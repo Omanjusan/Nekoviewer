@@ -1,0 +1,27 @@
+[package]
+name = "nekoviewer"
+version = "0.1.1"
+edition = "2024"
+license = "MIT"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.52", features = ["Win32_Storage_FileSystem"] }
+
+[dependencies]
+eframe = "0.29"
+egui = "0.29"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif", "bmp"] }
+zip = "2"
+flate2 = "1"
+encoding_rs = "0.8"
+walkdir = "2"
+sha2 = "0.10"
+fast_image_resize = "5"
+webp = "0.3"
+sysinfo = { version = "0.32", default-features = false, features = ["system"] }
+
+[profile.dev.package.fast_image_resize]
+opt-level = 3
+
+[profile.dev.package.image]
+opt-level = 3
