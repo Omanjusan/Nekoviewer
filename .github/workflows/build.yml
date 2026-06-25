@@ -65,7 +65,16 @@ jobs:
         run: |
           echo "https://dl-cdn.alpinelinux.org/alpine/edge/community" >> /etc/apk/repositories
           apk update
-          apk add --no-cache git build-base nasm cmake pkgconf dav1d-dev
+          apk add --no-cache git build-base nasm cmake pkgconf meson py3-packaging
+
+      - name: Build dav1d static
+        run: |
+          git clone --depth 1 https://code.videolan.org/videolan/dav1d.git /tmp/dav1d
+          meson setup /tmp/dav1d/build /tmp/dav1d \
+            --default-library=static \
+            --buildtype=release \
+            --prefix=/usr
+          ninja -C /tmp/dav1d/build install
 
       - uses: actions/checkout@v4
 
