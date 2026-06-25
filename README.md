@@ -58,7 +58,7 @@ If no argument is given, the app starts from the folder set in `nekoviewer.conf`
 | Click folder | Navigate into that folder's archive list |
 | Enter / Double-click thumbnail | Open the file at the selector position in the viewer window |
 | Click sort header | Sort by filename / date / size |
-| Arrow keys / Click thumbnail | Move / select the item selector |
+| Arrow keys / Click thumbnail | Move the item selector |
 
 The selector is shown in blue for archive files and red for standalone image files.
 
