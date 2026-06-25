@@ -60,12 +60,12 @@ jobs:
       contents: write
 
     steps:
+      - uses: actions/checkout@v4
+
       - name: Download artifact
         uses: actions/download-artifact@v4
         with:
           name: nekoviewer-windows-x64
-
-      - uses: actions/checkout@v4
 
       - name: Extract release notes
         run: |
