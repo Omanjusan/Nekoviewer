@@ -178,6 +178,11 @@ fn load_raw_file_content(path: &std::path::Path, filter: image::imageops::Filter
             return Some(PageContent::Animated(resize_anim_for_display(anim, filter)));
         }
     }
+    if lower == "avif" {
+        if let Some(anim) = AnimatedImage::from_avif(&buf) {
+            return Some(PageContent::Animated(resize_anim_for_display(anim, filter)));
+        }
+    }
 
     let display_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
     let img = crate::fs::archive::decode_image_bytes(&buf, display_name)?;
@@ -216,6 +221,11 @@ fn load_page_content(
 
     if lower.ends_with(".png") {
         if let Some(anim) = AnimatedImage::from_apng(&buf) {
+            return Some(PageContent::Animated(resize_anim_for_display(anim, filter)));
+        }
+    }
+    if lower.ends_with(".avif") {
+        if let Some(anim) = AnimatedImage::from_avif(&buf) {
             return Some(PageContent::Animated(resize_anim_for_display(anim, filter)));
         }
     }

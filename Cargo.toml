@@ -12,6 +12,7 @@ eframe = "0.29"
 egui = "0.29"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif", "bmp"] }
 libavif = "0.14"
+libavif-sys = "0.17"
 zip = "2"
 flate2 = "1"
 encoding_rs = "0.8"
