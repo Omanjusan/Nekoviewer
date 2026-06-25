@@ -4,5 +4,8 @@ version = "0.7.1+libdav1d.1.4.3"
 edition = "2021"
 links = "dav1d"
 
+[build-dependencies]
+pkg-config = "0.3"
+
 [lib]
 name = "libdav1d_sys"

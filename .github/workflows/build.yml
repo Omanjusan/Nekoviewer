@@ -1,4 +1,4 @@
-name: Build Windows EXE
+name: Build
 
 on:
   push:
@@ -8,8 +8,12 @@ on:
     branches: [main]
 
 jobs:
-  build:
+  build-windows:
     runs-on: windows-latest
+
+    env:
+      VCPKG_ROOT: C:\vcpkg
+      CARGO_TARGET_DIR: C:\cgt
 
     steps:
       - uses: actions/checkout@v4
@@ -51,8 +55,51 @@ jobs:
           path: C:\cgt\release\nekoviewer.exe
           retention-days: 30
 
+  build-linux:
+    runs-on: ubuntu-latest
+    container:
+      image: rust:alpine
+
+    steps:
+      - name: Install dependencies
+        run: |
+          echo "https://dl-cdn.alpinelinux.org/alpine/edge/community" >> /etc/apk/repositories
+          apk update
+          apk add --no-cache git build-base nasm cmake pkgconf meson py3-packaging
+
+      - name: Build dav1d static
+        run: |
+          git clone --depth 1 https://code.videolan.org/videolan/dav1d.git /tmp/dav1d
+          meson setup /tmp/dav1d/build /tmp/dav1d \
+            --default-library=static \
+            --buildtype=release \
+            --prefix=/usr
+          ninja -C /tmp/dav1d/build install
+
+      - uses: actions/checkout@v4
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: linux-musl-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: linux-musl-cargo-
+
+      - name: Build release
+        run: cargo build --release
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nekoviewer-linux-x64
+          path: target/release/nekoviewer
+          retention-days: 30
+
   release:
-    needs: build
+    needs: [build-windows, build-linux]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
 
@@ -62,10 +109,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Download artifact
+      - name: Download Windows artifact
         uses: actions/download-artifact@v4
         with:
           name: nekoviewer-windows-x64
+
+      - name: Download Linux artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: nekoviewer-linux-x64
 
       - name: Extract release notes
         run: |
@@ -77,5 +129,5 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create ${{ github.ref_name }} nekoviewer.exe \
+          gh release create ${{ github.ref_name }} nekoviewer.exe nekoviewer \
             --notes-file release_notes.md
