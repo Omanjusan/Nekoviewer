@@ -57,15 +57,17 @@ jobs:
 
   build-linux:
     runs-on: ubuntu-latest
+    container:
+      image: rust:alpine
 
     steps:
+      - name: Install dependencies
+        run: |
+          echo "https://dl-cdn.alpinelinux.org/alpine/edge/community" >> /etc/apk/repositories
+          apk update
+          apk add --no-cache git build-base nasm cmake pkgconf dav1d-dev
+
       - uses: actions/checkout@v4
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Install NASM and dav1d
-        run: sudo apt-get update && sudo apt-get install -y nasm libdav1d-dev pkg-config
 
       - name: Cache cargo
         uses: actions/cache@v4
@@ -74,8 +76,8 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-
+          key: linux-musl-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: linux-musl-cargo-
 
       - name: Build release
         run: cargo build --release
