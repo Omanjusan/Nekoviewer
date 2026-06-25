@@ -18,5 +18,14 @@ fn main() {
             .statik(true)
             .probe("dav1d")
             .expect("dav1d not found via pkg-config. Install dav1d-dev (Alpine: apk add dav1d-dev).");
+
+        let pc_dir = std::process::Command::new("pkg-config")
+            .args(["--variable=pcfiledir", "dav1d"])
+            .output()
+            .ok()
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .map(|s| s.trim().to_string())
+            .unwrap_or_else(|| "/usr/lib/pkgconfig".to_string());
+        println!("cargo:pkgconfig={pc_dir}");
     }
 }
