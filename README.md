@@ -56,8 +56,11 @@ If no argument is given, the app starts from the folder set in `nekoviewer.conf`
 | Action | Result |
 |--------|--------|
 | Click folder | Navigate into that folder's archive list |
-| Double-click thumbnail | Open viewer window |
+| Enter / Double-click thumbnail | Open the file at the selector position in the viewer window |
 | Click sort header | Sort by filename / date / size |
+| Arrow keys / Click thumbnail | Move / select the item selector |
+
+The selector is shown in blue for archive files and red for standalone image files.
 
 #### Viewer Window
 
@@ -73,8 +76,8 @@ If no argument is given, the app starts from the folder set in `nekoviewer.conf`
 | `4` | Spread offset −1 (clamped to −1–+1) |
 | `5` | Spread offset +1 (clamped to −1–+1) |
 | `F5`–`F8` | Save / restore window position and size slots |
-| `Enter` | Original size |
-| `Alt+Enter` | Toggle fullscreen / windowed |
+| `Enter` / Left double-click | Toggle between original size and fit to window |
+| `Alt+Enter` / Middle mouse button | Toggle fullscreen / windowed |
 | `Esc` | Close viewer window |
 
 ### Supported Formats
