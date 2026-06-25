@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.1] - 2026-06-25
+
+### Fixed
+- GitHub Actions release now correctly includes the EXE file
+
 ## [0.3.0] - 2026-06-25
 
 ### Added
