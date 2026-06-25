@@ -11,6 +11,7 @@ windows-sys = { version = "0.52", features = ["Win32_Storage_FileSystem"] }
 eframe = "0.29"
 egui = "0.29"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif", "bmp"] }
+libavif = "0.14"
 zip = "2"
 flate2 = "1"
 encoding_rs = "0.8"
@@ -25,3 +26,6 @@ opt-level = 3
 
 [profile.dev.package.image]
 opt-level = 3
+
+[patch.crates-io]
+libdav1d-sys = { path = "local/libdav1d-sys" }

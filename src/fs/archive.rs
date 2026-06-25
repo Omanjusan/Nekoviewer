@@ -26,10 +26,35 @@ fn decode_image(buf: &[u8], entry_name: &str) -> Option<image::DynamicImage> {
 
 /// バイト列から静止画をデコードする（外部から呼び出し可能）
 pub fn decode_image_bytes(buf: &[u8], entry_name: &str) -> Option<image::DynamicImage> {
-    if entry_name.to_lowercase().ends_with(".webp") {
+    let lower = entry_name.to_lowercase();
+    if lower.ends_with(".webp") {
         webp::Decoder::new(buf).decode().map(|w| w.to_image())
+    } else if lower.ends_with(".avif") {
+        decode_avif(buf)
     } else {
         image::load_from_memory(buf).ok()
+    }
+}
+
+fn decode_avif(buf: &[u8]) -> Option<image::DynamicImage> {
+    eprintln!("[avif] buf.len()={}, is_avif={}", buf.len(), libavif::is_avif(buf));
+    let rgb = match libavif::decode_rgb(buf) {
+        Ok(r) => r,
+        Err(e) => {
+            // libavif 1.0.4 error codes: 9=BMFF_PARSE_FAILED, 15=NO_CODEC_AVAILABLE
+            eprintln!("[avif] decode_rgb error: {:?}", e);
+            return None;
+        }
+    };
+    let w = rgb.width();
+    let h = rgb.height();
+    let pixels = rgb.as_slice().to_vec();
+    match image::RgbaImage::from_raw(w, h, pixels) {
+        Some(img) => Some(image::DynamicImage::ImageRgba8(img)),
+        None => {
+            eprintln!("[avif] RgbaImage::from_raw returned None");
+            None
+        }
     }
 }
 
@@ -45,7 +70,7 @@ pub fn load_bytes_from_archive(
     Some((buf, display_name))
 }
 
-const IMAGE_EXTENSIONS: &[&str] = &["jpg", "jpeg", "png", "webp", "gif", "bmp"];
+const IMAGE_EXTENSIONS: &[&str] = &["jpg", "jpeg", "png", "webp", "gif", "bmp", "avif"];
 
 /// ディレクトリ直下の生画像ファイルかどうかを拡張子で判定する
 pub fn is_supported_image_file(path: &Path) -> bool {

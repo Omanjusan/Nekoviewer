@@ -1,0 +1,8 @@
+[package]
+name = "libdav1d-sys"
+version = "0.7.1+libdav1d.1.4.3"
+edition = "2021"
+links = "dav1d"
+
+[lib]
+name = "libdav1d_sys"
