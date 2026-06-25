@@ -687,7 +687,7 @@ impl ViewerState {
                 // ── スライドアニメーション ────────────────────────────────────
                 let full_rect = egui::Rect::from_min_size(origin, avail);
                 let resp = ui.allocate_rect(full_rect, egui::Sense::click());
-                if resp.middle_clicked() { middle_clicked = true; }
+                if ui.ctx().input(|i| i.pointer.button_clicked(egui::PointerButton::Middle)) { middle_clicked = true; }
                 if resp.double_clicked() { double_clicked = true; }
 
                 let painter = ui.painter().with_clip_rect(clip);
@@ -797,7 +797,7 @@ impl ViewerState {
                     let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::click());
                     ui.painter().image(tex.id(), rect, FULL_UV, egui::Color32::WHITE);
                     if resp.double_clicked() { *double_clicked = true; }
-                    if resp.middle_clicked() { *middle_clicked = true; }
+                    if ui.ctx().input(|i| i.pointer.button_clicked(egui::PointerButton::Middle)) { *middle_clicked = true; }
                 });
             } else {
                 let available = ui.available_size();
@@ -808,13 +808,13 @@ impl ViewerState {
                 let resp  = ui.allocate_rect(rect, egui::Sense::click());
                 ui.painter().image(tex.id(), rect, FULL_UV, egui::Color32::WHITE);
                 if resp.double_clicked() { *double_clicked = true; }
-                if resp.middle_clicked() { *middle_clicked = true; }
+                if ui.ctx().input(|i| i.pointer.button_clicked(egui::PointerButton::Middle)) { *middle_clicked = true; }
             }
         } else {
             let rect = egui::Rect::from_min_size(ui.cursor().left_top(), ui.available_size());
             let resp = ui.allocate_rect(rect, egui::Sense::click());
             ui.painter().rect_filled(rect, 0.0, egui::Color32::from_gray(40));
-            if resp.middle_clicked() { *middle_clicked = true; }
+            if ui.ctx().input(|i| i.pointer.button_clicked(egui::PointerButton::Middle)) { *middle_clicked = true; }
         }
     }
 
@@ -829,7 +829,7 @@ impl ViewerState {
 
         let full_rect = egui::Rect::from_min_size(origin, available);
         let resp = ui.allocate_rect(full_rect, egui::Sense::click());
-        if resp.middle_clicked() { *middle_clicked = true; }
+        if ui.ctx().input(|i| i.pointer.button_clicked(egui::PointerButton::Middle)) { *middle_clicked = true; }
 
         let (rect_l, rect_r) = Self::spread_rects(available, origin, tex_left, tex_right);
         let painter = ui.painter();

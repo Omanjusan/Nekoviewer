@@ -534,6 +534,42 @@ impl eframe::App for NekoviewApp {
         // 止まる問題があるため、fullscreen 中はメインウィンドウ (ROOT viewport) で
         // ビューアを描画して独立したイベントループを維持する。
         let viewer_wants_fullscreen = self.viewer.as_ref().map_or(false, |v| v.fullscreen);
+
+        // セカンダリウィンドウを常に維持し、フルスクリーン中は with_visible(false) で
+        // 不可視にする。create/destroy サイクルが Win32 の マウスイベント配信を
+        // 壊すのを防ぐため。不可視ウィンドウはフォーカスを奪わない。
+        {
+            let visible = !viewer_wants_fullscreen;
+            let page_cache = &self.page_cache;
+            let mut viewer_should_close = false;
+            if let Some(viewer) = &mut self.viewer {
+                let vp_builder = {
+                    let b = egui::ViewportBuilder::default().with_visible(visible);
+                    if viewer.first_frame && visible { b.with_inner_size([800.0, 600.0]) } else { b }
+                };
+                if visible { viewer.first_frame = false; }
+                ctx.show_viewport_immediate(
+                    egui::ViewportId::from_hash_of("viewer_window"),
+                    vp_builder,
+                    |vp_ctx, _class| {
+                        if visible {
+                            viewer.show(vp_ctx, page_cache);
+                        } else {
+                            egui::CentralPanel::default().show(vp_ctx, |_| {});
+                        }
+                    },
+                );
+                if visible && viewer.save_requested {
+                    viewer.save_requested = false;
+                    self.viewer_slots = viewer.slots;
+                    crate::config::save_state(&self.current_dir, self.window_size, &self.viewer_slots, &SortState { key: self.sort_key.as_state_key().to_string(), ascending: self.sort_ascending });
+                }
+                if visible { viewer_should_close = !viewer.open; }
+            }
+            if viewer_should_close {
+                self.viewer = None;
+            }
+        }
         if viewer_wants_fullscreen {
             if !self.viewer_fullscreen_active {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(true));
@@ -1058,33 +1094,6 @@ impl eframe::App for NekoviewApp {
             }
         }
 
-        // ビューアウィンドウ（独立ウィンドウ）
-        let mut viewer_should_close = false;
-        if let Some(viewer) = &mut self.viewer {
-            let page_cache = &self.page_cache;
-            let vp_builder = {
-                let b = egui::ViewportBuilder::default();
-                if viewer.first_frame { b.with_inner_size([800.0, 600.0]) } else { b }
-            };
-            viewer.first_frame = false;
-            ctx.show_viewport_immediate(
-                egui::ViewportId::from_hash_of("viewer_window"),
-                vp_builder,
-                |vp_ctx, _class| {
-                    viewer.show(vp_ctx, page_cache);
-                },
-            );
-            // スロット保存要求があれば app 側に反映して永続化
-            if viewer.save_requested {
-                viewer.save_requested = false;
-                self.viewer_slots = viewer.slots;
-                crate::config::save_state(&self.current_dir, self.window_size, &self.viewer_slots, &SortState { key: self.sort_key.as_state_key().to_string(), ascending: self.sort_ascending });
-            }
-            viewer_should_close = !viewer.open;
-        }
-        if viewer_should_close {
-            self.viewer = None;
-        }
 
         // 未完了の処理がある間はワーカー結果を取りこぼさないよう次フレームを要求する
         // ビューアが開いている間も続ける（フルスクリーン時の入力取りこぼし防止）
