@@ -14,18 +14,13 @@ fn main() {
         // musl (Alpine) でも glibc でも pkg-config で解決する。
         // statik(true) で静的リンクを要求し、libavif-sys の cmake が
         // DEP_DAV1D_INCLUDE 経由で dav1d ヘッダを参照できるようにする。
-        pkg_config::Config::new()
+        let lib = pkg_config::Config::new()
             .statik(true)
             .probe("dav1d")
             .expect("dav1d not found via pkg-config. Install dav1d-dev (Alpine: apk add dav1d-dev).");
 
-        let pc_dir = std::process::Command::new("pkg-config")
-            .args(["--variable=pcfiledir", "dav1d"])
-            .output()
-            .ok()
-            .and_then(|o| String::from_utf8(o.stdout).ok())
-            .map(|s| s.trim().to_string())
-            .unwrap_or_else(|| "/usr/lib/pkgconfig".to_string());
-        println!("cargo:pkgconfig={pc_dir}");
+        for path in &lib.include_paths {
+            println!("cargo:include={}", path.display());
+        }
     }
 }
