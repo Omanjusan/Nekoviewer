@@ -11,6 +11,12 @@ fn main() {
         println!("cargo:include={base}/include");
         println!("cargo:staticlib={base}/lib/dav1d.lib");
     } else {
-        pkg_config::probe_library("dav1d").expect("dav1d not found via pkg-config. Install libdav1d-dev.");
+        // musl (Alpine) でも glibc でも pkg-config で解決する。
+        // statik(true) で静的リンクを要求し、libavif-sys の cmake が
+        // DEP_DAV1D_INCLUDE 経由で dav1d ヘッダを参照できるようにする。
+        pkg_config::Config::new()
+            .statik(true)
+            .probe("dav1d")
+            .expect("dav1d not found via pkg-config. Install dav1d-dev (Alpine: apk add dav1d-dev).");
     }
 }
