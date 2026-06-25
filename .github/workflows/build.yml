@@ -17,13 +17,27 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Install NASM
+        uses: ilammy/setup-nasm@v1
+
+      - name: Cache vcpkg dav1d
+        uses: actions/cache@v4
+        id: vcpkg-cache
+        with:
+          path: C:\vcpkg\packages\dav1d_x64-windows-static
+          key: vcpkg-dav1d-x64-windows-static-v1
+
+      - name: Install dav1d via vcpkg
+        if: steps.vcpkg-cache.outputs.cache-hit != 'true'
+        run: C:\vcpkg\vcpkg.exe install dav1d:x64-windows-static
+
       - name: Cache cargo
         uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target
+            C:\cgt
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-
 
@@ -34,7 +48,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: nekoviewer-windows-x64
-          path: target/release/nekoviewer.exe
+          path: C:\cgt\release\nekoviewer.exe
           retention-days: 30
 
   release:
