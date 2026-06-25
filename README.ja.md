@@ -81,7 +81,7 @@ nekoviewer [フォルダパス]
 
 ### 対応フォーマット
 
-**アーカイブ:** ZIP, CBZ
+**アーカイブ:** ZIP, CBZ, (読み込み可能な単独画像ファイル)
 
 **画像:** JPEG, PNG, WebP, GIF, PNG, BMP
 **アニメーション再生対応:** WebP, GIF, (APNGまだ未定)
