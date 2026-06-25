@@ -1,2 +1,5 @@
 [build]
 target-dir = "C:\\cgt"
+
+[env]
+VCPKG_ROOT = "C:\\vcpkg"
