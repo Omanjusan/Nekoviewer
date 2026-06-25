@@ -399,9 +399,9 @@ fn load_first_image_smb(path: PathBuf) -> Option<image::DynamicImage> {
 /// 1件のサムネイルリクエストを処理する。失敗時は None を返す（スレッドは死なない）。
 fn resolve_thumb(req: &ThumbRequest, filter: image::imageops::FilterType) -> Option<image::RgbaImage> {
     if req.is_raw_file {
-        // ディスクキャッシュがあれば使用
+        // ディスクキャッシュがあれば使用（元ファイルより新しい場合のみ）
         if let Some(ref tp) = req.thumb_path {
-            if tp.exists() {
+            if tp.exists() && !is_source_newer(&req.archive_path, tp) {
                 return image::open(tp).ok().map(|img| img.to_rgba8());
             }
         }
@@ -422,8 +422,8 @@ fn resolve_thumb(req: &ThumbRequest, filter: image::imageops::FilterType) -> Opt
     let is_smb = crate::fs::dir::is_gvfs_path(&req.archive_path);
 
     if let Some(ref tp) = req.thumb_path {
-        if tp.exists() {
-            // ディスクキャッシュから読み込み
+        if tp.exists() && !is_source_newer(&req.archive_path, tp) {
+            // ディスクキャッシュから読み込み（元ファイルより新しい場合のみ）
             let t0 = std::time::Instant::now();
             let result = image::open(tp).ok().map(|img| img.to_rgba8());
             log_perf!(
@@ -471,6 +471,17 @@ fn resolve_thumb(req: &ThumbRequest, filter: image::imageops::FilterType) -> Opt
             t_total.elapsed().as_secs_f64() * 1000.0,
         );
         Some(rgba)
+    }
+}
+
+/// 元ファイルの更新時刻がサムネキャッシュより新しいかどうかを返す。
+/// 時刻取得に失敗した場合は再生成を促すため true を返す。
+fn is_source_newer(source: &std::path::Path, thumb: &std::path::Path) -> bool {
+    let source_mtime = std::fs::metadata(source).and_then(|m| m.modified());
+    let thumb_mtime = std::fs::metadata(thumb).and_then(|m| m.modified());
+    match (source_mtime, thumb_mtime) {
+        (Ok(s), Ok(t)) => s > t,
+        _ => true,
     }
 }
 

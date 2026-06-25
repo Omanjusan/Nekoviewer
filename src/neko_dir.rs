@@ -20,12 +20,17 @@ pub fn ensure_thumbs_dir(neko_dir: &Path) -> Option<PathBuf> {
 }
 
 /// アーカイブパスからサムネイルキャッシュファイル名（拡張子 .jpg）を生成する。
+/// 元ファイルの拡張子を含めることで同名・異種ファイル間の衝突を防ぐ。
 pub fn thumb_filename(archive_path: &Path) -> String {
     let stem = archive_path
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("unknown");
-    format!("{stem}.jpg")
+    let ext = archive_path
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or("bin");
+    format!("{stem}.{ext}.jpg")
 }
 
 fn sha256_hex(data: &[u8]) -> String {
