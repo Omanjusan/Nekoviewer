@@ -37,25 +37,14 @@ pub fn decode_image_bytes(buf: &[u8], entry_name: &str) -> Option<image::Dynamic
 }
 
 fn decode_avif(buf: &[u8]) -> Option<image::DynamicImage> {
-    eprintln!("[avif] buf.len()={}, is_avif={}", buf.len(), libavif::is_avif(buf));
     let rgb = match libavif::decode_rgb(buf) {
         Ok(r) => r,
-        Err(e) => {
-            // libavif 1.0.4 error codes: 9=BMFF_PARSE_FAILED, 15=NO_CODEC_AVAILABLE
-            eprintln!("[avif] decode_rgb error: {:?}", e);
-            return None;
-        }
+        Err(_) => return None,
     };
     let w = rgb.width();
     let h = rgb.height();
     let pixels = rgb.as_slice().to_vec();
-    match image::RgbaImage::from_raw(w, h, pixels) {
-        Some(img) => Some(image::DynamicImage::ImageRgba8(img)),
-        None => {
-            eprintln!("[avif] RgbaImage::from_raw returned None");
-            None
-        }
-    }
+    image::RgbaImage::from_raw(w, h, pixels).map(image::DynamicImage::ImageRgba8)
 }
 
 /// 開済みの ZipArchive からエントリの生バイトと表示名を返す（デコードしない）
