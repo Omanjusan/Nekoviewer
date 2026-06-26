@@ -464,7 +464,9 @@ impl ViewerState {
              shift_nav_up, shift_nav_down, scroll_delta_raw, shift_scroll_delta) =
             ctx.input(|i| {
                 let sh = i.modifiers.shift;
-                let raw = if zoom_actual { 0.0 } else { i.raw_scroll_delta.y };
+                let raw = if zoom_actual { 0.0 } else {
+                    i.raw_scroll_delta.y + if sh { i.raw_scroll_delta.x } else { 0.0 }
+                };
                 (
                     i.key_pressed(egui::Key::ArrowLeft)  && !sh,
                     i.key_pressed(egui::Key::ArrowRight) && !sh,
@@ -481,7 +483,7 @@ impl ViewerState {
                     i.key_pressed(egui::Key::Num5),
                     i.key_pressed(egui::Key::ArrowUp)   && sh,
                     i.key_pressed(egui::Key::ArrowDown) && sh,
-                    if sh { 0.0 } else { raw },
+                    raw,
                     if sh { raw } else { 0.0 },
                 )
             });
@@ -496,9 +498,10 @@ impl ViewerState {
         });
 
         // 右綴じは左右キーを逆転（← が「次ページ」）。上下キーは常に上=戻る・下=進む
+        // shift_nav_up/down は Shift 押下中でも同方向のページ送り戻りを継続させる
         let (key_next, key_prev) = match self.page_mode {
-            PageMode::SpreadRight => (key_left || key_space || key_down, key_right || key_up),
-            _                     => (key_right || key_space || key_down, key_left || key_up),
+            PageMode::SpreadRight => (key_left || key_space || key_down || shift_nav_down, key_right || key_up || shift_nav_up),
+            _                     => (key_right || key_space || key_down || shift_nav_down, key_left || key_up || shift_nav_up),
         };
 
         // 4/5 のシフト方向も綴じ方向に合わせる（4=←方向, 5=→方向）
