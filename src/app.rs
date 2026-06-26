@@ -166,8 +166,8 @@ pub struct NekoviewApp {
     /// バックグラウンドで計算中のサマリー結果受信チャンネル
     cd_summary_rx: Option<mpsc::Receiver<(PathBuf, usize, usize)>>,
     cd_summary_updated_at: Option<std::time::Instant>,
-    /// 現在ディレクトリの thumbs/ パス（キャッシュ無効なら None）
-    thumbs_dir: Option<PathBuf>,
+    /// 現在ディレクトリの redb キャッシュDB（キャッシュ無効なら None）
+    cache_db: Option<std::sync::Arc<std::sync::Mutex<redb::Database>>>,
     thumbnails: HashMap<PathBuf, egui::TextureHandle>,
     thumb_req_tx: mpsc::SyncSender<ThumbRequest>,
     thumb_res_rx: mpsc::Receiver<ThumbResult>,
@@ -240,7 +240,7 @@ impl NekoviewApp {
             cd_summary: None,
             cd_summary_rx: None,
             cd_summary_updated_at: None,
-            thumbs_dir: None,
+            cache_db: None,
             thumbnails: HashMap::new(),
             thumb_req_tx,
             thumb_res_rx,
@@ -284,8 +284,8 @@ impl NekoviewApp {
         self.archives.clear();
         self.raw_image_files.clear();
         self.invalid_archives.clear();
-        self.thumbs_dir = neko_dir::neko_dir_for(&self.current_dir, &self.config)
-            .and_then(|nd| neko_dir::ensure_thumbs_dir(&nd));
+        self.cache_db = neko_dir::neko_dir_for(&self.current_dir, &self.config)
+            .and_then(|nd| neko_dir::open_cache_db(&nd));
         self.thumbnails.clear();
         self.thumb_pending.clear();
         self.pending_loads.clear();
@@ -309,10 +309,12 @@ impl NekoviewApp {
 
         if let Some((subdirs, archives, raw_images)) = result {
             self.subdirs = subdirs;
-            let neko_dir = neko_dir::neko_dir_for(&self.current_dir, &self.config);
             self.archives = archives.into_iter()
-                .filter(|p| neko_dir.as_ref()
-                    .map_or(true, |nd| !neko_dir::is_invalid_and_current(nd, p)))
+                .filter(|p| {
+                    let filename = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                    self.cache_db.as_ref()
+                        .map_or(true, |db| !neko_dir::is_invalid_and_current(db, filename, p))
+                })
                 .collect();
             for img in raw_images {
                 self.raw_image_files.insert(img.clone());
@@ -374,29 +376,21 @@ impl NekoviewApp {
 }
 
 /// cd_summary の計算をバックグラウンドスレッドで行い、受信チャンネルを返す。
-/// thumbs_path は呼び出し元で事前計算（UI スレッドで完結する純粋なパス操作）。
 fn spawn_summary_worker(
     path: PathBuf,
-    thumbs_path: Option<PathBuf>,
+    db: Option<std::sync::Arc<std::sync::Mutex<redb::Database>>>,
 ) -> mpsc::Receiver<(PathBuf, usize, usize)> {
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
         let archives = dir::list_archives(&path);
         let raw_images = dir::list_raw_images(&path);
         let total = archives.len() + raw_images.len();
-        let saved = thumbs_path
-            .map(|td| {
-                let zip_saved = archives
-                    .iter()
-                    .filter(|a| td.join(neko_dir::thumb_filename(a)).exists())
-                    .count();
-                let img_saved = raw_images
-                    .iter()
-                    .filter(|a| td.join(neko_dir::thumb_filename(a)).exists())
-                    .count();
-                zip_saved + img_saved
-            })
-            .unwrap_or(0);
+        let saved = db.map(|db| {
+            let filenames: Vec<String> = archives.iter().chain(raw_images.iter())
+                .filter_map(|p| p.file_name().and_then(|n| n.to_str()).map(|s| s.to_owned()))
+                .collect();
+            neko_dir::count_cached_thumbs(&db, &filenames)
+        }).unwrap_or(0);
         let _ = tx.send((path, saved, total));
     });
     rx
@@ -464,9 +458,7 @@ impl eframe::App for NekoviewApp {
             if just_finished || elapsed >= 2.0 {
                 if let Some((ref cd_path, _, _)) = self.cd_summary {
                     let path = cd_path.clone();
-                    let thumbs_path =
-                        neko_dir::neko_dir_for(&path, &self.config).map(|nd| nd.join("thumbs"));
-                    self.cd_summary_rx = Some(spawn_summary_worker(path, thumbs_path));
+                    self.cd_summary_rx = Some(spawn_summary_worker(path, self.cache_db.clone()));
                 }
             }
         }
@@ -827,10 +819,8 @@ impl eframe::App for NekoviewApp {
                     TreeAction::Navigate(path) => {
                         self.current_dir = path.clone();
                         self.viewing_dir = Some(path.clone());
-                        let thumbs_path = neko_dir::neko_dir_for(&path, &self.config)
-                            .map(|nd| nd.join("thumbs"));
-                        self.cd_summary_rx = Some(spawn_summary_worker(path.clone(), thumbs_path));
-                        self.start_scan();
+                        self.start_scan(); // cache_db をここで確定させてから clone して渡す
+                        self.cd_summary_rx = Some(spawn_summary_worker(path.clone(), self.cache_db.clone()));
                         crate::config::save_state(&self.current_dir, self.window_size, &self.viewer_slots, &SortState { key: self.sort_key.as_state_key().to_string(), ascending: self.sort_ascending });
                     }
                 }
@@ -967,12 +957,9 @@ impl eframe::App for NekoviewApp {
                                                 egui::Color32::from_gray(60),
                                             );
                                             if !self.thumb_pending.contains(path) {
-                                                let thumb_path = self.thumbs_dir.as_ref().map(|td| {
-                                                    td.join(neko_dir::thumb_filename(path))
-                                                });
                                                 if self.thumb_req_tx.try_send(ThumbRequest {
                                                     archive_path: path.clone(),
-                                                    thumb_path,
+                                                    db: self.cache_db.clone(),
                                                     is_raw_file: self.raw_image_files.contains(path),
                                                 }).is_ok() {
                                                     self.thumb_pending.insert(path.clone());
@@ -1097,11 +1084,13 @@ impl eframe::App for NekoviewApp {
 }
 
 impl NekoviewApp {
-    /// ZIPを無効確定してマーカーファイルを書き込む
+    /// ZIPを無効確定してDBにマーカーを書き込む
     fn mark_archive_invalid(&mut self, path: &PathBuf) {
         self.invalid_archives.insert(path.clone());
-        if let Some(nd) = neko_dir::neko_dir_for(&self.current_dir, &self.config) {
-            neko_dir::mark_invalid(&nd, path);
+        if let Some(ref db) = self.cache_db {
+            let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            let mtime = neko_dir::file_mtime(path);
+            neko_dir::mark_invalid(db, filename, mtime);
         }
     }
 

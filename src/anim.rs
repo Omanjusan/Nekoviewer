@@ -135,7 +135,7 @@ impl AnimatedImage {
                 } else {
                     webp_frames[i - 1].get_time_ms().max(0) as u64
                 };
-                let delay_ms = (ts - prev_ts).max(MIN_DELAY_MS);
+                let delay_ms = ts.saturating_sub(prev_ts).max(MIN_DELAY_MS);
                 let image = rgba_from_webp_frame(f);
                 AnimFrame { image, delay: Duration::from_millis(delay_ms) }
             })

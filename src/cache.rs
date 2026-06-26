@@ -358,8 +358,8 @@ fn content_bytes(content: &PageContent) -> usize {
 
 pub struct ThumbRequest {
     pub archive_path: PathBuf,
-    /// ディスクキャッシュJPEGのパス。存在すればZIPを開かずそこから読む。
-    pub thumb_path: Option<PathBuf>,
+    /// DB が利用可能な場合に渡す。None のときはメモリ生成のみ。
+    pub db: Option<std::sync::Arc<std::sync::Mutex<redb::Database>>>,
     /// true のとき archive_path は ZIP ではなく生画像ファイル
     pub is_raw_file: bool,
 }
@@ -396,7 +396,6 @@ pub fn spawn_thumb_worker(filter: image::imageops::FilterType, num_threads: usiz
 }
 
 /// SMB（gvfs）パスのZIPをバックグラウンドスレッドで読み込む。
-/// ワーカースレッド自体はブロックされないため次のリクエストを処理できる。
 fn load_first_image_smb(path: PathBuf) -> Option<image::DynamicImage> {
     let timeout = std::time::Duration::from_secs(30);
     let (tx, rx) = mpsc::channel();
@@ -408,63 +407,35 @@ fn load_first_image_smb(path: PathBuf) -> Option<image::DynamicImage> {
 
 /// 1件のサムネイルリクエストを処理する。失敗時は None を返す（スレッドは死なない）。
 fn resolve_thumb(req: &ThumbRequest, filter: image::imageops::FilterType) -> Option<image::RgbaImage> {
-    if req.is_raw_file {
-        // ディスクキャッシュがあれば使用（元ファイルより新しい場合のみ）
-        if let Some(ref tp) = req.thumb_path {
-            if tp.exists() && !is_source_newer(&req.archive_path, tp) {
-                return image::open(tp).ok().map(|img| img.to_rgba8());
-            }
+    let filename = req.archive_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("")
+        .to_owned();
+    let source_mtime = crate::neko_dir::file_mtime(&req.archive_path);
+
+    // DBキャッシュを試みる
+    if let Some(ref db) = req.db {
+        if let Some(jpeg) = crate::neko_dir::read_thumb(db, &filename, source_mtime) {
+            let t0 = std::time::Instant::now();
+            let result = image::load_from_memory(&jpeg).ok().map(|img| img.to_rgba8());
+            log_perf!("[perf/thumb] db_cache={:.1}ms", t0.elapsed().as_secs_f64() * 1000.0);
+            return result;
         }
-        // 生ファイルを直接読んでリサイズ
+    }
+
+    // キャッシュミス: 元ファイルから生成
+    let rgba = if req.is_raw_file {
         let buf = std::fs::read(&req.archive_path).ok()?;
         let display_name = req.archive_path
             .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("");
         let img = crate::fs::archive::decode_image_bytes(&buf, display_name)?;
-        let rgba = resize_thumbnail(img, filter);
-        if let Some(ref tp) = req.thumb_path {
-            save_thumb_jpeg(&rgba, tp);
-        }
-        return Some(rgba);
-    }
-
-    let is_smb = crate::fs::dir::is_gvfs_path(&req.archive_path);
-
-    if let Some(ref tp) = req.thumb_path {
-        if tp.exists() && !is_source_newer(&req.archive_path, tp) {
-            // ディスクキャッシュから読み込み（元ファイルより新しい場合のみ）
-            let t0 = std::time::Instant::now();
-            let result = image::open(tp).ok().map(|img| img.to_rgba8());
-            log_perf!(
-                "[perf/thumb] disk_cache={:.1}ms",
-                t0.elapsed().as_secs_f64() * 1000.0,
-            );
-            result
-        } else {
-            // ZIPから生成してディスクに保存
-            let t_total = std::time::Instant::now();
-            let img = if is_smb {
-                load_first_image_smb(req.archive_path.clone())?
-            } else {
-                crate::fs::archive::load_first_image(&req.archive_path)?
-            };
-            let t_load = t_total.elapsed();
-            let t2 = std::time::Instant::now();
-            let rgba = resize_thumbnail(img, filter);
-            let t_resize = t2.elapsed();
-            log_perf!(
-                "[perf/thumb] load={:.1}ms resize={:.1}ms total={:.1}ms",
-                t_load.as_secs_f64() * 1000.0,
-                t_resize.as_secs_f64() * 1000.0,
-                t_total.elapsed().as_secs_f64() * 1000.0,
-            );
-            save_thumb_jpeg(&rgba, tp);
-            Some(rgba)
-        }
+        resize_thumbnail(img, filter)
     } else {
-        // ディスクキャッシュ無効: ZIPから生成のみ
         let t_total = std::time::Instant::now();
+        let is_smb = crate::fs::dir::is_gvfs_path(&req.archive_path);
         let img = if is_smb {
             load_first_image_smb(req.archive_path.clone())?
         } else {
@@ -472,36 +443,31 @@ fn resolve_thumb(req: &ThumbRequest, filter: image::imageops::FilterType) -> Opt
         };
         let t_load = t_total.elapsed();
         let t2 = std::time::Instant::now();
-        let rgba = resize_thumbnail(img, filter);
-        let t_resize = t2.elapsed();
+        let result = resize_thumbnail(img, filter);
         log_perf!(
             "[perf/thumb] load={:.1}ms resize={:.1}ms total={:.1}ms",
             t_load.as_secs_f64() * 1000.0,
-            t_resize.as_secs_f64() * 1000.0,
+            t2.elapsed().as_secs_f64() * 1000.0,
             t_total.elapsed().as_secs_f64() * 1000.0,
         );
-        Some(rgba)
+        result
+    };
+
+    // DBに保存
+    if let Some(ref db) = req.db {
+        if let Some(jpeg) = encode_jpeg(&rgba) {
+            crate::neko_dir::write_thumb(db, &filename, source_mtime, &jpeg);
+        }
     }
+
+    Some(rgba)
 }
 
-/// 元ファイルの更新時刻がサムネキャッシュより新しいかどうかを返す。
-/// 時刻取得に失敗した場合は再生成を促すため true を返す。
-fn is_source_newer(source: &std::path::Path, thumb: &std::path::Path) -> bool {
-    let source_mtime = std::fs::metadata(source).and_then(|m| m.modified());
-    let thumb_mtime = std::fs::metadata(thumb).and_then(|m| m.modified());
-    match (source_mtime, thumb_mtime) {
-        (Ok(s), Ok(t)) => s > t,
-        _ => true,
-    }
-}
-
-fn save_thumb_jpeg(rgba: &image::RgbaImage, path: &std::path::Path) {
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    // JPEGはアルファチャンネル非対応のためRGBに変換
+fn encode_jpeg(rgba: &image::RgbaImage) -> Option<Vec<u8>> {
     let rgb = image::DynamicImage::ImageRgba8(rgba.clone()).to_rgb8();
-    let _ = rgb.save(path);
+    let mut buf = std::io::Cursor::new(Vec::new());
+    rgb.write_to(&mut buf, image::ImageFormat::Jpeg).ok()?;
+    Some(buf.into_inner())
 }
 
 pub fn resize_thumbnail(img: image::DynamicImage, filter: image::imageops::FilterType) -> image::RgbaImage {
