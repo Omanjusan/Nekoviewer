@@ -17,6 +17,14 @@ fn ease_out(t: f32) -> f32 {
     1.0 - (1.0 - t).powi(3)
 }
 
+/// viewer.show() の戻り値。ファイル間ナビゲーションの要求を app 側に伝える。
+#[derive(Clone, Copy, PartialEq)]
+pub enum ViewerNav {
+    None,
+    PrevFile,
+    NextFile,
+}
+
 #[derive(Clone, Copy, PartialEq)]
 pub enum PageMode {
     /// 1: 単独ページ
@@ -128,6 +136,10 @@ pub struct ViewerState {
     anim_states: HashMap<usize, AnimState>,
     /// true のとき生画像ファイルを直接表示中（見開きモード封印）
     pub is_raw_file: bool,
+    /// Shift+スクロールの蓄積値（ファイル間ナビゲーション用）
+    shift_scroll_acc: f32,
+    /// トーストメッセージ: (テキスト, 消去予定のegui時刻) None=非表示
+    toast: Option<(String, Option<f64>)>,
 }
 
 impl ViewerState {
@@ -169,6 +181,8 @@ impl ViewerState {
             sort_ascending: true,
             anim_states: HashMap::new(),
             is_raw_file: false,
+            shift_scroll_acc: 0.0,
+            toast: None,
         }
     }
 
@@ -211,7 +225,21 @@ impl ViewerState {
             sort_ascending: true,
             anim_states: HashMap::new(),
             is_raw_file: true,
+            shift_scroll_acc: 0.0,
+            toast: None,
         }
+    }
+
+    /// 最終ページから開くコンストラクタ（前ファイルへの移動用）
+    pub fn new_at_last_page(archive_path: PathBuf, slots: [Option<WindowSlot>; 4]) -> Self {
+        let mut s = Self::new(archive_path, slots);
+        s.spread_base = (s.entries.len() as i32 - 1).max(0);
+        s
+    }
+
+    /// トーストメッセージをセット（3秒後に自動消去）
+    pub fn set_toast(&mut self, msg: String) {
+        self.toast = Some((msg, None));
     }
 
     /// 現在の表示基点インデックス（spread_base + offset）
@@ -310,9 +338,9 @@ impl ViewerState {
         self.archive_path.file_name().and_then(|n| n.to_str()).unwrap_or("ビューア").to_string()
     }
 
-    pub fn show(&mut self, ctx: &egui::Context, page_cache: &PageCache) {
+    pub fn show(&mut self, ctx: &egui::Context, page_cache: &PageCache) -> ViewerNav {
         if !self.open || self.entries.is_empty() {
-            return;
+            return ViewerNav::None;
         }
 
         // ── spread_lo の変化を検出してアニメーション起動 ──────────────────────
@@ -430,23 +458,35 @@ impl ViewerState {
         }
 
         // ── 入力読み取り ────────────────────────────────────────────────────────
+        let zoom_actual = self.zoom_actual;
         let (key_left, key_right, key_up, key_down, key_space, esc, zoom_key, fs_key,
-             mode1, mode2, mode3, shift4, shift5) =
-            ctx.input(|i| (
-                i.key_pressed(egui::Key::ArrowLeft),
-                i.key_pressed(egui::Key::ArrowRight),
-                i.key_pressed(egui::Key::ArrowUp),
-                i.key_pressed(egui::Key::ArrowDown),
-                i.key_pressed(egui::Key::Space),
-                i.key_pressed(egui::Key::Escape),
-                i.key_pressed(egui::Key::Enter) && !i.modifiers.alt,
-                i.key_pressed(egui::Key::Enter) &&  i.modifiers.alt,
-                i.key_pressed(egui::Key::Num1),
-                i.key_pressed(egui::Key::Num2),
-                i.key_pressed(egui::Key::Num3),
-                i.key_pressed(egui::Key::Num4),
-                i.key_pressed(egui::Key::Num5),
-            ));
+             mode1, mode2, mode3, shift4, shift5,
+             shift_nav_up, shift_nav_down, scroll_delta_raw, shift_scroll_delta) =
+            ctx.input(|i| {
+                let sh = i.modifiers.shift;
+                let raw = if zoom_actual { 0.0 } else {
+                    i.raw_scroll_delta.y + if sh { i.raw_scroll_delta.x } else { 0.0 }
+                };
+                (
+                    i.key_pressed(egui::Key::ArrowLeft)  && !sh,
+                    i.key_pressed(egui::Key::ArrowRight) && !sh,
+                    i.key_pressed(egui::Key::ArrowUp)    && !sh,
+                    i.key_pressed(egui::Key::ArrowDown)  && !sh,
+                    i.key_pressed(egui::Key::Space),
+                    i.key_pressed(egui::Key::Escape),
+                    i.key_pressed(egui::Key::Enter) && !i.modifiers.alt,
+                    i.key_pressed(egui::Key::Enter) &&  i.modifiers.alt,
+                    i.key_pressed(egui::Key::Num1),
+                    i.key_pressed(egui::Key::Num2),
+                    i.key_pressed(egui::Key::Num3),
+                    i.key_pressed(egui::Key::Num4),
+                    i.key_pressed(egui::Key::Num5),
+                    i.key_pressed(egui::Key::ArrowUp)   && sh,
+                    i.key_pressed(egui::Key::ArrowDown) && sh,
+                    raw,
+                    if sh { raw } else { 0.0 },
+                )
+            });
 
         // F5〜F8: スロット適用
         let slot_apply: Option<usize> = ctx.input(|i| {
@@ -458,9 +498,10 @@ impl ViewerState {
         });
 
         // 右綴じは左右キーを逆転（← が「次ページ」）。上下キーは常に上=戻る・下=進む
+        // shift_nav_up/down は Shift 押下中でも同方向のページ送り戻りを継続させる
         let (key_next, key_prev) = match self.page_mode {
-            PageMode::SpreadRight => (key_left || key_space || key_down, key_right || key_up),
-            _                     => (key_right || key_space || key_down, key_left || key_up),
+            PageMode::SpreadRight => (key_left || key_space || key_down || shift_nav_down, key_right || key_up || shift_nav_up),
+            _                     => (key_right || key_space || key_down || shift_nav_down, key_left || key_up || shift_nav_up),
         };
 
         // 4/5 のシフト方向も綴じ方向に合わせる（4=←方向, 5=→方向）
@@ -469,18 +510,20 @@ impl ViewerState {
             _                     => (shift4, shift5),
         };
 
-        let scroll_delta = if self.zoom_actual { 0.0 } else {
-            ctx.input(|i| i.raw_scroll_delta.y)
-        };
+        let scroll_delta = scroll_delta_raw;
 
         if key_left || key_right || key_up || key_down || key_space || esc || zoom_key || fs_key
-            || mode1 || mode2 || mode3 || shift4 || shift5 || scroll_delta != 0.0
+            || mode1 || mode2 || mode3 || shift4 || shift5
+            || shift_nav_up || shift_nav_down
+            || scroll_delta != 0.0 || shift_scroll_delta != 0.0
         {
             log_key!(
                 "[key] left={} right={} up={} down={} space={} esc={} zoom={} fs={} \
-                 mode1={} mode2={} mode3={} shift4={} shift5={} scroll={:.1}",
+                 mode1={} mode2={} mode3={} shift4={} shift5={} \
+                 shift_nav_up={} shift_nav_down={} scroll={:.1} shift_scroll={:.1}",
                 key_left, key_right, key_up, key_down, key_space, esc, zoom_key, fs_key,
-                mode1, mode2, mode3, shift4, shift5, scroll_delta
+                mode1, mode2, mode3, shift4, shift5,
+                shift_nav_up, shift_nav_down, scroll_delta, shift_scroll_delta
             );
         }
 
@@ -731,7 +774,39 @@ impl ViewerState {
             let painter = ui.painter();
             painter.text(text_pos + egui::vec2(1.0, 1.0), egui::Align2::LEFT_TOP, &galley.text().to_string(), egui::FontId::proportional(14.0), shadow_color);
             painter.galley(text_pos, galley, text_color);
+
+            // ── トーストオーバーレイ（下部中央）──────────────────────────────
+            if let Some((msg, Some(_))) = &self.toast {
+                let toast_font = egui::FontId::proportional(16.0);
+                let tg = ui.fonts(|f| f.layout_no_wrap(msg.clone(), toast_font, egui::Color32::WHITE));
+                let pad = egui::vec2(16.0, 8.0);
+                let bg_size = tg.size() + pad * 2.0;
+                let bg_pos = egui::pos2(
+                    panel_rect.center().x - bg_size.x / 2.0,
+                    panel_rect.bottom() - bg_size.y - 20.0,
+                );
+                let bg_rect = egui::Rect::from_min_size(bg_pos, bg_size);
+                let p = ui.painter();
+                p.rect_filled(bg_rect, 6.0, egui::Color32::from_black_alpha(200));
+                p.galley(bg_pos + pad, tg, egui::Color32::WHITE);
+            }
         });
+
+        // ── ファイル間ナビゲーション（Shift+↑↓ or Shift+スクロール）────────────
+        self.shift_scroll_acc += shift_scroll_delta;
+        let shift_scroll_prev = self.shift_scroll_acc >  SCROLL_THRESHOLD;
+        let shift_scroll_next = self.shift_scroll_acc < -SCROLL_THRESHOLD;
+        if shift_scroll_prev { self.shift_scroll_acc -= SCROLL_THRESHOLD; }
+        if shift_scroll_next { self.shift_scroll_acc += SCROLL_THRESHOLD; }
+
+        let total_i = total as i32;
+        let off = self.offset.value();
+        let at_first = self.spread_lo() <= if is_spread { -1 } else { 0 };
+        let at_last  = self.spread_base + step + off > total_i - 1;
+
+        let mut nav = ViewerNav::None;
+        if (shift_nav_up   || shift_scroll_prev) && at_first { nav = ViewerNav::PrevFile; }
+        if (shift_nav_down || shift_scroll_next) && at_last  { nav = ViewerNav::NextFile; }
 
         // ── ページ送り ───────────────────────────────────────────────────────
         self.scroll_acc += scroll_delta;
@@ -740,8 +815,6 @@ impl ViewerState {
         if scroll_next { self.scroll_acc += SCROLL_THRESHOLD; }
         if scroll_prev { self.scroll_acc -= SCROLL_THRESHOLD; }
 
-        let total_i = total as i32;
-        let off = self.offset.value();
         if key_next || scroll_next {
             let next_base = self.spread_base + step;
             if next_base + off <= total_i - 1 { self.spread_base = next_base; }
@@ -780,6 +853,26 @@ impl ViewerState {
             self.open = false;
             self.fullscreen = false;
         }
+
+        // ── トースト期限チェック ──────────────────────────────────────────────
+        {
+            let now = ctx.input(|i| i.time);
+            match &mut self.toast {
+                Some((_, expires @ None)) => {
+                    *expires = Some(now + 3.0);
+                    ctx.request_repaint_after(Duration::from_millis(100));
+                }
+                Some((_, Some(exp))) if now >= *exp => {
+                    self.toast = None;
+                }
+                Some(_) => {
+                    ctx.request_repaint_after(Duration::from_millis(100));
+                }
+                None => {}
+            }
+        }
+
+        nav
     }
 
     fn render_single(
