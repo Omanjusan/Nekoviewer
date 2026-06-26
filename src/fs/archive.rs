@@ -28,7 +28,29 @@ fn decode_image(buf: &[u8], entry_name: &str) -> Option<image::DynamicImage> {
 pub fn decode_image_bytes(buf: &[u8], entry_name: &str) -> Option<image::DynamicImage> {
     let lower = entry_name.to_lowercase();
     if lower.ends_with(".webp") {
-        webp::Decoder::new(buf).decode().map(|w| w.to_image())
+        // 静止画デコードを先に試みる
+        if let Some(img) = webp::Decoder::new(buf).decode().map(|w| w.to_image()) {
+            return Some(img);
+        }
+        // アニメーション WebP: 最初のフレームを静止画として返す
+        if let Ok(anim) = webp::AnimDecoder::new(buf).decode() {
+            if let Some(frame) = anim.into_iter().next() {
+                let (w, h) = (frame.width(), frame.height());
+                let raw = frame.get_image();
+                let rgba = match frame.get_layout() {
+                    webp::PixelLayout::Rgba => image::RgbaImage::from_raw(w, h, raw.to_vec()),
+                    webp::PixelLayout::Rgb => {
+                        let data: Vec<u8> = raw
+                            .chunks_exact(3)
+                            .flat_map(|p| [p[0], p[1], p[2], 255u8])
+                            .collect();
+                        image::RgbaImage::from_raw(w, h, data)
+                    }
+                };
+                return rgba.map(image::DynamicImage::ImageRgba8);
+            }
+        }
+        None
     } else if lower.ends_with(".avif") {
         decode_avif(buf)
     } else {
@@ -180,10 +202,11 @@ pub fn load_first_image(path: &Path) -> Option<image::DynamicImage> {
 }
 
 /// Local File Header を先頭から順読みする（セントラルディレクトリ・末尾シーク不要）。
-/// Data Descriptor フラグが立っているエントリに到達したら None を返す。
+/// Data Descriptor フラグ付き DEFLATE エントリはストリーム展開で処理する。
 fn load_first_image_sequential(path: &Path) -> Option<image::DynamicImage> {
     const LFH_SIG: [u8; 4] = [0x50, 0x4B, 0x03, 0x04];
     const DATA_DESCRIPTOR_BIT: u16 = 1 << 3;
+    const METHOD_DEFLATE: u16 = 8;
 
     let mut f = std::fs::File::open(path).ok()?;
     loop {
@@ -210,8 +233,20 @@ fn load_first_image_sequential(path: &Path) -> Option<image::DynamicImage> {
 
         let has_dd = flags & DATA_DESCRIPTOR_BIT != 0;
 
-        // Data Descriptor があるとサイズが LFH に入っていないためスキップ不可
         if has_dd {
+            // DEFLATE + 画像エントリなら末尾シークなしでストリーム展開して返す。
+            // DeflateDecoder は DEFLATE 終端ビットで自動停止するため comp_size 不要。
+            if method == METHOD_DEFLATE && is_image_entry_raw(&fname) {
+                let mut raw = Vec::new();
+                let mut dec = flate2::read::DeflateDecoder::new(&mut f);
+                if dec.read_to_end(&mut raw).is_ok() {
+                    let name = decode_zip_name(&fname);
+                    if let Some(img) = decode_image(&raw, &name) {
+                        return Some(img);
+                    }
+                }
+            }
+            // 非 DEFLATE・非画像・デコード失敗はフォールバックへ
             return None;
         }
 
