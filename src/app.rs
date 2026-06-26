@@ -6,7 +6,7 @@ use crate::cache::{LoadRequest, LoadResult, PageCache, ThumbRequest, ThumbResult
 use crate::config::{AppConfig, SortState, WindowSlot};
 use crate::neko_dir;
 use crate::fs::{dir, mount::{list_gvfs_smb_mounts, list_local_drives, MountEntry}};
-use crate::viewer::{PageMode, ViewerState};
+use crate::viewer::{PageMode, ViewerNav, ViewerState};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum SortKey {
@@ -542,6 +542,7 @@ impl eframe::App for NekoviewApp {
             let visible = !viewer_wants_fullscreen;
             let page_cache = &self.page_cache;
             let mut viewer_should_close = false;
+            let mut viewport_nav = ViewerNav::None;
             if let Some(viewer) = &mut self.viewer {
                 let vp_builder = {
                     let b = egui::ViewportBuilder::default().with_visible(visible);
@@ -553,7 +554,7 @@ impl eframe::App for NekoviewApp {
                     vp_builder,
                     |vp_ctx, _class| {
                         if visible {
-                            viewer.show(vp_ctx, page_cache);
+                            viewport_nav = viewer.show(vp_ctx, page_cache);
                         } else {
                             egui::CentralPanel::default().show(vp_ctx, |_| {});
                         }
@@ -569,6 +570,7 @@ impl eframe::App for NekoviewApp {
             if viewer_should_close {
                 self.viewer = None;
             }
+            self.handle_viewer_nav(viewport_nav);
         }
         if viewer_wants_fullscreen {
             if !self.viewer_fullscreen_active {
@@ -576,16 +578,16 @@ impl eframe::App for NekoviewApp {
                 self.viewer_fullscreen_active = true;
             }
             let page_cache = &self.page_cache;
-            let (viewer_closed, exited_fullscreen) = if let Some(viewer) = &mut self.viewer {
-                viewer.show(ctx, page_cache);
+            let (viewer_closed, exited_fullscreen, fs_nav) = if let Some(viewer) = &mut self.viewer {
+                let nav = viewer.show(ctx, page_cache);
                 if viewer.save_requested {
                     viewer.save_requested = false;
                     self.viewer_slots = viewer.slots;
                     crate::config::save_state(&self.current_dir, self.window_size, &self.viewer_slots, &SortState { key: self.sort_key.as_state_key().to_string(), ascending: self.sort_ascending });
                 }
-                (!viewer.open, !viewer.fullscreen)
+                (!viewer.open, !viewer.fullscreen, nav)
             } else {
-                (true, true)
+                (true, true, ViewerNav::None)
             };
             if viewer_closed || exited_fullscreen {
                 self.viewer_fullscreen_active = false;
@@ -595,6 +597,7 @@ impl eframe::App for NekoviewApp {
             if viewer_closed {
                 self.viewer = None;
             }
+            self.handle_viewer_nav(fs_nav);
             ctx.request_repaint();
             return;
         }
@@ -1103,6 +1106,47 @@ impl eframe::App for NekoviewApp {
             || self.tree_scan_pending.is_some()
         {
             ctx.request_repaint();
+        }
+    }
+}
+
+impl NekoviewApp {
+    fn handle_viewer_nav(&mut self, nav: ViewerNav) {
+        match nav {
+            ViewerNav::None => {}
+            ViewerNav::PrevFile => {
+                let prev = self.selected_archive_index.and_then(|i| i.checked_sub(1));
+                if let Some(idx) = prev {
+                    self.selected_archive_index = Some(idx);
+                    let path = self.archives[idx].clone();
+                    self.pending_loads.clear();
+                    let slots = self.viewer_slots;
+                    self.viewer = Some(if self.raw_image_files.contains(&path) {
+                        ViewerState::new_raw(path, slots)
+                    } else {
+                        ViewerState::new_at_last_page(path, slots)
+                    });
+                } else if let Some(v) = &mut self.viewer {
+                    v.set_toast("これ以上開けるファイルは前方に存在しません".to_string());
+                }
+            }
+            ViewerNav::NextFile => {
+                let next = self.selected_archive_index.map(|i| i + 1)
+                    .filter(|&i| i < self.archives.len());
+                if let Some(idx) = next {
+                    self.selected_archive_index = Some(idx);
+                    let path = self.archives[idx].clone();
+                    self.pending_loads.clear();
+                    let slots = self.viewer_slots;
+                    self.viewer = Some(if self.raw_image_files.contains(&path) {
+                        ViewerState::new_raw(path, slots)
+                    } else {
+                        ViewerState::new(path, slots)
+                    });
+                } else if let Some(v) = &mut self.viewer {
+                    v.set_toast("これ以上開けるファイルは後方に存在しません".to_string());
+                }
+            }
         }
     }
 }
