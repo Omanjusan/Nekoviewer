@@ -21,6 +21,7 @@ sha2 = "0.10"
 fast_image_resize = "5"
 webp = "0.3"
 sysinfo = { version = "0.32", default-features = false, features = ["system"] }
+redb = "4"
 
 [profile.dev.package.fast_image_resize]
 opt-level = 3
