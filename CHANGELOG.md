@@ -2,6 +2,24 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.0] - 2026-06-26
+
+### Added
+- Directory navigation now uses single-click (the [直] button has been removed)
+- Invalid ZIP marker cache: ZIPs containing no images are marked under `.neko/invalid/`; the marker is automatically removed if the ZIP is updated
+- Invalid ZIPs show a red X in the grid with a toast notification (auto-dismissed after 3 seconds) on double-click
+- Silent skip of invalid ZIPs when navigating forward/backward in the viewer
+- Thumbnail storage refactored from individual JPG files to a single database file
+
+### Changed
+- Directory tree expansion is now triggered by clicking ▶ only (single-click on the item navigates into the directory)
+
+### Fixed
+- Viewer no longer opens for ZIPs that contain no image entries; once cached as invalid, they are hidden from the explorer
+
+### In Progress
+- UI internationalization (i18n) support
+
 ## [0.4.0] - 2026-06-26
 
 ### Added
