@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.4.0] - 2026-06-26
+
+### Added
+- File navigation via Shift+Scroll / Shift+↑↓: moves to the previous/next file when at the first/last page
+- Linux local build support: added `setup.sh` and `Makefile` with guided dependency installation
+
+### Fixed
+- Linux build is now available again (removed from Known Issues)
+
+### Changed
+- README updated with clear first-time and update build instructions
+
 ## [0.3.1] - 2026-06-25
 
 ### Fixed
