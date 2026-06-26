@@ -44,7 +44,6 @@ impl SortKey {
 enum TreeAction {
     None,
     ToggleExpand(PathBuf),
-    SelectAndExpand(PathBuf),
     Navigate(PathBuf),
 }
 
@@ -55,9 +54,7 @@ fn show_tree_node(
     viewing_dir: &Option<PathBuf>,
     tree_expanded: &HashSet<PathBuf>,
     tree_children: &HashMap<PathBuf, Vec<PathBuf>>,
-    tree_last_clicked: &Option<PathBuf>,
     show_hidden: bool,
-    direct_mode: bool,
     action: &mut TreeAction,
 ) {
     if !matches!(action, TreeAction::None) {
@@ -72,7 +69,6 @@ fn show_tree_node(
 
     let is_expanded = tree_expanded.contains(path);
     let is_current = viewing_dir.as_ref() == Some(path);
-    let is_last_clicked = tree_last_clicked.as_ref() == Some(path);
 
     let show_arrow = is_expanded
         || match tree_children.get(path) {
@@ -95,22 +91,16 @@ fn show_tree_node(
 
         ui.add_space(4.0);
 
-        // is_current → 赤（サムネ表示中）、is_last_clicked → 青（CD選択中）
         let r = ui.scope(|ui| {
             if is_current {
                 ui.visuals_mut().selection.bg_fill =
                     egui::Color32::from_rgb(160, 50, 50);
                 ui.visuals_mut().selection.stroke.color = egui::Color32::WHITE;
             }
-            ui.selectable_label(is_current || is_last_clicked, &name)
+            ui.selectable_label(is_current, &name)
         }).inner;
-        // 矢印クリックがすでに action をセットしていた場合はラベルクリックを無視
         if r.clicked() && matches!(*action, TreeAction::None) {
-            if direct_mode || is_last_clicked {
-                *action = TreeAction::Navigate(path.clone());
-            } else {
-                *action = TreeAction::SelectAndExpand(path.clone());
-            }
+            *action = TreeAction::Navigate(path.clone());
         }
     });
 
@@ -134,9 +124,7 @@ fn show_tree_node(
                     viewing_dir,
                     tree_expanded,
                     tree_children,
-                    tree_last_clicked,
                     show_hidden,
-                    direct_mode,
                     action,
                 );
             }
@@ -172,8 +160,6 @@ pub struct NekoviewApp {
     tree_root: PathBuf,
     tree_expanded: HashSet<PathBuf>,
     tree_children: HashMap<PathBuf, Vec<PathBuf>>,
-    tree_last_clicked: Option<PathBuf>,
-    /// 2クリックで移動済みのディレクトリ（赤ハイライト対象）。起動直後・ドライブ切替直後は None
     viewing_dir: Option<PathBuf>,
     /// CD/LSディレクトリのサマリーキャッシュ (path, saved_thumbs, total_archives)
     cd_summary: Option<(PathBuf, usize, usize)>,
@@ -203,7 +189,6 @@ pub struct NekoviewApp {
     /// archives のうち生画像ファイルのセット（赤枠表示・シングルクリック開封用）
     raw_image_files: std::collections::HashSet<PathBuf>,
     show_hidden: bool,
-    direct_mode: bool,
     sort_key: SortKey,
     sort_ascending: bool,
     selected_archive_index: Option<usize>,
@@ -247,7 +232,6 @@ impl NekoviewApp {
             tree_root,
             tree_expanded: HashSet::new(),
             tree_children: HashMap::new(),
-            tree_last_clicked: None,
             viewing_dir: None,
             cd_summary: None,
             cd_summary_rx: None,
@@ -270,7 +254,6 @@ impl NekoviewApp {
             viewer_slots,
             raw_image_files: std::collections::HashSet::new(),
             show_hidden: false,
-            direct_mode: false,
             sort_key: SortKey::from_state_key(&sort_state.key),
             sort_ascending: sort_state.ascending,
             selected_archive_index: None,
@@ -453,8 +436,7 @@ impl eframe::App for NekoviewApp {
         if let Some(ref rx) = self.cd_summary_rx {
             if let Ok((path, saved, total)) = rx.try_recv() {
                 // 現在の CD/LS ディレクトリに対応する結果のみ反映（古い結果を捨てる）
-                let is_current = self.tree_last_clicked.as_ref() == Some(&path)
-                    || self.viewing_dir.as_ref() == Some(&path);
+                let is_current = self.viewing_dir.as_ref() == Some(&path);
                 if is_current {
                     self.cd_summary = Some((path, saved, total));
                 }
@@ -608,18 +590,13 @@ impl eframe::App for NekoviewApp {
             ctx.send_viewport_cmd(egui::ViewportCommand::Title("Nekoview".to_owned()));
         }
 
-        // show_navigate_button はパネル外でも使う（キーハンドリング分岐のため）
-        let show_navigate_button = self.tree_last_clicked.is_some()
-            && (self.viewing_dir.is_none() || self.archives.is_empty())
-            && self.cd_summary.as_ref().map_or(false, |&(_, _, total)| total > 0);
-
         // ── エクスプローラー キーナビゲーション ─────────────────────────────
         {
             let total = self.archives.len();
             let cols = self.explorer_cols.max(1);
             let cell_h = self.config.thumb_size as f32;
             const KEY_GAP: f32 = 8.0;
-            if total > 0 && !show_navigate_button {
+            if total > 0 {
                 let prev = self.selected_archive_index;
                 ctx.input_mut(|i| {
                     if i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowRight) {
@@ -691,10 +668,6 @@ impl eframe::App for NekoviewApp {
                 let hidden_label = if self.show_hidden { "[隠 ON]" } else { "[隠OFF]" };
                 if ui.selectable_label(self.show_hidden, hidden_label).clicked() {
                     self.show_hidden = !self.show_hidden;
-                }
-                let direct_label = if self.direct_mode { "[直 ON]" } else { "[直OFF]" };
-                if ui.selectable_label(self.direct_mode, direct_label).clicked() {
-                    self.direct_mode = !self.direct_mode;
                 }
 
                 ui.separator();
@@ -819,9 +792,7 @@ impl eframe::App for NekoviewApp {
                             &self.viewing_dir,
                             &self.tree_expanded,
                             &self.tree_children,
-                            &self.tree_last_clicked,
                             self.show_hidden,
-                            self.direct_mode,
                             &mut tree_action,
                         );
                     });
@@ -842,31 +813,13 @@ impl eframe::App for NekoviewApp {
                             }
                         }
                     }
-                    TreeAction::SelectAndExpand(path) => {
-                        self.tree_last_clicked = Some(path.clone());
-                        // サマリー計算はバックグラウンドへ（UIスレッドをブロックしない）
-                        let thumbs_path = neko_dir::neko_dir_for(&path, &self.config)
-                            .map(|nd| nd.join("thumbs"));
-                        self.cd_summary_rx = Some(spawn_summary_worker(path.clone(), thumbs_path));
-                        if !self.tree_expanded.contains(&path) {
-                            self.tree_expanded.insert(path.clone());
-                            if !self.tree_children.contains_key(&path) {
-                                self.tree_scan_pending = Some(TreeScanPending {
-                                    path: path.clone(),
-                                    rx: dir::spawn_scan_subdirs(path),
-                                });
-                            }
-                        }
-                    }
                     TreeAction::Navigate(path) => {
                         self.current_dir = path.clone();
                         self.viewing_dir = Some(path.clone());
-                        // サマリーはバックグラウンドで再計算（表示は前の値を維持）
                         let thumbs_path = neko_dir::neko_dir_for(&path, &self.config)
                             .map(|nd| nd.join("thumbs"));
                         self.cd_summary_rx = Some(spawn_summary_worker(path.clone(), thumbs_path));
                         self.start_scan();
-                        self.tree_last_clicked = None;
                         crate::config::save_state(&self.current_dir, self.window_size, &self.viewer_slots, &SortState { key: self.sort_key.as_state_key().to_string(), ascending: self.sort_ascending });
                     }
                 }
@@ -893,7 +846,6 @@ impl eframe::App for NekoviewApp {
                                 self.tree_root = path.clone();
                                 self.tree_expanded.clear();
                                 self.tree_children.clear();
-                                self.tree_last_clicked = None;
                                 self.viewing_dir = None;
                                 self.cd_summary = None;
                                 self.cd_summary_rx = None;
@@ -907,8 +859,6 @@ impl eframe::App for NekoviewApp {
                         }
                     });
             });
-
-        let mut do_navigate = false;
 
         egui::CentralPanel::default()
             .frame({
@@ -951,22 +901,7 @@ impl eframe::App for NekoviewApp {
 
             ui.separator();
 
-            if show_navigate_button {
-                // ── CD状態（赤なし・ファイルあり）: 縦横中央に「表示」ボタン ──
-                let center = ui.max_rect().center();
-                let btn_rect = egui::Rect::from_center_size(center, egui::vec2(120.0, 40.0));
-                ui.allocate_new_ui(egui::UiBuilder::new().max_rect(btn_rect), |ui| {
-                    if ui
-                        .add(
-                            egui::Button::new(egui::RichText::new("表示").size(16.0))
-                                .min_size(egui::vec2(120.0, 40.0)),
-                        )
-                        .clicked()
-                    {
-                        do_navigate = true;
-                    }
-                });
-            } else {
+            {
                 // ローディング中は 0.5秒経過後にスピナーを表示（短いアクセスのチラツキ防止）
                 let is_loading = matches!(&self.scan_state, ScanState::Loading { started_at, .. }
                     if started_at.elapsed().as_secs_f32() > 0.5);
@@ -1083,20 +1018,6 @@ impl eframe::App for NekoviewApp {
                 }
             }
         });
-
-        // 「表示」ボタン押下 → TreeAction::Navigate と同等の処理
-        if do_navigate {
-            if let Some(path) = self.tree_last_clicked.take() {
-                self.current_dir = path.clone();
-                self.viewing_dir = Some(path.clone());
-                let thumbs_path = neko_dir::neko_dir_for(&path, &self.config)
-                    .map(|nd| nd.join("thumbs"));
-                self.cd_summary_rx = Some(spawn_summary_worker(path.clone(), thumbs_path));
-                self.start_scan();
-                crate::config::save_state(&self.current_dir, self.window_size, &self.viewer_slots, &SortState { key: self.sort_key.as_state_key().to_string(), ascending: self.sort_ascending });
-            }
-        }
-
 
         // 未完了の処理がある間はワーカー結果を取りこぼさないよう次フレームを要求する
         // ビューアが開いている間も続ける（フルスクリーン時の入力取りこぼし防止）
