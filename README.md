@@ -29,13 +29,16 @@ If your security software flags the file, see the [VirusTotal scan result](https
 
 ### Linux
 
-Requires the Rust toolchain (`cargo`).
+Requires the Rust toolchain (`cargo`) and `make`.
 
 ```bash
 git clone https://github.com/Omanjusan/Nekoviewer.git
 cd Nekoviewer
-cargo run --release
+make release
 ```
+
+`make release` will guide you through installing any missing dependencies (e.g. `nasm`, `dav1d`) on first run.
+Run `make help` if you're not sure what to do.
 
 ---
 
