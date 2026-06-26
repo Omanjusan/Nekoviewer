@@ -100,10 +100,12 @@ The selector is shown in blue for archive files and red for standalone image fil
 ### Supported Formats
 
 **Archives:** ZIP, CBZ (standalone image files are also supported)
+(7zip support planned)
+(RAR not supported)
 
-**Images:** JPEG, PNG, WebP, GIF, BMP
+**Images:** JPEG, PNG, WebP, GIF, AVIF
 
-**Animated playback:** WebP, GIF (APNG: TBD)
+**Animated playback:** AVIF, WebP, GIF (APNG: TBD)
 
 ### Config File (`nekoviewer.conf`)
 
