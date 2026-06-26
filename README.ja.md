@@ -38,7 +38,7 @@ make release
 ```
 
 `make release` は初回実行時に不足している依存パッケージ（`nasm`、`dav1d` 等）のインストールを案内します。
-`make help` 迷ったらこれで。
+`make help` ヘルプ表示。迷ったらこれで。
 
 ---
 
