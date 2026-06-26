@@ -25,9 +25,11 @@ Browse folders like a bookshelf, navigate into archives, and view their images â
 
 Download the latest `nekoviewer.exe` from [GitHub Releases](https://github.com/Omanjusan/Nekoviewer/releases/latest) and place it in any folder. No installation required.
 
-If your security software flags the file, see the [VirusTotal scan result](https://www.virustotal.com/gui/url/883c1d800c90c40c2ef478fbe8a2ad0627a8d780e3e7b825794864cb23c2b473) (as of v0.2.0).
+If your security software flags the file, see the [VirusTotal scan result](https://www.virustotal.com/gui/url-analysis/u-7cb29184e1093169f27f3d0c7e59ff65cadf0d835563749e128d8a8f538f39c0-599db6a1) (as of v0.4.0).
 
 ### Linux
+
+If your security software flags the binary, see the [VirusTotal scan result](https://www.virustotal.com/gui/url/d8583c37b14fcc3666d2c0015e1d52b00bf5745a76d100e0ef719084ee6c7736) (as of v0.4.0).
 
 Requires the Rust toolchain (`cargo`) and `make`.
 
