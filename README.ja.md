@@ -173,3 +173,11 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+---
+
+## サードパーティライセンス
+
+本ソフトウェアは以下のサードパーティライブラリを使用しています。
+
+- **[redb](https://github.com/cberner/redb)** — サムネイルディスクキャッシュに使用する組み込みキーバリューデータベース。MIT OR Apache-2.0 ライセンス。
