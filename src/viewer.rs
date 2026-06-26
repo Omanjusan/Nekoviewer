@@ -143,8 +143,11 @@ pub struct ViewerState {
 }
 
 impl ViewerState {
-    pub fn new(archive_path: PathBuf, slots: [Option<WindowSlot>; 4]) -> Self {
+    pub fn new(archive_path: PathBuf, slots: [Option<WindowSlot>; 4]) -> Option<Self> {
         let image_entries = archive::list_images(&archive_path);
+        if image_entries.is_empty() {
+            return None;
+        }
         let entries: Vec<ViewerEntry> = image_entries
             .into_iter()
             .enumerate()
@@ -155,7 +158,7 @@ impl ViewerState {
                 original_index: i,
             })
             .collect();
-        Self {
+        Some(Self {
             archive_path,
             entries,
             spread_base: 0,
@@ -183,7 +186,7 @@ impl ViewerState {
             is_raw_file: false,
             shift_scroll_acc: 0.0,
             toast: None,
-        }
+        })
     }
 
     /// 生画像ファイル（ZIP非対応・1ファイル固定）用コンストラクタ
@@ -231,10 +234,10 @@ impl ViewerState {
     }
 
     /// 最終ページから開くコンストラクタ（前ファイルへの移動用）
-    pub fn new_at_last_page(archive_path: PathBuf, slots: [Option<WindowSlot>; 4]) -> Self {
-        let mut s = Self::new(archive_path, slots);
+    pub fn new_at_last_page(archive_path: PathBuf, slots: [Option<WindowSlot>; 4]) -> Option<Self> {
+        let mut s = Self::new(archive_path, slots)?;
         s.spread_base = (s.entries.len() as i32 - 1).max(0);
-        s
+        Some(s)
     }
 
     /// トーストメッセージをセット（3秒後に自動消去）
