@@ -1,70 +1,101 @@
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
+use redb::{Database, ReadableDatabase, TableDefinition};
 use sha2::{Digest, Sha256};
 
 use crate::config::AppConfig;
 
+/// サムネキャッシュテーブル: キー=ファイル名, バリュー=(source_mtime_secs: i64, jpeg_blob: Vec<u8>)
+pub const THUMBS_TABLE: TableDefinition<&str, (i64, &[u8])> = TableDefinition::new("thumbs");
+
+/// 非画像ZIPマーカーテーブル: キー=ファイル名, バリュー=source_mtime_secs: i64
+pub const INVALID_TABLE: TableDefinition<&str, i64> = TableDefinition::new("invalid");
+
 /// dir に対応するキャッシュディレクトリのパスを返す（まだ作成しない）。
-/// パスの正規化に失敗した場合（存在しないパス等）は None を返す。
 pub fn neko_dir_for(dir: &Path, config: &AppConfig) -> Option<PathBuf> {
     let key = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
     let hash = sha256_hex(key.to_string_lossy().as_bytes());
     Some(config.cache_root()?.join(hash))
 }
 
-/// キャッシュディレクトリ以下の invalid/ に置くマーカーファイルのパスを返す。
-pub fn invalid_marker_path(neko_dir: &Path, archive_path: &Path) -> PathBuf {
-    let stem = archive_path.file_stem().and_then(|s| s.to_str()).unwrap_or("unknown");
-    let ext = archive_path.extension().and_then(|s| s.to_str()).unwrap_or("bin");
-    neko_dir.join("invalid").join(format!("{stem}.{ext}.invalid"))
-}
-
-/// 無効マーカーを作成する（invalid/ ディレクトリがなければ作る）。
-pub fn mark_invalid(neko_dir: &Path, archive_path: &Path) -> bool {
-    let dir = neko_dir.join("invalid");
-    if std::fs::create_dir_all(&dir).is_err() {
-        return false;
+/// キャッシュディレクトリ以下の cache.redb を開いて返す。
+/// ディレクトリが存在しなければ作成する。失敗時は None。
+pub fn open_cache_db(neko_dir: &Path) -> Option<Arc<Mutex<Database>>> {
+    std::fs::create_dir_all(neko_dir).ok()?;
+    let db_path = neko_dir.join("cache.redb");
+    let db = Database::create(&db_path).ok()?;
+    // テーブルを初期化（存在しなければ作成）
+    {
+        let tx = db.begin_write().ok()?;
+        tx.open_table(THUMBS_TABLE).ok()?;
+        tx.open_table(INVALID_TABLE).ok()?;
+        tx.commit().ok()?;
     }
-    std::fs::File::create(invalid_marker_path(neko_dir, archive_path)).is_ok()
+    Some(Arc::new(Mutex::new(db)))
 }
 
-/// マーカーが存在し、かつZIPがマーカーより古い（差し替えられていない）場合 true。
-/// ZIPが差し替えられていた場合（mtime比較）はマーカーを削除して false を返す。
-pub fn is_invalid_and_current(neko_dir: &Path, archive_path: &Path) -> bool {
-    let marker = invalid_marker_path(neko_dir, archive_path);
-    let Ok(marker_meta) = std::fs::metadata(&marker) else { return false };
-    let Ok(archive_meta) = std::fs::metadata(archive_path) else {
-        let _ = std::fs::remove_file(&marker);
-        return false;
-    };
-    if let (Ok(m), Ok(a)) = (marker_meta.modified(), archive_meta.modified()) {
-        if a > m {
-            let _ = std::fs::remove_file(&marker);
-            return false;
-        }
+/// サムネをDBから読み込む。source_mtime が一致しない場合は None（再生成が必要）。
+pub fn read_thumb(db: &Arc<Mutex<Database>>, filename: &str, source_mtime: i64) -> Option<Vec<u8>> {
+    let db = db.lock().ok()?;
+    let tx = db.begin_read().ok()?;
+    let table = tx.open_table(THUMBS_TABLE).ok()?;
+    let guard = table.get(filename).ok()??;
+    let (stored_mtime, jpeg) = guard.value();
+    if stored_mtime != source_mtime {
+        return None;
     }
-    true
+    Some(jpeg.to_vec())
 }
 
-/// キャッシュディレクトリ以下の thumbs/ パスを返し、存在しなければ作成する。
-pub fn ensure_thumbs_dir(neko_dir: &Path) -> Option<PathBuf> {
-    let thumbs = neko_dir.join("thumbs");
-    std::fs::create_dir_all(&thumbs).ok()?;
-    Some(thumbs)
+/// サムネをDBに書き込む。
+pub fn write_thumb(db: &Arc<Mutex<Database>>, filename: &str, source_mtime: i64, jpeg: &[u8]) {
+    let Ok(db) = db.lock() else { return };
+    let Ok(tx) = db.begin_write() else { return };
+    if let Ok(mut table) = tx.open_table(THUMBS_TABLE) {
+        let _ = table.insert(filename, (source_mtime, jpeg));
+    }
+    let _ = tx.commit();
 }
 
-/// アーカイブパスからサムネイルキャッシュファイル名（拡張子 .jpg）を生成する。
-/// 元ファイルの拡張子を含めることで同名・異種ファイル間の衝突を防ぐ。
-pub fn thumb_filename(archive_path: &Path) -> String {
-    let stem = archive_path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("unknown");
-    let ext = archive_path
-        .extension()
-        .and_then(|s| s.to_str())
-        .unwrap_or("bin");
-    format!("{stem}.{ext}.jpg")
+/// 非画像ZIPマーカーを書き込む。
+pub fn mark_invalid(db: &Arc<Mutex<Database>>, filename: &str, source_mtime: i64) {
+    let Ok(db) = db.lock() else { return };
+    let Ok(tx) = db.begin_write() else { return };
+    if let Ok(mut table) = tx.open_table(INVALID_TABLE) {
+        let _ = table.insert(filename, source_mtime);
+    }
+    let _ = tx.commit();
+}
+
+/// 非画像ZIPマーカーが存在し、かつZIPが差し替えられていない場合 true。
+pub fn is_invalid_and_current(db: &Arc<Mutex<Database>>, filename: &str, archive_path: &Path) -> bool {
+    let current_mtime = file_mtime(archive_path);
+    let Ok(db) = db.lock() else { return false };
+    let Ok(tx) = db.begin_read() else { return false };
+    let Ok(table) = tx.open_table(INVALID_TABLE) else { return false };
+    match table.get(filename) {
+        Ok(Some(guard)) => guard.value() == current_mtime,
+        _ => false,
+    }
+}
+
+/// キャッシュ済みサムネ件数をカウントする（ツリービュー表示用）。
+pub fn count_cached_thumbs(db: &Arc<Mutex<Database>>, filenames: &[String]) -> usize {
+    let Ok(db) = db.lock() else { return 0 };
+    let Ok(tx) = db.begin_read() else { return 0 };
+    let Ok(table) = tx.open_table(THUMBS_TABLE) else { return 0 };
+    filenames.iter().filter(|name| {
+        matches!(table.get(name.as_str()), Ok(Some(_)))
+    }).count()
+}
+
+/// ファイルのmtimeをi64（Unix秒）で返す。取得失敗時は0。
+pub fn file_mtime(path: &Path) -> i64 {
+    std::fs::metadata(path)
+        .and_then(|m| m.modified())
+        .map(|t| t.duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as i64)
+        .unwrap_or(0)
 }
 
 fn sha256_hex(data: &[u8]) -> String {
