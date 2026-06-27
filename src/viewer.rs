@@ -141,7 +141,6 @@ pub struct ViewerState {
     shift_scroll_acc: f32,
     /// トーストメッセージ: (テキスト, 消去予定のegui時刻) None=非表示
     toast: Option<(String, Option<f64>)>,
-    frame_count: u64,
 }
 
 impl ViewerState {
@@ -188,7 +187,6 @@ impl ViewerState {
             is_raw_file: false,
             shift_scroll_acc: 0.0,
             toast: None,
-            frame_count: 0,
         })
     }
 
@@ -233,7 +231,6 @@ impl ViewerState {
             is_raw_file: true,
             shift_scroll_acc: 0.0,
             toast: None,
-            frame_count: 0,
         }
     }
 
@@ -351,9 +348,6 @@ impl ViewerState {
         if !self.open || self.entries.is_empty() {
             return ViewerNav::None;
         }
-
-        self.frame_count += 1;
-        eprintln!("[viewer_frame] {}", self.frame_count);
 
         // ── spread_lo の変化を検出してアニメーション起動 ──────────────────────
         let current_lo = self.spread_lo();
