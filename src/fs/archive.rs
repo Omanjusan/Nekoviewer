@@ -70,8 +70,8 @@ fn decode_avif(buf: &[u8]) -> Option<image::DynamicImage> {
 }
 
 /// 開済みの ZipArchive からエントリの生バイトと表示名を返す（デコードしない）
-pub fn load_bytes_from_archive(
-    archive: &mut zip::ZipArchive<std::fs::File>,
+pub fn load_bytes_from_archive<R: std::io::Read + std::io::Seek>(
+    archive: &mut zip::ZipArchive<R>,
     entry_name: &str,
 ) -> Option<(Vec<u8>, String)> {
     let mut entry = archive.by_name(entry_name).ok()?;

@@ -55,6 +55,23 @@ pub struct LoadRequest {
     pub entry_name: String,
     /// true のとき archive_path は ZIP ではなく生画像ファイル（entry_name 不使用）
     pub is_raw_file: bool,
+    /// FileCache ヒット時のファイルバイト列。Some のときディスクI/Oをスキップしてメモリから読む。
+    pub file_bytes: Option<Arc<[u8]>>,
+}
+
+/// ワーカースレッド内で保持する開きっぱなしアーカイブ（ディスク版・メモリ版を統合）
+enum OpenArchive {
+    Disk(zip::ZipArchive<std::fs::File>),
+    Mem(zip::ZipArchive<std::io::Cursor<Arc<[u8]>>>),
+}
+
+impl OpenArchive {
+    fn load_page(&mut self, entry_name: &str, filter: image::imageops::FilterType) -> Option<PageContent> {
+        match self {
+            Self::Disk(a) => load_page_content(a, entry_name, filter),
+            Self::Mem(a)  => load_page_content(a, entry_name, filter),
+        }
+    }
 }
 
 /// ページキャッシュの値型。静止画とアニメーション（全フレーム展開済み）を統一して扱う
@@ -83,8 +100,8 @@ pub fn spawn_worker(filter: image::imageops::FilterType, num_threads: usize) -> 
         let req_rx = Arc::clone(&req_rx);
         let res_tx = res_tx.clone();
         std::thread::spawn(move || {
-            // 直前に開いたアーカイブをキープオープンする
-            let mut open_archive: Option<(PathBuf, zip::ZipArchive<std::fs::File>)> = None;
+            // 直前に開いたアーカイブをキープオープンする（ディスク版・メモリ版を統合）
+            let mut open_archive: Option<(PathBuf, OpenArchive)> = None;
 
             loop {
                 // ロックはメッセージ取り出しのみに使用し、デコード中は解放される
@@ -95,17 +112,34 @@ pub fn spawn_worker(filter: image::imageops::FilterType, num_threads: usize) -> 
 
                 let t_total = std::time::Instant::now();
                 let content = if req.is_raw_file {
-                    load_raw_file_content(&req.archive_path, filter)
+                    if let Some(bytes) = req.file_bytes {
+                        load_raw_content_from_bytes(&bytes, &req.archive_path, filter)
+                    } else {
+                        load_raw_file_content(&req.archive_path, filter)
+                    }
+                } else if let Some(bytes) = req.file_bytes {
+                    // FileCache ヒット: メモリからアーカイブを開く
+                    let is_same_mem = open_archive.as_ref().map_or(false, |(p, a)| {
+                        p == &req.archive_path && matches!(a, OpenArchive::Mem(_))
+                    });
+                    if !is_same_mem {
+                        open_archive = zip::ZipArchive::new(std::io::Cursor::new(bytes))
+                            .ok()
+                            .map(|a| (req.archive_path.clone(), OpenArchive::Mem(a)));
+                    }
+                    open_archive.as_mut().and_then(|(_, a)| a.load_page(&req.entry_name, filter))
                 } else {
-                    // 別のアーカイブに切り替わったら開き直す
-                    let is_same = open_archive.as_ref().map_or(false, |(p, _)| p == &req.archive_path);
-                    if !is_same {
+                    // FileCache ミス: ディスクから開く（従来の動作）
+                    let is_same_disk = open_archive.as_ref().map_or(false, |(p, a)| {
+                        p == &req.archive_path && matches!(a, OpenArchive::Disk(_))
+                    });
+                    if !is_same_disk {
                         open_archive = std::fs::File::open(&req.archive_path)
                             .ok()
                             .and_then(|f| zip::ZipArchive::new(f).ok())
-                            .map(|a| (req.archive_path.clone(), a));
+                            .map(|a| (req.archive_path.clone(), OpenArchive::Disk(a)));
                     }
-                    open_archive.as_mut().and_then(|(_, a)| load_page_content(a, &req.entry_name, filter))
+                    open_archive.as_mut().and_then(|(_, a)| a.load_page(&req.entry_name, filter))
                 };
 
                 if let Some(content) = content {
@@ -164,6 +198,11 @@ fn fir_resize(img: image::DynamicImage, nw: u32, nh: u32, filter: image::imageop
 /// 生画像ファイルを PageContent としてデコードする（ZIP不使用）
 fn load_raw_file_content(path: &std::path::Path, filter: image::imageops::FilterType) -> Option<PageContent> {
     let buf = std::fs::read(path).ok()?;
+    load_raw_content_from_bytes(&buf, path, filter)
+}
+
+/// バイト列から生画像を PageContent としてデコードする（FileCache ヒット時用）
+fn load_raw_content_from_bytes(buf: &[u8], path: &std::path::Path, filter: image::imageops::FilterType) -> Option<PageContent> {
     let lower = path
         .extension()
         .and_then(|e| e.to_str())
@@ -205,8 +244,8 @@ fn load_raw_file_content(path: &std::path::Path, filter: image::imageops::Filter
 }
 
 /// アーカイブエントリを PageContent としてデコードする。GIF/WebP/APNGはアニメーション展開、それ以外は静止画。
-fn load_page_content(
-    archive: &mut zip::ZipArchive<std::fs::File>,
+fn load_page_content<R: std::io::Read + std::io::Seek>(
+    archive: &mut zip::ZipArchive<R>,
     entry_name: &str,
     filter: image::imageops::FilterType,
 ) -> Option<PageContent> {
@@ -363,7 +402,7 @@ impl PageCache {
 /// 圧縮済みファイルバイト列をまるごとメモリに保持するキャッシュ。
 /// ヒット時はストレージI/Oをスキップしてメモリからデコードできる。
 pub struct FileCache {
-    entries: HashMap<PathBuf, std::sync::Arc<Vec<u8>>>,
+    entries: HashMap<PathBuf, std::sync::Arc<[u8]>>,
     total_bytes: usize,
     max_bytes: usize,
 }
@@ -376,7 +415,7 @@ impl FileCache {
     pub fn max_bytes(&self) -> usize { self.max_bytes }
     pub fn total_bytes(&self) -> usize { self.total_bytes }
 
-    pub fn get(&self, path: &PathBuf) -> Option<std::sync::Arc<Vec<u8>>> {
+    pub fn get(&self, path: &PathBuf) -> Option<std::sync::Arc<[u8]>> {
         self.entries.get(path).cloned()
     }
 
@@ -389,18 +428,16 @@ impl FileCache {
     pub fn insert(
         &mut self,
         path: PathBuf,
-        bytes: Vec<u8>,
+        bytes: Arc<[u8]>,
         current_path: &PathBuf,
         all_paths: &[PathBuf],
-    ) -> std::sync::Arc<Vec<u8>> {
+    ) {
         let incoming = bytes.len();
         while self.total_bytes + incoming > self.max_bytes && !self.entries.is_empty() {
             self.evict_furthest(current_path, all_paths);
         }
-        let arc = std::sync::Arc::new(bytes);
         self.total_bytes += incoming;
-        self.entries.insert(path, arc.clone());
-        arc
+        self.entries.insert(path, bytes);
     }
 
     fn evict_furthest(&mut self, current_path: &PathBuf, all_paths: &[PathBuf]) {
@@ -428,6 +465,24 @@ fn content_bytes(content: &PageContent) -> usize {
         PageContent::Static(img) => rgba_bytes(img),
         PageContent::Animated(anim) => anim.frames.iter().map(|f| rgba_bytes(&f.image)).sum(),
     }
+}
+
+// ── ファイルキャッシュワーカー ─────────────────────────────────────────────────
+
+/// ファイルバイト列をバックグラウンドで読み込む単一スレッドのワーカーを起動する。
+/// 返り値: (要求送信側, 結果受信側)
+pub fn spawn_file_cache_worker() -> (mpsc::Sender<PathBuf>, mpsc::Receiver<(PathBuf, Arc<[u8]>)>) {
+    let (req_tx, req_rx) = mpsc::channel::<PathBuf>();
+    let (res_tx, res_rx) = mpsc::channel::<(PathBuf, Arc<[u8]>)>();
+    std::thread::spawn(move || {
+        while let Ok(path) = req_rx.recv() {
+            if let Ok(bytes) = std::fs::read(&path) {
+                let arc: Arc<[u8]> = Arc::from(bytes);
+                let _ = res_tx.send((path, arc));
+            }
+        }
+    });
+    (req_tx, res_rx)
 }
 
 // ── サムネイルワーカー ──────────────────────────────────────────────────────

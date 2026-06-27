@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::mpsc;
 
-use crate::cache::{FileCache, LoadRequest, LoadResult, PageCache, ThumbRequest, ThumbResult, spawn_worker, spawn_thumb_worker};
+use crate::cache::{FileCache, LoadRequest, LoadResult, PageCache, ThumbRequest, ThumbResult, spawn_worker, spawn_thumb_worker, spawn_file_cache_worker};
 use crate::config::{AppConfig, SortState, WindowSlot};
 use crate::neko_dir;
 use crate::fs::{dir, mount::{list_gvfs_smb_mounts, list_local_drives, MountEntry}};
@@ -176,6 +176,9 @@ pub struct NekoviewApp {
     drives: Vec<MountEntry>,
     page_cache: PageCache,
     file_cache: FileCache,
+    file_cache_req_tx: mpsc::Sender<std::path::PathBuf>,
+    file_cache_res_rx: mpsc::Receiver<(std::path::PathBuf, std::sync::Arc<[u8]>)>,
+    file_cache_pending: HashSet<PathBuf>,
     req_tx: mpsc::Sender<LoadRequest>,
     res_rx: mpsc::Receiver<LoadResult>,
     pending_loads: HashSet<(PathBuf, usize)>,
@@ -207,6 +210,7 @@ impl NekoviewApp {
     pub fn new(start_dir: PathBuf, config: AppConfig, viewer_slots: [Option<WindowSlot>; 4], sort_state: SortState) -> Self {
         let (req_tx, res_rx) = spawn_worker(config.viewer_filter.to_image_filter(), config.resolved_decode_threads());
         let (thumb_req_tx, thumb_res_rx) = spawn_thumb_worker(config.thumb_filter.to_image_filter(), config.resolved_decode_threads());
+        let (file_cache_req_tx, file_cache_res_rx) = spawn_file_cache_worker();
         let (cache_max, cache_min, file_cache_max) = crate::cache::resolve_cache_budgets(config.cache_max_mb, config.file_cache_max_mb);
         let mut drives = list_local_drives();
         drives.extend(list_gvfs_smb_mounts());
@@ -250,6 +254,9 @@ impl NekoviewApp {
             drives,
             page_cache: PageCache::new(cache_max, cache_min),
             file_cache: FileCache::new(file_cache_max),
+            file_cache_req_tx,
+            file_cache_res_rx,
+            file_cache_pending: HashSet::new(),
             req_tx,
             res_rx,
             pending_loads: HashSet::new(),
@@ -465,6 +472,16 @@ impl eframe::App for NekoviewApp {
             }
         }
 
+        // FileCache ワーカーからの結果を受信して横キャッシュへ投入
+        let file_results: Vec<(PathBuf, std::sync::Arc<[u8]>)> =
+            std::iter::from_fn(|| self.file_cache_res_rx.try_recv().ok()).collect();
+        let cur_viewer_path = self.viewer.as_ref().map(|v| v.archive_path.clone());
+        for (path, bytes) in file_results {
+            self.file_cache_pending.remove(&path);
+            let current = cur_viewer_path.clone().unwrap_or_else(|| path.clone());
+            self.file_cache.insert(path, bytes, &current, &self.archives);
+        }
+
         // ワーカーからの結果を PageCache へ投入
         let results: Vec<LoadResult> =
             std::iter::from_fn(|| self.res_rx.try_recv().ok()).collect();
@@ -505,11 +522,13 @@ impl eframe::App for NekoviewApp {
                 let orig_i = entries[i].original_index;
                 let key = (path.clone(), orig_i);
                 if !self.page_cache.contains(&path, orig_i) && !self.pending_loads.contains(&key) {
+                    let file_bytes = self.file_cache.get(&path);
                     let _ = self.req_tx.send(LoadRequest {
                         archive_path: path.clone(),
                         index: orig_i,
                         entry_name: entries[i].entry_name.clone(),
                         is_raw_file: viewer.is_raw_file,
+                        file_bytes,
                     });
                     self.pending_loads.insert(key);
                 }
@@ -640,10 +659,11 @@ impl eframe::App for NekoviewApp {
                         if let Some(path) = self.archives.get(idx).cloned() {
                             self.pending_loads.clear();
                             self.viewer = if self.raw_image_files.contains(&path) {
-                                Some(ViewerState::new_raw(path, self.viewer_slots))
+                                Some(ViewerState::new_raw(path.clone(), self.viewer_slots))
                             } else {
-                                ViewerState::new(path, self.viewer_slots)
+                                ViewerState::new(path.clone(), self.viewer_slots)
                             };
+                            self.ensure_file_cached(path);
                         }
                     }
                 }
@@ -1004,6 +1024,7 @@ impl eframe::App for NekoviewApp {
                                             // 生ファイル: 選択済み状態のシングルクリックで開く
                                             self.pending_loads.clear();
                                             self.viewer = Some(ViewerState::new_raw(path.clone(), self.viewer_slots));
+                                            self.ensure_file_cached(path.clone());
                                         } else {
                                             self.selected_archive_index = Some(i);
                                             self.selected_archive_meta = std::fs::metadata(path)
@@ -1021,7 +1042,10 @@ impl eframe::App for NekoviewApp {
                                         } else {
                                             self.pending_loads.clear();
                                             match ViewerState::new(path.clone(), self.viewer_slots) {
-                                                Some(state) => { self.viewer = Some(state); }
+                                                Some(state) => {
+                                                    self.viewer = Some(state);
+                                                    self.ensure_file_cached(path.clone());
+                                                }
                                                 None => {
                                                     let p = path.clone();
                                                     self.mark_archive_invalid(&p);
@@ -1129,9 +1153,11 @@ impl NekoviewApp {
             ViewerNav::PrevFile => {
                 if let Some(from) = self.selected_archive_index {
                     if let Some((idx, state)) = self.find_next_valid(from, -1) {
+                        let path = state.archive_path.clone();
                         self.selected_archive_index = Some(idx);
                         self.pending_loads.clear();
                         self.viewer = Some(state);
+                        self.ensure_file_cached(path);
                     } else if let Some(v) = &mut self.viewer {
                         v.set_toast("これ以上開けるファイルは前方に存在しません".to_string());
                     }
@@ -1140,14 +1166,24 @@ impl NekoviewApp {
             ViewerNav::NextFile => {
                 if let Some(from) = self.selected_archive_index {
                     if let Some((idx, state)) = self.find_next_valid(from, 1) {
+                        let path = state.archive_path.clone();
                         self.selected_archive_index = Some(idx);
                         self.pending_loads.clear();
                         self.viewer = Some(state);
+                        self.ensure_file_cached(path);
                     } else if let Some(v) = &mut self.viewer {
                         v.set_toast("これ以上開けるファイルは後方に存在しません".to_string());
                     }
                 }
             }
+        }
+    }
+
+    /// ファイルが FileCache 未登録かつ未リクエストの場合にバックグラウンド読み込みを起動する。
+    fn ensure_file_cached(&mut self, path: PathBuf) {
+        if !self.file_cache.contains(&path) && !self.file_cache_pending.contains(&path) {
+            let _ = self.file_cache_req_tx.send(path.clone());
+            self.file_cache_pending.insert(path);
         }
     }
 }
