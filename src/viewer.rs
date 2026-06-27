@@ -740,6 +740,7 @@ impl ViewerState {
                 let painter = ui.painter().with_clip_rect(clip);
                 let off_old = avail.x * t * (-anim_dir_f);
                 let off_new = avail.x * (1.0 - t) * anim_dir_f;
+                let monitor = ui.ctx().input(|i| i.viewport().monitor_size);
 
                 match page_mode {
                     PageMode::Single => {
@@ -747,18 +748,18 @@ impl ViewerState {
                         Self::paint_single_at(&painter, &tex_lo,      avail, origin, off_new);
                     }
                     PageMode::SpreadLeft => {
-                        let (rl, rr) = Self::spread_rects(avail, origin, &prev_tex_lo, &prev_tex_hi);
+                        let (rl, rr) = Self::spread_rects(avail, origin, &prev_tex_lo, &prev_tex_hi, monitor);
                         Self::paint_page(&painter, &prev_tex_lo, rl.translate(egui::vec2(off_old, 0.0)));
                         Self::paint_page(&painter, &prev_tex_hi, rr.translate(egui::vec2(off_old, 0.0)));
-                        let (rl, rr) = Self::spread_rects(avail, origin, &tex_lo, &tex_hi);
+                        let (rl, rr) = Self::spread_rects(avail, origin, &tex_lo, &tex_hi, monitor);
                         Self::paint_page(&painter, &tex_lo, rl.translate(egui::vec2(off_new, 0.0)));
                         Self::paint_page(&painter, &tex_hi, rr.translate(egui::vec2(off_new, 0.0)));
                     }
                     PageMode::SpreadRight => {
-                        let (rl, rr) = Self::spread_rects(avail, origin, &prev_tex_hi, &prev_tex_lo);
+                        let (rl, rr) = Self::spread_rects(avail, origin, &prev_tex_hi, &prev_tex_lo, monitor);
                         Self::paint_page(&painter, &prev_tex_hi, rl.translate(egui::vec2(off_old, 0.0)));
                         Self::paint_page(&painter, &prev_tex_lo, rr.translate(egui::vec2(off_old, 0.0)));
-                        let (rl, rr) = Self::spread_rects(avail, origin, &tex_hi, &tex_lo);
+                        let (rl, rr) = Self::spread_rects(avail, origin, &tex_hi, &tex_lo, monitor);
                         Self::paint_page(&painter, &tex_hi, rl.translate(egui::vec2(off_new, 0.0)));
                         Self::paint_page(&painter, &tex_lo, rr.translate(egui::vec2(off_new, 0.0)));
                     }
@@ -849,13 +850,15 @@ impl ViewerState {
 
         if fs_key || middle_clicked {
             self.fullscreen = !self.fullscreen;
-            // ViewportCommand は送らない。フルスクリーン制御は app.rs 側で
-            // メインウィンドウに対して行う（show_viewport_immediate の連鎖問題を回避）
+            ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(self.fullscreen));
             log_key!("[key] fullscreen → {}", self.fullscreen);
         }
 
         let close_requested = ctx.input(|i| i.viewport().close_requested());
         if close_requested || esc {
+            if self.fullscreen {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
+            }
             self.open = false;
             self.fullscreen = false;
         }
@@ -901,6 +904,9 @@ impl ViewerState {
             } else {
                 let available = ui.available_size();
                 let scale = (available.x / img_w as f32).min(available.y / img_h as f32);
+                if !scale.is_finite() || scale <= 0.0 {
+                    return;
+                }
                 let size  = egui::vec2(img_w as f32 * scale, img_h as f32 * scale);
                 let tl    = ui.cursor().left_top() + (available - size) / 2.0;
                 let rect  = egui::Rect::from_min_size(tl, size);
@@ -925,12 +931,13 @@ impl ViewerState {
     ) {
         let available = ui.available_size();
         let origin = ui.cursor().left_top();
+        let monitor = ui.ctx().input(|i| i.viewport().monitor_size);
 
         let full_rect = egui::Rect::from_min_size(origin, available);
         let resp = ui.allocate_rect(full_rect, egui::Sense::click());
         if ui.ctx().input(|i| i.pointer.button_clicked(egui::PointerButton::Middle)) { *middle_clicked = true; }
 
-        let (rect_l, rect_r) = Self::spread_rects(available, origin, tex_left, tex_right);
+        let (rect_l, rect_r) = Self::spread_rects(available, origin, tex_left, tex_right, monitor);
         let painter = ui.painter();
         Self::paint_page(painter, tex_left,  rect_l);
         Self::paint_page(painter, tex_right, rect_r);
@@ -942,7 +949,13 @@ impl ViewerState {
         origin: egui::Pos2,
         tex_left: &Option<egui::TextureHandle>,
         tex_right: &Option<egui::TextureHandle>,
+        monitor: Option<egui::Vec2>,
     ) -> (egui::Rect, egui::Rect) {
+        if !available.x.is_finite() || !available.y.is_finite()
+            || available.x < 1.0 || available.y < 1.0 {
+            return (egui::Rect::NOTHING, egui::Rect::NOTHING);
+        }
+
         let page_size = |tex: &Option<egui::TextureHandle>| -> egui::Vec2 {
             tex.as_ref()
                 .map(|t| { let [w, h] = t.size(); egui::vec2(w as f32, h as f32) })
@@ -951,7 +964,14 @@ impl ViewerState {
         let sl = page_size(tex_left);
         let sr = page_size(tex_right);
         let ratio_sum = sl.x / sl.y + sr.x / sr.y;
+        if !ratio_sum.is_finite() || ratio_sum < 0.01 {
+            return (egui::Rect::NOTHING, egui::Rect::NOTHING);
+        }
+
         let h  = (available.x / ratio_sum).min(available.y);
+        if !h.is_finite() || h <= 0.0 {
+            return (egui::Rect::NOTHING, egui::Rect::NOTHING);
+        }
         let w_l = sl.x / sl.y * h;
         let w_r = sr.x / sr.y * h;
         let x0 = origin.x + (available.x - (w_l + w_r)) / 2.0;
