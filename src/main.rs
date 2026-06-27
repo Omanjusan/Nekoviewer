@@ -23,6 +23,7 @@ fn main() -> eframe::Result {
 
     let state = config::load_state();
     log_common!("[startup] state loaded (window_size = {:?})", state.window_size);
+    i18n::set_from_code(&state.lang);
 
     let start_dir = std::env::args()
         .nth(1)

@@ -332,11 +332,13 @@ pub struct AppState {
     /// ビューアウィンドウの位置・サイズスロット（F5〜F8 対応）
     pub viewer_slots: [Option<WindowSlot>; 4],
     pub sort_state: SortState,
+    /// UI言語コード: "ja" / "en" / "cn"
+    pub lang: String,
 }
 
 impl Default for AppState {
     fn default() -> Self {
-        Self { last_dir: None, window_size: None, viewer_slots: [None; 4], sort_state: SortState::default() }
+        Self { last_dir: None, window_size: None, viewer_slots: [None; 4], sort_state: SortState::default(), lang: "ja".to_string() }
     }
 }
 
@@ -385,6 +387,7 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
     let mut slot_h: [Option<u32>; 4] = [None; 4];
     let mut sort_key: Option<String> = None;
     let mut sort_ascending: Option<bool> = None;
+    let mut lang: Option<String> = None;
     let mut has_kv = false;
 
     for line in content.lines() {
@@ -422,6 +425,12 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
                     }
                 }
                 "sort_ascending" => { sort_ascending = v.trim().parse().ok(); }
+                "lang" => {
+                    let v = v.trim();
+                    if matches!(v, "ja" | "en" | "cn") {
+                        lang = Some(v.to_string());
+                    }
+                }
                 _ => {}
             }
         }
@@ -454,17 +463,17 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
         ascending: sort_ascending.unwrap_or(true),
     };
 
-    Some(AppState { last_dir, window_size, viewer_slots, sort_state })
+    Some(AppState { last_dir, window_size, viewer_slots, sort_state, lang: lang.unwrap_or_else(|| "ja".to_string()) })
 }
 
-pub fn save_state(dir: &Path, window_size: (u32, u32), viewer_slots: &[Option<WindowSlot>; 4], sort_state: &SortState) {
+pub fn save_state(dir: &Path, window_size: (u32, u32), viewer_slots: &[Option<WindowSlot>; 4], sort_state: &SortState, lang: &str) {
     let (Some(path), Some(bak), Some(tmp)) =
         (state_path(), state_bak_path(), state_tmp_path())
     else { return; };
 
     let mut content = format!(
-        "last_dir={}\nwindow_width={}\nwindow_height={}\nsort_key={}\nsort_ascending={}\n",
-        dir.to_string_lossy(), window_size.0, window_size.1, sort_state.key, sort_state.ascending
+        "last_dir={}\nwindow_width={}\nwindow_height={}\nsort_key={}\nsort_ascending={}\nlang={}\n",
+        dir.to_string_lossy(), window_size.0, window_size.1, sort_state.key, sort_state.ascending, lang
     );
     for (i, slot) in viewer_slots.iter().enumerate() {
         if let Some(s) = slot {
