@@ -43,7 +43,10 @@ fn main() -> eframe::Result {
         Box::new(|cc| {
             log_common!("[startup] eframe context ready, setting up font ...");
             setup_japanese_font(&cc.egui_ctx);
-            cc.egui_ctx.style_mut(|s| {
+            cc.egui_ctx.style_mut_of(egui::Theme::Dark, |s| {
+                s.spacing.scroll.bar_outer_margin = 0.0;
+            });
+            cc.egui_ctx.style_mut_of(egui::Theme::Light, |s| {
                 s.spacing.scroll.bar_outer_margin = 0.0;
             });
             log_common!("[startup] font done, creating app ...");
