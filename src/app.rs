@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::mpsc;
 
-use crate::cache::{LoadRequest, LoadResult, PageCache, ThumbRequest, ThumbResult, spawn_worker, spawn_thumb_worker};
+use crate::cache::{FileCache, LoadRequest, LoadResult, PageCache, ThumbRequest, ThumbResult, spawn_worker, spawn_thumb_worker};
 use crate::config::{AppConfig, SortState, WindowSlot};
 use crate::neko_dir;
 use crate::fs::{dir, mount::{list_gvfs_smb_mounts, list_local_drives, MountEntry}};
@@ -175,6 +175,7 @@ pub struct NekoviewApp {
     viewer: Option<ViewerState>,
     drives: Vec<MountEntry>,
     page_cache: PageCache,
+    file_cache: FileCache,
     req_tx: mpsc::Sender<LoadRequest>,
     res_rx: mpsc::Receiver<LoadResult>,
     pending_loads: HashSet<(PathBuf, usize)>,
@@ -206,7 +207,7 @@ impl NekoviewApp {
     pub fn new(start_dir: PathBuf, config: AppConfig, viewer_slots: [Option<WindowSlot>; 4], sort_state: SortState) -> Self {
         let (req_tx, res_rx) = spawn_worker(config.viewer_filter.to_image_filter(), config.resolved_decode_threads());
         let (thumb_req_tx, thumb_res_rx) = spawn_thumb_worker(config.thumb_filter.to_image_filter(), config.resolved_decode_threads());
-        let (cache_max, cache_min) = crate::cache::resolve_cache_budget(config.cache_max_mb);
+        let (cache_max, cache_min, file_cache_max) = crate::cache::resolve_cache_budgets(config.cache_max_mb, config.file_cache_max_mb);
         let mut drives = list_local_drives();
         drives.extend(list_gvfs_smb_mounts());
 
@@ -248,6 +249,7 @@ impl NekoviewApp {
             viewer: None,
             drives,
             page_cache: PageCache::new(cache_max, cache_min),
+            file_cache: FileCache::new(file_cache_max),
             req_tx,
             res_rx,
             pending_loads: HashSet::new(),

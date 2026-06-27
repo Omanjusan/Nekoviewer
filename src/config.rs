@@ -72,8 +72,10 @@ pub struct AppConfig {
     /// ページデコードの並列スレッド数（0 = 自動: 論理コア数/2）
     pub decode_threads: usize,
     pub startup: StartupConfig,
-    /// ページキャッシュの最大メモリ上限（MB）。None = システムRAMの30%
+    /// ページキャッシュの最大メモリ上限（MB）。None = システムRAMの25%
     pub cache_max_mb: Option<u64>,
+    /// ファイルキャッシュの最大メモリ上限（MB）。None = システムRAMの5%
+    pub file_cache_max_mb: Option<u64>,
 }
 
 impl AppConfig {
@@ -124,6 +126,7 @@ impl AppConfig {
                 fixed_dir: parsed.startup_fixed_dir,
             },
             cache_max_mb: parsed.cache_max_mb,
+            file_cache_max_mb: parsed.file_cache_max_mb,
         }
     }
 
@@ -199,6 +202,7 @@ struct ParsedIni {
     startup_use_last_dir: bool,
     startup_fixed_dir: Option<PathBuf>,
     cache_max_mb: Option<u64>,
+    file_cache_max_mb: Option<u64>,
 }
 
 /// bool のデフォルト値を const ジェネリクスで指定するラッパー
@@ -254,6 +258,11 @@ fn parse_ini(path: &std::path::Path) -> ParsedIni {
                 ("cache", "max_mb") => {
                     if let Ok(n) = v.parse::<u64>() {
                         result.cache_max_mb = Some(n.max(64));
+                    }
+                }
+                ("cache", "file_cache_max_mb") => {
+                    if let Ok(n) = v.parse::<u64>() {
+                        result.file_cache_max_mb = Some(n.max(16));
                     }
                 }
                 ("thumbnail", "filter") => {
@@ -547,9 +556,15 @@ decode_threads = 0
 # xdg   : ~/.local/share/nekoview/cache/ に保存（本番推奨）
 storage = local
 
-# ページキャッシュの最大メモリ上限（MB単位の整数）。
-# 指定しない場合はシステムRAMの30%を自動使用。最小値は64MB。
+# ページキャッシュ（デコード済み画像）の最大メモリ上限（MB単位の整数）。
+# システムRAMの25%を自動使用。最小値は64MB。
+# 指定しない場合は行頭#でコメントアウト。普段はデフォルトで問題ない
 # max_mb = 1024
+
+# ファイルキャッシュ（圧縮済みファイルまるごと）の最大メモリ上限（MB単位の整数）。
+# 指定しない場合はシステムRAMの5%を自動使用。最小値は16MB。
+# 指定しない場合は行頭#でコメントアウト。普段はデフォルトで問題ない
+# file_cache_max_mb = 200
 
 [thumbnail]
 # nearest / triangle / catmullrom / lanczos3

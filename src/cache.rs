@@ -7,28 +7,43 @@ use std::sync::{mpsc, Arc, Mutex};
 use fast_image_resize::images::Image as FirImage;
 use fast_image_resize::{FilterType as FirFilter, PixelType, ResizeAlg, ResizeOptions, Resizer};
 
-const RAM_RATIO_PCT: usize = 30;
-const MIN_RATIO_PCT: usize = 40; // max_bytes に対する min_bytes の割合
-const FALLBACK_MAX_BYTES: usize = 500 * 1024 * 1024; // sysinfo 失敗時フォールバック
+const PAGE_CACHE_RAM_PCT: usize = 25;
+const FILE_CACHE_RAM_PCT: usize = 5;
+const MIN_RATIO_PCT: usize = 40; // page_max に対する page_min の割合
+const FALLBACK_TOTAL_BYTES: usize = 500 * 1024 * 1024; // sysinfo 失敗時フォールバック（旧30%相当）
 
-pub fn resolve_cache_budget(cache_max_mb: Option<u64>) -> (usize, usize) {
-    let max_bytes = match cache_max_mb {
-        Some(mb) => (mb as usize) * 1024 * 1024,
-        None => {
-            let total = {
-                let mut sys = sysinfo::System::new();
-                sys.refresh_memory();
-                sys.total_memory() as usize
-            };
-            if total > 0 {
-                total * RAM_RATIO_PCT / 100
-            } else {
-                FALLBACK_MAX_BYTES
-            }
-        }
+/// ページキャッシュ・ファイルキャッシュの予算を一括解決する。
+/// 返り値: (page_max, page_min, file_max)
+pub fn resolve_cache_budgets(
+    page_cache_max_mb: Option<u64>,
+    file_cache_max_mb: Option<u64>,
+) -> (usize, usize, usize) {
+    let total_ram = {
+        let mut sys = sysinfo::System::new();
+        sys.refresh_memory();
+        sys.total_memory() as usize
     };
-    let min_bytes = max_bytes * MIN_RATIO_PCT / 100;
-    (max_bytes, min_bytes)
+
+    let page_max = match page_cache_max_mb {
+        Some(mb) => (mb as usize) * 1024 * 1024,
+        None => if total_ram > 0 {
+            total_ram * PAGE_CACHE_RAM_PCT / 100
+        } else {
+            FALLBACK_TOTAL_BYTES * PAGE_CACHE_RAM_PCT / (PAGE_CACHE_RAM_PCT + FILE_CACHE_RAM_PCT)
+        },
+    };
+
+    let file_max = match file_cache_max_mb {
+        Some(mb) => (mb as usize) * 1024 * 1024,
+        None => if total_ram > 0 {
+            total_ram * FILE_CACHE_RAM_PCT / 100
+        } else {
+            FALLBACK_TOTAL_BYTES * FILE_CACHE_RAM_PCT / (PAGE_CACHE_RAM_PCT + FILE_CACHE_RAM_PCT)
+        },
+    };
+
+    let page_min = page_max * MIN_RATIO_PCT / 100;
+    (page_max, page_min, file_max)
 }
 const MAX_DISPLAY_W: u32 = 1920;
 const MAX_DISPLAY_H: u32 = 1080;
@@ -338,6 +353,67 @@ impl PageCache {
         if let Some(key) = key {
             if let Some(content) = self.entries.remove(&key) {
                 self.total_bytes -= content_bytes(&content);
+            }
+        }
+    }
+}
+
+// ── ファイル単位キャッシュ ──────────────────────────────────────────────────────
+
+/// 圧縮済みファイルバイト列をまるごとメモリに保持するキャッシュ。
+/// ヒット時はストレージI/Oをスキップしてメモリからデコードできる。
+pub struct FileCache {
+    entries: HashMap<PathBuf, std::sync::Arc<Vec<u8>>>,
+    total_bytes: usize,
+    max_bytes: usize,
+}
+
+impl FileCache {
+    pub fn new(max_bytes: usize) -> Self {
+        Self { entries: HashMap::new(), total_bytes: 0, max_bytes }
+    }
+
+    pub fn max_bytes(&self) -> usize { self.max_bytes }
+    pub fn total_bytes(&self) -> usize { self.total_bytes }
+
+    pub fn get(&self, path: &PathBuf) -> Option<std::sync::Arc<Vec<u8>>> {
+        self.entries.get(path).cloned()
+    }
+
+    pub fn contains(&self, path: &PathBuf) -> bool {
+        self.entries.contains_key(path)
+    }
+
+    /// ファイルバイト列をキャッシュに追加する。
+    /// 予算超過時は `all_paths` 上の位置距離が最も遠いエントリを evict する。
+    pub fn insert(
+        &mut self,
+        path: PathBuf,
+        bytes: Vec<u8>,
+        current_path: &PathBuf,
+        all_paths: &[PathBuf],
+    ) -> std::sync::Arc<Vec<u8>> {
+        let incoming = bytes.len();
+        while self.total_bytes + incoming > self.max_bytes && !self.entries.is_empty() {
+            self.evict_furthest(current_path, all_paths);
+        }
+        let arc = std::sync::Arc::new(bytes);
+        self.total_bytes += incoming;
+        self.entries.insert(path, arc.clone());
+        arc
+    }
+
+    fn evict_furthest(&mut self, current_path: &PathBuf, all_paths: &[PathBuf]) {
+        let current_pos = all_paths.iter().position(|p| p == current_path).unwrap_or(0);
+        let key = self.entries.keys().max_by_key(|path| {
+            all_paths.iter().position(|p| p == *path)
+                .map(|pos| (pos as isize - current_pos as isize).unsigned_abs())
+                .unwrap_or(usize::MAX)
+        }).cloned();
+
+        if let Some(key) = key {
+            if let Some(bytes) = self.entries.remove(&key) {
+                self.total_bytes -= bytes.len();
             }
         }
     }
