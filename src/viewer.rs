@@ -141,6 +141,7 @@ pub struct ViewerState {
     shift_scroll_acc: f32,
     /// トーストメッセージ: (テキスト, 消去予定のegui時刻) None=非表示
     toast: Option<(String, Option<f64>)>,
+    frame_count: u64,
 }
 
 impl ViewerState {
@@ -187,6 +188,7 @@ impl ViewerState {
             is_raw_file: false,
             shift_scroll_acc: 0.0,
             toast: None,
+            frame_count: 0,
         })
     }
 
@@ -231,6 +233,7 @@ impl ViewerState {
             is_raw_file: true,
             shift_scroll_acc: 0.0,
             toast: None,
+            frame_count: 0,
         }
     }
 
@@ -342,10 +345,15 @@ impl ViewerState {
         self.archive_path.file_name().and_then(|n| n.to_str()).unwrap_or(i18n::t().viewer_fallback()).to_string()
     }
 
-    pub fn show(&mut self, ctx: &egui::Context, page_cache: &PageCache) -> ViewerNav {
+    pub fn show(&mut self, ui: &mut egui::Ui, page_cache: &PageCache) -> ViewerNav {
+        let ctx = ui.ctx().clone();
+        let viewer_style = ui.style().clone();
         if !self.open || self.entries.is_empty() {
             return ViewerNav::None;
         }
+
+        self.frame_count += 1;
+        eprintln!("[viewer_frame] {}", self.frame_count);
 
         // ── spread_lo の変化を検出してアニメーション起動 ──────────────────────
         let current_lo = self.spread_lo();
@@ -469,7 +477,8 @@ impl ViewerState {
             ctx.input(|i| {
                 let sh = i.modifiers.shift;
                 let raw = if zoom_actual { 0.0 } else {
-                    i.raw_scroll_delta.y + if sh { i.raw_scroll_delta.x } else { 0.0 }
+                    let sd = i.smooth_scroll_delta();
+                    sd.y + if sh { sd.x } else { 0.0 }
                 };
                 (
                     i.key_pressed(egui::Key::ArrowLeft)  && !sh,
@@ -564,9 +573,9 @@ impl ViewerState {
 
         // ── メニューバー（フルスクリーン時は非表示）────────────────────────────
         if !self.fullscreen {
-            egui::TopBottomPanel::top("slot_bar")
-                .frame(egui::Frame::side_top_panel(ctx.style().as_ref()))
-                .show(ctx, |ui| {
+            egui::Panel::top("slot_bar")
+                .frame(egui::Frame::side_top_panel(&viewer_style))
+                .show(ui, |ui| {
                     ui.horizontal(|ui| {
                         // ── 左: ZIPエントリのソートボタン ──
                         let mut sort_changed = false;
@@ -624,7 +633,7 @@ impl ViewerState {
             const FS_BAR_H: f32 = 32.0;
             const FS_HIDE_MARGIN: f32 = 10.0;
 
-            let screen_top = ctx.screen_rect().min.y;
+            let screen_top = ctx.input(|i| i.viewport_rect()).min.y;
             if let Some(pos) = ctx.input(|i| i.pointer.hover_pos()) {
                 if !self.fs_sort_bar_visible && pos.y < screen_top + FS_TRIGGER_H {
                     self.fs_sort_bar_visible = true;
@@ -636,9 +645,9 @@ impl ViewerState {
             }
 
             if self.fs_sort_bar_visible {
-                egui::TopBottomPanel::top("fs_sort_bar")
-                    .frame(egui::Frame::side_top_panel(ctx.style().as_ref()))
-                    .show(ctx, |ui| {
+                egui::Panel::top("fs_sort_bar")
+                    .frame(egui::Frame::side_top_panel(&viewer_style))
+                    .show(ui, |ui| {
                         ui.horizontal(|ui| {
                             let mut sort_changed = false;
                             let t = i18n::t();
@@ -672,7 +681,7 @@ impl ViewerState {
         const TRIGGER_W: f32 = 40.0;
         const HIDE_MARGIN: f32 = 20.0;
 
-        let screen_left = ctx.screen_rect().min.x;
+        let screen_left = ctx.input(|i| i.viewport_rect()).min.x;
         if let Some(pos) = ctx.input(|i| i.pointer.hover_pos()) {
             if !self.entry_list_visible && pos.x < screen_left + TRIGGER_W {
                 self.entry_list_visible = true;
@@ -688,10 +697,10 @@ impl ViewerState {
             let is_spread = self.page_mode != PageMode::Single;
             let entries_snap = self.entries.clone();
 
-            egui::SidePanel::left("entry_list_panel")
-                .exact_width(ENTRY_PANEL_W)
-                .frame(egui::Frame::side_top_panel(ctx.style().as_ref()))
-                .show(ctx, |ui| {
+            egui::Panel::left("entry_list_panel")
+                .exact_size(ENTRY_PANEL_W)
+                .frame(egui::Frame::side_top_panel(&viewer_style))
+                .show(ui, |ui| {
                     egui::ScrollArea::vertical()
                         .auto_shrink([false, false])
                         .show(ui, |ui| {
@@ -712,7 +721,7 @@ impl ViewerState {
         let page_mode = self.page_mode;
         let zoom_actual = self.zoom_actual;
 
-        egui::CentralPanel::default().show(ctx, |ui| {
+        egui::CentralPanel::default().show(ui, |ui| {
             let clip   = ui.clip_rect();
             let avail  = ui.available_size();
             let origin = ui.cursor().left_top();
@@ -772,18 +781,18 @@ impl ViewerState {
             let text_color = egui::Color32::WHITE;
             let shadow_color = egui::Color32::from_black_alpha(180);
             let panel_rect = ui.clip_rect();
-            let galley = ui.fonts(|f| f.layout_no_wrap(page_text, font_id, text_color));
+            let painter = ui.painter();
+            let galley = painter.layout_no_wrap(page_text, font_id, text_color);
             let text_size = galley.size();
             let margin = egui::vec2(8.0, 6.0);
             let text_pos = panel_rect.right_bottom() - text_size - margin;
-            let painter = ui.painter();
             painter.text(text_pos + egui::vec2(1.0, 1.0), egui::Align2::LEFT_TOP, &galley.text().to_string(), egui::FontId::proportional(14.0), shadow_color);
             painter.galley(text_pos, galley, text_color);
 
             // ── トーストオーバーレイ（下部中央）──────────────────────────────
             if let Some((msg, Some(_))) = &self.toast {
                 let toast_font = egui::FontId::proportional(16.0);
-                let tg = ui.fonts(|f| f.layout_no_wrap(msg.clone(), toast_font, egui::Color32::WHITE));
+                let tg = ui.painter().layout_no_wrap(msg.clone(), toast_font, egui::Color32::WHITE);
                 let pad = egui::vec2(16.0, 8.0);
                 let bg_size = tg.size() + pad * 2.0;
                 let bg_pos = egui::pos2(
@@ -850,14 +859,21 @@ impl ViewerState {
 
         if fs_key || middle_clicked {
             self.fullscreen = !self.fullscreen;
-            ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(self.fullscreen));
+            if self.fullscreen {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(true));
+                ctx.send_viewport_cmd(egui::ViewportCommand::Decorations(false));
+            } else {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(false));
+                ctx.send_viewport_cmd(egui::ViewportCommand::Decorations(true));
+            }
             log_key!("[key] fullscreen → {}", self.fullscreen);
         }
 
         let close_requested = ctx.input(|i| i.viewport().close_requested());
         if close_requested || esc {
             if self.fullscreen {
-                ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
+                ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(false));
+                ctx.send_viewport_cmd(egui::ViewportCommand::Decorations(true));
             }
             self.open = false;
             self.fullscreen = false;
