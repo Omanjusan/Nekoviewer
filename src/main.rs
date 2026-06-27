@@ -3,6 +3,7 @@ mod app;
 mod cache;
 mod config;
 mod fs;
+mod i18n;
 mod neko_dir;
 mod spread_offset;
 mod viewer;
