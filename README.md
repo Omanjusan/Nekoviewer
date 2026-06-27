@@ -85,6 +85,10 @@ The selector is shown in blue for archive files and red for standalone image fil
 |-----|--------|
 | `↓` / `Space` / Scroll down | Next page |
 | `↑` / Scroll up | Previous page |
+| `SHIFT+↓` / `SHIFT+Scroll down` | Move to next file (when at last page) |
+| `SHIFT+↑` / `SHIFT+Scroll up` | Move to previous file (when at first page) |
+| `←` | Next file (jump to page 1, regardless of current page) |
+| `→` | Previous file (jump to page 1, regardless of current page) |
 | `Home` | First page (not yet implemented) |
 | `End` | Last page (not yet implemented) |
 | `1` | Single page view |
