@@ -1,3 +1,4 @@
+use crate::i18n;
 use crate::log_key;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -338,7 +339,7 @@ impl ViewerState {
     }
 
     pub fn title(&self) -> String {
-        self.archive_path.file_name().and_then(|n| n.to_str()).unwrap_or("ビューア").to_string()
+        self.archive_path.file_name().and_then(|n| n.to_str()).unwrap_or(i18n::t().viewer_fallback()).to_string()
     }
 
     pub fn show(&mut self, ctx: &egui::Context, page_cache: &PageCache) -> ViewerNav {
@@ -569,10 +570,11 @@ impl ViewerState {
                     ui.horizontal(|ui| {
                         // ── 左: ZIPエントリのソートボタン ──
                         let mut sort_changed = false;
+                        let t = i18n::t();
                         for (key, label) in [
-                            (ViewerSortKey::Name,    "[名前]"),
-                            (ViewerSortKey::Natural, "[自然数]"),
-                            (ViewerSortKey::Date,    "[日付]"),
+                            (ViewerSortKey::Name,    t.sort_name()),
+                            (ViewerSortKey::Natural, t.sort_natural()),
+                            (ViewerSortKey::Date,    t.sort_date()),
                         ] {
                             let active = self.sort_key == key;
                             if ui.selectable_label(active, label).clicked() {
@@ -581,7 +583,7 @@ impl ViewerState {
                             }
                         }
                         ui.label(":");
-                        let order_label = if self.sort_ascending { "[昇順]" } else { "[降順]" };
+                        let order_label = if self.sort_ascending { t.sort_asc() } else { t.sort_desc() };
                         if ui.button(order_label).clicked() {
                             self.sort_ascending = !self.sort_ascending;
                             sort_changed = true;
@@ -593,7 +595,7 @@ impl ViewerState {
                         // ── 右: ウィンドウ位置スロットボタン ──
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             for i in (0..4usize).rev() {
-                                let label = format!("[位置F{}]", i + 5);
+                                let label = i18n::t().slot_label(i + 5);
                                 let has_slot = self.slots[i].is_some();
                                 if ui.selectable_label(has_slot, &label).clicked() {
                                     let inner = ctx.input(|inp| inp.viewport().inner_rect);
@@ -639,10 +641,11 @@ impl ViewerState {
                     .show(ctx, |ui| {
                         ui.horizontal(|ui| {
                             let mut sort_changed = false;
+                            let t = i18n::t();
                             for (key, label) in [
-                                (ViewerSortKey::Name,    "[名前]"),
-                                (ViewerSortKey::Natural, "[自然数]"),
-                                (ViewerSortKey::Date,    "[日付]"),
+                                (ViewerSortKey::Name,    t.sort_name()),
+                                (ViewerSortKey::Natural, t.sort_natural()),
+                                (ViewerSortKey::Date,    t.sort_date()),
                             ] {
                                 let active = self.sort_key == key;
                                 if ui.selectable_label(active, label).clicked() {
@@ -651,7 +654,7 @@ impl ViewerState {
                                 }
                             }
                             ui.label(":");
-                            let order_label = if self.sort_ascending { "[昇順]" } else { "[降順]" };
+                            let order_label = if self.sort_ascending { t.sort_asc() } else { t.sort_desc() };
                             if ui.button(order_label).clicked() {
                                 self.sort_ascending = !self.sort_ascending;
                                 sort_changed = true;

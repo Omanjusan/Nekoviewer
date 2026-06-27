@@ -4,6 +4,7 @@ use std::sync::mpsc;
 
 use crate::cache::{FileCache, LoadRequest, LoadResult, PageCache, ThumbRequest, ThumbResult, spawn_worker, spawn_thumb_worker, spawn_file_cache_worker};
 use crate::config::{AppConfig, SortState, WindowSlot};
+use crate::i18n;
 use crate::neko_dir;
 use crate::fs::{dir, mount::{list_gvfs_smb_mounts, list_local_drives, MountEntry}};
 use crate::viewer::{PageMode, ViewerNav, ViewerState};
@@ -17,10 +18,11 @@ enum SortKey {
 
 impl SortKey {
     fn label(self) -> &'static str {
+        let t = i18n::t();
         match self {
-            SortKey::Name => "[名前]",
-            SortKey::Date => "[日付]",
-            SortKey::Size => "[サイズ]",
+            SortKey::Name => t.sort_name(),
+            SortKey::Date => t.sort_date(),
+            SortKey::Size => t.sort_size(),
         }
     }
 
@@ -690,7 +692,7 @@ impl eframe::App for NekoviewApp {
 
         egui::TopBottomPanel::top("menu_bar").show(ctx, |ui| {
             ui.horizontal(|ui| {
-                let hidden_label = if self.show_hidden { "[隠 ON]" } else { "[隠OFF]" };
+                let hidden_label = if self.show_hidden { i18n::t().hidden_on() } else { i18n::t().hidden_off() };
                 if ui.selectable_label(self.show_hidden, hidden_label).clicked() {
                     self.show_hidden = !self.show_hidden;
                 }
@@ -704,15 +706,15 @@ impl eframe::App for NekoviewApp {
                 let is_spread = cur_mode.map_or(false, |m| m != PageMode::Single);
 
                 ui.add_enabled_ui(viewer_open, |ui| {
-                    if ui.selectable_label(cur_mode == Some(PageMode::Single), "[単ページ]").clicked() {
+                    if ui.selectable_label(cur_mode == Some(PageMode::Single), i18n::t().page_single()).clicked() {
                         if let Some(v) = &mut self.viewer { v.set_page_mode(PageMode::Single); }
                     }
                 });
                 ui.add_enabled_ui(viewer_open && !is_raw_viewer, |ui| {
-                    if ui.selectable_label(cur_mode == Some(PageMode::SpreadLeft), "[見開き左]").clicked() {
+                    if ui.selectable_label(cur_mode == Some(PageMode::SpreadLeft), i18n::t().page_spread_left()).clicked() {
                         if let Some(v) = &mut self.viewer { v.set_page_mode(PageMode::SpreadLeft); }
                     }
-                    if ui.selectable_label(cur_mode == Some(PageMode::SpreadRight), "[見開き右]").clicked() {
+                    if ui.selectable_label(cur_mode == Some(PageMode::SpreadRight), i18n::t().page_spread_right()).clicked() {
                         if let Some(v) = &mut self.viewer { v.set_page_mode(PageMode::SpreadRight); }
                     }
                 });
@@ -721,14 +723,14 @@ impl eframe::App for NekoviewApp {
                     let can_back = self.viewer.as_ref().map_or(false, |v| v.can_shift_backward());
                     let can_fwd  = self.viewer.as_ref().map_or(false, |v| v.can_shift_forward());
 
-                    if ui.add_enabled(can_back, egui::Button::new("[1P戻す]")).clicked() {
+                    if ui.add_enabled(can_back, egui::Button::new(i18n::t().spread_back())).clicked() {
                         if let Some(v) = &mut self.viewer { v.shift_offset_backward(); }
                     }
-                    if ui.add_enabled(can_fwd, egui::Button::new("[1P進む]")).clicked() {
+                    if ui.add_enabled(can_fwd, egui::Button::new(i18n::t().spread_fwd())).clicked() {
                         if let Some(v) = &mut self.viewer { v.shift_offset_forward(); }
                     }
                     let is_offset = self.viewer.as_ref().map_or(false, |v| v.is_spread_offset());
-                    ui.label(if is_offset { "+1Pずれ中" } else { "整列中" });
+                    ui.label(if is_offset { i18n::t().spread_offset_on() } else { i18n::t().spread_aligned() });
                 });
 
                 ui.separator();
@@ -753,7 +755,7 @@ impl eframe::App for NekoviewApp {
 
                 ui.label(":");
 
-                let order_label = if self.sort_ascending { "[昇順]" } else { "[降順]" };
+                let order_label = if self.sort_ascending { i18n::t().sort_asc() } else { i18n::t().sort_desc() };
                 if ui.button(order_label).clicked() {
                     self.sort_ascending = !self.sort_ascending;
                     sort_changed = true;
@@ -781,7 +783,7 @@ impl eframe::App for NekoviewApp {
                             let max  = self.page_cache.max_bytes();
                             let used_mb = used / (1024 * 1024);
                             let max_mb  = max  / (1024 * 1024);
-                            ui.label(format!("キャッシュ使用量: {} MB / {} MB", used_mb, max_mb));
+                            ui.label(i18n::t().cache_usage(used_mb, max_mb));
                         },
                     );
                 });
@@ -850,7 +852,7 @@ impl eframe::App for NekoviewApp {
                 ui.separator();
 
                 // ── 下部: ドライブ選択 ──
-                ui.small("ドライブ");
+                ui.small(i18n::t().drives());
                 egui::ScrollArea::vertical()
                     .id_salt("drive_scroll")
                     .auto_shrink([false, true])
@@ -904,7 +906,7 @@ impl eframe::App for NekoviewApp {
                             .color(ui.visuals().selection.bg_fill),
                     );
                     ui.label(
-                        egui::RichText::new(format!("サムネ保存: {saved} / {total}"))
+                        egui::RichText::new(i18n::t().thumb_saved(*saved, *total))
                             .color(egui::Color32::GRAY),
                     );
                 });
@@ -919,7 +921,7 @@ impl eframe::App for NekoviewApp {
                 ui.separator();
                 let mb = *size_bytes as f64 / (1024.0 * 1024.0);
                 let date_str = format_mtime(*mtime);
-                ui.label(format!("更新日時:{date_str}   ファイルサイズ：{:.1}MB   {filename}", mb));
+                ui.label(i18n::t().file_info(&date_str, mb, filename));
             }
 
             ui.separator();
@@ -931,7 +933,7 @@ impl eframe::App for NekoviewApp {
 
                 if is_loading {
                     ui.centered_and_justified(|ui| {
-                        ui.label("読み込み中...");
+                        ui.label(i18n::t().loading());
                     });
                 } else {
                     // ── LS状態: サムネグリッド ──
@@ -1036,7 +1038,7 @@ impl eframe::App for NekoviewApp {
                                         if self.invalid_archives.contains(path) {
                                             let name = truncate_filename(path);
                                             self.app_toast = Some((
-                                                format!("「{name}」は画像が含まれない無効なZIPです。表示できません"),
+                                                i18n::t().invalid_zip(&name),
                                                 std::time::Instant::now(),
                                             ));
                                         } else {
@@ -1051,7 +1053,7 @@ impl eframe::App for NekoviewApp {
                                                     self.mark_archive_invalid(&p);
                                                     let name = truncate_filename(path);
                                                     self.app_toast = Some((
-                                                        format!("「{name}」は画像が含まれない無効なZIPです。表示できません"),
+                                                        i18n::t().invalid_zip(&name),
                                                         std::time::Instant::now(),
                                                     ));
                                                 }
@@ -1159,7 +1161,7 @@ impl NekoviewApp {
                         self.viewer = Some(state);
                         self.ensure_file_cached(path);
                     } else if let Some(v) = &mut self.viewer {
-                        v.set_toast("これ以上開けるファイルは前方に存在しません".to_string());
+                        v.set_toast(i18n::t().toast_no_prev().to_string());
                     }
                 }
             }
@@ -1172,7 +1174,7 @@ impl NekoviewApp {
                         self.viewer = Some(state);
                         self.ensure_file_cached(path);
                     } else if let Some(v) = &mut self.viewer {
-                        v.set_toast("これ以上開けるファイルは後方に存在しません".to_string());
+                        v.set_toast(i18n::t().toast_no_next().to_string());
                     }
                 }
             }
