@@ -419,7 +419,7 @@ fn upload_texture(ctx: &egui::Context, name: &str, rgba: &image::RgbaImage) -> e
 
 impl eframe::App for NekoviewApp {
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
-        crate::config::save_state(&self.current_dir, self.window_size, &self.viewer_slots, &SortState { key: self.sort_key.as_state_key().to_string(), ascending: self.sort_ascending });
+        crate::config::save_state(&self.current_dir, self.window_size, &self.viewer_slots, &SortState { key: self.sort_key.as_state_key().to_string(), ascending: self.sort_ascending }, i18n::lang_code());
     }
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
@@ -571,7 +571,7 @@ impl eframe::App for NekoviewApp {
                 if visible && viewer.save_requested {
                     viewer.save_requested = false;
                     self.viewer_slots = viewer.slots;
-                    crate::config::save_state(&self.current_dir, self.window_size, &self.viewer_slots, &SortState { key: self.sort_key.as_state_key().to_string(), ascending: self.sort_ascending });
+                    crate::config::save_state(&self.current_dir, self.window_size, &self.viewer_slots, &SortState { key: self.sort_key.as_state_key().to_string(), ascending: self.sort_ascending }, i18n::lang_code());
                 }
                 if visible { viewer_should_close = !viewer.open; }
             }
@@ -591,7 +591,7 @@ impl eframe::App for NekoviewApp {
                 if viewer.save_requested {
                     viewer.save_requested = false;
                     self.viewer_slots = viewer.slots;
-                    crate::config::save_state(&self.current_dir, self.window_size, &self.viewer_slots, &SortState { key: self.sort_key.as_state_key().to_string(), ascending: self.sort_ascending });
+                    crate::config::save_state(&self.current_dir, self.window_size, &self.viewer_slots, &SortState { key: self.sort_key.as_state_key().to_string(), ascending: self.sort_ascending }, i18n::lang_code());
                 }
                 (!viewer.open, !viewer.fullscreen, nav)
             } else {
@@ -771,6 +771,25 @@ impl eframe::App for NekoviewApp {
                     if btn.clicked() {
                         ui.memory_mut(|m| m.toggle_popup(egui::Id::new("cache_info_popup")));
                     }
+
+                    ui.separator();
+
+                    for (lang, code) in [
+                        (i18n::Lang::Chinese,  "cn"),
+                        (i18n::Lang::English,  "en"),
+                        (i18n::Lang::Japanese, "ja"),
+                    ] {
+                        let active = i18n::t() == lang;
+                        if ui.selectable_label(active, code).clicked() && !active {
+                            i18n::set(lang);
+                            crate::config::save_state(
+                                &self.current_dir, self.window_size,
+                                &self.viewer_slots,
+                                &SortState { key: self.sort_key.as_state_key().to_string(), ascending: self.sort_ascending },
+                                i18n::lang_code(),
+                            );
+                        }
+                    }
                     egui::popup_above_or_below_widget(
                         ui,
                         egui::Id::new("cache_info_popup"),
@@ -845,7 +864,7 @@ impl eframe::App for NekoviewApp {
                         self.viewing_dir = Some(path.clone());
                         self.start_scan(); // cache_db をここで確定させてから clone して渡す
                         self.cd_summary_rx = Some(spawn_summary_worker(path.clone(), self.cache_db.clone()));
-                        crate::config::save_state(&self.current_dir, self.window_size, &self.viewer_slots, &SortState { key: self.sort_key.as_state_key().to_string(), ascending: self.sort_ascending });
+                        crate::config::save_state(&self.current_dir, self.window_size, &self.viewer_slots, &SortState { key: self.sort_key.as_state_key().to_string(), ascending: self.sort_ascending }, i18n::lang_code());
                     }
                 }
 
@@ -879,7 +898,7 @@ impl eframe::App for NekoviewApp {
                                     path: path.clone(),
                                     rx: dir::spawn_scan_subdirs(path),
                                 });
-                                crate::config::save_state(&self.current_dir, self.window_size, &self.viewer_slots, &SortState { key: self.sort_key.as_state_key().to_string(), ascending: self.sort_ascending });
+                                crate::config::save_state(&self.current_dir, self.window_size, &self.viewer_slots, &SortState { key: self.sort_key.as_state_key().to_string(), ascending: self.sort_ascending }, i18n::lang_code());
                             }
                         }
                     });
