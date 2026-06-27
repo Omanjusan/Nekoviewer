@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.6.1] - 2026-06-27
+
+### Added
+- `←` / `→` keys for file jump: jumps directly to page 1 of the previous/next file regardless of current page position
+
+### Changed
+- RAM cache is now managed in separate areas for vertical and horizontal scroll, per file; improves cache efficiency when browsing across files
+
 ## [0.5.0] - 2026-06-26
 
 ### Added
