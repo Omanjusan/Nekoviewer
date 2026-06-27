@@ -67,7 +67,18 @@ jobs:
           apk update
           apk add --no-cache git build-base nasm cmake pkgconf meson py3-packaging
 
+      - name: Cache dav1d build
+        uses: actions/cache@v4
+        id: dav1d-cache
+        with:
+          path: |
+            /usr/lib/libdav1d*
+            /usr/include/dav1d
+            /usr/lib/pkgconfig/dav1d.pc
+          key: alpine-dav1d-static-v1
+
       - name: Build dav1d static
+        if: steps.dav1d-cache.outputs.cache-hit != 'true'
         run: |
           git clone --depth 1 https://code.videolan.org/videolan/dav1d.git /tmp/dav1d
           meson setup /tmp/dav1d/build /tmp/dav1d \
