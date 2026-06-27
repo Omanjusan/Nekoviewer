@@ -198,6 +198,8 @@ pub struct NekoviewApp {
     invalid_archives: std::collections::HashSet<PathBuf>,
     /// アプリレベルのトーストメッセージ（3秒で自動消去）
     app_toast: Option<(String, std::time::Instant)>,
+    /// ビューアウィンドウをフォーカス前面に出すフラグ
+    viewer_focus_requested: bool,
     show_hidden: bool,
     sort_key: SortKey,
     sort_ascending: bool,
@@ -270,6 +272,7 @@ impl NekoviewApp {
             raw_image_files: std::collections::HashSet::new(),
             invalid_archives: std::collections::HashSet::new(),
             app_toast: None,
+            viewer_focus_requested: false,
             show_hidden: false,
             sort_key: SortKey::from_state_key(&sort_state.key),
             sort_ascending: sort_state.ascending,
@@ -547,6 +550,8 @@ impl eframe::App for NekoviewApp {
         // 不可視にする。create/destroy サイクルが Win32 の マウスイベント配信を
         // 壊すのを防ぐため。不可視ウィンドウはフォーカスを奪わない。
         {
+            let focus_viewer = self.viewer_focus_requested;
+            self.viewer_focus_requested = false;
             let visible = !viewer_wants_fullscreen;
             let page_cache = &self.page_cache;
             let mut viewer_should_close = false;
@@ -563,6 +568,9 @@ impl eframe::App for NekoviewApp {
                     |vp_ctx, _class| {
                         if visible {
                             viewport_nav = viewer.show(vp_ctx, page_cache);
+                            if focus_viewer {
+                                vp_ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                            }
                         } else {
                             egui::CentralPanel::default().show(vp_ctx, |_| {});
                         }
@@ -666,6 +674,7 @@ impl eframe::App for NekoviewApp {
                                 ViewerState::new(path.clone(), self.viewer_slots)
                             };
                             self.ensure_file_cached(path);
+                            self.viewer_focus_requested = true;
                         }
                     }
                 }
@@ -1046,6 +1055,7 @@ impl eframe::App for NekoviewApp {
                                             self.pending_loads.clear();
                                             self.viewer = Some(ViewerState::new_raw(path.clone(), self.viewer_slots));
                                             self.ensure_file_cached(path.clone());
+                                            self.viewer_focus_requested = true;
                                         } else {
                                             self.selected_archive_index = Some(i);
                                             self.selected_archive_meta = std::fs::metadata(path)
@@ -1066,6 +1076,7 @@ impl eframe::App for NekoviewApp {
                                                 Some(state) => {
                                                     self.viewer = Some(state);
                                                     self.ensure_file_cached(path.clone());
+                                                    self.viewer_focus_requested = true;
                                                 }
                                                 None => {
                                                     let p = path.clone();
@@ -1179,6 +1190,7 @@ impl NekoviewApp {
                         self.pending_loads.clear();
                         self.viewer = Some(state);
                         self.ensure_file_cached(path);
+                        self.viewer_focus_requested = true;
                     } else if let Some(v) = &mut self.viewer {
                         v.set_toast(i18n::t().toast_no_prev().to_string());
                     }
@@ -1192,6 +1204,7 @@ impl NekoviewApp {
                         self.pending_loads.clear();
                         self.viewer = Some(state);
                         self.ensure_file_cached(path);
+                        self.viewer_focus_requested = true;
                     } else if let Some(v) = &mut self.viewer {
                         v.set_toast(i18n::t().toast_no_next().to_string());
                     }
