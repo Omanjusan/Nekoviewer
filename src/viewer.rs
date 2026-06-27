@@ -500,12 +500,10 @@ impl ViewerState {
             else { None }
         });
 
-        // 右綴じは左右キーを逆転（← が「次ページ」）。上下キーは常に上=戻る・下=進む
+        // 左右キーはファイル間移動に使用。上下/スペースキーでページ送り戻り
         // shift_nav_up/down は Shift 押下中でも同方向のページ送り戻りを継続させる
-        let (key_next, key_prev) = match self.page_mode {
-            PageMode::SpreadRight => (key_left || key_space || key_down || shift_nav_down, key_right || key_up || shift_nav_up),
-            _                     => (key_right || key_space || key_down || shift_nav_down, key_left || key_up || shift_nav_up),
-        };
+        let key_next = key_space || key_down || shift_nav_down;
+        let key_prev = key_up || shift_nav_up;
 
         // 4/5 のシフト方向も綴じ方向に合わせる（4=←方向, 5=→方向）
         let (shift_dec, shift_inc) = match self.page_mode {
@@ -810,6 +808,8 @@ impl ViewerState {
         let mut nav = ViewerNav::None;
         if (shift_nav_up   || shift_scroll_prev) && at_first { nav = ViewerNav::PrevFile; }
         if (shift_nav_down || shift_scroll_next) && at_last  { nav = ViewerNav::NextFile; }
+        if key_left  { nav = ViewerNav::PrevFile; }
+        if key_right { nav = ViewerNav::NextFile; }
 
         // ── ページ送り ───────────────────────────────────────────────────────
         self.scroll_acc += scroll_delta;
