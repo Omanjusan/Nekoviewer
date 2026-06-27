@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::mpsc;
+use std::sync::{Arc, Mutex, mpsc};
 
 use crate::cache::{FileCache, LoadRequest, LoadResult, PageCache, ThumbRequest, ThumbResult, spawn_worker, spawn_thumb_worker, spawn_file_cache_worker};
 use crate::config::{AppConfig, SortState, WindowSlot};
@@ -174,9 +174,11 @@ pub struct NekoviewApp {
     thumb_req_tx: mpsc::SyncSender<ThumbRequest>,
     thumb_res_rx: mpsc::Receiver<ThumbResult>,
     thumb_pending: HashSet<PathBuf>,
-    viewer: Option<ViewerState>,
+    viewer: Arc<Mutex<Option<ViewerState>>>,
     drives: Vec<MountEntry>,
-    page_cache: PageCache,
+    page_cache: Arc<Mutex<PageCache>>,
+    /// deferred viewport の callback から親 update() へ ViewerNav を渡す共有バッファ
+    viewer_nav_deferred: Arc<Mutex<ViewerNav>>,
     file_cache: FileCache,
     file_cache_req_tx: mpsc::Sender<std::path::PathBuf>,
     file_cache_res_rx: mpsc::Receiver<(std::path::PathBuf, std::sync::Arc<[u8]>)>,
@@ -254,9 +256,10 @@ impl NekoviewApp {
             thumb_req_tx,
             thumb_res_rx,
             thumb_pending: HashSet::new(),
-            viewer: None,
+            viewer: Arc::new(Mutex::new(None)),
             drives,
-            page_cache: PageCache::new(cache_max, cache_min),
+            page_cache: Arc::new(Mutex::new(PageCache::new(cache_max, cache_min))),
+            viewer_nav_deferred: Arc::new(Mutex::new(ViewerNav::None)),
             file_cache: FileCache::new(file_cache_max),
             file_cache_req_tx,
             file_cache_res_rx,
@@ -480,7 +483,7 @@ impl eframe::App for NekoviewApp {
         // FileCache ワーカーからの結果を受信して横キャッシュへ投入
         let file_results: Vec<(PathBuf, std::sync::Arc<[u8]>)> =
             std::iter::from_fn(|| self.file_cache_res_rx.try_recv().ok()).collect();
-        let cur_viewer_path = self.viewer.as_ref().map(|v| v.archive_path.clone());
+        let cur_viewer_path = self.viewer.lock().unwrap().as_ref().map(|v| v.archive_path.clone());
         for (path, bytes) in file_results {
             self.file_cache_pending.remove(&path);
             let current = cur_viewer_path.clone().unwrap_or_else(|| path.clone());
@@ -492,6 +495,7 @@ impl eframe::App for NekoviewApp {
             std::iter::from_fn(|| self.res_rx.try_recv().ok()).collect();
         let (cur_path, cur_idx) = self
             .viewer
+            .lock().unwrap()
             .as_ref()
             .map(|v| {
                 let sorted_lo = v.spread_lo().max(0) as usize;
@@ -506,7 +510,7 @@ impl eframe::App for NekoviewApp {
         for result in results {
             self.pending_loads
                 .remove(&(result.archive_path.clone(), result.index));
-            self.page_cache.insert(
+            self.page_cache.lock().unwrap().insert(
                 result.archive_path,
                 result.index,
                 result.content,
@@ -516,23 +520,24 @@ impl eframe::App for NekoviewApp {
         }
 
         // スライディングウィンドウ: ビューア表示中に前後ページを先読み
-        if let Some(viewer) = &self.viewer {
+        let viewer_prefetch = self.viewer.lock().unwrap().as_ref().map(|viewer| {
             let cur = viewer.spread_lo().max(0) as usize;
-            let path = viewer.archive_path.clone();
-            let entries = viewer.entries.clone();
+            (cur, viewer.archive_path.clone(), viewer.entries.clone(), viewer.is_raw_file)
+        });
+        if let Some((cur, path, entries, is_raw_file)) = viewer_prefetch {
             let total = entries.len();
             let start = cur.saturating_sub(5);
             let end = (cur + 10 + 1).min(total);
             for i in start..end {
                 let orig_i = entries[i].original_index;
                 let key = (path.clone(), orig_i);
-                if !self.page_cache.contains(&path, orig_i) && !self.pending_loads.contains(&key) {
+                if !self.page_cache.lock().unwrap().contains(&path, orig_i) && !self.pending_loads.contains(&key) {
                     let file_bytes = self.file_cache.get(&path);
                     let _ = self.req_tx.send(LoadRequest {
                         archive_path: path.clone(),
                         index: orig_i,
                         entry_name: entries[i].entry_name.clone(),
-                        is_raw_file: viewer.is_raw_file,
+                        is_raw_file,
                         file_bytes,
                     });
                     self.pending_loads.insert(key);
@@ -544,66 +549,60 @@ impl eframe::App for NekoviewApp {
         // show_viewport_immediate はセカンダリウィンドウが親を覆うと update() が
         // 止まる問題があるため、fullscreen 中はメインウィンドウ (ROOT viewport) で
         // ビューアを描画して独立したイベントループを維持する。
-        let viewer_wants_fullscreen = self.viewer.as_ref().map_or(false, |v| v.fullscreen);
+        let viewer_wants_fullscreen = self.viewer.lock().unwrap().as_ref().map_or(false, |v| v.fullscreen);
 
-        // セカンダリウィンドウを常に維持し、フルスクリーン中は with_visible(false) で
-        // 不可視にする。create/destroy サイクルが Win32 の マウスイベント配信を
-        // 壊すのを防ぐため。不可視ウィンドウはフォーカスを奪わない。
+        // ── deferred viewport からの前フレーム結果を処理 ──────────────────────
         {
-            let focus_viewer = self.viewer_focus_requested;
-            self.viewer_focus_requested = false;
-            let visible = !viewer_wants_fullscreen;
-            let page_cache = &self.page_cache;
-            let mut viewer_should_close = false;
-            let mut viewport_nav = ViewerNav::None;
-            if let Some(viewer) = &mut self.viewer {
-                let vp_builder = {
-                    let b = egui::ViewportBuilder::default().with_visible(visible);
-                    if viewer.first_frame && visible { b.with_inner_size([800.0, 600.0]) } else { b }
-                };
-                if visible { viewer.first_frame = false; }
-                ctx.show_viewport_immediate(
-                    egui::ViewportId::from_hash_of("viewer_window"),
-                    vp_builder,
-                    |vp_ctx, _class| {
-                        if visible {
-                            viewport_nav = viewer.show(vp_ctx, page_cache);
-                            if focus_viewer {
-                                vp_ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
-                            }
-                        } else {
-                            egui::CentralPanel::default().show(vp_ctx, |_| {});
-                        }
-                    },
-                );
-                if visible && viewer.save_requested {
-                    viewer.save_requested = false;
-                    self.viewer_slots = viewer.slots;
-                    crate::config::save_state(&self.current_dir, self.window_size, &self.viewer_slots, &SortState { key: self.sort_key.as_state_key().to_string(), ascending: self.sort_ascending }, i18n::lang_code());
+            // deferred callback が書き込んだナビゲーション要求を取り出す
+            let viewport_nav = std::mem::replace(
+                &mut *self.viewer_nav_deferred.lock().unwrap(),
+                ViewerNav::None,
+            );
+
+            // viewer.open=false (ESC等) → ビューアを閉じる（非フルスクリーン時のみ。
+            // フルスクリーン時は後段の同期ブロックで処理する）
+            if !viewer_wants_fullscreen {
+                let mut guard = self.viewer.lock().unwrap();
+                if guard.as_ref().map_or(false, |v| !v.open) {
+                    *guard = None;
                 }
-                if visible { viewer_should_close = !viewer.open; }
             }
-            if viewer_should_close {
-                self.viewer = None;
+
+            // スロット保存要求（非フルスクリーン時）
+            if !viewer_wants_fullscreen {
+                let mut guard = self.viewer.lock().unwrap();
+                if let Some(v) = guard.as_mut() {
+                    if v.save_requested {
+                        v.save_requested = false;
+                        self.viewer_slots = v.slots;
+                        crate::config::save_state(&self.current_dir, self.window_size, &self.viewer_slots, &SortState { key: self.sort_key.as_state_key().to_string(), ascending: self.sort_ascending }, i18n::lang_code());
+                    }
+                }
             }
+
             self.handle_viewer_nav(viewport_nav);
         }
+
+        // ── フルスクリーンビューア: メインウィンドウで直接描画（同期） ─────────
         if viewer_wants_fullscreen {
             if !self.viewer_fullscreen_active {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(true));
                 self.viewer_fullscreen_active = true;
             }
-            let page_cache = &self.page_cache;
-            let (viewer_closed, exited_fullscreen, fs_nav) = if let Some(viewer) = &mut self.viewer {
-                let nav = viewer.show(ctx, page_cache);
-                if viewer.save_requested {
-                    viewer.save_requested = false;
-                    self.viewer_slots = viewer.slots;
-                    crate::config::save_state(&self.current_dir, self.window_size, &self.viewer_slots, &SortState { key: self.sort_key.as_state_key().to_string(), ascending: self.sort_ascending }, i18n::lang_code());
+            let (viewer_closed, exited_fullscreen, fs_nav) = {
+                let mut viewer_guard = self.viewer.lock().unwrap();
+                let page_cache_guard = self.page_cache.lock().unwrap();
+                if let Some(viewer) = viewer_guard.as_mut() {
+                    let nav = viewer.show(ctx, &*page_cache_guard);
+                    if viewer.save_requested {
+                        viewer.save_requested = false;
+                        self.viewer_slots = viewer.slots;
+                        crate::config::save_state(&self.current_dir, self.window_size, &self.viewer_slots, &SortState { key: self.sort_key.as_state_key().to_string(), ascending: self.sort_ascending }, i18n::lang_code());
+                    }
+                    (!viewer.open, !viewer.fullscreen, nav)
+                } else {
+                    (true, true, ViewerNav::None)
                 }
-                (!viewer.open, !viewer.fullscreen, nav)
-            } else {
-                (true, true, ViewerNav::None)
             };
             if viewer_closed || exited_fullscreen {
                 self.viewer_fullscreen_active = false;
@@ -611,17 +610,69 @@ impl eframe::App for NekoviewApp {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Title("Nekoview".to_owned()));
             }
             if viewer_closed {
-                self.viewer = None;
+                *self.viewer.lock().unwrap() = None;
             }
             self.handle_viewer_nav(fs_nav);
             ctx.request_repaint();
             return;
         }
+
         // フルスクリーンからの復帰フレームでメインウィンドウを元に戻す
         if self.viewer_fullscreen_active {
             self.viewer_fullscreen_active = false;
             ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
             ctx.send_viewport_cmd(egui::ViewportCommand::Title("Nekoview".to_owned()));
+        }
+
+        // ── ビューアウィンドウ (deferred viewport) ───────────────────────────
+        // show_viewport_deferred はセカンダリウィンドウが独立したイベントループで動作し
+        // 最大化・前面化しても親の update() をブロックしない。
+        {
+            let has_viewer = self.viewer.lock().unwrap().is_some();
+            if has_viewer {
+                // first_frame フラグを読み取り、その場でクリアする（サイズ指定は一度だけ）
+                let first_frame = {
+                    let mut guard = self.viewer.lock().unwrap();
+                    let ff = guard.as_ref().map_or(false, |v| v.first_frame);
+                    if ff {
+                        if let Some(v) = guard.as_mut() { v.first_frame = false; }
+                    }
+                    ff
+                };
+                let vp_builder = {
+                    let b = egui::ViewportBuilder::default();
+                    if first_frame { b.with_inner_size([800.0, 600.0]) } else { b }
+                };
+
+                let viewer_arc = Arc::clone(&self.viewer);
+                let page_cache_arc = Arc::clone(&self.page_cache);
+                let nav_arc = Arc::clone(&self.viewer_nav_deferred);
+                let focus = self.viewer_focus_requested;
+                self.viewer_focus_requested = false;
+
+                ctx.show_viewport_deferred(
+                    egui::ViewportId::from_hash_of("viewer_window"),
+                    vp_builder,
+                    move |vp_ctx, _class| {
+                        // フルスクリーン中はメインウィンドウで描画するので空パネルのみ
+                        let is_fullscreen = viewer_arc.lock().unwrap()
+                            .as_ref().map_or(false, |v| v.fullscreen);
+                        if is_fullscreen {
+                            egui::CentralPanel::default().show(vp_ctx, |_| {});
+                            return;
+                        }
+                        if focus {
+                            vp_ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                        }
+                        let mut viewer_guard = viewer_arc.lock().unwrap();
+                        let page_cache_guard = page_cache_arc.lock().unwrap();
+                        if let Some(viewer) = viewer_guard.as_mut() {
+                            let nav = viewer.show(vp_ctx, &*page_cache_guard);
+                            *nav_arc.lock().unwrap() = nav;
+                        }
+                    },
+                );
+            }
         }
 
         // ── エクスプローラー キーナビゲーション ─────────────────────────────
@@ -668,7 +719,7 @@ impl eframe::App for NekoviewApp {
                     if let Some(idx) = self.selected_archive_index {
                         if let Some(path) = self.archives.get(idx).cloned() {
                             self.pending_loads.clear();
-                            self.viewer = if self.raw_image_files.contains(&path) {
+                            *self.viewer.lock().unwrap() = if self.raw_image_files.contains(&path) {
                                 Some(ViewerState::new_raw(path.clone(), self.viewer_slots))
                             } else {
                                 ViewerState::new(path.clone(), self.viewer_slots)
@@ -709,36 +760,39 @@ impl eframe::App for NekoviewApp {
                 ui.separator();
 
                 // ── ページ表示モード ──────────────────────────────────────────
-                let viewer_open = self.viewer.is_some();
-                let is_raw_viewer = self.viewer.as_ref().map_or(false, |v| v.is_raw_file);
-                let cur_mode = self.viewer.as_ref().map(|v| v.page_mode);
-                let is_spread = cur_mode.map_or(false, |m| m != PageMode::Single);
+                let (viewer_open, is_raw_viewer, cur_mode, is_spread, can_back, can_fwd, is_offset) = {
+                    let guard = self.viewer.lock().unwrap();
+                    let viewer_open = guard.is_some();
+                    let is_raw_viewer = guard.as_ref().map_or(false, |v| v.is_raw_file);
+                    let cur_mode = guard.as_ref().map(|v| v.page_mode);
+                    let is_spread = cur_mode.map_or(false, |m| m != PageMode::Single);
+                    let can_back = guard.as_ref().map_or(false, |v| v.can_shift_backward());
+                    let can_fwd  = guard.as_ref().map_or(false, |v| v.can_shift_forward());
+                    let is_offset = guard.as_ref().map_or(false, |v| v.is_spread_offset());
+                    (viewer_open, is_raw_viewer, cur_mode, is_spread, can_back, can_fwd, is_offset)
+                };
 
                 ui.add_enabled_ui(viewer_open, |ui| {
                     if ui.selectable_label(cur_mode == Some(PageMode::Single), i18n::t().page_single()).clicked() {
-                        if let Some(v) = &mut self.viewer { v.set_page_mode(PageMode::Single); }
+                        if let Some(v) = self.viewer.lock().unwrap().as_mut() { v.set_page_mode(PageMode::Single); }
                     }
                 });
                 ui.add_enabled_ui(viewer_open && !is_raw_viewer, |ui| {
                     if ui.selectable_label(cur_mode == Some(PageMode::SpreadLeft), i18n::t().page_spread_left()).clicked() {
-                        if let Some(v) = &mut self.viewer { v.set_page_mode(PageMode::SpreadLeft); }
+                        if let Some(v) = self.viewer.lock().unwrap().as_mut() { v.set_page_mode(PageMode::SpreadLeft); }
                     }
                     if ui.selectable_label(cur_mode == Some(PageMode::SpreadRight), i18n::t().page_spread_right()).clicked() {
-                        if let Some(v) = &mut self.viewer { v.set_page_mode(PageMode::SpreadRight); }
+                        if let Some(v) = self.viewer.lock().unwrap().as_mut() { v.set_page_mode(PageMode::SpreadRight); }
                     }
                 });
 
                 ui.add_enabled_ui(viewer_open && is_spread && !is_raw_viewer, |ui| {
-                    let can_back = self.viewer.as_ref().map_or(false, |v| v.can_shift_backward());
-                    let can_fwd  = self.viewer.as_ref().map_or(false, |v| v.can_shift_forward());
-
                     if ui.add_enabled(can_back, egui::Button::new(i18n::t().spread_back())).clicked() {
-                        if let Some(v) = &mut self.viewer { v.shift_offset_backward(); }
+                        if let Some(v) = self.viewer.lock().unwrap().as_mut() { v.shift_offset_backward(); }
                     }
                     if ui.add_enabled(can_fwd, egui::Button::new(i18n::t().spread_fwd())).clicked() {
-                        if let Some(v) = &mut self.viewer { v.shift_offset_forward(); }
+                        if let Some(v) = self.viewer.lock().unwrap().as_mut() { v.shift_offset_forward(); }
                     }
-                    let is_offset = self.viewer.as_ref().map_or(false, |v| v.is_spread_offset());
                     ui.label(if is_offset { i18n::t().spread_offset_on() } else { i18n::t().spread_aligned() });
                 });
 
@@ -807,8 +861,9 @@ impl eframe::App for NekoviewApp {
                         egui::PopupCloseBehavior::CloseOnClickOutside,
                         |ui| {
                             ui.set_min_width(200.0);
-                            let used = self.page_cache.total_bytes();
-                            let max  = self.page_cache.max_bytes();
+                            let page_cache_guard = self.page_cache.lock().unwrap();
+                            let used = page_cache_guard.total_bytes();
+                            let max  = page_cache_guard.max_bytes();
                             let used_mb = used / (1024 * 1024);
                             let max_mb  = max  / (1024 * 1024);
                             ui.label(i18n::t().cache_usage(used_mb, max_mb));
@@ -1053,7 +1108,7 @@ impl eframe::App for NekoviewApp {
                                         if is_raw && self.selected_archive_index == Some(i) {
                                             // 生ファイル: 選択済み状態のシングルクリックで開く
                                             self.pending_loads.clear();
-                                            self.viewer = Some(ViewerState::new_raw(path.clone(), self.viewer_slots));
+                                            *self.viewer.lock().unwrap() = Some(ViewerState::new_raw(path.clone(), self.viewer_slots));
                                             self.ensure_file_cached(path.clone());
                                             self.viewer_focus_requested = true;
                                         } else {
@@ -1074,7 +1129,7 @@ impl eframe::App for NekoviewApp {
                                             self.pending_loads.clear();
                                             match ViewerState::new(path.clone(), self.viewer_slots) {
                                                 Some(state) => {
-                                                    self.viewer = Some(state);
+                                                    *self.viewer.lock().unwrap() = Some(state);
                                                     self.ensure_file_cached(path.clone());
                                                     self.viewer_focus_requested = true;
                                                 }
@@ -1132,7 +1187,7 @@ impl eframe::App for NekoviewApp {
         // 未完了の処理がある間はワーカー結果を取りこぼさないよう次フレームを要求する
         // ビューアが開いている間も続ける（フルスクリーン時の入力取りこぼし防止）
         if !self.thumb_pending.is_empty() || !self.pending_loads.is_empty()
-            || self.viewer.is_some()
+            || self.viewer.lock().unwrap().is_some()
             || matches!(self.scan_state, ScanState::Loading { .. })
             || self.tree_scan_pending.is_some()
         {
@@ -1188,11 +1243,13 @@ impl NekoviewApp {
                         let path = state.archive_path.clone();
                         self.selected_archive_index = Some(idx);
                         self.pending_loads.clear();
-                        self.viewer = Some(state);
+                        *self.viewer.lock().unwrap() = Some(state);
                         self.ensure_file_cached(path);
                         self.viewer_focus_requested = true;
-                    } else if let Some(v) = &mut self.viewer {
-                        v.set_toast(i18n::t().toast_no_prev().to_string());
+                    } else {
+                        if let Some(v) = self.viewer.lock().unwrap().as_mut() {
+                            v.set_toast(i18n::t().toast_no_prev().to_string());
+                        }
                     }
                 }
             }
@@ -1202,11 +1259,13 @@ impl NekoviewApp {
                         let path = state.archive_path.clone();
                         self.selected_archive_index = Some(idx);
                         self.pending_loads.clear();
-                        self.viewer = Some(state);
+                        *self.viewer.lock().unwrap() = Some(state);
                         self.ensure_file_cached(path);
                         self.viewer_focus_requested = true;
-                    } else if let Some(v) = &mut self.viewer {
-                        v.set_toast(i18n::t().toast_no_next().to_string());
+                    } else {
+                        if let Some(v) = self.viewer.lock().unwrap().as_mut() {
+                            v.set_toast(i18n::t().toast_no_next().to_string());
+                        }
                     }
                 }
             }
