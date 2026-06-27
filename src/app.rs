@@ -481,7 +481,7 @@ impl eframe::App for NekoviewApp {
         // FileCache ワーカーからの結果を受信して横キャッシュへ投入
         let file_results: Vec<(PathBuf, std::sync::Arc<[u8]>)> =
             std::iter::from_fn(|| self.file_cache_res_rx.try_recv().ok()).collect();
-        let cur_viewer_path = self.viewer.try_lock().expect("DEADLOCK DETECTED: viewer").as_ref().map(|v| v.archive_path.clone());
+        let cur_viewer_path = self.viewer.lock().unwrap().as_ref().map(|v| v.archive_path.clone());
         for (path, bytes) in file_results {
             self.file_cache_pending.remove(&path);
             let current = cur_viewer_path.clone().unwrap_or_else(|| path.clone());
@@ -508,7 +508,7 @@ impl eframe::App for NekoviewApp {
         for result in results {
             self.pending_loads
                 .remove(&(result.archive_path.clone(), result.index));
-            self.page_cache.try_lock().expect("DEADLOCK DETECTED: page_cache").insert(
+            self.page_cache.lock().unwrap().insert(
                 result.archive_path,
                 result.index,
                 result.content,
@@ -518,7 +518,7 @@ impl eframe::App for NekoviewApp {
         }
 
         // スライディングウィンドウ: ビューア表示中に前後ページを先読み
-        let viewer_prefetch = self.viewer.try_lock().expect("DEADLOCK DETECTED: viewer").as_ref().map(|viewer| {
+        let viewer_prefetch = self.viewer.lock().unwrap().as_ref().map(|viewer| {
             let cur = viewer.spread_lo().max(0) as usize;
             (cur, viewer.archive_path.clone(), viewer.entries.clone(), viewer.is_raw_file)
         });
@@ -529,7 +529,7 @@ impl eframe::App for NekoviewApp {
             for i in start..end {
                 let orig_i = entries[i].original_index;
                 let key = (path.clone(), orig_i);
-                if !self.page_cache.try_lock().expect("DEADLOCK DETECTED: page_cache").contains(&path, orig_i) && !self.pending_loads.contains(&key) {
+                if !self.page_cache.lock().unwrap().contains(&path, orig_i) && !self.pending_loads.contains(&key) {
                     let file_bytes = self.file_cache.get(&path);
                     let _ = self.req_tx.send(LoadRequest {
                         archive_path: path.clone(),
@@ -552,7 +552,7 @@ impl eframe::App for NekoviewApp {
 
             // viewer.open=false (ESC等) → ビューアを閉じる
             {
-                let mut guard = self.viewer.try_lock().expect("DEADLOCK DETECTED: viewer");
+                let mut guard = self.viewer.lock().unwrap();
                 if guard.as_ref().map_or(false, |v| !v.open) {
                     *guard = None;
                 }
@@ -560,7 +560,7 @@ impl eframe::App for NekoviewApp {
 
             // スロット保存要求
             {
-                let mut guard = self.viewer.try_lock().expect("DEADLOCK DETECTED: viewer");
+                let mut guard = self.viewer.lock().unwrap();
                 if let Some(v) = guard.as_mut() {
                     if v.save_requested {
                         v.save_requested = false;
@@ -577,11 +577,11 @@ impl eframe::App for NekoviewApp {
         // フルスクリーンも含め、ビューアは常に deferred viewport で描画する。
         // フルスクリーン切替は viewer 側が ViewportCommand::Fullscreen を送る。
         {
-            let has_viewer = self.viewer.try_lock().expect("DEADLOCK DETECTED: viewer").is_some();
+            let has_viewer = self.viewer.lock().unwrap().is_some();
             if has_viewer {
                 // first_frame フラグを読み取り、その場でクリアする（サイズ指定は一度だけ）
                 let first_frame = {
-                    let mut guard = self.viewer.try_lock().expect("DEADLOCK DETECTED: viewer");
+                    let mut guard = self.viewer.lock().unwrap();
                     let ff = guard.as_ref().map_or(false, |v| v.first_frame);
                     if ff {
                         if let Some(v) = guard.as_mut() { v.first_frame = false; }
@@ -606,8 +606,8 @@ impl eframe::App for NekoviewApp {
                         if focus {
                             vp_ui.ctx().send_viewport_cmd(egui::ViewportCommand::Focus);
                         }
-                        let mut viewer_guard = viewer_arc.try_lock().expect("DEADLOCK DETECTED: viewer_arc");
-                        let page_cache_guard = page_cache_arc.try_lock().expect("DEADLOCK DETECTED: page_cache_arc");
+                        let mut viewer_guard = viewer_arc.lock().unwrap();
+                        let page_cache_guard = page_cache_arc.lock().unwrap();
                         if let Some(viewer) = viewer_guard.as_mut() {
                             let nav = viewer.show(vp_ui, &*page_cache_guard);
                             *nav_arc.lock().unwrap() = nav;
@@ -661,7 +661,7 @@ impl eframe::App for NekoviewApp {
                     if let Some(idx) = self.selected_archive_index {
                         if let Some(path) = self.archives.get(idx).cloned() {
                             self.pending_loads.clear();
-                            *self.viewer.try_lock().expect("DEADLOCK DETECTED: viewer") = if self.raw_image_files.contains(&path) {
+                            *self.viewer.lock().unwrap() = if self.raw_image_files.contains(&path) {
                                 Some(ViewerState::new_raw(path.clone(), self.viewer_slots))
                             } else {
                                 ViewerState::new(path.clone(), self.viewer_slots)
@@ -703,7 +703,7 @@ impl eframe::App for NekoviewApp {
 
                 // ── ページ表示モード ──────────────────────────────────────────
                 let (viewer_open, is_raw_viewer, cur_mode, is_spread, can_back, can_fwd, is_offset) = {
-                    let guard = self.viewer.try_lock().expect("DEADLOCK DETECTED: viewer");
+                    let guard = self.viewer.lock().unwrap();
                     let viewer_open = guard.is_some();
                     let is_raw_viewer = guard.as_ref().map_or(false, |v| v.is_raw_file);
                     let cur_mode = guard.as_ref().map(|v| v.page_mode);
@@ -716,24 +716,24 @@ impl eframe::App for NekoviewApp {
 
                 ui.add_enabled_ui(viewer_open, |ui| {
                     if ui.selectable_label(cur_mode == Some(PageMode::Single), i18n::t().page_single()).clicked() {
-                        if let Some(v) = self.viewer.try_lock().expect("DEADLOCK DETECTED: viewer").as_mut() { v.set_page_mode(PageMode::Single); }
+                        if let Some(v) = self.viewer.lock().unwrap().as_mut() { v.set_page_mode(PageMode::Single); }
                     }
                 });
                 ui.add_enabled_ui(viewer_open && !is_raw_viewer, |ui| {
                     if ui.selectable_label(cur_mode == Some(PageMode::SpreadLeft), i18n::t().page_spread_left()).clicked() {
-                        if let Some(v) = self.viewer.try_lock().expect("DEADLOCK DETECTED: viewer").as_mut() { v.set_page_mode(PageMode::SpreadLeft); }
+                        if let Some(v) = self.viewer.lock().unwrap().as_mut() { v.set_page_mode(PageMode::SpreadLeft); }
                     }
                     if ui.selectable_label(cur_mode == Some(PageMode::SpreadRight), i18n::t().page_spread_right()).clicked() {
-                        if let Some(v) = self.viewer.try_lock().expect("DEADLOCK DETECTED: viewer").as_mut() { v.set_page_mode(PageMode::SpreadRight); }
+                        if let Some(v) = self.viewer.lock().unwrap().as_mut() { v.set_page_mode(PageMode::SpreadRight); }
                     }
                 });
 
                 ui.add_enabled_ui(viewer_open && is_spread && !is_raw_viewer, |ui| {
                     if ui.add_enabled(can_back, egui::Button::new(i18n::t().spread_back())).clicked() {
-                        if let Some(v) = self.viewer.try_lock().expect("DEADLOCK DETECTED: viewer").as_mut() { v.shift_offset_backward(); }
+                        if let Some(v) = self.viewer.lock().unwrap().as_mut() { v.shift_offset_backward(); }
                     }
                     if ui.add_enabled(can_fwd, egui::Button::new(i18n::t().spread_fwd())).clicked() {
-                        if let Some(v) = self.viewer.try_lock().expect("DEADLOCK DETECTED: viewer").as_mut() { v.shift_offset_forward(); }
+                        if let Some(v) = self.viewer.lock().unwrap().as_mut() { v.shift_offset_forward(); }
                     }
                     ui.label(if is_offset { i18n::t().spread_offset_on() } else { i18n::t().spread_aligned() });
                 });
@@ -796,7 +796,7 @@ impl eframe::App for NekoviewApp {
                         .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
                         .show(|ui| {
                             ui.set_min_width(200.0);
-                            let page_cache_guard = self.page_cache.try_lock().expect("DEADLOCK DETECTED: page_cache");
+                            let page_cache_guard = self.page_cache.lock().unwrap();
                             let used = page_cache_guard.total_bytes();
                             let max  = page_cache_guard.max_bytes();
                             let used_mb = used / (1024 * 1024);
@@ -1047,7 +1047,7 @@ impl eframe::App for NekoviewApp {
                                         if is_raw && self.selected_archive_index == Some(i) {
                                             // 生ファイル: 選択済み状態のシングルクリックで開く
                                             self.pending_loads.clear();
-                                            *self.viewer.try_lock().expect("DEADLOCK DETECTED: viewer") = Some(ViewerState::new_raw(path.clone(), self.viewer_slots));
+                                            *self.viewer.lock().unwrap() = Some(ViewerState::new_raw(path.clone(), self.viewer_slots));
                                             self.ensure_file_cached(path.clone());
                                             self.viewer_focus_requested = true;
                                         } else {
@@ -1068,7 +1068,7 @@ impl eframe::App for NekoviewApp {
                                             self.pending_loads.clear();
                                             match ViewerState::new(path.clone(), self.viewer_slots) {
                                                 Some(state) => {
-                                                    *self.viewer.try_lock().expect("DEADLOCK DETECTED: viewer") = Some(state);
+                                                    *self.viewer.lock().unwrap() = Some(state);
                                                     self.ensure_file_cached(path.clone());
                                                     self.viewer_focus_requested = true;
                                                 }
@@ -1176,11 +1176,11 @@ impl NekoviewApp {
                         let path = state.archive_path.clone();
                         self.selected_archive_index = Some(idx);
                         self.pending_loads.clear();
-                        *self.viewer.try_lock().expect("DEADLOCK DETECTED: viewer") = Some(state);
+                        *self.viewer.lock().unwrap() = Some(state);
                         self.ensure_file_cached(path);
                         self.viewer_focus_requested = true;
                     } else {
-                        if let Some(v) = self.viewer.try_lock().expect("DEADLOCK DETECTED: viewer").as_mut() {
+                        if let Some(v) = self.viewer.lock().unwrap().as_mut() {
                             v.set_toast(i18n::t().toast_no_prev().to_string());
                         }
                     }
@@ -1192,11 +1192,11 @@ impl NekoviewApp {
                         let path = state.archive_path.clone();
                         self.selected_archive_index = Some(idx);
                         self.pending_loads.clear();
-                        *self.viewer.try_lock().expect("DEADLOCK DETECTED: viewer") = Some(state);
+                        *self.viewer.lock().unwrap() = Some(state);
                         self.ensure_file_cached(path);
                         self.viewer_focus_requested = true;
                     } else {
-                        if let Some(v) = self.viewer.try_lock().expect("DEADLOCK DETECTED: viewer").as_mut() {
+                        if let Some(v) = self.viewer.lock().unwrap().as_mut() {
                             v.set_toast(i18n::t().toast_no_next().to_string());
                         }
                     }
