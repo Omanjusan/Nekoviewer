@@ -53,20 +53,34 @@ fn main() -> eframe::Result {
 }
 
 fn setup_japanese_font(ctx: &egui::Context) {
-    let font_data = japanese_font_data();
-    let Some(font_data) = font_data else { return };
+    let Some(font_data) = japanese_font_data() else { return };
 
     let mut fonts = egui::FontDefinitions::default();
     fonts.font_data.insert(
-        "NotoSansCJK".to_owned(),
+        "PrimaryCJK".to_owned(),
         egui::FontData::from_owned(font_data).into(),
     );
-    // デフォルトフォントの後ろに追加（ASCII はデフォルト優先、日本語はこちらにフォールバック）
+    // ASCII はデフォルト優先、日本語はこちらにフォールバック
     fonts
         .families
         .entry(egui::FontFamily::Proportional)
         .or_default()
-        .push("NotoSansCJK".to_owned());
+        .push("PrimaryCJK".to_owned());
+
+    // Windows の日本語フォントは簡体字グリフを持たないため、
+    // 簡体字中国語フォントをさらに後段の fallback として追加する。
+    // Linux は NotoSansCJK が全 CJK をカバーするので不要。
+    if let Some(cn_data) = simplified_chinese_font_data() {
+        fonts.font_data.insert(
+            "SimpChinese".to_owned(),
+            egui::FontData::from_owned(cn_data).into(),
+        );
+        fonts
+            .families
+            .entry(egui::FontFamily::Proportional)
+            .or_default()
+            .push("SimpChinese".to_owned());
+    }
 
     ctx.set_fonts(fonts);
 }
@@ -81,6 +95,16 @@ fn japanese_font_data() -> Option<Vec<u8>> {
     candidates.iter().find_map(|p| std::fs::read(p).ok())
 }
 
+#[cfg(target_os = "windows")]
+fn simplified_chinese_font_data() -> Option<Vec<u8>> {
+    let candidates = [
+        r"C:\Windows\Fonts\msyh.ttc",    // Microsoft YaHei（Win Vista 以降に同梱）
+        r"C:\Windows\Fonts\simsun.ttc",  // SimSun
+        r"C:\Windows\Fonts\simhei.ttf",  // SimHei
+    ];
+    candidates.iter().find_map(|p| std::fs::read(p).ok())
+}
+
 #[cfg(not(target_os = "windows"))]
 fn japanese_font_data() -> Option<Vec<u8>> {
     let candidates = [
@@ -90,4 +114,9 @@ fn japanese_font_data() -> Option<Vec<u8>> {
         "/System/Library/Fonts/ヒラギノ角ゴシック W3.ttc",
     ];
     candidates.iter().find_map(|p| std::fs::read(p).ok())
+}
+
+#[cfg(not(target_os = "windows"))]
+fn simplified_chinese_font_data() -> Option<Vec<u8>> {
+    None // NotoSansCJK が全 CJK をカバーするため追加フォント不要
 }
