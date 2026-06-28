@@ -184,8 +184,8 @@ pub struct NekoviewApp {
     file_cache_res_rx: mpsc::Receiver<(std::path::PathBuf, std::sync::Arc<[u8]>)>,
     file_cache_pending: HashSet<PathBuf>,
     req_tx: mpsc::Sender<LoadRequest>,
-    res_rx: mpsc::Receiver<LoadResult>,
-    pending_loads: HashSet<(PathBuf, usize)>,
+    res_rx: Arc<Mutex<mpsc::Receiver<LoadResult>>>,
+    pending_loads: Arc<Mutex<HashSet<(PathBuf, usize)>>>,
     scan_state: ScanState,
     tree_scan_pending: Option<TreeScanPending>,
     /// フレームごとに更新されるウィンドウサイズ（論理ピクセル）
@@ -211,8 +211,8 @@ pub struct NekoviewApp {
 }
 
 impl NekoviewApp {
-    pub fn new(start_dir: PathBuf, config: AppConfig, viewer_slots: [Option<WindowSlot>; 4], sort_state: SortState) -> Self {
-        let (req_tx, res_rx) = spawn_worker(config.viewer_filter.to_image_filter(), config.resolved_decode_threads());
+    pub fn new(start_dir: PathBuf, config: AppConfig, viewer_slots: [Option<WindowSlot>; 4], sort_state: SortState, ctx: egui::Context) -> Self {
+        let (req_tx, res_rx) = spawn_worker(config.viewer_filter.to_image_filter(), config.resolved_decode_threads(), ctx);
         let (thumb_req_tx, thumb_res_rx) = spawn_thumb_worker(config.thumb_filter.to_image_filter(), config.resolved_decode_threads());
         let (file_cache_req_tx, file_cache_res_rx) = spawn_file_cache_worker();
         let (cache_max, cache_min, file_cache_max) = crate::cache::resolve_cache_budgets(config.cache_max_mb, config.file_cache_max_mb);
@@ -263,8 +263,8 @@ impl NekoviewApp {
             file_cache_res_rx,
             file_cache_pending: HashSet::new(),
             req_tx,
-            res_rx,
-            pending_loads: HashSet::new(),
+            res_rx: Arc::new(Mutex::new(res_rx)),
+            pending_loads: Arc::new(Mutex::new(HashSet::new())),
             scan_state: ScanState::Idle,
             tree_scan_pending,
             window_size: (1024, 768),
@@ -302,7 +302,7 @@ impl NekoviewApp {
             .and_then(|nd| neko_dir::open_cache_db(&nd));
         self.thumbnails.clear();
         self.thumb_pending.clear();
-        self.pending_loads.clear();
+        self.pending_loads.lock().unwrap().clear();
         self.selected_archive_index = None;
         self.explorer_scroll_offset = 0.0;
     }
@@ -490,7 +490,7 @@ impl eframe::App for NekoviewApp {
 
         // ワーカーからの結果を PageCache へ投入
         let results: Vec<LoadResult> =
-            std::iter::from_fn(|| self.res_rx.try_recv().ok()).collect();
+            std::iter::from_fn(|| self.res_rx.lock().unwrap().try_recv().ok()).collect();
         let (cur_path, cur_idx) = self
             .viewer
             .lock().unwrap()
@@ -506,7 +506,7 @@ impl eframe::App for NekoviewApp {
             })
             .unwrap_or_default();
         for result in results {
-            self.pending_loads
+            self.pending_loads.lock().unwrap()
                 .remove(&(result.archive_path.clone(), result.index));
             self.page_cache.lock().unwrap().insert(
                 result.archive_path,
@@ -529,7 +529,7 @@ impl eframe::App for NekoviewApp {
             for i in start..end {
                 let orig_i = entries[i].original_index;
                 let key = (path.clone(), orig_i);
-                if !self.page_cache.lock().unwrap().contains(&path, orig_i) && !self.pending_loads.contains(&key) {
+                if !self.page_cache.lock().unwrap().contains(&path, orig_i) && !self.pending_loads.lock().unwrap().contains(&key) {
                     let file_bytes = self.file_cache.get(&path);
                     let _ = self.req_tx.send(LoadRequest {
                         archive_path: path.clone(),
@@ -538,7 +538,7 @@ impl eframe::App for NekoviewApp {
                         is_raw_file,
                         file_bytes,
                     });
-                    self.pending_loads.insert(key);
+                    self.pending_loads.lock().unwrap().insert(key);
                 }
             }
         }
@@ -596,6 +596,9 @@ impl eframe::App for NekoviewApp {
                 let viewer_arc = Arc::clone(&self.viewer);
                 let page_cache_arc = Arc::clone(&self.page_cache);
                 let nav_arc = Arc::clone(&self.viewer_nav_deferred);
+                let res_rx_arc = Arc::clone(&self.res_rx);
+                let pending_arc = Arc::clone(&self.pending_loads);
+                let req_tx_vp = self.req_tx.clone();
                 let focus = self.viewer_focus_requested;
                 self.viewer_focus_requested = false;
 
@@ -606,6 +609,56 @@ impl eframe::App for NekoviewApp {
                         if focus {
                             vp_ui.ctx().send_viewport_cmd(egui::ViewportCommand::Focus);
                         }
+
+                        // フルスクリーン時はメイン ui() がスロットルされるため、
+                        // viewer viewport 側でも res_rx を drain して PageCache へ投入する
+                        {
+                            let vp_results: Vec<LoadResult> =
+                                std::iter::from_fn(|| res_rx_arc.lock().unwrap().try_recv().ok()).collect();
+                            if !vp_results.is_empty() {
+                                let (cur_path, cur_idx) = viewer_arc.lock().unwrap().as_ref()
+                                    .map(|v| {
+                                        let lo = v.spread_lo().max(0) as usize;
+                                        let orig = v.entries.get(lo).map(|e| e.original_index).unwrap_or(0);
+                                        (v.archive_path.clone(), orig)
+                                    })
+                                    .unwrap_or_default();
+                                let mut pc = page_cache_arc.lock().unwrap();
+                                for result in vp_results {
+                                    pc.insert(result.archive_path, result.index, result.content, &cur_path, cur_idx);
+                                }
+                            }
+                        }
+
+                        // フルスクリーン時のprefetch: メイン ui() に代わってロード要求を送信する
+                        {
+                            let prefetch_info = viewer_arc.lock().unwrap().as_ref().map(|v| {
+                                let cur = v.spread_lo().max(0) as usize;
+                                (cur, v.archive_path.clone(), v.entries.clone(), v.is_raw_file)
+                            });
+                            if let Some((cur, path, entries, is_raw_file)) = prefetch_info {
+                                let total = entries.len();
+                                let start = cur.saturating_sub(5);
+                                let end = (cur + 10 + 1).min(total);
+                                let mut pending = pending_arc.lock().unwrap();
+                                let pc = page_cache_arc.lock().unwrap();
+                                for i in start..end {
+                                    let orig_i = entries[i].original_index;
+                                    let key = (path.clone(), orig_i);
+                                    if !pc.contains(&path, orig_i) && !pending.contains(&key) {
+                                        let _ = req_tx_vp.send(LoadRequest {
+                                            archive_path: path.clone(),
+                                            index: orig_i,
+                                            entry_name: entries[i].entry_name.clone(),
+                                            is_raw_file,
+                                            file_bytes: None,
+                                        });
+                                        pending.insert(key);
+                                    }
+                                }
+                            }
+                        }
+
                         let mut viewer_guard = viewer_arc.lock().unwrap();
                         let page_cache_guard = page_cache_arc.lock().unwrap();
                         if let Some(viewer) = viewer_guard.as_mut() {
@@ -660,7 +713,7 @@ impl eframe::App for NekoviewApp {
                 if ctx.input(|i| i.key_pressed(egui::Key::Enter)) {
                     if let Some(idx) = self.selected_archive_index {
                         if let Some(path) = self.archives.get(idx).cloned() {
-                            self.pending_loads.clear();
+                            self.pending_loads.lock().unwrap().clear();
                             *self.viewer.lock().unwrap() = if self.raw_image_files.contains(&path) {
                                 Some(ViewerState::new_raw(path.clone(), self.viewer_slots))
                             } else {
@@ -1046,7 +1099,7 @@ impl eframe::App for NekoviewApp {
                                     if response.clicked() {
                                         if is_raw && self.selected_archive_index == Some(i) {
                                             // 生ファイル: 選択済み状態のシングルクリックで開く
-                                            self.pending_loads.clear();
+                                            self.pending_loads.lock().unwrap().clear();
                                             *self.viewer.lock().unwrap() = Some(ViewerState::new_raw(path.clone(), self.viewer_slots));
                                             self.ensure_file_cached(path.clone());
                                             self.viewer_focus_requested = true;
@@ -1065,7 +1118,7 @@ impl eframe::App for NekoviewApp {
                                                 std::time::Instant::now(),
                                             ));
                                         } else {
-                                            self.pending_loads.clear();
+                                            self.pending_loads.lock().unwrap().clear();
                                             match ViewerState::new(path.clone(), self.viewer_slots) {
                                                 Some(state) => {
                                                     *self.viewer.lock().unwrap() = Some(state);
@@ -1175,7 +1228,7 @@ impl NekoviewApp {
                     if let Some((idx, state)) = self.find_next_valid(from, -1) {
                         let path = state.archive_path.clone();
                         self.selected_archive_index = Some(idx);
-                        self.pending_loads.clear();
+                        self.pending_loads.lock().unwrap().clear();
                         *self.viewer.lock().unwrap() = Some(state);
                         self.ensure_file_cached(path);
                         self.viewer_focus_requested = true;
@@ -1191,7 +1244,7 @@ impl NekoviewApp {
                     if let Some((idx, state)) = self.find_next_valid(from, 1) {
                         let path = state.archive_path.clone();
                         self.selected_archive_index = Some(idx);
-                        self.pending_loads.clear();
+                        self.pending_loads.lock().unwrap().clear();
                         *self.viewer.lock().unwrap() = Some(state);
                         self.ensure_file_cached(path);
                         self.viewer_focus_requested = true;

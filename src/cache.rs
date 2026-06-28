@@ -89,7 +89,7 @@ pub struct LoadResult {
 
 /// バックグラウンドデコードワーカーを `num_threads` 本起動する。
 /// 返り値: (要求送信側, 結果受信側)
-pub fn spawn_worker(filter: image::imageops::FilterType, num_threads: usize) -> (mpsc::Sender<LoadRequest>, mpsc::Receiver<LoadResult>) {
+pub fn spawn_worker(filter: image::imageops::FilterType, num_threads: usize, ctx: egui::Context) -> (mpsc::Sender<LoadRequest>, mpsc::Receiver<LoadResult>) {
     let (req_tx, req_rx) = mpsc::channel::<LoadRequest>();
     let (res_tx, res_rx) = mpsc::channel::<LoadResult>();
 
@@ -99,6 +99,7 @@ pub fn spawn_worker(filter: image::imageops::FilterType, num_threads: usize) -> 
     for _ in 0..num_threads {
         let req_rx = Arc::clone(&req_rx);
         let res_tx = res_tx.clone();
+        let ctx = ctx.clone();
         std::thread::spawn(move || {
             // 直前に開いたアーカイブをキープオープンする（ディスク版・メモリ版を統合）
             let mut open_archive: Option<(PathBuf, OpenArchive)> = None;
@@ -153,6 +154,7 @@ pub fn spawn_worker(filter: image::imageops::FilterType, num_threads: usize) -> 
                         index: req.index,
                         content,
                     });
+                    ctx.request_repaint_after(std::time::Duration::from_millis(8));
                 }
             }
         });
