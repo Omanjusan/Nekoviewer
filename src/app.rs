@@ -684,7 +684,9 @@ impl eframe::App for NekoviewApp {
                         let os_close = vp_ui.ctx().input(|i| i.viewport().close_requested());
                         if close || os_close {
                             *viewer_closing_arc.lock().unwrap() = true;
-                            // 念のため送る（Wayland フルスクリーン以外では有効）
+                            // Wayland フルスクリーン中は Close が無視されるため Fullscreen(false) を先に送る。
+                            // Windows では不要なため除外する。
+                            #[cfg(not(windows))]
                             vp_ui.ctx().send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
                             vp_ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
                             vp_ui.ctx().request_repaint_of(egui::ViewportId::ROOT);
