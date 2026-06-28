@@ -73,6 +73,92 @@ pub struct ViewerEntry {
     pub original_index: usize, // list_images 返却時の元インデックス（キャッシュキー）
 }
 
+/// show() の先頭で ctx.input を1回だけ呼び、フレーム全体で使い回す入力スナップショット
+struct FrameInput {
+    // キー入力
+    key_left: bool,
+    key_right: bool,
+    key_up: bool,
+    key_down: bool,
+    key_space: bool,
+    esc: bool,
+    zoom_key: bool,
+    fs_key: bool,
+    mode1: bool,
+    mode2: bool,
+    mode3: bool,
+    shift4: bool,
+    shift5: bool,
+    shift_nav_up: bool,
+    shift_nav_down: bool,
+    slot_apply: Option<usize>,
+    // スクロール
+    scroll_delta: f32,
+    shift_scroll_delta: f32,
+    // ポインタ
+    hover_pos: Option<egui::Pos2>,
+    middle_clicked: bool,
+    // viewport
+    outer_rect: Option<egui::Rect>,
+    inner_rect: Option<egui::Rect>,
+    monitor_size: Option<egui::Vec2>,
+    viewport_rect: egui::Rect,
+    os_maximized: bool,
+    close_requested: bool,
+    // 時刻
+    dt: f32,
+    time: f64,
+}
+
+impl FrameInput {
+    fn collect(ctx: &egui::Context, zoom_actual: bool) -> Self {
+        ctx.input(|i| {
+            let sh = i.modifiers.shift;
+            let raw = if zoom_actual { 0.0 } else {
+                let sd = i.smooth_scroll_delta();
+                sd.y + if sh { sd.x } else { 0.0 }
+            };
+            let slot_apply =
+                if      i.key_pressed(egui::Key::F5) { Some(0) }
+                else if i.key_pressed(egui::Key::F6) { Some(1) }
+                else if i.key_pressed(egui::Key::F7) { Some(2) }
+                else if i.key_pressed(egui::Key::F8) { Some(3) }
+                else { None };
+            let vp = i.viewport();
+            Self {
+                key_left:           i.key_pressed(egui::Key::ArrowLeft)  && !sh,
+                key_right:          i.key_pressed(egui::Key::ArrowRight) && !sh,
+                key_up:             i.key_pressed(egui::Key::ArrowUp)    && !sh,
+                key_down:           i.key_pressed(egui::Key::ArrowDown)  && !sh,
+                key_space:          i.key_pressed(egui::Key::Space),
+                esc:                i.key_pressed(egui::Key::Escape),
+                zoom_key:           i.key_pressed(egui::Key::Enter) && !i.modifiers.alt,
+                fs_key:             i.key_pressed(egui::Key::Enter) &&  i.modifiers.alt,
+                mode1:              i.key_pressed(egui::Key::Num1),
+                mode2:              i.key_pressed(egui::Key::Num2),
+                mode3:              i.key_pressed(egui::Key::Num3),
+                shift4:             i.key_pressed(egui::Key::Num4),
+                shift5:             i.key_pressed(egui::Key::Num5),
+                shift_nav_up:       i.key_pressed(egui::Key::ArrowUp)   && sh,
+                shift_nav_down:     i.key_pressed(egui::Key::ArrowDown) && sh,
+                slot_apply,
+                scroll_delta:       raw,
+                shift_scroll_delta: if sh { raw } else { 0.0 },
+                hover_pos:          i.pointer.hover_pos(),
+                middle_clicked:     i.pointer.button_clicked(egui::PointerButton::Middle),
+                outer_rect:         vp.outer_rect,
+                inner_rect:         vp.inner_rect,
+                monitor_size:       vp.monitor_size,
+                viewport_rect:      i.viewport_rect(),
+                os_maximized:       vp.maximized.unwrap_or(false),
+                close_requested:    vp.close_requested(),
+                dt:                 i.unstable_dt,
+                time:               i.time,
+            }
+        })
+    }
+}
+
 /// 自然数ソート比較: 数字列は数値として比較、それ以外は文字列として比較
 fn nat_cmp(a: &str, b: &str) -> std::cmp::Ordering {
     let mut ai = a.chars().peekable();
@@ -363,6 +449,9 @@ impl ViewerState {
         let mut save_slots: Option<[Option<WindowSlot>; 4]> = None;
         let mut close_self = false;
 
+        // ── フレーム入力を一括収集（ctx.input はこの1回のみ）────────────────
+        let input = FrameInput::collect(&ctx, self.zoom_actual);
+
         // ── spread_lo の変化を検出してアニメーション起動 ──────────────────────
         let current_lo = self.spread_lo();
         if current_lo != self.prev_spread_lo {
@@ -379,8 +468,7 @@ impl ViewerState {
 
         // アニメーション進捗を dt で更新
         if self.anim_active {
-            let dt = ctx.input(|i| i.unstable_dt);
-            self.anim_progress = (self.anim_progress + dt / ANIM_SECS).min(1.0);
+            self.anim_progress = (self.anim_progress + input.dt / ANIM_SECS).min(1.0);
             if self.anim_progress >= 1.0 { self.anim_active = false; }
             ctx.request_repaint();
         }
@@ -475,59 +563,37 @@ impl ViewerState {
         };
 
         // outer_rect の左上座標を毎フレーム記録（保存ボタン用、1フレーム遅れ許容）
-        if let Some(outer) = ctx.input(|i| i.viewport().outer_rect) {
+        if let Some(outer) = input.outer_rect {
             self.outer_pos = Some(outer.min);
         }
 
         // OSネイティブの最大化（タイトルバーあり最大化）を検知したら
         // 擬似フルスクリーン（Decorations(false)）に強制変換する。
         // タイトルバーあり最大化状態のままだと閉じる際にゴーストが残るため。
-        let os_maximized = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
-        if os_maximized && !self.fullscreen {
+        if input.os_maximized && !self.fullscreen {
             self.fullscreen = true;
             ctx.send_viewport_cmd(egui::ViewportCommand::Decorations(false));
         }
 
-        // ── 入力読み取り ────────────────────────────────────────────────────────
-        let zoom_actual = self.zoom_actual;
-        let (key_left, key_right, key_up, key_down, key_space, esc, zoom_key, fs_key,
-             mode1, mode2, mode3, shift4, shift5,
-             shift_nav_up, shift_nav_down, scroll_delta_raw, shift_scroll_delta) =
-            ctx.input(|i| {
-                let sh = i.modifiers.shift;
-                let raw = if zoom_actual { 0.0 } else {
-                    let sd = i.smooth_scroll_delta();
-                    sd.y + if sh { sd.x } else { 0.0 }
-                };
-                (
-                    i.key_pressed(egui::Key::ArrowLeft)  && !sh,
-                    i.key_pressed(egui::Key::ArrowRight) && !sh,
-                    i.key_pressed(egui::Key::ArrowUp)    && !sh,
-                    i.key_pressed(egui::Key::ArrowDown)  && !sh,
-                    i.key_pressed(egui::Key::Space),
-                    i.key_pressed(egui::Key::Escape),
-                    i.key_pressed(egui::Key::Enter) && !i.modifiers.alt,
-                    i.key_pressed(egui::Key::Enter) &&  i.modifiers.alt,
-                    i.key_pressed(egui::Key::Num1),
-                    i.key_pressed(egui::Key::Num2),
-                    i.key_pressed(egui::Key::Num3),
-                    i.key_pressed(egui::Key::Num4),
-                    i.key_pressed(egui::Key::Num5),
-                    i.key_pressed(egui::Key::ArrowUp)   && sh,
-                    i.key_pressed(egui::Key::ArrowDown) && sh,
-                    raw,
-                    if sh { raw } else { 0.0 },
-                )
-            });
-
-        // F5〜F8: スロット適用
-        let slot_apply: Option<usize> = ctx.input(|i| {
-            if      i.key_pressed(egui::Key::F5) { Some(0) }
-            else if i.key_pressed(egui::Key::F6) { Some(1) }
-            else if i.key_pressed(egui::Key::F7) { Some(2) }
-            else if i.key_pressed(egui::Key::F8) { Some(3) }
-            else { None }
-        });
+        // ── 入力読み取り（FrameInput から展開）────────────────────────────────
+        let key_left         = input.key_left;
+        let key_right        = input.key_right;
+        let key_up           = input.key_up;
+        let key_down         = input.key_down;
+        let key_space        = input.key_space;
+        let esc              = input.esc;
+        let zoom_key         = input.zoom_key;
+        let fs_key           = input.fs_key;
+        let mode1            = input.mode1;
+        let mode2            = input.mode2;
+        let mode3            = input.mode3;
+        let shift4           = input.shift4;
+        let shift5           = input.shift5;
+        let shift_nav_up     = input.shift_nav_up;
+        let shift_nav_down   = input.shift_nav_down;
+        let scroll_delta_raw = input.scroll_delta;
+        let shift_scroll_delta = input.shift_scroll_delta;
+        let slot_apply       = input.slot_apply;
 
         // 左右キーはファイル間移動に使用。上下/スペースキーでページ送り戻り
         // shift_nav_up/down は Shift 押下中でも同方向のページ送り戻りを継続させる
@@ -574,7 +640,7 @@ impl ViewerState {
         // ── スロット適用（F5〜F8）────────────────────────────────────────────
         if let Some(idx) = slot_apply {
             if let Some(slot) = self.slots[idx] {
-                let monitor = ctx.input(|i| i.viewport().monitor_size);
+                let monitor = input.monitor_size;
                 let (cx, cy) = if let Some(m) = monitor {
                     Self::clamp_slot_position_inner(slot.x, slot.y, slot.w, slot.h, m)
                 } else {
@@ -626,7 +692,7 @@ impl ViewerState {
                                 let label = i18n::t().slot_label(i + 5);
                                 let has_slot = self.slots[i].is_some();
                                 if ui.selectable_label(has_slot, &label).clicked() {
-                                    let inner = ctx.input(|inp| inp.viewport().inner_rect);
+                                    let inner = input.inner_rect;
                                     if let (Some(pos), Some(inner)) = (self.outer_pos, inner) {
                                         self.slots[i] = Some(WindowSlot {
                                             x: pos.x as i32,
@@ -652,8 +718,8 @@ impl ViewerState {
             const FS_BAR_H: f32 = 32.0;
             const FS_HIDE_MARGIN: f32 = 10.0;
 
-            let screen_top = ctx.input(|i| i.viewport_rect()).min.y;
-            if let Some(pos) = ctx.input(|i| i.pointer.hover_pos()) {
+            let screen_top = input.viewport_rect.min.y;
+            if let Some(pos) = input.hover_pos {
                 if !self.fs_sort_bar_visible && pos.y < screen_top + FS_TRIGGER_H {
                     self.fs_sort_bar_visible = true;
                     ctx.request_repaint();
@@ -700,8 +766,8 @@ impl ViewerState {
         const TRIGGER_W: f32 = 40.0;
         const HIDE_MARGIN: f32 = 20.0;
 
-        let screen_left = ctx.input(|i| i.viewport_rect()).min.x;
-        if let Some(pos) = ctx.input(|i| i.pointer.hover_pos()) {
+        let screen_left = input.viewport_rect.min.x;
+        if let Some(pos) = input.hover_pos {
             if !self.entry_list_visible && pos.x < screen_left + TRIGGER_W {
                 self.entry_list_visible = true;
                 ctx.request_repaint();
@@ -734,7 +800,7 @@ impl ViewerState {
         }
 
         let mut double_clicked = false;
-        let mut middle_clicked = false;
+        let middle_clicked = input.middle_clicked;
 
         let anim_dir_f = self.anim_dir as f32;
         let page_mode = self.page_mode;
@@ -749,26 +815,25 @@ impl ViewerState {
                 // ── 通常レンダリング ──────────────────────────────────────────
                 match page_mode {
                     PageMode::Single => {
-                        self.render_single(ui, &tex_lo, &mut double_clicked, &mut middle_clicked);
+                        self.render_single(ui, &tex_lo, &mut double_clicked);
                     }
                     PageMode::SpreadLeft => {
-                        Self::render_spread(ui, &tex_lo, &tex_hi, &mut middle_clicked);
+                        Self::render_spread(ui, &tex_lo, &tex_hi, input.monitor_size);
                     }
                     PageMode::SpreadRight => {
-                        Self::render_spread(ui, &tex_hi, &tex_lo, &mut middle_clicked);
+                        Self::render_spread(ui, &tex_hi, &tex_lo, input.monitor_size);
                     }
                 }
             } else {
                 // ── スライドアニメーション ────────────────────────────────────
                 let full_rect = egui::Rect::from_min_size(origin, avail);
                 let resp = ui.allocate_rect(full_rect, egui::Sense::click());
-                if ui.ctx().input(|i| i.pointer.button_clicked(egui::PointerButton::Middle)) { middle_clicked = true; }
                 if resp.double_clicked() { double_clicked = true; }
 
                 let painter = ui.painter().with_clip_rect(clip);
                 let off_old = avail.x * t * (-anim_dir_f);
                 let off_new = avail.x * (1.0 - t) * anim_dir_f;
-                let monitor = ui.ctx().input(|i| i.viewport().monitor_size);
+                let monitor = input.monitor_size;
 
                 match page_mode {
                     PageMode::Single => {
@@ -888,8 +953,7 @@ impl ViewerState {
             log_key!("[key] fullscreen → {}", self.fullscreen);
         }
 
-        let close_requested = ctx.input(|i| i.viewport().close_requested());
-        if close_requested || esc {
+        if input.close_requested || esc {
             if self.fullscreen {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(false));
                 ctx.send_viewport_cmd(egui::ViewportCommand::Decorations(true));
@@ -901,7 +965,7 @@ impl ViewerState {
 
         // ── トースト期限チェック ──────────────────────────────────────────────
         {
-            let now = ctx.input(|i| i.time);
+            let now = input.time;
             match &mut self.toast {
                 Some((_, expires @ None)) => {
                     *expires = Some(now + 3.0);
@@ -925,7 +989,6 @@ impl ViewerState {
         ui: &mut egui::Ui,
         tex: &Option<egui::TextureHandle>,
         double_clicked: &mut bool,
-        middle_clicked: &mut bool,
     ) {
         if let Some(tex) = tex {
             let [img_w, img_h] = tex.size();
@@ -935,7 +998,6 @@ impl ViewerState {
                     let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::click());
                     ui.painter().image(tex.id(), rect, FULL_UV, egui::Color32::WHITE);
                     if resp.double_clicked() { *double_clicked = true; }
-                    if ui.ctx().input(|i| i.pointer.button_clicked(egui::PointerButton::Middle)) { *middle_clicked = true; }
                 });
             } else {
                 let available = ui.available_size();
@@ -949,13 +1011,11 @@ impl ViewerState {
                 let resp  = ui.allocate_rect(rect, egui::Sense::click());
                 ui.painter().image(tex.id(), rect, FULL_UV, egui::Color32::WHITE);
                 if resp.double_clicked() { *double_clicked = true; }
-                if ui.ctx().input(|i| i.pointer.button_clicked(egui::PointerButton::Middle)) { *middle_clicked = true; }
             }
         } else {
             let rect = egui::Rect::from_min_size(ui.cursor().left_top(), ui.available_size());
-            let resp = ui.allocate_rect(rect, egui::Sense::click());
+            ui.allocate_rect(rect, egui::Sense::click());
             ui.painter().rect_filled(rect, 0.0, egui::Color32::from_gray(40));
-            if ui.ctx().input(|i| i.pointer.button_clicked(egui::PointerButton::Middle)) { *middle_clicked = true; }
         }
     }
 
@@ -963,15 +1023,13 @@ impl ViewerState {
         ui: &mut egui::Ui,
         tex_left: &Option<egui::TextureHandle>,
         tex_right: &Option<egui::TextureHandle>,
-        middle_clicked: &mut bool,
+        monitor: Option<egui::Vec2>,
     ) {
         let available = ui.available_size();
         let origin = ui.cursor().left_top();
-        let monitor = ui.ctx().input(|i| i.viewport().monitor_size);
 
         let full_rect = egui::Rect::from_min_size(origin, available);
-        let resp = ui.allocate_rect(full_rect, egui::Sense::click());
-        if ui.ctx().input(|i| i.pointer.button_clicked(egui::PointerButton::Middle)) { *middle_clicked = true; }
+        ui.allocate_rect(full_rect, egui::Sense::click());
 
         let (rect_l, rect_r) = Self::spread_rects(available, origin, tex_left, tex_right, monitor);
         let painter = ui.painter();
@@ -985,7 +1043,7 @@ impl ViewerState {
         origin: egui::Pos2,
         tex_left: &Option<egui::TextureHandle>,
         tex_right: &Option<egui::TextureHandle>,
-        monitor: Option<egui::Vec2>,
+        _monitor: Option<egui::Vec2>,
     ) -> (egui::Rect, egui::Rect) {
         if !available.x.is_finite() || !available.y.is_finite()
             || available.x < 1.0 || available.y < 1.0 {
