@@ -477,29 +477,7 @@ impl ViewerState {
         // ── フレーム入力を一括収集（ctx.input はこの1回のみ）────────────────
         let input = FrameInput::collect(&ctx, self.zoom_actual);
 
-        // ── spread_lo の変化を検出してアニメーション起動 ──────────────────────
-        let current_lo = self.spread_lo();
-        if current_lo != self.prev_spread_lo {
-            let delta = current_lo - self.prev_spread_lo;
-            self.anim_dir = match self.page_mode {
-                PageMode::SpreadRight => if delta > 0 { -1 } else { 1 },
-                _                     => if delta > 0 {  1 } else { -1 },
-            };
-            self.anim_from_lo = self.prev_spread_lo;
-            self.anim_progress = 0.0;
-            self.anim_active = true;
-            self.prev_spread_lo = current_lo;
-        }
-
-        // アニメーション進捗を dt で更新
-        if self.anim_active {
-            self.anim_progress = (self.anim_progress + input.dt / ANIM_SECS).min(1.0);
-            if self.anim_progress >= 1.0 { self.anim_active = false; }
-            ctx.request_repaint();
-        }
-
-        let t = ease_out(self.anim_progress);
-        let animating = self.anim_active;
+        let (animating, t) = self.update_animation(&ctx, input.dt);
 
         self.update_textures(&ctx, page_cache);
 
@@ -598,6 +576,29 @@ impl ViewerState {
         self.tick_toast(&ctx, input.time);
 
         ViewerOutput { nav, close_requested: close_self, save_slots }
+    }
+
+    fn update_animation(&mut self, ctx: &egui::Context, dt: f32) -> (bool, f32) {
+        let current_lo = self.spread_lo();
+        if current_lo != self.prev_spread_lo {
+            let delta = current_lo - self.prev_spread_lo;
+            self.anim_dir = match self.page_mode {
+                PageMode::SpreadRight => if delta > 0 { -1 } else { 1 },
+                _                     => if delta > 0 {  1 } else { -1 },
+            };
+            self.anim_from_lo = self.prev_spread_lo;
+            self.anim_progress = 0.0;
+            self.anim_active = true;
+            self.prev_spread_lo = current_lo;
+        }
+
+        if self.anim_active {
+            self.anim_progress = (self.anim_progress + dt / ANIM_SECS).min(1.0);
+            if self.anim_progress >= 1.0 { self.anim_active = false; }
+            ctx.request_repaint();
+        }
+
+        (self.anim_active, ease_out(self.anim_progress))
     }
 
     fn draw_top_bar(
