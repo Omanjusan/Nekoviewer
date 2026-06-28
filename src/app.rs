@@ -424,6 +424,18 @@ fn upload_texture(ctx: &egui::Context, name: &str, rgba: &image::RgbaImage) -> e
 }
 
 impl eframe::App for NekoviewApp {
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // ui() はフルスクリーン中にスロットルされて呼ばれない場合がある。
+        // viewer_closing フラグは deferred callback が立てるが、
+        // ui() が止まっていると消費されない。
+        // logic() はその場合でも呼ばれ続けるため、ここで確実に消費する。
+        if *self.viewer_closing.lock().unwrap() {
+            *self.viewer.lock().unwrap() = None;
+            *self.viewer_closing.lock().unwrap() = false;
+            ctx.request_repaint();
+        }
+    }
+
     fn on_exit(&mut self) {
         crate::config::save_state(&self.current_dir, self.window_size, &self.viewer_slots, &SortState { key: self.sort_key.as_state_key().to_string(), ascending: self.sort_ascending }, i18n::lang_code());
     }
@@ -568,12 +580,6 @@ impl eframe::App for NekoviewApp {
         // 閉じる処理: ViewportCommand::Close は Wayland フルスクリーン中に無視されるため、
         // viewer_closing フラグで show_viewport_deferred の登録自体をやめることで消す。
         {
-            // viewer_closing が立っていたらメインスレッド側で viewer を None にして消費
-            if *self.viewer_closing.lock().unwrap() {
-                *self.viewer.lock().unwrap() = None;
-                *self.viewer_closing.lock().unwrap() = false;
-            }
-
             let has_viewer = self.viewer.lock().unwrap().is_some();
             if has_viewer {
                 // first_frame フラグを読み取り、その場でクリアする（サイズ指定は一度だけ）
