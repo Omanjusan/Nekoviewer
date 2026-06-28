@@ -449,7 +449,6 @@ impl eframe::App for NekoviewApp {
         self.poll_workers(&ctx);
         self.prefetch_pages();
         self.draw_viewer_viewport(&ctx);
-        self.handle_explorer_keys(&ctx);
 
         egui::Panel::top("menu_bar").show(ui, |ui| {
             self.draw_menu_bar(ui);
@@ -482,6 +481,7 @@ impl eframe::App for NekoviewApp {
                 });
         }
 
+        self.handle_explorer_keys(&ctx);
         self.draw_toast(&ctx);
         ctx.request_repaint();
     }
