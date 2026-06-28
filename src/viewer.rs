@@ -436,7 +436,9 @@ impl ViewerState {
                     let remaining = next_delay.saturating_sub(elapsed_after_upload);
                     min_repaint_after = min_repaint_after.min(remaining);
                 }
-                None => {}
+                None => {
+                    ctx.request_repaint_after(Duration::from_millis(100));
+                }
             }
         }
 

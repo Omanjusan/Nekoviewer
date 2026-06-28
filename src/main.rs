@@ -50,7 +50,7 @@ fn main() -> eframe::Result {
                 s.spacing.scroll.bar_outer_margin = 0.0;
             });
             log_common!("[startup] font done, creating app ...");
-            Ok(Box::new(NekoviewApp::new(start_dir, cfg, state.viewer_slots, state.sort_state)))
+            Ok(Box::new(NekoviewApp::new(start_dir, cfg, state.viewer_slots, state.sort_state, cc.egui_ctx.clone())))
         }),
     )
 }
