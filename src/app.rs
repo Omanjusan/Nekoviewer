@@ -7,7 +7,7 @@ use crate::config::{AppConfig, SortState, WindowSlot};
 use crate::i18n;
 use crate::neko_dir;
 use crate::fs::{dir, mount::{list_gvfs_smb_mounts, list_local_drives, MountEntry}};
-use crate::viewer::{PageMode, ViewerNav, ViewerState};
+use crate::viewer::{PageMode, ViewerNav, ViewerOutput, ViewerState};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum SortKey {
@@ -177,8 +177,8 @@ pub struct NekoviewApp {
     viewer: Arc<Mutex<Option<ViewerState>>>,
     drives: Vec<MountEntry>,
     page_cache: Arc<Mutex<PageCache>>,
-    /// deferred viewport の callback から親 update() へ ViewerNav を渡す共有バッファ
-    viewer_nav_deferred: Arc<Mutex<ViewerNav>>,
+    /// deferred viewport の callback から親 update() へ ViewerOutput を渡す共有バッファ
+    viewer_nav_deferred: Arc<Mutex<ViewerOutput>>,
     file_cache: FileCache,
     file_cache_req_tx: mpsc::Sender<std::path::PathBuf>,
     file_cache_res_rx: mpsc::Receiver<(std::path::PathBuf, std::sync::Arc<[u8]>)>,
@@ -257,7 +257,7 @@ impl NekoviewApp {
             viewer: Arc::new(Mutex::new(None)),
             drives,
             page_cache: Arc::new(Mutex::new(PageCache::new(cache_max, cache_min))),
-            viewer_nav_deferred: Arc::new(Mutex::new(ViewerNav::None)),
+            viewer_nav_deferred: Arc::new(Mutex::new(ViewerOutput::none())),
             file_cache: FileCache::new(file_cache_max),
             file_cache_req_tx,
             file_cache_res_rx,
@@ -545,32 +545,21 @@ impl eframe::App for NekoviewApp {
 
         // ── deferred viewport からの前フレーム結果を処理 ──────────────────────
         {
-            let viewport_nav = std::mem::replace(
+            let output = std::mem::replace(
                 &mut *self.viewer_nav_deferred.lock().unwrap(),
-                ViewerNav::None,
+                ViewerOutput::none(),
             );
 
-            // viewer.open=false (ESC等) → ビューアを閉じる
-            {
-                let mut guard = self.viewer.lock().unwrap();
-                if guard.as_ref().map_or(false, |v| !v.open) {
-                    *guard = None;
-                }
+            if output.close_requested {
+                *self.viewer.lock().unwrap() = None;
             }
 
-            // スロット保存要求
-            {
-                let mut guard = self.viewer.lock().unwrap();
-                if let Some(v) = guard.as_mut() {
-                    if v.save_requested {
-                        v.save_requested = false;
-                        self.viewer_slots = v.slots;
-                        crate::config::save_state(&self.current_dir, self.window_size, &self.viewer_slots, &SortState { key: self.sort_key.as_state_key().to_string(), ascending: self.sort_ascending }, i18n::lang_code());
-                    }
-                }
+            if let Some(slots) = output.save_slots {
+                self.viewer_slots = slots;
+                crate::config::save_state(&self.current_dir, self.window_size, &self.viewer_slots, &SortState { key: self.sort_key.as_state_key().to_string(), ascending: self.sort_ascending }, i18n::lang_code());
             }
 
-            self.handle_viewer_nav(viewport_nav);
+            self.handle_viewer_nav(output.nav);
         }
 
         // ── ビューアウィンドウ (deferred viewport) ───────────────────────────
@@ -662,8 +651,8 @@ impl eframe::App for NekoviewApp {
                         let mut viewer_guard = viewer_arc.lock().unwrap();
                         let page_cache_guard = page_cache_arc.lock().unwrap();
                         if let Some(viewer) = viewer_guard.as_mut() {
-                            let nav = viewer.show(vp_ui, &*page_cache_guard);
-                            *nav_arc.lock().unwrap() = nav;
+                            let output = viewer.show(vp_ui, &*page_cache_guard);
+                            *nav_arc.lock().unwrap() = output;
                         }
                     },
                 );

@@ -26,6 +26,21 @@ pub enum ViewerNav {
     NextFile,
 }
 
+/// viewer.show() の戻り値。viewer → app への通知をまとめて返す。
+#[derive(Clone)]
+pub struct ViewerOutput {
+    pub nav: ViewerNav,
+    pub close_requested: bool,
+    /// Some(_) のとき app 側でスロットを永続化する
+    pub save_slots: Option<[Option<WindowSlot>; 4]>,
+}
+
+impl ViewerOutput {
+    pub fn none() -> Self {
+        Self { nav: ViewerNav::None, close_requested: false, save_slots: None }
+    }
+}
+
 #[derive(Clone, Copy, PartialEq)]
 pub enum PageMode {
     /// 1: 単独ページ
@@ -105,7 +120,7 @@ pub struct ViewerState {
     /// オフセット状態。spread_lo() = spread_base + offset.value()
     offset: SpreadOffset,
     pub textures: HashMap<usize, egui::TextureHandle>,
-    pub open: bool,
+    open: bool,
     pub fullscreen: bool,
     pub page_mode: PageMode,
     scroll_acc: f32,
@@ -122,7 +137,6 @@ pub struct ViewerState {
     /// ウィンドウ位置・サイズスロット（F5〜F8 で適用、ボタンで保存）
     pub slots: [Option<WindowSlot>; 4],
     /// スロット保存後に app 側へ永続化を要求するフラグ
-    pub save_requested: bool,
     /// 前フレームの outer_rect 左上座標（保存用、1フレーム遅れ許容）
     outer_pos: Option<egui::Pos2>,
     /// 初回フレームかどうか（with_inner_size を一度だけ渡すため）
@@ -176,7 +190,6 @@ impl ViewerState {
             anim_progress: 1.0,
             anim_active: false,
             slots,
-            save_requested: false,
             outer_pos: None,
             first_frame: true,
             entry_list_visible: false,
@@ -220,7 +233,6 @@ impl ViewerState {
             anim_progress: 1.0,
             anim_active: false,
             slots,
-            save_requested: false,
             outer_pos: None,
             first_frame: true,
             entry_list_visible: false,
@@ -342,12 +354,14 @@ impl ViewerState {
         self.archive_path.file_name().and_then(|n| n.to_str()).unwrap_or(i18n::t().viewer_fallback()).to_string()
     }
 
-    pub fn show(&mut self, ui: &mut egui::Ui, page_cache: &PageCache) -> ViewerNav {
+    pub fn show(&mut self, ui: &mut egui::Ui, page_cache: &PageCache) -> ViewerOutput {
         let ctx = ui.ctx().clone();
         let viewer_style = ui.style().clone();
         if !self.open || self.entries.is_empty() {
-            return ViewerNav::None;
+            return ViewerOutput { nav: ViewerNav::None, close_requested: !self.open, save_slots: None };
         }
+        let mut save_slots: Option<[Option<WindowSlot>; 4]> = None;
+        let mut close_self = false;
 
         // ── spread_lo の変化を検出してアニメーション起動 ──────────────────────
         let current_lo = self.spread_lo();
@@ -611,7 +625,7 @@ impl ViewerState {
                                             w: inner.width() as u32,
                                             h: inner.height() as u32,
                                         });
-                                        self.save_requested = true;
+                                        save_slots = Some(self.slots);
                                         log_key!("[slot] save slot{} → pos=({},{}) size={}x{}",
                                             i + 1, pos.x as i32, pos.y as i32,
                                             inner.width() as u32, inner.height() as u32);
@@ -873,6 +887,7 @@ impl ViewerState {
             }
             self.open = false;
             self.fullscreen = false;
+            close_self = true;
         }
 
         // ── トースト期限チェック ──────────────────────────────────────────────
@@ -893,7 +908,7 @@ impl ViewerState {
             }
         }
 
-        nav
+        ViewerOutput { nav, close_requested: close_self, save_slots }
     }
 
     fn render_single(
