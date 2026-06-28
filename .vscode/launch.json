@@ -1,0 +1,16 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "Debug Nekoviewer",
+      "cargo": {
+        "args": ["build", "--manifest-path", "${workspaceFolder}/Cargo.toml"]
+      },
+      "program": "${workspaceFolder}/target/debug/nekoviewer.exe",
+      "cwd": "${workspaceFolder}",
+      "args": []
+    }
+  ]
+}
