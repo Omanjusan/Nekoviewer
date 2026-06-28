@@ -671,6 +671,29 @@ impl ViewerState {
         };
         let double_clicked = self.draw_central_panel(ui, &frame);
 
+        let nav = self.process_navigation(&input, is_spread, step, total);
+
+        let close_self = self.process_misc_input(&ctx, &input, is_spread, double_clicked);
+
+        self.tick_toast(&ctx, input.time);
+
+        ViewerOutput { nav, close_requested: close_self, save_slots }
+    }
+
+    fn process_navigation(
+        &mut self,
+        input: &FrameInput,
+        is_spread: bool,
+        step: i32,
+        total: usize,
+    ) -> ViewerNav {
+        let key_next = input.key_space || input.key_down || input.shift_nav_down;
+        let key_prev = input.key_up || input.shift_nav_up;
+        let (shift_dec, shift_inc) = match self.page_mode {
+            PageMode::SpreadRight => (input.shift5, input.shift4),
+            _                     => (input.shift4, input.shift5),
+        };
+
         // ── ファイル間ナビゲーション（Shift+↑↓ or Shift+スクロール）────────────
         self.shift_scroll_acc += input.shift_scroll_delta;
         let shift_scroll_prev = self.shift_scroll_acc >  SCROLL_THRESHOLD;
@@ -696,9 +719,6 @@ impl ViewerState {
         if scroll_next { self.scroll_acc += SCROLL_THRESHOLD; }
         if scroll_prev { self.scroll_acc -= SCROLL_THRESHOLD; }
 
-        let key_next = input.key_space || input.key_down || input.shift_nav_down;
-        let key_prev = input.key_up || input.shift_nav_up;
-
         if key_next || scroll_next {
             let next_base = self.spread_base + step;
             if next_base + off <= total_i - 1 { self.spread_base = next_base; }
@@ -713,22 +733,13 @@ impl ViewerState {
         self.offset.update_virtual_right(is_spread && self.spread_lo() + 1 >= total_i);
 
         // ── 見開き 1P シフト（4/5）──────────────────────────────────────────
-        let (shift_dec, shift_inc) = match self.page_mode {
-            PageMode::SpreadRight => (input.shift5, input.shift4),
-            _                     => (input.shift4, input.shift5),
-        };
         if is_spread {
             if shift_inc { self.shift_offset_forward(); }
             if shift_dec { self.shift_offset_backward(); }
-            // オフセットシフト後に再評価（シフトで末尾仮想に入った場合に対応）
             self.offset.update_virtual_right(self.spread_lo() + 1 >= total_i);
         }
 
-        let close_self = self.process_misc_input(&ctx, &input, is_spread, double_clicked);
-
-        self.tick_toast(&ctx, input.time);
-
-        ViewerOutput { nav, close_requested: close_self, save_slots }
+        nav
     }
 
     fn draw_central_panel(&mut self, ui: &mut egui::Ui, frame: &RenderFrame) -> bool {
