@@ -198,6 +198,19 @@ fn eat_digits(iter: &mut std::iter::Peekable<std::str::Chars<'_>>) -> u64 {
     n
 }
 
+struct RenderFrame {
+    tex_lo:      Option<egui::TextureHandle>,
+    tex_hi:      Option<egui::TextureHandle>,
+    prev_tex_lo: Option<egui::TextureHandle>,
+    prev_tex_hi: Option<egui::TextureHandle>,
+    animating:   bool,
+    t:           f32,
+    anim_dir_f:  f32,
+    page_mode:   PageMode,
+    zoom_actual: bool,
+    monitor:     Option<egui::Vec2>,
+}
+
 pub struct ViewerState {
     archive_path: PathBuf,
     entries: Vec<ViewerEntry>,
@@ -460,7 +473,6 @@ impl ViewerState {
             return ViewerOutput { nav: ViewerNav::None, close_requested: !self.open, save_slots: None };
         }
         let mut save_slots: Option<[Option<WindowSlot>; 4]> = None;
-        let mut close_self = false;
 
         // ── フレーム入力を一括収集（ctx.input はこの1回のみ）────────────────
         let input = FrameInput::collect(&ctx, self.zoom_actual);
@@ -533,17 +545,6 @@ impl ViewerState {
         let scroll_delta_raw = input.scroll_delta;
         let shift_scroll_delta = input.shift_scroll_delta;
         let slot_apply       = input.slot_apply;
-
-        // 左右キーはファイル間移動に使用。上下/スペースキーでページ送り戻り
-        // shift_nav_up/down は Shift 押下中でも同方向のページ送り戻りを継続させる
-        let key_next = key_space || key_down || shift_nav_down;
-        let key_prev = key_up || shift_nav_up;
-
-        // 4/5 のシフト方向も綴じ方向に合わせる（4=←方向, 5=→方向）
-        let (shift_dec, shift_inc) = match self.page_mode {
-            PageMode::SpreadRight => (shift5, shift4),
-            _                     => (shift4, shift5),
-        };
 
         let scroll_delta = scroll_delta_raw;
 
@@ -659,29 +660,95 @@ impl ViewerState {
         // ── 左エントリリスト ──────────────────────────────────────────────────
         self.draw_entry_list(ui, &ctx, &viewer_style, input.hover_pos, input.viewport_rect);
 
+        let frame = RenderFrame {
+            tex_lo, tex_hi, prev_tex_lo, prev_tex_hi,
+            animating,
+            t,
+            anim_dir_f:  self.anim_dir as f32,
+            page_mode:   self.page_mode,
+            zoom_actual: self.zoom_actual,
+            monitor:     input.monitor_size,
+        };
+        let double_clicked = self.draw_central_panel(ui, &frame);
+
+        // ── ファイル間ナビゲーション（Shift+↑↓ or Shift+スクロール）────────────
+        self.shift_scroll_acc += input.shift_scroll_delta;
+        let shift_scroll_prev = self.shift_scroll_acc >  SCROLL_THRESHOLD;
+        let shift_scroll_next = self.shift_scroll_acc < -SCROLL_THRESHOLD;
+        if shift_scroll_prev { self.shift_scroll_acc -= SCROLL_THRESHOLD; }
+        if shift_scroll_next { self.shift_scroll_acc += SCROLL_THRESHOLD; }
+
+        let total_i = total as i32;
+        let off = self.offset.value();
+        let at_first = self.spread_lo() <= if is_spread { -1 } else { 0 };
+        let at_last  = self.spread_base + step + off > total_i - 1;
+
+        let mut nav = ViewerNav::None;
+        if (input.shift_nav_up   || shift_scroll_prev) && at_first { nav = ViewerNav::PrevFile; }
+        if (input.shift_nav_down || shift_scroll_next) && at_last  { nav = ViewerNav::NextFile; }
+        if input.key_left { nav = ViewerNav::PrevFile; }
+        if input.key_right { nav = ViewerNav::NextFile; }
+
+        // ── ページ送り ───────────────────────────────────────────────────────
+        self.scroll_acc += input.scroll_delta;
+        let scroll_next = self.scroll_acc < -SCROLL_THRESHOLD;
+        let scroll_prev = self.scroll_acc >  SCROLL_THRESHOLD;
+        if scroll_next { self.scroll_acc += SCROLL_THRESHOLD; }
+        if scroll_prev { self.scroll_acc -= SCROLL_THRESHOLD; }
+
+        let key_next = input.key_space || input.key_down || input.shift_nav_down;
+        let key_prev = input.key_up || input.shift_nav_up;
+
+        if key_next || scroll_next {
+            let next_base = self.spread_base + step;
+            if next_base + off <= total_i - 1 { self.spread_base = next_base; }
+        }
+        if key_prev || scroll_prev {
+            let prev_base = self.spread_base - step;
+            let min_lo = if is_spread { -1 } else { 0 };
+            if prev_base + off >= min_lo { self.spread_base = prev_base; }
+        }
+
+        // ナビゲーション後の末尾仮想フラグ更新（オフセットシフト前に確定させる）
+        self.offset.update_virtual_right(is_spread && self.spread_lo() + 1 >= total_i);
+
+        // ── 見開き 1P シフト（4/5）──────────────────────────────────────────
+        let (shift_dec, shift_inc) = match self.page_mode {
+            PageMode::SpreadRight => (input.shift5, input.shift4),
+            _                     => (input.shift4, input.shift5),
+        };
+        if is_spread {
+            if shift_inc { self.shift_offset_forward(); }
+            if shift_dec { self.shift_offset_backward(); }
+            // オフセットシフト後に再評価（シフトで末尾仮想に入った場合に対応）
+            self.offset.update_virtual_right(self.spread_lo() + 1 >= total_i);
+        }
+
+        let close_self = self.process_misc_input(&ctx, &input, is_spread, double_clicked);
+
+        self.tick_toast(&ctx, input.time);
+
+        ViewerOutput { nav, close_requested: close_self, save_slots }
+    }
+
+    fn draw_central_panel(&mut self, ui: &mut egui::Ui, frame: &RenderFrame) -> bool {
         let mut double_clicked = false;
-        let middle_clicked = input.middle_clicked;
-
-        let anim_dir_f = self.anim_dir as f32;
-        let page_mode = self.page_mode;
-        let zoom_actual = self.zoom_actual;
-
         egui::CentralPanel::default().show(ui, |ui| {
             let clip   = ui.clip_rect();
             let avail  = ui.available_size();
             let origin = ui.cursor().left_top();
 
-            if !animating || zoom_actual {
+            if !frame.animating || frame.zoom_actual {
                 // ── 通常レンダリング ──────────────────────────────────────────
-                match page_mode {
+                match frame.page_mode {
                     PageMode::Single => {
-                        self.render_single(ui, &tex_lo, &mut double_clicked);
+                        self.render_single(ui, &frame.tex_lo, &mut double_clicked);
                     }
                     PageMode::SpreadLeft => {
-                        Self::render_spread(ui, &tex_lo, &tex_hi, input.monitor_size);
+                        Self::render_spread(ui, &frame.tex_lo, &frame.tex_hi, frame.monitor);
                     }
                     PageMode::SpreadRight => {
-                        Self::render_spread(ui, &tex_hi, &tex_lo, input.monitor_size);
+                        Self::render_spread(ui, &frame.tex_hi, &frame.tex_lo, frame.monitor);
                     }
                 }
             } else {
@@ -691,30 +758,29 @@ impl ViewerState {
                 if resp.double_clicked() { double_clicked = true; }
 
                 let painter = ui.painter().with_clip_rect(clip);
-                let off_old = avail.x * t * (-anim_dir_f);
-                let off_new = avail.x * (1.0 - t) * anim_dir_f;
-                let monitor = input.monitor_size;
+                let off_old = avail.x * frame.t * (-frame.anim_dir_f);
+                let off_new = avail.x * (1.0 - frame.t) * frame.anim_dir_f;
 
-                match page_mode {
+                match frame.page_mode {
                     PageMode::Single => {
-                        Self::paint_single_at(&painter, &prev_tex_lo, avail, origin, off_old);
-                        Self::paint_single_at(&painter, &tex_lo,      avail, origin, off_new);
+                        Self::paint_single_at(&painter, &frame.prev_tex_lo, avail, origin, off_old);
+                        Self::paint_single_at(&painter, &frame.tex_lo,      avail, origin, off_new);
                     }
                     PageMode::SpreadLeft => {
-                        let (rl, rr) = Self::spread_rects(avail, origin, &prev_tex_lo, &prev_tex_hi, monitor);
-                        Self::paint_page(&painter, &prev_tex_lo, rl.translate(egui::vec2(off_old, 0.0)));
-                        Self::paint_page(&painter, &prev_tex_hi, rr.translate(egui::vec2(off_old, 0.0)));
-                        let (rl, rr) = Self::spread_rects(avail, origin, &tex_lo, &tex_hi, monitor);
-                        Self::paint_page(&painter, &tex_lo, rl.translate(egui::vec2(off_new, 0.0)));
-                        Self::paint_page(&painter, &tex_hi, rr.translate(egui::vec2(off_new, 0.0)));
+                        let (rl, rr) = Self::spread_rects(avail, origin, &frame.prev_tex_lo, &frame.prev_tex_hi, frame.monitor);
+                        Self::paint_page(&painter, &frame.prev_tex_lo, rl.translate(egui::vec2(off_old, 0.0)));
+                        Self::paint_page(&painter, &frame.prev_tex_hi, rr.translate(egui::vec2(off_old, 0.0)));
+                        let (rl, rr) = Self::spread_rects(avail, origin, &frame.tex_lo, &frame.tex_hi, frame.monitor);
+                        Self::paint_page(&painter, &frame.tex_lo, rl.translate(egui::vec2(off_new, 0.0)));
+                        Self::paint_page(&painter, &frame.tex_hi, rr.translate(egui::vec2(off_new, 0.0)));
                     }
                     PageMode::SpreadRight => {
-                        let (rl, rr) = Self::spread_rects(avail, origin, &prev_tex_hi, &prev_tex_lo, monitor);
-                        Self::paint_page(&painter, &prev_tex_hi, rl.translate(egui::vec2(off_old, 0.0)));
-                        Self::paint_page(&painter, &prev_tex_lo, rr.translate(egui::vec2(off_old, 0.0)));
-                        let (rl, rr) = Self::spread_rects(avail, origin, &tex_hi, &tex_lo, monitor);
-                        Self::paint_page(&painter, &tex_hi, rl.translate(egui::vec2(off_new, 0.0)));
-                        Self::paint_page(&painter, &tex_lo, rr.translate(egui::vec2(off_new, 0.0)));
+                        let (rl, rr) = Self::spread_rects(avail, origin, &frame.prev_tex_hi, &frame.prev_tex_lo, frame.monitor);
+                        Self::paint_page(&painter, &frame.prev_tex_hi, rl.translate(egui::vec2(off_old, 0.0)));
+                        Self::paint_page(&painter, &frame.prev_tex_lo, rr.translate(egui::vec2(off_old, 0.0)));
+                        let (rl, rr) = Self::spread_rects(avail, origin, &frame.tex_hi, &frame.tex_lo, frame.monitor);
+                        Self::paint_page(&painter, &frame.tex_hi, rl.translate(egui::vec2(off_new, 0.0)));
+                        Self::paint_page(&painter, &frame.tex_lo, rr.translate(egui::vec2(off_new, 0.0)));
                     }
                 }
             }
@@ -749,63 +815,21 @@ impl ViewerState {
                 p.galley(bg_pos + pad, tg, egui::Color32::WHITE);
             }
         });
+        double_clicked
+    }
 
-        // ── ファイル間ナビゲーション（Shift+↑↓ or Shift+スクロール）────────────
-        self.shift_scroll_acc += shift_scroll_delta;
-        let shift_scroll_prev = self.shift_scroll_acc >  SCROLL_THRESHOLD;
-        let shift_scroll_next = self.shift_scroll_acc < -SCROLL_THRESHOLD;
-        if shift_scroll_prev { self.shift_scroll_acc -= SCROLL_THRESHOLD; }
-        if shift_scroll_next { self.shift_scroll_acc += SCROLL_THRESHOLD; }
-
-        let total_i = total as i32;
-        let off = self.offset.value();
-        let at_first = self.spread_lo() <= if is_spread { -1 } else { 0 };
-        let at_last  = self.spread_base + step + off > total_i - 1;
-
-        let mut nav = ViewerNav::None;
-        if (shift_nav_up   || shift_scroll_prev) && at_first { nav = ViewerNav::PrevFile; }
-        if (shift_nav_down || shift_scroll_next) && at_last  { nav = ViewerNav::NextFile; }
-        if key_left {
-            nav = ViewerNav::PrevFile;
-        }
-        if key_right {
-            nav = ViewerNav::NextFile;
-        }
-
-        // ── ページ送り ───────────────────────────────────────────────────────
-        self.scroll_acc += scroll_delta;
-        let scroll_next = self.scroll_acc < -SCROLL_THRESHOLD;
-        let scroll_prev = self.scroll_acc > SCROLL_THRESHOLD;
-        if scroll_next { self.scroll_acc += SCROLL_THRESHOLD; }
-        if scroll_prev { self.scroll_acc -= SCROLL_THRESHOLD; }
-
-        if key_next || scroll_next {
-            let next_base = self.spread_base + step;
-            if next_base + off <= total_i - 1 { self.spread_base = next_base; }
-        }
-        if key_prev || scroll_prev {
-            let prev_base = self.spread_base - step;
-            let min_lo = if is_spread { -1 } else { 0 };
-            if prev_base + off >= min_lo { self.spread_base = prev_base; }
-        }
-
-        // ナビゲーション後の末尾仮想フラグ更新（オフセットシフト前に確定させる）
-        self.offset.update_virtual_right(is_spread && self.spread_lo() + 1 >= total_i);
-
-        // ── 見開き 1P シフト（4/5）──────────────────────────────────────────
-        if is_spread {
-            if shift_inc { self.shift_offset_forward(); }
-            if shift_dec { self.shift_offset_backward(); }
-            // オフセットシフト後に再評価（シフトで末尾仮想に入った場合に対応）
-            self.offset.update_virtual_right(self.spread_lo() + 1 >= total_i);
-        }
-
-        // ── その他の入力 ─────────────────────────────────────────────────────
-        if (zoom_key || double_clicked) && !is_spread {
+    fn process_misc_input(
+        &mut self,
+        ctx: &egui::Context,
+        input: &FrameInput,
+        is_spread: bool,
+        double_clicked: bool,
+    ) -> bool {
+        if (input.zoom_key || double_clicked) && !is_spread {
             self.zoom_actual = !self.zoom_actual;
         }
 
-        if fs_key || middle_clicked {
+        if input.fs_key || input.middle_clicked {
             self.fullscreen = !self.fullscreen;
             if self.fullscreen {
                 #[cfg(windows)]
@@ -827,7 +851,7 @@ impl ViewerState {
             log_key!("[key] fullscreen → {}", self.fullscreen);
         }
 
-        if input.close_requested || esc {
+        if input.close_requested || input.esc {
             if self.fullscreen {
                 #[cfg(windows)]
                 ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
@@ -842,28 +866,26 @@ impl ViewerState {
             ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
             self.open = false;
             self.fullscreen = false;
-            close_self = true;
+            return true;
         }
 
-        // ── トースト期限チェック ──────────────────────────────────────────────
-        {
-            let now = input.time;
-            match &mut self.toast {
-                Some((_, expires @ None)) => {
-                    *expires = Some(now + 3.0);
-                    ctx.request_repaint_after(Duration::from_millis(100));
-                }
-                Some((_, Some(exp))) if now >= *exp => {
-                    self.toast = None;
-                }
-                Some(_) => {
-                    ctx.request_repaint_after(Duration::from_millis(100));
-                }
-                None => {}
+        false
+    }
+
+    fn tick_toast(&mut self, ctx: &egui::Context, time: f64) {
+        match &mut self.toast {
+            Some((_, expires @ None)) => {
+                *expires = Some(time + 3.0);
+                ctx.request_repaint_after(Duration::from_millis(100));
             }
+            Some((_, Some(exp))) if time >= *exp => {
+                self.toast = None;
+            }
+            Some(_) => {
+                ctx.request_repaint_after(Duration::from_millis(100));
+            }
+            None => {}
         }
-
-        ViewerOutput { nav, close_requested: close_self, save_slots }
     }
 
     /// 表示ウィンドウ付近のページをキャッシュからテクスチャに変換し、
