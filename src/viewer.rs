@@ -504,13 +504,14 @@ impl ViewerState {
             self.outer_pos = Some(outer.min);
         }
 
-        // OSネイティブの最大化（タイトルバーあり最大化）を検知したらフルスクリーンに合流する。
-        // タイトルバーあり最大化状態のままだと閉じる際にゴーストが残るため。
+        // OSネイティブの最大化（タイトルバーあり最大化）を検知したら擬似フルスクに合流する。
+        // Wayland は Fullscreen 中に Close を無視するため、Alt+Enter と同じ
+        // Maximized(true)+Decorations(false) の擬似フルスクに統一して Close を通す。
         // Wayland 固有の問題のため Windows では行わない。
         #[cfg(not(windows))]
         if input.os_maximized && !self.fullscreen {
             self.fullscreen = true;
-            ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(true));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Decorations(false));
         }
 
         // ── 入力読み取り（FrameInput から展開）────────────────────────────────
@@ -832,6 +833,9 @@ impl ViewerState {
                     ctx.send_viewport_cmd(egui::ViewportCommand::Decorations(true));
                 }
             }
+            // Windows では非表示にするとゴーストが残るため、フルスク・ウィンドウ問わず最小化で代替する
+            #[cfg(windows)]
+            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
             self.open = false;
             self.fullscreen = false;
             close_self = true;
