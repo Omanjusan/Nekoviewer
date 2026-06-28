@@ -9,7 +9,7 @@ use crate::i18n;
 use crate::model::ExplorerSortKey;
 use crate::neko_dir;
 use crate::fs::{dir, mount::{list_gvfs_smb_mounts, list_local_drives, MountEntry}};
-use crate::viewer::{PageMode, ViewerState};
+use crate::view_reader::{PageMode, ViewerState};
 
 impl ExplorerSortKey {
     fn label(self) -> &'static str {

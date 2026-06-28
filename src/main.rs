@@ -1,5 +1,4 @@
 mod anim;
-mod app;
 mod cache;
 mod config;
 mod controller;
@@ -8,9 +7,10 @@ mod i18n;
 mod model;
 mod neko_dir;
 mod spread_offset;
-mod viewer;
+mod view_explorer;
+mod view_reader;
 
-use app::NekoviewApp;
+use view_explorer::NekoviewApp;
 use std::path::PathBuf;
 
 fn main() -> eframe::Result {
