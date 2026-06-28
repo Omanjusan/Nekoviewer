@@ -175,6 +175,8 @@ pub struct NekoviewApp {
     thumb_res_rx: mpsc::Receiver<ThumbResult>,
     thumb_pending: HashSet<PathBuf>,
     viewer: Arc<Mutex<Option<ViewerState>>>,
+    /// ビューア閉じる処理中フラグ（callback 自身が立てる・メインスレッドが消費する）
+    viewer_closing: Arc<Mutex<bool>>,
     drives: Vec<MountEntry>,
     page_cache: Arc<Mutex<PageCache>>,
     /// deferred viewport の callback から親 update() へ ViewerOutput を渡す共有バッファ
@@ -255,6 +257,7 @@ impl NekoviewApp {
             thumb_res_rx,
             thumb_pending: HashSet::new(),
             viewer: Arc::new(Mutex::new(None)),
+            viewer_closing: Arc::new(Mutex::new(false)),
             drives,
             page_cache: Arc::new(Mutex::new(PageCache::new(cache_max, cache_min))),
             viewer_nav_deferred: Arc::new(Mutex::new(ViewerOutput::none())),
@@ -550,10 +553,6 @@ impl eframe::App for NekoviewApp {
                 ViewerOutput::none(),
             );
 
-            if output.close_requested {
-                *self.viewer.lock().unwrap() = None;
-            }
-
             if let Some(slots) = output.save_slots {
                 self.viewer_slots = slots;
                 crate::config::save_state(&self.current_dir, self.window_size, &self.viewer_slots, &SortState { key: self.sort_key.as_state_key().to_string(), ascending: self.sort_ascending }, i18n::lang_code());
@@ -565,15 +564,26 @@ impl eframe::App for NekoviewApp {
         // ── ビューアウィンドウ (deferred viewport) ───────────────────────────
         // フルスクリーンも含め、ビューアは常に deferred viewport で描画する。
         // フルスクリーン切替は viewer 側が ViewportCommand::Fullscreen を送る。
+        //
+        // 閉じる処理: ViewportCommand::Close は Wayland フルスクリーン中に無視されるため、
+        // viewer_closing フラグで show_viewport_deferred の登録自体をやめることで消す。
         {
+            // viewer_closing が立っていたらメインスレッド側で viewer を None にして消費
+            if *self.viewer_closing.lock().unwrap() {
+                *self.viewer.lock().unwrap() = None;
+                *self.viewer_closing.lock().unwrap() = false;
+            }
+
             let has_viewer = self.viewer.lock().unwrap().is_some();
             if has_viewer {
                 // first_frame フラグを読み取り、その場でクリアする（サイズ指定は一度だけ）
+                // 新規オープン時に viewer_closing もリセットする
                 let first_frame = {
                     let mut guard = self.viewer.lock().unwrap();
                     let ff = guard.as_ref().map_or(false, |v| v.first_frame);
                     if ff {
                         if let Some(v) = guard.as_mut() { v.first_frame = false; }
+                        *self.viewer_closing.lock().unwrap() = false;
                     }
                     ff
                 };
@@ -590,6 +600,7 @@ impl eframe::App for NekoviewApp {
                 let req_tx_vp = self.req_tx.clone();
                 let focus = self.viewer_focus_requested;
                 self.viewer_focus_requested = false;
+                let viewer_closing_arc = Arc::clone(&self.viewer_closing);
 
                 ctx.show_viewport_deferred(
                     egui::ViewportId::from_hash_of("viewer_window"),
@@ -648,14 +659,37 @@ impl eframe::App for NekoviewApp {
                             }
                         }
 
-                        let mut viewer_guard = viewer_arc.lock().unwrap();
-                        let page_cache_guard = page_cache_arc.lock().unwrap();
-                        if let Some(viewer) = viewer_guard.as_mut() {
-                            let output = viewer.show(vp_ui, &*page_cache_guard);
-                            *nav_arc.lock().unwrap() = output;
+                        let close = {
+                            let mut viewer_guard = viewer_arc.lock().unwrap();
+                            let page_cache_guard = page_cache_arc.lock().unwrap();
+                            let close = if let Some(viewer) = viewer_guard.as_mut() {
+                                let output = viewer.show(vp_ui, &*page_cache_guard);
+                                let close = output.close_requested;
+                                *nav_arc.lock().unwrap() = output;
+                                close
+                            } else {
+                                false
+                            };
+                            drop(page_cache_guard);
+                            close
+                        };
+
+                        // viewer の close 要求（ESC/Xボタン独自ロジック）と
+                        // OS/winit レベルの close_requested を統合して処理する。
+                        // ViewportCommand::Close は Wayland フルスクリーン中に無視されるため、
+                        // viewer_closing フラグを立てて次フレームから登録をやめることで消す。
+                        let os_close = vp_ui.ctx().input(|i| i.viewport().close_requested());
+                        if close || os_close {
+                            *viewer_closing_arc.lock().unwrap() = true;
+                            // 念のため送る（Wayland フルスクリーン以外では有効）
+                            vp_ui.ctx().send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
+                            vp_ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+                            vp_ui.ctx().request_repaint_of(egui::ViewportId::ROOT);
                         }
                     },
                 );
+                // viewer が生きている間だけ repaint を要求する
+                ctx.request_repaint_of(egui::ViewportId::from_hash_of("viewer_window"));
             }
         }
 
@@ -1166,7 +1200,6 @@ impl eframe::App for NekoviewApp {
             }
         }
 
-        ctx.request_repaint_of(egui::ViewportId::from_hash_of("viewer_window"));
         ctx.request_repaint();
     }
 }
