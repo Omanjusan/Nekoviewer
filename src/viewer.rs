@@ -479,6 +479,15 @@ impl ViewerState {
             self.outer_pos = Some(outer.min);
         }
 
+        // OSネイティブの最大化（タイトルバーあり最大化）を検知したら
+        // 擬似フルスクリーン（Decorations(false)）に強制変換する。
+        // タイトルバーあり最大化状態のままだと閉じる際にゴーストが残るため。
+        let os_maximized = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
+        if os_maximized && !self.fullscreen {
+            self.fullscreen = true;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Decorations(false));
+        }
+
         // ── 入力読み取り ────────────────────────────────────────────────────────
         let zoom_actual = self.zoom_actual;
         let (key_left, key_right, key_up, key_down, key_space, esc, zoom_key, fs_key,
