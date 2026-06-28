@@ -446,6 +446,49 @@ impl eframe::App for NekoviewApp {
         let rect = ctx.input(|i| i.viewport_rect());
         self.window_size = (rect.width() as u32, rect.height() as u32);
 
+        self.poll_workers(&ctx);
+        self.prefetch_pages();
+        self.draw_viewer_viewport(&ctx);
+        self.handle_explorer_keys(&ctx);
+
+        egui::Panel::top("menu_bar").show(ui, |ui| {
+            self.draw_menu_bar(ui);
+        });
+
+        {
+            let style_clone = ui.style().clone();
+            egui::Panel::left("folder_panel")
+                .exact_size(200.0)
+                .frame({
+                    let mut f = egui::Frame::side_top_panel(&style_clone);
+                    f.inner_margin.right = 0;
+                    f
+                })
+                .show(ui, |ui| {
+                    self.draw_folder_panel(ui);
+                });
+        }
+
+        {
+            let style_clone = ui.style().clone();
+            egui::CentralPanel::default()
+                .frame({
+                    let mut f = egui::Frame::central_panel(&style_clone);
+                    f.inner_margin.right = 0;
+                    f
+                })
+                .show(ui, |ui| {
+                    self.draw_central_panel(ui);
+                });
+        }
+
+        self.draw_toast(&ctx);
+        ctx.request_repaint();
+    }
+}
+
+impl NekoviewApp {
+    fn poll_workers(&mut self, ctx: &egui::Context) {
         // バックグラウンドスキャン結果をポーリング
         self.poll_scan();
         self.poll_tree_scan();
@@ -459,7 +502,7 @@ impl eframe::App for NekoviewApp {
             if let Some(rgba) = result.rgba {
                 if self.archives.contains(&result.path) {
                     let name = result.path.display().to_string();
-                    let tex = upload_texture(&ctx, &name, &rgba);
+                    let tex = upload_texture(ctx, &name, &rgba);
                     self.thumbnails.insert(result.path, tex);
                 }
             }
@@ -531,7 +574,9 @@ impl eframe::App for NekoviewApp {
                 cur_idx,
             );
         }
+    }
 
+    fn prefetch_pages(&self) {
         // スライディングウィンドウ: ビューア表示中に前後ページを先読み
         let viewer_prefetch = self.viewer.lock().unwrap().as_ref().map(|viewer| {
             let cur = viewer.spread_lo().max(0) as usize;
@@ -557,7 +602,9 @@ impl eframe::App for NekoviewApp {
                 }
             }
         }
+    }
 
+    fn draw_viewer_viewport(&mut self, ctx: &egui::Context) {
         // ── deferred viewport からの前フレーム結果を処理 ──────────────────────
         {
             let output = std::mem::replace(
@@ -697,498 +744,481 @@ impl eframe::App for NekoviewApp {
                 ctx.request_repaint_of(egui::ViewportId::from_hash_of("viewer_window"));
             }
         }
+    }
 
+    fn handle_explorer_keys(&mut self, ctx: &egui::Context) {
         // ── エクスプローラー キーナビゲーション ─────────────────────────────
-        {
-            let total = self.archives.len();
-            let cols = self.explorer_cols.max(1);
-            let cell_h = self.config.thumb_size as f32;
-            const KEY_GAP: f32 = 8.0;
-            if total > 0 {
-                let prev = self.selected_archive_index;
-                ctx.input_mut(|i| {
-                    if i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowRight) {
-                        if let Some(idx) = self.selected_archive_index {
-                            if idx + 1 < total {
-                                self.selected_archive_index = Some(idx + 1);
-                            }
-                        }
-                    }
-                    if i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowLeft) {
-                        if let Some(idx) = self.selected_archive_index {
-                            if idx > 0 {
-                                self.selected_archive_index = Some(idx - 1);
-                            }
-                        }
-                    }
-                    if i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown) {
-                        if let Some(idx) = self.selected_archive_index {
-                            let current_row = idx / cols;
-                            let last_row = (total - 1) / cols;
-                            if current_row < last_row {
-                                self.selected_archive_index = Some((idx + cols).min(total - 1));
-                            }
-                        }
-                    }
-                    if i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp) {
-                        if let Some(idx) = self.selected_archive_index {
-                            if idx >= cols {
-                                self.selected_archive_index = Some(idx - cols);
-                            }
-                        }
-                    }
-                });
-                if ctx.input(|i| i.key_pressed(egui::Key::Enter)) {
+        let total = self.archives.len();
+        let cols = self.explorer_cols.max(1);
+        let cell_h = self.config.thumb_size as f32;
+        const KEY_GAP: f32 = 8.0;
+        if total > 0 {
+            let prev = self.selected_archive_index;
+            ctx.input_mut(|i| {
+                if i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowRight) {
                     if let Some(idx) = self.selected_archive_index {
-                        if let Some(path) = self.archives.get(idx).cloned() {
-                            self.pending_loads.lock().unwrap().clear();
-                            *self.viewer.lock().unwrap() = if self.raw_image_files.contains(&path) {
-                                Some(ViewerState::new_raw(path.clone(), self.viewer_slots))
-                            } else {
-                                ViewerState::new(path.clone(), self.viewer_slots)
-                            };
-                            self.ensure_file_cached(path);
-                            self.viewer_focus_requested = true;
+                        if idx + 1 < total {
+                            self.selected_archive_index = Some(idx + 1);
                         }
                     }
                 }
-                // 選択が変わったらコンテンツ空間で最小スクロールを計算（アニメーションなし）
-                if self.selected_archive_index != prev {
-                    self.selected_archive_meta = self.selected_archive_index
-                        .and_then(|idx| self.archives.get(idx))
-                        .and_then(|path| std::fs::metadata(path).ok())
-                        .map(|m| (m.modified().unwrap_or(std::time::UNIX_EPOCH), m.len()));
+                if i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowLeft) {
                     if let Some(idx) = self.selected_archive_index {
-                        let row = idx / cols;
-                        let item_top = row as f32 * (cell_h + KEY_GAP);
-                        let item_bottom = item_top + cell_h;
-                        let vp = self.explorer_viewport_h;
-                        if item_top < self.explorer_scroll_offset {
-                            self.explorer_scroll_offset = item_top;
-                        } else if vp > 0.0 && item_bottom > self.explorer_scroll_offset + vp {
-                            self.explorer_scroll_offset = item_bottom - vp;
+                        if idx > 0 {
+                            self.selected_archive_index = Some(idx - 1);
                         }
+                    }
+                }
+                if i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown) {
+                    if let Some(idx) = self.selected_archive_index {
+                        let current_row = idx / cols;
+                        let last_row = (total - 1) / cols;
+                        if current_row < last_row {
+                            self.selected_archive_index = Some((idx + cols).min(total - 1));
+                        }
+                    }
+                }
+                if i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp) {
+                    if let Some(idx) = self.selected_archive_index {
+                        if idx >= cols {
+                            self.selected_archive_index = Some(idx - cols);
+                        }
+                    }
+                }
+            });
+            if ctx.input(|i| i.key_pressed(egui::Key::Enter)) {
+                if let Some(idx) = self.selected_archive_index {
+                    if let Some(path) = self.archives.get(idx).cloned() {
+                        self.pending_loads.lock().unwrap().clear();
+                        *self.viewer.lock().unwrap() = if self.raw_image_files.contains(&path) {
+                            Some(ViewerState::new_raw(path.clone(), self.viewer_slots))
+                        } else {
+                            ViewerState::new(path.clone(), self.viewer_slots)
+                        };
+                        self.ensure_file_cached(path);
+                        self.viewer_focus_requested = true;
+                    }
+                }
+            }
+            // 選択が変わったらコンテンツ空間で最小スクロールを計算（アニメーションなし）
+            if self.selected_archive_index != prev {
+                self.selected_archive_meta = self.selected_archive_index
+                    .and_then(|idx| self.archives.get(idx))
+                    .and_then(|path| std::fs::metadata(path).ok())
+                    .map(|m| (m.modified().unwrap_or(std::time::UNIX_EPOCH), m.len()));
+                if let Some(idx) = self.selected_archive_index {
+                    let row = idx / cols;
+                    let item_top = row as f32 * (cell_h + KEY_GAP);
+                    let item_bottom = item_top + cell_h;
+                    let vp = self.explorer_viewport_h;
+                    if item_top < self.explorer_scroll_offset {
+                        self.explorer_scroll_offset = item_top;
+                    } else if vp > 0.0 && item_bottom > self.explorer_scroll_offset + vp {
+                        self.explorer_scroll_offset = item_bottom - vp;
                     }
                 }
             }
         }
+    }
 
-        egui::Panel::top("menu_bar").show(ui, |ui| {
-            ui.horizontal(|ui| {
-                let hidden_label = if self.show_hidden { i18n::t().hidden_on() } else { i18n::t().hidden_off() };
-                if ui.selectable_label(self.show_hidden, hidden_label).clicked() {
-                    self.show_hidden = !self.show_hidden;
-                }
-
-                ui.separator();
-
-                // ── ページ表示モード ──────────────────────────────────────────
-                let (viewer_open, is_raw_viewer, cur_mode, is_spread, can_back, can_fwd, is_offset) = {
-                    let guard = self.viewer.lock().unwrap();
-                    let viewer_open = guard.is_some();
-                    let is_raw_viewer = guard.as_ref().map_or(false, |v| v.is_raw_file());
-                    let cur_mode = guard.as_ref().map(|v| v.page_mode());
-                    let is_spread = cur_mode.map_or(false, |m| m != PageMode::Single);
-                    let can_back = guard.as_ref().map_or(false, |v| v.can_shift_backward());
-                    let can_fwd  = guard.as_ref().map_or(false, |v| v.can_shift_forward());
-                    let is_offset = guard.as_ref().map_or(false, |v| v.is_spread_offset());
-                    (viewer_open, is_raw_viewer, cur_mode, is_spread, can_back, can_fwd, is_offset)
-                };
-
-                ui.add_enabled_ui(viewer_open, |ui| {
-                    if ui.selectable_label(cur_mode == Some(PageMode::Single), i18n::t().page_single()).clicked() {
-                        if let Some(v) = self.viewer.lock().unwrap().as_mut() { v.set_page_mode(PageMode::Single); }
-                    }
-                });
-                ui.add_enabled_ui(viewer_open && !is_raw_viewer, |ui| {
-                    if ui.selectable_label(cur_mode == Some(PageMode::SpreadLeft), i18n::t().page_spread_left()).clicked() {
-                        if let Some(v) = self.viewer.lock().unwrap().as_mut() { v.set_page_mode(PageMode::SpreadLeft); }
-                    }
-                    if ui.selectable_label(cur_mode == Some(PageMode::SpreadRight), i18n::t().page_spread_right()).clicked() {
-                        if let Some(v) = self.viewer.lock().unwrap().as_mut() { v.set_page_mode(PageMode::SpreadRight); }
-                    }
-                });
-
-                ui.add_enabled_ui(viewer_open && is_spread && !is_raw_viewer, |ui| {
-                    if ui.add_enabled(can_back, egui::Button::new(i18n::t().spread_back())).clicked() {
-                        if let Some(v) = self.viewer.lock().unwrap().as_mut() { v.shift_offset_backward(); }
-                    }
-                    if ui.add_enabled(can_fwd, egui::Button::new(i18n::t().spread_fwd())).clicked() {
-                        if let Some(v) = self.viewer.lock().unwrap().as_mut() { v.shift_offset_forward(); }
-                    }
-                    ui.label(if is_offset { i18n::t().spread_offset_on() } else { i18n::t().spread_aligned() });
-                });
-
-                ui.separator();
-
-                // ── エクスプローラーソート ────────────────────────────────────
-                let mut sort_changed = false;
-                for key in [SortKey::Name, SortKey::Date, SortKey::Size] {
-                    let active = self.sort_key == key;
-                    let clicked = ui.scope(|ui| {
-                        if active {
-                            ui.visuals_mut().selection.bg_fill =
-                                egui::Color32::from_rgb(30, 100, 200);
-                            ui.visuals_mut().selection.stroke.color = egui::Color32::WHITE;
-                        }
-                        ui.selectable_label(active, key.label()).clicked()
-                    }).inner;
-                    if clicked {
-                        self.sort_key = key;
-                        sort_changed = true;
-                    }
-                }
-
-                ui.label(":");
-
-                let order_label = if self.sort_ascending { i18n::t().sort_asc() } else { i18n::t().sort_desc() };
-                if ui.button(order_label).clicked() {
-                    self.sort_ascending = !self.sort_ascending;
-                    sort_changed = true;
-                }
-
-                if sort_changed {
-                    self.sort_archives();
-                }
-
-                // ── メモリ情報ボタン（右端） ──────────────────────────────────
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let btn = ui.button("[?]");
-
-                    ui.separator();
-
-                    for (lang, code) in [
-                        (i18n::Lang::Chinese,  "cn"),
-                        (i18n::Lang::English,  "en"),
-                        (i18n::Lang::Japanese, "ja"),
-                    ] {
-                        let active = i18n::t() == lang;
-                        if ui.selectable_label(active, code).clicked() && !active {
-                            i18n::set(lang);
-                            crate::config::save_state(
-                                &self.current_dir, self.window_size,
-                                &self.viewer_slots,
-                                &SortState { key: self.sort_key.as_state_key().to_string(), ascending: self.sort_ascending },
-                                i18n::lang_code(),
-                            );
-                        }
-                    }
-                    egui::Popup::from_toggle_button_response(&btn)
-                        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-                        .show(|ui| {
-                            ui.set_min_width(200.0);
-                            let page_cache_guard = self.page_cache.lock().unwrap();
-                            let used = page_cache_guard.total_bytes();
-                            let max  = page_cache_guard.max_bytes();
-                            let used_mb = used / (1024 * 1024);
-                            let max_mb  = max  / (1024 * 1024);
-                            ui.label(i18n::t().cache_usage(used_mb, max_mb));
-                        });
-                });
-            });
-        });
-
-        {
-            let style_clone = ui.style().clone();
-        egui::Panel::left("folder_panel")
-            .exact_size(200.0)
-            .frame({
-                let mut f = egui::Frame::side_top_panel(&style_clone);
-                f.inner_margin.right = 0;
-                f
-            })
-            .show(ui, |ui| {
-                // 下部に確保する高さ（ドライブ数に応じて可変）
-                let drive_rows = self.drives.len() as f32;
-                let bottom_h = (drive_rows * 24.0 + 44.0).min(200.0); // heading+sep+rows
-                let top_h = (ui.available_height() - bottom_h - 8.0).max(40.0);
-
-                // ── 上部: ディレクトリツリー ──
-                let mut tree_action = TreeAction::None;
-                egui::ScrollArea::both()
-                    .id_salt("folder_scroll")
-                    .max_height(top_h)
-                    .auto_shrink([false, false])
-                    .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
-                    .show(ui, |ui| {
-                        show_tree_node(
-                            ui,
-                            &self.tree_root.clone(),
-                            0,
-                            &self.viewing_dir,
-                            &self.tree_expanded,
-                            &self.tree_children,
-                            self.show_hidden,
-                            &mut tree_action,
-                        );
-                    });
-
-                match tree_action {
-                    TreeAction::None => {}
-                    TreeAction::ToggleExpand(path) => {
-                        if self.tree_expanded.contains(&path) {
-                            self.tree_expanded.remove(&path);
-                        } else {
-                            self.tree_expanded.insert(path.clone());
-                            if !self.tree_children.contains_key(&path) {
-                                // バックグラウンドでサブディレクトリを取得
-                                self.tree_scan_pending = Some(TreeScanPending {
-                                    path: path.clone(),
-                                    rx: dir::spawn_scan_subdirs(path),
-                                });
-                            }
-                        }
-                    }
-                    TreeAction::Navigate(path) => {
-                        self.current_dir = path.clone();
-                        self.viewing_dir = Some(path.clone());
-                        self.start_scan(); // cache_db をここで確定させてから clone して渡す
-                        self.cd_summary_rx = Some(spawn_summary_worker(path.clone(), self.cache_db.clone()));
-                        crate::config::save_state(&self.current_dir, self.window_size, &self.viewer_slots, &SortState { key: self.sort_key.as_state_key().to_string(), ascending: self.sort_ascending }, i18n::lang_code());
-                    }
-                }
-
-                ui.separator();
-
-                // ── 下部: ドライブ選択 ──
-                ui.small(i18n::t().drives());
-                egui::ScrollArea::vertical()
-                    .id_salt("drive_scroll")
-                    .auto_shrink([false, true])
-                    .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
-                    .show(ui, |ui| {
-                        let drives: Vec<_> = self.drives
-                            .iter()
-                            .map(|d| (d.label.clone(), d.path.clone()))
-                            .collect();
-                        for (label, path) in drives {
-                            let selected = self.tree_root == path;
-                            if ui.selectable_label(selected, &label).clicked() {
-                                self.current_dir = path.clone();
-                                self.start_scan();
-                                // ツリーのルートをドライブに切り替え
-                                self.tree_root = path.clone();
-                                self.tree_expanded.clear();
-                                self.tree_children.clear();
-                                self.viewing_dir = None;
-                                self.cd_summary = None;
-                                self.cd_summary_rx = None;
-                                // ドライブルートのサブディレクトリをバックグラウンドで取得
-                                self.tree_scan_pending = Some(TreeScanPending {
-                                    path: path.clone(),
-                                    rx: dir::spawn_scan_subdirs(path),
-                                });
-                                crate::config::save_state(&self.current_dir, self.window_size, &self.viewer_slots, &SortState { key: self.sort_key.as_state_key().to_string(), ascending: self.sort_ascending }, i18n::lang_code());
-                            }
-                        }
-                    });
-            });
-        } // style_clone block
-
-        {
-            let style_clone = ui.style().clone();
-        egui::CentralPanel::default()
-            .frame({
-                let mut f = egui::Frame::central_panel(&style_clone);
-                f.inner_margin.right = 0;
-                f
-            })
-            .show(ui, |ui| {
-            ui.label(self.current_dir.display().to_string());
-
-            // CD/LS状態: ディレクトリのサマリーを表示
-            if let Some((cd_path, saved, total)) = &self.cd_summary {
-                let dir_name = cd_path
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("?");
-                ui.horizontal(|ui| {
-                    ui.label(
-                        egui::RichText::new(format!("▶ {dir_name}"))
-                            .color(ui.visuals().selection.bg_fill),
-                    );
-                    ui.label(
-                        egui::RichText::new(i18n::t().thumb_saved(*saved, *total))
-                            .color(egui::Color32::GRAY),
-                    );
-                });
-            }
-
-            if let Some((mtime, size_bytes)) = &self.selected_archive_meta {
-                let filename = self.selected_archive_index
-                    .and_then(|idx| self.archives.get(idx))
-                    .and_then(|p| p.file_name())
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("");
-                ui.separator();
-                let mb = *size_bytes as f64 / (1024.0 * 1024.0);
-                let date_str = format_mtime(*mtime);
-                ui.label(i18n::t().file_info(&date_str, mb, filename));
+    fn draw_menu_bar(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            let hidden_label = if self.show_hidden { i18n::t().hidden_on() } else { i18n::t().hidden_off() };
+            if ui.selectable_label(self.show_hidden, hidden_label).clicked() {
+                self.show_hidden = !self.show_hidden;
             }
 
             ui.separator();
 
-            {
-                // ローディング中は 0.5秒経過後にスピナーを表示（短いアクセスのチラツキ防止）
-                let is_loading = matches!(&self.scan_state, ScanState::Loading { started_at, .. }
-                    if started_at.elapsed().as_secs_f32() > 0.5);
+            // ── ページ表示モード ──────────────────────────────────────────
+            let (viewer_open, is_raw_viewer, cur_mode, is_spread, can_back, can_fwd, is_offset) = {
+                let guard = self.viewer.lock().unwrap();
+                let viewer_open = guard.is_some();
+                let is_raw_viewer = guard.as_ref().map_or(false, |v| v.is_raw_file());
+                let cur_mode = guard.as_ref().map(|v| v.page_mode());
+                let is_spread = cur_mode.map_or(false, |m| m != PageMode::Single);
+                let can_back = guard.as_ref().map_or(false, |v| v.can_shift_backward());
+                let can_fwd  = guard.as_ref().map_or(false, |v| v.can_shift_forward());
+                let is_offset = guard.as_ref().map_or(false, |v| v.is_spread_offset());
+                (viewer_open, is_raw_viewer, cur_mode, is_spread, can_back, can_fwd, is_offset)
+            };
 
-                if is_loading {
-                    ui.centered_and_justified(|ui| {
-                        ui.label(i18n::t().loading());
-                    });
-                } else {
-                    // ── LS状態: サムネグリッド ──
-                    let cell_h = self.config.thumb_size as f32;
-                    let cell_w = (cell_h / std::f32::consts::SQRT_2).round();
-                    const GAP: f32 = 8.0;
-                    let avail_w = ui.available_width();
-                    let full_cols = ((avail_w + GAP) / (cell_w + GAP)).floor() as usize;
-                    let used_w = full_cols as f32 * (cell_w + GAP) - GAP;
-                    let cols = if avail_w - used_w >= cell_w / 2.0 { full_cols + 1 } else { full_cols }.max(1);
-                    self.explorer_cols = cols;
+            ui.add_enabled_ui(viewer_open, |ui| {
+                if ui.selectable_label(cur_mode == Some(PageMode::Single), i18n::t().page_single()).clicked() {
+                    if let Some(v) = self.viewer.lock().unwrap().as_mut() { v.set_page_mode(PageMode::Single); }
+                }
+            });
+            ui.add_enabled_ui(viewer_open && !is_raw_viewer, |ui| {
+                if ui.selectable_label(cur_mode == Some(PageMode::SpreadLeft), i18n::t().page_spread_left()).clicked() {
+                    if let Some(v) = self.viewer.lock().unwrap().as_mut() { v.set_page_mode(PageMode::SpreadLeft); }
+                }
+                if ui.selectable_label(cur_mode == Some(PageMode::SpreadRight), i18n::t().page_spread_right()).clicked() {
+                    if let Some(v) = self.viewer.lock().unwrap().as_mut() { v.set_page_mode(PageMode::SpreadRight); }
+                }
+            });
 
-                    let output = egui::ScrollArea::vertical()
-                            .auto_shrink([false, false])
-                            .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
-                            .vertical_scroll_offset(self.explorer_scroll_offset)
-                            .show(ui, |ui| {
-                        egui::Grid::new("archive_grid")
-                            .num_columns(cols)
-                            .spacing([GAP, GAP])
-                            .show(ui, |ui| {
-                                let archives = self.archives.clone();
-                                for (i, path) in archives.iter().enumerate() {
-                                    let is_selected = self.selected_archive_index == Some(i);
-                                    let (rect, response) = ui.allocate_exact_size(
-                                        egui::vec2(cell_w, cell_h),
-                                        egui::Sense::click(),
-                                    );
+            ui.add_enabled_ui(viewer_open && is_spread && !is_raw_viewer, |ui| {
+                if ui.add_enabled(can_back, egui::Button::new(i18n::t().spread_back())).clicked() {
+                    if let Some(v) = self.viewer.lock().unwrap().as_mut() { v.shift_offset_backward(); }
+                }
+                if ui.add_enabled(can_fwd, egui::Button::new(i18n::t().spread_fwd())).clicked() {
+                    if let Some(v) = self.viewer.lock().unwrap().as_mut() { v.shift_offset_forward(); }
+                }
+                ui.label(if is_offset { i18n::t().spread_offset_on() } else { i18n::t().spread_aligned() });
+            });
 
-                                    if ui.is_rect_visible(rect) {
-                                        if let Some(tex) = self.thumbnails.get(path) {
-                                            ui.painter().image(
-                                                tex.id(),
-                                                rect,
-                                                egui::Rect::from_min_max(
-                                                    egui::pos2(0.0, 0.0),
-                                                    egui::pos2(1.0, 1.0),
-                                                ),
-                                                egui::Color32::WHITE,
-                                            );
-                                        } else {
-                                            ui.painter().rect_filled(
-                                                rect,
-                                                4.0,
-                                                egui::Color32::from_gray(60),
-                                            );
-                                            if !self.thumb_pending.contains(path) {
-                                                if self.thumb_req_tx.try_send(ThumbRequest {
-                                                    archive_path: path.clone(),
-                                                    db: self.cache_db.clone(),
-                                                    is_raw_file: self.raw_image_files.contains(path),
-                                                }).is_ok() {
-                                                    self.thumb_pending.insert(path.clone());
-                                                }
-                                            }
-                                        }
+            ui.separator();
 
-                                        // 無効ZIPは左上に赤Xを描画
-                                        if self.invalid_archives.contains(path) {
-                                            let x_size = 16.0;
-                                            let origin = rect.min + egui::vec2(4.0, 4.0);
-                                            let end = origin + egui::vec2(x_size, x_size);
-                                            let stroke = egui::Stroke::new(2.5, egui::Color32::from_rgb(220, 50, 50));
-                                            ui.painter().line_segment([origin, end], stroke);
-                                            ui.painter().line_segment(
-                                                [egui::pos2(end.x, origin.y), egui::pos2(origin.x, end.y)],
-                                                stroke,
-                                            );
-                                        }
-
-                                        // 選択中アイテムを枠で囲む（生ファイルは赤、ZIPは青）
-                                        if is_selected {
-                                            let is_raw = self.raw_image_files.contains(path);
-                                            let stroke_color = if is_raw {
-                                                egui::Color32::from_rgb(220, 60, 60)
-                                            } else {
-                                                egui::Color32::from_rgb(50, 120, 230)
-                                            };
-                                            ui.painter().rect_stroke(
-                                                rect,
-                                                0.0,
-                                                egui::Stroke::new(2.0, stroke_color),
-                                                egui::StrokeKind::Inside,
-                                            );
-                                        }
-                                    }
-
-                                    let is_raw = self.raw_image_files.contains(path);
-                                    if response.clicked() {
-                                        if is_raw && self.selected_archive_index == Some(i) {
-                                            // 生ファイル: 選択済み状態のシングルクリックで開く
-                                            self.pending_loads.lock().unwrap().clear();
-                                            *self.viewer.lock().unwrap() = Some(ViewerState::new_raw(path.clone(), self.viewer_slots));
-                                            self.ensure_file_cached(path.clone());
-                                            self.viewer_focus_requested = true;
-                                        } else {
-                                            self.selected_archive_index = Some(i);
-                                            self.selected_archive_meta = std::fs::metadata(path)
-                                                .ok()
-                                                .map(|m| (m.modified().unwrap_or(std::time::UNIX_EPOCH), m.len()));
-                                        }
-                                    }
-                                    if response.double_clicked() && !is_raw {
-                                        if self.invalid_archives.contains(path) {
-                                            let name = truncate_filename(path);
-                                            self.app_toast = Some((
-                                                i18n::t().invalid_zip(&name),
-                                                std::time::Instant::now(),
-                                            ));
-                                        } else {
-                                            self.pending_loads.lock().unwrap().clear();
-                                            match ViewerState::new(path.clone(), self.viewer_slots) {
-                                                Some(state) => {
-                                                    *self.viewer.lock().unwrap() = Some(state);
-                                                    self.ensure_file_cached(path.clone());
-                                                    self.viewer_focus_requested = true;
-                                                }
-                                                None => {
-                                                    let p = path.clone();
-                                                    self.mark_archive_invalid(&p);
-                                                    let name = truncate_filename(path);
-                                                    self.app_toast = Some((
-                                                        i18n::t().invalid_zip(&name),
-                                                        std::time::Instant::now(),
-                                                    ));
-                                                }
-                                            }
-                                        }
-                                    }
-
-                                    if (i + 1) % cols == 0 {
-                                        ui.end_row();
-                                    }
-                                }
-                                if !archives.is_empty() && archives.len() % cols != 0 {
-                                    ui.end_row();
-                                }
-                            });
-                    });
-                    // ユーザーの手動スクロールを読み戻してストアを更新
-                    self.explorer_scroll_offset = output.state.offset.y;
-                    self.explorer_viewport_h = output.inner_rect.height();
+            // ── エクスプローラーソート ────────────────────────────────────
+            let mut sort_changed = false;
+            for key in [SortKey::Name, SortKey::Date, SortKey::Size] {
+                let active = self.sort_key == key;
+                let clicked = ui.scope(|ui| {
+                    if active {
+                        ui.visuals_mut().selection.bg_fill =
+                            egui::Color32::from_rgb(30, 100, 200);
+                        ui.visuals_mut().selection.stroke.color = egui::Color32::WHITE;
+                    }
+                    ui.selectable_label(active, key.label()).clicked()
+                }).inner;
+                if clicked {
+                    self.sort_key = key;
+                    sort_changed = true;
                 }
             }
-        });
-        } // style_clone block
 
+            ui.label(":");
+
+            let order_label = if self.sort_ascending { i18n::t().sort_asc() } else { i18n::t().sort_desc() };
+            if ui.button(order_label).clicked() {
+                self.sort_ascending = !self.sort_ascending;
+                sort_changed = true;
+            }
+
+            if sort_changed {
+                self.sort_archives();
+            }
+
+            // ── メモリ情報ボタン（右端） ──────────────────────────────────
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let btn = ui.button("[?]");
+
+                ui.separator();
+
+                for (lang, code) in [
+                    (i18n::Lang::Chinese,  "cn"),
+                    (i18n::Lang::English,  "en"),
+                    (i18n::Lang::Japanese, "ja"),
+                ] {
+                    let active = i18n::t() == lang;
+                    if ui.selectable_label(active, code).clicked() && !active {
+                        i18n::set(lang);
+                        crate::config::save_state(
+                            &self.current_dir, self.window_size,
+                            &self.viewer_slots,
+                            &SortState { key: self.sort_key.as_state_key().to_string(), ascending: self.sort_ascending },
+                            i18n::lang_code(),
+                        );
+                    }
+                }
+                egui::Popup::from_toggle_button_response(&btn)
+                    .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                    .show(|ui| {
+                        ui.set_min_width(200.0);
+                        let page_cache_guard = self.page_cache.lock().unwrap();
+                        let used = page_cache_guard.total_bytes();
+                        let max  = page_cache_guard.max_bytes();
+                        let used_mb = used / (1024 * 1024);
+                        let max_mb  = max  / (1024 * 1024);
+                        ui.label(i18n::t().cache_usage(used_mb, max_mb));
+                    });
+            });
+        });
+    }
+
+    fn draw_folder_panel(&mut self, ui: &mut egui::Ui) {
+        // 下部に確保する高さ（ドライブ数に応じて可変）
+        let drive_rows = self.drives.len() as f32;
+        let bottom_h = (drive_rows * 24.0 + 44.0).min(200.0); // heading+sep+rows
+        let top_h = (ui.available_height() - bottom_h - 8.0).max(40.0);
+
+        // ── 上部: ディレクトリツリー ──
+        let mut tree_action = TreeAction::None;
+        egui::ScrollArea::both()
+            .id_salt("folder_scroll")
+            .max_height(top_h)
+            .auto_shrink([false, false])
+            .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
+            .show(ui, |ui| {
+                show_tree_node(
+                    ui,
+                    &self.tree_root.clone(),
+                    0,
+                    &self.viewing_dir,
+                    &self.tree_expanded,
+                    &self.tree_children,
+                    self.show_hidden,
+                    &mut tree_action,
+                );
+            });
+
+        match tree_action {
+            TreeAction::None => {}
+            TreeAction::ToggleExpand(path) => {
+                if self.tree_expanded.contains(&path) {
+                    self.tree_expanded.remove(&path);
+                } else {
+                    self.tree_expanded.insert(path.clone());
+                    if !self.tree_children.contains_key(&path) {
+                        // バックグラウンドでサブディレクトリを取得
+                        self.tree_scan_pending = Some(TreeScanPending {
+                            path: path.clone(),
+                            rx: dir::spawn_scan_subdirs(path),
+                        });
+                    }
+                }
+            }
+            TreeAction::Navigate(path) => {
+                self.current_dir = path.clone();
+                self.viewing_dir = Some(path.clone());
+                self.start_scan(); // cache_db をここで確定させてから clone して渡す
+                self.cd_summary_rx = Some(spawn_summary_worker(path.clone(), self.cache_db.clone()));
+                crate::config::save_state(&self.current_dir, self.window_size, &self.viewer_slots, &SortState { key: self.sort_key.as_state_key().to_string(), ascending: self.sort_ascending }, i18n::lang_code());
+            }
+        }
+
+        ui.separator();
+
+        // ── 下部: ドライブ選択 ──
+        ui.small(i18n::t().drives());
+        egui::ScrollArea::vertical()
+            .id_salt("drive_scroll")
+            .auto_shrink([false, true])
+            .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
+            .show(ui, |ui| {
+                let drives: Vec<_> = self.drives
+                    .iter()
+                    .map(|d| (d.label.clone(), d.path.clone()))
+                    .collect();
+                for (label, path) in drives {
+                    let selected = self.tree_root == path;
+                    if ui.selectable_label(selected, &label).clicked() {
+                        self.current_dir = path.clone();
+                        self.start_scan();
+                        // ツリーのルートをドライブに切り替え
+                        self.tree_root = path.clone();
+                        self.tree_expanded.clear();
+                        self.tree_children.clear();
+                        self.viewing_dir = None;
+                        self.cd_summary = None;
+                        self.cd_summary_rx = None;
+                        // ドライブルートのサブディレクトリをバックグラウンドで取得
+                        self.tree_scan_pending = Some(TreeScanPending {
+                            path: path.clone(),
+                            rx: dir::spawn_scan_subdirs(path),
+                        });
+                        crate::config::save_state(&self.current_dir, self.window_size, &self.viewer_slots, &SortState { key: self.sort_key.as_state_key().to_string(), ascending: self.sort_ascending }, i18n::lang_code());
+                    }
+                }
+            });
+    }
+
+    fn draw_central_panel(&mut self, ui: &mut egui::Ui) {
+        ui.label(self.current_dir.display().to_string());
+
+        // CD/LS状態: ディレクトリのサマリーを表示
+        if let Some((cd_path, saved, total)) = &self.cd_summary {
+            let dir_name = cd_path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("?");
+            ui.horizontal(|ui| {
+                ui.label(
+                    egui::RichText::new(format!("▶ {dir_name}"))
+                        .color(ui.visuals().selection.bg_fill),
+                );
+                ui.label(
+                    egui::RichText::new(i18n::t().thumb_saved(*saved, *total))
+                        .color(egui::Color32::GRAY),
+                );
+            });
+        }
+
+        if let Some((mtime, size_bytes)) = &self.selected_archive_meta {
+            let filename = self.selected_archive_index
+                .and_then(|idx| self.archives.get(idx))
+                .and_then(|p| p.file_name())
+                .and_then(|n| n.to_str())
+                .unwrap_or("");
+            ui.separator();
+            let mb = *size_bytes as f64 / (1024.0 * 1024.0);
+            let date_str = format_mtime(*mtime);
+            ui.label(i18n::t().file_info(&date_str, mb, filename));
+        }
+
+        ui.separator();
+
+        {
+            // ローディング中は 0.5秒経過後にスピナーを表示（短いアクセスのチラツキ防止）
+            let is_loading = matches!(&self.scan_state, ScanState::Loading { started_at, .. }
+                if started_at.elapsed().as_secs_f32() > 0.5);
+
+            if is_loading {
+                ui.centered_and_justified(|ui| {
+                    ui.label(i18n::t().loading());
+                });
+            } else {
+                // ── LS状態: サムネグリッド ──
+                let cell_h = self.config.thumb_size as f32;
+                let cell_w = (cell_h / std::f32::consts::SQRT_2).round();
+                const GAP: f32 = 8.0;
+                let avail_w = ui.available_width();
+                let full_cols = ((avail_w + GAP) / (cell_w + GAP)).floor() as usize;
+                let used_w = full_cols as f32 * (cell_w + GAP) - GAP;
+                let cols = if avail_w - used_w >= cell_w / 2.0 { full_cols + 1 } else { full_cols }.max(1);
+                self.explorer_cols = cols;
+
+                let output = egui::ScrollArea::vertical()
+                        .auto_shrink([false, false])
+                        .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
+                        .vertical_scroll_offset(self.explorer_scroll_offset)
+                        .show(ui, |ui| {
+                    egui::Grid::new("archive_grid")
+                        .num_columns(cols)
+                        .spacing([GAP, GAP])
+                        .show(ui, |ui| {
+                            let archives = self.archives.clone();
+                            for (i, path) in archives.iter().enumerate() {
+                                let is_selected = self.selected_archive_index == Some(i);
+                                let (rect, response) = ui.allocate_exact_size(
+                                    egui::vec2(cell_w, cell_h),
+                                    egui::Sense::click(),
+                                );
+
+                                if ui.is_rect_visible(rect) {
+                                    if let Some(tex) = self.thumbnails.get(path) {
+                                        ui.painter().image(
+                                            tex.id(),
+                                            rect,
+                                            egui::Rect::from_min_max(
+                                                egui::pos2(0.0, 0.0),
+                                                egui::pos2(1.0, 1.0),
+                                            ),
+                                            egui::Color32::WHITE,
+                                        );
+                                    } else {
+                                        ui.painter().rect_filled(
+                                            rect,
+                                            4.0,
+                                            egui::Color32::from_gray(60),
+                                        );
+                                        if !self.thumb_pending.contains(path) {
+                                            if self.thumb_req_tx.try_send(ThumbRequest {
+                                                archive_path: path.clone(),
+                                                db: self.cache_db.clone(),
+                                                is_raw_file: self.raw_image_files.contains(path),
+                                            }).is_ok() {
+                                                self.thumb_pending.insert(path.clone());
+                                            }
+                                        }
+                                    }
+
+                                    // 無効ZIPは左上に赤Xを描画
+                                    if self.invalid_archives.contains(path) {
+                                        let x_size = 16.0;
+                                        let origin = rect.min + egui::vec2(4.0, 4.0);
+                                        let end = origin + egui::vec2(x_size, x_size);
+                                        let stroke = egui::Stroke::new(2.5, egui::Color32::from_rgb(220, 50, 50));
+                                        ui.painter().line_segment([origin, end], stroke);
+                                        ui.painter().line_segment(
+                                            [egui::pos2(end.x, origin.y), egui::pos2(origin.x, end.y)],
+                                            stroke,
+                                        );
+                                    }
+
+                                    // 選択中アイテムを枠で囲む（生ファイルは赤、ZIPは青）
+                                    if is_selected {
+                                        let is_raw = self.raw_image_files.contains(path);
+                                        let stroke_color = if is_raw {
+                                            egui::Color32::from_rgb(220, 60, 60)
+                                        } else {
+                                            egui::Color32::from_rgb(50, 120, 230)
+                                        };
+                                        ui.painter().rect_stroke(
+                                            rect,
+                                            0.0,
+                                            egui::Stroke::new(2.0, stroke_color),
+                                            egui::StrokeKind::Inside,
+                                        );
+                                    }
+                                }
+
+                                let is_raw = self.raw_image_files.contains(path);
+                                if response.clicked() {
+                                    if is_raw && self.selected_archive_index == Some(i) {
+                                        // 生ファイル: 選択済み状態のシングルクリックで開く
+                                        self.pending_loads.lock().unwrap().clear();
+                                        *self.viewer.lock().unwrap() = Some(ViewerState::new_raw(path.clone(), self.viewer_slots));
+                                        self.ensure_file_cached(path.clone());
+                                        self.viewer_focus_requested = true;
+                                    } else {
+                                        self.selected_archive_index = Some(i);
+                                        self.selected_archive_meta = std::fs::metadata(path)
+                                            .ok()
+                                            .map(|m| (m.modified().unwrap_or(std::time::UNIX_EPOCH), m.len()));
+                                    }
+                                }
+                                if response.double_clicked() && !is_raw {
+                                    if self.invalid_archives.contains(path) {
+                                        let name = truncate_filename(path);
+                                        self.app_toast = Some((
+                                            i18n::t().invalid_zip(&name),
+                                            std::time::Instant::now(),
+                                        ));
+                                    } else {
+                                        self.pending_loads.lock().unwrap().clear();
+                                        match ViewerState::new(path.clone(), self.viewer_slots) {
+                                            Some(state) => {
+                                                *self.viewer.lock().unwrap() = Some(state);
+                                                self.ensure_file_cached(path.clone());
+                                                self.viewer_focus_requested = true;
+                                            }
+                                            None => {
+                                                let p = path.clone();
+                                                self.mark_archive_invalid(&p);
+                                                let name = truncate_filename(path);
+                                                self.app_toast = Some((
+                                                    i18n::t().invalid_zip(&name),
+                                                    std::time::Instant::now(),
+                                                ));
+                                            }
+                                        }
+                                    }
+                                }
+
+                                if (i + 1) % cols == 0 {
+                                    ui.end_row();
+                                }
+                            }
+                            if !archives.is_empty() && archives.len() % cols != 0 {
+                                ui.end_row();
+                            }
+                        });
+                });
+                // ユーザーの手動スクロールを読み戻してストアを更新
+                self.explorer_scroll_offset = output.state.offset.y;
+                self.explorer_viewport_h = output.inner_rect.height();
+            }
+        }
+    }
+
+    fn draw_toast(&mut self, ctx: &egui::Context) {
         // アプリレベルトースト（3秒で自動消去）
         if let Some((ref msg, since)) = self.app_toast.clone() {
             if since.elapsed().as_secs_f32() < 3.0 {
                 egui::Area::new(egui::Id::new("app_toast"))
                     .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -30.0))
-                    .show(&ctx, |ui| {
+                    .show(ctx, |ui| {
                         egui::Frame::popup(ui.style())
                             .fill(egui::Color32::from_rgba_premultiplied(30, 30, 30, 230))
                             .show(ui, |ui| {
@@ -1204,12 +1234,8 @@ impl eframe::App for NekoviewApp {
                 self.app_toast = None;
             }
         }
-
-        ctx.request_repaint();
     }
-}
 
-impl NekoviewApp {
     /// ZIPを無効確定してDBにマーカーを書き込む
     fn mark_archive_invalid(&mut self, path: &PathBuf) {
         self.invalid_archives.insert(path.clone());
