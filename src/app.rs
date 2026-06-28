@@ -496,7 +496,7 @@ impl eframe::App for NekoviewApp {
         // FileCache ワーカーからの結果を受信して横キャッシュへ投入
         let file_results: Vec<(PathBuf, std::sync::Arc<[u8]>)> =
             std::iter::from_fn(|| self.file_cache_res_rx.try_recv().ok()).collect();
-        let cur_viewer_path = self.viewer.lock().unwrap().as_ref().map(|v| v.archive_path.clone());
+        let cur_viewer_path = self.viewer.lock().unwrap().as_ref().map(|v| v.archive_path().clone());
         for (path, bytes) in file_results {
             self.file_cache_pending.remove(&path);
             let current = cur_viewer_path.clone().unwrap_or_else(|| path.clone());
@@ -512,12 +512,12 @@ impl eframe::App for NekoviewApp {
             .as_ref()
             .map(|v| {
                 let sorted_lo = v.spread_lo().max(0) as usize;
-                let orig = if sorted_lo < v.entries.len() {
-                    v.entries[sorted_lo].original_index
+                let orig = if sorted_lo < v.entries().len() {
+                    v.entries()[sorted_lo].original_index
                 } else {
                     0
                 };
-                (v.archive_path.clone(), orig)
+                (v.archive_path().clone(), orig)
             })
             .unwrap_or_default();
         for result in results {
@@ -535,7 +535,7 @@ impl eframe::App for NekoviewApp {
         // スライディングウィンドウ: ビューア表示中に前後ページを先読み
         let viewer_prefetch = self.viewer.lock().unwrap().as_ref().map(|viewer| {
             let cur = viewer.spread_lo().max(0) as usize;
-            (cur, viewer.archive_path.clone(), viewer.entries.clone(), viewer.is_raw_file)
+            (cur, viewer.archive_path().clone(), viewer.entries().to_vec(), viewer.is_raw_file())
         });
         if let Some((cur, path, entries, is_raw_file)) = viewer_prefetch {
             let total = entries.len();
@@ -586,11 +586,8 @@ impl eframe::App for NekoviewApp {
                 // 新規オープン時に viewer_closing もリセットする
                 let first_frame = {
                     let mut guard = self.viewer.lock().unwrap();
-                    let ff = guard.as_ref().map_or(false, |v| v.first_frame);
-                    if ff {
-                        if let Some(v) = guard.as_mut() { v.first_frame = false; }
-                        *self.viewer_closing.lock().unwrap() = false;
-                    }
+                    let ff = guard.as_mut().map_or(false, |v| v.take_first_frame());
+                    if ff { *self.viewer_closing.lock().unwrap() = false; }
                     ff
                 };
                 let vp_builder = {
@@ -625,8 +622,8 @@ impl eframe::App for NekoviewApp {
                                 let (cur_path, cur_idx) = viewer_arc.lock().unwrap().as_ref()
                                     .map(|v| {
                                         let lo = v.spread_lo().max(0) as usize;
-                                        let orig = v.entries.get(lo).map(|e| e.original_index).unwrap_or(0);
-                                        (v.archive_path.clone(), orig)
+                                        let orig = v.entries().get(lo).map(|e| e.original_index).unwrap_or(0);
+                                        (v.archive_path().clone(), orig)
                                     })
                                     .unwrap_or_default();
                                 let mut pc = page_cache_arc.lock().unwrap();
@@ -640,7 +637,7 @@ impl eframe::App for NekoviewApp {
                         {
                             let prefetch_info = viewer_arc.lock().unwrap().as_ref().map(|v| {
                                 let cur = v.spread_lo().max(0) as usize;
-                                (cur, v.archive_path.clone(), v.entries.clone(), v.is_raw_file)
+                                (cur, v.archive_path().clone(), v.entries().to_vec(), v.is_raw_file())
                             });
                             if let Some((cur, path, entries, is_raw_file)) = prefetch_info {
                                 let total = entries.len();
@@ -787,8 +784,8 @@ impl eframe::App for NekoviewApp {
                 let (viewer_open, is_raw_viewer, cur_mode, is_spread, can_back, can_fwd, is_offset) = {
                     let guard = self.viewer.lock().unwrap();
                     let viewer_open = guard.is_some();
-                    let is_raw_viewer = guard.as_ref().map_or(false, |v| v.is_raw_file);
-                    let cur_mode = guard.as_ref().map(|v| v.page_mode);
+                    let is_raw_viewer = guard.as_ref().map_or(false, |v| v.is_raw_file());
+                    let cur_mode = guard.as_ref().map(|v| v.page_mode());
                     let is_spread = cur_mode.map_or(false, |m| m != PageMode::Single);
                     let can_back = guard.as_ref().map_or(false, |v| v.can_shift_backward());
                     let can_fwd  = guard.as_ref().map_or(false, |v| v.can_shift_forward());
@@ -1254,7 +1251,7 @@ impl NekoviewApp {
             ViewerNav::PrevFile => {
                 if let Some(from) = self.selected_archive_index {
                     if let Some((idx, state)) = self.find_next_valid(from, -1) {
-                        let path = state.archive_path.clone();
+                        let path = state.archive_path().clone();
                         self.selected_archive_index = Some(idx);
                         self.pending_loads.lock().unwrap().clear();
                         *self.viewer.lock().unwrap() = Some(state);
@@ -1270,7 +1267,7 @@ impl NekoviewApp {
             ViewerNav::NextFile => {
                 if let Some(from) = self.selected_archive_index {
                     if let Some((idx, state)) = self.find_next_valid(from, 1) {
-                        let path = state.archive_path.clone();
+                        let path = state.archive_path().clone();
                         self.selected_archive_index = Some(idx);
                         self.pending_loads.lock().unwrap().clear();
                         *self.viewer.lock().unwrap() = Some(state);
