@@ -1068,142 +1068,145 @@ impl NekoviewApp {
                     ui.label(i18n::t().loading());
                 });
             } else {
-                // ── LS状態: サムネグリッド ──
-                let cell_h = self.config.thumb_size as f32;
-                let cell_w = (cell_h / std::f32::consts::SQRT_2).round();
-                const GAP: f32 = 8.0;
-                let avail_w = ui.available_width();
-                let full_cols = ((avail_w + GAP) / (cell_w + GAP)).floor() as usize;
-                let used_w = full_cols as f32 * (cell_w + GAP) - GAP;
-                let cols = if avail_w - used_w >= cell_w / 2.0 { full_cols + 1 } else { full_cols }.max(1);
-                self.explorer_cols = cols;
+                self.draw_archive_grid(ui);
+            }
+        }
+    }
 
-                let output = egui::ScrollArea::vertical()
-                        .auto_shrink([false, false])
-                        .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
-                        .vertical_scroll_offset(self.explorer_scroll_offset)
-                        .show(ui, |ui| {
-                    egui::Grid::new("archive_grid")
-                        .num_columns(cols)
-                        .spacing([GAP, GAP])
-                        .show(ui, |ui| {
-                            let archives = self.archives.clone();
-                            for (i, path) in archives.iter().enumerate() {
-                                let is_selected = self.selected_archive_index == Some(i);
-                                let (rect, response) = ui.allocate_exact_size(
-                                    egui::vec2(cell_w, cell_h),
-                                    egui::Sense::click(),
+    fn draw_archive_grid(&mut self, ui: &mut egui::Ui) {
+        let cell_h = self.config.thumb_size as f32;
+        let cell_w = (cell_h / std::f32::consts::SQRT_2).round();
+        const GAP: f32 = 8.0;
+        let avail_w = ui.available_width();
+        let full_cols = ((avail_w + GAP) / (cell_w + GAP)).floor() as usize;
+        let used_w = full_cols as f32 * (cell_w + GAP) - GAP;
+        let cols = if avail_w - used_w >= cell_w / 2.0 { full_cols + 1 } else { full_cols }.max(1);
+        self.explorer_cols = cols;
+
+        let output = egui::ScrollArea::vertical()
+                .auto_shrink([false, false])
+                .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
+                .vertical_scroll_offset(self.explorer_scroll_offset)
+                .show(ui, |ui| {
+            egui::Grid::new("archive_grid")
+                .num_columns(cols)
+                .spacing([GAP, GAP])
+                .show(ui, |ui| {
+                    let archives = self.archives.clone();
+                    for (i, path) in archives.iter().enumerate() {
+                        let is_selected = self.selected_archive_index == Some(i);
+                        let (rect, response) = ui.allocate_exact_size(
+                            egui::vec2(cell_w, cell_h),
+                            egui::Sense::click(),
+                        );
+
+                        if ui.is_rect_visible(rect) {
+                            if let Some(tex) = self.thumbnails.get(path) {
+                                ui.painter().image(
+                                    tex.id(),
+                                    rect,
+                                    egui::Rect::from_min_max(
+                                        egui::pos2(0.0, 0.0),
+                                        egui::pos2(1.0, 1.0),
+                                    ),
+                                    egui::Color32::WHITE,
                                 );
-
-                                if ui.is_rect_visible(rect) {
-                                    if let Some(tex) = self.thumbnails.get(path) {
-                                        ui.painter().image(
-                                            tex.id(),
-                                            rect,
-                                            egui::Rect::from_min_max(
-                                                egui::pos2(0.0, 0.0),
-                                                egui::pos2(1.0, 1.0),
-                                            ),
-                                            egui::Color32::WHITE,
-                                        );
-                                    } else {
-                                        ui.painter().rect_filled(
-                                            rect,
-                                            4.0,
-                                            egui::Color32::from_gray(60),
-                                        );
-                                        if !self.thumb_pending.contains(path) {
-                                            if self.thumb_req_tx.try_send(ThumbRequest {
-                                                archive_path: path.clone(),
-                                                db: self.cache_db.clone(),
-                                                is_raw_file: self.raw_image_files.contains(path),
-                                            }).is_ok() {
-                                                self.thumb_pending.insert(path.clone());
-                                            }
-                                        }
-                                    }
-
-                                    // 無効ZIPは左上に赤Xを描画
-                                    if self.invalid_archives.contains(path) {
-                                        let x_size = 16.0;
-                                        let origin = rect.min + egui::vec2(4.0, 4.0);
-                                        let end = origin + egui::vec2(x_size, x_size);
-                                        let stroke = egui::Stroke::new(2.5, egui::Color32::from_rgb(220, 50, 50));
-                                        ui.painter().line_segment([origin, end], stroke);
-                                        ui.painter().line_segment(
-                                            [egui::pos2(end.x, origin.y), egui::pos2(origin.x, end.y)],
-                                            stroke,
-                                        );
-                                    }
-
-                                    // 選択中アイテムを枠で囲む（生ファイルは赤、ZIPは青）
-                                    if is_selected {
-                                        let is_raw = self.raw_image_files.contains(path);
-                                        let stroke_color = if is_raw {
-                                            egui::Color32::from_rgb(220, 60, 60)
-                                        } else {
-                                            egui::Color32::from_rgb(50, 120, 230)
-                                        };
-                                        ui.painter().rect_stroke(
-                                            rect,
-                                            0.0,
-                                            egui::Stroke::new(2.0, stroke_color),
-                                            egui::StrokeKind::Inside,
-                                        );
+                            } else {
+                                ui.painter().rect_filled(
+                                    rect,
+                                    4.0,
+                                    egui::Color32::from_gray(60),
+                                );
+                                if !self.thumb_pending.contains(path) {
+                                    if self.thumb_req_tx.try_send(ThumbRequest {
+                                        archive_path: path.clone(),
+                                        db: self.cache_db.clone(),
+                                        is_raw_file: self.raw_image_files.contains(path),
+                                    }).is_ok() {
+                                        self.thumb_pending.insert(path.clone());
                                     }
                                 }
+                            }
 
+                            // 無効ZIPは左上に赤Xを描画
+                            if self.invalid_archives.contains(path) {
+                                let x_size = 16.0;
+                                let origin = rect.min + egui::vec2(4.0, 4.0);
+                                let end = origin + egui::vec2(x_size, x_size);
+                                let stroke = egui::Stroke::new(2.5, egui::Color32::from_rgb(220, 50, 50));
+                                ui.painter().line_segment([origin, end], stroke);
+                                ui.painter().line_segment(
+                                    [egui::pos2(end.x, origin.y), egui::pos2(origin.x, end.y)],
+                                    stroke,
+                                );
+                            }
+
+                            // 選択中アイテムを枠で囲む（生ファイルは赤、ZIPは青）
+                            if is_selected {
                                 let is_raw = self.raw_image_files.contains(path);
-                                if response.clicked() {
-                                    if is_raw && self.selected_archive_index == Some(i) {
-                                        // 生ファイル: 選択済み状態のシングルクリックで開く
-                                        self.open_viewer(ViewerState::new_raw(path.clone(), self.viewer_slots));
-                                    } else {
-                                        self.selected_archive_index = Some(i);
-                                        self.selected_archive_meta = std::fs::metadata(path)
-                                            .ok()
-                                            .map(|m| (m.modified().unwrap_or(std::time::UNIX_EPOCH), m.len()));
+                                let stroke_color = if is_raw {
+                                    egui::Color32::from_rgb(220, 60, 60)
+                                } else {
+                                    egui::Color32::from_rgb(50, 120, 230)
+                                };
+                                ui.painter().rect_stroke(
+                                    rect,
+                                    0.0,
+                                    egui::Stroke::new(2.0, stroke_color),
+                                    egui::StrokeKind::Inside,
+                                );
+                            }
+                        }
+
+                        let is_raw = self.raw_image_files.contains(path);
+                        if response.clicked() {
+                            if is_raw && self.selected_archive_index == Some(i) {
+                                // 生ファイル: 選択済み状態のシングルクリックで開く
+                                self.open_viewer(ViewerState::new_raw(path.clone(), self.viewer_slots));
+                            } else {
+                                self.selected_archive_index = Some(i);
+                                self.selected_archive_meta = std::fs::metadata(path)
+                                    .ok()
+                                    .map(|m| (m.modified().unwrap_or(std::time::UNIX_EPOCH), m.len()));
+                            }
+                        }
+                        if response.double_clicked() && !is_raw {
+                            if self.invalid_archives.contains(path) {
+                                let name = truncate_filename(path);
+                                self.app_toast = Some((
+                                    i18n::t().invalid_zip(&name),
+                                    std::time::Instant::now(),
+                                ));
+                            } else {
+                                match ViewerState::new(path.clone(), self.viewer_slots) {
+                                    Some(state) => {
+                                        self.open_viewer(state);
                                     }
-                                }
-                                if response.double_clicked() && !is_raw {
-                                    if self.invalid_archives.contains(path) {
+                                    None => {
+                                        let p = path.clone();
+                                        self.mark_archive_invalid(&p);
                                         let name = truncate_filename(path);
                                         self.app_toast = Some((
                                             i18n::t().invalid_zip(&name),
                                             std::time::Instant::now(),
                                         ));
-                                    } else {
-                                        match ViewerState::new(path.clone(), self.viewer_slots) {
-                                            Some(state) => {
-                                                self.open_viewer(state);
-                                            }
-                                            None => {
-                                                let p = path.clone();
-                                                self.mark_archive_invalid(&p);
-                                                let name = truncate_filename(path);
-                                                self.app_toast = Some((
-                                                    i18n::t().invalid_zip(&name),
-                                                    std::time::Instant::now(),
-                                                ));
-                                            }
-                                        }
                                     }
                                 }
+                            }
+                        }
 
-                                if (i + 1) % cols == 0 {
-                                    ui.end_row();
-                                }
-                            }
-                            if !archives.is_empty() && archives.len() % cols != 0 {
-                                ui.end_row();
-                            }
-                        });
+                        if (i + 1) % cols == 0 {
+                            ui.end_row();
+                        }
+                    }
+                    if !archives.is_empty() && archives.len() % cols != 0 {
+                        ui.end_row();
+                    }
                 });
-                // ユーザーの手動スクロールを読み戻してストアを更新
-                self.explorer_scroll_offset = output.state.offset.y;
-                self.explorer_viewport_h = output.inner_rect.height();
-            }
-        }
+        });
+        // ユーザーの手動スクロールを読み戻してストアを更新
+        self.explorer_scroll_offset = output.state.offset.y;
+        self.explorer_viewport_h = output.inner_rect.height();
     }
 
     fn draw_toast(&mut self, ctx: &egui::Context) {
