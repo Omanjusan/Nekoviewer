@@ -312,6 +312,21 @@ impl Default for SortState {
     }
 }
 
+/// ファイルをまたいで維持するビューア設定（ウィンドウを開き直しても保持）
+#[derive(Clone, Copy)]
+pub struct ViewerConfig {
+    /// true = 1:1等倍表示、false = ウィンドウフィット
+    pub zoom_actual: bool,
+    /// フルスクリーン状態
+    pub fullscreen: bool,
+}
+
+impl Default for ViewerConfig {
+    fn default() -> Self {
+        Self { zoom_actual: false, fullscreen: false }
+    }
+}
+
 /// ビューアウィンドウの位置・サイズスロット（論理ピクセル）
 #[derive(Clone, Copy)]
 pub struct WindowSlot {
@@ -334,11 +349,20 @@ pub struct AppState {
     pub sort_state: SortState,
     /// UI言語コード: "ja" / "en" / "cn"
     pub lang: String,
+    /// ファイル切替後も維持するビューア設定
+    pub viewer_cfg: ViewerConfig,
 }
 
 impl Default for AppState {
     fn default() -> Self {
-        Self { last_dir: None, window_size: None, viewer_slots: [None; 4], sort_state: SortState::default(), lang: "ja".to_string() }
+        Self {
+            last_dir: None,
+            window_size: None,
+            viewer_slots: [None; 4],
+            sort_state: SortState::default(),
+            lang: "ja".to_string(),
+            viewer_cfg: ViewerConfig::default(),
+        }
     }
 }
 
@@ -388,6 +412,8 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
     let mut sort_key: Option<String> = None;
     let mut sort_ascending: Option<bool> = None;
     let mut lang: Option<String> = None;
+    let mut viewer_zoom: Option<bool> = None;
+    let mut viewer_fullscreen: Option<bool> = None;
     let mut has_kv = false;
 
     for line in content.lines() {
@@ -431,6 +457,8 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
                         lang = Some(v.to_string());
                     }
                 }
+                "viewer_zoom"       => { viewer_zoom       = v.trim().parse().ok(); }
+                "viewer_fullscreen" => { viewer_fullscreen = v.trim().parse().ok(); }
                 _ => {}
             }
         }
@@ -463,17 +491,28 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
         ascending: sort_ascending.unwrap_or(true),
     };
 
-    Some(AppState { last_dir, window_size, viewer_slots, sort_state, lang: lang.unwrap_or_else(|| "ja".to_string()) })
+    Some(AppState {
+        last_dir,
+        window_size,
+        viewer_slots,
+        sort_state,
+        lang: lang.unwrap_or_else(|| "ja".to_string()),
+        viewer_cfg: ViewerConfig {
+            zoom_actual: viewer_zoom.unwrap_or(false),
+            fullscreen: viewer_fullscreen.unwrap_or(false),
+        },
+    })
 }
 
-pub fn save_state(dir: &Path, window_size: (u32, u32), viewer_slots: &[Option<WindowSlot>; 4], sort_state: &SortState, lang: &str) {
+pub fn save_state(dir: &Path, window_size: (u32, u32), viewer_slots: &[Option<WindowSlot>; 4], sort_state: &SortState, lang: &str, viewer_cfg: &ViewerConfig) {
     let (Some(path), Some(bak), Some(tmp)) =
         (state_path(), state_bak_path(), state_tmp_path())
     else { return; };
 
     let mut content = format!(
-        "last_dir={}\nwindow_width={}\nwindow_height={}\nsort_key={}\nsort_ascending={}\nlang={}\n",
-        dir.to_string_lossy(), window_size.0, window_size.1, sort_state.key, sort_state.ascending, lang
+        "last_dir={}\nwindow_width={}\nwindow_height={}\nsort_key={}\nsort_ascending={}\nlang={}\nviewer_zoom={}\nviewer_fullscreen={}\n",
+        dir.to_string_lossy(), window_size.0, window_size.1, sort_state.key, sort_state.ascending, lang,
+        viewer_cfg.zoom_actual, viewer_cfg.fullscreen,
     );
     for (i, slot) in viewer_slots.iter().enumerate() {
         if let Some(s) = slot {

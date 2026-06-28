@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, mpsc};
 
 use crate::cache::{FileCache, LoadRequest, LoadResult, PageCache, ThumbRequest, ThumbResult, spawn_worker, spawn_thumb_worker, spawn_file_cache_worker};
-use crate::config::{AppConfig, SortState, WindowSlot};
+use crate::config::{AppConfig, SortState, ViewerConfig, WindowSlot};
 use crate::controller::{self, ViewerNav, ViewerOutput};
 use crate::i18n;
 use crate::model::ExplorerSortKey;
@@ -170,6 +170,8 @@ pub struct NekoviewApp {
     thumb_res_rx: mpsc::Receiver<ThumbResult>,
     thumb_pending: HashSet<PathBuf>,
     viewer: Arc<Mutex<Option<ViewerState>>>,
+    /// ファイル切替後も維持するビューア設定（zoom・fullscreen 等）
+    viewer_cfg: Arc<Mutex<ViewerConfig>>,
     /// ビューア閉じる処理中フラグ（callback 自身が立てる・メインスレッドが消費する）
     viewer_closing: Arc<Mutex<bool>>,
     drives: Vec<MountEntry>,
@@ -208,7 +210,7 @@ pub struct NekoviewApp {
 }
 
 impl NekoviewApp {
-    pub fn new(start_dir: PathBuf, config: AppConfig, viewer_slots: [Option<WindowSlot>; 4], sort_state: SortState, ctx: egui::Context) -> Self {
+    pub fn new(start_dir: PathBuf, config: AppConfig, viewer_slots: [Option<WindowSlot>; 4], sort_state: SortState, viewer_cfg: ViewerConfig, ctx: egui::Context) -> Self {
         let (req_tx, res_rx) = spawn_worker(config.viewer_filter.to_image_filter(), config.resolved_decode_threads(), ctx);
         let (thumb_req_tx, thumb_res_rx) = spawn_thumb_worker(config.thumb_filter.to_image_filter(), config.resolved_decode_threads());
         let (file_cache_req_tx, file_cache_res_rx) = spawn_file_cache_worker();
@@ -252,6 +254,7 @@ impl NekoviewApp {
             thumb_res_rx,
             thumb_pending: HashSet::new(),
             viewer: Arc::new(Mutex::new(None)),
+            viewer_cfg: Arc::new(Mutex::new(viewer_cfg)),
             viewer_closing: Arc::new(Mutex::new(false)),
             drives,
             page_cache: Arc::new(Mutex::new(PageCache::new(cache_max, cache_min))),
@@ -432,7 +435,7 @@ impl eframe::App for NekoviewApp {
     }
 
     fn on_exit(&mut self) {
-        crate::config::save_state(&self.current_dir, self.window_size, &self.viewer_slots, &SortState { key: self.sort_key.as_state_key().to_string(), ascending: self.sort_ascending }, i18n::lang_code());
+        crate::config::save_state(&self.current_dir, self.window_size, &self.viewer_slots, &SortState { key: self.sort_key.as_state_key().to_string(), ascending: self.sort_ascending }, i18n::lang_code(), &*self.viewer_cfg.lock().unwrap());
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
@@ -609,7 +612,7 @@ impl NekoviewApp {
 
             if let Some(slots) = output.save_slots {
                 self.viewer_slots = slots;
-                crate::config::save_state(&self.current_dir, self.window_size, &self.viewer_slots, &SortState { key: self.sort_key.as_state_key().to_string(), ascending: self.sort_ascending }, i18n::lang_code());
+                crate::config::save_state(&self.current_dir, self.window_size, &self.viewer_slots, &SortState { key: self.sort_key.as_state_key().to_string(), ascending: self.sort_ascending }, i18n::lang_code(), &*self.viewer_cfg.lock().unwrap());
             }
 
             self.handle_viewer_nav(output.nav);
@@ -646,6 +649,7 @@ impl NekoviewApp {
                 let focus = self.viewer_focus_requested;
                 self.viewer_focus_requested = false;
                 let viewer_closing_arc = Arc::clone(&self.viewer_closing);
+                let viewer_cfg_arc = Arc::clone(&self.viewer_cfg);
 
                 ctx.show_viewport_deferred(
                     egui::ViewportId::from_hash_of("viewer_window"),
@@ -707,8 +711,9 @@ impl NekoviewApp {
                         let close = {
                             let mut viewer_guard = viewer_arc.lock().unwrap();
                             let page_cache_guard = page_cache_arc.lock().unwrap();
+                            let mut cfg_guard = viewer_cfg_arc.lock().unwrap();
                             let close = if let Some(viewer) = viewer_guard.as_mut() {
-                                let output = viewer.show(vp_ui, &*page_cache_guard);
+                                let output = viewer.show(vp_ui, &*page_cache_guard, &mut *cfg_guard);
                                 let close = output.close_requested;
                                 *nav_arc.lock().unwrap() = output;
                                 close
@@ -840,15 +845,21 @@ impl NekoviewApp {
 
             ui.add_enabled_ui(viewer_open, |ui| {
                 if ui.selectable_label(cur_mode == Some(PageMode::Single), i18n::t().page_single()).clicked() {
-                    if let Some(v) = self.viewer.lock().unwrap().as_mut() { v.set_page_mode(PageMode::Single); }
+                    let mut v_guard = self.viewer.lock().unwrap();
+                    let mut cfg_guard = self.viewer_cfg.lock().unwrap();
+                    if let Some(v) = v_guard.as_mut() { v.set_page_mode(PageMode::Single, &mut *cfg_guard); }
                 }
             });
             ui.add_enabled_ui(viewer_open && !is_raw_viewer, |ui| {
                 if ui.selectable_label(cur_mode == Some(PageMode::SpreadLeft), i18n::t().page_spread_left()).clicked() {
-                    if let Some(v) = self.viewer.lock().unwrap().as_mut() { v.set_page_mode(PageMode::SpreadLeft); }
+                    let mut v_guard = self.viewer.lock().unwrap();
+                    let mut cfg_guard = self.viewer_cfg.lock().unwrap();
+                    if let Some(v) = v_guard.as_mut() { v.set_page_mode(PageMode::SpreadLeft, &mut *cfg_guard); }
                 }
                 if ui.selectable_label(cur_mode == Some(PageMode::SpreadRight), i18n::t().page_spread_right()).clicked() {
-                    if let Some(v) = self.viewer.lock().unwrap().as_mut() { v.set_page_mode(PageMode::SpreadRight); }
+                    let mut v_guard = self.viewer.lock().unwrap();
+                    let mut cfg_guard = self.viewer_cfg.lock().unwrap();
+                    if let Some(v) = v_guard.as_mut() { v.set_page_mode(PageMode::SpreadRight, &mut *cfg_guard); }
                 }
             });
 
@@ -913,6 +924,7 @@ impl NekoviewApp {
                             &self.viewer_slots,
                             &SortState { key: self.sort_key.as_state_key().to_string(), ascending: self.sort_ascending },
                             i18n::lang_code(),
+                            &*self.viewer_cfg.lock().unwrap(),
                         );
                     }
                 }
@@ -978,7 +990,7 @@ impl NekoviewApp {
                 self.viewing_dir = Some(path.clone());
                 self.start_scan(); // cache_db をここで確定させてから clone して渡す
                 self.cd_summary_rx = Some(spawn_summary_worker(path.clone(), self.cache_db.clone()));
-                crate::config::save_state(&self.current_dir, self.window_size, &self.viewer_slots, &SortState { key: self.sort_key.as_state_key().to_string(), ascending: self.sort_ascending }, i18n::lang_code());
+                crate::config::save_state(&self.current_dir, self.window_size, &self.viewer_slots, &SortState { key: self.sort_key.as_state_key().to_string(), ascending: self.sort_ascending }, i18n::lang_code(), &*self.viewer_cfg.lock().unwrap());
             }
         }
 
@@ -1012,7 +1024,7 @@ impl NekoviewApp {
                             path: path.clone(),
                             rx: dir::spawn_scan_subdirs(path),
                         });
-                        crate::config::save_state(&self.current_dir, self.window_size, &self.viewer_slots, &SortState { key: self.sort_key.as_state_key().to_string(), ascending: self.sort_ascending }, i18n::lang_code());
+                        crate::config::save_state(&self.current_dir, self.window_size, &self.viewer_slots, &SortState { key: self.sort_key.as_state_key().to_string(), ascending: self.sort_ascending }, i18n::lang_code(), &*self.viewer_cfg.lock().unwrap());
                     }
                 }
             });

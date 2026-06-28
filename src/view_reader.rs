@@ -1,3 +1,4 @@
+use crate::config::ViewerConfig;
 use crate::controller::{ViewerNav, ViewerOutput};
 use crate::i18n;
 use crate::log_key;
@@ -174,10 +175,8 @@ pub struct ViewerState {
     offset: SpreadOffset,
     textures: HashMap<usize, egui::TextureHandle>,
     open: bool,
-    fullscreen: bool,
     page_mode: PageMode,
     scroll_acc: f32,
-    zoom_actual: bool,
     /// アニメーション検出用: 前フレームの spread_lo()
     prev_spread_lo: i32,
     /// アニメーション開始時点の旧 spread_lo（退場側テクスチャ取得用）
@@ -246,10 +245,8 @@ impl ViewerState {
             offset: SpreadOffset::new(),
             textures: HashMap::new(),
             open: true,
-            fullscreen: false,
             page_mode: PageMode::Single,
             scroll_acc: 0.0,
-            zoom_actual: false,
             prev_spread_lo: 0,
             anim_from_lo: 0,
             anim_dir: 1,
@@ -289,10 +286,8 @@ impl ViewerState {
             offset: SpreadOffset::new(),
             textures: HashMap::new(),
             open: true,
-            fullscreen: false,
             page_mode: PageMode::Single,
             scroll_acc: 0.0,
-            zoom_actual: false,
             prev_spread_lo: 0,
             anim_from_lo: 0,
             anim_dir: 1,
@@ -351,7 +346,7 @@ impl ViewerState {
     }
 
     /// ページモードを切り替え、spread_base とオフセットを整合させる
-    pub fn set_page_mode(&mut self, mode: PageMode) {
+    pub fn set_page_mode(&mut self, mode: PageMode, cfg: &mut ViewerConfig) {
         match mode {
             PageMode::Single => {
                 self.page_mode = mode;
@@ -363,7 +358,7 @@ impl ViewerState {
                 if self.is_raw_file { return; }
                 if self.page_mode != mode {
                     self.page_mode = mode;
-                    self.zoom_actual = false;
+                    cfg.zoom_actual = false;
                     self.spread_base = self.spread_lo().max(0) & !1;
                     self.offset.reset();
                 }
@@ -420,7 +415,7 @@ impl ViewerState {
         self.archive_path.file_name().and_then(|n| n.to_str()).unwrap_or(i18n::t().viewer_fallback()).to_string()
     }
 
-    pub fn show(&mut self, ui: &mut egui::Ui, page_cache: &PageCache) -> ViewerOutput {
+    pub fn show(&mut self, ui: &mut egui::Ui, page_cache: &PageCache, cfg: &mut ViewerConfig) -> ViewerOutput {
         let ctx = ui.ctx().clone();
         let viewer_style = ui.style().clone();
         if !self.open || self.entries.is_empty() {
@@ -429,7 +424,7 @@ impl ViewerState {
         let mut save_slots: Option<[Option<WindowSlot>; 4]> = None;
 
         // ── フレーム入力を一括収集（ctx.input はこの1回のみ）────────────────
-        let input = FrameInput::collect(&ctx, self.zoom_actual);
+        let input = FrameInput::collect(&ctx, cfg.zoom_actual);
 
         let (animating, t) = self.update_animation(&ctx, input.dt);
 
@@ -453,8 +448,8 @@ impl ViewerState {
         // Maximized(true)+Decorations(false) の擬似フルスクに統一して Close を通す。
         // Wayland 固有の問題のため Windows では行わない。
         #[cfg(not(windows))]
-        if input.os_maximized && !self.fullscreen {
-            self.fullscreen = true;
+        if input.os_maximized && !cfg.fullscreen {
+            cfg.fullscreen = true;
             ctx.send_viewport_cmd(egui::ViewportCommand::Decorations(false));
         }
 
@@ -494,11 +489,11 @@ impl ViewerState {
         }
 
         // ── ページモード切り替え ──────────────────────────────────────────────
-        if mode1 { self.set_page_mode(PageMode::Single); }
+        if mode1 { self.set_page_mode(PageMode::Single, cfg); }
         // 生ファイル表示中は見開きキーを無効化（set_page_mode 内でも封印済みだが念のため）
         if !self.is_raw_file {
-            if mode2 { self.set_page_mode(PageMode::SpreadLeft); }
-            if mode3 { self.set_page_mode(PageMode::SpreadRight); }
+            if mode2 { self.set_page_mode(PageMode::SpreadLeft, cfg); }
+            if mode3 { self.set_page_mode(PageMode::SpreadRight, cfg); }
         }
 
         let is_spread = self.page_mode != PageMode::Single;
@@ -507,7 +502,7 @@ impl ViewerState {
         // タイトルを独立ウィンドウのタイトルバーに反映
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(self.title()));
 
-        save_slots = self.draw_top_bar(ui, &ctx, &input, &viewer_style);
+        save_slots = self.draw_top_bar(ui, &ctx, &input, &viewer_style, cfg);
 
         // ── 左エントリリスト ──────────────────────────────────────────────────
         self.draw_entry_list(ui, &ctx, &viewer_style, input.hover_pos, input.viewport_rect);
@@ -518,14 +513,14 @@ impl ViewerState {
             t,
             anim_dir_f:  self.anim_dir as f32,
             page_mode:   self.page_mode,
-            zoom_actual: self.zoom_actual,
+            zoom_actual: cfg.zoom_actual,
             monitor:     input.monitor_size,
         };
         let double_clicked = self.draw_central_panel(ui, &frame);
 
         let nav = self.process_navigation(&input, is_spread, step, total);
 
-        let close_self = self.process_misc_input(&ctx, &input, is_spread, double_clicked);
+        let close_self = self.process_misc_input(&ctx, &input, is_spread, double_clicked, cfg);
 
         self.tick_toast(&ctx, input.time);
 
@@ -561,6 +556,7 @@ impl ViewerState {
         ctx: &egui::Context,
         input: &FrameInput,
         style: &egui::Style,
+        cfg: &ViewerConfig,
     ) -> Option<[Option<WindowSlot>; 4]> {
         let mut save_slots = None;
 
@@ -583,7 +579,7 @@ impl ViewerState {
         }
 
         // ── メニューバー（フルスクリーン時は非表示）────────────────────────────
-        if !self.fullscreen {
+        if !cfg.fullscreen {
             egui::Panel::top("slot_bar")
                 .frame(egui::Frame::side_top_panel(style))
                 .show(ui, |ui| {
@@ -614,7 +610,7 @@ impl ViewerState {
         }
 
         // ── フルスクリーン時ソートバー（上端ホバーでポップアップ）────────────
-        if self.fullscreen {
+        if cfg.fullscreen {
             const FS_TRIGGER_H: f32 = 40.0;
             const FS_BAR_H: f32 = 32.0;
             const FS_HIDE_MARGIN: f32 = 10.0;
@@ -715,7 +711,7 @@ impl ViewerState {
                 // ── 通常レンダリング ──────────────────────────────────────────
                 match frame.page_mode {
                     PageMode::Single => {
-                        self.render_single(ui, &frame.tex_lo, &mut double_clicked);
+                        self.render_single(ui, &frame.tex_lo, frame.zoom_actual, &mut double_clicked);
                     }
                     PageMode::SpreadLeft => {
                         Self::render_spread(ui, &frame.tex_lo, &frame.tex_hi, frame.monitor);
@@ -797,14 +793,15 @@ impl ViewerState {
         input: &FrameInput,
         is_spread: bool,
         double_clicked: bool,
+        cfg: &mut ViewerConfig,
     ) -> bool {
         if (input.zoom_key || double_clicked) && !is_spread {
-            self.zoom_actual = !self.zoom_actual;
+            cfg.zoom_actual = !cfg.zoom_actual;
         }
 
         if input.fs_key || input.middle_clicked {
-            self.fullscreen = !self.fullscreen;
-            if self.fullscreen {
+            cfg.fullscreen = !cfg.fullscreen;
+            if cfg.fullscreen {
                 #[cfg(windows)]
                 ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(true));
                 #[cfg(not(windows))]
@@ -821,11 +818,11 @@ impl ViewerState {
                     ctx.send_viewport_cmd(egui::ViewportCommand::Decorations(true));
                 }
             }
-            log_key!("[key] fullscreen → {}", self.fullscreen);
+            log_key!("[key] fullscreen → {}", cfg.fullscreen);
         }
 
         if input.close_requested || input.esc {
-            if self.fullscreen {
+            if cfg.fullscreen {
                 #[cfg(windows)]
                 ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
                 #[cfg(not(windows))]
@@ -838,7 +835,7 @@ impl ViewerState {
             #[cfg(windows)]
             ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
             self.open = false;
-            self.fullscreen = false;
+            cfg.fullscreen = false;
             return true;
         }
 
@@ -1016,11 +1013,12 @@ impl ViewerState {
         &mut self,
         ui: &mut egui::Ui,
         tex: &Option<egui::TextureHandle>,
+        zoom_actual: bool,
         double_clicked: &mut bool,
     ) {
         if let Some(tex) = tex {
             let [img_w, img_h] = tex.size();
-            if self.zoom_actual {
+            if zoom_actual {
                 egui::ScrollArea::both().show(ui, |ui| {
                     let size = egui::vec2(img_w as f32, img_h as f32);
                     let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::click());
