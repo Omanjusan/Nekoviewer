@@ -5,40 +5,34 @@ use std::sync::{Arc, Mutex, mpsc};
 use crate::cache::{FileCache, LoadRequest, LoadResult, PageCache, ThumbRequest, ThumbResult, spawn_worker, spawn_thumb_worker, spawn_file_cache_worker};
 use crate::config::{AppConfig, SortState, WindowSlot};
 use crate::i18n;
+use crate::model::ExplorerSortKey;
 use crate::neko_dir;
 use crate::fs::{dir, mount::{list_gvfs_smb_mounts, list_local_drives, MountEntry}};
 use crate::viewer::{PageMode, ViewerNav, ViewerOutput, ViewerState};
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-enum SortKey {
-    Name,
-    Date,
-    Size,
-}
-
-impl SortKey {
+impl ExplorerSortKey {
     fn label(self) -> &'static str {
         let t = i18n::t();
         match self {
-            SortKey::Name => t.sort_name(),
-            SortKey::Date => t.sort_date(),
-            SortKey::Size => t.sort_size(),
+            Self::Name => t.sort_name(),
+            Self::Date => t.sort_date(),
+            Self::Size => t.sort_size(),
         }
     }
 
     fn as_state_key(self) -> &'static str {
         match self {
-            SortKey::Name => "name",
-            SortKey::Date => "date",
-            SortKey::Size => "size",
+            Self::Name => "name",
+            Self::Date => "date",
+            Self::Size => "size",
         }
     }
 
     fn from_state_key(s: &str) -> Self {
         match s {
-            "date" => SortKey::Date,
-            "size" => SortKey::Size,
-            _ => SortKey::Name,
+            "date" => Self::Date,
+            "size" => Self::Size,
+            _ => Self::Name,
         }
     }
 }
@@ -203,7 +197,7 @@ pub struct NekoviewApp {
     /// ビューアウィンドウをフォーカス前面に出すフラグ
     viewer_focus_requested: bool,
     show_hidden: bool,
-    sort_key: SortKey,
+    sort_key: ExplorerSortKey,
     sort_ascending: bool,
     selected_archive_index: Option<usize>,
     selected_archive_meta: Option<(std::time::SystemTime, u64)>,
@@ -277,7 +271,7 @@ impl NekoviewApp {
             app_toast: None,
             viewer_focus_requested: false,
             show_hidden: false,
-            sort_key: SortKey::from_state_key(&sort_state.key),
+            sort_key: ExplorerSortKey::from_state_key(&sort_state.key),
             sort_ascending: sort_state.ascending,
             selected_archive_index: None,
             selected_archive_meta: None,
@@ -364,7 +358,7 @@ impl NekoviewApp {
     fn sort_archives(&mut self) {
         let ascending = self.sort_ascending;
         match self.sort_key {
-            SortKey::Name => {
+            ExplorerSortKey::Name => {
                 self.archives.sort_by(|a, b| {
                     let na = a.file_name().and_then(|n| n.to_str()).unwrap_or("");
                     let nb = b.file_name().and_then(|n| n.to_str()).unwrap_or("");
@@ -372,7 +366,7 @@ impl NekoviewApp {
                     if ascending { cmp } else { cmp.reverse() }
                 });
             }
-            SortKey::Date => {
+            ExplorerSortKey::Date => {
                 self.archives.sort_by(|a, b| {
                     let ta = std::fs::metadata(a).and_then(|m| m.modified()).ok();
                     let tb = std::fs::metadata(b).and_then(|m| m.modified()).ok();
@@ -380,7 +374,7 @@ impl NekoviewApp {
                     if ascending { cmp } else { cmp.reverse() }
                 });
             }
-            SortKey::Size => {
+            ExplorerSortKey::Size => {
                 self.archives.sort_by(|a, b| {
                     let sa = std::fs::metadata(a).map(|m| m.len()).unwrap_or(0);
                     let sb = std::fs::metadata(b).map(|m| m.len()).unwrap_or(0);
@@ -871,7 +865,7 @@ impl NekoviewApp {
 
             // ── エクスプローラーソート ────────────────────────────────────
             let mut sort_changed = false;
-            for key in [SortKey::Name, SortKey::Date, SortKey::Size] {
+            for key in [ExplorerSortKey::Name, ExplorerSortKey::Date, ExplorerSortKey::Size] {
                 let active = self.sort_key == key;
                 let clicked = ui.scope(|ui| {
                     if active {

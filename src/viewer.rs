@@ -1,5 +1,7 @@
 use crate::i18n;
 use crate::log_key;
+use crate::model::ReaderSortKey as ViewerSortKey;
+pub use crate::model::{PageMode, ViewerEntry};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -41,36 +43,10 @@ impl ViewerOutput {
     }
 }
 
-#[derive(Clone, Copy, PartialEq)]
-pub enum PageMode {
-    /// 1: 単独ページ
-    Single,
-    /// 2: 見開き左綴じ（左→右）
-    SpreadLeft,
-    /// 3: 見開き右綴じ（右→左）
-    SpreadRight,
-}
-
-#[derive(Clone, Copy, PartialEq)]
-enum ViewerSortKey {
-    Name,
-    Natural,
-    Date,
-}
-
 /// GIF等アニメーション再生状態（ページごとに保持）
 struct AnimState {
     frame_index: usize,
     last_frame_at: Instant,
-}
-
-/// ソート済みエントリ。original_index はキャッシュキーに使い、ソートで変化しない。
-#[derive(Clone)]
-pub struct ViewerEntry {
-    pub entry_name: String,    // ZIP 内部パス（ロード用）
-    pub display_name: String,  // 表示用ファイル名
-    pub date_key: u64,         // 日付ソートキー
-    pub original_index: usize, // list_images 返却時の元インデックス（キャッシュキー）
 }
 
 /// show() の先頭で ctx.input を1回だけ呼び、フレーム全体で使い回す入力スナップショット

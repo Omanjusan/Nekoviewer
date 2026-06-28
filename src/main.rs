@@ -4,6 +4,7 @@ mod cache;
 mod config;
 mod fs;
 mod i18n;
+mod model;
 mod neko_dir;
 mod spread_offset;
 mod viewer;
