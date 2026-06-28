@@ -199,18 +199,18 @@ fn eat_digits(iter: &mut std::iter::Peekable<std::str::Chars<'_>>) -> u64 {
 }
 
 pub struct ViewerState {
-    pub archive_path: PathBuf,
-    pub entries: Vec<ViewerEntry>,
+    archive_path: PathBuf,
+    entries: Vec<ViewerEntry>,
     /// 見開き基点ページ（常に偶数。単ページ時はそのままページ番号）
     spread_base: i32,
     /// オフセット状態。spread_lo() = spread_base + offset.value()
     offset: SpreadOffset,
-    pub textures: HashMap<usize, egui::TextureHandle>,
+    textures: HashMap<usize, egui::TextureHandle>,
     open: bool,
-    pub fullscreen: bool,
-    pub page_mode: PageMode,
+    fullscreen: bool,
+    page_mode: PageMode,
     scroll_acc: f32,
-    pub zoom_actual: bool,
+    zoom_actual: bool,
     /// アニメーション検出用: 前フレームの spread_lo()
     prev_spread_lo: i32,
     /// アニメーション開始時点の旧 spread_lo（退場側テクスチャ取得用）
@@ -221,12 +221,12 @@ pub struct ViewerState {
     anim_progress: f32,
     anim_active: bool,
     /// ウィンドウ位置・サイズスロット（F5〜F8 で適用、ボタンで保存）
-    pub slots: [Option<WindowSlot>; 4],
+    slots: [Option<WindowSlot>; 4],
     /// スロット保存後に app 側へ永続化を要求するフラグ
     /// 前フレームの outer_rect 左上座標（保存用、1フレーム遅れ許容）
     outer_pos: Option<egui::Pos2>,
     /// 初回フレームかどうか（with_inner_size を一度だけ渡すため）
-    pub first_frame: bool,
+    first_frame: bool,
     /// 左エントリリストパネルの表示状態（マウスホバーで on/off）
     entry_list_visible: bool,
     /// フルスクリーン時ソートバーの表示状態（上端ホバーで on/off）
@@ -236,7 +236,7 @@ pub struct ViewerState {
     /// アニメーションページの再生状態（original_index → AnimState）
     anim_states: HashMap<usize, AnimState>,
     /// true のとき生画像ファイルを直接表示中（見開きモード封印）
-    pub is_raw_file: bool,
+    is_raw_file: bool,
     /// Shift+スクロールの蓄積値（ファイル間ナビゲーション用）
     shift_scroll_acc: f32,
     /// トーストメッセージ: (テキスト, 消去予定のegui時刻) None=非表示
@@ -244,6 +244,19 @@ pub struct ViewerState {
 }
 
 impl ViewerState {
+    // ── 読み取り専用アクセサ ─────────────────────────────────────────────────
+    pub fn archive_path(&self) -> &PathBuf { &self.archive_path }
+    pub fn entries(&self) -> &[ViewerEntry] { &self.entries }
+    pub fn is_raw_file(&self) -> bool { self.is_raw_file }
+    pub fn page_mode(&self) -> PageMode { self.page_mode }
+
+    /// 初回フレームフラグを取り出す（true を返した後は false に戻す）
+    pub(crate) fn take_first_frame(&mut self) -> bool {
+        let f = self.first_frame;
+        self.first_frame = false;
+        f
+    }
+
     pub fn new(archive_path: PathBuf, slots: [Option<WindowSlot>; 4]) -> Option<Self> {
         let image_entries = archive::list_images(&archive_path);
         if image_entries.is_empty() {
