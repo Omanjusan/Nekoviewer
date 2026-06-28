@@ -504,12 +504,13 @@ impl ViewerState {
             self.outer_pos = Some(outer.min);
         }
 
-        // OSネイティブの最大化（タイトルバーあり最大化）を検知したら
-        // 擬似フルスクリーン（Decorations(false)）に強制変換する。
+        // OSネイティブの最大化（タイトルバーあり最大化）を検知したらフルスクリーンに合流する。
         // タイトルバーあり最大化状態のままだと閉じる際にゴーストが残るため。
+        // Wayland 固有の問題のため Windows では行わない。
+        #[cfg(not(windows))]
         if input.os_maximized && !self.fullscreen {
             self.fullscreen = true;
-            ctx.send_viewport_cmd(egui::ViewportCommand::Decorations(false));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(true));
         }
 
         // ── 入力読み取り（FrameInput から展開）────────────────────────────────
@@ -802,19 +803,34 @@ impl ViewerState {
         if fs_key || middle_clicked {
             self.fullscreen = !self.fullscreen;
             if self.fullscreen {
-                ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(true));
-                ctx.send_viewport_cmd(egui::ViewportCommand::Decorations(false));
+                #[cfg(windows)]
+                ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(true));
+                #[cfg(not(windows))]
+                {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(true));
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Decorations(false));
+                }
             } else {
-                ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(false));
-                ctx.send_viewport_cmd(egui::ViewportCommand::Decorations(true));
+                #[cfg(windows)]
+                ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
+                #[cfg(not(windows))]
+                {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(false));
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Decorations(true));
+                }
             }
             log_key!("[key] fullscreen → {}", self.fullscreen);
         }
 
         if input.close_requested || esc {
             if self.fullscreen {
-                ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(false));
-                ctx.send_viewport_cmd(egui::ViewportCommand::Decorations(true));
+                #[cfg(windows)]
+                ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
+                #[cfg(not(windows))]
+                {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(false));
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Decorations(true));
+                }
             }
             self.open = false;
             self.fullscreen = false;
