@@ -789,14 +789,14 @@ impl NekoviewApp {
             if ctx.input(|i| i.key_pressed(egui::Key::Enter)) {
                 if let Some(idx) = self.selected_archive_index {
                     if let Some(path) = self.archives.get(idx).cloned() {
-                        self.pending_loads.lock().unwrap().clear();
-                        *self.viewer.lock().unwrap() = if self.raw_image_files.contains(&path) {
+                        let state = if self.raw_image_files.contains(&path) {
                             Some(ViewerState::new_raw(path.clone(), self.viewer_slots))
                         } else {
                             ViewerState::new(path.clone(), self.viewer_slots)
                         };
-                        self.ensure_file_cached(path);
-                        self.viewer_focus_requested = true;
+                        if let Some(state) = state {
+                            self.open_viewer(state);
+                        }
                     }
                 }
             }
@@ -1157,10 +1157,7 @@ impl NekoviewApp {
                                 if response.clicked() {
                                     if is_raw && self.selected_archive_index == Some(i) {
                                         // 生ファイル: 選択済み状態のシングルクリックで開く
-                                        self.pending_loads.lock().unwrap().clear();
-                                        *self.viewer.lock().unwrap() = Some(ViewerState::new_raw(path.clone(), self.viewer_slots));
-                                        self.ensure_file_cached(path.clone());
-                                        self.viewer_focus_requested = true;
+                                        self.open_viewer(ViewerState::new_raw(path.clone(), self.viewer_slots));
                                     } else {
                                         self.selected_archive_index = Some(i);
                                         self.selected_archive_meta = std::fs::metadata(path)
@@ -1176,12 +1173,9 @@ impl NekoviewApp {
                                             std::time::Instant::now(),
                                         ));
                                     } else {
-                                        self.pending_loads.lock().unwrap().clear();
                                         match ViewerState::new(path.clone(), self.viewer_slots) {
                                             Some(state) => {
-                                                *self.viewer.lock().unwrap() = Some(state);
-                                                self.ensure_file_cached(path.clone());
-                                                self.viewer_focus_requested = true;
+                                                self.open_viewer(state);
                                             }
                                             None => {
                                                 let p = path.clone();
@@ -1279,12 +1273,8 @@ impl NekoviewApp {
             ViewerNav::PrevFile => {
                 if let Some(from) = self.selected_archive_index {
                     if let Some((idx, state)) = self.find_next_valid(from, -1) {
-                        let path = state.archive_path().clone();
                         self.selected_archive_index = Some(idx);
-                        self.pending_loads.lock().unwrap().clear();
-                        *self.viewer.lock().unwrap() = Some(state);
-                        self.ensure_file_cached(path);
-                        self.viewer_focus_requested = true;
+                        self.open_viewer(state);
                     } else {
                         if let Some(v) = self.viewer.lock().unwrap().as_mut() {
                             v.set_toast(i18n::t().toast_no_prev().to_string());
@@ -1295,12 +1285,8 @@ impl NekoviewApp {
             ViewerNav::NextFile => {
                 if let Some(from) = self.selected_archive_index {
                     if let Some((idx, state)) = self.find_next_valid(from, 1) {
-                        let path = state.archive_path().clone();
                         self.selected_archive_index = Some(idx);
-                        self.pending_loads.lock().unwrap().clear();
-                        *self.viewer.lock().unwrap() = Some(state);
-                        self.ensure_file_cached(path);
-                        self.viewer_focus_requested = true;
+                        self.open_viewer(state);
                     } else {
                         if let Some(v) = self.viewer.lock().unwrap().as_mut() {
                             v.set_toast(i18n::t().toast_no_next().to_string());
@@ -1317,6 +1303,15 @@ impl NekoviewApp {
             let _ = self.file_cache_req_tx.send(path.clone());
             self.file_cache_pending.insert(path);
         }
+    }
+
+    /// ビューアを開く（ページキャッシュクリア・ファイルキャッシュ投入・フォーカス要求を一括処理）
+    fn open_viewer(&mut self, state: ViewerState) {
+        let path = state.archive_path().clone();
+        self.pending_loads.lock().unwrap().clear();
+        *self.viewer.lock().unwrap() = Some(state);
+        self.ensure_file_cached(path);
+        self.viewer_focus_requested = true;
     }
 }
 
