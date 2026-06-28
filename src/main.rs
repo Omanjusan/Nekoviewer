@@ -2,6 +2,7 @@ mod anim;
 mod app;
 mod cache;
 mod config;
+mod controller;
 mod fs;
 mod i18n;
 mod model;

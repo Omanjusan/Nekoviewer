@@ -1,3 +1,4 @@
+use crate::controller::{ViewerNav, ViewerOutput};
 use crate::i18n;
 use crate::log_key;
 use crate::model::ReaderSortKey as ViewerSortKey;
@@ -18,29 +19,6 @@ const FULL_UV: egui::Rect =
 
 fn ease_out(t: f32) -> f32 {
     1.0 - (1.0 - t).powi(3)
-}
-
-/// viewer.show() の戻り値。ファイル間ナビゲーションの要求を app 側に伝える。
-#[derive(Clone, Copy, PartialEq)]
-pub enum ViewerNav {
-    None,
-    PrevFile,
-    NextFile,
-}
-
-/// viewer.show() の戻り値。viewer → app への通知をまとめて返す。
-#[derive(Clone)]
-pub struct ViewerOutput {
-    pub nav: ViewerNav,
-    pub close_requested: bool,
-    /// Some(_) のとき app 側でスロットを永続化する
-    pub save_slots: Option<[Option<WindowSlot>; 4]>,
-}
-
-impl ViewerOutput {
-    pub fn none() -> Self {
-        Self { nav: ViewerNav::None, close_requested: false, save_slots: None }
-    }
 }
 
 /// GIF等アニメーション再生状態（ページごとに保持）

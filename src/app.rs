@@ -4,11 +4,12 @@ use std::sync::{Arc, Mutex, mpsc};
 
 use crate::cache::{FileCache, LoadRequest, LoadResult, PageCache, ThumbRequest, ThumbResult, spawn_worker, spawn_thumb_worker, spawn_file_cache_worker};
 use crate::config::{AppConfig, SortState, WindowSlot};
+use crate::controller::{self, ViewerNav, ViewerOutput};
 use crate::i18n;
 use crate::model::ExplorerSortKey;
 use crate::neko_dir;
 use crate::fs::{dir, mount::{list_gvfs_smb_mounts, list_local_drives, MountEntry}};
-use crate::viewer::{PageMode, ViewerNav, ViewerOutput, ViewerState};
+use crate::viewer::{PageMode, ViewerState};
 
 impl ExplorerSortKey {
     fn label(self) -> &'static str {
@@ -1240,25 +1241,27 @@ impl NekoviewApp {
     /// direction(+1/-1) 方向に from_idx から次の有効ファイルを探す。
     /// キャッシュ済み無効ZIPはスキップ、未判定は ViewerState::new() で確認して無効なら登録しスキップ。
     fn find_next_valid(&mut self, from_idx: usize, direction: i32) -> Option<(usize, ViewerState)> {
-        let total = self.archives.len() as i32;
-        let mut idx = from_idx as i32 + direction;
+        let mut skip_idx = from_idx;
         loop {
-            if idx < 0 || idx >= total {
-                return None;
-            }
-            let path = self.archives[idx as usize].clone();
-            if self.raw_image_files.contains(&path) {
-                return Some((idx as usize, ViewerState::new_raw(path, self.viewer_slots)));
-            }
-            if self.invalid_archives.contains(&path) {
-                idx += direction;
-                continue;
-            }
-            match ViewerState::new(path.clone(), self.viewer_slots) {
-                Some(state) => return Some((idx as usize, state)),
-                None => {
-                    self.mark_archive_invalid(&path);
-                    idx += direction;
+            match controller::find_next_file(
+                &self.archives,
+                &self.raw_image_files,
+                &self.invalid_archives,
+                skip_idx,
+                direction,
+            ) {
+                None => return None,
+                Some((idx, path, true)) => {
+                    return Some((idx, ViewerState::new_raw(path, self.viewer_slots)));
+                }
+                Some((idx, path, false)) => {
+                    match ViewerState::new(path.clone(), self.viewer_slots) {
+                        Some(state) => return Some((idx, state)),
+                        None => {
+                            self.mark_archive_invalid(&path);
+                            skip_idx = idx;
+                        }
+                    }
                 }
             }
         }
