@@ -489,85 +489,9 @@ impl ViewerState {
         let t = ease_out(self.anim_progress);
         let animating = self.anim_active;
 
+        self.update_textures(&ctx, page_cache);
+
         let total = self.entries.len();
-        let anchor = self.spread_lo().max(0) as usize;
-        let start = anchor.saturating_sub(5);
-        let end = (anchor + 10 + 1).min(total);
-
-        let now = Instant::now();
-        let mut min_repaint_after = Duration::MAX;
-
-        for i in start..end {
-            let orig_i = self.entries[i].original_index;
-            match page_cache.get(&self.archive_path, orig_i) {
-                Some(PageContent::Static(img)) => {
-                    if !self.textures.contains_key(&orig_i) {
-                        let color_image = egui::ColorImage::from_rgba_unmultiplied(
-                            [img.width() as usize, img.height() as usize],
-                            img.as_raw(),
-                        );
-                        let tex = ctx.load_texture(
-                            format!("page_{orig_i}"),
-                            color_image,
-                            egui::TextureOptions::LINEAR,
-                        );
-                        self.textures.insert(orig_i, tex);
-                    }
-                }
-                Some(PageContent::Animated(anim)) => {
-                    let state = self.anim_states.entry(orig_i).or_insert_with(|| AnimState {
-                        frame_index: 0,
-                        last_frame_at: now,
-                    });
-                    let elapsed = now.duration_since(state.last_frame_at);
-                    let current_delay = anim.frames[state.frame_index].delay;
-
-                    let needs_upload = if elapsed >= current_delay {
-                        // フレームを進める（ループ回数は将来対応、現状は無限ループ）
-                        state.frame_index = (state.frame_index + 1) % anim.frames.len();
-                        state.last_frame_at = now;
-                        true
-                    } else {
-                        !self.textures.contains_key(&orig_i)
-                    };
-
-                    if needs_upload {
-                        let img = &anim.frames[state.frame_index].image;
-                        let color_image = egui::ColorImage::from_rgba_unmultiplied(
-                            [img.width() as usize, img.height() as usize],
-                            img.as_raw(),
-                        );
-                        let tex = ctx.load_texture(
-                            format!("page_{orig_i}"),
-                            color_image,
-                            egui::TextureOptions::LINEAR,
-                        );
-                        self.textures.insert(orig_i, tex);
-                    }
-
-                    // 次フレームまでの残余時間を収集（最小値で repaint 予約）
-                    let elapsed_after_upload = now.duration_since(state.last_frame_at);
-                    let next_delay = anim.frames[state.frame_index].delay;
-                    let remaining = next_delay.saturating_sub(elapsed_after_upload);
-                    min_repaint_after = min_repaint_after.min(remaining);
-                }
-                None => {
-                    ctx.request_repaint_after(Duration::from_millis(100));
-                }
-            }
-        }
-
-        let window_orig: HashSet<usize> = (start..end)
-            .map(|i| self.entries[i].original_index)
-            .collect();
-        self.textures.retain(|orig_i, _| window_orig.contains(orig_i));
-        self.anim_states.retain(|orig_i, _| window_orig.contains(orig_i));
-
-        // アニメーションページが存在する場合は次フレームまでの時間で再描画を予約
-        if min_repaint_after < Duration::MAX {
-            ctx.request_repaint_after(min_repaint_after);
-        }
-
         let (tex_lo, tex_hi) = self.page_textures_for(self.spread_lo());
         let (prev_tex_lo, prev_tex_hi) = if animating {
             self.page_textures_for(self.anim_from_lo)
@@ -676,28 +600,7 @@ impl ViewerState {
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
                         // ── 左: ZIPエントリのソートボタン ──
-                        let mut sort_changed = false;
-                        let t = i18n::t();
-                        for (key, label) in [
-                            (ViewerSortKey::Name,    t.sort_name()),
-                            (ViewerSortKey::Natural, t.sort_natural()),
-                            (ViewerSortKey::Date,    t.sort_date()),
-                        ] {
-                            let active = self.sort_key == key;
-                            if ui.selectable_label(active, label).clicked() {
-                                self.sort_key = key;
-                                sort_changed = true;
-                            }
-                        }
-                        ui.label(":");
-                        let order_label = if self.sort_ascending { t.sort_asc() } else { t.sort_desc() };
-                        if ui.button(order_label).clicked() {
-                            self.sort_ascending = !self.sort_ascending;
-                            sort_changed = true;
-                        }
-                        if sort_changed {
-                            self.sort_entries();
-                        }
+                        self.draw_sort_buttons(ui);
 
                         // ── 右: ウィンドウ位置スロットボタン ──
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -746,71 +649,13 @@ impl ViewerState {
                 egui::Panel::top("fs_sort_bar")
                     .frame(egui::Frame::side_top_panel(&viewer_style))
                     .show(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            let mut sort_changed = false;
-                            let t = i18n::t();
-                            for (key, label) in [
-                                (ViewerSortKey::Name,    t.sort_name()),
-                                (ViewerSortKey::Natural, t.sort_natural()),
-                                (ViewerSortKey::Date,    t.sort_date()),
-                            ] {
-                                let active = self.sort_key == key;
-                                if ui.selectable_label(active, label).clicked() {
-                                    self.sort_key = key;
-                                    sort_changed = true;
-                                }
-                            }
-                            ui.label(":");
-                            let order_label = if self.sort_ascending { t.sort_asc() } else { t.sort_desc() };
-                            if ui.button(order_label).clicked() {
-                                self.sort_ascending = !self.sort_ascending;
-                                sort_changed = true;
-                            }
-                            if sort_changed {
-                                self.sort_entries();
-                            }
-                        });
+                        ui.horizontal(|ui| { self.draw_sort_buttons(ui); });
                     });
             }
         }
 
-        // ── 左エントリリストのホバー制御 ──────────────────────────────────────
-        const ENTRY_PANEL_W: f32 = 180.0;
-        const TRIGGER_W: f32 = 40.0;
-        const HIDE_MARGIN: f32 = 20.0;
-
-        let screen_left = input.viewport_rect.min.x;
-        if let Some(pos) = input.hover_pos {
-            if !self.entry_list_visible && pos.x < screen_left + TRIGGER_W {
-                self.entry_list_visible = true;
-                ctx.request_repaint();
-            } else if self.entry_list_visible && pos.x > screen_left + ENTRY_PANEL_W + HIDE_MARGIN {
-                self.entry_list_visible = false;
-                ctx.request_repaint();
-            }
-        }
-
-        if self.entry_list_visible {
-            let current_lo = self.spread_lo().max(0) as usize;
-            let is_spread = self.page_mode != PageMode::Single;
-            let entries_snap = self.entries.clone();
-
-            egui::Panel::left("entry_list_panel")
-                .exact_size(ENTRY_PANEL_W)
-                .frame(egui::Frame::side_top_panel(&viewer_style))
-                .show(ui, |ui| {
-                    egui::ScrollArea::vertical()
-                        .auto_shrink([false, false])
-                        .show(ui, |ui| {
-                            let total = entries_snap.len();
-                            for (i, entry) in entries_snap.iter().enumerate() {
-                                let is_cur = i == current_lo
-                                    || (is_spread && current_lo + 1 < total && i == current_lo + 1);
-                                let _ = ui.selectable_label(is_cur, &entry.display_name);
-                            }
-                        });
-                });
-        }
+        // ── 左エントリリスト ──────────────────────────────────────────────────
+        self.draw_entry_list(ui, &ctx, &viewer_style, input.hover_pos, input.viewport_rect);
 
         let mut double_clicked = false;
         let middle_clicked = input.middle_clicked;
@@ -995,6 +840,157 @@ impl ViewerState {
         }
 
         ViewerOutput { nav, close_requested: close_self, save_slots }
+    }
+
+    /// 表示ウィンドウ付近のページをキャッシュからテクスチャに変換し、
+    /// ウィンドウ外のテクスチャを破棄する。GIF アニメーションのフレーム送りも担う。
+    fn update_textures(&mut self, ctx: &egui::Context, page_cache: &PageCache) {
+        let total = self.entries.len();
+        let anchor = self.spread_lo().max(0) as usize;
+        let start = anchor.saturating_sub(5);
+        let end = (anchor + 10 + 1).min(total);
+
+        let now = Instant::now();
+        let mut min_repaint_after = Duration::MAX;
+
+        for i in start..end {
+            let orig_i = self.entries[i].original_index;
+            match page_cache.get(&self.archive_path, orig_i) {
+                Some(PageContent::Static(img)) => {
+                    if !self.textures.contains_key(&orig_i) {
+                        let color_image = egui::ColorImage::from_rgba_unmultiplied(
+                            [img.width() as usize, img.height() as usize],
+                            img.as_raw(),
+                        );
+                        let tex = ctx.load_texture(
+                            format!("page_{orig_i}"),
+                            color_image,
+                            egui::TextureOptions::LINEAR,
+                        );
+                        self.textures.insert(orig_i, tex);
+                    }
+                }
+                Some(PageContent::Animated(anim)) => {
+                    let state = self.anim_states.entry(orig_i).or_insert_with(|| AnimState {
+                        frame_index: 0,
+                        last_frame_at: now,
+                    });
+                    let elapsed = now.duration_since(state.last_frame_at);
+                    let current_delay = anim.frames[state.frame_index].delay;
+
+                    let needs_upload = if elapsed >= current_delay {
+                        state.frame_index = (state.frame_index + 1) % anim.frames.len();
+                        state.last_frame_at = now;
+                        true
+                    } else {
+                        !self.textures.contains_key(&orig_i)
+                    };
+
+                    if needs_upload {
+                        let img = &anim.frames[state.frame_index].image;
+                        let color_image = egui::ColorImage::from_rgba_unmultiplied(
+                            [img.width() as usize, img.height() as usize],
+                            img.as_raw(),
+                        );
+                        let tex = ctx.load_texture(
+                            format!("page_{orig_i}"),
+                            color_image,
+                            egui::TextureOptions::LINEAR,
+                        );
+                        self.textures.insert(orig_i, tex);
+                    }
+
+                    let elapsed_after_upload = now.duration_since(state.last_frame_at);
+                    let next_delay = anim.frames[state.frame_index].delay;
+                    let remaining = next_delay.saturating_sub(elapsed_after_upload);
+                    min_repaint_after = min_repaint_after.min(remaining);
+                }
+                None => {
+                    ctx.request_repaint_after(Duration::from_millis(100));
+                }
+            }
+        }
+
+        let window_orig: HashSet<usize> = (start..end)
+            .map(|i| self.entries[i].original_index)
+            .collect();
+        self.textures.retain(|orig_i, _| window_orig.contains(orig_i));
+        self.anim_states.retain(|orig_i, _| window_orig.contains(orig_i));
+
+        if min_repaint_after < Duration::MAX {
+            ctx.request_repaint_after(min_repaint_after);
+        }
+    }
+
+    /// 左エントリリストパネル（ホバー制御 + 描画）
+    fn draw_entry_list(
+        &mut self,
+        ui: &mut egui::Ui,
+        ctx: &egui::Context,
+        viewer_style: &egui::Style,
+        hover_pos: Option<egui::Pos2>,
+        viewport_rect: egui::Rect,
+    ) {
+        const ENTRY_PANEL_W: f32 = 180.0;
+        const TRIGGER_W: f32 = 40.0;
+        const HIDE_MARGIN: f32 = 20.0;
+
+        let screen_left = viewport_rect.min.x;
+        if let Some(pos) = hover_pos {
+            if !self.entry_list_visible && pos.x < screen_left + TRIGGER_W {
+                self.entry_list_visible = true;
+                ctx.request_repaint();
+            } else if self.entry_list_visible && pos.x > screen_left + ENTRY_PANEL_W + HIDE_MARGIN {
+                self.entry_list_visible = false;
+                ctx.request_repaint();
+            }
+        }
+
+        if self.entry_list_visible {
+            let current_lo = self.spread_lo().max(0) as usize;
+            let is_spread = self.page_mode != PageMode::Single;
+            let entries_snap = self.entries.clone();
+
+            egui::Panel::left("entry_list_panel")
+                .exact_size(ENTRY_PANEL_W)
+                .frame(egui::Frame::side_top_panel(viewer_style))
+                .show(ui, |ui| {
+                    egui::ScrollArea::vertical()
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            let total = entries_snap.len();
+                            for (i, entry) in entries_snap.iter().enumerate() {
+                                let is_cur = i == current_lo
+                                    || (is_spread && current_lo + 1 < total && i == current_lo + 1);
+                                let _ = ui.selectable_label(is_cur, &entry.display_name);
+                            }
+                        });
+                });
+        }
+    }
+
+    /// ソートキー切り替えボタン群（通常バーとフルスクリーンバーで共用）
+    fn draw_sort_buttons(&mut self, ui: &mut egui::Ui) {
+        let mut sort_changed = false;
+        let t = i18n::t();
+        for (key, label) in [
+            (ViewerSortKey::Name,    t.sort_name()),
+            (ViewerSortKey::Natural, t.sort_natural()),
+            (ViewerSortKey::Date,    t.sort_date()),
+        ] {
+            let active = self.sort_key == key;
+            if ui.selectable_label(active, label).clicked() {
+                self.sort_key = key;
+                sort_changed = true;
+            }
+        }
+        ui.label(":");
+        let order_label = if self.sort_ascending { t.sort_asc() } else { t.sort_desc() };
+        if ui.button(order_label).clicked() {
+            self.sort_ascending = !self.sort_ascending;
+            sort_changed = true;
+        }
+        if sort_changed { self.sort_entries(); }
     }
 
     fn render_single(
