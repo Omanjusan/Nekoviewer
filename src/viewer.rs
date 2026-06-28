@@ -765,8 +765,12 @@ impl ViewerState {
         let mut nav = ViewerNav::None;
         if (shift_nav_up   || shift_scroll_prev) && at_first { nav = ViewerNav::PrevFile; }
         if (shift_nav_down || shift_scroll_next) && at_last  { nav = ViewerNav::NextFile; }
-        if key_left  { nav = ViewerNav::PrevFile; }
-        if key_right { nav = ViewerNav::NextFile; }
+        if key_left {
+            nav = ViewerNav::PrevFile;
+        }
+        if key_right {
+            nav = ViewerNav::NextFile;
+        }
 
         // ── ページ送り ───────────────────────────────────────────────────────
         self.scroll_acc += scroll_delta;
