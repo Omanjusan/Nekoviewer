@@ -544,8 +544,6 @@ impl ViewerState {
         let shift_nav_down   = input.shift_nav_down;
         let scroll_delta_raw = input.scroll_delta;
         let shift_scroll_delta = input.shift_scroll_delta;
-        let slot_apply       = input.slot_apply;
-
         let scroll_delta = scroll_delta_raw;
 
         if key_left || key_right || key_up || key_down || key_space || esc || zoom_key || fs_key
@@ -577,11 +575,44 @@ impl ViewerState {
         // タイトルを独立ウィンドウのタイトルバーに反映
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(self.title()));
 
+        save_slots = self.draw_top_bar(ui, &ctx, &input, &viewer_style);
+
+        // ── 左エントリリスト ──────────────────────────────────────────────────
+        self.draw_entry_list(ui, &ctx, &viewer_style, input.hover_pos, input.viewport_rect);
+
+        let frame = RenderFrame {
+            tex_lo, tex_hi, prev_tex_lo, prev_tex_hi,
+            animating,
+            t,
+            anim_dir_f:  self.anim_dir as f32,
+            page_mode:   self.page_mode,
+            zoom_actual: self.zoom_actual,
+            monitor:     input.monitor_size,
+        };
+        let double_clicked = self.draw_central_panel(ui, &frame);
+
+        let nav = self.process_navigation(&input, is_spread, step, total);
+
+        let close_self = self.process_misc_input(&ctx, &input, is_spread, double_clicked);
+
+        self.tick_toast(&ctx, input.time);
+
+        ViewerOutput { nav, close_requested: close_self, save_slots }
+    }
+
+    fn draw_top_bar(
+        &mut self,
+        ui: &mut egui::Ui,
+        ctx: &egui::Context,
+        input: &FrameInput,
+        style: &egui::Style,
+    ) -> Option<[Option<WindowSlot>; 4]> {
+        let mut save_slots = None;
+
         // ── スロット適用（F5〜F8）────────────────────────────────────────────
-        if let Some(idx) = slot_apply {
+        if let Some(idx) = input.slot_apply {
             if let Some(slot) = self.slots[idx] {
-                let monitor = input.monitor_size;
-                let (cx, cy) = if let Some(m) = monitor {
+                let (cx, cy) = if let Some(m) = input.monitor_size {
                     Self::clamp_slot_position_inner(slot.x, slot.y, slot.w, slot.h, m)
                 } else {
                     (slot.x, slot.y)
@@ -599,20 +630,16 @@ impl ViewerState {
         // ── メニューバー（フルスクリーン時は非表示）────────────────────────────
         if !self.fullscreen {
             egui::Panel::top("slot_bar")
-                .frame(egui::Frame::side_top_panel(&viewer_style))
+                .frame(egui::Frame::side_top_panel(style))
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
-                        // ── 左: ZIPエントリのソートボタン ──
                         self.draw_sort_buttons(ui);
-
-                        // ── 右: ウィンドウ位置スロットボタン ──
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             for i in (0..4usize).rev() {
                                 let label = i18n::t().slot_label(i + 5);
                                 let has_slot = self.slots[i].is_some();
                                 if ui.selectable_label(has_slot, &label).clicked() {
-                                    let inner = input.inner_rect;
-                                    if let (Some(pos), Some(inner)) = (self.outer_pos, inner) {
+                                    if let (Some(pos), Some(inner)) = (self.outer_pos, input.inner_rect) {
                                         self.slots[i] = Some(WindowSlot {
                                             x: pos.x as i32,
                                             y: pos.y as i32,
@@ -650,34 +677,14 @@ impl ViewerState {
 
             if self.fs_sort_bar_visible {
                 egui::Panel::top("fs_sort_bar")
-                    .frame(egui::Frame::side_top_panel(&viewer_style))
+                    .frame(egui::Frame::side_top_panel(style))
                     .show(ui, |ui| {
                         ui.horizontal(|ui| { self.draw_sort_buttons(ui); });
                     });
             }
         }
 
-        // ── 左エントリリスト ──────────────────────────────────────────────────
-        self.draw_entry_list(ui, &ctx, &viewer_style, input.hover_pos, input.viewport_rect);
-
-        let frame = RenderFrame {
-            tex_lo, tex_hi, prev_tex_lo, prev_tex_hi,
-            animating,
-            t,
-            anim_dir_f:  self.anim_dir as f32,
-            page_mode:   self.page_mode,
-            zoom_actual: self.zoom_actual,
-            monitor:     input.monitor_size,
-        };
-        let double_clicked = self.draw_central_panel(ui, &frame);
-
-        let nav = self.process_navigation(&input, is_spread, step, total);
-
-        let close_self = self.process_misc_input(&ctx, &input, is_spread, double_clicked);
-
-        self.tick_toast(&ctx, input.time);
-
-        ViewerOutput { nav, close_requested: close_self, save_slots }
+        save_slots
     }
 
     fn process_navigation(
