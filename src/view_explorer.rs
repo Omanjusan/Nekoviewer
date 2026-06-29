@@ -753,39 +753,61 @@ impl NekoviewApp {
         let cell_h = self.config.thumb_size as f32;
         const KEY_GAP: f32 = 8.0;
         if total > 0 {
+            let viewer_is_open = self.viewer.lock().unwrap().is_some();
             let prev = self.selected_archive_index;
-            ctx.input_mut(|i| {
-                if i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowRight) {
+
+            // キー入力を一括消費してからクロージャ外で処理する（borrow 競合回避）
+            let (key_left, key_right, key_down, key_up) = ctx.input_mut(|i| (
+                i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowLeft),
+                i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowRight),
+                i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown),
+                i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp),
+            ));
+
+            if viewer_is_open {
+                // ビューア起動中: 左右キーでファイル間ナビゲーション
+                // Windows ではビューアウィンドウがキーフォーカスを得られない場合があるため、
+                // メインウィンドウ側でも左右キーをファイルナビゲーションとして処理する。
+                // ビューアが正しくフォーカスを持つ場合（Linux 等）はメインウィンドウ側に
+                // キーイベントが届かないため、二重ナビゲーションは発生しない。
+                if key_right { self.handle_viewer_nav(ViewerNav::NextFile); }
+                if key_left  { self.handle_viewer_nav(ViewerNav::PrevFile); }
+            } else {
+                // ビューア未起動時: 左右キーでグリッド選択移動
+                if key_right {
                     if let Some(idx) = self.selected_archive_index {
                         if idx + 1 < total {
                             self.selected_archive_index = Some(idx + 1);
                         }
                     }
                 }
-                if i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowLeft) {
+                if key_left {
                     if let Some(idx) = self.selected_archive_index {
                         if idx > 0 {
                             self.selected_archive_index = Some(idx - 1);
                         }
                     }
                 }
-                if i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown) {
-                    if let Some(idx) = self.selected_archive_index {
-                        let current_row = idx / cols;
-                        let last_row = (total - 1) / cols;
-                        if current_row < last_row {
-                            self.selected_archive_index = Some((idx + cols).min(total - 1));
-                        }
+            }
+
+            // 上下キーは常にグリッド選択移動
+            if key_down {
+                if let Some(idx) = self.selected_archive_index {
+                    let current_row = idx / cols;
+                    let last_row = (total - 1) / cols;
+                    if current_row < last_row {
+                        self.selected_archive_index = Some((idx + cols).min(total - 1));
                     }
                 }
-                if i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp) {
-                    if let Some(idx) = self.selected_archive_index {
-                        if idx >= cols {
-                            self.selected_archive_index = Some(idx - cols);
-                        }
+            }
+            if key_up {
+                if let Some(idx) = self.selected_archive_index {
+                    if idx >= cols {
+                        self.selected_archive_index = Some(idx - cols);
                     }
                 }
-            });
+            }
+
             if ctx.input(|i| i.key_pressed(egui::Key::Enter)) {
                 if let Some(idx) = self.selected_archive_index {
                     if let Some(path) = self.archives.get(idx).cloned() {
