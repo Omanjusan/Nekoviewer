@@ -207,6 +207,14 @@ pub struct NekoviewApp {
     explorer_cols: usize,
     explorer_scroll_offset: f32,
     explorer_viewport_h: f32,
+    /// ステータスウィンドウ表示フラグ（[?] ボタンでトグル）
+    show_status_window: bool,
+    status_window_data: Arc<Mutex<crate::view_status::StatusData>>,
+    status_window_closing: Arc<Mutex<bool>>,
+    /// ステータスデータを最後に更新した時刻（1秒間隔制御用）
+    last_status_update: std::time::Instant,
+    /// 各 View から controller 経由でセットされる即時更新要求フラグ
+    status_update_requested: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl NekoviewApp {
@@ -282,6 +290,11 @@ impl NekoviewApp {
             explorer_cols: 1,
             explorer_scroll_offset: 0.0,
             explorer_viewport_h: 0.0,
+            show_status_window: false,
+            status_window_data: Arc::new(Mutex::new(crate::view_status::StatusData::default())),
+            status_window_closing: Arc::new(Mutex::new(false)),
+            last_status_update: std::time::Instant::now(),
+            status_update_requested: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         };
         app.start_scan();
         app
@@ -480,6 +493,7 @@ impl eframe::App for NekoviewApp {
         }
 
         self.handle_explorer_keys(&ctx);
+        self.draw_status_window(&ctx);
         self.draw_toast(&ctx);
         ctx.request_repaint();
     }
@@ -650,6 +664,7 @@ impl NekoviewApp {
                 self.viewer_focus_requested = false;
                 let viewer_closing_arc = Arc::clone(&self.viewer_closing);
                 let viewer_cfg_arc = Arc::clone(&self.viewer_cfg);
+                let status_update_flag = Arc::clone(&self.status_update_requested);
 
                 ctx.show_viewport_deferred(
                     egui::ViewportId::from_hash_of("viewer_window"),
@@ -715,7 +730,13 @@ impl NekoviewApp {
                             let close = if let Some(viewer) = viewer_guard.as_mut() {
                                 let output = viewer.show(vp_ui, &*page_cache_guard, &mut *cfg_guard);
                                 let close = output.close_requested;
+                                let had_nav = output.nav != ViewerNav::None;
                                 *nav_arc.lock().unwrap() = output;
+                                // ナビゲーション発生時は root を叩き起こしてステータスを即時更新する
+                                if had_nav || close {
+                                    controller::request_status_update(&status_update_flag);
+                                    vp_ui.ctx().request_repaint_of(egui::ViewportId::ROOT);
+                                }
                                 close
                             } else {
                                 false
@@ -927,9 +948,12 @@ impl NekoviewApp {
                 self.sort_archives();
             }
 
-            // ── メモリ情報ボタン（右端） ──────────────────────────────────
+            // ── ステータスウィンドウボタン（右端） ────────────────────────
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let btn = ui.button("[?]");
+                if btn.clicked() {
+                    self.show_status_window = !self.show_status_window;
+                }
 
                 ui.separator();
 
@@ -950,17 +974,6 @@ impl NekoviewApp {
                         );
                     }
                 }
-                egui::Popup::from_toggle_button_response(&btn)
-                    .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-                    .show(|ui| {
-                        ui.set_min_width(200.0);
-                        let page_cache_guard = self.page_cache.lock().unwrap();
-                        let used = page_cache_guard.total_bytes();
-                        let max  = page_cache_guard.max_bytes();
-                        let used_mb = used / (1024 * 1024);
-                        let max_mb  = max  / (1024 * 1024);
-                        ui.label(i18n::t().cache_usage(used_mb, max_mb));
-                    });
             });
         });
     }
@@ -1236,6 +1249,47 @@ impl NekoviewApp {
         // ユーザーの手動スクロールを読み戻してストアを更新
         self.explorer_scroll_offset = output.state.offset.y;
         self.explorer_viewport_h = output.inner_rect.height();
+    }
+
+    fn draw_status_window(&mut self, ctx: &egui::Context) {
+        if self.show_status_window {
+            let force = self.status_update_requested.swap(false, std::sync::atomic::Ordering::Relaxed);
+            let elapsed = self.last_status_update.elapsed();
+            if force || elapsed >= std::time::Duration::from_secs(1) {
+                self.last_status_update = std::time::Instant::now();
+                let mut data = self.status_window_data.lock().unwrap();
+                let page_cache = self.page_cache.lock().unwrap();
+                controller::update_status_data(
+                    &mut data,
+                    page_cache.total_bytes(),
+                    page_cache.max_bytes(),
+                    self.file_cache.total_bytes(),
+                    self.file_cache.max_bytes(),
+                );
+
+                #[cfg(debug_assertions)]
+                controller::update_status_data_debug(
+                    &mut data,
+                    ctx.input(|i| i.stable_dt) * 1000.0,
+                    self.thumb_pending.len(),
+                    self.pending_loads.lock().unwrap().len(),
+                    self.thumbnails.len(),
+                    match &self.scan_state {
+                        ScanState::Idle      => "idle",
+                        ScanState::Loading { .. } => "loading",
+                        ScanState::Done      => "done",
+                    },
+                );
+            }
+            ctx.request_repaint_after(std::time::Duration::from_secs(1));
+        }
+
+        crate::view_status::show(
+            ctx,
+            &mut self.show_status_window,
+            &self.status_window_data,
+            &self.status_window_closing,
+        );
     }
 
     fn draw_toast(&mut self, ctx: &egui::Context) {

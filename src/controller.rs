@@ -1,7 +1,10 @@
 use std::collections::HashSet;
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::config::WindowSlot;
+use crate::view_status::StatusData;
 
 // ── viewer → controller 間メッセージ ───────────────────────────────────────
 
@@ -26,6 +29,48 @@ impl ViewerOutput {
     pub fn none() -> Self {
         Self { nav: ViewerNav::None, close_requested: false, save_slots: None }
     }
+}
+
+// ── ステータス即時更新要求 ────────────────────────────────────────────────────
+
+/// ステータスウィンドウのデータを次フレームで即時更新するよう要求する。
+/// 呼び出し元 viewport が root でない場合は
+/// `ctx.request_repaint_of(egui::ViewportId::ROOT)` も併せて発行すること。
+pub fn request_status_update(flag: &Arc<AtomicBool>) {
+    flag.store(true, Ordering::Relaxed);
+}
+
+// ── ステータスデータ更新 ──────────────────────────────────────────────────────
+
+/// リリース/デバッグ共通フィールドを更新する
+pub fn update_status_data(
+    data: &mut StatusData,
+    page_cache_used_bytes: usize,
+    page_cache_max_bytes: usize,
+    file_cache_used_bytes: usize,
+    file_cache_max_bytes: usize,
+) {
+    data.page_cache_used_bytes = page_cache_used_bytes;
+    data.page_cache_max_bytes  = page_cache_max_bytes;
+    data.file_cache_used_bytes = file_cache_used_bytes;
+    data.file_cache_max_bytes  = file_cache_max_bytes;
+}
+
+/// デバッグビルド専用フィールドを更新する
+#[cfg(debug_assertions)]
+pub fn update_status_data_debug(
+    data: &mut StatusData,
+    frame_dt_ms: f32,
+    thumb_pending: usize,
+    pending_loads: usize,
+    thumbnails_loaded: usize,
+    scan_state: &'static str,
+) {
+    data.frame_dt_ms      = frame_dt_ms;
+    data.thumb_pending    = thumb_pending;
+    data.pending_loads    = pending_loads;
+    data.thumbnails_loaded = thumbnails_loaded;
+    data.scan_state       = scan_state;
 }
 
 // ── ナビゲーション純粋ロジック ────────────────────────────────────────────

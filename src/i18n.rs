@@ -184,14 +184,6 @@ impl Lang {
         }
     }
 
-    pub fn cache_usage(self, used_mb: usize, max_mb: usize) -> String {
-        match self {
-            Lang::Japanese => format!("キャッシュ使用量: {} MB / {} MB", used_mb, max_mb),
-            Lang::English  => format!("Cache: {} MB / {} MB", used_mb, max_mb),
-            Lang::Chinese  => format!("缓存占用: {} MB / {} MB", used_mb, max_mb),
-        }
-    }
-
     pub fn thumb_saved(self, saved: usize, total: usize) -> String {
         match self {
             Lang::Japanese => format!("サムネ保存: {} / {}", saved, total),

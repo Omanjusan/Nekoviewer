@@ -9,6 +9,7 @@ mod neko_dir;
 mod spread_offset;
 mod view_explorer;
 mod view_reader;
+mod view_status;
 
 use view_explorer::NekoviewApp;
 use std::path::PathBuf;
