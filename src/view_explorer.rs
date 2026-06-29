@@ -217,6 +217,10 @@ pub struct NekoviewApp {
     status_update_requested: Arc<std::sync::atomic::AtomicBool>,
     /// バックグラウンドワーカーから ROOT を起こす（イベント駆動再描画）ために保持する ctx
     egui_ctx: egui::Context,
+    /// ステータス窓表示中だけ true。1Hz ティッカースレッドが参照して ROOT を外部ウェイクする。
+    /// （request_repaint_after の自己ループは ROOT 非フォーカス時に途切れて復帰しないため、
+    ///  独立スレッドからの外部ウェイクで確実に 1Hz を保証する）
+    status_ticker_open: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl NekoviewApp {
@@ -248,6 +252,25 @@ impl NekoviewApp {
                 move || c.request_repaint()
             }),
         });
+
+        // ステータス窓 1Hz ティッカー。表示中だけ ROOT を外部ウェイクする。
+        // 自己ループ式の request_repaint_after は ROOT が非フォーカス/眠った瞬間に途切れて
+        // 復帰しないため、独立スレッドから毎秒ウェイクして確実に 1Hz を保つ。
+        let status_ticker_open = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        {
+            let c = ctx.clone();
+            let open = Arc::clone(&status_ticker_open);
+            std::thread::spawn(move || loop {
+                std::thread::sleep(std::time::Duration::from_secs(1));
+                if open.load(std::sync::atomic::Ordering::Relaxed) {
+                    #[cfg(debug_assertions)]
+                    eprintln!("[probe1] ticker -> request_repaint_of(ROOT + status)");
+                    c.request_repaint_of(egui::ViewportId::ROOT);
+                    // status 窓を直接叩いて、ROOT を経由せず描画できるか切り分ける
+                    c.request_repaint_of(egui::ViewportId::from_hash_of("status_window"));
+                }
+            });
+        }
 
         let mut app = Self {
             config,
@@ -301,6 +324,7 @@ impl NekoviewApp {
             last_status_update: std::time::Instant::now(),
             status_update_requested: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             egui_ctx: ctx,
+            status_ticker_open,
         };
         app.start_scan();
         app
@@ -1282,6 +1306,9 @@ impl NekoviewApp {
     }
 
     fn draw_status_window(&mut self, ctx: &egui::Context) {
+        // 1Hz ティッカーに現在の表示状態を伝える（表示中だけ ROOT を外部ウェイクさせる）
+        self.status_ticker_open
+            .store(self.show_status_window, std::sync::atomic::Ordering::Relaxed);
         if self.show_status_window {
             let force = self.status_update_requested.swap(false, std::sync::atomic::Ordering::Relaxed);
             let elapsed = self.last_status_update.elapsed();
@@ -1316,6 +1343,8 @@ impl NekoviewApp {
                 // 発火しないため、データを更新した tick のフレームでだけ即時 repaint を要求する。
                 // これにより非フォーカスの deferred viewport でも 1Hz で確実に更新される。
                 ctx.request_repaint_of(egui::ViewportId::from_hash_of("status_window"));
+                #[cfg(debug_assertions)]
+                eprintln!("[probe2] draw_status_window tick (force={force}) -> repaint status viewport");
             }
             // ステータス窓表示中は ROOT を1Hzで起こすハートビート。
             // イベント駆動化で ROOT は常時回らなくなったため、これが 1Hz tick を駆動する。

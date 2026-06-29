@@ -167,6 +167,7 @@ pub fn show(
                 .with_inner_size([300.0, 280.0])
                 .with_resizable(true),
             move |vp_ctx, _class| {
+                eprintln!("[probe3] status viewport closure PAINTED");
                 egui::CentralPanel::default().show(vp_ctx, |ui| {
                     let d = data_arc.lock().unwrap();
                     draw_content(ui, &d);
