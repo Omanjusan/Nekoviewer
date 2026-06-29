@@ -508,7 +508,6 @@ impl NekoviewApp {
 
         self.poll_workers(&ctx);
         self.prefetch_pages();
-        self.draw_viewer_viewport(&ctx);
 
         egui::Panel::top("menu_bar").show(ui, |ui| {
             self.draw_menu_bar(ui);
@@ -669,155 +668,83 @@ impl NekoviewApp {
         }
     }
 
-    fn draw_viewer_viewport(&mut self, ctx: &egui::Context) {
-        // ── deferred viewport からの前フレーム結果を処理 ──────────────────────
-        {
-            let output = std::mem::replace(
-                &mut *self.viewer_nav_deferred.lock().unwrap(),
-                ViewerOutput::none(),
-            );
+    /// ビューアー窓が開いているか（winit_app が窓の生成/破棄判定に使う）。
+    pub fn viewer_is_open(&self) -> bool {
+        self.viewer.lock().unwrap().is_some()
+    }
 
-            if let Some(slots) = output.save_slots {
-                self.viewer_slots = slots;
-                crate::config::save_state(&self.current_dir, self.window_size, &self.viewer_slots, &SortState { key: self.sort_key.as_state_key().to_string(), ascending: self.sort_ascending }, i18n::lang_code(), &*self.viewer_cfg.lock().unwrap());
+    /// ビューアー窓のフォーカス前面化要求を取り出す（取り出したら false に戻す）。
+    pub fn take_viewer_focus_request(&mut self) -> bool {
+        let f = self.viewer_focus_requested;
+        self.viewer_focus_requested = false;
+        f
+    }
+
+    /// ビューアーを閉じる（OS のクローズボタン等から winit_app が呼ぶ）。
+    pub fn close_viewer(&mut self) {
+        *self.viewer.lock().unwrap() = None;
+    }
+
+    /// ビューアー独立窓の 1 フレーム描画。winit_app がビューアー窓の egui パスから呼ぶ。
+    /// 旧 `draw_viewer_viewport` の deferred callback 相当（ページ供給 → show → nav/close 処理）。
+    pub fn render_viewer(&mut self, ui: &mut egui::Ui) {
+        // エクスプローラー窓が起きていなくてもページ送りが進むよう、
+        // ここでワーカー結果回収（res_rx drain）と先読みを回す。
+        self.pump_viewer_pages();
+
+        let output = {
+            let mut viewer_guard = self.viewer.lock().unwrap();
+            let page_cache_guard = self.page_cache.lock().unwrap();
+            let mut cfg_guard = self.viewer_cfg.lock().unwrap();
+            match viewer_guard.as_mut() {
+                Some(viewer) => viewer.show(ui, &*page_cache_guard, &mut *cfg_guard),
+                None => return,
             }
+        };
 
+        if let Some(slots) = output.save_slots {
+            self.viewer_slots = slots;
+            crate::config::save_state(&self.current_dir, self.window_size, &self.viewer_slots, &SortState { key: self.sort_key.as_state_key().to_string(), ascending: self.sort_ascending }, i18n::lang_code(), &*self.viewer_cfg.lock().unwrap());
+        }
+
+        let had_nav = output.nav != ViewerNav::None;
+        if output.close_requested {
+            *self.viewer.lock().unwrap() = None;
+            controller::request_status_update(&self.status_update_requested);
+            self.egui_ctx.request_repaint();
+        } else if had_nav {
             self.handle_viewer_nav(output.nav);
+            controller::request_status_update(&self.status_update_requested);
+            self.egui_ctx.request_repaint();
         }
+    }
 
-        // ── ビューアウィンドウ (deferred viewport) ───────────────────────────
-        // フルスクリーンも含め、ビューアは常に deferred viewport で描画する。
-        // フルスクリーン切替は viewer 側が ViewportCommand::Fullscreen を送る。
-        //
-        // 閉じる処理: ViewportCommand::Close は Wayland フルスクリーン中に無視されるため、
-        // viewer_closing フラグで show_viewport_deferred の登録自体をやめることで消す。
-        {
-            let has_viewer = self.viewer.lock().unwrap().is_some();
-            if has_viewer {
-                // first_frame フラグを読み取り、その場でクリアする（サイズ指定は一度だけ）
-                // 新規オープン時に viewer_closing もリセットする
-                let first_frame = {
-                    let mut guard = self.viewer.lock().unwrap();
-                    let ff = guard.as_mut().map_or(false, |v| v.take_first_frame());
-                    if ff { *self.viewer_closing.lock().unwrap() = false; }
-                    ff
-                };
-                let vp_builder = {
-                    let b = egui::ViewportBuilder::default();
-                    if first_frame { b.with_inner_size([800.0, 600.0]) } else { b }
-                };
-
-                let viewer_arc = Arc::clone(&self.viewer);
-                let page_cache_arc = Arc::clone(&self.page_cache);
-                let nav_arc = Arc::clone(&self.viewer_nav_deferred);
-                let res_rx_arc = Arc::clone(&self.res_rx);
-                let pending_arc = Arc::clone(&self.pending_loads);
-                let req_tx_vp = self.req_tx.clone();
-                let focus = self.viewer_focus_requested;
-                self.viewer_focus_requested = false;
-                let viewer_closing_arc = Arc::clone(&self.viewer_closing);
-                let viewer_cfg_arc = Arc::clone(&self.viewer_cfg);
-                let status_update_flag = Arc::clone(&self.status_update_requested);
-
-                ctx.show_viewport_deferred(
-                    egui::ViewportId::from_hash_of("viewer_window"),
-                    vp_builder,
-                    move |vp_ui, _class| {
-                        if focus {
-                            vp_ui.ctx().send_viewport_cmd(egui::ViewportCommand::Focus);
-                        }
-
-                        // フルスクリーン時はメイン ui() がスロットルされるため、
-                        // viewer viewport 側でも res_rx を drain して PageCache へ投入する
-                        {
-                            let vp_results: Vec<LoadResult> =
-                                std::iter::from_fn(|| res_rx_arc.lock().unwrap().try_recv().ok()).collect();
-                            if !vp_results.is_empty() {
-                                let (cur_path, cur_idx) = viewer_arc.lock().unwrap().as_ref()
-                                    .map(|v| {
-                                        let lo = v.spread_lo().max(0) as usize;
-                                        let orig = v.entries().get(lo).map(|e| e.original_index).unwrap_or(0);
-                                        (v.archive_path().clone(), orig)
-                                    })
-                                    .unwrap_or_default();
-                                let mut pc = page_cache_arc.lock().unwrap();
-                                for result in vp_results {
-                                    pc.insert(result.archive_path, result.index, result.content, &cur_path, cur_idx);
-                                }
-                            }
-                        }
-
-                        // フルスクリーン時のprefetch: メイン ui() に代わってロード要求を送信する
-                        {
-                            let prefetch_info = viewer_arc.lock().unwrap().as_ref().map(|v| {
-                                let cur = v.spread_lo().max(0) as usize;
-                                (cur, v.archive_path().clone(), v.entries().to_vec(), v.is_raw_file())
-                            });
-                            if let Some((cur, path, entries, is_raw_file)) = prefetch_info {
-                                let total = entries.len();
-                                let start = cur.saturating_sub(5);
-                                let end = (cur + 10 + 1).min(total);
-                                let mut pending = pending_arc.lock().unwrap();
-                                let pc = page_cache_arc.lock().unwrap();
-                                for i in start..end {
-                                    let orig_i = entries[i].original_index;
-                                    let key = (path.clone(), orig_i);
-                                    if !pc.contains(&path, orig_i) && !pending.contains(&key) {
-                                        let _ = req_tx_vp.send(LoadRequest {
-                                            archive_path: path.clone(),
-                                            index: orig_i,
-                                            entry_name: entries[i].entry_name.clone(),
-                                            is_raw_file,
-                                            file_bytes: None,
-                                        });
-                                        pending.insert(key);
-                                    }
-                                }
-                            }
-                        }
-
-                        let close = {
-                            let mut viewer_guard = viewer_arc.lock().unwrap();
-                            let page_cache_guard = page_cache_arc.lock().unwrap();
-                            let mut cfg_guard = viewer_cfg_arc.lock().unwrap();
-                            let close = if let Some(viewer) = viewer_guard.as_mut() {
-                                let output = viewer.show(vp_ui, &*page_cache_guard, &mut *cfg_guard);
-                                let close = output.close_requested;
-                                let had_nav = output.nav != ViewerNav::None;
-                                *nav_arc.lock().unwrap() = output;
-                                // ナビゲーション発生時は root を叩き起こしてステータスを即時更新する
-                                if had_nav || close {
-                                    controller::request_status_update(&status_update_flag);
-                                    vp_ui.ctx().request_repaint_of(egui::ViewportId::ROOT);
-                                }
-                                close
-                            } else {
-                                false
-                            };
-                            drop(page_cache_guard);
-                            close
-                        };
-
-                        // viewer の close 要求（ESC/Xボタン独自ロジック）と
-                        // OS/winit レベルの close_requested を統合して処理する。
-                        // ViewportCommand::Close は Wayland フルスクリーン中に無視されるため、
-                        // viewer_closing フラグを立てて次フレームから登録をやめることで消す。
-                        let os_close = vp_ui.ctx().input(|i| i.viewport().close_requested());
-                        if close || os_close {
-                            *viewer_closing_arc.lock().unwrap() = true;
-                            // Wayland フルスクリーン中は Close が無視されるため Fullscreen(false) を先に送る。
-                            // Windows では不要なため除外する。
-                            #[cfg(not(windows))]
-                            vp_ui.ctx().send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
-                            vp_ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
-                            vp_ui.ctx().request_repaint_of(egui::ViewportId::ROOT);
-                        }
-                    },
+    /// ビューアー独立窓パスからのページワーカー結果回収（res_rx drain）と先読み。
+    /// エクスプローラー窓の poll_workers / prefetch_pages が起きていない間でもページを進める。
+    fn pump_viewer_pages(&mut self) {
+        let results: Vec<LoadResult> =
+            std::iter::from_fn(|| self.res_rx.lock().unwrap().try_recv().ok()).collect();
+        if !results.is_empty() {
+            let (cur_path, cur_idx) = self.viewer.lock().unwrap().as_ref()
+                .map(|v| {
+                    let lo = v.spread_lo().max(0) as usize;
+                    let orig = v.entries().get(lo).map(|e| e.original_index).unwrap_or(0);
+                    (v.archive_path().clone(), orig)
+                })
+                .unwrap_or_default();
+            for result in results {
+                self.pending_loads.lock().unwrap()
+                    .remove(&(result.archive_path.clone(), result.index));
+                self.page_cache.lock().unwrap().insert(
+                    result.archive_path,
+                    result.index,
+                    result.content,
+                    &cur_path,
+                    cur_idx,
                 );
-                // viewer が生きている間だけ repaint を要求する
-                ctx.request_repaint_of(egui::ViewportId::from_hash_of("viewer_window"));
             }
         }
+        self.prefetch_pages();
     }
 
     fn handle_explorer_keys(&mut self, ctx: &egui::Context) {
