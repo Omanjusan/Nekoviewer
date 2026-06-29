@@ -215,13 +215,15 @@ pub struct NekoviewApp {
     last_status_update: std::time::Instant,
     /// 各 View から controller 経由でセットされる即時更新要求フラグ
     status_update_requested: Arc<std::sync::atomic::AtomicBool>,
+    /// バックグラウンドワーカーから ROOT を起こす（イベント駆動再描画）ために保持する ctx
+    egui_ctx: egui::Context,
 }
 
 impl NekoviewApp {
     pub fn new(start_dir: PathBuf, config: AppConfig, viewer_slots: [Option<WindowSlot>; 4], sort_state: SortState, viewer_cfg: ViewerConfig, ctx: egui::Context) -> Self {
-        let (req_tx, res_rx) = spawn_worker(config.viewer_filter.to_image_filter(), config.resolved_decode_threads(), ctx);
-        let (thumb_req_tx, thumb_res_rx) = spawn_thumb_worker(config.thumb_filter.to_image_filter(), config.resolved_decode_threads());
-        let (file_cache_req_tx, file_cache_res_rx) = spawn_file_cache_worker();
+        let (req_tx, res_rx) = spawn_worker(config.viewer_filter.to_image_filter(), config.resolved_decode_threads(), ctx.clone());
+        let (thumb_req_tx, thumb_res_rx) = spawn_thumb_worker(config.thumb_filter.to_image_filter(), config.resolved_decode_threads(), ctx.clone());
+        let (file_cache_req_tx, file_cache_res_rx) = spawn_file_cache_worker(ctx.clone());
         let (cache_max, cache_min, file_cache_max) = crate::cache::resolve_cache_budgets(config.cache_max_mb, config.file_cache_max_mb);
         let mut drives = list_local_drives();
         drives.extend(list_gvfs_smb_mounts());
@@ -241,7 +243,10 @@ impl NekoviewApp {
         // ツリールートのサブディレクトリをバックグラウンドで取得
         let tree_scan_pending = Some(TreeScanPending {
             path: tree_root.clone(),
-            rx: dir::spawn_scan_subdirs(tree_root.clone()),
+            rx: dir::spawn_scan_subdirs(tree_root.clone(), {
+                let c = ctx.clone();
+                move || c.request_repaint()
+            }),
         });
 
         let mut app = Self {
@@ -295,6 +300,7 @@ impl NekoviewApp {
             status_window_closing: Arc::new(Mutex::new(false)),
             last_status_update: std::time::Instant::now(),
             status_update_requested: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            egui_ctx: ctx,
         };
         app.start_scan();
         app
@@ -302,7 +308,10 @@ impl NekoviewApp {
 
     /// バックグラウンドスキャンを起動する（UIをブロックしない）
     fn start_scan(&mut self) {
-        let rx = dir::spawn_scan(self.current_dir.clone());
+        let rx = dir::spawn_scan(self.current_dir.clone(), {
+            let c = self.egui_ctx.clone();
+            move || c.request_repaint()
+        });
         self.scan_state = ScanState::Loading {
             dir: self.current_dir.clone(),
             rx,
@@ -407,6 +416,7 @@ impl NekoviewApp {
 fn spawn_summary_worker(
     path: PathBuf,
     db: Option<std::sync::Arc<std::sync::Mutex<redb::Database>>>,
+    ctx: egui::Context,
 ) -> mpsc::Receiver<(PathBuf, usize, usize)> {
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
@@ -420,6 +430,8 @@ fn spawn_summary_worker(
             neko_dir::count_cached_thumbs(&db, &filenames)
         }).unwrap_or(0);
         let _ = tx.send((path, saved, total));
+        // ROOT を起こして poll_workers に結果を回収させる
+        ctx.request_repaint();
     });
     rx
 }
@@ -445,6 +457,14 @@ impl eframe::App for NekoviewApp {
             *self.viewer_closing.lock().unwrap() = false;
             ctx.request_repaint();
         }
+
+        // ステータスウィンドウ（debug ビルド = 独立 deferred viewport）の駆動。
+        // ui() は ROOT が非可視/オクルージョン時にスキップされ、データ更新も再描画駆動も止まる。
+        // logic() はその場合でも呼ばれ続けるため、ビューアーにフォーカスが移っても
+        // ステータス窓が 1Hz で更新され続ける。deferred viewport は ROOT へ描画しないので
+        // logic() からの登録・駆動で問題ない（release の ROOT内ウィンドウは ui() 側で描画）。
+        #[cfg(debug_assertions)]
+        self.draw_status_window(ctx);
     }
 
     fn on_exit(&mut self) {
@@ -493,9 +513,13 @@ impl eframe::App for NekoviewApp {
         }
 
         self.handle_explorer_keys(&ctx);
+        // release ビルドは ROOT 内フローティングウィンドウのため ui() で描画する。
+        // debug ビルドの独立 deferred viewport は logic() 側で駆動する（上記参照）。
+        #[cfg(not(debug_assertions))]
         self.draw_status_window(&ctx);
         self.draw_toast(&ctx);
-        ctx.request_repaint();
+        // 旧来の無条件 ctx.request_repaint() は撤去（イベント駆動化）。
+        // ROOT は入力イベント・各ワーカーの起床通知・ステータス窓の1Hzハートビートで再描画される。
     }
 }
 
@@ -543,7 +567,7 @@ impl NekoviewApp {
             if just_finished || elapsed >= 2.0 {
                 if let Some((ref cd_path, _, _)) = self.cd_summary {
                     let path = cd_path.clone();
-                    self.cd_summary_rx = Some(spawn_summary_worker(path, self.cache_db.clone()));
+                    self.cd_summary_rx = Some(spawn_summary_worker(path, self.cache_db.clone(), self.egui_ctx.clone()));
                 }
             }
         }
@@ -1015,7 +1039,10 @@ impl NekoviewApp {
                         // バックグラウンドでサブディレクトリを取得
                         self.tree_scan_pending = Some(TreeScanPending {
                             path: path.clone(),
-                            rx: dir::spawn_scan_subdirs(path),
+                            rx: dir::spawn_scan_subdirs(path, {
+                                let c = self.egui_ctx.clone();
+                                move || c.request_repaint()
+                            }),
                         });
                     }
                 }
@@ -1024,7 +1051,7 @@ impl NekoviewApp {
                 self.current_dir = path.clone();
                 self.viewing_dir = Some(path.clone());
                 self.start_scan(); // cache_db をここで確定させてから clone して渡す
-                self.cd_summary_rx = Some(spawn_summary_worker(path.clone(), self.cache_db.clone()));
+                self.cd_summary_rx = Some(spawn_summary_worker(path.clone(), self.cache_db.clone(), self.egui_ctx.clone()));
                 crate::config::save_state(&self.current_dir, self.window_size, &self.viewer_slots, &SortState { key: self.sort_key.as_state_key().to_string(), ascending: self.sort_ascending }, i18n::lang_code(), &*self.viewer_cfg.lock().unwrap());
             }
         }
@@ -1057,7 +1084,10 @@ impl NekoviewApp {
                         // ドライブルートのサブディレクトリをバックグラウンドで取得
                         self.tree_scan_pending = Some(TreeScanPending {
                             path: path.clone(),
-                            rx: dir::spawn_scan_subdirs(path),
+                            rx: dir::spawn_scan_subdirs(path, {
+                                let c = self.egui_ctx.clone();
+                                move || c.request_repaint()
+                            }),
                         });
                         crate::config::save_state(&self.current_dir, self.window_size, &self.viewer_slots, &SortState { key: self.sort_key.as_state_key().to_string(), ascending: self.sort_ascending }, i18n::lang_code(), &*self.viewer_cfg.lock().unwrap());
                     }
@@ -1280,7 +1310,15 @@ impl NekoviewApp {
                         ScanState::Done      => "done",
                     },
                 );
+
+                // ビューアーと同様に親駆動で status viewport を再描画する。
+                // 毎フレーム request_repaint_after_for を呼ぶと期限が先送りされ続けて
+                // 発火しないため、データを更新した tick のフレームでだけ即時 repaint を要求する。
+                // これにより非フォーカスの deferred viewport でも 1Hz で確実に更新される。
+                ctx.request_repaint_of(egui::ViewportId::from_hash_of("status_window"));
             }
+            // ステータス窓表示中は ROOT を1Hzで起こすハートビート。
+            // イベント駆動化で ROOT は常時回らなくなったため、これが 1Hz tick を駆動する。
             ctx.request_repaint_after(std::time::Duration::from_secs(1));
         }
 

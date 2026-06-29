@@ -473,7 +473,7 @@ fn content_bytes(content: &PageContent) -> usize {
 
 /// ファイルバイト列をバックグラウンドで読み込む単一スレッドのワーカーを起動する。
 /// 返り値: (要求送信側, 結果受信側)
-pub fn spawn_file_cache_worker() -> (mpsc::Sender<PathBuf>, mpsc::Receiver<(PathBuf, Arc<[u8]>)>) {
+pub fn spawn_file_cache_worker(ctx: egui::Context) -> (mpsc::Sender<PathBuf>, mpsc::Receiver<(PathBuf, Arc<[u8]>)>) {
     let (req_tx, req_rx) = mpsc::channel::<PathBuf>();
     let (res_tx, res_rx) = mpsc::channel::<(PathBuf, Arc<[u8]>)>();
     std::thread::spawn(move || {
@@ -481,6 +481,8 @@ pub fn spawn_file_cache_worker() -> (mpsc::Sender<PathBuf>, mpsc::Receiver<(Path
             if let Ok(bytes) = std::fs::read(&path) {
                 let arc: Arc<[u8]> = Arc::from(bytes);
                 let _ = res_tx.send((path, arc));
+                // ROOT を起こして poll_workers に結果を回収させる
+                ctx.request_repaint();
             }
         }
     });
@@ -502,7 +504,7 @@ pub struct ThumbResult {
     pub rgba: Option<image::RgbaImage>,
 }
 
-pub fn spawn_thumb_worker(filter: image::imageops::FilterType, num_threads: usize) -> (mpsc::SyncSender<ThumbRequest>, mpsc::Receiver<ThumbResult>) {
+pub fn spawn_thumb_worker(filter: image::imageops::FilterType, num_threads: usize, ctx: egui::Context) -> (mpsc::SyncSender<ThumbRequest>, mpsc::Receiver<ThumbResult>) {
     let capacity = num_threads * 2;
     let (req_tx, req_rx) = mpsc::sync_channel::<ThumbRequest>(capacity);
     let (res_tx, res_rx) = mpsc::channel::<ThumbResult>();
@@ -512,6 +514,7 @@ pub fn spawn_thumb_worker(filter: image::imageops::FilterType, num_threads: usiz
     for _ in 0..num_threads {
         let req_rx = Arc::clone(&req_rx);
         let res_tx = res_tx.clone();
+        let ctx = ctx.clone();
         std::thread::spawn(move || {
             loop {
                 let req = match req_rx.lock().unwrap().recv() {
@@ -521,6 +524,8 @@ pub fn spawn_thumb_worker(filter: image::imageops::FilterType, num_threads: usiz
                 // 失敗（None）でも必ず返送し、呼び元が thumb_pending を解放できるようにする
                 let rgba = resolve_thumb(&req, filter);
                 let _ = res_tx.send(ThumbResult { path: req.archive_path, rgba });
+                // ROOT を起こして poll_workers に結果を回収させる
+                ctx.request_repaint();
             }
         });
     }
