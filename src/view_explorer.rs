@@ -633,6 +633,13 @@ impl NekoviewApp {
         self.viewer.lock().unwrap().is_some()
     }
 
+    /// ビューアー窓を生成する winit 側が、初回フラッシュを避けるために参照する
+    /// 解決済み既定スロット（conf default_slot × 現在の viewer_slots）。
+    /// None のとき winit は従来の OS既定位置・800x600 で生成する。
+    pub fn resolved_default_viewer_slot(&self) -> Option<WindowSlot> {
+        crate::controller::resolve_default_slot(self.config.default_slot, &self.viewer_slots)
+    }
+
     /// ビューアー窓のフォーカス前面化要求を取り出す（取り出したら false に戻す）。
     pub fn take_viewer_focus_request(&mut self) -> bool {
         let f = self.viewer_focus_requested;
@@ -766,9 +773,9 @@ impl NekoviewApp {
                 if let Some(idx) = self.selected_archive_index {
                     if let Some(path) = self.archives.get(idx).cloned() {
                         let state = if self.raw_image_files.contains(&path) {
-                            Some(ViewerState::new_raw(path.clone(), self.viewer_slots))
+                            Some(ViewerState::new_raw(path.clone(), self.viewer_slots, self.config.default_slot))
                         } else {
-                            ViewerState::new(path.clone(), self.viewer_slots)
+                            ViewerState::new(path.clone(), self.viewer_slots, self.config.default_slot)
                         };
                         if let Some(state) = state {
                             self.open_viewer(state);
@@ -1143,7 +1150,7 @@ impl NekoviewApp {
                         if response.clicked() {
                             if is_raw && self.selected_archive_index == Some(i) {
                                 // 生ファイル: 選択済み状態のシングルクリックで開く
-                                self.open_viewer(ViewerState::new_raw(path.clone(), self.viewer_slots));
+                                self.open_viewer(ViewerState::new_raw(path.clone(), self.viewer_slots, self.config.default_slot));
                             } else {
                                 self.selected_archive_index = Some(i);
                                 self.selected_archive_meta = std::fs::metadata(path)
@@ -1159,7 +1166,7 @@ impl NekoviewApp {
                                     std::time::Instant::now(),
                                 ));
                             } else {
-                                match ViewerState::new(path.clone(), self.viewer_slots) {
+                                match ViewerState::new(path.clone(), self.viewer_slots, self.config.default_slot) {
                                     Some(state) => {
                                         self.open_viewer(state);
                                     }
@@ -1315,10 +1322,10 @@ impl NekoviewApp {
             ) {
                 None => return None,
                 Some((idx, path, true)) => {
-                    return Some((idx, ViewerState::new_raw(path, self.viewer_slots)));
+                    return Some((idx, ViewerState::new_raw(path, self.viewer_slots, self.config.default_slot)));
                 }
                 Some((idx, path, false)) => {
-                    match ViewerState::new(path.clone(), self.viewer_slots) {
+                    match ViewerState::new(path.clone(), self.viewer_slots, self.config.default_slot) {
                         Some(state) => return Some((idx, state)),
                         None => {
                             self.mark_archive_invalid(&path);

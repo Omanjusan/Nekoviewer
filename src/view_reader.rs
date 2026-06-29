@@ -191,6 +191,10 @@ pub struct ViewerState {
     anim_active: bool,
     /// ウィンドウ位置・サイズスロット（F5〜F8 で適用、ボタンで保存）
     slots: [Option<WindowSlot>; 4],
+    /// conf 由来の既定スロット index（0..3）。None = デフォルト無し
+    default_slot: Option<usize>,
+    /// 既定スロットの初回フレーム適用を一度だけ行うためのフラグ
+    default_slot_applied: bool,
     /// スロット保存後に app 側へ永続化を要求するフラグ
     /// 前フレームの outer_rect 左上座標（保存用、1フレーム遅れ許容）
     outer_pos: Option<egui::Pos2>,
@@ -217,7 +221,7 @@ impl ViewerState {
     pub fn is_raw_file(&self) -> bool { self.is_raw_file }
     pub fn page_mode(&self) -> PageMode { self.page_mode }
 
-    pub fn new(archive_path: PathBuf, slots: [Option<WindowSlot>; 4]) -> Option<Self> {
+    pub fn new(archive_path: PathBuf, slots: [Option<WindowSlot>; 4], default_slot: Option<usize>) -> Option<Self> {
         let image_entries = archive::list_images(&archive_path);
         if image_entries.is_empty() {
             return None;
@@ -247,6 +251,8 @@ impl ViewerState {
             anim_progress: 1.0,
             anim_active: false,
             slots,
+            default_slot,
+            default_slot_applied: false,
             outer_pos: None,
             entry_list_visible: false,
             fs_sort_bar_visible: false,
@@ -260,7 +266,7 @@ impl ViewerState {
     }
 
     /// 生画像ファイル（ZIP非対応・1ファイル固定）用コンストラクタ
-    pub fn new_raw(path: PathBuf, slots: [Option<WindowSlot>; 4]) -> Self {
+    pub fn new_raw(path: PathBuf, slots: [Option<WindowSlot>; 4], default_slot: Option<usize>) -> Self {
         let name = path
             .file_name()
             .and_then(|n| n.to_str())
@@ -287,6 +293,8 @@ impl ViewerState {
             anim_progress: 1.0,
             anim_active: false,
             slots,
+            default_slot,
+            default_slot_applied: false,
             outer_pos: None,
             entry_list_visible: false,
             fs_sort_bar_visible: false,
@@ -410,6 +418,9 @@ impl ViewerState {
         // ── フレーム入力を一括収集（ctx.input はこの1回のみ）────────────────
         let input = FrameInput::collect(&ctx, cfg.zoom_actual);
 
+        // 既定スロットを初回フレームで一度だけ適用（クランプ付き）。
+        self.apply_default_slot(&ctx, input.monitor_size);
+
         let (animating, t) = self.update_animation(&ctx, input.dt);
 
         self.update_textures(&ctx, page_cache);
@@ -509,6 +520,31 @@ impl ViewerState {
         self.tick_toast(&ctx, input.time);
 
         ViewerOutput { nav, close_requested: close_self, save_slots }
+    }
+
+    /// ビューアーを開いた直後（初回フレーム）に conf 既定スロットを一度だけ適用する。
+    /// F5〜F8 と同じく `clamp_slot_position_inner` で画面外補正してから位置・サイズを送る。
+    fn apply_default_slot(&mut self, ctx: &egui::Context, monitor_size: Option<egui::Vec2>) {
+        if self.default_slot_applied {
+            return;
+        }
+        self.default_slot_applied = true;
+
+        let Some(slot) = crate::controller::resolve_default_slot(self.default_slot, &self.slots)
+        else { return };
+
+        let (cx, cy) = if let Some(m) = monitor_size {
+            Self::clamp_slot_position_inner(slot.x, slot.y, slot.w, slot.h, m)
+        } else {
+            (slot.x, slot.y)
+        };
+        ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(
+            egui::pos2(cx as f32, cy as f32),
+        ));
+        ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(
+            egui::vec2(slot.w as f32, slot.h as f32),
+        ));
+        log_key!("[slot] apply default → pos=({},{}) size={}x{}", cx, cy, slot.w, slot.h);
     }
 
     fn update_animation(&mut self, ctx: &egui::Context, dt: f32) -> (bool, f32) {

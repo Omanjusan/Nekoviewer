@@ -107,3 +107,54 @@ pub fn find_next_file(
         return Some((idx as usize, path.clone(), false));
     }
 }
+
+// ── ビューアー既定スロット解決 ────────────────────────────────────────────
+
+/// ビューアーを開くときの既定の位置・サイズスロットを解決する純粋関数。
+///
+/// 評価順:
+/// - (a) `default_slot`（conf 由来の index 0..3）が `None` なら即フォールバック。
+/// - (b) 該当スロットが空（`None`）ならフォールバック。
+///
+/// 両方を満たすときだけ `Some(WindowSlot)` を返す。`None` は「デフォルト無し」を意味する。
+///
+/// 注: (b) は呼び出しのたびに現在の `slots` で評価されるため、セッション途中に
+///     保存したスロット値が、次にビューアーを開いたとき既定値として有効化される。
+pub fn resolve_default_slot(
+    default_slot: Option<usize>,
+    slots: &[Option<WindowSlot>; 4],
+) -> Option<WindowSlot> {
+    let idx = default_slot?;             // (a) conf 値が空欄/不正なら None
+    slots.get(idx).copied().flatten()    // (b) 該当スロット未保存なら None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn slot(x: i32) -> WindowSlot {
+        WindowSlot { x, y: 0, w: 800, h: 600 }
+    }
+
+    #[test]
+    fn default_slot_none_when_unconfigured() {
+        // (a) 失敗: conf 空欄/不正 → デフォルト無し
+        let slots = [Some(slot(10)), None, None, None];
+        assert!(resolve_default_slot(None, &slots).is_none());
+    }
+
+    #[test]
+    fn default_slot_none_when_target_empty() {
+        // (b) 失敗: 番号は正しいが該当スロット未保存 → デフォルト無し
+        let slots = [None, None, None, None];
+        assert!(resolve_default_slot(Some(1), &slots).is_none());
+    }
+
+    #[test]
+    fn default_slot_resolved_when_present() {
+        // (a)(b) 成立 → 該当スロットを返す
+        let slots = [None, Some(slot(42)), None, None];
+        let got = resolve_default_slot(Some(1), &slots).expect("resolved");
+        assert_eq!(got.x, 42);
+    }
+}

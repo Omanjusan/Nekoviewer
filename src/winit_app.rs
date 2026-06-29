@@ -277,9 +277,16 @@ impl WinitApp {
         let have = self.viewer.is_some();
 
         if want && !have {
-            let attrs = Window::default_attributes()
-                .with_title("Nekoview")
-                .with_inner_size(winit::dpi::LogicalSize::new(800.0, 600.0));
+            // conf 既定スロットが解決できれば、その位置・サイズで生成して初回フラッシュを避ける。
+            // 画面外補正は ViewerState 初回フレームの apply_default_slot が担う。
+            let mut attrs = Window::default_attributes().with_title("Nekoview");
+            if let Some(slot) = app.resolved_default_viewer_slot() {
+                attrs = attrs
+                    .with_position(winit::dpi::LogicalPosition::new(slot.x as f64, slot.y as f64))
+                    .with_inner_size(winit::dpi::LogicalSize::new(slot.w as f64, slot.h as f64));
+            } else {
+                attrs = attrs.with_inner_size(winit::dpi::LogicalSize::new(800.0, 600.0));
+            }
             let window = Arc::new(event_loop.create_window(attrs).expect("create viewer window"));
             let win = make_egui_window(window.clone(), viewer_viewport_id(), &self.proxy);
             if app.take_viewer_focus_request() {
