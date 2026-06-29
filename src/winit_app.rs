@@ -17,7 +17,12 @@
 //! - 再描画要求（egui の repaint コールバック / ワーカー起床）は `EventLoopProxy::send_event`
 //!   でループを叩き起こし、`UserEvent::Repaint{viewport_id}` で対象窓の `next_repaint` を更新する。
 //!
-//! ステータス窓（段階5）はまだ独立窓化しない（debug ビルドでは ROOT の deferred viewport のまま）。
+//! 段階5では **ステータス窓（debug ビルドのみ）を 3 枚目の独立 OS 窓**にする。ビューアー窓と
+//! 同じ枠組み（`EguiWindow` + `sync_status_window` で動的生成/破棄、render-on-demand）で扱い、
+//! `NekoviewApp::status_is_open()` の状態に追従する。データは `render_status` 内で 1Hz throttle
+//! して更新し、`request_repaint_after(1s)` で自分自身を 1Hz で起こし続ける（旧 1Hz ティッカー
+//! スレッド＋ROOT 外部ウェイクは不要になり撤去）。release ビルドでは従来どおり ROOT 内の
+//! フローティング `egui::Window`（`ui()` 内 `draw_status_window`）のまま。
 
 use std::num::NonZeroU32;
 use std::path::PathBuf;
@@ -38,6 +43,11 @@ use crate::view_explorer::NekoviewApp;
 /// ビューアー窓に割り当てる ViewportId（ROOT=エクスプローラーと区別する）。
 fn viewer_viewport_id() -> ViewportId {
     ViewportId::from_hash_of("viewer_window")
+}
+
+/// ステータス窓（debug ビルドのみ）に割り当てる ViewportId。
+fn status_viewport_id() -> ViewportId {
+    ViewportId::from_hash_of("status_window")
 }
 
 /// 自前ループへ送る独自イベント。今は再描画要求のみ。
@@ -202,6 +212,8 @@ struct WinitApp {
     painter: Option<Painter>,
     explorer: Option<EguiWindow>,
     viewer: Option<EguiWindow>,
+    /// ステータス窓（debug ビルドでのみ生成される。release では常に `None`）。
+    status: Option<EguiWindow>,
     app: Option<NekoviewApp>,
 }
 
@@ -218,8 +230,23 @@ impl WinitApp {
             painter: None,
             explorer: None,
             viewer: None,
+            status: None,
             app: None,
         }
+    }
+
+    /// 現在存在する全窓の ViewportId 集合。サーフェス回収（`gc_viewports`）で
+    /// 「残す窓」を指定するのに使う（破棄対象は呼び出し前に `None` 済みであること）。
+    fn active_viewport_set(&self) -> egui::ViewportIdSet {
+        let mut set = egui::ViewportIdSet::default();
+        set.insert(ViewportId::ROOT);
+        if self.viewer.is_some() {
+            set.insert(viewer_viewport_id());
+        }
+        if self.status.is_some() {
+            set.insert(status_viewport_id());
+        }
+        set
     }
 
     fn create_explorer_window(&mut self, event_loop: &ActiveEventLoop) {
@@ -268,11 +295,11 @@ impl WinitApp {
             crate::log_common!("[viewer] window created");
         } else if !want && have {
             // 窓を破棄。Painter のサーフェスは gc_viewports で当該 viewport だけ除去する
-            // （set_window(_, None) は全サーフェスを消すので使わない）。
+            // （set_window(_, None) は全サーフェスを消すので使わない）。残す窓は
+            // active_viewport_set（破棄後の現存窓）で指定する。
             self.viewer = None;
+            let active = self.active_viewport_set();
             if let Some(p) = self.painter.as_mut() {
-                let mut active = egui::ViewportIdSet::default();
-                active.insert(ViewportId::ROOT);
                 p.gc_viewports(&active);
             }
             crate::log_common!("[viewer] window destroyed");
@@ -284,6 +311,38 @@ impl WinitApp {
                 }
             }
         }
+    }
+
+    /// `NekoviewApp::status_is_open()`（debug ビルドの [?] トグル）に合わせて
+    /// ステータス窓を生成/破棄する。release ビルドでは何もしない（ROOT 内フローティング窓のまま）。
+    fn sync_status_window(&mut self, event_loop: &ActiveEventLoop) {
+        #[cfg(debug_assertions)]
+        {
+            let Some(app) = self.app.as_mut() else { return };
+            let want = app.status_is_open();
+            let have = self.status.is_some();
+
+            if want && !have {
+                let attrs = Window::default_attributes()
+                    .with_title("Nekoview Status")
+                    .with_inner_size(winit::dpi::LogicalSize::new(300.0, 280.0));
+                let window = Arc::new(event_loop.create_window(attrs).expect("create status window"));
+                let painter = self.painter.as_mut().expect("painter must exist");
+                let win = make_egui_window(window, status_viewport_id(), painter, &self.proxy);
+                self.status = Some(win);
+                crate::log_common!("[status] window created");
+            } else if !want && have {
+                // 窓を破棄。残す窓は active_viewport_set（破棄後の現存窓）で指定する。
+                self.status = None;
+                let active = self.active_viewport_set();
+                if let Some(p) = self.painter.as_mut() {
+                    p.gc_viewports(&active);
+                }
+                crate::log_common!("[status] window destroyed");
+            }
+        }
+        #[cfg(not(debug_assertions))]
+        let _ = event_loop;
     }
 
     /// 期限が来た窓をループ本体から直接 render する。
@@ -318,12 +377,23 @@ impl WinitApp {
                 win.next_repaint = schedule_after(delay);
             }
         }
+
+        if self.status.as_ref().map_or(false, |w| w.due(now)) {
+            if let (Some(p), Some(win), Some(app)) =
+                (self.painter.as_mut(), self.status.as_mut(), self.app.as_mut())
+            {
+                let delay = render_window(p, win, |ui| {
+                    app.render_status(ui);
+                });
+                win.next_repaint = schedule_after(delay);
+            }
+        }
     }
 
     /// 全窓の `next_repaint` のうち最短を返す。
     fn earliest_repaint(&self) -> Option<Instant> {
         let mut earliest: Option<Instant> = None;
-        for w in [self.explorer.as_ref(), self.viewer.as_ref()] {
+        for w in [self.explorer.as_ref(), self.viewer.as_ref(), self.status.as_ref()] {
             if let Some(t) = w.and_then(|w| w.next_repaint) {
                 earliest = Some(earliest.map_or(t, |e| e.min(t)));
             }
@@ -337,6 +407,8 @@ impl WinitApp {
             self.explorer.as_mut()
         } else if self.viewer.as_ref().map_or(false, |w| w.window.id() == window_id) {
             self.viewer.as_mut()
+        } else if self.status.as_ref().map_or(false, |w| w.window.id() == window_id) {
+            self.status.as_mut()
         } else {
             None
         }
@@ -371,6 +443,10 @@ impl ApplicationHandler<UserEvent> for WinitApp {
                     if let Some(w) = self.viewer.as_mut() {
                         w.bump(when);
                     }
+                } else if self.status.as_ref().map_or(false, |w| w.viewport_id == viewport_id) {
+                    if let Some(w) = self.status.as_mut() {
+                        w.bump(when);
+                    }
                 }
             }
         }
@@ -384,7 +460,8 @@ impl ApplicationHandler<UserEvent> for WinitApp {
     ) {
         let is_explorer = self.explorer.as_ref().map_or(false, |w| w.window.id() == window_id);
         let is_viewer = self.viewer.as_ref().map_or(false, |w| w.window.id() == window_id);
-        if !is_explorer && !is_viewer {
+        let is_status = self.status.as_ref().map_or(false, |w| w.window.id() == window_id);
+        if !is_explorer && !is_viewer && !is_status {
             return;
         }
 
@@ -413,17 +490,30 @@ impl ApplicationHandler<UserEvent> for WinitApp {
                     }
                     event_loop.exit();
                     return;
-                } else {
+                } else if is_viewer {
                     // ビューアー窓の OS クローズ。ViewerState を破棄し、窓も即破棄する。
                     if let Some(app) = self.app.as_mut() {
                         app.close_viewer();
                     }
                     self.sync_viewer_window(event_loop);
                     return;
+                } else {
+                    // ステータス窓の OS クローズ。トグルを下ろし、窓を破棄する。
+                    if let Some(app) = self.app.as_mut() {
+                        app.close_status();
+                    }
+                    self.sync_status_window(event_loop);
+                    return;
                 }
             }
             WindowEvent::Resized(size) => {
-                let vp = if is_explorer { ViewportId::ROOT } else { viewer_viewport_id() };
+                let vp = if is_explorer {
+                    ViewportId::ROOT
+                } else if is_viewer {
+                    viewer_viewport_id()
+                } else {
+                    status_viewport_id()
+                };
                 if let (Some(w), Some(h), Some(p)) = (
                     NonZeroU32::new(size.width),
                     NonZeroU32::new(size.height),
@@ -447,12 +537,14 @@ impl ApplicationHandler<UserEvent> for WinitApp {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        // エクスプローラーの操作でビューアーが開いた/閉じた可能性に追従する。
+        // エクスプローラーの操作でビューアー/ステータス窓が開いた/閉じた可能性に追従する。
         self.sync_viewer_window(event_loop);
+        self.sync_status_window(event_loop);
         // 期限の来た窓を描画する。
         self.render_due_windows();
-        // 描画中（ビューアーの ESC/X 等）にビューアーが閉じられた可能性に追従する。
+        // 描画中（ビューアーの ESC/X、ステータスの [?] トグル等）に窓が閉じられた可能性に追従する。
         self.sync_viewer_window(event_loop);
+        self.sync_status_window(event_loop);
 
         // 全窓の最短再描画予定で ControlFlow を決める。
         match self.earliest_repaint() {

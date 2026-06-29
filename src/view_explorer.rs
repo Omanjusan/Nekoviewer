@@ -210,17 +210,12 @@ pub struct NekoviewApp {
     /// ステータスウィンドウ表示フラグ（[?] ボタンでトグル）
     show_status_window: bool,
     status_window_data: Arc<Mutex<crate::view_status::StatusData>>,
-    status_window_closing: Arc<Mutex<bool>>,
     /// ステータスデータを最後に更新した時刻（1秒間隔制御用）
     last_status_update: std::time::Instant,
     /// 各 View から controller 経由でセットされる即時更新要求フラグ
     status_update_requested: Arc<std::sync::atomic::AtomicBool>,
     /// バックグラウンドワーカーから ROOT を起こす（イベント駆動再描画）ために保持する ctx
     egui_ctx: egui::Context,
-    /// ステータス窓表示中だけ true。1Hz ティッカースレッドが参照して ROOT を外部ウェイクする。
-    /// （request_repaint_after の自己ループは ROOT 非フォーカス時に途切れて復帰しないため、
-    ///  独立スレッドからの外部ウェイクで確実に 1Hz を保証する）
-    status_ticker_open: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl NekoviewApp {
@@ -253,24 +248,9 @@ impl NekoviewApp {
             }),
         });
 
-        // ステータス窓 1Hz ティッカー。表示中だけ ROOT を外部ウェイクする。
-        // 自己ループ式の request_repaint_after は ROOT が非フォーカス/眠った瞬間に途切れて
-        // 復帰しないため、独立スレッドから毎秒ウェイクして確実に 1Hz を保つ。
-        let status_ticker_open = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        {
-            let c = ctx.clone();
-            let open = Arc::clone(&status_ticker_open);
-            std::thread::spawn(move || loop {
-                std::thread::sleep(std::time::Duration::from_secs(1));
-                if open.load(std::sync::atomic::Ordering::Relaxed) {
-                    #[cfg(debug_assertions)]
-                    eprintln!("[probe1] ticker -> request_repaint_of(ROOT + status)");
-                    c.request_repaint_of(egui::ViewportId::ROOT);
-                    // status 窓を直接叩いて、ROOT を経由せず描画できるか切り分ける
-                    c.request_repaint_of(egui::ViewportId::from_hash_of("status_window"));
-                }
-            });
-        }
+        // 段階5: 旧 1Hz ティッカースレッド＋ROOT 外部ウェイクは撤去。debug のステータス窓は
+        // 独立 OS 窓になり、render_status 内の request_repaint_after(1s) で自分自身を 1Hz で
+        // 起こし続ける（winit ループがその予定で WaitUntil する）。
 
         let mut app = Self {
             config,
@@ -320,11 +300,9 @@ impl NekoviewApp {
             explorer_viewport_h: 0.0,
             show_status_window: false,
             status_window_data: Arc::new(Mutex::new(crate::view_status::StatusData::default())),
-            status_window_closing: Arc::new(Mutex::new(false)),
             last_status_update: std::time::Instant::now(),
             status_update_requested: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             egui_ctx: ctx,
-            status_ticker_open,
         };
         app.start_scan();
         app
@@ -484,13 +462,9 @@ impl NekoviewApp {
             ctx.request_repaint();
         }
 
-        // ステータスウィンドウ（debug ビルド = 独立 deferred viewport）の駆動。
-        // ui() は ROOT が非可視/オクルージョン時にスキップされ、データ更新も再描画駆動も止まる。
-        // logic() はその場合でも呼ばれ続けるため、ビューアーにフォーカスが移っても
-        // ステータス窓が 1Hz で更新され続ける。deferred viewport は ROOT へ描画しないので
-        // logic() からの登録・駆動で問題ない（release の ROOT内ウィンドウは ui() 側で描画）。
-        #[cfg(debug_assertions)]
-        self.draw_status_window(ctx);
+        // 段階5: debug ビルドのステータス窓は独立 OS 窓化され、winit_app が直接 render_status を
+        // 呼んで 1Hz で駆動する。logic() からの駆動は不要になった（release は ui() の
+        // draw_status_window で ROOT 内フローティング窓として描画する）。
     }
 
     /// 終了時に状態を永続化する（旧 eframe::App::on_exit 相当）。
@@ -1230,57 +1204,80 @@ impl NekoviewApp {
         self.explorer_viewport_h = output.inner_rect.height();
     }
 
-    fn draw_status_window(&mut self, ctx: &egui::Context) {
-        // 1Hz ティッカーに現在の表示状態を伝える（表示中だけ ROOT を外部ウェイクさせる）
-        self.status_ticker_open
-            .store(self.show_status_window, std::sync::atomic::Ordering::Relaxed);
-        if self.show_status_window {
-            let force = self.status_update_requested.swap(false, std::sync::atomic::Ordering::Relaxed);
-            let elapsed = self.last_status_update.elapsed();
-            if force || elapsed >= std::time::Duration::from_secs(1) {
-                self.last_status_update = std::time::Instant::now();
-                let mut data = self.status_window_data.lock().unwrap();
-                let page_cache = self.page_cache.lock().unwrap();
-                controller::update_status_data(
-                    &mut data,
-                    page_cache.total_bytes(),
-                    page_cache.max_bytes(),
-                    self.file_cache.total_bytes(),
-                    self.file_cache.max_bytes(),
-                );
-
-                #[cfg(debug_assertions)]
-                controller::update_status_data_debug(
-                    &mut data,
-                    ctx.input(|i| i.stable_dt) * 1000.0,
-                    self.thumb_pending.len(),
-                    self.pending_loads.lock().unwrap().len(),
-                    self.thumbnails.len(),
-                    match &self.scan_state {
-                        ScanState::Idle      => "idle",
-                        ScanState::Loading { .. } => "loading",
-                        ScanState::Done      => "done",
-                    },
-                );
-
-                // ビューアーと同様に親駆動で status viewport を再描画する。
-                // 毎フレーム request_repaint_after_for を呼ぶと期限が先送りされ続けて
-                // 発火しないため、データを更新した tick のフレームでだけ即時 repaint を要求する。
-                // これにより非フォーカスの deferred viewport でも 1Hz で確実に更新される。
-                ctx.request_repaint_of(egui::ViewportId::from_hash_of("status_window"));
-                #[cfg(debug_assertions)]
-                eprintln!("[probe2] draw_status_window tick (force={force}) -> repaint status viewport");
-            }
-            // ステータス窓表示中は ROOT を1Hzで起こすハートビート。
-            // イベント駆動化で ROOT は常時回らなくなったため、これが 1Hz tick を駆動する。
-            ctx.request_repaint_after(std::time::Duration::from_secs(1));
+    /// ステータスデータを 1Hz throttle で更新する（force 要求があれば即時）。
+    /// debug/release 共通。debug 用の追加メトリクスは `frame_dt_ms` を使う。
+    fn refresh_status_data(&mut self, frame_dt_ms: f32) {
+        let force = self.status_update_requested.swap(false, std::sync::atomic::Ordering::Relaxed);
+        let elapsed = self.last_status_update.elapsed();
+        if !(force || elapsed >= std::time::Duration::from_secs(1)) {
+            return;
         }
+        self.last_status_update = std::time::Instant::now();
+        let mut data = self.status_window_data.lock().unwrap();
+        let page_cache = self.page_cache.lock().unwrap();
+        controller::update_status_data(
+            &mut data,
+            page_cache.total_bytes(),
+            page_cache.max_bytes(),
+            self.file_cache.total_bytes(),
+            self.file_cache.max_bytes(),
+        );
 
+        #[cfg(debug_assertions)]
+        controller::update_status_data_debug(
+            &mut data,
+            frame_dt_ms,
+            self.thumb_pending.len(),
+            self.pending_loads.lock().unwrap().len(),
+            self.thumbnails.len(),
+            match &self.scan_state {
+                ScanState::Idle      => "idle",
+                ScanState::Loading { .. } => "loading",
+                ScanState::Done      => "done",
+            },
+        );
+        #[cfg(not(debug_assertions))]
+        let _ = frame_dt_ms;
+    }
+
+    /// ステータス窓（debug 独立 OS 窓 / release ROOT 内フローティング窓）の表示状態。
+    /// winit_app が debug ビルドでこの状態に合わせて独立窓を生成/破棄する
+    /// （release では sync_status_window が no-op のため未使用）。
+    #[cfg_attr(not(debug_assertions), allow(dead_code))]
+    pub fn status_is_open(&self) -> bool {
+        self.show_status_window
+    }
+
+    /// ステータス窓を閉じる（OS のクローズボタンから winit_app が呼ぶ / debug）。
+    pub fn close_status(&mut self) {
+        self.show_status_window = false;
+    }
+
+    /// debug ビルドのステータス独立窓の 1 フレーム描画。winit_app が status 窓の
+    /// egui パスから呼ぶ。データを 1Hz throttle で更新して描画し、
+    /// `request_repaint_after(1s)` で自分自身を 1Hz で起こし続ける。
+    pub fn render_status(&mut self, ui: &mut egui::Ui) {
+        let dt_ms = ui.ctx().input(|i| i.stable_dt) * 1000.0;
+        self.refresh_status_data(dt_ms);
+        {
+            let data = self.status_window_data.lock().unwrap();
+            crate::view_status::draw_content(ui, &data);
+        }
+        // 次の 1Hz tick へ向けて自分自身の再描画を予約する。
+        ui.ctx().request_repaint_after(std::time::Duration::from_secs(1));
+    }
+
+    /// release ビルド: ROOT 内フローティング `egui::Window` としてステータスを描画する。
+    /// debug ビルドでは独立 OS 窓（render_status）が担うため使わない。
+    #[cfg(not(debug_assertions))]
+    fn draw_status_window(&mut self, ctx: &egui::Context) {
+        if self.show_status_window {
+            self.refresh_status_data(ctx.input(|i| i.stable_dt) * 1000.0);
+        }
         crate::view_status::show(
             ctx,
             &mut self.show_status_window,
             &self.status_window_data,
-            &self.status_window_closing,
         );
     }
 

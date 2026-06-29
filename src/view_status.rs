@@ -1,4 +1,5 @@
 use std::collections::VecDeque;
+#[cfg(not(debug_assertions))]
 use std::sync::{Arc, Mutex};
 
 // ── リングバッファログ ────────────────────────────────────────────────────────
@@ -65,7 +66,7 @@ impl Default for StatusData {
 
 // ── 描画 ─────────────────────────────────────────────────────────────────────
 
-fn draw_content(ui: &mut egui::Ui, data: &StatusData) {
+pub(crate) fn draw_content(ui: &mut egui::Ui, data: &StatusData) {
     egui::Grid::new("status_grid")
         .num_columns(2)
         .spacing([8.0, 2.0])
@@ -142,62 +143,21 @@ fn draw_log(ui: &mut egui::Ui, log: &StatusLog) {
 
 // ── ウィンドウ表示 ─────────────────────────────────────────────────────────────
 
-/// debug ビルド: 完全分離型の OS ウィンドウ（deferred viewport）
-/// release ビルド: メインウィンドウ内フローティング egui::Window
-pub fn show(
-    ctx: &egui::Context,
-    open: &mut bool,
-    data: &Arc<Mutex<StatusData>>,
-    closing: &Arc<Mutex<bool>>,
-) {
-    #[cfg(debug_assertions)]
-    {
-        if std::mem::take(&mut *closing.lock().unwrap()) {
-            *open = false;
-        }
-        if !*open {
-            return;
-        }
-        let data_arc    = Arc::clone(data);
-        let closing_arc = Arc::clone(closing);
-        ctx.show_viewport_deferred(
-            egui::ViewportId::from_hash_of("status_window"),
-            egui::ViewportBuilder::default()
-                .with_title("Nekoview Status")
-                .with_inner_size([300.0, 280.0])
-                .with_resizable(true),
-            move |vp_ctx, _class| {
-                eprintln!("[probe3] status viewport closure PAINTED");
-                egui::CentralPanel::default().show(vp_ctx, |ui| {
-                    let d = data_arc.lock().unwrap();
-                    draw_content(ui, &d);
-                });
-                // root がスロットルされていても1秒ごとに自己 repaint しつつ
-                // root も叩き起こしてデータ更新を促す
-                vp_ctx.request_repaint_after(std::time::Duration::from_secs(1));
-                vp_ctx.request_repaint_of(egui::ViewportId::ROOT);
-                if vp_ctx.input(|i| i.viewport().close_requested()) {
-                    *closing_arc.lock().unwrap() = true;
-                    vp_ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                    vp_ctx.request_repaint_of(egui::ViewportId::ROOT);
-                }
-            },
-        );
+/// release ビルド: メインウィンドウ内フローティング `egui::Window` としてステータスを表示する。
+///
+/// debug ビルドではステータスは独立 OS 窓（段階5）になり、`NekoviewApp::render_status` が
+/// `draw_content` を直接描画するため、この関数は使わない。
+#[cfg(not(debug_assertions))]
+pub fn show(ctx: &egui::Context, open: &mut bool, data: &Arc<Mutex<StatusData>>) {
+    if !*open {
+        return;
     }
-
-    #[cfg(not(debug_assertions))]
-    {
-        if !*open {
-            return;
-        }
-        let data_guard = data.lock().unwrap();
-        egui::Window::new("Status")
-            .open(open)
-            .resizable(true)
-            .collapsible(false)
-            .show(ctx, |ui| {
-                draw_content(ui, &data_guard);
-            });
-        let _ = closing; // 未使用警告抑制
-    }
+    let data_guard = data.lock().unwrap();
+    egui::Window::new("Status")
+        .open(open)
+        .resizable(true)
+        .collapsible(false)
+        .show(ctx, |ui| {
+            draw_content(ui, &data_guard);
+        });
 }
