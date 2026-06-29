@@ -470,8 +470,10 @@ fn upload_texture(ctx: &egui::Context, name: &str, rgba: &image::RgbaImage) -> e
     ctx.load_texture(name, color_image, egui::TextureOptions::LINEAR)
 }
 
-impl eframe::App for NekoviewApp {
-    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+impl NekoviewApp {
+    /// 毎フレーム、egui パス内で UI 描画より前に呼ぶ「常時走る処理」。
+    /// （旧 eframe::App::logic 相当。winit ループ本体から各フレーム呼ぶ）
+    pub fn logic(&mut self, ctx: &egui::Context) {
         // ui() はフルスクリーン中にスロットルされて呼ばれない場合がある。
         // viewer_closing フラグは deferred callback が立てるが、
         // ui() が止まっていると消費されない。
@@ -491,11 +493,14 @@ impl eframe::App for NekoviewApp {
         self.draw_status_window(ctx);
     }
 
-    fn on_exit(&mut self) {
+    /// 終了時に状態を永続化する（旧 eframe::App::on_exit 相当）。
+    pub fn on_exit(&mut self) {
         crate::config::save_state(&self.current_dir, self.window_size, &self.viewer_slots, &SortState { key: self.sort_key.as_state_key().to_string(), ascending: self.sort_ascending }, i18n::lang_code(), &*self.viewer_cfg.lock().unwrap());
     }
 
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+    /// エクスプローラー窓の中身を描画する（旧 eframe::App::ui 相当）。
+    /// 呼び出し元が CentralPanel の Ui を渡す。
+    pub fn ui(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
         // ウィンドウサイズを毎フレーム記録
         let rect = ctx.input(|i| i.viewport_rect());

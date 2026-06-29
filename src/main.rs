@@ -11,10 +11,11 @@ mod view_explorer;
 mod view_reader;
 mod view_status;
 
-use view_explorer::NekoviewApp;
+mod winit_app;
+
 use std::path::PathBuf;
 
-fn main() -> eframe::Result {
+fn main() {
     // config 読み込み前なのでデフォルト値（common=true）でログ出力
     log_common!("[startup] main() start");
 
@@ -34,28 +35,20 @@ fn main() -> eframe::Result {
         .unwrap_or_else(|| cfg.startup_dir(&state));
     log_common!("[startup] start_dir = {:?}", start_dir);
 
-    let mut options = eframe::NativeOptions::default();
-    if let Some((w, h)) = state.window_size {
-        options.viewport = options.viewport.with_inner_size([w as f32, h as f32]);
-    }
-    log_common!("[startup] calling eframe::run_native ...");
+    log_common!("[startup] starting winit event loop ...");
+    winit_app::run(start_dir, cfg, state);
+}
 
-    eframe::run_native(
-        "Nekoview",
-        options,
-        Box::new(|cc| {
-            log_common!("[startup] eframe context ready, setting up font ...");
-            setup_japanese_font(&cc.egui_ctx);
-            cc.egui_ctx.style_mut_of(egui::Theme::Dark, |s| {
-                s.spacing.scroll.bar_outer_margin = 0.0;
-            });
-            cc.egui_ctx.style_mut_of(egui::Theme::Light, |s| {
-                s.spacing.scroll.bar_outer_margin = 0.0;
-            });
-            log_common!("[startup] font done, creating app ...");
-            Ok(Box::new(NekoviewApp::new(start_dir, cfg, state.viewer_slots, state.sort_state, state.viewer_cfg, cc.egui_ctx.clone())))
-        }),
-    )
+/// 窓ごとの egui::Context を生成した直後に、日本語フォントとスタイルを適用する。
+/// （旧 eframe では cc.egui_ctx に対し 1 回だけ行っていたが、winit では窓ごとに Context を持つ）
+fn setup_egui_context(ctx: &egui::Context) {
+    setup_japanese_font(ctx);
+    ctx.style_mut_of(egui::Theme::Dark, |s| {
+        s.spacing.scroll.bar_outer_margin = 0.0;
+    });
+    ctx.style_mut_of(egui::Theme::Light, |s| {
+        s.spacing.scroll.bar_outer_margin = 0.0;
+    });
 }
 
 fn setup_japanese_font(ctx: &egui::Context) {
