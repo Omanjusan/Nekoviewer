@@ -70,8 +70,15 @@ fn schedule_after(delay: Duration) -> Option<Instant> {
 
 /// 1 枚の窓ぶんの描画コンテキスト。
 /// **窓ごとに独立した `egui::Context`** を持つ（ROOT 結合を作らないため）。
+/// さらに **窓ごとに独立した `Painter`（= 独立した wgpu Device/Renderer）** を持つ。
+/// egui_wgpu の `Renderer` はテクスチャを `TextureId` キーの単一マップで保持するが、
+/// `TextureId::Managed` の採番は `Context` ごとに 0 から独立する。よって複数 Context で
+/// 1 個の Renderer を共有するとフォントアトラス（Managed(0)）等が窓間で衝突し描画が壊れる。
+/// Painter を窓ごとに分けることで TextureId 名前空間を窓ごとに隔離する。
 struct EguiWindow {
     window: Arc<Window>,
+    /// この窓専用の描画器（自前 wgpu Device/Queue/Renderer + サーフェス1枚を内包）。
+    painter: Painter,
     egui_ctx: egui::Context,
     egui_state: egui_winit::State,
     viewport_id: ViewportId,
@@ -104,17 +111,25 @@ impl EguiWindow {
 }
 
 /// 1 枚の窓の egui プラミング（Context/State/repaint コールバック）を組み立てて返す。
-/// サーフェスも `painter` に登録する。
+/// **この窓専用の `Painter`（独立 wgpu Device/Renderer）を生成**し、サーフェスを登録する。
 fn make_egui_window(
     window: Arc<Window>,
     viewport_id: ViewportId,
-    painter: &mut Painter,
     proxy: &EventLoopProxy<UserEvent>,
 ) -> EguiWindow {
-    pollster::block_on(painter.set_window(viewport_id, Some(window.clone()))).expect("set_window");
-
     let egui_ctx = egui::Context::default();
     crate::setup_egui_context(&egui_ctx);
+
+    // 窓ごとに独立した Painter を作る。Painter::new で wgpu Instance を用意し、
+    // set_window で初回サーフェス登録時に専用の Device/Queue/Renderer を生成する。
+    // 内部の error-repaint 用 Context にはこの窓自身の egui_ctx を渡す。
+    let mut painter = pollster::block_on(Painter::new(
+        egui_ctx.clone(),
+        WgpuConfiguration::default(),
+        false,
+        RendererOptions::default(),
+    ));
+    pollster::block_on(painter.set_window(viewport_id, Some(window.clone()))).expect("set_window");
 
     // 再描画要求 → ループ起床の橋渡し。ワーカースレッドからの request_repaint もここを通る。
     // EventLoopProxy<UserEvent> は Send なので Mutex で Sync 化してコールバック境界
@@ -140,6 +155,7 @@ fn make_egui_window(
 
     EguiWindow {
         window,
+        painter,
         egui_ctx,
         egui_state,
         viewport_id,
@@ -152,11 +168,7 @@ fn make_egui_window(
 /// 1 つの窓を 1 フレーム描画し、egui が望む次回再描画までの猶予を返す。
 /// `build` は egui パス内で UI を構築するクロージャ。
 /// 描画後、egui が出した `ViewportCommand` 群を `process_viewport_commands` で winit Window へ適用する。
-fn render_window(
-    painter: &mut Painter,
-    win: &mut EguiWindow,
-    build: impl FnMut(&mut egui::Ui),
-) -> Duration {
+fn render_window(win: &mut EguiWindow, build: impl FnMut(&mut egui::Ui)) -> Duration {
     let ctx = win.egui_ctx.clone();
 
     // outer/inner rect・モニタサイズ等を最新化し、raw_input に載せる（スロット保存等が参照）。
@@ -171,7 +183,7 @@ fn render_window(
     win.egui_state
         .handle_platform_output(&win.window, full_output.platform_output);
     let clipped = ctx.tessellate(full_output.shapes, full_output.pixels_per_point);
-    painter.paint_and_update_textures(
+    win.painter.paint_and_update_textures(
         win.viewport_id,
         full_output.pixels_per_point,
         [0.0, 0.0, 0.0, 1.0],
@@ -209,7 +221,6 @@ struct WinitApp {
     init: Option<(PathBuf, AppConfig, AppState)>,
     /// 再描画要求でループを起床させるためのプロキシ（各窓のコールバックへ clone して渡す）。
     proxy: EventLoopProxy<UserEvent>,
-    painter: Option<Painter>,
     explorer: Option<EguiWindow>,
     viewer: Option<EguiWindow>,
     /// ステータス窓（debug ビルドでのみ生成される。release では常に `None`）。
@@ -227,26 +238,11 @@ impl WinitApp {
         Self {
             init: Some((start_dir, cfg, state)),
             proxy,
-            painter: None,
             explorer: None,
             viewer: None,
             status: None,
             app: None,
         }
-    }
-
-    /// 現在存在する全窓の ViewportId 集合。サーフェス回収（`gc_viewports`）で
-    /// 「残す窓」を指定するのに使う（破棄対象は呼び出し前に `None` 済みであること）。
-    fn active_viewport_set(&self) -> egui::ViewportIdSet {
-        let mut set = egui::ViewportIdSet::default();
-        set.insert(ViewportId::ROOT);
-        if self.viewer.is_some() {
-            set.insert(viewer_viewport_id());
-        }
-        if self.status.is_some() {
-            set.insert(status_viewport_id());
-        }
-        set
     }
 
     fn create_explorer_window(&mut self, event_loop: &ActiveEventLoop) {
@@ -258,8 +254,7 @@ impl WinitApp {
         }
         let window = Arc::new(event_loop.create_window(attrs).expect("create_window"));
 
-        let painter = self.painter.as_mut().expect("painter must exist");
-        let win = make_egui_window(window, ViewportId::ROOT, painter, &self.proxy);
+        let win = make_egui_window(window, ViewportId::ROOT, &self.proxy);
 
         // ワーカー起床・テクスチャ登録に使う ctx はエクスプローラー窓の Context を渡す。
         let app = NekoviewApp::new(
@@ -286,22 +281,16 @@ impl WinitApp {
                 .with_title("Nekoview")
                 .with_inner_size(winit::dpi::LogicalSize::new(800.0, 600.0));
             let window = Arc::new(event_loop.create_window(attrs).expect("create viewer window"));
-            let painter = self.painter.as_mut().expect("painter must exist");
-            let win = make_egui_window(window.clone(), viewer_viewport_id(), painter, &self.proxy);
+            let win = make_egui_window(window.clone(), viewer_viewport_id(), &self.proxy);
             if app.take_viewer_focus_request() {
                 window.focus_window();
             }
             self.viewer = Some(win);
             crate::log_common!("[viewer] window created");
         } else if !want && have {
-            // 窓を破棄。Painter のサーフェスは gc_viewports で当該 viewport だけ除去する
-            // （set_window(_, None) は全サーフェスを消すので使わない）。残す窓は
-            // active_viewport_set（破棄後の現存窓）で指定する。
+            // 窓を破棄。EguiWindow を drop すると専用 Painter（サーフェス・Device・Renderer）も
+            // 一緒に解放される（共有 Painter 時代の gc_viewports は不要）。
             self.viewer = None;
-            let active = self.active_viewport_set();
-            if let Some(p) = self.painter.as_mut() {
-                p.gc_viewports(&active);
-            }
             crate::log_common!("[viewer] window destroyed");
         } else if want && have {
             // 既存窓のままファイル切替したとき等のフォーカス前面化要求を処理。
@@ -327,17 +316,12 @@ impl WinitApp {
                     .with_title("Nekoview Status")
                     .with_inner_size(winit::dpi::LogicalSize::new(300.0, 280.0));
                 let window = Arc::new(event_loop.create_window(attrs).expect("create status window"));
-                let painter = self.painter.as_mut().expect("painter must exist");
-                let win = make_egui_window(window, status_viewport_id(), painter, &self.proxy);
+                let win = make_egui_window(window, status_viewport_id(), &self.proxy);
                 self.status = Some(win);
                 crate::log_common!("[status] window created");
             } else if !want && have {
-                // 窓を破棄。残す窓は active_viewport_set（破棄後の現存窓）で指定する。
+                // 窓を破棄。EguiWindow の drop で専用 Painter ごと解放される。
                 self.status = None;
-                let active = self.active_viewport_set();
-                if let Some(p) = self.painter.as_mut() {
-                    p.gc_viewports(&active);
-                }
                 crate::log_common!("[status] window destroyed");
             }
         }
@@ -350,10 +334,8 @@ impl WinitApp {
         let now = Instant::now();
 
         if self.explorer.as_ref().map_or(false, |w| w.due(now)) {
-            if let (Some(p), Some(win), Some(app)) =
-                (self.painter.as_mut(), self.explorer.as_mut(), self.app.as_mut())
-            {
-                let delay = render_window(p, win, |ui| {
+            if let (Some(win), Some(app)) = (self.explorer.as_mut(), self.app.as_mut()) {
+                let delay = render_window(win, |ui| {
                     // 常時走る処理（旧 eframe::App::logic）。egui パス内で UI より前に呼ぶ。
                     let ctx = ui.ctx().clone();
                     app.logic(&ctx);
@@ -368,10 +350,8 @@ impl WinitApp {
         }
 
         if self.viewer.as_ref().map_or(false, |w| w.due(now)) {
-            if let (Some(p), Some(win), Some(app)) =
-                (self.painter.as_mut(), self.viewer.as_mut(), self.app.as_mut())
-            {
-                let delay = render_window(p, win, |ui| {
+            if let (Some(win), Some(app)) = (self.viewer.as_mut(), self.app.as_mut()) {
+                let delay = render_window(win, |ui| {
                     app.render_viewer(ui);
                 });
                 win.next_repaint = schedule_after(delay);
@@ -379,10 +359,8 @@ impl WinitApp {
         }
 
         if self.status.as_ref().map_or(false, |w| w.due(now)) {
-            if let (Some(p), Some(win), Some(app)) =
-                (self.painter.as_mut(), self.status.as_mut(), self.app.as_mut())
-            {
-                let delay = render_window(p, win, |ui| {
+            if let (Some(win), Some(app)) = (self.status.as_mut(), self.app.as_mut()) {
+                let delay = render_window(win, |ui| {
                     app.render_status(ui);
                 });
                 win.next_repaint = schedule_after(delay);
@@ -417,14 +395,9 @@ impl WinitApp {
 
 impl ApplicationHandler<UserEvent> for WinitApp {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        if self.painter.is_none() {
-            let painter = pollster::block_on(Painter::new(
-                egui::Context::default(),
-                WgpuConfiguration::default(),
-                false,
-                RendererOptions::default(),
-            ));
-            self.painter = Some(painter);
+        // 各窓は自前の Painter を持つ（make_egui_window 内で生成）。ここでは
+        // エクスプローラー窓をまだ作っていなければ作る。
+        if self.explorer.is_none() {
             self.create_explorer_window(event_loop);
             crate::log_common!("[startup] explorer window created");
         }
@@ -507,19 +480,14 @@ impl ApplicationHandler<UserEvent> for WinitApp {
                 }
             }
             WindowEvent::Resized(size) => {
-                let vp = if is_explorer {
-                    ViewportId::ROOT
-                } else if is_viewer {
-                    viewer_viewport_id()
-                } else {
-                    status_viewport_id()
-                };
-                if let (Some(w), Some(h), Some(p)) = (
+                // 各窓は自前 Painter を持つので、その窓の Painter を窓自身の viewport_id で
+                // リサイズする。
+                if let (Some(nw), Some(nh), Some(win)) = (
                     NonZeroU32::new(size.width),
                     NonZeroU32::new(size.height),
-                    self.painter.as_mut(),
+                    self.window_mut(window_id),
                 ) {
-                    p.on_window_resized(vp, w, h);
+                    win.painter.on_window_resized(win.viewport_id, nw, nh);
                 }
                 if let Some(w) = self.window_mut(window_id) {
                     w.bump_now();
