@@ -1,0 +1,18 @@
+[package]
+name = "poc-winit-multiwindow"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# eframe を使わず、egui(UI) + egui-winit(入力) + egui-wgpu(描画) を
+# 自前 winit ループで束ねるマルチウィンドウ PoC。
+# 検証点:
+#  1. 窓Bにフォーカス中でも、共有 model.counter が回り続ける（窓Aの表示が更新される）
+#  2. 窓B(Viewer)の Left/Right キーが model に届く（フォーカス窓ごとのイベント配送）
+
+[dependencies]
+egui = "0.35"
+egui-winit = "0.35"
+egui-wgpu = { version = "0.35", features = ["winit"] }
+winit = "0.30"
+pollster = "0.4"
