@@ -2,6 +2,33 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.7.0] - 2026-06-30
+
+### Added
+
+- Multilingual support: language switcher menu placed on the right side of the menu bar in the thumbnail display area (ja/en/cn)
+- (Primarily Windows) F5–F8 window position and size slots now support default slot numbers configurable in the config file
+
+### Changed
+
+- Cache optimizations
+
+### Changed - Development Notes
+
+- Core architecture refactored to MVC model
+- Disabled eframe in multi-window setup due to update issues
+
+### Known Issues
+
+- Display issues when cache memory overflows
+- Loading indicator needs clarification
+- Config file internationalization pending
+
+### In Progress
+
+- Search functionality
+- Page thumbnails and position marker within archives
+
 ## [0.6.1] - 2026-06-27
 
 ### Added
