@@ -6,6 +6,9 @@ use std::sync::{Arc, Mutex};
 
 pub struct StatusLog {
     entries: VecDeque<String>,
+    // push が未配線のため capacity は現状参照されない（ログパネルは表示のみ）。
+    // 将来ログ投入を配線したら push 経由で参照される。
+    #[allow(dead_code)]
     capacity: usize,
 }
 
@@ -14,6 +17,8 @@ impl StatusLog {
         Self { entries: VecDeque::with_capacity(capacity), capacity }
     }
 
+    /// ログ投入 API。現状は呼び出し元未配線（debug ステータス窓のログ機能は未完成）。
+    #[allow(dead_code)]
     pub fn push(&mut self, msg: String) {
         if self.entries.len() >= self.capacity {
             self.entries.pop_front();
@@ -21,6 +26,8 @@ impl StatusLog {
         self.entries.push_back(msg);
     }
 
+    // 参照元は draw_log（debug 専用）のみ。release ではログパネルを出さないため不要。
+    #[cfg(debug_assertions)]
     pub fn entries(&self) -> &VecDeque<String> {
         &self.entries
     }
@@ -34,6 +41,10 @@ impl Default for StatusLog {
 
 // ── ステータスデータ ──────────────────────────────────────────────────────────
 
+// debug グリッド（frame_dt_ms / scan_state / thumb_pending / pending_loads /
+// thumbnails_loaded / log）は draw_content の #[cfg(debug_assertions)] ブロックでのみ
+// 読まれる。release では書き込むだけで参照しないため、release ビルドに限り未読警告を抑制する。
+#[cfg_attr(not(debug_assertions), allow(dead_code))]
 pub struct StatusData {
     pub page_cache_used_bytes: usize,
     pub page_cache_max_bytes: usize,

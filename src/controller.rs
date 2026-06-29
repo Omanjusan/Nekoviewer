@@ -25,12 +25,6 @@ pub struct ViewerOutput {
     pub save_slots: Option<[Option<WindowSlot>; 4]>,
 }
 
-impl ViewerOutput {
-    pub fn none() -> Self {
-        Self { nav: ViewerNav::None, close_requested: false, save_slots: None }
-    }
-}
-
 // ── ステータス即時更新要求 ────────────────────────────────────────────────────
 
 /// ステータスウィンドウのデータを次フレームで即時更新するよう要求する。

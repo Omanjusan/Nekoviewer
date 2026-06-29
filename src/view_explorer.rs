@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex, mpsc};
 
 use crate::cache::{FileCache, LoadRequest, LoadResult, PageCache, ThumbRequest, ThumbResult, spawn_worker, spawn_thumb_worker, spawn_file_cache_worker};
 use crate::config::{AppConfig, SortState, ViewerConfig, WindowSlot};
-use crate::controller::{self, ViewerNav, ViewerOutput};
+use crate::controller::{self, ViewerNav};
 use crate::i18n;
 use crate::model::ExplorerSortKey;
 use crate::neko_dir;
@@ -172,12 +172,8 @@ pub struct NekoviewApp {
     viewer: Arc<Mutex<Option<ViewerState>>>,
     /// ファイル切替後も維持するビューア設定（zoom・fullscreen 等）
     viewer_cfg: Arc<Mutex<ViewerConfig>>,
-    /// ビューア閉じる処理中フラグ（callback 自身が立てる・メインスレッドが消費する）
-    viewer_closing: Arc<Mutex<bool>>,
     drives: Vec<MountEntry>,
     page_cache: Arc<Mutex<PageCache>>,
-    /// deferred viewport の callback から親 update() へ ViewerOutput を渡す共有バッファ
-    viewer_nav_deferred: Arc<Mutex<ViewerOutput>>,
     file_cache: FileCache,
     file_cache_req_tx: mpsc::Sender<std::path::PathBuf>,
     file_cache_res_rx: mpsc::Receiver<(std::path::PathBuf, std::sync::Arc<[u8]>)>,
@@ -271,10 +267,8 @@ impl NekoviewApp {
             thumb_pending: HashSet::new(),
             viewer: Arc::new(Mutex::new(None)),
             viewer_cfg: Arc::new(Mutex::new(viewer_cfg)),
-            viewer_closing: Arc::new(Mutex::new(false)),
             drives,
             page_cache: Arc::new(Mutex::new(PageCache::new(cache_max, cache_min))),
-            viewer_nav_deferred: Arc::new(Mutex::new(ViewerOutput::none())),
             file_cache: FileCache::new(file_cache_max),
             file_cache_req_tx,
             file_cache_res_rx,
@@ -451,20 +445,12 @@ fn upload_texture(ctx: &egui::Context, name: &str, rgba: &image::RgbaImage) -> e
 impl NekoviewApp {
     /// 毎フレーム、egui パス内で UI 描画より前に呼ぶ「常時走る処理」。
     /// （旧 eframe::App::logic 相当。winit ループ本体から各フレーム呼ぶ）
-    pub fn logic(&mut self, ctx: &egui::Context) {
-        // ui() はフルスクリーン中にスロットルされて呼ばれない場合がある。
-        // viewer_closing フラグは deferred callback が立てるが、
-        // ui() が止まっていると消費されない。
-        // logic() はその場合でも呼ばれ続けるため、ここで確実に消費する。
-        if *self.viewer_closing.lock().unwrap() {
-            *self.viewer.lock().unwrap() = None;
-            *self.viewer_closing.lock().unwrap() = false;
-            ctx.request_repaint();
-        }
-
-        // 段階5: debug ビルドのステータス窓は独立 OS 窓化され、winit_app が直接 render_status を
-        // 呼んで 1Hz で駆動する。logic() からの駆動は不要になった（release は ui() の
-        // draw_status_window で ROOT 内フローティング窓として描画する）。
+    pub fn logic(&mut self, _ctx: &egui::Context) {
+        // 旧 eframe::App::logic 相当の「常時走る処理」フック。winit ループ本体から
+        // 各フレーム呼ばれる。現状は常時処理なし:
+        // ・ビューア破棄は window_event の CloseRequested / ESC で直接行う（旧 viewer_closing
+        //   フラグ経由の deferred callback 回避策は winit 化で不要になり撤去）。
+        // ・ステータス窓（debug）は winit_app が独立 OS 窓として直接 render_status を駆動する。
     }
 
     /// 終了時に状態を永続化する（旧 eframe::App::on_exit 相当）。

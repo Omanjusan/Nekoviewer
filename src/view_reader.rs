@@ -58,6 +58,9 @@ struct FrameInput {
     inner_rect: Option<egui::Rect>,
     monitor_size: Option<egui::Vec2>,
     viewport_rect: egui::Rect,
+    // Wayland 専用: OS ネイティブ最大化を擬似フルスクへ合流させる判定に使う。
+    // Windows では参照しないため dead_code 警告を抑制する。
+    #[cfg_attr(windows, allow(dead_code))]
     os_maximized: bool,
     close_requested: bool,
     // 時刻
@@ -191,8 +194,6 @@ pub struct ViewerState {
     /// スロット保存後に app 側へ永続化を要求するフラグ
     /// 前フレームの outer_rect 左上座標（保存用、1フレーム遅れ許容）
     outer_pos: Option<egui::Pos2>,
-    /// 初回フレームかどうか（with_inner_size を一度だけ渡すため）
-    first_frame: bool,
     /// 左エントリリストパネルの表示状態（マウスホバーで on/off）
     entry_list_visible: bool,
     /// フルスクリーン時ソートバーの表示状態（上端ホバーで on/off）
@@ -215,13 +216,6 @@ impl ViewerState {
     pub fn entries(&self) -> &[ViewerEntry] { &self.entries }
     pub fn is_raw_file(&self) -> bool { self.is_raw_file }
     pub fn page_mode(&self) -> PageMode { self.page_mode }
-
-    /// 初回フレームフラグを取り出す（true を返した後は false に戻す）
-    pub(crate) fn take_first_frame(&mut self) -> bool {
-        let f = self.first_frame;
-        self.first_frame = false;
-        f
-    }
 
     pub fn new(archive_path: PathBuf, slots: [Option<WindowSlot>; 4]) -> Option<Self> {
         let image_entries = archive::list_images(&archive_path);
@@ -254,7 +248,6 @@ impl ViewerState {
             anim_active: false,
             slots,
             outer_pos: None,
-            first_frame: true,
             entry_list_visible: false,
             fs_sort_bar_visible: false,
             sort_key: ViewerSortKey::Name,
@@ -295,7 +288,6 @@ impl ViewerState {
             anim_active: false,
             slots,
             outer_pos: None,
-            first_frame: true,
             entry_list_visible: false,
             fs_sort_bar_visible: false,
             sort_key: ViewerSortKey::Name,
@@ -305,13 +297,6 @@ impl ViewerState {
             shift_scroll_acc: 0.0,
             toast: None,
         }
-    }
-
-    /// 最終ページから開くコンストラクタ（前ファイルへの移動用）
-    pub fn new_at_last_page(archive_path: PathBuf, slots: [Option<WindowSlot>; 4]) -> Option<Self> {
-        let mut s = Self::new(archive_path, slots)?;
-        s.spread_base = (s.entries.len() as i32 - 1).max(0);
-        Some(s)
     }
 
     /// トーストメッセージをセット（3秒後に自動消去）
@@ -421,7 +406,6 @@ impl ViewerState {
         if !self.open || self.entries.is_empty() {
             return ViewerOutput { nav: ViewerNav::None, close_requested: !self.open, save_slots: None };
         }
-        let mut save_slots: Option<[Option<WindowSlot>; 4]> = None;
 
         // ── フレーム入力を一括収集（ctx.input はこの1回のみ）────────────────
         let input = FrameInput::collect(&ctx, cfg.zoom_actual);
@@ -502,7 +486,7 @@ impl ViewerState {
         // タイトルを独立ウィンドウのタイトルバーに反映
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(self.title()));
 
-        save_slots = self.draw_top_bar(ui, &ctx, &input, &viewer_style, cfg);
+        let save_slots = self.draw_top_bar(ui, &ctx, &input, &viewer_style, cfg);
 
         // ── 左エントリリスト ──────────────────────────────────────────────────
         self.draw_entry_list(ui, &ctx, &viewer_style, input.hover_pos, input.viewport_rect);
