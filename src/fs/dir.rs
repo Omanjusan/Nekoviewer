@@ -16,19 +16,30 @@ pub fn is_gvfs_path(_path: &Path) -> bool {
 /// タイムアウトなし: 処理が完了するまで待つ（UIはブロックしない）。
 /// ユーザーが別ディレクトリに移動した時点で結果を破棄することでキャンセルに相当する。
 /// 戻り値: (サブディレクトリ, ZIPアーカイブ, 生画像ファイル)
-pub fn spawn_scan(dir: PathBuf) -> mpsc::Receiver<(Vec<PathBuf>, Vec<PathBuf>, Vec<PathBuf>)> {
+/// `wake` は結果送信後に1回呼ばれる。呼び出し側で UI（ROOT）を起こすために使う。
+/// fs/ 層を egui 非依存に保つため、egui::Context ではなくコールバックを受け取る。
+pub fn spawn_scan(
+    dir: PathBuf,
+    wake: impl Fn() + Send + 'static,
+) -> mpsc::Receiver<(Vec<PathBuf>, Vec<PathBuf>, Vec<PathBuf>)> {
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
         let _ = tx.send((list_subdirs(&dir), list_archives(&dir), list_raw_images(&dir)));
+        wake();
     });
     rx
 }
 
 /// ツリー展開用（サブディレクトリのみ）をバックグラウンドで起動する。
-pub fn spawn_scan_subdirs(dir: PathBuf) -> mpsc::Receiver<Vec<PathBuf>> {
+/// `wake` は結果送信後に1回呼ばれる（UI を起こすため）。
+pub fn spawn_scan_subdirs(
+    dir: PathBuf,
+    wake: impl Fn() + Send + 'static,
+) -> mpsc::Receiver<Vec<PathBuf>> {
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
         let _ = tx.send(list_subdirs(&dir));
+        wake();
     });
     rx
 }

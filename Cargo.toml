@@ -1,6 +1,6 @@
 [package]
 name = "nekoviewer"
-version = "0.6.1"
+version = "0.7.0"
 edition = "2024"
 license = "MIT"
 
@@ -8,8 +8,11 @@ license = "MIT"
 windows-sys = { version = "0.52", features = ["Win32_Storage_FileSystem"] }
 
 [dependencies]
-eframe = "0.29"
-egui = "0.29"
+egui = "0.35"
+egui-winit = "0.35"
+egui-wgpu = { version = "0.35", features = ["winit"] }
+winit = "0.30"
+pollster = "0.4"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif", "bmp"] }
 libavif = "0.14"
 libavif-sys = "0.17"

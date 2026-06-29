@@ -178,19 +178,9 @@ pub fn load_image_from_archive(
 ) -> Option<image::DynamicImage> {
     let mut entry = archive.by_name(entry_name).ok()?;
     let mut buf = Vec::new();
-    let t0 = std::time::Instant::now();
     entry.read_to_end(&mut buf).ok()?;
-    let t_read = t0.elapsed();
-    let t1 = std::time::Instant::now();
     let display_name = decode_zip_name(entry.name_raw());
     let img = decode_image(&buf, &display_name)?;
-    let t_decode = t1.elapsed();
-    eprintln!(
-        "[perf/load] zip_read={:.1}ms decode={:.1}ms  entry={}",
-        t_read.as_secs_f64() * 1000.0,
-        t_decode.as_secs_f64() * 1000.0,
-        entry_name,
-    );
     Some(img)
 }
 
@@ -310,20 +300,10 @@ fn load_first_image_via_archive(path: &Path) -> Option<image::DynamicImage> {
         }
         let display_name = decode_zip_name(&raw);
         let mut buf = Vec::new();
-        let t0 = std::time::Instant::now();
         if entry.read_to_end(&mut buf).is_err() {
             continue;
         }
-        let t_read = t0.elapsed();
-        let t1 = std::time::Instant::now();
         if let Some(img) = decode_image(&buf, &display_name) {
-            let t_decode = t1.elapsed();
-            eprintln!(
-                "[perf/load] zip_read={:.1}ms decode={:.1}ms  entry={}",
-                t_read.as_secs_f64() * 1000.0,
-                t_decode.as_secs_f64() * 1000.0,
-                &display_name,
-            );
             return Some(img);
         }
     }

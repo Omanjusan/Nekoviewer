@@ -76,6 +76,8 @@ pub struct AppConfig {
     pub cache_max_mb: Option<u64>,
     /// ファイルキャッシュの最大メモリ上限（MB）。None = システムRAMの5%
     pub file_cache_max_mb: Option<u64>,
+    /// ビューアー既定スロット index（0..3 = F5〜F8）。None = デフォルト無し（空欄/不正値）
+    pub default_slot: Option<usize>,
 }
 
 impl AppConfig {
@@ -127,6 +129,7 @@ impl AppConfig {
             },
             cache_max_mb: parsed.cache_max_mb,
             file_cache_max_mb: parsed.file_cache_max_mb,
+            default_slot: parsed.default_slot,
         }
     }
 
@@ -203,6 +206,7 @@ struct ParsedIni {
     startup_fixed_dir: Option<PathBuf>,
     cache_max_mb: Option<u64>,
     file_cache_max_mb: Option<u64>,
+    default_slot: Option<usize>,
 }
 
 /// bool のデフォルト値を const ジェネリクスで指定するラッパー
@@ -271,6 +275,16 @@ fn parse_ini(path: &std::path::Path) -> ParsedIni {
                 ("viewer", "filter") => {
                     result.viewer_filter = parse_filter(v);
                 }
+                ("viewer", "default_slot") => {
+                    // (a) 5〜8 のみ採用。空欄・範囲外・不正値は None（デフォルト無し）。
+                    result.default_slot = match v {
+                        "5" => Some(0),
+                        "6" => Some(1),
+                        "7" => Some(2),
+                        "8" => Some(3),
+                        _   => None,
+                    };
+                }
                 ("grid", "thumb_size") => {
                     if let Ok(n) = v.parse::<u32>() {
                         result.thumb_size = ThumbSize(n.max(64).min(512));
@@ -312,6 +326,21 @@ impl Default for SortState {
     }
 }
 
+/// ファイルをまたいで維持するビューア設定（ウィンドウを開き直しても保持）
+#[derive(Clone, Copy)]
+pub struct ViewerConfig {
+    /// true = 1:1等倍表示、false = ウィンドウフィット
+    pub zoom_actual: bool,
+    /// フルスクリーン状態
+    pub fullscreen: bool,
+}
+
+impl Default for ViewerConfig {
+    fn default() -> Self {
+        Self { zoom_actual: false, fullscreen: false }
+    }
+}
+
 /// ビューアウィンドウの位置・サイズスロット（論理ピクセル）
 #[derive(Clone, Copy)]
 pub struct WindowSlot {
@@ -332,11 +361,22 @@ pub struct AppState {
     /// ビューアウィンドウの位置・サイズスロット（F5〜F8 対応）
     pub viewer_slots: [Option<WindowSlot>; 4],
     pub sort_state: SortState,
+    /// UI言語コード: "ja" / "en" / "cn"
+    pub lang: String,
+    /// ファイル切替後も維持するビューア設定
+    pub viewer_cfg: ViewerConfig,
 }
 
 impl Default for AppState {
     fn default() -> Self {
-        Self { last_dir: None, window_size: None, viewer_slots: [None; 4], sort_state: SortState::default() }
+        Self {
+            last_dir: None,
+            window_size: None,
+            viewer_slots: [None; 4],
+            sort_state: SortState::default(),
+            lang: "ja".to_string(),
+            viewer_cfg: ViewerConfig::default(),
+        }
     }
 }
 
@@ -385,6 +425,9 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
     let mut slot_h: [Option<u32>; 4] = [None; 4];
     let mut sort_key: Option<String> = None;
     let mut sort_ascending: Option<bool> = None;
+    let mut lang: Option<String> = None;
+    let mut viewer_zoom: Option<bool> = None;
+    let mut viewer_fullscreen: Option<bool> = None;
     let mut has_kv = false;
 
     for line in content.lines() {
@@ -422,6 +465,14 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
                     }
                 }
                 "sort_ascending" => { sort_ascending = v.trim().parse().ok(); }
+                "lang" => {
+                    let v = v.trim();
+                    if matches!(v, "ja" | "en" | "cn") {
+                        lang = Some(v.to_string());
+                    }
+                }
+                "viewer_zoom"       => { viewer_zoom       = v.trim().parse().ok(); }
+                "viewer_fullscreen" => { viewer_fullscreen = v.trim().parse().ok(); }
                 _ => {}
             }
         }
@@ -454,17 +505,28 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
         ascending: sort_ascending.unwrap_or(true),
     };
 
-    Some(AppState { last_dir, window_size, viewer_slots, sort_state })
+    Some(AppState {
+        last_dir,
+        window_size,
+        viewer_slots,
+        sort_state,
+        lang: lang.unwrap_or_else(|| "ja".to_string()),
+        viewer_cfg: ViewerConfig {
+            zoom_actual: viewer_zoom.unwrap_or(false),
+            fullscreen: viewer_fullscreen.unwrap_or(false),
+        },
+    })
 }
 
-pub fn save_state(dir: &Path, window_size: (u32, u32), viewer_slots: &[Option<WindowSlot>; 4], sort_state: &SortState) {
+pub fn save_state(dir: &Path, window_size: (u32, u32), viewer_slots: &[Option<WindowSlot>; 4], sort_state: &SortState, lang: &str, viewer_cfg: &ViewerConfig) {
     let (Some(path), Some(bak), Some(tmp)) =
         (state_path(), state_bak_path(), state_tmp_path())
     else { return; };
 
     let mut content = format!(
-        "last_dir={}\nwindow_width={}\nwindow_height={}\nsort_key={}\nsort_ascending={}\n",
-        dir.to_string_lossy(), window_size.0, window_size.1, sort_state.key, sort_state.ascending
+        "last_dir={}\nwindow_width={}\nwindow_height={}\nsort_key={}\nsort_ascending={}\nlang={}\nviewer_zoom={}\nviewer_fullscreen={}\n",
+        dir.to_string_lossy(), window_size.0, window_size.1, sort_state.key, sort_state.ascending, lang,
+        viewer_cfg.zoom_actual, viewer_cfg.fullscreen,
     );
     for (i, slot) in viewer_slots.iter().enumerate() {
         if let Some(s) = slot {
@@ -525,58 +587,81 @@ fn parse_filter(s: &str) -> ResizeFilter {
     }
 }
 
-const DEFAULT_INI: &str = "
+const DEFAULT_INI: &str = "\
+# ============================================================================
+#  Nekoviewer 設定ファイル (nekoviewer.conf)
+#
+#  ・この実行ファイルと同じフォルダに置かれます。
+#  ・ファイルを削除すると、次回起動時にこの既定値で再生成されます。
+#  ・'#' または ';' で始まる行はコメントです。'キー = 値' 形式で記述します。
+#  ・不明なキーや不正な値は無視され、そのキーの既定値が使われます。
+# ============================================================================
+
+# ── 起動 ────────────────────────────────────────────────────────────────────
 [startup]
-# 起動時に最後に開いていた場所を復元する（true / false）
-# ※ ネットワークドライブの切断など、最後のフォルダにアクセスできない場合は
-#    fixed_dir にフォールバックします。fixed_dir が空欄の場合はホームディレクトリ、
-#    ホームにも移動できない場合はルート (/) にフォールバックします。
+# 起動時に最後に開いていた場所を復元する（true / false）。
+# 最後のフォルダにアクセスできない場合（ネットワークドライブ切断など）は
+# fixed_dir にフォールバックします。
 use_last_dir = false
 
-# 起動時に開く固定フォルダ
-# use_last_dir = false の場合の起動フォルダ、および
-# use_last_dir = true でフォルダにアクセスできない場合のフォールバック先。
-# 空欄の場合はホームディレクトリを使用します。
+# 起動時に開く固定フォルダ。
+# ・use_last_dir = false のときの起動フォルダ。
+# ・use_last_dir = true でフォルダにアクセスできないときのフォールバック先。
+# 空欄ならホームディレクトリ、ホームにも移動できなければルート (/) を使います。
 fixed_dir =
 
-[log]
-# パフォーマンス計測ログ（ページ読み込み時間など）
-perf = false
-# キーイベント・スクロールの入力ログ
-key = true
-# 起動・初期化など共通ログ
-common = true
-
-[worker]
-# ページデコードの並列スレッド数。0 = 自動（論理コア数の半分）
-decode_threads = 0
-
-[cache]
-# local : 実行ファイル配下の cache/ に保存（開発・確認用）
-# xdg   : ~/.local/share/nekoview/cache/ に保存（本番推奨）
-storage = local
-
-# ページキャッシュ（デコード済み画像）の最大メモリ上限（MB単位の整数）。
-# システムRAMの25%を自動使用。最小値は64MB。
-# 指定しない場合は行頭#でコメントアウト。普段はデフォルトで問題ない
-# max_mb = 1024
-
-# ファイルキャッシュ（圧縮済みファイルまるごと）の最大メモリ上限（MB単位の整数）。
-# 指定しない場合はシステムRAMの5%を自動使用。最小値は16MB。
-# 指定しない場合は行頭#でコメントアウト。普段はデフォルトで問題ない
-# file_cache_max_mb = 200
-
-[thumbnail]
-# nearest / triangle / catmullrom / lanczos3
-# triangle 推奨（256px縮小では品質差が小さく速い）
-filter = triangle
-
+# ── ビューアー ──────────────────────────────────────────────────────────────
 [viewer]
-# nearest / triangle / catmullrom / lanczos3
-# catmullrom 推奨（フルサイズ表示で品質が目に見えるためバランス重視）
+# 表示時の拡大縮小フィルタ：nearest / triangle / catmullrom / lanczos3
+# catmullrom 推奨（フルサイズ表示で品質差が目に見えるためバランス重視）。
 filter = catmullrom
 
+# ビューアーを開くときの既定の位置・サイズに使うスロット番号（5 / 6 / 7 / 8 / 空欄）。
+# F5〜F8 で保存したスロットを既定値として、ビューアーを開くたびに適用します。
+# ・空欄、または 5〜8 以外を指定した場合はデフォルト無し（OS既定位置・800x600）。
+# ・番号は正しくても該当スロットがまだ未保存の場合はデフォルト無しになります。
+# ・適用後でも F5〜F8 を押せば、その回だけ別スロットへ切り替えられます。
+default_slot =
+
+# ── サムネイル ──────────────────────────────────────────────────────────────
+[thumbnail]
+# 縮小時のフィルタ：nearest / triangle / catmullrom / lanczos3
+# triangle 推奨（256px 縮小では品質差が小さく速い）。
+filter = triangle
+
+# ── グリッド ────────────────────────────────────────────────────────────────
 [grid]
 # サムネイル長辺サイズ（px）。64〜512 の範囲で指定。幅は 1:√2 で自動計算。
 thumb_size = 256
+
+# ── ワーカー ────────────────────────────────────────────────────────────────
+[worker]
+# ページデコードの並列スレッド数。0 = 自動（論理コア数の半分）。
+decode_threads = 0
+
+# ── キャッシュ ──────────────────────────────────────────────────────────────
+[cache]
+# サムネイルのディスクキャッシュ保存先。
+#   local : 実行ファイル配下の cache/ に保存（開発・確認用）
+#   xdg   : ~/.local/share/nekoview/cache/ に保存（本番推奨）
+storage = local
+
+# ページキャッシュ（デコード済み画像）の最大メモリ上限（MB / 整数）。
+# 既定はシステムRAMの25%。最小値は64MB。
+# 通常は既定のままで問題ありません。指定する場合は行頭の '#' を外します。
+# max_mb = 1024
+
+# ファイルキャッシュ（圧縮ファイルまるごと）の最大メモリ上限（MB / 整数）。
+# 既定はシステムRAMの5%。最小値は16MB。
+# 通常は既定のままで問題ありません。指定する場合は行頭の '#' を外します。
+# file_cache_max_mb = 200
+
+# ── ログ ────────────────────────────────────────────────────────────────────
+[log]
+# パフォーマンス計測ログ（ページ読み込み時間など）。
+perf = false
+# キーイベント・スクロールの入力ログ。
+key = true
+# 起動・初期化など共通ログ。
+common = true
 ";

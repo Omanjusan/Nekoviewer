@@ -1,2 +1,5 @@
 /target
 /.claude
+
+# Rust build artifacts in any nested crate (e.g. poc/)
+target/
