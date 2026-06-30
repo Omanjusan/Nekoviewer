@@ -7,10 +7,14 @@ use std::sync::{mpsc, Arc, Mutex};
 use fast_image_resize::images::Image as FirImage;
 use fast_image_resize::{FilterType as FirFilter, PixelType, ResizeAlg, ResizeOptions, Resizer};
 
+const KB: usize = 1024;
+const MB: usize = 1024 * KB;
+const GB: usize = 1024 * MB;
+
 const PAGE_CACHE_RAM_PCT: usize = 25;
 const FILE_CACHE_RAM_PCT: usize = 5;
 const MIN_RATIO_PCT: usize = 40; // page_max に対する page_min の割合
-const FALLBACK_TOTAL_BYTES: usize = 500 * 1024 * 1024; // sysinfo 失敗時フォールバック（旧30%相当）
+const FALLBACK_TOTAL_BYTES: usize = 500 * MB; // sysinfo 失敗時フォールバック（旧30%相当）
 
 /// ページキャッシュ・ファイルキャッシュの予算を一括解決する。
 /// 返り値: (page_max, page_min, file_max)
@@ -25,7 +29,7 @@ pub fn resolve_cache_budgets(
     };
 
     let page_max = match page_cache_max_mb {
-        Some(mb) => (mb as usize) * 1024 * 1024,
+        Some(mb) => (mb as usize) * MB,
         None => if total_ram > 0 {
             total_ram * PAGE_CACHE_RAM_PCT / 100
         } else {
@@ -34,7 +38,7 @@ pub fn resolve_cache_budgets(
     };
 
     let file_max = match file_cache_max_mb {
-        Some(mb) => (mb as usize) * 1024 * 1024,
+        Some(mb) => (mb as usize) * MB,
         None => if total_ram > 0 {
             total_ram * FILE_CACHE_RAM_PCT / 100
         } else {
@@ -47,6 +51,9 @@ pub fn resolve_cache_budgets(
 }
 const MAX_DISPLAY_W: u32 = 1920;
 const MAX_DISPLAY_H: u32 = 1080;
+/// デコード済みアニメーション総サイズがこれを超えたら拒否してプレースホルダーを返す。
+/// resize 前サイズで判定するため余裕を持って 2GB に設定。
+const ANIM_HARD_LIMIT_BYTES: usize = 2 * GB;
 
 // ワーカースレッドへのロード要求
 pub struct LoadRequest {
@@ -203,45 +210,47 @@ fn load_raw_file_content(path: &std::path::Path, filter: image::imageops::Filter
     load_raw_content_from_bytes(&buf, path, filter)
 }
 
+/// アニメーションデコード結果を PageContent に変換する。
+/// `single_frame_static` が true のとき 1フレームは静止画として扱う（GIF/WebP 用）。
+fn anim_to_content(
+    anim: AnimatedImage,
+    label: &str,
+    single_frame_static: bool,
+    filter: image::imageops::FilterType,
+) -> Option<PageContent> {
+    if single_frame_static && anim.frames.len() == 1 {
+        let img = image::DynamicImage::ImageRgba8(anim.frames.into_iter().next()?.image);
+        return Some(PageContent::Static(resize_for_display(img, filter)));
+    }
+    guard_anim_size(anim, label).map(|a| PageContent::Animated(resize_anim_for_display(a, filter)))
+}
+
+/// 拡張子（ドットなし小文字）からアニメーションデコードを試みて PageContent を返す。
+/// 対象外の拡張子や静止画は None。
+fn decode_anim_from_ext(buf: &[u8], ext: &str, filter: image::imageops::FilterType) -> Option<PageContent> {
+    match ext {
+        "gif"  => AnimatedImage::from_gif(buf) .and_then(|a| anim_to_content(a, "gif",  true,  filter)),
+        "webp" => AnimatedImage::from_webp(buf).and_then(|a| anim_to_content(a, "webp", true,  filter)),
+        "png"  => AnimatedImage::from_apng(buf).and_then(|a| anim_to_content(a, "apng", false, filter)),
+        "avif" => AnimatedImage::from_avif(buf).and_then(|a| anim_to_content(a, "avif", false, filter)),
+        _      => None,
+    }
+}
+
 /// バイト列から生画像を PageContent としてデコードする（FileCache ヒット時用）
 fn load_raw_content_from_bytes(buf: &[u8], path: &std::path::Path, filter: image::imageops::FilterType) -> Option<PageContent> {
-    let lower = path
+    let ext = path
         .extension()
         .and_then(|e| e.to_str())
         .map(|s| s.to_ascii_lowercase())
         .unwrap_or_default();
 
-    if lower == "gif" {
-        if let Some(anim) = AnimatedImage::from_gif(&buf) {
-            if anim.frames.len() > 1 {
-                return Some(PageContent::Animated(resize_anim_for_display(anim, filter)));
-            }
-            let img = image::DynamicImage::ImageRgba8(anim.frames.into_iter().next()?.image);
-            return Some(PageContent::Static(resize_for_display(img, filter)));
-        }
-    }
-    if lower == "webp" {
-        if let Some(anim) = AnimatedImage::from_webp(&buf) {
-            if anim.frames.len() > 1 {
-                return Some(PageContent::Animated(resize_anim_for_display(anim, filter)));
-            }
-            let img = image::DynamicImage::ImageRgba8(anim.frames.into_iter().next()?.image);
-            return Some(PageContent::Static(resize_for_display(img, filter)));
-        }
-    }
-    if lower == "png" {
-        if let Some(anim) = AnimatedImage::from_apng(&buf) {
-            return Some(PageContent::Animated(resize_anim_for_display(anim, filter)));
-        }
-    }
-    if lower == "avif" {
-        if let Some(anim) = AnimatedImage::from_avif(&buf) {
-            return Some(PageContent::Animated(resize_anim_for_display(anim, filter)));
-        }
+    if let Some(c) = decode_anim_from_ext(buf, &ext, filter) {
+        return Some(c);
     }
 
     let display_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-    let img = crate::fs::archive::decode_image_bytes(&buf, display_name)?;
+    let img = crate::fs::archive::decode_image_bytes(buf, display_name)?;
     Some(PageContent::Static(resize_for_display(img, filter)))
 }
 
@@ -254,36 +263,10 @@ fn load_page_content<R: std::io::Read + std::io::Seek>(
     let (buf, display_name) = crate::fs::archive::load_bytes_from_archive(archive, entry_name)?;
 
     let lower = entry_name.to_ascii_lowercase();
+    let ext = lower.rsplit_once('.').map(|(_, e)| e).unwrap_or("");
 
-    if lower.ends_with(".gif") {
-        if let Some(anim) = AnimatedImage::from_gif(&buf) {
-            if anim.frames.len() > 1 {
-                return Some(PageContent::Animated(resize_anim_for_display(anim, filter)));
-            }
-            let img = image::DynamicImage::ImageRgba8(anim.frames.into_iter().next()?.image);
-            return Some(PageContent::Static(resize_for_display(img, filter)));
-        }
-    }
-
-    if lower.ends_with(".webp") {
-        if let Some(anim) = AnimatedImage::from_webp(&buf) {
-            if anim.frames.len() > 1 {
-                return Some(PageContent::Animated(resize_anim_for_display(anim, filter)));
-            }
-            let img = image::DynamicImage::ImageRgba8(anim.frames.into_iter().next()?.image);
-            return Some(PageContent::Static(resize_for_display(img, filter)));
-        }
-    }
-
-    if lower.ends_with(".png") {
-        if let Some(anim) = AnimatedImage::from_apng(&buf) {
-            return Some(PageContent::Animated(resize_anim_for_display(anim, filter)));
-        }
-    }
-    if lower.ends_with(".avif") {
-        if let Some(anim) = AnimatedImage::from_avif(&buf) {
-            return Some(PageContent::Animated(resize_anim_for_display(anim, filter)));
-        }
+    if let Some(c) = decode_anim_from_ext(&buf, ext, filter) {
+        return Some(c);
     }
 
     let img = crate::fs::archive::decode_image_bytes(&buf, &display_name)?;
@@ -335,6 +318,8 @@ pub struct PageCache {
     total_bytes: usize,
     max_bytes: usize,
     min_bytes: usize,
+    /// LRU 予算を超える単一アイテムを表示のためだけに保持するスロット（1件のみ）
+    bypass: Option<((PathBuf, usize), PageContent)>,
 }
 
 impl PageCache {
@@ -344,6 +329,7 @@ impl PageCache {
             total_bytes: 0,
             max_bytes,
             min_bytes,
+            bypass: None,
         }
     }
 
@@ -352,13 +338,20 @@ impl PageCache {
 
     pub fn contains(&self, path: &PathBuf, index: usize) -> bool {
         self.entries.contains_key(&(path.clone(), index))
+            || self.bypass.as_ref()
+                .map_or(false, |((bp, bi), _)| bp == path && *bi == index)
     }
 
     pub fn get(&self, path: &PathBuf, index: usize) -> Option<&PageContent> {
-        self.entries.get(&(path.clone(), index))
+        self.entries.get(&(path.clone(), index)).or_else(|| {
+            self.bypass.as_ref().and_then(|((bp, bi), c)| {
+                if bp == path && *bi == index { Some(c) } else { None }
+            })
+        })
     }
 
     /// キャッシュに追加する。予算超過時は最遠エントリを evict する。
+    /// 単一アイテムが予算全体を超える場合は LRU を汚さず bypass スロットに格納する。
     pub fn insert(
         &mut self,
         path: PathBuf,
@@ -368,6 +361,25 @@ impl PageCache {
         current_index: usize,
     ) {
         let incoming = content_bytes(&content);
+
+        if incoming >= self.max_bytes {
+            eprintln!(
+                "[cache] bypass: {:?}[{}] {}MB > budget {}MB",
+                path, index,
+                incoming / MB,
+                self.max_bytes / MB,
+            );
+            self.bypass = Some(((path, index), content));
+            return;
+        }
+
+        // 現在位置が変わっていたら stale な bypass エントリを解放する
+        if let Some(((bp, bi), _)) = &self.bypass {
+            if bp != current_path || *bi != current_index {
+                self.bypass = None;
+            }
+        }
+
         while self.total_bytes + incoming > self.max_bytes
             && self.total_bytes > self.min_bytes
             && !self.entries.is_empty()
@@ -393,7 +405,7 @@ impl PageCache {
 
         if let Some(key) = key {
             if let Some(content) = self.entries.remove(&key) {
-                self.total_bytes -= content_bytes(&content);
+                self.total_bytes = self.total_bytes.saturating_sub(content_bytes(&content));
             }
         }
     }
@@ -467,6 +479,22 @@ fn content_bytes(content: &PageContent) -> usize {
         PageContent::Static(img) => rgba_bytes(img),
         PageContent::Animated(anim) => anim.frames.iter().map(|f| rgba_bytes(&f.image)).sum(),
     }
+}
+
+/// デコード済みアニメーションが ANIM_HARD_LIMIT_BYTES を超えたら None を返してメモリを解放する。
+/// resize 前に呼び出すことでリサイズ処理のコストも削減する。
+fn guard_anim_size(anim: AnimatedImage, label: &str) -> Option<AnimatedImage> {
+    let total: usize = anim.frames.iter().map(|f| rgba_bytes(&f.image)).sum();
+    if total > ANIM_HARD_LIMIT_BYTES {
+        eprintln!(
+            "[cache] {} animation too large ({}MB > {}MB limit), skipping",
+            label,
+            total / MB,
+            ANIM_HARD_LIMIT_BYTES / MB,
+        );
+        return None;
+    }
+    Some(anim)
 }
 
 // ── ファイルキャッシュワーカー ─────────────────────────────────────────────────
