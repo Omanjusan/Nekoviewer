@@ -22,16 +22,18 @@ fn main() {
     fs::mount::log_gvfs_status();
     log_common!("[startup] gvfs check done");
 
-    let cfg = config::AppConfig::load();
+    let mut cfg = config::AppConfig::load();
     log_common!("[startup] config loaded");
 
     let state = config::load_state();
     log_common!("[startup] state loaded (window_size = {:?})", state.window_size);
     i18n::set_from_code(&state.lang);
 
-    let start_dir = std::env::args()
-        .nth(1)
-        .map(PathBuf::from)
+    let args = CliArgs::parse();
+    if let Some(v) = args.cache_max_mb    { cfg.cache_max_mb      = Some(v.max(64)); }
+    if let Some(v) = args.file_cache_max_mb { cfg.file_cache_max_mb = Some(v.max(16)); }
+
+    let start_dir = args.start_path
         .unwrap_or_else(|| cfg.startup_dir(&state));
     log_common!("[startup] start_dir = {:?}", start_dir);
 
@@ -118,4 +120,45 @@ fn japanese_font_data() -> Option<Vec<u8>> {
 #[cfg(not(target_os = "windows"))]
 fn simplified_chinese_font_data() -> Option<Vec<u8>> {
     None // NotoSansCJK が全 CJK をカバーするため追加フォント不要
+}
+
+// ── コマンドライン引数 ────────────────────────────────────────────────────────
+
+struct CliArgs {
+    start_path:        Option<PathBuf>,
+    cache_max_mb:      Option<u64>,
+    file_cache_max_mb: Option<u64>,
+}
+
+impl CliArgs {
+    /// `--cache-max-mb=N` / `--cache-max-mb N` 形式を手動パース。
+    /// 不明なオプションは無視、位置引数は start_path として扱う。
+    fn parse() -> Self {
+        let mut start_path        = None::<PathBuf>;
+        let mut cache_max_mb      = None::<u64>;
+        let mut file_cache_max_mb = None::<u64>;
+
+        let mut it = std::env::args().skip(1);
+        while let Some(arg) = it.next() {
+            if let Some(rest) = arg.strip_prefix("--cache-max-mb") {
+                cache_max_mb = Self::take_value(rest, &mut it);
+            } else if let Some(rest) = arg.strip_prefix("--file-cache-max-mb") {
+                file_cache_max_mb = Self::take_value(rest, &mut it);
+            } else if !arg.starts_with('-') {
+                start_path = Some(PathBuf::from(&arg));
+            }
+            // 未知の --xxx オプションは無視
+        }
+
+        Self { start_path, cache_max_mb, file_cache_max_mb }
+    }
+
+    fn take_value(rest: &str, it: &mut impl Iterator<Item = String>) -> Option<u64> {
+        let s = if let Some(s) = rest.strip_prefix('=') {
+            s.to_owned()
+        } else {
+            it.next().unwrap_or_default()
+        };
+        s.parse::<u64>().ok()
+    }
 }
