@@ -15,52 +15,91 @@ pub struct AnimatedImage {
     pub loop_count: u32,
 }
 
+/// フレームを1枚ずつ受け取り、2段階のサイズ判定を行うアキュムレータ。
+/// - `hard_limit_bytes` 超過: アニメーション全体を破棄（`push` が Err を返す）。
+/// - `cache_budget_bytes` 超過: アニメーションとしての再生を諦め、
+///   既に確定している先頭1フレームだけを残して打ち切る（静止画フォールバック）。
+///   ページキャッシュに載り切らないアニメーションを毎回全フレーム展開してから
+///   bypass するのは無駄が大きく、ループ再生でユーザー体験も損なうため、
+///   「載らないと分かった時点」で以降のデコードをやめて先頭フレームの静止画に倒す。
+struct FrameAccumulator<'a> {
+    frames: Vec<AnimFrame>,
+    total: usize,
+    hard_limit_bytes: usize,
+    cache_budget_bytes: usize,
+    label: &'a str,
+}
+
+impl<'a> FrameAccumulator<'a> {
+    fn new(hard_limit_bytes: usize, cache_budget_bytes: usize, label: &'a str) -> Self {
+        Self { frames: Vec::new(), total: 0, hard_limit_bytes, cache_budget_bytes, label }
+    }
+
+    /// `Ok(true)`: 継続, `Ok(false)`: 静止画フォールバックとして打ち切り, `Err(())`: 全体を破棄。
+    fn push(&mut self, frame: AnimFrame) -> Result<bool, ()> {
+        self.total += frame_bytes(&frame.image);
+        if self.total > self.hard_limit_bytes {
+            log_anim_too_large(self.label, self.total, self.hard_limit_bytes);
+            return Err(());
+        }
+        if self.frames.is_empty() {
+            // 先頭フレームは静止画フォールバック用に必ず確保する。
+            self.frames.push(frame);
+            return Ok(true);
+        }
+        if self.total <= self.cache_budget_bytes {
+            self.frames.push(frame);
+            Ok(true)
+        } else {
+            log_anim_truncated_to_static(self.label, self.total, self.cache_budget_bytes);
+            self.frames.truncate(1);
+            Ok(false)
+        }
+    }
+
+    fn finish(self) -> Option<AnimatedImage> {
+        if self.frames.is_empty() { return None; }
+        Some(AnimatedImage { frames: self.frames, loop_count: 0 })
+    }
+}
+
 impl AnimatedImage {
-    /// `limit_bytes` を超えた時点でデコードを打ち切り None を返す（インクリメンタルガード）。
-    /// 全フレームをデコードし終えてからサイズ判定する「後追い」実装だと、
-    /// 1枚で巨大に展開されるアニメーションに対してガードが手遅れになるため。
-    pub fn from_gif(data: &[u8], limit_bytes: usize, label: &str) -> Option<Self> {
+    pub fn from_gif(data: &[u8], hard_limit_bytes: usize, cache_budget_bytes: usize, label: &str) -> Option<Self> {
         use image::AnimationDecoder;
         let decoder = image::codecs::gif::GifDecoder::new(std::io::Cursor::new(data)).ok()?;
-        let mut frames = Vec::new();
-        let mut total: usize = 0;
+        let mut acc = FrameAccumulator::new(hard_limit_bytes, cache_budget_bytes, label);
         for frame_result in decoder.into_frames() {
             let frame = frame_result.ok()?;
             let delay = delay_from_image(frame.delay());
             let image = frame.into_buffer();
-            total += frame_bytes(&image);
-            if total > limit_bytes {
-                log_anim_too_large(label, total, limit_bytes);
-                return None;
+            match acc.push(AnimFrame { image, delay }) {
+                Ok(true) => {}
+                Ok(false) => break,
+                Err(()) => return None,
             }
-            frames.push(AnimFrame { image, delay });
         }
-        if frames.is_empty() { return None; }
-        Some(Self { frames, loop_count: 0 })
+        acc.finish()
     }
 
-    pub fn from_apng(data: &[u8], limit_bytes: usize, label: &str) -> Option<Self> {
+    pub fn from_apng(data: &[u8], hard_limit_bytes: usize, cache_budget_bytes: usize, label: &str) -> Option<Self> {
         use image::AnimationDecoder;
         let decoder = image::codecs::png::PngDecoder::new(std::io::Cursor::new(data)).ok()?;
         if !decoder.is_apng().ok()? { return None; }
-        let mut frames = Vec::new();
-        let mut total: usize = 0;
+        let mut acc = FrameAccumulator::new(hard_limit_bytes, cache_budget_bytes, label);
         for frame_result in decoder.apng().ok()?.into_frames() {
             let frame = frame_result.ok()?;
             let delay = delay_from_image(frame.delay());
             let image = frame.into_buffer();
-            total += frame_bytes(&image);
-            if total > limit_bytes {
-                log_anim_too_large(label, total, limit_bytes);
-                return None;
+            match acc.push(AnimFrame { image, delay }) {
+                Ok(true) => {}
+                Ok(false) => break,
+                Err(()) => return None,
             }
-            frames.push(AnimFrame { image, delay });
         }
-        if frames.is_empty() { return None; }
-        Some(Self { frames, loop_count: 0 })
+        acc.finish()
     }
 
-    pub fn from_avif(data: &[u8], limit_bytes: usize, label: &str) -> Option<Self> {
+    pub fn from_avif(data: &[u8], hard_limit_bytes: usize, cache_budget_bytes: usize, label: &str) -> Option<Self> {
         use libavif_sys::*;
 
         struct DecoderGuard(*mut avifDecoder);
@@ -86,8 +125,7 @@ impl AnimatedImage {
             if (*decoder).imageCount <= 1 { return None; }
 
             let timescale = (*decoder).timescale as f64;
-            let mut frames = Vec::with_capacity((*decoder).imageCount as usize);
-            let mut total: usize = 0;
+            let mut acc = FrameAccumulator::new(hard_limit_bytes, cache_budget_bytes, label);
 
             while avifDecoderNextImage(decoder) == AVIF_RESULT_OK {
                 let avif_image = (*decoder).image;
@@ -123,28 +161,26 @@ impl AnimatedImage {
                 avifRGBImageFreePixels(&mut rgb);
 
                 if let Some(frame) = pushed_frame {
-                    total += frame_bytes(&frame.image);
-                    if total > limit_bytes {
-                        log_anim_too_large(label, total, limit_bytes);
-                        return None;
+                    match acc.push(frame) {
+                        Ok(true) => {}
+                        Ok(false) => break,
+                        Err(()) => return None,
                     }
-                    frames.push(frame);
                 }
             }
 
-            if frames.is_empty() { return None; }
-            Some(Self { frames, loop_count: 0 })
+            acc.finish()
         }
     }
 
     /// webp::AnimDecoder::decode() は libwebp 内部で全フレームをデコードしてから返すため、
-    /// フレーム単位の途中打ち切りができない。代わりにデコード前にヘッダ情報
-    /// (キャンバスサイズ・フレーム数)だけを取得し、展開後サイズを事前見積もりして
-    /// 閾値超過ならデコード自体を行わずに打ち切る。
-    pub fn from_webp(data: &[u8], limit_bytes: usize, label: &str) -> Option<Self> {
+    /// フレーム単位の途中打ち切りができない。まずヘッダ情報(キャンバスサイズ・フレーム数)だけで
+    /// ハードリミット超過が確定しているものだけデコード自体を回避し、残りは通常通りデコードした後に
+    /// 実サイズでキャッシュ予算を判定して先頭フレームのみへ切り詰める。
+    pub fn from_webp(data: &[u8], hard_limit_bytes: usize, cache_budget_bytes: usize, label: &str) -> Option<Self> {
         if let Some(projected) = webp_projected_bytes(data) {
-            if projected > limit_bytes {
-                log_anim_too_large(label, projected, limit_bytes);
+            if projected > hard_limit_bytes {
+                log_anim_too_large(label, projected, hard_limit_bytes);
                 return None;
             }
         }
@@ -155,7 +191,7 @@ impl AnimatedImage {
 
         // webp のタイムスタンプは累積ms。フレーム間の差分をディレイとして使う。
         let webp_frames: Vec<_> = anim.into_iter().collect();
-        let frames: Vec<AnimFrame> = webp_frames
+        let mut frames: Vec<AnimFrame> = webp_frames
             .iter()
             .enumerate()
             .map(|(i, f)| {
@@ -171,6 +207,17 @@ impl AnimatedImage {
             })
             .collect();
         if frames.is_empty() { return None; }
+
+        let total: usize = frames.iter().map(|f| frame_bytes(&f.image)).sum();
+        if total > hard_limit_bytes {
+            log_anim_too_large(label, total, hard_limit_bytes);
+            return None;
+        }
+        if total > cache_budget_bytes && frames.len() > 1 {
+            log_anim_truncated_to_static(label, total, cache_budget_bytes);
+            frames.truncate(1);
+        }
+
         Some(Self { frames, loop_count })
     }
 }
@@ -186,6 +233,16 @@ fn log_anim_too_large(label: &str, total: usize, limit: usize) {
         label,
         total / MB,
         limit / MB,
+    );
+}
+
+fn log_anim_truncated_to_static(label: &str, total: usize, budget: usize) {
+    const MB: usize = 1024 * 1024;
+    eprintln!(
+        "[cache] {} animation exceeds cache budget ({}MB > {}MB), falling back to first frame as static",
+        label,
+        total / MB,
+        budget / MB,
     );
 }
 

@@ -73,10 +73,10 @@ enum OpenArchive {
 }
 
 impl OpenArchive {
-    fn load_page(&mut self, entry_name: &str, filter: image::imageops::FilterType) -> Option<PageContent> {
+    fn load_page(&mut self, entry_name: &str, filter: image::imageops::FilterType, cache_budget_bytes: usize) -> Option<PageContent> {
         match self {
-            Self::Disk(a) => load_page_content(a, entry_name, filter),
-            Self::Mem(a)  => load_page_content(a, entry_name, filter),
+            Self::Disk(a) => load_page_content(a, entry_name, filter, cache_budget_bytes),
+            Self::Mem(a)  => load_page_content(a, entry_name, filter, cache_budget_bytes),
         }
     }
 }
@@ -95,8 +95,10 @@ pub struct LoadResult {
 }
 
 /// バックグラウンドデコードワーカーを `num_threads` 本起動する。
+/// `cache_budget_bytes` はページキャッシュの予算（PageCache::max_bytes）。
+/// これを超えて展開されるアニメーションは先頭フレームのみの静止画にフォールバックする。
 /// 返り値: (要求送信側, 結果受信側)
-pub fn spawn_worker(filter: image::imageops::FilterType, num_threads: usize, ctx: egui::Context) -> (mpsc::Sender<LoadRequest>, mpsc::Receiver<LoadResult>) {
+pub fn spawn_worker(filter: image::imageops::FilterType, num_threads: usize, ctx: egui::Context, cache_budget_bytes: usize) -> (mpsc::Sender<LoadRequest>, mpsc::Receiver<LoadResult>) {
     let (req_tx, req_rx) = mpsc::channel::<LoadRequest>();
     let (res_tx, res_rx) = mpsc::channel::<LoadResult>();
 
@@ -121,9 +123,9 @@ pub fn spawn_worker(filter: image::imageops::FilterType, num_threads: usize, ctx
                 let t_total = std::time::Instant::now();
                 let content = if req.is_raw_file {
                     if let Some(bytes) = req.file_bytes {
-                        load_raw_content_from_bytes(&bytes, &req.archive_path, filter)
+                        load_raw_content_from_bytes(&bytes, &req.archive_path, filter, cache_budget_bytes)
                     } else {
-                        load_raw_file_content(&req.archive_path, filter)
+                        load_raw_file_content(&req.archive_path, filter, cache_budget_bytes)
                     }
                 } else if let Some(bytes) = req.file_bytes {
                     // FileCache ヒット: メモリからアーカイブを開く
@@ -135,7 +137,7 @@ pub fn spawn_worker(filter: image::imageops::FilterType, num_threads: usize, ctx
                             .ok()
                             .map(|a| (req.archive_path.clone(), OpenArchive::Mem(a)));
                     }
-                    open_archive.as_mut().and_then(|(_, a)| a.load_page(&req.entry_name, filter))
+                    open_archive.as_mut().and_then(|(_, a)| a.load_page(&req.entry_name, filter, cache_budget_bytes))
                 } else {
                     // FileCache ミス: ディスクから開く（従来の動作）
                     let is_same_disk = open_archive.as_ref().map_or(false, |(p, a)| {
@@ -147,7 +149,7 @@ pub fn spawn_worker(filter: image::imageops::FilterType, num_threads: usize, ctx
                             .and_then(|f| zip::ZipArchive::new(f).ok())
                             .map(|a| (req.archive_path.clone(), OpenArchive::Disk(a)));
                     }
-                    open_archive.as_mut().and_then(|(_, a)| a.load_page(&req.entry_name, filter))
+                    open_archive.as_mut().and_then(|(_, a)| a.load_page(&req.entry_name, filter, cache_budget_bytes))
                 };
 
                 if let Some(content) = content {
@@ -205,20 +207,17 @@ fn fir_resize(img: image::DynamicImage, nw: u32, nh: u32, filter: image::imageop
 }
 
 /// 生画像ファイルを PageContent としてデコードする（ZIP不使用）
-fn load_raw_file_content(path: &std::path::Path, filter: image::imageops::FilterType) -> Option<PageContent> {
+fn load_raw_file_content(path: &std::path::Path, filter: image::imageops::FilterType, cache_budget_bytes: usize) -> Option<PageContent> {
     let buf = std::fs::read(path).ok()?;
-    load_raw_content_from_bytes(&buf, path, filter)
+    load_raw_content_from_bytes(&buf, path, filter, cache_budget_bytes)
 }
 
 /// アニメーションデコード結果を PageContent に変換する。
-/// `single_frame_static` が true のとき 1フレームは静止画として扱う（GIF/WebP 用）。
+/// 1フレームしか無ければ静止画として扱う（元々1フレームだった場合と、
+/// キャッシュ予算超過でanim.rs側が先頭フレームへ切り詰めた場合の両方が該当）。
 /// サイズ上限のチェックはデコード中（anim.rs のインクリメンタルガード）で完了済み。
-fn anim_to_content(
-    anim: AnimatedImage,
-    single_frame_static: bool,
-    filter: image::imageops::FilterType,
-) -> Option<PageContent> {
-    if single_frame_static && anim.frames.len() == 1 {
+fn anim_to_content(anim: AnimatedImage, filter: image::imageops::FilterType) -> Option<PageContent> {
+    if anim.frames.len() == 1 {
         let img = image::DynamicImage::ImageRgba8(anim.frames.into_iter().next()?.image);
         return Some(PageContent::Static(resize_for_display(img, filter)));
     }
@@ -227,25 +226,27 @@ fn anim_to_content(
 
 /// 拡張子（ドットなし小文字）からアニメーションデコードを試みて PageContent を返す。
 /// 対象外の拡張子や静止画は None。
-fn decode_anim_from_ext(buf: &[u8], ext: &str, filter: image::imageops::FilterType) -> Option<PageContent> {
+/// `cache_budget_bytes` はページキャッシュの予算（PageCache::max_bytes）。これを超えるアニメーションは
+/// ループ再生させず、先頭フレームのみの静止画にフォールバックする（anim.rs 側で判定）。
+fn decode_anim_from_ext(buf: &[u8], ext: &str, filter: image::imageops::FilterType, cache_budget_bytes: usize) -> Option<PageContent> {
     match ext {
-        "gif"  => AnimatedImage::from_gif(buf, ANIM_HARD_LIMIT_BYTES, "gif") .and_then(|a| anim_to_content(a, true,  filter)),
-        "webp" => AnimatedImage::from_webp(buf, ANIM_HARD_LIMIT_BYTES, "webp").and_then(|a| anim_to_content(a, true,  filter)),
-        "png"  => AnimatedImage::from_apng(buf, ANIM_HARD_LIMIT_BYTES, "apng").and_then(|a| anim_to_content(a, false, filter)),
-        "avif" => AnimatedImage::from_avif(buf, ANIM_HARD_LIMIT_BYTES, "avif").and_then(|a| anim_to_content(a, false, filter)),
+        "gif"  => AnimatedImage::from_gif(buf, ANIM_HARD_LIMIT_BYTES, cache_budget_bytes, "gif") .and_then(|a| anim_to_content(a, filter)),
+        "webp" => AnimatedImage::from_webp(buf, ANIM_HARD_LIMIT_BYTES, cache_budget_bytes, "webp").and_then(|a| anim_to_content(a, filter)),
+        "png"  => AnimatedImage::from_apng(buf, ANIM_HARD_LIMIT_BYTES, cache_budget_bytes, "apng").and_then(|a| anim_to_content(a, filter)),
+        "avif" => AnimatedImage::from_avif(buf, ANIM_HARD_LIMIT_BYTES, cache_budget_bytes, "avif").and_then(|a| anim_to_content(a, filter)),
         _      => None,
     }
 }
 
 /// バイト列から生画像を PageContent としてデコードする（FileCache ヒット時用）
-fn load_raw_content_from_bytes(buf: &[u8], path: &std::path::Path, filter: image::imageops::FilterType) -> Option<PageContent> {
+fn load_raw_content_from_bytes(buf: &[u8], path: &std::path::Path, filter: image::imageops::FilterType, cache_budget_bytes: usize) -> Option<PageContent> {
     let ext = path
         .extension()
         .and_then(|e| e.to_str())
         .map(|s| s.to_ascii_lowercase())
         .unwrap_or_default();
 
-    if let Some(c) = decode_anim_from_ext(buf, &ext, filter) {
+    if let Some(c) = decode_anim_from_ext(buf, &ext, filter, cache_budget_bytes) {
         return Some(c);
     }
 
@@ -259,13 +260,14 @@ fn load_page_content<R: std::io::Read + std::io::Seek>(
     archive: &mut zip::ZipArchive<R>,
     entry_name: &str,
     filter: image::imageops::FilterType,
+    cache_budget_bytes: usize,
 ) -> Option<PageContent> {
     let (buf, display_name) = crate::fs::archive::load_bytes_from_archive(archive, entry_name)?;
 
     let lower = entry_name.to_ascii_lowercase();
     let ext = lower.rsplit_once('.').map(|(_, e)| e).unwrap_or("");
 
-    if let Some(c) = decode_anim_from_ext(&buf, ext, filter) {
+    if let Some(c) = decode_anim_from_ext(&buf, ext, filter, cache_budget_bytes) {
         return Some(c);
     }
 
