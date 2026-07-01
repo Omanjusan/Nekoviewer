@@ -64,6 +64,11 @@ impl<'a> FrameAccumulator<'a> {
 }
 
 impl AnimatedImage {
+    /// 全フレームの合計デコード後バイト数（フェーズ2のサンプル見積もり用）。
+    pub fn total_bytes(&self) -> usize {
+        self.frames.iter().map(|f| frame_bytes(&f.image)).sum()
+    }
+
     pub fn from_gif(data: &[u8], hard_limit_bytes: usize, cache_budget_bytes: usize, label: &str) -> Option<Self> {
         use image::AnimationDecoder;
         let decoder = image::codecs::gif::GifDecoder::new(std::io::Cursor::new(data)).ok()?;

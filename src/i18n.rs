@@ -208,6 +208,30 @@ impl Lang {
         }
     }
 
+    pub fn memory_warning_title(self) -> &'static str {
+        match self {
+            Lang::Japanese => "メモリ不足",
+            Lang::English  => "Insufficient Memory",
+            Lang::Chinese  => "内存不足",
+        }
+    }
+
+    pub fn memory_warning_body(self) -> &'static str {
+        match self {
+            Lang::Japanese => "展開に十分なメモリが確保できません",
+            Lang::English  => "Not enough memory available to open this file",
+            Lang::Chinese  => "没有足够的内存来展开此文件",
+        }
+    }
+
+    pub fn memory_warning_ok(self) -> &'static str {
+        match self {
+            Lang::Japanese => "OK",
+            Lang::English  => "OK",
+            Lang::Chinese  => "确定",
+        }
+    }
+
     pub fn slot_label(self, n: usize) -> String {
         match self {
             Lang::Japanese => format!("[位置F{n}]"),
