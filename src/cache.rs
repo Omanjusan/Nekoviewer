@@ -212,9 +212,9 @@ fn load_raw_file_content(path: &std::path::Path, filter: image::imageops::Filter
 
 /// アニメーションデコード結果を PageContent に変換する。
 /// `single_frame_static` が true のとき 1フレームは静止画として扱う（GIF/WebP 用）。
+/// サイズ上限のチェックはデコード中（anim.rs のインクリメンタルガード）で完了済み。
 fn anim_to_content(
     anim: AnimatedImage,
-    label: &str,
     single_frame_static: bool,
     filter: image::imageops::FilterType,
 ) -> Option<PageContent> {
@@ -222,17 +222,17 @@ fn anim_to_content(
         let img = image::DynamicImage::ImageRgba8(anim.frames.into_iter().next()?.image);
         return Some(PageContent::Static(resize_for_display(img, filter)));
     }
-    guard_anim_size(anim, label).map(|a| PageContent::Animated(resize_anim_for_display(a, filter)))
+    Some(PageContent::Animated(resize_anim_for_display(anim, filter)))
 }
 
 /// 拡張子（ドットなし小文字）からアニメーションデコードを試みて PageContent を返す。
 /// 対象外の拡張子や静止画は None。
 fn decode_anim_from_ext(buf: &[u8], ext: &str, filter: image::imageops::FilterType) -> Option<PageContent> {
     match ext {
-        "gif"  => AnimatedImage::from_gif(buf) .and_then(|a| anim_to_content(a, "gif",  true,  filter)),
-        "webp" => AnimatedImage::from_webp(buf).and_then(|a| anim_to_content(a, "webp", true,  filter)),
-        "png"  => AnimatedImage::from_apng(buf).and_then(|a| anim_to_content(a, "apng", false, filter)),
-        "avif" => AnimatedImage::from_avif(buf).and_then(|a| anim_to_content(a, "avif", false, filter)),
+        "gif"  => AnimatedImage::from_gif(buf, ANIM_HARD_LIMIT_BYTES, "gif") .and_then(|a| anim_to_content(a, true,  filter)),
+        "webp" => AnimatedImage::from_webp(buf, ANIM_HARD_LIMIT_BYTES, "webp").and_then(|a| anim_to_content(a, true,  filter)),
+        "png"  => AnimatedImage::from_apng(buf, ANIM_HARD_LIMIT_BYTES, "apng").and_then(|a| anim_to_content(a, false, filter)),
+        "avif" => AnimatedImage::from_avif(buf, ANIM_HARD_LIMIT_BYTES, "avif").and_then(|a| anim_to_content(a, false, filter)),
         _      => None,
     }
 }
@@ -479,22 +479,6 @@ fn content_bytes(content: &PageContent) -> usize {
         PageContent::Static(img) => rgba_bytes(img),
         PageContent::Animated(anim) => anim.frames.iter().map(|f| rgba_bytes(&f.image)).sum(),
     }
-}
-
-/// デコード済みアニメーションが ANIM_HARD_LIMIT_BYTES を超えたら None を返してメモリを解放する。
-/// resize 前に呼び出すことでリサイズ処理のコストも削減する。
-fn guard_anim_size(anim: AnimatedImage, label: &str) -> Option<AnimatedImage> {
-    let total: usize = anim.frames.iter().map(|f| rgba_bytes(&f.image)).sum();
-    if total > ANIM_HARD_LIMIT_BYTES {
-        eprintln!(
-            "[cache] {} animation too large ({}MB > {}MB limit), skipping",
-            label,
-            total / MB,
-            ANIM_HARD_LIMIT_BYTES / MB,
-        );
-        return None;
-    }
-    Some(anim)
 }
 
 // ── ファイルキャッシュワーカー ─────────────────────────────────────────────────

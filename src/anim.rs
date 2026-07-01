@@ -16,43 +16,51 @@ pub struct AnimatedImage {
 }
 
 impl AnimatedImage {
-    pub fn from_gif(data: &[u8]) -> Option<Self> {
+    /// `limit_bytes` を超えた時点でデコードを打ち切り None を返す（インクリメンタルガード）。
+    /// 全フレームをデコードし終えてからサイズ判定する「後追い」実装だと、
+    /// 1枚で巨大に展開されるアニメーションに対してガードが手遅れになるため。
+    pub fn from_gif(data: &[u8], limit_bytes: usize, label: &str) -> Option<Self> {
         use image::AnimationDecoder;
         let decoder = image::codecs::gif::GifDecoder::new(std::io::Cursor::new(data)).ok()?;
-        let frames: Vec<AnimFrame> = decoder
-            .into_frames()
-            .collect_frames()
-            .ok()?
-            .into_iter()
-            .map(|f| AnimFrame {
-                delay: delay_from_image(f.delay()),
-                image: f.into_buffer(),
-            })
-            .collect();
+        let mut frames = Vec::new();
+        let mut total: usize = 0;
+        for frame_result in decoder.into_frames() {
+            let frame = frame_result.ok()?;
+            let delay = delay_from_image(frame.delay());
+            let image = frame.into_buffer();
+            total += frame_bytes(&image);
+            if total > limit_bytes {
+                log_anim_too_large(label, total, limit_bytes);
+                return None;
+            }
+            frames.push(AnimFrame { image, delay });
+        }
         if frames.is_empty() { return None; }
         Some(Self { frames, loop_count: 0 })
     }
 
-    pub fn from_apng(data: &[u8]) -> Option<Self> {
+    pub fn from_apng(data: &[u8], limit_bytes: usize, label: &str) -> Option<Self> {
         use image::AnimationDecoder;
         let decoder = image::codecs::png::PngDecoder::new(std::io::Cursor::new(data)).ok()?;
         if !decoder.is_apng().ok()? { return None; }
-        let frames: Vec<AnimFrame> = decoder
-            .apng().ok()?
-            .into_frames()
-            .collect_frames()
-            .ok()?
-            .into_iter()
-            .map(|f| AnimFrame {
-                delay: delay_from_image(f.delay()),
-                image: f.into_buffer(),
-            })
-            .collect();
+        let mut frames = Vec::new();
+        let mut total: usize = 0;
+        for frame_result in decoder.apng().ok()?.into_frames() {
+            let frame = frame_result.ok()?;
+            let delay = delay_from_image(frame.delay());
+            let image = frame.into_buffer();
+            total += frame_bytes(&image);
+            if total > limit_bytes {
+                log_anim_too_large(label, total, limit_bytes);
+                return None;
+            }
+            frames.push(AnimFrame { image, delay });
+        }
         if frames.is_empty() { return None; }
         Some(Self { frames, loop_count: 0 })
     }
 
-    pub fn from_avif(data: &[u8]) -> Option<Self> {
+    pub fn from_avif(data: &[u8], limit_bytes: usize, label: &str) -> Option<Self> {
         use libavif_sys::*;
 
         struct DecoderGuard(*mut avifDecoder);
@@ -79,6 +87,7 @@ impl AnimatedImage {
 
             let timescale = (*decoder).timescale as f64;
             let mut frames = Vec::with_capacity((*decoder).imageCount as usize);
+            let mut total: usize = 0;
 
             while avifDecoderNextImage(decoder) == AVIF_RESULT_OK {
                 let avif_image = (*decoder).image;
@@ -95,6 +104,7 @@ impl AnimatedImage {
                 if avifRGBImageAllocatePixels(&mut rgb) != AVIF_RESULT_OK { continue; }
 
                 let ok = avifImageYUVToRGB(avif_image, &mut rgb) == AVIF_RESULT_OK;
+                let mut pushed_frame: Option<AnimFrame> = None;
                 if ok {
                     let pixels_len = (rgb.rowBytes * h) as usize;
                     let pixels = std::slice::from_raw_parts(rgb.pixels, pixels_len).to_vec();
@@ -107,10 +117,19 @@ impl AnimatedImage {
                     };
 
                     if let Some(image) = RgbaImage::from_raw(w, h, pixels) {
-                        frames.push(AnimFrame { image, delay: std::time::Duration::from_millis(delay_ms) });
+                        pushed_frame = Some(AnimFrame { image, delay: std::time::Duration::from_millis(delay_ms) });
                     }
                 }
                 avifRGBImageFreePixels(&mut rgb);
+
+                if let Some(frame) = pushed_frame {
+                    total += frame_bytes(&frame.image);
+                    if total > limit_bytes {
+                        log_anim_too_large(label, total, limit_bytes);
+                        return None;
+                    }
+                    frames.push(frame);
+                }
             }
 
             if frames.is_empty() { return None; }
@@ -118,7 +137,18 @@ impl AnimatedImage {
         }
     }
 
-    pub fn from_webp(data: &[u8]) -> Option<Self> {
+    /// webp::AnimDecoder::decode() は libwebp 内部で全フレームをデコードしてから返すため、
+    /// フレーム単位の途中打ち切りができない。代わりにデコード前にヘッダ情報
+    /// (キャンバスサイズ・フレーム数)だけを取得し、展開後サイズを事前見積もりして
+    /// 閾値超過ならデコード自体を行わずに打ち切る。
+    pub fn from_webp(data: &[u8], limit_bytes: usize, label: &str) -> Option<Self> {
+        if let Some(projected) = webp_projected_bytes(data) {
+            if projected > limit_bytes {
+                log_anim_too_large(label, projected, limit_bytes);
+                return None;
+            }
+        }
+
         let anim = webp::AnimDecoder::new(data).decode().ok()?;
         if !anim.has_animation() { return None; }
         let loop_count = anim.loop_count;
@@ -142,6 +172,48 @@ impl AnimatedImage {
             .collect();
         if frames.is_empty() { return None; }
         Some(Self { frames, loop_count })
+    }
+}
+
+fn frame_bytes(img: &RgbaImage) -> usize {
+    (img.width() as usize) * (img.height() as usize) * 4
+}
+
+fn log_anim_too_large(label: &str, total: usize, limit: usize) {
+    const MB: usize = 1024 * 1024;
+    eprintln!(
+        "[cache] {} animation too large ({}MB > {}MB limit), skipping",
+        label,
+        total / MB,
+        limit / MB,
+    );
+}
+
+/// WebPAnimDecoderGetInfo だけを呼んでキャンバスサイズとフレーム数を取得し、
+/// 全フレームデコード後の推定バイト数（キャンバスサイズ×フレーム数×4）を返す。
+/// フレームは常にキャンバス全面のRGBAバッファとして返されるため、この見積もりは正確な上限になる。
+/// 取得に失敗した場合は None（呼び出し側は事前チェックをスキップし、通常のデコードに進む）。
+fn webp_projected_bytes(data: &[u8]) -> Option<usize> {
+    use libwebp_sys::*;
+
+    unsafe {
+        let mut dec_options: WebPAnimDecoderOptions = std::mem::zeroed();
+        dec_options.color_mode = WEBP_CSP_MODE::MODE_RGBA;
+        if WebPAnimDecoderOptionsInitInternal(&mut dec_options, WebPGetDemuxABIVersion()) == 0 {
+            return None;
+        }
+
+        let webp_data = WebPData { bytes: data.as_ptr(), size: data.len() };
+        let dec = WebPAnimDecoderNewInternal(&webp_data, &dec_options, WebPGetDemuxABIVersion());
+        if dec.is_null() { return None; }
+
+        let mut anim_info: WebPAnimInfo = std::mem::zeroed();
+        let ok = WebPAnimDecoderGetInfo(dec, &mut anim_info);
+        WebPAnimDecoderDelete(dec);
+        if ok == 0 { return None; }
+
+        let per_frame = (anim_info.canvas_width as usize) * (anim_info.canvas_height as usize) * 4;
+        Some(per_frame.saturating_mul(anim_info.frame_count as usize))
     }
 }
 
