@@ -746,3 +746,133 @@ pub fn resize_thumbnail(img: image::DynamicImage, filter: image::imageops::Filte
     };
     fir_resize(img, nw, nh, filter)
 }
+
+#[cfg(test)]
+mod ring_integration_tests {
+    use super::*;
+
+    /// フェーズ3.6: 実物の大きいGIF(test/nouka.gif, 640x360 1316フレーム, 全展開なら約1.2GB)で
+    /// リングバッファが実際に「全フレーム常駐にならず一定量に収まる」ことを確認する結合テスト。
+    #[test]
+    fn ring_anim_stays_bounded_on_real_large_gif() {
+        let path = std::path::Path::new("test/nouka.gif");
+        let buf = std::fs::read(path).expect("test/nouka.gif が見つからない");
+
+        let content = decode_ring_anim(&buf, AnimFormat::Gif, image::imageops::FilterType::Triangle)
+            .expect("GIFとしてデコードできるはず");
+
+        let PageContent::Animated(ring) = content else {
+            panic!("1316フレームあるので Animated になるはず（Static ではない）");
+        };
+
+        // 再生をシミュレート: リングバッファ容量(32)を大きく超える200フレーム分進める。
+        for i in 0..200 {
+            let ok = ring.with_frame(i, |_| ()).is_some();
+            assert!(ok, "frame {i} が取得できるはず（1316フレーム中なので終端に達していない）");
+        }
+
+        // 200フレーム分デコードした後も、常駐量は「全フレーム分(約1.2GB)」ではなく
+        // リングバッファ容量相当(数十MB)に収まっているはず。
+        let resident = ring.resident_bytes();
+        let one_frame_bytes = 640 * 360 * 4;
+        let full_bytes = one_frame_bytes * 1316;
+        assert!(
+            resident < full_bytes / 4,
+            "resident_bytes={resident} が全フレーム分({full_bytes})に対して大きすぎる(リングバッファが効いていない)",
+        );
+        assert!(
+            resident <= one_frame_bytes * (DEFAULT_RING_CAPACITY + 1),
+            "resident_bytes={resident} がリング容量{DEFAULT_RING_CAPACITY}枚分を大きく超えている",
+        );
+    }
+
+    /// フェーズ3.6: ループ境界(終端→restart→先頭)が実際に機能することを確認する。
+    #[test]
+    fn ring_anim_restart_replays_from_head_on_real_gif() {
+        let path = std::path::Path::new("test/nouka.gif");
+        let buf = std::fs::read(path).expect("test/nouka.gif が見つからない");
+
+        let content = decode_ring_anim(&buf, AnimFormat::Gif, image::imageops::FilterType::Triangle)
+            .expect("GIFとしてデコードできるはず");
+        let PageContent::Animated(ring) = content else {
+            panic!("Animated になるはず");
+        };
+
+        // 終端(1316番目、存在しない)は None のはず。
+        assert!(ring.with_frame(1316, |_| ()).is_none());
+
+        // ループ境界: restart() して先頭からまた取得できることを確認する。
+        assert!(ring.restart());
+        assert!(ring.with_frame(0, |_| ()).is_some());
+        assert!(ring.with_frame(1, |_| ()).is_some());
+    }
+
+    /// フェーズ3.6(WebP): /tmp/testwebp.zip 内のアニメWebP(960x1376, 243フレーム,
+    /// 全展開なら約1.28GB)で、リングバッファが機能することを確認する結合テスト。
+    /// パスが環境依存(ユーザーの実機の一時ファイル)のため #[ignore]。
+    fn load_webp_entry_from_test_zip() -> Vec<u8> {
+        let zip_path = "/tmp/testwebp.zip";
+        let file = std::fs::File::open(zip_path).expect("/tmp/testwebp.zip が見つからない");
+        let mut archive = zip::ZipArchive::new(file).expect("zip open failed");
+        let mut entry = archive
+            .by_name("3696790_aab7483a45/11_1_001.webp")
+            .expect("entry not found");
+        let mut buf = Vec::new();
+        std::io::Read::read_to_end(&mut entry, &mut buf).unwrap();
+        buf
+    }
+
+    #[test]
+    #[ignore]
+    fn ring_anim_webp_stays_bounded_on_real_large_file() {
+        let buf = load_webp_entry_from_test_zip();
+
+        let content = decode_ring_anim(&buf, AnimFormat::Webp, image::imageops::FilterType::Triangle)
+            .expect("WebPとしてデコードできるはず");
+        let PageContent::Animated(ring) = content else {
+            panic!("243フレームあるので Animated になるはず（Static ではない）");
+        };
+
+        // 表示サイズ縮小後の1フレーム分バイト数を、エビクトされる前(ループ前)に取得しておく
+        // (960x1376はMAX_DISPLAY_H(1080)を超えるため縮小されている前提)。
+        let one_frame_bytes = ring
+            .with_frame(0, |f| (f.image.width() as usize) * (f.image.height() as usize) * 4)
+            .expect("frame 0 は取得できるはず");
+
+        // 再生をシミュレート: リングバッファ容量(32)を大きく超える100フレーム分進める。
+        for i in 0..100 {
+            assert!(ring.with_frame(i, |_| ()).is_some(), "frame {i} が取得できるはず");
+        }
+
+        let full_bytes = one_frame_bytes * 243;
+        let resident = ring.resident_bytes();
+        assert!(
+            resident < full_bytes / 4,
+            "resident_bytes={resident} が全フレーム分({full_bytes})に対して大きすぎる(リングバッファが効いていない)",
+        );
+        assert!(
+            resident <= one_frame_bytes * (DEFAULT_RING_CAPACITY + 1),
+            "resident_bytes={resident} がリング容量{DEFAULT_RING_CAPACITY}枚分を大きく超えている",
+        );
+    }
+
+    #[test]
+    #[ignore]
+    fn ring_anim_webp_restart_replays_from_head() {
+        let buf = load_webp_entry_from_test_zip();
+
+        let content = decode_ring_anim(&buf, AnimFormat::Webp, image::imageops::FilterType::Triangle)
+            .expect("WebPとしてデコードできるはず");
+        let PageContent::Animated(ring) = content else {
+            panic!("Animated になるはず");
+        };
+
+        // 終端(243番目、存在しない)は None のはず。
+        assert!(ring.with_frame(243, |_| ()).is_none());
+
+        // ループ境界: restart() して先頭からまた取得できることを確認する。
+        assert!(ring.restart());
+        assert!(ring.with_frame(0, |_| ()).is_some());
+        assert!(ring.with_frame(1, |_| ()).is_some());
+    }
+}

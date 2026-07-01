@@ -102,18 +102,42 @@ pub enum AnimSampleEstimate {
 /// 集約されるため、事前に構造的な非アニメーション判定（PNGのacTLチャンク有無、
 /// WebPの静止画デコード可否）を行い、`NotAnimated` を先に弾いてから呼び出す。
 pub fn estimate_anim_sample_bytes(buf: &[u8], ext: &str, budget_bytes: usize) -> AnimSampleEstimate {
-    use crate::anim::AnimatedImage;
+    use crate::anim::{AnimFormat, SequentialAnimDecoder, DEFAULT_RING_CAPACITY};
 
-    fn classify(anim: Option<AnimatedImage>) -> AnimSampleEstimate {
-        match anim {
-            Some(a) if a.frames.len() > 1 => AnimSampleEstimate::Bytes(a.total_bytes()),
-            Some(_) => AnimSampleEstimate::NotAnimated,
-            None => AnimSampleEstimate::OverBudget,
+    /// フェーズ3/3.5でアニメは全フレーム常駐ではなくリングバッファ(容量`DEFAULT_RING_CAPACITY`)で
+    /// 保持されるため、見積もりも「実際に常駐しうる最大バイト数」＝リング容量分だけをデコードして
+    /// 求める（`cache.rs::RingAnimation::from_source`と同じ判定基準: 実質1フレームならNotAnimated、
+    /// 1フレーム目の時点でbudget_bytesを超えるなら即OverBudget）。
+    fn ring_bounded_estimate(format: AnimFormat, buf: &[u8], budget_bytes: usize) -> AnimSampleEstimate {
+        let Some(mut decoder) = SequentialAnimDecoder::new(format, std::sync::Arc::from(buf)) else {
+            return AnimSampleEstimate::NotAnimated;
+        };
+        let Some(frame0) = decoder.next_frame() else {
+            return AnimSampleEstimate::NotAnimated;
+        };
+        let frame_bytes = |img: &image::RgbaImage| (img.width() as usize) * (img.height() as usize) * 4;
+        let frame0_bytes = frame_bytes(&frame0.image);
+        if frame0_bytes > budget_bytes {
+            return AnimSampleEstimate::OverBudget;
         }
+
+        let Some(frame1) = decoder.next_frame() else {
+            // 実質1フレームしかない = 静止画相当（decode_ring_anim の SingleFrame 判定と同じ）
+            return AnimSampleEstimate::NotAnimated;
+        };
+        let mut total = frame0_bytes + frame_bytes(&frame1.image);
+
+        for _ in 2..DEFAULT_RING_CAPACITY {
+            match decoder.next_frame() {
+                Some(f) => total += frame_bytes(&f.image),
+                None => break, // アニメ自体がリング容量より短い
+            }
+        }
+        AnimSampleEstimate::Bytes(total)
     }
 
     match ext {
-        "gif" => classify(AnimatedImage::from_gif(buf, budget_bytes, budget_bytes, "sample-gif")),
+        "gif" => ring_bounded_estimate(AnimFormat::Gif, buf, budget_bytes),
         "webp" => {
             // 静止画WebPはAnimDecoderがデコード失敗またはhas_animation()==falseを返すことが
             // あり、budget_bytes超過とは無関係にNoneになりうる。先に静止画デコードを試して
@@ -121,7 +145,7 @@ pub fn estimate_anim_sample_bytes(buf: &[u8], ext: &str, budget_bytes: usize) ->
             if webp::Decoder::new(buf).decode().is_some() {
                 return AnimSampleEstimate::NotAnimated;
             }
-            classify(AnimatedImage::from_webp(buf, budget_bytes, budget_bytes, "sample-webp"))
+            ring_bounded_estimate(AnimFormat::Webp, buf, budget_bytes)
         }
         "png" => {
             let is_apng = image::codecs::png::PngDecoder::new(std::io::Cursor::new(buf))
@@ -131,9 +155,9 @@ pub fn estimate_anim_sample_bytes(buf: &[u8], ext: &str, budget_bytes: usize) ->
             if !is_apng {
                 return AnimSampleEstimate::NotAnimated;
             }
-            classify(AnimatedImage::from_apng(buf, budget_bytes, budget_bytes, "sample-apng"))
+            ring_bounded_estimate(AnimFormat::Apng, buf, budget_bytes)
         }
-        "avif" => classify(AnimatedImage::from_avif(buf, budget_bytes, budget_bytes, "sample-avif")),
+        "avif" => ring_bounded_estimate(AnimFormat::Avif, buf, budget_bytes),
         _ => AnimSampleEstimate::NotAnimated,
     }
 }
@@ -677,5 +701,41 @@ mod tests {
         let path = test_zip();
         let result = estimate_archive_memory(&path, &[], 1);
         assert_eq!(result, ArchiveMemoryEstimate::Ok);
+    }
+
+    #[test]
+    #[ignore]
+    fn debug_probe_real_zip() {
+        let path = PathBuf::from("test/神聖モテモテ王国 01巻.zip");
+        let entries = list_images(&path);
+        eprintln!("entries.len() = {}", entries.len());
+        let (page_max, _page_min, _file_max) = crate::cache::resolve_cache_budgets(None, None);
+        eprintln!("page_max(budget) = {} bytes ({} MB)", page_max, page_max / (1024*1024));
+        let result = estimate_archive_memory(&path, &entries, page_max);
+        eprintln!("result = {:?}", result);
+    }
+
+    #[test]
+    #[ignore]
+    fn debug_probe_testwebp_zip() {
+        let path = PathBuf::from("/tmp/testwebp.zip");
+        let entries = list_images(&path);
+        eprintln!("entries.len() = {}", entries.len());
+        let (page_max, _page_min, _file_max) = crate::cache::resolve_cache_budgets(None, None);
+        eprintln!("page_max(budget) = {} bytes ({} MB)", page_max, page_max / (1024*1024));
+
+        // select_sample_indices が実際にどのサンプルを選ぶか、各サンプルの見積もりも個別に見る。
+        for idx in select_sample_indices(entries.len()) {
+            let file = std::fs::File::open(&path).unwrap();
+            let mut archive = zip::ZipArchive::new(file).unwrap();
+            match estimate_entry_bytes(&mut archive, &entries[idx].entry_name, page_max) {
+                Some(EntryEstimate::Bytes(n)) => eprintln!("sample[{idx}] = Bytes({n}, {}MB)", n/(1024*1024)),
+                Some(EntryEstimate::OverBudget) => eprintln!("sample[{idx}] = OverBudget"),
+                None => eprintln!("sample[{idx}] = None(read failure)"),
+            }
+        }
+
+        let result = estimate_archive_memory(&path, &entries, page_max);
+        eprintln!("result = {:?}", result);
     }
 }

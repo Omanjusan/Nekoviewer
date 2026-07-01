@@ -23,8 +23,17 @@ WebPはlibwebp内部の一括デコード(webpクレートのAnimDecoder::decode
 フェーズ3.5: リングバッファ(WebP) — 実装完了
 libwebp-sys(0.9)のFFIシグネチャを直接確認し、WebPAnimDecoderGetNext(1フレームずつ取得)・WebPAnimDecoderHasMoreFrames・WebPAnimDecoderReset(先頭巻き戻し)がAVIF実装と同型で組めることを確認した上で実装。実アニメWebPのテストフィクスチャがリポジトリに無く`webp`クレート(0.3.1)にもアニメエンコード機能が無いため、往復の自動テストは見送り（フェーズ3.6の結合テストに合流）。WebPも含め全フォーマットがリングバッファ方式に統一されたため、cache.rsの`AnimatedContent`enum(Ring/Full二重構造)を撤去し`PageContent::Animated(RingAnimation)`に単純化した。
 
-フェーズ3.6: 結合テスト(GIF/APNG/AVIF)
-フェーズ3で実装した RingAnimation / decode_ring_anim の結合テスト（実際の再生シミュレーション下でのリングバッファのエビクション、ループ境界でのrestart挙動、cache.rsのcontent_bytes/PageCache連携）。ユーザー判断でフェーズ3.5(WebP)より後回しにした。単体テスト（anim.rsのSequentialAnimDecoder/FrameRingBuffer）は完了済みだが、cache.rs/view_reader.rsに結線した後の結合テストは未実施のまま次フェーズに進む。
+フェーズ3.6: 結合テスト(GIF/APNG/AVIF/WebP) — GIF・WebP実施済み
+`test/nouka.gif`（640x360, 1316フレーム、全展開なら約1.2GB）を使い、cache.rsに`ring_integration_tests`を追加。
+- `ring_anim_stays_bounded_on_real_large_gif`: 200フレーム分再生をシミュレートしても`resident_bytes()`が全フレーム分(1.2GB)の1/4未満、かつリング容量(32枚)相当に収まることを確認。
+- `ring_anim_restart_replays_from_head_on_real_gif`: 終端(1316番目)がNoneになること、`restart()`後に先頭フレームへ戻れることを確認。
+
+WebP版も追加（960x1376, 243フレーム, 全展開なら約1.28GBのアニメWebP、ユーザー実機の`/tmp/testwebp.zip`内エントリを使用、パスが環境依存のため`#[ignore]`）。
+- `ring_anim_webp_stays_bounded_on_real_large_file` / `ring_anim_webp_restart_replays_from_head`: GIF版と同じ観点を確認。実装時に「前進専用のためエビクト済みフレームは再取得できない」という設計通りの挙動をテストコード側が誤解していたバグ(frame0のサイズをエビクト後に取得しようとしていた)を発見・修正。
+
+release/debugとも全パス（release 1.8~1.5秒、debug 27秒）。APNG/AVIF分の実物ファイルでの結合テストは未実施。
+
+**フェーズ2見積もりロジックの不整合を発見・修正(2026-07-01)**: `/tmp/testwebp.zip`(20エントリ、大きいものは960x1376/243フレームのアニメWebP)を実機の`cargo run --release`で開くと、サムネイル閲覧時にもメモリ不足ガードに引っかかるとの報告。調査の結果、`estimate_anim_sample_bytes`(フェーズ2)が「アニメを全フレームデコードしたら何バイトになるか」を見積もっており、フェーズ3/3.5のリングバッファ化(実際のランタイムは常にリング容量`DEFAULT_RING_CAPACITY`(32枚)分に収まる)を反映していなかったことが判明。診断テストで実測: 修正前は1サンプルあたり406〜1224MB(全フレーム分)、平均×20エントリ≈19GBが予算15.4GBを超えOverBudget誤判定。修正後はリング容量分だけデコードする方式に変更し、94〜161MBに縮小、正しくOkと判定されることを確認。既存のGIF単体テストの期待値とも矛盾しないことを確認済み。
 
 フェーズ4: 動的先読み幅
 avg_frame_sizeを都度再計算するコストと、頻繁な先読み幅変動によるデコードのチラつき(先読み幅が縮んだ瞬間に直前までキャッシュされていたフレームが急にエビクトされ、ちょっと進んだだけで再デコードが走る)が懸念です。動的にする場合はヒステリシス(縮める閾値と広げる閾値を別にする)を入れないと、境界付近でエビクト/再デコードを繰り返す可能性があります。
