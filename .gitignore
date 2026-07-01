@@ -1,5 +1,11 @@
 /target
 /.claude
+/test/*.jpg
+/test/*.gif
+/test/*.png
+/test/*.apng
+/test/*.webp
+/test/*.avif
 
 # Rust build artifacts in any nested crate (e.g. poc/)
 target/

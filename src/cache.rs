@@ -1,5 +1,5 @@
 use crate::{log_perf};
-use crate::anim::{AnimatedImage, AnimFrame};
+use crate::anim::{AnimFrame, AnimFormat, SequentialAnimDecoder, FrameRingBuffer, DEFAULT_RING_CAPACITY};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{mpsc, Arc, Mutex};
@@ -81,10 +81,12 @@ impl OpenArchive {
     }
 }
 
-/// ページキャッシュの値型。静止画とアニメーション（全フレーム展開済み）を統一して扱う
+/// ページキャッシュの値型。静止画とアニメーションを統一して扱う。
+/// アニメーション(GIF/APNG/AVIF/WebP)は全フレーム一括保持をやめ、
+/// 逐次デコード+リングバッファ(`RingAnimation`)で保持する（フェーズ3/3.5）。
 pub enum PageContent {
     Static(image::RgbaImage),
-    Animated(AnimatedImage),
+    Animated(RingAnimation),
 }
 
 // ワーカースレッドからの結果
@@ -212,28 +214,30 @@ fn load_raw_file_content(path: &std::path::Path, filter: image::imageops::Filter
     load_raw_content_from_bytes(&buf, path, filter, cache_budget_bytes)
 }
 
-/// アニメーションデコード結果を PageContent に変換する。
-/// 1フレームしか無ければ静止画として扱う（元々1フレームだった場合と、
-/// キャッシュ予算超過でanim.rs側が先頭フレームへ切り詰めた場合の両方が該当）。
-/// サイズ上限のチェックはデコード中（anim.rs のインクリメンタルガード）で完了済み。
-fn anim_to_content(anim: AnimatedImage, filter: image::imageops::FilterType) -> Option<PageContent> {
-    if anim.frames.len() == 1 {
-        let img = image::DynamicImage::ImageRgba8(anim.frames.into_iter().next()?.image);
-        return Some(PageContent::Static(resize_for_display(img, filter)));
+/// GIF/APNG/AVIF/WebP（フェーズ3/3.5）をリングバッファ方式でデコードし PageContent に変換する。
+/// 実質1フレームしか無い場合は静止画として扱う。対象フォーマットでない場合は None。
+fn decode_ring_anim(buf: &[u8], format: AnimFormat, filter: image::imageops::FilterType) -> Option<PageContent> {
+    match RingAnimation::from_source(format, std::sync::Arc::from(buf), filter) {
+        RingDecodeOutcome::NotThisFormat => None,
+        RingDecodeOutcome::SingleFrame(frame) => {
+            Some(PageContent::Static(frame.image))
+        }
+        RingDecodeOutcome::Animated(ring) => {
+            Some(PageContent::Animated(ring))
+        }
     }
-    Some(PageContent::Animated(resize_anim_for_display(anim, filter)))
 }
 
 /// 拡張子（ドットなし小文字）からアニメーションデコードを試みて PageContent を返す。
 /// 対象外の拡張子や静止画は None。
-/// `cache_budget_bytes` はページキャッシュの予算（PageCache::max_bytes）。これを超えるアニメーションは
-/// ループ再生させず、先頭フレームのみの静止画にフォールバックする（anim.rs 側で判定）。
-fn decode_anim_from_ext(buf: &[u8], ext: &str, filter: image::imageops::FilterType, cache_budget_bytes: usize) -> Option<PageContent> {
+/// フェーズ3.5でWebPもリングバッファ方式に移行したため、GIF/APNG/AVIF/WebPの全フォーマットが
+/// 常にリングバッファ予算内に収まる。`cache_budget_bytes` は呼び出し元の都合で残す互換パラメータ。
+fn decode_anim_from_ext(buf: &[u8], ext: &str, filter: image::imageops::FilterType, _cache_budget_bytes: usize) -> Option<PageContent> {
     match ext {
-        "gif"  => AnimatedImage::from_gif(buf, ANIM_HARD_LIMIT_BYTES, cache_budget_bytes, "gif") .and_then(|a| anim_to_content(a, filter)),
-        "webp" => AnimatedImage::from_webp(buf, ANIM_HARD_LIMIT_BYTES, cache_budget_bytes, "webp").and_then(|a| anim_to_content(a, filter)),
-        "png"  => AnimatedImage::from_apng(buf, ANIM_HARD_LIMIT_BYTES, cache_budget_bytes, "apng").and_then(|a| anim_to_content(a, filter)),
-        "avif" => AnimatedImage::from_avif(buf, ANIM_HARD_LIMIT_BYTES, cache_budget_bytes, "avif").and_then(|a| anim_to_content(a, filter)),
+        "gif"  => decode_ring_anim(buf, AnimFormat::Gif, filter),
+        "png"  => decode_ring_anim(buf, AnimFormat::Apng, filter),
+        "avif" => decode_ring_anim(buf, AnimFormat::Avif, filter),
+        "webp" => decode_ring_anim(buf, AnimFormat::Webp, filter),
         _      => None,
     }
 }
@@ -275,31 +279,6 @@ fn load_page_content<R: std::io::Read + std::io::Seek>(
     Some(PageContent::Static(resize_for_display(img, filter)))
 }
 
-/// AnimatedImage の全フレームを最大表示サイズに縮小する（拡大はしない）
-fn resize_anim_for_display(anim: AnimatedImage, filter: image::imageops::FilterType) -> AnimatedImage {
-    let (w, h) = {
-        let f = &anim.frames[0];
-        (f.image.width(), f.image.height())
-    };
-    let scale = (MAX_DISPLAY_W as f32 / w as f32)
-        .min(MAX_DISPLAY_H as f32 / h as f32)
-        .min(1.0);
-
-    if scale >= 1.0 {
-        return anim;
-    }
-
-    let nw = ((w as f32 * scale) as u32).max(1);
-    let nh = ((h as f32 * scale) as u32).max(1);
-
-    let frames = anim.frames.into_iter().map(|f| {
-        let dynamic = image::DynamicImage::ImageRgba8(f.image);
-        AnimFrame { image: fir_resize(dynamic, nw, nh, filter), delay: f.delay }
-    }).collect();
-
-    AnimatedImage { frames, loop_count: anim.loop_count }
-}
-
 /// 最大表示サイズ（1920×1080）に縮小する（拡大はしない）
 pub fn resize_for_display(img: image::DynamicImage, filter: image::imageops::FilterType) -> image::RgbaImage {
     let (w, h) = (img.width(), img.height());
@@ -312,6 +291,130 @@ pub fn resize_for_display(img: image::DynamicImage, filter: image::imageops::Fil
         fir_resize(img, nw, nh, filter)
     } else {
         img.to_rgba8()
+    }
+}
+
+// ── フェーズ3: リングバッファ式アニメーション（GIF/APNG/AVIF）───────────────────
+
+/// `RingAnimation::from_source` の結果。
+enum RingDecodeOutcome {
+    /// このフォーマットのデコーダとして構築できなかった（例: apng拡張子ではない通常PNG）。
+    NotThisFormat,
+    /// 実質1フレームしか無い。呼び出し側は静止画として扱う。
+    SingleFrame(AnimFrame),
+    /// 2フレーム以上ある本物のアニメーション。
+    Animated(RingAnimation),
+}
+
+struct RingAnimState {
+    decoder: SequentialAnimDecoder,
+    ring: FrameRingBuffer,
+    /// 次に decoder.next_frame() で得られるフレームに割り振るインデックス
+    next_index: usize,
+    resize_to: Option<(u32, u32)>,
+    filter: image::imageops::FilterType,
+}
+
+/// 全フレームを一括保持せず、逐次デコード+リングバッファで保持するアニメーション。
+/// 再生は前進のみを前提とし、デコーダが終端(None)を返した時点がループ境界の合図になる。
+/// その際は `restart()` でデコーダを先頭から作り直す（この再デコードによる一瞬のフリーズは許容する）。
+pub struct RingAnimation {
+    state: Mutex<RingAnimState>,
+}
+
+impl RingAnimation {
+    fn from_source(format: AnimFormat, source: Arc<[u8]>, filter: image::imageops::FilterType) -> RingDecodeOutcome {
+        let mut decoder = match SequentialAnimDecoder::new(format, source) {
+            Some(d) => d,
+            None => return RingDecodeOutcome::NotThisFormat,
+        };
+        let frame0 = match decoder.next_frame() {
+            Some(f) => f,
+            None => return RingDecodeOutcome::NotThisFormat,
+        };
+
+        let frame0_bytes = (frame0.image.width() as usize) * (frame0.image.height() as usize) * 4;
+        if frame0_bytes > ANIM_HARD_LIMIT_BYTES {
+            eprintln!(
+                "[cache] ring anim frame too large ({}MB > {}MB limit), skipping",
+                frame0_bytes / MB,
+                ANIM_HARD_LIMIT_BYTES / MB,
+            );
+            return RingDecodeOutcome::NotThisFormat;
+        }
+
+        let (w, h) = (frame0.image.width(), frame0.image.height());
+        let scale = (MAX_DISPLAY_W as f32 / w as f32)
+            .min(MAX_DISPLAY_H as f32 / h as f32)
+            .min(1.0);
+        let resize_to = if scale < 1.0 {
+            Some((((w as f32 * scale) as u32).max(1), ((h as f32 * scale) as u32).max(1)))
+        } else {
+            None
+        };
+
+        let frame0 = Self::apply_resize(frame0, resize_to, filter);
+
+        let frame1 = match decoder.next_frame() {
+            Some(f) => f,
+            None => return RingDecodeOutcome::SingleFrame(frame0),
+        };
+        let frame1 = Self::apply_resize(frame1, resize_to, filter);
+
+        let mut ring = FrameRingBuffer::new(DEFAULT_RING_CAPACITY);
+        ring.push(0, frame0);
+        ring.push(1, frame1);
+
+        let state = RingAnimState { decoder, ring, next_index: 2, resize_to, filter };
+        RingDecodeOutcome::Animated(Self { state: Mutex::new(state) })
+    }
+
+    fn apply_resize(frame: AnimFrame, resize_to: Option<(u32, u32)>, filter: image::imageops::FilterType) -> AnimFrame {
+        match resize_to {
+            None => frame,
+            Some((nw, nh)) => {
+                let dynamic = image::DynamicImage::ImageRgba8(frame.image);
+                AnimFrame { image: fir_resize(dynamic, nw, nh, filter), delay: frame.delay }
+            }
+        }
+    }
+
+    /// index番目のフレームが手に入るまでデコードを進め、見つかったフレームへの参照でfを呼ぶ
+    /// (RGBAバッファの不要なコピーを避けるため)。デコーダが終端に達し index が存在しないと
+    /// わかった場合は None（呼び出し側はループ境界として扱い `restart()` を呼ぶ）。
+    pub fn with_frame<R>(&self, index: usize, f: impl FnOnce(&AnimFrame) -> R) -> Option<R> {
+        let mut state = self.state.lock().unwrap();
+        loop {
+            if let Some(frame) = state.ring.get(index) {
+                return Some(f(frame));
+            }
+            if index < state.next_index {
+                // 前進専用のためエビクト済みフレームへは戻れない。
+                return None;
+            }
+            let next = state.decoder.next_frame()?;
+            let idx = state.next_index;
+            state.next_index += 1;
+            let resized = Self::apply_resize(next, state.resize_to, state.filter);
+            state.ring.push(idx, resized);
+        }
+    }
+
+    /// ループ境界（最終フレーム→先頭）: デコーダを元データから作り直す。
+    pub fn restart(&self) -> bool {
+        let mut state = self.state.lock().unwrap();
+        if state.decoder.restart() {
+            state.ring.clear();
+            state.next_index = 0;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// 現在リングバッファに乗っている分だけの推定バイト数（アニメ全体ではない）。
+    pub fn resident_bytes(&self) -> usize {
+        self.state.lock().unwrap().ring.total_bytes()
     }
 }
 
@@ -491,7 +594,7 @@ fn rgba_bytes(img: &image::RgbaImage) -> usize {
 fn content_bytes(content: &PageContent) -> usize {
     match content {
         PageContent::Static(img) => rgba_bytes(img),
-        PageContent::Animated(anim) => anim.frames.iter().map(|f| rgba_bytes(&f.image)).sum(),
+        PageContent::Animated(ring) => ring.resident_bytes(),
     }
 }
 
