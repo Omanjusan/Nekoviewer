@@ -410,6 +410,19 @@ impl ApplicationHandler<UserEvent> for WinitApp {
         }
     }
 
+    /// イベントループが終了する直前（プラットフォームの接続がまだ生きている状態）に呼ばれる。
+    /// ここで全窓（Arc<Window> + wgpu Painter/Surface）を明示的に drop しないと、
+    /// `run_app` から戻った後（＝プラットフォーム接続が既に破棄された後）に `main` 側の
+    /// `WinitApp` が drop される際に窓を破棄することになり、Wayland 環境で
+    /// セグメンテーションフォルトを起こす（エクスプローラー窓を閉じてアプリを終了した
+    /// ときにのみ再現していた原因）。ビューアー/ステータス窓の個別クローズはイベントループが
+    /// 生きている間に drop されるため影響を受けない。
+    fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+        self.viewer = None;
+        self.status = None;
+        self.explorer = None;
+    }
+
     fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: UserEvent) {
         // ワーカーや egui からの再描画要求。対象窓の next_repaint を最短に更新するだけで、
         // 実際の描画と ControlFlow 設定は about_to_wait が行う。
