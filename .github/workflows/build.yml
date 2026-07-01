@@ -68,7 +68,7 @@ jobs:
         run: |
           echo "https://dl-cdn.alpinelinux.org/alpine/edge/community" >> /etc/apk/repositories
           apk update
-          apk add --no-cache git build-base nasm cmake pkgconf meson py3-packaging
+          apk add --no-cache git build-base nasm cmake pkgconf meson py3-packaging tar
 
       - name: Cache dav1d build
         uses: actions/cache@v4
