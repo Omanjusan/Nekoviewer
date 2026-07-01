@@ -1,6 +1,6 @@
 use crate::{log_perf};
 use crate::anim::{AnimatedImage, AnimFrame};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{mpsc, Arc, Mutex};
 
@@ -320,6 +320,10 @@ pub struct PageCache {
     min_bytes: usize,
     /// LRU 予算を超える単一アイテムを表示のためだけに保持するスロット（1件のみ）
     bypass: Option<((PathBuf, usize), PageContent)>,
+    /// 一度でも予算超過(bypass)と判定された(path, index)の記憶。
+    /// bypass スロットから追い出された後も先読みが再要求しないようにするためのもので、
+    /// 中身は保持しない（キャッシュを汚染しない）。
+    known_bypass: HashSet<(PathBuf, usize)>,
 }
 
 impl PageCache {
@@ -330,6 +334,7 @@ impl PageCache {
             max_bytes,
             min_bytes,
             bypass: None,
+            known_bypass: HashSet::new(),
         }
     }
 
@@ -340,6 +345,12 @@ impl PageCache {
         self.entries.contains_key(&(path.clone(), index))
             || self.bypass.as_ref()
                 .map_or(false, |((bp, bi), _)| bp == path && *bi == index)
+    }
+
+    /// この(path, index)が過去に予算超過(bypass)と判定されたことがあるか。
+    /// 先読みウィンドウが同じページを何度もデコードし直すループを防ぐために使う。
+    pub fn is_known_bypass(&self, path: &PathBuf, index: usize) -> bool {
+        self.known_bypass.contains(&(path.clone(), index))
     }
 
     pub fn get(&self, path: &PathBuf, index: usize) -> Option<&PageContent> {
@@ -369,6 +380,7 @@ impl PageCache {
                 incoming / MB,
                 self.max_bytes / MB,
             );
+            self.known_bypass.insert((path.clone(), index));
             self.bypass = Some(((path, index), content));
             return;
         }
