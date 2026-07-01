@@ -54,9 +54,6 @@ pub fn resolve_cache_budgets(
 }
 const MAX_DISPLAY_W: u32 = 1920;
 const MAX_DISPLAY_H: u32 = 1080;
-/// デコード済みアニメーション総サイズがこれを超えたら拒否してプレースホルダーを返す。
-/// resize 前サイズで判定するため余裕を持って 2GB に設定。
-const ANIM_HARD_LIMIT_BYTES: usize = 2 * GB;
 
 // ワーカースレッドへのロード要求
 pub struct LoadRequest {
@@ -76,10 +73,10 @@ enum OpenArchive {
 }
 
 impl OpenArchive {
-    fn load_page(&mut self, entry_name: &str, filter: image::imageops::FilterType, cache_budget_bytes: usize, ring_bounds: (usize, usize)) -> Option<PageContent> {
+    fn load_page(&mut self, entry_name: &str, filter: image::imageops::FilterType, cache_budget_bytes: usize, ring_bounds: (usize, usize), frame_hard_limit_bytes: usize) -> Option<PageContent> {
         match self {
-            Self::Disk(a) => load_page_content(a, entry_name, filter, cache_budget_bytes, ring_bounds),
-            Self::Mem(a)  => load_page_content(a, entry_name, filter, cache_budget_bytes, ring_bounds),
+            Self::Disk(a) => load_page_content(a, entry_name, filter, cache_budget_bytes, ring_bounds, frame_hard_limit_bytes),
+            Self::Mem(a)  => load_page_content(a, entry_name, filter, cache_budget_bytes, ring_bounds, frame_hard_limit_bytes),
         }
     }
 }
@@ -103,8 +100,9 @@ pub struct LoadResult {
 /// `cache_budget_bytes` はページキャッシュの予算（PageCache::max_bytes）。
 /// これを超えて展開されるアニメーションは先頭フレームのみの静止画にフォールバックする。
 /// `ring_bounds` はフェーズ4のリング先読み枚数の(下限, 上限)。
+/// `frame_hard_limit_bytes` はフェーズ5: 1フレームあたりの生デコードサイズ上限。超過フレームはその場で縮小する。
 /// 返り値: (要求送信側, 結果受信側)
-pub fn spawn_worker(filter: image::imageops::FilterType, num_threads: usize, ctx: egui::Context, cache_budget_bytes: usize, ring_bounds: (usize, usize)) -> (mpsc::Sender<LoadRequest>, mpsc::Receiver<LoadResult>) {
+pub fn spawn_worker(filter: image::imageops::FilterType, num_threads: usize, ctx: egui::Context, cache_budget_bytes: usize, ring_bounds: (usize, usize), frame_hard_limit_bytes: usize) -> (mpsc::Sender<LoadRequest>, mpsc::Receiver<LoadResult>) {
     let (req_tx, req_rx) = mpsc::channel::<LoadRequest>();
     let (res_tx, res_rx) = mpsc::channel::<LoadResult>();
 
@@ -129,9 +127,9 @@ pub fn spawn_worker(filter: image::imageops::FilterType, num_threads: usize, ctx
                 let t_total = std::time::Instant::now();
                 let content = if req.is_raw_file {
                     if let Some(bytes) = req.file_bytes {
-                        load_raw_content_from_bytes(&bytes, &req.archive_path, filter, cache_budget_bytes, ring_bounds)
+                        load_raw_content_from_bytes(&bytes, &req.archive_path, filter, cache_budget_bytes, ring_bounds, frame_hard_limit_bytes)
                     } else {
-                        load_raw_file_content(&req.archive_path, filter, cache_budget_bytes, ring_bounds)
+                        load_raw_file_content(&req.archive_path, filter, cache_budget_bytes, ring_bounds, frame_hard_limit_bytes)
                     }
                 } else if let Some(bytes) = req.file_bytes {
                     // FileCache ヒット: メモリからアーカイブを開く
@@ -143,7 +141,7 @@ pub fn spawn_worker(filter: image::imageops::FilterType, num_threads: usize, ctx
                             .ok()
                             .map(|a| (req.archive_path.clone(), OpenArchive::Mem(a)));
                     }
-                    open_archive.as_mut().and_then(|(_, a)| a.load_page(&req.entry_name, filter, cache_budget_bytes, ring_bounds))
+                    open_archive.as_mut().and_then(|(_, a)| a.load_page(&req.entry_name, filter, cache_budget_bytes, ring_bounds, frame_hard_limit_bytes))
                 } else {
                     // FileCache ミス: ディスクから開く（従来の動作）
                     let is_same_disk = open_archive.as_ref().map_or(false, |(p, a)| {
@@ -155,7 +153,7 @@ pub fn spawn_worker(filter: image::imageops::FilterType, num_threads: usize, ctx
                             .and_then(|f| zip::ZipArchive::new(f).ok())
                             .map(|a| (req.archive_path.clone(), OpenArchive::Disk(a)));
                     }
-                    open_archive.as_mut().and_then(|(_, a)| a.load_page(&req.entry_name, filter, cache_budget_bytes, ring_bounds))
+                    open_archive.as_mut().and_then(|(_, a)| a.load_page(&req.entry_name, filter, cache_budget_bytes, ring_bounds, frame_hard_limit_bytes))
                 };
 
                 if let Some(content) = content {
@@ -213,15 +211,15 @@ fn fir_resize(img: image::DynamicImage, nw: u32, nh: u32, filter: image::imageop
 }
 
 /// 生画像ファイルを PageContent としてデコードする（ZIP不使用）
-fn load_raw_file_content(path: &std::path::Path, filter: image::imageops::FilterType, cache_budget_bytes: usize, ring_bounds: (usize, usize)) -> Option<PageContent> {
+fn load_raw_file_content(path: &std::path::Path, filter: image::imageops::FilterType, cache_budget_bytes: usize, ring_bounds: (usize, usize), frame_hard_limit_bytes: usize) -> Option<PageContent> {
     let buf = std::fs::read(path).ok()?;
-    load_raw_content_from_bytes(&buf, path, filter, cache_budget_bytes, ring_bounds)
+    load_raw_content_from_bytes(&buf, path, filter, cache_budget_bytes, ring_bounds, frame_hard_limit_bytes)
 }
 
 /// GIF/APNG/AVIF/WebP（フェーズ3/3.5）をリングバッファ方式でデコードし PageContent に変換する。
 /// 実質1フレームしか無い場合は静止画として扱う。対象フォーマットでない場合は None。
-fn decode_ring_anim(buf: &[u8], format: AnimFormat, filter: image::imageops::FilterType, ring_budget_bytes: usize, ring_bounds: (usize, usize)) -> Option<PageContent> {
-    match RingAnimation::from_source(format, std::sync::Arc::from(buf), filter, ring_budget_bytes, ring_bounds) {
+fn decode_ring_anim(buf: &[u8], format: AnimFormat, filter: image::imageops::FilterType, ring_budget_bytes: usize, ring_bounds: (usize, usize), frame_hard_limit_bytes: usize) -> Option<PageContent> {
+    match RingAnimation::from_source(format, std::sync::Arc::from(buf), filter, ring_budget_bytes, ring_bounds, frame_hard_limit_bytes) {
         RingDecodeOutcome::NotThisFormat => None,
         RingDecodeOutcome::SingleFrame(frame) => {
             Some(PageContent::Static(frame.image))
@@ -236,26 +234,26 @@ fn decode_ring_anim(buf: &[u8], format: AnimFormat, filter: image::imageops::Fil
 /// 対象外の拡張子や静止画は None。
 /// `cache_budget_bytes` はページキャッシュ全体の予算（page_max）。フェーズ4では
 /// その一部（ANIM_RING_BUDGET_PCT）をアニメ1本のリング予算として使う。
-fn decode_anim_from_ext(buf: &[u8], ext: &str, filter: image::imageops::FilterType, cache_budget_bytes: usize, ring_bounds: (usize, usize)) -> Option<PageContent> {
+fn decode_anim_from_ext(buf: &[u8], ext: &str, filter: image::imageops::FilterType, cache_budget_bytes: usize, ring_bounds: (usize, usize), frame_hard_limit_bytes: usize) -> Option<PageContent> {
     let ring_budget_bytes = cache_budget_bytes * ANIM_RING_BUDGET_PCT / 100;
     match ext {
-        "gif"  => decode_ring_anim(buf, AnimFormat::Gif, filter, ring_budget_bytes, ring_bounds),
-        "png"  => decode_ring_anim(buf, AnimFormat::Apng, filter, ring_budget_bytes, ring_bounds),
-        "avif" => decode_ring_anim(buf, AnimFormat::Avif, filter, ring_budget_bytes, ring_bounds),
-        "webp" => decode_ring_anim(buf, AnimFormat::Webp, filter, ring_budget_bytes, ring_bounds),
+        "gif"  => decode_ring_anim(buf, AnimFormat::Gif, filter, ring_budget_bytes, ring_bounds, frame_hard_limit_bytes),
+        "png"  => decode_ring_anim(buf, AnimFormat::Apng, filter, ring_budget_bytes, ring_bounds, frame_hard_limit_bytes),
+        "avif" => decode_ring_anim(buf, AnimFormat::Avif, filter, ring_budget_bytes, ring_bounds, frame_hard_limit_bytes),
+        "webp" => decode_ring_anim(buf, AnimFormat::Webp, filter, ring_budget_bytes, ring_bounds, frame_hard_limit_bytes),
         _      => None,
     }
 }
 
 /// バイト列から生画像を PageContent としてデコードする（FileCache ヒット時用）
-fn load_raw_content_from_bytes(buf: &[u8], path: &std::path::Path, filter: image::imageops::FilterType, cache_budget_bytes: usize, ring_bounds: (usize, usize)) -> Option<PageContent> {
+fn load_raw_content_from_bytes(buf: &[u8], path: &std::path::Path, filter: image::imageops::FilterType, cache_budget_bytes: usize, ring_bounds: (usize, usize), frame_hard_limit_bytes: usize) -> Option<PageContent> {
     let ext = path
         .extension()
         .and_then(|e| e.to_str())
         .map(|s| s.to_ascii_lowercase())
         .unwrap_or_default();
 
-    if let Some(c) = decode_anim_from_ext(buf, &ext, filter, cache_budget_bytes, ring_bounds) {
+    if let Some(c) = decode_anim_from_ext(buf, &ext, filter, cache_budget_bytes, ring_bounds, frame_hard_limit_bytes) {
         return Some(c);
     }
 
@@ -271,13 +269,14 @@ fn load_page_content<R: std::io::Read + std::io::Seek>(
     filter: image::imageops::FilterType,
     cache_budget_bytes: usize,
     ring_bounds: (usize, usize),
+    frame_hard_limit_bytes: usize,
 ) -> Option<PageContent> {
     let (buf, display_name) = crate::fs::archive::load_bytes_from_archive(archive, entry_name)?;
 
     let lower = entry_name.to_ascii_lowercase();
     let ext = lower.rsplit_once('.').map(|(_, e)| e).unwrap_or("");
 
-    if let Some(c) = decode_anim_from_ext(&buf, ext, filter, cache_budget_bytes, ring_bounds) {
+    if let Some(c) = decode_anim_from_ext(&buf, ext, filter, cache_budget_bytes, ring_bounds, frame_hard_limit_bytes) {
         return Some(c);
     }
 
@@ -319,6 +318,8 @@ struct RingAnimState {
     next_index: usize,
     resize_to: Option<(u32, u32)>,
     filter: image::imageops::FilterType,
+    /// フェーズ5: 1フレームあたりの生デコードサイズ上限（超過フレームはその場で縮小）
+    frame_hard_limit_bytes: usize,
 }
 
 /// 全フレームを一括保持せず、逐次デコード+リングバッファで保持するアニメーション。
@@ -330,8 +331,10 @@ pub struct RingAnimation {
 
 impl RingAnimation {
     /// `ring_budget_bytes` はこのアニメ1本に割り当てるリング予算、`ring_bounds` は(下限, 上限)の先読み枚数。
-    /// フレーム0のバイト数から容量を算出し、以降の再生中は変更しない（フェーズ4）。
-    fn from_source(format: AnimFormat, source: Arc<[u8]>, filter: image::imageops::FilterType, ring_budget_bytes: usize, ring_bounds: (usize, usize)) -> RingDecodeOutcome {
+    /// `frame_hard_limit_bytes` はフェーズ5: 1フレームの生デコードサイズ上限。frame0・中間フレームの
+    /// どちらも超過時はそのフレームだけ縮小して継続する（同一アニメ内で解像度が変則的なファイル対策）。
+    /// フレーム0のバイト数から通常表示用のリサイズ先・リング容量を算出し、以降の再生中は変更しない（フェーズ4）。
+    fn from_source(format: AnimFormat, source: Arc<[u8]>, filter: image::imageops::FilterType, ring_budget_bytes: usize, ring_bounds: (usize, usize), frame_hard_limit_bytes: usize) -> RingDecodeOutcome {
         let mut decoder = match SequentialAnimDecoder::new(format, source) {
             Some(d) => d,
             None => return RingDecodeOutcome::NotThisFormat,
@@ -340,16 +343,7 @@ impl RingAnimation {
             Some(f) => f,
             None => return RingDecodeOutcome::NotThisFormat,
         };
-
-        let frame0_bytes = (frame0.image.width() as usize) * (frame0.image.height() as usize) * 4;
-        if frame0_bytes > ANIM_HARD_LIMIT_BYTES {
-            eprintln!(
-                "[cache] ring anim frame too large ({}MB > {}MB limit), skipping",
-                frame0_bytes / MB,
-                ANIM_HARD_LIMIT_BYTES / MB,
-            );
-            return RingDecodeOutcome::NotThisFormat;
-        }
+        let frame0 = Self::guard_frame_size(frame0, frame_hard_limit_bytes, filter, 0);
 
         let (w, h) = (frame0.image.width(), frame0.image.height());
         let scale = (MAX_DISPLAY_W as f32 / w as f32)
@@ -367,6 +361,7 @@ impl RingAnimation {
             Some(f) => f,
             None => return RingDecodeOutcome::SingleFrame(frame0),
         };
+        let frame1 = Self::guard_frame_size(frame1, frame_hard_limit_bytes, filter, 1);
         let frame1 = Self::apply_resize(frame1, resize_to, filter);
 
         // 容量算出はresize後のフレームサイズ基準（実際にリングへ乗るバイト数と一致させるため）。
@@ -377,8 +372,27 @@ impl RingAnimation {
         ring.push(0, frame0);
         ring.push(1, frame1);
 
-        let state = RingAnimState { decoder, ring, next_index: 2, resize_to, filter };
+        let state = RingAnimState { decoder, ring, next_index: 2, resize_to, filter, frame_hard_limit_bytes };
         RingDecodeOutcome::Animated(Self { state: Mutex::new(state) })
+    }
+
+    /// フレームの生デコードサイズ(リサイズ前、w*h*4)が`hard_limit_bytes`を超える場合、
+    /// 収まる比率までそのフレームだけ縮小する（フェーズ5: 同一アニメ内の解像度異常フレーム対策）。
+    fn guard_frame_size(frame: AnimFrame, hard_limit_bytes: usize, filter: image::imageops::FilterType, index: usize) -> AnimFrame {
+        let (w, h) = (frame.image.width(), frame.image.height());
+        let raw_bytes = (w as usize) * (h as usize) * 4;
+        if hard_limit_bytes == 0 || raw_bytes <= hard_limit_bytes {
+            return frame;
+        }
+        let scale = ((hard_limit_bytes as f64) / (raw_bytes as f64)).sqrt() as f32;
+        let nw = ((w as f32 * scale) as u32).max(1);
+        let nh = ((h as f32 * scale) as u32).max(1);
+        eprintln!(
+            "[cache] anim frame {} auto-downscaled: {}x{} -> {}x{} (raw {}MB > limit {}MB)",
+            index, w, h, nw, nh, raw_bytes / MB, hard_limit_bytes / MB,
+        );
+        let dynamic = image::DynamicImage::ImageRgba8(frame.image);
+        AnimFrame { image: fir_resize(dynamic, nw, nh, filter), delay: frame.delay }
     }
 
     fn apply_resize(frame: AnimFrame, resize_to: Option<(u32, u32)>, filter: image::imageops::FilterType) -> AnimFrame {
@@ -407,6 +421,7 @@ impl RingAnimation {
             let next = state.decoder.next_frame()?;
             let idx = state.next_index;
             state.next_index += 1;
+            let next = Self::guard_frame_size(next, state.frame_hard_limit_bytes, state.filter, idx);
             let resized = Self::apply_resize(next, state.resize_to, state.filter);
             state.ring.push(idx, resized);
         }
@@ -768,6 +783,8 @@ mod ring_integration_tests {
     const TEST_RING_BUDGET_BYTES: usize = 10 * GB;
     const TEST_RING_BOUNDS: (usize, usize) = (4, 32);
     const TEST_RING_MAX: usize = TEST_RING_BOUNDS.1;
+    /// フェーズ5: 実際のデフォルト(100MB)と同じ値。テストフィクスチャは全て十分小さいので影響しない。
+    const TEST_FRAME_HARD_LIMIT_BYTES: usize = 100 * MB;
 
     /// フェーズ3.6: 実物の大きいGIF(test/nouka.gif, 640x360 1316フレーム, 全展開なら約1.2GB)で
     /// リングバッファが実際に「全フレーム常駐にならず一定量に収まる」ことを確認する結合テスト。
@@ -776,7 +793,7 @@ mod ring_integration_tests {
         let path = std::path::Path::new("test/nouka.gif");
         let buf = std::fs::read(path).expect("test/nouka.gif が見つからない");
 
-        let content = decode_ring_anim(&buf, AnimFormat::Gif, image::imageops::FilterType::Triangle, TEST_RING_BUDGET_BYTES, TEST_RING_BOUNDS)
+        let content = decode_ring_anim(&buf, AnimFormat::Gif, image::imageops::FilterType::Triangle, TEST_RING_BUDGET_BYTES, TEST_RING_BOUNDS, TEST_FRAME_HARD_LIMIT_BYTES)
             .expect("GIFとしてデコードできるはず");
 
         let PageContent::Animated(ring) = content else {
@@ -810,7 +827,7 @@ mod ring_integration_tests {
         let path = std::path::Path::new("test/nouka.gif");
         let buf = std::fs::read(path).expect("test/nouka.gif が見つからない");
 
-        let content = decode_ring_anim(&buf, AnimFormat::Gif, image::imageops::FilterType::Triangle, TEST_RING_BUDGET_BYTES, TEST_RING_BOUNDS)
+        let content = decode_ring_anim(&buf, AnimFormat::Gif, image::imageops::FilterType::Triangle, TEST_RING_BUDGET_BYTES, TEST_RING_BOUNDS, TEST_FRAME_HARD_LIMIT_BYTES)
             .expect("GIFとしてデコードできるはず");
         let PageContent::Animated(ring) = content else {
             panic!("Animated になるはず");
@@ -845,7 +862,7 @@ mod ring_integration_tests {
     fn ring_anim_webp_stays_bounded_on_real_large_file() {
         let buf = load_webp_entry_from_test_zip();
 
-        let content = decode_ring_anim(&buf, AnimFormat::Webp, image::imageops::FilterType::Triangle, TEST_RING_BUDGET_BYTES, TEST_RING_BOUNDS)
+        let content = decode_ring_anim(&buf, AnimFormat::Webp, image::imageops::FilterType::Triangle, TEST_RING_BUDGET_BYTES, TEST_RING_BOUNDS, TEST_FRAME_HARD_LIMIT_BYTES)
             .expect("WebPとしてデコードできるはず");
         let PageContent::Animated(ring) = content else {
             panic!("243フレームあるので Animated になるはず（Static ではない）");
@@ -879,7 +896,7 @@ mod ring_integration_tests {
     fn ring_anim_webp_restart_replays_from_head() {
         let buf = load_webp_entry_from_test_zip();
 
-        let content = decode_ring_anim(&buf, AnimFormat::Webp, image::imageops::FilterType::Triangle, TEST_RING_BUDGET_BYTES, TEST_RING_BOUNDS)
+        let content = decode_ring_anim(&buf, AnimFormat::Webp, image::imageops::FilterType::Triangle, TEST_RING_BUDGET_BYTES, TEST_RING_BOUNDS, TEST_FRAME_HARD_LIMIT_BYTES)
             .expect("WebPとしてデコードできるはず");
         let PageContent::Animated(ring) = content else {
             panic!("Animated になるはず");
@@ -892,5 +909,60 @@ mod ring_integration_tests {
         assert!(ring.restart());
         assert!(ring.with_frame(0, |_| ()).is_some());
         assert!(ring.with_frame(1, |_| ()).is_some());
+    }
+
+    /// フレームごとに解像度が異なる合成GIFを作る（フェーズ5: 変則ファイルの再現用）。
+    fn encode_gif_frames_mixed(dims: &[(u32, u32)]) -> Vec<u8> {
+        use image::codecs::gif::GifEncoder;
+        use image::Delay;
+        let mut buf = Vec::new();
+        {
+            let mut encoder = GifEncoder::new(&mut buf);
+            for &(w, h) in dims {
+                let img = image::RgbaImage::new(w, h);
+                let frame = image::Frame::from_parts(img, 0, 0, Delay::from_numer_denom_ms(10, 1));
+                encoder.encode_frame(frame).unwrap();
+            }
+        }
+        buf
+    }
+
+    /// フェーズ5: 同一アニメ内でframe0より大幅に大きい中間フレームに遭遇しても、
+    /// そのフレームだけ縮小されてhard_limit以内に収まり、再生が継続できることを確認する。
+    #[test]
+    fn ring_anim_downscales_oversized_mid_stream_frame() {
+        let bytes = encode_gif_frames_mixed(&[(10, 10), (4000, 4000), (10, 10)]);
+        let hard_limit_bytes = 1000; // 4000x4000の生サイズ(64,000,000 bytes)を大きく下回る極小値
+
+        let content = decode_ring_anim(&bytes, AnimFormat::Gif, image::imageops::FilterType::Triangle, TEST_RING_BUDGET_BYTES, TEST_RING_BOUNDS, hard_limit_bytes)
+            .expect("GIFとしてデコードできるはず");
+        let PageContent::Animated(ring) = content else {
+            panic!("3フレームあるので Animated になるはず");
+        };
+
+        let (w, h) = ring.with_frame(1, |f| (f.image.width(), f.image.height()))
+            .expect("frame1が取得できるはず");
+        assert!((w as usize) * (h as usize) * 4 <= hard_limit_bytes, "縮小後もhard_limitに収まるはず: {w}x{h}");
+
+        // 縮小後もframe2(通常サイズに戻る)へ普通に進行できることを確認する。
+        assert!(ring.with_frame(2, |_| ()).is_some());
+    }
+
+    /// フェーズ5: frame0自体が超過しても、静止画に丸ごとフォールバックせず
+    /// 縮小した上でアニメーションとして続行することを確認する。
+    #[test]
+    fn ring_anim_downscales_oversized_frame0_and_stays_animated() {
+        let bytes = encode_gif_frames_mixed(&[(4000, 4000), (10, 10)]);
+        let hard_limit_bytes = 1000;
+
+        let content = decode_ring_anim(&bytes, AnimFormat::Gif, image::imageops::FilterType::Triangle, TEST_RING_BUDGET_BYTES, TEST_RING_BOUNDS, hard_limit_bytes)
+            .expect("GIFとしてデコードできるはず");
+        let PageContent::Animated(ring) = content else {
+            panic!("2フレームあるので Animated になるはず（静止画フォールバックしない）");
+        };
+
+        let (w, h) = ring.with_frame(0, |f| (f.image.width(), f.image.height()))
+            .expect("frame0が取得できるはず");
+        assert!((w as usize) * (h as usize) * 4 <= hard_limit_bytes, "frame0も縮小されhard_limitに収まるはず: {w}x{h}");
     }
 }

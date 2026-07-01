@@ -224,7 +224,8 @@ impl NekoviewApp {
     pub fn new(start_dir: PathBuf, config: AppConfig, viewer_slots: [Option<WindowSlot>; 4], sort_state: SortState, viewer_cfg: ViewerConfig, ctx: egui::Context) -> Self {
         let (cache_max, cache_min, file_cache_max) = crate::cache::resolve_cache_budgets(config.cache_max_mb, config.file_cache_max_mb);
         let ring_bounds = (config.anim_ring_min_frames, config.anim_ring_max_frames);
-        let (req_tx, res_rx) = spawn_worker(config.viewer_filter.to_image_filter(), config.resolved_decode_threads(), ctx.clone(), cache_max, ring_bounds);
+        let frame_hard_limit_bytes = config.anim_frame_hard_limit_mb * 1024 * 1024;
+        let (req_tx, res_rx) = spawn_worker(config.viewer_filter.to_image_filter(), config.resolved_decode_threads(), ctx.clone(), cache_max, ring_bounds, frame_hard_limit_bytes);
         let (thumb_req_tx, thumb_res_rx) = spawn_thumb_worker(config.thumb_filter.to_image_filter(), config.resolved_decode_threads(), ctx.clone());
         let (file_cache_req_tx, file_cache_res_rx) = spawn_file_cache_worker(ctx.clone());
         let mut drives = list_local_drives();

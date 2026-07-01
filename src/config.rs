@@ -82,6 +82,8 @@ pub struct AppConfig {
     pub anim_ring_min_frames: usize,
     /// アニメーションリングバッファの先読み枚数上限（フェーズ4）。空欄/不正値は既定32。
     pub anim_ring_max_frames: usize,
+    /// アニメーション1フレームあたりの生デコードサイズ上限（MB、フェーズ5）。空欄/不正値は既定100。
+    pub anim_frame_hard_limit_mb: usize,
 }
 
 impl AppConfig {
@@ -136,6 +138,7 @@ impl AppConfig {
             default_slot: parsed.default_slot,
             anim_ring_min_frames: parsed.anim_ring_min_frames.0,
             anim_ring_max_frames: parsed.anim_ring_max_frames.0,
+            anim_frame_hard_limit_mb: parsed.anim_frame_hard_limit_mb.0,
         }
     }
 
@@ -215,6 +218,7 @@ struct ParsedIni {
     default_slot: Option<usize>,
     anim_ring_min_frames: UsizeDefault<4>,
     anim_ring_max_frames: UsizeDefault<32>,
+    anim_frame_hard_limit_mb: UsizeDefault<100>,
 }
 
 /// usize のデフォルト値を const ジェネリクスで指定するラッパー（空欄/不正値は既定にフォールバック）
@@ -291,6 +295,11 @@ fn parse_ini(path: &std::path::Path) -> ParsedIni {
                 ("cache", "anim_ring_max_frames") => {
                     if let Ok(n) = v.parse::<usize>() {
                         result.anim_ring_max_frames = UsizeDefault(n.max(1));
+                    }
+                }
+                ("cache", "anim_frame_hard_limit_mb") => {
+                    if let Ok(n) = v.parse::<usize>() {
+                        result.anim_frame_hard_limit_mb = UsizeDefault(n.max(1));
                     }
                 }
                 ("thumbnail", "filter") => {
@@ -685,6 +694,12 @@ storage = local
 # 空欄・不正値は既定（下限4 / 上限32）にフォールバックします。
 # anim_ring_min_frames = 4
 # anim_ring_max_frames = 32
+
+# アニメーション1フレームあたりの生デコードサイズ上限（MB / 整数、リサイズ前のw*h*4基準）。
+# 同一アニメ内で解像度が異常に大きいフレームに遭遇した際、そのフレームだけ縮小して再生を継続します。
+# 一般的なアニメ解像度（4K級まで）は約34MB程度に収まるため、既定100MBで十分な余裕があります。
+# 空欄・不正値は既定（100）にフォールバックします。
+# anim_frame_hard_limit_mb = 100
 
 # ── ログ ────────────────────────────────────────────────────────────────────
 [log]
