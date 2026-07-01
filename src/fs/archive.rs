@@ -101,14 +101,15 @@ pub enum AnimSampleEstimate {
 /// 「非アニメーション」と「予算超過」がどちらも `AnimatedImage::from_*` の `None` に
 /// 集約されるため、事前に構造的な非アニメーション判定（PNGのacTLチャンク有無、
 /// WebPの静止画デコード可否）を行い、`NotAnimated` を先に弾いてから呼び出す。
-pub fn estimate_anim_sample_bytes(buf: &[u8], ext: &str, budget_bytes: usize) -> AnimSampleEstimate {
-    use crate::anim::{AnimFormat, SequentialAnimDecoder, DEFAULT_RING_CAPACITY};
+pub fn estimate_anim_sample_bytes(buf: &[u8], ext: &str, budget_bytes: usize, ring_bounds: (usize, usize)) -> AnimSampleEstimate {
+    use crate::anim::{AnimFormat, SequentialAnimDecoder, resolve_ring_capacity};
+    use crate::cache::ANIM_RING_BUDGET_PCT;
 
-    /// フェーズ3/3.5でアニメは全フレーム常駐ではなくリングバッファ(容量`DEFAULT_RING_CAPACITY`)で
-    /// 保持されるため、見積もりも「実際に常駐しうる最大バイト数」＝リング容量分だけをデコードして
-    /// 求める（`cache.rs::RingAnimation::from_source`と同じ判定基準: 実質1フレームならNotAnimated、
-    /// 1フレーム目の時点でbudget_bytesを超えるなら即OverBudget）。
-    fn ring_bounded_estimate(format: AnimFormat, buf: &[u8], budget_bytes: usize) -> AnimSampleEstimate {
+    /// フェーズ3/3.5でアニメは全フレーム常駐ではなくリングバッファで保持されるため、
+    /// 見積もりも「実際に常駐しうる最大バイト数」＝リング容量分だけをデコードして求める
+    /// （`cache.rs::RingAnimation::from_source`と同じ判定基準・同じ容量算出式を使う。
+    /// 実質1フレームならNotAnimated、1フレーム目の時点でbudget_bytesを超えるなら即OverBudget）。
+    fn ring_bounded_estimate(format: AnimFormat, buf: &[u8], budget_bytes: usize, ring_bounds: (usize, usize)) -> AnimSampleEstimate {
         let Some(mut decoder) = SequentialAnimDecoder::new(format, std::sync::Arc::from(buf)) else {
             return AnimSampleEstimate::NotAnimated;
         };
@@ -127,7 +128,10 @@ pub fn estimate_anim_sample_bytes(buf: &[u8], ext: &str, budget_bytes: usize) ->
         };
         let mut total = frame0_bytes + frame_bytes(&frame1.image);
 
-        for _ in 2..DEFAULT_RING_CAPACITY {
+        let ring_budget_bytes = budget_bytes * ANIM_RING_BUDGET_PCT / 100;
+        let (min_frames, max_frames) = ring_bounds;
+        let capacity = resolve_ring_capacity(frame0_bytes, ring_budget_bytes, min_frames, max_frames);
+        for _ in 2..capacity {
             match decoder.next_frame() {
                 Some(f) => total += frame_bytes(&f.image),
                 None => break, // アニメ自体がリング容量より短い
@@ -137,7 +141,7 @@ pub fn estimate_anim_sample_bytes(buf: &[u8], ext: &str, budget_bytes: usize) ->
     }
 
     match ext {
-        "gif" => ring_bounded_estimate(AnimFormat::Gif, buf, budget_bytes),
+        "gif" => ring_bounded_estimate(AnimFormat::Gif, buf, budget_bytes, ring_bounds),
         "webp" => {
             // 静止画WebPはAnimDecoderがデコード失敗またはhas_animation()==falseを返すことが
             // あり、budget_bytes超過とは無関係にNoneになりうる。先に静止画デコードを試して
@@ -145,7 +149,7 @@ pub fn estimate_anim_sample_bytes(buf: &[u8], ext: &str, budget_bytes: usize) ->
             if webp::Decoder::new(buf).decode().is_some() {
                 return AnimSampleEstimate::NotAnimated;
             }
-            ring_bounded_estimate(AnimFormat::Webp, buf, budget_bytes)
+            ring_bounded_estimate(AnimFormat::Webp, buf, budget_bytes, ring_bounds)
         }
         "png" => {
             let is_apng = image::codecs::png::PngDecoder::new(std::io::Cursor::new(buf))
@@ -155,9 +159,9 @@ pub fn estimate_anim_sample_bytes(buf: &[u8], ext: &str, budget_bytes: usize) ->
             if !is_apng {
                 return AnimSampleEstimate::NotAnimated;
             }
-            ring_bounded_estimate(AnimFormat::Apng, buf, budget_bytes)
+            ring_bounded_estimate(AnimFormat::Apng, buf, budget_bytes, ring_bounds)
         }
-        "avif" => ring_bounded_estimate(AnimFormat::Avif, buf, budget_bytes),
+        "avif" => ring_bounded_estimate(AnimFormat::Avif, buf, budget_bytes, ring_bounds),
         _ => AnimSampleEstimate::NotAnimated,
     }
 }
@@ -190,12 +194,13 @@ fn estimate_entry_bytes<R: Read + Seek>(
     archive: &mut zip::ZipArchive<R>,
     entry_name: &str,
     budget_bytes: usize,
+    ring_bounds: (usize, usize),
 ) -> Option<EntryEstimate> {
     let (buf, display_name) = load_bytes_from_archive(archive, entry_name)?;
     let ext = display_name.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
 
     if matches!(ext.as_str(), "gif" | "webp" | "png" | "avif") {
-        match estimate_anim_sample_bytes(&buf, &ext, budget_bytes) {
+        match estimate_anim_sample_bytes(&buf, &ext, budget_bytes, ring_bounds) {
             AnimSampleEstimate::Bytes(n) => return Some(EntryEstimate::Bytes(n)),
             AnimSampleEstimate::OverBudget => return Some(EntryEstimate::OverBudget),
             AnimSampleEstimate::NotAnimated => {} // 静止画推定へフォールバック
@@ -238,6 +243,7 @@ pub fn estimate_archive_memory(
     path: &Path,
     entries: &[ImageEntry],
     budget_bytes: usize,
+    ring_bounds: (usize, usize),
 ) -> ArchiveMemoryEstimate {
     if entries.is_empty() {
         return ArchiveMemoryEstimate::Ok;
@@ -247,7 +253,7 @@ pub fn estimate_archive_memory(
 
     let mut sample_bytes: Vec<usize> = Vec::new();
     for idx in select_sample_indices(entries.len()) {
-        match estimate_entry_bytes(&mut archive, &entries[idx].entry_name, budget_bytes) {
+        match estimate_entry_bytes(&mut archive, &entries[idx].entry_name, budget_bytes, ring_bounds) {
             Some(EntryEstimate::OverBudget) => return ArchiveMemoryEstimate::OverBudget,
             Some(EntryEstimate::Bytes(n)) => sample_bytes.push(n),
             None => {} // 読み込み/デコード失敗エントリはサンプルから除外
@@ -535,6 +541,8 @@ mod tests {
     use std::path::PathBuf;
 
     const MB: usize = 1024 * 1024;
+    /// テスト用のリング先読み枚数(下限, 上限)。実運用のデフォルト(4, 32)に合わせる。
+    const TEST_RING_BOUNDS: (usize, usize) = (4, 32);
 
     fn test_zip() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("test/testarchive.zip")
@@ -629,14 +637,14 @@ mod tests {
     #[test]
     fn test_estimate_anim_sample_bytes_plain_png_is_not_animated() {
         let buf = encode_png(10, 10);
-        let result = estimate_anim_sample_bytes(&buf, "png", 10 * MB);
+        let result = estimate_anim_sample_bytes(&buf, "png", 10 * MB, TEST_RING_BOUNDS);
         assert!(matches!(result, AnimSampleEstimate::NotAnimated), "非APNGはNotAnimatedであるべき");
     }
 
     #[test]
     fn test_estimate_anim_sample_bytes_gif_within_budget() {
         let buf = encode_gif_frames(10, 10, 3);
-        let result = estimate_anim_sample_bytes(&buf, "gif", 10 * MB);
+        let result = estimate_anim_sample_bytes(&buf, "gif", 10 * MB, TEST_RING_BOUNDS);
         match result {
             AnimSampleEstimate::Bytes(n) => assert_eq!(n, 10 * 10 * 4 * 3),
             _ => panic!("3フレームGIFはBytesであるべき"),
@@ -647,7 +655,7 @@ mod tests {
     fn test_estimate_anim_sample_bytes_gif_over_budget() {
         let buf = encode_gif_frames(10, 10, 3);
         // 1フレーム分(400byte)未満の予算 → 先頭フレームの時点でハードリミット超過
-        let result = estimate_anim_sample_bytes(&buf, "gif", 100);
+        let result = estimate_anim_sample_bytes(&buf, "gif", 100, TEST_RING_BOUNDS);
         assert!(matches!(result, AnimSampleEstimate::OverBudget), "予算未満のGIFはOverBudgetであるべき");
     }
 
@@ -667,7 +675,7 @@ mod tests {
         let path = build_zip_with_pngs(&[(10, 10), (10, 10), (10, 10)]);
         let entries = list_images(&path);
         assert_eq!(entries.len(), 3);
-        let result = estimate_archive_memory(&path, &entries, 10 * MB);
+        let result = estimate_archive_memory(&path, &entries, 10 * MB, TEST_RING_BOUNDS);
         std::fs::remove_file(&path).ok();
         assert_eq!(result, ArchiveMemoryEstimate::Ok);
     }
@@ -680,7 +688,7 @@ mod tests {
         let entries = list_images(&path);
         assert_eq!(entries.len(), 20);
         // 40,000 * 20 = 800,000 > budget(500,000) だが 40,000 < budget 単体は超えない
-        let result = estimate_archive_memory(&path, &entries, 500_000);
+        let result = estimate_archive_memory(&path, &entries, 500_000, TEST_RING_BOUNDS);
         std::fs::remove_file(&path).ok();
         assert_eq!(result, ArchiveMemoryEstimate::OverBudget);
     }
@@ -691,7 +699,7 @@ mod tests {
         let path = build_zip_with_pngs(&[(2000, 2000), (10, 10), (10, 10), (10, 10), (10, 10)]);
         let entries = list_images(&path);
         assert_eq!(entries.len(), 5); // 5枚 → 先頭・末尾2サンプル
-        let result = estimate_archive_memory(&path, &entries, MB);
+        let result = estimate_archive_memory(&path, &entries, MB, TEST_RING_BOUNDS);
         std::fs::remove_file(&path).ok();
         assert_eq!(result, ArchiveMemoryEstimate::OverBudget);
     }
@@ -699,7 +707,7 @@ mod tests {
     #[test]
     fn test_estimate_archive_memory_empty_entries_is_ok() {
         let path = test_zip();
-        let result = estimate_archive_memory(&path, &[], 1);
+        let result = estimate_archive_memory(&path, &[], 1, TEST_RING_BOUNDS);
         assert_eq!(result, ArchiveMemoryEstimate::Ok);
     }
 
@@ -711,7 +719,7 @@ mod tests {
         eprintln!("entries.len() = {}", entries.len());
         let (page_max, _page_min, _file_max) = crate::cache::resolve_cache_budgets(None, None);
         eprintln!("page_max(budget) = {} bytes ({} MB)", page_max, page_max / (1024*1024));
-        let result = estimate_archive_memory(&path, &entries, page_max);
+        let result = estimate_archive_memory(&path, &entries, page_max, TEST_RING_BOUNDS);
         eprintln!("result = {:?}", result);
     }
 
@@ -728,14 +736,14 @@ mod tests {
         for idx in select_sample_indices(entries.len()) {
             let file = std::fs::File::open(&path).unwrap();
             let mut archive = zip::ZipArchive::new(file).unwrap();
-            match estimate_entry_bytes(&mut archive, &entries[idx].entry_name, page_max) {
+            match estimate_entry_bytes(&mut archive, &entries[idx].entry_name, page_max, TEST_RING_BOUNDS) {
                 Some(EntryEstimate::Bytes(n)) => eprintln!("sample[{idx}] = Bytes({n}, {}MB)", n/(1024*1024)),
                 Some(EntryEstimate::OverBudget) => eprintln!("sample[{idx}] = OverBudget"),
                 None => eprintln!("sample[{idx}] = None(read failure)"),
             }
         }
 
-        let result = estimate_archive_memory(&path, &entries, page_max);
+        let result = estimate_archive_memory(&path, &entries, page_max, TEST_RING_BOUNDS);
         eprintln!("result = {:?}", result);
     }
 }

@@ -547,8 +547,17 @@ impl Drop for WebpSeqState {
     }
 }
 
-/// フェーズ4で動的化する前提の初期値（固定値）。設定ファイルからの変更は将来対応(TODO)。
-pub const DEFAULT_RING_CAPACITY: usize = 32;
+/// フェーズ4: リング容量（先読み枚数）を1フレームあたりのバイト数と予算から算出する。
+/// アニメ開始時に1回だけ呼ばれ、以降そのアニメーションの再生中は変更しない。
+/// `frame_bytes` が0以下、または `budget_bytes` が0の場合は `min_frames` にフォールバックする。
+pub fn resolve_ring_capacity(frame_bytes: usize, budget_bytes: usize, min_frames: usize, max_frames: usize) -> usize {
+    let min_frames = min_frames.max(1);
+    let max_frames = max_frames.max(min_frames);
+    if frame_bytes == 0 || budget_bytes == 0 {
+        return min_frames;
+    }
+    (budget_bytes / frame_bytes).clamp(min_frames, max_frames)
+}
 
 /// 直近デコードしたフレームだけを保持するリングバッファ。
 /// 容量超過時は最も古い(最初にpushされた)フレームから捨てる。
@@ -615,6 +624,40 @@ mod ring_tests {
         ring.push(1, dummy_frame());
         ring.clear();
         assert_eq!(ring.len(), 0);
+    }
+
+    #[test]
+    fn resolve_ring_capacity_uses_budget_within_bounds() {
+        // 1フレーム1MB、予算10MB → 10枚（下限4/上限32の範囲内）
+        let cap = resolve_ring_capacity(1024 * 1024, 10 * 1024 * 1024, 4, 32);
+        assert_eq!(cap, 10);
+    }
+
+    #[test]
+    fn resolve_ring_capacity_clamps_to_min_for_large_frames() {
+        // 1フレーム100MB、予算10MB → 0枚相当だが下限4にクランプ
+        let cap = resolve_ring_capacity(100 * 1024 * 1024, 10 * 1024 * 1024, 4, 32);
+        assert_eq!(cap, 4);
+    }
+
+    #[test]
+    fn resolve_ring_capacity_clamps_to_max_for_tiny_frames() {
+        // 1フレーム1KB、予算10MB → 上限32にクランプ
+        let cap = resolve_ring_capacity(1024, 10 * 1024 * 1024, 4, 32);
+        assert_eq!(cap, 32);
+    }
+
+    #[test]
+    fn resolve_ring_capacity_falls_back_to_min_when_zero_input() {
+        assert_eq!(resolve_ring_capacity(0, 10 * 1024 * 1024, 4, 32), 4);
+        assert_eq!(resolve_ring_capacity(1024, 0, 4, 32), 4);
+    }
+
+    #[test]
+    fn resolve_ring_capacity_handles_inverted_min_max() {
+        // maxがminより小さい不正設定でもクランプが破綻しない
+        let cap = resolve_ring_capacity(1024, 10 * 1024 * 1024, 32, 4);
+        assert_eq!(cap, 32);
     }
 
     fn encode_gif_frames(w: u32, h: u32, frame_count: usize) -> Vec<u8> {

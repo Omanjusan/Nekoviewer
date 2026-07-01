@@ -195,6 +195,8 @@ pub struct NekoviewApp {
     app_toast: Option<(String, std::time::Instant)>,
     /// フェーズ2: ページキャッシュ予算（見積もりゲートの閾値。resolve_cache_budgetsのpage_max）
     cache_budget_bytes: usize,
+    /// フェーズ4: アニメリングバッファ先読み枚数の(下限, 上限)。見積もりゲートも同じ値を使う。
+    anim_ring_bounds: (usize, usize),
     /// フェーズ2: メモリ見積もり超過を知らせる確認ダイアログの表示状態
     memory_warning_open: bool,
     /// ビューアウィンドウをフォーカス前面に出すフラグ
@@ -221,7 +223,8 @@ pub struct NekoviewApp {
 impl NekoviewApp {
     pub fn new(start_dir: PathBuf, config: AppConfig, viewer_slots: [Option<WindowSlot>; 4], sort_state: SortState, viewer_cfg: ViewerConfig, ctx: egui::Context) -> Self {
         let (cache_max, cache_min, file_cache_max) = crate::cache::resolve_cache_budgets(config.cache_max_mb, config.file_cache_max_mb);
-        let (req_tx, res_rx) = spawn_worker(config.viewer_filter.to_image_filter(), config.resolved_decode_threads(), ctx.clone(), cache_max);
+        let ring_bounds = (config.anim_ring_min_frames, config.anim_ring_max_frames);
+        let (req_tx, res_rx) = spawn_worker(config.viewer_filter.to_image_filter(), config.resolved_decode_threads(), ctx.clone(), cache_max, ring_bounds);
         let (thumb_req_tx, thumb_res_rx) = spawn_thumb_worker(config.thumb_filter.to_image_filter(), config.resolved_decode_threads(), ctx.clone());
         let (file_cache_req_tx, file_cache_res_rx) = spawn_file_cache_worker(ctx.clone());
         let mut drives = list_local_drives();
@@ -288,6 +291,7 @@ impl NekoviewApp {
             invalid_archives: std::collections::HashSet::new(),
             app_toast: None,
             cache_budget_bytes: cache_max,
+            anim_ring_bounds: ring_bounds,
             memory_warning_open: false,
             viewer_focus_requested: false,
             show_hidden: false,
@@ -1325,7 +1329,7 @@ impl NekoviewApp {
         if entries.is_empty() {
             return true; // 空/無効アーカイブの判定は既存の invalid_archives 処理に任せる
         }
-        match archive::estimate_archive_memory(path, &entries, self.cache_budget_bytes) {
+        match archive::estimate_archive_memory(path, &entries, self.cache_budget_bytes, self.anim_ring_bounds) {
             archive::ArchiveMemoryEstimate::Ok => true,
             archive::ArchiveMemoryEstimate::OverBudget => {
                 self.memory_warning_open = true;
