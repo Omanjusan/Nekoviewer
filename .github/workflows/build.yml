@@ -96,8 +96,8 @@ jobs:
         uses: actions/cache@v4
         with:
           path: |
-            /root/.cargo/registry
-            /root/.cargo/git
+            /usr/local/cargo/registry
+            /usr/local/cargo/git
             ${{ github.workspace }}/target
           key: linux-musl-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: linux-musl-cargo-
