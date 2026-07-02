@@ -216,10 +216,10 @@ pub struct NekoviewApp {
 
 impl NekoviewApp {
     pub fn new(start_dir: PathBuf, config: AppConfig, viewer_slots: [Option<WindowSlot>; 4], sort_state: SortState, viewer_cfg: ViewerConfig, ctx: egui::Context) -> Self {
-        let (req_tx, res_rx) = spawn_worker(config.viewer_filter.to_image_filter(), config.resolved_decode_threads(), ctx.clone());
+        let (cache_max, cache_min, file_cache_max) = crate::cache::resolve_cache_budgets(config.cache_max_mb, config.file_cache_max_mb);
+        let (req_tx, res_rx) = spawn_worker(config.viewer_filter.to_image_filter(), config.resolved_decode_threads(), ctx.clone(), cache_max);
         let (thumb_req_tx, thumb_res_rx) = spawn_thumb_worker(config.thumb_filter.to_image_filter(), config.resolved_decode_threads(), ctx.clone());
         let (file_cache_req_tx, file_cache_res_rx) = spawn_file_cache_worker(ctx.clone());
-        let (cache_max, cache_min, file_cache_max) = crate::cache::resolve_cache_budgets(config.cache_max_mb, config.file_cache_max_mb);
         let mut drives = list_local_drives();
         drives.extend(list_gvfs_smb_mounts());
 
@@ -608,10 +608,16 @@ impl NekoviewApp {
         });
         if let Some((cur, path, entries, is_raw_file)) = viewer_prefetch {
             let total = entries.len();
+            let cur_orig_i = entries.get(cur).map(|e| e.original_index);
             let start = cur.saturating_sub(5);
             let end = (cur + 10 + 1).min(total);
             for i in start..end {
                 let orig_i = entries[i].original_index;
+                // 予算超過(bypass)と判明済みのページは、現在表示中でない限り先読み対象から外す。
+                // bypass はキャッシュに残らないため、先読みし続けると無限に再デコードされてしまう。
+                if Some(orig_i) != cur_orig_i && self.page_cache.lock().unwrap().is_known_bypass(&path, orig_i) {
+                    continue;
+                }
                 let key = (path.clone(), orig_i);
                 if !self.page_cache.lock().unwrap().contains(&path, orig_i) && !self.pending_loads.lock().unwrap().contains(&key) {
                     let file_bytes = self.file_cache.get(&path);
