@@ -1,0 +1,325 @@
+//! GUI設定ダイアログ・セッション状態(state ファイル)まわり。
+//! config.rs の AppConfig(config.ini, 起動時読み込み専用)とは異なり、こちらは
+//! アプリ実行中に設定ダイアログ/ビューアー操作から書き換えられ、都度 state ファイルへ
+//! 永続化される値（ウィンドウ位置・ソート順・言語・ビューア設定・隠しファイル表示・
+//! 設定ダイアログ経由の AppConfig 上書き値）を扱う。
+
+use std::path::{Path, PathBuf};
+
+use crate::config::{AppConfig, ResizeFilter, filter_to_str, parse_filter};
+
+// ── State ファイル（動的状態: 最後のディレクトリ・ウィンドウサイズ）────────────
+
+pub struct SortState {
+    pub key: String,
+    pub ascending: bool,
+}
+
+impl Default for SortState {
+    fn default() -> Self {
+        Self { key: "name".to_string(), ascending: true }
+    }
+}
+
+/// ファイルをまたいで維持するビューア設定（ウィンドウを開き直しても保持）
+#[derive(Clone, Copy)]
+pub struct ViewerConfig {
+    /// true = 1:1等倍表示、false = ウィンドウフィット
+    pub zoom_actual: bool,
+    /// フルスクリーン状態
+    pub fullscreen: bool,
+    /// フェーズ6: ウィンドウリサイズ/zoom_actual切替時に元データから再デコードするか
+    pub redecode_on_resize: bool,
+    /// フェーズ6: リサイズ→再デコードまでのデバウンス時間(ms)。100刻みで100〜1000をループ
+    pub resize_debounce_ms: u64,
+    /// フェーズ6: リサイズ/zoom_actual切替のたびに増分する世代カウンタ（非永続・実行時のみ）。
+    /// winit_app.rs / view_reader.rs から更新され、NekoviewApp 側で変化検知にのみ使う。
+    pub redecode_trigger_seq: u64,
+}
+
+impl Default for ViewerConfig {
+    fn default() -> Self {
+        Self {
+            zoom_actual: false,
+            fullscreen: false,
+            redecode_on_resize: false,
+            resize_debounce_ms: 300,
+            redecode_trigger_seq: 0,
+        }
+    }
+}
+
+/// resize_debounce_ms サイクルボタンの次の値を返す（100刻み、100〜1000をループ）。
+pub fn next_debounce_ms(current: u64) -> u64 {
+    if current >= 1000 { 100 } else { current + 100 }
+}
+
+/// ビューアウィンドウの位置・サイズスロット（論理ピクセル）
+#[derive(Clone, Copy)]
+pub struct WindowSlot {
+    /// outer_rect の左上 x 座標
+    pub x: i32,
+    /// outer_rect の左上 y 座標
+    pub y: i32,
+    /// inner_rect の幅（コンテンツ領域）
+    pub w: u32,
+    /// inner_rect の高さ（コンテンツ領域）
+    pub h: u32,
+}
+
+pub struct AppState {
+    pub last_dir: Option<PathBuf>,
+    /// (width, height) in logical pixels
+    pub window_size: Option<(u32, u32)>,
+    /// ビューアウィンドウの位置・サイズスロット（F5〜F8 対応）
+    pub viewer_slots: [Option<WindowSlot>; 4],
+    pub sort_state: SortState,
+    /// UI言語コード: "ja" / "en" / "cn"
+    pub lang: String,
+    /// ファイル切替後も維持するビューア設定
+    pub viewer_cfg: ViewerConfig,
+    /// 隠しファイル/フォルダを一覧に表示するか（設定ダイアログの共通タブで編集）
+    pub show_hidden: bool,
+    /// 設定ダイアログ（共通/アニメタブ）から編集された AppConfig 上書き値。
+    /// None のものは config.ini の値をそのまま使う。一度でもダイアログで変更すると
+    /// この state 側の値が以後 config.ini より優先される（次回起動反映）。
+    pub app_cache_total_mb: Option<u64>,
+    pub app_anim_ring_min_frames: Option<usize>,
+    pub app_anim_ring_max_frames: Option<usize>,
+    pub app_anim_frame_hard_limit_mb: Option<usize>,
+    pub app_viewer_filter: Option<ResizeFilter>,
+    pub app_max_decode_edge: Option<u32>,
+}
+
+impl Default for AppState {
+    fn default() -> Self {
+        Self {
+            last_dir: None,
+            window_size: None,
+            viewer_slots: [None; 4],
+            sort_state: SortState::default(),
+            lang: "ja".to_string(),
+            viewer_cfg: ViewerConfig::default(),
+            show_hidden: false,
+            app_cache_total_mb: None,
+            app_anim_ring_min_frames: None,
+            app_anim_ring_max_frames: None,
+            app_anim_frame_hard_limit_mb: None,
+            app_viewer_filter: None,
+            app_max_decode_edge: None,
+        }
+    }
+}
+
+fn state_path() -> Option<PathBuf> {
+    std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.join("nekoviewer.state")))
+}
+
+fn state_bak_path() -> Option<PathBuf> {
+    std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.join("nekoviewer.state.bak")))
+}
+
+fn state_tmp_path() -> Option<PathBuf> {
+    std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.join("nekoviewer.state.tmp")))
+}
+
+pub fn load_state() -> AppState {
+    if let Some(path) = state_path() {
+        if let Some(state) = parse_state_file(&path) {
+            return state;
+        }
+    }
+    // メインが読めなければ bak を試みる
+    if let Some(bak) = state_bak_path() {
+        if let Some(state) = parse_state_file(&bak) {
+            crate::log_common!("[state] メイン読み込み失敗 → bak から復元");
+            return state;
+        }
+    }
+    AppState::default()
+}
+
+fn parse_state_file(path: &Path) -> Option<AppState> {
+    let content = std::fs::read_to_string(path).ok()?;
+    let mut last_dir: Option<PathBuf> = None;
+    let mut window_width: Option<u32> = None;
+    let mut window_height: Option<u32> = None;
+    let mut slot_x: [Option<i32>; 4] = [None; 4];
+    let mut slot_y: [Option<i32>; 4] = [None; 4];
+    let mut slot_w: [Option<u32>; 4] = [None; 4];
+    let mut slot_h: [Option<u32>; 4] = [None; 4];
+    let mut sort_key: Option<String> = None;
+    let mut sort_ascending: Option<bool> = None;
+    let mut lang: Option<String> = None;
+    let mut viewer_zoom: Option<bool> = None;
+    let mut viewer_fullscreen: Option<bool> = None;
+    let mut redecode_on_resize: Option<bool> = None;
+    let mut show_hidden: Option<bool> = None;
+    let mut resize_debounce_ms: Option<u64> = None;
+    let mut app_cache_total_mb: Option<u64> = None;
+    let mut app_anim_ring_min_frames: Option<usize> = None;
+    let mut app_anim_ring_max_frames: Option<usize> = None;
+    let mut app_anim_frame_hard_limit_mb: Option<usize> = None;
+    let mut app_viewer_filter: Option<ResizeFilter> = None;
+    let mut app_max_decode_edge: Option<u32> = None;
+    let mut has_kv = false;
+
+    for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty() { continue; }
+        if let Some((k, v)) = line.split_once('=') {
+            has_kv = true;
+            match k.trim() {
+                "last_dir" => {
+                    let v = v.trim();
+                    if !v.is_empty() { last_dir = Some(PathBuf::from(v)); }
+                }
+                "window_width"  => { window_width  = v.trim().parse().ok(); }
+                "window_height" => { window_height = v.trim().parse().ok(); }
+                "slot1_x" => { slot_x[0] = v.trim().parse().ok(); }
+                "slot1_y" => { slot_y[0] = v.trim().parse().ok(); }
+                "slot1_w" => { slot_w[0] = v.trim().parse().ok(); }
+                "slot1_h" => { slot_h[0] = v.trim().parse().ok(); }
+                "slot2_x" => { slot_x[1] = v.trim().parse().ok(); }
+                "slot2_y" => { slot_y[1] = v.trim().parse().ok(); }
+                "slot2_w" => { slot_w[1] = v.trim().parse().ok(); }
+                "slot2_h" => { slot_h[1] = v.trim().parse().ok(); }
+                "slot3_x" => { slot_x[2] = v.trim().parse().ok(); }
+                "slot3_y" => { slot_y[2] = v.trim().parse().ok(); }
+                "slot3_w" => { slot_w[2] = v.trim().parse().ok(); }
+                "slot3_h" => { slot_h[2] = v.trim().parse().ok(); }
+                "slot4_x" => { slot_x[3] = v.trim().parse().ok(); }
+                "slot4_y" => { slot_y[3] = v.trim().parse().ok(); }
+                "slot4_w" => { slot_w[3] = v.trim().parse().ok(); }
+                "slot4_h" => { slot_h[3] = v.trim().parse().ok(); }
+                "sort_key" => {
+                    let v = v.trim();
+                    if matches!(v, "name" | "date" | "size") {
+                        sort_key = Some(v.to_string());
+                    }
+                }
+                "sort_ascending" => { sort_ascending = v.trim().parse().ok(); }
+                "lang" => {
+                    let v = v.trim();
+                    if matches!(v, "ja" | "en" | "cn") {
+                        lang = Some(v.to_string());
+                    }
+                }
+                "viewer_zoom"       => { viewer_zoom       = v.trim().parse().ok(); }
+                "viewer_fullscreen" => { viewer_fullscreen = v.trim().parse().ok(); }
+                "redecode_on_resize" => { redecode_on_resize = v.trim().parse().ok(); }
+                "show_hidden" => { show_hidden = v.trim().parse().ok(); }
+                "resize_debounce_ms" => {
+                    resize_debounce_ms = v.trim().parse::<u64>().ok()
+                        .filter(|n| (100..=1000).contains(n) && n % 100 == 0);
+                }
+                "app_cache_total_mb" => { app_cache_total_mb = v.trim().parse().ok(); }
+                "app_anim_ring_min_frames" => { app_anim_ring_min_frames = v.trim().parse().ok(); }
+                "app_anim_ring_max_frames" => { app_anim_ring_max_frames = v.trim().parse().ok(); }
+                "app_anim_frame_hard_limit_mb" => { app_anim_frame_hard_limit_mb = v.trim().parse().ok(); }
+                "app_viewer_filter" => {
+                    let v = v.trim();
+                    if !v.is_empty() { app_viewer_filter = Some(parse_filter(v)); }
+                }
+                "app_max_decode_edge" => { app_max_decode_edge = v.trim().parse().ok(); }
+                _ => {}
+            }
+        }
+    }
+
+    // 旧フォーマット互換: key=value がなければ全体をパスとして扱う
+    if !has_kv {
+        let trimmed = content.trim();
+        if !trimmed.is_empty() {
+            last_dir = Some(PathBuf::from(trimmed));
+        }
+    }
+
+    let window_size = match (window_width, window_height) {
+        (Some(w), Some(h)) if w >= 200 && h >= 150 => Some((w, h)),
+        _ => None,
+    };
+
+    let mut viewer_slots: [Option<WindowSlot>; 4] = [None; 4];
+    for i in 0..4 {
+        if let (Some(x), Some(y), Some(w), Some(h)) = (slot_x[i], slot_y[i], slot_w[i], slot_h[i]) {
+            if w >= 100 && h >= 100 {
+                viewer_slots[i] = Some(WindowSlot { x, y, w, h });
+            }
+        }
+    }
+
+    let sort_state = SortState {
+        key: sort_key.unwrap_or_else(|| "name".to_string()),
+        ascending: sort_ascending.unwrap_or(true),
+    };
+
+    Some(AppState {
+        last_dir,
+        window_size,
+        viewer_slots,
+        sort_state,
+        lang: lang.unwrap_or_else(|| "ja".to_string()),
+        viewer_cfg: ViewerConfig {
+            zoom_actual: viewer_zoom.unwrap_or(false),
+            fullscreen: viewer_fullscreen.unwrap_or(false),
+            redecode_on_resize: redecode_on_resize.unwrap_or(false),
+            resize_debounce_ms: resize_debounce_ms.unwrap_or(300),
+            redecode_trigger_seq: 0,
+        },
+        show_hidden: show_hidden.unwrap_or(false),
+        app_cache_total_mb,
+        app_anim_ring_min_frames,
+        app_anim_ring_max_frames,
+        app_anim_frame_hard_limit_mb,
+        app_viewer_filter,
+        app_max_decode_edge,
+    })
+}
+
+pub fn save_state(dir: &Path, window_size: (u32, u32), viewer_slots: &[Option<WindowSlot>; 4], sort_state: &SortState, lang: &str, viewer_cfg: &ViewerConfig, show_hidden: bool, app_cfg: &AppConfig) {
+    let (Some(path), Some(bak), Some(tmp)) =
+        (state_path(), state_bak_path(), state_tmp_path())
+    else { return; };
+
+    let mut content = format!(
+        "last_dir={}\nwindow_width={}\nwindow_height={}\nsort_key={}\nsort_ascending={}\nlang={}\nviewer_zoom={}\nviewer_fullscreen={}\nredecode_on_resize={}\nresize_debounce_ms={}\nshow_hidden={}\n",
+        dir.to_string_lossy(), window_size.0, window_size.1, sort_state.key, sort_state.ascending, lang,
+        viewer_cfg.zoom_actual, viewer_cfg.fullscreen,
+        viewer_cfg.redecode_on_resize, viewer_cfg.resize_debounce_ms, show_hidden,
+    );
+    // 設定ダイアログ（共通/アニメタブ）が編集する AppConfig 系の値。次回起動から反映されるため、
+    // ここでは現在の有効値をそのまま state に書き戻すだけでよい（即時のワーカー再構築は不要）。
+    content.push_str(&format!(
+        "app_cache_total_mb={}\napp_anim_ring_min_frames={}\napp_anim_ring_max_frames={}\napp_anim_frame_hard_limit_mb={}\napp_viewer_filter={}\napp_max_decode_edge={}\n",
+        app_cfg.cache_total_mb.map(|v| v.to_string()).unwrap_or_default(),
+        app_cfg.anim_ring_min_frames,
+        app_cfg.anim_ring_max_frames,
+        app_cfg.anim_frame_hard_limit_mb,
+        filter_to_str(app_cfg.viewer_filter),
+        app_cfg.max_decode_edge,
+    ));
+    for (i, slot) in viewer_slots.iter().enumerate() {
+        if let Some(s) = slot {
+            content.push_str(&format!(
+                "slot{n}_x={x}\nslot{n}_y={y}\nslot{n}_w={w}\nslot{n}_h={h}\n",
+                n = i + 1, x = s.x, y = s.y, w = s.w, h = s.h
+            ));
+        }
+    }
+
+    // アトミック書き込み: tmp に書いてから rename
+    if std::fs::write(&tmp, &content).is_err() { return; }
+    if std::fs::rename(&tmp, &path).is_err() {
+        let _ = std::fs::remove_file(&tmp);
+        return;
+    }
+    // 書き込み成功を確認してから bak に同内容をミラー
+    let _ = std::fs::write(&bak, &content);
+}

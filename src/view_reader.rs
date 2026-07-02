@@ -1,4 +1,4 @@
-use crate::config::ViewerConfig;
+use crate::gui_config::ViewerConfig;
 use crate::controller::{ViewerNav, ViewerOutput};
 use crate::i18n;
 use crate::log_key;
@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use crate::cache::{PageCache, PageContent};
-use crate::config::WindowSlot;
+use crate::gui_config::WindowSlot;
 use crate::fs::archive;
 use crate::spread_offset::SpreadOffset;
 

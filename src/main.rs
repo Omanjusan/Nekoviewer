@@ -3,11 +3,13 @@ mod cache;
 mod config;
 mod controller;
 mod fs;
+mod gui_config;
 mod i18n;
 mod model;
 mod neko_dir;
 mod spread_offset;
 mod view_explorer;
+mod view_gui_config;
 mod view_reader;
 mod view_status;
 
@@ -25,13 +27,12 @@ fn main() {
     let mut cfg = config::AppConfig::load();
     log_common!("[startup] config loaded");
 
-    let state = config::load_state();
+    let state = gui_config::load_state();
     log_common!("[startup] state loaded (window_size = {:?})", state.window_size);
     i18n::set_from_code(&state.lang);
 
     // 設定ダイアログ（共通/アニメタブ）で編集された値は state 側が config.ini より優先される。
-    if let Some(v) = state.app_cache_max_mb { cfg.cache_max_mb = Some(v); }
-    if let Some(v) = state.app_file_cache_max_mb { cfg.file_cache_max_mb = Some(v); }
+    if let Some(v) = state.app_cache_total_mb { cfg.cache_total_mb = Some(v); }
     if let Some(v) = state.app_anim_ring_min_frames { cfg.anim_ring_min_frames = v; }
     if let Some(v) = state.app_anim_ring_max_frames { cfg.anim_ring_max_frames = v; }
     if let Some(v) = state.app_anim_frame_hard_limit_mb { cfg.anim_frame_hard_limit_mb = v; }
@@ -39,8 +40,7 @@ fn main() {
     if let Some(v) = state.app_max_decode_edge { cfg.max_decode_edge = v; }
 
     let args = CliArgs::parse();
-    if let Some(v) = args.cache_max_mb    { cfg.cache_max_mb      = Some(v.max(64)); }
-    if let Some(v) = args.file_cache_max_mb { cfg.file_cache_max_mb = Some(v.max(16)); }
+    if let Some(v) = args.cache_max_mb { cfg.cache_total_mb = Some(v.max(64)); }
 
     let start_dir = args.start_path
         .unwrap_or_else(|| cfg.startup_dir(&state));
@@ -134,32 +134,29 @@ fn simplified_chinese_font_data() -> Option<Vec<u8>> {
 // ── コマンドライン引数 ────────────────────────────────────────────────────────
 
 struct CliArgs {
-    start_path:        Option<PathBuf>,
-    cache_max_mb:      Option<u64>,
-    file_cache_max_mb: Option<u64>,
+    start_path:   Option<PathBuf>,
+    /// キャッシュ合計（ページ+ファイル）の上限MB。
+    cache_max_mb: Option<u64>,
 }
 
 impl CliArgs {
     /// `--cache-max-mb=N` / `--cache-max-mb N` 形式を手動パース。
     /// 不明なオプションは無視、位置引数は start_path として扱う。
     fn parse() -> Self {
-        let mut start_path        = None::<PathBuf>;
-        let mut cache_max_mb      = None::<u64>;
-        let mut file_cache_max_mb = None::<u64>;
+        let mut start_path   = None::<PathBuf>;
+        let mut cache_max_mb = None::<u64>;
 
         let mut it = std::env::args().skip(1);
         while let Some(arg) = it.next() {
             if let Some(rest) = arg.strip_prefix("--cache-max-mb") {
                 cache_max_mb = Self::take_value(rest, &mut it);
-            } else if let Some(rest) = arg.strip_prefix("--file-cache-max-mb") {
-                file_cache_max_mb = Self::take_value(rest, &mut it);
             } else if !arg.starts_with('-') {
                 start_path = Some(PathBuf::from(&arg));
             }
             // 未知の --xxx オプションは無視
         }
 
-        Self { start_path, cache_max_mb, file_cache_max_mb }
+        Self { start_path, cache_max_mb }
     }
 
     fn take_value(rest: &str, it: &mut impl Iterator<Item = String>) -> Option<u64> {

@@ -72,22 +72,6 @@ impl Lang {
         }
     }
 
-    pub fn hidden_on(self) -> &'static str {
-        match self {
-            Lang::Japanese => "[隠 ON]",
-            Lang::English  => "[Hidden ON]",
-            Lang::Chinese  => "[隐 ON]",
-        }
-    }
-
-    pub fn hidden_off(self) -> &'static str {
-        match self {
-            Lang::Japanese => "[隠OFF]",
-            Lang::English  => "[HiddenOFF]",
-            Lang::Chinese  => "[隐OFF]",
-        }
-    }
-
     pub fn page_single(self) -> &'static str {
         match self {
             Lang::Japanese => "[単ページ]",
@@ -321,12 +305,13 @@ impl Lang {
         }
     }
 
-    /// ダイアログ下部に1回だけ出す凡例。■=[反映]ですぐ効く、※=次回起動から効く。
+    /// ダイアログ下部に1回だけ出す凡例。全項目に■が付き、[反映]後に次回起動が必要な
+    /// 項目だけ■の直後に※も付く（■ ※<ラベル>）。
     pub fn settings_legend(self) -> &'static str {
         match self {
-            Lang::Japanese => "■ すぐ反映される項目　※ 次回起動時から反映される項目",
-            Lang::English  => "■ Takes effect immediately　※ Takes effect after restarting the app",
-            Lang::Chinese  => "■ 立即生效的项目　※ 下次启动后生效的项目",
+            Lang::Japanese => "■ ←通常の設定項目マーク、これは変更保存で即時反映されます\n■※ ←保存しても反映されるのは次回起動後の項目マーク",
+            Lang::English  => "■ ← Normal setting, applied immediately when saved\n■※ ← Saved now, but only takes effect after restarting the app",
+            Lang::Chinese  => "■ ←普通设置项标记，保存后立即生效\n■※ ←保存后仍需重启才能生效的项目标记",
         }
     }
 
@@ -378,43 +363,43 @@ impl Lang {
         }
     }
 
-    pub fn settings_cache_size_label(self) -> &'static str {
+    pub fn settings_cache_system_ram(self, mb: u64) -> String {
         match self {
-            Lang::Japanese => "※ キャッシュサイズ (MB)",
-            Lang::English  => "※ Cache size (MB)",
-            Lang::Chinese  => "※ 缓存大小 (MB)",
+            Lang::Japanese => format!("システム最大RAM: {mb} MB （指定最大サイズは最大量の50%）"),
+            Lang::English  => format!("System RAM: {mb} MB (the max you can specify is 50% of this)"),
+            Lang::Chinese  => format!("系统最大内存: {mb} MB （可指定的最大值为该值的50%）"),
         }
     }
 
-    pub fn settings_cache_size_page(self) -> &'static str {
+    pub fn settings_cache_manual_toggle(self) -> &'static str {
         match self {
-            Lang::Japanese => "ページキャッシュ上限",
-            Lang::English  => "Page cache limit",
-            Lang::Chinese  => "页面缓存上限",
+            Lang::Japanese => "■ ※ 手動でキャッシュ上限を指定する",
+            Lang::English  => "■ ※ Manually set the cache limit",
+            Lang::Chinese  => "■ ※ 手动指定缓存上限",
         }
     }
 
-    pub fn settings_cache_size_file(self) -> &'static str {
+    pub fn settings_cache_manual_explain(self) -> &'static str {
         match self {
-            Lang::Japanese => "ファイルキャッシュ上限",
-            Lang::English  => "File cache limit",
-            Lang::Chinese  => "文件缓存上限",
+            Lang::Japanese => "このアプリが使ってよいキャッシュ合計（ページキャッシュ+ファイルキャッシュ）の上限。チェックを外すとシステムRAMの30%を自動で使う。内訳はページ70%・ファイル30%に自動配分される。",
+            Lang::English  => "The total cache limit (page cache + file cache) this app may use. Unchecked = automatically uses 30% of system RAM. Split 70% page / 30% file internally.",
+            Lang::Chinese  => "本应用可使用的缓存总量上限（页面缓存+文件缓存）。取消勾选则自动使用系统RAM的30%。内部按页面70%／文件30%自动分配。",
         }
     }
 
-    pub fn settings_cache_size_auto(self) -> &'static str {
+    pub fn settings_cache_over_budget(self) -> &'static str {
         match self {
-            Lang::Japanese => "空欄=自動",
-            Lang::English  => "blank = auto",
-            Lang::Chinese  => "留空=自动",
+            Lang::Japanese => "キャッシュサイズ合計がシステム最大RAMの50%を超えています、適用されません",
+            Lang::English  => "Total cache size exceeds 50% of system RAM and will not be applied",
+            Lang::Chinese  => "缓存总量超过了系统最大内存的50%，不会被应用",
         }
     }
 
     pub fn settings_max_decode_label(self) -> &'static str {
         match self {
-            Lang::Japanese => "※ 原寸時に許容する最大長辺幅",
-            Lang::English  => "※ Max long edge for original size",
-            Lang::Chinese  => "※ 原始尺寸下允许的最大长边",
+            Lang::Japanese => "■ ※ 原寸時に許容する最大長辺幅",
+            Lang::English  => "■ ※ Max long edge for original size",
+            Lang::Chinese  => "■ ※ 原始尺寸下允许的最大长边",
         }
     }
 
@@ -428,17 +413,25 @@ impl Lang {
 
     pub fn settings_resize_filter_viewer_label(self) -> &'static str {
         match self {
-            Lang::Japanese => "※ リサイズフィルタ（ビューアー用）",
-            Lang::English  => "※ Resize filter (viewer)",
-            Lang::Chinese  => "※ 缩放滤镜（查看器用）",
+            Lang::Japanese => "■ ※ リサイズフィルタ（ビューアー用）",
+            Lang::English  => "■ ※ Resize filter (viewer)",
+            Lang::Chinese  => "■ ※ 缩放滤镜（查看器用）",
         }
     }
 
     pub fn settings_resize_filter_thumb_label(self) -> &'static str {
         match self {
-            Lang::Japanese => "※ リサイズフィルタ（サムネ用）",
-            Lang::English  => "※ Resize filter (thumbnails)",
-            Lang::Chinese  => "※ 缩放滤镜（缩略图用）",
+            Lang::Japanese => "■ ※ リサイズフィルタ（サムネ用）",
+            Lang::English  => "■ ※ Resize filter (thumbnails)",
+            Lang::Chinese  => "■ ※ 缩放滤镜（缩略图用）",
+        }
+    }
+
+    pub fn settings_show_hidden_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "■ 隠しファイルを表示する",
+            Lang::English  => "■ Show hidden files",
+            Lang::Chinese  => "■ 显示隐藏文件",
         }
     }
 
@@ -452,9 +445,9 @@ impl Lang {
 
     pub fn settings_ring_bounds_label(self) -> &'static str {
         match self {
-            Lang::Japanese => "※ リングバッファの先読み枚数（下限〜上限）",
-            Lang::English  => "※ Ring buffer prefetch frames (min - max)",
-            Lang::Chinese  => "※ 环形缓冲区预读帧数（下限～上限）",
+            Lang::Japanese => "■ ※ リングバッファの先読み枚数（下限〜上限）",
+            Lang::English  => "■ ※ Ring buffer prefetch frames (min - max)",
+            Lang::Chinese  => "■ ※ 环形缓冲区预读帧数（下限～上限）",
         }
     }
 
