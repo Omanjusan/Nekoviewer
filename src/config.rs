@@ -78,6 +78,10 @@ pub struct AppConfig {
     pub file_cache_max_mb: Option<u64>,
     /// ビューアー既定スロット index（0..3 = F5〜F8）。None = デフォルト無し（空欄/不正値）
     pub default_slot: Option<usize>,
+    /// アニメーションリングバッファの先読み枚数下限（フェーズ4）。空欄/不正値は既定4。
+    pub anim_ring_min_frames: usize,
+    /// アニメーションリングバッファの先読み枚数上限（フェーズ4）。空欄/不正値は既定32。
+    pub anim_ring_max_frames: usize,
 }
 
 impl AppConfig {
@@ -130,6 +134,8 @@ impl AppConfig {
             cache_max_mb: parsed.cache_max_mb,
             file_cache_max_mb: parsed.file_cache_max_mb,
             default_slot: parsed.default_slot,
+            anim_ring_min_frames: parsed.anim_ring_min_frames.0,
+            anim_ring_max_frames: parsed.anim_ring_max_frames.0,
         }
     }
 
@@ -207,6 +213,14 @@ struct ParsedIni {
     cache_max_mb: Option<u64>,
     file_cache_max_mb: Option<u64>,
     default_slot: Option<usize>,
+    anim_ring_min_frames: UsizeDefault<4>,
+    anim_ring_max_frames: UsizeDefault<32>,
+}
+
+/// usize のデフォルト値を const ジェネリクスで指定するラッパー（空欄/不正値は既定にフォールバック）
+struct UsizeDefault<const V: usize>(usize);
+impl<const V: usize> Default for UsizeDefault<V> {
+    fn default() -> Self { Self(V) }
 }
 
 /// bool のデフォルト値を const ジェネリクスで指定するラッパー
@@ -267,6 +281,16 @@ fn parse_ini(path: &std::path::Path) -> ParsedIni {
                 ("cache", "file_cache_max_mb") => {
                     if let Ok(n) = v.parse::<u64>() {
                         result.file_cache_max_mb = Some(n.max(16));
+                    }
+                }
+                ("cache", "anim_ring_min_frames") => {
+                    if let Ok(n) = v.parse::<usize>() {
+                        result.anim_ring_min_frames = UsizeDefault(n.max(1));
+                    }
+                }
+                ("cache", "anim_ring_max_frames") => {
+                    if let Ok(n) = v.parse::<usize>() {
+                        result.anim_ring_max_frames = UsizeDefault(n.max(1));
                     }
                 }
                 ("thumbnail", "filter") => {
@@ -655,6 +679,12 @@ storage = local
 # 既定はシステムRAMの5%。最小値は16MB。
 # 通常は既定のままで問題ありません。指定する場合は行頭の '#' を外します。
 # file_cache_max_mb = 200
+
+# アニメーション（GIF/APNG/AVIF/WebP）のリングバッファ先読み枚数の下限・上限。
+# 解像度に応じてこの範囲内で自動調整されます（大きいほど滑らかだがメモリを使う）。
+# 空欄・不正値は既定（下限4 / 上限32）にフォールバックします。
+# anim_ring_min_frames = 4
+# anim_ring_max_frames = 32
 
 # ── ログ ────────────────────────────────────────────────────────────────────
 [log]

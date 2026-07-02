@@ -1,5 +1,5 @@
 use crate::{log_perf};
-use crate::anim::{AnimFrame, AnimFormat, SequentialAnimDecoder, FrameRingBuffer, DEFAULT_RING_CAPACITY};
+use crate::anim::{AnimFrame, AnimFormat, SequentialAnimDecoder, FrameRingBuffer, resolve_ring_capacity};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{mpsc, Arc, Mutex};
@@ -14,6 +14,9 @@ const GB: usize = 1024 * MB;
 const PAGE_CACHE_RAM_PCT: usize = 25;
 const FILE_CACHE_RAM_PCT: usize = 5;
 const MIN_RATIO_PCT: usize = 40; // page_max に対する page_min の割合
+/// フェーズ4: アニメ1本のリングバッファに割り当てる予算の、page_max に対する割合。
+/// フェーズ2の見積もりゲート(fs/archive.rs)も同じ値を使い、実際のリング容量算出と整合させる。
+pub(crate) const ANIM_RING_BUDGET_PCT: usize = 25;
 const FALLBACK_TOTAL_BYTES: usize = 500 * MB; // sysinfo 失敗時フォールバック（旧30%相当）
 
 /// ページキャッシュ・ファイルキャッシュの予算を一括解決する。
@@ -73,10 +76,10 @@ enum OpenArchive {
 }
 
 impl OpenArchive {
-    fn load_page(&mut self, entry_name: &str, filter: image::imageops::FilterType, cache_budget_bytes: usize) -> Option<PageContent> {
+    fn load_page(&mut self, entry_name: &str, filter: image::imageops::FilterType, cache_budget_bytes: usize, ring_bounds: (usize, usize)) -> Option<PageContent> {
         match self {
-            Self::Disk(a) => load_page_content(a, entry_name, filter, cache_budget_bytes),
-            Self::Mem(a)  => load_page_content(a, entry_name, filter, cache_budget_bytes),
+            Self::Disk(a) => load_page_content(a, entry_name, filter, cache_budget_bytes, ring_bounds),
+            Self::Mem(a)  => load_page_content(a, entry_name, filter, cache_budget_bytes, ring_bounds),
         }
     }
 }
@@ -99,8 +102,9 @@ pub struct LoadResult {
 /// バックグラウンドデコードワーカーを `num_threads` 本起動する。
 /// `cache_budget_bytes` はページキャッシュの予算（PageCache::max_bytes）。
 /// これを超えて展開されるアニメーションは先頭フレームのみの静止画にフォールバックする。
+/// `ring_bounds` はフェーズ4のリング先読み枚数の(下限, 上限)。
 /// 返り値: (要求送信側, 結果受信側)
-pub fn spawn_worker(filter: image::imageops::FilterType, num_threads: usize, ctx: egui::Context, cache_budget_bytes: usize) -> (mpsc::Sender<LoadRequest>, mpsc::Receiver<LoadResult>) {
+pub fn spawn_worker(filter: image::imageops::FilterType, num_threads: usize, ctx: egui::Context, cache_budget_bytes: usize, ring_bounds: (usize, usize)) -> (mpsc::Sender<LoadRequest>, mpsc::Receiver<LoadResult>) {
     let (req_tx, req_rx) = mpsc::channel::<LoadRequest>();
     let (res_tx, res_rx) = mpsc::channel::<LoadResult>();
 
@@ -125,9 +129,9 @@ pub fn spawn_worker(filter: image::imageops::FilterType, num_threads: usize, ctx
                 let t_total = std::time::Instant::now();
                 let content = if req.is_raw_file {
                     if let Some(bytes) = req.file_bytes {
-                        load_raw_content_from_bytes(&bytes, &req.archive_path, filter, cache_budget_bytes)
+                        load_raw_content_from_bytes(&bytes, &req.archive_path, filter, cache_budget_bytes, ring_bounds)
                     } else {
-                        load_raw_file_content(&req.archive_path, filter, cache_budget_bytes)
+                        load_raw_file_content(&req.archive_path, filter, cache_budget_bytes, ring_bounds)
                     }
                 } else if let Some(bytes) = req.file_bytes {
                     // FileCache ヒット: メモリからアーカイブを開く
@@ -139,7 +143,7 @@ pub fn spawn_worker(filter: image::imageops::FilterType, num_threads: usize, ctx
                             .ok()
                             .map(|a| (req.archive_path.clone(), OpenArchive::Mem(a)));
                     }
-                    open_archive.as_mut().and_then(|(_, a)| a.load_page(&req.entry_name, filter, cache_budget_bytes))
+                    open_archive.as_mut().and_then(|(_, a)| a.load_page(&req.entry_name, filter, cache_budget_bytes, ring_bounds))
                 } else {
                     // FileCache ミス: ディスクから開く（従来の動作）
                     let is_same_disk = open_archive.as_ref().map_or(false, |(p, a)| {
@@ -151,7 +155,7 @@ pub fn spawn_worker(filter: image::imageops::FilterType, num_threads: usize, ctx
                             .and_then(|f| zip::ZipArchive::new(f).ok())
                             .map(|a| (req.archive_path.clone(), OpenArchive::Disk(a)));
                     }
-                    open_archive.as_mut().and_then(|(_, a)| a.load_page(&req.entry_name, filter, cache_budget_bytes))
+                    open_archive.as_mut().and_then(|(_, a)| a.load_page(&req.entry_name, filter, cache_budget_bytes, ring_bounds))
                 };
 
                 if let Some(content) = content {
@@ -209,15 +213,15 @@ fn fir_resize(img: image::DynamicImage, nw: u32, nh: u32, filter: image::imageop
 }
 
 /// 生画像ファイルを PageContent としてデコードする（ZIP不使用）
-fn load_raw_file_content(path: &std::path::Path, filter: image::imageops::FilterType, cache_budget_bytes: usize) -> Option<PageContent> {
+fn load_raw_file_content(path: &std::path::Path, filter: image::imageops::FilterType, cache_budget_bytes: usize, ring_bounds: (usize, usize)) -> Option<PageContent> {
     let buf = std::fs::read(path).ok()?;
-    load_raw_content_from_bytes(&buf, path, filter, cache_budget_bytes)
+    load_raw_content_from_bytes(&buf, path, filter, cache_budget_bytes, ring_bounds)
 }
 
 /// GIF/APNG/AVIF/WebP（フェーズ3/3.5）をリングバッファ方式でデコードし PageContent に変換する。
 /// 実質1フレームしか無い場合は静止画として扱う。対象フォーマットでない場合は None。
-fn decode_ring_anim(buf: &[u8], format: AnimFormat, filter: image::imageops::FilterType) -> Option<PageContent> {
-    match RingAnimation::from_source(format, std::sync::Arc::from(buf), filter) {
+fn decode_ring_anim(buf: &[u8], format: AnimFormat, filter: image::imageops::FilterType, ring_budget_bytes: usize, ring_bounds: (usize, usize)) -> Option<PageContent> {
+    match RingAnimation::from_source(format, std::sync::Arc::from(buf), filter, ring_budget_bytes, ring_bounds) {
         RingDecodeOutcome::NotThisFormat => None,
         RingDecodeOutcome::SingleFrame(frame) => {
             Some(PageContent::Static(frame.image))
@@ -230,27 +234,28 @@ fn decode_ring_anim(buf: &[u8], format: AnimFormat, filter: image::imageops::Fil
 
 /// 拡張子（ドットなし小文字）からアニメーションデコードを試みて PageContent を返す。
 /// 対象外の拡張子や静止画は None。
-/// フェーズ3.5でWebPもリングバッファ方式に移行したため、GIF/APNG/AVIF/WebPの全フォーマットが
-/// 常にリングバッファ予算内に収まる。`cache_budget_bytes` は呼び出し元の都合で残す互換パラメータ。
-fn decode_anim_from_ext(buf: &[u8], ext: &str, filter: image::imageops::FilterType, _cache_budget_bytes: usize) -> Option<PageContent> {
+/// `cache_budget_bytes` はページキャッシュ全体の予算（page_max）。フェーズ4では
+/// その一部（ANIM_RING_BUDGET_PCT）をアニメ1本のリング予算として使う。
+fn decode_anim_from_ext(buf: &[u8], ext: &str, filter: image::imageops::FilterType, cache_budget_bytes: usize, ring_bounds: (usize, usize)) -> Option<PageContent> {
+    let ring_budget_bytes = cache_budget_bytes * ANIM_RING_BUDGET_PCT / 100;
     match ext {
-        "gif"  => decode_ring_anim(buf, AnimFormat::Gif, filter),
-        "png"  => decode_ring_anim(buf, AnimFormat::Apng, filter),
-        "avif" => decode_ring_anim(buf, AnimFormat::Avif, filter),
-        "webp" => decode_ring_anim(buf, AnimFormat::Webp, filter),
+        "gif"  => decode_ring_anim(buf, AnimFormat::Gif, filter, ring_budget_bytes, ring_bounds),
+        "png"  => decode_ring_anim(buf, AnimFormat::Apng, filter, ring_budget_bytes, ring_bounds),
+        "avif" => decode_ring_anim(buf, AnimFormat::Avif, filter, ring_budget_bytes, ring_bounds),
+        "webp" => decode_ring_anim(buf, AnimFormat::Webp, filter, ring_budget_bytes, ring_bounds),
         _      => None,
     }
 }
 
 /// バイト列から生画像を PageContent としてデコードする（FileCache ヒット時用）
-fn load_raw_content_from_bytes(buf: &[u8], path: &std::path::Path, filter: image::imageops::FilterType, cache_budget_bytes: usize) -> Option<PageContent> {
+fn load_raw_content_from_bytes(buf: &[u8], path: &std::path::Path, filter: image::imageops::FilterType, cache_budget_bytes: usize, ring_bounds: (usize, usize)) -> Option<PageContent> {
     let ext = path
         .extension()
         .and_then(|e| e.to_str())
         .map(|s| s.to_ascii_lowercase())
         .unwrap_or_default();
 
-    if let Some(c) = decode_anim_from_ext(buf, &ext, filter, cache_budget_bytes) {
+    if let Some(c) = decode_anim_from_ext(buf, &ext, filter, cache_budget_bytes, ring_bounds) {
         return Some(c);
     }
 
@@ -265,13 +270,14 @@ fn load_page_content<R: std::io::Read + std::io::Seek>(
     entry_name: &str,
     filter: image::imageops::FilterType,
     cache_budget_bytes: usize,
+    ring_bounds: (usize, usize),
 ) -> Option<PageContent> {
     let (buf, display_name) = crate::fs::archive::load_bytes_from_archive(archive, entry_name)?;
 
     let lower = entry_name.to_ascii_lowercase();
     let ext = lower.rsplit_once('.').map(|(_, e)| e).unwrap_or("");
 
-    if let Some(c) = decode_anim_from_ext(&buf, ext, filter, cache_budget_bytes) {
+    if let Some(c) = decode_anim_from_ext(&buf, ext, filter, cache_budget_bytes, ring_bounds) {
         return Some(c);
     }
 
@@ -323,7 +329,9 @@ pub struct RingAnimation {
 }
 
 impl RingAnimation {
-    fn from_source(format: AnimFormat, source: Arc<[u8]>, filter: image::imageops::FilterType) -> RingDecodeOutcome {
+    /// `ring_budget_bytes` はこのアニメ1本に割り当てるリング予算、`ring_bounds` は(下限, 上限)の先読み枚数。
+    /// フレーム0のバイト数から容量を算出し、以降の再生中は変更しない（フェーズ4）。
+    fn from_source(format: AnimFormat, source: Arc<[u8]>, filter: image::imageops::FilterType, ring_budget_bytes: usize, ring_bounds: (usize, usize)) -> RingDecodeOutcome {
         let mut decoder = match SequentialAnimDecoder::new(format, source) {
             Some(d) => d,
             None => return RingDecodeOutcome::NotThisFormat,
@@ -361,7 +369,11 @@ impl RingAnimation {
         };
         let frame1 = Self::apply_resize(frame1, resize_to, filter);
 
-        let mut ring = FrameRingBuffer::new(DEFAULT_RING_CAPACITY);
+        // 容量算出はresize後のフレームサイズ基準（実際にリングへ乗るバイト数と一致させるため）。
+        let resized_frame_bytes = (frame0.image.width() as usize) * (frame0.image.height() as usize) * 4;
+        let (min_frames, max_frames) = ring_bounds;
+        let capacity = resolve_ring_capacity(resized_frame_bytes, ring_budget_bytes, min_frames, max_frames);
+        let mut ring = FrameRingBuffer::new(capacity);
         ring.push(0, frame0);
         ring.push(1, frame1);
 
@@ -751,6 +763,12 @@ pub fn resize_thumbnail(img: image::DynamicImage, filter: image::imageops::Filte
 mod ring_integration_tests {
     use super::*;
 
+    /// テスト用: 十分大きい予算を与え、容量は常に上限(32)に張り付かせる
+    /// （フェーズ3.6時点の固定容量32枚での期待値をそのまま維持するため）。
+    const TEST_RING_BUDGET_BYTES: usize = 10 * GB;
+    const TEST_RING_BOUNDS: (usize, usize) = (4, 32);
+    const TEST_RING_MAX: usize = TEST_RING_BOUNDS.1;
+
     /// フェーズ3.6: 実物の大きいGIF(test/nouka.gif, 640x360 1316フレーム, 全展開なら約1.2GB)で
     /// リングバッファが実際に「全フレーム常駐にならず一定量に収まる」ことを確認する結合テスト。
     #[test]
@@ -758,7 +776,7 @@ mod ring_integration_tests {
         let path = std::path::Path::new("test/nouka.gif");
         let buf = std::fs::read(path).expect("test/nouka.gif が見つからない");
 
-        let content = decode_ring_anim(&buf, AnimFormat::Gif, image::imageops::FilterType::Triangle)
+        let content = decode_ring_anim(&buf, AnimFormat::Gif, image::imageops::FilterType::Triangle, TEST_RING_BUDGET_BYTES, TEST_RING_BOUNDS)
             .expect("GIFとしてデコードできるはず");
 
         let PageContent::Animated(ring) = content else {
@@ -781,8 +799,8 @@ mod ring_integration_tests {
             "resident_bytes={resident} が全フレーム分({full_bytes})に対して大きすぎる(リングバッファが効いていない)",
         );
         assert!(
-            resident <= one_frame_bytes * (DEFAULT_RING_CAPACITY + 1),
-            "resident_bytes={resident} がリング容量{DEFAULT_RING_CAPACITY}枚分を大きく超えている",
+            resident <= one_frame_bytes * (TEST_RING_MAX + 1),
+            "resident_bytes={resident} がリング容量{TEST_RING_MAX}枚分を大きく超えている",
         );
     }
 
@@ -792,7 +810,7 @@ mod ring_integration_tests {
         let path = std::path::Path::new("test/nouka.gif");
         let buf = std::fs::read(path).expect("test/nouka.gif が見つからない");
 
-        let content = decode_ring_anim(&buf, AnimFormat::Gif, image::imageops::FilterType::Triangle)
+        let content = decode_ring_anim(&buf, AnimFormat::Gif, image::imageops::FilterType::Triangle, TEST_RING_BUDGET_BYTES, TEST_RING_BOUNDS)
             .expect("GIFとしてデコードできるはず");
         let PageContent::Animated(ring) = content else {
             panic!("Animated になるはず");
@@ -827,7 +845,7 @@ mod ring_integration_tests {
     fn ring_anim_webp_stays_bounded_on_real_large_file() {
         let buf = load_webp_entry_from_test_zip();
 
-        let content = decode_ring_anim(&buf, AnimFormat::Webp, image::imageops::FilterType::Triangle)
+        let content = decode_ring_anim(&buf, AnimFormat::Webp, image::imageops::FilterType::Triangle, TEST_RING_BUDGET_BYTES, TEST_RING_BOUNDS)
             .expect("WebPとしてデコードできるはず");
         let PageContent::Animated(ring) = content else {
             panic!("243フレームあるので Animated になるはず（Static ではない）");
@@ -851,8 +869,8 @@ mod ring_integration_tests {
             "resident_bytes={resident} が全フレーム分({full_bytes})に対して大きすぎる(リングバッファが効いていない)",
         );
         assert!(
-            resident <= one_frame_bytes * (DEFAULT_RING_CAPACITY + 1),
-            "resident_bytes={resident} がリング容量{DEFAULT_RING_CAPACITY}枚分を大きく超えている",
+            resident <= one_frame_bytes * (TEST_RING_MAX + 1),
+            "resident_bytes={resident} がリング容量{TEST_RING_MAX}枚分を大きく超えている",
         );
     }
 
@@ -861,7 +879,7 @@ mod ring_integration_tests {
     fn ring_anim_webp_restart_replays_from_head() {
         let buf = load_webp_entry_from_test_zip();
 
-        let content = decode_ring_anim(&buf, AnimFormat::Webp, image::imageops::FilterType::Triangle)
+        let content = decode_ring_anim(&buf, AnimFormat::Webp, image::imageops::FilterType::Triangle, TEST_RING_BUDGET_BYTES, TEST_RING_BOUNDS)
             .expect("WebPとしてデコードできるはず");
         let PageContent::Animated(ring) = content else {
             panic!("Animated になるはず");
