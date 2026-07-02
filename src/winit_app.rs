@@ -512,6 +512,13 @@ impl ApplicationHandler<UserEvent> for WinitApp {
                 if let Some(w) = self.window_mut(window_id) {
                     w.bump_now();
                 }
+                // フェーズ6: ビューアー窓のリサイズのみ再デコードのデバウンス対象にする
+                // （エクスプローラー窓のリサイズは表示画像と無関係）。
+                if is_viewer {
+                    if let Some(app) = self.app.as_mut() {
+                        app.notify_viewer_resized();
+                    }
+                }
             }
             _ => {}
         }

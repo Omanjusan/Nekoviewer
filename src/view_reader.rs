@@ -212,6 +212,9 @@ pub struct ViewerState {
     shift_scroll_acc: f32,
     /// トーストメッセージ: (テキスト, 消去予定のegui時刻) None=非表示
     toast: Option<(String, Option<f64>)>,
+    /// フェーズ6: 直近フレームで観測したウィンドウ描画領域サイズ（物理px）。
+    /// リサイズ再デコードのターゲットサイズ算出に使う。
+    content_px: (u32, u32),
 }
 
 impl ViewerState {
@@ -220,6 +223,32 @@ impl ViewerState {
     pub fn entries(&self) -> &[ViewerEntry] { &self.entries }
     pub fn is_raw_file(&self) -> bool { self.is_raw_file }
     pub fn page_mode(&self) -> PageMode { self.page_mode }
+
+    /// フェーズ6: 現在表示中のページ(見開き時は2枚)の original_index を返す。
+    pub fn visible_original_indices(&self) -> Vec<usize> {
+        let lo = self.spread_lo();
+        let total = self.entries.len() as i32;
+        let hi = if self.page_mode == PageMode::Single { lo } else { lo + 1 };
+        (lo..=hi)
+            .filter(|&i| i >= 0 && i < total)
+            .map(|i| self.entries[i as usize].original_index)
+            .collect()
+    }
+
+    /// フェーズ6: リサイズ/zoom_actual切替後の再デコード先ターゲットサイズ。
+    /// zoom_actual時は無制限(原寸)、それ以外は直近の描画領域サイズ(物理px)を上限にする。
+    pub fn current_decode_target(&self, zoom_actual: bool) -> Option<(u32, u32)> {
+        if zoom_actual { None } else { Some(self.content_px) }
+    }
+
+    /// フェーズ6: 再デコード発火時に、指定ページのテクスチャ・アニメ再生状態を破棄する。
+    /// 次の update_textures() で PageCache から作り直させる（アニメはフレーム0から再生し直す）。
+    pub fn invalidate_pages(&mut self, orig_indices: &[usize]) {
+        for orig_i in orig_indices {
+            self.textures.remove(orig_i);
+            self.anim_states.remove(orig_i);
+        }
+    }
 
     pub fn new(archive_path: PathBuf, slots: [Option<WindowSlot>; 4], default_slot: Option<usize>) -> Option<Self> {
         let image_entries = archive::list_images(&archive_path);
@@ -262,6 +291,7 @@ impl ViewerState {
             is_raw_file: false,
             shift_scroll_acc: 0.0,
             toast: None,
+            content_px: crate::cache::DEFAULT_DECODE_TARGET,
         })
     }
 
@@ -304,6 +334,7 @@ impl ViewerState {
             is_raw_file: true,
             shift_scroll_acc: 0.0,
             toast: None,
+            content_px: crate::cache::DEFAULT_DECODE_TARGET,
         }
     }
 
@@ -417,6 +448,10 @@ impl ViewerState {
 
         // ── フレーム入力を一括収集（ctx.input はこの1回のみ）────────────────
         let input = FrameInput::collect(&ctx, cfg.zoom_actual);
+
+        // フェーズ6: リサイズ再デコードのターゲットサイズ算出用に、現在の描画領域サイズ（物理px）を記録する。
+        let screen = ctx.content_rect().size() * ctx.pixels_per_point();
+        self.content_px = (screen.x.max(1.0) as u32, screen.y.max(1.0) as u32);
 
         // 既定スロットを初回フレームで一度だけ適用（クランプ付き）。
         self.apply_default_slot(&ctx, input.monitor_size);
@@ -817,6 +852,8 @@ impl ViewerState {
     ) -> bool {
         if (input.zoom_key || double_clicked) && !is_spread {
             cfg.zoom_actual = !cfg.zoom_actual;
+            // フェーズ6: 表示ターゲットサイズが変わるイベントとして再デコードのデバウンス対象にする
+            cfg.redecode_trigger_seq += 1;
         }
 
         if input.fs_key || input.middle_clicked {

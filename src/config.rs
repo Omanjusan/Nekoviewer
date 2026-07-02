@@ -366,12 +366,30 @@ pub struct ViewerConfig {
     pub zoom_actual: bool,
     /// フルスクリーン状態
     pub fullscreen: bool,
+    /// フェーズ6: ウィンドウリサイズ/zoom_actual切替時に元データから再デコードするか
+    pub redecode_on_resize: bool,
+    /// フェーズ6: リサイズ→再デコードまでのデバウンス時間(ms)。100刻みで100〜1000をループ
+    pub resize_debounce_ms: u64,
+    /// フェーズ6: リサイズ/zoom_actual切替のたびに増分する世代カウンタ（非永続・実行時のみ）。
+    /// winit_app.rs / view_reader.rs から更新され、NekoviewApp 側で変化検知にのみ使う。
+    pub redecode_trigger_seq: u64,
 }
 
 impl Default for ViewerConfig {
     fn default() -> Self {
-        Self { zoom_actual: false, fullscreen: false }
+        Self {
+            zoom_actual: false,
+            fullscreen: false,
+            redecode_on_resize: false,
+            resize_debounce_ms: 300,
+            redecode_trigger_seq: 0,
+        }
     }
+}
+
+/// resize_debounce_ms サイクルボタンの次の値を返す（100刻み、100〜1000をループ）。
+pub fn next_debounce_ms(current: u64) -> u64 {
+    if current >= 1000 { 100 } else { current + 100 }
 }
 
 /// ビューアウィンドウの位置・サイズスロット（論理ピクセル）
@@ -461,6 +479,8 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
     let mut lang: Option<String> = None;
     let mut viewer_zoom: Option<bool> = None;
     let mut viewer_fullscreen: Option<bool> = None;
+    let mut redecode_on_resize: Option<bool> = None;
+    let mut resize_debounce_ms: Option<u64> = None;
     let mut has_kv = false;
 
     for line in content.lines() {
@@ -506,6 +526,11 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
                 }
                 "viewer_zoom"       => { viewer_zoom       = v.trim().parse().ok(); }
                 "viewer_fullscreen" => { viewer_fullscreen = v.trim().parse().ok(); }
+                "redecode_on_resize" => { redecode_on_resize = v.trim().parse().ok(); }
+                "resize_debounce_ms" => {
+                    resize_debounce_ms = v.trim().parse::<u64>().ok()
+                        .filter(|n| (100..=1000).contains(n) && n % 100 == 0);
+                }
                 _ => {}
             }
         }
@@ -547,6 +572,9 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
         viewer_cfg: ViewerConfig {
             zoom_actual: viewer_zoom.unwrap_or(false),
             fullscreen: viewer_fullscreen.unwrap_or(false),
+            redecode_on_resize: redecode_on_resize.unwrap_or(false),
+            resize_debounce_ms: resize_debounce_ms.unwrap_or(300),
+            redecode_trigger_seq: 0,
         },
     })
 }
@@ -557,9 +585,10 @@ pub fn save_state(dir: &Path, window_size: (u32, u32), viewer_slots: &[Option<Wi
     else { return; };
 
     let mut content = format!(
-        "last_dir={}\nwindow_width={}\nwindow_height={}\nsort_key={}\nsort_ascending={}\nlang={}\nviewer_zoom={}\nviewer_fullscreen={}\n",
+        "last_dir={}\nwindow_width={}\nwindow_height={}\nsort_key={}\nsort_ascending={}\nlang={}\nviewer_zoom={}\nviewer_fullscreen={}\nredecode_on_resize={}\nresize_debounce_ms={}\n",
         dir.to_string_lossy(), window_size.0, window_size.1, sort_state.key, sort_state.ascending, lang,
         viewer_cfg.zoom_actual, viewer_cfg.fullscreen,
+        viewer_cfg.redecode_on_resize, viewer_cfg.resize_debounce_ms,
     );
     for (i, slot) in viewer_slots.iter().enumerate() {
         if let Some(s) = slot {

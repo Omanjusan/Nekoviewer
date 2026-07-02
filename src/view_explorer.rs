@@ -218,6 +218,13 @@ pub struct NekoviewApp {
     status_update_requested: Arc<std::sync::atomic::AtomicBool>,
     /// バックグラウンドワーカーから ROOT を起こす（イベント駆動再描画）ために保持する ctx
     egui_ctx: egui::Context,
+    /// フェーズ6: viewer_cfg.redecode_trigger_seq のうち処理済みの値（変化検知用）
+    resize_redecode_last_seq: u64,
+    /// フェーズ6: デバウンス期限（この時刻を過ぎたら再デコード発火）。None = 待ち無し
+    resize_redecode_deadline: Option<std::time::Instant>,
+    /// フェーズ6: 直近の再デコードで決まった、以降のデコード要求(先読み含む)に使うターゲットサイズ。
+    /// None = 無制限(原寸、zoom_actual時)。起動直後の既定値は従来の固定上限と同じ。
+    decode_target: Option<(u32, u32)>,
 }
 
 impl NekoviewApp {
@@ -308,6 +315,9 @@ impl NekoviewApp {
             last_status_update: std::time::Instant::now(),
             status_update_requested: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             egui_ctx: ctx,
+            resize_redecode_last_seq: viewer_cfg.redecode_trigger_seq,
+            resize_redecode_deadline: None,
+            decode_target: Some(crate::cache::DEFAULT_DECODE_TARGET),
         };
         app.start_scan();
         app
@@ -456,12 +466,115 @@ fn upload_texture(ctx: &egui::Context, name: &str, rgba: &image::RgbaImage) -> e
 impl NekoviewApp {
     /// 毎フレーム、egui パス内で UI 描画より前に呼ぶ「常時走る処理」。
     /// （旧 eframe::App::logic 相当。winit ループ本体から各フレーム呼ぶ）
-    pub fn logic(&mut self, _ctx: &egui::Context) {
+    pub fn logic(&mut self, ctx: &egui::Context) {
         // 旧 eframe::App::logic 相当の「常時走る処理」フック。winit ループ本体から
         // 各フレーム呼ばれる。現状は常時処理なし:
         // ・ビューア破棄は window_event の CloseRequested / ESC で直接行う（旧 viewer_closing
         //   フラグ経由の deferred callback 回避策は winit 化で不要になり撤去）。
         // ・ステータス窓（debug）は winit_app が独立 OS 窓として直接 render_status を駆動する。
+        self.poll_resize_redecode(ctx);
+    }
+
+    /// フェーズ6: リサイズ/zoom_actual切替のデバウンス判定。
+    /// viewer_cfg.redecode_trigger_seq の変化を検知してデバウンス期限を(再)セットし、
+    /// 期限が過ぎたら発火する。
+    /// フェーズ6-E: 待機中は `ctx.request_repaint_after()` で明示的に未来のフレームを
+    /// 予約する。これが無いと、リサイズ後にアニメ等の継続的な再描画要因が無い窓では
+    /// 「デッドラインは設定されたが、それを再評価するフレームが二度と来ない」ため
+    /// デバウンスが体感上まったく発火しないバグがあった（実機確認で発覚）。
+    /// また呼び出し元はエクスプローラー窓のlogic()だけでなくビューアー窓のrender_viewer()
+    /// からも呼ぶ必要がある（ビューアー窓だけを操作している間はエクスプローラー窓が
+    /// 再描画されないため）。
+    fn poll_resize_redecode(&mut self, ctx: &egui::Context) {
+        let (redecode_on, debounce_ms, seq) = {
+            let cfg = self.viewer_cfg.lock().unwrap();
+            (cfg.redecode_on_resize, cfg.resize_debounce_ms, cfg.redecode_trigger_seq)
+        };
+        if !redecode_on {
+            self.resize_redecode_last_seq = seq;
+            self.resize_redecode_deadline = None;
+            return;
+        }
+        if seq != self.resize_redecode_last_seq {
+            self.resize_redecode_last_seq = seq;
+            self.resize_redecode_deadline =
+                Some(std::time::Instant::now() + std::time::Duration::from_millis(debounce_ms));
+        }
+        if let Some(deadline) = self.resize_redecode_deadline {
+            let now = std::time::Instant::now();
+            if now >= deadline {
+                self.resize_redecode_deadline = None;
+                self.fire_resize_redecode(seq);
+            } else {
+                ctx.request_repaint_after(deadline - now);
+            }
+        }
+    }
+
+    /// フェーズ6-C/6-D: デバウンス発火時に、表示中ページ(見開き時は2枚)を新しいターゲットサイズで
+    /// 再デコードさせる。PageCacheから既存エントリを破棄し、新規LoadRequestを送るだけで、
+    /// 静止画・アニメーション(RingAnimation)とも decode_ring_anim/resize_for_display 側の
+    /// target_size配線に乗って統一的に再デコードされる。アニメは新規RingAnimationとして
+    /// 作られるため自然に再生位置が先頭へ戻る（フェーズ6-A決定事項どおり）。
+    fn fire_resize_redecode(&mut self, seq: u64) {
+        let zoom_actual = self.viewer_cfg.lock().unwrap().zoom_actual;
+        let target = {
+            let viewer = self.viewer.lock().unwrap();
+            match viewer.as_ref() {
+                Some(v) => v.current_decode_target(zoom_actual),
+                None => return,
+            }
+        };
+        self.decode_target = target;
+
+        let (path, is_raw_file, pages) = {
+            let viewer = self.viewer.lock().unwrap();
+            let Some(v) = viewer.as_ref() else { return };
+            let path = v.archive_path().clone();
+            let is_raw_file = v.is_raw_file();
+            let entries = v.entries();
+            let pages: Vec<(usize, String)> = v
+                .visible_original_indices()
+                .into_iter()
+                .filter_map(|orig_i| {
+                    entries.iter()
+                        .find(|e| e.original_index == orig_i)
+                        .map(|e| (orig_i, e.entry_name.clone()))
+                })
+                .collect();
+            (path, is_raw_file, pages)
+        };
+
+        for (orig_i, entry_name) in &pages {
+            self.page_cache.lock().unwrap().remove(&path, *orig_i);
+            let key = (path.clone(), *orig_i);
+            let file_bytes = self.file_cache.get(&path);
+            let _ = self.req_tx.send(LoadRequest {
+                archive_path: path.clone(),
+                index: *orig_i,
+                entry_name: entry_name.clone(),
+                is_raw_file,
+                file_bytes,
+                target_size: target,
+            });
+            self.pending_loads.lock().unwrap().insert(key);
+        }
+
+        if let Some(v) = self.viewer.lock().unwrap().as_mut() {
+            let orig_indices: Vec<usize> = pages.iter().map(|(i, _)| *i).collect();
+            v.invalidate_pages(&orig_indices);
+        }
+
+        crate::log_common!(
+            "[resize-redecode] fired (generation={}, target={:?}, pages={})",
+            seq, target, pages.len(),
+        );
+    }
+
+    /// フェーズ6: ビューアー窓のリサイズを通知する（winit_app.rs の WindowEvent::Resized から呼ぶ）。
+    /// viewer_cfg.redecode_trigger_seq を進め、poll_resize_redecode() 側の変化検知に拾わせる。
+    pub fn notify_viewer_resized(&mut self) {
+        self.viewer_cfg.lock().unwrap().redecode_trigger_seq += 1;
     }
 
     /// 終了時に状態を永続化する（旧 eframe::App::on_exit 相当）。
@@ -639,6 +752,7 @@ impl NekoviewApp {
                         entry_name: entries[i].entry_name.clone(),
                         is_raw_file,
                         file_bytes,
+                        target_size: self.decode_target,
                     });
                     self.pending_loads.lock().unwrap().insert(key);
                 }
@@ -673,6 +787,12 @@ impl NekoviewApp {
     /// ビューアー独立窓の 1 フレーム描画。winit_app がビューアー窓の egui パスから呼ぶ。
     /// 旧 `draw_viewer_viewport` の deferred callback 相当（ページ供給 → show → nav/close 処理）。
     pub fn render_viewer(&mut self, ui: &mut egui::Ui) {
+        // フェーズ6-E: poll_resize_redecode()はエクスプローラー窓のlogic()からしか
+        // 呼ばれていなかったため、ビューアー窓だけを操作している間はエクスプローラー窓が
+        // 再描画されずデバウンスが発火しないバグがあった。ビューアー窓自身の毎フレームでも
+        // 呼ぶことで、エクスプローラー窓の再描画タイミングに依存しないようにする。
+        self.poll_resize_redecode(ui.ctx());
+
         // エクスプローラー窓が起きていなくてもページ送りが進むよう、
         // ここでワーカー結果回収（res_rx drain）と先読みを回す。
         self.pump_viewer_pages();
@@ -914,6 +1034,37 @@ impl NekoviewApp {
                 let btn = ui.button("[?]");
                 if btn.clicked() {
                     self.show_status_window = !self.show_status_window;
+                }
+
+                ui.separator();
+
+                // ── フェーズ6: 再デコードトグル・デバウンスサイクル ───────
+                // ビューアー個別ではなく全アニメーション共通の設定のため、親のエクスプ
+                // ローラー窓側に配置する。
+                let (redecode_on, debounce_ms) = {
+                    let cfg = self.viewer_cfg.lock().unwrap();
+                    (cfg.redecode_on_resize, cfg.resize_debounce_ms)
+                };
+                let toggle_label = if redecode_on { i18n::t().redecode_on() } else { i18n::t().redecode_off() };
+                if ui.button(toggle_label).clicked() {
+                    self.viewer_cfg.lock().unwrap().redecode_on_resize = !redecode_on;
+                    crate::config::save_state(
+                        &self.current_dir, self.window_size,
+                        &self.viewer_slots,
+                        &SortState { key: self.sort_key.as_state_key().to_string(), ascending: self.sort_ascending },
+                        i18n::lang_code(),
+                        &*self.viewer_cfg.lock().unwrap(),
+                    );
+                }
+                if ui.button(i18n::t().redecode_debounce_label(debounce_ms)).clicked() {
+                    self.viewer_cfg.lock().unwrap().resize_debounce_ms = crate::config::next_debounce_ms(debounce_ms);
+                    crate::config::save_state(
+                        &self.current_dir, self.window_size,
+                        &self.viewer_slots,
+                        &SortState { key: self.sort_key.as_state_key().to_string(), ascending: self.sort_ascending },
+                        i18n::lang_code(),
+                        &*self.viewer_cfg.lock().unwrap(),
+                    );
                 }
 
                 ui.separator();
