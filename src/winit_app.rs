@@ -37,7 +37,8 @@ use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 use winit::window::{Window, WindowId};
 
-use crate::config::{AppConfig, AppState};
+use crate::config::AppConfig;
+use crate::gui_config::AppState;
 use crate::view_explorer::NekoviewApp;
 
 /// ビューアー窓に割り当てる ViewportId（ROOT=エクスプローラーと区別する）。
@@ -263,6 +264,7 @@ impl WinitApp {
             state.viewer_slots,
             state.sort_state,
             state.viewer_cfg,
+            state.show_hidden,
             win.egui_ctx.clone(),
         );
 
@@ -410,6 +412,19 @@ impl ApplicationHandler<UserEvent> for WinitApp {
         }
     }
 
+    /// イベントループが終了する直前（プラットフォームの接続がまだ生きている状態）に呼ばれる。
+    /// ここで全窓（Arc<Window> + wgpu Painter/Surface）を明示的に drop しないと、
+    /// `run_app` から戻った後（＝プラットフォーム接続が既に破棄された後）に `main` 側の
+    /// `WinitApp` が drop される際に窓を破棄することになり、Wayland 環境で
+    /// セグメンテーションフォルトを起こす（エクスプローラー窓を閉じてアプリを終了した
+    /// ときにのみ再現していた原因）。ビューアー/ステータス窓の個別クローズはイベントループが
+    /// 生きている間に drop されるため影響を受けない。
+    fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+        self.viewer = None;
+        self.status = None;
+        self.explorer = None;
+    }
+
     fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: UserEvent) {
         // ワーカーや egui からの再描画要求。対象窓の next_repaint を最短に更新するだけで、
         // 実際の描画と ControlFlow 設定は about_to_wait が行う。
@@ -498,6 +513,13 @@ impl ApplicationHandler<UserEvent> for WinitApp {
                 }
                 if let Some(w) = self.window_mut(window_id) {
                     w.bump_now();
+                }
+                // フェーズ6: ビューアー窓のリサイズのみ再デコードのデバウンス対象にする
+                // （エクスプローラー窓のリサイズは表示画像と無関係）。
+                if is_viewer {
+                    if let Some(app) = self.app.as_mut() {
+                        app.notify_viewer_resized();
+                    }
                 }
             }
             _ => {}

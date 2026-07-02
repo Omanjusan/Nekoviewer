@@ -3,12 +3,14 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, mpsc};
 
 use crate::cache::{FileCache, LoadRequest, LoadResult, PageCache, ThumbRequest, ThumbResult, spawn_worker, spawn_thumb_worker, spawn_file_cache_worker};
-use crate::config::{AppConfig, SortState, ViewerConfig, WindowSlot};
+use crate::config::AppConfig;
+use crate::gui_config::{SortState, ViewerConfig, WindowSlot};
+use crate::view_gui_config::{SettingsDraft, SettingsTab};
 use crate::controller::{self, ViewerNav};
 use crate::i18n;
 use crate::model::ExplorerSortKey;
 use crate::neko_dir;
-use crate::fs::{dir, mount::{list_gvfs_smb_mounts, list_local_drives, MountEntry}};
+use crate::fs::{archive, dir, mount::{list_gvfs_smb_mounts, list_local_drives, MountEntry}};
 use crate::view_reader::{PageMode, ViewerState};
 
 impl ExplorerSortKey {
@@ -150,7 +152,7 @@ struct TreeScanPending {
 }
 
 pub struct NekoviewApp {
-    config: AppConfig,
+    pub(crate) config: AppConfig,
     current_dir: PathBuf,
     subdirs: Vec<PathBuf>,
     archives: Vec<PathBuf>,
@@ -171,7 +173,7 @@ pub struct NekoviewApp {
     thumb_pending: HashSet<PathBuf>,
     viewer: Arc<Mutex<Option<ViewerState>>>,
     /// ファイル切替後も維持するビューア設定（zoom・fullscreen 等）
-    viewer_cfg: Arc<Mutex<ViewerConfig>>,
+    pub(crate) viewer_cfg: Arc<Mutex<ViewerConfig>>,
     drives: Vec<MountEntry>,
     page_cache: Arc<Mutex<PageCache>>,
     file_cache: FileCache,
@@ -193,9 +195,19 @@ pub struct NekoviewApp {
     invalid_archives: std::collections::HashSet<PathBuf>,
     /// アプリレベルのトーストメッセージ（3秒で自動消去）
     app_toast: Option<(String, std::time::Instant)>,
+    /// フェーズ2: ページキャッシュ予算（見積もりゲートの閾値。resolve_cache_budgetsのpage_max）
+    cache_budget_bytes: usize,
+    /// フェーズ4: アニメリングバッファ先読み枚数の(下限, 上限)。見積もりゲートも同じ値を使う。
+    anim_ring_bounds: (usize, usize),
+    /// フェーズ2: メモリ見積もり超過を知らせる確認ダイアログの表示状態
+    memory_warning_open: bool,
+    /// 設定ダイアログの表示状態・選択中タブ・編集用下書き
+    pub(crate) settings_open: bool,
+    pub(crate) settings_tab: SettingsTab,
+    pub(crate) settings_draft: SettingsDraft,
     /// ビューアウィンドウをフォーカス前面に出すフラグ
     viewer_focus_requested: bool,
-    show_hidden: bool,
+    pub(crate) show_hidden: bool,
     sort_key: ExplorerSortKey,
     sort_ascending: bool,
     selected_archive_index: Option<usize>,
@@ -212,14 +224,27 @@ pub struct NekoviewApp {
     status_update_requested: Arc<std::sync::atomic::AtomicBool>,
     /// バックグラウンドワーカーから ROOT を起こす（イベント駆動再描画）ために保持する ctx
     egui_ctx: egui::Context,
+    /// フェーズ6: viewer_cfg.redecode_trigger_seq のうち処理済みの値（変化検知用）
+    resize_redecode_last_seq: u64,
+    /// フェーズ6: デバウンス期限（この時刻を過ぎたら再デコード発火）。None = 待ち無し
+    resize_redecode_deadline: Option<std::time::Instant>,
+    /// フェーズ6: 直近の再デコードで決まった、以降のデコード要求(先読み含む)に使うターゲットサイズ。
+    /// None = 無制限(原寸、zoom_actual時)。起動直後の既定値は従来の固定上限と同じ。
+    decode_target: Option<(u32, u32)>,
 }
 
 impl NekoviewApp {
-    pub fn new(start_dir: PathBuf, config: AppConfig, viewer_slots: [Option<WindowSlot>; 4], sort_state: SortState, viewer_cfg: ViewerConfig, ctx: egui::Context) -> Self {
-        let (req_tx, res_rx) = spawn_worker(config.viewer_filter.to_image_filter(), config.resolved_decode_threads(), ctx.clone());
+    pub fn new(start_dir: PathBuf, config: AppConfig, viewer_slots: [Option<WindowSlot>; 4], sort_state: SortState, viewer_cfg: ViewerConfig, show_hidden: bool, ctx: egui::Context) -> Self {
+        let (cache_max, cache_min, file_cache_max) = crate::cache::resolve_cache_budgets(config.cache_total_mb);
+        let ring_bounds = (config.anim_ring_min_frames, config.anim_ring_max_frames);
+        let frame_hard_limit_bytes = config.anim_frame_hard_limit_mb * 1024 * 1024;
+        // 長辺px上限のみ指定し、正方形の箱として resize_for_display に渡す。
+        // fit-within(縦横比維持)なので短辺は箱の中に自動的に収まる。
+        let max_decode_target = (config.max_decode_edge, config.max_decode_edge);
+        let settings_draft = SettingsDraft::from_current(&config, &viewer_cfg, show_hidden);
+        let (req_tx, res_rx) = spawn_worker(config.viewer_filter.to_image_filter(), config.resolved_decode_threads(), ctx.clone(), cache_max, ring_bounds, frame_hard_limit_bytes);
         let (thumb_req_tx, thumb_res_rx) = spawn_thumb_worker(config.thumb_filter.to_image_filter(), config.resolved_decode_threads(), ctx.clone());
         let (file_cache_req_tx, file_cache_res_rx) = spawn_file_cache_worker(ctx.clone());
-        let (cache_max, cache_min, file_cache_max) = crate::cache::resolve_cache_budgets(config.cache_max_mb, config.file_cache_max_mb);
         let mut drives = list_local_drives();
         drives.extend(list_gvfs_smb_mounts());
 
@@ -283,8 +308,14 @@ impl NekoviewApp {
             raw_image_files: std::collections::HashSet::new(),
             invalid_archives: std::collections::HashSet::new(),
             app_toast: None,
+            cache_budget_bytes: cache_max,
+            anim_ring_bounds: ring_bounds,
+            memory_warning_open: false,
+            settings_open: false,
+            settings_tab: SettingsTab::Common,
+            settings_draft,
             viewer_focus_requested: false,
-            show_hidden: false,
+            show_hidden,
             sort_key: ExplorerSortKey::from_state_key(&sort_state.key),
             sort_ascending: sort_state.ascending,
             selected_archive_index: None,
@@ -297,6 +328,9 @@ impl NekoviewApp {
             last_status_update: std::time::Instant::now(),
             status_update_requested: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             egui_ctx: ctx,
+            resize_redecode_last_seq: viewer_cfg.redecode_trigger_seq,
+            resize_redecode_deadline: None,
+            decode_target: Some(max_decode_target),
         };
         app.start_scan();
         app
@@ -377,6 +411,19 @@ impl NekoviewApp {
         }
     }
 
+    /// カレントディレクトリ・ウィンドウ状態・ソート順・言語・ビューア設定・設定ダイアログで
+    /// 編集されうる AppConfig 値をまとめて state ファイルへ書き戻す。
+    pub(crate) fn persist_state(&self) {
+        crate::gui_config::save_state(
+            &self.current_dir, self.window_size, &self.viewer_slots,
+            &SortState { key: self.sort_key.as_state_key().to_string(), ascending: self.sort_ascending },
+            i18n::lang_code(),
+            &*self.viewer_cfg.lock().unwrap(),
+            self.show_hidden,
+            &self.config,
+        );
+    }
+
     fn sort_archives(&mut self) {
         let ascending = self.sort_ascending;
         match self.sort_key {
@@ -445,17 +492,141 @@ fn upload_texture(ctx: &egui::Context, name: &str, rgba: &image::RgbaImage) -> e
 impl NekoviewApp {
     /// 毎フレーム、egui パス内で UI 描画より前に呼ぶ「常時走る処理」。
     /// （旧 eframe::App::logic 相当。winit ループ本体から各フレーム呼ぶ）
-    pub fn logic(&mut self, _ctx: &egui::Context) {
+    pub fn logic(&mut self, ctx: &egui::Context) {
         // 旧 eframe::App::logic 相当の「常時走る処理」フック。winit ループ本体から
         // 各フレーム呼ばれる。現状は常時処理なし:
         // ・ビューア破棄は window_event の CloseRequested / ESC で直接行う（旧 viewer_closing
         //   フラグ経由の deferred callback 回避策は winit 化で不要になり撤去）。
         // ・ステータス窓（debug）は winit_app が独立 OS 窓として直接 render_status を駆動する。
+        self.poll_resize_redecode(ctx);
+    }
+
+    /// フェーズ6: リサイズ/zoom_actual切替のデバウンス判定。
+    /// viewer_cfg.redecode_trigger_seq の変化を検知してデバウンス期限を(再)セットし、
+    /// 期限が過ぎたら発火する。
+    /// フェーズ6-E: 待機中は `ctx.request_repaint_after()` で明示的に未来のフレームを
+    /// 予約する。これが無いと、リサイズ後にアニメ等の継続的な再描画要因が無い窓では
+    /// 「デッドラインは設定されたが、それを再評価するフレームが二度と来ない」ため
+    /// デバウンスが体感上まったく発火しないバグがあった（実機確認で発覚）。
+    /// また呼び出し元はエクスプローラー窓のlogic()だけでなくビューアー窓のrender_viewer()
+    /// からも呼ぶ必要がある（ビューアー窓だけを操作している間はエクスプローラー窓が
+    /// 再描画されないため）。
+    fn poll_resize_redecode(&mut self, ctx: &egui::Context) {
+        let (redecode_on, debounce_ms, seq) = {
+            let cfg = self.viewer_cfg.lock().unwrap();
+            (cfg.redecode_on_resize, cfg.resize_debounce_ms, cfg.redecode_trigger_seq)
+        };
+        if !redecode_on {
+            self.resize_redecode_last_seq = seq;
+            self.resize_redecode_deadline = None;
+            // 「原寸」選択中は常にガードレール値（長辺 max_decode_edge）を使う。
+            // fire_resize_redecode() 経由で decode_target が None（無制限）になったまま
+            // 放置されると、一度でも「ウィンドウ追従」+ビューアー等倍ズームを使った後は
+            // 「原寸」に戻してもガードレールが永続的に外れたままになるバグがあったため、
+            // ここで毎フレーム復元する（実際に変化した時だけ再デコードを発火）。
+            let guardrail = Some((self.config.max_decode_edge, self.config.max_decode_edge));
+            if self.decode_target != guardrail {
+                self.decode_target = guardrail;
+                self.redecode_visible_pages(guardrail);
+                crate::log_common!("[resize-redecode] restored guardrail target={:?}", guardrail);
+            }
+            return;
+        }
+        if seq != self.resize_redecode_last_seq {
+            self.resize_redecode_last_seq = seq;
+            self.resize_redecode_deadline =
+                Some(std::time::Instant::now() + std::time::Duration::from_millis(debounce_ms));
+        }
+        if let Some(deadline) = self.resize_redecode_deadline {
+            let now = std::time::Instant::now();
+            if now >= deadline {
+                self.resize_redecode_deadline = None;
+                self.fire_resize_redecode(seq);
+            } else {
+                ctx.request_repaint_after(deadline - now);
+            }
+        }
+    }
+
+    /// フェーズ6-C/6-D: デバウンス発火時に、表示中ページ(見開き時は2枚)を新しいターゲットサイズで
+    /// 再デコードさせる。PageCacheから既存エントリを破棄し、新規LoadRequestを送るだけで、
+    /// 静止画・アニメーション(RingAnimation)とも decode_ring_anim/resize_for_display 側の
+    /// target_size配線に乗って統一的に再デコードされる。アニメは新規RingAnimationとして
+    /// 作られるため自然に再生位置が先頭へ戻る（フェーズ6-A決定事項どおり）。
+    fn fire_resize_redecode(&mut self, seq: u64) {
+        let zoom_actual = self.viewer_cfg.lock().unwrap().zoom_actual;
+        let target = {
+            let viewer = self.viewer.lock().unwrap();
+            match viewer.as_ref() {
+                Some(v) => v.current_decode_target(zoom_actual),
+                None => return,
+            }
+        };
+        self.decode_target = target;
+        let pages = self.redecode_visible_pages(target);
+
+        crate::log_common!(
+            "[resize-redecode] fired (generation={}, target={:?}, pages={})",
+            seq, target, pages,
+        );
+    }
+
+    /// 現在ビューアーに表示中のページ(見開き時は2枚)を、指定ターゲットサイズで再デコードさせる。
+    /// PageCacheから既存エントリを破棄し、新規LoadRequestを送るだけで、静止画・アニメーション
+    /// (RingAnimation)とも decode_ring_anim/resize_for_display 側の target_size配線に乗って
+    /// 統一的に再デコードされる（アニメは新規RingAnimationとして作られるため自然に再生位置が
+    /// 先頭へ戻る）。戻り値は再デコード対象にしたページ数（ログ用）。
+    fn redecode_visible_pages(&mut self, target: Option<(u32, u32)>) -> usize {
+        let (path, is_raw_file, pages) = {
+            let viewer = self.viewer.lock().unwrap();
+            let Some(v) = viewer.as_ref() else { return 0 };
+            let path = v.archive_path().clone();
+            let is_raw_file = v.is_raw_file();
+            let entries = v.entries();
+            let pages: Vec<(usize, String)> = v
+                .visible_original_indices()
+                .into_iter()
+                .filter_map(|orig_i| {
+                    entries.iter()
+                        .find(|e| e.original_index == orig_i)
+                        .map(|e| (orig_i, e.entry_name.clone()))
+                })
+                .collect();
+            (path, is_raw_file, pages)
+        };
+
+        for (orig_i, entry_name) in &pages {
+            self.page_cache.lock().unwrap().remove(&path, *orig_i);
+            let key = (path.clone(), *orig_i);
+            let file_bytes = self.file_cache.get(&path);
+            let _ = self.req_tx.send(LoadRequest {
+                archive_path: path.clone(),
+                index: *orig_i,
+                entry_name: entry_name.clone(),
+                is_raw_file,
+                file_bytes,
+                target_size: target,
+            });
+            self.pending_loads.lock().unwrap().insert(key);
+        }
+
+        if let Some(v) = self.viewer.lock().unwrap().as_mut() {
+            let orig_indices: Vec<usize> = pages.iter().map(|(i, _)| *i).collect();
+            v.invalidate_pages(&orig_indices);
+        }
+
+        pages.len()
+    }
+
+    /// フェーズ6: ビューアー窓のリサイズを通知する（winit_app.rs の WindowEvent::Resized から呼ぶ）。
+    /// viewer_cfg.redecode_trigger_seq を進め、poll_resize_redecode() 側の変化検知に拾わせる。
+    pub fn notify_viewer_resized(&mut self) {
+        self.viewer_cfg.lock().unwrap().redecode_trigger_seq += 1;
     }
 
     /// 終了時に状態を永続化する（旧 eframe::App::on_exit 相当）。
     pub fn on_exit(&mut self) {
-        crate::config::save_state(&self.current_dir, self.window_size, &self.viewer_slots, &SortState { key: self.sort_key.as_state_key().to_string(), ascending: self.sort_ascending }, i18n::lang_code(), &*self.viewer_cfg.lock().unwrap());
+        self.persist_state();
     }
 
     /// エクスプローラー窓の中身を描画する（旧 eframe::App::ui 相当）。
@@ -506,6 +677,8 @@ impl NekoviewApp {
         #[cfg(not(debug_assertions))]
         self.draw_status_window(&ctx);
         self.draw_toast(&ctx);
+        self.draw_memory_warning_dialog(&ctx);
+        self.draw_settings_dialog(&ctx);
         // 旧来の無条件 ctx.request_repaint() は撤去（イベント駆動化）。
         // ROOT は入力イベント・各ワーカーの起床通知・ステータス窓の1Hzハートビートで再描画される。
     }
@@ -608,10 +781,16 @@ impl NekoviewApp {
         });
         if let Some((cur, path, entries, is_raw_file)) = viewer_prefetch {
             let total = entries.len();
+            let cur_orig_i = entries.get(cur).map(|e| e.original_index);
             let start = cur.saturating_sub(5);
             let end = (cur + 10 + 1).min(total);
             for i in start..end {
                 let orig_i = entries[i].original_index;
+                // 予算超過(bypass)と判明済みのページは、現在表示中でない限り先読み対象から外す。
+                // bypass はキャッシュに残らないため、先読みし続けると無限に再デコードされてしまう。
+                if Some(orig_i) != cur_orig_i && self.page_cache.lock().unwrap().is_known_bypass(&path, orig_i) {
+                    continue;
+                }
                 let key = (path.clone(), orig_i);
                 if !self.page_cache.lock().unwrap().contains(&path, orig_i) && !self.pending_loads.lock().unwrap().contains(&key) {
                     let file_bytes = self.file_cache.get(&path);
@@ -621,6 +800,7 @@ impl NekoviewApp {
                         entry_name: entries[i].entry_name.clone(),
                         is_raw_file,
                         file_bytes,
+                        target_size: self.decode_target,
                     });
                     self.pending_loads.lock().unwrap().insert(key);
                 }
@@ -655,6 +835,25 @@ impl NekoviewApp {
     /// ビューアー独立窓の 1 フレーム描画。winit_app がビューアー窓の egui パスから呼ぶ。
     /// 旧 `draw_viewer_viewport` の deferred callback 相当（ページ供給 → show → nav/close 処理）。
     pub fn render_viewer(&mut self, ui: &mut egui::Ui) {
+        // フェーズ6-E: poll_resize_redecode()はエクスプローラー窓のlogic()からしか
+        // 呼ばれていなかったため、ビューアー窓だけを操作している間はエクスプローラー窓が
+        // 再描画されずデバウンスが発火しないバグがあった。ビューアー窓自身の毎フレームでも
+        // 呼ぶことで、エクスプローラー窓の再描画タイミングに依存しないようにする。
+        self.poll_resize_redecode(ui.ctx());
+
+        // 設定ダイアログ表示中は、エクスプローラー窓と合わせてビューアー窓側の操作も
+        // ブロックする。独立 OS 窓（別 egui::Context）なので winit_app 側の入力横取りは
+        // 使わない。egui::Modal はレイヤー順で「後に出した方が最前面」になるため、通常の
+        // viewer.show() より後に出しても既に処理済みのウィジェットの入力は防げない
+        // （同一フレーム内で先に走った側が先に入力を消費してしまう）。そのため
+        // viewer.show() 自体を呼ばず、Modal だけを描いて操作を完全に止める。
+        if self.settings_is_open() {
+            egui::Modal::new(egui::Id::new("viewer_settings_blocked")).show(ui.ctx(), |ui| {
+                ui.label(i18n::t().settings_viewer_blocked());
+            });
+            return;
+        }
+
         // エクスプローラー窓が起きていなくてもページ送りが進むよう、
         // ここでワーカー結果回収（res_rx drain）と先読みを回す。
         self.pump_viewer_pages();
@@ -671,7 +870,7 @@ impl NekoviewApp {
 
         if let Some(slots) = output.save_slots {
             self.viewer_slots = slots;
-            crate::config::save_state(&self.current_dir, self.window_size, &self.viewer_slots, &SortState { key: self.sort_key.as_state_key().to_string(), ascending: self.sort_ascending }, i18n::lang_code(), &*self.viewer_cfg.lock().unwrap());
+            self.persist_state();
         }
 
         let had_nav = output.nav != ViewerNav::None;
@@ -772,10 +971,13 @@ impl NekoviewApp {
             if ctx.input(|i| i.key_pressed(egui::Key::Enter)) {
                 if let Some(idx) = self.selected_archive_index {
                     if let Some(path) = self.archives.get(idx).cloned() {
-                        let state = if self.raw_image_files.contains(&path) {
+                        let is_raw = self.raw_image_files.contains(&path);
+                        let state = if is_raw {
                             Some(ViewerState::new_raw(path.clone(), self.viewer_slots, self.config.default_slot))
-                        } else {
+                        } else if self.check_memory_budget(&path) {
                             ViewerState::new(path.clone(), self.viewer_slots, self.config.default_slot)
+                        } else {
+                            None
                         };
                         if let Some(state) = state {
                             self.open_viewer(state);
@@ -806,12 +1008,7 @@ impl NekoviewApp {
 
     fn draw_menu_bar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            let hidden_label = if self.show_hidden { i18n::t().hidden_on() } else { i18n::t().hidden_off() };
-            if ui.selectable_label(self.show_hidden, hidden_label).clicked() {
-                self.show_hidden = !self.show_hidden;
-            }
-
-            ui.separator();
+            // 隠しファイル表示トグルは設定ダイアログの「共通」タブへ移設した。
 
             // ── ページ表示モード ──────────────────────────────────────────
             let (viewer_open, is_raw_viewer, cur_mode, is_spread, can_back, can_fwd, is_offset) = {
@@ -897,22 +1094,10 @@ impl NekoviewApp {
 
                 ui.separator();
 
-                for (lang, code) in [
-                    (i18n::Lang::Chinese,  "cn"),
-                    (i18n::Lang::English,  "en"),
-                    (i18n::Lang::Japanese, "ja"),
-                ] {
-                    let active = i18n::t() == lang;
-                    if ui.selectable_label(active, code).clicked() && !active {
-                        i18n::set(lang);
-                        crate::config::save_state(
-                            &self.current_dir, self.window_size,
-                            &self.viewer_slots,
-                            &SortState { key: self.sort_key.as_state_key().to_string(), ascending: self.sort_ascending },
-                            i18n::lang_code(),
-                            &*self.viewer_cfg.lock().unwrap(),
-                        );
-                    }
+                // 設定ダイアログを開く。旧・再デコードトグル/デバウンスサイクル/言語切替
+                // ボタン列はダイアログの「共通」タブに統合した。
+                if ui.button(i18n::t().settings_button()).clicked() {
+                    self.open_settings();
                 }
             });
         });
@@ -968,7 +1153,7 @@ impl NekoviewApp {
                 self.viewing_dir = Some(path.clone());
                 self.start_scan(); // cache_db をここで確定させてから clone して渡す
                 self.cd_summary_rx = Some(spawn_summary_worker(path.clone(), self.cache_db.clone(), self.egui_ctx.clone()));
-                crate::config::save_state(&self.current_dir, self.window_size, &self.viewer_slots, &SortState { key: self.sort_key.as_state_key().to_string(), ascending: self.sort_ascending }, i18n::lang_code(), &*self.viewer_cfg.lock().unwrap());
+                self.persist_state();
             }
         }
 
@@ -1005,7 +1190,7 @@ impl NekoviewApp {
                                 move || c.request_repaint()
                             }),
                         });
-                        crate::config::save_state(&self.current_dir, self.window_size, &self.viewer_slots, &SortState { key: self.sort_key.as_state_key().to_string(), ascending: self.sort_ascending }, i18n::lang_code(), &*self.viewer_cfg.lock().unwrap());
+                        self.persist_state();
                     }
                 }
             });
@@ -1165,6 +1350,8 @@ impl NekoviewApp {
                                     i18n::t().invalid_zip(&name),
                                     std::time::Instant::now(),
                                 ));
+                            } else if !self.check_memory_budget(path) {
+                                // ダイアログ表示フラグは check_memory_budget 内で立つ。オープンは中止する。
                             } else {
                                 match ViewerState::new(path.clone(), self.viewer_slots, self.config.default_slot) {
                                     Some(state) => {
@@ -1298,6 +1485,49 @@ impl NekoviewApp {
         }
     }
 
+    /// フェーズ2: アーカイブを開く前にメモリ見積もりゲートを通す。
+    /// 予算超過と判定した場合は確認ダイアログの表示フラグを立てて false を返す
+    /// （呼び出し側はオープンを中止する。invalid_archives への永続マークは行わない。
+    /// 一時的な予算状況が変わりうるため、次回オープン時に再度見積もりし直す）。
+    fn check_memory_budget(&mut self, path: &std::path::Path) -> bool {
+        let entries = archive::list_images(path);
+        if entries.is_empty() {
+            return true; // 空/無効アーカイブの判定は既存の invalid_archives 処理に任せる
+        }
+        match archive::estimate_archive_memory(path, &entries, self.cache_budget_bytes, self.anim_ring_bounds) {
+            archive::ArchiveMemoryEstimate::Ok => true,
+            archive::ArchiveMemoryEstimate::OverBudget => {
+                self.memory_warning_open = true;
+                false
+            }
+        }
+    }
+
+    /// フェーズ2: メモリ見積もり超過の確認ダイアログを描画する（OKボタンのみ）
+    fn draw_memory_warning_dialog(&mut self, ctx: &egui::Context) {
+        if !self.memory_warning_open {
+            return;
+        }
+        let mut open = true;
+        egui::Window::new(i18n::t().memory_warning_title())
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .show(ctx, |ui| {
+                ui.label(i18n::t().memory_warning_body());
+                ui.add_space(8.0);
+                ui.vertical_centered(|ui| {
+                    if ui.button(i18n::t().memory_warning_ok()).clicked() {
+                        self.memory_warning_open = false;
+                    }
+                });
+            });
+        if !open {
+            self.memory_warning_open = false;
+        }
+    }
+
     /// ZIPを無効確定してDBにマーカーを書き込む
     fn mark_archive_invalid(&mut self, path: &PathBuf) {
         self.invalid_archives.insert(path.clone());
@@ -1325,6 +1555,11 @@ impl NekoviewApp {
                     return Some((idx, ViewerState::new_raw(path, self.viewer_slots, self.config.default_slot)));
                 }
                 Some((idx, path, false)) => {
+                    if !self.check_memory_budget(&path) {
+                        // ダイアログ表示フラグは check_memory_budget 内で立つ。
+                        // invalid_archives には永続マークせず、現在のファイルに留まる。
+                        return None;
+                    }
                     match ViewerState::new(path.clone(), self.viewer_slots, self.config.default_slot) {
                         Some(state) => return Some((idx, state)),
                         None => {
@@ -1345,7 +1580,9 @@ impl NekoviewApp {
                     if let Some((idx, state)) = self.find_next_valid(from, -1) {
                         self.selected_archive_index = Some(idx);
                         self.open_viewer(state);
-                    } else {
+                    } else if !self.memory_warning_open {
+                        // メモリ見積もり超過が原因の場合は memory_warning ダイアログの方を
+                        // 表示するため、「これ以上開けない」トーストは出さない。
                         if let Some(v) = self.viewer.lock().unwrap().as_mut() {
                             v.set_toast(i18n::t().toast_no_prev().to_string());
                         }
@@ -1357,7 +1594,7 @@ impl NekoviewApp {
                     if let Some((idx, state)) = self.find_next_valid(from, 1) {
                         self.selected_archive_index = Some(idx);
                         self.open_viewer(state);
-                    } else {
+                    } else if !self.memory_warning_open {
                         if let Some(v) = self.viewer.lock().unwrap().as_mut() {
                             v.set_toast(i18n::t().toast_no_next().to_string());
                         }

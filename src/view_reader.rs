@@ -1,4 +1,4 @@
-use crate::config::ViewerConfig;
+use crate::gui_config::ViewerConfig;
 use crate::controller::{ViewerNav, ViewerOutput};
 use crate::i18n;
 use crate::log_key;
@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use crate::cache::{PageCache, PageContent};
-use crate::config::WindowSlot;
+use crate::gui_config::WindowSlot;
 use crate::fs::archive;
 use crate::spread_offset::SpreadOffset;
 
@@ -212,6 +212,9 @@ pub struct ViewerState {
     shift_scroll_acc: f32,
     /// トーストメッセージ: (テキスト, 消去予定のegui時刻) None=非表示
     toast: Option<(String, Option<f64>)>,
+    /// フェーズ6: 直近フレームで観測したウィンドウ描画領域サイズ（物理px）。
+    /// リサイズ再デコードのターゲットサイズ算出に使う。
+    content_px: (u32, u32),
 }
 
 impl ViewerState {
@@ -220,6 +223,32 @@ impl ViewerState {
     pub fn entries(&self) -> &[ViewerEntry] { &self.entries }
     pub fn is_raw_file(&self) -> bool { self.is_raw_file }
     pub fn page_mode(&self) -> PageMode { self.page_mode }
+
+    /// フェーズ6: 現在表示中のページ(見開き時は2枚)の original_index を返す。
+    pub fn visible_original_indices(&self) -> Vec<usize> {
+        let lo = self.spread_lo();
+        let total = self.entries.len() as i32;
+        let hi = if self.page_mode == PageMode::Single { lo } else { lo + 1 };
+        (lo..=hi)
+            .filter(|&i| i >= 0 && i < total)
+            .map(|i| self.entries[i as usize].original_index)
+            .collect()
+    }
+
+    /// フェーズ6: リサイズ/zoom_actual切替後の再デコード先ターゲットサイズ。
+    /// zoom_actual時は無制限(原寸)、それ以外は直近の描画領域サイズ(物理px)を上限にする。
+    pub fn current_decode_target(&self, zoom_actual: bool) -> Option<(u32, u32)> {
+        if zoom_actual { None } else { Some(self.content_px) }
+    }
+
+    /// フェーズ6: 再デコード発火時に、指定ページのテクスチャ・アニメ再生状態を破棄する。
+    /// 次の update_textures() で PageCache から作り直させる（アニメはフレーム0から再生し直す）。
+    pub fn invalidate_pages(&mut self, orig_indices: &[usize]) {
+        for orig_i in orig_indices {
+            self.textures.remove(orig_i);
+            self.anim_states.remove(orig_i);
+        }
+    }
 
     pub fn new(archive_path: PathBuf, slots: [Option<WindowSlot>; 4], default_slot: Option<usize>) -> Option<Self> {
         let image_entries = archive::list_images(&archive_path);
@@ -262,6 +291,7 @@ impl ViewerState {
             is_raw_file: false,
             shift_scroll_acc: 0.0,
             toast: None,
+            content_px: crate::cache::DEFAULT_DECODE_TARGET,
         })
     }
 
@@ -304,6 +334,7 @@ impl ViewerState {
             is_raw_file: true,
             shift_scroll_acc: 0.0,
             toast: None,
+            content_px: crate::cache::DEFAULT_DECODE_TARGET,
         }
     }
 
@@ -417,6 +448,10 @@ impl ViewerState {
 
         // ── フレーム入力を一括収集（ctx.input はこの1回のみ）────────────────
         let input = FrameInput::collect(&ctx, cfg.zoom_actual);
+
+        // フェーズ6: リサイズ再デコードのターゲットサイズ算出用に、現在の描画領域サイズ（物理px）を記録する。
+        let screen = ctx.content_rect().size() * ctx.pixels_per_point();
+        self.content_px = (screen.x.max(1.0) as u32, screen.y.max(1.0) as u32);
 
         // 既定スロットを初回フレームで一度だけ適用（クランプ付き）。
         self.apply_default_slot(&ctx, input.monitor_size);
@@ -817,6 +852,8 @@ impl ViewerState {
     ) -> bool {
         if (input.zoom_key || double_clicked) && !is_spread {
             cfg.zoom_actual = !cfg.zoom_actual;
+            // フェーズ6: 表示ターゲットサイズが変わるイベントとして再デコードのデバウンス対象にする
+            cfg.redecode_trigger_seq += 1;
         }
 
         if input.fs_key || input.middle_clicked {
@@ -906,38 +943,58 @@ impl ViewerState {
                         self.textures.insert(orig_i, tex);
                     }
                 }
-                Some(PageContent::Animated(anim)) => {
+                Some(PageContent::Animated(ring)) => {
+                    // フェーズ3/3.5: GIF/APNG/AVIF/WebP。全フレーム常駐ではなく逐次デコード+リングバッファ。
+                    // デコーダが終端(None)を返した時点をループ境界とみなし restart() する
+                    // (この再デコードによる一瞬のフリーズは許容する設計上の割り切り)。
                     let state = self.anim_states.entry(orig_i).or_insert_with(|| AnimState {
                         frame_index: 0,
                         last_frame_at: now,
                     });
                     let elapsed = now.duration_since(state.last_frame_at);
-                    let current_delay = anim.frames[state.frame_index].delay;
+                    let current_delay = ring
+                        .with_frame(state.frame_index, |f| f.delay)
+                        .unwrap_or(Duration::from_millis(100));
 
-                    let needs_upload = if elapsed >= current_delay {
-                        state.frame_index = (state.frame_index + 1) % anim.frames.len();
+                    let mut needs_upload = !self.textures.contains_key(&orig_i);
+                    if elapsed >= current_delay {
+                        let next_index = state.frame_index + 1;
+                        if ring.with_frame(next_index, |_| ()).is_some() {
+                            state.frame_index = next_index;
+                        } else {
+                            ring.restart();
+                            state.frame_index = 0;
+                        }
                         state.last_frame_at = now;
-                        true
-                    } else {
-                        !self.textures.contains_key(&orig_i)
-                    };
-
-                    if needs_upload {
-                        let img = &anim.frames[state.frame_index].image;
-                        let color_image = egui::ColorImage::from_rgba_unmultiplied(
-                            [img.width() as usize, img.height() as usize],
-                            img.as_raw(),
-                        );
-                        let tex = ctx.load_texture(
-                            format!("page_{orig_i}"),
-                            color_image,
-                            egui::TextureOptions::LINEAR,
-                        );
-                        self.textures.insert(orig_i, tex);
+                        needs_upload = true;
                     }
 
-                    let elapsed_after_upload = now.duration_since(state.last_frame_at);
-                    let next_delay = anim.frames[state.frame_index].delay;
+                    if needs_upload {
+                        let payload = ring.with_frame(state.frame_index, |f| {
+                            (f.image.width(), f.image.height(), f.image.as_raw().clone())
+                        });
+                        if let Some((w, h, raw)) = payload {
+                            let color_image = egui::ColorImage::from_rgba_unmultiplied(
+                                [w as usize, h as usize],
+                                &raw,
+                            );
+                            let tex = ctx.load_texture(
+                                format!("page_{orig_i}"),
+                                color_image,
+                                egui::TextureOptions::LINEAR,
+                            );
+                            self.textures.insert(orig_i, tex);
+                        }
+                    }
+
+                    // デコード/リサイズ/アップロードに要した実時間を差し引くため、ここで時刻を取り直す
+                    // (loop開始時の `now` を使うと、上記処理のコストが remaining に反映されず
+                    //  次のrepaintが実処理時間分だけ遅延し、アニメ全体が一様に遅く見える)
+                    let now2 = Instant::now();
+                    let elapsed_after_upload = now2.duration_since(state.last_frame_at);
+                    let next_delay = ring
+                        .with_frame(state.frame_index, |f| f.delay)
+                        .unwrap_or(Duration::from_millis(100));
                     let remaining = next_delay.saturating_sub(elapsed_after_upload);
                     min_repaint_after = min_repaint_after.min(remaining);
                 }

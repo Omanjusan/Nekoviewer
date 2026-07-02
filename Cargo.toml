@@ -1,6 +1,6 @@
 [package]
 name = "nekoviewer"
-version = "0.7.0"
+version = "0.8.0"
 edition = "2024"
 license = "MIT"
 
@@ -23,6 +23,7 @@ walkdir = "2"
 sha2 = "0.10"
 fast_image_resize = "5"
 webp = "0.3"
+libwebp-sys = "0.9"
 sysinfo = { version = "0.32", default-features = false, features = ["system"] }
 redb = "4"
 

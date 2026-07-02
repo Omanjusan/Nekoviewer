@@ -3,7 +3,6 @@ name: Build
 on:
   push:
     branches: [main, develop]
-    tags: ["v*.*.*"]
   pull_request:
     branches: [main]
 
@@ -68,7 +67,7 @@ jobs:
         run: |
           echo "https://dl-cdn.alpinelinux.org/alpine/edge/community" >> /etc/apk/repositories
           apk update
-          apk add --no-cache git build-base nasm cmake pkgconf meson py3-packaging
+          apk add --no-cache git build-base nasm cmake pkgconf meson py3-packaging tar
 
       - name: Cache dav1d build
         uses: actions/cache@v4
@@ -96,8 +95,8 @@ jobs:
         uses: actions/cache@v4
         with:
           path: |
-            /root/.cargo/registry
-            /root/.cargo/git
+            /usr/local/cargo/registry
+            /usr/local/cargo/git
             ${{ github.workspace }}/target
           key: linux-musl-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: linux-musl-cargo-
@@ -111,37 +110,3 @@ jobs:
           name: nekoviewer-linux-x64
           path: target/release/nekoviewer
           retention-days: 30
-
-  release:
-    needs: [build-windows, build-linux]
-    if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-latest
-
-    permissions:
-      contents: write
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Download Windows artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: nekoviewer-windows-x64
-
-      - name: Download Linux artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: nekoviewer-linux-x64
-
-      - name: Extract release notes
-        run: |
-          VERSION="${{ github.ref_name }}"
-          VERSION="${VERSION#v}"
-          awk "/^## \[${VERSION}\]/{found=1; next} found && /^## \[/{exit} found{print}" CHANGELOG.md > release_notes.md
-
-      - name: Create GitHub Release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh release create ${{ github.ref_name }} nekoviewer.exe nekoviewer \
-            --notes-file release_notes.md

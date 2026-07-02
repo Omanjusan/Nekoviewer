@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use crate::config::WindowSlot;
+use crate::gui_config::WindowSlot;
 use crate::view_status::StatusData;
 
 // ── viewer → controller 間メッセージ ───────────────────────────────────────

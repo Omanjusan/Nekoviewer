@@ -1,5 +1,7 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::OnceLock;
+
+use crate::gui_config::AppState;
 
 // ── ログ設定グローバル ─────────────────────────────────────────────────────────
 
@@ -37,7 +39,7 @@ pub enum CacheStorage {
     Xdg,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 pub enum ResizeFilter {
     Nearest,
     Triangle,
@@ -72,12 +74,20 @@ pub struct AppConfig {
     /// ページデコードの並列スレッド数（0 = 自動: 論理コア数/2）
     pub decode_threads: usize,
     pub startup: StartupConfig,
-    /// ページキャッシュの最大メモリ上限（MB）。None = システムRAMの25%
-    pub cache_max_mb: Option<u64>,
-    /// ファイルキャッシュの最大メモリ上限（MB）。None = システムRAMの5%
-    pub file_cache_max_mb: Option<u64>,
+    /// このアプリが使ってよいキャッシュ合計の上限（MB、ページ+ファイル）。None = システムRAMの30%。
+    /// ページ/ファイルへの内訳は cache::resolve_cache_budgets の固定比率で分配する。
+    pub cache_total_mb: Option<u64>,
     /// ビューアー既定スロット index（0..3 = F5〜F8）。None = デフォルト無し（空欄/不正値）
     pub default_slot: Option<usize>,
+    /// アニメーションリングバッファの先読み枚数下限（フェーズ4）。空欄/不正値は既定4。
+    pub anim_ring_min_frames: usize,
+    /// アニメーションリングバッファの先読み枚数上限（フェーズ4）。空欄/不正値は既定32。
+    pub anim_ring_max_frames: usize,
+    /// アニメーション1フレームあたりの生デコードサイズ上限（MB、フェーズ5）。空欄/不正値は既定100。
+    pub anim_frame_hard_limit_mb: usize,
+    /// 表示デコードの取り扱い上限（長辺px）。短辺は縦横比を保って自動的に収まる。
+    /// config.ini には持たず、既定値はここに直書き（stateファイル経由の上書きのみ）。
+    pub max_decode_edge: u32,
 }
 
 impl AppConfig {
@@ -127,9 +137,12 @@ impl AppConfig {
                 use_last_dir: parsed.startup_use_last_dir,
                 fixed_dir: parsed.startup_fixed_dir,
             },
-            cache_max_mb: parsed.cache_max_mb,
-            file_cache_max_mb: parsed.file_cache_max_mb,
+            cache_total_mb: parsed.cache_total_mb,
             default_slot: parsed.default_slot,
+            anim_ring_min_frames: parsed.anim_ring_min_frames.0,
+            anim_ring_max_frames: parsed.anim_ring_max_frames.0,
+            anim_frame_hard_limit_mb: parsed.anim_frame_hard_limit_mb.0,
+            max_decode_edge: 1920,
         }
     }
 
@@ -204,9 +217,17 @@ struct ParsedIni {
     log_common: LogDefault<true>,
     startup_use_last_dir: bool,
     startup_fixed_dir: Option<PathBuf>,
-    cache_max_mb: Option<u64>,
-    file_cache_max_mb: Option<u64>,
+    cache_total_mb: Option<u64>,
     default_slot: Option<usize>,
+    anim_ring_min_frames: UsizeDefault<4>,
+    anim_ring_max_frames: UsizeDefault<32>,
+    anim_frame_hard_limit_mb: UsizeDefault<100>,
+}
+
+/// usize のデフォルト値を const ジェネリクスで指定するラッパー（空欄/不正値は既定にフォールバック）
+struct UsizeDefault<const V: usize>(usize);
+impl<const V: usize> Default for UsizeDefault<V> {
+    fn default() -> Self { Self(V) }
 }
 
 /// bool のデフォルト値を const ジェネリクスで指定するラッパー
@@ -259,14 +280,24 @@ fn parse_ini(path: &std::path::Path) -> ParsedIni {
                         _ => CacheStorage::Local,
                     };
                 }
-                ("cache", "max_mb") => {
+                ("cache", "cache_total_mb") => {
                     if let Ok(n) = v.parse::<u64>() {
-                        result.cache_max_mb = Some(n.max(64));
+                        result.cache_total_mb = Some(n.max(64));
                     }
                 }
-                ("cache", "file_cache_max_mb") => {
-                    if let Ok(n) = v.parse::<u64>() {
-                        result.file_cache_max_mb = Some(n.max(16));
+                ("cache", "anim_ring_min_frames") => {
+                    if let Ok(n) = v.parse::<usize>() {
+                        result.anim_ring_min_frames = UsizeDefault(n.max(1));
+                    }
+                }
+                ("cache", "anim_ring_max_frames") => {
+                    if let Ok(n) = v.parse::<usize>() {
+                        result.anim_ring_max_frames = UsizeDefault(n.max(1));
+                    }
+                }
+                ("cache", "anim_frame_hard_limit_mb") => {
+                    if let Ok(n) = v.parse::<usize>() {
+                        result.anim_frame_hard_limit_mb = UsizeDefault(n.max(1));
                     }
                 }
                 ("thumbnail", "filter") => {
@@ -313,240 +344,6 @@ fn parse_ini(path: &std::path::Path) -> ParsedIni {
     result
 }
 
-// ── State ファイル（動的状態: 最後のディレクトリ・ウィンドウサイズ）────────────
-
-pub struct SortState {
-    pub key: String,
-    pub ascending: bool,
-}
-
-impl Default for SortState {
-    fn default() -> Self {
-        Self { key: "name".to_string(), ascending: true }
-    }
-}
-
-/// ファイルをまたいで維持するビューア設定（ウィンドウを開き直しても保持）
-#[derive(Clone, Copy)]
-pub struct ViewerConfig {
-    /// true = 1:1等倍表示、false = ウィンドウフィット
-    pub zoom_actual: bool,
-    /// フルスクリーン状態
-    pub fullscreen: bool,
-}
-
-impl Default for ViewerConfig {
-    fn default() -> Self {
-        Self { zoom_actual: false, fullscreen: false }
-    }
-}
-
-/// ビューアウィンドウの位置・サイズスロット（論理ピクセル）
-#[derive(Clone, Copy)]
-pub struct WindowSlot {
-    /// outer_rect の左上 x 座標
-    pub x: i32,
-    /// outer_rect の左上 y 座標
-    pub y: i32,
-    /// inner_rect の幅（コンテンツ領域）
-    pub w: u32,
-    /// inner_rect の高さ（コンテンツ領域）
-    pub h: u32,
-}
-
-pub struct AppState {
-    pub last_dir: Option<PathBuf>,
-    /// (width, height) in logical pixels
-    pub window_size: Option<(u32, u32)>,
-    /// ビューアウィンドウの位置・サイズスロット（F5〜F8 対応）
-    pub viewer_slots: [Option<WindowSlot>; 4],
-    pub sort_state: SortState,
-    /// UI言語コード: "ja" / "en" / "cn"
-    pub lang: String,
-    /// ファイル切替後も維持するビューア設定
-    pub viewer_cfg: ViewerConfig,
-}
-
-impl Default for AppState {
-    fn default() -> Self {
-        Self {
-            last_dir: None,
-            window_size: None,
-            viewer_slots: [None; 4],
-            sort_state: SortState::default(),
-            lang: "ja".to_string(),
-            viewer_cfg: ViewerConfig::default(),
-        }
-    }
-}
-
-fn state_path() -> Option<PathBuf> {
-    std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|d| d.join("nekoviewer.state")))
-}
-
-fn state_bak_path() -> Option<PathBuf> {
-    std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|d| d.join("nekoviewer.state.bak")))
-}
-
-fn state_tmp_path() -> Option<PathBuf> {
-    std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|d| d.join("nekoviewer.state.tmp")))
-}
-
-pub fn load_state() -> AppState {
-    if let Some(path) = state_path() {
-        if let Some(state) = parse_state_file(&path) {
-            return state;
-        }
-    }
-    // メインが読めなければ bak を試みる
-    if let Some(bak) = state_bak_path() {
-        if let Some(state) = parse_state_file(&bak) {
-            log_common!("[state] メイン読み込み失敗 → bak から復元");
-            return state;
-        }
-    }
-    AppState::default()
-}
-
-fn parse_state_file(path: &Path) -> Option<AppState> {
-    let content = std::fs::read_to_string(path).ok()?;
-    let mut last_dir: Option<PathBuf> = None;
-    let mut window_width: Option<u32> = None;
-    let mut window_height: Option<u32> = None;
-    let mut slot_x: [Option<i32>; 4] = [None; 4];
-    let mut slot_y: [Option<i32>; 4] = [None; 4];
-    let mut slot_w: [Option<u32>; 4] = [None; 4];
-    let mut slot_h: [Option<u32>; 4] = [None; 4];
-    let mut sort_key: Option<String> = None;
-    let mut sort_ascending: Option<bool> = None;
-    let mut lang: Option<String> = None;
-    let mut viewer_zoom: Option<bool> = None;
-    let mut viewer_fullscreen: Option<bool> = None;
-    let mut has_kv = false;
-
-    for line in content.lines() {
-        let line = line.trim();
-        if line.is_empty() { continue; }
-        if let Some((k, v)) = line.split_once('=') {
-            has_kv = true;
-            match k.trim() {
-                "last_dir" => {
-                    let v = v.trim();
-                    if !v.is_empty() { last_dir = Some(PathBuf::from(v)); }
-                }
-                "window_width"  => { window_width  = v.trim().parse().ok(); }
-                "window_height" => { window_height = v.trim().parse().ok(); }
-                "slot1_x" => { slot_x[0] = v.trim().parse().ok(); }
-                "slot1_y" => { slot_y[0] = v.trim().parse().ok(); }
-                "slot1_w" => { slot_w[0] = v.trim().parse().ok(); }
-                "slot1_h" => { slot_h[0] = v.trim().parse().ok(); }
-                "slot2_x" => { slot_x[1] = v.trim().parse().ok(); }
-                "slot2_y" => { slot_y[1] = v.trim().parse().ok(); }
-                "slot2_w" => { slot_w[1] = v.trim().parse().ok(); }
-                "slot2_h" => { slot_h[1] = v.trim().parse().ok(); }
-                "slot3_x" => { slot_x[2] = v.trim().parse().ok(); }
-                "slot3_y" => { slot_y[2] = v.trim().parse().ok(); }
-                "slot3_w" => { slot_w[2] = v.trim().parse().ok(); }
-                "slot3_h" => { slot_h[2] = v.trim().parse().ok(); }
-                "slot4_x" => { slot_x[3] = v.trim().parse().ok(); }
-                "slot4_y" => { slot_y[3] = v.trim().parse().ok(); }
-                "slot4_w" => { slot_w[3] = v.trim().parse().ok(); }
-                "slot4_h" => { slot_h[3] = v.trim().parse().ok(); }
-                "sort_key" => {
-                    let v = v.trim();
-                    if matches!(v, "name" | "date" | "size") {
-                        sort_key = Some(v.to_string());
-                    }
-                }
-                "sort_ascending" => { sort_ascending = v.trim().parse().ok(); }
-                "lang" => {
-                    let v = v.trim();
-                    if matches!(v, "ja" | "en" | "cn") {
-                        lang = Some(v.to_string());
-                    }
-                }
-                "viewer_zoom"       => { viewer_zoom       = v.trim().parse().ok(); }
-                "viewer_fullscreen" => { viewer_fullscreen = v.trim().parse().ok(); }
-                _ => {}
-            }
-        }
-    }
-
-    // 旧フォーマット互換: key=value がなければ全体をパスとして扱う
-    if !has_kv {
-        let trimmed = content.trim();
-        if !trimmed.is_empty() {
-            last_dir = Some(PathBuf::from(trimmed));
-        }
-    }
-
-    let window_size = match (window_width, window_height) {
-        (Some(w), Some(h)) if w >= 200 && h >= 150 => Some((w, h)),
-        _ => None,
-    };
-
-    let mut viewer_slots: [Option<WindowSlot>; 4] = [None; 4];
-    for i in 0..4 {
-        if let (Some(x), Some(y), Some(w), Some(h)) = (slot_x[i], slot_y[i], slot_w[i], slot_h[i]) {
-            if w >= 100 && h >= 100 {
-                viewer_slots[i] = Some(WindowSlot { x, y, w, h });
-            }
-        }
-    }
-
-    let sort_state = SortState {
-        key: sort_key.unwrap_or_else(|| "name".to_string()),
-        ascending: sort_ascending.unwrap_or(true),
-    };
-
-    Some(AppState {
-        last_dir,
-        window_size,
-        viewer_slots,
-        sort_state,
-        lang: lang.unwrap_or_else(|| "ja".to_string()),
-        viewer_cfg: ViewerConfig {
-            zoom_actual: viewer_zoom.unwrap_or(false),
-            fullscreen: viewer_fullscreen.unwrap_or(false),
-        },
-    })
-}
-
-pub fn save_state(dir: &Path, window_size: (u32, u32), viewer_slots: &[Option<WindowSlot>; 4], sort_state: &SortState, lang: &str, viewer_cfg: &ViewerConfig) {
-    let (Some(path), Some(bak), Some(tmp)) =
-        (state_path(), state_bak_path(), state_tmp_path())
-    else { return; };
-
-    let mut content = format!(
-        "last_dir={}\nwindow_width={}\nwindow_height={}\nsort_key={}\nsort_ascending={}\nlang={}\nviewer_zoom={}\nviewer_fullscreen={}\n",
-        dir.to_string_lossy(), window_size.0, window_size.1, sort_state.key, sort_state.ascending, lang,
-        viewer_cfg.zoom_actual, viewer_cfg.fullscreen,
-    );
-    for (i, slot) in viewer_slots.iter().enumerate() {
-        if let Some(s) = slot {
-            content.push_str(&format!(
-                "slot{n}_x={x}\nslot{n}_y={y}\nslot{n}_w={w}\nslot{n}_h={h}\n",
-                n = i + 1, x = s.x, y = s.y, w = s.w, h = s.h
-            ));
-        }
-    }
-
-    // アトミック書き込み: tmp に書いてから rename
-    if std::fs::write(&tmp, &content).is_err() { return; }
-    if std::fs::rename(&tmp, &path).is_err() {
-        let _ = std::fs::remove_file(&tmp);
-        return;
-    }
-    // 書き込み成功を確認してから bak に同内容をミラー
-    let _ = std::fs::write(&bak, &content);
-}
-
 fn resolve_fallback_dir(fixed: Option<&std::path::Path>) -> PathBuf {
     if let Some(p) = fixed {
         if p.is_dir() {
@@ -578,12 +375,21 @@ fn parse_bool(s: &str, default: bool) -> bool {
     }
 }
 
-fn parse_filter(s: &str) -> ResizeFilter {
+pub(crate) fn parse_filter(s: &str) -> ResizeFilter {
     match s {
         "nearest"   => ResizeFilter::Nearest,
         "catmullrom" => ResizeFilter::CatmullRom,
         "lanczos3"  => ResizeFilter::Lanczos3,
         _           => ResizeFilter::Triangle,
+    }
+}
+
+pub fn filter_to_str(f: ResizeFilter) -> &'static str {
+    match f {
+        ResizeFilter::Nearest    => "nearest",
+        ResizeFilter::Triangle   => "triangle",
+        ResizeFilter::CatmullRom => "catmullrom",
+        ResizeFilter::Lanczos3   => "lanczos3",
     }
 }
 
@@ -646,15 +452,22 @@ decode_threads = 0
 #   xdg   : ~/.local/share/nekoview/cache/ に保存（本番推奨）
 storage = local
 
-# ページキャッシュ（デコード済み画像）の最大メモリ上限（MB / 整数）。
-# 既定はシステムRAMの25%。最小値は64MB。
+# キャッシュ合計（ページキャッシュ+ファイルキャッシュ）の最大メモリ上限（MB / 整数）。
+# 内訳はページ70% : ファイル30%に自動分配されます。既定はシステムRAMの30%。最小値は64MB。
 # 通常は既定のままで問題ありません。指定する場合は行頭の '#' を外します。
-# max_mb = 1024
+# cache_total_mb = 2048
 
-# ファイルキャッシュ（圧縮ファイルまるごと）の最大メモリ上限（MB / 整数）。
-# 既定はシステムRAMの5%。最小値は16MB。
-# 通常は既定のままで問題ありません。指定する場合は行頭の '#' を外します。
-# file_cache_max_mb = 200
+# アニメーション（GIF/APNG/AVIF/WebP）のリングバッファ先読み枚数の下限・上限。
+# 解像度に応じてこの範囲内で自動調整されます（大きいほど滑らかだがメモリを使う）。
+# 空欄・不正値は既定（下限4 / 上限32）にフォールバックします。
+# anim_ring_min_frames = 4
+# anim_ring_max_frames = 32
+
+# アニメーション1フレームあたりの生デコードサイズ上限（MB / 整数、リサイズ前のw*h*4基準）。
+# 同一アニメ内で解像度が異常に大きいフレームに遭遇した際、そのフレームだけ縮小して再生を継続します。
+# 一般的なアニメ解像度（4K級まで）は約34MB程度に収まるため、既定100MBで十分な余裕があります。
+# 空欄・不正値は既定（100）にフォールバックします。
+# anim_frame_hard_limit_mb = 100
 
 # ── ログ ────────────────────────────────────────────────────────────────────
 [log]
