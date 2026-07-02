@@ -29,6 +29,15 @@ fn main() {
     log_common!("[startup] state loaded (window_size = {:?})", state.window_size);
     i18n::set_from_code(&state.lang);
 
+    // 設定ダイアログ（共通/アニメタブ）で編集された値は state 側が config.ini より優先される。
+    if let Some(v) = state.app_cache_max_mb { cfg.cache_max_mb = Some(v); }
+    if let Some(v) = state.app_file_cache_max_mb { cfg.file_cache_max_mb = Some(v); }
+    if let Some(v) = state.app_anim_ring_min_frames { cfg.anim_ring_min_frames = v; }
+    if let Some(v) = state.app_anim_ring_max_frames { cfg.anim_ring_max_frames = v; }
+    if let Some(v) = state.app_anim_frame_hard_limit_mb { cfg.anim_frame_hard_limit_mb = v; }
+    if let Some(v) = state.app_viewer_filter { cfg.viewer_filter = v; }
+    if let Some(v) = state.app_max_decode_edge { cfg.max_decode_edge = v; }
+
     let args = CliArgs::parse();
     if let Some(v) = args.cache_max_mb    { cfg.cache_max_mb      = Some(v.max(64)); }
     if let Some(v) = args.file_cache_max_mb { cfg.file_cache_max_mb = Some(v.max(16)); }

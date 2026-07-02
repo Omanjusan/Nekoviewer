@@ -232,22 +232,6 @@ impl Lang {
         }
     }
 
-    pub fn redecode_on(self) -> &'static str {
-        match self {
-            Lang::Japanese => "[再デコードON]",
-            Lang::English  => "[Redecode ON]",
-            Lang::Chinese  => "[重新解码ON]",
-        }
-    }
-
-    pub fn redecode_off(self) -> &'static str {
-        match self {
-            Lang::Japanese => "[再デコードOFF]",
-            Lang::English  => "[Redecode OFF]",
-            Lang::Chinese  => "[重新解码OFF]",
-        }
-    }
-
     pub fn redecode_debounce_label(self, ms: u64) -> String {
         match self {
             Lang::Japanese => format!("[デバウンス{ms}ms]"),
@@ -261,6 +245,247 @@ impl Lang {
             Lang::Japanese => format!("[位置F{n}]"),
             Lang::English  => format!("[SlotF{n}]"),
             Lang::Chinese  => format!("[位置F{n}]"),
+        }
+    }
+
+    /// 言語選択コンボボックス用の、その言語自身の正式名称（現在の表示言語に依存しない）。
+    pub fn native_name(self) -> &'static str {
+        match self {
+            Lang::Japanese => "日本語",
+            Lang::English  => "English",
+            Lang::Chinese  => "简体中文",
+        }
+    }
+
+    pub fn settings_button(self) -> &'static str {
+        match self {
+            Lang::Japanese => "[設定]",
+            Lang::English  => "[Settings]",
+            Lang::Chinese  => "[设置]",
+        }
+    }
+
+    pub fn settings_title(self) -> &'static str {
+        match self {
+            Lang::Japanese => "設定",
+            Lang::English  => "Settings",
+            Lang::Chinese  => "设置",
+        }
+    }
+
+    pub fn settings_close(self) -> &'static str {
+        match self {
+            Lang::Japanese => "閉じる",
+            Lang::English  => "Close",
+            Lang::Chinese  => "关闭",
+        }
+    }
+
+    pub fn settings_apply(self) -> &'static str {
+        match self {
+            Lang::Japanese => "反映",
+            Lang::English  => "Apply",
+            Lang::Chinese  => "应用",
+        }
+    }
+
+    pub fn settings_tab_common(self) -> &'static str {
+        match self {
+            Lang::Japanese => "共通",
+            Lang::English  => "Common",
+            Lang::Chinese  => "通用",
+        }
+    }
+
+    pub fn settings_tab_anim(self) -> &'static str {
+        match self {
+            Lang::Japanese => "アニメ設定",
+            Lang::English  => "Animation",
+            Lang::Chinese  => "动画设置",
+        }
+    }
+
+    pub fn settings_tab_static(self) -> &'static str {
+        match self {
+            Lang::Japanese => "静止画設定",
+            Lang::English  => "Still Image",
+            Lang::Chinese  => "静止图像设置",
+        }
+    }
+
+    pub fn settings_tab_other(self) -> &'static str {
+        match self {
+            Lang::Japanese => "その他",
+            Lang::English  => "Other",
+            Lang::Chinese  => "其他",
+        }
+    }
+
+    pub fn settings_next_launch_note(self) -> &'static str {
+        match self {
+            Lang::Japanese => "※ここの項目は次回起動時から反映されます",
+            Lang::English  => "* These settings take effect after restarting the app",
+            Lang::Chinese  => "※此处的设置将在下次启动后生效",
+        }
+    }
+
+    pub fn settings_base_resolution_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ベース解像度",
+            Lang::English  => "Base resolution",
+            Lang::Chinese  => "基础分辨率",
+        }
+    }
+
+    pub fn settings_base_resolution_actual(self) -> &'static str {
+        match self {
+            Lang::Japanese => "原寸",
+            Lang::English  => "Original size",
+            Lang::Chinese  => "原始尺寸",
+        }
+    }
+
+    pub fn settings_base_resolution_follow_window(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ウィンドウ追従",
+            Lang::English  => "Follow window size",
+            Lang::Chinese  => "跟随窗口",
+        }
+    }
+
+    pub fn settings_base_resolution_explain(self) -> &'static str {
+        match self {
+            Lang::Japanese => "「ウィンドウ追従」は、ビューアー窓のリサイズやズーム切替に合わせて表示解像度で再デコードする。「原寸」はファイルの元解像度のまま保持する（メモリ使用量は増えやすい）。",
+            Lang::English  => "\"Follow window size\" re-decodes images to match the viewer window's size on resize/zoom changes. \"Original size\" keeps the file's native resolution (uses more memory).",
+            Lang::Chinese  => "「跟随窗口」会在调整查看器窗口大小或切换缩放时,按显示分辨率重新解码。「原始尺寸」保持文件原始分辨率（更占内存）。",
+        }
+    }
+
+    pub fn settings_debounce_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "再デコードのデバウンス時間",
+            Lang::English  => "Redecode debounce delay",
+            Lang::Chinese  => "重新解码防抖延迟",
+        }
+    }
+
+    pub fn settings_debounce_explain(self) -> &'static str {
+        match self {
+            Lang::Japanese => "「ウィンドウ追従」時、リサイズ操作が止まってから再デコードを発火するまでの待ち時間。短いほど追従が速いが、リサイズ中の再デコード回数が増える。",
+            Lang::English  => "When following window size, the delay after resizing stops before a redecode fires. Shorter values react faster but redecode more often while resizing.",
+            Lang::Chinese  => "在「跟随窗口」模式下，从停止调整大小到触发重新解码之间的等待时间。数值越短响应越快，但调整过程中重新解码的次数也会增加。",
+        }
+    }
+
+    pub fn settings_cache_size_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "キャッシュサイズ (MB)",
+            Lang::English  => "Cache size (MB)",
+            Lang::Chinese  => "缓存大小 (MB)",
+        }
+    }
+
+    pub fn settings_cache_size_page(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ページキャッシュ上限",
+            Lang::English  => "Page cache limit",
+            Lang::Chinese  => "页面缓存上限",
+        }
+    }
+
+    pub fn settings_cache_size_file(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ファイルキャッシュ上限",
+            Lang::English  => "File cache limit",
+            Lang::Chinese  => "文件缓存上限",
+        }
+    }
+
+    pub fn settings_cache_size_auto(self) -> &'static str {
+        match self {
+            Lang::Japanese => "空欄=自動",
+            Lang::English  => "blank = auto",
+            Lang::Chinese  => "留空=自动",
+        }
+    }
+
+    pub fn settings_max_decode_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "取り扱い上限解像度（長辺）",
+            Lang::English  => "Max decode resolution (long edge)",
+            Lang::Chinese  => "最大解码分辨率（长边）",
+        }
+    }
+
+    pub fn settings_max_decode_explain(self) -> &'static str {
+        match self {
+            Lang::Japanese => "「原寸」モードで開く画像の長辺が、ここで指定した px を超える場合に縦横比を保って縮小して読み込むガードレール。短辺はそれに応じて自動的に収まる。メモリ使用量の暴走を防ぐための上限で、通常は変更不要。",
+            Lang::English  => "A guardrail that downsizes images whose long edge exceeds this many px when opened in \"Original size\" mode, keeping aspect ratio (the short edge shrinks proportionally). Prevents runaway memory use; usually no need to change.",
+            Lang::Chinese  => "当以「原始尺寸」模式打开的图像长边超过此处指定的px时，将保持宽高比按比例缩小（短边自动跟随缩小）以防止内存占用失控。通常无需更改。",
+        }
+    }
+
+    pub fn settings_resize_filter_viewer_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "リサイズフィルタ（ビューアー用・画質優先）",
+            Lang::English  => "Resize filter (viewer, quality-focused)",
+            Lang::Chinese  => "缩放滤镜（查看器用，注重画质）",
+        }
+    }
+
+    pub fn settings_resize_filter_thumb_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "リサイズフィルタ（サムネ用・速度優先）",
+            Lang::English  => "Resize filter (thumbnails, speed-focused)",
+            Lang::Chinese  => "缩放滤镜（缩略图用，注重速度）",
+        }
+    }
+
+    pub fn settings_lang_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "言語",
+            Lang::English  => "Language",
+            Lang::Chinese  => "语言",
+        }
+    }
+
+    pub fn settings_ring_bounds_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "リングバッファの先読み枚数（下限〜上限）",
+            Lang::English  => "Ring buffer prefetch frames (min - max)",
+            Lang::Chinese  => "环形缓冲区预读帧数（下限～上限）",
+        }
+    }
+
+    pub fn settings_ring_bounds_explain(self) -> &'static str {
+        match self {
+            Lang::Japanese => "GIF/APNG/AVIF/WebPアニメーションを逐次デコードする際、メモリに保持しておくフレーム数の範囲。多いほど滑らかだがメモリを消費する。",
+            Lang::English  => "The range of frames kept in memory while sequentially decoding GIF/APNG/AVIF/WebP animations. More frames play smoother but use more memory.",
+            Lang::Chinese  => "逐帧解码GIF/APNG/AVIF/WebP动画时，保留在内存中的帧数范围。数值越大播放越流畅，但内存占用也越高。",
+        }
+    }
+
+    pub fn settings_static_placeholder(self) -> &'static str {
+        match self {
+            Lang::Japanese => "現在、静止画専用の設定項目はありません",
+            Lang::English  => "No still-image-specific settings yet",
+            Lang::Chinese  => "目前没有静止图像专用设置项",
+        }
+    }
+
+    pub fn settings_version_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "バージョン",
+            Lang::English  => "Version",
+            Lang::Chinese  => "版本",
+        }
+    }
+
+    pub fn settings_viewer_blocked(self) -> &'static str {
+        match self {
+            Lang::Japanese => "設定変更中は操作できません",
+            Lang::English  => "Locked while settings are open",
+            Lang::Chinese  => "设置窗口打开期间无法操作",
         }
     }
 }

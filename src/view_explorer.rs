@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, mpsc};
 
 use crate::cache::{FileCache, LoadRequest, LoadResult, PageCache, ThumbRequest, ThumbResult, spawn_worker, spawn_thumb_worker, spawn_file_cache_worker};
-use crate::config::{AppConfig, SortState, ViewerConfig, WindowSlot};
+use crate::config::{AppConfig, ResizeFilter, SortState, ViewerConfig, WindowSlot, filter_to_str};
 use crate::controller::{self, ViewerNav};
 use crate::i18n;
 use crate::model::ExplorerSortKey;
@@ -42,6 +42,76 @@ enum TreeAction {
     None,
     ToggleExpand(PathBuf),
     Navigate(PathBuf),
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SettingsTab {
+    Common,
+    Anim,
+    Static,
+    Other,
+}
+
+/// 設定ダイアログの編集用下書き。[反映]を押すまでは AppConfig/ViewerConfig 本体には
+/// 一切書き戻さない（自由にタイプ・切り替えさせるための一時バッファ）。
+struct SettingsDraft {
+    redecode_on_resize: bool,
+    debounce_ms: u64,
+    cache_max_mb_text: String,
+    file_cache_max_mb_text: String,
+    max_decode_edge_text: String,
+    viewer_filter: ResizeFilter,
+    thumb_filter: ResizeFilter,
+    lang: i18n::Lang,
+    ring_min_text: String,
+    ring_max_text: String,
+}
+
+impl SettingsDraft {
+    fn from_current(config: &AppConfig, viewer_cfg: &ViewerConfig) -> Self {
+        Self {
+            redecode_on_resize: viewer_cfg.redecode_on_resize,
+            debounce_ms: viewer_cfg.resize_debounce_ms,
+            cache_max_mb_text: config.cache_max_mb.map(|v| v.to_string()).unwrap_or_default(),
+            file_cache_max_mb_text: config.file_cache_max_mb.map(|v| v.to_string()).unwrap_or_default(),
+            max_decode_edge_text: config.max_decode_edge.to_string(),
+            viewer_filter: config.viewer_filter,
+            thumb_filter: config.thumb_filter,
+            lang: i18n::t(),
+            ring_min_text: config.anim_ring_min_frames.to_string(),
+            ring_max_text: config.anim_ring_max_frames.to_string(),
+        }
+    }
+
+    /// [反映]クリック時に実際の設定へ書き戻す。数値が空欄/不正な場合は元の値を維持する。
+    fn apply_to(&self, config: &mut AppConfig, viewer_cfg: &mut ViewerConfig) {
+        viewer_cfg.redecode_on_resize = self.redecode_on_resize;
+        viewer_cfg.resize_debounce_ms = self.debounce_ms;
+        config.cache_max_mb = parse_optional_u64(&self.cache_max_mb_text);
+        config.file_cache_max_mb = parse_optional_u64(&self.file_cache_max_mb_text);
+        config.max_decode_edge = parse_clamped(&self.max_decode_edge_text, config.max_decode_edge, 256, 16384);
+        config.viewer_filter = self.viewer_filter;
+        config.thumb_filter = self.thumb_filter;
+        i18n::set(self.lang);
+
+        let mut min = parse_clamped(&self.ring_min_text, config.anim_ring_min_frames, 1, 256);
+        let mut max = parse_clamped(&self.ring_max_text, config.anim_ring_max_frames, 1, 256);
+        if min > max {
+            std::mem::swap(&mut min, &mut max);
+        }
+        config.anim_ring_min_frames = min;
+        config.anim_ring_max_frames = max;
+    }
+}
+
+fn parse_optional_u64(s: &str) -> Option<u64> {
+    let t = s.trim();
+    if t.is_empty() { None } else { t.parse().ok() }
+}
+
+/// 空欄/不正値は `fallback` を維持しつつ、[min, max] にクランプする。
+fn parse_clamped<T: std::str::FromStr + Ord + Copy>(s: &str, fallback: T, min: T, max: T) -> T {
+    s.trim().parse::<T>().ok().map(|v| v.clamp(min, max)).unwrap_or(fallback)
 }
 
 fn show_tree_node(
@@ -199,6 +269,10 @@ pub struct NekoviewApp {
     anim_ring_bounds: (usize, usize),
     /// フェーズ2: メモリ見積もり超過を知らせる確認ダイアログの表示状態
     memory_warning_open: bool,
+    /// 設定ダイアログの表示状態・選択中タブ・編集用下書き
+    settings_open: bool,
+    settings_tab: SettingsTab,
+    settings_draft: SettingsDraft,
     /// ビューアウィンドウをフォーカス前面に出すフラグ
     viewer_focus_requested: bool,
     show_hidden: bool,
@@ -232,6 +306,10 @@ impl NekoviewApp {
         let (cache_max, cache_min, file_cache_max) = crate::cache::resolve_cache_budgets(config.cache_max_mb, config.file_cache_max_mb);
         let ring_bounds = (config.anim_ring_min_frames, config.anim_ring_max_frames);
         let frame_hard_limit_bytes = config.anim_frame_hard_limit_mb * 1024 * 1024;
+        // 長辺px上限のみ指定し、正方形の箱として resize_for_display に渡す。
+        // fit-within(縦横比維持)なので短辺は箱の中に自動的に収まる。
+        let max_decode_target = (config.max_decode_edge, config.max_decode_edge);
+        let settings_draft = SettingsDraft::from_current(&config, &viewer_cfg);
         let (req_tx, res_rx) = spawn_worker(config.viewer_filter.to_image_filter(), config.resolved_decode_threads(), ctx.clone(), cache_max, ring_bounds, frame_hard_limit_bytes);
         let (thumb_req_tx, thumb_res_rx) = spawn_thumb_worker(config.thumb_filter.to_image_filter(), config.resolved_decode_threads(), ctx.clone());
         let (file_cache_req_tx, file_cache_res_rx) = spawn_file_cache_worker(ctx.clone());
@@ -301,6 +379,9 @@ impl NekoviewApp {
             cache_budget_bytes: cache_max,
             anim_ring_bounds: ring_bounds,
             memory_warning_open: false,
+            settings_open: false,
+            settings_tab: SettingsTab::Common,
+            settings_draft,
             viewer_focus_requested: false,
             show_hidden: false,
             sort_key: ExplorerSortKey::from_state_key(&sort_state.key),
@@ -317,7 +398,7 @@ impl NekoviewApp {
             egui_ctx: ctx,
             resize_redecode_last_seq: viewer_cfg.redecode_trigger_seq,
             resize_redecode_deadline: None,
-            decode_target: Some(crate::cache::DEFAULT_DECODE_TARGET),
+            decode_target: Some(max_decode_target),
         };
         app.start_scan();
         app
@@ -398,6 +479,18 @@ impl NekoviewApp {
         }
     }
 
+    /// カレントディレクトリ・ウィンドウ状態・ソート順・言語・ビューア設定・設定ダイアログで
+    /// 編集されうる AppConfig 値をまとめて state ファイルへ書き戻す。
+    fn persist_state(&self) {
+        crate::config::save_state(
+            &self.current_dir, self.window_size, &self.viewer_slots,
+            &SortState { key: self.sort_key.as_state_key().to_string(), ascending: self.sort_ascending },
+            i18n::lang_code(),
+            &*self.viewer_cfg.lock().unwrap(),
+            &self.config,
+        );
+    }
+
     fn sort_archives(&mut self) {
         let ascending = self.sort_ascending;
         match self.sort_key {
@@ -461,6 +554,87 @@ fn upload_texture(ctx: &egui::Context, name: &str, rgba: &image::RgbaImage) -> e
         rgba.as_raw(),
     );
     ctx.load_texture(name, color_image, egui::TextureOptions::LINEAR)
+}
+
+/// 数値テキスト入力1行分（空欄可・単位ラベル付き）。ユーザーが直接タイプできる、
+/// DragValue のような「ドラッグしないと分からない」操作を避けるための素朴な TextEdit。
+fn draw_text_field(ui: &mut egui::Ui, label: &str, text: &mut String, unit: &str, hint: &str) {
+    ui.horizontal(|ui| {
+        ui.label(label);
+        ui.add(egui::TextEdit::singleline(text).desired_width(70.0).hint_text(hint));
+        if !unit.is_empty() {
+            ui.label(unit);
+        }
+    });
+}
+
+/// リサイズフィルタ選択コンボボックス（共通タブで静止画・アニメ共通の1個を編集する）。
+fn draw_resize_filter_combo(ui: &mut egui::Ui, id: &str, value: &mut ResizeFilter) {
+    egui::ComboBox::from_id_salt(id)
+        .selected_text(filter_to_str(*value))
+        .show_ui(ui, |ui| {
+            for f in [ResizeFilter::Nearest, ResizeFilter::Triangle, ResizeFilter::CatmullRom, ResizeFilter::Lanczos3] {
+                ui.selectable_value(value, f, filter_to_str(f));
+            }
+        });
+}
+
+fn draw_settings_tab_common(ui: &mut egui::Ui, draft: &mut SettingsDraft) {
+    ui.label(i18n::t().settings_base_resolution_label());
+    ui.horizontal(|ui| {
+        ui.radio_value(&mut draft.redecode_on_resize, false, i18n::t().settings_base_resolution_actual());
+        ui.radio_value(&mut draft.redecode_on_resize, true, i18n::t().settings_base_resolution_follow_window());
+    });
+    ui.label(i18n::t().settings_base_resolution_explain());
+    ui.separator();
+
+    ui.label(i18n::t().settings_debounce_label());
+    if ui.button(i18n::t().redecode_debounce_label(draft.debounce_ms)).clicked() {
+        draft.debounce_ms = crate::config::next_debounce_ms(draft.debounce_ms);
+    }
+    ui.label(i18n::t().settings_debounce_explain());
+    ui.separator();
+
+    ui.label(i18n::t().settings_cache_size_label());
+    let auto_hint = i18n::t().settings_cache_size_auto();
+    draw_text_field(ui, i18n::t().settings_cache_size_page(), &mut draft.cache_max_mb_text, "MB", auto_hint);
+    draw_text_field(ui, i18n::t().settings_cache_size_file(), &mut draft.file_cache_max_mb_text, "MB", auto_hint);
+    ui.separator();
+
+    draw_text_field(ui, i18n::t().settings_max_decode_label(), &mut draft.max_decode_edge_text, "px", "");
+    ui.label(i18n::t().settings_max_decode_explain());
+    ui.separator();
+
+    ui.label(i18n::t().settings_resize_filter_viewer_label());
+    draw_resize_filter_combo(ui, "common_viewer_filter", &mut draft.viewer_filter);
+    ui.add_space(4.0);
+    ui.label(i18n::t().settings_resize_filter_thumb_label());
+    draw_resize_filter_combo(ui, "common_thumb_filter", &mut draft.thumb_filter);
+    ui.separator();
+
+    ui.label(i18n::t().settings_lang_label());
+    egui::ComboBox::from_id_salt("settings_lang")
+        .selected_text(draft.lang.native_name())
+        .show_ui(ui, |ui| {
+            for lang in [i18n::Lang::Japanese, i18n::Lang::English, i18n::Lang::Chinese] {
+                ui.selectable_value(&mut draft.lang, lang, lang.native_name());
+            }
+        });
+
+    ui.add_space(8.0);
+    ui.label(i18n::t().settings_next_launch_note());
+}
+
+fn draw_settings_tab_anim(ui: &mut egui::Ui, draft: &mut SettingsDraft) {
+    ui.label(i18n::t().settings_ring_bounds_label());
+    ui.horizontal(|ui| {
+        ui.add(egui::TextEdit::singleline(&mut draft.ring_min_text).desired_width(50.0));
+        ui.label("-");
+        ui.add(egui::TextEdit::singleline(&mut draft.ring_max_text).desired_width(50.0));
+    });
+    ui.label(i18n::t().settings_ring_bounds_explain());
+    ui.separator();
+    ui.label(i18n::t().settings_next_launch_note());
 }
 
 impl NekoviewApp {
@@ -579,7 +753,7 @@ impl NekoviewApp {
 
     /// 終了時に状態を永続化する（旧 eframe::App::on_exit 相当）。
     pub fn on_exit(&mut self) {
-        crate::config::save_state(&self.current_dir, self.window_size, &self.viewer_slots, &SortState { key: self.sort_key.as_state_key().to_string(), ascending: self.sort_ascending }, i18n::lang_code(), &*self.viewer_cfg.lock().unwrap());
+        self.persist_state();
     }
 
     /// エクスプローラー窓の中身を描画する（旧 eframe::App::ui 相当）。
@@ -631,6 +805,7 @@ impl NekoviewApp {
         self.draw_status_window(&ctx);
         self.draw_toast(&ctx);
         self.draw_memory_warning_dialog(&ctx);
+        self.draw_settings_dialog(&ctx);
         // 旧来の無条件 ctx.request_repaint() は撤去（イベント駆動化）。
         // ROOT は入力イベント・各ワーカーの起床通知・ステータス窓の1Hzハートビートで再描画される。
     }
@@ -793,6 +968,19 @@ impl NekoviewApp {
         // 呼ぶことで、エクスプローラー窓の再描画タイミングに依存しないようにする。
         self.poll_resize_redecode(ui.ctx());
 
+        // 設定ダイアログ表示中は、エクスプローラー窓と合わせてビューアー窓側の操作も
+        // ブロックする。独立 OS 窓（別 egui::Context）なので winit_app 側の入力横取りは
+        // 使わない。egui::Modal はレイヤー順で「後に出した方が最前面」になるため、通常の
+        // viewer.show() より後に出しても既に処理済みのウィジェットの入力は防げない
+        // （同一フレーム内で先に走った側が先に入力を消費してしまう）。そのため
+        // viewer.show() 自体を呼ばず、Modal だけを描いて操作を完全に止める。
+        if self.settings_is_open() {
+            egui::Modal::new(egui::Id::new("viewer_settings_blocked")).show(ui.ctx(), |ui| {
+                ui.label(i18n::t().settings_viewer_blocked());
+            });
+            return;
+        }
+
         // エクスプローラー窓が起きていなくてもページ送りが進むよう、
         // ここでワーカー結果回収（res_rx drain）と先読みを回す。
         self.pump_viewer_pages();
@@ -809,7 +997,7 @@ impl NekoviewApp {
 
         if let Some(slots) = output.save_slots {
             self.viewer_slots = slots;
-            crate::config::save_state(&self.current_dir, self.window_size, &self.viewer_slots, &SortState { key: self.sort_key.as_state_key().to_string(), ascending: self.sort_ascending }, i18n::lang_code(), &*self.viewer_cfg.lock().unwrap());
+            self.persist_state();
         }
 
         let had_nav = output.nav != ViewerNav::None;
@@ -1038,53 +1226,10 @@ impl NekoviewApp {
 
                 ui.separator();
 
-                // ── フェーズ6: 再デコードトグル・デバウンスサイクル ───────
-                // ビューアー個別ではなく全アニメーション共通の設定のため、親のエクスプ
-                // ローラー窓側に配置する。
-                let (redecode_on, debounce_ms) = {
-                    let cfg = self.viewer_cfg.lock().unwrap();
-                    (cfg.redecode_on_resize, cfg.resize_debounce_ms)
-                };
-                let toggle_label = if redecode_on { i18n::t().redecode_on() } else { i18n::t().redecode_off() };
-                if ui.button(toggle_label).clicked() {
-                    self.viewer_cfg.lock().unwrap().redecode_on_resize = !redecode_on;
-                    crate::config::save_state(
-                        &self.current_dir, self.window_size,
-                        &self.viewer_slots,
-                        &SortState { key: self.sort_key.as_state_key().to_string(), ascending: self.sort_ascending },
-                        i18n::lang_code(),
-                        &*self.viewer_cfg.lock().unwrap(),
-                    );
-                }
-                if ui.button(i18n::t().redecode_debounce_label(debounce_ms)).clicked() {
-                    self.viewer_cfg.lock().unwrap().resize_debounce_ms = crate::config::next_debounce_ms(debounce_ms);
-                    crate::config::save_state(
-                        &self.current_dir, self.window_size,
-                        &self.viewer_slots,
-                        &SortState { key: self.sort_key.as_state_key().to_string(), ascending: self.sort_ascending },
-                        i18n::lang_code(),
-                        &*self.viewer_cfg.lock().unwrap(),
-                    );
-                }
-
-                ui.separator();
-
-                for (lang, code) in [
-                    (i18n::Lang::Chinese,  "cn"),
-                    (i18n::Lang::English,  "en"),
-                    (i18n::Lang::Japanese, "ja"),
-                ] {
-                    let active = i18n::t() == lang;
-                    if ui.selectable_label(active, code).clicked() && !active {
-                        i18n::set(lang);
-                        crate::config::save_state(
-                            &self.current_dir, self.window_size,
-                            &self.viewer_slots,
-                            &SortState { key: self.sort_key.as_state_key().to_string(), ascending: self.sort_ascending },
-                            i18n::lang_code(),
-                            &*self.viewer_cfg.lock().unwrap(),
-                        );
-                    }
+                // 設定ダイアログを開く。旧・再デコードトグル/デバウンスサイクル/言語切替
+                // ボタン列はダイアログの「共通」タブに統合した。
+                if ui.button(i18n::t().settings_button()).clicked() {
+                    self.open_settings();
                 }
             });
         });
@@ -1140,7 +1285,7 @@ impl NekoviewApp {
                 self.viewing_dir = Some(path.clone());
                 self.start_scan(); // cache_db をここで確定させてから clone して渡す
                 self.cd_summary_rx = Some(spawn_summary_worker(path.clone(), self.cache_db.clone(), self.egui_ctx.clone()));
-                crate::config::save_state(&self.current_dir, self.window_size, &self.viewer_slots, &SortState { key: self.sort_key.as_state_key().to_string(), ascending: self.sort_ascending }, i18n::lang_code(), &*self.viewer_cfg.lock().unwrap());
+                self.persist_state();
             }
         }
 
@@ -1177,7 +1322,7 @@ impl NekoviewApp {
                                 move || c.request_repaint()
                             }),
                         });
-                        crate::config::save_state(&self.current_dir, self.window_size, &self.viewer_slots, &SortState { key: self.sort_key.as_state_key().to_string(), ascending: self.sort_ascending }, i18n::lang_code(), &*self.viewer_cfg.lock().unwrap());
+                        self.persist_state();
                     }
                 }
             });
@@ -1491,6 +1636,86 @@ impl NekoviewApp {
     }
 
     /// フェーズ2: メモリ見積もり超過の確認ダイアログを描画する（OKボタンのみ）
+    /// 設定ダイアログが開いているか（ビューアー窓側の操作ブロック判定にも使う）。
+    pub fn settings_is_open(&self) -> bool {
+        self.settings_open
+    }
+
+    /// 設定ダイアログを開く。編集用の下書き(draft)を現在値から作り直す
+    /// （[反映]を押すまで実際の設定には反映されない）。
+    pub fn open_settings(&mut self) {
+        self.settings_draft = SettingsDraft::from_current(&self.config, &self.viewer_cfg.lock().unwrap());
+        self.settings_open = true;
+    }
+
+    /// 設定ダイアログ本体。`egui::Modal` はこの `ctx`（エクスプローラー窓）内の入力を
+    /// 自動的にブロックする。ビューアー窓側は別 Context のため、`render_viewer` 側で
+    /// 同様の Modal を出して操作を止める（`settings_is_open()` 参照）。
+    /// 各タブの入力は draft（`self.settings_draft`）に対して自由に編集させ、
+    /// タブ共通の[反映]/[閉じる]ボタンでのみ実際の設定へ書き戻す。
+    fn draw_settings_dialog(&mut self, ctx: &egui::Context) {
+        if !self.settings_open {
+            return;
+        }
+        let mut close = false;
+        let mut apply = false;
+        egui::Modal::new(egui::Id::new("settings_dialog")).show(ctx, |ui| {
+            ui.set_min_width(460.0);
+            ui.heading(i18n::t().settings_title());
+            ui.separator();
+
+            ui.horizontal(|ui| {
+                for (tab, label) in [
+                    (SettingsTab::Common, i18n::t().settings_tab_common()),
+                    (SettingsTab::Anim, i18n::t().settings_tab_anim()),
+                    (SettingsTab::Static, i18n::t().settings_tab_static()),
+                    (SettingsTab::Other, i18n::t().settings_tab_other()),
+                ] {
+                    ui.selectable_value(&mut self.settings_tab, tab, label);
+                }
+            });
+            ui.separator();
+
+            match self.settings_tab {
+                SettingsTab::Common => draw_settings_tab_common(ui, &mut self.settings_draft),
+                SettingsTab::Anim => draw_settings_tab_anim(ui, &mut self.settings_draft),
+                SettingsTab::Static => self.draw_settings_tab_static(ui),
+                SettingsTab::Other => self.draw_settings_tab_other(ui),
+            }
+
+            ui.separator();
+            // GTK/GNOME 慣習（キャンセル系=左、既定/主アクション=右）に合わせて
+            // [閉じる]を左、主アクションの[反映]を右に置く。
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.button(i18n::t().settings_apply()).clicked() {
+                    apply = true;
+                }
+                if ui.button(i18n::t().settings_close()).clicked() {
+                    close = true;
+                }
+            });
+        });
+        if apply {
+            self.settings_draft.apply_to(&mut self.config, &mut self.viewer_cfg.lock().unwrap());
+            self.persist_state();
+            close = true;
+        }
+        if close {
+            self.settings_open = false;
+        }
+    }
+
+    fn draw_settings_tab_static(&mut self, ui: &mut egui::Ui) {
+        ui.label(i18n::t().settings_static_placeholder());
+    }
+
+    fn draw_settings_tab_other(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            ui.label(i18n::t().settings_version_label());
+            ui.label(env!("CARGO_PKG_VERSION"));
+        });
+    }
+
     fn draw_memory_warning_dialog(&mut self, ctx: &egui::Context) {
         if !self.memory_warning_open {
             return;

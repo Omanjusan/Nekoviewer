@@ -37,7 +37,7 @@ pub enum CacheStorage {
     Xdg,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 pub enum ResizeFilter {
     Nearest,
     Triangle,
@@ -84,6 +84,9 @@ pub struct AppConfig {
     pub anim_ring_max_frames: usize,
     /// アニメーション1フレームあたりの生デコードサイズ上限（MB、フェーズ5）。空欄/不正値は既定100。
     pub anim_frame_hard_limit_mb: usize,
+    /// 表示デコードの取り扱い上限（長辺px）。短辺は縦横比を保って自動的に収まる。
+    /// config.ini には持たず、既定値はここに直書き（stateファイル経由の上書きのみ）。
+    pub max_decode_edge: u32,
 }
 
 impl AppConfig {
@@ -139,6 +142,7 @@ impl AppConfig {
             anim_ring_min_frames: parsed.anim_ring_min_frames.0,
             anim_ring_max_frames: parsed.anim_ring_max_frames.0,
             anim_frame_hard_limit_mb: parsed.anim_frame_hard_limit_mb.0,
+            max_decode_edge: 1920,
         }
     }
 
@@ -416,6 +420,16 @@ pub struct AppState {
     pub lang: String,
     /// ファイル切替後も維持するビューア設定
     pub viewer_cfg: ViewerConfig,
+    /// 設定ダイアログ（共通/アニメタブ）から編集された AppConfig 上書き値。
+    /// None のものは config.ini の値をそのまま使う。一度でもダイアログで変更すると
+    /// この state 側の値が以後 config.ini より優先される（次回起動反映）。
+    pub app_cache_max_mb: Option<u64>,
+    pub app_file_cache_max_mb: Option<u64>,
+    pub app_anim_ring_min_frames: Option<usize>,
+    pub app_anim_ring_max_frames: Option<usize>,
+    pub app_anim_frame_hard_limit_mb: Option<usize>,
+    pub app_viewer_filter: Option<ResizeFilter>,
+    pub app_max_decode_edge: Option<u32>,
 }
 
 impl Default for AppState {
@@ -427,6 +441,13 @@ impl Default for AppState {
             sort_state: SortState::default(),
             lang: "ja".to_string(),
             viewer_cfg: ViewerConfig::default(),
+            app_cache_max_mb: None,
+            app_file_cache_max_mb: None,
+            app_anim_ring_min_frames: None,
+            app_anim_ring_max_frames: None,
+            app_anim_frame_hard_limit_mb: None,
+            app_viewer_filter: None,
+            app_max_decode_edge: None,
         }
     }
 }
@@ -481,6 +502,13 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
     let mut viewer_fullscreen: Option<bool> = None;
     let mut redecode_on_resize: Option<bool> = None;
     let mut resize_debounce_ms: Option<u64> = None;
+    let mut app_cache_max_mb: Option<u64> = None;
+    let mut app_file_cache_max_mb: Option<u64> = None;
+    let mut app_anim_ring_min_frames: Option<usize> = None;
+    let mut app_anim_ring_max_frames: Option<usize> = None;
+    let mut app_anim_frame_hard_limit_mb: Option<usize> = None;
+    let mut app_viewer_filter: Option<ResizeFilter> = None;
+    let mut app_max_decode_edge: Option<u32> = None;
     let mut has_kv = false;
 
     for line in content.lines() {
@@ -531,6 +559,16 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
                     resize_debounce_ms = v.trim().parse::<u64>().ok()
                         .filter(|n| (100..=1000).contains(n) && n % 100 == 0);
                 }
+                "app_cache_max_mb" => { app_cache_max_mb = v.trim().parse().ok(); }
+                "app_file_cache_max_mb" => { app_file_cache_max_mb = v.trim().parse().ok(); }
+                "app_anim_ring_min_frames" => { app_anim_ring_min_frames = v.trim().parse().ok(); }
+                "app_anim_ring_max_frames" => { app_anim_ring_max_frames = v.trim().parse().ok(); }
+                "app_anim_frame_hard_limit_mb" => { app_anim_frame_hard_limit_mb = v.trim().parse().ok(); }
+                "app_viewer_filter" => {
+                    let v = v.trim();
+                    if !v.is_empty() { app_viewer_filter = Some(parse_filter(v)); }
+                }
+                "app_max_decode_edge" => { app_max_decode_edge = v.trim().parse().ok(); }
                 _ => {}
             }
         }
@@ -576,10 +614,17 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
             resize_debounce_ms: resize_debounce_ms.unwrap_or(300),
             redecode_trigger_seq: 0,
         },
+        app_cache_max_mb,
+        app_file_cache_max_mb,
+        app_anim_ring_min_frames,
+        app_anim_ring_max_frames,
+        app_anim_frame_hard_limit_mb,
+        app_viewer_filter,
+        app_max_decode_edge,
     })
 }
 
-pub fn save_state(dir: &Path, window_size: (u32, u32), viewer_slots: &[Option<WindowSlot>; 4], sort_state: &SortState, lang: &str, viewer_cfg: &ViewerConfig) {
+pub fn save_state(dir: &Path, window_size: (u32, u32), viewer_slots: &[Option<WindowSlot>; 4], sort_state: &SortState, lang: &str, viewer_cfg: &ViewerConfig, app_cfg: &AppConfig) {
     let (Some(path), Some(bak), Some(tmp)) =
         (state_path(), state_bak_path(), state_tmp_path())
     else { return; };
@@ -590,6 +635,18 @@ pub fn save_state(dir: &Path, window_size: (u32, u32), viewer_slots: &[Option<Wi
         viewer_cfg.zoom_actual, viewer_cfg.fullscreen,
         viewer_cfg.redecode_on_resize, viewer_cfg.resize_debounce_ms,
     );
+    // 設定ダイアログ（共通/アニメタブ）が編集する AppConfig 系の値。次回起動から反映されるため、
+    // ここでは現在の有効値をそのまま state に書き戻すだけでよい（即時のワーカー再構築は不要）。
+    content.push_str(&format!(
+        "app_cache_max_mb={}\napp_file_cache_max_mb={}\napp_anim_ring_min_frames={}\napp_anim_ring_max_frames={}\napp_anim_frame_hard_limit_mb={}\napp_viewer_filter={}\napp_max_decode_edge={}\n",
+        app_cfg.cache_max_mb.map(|v| v.to_string()).unwrap_or_default(),
+        app_cfg.file_cache_max_mb.map(|v| v.to_string()).unwrap_or_default(),
+        app_cfg.anim_ring_min_frames,
+        app_cfg.anim_ring_max_frames,
+        app_cfg.anim_frame_hard_limit_mb,
+        filter_to_str(app_cfg.viewer_filter),
+        app_cfg.max_decode_edge,
+    ));
     for (i, slot) in viewer_slots.iter().enumerate() {
         if let Some(s) = slot {
             content.push_str(&format!(
@@ -646,6 +703,15 @@ fn parse_filter(s: &str) -> ResizeFilter {
         "catmullrom" => ResizeFilter::CatmullRom,
         "lanczos3"  => ResizeFilter::Lanczos3,
         _           => ResizeFilter::Triangle,
+    }
+}
+
+pub fn filter_to_str(f: ResizeFilter) -> &'static str {
+    match f {
+        ResizeFilter::Nearest    => "nearest",
+        ResizeFilter::Triangle   => "triangle",
+        ResizeFilter::CatmullRom => "catmullrom",
+        ResizeFilter::Lanczos3   => "lanczos3",
     }
 }
 
