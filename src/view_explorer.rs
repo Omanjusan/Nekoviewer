@@ -586,6 +586,10 @@ fn draw_settings_tab_common(ui: &mut egui::Ui, draft: &mut SettingsDraft) {
         ui.radio_value(&mut draft.redecode_on_resize, true, i18n::t().settings_base_resolution_follow_window());
     });
     ui.label(i18n::t().settings_base_resolution_explain());
+
+    draw_text_field(ui, i18n::t().settings_max_decode_label(), &mut draft.max_decode_edge_text, "px", "");
+    ui.label(i18n::t().settings_max_decode_explain());
+
     ui.separator();
 
     ui.label(i18n::t().settings_debounce_label());
@@ -601,9 +605,6 @@ fn draw_settings_tab_common(ui: &mut egui::Ui, draft: &mut SettingsDraft) {
     draw_text_field(ui, i18n::t().settings_cache_size_file(), &mut draft.file_cache_max_mb_text, "MB", auto_hint);
     ui.separator();
 
-    draw_text_field(ui, i18n::t().settings_max_decode_label(), &mut draft.max_decode_edge_text, "px", "");
-    ui.label(i18n::t().settings_max_decode_explain());
-    ui.separator();
 
     ui.label(i18n::t().settings_resize_filter_viewer_label());
     draw_resize_filter_combo(ui, "common_viewer_filter", &mut draft.viewer_filter);
