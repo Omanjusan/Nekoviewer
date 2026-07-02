@@ -232,6 +232,30 @@ impl Lang {
         }
     }
 
+    pub fn redecode_on(self) -> &'static str {
+        match self {
+            Lang::Japanese => "[再デコードON]",
+            Lang::English  => "[Redecode ON]",
+            Lang::Chinese  => "[重新解码ON]",
+        }
+    }
+
+    pub fn redecode_off(self) -> &'static str {
+        match self {
+            Lang::Japanese => "[再デコードOFF]",
+            Lang::English  => "[Redecode OFF]",
+            Lang::Chinese  => "[重新解码OFF]",
+        }
+    }
+
+    pub fn redecode_debounce_label(self, ms: u64) -> String {
+        match self {
+            Lang::Japanese => format!("[デバウンス{ms}ms]"),
+            Lang::English  => format!("[Debounce {ms}ms]"),
+            Lang::Chinese  => format!("[防抖{ms}ms]"),
+        }
+    }
+
     pub fn slot_label(self, n: usize) -> String {
         match self {
             Lang::Japanese => format!("[位置F{n}]"),
