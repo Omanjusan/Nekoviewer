@@ -906,38 +906,54 @@ impl ViewerState {
                         self.textures.insert(orig_i, tex);
                     }
                 }
-                Some(PageContent::Animated(anim)) => {
+                Some(PageContent::Animated(ring)) => {
+                    // フェーズ3/3.5: GIF/APNG/AVIF/WebP。全フレーム常駐ではなく逐次デコード+リングバッファ。
+                    // デコーダが終端(None)を返した時点をループ境界とみなし restart() する
+                    // (この再デコードによる一瞬のフリーズは許容する設計上の割り切り)。
                     let state = self.anim_states.entry(orig_i).or_insert_with(|| AnimState {
                         frame_index: 0,
                         last_frame_at: now,
                     });
                     let elapsed = now.duration_since(state.last_frame_at);
-                    let current_delay = anim.frames[state.frame_index].delay;
+                    let current_delay = ring
+                        .with_frame(state.frame_index, |f| f.delay)
+                        .unwrap_or(Duration::from_millis(100));
 
-                    let needs_upload = if elapsed >= current_delay {
-                        state.frame_index = (state.frame_index + 1) % anim.frames.len();
+                    let mut needs_upload = !self.textures.contains_key(&orig_i);
+                    if elapsed >= current_delay {
+                        let next_index = state.frame_index + 1;
+                        if ring.with_frame(next_index, |_| ()).is_some() {
+                            state.frame_index = next_index;
+                        } else {
+                            ring.restart();
+                            state.frame_index = 0;
+                        }
                         state.last_frame_at = now;
-                        true
-                    } else {
-                        !self.textures.contains_key(&orig_i)
-                    };
+                        needs_upload = true;
+                    }
 
                     if needs_upload {
-                        let img = &anim.frames[state.frame_index].image;
-                        let color_image = egui::ColorImage::from_rgba_unmultiplied(
-                            [img.width() as usize, img.height() as usize],
-                            img.as_raw(),
-                        );
-                        let tex = ctx.load_texture(
-                            format!("page_{orig_i}"),
-                            color_image,
-                            egui::TextureOptions::LINEAR,
-                        );
-                        self.textures.insert(orig_i, tex);
+                        let payload = ring.with_frame(state.frame_index, |f| {
+                            (f.image.width(), f.image.height(), f.image.as_raw().clone())
+                        });
+                        if let Some((w, h, raw)) = payload {
+                            let color_image = egui::ColorImage::from_rgba_unmultiplied(
+                                [w as usize, h as usize],
+                                &raw,
+                            );
+                            let tex = ctx.load_texture(
+                                format!("page_{orig_i}"),
+                                color_image,
+                                egui::TextureOptions::LINEAR,
+                            );
+                            self.textures.insert(orig_i, tex);
+                        }
                     }
 
                     let elapsed_after_upload = now.duration_since(state.last_frame_at);
-                    let next_delay = anim.frames[state.frame_index].delay;
+                    let next_delay = ring
+                        .with_frame(state.frame_index, |f| f.delay)
+                        .unwrap_or(Duration::from_millis(100));
                     let remaining = next_delay.saturating_sub(elapsed_after_upload);
                     min_repaint_after = min_repaint_after.min(remaining);
                 }
