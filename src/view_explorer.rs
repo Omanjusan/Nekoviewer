@@ -63,8 +63,10 @@ struct SettingsDraft {
     viewer_filter: ResizeFilter,
     thumb_filter: ResizeFilter,
     lang: i18n::Lang,
-    ring_min_text: String,
-    ring_max_text: String,
+    // リングバッファ上下限はテキスト入力だと範囲外の値をタイプできてしまいフールプルーフで
+    // ないため、Slider で常に有効範囲内の値しか持てないようにする（min<=max もUI側で保証）。
+    ring_min: usize,
+    ring_max: usize,
 }
 
 impl SettingsDraft {
@@ -78,8 +80,8 @@ impl SettingsDraft {
             viewer_filter: config.viewer_filter,
             thumb_filter: config.thumb_filter,
             lang: i18n::t(),
-            ring_min_text: config.anim_ring_min_frames.to_string(),
-            ring_max_text: config.anim_ring_max_frames.to_string(),
+            ring_min: config.anim_ring_min_frames,
+            ring_max: config.anim_ring_max_frames,
         }
     }
 
@@ -94,13 +96,8 @@ impl SettingsDraft {
         config.thumb_filter = self.thumb_filter;
         i18n::set(self.lang);
 
-        let mut min = parse_clamped(&self.ring_min_text, config.anim_ring_min_frames, 1, 256);
-        let mut max = parse_clamped(&self.ring_max_text, config.anim_ring_max_frames, 1, 256);
-        if min > max {
-            std::mem::swap(&mut min, &mut max);
-        }
-        config.anim_ring_min_frames = min;
-        config.anim_ring_max_frames = max;
+        config.anim_ring_min_frames = self.ring_min;
+        config.anim_ring_max_frames = self.ring_max;
     }
 }
 
@@ -625,11 +622,11 @@ fn draw_settings_tab_common(ui: &mut egui::Ui, draft: &mut SettingsDraft) {
 
 fn draw_settings_tab_anim(ui: &mut egui::Ui, draft: &mut SettingsDraft) {
     ui.label(i18n::t().settings_ring_bounds_label());
-    ui.horizontal(|ui| {
-        ui.add(egui::TextEdit::singleline(&mut draft.ring_min_text).desired_width(50.0));
-        ui.label("-");
-        ui.add(egui::TextEdit::singleline(&mut draft.ring_max_text).desired_width(50.0));
-    });
+    // Slider は値域(1..=60)外を選べないため、テキスト入力よりフールプルーフ。
+    // 下限スライダーの上端を現在の上限に、上限スライダーの下端を現在の下限に連動させ、
+    // min<=max もUI操作だけで常に保証する。
+    ui.add(egui::Slider::new(&mut draft.ring_min, 1..=draft.ring_max).text(i18n::t().settings_ring_min_label()));
+    ui.add(egui::Slider::new(&mut draft.ring_max, draft.ring_min..=60).text(i18n::t().settings_ring_max_label()));
     ui.label(i18n::t().settings_ring_bounds_explain());
 }
 

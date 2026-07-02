@@ -458,6 +458,22 @@ impl Lang {
         }
     }
 
+    pub fn settings_ring_min_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "下限",
+            Lang::English  => "Min",
+            Lang::Chinese  => "下限",
+        }
+    }
+
+    pub fn settings_ring_max_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "上限",
+            Lang::English  => "Max",
+            Lang::Chinese  => "上限",
+        }
+    }
+
     pub fn settings_ring_bounds_explain(self) -> &'static str {
         match self {
             Lang::Japanese => "GIF/APNG/AVIF/WebPアニメーションを逐次デコードする際、メモリに保持しておくフレーム数の範囲。多いほど滑らかだがメモリを消費する。",
