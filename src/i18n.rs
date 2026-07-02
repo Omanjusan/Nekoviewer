@@ -356,9 +356,9 @@ impl Lang {
 
     pub fn settings_base_resolution_explain(self) -> &'static str {
         match self {
-            Lang::Japanese => "「ウィンドウ追従」は、ビューアー窓のリサイズやズーム切替に合わせて表示解像度で再デコードする。「原寸」はファイルの元解像度のまま保持する（メモリ使用量は増えやすい）。",
-            Lang::English  => "\"Follow window size\" re-decodes images to match the viewer window's size on resize/zoom changes. \"Original size\" keeps the file's native resolution (uses more memory).",
-            Lang::Chinese  => "「跟随窗口」会在调整查看器窗口大小或切换缩放时,按显示分辨率重新解码。「原始尺寸」保持文件原始分辨率（更占内存）。",
+            Lang::Japanese => "「ウィンドウ追従」は、ビューアー窓のリサイズやズーム切替に合わせて表示解像度で再デコードする。「原寸」は縦横比を保ったまま、下の「原寸時に許容する最大長辺幅」に収まる解像度で保持する（無制限ではない）。",
+            Lang::English  => "\"Follow window size\" re-decodes images to match the viewer window's size on resize/zoom changes. \"Original size\" keeps the file's resolution (aspect ratio preserved) up to the \"Max long edge for original size\" limit below — not truly unlimited.",
+            Lang::Chinese  => "「跟随窗口」会在调整查看器窗口大小或切换缩放时,按显示分辨率重新解码。「原始尺寸」在保持宽高比的前提下，保留不超过下方「原始尺寸下允许的最大长边」的分辨率（并非无限制）。",
         }
     }
 
@@ -412,17 +412,17 @@ impl Lang {
 
     pub fn settings_max_decode_label(self) -> &'static str {
         match self {
-            Lang::Japanese => "※ 取り扱い上限解像度（長辺）",
-            Lang::English  => "※ Max decode resolution (long edge)",
-            Lang::Chinese  => "※ 最大解码分辨率（长边）",
+            Lang::Japanese => "※ 原寸時に許容する最大長辺幅",
+            Lang::English  => "※ Max long edge for original size",
+            Lang::Chinese  => "※ 原始尺寸下允许的最大长边",
         }
     }
 
     pub fn settings_max_decode_explain(self) -> &'static str {
         match self {
-            Lang::Japanese => "「原寸」モードで開く画像の長辺が、ここで指定した px を超える場合に縦横比を保って縮小して読み込むガードレール。短辺はそれに応じて自動的に収まる。メモリ使用量の暴走を防ぐための上限で、通常は変更不要。",
-            Lang::English  => "A guardrail that downsizes images whose long edge exceeds this many px when opened in \"Original size\" mode, keeping aspect ratio (the short edge shrinks proportionally). Prevents runaway memory use; usually no need to change.",
-            Lang::Chinese  => "当以「原始尺寸」模式打开的图像长边超过此处指定的px时，将保持宽高比按比例缩小（短边自动跟随缩小）以防止内存占用失控。通常无需更改。",
+            Lang::Japanese => "「原寸」モードの実体はこの値。画像の長辺がここで指定した px を超える場合、縦横比を保ったまま長辺がこの値に収まるよう縮小する（短辺は比率に応じて自動的に決まる）。メモリ使用量の暴走を防ぐための上限で、通常は変更不要。",
+            Lang::English  => "This value defines what \"Original size\" mode actually means: if an image's long edge exceeds this many px, it's downscaled so the long edge fits this value, aspect ratio preserved (the short edge follows proportionally). Prevents runaway memory use; usually no need to change.",
+            Lang::Chinese  => "「原始尺寸」模式的实际含义就是这个值：当图像长边超过此处指定的px时，将保持宽高比缩小，使长边收敛到该值（短边按比例自动决定）。用于防止内存占用失控，通常无需更改。",
         }
     }
 

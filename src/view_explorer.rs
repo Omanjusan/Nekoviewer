@@ -663,6 +663,17 @@ impl NekoviewApp {
         if !redecode_on {
             self.resize_redecode_last_seq = seq;
             self.resize_redecode_deadline = None;
+            // 「原寸」選択中は常にガードレール値（長辺 max_decode_edge）を使う。
+            // fire_resize_redecode() 経由で decode_target が None（無制限）になったまま
+            // 放置されると、一度でも「ウィンドウ追従」+ビューアー等倍ズームを使った後は
+            // 「原寸」に戻してもガードレールが永続的に外れたままになるバグがあったため、
+            // ここで毎フレーム復元する（実際に変化した時だけ再デコードを発火）。
+            let guardrail = Some((self.config.max_decode_edge, self.config.max_decode_edge));
+            if self.decode_target != guardrail {
+                self.decode_target = guardrail;
+                self.redecode_visible_pages(guardrail);
+                crate::log_common!("[resize-redecode] restored guardrail target={:?}", guardrail);
+            }
             return;
         }
         if seq != self.resize_redecode_last_seq {
@@ -696,10 +707,23 @@ impl NekoviewApp {
             }
         };
         self.decode_target = target;
+        let pages = self.redecode_visible_pages(target);
 
+        crate::log_common!(
+            "[resize-redecode] fired (generation={}, target={:?}, pages={})",
+            seq, target, pages,
+        );
+    }
+
+    /// 現在ビューアーに表示中のページ(見開き時は2枚)を、指定ターゲットサイズで再デコードさせる。
+    /// PageCacheから既存エントリを破棄し、新規LoadRequestを送るだけで、静止画・アニメーション
+    /// (RingAnimation)とも decode_ring_anim/resize_for_display 側の target_size配線に乗って
+    /// 統一的に再デコードされる（アニメは新規RingAnimationとして作られるため自然に再生位置が
+    /// 先頭へ戻る）。戻り値は再デコード対象にしたページ数（ログ用）。
+    fn redecode_visible_pages(&mut self, target: Option<(u32, u32)>) -> usize {
         let (path, is_raw_file, pages) = {
             let viewer = self.viewer.lock().unwrap();
-            let Some(v) = viewer.as_ref() else { return };
+            let Some(v) = viewer.as_ref() else { return 0 };
             let path = v.archive_path().clone();
             let is_raw_file = v.is_raw_file();
             let entries = v.entries();
@@ -735,10 +759,7 @@ impl NekoviewApp {
             v.invalidate_pages(&orig_indices);
         }
 
-        crate::log_common!(
-            "[resize-redecode] fired (generation={}, target={:?}, pages={})",
-            seq, target, pages.len(),
-        );
+        pages.len()
     }
 
     /// フェーズ6: ビューアー窓のリサイズを通知する（winit_app.rs の WindowEvent::Resized から呼ぶ）。
