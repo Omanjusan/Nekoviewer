@@ -987,7 +987,11 @@ impl ViewerState {
                         }
                     }
 
-                    let elapsed_after_upload = now.duration_since(state.last_frame_at);
+                    // デコード/リサイズ/アップロードに要した実時間を差し引くため、ここで時刻を取り直す
+                    // (loop開始時の `now` を使うと、上記処理のコストが remaining に反映されず
+                    //  次のrepaintが実処理時間分だけ遅延し、アニメ全体が一様に遅く見える)
+                    let now2 = Instant::now();
+                    let elapsed_after_upload = now2.duration_since(state.last_frame_at);
                     let next_delay = ring
                         .with_frame(state.frame_index, |f| f.delay)
                         .unwrap_or(Duration::from_millis(100));
