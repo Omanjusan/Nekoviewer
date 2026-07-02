@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.8.0] - 2026-07-02
+
+### Added
+
+- Added settings GUI
+
+### Changed
+
+- Animations now use a ring buffer, reducing memory usage
+
+### Fixed
+
+- Fixed animations playing back slower than intended
+
 ## [0.7.0] - 2026-06-30
 
 ### Added
