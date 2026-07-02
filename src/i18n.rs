@@ -321,11 +321,12 @@ impl Lang {
         }
     }
 
-    pub fn settings_next_launch_note(self) -> &'static str {
+    /// ダイアログ下部に1回だけ出す凡例。■=[反映]ですぐ効く、※=次回起動から効く。
+    pub fn settings_legend(self) -> &'static str {
         match self {
-            Lang::Japanese => "※ここの項目は次回起動時から反映されます",
-            Lang::English  => "* These settings take effect after restarting the app",
-            Lang::Chinese  => "※此处的设置将在下次启动后生效",
+            Lang::Japanese => "■ すぐ反映される項目　※ 次回起動時から反映される項目",
+            Lang::English  => "■ Takes effect immediately　※ Takes effect after restarting the app",
+            Lang::Chinese  => "■ 立即生效的项目　※ 下次启动后生效的项目",
         }
     }
 
@@ -379,9 +380,9 @@ impl Lang {
 
     pub fn settings_cache_size_label(self) -> &'static str {
         match self {
-            Lang::Japanese => "■ キャッシュサイズ (MB)",
-            Lang::English  => "■ Cache size (MB)",
-            Lang::Chinese  => "■ 缓存大小 (MB)",
+            Lang::Japanese => "※ キャッシュサイズ (MB)",
+            Lang::English  => "※ Cache size (MB)",
+            Lang::Chinese  => "※ 缓存大小 (MB)",
         }
     }
 
@@ -411,9 +412,9 @@ impl Lang {
 
     pub fn settings_max_decode_label(self) -> &'static str {
         match self {
-            Lang::Japanese => "■ 取り扱い上限解像度（長辺）",
-            Lang::English  => "■ Max decode resolution (long edge)",
-            Lang::Chinese  => "■ 最大解码分辨率（长边）",
+            Lang::Japanese => "※ 取り扱い上限解像度（長辺）",
+            Lang::English  => "※ Max decode resolution (long edge)",
+            Lang::Chinese  => "※ 最大解码分辨率（长边）",
         }
     }
 
@@ -427,17 +428,17 @@ impl Lang {
 
     pub fn settings_resize_filter_viewer_label(self) -> &'static str {
         match self {
-            Lang::Japanese => "■ リサイズフィルタ（ビューアー用）",
-            Lang::English  => "■ Resize filter (viewer)",
-            Lang::Chinese  => "■ 缩放滤镜（查看器用）",
+            Lang::Japanese => "※ リサイズフィルタ（ビューアー用）",
+            Lang::English  => "※ Resize filter (viewer)",
+            Lang::Chinese  => "※ 缩放滤镜（查看器用）",
         }
     }
 
     pub fn settings_resize_filter_thumb_label(self) -> &'static str {
         match self {
-            Lang::Japanese => "■ リサイズフィルタ（サムネ用）",
-            Lang::English  => "■ Resize filter (thumbnails)",
-            Lang::Chinese  => "■ 缩放滤镜（缩略图用）",
+            Lang::Japanese => "※ リサイズフィルタ（サムネ用）",
+            Lang::English  => "※ Resize filter (thumbnails)",
+            Lang::Chinese  => "※ 缩放滤镜（缩略图用）",
         }
     }
 
@@ -451,9 +452,9 @@ impl Lang {
 
     pub fn settings_ring_bounds_label(self) -> &'static str {
         match self {
-            Lang::Japanese => "■ リングバッファの先読み枚数（下限〜上限）",
-            Lang::English  => "■ Ring buffer prefetch frames (min - max)",
-            Lang::Chinese  => "■ 环形缓冲区预读帧数（下限～上限）",
+            Lang::Japanese => "※ リングバッファの先読み枚数（下限〜上限）",
+            Lang::English  => "※ Ring buffer prefetch frames (min - max)",
+            Lang::Chinese  => "※ 环形缓冲区预读帧数（下限～上限）",
         }
     }
 
@@ -475,9 +476,9 @@ impl Lang {
 
     pub fn settings_version_label(self) -> &'static str {
         match self {
-            Lang::Japanese => "■ バージョン",
-            Lang::English  => "■ Version",
-            Lang::Chinese  => "■ 版本",
+            Lang::Japanese => "バージョン",
+            Lang::English  => "Version",
+            Lang::Chinese  => "版本",
         }
     }
 

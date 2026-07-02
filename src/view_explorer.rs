@@ -621,9 +621,6 @@ fn draw_settings_tab_common(ui: &mut egui::Ui, draft: &mut SettingsDraft) {
                 ui.selectable_value(&mut draft.lang, lang, lang.native_name());
             }
         });
-
-    ui.add_space(8.0);
-    ui.label(i18n::t().settings_next_launch_note());
 }
 
 fn draw_settings_tab_anim(ui: &mut egui::Ui, draft: &mut SettingsDraft) {
@@ -634,8 +631,6 @@ fn draw_settings_tab_anim(ui: &mut egui::Ui, draft: &mut SettingsDraft) {
         ui.add(egui::TextEdit::singleline(&mut draft.ring_max_text).desired_width(50.0));
     });
     ui.label(i18n::t().settings_ring_bounds_explain());
-    ui.separator();
-    ui.label(i18n::t().settings_next_launch_note());
 }
 
 impl NekoviewApp {
@@ -1684,6 +1679,8 @@ impl NekoviewApp {
                 SettingsTab::Other => self.draw_settings_tab_other(ui),
             }
 
+            ui.separator();
+            ui.label(i18n::t().settings_legend());
             ui.separator();
             // GTK/GNOME 慣習（キャンセル系=左、既定/主アクション=右）に合わせて
             // [閉じる]を左、主アクションの[反映]を右に置く。
