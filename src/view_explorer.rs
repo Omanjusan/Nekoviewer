@@ -8,7 +8,7 @@ use crate::controller::{self, ViewerNav};
 use crate::i18n;
 use crate::model::ExplorerSortKey;
 use crate::neko_dir;
-use crate::fs::{dir, mount::{list_gvfs_smb_mounts, list_local_drives, MountEntry}};
+use crate::fs::{archive, dir, mount::{list_gvfs_smb_mounts, list_local_drives, MountEntry}};
 use crate::view_reader::{PageMode, ViewerState};
 
 impl ExplorerSortKey {
@@ -193,6 +193,10 @@ pub struct NekoviewApp {
     invalid_archives: std::collections::HashSet<PathBuf>,
     /// アプリレベルのトーストメッセージ（3秒で自動消去）
     app_toast: Option<(String, std::time::Instant)>,
+    /// フェーズ2: ページキャッシュ予算（見積もりゲートの閾値。resolve_cache_budgetsのpage_max）
+    cache_budget_bytes: usize,
+    /// フェーズ2: メモリ見積もり超過を知らせる確認ダイアログの表示状態
+    memory_warning_open: bool,
     /// ビューアウィンドウをフォーカス前面に出すフラグ
     viewer_focus_requested: bool,
     show_hidden: bool,
@@ -283,6 +287,8 @@ impl NekoviewApp {
             raw_image_files: std::collections::HashSet::new(),
             invalid_archives: std::collections::HashSet::new(),
             app_toast: None,
+            cache_budget_bytes: cache_max,
+            memory_warning_open: false,
             viewer_focus_requested: false,
             show_hidden: false,
             sort_key: ExplorerSortKey::from_state_key(&sort_state.key),
@@ -506,6 +512,7 @@ impl NekoviewApp {
         #[cfg(not(debug_assertions))]
         self.draw_status_window(&ctx);
         self.draw_toast(&ctx);
+        self.draw_memory_warning_dialog(&ctx);
         // 旧来の無条件 ctx.request_repaint() は撤去（イベント駆動化）。
         // ROOT は入力イベント・各ワーカーの起床通知・ステータス窓の1Hzハートビートで再描画される。
     }
@@ -778,10 +785,13 @@ impl NekoviewApp {
             if ctx.input(|i| i.key_pressed(egui::Key::Enter)) {
                 if let Some(idx) = self.selected_archive_index {
                     if let Some(path) = self.archives.get(idx).cloned() {
-                        let state = if self.raw_image_files.contains(&path) {
+                        let is_raw = self.raw_image_files.contains(&path);
+                        let state = if is_raw {
                             Some(ViewerState::new_raw(path.clone(), self.viewer_slots, self.config.default_slot))
-                        } else {
+                        } else if self.check_memory_budget(&path) {
                             ViewerState::new(path.clone(), self.viewer_slots, self.config.default_slot)
+                        } else {
+                            None
                         };
                         if let Some(state) = state {
                             self.open_viewer(state);
@@ -1171,6 +1181,8 @@ impl NekoviewApp {
                                     i18n::t().invalid_zip(&name),
                                     std::time::Instant::now(),
                                 ));
+                            } else if !self.check_memory_budget(path) {
+                                // ダイアログ表示フラグは check_memory_budget 内で立つ。オープンは中止する。
                             } else {
                                 match ViewerState::new(path.clone(), self.viewer_slots, self.config.default_slot) {
                                     Some(state) => {
@@ -1304,6 +1316,49 @@ impl NekoviewApp {
         }
     }
 
+    /// フェーズ2: アーカイブを開く前にメモリ見積もりゲートを通す。
+    /// 予算超過と判定した場合は確認ダイアログの表示フラグを立てて false を返す
+    /// （呼び出し側はオープンを中止する。invalid_archives への永続マークは行わない。
+    /// 一時的な予算状況が変わりうるため、次回オープン時に再度見積もりし直す）。
+    fn check_memory_budget(&mut self, path: &std::path::Path) -> bool {
+        let entries = archive::list_images(path);
+        if entries.is_empty() {
+            return true; // 空/無効アーカイブの判定は既存の invalid_archives 処理に任せる
+        }
+        match archive::estimate_archive_memory(path, &entries, self.cache_budget_bytes) {
+            archive::ArchiveMemoryEstimate::Ok => true,
+            archive::ArchiveMemoryEstimate::OverBudget => {
+                self.memory_warning_open = true;
+                false
+            }
+        }
+    }
+
+    /// フェーズ2: メモリ見積もり超過の確認ダイアログを描画する（OKボタンのみ）
+    fn draw_memory_warning_dialog(&mut self, ctx: &egui::Context) {
+        if !self.memory_warning_open {
+            return;
+        }
+        let mut open = true;
+        egui::Window::new(i18n::t().memory_warning_title())
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .show(ctx, |ui| {
+                ui.label(i18n::t().memory_warning_body());
+                ui.add_space(8.0);
+                ui.vertical_centered(|ui| {
+                    if ui.button(i18n::t().memory_warning_ok()).clicked() {
+                        self.memory_warning_open = false;
+                    }
+                });
+            });
+        if !open {
+            self.memory_warning_open = false;
+        }
+    }
+
     /// ZIPを無効確定してDBにマーカーを書き込む
     fn mark_archive_invalid(&mut self, path: &PathBuf) {
         self.invalid_archives.insert(path.clone());
@@ -1331,6 +1386,11 @@ impl NekoviewApp {
                     return Some((idx, ViewerState::new_raw(path, self.viewer_slots, self.config.default_slot)));
                 }
                 Some((idx, path, false)) => {
+                    if !self.check_memory_budget(&path) {
+                        // ダイアログ表示フラグは check_memory_budget 内で立つ。
+                        // invalid_archives には永続マークせず、現在のファイルに留まる。
+                        return None;
+                    }
                     match ViewerState::new(path.clone(), self.viewer_slots, self.config.default_slot) {
                         Some(state) => return Some((idx, state)),
                         None => {
@@ -1351,7 +1411,9 @@ impl NekoviewApp {
                     if let Some((idx, state)) = self.find_next_valid(from, -1) {
                         self.selected_archive_index = Some(idx);
                         self.open_viewer(state);
-                    } else {
+                    } else if !self.memory_warning_open {
+                        // メモリ見積もり超過が原因の場合は memory_warning ダイアログの方を
+                        // 表示するため、「これ以上開けない」トーストは出さない。
                         if let Some(v) = self.viewer.lock().unwrap().as_mut() {
                             v.set_toast(i18n::t().toast_no_prev().to_string());
                         }
@@ -1363,7 +1425,7 @@ impl NekoviewApp {
                     if let Some((idx, state)) = self.find_next_valid(from, 1) {
                         self.selected_archive_index = Some(idx);
                         self.open_viewer(state);
-                    } else {
+                    } else if !self.memory_warning_open {
                         if let Some(v) = self.viewer.lock().unwrap().as_mut() {
                             v.set_toast(i18n::t().toast_no_next().to_string());
                         }
