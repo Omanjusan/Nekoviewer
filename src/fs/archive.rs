@@ -717,7 +717,7 @@ mod tests {
         let path = PathBuf::from("test/神聖モテモテ王国 01巻.zip");
         let entries = list_images(&path);
         eprintln!("entries.len() = {}", entries.len());
-        let (page_max, _page_min, _file_max) = crate::cache::resolve_cache_budgets(None, None);
+        let (page_max, _page_min, _file_max) = crate::cache::resolve_cache_budgets(None);
         eprintln!("page_max(budget) = {} bytes ({} MB)", page_max, page_max / (1024*1024));
         let result = estimate_archive_memory(&path, &entries, page_max, TEST_RING_BOUNDS);
         eprintln!("result = {:?}", result);
@@ -729,7 +729,7 @@ mod tests {
         let path = PathBuf::from("/tmp/testwebp.zip");
         let entries = list_images(&path);
         eprintln!("entries.len() = {}", entries.len());
-        let (page_max, _page_min, _file_max) = crate::cache::resolve_cache_budgets(None, None);
+        let (page_max, _page_min, _file_max) = crate::cache::resolve_cache_budgets(None);
         eprintln!("page_max(budget) = {} bytes ({} MB)", page_max, page_max / (1024*1024));
 
         // select_sample_indices が実際にどのサンプルを選ぶか、各サンプルの見積もりも個別に見る。

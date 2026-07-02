@@ -37,7 +37,8 @@ use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 use winit::window::{Window, WindowId};
 
-use crate::config::{AppConfig, AppState};
+use crate::config::AppConfig;
+use crate::gui_config::AppState;
 use crate::view_explorer::NekoviewApp;
 
 /// ビューアー窓に割り当てる ViewportId（ROOT=エクスプローラーと区別する）。
@@ -263,6 +264,7 @@ impl WinitApp {
             state.viewer_slots,
             state.sort_state,
             state.viewer_cfg,
+            state.show_hidden,
             win.egui_ctx.clone(),
         );
 

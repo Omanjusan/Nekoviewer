@@ -11,44 +11,45 @@ const KB: usize = 1024;
 const MB: usize = 1024 * KB;
 const GB: usize = 1024 * MB;
 
-const PAGE_CACHE_RAM_PCT: usize = 25;
-const FILE_CACHE_RAM_PCT: usize = 5;
+/// 合計キャッシュ予算のうちページキャッシュに回す割合。リングバッファ導入(フェーズ3/3.5)で
+/// アニメーションによるページキャッシュ占有が下がったぶん、ファイルキャッシュに厚めに配分する。
+const PAGE_CACHE_SHARE_PCT: usize = 70;
+const FILE_CACHE_SHARE_PCT: usize = 100 - PAGE_CACHE_SHARE_PCT;
+/// 合計予算が未指定(自動)のときに使う、システムRAMに対する割合。
+const TOTAL_CACHE_RAM_PCT: usize = 30;
 const MIN_RATIO_PCT: usize = 40; // page_max に対する page_min の割合
 /// フェーズ4: アニメ1本のリングバッファに割り当てる予算の、page_max に対する割合。
 /// フェーズ2の見積もりゲート(fs/archive.rs)も同じ値を使い、実際のリング容量算出と整合させる。
 pub(crate) const ANIM_RING_BUDGET_PCT: usize = 25;
 const FALLBACK_TOTAL_BYTES: usize = 500 * MB; // sysinfo 失敗時フォールバック（旧30%相当）
 
+/// システム総RAM量をMB単位で返す（sysinfo失敗時は0）。設定ダイアログの表示にも使う。
+pub fn system_total_ram_mb() -> u64 {
+    let mut sys = sysinfo::System::new();
+    sys.refresh_memory();
+    sys.total_memory() / (MB as u64)
+}
+
+/// 合計予算が未指定(自動)のときの既定MB値（システムRAMの30%、取得失敗時はフォールバック）。
+pub fn default_cache_total_mb() -> u64 {
+    let ram_mb = system_total_ram_mb();
+    if ram_mb > 0 {
+        ram_mb * TOTAL_CACHE_RAM_PCT as u64 / 100
+    } else {
+        (FALLBACK_TOTAL_BYTES / MB) as u64
+    }
+}
+
 /// ページキャッシュ・ファイルキャッシュの予算を一括解決する。
+/// `cache_total_mb` はページ+ファイル合計の上限（None = システムRAMの30%を自動使用）。
+/// 合計を PAGE_CACHE_SHARE_PCT : FILE_CACHE_SHARE_PCT で分配する。
 /// 返り値: (page_max, page_min, file_max)
-pub fn resolve_cache_budgets(
-    page_cache_max_mb: Option<u64>,
-    file_cache_max_mb: Option<u64>,
-) -> (usize, usize, usize) {
-    let total_ram = {
-        let mut sys = sysinfo::System::new();
-        sys.refresh_memory();
-        sys.total_memory() as usize
-    };
+pub fn resolve_cache_budgets(cache_total_mb: Option<u64>) -> (usize, usize, usize) {
+    let total_mb = cache_total_mb.unwrap_or_else(default_cache_total_mb);
+    let total_bytes = (total_mb as usize) * MB;
 
-    let page_max = match page_cache_max_mb {
-        Some(mb) => (mb as usize) * MB,
-        None => if total_ram > 0 {
-            total_ram * PAGE_CACHE_RAM_PCT / 100
-        } else {
-            FALLBACK_TOTAL_BYTES * PAGE_CACHE_RAM_PCT / (PAGE_CACHE_RAM_PCT + FILE_CACHE_RAM_PCT)
-        },
-    };
-
-    let file_max = match file_cache_max_mb {
-        Some(mb) => (mb as usize) * MB,
-        None => if total_ram > 0 {
-            total_ram * FILE_CACHE_RAM_PCT / 100
-        } else {
-            FALLBACK_TOTAL_BYTES * FILE_CACHE_RAM_PCT / (PAGE_CACHE_RAM_PCT + FILE_CACHE_RAM_PCT)
-        },
-    };
-
+    let page_max = total_bytes * PAGE_CACHE_SHARE_PCT / 100;
+    let file_max = total_bytes * FILE_CACHE_SHARE_PCT / 100;
     let page_min = page_max * MIN_RATIO_PCT / 100;
     (page_max, page_min, file_max)
 }
