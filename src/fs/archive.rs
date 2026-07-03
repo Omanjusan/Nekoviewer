@@ -185,10 +185,33 @@ enum EntryEstimate {
     OverBudget,
 }
 
-/// フェーズ2: 開済みアーカイブから1エントリを展開し、サイズを見積もる。
+/// フェーズ2: 展開済みバイト列1件のデコード後サイズ(RGBA, byte)を見積もる（ZIP/7z共通処理）。
 /// アニメーション拡張子ならまずフェーズ1.5ガード付きデコードを試し、非アニメーションと
 /// 判定された場合は静止画のヘッダ読みにフォールバックする。ヘッダ解析にも失敗した場合の
 /// 最終手段としてフルデコードして実サイズを使う（通常のページ読み込みと同じコスト）。
+/// デコード自体に失敗した場合は None（このサンプルは無視する）。
+fn estimate_bytes_for_entry(buf: &[u8], display_name: &str, budget_bytes: usize, ring_bounds: (usize, usize)) -> Option<EntryEstimate> {
+    let ext = display_name.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+
+    if matches!(ext.as_str(), "gif" | "webp" | "png" | "avif") {
+        match estimate_anim_sample_bytes(buf, &ext, budget_bytes, ring_bounds) {
+            AnimSampleEstimate::Bytes(n) => return Some(EntryEstimate::Bytes(n)),
+            AnimSampleEstimate::OverBudget => return Some(EntryEstimate::OverBudget),
+            AnimSampleEstimate::NotAnimated => {} // 静止画推定へフォールバック
+        }
+    }
+
+    if let Some(n) = estimate_static_decoded_bytes(buf) {
+        return Some(to_entry_estimate(n, budget_bytes));
+    }
+
+    // ヘッダ解析失敗時の最終手段: フルデコードして実サイズを使う。
+    let img = decode_image(buf, display_name)?;
+    let n = (img.width() as usize) * (img.height() as usize) * 4;
+    Some(to_entry_estimate(n, budget_bytes))
+}
+
+/// フェーズ2: 開済みZIPアーカイブから1エントリを展開し、サイズを見積もる。
 /// エントリの読み込み自体に失敗した場合は None（このサンプルは無視する）。
 fn estimate_entry_bytes<R: Read + Seek>(
     archive: &mut zip::ZipArchive<R>,
@@ -197,24 +220,7 @@ fn estimate_entry_bytes<R: Read + Seek>(
     ring_bounds: (usize, usize),
 ) -> Option<EntryEstimate> {
     let (buf, display_name) = load_bytes_from_archive(archive, entry_name)?;
-    let ext = display_name.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
-
-    if matches!(ext.as_str(), "gif" | "webp" | "png" | "avif") {
-        match estimate_anim_sample_bytes(&buf, &ext, budget_bytes, ring_bounds) {
-            AnimSampleEstimate::Bytes(n) => return Some(EntryEstimate::Bytes(n)),
-            AnimSampleEstimate::OverBudget => return Some(EntryEstimate::OverBudget),
-            AnimSampleEstimate::NotAnimated => {} // 静止画推定へフォールバック
-        }
-    }
-
-    if let Some(n) = estimate_static_decoded_bytes(&buf) {
-        return Some(to_entry_estimate(n, budget_bytes));
-    }
-
-    // ヘッダ解析失敗時の最終手段: フルデコードして実サイズを使う。
-    let img = decode_image(&buf, &display_name)?;
-    let n = (img.width() as usize) * (img.height() as usize) * 4;
-    Some(to_entry_estimate(n, budget_bytes))
+    estimate_bytes_for_entry(&buf, &display_name, budget_bytes, ring_bounds)
 }
 
 fn to_entry_estimate(bytes: usize, budget_bytes: usize) -> EntryEstimate {
@@ -239,6 +245,10 @@ pub enum ArchiveMemoryEstimate {
 /// サンプル1枚でも単体で budget_bytes を超えた時点で残りのサンプリングを打ち切り、
 /// 即座に `OverBudget` と判定する（サンプル単体チェック + 合計見積もりチェックの二重構成）。
 /// 全サンプルの読み込みに失敗した場合（判定不能）は `Ok` を返し、通常のオープンを妨げない。
+///
+/// 7z(ソリッド圧縮)はサンプリングでの軽量見積もりが成立しない（1件だけ取り出すのにブロック
+/// 先頭からの再展開が必要になるため）。そのため7zは `estimate_archive_memory_7z` に委譲し、
+/// フェーズ2の一括展開結果を使った全件厳密判定を行う。
 pub fn estimate_archive_memory(
     path: &Path,
     entries: &[ImageEntry],
@@ -248,6 +258,10 @@ pub fn estimate_archive_memory(
     if entries.is_empty() {
         return ArchiveMemoryEstimate::Ok;
     }
+    if is_7z_path(path) {
+        return estimate_archive_memory_7z(path, entries, budget_bytes, ring_bounds);
+    }
+
     let Ok(file) = std::fs::File::open(path) else { return ArchiveMemoryEstimate::Ok };
     let Ok(mut archive) = zip::ZipArchive::new(file) else { return ArchiveMemoryEstimate::Ok };
 
@@ -267,6 +281,38 @@ pub fn estimate_archive_memory(
     } else {
         ArchiveMemoryEstimate::Ok
     }
+}
+
+/// フェーズ4: 7z版の見積もり。ソリッド圧縮では「軽くサンプリング」が成立しないため、
+/// どのみち開く際に必要になる一括展開(フェーズ2の`extract_all_images_7z_path`と同じ処理)を
+/// 先に行い、全エントリのヘッダ寸法から実際の合計値を厳密に計算する
+/// （サンプル平均による概算ではなく全数チェックなので、ZIP版より判定精度は高い）。
+fn estimate_archive_memory_7z(
+    path: &Path,
+    entries: &[ImageEntry],
+    budget_bytes: usize,
+    ring_bounds: (usize, usize),
+) -> ArchiveMemoryEstimate {
+    let map = extract_all_images_7z_path(path);
+    if map.is_empty() {
+        return ArchiveMemoryEstimate::Ok;
+    }
+
+    let mut total: usize = 0;
+    for entry in entries {
+        let Some(buf) = map.get(&entry.entry_name) else { continue };
+        match estimate_bytes_for_entry(buf, &entry.display_name, budget_bytes, ring_bounds) {
+            Some(EntryEstimate::OverBudget) => return ArchiveMemoryEstimate::OverBudget,
+            Some(EntryEstimate::Bytes(n)) => {
+                total = total.saturating_add(n);
+                if total > budget_bytes {
+                    return ArchiveMemoryEstimate::OverBudget;
+                }
+            }
+            None => {} // 読み込み/デコード失敗エントリは合計から除外
+        }
+    }
+    ArchiveMemoryEstimate::Ok
 }
 
 fn average(values: &[usize]) -> Option<usize> {
@@ -311,9 +357,54 @@ pub struct ImageEntry {
     pub date_key: u64,
 }
 
-/// ZIP/CBZ 内の全画像をフラット化して返す。
+/// 拡張子で 7z/CB7 かどうかを判定する
+pub fn is_7z_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.eq_ignore_ascii_case("7z") || e.eq_ignore_ascii_case("cb7"))
+        .unwrap_or(false)
+}
+
+/// (display_name, entry_name, date_key) のペア列から、ソート・衝突回避済みの
+/// `ImageEntry` 列を組み立てる（ZIP/7z共通処理）。
+fn finalize_entries(mut pairs: Vec<(String, String, u64)>) -> Vec<ImageEntry> {
+    // ファイル名優先、同名はentry_nameで安定ソート
+    pairs.sort_by(|(da, ea, _), (db, eb, _)| {
+        basename(da).cmp(basename(db)).then(ea.cmp(eb))
+    });
+
+    // 衝突検出: 同じファイル名が2回目以降なら "stem_01.ext" 形式を付与
+    let mut seen: HashMap<String, usize> = HashMap::new();
+    let mut entries: Vec<ImageEntry> = pairs
+        .into_iter()
+        .map(|(display_name, entry_name, date_key)| {
+            let base = basename(&display_name).to_string();
+            let count = seen.entry(base.clone()).or_insert(0);
+            let final_display = if *count == 0 {
+                base.clone()
+            } else {
+                collision_name(&base, *count)
+            };
+            *count += 1;
+            ImageEntry { display_name: final_display, entry_name, date_key }
+        })
+        .collect();
+
+    entries.sort_by(|a, b| a.display_name.cmp(&b.display_name));
+    entries
+}
+
+/// アーカイブ(ZIP/CBZ/7z/CB7)内の全画像をフラット化して返す。
 /// ディレクトリ構造を無視し、ファイル名の衝突は "stem_01.ext" 形式で回避する。
 pub fn list_images(path: &Path) -> Vec<ImageEntry> {
+    if is_7z_path(path) {
+        list_images_7z(path)
+    } else {
+        list_images_zip(path)
+    }
+}
+
+fn list_images_zip(path: &Path) -> Vec<ImageEntry> {
     let Ok(file) = std::fs::File::open(path) else {
         return Vec::new();
     };
@@ -345,30 +436,93 @@ pub fn list_images(path: &Path) -> Vec<ImageEntry> {
         pairs.push((display_name, entry_name, date_key));
     }
 
-    // ファイル名優先、同名はentry_nameで安定ソート
-    pairs.sort_by(|(da, ea, _), (db, eb, _)| {
-        basename(da).cmp(basename(db)).then(ea.cmp(eb))
+    finalize_entries(pairs)
+}
+
+/// 7z のヘッダ(ファイル一覧・メタデータ)のみを読み、画像エントリを一覧化する。
+/// データストリームの展開は行わない。
+fn list_images_7z(path: &Path) -> Vec<ImageEntry> {
+    let Ok(archive) = sevenz_rust2::Archive::open(path) else {
+        return Vec::new();
+    };
+
+    let mut pairs: Vec<(String, String, u64)> = Vec::new();
+    for entry in &archive.files {
+        if entry.is_directory || !entry.has_stream {
+            continue;
+        }
+        if !is_image_entry_raw(entry.name.as_bytes()) {
+            continue;
+        }
+        let date_key = if entry.has_last_modified_date {
+            nt_time_to_date_key(entry.last_modified_date)
+        } else {
+            0
+        };
+        pairs.push((entry.name.clone(), entry.name.clone(), date_key));
+    }
+
+    finalize_entries(pairs)
+}
+
+/// 7zの`NtTime`(Windows FILETIME)をZIP版と同じ形式(年月日時分秒を1桁ずつパックしたu64)に変換する。
+/// 変換不能(エポック未満・オーバーフロー等)なら0を返す。
+fn nt_time_to_date_key(t: sevenz_rust2::NtTime) -> u64 {
+    let st: std::time::SystemTime = t.into();
+    let Ok(dur) = st.duration_since(std::time::SystemTime::UNIX_EPOCH) else {
+        return 0;
+    };
+    let secs = dur.as_secs();
+    let days = (secs / 86400) as i64;
+    let rem = secs % 86400;
+    let (hour, minute, second) = (rem / 3600, (rem % 3600) / 60, rem % 60);
+
+    // Howard Hinnant の civil_from_days アルゴリズム(days-since-epoch -> 暦日)
+    let z = days + 719468;
+    let era = if z >= 0 { z } else { z - 146096 } / 146097;
+    let doe = (z - era * 146097) as u64; // [0, 146096]
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365; // [0, 399]
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]
+    let mp = (5 * doy + 2) / 153; // [0, 11]
+    let day = doy - (153 * mp + 2) / 5 + 1; // [1, 31]
+    let month = if mp < 10 { mp + 3 } else { mp - 9 }; // [1, 12]
+    let year = if month <= 2 { yoe as i64 + era * 400 + 1 } else { yoe as i64 + era * 400 };
+
+    (year as u64) * 10_000_000_000
+        + month * 100_000_000
+        + day * 1_000_000
+        + hour * 10_000
+        + minute * 100
+        + second
+}
+
+/// 7z(ソリッド圧縮)は1エントリだけの取り出しがブロック先頭からの再展開になり非効率なため、
+/// 開いた時点で画像エントリを一括デコードし `entry_name -> 生バイト列` の対応表にまとめて返す。
+/// 以降のページ送りはこの表を引くだけで済み、再展開は発生しない。
+pub fn extract_all_images_7z<R: Read + Seek>(source: R) -> HashMap<String, Vec<u8>> {
+    let Ok(mut reader) = sevenz_rust2::ArchiveReader::new(source, sevenz_rust2::Password::empty()) else {
+        return HashMap::new();
+    };
+
+    let mut out = HashMap::new();
+    let _ = reader.for_each_entries(&mut |entry: &sevenz_rust2::ArchiveEntry, r: &mut dyn Read| {
+        if !entry.is_directory && entry.has_stream && is_image_entry_raw(entry.name.as_bytes()) {
+            let mut buf = Vec::with_capacity(entry.size as usize);
+            if r.read_to_end(&mut buf).is_ok() {
+                out.insert(entry.name.clone(), buf);
+            }
+        }
+        Ok(true) // 全エントリを処理する
     });
+    out
+}
 
-    // 衝突検出: 同じファイル名が2回目以降なら "stem_01.ext" 形式を付与
-    let mut seen: HashMap<String, usize> = HashMap::new();
-    let mut entries: Vec<ImageEntry> = pairs
-        .into_iter()
-        .map(|(display_name, entry_name, date_key)| {
-            let base = basename(&display_name).to_string();
-            let count = seen.entry(base.clone()).or_insert(0);
-            let final_display = if *count == 0 {
-                base.clone()
-            } else {
-                collision_name(&base, *count)
-            };
-            *count += 1;
-            ImageEntry { display_name: final_display, entry_name, date_key }
-        })
-        .collect();
-
-    entries.sort_by(|a, b| a.display_name.cmp(&b.display_name));
-    entries
+/// ディスク上の7zファイルを開いて `extract_all_images_7z` を実行する
+pub fn extract_all_images_7z_path(path: &Path) -> HashMap<String, Vec<u8>> {
+    let Ok(file) = std::fs::File::open(path) else {
+        return HashMap::new();
+    };
+    extract_all_images_7z(file)
 }
 
 /// ZIP/CBZ から指定エントリの画像をデコードして返す
@@ -391,11 +545,38 @@ pub fn load_image_from_archive(
     Some(img)
 }
 
-/// ZIP/CBZ の先頭画像1枚をデコードして返す（サムネイル用）。
-/// まず Local File Header を先頭から順読みして試みる（ネットワーク帯域節約）。
+/// アーカイブ(ZIP/CBZ/7z/CB7)の先頭画像1枚をデコードして返す（サムネイル用）。
+/// ZIPはまず Local File Header を先頭から順読みして試みる（ネットワーク帯域節約）。
 /// Data Descriptor フラグ等で順読み不可の場合は ZipArchive 経由にフォールバックする。
 pub fn load_first_image(path: &Path) -> Option<image::DynamicImage> {
+    if is_7z_path(path) {
+        return load_first_image_7z(path);
+    }
     load_first_image_sequential(path).or_else(|| load_first_image_via_archive(path))
+}
+
+/// 7zの先頭画像1枚をデコードして返す（サムネイル用）。
+/// 7zはヘッダがアーカイブ末尾に集約されるためZIP版のような先頭シーケンシャル最適化は
+/// 使えないが、目的の画像が見つかった時点でブロック展開を打ち切ることで、
+/// アーカイブ全体を一括展開する`extract_all_images_7z`より軽量に済ませる。
+fn load_first_image_7z(path: &Path) -> Option<image::DynamicImage> {
+    let file = std::fs::File::open(path).ok()?;
+    let mut reader = sevenz_rust2::ArchiveReader::new(file, sevenz_rust2::Password::empty()).ok()?;
+
+    let mut result: Option<image::DynamicImage> = None;
+    let _ = reader.for_each_entries(|entry: &sevenz_rust2::ArchiveEntry, r: &mut dyn Read| {
+        let mut buf = Vec::with_capacity(entry.size as usize);
+        // ソリッドストリーム内の位置整合のため、対象外エントリでも必ず読み切る。
+        let read_ok = r.read_to_end(&mut buf).is_ok();
+        if read_ok && !entry.is_directory && entry.has_stream && is_image_entry_raw(entry.name.as_bytes()) {
+            if let Some(img) = decode_image(&buf, &entry.name) {
+                result = Some(img);
+                return Ok(false); // 見つかった時点でこのブロックの展開を打ち切る
+            }
+        }
+        Ok(true)
+    });
+    result
 }
 
 /// Local File Header を先頭から順読みする（セントラルディレクトリ・末尾シーク不要）。
@@ -581,6 +762,61 @@ mod tests {
         let mut sorted = names.clone();
         sorted.sort();
         assert_eq!(names, sorted, "display_name がソートされていない");
+    }
+
+    fn test_7z() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("test/test7z.7z")
+    }
+
+    #[test]
+    fn test_list_images_7z_count() {
+        let entries = list_images(&test_7z());
+        assert_eq!(entries.len(), 3, "7z画像エントリ数が想定と異なる");
+    }
+
+    #[test]
+    fn test_list_images_7z_sorted_and_named() {
+        let entries = list_images(&test_7z());
+        let names: Vec<&str> = entries.iter().map(|e| e.display_name.as_str()).collect();
+        let mut sorted = names.clone();
+        sorted.sort();
+        assert_eq!(names, sorted, "display_name がソートされていない");
+        assert!(names.iter().any(|n| n.ends_with(".webp")));
+    }
+
+    #[test]
+    fn test_extract_all_images_7z_decodes_pages() {
+        let entries = list_images(&test_7z());
+        assert_eq!(entries.len(), 3);
+        let map = extract_all_images_7z_path(&test_7z());
+        assert_eq!(map.len(), 3, "一括展開後のエントリ数が一覧と一致しない");
+        for e in &entries {
+            let buf = map.get(&e.entry_name).expect("展開済みマップにエントリが無い");
+            let img = decode_image_bytes(buf, &e.display_name);
+            assert!(img.is_some(), "{} のデコードに失敗", e.display_name);
+        }
+    }
+
+    #[test]
+    fn test_load_first_image_7z_returns_some() {
+        let img = load_first_image(&test_7z());
+        assert!(img.is_some(), "7zの先頭画像の読み込みに失敗");
+    }
+
+    #[test]
+    fn test_estimate_archive_memory_7z_ok_within_budget() {
+        // test7z.7z の3画像デコード後合計は約75MB。100MB予算なら収まる。
+        let entries = list_images(&test_7z());
+        let result = estimate_archive_memory(&test_7z(), &entries, 100 * MB, TEST_RING_BOUNDS);
+        assert_eq!(result, ArchiveMemoryEstimate::Ok);
+    }
+
+    #[test]
+    fn test_estimate_archive_memory_7z_over_budget() {
+        // 最大の1枚(4096x3072)だけで約50MB。40MB予算なら単体超過でOverBudget。
+        let entries = list_images(&test_7z());
+        let result = estimate_archive_memory(&test_7z(), &entries, 40 * MB, TEST_RING_BOUNDS);
+        assert_eq!(result, ArchiveMemoryEstimate::OverBudget);
     }
 
     #[test]

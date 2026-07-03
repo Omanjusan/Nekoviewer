@@ -77,6 +77,8 @@ pub struct LoadRequest {
 enum OpenArchive {
     Disk(zip::ZipArchive<std::fs::File>),
     Mem(zip::ZipArchive<std::io::Cursor<Arc<[u8]>>>),
+    /// 7z(ソリッド圧縮)は開いた時点で画像を一括展開済み。ページ送りは再展開せずここから引く。
+    SevenZ(HashMap<String, Vec<u8>>),
 }
 
 impl OpenArchive {
@@ -84,6 +86,10 @@ impl OpenArchive {
         match self {
             Self::Disk(a) => load_page_content(a, entry_name, filter, cache_budget_bytes, ring_bounds, frame_hard_limit_bytes, target_size),
             Self::Mem(a)  => load_page_content(a, entry_name, filter, cache_budget_bytes, ring_bounds, frame_hard_limit_bytes, target_size),
+            Self::SevenZ(map) => {
+                let buf = map.get(entry_name)?;
+                decode_bytes_to_content(buf, entry_name, filter, cache_budget_bytes, ring_bounds, frame_hard_limit_bytes, target_size)
+            }
         }
     }
 }
@@ -141,25 +147,37 @@ pub fn spawn_worker(filter: image::imageops::FilterType, num_threads: usize, ctx
                     }
                 } else if let Some(bytes) = req.file_bytes {
                     // FileCache ヒット: メモリからアーカイブを開く
-                    let is_same_mem = open_archive.as_ref().map_or(false, |(p, a)| {
-                        p == &req.archive_path && matches!(a, OpenArchive::Mem(_))
+                    let is_7z = crate::fs::archive::is_7z_path(&req.archive_path);
+                    let is_same = open_archive.as_ref().map_or(false, |(p, a)| {
+                        p == &req.archive_path && matches!(a, OpenArchive::Mem(_) | OpenArchive::SevenZ(_))
                     });
-                    if !is_same_mem {
-                        open_archive = zip::ZipArchive::new(std::io::Cursor::new(bytes))
-                            .ok()
-                            .map(|a| (req.archive_path.clone(), OpenArchive::Mem(a)));
+                    if !is_same {
+                        open_archive = if is_7z {
+                            let map = crate::fs::archive::extract_all_images_7z(std::io::Cursor::new(bytes));
+                            Some((req.archive_path.clone(), OpenArchive::SevenZ(map)))
+                        } else {
+                            zip::ZipArchive::new(std::io::Cursor::new(bytes))
+                                .ok()
+                                .map(|a| (req.archive_path.clone(), OpenArchive::Mem(a)))
+                        };
                     }
                     open_archive.as_mut().and_then(|(_, a)| a.load_page(&req.entry_name, filter, cache_budget_bytes, ring_bounds, frame_hard_limit_bytes, target_size))
                 } else {
                     // FileCache ミス: ディスクから開く（従来の動作）
-                    let is_same_disk = open_archive.as_ref().map_or(false, |(p, a)| {
-                        p == &req.archive_path && matches!(a, OpenArchive::Disk(_))
+                    let is_7z = crate::fs::archive::is_7z_path(&req.archive_path);
+                    let is_same = open_archive.as_ref().map_or(false, |(p, a)| {
+                        p == &req.archive_path && matches!(a, OpenArchive::Disk(_) | OpenArchive::SevenZ(_))
                     });
-                    if !is_same_disk {
-                        open_archive = std::fs::File::open(&req.archive_path)
-                            .ok()
-                            .and_then(|f| zip::ZipArchive::new(f).ok())
-                            .map(|a| (req.archive_path.clone(), OpenArchive::Disk(a)));
+                    if !is_same {
+                        open_archive = if is_7z {
+                            let map = crate::fs::archive::extract_all_images_7z_path(&req.archive_path);
+                            Some((req.archive_path.clone(), OpenArchive::SevenZ(map)))
+                        } else {
+                            std::fs::File::open(&req.archive_path)
+                                .ok()
+                                .and_then(|f| zip::ZipArchive::new(f).ok())
+                                .map(|a| (req.archive_path.clone(), OpenArchive::Disk(a)))
+                        };
                     }
                     open_archive.as_mut().and_then(|(_, a)| a.load_page(&req.entry_name, filter, cache_budget_bytes, ring_bounds, frame_hard_limit_bytes, target_size))
                 };
@@ -282,15 +300,28 @@ fn load_page_content<R: std::io::Read + std::io::Seek>(
     target_size: Option<(u32, u32)>,
 ) -> Option<PageContent> {
     let (buf, display_name) = crate::fs::archive::load_bytes_from_archive(archive, entry_name)?;
+    decode_bytes_to_content(&buf, &display_name, filter, cache_budget_bytes, ring_bounds, frame_hard_limit_bytes, target_size)
+}
 
+/// 展開済みバイト列を PageContent としてデコードする（ZIP/7z共通処理）。
+/// GIF/WebP/APNGはアニメーション展開、それ以外は静止画。
+fn decode_bytes_to_content(
+    buf: &[u8],
+    entry_name: &str,
+    filter: image::imageops::FilterType,
+    cache_budget_bytes: usize,
+    ring_bounds: (usize, usize),
+    frame_hard_limit_bytes: usize,
+    target_size: Option<(u32, u32)>,
+) -> Option<PageContent> {
     let lower = entry_name.to_ascii_lowercase();
     let ext = lower.rsplit_once('.').map(|(_, e)| e).unwrap_or("");
 
-    if let Some(c) = decode_anim_from_ext(&buf, ext, filter, cache_budget_bytes, ring_bounds, frame_hard_limit_bytes, target_size) {
+    if let Some(c) = decode_anim_from_ext(buf, ext, filter, cache_budget_bytes, ring_bounds, frame_hard_limit_bytes, target_size) {
         return Some(c);
     }
 
-    let img = crate::fs::archive::decode_image_bytes(&buf, &display_name)?;
+    let img = crate::fs::archive::decode_image_bytes(buf, entry_name)?;
     Some(PageContent::Static(resize_for_display(img, filter, target_size)))
 }
 
