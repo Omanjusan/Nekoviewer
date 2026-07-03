@@ -819,7 +819,6 @@ pub fn spawn_entry_thumb_worker(filter: image::imageops::FilterType, num_threads
                     Some(PageContent::Animated(ring)) => ring.with_frame(0, |f| f.image.clone()),
                     None => None,
                 };
-                crate::log_common!("[thumbbar-debug] worker result idx={} entry={} ok={}", req.original_index, req.entry_name, rgba.is_some());
 
                 let _ = res_tx.send(EntryThumbResult {
                     archive_path: req.archive_path,

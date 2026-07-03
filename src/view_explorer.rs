@@ -972,11 +972,7 @@ impl NekoviewApp {
 
         let archive_path = viewer.archive_path().clone();
         let is_raw_file = viewer.is_raw_file();
-        let missing = viewer.thumbbar_missing_indices();
-        if !missing.is_empty() {
-            crate::log_common!("[thumbbar-debug] pump: missing={}", missing.len());
-        }
-        for original_index in missing {
+        for original_index in viewer.thumbbar_missing_indices() {
             let Some(entry_name) = viewer.entry_name_for(original_index) else { continue; };
             let req = EntryThumbRequest {
                 archive_path: archive_path.clone(),

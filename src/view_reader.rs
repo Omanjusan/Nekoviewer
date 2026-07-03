@@ -233,6 +233,11 @@ pub struct ViewerState {
     thumb_pending: HashSet<usize>,
     /// サムネイルバー自動非表示用: 直近のページ操作(ナビゲーション入力)時刻。
     thumbbar_last_activity: Instant,
+    /// サムネイルバーを最後にセンタリングした spread_lo。ページが実際に変わった
+    /// フレームでだけ scroll_to_rect を呼ぶための重複防止フラグ（毎フレーム呼ぶと
+    /// クリップ矩形サイズが不安定な瞬間に delta が収束せず request_repaint が
+    /// 連打され続ける恐れがあるため）。
+    thumbbar_scrolled_lo: Option<i32>,
 }
 
 impl ViewerState {
@@ -355,6 +360,7 @@ impl ViewerState {
             thumb_textures: HashMap::new(),
             thumb_pending: HashSet::new(),
             thumbbar_last_activity: Instant::now(),
+            thumbbar_scrolled_lo: None,
         })
     }
 
@@ -401,6 +407,7 @@ impl ViewerState {
             thumb_textures: HashMap::new(),
             thumb_pending: HashSet::new(),
             thumbbar_last_activity: Instant::now(),
+            thumbbar_scrolled_lo: None,
         }
     }
 
@@ -937,7 +944,7 @@ impl ViewerState {
     }
 
     /// サムネイルバー: 本画像の領域を圧迫する形（配置に応じて Panel で領域確保）。
-    fn draw_thumbbar_panel(&self, ui: &mut egui::Ui, cfg: &ViewerConfig, pos: ThumbbarPos) {
+    fn draw_thumbbar_panel(&mut self, ui: &mut egui::Ui, cfg: &ViewerConfig, pos: ThumbbarPos) {
         let outer = cfg.thumbbar_thumb_size as f32 + 16.0;
         let frame = egui::Frame::side_top_panel(ui.style());
         match pos {
@@ -963,7 +970,7 @@ impl ViewerState {
 
     /// サムネイルバー: 本画像の前面にオーバーレイ表示（領域は確保しない）。
     /// `viewport` は central panel 描画前に記録した全体領域。
-    fn draw_thumbbar_overlay(&self, ui: &mut egui::Ui, cfg: &ViewerConfig, pos: ThumbbarPos, viewport: egui::Rect) {
+    fn draw_thumbbar_overlay(&mut self, ui: &mut egui::Ui, cfg: &ViewerConfig, pos: ThumbbarPos, viewport: egui::Rect) {
         let thickness = cfg.thumbbar_thumb_size as f32 + 16.0;
         const MARGIN: f32 = 10.0;
         let horizontal = matches!(pos, ThumbbarPos::Top | ThumbbarPos::Bottom);
@@ -994,7 +1001,7 @@ impl ViewerState {
 
     /// サムネイルバーの中身。指定 Ui の領域いっぱいにスクロール可能な帯としてサムネを並べ、
     /// 現在地(見開きなら2枚)に半透明ボックスを重ねる。
-    fn draw_thumbbar_contents(&self, ui: &mut egui::Ui, cfg: &ViewerConfig, horizontal: bool) {
+    fn draw_thumbbar_contents(&mut self, ui: &mut egui::Ui, cfg: &ViewerConfig, horizontal: bool) {
         let edge = cfg.thumbbar_thumb_size as f32;
         let lo = self.spread_lo();
         let hi = if self.page_mode == PageMode::Single { lo } else { lo + 1 };
@@ -1034,8 +1041,14 @@ impl ViewerState {
                     // 見開きは2枚分の範囲をまとめて1回だけセンタリングする（現在地は動かさず、
                     // サムネの方をスクロールさせる）。先頭/終端付近では egui が自動的に
                     // クランプするため、そこだけマーカーが中央から端へ寄る（仕様通りの挙動）。
+                    // ページが実際に変わった時だけ呼ぶ（毎フレーム呼ぶと、リサイズ直後など
+                    // クリップ矩形が安定しない間 delta が収束せず request_repaint が連打され
+                    // 続けるおそれがあるため。フルスクリーン切替直後の操作停滞の一因だった）。
                     if let Some(r) = current_rect {
-                        ui.scroll_to_rect(r, Some(egui::Align::Center));
+                        if self.thumbbar_scrolled_lo != Some(lo) {
+                            ui.scroll_to_rect(r, Some(egui::Align::Center));
+                            self.thumbbar_scrolled_lo = Some(lo);
+                        }
                     }
                 });
             });
