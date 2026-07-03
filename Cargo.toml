@@ -17,6 +17,7 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png",
 libavif = "0.14"
 libavif-sys = "0.17"
 zip = "2"
+sevenz-rust2 = "0.21"
 flate2 = "1"
 encoding_rs = "0.8"
 walkdir = "2"
