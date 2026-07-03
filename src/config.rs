@@ -18,17 +18,31 @@ pub fn log() -> &'static LogConfig {
     LOG.get_or_init(|| LogConfig { perf: false, key: true, common: true })
 }
 
+// perf ログは高頻度パス（デコードループ等）から呼ばれるため、リングバッファ(Mutex)への
+// 書き込みコストを避けてターミナル(eprintln!)出力のみに留める。
 #[macro_export]
 macro_rules! log_perf {
     ($($arg:tt)*) => { if $crate::config::log().perf   { eprintln!($($arg)*); } };
 }
 #[macro_export]
 macro_rules! log_key {
-    ($($arg:tt)*) => { if $crate::config::log().key    { eprintln!($($arg)*); } };
+    ($($arg:tt)*) => {
+        if $crate::config::log().key {
+            let msg = format!($($arg)*);
+            eprintln!("{msg}");
+            $crate::model_innerlog::push(&msg);
+        }
+    };
 }
 #[macro_export]
 macro_rules! log_common {
-    ($($arg:tt)*) => { if $crate::config::log().common { eprintln!($($arg)*); } };
+    ($($arg:tt)*) => {
+        if $crate::config::log().common {
+            let msg = format!($($arg)*);
+            eprintln!("{msg}");
+            $crate::model_innerlog::push(&msg);
+        }
+    };
 }
 
 #[derive(Clone, Copy, PartialEq)]
