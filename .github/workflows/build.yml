@@ -1,10 +1,10 @@
 name: Build
 
 on:
-  push:
-    branches: [main, develop]
   pull_request:
-    branches: [main]
+    branches: [dev, main]   # feat→dev、dev→mainのPR時にCI検証
+  push:
+    tags: ['v*']            # リリース用タグpush時にビルド&アーティファクト生成
 
 jobs:
   build-windows:
@@ -48,65 +48,10 @@ jobs:
         run: cargo build --release
 
       - name: Upload artifact
+        if: startsWith(github.ref, 'refs/tags/')
         uses: actions/upload-artifact@v4
         with:
           name: nekoviewer-windows-x64
           path: C:\cgt\release\nekoviewer.exe
           retention-days: 30
 
-  build-linux:
-    runs-on: ubuntu-latest
-    container:
-      image: rust:alpine
-      credentials:
-        username: ${{ secrets.DOCKERHUB_USERNAME }}
-        password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-    steps:
-      - name: Install dependencies
-        run: |
-          echo "https://dl-cdn.alpinelinux.org/alpine/edge/community" >> /etc/apk/repositories
-          apk update
-          apk add --no-cache git build-base nasm cmake pkgconf meson py3-packaging tar
-
-      - name: Cache dav1d build
-        uses: actions/cache@v4
-        id: dav1d-cache
-        with:
-          path: |
-            /usr/lib/libdav1d*
-            /usr/include/dav1d
-            /usr/lib/pkgconfig/dav1d.pc
-          key: alpine-dav1d-static-v1
-
-      - name: Build dav1d static
-        if: steps.dav1d-cache.outputs.cache-hit != 'true'
-        run: |
-          git clone --depth 1 https://code.videolan.org/videolan/dav1d.git /tmp/dav1d
-          meson setup /tmp/dav1d/build /tmp/dav1d \
-            --default-library=static \
-            --buildtype=release \
-            --prefix=/usr
-          ninja -C /tmp/dav1d/build install
-
-      - uses: actions/checkout@v4
-
-      - name: Cache cargo
-        uses: actions/cache@v4
-        with:
-          path: |
-            /usr/local/cargo/registry
-            /usr/local/cargo/git
-            ${{ github.workspace }}/target
-          key: linux-musl-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: linux-musl-cargo-
-
-      - name: Build release
-        run: cargo build --release
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: nekoviewer-linux-x64
-          path: target/release/nekoviewer
-          retention-days: 30
