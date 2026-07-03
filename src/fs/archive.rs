@@ -311,9 +311,54 @@ pub struct ImageEntry {
     pub date_key: u64,
 }
 
-/// ZIP/CBZ 内の全画像をフラット化して返す。
+/// 拡張子で 7z/CB7 かどうかを判定する
+fn is_7z_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.eq_ignore_ascii_case("7z") || e.eq_ignore_ascii_case("cb7"))
+        .unwrap_or(false)
+}
+
+/// (display_name, entry_name, date_key) のペア列から、ソート・衝突回避済みの
+/// `ImageEntry` 列を組み立てる（ZIP/7z共通処理）。
+fn finalize_entries(mut pairs: Vec<(String, String, u64)>) -> Vec<ImageEntry> {
+    // ファイル名優先、同名はentry_nameで安定ソート
+    pairs.sort_by(|(da, ea, _), (db, eb, _)| {
+        basename(da).cmp(basename(db)).then(ea.cmp(eb))
+    });
+
+    // 衝突検出: 同じファイル名が2回目以降なら "stem_01.ext" 形式を付与
+    let mut seen: HashMap<String, usize> = HashMap::new();
+    let mut entries: Vec<ImageEntry> = pairs
+        .into_iter()
+        .map(|(display_name, entry_name, date_key)| {
+            let base = basename(&display_name).to_string();
+            let count = seen.entry(base.clone()).or_insert(0);
+            let final_display = if *count == 0 {
+                base.clone()
+            } else {
+                collision_name(&base, *count)
+            };
+            *count += 1;
+            ImageEntry { display_name: final_display, entry_name, date_key }
+        })
+        .collect();
+
+    entries.sort_by(|a, b| a.display_name.cmp(&b.display_name));
+    entries
+}
+
+/// アーカイブ(ZIP/CBZ/7z/CB7)内の全画像をフラット化して返す。
 /// ディレクトリ構造を無視し、ファイル名の衝突は "stem_01.ext" 形式で回避する。
 pub fn list_images(path: &Path) -> Vec<ImageEntry> {
+    if is_7z_path(path) {
+        list_images_7z(path)
+    } else {
+        list_images_zip(path)
+    }
+}
+
+fn list_images_zip(path: &Path) -> Vec<ImageEntry> {
     let Ok(file) = std::fs::File::open(path) else {
         return Vec::new();
     };
@@ -345,30 +390,64 @@ pub fn list_images(path: &Path) -> Vec<ImageEntry> {
         pairs.push((display_name, entry_name, date_key));
     }
 
-    // ファイル名優先、同名はentry_nameで安定ソート
-    pairs.sort_by(|(da, ea, _), (db, eb, _)| {
-        basename(da).cmp(basename(db)).then(ea.cmp(eb))
-    });
+    finalize_entries(pairs)
+}
 
-    // 衝突検出: 同じファイル名が2回目以降なら "stem_01.ext" 形式を付与
-    let mut seen: HashMap<String, usize> = HashMap::new();
-    let mut entries: Vec<ImageEntry> = pairs
-        .into_iter()
-        .map(|(display_name, entry_name, date_key)| {
-            let base = basename(&display_name).to_string();
-            let count = seen.entry(base.clone()).or_insert(0);
-            let final_display = if *count == 0 {
-                base.clone()
-            } else {
-                collision_name(&base, *count)
-            };
-            *count += 1;
-            ImageEntry { display_name: final_display, entry_name, date_key }
-        })
-        .collect();
+/// 7z のヘッダ(ファイル一覧・メタデータ)のみを読み、画像エントリを一覧化する。
+/// Phase1時点ではデータストリームの展開は行わない(展開はPhase2で対応)。
+fn list_images_7z(path: &Path) -> Vec<ImageEntry> {
+    let Ok(archive) = sevenz_rust2::Archive::open(path) else {
+        return Vec::new();
+    };
 
-    entries.sort_by(|a, b| a.display_name.cmp(&b.display_name));
-    entries
+    let mut pairs: Vec<(String, String, u64)> = Vec::new();
+    for entry in &archive.files {
+        if entry.is_directory || !entry.has_stream {
+            continue;
+        }
+        if !is_image_entry_raw(entry.name.as_bytes()) {
+            continue;
+        }
+        let date_key = if entry.has_last_modified_date {
+            nt_time_to_date_key(entry.last_modified_date)
+        } else {
+            0
+        };
+        pairs.push((entry.name.clone(), entry.name.clone(), date_key));
+    }
+
+    finalize_entries(pairs)
+}
+
+/// 7zの`NtTime`(Windows FILETIME)をZIP版と同じ形式(年月日時分秒を1桁ずつパックしたu64)に変換する。
+/// 変換不能(エポック未満・オーバーフロー等)なら0を返す。
+fn nt_time_to_date_key(t: sevenz_rust2::NtTime) -> u64 {
+    let st: std::time::SystemTime = t.into();
+    let Ok(dur) = st.duration_since(std::time::SystemTime::UNIX_EPOCH) else {
+        return 0;
+    };
+    let secs = dur.as_secs();
+    let days = (secs / 86400) as i64;
+    let rem = secs % 86400;
+    let (hour, minute, second) = (rem / 3600, (rem % 3600) / 60, rem % 60);
+
+    // Howard Hinnant の civil_from_days アルゴリズム(days-since-epoch -> 暦日)
+    let z = days + 719468;
+    let era = if z >= 0 { z } else { z - 146096 } / 146097;
+    let doe = (z - era * 146097) as u64; // [0, 146096]
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365; // [0, 399]
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]
+    let mp = (5 * doy + 2) / 153; // [0, 11]
+    let day = doy - (153 * mp + 2) / 5 + 1; // [1, 31]
+    let month = if mp < 10 { mp + 3 } else { mp - 9 }; // [1, 12]
+    let year = if month <= 2 { yoe as i64 + era * 400 + 1 } else { yoe as i64 + era * 400 };
+
+    (year as u64) * 10_000_000_000
+        + month * 100_000_000
+        + day * 1_000_000
+        + hour * 10_000
+        + minute * 100
+        + second
 }
 
 /// ZIP/CBZ から指定エントリの画像をデコードして返す
@@ -581,6 +660,26 @@ mod tests {
         let mut sorted = names.clone();
         sorted.sort();
         assert_eq!(names, sorted, "display_name がソートされていない");
+    }
+
+    fn test_7z() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("test/test7z.7z")
+    }
+
+    #[test]
+    fn test_list_images_7z_count() {
+        let entries = list_images(&test_7z());
+        assert_eq!(entries.len(), 3, "7z画像エントリ数が想定と異なる");
+    }
+
+    #[test]
+    fn test_list_images_7z_sorted_and_named() {
+        let entries = list_images(&test_7z());
+        let names: Vec<&str> = entries.iter().map(|e| e.display_name.as_str()).collect();
+        let mut sorted = names.clone();
+        sorted.sort();
+        assert_eq!(names, sorted, "display_name がソートされていない");
+        assert!(names.iter().any(|n| n.ends_with(".webp")));
     }
 
     #[test]
