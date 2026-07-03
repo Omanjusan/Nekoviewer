@@ -6,10 +6,12 @@ mod fs;
 mod gui_config;
 mod i18n;
 mod model;
+mod model_innerlog;
 mod neko_dir;
 mod spread_offset;
 mod view_explorer;
 mod view_gui_config;
+mod view_innerlog;
 mod view_reader;
 mod view_status;
 
