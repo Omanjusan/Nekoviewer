@@ -1,3 +1,4 @@
+#![cfg_attr(windows, windows_subsystem = "windows")]
 mod anim;
 mod cache;
 mod config;
@@ -23,34 +24,76 @@ fn main() {
     // config 読み込み前なのでデフォルト値（common=true）でログ出力
     log_common!("[startup] main() start");
 
-    fs::mount::log_gvfs_status();
-    log_common!("[startup] gvfs check done");
+    // Windows は windows_subsystem="windows" によりコンソールを持たないため、
+    // 初期化中に panic が起きても標準エラーが誰にも見えず、プロセスが無言で
+    // 消えるだけになる。init_result で起動シーケンスを catch_unwind して
+    // 拾い、Windows ではダイアログで知らせてから終了する（Linuxは従来通り
+    // 標準エラーへの panic メッセージで足りるため、そちらに任せる）。
+    let init_result = std::panic::catch_unwind(|| {
+        fs::mount::log_gvfs_status();
+        log_common!("[startup] gvfs check done");
 
-    let mut cfg = config::AppConfig::load();
-    log_common!("[startup] config loaded");
+        let mut cfg = config::AppConfig::load();
+        log_common!("[startup] config loaded");
 
-    let state = gui_config::load_state();
-    log_common!("[startup] state loaded (window_size = {:?})", state.window_size);
-    i18n::set_from_code(&state.lang);
+        let state = gui_config::load_state();
+        log_common!("[startup] state loaded (window_size = {:?})", state.window_size);
+        i18n::set_from_code(&state.lang);
 
-    // 設定ダイアログ（共通/アニメタブ）で編集された値は state 側が config.ini より優先される。
-    if let Some(v) = state.app_cache_total_mb { cfg.cache_total_mb = Some(v); }
-    if let Some(v) = state.app_anim_ring_min_frames { cfg.anim_ring_min_frames = v; }
-    if let Some(v) = state.app_anim_ring_max_frames { cfg.anim_ring_max_frames = v; }
-    if let Some(v) = state.app_anim_frame_hard_limit_mb { cfg.anim_frame_hard_limit_mb = v; }
-    if let Some(v) = state.app_viewer_filter { cfg.viewer_filter = v; }
-    if let Some(v) = state.app_max_decode_edge { cfg.max_decode_edge = v; }
+        // 設定ダイアログ（共通/アニメタブ）で編集された値は state 側が config.ini より優先される。
+        if let Some(v) = state.app_cache_total_mb { cfg.cache_total_mb = Some(v); }
+        if let Some(v) = state.app_anim_ring_min_frames { cfg.anim_ring_min_frames = v; }
+        if let Some(v) = state.app_anim_ring_max_frames { cfg.anim_ring_max_frames = v; }
+        if let Some(v) = state.app_anim_frame_hard_limit_mb { cfg.anim_frame_hard_limit_mb = v; }
+        if let Some(v) = state.app_viewer_filter { cfg.viewer_filter = v; }
+        if let Some(v) = state.app_max_decode_edge { cfg.max_decode_edge = v; }
 
-    let args = CliArgs::parse();
-    if let Some(v) = args.cache_max_mb { cfg.cache_total_mb = Some(v.max(64)); }
+        let args = CliArgs::parse();
+        if let Some(v) = args.cache_max_mb { cfg.cache_total_mb = Some(v.max(64)); }
 
-    let start_dir = args.start_path
-        .unwrap_or_else(|| cfg.startup_dir(&state));
-    log_common!("[startup] start_dir = {:?}", start_dir);
+        let start_dir = args.start_path
+            .unwrap_or_else(|| cfg.startup_dir(&state));
+        log_common!("[startup] start_dir = {:?}", start_dir);
+
+        (cfg, state, start_dir)
+    });
+
+    let (cfg, state, start_dir) = match init_result {
+        Ok(v) => v,
+        Err(_) => {
+            show_init_failure_dialog();
+            std::process::exit(1);
+        }
+    };
 
     log_common!("[startup] starting winit event loop ...");
     winit_app::run(start_dir, cfg, state);
 }
+
+/// 初期化失敗時のブロッキングダイアログ（Windowsのみ）。Linuxはコンソール起動が
+/// 前提のため、panic 時の標準エラー出力（既定の panic hook）で足りるとして何もしない。
+#[cfg(windows)]
+fn show_init_failure_dialog() {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_OK, MB_ICONERROR};
+
+    fn to_wide(s: &str) -> Vec<u16> {
+        s.encode_utf16().chain(std::iter::once(0)).collect()
+    }
+
+    let text = to_wide(
+        "初期化に失敗しました。\n\
+         nekoviewer.state, nekoviewer.conf に汚染の疑いがあるので、\n\
+         バックアップをとってから削除して再起動することをおすすめします。",
+    );
+    let caption = to_wide("Nekoviewer");
+
+    unsafe {
+        MessageBoxW(0, text.as_ptr(), caption.as_ptr(), MB_OK | MB_ICONERROR);
+    }
+}
+
+#[cfg(not(windows))]
+fn show_init_failure_dialog() {}
 
 /// 窓ごとの egui::Context を生成した直後に、日本語フォントとスタイルを適用する。
 /// （旧 eframe では cc.egui_ctx に対し 1 回だけ行っていたが、winit では窓ごとに Context を持つ）
