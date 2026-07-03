@@ -356,6 +356,7 @@ impl NekoviewApp {
         };
         self.subdirs.clear();
         self.archives.clear();
+        self.filtered_indices.clear();
         self.raw_image_files.clear();
         self.invalid_archives.clear();
         self.cache_db = neko_dir::neko_dir_for(&self.current_dir, &self.config)
