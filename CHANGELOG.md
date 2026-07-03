@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.9.0] - 2026-07-03
+
+### Added
+
+- Added 7z support (password-protected archives not implemented)
+
+### Changed
+
+- Reduced terminal output where possible; logs can now be viewed from the GUI
+
 ## [0.8.0] - 2026-07-02
 
 ### Added
