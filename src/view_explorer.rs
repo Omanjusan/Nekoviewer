@@ -466,12 +466,27 @@ impl NekoviewApp {
     /// 表示・選択・キー操作の対象となる `filtered_indices` を作り直す。
     fn recompute_filter(&mut self) {
         if self.filter_enabled && !self.filter_text.trim().is_empty() {
-            let needle = self.filter_text.to_lowercase();
+            let text = self.filter_text.trim();
+            // *, ?, [...] / [!...] が含まれる場合のみ glob パターンとして扱う。
+            // 含まれない場合や glob として不正な場合は従来通りの部分一致にフォールバックする。
+            let pattern = if text.contains(['*', '?', '[']) {
+                glob::Pattern::new(text).ok()
+            } else {
+                None
+            };
+            let match_opts = glob::MatchOptions {
+                case_sensitive: false,
+                require_literal_separator: false,
+                require_literal_leading_dot: false,
+            };
+            let needle = text.to_lowercase();
             self.filtered_indices = self.archives.iter().enumerate()
                 .filter(|(_, p)| {
-                    p.file_name().and_then(|n| n.to_str())
-                        .map(|n| n.to_lowercase().contains(&needle))
-                        .unwrap_or(false)
+                    let Some(name) = p.file_name().and_then(|n| n.to_str()) else { return false };
+                    match &pattern {
+                        Some(pat) => pat.matches_with(name, match_opts),
+                        None => name.to_lowercase().contains(&needle),
+                    }
                 })
                 .map(|(i, _)| i)
                 .collect();

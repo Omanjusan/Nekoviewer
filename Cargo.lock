@@ -1952,6 +1952,7 @@ dependencies = [
  "encoding_rs",
  "fast_image_resize",
  "flate2",
+ "glob",
  "image",
  "libavif",
  "libavif-sys",
