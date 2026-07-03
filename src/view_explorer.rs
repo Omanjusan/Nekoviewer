@@ -2,7 +2,8 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, mpsc};
 
-use crate::cache::{FileCache, LoadRequest, LoadResult, PageCache, ThumbRequest, ThumbResult, spawn_worker, spawn_thumb_worker, spawn_file_cache_worker};
+use crate::cache::{FileCache, LoadRequest, LoadResult, PageCache, ThumbRequest, ThumbResult, EntryThumbRequest, EntryThumbResult, spawn_worker, spawn_thumb_worker, spawn_entry_thumb_worker, spawn_file_cache_worker};
+use crate::gui_config::ThumbbarPos;
 use crate::config::AppConfig;
 use crate::gui_config::{SortState, ViewerConfig, WindowSlot};
 use crate::view_gui_config::{SettingsDraft, SettingsTab};
@@ -171,6 +172,9 @@ pub struct NekoviewApp {
     thumb_req_tx: mpsc::SyncSender<ThumbRequest>,
     thumb_res_rx: mpsc::Receiver<ThumbResult>,
     thumb_pending: HashSet<PathBuf>,
+    /// アーカイブ内サムネイルバー用（フォルダグリッドの thumb_req_tx とは別系統）
+    entry_thumb_req_tx: mpsc::Sender<EntryThumbRequest>,
+    entry_thumb_res_rx: mpsc::Receiver<EntryThumbResult>,
     viewer: Arc<Mutex<Option<ViewerState>>>,
     /// ファイル切替後も維持するビューア設定（zoom・fullscreen 等）
     pub(crate) viewer_cfg: Arc<Mutex<ViewerConfig>>,
@@ -248,6 +252,7 @@ impl NekoviewApp {
         let settings_draft = SettingsDraft::from_current(&config, &viewer_cfg, show_hidden);
         let (req_tx, res_rx) = spawn_worker(config.viewer_filter.to_image_filter(), config.resolved_decode_threads(), ctx.clone(), cache_max, ring_bounds, frame_hard_limit_bytes);
         let (thumb_req_tx, thumb_res_rx) = spawn_thumb_worker(config.thumb_filter.to_image_filter(), config.resolved_decode_threads(), ctx.clone());
+        let (entry_thumb_req_tx, entry_thumb_res_rx) = spawn_entry_thumb_worker(config.thumb_filter.to_image_filter(), config.resolved_decode_threads(), ctx.clone());
         let (file_cache_req_tx, file_cache_res_rx) = spawn_file_cache_worker(ctx.clone());
         let mut drives = list_local_drives();
         drives.extend(list_gvfs_smb_mounts());
@@ -294,6 +299,8 @@ impl NekoviewApp {
             thumb_req_tx,
             thumb_res_rx,
             thumb_pending: HashSet::new(),
+            entry_thumb_req_tx,
+            entry_thumb_res_rx,
             viewer: Arc::new(Mutex::new(None)),
             viewer_cfg: Arc::new(Mutex::new(viewer_cfg)),
             drives,
@@ -906,6 +913,11 @@ impl NekoviewApp {
         // エクスプローラー窓が起きていなくてもページ送りが進むよう、
         // ここでワーカー結果回収（res_rx drain）と先読みを回す。
         self.pump_viewer_pages();
+        // 窓ごとに独立した egui::Context を持つ構成のため、サムネイルバー用テクスチャは
+        // 必ずビューアー窓自身の ctx(=ui.ctx()) で load_texture する。self.egui_ctx は
+        // エクスプローラー窓側の Context であり、そちらで作ったテクスチャはビューアー窓の
+        // Painter からは見えない（テクスチャがデコードはできても描画されない原因だった）。
+        self.pump_thumbbar_entries(ui.ctx());
 
         let output = {
             let mut viewer_guard = self.viewer.lock().unwrap();
@@ -931,6 +943,51 @@ impl NekoviewApp {
             self.handle_viewer_nav(output.nav);
             controller::request_status_update(&self.status_update_requested);
             self.egui_ctx.request_repaint();
+        }
+    }
+
+    /// アーカイブ内サムネイルバー用: ワーカー結果の回収と、未取得エントリの要求送出。
+    /// サムネイルバー配置が「表示なし」、またはアーカイブが1件以下の場合は要求を出さない
+    /// （設定タブの表示条件と揃える）。
+    fn pump_thumbbar_entries(&mut self, viewer_ctx: &egui::Context) {
+        let results: Vec<EntryThumbResult> =
+            std::iter::from_fn(|| self.entry_thumb_res_rx.try_recv().ok()).collect();
+
+        let mut viewer_guard = self.viewer.lock().unwrap();
+        let Some(viewer) = viewer_guard.as_mut() else { return; };
+
+        for result in results {
+            if result.archive_path == *viewer.archive_path() {
+                viewer.set_thumb_result(viewer_ctx, result.original_index, result.rgba);
+            }
+        }
+
+        let (thumbbar_pos, edge) = {
+            let cfg = self.viewer_cfg.lock().unwrap();
+            (cfg.thumbbar_pos, cfg.thumbbar_thumb_size)
+        };
+        if thumbbar_pos == ThumbbarPos::None || viewer.entries().len() <= 1 {
+            return;
+        }
+
+        let archive_path = viewer.archive_path().clone();
+        let is_raw_file = viewer.is_raw_file();
+        let missing = viewer.thumbbar_missing_indices();
+        if !missing.is_empty() {
+            crate::log_common!("[thumbbar-debug] pump: missing={}", missing.len());
+        }
+        for original_index in missing {
+            let Some(entry_name) = viewer.entry_name_for(original_index) else { continue; };
+            let req = EntryThumbRequest {
+                archive_path: archive_path.clone(),
+                entry_name: entry_name.to_string(),
+                original_index,
+                is_raw_file,
+                edge,
+            };
+            if self.entry_thumb_req_tx.send(req).is_ok() {
+                viewer.mark_thumb_pending(original_index);
+            }
         }
     }
 
