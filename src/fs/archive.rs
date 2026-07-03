@@ -185,10 +185,33 @@ enum EntryEstimate {
     OverBudget,
 }
 
-/// フェーズ2: 開済みアーカイブから1エントリを展開し、サイズを見積もる。
+/// フェーズ2: 展開済みバイト列1件のデコード後サイズ(RGBA, byte)を見積もる（ZIP/7z共通処理）。
 /// アニメーション拡張子ならまずフェーズ1.5ガード付きデコードを試し、非アニメーションと
 /// 判定された場合は静止画のヘッダ読みにフォールバックする。ヘッダ解析にも失敗した場合の
 /// 最終手段としてフルデコードして実サイズを使う（通常のページ読み込みと同じコスト）。
+/// デコード自体に失敗した場合は None（このサンプルは無視する）。
+fn estimate_bytes_for_entry(buf: &[u8], display_name: &str, budget_bytes: usize, ring_bounds: (usize, usize)) -> Option<EntryEstimate> {
+    let ext = display_name.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+
+    if matches!(ext.as_str(), "gif" | "webp" | "png" | "avif") {
+        match estimate_anim_sample_bytes(buf, &ext, budget_bytes, ring_bounds) {
+            AnimSampleEstimate::Bytes(n) => return Some(EntryEstimate::Bytes(n)),
+            AnimSampleEstimate::OverBudget => return Some(EntryEstimate::OverBudget),
+            AnimSampleEstimate::NotAnimated => {} // 静止画推定へフォールバック
+        }
+    }
+
+    if let Some(n) = estimate_static_decoded_bytes(buf) {
+        return Some(to_entry_estimate(n, budget_bytes));
+    }
+
+    // ヘッダ解析失敗時の最終手段: フルデコードして実サイズを使う。
+    let img = decode_image(buf, display_name)?;
+    let n = (img.width() as usize) * (img.height() as usize) * 4;
+    Some(to_entry_estimate(n, budget_bytes))
+}
+
+/// フェーズ2: 開済みZIPアーカイブから1エントリを展開し、サイズを見積もる。
 /// エントリの読み込み自体に失敗した場合は None（このサンプルは無視する）。
 fn estimate_entry_bytes<R: Read + Seek>(
     archive: &mut zip::ZipArchive<R>,
@@ -197,24 +220,7 @@ fn estimate_entry_bytes<R: Read + Seek>(
     ring_bounds: (usize, usize),
 ) -> Option<EntryEstimate> {
     let (buf, display_name) = load_bytes_from_archive(archive, entry_name)?;
-    let ext = display_name.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
-
-    if matches!(ext.as_str(), "gif" | "webp" | "png" | "avif") {
-        match estimate_anim_sample_bytes(&buf, &ext, budget_bytes, ring_bounds) {
-            AnimSampleEstimate::Bytes(n) => return Some(EntryEstimate::Bytes(n)),
-            AnimSampleEstimate::OverBudget => return Some(EntryEstimate::OverBudget),
-            AnimSampleEstimate::NotAnimated => {} // 静止画推定へフォールバック
-        }
-    }
-
-    if let Some(n) = estimate_static_decoded_bytes(&buf) {
-        return Some(to_entry_estimate(n, budget_bytes));
-    }
-
-    // ヘッダ解析失敗時の最終手段: フルデコードして実サイズを使う。
-    let img = decode_image(&buf, &display_name)?;
-    let n = (img.width() as usize) * (img.height() as usize) * 4;
-    Some(to_entry_estimate(n, budget_bytes))
+    estimate_bytes_for_entry(&buf, &display_name, budget_bytes, ring_bounds)
 }
 
 fn to_entry_estimate(bytes: usize, budget_bytes: usize) -> EntryEstimate {
@@ -239,6 +245,10 @@ pub enum ArchiveMemoryEstimate {
 /// サンプル1枚でも単体で budget_bytes を超えた時点で残りのサンプリングを打ち切り、
 /// 即座に `OverBudget` と判定する（サンプル単体チェック + 合計見積もりチェックの二重構成）。
 /// 全サンプルの読み込みに失敗した場合（判定不能）は `Ok` を返し、通常のオープンを妨げない。
+///
+/// 7z(ソリッド圧縮)はサンプリングでの軽量見積もりが成立しない（1件だけ取り出すのにブロック
+/// 先頭からの再展開が必要になるため）。そのため7zは `estimate_archive_memory_7z` に委譲し、
+/// フェーズ2の一括展開結果を使った全件厳密判定を行う。
 pub fn estimate_archive_memory(
     path: &Path,
     entries: &[ImageEntry],
@@ -248,6 +258,10 @@ pub fn estimate_archive_memory(
     if entries.is_empty() {
         return ArchiveMemoryEstimate::Ok;
     }
+    if is_7z_path(path) {
+        return estimate_archive_memory_7z(path, entries, budget_bytes, ring_bounds);
+    }
+
     let Ok(file) = std::fs::File::open(path) else { return ArchiveMemoryEstimate::Ok };
     let Ok(mut archive) = zip::ZipArchive::new(file) else { return ArchiveMemoryEstimate::Ok };
 
@@ -267,6 +281,38 @@ pub fn estimate_archive_memory(
     } else {
         ArchiveMemoryEstimate::Ok
     }
+}
+
+/// フェーズ4: 7z版の見積もり。ソリッド圧縮では「軽くサンプリング」が成立しないため、
+/// どのみち開く際に必要になる一括展開(フェーズ2の`extract_all_images_7z_path`と同じ処理)を
+/// 先に行い、全エントリのヘッダ寸法から実際の合計値を厳密に計算する
+/// （サンプル平均による概算ではなく全数チェックなので、ZIP版より判定精度は高い）。
+fn estimate_archive_memory_7z(
+    path: &Path,
+    entries: &[ImageEntry],
+    budget_bytes: usize,
+    ring_bounds: (usize, usize),
+) -> ArchiveMemoryEstimate {
+    let map = extract_all_images_7z_path(path);
+    if map.is_empty() {
+        return ArchiveMemoryEstimate::Ok;
+    }
+
+    let mut total: usize = 0;
+    for entry in entries {
+        let Some(buf) = map.get(&entry.entry_name) else { continue };
+        match estimate_bytes_for_entry(buf, &entry.display_name, budget_bytes, ring_bounds) {
+            Some(EntryEstimate::OverBudget) => return ArchiveMemoryEstimate::OverBudget,
+            Some(EntryEstimate::Bytes(n)) => {
+                total = total.saturating_add(n);
+                if total > budget_bytes {
+                    return ArchiveMemoryEstimate::OverBudget;
+                }
+            }
+            None => {} // 読み込み/デコード失敗エントリは合計から除外
+        }
+    }
+    ArchiveMemoryEstimate::Ok
 }
 
 fn average(values: &[usize]) -> Option<usize> {
@@ -722,6 +768,22 @@ mod tests {
             let img = decode_image_bytes(buf, &e.display_name);
             assert!(img.is_some(), "{} のデコードに失敗", e.display_name);
         }
+    }
+
+    #[test]
+    fn test_estimate_archive_memory_7z_ok_within_budget() {
+        // test7z.7z の3画像デコード後合計は約75MB。100MB予算なら収まる。
+        let entries = list_images(&test_7z());
+        let result = estimate_archive_memory(&test_7z(), &entries, 100 * MB, TEST_RING_BOUNDS);
+        assert_eq!(result, ArchiveMemoryEstimate::Ok);
+    }
+
+    #[test]
+    fn test_estimate_archive_memory_7z_over_budget() {
+        // 最大の1枚(4096x3072)だけで約50MB。40MB予算なら単体超過でOverBudget。
+        let entries = list_images(&test_7z());
+        let result = estimate_archive_memory(&test_7z(), &entries, 40 * MB, TEST_RING_BOUNDS);
+        assert_eq!(result, ArchiveMemoryEstimate::OverBudget);
     }
 
     #[test]
