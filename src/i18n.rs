@@ -136,6 +136,22 @@ impl Lang {
         }
     }
 
+    pub fn explorer_filter_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "フィルタ",
+            Lang::English  => "Filter",
+            Lang::Chinese  => "过滤",
+        }
+    }
+
+    pub fn explorer_filter_hint(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ファイル名で絞り込み...",
+            Lang::English  => "Filter by filename...",
+            Lang::Chinese  => "按文件名筛选...",
+        }
+    }
+
     pub fn drives(self) -> &'static str {
         match self {
             Lang::Japanese => "ドライブ",
