@@ -411,6 +411,22 @@ impl Lang {
         }
     }
 
+    pub fn settings_thumb_size_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "■ サムネイルサイズ",
+            Lang::English  => "■ Thumbnail size",
+            Lang::Chinese  => "■ 缩略图尺寸",
+        }
+    }
+
+    pub fn settings_thumb_size_explain(self) -> &'static str {
+        match self {
+            Lang::Japanese => "グリッド表示でのサムネイル長辺サイズ（px）。",
+            Lang::English  => "Long-edge size (px) of thumbnails in grid view.",
+            Lang::Chinese  => "网格视图中缩略图长边尺寸（px）。",
+        }
+    }
+
     pub fn settings_resize_filter_viewer_label(self) -> &'static str {
         match self {
             Lang::Japanese => "■ ※ リサイズフィルタ（ビューアー用）",
