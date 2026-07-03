@@ -312,7 +312,7 @@ pub struct ImageEntry {
 }
 
 /// 拡張子で 7z/CB7 かどうかを判定する
-fn is_7z_path(path: &Path) -> bool {
+pub fn is_7z_path(path: &Path) -> bool {
     path.extension()
         .and_then(|e| e.to_str())
         .map(|e| e.eq_ignore_ascii_case("7z") || e.eq_ignore_ascii_case("cb7"))
@@ -448,6 +448,35 @@ fn nt_time_to_date_key(t: sevenz_rust2::NtTime) -> u64 {
         + hour * 10_000
         + minute * 100
         + second
+}
+
+/// 7z(ソリッド圧縮)は1エントリだけの取り出しがブロック先頭からの再展開になり非効率なため、
+/// 開いた時点で画像エントリを一括デコードし `entry_name -> 生バイト列` の対応表にまとめて返す。
+/// 以降のページ送りはこの表を引くだけで済み、再展開は発生しない。
+pub fn extract_all_images_7z<R: Read + Seek>(source: R) -> HashMap<String, Vec<u8>> {
+    let Ok(mut reader) = sevenz_rust2::ArchiveReader::new(source, sevenz_rust2::Password::empty()) else {
+        return HashMap::new();
+    };
+
+    let mut out = HashMap::new();
+    let _ = reader.for_each_entries(&mut |entry: &sevenz_rust2::ArchiveEntry, r: &mut dyn Read| {
+        if !entry.is_directory && entry.has_stream && is_image_entry_raw(entry.name.as_bytes()) {
+            let mut buf = Vec::with_capacity(entry.size as usize);
+            if r.read_to_end(&mut buf).is_ok() {
+                out.insert(entry.name.clone(), buf);
+            }
+        }
+        Ok(true) // 全エントリを処理する
+    });
+    out
+}
+
+/// ディスク上の7zファイルを開いて `extract_all_images_7z` を実行する
+pub fn extract_all_images_7z_path(path: &Path) -> HashMap<String, Vec<u8>> {
+    let Ok(file) = std::fs::File::open(path) else {
+        return HashMap::new();
+    };
+    extract_all_images_7z(file)
 }
 
 /// ZIP/CBZ から指定エントリの画像をデコードして返す
@@ -680,6 +709,19 @@ mod tests {
         sorted.sort();
         assert_eq!(names, sorted, "display_name がソートされていない");
         assert!(names.iter().any(|n| n.ends_with(".webp")));
+    }
+
+    #[test]
+    fn test_extract_all_images_7z_decodes_pages() {
+        let entries = list_images(&test_7z());
+        assert_eq!(entries.len(), 3);
+        let map = extract_all_images_7z_path(&test_7z());
+        assert_eq!(map.len(), 3, "一括展開後のエントリ数が一覧と一致しない");
+        for e in &entries {
+            let buf = map.get(&e.entry_name).expect("展開済みマップにエントリが無い");
+            let img = decode_image_bytes(buf, &e.display_name);
+            assert!(img.is_some(), "{} のデコードに失敗", e.display_name);
+        }
     }
 
     #[test]
