@@ -440,7 +440,7 @@ fn list_images_zip(path: &Path) -> Vec<ImageEntry> {
 }
 
 /// 7z のヘッダ(ファイル一覧・メタデータ)のみを読み、画像エントリを一覧化する。
-/// Phase1時点ではデータストリームの展開は行わない(展開はPhase2で対応)。
+/// データストリームの展開は行わない。
 fn list_images_7z(path: &Path) -> Vec<ImageEntry> {
     let Ok(archive) = sevenz_rust2::Archive::open(path) else {
         return Vec::new();
@@ -545,11 +545,38 @@ pub fn load_image_from_archive(
     Some(img)
 }
 
-/// ZIP/CBZ の先頭画像1枚をデコードして返す（サムネイル用）。
-/// まず Local File Header を先頭から順読みして試みる（ネットワーク帯域節約）。
+/// アーカイブ(ZIP/CBZ/7z/CB7)の先頭画像1枚をデコードして返す（サムネイル用）。
+/// ZIPはまず Local File Header を先頭から順読みして試みる（ネットワーク帯域節約）。
 /// Data Descriptor フラグ等で順読み不可の場合は ZipArchive 経由にフォールバックする。
 pub fn load_first_image(path: &Path) -> Option<image::DynamicImage> {
+    if is_7z_path(path) {
+        return load_first_image_7z(path);
+    }
     load_first_image_sequential(path).or_else(|| load_first_image_via_archive(path))
+}
+
+/// 7zの先頭画像1枚をデコードして返す（サムネイル用）。
+/// 7zはヘッダがアーカイブ末尾に集約されるためZIP版のような先頭シーケンシャル最適化は
+/// 使えないが、目的の画像が見つかった時点でブロック展開を打ち切ることで、
+/// アーカイブ全体を一括展開する`extract_all_images_7z`より軽量に済ませる。
+fn load_first_image_7z(path: &Path) -> Option<image::DynamicImage> {
+    let file = std::fs::File::open(path).ok()?;
+    let mut reader = sevenz_rust2::ArchiveReader::new(file, sevenz_rust2::Password::empty()).ok()?;
+
+    let mut result: Option<image::DynamicImage> = None;
+    let _ = reader.for_each_entries(|entry: &sevenz_rust2::ArchiveEntry, r: &mut dyn Read| {
+        let mut buf = Vec::with_capacity(entry.size as usize);
+        // ソリッドストリーム内の位置整合のため、対象外エントリでも必ず読み切る。
+        let read_ok = r.read_to_end(&mut buf).is_ok();
+        if read_ok && !entry.is_directory && entry.has_stream && is_image_entry_raw(entry.name.as_bytes()) {
+            if let Some(img) = decode_image(&buf, &entry.name) {
+                result = Some(img);
+                return Ok(false); // 見つかった時点でこのブロックの展開を打ち切る
+            }
+        }
+        Ok(true)
+    });
+    result
 }
 
 /// Local File Header を先頭から順読みする（セントラルディレクトリ・末尾シーク不要）。
@@ -768,6 +795,12 @@ mod tests {
             let img = decode_image_bytes(buf, &e.display_name);
             assert!(img.is_some(), "{} のデコードに失敗", e.display_name);
         }
+    }
+
+    #[test]
+    fn test_load_first_image_7z_returns_some() {
+        let img = load_first_image(&test_7z());
+        assert!(img.is_some(), "7zの先頭画像の読み込みに失敗");
     }
 
     #[test]
