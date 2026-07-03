@@ -8,7 +8,7 @@ use crate::gui_config::{SortState, ViewerConfig, WindowSlot};
 use crate::view_gui_config::{SettingsDraft, SettingsTab};
 use crate::controller::{self, ViewerNav};
 use crate::i18n;
-use crate::model::ExplorerSortKey;
+use crate::types::ExplorerSortKey;
 use crate::neko_dir;
 use crate::fs::{archive, dir, mount::{list_gvfs_smb_mounts, list_local_drives, MountEntry}};
 use crate::view_reader::{PageMode, ViewerState};
