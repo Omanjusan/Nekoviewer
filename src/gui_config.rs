@@ -21,6 +21,36 @@ impl Default for SortState {
     }
 }
 
+/// アーカイブ内サムネイルバーの配置。ビューアー画面を軸とした表示位置。
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ThumbbarPos {
+    Left,
+    Right,
+    Top,
+    Bottom,
+    None,
+}
+
+pub(crate) fn parse_thumbbar_pos(s: &str) -> ThumbbarPos {
+    match s {
+        "left"   => ThumbbarPos::Left,
+        "right"  => ThumbbarPos::Right,
+        "top"    => ThumbbarPos::Top,
+        "bottom" => ThumbbarPos::Bottom,
+        _        => ThumbbarPos::None,
+    }
+}
+
+pub fn thumbbar_pos_to_str(p: ThumbbarPos) -> &'static str {
+    match p {
+        ThumbbarPos::Left   => "left",
+        ThumbbarPos::Right  => "right",
+        ThumbbarPos::Top    => "top",
+        ThumbbarPos::Bottom => "bottom",
+        ThumbbarPos::None   => "none",
+    }
+}
+
 /// ファイルをまたいで維持するビューア設定（ウィンドウを開き直しても保持）
 #[derive(Clone, Copy)]
 pub struct ViewerConfig {
@@ -35,6 +65,23 @@ pub struct ViewerConfig {
     /// フェーズ6: リサイズ/zoom_actual切替のたびに増分する世代カウンタ（非永続・実行時のみ）。
     /// winit_app.rs / view_reader.rs から更新され、NekoviewApp 側で変化検知にのみ使う。
     pub redecode_trigger_seq: u64,
+    /// アーカイブ内サムネイルバーの配置。単一ファイル/1ファイル格納アーカイブでは
+    /// この設定に関わらず非表示にする（呼び出し側で判定）。
+    pub thumbbar_pos: ThumbbarPos,
+    /// サムネイル1枚の長辺サイズ（px）
+    pub thumbbar_thumb_size: u32,
+    /// ページ操作停滞後、サムネバーを自動で消すまでの待機時間(ms)。0 = 常時表示
+    pub thumbbar_idle_hide_ms: u64,
+    /// true = サムネバーを本画像の前面にオーバーレイ表示（本画像はサムネバー領域を意識せず描画）
+    pub thumbbar_overlap: bool,
+    /// 現在地マーカーの色(R)
+    pub thumbbar_marker_r: u8,
+    /// 現在地マーカーの色(G)
+    pub thumbbar_marker_g: u8,
+    /// 現在地マーカーの色(B)
+    pub thumbbar_marker_b: u8,
+    /// 現在地マーカーの不透明度(0〜100%)
+    pub thumbbar_marker_a: u8,
 }
 
 impl Default for ViewerConfig {
@@ -45,6 +92,14 @@ impl Default for ViewerConfig {
             redecode_on_resize: false,
             resize_debounce_ms: 300,
             redecode_trigger_seq: 0,
+            thumbbar_pos: ThumbbarPos::None,
+            thumbbar_thumb_size: 96,
+            thumbbar_idle_hide_ms: 3000,
+            thumbbar_overlap: false,
+            thumbbar_marker_r: 230,
+            thumbbar_marker_g: 169,
+            thumbbar_marker_b: 79,
+            thumbbar_marker_a: 35,
         }
     }
 }
@@ -168,6 +223,14 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
     let mut app_anim_frame_hard_limit_mb: Option<usize> = None;
     let mut app_viewer_filter: Option<ResizeFilter> = None;
     let mut app_max_decode_edge: Option<u32> = None;
+    let mut thumbbar_pos: Option<ThumbbarPos> = None;
+    let mut thumbbar_thumb_size: Option<u32> = None;
+    let mut thumbbar_idle_hide_ms: Option<u64> = None;
+    let mut thumbbar_overlap: Option<bool> = None;
+    let mut thumbbar_marker_r: Option<u8> = None;
+    let mut thumbbar_marker_g: Option<u8> = None;
+    let mut thumbbar_marker_b: Option<u8> = None;
+    let mut thumbbar_marker_a: Option<u8> = None;
     let mut has_kv = false;
 
     for line in content.lines() {
@@ -228,6 +291,14 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
                     if !v.is_empty() { app_viewer_filter = Some(parse_filter(v)); }
                 }
                 "app_max_decode_edge" => { app_max_decode_edge = v.trim().parse().ok(); }
+                "thumbbar_pos" => { thumbbar_pos = Some(parse_thumbbar_pos(v.trim())); }
+                "thumbbar_thumb_size" => { thumbbar_thumb_size = v.trim().parse().ok(); }
+                "thumbbar_idle_hide_ms" => { thumbbar_idle_hide_ms = v.trim().parse().ok(); }
+                "thumbbar_overlap" => { thumbbar_overlap = v.trim().parse().ok(); }
+                "thumbbar_marker_r" => { thumbbar_marker_r = v.trim().parse().ok(); }
+                "thumbbar_marker_g" => { thumbbar_marker_g = v.trim().parse().ok(); }
+                "thumbbar_marker_b" => { thumbbar_marker_b = v.trim().parse().ok(); }
+                "thumbbar_marker_a" => { thumbbar_marker_a = v.trim().parse().ok(); }
                 _ => {}
             }
         }
@@ -272,6 +343,14 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
             redecode_on_resize: redecode_on_resize.unwrap_or(false),
             resize_debounce_ms: resize_debounce_ms.unwrap_or(300),
             redecode_trigger_seq: 0,
+            thumbbar_pos: thumbbar_pos.unwrap_or(ThumbbarPos::None),
+            thumbbar_thumb_size: thumbbar_thumb_size.unwrap_or(96),
+            thumbbar_idle_hide_ms: thumbbar_idle_hide_ms.unwrap_or(3000),
+            thumbbar_overlap: thumbbar_overlap.unwrap_or(false),
+            thumbbar_marker_r: thumbbar_marker_r.unwrap_or(230),
+            thumbbar_marker_g: thumbbar_marker_g.unwrap_or(169),
+            thumbbar_marker_b: thumbbar_marker_b.unwrap_or(79),
+            thumbbar_marker_a: thumbbar_marker_a.unwrap_or(35),
         },
         show_hidden: show_hidden.unwrap_or(false),
         app_cache_total_mb,
@@ -294,6 +373,12 @@ pub fn save_state(dir: &Path, window_size: (u32, u32), viewer_slots: &[Option<Wi
         viewer_cfg.zoom_actual, viewer_cfg.fullscreen,
         viewer_cfg.redecode_on_resize, viewer_cfg.resize_debounce_ms, show_hidden,
     );
+    content.push_str(&format!(
+        "thumbbar_pos={}\nthumbbar_thumb_size={}\nthumbbar_idle_hide_ms={}\nthumbbar_overlap={}\nthumbbar_marker_r={}\nthumbbar_marker_g={}\nthumbbar_marker_b={}\nthumbbar_marker_a={}\n",
+        thumbbar_pos_to_str(viewer_cfg.thumbbar_pos), viewer_cfg.thumbbar_thumb_size, viewer_cfg.thumbbar_idle_hide_ms,
+        viewer_cfg.thumbbar_overlap, viewer_cfg.thumbbar_marker_r, viewer_cfg.thumbbar_marker_g,
+        viewer_cfg.thumbbar_marker_b, viewer_cfg.thumbbar_marker_a,
+    ));
     // 設定ダイアログ（共通/アニメタブ）が編集する AppConfig 系の値。次回起動から反映されるため、
     // ここでは現在の有効値をそのまま state に書き戻すだけでよい（即時のワーカー再構築は不要）。
     content.push_str(&format!(
