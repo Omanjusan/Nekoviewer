@@ -60,6 +60,7 @@ pub fn list_archives(dir: &Path) -> Vec<PathBuf> {
             matches!(
                 p.extension().and_then(|e| e.to_str()),
                 Some("zip") | Some("cbz") | Some("ZIP") | Some("CBZ")
+                    | Some("7z") | Some("cb7") | Some("7Z") | Some("CB7")
             )
             .then_some(p)
         })

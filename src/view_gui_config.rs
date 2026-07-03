@@ -20,6 +20,9 @@ const MAX_DECODE_EDGE_CEILING: u32 = 7680;
 const MAX_DECODE_EDGE_FLOOR: u32 = 200;
 /// キャッシュ合計スライダーの下限MB。
 const CACHE_TOTAL_FLOOR_MB: u64 = 64;
+/// サムネイルサイズスライダーの下限・上限px（config.rs のパース時clampと合わせる）。
+const THUMB_SIZE_FLOOR: u32 = 64;
+const THUMB_SIZE_CEILING: u32 = 512;
 
 /// 設定ダイアログの編集用下書き。[反映]を押すまでは AppConfig/ViewerConfig 本体には
 /// 一切書き戻さない（自由にタイプ・切り替えさせるための一時バッファ）。
@@ -34,6 +37,7 @@ pub(crate) struct SettingsDraft {
     /// ダイアログを開いた時点のシステム総RAM(MB)。毎フレームのsysinfo呼び出しを避けるためキャッシュする。
     system_ram_mb: u64,
     max_decode_edge: u32,
+    thumb_size: u32,
     viewer_filter: ResizeFilter,
     thumb_filter: ResizeFilter,
     lang: i18n::Lang,
@@ -52,6 +56,7 @@ impl SettingsDraft {
             cache_total_mb: config.cache_total_mb.unwrap_or_else(crate::cache::default_cache_total_mb),
             system_ram_mb,
             max_decode_edge: config.max_decode_edge,
+            thumb_size: config.thumb_size,
             viewer_filter: config.viewer_filter,
             thumb_filter: config.thumb_filter,
             lang: i18n::t(),
@@ -73,6 +78,7 @@ impl SettingsDraft {
         viewer_cfg.resize_debounce_ms = self.debounce_ms;
         config.cache_total_mb = if self.cache_total_user_set { Some(self.cache_total_mb) } else { None };
         config.max_decode_edge = self.max_decode_edge;
+        config.thumb_size = self.thumb_size;
         config.viewer_filter = self.viewer_filter;
         config.thumb_filter = self.thumb_filter;
         i18n::set(self.lang);
@@ -140,6 +146,17 @@ fn draw_settings_tab_common(ui: &mut egui::Ui, draft: &mut SettingsDraft) {
     if draft.cache_over_budget() {
         ui.colored_label(egui::Color32::from_rgb(220, 60, 60), i18n::t().settings_cache_over_budget());
     }
+    ui.separator();
+
+    ui.label(i18n::t().settings_thumb_size_label());
+    ui.scope(|ui| {
+        ui.spacing_mut().slider_width = 260.0;
+        ui.horizontal(|ui| {
+            ui.add(egui::Slider::new(&mut draft.thumb_size, THUMB_SIZE_FLOOR..=THUMB_SIZE_CEILING).show_value(false));
+            ui.label(format!("{} px", draft.thumb_size));
+        });
+    });
+    ui.label(i18n::t().settings_thumb_size_explain());
     ui.separator();
 
     ui.label(i18n::t().settings_resize_filter_viewer_label());
