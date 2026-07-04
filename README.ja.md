@@ -41,7 +41,7 @@ make release
 
 `make release` は初回実行時に不足している依存パッケージ（`nasm`、`dav1d` 等）のインストールを案内します。
 
-#### アップデート時
+#### Linuxアップデート時
 
 ```bash
 git pull
@@ -54,6 +54,12 @@ make release
 ---
 
 ## 使い方
+
+
+### Windows / Linux 共通のアップデート時
+
+exe（Linuxでは実行バイナリ）を配置しているフォルダ内のstateファイルとconfは念の為消しておいてください
+自動的に新規項目が不足しているからセーブデータも更新しますみたいな機能はまだありません
 
 ### 起動
 
@@ -110,38 +116,7 @@ nekoviewer [フォルダパス]
 
 ### 設定ファイル（`nekoviewer.conf`）
 
-実行ファイルと同じフォルダに自動生成されます。初回起動後に編集してください。主な設定項目：
-
-```conf
-[startup]
-# true にすると前回開いたフォルダから起動
-use_last_dir = false
-# 固定の起動フォルダ（空欄はホームディレクトリ）
-fixed_dir =
-
-[cache]
-# local : 実行ファイル配下の cache/ に保存（開発・確認用）
-# xdg   : %LOCALAPPDATA%/nekoview/cache/ に保存（本番推奨だが評価版状態なのでlocalで問題なし）
-storage = local
-# ページキャッシュの上限メモリ（MB）。省略時はシステムRAMの30%
-# max_mb = 
-
-[worker]
-# デコードスレッド数。0 = 自動（論理コア数の半分）
-decode_threads = 0
-
-[thumbnail]
-# nearest / triangle / catmullrom / lanczos3
-filter = triangle
-
-[viewer]
-# nearest / triangle / catmullrom / lanczos3
-filter = catmullrom
-
-[grid]
-# サムネイル長辺サイズ（px）。64〜512
-thumb_size = 256
-```
+主な設定項目はアプリ内のGUI設定画面に移行済み。設定ファイルは初回起動時の生成・高度な設定用途のみで、日常的な変更はGUI設定画面から行う。
 
 ---
 
