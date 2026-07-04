@@ -6,7 +6,7 @@ mod controller;
 mod fs;
 mod gui_config;
 mod i18n;
-mod model;
+mod types;
 mod model_innerlog;
 mod neko_dir;
 mod spread_offset;
