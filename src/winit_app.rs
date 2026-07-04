@@ -265,6 +265,7 @@ impl WinitApp {
             state.sort_state,
             state.viewer_cfg,
             state.show_hidden,
+            state.wayland_fullscreen_warning_dismissed,
             win.egui_ctx.clone(),
         );
 
