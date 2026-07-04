@@ -1944,7 +1944,7 @@ dependencies = [
 
 [[package]]
 name = "nekoviewer"
-version = "0.8.0"
+version = "1.0.0"
 dependencies = [
  "egui",
  "egui-wgpu",
@@ -1962,7 +1962,6 @@ dependencies = [
  "sevenz-rust2",
  "sha2 0.10.9",
  "sysinfo",
- "walkdir",
  "webp",
  "windows-sys 0.52.0",
  "winit",
