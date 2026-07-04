@@ -232,38 +232,6 @@ impl Lang {
         }
     }
 
-    pub fn wayland_warning_title(self) -> &'static str {
-        match self {
-            Lang::Japanese => "Wayland環境での既知の制限",
-            Lang::English  => "Known limitation on Wayland",
-            Lang::Chinese  => "Wayland环境下的已知限制",
-        }
-    }
-
-    pub fn wayland_warning_body(self) -> &'static str {
-        match self {
-            Lang::Japanese => "Wayland環境では、ビューアーをフルスクリーン表示中にウィンドウの描画・操作が一時的に固まることがあります（コンポジタ/GPUドライバ側の要因のため、アプリ側では解決できません）。フルスクリーンの利用は非推奨です。",
-            Lang::English  => "On Wayland, the viewer window may temporarily freeze while in fullscreen (this is caused by the compositor/GPU driver stack and cannot be fixed on the app side). Using fullscreen is not recommended in this environment.",
-            Lang::Chinese  => "在Wayland环境下，查看器窗口在全屏显示时可能会暂时卡住（这是由合成器/GPU驱动层面导致的，应用程序无法修复）。不建议在此环境下使用全屏。",
-        }
-    }
-
-    pub fn wayland_warning_dont_show_again(self) -> &'static str {
-        match self {
-            Lang::Japanese => "次回から表示しない",
-            Lang::English  => "Don't show this again",
-            Lang::Chinese  => "下次不再显示",
-        }
-    }
-
-    pub fn wayland_warning_close(self) -> &'static str {
-        match self {
-            Lang::Japanese => "閉じる",
-            Lang::English  => "Close",
-            Lang::Chinese  => "关闭",
-        }
-    }
-
     pub fn redecode_debounce_label(self, ms: u64) -> String {
         match self {
             Lang::Japanese => format!("[デバウンス{ms}ms]"),

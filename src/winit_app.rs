@@ -90,11 +90,20 @@ struct EguiWindow {
     first_frame: bool,
     /// 次に再描画すべき最短時刻。`None` = 予定なし（純粋にイベント待ち）。
     next_repaint: Option<Instant>,
+    /// フレームキャップの下限時刻（前回 render 開始＋最小フレーム間隔）。
+    /// どの経路の再描画要求もこれより前には描かない。Wayland では vsync を外す
+    /// （occluded サーフェスへの frame callback 停止で acquire が無期限ブロックするため）ので、
+    /// vsync に代わるフレームペーサーとして全プラットフォームで一律に効かせる。
+    not_before: Instant,
 }
 
+/// モニタ Hz が取得できないときの上限フォールバック。
+const FALLBACK_FRAME_CAP_MILLIHERTZ: u32 = 120_000;
+
 impl EguiWindow {
-    /// `next_repaint` を `t` と比較してより早い方に更新する。
+    /// `next_repaint` を `t` と比較してより早い方に更新する（フレームキャップ下限つき）。
     fn bump(&mut self, t: Instant) {
+        let t = t.max(self.not_before);
         self.next_repaint = Some(match self.next_repaint {
             Some(cur) => cur.min(t),
             None => t,
@@ -103,11 +112,23 @@ impl EguiWindow {
 
     /// 今すぐ再描画を要求する（入力イベント・リサイズ・OS expose 用）。
     fn bump_now(&mut self) {
-        self.next_repaint = Some(Instant::now());
+        self.bump(Instant::now());
     }
 
     fn due(&self, now: Instant) -> bool {
         matches!(self.next_repaint, Some(t) if now >= t)
+    }
+
+    /// この窓の最小フレーム間隔。窓が今いるモニタのリフレッシュレートを上限とし、
+    /// 取得できなければ 120Hz 相当にフォールバックする。
+    fn frame_cap_interval(&self) -> Duration {
+        let mhz = self
+            .window
+            .current_monitor()
+            .and_then(|m| m.refresh_rate_millihertz())
+            .filter(|&mhz| mhz > 0)
+            .unwrap_or(FALLBACK_FRAME_CAP_MILLIHERTZ);
+        Duration::from_nanos(1_000_000_000_000 / mhz as u64)
     }
 }
 
@@ -124,9 +145,31 @@ fn make_egui_window(
     // 窓ごとに独立した Painter を作る。Painter::new で wgpu Instance を用意し、
     // set_window で初回サーフェス登録時に専用の Device/Queue/Renderer を生成する。
     // 内部の error-repaint 用 Context にはこの窓自身の egui_ctx を渡す。
+    //
+    // present mode: 既定は vsync（AutoVsync）だが、Wayland セッションでは外す。
+    // Wayland コンポジタは完全に隠れた（occluded）サーフェスに frame callback を送らず、
+    // vsync 付き acquire（get_current_texture）が無期限ブロックする。単一スレッドで全窓を
+    // render する本ループでは、擬似フルスクのビューアーに覆われたエクスプローラー窓の
+    // render がループごと止め、ビューアーの画面更新が停止していた（フォーカス切替で復帰）。
+    // vsync を外すぶんのフレームペーシングは EguiWindow::frame_cap_interval が担う。
+    // NEKO_NO_VSYNC=1 は動作検証用の強制スイッチ。
+    let no_vsync =
+        crate::fs::dir::is_wayland_session() || std::env::var_os("NEKO_NO_VSYNC").is_some();
+    let wgpu_config = if no_vsync {
+        crate::log_common!("[render] present_mode = AutoNoVsync (Wayland or NEKO_NO_VSYNC)");
+        WgpuConfiguration {
+            surface: egui_wgpu::SurfaceConfig {
+                present_mode: egui_wgpu::wgpu::PresentMode::AutoNoVsync,
+                desired_maximum_frame_latency: None,
+            },
+            ..Default::default()
+        }
+    } else {
+        WgpuConfiguration::default()
+    };
     let mut painter = pollster::block_on(Painter::new(
         egui_ctx.clone(),
-        WgpuConfiguration::default(),
+        wgpu_config,
         false,
         RendererOptions::default(),
     ));
@@ -163,6 +206,7 @@ fn make_egui_window(
         info: egui::ViewportInfo::default(),
         first_frame: true,
         next_repaint: Some(Instant::now()),
+        not_before: Instant::now(),
     }
 }
 
@@ -265,7 +309,6 @@ impl WinitApp {
             state.sort_state,
             state.viewer_cfg,
             state.show_hidden,
-            state.wayland_fullscreen_warning_dismissed,
             win.egui_ctx.clone(),
         );
 
@@ -340,11 +383,19 @@ impl WinitApp {
     }
 
     /// 期限が来た窓をループ本体から直接 render する。
+    /// render 後は「render 開始＋最小フレーム間隔」を `not_before` に記録し、
+    /// 次回予定をそれ以降にクランプする（vsync 非依存のフレームキャップ）。
     fn render_due_windows(&mut self) {
         let now = Instant::now();
 
+        fn finish_frame(win: &mut EguiWindow, started: Instant, delay: Duration) {
+            win.not_before = started + win.frame_cap_interval();
+            win.next_repaint = schedule_after(delay).map(|t| t.max(win.not_before));
+        }
+
         if self.explorer.as_ref().map_or(false, |w| w.due(now)) {
             if let (Some(win), Some(app)) = (self.explorer.as_mut(), self.app.as_mut()) {
+                let started = Instant::now();
                 let delay = render_window(win, |ui| {
                     // 常時走る処理（旧 eframe::App::logic）。egui パス内で UI より前に呼ぶ。
                     let ctx = ui.ctx().clone();
@@ -355,25 +406,27 @@ impl WinitApp {
                             app.ui(ui);
                         });
                 });
-                win.next_repaint = schedule_after(delay);
+                finish_frame(win, started, delay);
             }
         }
 
         if self.viewer.as_ref().map_or(false, |w| w.due(now)) {
             if let (Some(win), Some(app)) = (self.viewer.as_mut(), self.app.as_mut()) {
+                let started = Instant::now();
                 let delay = render_window(win, |ui| {
                     app.render_viewer(ui);
                 });
-                win.next_repaint = schedule_after(delay);
+                finish_frame(win, started, delay);
             }
         }
 
         if self.status.as_ref().map_or(false, |w| w.due(now)) {
             if let (Some(win), Some(app)) = (self.status.as_mut(), self.app.as_mut()) {
+                let started = Instant::now();
                 let delay = render_window(win, |ui| {
                     app.render_status(ui);
                 });
-                win.next_repaint = schedule_after(delay);
+                finish_frame(win, started, delay);
             }
         }
     }
