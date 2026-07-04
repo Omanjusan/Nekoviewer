@@ -144,9 +144,6 @@ pub struct AppState {
     pub app_anim_frame_hard_limit_mb: Option<usize>,
     pub app_viewer_filter: Option<ResizeFilter>,
     pub app_max_decode_edge: Option<u32>,
-    /// Wayland環境でのフルスクリーン既知不具合の注意モードレスダイアログを、
-    /// ユーザーが「次回から表示しない」にチェックして閉じたかどうか。
-    pub wayland_fullscreen_warning_dismissed: bool,
 }
 
 impl Default for AppState {
@@ -165,7 +162,6 @@ impl Default for AppState {
             app_anim_frame_hard_limit_mb: None,
             app_viewer_filter: None,
             app_max_decode_edge: None,
-            wayland_fullscreen_warning_dismissed: false,
         }
     }
 }
@@ -234,7 +230,6 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
     let mut thumbbar_marker_g: Option<u8> = None;
     let mut thumbbar_marker_b: Option<u8> = None;
     let mut thumbbar_marker_a: Option<u8> = None;
-    let mut wayland_fullscreen_warning_dismissed: Option<bool> = None;
     let mut has_kv = false;
 
     for line in content.lines() {
@@ -302,7 +297,6 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
                 "thumbbar_marker_g" => { thumbbar_marker_g = v.trim().parse().ok(); }
                 "thumbbar_marker_b" => { thumbbar_marker_b = v.trim().parse().ok(); }
                 "thumbbar_marker_a" => { thumbbar_marker_a = v.trim().parse().ok(); }
-                "wayland_fullscreen_warning_dismissed" => { wayland_fullscreen_warning_dismissed = v.trim().parse().ok(); }
                 _ => {}
             }
         }
@@ -364,21 +358,19 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
         app_anim_frame_hard_limit_mb,
         app_viewer_filter,
         app_max_decode_edge,
-        wayland_fullscreen_warning_dismissed: wayland_fullscreen_warning_dismissed.unwrap_or(false),
     })
 }
 
-pub fn save_state(dir: &Path, window_size: (u32, u32), viewer_slots: &[Option<WindowSlot>; 4], sort_state: &SortState, lang: &str, viewer_cfg: &ViewerConfig, show_hidden: bool, app_cfg: &AppConfig, wayland_fullscreen_warning_dismissed: bool) {
+pub fn save_state(dir: &Path, window_size: (u32, u32), viewer_slots: &[Option<WindowSlot>; 4], sort_state: &SortState, lang: &str, viewer_cfg: &ViewerConfig, show_hidden: bool, app_cfg: &AppConfig) {
     let (Some(path), Some(bak), Some(tmp)) =
         (state_path(), state_bak_path(), state_tmp_path())
     else { return; };
 
     let mut content = format!(
-        "last_dir={}\nwindow_width={}\nwindow_height={}\nsort_key={}\nsort_ascending={}\nlang={}\nviewer_zoom={}\nviewer_fullscreen={}\nredecode_on_resize={}\nresize_debounce_ms={}\nshow_hidden={}\nwayland_fullscreen_warning_dismissed={}\n",
+        "last_dir={}\nwindow_width={}\nwindow_height={}\nsort_key={}\nsort_ascending={}\nlang={}\nviewer_zoom={}\nviewer_fullscreen={}\nredecode_on_resize={}\nresize_debounce_ms={}\nshow_hidden={}\n",
         dir.to_string_lossy(), window_size.0, window_size.1, sort_state.key, sort_state.ascending, lang,
         viewer_cfg.zoom_actual, viewer_cfg.fullscreen,
         viewer_cfg.redecode_on_resize, viewer_cfg.resize_debounce_ms, show_hidden,
-        wayland_fullscreen_warning_dismissed,
     );
     content.push_str(&format!(
         "thumbbar_pos={}\nthumbbar_thumb_size={}\nthumbbar_idle_hide_ms={}\nthumbbar_overlap={}\nthumbbar_marker_r={}\nthumbbar_marker_g={}\nthumbbar_marker_b={}\nthumbbar_marker_a={}\n",

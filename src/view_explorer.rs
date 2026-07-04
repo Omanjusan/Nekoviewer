@@ -205,13 +205,6 @@ pub struct NekoviewApp {
     anim_ring_bounds: (usize, usize),
     /// フェーズ2: メモリ見積もり超過を知らせる確認ダイアログの表示状態
     memory_warning_open: bool,
-    /// Wayland環境でのフルスクリーン既知不具合の注意モードレスダイアログの表示状態。
-    /// 起動時、Waylandセッション かつ 過去に「次回から表示しない」されていない場合に true。
-    wayland_warning_open: bool,
-    /// 上記ダイアログの「次回から表示しない」チェックボックスの状態（下書き）。
-    wayland_warning_dont_show_again: bool,
-    /// state ファイルへ永続化する「次回から表示しない」確定値。
-    wayland_warning_dismissed: bool,
     /// 設定ダイアログの表示状態・選択中タブ・編集用下書き
     pub(crate) settings_open: bool,
     pub(crate) settings_tab: SettingsTab,
@@ -249,7 +242,7 @@ pub struct NekoviewApp {
 }
 
 impl NekoviewApp {
-    pub fn new(start_dir: PathBuf, config: AppConfig, viewer_slots: [Option<WindowSlot>; 4], sort_state: SortState, viewer_cfg: ViewerConfig, show_hidden: bool, wayland_fullscreen_warning_dismissed: bool, ctx: egui::Context) -> Self {
+    pub fn new(start_dir: PathBuf, config: AppConfig, viewer_slots: [Option<WindowSlot>; 4], sort_state: SortState, viewer_cfg: ViewerConfig, show_hidden: bool, ctx: egui::Context) -> Self {
         let (cache_max, cache_min, file_cache_max) = crate::cache::resolve_cache_budgets(config.cache_total_mb);
         let ring_bounds = (config.anim_ring_min_frames, config.anim_ring_max_frames);
         let frame_hard_limit_bytes = config.anim_frame_hard_limit_mb * 1024 * 1024;
@@ -329,9 +322,6 @@ impl NekoviewApp {
             cache_budget_bytes: cache_max,
             anim_ring_bounds: ring_bounds,
             memory_warning_open: false,
-            wayland_warning_open: crate::fs::dir::is_wayland_session() && !wayland_fullscreen_warning_dismissed,
-            wayland_warning_dont_show_again: false,
-            wayland_warning_dismissed: wayland_fullscreen_warning_dismissed,
             settings_open: false,
             settings_tab: SettingsTab::Common,
             settings_draft,
@@ -446,7 +436,6 @@ impl NekoviewApp {
             &*self.viewer_cfg.lock().unwrap(),
             self.show_hidden,
             &self.config,
-            self.wayland_warning_dismissed,
         );
     }
 
@@ -745,7 +734,6 @@ impl NekoviewApp {
         self.draw_status_window(&ctx);
         self.draw_toast(&ctx);
         self.draw_memory_warning_dialog(&ctx);
-        self.draw_wayland_warning_dialog(&ctx);
         self.draw_settings_dialog(&ctx);
         // 旧来の無条件 ctx.request_repaint() は撤去（イベント駆動化）。
         // ROOT は入力イベント・各ワーカーの起床通知・ステータス窓の1Hzハートビートで再描画される。
@@ -1658,44 +1646,6 @@ impl NekoviewApp {
     }
 
     /// フェーズ2: メモリ見積もり超過の確認ダイアログを描画する（OKボタンのみ）
-    /// Wayland環境限定: フルスクリーン切替周りに既知の不具合（コンポジタ側の要因で
-    /// ビューアー窓の描画が一時的に固まることがある）があることを知らせる、
-    /// モードレス（操作をブロックしない）な注意ダイアログ。
-    /// 「次回から表示しない」チェックをつけて閉じると state ファイルに永続化する。
-    fn draw_wayland_warning_dialog(&mut self, ctx: &egui::Context) {
-        if !self.wayland_warning_open {
-            return;
-        }
-        let mut open = true;
-        let mut close_clicked = false;
-        egui::Window::new(i18n::t().wayland_warning_title())
-            .open(&mut open)
-            .collapsible(false)
-            .resizable(false)
-            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
-            .show(ctx, |ui| {
-                ui.label(i18n::t().wayland_warning_body());
-                ui.add_space(8.0);
-                ui.horizontal(|ui| {
-                    ui.label(i18n::t().wayland_warning_dont_show_again());
-                    ui.checkbox(&mut self.wayland_warning_dont_show_again, "");
-                });
-                ui.add_space(8.0);
-                ui.vertical_centered(|ui| {
-                    if ui.button(i18n::t().wayland_warning_close()).clicked() {
-                        close_clicked = true;
-                    }
-                });
-            });
-        if !open || close_clicked {
-            self.wayland_warning_open = false;
-            if self.wayland_warning_dont_show_again {
-                self.wayland_warning_dismissed = true;
-                self.persist_state();
-            }
-        }
-    }
-
     fn draw_memory_warning_dialog(&mut self, ctx: &egui::Context) {
         if !self.memory_warning_open {
             return;
