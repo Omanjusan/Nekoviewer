@@ -749,6 +749,90 @@ pub fn spawn_thumb_worker(filter: image::imageops::FilterType, num_threads: usiz
     (req_tx, res_rx)
 }
 
+// ── アーカイブ内エントリ単位のサムネイルワーカー（サムネイルバー用）────────────
+// フォルダグリッド用の spawn_thumb_worker（アーカイブ先頭1枚だけ）とは別に、開いている
+// アーカイブの全エントリを小さくデコードする。LoadRequest 用の OpenArchive/load_page を
+// そのまま流用し、zip/7z/生画像を共通に扱う。結果はメインの page_cache とは別に保持する
+// （解像度が異なるため同じキーで衝突させない）。
+const ENTRY_THUMB_RING_BUDGET_BYTES: usize = 32 * 1024 * 1024;
+const ENTRY_THUMB_FRAME_HARD_LIMIT_BYTES: usize = 32 * 1024 * 1024;
+
+pub struct EntryThumbRequest {
+    pub archive_path: PathBuf,
+    pub entry_name: String,
+    pub original_index: usize,
+    pub is_raw_file: bool,
+    /// 長辺の目標サイズ(px)
+    pub edge: u32,
+}
+
+pub struct EntryThumbResult {
+    pub archive_path: PathBuf,
+    pub original_index: usize,
+    pub rgba: Option<image::RgbaImage>,
+}
+
+pub fn spawn_entry_thumb_worker(filter: image::imageops::FilterType, num_threads: usize, ctx: egui::Context) -> (mpsc::Sender<EntryThumbRequest>, mpsc::Receiver<EntryThumbResult>) {
+    let (req_tx, req_rx) = mpsc::channel::<EntryThumbRequest>();
+    let (res_tx, res_rx) = mpsc::channel::<EntryThumbResult>();
+    let req_rx = Arc::new(Mutex::new(req_rx));
+
+    for _ in 0..num_threads.max(1) {
+        let req_rx = Arc::clone(&req_rx);
+        let res_tx = res_tx.clone();
+        let ctx = ctx.clone();
+        std::thread::spawn(move || {
+            // 直前に開いたアーカイブをキープオープンする（spawn_worker と同様）
+            let mut open_archive: Option<(PathBuf, OpenArchive)> = None;
+
+            loop {
+                let req = match req_rx.lock().unwrap().recv() {
+                    Ok(r) => r,
+                    Err(_) => break,
+                };
+
+                let target = Some((req.edge, req.edge));
+                let ring_bounds = (1, 1);
+                let content = if req.is_raw_file {
+                    load_raw_file_content(&req.archive_path, filter, ENTRY_THUMB_RING_BUDGET_BYTES, ring_bounds, ENTRY_THUMB_FRAME_HARD_LIMIT_BYTES, target)
+                } else {
+                    let is_7z = crate::fs::archive::is_7z_path(&req.archive_path);
+                    let is_same = open_archive.as_ref().map_or(false, |(p, _)| p == &req.archive_path);
+                    if !is_same {
+                        open_archive = if is_7z {
+                            let map = crate::fs::archive::extract_all_images_7z_path(&req.archive_path);
+                            Some((req.archive_path.clone(), OpenArchive::SevenZ(map)))
+                        } else {
+                            std::fs::File::open(&req.archive_path)
+                                .ok()
+                                .and_then(|f| zip::ZipArchive::new(f).ok())
+                                .map(|a| (req.archive_path.clone(), OpenArchive::Disk(a)))
+                        };
+                    }
+                    open_archive.as_mut().and_then(|(_, a)| {
+                        a.load_page(&req.entry_name, filter, ENTRY_THUMB_RING_BUDGET_BYTES, ring_bounds, ENTRY_THUMB_FRAME_HARD_LIMIT_BYTES, target)
+                    })
+                };
+
+                let rgba = match content {
+                    Some(PageContent::Static(img)) => Some(img),
+                    Some(PageContent::Animated(ring)) => ring.with_frame(0, |f| f.image.clone()),
+                    None => None,
+                };
+
+                let _ = res_tx.send(EntryThumbResult {
+                    archive_path: req.archive_path,
+                    original_index: req.original_index,
+                    rgba,
+                });
+                ctx.request_repaint();
+            }
+        });
+    }
+
+    (req_tx, res_rx)
+}
+
 /// SMB（gvfs）パスのZIPをバックグラウンドスレッドで読み込む。
 fn load_first_image_smb(path: PathBuf) -> Option<image::DynamicImage> {
     let timeout = std::time::Duration::from_secs(30);

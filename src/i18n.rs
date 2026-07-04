@@ -232,6 +232,38 @@ impl Lang {
         }
     }
 
+    pub fn wayland_warning_title(self) -> &'static str {
+        match self {
+            Lang::Japanese => "Wayland環境での既知の制限",
+            Lang::English  => "Known limitation on Wayland",
+            Lang::Chinese  => "Wayland环境下的已知限制",
+        }
+    }
+
+    pub fn wayland_warning_body(self) -> &'static str {
+        match self {
+            Lang::Japanese => "Wayland環境では、ビューアーをフルスクリーン表示中にウィンドウの描画・操作が一時的に固まることがあります（コンポジタ/GPUドライバ側の要因のため、アプリ側では解決できません）。フルスクリーンの利用は非推奨です。",
+            Lang::English  => "On Wayland, the viewer window may temporarily freeze while in fullscreen (this is caused by the compositor/GPU driver stack and cannot be fixed on the app side). Using fullscreen is not recommended in this environment.",
+            Lang::Chinese  => "在Wayland环境下，查看器窗口在全屏显示时可能会暂时卡住（这是由合成器/GPU驱动层面导致的，应用程序无法修复）。不建议在此环境下使用全屏。",
+        }
+    }
+
+    pub fn wayland_warning_dont_show_again(self) -> &'static str {
+        match self {
+            Lang::Japanese => "次回から表示しない",
+            Lang::English  => "Don't show this again",
+            Lang::Chinese  => "下次不再显示",
+        }
+    }
+
+    pub fn wayland_warning_close(self) -> &'static str {
+        match self {
+            Lang::Japanese => "閉じる",
+            Lang::English  => "Close",
+            Lang::Chinese  => "关闭",
+        }
+    }
+
     pub fn redecode_debounce_label(self, ms: u64) -> String {
         match self {
             Lang::Japanese => format!("[デバウンス{ms}ms]"),
@@ -318,6 +350,153 @@ impl Lang {
             Lang::Japanese => "その他",
             Lang::English  => "Other",
             Lang::Chinese  => "其他",
+        }
+    }
+
+    pub fn settings_tab_viewer(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ビューアー",
+            Lang::English  => "Viewer",
+            Lang::Chinese  => "查看器",
+        }
+    }
+
+    /// タブ内の大項目見出し。■は個々の設定項目(即時反映マーク)専用の記号なので、
+    /// 見出し自体には付けず、呼び出し側で太字・大きめフォントにして区別する
+    /// （settings_legend の凡例と衝突させないため）。
+    pub fn settings_thumbbar_section_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "アーカイブ内サムネイル",
+            Lang::English  => "In-archive thumbnails",
+            Lang::Chinese  => "压缩包内缩略图",
+        }
+    }
+
+    pub fn settings_thumbbar_pos_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "■ サムネイルバー配置",
+            Lang::English  => "■ Thumbnail bar position",
+            Lang::Chinese  => "■ 缩略图栏位置",
+        }
+    }
+
+    pub fn settings_thumbbar_pos_explain(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ビューアー画面を軸とした表示位置。単一ファイル、または1ファイルのみ格納するアーカイブでは、この設定に関わらず表示しない。",
+            Lang::English  => "Where the thumbnail bar sits relative to the viewer. Hidden regardless of this setting for a single file, or an archive that contains only one file.",
+            Lang::Chinese  => "以查看器画面为基准的显示位置。对于单个文件，或仅包含1个文件的压缩包，无论此设置如何都不会显示。",
+        }
+    }
+
+    pub fn settings_thumbbar_pos_left(self) -> &'static str {
+        match self {
+            Lang::Japanese => "左側縦",
+            Lang::English  => "Left (vertical)",
+            Lang::Chinese  => "左侧竖排",
+        }
+    }
+
+    pub fn settings_thumbbar_pos_right(self) -> &'static str {
+        match self {
+            Lang::Japanese => "右側縦",
+            Lang::English  => "Right (vertical)",
+            Lang::Chinese  => "右侧竖排",
+        }
+    }
+
+    pub fn settings_thumbbar_pos_top(self) -> &'static str {
+        match self {
+            Lang::Japanese => "上部横",
+            Lang::English  => "Top (horizontal)",
+            Lang::Chinese  => "顶部横排",
+        }
+    }
+
+    pub fn settings_thumbbar_pos_bottom(self) -> &'static str {
+        match self {
+            Lang::Japanese => "下部横",
+            Lang::English  => "Bottom (horizontal)",
+            Lang::Chinese  => "底部横排",
+        }
+    }
+
+    pub fn settings_thumbbar_pos_none(self) -> &'static str {
+        match self {
+            Lang::Japanese => "表示なし",
+            Lang::English  => "Hidden",
+            Lang::Chinese  => "不显示",
+        }
+    }
+
+    pub fn settings_thumbbar_size_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "■ サムネ長辺サイズ",
+            Lang::English  => "■ Thumbnail long-edge size",
+            Lang::Chinese  => "■ 缩略图长边尺寸",
+        }
+    }
+
+    pub fn settings_thumbbar_size_explain(self) -> &'static str {
+        match self {
+            Lang::Japanese => "サムネイルバーに並ぶサムネイル1枚の長辺サイズ（px）。",
+            Lang::English  => "Long-edge size (px) of each thumbnail in the bar.",
+            Lang::Chinese  => "缩略图栏中每个缩略图长边的尺寸（px）。",
+        }
+    }
+
+    pub fn settings_thumbbar_idle_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "■ 自動非表示までの待機時間",
+            Lang::English  => "■ Auto-hide delay",
+            Lang::Chinese  => "■ 自动隐藏等待时间",
+        }
+    }
+
+    pub fn settings_thumbbar_idle_explain(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ページ操作が停滞してからサムネイルバーを消すまでの待機時間。0 = 常時表示。",
+            Lang::English  => "How long to wait after page navigation stops before hiding the thumbnail bar. 0 = always shown.",
+            Lang::Chinese  => "翻页操作停止后到隐藏缩略图栏为止的等待时间。0 = 始终显示。",
+        }
+    }
+
+    pub fn settings_thumbbar_idle_always(self) -> &'static str {
+        match self {
+            Lang::Japanese => "常時表示",
+            Lang::English  => "Always shown",
+            Lang::Chinese  => "始终显示",
+        }
+    }
+
+    pub fn settings_thumbbar_overlap_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "■ 本画像との重なりを許可",
+            Lang::English  => "■ Allow overlap with the main image",
+            Lang::Chinese  => "■ 允许与正文图像重叠",
+        }
+    }
+
+    pub fn settings_thumbbar_overlap_explain(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ONの場合、本画像はサムネイルバーの領域を意識せずに描画し、サムネイルバーはその前面にオーバーレイ表示する。",
+            Lang::English  => "When on, the main image is drawn without reserving space for the thumbnail bar, and the bar overlays on top of it instead.",
+            Lang::Chinese  => "开启后，正文图像不为缩略图栏预留空间，缩略图栏将叠加显示在其上方。",
+        }
+    }
+
+    pub fn settings_thumbbar_marker_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "■ 現在地マーカー色 (RGBA)",
+            Lang::English  => "■ Current-position marker color (RGBA)",
+            Lang::Chinese  => "■ 当前位置标记颜色 (RGBA)",
+        }
+    }
+
+    pub fn settings_thumbbar_marker_explain(self) -> &'static str {
+        match self {
+            Lang::Japanese => "サムネイルバー上で現在表示中のページ（見開きなら2枚とも）に重ねる半透明ボックスの色。",
+            Lang::English  => "Color of the translucent box overlaid on the currently viewed page(s) in the thumbnail bar (both pages when in spread mode).",
+            Lang::Chinese  => "叠加在缩略图栏中当前显示页面（跨页时为两页）上的半透明方块颜色。",
         }
     }
 

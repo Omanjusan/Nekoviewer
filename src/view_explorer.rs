@@ -2,7 +2,8 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, mpsc};
 
-use crate::cache::{FileCache, LoadRequest, LoadResult, PageCache, ThumbRequest, ThumbResult, spawn_worker, spawn_thumb_worker, spawn_file_cache_worker};
+use crate::cache::{FileCache, LoadRequest, LoadResult, PageCache, ThumbRequest, ThumbResult, EntryThumbRequest, EntryThumbResult, spawn_worker, spawn_thumb_worker, spawn_entry_thumb_worker, spawn_file_cache_worker};
+use crate::gui_config::ThumbbarPos;
 use crate::config::AppConfig;
 use crate::gui_config::{SortState, ViewerConfig, WindowSlot};
 use crate::view_gui_config::{SettingsDraft, SettingsTab};
@@ -171,6 +172,9 @@ pub struct NekoviewApp {
     thumb_req_tx: mpsc::SyncSender<ThumbRequest>,
     thumb_res_rx: mpsc::Receiver<ThumbResult>,
     thumb_pending: HashSet<PathBuf>,
+    /// アーカイブ内サムネイルバー用（フォルダグリッドの thumb_req_tx とは別系統）
+    entry_thumb_req_tx: mpsc::Sender<EntryThumbRequest>,
+    entry_thumb_res_rx: mpsc::Receiver<EntryThumbResult>,
     viewer: Arc<Mutex<Option<ViewerState>>>,
     /// ファイル切替後も維持するビューア設定（zoom・fullscreen 等）
     pub(crate) viewer_cfg: Arc<Mutex<ViewerConfig>>,
@@ -201,6 +205,13 @@ pub struct NekoviewApp {
     anim_ring_bounds: (usize, usize),
     /// フェーズ2: メモリ見積もり超過を知らせる確認ダイアログの表示状態
     memory_warning_open: bool,
+    /// Wayland環境でのフルスクリーン既知不具合の注意モードレスダイアログの表示状態。
+    /// 起動時、Waylandセッション かつ 過去に「次回から表示しない」されていない場合に true。
+    wayland_warning_open: bool,
+    /// 上記ダイアログの「次回から表示しない」チェックボックスの状態（下書き）。
+    wayland_warning_dont_show_again: bool,
+    /// state ファイルへ永続化する「次回から表示しない」確定値。
+    wayland_warning_dismissed: bool,
     /// 設定ダイアログの表示状態・選択中タブ・編集用下書き
     pub(crate) settings_open: bool,
     pub(crate) settings_tab: SettingsTab,
@@ -238,7 +249,7 @@ pub struct NekoviewApp {
 }
 
 impl NekoviewApp {
-    pub fn new(start_dir: PathBuf, config: AppConfig, viewer_slots: [Option<WindowSlot>; 4], sort_state: SortState, viewer_cfg: ViewerConfig, show_hidden: bool, ctx: egui::Context) -> Self {
+    pub fn new(start_dir: PathBuf, config: AppConfig, viewer_slots: [Option<WindowSlot>; 4], sort_state: SortState, viewer_cfg: ViewerConfig, show_hidden: bool, wayland_fullscreen_warning_dismissed: bool, ctx: egui::Context) -> Self {
         let (cache_max, cache_min, file_cache_max) = crate::cache::resolve_cache_budgets(config.cache_total_mb);
         let ring_bounds = (config.anim_ring_min_frames, config.anim_ring_max_frames);
         let frame_hard_limit_bytes = config.anim_frame_hard_limit_mb * 1024 * 1024;
@@ -248,6 +259,7 @@ impl NekoviewApp {
         let settings_draft = SettingsDraft::from_current(&config, &viewer_cfg, show_hidden);
         let (req_tx, res_rx) = spawn_worker(config.viewer_filter.to_image_filter(), config.resolved_decode_threads(), ctx.clone(), cache_max, ring_bounds, frame_hard_limit_bytes);
         let (thumb_req_tx, thumb_res_rx) = spawn_thumb_worker(config.thumb_filter.to_image_filter(), config.resolved_decode_threads(), ctx.clone());
+        let (entry_thumb_req_tx, entry_thumb_res_rx) = spawn_entry_thumb_worker(config.thumb_filter.to_image_filter(), config.resolved_decode_threads(), ctx.clone());
         let (file_cache_req_tx, file_cache_res_rx) = spawn_file_cache_worker(ctx.clone());
         let mut drives = list_local_drives();
         drives.extend(list_gvfs_smb_mounts());
@@ -294,6 +306,8 @@ impl NekoviewApp {
             thumb_req_tx,
             thumb_res_rx,
             thumb_pending: HashSet::new(),
+            entry_thumb_req_tx,
+            entry_thumb_res_rx,
             viewer: Arc::new(Mutex::new(None)),
             viewer_cfg: Arc::new(Mutex::new(viewer_cfg)),
             drives,
@@ -315,6 +329,9 @@ impl NekoviewApp {
             cache_budget_bytes: cache_max,
             anim_ring_bounds: ring_bounds,
             memory_warning_open: false,
+            wayland_warning_open: crate::fs::dir::is_wayland_session() && !wayland_fullscreen_warning_dismissed,
+            wayland_warning_dont_show_again: false,
+            wayland_warning_dismissed: wayland_fullscreen_warning_dismissed,
             settings_open: false,
             settings_tab: SettingsTab::Common,
             settings_draft,
@@ -429,6 +446,7 @@ impl NekoviewApp {
             &*self.viewer_cfg.lock().unwrap(),
             self.show_hidden,
             &self.config,
+            self.wayland_warning_dismissed,
         );
     }
 
@@ -727,6 +745,7 @@ impl NekoviewApp {
         self.draw_status_window(&ctx);
         self.draw_toast(&ctx);
         self.draw_memory_warning_dialog(&ctx);
+        self.draw_wayland_warning_dialog(&ctx);
         self.draw_settings_dialog(&ctx);
         // 旧来の無条件 ctx.request_repaint() は撤去（イベント駆動化）。
         // ROOT は入力イベント・各ワーカーの起床通知・ステータス窓の1Hzハートビートで再描画される。
@@ -906,6 +925,11 @@ impl NekoviewApp {
         // エクスプローラー窓が起きていなくてもページ送りが進むよう、
         // ここでワーカー結果回収（res_rx drain）と先読みを回す。
         self.pump_viewer_pages();
+        // 窓ごとに独立した egui::Context を持つ構成のため、サムネイルバー用テクスチャは
+        // 必ずビューアー窓自身の ctx(=ui.ctx()) で load_texture する。self.egui_ctx は
+        // エクスプローラー窓側の Context であり、そちらで作ったテクスチャはビューアー窓の
+        // Painter からは見えない（テクスチャがデコードはできても描画されない原因だった）。
+        self.pump_thumbbar_entries(ui.ctx());
 
         let output = {
             let mut viewer_guard = self.viewer.lock().unwrap();
@@ -931,6 +955,47 @@ impl NekoviewApp {
             self.handle_viewer_nav(output.nav);
             controller::request_status_update(&self.status_update_requested);
             self.egui_ctx.request_repaint();
+        }
+    }
+
+    /// アーカイブ内サムネイルバー用: ワーカー結果の回収と、未取得エントリの要求送出。
+    /// サムネイルバー配置が「表示なし」、またはアーカイブが1件以下の場合は要求を出さない
+    /// （設定タブの表示条件と揃える）。
+    fn pump_thumbbar_entries(&mut self, viewer_ctx: &egui::Context) {
+        let results: Vec<EntryThumbResult> =
+            std::iter::from_fn(|| self.entry_thumb_res_rx.try_recv().ok()).collect();
+
+        let mut viewer_guard = self.viewer.lock().unwrap();
+        let Some(viewer) = viewer_guard.as_mut() else { return; };
+
+        for result in results {
+            if result.archive_path == *viewer.archive_path() {
+                viewer.set_thumb_result(viewer_ctx, result.original_index, result.rgba);
+            }
+        }
+
+        let (thumbbar_pos, edge) = {
+            let cfg = self.viewer_cfg.lock().unwrap();
+            (cfg.thumbbar_pos, cfg.thumbbar_thumb_size)
+        };
+        if thumbbar_pos == ThumbbarPos::None || viewer.entries().len() <= 1 {
+            return;
+        }
+
+        let archive_path = viewer.archive_path().clone();
+        let is_raw_file = viewer.is_raw_file();
+        for original_index in viewer.thumbbar_missing_indices() {
+            let Some(entry_name) = viewer.entry_name_for(original_index) else { continue; };
+            let req = EntryThumbRequest {
+                archive_path: archive_path.clone(),
+                entry_name: entry_name.to_string(),
+                original_index,
+                is_raw_file,
+                edge,
+            };
+            if self.entry_thumb_req_tx.send(req).is_ok() {
+                viewer.mark_thumb_pending(original_index);
+            }
         }
     }
 
@@ -1593,6 +1658,44 @@ impl NekoviewApp {
     }
 
     /// フェーズ2: メモリ見積もり超過の確認ダイアログを描画する（OKボタンのみ）
+    /// Wayland環境限定: フルスクリーン切替周りに既知の不具合（コンポジタ側の要因で
+    /// ビューアー窓の描画が一時的に固まることがある）があることを知らせる、
+    /// モードレス（操作をブロックしない）な注意ダイアログ。
+    /// 「次回から表示しない」チェックをつけて閉じると state ファイルに永続化する。
+    fn draw_wayland_warning_dialog(&mut self, ctx: &egui::Context) {
+        if !self.wayland_warning_open {
+            return;
+        }
+        let mut open = true;
+        let mut close_clicked = false;
+        egui::Window::new(i18n::t().wayland_warning_title())
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .show(ctx, |ui| {
+                ui.label(i18n::t().wayland_warning_body());
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    ui.label(i18n::t().wayland_warning_dont_show_again());
+                    ui.checkbox(&mut self.wayland_warning_dont_show_again, "");
+                });
+                ui.add_space(8.0);
+                ui.vertical_centered(|ui| {
+                    if ui.button(i18n::t().wayland_warning_close()).clicked() {
+                        close_clicked = true;
+                    }
+                });
+            });
+        if !open || close_clicked {
+            self.wayland_warning_open = false;
+            if self.wayland_warning_dont_show_again {
+                self.wayland_warning_dismissed = true;
+                self.persist_state();
+            }
+        }
+    }
+
     fn draw_memory_warning_dialog(&mut self, ctx: &egui::Context) {
         if !self.memory_warning_open {
             return;
