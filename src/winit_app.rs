@@ -227,6 +227,10 @@ struct WinitApp {
     /// ステータス窓（debug ビルドでのみ生成される。release では常に `None`）。
     status: Option<EguiWindow>,
     app: Option<NekoviewApp>,
+    /// 実験: 直近に観測した viewer_cfg.fullscreen（変化検知用）。
+    viewer_fullscreen_prev: bool,
+    /// 実験: 疑似フルスク突入直前の (外側位置, 内側サイズ)。解除時に復元する。
+    viewer_pre_fullscreen_rect: Option<(winit::dpi::PhysicalPosition<i32>, winit::dpi::PhysicalSize<u32>)>,
 }
 
 impl WinitApp {
@@ -243,6 +247,37 @@ impl WinitApp {
             viewer: None,
             status: None,
             app: None,
+            viewer_fullscreen_prev: false,
+            viewer_pre_fullscreen_rect: None,
+        }
+    }
+
+    /// 実験: viewer_cfg.fullscreen の変化を見て、疑似フルスクの位置・サイズを直接適用する。
+    /// Maximizedステートを経由しないため、ここで `current_monitor()` から正しいモニタ原点を
+    /// 得て `set_outer_position`/`request_inner_size` する（egui::ViewportInfo は
+    /// monitor_size しか持たずモニタ原点が取れないため、winit の生 Window が必要）。
+    #[cfg(not(windows))]
+    fn sync_viewer_fullscreen(&mut self) {
+        let Some(app) = self.app.as_ref() else { return };
+        let fullscreen = app.viewer_cfg.lock().unwrap().fullscreen;
+        if fullscreen == self.viewer_fullscreen_prev {
+            return;
+        }
+        self.viewer_fullscreen_prev = fullscreen;
+        let Some(win) = self.viewer.as_ref() else { return };
+        let window = &win.window;
+
+        if fullscreen {
+            let pos = window.outer_position().unwrap_or_default();
+            let size = window.inner_size();
+            self.viewer_pre_fullscreen_rect = Some((pos, size));
+            if let Some(monitor) = window.current_monitor() {
+                window.set_outer_position(monitor.position());
+                let _ = window.request_inner_size(monitor.size());
+            }
+        } else if let Some((pos, size)) = self.viewer_pre_fullscreen_rect.take() {
+            window.set_outer_position(pos);
+            let _ = window.request_inner_size(size);
         }
     }
 
@@ -301,6 +336,9 @@ impl WinitApp {
             // 窓を破棄。EguiWindow を drop すると専用 Painter（サーフェス・Device・Renderer）も
             // 一緒に解放される（共有 Painter 時代の gc_viewports は不要）。
             self.viewer = None;
+            // 実験: 次回オープン時に cfg.fullscreen が既に true でも再適用させる。
+            self.viewer_fullscreen_prev = false;
+            self.viewer_pre_fullscreen_rect = None;
             crate::log_common!("[viewer] window destroyed");
         } else if want && have {
             // 既存窓のままファイル切替したとき等のフォーカス前面化要求を処理。
@@ -540,6 +578,9 @@ impl ApplicationHandler<UserEvent> for WinitApp {
         self.sync_status_window(event_loop);
         // 期限の来た窓を描画する。
         self.render_due_windows();
+        // 実験: フルスクON/OFFの変化を見て疑似フルスクの位置・サイズを直接適用する。
+        #[cfg(not(windows))]
+        self.sync_viewer_fullscreen();
         // 描画中（ビューアーの ESC/X、ステータスの [?] トグル等）に窓が閉じられた可能性に追従する。
         self.sync_viewer_window(event_loop);
         self.sync_status_window(event_loop);

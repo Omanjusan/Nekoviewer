@@ -1075,17 +1075,16 @@ impl ViewerState {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(true));
                 #[cfg(not(windows))]
                 {
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(true));
+                    // 実験: Maximizedステート遷移(WMのtweenアニメ)は経由しない。
+                    // 位置・サイズの実際の変更はwinit_app.rs側(current_monitor()で
+                    // 正しいモニタ原点を取れる場所)が cfg.fullscreen の変化を見て行う。
                     ctx.send_viewport_cmd(egui::ViewportCommand::Decorations(false));
                 }
             } else {
                 #[cfg(windows)]
                 ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
                 #[cfg(not(windows))]
-                {
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(false));
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Decorations(true));
-                }
+                ctx.send_viewport_cmd(egui::ViewportCommand::Decorations(true));
             }
             log_key!("[key] fullscreen → {}", cfg.fullscreen);
         }
@@ -1095,10 +1094,7 @@ impl ViewerState {
                 #[cfg(windows)]
                 ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
                 #[cfg(not(windows))]
-                {
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(false));
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Decorations(true));
-                }
+                ctx.send_viewport_cmd(egui::ViewportCommand::Decorations(true));
             }
             // Windows では非表示にするとゴーストが残るため、フルスク・ウィンドウ問わず最小化で代替する
             #[cfg(windows)]
