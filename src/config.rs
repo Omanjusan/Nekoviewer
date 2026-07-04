@@ -1,9 +1,13 @@
 use std::path::PathBuf;
-use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::gui_config::AppState;
 
 // ── ログ設定グローバル ─────────────────────────────────────────────────────────
+// AtomicBool を使うのは、AppConfig::load() より前（main() 冒頭）で一度 log() が
+// 呼ばれてしまってもデフォルト値で確定させず、config.ini 読み込み後に上書きできる
+// ようにするため（以前は OnceLock<LogConfig> で、一度確定すると二度と変更できず
+// [log] key=false 等が反映されないバグがあった）。
 
 pub struct LogConfig {
     pub perf:   bool,
@@ -11,11 +15,23 @@ pub struct LogConfig {
     pub common: bool,
 }
 
-static LOG: OnceLock<LogConfig> = OnceLock::new();
+static LOG_PERF:   AtomicBool = AtomicBool::new(false);
+static LOG_KEY:    AtomicBool = AtomicBool::new(true);
+static LOG_COMMON: AtomicBool = AtomicBool::new(true);
 
 /// どこからでも呼べるログ設定取得。AppConfig::load() より前に呼ぶとデフォルト値を返す。
-pub fn log() -> &'static LogConfig {
-    LOG.get_or_init(|| LogConfig { perf: false, key: true, common: true })
+pub fn log() -> LogConfig {
+    LogConfig {
+        perf:   LOG_PERF.load(Ordering::Relaxed),
+        key:    LOG_KEY.load(Ordering::Relaxed),
+        common: LOG_COMMON.load(Ordering::Relaxed),
+    }
+}
+
+fn set_log(cfg: LogConfig) {
+    LOG_PERF.store(cfg.perf, Ordering::Relaxed);
+    LOG_KEY.store(cfg.key, Ordering::Relaxed);
+    LOG_COMMON.store(cfg.common, Ordering::Relaxed);
 }
 
 // perf ログは高頻度パス（デコードループ等）から呼ばれるため、リングバッファ(Mutex)への
@@ -134,8 +150,8 @@ impl AppConfig {
             }
         }
 
-        // グローバルに設定（2回目以降の load() 呼び出しは無視される）
-        let _ = LOG.set(LogConfig {
+        // グローバルに設定（main() 冒頭の早期ログで確定した値も、ここで確実に上書きする）
+        set_log(LogConfig {
             perf:   parsed.log_perf,
             key:    parsed.log_key.0,
             common: parsed.log_common.0,

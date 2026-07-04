@@ -3,7 +3,7 @@
 //! [設定]ボタン以降のUI（タブ切り替え・各タブの中身・下書き→反映のフロー）のみを扱う。
 
 use crate::config::{AppConfig, ResizeFilter, filter_to_str};
-use crate::gui_config::ViewerConfig;
+use crate::gui_config::{ThumbbarPos, ViewerConfig};
 use crate::i18n;
 use crate::view_explorer::NekoviewApp;
 
@@ -12,6 +12,7 @@ pub(crate) enum SettingsTab {
     Common,
     Anim,
     Static,
+    Viewer,
     Other,
 }
 
@@ -44,6 +45,14 @@ pub(crate) struct SettingsDraft {
     show_hidden: bool,
     ring_min: usize,
     ring_max: usize,
+    thumbbar_pos: ThumbbarPos,
+    thumbbar_thumb_size: u32,
+    thumbbar_idle_hide_ms: u64,
+    thumbbar_overlap: bool,
+    thumbbar_marker_r: u8,
+    thumbbar_marker_g: u8,
+    thumbbar_marker_b: u8,
+    thumbbar_marker_a: u8,
 }
 
 impl SettingsDraft {
@@ -63,6 +72,14 @@ impl SettingsDraft {
             show_hidden,
             ring_min: config.anim_ring_min_frames,
             ring_max: config.anim_ring_max_frames,
+            thumbbar_pos: viewer_cfg.thumbbar_pos,
+            thumbbar_thumb_size: viewer_cfg.thumbbar_thumb_size,
+            thumbbar_idle_hide_ms: viewer_cfg.thumbbar_idle_hide_ms,
+            thumbbar_overlap: viewer_cfg.thumbbar_overlap,
+            thumbbar_marker_r: viewer_cfg.thumbbar_marker_r,
+            thumbbar_marker_g: viewer_cfg.thumbbar_marker_g,
+            thumbbar_marker_b: viewer_cfg.thumbbar_marker_b,
+            thumbbar_marker_a: viewer_cfg.thumbbar_marker_a,
         }
     }
 
@@ -85,6 +102,15 @@ impl SettingsDraft {
 
         config.anim_ring_min_frames = self.ring_min;
         config.anim_ring_max_frames = self.ring_max;
+
+        viewer_cfg.thumbbar_pos = self.thumbbar_pos;
+        viewer_cfg.thumbbar_thumb_size = self.thumbbar_thumb_size;
+        viewer_cfg.thumbbar_idle_hide_ms = self.thumbbar_idle_hide_ms;
+        viewer_cfg.thumbbar_overlap = self.thumbbar_overlap;
+        viewer_cfg.thumbbar_marker_r = self.thumbbar_marker_r;
+        viewer_cfg.thumbbar_marker_g = self.thumbbar_marker_g;
+        viewer_cfg.thumbbar_marker_b = self.thumbbar_marker_b;
+        viewer_cfg.thumbbar_marker_a = self.thumbbar_marker_a;
     }
 }
 
@@ -199,6 +225,96 @@ fn draw_settings_tab_anim(ui: &mut egui::Ui, draft: &mut SettingsDraft) {
     ui.label(i18n::t().settings_ring_bounds_explain());
 }
 
+fn draw_settings_tab_viewer(ui: &mut egui::Ui, draft: &mut SettingsDraft) {
+    // 大項目見出し。下の各項目ラベル(■付き)と混同しないよう太字・大きめで区別する。
+    ui.label(egui::RichText::new(i18n::t().settings_thumbbar_section_label()).strong().size(15.0));
+
+    ui.label(i18n::t().settings_thumbbar_pos_label());
+    egui::ComboBox::from_id_salt("thumbbar_pos")
+        .selected_text(match draft.thumbbar_pos {
+            ThumbbarPos::Left => i18n::t().settings_thumbbar_pos_left(),
+            ThumbbarPos::Right => i18n::t().settings_thumbbar_pos_right(),
+            ThumbbarPos::Top => i18n::t().settings_thumbbar_pos_top(),
+            ThumbbarPos::Bottom => i18n::t().settings_thumbbar_pos_bottom(),
+            ThumbbarPos::None => i18n::t().settings_thumbbar_pos_none(),
+        })
+        .show_ui(ui, |ui| {
+            ui.selectable_value(&mut draft.thumbbar_pos, ThumbbarPos::Left, i18n::t().settings_thumbbar_pos_left());
+            ui.selectable_value(&mut draft.thumbbar_pos, ThumbbarPos::Right, i18n::t().settings_thumbbar_pos_right());
+            ui.selectable_value(&mut draft.thumbbar_pos, ThumbbarPos::Top, i18n::t().settings_thumbbar_pos_top());
+            ui.selectable_value(&mut draft.thumbbar_pos, ThumbbarPos::Bottom, i18n::t().settings_thumbbar_pos_bottom());
+            ui.selectable_value(&mut draft.thumbbar_pos, ThumbbarPos::None, i18n::t().settings_thumbbar_pos_none());
+        });
+    ui.label(i18n::t().settings_thumbbar_pos_explain());
+    ui.separator();
+
+    ui.label(i18n::t().settings_thumbbar_size_label());
+    ui.scope(|ui| {
+        ui.spacing_mut().slider_width = 260.0;
+        ui.horizontal(|ui| {
+            ui.add(egui::Slider::new(&mut draft.thumbbar_thumb_size, 48..=200).show_value(false));
+            ui.label(format!("{} px", draft.thumbbar_thumb_size));
+        });
+    });
+    ui.label(i18n::t().settings_thumbbar_size_explain());
+    ui.separator();
+
+    ui.label(i18n::t().settings_thumbbar_idle_label());
+    ui.scope(|ui| {
+        ui.spacing_mut().slider_width = 260.0;
+        ui.horizontal(|ui| {
+            ui.add(egui::Slider::new(&mut draft.thumbbar_idle_hide_ms, 0..=10000).show_value(false).step_by(500.0));
+            let text = if draft.thumbbar_idle_hide_ms == 0 {
+                i18n::t().settings_thumbbar_idle_always().to_string()
+            } else {
+                format!("{:.1} s", draft.thumbbar_idle_hide_ms as f64 / 1000.0)
+            };
+            ui.label(text);
+        });
+    });
+    ui.label(i18n::t().settings_thumbbar_idle_explain());
+    ui.separator();
+
+    ui.horizontal(|ui| {
+        ui.label(i18n::t().settings_thumbbar_overlap_label());
+        ui.checkbox(&mut draft.thumbbar_overlap, "");
+    });
+    ui.label(i18n::t().settings_thumbbar_overlap_explain());
+    ui.separator();
+
+    ui.label(i18n::t().settings_thumbbar_marker_label());
+    ui.label(i18n::t().settings_thumbbar_marker_explain());
+
+    // スライダーの値をその場で確認できるよう、現在地マーカーのサンプル矩形をリアルタイム描画する。
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(30.0, 30.0), egui::Sense::hover());
+    let painter = ui.painter();
+    painter.rect_filled(rect, 3.0, egui::Color32::from_gray(90));
+    let alpha = (draft.thumbbar_marker_a as f32 / 100.0 * 255.0).round() as u8;
+    painter.rect_filled(rect, 3.0, egui::Color32::from_rgba_unmultiplied(
+        draft.thumbbar_marker_r, draft.thumbbar_marker_g, draft.thumbbar_marker_b, alpha,
+    ));
+
+    ui.scope(|ui| {
+        ui.spacing_mut().slider_width = 220.0;
+        ui.horizontal(|ui| {
+            ui.label("R");
+            ui.add(egui::Slider::new(&mut draft.thumbbar_marker_r, 0..=255));
+        });
+        ui.horizontal(|ui| {
+            ui.label("G");
+            ui.add(egui::Slider::new(&mut draft.thumbbar_marker_g, 0..=255));
+        });
+        ui.horizontal(|ui| {
+            ui.label("B");
+            ui.add(egui::Slider::new(&mut draft.thumbbar_marker_b, 0..=255));
+        });
+        ui.horizontal(|ui| {
+            ui.label("A");
+            ui.add(egui::Slider::new(&mut draft.thumbbar_marker_a, 0..=100));
+        });
+    });
+}
+
 impl NekoviewApp {
     pub fn settings_is_open(&self) -> bool {
         self.settings_open
@@ -232,6 +348,7 @@ impl NekoviewApp {
                     (SettingsTab::Common, i18n::t().settings_tab_common()),
                     (SettingsTab::Anim, i18n::t().settings_tab_anim()),
                     (SettingsTab::Static, i18n::t().settings_tab_static()),
+                    (SettingsTab::Viewer, i18n::t().settings_tab_viewer()),
                     (SettingsTab::Other, i18n::t().settings_tab_other()),
                 ] {
                     ui.selectable_value(&mut self.settings_tab, tab, label);
@@ -243,6 +360,7 @@ impl NekoviewApp {
                 SettingsTab::Common => draw_settings_tab_common(ui, &mut self.settings_draft),
                 SettingsTab::Anim => draw_settings_tab_anim(ui, &mut self.settings_draft),
                 SettingsTab::Static => self.draw_settings_tab_static(ui),
+                SettingsTab::Viewer => draw_settings_tab_viewer(ui, &mut self.settings_draft),
                 SettingsTab::Other => self.draw_settings_tab_other(ui),
             }
 

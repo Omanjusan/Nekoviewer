@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.0.0] - 2026-07-04
+
+### Added
+
+- Added in-archive thumbnail display in the viewer
+- Added corresponding viewer settings (can also be hidden)
+- Added a filename search filter at the bottom of the explorer pane; supports glob-style wildcards (`*`, `?`); the checkbox toggles the filter on/off; the search text persists only for the current session and is not carried over to the next launch
+
+### Fixed
+
+- Fixed fullscreen paging on Wayland appearing to freeze (window stopped updating); now sets an AutoNoVsync flag to work around it
+- Fixed settings dialog layout issues
+
 ## [0.9.0] - 2026-07-03
 
 ### Added

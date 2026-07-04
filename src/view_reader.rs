@@ -1,9 +1,9 @@
-use crate::gui_config::ViewerConfig;
+use crate::gui_config::{ThumbbarPos, ViewerConfig};
 use crate::controller::{ViewerNav, ViewerOutput};
 use crate::i18n;
 use crate::log_key;
-use crate::model::ReaderSortKey as ViewerSortKey;
-pub use crate::model::{PageMode, ViewerEntry};
+use crate::types::ReaderSortKey as ViewerSortKey;
+pub use crate::types::{PageMode, ViewerEntry};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -20,6 +20,17 @@ const FULL_UV: egui::Rect =
 
 fn ease_out(t: f32) -> f32 {
     1.0 - (1.0 - t).powi(3)
+}
+
+/// `bounds` の中に `img_size` を縦横比を保ったまま収める（contain-fit）矩形を返す。
+/// サムネイルバーの正方形枠に、実際のサムネイル画像(縦長/横長)を収めるのに使う。
+fn fit_rect_contain(bounds: egui::Rect, img_size: egui::Vec2) -> egui::Rect {
+    if img_size.x <= 0.0 || img_size.y <= 0.0 {
+        return bounds;
+    }
+    let scale = (bounds.width() / img_size.x).min(bounds.height() / img_size.y);
+    let size = img_size * scale;
+    egui::Rect::from_center_size(bounds.center(), size)
 }
 
 /// GIF等アニメーション再生状態（ページごとに保持）
@@ -215,6 +226,18 @@ pub struct ViewerState {
     /// フェーズ6: 直近フレームで観測したウィンドウ描画領域サイズ（物理px）。
     /// リサイズ再デコードのターゲットサイズ算出に使う。
     content_px: (u32, u32),
+    /// アーカイブ内サムネイルバー用テクスチャ(original_index → texture)。
+    /// メインの textures とは別解像度で保持するため独立させる。
+    thumb_textures: HashMap<usize, egui::TextureHandle>,
+    /// サムネイル読み込み要求済み・未完了の original_index 集合（重複要求防止）。
+    thumb_pending: HashSet<usize>,
+    /// サムネイルバー自動非表示用: 直近のページ操作(ナビゲーション入力)時刻。
+    thumbbar_last_activity: Instant,
+    /// サムネイルバーを最後にセンタリングした spread_lo。ページが実際に変わった
+    /// フレームでだけ scroll_to_rect を呼ぶための重複防止フラグ（毎フレーム呼ぶと
+    /// クリップ矩形サイズが不安定な瞬間に delta が収束せず request_repaint が
+    /// 連打され続ける恐れがあるため）。
+    thumbbar_scrolled_lo: Option<i32>,
 }
 
 impl ViewerState {
@@ -233,6 +256,48 @@ impl ViewerState {
             .filter(|&i| i >= 0 && i < total)
             .map(|i| self.entries[i as usize].original_index)
             .collect()
+    }
+
+    /// サムネイルバー用: まだテクスチャが無く、要求も出していない original_index 一覧。
+    pub fn thumbbar_missing_indices(&self) -> Vec<usize> {
+        self.entries.iter()
+            .map(|e| e.original_index)
+            .filter(|i| !self.thumb_textures.contains_key(i) && !self.thumb_pending.contains(i))
+            .collect()
+    }
+
+    /// サムネイルバー用: 指定 original_index に対応する entry_name を引く（要求作成用）。
+    pub fn entry_name_for(&self, original_index: usize) -> Option<&str> {
+        self.entries.iter()
+            .find(|e| e.original_index == original_index)
+            .map(|e| e.entry_name.as_str())
+    }
+
+    /// サムネイルバー用: 要求送信済みとしてマークする（重複送信防止）。
+    pub fn mark_thumb_pending(&mut self, original_index: usize) {
+        self.thumb_pending.insert(original_index);
+    }
+
+    /// サムネイルバー用: ワーカーからの結果を反映する。デコード失敗時(None)もpendingは解除する。
+    pub fn set_thumb_result(&mut self, ctx: &egui::Context, original_index: usize, rgba: Option<image::RgbaImage>) {
+        self.thumb_pending.remove(&original_index);
+        if let Some(img) = rgba {
+            let color_image = egui::ColorImage::from_rgba_unmultiplied(
+                [img.width() as usize, img.height() as usize],
+                img.as_raw(),
+            );
+            let tex = ctx.load_texture(
+                format!("thumb_{original_index}"),
+                color_image,
+                egui::TextureOptions::LINEAR,
+            );
+            self.thumb_textures.insert(original_index, tex);
+        }
+    }
+
+    /// サムネイルバー描画用: original_index に対応するテクスチャ（未取得なら None）。
+    pub fn thumb_texture(&self, original_index: usize) -> Option<&egui::TextureHandle> {
+        self.thumb_textures.get(&original_index)
     }
 
     /// フェーズ6: リサイズ/zoom_actual切替後の再デコード先ターゲットサイズ。
@@ -292,6 +357,10 @@ impl ViewerState {
             shift_scroll_acc: 0.0,
             toast: None,
             content_px: crate::cache::DEFAULT_DECODE_TARGET,
+            thumb_textures: HashMap::new(),
+            thumb_pending: HashSet::new(),
+            thumbbar_last_activity: Instant::now(),
+            thumbbar_scrolled_lo: None,
         })
     }
 
@@ -335,6 +404,10 @@ impl ViewerState {
             shift_scroll_acc: 0.0,
             toast: None,
             content_px: crate::cache::DEFAULT_DECODE_TARGET,
+            thumb_textures: HashMap::new(),
+            thumb_pending: HashSet::new(),
+            thumbbar_last_activity: Instant::now(),
+            thumbbar_scrolled_lo: None,
         }
     }
 
@@ -474,9 +547,10 @@ impl ViewerState {
         }
 
         // OSネイティブの最大化（タイトルバーあり最大化）を検知したら擬似フルスクに合流する。
-        // Wayland は Fullscreen 中に Close を無視するため、Alt+Enter と同じ
-        // Maximized(true)+Decorations(false) の擬似フルスクに統一して Close を通す。
-        // Wayland 固有の問題のため Windows では行わない。
+        // Wayland は Fullscreen 中に Close を無視する上、本物のFullscreenはGNOME等で
+        // 専用ワークスペースへ移動する挙動があり他窓へフォーカスを移すとビューアーが
+        // 消えて見える（実験2で確認）。Maximized(true)+Decorations(false)の擬似フルスクに
+        // 統一してこれらを避ける。Wayland固有の問題のためWindowsでは行わない。
         #[cfg(not(windows))]
         if input.os_maximized && !cfg.fullscreen {
             cfg.fullscreen = true;
@@ -502,6 +576,14 @@ impl ViewerState {
         let scroll_delta_raw = input.scroll_delta;
         let shift_scroll_delta = input.shift_scroll_delta;
         let scroll_delta = scroll_delta_raw;
+
+        // サムネイルバー自動非表示用: ページ送りに関わる入力があった時刻を記録する。
+        if key_left || key_right || key_up || key_down || key_space
+            || shift_nav_up || shift_nav_down
+            || scroll_delta != 0.0 || shift_scroll_delta != 0.0
+        {
+            self.thumbbar_last_activity = Instant::now();
+        }
 
         if key_left || key_right || key_up || key_down || key_space || esc || zoom_key || fs_key
             || mode1 || mode2 || mode3 || shift4 || shift5
@@ -537,6 +619,22 @@ impl ViewerState {
         // ── 左エントリリスト ──────────────────────────────────────────────────
         self.draw_entry_list(ui, &ctx, &viewer_style, input.hover_pos, input.viewport_rect);
 
+        // ── アーカイブ内サムネイルバー ────────────────────────────────────────
+        // 単一ファイル/1ファイル格納アーカイブでは常に非表示（設定に関わらず）。
+        // idle_hide_ms > 0 のとき、ページ操作停滞がその時間を超えたら自動的に隠す(0=常時表示)。
+        let idle_ms = cfg.thumbbar_idle_hide_ms;
+        let idle_elapsed_ms = self.thumbbar_last_activity.elapsed().as_millis() as u64;
+        let auto_hidden = idle_ms > 0 && idle_elapsed_ms >= idle_ms;
+        if idle_ms > 0 && !auto_hidden {
+            // 残り時間ちょうどで再描画させ、入力が無くても自動的に隠れるようにする。
+            ctx.request_repaint_after(Duration::from_millis((idle_ms - idle_elapsed_ms).max(1)));
+        }
+        let show_thumbbar = cfg.thumbbar_pos != ThumbbarPos::None && total > 1 && !auto_hidden;
+        if show_thumbbar && !cfg.thumbbar_overlap {
+            self.draw_thumbbar_panel(ui, cfg, cfg.thumbbar_pos);
+        }
+        let viewport_before_central = ui.max_rect();
+
         let frame = RenderFrame {
             tex_lo, tex_hi, prev_tex_lo, prev_tex_hi,
             animating,
@@ -547,6 +645,10 @@ impl ViewerState {
             monitor:     input.monitor_size,
         };
         let double_clicked = self.draw_central_panel(ui, &frame);
+
+        if show_thumbbar && cfg.thumbbar_overlap {
+            self.draw_thumbbar_overlay(ui, cfg, cfg.thumbbar_pos, viewport_before_central);
+        }
 
         let nav = self.process_navigation(&input, is_spread, step, total);
 
@@ -842,6 +944,117 @@ impl ViewerState {
         double_clicked
     }
 
+    /// サムネイルバー: 本画像の領域を圧迫する形（配置に応じて Panel で領域確保）。
+    fn draw_thumbbar_panel(&mut self, ui: &mut egui::Ui, cfg: &ViewerConfig, pos: ThumbbarPos) {
+        let outer = cfg.thumbbar_thumb_size as f32 + 16.0;
+        let frame = egui::Frame::side_top_panel(ui.style());
+        match pos {
+            ThumbbarPos::Left => {
+                egui::Panel::left("thumbbar_panel").exact_size(outer).resizable(false).frame(frame)
+                    .show(ui, |ui| self.draw_thumbbar_contents(ui, cfg, false));
+            }
+            ThumbbarPos::Right => {
+                egui::Panel::right("thumbbar_panel").exact_size(outer).resizable(false).frame(frame)
+                    .show(ui, |ui| self.draw_thumbbar_contents(ui, cfg, false));
+            }
+            ThumbbarPos::Top => {
+                egui::Panel::top("thumbbar_panel").exact_size(outer).resizable(false).frame(frame)
+                    .show(ui, |ui| self.draw_thumbbar_contents(ui, cfg, true));
+            }
+            ThumbbarPos::Bottom => {
+                egui::Panel::bottom("thumbbar_panel").exact_size(outer).resizable(false).frame(frame)
+                    .show(ui, |ui| self.draw_thumbbar_contents(ui, cfg, true));
+            }
+            ThumbbarPos::None => {}
+        }
+    }
+
+    /// サムネイルバー: 本画像の前面にオーバーレイ表示（領域は確保しない）。
+    /// `viewport` は central panel 描画前に記録した全体領域。
+    fn draw_thumbbar_overlay(&mut self, ui: &mut egui::Ui, cfg: &ViewerConfig, pos: ThumbbarPos, viewport: egui::Rect) {
+        let thickness = cfg.thumbbar_thumb_size as f32 + 16.0;
+        const MARGIN: f32 = 10.0;
+        let horizontal = matches!(pos, ThumbbarPos::Top | ThumbbarPos::Bottom);
+        let rect = match pos {
+            ThumbbarPos::Left => egui::Rect::from_min_size(
+                viewport.min + egui::vec2(MARGIN, MARGIN),
+                egui::vec2(thickness, viewport.height() - MARGIN * 2.0),
+            ),
+            ThumbbarPos::Right => egui::Rect::from_min_size(
+                egui::pos2(viewport.max.x - MARGIN - thickness, viewport.min.y + MARGIN),
+                egui::vec2(thickness, viewport.height() - MARGIN * 2.0),
+            ),
+            ThumbbarPos::Top => egui::Rect::from_min_size(
+                viewport.min + egui::vec2(MARGIN, MARGIN),
+                egui::vec2(viewport.width() - MARGIN * 2.0, thickness),
+            ),
+            ThumbbarPos::Bottom => egui::Rect::from_min_size(
+                egui::pos2(viewport.min.x + MARGIN, viewport.max.y - MARGIN - thickness),
+                egui::vec2(viewport.width() - MARGIN * 2.0, thickness),
+            ),
+            ThumbbarPos::None => return,
+        };
+
+        ui.painter().rect_filled(rect, 4.0, egui::Color32::from_black_alpha(160));
+        let mut child = ui.new_child(egui::UiBuilder::new().id_salt("thumbbar_overlay_child").max_rect(rect));
+        self.draw_thumbbar_contents(&mut child, cfg, horizontal);
+    }
+
+    /// サムネイルバーの中身。指定 Ui の領域いっぱいにスクロール可能な帯としてサムネを並べ、
+    /// 現在地(見開きなら2枚)に半透明ボックスを重ねる。
+    fn draw_thumbbar_contents(&mut self, ui: &mut egui::Ui, cfg: &ViewerConfig, horizontal: bool) {
+        let edge = cfg.thumbbar_thumb_size as f32;
+        let lo = self.spread_lo();
+        let hi = if self.page_mode == PageMode::Single { lo } else { lo + 1 };
+        let marker = egui::Color32::from_rgba_unmultiplied(
+            cfg.thumbbar_marker_r,
+            cfg.thumbbar_marker_g,
+            cfg.thumbbar_marker_b,
+            (cfg.thumbbar_marker_a as f32 / 100.0 * 255.0).round() as u8,
+        );
+
+        egui::ScrollArea::new([horizontal, !horizontal])
+            .id_salt("thumbbar_scroll")
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                let layout = if horizontal {
+                    egui::Layout::left_to_right(egui::Align::Center)
+                } else {
+                    egui::Layout::top_down(egui::Align::Min)
+                };
+                ui.with_layout(layout, |ui| {
+                    let mut current_rect: Option<egui::Rect> = None;
+                    for (i, entry) in self.entries.iter().enumerate() {
+                        let orig = entry.original_index;
+                        let (rect, _resp) = ui.allocate_exact_size(egui::vec2(edge, edge), egui::Sense::hover());
+                        if let Some(tex) = self.thumb_texture(orig) {
+                            let fit = fit_rect_contain(rect, tex.size_vec2());
+                            ui.painter().image(tex.id(), fit, FULL_UV, egui::Color32::WHITE);
+                        } else {
+                            ui.painter().rect_filled(rect, 3.0, egui::Color32::from_gray(60));
+                        }
+                        let is_current = i as i32 == lo || i as i32 == hi;
+                        if is_current {
+                            ui.painter().rect_filled(rect, 3.0, marker);
+                            current_rect = Some(current_rect.map_or(rect, |r| r.union(rect)));
+                        }
+                    }
+                    // 見開きは2枚分の範囲をまとめて1回だけセンタリングする（現在地は動かさず、
+                    // サムネの方をスクロールさせる）。先頭/終端付近では egui が自動的に
+                    // クランプするため、そこだけマーカーが中央から端へ寄る（仕様通りの挙動）。
+                    // ページが実際に変わった時だけ呼ぶ（毎フレーム呼ぶと、リサイズ直後など
+                    // クリップ矩形が安定しない間 delta が収束せず request_repaint が連打され
+                    // 続けるおそれがあるため。フルスクリーン切替直後の操作停滞の一因だった）。
+                    if let Some(r) = current_rect {
+                        if self.thumbbar_scrolled_lo != Some(lo) {
+                            ui.scroll_to_rect(r, Some(egui::Align::Center));
+                            self.thumbbar_scrolled_lo = Some(lo);
+                        }
+                    }
+                });
+            });
+    }
+
     fn process_misc_input(
         &mut self,
         ctx: &egui::Context,
@@ -863,6 +1076,9 @@ impl ViewerState {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(true));
                 #[cfg(not(windows))]
                 {
+                    // 本物のFullscreenはGNOME等で専用ワークスペースに移り、他窓へ
+                    // フォーカスを移すとビューアーが消えて見える上ESCも届かなくなる
+                    // (実験2で確認)。Maximized(true)+Decorations(false)の擬似フルスクに戻す。
                     ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(true));
                     ctx.send_viewport_cmd(egui::ViewportCommand::Decorations(false));
                 }
@@ -1096,10 +1312,18 @@ impl ViewerState {
         if let Some(tex) = tex {
             let [img_w, img_h] = tex.size();
             if zoom_actual {
+                // ビューポートより画像が小さい場合は中央寄せ、大きい場合はスクロール領域いっぱいに
+                // 敷いて従来どおりの原寸表示にする。
+                let outer_available = ui.available_size();
                 egui::ScrollArea::both().show(ui, |ui| {
-                    let size = egui::vec2(img_w as f32, img_h as f32);
-                    let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::click());
-                    ui.painter().image(tex.id(), rect, FULL_UV, egui::Color32::WHITE);
+                    let img_size = egui::vec2(img_w as f32, img_h as f32);
+                    let content_size = img_size.max(outer_available);
+                    let (content_rect, resp) = ui.allocate_exact_size(content_size, egui::Sense::click());
+                    let img_rect = egui::Rect::from_min_size(
+                        content_rect.min + (content_size - img_size) / 2.0,
+                        img_size,
+                    );
+                    ui.painter().image(tex.id(), img_rect, FULL_UV, egui::Color32::WHITE);
                     if resp.double_clicked() { *double_clicked = true; }
                 });
             } else {

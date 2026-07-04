@@ -1,6 +1,6 @@
 [package]
 name = "nekoviewer"
-version = "0.8.0"
+version = "1.0.0"
 edition = "2024"
 license = "MIT"
 
@@ -20,7 +20,7 @@ zip = "2"
 sevenz-rust2 = "0.21"
 flate2 = "1"
 encoding_rs = "0.8"
-walkdir = "2"
+glob = "0.3"
 sha2 = "0.10"
 fast_image_resize = "5"
 webp = "0.3"
