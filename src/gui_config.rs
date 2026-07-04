@@ -216,7 +216,6 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
     let mut sort_key: Option<String> = None;
     let mut sort_ascending: Option<bool> = None;
     let mut lang: Option<String> = None;
-    let mut viewer_zoom: Option<bool> = None;
     let mut viewer_fullscreen: Option<bool> = None;
     let mut redecode_on_resize: Option<bool> = None;
     let mut show_hidden: Option<bool> = None;
@@ -279,7 +278,6 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
                         lang = Some(v.to_string());
                     }
                 }
-                "viewer_zoom"       => { viewer_zoom       = v.trim().parse().ok(); }
                 "viewer_fullscreen" => { viewer_fullscreen = v.trim().parse().ok(); }
                 "redecode_on_resize" => { redecode_on_resize = v.trim().parse().ok(); }
                 "show_hidden" => { show_hidden = v.trim().parse().ok(); }
@@ -344,7 +342,8 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
         sort_state,
         lang: lang.unwrap_or_else(|| "ja".to_string()),
         viewer_cfg: ViewerConfig {
-            zoom_actual: viewer_zoom.unwrap_or(false),
+            // 起動時は常にフィット表示から始める（原寸表示は前回終了時の状態を引き継がない）。
+            zoom_actual: false,
             fullscreen: viewer_fullscreen.unwrap_or(false),
             redecode_on_resize: redecode_on_resize.unwrap_or(false),
             resize_debounce_ms: resize_debounce_ms.unwrap_or(300),
