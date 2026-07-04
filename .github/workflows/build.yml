@@ -2,7 +2,7 @@ name: Build
 
 on:
   pull_request:
-    branches: [dev, main]   # feat→dev、dev→mainのPR時にCI検証
+    branches: [develop, main]   # feat→dev、dev→mainのPR時にCI検証
   push:
     tags: ['v*']            # リリース用タグpush時にビルド&アーティファクト生成
 
