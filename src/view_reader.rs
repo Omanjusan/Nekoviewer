@@ -547,9 +547,10 @@ impl ViewerState {
         }
 
         // OSネイティブの最大化（タイトルバーあり最大化）を検知したら擬似フルスクに合流する。
-        // Wayland は Fullscreen 中に Close を無視するため、Alt+Enter と同じ
-        // Maximized(true)+Decorations(false) の擬似フルスクに統一して Close を通す。
-        // Wayland 固有の問題のため Windows では行わない。
+        // Wayland は Fullscreen 中に Close を無視する上、本物のFullscreenはGNOME等で
+        // 専用ワークスペースへ移動する挙動があり他窓へフォーカスを移すとビューアーが
+        // 消えて見える（実験2で確認）。Maximized(true)+Decorations(false)の擬似フルスクに
+        // 統一してこれらを避ける。Wayland固有の問題のためWindowsでは行わない。
         #[cfg(not(windows))]
         if input.os_maximized && !cfg.fullscreen {
             cfg.fullscreen = true;
@@ -1075,16 +1076,20 @@ impl ViewerState {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(true));
                 #[cfg(not(windows))]
                 {
-                    // 実験: Maximizedステート遷移(WMのtweenアニメ)は経由しない。
-                    // 位置・サイズの実際の変更はwinit_app.rs側(current_monitor()で
-                    // 正しいモニタ原点を取れる場所)が cfg.fullscreen の変化を見て行う。
+                    // 本物のFullscreenはGNOME等で専用ワークスペースに移り、他窓へ
+                    // フォーカスを移すとビューアーが消えて見える上ESCも届かなくなる
+                    // (実験2で確認)。Maximized(true)+Decorations(false)の擬似フルスクに戻す。
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(true));
                     ctx.send_viewport_cmd(egui::ViewportCommand::Decorations(false));
                 }
             } else {
                 #[cfg(windows)]
                 ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
                 #[cfg(not(windows))]
-                ctx.send_viewport_cmd(egui::ViewportCommand::Decorations(true));
+                {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(false));
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Decorations(true));
+                }
             }
             log_key!("[key] fullscreen → {}", cfg.fullscreen);
         }
@@ -1094,7 +1099,10 @@ impl ViewerState {
                 #[cfg(windows)]
                 ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
                 #[cfg(not(windows))]
-                ctx.send_viewport_cmd(egui::ViewportCommand::Decorations(true));
+                {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(false));
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Decorations(true));
+                }
             }
             // Windows では非表示にするとゴーストが残るため、フルスク・ウィンドウ問わず最小化で代替する
             #[cfg(windows)]
@@ -1304,10 +1312,18 @@ impl ViewerState {
         if let Some(tex) = tex {
             let [img_w, img_h] = tex.size();
             if zoom_actual {
+                // ビューポートより画像が小さい場合は中央寄せ、大きい場合はスクロール領域いっぱいに
+                // 敷いて従来どおりの原寸表示にする。
+                let outer_available = ui.available_size();
                 egui::ScrollArea::both().show(ui, |ui| {
-                    let size = egui::vec2(img_w as f32, img_h as f32);
-                    let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::click());
-                    ui.painter().image(tex.id(), rect, FULL_UV, egui::Color32::WHITE);
+                    let img_size = egui::vec2(img_w as f32, img_h as f32);
+                    let content_size = img_size.max(outer_available);
+                    let (content_rect, resp) = ui.allocate_exact_size(content_size, egui::Sense::click());
+                    let img_rect = egui::Rect::from_min_size(
+                        content_rect.min + (content_size - img_size) / 2.0,
+                        img_size,
+                    );
+                    ui.painter().image(tex.id(), img_rect, FULL_UV, egui::Color32::WHITE);
                     if resp.double_clicked() { *double_clicked = true; }
                 });
             } else {
