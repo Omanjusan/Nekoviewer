@@ -212,6 +212,10 @@ pub struct NekoviewApp {
     sort_ascending: bool,
     selected_archive_index: Option<usize>,
     selected_archive_meta: Option<(std::time::SystemTime, u64)>,
+    /// サムネフィルタ: 有効フラグ・入力文字列・絞り込み後の archives インデックス一覧
+    filter_enabled: bool,
+    filter_text: String,
+    filtered_indices: Vec<usize>,
     explorer_cols: usize,
     explorer_scroll_offset: f32,
     explorer_viewport_h: f32,
@@ -320,6 +324,9 @@ impl NekoviewApp {
             sort_ascending: sort_state.ascending,
             selected_archive_index: None,
             selected_archive_meta: None,
+            filter_enabled: true,
+            filter_text: String::new(),
+            filtered_indices: Vec::new(),
             explorer_cols: 1,
             explorer_scroll_offset: 0.0,
             explorer_viewport_h: 0.0,
@@ -349,6 +356,7 @@ impl NekoviewApp {
         };
         self.subdirs.clear();
         self.archives.clear();
+        self.filtered_indices.clear();
         self.raw_image_files.clear();
         self.invalid_archives.clear();
         self.cache_db = neko_dir::neko_dir_for(&self.current_dir, &self.config)
@@ -450,6 +458,47 @@ impl NekoviewApp {
                     let cmp = sa.cmp(&sb);
                     if ascending { cmp } else { cmp.reverse() }
                 });
+            }
+        }
+        self.recompute_filter();
+    }
+
+    /// フィルタ文字列・ON/OFF・archives の並び替えのいずれかが変わった時に呼び、
+    /// 表示・選択・キー操作の対象となる `filtered_indices` を作り直す。
+    fn recompute_filter(&mut self) {
+        if self.filter_enabled && !self.filter_text.trim().is_empty() {
+            let text = self.filter_text.trim();
+            // *, ?, [...] / [!...] が含まれる場合のみ glob パターンとして扱う。
+            // 含まれない場合や glob として不正な場合は従来通りの部分一致にフォールバックする。
+            let pattern = if text.contains(['*', '?', '[']) {
+                glob::Pattern::new(text).ok()
+            } else {
+                None
+            };
+            let match_opts = glob::MatchOptions {
+                case_sensitive: false,
+                require_literal_separator: false,
+                require_literal_leading_dot: false,
+            };
+            let needle = text.to_lowercase();
+            self.filtered_indices = self.archives.iter().enumerate()
+                .filter(|(_, p)| {
+                    let Some(name) = p.file_name().and_then(|n| n.to_str()) else { return false };
+                    match &pattern {
+                        Some(pat) => pat.matches_with(name, match_opts),
+                        None => name.to_lowercase().contains(&needle),
+                    }
+                })
+                .map(|(i, _)| i)
+                .collect();
+        } else {
+            self.filtered_indices = (0..self.archives.len()).collect();
+        }
+
+        // 選択中の項目がフィルタで除外されたら先頭に付け直す
+        if let Some(idx) = self.selected_archive_index {
+            if !self.filtered_indices.contains(&idx) {
+                self.selected_archive_index = self.filtered_indices.first().copied();
             }
         }
     }
@@ -915,12 +964,16 @@ impl NekoviewApp {
 
     fn handle_explorer_keys(&mut self, ctx: &egui::Context) {
         // ── エクスプローラー キーナビゲーション ─────────────────────────────
-        let total = self.archives.len();
+        // フィルタ適用中は見えている項目（filtered_indices）だけを移動対象にする。
+        let filtered = self.filtered_indices.clone();
+        let total = filtered.len();
         let cols = self.explorer_cols.max(1);
         let cell_h = self.config.thumb_size as f32;
         const KEY_GAP: f32 = 8.0;
         if total > 0 {
             let prev = self.selected_archive_index;
+            let cur_pos = self.selected_archive_index
+                .and_then(|idx| filtered.iter().position(|&i| i == idx));
 
             // キー入力を一括消費してからクロージャ外で処理する（borrow 競合回避）
             let (key_left, key_right, key_down, key_up) = ctx.input_mut(|i| (
@@ -936,34 +989,34 @@ impl NekoviewApp {
             // エクスプローラー窓の左右キーで viewer nav を肩代わりする」回避策は撤去する。
             // エクスプローラー窓の左右キーは常にグリッド選択移動とする。
             if key_right {
-                if let Some(idx) = self.selected_archive_index {
-                    if idx + 1 < total {
-                        self.selected_archive_index = Some(idx + 1);
+                if let Some(pos) = cur_pos {
+                    if pos + 1 < total {
+                        self.selected_archive_index = Some(filtered[pos + 1]);
                     }
                 }
             }
             if key_left {
-                if let Some(idx) = self.selected_archive_index {
-                    if idx > 0 {
-                        self.selected_archive_index = Some(idx - 1);
+                if let Some(pos) = cur_pos {
+                    if pos > 0 {
+                        self.selected_archive_index = Some(filtered[pos - 1]);
                     }
                 }
             }
 
             // 上下キーは常にグリッド選択移動
             if key_down {
-                if let Some(idx) = self.selected_archive_index {
-                    let current_row = idx / cols;
+                if let Some(pos) = cur_pos {
+                    let current_row = pos / cols;
                     let last_row = (total - 1) / cols;
                     if current_row < last_row {
-                        self.selected_archive_index = Some((idx + cols).min(total - 1));
+                        self.selected_archive_index = Some(filtered[(pos + cols).min(total - 1)]);
                     }
                 }
             }
             if key_up {
-                if let Some(idx) = self.selected_archive_index {
-                    if idx >= cols {
-                        self.selected_archive_index = Some(idx - cols);
+                if let Some(pos) = cur_pos {
+                    if pos >= cols {
+                        self.selected_archive_index = Some(filtered[pos - cols]);
                     }
                 }
             }
@@ -992,14 +1045,16 @@ impl NekoviewApp {
                     .and_then(|path| std::fs::metadata(path).ok())
                     .map(|m| (m.modified().unwrap_or(std::time::UNIX_EPOCH), m.len()));
                 if let Some(idx) = self.selected_archive_index {
-                    let row = idx / cols;
-                    let item_top = row as f32 * (cell_h + KEY_GAP);
-                    let item_bottom = item_top + cell_h;
-                    let vp = self.explorer_viewport_h;
-                    if item_top < self.explorer_scroll_offset {
-                        self.explorer_scroll_offset = item_top;
-                    } else if vp > 0.0 && item_bottom > self.explorer_scroll_offset + vp {
-                        self.explorer_scroll_offset = item_bottom - vp;
+                    if let Some(pos) = filtered.iter().position(|&i| i == idx) {
+                        let row = pos / cols;
+                        let item_top = row as f32 * (cell_h + KEY_GAP);
+                        let item_bottom = item_top + cell_h;
+                        let vp = self.explorer_viewport_h;
+                        if item_top < self.explorer_scroll_offset {
+                            self.explorer_scroll_offset = item_top;
+                        } else if vp > 0.0 && item_bottom > self.explorer_scroll_offset + vp {
+                            self.explorer_scroll_offset = item_bottom - vp;
+                        }
                     }
                 }
             }
@@ -1236,14 +1291,44 @@ impl NekoviewApp {
             let is_loading = matches!(&self.scan_state, ScanState::Loading { started_at, .. }
                 if started_at.elapsed().as_secs_f32() > 0.5);
 
-            if is_loading {
-                ui.centered_and_justified(|ui| {
-                    ui.label(i18n::t().loading());
-                });
-            } else {
-                self.draw_archive_grid(ui);
-            }
+            const FILTER_BAR_H: f32 = 28.0;
+            let content_h = (ui.available_height() - FILTER_BAR_H).max(0.0);
+            ui.allocate_ui_with_layout(
+                egui::vec2(ui.available_width(), content_h),
+                egui::Layout::top_down(egui::Align::Min),
+                |ui| {
+                    if is_loading {
+                        ui.centered_and_justified(|ui| {
+                            ui.label(i18n::t().loading());
+                        });
+                    } else {
+                        self.draw_archive_grid(ui);
+                    }
+                },
+            );
+            self.draw_filter_bar(ui);
         }
+    }
+
+    /// サムネグリッド最下部の検索フィルタ行（ラベル＋チェックボックス＋テキスト入力）
+    fn draw_filter_bar(&mut self, ui: &mut egui::Ui) {
+        ui.separator();
+        ui.horizontal(|ui| {
+            ui.label(i18n::t().explorer_filter_label());
+            let mut changed = ui.checkbox(&mut self.filter_enabled, "").changed();
+            let resp = ui.add_enabled(
+                self.filter_enabled,
+                egui::TextEdit::singleline(&mut self.filter_text)
+                    .hint_text(i18n::t().explorer_filter_hint())
+                    .desired_width(ui.available_width()),
+            );
+            if resp.changed() {
+                changed = true;
+            }
+            if changed {
+                self.recompute_filter();
+            }
+        });
     }
 
     fn draw_archive_grid(&mut self, ui: &mut egui::Ui) {
@@ -1265,9 +1350,13 @@ impl NekoviewApp {
                 .num_columns(cols)
                 .spacing([GAP, GAP])
                 .show(ui, |ui| {
-                    let archives = self.archives.clone();
-                    for (i, path) in archives.iter().enumerate() {
-                        let is_selected = self.selected_archive_index == Some(i);
+                    // フィルタ適用中は filtered_indices（archives へのインデックス）のみ描画対象にする
+                    let visible: Vec<(usize, PathBuf)> = self.filtered_indices.iter()
+                        .map(|&idx| (idx, self.archives[idx].clone()))
+                        .collect();
+                    for (i, (real_idx, path)) in visible.iter().enumerate() {
+                        let real_idx = *real_idx;
+                        let is_selected = self.selected_archive_index == Some(real_idx);
                         let (rect, response) = ui.allocate_exact_size(
                             egui::vec2(cell_w, cell_h),
                             egui::Sense::click(),
@@ -1333,11 +1422,11 @@ impl NekoviewApp {
 
                         let is_raw = self.raw_image_files.contains(path);
                         if response.clicked() {
-                            if is_raw && self.selected_archive_index == Some(i) {
+                            if is_raw && self.selected_archive_index == Some(real_idx) {
                                 // 生ファイル: 選択済み状態のシングルクリックで開く
                                 self.open_viewer(ViewerState::new_raw(path.clone(), self.viewer_slots, self.config.default_slot));
                             } else {
-                                self.selected_archive_index = Some(i);
+                                self.selected_archive_index = Some(real_idx);
                                 self.selected_archive_meta = std::fs::metadata(path)
                                     .ok()
                                     .map(|m| (m.modified().unwrap_or(std::time::UNIX_EPOCH), m.len()));
@@ -1374,7 +1463,7 @@ impl NekoviewApp {
                             ui.end_row();
                         }
                     }
-                    if !archives.is_empty() && archives.len() % cols != 0 {
+                    if !visible.is_empty() && visible.len() % cols != 0 {
                         ui.end_row();
                     }
                 });
