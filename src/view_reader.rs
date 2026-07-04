@@ -950,19 +950,19 @@ impl ViewerState {
         match pos {
             ThumbbarPos::Left => {
                 egui::Panel::left("thumbbar_panel").exact_size(outer).resizable(false).frame(frame)
-                    .show(ui, |ui| self.draw_thumbbar_contents(ui, cfg, true));
+                    .show(ui, |ui| self.draw_thumbbar_contents(ui, cfg, false));
             }
             ThumbbarPos::Right => {
                 egui::Panel::right("thumbbar_panel").exact_size(outer).resizable(false).frame(frame)
-                    .show(ui, |ui| self.draw_thumbbar_contents(ui, cfg, true));
+                    .show(ui, |ui| self.draw_thumbbar_contents(ui, cfg, false));
             }
             ThumbbarPos::Top => {
                 egui::Panel::top("thumbbar_panel").exact_size(outer).resizable(false).frame(frame)
-                    .show(ui, |ui| self.draw_thumbbar_contents(ui, cfg, false));
+                    .show(ui, |ui| self.draw_thumbbar_contents(ui, cfg, true));
             }
             ThumbbarPos::Bottom => {
                 egui::Panel::bottom("thumbbar_panel").exact_size(outer).resizable(false).frame(frame)
-                    .show(ui, |ui| self.draw_thumbbar_contents(ui, cfg, false));
+                    .show(ui, |ui| self.draw_thumbbar_contents(ui, cfg, true));
             }
             ThumbbarPos::None => {}
         }
