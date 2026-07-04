@@ -111,38 +111,7 @@ The selector is shown in blue for archive files and red for standalone image fil
 
 ### Config File (`nekoviewer.conf`)
 
-Auto-generated in the same folder as the executable on first launch.
-
-```conf
-[startup]
-# Start from the last opened folder
-use_last_dir = false
-# Fixed startup folder (empty = home directory)
-fixed_dir =
-
-[cache]
-# local : store under cache/ next to the executable
-# xdg   : store under %LOCALAPPDATA%/nekoview/cache/
-storage = local
-# Max memory for page cache (MB). Default: 30% of system RAM
-# max_mb =
-
-[worker]
-# Decoder thread count. 0 = auto (half of logical cores)
-decode_threads = 0
-
-[thumbnail]
-# nearest / triangle / catmullrom / lanczos3
-filter = triangle
-
-[viewer]
-# nearest / triangle / catmullrom / lanczos3
-filter = catmullrom
-
-[grid]
-# Thumbnail long-edge size (px). Range: 64–512
-thumb_size = 256
-```
+Most settings have moved to the in-app GUI settings dialog. The config file is now only used for initial/advanced setup; see the settings dialog for day-to-day configuration.
 
 ---
 
