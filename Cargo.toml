@@ -4,6 +4,11 @@ version = "1.0.0"
 edition = "2024"
 license = "MIT"
 
+[profile.release]
+strip = true
+lto = true
+codegen_units = 1
+
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.52", features = ["Win32_Storage_FileSystem", "Win32_UI_WindowsAndMessaging", "Win32_Foundation"] }
 
