@@ -66,6 +66,8 @@ pub const DEFAULT_DECODE_TARGET: (u32, u32) = (MAX_DISPLAY_W, MAX_DISPLAY_H);
 #[derive(Clone)]
 pub enum FileCacheEntry {
     Raw(Arc<[u8]>),
+    /// 型自体は std のみ（展開関数のみ 7z/tar 依存）。両 feature 無効時のみ未構築のデッドコード。
+    #[cfg_attr(not(any(feature = "fmt-7z", feature = "fmt-tar")), allow(dead_code))]
     Extracted(Arc<HashMap<String, Vec<u8>>>),
 }
 
@@ -96,21 +98,26 @@ pub struct LoadRequest {
 enum OpenArchive {
     Disk(zip::ZipArchive<std::fs::File>),
     Mem(zip::ZipArchive<std::io::Cursor<Arc<[u8]>>>),
-    /// 7z(および将来のtar)のソリッド圧縮は開いた時点で画像を一括展開済み。
+    /// 7z/tar のソリッド圧縮は開いた時点で画像を一括展開済み。
     /// ページ送りは再展開せずここから引く。
     /// `Arc`はFileCache側が保持するものと共有しており、スレッドごとの再展開が起きない。
+    /// 型自体は std のみ（展開関数のみ 7z/tar 依存）なので variant は常時持ち、
+    /// 両 feature 無効時のみ未構築のデッドコードとして許容する。
+    #[cfg_attr(not(any(feature = "fmt-7z", feature = "fmt-tar")), allow(dead_code))]
     Extracted(Arc<HashMap<String, Vec<u8>>>),
 }
 
-/// FileCache ミス時にディスクからアーカイブを開く（zipはランダムアクセス、7zは一括展開）。
+/// FileCache ミス時にディスクからアーカイブを開く（zipはランダムアクセス、7z/tarは一括展開）。
 /// spawn_worker と spawn_entry_thumb_worker の FileCache ミス経路の共通処理。
 /// 通常は FileCache 側が先出しするためミスはほぼ発生しない安全弁。
 fn open_archive_from_disk(path: &std::path::Path) -> Option<OpenArchive> {
     match crate::fs::archive::detect_format(path) {
+        #[cfg(feature = "fmt-7z")]
         crate::fs::archive::ArchiveFormat::SevenZ => {
             let map = Arc::new(crate::fs::archive::extract_all_images_7z_path(path));
             Some(OpenArchive::Extracted(map))
         }
+        #[cfg(feature = "fmt-tar")]
         crate::fs::archive::ArchiveFormat::Tar => {
             let map = Arc::new(crate::fs::archive::extract_all_images_tar_path(path));
             Some(OpenArchive::Extracted(map))
@@ -739,10 +746,12 @@ pub fn spawn_file_cache_worker(ctx: egui::Context) -> (mpsc::Sender<PathBuf>, mp
     std::thread::spawn(move || {
         while let Ok(path) = req_rx.recv() {
             let entry = match crate::fs::archive::detect_format(&path) {
+                #[cfg(feature = "fmt-7z")]
                 crate::fs::archive::ArchiveFormat::SevenZ => {
                     let map = crate::fs::archive::extract_all_images_7z_path(&path);
                     Some(FileCacheEntry::Extracted(Arc::new(map)))
                 }
+                #[cfg(feature = "fmt-tar")]
                 crate::fs::archive::ArchiveFormat::Tar => {
                     let map = crate::fs::archive::extract_all_images_tar_path(&path);
                     Some(FileCacheEntry::Extracted(Arc::new(map)))

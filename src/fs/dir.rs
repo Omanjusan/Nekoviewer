@@ -56,20 +56,29 @@ pub fn spawn_scan_subdirs(
     rx
 }
 
-/// 対応アーカイブのファイル名サフィックス（小文字）。`.tar.gz` のような
-/// 二重拡張子を正しく扱うため、`extension()` ではなくファイル名末尾で判定する。
-const ARCHIVE_SUFFIXES: &[&str] = &[
-    ".zip", ".cbz", ".7z", ".cb7", ".tar", ".cbt", ".tar.gz", ".tgz",
-];
-
-/// パスが対応アーカイブのファイル名サフィックスを持つか
+/// パスが対応アーカイブのファイル名サフィックスを持つか。
+/// `.tar.gz` のような二重拡張子を正しく扱うため `extension()` ではなくファイル名末尾で判定する。
+/// 7z/tar は対応 feature が有効なときのみ列挙対象に含める。
 fn is_archive_path(p: &Path) -> bool {
     let name = p
         .file_name()
         .and_then(|n| n.to_str())
         .map(|s| s.to_ascii_lowercase())
         .unwrap_or_default();
-    ARCHIVE_SUFFIXES.iter().any(|s| name.ends_with(s))
+    let ends = |s: &str| name.ends_with(s);
+
+    if ends(".zip") || ends(".cbz") {
+        return true;
+    }
+    #[cfg(feature = "fmt-7z")]
+    if ends(".7z") || ends(".cb7") {
+        return true;
+    }
+    #[cfg(feature = "fmt-tar")]
+    if ends(".tar") || ends(".cbt") || ends(".tar.gz") || ends(".tgz") {
+        return true;
+    }
+    false
 }
 
 /// ディレクトリ直下の ZIP/CBZ/7z/CB7/TAR/CBT ファイルを列挙する

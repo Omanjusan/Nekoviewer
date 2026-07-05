@@ -12,6 +12,11 @@ use super::{ArchiveMemoryEstimate, EntryEstimate, ImageEntry};
 
 /// tar ファイルを開き、gzip 圧縮なら透過的に解凍したリーダを返す。
 /// 先頭2バイトの gzip マジックで判定し、raw tar はそのまま返す。
+///
+/// 将来の追加圧縮（default-off feature の frame）:
+///   - `tar-zstd`: 先頭 `28 B5 2F FD` を見て `zstd::Decoder` で包む
+///   - `tar-xz`  : 先頭 `FD 37 7A 58 5A 00` を見て liblzma デコーダで包む
+/// いずれも C 依存を引き込むため、対応 dep とデコード経路は feature 有効時のみ追加する。
 fn open_reader(path: &Path) -> Option<Box<dyn Read>> {
     let mut file = std::fs::File::open(path).ok()?;
     let mut magic = [0u8; 2];

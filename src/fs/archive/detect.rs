@@ -27,14 +27,18 @@ pub fn is_supported_image_file(path: &Path) -> bool {
 }
 
 /// アーカイブのコンテナ形式。中身の画像フォーマットではなくアーカイブそのものの種別。
+/// zip は基幹形式のため常時、7z/tar は対応 feature が有効なときのみ variant を持つ。
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ArchiveFormat {
     Zip,
+    #[cfg(feature = "fmt-7z")]
     SevenZ,
     /// TAR/CBT（raw および gzip 圧縮の tar.gz/tgz）。7z 同様ソリッド扱いで一括展開する。
+    #[cfg(feature = "fmt-tar")]
     Tar,
 }
 
+#[cfg(feature = "fmt-7z")]
 const SEVEN_Z_SIGNATURE: [u8; 6] = [0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C];
 /// ZIP のローカルファイルヘッダ / 空アーカイブ(EOCD) / 分割アーカイブの各シグネチャ先頭4バイト。
 const ZIP_SIGNATURES: [[u8; 4]; 3] = [
@@ -43,14 +47,21 @@ const ZIP_SIGNATURES: [[u8; 4]; 3] = [
     [0x50, 0x4B, 0x07, 0x08], // 分割/スパンド
 ];
 /// gzip のマジック（tar.gz/tgz 判定用）
+#[cfg(feature = "fmt-tar")]
 const GZIP_SIGNATURE: [u8; 2] = [0x1F, 0x8B];
 /// POSIX ustar の magic。tar ヘッダの offset 257 に "ustar" が入る。
+#[cfg(feature = "fmt-tar")]
 const USTAR_OFFSET: usize = 257;
+#[cfg(feature = "fmt-tar")]
 const USTAR_MAGIC: [u8; 5] = *b"ustar";
-/// tar の1ブロック分。ustar magic(offset 257)まで確実に届くよう先頭ブロックを読む。
+/// マジック読み取り長。ustar magic(offset 257)まで届くよう先頭ブロック分読む。
+/// tar 無効時は先頭シグネチャ(最大6バイト)だけで足りる。
+#[cfg(feature = "fmt-tar")]
 const MAGIC_READ_LEN: usize = 512;
+#[cfg(not(feature = "fmt-tar"))]
+const MAGIC_READ_LEN: usize = 8;
 
-/// ファイル先頭バイトを最大 512 バイト読む。開けない・空の場合は None。
+/// ファイル先頭バイトを最大 MAGIC_READ_LEN バイト読む。開けない・空の場合は None。
 fn read_magic(path: &Path) -> Option<Vec<u8>> {
     let mut f = std::fs::File::open(path).ok()?;
     let mut buf = [0u8; MAGIC_READ_LEN];
@@ -63,26 +74,31 @@ fn read_magic(path: &Path) -> Option<Vec<u8>> {
 
 /// マジックバイトからアーカイブ形式を判定する。判別できない場合は None。
 fn detect_by_magic(buf: &[u8]) -> Option<ArchiveFormat> {
+    #[cfg(feature = "fmt-7z")]
     if buf.len() >= SEVEN_Z_SIGNATURE.len() && buf[..SEVEN_Z_SIGNATURE.len()] == SEVEN_Z_SIGNATURE {
         return Some(ArchiveFormat::SevenZ);
     }
     if buf.len() >= 4 && ZIP_SIGNATURES.iter().any(|sig| &buf[..4] == sig) {
         return Some(ArchiveFormat::Zip);
     }
-    // gzip はこのアプリの文脈では tar.gz とみなす（単体 .gz は非対応スコープ）。
-    if buf.len() >= GZIP_SIGNATURE.len() && buf[..GZIP_SIGNATURE.len()] == GZIP_SIGNATURE {
-        return Some(ArchiveFormat::Tar);
-    }
-    // raw tar は先頭マジックを持たず、offset 257 に ustar magic がある。
-    if buf.len() >= USTAR_OFFSET + USTAR_MAGIC.len()
-        && buf[USTAR_OFFSET..USTAR_OFFSET + USTAR_MAGIC.len()] == USTAR_MAGIC
+    #[cfg(feature = "fmt-tar")]
     {
-        return Some(ArchiveFormat::Tar);
+        // gzip はこのアプリの文脈では tar.gz とみなす（単体 .gz は非対応スコープ）。
+        if buf.len() >= GZIP_SIGNATURE.len() && buf[..GZIP_SIGNATURE.len()] == GZIP_SIGNATURE {
+            return Some(ArchiveFormat::Tar);
+        }
+        // raw tar は先頭マジックを持たず、offset 257 に ustar magic がある。
+        if buf.len() >= USTAR_OFFSET + USTAR_MAGIC.len()
+            && buf[USTAR_OFFSET..USTAR_OFFSET + USTAR_MAGIC.len()] == USTAR_MAGIC
+        {
+            return Some(ArchiveFormat::Tar);
+        }
     }
     None
 }
 
 /// ファイル名の小文字サフィックスがいずれかに一致するか。
+#[cfg(any(feature = "fmt-7z", feature = "fmt-tar"))]
 fn name_ends_with_any(path: &Path, suffixes: &[&str]) -> bool {
     let name = path
         .file_name()
@@ -95,13 +111,16 @@ fn name_ends_with_any(path: &Path, suffixes: &[&str]) -> bool {
 /// 拡張子からアーカイブ形式を推定する（マジック判定不能時のフォールバック）。
 /// 7z/cb7 → SevenZ、tar系 → Tar、それ以外は Zip とみなす（従来の既定動作）。
 fn detect_by_ext(path: &Path) -> ArchiveFormat {
+    #[cfg(feature = "fmt-7z")]
     if name_ends_with_any(path, &[".7z", ".cb7"]) {
-        ArchiveFormat::SevenZ
-    } else if name_ends_with_any(path, &[".tar", ".cbt", ".tar.gz", ".tgz"]) {
-        ArchiveFormat::Tar
-    } else {
-        ArchiveFormat::Zip
+        return ArchiveFormat::SevenZ;
     }
+    #[cfg(feature = "fmt-tar")]
+    if name_ends_with_any(path, &[".tar", ".cbt", ".tar.gz", ".tgz"]) {
+        return ArchiveFormat::Tar;
+    }
+    let _ = path;
+    ArchiveFormat::Zip
 }
 
 /// マジックバイト優先、読めない場合のみ拡張子でアーカイブ形式を判定する（キャッシュ無し）。
@@ -222,8 +241,17 @@ pub fn detect_format(path: &Path) -> ArchiveFormat {
 }
 
 /// 7z/CB7 かどうかを判定する（`detect_format` の薄いラッパ）。
+/// fmt-7z 無効時は常に false。
 pub fn is_7z_path(path: &Path) -> bool {
-    detect_format(path) == ArchiveFormat::SevenZ
+    #[cfg(feature = "fmt-7z")]
+    {
+        detect_format(path) == ArchiveFormat::SevenZ
+    }
+    #[cfg(not(feature = "fmt-7z"))]
+    {
+        let _ = path;
+        false
+    }
 }
 
 #[cfg(test)]
@@ -233,20 +261,24 @@ mod tests {
 
     #[test]
     fn detect_by_magic_recognizes_signatures() {
-        assert_eq!(detect_by_magic(&SEVEN_Z_SIGNATURE), Some(ArchiveFormat::SevenZ));
         assert_eq!(detect_by_magic(b"PK\x03\x04rest"), Some(ArchiveFormat::Zip));
         assert_eq!(detect_by_magic(b"PK\x05\x06"), Some(ArchiveFormat::Zip));
-        assert_eq!(detect_by_magic(b"\x1f\x8b\x08rest"), Some(ArchiveFormat::Tar)); // gzip(tar.gz)
         assert_eq!(detect_by_magic(b"\xff\xd8\xff\xe0jpeg"), None); // JPEG等は非アーカイブ
         assert_eq!(detect_by_magic(b"PK"), None); // 短すぎるものは判別不能
 
-        // raw tar: offset 257 に ustar magic
-        let mut tar_head = vec![0u8; 512];
-        tar_head[USTAR_OFFSET..USTAR_OFFSET + USTAR_MAGIC.len()].copy_from_slice(&USTAR_MAGIC);
-        assert_eq!(detect_by_magic(&tar_head), Some(ArchiveFormat::Tar));
+        #[cfg(feature = "fmt-7z")]
+        assert_eq!(detect_by_magic(&SEVEN_Z_SIGNATURE), Some(ArchiveFormat::SevenZ));
+
+        #[cfg(feature = "fmt-tar")]
+        {
+            assert_eq!(detect_by_magic(b"\x1f\x8b\x08rest"), Some(ArchiveFormat::Tar)); // gzip(tar.gz)
+            // raw tar: offset 257 に ustar magic
+            let mut tar_head = vec![0u8; 512];
+            tar_head[USTAR_OFFSET..USTAR_OFFSET + USTAR_MAGIC.len()].copy_from_slice(&USTAR_MAGIC);
+            assert_eq!(detect_by_magic(&tar_head), Some(ArchiveFormat::Tar));
+        }
     }
 
-    /// マジックバイトが拡張子より優先されること（.cbz偽装等への対応）を確認する。
     fn write_temp(name: &str, head: &[u8]) -> std::path::PathBuf {
         use std::sync::atomic::{AtomicU32, Ordering};
         static COUNTER: AtomicU32 = AtomicU32::new(0);
@@ -257,6 +289,8 @@ mod tests {
         path
     }
 
+    /// マジックバイトが拡張子より優先されること（.cbz偽装等への対応）を確認する。
+    #[cfg(feature = "fmt-7z")]
     #[test]
     fn magic_overrides_misleading_extension() {
         // 中身がZIPなのに .7z 拡張子 → マジック優先でZip判定
@@ -273,22 +307,27 @@ mod tests {
 
     #[test]
     fn falls_back_to_extension_when_magic_unknown() {
-        // マジックで判別できない中身 → 拡張子でフォールバック
-        let unknown_7z = write_temp("data.7z", b"not-an-archive-header");
-        assert_eq!(detect_format(&unknown_7z), ArchiveFormat::SevenZ);
-
+        // マジックで判別できない .cbz → Zip
         let unknown_cbz = write_temp("data.cbz", b"not-an-archive-header");
         assert_eq!(detect_format(&unknown_cbz), ArchiveFormat::Zip);
-
-        // マジックを持たない古い tar / .cbt は拡張子で Tar 判定
-        let unknown_tar = write_temp("data.tar", b"short-header");
-        assert_eq!(detect_format(&unknown_tar), ArchiveFormat::Tar);
-        let unknown_cbt = write_temp("data.cbt", b"short-header");
-        assert_eq!(detect_format(&unknown_cbt), ArchiveFormat::Tar);
-
-        std::fs::remove_file(&unknown_7z).ok();
         std::fs::remove_file(&unknown_cbz).ok();
-        std::fs::remove_file(&unknown_tar).ok();
-        std::fs::remove_file(&unknown_cbt).ok();
+
+        #[cfg(feature = "fmt-7z")]
+        {
+            let unknown_7z = write_temp("data.7z", b"not-an-archive-header");
+            assert_eq!(detect_format(&unknown_7z), ArchiveFormat::SevenZ);
+            std::fs::remove_file(&unknown_7z).ok();
+        }
+
+        #[cfg(feature = "fmt-tar")]
+        {
+            // マジックを持たない古い tar / .cbt は拡張子で Tar 判定
+            let unknown_tar = write_temp("data.tar", b"short-header");
+            assert_eq!(detect_format(&unknown_tar), ArchiveFormat::Tar);
+            let unknown_cbt = write_temp("data.cbt", b"short-header");
+            assert_eq!(detect_format(&unknown_cbt), ArchiveFormat::Tar);
+            std::fs::remove_file(&unknown_tar).ok();
+            std::fs::remove_file(&unknown_cbt).ok();
+        }
     }
 }

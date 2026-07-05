@@ -6,14 +6,18 @@ use std::path::Path;
 
 pub mod decode;
 pub mod detect;
+#[cfg(feature = "fmt-7z")]
 mod sevenz;
+#[cfg(feature = "fmt-tar")]
 mod tar;
 mod zip;
 
 // 既存の呼び出し元が使う `crate::fs::archive::NAME` パスを維持するための再エクスポート。
 pub use decode::{decode_image_bytes, estimate_anim_sample_bytes, estimate_static_decoded_bytes, AnimSampleEstimate};
 pub use detect::{detect_format, is_7z_path, is_supported_image_file, ArchiveFormat};
+#[cfg(feature = "fmt-7z")]
 pub use sevenz::{extract_all_images_7z, extract_all_images_7z_path};
+#[cfg(feature = "fmt-tar")]
 pub use tar::{extract_all_images_tar, extract_all_images_tar_path};
 pub use zip::{load_bytes_from_archive, load_image, load_image_from_archive};
 
@@ -115,7 +119,9 @@ pub fn estimate_archive_memory(
         return ArchiveMemoryEstimate::Ok;
     }
     match detect::detect_format(path) {
+        #[cfg(feature = "fmt-7z")]
         ArchiveFormat::SevenZ => sevenz::estimate_archive_memory_7z(path, entries, budget_bytes, ring_bounds),
+        #[cfg(feature = "fmt-tar")]
         ArchiveFormat::Tar => tar::estimate_archive_memory_tar(path, entries, budget_bytes, ring_bounds),
         ArchiveFormat::Zip => zip::estimate_archive_memory_zip(path, entries, budget_bytes, ring_bounds),
     }
@@ -125,7 +131,9 @@ pub fn estimate_archive_memory(
 /// ディレクトリ構造を無視し、ファイル名の衝突は "stem_01.ext" 形式で回避する。
 pub fn list_images(path: &Path) -> Vec<ImageEntry> {
     match detect::detect_format(path) {
+        #[cfg(feature = "fmt-7z")]
         ArchiveFormat::SevenZ => sevenz::list_images_7z(path),
+        #[cfg(feature = "fmt-tar")]
         ArchiveFormat::Tar => tar::list_images_tar(path),
         ArchiveFormat::Zip => zip::list_images_zip(path),
     }
@@ -136,7 +144,9 @@ pub fn list_images(path: &Path) -> Vec<ImageEntry> {
 /// Data Descriptor フラグ等で順読み不可の場合は ZipArchive 経由にフォールバックする。
 pub fn load_first_image(path: &Path) -> Option<image::DynamicImage> {
     match detect::detect_format(path) {
+        #[cfg(feature = "fmt-7z")]
         ArchiveFormat::SevenZ => sevenz::load_first_image_7z(path),
+        #[cfg(feature = "fmt-tar")]
         ArchiveFormat::Tar => tar::load_first_image_tar(path),
         ArchiveFormat::Zip => {
             zip::load_first_image_sequential(path).or_else(|| zip::load_first_image_via_archive(path))
@@ -146,6 +156,7 @@ pub fn load_first_image(path: &Path) -> Option<image::DynamicImage> {
 
 /// UNIXエポック秒を、ZIP版と同じ日付ソートキー(年月日時分秒を1桁ずつパックしたu64)に変換する。
 /// Howard Hinnant の civil_from_days アルゴリズム(days-since-epoch -> 暦日)を使う。7z/tar 共通。
+#[cfg(any(feature = "fmt-7z", feature = "fmt-tar"))]
 pub(crate) fn unix_secs_to_date_key(secs: u64) -> u64 {
     let days = (secs / 86400) as i64;
     let rem = secs % 86400;
@@ -219,10 +230,12 @@ fn collision_name(base: &str, count: usize) -> String {
 mod tests {
     use super::zip::estimate_entry_bytes;
     use super::{
-        decode_image_bytes, estimate_anim_sample_bytes, estimate_archive_memory,
-        estimate_static_decoded_bytes, extract_all_images_7z_path, list_images, load_first_image,
+        estimate_anim_sample_bytes, estimate_archive_memory,
+        estimate_static_decoded_bytes, list_images, load_first_image,
         load_image, select_sample_indices, AnimSampleEstimate, ArchiveMemoryEstimate, EntryEstimate,
     };
+    #[cfg(feature = "fmt-7z")]
+    use super::{decode_image_bytes, extract_all_images_7z_path};
     use std::io::Write;
     use std::path::PathBuf;
 
@@ -269,16 +282,19 @@ mod tests {
         assert_eq!(names, sorted, "display_name がソートされていない");
     }
 
+    #[cfg(feature = "fmt-7z")]
     fn test_7z() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("test/test7z.7z")
     }
 
+    #[cfg(feature = "fmt-7z")]
     #[test]
     fn test_list_images_7z_count() {
         let entries = list_images(&test_7z());
         assert_eq!(entries.len(), 3, "7z画像エントリ数が想定と異なる");
     }
 
+    #[cfg(feature = "fmt-7z")]
     #[test]
     fn test_list_images_7z_sorted_and_named() {
         let entries = list_images(&test_7z());
@@ -289,6 +305,7 @@ mod tests {
         assert!(names.iter().any(|n| n.ends_with(".webp")));
     }
 
+    #[cfg(feature = "fmt-7z")]
     #[test]
     fn test_extract_all_images_7z_decodes_pages() {
         let entries = list_images(&test_7z());
@@ -302,12 +319,14 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "fmt-7z")]
     #[test]
     fn test_load_first_image_7z_returns_some() {
         let img = load_first_image(&test_7z());
         assert!(img.is_some(), "7zの先頭画像の読み込みに失敗");
     }
 
+    #[cfg(feature = "fmt-7z")]
     #[test]
     fn test_estimate_archive_memory_7z_ok_within_budget() {
         // test7z.7z の3画像デコード後合計は約75MB。100MB予算なら収まる。
@@ -316,6 +335,7 @@ mod tests {
         assert_eq!(result, ArchiveMemoryEstimate::Ok);
     }
 
+    #[cfg(feature = "fmt-7z")]
     #[test]
     fn test_estimate_archive_memory_7z_over_budget() {
         // 最大の1枚(4096x3072)だけで約50MB。40MB予算なら単体超過でOverBudget。
