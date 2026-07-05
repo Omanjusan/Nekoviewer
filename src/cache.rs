@@ -111,6 +111,10 @@ fn open_archive_from_disk(path: &std::path::Path) -> Option<OpenArchive> {
             let map = Arc::new(crate::fs::archive::extract_all_images_7z_path(path));
             Some(OpenArchive::Extracted(map))
         }
+        crate::fs::archive::ArchiveFormat::Tar => {
+            let map = Arc::new(crate::fs::archive::extract_all_images_tar_path(path));
+            Some(OpenArchive::Extracted(map))
+        }
         crate::fs::archive::ArchiveFormat::Zip => std::fs::File::open(path)
             .ok()
             .and_then(|f| zip::ZipArchive::new(f).ok())
@@ -737,6 +741,10 @@ pub fn spawn_file_cache_worker(ctx: egui::Context) -> (mpsc::Sender<PathBuf>, mp
             let entry = match crate::fs::archive::detect_format(&path) {
                 crate::fs::archive::ArchiveFormat::SevenZ => {
                     let map = crate::fs::archive::extract_all_images_7z_path(&path);
+                    Some(FileCacheEntry::Extracted(Arc::new(map)))
+                }
+                crate::fs::archive::ArchiveFormat::Tar => {
+                    let map = crate::fs::archive::extract_all_images_tar_path(&path);
                     Some(FileCacheEntry::Extracted(Arc::new(map)))
                 }
                 crate::fs::archive::ArchiveFormat::Zip => {

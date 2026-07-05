@@ -7,12 +7,14 @@ use std::path::Path;
 pub mod decode;
 pub mod detect;
 mod sevenz;
+mod tar;
 mod zip;
 
 // 既存の呼び出し元が使う `crate::fs::archive::NAME` パスを維持するための再エクスポート。
 pub use decode::{decode_image_bytes, estimate_anim_sample_bytes, estimate_static_decoded_bytes, AnimSampleEstimate};
 pub use detect::{detect_format, is_7z_path, is_supported_image_file, ArchiveFormat};
 pub use sevenz::{extract_all_images_7z, extract_all_images_7z_path};
+pub use tar::{extract_all_images_tar, extract_all_images_tar_path};
 pub use zip::{load_bytes_from_archive, load_image, load_image_from_archive};
 
 /// ZIP/CBZ/7z/CB7 内の画像エントリ
@@ -112,30 +114,59 @@ pub fn estimate_archive_memory(
     if entries.is_empty() {
         return ArchiveMemoryEstimate::Ok;
     }
-    if detect::is_7z_path(path) {
-        return sevenz::estimate_archive_memory_7z(path, entries, budget_bytes, ring_bounds);
+    match detect::detect_format(path) {
+        ArchiveFormat::SevenZ => sevenz::estimate_archive_memory_7z(path, entries, budget_bytes, ring_bounds),
+        ArchiveFormat::Tar => tar::estimate_archive_memory_tar(path, entries, budget_bytes, ring_bounds),
+        ArchiveFormat::Zip => zip::estimate_archive_memory_zip(path, entries, budget_bytes, ring_bounds),
     }
-    zip::estimate_archive_memory_zip(path, entries, budget_bytes, ring_bounds)
 }
 
-/// アーカイブ(ZIP/CBZ/7z/CB7)内の全画像をフラット化して返す。
+/// アーカイブ(ZIP/CBZ/7z/CB7/TAR/CBT)内の全画像をフラット化して返す。
 /// ディレクトリ構造を無視し、ファイル名の衝突は "stem_01.ext" 形式で回避する。
 pub fn list_images(path: &Path) -> Vec<ImageEntry> {
-    if detect::is_7z_path(path) {
-        sevenz::list_images_7z(path)
-    } else {
-        zip::list_images_zip(path)
+    match detect::detect_format(path) {
+        ArchiveFormat::SevenZ => sevenz::list_images_7z(path),
+        ArchiveFormat::Tar => tar::list_images_tar(path),
+        ArchiveFormat::Zip => zip::list_images_zip(path),
     }
 }
 
-/// アーカイブ(ZIP/CBZ/7z/CB7)の先頭画像1枚をデコードして返す（サムネイル用）。
+/// アーカイブ(ZIP/CBZ/7z/CB7/TAR/CBT)の先頭画像1枚をデコードして返す（サムネイル用）。
 /// ZIPはまず Local File Header を先頭から順読みして試みる（ネットワーク帯域節約）。
 /// Data Descriptor フラグ等で順読み不可の場合は ZipArchive 経由にフォールバックする。
 pub fn load_first_image(path: &Path) -> Option<image::DynamicImage> {
-    if detect::is_7z_path(path) {
-        return sevenz::load_first_image_7z(path);
+    match detect::detect_format(path) {
+        ArchiveFormat::SevenZ => sevenz::load_first_image_7z(path),
+        ArchiveFormat::Tar => tar::load_first_image_tar(path),
+        ArchiveFormat::Zip => {
+            zip::load_first_image_sequential(path).or_else(|| zip::load_first_image_via_archive(path))
+        }
     }
-    zip::load_first_image_sequential(path).or_else(|| zip::load_first_image_via_archive(path))
+}
+
+/// UNIXエポック秒を、ZIP版と同じ日付ソートキー(年月日時分秒を1桁ずつパックしたu64)に変換する。
+/// Howard Hinnant の civil_from_days アルゴリズム(days-since-epoch -> 暦日)を使う。7z/tar 共通。
+pub(crate) fn unix_secs_to_date_key(secs: u64) -> u64 {
+    let days = (secs / 86400) as i64;
+    let rem = secs % 86400;
+    let (hour, minute, second) = (rem / 3600, (rem % 3600) / 60, rem % 60);
+
+    let z = days + 719468;
+    let era = if z >= 0 { z } else { z - 146096 } / 146097;
+    let doe = (z - era * 146097) as u64; // [0, 146096]
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365; // [0, 399]
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]
+    let mp = (5 * doy + 2) / 153; // [0, 11]
+    let day = doy - (153 * mp + 2) / 5 + 1; // [1, 31]
+    let month = if mp < 10 { mp + 3 } else { mp - 9 }; // [1, 12]
+    let year = if month <= 2 { yoe as i64 + era * 400 + 1 } else { yoe as i64 + era * 400 };
+
+    (year as u64) * 10_000_000_000
+        + month * 100_000_000
+        + day * 1_000_000
+        + hour * 10_000
+        + minute * 100
+        + second
 }
 
 /// (display_name, entry_name, date_key) のペア列から、ソート・衝突回避済みの

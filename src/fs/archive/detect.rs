@@ -27,11 +27,12 @@ pub fn is_supported_image_file(path: &Path) -> bool {
 }
 
 /// アーカイブのコンテナ形式。中身の画像フォーマットではなくアーカイブそのものの種別。
-/// フェーズ2で `Tar` を追加予定。
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ArchiveFormat {
     Zip,
     SevenZ,
+    /// TAR/CBT（raw および gzip 圧縮の tar.gz/tgz）。7z 同様ソリッド扱いで一括展開する。
+    Tar,
 }
 
 const SEVEN_Z_SIGNATURE: [u8; 6] = [0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C];
@@ -41,11 +42,18 @@ const ZIP_SIGNATURES: [[u8; 4]; 3] = [
     [0x50, 0x4B, 0x05, 0x06], // 空アーカイブ
     [0x50, 0x4B, 0x07, 0x08], // 分割/スパンド
 ];
+/// gzip のマジック（tar.gz/tgz 判定用）
+const GZIP_SIGNATURE: [u8; 2] = [0x1F, 0x8B];
+/// POSIX ustar の magic。tar ヘッダの offset 257 に "ustar" が入る。
+const USTAR_OFFSET: usize = 257;
+const USTAR_MAGIC: [u8; 5] = *b"ustar";
+/// tar の1ブロック分。ustar magic(offset 257)まで確実に届くよう先頭ブロックを読む。
+const MAGIC_READ_LEN: usize = 512;
 
-/// ファイル先頭バイトを最大6バイト読む。開けない・空の場合は None。
+/// ファイル先頭バイトを最大 512 バイト読む。開けない・空の場合は None。
 fn read_magic(path: &Path) -> Option<Vec<u8>> {
     let mut f = std::fs::File::open(path).ok()?;
-    let mut buf = [0u8; 6];
+    let mut buf = [0u8; MAGIC_READ_LEN];
     let n = f.read(&mut buf).ok()?;
     if n == 0 {
         return None;
@@ -61,19 +69,36 @@ fn detect_by_magic(buf: &[u8]) -> Option<ArchiveFormat> {
     if buf.len() >= 4 && ZIP_SIGNATURES.iter().any(|sig| &buf[..4] == sig) {
         return Some(ArchiveFormat::Zip);
     }
+    // gzip はこのアプリの文脈では tar.gz とみなす（単体 .gz は非対応スコープ）。
+    if buf.len() >= GZIP_SIGNATURE.len() && buf[..GZIP_SIGNATURE.len()] == GZIP_SIGNATURE {
+        return Some(ArchiveFormat::Tar);
+    }
+    // raw tar は先頭マジックを持たず、offset 257 に ustar magic がある。
+    if buf.len() >= USTAR_OFFSET + USTAR_MAGIC.len()
+        && buf[USTAR_OFFSET..USTAR_OFFSET + USTAR_MAGIC.len()] == USTAR_MAGIC
+    {
+        return Some(ArchiveFormat::Tar);
+    }
     None
 }
 
+/// ファイル名の小文字サフィックスがいずれかに一致するか。
+fn name_ends_with_any(path: &Path, suffixes: &[&str]) -> bool {
+    let name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map(|s| s.to_ascii_lowercase())
+        .unwrap_or_default();
+    suffixes.iter().any(|s| name.ends_with(s))
+}
+
 /// 拡張子からアーカイブ形式を推定する（マジック判定不能時のフォールバック）。
-/// 7z/cb7 のみ SevenZ、それ以外は Zip とみなす（従来の既定動作）。
+/// 7z/cb7 → SevenZ、tar系 → Tar、それ以外は Zip とみなす（従来の既定動作）。
 fn detect_by_ext(path: &Path) -> ArchiveFormat {
-    let is_7z = path
-        .extension()
-        .and_then(|e| e.to_str())
-        .map(|e| e.eq_ignore_ascii_case("7z") || e.eq_ignore_ascii_case("cb7"))
-        .unwrap_or(false);
-    if is_7z {
+    if name_ends_with_any(path, &[".7z", ".cb7"]) {
         ArchiveFormat::SevenZ
+    } else if name_ends_with_any(path, &[".tar", ".cbt", ".tar.gz", ".tgz"]) {
+        ArchiveFormat::Tar
     } else {
         ArchiveFormat::Zip
     }
@@ -211,8 +236,14 @@ mod tests {
         assert_eq!(detect_by_magic(&SEVEN_Z_SIGNATURE), Some(ArchiveFormat::SevenZ));
         assert_eq!(detect_by_magic(b"PK\x03\x04rest"), Some(ArchiveFormat::Zip));
         assert_eq!(detect_by_magic(b"PK\x05\x06"), Some(ArchiveFormat::Zip));
+        assert_eq!(detect_by_magic(b"\x1f\x8b\x08rest"), Some(ArchiveFormat::Tar)); // gzip(tar.gz)
         assert_eq!(detect_by_magic(b"\xff\xd8\xff\xe0jpeg"), None); // JPEG等は非アーカイブ
         assert_eq!(detect_by_magic(b"PK"), None); // 短すぎるものは判別不能
+
+        // raw tar: offset 257 に ustar magic
+        let mut tar_head = vec![0u8; 512];
+        tar_head[USTAR_OFFSET..USTAR_OFFSET + USTAR_MAGIC.len()].copy_from_slice(&USTAR_MAGIC);
+        assert_eq!(detect_by_magic(&tar_head), Some(ArchiveFormat::Tar));
     }
 
     /// マジックバイトが拡張子より優先されること（.cbz偽装等への対応）を確認する。
@@ -249,7 +280,15 @@ mod tests {
         let unknown_cbz = write_temp("data.cbz", b"not-an-archive-header");
         assert_eq!(detect_format(&unknown_cbz), ArchiveFormat::Zip);
 
+        // マジックを持たない古い tar / .cbt は拡張子で Tar 判定
+        let unknown_tar = write_temp("data.tar", b"short-header");
+        assert_eq!(detect_format(&unknown_tar), ArchiveFormat::Tar);
+        let unknown_cbt = write_temp("data.cbt", b"short-header");
+        assert_eq!(detect_format(&unknown_cbt), ArchiveFormat::Tar);
+
         std::fs::remove_file(&unknown_7z).ok();
         std::fs::remove_file(&unknown_cbz).ok();
+        std::fs::remove_file(&unknown_tar).ok();
+        std::fs::remove_file(&unknown_cbt).ok();
     }
 }
