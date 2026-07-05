@@ -76,11 +76,6 @@ impl SpreadOffset {
         self.state = SpreadDisplayState::VirtualLeft;
     }
 
-    /// End: +1ずれ状態へ直接遷移する（advance/retreatの境界ガードをバイパス）
-    pub fn force_shifted_one(&mut self) {
-        self.state = SpreadDisplayState::ShiftedOne;
-    }
-
     /// viewer が毎フレーム末尾仮想フラグを更新する
     /// hi側ページ（lo+1）が存在しないときに true を渡す
     pub fn update_virtual_right(&mut self, at_end: bool) {

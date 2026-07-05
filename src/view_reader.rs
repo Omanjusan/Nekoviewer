@@ -15,6 +15,9 @@ use crate::spread_offset::SpreadOffset;
 
 const SCROLL_THRESHOLD: f32 = 50.0;
 const ANIM_SECS: f32 = 0.4;
+/// サムネイルバー: 現在ページを中心にこの枚数分だけ先取り要求する（暫定固定値）。
+/// フェーズ2で実際の可視範囲ベースに置き換え予定。
+const THUMBBAR_ENQUEUE_WINDOW: i32 = 40;
 const FULL_UV: egui::Rect =
     egui::Rect { min: egui::pos2(0.0, 0.0), max: egui::pos2(1.0, 1.0) };
 
@@ -242,6 +245,10 @@ pub struct ViewerState {
     /// クリップ矩形サイズが不安定な瞬間に delta が収束せず request_repaint が
     /// 連打され続ける恐れがあるため）。
     thumbbar_scrolled_lo: Option<i32>,
+    /// フェーズ2: 直近フレームで実描画したサムネイルバーの可視インデックス範囲
+    /// (原始インデックス、両端含む)。enqueue の優先範囲としても使う。
+    /// None の間は仮想化描画がまだ一度も走っていない（起動直後の1フレーム分）。
+    thumbbar_visible_range: Option<(i32, i32)>,
 }
 
 impl ViewerState {
@@ -262,10 +269,25 @@ impl ViewerState {
             .collect()
     }
 
-    /// サムネイルバー用: まだテクスチャが無く、要求も出していない original_index 一覧。
+    /// サムネイルバー用: 現在ページ近傍でまだテクスチャが無く、要求も出していない
+    /// original_index 一覧。開いた直後や大きくジャンプした直後に全ページ分を一括で
+    /// キューへ積まないよう、直近フレームで実描画した可視範囲(`thumbbar_visible_range`)
+    /// に絞る。まだ一度も描画されていない最初のフレームは `THUMBBAR_ENQUEUE_WINDOW`
+    /// を暫定の窓として使う。
     pub fn thumbbar_missing_indices(&self) -> Vec<usize> {
-        self.entries.iter()
-            .map(|e| e.original_index)
+        let lo = self.spread_lo();
+        let total = self.entries.len() as i32;
+        let (win_lo, win_hi) = self.thumbbar_visible_range.unwrap_or((
+            lo - THUMBBAR_ENQUEUE_WINDOW,
+            lo + THUMBBAR_ENQUEUE_WINDOW,
+        ));
+        let win_lo = win_lo.max(0);
+        let win_hi = win_hi.min(total - 1);
+        if win_lo > win_hi {
+            return Vec::new();
+        }
+        (win_lo..=win_hi)
+            .map(|i| self.entries[i as usize].original_index)
             .filter(|i| !self.thumb_textures.contains_key(i) && !self.thumb_pending.contains(i))
             .collect()
     }
@@ -365,6 +387,7 @@ impl ViewerState {
             thumb_pending: HashSet::new(),
             thumbbar_last_activity: Instant::now(),
             thumbbar_scrolled_lo: None,
+            thumbbar_visible_range: None,
         })
     }
 
@@ -412,6 +435,7 @@ impl ViewerState {
             thumb_pending: HashSet::new(),
             thumbbar_last_activity: Instant::now(),
             thumbbar_scrolled_lo: None,
+            thumbbar_visible_range: None,
         }
     }
 
@@ -866,7 +890,11 @@ impl ViewerState {
             self.shift_scroll_acc = 0.0;
             self.spread_base = 0;
             if is_spread {
-                self.offset.force_virtual_left();
+                // オフセットは維持する。ただし維持したままだと先頭実ページ(0)が
+                // 欠落してしまう場合（ShiftedOne等）だけ、仮想左側に倒して補正する。
+                if self.spread_lo() > 0 {
+                    self.offset.force_virtual_left();
+                }
             } else {
                 self.offset.reset();
             }
@@ -876,12 +904,12 @@ impl ViewerState {
             self.scroll_acc = 0.0;
             self.shift_scroll_acc = 0.0;
             if is_spread {
-                self.spread_base = (total_i - 1).max(0) & !1;
-                if self.spread_base + 1 < total_i {
-                    self.offset.force_shifted_one();
-                } else {
-                    self.offset.reset();
-                }
+                // オフセットは維持する。通常のページ送りを限界までやった時と同じ
+                // spread_base（offsetを保ったまま到達できる最大値）を直接計算する。
+                let off = self.offset.value();
+                let target = total_i - 1 - off;
+                let k = if target >= 0 { target / step } else { 0 };
+                self.spread_base = (k * step).max(0);
             } else {
                 self.spread_base = (total_i - 1).max(0);
                 self.offset.reset();
@@ -1037,10 +1065,18 @@ impl ViewerState {
 
     /// サムネイルバーの中身。指定 Ui の領域いっぱいにスクロール可能な帯としてサムネを並べ、
     /// 現在地(見開きなら2枚)に半透明ボックスを重ねる。
+    /// フェーズ2: ページ数が多いアーカイブでも重くならないよう、可視範囲＋マージン分だけ
+    /// 実際にレイアウト・描画する（仮想化）。可視範囲は `thumbbar_visible_range` に記録し、
+    /// enqueue（サムネ生成要求）の優先範囲としても使う。
     fn draw_thumbbar_contents(&mut self, ui: &mut egui::Ui, cfg: &ViewerConfig, horizontal: bool) {
+        const MARGIN_ITEMS: i32 = 8;
         let edge = cfg.thumbbar_thumb_size as f32;
+        let spacing = ui.spacing().item_spacing;
+        let spacing_axis = if horizontal { spacing.x } else { spacing.y };
+        let step = edge + spacing_axis;
         let lo = self.spread_lo();
         let hi = if self.page_mode == PageMode::Single { lo } else { lo + 1 };
+        let total = self.entries.len() as i32;
         let marker = egui::Color32::from_rgba_unmultiplied(
             cfg.thumbbar_marker_r,
             cfg.thumbbar_marker_g,
@@ -1048,45 +1084,89 @@ impl ViewerState {
             (cfg.thumbbar_marker_a as f32 / 100.0 * 255.0).round() as u8,
         );
 
+        // 現在地が仮想ページ(-1 or total)にはみ出している場合、サムネバー側にも
+        // その仮想ページ用のスロットを1枠追加する（現在地マーカーを実ページ単独では
+        // なく本来の見開きペアとして表示するため）。仮想ページは常に先頭(-1)か
+        // 末尾(total)のどちらか片方にしか出ないので、両方同時に足す必要はない。
+        let virtual_left = self.page_mode != PageMode::Single && lo == -1;
+        let virtual_right = self.page_mode != PageMode::Single && hi == total;
+        let base = if virtual_left { 1 } else { 0 };
+        let slot_count = total + base + if virtual_right { 1 } else { 0 };
+
         egui::ScrollArea::new([horizontal, !horizontal])
             .id_salt("thumbbar_scroll")
             .auto_shrink([false, false])
-            .show(ui, |ui| {
-                let layout = if horizontal {
-                    egui::Layout::left_to_right(egui::Align::Center)
+            .show_viewport(ui, |ui, viewport| {
+                if slot_count <= 0 {
+                    self.thumbbar_visible_range = Some((0, -1));
+                    return;
+                }
+                let content_len = (slot_count as f32 * step - spacing_axis).max(0.0);
+                if horizontal {
+                    ui.set_width(content_len);
                 } else {
-                    egui::Layout::top_down(egui::Align::Min)
+                    ui.set_height(content_len);
+                }
+
+                let (view_min, view_max) = if horizontal {
+                    (viewport.min.x, viewport.max.x)
+                } else {
+                    (viewport.min.y, viewport.max.y)
                 };
-                ui.with_layout(layout, |ui| {
-                    let mut current_rect: Option<egui::Rect> = None;
-                    for (i, entry) in self.entries.iter().enumerate() {
-                        let orig = entry.original_index;
-                        let (rect, _resp) = ui.allocate_exact_size(egui::vec2(edge, edge), egui::Sense::hover());
-                        if let Some(tex) = self.thumb_texture(orig) {
-                            let fit = fit_rect_contain(rect, tex.size_vec2());
-                            ui.painter().image(tex.id(), fit, FULL_UV, egui::Color32::WHITE);
+                let first = ((view_min / step).floor() as i32 - MARGIN_ITEMS).max(0);
+                let last = ((view_max / step).ceil() as i32 + MARGIN_ITEMS).min(slot_count - 1);
+                // enqueue優先範囲は実ページのみを対象にするため、仮想スロット分は除いて記録する。
+                self.thumbbar_visible_range = Some(((first - base).max(0), (last - base).min(total - 1)));
+
+                let origin = ui.max_rect().min;
+                let item_rect = |s: i32| -> egui::Rect {
+                    let offset = s as f32 * step;
+                    if horizontal {
+                        egui::Rect::from_min_size(origin + egui::vec2(offset, 0.0), egui::vec2(edge, edge))
+                    } else {
+                        egui::Rect::from_min_size(origin + egui::vec2(0.0, offset), egui::vec2(edge, edge))
+                    }
+                };
+
+                let mut current_rect: Option<egui::Rect> = None;
+                if first <= last {
+                    for s in first..=last {
+                        let page = s - base;
+                        let rect = item_rect(s);
+                        if page < 0 || page >= total {
+                            // 仮想ページ: メイン表示側の空白カードと同じ色のダミーを描く。
+                            ui.painter().rect_filled(rect, 3.0, egui::Color32::from_gray(40));
                         } else {
-                            ui.painter().rect_filled(rect, 3.0, egui::Color32::from_gray(60));
+                            let orig = self.entries[page as usize].original_index;
+                            if let Some(tex) = self.thumb_texture(orig) {
+                                let fit = fit_rect_contain(rect, tex.size_vec2());
+                                ui.painter().image(tex.id(), fit, FULL_UV, egui::Color32::WHITE);
+                            } else {
+                                ui.painter().rect_filled(rect, 3.0, egui::Color32::from_gray(60));
+                            }
                         }
-                        let is_current = i as i32 == lo || i as i32 == hi;
+                        let is_current = page == lo || page == hi;
                         if is_current {
                             ui.painter().rect_filled(rect, 3.0, marker);
                             current_rect = Some(current_rect.map_or(rect, |r| r.union(rect)));
                         }
                     }
-                    // 見開きは2枚分の範囲をまとめて1回だけセンタリングする（現在地は動かさず、
-                    // サムネの方をスクロールさせる）。先頭/終端付近では egui が自動的に
-                    // クランプするため、そこだけマーカーが中央から端へ寄る（仕様通りの挙動）。
-                    // ページが実際に変わった時だけ呼ぶ（毎フレーム呼ぶと、リサイズ直後など
-                    // クリップ矩形が安定しない間 delta が収束せず request_repaint が連打され
-                    // 続けるおそれがあるため。フルスクリーン切替直後の操作停滞の一因だった）。
-                    if let Some(r) = current_rect {
-                        if self.thumbbar_scrolled_lo != Some(lo) {
-                            ui.scroll_to_rect(r, Some(egui::Align::Center));
-                            self.thumbbar_scrolled_lo = Some(lo);
-                        }
-                    }
-                });
+                }
+                // 現在地(lo/hi)が可視範囲外（マージンの外）でも、位置計算だけで
+                // scroll_to_rect の対象矩形を求める。見開きは2枚分の範囲をまとめて
+                // 1回だけセンタリングする（現在地は動かさず、サムネの方をスクロールさせる）。
+                // ページが実際に変わった時だけ呼ぶ（毎フレーム呼ぶと、リサイズ直後など
+                // クリップ矩形が安定しない間 delta が収束せず request_repaint が連打され
+                // 続けるおそれがあるため。フルスクリーン切替直後の操作停滞の一因だった）。
+                if self.thumbbar_scrolled_lo != Some(lo) {
+                    let r = current_rect.unwrap_or_else(|| {
+                        let lo_s = (lo + base).clamp(0, slot_count - 1);
+                        let hi_s = (hi + base).clamp(0, slot_count - 1);
+                        item_rect(lo_s).union(item_rect(hi_s))
+                    });
+                    ui.scroll_to_rect(r, Some(egui::Align::Center));
+                    self.thumbbar_scrolled_lo = Some(lo);
+                }
             });
     }
 
@@ -1291,8 +1371,11 @@ impl ViewerState {
         }
 
         if self.entry_list_visible {
-            let current_lo = self.spread_lo().max(0) as usize;
+            // 仮想ページ(-1 or total)を握りつぶさないよう、クランプ前の生の lo/hi で
+            // ペア判定してから、実ページ範囲内のものだけハイライトする。
+            let lo = self.spread_lo();
             let is_spread = self.page_mode != PageMode::Single;
+            let hi = if is_spread { lo + 1 } else { lo };
             let entries_snap = self.entries.clone();
 
             egui::Panel::left("entry_list_panel")
@@ -1302,10 +1385,9 @@ impl ViewerState {
                     egui::ScrollArea::vertical()
                         .auto_shrink([false, false])
                         .show(ui, |ui| {
-                            let total = entries_snap.len();
                             for (i, entry) in entries_snap.iter().enumerate() {
-                                let is_cur = i == current_lo
-                                    || (is_spread && current_lo + 1 < total && i == current_lo + 1);
+                                let i = i as i32;
+                                let is_cur = i == lo || i == hi;
                                 let _ = ui.selectable_label(is_cur, &entry.display_name);
                             }
                         });
