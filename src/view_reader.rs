@@ -57,6 +57,8 @@ struct FrameInput {
     shift5: bool,
     shift_nav_up: bool,
     shift_nav_down: bool,
+    key_home: bool,
+    key_end: bool,
     slot_apply: Option<usize>,
     // スクロール
     scroll_delta: f32,
@@ -110,6 +112,8 @@ impl FrameInput {
                 shift5:             i.key_pressed(egui::Key::Num5),
                 shift_nav_up:       i.key_pressed(egui::Key::ArrowUp)   && sh,
                 shift_nav_down:     i.key_pressed(egui::Key::ArrowDown) && sh,
+                key_home:           i.key_pressed(egui::Key::Home),
+                key_end:            i.key_pressed(egui::Key::End),
                 slot_apply,
                 scroll_delta:       raw,
                 shift_scroll_delta: if sh { raw } else { 0.0 },
@@ -579,7 +583,7 @@ impl ViewerState {
 
         // サムネイルバー自動非表示用: ページ送りに関わる入力があった時刻を記録する。
         if key_left || key_right || key_up || key_down || key_space
-            || shift_nav_up || shift_nav_down
+            || shift_nav_up || shift_nav_down || input.key_home || input.key_end
             || scroll_delta != 0.0 || shift_scroll_delta != 0.0
         {
             self.thumbbar_last_activity = Instant::now();
@@ -587,16 +591,16 @@ impl ViewerState {
 
         if key_left || key_right || key_up || key_down || key_space || esc || zoom_key || fs_key
             || mode1 || mode2 || mode3 || shift4 || shift5
-            || shift_nav_up || shift_nav_down
+            || shift_nav_up || shift_nav_down || input.key_home || input.key_end
             || scroll_delta != 0.0 || shift_scroll_delta != 0.0
         {
             log_key!(
                 "[key] left={} right={} up={} down={} space={} esc={} zoom={} fs={} \
                  mode1={} mode2={} mode3={} shift4={} shift5={} \
-                 shift_nav_up={} shift_nav_down={} scroll={:.1} shift_scroll={:.1}",
+                 shift_nav_up={} shift_nav_down={} home={} end={} scroll={:.1} shift_scroll={:.1}",
                 key_left, key_right, key_up, key_down, key_space, esc, zoom_key, fs_key,
                 mode1, mode2, mode3, shift4, shift5,
-                shift_nav_up, shift_nav_down, scroll_delta, shift_scroll_delta
+                shift_nav_up, shift_nav_down, input.key_home, input.key_end, scroll_delta, shift_scroll_delta
             );
         }
 
@@ -852,6 +856,37 @@ impl ViewerState {
             if shift_inc { self.shift_offset_forward(); }
             if shift_dec { self.shift_offset_backward(); }
             self.offset.update_virtual_right(self.spread_lo() + 1 >= total_i);
+        }
+
+        // ── Home/End: アーカイブ内先頭/末尾へ絶対ジャンプ ────────────────────
+        // 通常のページ送りを限界まで行った状態と同じ内部状態を再現する
+        // （以降の戻る/進む操作が通常ナビゲーションと同様に振る舞うように）。
+        if input.key_home {
+            self.scroll_acc = 0.0;
+            self.shift_scroll_acc = 0.0;
+            self.spread_base = 0;
+            if is_spread {
+                self.offset.force_virtual_left();
+            } else {
+                self.offset.reset();
+            }
+            self.offset.update_virtual_right(is_spread && self.spread_lo() + 1 >= total_i);
+        }
+        if input.key_end {
+            self.scroll_acc = 0.0;
+            self.shift_scroll_acc = 0.0;
+            if is_spread {
+                self.spread_base = (total_i - 1).max(0) & !1;
+                if self.spread_base + 1 < total_i {
+                    self.offset.force_shifted_one();
+                } else {
+                    self.offset.reset();
+                }
+            } else {
+                self.spread_base = (total_i - 1).max(0);
+                self.offset.reset();
+            }
+            self.offset.update_virtual_right(is_spread && self.spread_lo() + 1 >= total_i);
         }
 
         nav
