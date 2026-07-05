@@ -309,8 +309,7 @@ fn load_raw_content_from_bytes(buf: &[u8], path: &std::path::Path, filter: image
         return Some(c);
     }
 
-    let display_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-    let img = crate::fs::archive::decode_image_bytes(buf, display_name)?;
+    let img = crate::fs::archive::decode_image_bytes(buf)?;
     Some(PageContent::Static(resize_for_display(img, filter, target_size)))
 }
 
@@ -346,7 +345,7 @@ fn decode_bytes_to_content(
         return Some(c);
     }
 
-    let img = crate::fs::archive::decode_image_bytes(buf, entry_name)?;
+    let img = crate::fs::archive::decode_image_bytes(buf)?;
     Some(PageContent::Static(resize_for_display(img, filter, target_size)))
 }
 
@@ -938,11 +937,7 @@ fn resolve_thumb(req: &ThumbRequest, filter: image::imageops::FilterType) -> Opt
     // キャッシュミス: 元ファイルから生成
     let rgba = if req.is_raw_file {
         let buf = std::fs::read(&req.archive_path).ok()?;
-        let display_name = req.archive_path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("");
-        let img = crate::fs::archive::decode_image_bytes(&buf, display_name)?;
+        let img = crate::fs::archive::decode_image_bytes(&buf)?;
         resize_thumbnail(img, filter)
     } else {
         let t_total = std::time::Instant::now();

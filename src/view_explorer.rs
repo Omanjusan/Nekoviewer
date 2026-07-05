@@ -208,6 +208,10 @@ pub struct NekoviewApp {
     raw_image_files: std::collections::HashSet<PathBuf>,
     /// 無効確定済みZIP（画像エントリなし）のセット（現ディレクトリセッション中に保持）
     invalid_archives: std::collections::HashSet<PathBuf>,
+    /// サムネイル生成に失敗したファイルのセット（DB非永続・セッション中のみ。
+    /// 無限リトライを止めるためのマーカーで、invalid_archives とは異なり
+    /// 次回スキャンでの一覧除外は行わない）
+    thumb_failed: std::collections::HashSet<PathBuf>,
     /// アプリレベルのトーストメッセージ（3秒で自動消去）
     app_toast: Option<(String, std::time::Instant)>,
     /// フェーズ2: ページキャッシュ予算（見積もりゲートの閾値。resolve_cache_budgetsのpage_max）
@@ -330,6 +334,7 @@ impl NekoviewApp {
             viewer_slots,
             raw_image_files: std::collections::HashSet::new(),
             invalid_archives: std::collections::HashSet::new(),
+            thumb_failed: std::collections::HashSet::new(),
             app_toast: None,
             cache_budget_bytes: cache_max,
             anim_ring_bounds: ring_bounds,
@@ -378,6 +383,7 @@ impl NekoviewApp {
         self.filtered_indices.clear();
         self.raw_image_files.clear();
         self.invalid_archives.clear();
+        self.thumb_failed.clear();
         self.cache_db = neko_dir::neko_dir_for(&self.current_dir, &self.config)
             .and_then(|nd| neko_dir::open_cache_db(&nd));
         self.thumbnails.clear();
@@ -783,11 +789,16 @@ impl NekoviewApp {
             std::iter::from_fn(|| self.thumb_res_rx.try_recv().ok()).collect();
         for result in thumb_results {
             self.thumb_pending.remove(&result.path);
-            if let Some(rgba) = result.rgba {
-                if self.archives.contains(&result.path) {
-                    let name = result.path.display().to_string();
-                    let tex = upload_texture(ctx, &name, &rgba);
-                    self.thumbnails.insert(result.path, tex);
+            match result.rgba {
+                Some(rgba) => {
+                    if self.archives.contains(&result.path) {
+                        let name = result.path.display().to_string();
+                        let tex = upload_texture(ctx, &name, &rgba);
+                        self.thumbnails.insert(result.path, tex);
+                    }
+                }
+                None => {
+                    self.thumb_failed.insert(result.path);
                 }
             }
         }
@@ -1502,7 +1513,7 @@ impl NekoviewApp {
                                     4.0,
                                     egui::Color32::from_gray(60),
                                 );
-                                if !self.thumb_pending.contains(path) {
+                                if !self.thumb_pending.contains(path) && !self.thumb_failed.contains(path) {
                                     if self.thumb_req_tx.try_send(ThumbRequest {
                                         archive_path: path.clone(),
                                         db: self.cache_db.clone(),
@@ -1513,8 +1524,9 @@ impl NekoviewApp {
                                 }
                             }
 
-                            // 無効ZIPは左上に赤Xを描画
-                            if self.invalid_archives.contains(path) {
+                            // 無効ZIP・サムネデコード失敗は左上に赤Xを描画
+                            let thumb_failed = self.thumb_failed.contains(path);
+                            if self.invalid_archives.contains(path) || thumb_failed {
                                 let x_size = 16.0;
                                 let origin = rect.min + egui::vec2(4.0, 4.0);
                                 let end = origin + egui::vec2(x_size, x_size);
@@ -1524,6 +1536,10 @@ impl NekoviewApp {
                                     [egui::pos2(end.x, origin.y), egui::pos2(origin.x, end.y)],
                                     stroke,
                                 );
+                            }
+                            if thumb_failed {
+                                let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("?");
+                                response.clone().on_hover_text(format!("{ext}デコード失敗"));
                             }
 
                             // 選択中アイテムを枠で囲む（生ファイルは赤、ZIPは青）
