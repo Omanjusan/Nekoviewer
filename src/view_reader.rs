@@ -890,7 +890,11 @@ impl ViewerState {
             self.shift_scroll_acc = 0.0;
             self.spread_base = 0;
             if is_spread {
-                self.offset.force_virtual_left();
+                // オフセットは維持する。ただし維持したままだと先頭実ページ(0)が
+                // 欠落してしまう場合（ShiftedOne等）だけ、仮想左側に倒して補正する。
+                if self.spread_lo() > 0 {
+                    self.offset.force_virtual_left();
+                }
             } else {
                 self.offset.reset();
             }
@@ -900,12 +904,12 @@ impl ViewerState {
             self.scroll_acc = 0.0;
             self.shift_scroll_acc = 0.0;
             if is_spread {
-                self.spread_base = (total_i - 1).max(0) & !1;
-                if self.spread_base + 1 < total_i {
-                    self.offset.force_shifted_one();
-                } else {
-                    self.offset.reset();
-                }
+                // オフセットは維持する。通常のページ送りを限界までやった時と同じ
+                // spread_base（offsetを保ったまま到達できる最大値）を直接計算する。
+                let off = self.offset.value();
+                let target = total_i - 1 - off;
+                let k = if target >= 0 { target / step } else { 0 };
+                self.spread_base = (k * step).max(0);
             } else {
                 self.spread_base = (total_i - 1).max(0);
                 self.offset.reset();
@@ -1080,15 +1084,24 @@ impl ViewerState {
             (cfg.thumbbar_marker_a as f32 / 100.0 * 255.0).round() as u8,
         );
 
+        // 現在地が仮想ページ(-1 or total)にはみ出している場合、サムネバー側にも
+        // その仮想ページ用のスロットを1枠追加する（現在地マーカーを実ページ単独では
+        // なく本来の見開きペアとして表示するため）。仮想ページは常に先頭(-1)か
+        // 末尾(total)のどちらか片方にしか出ないので、両方同時に足す必要はない。
+        let virtual_left = self.page_mode != PageMode::Single && lo == -1;
+        let virtual_right = self.page_mode != PageMode::Single && hi == total;
+        let base = if virtual_left { 1 } else { 0 };
+        let slot_count = total + base + if virtual_right { 1 } else { 0 };
+
         egui::ScrollArea::new([horizontal, !horizontal])
             .id_salt("thumbbar_scroll")
             .auto_shrink([false, false])
             .show_viewport(ui, |ui, viewport| {
-                if total <= 0 {
+                if slot_count <= 0 {
                     self.thumbbar_visible_range = Some((0, -1));
                     return;
                 }
-                let content_len = (total as f32 * step - spacing_axis).max(0.0);
+                let content_len = (slot_count as f32 * step - spacing_axis).max(0.0);
                 if horizontal {
                     ui.set_width(content_len);
                 } else {
@@ -1101,12 +1114,13 @@ impl ViewerState {
                     (viewport.min.y, viewport.max.y)
                 };
                 let first = ((view_min / step).floor() as i32 - MARGIN_ITEMS).max(0);
-                let last = ((view_max / step).ceil() as i32 + MARGIN_ITEMS).min(total - 1);
-                self.thumbbar_visible_range = Some((first, last));
+                let last = ((view_max / step).ceil() as i32 + MARGIN_ITEMS).min(slot_count - 1);
+                // enqueue優先範囲は実ページのみを対象にするため、仮想スロット分は除いて記録する。
+                self.thumbbar_visible_range = Some(((first - base).max(0), (last - base).min(total - 1)));
 
                 let origin = ui.max_rect().min;
-                let item_rect = |i: i32| -> egui::Rect {
-                    let offset = i as f32 * step;
+                let item_rect = |s: i32| -> egui::Rect {
+                    let offset = s as f32 * step;
                     if horizontal {
                         egui::Rect::from_min_size(origin + egui::vec2(offset, 0.0), egui::vec2(edge, edge))
                     } else {
@@ -1116,16 +1130,22 @@ impl ViewerState {
 
                 let mut current_rect: Option<egui::Rect> = None;
                 if first <= last {
-                    for i in first..=last {
-                        let orig = self.entries[i as usize].original_index;
-                        let rect = item_rect(i);
-                        if let Some(tex) = self.thumb_texture(orig) {
-                            let fit = fit_rect_contain(rect, tex.size_vec2());
-                            ui.painter().image(tex.id(), fit, FULL_UV, egui::Color32::WHITE);
+                    for s in first..=last {
+                        let page = s - base;
+                        let rect = item_rect(s);
+                        if page < 0 || page >= total {
+                            // 仮想ページ: メイン表示側の空白カードと同じ色のダミーを描く。
+                            ui.painter().rect_filled(rect, 3.0, egui::Color32::from_gray(40));
                         } else {
-                            ui.painter().rect_filled(rect, 3.0, egui::Color32::from_gray(60));
+                            let orig = self.entries[page as usize].original_index;
+                            if let Some(tex) = self.thumb_texture(orig) {
+                                let fit = fit_rect_contain(rect, tex.size_vec2());
+                                ui.painter().image(tex.id(), fit, FULL_UV, egui::Color32::WHITE);
+                            } else {
+                                ui.painter().rect_filled(rect, 3.0, egui::Color32::from_gray(60));
+                            }
                         }
-                        let is_current = i == lo || i == hi;
+                        let is_current = page == lo || page == hi;
                         if is_current {
                             ui.painter().rect_filled(rect, 3.0, marker);
                             current_rect = Some(current_rect.map_or(rect, |r| r.union(rect)));
@@ -1140,9 +1160,9 @@ impl ViewerState {
                 // 続けるおそれがあるため。フルスクリーン切替直後の操作停滞の一因だった）。
                 if self.thumbbar_scrolled_lo != Some(lo) {
                     let r = current_rect.unwrap_or_else(|| {
-                        let lo_c = lo.clamp(0, total - 1);
-                        let hi_c = hi.clamp(0, total - 1);
-                        item_rect(lo_c).union(item_rect(hi_c))
+                        let lo_s = (lo + base).clamp(0, slot_count - 1);
+                        let hi_s = (hi + base).clamp(0, slot_count - 1);
+                        item_rect(lo_s).union(item_rect(hi_s))
                     });
                     ui.scroll_to_rect(r, Some(egui::Align::Center));
                     self.thumbbar_scrolled_lo = Some(lo);
