@@ -672,7 +672,14 @@ impl ViewerState {
             zoom_actual: cfg.zoom_actual,
             monitor:     input.monitor_size,
         };
-        let double_clicked = self.draw_central_panel(ui, &frame);
+        let (double_clicked, single_clicked) = self.draw_central_panel(ui, &frame);
+
+        // メイン画像シングルクリックでサムネバーの自動非表示タイマーを早送りし、即座に隠す。
+        // idle_hide_ms == 0（常時表示設定）のときは早送り対象のタイマー自体が存在しないため何もしない。
+        if single_clicked && idle_ms > 0 {
+            self.thumbbar_last_activity = Instant::now() - Duration::from_millis(idle_ms);
+            ctx.request_repaint();
+        }
 
         if show_thumbbar && cfg.thumbbar_overlap {
             self.draw_thumbbar_overlay(ui, cfg, cfg.thumbbar_pos, viewport_before_central);
@@ -920,8 +927,9 @@ impl ViewerState {
         nav
     }
 
-    fn draw_central_panel(&mut self, ui: &mut egui::Ui, frame: &RenderFrame) -> bool {
+    fn draw_central_panel(&mut self, ui: &mut egui::Ui, frame: &RenderFrame) -> (bool, bool) {
         let mut double_clicked = false;
+        let mut single_clicked = false;
         egui::CentralPanel::default().show(ui, |ui| {
             let clip   = ui.clip_rect();
             let avail  = ui.available_size();
@@ -931,13 +939,13 @@ impl ViewerState {
                 // ── 通常レンダリング ──────────────────────────────────────────
                 match frame.page_mode {
                     PageMode::Single => {
-                        self.render_single(ui, &frame.tex_lo, frame.zoom_actual, &mut double_clicked);
+                        self.render_single(ui, &frame.tex_lo, frame.zoom_actual, &mut double_clicked, &mut single_clicked);
                     }
                     PageMode::SpreadLeft => {
-                        Self::render_spread(ui, &frame.tex_lo, &frame.tex_hi, frame.monitor);
+                        Self::render_spread(ui, &frame.tex_lo, &frame.tex_hi, frame.monitor, &mut single_clicked);
                     }
                     PageMode::SpreadRight => {
-                        Self::render_spread(ui, &frame.tex_hi, &frame.tex_lo, frame.monitor);
+                        Self::render_spread(ui, &frame.tex_hi, &frame.tex_lo, frame.monitor, &mut single_clicked);
                     }
                 }
             } else {
@@ -945,6 +953,7 @@ impl ViewerState {
                 let full_rect = egui::Rect::from_min_size(origin, avail);
                 let resp = ui.allocate_rect(full_rect, egui::Sense::click());
                 if resp.double_clicked() { double_clicked = true; }
+                if resp.clicked() && !resp.double_clicked() { single_clicked = true; }
 
                 let painter = ui.painter().with_clip_rect(clip);
                 let off_old = avail.x * frame.t * (-frame.anim_dir_f);
@@ -1004,7 +1013,7 @@ impl ViewerState {
                 p.galley(bg_pos + pad, tg, egui::Color32::WHITE);
             }
         });
-        double_clicked
+        (double_clicked, single_clicked)
     }
 
     /// サムネイルバー: 本画像の領域を圧迫する形（配置に応じて Panel で領域確保）。
@@ -1149,6 +1158,23 @@ impl ViewerState {
                         if is_current {
                             ui.painter().rect_filled(rect, 3.0, marker);
                             current_rect = Some(current_rect.map_or(rect, |r| r.union(rect)));
+                        }
+                        if page >= 0 && page < total {
+                            // ページ番号(1-indexed)。ドロップシャドウは右下ページ数オーバーレイと同じ手法。
+                            let font_size = (edge * 0.22).clamp(9.0, 20.0);
+                            let font_id = egui::FontId::proportional(font_size);
+                            let text_color = egui::Color32::WHITE;
+                            let shadow_color = egui::Color32::from_black_alpha(180);
+                            let galley = ui.painter().layout_no_wrap((page + 1).to_string(), font_id, text_color);
+                            let text_pos = egui::pos2(rect.left() + 2.0, rect.bottom() - galley.size().y - 2.0);
+                            ui.painter().text(
+                                text_pos + egui::vec2(1.0, 1.0),
+                                egui::Align2::LEFT_TOP,
+                                galley.text(),
+                                egui::FontId::proportional(font_size),
+                                shadow_color,
+                            );
+                            ui.painter().galley(text_pos, galley, text_color);
                         }
                     }
                 }
@@ -1425,6 +1451,7 @@ impl ViewerState {
         tex: &Option<egui::TextureHandle>,
         zoom_actual: bool,
         double_clicked: &mut bool,
+        single_clicked: &mut bool,
     ) {
         if let Some(tex) = tex {
             let [img_w, img_h] = tex.size();
@@ -1442,6 +1469,7 @@ impl ViewerState {
                     );
                     ui.painter().image(tex.id(), img_rect, FULL_UV, egui::Color32::WHITE);
                     if resp.double_clicked() { *double_clicked = true; }
+                    if resp.clicked() && !resp.double_clicked() { *single_clicked = true; }
                 });
             } else {
                 let available = ui.available_size();
@@ -1455,6 +1483,7 @@ impl ViewerState {
                 let resp  = ui.allocate_rect(rect, egui::Sense::click());
                 ui.painter().image(tex.id(), rect, FULL_UV, egui::Color32::WHITE);
                 if resp.double_clicked() { *double_clicked = true; }
+                if resp.clicked() && !resp.double_clicked() { *single_clicked = true; }
             }
         } else {
             let rect = egui::Rect::from_min_size(ui.cursor().left_top(), ui.available_size());
@@ -1468,12 +1497,14 @@ impl ViewerState {
         tex_left: &Option<egui::TextureHandle>,
         tex_right: &Option<egui::TextureHandle>,
         monitor: Option<egui::Vec2>,
+        single_clicked: &mut bool,
     ) {
         let available = ui.available_size();
         let origin = ui.cursor().left_top();
 
         let full_rect = egui::Rect::from_min_size(origin, available);
-        ui.allocate_rect(full_rect, egui::Sense::click());
+        let resp = ui.allocate_rect(full_rect, egui::Sense::click());
+        if resp.clicked() && !resp.double_clicked() { *single_clicked = true; }
 
         let (rect_l, rect_r) = Self::spread_rects(available, origin, tex_left, tex_right, monitor);
         let painter = ui.painter();
