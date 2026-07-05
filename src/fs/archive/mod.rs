@@ -11,7 +11,7 @@ mod zip;
 
 // 既存の呼び出し元が使う `crate::fs::archive::NAME` パスを維持するための再エクスポート。
 pub use decode::{decode_image_bytes, estimate_anim_sample_bytes, estimate_static_decoded_bytes, AnimSampleEstimate};
-pub use detect::{is_7z_path, is_supported_image_file};
+pub use detect::{detect_format, is_7z_path, is_supported_image_file, ArchiveFormat};
 pub use sevenz::{extract_all_images_7z, extract_all_images_7z_path};
 pub use zip::{load_bytes_from_archive, load_image, load_image_from_archive};
 
