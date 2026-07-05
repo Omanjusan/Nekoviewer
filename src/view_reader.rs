@@ -1371,8 +1371,11 @@ impl ViewerState {
         }
 
         if self.entry_list_visible {
-            let current_lo = self.spread_lo().max(0) as usize;
+            // 仮想ページ(-1 or total)を握りつぶさないよう、クランプ前の生の lo/hi で
+            // ペア判定してから、実ページ範囲内のものだけハイライトする。
+            let lo = self.spread_lo();
             let is_spread = self.page_mode != PageMode::Single;
+            let hi = if is_spread { lo + 1 } else { lo };
             let entries_snap = self.entries.clone();
 
             egui::Panel::left("entry_list_panel")
@@ -1382,10 +1385,9 @@ impl ViewerState {
                     egui::ScrollArea::vertical()
                         .auto_shrink([false, false])
                         .show(ui, |ui| {
-                            let total = entries_snap.len();
                             for (i, entry) in entries_snap.iter().enumerate() {
-                                let is_cur = i == current_lo
-                                    || (is_spread && current_lo + 1 < total && i == current_lo + 1);
+                                let i = i as i32;
+                                let is_cur = i == lo || i == hi;
                                 let _ = ui.selectable_label(is_cur, &entry.display_name);
                             }
                         });
