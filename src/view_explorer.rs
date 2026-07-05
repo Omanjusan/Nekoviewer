@@ -1029,11 +1029,13 @@ impl NekoviewApp {
                 .and_then(|idx| filtered.iter().position(|&i| i == idx));
 
             // キー入力を一括消費してからクロージャ外で処理する（borrow 競合回避）
-            let (key_left, key_right, key_down, key_up) = ctx.input_mut(|i| (
+            let (key_left, key_right, key_down, key_up, key_home, key_end) = ctx.input_mut(|i| (
                 i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowLeft),
                 i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowRight),
                 i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown),
                 i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp),
+                i.consume_key(egui::Modifiers::NONE, egui::Key::Home),
+                i.consume_key(egui::Modifiers::NONE, egui::Key::End),
             ));
 
             // 段階4（窓ごとキー配送）: ビューアーは独立した OS 窓になり、自分の左右キーで
@@ -1072,6 +1074,14 @@ impl NekoviewApp {
                         self.selected_archive_index = Some(filtered[pos - cols]);
                     }
                 }
+            }
+
+            // Home/End: ファイラー先頭（左上）/末尾（右下）へ絶対ジャンプ
+            if key_home {
+                self.selected_archive_index = Some(filtered[0]);
+            }
+            if key_end {
+                self.selected_archive_index = Some(filtered[total - 1]);
             }
 
             if ctx.input(|i| i.key_pressed(egui::Key::Enter)) {
