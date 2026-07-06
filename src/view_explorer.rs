@@ -250,6 +250,8 @@ pub struct NekoviewApp {
     spread_db: Option<std::sync::Arc<std::sync::Mutex<redb::Database>>>,
     /// 現在ディレクトリ内で保存済みの見開き状態 (filename -> (mode, offset, page_index))
     spread_states: HashMap<String, (crate::types::PageMode, i32)>,
+    /// 現在ディレクトリ内のお気に入り登録状態 (filename -> 所属folder_id一覧、空Vec=未整理)
+    favorite_states: HashMap<String, Vec<u8>>,
     thumbnails: HashMap<PathBuf, egui::TextureHandle>,
     thumb_req_tx: mpsc::SyncSender<ThumbRequest>,
     thumb_res_rx: mpsc::Receiver<ThumbResult>,
@@ -399,6 +401,7 @@ impl NekoviewApp {
                 db
             },
             spread_states: HashMap::new(),
+            favorite_states: HashMap::new(),
             thumbnails: HashMap::new(),
             thumb_req_tx,
             thumb_res_rx,
@@ -519,8 +522,13 @@ impl NekoviewApp {
                     .into_iter()
                     .map(|(name, mode, offset)| (name, (mode, offset)))
                     .collect();
+                crate::favorites::gc_dir(&db, &self.current_dir, &filenames);
+                self.favorite_states = crate::favorites::list_dir_favorites(&db, &self.current_dir)
+                    .into_iter()
+                    .collect();
             } else {
                 self.spread_states.clear();
+                self.favorite_states.clear();
             }
             self.scan_state = ScanState::Done;
             self.sort_archives();
@@ -1727,6 +1735,9 @@ impl NekoviewApp {
             if let Some(db) = self.spread_db.clone() {
                 let _ = crate::favorites::delete_folder(&db, id);
                 self.refresh_favorite_folders();
+                for ids in self.favorite_states.values_mut() {
+                    ids.retain(|&f| f != id);
+                }
             }
             if self.favorite_selected == FavoriteSelection::Folder(id) {
                 self.favorite_selected = FavoriteSelection::None;
@@ -1890,6 +1901,36 @@ impl NekoviewApp {
                             if thumb_failed {
                                 let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("?");
                                 response.clone().on_hover_text(format!("{ext}デコード失敗"));
+                            }
+
+                            // お気に入りマーカー: 左上から左下に列挙（表示できる分だけ）
+                            let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                            if let Some(folder_ids) = self.favorite_states.get(filename) {
+                                const MARKER_LINE_H: f32 = 16.0;
+                                let marker_font = egui::FontId::proportional(14.0);
+                                if folder_ids.is_empty() {
+                                    ui.painter().text(
+                                        rect.min + egui::vec2(4.0, 4.0),
+                                        egui::Align2::LEFT_TOP,
+                                        "★",
+                                        marker_font,
+                                        default_favorite_color(),
+                                    );
+                                } else {
+                                    let max_lines = ((cell_h - 8.0) / MARKER_LINE_H).floor().max(1.0) as usize;
+                                    for (i, id) in folder_ids.iter().take(max_lines).enumerate() {
+                                        let Some(folder) = self.favorite_folders.iter().find(|f| f.id == *id) else {
+                                            continue;
+                                        };
+                                        ui.painter().text(
+                                            rect.min + egui::vec2(4.0, 4.0 + i as f32 * MARKER_LINE_H),
+                                            egui::Align2::LEFT_TOP,
+                                            &folder.marker,
+                                            marker_font.clone(),
+                                            rgba_u32_to_color32(folder.color_rgba),
+                                        );
+                                    }
+                                }
                             }
 
                             // 選択中アイテムを枠で囲む（生ファイルは赤、ZIPは青）
@@ -2356,6 +2397,13 @@ impl NekoviewApp {
                     crate::favorites::set_membership(&db, &dialog.dir, &dialog.filename, &dialog.assigned);
                 } else {
                     crate::favorites::remove_favorite(&db, &dialog.dir, &dialog.filename);
+                }
+                if dialog.dir == self.current_dir {
+                    if dialog.favorite_enabled {
+                        self.favorite_states.insert(dialog.filename, dialog.assigned);
+                    } else {
+                        self.favorite_states.remove(&dialog.filename);
+                    }
                 }
             }
         }
