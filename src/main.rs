@@ -3,6 +3,7 @@ mod anim;
 mod cache;
 mod config;
 mod controller;
+mod favorites;
 mod fs;
 mod gui_config;
 mod i18n;

@@ -314,7 +314,13 @@ impl NekoviewApp {
             cd_summary_rx: None,
             cd_summary_updated_at: None,
             cache_db: None,
-            spread_db: crate::spread_state::open_spread_db(),
+            spread_db: {
+                let db = crate::spread_state::open_spread_db();
+                if let Some(db) = &db {
+                    crate::favorites::init_favorite_tables(db);
+                }
+                db
+            },
             spread_states: HashMap::new(),
             thumbnails: HashMap::new(),
             thumb_req_tx,
