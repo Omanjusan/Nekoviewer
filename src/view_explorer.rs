@@ -2021,18 +2021,18 @@ impl NekoviewApp {
                             }
 
                             // ネットワークリンク切れマーカー: 右上（大元マウント単位で判定済みのもののみ）
-                            if let Some(root) = crate::fs::mount::network_mount_root(path) {
-                                if self.network_unreachable_mounts.contains(&root) {
-                                    let mark_size = 16.0;
-                                    let origin = egui::pos2(rect.max.x - mark_size - 4.0, rect.min.y + 4.0);
-                                    ui.painter().text(
-                                        origin,
-                                        egui::Align2::LEFT_TOP,
-                                        "⚠",
-                                        egui::FontId::proportional(14.0),
-                                        egui::Color32::from_rgb(220, 160, 40),
-                                    );
-                                }
+                            if let Some(root) = crate::fs::mount::network_mount_root(path)
+                                && self.network_unreachable_mounts.contains(&root)
+                            {
+                                let mark_size = 16.0;
+                                let origin = egui::pos2(rect.max.x - mark_size - 4.0, rect.min.y + 4.0);
+                                ui.painter().text(
+                                    origin,
+                                    egui::Align2::LEFT_TOP,
+                                    "⚠",
+                                    egui::FontId::proportional(14.0),
+                                    egui::Color32::from_rgb(220, 160, 40),
+                                );
                             }
 
                             // 選択中アイテムを枠で囲む（生ファイルは赤、ZIPは青）
@@ -2297,10 +2297,10 @@ impl NekoviewApp {
     /// サムネ失敗・無効ZIP確定などの開封失敗を検知した際、それがネットワーク
     /// マウント配下のファイルであれば大元の到達可否を確認する（1アクション判定）。
     fn maybe_check_mount_after_failure(&mut self, path: &Path) {
-        if let Some(root) = crate::fs::mount::network_mount_root(path) {
-            if !self.network_unreachable_mounts.contains(&root) {
-                self.spawn_mount_check_if_needed(root);
-            }
+        if let Some(root) = crate::fs::mount::network_mount_root(path)
+            && !self.network_unreachable_mounts.contains(&root)
+        {
+            self.spawn_mount_check_if_needed(root);
         }
     }
 
