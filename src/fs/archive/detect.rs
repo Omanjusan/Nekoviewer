@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-const IMAGE_EXTENSIONS: &[&str] = &["jpg", "jpeg", "png", "webp", "gif", "bmp", "avif"];
+const IMAGE_EXTENSIONS: &[&str] = &["jpg", "jpeg", "png", "webp", "gif", "bmp", "avif", "tiff", "tif"];
 
 /// 生バイト列で拡張子を確認する（Shift-JIS等でもASCII拡張子は正しく判定できる）
 pub(crate) fn is_image_entry_raw(raw: &[u8]) -> bool {
@@ -270,6 +270,15 @@ pub fn is_7z_path(path: &Path) -> bool {
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn is_supported_image_file_recognizes_tiff() {
+        assert!(is_supported_image_file(Path::new("scan.tiff")));
+        assert!(is_supported_image_file(Path::new("scan.tif")));
+        assert!(is_supported_image_file(Path::new("SCAN.TIFF")));
+        assert!(is_image_entry_raw(b"page01.tiff"));
+        assert!(is_image_entry_raw(b"page01.tif"));
+    }
 
     #[test]
     fn detect_by_magic_recognizes_signatures() {
