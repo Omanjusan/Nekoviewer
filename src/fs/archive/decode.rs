@@ -158,3 +158,22 @@ pub fn estimate_anim_sample_bytes(buf: &[u8], ext: &str, budget_bytes: usize, ri
         _ => AnimSampleEstimate::NotAnimated,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn decode_image_bytes_reads_tiff() {
+        let img = image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(4, 3, image::Rgba([10, 20, 30, 255])));
+        let mut buf = std::io::Cursor::new(Vec::new());
+        img.write_to(&mut buf, image::ImageFormat::Tiff).unwrap();
+        let bytes = buf.into_inner();
+
+        let decoded = decode_image_bytes(&bytes).expect("tiff should decode");
+        assert_eq!((decoded.width(), decoded.height()), (4, 3));
+
+        let estimated = estimate_static_decoded_bytes(&bytes).expect("tiff header should be readable");
+        assert_eq!(estimated, 4 * 3 * 4);
+    }
+}

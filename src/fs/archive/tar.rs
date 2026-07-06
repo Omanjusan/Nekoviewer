@@ -10,23 +10,27 @@ use super::decode::decode_image;
 use super::detect::is_image_entry_raw;
 use super::{ArchiveMemoryEstimate, EntryEstimate, ImageEntry};
 
-/// tar ファイルを開き、gzip 圧縮なら透過的に解凍したリーダを返す。
-/// 先頭2バイトの gzip マジックで判定し、raw tar はそのまま返す。
+/// tar ファイルを開き、圧縮されていれば透過的に解凍したリーダを返す。
+/// 先頭マジックで gzip(tar.gz/tgz) / zstd(tar.zst/tzst) を判定し、raw tar はそのまま返す。
 ///
-/// 将来の追加圧縮（default-off feature の frame）:
-///   - `tar-zstd`: 先頭 `28 B5 2F FD` を見て `zstd::Decoder` で包む
+/// zstd は純 Rust の `ruzstd`（C 依存なし）で解凍するため単一 musl 配布と両立する。
+/// 未実装の追加圧縮:
 ///   - `tar-xz`  : 先頭 `FD 37 7A 58 5A 00` を見て liblzma デコーダで包む
-/// いずれも C 依存を引き込むため、対応 dep とデコード経路は feature 有効時のみ追加する。
+///     （liblzma は C 依存を引き込むため、対応 dep とデコード経路は feature 有効時のみ追加する）。
 fn open_reader(path: &Path) -> Option<Box<dyn Read>> {
     let mut file = std::fs::File::open(path).ok()?;
-    let mut magic = [0u8; 2];
+    let mut magic = [0u8; 4];
     let n = file.read(&mut magic).ok()?;
     file.seek(SeekFrom::Start(0)).ok()?;
-    if n == 2 && magic == [0x1F, 0x8B] {
-        Some(Box::new(flate2::read::GzDecoder::new(file)))
-    } else {
-        Some(Box::new(file))
+    if n >= 2 && magic[..2] == [0x1F, 0x8B] {
+        return Some(Box::new(flate2::read::GzDecoder::new(file)));
     }
+    #[cfg(feature = "tar-zstd")]
+    if n >= 4 && magic == [0x28, 0xB5, 0x2F, 0xFD] {
+        let decoder = ruzstd::decoding::StreamingDecoder::new(file).ok()?;
+        return Some(Box::new(decoder));
+    }
+    Some(Box::new(file))
 }
 
 /// tar のヘッダを順に読み、画像エントリを一覧化する。
@@ -163,38 +167,57 @@ mod tests {
         buf
     }
 
-    /// 指定寸法のPNGを格納した tar を組み立てる（gzip=true なら tar.gz）。
-    fn build_tar(dims: &[(u32, u32)], gzip: bool) -> std::path::PathBuf {
+    /// 指定寸法のPNGエントリを tar ストリームとして `w` に書き出す。
+    fn write_tar_entries(w: &mut dyn Write, dims: &[(u32, u32)]) {
+        let mut builder = tar::Builder::new(w);
+        for (i, (width, height)) in dims.iter().enumerate() {
+            let data = encode_png(*width, *height);
+            let mut header = tar::Header::new_gnu();
+            header.set_size(data.len() as u64);
+            header.set_mode(0o644);
+            header.set_cksum();
+            builder
+                .append_data(&mut header, format!("page{:03}.png", i + 1), data.as_slice())
+                .unwrap();
+        }
+        builder.finish().unwrap();
+    }
+
+    /// テスト用の一意な temp パスを組み立てる。
+    fn temp_path(ext: &str) -> std::path::PathBuf {
         use std::sync::atomic::{AtomicU32, Ordering};
         static COUNTER: AtomicU32 = AtomicU32::new(0);
         let n = COUNTER.fetch_add(1, Ordering::SeqCst);
-        let ext = if gzip { "tar.gz" } else { "tar" };
-        let path = std::env::temp_dir()
-            .join(format!("nekoviewer_test_tar_{}_{n}.{ext}", std::process::id()));
+        std::env::temp_dir().join(format!("nekoviewer_test_tar_{}_{n}.{ext}", std::process::id()))
+    }
 
+    /// 指定寸法のPNGを格納した tar を組み立てる（gzip=true なら tar.gz）。
+    fn build_tar(dims: &[(u32, u32)], gzip: bool) -> std::path::PathBuf {
+        let ext = if gzip { "tar.gz" } else { "tar" };
+        let path = temp_path(ext);
         let file = std::fs::File::create(&path).unwrap();
-        let write_entries = |w: &mut dyn Write| {
-            let mut builder = tar::Builder::new(w);
-            for (i, (width, height)) in dims.iter().enumerate() {
-                let data = encode_png(*width, *height);
-                let mut header = tar::Header::new_gnu();
-                header.set_size(data.len() as u64);
-                header.set_mode(0o644);
-                header.set_cksum();
-                builder
-                    .append_data(&mut header, format!("page{:03}.png", i + 1), data.as_slice())
-                    .unwrap();
-            }
-            builder.finish().unwrap();
-        };
         if gzip {
             let mut enc = flate2::write::GzEncoder::new(file, flate2::Compression::default());
-            write_entries(&mut enc);
+            write_tar_entries(&mut enc, dims);
             enc.finish().unwrap();
         } else {
             let mut file = file;
-            write_entries(&mut file);
+            write_tar_entries(&mut file, dims);
         }
+        path
+    }
+
+    /// 指定寸法のPNGを格納した tar.zst を組み立てる（ruzstd で純Rust圧縮）。
+    #[cfg(feature = "tar-zstd")]
+    fn build_tar_zst(dims: &[(u32, u32)]) -> std::path::PathBuf {
+        let path = temp_path("tar.zst");
+        let mut raw = Vec::new();
+        write_tar_entries(&mut raw, dims);
+        let compressed = ruzstd::encoding::compress_to_vec(
+            raw.as_slice(),
+            ruzstd::encoding::CompressionLevel::Fastest,
+        );
+        std::fs::write(&path, compressed).unwrap();
         path
     }
 
@@ -231,6 +254,26 @@ mod tests {
         assert_eq!(map.len(), 2);
 
         assert!(load_first_image_tar(&path).is_some(), "tar.gzの先頭画像の読み込みに失敗");
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[cfg(feature = "tar-zstd")]
+    #[test]
+    fn tar_zst_list_extract_and_first_image() {
+        let path = build_tar_zst(&[(16, 16), (10, 10), (8, 8)]);
+        assert_eq!(super::super::detect_format(&path), super::super::ArchiveFormat::Tar);
+
+        let entries = list_images_tar(&path);
+        assert_eq!(entries.len(), 3, "tar.zstの画像エントリ数が想定と異なる");
+
+        let map = extract_all_images_tar_path(&path);
+        assert_eq!(map.len(), 3, "tar.zst一括展開後のエントリ数が一覧と一致しない");
+        for e in &entries {
+            let buf = map.get(&e.entry_name).expect("展開済みマップにエントリが無い");
+            assert!(decode_image(buf).is_some(), "{} のデコードに失敗", e.display_name);
+        }
+
+        assert!(load_first_image_tar(&path).is_some(), "tar.zstの先頭画像の読み込みに失敗");
         std::fs::remove_file(&path).ok();
     }
 

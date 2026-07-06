@@ -78,6 +78,10 @@ fn is_archive_path(p: &Path) -> bool {
     if ends(".tar") || ends(".cbt") || ends(".tar.gz") || ends(".tgz") {
         return true;
     }
+    #[cfg(feature = "tar-zstd")]
+    if ends(".tar.zst") || ends(".tzst") {
+        return true;
+    }
     false
 }
 

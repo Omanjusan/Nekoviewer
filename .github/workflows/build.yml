@@ -44,7 +44,12 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-
 
-      - name: Build release
+      - name: Build (PR check)
+        if: github.event_name == 'pull_request'
+        run: cargo build
+
+      - name: Build release (tag)
+        if: startsWith(github.ref, 'refs/tags/')
         run: cargo build --release
 
       - name: Upload artifact
