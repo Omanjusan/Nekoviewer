@@ -469,27 +469,37 @@ impl NekoviewApp {
                                 self.favorite_states.get(filename)
                             };
                             if let Some(folder_ids) = marker_ids {
-                                const MARKER_LINE_H: f32 = 16.0;
-                                let marker_font = egui::FontId::proportional(14.0);
-                                if folder_ids.is_empty() {
+                                const MARKER_LINE_H: f32 = 21.0;
+                                let marker_font = egui::FontId::proportional(19.0);
+                                // 同グリフを右下1.5pxオフセットの半透明黒で先描きして
+                                // 小さめのドロップシャドウにする（サムネ地の明暗によらず視認確保）
+                                let paint_marker = |pos: egui::Pos2, text: &str, color: egui::Color32| {
                                     ui.painter().text(
-                                        rect.min + egui::vec2(4.0, 4.0),
+                                        pos + egui::vec2(1.5, 1.5),
                                         egui::Align2::LEFT_TOP,
-                                        "★",
-                                        marker_font,
-                                        default_favorite_color(),
+                                        text,
+                                        marker_font.clone(),
+                                        egui::Color32::from_black_alpha(140),
                                     );
+                                    ui.painter().text(
+                                        pos,
+                                        egui::Align2::LEFT_TOP,
+                                        text,
+                                        marker_font.clone(),
+                                        color,
+                                    );
+                                };
+                                if folder_ids.is_empty() {
+                                    paint_marker(rect.min + egui::vec2(4.0, 4.0), "★", default_favorite_color());
                                 } else {
                                     let max_lines = ((cell_h - 8.0) / MARKER_LINE_H).floor().max(1.0) as usize;
                                     for (i, id) in folder_ids.iter().take(max_lines).enumerate() {
                                         let Some(folder) = self.favorite_folders.iter().find(|f| f.id == *id) else {
                                             continue;
                                         };
-                                        ui.painter().text(
+                                        paint_marker(
                                             rect.min + egui::vec2(4.0, 4.0 + i as f32 * MARKER_LINE_H),
-                                            egui::Align2::LEFT_TOP,
                                             &folder.marker,
-                                            marker_font.clone(),
                                             rgba_u32_to_color32(folder.color_rgba),
                                         );
                                     }
