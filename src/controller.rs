@@ -16,6 +16,17 @@ pub enum ViewerNav {
     NextFile,
 }
 
+/// 見開き設定保存メニューでのユーザー操作
+#[derive(Clone, Copy, PartialEq)]
+pub enum SpreadSaveAction {
+    /// トグルON: 現在のmode/offset/page_indexを保存
+    Enable,
+    /// トグルOFF: 保存解除（DBエントリ削除）
+    Disable,
+    /// 現在の見開き設定で上書き保存（現在Singleなら実質Disableと同じ扱い）
+    Overwrite,
+}
+
 /// viewer.show() の戻り値。viewer → controller への通知をまとめて返す。
 #[derive(Clone)]
 pub struct ViewerOutput {
@@ -23,6 +34,8 @@ pub struct ViewerOutput {
     pub close_requested: bool,
     /// Some(_) のとき app 側でスロットを永続化する
     pub save_slots: Option<[Option<WindowSlot>; 4]>,
+    /// Some(_) のとき app 側で見開き状態DBへの保存/削除を行う
+    pub spread_save_action: Option<SpreadSaveAction>,
 }
 
 // ── ステータス即時更新要求 ────────────────────────────────────────────────────

@@ -128,6 +128,22 @@ impl Lang {
         }
     }
 
+    pub fn spread_save_toggle_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "見開き設定保存状態",
+            Lang::English  => "Save spread state",
+            Lang::Chinese  => "保存双页设置",
+        }
+    }
+
+    pub fn spread_save_overwrite_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "現在の見開き設定で上書き保存",
+            Lang::English  => "Overwrite with current spread state",
+            Lang::Chinese  => "用当前双页设置覆盖保存",
+        }
+    }
+
     pub fn loading(self) -> &'static str {
         match self {
             Lang::Japanese => "読み込み中...",
