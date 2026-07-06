@@ -1,13 +1,13 @@
 [package]
 name = "nekoviewer"
-version = "1.0.0"
+version = "1.1.0"
 edition = "2024"
 license = "MIT"
 
 [profile.release]
 strip = true
 lto = true
-codegen_units = 1
+codegen-units = 1
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.52", features = ["Win32_Storage_FileSystem", "Win32_UI_WindowsAndMessaging", "Win32_Foundation"] }
@@ -18,7 +18,7 @@ egui-winit = "0.35"
 egui-wgpu = { version = "0.35", features = ["winit"] }
 winit = "0.30"
 pollster = "0.4"
-image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif", "bmp"] }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif", "bmp", "tiff"] }
 libavif = "0.14"
 libavif-sys = "0.17"
 zip = "2"
