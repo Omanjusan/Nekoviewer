@@ -216,6 +216,14 @@ impl Lang {
         }
     }
 
+    pub fn network_checking_toast(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ネットワーク接続を確認しています...",
+            Lang::English  => "Checking network connection...",
+            Lang::Chinese  => "正在检查网络连接...",
+        }
+    }
+
     pub fn favorite_view_header_unsorted(self) -> &'static str {
         match self {
             Lang::Japanese => "お気に入り: 未整理",

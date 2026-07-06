@@ -1,5 +1,5 @@
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, mpsc};
 
 use crate::cache::{FileCache, FileCacheEntry, LoadRequest, LoadResult, PageCache, ThumbRequest, ThumbResult, EntryThumbRequest, EntryThumbResult, spawn_worker, spawn_thumb_worker, spawn_entry_thumb_worker, spawn_file_cache_worker};
@@ -258,6 +258,10 @@ pub struct NekoviewApp {
     /// お気に入り一覧表示中のマーカー情報 (フルパス -> 所属folder_id一覧)。
     /// ディレクトリ横断のため favorite_states とは別にフルパスキーで持つ。
     favorite_view_markers: HashMap<PathBuf, Vec<u8>>,
+    /// 到達不能と判定済みのネットワークマウント大元（定期ポーリングはしない）
+    network_unreachable_mounts: HashSet<PathBuf>,
+    /// バックグラウンドで進行中のマウント到達可否チェック
+    mount_check_pending: Vec<(PathBuf, mpsc::Receiver<(PathBuf, bool)>)>,
     thumbnails: HashMap<PathBuf, egui::TextureHandle>,
     thumb_req_tx: mpsc::SyncSender<ThumbRequest>,
     thumb_res_rx: mpsc::Receiver<ThumbResult>,
@@ -410,6 +414,8 @@ impl NekoviewApp {
             spread_states: HashMap::new(),
             favorite_states: HashMap::new(),
             favorite_view_markers: HashMap::new(),
+            network_unreachable_mounts: HashSet::new(),
+            mount_check_pending: Vec::new(),
             thumbnails: HashMap::new(),
             thumb_req_tx,
             thumb_res_rx,
@@ -899,6 +905,8 @@ impl NekoviewApp {
 
 impl NekoviewApp {
     fn poll_workers(&mut self, ctx: &egui::Context) {
+        self.poll_mount_checks();
+
         // バックグラウンドスキャン結果をポーリング
         self.poll_scan();
         self.poll_tree_scan();
@@ -918,6 +926,7 @@ impl NekoviewApp {
                     }
                 }
                 None => {
+                    self.maybe_check_mount_after_failure(&result.path);
                     self.thumb_failed.insert(result.path);
                 }
             }
@@ -1305,16 +1314,18 @@ impl NekoviewApp {
             if ctx.input(|i| i.key_pressed(egui::Key::Enter)) {
                 if let Some(idx) = self.selected_archive_index {
                     if let Some(path) = self.archives.get(idx).cloned() {
-                        let is_raw = self.raw_image_files.contains(&path);
-                        let state = if is_raw {
-                            Some(ViewerState::new_raw(path.clone(), self.viewer_slots, self.config.default_slot))
-                        } else if self.check_memory_budget(&path) {
-                            ViewerState::new(path.clone(), self.viewer_slots, self.config.default_slot)
-                        } else {
-                            None
-                        };
-                        if let Some(state) = state {
-                            self.open_viewer(state);
+                        if self.network_gate(&path) {
+                            let is_raw = self.raw_image_files.contains(&path);
+                            let state = if is_raw {
+                                Some(ViewerState::new_raw(path.clone(), self.viewer_slots, self.config.default_slot))
+                            } else if self.check_memory_budget(&path) {
+                                ViewerState::new(path.clone(), self.viewer_slots, self.config.default_slot)
+                            } else {
+                                None
+                            };
+                            if let Some(state) = state {
+                                self.open_viewer(state);
+                            }
                         }
                     }
                 }
@@ -2009,6 +2020,21 @@ impl NekoviewApp {
                                 }
                             }
 
+                            // ネットワークリンク切れマーカー: 右上（大元マウント単位で判定済みのもののみ）
+                            if let Some(root) = crate::fs::mount::network_mount_root(path) {
+                                if self.network_unreachable_mounts.contains(&root) {
+                                    let mark_size = 16.0;
+                                    let origin = egui::pos2(rect.max.x - mark_size - 4.0, rect.min.y + 4.0);
+                                    ui.painter().text(
+                                        origin,
+                                        egui::Align2::LEFT_TOP,
+                                        "⚠",
+                                        egui::FontId::proportional(14.0),
+                                        egui::Color32::from_rgb(220, 160, 40),
+                                    );
+                                }
+                            }
+
                             // 選択中アイテムを枠で囲む（生ファイルは赤、ZIPは青）
                             if is_selected {
                                 let is_raw = self.raw_image_files.contains(path);
@@ -2030,7 +2056,9 @@ impl NekoviewApp {
                         if response.clicked() {
                             if is_raw && self.selected_archive_index == Some(real_idx) {
                                 // 生ファイル: 選択済み状態のシングルクリックで開く
-                                self.open_viewer(ViewerState::new_raw(path.clone(), self.viewer_slots, self.config.default_slot));
+                                if self.network_gate(path) {
+                                    self.open_viewer(ViewerState::new_raw(path.clone(), self.viewer_slots, self.config.default_slot));
+                                }
                             } else {
                                 self.selected_archive_index = Some(real_idx);
                                 self.selected_archive_meta = std::fs::metadata(path)
@@ -2045,6 +2073,8 @@ impl NekoviewApp {
                                     i18n::t().invalid_zip(&name),
                                     std::time::Instant::now(),
                                 ));
+                            } else if !self.network_gate(path) {
+                                // トースト表示・再チェックは network_gate 内で処理済み。
                             } else if !self.check_memory_budget(path) {
                                 // ダイアログ表示フラグは check_memory_budget 内で立つ。オープンは中止する。
                             } else {
@@ -2230,6 +2260,66 @@ impl NekoviewApp {
             let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
             let mtime = neko_dir::file_mtime(path);
             neko_dir::mark_invalid(db, filename, mtime);
+        }
+        self.maybe_check_mount_after_failure(path);
+    }
+
+    /// バックグラウンドで進行中のマウント到達可否チェックの結果を回収する。
+    fn poll_mount_checks(&mut self) {
+        let mut still_pending = Vec::new();
+        for (root, rx) in self.mount_check_pending.drain(..) {
+            match rx.try_recv() {
+                Ok((root, reachable)) => {
+                    if reachable {
+                        self.network_unreachable_mounts.remove(&root);
+                    } else {
+                        self.network_unreachable_mounts.insert(root);
+                    }
+                }
+                Err(mpsc::TryRecvError::Empty) => still_pending.push((root, rx)),
+                Err(mpsc::TryRecvError::Disconnected) => {}
+            }
+        }
+        self.mount_check_pending = still_pending;
+    }
+
+    /// path が既知のネットワークマウント配下にあり、まだチェック中でなければ
+    /// 到達可否のバックグラウンド確認を1件発火する（定期ポーリングはしない）。
+    fn spawn_mount_check_if_needed(&mut self, root: PathBuf) {
+        if self.mount_check_pending.iter().any(|(r, _)| *r == root) {
+            return;
+        }
+        let ctx = self.egui_ctx.clone();
+        let rx = crate::fs::mount::spawn_mount_reachability_check(root.clone(), move || ctx.request_repaint());
+        self.mount_check_pending.push((root, rx));
+    }
+
+    /// サムネ失敗・無効ZIP確定などの開封失敗を検知した際、それがネットワーク
+    /// マウント配下のファイルであれば大元の到達可否を確認する（1アクション判定）。
+    fn maybe_check_mount_after_failure(&mut self, path: &Path) {
+        if let Some(root) = crate::fs::mount::network_mount_root(path) {
+            if !self.network_unreachable_mounts.contains(&root) {
+                self.spawn_mount_check_if_needed(root);
+            }
+        }
+    }
+
+    /// ファイルを開く直前のゲート。ネットワークマウント配下でなければ常に true。
+    /// すでにリンク切れ表示中のマウントに対する明示的なオープン試行の場合は、
+    /// ここで再チェックを発火しつつ今回のオープンは保留する（true を返さない）。
+    fn network_gate(&mut self, path: &Path) -> bool {
+        let Some(root) = crate::fs::mount::network_mount_root(path) else {
+            return true;
+        };
+        if self.network_unreachable_mounts.contains(&root) {
+            self.spawn_mount_check_if_needed(root);
+            self.app_toast = Some((
+                i18n::t().network_checking_toast().to_string(),
+                std::time::Instant::now(),
+            ));
+            false
+        } else {
+            true
         }
     }
 

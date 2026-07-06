@@ -1,8 +1,70 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 pub struct MountEntry {
     pub label: String,
     pub path: PathBuf,
+}
+
+/// path が既知のネットワークマウント（SMB等）配下にあれば、そのマウント大元の
+/// ルートパスを返す。ファイル単位ではなく大元単位で判定するための入口。
+#[cfg(unix)]
+pub fn network_mount_root(path: &Path) -> Option<PathBuf> {
+    let uid = current_uid();
+    let gvfs_dir = PathBuf::from(format!("/run/user/{uid}/gvfs"));
+    let entries = std::fs::read_dir(&gvfs_dir).ok()?;
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if !name.starts_with("smb-share:") {
+            continue;
+        }
+        let root = entry.path();
+        if path.starts_with(&root) {
+            return Some(root);
+        }
+    }
+    None
+}
+
+#[cfg(windows)]
+pub fn network_mount_root(path: &Path) -> Option<PathBuf> {
+    use windows_sys::Win32::Storage::FileSystem::GetDriveTypeW;
+    const DRIVE_REMOTE: u32 = 4;
+
+    let root = path.ancestors().last()?.to_path_buf();
+    let root_str = root.to_string_lossy();
+    let wide: Vec<u16> = root_str.encode_utf16().chain(std::iter::once(0)).collect();
+    if unsafe { GetDriveTypeW(wide.as_ptr()) } == DRIVE_REMOTE {
+        Some(root)
+    } else {
+        None
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
+pub fn network_mount_root(_path: &Path) -> Option<PathBuf> {
+    None
+}
+
+/// マウント大元への到達可否を1アクション（read_dir）で判定する。
+/// ネットワークI/Oでブロックしうるため、呼び出し側は必ずバックグラウンドスレッドで呼ぶこと。
+pub fn check_mount_reachable(root: &Path) -> bool {
+    std::fs::read_dir(root).is_ok()
+}
+
+/// マウント大元の到達可否をバックグラウンドスレッドで確認する。
+/// 定期ポーリングはしない前提のため、呼び出し側が明示的なタイミング
+/// （オープン失敗の検知・リンク切れ表示中ファイルの再オープン試行）でのみ呼ぶこと。
+pub fn spawn_mount_reachability_check(
+    root: PathBuf,
+    wake: impl Fn() + Send + 'static,
+) -> std::sync::mpsc::Receiver<(PathBuf, bool)> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let reachable = check_mount_reachable(&root);
+        let _ = tx.send((root, reachable));
+        wake();
+    });
+    rx
 }
 
 /// /run/user/{uid}/gvfs/ 以下の SMB マウントを列挙する（Unix のみ）
