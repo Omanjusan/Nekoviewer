@@ -184,6 +184,38 @@ impl Lang {
         }
     }
 
+    pub fn favorite_detail_menu_bulk(self, count: usize) -> String {
+        match self {
+            Lang::Japanese => format!("お気に入り詳細設定 ({count}件)"),
+            Lang::English  => format!("Favorite Details... ({count} items)"),
+            Lang::Chinese  => format!("收藏详细设置（{count} 项）"),
+        }
+    }
+
+    pub fn favorite_overwrite_confirm_title(self) -> &'static str {
+        match self {
+            Lang::Japanese => "お気に入り一括設定の確認",
+            Lang::English  => "Confirm Bulk Favorite Update",
+            Lang::Chinese  => "确认批量收藏设置",
+        }
+    }
+
+    pub fn favorite_overwrite_confirm_message(self, count: usize) -> String {
+        match self {
+            Lang::Japanese => format!("選択した{count}件の既存のお気に入り設定は上書きされます。よろしいですか？"),
+            Lang::English  => format!("The existing favorite settings for the selected {count} item(s) will be overwritten. Continue?"),
+            Lang::Chinese  => format!("所选 {count} 项现有的收藏设置将被覆盖。确定继续吗？"),
+        }
+    }
+
+    pub fn favorite_overwrite_confirm_ok(self) -> &'static str {
+        match self {
+            Lang::Japanese => "上書きする",
+            Lang::English  => "Overwrite",
+            Lang::Chinese  => "覆盖",
+        }
+    }
+
     pub fn favorite_detail_dialog_title(self) -> &'static str {
         match self {
             Lang::Japanese => "お気に入り詳細設定",

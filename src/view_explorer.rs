@@ -86,12 +86,14 @@ const FAVORITE_MARKER_CANDIDATES: &[&str] = &[
 /// ビューアー右クリック「お気に入り詳細設定」ダイアログの状態。
 /// 左＝定義済みお気に入りフォルダ一覧、右＝対象ファイルの登録先（デュアルリストボックス）。
 struct FavoriteDetailDialogState {
-    dir: PathBuf,
-    filename: String,
+    /// 対象ファイルの絶対パス。単一選択時は1件、複数選択時は選択集合全件。
+    targets: Vec<PathBuf>,
     favorite_enabled: bool,
     assigned: Vec<u8>,
     left_selected: HashSet<u8>,
     right_selected: HashSet<u8>,
+    /// 複数選択時のみ使用: 決定後にもう一段の上書き確認を挟むためのフラグ
+    pending_overwrite_confirm: bool,
 }
 
 fn default_favorite_color() -> egui::Color32 {
@@ -318,6 +320,11 @@ pub struct NekoviewApp {
     sort_ascending: bool,
     selected_archive_index: Option<usize>,
     selected_archive_meta: Option<(std::time::SystemTime, u64)>,
+    /// Ctrl/Shift併用による複数選択の集合（archivesへのインデックス）。
+    /// 空 = 単一選択モード。非空時は selected_archive_index も含めて保持する。
+    multi_selected: std::collections::HashSet<usize>,
+    /// Shift範囲選択の起点インデックス。
+    select_anchor: Option<usize>,
     /// サムネフィルタ: 有効フラグ・入力文字列・絞り込み後の archives インデックス一覧
     filter_enabled: bool,
     filter_text: String,
@@ -454,6 +461,8 @@ impl NekoviewApp {
             sort_ascending: sort_state.ascending,
             selected_archive_index: None,
             selected_archive_meta: None,
+            multi_selected: std::collections::HashSet::new(),
+            select_anchor: None,
             filter_enabled: true,
             filter_text: String::new(),
             filtered_indices: Vec::new(),
@@ -497,6 +506,8 @@ impl NekoviewApp {
         self.thumb_pending.clear();
         self.pending_loads.lock().unwrap().clear();
         self.selected_archive_index = None;
+        self.multi_selected.clear();
+        self.select_anchor = None;
         self.explorer_scroll_offset = 0.0;
     }
 
@@ -547,6 +558,8 @@ impl NekoviewApp {
             self.scan_state = ScanState::Done;
             self.sort_archives();
             self.selected_archive_index = if self.archives.is_empty() { None } else { Some(0) };
+            self.multi_selected.clear();
+            self.select_anchor = None;
         }
     }
 
@@ -650,6 +663,9 @@ impl NekoviewApp {
                 self.selected_archive_index = self.filtered_indices.first().copied();
             }
         }
+        // 複数選択もフィルタで隠れた分は外す（表示外の項目を選択集合に残さない）
+        let filtered_set: std::collections::HashSet<usize> = self.filtered_indices.iter().copied().collect();
+        self.multi_selected.retain(|idx| filtered_set.contains(idx));
     }
 }
 
@@ -1264,23 +1280,49 @@ impl NekoviewApp {
                 i.consume_key(egui::Modifiers::NONE, egui::Key::Home),
                 i.consume_key(egui::Modifiers::NONE, egui::Key::End),
             ));
+            // Shift併用版（範囲選択の拡張用）
+            let (skey_left, skey_right, skey_down, skey_up, skey_home, skey_end) = ctx.input_mut(|i| (
+                i.consume_key(egui::Modifiers::SHIFT, egui::Key::ArrowLeft),
+                i.consume_key(egui::Modifiers::SHIFT, egui::Key::ArrowRight),
+                i.consume_key(egui::Modifiers::SHIFT, egui::Key::ArrowDown),
+                i.consume_key(egui::Modifiers::SHIFT, egui::Key::ArrowUp),
+                i.consume_key(egui::Modifiers::SHIFT, egui::Key::Home),
+                i.consume_key(egui::Modifiers::SHIFT, egui::Key::End),
+            ));
+            let key_left = key_left || skey_left;
+            let key_right = key_right || skey_right;
+            let key_down = key_down || skey_down;
+            let key_up = key_up || skey_up;
+            let key_home = key_home || skey_home;
+            let key_end = key_end || skey_end;
+            let extend = skey_left || skey_right || skey_down || skey_up || skey_home || skey_end;
+            if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::A)) {
+                self.multi_selected = filtered.iter().copied().collect();
+                if self.select_anchor.is_none() {
+                    self.select_anchor = filtered.first().copied();
+                }
+                if let Some(&last) = filtered.last() {
+                    self.selected_archive_index = Some(last);
+                }
+            }
 
             // 段階4（窓ごとキー配送）: ビューアーは独立した OS 窓になり、自分の左右キーで
             // ファイル間ナビゲーションを処理する（view_reader::process_navigation →
             // ViewerOutput.nav → render_viewer）。よって 86eca4b の「ビューア起動中は
             // エクスプローラー窓の左右キーで viewer nav を肩代わりする」回避策は撤去する。
             // エクスプローラー窓の左右キーは常にグリッド選択移動とする。
+            let mut move_to: Option<usize> = None;
             if key_right {
                 if let Some(pos) = cur_pos {
                     if pos + 1 < total {
-                        self.selected_archive_index = Some(filtered[pos + 1]);
+                        move_to = Some(filtered[pos + 1]);
                     }
                 }
             }
             if key_left {
                 if let Some(pos) = cur_pos {
                     if pos > 0 {
-                        self.selected_archive_index = Some(filtered[pos - 1]);
+                        move_to = Some(filtered[pos - 1]);
                     }
                 }
             }
@@ -1291,24 +1333,31 @@ impl NekoviewApp {
                     let current_row = pos / cols;
                     let last_row = (total - 1) / cols;
                     if current_row < last_row {
-                        self.selected_archive_index = Some(filtered[(pos + cols).min(total - 1)]);
+                        move_to = Some(filtered[(pos + cols).min(total - 1)]);
                     }
                 }
             }
             if key_up {
                 if let Some(pos) = cur_pos {
                     if pos >= cols {
-                        self.selected_archive_index = Some(filtered[pos - cols]);
+                        move_to = Some(filtered[pos - cols]);
                     }
                 }
             }
 
             // Home/End: ファイラー先頭（左上）/末尾（右下）へ絶対ジャンプ
             if key_home {
-                self.selected_archive_index = Some(filtered[0]);
+                move_to = Some(filtered[0]);
             }
             if key_end {
-                self.selected_archive_index = Some(filtered[total - 1]);
+                move_to = Some(filtered[total - 1]);
+            }
+            if let Some(target) = move_to {
+                if extend {
+                    self.extend_selection_to(target, &filtered);
+                } else {
+                    self.select_single(target);
+                }
             }
 
             if ctx.input(|i| i.key_pressed(egui::Key::Enter)) {
@@ -1430,6 +1479,10 @@ impl NekoviewApp {
 
             if sort_changed {
                 self.sort_archives();
+                // ソート変更で archives の並びが変わり、インデックスベースの複数選択が
+                // 無関係な項目を指す可能性があるため安全側に倒して解除する
+                self.multi_selected.clear();
+                self.select_anchor = None;
             }
 
             // ── ステータスウィンドウボタン（右端） ────────────────────────
@@ -1575,6 +1628,24 @@ impl NekoviewApp {
     }
 
     /// 中央グリッドの表示対象を、選択されたお気に入り（フォルダ横断）一覧に切り替える。
+    /// 単一選択に置き換える（複数選択を解除し、指定インデックスを起点にする）。
+    fn select_single(&mut self, idx: usize) {
+        self.multi_selected.clear();
+        self.select_anchor = Some(idx);
+        self.selected_archive_index = Some(idx);
+    }
+
+    /// 現在の選択起点(select_anchor)から idx までの範囲を multi_selected に反映する
+    /// （Shift+矢印キーによる範囲拡張用。filtered は表示順のインデックス列）。
+    fn extend_selection_to(&mut self, idx: usize, filtered: &[usize]) {
+        let anchor = self.select_anchor.unwrap_or(idx);
+        let anchor_pos = filtered.iter().position(|&i| i == anchor).unwrap_or(0);
+        let target_pos = filtered.iter().position(|&i| i == idx).unwrap_or(anchor_pos);
+        let (from, to) = if anchor_pos <= target_pos { (anchor_pos, target_pos) } else { (target_pos, anchor_pos) };
+        self.multi_selected = filtered[from..=to].iter().copied().collect();
+        self.selected_archive_index = Some(idx);
+    }
+
     fn enter_favorite_view(&mut self, selection: FavoriteSelection) {
         let Some(db) = self.spread_db.clone() else { return };
         let entries: Vec<(PathBuf, String)> = match selection {
@@ -1606,6 +1677,8 @@ impl NekoviewApp {
         self.recompute_filter();
         self.selected_archive_index = if self.archives.is_empty() { None } else { Some(0) };
         self.selected_archive_meta = None;
+        self.multi_selected.clear();
+        self.select_anchor = None;
     }
 
     /// お気に入り一覧表示を終え、実ディレクトリ（current_dir）表示に戻す。
@@ -1932,7 +2005,8 @@ impl NekoviewApp {
                         .collect();
                     for (i, (real_idx, path)) in visible.iter().enumerate() {
                         let real_idx = *real_idx;
-                        let is_selected = self.selected_archive_index == Some(real_idx);
+                        let is_selected = self.selected_archive_index == Some(real_idx)
+                            || self.multi_selected.contains(&real_idx);
                         let (rect, response) = ui.allocate_exact_size(
                             egui::vec2(cell_w, cell_h),
                             egui::Sense::click(),
@@ -2054,12 +2128,39 @@ impl NekoviewApp {
 
                         let is_raw = self.raw_image_files.contains(path);
                         if response.clicked() {
-                            if is_raw && self.selected_archive_index == Some(real_idx) {
+                            let modifiers = ui.input(|i| i.modifiers);
+                            if modifiers.command {
+                                // Ctrl(Cmd)+クリック: トグル追加/除外
+                                if self.multi_selected.is_empty()
+                                    && let Some(prev) = self.selected_archive_index
+                                {
+                                    self.multi_selected.insert(prev);
+                                }
+                                if !self.multi_selected.insert(real_idx) {
+                                    self.multi_selected.remove(&real_idx);
+                                }
+                                self.select_anchor = Some(real_idx);
+                                self.selected_archive_index = Some(real_idx);
+                                self.selected_archive_meta = None;
+                                if self.multi_selected.len() == 1 {
+                                    self.multi_selected.clear();
+                                }
+                            } else if modifiers.shift {
+                                // Shift+クリック: 起点からの範囲選択
+                                let anchor = self.select_anchor.unwrap_or(real_idx);
+                                let anchor_pos = visible.iter().position(|(idx, _)| *idx == anchor).unwrap_or(i);
+                                let (from, to) = if anchor_pos <= i { (anchor_pos, i) } else { (i, anchor_pos) };
+                                self.multi_selected = visible[from..=to].iter().map(|(idx, _)| *idx).collect();
+                                self.selected_archive_index = Some(real_idx);
+                                self.selected_archive_meta = None;
+                            } else if is_raw && self.selected_archive_index == Some(real_idx) && self.multi_selected.is_empty() {
                                 // 生ファイル: 選択済み状態のシングルクリックで開く
                                 if self.network_gate(path) {
                                     self.open_viewer(ViewerState::new_raw(path.clone(), self.viewer_slots, self.config.default_slot));
                                 }
                             } else {
+                                self.multi_selected.clear();
+                                self.select_anchor = Some(real_idx);
                                 self.selected_archive_index = Some(real_idx);
                                 self.selected_archive_meta = std::fs::metadata(path)
                                     .ok()
@@ -2095,6 +2196,24 @@ impl NekoviewApp {
                             }
                         }
 
+                        // 右クリックメニュー: 複数選択中はホバー位置を無視し選択集合全体を対象にする。
+                        // 未選択（単一）時はこのセルのファイル1件のみを対象にする。
+                        response.context_menu(|ui| {
+                            if !self.multi_selected.is_empty() {
+                                let count = self.multi_selected.len();
+                                if ui.button(i18n::t().favorite_detail_menu_bulk(count)).clicked() {
+                                    let targets: Vec<PathBuf> = self.multi_selected.iter()
+                                        .filter_map(|&idx| self.archives.get(idx).cloned())
+                                        .collect();
+                                    self.open_favorite_detail_dialog_for_paths(targets);
+                                    ui.close();
+                                }
+                            } else if ui.button(i18n::t().favorite_detail_menu()).clicked() {
+                                self.open_favorite_detail_dialog_for_paths(vec![path.clone()]);
+                                ui.close();
+                            }
+                        });
+
                         if (i + 1) % cols == 0 {
                             ui.end_row();
                         }
@@ -2103,6 +2222,12 @@ impl NekoviewApp {
                         ui.end_row();
                     }
                 });
+            // グリッド下の余白（サムネの無い領域）への右クリック: メニューは出すが非活性にする
+            let bg_size = egui::vec2(ui.available_width(), ui.available_height().max(40.0));
+            let (_, bg_response) = ui.allocate_exact_size(bg_size, egui::Sense::click());
+            bg_response.context_menu(|ui| {
+                ui.add_enabled(false, egui::Button::new(i18n::t().favorite_detail_menu()));
+            });
         });
         // ユーザーの手動スクロールを読み戻してストアを更新
         self.explorer_scroll_offset = output.state.offset.y;
@@ -2432,32 +2557,55 @@ impl NekoviewApp {
     /// ビューアー右クリック「お気に入り詳細設定」ダイアログを、現在表示中ファイルの
     /// 既存お気に入り登録状態を読み込んだ上で開く。
     fn open_favorite_detail_dialog(&mut self) {
-        let Some(db) = self.spread_db.clone() else { return };
         let path = {
             let viewer_guard = self.viewer.lock().unwrap();
             let Some(viewer) = viewer_guard.as_ref() else { return };
             viewer.archive_path().clone()
         };
-        let Some(dir) = path.parent().map(|p| p.to_path_buf()) else { return };
-        let Some(filename) = path.file_name().and_then(|n| n.to_str()) else { return };
-        let filename = filename.to_string();
-        let (favorite_enabled, assigned) = match crate::favorites::get_membership(&db, &dir, &filename) {
-            Some(ids) => (true, ids),
-            None => (false, Vec::new()),
+        self.open_favorite_detail_dialog_for_paths(vec![path]);
+    }
+
+    /// エクスプローラー部のグリッド右クリックから、単一ファイルまたは複数選択集合を
+    /// 対象にお気に入り詳細設定ダイアログを開く。
+    fn open_favorite_detail_dialog_for_paths(&mut self, targets: Vec<PathBuf>) {
+        if targets.is_empty() {
+            return;
+        }
+        let Some(db) = self.spread_db.clone() else { return };
+        // 単一ファイルの場合のみ、既存の登録状態をそのままプリフィルする。
+        // 複数選択時は「同一状態で上書き」方式のため、個々の既存状態が異なりうることから
+        // 空状態から出発させ、決定時に上書き確認を挟む。
+        let (favorite_enabled, assigned) = if let [path] = targets.as_slice() {
+            let dir = path.parent().map(|p| p.to_path_buf());
+            let filename = path.file_name().and_then(|n| n.to_str()).map(str::to_string);
+            match (dir, filename) {
+                (Some(dir), Some(filename)) => match crate::favorites::get_membership(&db, &dir, &filename) {
+                    Some(ids) => (true, ids),
+                    None => (false, Vec::new()),
+                },
+                _ => (false, Vec::new()),
+            }
+        } else {
+            (false, Vec::new())
         };
         self.favorite_detail_dialog = Some(FavoriteDetailDialogState {
-            dir,
-            filename,
+            targets,
             favorite_enabled,
             assigned,
             left_selected: HashSet::new(),
             right_selected: HashSet::new(),
+            pending_overwrite_confirm: false,
         });
     }
 
     /// お気に入り詳細設定ダイアログを描画する（デュアルリストボックス方式）。
+    /// 複数選択時は決定ボタン押下後に上書き確認モーダルを1段挟む。
     fn draw_favorite_detail_dialog(&mut self, ctx: &egui::Context) {
         if self.favorite_detail_dialog.is_none() {
+            return;
+        }
+        if self.favorite_detail_dialog.as_ref().is_some_and(|d| d.pending_overwrite_confirm) {
+            self.draw_favorite_overwrite_confirm(ctx);
             return;
         }
         let folders = self.favorite_folders.clone();
@@ -2466,12 +2614,22 @@ impl NekoviewApp {
         };
         let mut cancel = false;
         let mut commit = false;
+        let is_bulk = dialog.targets.len() > 1;
         egui::Window::new(i18n::t().favorite_detail_dialog_title())
             .collapsible(false)
             .resizable(true)
             .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
             .show(ctx, |ui| {
-                ui.label(&dialog.filename);
+                let label = if is_bulk {
+                    i18n::t().favorite_detail_menu_bulk(dialog.targets.len())
+                } else {
+                    dialog.targets.first()
+                        .and_then(|p| p.file_name())
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("")
+                        .to_string()
+                };
+                ui.label(label);
                 ui.add_space(4.0);
                 ui.checkbox(&mut dialog.favorite_enabled, i18n::t().favorite_detail_enable_checkbox());
                 ui.add_space(8.0);
@@ -2557,21 +2715,71 @@ impl NekoviewApp {
             return;
         }
         if commit {
-            let Some(dialog) = self.favorite_detail_dialog.take() else { return };
-            if let Some(db) = self.spread_db.clone() {
-                if dialog.favorite_enabled {
-                    crate::favorites::set_membership(&db, &dialog.dir, &dialog.filename, &dialog.assigned);
-                } else {
-                    crate::favorites::remove_favorite(&db, &dialog.dir, &dialog.filename);
+            if is_bulk {
+                // 複数選択時は「選択ファイル全部を同一状態で上書き」する破壊的操作のため、
+                // 実行前にもう一段確認を挟む（仕様: 細かい要望 参照）
+                if let Some(d) = self.favorite_detail_dialog.as_mut() {
+                    d.pending_overwrite_confirm = true;
                 }
-                if dialog.dir == self.current_dir {
-                    if dialog.favorite_enabled {
-                        self.favorite_states.insert(dialog.filename, dialog.assigned);
-                    } else {
-                        self.favorite_states.remove(&dialog.filename);
+            } else {
+                self.commit_favorite_detail_dialog();
+            }
+        }
+    }
+
+    /// 上書き確認モーダル（複数選択時のみ）。確定でDB反映、キャンセルで詳細設定に戻る。
+    fn draw_favorite_overwrite_confirm(&mut self, ctx: &egui::Context) {
+        let Some(count) = self.favorite_detail_dialog.as_ref().map(|d| d.targets.len()) else { return };
+        let mut confirm = false;
+        let mut back = false;
+        egui::Window::new(i18n::t().favorite_overwrite_confirm_title())
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .show(ctx, |ui| {
+                ui.label(i18n::t().favorite_overwrite_confirm_message(count));
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button(i18n::t().favorite_dialog_cancel()).clicked() {
+                        back = true;
                     }
+                    if ui.button(i18n::t().favorite_overwrite_confirm_ok()).clicked() {
+                        confirm = true;
+                    }
+                });
+            });
+        if back && let Some(d) = self.favorite_detail_dialog.as_mut() {
+            d.pending_overwrite_confirm = false;
+        }
+        if confirm {
+            self.commit_favorite_detail_dialog();
+        }
+    }
+
+    /// お気に入り詳細設定ダイアログの内容を、対象の全ファイルへ同一状態で書き込む。
+    fn commit_favorite_detail_dialog(&mut self) {
+        let Some(dialog) = self.favorite_detail_dialog.take() else { return };
+        let Some(db) = self.spread_db.clone() else { return };
+        for path in &dialog.targets {
+            let Some(dir) = path.parent().map(|p| p.to_path_buf()) else { continue };
+            let Some(filename) = path.file_name().and_then(|n| n.to_str()) else { continue };
+            if dialog.favorite_enabled {
+                crate::favorites::set_membership(&db, &dir, filename, &dialog.assigned);
+            } else {
+                crate::favorites::remove_favorite(&db, &dir, filename);
+            }
+            if dir == self.current_dir {
+                if dialog.favorite_enabled {
+                    self.favorite_states.insert(filename.to_string(), dialog.assigned.clone());
+                } else {
+                    self.favorite_states.remove(filename);
                 }
             }
+        }
+        // お気に入り一覧表示中は所属変更で対象ファイルが表示リストから
+        // 外れうるため、同じ選択条件で一覧を再構築して追従させる
+        if let Some(selection) = self.viewing_favorites {
+            self.enter_favorite_view(selection);
         }
     }
 
