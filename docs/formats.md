@@ -26,3 +26,4 @@ v.1.1.0
 | `.bmp` | 静止画デコード | `image`（bmp feature） | MIT OR Apache-2.0 |
 | `.webp` | 静止画・アニメーション両対応。先頭バイトのマジック判定で `image` crateより優先して専用デコーダを使う | `webp`（内部で libwebp にバインド）+ `libwebp-sys` | webp: MIT OR Apache-2.0 / libwebp-sys: MIT（libwebp本体: BSD-3-Clause） |
 | `.avif` | 静止画・アニメーション対応。ftypボックスのブランド（avif/avis）でシグネチャ判定してデコード | `libavif` + `libavif-sys`（AV1デコーダとして `local/libdav1d-sys` 経由の dav1d を使用） | libavif/libavif-sys: BSD-2-Clause（dav1d本体: BSD-2-Clause） |
+| `.tiff` / `.tif` | 静止画デコード（純Rust実装、追加のC依存なし）。マルチページTIFFは1ページ目のみ表示。CCITT G3/G4やJPEG-in-TIFF等一部の圧縮方式は非対応 | `image`（tiff feature） | MIT OR Apache-2.0 |

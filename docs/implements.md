@@ -44,7 +44,7 @@ nekoviewer/
 | 用途 | クレート |
 | --- | --- |
 | GUI | `egui` + `egui-winit` + `egui-wgpu` + `winit` + `pollster` |
-| 画像デコード | `image`（jpeg/png/webp/gif/bmp）+ `libavif`/`libavif-sys`（AVIF）+ `webp`/`libwebp-sys` |
+| 画像デコード | `image`（jpeg/png/webp/gif/bmp/tiff）+ `libavif`/`libavif-sys`（AVIF）+ `webp`/`libwebp-sys` |
 | リサイズ | `fast_image_resize` |
 | ZIP / CBZ | `zip` |
 | 7Z / CB7 | `sevenz-rust2` |
