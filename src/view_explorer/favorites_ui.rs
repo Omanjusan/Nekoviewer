@@ -137,9 +137,13 @@ impl NekoviewApp {
                     egui::ComboBox::from_id_salt("favorite_marker_combo")
                         .selected_text(dialog.marker.clone())
                         .show_ui(ui, |ui| {
-                            for m in FAVORITE_MARKER_CANDIDATES {
-                                ui.selectable_value(&mut dialog.marker, (*m).to_string(), *m);
-                            }
+                            // 候補が多いため縦一列ではなく折り返しグリッドで並べる
+                            ui.set_min_width(230.0);
+                            ui.horizontal_wrapped(|ui| {
+                                for m in FAVORITE_MARKER_CANDIDATES {
+                                    ui.selectable_value(&mut dialog.marker, (*m).to_string(), *m);
+                                }
+                            });
                         });
                     egui::widgets::color_picker::color_edit_button_srgba(
                         ui,
