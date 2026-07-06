@@ -47,6 +47,56 @@ enum TreeAction {
     Navigate(PathBuf),
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FolderPaneTab {
+    RealTree,
+    Favorites,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FavoriteSelection {
+    None,
+    /// 未整理のお気に入り（どのフォルダにも紐付かないテンポラリお気に入り群）
+    Unsorted,
+    Folder(u8),
+}
+
+#[derive(Clone, Copy)]
+enum FavoriteDialogMode {
+    Create,
+    Rename(u8),
+}
+
+#[derive(Clone)]
+struct FavoriteDialogState {
+    mode: FavoriteDialogMode,
+    name: String,
+    marker: String,
+    color: egui::Color32,
+    error: Option<String>,
+}
+
+/// お気に入りマーカーの固定候補セット。egui標準バンドルのモノクロ記号フォントで
+/// 描画できることを前提とした暫定セット（実機でのレンダリング確認は別途行う）。
+const FAVORITE_MARKER_CANDIDATES: &[&str] = &[
+    "★", "☆", "♥", "♦", "♣", "♠", "●", "■", "▲", "◆", "☀", "☂", "☁", "♪", "♫", "✈", "⚑", "⚐",
+    "☺", "☻", "♨", "☎", "✉", "✂", "⌚", "⌛", "☯", "☮",
+];
+
+fn default_favorite_color() -> egui::Color32 {
+    egui::Color32::from_rgb(255, 204, 0)
+}
+
+fn color32_to_rgba_u32(c: egui::Color32) -> u32 {
+    let [r, g, b, a] = c.to_array();
+    u32::from_be_bytes([r, g, b, a])
+}
+
+fn rgba_u32_to_color32(v: u32) -> egui::Color32 {
+    let [r, g, b, a] = v.to_be_bytes();
+    egui::Color32::from_rgba_unmultiplied(r, g, b, a)
+}
+
 fn show_tree_node(
     ui: &mut egui::Ui,
     path: &PathBuf,
@@ -167,6 +217,14 @@ pub struct NekoviewApp {
     tree_root: PathBuf,
     tree_expanded: HashSet<PathBuf>,
     tree_children: HashMap<PathBuf, Vec<PathBuf>>,
+    /// 左ペイン: 実フォルダツリー / お気に入りペインの切替状態
+    folder_pane_tab: FolderPaneTab,
+    /// 定義済みお気に入りフォルダ一覧のキャッシュ（DB操作の都度リフレッシュ）
+    favorite_folders: Vec<crate::favorites::FavoriteFolder>,
+    favorite_selected: FavoriteSelection,
+    favorite_dialog: Option<FavoriteDialogState>,
+    /// 削除確認待ちのお気に入りフォルダID
+    favorite_delete_confirm: Option<u8>,
     viewing_dir: Option<PathBuf>,
     /// CD/LSディレクトリのサマリーキャッシュ (path, saved_thumbs, total_archives)
     cd_summary: Option<(PathBuf, usize, usize)>,
@@ -309,6 +367,11 @@ impl NekoviewApp {
             tree_root,
             tree_expanded: HashSet::new(),
             tree_children: HashMap::new(),
+            folder_pane_tab: FolderPaneTab::RealTree,
+            favorite_folders: Vec::new(),
+            favorite_selected: FavoriteSelection::None,
+            favorite_dialog: None,
+            favorite_delete_confirm: None,
             viewing_dir: None,
             cd_summary: None,
             cd_summary_rx: None,
@@ -376,6 +439,7 @@ impl NekoviewApp {
             decode_target: Some(max_decode_target),
         };
         app.start_scan();
+        app.refresh_favorite_folders();
         app
     }
 
@@ -795,6 +859,8 @@ impl NekoviewApp {
         self.draw_status_window(&ctx);
         self.draw_toast(&ctx);
         self.draw_memory_warning_dialog(&ctx);
+        self.draw_favorite_dialog(&ctx);
+        self.draw_favorite_delete_confirm_dialog(&ctx);
         self.draw_settings_dialog(&ctx);
         // 旧来の無条件 ctx.request_repaint() は撤去（イベント駆動化）。
         // ROOT は入力イベント・各ワーカーの起床通知・ステータス窓の1Hzハートビートで再描画される。
@@ -1115,6 +1181,24 @@ impl NekoviewApp {
     }
 
     fn handle_explorer_keys(&mut self, ctx: &egui::Context) {
+        // ── お気に入りペイン: F2でリネームダイアログを開く ──────────────────
+        if self.folder_pane_tab == FolderPaneTab::Favorites
+            && self.favorite_dialog.is_none()
+            && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::F2))
+        {
+            if let FavoriteSelection::Folder(id) = self.favorite_selected {
+                if let Some(folder) = self.favorite_folders.iter().find(|f| f.id == id) {
+                    self.favorite_dialog = Some(FavoriteDialogState {
+                        mode: FavoriteDialogMode::Rename(folder.id),
+                        name: folder.name.clone(),
+                        marker: folder.marker.clone(),
+                        color: rgba_u32_to_color32(folder.color_rgba),
+                        error: None,
+                    });
+                }
+            }
+        }
+
         // ── エクスプローラー キーナビゲーション ─────────────────────────────
         // フィルタ適用中は見えている項目（filtered_indices）だけを移動対象にする。
         let filtered = self.filtered_indices.clone();
@@ -1321,6 +1405,29 @@ impl NekoviewApp {
     }
 
     fn draw_folder_panel(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            if ui
+                .selectable_label(self.folder_pane_tab == FolderPaneTab::RealTree, i18n::t().folder_tab_real())
+                .clicked()
+            {
+                self.folder_pane_tab = FolderPaneTab::RealTree;
+            }
+            if ui
+                .selectable_label(self.folder_pane_tab == FolderPaneTab::Favorites, i18n::t().folder_tab_favorites())
+                .clicked()
+            {
+                self.folder_pane_tab = FolderPaneTab::Favorites;
+            }
+        });
+        ui.separator();
+
+        match self.folder_pane_tab {
+            FolderPaneTab::RealTree => self.draw_real_tree_panel(ui),
+            FolderPaneTab::Favorites => self.draw_favorites_pane(ui),
+        }
+    }
+
+    fn draw_real_tree_panel(&mut self, ui: &mut egui::Ui) {
         // 下部に確保する高さ（ドライブ数に応じて可変）
         let drive_rows = self.drives.len() as f32;
         let bottom_h = (drive_rows * 24.0 + 44.0).min(200.0); // heading+sep+rows
@@ -1411,6 +1518,202 @@ impl NekoviewApp {
                     }
                 }
             });
+    }
+
+    /// DBから定義済みお気に入りフォルダ一覧を読み直してキャッシュを更新する。
+    fn refresh_favorite_folders(&mut self) {
+        let Some(db) = self.spread_db.clone() else { return };
+        self.favorite_folders = crate::favorites::list_folders(&db);
+    }
+
+    fn draw_favorites_pane(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            if ui.button("+").clicked() {
+                self.favorite_dialog = Some(FavoriteDialogState {
+                    mode: FavoriteDialogMode::Create,
+                    name: String::new(),
+                    marker: FAVORITE_MARKER_CANDIDATES[0].to_string(),
+                    color: default_favorite_color(),
+                    error: None,
+                });
+            }
+        });
+        ui.separator();
+
+        egui::ScrollArea::vertical()
+            .id_salt("favorites_scroll")
+            .auto_shrink([false, false])
+            .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
+            .show(ui, |ui| {
+                // 特別枠: 未整理のお気に入り。ソート設定に関わらず常に最上位固定。
+                let unsorted_selected = self.favorite_selected == FavoriteSelection::Unsorted;
+                if ui
+                    .selectable_label(unsorted_selected, i18n::t().favorite_unsorted_label())
+                    .clicked()
+                {
+                    self.favorite_selected = FavoriteSelection::Unsorted;
+                }
+
+                for folder in self.favorite_folders.clone() {
+                    let label = format!("{} {}", folder.marker, folder.name);
+                    let selected = self.favorite_selected == FavoriteSelection::Folder(folder.id);
+                    let resp = ui.selectable_label(selected, label);
+                    if resp.clicked() {
+                        self.favorite_selected = FavoriteSelection::Folder(folder.id);
+                    }
+                    resp.context_menu(|ui| {
+                        if ui.button(i18n::t().favorite_rename_menu()).clicked() {
+                            self.favorite_dialog = Some(FavoriteDialogState {
+                                mode: FavoriteDialogMode::Rename(folder.id),
+                                name: folder.name.clone(),
+                                marker: folder.marker.clone(),
+                                color: rgba_u32_to_color32(folder.color_rgba),
+                                error: None,
+                            });
+                            ui.close();
+                        }
+                        if ui.button(i18n::t().favorite_delete_menu()).clicked() {
+                            self.favorite_delete_confirm = Some(folder.id);
+                            ui.close();
+                        }
+                    });
+                }
+            });
+    }
+
+    /// お気に入りフォルダの新規作成・リネームダイアログ。
+    fn draw_favorite_dialog(&mut self, ctx: &egui::Context) {
+        let Some(dialog) = self.favorite_dialog.as_mut() else {
+            return;
+        };
+        let title = match dialog.mode {
+            FavoriteDialogMode::Create => i18n::t().favorite_dialog_title_create(),
+            FavoriteDialogMode::Rename(_) => i18n::t().favorite_dialog_title_rename(),
+        };
+        let mut cancel = false;
+        let mut commit = false;
+        egui::Window::new(title)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .show(ctx, |ui| {
+                ui.label(i18n::t().favorite_dialog_prompt());
+                ui.add_space(4.0);
+                ui.text_edit_singleline(&mut dialog.name);
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    ui.label(i18n::t().favorite_dialog_marker_label());
+                    egui::ComboBox::from_id_salt("favorite_marker_combo")
+                        .selected_text(dialog.marker.clone())
+                        .show_ui(ui, |ui| {
+                            for m in FAVORITE_MARKER_CANDIDATES {
+                                ui.selectable_value(&mut dialog.marker, (*m).to_string(), *m);
+                            }
+                        });
+                    egui::widgets::color_picker::color_edit_button_srgba(
+                        ui,
+                        &mut dialog.color,
+                        egui::widgets::color_picker::Alpha::Opaque,
+                    );
+                });
+                if let Some(err) = dialog.error.clone() {
+                    ui.add_space(4.0);
+                    ui.colored_label(egui::Color32::RED, err);
+                }
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button(i18n::t().favorite_dialog_cancel()).clicked() {
+                        cancel = true;
+                    }
+                    if ui.button(i18n::t().favorite_dialog_ok()).clicked() {
+                        commit = true;
+                    }
+                });
+            });
+
+        if cancel {
+            self.favorite_dialog = None;
+            return;
+        }
+        if commit {
+            self.commit_favorite_dialog();
+        }
+    }
+
+    fn commit_favorite_dialog(&mut self) {
+        let Some(dialog) = self.favorite_dialog.take() else { return };
+        let Some(db) = self.spread_db.clone() else { return };
+        let color_rgba = color32_to_rgba_u32(dialog.color);
+        let result = match dialog.mode {
+            FavoriteDialogMode::Create => {
+                crate::favorites::create_folder(&db, &dialog.name, &dialog.marker, color_rgba).map(|_| ())
+            }
+            FavoriteDialogMode::Rename(id) => crate::favorites::rename_folder(&db, id, &dialog.name)
+                .and_then(|()| crate::favorites::set_marker(&db, id, &dialog.marker, color_rgba)),
+        };
+        match result {
+            Ok(()) => {
+                self.refresh_favorite_folders();
+            }
+            Err(err) => {
+                let msg = match err {
+                    crate::favorites::FavoriteFolderError::NameEmpty => i18n::t().favorite_error_name_empty(),
+                    crate::favorites::FavoriteFolderError::NameTooLong => i18n::t().favorite_error_name_too_long(),
+                    crate::favorites::FavoriteFolderError::NameConflict => i18n::t().favorite_error_name_conflict(),
+                    crate::favorites::FavoriteFolderError::LimitReached => i18n::t().favorite_error_limit_reached(),
+                    crate::favorites::FavoriteFolderError::NotFound
+                    | crate::favorites::FavoriteFolderError::Db => i18n::t().favorite_error_generic(),
+                };
+                self.favorite_dialog = Some(FavoriteDialogState {
+                    error: Some(msg.to_string()),
+                    ..dialog
+                });
+            }
+        }
+    }
+
+    /// お気に入りフォルダ削除の確認ダイアログ。
+    fn draw_favorite_delete_confirm_dialog(&mut self, ctx: &egui::Context) {
+        let Some(id) = self.favorite_delete_confirm else {
+            return;
+        };
+        let name = self
+            .favorite_folders
+            .iter()
+            .find(|f| f.id == id)
+            .map(|f| f.name.clone())
+            .unwrap_or_default();
+        let mut cancel = false;
+        let mut confirm = false;
+        egui::Window::new(i18n::t().favorite_delete_confirm_title())
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .show(ctx, |ui| {
+                ui.label(i18n::t().favorite_delete_confirm_body(&name));
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button(i18n::t().favorite_dialog_cancel()).clicked() {
+                        cancel = true;
+                    }
+                    if ui.button(i18n::t().favorite_delete_confirm_ok()).clicked() {
+                        confirm = true;
+                    }
+                });
+            });
+        if cancel {
+            self.favorite_delete_confirm = None;
+        }
+        if confirm {
+            if let Some(db) = self.spread_db.clone() {
+                let _ = crate::favorites::delete_folder(&db, id);
+                self.refresh_favorite_folders();
+            }
+            if self.favorite_selected == FavoriteSelection::Folder(id) {
+                self.favorite_selected = FavoriteSelection::None;
+            }
+            self.favorite_delete_confirm = None;
+        }
     }
 
     fn draw_central_panel(&mut self, ui: &mut egui::Ui) {
