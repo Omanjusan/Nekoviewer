@@ -89,10 +89,15 @@ struct FavoriteDetailDialogState {
     /// 対象ファイルの絶対パス。単一選択時は1件、複数選択時は選択集合全件。
     targets: Vec<PathBuf>,
     favorite_enabled: bool,
+    /// ダイアログを開いた時点での対象ファイル全員の所属フォルダの積集合（共通部分）。
+    /// 単一選択時はそのファイルの実際の所属そのものと一致する。
+    /// 決定時、この共通部分と `assigned`（ユーザー操作後の右リスト）の差分だけを
+    /// 各ファイルの実際の所属に対して加減算適用する（表示されない個別所属を保持するため）。
+    common: Vec<u8>,
     assigned: Vec<u8>,
     left_selected: HashSet<u8>,
     right_selected: HashSet<u8>,
-    /// 複数選択時のみ使用: 決定後にもう一段の上書き確認を挟むためのフラグ
+    /// 複数選択時のみ使用: チェックボックスOFF（全削除）決定後にもう一段の確認を挟むためのフラグ
     pending_overwrite_confirm: bool,
 }
 
@@ -913,6 +918,7 @@ impl NekoviewApp {
         self.draw_memory_warning_dialog(&ctx);
         self.draw_favorite_dialog(&ctx);
         self.draw_favorite_delete_confirm_dialog(&ctx);
+        self.draw_favorite_detail_dialog(&ctx);
         self.draw_settings_dialog(&ctx);
         // 旧来の無条件 ctx.request_repaint() は撤去（イベント駆動化）。
         // ROOT は入力イベント・各ワーカーの起床通知・ステータス窓の1Hzハートビートで再描画される。
@@ -1151,7 +1157,10 @@ impl NekoviewApp {
         if output.open_favorite_dialog {
             self.open_favorite_detail_dialog();
         }
-        self.draw_favorite_detail_dialog(ui.ctx());
+        // 描画自体はエクスプローラー窓の ui() 側でのみ行う（memory_warning_open 等と同じ
+        // 「状態はどちらの窓のアクションからでもセットできるが、モーダル描画は単一窓に一本化する」
+        // 既存パターンに合わせる。ビューアー窓側でも呼ぶと、複数選択からの起動時にビューアー窓・
+        // エクスプローラー窓の両方でダイアログが二重に描画されてしまう）。
 
         let had_nav = output.nav != ViewerNav::None;
         if output.close_requested {
@@ -2572,26 +2581,36 @@ impl NekoviewApp {
             return;
         }
         let Some(db) = self.spread_db.clone() else { return };
-        // 単一ファイルの場合のみ、既存の登録状態をそのままプリフィルする。
-        // 複数選択時は「同一状態で上書き」方式のため、個々の既存状態が異なりうることから
-        // 空状態から出発させ、決定時に上書き確認を挟む。
-        let (favorite_enabled, assigned) = if let [path] = targets.as_slice() {
+        // 各対象ファイルの実際の所属状態を取得する（未お気に入りは空集合扱い）。
+        let memberships: Vec<Option<Vec<u8>>> = targets.iter().map(|path| {
             let dir = path.parent().map(|p| p.to_path_buf());
             let filename = path.file_name().and_then(|n| n.to_str()).map(str::to_string);
             match (dir, filename) {
-                (Some(dir), Some(filename)) => match crate::favorites::get_membership(&db, &dir, &filename) {
-                    Some(ids) => (true, ids),
-                    None => (false, Vec::new()),
-                },
-                _ => (false, Vec::new()),
+                (Some(dir), Some(filename)) => crate::favorites::get_membership(&db, &dir, &filename),
+                _ => None,
             }
-        } else {
-            (false, Vec::new())
-        };
+        }).collect();
+        // チェックボックス初期値: 1件でも既にお気に入り登録済みならON
+        // （単一選択時はそのファイル自身の状態そのもの）
+        let favorite_enabled = memberships.iter().any(|m| m.is_some());
+        // 積集合（共通部分）を計算する。個々のファイルで食い違う所属をダイアログ上に
+        // 混在表示すると誤操作を招くため、共通部分だけを表示・編集対象にする
+        // （単一選択時は積集合=そのファイル自身の所属と一致するため、従来通りの動作になる）。
+        let mut common: Option<HashSet<u8>> = None;
+        for m in &memberships {
+            let set: HashSet<u8> = m.clone().unwrap_or_default().into_iter().collect();
+            common = Some(match common {
+                None => set,
+                Some(prev) => prev.intersection(&set).copied().collect(),
+            });
+        }
+        let mut common: Vec<u8> = common.unwrap_or_default().into_iter().collect();
+        common.sort_unstable();
         self.favorite_detail_dialog = Some(FavoriteDetailDialogState {
             targets,
             favorite_enabled,
-            assigned,
+            common: common.clone(),
+            assigned: common,
             left_selected: HashSet::new(),
             right_selected: HashSet::new(),
             pending_overwrite_confirm: false,
@@ -2698,6 +2717,10 @@ impl NekoviewApp {
                         });
                     });
                 });
+                if is_bulk {
+                    ui.add_space(4.0);
+                    ui.label(i18n::t().favorite_detail_common_only_note());
+                }
 
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
@@ -2715,9 +2738,11 @@ impl NekoviewApp {
             return;
         }
         if commit {
-            if is_bulk {
-                // 複数選択時は「選択ファイル全部を同一状態で上書き」する破壊的操作のため、
-                // 実行前にもう一段確認を挟む（仕様: 細かい要望 参照）
+            if is_bulk && !dialog.favorite_enabled {
+                // 複数選択かつチェックボックスOFF（全ファイルをお気に入りから丸ごと削除する
+                // 破壊的操作）の時のみ、実行前にもう一段確認を挟む。
+                // チェックボックスON時の加減算編集は、ダイアログ上で明示的に選んだ操作の
+                // 反映であり隠れた破壊が起きないため確認不要。
                 if let Some(d) = self.favorite_detail_dialog.as_mut() {
                     d.pending_overwrite_confirm = true;
                 }
@@ -2760,20 +2785,32 @@ impl NekoviewApp {
     fn commit_favorite_detail_dialog(&mut self) {
         let Some(dialog) = self.favorite_detail_dialog.take() else { return };
         let Some(db) = self.spread_db.clone() else { return };
+        // common（ダイアログを開いた時点の共通所属）と assigned（ユーザー操作後の右リスト）
+        // の差分だけを加減算適用する。単一選択時は common == そのファイルの実際の所属と
+        // 一致するため、この差分計算は従来通りの「right リストをそのまま反映」と同じ結果になる。
+        let removed: HashSet<u8> = dialog.common.iter().filter(|id| !dialog.assigned.contains(id)).copied().collect();
+        let added: HashSet<u8> = dialog.assigned.iter().filter(|id| !dialog.common.contains(id)).copied().collect();
         for path in &dialog.targets {
             let Some(dir) = path.parent().map(|p| p.to_path_buf()) else { continue };
             let Some(filename) = path.file_name().and_then(|n| n.to_str()) else { continue };
-            if dialog.favorite_enabled {
-                crate::favorites::set_membership(&db, &dir, filename, &dialog.assigned);
-            } else {
+            if !dialog.favorite_enabled {
+                // チェックボックスOFF: 表示されていない個別所属も含めて丸ごと削除する核オプション
                 crate::favorites::remove_favorite(&db, &dir, filename);
-            }
-            if dir == self.current_dir {
-                if dialog.favorite_enabled {
-                    self.favorite_states.insert(filename.to_string(), dialog.assigned.clone());
-                } else {
+                if dir == self.current_dir {
                     self.favorite_states.remove(filename);
                 }
+                continue;
+            }
+            let existing = crate::favorites::get_membership(&db, &dir, filename).unwrap_or_default();
+            let mut new_ids: Vec<u8> = existing.into_iter().filter(|id| !removed.contains(id)).collect();
+            for id in &added {
+                if !new_ids.contains(id) {
+                    new_ids.push(*id);
+                }
+            }
+            crate::favorites::set_membership(&db, &dir, filename, &new_ids);
+            if dir == self.current_dir {
+                self.favorite_states.insert(filename.to_string(), new_ids);
             }
         }
         // お気に入り一覧表示中は所属変更で対象ファイルが表示リストから

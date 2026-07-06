@@ -192,6 +192,14 @@ impl Lang {
         }
     }
 
+    pub fn favorite_detail_common_only_note(self) -> &'static str {
+        match self {
+            Lang::Japanese => "※共通のお気に入り以外は省略しています",
+            Lang::English  => "* Folders not shared by all selected files are omitted",
+            Lang::Chinese  => "※未显示所选文件不共有的收藏夹",
+        }
+    }
+
     pub fn favorite_overwrite_confirm_title(self) -> &'static str {
         match self {
             Lang::Japanese => "お気に入り一括設定の確認",
