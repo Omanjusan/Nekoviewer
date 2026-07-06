@@ -1,8 +1,13 @@
 [package]
 name = "nekoviewer"
-version = "1.0.0"
+version = "1.1.0"
 edition = "2024"
 license = "MIT"
+
+[profile.release]
+strip = true
+lto = true
+codegen-units = 1
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.52", features = ["Win32_Storage_FileSystem", "Win32_UI_WindowsAndMessaging", "Win32_Foundation"] }
@@ -13,11 +18,13 @@ egui-winit = "0.35"
 egui-wgpu = { version = "0.35", features = ["winit"] }
 winit = "0.30"
 pollster = "0.4"
-image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif", "bmp"] }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif", "bmp", "tiff"] }
 libavif = "0.14"
 libavif-sys = "0.17"
 zip = "2"
-sevenz-rust2 = "0.21"
+sevenz-rust2 = { version = "0.21", optional = true }
+tar = { version = "0.4", optional = true }
+ruzstd = { version = "0.8", optional = true }
 flate2 = "1"
 encoding_rs = "0.8"
 glob = "0.3"
@@ -27,6 +34,18 @@ webp = "0.3"
 libwebp-sys = "0.9"
 sysinfo = { version = "0.32", default-features = false, features = ["system"] }
 redb = "4"
+
+[features]
+# zip/cbz は画像・コミックビューアの基幹形式のため常時コンパイル（feature 化しない）。
+# 7z / tar のみ分離し、不要ならビルドから外してバイナリサイズと依存を削減できる。
+default = ["fmt-7z", "fmt-tar", "tar-zstd"]
+fmt-7z = ["dep:sevenz-rust2"]
+fmt-tar = ["dep:tar"]
+# tar.zst 対応。ruzstd は純 Rust の zstd 実装で C 依存を引き込まないため、単一 musl 配布と
+# 両立できる。tar バックエンドが前提のため fmt-tar を暗黙有効化する。
+tar-zstd = ["fmt-tar", "dep:ruzstd"]
+# tar.xz は liblzma（C 依存）を要し単一 musl 配布と相性が悪いため既定で無効。現状は枠のみ。
+tar-xz = []
 
 [profile.dev.package.fast_image_resize]
 opt-level = 3

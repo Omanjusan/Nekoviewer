@@ -101,11 +101,10 @@ The selector is shown in blue for archive files and red for standalone image fil
 
 ### Supported Formats
 
-**Archives:** ZIP, CBZ (standalone image files are also supported)
-(7zip support planned)
-(RAR not supported)
+**Archives:** ZIP, CBZ, 7Z, CB7, TAR, CBT, tar.gz/tgz, tar.zst/tzst (standalone image files are also supported)
+(tar.xz not supported yet, RAR under consideration. See [docs/formats.md](docs/formats.md) for details)
 
-**Images:** JPEG, PNG, WebP, GIF, AVIF
+**Images:** JPEG, PNG, WebP, GIF, BMP, AVIF, TIFF
 
 **Animated playback:** AVIF, WebP, GIF (APNG: TBD)
 

@@ -15,6 +15,9 @@ use crate::spread_offset::SpreadOffset;
 
 const SCROLL_THRESHOLD: f32 = 50.0;
 const ANIM_SECS: f32 = 0.4;
+/// サムネイルバー: 現在ページを中心にこの枚数分だけ先取り要求する（暫定固定値）。
+/// フェーズ2で実際の可視範囲ベースに置き換え予定。
+const THUMBBAR_ENQUEUE_WINDOW: i32 = 40;
 const FULL_UV: egui::Rect =
     egui::Rect { min: egui::pos2(0.0, 0.0), max: egui::pos2(1.0, 1.0) };
 
@@ -57,6 +60,8 @@ struct FrameInput {
     shift5: bool,
     shift_nav_up: bool,
     shift_nav_down: bool,
+    key_home: bool,
+    key_end: bool,
     slot_apply: Option<usize>,
     // スクロール
     scroll_delta: f32,
@@ -110,6 +115,8 @@ impl FrameInput {
                 shift5:             i.key_pressed(egui::Key::Num5),
                 shift_nav_up:       i.key_pressed(egui::Key::ArrowUp)   && sh,
                 shift_nav_down:     i.key_pressed(egui::Key::ArrowDown) && sh,
+                key_home:           i.key_pressed(egui::Key::Home),
+                key_end:            i.key_pressed(egui::Key::End),
                 slot_apply,
                 scroll_delta:       raw,
                 shift_scroll_delta: if sh { raw } else { 0.0 },
@@ -238,6 +245,14 @@ pub struct ViewerState {
     /// クリップ矩形サイズが不安定な瞬間に delta が収束せず request_repaint が
     /// 連打され続ける恐れがあるため）。
     thumbbar_scrolled_lo: Option<i32>,
+    /// フェーズ2: 直近フレームで実描画したサムネイルバーの可視インデックス範囲
+    /// (原始インデックス、両端含む)。enqueue の優先範囲としても使う。
+    /// None の間は仮想化描画がまだ一度も走っていない（起動直後の1フレーム分）。
+    thumbbar_visible_range: Option<(i32, i32)>,
+    /// 保存済み見開き状態のキャッシュ（app側がopen_viewer時にセット/操作後に更新）
+    saved_spread: Option<(PageMode, i32)>,
+    /// 保存メニューでのユーザー操作要求（1フレームで消費してViewerOutputへ渡す）
+    pending_spread_action: Option<crate::controller::SpreadSaveAction>,
 }
 
 impl ViewerState {
@@ -258,10 +273,25 @@ impl ViewerState {
             .collect()
     }
 
-    /// サムネイルバー用: まだテクスチャが無く、要求も出していない original_index 一覧。
+    /// サムネイルバー用: 現在ページ近傍でまだテクスチャが無く、要求も出していない
+    /// original_index 一覧。開いた直後や大きくジャンプした直後に全ページ分を一括で
+    /// キューへ積まないよう、直近フレームで実描画した可視範囲(`thumbbar_visible_range`)
+    /// に絞る。まだ一度も描画されていない最初のフレームは `THUMBBAR_ENQUEUE_WINDOW`
+    /// を暫定の窓として使う。
     pub fn thumbbar_missing_indices(&self) -> Vec<usize> {
-        self.entries.iter()
-            .map(|e| e.original_index)
+        let lo = self.spread_lo();
+        let total = self.entries.len() as i32;
+        let (win_lo, win_hi) = self.thumbbar_visible_range.unwrap_or((
+            lo - THUMBBAR_ENQUEUE_WINDOW,
+            lo + THUMBBAR_ENQUEUE_WINDOW,
+        ));
+        let win_lo = win_lo.max(0);
+        let win_hi = win_hi.min(total - 1);
+        if win_lo > win_hi {
+            return Vec::new();
+        }
+        (win_lo..=win_hi)
+            .map(|i| self.entries[i as usize].original_index)
             .filter(|i| !self.thumb_textures.contains_key(i) && !self.thumb_pending.contains(i))
             .collect()
     }
@@ -361,6 +391,9 @@ impl ViewerState {
             thumb_pending: HashSet::new(),
             thumbbar_last_activity: Instant::now(),
             thumbbar_scrolled_lo: None,
+            thumbbar_visible_range: None,
+            saved_spread: None,
+            pending_spread_action: None,
         })
     }
 
@@ -408,6 +441,9 @@ impl ViewerState {
             thumb_pending: HashSet::new(),
             thumbbar_last_activity: Instant::now(),
             thumbbar_scrolled_lo: None,
+            thumbbar_visible_range: None,
+            saved_spread: None,
+            pending_spread_action: None,
         }
     }
 
@@ -463,6 +499,48 @@ impl ViewerState {
         }
     }
 
+    /// 保存済み見開き状態を復元する（ビューアを開いた直後に一度だけ呼ぶ想定）。
+    /// 復帰は常にファイル先頭固定で、保存されたオフセット値だけを先頭に適用する。
+    pub fn restore_saved_spread(&mut self, mode: PageMode, offset_value: i32, cfg: &mut ViewerConfig) {
+        if self.is_raw_file || mode == PageMode::Single { return; }
+        self.set_page_mode(mode, cfg);
+        self.spread_base = 0;
+        match offset_value {
+            v if v < 0 => self.offset.force_virtual_left(),
+            v if v > 0 => { self.offset.reset(); self.offset.advance(); }
+            _ => self.offset.reset(),
+        }
+    }
+
+    pub fn set_saved_spread(&mut self, v: Option<(PageMode, i32)>) { self.saved_spread = v; }
+
+    /// 現在の表示状態を保存キー用の (mode, offset) 形式で返す
+    pub fn current_spread_snapshot(&self) -> (PageMode, i32) {
+        (self.page_mode, self.offset.value())
+    }
+
+    /// 保存トグル（チェックボックス）を操作可能か（Single中は保存対象外）
+    pub fn spread_save_toggle_enabled(&self) -> bool {
+        self.page_mode != PageMode::Single
+    }
+
+    pub fn spread_save_toggle_on(&self) -> bool {
+        self.saved_spread.is_some()
+    }
+
+    /// 「上書き保存」ボタンを操作可能か（保存済みかつ現在のmode/offsetが保存値と異なる場合のみ）
+    pub fn spread_overwrite_enabled(&self) -> bool {
+        match self.saved_spread {
+            None => false,
+            Some((mode, offset)) => mode != self.page_mode || offset != self.offset.value(),
+        }
+    }
+
+    /// メニュー操作で立てられた保存要求を取り出す（1フレームで消費）
+    pub fn take_spread_action(&mut self) -> Option<crate::controller::SpreadSaveAction> {
+        self.pending_spread_action.take()
+    }
+
     /// spread_lo を基に lo/hi テクスチャを返す（original_index でキャッシュ参照）
     fn page_textures_for(&self, lo: i32) -> (Option<egui::TextureHandle>, Option<egui::TextureHandle>) {
         let total = self.entries.len() as i32;
@@ -516,7 +594,7 @@ impl ViewerState {
         let ctx = ui.ctx().clone();
         let viewer_style = ui.style().clone();
         if !self.open || self.entries.is_empty() {
-            return ViewerOutput { nav: ViewerNav::None, close_requested: !self.open, save_slots: None };
+            return ViewerOutput { nav: ViewerNav::None, close_requested: !self.open, save_slots: None, spread_save_action: None };
         }
 
         // ── フレーム入力を一括収集（ctx.input はこの1回のみ）────────────────
@@ -579,7 +657,7 @@ impl ViewerState {
 
         // サムネイルバー自動非表示用: ページ送りに関わる入力があった時刻を記録する。
         if key_left || key_right || key_up || key_down || key_space
-            || shift_nav_up || shift_nav_down
+            || shift_nav_up || shift_nav_down || input.key_home || input.key_end
             || scroll_delta != 0.0 || shift_scroll_delta != 0.0
         {
             self.thumbbar_last_activity = Instant::now();
@@ -587,16 +665,16 @@ impl ViewerState {
 
         if key_left || key_right || key_up || key_down || key_space || esc || zoom_key || fs_key
             || mode1 || mode2 || mode3 || shift4 || shift5
-            || shift_nav_up || shift_nav_down
+            || shift_nav_up || shift_nav_down || input.key_home || input.key_end
             || scroll_delta != 0.0 || shift_scroll_delta != 0.0
         {
             log_key!(
                 "[key] left={} right={} up={} down={} space={} esc={} zoom={} fs={} \
                  mode1={} mode2={} mode3={} shift4={} shift5={} \
-                 shift_nav_up={} shift_nav_down={} scroll={:.1} shift_scroll={:.1}",
+                 shift_nav_up={} shift_nav_down={} home={} end={} scroll={:.1} shift_scroll={:.1}",
                 key_left, key_right, key_up, key_down, key_space, esc, zoom_key, fs_key,
                 mode1, mode2, mode3, shift4, shift5,
-                shift_nav_up, shift_nav_down, scroll_delta, shift_scroll_delta
+                shift_nav_up, shift_nav_down, input.key_home, input.key_end, scroll_delta, shift_scroll_delta
             );
         }
 
@@ -644,7 +722,14 @@ impl ViewerState {
             zoom_actual: cfg.zoom_actual,
             monitor:     input.monitor_size,
         };
-        let double_clicked = self.draw_central_panel(ui, &frame);
+        let (double_clicked, single_clicked) = self.draw_central_panel(ui, &frame);
+
+        // メイン画像シングルクリックでサムネバーの自動非表示タイマーを早送りし、即座に隠す。
+        // idle_hide_ms == 0（常時表示設定）のときは早送り対象のタイマー自体が存在しないため何もしない。
+        if single_clicked && idle_ms > 0 {
+            self.thumbbar_last_activity = Instant::now() - Duration::from_millis(idle_ms);
+            ctx.request_repaint();
+        }
 
         if show_thumbbar && cfg.thumbbar_overlap {
             self.draw_thumbbar_overlay(ui, cfg, cfg.thumbbar_pos, viewport_before_central);
@@ -656,7 +741,8 @@ impl ViewerState {
 
         self.tick_toast(&ctx, input.time);
 
-        ViewerOutput { nav, close_requested: close_self, save_slots }
+        let spread_save_action = self.take_spread_action();
+        ViewerOutput { nav, close_requested: close_self, save_slots, spread_save_action }
     }
 
     /// ビューアーを開いた直後（初回フレーム）に conf 既定スロットを一度だけ適用する。
@@ -854,11 +940,47 @@ impl ViewerState {
             self.offset.update_virtual_right(self.spread_lo() + 1 >= total_i);
         }
 
+        // ── Home/End: アーカイブ内先頭/末尾へ絶対ジャンプ ────────────────────
+        // 通常のページ送りを限界まで行った状態と同じ内部状態を再現する
+        // （以降の戻る/進む操作が通常ナビゲーションと同様に振る舞うように）。
+        if input.key_home {
+            self.scroll_acc = 0.0;
+            self.shift_scroll_acc = 0.0;
+            self.spread_base = 0;
+            if is_spread {
+                // オフセットは維持する。ただし維持したままだと先頭実ページ(0)が
+                // 欠落してしまう場合（ShiftedOne等）だけ、仮想左側に倒して補正する。
+                if self.spread_lo() > 0 {
+                    self.offset.force_virtual_left();
+                }
+            } else {
+                self.offset.reset();
+            }
+            self.offset.update_virtual_right(is_spread && self.spread_lo() + 1 >= total_i);
+        }
+        if input.key_end {
+            self.scroll_acc = 0.0;
+            self.shift_scroll_acc = 0.0;
+            if is_spread {
+                // オフセットは維持する。通常のページ送りを限界までやった時と同じ
+                // spread_base（offsetを保ったまま到達できる最大値）を直接計算する。
+                let off = self.offset.value();
+                let target = total_i - 1 - off;
+                let k = if target >= 0 { target / step } else { 0 };
+                self.spread_base = (k * step).max(0);
+            } else {
+                self.spread_base = (total_i - 1).max(0);
+                self.offset.reset();
+            }
+            self.offset.update_virtual_right(is_spread && self.spread_lo() + 1 >= total_i);
+        }
+
         nav
     }
 
-    fn draw_central_panel(&mut self, ui: &mut egui::Ui, frame: &RenderFrame) -> bool {
+    fn draw_central_panel(&mut self, ui: &mut egui::Ui, frame: &RenderFrame) -> (bool, bool) {
         let mut double_clicked = false;
+        let mut single_clicked = false;
         egui::CentralPanel::default().show(ui, |ui| {
             let clip   = ui.clip_rect();
             let avail  = ui.available_size();
@@ -868,13 +990,13 @@ impl ViewerState {
                 // ── 通常レンダリング ──────────────────────────────────────────
                 match frame.page_mode {
                     PageMode::Single => {
-                        self.render_single(ui, &frame.tex_lo, frame.zoom_actual, &mut double_clicked);
+                        self.render_single(ui, &frame.tex_lo, frame.zoom_actual, &mut double_clicked, &mut single_clicked);
                     }
                     PageMode::SpreadLeft => {
-                        Self::render_spread(ui, &frame.tex_lo, &frame.tex_hi, frame.monitor);
+                        self.render_spread(ui, &frame.tex_lo, &frame.tex_hi, frame.monitor, &mut single_clicked);
                     }
                     PageMode::SpreadRight => {
-                        Self::render_spread(ui, &frame.tex_hi, &frame.tex_lo, frame.monitor);
+                        self.render_spread(ui, &frame.tex_hi, &frame.tex_lo, frame.monitor, &mut single_clicked);
                     }
                 }
             } else {
@@ -882,6 +1004,7 @@ impl ViewerState {
                 let full_rect = egui::Rect::from_min_size(origin, avail);
                 let resp = ui.allocate_rect(full_rect, egui::Sense::click());
                 if resp.double_clicked() { double_clicked = true; }
+                if resp.clicked() && !resp.double_clicked() { single_clicked = true; }
 
                 let painter = ui.painter().with_clip_rect(clip);
                 let off_old = avail.x * frame.t * (-frame.anim_dir_f);
@@ -941,7 +1064,7 @@ impl ViewerState {
                 p.galley(bg_pos + pad, tg, egui::Color32::WHITE);
             }
         });
-        double_clicked
+        (double_clicked, single_clicked)
     }
 
     /// サムネイルバー: 本画像の領域を圧迫する形（配置に応じて Panel で領域確保）。
@@ -1002,10 +1125,18 @@ impl ViewerState {
 
     /// サムネイルバーの中身。指定 Ui の領域いっぱいにスクロール可能な帯としてサムネを並べ、
     /// 現在地(見開きなら2枚)に半透明ボックスを重ねる。
+    /// フェーズ2: ページ数が多いアーカイブでも重くならないよう、可視範囲＋マージン分だけ
+    /// 実際にレイアウト・描画する（仮想化）。可視範囲は `thumbbar_visible_range` に記録し、
+    /// enqueue（サムネ生成要求）の優先範囲としても使う。
     fn draw_thumbbar_contents(&mut self, ui: &mut egui::Ui, cfg: &ViewerConfig, horizontal: bool) {
+        const MARGIN_ITEMS: i32 = 8;
         let edge = cfg.thumbbar_thumb_size as f32;
+        let spacing = ui.spacing().item_spacing;
+        let spacing_axis = if horizontal { spacing.x } else { spacing.y };
+        let step = edge + spacing_axis;
         let lo = self.spread_lo();
         let hi = if self.page_mode == PageMode::Single { lo } else { lo + 1 };
+        let total = self.entries.len() as i32;
         let marker = egui::Color32::from_rgba_unmultiplied(
             cfg.thumbbar_marker_r,
             cfg.thumbbar_marker_g,
@@ -1013,45 +1144,106 @@ impl ViewerState {
             (cfg.thumbbar_marker_a as f32 / 100.0 * 255.0).round() as u8,
         );
 
+        // 現在地が仮想ページ(-1 or total)にはみ出している場合、サムネバー側にも
+        // その仮想ページ用のスロットを1枠追加する（現在地マーカーを実ページ単独では
+        // なく本来の見開きペアとして表示するため）。仮想ページは常に先頭(-1)か
+        // 末尾(total)のどちらか片方にしか出ないので、両方同時に足す必要はない。
+        let virtual_left = self.page_mode != PageMode::Single && lo == -1;
+        let virtual_right = self.page_mode != PageMode::Single && hi == total;
+        let base = if virtual_left { 1 } else { 0 };
+        let slot_count = total + base + if virtual_right { 1 } else { 0 };
+
         egui::ScrollArea::new([horizontal, !horizontal])
             .id_salt("thumbbar_scroll")
             .auto_shrink([false, false])
-            .show(ui, |ui| {
-                let layout = if horizontal {
-                    egui::Layout::left_to_right(egui::Align::Center)
+            .show_viewport(ui, |ui, viewport| {
+                if slot_count <= 0 {
+                    self.thumbbar_visible_range = Some((0, -1));
+                    return;
+                }
+                let content_len = (slot_count as f32 * step - spacing_axis).max(0.0);
+                if horizontal {
+                    ui.set_width(content_len);
                 } else {
-                    egui::Layout::top_down(egui::Align::Min)
+                    ui.set_height(content_len);
+                }
+
+                let (view_min, view_max) = if horizontal {
+                    (viewport.min.x, viewport.max.x)
+                } else {
+                    (viewport.min.y, viewport.max.y)
                 };
-                ui.with_layout(layout, |ui| {
-                    let mut current_rect: Option<egui::Rect> = None;
-                    for (i, entry) in self.entries.iter().enumerate() {
-                        let orig = entry.original_index;
-                        let (rect, _resp) = ui.allocate_exact_size(egui::vec2(edge, edge), egui::Sense::hover());
-                        if let Some(tex) = self.thumb_texture(orig) {
-                            let fit = fit_rect_contain(rect, tex.size_vec2());
-                            ui.painter().image(tex.id(), fit, FULL_UV, egui::Color32::WHITE);
+                let first = ((view_min / step).floor() as i32 - MARGIN_ITEMS).max(0);
+                let last = ((view_max / step).ceil() as i32 + MARGIN_ITEMS).min(slot_count - 1);
+                // enqueue優先範囲は実ページのみを対象にするため、仮想スロット分は除いて記録する。
+                self.thumbbar_visible_range = Some(((first - base).max(0), (last - base).min(total - 1)));
+
+                let origin = ui.max_rect().min;
+                let item_rect = |s: i32| -> egui::Rect {
+                    let offset = s as f32 * step;
+                    if horizontal {
+                        egui::Rect::from_min_size(origin + egui::vec2(offset, 0.0), egui::vec2(edge, edge))
+                    } else {
+                        egui::Rect::from_min_size(origin + egui::vec2(0.0, offset), egui::vec2(edge, edge))
+                    }
+                };
+
+                let mut current_rect: Option<egui::Rect> = None;
+                if first <= last {
+                    for s in first..=last {
+                        let page = s - base;
+                        let rect = item_rect(s);
+                        if page < 0 || page >= total {
+                            // 仮想ページ: メイン表示側の空白カードと同じ色のダミーを描く。
+                            ui.painter().rect_filled(rect, 3.0, egui::Color32::from_gray(40));
                         } else {
-                            ui.painter().rect_filled(rect, 3.0, egui::Color32::from_gray(60));
+                            let orig = self.entries[page as usize].original_index;
+                            if let Some(tex) = self.thumb_texture(orig) {
+                                let fit = fit_rect_contain(rect, tex.size_vec2());
+                                ui.painter().image(tex.id(), fit, FULL_UV, egui::Color32::WHITE);
+                            } else {
+                                ui.painter().rect_filled(rect, 3.0, egui::Color32::from_gray(60));
+                            }
                         }
-                        let is_current = i as i32 == lo || i as i32 == hi;
+                        let is_current = page == lo || page == hi;
                         if is_current {
                             ui.painter().rect_filled(rect, 3.0, marker);
                             current_rect = Some(current_rect.map_or(rect, |r| r.union(rect)));
                         }
-                    }
-                    // 見開きは2枚分の範囲をまとめて1回だけセンタリングする（現在地は動かさず、
-                    // サムネの方をスクロールさせる）。先頭/終端付近では egui が自動的に
-                    // クランプするため、そこだけマーカーが中央から端へ寄る（仕様通りの挙動）。
-                    // ページが実際に変わった時だけ呼ぶ（毎フレーム呼ぶと、リサイズ直後など
-                    // クリップ矩形が安定しない間 delta が収束せず request_repaint が連打され
-                    // 続けるおそれがあるため。フルスクリーン切替直後の操作停滞の一因だった）。
-                    if let Some(r) = current_rect {
-                        if self.thumbbar_scrolled_lo != Some(lo) {
-                            ui.scroll_to_rect(r, Some(egui::Align::Center));
-                            self.thumbbar_scrolled_lo = Some(lo);
+                        if page >= 0 && page < total {
+                            // ページ番号(1-indexed)。ドロップシャドウは右下ページ数オーバーレイと同じ手法。
+                            let font_size = (edge * 0.22).clamp(9.0, 20.0);
+                            let font_id = egui::FontId::proportional(font_size);
+                            let text_color = egui::Color32::WHITE;
+                            let shadow_color = egui::Color32::from_black_alpha(180);
+                            let galley = ui.painter().layout_no_wrap((page + 1).to_string(), font_id, text_color);
+                            let text_pos = egui::pos2(rect.left() + 2.0, rect.bottom() - galley.size().y - 2.0);
+                            ui.painter().text(
+                                text_pos + egui::vec2(1.0, 1.0),
+                                egui::Align2::LEFT_TOP,
+                                galley.text(),
+                                egui::FontId::proportional(font_size),
+                                shadow_color,
+                            );
+                            ui.painter().galley(text_pos, galley, text_color);
                         }
                     }
-                });
+                }
+                // 現在地(lo/hi)が可視範囲外（マージンの外）でも、位置計算だけで
+                // scroll_to_rect の対象矩形を求める。見開きは2枚分の範囲をまとめて
+                // 1回だけセンタリングする（現在地は動かさず、サムネの方をスクロールさせる）。
+                // ページが実際に変わった時だけ呼ぶ（毎フレーム呼ぶと、リサイズ直後など
+                // クリップ矩形が安定しない間 delta が収束せず request_repaint が連打され
+                // 続けるおそれがあるため。フルスクリーン切替直後の操作停滞の一因だった）。
+                if self.thumbbar_scrolled_lo != Some(lo) {
+                    let r = current_rect.unwrap_or_else(|| {
+                        let lo_s = (lo + base).clamp(0, slot_count - 1);
+                        let hi_s = (hi + base).clamp(0, slot_count - 1);
+                        item_rect(lo_s).union(item_rect(hi_s))
+                    });
+                    ui.scroll_to_rect(r, Some(egui::Align::Center));
+                    self.thumbbar_scrolled_lo = Some(lo);
+                }
             });
     }
 
@@ -1256,8 +1448,11 @@ impl ViewerState {
         }
 
         if self.entry_list_visible {
-            let current_lo = self.spread_lo().max(0) as usize;
+            // 仮想ページ(-1 or total)を握りつぶさないよう、クランプ前の生の lo/hi で
+            // ペア判定してから、実ページ範囲内のものだけハイライトする。
+            let lo = self.spread_lo();
             let is_spread = self.page_mode != PageMode::Single;
+            let hi = if is_spread { lo + 1 } else { lo };
             let entries_snap = self.entries.clone();
 
             egui::Panel::left("entry_list_panel")
@@ -1267,10 +1462,9 @@ impl ViewerState {
                     egui::ScrollArea::vertical()
                         .auto_shrink([false, false])
                         .show(ui, |ui| {
-                            let total = entries_snap.len();
                             for (i, entry) in entries_snap.iter().enumerate() {
-                                let is_cur = i == current_lo
-                                    || (is_spread && current_lo + 1 < total && i == current_lo + 1);
+                                let i = i as i32;
+                                let is_cur = i == lo || i == hi;
                                 let _ = ui.selectable_label(is_cur, &entry.display_name);
                             }
                         });
@@ -1302,13 +1496,46 @@ impl ViewerState {
         if sort_changed { self.sort_entries(); }
     }
 
+    /// 画像本体の右クリックメニュー（見開き設定の保存トグル／上書き保存）を描画する
+    fn spread_save_context_menu(
+        ui: &mut egui::Ui,
+        toggle_enabled: bool,
+        toggle_on_init: bool,
+        overwrite_enabled: bool,
+        action: &mut Option<crate::controller::SpreadSaveAction>,
+    ) {
+        let t = i18n::t();
+        let mut toggle_on = toggle_on_init;
+        ui.add_enabled_ui(toggle_enabled, |ui| {
+            if ui.checkbox(&mut toggle_on, t.spread_save_toggle_label()).changed() {
+                *action = Some(if toggle_on {
+                    crate::controller::SpreadSaveAction::Enable
+                } else {
+                    crate::controller::SpreadSaveAction::Disable
+                });
+                ui.close();
+            }
+        });
+        ui.add_enabled_ui(overwrite_enabled, |ui| {
+            if ui.button(t.spread_save_overwrite_label()).clicked() {
+                *action = Some(crate::controller::SpreadSaveAction::Overwrite);
+                ui.close();
+            }
+        });
+    }
+
     fn render_single(
         &mut self,
         ui: &mut egui::Ui,
         tex: &Option<egui::TextureHandle>,
         zoom_actual: bool,
         double_clicked: &mut bool,
+        single_clicked: &mut bool,
     ) {
+        let toggle_enabled = self.spread_save_toggle_enabled();
+        let toggle_on = self.spread_save_toggle_on();
+        let overwrite_enabled = self.spread_overwrite_enabled();
+        let action = &mut self.pending_spread_action;
         if let Some(tex) = tex {
             let [img_w, img_h] = tex.size();
             if zoom_actual {
@@ -1325,6 +1552,8 @@ impl ViewerState {
                     );
                     ui.painter().image(tex.id(), img_rect, FULL_UV, egui::Color32::WHITE);
                     if resp.double_clicked() { *double_clicked = true; }
+                    if resp.clicked() && !resp.double_clicked() { *single_clicked = true; }
+                    resp.context_menu(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action));
                 });
             } else {
                 let available = ui.available_size();
@@ -1338,6 +1567,8 @@ impl ViewerState {
                 let resp  = ui.allocate_rect(rect, egui::Sense::click());
                 ui.painter().image(tex.id(), rect, FULL_UV, egui::Color32::WHITE);
                 if resp.double_clicked() { *double_clicked = true; }
+                if resp.clicked() && !resp.double_clicked() { *single_clicked = true; }
+                resp.context_menu(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action));
             }
         } else {
             let rect = egui::Rect::from_min_size(ui.cursor().left_top(), ui.available_size());
@@ -1347,16 +1578,24 @@ impl ViewerState {
     }
 
     fn render_spread(
+        &mut self,
         ui: &mut egui::Ui,
         tex_left: &Option<egui::TextureHandle>,
         tex_right: &Option<egui::TextureHandle>,
         monitor: Option<egui::Vec2>,
+        single_clicked: &mut bool,
     ) {
+        let toggle_enabled = self.spread_save_toggle_enabled();
+        let toggle_on = self.spread_save_toggle_on();
+        let overwrite_enabled = self.spread_overwrite_enabled();
+        let action = &mut self.pending_spread_action;
         let available = ui.available_size();
         let origin = ui.cursor().left_top();
 
         let full_rect = egui::Rect::from_min_size(origin, available);
-        ui.allocate_rect(full_rect, egui::Sense::click());
+        let resp = ui.allocate_rect(full_rect, egui::Sense::click());
+        if resp.clicked() && !resp.double_clicked() { *single_clicked = true; }
+        resp.context_menu(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action));
 
         let (rect_l, rect_r) = Self::spread_rects(available, origin, tex_left, tex_right, monitor);
         let painter = ui.painter();

@@ -71,6 +71,11 @@ impl SpreadOffset {
         self.virtual_right = false;
     }
 
+    /// Home: 先頭仮想状態へ直接遷移する（advance/retreatの境界ガードをバイパス）
+    pub fn force_virtual_left(&mut self) {
+        self.state = SpreadDisplayState::VirtualLeft;
+    }
+
     /// viewer が毎フレーム末尾仮想フラグを更新する
     /// hi側ページ（lo+1）が存在しないときに true を渡す
     pub fn update_virtual_right(&mut self, at_end: bool) {

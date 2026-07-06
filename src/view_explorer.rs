@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, mpsc};
 
-use crate::cache::{FileCache, LoadRequest, LoadResult, PageCache, ThumbRequest, ThumbResult, EntryThumbRequest, EntryThumbResult, spawn_worker, spawn_thumb_worker, spawn_entry_thumb_worker, spawn_file_cache_worker};
+use crate::cache::{FileCache, FileCacheEntry, LoadRequest, LoadResult, PageCache, ThumbRequest, ThumbResult, EntryThumbRequest, EntryThumbResult, spawn_worker, spawn_thumb_worker, spawn_entry_thumb_worker, spawn_file_cache_worker};
 use crate::gui_config::ThumbbarPos;
 use crate::config::AppConfig;
 use crate::gui_config::{SortState, ViewerConfig, WindowSlot};
@@ -152,6 +152,13 @@ struct TreeScanPending {
     rx: mpsc::Receiver<Vec<PathBuf>>,
 }
 
+/// 7zのFileCache展開待ちで保留したページ/サムネ要求。
+/// FileCache結果が届いた時点でこれをまとめて実際のワーカーへ送出する。
+enum DeferredArchiveRequest {
+    Page(LoadRequest),
+    Thumb(EntryThumbRequest),
+}
+
 pub struct NekoviewApp {
     pub(crate) config: AppConfig,
     current_dir: PathBuf,
@@ -168,6 +175,10 @@ pub struct NekoviewApp {
     cd_summary_updated_at: Option<std::time::Instant>,
     /// 現在ディレクトリの redb キャッシュDB（キャッシュ無効なら None）
     cache_db: Option<std::sync::Arc<std::sync::Mutex<redb::Database>>>,
+    /// exe横の見開き状態DB（アプリ起動時に一度だけ開き、使い回す）
+    spread_db: Option<std::sync::Arc<std::sync::Mutex<redb::Database>>>,
+    /// 現在ディレクトリ内で保存済みの見開き状態 (filename -> (mode, offset, page_index))
+    spread_states: HashMap<String, (crate::types::PageMode, i32)>,
     thumbnails: HashMap<PathBuf, egui::TextureHandle>,
     thumb_req_tx: mpsc::SyncSender<ThumbRequest>,
     thumb_res_rx: mpsc::Receiver<ThumbResult>,
@@ -182,8 +193,12 @@ pub struct NekoviewApp {
     page_cache: Arc<Mutex<PageCache>>,
     file_cache: FileCache,
     file_cache_req_tx: mpsc::Sender<std::path::PathBuf>,
-    file_cache_res_rx: mpsc::Receiver<(std::path::PathBuf, std::sync::Arc<[u8]>)>,
+    file_cache_res_rx: mpsc::Receiver<(std::path::PathBuf, FileCacheEntry)>,
     file_cache_pending: HashSet<PathBuf>,
+    /// 7zがFileCacheへの展開待ちの間、ページ/サムネ要求を送らずここに溜めておく。
+    /// FileCache結果が届いた時点でまとめてフラッシュする（デコードワーカー側での
+    /// スレッドごとの重複展開を避けるため）。
+    deferred_archive_requests: HashMap<PathBuf, Vec<DeferredArchiveRequest>>,
     req_tx: mpsc::Sender<LoadRequest>,
     res_rx: Arc<Mutex<mpsc::Receiver<LoadResult>>>,
     pending_loads: Arc<Mutex<HashSet<(PathBuf, usize)>>>,
@@ -197,6 +212,10 @@ pub struct NekoviewApp {
     raw_image_files: std::collections::HashSet<PathBuf>,
     /// 無効確定済みZIP（画像エントリなし）のセット（現ディレクトリセッション中に保持）
     invalid_archives: std::collections::HashSet<PathBuf>,
+    /// サムネイル生成に失敗したファイルのセット（DB非永続・セッション中のみ。
+    /// 無限リトライを止めるためのマーカーで、invalid_archives とは異なり
+    /// 次回スキャンでの一覧除外は行わない）
+    thumb_failed: std::collections::HashSet<PathBuf>,
     /// アプリレベルのトーストメッセージ（3秒で自動消去）
     app_toast: Option<(String, std::time::Instant)>,
     /// フェーズ2: ページキャッシュ予算（見積もりゲートの閾値。resolve_cache_budgetsのpage_max）
@@ -295,6 +314,8 @@ impl NekoviewApp {
             cd_summary_rx: None,
             cd_summary_updated_at: None,
             cache_db: None,
+            spread_db: crate::spread_state::open_spread_db(),
+            spread_states: HashMap::new(),
             thumbnails: HashMap::new(),
             thumb_req_tx,
             thumb_res_rx,
@@ -309,6 +330,7 @@ impl NekoviewApp {
             file_cache_req_tx,
             file_cache_res_rx,
             file_cache_pending: HashSet::new(),
+            deferred_archive_requests: HashMap::new(),
             req_tx,
             res_rx: Arc::new(Mutex::new(res_rx)),
             pending_loads: Arc::new(Mutex::new(HashSet::new())),
@@ -318,6 +340,7 @@ impl NekoviewApp {
             viewer_slots,
             raw_image_files: std::collections::HashSet::new(),
             invalid_archives: std::collections::HashSet::new(),
+            thumb_failed: std::collections::HashSet::new(),
             app_toast: None,
             cache_budget_bytes: cache_max,
             anim_ring_bounds: ring_bounds,
@@ -366,6 +389,7 @@ impl NekoviewApp {
         self.filtered_indices.clear();
         self.raw_image_files.clear();
         self.invalid_archives.clear();
+        self.thumb_failed.clear();
         self.cache_db = neko_dir::neko_dir_for(&self.current_dir, &self.config)
             .and_then(|nd| neko_dir::open_cache_db(&nd));
         self.thumbnails.clear();
@@ -401,6 +425,18 @@ impl NekoviewApp {
             for img in raw_images {
                 self.raw_image_files.insert(img.clone());
                 self.archives.push(img);
+            }
+            if let Some(db) = self.spread_db.clone() {
+                let filenames: Vec<String> = self.archives.iter()
+                    .filter_map(|p| p.file_name().and_then(|n| n.to_str()).map(str::to_string))
+                    .collect();
+                crate::spread_state::gc_dir(&db, &self.current_dir, &filenames);
+                self.spread_states = crate::spread_state::list_dir_entries(&db, &self.current_dir)
+                    .into_iter()
+                    .map(|(name, mode, offset)| (name, (mode, offset)))
+                    .collect();
+            } else {
+                self.spread_states.clear();
             }
             self.scan_state = ScanState::Done;
             self.sort_archives();
@@ -627,6 +663,26 @@ impl NekoviewApp {
         );
     }
 
+    /// LoadRequestを送出する。7zがFileCacheへの展開待ちの間は、要求を保留キューへ積んで
+    /// 展開完了後にまとめて送る（デコードワーカー側でのスレッドごとの重複展開を避けるため）。
+    fn dispatch_load_request(&mut self, mut req: LoadRequest) {
+        let entry = self.file_cache.get(&req.archive_path);
+        if entry.is_none()
+            && !req.is_raw_file
+            && archive::is_7z_path(&req.archive_path)
+            && self.file_cache_pending.contains(&req.archive_path)
+        {
+            self.deferred_archive_requests
+                .entry(req.archive_path.clone())
+                .or_default()
+                .push(DeferredArchiveRequest::Page(req));
+            return;
+        }
+        req.file_cache_entry = entry;
+        let _ = self.req_tx.send(req);
+    }
+
+
     /// 現在ビューアーに表示中のページ(見開き時は2枚)を、指定ターゲットサイズで再デコードさせる。
     /// PageCacheから既存エントリを破棄し、新規LoadRequestを送るだけで、静止画・アニメーション
     /// (RingAnimation)とも decode_ring_anim/resize_for_display 側の target_size配線に乗って
@@ -654,16 +710,15 @@ impl NekoviewApp {
         for (orig_i, entry_name) in &pages {
             self.page_cache.lock().unwrap().remove(&path, *orig_i);
             let key = (path.clone(), *orig_i);
-            let file_bytes = self.file_cache.get(&path);
-            let _ = self.req_tx.send(LoadRequest {
+            self.pending_loads.lock().unwrap().insert(key);
+            self.dispatch_load_request(LoadRequest {
                 archive_path: path.clone(),
                 index: *orig_i,
                 entry_name: entry_name.clone(),
                 is_raw_file,
-                file_bytes,
+                file_cache_entry: None,
                 target_size: target,
             });
-            self.pending_loads.lock().unwrap().insert(key);
         }
 
         if let Some(v) = self.viewer.lock().unwrap().as_mut() {
@@ -752,11 +807,16 @@ impl NekoviewApp {
             std::iter::from_fn(|| self.thumb_res_rx.try_recv().ok()).collect();
         for result in thumb_results {
             self.thumb_pending.remove(&result.path);
-            if let Some(rgba) = result.rgba {
-                if self.archives.contains(&result.path) {
-                    let name = result.path.display().to_string();
-                    let tex = upload_texture(ctx, &name, &rgba);
-                    self.thumbnails.insert(result.path, tex);
+            match result.rgba {
+                Some(rgba) => {
+                    if self.archives.contains(&result.path) {
+                        let name = result.path.display().to_string();
+                        let tex = upload_texture(ctx, &name, &rgba);
+                        self.thumbnails.insert(result.path, tex);
+                    }
+                }
+                None => {
+                    self.thumb_failed.insert(result.path);
                 }
             }
         }
@@ -790,13 +850,37 @@ impl NekoviewApp {
         }
 
         // FileCache ワーカーからの結果を受信して横キャッシュへ投入
-        let file_results: Vec<(PathBuf, std::sync::Arc<[u8]>)> =
+        let file_results: Vec<(PathBuf, FileCacheEntry)> =
             std::iter::from_fn(|| self.file_cache_res_rx.try_recv().ok()).collect();
         let cur_viewer_path = self.viewer.lock().unwrap().as_ref().map(|v| v.archive_path().clone());
-        for (path, bytes) in file_results {
+        for (path, entry) in file_results {
             self.file_cache_pending.remove(&path);
             let current = cur_viewer_path.clone().unwrap_or_else(|| path.clone());
-            self.file_cache.insert(path, bytes, &current, &self.archives);
+            self.file_cache.insert(path.clone(), entry, &current, &self.archives);
+            // 7zの展開待ちで保留していたページ/サムネ要求をまとめてフラッシュする。
+            if let Some(deferred) = self.deferred_archive_requests.remove(&path) {
+                let file_cache_entry = self.file_cache.get(&path);
+                for d in deferred {
+                    match d {
+                        DeferredArchiveRequest::Page(mut req) => {
+                            req.file_cache_entry = file_cache_entry.clone();
+                            let _ = self.req_tx.send(req);
+                        }
+                        DeferredArchiveRequest::Thumb(mut req) => {
+                            req.file_cache_entry = file_cache_entry.clone();
+                            let original_index = req.original_index;
+                            let archive_path = req.archive_path.clone();
+                            if self.entry_thumb_req_tx.send(req).is_ok() {
+                                if let Some(v) = self.viewer.lock().unwrap().as_mut() {
+                                    if *v.archive_path() == archive_path {
+                                        v.mark_thumb_pending(original_index);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
 
         // ワーカーからの結果を PageCache へ投入
@@ -829,7 +913,7 @@ impl NekoviewApp {
         }
     }
 
-    fn prefetch_pages(&self) {
+    fn prefetch_pages(&mut self) {
         // スライディングウィンドウ: ビューア表示中に前後ページを先読み
         let viewer_prefetch = self.viewer.lock().unwrap().as_ref().map(|viewer| {
             let cur = viewer.spread_lo().max(0) as usize;
@@ -849,16 +933,15 @@ impl NekoviewApp {
                 }
                 let key = (path.clone(), orig_i);
                 if !self.page_cache.lock().unwrap().contains(&path, orig_i) && !self.pending_loads.lock().unwrap().contains(&key) {
-                    let file_bytes = self.file_cache.get(&path);
-                    let _ = self.req_tx.send(LoadRequest {
+                    self.pending_loads.lock().unwrap().insert(key);
+                    self.dispatch_load_request(LoadRequest {
                         archive_path: path.clone(),
                         index: orig_i,
                         entry_name: entries[i].entry_name.clone(),
                         is_raw_file,
-                        file_bytes,
+                        file_cache_entry: None,
                         target_size: self.decode_target,
                     });
-                    self.pending_loads.lock().unwrap().insert(key);
                 }
             }
         }
@@ -934,6 +1017,10 @@ impl NekoviewApp {
             self.persist_state();
         }
 
+        if let Some(action) = output.spread_save_action {
+            self.handle_spread_save_action(action);
+        }
+
         let had_nav = output.nav != ViewerNav::None;
         if output.close_requested {
             *self.viewer.lock().unwrap() = None;
@@ -980,10 +1067,16 @@ impl NekoviewApp {
                 original_index,
                 is_raw_file,
                 edge,
+                file_cache_entry: None,
             };
-            if self.entry_thumb_req_tx.send(req).is_ok() {
-                viewer.mark_thumb_pending(original_index);
-            }
+            dispatch_thumb_request(
+                &self.file_cache,
+                &self.file_cache_pending,
+                &mut self.deferred_archive_requests,
+                &self.entry_thumb_req_tx,
+                req,
+                viewer,
+            );
         }
     }
 
@@ -1029,11 +1122,13 @@ impl NekoviewApp {
                 .and_then(|idx| filtered.iter().position(|&i| i == idx));
 
             // キー入力を一括消費してからクロージャ外で処理する（borrow 競合回避）
-            let (key_left, key_right, key_down, key_up) = ctx.input_mut(|i| (
+            let (key_left, key_right, key_down, key_up, key_home, key_end) = ctx.input_mut(|i| (
                 i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowLeft),
                 i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowRight),
                 i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown),
                 i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp),
+                i.consume_key(egui::Modifiers::NONE, egui::Key::Home),
+                i.consume_key(egui::Modifiers::NONE, egui::Key::End),
             ));
 
             // 段階4（窓ごとキー配送）: ビューアーは独立した OS 窓になり、自分の左右キーで
@@ -1072,6 +1167,14 @@ impl NekoviewApp {
                         self.selected_archive_index = Some(filtered[pos - cols]);
                     }
                 }
+            }
+
+            // Home/End: ファイラー先頭（左上）/末尾（右下）へ絶対ジャンプ
+            if key_home {
+                self.selected_archive_index = Some(filtered[0]);
+            }
+            if key_end {
+                self.selected_archive_index = Some(filtered[total - 1]);
             }
 
             if ctx.input(|i| i.key_pressed(egui::Key::Enter)) {
@@ -1432,7 +1535,7 @@ impl NekoviewApp {
                                     4.0,
                                     egui::Color32::from_gray(60),
                                 );
-                                if !self.thumb_pending.contains(path) {
+                                if !self.thumb_pending.contains(path) && !self.thumb_failed.contains(path) {
                                     if self.thumb_req_tx.try_send(ThumbRequest {
                                         archive_path: path.clone(),
                                         db: self.cache_db.clone(),
@@ -1443,8 +1546,9 @@ impl NekoviewApp {
                                 }
                             }
 
-                            // 無効ZIPは左上に赤Xを描画
-                            if self.invalid_archives.contains(path) {
+                            // 無効ZIP・サムネデコード失敗は左上に赤Xを描画
+                            let thumb_failed = self.thumb_failed.contains(path);
+                            if self.invalid_archives.contains(path) || thumb_failed {
                                 let x_size = 16.0;
                                 let origin = rect.min + egui::vec2(4.0, 4.0);
                                 let end = origin + egui::vec2(x_size, x_size);
@@ -1454,6 +1558,10 @@ impl NekoviewApp {
                                     [egui::pos2(end.x, origin.y), egui::pos2(origin.x, end.y)],
                                     stroke,
                                 );
+                            }
+                            if thumb_failed {
+                                let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("?");
+                                response.clone().on_hover_text(format!("{ext}デコード失敗"));
                             }
 
                             // 選択中アイテムを枠で囲む（生ファイルは赤、ZIPは青）
@@ -1746,6 +1854,46 @@ impl NekoviewApp {
         }
     }
 
+    /// 右クリックメニューでの見開き設定保存操作を反映する（DB書き込み/削除＋メモリ上のキャッシュ更新）。
+    fn handle_spread_save_action(&mut self, action: crate::controller::SpreadSaveAction) {
+        let Some(db) = self.spread_db.clone() else { return };
+        let mut viewer_guard = self.viewer.lock().unwrap();
+        let Some(viewer) = viewer_guard.as_mut() else { return };
+        let filename = match viewer.archive_path().file_name().and_then(|n| n.to_str()) {
+            Some(f) => f.to_string(),
+            None => return,
+        };
+
+        let disable = |viewer: &mut ViewerState, spread_states: &mut HashMap<String, (PageMode, i32)>, db: &Arc<Mutex<redb::Database>>, dir: &std::path::Path, filename: &str| {
+            crate::spread_state::remove_spread(db, dir, filename);
+            viewer.set_saved_spread(None);
+            spread_states.remove(filename);
+        };
+
+        use crate::controller::SpreadSaveAction;
+        match action {
+            SpreadSaveAction::Enable => {
+                let (mode, offset) = viewer.current_spread_snapshot();
+                crate::spread_state::write_spread(&db, &self.current_dir, &filename, mode, offset);
+                viewer.set_saved_spread(Some((mode, offset)));
+                self.spread_states.insert(filename, (mode, offset));
+            }
+            SpreadSaveAction::Disable => {
+                disable(viewer, &mut self.spread_states, &db, &self.current_dir, &filename);
+            }
+            SpreadSaveAction::Overwrite => {
+                let (mode, offset) = viewer.current_spread_snapshot();
+                if mode == PageMode::Single {
+                    disable(viewer, &mut self.spread_states, &db, &self.current_dir, &filename);
+                } else {
+                    crate::spread_state::write_spread(&db, &self.current_dir, &filename, mode, offset);
+                    viewer.set_saved_spread(Some((mode, offset)));
+                    self.spread_states.insert(filename, (mode, offset));
+                }
+            }
+        }
+    }
+
     /// ファイルが FileCache 未登録かつ未リクエストの場合にバックグラウンド読み込みを起動する。
     fn ensure_file_cached(&mut self, path: PathBuf) {
         if !self.file_cache.contains(&path) && !self.file_cache_pending.contains(&path) {
@@ -1755,12 +1903,50 @@ impl NekoviewApp {
     }
 
     /// ビューアを開く（ページキャッシュクリア・ファイルキャッシュ投入・フォーカス要求を一括処理）
-    fn open_viewer(&mut self, state: ViewerState) {
+    fn open_viewer(&mut self, mut state: ViewerState) {
         let path = state.archive_path().clone();
+        let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        if let Some(&(mode, offset)) = self.spread_states.get(filename) {
+            let mut cfg = self.viewer_cfg.lock().unwrap();
+            state.restore_saved_spread(mode, offset, &mut cfg);
+            state.set_saved_spread(Some((mode, offset)));
+        }
         self.pending_loads.lock().unwrap().clear();
         *self.viewer.lock().unwrap() = Some(state);
         self.ensure_file_cached(path);
         self.viewer_focus_requested = true;
+    }
+}
+
+/// EntryThumbRequestを送出する。7zがFileCacheへの展開待ちの間は保留キューへ積んで、
+/// 展開完了後にまとめて送る（デコードワーカー側でのスレッドごとの重複展開を避けるため）。
+/// フリー関数にしているのは、呼び出し元で`viewer: &mut ViewerState`（`self.viewer`の
+/// MutexGuard経由）を同時に借用する必要があり、`&mut self`メソッドにすると
+/// 呼び出し元で二重借用エラーになるため（個別フィールド借用なら共存できる）。
+fn dispatch_thumb_request(
+    file_cache: &FileCache,
+    file_cache_pending: &HashSet<PathBuf>,
+    deferred_archive_requests: &mut HashMap<PathBuf, Vec<DeferredArchiveRequest>>,
+    entry_thumb_req_tx: &mpsc::Sender<EntryThumbRequest>,
+    mut req: EntryThumbRequest,
+    viewer: &mut ViewerState,
+) {
+    let entry = file_cache.get(&req.archive_path);
+    if entry.is_none()
+        && !req.is_raw_file
+        && archive::is_7z_path(&req.archive_path)
+        && file_cache_pending.contains(&req.archive_path)
+    {
+        deferred_archive_requests
+            .entry(req.archive_path.clone())
+            .or_default()
+            .push(DeferredArchiveRequest::Thumb(req));
+        return;
+    }
+    req.file_cache_entry = entry;
+    let original_index = req.original_index;
+    if entry_thumb_req_tx.send(req).is_ok() {
+        viewer.mark_thumb_pending(original_index);
     }
 }
 
