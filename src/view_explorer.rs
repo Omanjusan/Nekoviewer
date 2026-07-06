@@ -601,9 +601,20 @@ impl NekoviewApp {
 
     fn sort_archives(&mut self) {
         let ascending = self.sort_ascending;
+        // お気に入り一覧表示中は favorite_states が実ディレクトリ用の古いデータのままで
+        // 信頼できないため、スティッキー判定は通常のディレクトリ表示中のみ行う。
+        let sticky_favorites = self.viewing_favorites.is_none();
+        let is_fav = |p: &PathBuf| -> bool {
+            sticky_favorites
+                && p.file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|name| self.favorite_states.contains_key(name))
+        };
         match self.sort_key {
             ExplorerSortKey::Name => {
                 self.archives.sort_by(|a, b| {
+                    let fav_cmp = is_fav(b).cmp(&is_fav(a));
+                    if fav_cmp != std::cmp::Ordering::Equal { return fav_cmp; }
                     let na = a.file_name().and_then(|n| n.to_str()).unwrap_or("");
                     let nb = b.file_name().and_then(|n| n.to_str()).unwrap_or("");
                     let cmp = na.cmp(nb);
@@ -612,6 +623,8 @@ impl NekoviewApp {
             }
             ExplorerSortKey::Date => {
                 self.archives.sort_by(|a, b| {
+                    let fav_cmp = is_fav(b).cmp(&is_fav(a));
+                    if fav_cmp != std::cmp::Ordering::Equal { return fav_cmp; }
                     let ta = std::fs::metadata(a).and_then(|m| m.modified()).ok();
                     let tb = std::fs::metadata(b).and_then(|m| m.modified()).ok();
                     let cmp = ta.cmp(&tb);
@@ -620,6 +633,8 @@ impl NekoviewApp {
             }
             ExplorerSortKey::Size => {
                 self.archives.sort_by(|a, b| {
+                    let fav_cmp = is_fav(b).cmp(&is_fav(a));
+                    if fav_cmp != std::cmp::Ordering::Equal { return fav_cmp; }
                     let sa = std::fs::metadata(a).map(|m| m.len()).unwrap_or(0);
                     let sb = std::fs::metadata(b).map(|m| m.len()).unwrap_or(0);
                     let cmp = sa.cmp(&sb);
@@ -2817,6 +2832,10 @@ impl NekoviewApp {
         // 外れうるため、同じ選択条件で一覧を再構築して追従させる
         if let Some(selection) = self.viewing_favorites {
             self.enter_favorite_view(selection);
+        } else {
+            // 通常のディレクトリ表示中はお気に入りスティッキーソートの
+            // グループが変わりうるため並び替えを反映する
+            self.sort_archives();
         }
     }
 
