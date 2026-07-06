@@ -176,6 +176,262 @@ impl Lang {
         }
     }
 
+    pub fn favorite_detail_menu(self) -> &'static str {
+        match self {
+            Lang::Japanese => "お気に入り詳細設定",
+            Lang::English  => "Favorite Details...",
+            Lang::Chinese  => "收藏详细设置",
+        }
+    }
+
+    pub fn favorite_detail_menu_bulk(self, count: usize) -> String {
+        match self {
+            Lang::Japanese => format!("お気に入り詳細設定 ({count}件)"),
+            Lang::English  => format!("Favorite Details... ({count} items)"),
+            Lang::Chinese  => format!("收藏详细设置（{count} 项）"),
+        }
+    }
+
+    pub fn favorite_detail_common_only_note(self) -> &'static str {
+        match self {
+            Lang::Japanese => "※共通のお気に入り以外は省略しています",
+            Lang::English  => "* Folders not shared by all selected files are omitted",
+            Lang::Chinese  => "※未显示所选文件不共有的收藏夹",
+        }
+    }
+
+    pub fn favorite_overwrite_confirm_title(self) -> &'static str {
+        match self {
+            Lang::Japanese => "お気に入り一括設定の確認",
+            Lang::English  => "Confirm Bulk Favorite Update",
+            Lang::Chinese  => "确认批量收藏设置",
+        }
+    }
+
+    pub fn favorite_overwrite_confirm_message(self, count: usize) -> String {
+        match self {
+            Lang::Japanese => format!("選択した{count}件の既存のお気に入り設定は上書きされます。よろしいですか？"),
+            Lang::English  => format!("The existing favorite settings for the selected {count} item(s) will be overwritten. Continue?"),
+            Lang::Chinese  => format!("所选 {count} 项现有的收藏设置将被覆盖。确定继续吗？"),
+        }
+    }
+
+    pub fn favorite_overwrite_confirm_ok(self) -> &'static str {
+        match self {
+            Lang::Japanese => "上書きする",
+            Lang::English  => "Overwrite",
+            Lang::Chinese  => "覆盖",
+        }
+    }
+
+    pub fn favorite_detail_dialog_title(self) -> &'static str {
+        match self {
+            Lang::Japanese => "お気に入り詳細設定",
+            Lang::English  => "Favorite Details",
+            Lang::Chinese  => "收藏详细设置",
+        }
+    }
+
+    pub fn favorite_detail_enable_checkbox(self) -> &'static str {
+        match self {
+            Lang::Japanese => "このファイルをお気に入りに登録する",
+            Lang::English  => "Add this file to favorites",
+            Lang::Chinese  => "将此文件加入收藏",
+        }
+    }
+
+    pub fn favorite_detail_available_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "定義済みお気に入りフォルダ",
+            Lang::English  => "Available Folders",
+            Lang::Chinese  => "已定义的收藏夹",
+        }
+    }
+
+    pub fn favorite_detail_assigned_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "登録先",
+            Lang::English  => "Assigned To",
+            Lang::Chinese  => "已加入",
+        }
+    }
+
+    pub fn network_checking_toast(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ネットワーク接続を確認しています...",
+            Lang::English  => "Checking network connection...",
+            Lang::Chinese  => "正在检查网络连接...",
+        }
+    }
+
+    pub fn favorite_view_header_unsorted(self) -> &'static str {
+        match self {
+            Lang::Japanese => "お気に入り: 未整理",
+            Lang::English  => "Favorites: Unsorted",
+            Lang::Chinese  => "收藏：未整理",
+        }
+    }
+
+    pub fn favorite_view_header_folder(self, name: &str) -> String {
+        match self {
+            Lang::Japanese => format!("お気に入り: {name}"),
+            Lang::English  => format!("Favorites: {name}"),
+            Lang::Chinese  => format!("收藏：{name}"),
+        }
+    }
+
+    pub fn folder_tab_real(self) -> &'static str {
+        match self {
+            Lang::Japanese => "フォルダ",
+            Lang::English  => "Folders",
+            Lang::Chinese  => "文件夹",
+        }
+    }
+
+    pub fn folder_tab_favorites(self) -> &'static str {
+        match self {
+            Lang::Japanese => "お気に入り",
+            Lang::English  => "Favorites",
+            Lang::Chinese  => "收藏夹",
+        }
+    }
+
+    pub fn favorite_unsorted_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "（未整理のお気に入り）",
+            Lang::English  => "(Unsorted Favorites)",
+            Lang::Chinese  => "（未整理的收藏）",
+        }
+    }
+
+    pub fn favorite_rename_menu(self) -> &'static str {
+        match self {
+            Lang::Japanese => "リネーム (F2)",
+            Lang::English  => "Rename (F2)",
+            Lang::Chinese  => "重命名 (F2)",
+        }
+    }
+
+    pub fn favorite_delete_menu(self) -> &'static str {
+        match self {
+            Lang::Japanese => "削除",
+            Lang::English  => "Delete",
+            Lang::Chinese  => "删除",
+        }
+    }
+
+    pub fn favorite_dialog_title_create(self) -> &'static str {
+        match self {
+            Lang::Japanese => "お気に入りフォルダの新規作成",
+            Lang::English  => "Create Favorite Folder",
+            Lang::Chinese  => "新建收藏夹",
+        }
+    }
+
+    pub fn favorite_dialog_title_rename(self) -> &'static str {
+        match self {
+            Lang::Japanese => "お気に入りフォルダのリネーム",
+            Lang::English  => "Rename Favorite Folder",
+            Lang::Chinese  => "重命名收藏夹",
+        }
+    }
+
+    pub fn favorite_dialog_prompt(self) -> &'static str {
+        match self {
+            Lang::Japanese => "新しいお気に入りフォルダ名を設定してください",
+            Lang::English  => "Enter a name for this favorite folder",
+            Lang::Chinese  => "请输入收藏夹名称",
+        }
+    }
+
+    pub fn favorite_dialog_marker_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "マーカー:",
+            Lang::English  => "Marker:",
+            Lang::Chinese  => "标记:",
+        }
+    }
+
+    pub fn favorite_dialog_cancel(self) -> &'static str {
+        match self {
+            Lang::Japanese => "キャンセル",
+            Lang::English  => "Cancel",
+            Lang::Chinese  => "取消",
+        }
+    }
+
+    pub fn favorite_dialog_ok(self) -> &'static str {
+        match self {
+            Lang::Japanese => "決定",
+            Lang::English  => "OK",
+            Lang::Chinese  => "确定",
+        }
+    }
+
+    pub fn favorite_error_name_empty(self) -> &'static str {
+        match self {
+            Lang::Japanese => "名前を入力してください",
+            Lang::English  => "Please enter a name",
+            Lang::Chinese  => "请输入名称",
+        }
+    }
+
+    pub fn favorite_error_name_too_long(self) -> &'static str {
+        match self {
+            Lang::Japanese => "名前が長すぎます（200文字まで）",
+            Lang::English  => "Name is too long (max 200 characters)",
+            Lang::Chinese  => "名称过长（最多200个字符）",
+        }
+    }
+
+    pub fn favorite_error_name_conflict(self) -> &'static str {
+        match self {
+            Lang::Japanese => "その名前はすでに使われています",
+            Lang::English  => "That name is already in use",
+            Lang::Chinese  => "该名称已被使用",
+        }
+    }
+
+    pub fn favorite_error_limit_reached(self) -> &'static str {
+        match self {
+            Lang::Japanese => "お気に入りフォルダは200個までです",
+            Lang::English  => "You can create up to 200 favorite folders",
+            Lang::Chinese  => "收藏夹最多可创建200个",
+        }
+    }
+
+    pub fn favorite_error_generic(self) -> &'static str {
+        match self {
+            Lang::Japanese => "処理に失敗しました",
+            Lang::English  => "Operation failed",
+            Lang::Chinese  => "操作失败",
+        }
+    }
+
+    pub fn favorite_delete_confirm_title(self) -> &'static str {
+        match self {
+            Lang::Japanese => "お気に入りフォルダの削除",
+            Lang::English  => "Delete Favorite Folder",
+            Lang::Chinese  => "删除收藏夹",
+        }
+    }
+
+    pub fn favorite_delete_confirm_body(self, name: &str) -> String {
+        match self {
+            Lang::Japanese => format!("「{name}」を削除しますか？\n所属するファイルの登録も解除されます"),
+            Lang::English  => format!("Delete \"{name}\"?\nFiles assigned to it will be unassigned."),
+            Lang::Chinese  => format!("确定要删除“{name}”吗？\n所属文件的收藏关系也会被解除"),
+        }
+    }
+
+    pub fn favorite_delete_confirm_ok(self) -> &'static str {
+        match self {
+            Lang::Japanese => "削除する",
+            Lang::English  => "Delete",
+            Lang::Chinese  => "删除",
+        }
+    }
+
     pub fn toast_no_prev(self) -> &'static str {
         match self {
             Lang::Japanese => "これ以上開けるファイルは前方に存在しません",
