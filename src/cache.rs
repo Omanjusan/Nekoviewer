@@ -59,20 +59,23 @@ const MAX_DISPLAY_H: u32 = 1080;
 /// 従来の固定 MAX_DISPLAY_W/H と同じ値を使う。
 pub const DEFAULT_DECODE_TARGET: (u32, u32) = (MAX_DISPLAY_W, MAX_DISPLAY_H);
 
-/// FileCache が保持する「準備済みデータ」。7zはソリッド圧縮でランダムアクセスできないため、
-/// 開いた時点で全画像エントリを展開したもの(`SevenZExtracted`)を1アーカイブにつき1回だけ
-/// 作り、ZIP/生画像は従来通りの生バイト列(`Raw`)を持つ。どちらも `Arc` でスレッド間に安く共有する。
+/// FileCache が保持する「準備済みデータ」。7z(および将来のtar)はソリッド圧縮で
+/// ランダムアクセスできないため、開いた時点で全画像エントリを展開したもの(`Extracted`)を
+/// 1アーカイブにつき1回だけ作り、ZIP/生画像は従来通りの生バイト列(`Raw`)を持つ。
+/// どちらも `Arc` でスレッド間に安く共有する。
 #[derive(Clone)]
 pub enum FileCacheEntry {
     Raw(Arc<[u8]>),
-    SevenZExtracted(Arc<HashMap<String, Vec<u8>>>),
+    /// 型自体は std のみ（展開関数のみ 7z/tar 依存）。両 feature 無効時のみ未構築のデッドコード。
+    #[cfg_attr(not(any(feature = "fmt-7z", feature = "fmt-tar")), allow(dead_code))]
+    Extracted(Arc<HashMap<String, Vec<u8>>>),
 }
 
 impl FileCacheEntry {
     fn size_bytes(&self) -> usize {
         match self {
             Self::Raw(b) => b.len(),
-            Self::SevenZExtracted(m) => m.values().map(|v| v.len()).sum(),
+            Self::Extracted(m) => m.values().map(|v| v.len()).sum(),
         }
     }
 }
@@ -95,9 +98,35 @@ pub struct LoadRequest {
 enum OpenArchive {
     Disk(zip::ZipArchive<std::fs::File>),
     Mem(zip::ZipArchive<std::io::Cursor<Arc<[u8]>>>),
-    /// 7z(ソリッド圧縮)は開いた時点で画像を一括展開済み。ページ送りは再展開せずここから引く。
+    /// 7z/tar のソリッド圧縮は開いた時点で画像を一括展開済み。
+    /// ページ送りは再展開せずここから引く。
     /// `Arc`はFileCache側が保持するものと共有しており、スレッドごとの再展開が起きない。
-    SevenZ(Arc<HashMap<String, Vec<u8>>>),
+    /// 型自体は std のみ（展開関数のみ 7z/tar 依存）なので variant は常時持ち、
+    /// 両 feature 無効時のみ未構築のデッドコードとして許容する。
+    #[cfg_attr(not(any(feature = "fmt-7z", feature = "fmt-tar")), allow(dead_code))]
+    Extracted(Arc<HashMap<String, Vec<u8>>>),
+}
+
+/// FileCache ミス時にディスクからアーカイブを開く（zipはランダムアクセス、7z/tarは一括展開）。
+/// spawn_worker と spawn_entry_thumb_worker の FileCache ミス経路の共通処理。
+/// 通常は FileCache 側が先出しするためミスはほぼ発生しない安全弁。
+fn open_archive_from_disk(path: &std::path::Path) -> Option<OpenArchive> {
+    match crate::fs::archive::detect_format(path) {
+        #[cfg(feature = "fmt-7z")]
+        crate::fs::archive::ArchiveFormat::SevenZ => {
+            let map = Arc::new(crate::fs::archive::extract_all_images_7z_path(path));
+            Some(OpenArchive::Extracted(map))
+        }
+        #[cfg(feature = "fmt-tar")]
+        crate::fs::archive::ArchiveFormat::Tar => {
+            let map = Arc::new(crate::fs::archive::extract_all_images_tar_path(path));
+            Some(OpenArchive::Extracted(map))
+        }
+        crate::fs::archive::ArchiveFormat::Zip => std::fs::File::open(path)
+            .ok()
+            .and_then(|f| zip::ZipArchive::new(f).ok())
+            .map(OpenArchive::Disk),
+    }
 }
 
 impl OpenArchive {
@@ -105,7 +134,7 @@ impl OpenArchive {
         match self {
             Self::Disk(a) => load_page_content(a, entry_name, filter, cache_budget_bytes, ring_bounds, frame_hard_limit_bytes, target_size),
             Self::Mem(a)  => load_page_content(a, entry_name, filter, cache_budget_bytes, ring_bounds, frame_hard_limit_bytes, target_size),
-            Self::SevenZ(map) => {
+            Self::Extracted(map) => {
                 let buf = map.get(entry_name)?;
                 decode_bytes_to_content(buf, entry_name, filter, cache_budget_bytes, ring_bounds, frame_hard_limit_bytes, target_size)
             }
@@ -165,13 +194,13 @@ pub fn spawn_worker(filter: image::imageops::FilterType, num_threads: usize, ctx
                         }
                         _ => load_raw_file_content(&req.archive_path, filter, cache_budget_bytes, ring_bounds, frame_hard_limit_bytes, target_size),
                     }
-                } else if let Some(FileCacheEntry::SevenZExtracted(map)) = req.file_cache_entry.clone() {
-                    // FileCache が既に7zを展開済み: スレッドローカルの再展開はせず共有Arcを使う
+                } else if let Some(FileCacheEntry::Extracted(map)) = req.file_cache_entry.clone() {
+                    // FileCache が既に展開済み(7z等): スレッドローカルの再展開はせず共有Arcを使う
                     let is_same = open_archive.as_ref().map_or(false, |(p, a)| {
-                        p == &req.archive_path && matches!(a, OpenArchive::SevenZ(_))
+                        p == &req.archive_path && matches!(a, OpenArchive::Extracted(_))
                     });
                     if !is_same {
-                        open_archive = Some((req.archive_path.clone(), OpenArchive::SevenZ(map)));
+                        open_archive = Some((req.archive_path.clone(), OpenArchive::Extracted(map)));
                     }
                     open_archive.as_mut().and_then(|(_, a)| a.load_page(&req.entry_name, filter, cache_budget_bytes, ring_bounds, frame_hard_limit_bytes, target_size))
                 } else if let Some(FileCacheEntry::Raw(bytes)) = req.file_cache_entry {
@@ -186,23 +215,15 @@ pub fn spawn_worker(filter: image::imageops::FilterType, num_threads: usize, ctx
                     }
                     open_archive.as_mut().and_then(|(_, a)| a.load_page(&req.entry_name, filter, cache_budget_bytes, ring_bounds, frame_hard_limit_bytes, target_size))
                 } else {
-                    // FileCache ミス: ディスクから開く（従来の動作。7zはここに来た場合のみ
+                    // FileCache ミス: ディスクから開く（従来の動作。ソリッド形式はここに来た場合のみ
                     // スレッドローカルに展開する安全弁で、通常はFileCache側の先出しにより
                     // ほぼ発生しない）
-                    let is_7z = crate::fs::archive::is_7z_path(&req.archive_path);
                     let is_same = open_archive.as_ref().map_or(false, |(p, a)| {
-                        p == &req.archive_path && matches!(a, OpenArchive::Disk(_) | OpenArchive::SevenZ(_))
+                        p == &req.archive_path && matches!(a, OpenArchive::Disk(_) | OpenArchive::Extracted(_))
                     });
                     if !is_same {
-                        open_archive = if is_7z {
-                            let map = Arc::new(crate::fs::archive::extract_all_images_7z_path(&req.archive_path));
-                            Some((req.archive_path.clone(), OpenArchive::SevenZ(map)))
-                        } else {
-                            std::fs::File::open(&req.archive_path)
-                                .ok()
-                                .and_then(|f| zip::ZipArchive::new(f).ok())
-                                .map(|a| (req.archive_path.clone(), OpenArchive::Disk(a)))
-                        };
+                        open_archive = open_archive_from_disk(&req.archive_path)
+                            .map(|a| (req.archive_path.clone(), a));
                     }
                     open_archive.as_mut().and_then(|(_, a)| a.load_page(&req.entry_name, filter, cache_budget_bytes, ring_bounds, frame_hard_limit_bytes, target_size))
                 };
@@ -643,7 +664,7 @@ impl PageCache {
 
 /// アーカイブ単位の「準備済みデータ」をまるごとメモリに保持するキャッシュ。
 /// ZIP/生画像は生バイト列(`FileCacheEntry::Raw`)、7zは開いた時点で全画像を展開した
-/// 結果(`FileCacheEntry::SevenZExtracted`)を保持する。ヒット時はストレージI/Oも
+/// 結果(`FileCacheEntry::Extracted`)を保持する。ヒット時はストレージI/Oも
 /// 7z展開もスキップでき、かつ`Arc`で全ワーカースレッドに安く共有できる。
 pub struct FileCache {
     entries: HashMap<PathBuf, FileCacheEntry>,
@@ -714,9 +735,9 @@ fn content_bytes(content: &PageContent) -> usize {
 // ── ファイルキャッシュワーカー ─────────────────────────────────────────────────
 
 /// ファイルをバックグラウンドで読み込む単一スレッドのワーカーを起動する。
-/// 7zは開いた時点で全画像エントリを一括展開して`SevenZExtracted`として返す
-/// （ソリッド圧縮でランダムアクセスできないための一括展開。プロセス全体でこの1回きり
-/// になり、以降デコードワーカー側は共有Arcを参照するだけで済む）。
+/// 7z(ソリッド圧縮)は開いた時点で全画像エントリを一括展開して`Extracted`として返す
+/// （ランダムアクセスできないための一括展開。プロセス全体でこの1回きりになり、
+/// 以降デコードワーカー側は共有Arcを参照するだけで済む）。
 /// それ以外(ZIP/生画像)は従来通り生バイト列(`Raw`)のまま返す。
 /// 返り値: (要求送信側, 結果受信側)
 pub fn spawn_file_cache_worker(ctx: egui::Context) -> (mpsc::Sender<PathBuf>, mpsc::Receiver<(PathBuf, FileCacheEntry)>) {
@@ -724,11 +745,20 @@ pub fn spawn_file_cache_worker(ctx: egui::Context) -> (mpsc::Sender<PathBuf>, mp
     let (res_tx, res_rx) = mpsc::channel::<(PathBuf, FileCacheEntry)>();
     std::thread::spawn(move || {
         while let Ok(path) = req_rx.recv() {
-            let entry = if crate::fs::archive::is_7z_path(&path) {
-                let map = crate::fs::archive::extract_all_images_7z_path(&path);
-                Some(FileCacheEntry::SevenZExtracted(Arc::new(map)))
-            } else {
-                std::fs::read(&path).ok().map(|bytes| FileCacheEntry::Raw(Arc::from(bytes)))
+            let entry = match crate::fs::archive::detect_format(&path) {
+                #[cfg(feature = "fmt-7z")]
+                crate::fs::archive::ArchiveFormat::SevenZ => {
+                    let map = crate::fs::archive::extract_all_images_7z_path(&path);
+                    Some(FileCacheEntry::Extracted(Arc::new(map)))
+                }
+                #[cfg(feature = "fmt-tar")]
+                crate::fs::archive::ArchiveFormat::Tar => {
+                    let map = crate::fs::archive::extract_all_images_tar_path(&path);
+                    Some(FileCacheEntry::Extracted(Arc::new(map)))
+                }
+                crate::fs::archive::ArchiveFormat::Zip => {
+                    std::fs::read(&path).ok().map(|bytes| FileCacheEntry::Raw(Arc::from(bytes)))
+                }
             };
             if let Some(entry) = entry {
                 let _ = res_tx.send((path, entry));
@@ -838,13 +868,13 @@ pub fn spawn_entry_thumb_worker(filter: image::imageops::FilterType, num_threads
                         }
                         _ => load_raw_file_content(&req.archive_path, filter, ENTRY_THUMB_RING_BUDGET_BYTES, ring_bounds, ENTRY_THUMB_FRAME_HARD_LIMIT_BYTES, target),
                     }
-                } else if let Some(FileCacheEntry::SevenZExtracted(map)) = req.file_cache_entry.clone() {
-                    // FileCache が既に7zを展開済み: スレッドローカルの再展開はせず共有Arcを使う
+                } else if let Some(FileCacheEntry::Extracted(map)) = req.file_cache_entry.clone() {
+                    // FileCache が既に展開済み(7z等): スレッドローカルの再展開はせず共有Arcを使う
                     let is_same = open_archive.as_ref().map_or(false, |(p, a)| {
-                        p == &req.archive_path && matches!(a, OpenArchive::SevenZ(_))
+                        p == &req.archive_path && matches!(a, OpenArchive::Extracted(_))
                     });
                     if !is_same {
-                        open_archive = Some((req.archive_path.clone(), OpenArchive::SevenZ(map)));
+                        open_archive = Some((req.archive_path.clone(), OpenArchive::Extracted(map)));
                     }
                     open_archive.as_mut().and_then(|(_, a)| {
                         a.load_page(&req.entry_name, filter, ENTRY_THUMB_RING_BUDGET_BYTES, ring_bounds, ENTRY_THUMB_FRAME_HARD_LIMIT_BYTES, target)
@@ -863,23 +893,15 @@ pub fn spawn_entry_thumb_worker(filter: image::imageops::FilterType, num_threads
                         a.load_page(&req.entry_name, filter, ENTRY_THUMB_RING_BUDGET_BYTES, ring_bounds, ENTRY_THUMB_FRAME_HARD_LIMIT_BYTES, target)
                     })
                 } else {
-                    // FileCache ミス: ディスクから開く（従来の動作。7zはここに来た場合のみ
+                    // FileCache ミス: ディスクから開く（従来の動作。ソリッド形式はここに来た場合のみ
                     // スレッドローカルに展開する安全弁で、通常はFileCache側の先出しにより
                     // ほぼ発生しない）
-                    let is_7z = crate::fs::archive::is_7z_path(&req.archive_path);
                     let is_same = open_archive.as_ref().map_or(false, |(p, a)| {
-                        p == &req.archive_path && matches!(a, OpenArchive::Disk(_) | OpenArchive::SevenZ(_))
+                        p == &req.archive_path && matches!(a, OpenArchive::Disk(_) | OpenArchive::Extracted(_))
                     });
                     if !is_same {
-                        open_archive = if is_7z {
-                            let map = Arc::new(crate::fs::archive::extract_all_images_7z_path(&req.archive_path));
-                            Some((req.archive_path.clone(), OpenArchive::SevenZ(map)))
-                        } else {
-                            std::fs::File::open(&req.archive_path)
-                                .ok()
-                                .and_then(|f| zip::ZipArchive::new(f).ok())
-                                .map(|a| (req.archive_path.clone(), OpenArchive::Disk(a)))
-                        };
+                        open_archive = open_archive_from_disk(&req.archive_path)
+                            .map(|a| (req.archive_path.clone(), a));
                     }
                     open_archive.as_mut().and_then(|(_, a)| {
                         a.load_page(&req.entry_name, filter, ENTRY_THUMB_RING_BUDGET_BYTES, ring_bounds, ENTRY_THUMB_FRAME_HARD_LIMIT_BYTES, target)

@@ -56,7 +56,32 @@ pub fn spawn_scan_subdirs(
     rx
 }
 
-/// ディレクトリ直下の ZIP/CBZ ファイルを列挙する
+/// パスが対応アーカイブのファイル名サフィックスを持つか。
+/// `.tar.gz` のような二重拡張子を正しく扱うため `extension()` ではなくファイル名末尾で判定する。
+/// 7z/tar は対応 feature が有効なときのみ列挙対象に含める。
+fn is_archive_path(p: &Path) -> bool {
+    let name = p
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map(|s| s.to_ascii_lowercase())
+        .unwrap_or_default();
+    let ends = |s: &str| name.ends_with(s);
+
+    if ends(".zip") || ends(".cbz") {
+        return true;
+    }
+    #[cfg(feature = "fmt-7z")]
+    if ends(".7z") || ends(".cb7") {
+        return true;
+    }
+    #[cfg(feature = "fmt-tar")]
+    if ends(".tar") || ends(".cbt") || ends(".tar.gz") || ends(".tgz") {
+        return true;
+    }
+    false
+}
+
+/// ディレクトリ直下の ZIP/CBZ/7z/CB7/TAR/CBT ファイルを列挙する
 pub fn list_archives(dir: &Path) -> Vec<PathBuf> {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return Vec::new();
@@ -69,12 +94,7 @@ pub fn list_archives(dir: &Path) -> Vec<PathBuf> {
                 return None;
             }
             let p = e.path();
-            matches!(
-                p.extension().and_then(|e| e.to_str()),
-                Some("zip") | Some("cbz") | Some("ZIP") | Some("CBZ")
-                    | Some("7z") | Some("cb7") | Some("7Z") | Some("CB7")
-            )
-            .then_some(p)
+            is_archive_path(&p).then_some(p)
         })
         .collect();
     result.sort();

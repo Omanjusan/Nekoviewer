@@ -22,7 +22,8 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png",
 libavif = "0.14"
 libavif-sys = "0.17"
 zip = "2"
-sevenz-rust2 = "0.21"
+sevenz-rust2 = { version = "0.21", optional = true }
+tar = { version = "0.4", optional = true }
 flate2 = "1"
 encoding_rs = "0.8"
 glob = "0.3"
@@ -32,6 +33,17 @@ webp = "0.3"
 libwebp-sys = "0.9"
 sysinfo = { version = "0.32", default-features = false, features = ["system"] }
 redb = "4"
+
+[features]
+# zip/cbz は画像・コミックビューアの基幹形式のため常時コンパイル（feature 化しない）。
+# 7z / tar のみ分離し、不要ならビルドから外してバイナリサイズと依存を削減できる。
+default = ["fmt-7z", "fmt-tar"]
+fmt-7z = ["dep:sevenz-rust2"]
+fmt-tar = ["dep:tar"]
+# tar の追加圧縮（default-off）。zstd/liblzma は C 依存を引き込み単一 musl 配布と
+# 相性が悪いため既定では無効。現状は枠のみで、実装時に対応 dep とデコード経路を追加する。
+tar-zstd = []
+tar-xz = []
 
 [profile.dev.package.fast_image_resize]
 opt-level = 3
