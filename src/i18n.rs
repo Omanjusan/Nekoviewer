@@ -176,6 +176,46 @@ impl Lang {
         }
     }
 
+    pub fn favorite_detail_menu(self) -> &'static str {
+        match self {
+            Lang::Japanese => "お気に入り詳細設定",
+            Lang::English  => "Favorite Details...",
+            Lang::Chinese  => "收藏详细设置",
+        }
+    }
+
+    pub fn favorite_detail_dialog_title(self) -> &'static str {
+        match self {
+            Lang::Japanese => "お気に入り詳細設定",
+            Lang::English  => "Favorite Details",
+            Lang::Chinese  => "收藏详细设置",
+        }
+    }
+
+    pub fn favorite_detail_enable_checkbox(self) -> &'static str {
+        match self {
+            Lang::Japanese => "このファイルをお気に入りに登録する",
+            Lang::English  => "Add this file to favorites",
+            Lang::Chinese  => "将此文件加入收藏",
+        }
+    }
+
+    pub fn favorite_detail_available_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "定義済みお気に入りフォルダ",
+            Lang::English  => "Available Folders",
+            Lang::Chinese  => "已定义的收藏夹",
+        }
+    }
+
+    pub fn favorite_detail_assigned_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "登録先",
+            Lang::English  => "Assigned To",
+            Lang::Chinese  => "已加入",
+        }
+    }
+
     pub fn folder_tab_real(self) -> &'static str {
         match self {
             Lang::Japanese => "フォルダ",

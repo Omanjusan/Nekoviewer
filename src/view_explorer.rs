@@ -83,6 +83,17 @@ const FAVORITE_MARKER_CANDIDATES: &[&str] = &[
     "☺", "☻", "♨", "☎", "✉", "✂", "⌚", "⌛", "☯", "☮",
 ];
 
+/// ビューアー右クリック「お気に入り詳細設定」ダイアログの状態。
+/// 左＝定義済みお気に入りフォルダ一覧、右＝対象ファイルの登録先（デュアルリストボックス）。
+struct FavoriteDetailDialogState {
+    dir: PathBuf,
+    filename: String,
+    favorite_enabled: bool,
+    assigned: Vec<u8>,
+    left_selected: HashSet<u8>,
+    right_selected: HashSet<u8>,
+}
+
 fn default_favorite_color() -> egui::Color32 {
     egui::Color32::from_rgb(255, 204, 0)
 }
@@ -225,6 +236,8 @@ pub struct NekoviewApp {
     favorite_dialog: Option<FavoriteDialogState>,
     /// 削除確認待ちのお気に入りフォルダID
     favorite_delete_confirm: Option<u8>,
+    /// ビューアー右クリック「お気に入り詳細設定」ダイアログの状態
+    favorite_detail_dialog: Option<FavoriteDetailDialogState>,
     viewing_dir: Option<PathBuf>,
     /// CD/LSディレクトリのサマリーキャッシュ (path, saved_thumbs, total_archives)
     cd_summary: Option<(PathBuf, usize, usize)>,
@@ -372,6 +385,7 @@ impl NekoviewApp {
             favorite_selected: FavoriteSelection::None,
             favorite_dialog: None,
             favorite_delete_confirm: None,
+            favorite_detail_dialog: None,
             viewing_dir: None,
             cd_summary: None,
             cd_summary_rx: None,
@@ -1092,6 +1106,11 @@ impl NekoviewApp {
         if let Some(action) = output.spread_save_action {
             self.handle_spread_save_action(action);
         }
+
+        if output.open_favorite_dialog {
+            self.open_favorite_detail_dialog();
+        }
+        self.draw_favorite_detail_dialog(ui.ctx());
 
         let had_nav = output.nav != ViewerNav::None;
         if output.close_requested {
@@ -2198,6 +2217,145 @@ impl NekoviewApp {
                     crate::spread_state::write_spread(&db, &self.current_dir, &filename, mode, offset);
                     viewer.set_saved_spread(Some((mode, offset)));
                     self.spread_states.insert(filename, (mode, offset));
+                }
+            }
+        }
+    }
+
+    /// ビューアー右クリック「お気に入り詳細設定」ダイアログを、現在表示中ファイルの
+    /// 既存お気に入り登録状態を読み込んだ上で開く。
+    fn open_favorite_detail_dialog(&mut self) {
+        let Some(db) = self.spread_db.clone() else { return };
+        let path = {
+            let viewer_guard = self.viewer.lock().unwrap();
+            let Some(viewer) = viewer_guard.as_ref() else { return };
+            viewer.archive_path().clone()
+        };
+        let Some(dir) = path.parent().map(|p| p.to_path_buf()) else { return };
+        let Some(filename) = path.file_name().and_then(|n| n.to_str()) else { return };
+        let filename = filename.to_string();
+        let (favorite_enabled, assigned) = match crate::favorites::get_membership(&db, &dir, &filename) {
+            Some(ids) => (true, ids),
+            None => (false, Vec::new()),
+        };
+        self.favorite_detail_dialog = Some(FavoriteDetailDialogState {
+            dir,
+            filename,
+            favorite_enabled,
+            assigned,
+            left_selected: HashSet::new(),
+            right_selected: HashSet::new(),
+        });
+    }
+
+    /// お気に入り詳細設定ダイアログを描画する（デュアルリストボックス方式）。
+    fn draw_favorite_detail_dialog(&mut self, ctx: &egui::Context) {
+        if self.favorite_detail_dialog.is_none() {
+            return;
+        }
+        let folders = self.favorite_folders.clone();
+        let Some(dialog) = self.favorite_detail_dialog.as_mut() else {
+            return;
+        };
+        let mut cancel = false;
+        let mut commit = false;
+        egui::Window::new(i18n::t().favorite_detail_dialog_title())
+            .collapsible(false)
+            .resizable(true)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .show(ctx, |ui| {
+                ui.label(&dialog.filename);
+                ui.add_space(4.0);
+                ui.checkbox(&mut dialog.favorite_enabled, i18n::t().favorite_detail_enable_checkbox());
+                ui.add_space(8.0);
+
+                ui.add_enabled_ui(dialog.favorite_enabled, |ui| {
+                    ui.horizontal(|ui| {
+                        // 左: 未登録の定義済みフォルダ一覧
+                        ui.vertical(|ui| {
+                            ui.label(i18n::t().favorite_detail_available_label());
+                            egui::ScrollArea::vertical()
+                                .id_salt("favorite_detail_left")
+                                .min_scrolled_height(160.0)
+                                .max_height(220.0)
+                                .show(ui, |ui| {
+                                    for folder in folders.iter().filter(|f| !dialog.assigned.contains(&f.id)) {
+                                        let selected = dialog.left_selected.contains(&folder.id);
+                                        let label = format!("{} {}", folder.marker, folder.name);
+                                        if ui.selectable_label(selected, label).clicked() {
+                                            if selected {
+                                                dialog.left_selected.remove(&folder.id);
+                                            } else {
+                                                dialog.left_selected.insert(folder.id);
+                                            }
+                                        }
+                                    }
+                                });
+                        });
+
+                        ui.vertical(|ui| {
+                            ui.add_space(24.0);
+                            if ui.button(">").clicked() {
+                                for id in dialog.left_selected.drain() {
+                                    if !dialog.assigned.contains(&id) {
+                                        dialog.assigned.push(id);
+                                    }
+                                }
+                            }
+                            if ui.button("<").clicked() {
+                                let removed = dialog.right_selected.clone();
+                                dialog.assigned.retain(|id| !removed.contains(id));
+                                dialog.right_selected.clear();
+                            }
+                        });
+
+                        // 右: このファイルの登録先
+                        ui.vertical(|ui| {
+                            ui.label(i18n::t().favorite_detail_assigned_label());
+                            egui::ScrollArea::vertical()
+                                .id_salt("favorite_detail_right")
+                                .min_scrolled_height(160.0)
+                                .max_height(220.0)
+                                .show(ui, |ui| {
+                                    for &id in &dialog.assigned {
+                                        let Some(folder) = folders.iter().find(|f| f.id == id) else { continue };
+                                        let selected = dialog.right_selected.contains(&id);
+                                        let label = format!("{} {}", folder.marker, folder.name);
+                                        if ui.selectable_label(selected, label).clicked() {
+                                            if selected {
+                                                dialog.right_selected.remove(&id);
+                                            } else {
+                                                dialog.right_selected.insert(id);
+                                            }
+                                        }
+                                    }
+                                });
+                        });
+                    });
+                });
+
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button(i18n::t().favorite_dialog_cancel()).clicked() {
+                        cancel = true;
+                    }
+                    if ui.button(i18n::t().favorite_dialog_ok()).clicked() {
+                        commit = true;
+                    }
+                });
+            });
+
+        if cancel {
+            self.favorite_detail_dialog = None;
+            return;
+        }
+        if commit {
+            let Some(dialog) = self.favorite_detail_dialog.take() else { return };
+            if let Some(db) = self.spread_db.clone() {
+                if dialog.favorite_enabled {
+                    crate::favorites::set_membership(&db, &dialog.dir, &dialog.filename, &dialog.assigned);
+                } else {
+                    crate::favorites::remove_favorite(&db, &dialog.dir, &dialog.filename);
                 }
             }
         }

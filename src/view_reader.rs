@@ -253,6 +253,8 @@ pub struct ViewerState {
     saved_spread: Option<(PageMode, i32)>,
     /// 保存メニューでのユーザー操作要求（1フレームで消費してViewerOutputへ渡す）
     pending_spread_action: Option<crate::controller::SpreadSaveAction>,
+    /// 右クリックメニュー「お気に入り詳細設定」が押されたか（1フレームで消費）
+    pending_open_favorite_dialog: bool,
 }
 
 impl ViewerState {
@@ -394,6 +396,7 @@ impl ViewerState {
             thumbbar_visible_range: None,
             saved_spread: None,
             pending_spread_action: None,
+            pending_open_favorite_dialog: false,
         })
     }
 
@@ -444,6 +447,7 @@ impl ViewerState {
             thumbbar_visible_range: None,
             saved_spread: None,
             pending_spread_action: None,
+            pending_open_favorite_dialog: false,
         }
     }
 
@@ -541,6 +545,11 @@ impl ViewerState {
         self.pending_spread_action.take()
     }
 
+    /// 右クリックメニュー「お気に入り詳細設定」の要求を取り出す（1フレームで消費）
+    pub fn take_favorite_dialog_request(&mut self) -> bool {
+        std::mem::take(&mut self.pending_open_favorite_dialog)
+    }
+
     /// spread_lo を基に lo/hi テクスチャを返す（original_index でキャッシュ参照）
     fn page_textures_for(&self, lo: i32) -> (Option<egui::TextureHandle>, Option<egui::TextureHandle>) {
         let total = self.entries.len() as i32;
@@ -594,7 +603,7 @@ impl ViewerState {
         let ctx = ui.ctx().clone();
         let viewer_style = ui.style().clone();
         if !self.open || self.entries.is_empty() {
-            return ViewerOutput { nav: ViewerNav::None, close_requested: !self.open, save_slots: None, spread_save_action: None };
+            return ViewerOutput { nav: ViewerNav::None, close_requested: !self.open, save_slots: None, spread_save_action: None, open_favorite_dialog: false };
         }
 
         // ── フレーム入力を一括収集（ctx.input はこの1回のみ）────────────────
@@ -742,7 +751,8 @@ impl ViewerState {
         self.tick_toast(&ctx, input.time);
 
         let spread_save_action = self.take_spread_action();
-        ViewerOutput { nav, close_requested: close_self, save_slots, spread_save_action }
+        let open_favorite_dialog = self.take_favorite_dialog_request();
+        ViewerOutput { nav, close_requested: close_self, save_slots, spread_save_action, open_favorite_dialog }
     }
 
     /// ビューアーを開いた直後（初回フレーム）に conf 既定スロットを一度だけ適用する。
@@ -1503,6 +1513,7 @@ impl ViewerState {
         toggle_on_init: bool,
         overwrite_enabled: bool,
         action: &mut Option<crate::controller::SpreadSaveAction>,
+        open_favorite_dialog: &mut bool,
     ) {
         let t = i18n::t();
         let mut toggle_on = toggle_on_init;
@@ -1522,6 +1533,11 @@ impl ViewerState {
                 ui.close();
             }
         });
+        ui.separator();
+        if ui.button(t.favorite_detail_menu()).clicked() {
+            *open_favorite_dialog = true;
+            ui.close();
+        }
     }
 
     fn render_single(
@@ -1536,6 +1552,7 @@ impl ViewerState {
         let toggle_on = self.spread_save_toggle_on();
         let overwrite_enabled = self.spread_overwrite_enabled();
         let action = &mut self.pending_spread_action;
+        let open_favorite_dialog = &mut self.pending_open_favorite_dialog;
         if let Some(tex) = tex {
             let [img_w, img_h] = tex.size();
             if zoom_actual {
@@ -1553,7 +1570,7 @@ impl ViewerState {
                     ui.painter().image(tex.id(), img_rect, FULL_UV, egui::Color32::WHITE);
                     if resp.double_clicked() { *double_clicked = true; }
                     if resp.clicked() && !resp.double_clicked() { *single_clicked = true; }
-                    resp.context_menu(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action));
+                    resp.context_menu(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, open_favorite_dialog));
                 });
             } else {
                 let available = ui.available_size();
@@ -1568,7 +1585,7 @@ impl ViewerState {
                 ui.painter().image(tex.id(), rect, FULL_UV, egui::Color32::WHITE);
                 if resp.double_clicked() { *double_clicked = true; }
                 if resp.clicked() && !resp.double_clicked() { *single_clicked = true; }
-                resp.context_menu(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action));
+                resp.context_menu(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, open_favorite_dialog));
             }
         } else {
             let rect = egui::Rect::from_min_size(ui.cursor().left_top(), ui.available_size());
@@ -1589,13 +1606,14 @@ impl ViewerState {
         let toggle_on = self.spread_save_toggle_on();
         let overwrite_enabled = self.spread_overwrite_enabled();
         let action = &mut self.pending_spread_action;
+        let open_favorite_dialog = &mut self.pending_open_favorite_dialog;
         let available = ui.available_size();
         let origin = ui.cursor().left_top();
 
         let full_rect = egui::Rect::from_min_size(origin, available);
         let resp = ui.allocate_rect(full_rect, egui::Sense::click());
         if resp.clicked() && !resp.double_clicked() { *single_clicked = true; }
-        resp.context_menu(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action));
+        resp.context_menu(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, open_favorite_dialog));
 
         let (rect_l, rect_r) = Self::spread_rects(available, origin, tex_left, tex_right, monitor);
         let painter = ui.painter();
