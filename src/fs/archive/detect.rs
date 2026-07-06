@@ -49,6 +49,9 @@ const ZIP_SIGNATURES: [[u8; 4]; 3] = [
 /// gzip のマジック（tar.gz/tgz 判定用）
 #[cfg(feature = "fmt-tar")]
 const GZIP_SIGNATURE: [u8; 2] = [0x1F, 0x8B];
+/// zstd フレームのマジック（tar.zst/tzst 判定用）
+#[cfg(feature = "tar-zstd")]
+const ZSTD_SIGNATURE: [u8; 4] = [0x28, 0xB5, 0x2F, 0xFD];
 /// POSIX ustar の magic。tar ヘッダの offset 257 に "ustar" が入る。
 #[cfg(feature = "fmt-tar")]
 const USTAR_OFFSET: usize = 257;
@@ -87,6 +90,11 @@ fn detect_by_magic(buf: &[u8]) -> Option<ArchiveFormat> {
         if buf.len() >= GZIP_SIGNATURE.len() && buf[..GZIP_SIGNATURE.len()] == GZIP_SIGNATURE {
             return Some(ArchiveFormat::Tar);
         }
+        // zstd フレームは tar.zst とみなす（単体 .zst は非対応スコープ）。
+        #[cfg(feature = "tar-zstd")]
+        if buf.len() >= ZSTD_SIGNATURE.len() && buf[..ZSTD_SIGNATURE.len()] == ZSTD_SIGNATURE {
+            return Some(ArchiveFormat::Tar);
+        }
         // raw tar は先頭マジックを持たず、offset 257 に ustar magic がある。
         if buf.len() >= USTAR_OFFSET + USTAR_MAGIC.len()
             && buf[USTAR_OFFSET..USTAR_OFFSET + USTAR_MAGIC.len()] == USTAR_MAGIC
@@ -117,6 +125,10 @@ fn detect_by_ext(path: &Path) -> ArchiveFormat {
     }
     #[cfg(feature = "fmt-tar")]
     if name_ends_with_any(path, &[".tar", ".cbt", ".tar.gz", ".tgz"]) {
+        return ArchiveFormat::Tar;
+    }
+    #[cfg(feature = "tar-zstd")]
+    if name_ends_with_any(path, &[".tar.zst", ".tzst"]) {
         return ArchiveFormat::Tar;
     }
     let _ = path;
@@ -276,6 +288,9 @@ mod tests {
             let mut tar_head = vec![0u8; 512];
             tar_head[USTAR_OFFSET..USTAR_OFFSET + USTAR_MAGIC.len()].copy_from_slice(&USTAR_MAGIC);
             assert_eq!(detect_by_magic(&tar_head), Some(ArchiveFormat::Tar));
+
+            #[cfg(feature = "tar-zstd")]
+            assert_eq!(detect_by_magic(b"\x28\xb5\x2f\xfdrest"), Some(ArchiveFormat::Tar)); // zstd(tar.zst)
         }
     }
 
