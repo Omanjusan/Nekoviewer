@@ -2,6 +2,43 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.1.0] - 2026-07-05
+
+### Added
+
+#### HOME / END key support
+
+- In the explorer, moves the thumbnail selector to the first/last item
+- In the viewer, moves to the first/last position within the archive
+
+#### Save current spread settings from the viewer's right-click menu
+
+- Single-page mode cannot be saved, but it can still be selected from the menu when overwriting a save; selecting it just resets to the default (no-save) value
+- Binding direction and offset value are saved as well
+- Page position is not saved; state is restored at the start of the file. Restoration preserves the offset value without breaking it, so a virtual page for position correction may appear — this is not a bug
+- The database file is placed next to the executable; delete it to reset
+
+#### Added page numbers to the thumbnail bar
+
+#### Additional archive format support
+
+- Added TAR / CBT support (uncompressed and gzip-compressed): `.tar` / `.cbt` / `.tgz` / `.tar.gz`
+- Added TAR + zstd compression support (`.tar.zst` / `.tzst`); pure Rust implementation, no added C dependency
+
+#### Additional image format support
+
+- Added TIFF / TIF support (pure Rust implementation); multi-page TIFF only displays the first page; some compression schemes (CCITT G3/G4, JPEG-in-TIFF, etc.) are not supported
+
+### Fixed
+
+- File type detection now inspects the leading binary bytes of the file instead of relying solely on the extension when decoding/extracting; this also fixes a fallback failure bug encountered with files that couldn't be decoded
+- Fixed heavy rendering performance in the thumbnail bar
+
+### Under Consideration
+
+- RAR archive format support
+- Favorites folder support: a spec for collecting favorited files into a virtual favorites folder
+
 ## [1.0.0] - 2026-07-04
 
 ### Added
