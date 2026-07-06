@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
@@ -329,6 +329,47 @@ pub fn list_dir_favorites(db: &Arc<Mutex<Database>>, dir: &Path) -> Vec<(String,
     out
 }
 
+/// 全ディレクトリ横断でのお気に入りエントリ一覧（フルテーブルスキャン）。
+/// お気に入り一覧表示（エクスプローラー部でフォルダ/未整理を選んだ時）専用。
+fn list_all_favorites(db: &Arc<Mutex<Database>>) -> Vec<(PathBuf, String, Vec<u8>)> {
+    let Ok(db) = db.lock() else { return Vec::new() };
+    let Ok(tx) = db.begin_read() else { return Vec::new() };
+    let Ok(table) = tx.open_table(FAVORITE_MEMBERSHIP_TABLE) else {
+        return Vec::new();
+    };
+    let Ok(iter) = table.iter() else { return Vec::new() };
+    let mut out = Vec::new();
+    for entry in iter {
+        let Ok((k, v)) = entry else { continue };
+        let key = k.value();
+        let Some(pos) = key.find('\0') else { continue };
+        out.push((
+            PathBuf::from(&key[..pos]),
+            key[pos + 1..].to_string(),
+            v.value().to_vec(),
+        ));
+    }
+    out
+}
+
+/// 指定お気に入りフォルダに所属するファイルを全ディレクトリ横断で列挙する。
+pub fn list_files_in_folder(db: &Arc<Mutex<Database>>, folder_id: u8) -> Vec<(PathBuf, String)> {
+    list_all_favorites(db)
+        .into_iter()
+        .filter(|(_, _, ids)| ids.contains(&folder_id))
+        .map(|(dir, name, _)| (dir, name))
+        .collect()
+}
+
+/// 未整理のお気に入り（どのフォルダにも属さない）ファイルを全ディレクトリ横断で列挙する。
+pub fn list_unsorted_files(db: &Arc<Mutex<Database>>) -> Vec<(PathBuf, String)> {
+    list_all_favorites(db)
+        .into_iter()
+        .filter(|(_, _, ids)| ids.is_empty())
+        .map(|(dir, name, _)| (dir, name))
+        .collect()
+}
+
 /// dir 配下で existing_filenames に存在しないエントリを削除する（GC）。削除件数を返す。
 pub fn gc_dir(db: &Arc<Mutex<Database>>, dir: &Path, existing_filenames: &[String]) -> usize {
     let stale: Vec<String> = list_dir_favorites(db, dir)
@@ -455,6 +496,33 @@ mod tests {
         delete_folder(&db, f1.id).unwrap();
         assert_eq!(get_membership(&db, &dir, "a.zip"), Some(vec![f2.id]));
         assert!(list_folders(&db).iter().all(|f| f.id != f1.id));
+    }
+
+    #[test]
+    fn list_files_in_folder_spans_directories() {
+        let db = temp_db();
+        let dir_a = PathBuf::from("/tmp/nekoviewer_fav_test_a");
+        let dir_b = PathBuf::from("/tmp/nekoviewer_fav_test_b");
+        let f1 = create_folder(&db, "F1", "★", 0).unwrap();
+        set_membership(&db, &dir_a, "a.zip", &[f1.id]);
+        set_membership(&db, &dir_b, "b.zip", &[f1.id]);
+        set_membership(&db, &dir_a, "unsorted.zip", &[]);
+
+        let mut in_folder = list_files_in_folder(&db, f1.id);
+        in_folder.sort();
+        assert_eq!(
+            in_folder,
+            vec![
+                (dir_a.canonicalize().unwrap_or(dir_a.clone()), "a.zip".to_string()),
+                (dir_b.canonicalize().unwrap_or(dir_b.clone()), "b.zip".to_string()),
+            ]
+        );
+
+        let unsorted = list_unsorted_files(&db);
+        assert_eq!(
+            unsorted,
+            vec![(dir_a.canonicalize().unwrap_or(dir_a), "unsorted.zip".to_string())]
+        );
     }
 
     #[test]

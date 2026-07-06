@@ -238,6 +238,9 @@ pub struct NekoviewApp {
     favorite_delete_confirm: Option<u8>,
     /// ビューアー右クリック「お気に入り詳細設定」ダイアログの状態
     favorite_detail_dialog: Option<FavoriteDetailDialogState>,
+    /// Some(_) の間、中央グリッドは実ディレクトリではなく選択中のお気に入り
+    /// （フォルダ横断）一覧を表示している。
+    viewing_favorites: Option<FavoriteSelection>,
     viewing_dir: Option<PathBuf>,
     /// CD/LSディレクトリのサマリーキャッシュ (path, saved_thumbs, total_archives)
     cd_summary: Option<(PathBuf, usize, usize)>,
@@ -252,6 +255,9 @@ pub struct NekoviewApp {
     spread_states: HashMap<String, (crate::types::PageMode, i32)>,
     /// 現在ディレクトリ内のお気に入り登録状態 (filename -> 所属folder_id一覧、空Vec=未整理)
     favorite_states: HashMap<String, Vec<u8>>,
+    /// お気に入り一覧表示中のマーカー情報 (フルパス -> 所属folder_id一覧)。
+    /// ディレクトリ横断のため favorite_states とは別にフルパスキーで持つ。
+    favorite_view_markers: HashMap<PathBuf, Vec<u8>>,
     thumbnails: HashMap<PathBuf, egui::TextureHandle>,
     thumb_req_tx: mpsc::SyncSender<ThumbRequest>,
     thumb_res_rx: mpsc::Receiver<ThumbResult>,
@@ -388,6 +394,7 @@ impl NekoviewApp {
             favorite_dialog: None,
             favorite_delete_confirm: None,
             favorite_detail_dialog: None,
+            viewing_favorites: None,
             viewing_dir: None,
             cd_summary: None,
             cd_summary_rx: None,
@@ -402,6 +409,7 @@ impl NekoviewApp {
             },
             spread_states: HashMap::new(),
             favorite_states: HashMap::new(),
+            favorite_view_markers: HashMap::new(),
             thumbnails: HashMap::new(),
             thumb_req_tx,
             thumb_res_rx,
@@ -1438,6 +1446,7 @@ impl NekoviewApp {
                 .clicked()
             {
                 self.folder_pane_tab = FolderPaneTab::RealTree;
+                self.exit_favorite_view();
             }
             if ui
                 .selectable_label(self.folder_pane_tab == FolderPaneTab::Favorites, i18n::t().folder_tab_favorites())
@@ -1500,6 +1509,7 @@ impl NekoviewApp {
                 }
             }
             TreeAction::Navigate(path) => {
+                self.viewing_favorites = None;
                 self.current_dir = path.clone();
                 self.viewing_dir = Some(path.clone());
                 self.start_scan(); // cache_db をここで確定させてから clone して渡す
@@ -1553,6 +1563,50 @@ impl NekoviewApp {
         self.favorite_folders = crate::favorites::list_folders(&db);
     }
 
+    /// 中央グリッドの表示対象を、選択されたお気に入り（フォルダ横断）一覧に切り替える。
+    fn enter_favorite_view(&mut self, selection: FavoriteSelection) {
+        let Some(db) = self.spread_db.clone() else { return };
+        let entries: Vec<(PathBuf, String)> = match selection {
+            FavoriteSelection::Unsorted => crate::favorites::list_unsorted_files(&db),
+            FavoriteSelection::Folder(id) => crate::favorites::list_files_in_folder(&db, id),
+            FavoriteSelection::None => Vec::new(),
+        };
+        self.favorite_view_markers = entries
+            .iter()
+            .map(|(dir, name)| {
+                let path = dir.join(name);
+                let ids = crate::favorites::get_membership(&db, dir, name).unwrap_or_default();
+                (path, ids)
+            })
+            .collect();
+        self.archives = entries.into_iter().map(|(dir, name)| dir.join(name)).collect();
+        self.raw_image_files = self
+            .archives
+            .iter()
+            .filter(|p| archive::is_supported_image_file(p))
+            .cloned()
+            .collect();
+        // 横断一覧では単一ディレクトリ前提のキャッシュDB/セッション状態は無効化する
+        self.cache_db = None;
+        self.invalid_archives.clear();
+        self.thumb_failed.clear();
+        self.viewing_favorites = Some(selection);
+        self.sort_archives();
+        self.recompute_filter();
+        self.selected_archive_index = if self.archives.is_empty() { None } else { Some(0) };
+        self.selected_archive_meta = None;
+    }
+
+    /// お気に入り一覧表示を終え、実ディレクトリ（current_dir）表示に戻す。
+    fn exit_favorite_view(&mut self) {
+        if self.viewing_favorites.is_none() {
+            return;
+        }
+        self.viewing_favorites = None;
+        self.favorite_selected = FavoriteSelection::None;
+        self.start_scan();
+    }
+
     fn draw_favorites_pane(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             if ui.button("+").clicked() {
@@ -1578,7 +1632,7 @@ impl NekoviewApp {
                     .selectable_label(unsorted_selected, i18n::t().favorite_unsorted_label())
                     .clicked()
                 {
-                    self.favorite_selected = FavoriteSelection::Unsorted;
+                    self.enter_favorite_view(FavoriteSelection::Unsorted);
                 }
 
                 for folder in self.favorite_folders.clone() {
@@ -1586,7 +1640,7 @@ impl NekoviewApp {
                     let selected = self.favorite_selected == FavoriteSelection::Folder(folder.id);
                     let resp = ui.selectable_label(selected, label);
                     if resp.clicked() {
-                        self.favorite_selected = FavoriteSelection::Folder(folder.id);
+                        self.enter_favorite_view(FavoriteSelection::Folder(folder.id));
                     }
                     resp.context_menu(|ui| {
                         if ui.button(i18n::t().favorite_rename_menu()).clicked() {
@@ -1747,7 +1801,23 @@ impl NekoviewApp {
     }
 
     fn draw_central_panel(&mut self, ui: &mut egui::Ui) {
-        ui.label(self.current_dir.display().to_string());
+        match self.viewing_favorites {
+            Some(FavoriteSelection::Unsorted) => {
+                ui.label(i18n::t().favorite_view_header_unsorted());
+            }
+            Some(FavoriteSelection::Folder(id)) => {
+                let name = self
+                    .favorite_folders
+                    .iter()
+                    .find(|f| f.id == id)
+                    .map(|f| f.name.clone())
+                    .unwrap_or_default();
+                ui.label(i18n::t().favorite_view_header_folder(&name));
+            }
+            _ => {
+                ui.label(self.current_dir.display().to_string());
+            }
+        }
 
         // CD/LS状態: ディレクトリのサマリーを表示
         if let Some((cd_path, saved, total)) = &self.cd_summary {
@@ -1904,8 +1974,14 @@ impl NekoviewApp {
                             }
 
                             // お気に入りマーカー: 左上から左下に列挙（表示できる分だけ）
+                            // お気に入り一覧表示中はフルパスキー、通常のディレクトリ表示中はファイル名キーで引く。
                             let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                            if let Some(folder_ids) = self.favorite_states.get(filename) {
+                            let marker_ids = if self.viewing_favorites.is_some() {
+                                self.favorite_view_markers.get(path)
+                            } else {
+                                self.favorite_states.get(filename)
+                            };
+                            if let Some(folder_ids) = marker_ids {
                                 const MARKER_LINE_H: f32 = 16.0;
                                 let marker_font = egui::FontId::proportional(14.0);
                                 if folder_ids.is_empty() {

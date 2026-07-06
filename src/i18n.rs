@@ -216,6 +216,22 @@ impl Lang {
         }
     }
 
+    pub fn favorite_view_header_unsorted(self) -> &'static str {
+        match self {
+            Lang::Japanese => "お気に入り: 未整理",
+            Lang::English  => "Favorites: Unsorted",
+            Lang::Chinese  => "收藏：未整理",
+        }
+    }
+
+    pub fn favorite_view_header_folder(self, name: &str) -> String {
+        match self {
+            Lang::Japanese => format!("お気に入り: {name}"),
+            Lang::English  => format!("Favorites: {name}"),
+            Lang::Chinese  => format!("收藏：{name}"),
+        }
+    }
+
     pub fn folder_tab_real(self) -> &'static str {
         match self {
             Lang::Japanese => "フォルダ",
