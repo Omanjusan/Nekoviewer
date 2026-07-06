@@ -10,6 +10,7 @@ mod types;
 mod model_innerlog;
 mod neko_dir;
 mod spread_offset;
+mod spread_state;
 mod view_explorer;
 mod view_gui_config;
 mod view_innerlog;

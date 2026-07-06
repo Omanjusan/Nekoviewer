@@ -249,6 +249,10 @@ pub struct ViewerState {
     /// (原始インデックス、両端含む)。enqueue の優先範囲としても使う。
     /// None の間は仮想化描画がまだ一度も走っていない（起動直後の1フレーム分）。
     thumbbar_visible_range: Option<(i32, i32)>,
+    /// 保存済み見開き状態のキャッシュ（app側がopen_viewer時にセット/操作後に更新）
+    saved_spread: Option<(PageMode, i32)>,
+    /// 保存メニューでのユーザー操作要求（1フレームで消費してViewerOutputへ渡す）
+    pending_spread_action: Option<crate::controller::SpreadSaveAction>,
 }
 
 impl ViewerState {
@@ -388,6 +392,8 @@ impl ViewerState {
             thumbbar_last_activity: Instant::now(),
             thumbbar_scrolled_lo: None,
             thumbbar_visible_range: None,
+            saved_spread: None,
+            pending_spread_action: None,
         })
     }
 
@@ -436,6 +442,8 @@ impl ViewerState {
             thumbbar_last_activity: Instant::now(),
             thumbbar_scrolled_lo: None,
             thumbbar_visible_range: None,
+            saved_spread: None,
+            pending_spread_action: None,
         }
     }
 
@@ -491,6 +499,48 @@ impl ViewerState {
         }
     }
 
+    /// 保存済み見開き状態を復元する（ビューアを開いた直後に一度だけ呼ぶ想定）。
+    /// 復帰は常にファイル先頭固定で、保存されたオフセット値だけを先頭に適用する。
+    pub fn restore_saved_spread(&mut self, mode: PageMode, offset_value: i32, cfg: &mut ViewerConfig) {
+        if self.is_raw_file || mode == PageMode::Single { return; }
+        self.set_page_mode(mode, cfg);
+        self.spread_base = 0;
+        match offset_value {
+            v if v < 0 => self.offset.force_virtual_left(),
+            v if v > 0 => { self.offset.reset(); self.offset.advance(); }
+            _ => self.offset.reset(),
+        }
+    }
+
+    pub fn set_saved_spread(&mut self, v: Option<(PageMode, i32)>) { self.saved_spread = v; }
+
+    /// 現在の表示状態を保存キー用の (mode, offset) 形式で返す
+    pub fn current_spread_snapshot(&self) -> (PageMode, i32) {
+        (self.page_mode, self.offset.value())
+    }
+
+    /// 保存トグル（チェックボックス）を操作可能か（Single中は保存対象外）
+    pub fn spread_save_toggle_enabled(&self) -> bool {
+        self.page_mode != PageMode::Single
+    }
+
+    pub fn spread_save_toggle_on(&self) -> bool {
+        self.saved_spread.is_some()
+    }
+
+    /// 「上書き保存」ボタンを操作可能か（保存済みかつ現在のmode/offsetが保存値と異なる場合のみ）
+    pub fn spread_overwrite_enabled(&self) -> bool {
+        match self.saved_spread {
+            None => false,
+            Some((mode, offset)) => mode != self.page_mode || offset != self.offset.value(),
+        }
+    }
+
+    /// メニュー操作で立てられた保存要求を取り出す（1フレームで消費）
+    pub fn take_spread_action(&mut self) -> Option<crate::controller::SpreadSaveAction> {
+        self.pending_spread_action.take()
+    }
+
     /// spread_lo を基に lo/hi テクスチャを返す（original_index でキャッシュ参照）
     fn page_textures_for(&self, lo: i32) -> (Option<egui::TextureHandle>, Option<egui::TextureHandle>) {
         let total = self.entries.len() as i32;
@@ -544,7 +594,7 @@ impl ViewerState {
         let ctx = ui.ctx().clone();
         let viewer_style = ui.style().clone();
         if !self.open || self.entries.is_empty() {
-            return ViewerOutput { nav: ViewerNav::None, close_requested: !self.open, save_slots: None };
+            return ViewerOutput { nav: ViewerNav::None, close_requested: !self.open, save_slots: None, spread_save_action: None };
         }
 
         // ── フレーム入力を一括収集（ctx.input はこの1回のみ）────────────────
@@ -691,7 +741,8 @@ impl ViewerState {
 
         self.tick_toast(&ctx, input.time);
 
-        ViewerOutput { nav, close_requested: close_self, save_slots }
+        let spread_save_action = self.take_spread_action();
+        ViewerOutput { nav, close_requested: close_self, save_slots, spread_save_action }
     }
 
     /// ビューアーを開いた直後（初回フレーム）に conf 既定スロットを一度だけ適用する。
@@ -942,10 +993,10 @@ impl ViewerState {
                         self.render_single(ui, &frame.tex_lo, frame.zoom_actual, &mut double_clicked, &mut single_clicked);
                     }
                     PageMode::SpreadLeft => {
-                        Self::render_spread(ui, &frame.tex_lo, &frame.tex_hi, frame.monitor, &mut single_clicked);
+                        self.render_spread(ui, &frame.tex_lo, &frame.tex_hi, frame.monitor, &mut single_clicked);
                     }
                     PageMode::SpreadRight => {
-                        Self::render_spread(ui, &frame.tex_hi, &frame.tex_lo, frame.monitor, &mut single_clicked);
+                        self.render_spread(ui, &frame.tex_hi, &frame.tex_lo, frame.monitor, &mut single_clicked);
                     }
                 }
             } else {
@@ -1445,6 +1496,34 @@ impl ViewerState {
         if sort_changed { self.sort_entries(); }
     }
 
+    /// 画像本体の右クリックメニュー（見開き設定の保存トグル／上書き保存）を描画する
+    fn spread_save_context_menu(
+        ui: &mut egui::Ui,
+        toggle_enabled: bool,
+        toggle_on_init: bool,
+        overwrite_enabled: bool,
+        action: &mut Option<crate::controller::SpreadSaveAction>,
+    ) {
+        let t = i18n::t();
+        let mut toggle_on = toggle_on_init;
+        ui.add_enabled_ui(toggle_enabled, |ui| {
+            if ui.checkbox(&mut toggle_on, t.spread_save_toggle_label()).changed() {
+                *action = Some(if toggle_on {
+                    crate::controller::SpreadSaveAction::Enable
+                } else {
+                    crate::controller::SpreadSaveAction::Disable
+                });
+                ui.close();
+            }
+        });
+        ui.add_enabled_ui(overwrite_enabled, |ui| {
+            if ui.button(t.spread_save_overwrite_label()).clicked() {
+                *action = Some(crate::controller::SpreadSaveAction::Overwrite);
+                ui.close();
+            }
+        });
+    }
+
     fn render_single(
         &mut self,
         ui: &mut egui::Ui,
@@ -1453,6 +1532,10 @@ impl ViewerState {
         double_clicked: &mut bool,
         single_clicked: &mut bool,
     ) {
+        let toggle_enabled = self.spread_save_toggle_enabled();
+        let toggle_on = self.spread_save_toggle_on();
+        let overwrite_enabled = self.spread_overwrite_enabled();
+        let action = &mut self.pending_spread_action;
         if let Some(tex) = tex {
             let [img_w, img_h] = tex.size();
             if zoom_actual {
@@ -1470,6 +1553,7 @@ impl ViewerState {
                     ui.painter().image(tex.id(), img_rect, FULL_UV, egui::Color32::WHITE);
                     if resp.double_clicked() { *double_clicked = true; }
                     if resp.clicked() && !resp.double_clicked() { *single_clicked = true; }
+                    resp.context_menu(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action));
                 });
             } else {
                 let available = ui.available_size();
@@ -1484,6 +1568,7 @@ impl ViewerState {
                 ui.painter().image(tex.id(), rect, FULL_UV, egui::Color32::WHITE);
                 if resp.double_clicked() { *double_clicked = true; }
                 if resp.clicked() && !resp.double_clicked() { *single_clicked = true; }
+                resp.context_menu(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action));
             }
         } else {
             let rect = egui::Rect::from_min_size(ui.cursor().left_top(), ui.available_size());
@@ -1493,18 +1578,24 @@ impl ViewerState {
     }
 
     fn render_spread(
+        &mut self,
         ui: &mut egui::Ui,
         tex_left: &Option<egui::TextureHandle>,
         tex_right: &Option<egui::TextureHandle>,
         monitor: Option<egui::Vec2>,
         single_clicked: &mut bool,
     ) {
+        let toggle_enabled = self.spread_save_toggle_enabled();
+        let toggle_on = self.spread_save_toggle_on();
+        let overwrite_enabled = self.spread_overwrite_enabled();
+        let action = &mut self.pending_spread_action;
         let available = ui.available_size();
         let origin = ui.cursor().left_top();
 
         let full_rect = egui::Rect::from_min_size(origin, available);
         let resp = ui.allocate_rect(full_rect, egui::Sense::click());
         if resp.clicked() && !resp.double_clicked() { *single_clicked = true; }
+        resp.context_menu(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action));
 
         let (rect_l, rect_r) = Self::spread_rects(available, origin, tex_left, tex_right, monitor);
         let painter = ui.painter();

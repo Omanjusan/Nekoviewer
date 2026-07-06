@@ -175,6 +175,10 @@ pub struct NekoviewApp {
     cd_summary_updated_at: Option<std::time::Instant>,
     /// 現在ディレクトリの redb キャッシュDB（キャッシュ無効なら None）
     cache_db: Option<std::sync::Arc<std::sync::Mutex<redb::Database>>>,
+    /// exe横の見開き状態DB（アプリ起動時に一度だけ開き、使い回す）
+    spread_db: Option<std::sync::Arc<std::sync::Mutex<redb::Database>>>,
+    /// 現在ディレクトリ内で保存済みの見開き状態 (filename -> (mode, offset, page_index))
+    spread_states: HashMap<String, (crate::types::PageMode, i32)>,
     thumbnails: HashMap<PathBuf, egui::TextureHandle>,
     thumb_req_tx: mpsc::SyncSender<ThumbRequest>,
     thumb_res_rx: mpsc::Receiver<ThumbResult>,
@@ -310,6 +314,8 @@ impl NekoviewApp {
             cd_summary_rx: None,
             cd_summary_updated_at: None,
             cache_db: None,
+            spread_db: crate::spread_state::open_spread_db(),
+            spread_states: HashMap::new(),
             thumbnails: HashMap::new(),
             thumb_req_tx,
             thumb_res_rx,
@@ -419,6 +425,18 @@ impl NekoviewApp {
             for img in raw_images {
                 self.raw_image_files.insert(img.clone());
                 self.archives.push(img);
+            }
+            if let Some(db) = self.spread_db.clone() {
+                let filenames: Vec<String> = self.archives.iter()
+                    .filter_map(|p| p.file_name().and_then(|n| n.to_str()).map(str::to_string))
+                    .collect();
+                crate::spread_state::gc_dir(&db, &self.current_dir, &filenames);
+                self.spread_states = crate::spread_state::list_dir_entries(&db, &self.current_dir)
+                    .into_iter()
+                    .map(|(name, mode, offset)| (name, (mode, offset)))
+                    .collect();
+            } else {
+                self.spread_states.clear();
             }
             self.scan_state = ScanState::Done;
             self.sort_archives();
@@ -997,6 +1015,10 @@ impl NekoviewApp {
         if let Some(slots) = output.save_slots {
             self.viewer_slots = slots;
             self.persist_state();
+        }
+
+        if let Some(action) = output.spread_save_action {
+            self.handle_spread_save_action(action);
         }
 
         let had_nav = output.nav != ViewerNav::None;
@@ -1832,6 +1854,46 @@ impl NekoviewApp {
         }
     }
 
+    /// 右クリックメニューでの見開き設定保存操作を反映する（DB書き込み/削除＋メモリ上のキャッシュ更新）。
+    fn handle_spread_save_action(&mut self, action: crate::controller::SpreadSaveAction) {
+        let Some(db) = self.spread_db.clone() else { return };
+        let mut viewer_guard = self.viewer.lock().unwrap();
+        let Some(viewer) = viewer_guard.as_mut() else { return };
+        let filename = match viewer.archive_path().file_name().and_then(|n| n.to_str()) {
+            Some(f) => f.to_string(),
+            None => return,
+        };
+
+        let disable = |viewer: &mut ViewerState, spread_states: &mut HashMap<String, (PageMode, i32)>, db: &Arc<Mutex<redb::Database>>, dir: &std::path::Path, filename: &str| {
+            crate::spread_state::remove_spread(db, dir, filename);
+            viewer.set_saved_spread(None);
+            spread_states.remove(filename);
+        };
+
+        use crate::controller::SpreadSaveAction;
+        match action {
+            SpreadSaveAction::Enable => {
+                let (mode, offset) = viewer.current_spread_snapshot();
+                crate::spread_state::write_spread(&db, &self.current_dir, &filename, mode, offset);
+                viewer.set_saved_spread(Some((mode, offset)));
+                self.spread_states.insert(filename, (mode, offset));
+            }
+            SpreadSaveAction::Disable => {
+                disable(viewer, &mut self.spread_states, &db, &self.current_dir, &filename);
+            }
+            SpreadSaveAction::Overwrite => {
+                let (mode, offset) = viewer.current_spread_snapshot();
+                if mode == PageMode::Single {
+                    disable(viewer, &mut self.spread_states, &db, &self.current_dir, &filename);
+                } else {
+                    crate::spread_state::write_spread(&db, &self.current_dir, &filename, mode, offset);
+                    viewer.set_saved_spread(Some((mode, offset)));
+                    self.spread_states.insert(filename, (mode, offset));
+                }
+            }
+        }
+    }
+
     /// ファイルが FileCache 未登録かつ未リクエストの場合にバックグラウンド読み込みを起動する。
     fn ensure_file_cached(&mut self, path: PathBuf) {
         if !self.file_cache.contains(&path) && !self.file_cache_pending.contains(&path) {
@@ -1841,8 +1903,14 @@ impl NekoviewApp {
     }
 
     /// ビューアを開く（ページキャッシュクリア・ファイルキャッシュ投入・フォーカス要求を一括処理）
-    fn open_viewer(&mut self, state: ViewerState) {
+    fn open_viewer(&mut self, mut state: ViewerState) {
         let path = state.archive_path().clone();
+        let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        if let Some(&(mode, offset)) = self.spread_states.get(filename) {
+            let mut cfg = self.viewer_cfg.lock().unwrap();
+            state.restore_saved_spread(mode, offset, &mut cfg);
+            state.set_saved_spread(Some((mode, offset)));
+        }
         self.pending_loads.lock().unwrap().clear();
         *self.viewer.lock().unwrap() = Some(state);
         self.ensure_file_cached(path);
