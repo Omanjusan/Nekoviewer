@@ -665,7 +665,12 @@ impl ViewerState {
         let scroll_delta = scroll_delta_raw;
 
         // サムネイルバー自動非表示用: ページ送りに関わる入力があった時刻を記録する。
-        if key_left || key_right || key_up || key_down || key_space
+        // key_left/key_right（←→）はファイル切替専用でこのビューア内のページ送りではなく、
+        // 端（先頭/末尾ファイル）で移動先が無い場合は何も動かずトーストが出るだけ。その場合は
+        // ここで無条件にタイマーを更新すると「何も動いていないのにバーだけ反応する」矛盾が
+        // 起きるため対象から外す。移動が成功した場合は新規 ViewerState 生成時に
+        // thumbbar_last_activity が Instant::now() で初期化されるため、そちらで表示される。
+        if key_up || key_down || key_space
             || shift_nav_up || shift_nav_down || input.key_home || input.key_end
             || scroll_delta != 0.0 || shift_scroll_delta != 0.0
         {
