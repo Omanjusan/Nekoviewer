@@ -2,58 +2,14 @@
 
 v.1.1.0
 
+構造・ファイル別役割・技術スタックは [architecture.md](architecture.md) を参照。本ドキュメントは
+UI/操作仕様、キャッシュ以外の各種挙動の仕様メモ。
+
 ## 概要
 
 Rust + egui（生winit + egui-wgpu、eframe不使用）で作る画像ビューアアプリ。
-アーカイブ（ZIP / CBZ / 7Z / CB7）内の画像をサムネイルグリッドで一覧し、選択するとOSネイティブの独立ウィンドウでビューアを開く。
-
----
-
-## アーキテクチャ概略
-
-```
-nekoviewer/
-├── src/
-│   ├── main.rs             # エントリポイント、CLI引数解析、config/state読込、winit起動
-│   ├── winit_app.rs        # ウィンドウ作成・イベントループ（eframe相当の役割）
-│   ├── view_explorer.rs    # フォルダツリー+サムネイルグリッド画面
-│   ├── view_reader.rs      # ビューア画面（キー入力・見開き・サムネイルバー等）
-│   ├── controller.rs       # ビューアのナビゲーション制御
-│   ├── cache.rs            # ページ/ファイルキャッシュ、デコードワーカー、サムネイル生成
-│   ├── neko_dir.rs         # redbベースのサムネイルDB管理
-│   ├── fs/
-│   │   ├── dir.rs          # ディレクトリ走査（std::fs::read_dir）
-│   │   ├── archive.rs      # ZIP/7Z読み込み・画像抽出
-│   │   └── mount.rs        # SMB/gvfsマウント検出
-│   ├── config.rs           # 起動時設定（nekoviewer.conf）
-│   ├── gui_config.rs       # 実行時設定（nekoviewer.state）
-│   ├── view_gui_config.rs  # 設定ダイアログUI
-│   ├── anim.rs             # アニメーション再生（リングバッファ方式）
-│   ├── spread_offset.rs    # 見開きオフセット計算
-│   ├── i18n.rs             # 多言語対応
-│   ├── types.rs            # 共有ドメイン型
-│   └── model_innerlog.rs / view_innerlog.rs / view_status.rs  # アプリ内ログ・ステータス表示
-├── Cargo.toml
-└── docs/
-```
-
----
-
-## 技術スタック
-
-| 用途 | クレート |
-| --- | --- |
-| GUI | `egui` + `egui-winit` + `egui-wgpu` + `winit` + `pollster` |
-| 画像デコード | `image`（jpeg/png/webp/gif/bmp/tiff）+ `libavif`/`libavif-sys`（AVIF）+ `webp`/`libwebp-sys` |
-| リサイズ | `fast_image_resize` |
-| ZIP / CBZ | `zip` |
-| 7Z / CB7 | `sevenz-rust2` |
-| サムネイルDB | `redb` |
-| SHA256 ハッシュ | `sha2` |
-| 設定ファイル | 独自iniパーサ（自前実装、TOML不使用） |
-| ディレクトリ走査 | `std::fs::read_dir`（walkdir不使用） |
-| 並列処理 | `std::thread`（rayon不使用） |
-| システム情報 | `sysinfo`（キャッシュ予算の自動算出用） |
+アーカイブ（ZIP / CBZ / 7Z / CB7 / TAR系。詳細は[formats.md](formats.md)）内の画像をサムネイル
+グリッドで一覧し、選択するとOSネイティブの独立ウィンドウでビューアを開く。
 
 ---
 
@@ -77,9 +33,8 @@ nekoviewer/
 
 ## 対応フォーマット
 
-- **アーカイブ**: ZIP / CBZ / 7Z / CB7（RAR・TAR は対象外）
-- **画像**: JPEG / PNG / WebP / GIF / BMP / AVIF
-- 非アーカイブの生画像ファイルも閲覧できる
+対応拡張子・使用ライブラリの一覧は [formats.md](formats.md) を参照。非アーカイブの生画像
+ファイルも閲覧できる。
 
 ---
 
@@ -88,8 +43,8 @@ nekoviewer/
 ### 生成ロジック
 
 - アーカイブ内で最初に見つかった画像1枚を採用する（複数枚のサンプリングや輝度判定は行わない）
-- ZIPは Local File Header を先頭から順読みし、最初にデコード成功した画像を採用（`load_first_image`, `fs/archive.rs`）
-- 7zは`for_each_entries`で最初の画像が見つかった時点でブロック展開を打ち切る（ソリッド圧縮の全展開を避けるため）
+- ZIPは Local File Header を先頭から順読みし、最初にデコード成功した画像を採用（`fs/archive/zip.rs::load_first_image_sequential`）
+- 7z/tarは最初の画像が見つかった時点でブロック展開を打ち切る（ソリッド圧縮の全展開を避けるため）
 - リサイズ: 長辺256px固定、JPEGエンコードして保存（フォーマット選択は無い）
 
 ### アスペクト比
@@ -186,11 +141,4 @@ nekoviewer --cache-max-mb 2048
 nekoviewer
 ```
 
----
-
-## 実装上の方針
-
-- **シンプル優先**: 迷ったら機能を削る方向で判断する
-- **Linux/Windows対応**
-- **SMB対応**: OSマウント前提（特別なSMB実装は行わない）
-- **Rustのみ**: Python などの他言語は使用しない
+プロジェクト全体の方針（対応OS・シンプル優先・実装言語等）は `.claude/CLAUDE.md` を参照。
