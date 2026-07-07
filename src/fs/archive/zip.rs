@@ -104,25 +104,6 @@ pub(crate) fn estimate_archive_memory_zip(
     }
 }
 
-/// ZIP/CBZ から指定エントリの画像をデコードして返す
-pub fn load_image(path: &Path, entry_name: &str) -> Option<image::DynamicImage> {
-    let file = std::fs::File::open(path).ok()?;
-    let mut archive = ::zip::ZipArchive::new(file).ok()?;
-    load_image_from_archive(&mut archive, entry_name)
-}
-
-/// 開済みの ZipArchive から指定エントリの画像をデコードして返す（キープオープン用）
-pub fn load_image_from_archive(
-    archive: &mut ::zip::ZipArchive<std::fs::File>,
-    entry_name: &str,
-) -> Option<image::DynamicImage> {
-    let mut entry = archive.by_name(entry_name).ok()?;
-    let mut buf = Vec::new();
-    entry.read_to_end(&mut buf).ok()?;
-    let img = decode_image(&buf)?;
-    Some(img)
-}
-
 /// Local File Header を先頭から順読みする（セントラルディレクトリ・末尾シーク不要）。
 /// Data Descriptor フラグ付き DEFLATE エントリはストリーム展開で処理する。
 pub(crate) fn load_first_image_sequential(path: &Path) -> Option<image::DynamicImage> {
