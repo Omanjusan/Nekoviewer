@@ -118,7 +118,7 @@ impl NekoviewApp {
         if entries.is_empty() {
             return true; // 空/無効アーカイブの判定は既存の invalid_archives 処理に任せる
         }
-        match archive::estimate_archive_memory(path, &entries, self.cache_budget_bytes, self.anim_ring_bounds) {
+        match archive::estimate_archive_memory(path, &entries, self.cache_budget_bytes, self.anim_ring_bounds, self.config.max_decode_edge) {
             archive::ArchiveMemoryEstimate::Ok => true,
             archive::ArchiveMemoryEstimate::OverBudget => {
                 self.memory_warning_open = true;

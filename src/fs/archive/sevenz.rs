@@ -99,32 +99,33 @@ pub(crate) fn load_first_image_7z(path: &Path) -> Option<image::DynamicImage> {
 
 /// フェーズ4: 7z版の見積もり。ソリッド圧縮では「軽くサンプリング」が成立しないため、
 /// どのみち開く際に必要になる一括展開(フェーズ2の`extract_all_images_7z_path`と同じ処理)を
-/// 先に行い、全エントリのヘッダ寸法から実際の合計値を厳密に計算する
-/// （サンプル平均による概算ではなく全数チェックなので、ZIP版より判定精度は高い）。
+/// 先に行い、全エントリの計上額を計算する。全数が手に入るため、ZIP版の「平均×窓幅」より
+/// 精度の高い「最悪の連続先読みウィンドウ合計」で同時常駐を判定する。
 pub(crate) fn estimate_archive_memory_7z(
     path: &Path,
     entries: &[ImageEntry],
     budget_bytes: usize,
     ring_bounds: (usize, usize),
+    max_decode_edge: u32,
 ) -> ArchiveMemoryEstimate {
     let map = extract_all_images_7z_path(path);
     if map.is_empty() {
         return ArchiveMemoryEstimate::Ok;
     }
 
-    let mut total: usize = 0;
+    let mut per_entry: Vec<usize> = Vec::with_capacity(entries.len());
     for entry in entries {
-        let Some(buf) = map.get(&entry.entry_name) else { continue };
-        match super::estimate_bytes_for_entry(buf, &entry.display_name, budget_bytes, ring_bounds) {
+        let Some(buf) = map.get(&entry.entry_name) else { per_entry.push(0); continue };
+        match super::estimate_bytes_for_entry(buf, &entry.display_name, budget_bytes, ring_bounds, max_decode_edge) {
             Some(EntryEstimate::OverBudget) => return ArchiveMemoryEstimate::OverBudget,
-            Some(EntryEstimate::Bytes(n)) => {
-                total = total.saturating_add(n);
-                if total > budget_bytes {
-                    return ArchiveMemoryEstimate::OverBudget;
-                }
-            }
-            None => {} // 読み込み/デコード失敗エントリは合計から除外
+            Some(EntryEstimate::Bytes(n)) => per_entry.push(n),
+            None => per_entry.push(0), // 読み込み/デコード失敗エントリは合計から除外
         }
     }
-    ArchiveMemoryEstimate::Ok
+    let worst = super::worst_window_total(&per_entry, crate::cache::PREFETCH_WINDOW);
+    if worst > budget_bytes {
+        ArchiveMemoryEstimate::OverBudget
+    } else {
+        ArchiveMemoryEstimate::Ok
+    }
 }

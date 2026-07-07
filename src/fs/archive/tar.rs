@@ -121,33 +121,35 @@ pub(crate) fn load_first_image_tar(path: &Path) -> Option<image::DynamicImage> {
     None
 }
 
-/// tar版のメモリ見積もり。ソリッド扱いのため7z同様、一括展開結果を使って全件厳密に計算する。
+/// tar版のメモリ見積もり。ソリッド扱いのため7z同様、一括展開結果を使って全件計算し、
+/// 「最悪の連続先読みウィンドウ合計」で同時常駐を判定する。
 pub(crate) fn estimate_archive_memory_tar(
     path: &Path,
     entries: &[ImageEntry],
     budget_bytes: usize,
     ring_bounds: (usize, usize),
+    max_decode_edge: u32,
 ) -> ArchiveMemoryEstimate {
     let map = extract_all_images_tar_path(path);
     if map.is_empty() {
         return ArchiveMemoryEstimate::Ok;
     }
 
-    let mut total: usize = 0;
+    let mut per_entry: Vec<usize> = Vec::with_capacity(entries.len());
     for entry in entries {
-        let Some(buf) = map.get(&entry.entry_name) else { continue };
-        match super::estimate_bytes_for_entry(buf, &entry.display_name, budget_bytes, ring_bounds) {
+        let Some(buf) = map.get(&entry.entry_name) else { per_entry.push(0); continue };
+        match super::estimate_bytes_for_entry(buf, &entry.display_name, budget_bytes, ring_bounds, max_decode_edge) {
             Some(EntryEstimate::OverBudget) => return ArchiveMemoryEstimate::OverBudget,
-            Some(EntryEstimate::Bytes(n)) => {
-                total = total.saturating_add(n);
-                if total > budget_bytes {
-                    return ArchiveMemoryEstimate::OverBudget;
-                }
-            }
-            None => {} // 読み込み/デコード失敗エントリは合計から除外
+            Some(EntryEstimate::Bytes(n)) => per_entry.push(n),
+            None => per_entry.push(0), // 読み込み/デコード失敗エントリは合計から除外
         }
     }
-    ArchiveMemoryEstimate::Ok
+    let worst = super::worst_window_total(&per_entry, crate::cache::PREFETCH_WINDOW);
+    if worst > budget_bytes {
+        ArchiveMemoryEstimate::OverBudget
+    } else {
+        ArchiveMemoryEstimate::Ok
+    }
 }
 
 #[cfg(test)]
@@ -283,12 +285,12 @@ mod tests {
         let path = build_tar(&[(10, 10), (10, 10), (10, 10)], false);
         let entries = list_images_tar(&path);
         assert_eq!(
-            estimate_archive_memory_tar(&path, &entries, 10 * MB, TEST_RING_BOUNDS),
+            estimate_archive_memory_tar(&path, &entries, 10 * MB, TEST_RING_BOUNDS, 1920),
             ArchiveMemoryEstimate::Ok
         );
         // 1枚(400byte)未満の予算 → 単体超過で OverBudget
         assert_eq!(
-            estimate_archive_memory_tar(&path, &entries, 100, TEST_RING_BOUNDS),
+            estimate_archive_memory_tar(&path, &entries, 100, TEST_RING_BOUNDS, 1920),
             ArchiveMemoryEstimate::OverBudget
         );
         std::fs::remove_file(&path).ok();

@@ -22,6 +22,15 @@ const MIN_RATIO_PCT: usize = 40; // page_max に対する page_min の割合
 pub(crate) const ANIM_RING_BUDGET_PCT: usize = 25;
 const FALLBACK_TOTAL_BYTES: usize = 500 * MB; // sysinfo 失敗時フォールバック（旧30%相当）
 
+/// ビューアーの先読みウィンドウ: 現在ページの後方（戻り側）に保持する枚数。
+pub const PREFETCH_BEHIND: usize = 5;
+/// ビューアーの先読みウィンドウ: 前方（進み側）に先読みする枚数。
+pub const PREFETCH_AHEAD: usize = 10;
+/// 同時にデコード常駐しうるページ数（後方 + 現在ページ + 前方）。
+/// view_explorer の prefetch_pages と、fs/archive のメモリ見積もりゲートが
+/// 同じウィンドウ幅を共有するための単一定義。
+pub const PREFETCH_WINDOW: usize = PREFETCH_BEHIND + 1 + PREFETCH_AHEAD;
+
 /// システム総RAM量をMB単位で返す（sysinfo失敗時は0）。設定ダイアログの表示にも使う。
 pub fn system_total_ram_mb() -> u64 {
     let mut sys = sysinfo::System::new();
@@ -52,12 +61,6 @@ pub fn resolve_cache_budgets(cache_total_mb: Option<u64>) -> (usize, usize, usiz
     let page_min = page_max * MIN_RATIO_PCT / 100;
     (page_max, page_min, file_max)
 }
-const MAX_DISPLAY_W: u32 = 1920;
-const MAX_DISPLAY_H: u32 = 1080;
-/// フェーズ6: リサイズ再デコード未接続時（起動直後など）のデコード上限既定値。
-/// 従来の固定 MAX_DISPLAY_W/H と同じ値を使う。
-pub const DEFAULT_DECODE_TARGET: (u32, u32) = (MAX_DISPLAY_W, MAX_DISPLAY_H);
-
 /// FileCache が保持する「準備済みデータ」。7z(および将来のtar)はソリッド圧縮で
 /// ランダムアクセスできないため、開いた時点で全画像エントリを展開したもの(`Extracted`)を
 /// 1アーカイブにつき1回だけ作り、ZIP/生画像は従来通りの生バイト列(`Raw`)を持つ。
@@ -370,18 +373,14 @@ fn decode_bytes_to_content(
 }
 
 /// `target` に縮小する（拡大はしない）。`target` が None のときは無制限（原寸のまま）。
-/// フェーズ6: 従来の固定 MAX_DISPLAY_W/H から、リサイズ再デコード対応のため呼び出し側指定に変更。
+/// フェーズ6: 従来の固定上限(1920x1080)から、リサイズ再デコード対応のため呼び出し側指定に変更。
 pub fn resize_for_display(img: image::DynamicImage, filter: image::imageops::FilterType, target: Option<(u32, u32)>) -> image::RgbaImage {
     let Some((tw, th)) = target else {
         return img.to_rgba8();
     };
     let (w, h) = (img.width(), img.height());
-    let scale = (tw as f32 / w as f32)
-        .min(th as f32 / h as f32)
-        .min(1.0);
-    if scale < 1.0 {
-        let nw = ((w as f32 * scale) as u32).max(1);
-        let nh = ((h as f32 * scale) as u32).max(1);
+    let (nw, nh) = crate::anim::fit_within(w, h, tw, th);
+    if (nw, nh) != (w, h) {
         fir_resize(img, nw, nh, filter)
     } else {
         img.to_rgba8()
@@ -416,6 +415,11 @@ struct RingAnimState {
 /// その際は `restart()` でデコーダを先頭から作り直す（この再デコードによる一瞬のフリーズは許容する）。
 pub struct RingAnimation {
     state: Mutex<RingAnimState>,
+    /// PageCache への計上額（リング容量 × リサイズ後フレームサイズ）。構築時に確定し不変。
+    /// 挿入時点の実常駐（2フレーム分）で計上すると、再生でリングが容量まで育ったとき
+    /// 帳簿が実態を大幅に過小評価して evict が動かなくなるため、
+    /// 「育ちうる最大量」を予約方式で先取り計上する（常に 帳簿 ≥ 実常駐 を保証）。
+    reserved_bytes: usize,
 }
 
 impl RingAnimation {
@@ -437,12 +441,8 @@ impl RingAnimation {
 
         let (w, h) = (frame0.image.width(), frame0.image.height());
         let resize_to = target_size.and_then(|(tw, th)| {
-            let scale = (tw as f32 / w as f32).min(th as f32 / h as f32).min(1.0);
-            if scale < 1.0 {
-                Some((((w as f32 * scale) as u32).max(1), ((h as f32 * scale) as u32).max(1)))
-            } else {
-                None
-            }
+            let (nw, nh) = crate::anim::fit_within(w, h, tw, th);
+            if (nw, nh) == (w, h) { None } else { Some((nw, nh)) }
         });
 
         let frame0 = Self::apply_resize(frame0, resize_to, filter);
@@ -458,12 +458,13 @@ impl RingAnimation {
         let resized_frame_bytes = (frame0.image.width() as usize) * (frame0.image.height() as usize) * 4;
         let (min_frames, max_frames) = ring_bounds;
         let capacity = resolve_ring_capacity(resized_frame_bytes, ring_budget_bytes, min_frames, max_frames);
+        let reserved_bytes = capacity.saturating_mul(resized_frame_bytes);
         let mut ring = FrameRingBuffer::new(capacity);
         ring.push(0, frame0);
         ring.push(1, frame1);
 
         let state = RingAnimState { decoder, ring, next_index: 2, resize_to, filter, frame_hard_limit_bytes };
-        RingDecodeOutcome::Animated(Self { state: Mutex::new(state) })
+        RingDecodeOutcome::Animated(Self { state: Mutex::new(state), reserved_bytes })
     }
 
     /// フレームの生デコードサイズ(リサイズ前、w*h*4)が`hard_limit_bytes`を超える場合、
@@ -532,6 +533,12 @@ impl RingAnimation {
     /// 現在リングバッファに乗っている分だけの推定バイト数（アニメ全体ではない）。
     pub fn resident_bytes(&self) -> usize {
         self.state.lock().unwrap().ring.total_bytes()
+    }
+
+    /// PageCache への計上額（リング容量 × リサイズ後フレームサイズ、構築時に確定）。
+    /// insert/evict の両方でこの同一値を使うことで帳簿の足し引きが対称になる。
+    pub fn reserved_bytes(&self) -> usize {
+        self.reserved_bytes
     }
 }
 
@@ -727,7 +734,10 @@ fn rgba_bytes(img: &image::RgbaImage) -> usize {
 fn content_bytes(content: &PageContent) -> usize {
     match content {
         PageContent::Static(img) => rgba_bytes(img),
-        PageContent::Animated(ring) => ring.resident_bytes(),
+        // アニメは実常駐ではなく予約額で計上する。実常駐(resident_bytes)は挿入後に
+        // リングが育って増えるため、挿入時点の値で計上すると帳簿が過小評価になり
+        // evict が動かなくなる（reserved_bytes のコメント参照）。
+        PageContent::Animated(ring) => ring.reserved_bytes(),
     }
 }
 
@@ -1103,7 +1113,7 @@ mod ring_integration_tests {
         };
 
         // 表示サイズ縮小後の1フレーム分バイト数を、エビクトされる前(ループ前)に取得しておく
-        // (960x1376はMAX_DISPLAY_H(1080)を超えるため縮小されている前提)。
+        // (960x1376は表示ターゲット高さ(1080)を超えるため縮小されている前提)。
         let one_frame_bytes = ring
             .with_frame(0, |f| (f.image.width() as usize) * (f.image.height() as usize) * 4)
             .expect("frame 0 は取得できるはず");

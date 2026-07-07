@@ -295,8 +295,8 @@ impl NekoviewApp {
         if let Some((cur, path, entries, is_raw_file)) = viewer_prefetch {
             let total = entries.len();
             let cur_orig_i = entries.get(cur).map(|e| e.original_index);
-            let start = cur.saturating_sub(5);
-            let end = (cur + 10 + 1).min(total);
+            let start = cur.saturating_sub(crate::cache::PREFETCH_BEHIND);
+            let end = (cur + crate::cache::PREFETCH_AHEAD + 1).min(total);
             for i in start..end {
                 let orig_i = entries[i].original_index;
                 // 予算超過(bypass)と判明済みのページは、現在表示中でない限り先読み対象から外す。

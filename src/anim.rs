@@ -267,6 +267,18 @@ impl Drop for WebpSeqState {
     }
 }
 
+/// `(w, h)` を `(tw, th)` の箱に縦横比維持で収めた縮小後サイズを返す（拡大はしない）。
+/// 実デコード時のリサイズ先（cache.rs::RingAnimation::from_source / resize_for_display）と、
+/// メモリ見積もりゲート（fs/archive）の推定サイズ計算を同じ式に揃えるための共通ヘルパ。
+pub fn fit_within(w: u32, h: u32, tw: u32, th: u32) -> (u32, u32) {
+    let scale = (tw as f32 / w as f32).min(th as f32 / h as f32).min(1.0);
+    if scale < 1.0 {
+        (((w as f32 * scale) as u32).max(1), ((h as f32 * scale) as u32).max(1))
+    } else {
+        (w, h)
+    }
+}
+
 /// フェーズ4: リング容量（先読み枚数）を1フレームあたりのバイト数と予算から算出する。
 /// アニメ開始時に1回だけ呼ばれ、以降そのアニメーションの再生中は変更しない。
 /// `frame_bytes` が0以下、または `budget_bytes` が0の場合は `min_frames` にフォールバックする。
