@@ -73,11 +73,37 @@ struct FavoriteDialogState {
     error: Option<String>,
 }
 
-/// お気に入りマーカーの固定候補セット。egui標準バンドルのモノクロ記号フォントで
-/// 描画できることを前提とした暫定セット（実機でのレンダリング確認は別途行う）。
+/// お気に入りマーカーの固定候補セット。
+/// マーカーはグリフの単色アルファマスクに色を乗せて描くため、候補は「塗り（solid）
+/// グリフ」または「線画（インク全面に色が乗る）グリフ」に限定する。空洞グリフ（☆等）は
+/// 内部に色が乗らないため除外。収録・塗り率は glyph_audit テストで機械検証しており、
+/// リストを変更したら Windows / Linux 両方で `cargo test glyph -- --nocapture` を通すこと。
 const FAVORITE_MARKER_CANDIDATES: &[&str] = &[
-    "★", "☆", "♥", "♦", "♣", "♠", "●", "■", "▲", "◆", "☀", "☂", "☁", "♪", "♫", "✈", "⚑", "⚐",
-    "☺", "☻", "♨", "☎", "✉", "✂", "⌚", "⌛", "☯", "☮",
+    // 星・スート・スパーク
+    "★", "✪", "✱", "♥", "❤", "❥", "♦", "♣", "♠",
+    // 幾何図形
+    "●", "■", "▲", "▼", "◀", "▶", "◆", "◢", "◥", "⬟",
+    // 花・記号
+    "✿", "✚", "✖", "✔",
+    // 音符（線画）
+    "♪", "♫", "♬",
+    // 物・シンボル
+    "☂", "✈", "⚑", "♨", "☎", "✉", "⌛", "☯", "☮",
+    // チェス駒
+    "♚", "♛", "♜", "♝", "♞", "♟",
+];
+
+/// 廃止した空洞・豆腐マーカーから塗り版への移行対応表。
+/// 塗りペアが存在しない文字は既定の ★ に寄せる（DB読込時に適用・書き戻し）。
+const FAVORITE_MARKER_MIGRATION: &[(&str, &str)] = &[
+    ("☆", "★"), // 塗りペア
+    ("⚐", "⚑"), // 塗りペア
+    ("☀", "★"),
+    ("☁", "★"),
+    ("☺", "★"),
+    ("☻", "★"), // Linux ではフォント未収録（豆腐）
+    ("✂", "★"),
+    ("⌚", "⌛"), // 同モチーフの塗り版
 ];
 
 /// ビューアー右クリック「お気に入り詳細設定」ダイアログの状態。
@@ -275,6 +301,9 @@ mod panels;
 mod favorites_ui;
 mod status;
 
+#[cfg(test)]
+mod glyph_audit;
+
 
 impl NekoviewApp {
     pub fn new(start_dir: PathBuf, config: AppConfig, viewer_slots: [Option<WindowSlot>; 4], sort_state: SortState, viewer_cfg: ViewerConfig, show_hidden: bool, ctx: egui::Context) -> Self {
@@ -341,6 +370,8 @@ impl NekoviewApp {
                 let db = crate::spread_state::open_spread_db();
                 if let Some(db) = &db {
                     crate::favorites::init_favorite_tables(db);
+                    // 候補刷新で廃止した空洞・豆腐マーカーを塗り版へ一括移行
+                    crate::favorites::migrate_markers(db, FAVORITE_MARKER_MIGRATION);
                 }
                 db
             },

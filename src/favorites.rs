@@ -49,6 +49,42 @@ pub fn init_favorite_tables(db: &Arc<Mutex<Database>>) -> Option<()> {
     Some(())
 }
 
+/// 廃止マーカーを対応表に従って一括で塗り版へ書き換える（起動時マイグレーション）。
+/// 対応表にないマーカーはそのまま。書き換えたフォルダ数を返す。
+pub fn migrate_markers(db: &Arc<Mutex<Database>>, mapping: &[(&str, &str)]) -> usize {
+    let Ok(db) = db.lock() else { return 0 };
+    let Ok(tx) = db.begin_write() else { return 0 };
+    let mut migrated = 0;
+    {
+        let Ok(mut table) = tx.open_table(FAVORITE_FOLDERS_TABLE) else {
+            return 0;
+        };
+        // redb はイテレート中の更新ができないため、対象を先に収集してから書き戻す
+        let targets: Vec<(u8, String, String, u32, u8)> = {
+            let Ok(iter) = table.iter() else { return 0 };
+            iter.filter_map(|entry| {
+                let (k, v) = entry.ok()?;
+                let (name, marker, color_rgba, order) = v.value();
+                let (_, to) = mapping.iter().find(|(from, _)| *from == marker)?;
+                Some((k.value(), name.to_string(), (*to).to_string(), color_rgba, order))
+            })
+            .collect()
+        };
+        for (id, name, marker, color_rgba, order) in targets {
+            if table
+                .insert(id, (name.as_str(), marker.as_str(), color_rgba, order))
+                .is_ok()
+            {
+                migrated += 1;
+            }
+        }
+    }
+    if migrated > 0 {
+        let _ = tx.commit();
+    }
+    migrated
+}
+
 fn make_key(dir: &Path, filename: &str) -> String {
     let key = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
     format!("{}\0{}", key.to_string_lossy(), filename)
@@ -467,6 +503,28 @@ mod tests {
         let folders = list_folders(&db);
         assert_eq!(folders[0].marker, "♪");
         assert_eq!(folders[0].color_rgba, 0x00FF00FF);
+    }
+
+    #[test]
+    fn migrate_markers_rewrites_only_mapped() {
+        let db = temp_db();
+        let a = create_folder(&db, "A", "☆", 0xFF0000FF).unwrap();
+        let b = create_folder(&db, "B", "★", 0x00FF00FF).unwrap();
+        let c = create_folder(&db, "C", "⚐", 0x0000FFFF).unwrap();
+
+        let mapping = [("☆", "★"), ("⚐", "⚑")];
+        assert_eq!(migrate_markers(&db, &mapping), 2);
+
+        let folders = list_folders(&db);
+        let find = |id: u8| folders.iter().find(|f| f.id == id).unwrap();
+        assert_eq!(find(a.id).marker, "★");
+        assert_eq!(find(a.id).color_rgba, 0xFF0000FF); // 色・名前は維持
+        assert_eq!(find(a.id).name, "A");
+        assert_eq!(find(b.id).marker, "★"); // 対応表外はそのまま
+        assert_eq!(find(c.id).marker, "⚑");
+
+        // 再実行しても対象なし（冪等）
+        assert_eq!(migrate_markers(&db, &mapping), 0);
     }
 
     #[test]

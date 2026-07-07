@@ -35,6 +35,10 @@ libwebp-sys = "0.9"
 sysinfo = { version = "0.32", default-features = false, features = ["system"] }
 redb = "4"
 
+[dev-dependencies]
+# マーカー候補グリフの収録・塗りつぶし検証テスト用（epaint 経由で既にロック済みの版に合わせる）
+ab_glyph = "0.2"
+
 [features]
 # zip/cbz は画像・コミックビューアの基幹形式のため常時コンパイル（feature 化しない）。
 # 7z / tar のみ分離し、不要ならビルドから外してバイナリサイズと依存を削減できる。
