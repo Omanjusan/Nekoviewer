@@ -221,7 +221,7 @@ pub struct NekoviewApp {
     page_cache: Arc<Mutex<PageCache>>,
     file_cache: FileCache,
     file_cache_req_tx: mpsc::Sender<std::path::PathBuf>,
-    file_cache_res_rx: mpsc::Receiver<(std::path::PathBuf, FileCacheEntry)>,
+    file_cache_res_rx: mpsc::Receiver<(std::path::PathBuf, Option<FileCacheEntry>)>,
     file_cache_pending: HashSet<PathBuf>,
     /// 7zがFileCacheへの展開待ちの間、ページ/サムネ要求を送らずここに溜めておく。
     /// FileCache結果が届いた時点でまとめてフラッシュする（デコードワーカー側での
@@ -317,7 +317,7 @@ impl NekoviewApp {
         let (req_tx, res_rx) = spawn_worker(config.viewer_filter.to_image_filter(), config.resolved_decode_threads(), ctx.clone(), cache_max, ring_bounds, frame_hard_limit_bytes);
         let (thumb_req_tx, thumb_res_rx) = spawn_thumb_worker(config.thumb_filter.to_image_filter(), config.resolved_decode_threads(), ctx.clone());
         let (entry_thumb_req_tx, entry_thumb_res_rx) = spawn_entry_thumb_worker(config.thumb_filter.to_image_filter(), config.resolved_decode_threads(), ctx.clone());
-        let (file_cache_req_tx, file_cache_res_rx) = spawn_file_cache_worker(ctx.clone());
+        let (file_cache_req_tx, file_cache_res_rx) = spawn_file_cache_worker(ctx.clone(), file_cache_max);
         let mut drives = list_local_drives();
         drives.extend(list_gvfs_smb_mounts());
 

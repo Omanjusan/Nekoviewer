@@ -222,14 +222,18 @@ impl NekoviewApp {
             }
         }
 
-        // FileCache ワーカーからの結果を受信して横キャッシュへ投入
-        let file_results: Vec<(PathBuf, FileCacheEntry)> =
+        // FileCache ワーカーからの結果を受信して横キャッシュへ投入。
+        // None は「予算超過スキップ or 読み込み失敗」でキャッシュには入れないが、
+        // pending解放と保留リクエストのフラッシュ（ディスク直読みフォールバック）は行う。
+        let file_results: Vec<(PathBuf, Option<FileCacheEntry>)> =
             std::iter::from_fn(|| self.file_cache_res_rx.try_recv().ok()).collect();
         let cur_viewer_path = self.viewer.lock().unwrap().as_ref().map(|v| v.archive_path().clone());
         for (path, entry) in file_results {
             self.file_cache_pending.remove(&path);
-            let current = cur_viewer_path.clone().unwrap_or_else(|| path.clone());
-            self.file_cache.insert(path.clone(), entry, &current, &self.archives);
+            if let Some(entry) = entry {
+                let current = cur_viewer_path.clone().unwrap_or_else(|| path.clone());
+                self.file_cache.insert(path.clone(), entry, &current, &self.archives);
+            }
             // 7zの展開待ちで保留していたページ/サムネ要求をまとめてフラッシュする。
             if let Some(deferred) = self.deferred_archive_requests.remove(&path) {
                 let file_cache_entry = self.file_cache.get(&path);
@@ -295,8 +299,8 @@ impl NekoviewApp {
         if let Some((cur, path, entries, is_raw_file)) = viewer_prefetch {
             let total = entries.len();
             let cur_orig_i = entries.get(cur).map(|e| e.original_index);
-            let start = cur.saturating_sub(5);
-            let end = (cur + 10 + 1).min(total);
+            let start = cur.saturating_sub(crate::cache::PREFETCH_BEHIND);
+            let end = (cur + crate::cache::PREFETCH_AHEAD + 1).min(total);
             for i in start..end {
                 let orig_i = entries[i].original_index;
                 // 予算超過(bypass)と判明済みのページは、現在表示中でない限り先読み対象から外す。

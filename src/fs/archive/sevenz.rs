@@ -44,6 +44,21 @@ fn nt_time_to_date_key(t: sevenz_rust2::NtTime) -> u64 {
     super::unix_secs_to_date_key(dur.as_secs())
 }
 
+/// 画像エントリの展開後合計サイズをヘッダ(メタデータ)のみから求める。
+/// データストリームの展開は一切行わないため、巨大アーカイブでも軽量・省メモリ。
+/// FileCache(Extracted)に載る量の事前見積もりに使う。ヘッダが読めない場合は0。
+pub(crate) fn sum_image_entry_sizes_7z(path: &Path) -> u64 {
+    let Ok(archive) = sevenz_rust2::Archive::open(path) else {
+        return 0;
+    };
+    archive
+        .files
+        .iter()
+        .filter(|e| !e.is_directory && e.has_stream && is_image_entry_raw(e.name.as_bytes()))
+        .map(|e| e.size)
+        .sum()
+}
+
 /// 7z(ソリッド圧縮)は1エントリだけの取り出しがブロック先頭からの再展開になり非効率なため、
 /// 開いた時点で画像エントリを一括デコードし `entry_name -> 生バイト列` の対応表にまとめて返す。
 /// 以降のページ送りはこの表を引くだけで済み、再展開は発生しない。
@@ -97,34 +112,49 @@ pub(crate) fn load_first_image_7z(path: &Path) -> Option<image::DynamicImage> {
     result
 }
 
-/// フェーズ4: 7z版の見積もり。ソリッド圧縮では「軽くサンプリング」が成立しないため、
-/// どのみち開く際に必要になる一括展開(フェーズ2の`extract_all_images_7z_path`と同じ処理)を
-/// 先に行い、全エントリのヘッダ寸法から実際の合計値を厳密に計算する
-/// （サンプル平均による概算ではなく全数チェックなので、ZIP版より判定精度は高い）。
+/// 7z版の見積もり。まずヘッダのみの軽量チェックとして「画像エントリの展開後合計 >
+/// FileCache予算(file_budget_bytes)」なら展開せずに即OverBudget（7zは開くと全量が
+/// FileCacheに常駐するため。判定のためのメモリスパイクもこれで防がれる）。
+///
+/// 通過したら一括展開して全エントリの計上額を計算する。全数が手に入るため、ZIP版の
+/// 「平均×窓幅」より精度の高い「最悪の連続先読みウィンドウ合計」で同時常駐を判定する。
+/// 判定Okなら展開結果を `prepared` で持ち帰り、呼び出し側がFileCacheへ流用する
+/// （オープン時の再展開を回避）。
 pub(crate) fn estimate_archive_memory_7z(
     path: &Path,
     entries: &[ImageEntry],
     budget_bytes: usize,
     ring_bounds: (usize, usize),
-) -> ArchiveMemoryEstimate {
-    let map = extract_all_images_7z_path(path);
-    if map.is_empty() {
-        return ArchiveMemoryEstimate::Ok;
+    max_decode_edge: u32,
+    file_budget_bytes: usize,
+) -> super::ArchiveMemoryCheck {
+    if sum_image_entry_sizes_7z(path) > file_budget_bytes as u64 {
+        return super::ArchiveMemoryCheck::without_payload(ArchiveMemoryEstimate::OverBudget);
     }
 
-    let mut total: usize = 0;
+    let map = extract_all_images_7z_path(path);
+    if map.is_empty() {
+        return super::ArchiveMemoryCheck::without_payload(ArchiveMemoryEstimate::Ok);
+    }
+
+    let mut per_entry: Vec<usize> = Vec::with_capacity(entries.len());
     for entry in entries {
-        let Some(buf) = map.get(&entry.entry_name) else { continue };
-        match super::estimate_bytes_for_entry(buf, &entry.display_name, budget_bytes, ring_bounds) {
-            Some(EntryEstimate::OverBudget) => return ArchiveMemoryEstimate::OverBudget,
-            Some(EntryEstimate::Bytes(n)) => {
-                total = total.saturating_add(n);
-                if total > budget_bytes {
-                    return ArchiveMemoryEstimate::OverBudget;
-                }
+        let Some(buf) = map.get(&entry.entry_name) else { per_entry.push(0); continue };
+        match super::estimate_bytes_for_entry(buf, &entry.display_name, budget_bytes, ring_bounds, max_decode_edge) {
+            Some(EntryEstimate::OverBudget) => {
+                return super::ArchiveMemoryCheck::without_payload(ArchiveMemoryEstimate::OverBudget);
             }
-            None => {} // 読み込み/デコード失敗エントリは合計から除外
+            Some(EntryEstimate::Bytes(n)) => per_entry.push(n),
+            None => per_entry.push(0), // 読み込み/デコード失敗エントリは合計から除外
         }
     }
-    ArchiveMemoryEstimate::Ok
+    let worst = super::worst_window_total(&per_entry, crate::cache::PREFETCH_WINDOW);
+    if worst > budget_bytes {
+        super::ArchiveMemoryCheck::without_payload(ArchiveMemoryEstimate::OverBudget)
+    } else {
+        super::ArchiveMemoryCheck {
+            estimate: ArchiveMemoryEstimate::Ok,
+            prepared: Some(crate::cache::FileCacheEntry::Extracted(std::sync::Arc::new(map))),
+        }
+    }
 }

@@ -14,6 +14,9 @@ use crate::fs::archive;
 use crate::spread_offset::SpreadOffset;
 
 const SCROLL_THRESHOLD: f32 = 50.0;
+/// content_px の初回フレーム前プレースホルダ。draw() 冒頭で毎フレーム実測値に
+/// 上書きされるため、実際のデコードターゲットには事実上使われない。
+const CONTENT_PX_PLACEHOLDER: (u32, u32) = (1920, 1080);
 const ANIM_SECS: f32 = 0.4;
 /// サムネイルバー: 現在ページを中心にこの枚数分だけ先取り要求する（暫定固定値）。
 /// フェーズ2で実際の可視範囲ベースに置き換え予定。
@@ -388,7 +391,7 @@ impl ViewerState {
             is_raw_file: false,
             shift_scroll_acc: 0.0,
             toast: None,
-            content_px: crate::cache::DEFAULT_DECODE_TARGET,
+            content_px: CONTENT_PX_PLACEHOLDER,
             thumb_textures: HashMap::new(),
             thumb_pending: HashSet::new(),
             thumbbar_last_activity: Instant::now(),
@@ -439,7 +442,7 @@ impl ViewerState {
             is_raw_file: true,
             shift_scroll_acc: 0.0,
             toast: None,
-            content_px: crate::cache::DEFAULT_DECODE_TARGET,
+            content_px: CONTENT_PX_PLACEHOLDER,
             thumb_textures: HashMap::new(),
             thumb_pending: HashSet::new(),
             thumbbar_last_activity: Instant::now(),
