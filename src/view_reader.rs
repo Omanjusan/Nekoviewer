@@ -32,6 +32,25 @@ fn ease_out(t: f32) -> f32 {
     1.0 - (1.0 - t).powi(3)
 }
 
+/// リングバッファ上の指定フレームをテクスチャとして登録する。
+/// フレームが手に入らない（エビクト済み等）場合は None。
+fn upload_ring_frame(
+    ctx: &egui::Context,
+    orig_i: usize,
+    ring: &crate::cache::RingAnimation,
+    index: usize,
+) -> Option<egui::TextureHandle> {
+    let (w, h, raw) = ring.with_frame(index, |f| {
+        (f.image.width(), f.image.height(), f.image.as_raw().clone())
+    })?;
+    let color_image = egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], &raw);
+    Some(ctx.load_texture(
+        format!("page_{orig_i}"),
+        color_image,
+        egui::TextureOptions::LINEAR,
+    ))
+}
+
 /// `bounds` の中に `img_size` を縦横比を保ったまま収める（contain-fit）矩形を返す。
 /// サムネイルバーの正方形枠に、実際のサムネイル画像(縦長/横長)を収めるのに使う。
 fn fit_rect_contain(bounds: egui::Rect, img_size: egui::Vec2) -> egui::Rect {
@@ -47,6 +66,10 @@ fn fit_rect_contain(bounds: egui::Rect, img_size: egui::Vec2) -> egui::Rect {
 struct AnimState {
     frame_index: usize,
     last_frame_at: Instant,
+    /// 非可視ページとして凍結中か。フレーム送り(UIスレッド同期デコード)は可視ページ
+    /// 限定のため、裏に回ったアニメはこのフラグを立てて位置を凍結し、再可視化時に
+    /// 基準時刻を取り直して続きから再開する（凍結中の経過時間を追走させない）。
+    paused: bool,
 }
 
 /// show() の先頭で ctx.input を1回だけ呼び、フレーム全体で使い回す入力スナップショット
@@ -245,6 +268,10 @@ pub struct ViewerState {
     thumb_textures: HashMap<usize, egui::TextureHandle>,
     /// サムネイル読み込み要求済み・未完了の original_index 集合（重複要求防止）。
     thumb_pending: HashSet<usize>,
+    /// サムネイル生成に失敗した original_index 集合。失敗を記録しないと
+    /// thumbbar_missing_indices が毎フレーム同じエントリを再要求し、
+    /// デコードワーカーが失敗デコードを永久に繰り返す（破損画像等への保険）。
+    thumb_failed: HashSet<usize>,
     /// サムネイルバー自動非表示用: 直近のページ操作(ナビゲーション入力)時刻。
     thumbbar_last_activity: Instant,
     /// サムネイルバーを最後にセンタリングした spread_lo。ページが実際に変わった
@@ -301,7 +328,11 @@ impl ViewerState {
         }
         (win_lo..=win_hi)
             .map(|i| self.entries[i as usize].original_index)
-            .filter(|i| !self.thumb_textures.contains_key(i) && !self.thumb_pending.contains(i))
+            .filter(|i| {
+                !self.thumb_textures.contains_key(i)
+                    && !self.thumb_pending.contains(i)
+                    && !self.thumb_failed.contains(i)
+            })
             .collect()
     }
 
@@ -317,9 +348,13 @@ impl ViewerState {
         self.thumb_pending.insert(original_index);
     }
 
-    /// サムネイルバー用: ワーカーからの結果を反映する。デコード失敗時(None)もpendingは解除する。
+    /// サムネイルバー用: ワーカーからの結果を反映する。デコード失敗時(None)は
+    /// 失敗として記録し、以降は再要求しない（グレーカードのまま表示を継続する）。
     pub fn set_thumb_result(&mut self, ctx: &egui::Context, original_index: usize, rgba: Option<image::RgbaImage>) {
         self.thumb_pending.remove(&original_index);
+        if rgba.is_none() {
+            self.thumb_failed.insert(original_index);
+        }
         if let Some(img) = rgba {
             let color_image = egui::ColorImage::from_rgba_unmultiplied(
                 [img.width() as usize, img.height() as usize],
@@ -398,6 +433,7 @@ impl ViewerState {
             content_px: CONTENT_PX_PLACEHOLDER,
             thumb_textures: HashMap::new(),
             thumb_pending: HashSet::new(),
+            thumb_failed: HashSet::new(),
             thumbbar_last_activity: Instant::now(),
             thumbbar_scrolled_lo: None,
             thumbbar_visible_range: None,
@@ -449,6 +485,7 @@ impl ViewerState {
             content_px: CONTENT_PX_PLACEHOLDER,
             thumb_textures: HashMap::new(),
             thumb_pending: HashSet::new(),
+            thumb_failed: HashSet::new(),
             thumbbar_last_activity: Instant::now(),
             thumbbar_scrolled_lo: None,
             thumbbar_visible_range: None,
@@ -1353,6 +1390,11 @@ impl ViewerState {
         let start = anchor.saturating_sub(5);
         let end = (anchor + 10 + 1).min(total);
 
+        // フレーム送り(UIスレッド同期デコード+アップロード)は可視ページに限定する。
+        // 先読みウィンドウ内の裏ページまで毎tickデコードすると、アニメ主体のアーカイブで
+        // UIスレッドが飽和し、可視アニメ自身のtickが追走上限に張り付いて再生全体が遅くなる。
+        let visible_orig = self.visible_original_indices();
+
         let now = Instant::now();
         let mut min_repaint_after = Duration::MAX;
 
@@ -1377,10 +1419,32 @@ impl ViewerState {
                     // フェーズ3/3.5: GIF/APNG/AVIF/WebP。全フレーム常駐ではなく逐次デコード+リングバッファ。
                     // デコーダが終端(None)を返した時点をループ境界とみなし restart() する
                     // (この再デコードによる一瞬のフリーズは許容する設計上の割り切り)。
+                    if !visible_orig.contains(&orig_i) {
+                        // 裏ページ: 位置を凍結（tickしない）。ページ送り時の白フラッシュ防止に、
+                        // テクスチャ未保有時のみ凍結位置のフレームを1回だけアップロードする。
+                        if let Some(state) = self.anim_states.get_mut(&orig_i) {
+                            state.paused = true;
+                        }
+                        if !self.textures.contains_key(&orig_i) {
+                            let frozen_index =
+                                self.anim_states.get(&orig_i).map_or(0, |s| s.frame_index);
+                            if let Some(tex) = upload_ring_frame(ctx, orig_i, ring, frozen_index) {
+                                self.textures.insert(orig_i, tex);
+                            }
+                        }
+                        continue;
+                    }
                     let state = self.anim_states.entry(orig_i).or_insert_with(|| AnimState {
                         frame_index: 0,
                         last_frame_at: now,
+                        paused: false,
                     });
+                    // 凍結明け: 凍結中の経過時間を再生遅延として追走しないよう基準時刻を取り直し、
+                    // 凍結位置から等速で再開する。
+                    if state.paused {
+                        state.paused = false;
+                        state.last_frame_at = now;
+                    }
                     let mut needs_upload = !self.textures.contains_key(&orig_i);
                     // 遅れが1フレーム分を超えていたら複数フレーム進めて追いつく
                     // (テクスチャアップロードは最後の1枚だけ)。スキップ分のデコードも
@@ -1423,19 +1487,8 @@ impl ViewerState {
                     }
 
                     if needs_upload {
-                        let payload = ring.with_frame(state.frame_index, |f| {
-                            (f.image.width(), f.image.height(), f.image.as_raw().clone())
-                        });
-                        if let Some((w, h, raw)) = payload {
-                            let color_image = egui::ColorImage::from_rgba_unmultiplied(
-                                [w as usize, h as usize],
-                                &raw,
-                            );
-                            let tex = ctx.load_texture(
-                                format!("page_{orig_i}"),
-                                color_image,
-                                egui::TextureOptions::LINEAR,
-                            );
+                        let frame_index = state.frame_index;
+                        if let Some(tex) = upload_ring_frame(ctx, orig_i, ring, frame_index) {
                             self.textures.insert(orig_i, tex);
                         }
                     }

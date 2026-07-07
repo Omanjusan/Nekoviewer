@@ -884,7 +884,10 @@ pub fn spawn_entry_thumb_worker(filter: image::imageops::FilterType, num_threads
                 };
 
                 let target = Some((req.edge, req.edge));
-                let ring_bounds = (1, 1);
+                // RingAnimation::from_source は構築時に frame0/frame1 を両方 push するため、
+                // 容量1だと frame0 が即エビクトされ with_frame(0) が常に None になる
+                // （アニメエントリのサムネが100%失敗→毎フレーム再デコードし続ける原因だった）。
+                let ring_bounds = (2, 2);
                 let content = if req.is_raw_file {
                     match &req.file_cache_entry {
                         Some(FileCacheEntry::Raw(bytes)) => {
