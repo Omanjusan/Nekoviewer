@@ -287,6 +287,11 @@ impl NekoviewApp {
     }
 
     fn draw_central_panel(&mut self, ui: &mut egui::Ui) {
+        // お気に入りタブ中は実ディレクトリ由来の表示（パス・サマリー）を出さない。
+        // cd_summary はワーカーが非同期で書き込むため、状態クリアではなく描画側でゲートする。
+        let in_favorites_ui = self.folder_pane_tab == FolderPaneTab::Favorites
+            || self.viewing_favorites.is_some();
+
         match self.viewing_favorites {
             Some(FavoriteSelection::Unsorted) => {
                 ui.label(i18n::t().favorite_view_header_unsorted());
@@ -300,13 +305,18 @@ impl NekoviewApp {
                     .unwrap_or_default();
                 ui.label(i18n::t().favorite_view_header_folder(&name));
             }
+            _ if in_favorites_ui => {
+                ui.label("");
+            }
             _ => {
                 ui.label(self.current_dir.display().to_string());
             }
         }
 
         // CD/LS状態: ディレクトリのサマリーを表示
-        if let Some((cd_path, saved, total)) = &self.cd_summary {
+        if let Some((cd_path, saved, total)) = &self.cd_summary
+            && !in_favorites_ui
+        {
             let dir_name = cd_path
                 .file_name()
                 .and_then(|n| n.to_str())
