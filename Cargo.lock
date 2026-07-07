@@ -1967,6 +1967,7 @@ dependencies = [
  "image",
  "libavif",
  "libavif-sys",
+ "libc",
  "libwebp-sys",
  "pollster",
  "redb",

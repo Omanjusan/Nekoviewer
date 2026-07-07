@@ -139,6 +139,28 @@ nekoviewer --cache-max-mb 2048
 
 # 引数なしは use_last_dir → fixed_dir → ホームディレクトリ → ルートの順にフォールバック
 nekoviewer
+
+# 多重起動禁止を無効化（デバッグ用。複数プロセスを並行起動したいとき）
+NEKOVIEWER_ALLOW_MULTI=1 nekoviewer
 ```
+
+### 多重起動禁止
+
+2つ目以降のプロセスは起動処理を行わず、先発プロセスへ ping を送って即終了する
+（起動パス引数は無視される）。実装は [single_instance.rs](../src/single_instance.rs)。
+
+- **検知**: Windows は Named Mutex、Unix系は flock。いずれもOSがプロセス終了時に
+  自動解放するため、異常終了時の残骸掃除は不要
+- **通知**: 先発プロセスへ named pipe（Windows）/ Unixドメインソケット（Unix系）で
+  ping。受信するとエクスプローラー窓へ `focus_window()` + `request_user_attention()`
+  を試みる（ベストエフォート）
+- **Wayland上の既知の制限**: GNOME/Mutter で動作確認したところ、compositor の
+  フォーカス盗み防止ポリシーにより `focus_window()` は効かない。通知（タスクバー/
+  ドックのアテンション表示）は届くので、ユーザーがそれをクリックすれば前面に出る。
+  X11 / Windows は素直にフォーカスが移る見込み（Windows は実機未検証）
+- 先発プロセスがロックを握ったまま ping に応答しない場合（フリーズ等）、後発
+  プロセスは救済せずエラー終了する
+
+---
 
 プロジェクト全体の方針（対応OS・シンプル優先・実装言語等）は `.claude/CLAUDE.md` を参照。

@@ -56,6 +56,9 @@ fn status_viewport_id() -> ViewportId {
 enum UserEvent {
     /// 指定窓を `when` 時刻までに再描画してほしい（egui の repaint コールバック由来）。
     Repaint { viewport_id: ViewportId, when: Instant },
+    /// 多重起動された後発プロセスから ping を受けた。エクスプローラー窓へフォーカスを試みる
+    /// （Waylandではcompositorのフォーカス盗み防止により効かないことがある。ベストエフォート）。
+    FocusRequested,
 }
 
 /// `repaint_delay`（egui が返す「次に描くまでの猶予」）を絶対時刻へ変換する。
@@ -498,6 +501,13 @@ impl ApplicationHandler<UserEvent> for WinitApp {
                     }
                 }
             }
+            UserEvent::FocusRequested => {
+                if let Some(w) = self.explorer.as_ref() {
+                    crate::log_common!("[single_instance] focus requested -> focusing explorer window");
+                    w.window.focus_window();
+                    w.window.request_user_attention(Some(winit::window::UserAttentionType::Critical));
+                }
+            }
         }
     }
 
@@ -617,6 +627,12 @@ pub fn run(start_dir: PathBuf, cfg: AppConfig, state: AppState) {
     // 既定は Wait（render-on-demand）。再描画予定は about_to_wait で WaitUntil/Poll に切替。
     event_loop.set_control_flow(ControlFlow::Wait);
     let proxy = event_loop.create_proxy();
+
+    let ping_proxy = proxy.clone();
+    crate::single_instance::start_ping_listener(move || {
+        let _ = ping_proxy.send_event(UserEvent::FocusRequested);
+    });
+
     let mut app = WinitApp::new(start_dir, cfg, state, proxy);
     event_loop.run_app(&mut app).expect("run_app");
 }
