@@ -245,6 +245,10 @@ pub struct ViewerState {
     thumb_textures: HashMap<usize, egui::TextureHandle>,
     /// サムネイル読み込み要求済み・未完了の original_index 集合（重複要求防止）。
     thumb_pending: HashSet<usize>,
+    /// サムネイル生成に失敗した original_index 集合。失敗を記録しないと
+    /// thumbbar_missing_indices が毎フレーム同じエントリを再要求し、
+    /// デコードワーカーが失敗デコードを永久に繰り返す（破損画像等への保険）。
+    thumb_failed: HashSet<usize>,
     /// サムネイルバー自動非表示用: 直近のページ操作(ナビゲーション入力)時刻。
     thumbbar_last_activity: Instant,
     /// サムネイルバーを最後にセンタリングした spread_lo。ページが実際に変わった
@@ -301,7 +305,11 @@ impl ViewerState {
         }
         (win_lo..=win_hi)
             .map(|i| self.entries[i as usize].original_index)
-            .filter(|i| !self.thumb_textures.contains_key(i) && !self.thumb_pending.contains(i))
+            .filter(|i| {
+                !self.thumb_textures.contains_key(i)
+                    && !self.thumb_pending.contains(i)
+                    && !self.thumb_failed.contains(i)
+            })
             .collect()
     }
 
@@ -317,9 +325,13 @@ impl ViewerState {
         self.thumb_pending.insert(original_index);
     }
 
-    /// サムネイルバー用: ワーカーからの結果を反映する。デコード失敗時(None)もpendingは解除する。
+    /// サムネイルバー用: ワーカーからの結果を反映する。デコード失敗時(None)は
+    /// 失敗として記録し、以降は再要求しない（グレーカードのまま表示を継続する）。
     pub fn set_thumb_result(&mut self, ctx: &egui::Context, original_index: usize, rgba: Option<image::RgbaImage>) {
         self.thumb_pending.remove(&original_index);
+        if rgba.is_none() {
+            self.thumb_failed.insert(original_index);
+        }
         if let Some(img) = rgba {
             let color_image = egui::ColorImage::from_rgba_unmultiplied(
                 [img.width() as usize, img.height() as usize],
@@ -398,6 +410,7 @@ impl ViewerState {
             content_px: CONTENT_PX_PLACEHOLDER,
             thumb_textures: HashMap::new(),
             thumb_pending: HashSet::new(),
+            thumb_failed: HashSet::new(),
             thumbbar_last_activity: Instant::now(),
             thumbbar_scrolled_lo: None,
             thumbbar_visible_range: None,
@@ -449,6 +462,7 @@ impl ViewerState {
             content_px: CONTENT_PX_PLACEHOLDER,
             thumb_textures: HashMap::new(),
             thumb_pending: HashSet::new(),
+            thumb_failed: HashSet::new(),
             thumbbar_last_activity: Instant::now(),
             thumbbar_scrolled_lo: None,
             thumbbar_visible_range: None,
