@@ -2,6 +2,26 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.2.0] - 2026-07-07
+
+### Added
+
+#### Added favorites feature
+
+- Added a new tab at the top of the folder tree for favorites, giving access to favorite folders from there
+- Favorite items can be set via right-click menu in both the explorer and viewer panes; in the explorer, for a single file the item directly under the mouse hover position is targeted, while with multiple selections the hover position is ignored and the selected items are targeted instead
+- A single file can be linked to multiple favorite folders, allowing simultaneous use of folders organized by author, pure favorites, etc.
+- Caution is needed when mixing items from a network drive with items from local storage
+
+### Changed
+
+- Prevented multiple instances of the app from launching
+
+### Fixed
+
+- Fixed incorrect playback speed for animation files inside archives
+- Fixed the scrollbar not appearing in the settings screen, making the close/apply buttons visually unreachable
+
 ## [1.1.0] - 2026-07-05
 
 ### Added
