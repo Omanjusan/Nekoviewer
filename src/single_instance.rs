@@ -59,7 +59,7 @@ fn acquire_windows() -> AcquireResult {
     let name = to_wide(r"Global\Nekoviewer_SingleInstance_Lock");
 
     let handle = unsafe { CreateMutexW(std::ptr::null(), 0, name.as_ptr()) };
-    if handle.is_null() {
+    if handle == 0 {
         // Mutex作成自体に失敗。判定不能なので先発扱いで続行する。
         return AcquireResult::Acquired(InstanceGuard(Inner::Bypassed));
     }
@@ -256,7 +256,7 @@ fn send_ping_windows() -> bool {
             std::ptr::null(),
             OPEN_EXISTING,
             0,
-            std::ptr::null_mut(),
+            0,
         )
     };
     if handle == INVALID_HANDLE_VALUE {
