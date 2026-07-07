@@ -1956,6 +1956,7 @@ dependencies = [
 name = "nekoviewer"
 version = "1.1.0"
 dependencies = [
+ "ab_glyph",
  "egui",
  "egui-wgpu",
  "egui-winit",
@@ -1966,6 +1967,7 @@ dependencies = [
  "image",
  "libavif",
  "libavif-sys",
+ "libc",
  "libwebp-sys",
  "pollster",
  "redb",

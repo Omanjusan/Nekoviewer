@@ -339,6 +339,22 @@ impl NekoviewApp {
         let mut close = false;
         let mut apply = false;
         egui::Modal::new(egui::Id::new("settings_dialog")).show(ctx, |ui| {
+            // エクスプローラー窓がダイアログより小さいと見切れて操作不能になるため、
+            // 窓サイズ(からModalの枠ぶんの余白を引いた値)を上限に、タブ行・ボタン行を
+            // 含む全体を縦横スクロール可能にする。窓が十分大きければバーは出ない。
+            //
+            // min_scrolled も max と同値で毎フレーム指定するのが肝。ScrollArea の外形は
+            // 親(Modal の Area)が記憶した前フレームサイズにもクランプされるため、max だけ
+            // だと一度縮んだ記憶に引きずられて窓を広げても戻らない(縮小の一方通行)。
+            // min_scrolled はその記憶を無視して張れる下限なので、窓サイズへ双方向に追従する。
+            let target = (ctx.content_rect().size() - egui::vec2(80.0, 80.0))
+                .max(egui::vec2(100.0, 100.0));
+            egui::ScrollArea::both()
+                .max_width(target.x)
+                .max_height(target.y)
+                .min_scrolled_width(target.x)
+                .min_scrolled_height(target.y)
+                .show(ui, |ui| {
             ui.set_min_width(460.0);
             ui.heading(i18n::t().settings_title());
             ui.separator();
@@ -376,6 +392,7 @@ impl NekoviewApp {
                 if ui.button(i18n::t().settings_close()).clicked() {
                     close = true;
                 }
+            });
             });
         });
         if apply {

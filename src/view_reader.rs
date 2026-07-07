@@ -14,7 +14,14 @@ use crate::fs::archive;
 use crate::spread_offset::SpreadOffset;
 
 const SCROLL_THRESHOLD: f32 = 50.0;
+/// content_px の初回フレーム前プレースホルダ。draw() 冒頭で毎フレーム実測値に
+/// 上書きされるため、実際のデコードターゲットには事実上使われない。
+const CONTENT_PX_PLACEHOLDER: (u32, u32) = (1920, 1080);
 const ANIM_SECS: f32 = 0.4;
+/// アニメ再生のキャッチアップ: 1tickで進める最大フレーム数。
+/// フレーム送りはUIスレッド上の同期デコード(RingAnimation::with_frame)を伴うため、
+/// 上限なしで追走するとrepaintが長時間ブロックしてUIが固まる。
+const MAX_CATCHUP_FRAMES: usize = 4;
 /// サムネイルバー: 現在ページを中心にこの枚数分だけ先取り要求する（暫定固定値）。
 /// フェーズ2で実際の可視範囲ベースに置き換え予定。
 const THUMBBAR_ENQUEUE_WINDOW: i32 = 40;
@@ -23,6 +30,25 @@ const FULL_UV: egui::Rect =
 
 fn ease_out(t: f32) -> f32 {
     1.0 - (1.0 - t).powi(3)
+}
+
+/// リングバッファ上の指定フレームをテクスチャとして登録する。
+/// フレームが手に入らない（エビクト済み等）場合は None。
+fn upload_ring_frame(
+    ctx: &egui::Context,
+    orig_i: usize,
+    ring: &crate::cache::RingAnimation,
+    index: usize,
+) -> Option<egui::TextureHandle> {
+    let (w, h, raw) = ring.with_frame(index, |f| {
+        (f.image.width(), f.image.height(), f.image.as_raw().clone())
+    })?;
+    let color_image = egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], &raw);
+    Some(ctx.load_texture(
+        format!("page_{orig_i}"),
+        color_image,
+        egui::TextureOptions::LINEAR,
+    ))
 }
 
 /// `bounds` の中に `img_size` を縦横比を保ったまま収める（contain-fit）矩形を返す。
@@ -40,6 +66,10 @@ fn fit_rect_contain(bounds: egui::Rect, img_size: egui::Vec2) -> egui::Rect {
 struct AnimState {
     frame_index: usize,
     last_frame_at: Instant,
+    /// 非可視ページとして凍結中か。フレーム送り(UIスレッド同期デコード)は可視ページ
+    /// 限定のため、裏に回ったアニメはこのフラグを立てて位置を凍結し、再可視化時に
+    /// 基準時刻を取り直して続きから再開する（凍結中の経過時間を追走させない）。
+    paused: bool,
 }
 
 /// show() の先頭で ctx.input を1回だけ呼び、フレーム全体で使い回す入力スナップショット
@@ -238,6 +268,10 @@ pub struct ViewerState {
     thumb_textures: HashMap<usize, egui::TextureHandle>,
     /// サムネイル読み込み要求済み・未完了の original_index 集合（重複要求防止）。
     thumb_pending: HashSet<usize>,
+    /// サムネイル生成に失敗した original_index 集合。失敗を記録しないと
+    /// thumbbar_missing_indices が毎フレーム同じエントリを再要求し、
+    /// デコードワーカーが失敗デコードを永久に繰り返す（破損画像等への保険）。
+    thumb_failed: HashSet<usize>,
     /// サムネイルバー自動非表示用: 直近のページ操作(ナビゲーション入力)時刻。
     thumbbar_last_activity: Instant,
     /// サムネイルバーを最後にセンタリングした spread_lo。ページが実際に変わった
@@ -253,6 +287,8 @@ pub struct ViewerState {
     saved_spread: Option<(PageMode, i32)>,
     /// 保存メニューでのユーザー操作要求（1フレームで消費してViewerOutputへ渡す）
     pending_spread_action: Option<crate::controller::SpreadSaveAction>,
+    /// 右クリックメニュー「お気に入り詳細設定」が押されたか（1フレームで消費）
+    pending_open_favorite_dialog: bool,
 }
 
 impl ViewerState {
@@ -292,7 +328,11 @@ impl ViewerState {
         }
         (win_lo..=win_hi)
             .map(|i| self.entries[i as usize].original_index)
-            .filter(|i| !self.thumb_textures.contains_key(i) && !self.thumb_pending.contains(i))
+            .filter(|i| {
+                !self.thumb_textures.contains_key(i)
+                    && !self.thumb_pending.contains(i)
+                    && !self.thumb_failed.contains(i)
+            })
             .collect()
     }
 
@@ -308,9 +348,13 @@ impl ViewerState {
         self.thumb_pending.insert(original_index);
     }
 
-    /// サムネイルバー用: ワーカーからの結果を反映する。デコード失敗時(None)もpendingは解除する。
+    /// サムネイルバー用: ワーカーからの結果を反映する。デコード失敗時(None)は
+    /// 失敗として記録し、以降は再要求しない（グレーカードのまま表示を継続する）。
     pub fn set_thumb_result(&mut self, ctx: &egui::Context, original_index: usize, rgba: Option<image::RgbaImage>) {
         self.thumb_pending.remove(&original_index);
+        if rgba.is_none() {
+            self.thumb_failed.insert(original_index);
+        }
         if let Some(img) = rgba {
             let color_image = egui::ColorImage::from_rgba_unmultiplied(
                 [img.width() as usize, img.height() as usize],
@@ -386,14 +430,16 @@ impl ViewerState {
             is_raw_file: false,
             shift_scroll_acc: 0.0,
             toast: None,
-            content_px: crate::cache::DEFAULT_DECODE_TARGET,
+            content_px: CONTENT_PX_PLACEHOLDER,
             thumb_textures: HashMap::new(),
             thumb_pending: HashSet::new(),
+            thumb_failed: HashSet::new(),
             thumbbar_last_activity: Instant::now(),
             thumbbar_scrolled_lo: None,
             thumbbar_visible_range: None,
             saved_spread: None,
             pending_spread_action: None,
+            pending_open_favorite_dialog: false,
         })
     }
 
@@ -436,14 +482,16 @@ impl ViewerState {
             is_raw_file: true,
             shift_scroll_acc: 0.0,
             toast: None,
-            content_px: crate::cache::DEFAULT_DECODE_TARGET,
+            content_px: CONTENT_PX_PLACEHOLDER,
             thumb_textures: HashMap::new(),
             thumb_pending: HashSet::new(),
+            thumb_failed: HashSet::new(),
             thumbbar_last_activity: Instant::now(),
             thumbbar_scrolled_lo: None,
             thumbbar_visible_range: None,
             saved_spread: None,
             pending_spread_action: None,
+            pending_open_favorite_dialog: false,
         }
     }
 
@@ -541,6 +589,11 @@ impl ViewerState {
         self.pending_spread_action.take()
     }
 
+    /// 右クリックメニュー「お気に入り詳細設定」の要求を取り出す（1フレームで消費）
+    pub fn take_favorite_dialog_request(&mut self) -> bool {
+        std::mem::take(&mut self.pending_open_favorite_dialog)
+    }
+
     /// spread_lo を基に lo/hi テクスチャを返す（original_index でキャッシュ参照）
     fn page_textures_for(&self, lo: i32) -> (Option<egui::TextureHandle>, Option<egui::TextureHandle>) {
         let total = self.entries.len() as i32;
@@ -594,7 +647,7 @@ impl ViewerState {
         let ctx = ui.ctx().clone();
         let viewer_style = ui.style().clone();
         if !self.open || self.entries.is_empty() {
-            return ViewerOutput { nav: ViewerNav::None, close_requested: !self.open, save_slots: None, spread_save_action: None };
+            return ViewerOutput { nav: ViewerNav::None, close_requested: !self.open, save_slots: None, spread_save_action: None, open_favorite_dialog: false };
         }
 
         // ── フレーム入力を一括収集（ctx.input はこの1回のみ）────────────────
@@ -656,7 +709,12 @@ impl ViewerState {
         let scroll_delta = scroll_delta_raw;
 
         // サムネイルバー自動非表示用: ページ送りに関わる入力があった時刻を記録する。
-        if key_left || key_right || key_up || key_down || key_space
+        // key_left/key_right（←→）はファイル切替専用でこのビューア内のページ送りではなく、
+        // 端（先頭/末尾ファイル）で移動先が無い場合は何も動かずトーストが出るだけ。その場合は
+        // ここで無条件にタイマーを更新すると「何も動いていないのにバーだけ反応する」矛盾が
+        // 起きるため対象から外す。移動が成功した場合は新規 ViewerState 生成時に
+        // thumbbar_last_activity が Instant::now() で初期化されるため、そちらで表示される。
+        if key_up || key_down || key_space
             || shift_nav_up || shift_nav_down || input.key_home || input.key_end
             || scroll_delta != 0.0 || shift_scroll_delta != 0.0
         {
@@ -742,7 +800,8 @@ impl ViewerState {
         self.tick_toast(&ctx, input.time);
 
         let spread_save_action = self.take_spread_action();
-        ViewerOutput { nav, close_requested: close_self, save_slots, spread_save_action }
+        let open_favorite_dialog = self.take_favorite_dialog_request();
+        ViewerOutput { nav, close_requested: close_self, save_slots, spread_save_action, open_favorite_dialog }
     }
 
     /// ビューアーを開いた直後（初回フレーム）に conf 既定スロットを一度だけ適用する。
@@ -1331,6 +1390,11 @@ impl ViewerState {
         let start = anchor.saturating_sub(5);
         let end = (anchor + 10 + 1).min(total);
 
+        // フレーム送り(UIスレッド同期デコード+アップロード)は可視ページに限定する。
+        // 先読みウィンドウ内の裏ページまで毎tickデコードすると、アニメ主体のアーカイブで
+        // UIスレッドが飽和し、可視アニメ自身のtickが追走上限に張り付いて再生全体が遅くなる。
+        let visible_orig = self.visible_original_indices();
+
         let now = Instant::now();
         let mut min_repaint_after = Duration::MAX;
 
@@ -1355,42 +1419,76 @@ impl ViewerState {
                     // フェーズ3/3.5: GIF/APNG/AVIF/WebP。全フレーム常駐ではなく逐次デコード+リングバッファ。
                     // デコーダが終端(None)を返した時点をループ境界とみなし restart() する
                     // (この再デコードによる一瞬のフリーズは許容する設計上の割り切り)。
+                    if !visible_orig.contains(&orig_i) {
+                        // 裏ページ: 位置を凍結（tickしない）。ページ送り時の白フラッシュ防止に、
+                        // テクスチャ未保有時のみ凍結位置のフレームを1回だけアップロードする。
+                        if let Some(state) = self.anim_states.get_mut(&orig_i) {
+                            state.paused = true;
+                        }
+                        if !self.textures.contains_key(&orig_i) {
+                            let frozen_index =
+                                self.anim_states.get(&orig_i).map_or(0, |s| s.frame_index);
+                            if let Some(tex) = upload_ring_frame(ctx, orig_i, ring, frozen_index) {
+                                self.textures.insert(orig_i, tex);
+                            }
+                        }
+                        continue;
+                    }
                     let state = self.anim_states.entry(orig_i).or_insert_with(|| AnimState {
                         frame_index: 0,
                         last_frame_at: now,
+                        paused: false,
                     });
-                    let elapsed = now.duration_since(state.last_frame_at);
-                    let current_delay = ring
-                        .with_frame(state.frame_index, |f| f.delay)
-                        .unwrap_or(Duration::from_millis(100));
-
+                    // 凍結明け: 凍結中の経過時間を再生遅延として追走しないよう基準時刻を取り直し、
+                    // 凍結位置から等速で再開する。
+                    if state.paused {
+                        state.paused = false;
+                        state.last_frame_at = now;
+                    }
                     let mut needs_upload = !self.textures.contains_key(&orig_i);
-                    if elapsed >= current_delay {
+                    // 遅れが1フレーム分を超えていたら複数フレーム進めて追いつく
+                    // (テクスチャアップロードは最後の1枚だけ)。スキップ分のデコードも
+                    // UIスレッドで走るため、上限 MAX_CATCHUP_FRAMES で打ち切る。
+                    let mut advanced = false;
+                    for _ in 0..MAX_CATCHUP_FRAMES {
+                        let current_delay = ring
+                            .with_frame(state.frame_index, |f| f.delay)
+                            .unwrap_or(Duration::from_millis(100));
+                        if now.duration_since(state.last_frame_at) < current_delay {
+                            break;
+                        }
                         let next_index = state.frame_index + 1;
                         if ring.with_frame(next_index, |_| ()).is_some() {
                             state.frame_index = next_index;
+                            // 超過分(elapsed - delay)を次フレームへ繰り越して蓄積誤差を防ぐ
+                            state.last_frame_at += current_delay;
                         } else {
+                            // ループ境界: restart()はリング全クリア+先頭からの再デコードで
+                            // コストが読めないため、境界を跨ぐ追走はせずフレーム0から仕切り直す。
                             ring.restart();
                             state.frame_index = 0;
+                            state.last_frame_at = now;
+                            advanced = true;
+                            break;
                         }
-                        state.last_frame_at = now;
+                        advanced = true;
+                    }
+                    if advanced {
                         needs_upload = true;
+                        // 上限まで進めてもまだ1フレーム分以上遅れている場合
+                        // (デコードが再生速度に追いつかない高速アニメ、最小化からの復帰直後など)は
+                        // 追走を諦めて now に切り直し「遅いなり再生」に落とす(無限追走スパイラル防止)。
+                        let current_delay = ring
+                            .with_frame(state.frame_index, |f| f.delay)
+                            .unwrap_or(Duration::from_millis(100));
+                        if now.duration_since(state.last_frame_at) >= current_delay {
+                            state.last_frame_at = now;
+                        }
                     }
 
                     if needs_upload {
-                        let payload = ring.with_frame(state.frame_index, |f| {
-                            (f.image.width(), f.image.height(), f.image.as_raw().clone())
-                        });
-                        if let Some((w, h, raw)) = payload {
-                            let color_image = egui::ColorImage::from_rgba_unmultiplied(
-                                [w as usize, h as usize],
-                                &raw,
-                            );
-                            let tex = ctx.load_texture(
-                                format!("page_{orig_i}"),
-                                color_image,
-                                egui::TextureOptions::LINEAR,
-                            );
+                        let frame_index = state.frame_index;
+                        if let Some(tex) = upload_ring_frame(ctx, orig_i, ring, frame_index) {
                             self.textures.insert(orig_i, tex);
                         }
                     }
@@ -1503,6 +1601,7 @@ impl ViewerState {
         toggle_on_init: bool,
         overwrite_enabled: bool,
         action: &mut Option<crate::controller::SpreadSaveAction>,
+        open_favorite_dialog: &mut bool,
     ) {
         let t = i18n::t();
         let mut toggle_on = toggle_on_init;
@@ -1522,6 +1621,11 @@ impl ViewerState {
                 ui.close();
             }
         });
+        ui.separator();
+        if ui.button(t.favorite_detail_menu()).clicked() {
+            *open_favorite_dialog = true;
+            ui.close();
+        }
     }
 
     fn render_single(
@@ -1536,6 +1640,7 @@ impl ViewerState {
         let toggle_on = self.spread_save_toggle_on();
         let overwrite_enabled = self.spread_overwrite_enabled();
         let action = &mut self.pending_spread_action;
+        let open_favorite_dialog = &mut self.pending_open_favorite_dialog;
         if let Some(tex) = tex {
             let [img_w, img_h] = tex.size();
             if zoom_actual {
@@ -1553,7 +1658,7 @@ impl ViewerState {
                     ui.painter().image(tex.id(), img_rect, FULL_UV, egui::Color32::WHITE);
                     if resp.double_clicked() { *double_clicked = true; }
                     if resp.clicked() && !resp.double_clicked() { *single_clicked = true; }
-                    resp.context_menu(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action));
+                    resp.context_menu(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, open_favorite_dialog));
                 });
             } else {
                 let available = ui.available_size();
@@ -1568,7 +1673,7 @@ impl ViewerState {
                 ui.painter().image(tex.id(), rect, FULL_UV, egui::Color32::WHITE);
                 if resp.double_clicked() { *double_clicked = true; }
                 if resp.clicked() && !resp.double_clicked() { *single_clicked = true; }
-                resp.context_menu(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action));
+                resp.context_menu(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, open_favorite_dialog));
             }
         } else {
             let rect = egui::Rect::from_min_size(ui.cursor().left_top(), ui.available_size());
@@ -1589,13 +1694,14 @@ impl ViewerState {
         let toggle_on = self.spread_save_toggle_on();
         let overwrite_enabled = self.spread_overwrite_enabled();
         let action = &mut self.pending_spread_action;
+        let open_favorite_dialog = &mut self.pending_open_favorite_dialog;
         let available = ui.available_size();
         let origin = ui.cursor().left_top();
 
         let full_rect = egui::Rect::from_min_size(origin, available);
         let resp = ui.allocate_rect(full_rect, egui::Sense::click());
         if resp.clicked() && !resp.double_clicked() { *single_clicked = true; }
-        resp.context_menu(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action));
+        resp.context_menu(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, open_favorite_dialog));
 
         let (rect_l, rect_r) = Self::spread_rects(available, origin, tex_left, tex_right, monitor);
         let painter = ui.painter();

@@ -36,6 +36,8 @@ pub struct ViewerOutput {
     pub save_slots: Option<[Option<WindowSlot>; 4]>,
     /// Some(_) のとき app 側で見開き状態DBへの保存/削除を行う
     pub spread_save_action: Option<SpreadSaveAction>,
+    /// true のとき app 側でお気に入り詳細設定ダイアログを開く
+    pub open_favorite_dialog: bool,
 }
 
 // ── ステータス即時更新要求 ────────────────────────────────────────────────────

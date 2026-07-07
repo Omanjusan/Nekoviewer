@@ -71,24 +71,27 @@ pub(crate) fn estimate_entry_bytes<R: Read + Seek>(
     entry_name: &str,
     budget_bytes: usize,
     ring_bounds: (usize, usize),
+    max_decode_edge: u32,
 ) -> Option<EntryEstimate> {
     let (buf, display_name) = load_bytes_from_archive(archive, entry_name)?;
-    super::estimate_bytes_for_entry(&buf, &display_name, budget_bytes, ring_bounds)
+    super::estimate_bytes_for_entry(&buf, &display_name, budget_bytes, ring_bounds, max_decode_edge)
 }
 
-/// ZIP版のメモリ見積もり。サンプリングした平均 × 総ページ数で全体を推定する。
+/// ZIP版のメモリ見積もり。サンプリングした平均 × 先読みウィンドウ幅で
+/// 「閲覧中に同時常駐しうる量」を推定する（全ページ同時常駐は仮定しない）。
 pub(crate) fn estimate_archive_memory_zip(
     path: &Path,
     entries: &[ImageEntry],
     budget_bytes: usize,
     ring_bounds: (usize, usize),
+    max_decode_edge: u32,
 ) -> ArchiveMemoryEstimate {
     let Ok(file) = std::fs::File::open(path) else { return ArchiveMemoryEstimate::Ok };
     let Ok(mut archive) = ::zip::ZipArchive::new(file) else { return ArchiveMemoryEstimate::Ok };
 
     let mut sample_bytes: Vec<usize> = Vec::new();
     for idx in super::select_sample_indices(entries.len()) {
-        match estimate_entry_bytes(&mut archive, &entries[idx].entry_name, budget_bytes, ring_bounds) {
+        match estimate_entry_bytes(&mut archive, &entries[idx].entry_name, budget_bytes, ring_bounds, max_decode_edge) {
             Some(EntryEstimate::OverBudget) => return ArchiveMemoryEstimate::OverBudget,
             Some(EntryEstimate::Bytes(n)) => sample_bytes.push(n),
             None => {} // 読み込み/デコード失敗エントリはサンプルから除外
@@ -96,31 +99,13 @@ pub(crate) fn estimate_archive_memory_zip(
     }
 
     let Some(avg) = super::average(&sample_bytes) else { return ArchiveMemoryEstimate::Ok };
-    let total_estimate = avg.saturating_mul(entries.len());
-    if total_estimate > budget_bytes {
+    let window = crate::cache::PREFETCH_WINDOW.min(entries.len());
+    let resident_estimate = avg.saturating_mul(window);
+    if resident_estimate > budget_bytes {
         ArchiveMemoryEstimate::OverBudget
     } else {
         ArchiveMemoryEstimate::Ok
     }
-}
-
-/// ZIP/CBZ から指定エントリの画像をデコードして返す
-pub fn load_image(path: &Path, entry_name: &str) -> Option<image::DynamicImage> {
-    let file = std::fs::File::open(path).ok()?;
-    let mut archive = ::zip::ZipArchive::new(file).ok()?;
-    load_image_from_archive(&mut archive, entry_name)
-}
-
-/// 開済みの ZipArchive から指定エントリの画像をデコードして返す（キープオープン用）
-pub fn load_image_from_archive(
-    archive: &mut ::zip::ZipArchive<std::fs::File>,
-    entry_name: &str,
-) -> Option<image::DynamicImage> {
-    let mut entry = archive.by_name(entry_name).ok()?;
-    let mut buf = Vec::new();
-    entry.read_to_end(&mut buf).ok()?;
-    let img = decode_image(&buf)?;
-    Some(img)
 }
 
 /// Local File Header を先頭から順読みする（セントラルディレクトリ・末尾シーク不要）。

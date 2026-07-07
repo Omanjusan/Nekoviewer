@@ -3,12 +3,14 @@ mod anim;
 mod cache;
 mod config;
 mod controller;
+mod favorites;
 mod fs;
 mod gui_config;
 mod i18n;
 mod types;
 mod model_innerlog;
 mod neko_dir;
+mod single_instance;
 mod spread_offset;
 mod spread_state;
 mod view_explorer;
@@ -24,6 +26,21 @@ use std::path::PathBuf;
 fn main() {
     // config 読み込み前なのでデフォルト値（common=true）でログ出力
     log_common!("[startup] main() start");
+
+    let instance_guard = match single_instance::acquire() {
+        single_instance::AcquireResult::Acquired(guard) => guard,
+        single_instance::AcquireResult::AlreadyRunning => {
+            log_common!("[startup] already running -> send ping");
+            if single_instance::send_ping() {
+                std::process::exit(0);
+            } else {
+                // 先発プロセスがロックを握ったままpingに応答しない
+                // （フリーズ等）。救済せずエラー終了する。
+                log_common!("[startup] ping failed (existing process unresponsive) -> exit(1)");
+                std::process::exit(1);
+            }
+        }
+    };
 
     // Windows は windows_subsystem="windows" によりコンソールを持たないため、
     // 初期化中に panic が起きても標準エラーが誰にも見えず、プロセスが無言で
@@ -69,6 +86,7 @@ fn main() {
 
     log_common!("[startup] starting winit event loop ...");
     winit_app::run(start_dir, cfg, state);
+    drop(instance_guard);
 }
 
 /// 初期化失敗時のブロッキングダイアログ（Windowsのみ）。Linuxはコンソール起動が

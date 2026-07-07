@@ -9,7 +9,6 @@ use fast_image_resize::{FilterType as FirFilter, PixelType, ResizeAlg, ResizeOpt
 
 const KB: usize = 1024;
 const MB: usize = 1024 * KB;
-const GB: usize = 1024 * MB;
 
 /// 合計キャッシュ予算のうちページキャッシュに回す割合。リングバッファ導入(フェーズ3/3.5)で
 /// アニメーションによるページキャッシュ占有が下がったぶん、ファイルキャッシュに厚めに配分する。
@@ -22,6 +21,15 @@ const MIN_RATIO_PCT: usize = 40; // page_max に対する page_min の割合
 /// フェーズ2の見積もりゲート(fs/archive.rs)も同じ値を使い、実際のリング容量算出と整合させる。
 pub(crate) const ANIM_RING_BUDGET_PCT: usize = 25;
 const FALLBACK_TOTAL_BYTES: usize = 500 * MB; // sysinfo 失敗時フォールバック（旧30%相当）
+
+/// ビューアーの先読みウィンドウ: 現在ページの後方（戻り側）に保持する枚数。
+pub const PREFETCH_BEHIND: usize = 5;
+/// ビューアーの先読みウィンドウ: 前方（進み側）に先読みする枚数。
+pub const PREFETCH_AHEAD: usize = 10;
+/// 同時にデコード常駐しうるページ数（後方 + 現在ページ + 前方）。
+/// view_explorer の prefetch_pages と、fs/archive のメモリ見積もりゲートが
+/// 同じウィンドウ幅を共有するための単一定義。
+pub const PREFETCH_WINDOW: usize = PREFETCH_BEHIND + 1 + PREFETCH_AHEAD;
 
 /// システム総RAM量をMB単位で返す（sysinfo失敗時は0）。設定ダイアログの表示にも使う。
 pub fn system_total_ram_mb() -> u64 {
@@ -53,12 +61,6 @@ pub fn resolve_cache_budgets(cache_total_mb: Option<u64>) -> (usize, usize, usiz
     let page_min = page_max * MIN_RATIO_PCT / 100;
     (page_max, page_min, file_max)
 }
-const MAX_DISPLAY_W: u32 = 1920;
-const MAX_DISPLAY_H: u32 = 1080;
-/// フェーズ6: リサイズ再デコード未接続時（起動直後など）のデコード上限既定値。
-/// 従来の固定 MAX_DISPLAY_W/H と同じ値を使う。
-pub const DEFAULT_DECODE_TARGET: (u32, u32) = (MAX_DISPLAY_W, MAX_DISPLAY_H);
-
 /// FileCache が保持する「準備済みデータ」。7z(および将来のtar)はソリッド圧縮で
 /// ランダムアクセスできないため、開いた時点で全画像エントリを展開したもの(`Extracted`)を
 /// 1アーカイブにつき1回だけ作り、ZIP/生画像は従来通りの生バイト列(`Raw`)を持つ。
@@ -371,18 +373,14 @@ fn decode_bytes_to_content(
 }
 
 /// `target` に縮小する（拡大はしない）。`target` が None のときは無制限（原寸のまま）。
-/// フェーズ6: 従来の固定 MAX_DISPLAY_W/H から、リサイズ再デコード対応のため呼び出し側指定に変更。
+/// フェーズ6: 従来の固定上限(1920x1080)から、リサイズ再デコード対応のため呼び出し側指定に変更。
 pub fn resize_for_display(img: image::DynamicImage, filter: image::imageops::FilterType, target: Option<(u32, u32)>) -> image::RgbaImage {
     let Some((tw, th)) = target else {
         return img.to_rgba8();
     };
     let (w, h) = (img.width(), img.height());
-    let scale = (tw as f32 / w as f32)
-        .min(th as f32 / h as f32)
-        .min(1.0);
-    if scale < 1.0 {
-        let nw = ((w as f32 * scale) as u32).max(1);
-        let nh = ((h as f32 * scale) as u32).max(1);
+    let (nw, nh) = crate::anim::fit_within(w, h, tw, th);
+    if (nw, nh) != (w, h) {
         fir_resize(img, nw, nh, filter)
     } else {
         img.to_rgba8()
@@ -417,6 +415,11 @@ struct RingAnimState {
 /// その際は `restart()` でデコーダを先頭から作り直す（この再デコードによる一瞬のフリーズは許容する）。
 pub struct RingAnimation {
     state: Mutex<RingAnimState>,
+    /// PageCache への計上額（リング容量 × リサイズ後フレームサイズ）。構築時に確定し不変。
+    /// 挿入時点の実常駐（2フレーム分）で計上すると、再生でリングが容量まで育ったとき
+    /// 帳簿が実態を大幅に過小評価して evict が動かなくなるため、
+    /// 「育ちうる最大量」を予約方式で先取り計上する（常に 帳簿 ≥ 実常駐 を保証）。
+    reserved_bytes: usize,
 }
 
 impl RingAnimation {
@@ -438,12 +441,8 @@ impl RingAnimation {
 
         let (w, h) = (frame0.image.width(), frame0.image.height());
         let resize_to = target_size.and_then(|(tw, th)| {
-            let scale = (tw as f32 / w as f32).min(th as f32 / h as f32).min(1.0);
-            if scale < 1.0 {
-                Some((((w as f32 * scale) as u32).max(1), ((h as f32 * scale) as u32).max(1)))
-            } else {
-                None
-            }
+            let (nw, nh) = crate::anim::fit_within(w, h, tw, th);
+            if (nw, nh) == (w, h) { None } else { Some((nw, nh)) }
         });
 
         let frame0 = Self::apply_resize(frame0, resize_to, filter);
@@ -459,12 +458,13 @@ impl RingAnimation {
         let resized_frame_bytes = (frame0.image.width() as usize) * (frame0.image.height() as usize) * 4;
         let (min_frames, max_frames) = ring_bounds;
         let capacity = resolve_ring_capacity(resized_frame_bytes, ring_budget_bytes, min_frames, max_frames);
+        let reserved_bytes = capacity.saturating_mul(resized_frame_bytes);
         let mut ring = FrameRingBuffer::new(capacity);
         ring.push(0, frame0);
         ring.push(1, frame1);
 
         let state = RingAnimState { decoder, ring, next_index: 2, resize_to, filter, frame_hard_limit_bytes };
-        RingDecodeOutcome::Animated(Self { state: Mutex::new(state) })
+        RingDecodeOutcome::Animated(Self { state: Mutex::new(state), reserved_bytes })
     }
 
     /// フレームの生デコードサイズ(リサイズ前、w*h*4)が`hard_limit_bytes`を超える場合、
@@ -531,8 +531,16 @@ impl RingAnimation {
     }
 
     /// 現在リングバッファに乗っている分だけの推定バイト数（アニメ全体ではない）。
+    /// テスト専用（実常駐が予約額 reserved_bytes を超えないことの検証用）。
+    #[cfg(test)]
     pub fn resident_bytes(&self) -> usize {
         self.state.lock().unwrap().ring.total_bytes()
+    }
+
+    /// PageCache への計上額（リング容量 × リサイズ後フレームサイズ、構築時に確定）。
+    /// insert/evict の両方でこの同一値を使うことで帳簿の足し引きが対称になる。
+    pub fn reserved_bytes(&self) -> usize {
+        self.reserved_bytes
     }
 }
 
@@ -728,7 +736,10 @@ fn rgba_bytes(img: &image::RgbaImage) -> usize {
 fn content_bytes(content: &PageContent) -> usize {
     match content {
         PageContent::Static(img) => rgba_bytes(img),
-        PageContent::Animated(ring) => ring.resident_bytes(),
+        // アニメは実常駐ではなく予約額で計上する。実常駐(resident_bytes)は挿入後に
+        // リングが育って増えるため、挿入時点の値で計上すると帳簿が過小評価になり
+        // evict が動かなくなる（reserved_bytes のコメント参照）。
+        PageContent::Animated(ring) => ring.reserved_bytes(),
     }
 }
 
@@ -739,12 +750,26 @@ fn content_bytes(content: &PageContent) -> usize {
 /// （ランダムアクセスできないための一括展開。プロセス全体でこの1回きりになり、
 /// 以降デコードワーカー側は共有Arcを参照するだけで済む）。
 /// それ以外(ZIP/生画像)は従来通り生バイト列(`Raw`)のまま返す。
-/// 返り値: (要求送信側, 結果受信側)
-pub fn spawn_file_cache_worker(ctx: egui::Context) -> (mpsc::Sender<PathBuf>, mpsc::Receiver<(PathBuf, FileCacheEntry)>) {
+///
+/// `max_bytes` はFileCacheの予算。メタデータ見積もりで予算を超えるファイルは
+/// 読み込み・展開自体を行わず None を返す（隣接アーカイブの先読みはビューアーの
+/// メモリゲートを通らないため、ここで丸読みによるスパイクを防ぐ。呼び出し側は
+/// キャッシュせず、ページ読み込みはディスク直読みにフォールバックする）。
+/// 返り値: (要求送信側, 結果受信側)。結果 None は「予算超過につきキャッシュ対象外」。
+pub fn spawn_file_cache_worker(ctx: egui::Context, max_bytes: usize) -> (mpsc::Sender<PathBuf>, mpsc::Receiver<(PathBuf, Option<FileCacheEntry>)>) {
     let (req_tx, req_rx) = mpsc::channel::<PathBuf>();
-    let (res_tx, res_rx) = mpsc::channel::<(PathBuf, FileCacheEntry)>();
+    let (res_tx, res_rx) = mpsc::channel::<(PathBuf, Option<FileCacheEntry>)>();
     std::thread::spawn(move || {
         while let Ok(path) = req_rx.recv() {
+            if crate::fs::archive::estimate_file_cache_bytes(&path) > max_bytes as u64 {
+                eprintln!(
+                    "[cache] file cache skip (over budget {}MB): {:?}",
+                    max_bytes / MB, path,
+                );
+                let _ = res_tx.send((path, None));
+                ctx.request_repaint();
+                continue;
+            }
             let entry = match crate::fs::archive::detect_format(&path) {
                 #[cfg(feature = "fmt-7z")]
                 crate::fs::archive::ArchiveFormat::SevenZ => {
@@ -760,11 +785,10 @@ pub fn spawn_file_cache_worker(ctx: egui::Context) -> (mpsc::Sender<PathBuf>, mp
                     std::fs::read(&path).ok().map(|bytes| FileCacheEntry::Raw(Arc::from(bytes)))
                 }
             };
-            if let Some(entry) = entry {
-                let _ = res_tx.send((path, entry));
-                // ROOT を起こして poll_workers に結果を回収させる
-                ctx.request_repaint();
-            }
+            // 読み込み失敗(None)でも必ず返送し、呼び出し側が pending を解放できるようにする
+            let _ = res_tx.send((path, entry));
+            // ROOT を起こして poll_workers に結果を回収させる
+            ctx.request_repaint();
         }
     });
     (req_tx, res_rx)
@@ -860,7 +884,10 @@ pub fn spawn_entry_thumb_worker(filter: image::imageops::FilterType, num_threads
                 };
 
                 let target = Some((req.edge, req.edge));
-                let ring_bounds = (1, 1);
+                // RingAnimation::from_source は構築時に frame0/frame1 を両方 push するため、
+                // 容量1だと frame0 が即エビクトされ with_frame(0) が常に None になる
+                // （アニメエントリのサムネが100%失敗→毎フレーム再デコードし続ける原因だった）。
+                let ring_bounds = (2, 2);
                 let content = if req.is_raw_file {
                     match &req.file_cache_entry {
                         Some(FileCacheEntry::Raw(bytes)) => {
@@ -1012,6 +1039,7 @@ pub fn resize_thumbnail(img: image::DynamicImage, filter: image::imageops::Filte
 mod ring_integration_tests {
     use super::*;
 
+    const GB: usize = 1024 * MB;
     /// テスト用: 十分大きい予算を与え、容量は常に上限(32)に張り付かせる
     /// （フェーズ3.6時点の固定容量32枚での期待値をそのまま維持するため）。
     const TEST_RING_BUDGET_BYTES: usize = 10 * GB;
@@ -1053,6 +1081,46 @@ mod ring_integration_tests {
             resident <= one_frame_bytes * (TEST_RING_MAX + 1),
             "resident_bytes={resident} がリング容量{TEST_RING_MAX}枚分を大きく超えている",
         );
+        // 帳簿の予約額は実常駐の上限であり続けるはず（帳簿 ≥ 実常駐 の保証）。
+        assert!(
+            resident <= ring.reserved_bytes(),
+            "resident_bytes={resident} が予約計上額{}を超えている(帳簿が過小評価になる)",
+            ring.reserved_bytes(),
+        );
+    }
+
+    /// PageCacheの帳簿がアニメを予約額(容量×フレームサイズ)で計上し、
+    /// 再生でリングが育っても帳簿が変わらず、remove時に同額が引かれて
+    /// ゼロに戻る（足し引きの対称性）ことを確認する。
+    #[test]
+    fn page_cache_accounts_anim_by_reservation_symmetrically() {
+        let bytes = encode_gif_frames_mixed(&[(10, 10), (10, 10), (10, 10)]);
+        let content = decode_ring_anim(&bytes, AnimFormat::Gif, image::imageops::FilterType::Triangle, TEST_RING_BUDGET_BYTES, TEST_RING_BOUNDS, TEST_FRAME_HARD_LIMIT_BYTES, Some((1920, 1080)))
+            .expect("GIFとしてデコードできるはず");
+        let PageContent::Animated(ref ring) = content else {
+            panic!("3フレームあるので Animated になるはず");
+        };
+        // 予算が十分大きいので容量は上限(32)に張り付き、予約額 = 32 × 10×10×4。
+        let reserved = ring.reserved_bytes();
+        assert_eq!(reserved, 10 * 10 * 4 * TEST_RING_MAX);
+
+        let mut cache = PageCache::new(10 * MB, 0);
+        let path = std::path::PathBuf::from("test.zip");
+        cache.insert(path.clone(), 0, content, &path, 0);
+        assert_eq!(cache.total_bytes(), reserved, "挿入時点で予約額が計上されるべき");
+
+        // 再生を進めてリングを育てても帳簿は不変（挿入時確定の予約方式）。
+        if let Some(PageContent::Animated(ring)) = cache.get(&path, 0) {
+            for i in 0..3 {
+                let _ = ring.with_frame(i, |_| ());
+            }
+            assert!(ring.resident_bytes() <= reserved);
+        }
+        assert_eq!(cache.total_bytes(), reserved, "リングが育っても帳簿は変わらないべき");
+
+        // removeで同額が引かれゼロに戻る（挿入と削除の対称性）。
+        cache.remove(&path, 0);
+        assert_eq!(cache.total_bytes(), 0, "予約額と同額が引かれてゼロに戻るべき");
     }
 
     /// フェーズ3.6: ループ境界(終端→restart→先頭)が実際に機能することを確認する。
@@ -1103,7 +1171,7 @@ mod ring_integration_tests {
         };
 
         // 表示サイズ縮小後の1フレーム分バイト数を、エビクトされる前(ループ前)に取得しておく
-        // (960x1376はMAX_DISPLAY_H(1080)を超えるため縮小されている前提)。
+        // (960x1376は表示ターゲット高さ(1080)を超えるため縮小されている前提)。
         let one_frame_bytes = ring
             .with_frame(0, |f| (f.image.width() as usize) * (f.image.height() as usize) * 4)
             .expect("frame 0 は取得できるはず");
