@@ -74,7 +74,7 @@ impl NekoviewApp {
     /// release ビルド: ROOT 内フローティング `egui::Window` としてステータスを描画する。
     /// debug ビルドでは独立 OS 窓（render_status）が担うため使わない。
     #[cfg(not(debug_assertions))]
-    fn draw_status_window(&mut self, ctx: &egui::Context) {
+    pub(super) fn draw_status_window(&mut self, ctx: &egui::Context) {
         if self.show_status_window {
             self.refresh_status_data(ctx.input(|i| i.stable_dt) * 1000.0);
         }

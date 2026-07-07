@@ -1078,6 +1078,46 @@ mod ring_integration_tests {
             resident <= one_frame_bytes * (TEST_RING_MAX + 1),
             "resident_bytes={resident} がリング容量{TEST_RING_MAX}枚分を大きく超えている",
         );
+        // 帳簿の予約額は実常駐の上限であり続けるはず（帳簿 ≥ 実常駐 の保証）。
+        assert!(
+            resident <= ring.reserved_bytes(),
+            "resident_bytes={resident} が予約計上額{}を超えている(帳簿が過小評価になる)",
+            ring.reserved_bytes(),
+        );
+    }
+
+    /// PageCacheの帳簿がアニメを予約額(容量×フレームサイズ)で計上し、
+    /// 再生でリングが育っても帳簿が変わらず、remove時に同額が引かれて
+    /// ゼロに戻る（足し引きの対称性）ことを確認する。
+    #[test]
+    fn page_cache_accounts_anim_by_reservation_symmetrically() {
+        let bytes = encode_gif_frames_mixed(&[(10, 10), (10, 10), (10, 10)]);
+        let content = decode_ring_anim(&bytes, AnimFormat::Gif, image::imageops::FilterType::Triangle, TEST_RING_BUDGET_BYTES, TEST_RING_BOUNDS, TEST_FRAME_HARD_LIMIT_BYTES, Some((1920, 1080)))
+            .expect("GIFとしてデコードできるはず");
+        let PageContent::Animated(ref ring) = content else {
+            panic!("3フレームあるので Animated になるはず");
+        };
+        // 予算が十分大きいので容量は上限(32)に張り付き、予約額 = 32 × 10×10×4。
+        let reserved = ring.reserved_bytes();
+        assert_eq!(reserved, 10 * 10 * 4 * TEST_RING_MAX);
+
+        let mut cache = PageCache::new(10 * MB, 0);
+        let path = std::path::PathBuf::from("test.zip");
+        cache.insert(path.clone(), 0, content, &path, 0);
+        assert_eq!(cache.total_bytes(), reserved, "挿入時点で予約額が計上されるべき");
+
+        // 再生を進めてリングを育てても帳簿は不変（挿入時確定の予約方式）。
+        if let Some(PageContent::Animated(ring)) = cache.get(&path, 0) {
+            for i in 0..3 {
+                let _ = ring.with_frame(i, |_| ());
+            }
+            assert!(ring.resident_bytes() <= reserved);
+        }
+        assert_eq!(cache.total_bytes(), reserved, "リングが育っても帳簿は変わらないべき");
+
+        // removeで同額が引かれゼロに戻る（挿入と削除の対称性）。
+        cache.remove(&path, 0);
+        assert_eq!(cache.total_bytes(), 0, "予約額と同額が引かれてゼロに戻るべき");
     }
 
     /// フェーズ3.6: ループ境界(終端→restart→先頭)が実際に機能することを確認する。
