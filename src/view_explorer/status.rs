@@ -113,13 +113,35 @@ impl NekoviewApp {
     /// 予算超過と判定した場合は確認ダイアログの表示フラグを立てて false を返す
     /// （呼び出し側はオープンを中止する。invalid_archives への永続マークは行わない。
     /// 一時的な予算状況が変わりうるため、次回オープン時に再度見積もりし直す）。
+    /// 7z/tarで判定のために一括展開したデータはそのままFileCacheへ投入し、
+    /// オープン後の再展開（二重展開）を回避する。
     pub(super) fn check_memory_budget(&mut self, path: &std::path::Path) -> bool {
         let entries = archive::list_images(path);
         if entries.is_empty() {
             return true; // 空/無効アーカイブの判定は既存の invalid_archives 処理に任せる
         }
-        match archive::estimate_archive_memory(path, &entries, self.cache_budget_bytes, self.anim_ring_bounds, self.config.max_decode_edge) {
-            archive::ArchiveMemoryEstimate::Ok => true,
+        let check = archive::estimate_archive_memory(
+            path,
+            &entries,
+            self.cache_budget_bytes,
+            self.anim_ring_bounds,
+            self.config.max_decode_edge,
+            self.file_cache.max_bytes(),
+        );
+        match check.estimate {
+            archive::ArchiveMemoryEstimate::Ok => {
+                if let Some(prepared) = check.prepared {
+                    let current = self
+                        .viewer
+                        .lock()
+                        .unwrap()
+                        .as_ref()
+                        .map(|v| v.archive_path().clone())
+                        .unwrap_or_else(|| path.to_path_buf());
+                    self.file_cache.insert(path.to_path_buf(), prepared, &current, &self.archives);
+                }
+                true
+            }
             archive::ArchiveMemoryEstimate::OverBudget => {
                 self.memory_warning_open = true;
                 false

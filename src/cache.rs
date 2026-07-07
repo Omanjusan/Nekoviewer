@@ -531,6 +531,8 @@ impl RingAnimation {
     }
 
     /// 現在リングバッファに乗っている分だけの推定バイト数（アニメ全体ではない）。
+    /// テスト専用（実常駐が予約額 reserved_bytes を超えないことの検証用）。
+    #[cfg(test)]
     pub fn resident_bytes(&self) -> usize {
         self.state.lock().unwrap().ring.total_bytes()
     }
@@ -748,12 +750,26 @@ fn content_bytes(content: &PageContent) -> usize {
 /// （ランダムアクセスできないための一括展開。プロセス全体でこの1回きりになり、
 /// 以降デコードワーカー側は共有Arcを参照するだけで済む）。
 /// それ以外(ZIP/生画像)は従来通り生バイト列(`Raw`)のまま返す。
-/// 返り値: (要求送信側, 結果受信側)
-pub fn spawn_file_cache_worker(ctx: egui::Context) -> (mpsc::Sender<PathBuf>, mpsc::Receiver<(PathBuf, FileCacheEntry)>) {
+///
+/// `max_bytes` はFileCacheの予算。メタデータ見積もりで予算を超えるファイルは
+/// 読み込み・展開自体を行わず None を返す（隣接アーカイブの先読みはビューアーの
+/// メモリゲートを通らないため、ここで丸読みによるスパイクを防ぐ。呼び出し側は
+/// キャッシュせず、ページ読み込みはディスク直読みにフォールバックする）。
+/// 返り値: (要求送信側, 結果受信側)。結果 None は「予算超過につきキャッシュ対象外」。
+pub fn spawn_file_cache_worker(ctx: egui::Context, max_bytes: usize) -> (mpsc::Sender<PathBuf>, mpsc::Receiver<(PathBuf, Option<FileCacheEntry>)>) {
     let (req_tx, req_rx) = mpsc::channel::<PathBuf>();
-    let (res_tx, res_rx) = mpsc::channel::<(PathBuf, FileCacheEntry)>();
+    let (res_tx, res_rx) = mpsc::channel::<(PathBuf, Option<FileCacheEntry>)>();
     std::thread::spawn(move || {
         while let Ok(path) = req_rx.recv() {
+            if crate::fs::archive::estimate_file_cache_bytes(&path) > max_bytes as u64 {
+                eprintln!(
+                    "[cache] file cache skip (over budget {}MB): {:?}",
+                    max_bytes / MB, path,
+                );
+                let _ = res_tx.send((path, None));
+                ctx.request_repaint();
+                continue;
+            }
             let entry = match crate::fs::archive::detect_format(&path) {
                 #[cfg(feature = "fmt-7z")]
                 crate::fs::archive::ArchiveFormat::SevenZ => {
@@ -769,11 +785,10 @@ pub fn spawn_file_cache_worker(ctx: egui::Context) -> (mpsc::Sender<PathBuf>, mp
                     std::fs::read(&path).ok().map(|bytes| FileCacheEntry::Raw(Arc::from(bytes)))
                 }
             };
-            if let Some(entry) = entry {
-                let _ = res_tx.send((path, entry));
-                // ROOT を起こして poll_workers に結果を回収させる
-                ctx.request_repaint();
-            }
+            // 読み込み失敗(None)でも必ず返送し、呼び出し側が pending を解放できるようにする
+            let _ = res_tx.send((path, entry));
+            // ROOT を起こして poll_workers に結果を回収させる
+            ctx.request_repaint();
         }
     });
     (req_tx, res_rx)

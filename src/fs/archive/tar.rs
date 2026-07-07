@@ -62,6 +62,27 @@ pub(crate) fn list_images_tar(path: &Path) -> Vec<ImageEntry> {
     super::finalize_entries(pairs)
 }
 
+/// 画像エントリの展開後合計サイズをtarヘッダのみから求める。
+/// エントリのデータ本体は読み込まない（イテレータが読み飛ばす）ため省メモリ。
+/// 圧縮tar(gz/zst)はストリーム解凍を伴うがバッファは使い捨てで、メモリは膨らまない。
+/// FileCache(Extracted)に載る量の事前見積もりに使う。読めない場合は0。
+pub(crate) fn sum_image_entry_sizes_tar(path: &Path) -> u64 {
+    let Some(reader) = open_reader(path) else {
+        return 0;
+    };
+    let mut archive = tar::Archive::new(reader);
+    let Ok(entries) = archive.entries() else {
+        return 0;
+    };
+    entries
+        .filter_map(|e| e.ok())
+        .filter(|e| {
+            !e.header().entry_type().is_dir() && is_image_entry_raw(&e.path_bytes())
+        })
+        .map(|e| e.header().size().unwrap_or(0))
+        .sum()
+}
+
 /// tar(raw/gzip)を開き、画像エントリを一括展開して `entry_name -> 生バイト列` の対応表を返す。
 /// 以降のページ送りはこの表を引くだけで済み、再展開は発生しない（7z と同じ方式）。
 pub fn extract_all_images_tar<R: Read>(source: R) -> HashMap<String, Vec<u8>> {
@@ -121,34 +142,46 @@ pub(crate) fn load_first_image_tar(path: &Path) -> Option<image::DynamicImage> {
     None
 }
 
-/// tar版のメモリ見積もり。ソリッド扱いのため7z同様、一括展開結果を使って全件計算し、
+/// tar版のメモリ見積もり。7z同様、まずヘッダのみの軽量チェックとして「画像エントリの
+/// 展開後合計 > FileCache予算」なら展開せずに即OverBudget。通過したら一括展開して
 /// 「最悪の連続先読みウィンドウ合計」で同時常駐を判定する。
+/// 判定Okなら展開結果を `prepared` で持ち帰り、FileCacheに流用して二重展開を避ける。
 pub(crate) fn estimate_archive_memory_tar(
     path: &Path,
     entries: &[ImageEntry],
     budget_bytes: usize,
     ring_bounds: (usize, usize),
     max_decode_edge: u32,
-) -> ArchiveMemoryEstimate {
+    file_budget_bytes: usize,
+) -> super::ArchiveMemoryCheck {
+    if sum_image_entry_sizes_tar(path) > file_budget_bytes as u64 {
+        return super::ArchiveMemoryCheck::without_payload(ArchiveMemoryEstimate::OverBudget);
+    }
+
     let map = extract_all_images_tar_path(path);
     if map.is_empty() {
-        return ArchiveMemoryEstimate::Ok;
+        return super::ArchiveMemoryCheck::without_payload(ArchiveMemoryEstimate::Ok);
     }
 
     let mut per_entry: Vec<usize> = Vec::with_capacity(entries.len());
     for entry in entries {
         let Some(buf) = map.get(&entry.entry_name) else { per_entry.push(0); continue };
         match super::estimate_bytes_for_entry(buf, &entry.display_name, budget_bytes, ring_bounds, max_decode_edge) {
-            Some(EntryEstimate::OverBudget) => return ArchiveMemoryEstimate::OverBudget,
+            Some(EntryEstimate::OverBudget) => {
+                return super::ArchiveMemoryCheck::without_payload(ArchiveMemoryEstimate::OverBudget);
+            }
             Some(EntryEstimate::Bytes(n)) => per_entry.push(n),
             None => per_entry.push(0), // 読み込み/デコード失敗エントリは合計から除外
         }
     }
     let worst = super::worst_window_total(&per_entry, crate::cache::PREFETCH_WINDOW);
     if worst > budget_bytes {
-        ArchiveMemoryEstimate::OverBudget
+        super::ArchiveMemoryCheck::without_payload(ArchiveMemoryEstimate::OverBudget)
     } else {
-        ArchiveMemoryEstimate::Ok
+        super::ArchiveMemoryCheck {
+            estimate: ArchiveMemoryEstimate::Ok,
+            prepared: Some(crate::cache::FileCacheEntry::Extracted(std::sync::Arc::new(map))),
+        }
     }
 }
 
@@ -284,15 +317,38 @@ mod tests {
         // 10x10 RGBA = 400byte/枚 × 3 = 1200byte。10MB予算なら収まる。
         let path = build_tar(&[(10, 10), (10, 10), (10, 10)], false);
         let entries = list_images_tar(&path);
-        assert_eq!(
-            estimate_archive_memory_tar(&path, &entries, 10 * MB, TEST_RING_BOUNDS, 1920),
-            ArchiveMemoryEstimate::Ok
-        );
+        let check = estimate_archive_memory_tar(&path, &entries, 10 * MB, TEST_RING_BOUNDS, 1920, 100 * MB);
+        assert_eq!(check.estimate, ArchiveMemoryEstimate::Ok);
+        assert!(check.prepared.is_some(), "判定Okなら展開結果をFileCache流用向けに持ち帰るべき");
         // 1枚(400byte)未満の予算 → 単体超過で OverBudget
-        assert_eq!(
-            estimate_archive_memory_tar(&path, &entries, 100, TEST_RING_BOUNDS, 1920),
-            ArchiveMemoryEstimate::OverBudget
-        );
+        let check = estimate_archive_memory_tar(&path, &entries, 100, TEST_RING_BOUNDS, 1920, 100 * MB);
+        assert_eq!(check.estimate, ArchiveMemoryEstimate::OverBudget);
+        assert!(check.prepared.is_none());
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn tar_file_budget_gate_blocks_without_extraction() {
+        // 画像エントリの展開後合計(PNGファイルサイズ合計)がFileCache予算を超えるなら
+        // ページ判定に関係なく即OverBudget。
+        let path = build_tar(&[(10, 10), (10, 10), (10, 10)], false);
+        let entries = list_images_tar(&path);
+        let sum = sum_image_entry_sizes_tar(&path);
+        assert!(sum > 0, "メタデータから展開後合計が取れるはず");
+        let check = estimate_archive_memory_tar(&path, &entries, 10 * MB, TEST_RING_BOUNDS, 1920, (sum - 1) as usize);
+        assert_eq!(check.estimate, ArchiveMemoryEstimate::OverBudget);
+        assert!(check.prepared.is_none());
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn tar_sum_image_entry_sizes_matches_extracted() {
+        // ヘッダのみの合計が、実際に展開したバイト数合計と一致することを確認する。
+        let path = build_tar(&[(16, 16), (10, 10)], false);
+        let sum = sum_image_entry_sizes_tar(&path);
+        let map = extract_all_images_tar_path(&path);
+        let extracted: u64 = map.values().map(|v| v.len() as u64).sum();
+        assert_eq!(sum, extracted);
         std::fs::remove_file(&path).ok();
     }
 }

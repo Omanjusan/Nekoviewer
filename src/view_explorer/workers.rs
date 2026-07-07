@@ -222,14 +222,18 @@ impl NekoviewApp {
             }
         }
 
-        // FileCache ワーカーからの結果を受信して横キャッシュへ投入
-        let file_results: Vec<(PathBuf, FileCacheEntry)> =
+        // FileCache ワーカーからの結果を受信して横キャッシュへ投入。
+        // None は「予算超過スキップ or 読み込み失敗」でキャッシュには入れないが、
+        // pending解放と保留リクエストのフラッシュ（ディスク直読みフォールバック）は行う。
+        let file_results: Vec<(PathBuf, Option<FileCacheEntry>)> =
             std::iter::from_fn(|| self.file_cache_res_rx.try_recv().ok()).collect();
         let cur_viewer_path = self.viewer.lock().unwrap().as_ref().map(|v| v.archive_path().clone());
         for (path, entry) in file_results {
             self.file_cache_pending.remove(&path);
-            let current = cur_viewer_path.clone().unwrap_or_else(|| path.clone());
-            self.file_cache.insert(path.clone(), entry, &current, &self.archives);
+            if let Some(entry) = entry {
+                let current = cur_viewer_path.clone().unwrap_or_else(|| path.clone());
+                self.file_cache.insert(path.clone(), entry, &current, &self.archives);
+            }
             // 7zの展開待ちで保留していたページ/サムネ要求をまとめてフラッシュする。
             if let Some(deferred) = self.deferred_archive_requests.remove(&path) {
                 let file_cache_entry = self.file_cache.get(&path);

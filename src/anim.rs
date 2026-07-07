@@ -12,6 +12,9 @@ pub struct AnimFrame {
     pub delay: Duration,
 }
 
+/// テスト専用（RingAnimation::resident_bytes 経由の実常駐検証にのみ使用）。
+/// 実運用の帳簿は予約方式（RingAnimation::reserved_bytes）に一本化されている。
+#[cfg(test)]
 fn frame_bytes(img: &RgbaImage) -> usize {
     (img.width() as usize) * (img.height() as usize) * 4
 }
@@ -319,6 +322,8 @@ impl FrameRingBuffer {
     }
 
     /// 現在保持している分だけの合計デコード後バイト数（全フレームではなくリング内のみ）。
+    /// テスト専用（実常駐がリング容量に収まることの検証用）。
+    #[cfg(test)]
     pub fn total_bytes(&self) -> usize {
         self.frames.iter().map(|(_, f)| frame_bytes(&f.image)).sum()
     }

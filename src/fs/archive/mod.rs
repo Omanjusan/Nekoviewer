@@ -113,8 +113,39 @@ pub(crate) fn worst_window_total(per_entry: &[usize], window: usize) -> usize {
 pub enum ArchiveMemoryEstimate {
     /// 同時常駐推定（先読みウィンドウぶんの計上額）が budget_bytes 以内。
     Ok,
-    /// budget_bytes を超過（サンプル単体超過、または同時常駐推定超過のいずれか）。
+    /// budget_bytes を超過（サンプル単体超過、同時常駐推定超過、
+    /// またはFileCache展開後合計超過のいずれか）。
     OverBudget,
+}
+
+/// `estimate_archive_memory` の結果。判定に加え、7z/tarで見積もりのために
+/// 一括展開したデータを持ち帰る（判定Okのときのみ）。
+pub struct ArchiveMemoryCheck {
+    pub estimate: ArchiveMemoryEstimate,
+    /// 7z/tar が判定のために一括展開した画像マップ。呼び出し側がそのまま
+    /// FileCache へ投入することで、オープン時の再展開（二重展開）を回避できる。
+    /// ZIP（サンプリング判定・展開不要）と判定OverBudget時は None。
+    pub prepared: Option<crate::cache::FileCacheEntry>,
+}
+
+impl ArchiveMemoryCheck {
+    pub(crate) fn without_payload(estimate: ArchiveMemoryEstimate) -> Self {
+        Self { estimate, prepared: None }
+    }
+}
+
+/// FileCache に載る想定サイズをメタデータのみで見積もる（展開・丸読みなし）。
+/// ZIP/生画像: ディスク上のファイルサイズ（`FileCacheEntry::Raw` で丸ごと保持されるため）。
+/// 7z/tar: 画像エントリの展開後合計（`FileCacheEntry::Extracted` で保持されるため）。
+/// 取得できない場合は0（= 制限しない）。
+pub fn estimate_file_cache_bytes(path: &Path) -> u64 {
+    match detect::detect_format(path) {
+        #[cfg(feature = "fmt-7z")]
+        ArchiveFormat::SevenZ => sevenz::sum_image_entry_sizes_7z(path),
+        #[cfg(feature = "fmt-tar")]
+        ArchiveFormat::Tar => tar::sum_image_entry_sizes_tar(path),
+        ArchiveFormat::Zip => std::fs::metadata(path).map(|m| m.len()).unwrap_or(0),
+    }
 }
 
 /// フェーズ2改: `list_images` の結果に対してサンプリングを行い、閲覧中に同時常駐しうる
@@ -128,25 +159,31 @@ pub enum ArchiveMemoryEstimate {
 /// `max_decode_edge` は表示リサイズのガードレール値（config.max_decode_edge）。
 /// 見積もりは全てこの箱に収めたリサイズ後サイズで行い、実際の保持量と一致させる。
 ///
+/// `file_budget_bytes` は FileCache の予算（file_max）。7z/tar は開くと画像全量が
+/// 展開されて FileCache に常駐するため、メタデータ上の展開後合計がこれを超える
+/// アーカイブは展開せずに即 OverBudget とする（ページ判定とは独立のガード）。
+///
 /// 7z(ソリッド圧縮)はサンプリングでの軽量見積もりが成立しない（1件だけ取り出すのにブロック
 /// 先頭からの再展開が必要になるため）。そのため7zは `estimate_archive_memory_7z` に委譲し、
-/// 一括展開結果を使った全件計算（最悪連続ウィンドウ）で判定する。
+/// 一括展開結果を使った全件計算（最悪連続ウィンドウ）で判定する。判定Okの場合は
+/// 展開結果を `prepared` で持ち帰り、FileCacheに流用して二重展開を避ける。
 pub fn estimate_archive_memory(
     path: &Path,
     entries: &[ImageEntry],
     budget_bytes: usize,
     ring_bounds: (usize, usize),
     max_decode_edge: u32,
-) -> ArchiveMemoryEstimate {
+    file_budget_bytes: usize,
+) -> ArchiveMemoryCheck {
     if entries.is_empty() {
-        return ArchiveMemoryEstimate::Ok;
+        return ArchiveMemoryCheck::without_payload(ArchiveMemoryEstimate::Ok);
     }
     match detect::detect_format(path) {
         #[cfg(feature = "fmt-7z")]
-        ArchiveFormat::SevenZ => sevenz::estimate_archive_memory_7z(path, entries, budget_bytes, ring_bounds, max_decode_edge),
+        ArchiveFormat::SevenZ => sevenz::estimate_archive_memory_7z(path, entries, budget_bytes, ring_bounds, max_decode_edge, file_budget_bytes),
         #[cfg(feature = "fmt-tar")]
-        ArchiveFormat::Tar => tar::estimate_archive_memory_tar(path, entries, budget_bytes, ring_bounds, max_decode_edge),
-        ArchiveFormat::Zip => zip::estimate_archive_memory_zip(path, entries, budget_bytes, ring_bounds, max_decode_edge),
+        ArchiveFormat::Tar => tar::estimate_archive_memory_tar(path, entries, budget_bytes, ring_bounds, max_decode_edge, file_budget_bytes),
+        ArchiveFormat::Zip => ArchiveMemoryCheck::without_payload(zip::estimate_archive_memory_zip(path, entries, budget_bytes, ring_bounds, max_decode_edge)),
     }
 }
 
@@ -267,6 +304,8 @@ mod tests {
     const TEST_RING_BOUNDS: (usize, usize) = (4, 32);
     /// テスト用の表示リサイズガードレール長辺。実運用のデフォルト(max_decode_edge=1920)に合わせる。
     const TEST_DECODE_EDGE: u32 = 1920;
+    /// テスト用のFileCache予算。テストフィクスチャの展開後合計より十分大きい値。
+    const TEST_FILE_BUDGET: usize = 100 * MB;
 
     fn test_zip() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("test/testarchive.zip")
@@ -357,8 +396,40 @@ mod tests {
         // test7z.7z の3画像（最大4096x3072）はリサイズ後基準（1920箱）だと1枚≈11MB以下。
         // 100MB予算なら余裕で収まる。
         let entries = list_images(&test_7z());
-        let result = estimate_archive_memory(&test_7z(), &entries, 100 * MB, TEST_RING_BOUNDS, TEST_DECODE_EDGE);
+        let result = estimate_archive_memory(&test_7z(), &entries, 100 * MB, TEST_RING_BOUNDS, TEST_DECODE_EDGE, TEST_FILE_BUDGET).estimate;
         assert_eq!(result, ArchiveMemoryEstimate::Ok);
+    }
+
+    #[cfg(feature = "fmt-7z")]
+    #[test]
+    fn test_7z_sum_sizes_matches_extracted_and_gates_file_budget() {
+        // ヘッダのみの展開後合計が実際の展開バイト数と一致し、
+        // それがFileCache予算を超える場合は展開せずに即OverBudgetになる。
+        let sum = super::sevenz::sum_image_entry_sizes_7z(&test_7z());
+        let map = extract_all_images_7z_path(&test_7z());
+        let extracted: u64 = map.values().map(|v| v.len() as u64).sum();
+        assert_eq!(sum, extracted, "メタデータ合計と実展開合計が一致するはず");
+        assert!(sum > 0);
+
+        let entries = list_images(&test_7z());
+        let check = estimate_archive_memory(&test_7z(), &entries, 100 * MB, TEST_RING_BOUNDS, TEST_DECODE_EDGE, (sum - 1) as usize);
+        assert_eq!(check.estimate, ArchiveMemoryEstimate::OverBudget);
+        assert!(check.prepared.is_none());
+    }
+
+    #[cfg(feature = "fmt-7z")]
+    #[test]
+    fn test_estimate_archive_memory_7z_ok_carries_prepared_map() {
+        // 判定Okのとき、見積もりで展開したマップをFileCache流用向けに持ち帰る（二重展開回避）。
+        let entries = list_images(&test_7z());
+        let check = estimate_archive_memory(&test_7z(), &entries, 100 * MB, TEST_RING_BOUNDS, TEST_DECODE_EDGE, TEST_FILE_BUDGET);
+        assert_eq!(check.estimate, ArchiveMemoryEstimate::Ok);
+        match check.prepared {
+            Some(crate::cache::FileCacheEntry::Extracted(map)) => {
+                assert_eq!(map.len(), entries.len(), "展開マップは全画像エントリを含むはず");
+            }
+            _ => panic!("7zの判定OkはExtractedを持ち帰るべき"),
+        }
     }
 
     #[cfg(feature = "fmt-7z")]
@@ -366,7 +437,7 @@ mod tests {
     fn test_estimate_archive_memory_7z_over_budget() {
         // 最大の1枚(4096x3072)はリサイズ後(1920x1440)でも約11MB。8MB予算なら単体超過でOverBudget。
         let entries = list_images(&test_7z());
-        let result = estimate_archive_memory(&test_7z(), &entries, 8 * MB, TEST_RING_BOUNDS, TEST_DECODE_EDGE);
+        let result = estimate_archive_memory(&test_7z(), &entries, 8 * MB, TEST_RING_BOUNDS, TEST_DECODE_EDGE, TEST_FILE_BUDGET).estimate;
         assert_eq!(result, ArchiveMemoryEstimate::OverBudget);
     }
 
@@ -466,7 +537,7 @@ mod tests {
         let path = build_zip_with_pngs(&[(10, 10), (10, 10), (10, 10)]);
         let entries = list_images(&path);
         assert_eq!(entries.len(), 3);
-        let result = estimate_archive_memory(&path, &entries, 10 * MB, TEST_RING_BOUNDS, TEST_DECODE_EDGE);
+        let result = estimate_archive_memory(&path, &entries, 10 * MB, TEST_RING_BOUNDS, TEST_DECODE_EDGE, TEST_FILE_BUDGET).estimate;
         std::fs::remove_file(&path).ok();
         assert_eq!(result, ArchiveMemoryEstimate::Ok);
     }
@@ -479,7 +550,7 @@ mod tests {
         let entries = list_images(&path);
         assert_eq!(entries.len(), 20);
         // 40,000 × 16 = 640,000 > budget(500,000) だが 40,000 < budget 単体は超えない
-        let result = estimate_archive_memory(&path, &entries, 500_000, TEST_RING_BOUNDS, TEST_DECODE_EDGE);
+        let result = estimate_archive_memory(&path, &entries, 500_000, TEST_RING_BOUNDS, TEST_DECODE_EDGE, TEST_FILE_BUDGET).estimate;
         std::fs::remove_file(&path).ok();
         assert_eq!(result, ArchiveMemoryEstimate::OverBudget);
     }
@@ -492,7 +563,7 @@ mod tests {
         let path = build_zip_with_pngs(&dims);
         let entries = list_images(&path);
         assert_eq!(entries.len(), 100);
-        let result = estimate_archive_memory(&path, &entries, 700_000, TEST_RING_BOUNDS, TEST_DECODE_EDGE);
+        let result = estimate_archive_memory(&path, &entries, 700_000, TEST_RING_BOUNDS, TEST_DECODE_EDGE, TEST_FILE_BUDGET).estimate;
         std::fs::remove_file(&path).ok();
         assert_eq!(result, ArchiveMemoryEstimate::Ok);
     }
@@ -504,7 +575,7 @@ mod tests {
         let path = build_zip_with_pngs(&[(2000, 2000), (10, 10), (10, 10), (10, 10), (10, 10)]);
         let entries = list_images(&path);
         assert_eq!(entries.len(), 5); // 5枚 → 先頭・末尾2サンプル
-        let result = estimate_archive_memory(&path, &entries, MB, TEST_RING_BOUNDS, TEST_DECODE_EDGE);
+        let result = estimate_archive_memory(&path, &entries, MB, TEST_RING_BOUNDS, TEST_DECODE_EDGE, TEST_FILE_BUDGET).estimate;
         std::fs::remove_file(&path).ok();
         assert_eq!(result, ArchiveMemoryEstimate::OverBudget);
     }
@@ -512,7 +583,7 @@ mod tests {
     #[test]
     fn test_estimate_archive_memory_empty_entries_is_ok() {
         let path = test_zip();
-        let result = estimate_archive_memory(&path, &[], 1, TEST_RING_BOUNDS, TEST_DECODE_EDGE);
+        let result = estimate_archive_memory(&path, &[], 1, TEST_RING_BOUNDS, TEST_DECODE_EDGE, TEST_FILE_BUDGET).estimate;
         assert_eq!(result, ArchiveMemoryEstimate::Ok);
     }
 
@@ -534,7 +605,7 @@ mod tests {
         eprintln!("entries.len() = {}", entries.len());
         let (page_max, _page_min, _file_max) = crate::cache::resolve_cache_budgets(None);
         eprintln!("page_max(budget) = {} bytes ({} MB)", page_max, page_max / (1024*1024));
-        let result = estimate_archive_memory(&path, &entries, page_max, TEST_RING_BOUNDS, TEST_DECODE_EDGE);
+        let result = estimate_archive_memory(&path, &entries, page_max, TEST_RING_BOUNDS, TEST_DECODE_EDGE, TEST_FILE_BUDGET).estimate;
         eprintln!("result = {:?}", result);
     }
 
@@ -558,7 +629,7 @@ mod tests {
             }
         }
 
-        let result = estimate_archive_memory(&path, &entries, page_max, TEST_RING_BOUNDS, TEST_DECODE_EDGE);
+        let result = estimate_archive_memory(&path, &entries, page_max, TEST_RING_BOUNDS, TEST_DECODE_EDGE, TEST_FILE_BUDGET).estimate;
         eprintln!("result = {:?}", result);
     }
 }
