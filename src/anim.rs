@@ -3,8 +3,8 @@ use std::sync::Arc;
 use std::time::Duration;
 use image::RgbaImage;
 
-const DEFAULT_DELAY_MS: u64 = 100;
-const MIN_DELAY_MS: u64 = 10;
+const DEFAULT_DELAY: Duration = Duration::from_millis(100);
+const MIN_DELAY: Duration = Duration::from_millis(10);
 
 #[derive(Clone)]
 pub struct AnimFrame {
@@ -20,13 +20,13 @@ fn frame_bytes(img: &RgbaImage) -> usize {
 }
 
 fn delay_from_image(d: image::Delay) -> Duration {
+    // numer/denom はms単位の分数。ms切り捨てだと60fps系(16.67ms)が約4%速回りするためµsで保持する。
     let (numer, denom) = d.numer_denom_ms();
-    let ms = if denom == 0 {
-        DEFAULT_DELAY_MS
+    if denom == 0 {
+        DEFAULT_DELAY
     } else {
-        ((numer as u64) / (denom as u64)).max(MIN_DELAY_MS)
-    };
-    Duration::from_millis(ms)
+        Duration::from_micros((numer as u64 * 1000) / (denom as u64)).max(MIN_DELAY)
+    }
 }
 
 // ---- フェーズ3: リングバッファ（GIF/APNG/AVIF）----
@@ -175,14 +175,15 @@ impl AvifSeqState {
                 let pixels = std::slice::from_raw_parts(rgb.pixels, pixels_len).to_vec();
 
                 let duration_in_timescales = (*self.decoder).imageTiming.durationInTimescales as f64;
-                let delay_ms = if self.timescale > 0.0 {
-                    ((duration_in_timescales / self.timescale * 1000.0) as u64).max(MIN_DELAY_MS)
+                let delay = if self.timescale > 0.0 {
+                    Duration::from_micros((duration_in_timescales / self.timescale * 1_000_000.0) as u64)
+                        .max(MIN_DELAY)
                 } else {
-                    DEFAULT_DELAY_MS
+                    DEFAULT_DELAY
                 };
 
                 RgbaImage::from_raw(w, h, pixels)
-                    .map(|image| AnimFrame { image, delay: Duration::from_millis(delay_ms) })
+                    .map(|image| AnimFrame { image, delay })
             } else {
                 None
             };
@@ -254,12 +255,13 @@ impl WebpSeqState {
             let pixels_len = (self.width as usize) * (self.height as usize) * 4;
             let pixels = std::slice::from_raw_parts(buf, pixels_len).to_vec();
 
+            // WebPのタイムスタンプはフォーマット仕様上ms整数のため、これ以上の精度は元々存在しない。
             let ts_ms = timestamp.max(0) as u64;
-            let delay_ms = ts_ms.saturating_sub(self.prev_ts_ms).max(MIN_DELAY_MS);
+            let delay = Duration::from_millis(ts_ms.saturating_sub(self.prev_ts_ms)).max(MIN_DELAY);
             self.prev_ts_ms = ts_ms;
 
             let image = RgbaImage::from_raw(self.width, self.height, pixels)?;
-            Some(AnimFrame { image, delay: Duration::from_millis(delay_ms) })
+            Some(AnimFrame { image, delay })
         }
     }
 }

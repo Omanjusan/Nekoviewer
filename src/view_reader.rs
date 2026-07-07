@@ -18,6 +18,10 @@ const SCROLL_THRESHOLD: f32 = 50.0;
 /// 上書きされるため、実際のデコードターゲットには事実上使われない。
 const CONTENT_PX_PLACEHOLDER: (u32, u32) = (1920, 1080);
 const ANIM_SECS: f32 = 0.4;
+/// アニメ再生のキャッチアップ: 1tickで進める最大フレーム数。
+/// フレーム送りはUIスレッド上の同期デコード(RingAnimation::with_frame)を伴うため、
+/// 上限なしで追走するとrepaintが長時間ブロックしてUIが固まる。
+const MAX_CATCHUP_FRAMES: usize = 4;
 /// サムネイルバー: 現在ページを中心にこの枚数分だけ先取り要求する（暫定固定値）。
 /// フェーズ2で実際の可視範囲ベースに置き換え予定。
 const THUMBBAR_ENQUEUE_WINDOW: i32 = 40;
@@ -1377,22 +1381,45 @@ impl ViewerState {
                         frame_index: 0,
                         last_frame_at: now,
                     });
-                    let elapsed = now.duration_since(state.last_frame_at);
-                    let current_delay = ring
-                        .with_frame(state.frame_index, |f| f.delay)
-                        .unwrap_or(Duration::from_millis(100));
-
                     let mut needs_upload = !self.textures.contains_key(&orig_i);
-                    if elapsed >= current_delay {
+                    // 遅れが1フレーム分を超えていたら複数フレーム進めて追いつく
+                    // (テクスチャアップロードは最後の1枚だけ)。スキップ分のデコードも
+                    // UIスレッドで走るため、上限 MAX_CATCHUP_FRAMES で打ち切る。
+                    let mut advanced = false;
+                    for _ in 0..MAX_CATCHUP_FRAMES {
+                        let current_delay = ring
+                            .with_frame(state.frame_index, |f| f.delay)
+                            .unwrap_or(Duration::from_millis(100));
+                        if now.duration_since(state.last_frame_at) < current_delay {
+                            break;
+                        }
                         let next_index = state.frame_index + 1;
                         if ring.with_frame(next_index, |_| ()).is_some() {
                             state.frame_index = next_index;
+                            // 超過分(elapsed - delay)を次フレームへ繰り越して蓄積誤差を防ぐ
+                            state.last_frame_at += current_delay;
                         } else {
+                            // ループ境界: restart()はリング全クリア+先頭からの再デコードで
+                            // コストが読めないため、境界を跨ぐ追走はせずフレーム0から仕切り直す。
                             ring.restart();
                             state.frame_index = 0;
+                            state.last_frame_at = now;
+                            advanced = true;
+                            break;
                         }
-                        state.last_frame_at = now;
+                        advanced = true;
+                    }
+                    if advanced {
                         needs_upload = true;
+                        // 上限まで進めてもまだ1フレーム分以上遅れている場合
+                        // (デコードが再生速度に追いつかない高速アニメ、最小化からの復帰直後など)は
+                        // 追走を諦めて now に切り直し「遅いなり再生」に落とす(無限追走スパイラル防止)。
+                        let current_delay = ring
+                            .with_frame(state.frame_index, |f| f.delay)
+                            .unwrap_or(Duration::from_millis(100));
+                        if now.duration_since(state.last_frame_at) >= current_delay {
+                            state.last_frame_at = now;
+                        }
                     }
 
                     if needs_upload {
