@@ -13,13 +13,13 @@ mod tar;
 mod zip;
 
 // 既存の呼び出し元が使う `crate::fs::archive::NAME` パスを維持するための再エクスポート。
-pub use decode::{decode_image_bytes, estimate_anim_sample_bytes, estimate_static_decoded_bytes, AnimSampleEstimate};
+pub use decode::decode_image_bytes;
 pub use detect::{detect_format, is_7z_path, is_supported_image_file, ArchiveFormat};
 #[cfg(feature = "fmt-7z")]
-pub use sevenz::{extract_all_images_7z, extract_all_images_7z_path};
+pub use sevenz::extract_all_images_7z_path;
 #[cfg(feature = "fmt-tar")]
-pub use tar::{extract_all_images_tar, extract_all_images_tar_path};
-pub use zip::{load_bytes_from_archive, load_image, load_image_from_archive};
+pub use tar::extract_all_images_tar_path;
+pub use zip::load_bytes_from_archive;
 
 /// ZIP/CBZ/7z/CB7 内の画像エントリ
 pub struct ImageEntry {
@@ -228,11 +228,11 @@ fn collision_name(base: &str, count: usize) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::decode::{estimate_anim_sample_bytes, estimate_static_decoded_bytes, AnimSampleEstimate};
     use super::zip::estimate_entry_bytes;
     use super::{
-        estimate_anim_sample_bytes, estimate_archive_memory,
-        estimate_static_decoded_bytes, list_images, load_first_image,
-        load_image, select_sample_indices, AnimSampleEstimate, ArchiveMemoryEstimate, EntryEstimate,
+        estimate_archive_memory, list_images, load_first_image,
+        select_sample_indices, ArchiveMemoryEstimate, EntryEstimate,
     };
     #[cfg(feature = "fmt-7z")]
     use super::{decode_image_bytes, extract_all_images_7z_path};
@@ -348,14 +348,6 @@ mod tests {
     fn test_load_first_image_returns_some() {
         let img = load_first_image(&test_zip());
         assert!(img.is_some(), "先頭画像の読み込みに失敗");
-    }
-
-    #[test]
-    fn test_load_image_by_entry_name() {
-        let entries = list_images(&test_zip());
-        let first = &entries[0];
-        let img = load_image(&test_zip(), &first.entry_name);
-        assert!(img.is_some(), "entry_name で画像を読み込めない");
     }
 
     fn encode_png(w: u32, h: u32) -> Vec<u8> {

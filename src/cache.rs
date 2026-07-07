@@ -9,7 +9,6 @@ use fast_image_resize::{FilterType as FirFilter, PixelType, ResizeAlg, ResizeOpt
 
 const KB: usize = 1024;
 const MB: usize = 1024 * KB;
-const GB: usize = 1024 * MB;
 
 /// 合計キャッシュ予算のうちページキャッシュに回す割合。リングバッファ導入(フェーズ3/3.5)で
 /// アニメーションによるページキャッシュ占有が下がったぶん、ファイルキャッシュに厚めに配分する。
@@ -1012,6 +1011,7 @@ pub fn resize_thumbnail(img: image::DynamicImage, filter: image::imageops::Filte
 mod ring_integration_tests {
     use super::*;
 
+    const GB: usize = 1024 * MB;
     /// テスト用: 十分大きい予算を与え、容量は常に上限(32)に張り付かせる
     /// （フェーズ3.6時点の固定容量32枚での期待値をそのまま維持するため）。
     const TEST_RING_BUDGET_BYTES: usize = 10 * GB;
