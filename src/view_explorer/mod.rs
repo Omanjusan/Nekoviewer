@@ -278,6 +278,8 @@ pub struct NekoviewApp {
     explorer_cols: usize,
     explorer_scroll_offset: f32,
     explorer_viewport_h: f32,
+    /// フォルダ名ラベルの1秒ホバー救済用: (対象パス, ホバー開始時刻)
+    folder_label_hover: Option<(PathBuf, std::time::Instant)>,
     /// ステータスウィンドウ表示フラグ（[?] ボタンでトグル）
     show_status_window: bool,
     status_window_data: Arc<Mutex<crate::view_status::StatusData>>,
@@ -431,6 +433,7 @@ impl NekoviewApp {
             explorer_cols: 1,
             explorer_scroll_offset: 0.0,
             explorer_viewport_h: 0.0,
+            folder_label_hover: None,
             show_status_window: false,
             status_window_data: Arc::new(Mutex::new(crate::view_status::StatusData::default())),
             last_status_update: std::time::Instant::now(),

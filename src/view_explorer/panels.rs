@@ -443,8 +443,48 @@ impl NekoviewApp {
                                 egui::Sense::click(),
                             );
                             if ui.is_rect_visible(rect) {
+                                let label_h = (cell_h * 0.16).clamp(12.0, 28.0);
+                                let icon_rect = egui::Rect::from_min_size(
+                                    rect.min,
+                                    egui::vec2(cell_w, cell_h - label_h),
+                                );
                                 ui.painter().rect_filled(rect, 4.0, ui.visuals().faint_bg_color);
-                                nav_icons::draw_folder_icon(ui.painter(), rect, nav_icons::NAV_ICON_COLOR);
+                                nav_icons::draw_folder_icon(ui.painter(), icon_rect, nav_icons::NAV_ICON_COLOR);
+
+                                let full_name = dir_path.file_name()
+                                    .and_then(|n| n.to_str())
+                                    .unwrap_or("")
+                                    .to_string();
+                                let font_id = egui::FontId::proportional((cell_h * 0.075).clamp(9.0, 18.0));
+                                let label = nav_icons::truncate_to_width(ui, &full_name, font_id.clone(), cell_w * 0.92);
+                                ui.painter().text(
+                                    egui::pos2(rect.center().x, rect.max.y - label_h / 2.0),
+                                    egui::Align2::CENTER_CENTER,
+                                    &label,
+                                    font_id,
+                                    ui.visuals().text_color(),
+                                );
+
+                                // 1秒ホバー救済: 後方カットで読めなくなった分をツールチップで全表示
+                                if response.hovered() {
+                                    let now = std::time::Instant::now();
+                                    let past_delay = match &self.folder_label_hover {
+                                        Some((p, since)) if p == dir_path => {
+                                            now.duration_since(*since).as_secs_f32() >= 1.0
+                                        }
+                                        _ => {
+                                            self.folder_label_hover = Some((dir_path.clone(), now));
+                                            false
+                                        }
+                                    };
+                                    if past_delay {
+                                        response.show_tooltip_text(&full_name);
+                                    } else {
+                                        ui.ctx().request_repaint_after(std::time::Duration::from_millis(120));
+                                    }
+                                } else if matches!(&self.folder_label_hover, Some((p, _)) if p == dir_path) {
+                                    self.folder_label_hover = None;
+                                }
                             }
                             if response.clicked() {
                                 pending_navigate = Some(dir_path.clone());

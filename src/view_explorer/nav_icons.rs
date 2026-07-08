@@ -64,6 +64,26 @@ pub fn draw_folder_icon(painter: &Painter, rect: Rect, color: Color32) {
     painter.rect_filled(front_tab, 1.0 * scale, color);
 }
 
+/// text を font_id で計測し、max_width に収まらなければ末尾を "…" 付きでカットする。
+/// egui の実測フォントメトリクスを使うため、フォント・文字種によらず正確に収まる。
+pub fn truncate_to_width(ui: &egui::Ui, text: &str, font_id: egui::FontId, max_width: f32) -> String {
+    let measure = |s: &str| -> f32 {
+        ui.painter().layout_no_wrap(s.to_string(), font_id.clone(), Color32::WHITE).size().x
+    };
+    if text.is_empty() || measure(text) <= max_width {
+        return text.to_string();
+    }
+    const ELLIPSIS: &str = "…";
+    let chars: Vec<char> = text.chars().collect();
+    for end in (0..chars.len()).rev() {
+        let candidate: String = chars[..end].iter().collect::<String>() + ELLIPSIS;
+        if measure(&candidate) <= max_width {
+            return candidate;
+        }
+    }
+    ELLIPSIS.to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
