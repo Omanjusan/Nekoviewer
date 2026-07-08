@@ -12,7 +12,7 @@ impl NekoviewApp {
         self.favorite_folders = crate::favorites::list_folders(&db);
     }
 
-    fn enter_favorite_view(&mut self, selection: FavoriteSelection) {
+    pub(super) fn enter_favorite_view(&mut self, selection: FavoriteSelection) {
         let Some(db) = self.spread_db.clone() else { return };
         let entries: Vec<(PathBuf, String)> = match selection {
             FavoriteSelection::Unsorted => crate::favorites::list_unsorted_files(&db),
@@ -27,6 +27,7 @@ impl NekoviewApp {
                 (path, ids)
             })
             .collect();
+        self.favorite_selected = selection;
         self.archives = entries.into_iter().map(|(dir, name)| dir.join(name)).collect();
         self.raw_image_files = self
             .archives
@@ -76,20 +77,38 @@ impl NekoviewApp {
             .auto_shrink([false, false])
             .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
             .show(ui, |ui| {
+                let favorites_focused = self.focused_pane == FocusPane::FavoriteTab;
+
                 // 特別枠: 未整理のお気に入り。ソート設定に関わらず常に最上位固定。
                 let unsorted_selected = self.favorite_selected == FavoriteSelection::Unsorted;
-                if ui
-                    .selectable_label(unsorted_selected, i18n::t().favorite_unsorted_label())
-                    .clicked()
-                {
+                let unsorted_cursor = favorites_focused && self.favorite_cursor == Some(FavoriteSelection::Unsorted);
+                let unsorted_resp = ui.scope(|ui| {
+                    if unsorted_cursor {
+                        ui.visuals_mut().widgets.inactive.bg_stroke =
+                            egui::Stroke::new(1.5, ui.visuals().selection.bg_fill);
+                    }
+                    ui.selectable_label(unsorted_selected, i18n::t().favorite_unsorted_label())
+                }).inner;
+                if unsorted_resp.clicked() {
+                    self.focused_pane = FocusPane::FavoriteTab;
+                    self.favorite_cursor = Some(FavoriteSelection::Unsorted);
                     self.enter_favorite_view(FavoriteSelection::Unsorted);
                 }
 
                 for folder in self.favorite_folders.clone() {
                     let label = format!("{} {}", folder.marker, folder.name);
                     let selected = self.favorite_selected == FavoriteSelection::Folder(folder.id);
-                    let resp = ui.selectable_label(selected, label);
+                    let is_cursor = favorites_focused && self.favorite_cursor == Some(FavoriteSelection::Folder(folder.id));
+                    let resp = ui.scope(|ui| {
+                        if is_cursor {
+                            ui.visuals_mut().widgets.inactive.bg_stroke =
+                                egui::Stroke::new(1.5, ui.visuals().selection.bg_fill);
+                        }
+                        ui.selectable_label(selected, label)
+                    }).inner;
                     if resp.clicked() {
+                        self.focused_pane = FocusPane::FavoriteTab;
+                        self.favorite_cursor = Some(FavoriteSelection::Folder(folder.id));
                         self.enter_favorite_view(FavoriteSelection::Folder(folder.id));
                     }
                     resp.context_menu(|ui| {

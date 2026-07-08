@@ -220,6 +220,8 @@ pub struct NekoviewApp {
     /// ドライブ一覧内のプレターゲティングカーソル。Favoritesタブ経由でDrivesへ
     /// 移動した際、実ツリー側にいた頃のこの値を復元する（無効ならフォールバック）
     drive_cursor: Option<PathBuf>,
+    /// お気に入りタブ内のプレターゲティングカーソル（[未整理, フォルダ...]の並び）
+    favorite_cursor: Option<FavoriteSelection>,
     /// 定義済みお気に入りフォルダ一覧のキャッシュ（DB操作の都度リフレッシュ）
     favorite_folders: Vec<crate::favorites::FavoriteFolder>,
     favorite_selected: FavoriteSelection,
@@ -409,6 +411,7 @@ impl NekoviewApp {
             focused_pane: FocusPane::Grid,
             tree_cursor: None,
             drive_cursor: None,
+            favorite_cursor: None,
             favorite_folders: Vec::new(),
             favorite_selected: FavoriteSelection::None,
             favorite_dialog: None,

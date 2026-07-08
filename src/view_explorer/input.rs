@@ -135,19 +135,14 @@ impl NekoviewApp {
         }
     }
 
-    pub(super) fn handle_explorer_keys(&mut self, ctx: &egui::Context) {
-        self.handle_focus_keys(ctx);
-        if self.focused_pane == FocusPane::TreeTab {
-            self.handle_tree_keys(ctx);
-            return;
-        }
-        // ── お気に入りペイン: F2でリネームダイアログを開く ──────────────────
-        // (フォーカス位置に関わらず、お気に入りタブ表示中は従来通り有効)
-        if self.folder_pane_tab == FolderPaneTab::Favorites
-            && self.favorite_dialog.is_none()
+    /// お気に入りタブにフォーカスがある間のプレターゲティングカーソル操作。
+    /// 並びは [未整理, 定義済みフォルダ...]。上下=移動、Enter=確定enter_favorite_view。
+    fn handle_favorites_keys(&mut self, ctx: &egui::Context) {
+        // F2: カーソル位置のフォルダをリネーム（未整理枠はリネーム対象外）
+        if self.favorite_dialog.is_none()
             && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::F2))
         {
-            if let FavoriteSelection::Folder(id) = self.favorite_selected {
+            if let Some(FavoriteSelection::Folder(id)) = self.favorite_cursor {
                 if let Some(folder) = self.favorite_folders.iter().find(|f| f.id == id) {
                     self.favorite_dialog = Some(FavoriteDialogState {
                         mode: FavoriteDialogMode::Rename(folder.id),
@@ -160,6 +155,85 @@ impl NekoviewApp {
             }
         }
 
+        let (key_down, key_up, key_enter) = ctx.input_mut(|i| (
+            i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown),
+            i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp),
+            i.consume_key(egui::Modifiers::NONE, egui::Key::Enter),
+        ));
+        if !(key_down || key_up || key_enter) {
+            return;
+        }
+
+        let items: Vec<FavoriteSelection> = std::iter::once(FavoriteSelection::Unsorted)
+            .chain(self.favorite_folders.iter().map(|f| FavoriteSelection::Folder(f.id)))
+            .collect();
+        if items.is_empty() {
+            return;
+        }
+        let cur = self.favorite_cursor
+            .filter(|c| items.contains(c))
+            .unwrap_or(items[0]);
+        let pos = items.iter().position(|c| *c == cur).unwrap_or(0);
+        let mut new_pos = pos;
+        if key_down && pos + 1 < items.len() {
+            new_pos = pos + 1;
+        }
+        if key_up && pos > 0 {
+            new_pos = pos - 1;
+        }
+        if new_pos != pos {
+            self.favorite_cursor = Some(items[new_pos]);
+        }
+        if key_enter {
+            self.enter_favorite_view(items[new_pos]);
+        }
+    }
+
+    /// Drivesにフォーカスがある間のプレターゲティングカーソル操作。
+    /// 上下=移動、Enter=確定navigate_to_drive。
+    fn handle_drives_keys(&mut self, ctx: &egui::Context) {
+        let (key_down, key_up, key_enter) = ctx.input_mut(|i| (
+            i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown),
+            i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp),
+            i.consume_key(egui::Modifiers::NONE, egui::Key::Enter),
+        ));
+        if !(key_down || key_up || key_enter) {
+            return;
+        }
+        if self.drives.is_empty() {
+            return;
+        }
+        let cur = self.drive_cursor.clone().unwrap_or_else(|| self.drives[0].path.clone());
+        let pos = self.drives.iter().position(|d| d.path == cur).unwrap_or(0);
+        let mut new_pos = pos;
+        if key_down && pos + 1 < self.drives.len() {
+            new_pos = pos + 1;
+        }
+        if key_up && pos > 0 {
+            new_pos = pos - 1;
+        }
+        if new_pos != pos {
+            self.drive_cursor = Some(self.drives[new_pos].path.clone());
+        }
+        if key_enter {
+            self.navigate_to_drive(self.drives[new_pos].path.clone());
+        }
+    }
+
+    pub(super) fn handle_explorer_keys(&mut self, ctx: &egui::Context) {
+        self.handle_focus_keys(ctx);
+        if self.focused_pane == FocusPane::TreeTab {
+            self.handle_tree_keys(ctx);
+            return;
+        }
+        if self.focused_pane == FocusPane::FavoriteTab {
+            self.handle_favorites_keys(ctx);
+            return;
+        }
+        if self.focused_pane == FocusPane::Drives {
+            self.handle_drives_keys(ctx);
+            return;
+        }
         if self.focused_pane != FocusPane::Grid {
             return;
         }
