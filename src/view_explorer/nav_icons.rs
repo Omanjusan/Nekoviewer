@@ -1,7 +1,7 @@
 //! サムネグリッドの「↑（親フォルダへ）」「フォルダ」アイコンをベクター描画する。
 //! 画像リソースは使わず、100x100の設計座標系をアイコン用矩形へ均一スケールして描く。
 
-use egui::{Color32, Painter, Pos2, Rect, Shape, Stroke, pos2, vec2};
+use egui::{Color32, Painter, Pos2, Rect, Shape, Stroke, pos2};
 
 /// 両アイコン共通のアクセント色（ライト/ダーク双方で視認性を確認済み）。
 pub const NAV_ICON_COLOR: Color32 = Color32::from_rgb(70, 140, 235);
@@ -70,7 +70,7 @@ mod tests {
 
     #[test]
     fn transform_maps_center_to_rect_center() {
-        let rect = Rect::from_min_size(pos2(10.0, 20.0), vec2(74.0, 104.6));
+        let rect = Rect::from_min_size(pos2(10.0, 20.0), egui::vec2(74.0, 104.6));
         let tf = transform(rect, icon_scale(rect));
         let mapped = tf(50.0, 50.0);
         assert!((mapped - rect.center()).length() < 0.001);

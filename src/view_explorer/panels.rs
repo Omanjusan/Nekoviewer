@@ -412,6 +412,50 @@ impl NekoviewApp {
                 .num_columns(cols)
                 .spacing([GAP, GAP])
                 .show(ui, |ui| {
+                    let mut cell_index: usize = 0;
+
+                    // 並び順: ↑（先頭・非ソート・ルートで非表示）→ フォルダ群 → 通常のarchivesグリッド。
+                    // お気に入り一覧表示中は実フォルダのナビゲーション概念が無いため出さない。
+                    if self.viewing_favorites.is_none() {
+                        if crate::fs::mount::up_target(&self.current_dir).is_some() {
+                            let (rect, _response) = ui.allocate_exact_size(
+                                egui::vec2(cell_w, cell_h),
+                                egui::Sense::click(),
+                            );
+                            if ui.is_rect_visible(rect) {
+                                ui.painter().rect_filled(rect, 4.0, ui.visuals().faint_bg_color);
+                                nav_icons::draw_up_icon(ui.painter(), rect, nav_icons::NAV_ICON_COLOR);
+                            }
+                            cell_index += 1;
+                            if cell_index % cols == 0 {
+                                ui.end_row();
+                            }
+                        }
+
+                        let mut sorted_subdirs = self.subdirs.clone();
+                        let ascending = self.sort_ascending;
+                        sorted_subdirs.sort_by(|a, b| {
+                            let na = a.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                            let nb = b.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                            let cmp = na.cmp(nb);
+                            if ascending { cmp } else { cmp.reverse() }
+                        });
+                        for _dir_path in &sorted_subdirs {
+                            let (rect, _response) = ui.allocate_exact_size(
+                                egui::vec2(cell_w, cell_h),
+                                egui::Sense::click(),
+                            );
+                            if ui.is_rect_visible(rect) {
+                                ui.painter().rect_filled(rect, 4.0, ui.visuals().faint_bg_color);
+                                nav_icons::draw_folder_icon(ui.painter(), rect, nav_icons::NAV_ICON_COLOR);
+                            }
+                            cell_index += 1;
+                            if cell_index % cols == 0 {
+                                ui.end_row();
+                            }
+                        }
+                    }
+
                     // フィルタ適用中は filtered_indices（archives へのインデックス）のみ描画対象にする
                     let visible: Vec<(usize, PathBuf)> = self.filtered_indices.iter()
                         .map(|&idx| (idx, self.archives[idx].clone()))
@@ -637,11 +681,12 @@ impl NekoviewApp {
                             }
                         });
 
-                        if (i + 1) % cols == 0 {
+                        cell_index += 1;
+                        if cell_index % cols == 0 {
                             ui.end_row();
                         }
                     }
-                    if !visible.is_empty() && visible.len() % cols != 0 {
+                    if cell_index % cols != 0 {
                         ui.end_row();
                     }
                 });
