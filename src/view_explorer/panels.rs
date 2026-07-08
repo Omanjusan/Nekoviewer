@@ -428,7 +428,7 @@ impl NekoviewApp {
                                 ui.painter().rect_filled(rect, 4.0, ui.visuals().faint_bg_color);
                                 nav_icons::draw_up_icon(ui.painter(), rect, nav_icons::NAV_ICON_COLOR);
                             }
-                            if response.clicked() {
+                            if response.double_clicked() {
                                 pending_navigate = Some(parent);
                             }
                             cell_index += 1;
@@ -502,7 +502,7 @@ impl NekoviewApp {
                                     self.folder_label_hover = None;
                                 }
                             }
-                            if response.clicked() {
+                            if response.double_clicked() {
                                 pending_navigate = Some(dir_path.clone());
                             }
                             cell_index += 1;
