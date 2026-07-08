@@ -52,6 +52,16 @@ impl NekoviewApp {
         }
 
         self.handle_explorer_keys(&ctx);
+        // egui標準のTab/矢印キーによるネイティブなウィジェットフォーカス移動
+        // （Memory::focus_direction、選択ラベル/ボタンも対象になる）は、今回自前で
+        // 構築したFocusPaneベースのキーボード操作と二重に動いてしまう
+        // （例: MenuBarのボタンがネイティブフォーカスを奪い、それを起点に矢印キーで
+        // 隣接ウィジェットへ移り歩いてしまい、ツリー等の自前カーソル移動と競合して見える）。
+        // Filter欄だけは実際のテキスト入力フォーカスが必要なので、それ以外は毎フレーム
+        // ネイティブフォーカスを解除し、見た目上のカーソル表現を自前のハイライトに一本化する。
+        if self.focused_pane != FocusPane::Filter {
+            ctx.memory_mut(|mem| mem.stop_text_input());
+        }
         // release ビルドは ROOT 内フローティングウィンドウのため ui() で描画する。
         // debug ビルドの独立 deferred viewport は logic() 側で駆動する（上記参照）。
         #[cfg(not(debug_assertions))]
