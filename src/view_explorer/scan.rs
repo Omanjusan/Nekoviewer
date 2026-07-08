@@ -23,9 +23,19 @@ impl NekoviewApp {
         self.filtered_indices.clear();
         self.raw_image_files.clear();
         self.invalid_archives.clear();
-        self.thumb_failed.clear();
-        self.cache_db = neko_dir::neko_dir_for(&self.current_dir, &self.config)
-            .and_then(|nd| neko_dir::open_cache_db(&nd));
+        // thumb_failed はセッション内で保持する（再入場のたびの無駄な再試行を避ける）。
+        // ネットワーク失敗分はマウント回復検知（poll_mount_checks）で解禁される。
+        // リンク切れ表示中のマウント配下へ入る場合は到達可否を再確認する（回復検知の入口）
+        if let Some(root) = self.network_unreachable_mounts.iter()
+            .find(|r| self.current_dir.starts_with(r))
+            .cloned()
+        {
+            self.spawn_mount_check_if_needed(root);
+        }
+        // DBは既存の場合のみ開く。新規作成は対象ファイルの存在が確定してから
+        // （poll_scan）行い、通過しただけのフォルダに空DBを作らない。
+        self.cache_neko_dir = neko_dir::neko_dir_for(&self.current_dir, &self.config);
+        self.cache_db = self.cache_neko_dir.as_deref().and_then(neko_dir::open_cache_db_if_exists);
         self.thumbnails.clear();
         self.thumb_pending.clear();
         self.pending_loads.lock().unwrap().clear();
@@ -50,6 +60,10 @@ impl NekoviewApp {
         };
 
         if let Some((subdirs, archives, raw_images)) = result {
+            // 対象ファイルが存在するフォルダに限りDBを新規作成する
+            if self.cache_db.is_none() && !(archives.is_empty() && raw_images.is_empty()) {
+                self.cache_db = self.cache_neko_dir.as_deref().and_then(neko_dir::open_cache_db);
+            }
             self.subdirs = subdirs;
             self.archives = archives.into_iter()
                 .filter(|p| {

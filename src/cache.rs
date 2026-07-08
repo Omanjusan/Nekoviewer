@@ -812,53 +812,24 @@ pub struct ThumbResult {
 /// プローブレーンのスレッド数。ローカルDB読み＋JPEGデコードのみで軽いため少数で足りる。
 const THUMB_PROBE_THREADS: usize = 2;
 
-/// サムネイルワーカーを2レーン構成で起動する。
-/// - プローブレーン: ローカルDBだけを見てキャッシュ済みサムネを即返す（ネットワークI/Oなし）。
-///   ミス分と要再生成分は生成レーンへ転送する。
-/// - 生成レーン: 元ファイルからの生成（ネットワークパスでは遅い）。
-/// キャッシュ済みサムネが未格納分の生成待ち行列に並ばされて遅延するのを防ぐ。
-pub fn spawn_thumb_worker(filter: image::imageops::FilterType, num_threads: usize, ctx: egui::Context) -> (mpsc::SyncSender<ThumbRequest>, mpsc::Receiver<ThumbResult>) {
-    let capacity = (num_threads * 2).max(16);
-    let (req_tx, probe_rx) = mpsc::sync_channel::<ThumbRequest>(capacity);
-    let (res_tx, res_rx) = mpsc::channel::<ThumbResult>();
-    let (gen_tx, gen_rx) = mpsc::channel::<ThumbRequest>();
+/// ネットワーク（gvfs）パスの生成並列度。CPU数ぶん並列でSMBに読みをかけると
+/// 帯域が飽和してプローブのstatやビューア本体の読み込みまで巻き添えになるため絞る。
+const THUMB_NET_GEN_THREADS: usize = 2;
 
-    let probe_rx = Arc::new(Mutex::new(probe_rx));
-    let gen_rx = Arc::new(Mutex::new(gen_rx));
+/// ミス分をパス種別に応じた生成レーンへ振り分ける。
+fn forward_thumb_gen(req: ThumbRequest, local_tx: &mpsc::Sender<ThumbRequest>, net_tx: &mpsc::Sender<ThumbRequest>) {
+    let tx = if crate::fs::dir::is_gvfs_path(&req.archive_path) { net_tx } else { local_tx };
+    let _ = tx.send(req);
+}
 
-    for _ in 0..THUMB_PROBE_THREADS {
-        let probe_rx = Arc::clone(&probe_rx);
-        let gen_tx = gen_tx.clone();
-        let res_tx = res_tx.clone();
-        let ctx = ctx.clone();
-        std::thread::spawn(move || {
-            loop {
-                let req = match probe_rx.lock().unwrap().recv() {
-                    Ok(r) => r,
-                    Err(_) => break,
-                };
-                match probe_cached_thumb(&req) {
-                    Some((rgba, stored_mtime)) => {
-                        // キャッシュヒット: statを待たずに先に表示へ回す
-                        let _ = res_tx.send(ThumbResult { path: req.archive_path.clone(), rgba: Some(rgba) });
-                        ctx.request_repaint();
-                        // 後追い検証: statが成功してmtimeが変わっていた場合のみ再生成へ。
-                        // stat失敗（ネットワーク不調）はキャッシュ表示のまま維持する。
-                        let current_mtime = crate::neko_dir::file_mtime(&req.archive_path);
-                        if current_mtime != 0 && current_mtime != stored_mtime {
-                            let _ = gen_tx.send(req);
-                        }
-                    }
-                    None => {
-                        let _ = gen_tx.send(req);
-                    }
-                }
-            }
-        });
-    }
-    // 全 gen_tx（プローブスレッド保持分）が閉じると生成レーンも終了する
-    drop(gen_tx);
-
+/// 生成レーンのスレッドプールを起動する。
+fn spawn_thumb_gen_pool(
+    gen_rx: Arc<Mutex<mpsc::Receiver<ThumbRequest>>>,
+    num_threads: usize,
+    filter: image::imageops::FilterType,
+    res_tx: mpsc::Sender<ThumbResult>,
+    ctx: egui::Context,
+) {
     for _ in 0..num_threads {
         let gen_rx = Arc::clone(&gen_rx);
         let res_tx = res_tx.clone();
@@ -877,6 +848,60 @@ pub fn spawn_thumb_worker(filter: image::imageops::FilterType, num_threads: usiz
             }
         });
     }
+}
+
+/// サムネイルワーカーを多レーン構成で起動する。
+/// - プローブレーン: ローカルDBだけを見てキャッシュ済みサムネを即返す（ネットワークI/Oなし）。
+///   ミス分と要再生成分は生成レーンへ転送する。
+/// - 生成レーン（ローカル/ネットワーク別）: 元ファイルからの生成。
+///   ネットワーク側は並列度を THUMB_NET_GEN_THREADS に制限する。
+/// キャッシュ済みサムネが未格納分の生成待ち行列に並ばされて遅延するのを防ぐ。
+pub fn spawn_thumb_worker(filter: image::imageops::FilterType, num_threads: usize, ctx: egui::Context) -> (mpsc::SyncSender<ThumbRequest>, mpsc::Receiver<ThumbResult>) {
+    let capacity = (num_threads * 2).max(16);
+    let (req_tx, probe_rx) = mpsc::sync_channel::<ThumbRequest>(capacity);
+    let (res_tx, res_rx) = mpsc::channel::<ThumbResult>();
+    let (gen_tx, gen_rx) = mpsc::channel::<ThumbRequest>();
+    let (net_gen_tx, net_gen_rx) = mpsc::channel::<ThumbRequest>();
+
+    let probe_rx = Arc::new(Mutex::new(probe_rx));
+
+    for _ in 0..THUMB_PROBE_THREADS {
+        let probe_rx = Arc::clone(&probe_rx);
+        let gen_tx = gen_tx.clone();
+        let net_gen_tx = net_gen_tx.clone();
+        let res_tx = res_tx.clone();
+        let ctx = ctx.clone();
+        std::thread::spawn(move || {
+            loop {
+                let req = match probe_rx.lock().unwrap().recv() {
+                    Ok(r) => r,
+                    Err(_) => break,
+                };
+                match probe_cached_thumb(&req) {
+                    Some((rgba, stored_mtime)) => {
+                        // キャッシュヒット: statを待たずに先に表示へ回す
+                        let _ = res_tx.send(ThumbResult { path: req.archive_path.clone(), rgba: Some(rgba) });
+                        ctx.request_repaint();
+                        // 後追い検証: statが成功してmtimeが変わっていた場合のみ再生成へ。
+                        // stat失敗（ネットワーク不調）はキャッシュ表示のまま維持する。
+                        let current_mtime = crate::neko_dir::file_mtime(&req.archive_path);
+                        if current_mtime != 0 && current_mtime != stored_mtime {
+                            forward_thumb_gen(req, &gen_tx, &net_gen_tx);
+                        }
+                    }
+                    None => {
+                        forward_thumb_gen(req, &gen_tx, &net_gen_tx);
+                    }
+                }
+            }
+        });
+    }
+    // 全送信側（プローブスレッド保持分）が閉じると生成レーンも終了する
+    drop(gen_tx);
+    drop(net_gen_tx);
+
+    spawn_thumb_gen_pool(Arc::new(Mutex::new(gen_rx)), num_threads, filter, res_tx.clone(), ctx.clone());
+    spawn_thumb_gen_pool(Arc::new(Mutex::new(net_gen_rx)), THUMB_NET_GEN_THREADS, filter, res_tx, ctx);
 
     (req_tx, res_rx)
 }

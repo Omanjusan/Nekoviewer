@@ -1,5 +1,6 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use redb::{Database, ReadableDatabase, TableDefinition};
 use sha2::{Digest, Sha256};
@@ -19,11 +20,32 @@ pub fn neko_dir_for(dir: &Path, config: &AppConfig) -> Option<PathBuf> {
     Some(config.cache_root()?.join(hash))
 }
 
+/// プロセス内で開いた cache.redb のレジストリ（メモリ上のみ。ディスクには何も作らない）。
+/// redb は同一ファイルの多重オープンを排他ロックで拒否するため、ワーカーのキューに
+/// 旧 Arc が残っている間に同じフォルダへ戻ると再オープンが失敗して cache_db=None になる。
+/// 一度開いたDBはセッション中ここに保持して使い回し、再オープン自体を発生させない。
+static OPEN_DBS: OnceLock<Mutex<HashMap<PathBuf, Arc<Mutex<Database>>>>> = OnceLock::new();
+
+/// cache.redb が既に存在する場合のみ開いて返す。無ければ None（作成しない）。
+/// 対象ファイルの無いフォルダに空DBを量産しないための入口。
+pub fn open_cache_db_if_exists(neko_dir: &Path) -> Option<Arc<Mutex<Database>>> {
+    if !neko_dir.join("cache.redb").exists() {
+        return None;
+    }
+    open_cache_db(neko_dir)
+}
+
 /// キャッシュディレクトリ以下の cache.redb を開いて返す。
 /// ディレクトリが存在しなければ作成する。失敗時は None。
+/// 同じDBを既に開いている場合はレジストリの既存ハンドルを返す。
 pub fn open_cache_db(neko_dir: &Path) -> Option<Arc<Mutex<Database>>> {
-    std::fs::create_dir_all(neko_dir).ok()?;
     let db_path = neko_dir.join("cache.redb");
+    let registry = OPEN_DBS.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut registry = registry.lock().ok()?;
+    if let Some(db) = registry.get(&db_path) {
+        return Some(Arc::clone(db));
+    }
+    std::fs::create_dir_all(neko_dir).ok()?;
     let db = Database::create(&db_path).ok()?;
     // テーブルを初期化（存在しなければ作成）
     {
@@ -32,7 +54,9 @@ pub fn open_cache_db(neko_dir: &Path) -> Option<Arc<Mutex<Database>>> {
         tx.open_table(INVALID_TABLE).ok()?;
         tx.commit().ok()?;
     }
-    Some(Arc::new(Mutex::new(db)))
+    let db = Arc::new(Mutex::new(db));
+    registry.insert(db_path, Arc::clone(&db));
+    Some(db)
 }
 
 /// サムネをmtime検証なしでDBから読み込む。戻り値は (保存時のsource_mtime, jpeg)。
