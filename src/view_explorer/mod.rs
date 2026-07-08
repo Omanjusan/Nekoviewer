@@ -303,6 +303,7 @@ mod input;
 mod panels;
 mod favorites_ui;
 mod status;
+mod nav_icons;
 
 #[cfg(test)]
 mod glyph_audit;
