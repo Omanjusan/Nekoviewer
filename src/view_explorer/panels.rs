@@ -411,7 +411,15 @@ impl NekoviewApp {
                     // 並び順: ↑（先頭・非ソート・ルートで非表示）→ フォルダ群 → 通常のarchivesグリッド。
                     // お気に入り一覧表示中は実フォルダのナビゲーション概念が無いため出さない。
                     if self.viewing_favorites.is_none() {
-                        if let Some(parent) = crate::fs::mount::up_target(&self.current_dir) {
+                        // ツリー側のルート（ドライブ/ホーム/ネットワーク共有の選択に連動）を天井にする。
+                        // mount::up_target 単体だと「ホーム」ドライブのような疑似ルートを知らず、
+                        // ホーム配下を素通りしてツリーが表示しない領域まで昇れてしまうため。
+                        let up_target = if self.current_dir == self.tree_root {
+                            None
+                        } else {
+                            crate::fs::mount::up_target(&self.current_dir)
+                        };
+                        if let Some(parent) = up_target {
                             let (rect, response) = ui.allocate_exact_size(
                                 egui::vec2(cell_w, cell_h),
                                 egui::Sense::click(),
@@ -429,7 +437,15 @@ impl NekoviewApp {
                             }
                         }
 
-                        let mut sorted_subdirs = self.subdirs.clone();
+                        let show_hidden = self.show_hidden;
+                        let mut sorted_subdirs: Vec<PathBuf> = self.subdirs.iter()
+                            .filter(|p| {
+                                show_hidden || !p.file_name()
+                                    .and_then(|n| n.to_str())
+                                    .is_some_and(|n| n.starts_with('.'))
+                            })
+                            .cloned()
+                            .collect();
                         let ascending = self.sort_ascending;
                         sorted_subdirs.sort_by(|a, b| {
                             let na = a.file_name().and_then(|n| n.to_str()).unwrap_or("");
