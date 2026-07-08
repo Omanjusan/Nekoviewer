@@ -220,6 +220,34 @@ impl NekoviewApp {
         }
     }
 
+    /// MenuBarにフォーカスがある間の操作。左右=ボタン間移動、Enter=クリック相当を発火。
+    /// （無効ボタンのスキップは行わない。着地はできるがEnterでは何も起きない。）
+    fn handle_menu_bar_keys(&mut self, ctx: &egui::Context) {
+        let (key_left, key_right, key_enter) = ctx.input_mut(|i| (
+            i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowLeft),
+            i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowRight),
+            i.consume_key(egui::Modifiers::NONE, egui::Key::Enter),
+        ));
+        if !(key_left || key_right || key_enter) {
+            return;
+        }
+        let len = MENU_BAR_ORDER.len();
+        if key_left && self.menu_cursor > 0 {
+            self.menu_cursor -= 1;
+        }
+        if key_right && self.menu_cursor + 1 < len {
+            self.menu_cursor += 1;
+        }
+        if key_enter {
+            let items = self.menu_bar_items();
+            if let Some(&(button, enabled)) = items.get(self.menu_cursor) {
+                if enabled {
+                    self.activate_menu_button(button);
+                }
+            }
+        }
+    }
+
     pub(super) fn handle_explorer_keys(&mut self, ctx: &egui::Context) {
         self.handle_focus_keys(ctx);
         if self.focused_pane == FocusPane::TreeTab {
@@ -232,6 +260,10 @@ impl NekoviewApp {
         }
         if self.focused_pane == FocusPane::Drives {
             self.handle_drives_keys(ctx);
+            return;
+        }
+        if self.focused_pane == FocusPane::MenuBar {
+            self.handle_menu_bar_keys(ctx);
             return;
         }
         if self.focused_pane != FocusPane::Grid {

@@ -96,6 +96,65 @@ impl NekoviewApp {
         }).collect()
     }
 
+    /// ソートキー・昇降順の変更後に共通で行う後処理（クリック・キーボード両経路で使う）。
+    fn finish_sort_change(&mut self) {
+        self.sort_archives();
+        // ソート変更で archives の並びが変わり、インデックスベースの複数選択が
+        // 無関係な項目を指す可能性があるため安全側に倒して解除する
+        self.multi_selected.clear();
+        self.select_anchor = None;
+    }
+
+    /// MenuBarキーボード操作（Enter確定）から、指定ボタンのクリック相当処理を発火する。
+    /// 呼び出し側で有効/無効チェック済みであることを前提とする。
+    pub(super) fn activate_menu_button(&mut self, button: MenuBarButton) {
+        match button {
+            MenuBarButton::PageSingle => {
+                let mut v_guard = self.viewer.lock().unwrap();
+                let mut cfg_guard = self.viewer_cfg.lock().unwrap();
+                if let Some(v) = v_guard.as_mut() { v.set_page_mode(PageMode::Single, &mut *cfg_guard); }
+            }
+            MenuBarButton::PageSpreadLeft => {
+                let mut v_guard = self.viewer.lock().unwrap();
+                let mut cfg_guard = self.viewer_cfg.lock().unwrap();
+                if let Some(v) = v_guard.as_mut() { v.set_page_mode(PageMode::SpreadLeft, &mut *cfg_guard); }
+            }
+            MenuBarButton::PageSpreadRight => {
+                let mut v_guard = self.viewer.lock().unwrap();
+                let mut cfg_guard = self.viewer_cfg.lock().unwrap();
+                if let Some(v) = v_guard.as_mut() { v.set_page_mode(PageMode::SpreadRight, &mut *cfg_guard); }
+            }
+            MenuBarButton::SpreadBack => {
+                if let Some(v) = self.viewer.lock().unwrap().as_mut() { v.shift_offset_backward(); }
+            }
+            MenuBarButton::SpreadFwd => {
+                if let Some(v) = self.viewer.lock().unwrap().as_mut() { v.shift_offset_forward(); }
+            }
+            MenuBarButton::SortName => {
+                self.sort_key = ExplorerSortKey::Name;
+                self.finish_sort_change();
+            }
+            MenuBarButton::SortDate => {
+                self.sort_key = ExplorerSortKey::Date;
+                self.finish_sort_change();
+            }
+            MenuBarButton::SortSize => {
+                self.sort_key = ExplorerSortKey::Size;
+                self.finish_sort_change();
+            }
+            MenuBarButton::SortOrder => {
+                self.sort_ascending = !self.sort_ascending;
+                self.finish_sort_change();
+            }
+            MenuBarButton::StatusToggle => {
+                self.show_status_window = !self.show_status_window;
+            }
+            MenuBarButton::Settings => {
+                self.open_settings();
+            }
+        }
+    }
+
     fn draw_menu_bar(&mut self, ui: &mut egui::Ui) {
         let menu_focused = self.focused_pane == FocusPane::MenuBar;
         let cursor_button = MENU_BAR_ORDER.get(self.menu_cursor).copied();
@@ -211,11 +270,7 @@ impl NekoviewApp {
             }
 
             if sort_changed {
-                self.sort_archives();
-                // ソート変更で archives の並びが変わり、インデックスベースの複数選択が
-                // 無関係な項目を指す可能性があるため安全側に倒して解除する
-                self.multi_selected.clear();
-                self.select_anchor = None;
+                self.finish_sort_change();
             }
 
             // ── ステータスウィンドウボタン（右端） ────────────────────────
