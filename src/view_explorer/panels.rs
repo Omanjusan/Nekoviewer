@@ -237,14 +237,7 @@ impl NekoviewApp {
                 }
             }
             TreeAction::Navigate(path) => {
-                self.viewing_favorites = None;
-                self.current_dir = path.clone();
-                self.viewing_dir = Some(path.clone());
-                // サマリーはスキャン完了時（poll_scan）にスキャン結果から起動する
-                self.cd_summary = None;
-                self.cd_summary_rx = None;
-                self.start_scan();
-                self.persist_state();
+                self.navigate_to(path);
             }
         }
 
@@ -408,23 +401,27 @@ impl NekoviewApp {
                 .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
                 .vertical_scroll_offset(self.explorer_scroll_offset)
                 .show(ui, |ui| {
-            egui::Grid::new("archive_grid")
+            let grid_response = egui::Grid::new("archive_grid")
                 .num_columns(cols)
                 .spacing([GAP, GAP])
                 .show(ui, |ui| {
                     let mut cell_index: usize = 0;
+                    let mut pending_navigate: Option<PathBuf> = None;
 
                     // 並び順: ↑（先頭・非ソート・ルートで非表示）→ フォルダ群 → 通常のarchivesグリッド。
                     // お気に入り一覧表示中は実フォルダのナビゲーション概念が無いため出さない。
                     if self.viewing_favorites.is_none() {
-                        if crate::fs::mount::up_target(&self.current_dir).is_some() {
-                            let (rect, _response) = ui.allocate_exact_size(
+                        if let Some(parent) = crate::fs::mount::up_target(&self.current_dir) {
+                            let (rect, response) = ui.allocate_exact_size(
                                 egui::vec2(cell_w, cell_h),
                                 egui::Sense::click(),
                             );
                             if ui.is_rect_visible(rect) {
                                 ui.painter().rect_filled(rect, 4.0, ui.visuals().faint_bg_color);
                                 nav_icons::draw_up_icon(ui.painter(), rect, nav_icons::NAV_ICON_COLOR);
+                            }
+                            if response.clicked() {
+                                pending_navigate = Some(parent);
                             }
                             cell_index += 1;
                             if cell_index % cols == 0 {
@@ -440,14 +437,17 @@ impl NekoviewApp {
                             let cmp = na.cmp(nb);
                             if ascending { cmp } else { cmp.reverse() }
                         });
-                        for _dir_path in &sorted_subdirs {
-                            let (rect, _response) = ui.allocate_exact_size(
+                        for dir_path in &sorted_subdirs {
+                            let (rect, response) = ui.allocate_exact_size(
                                 egui::vec2(cell_w, cell_h),
                                 egui::Sense::click(),
                             );
                             if ui.is_rect_visible(rect) {
                                 ui.painter().rect_filled(rect, 4.0, ui.visuals().faint_bg_color);
                                 nav_icons::draw_folder_icon(ui.painter(), rect, nav_icons::NAV_ICON_COLOR);
+                            }
+                            if response.clicked() {
+                                pending_navigate = Some(dir_path.clone());
                             }
                             cell_index += 1;
                             if cell_index % cols == 0 {
@@ -689,6 +689,7 @@ impl NekoviewApp {
                     if cell_index % cols != 0 {
                         ui.end_row();
                     }
+                    pending_navigate
                 });
             // グリッド下の余白（サムネの無い領域）への右クリック: メニューは出すが非活性にする
             let bg_size = egui::vec2(ui.available_width(), ui.available_height().max(40.0));
@@ -696,10 +697,14 @@ impl NekoviewApp {
             bg_response.context_menu(|ui| {
                 ui.add_enabled(false, egui::Button::new(i18n::t().favorite_detail_menu()));
             });
+            grid_response.inner
         });
         // ユーザーの手動スクロールを読み戻してストアを更新
         self.explorer_scroll_offset = output.state.offset.y;
         self.explorer_viewport_h = output.inner_rect.height();
+        if let Some(path) = output.inner {
+            self.navigate_to(path);
+        }
     }
 }
 
