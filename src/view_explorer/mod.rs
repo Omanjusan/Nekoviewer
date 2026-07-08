@@ -88,6 +88,17 @@ impl FocusPane {
     }
 }
 
+/// サムネグリッドの「↑・サブフォルダ・アーカイブファイル」を貫通する統一カーソル位置。
+/// draw_archive_grid内で実際に描画される順序（↑→サブフォルダ→フィルタ後アーカイブ）と
+/// 一致させること（grid_entries()参照）。
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) enum GridEntry {
+    Up(PathBuf),
+    Subdir(PathBuf),
+    /// archives へのインデックス（実インデックス、filtered_indices経由ではない）
+    Archive(usize),
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum FavoriteSelection {
     None,
@@ -350,6 +361,8 @@ pub struct NekoviewApp {
     pub(crate) show_hidden: bool,
     sort_key: ExplorerSortKey,
     sort_ascending: bool,
+    /// サムネグリッドの統一カーソル位置（↑/サブフォルダ/アーカイブを貫通）
+    grid_cursor: Option<GridEntry>,
     selected_archive_index: Option<usize>,
     selected_archive_meta: Option<(std::time::SystemTime, u64)>,
     /// Ctrl/Shift併用による複数選択の集合（archivesへのインデックス）。
@@ -516,6 +529,7 @@ impl NekoviewApp {
             show_hidden,
             sort_key: ExplorerSortKey::from_state_key(&sort_state.key),
             sort_ascending: sort_state.ascending,
+            grid_cursor: None,
             selected_archive_index: None,
             selected_archive_meta: None,
             multi_selected: std::collections::HashSet::new(),

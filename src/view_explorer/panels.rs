@@ -514,6 +514,43 @@ impl NekoviewApp {
         });
     }
 
+    /// サムネグリッドで実際に描画される「↑・サブフォルダ・アーカイブ」の並び順を
+    /// draw_archive_gridと同一ロジックで再現したもの。キーボードカーソルの移動対象になる。
+    /// draw_archive_grid側の並び替え条件を変えたら、ここも同じように変えること。
+    pub(super) fn grid_entries(&self) -> Vec<GridEntry> {
+        let mut out = Vec::new();
+        if self.viewing_favorites.is_none() {
+            let up_target = if self.current_dir == self.tree_root {
+                None
+            } else {
+                crate::fs::mount::up_target(&self.current_dir)
+            };
+            if let Some(parent) = up_target {
+                out.push(GridEntry::Up(parent));
+            }
+
+            let show_hidden = self.show_hidden;
+            let mut sorted_subdirs: Vec<PathBuf> = self.subdirs.iter()
+                .filter(|p| {
+                    show_hidden || !p.file_name()
+                        .and_then(|n| n.to_str())
+                        .is_some_and(|n| n.starts_with('.'))
+                })
+                .cloned()
+                .collect();
+            let ascending = self.sort_ascending;
+            sorted_subdirs.sort_by(|a, b| {
+                let na = a.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                let nb = b.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                let cmp = na.cmp(nb);
+                if ascending { cmp } else { cmp.reverse() }
+            });
+            out.extend(sorted_subdirs.into_iter().map(GridEntry::Subdir));
+        }
+        out.extend(self.filtered_indices.iter().map(|&idx| GridEntry::Archive(idx)));
+        out
+    }
+
     fn draw_archive_grid(&mut self, ui: &mut egui::Ui) {
         let cell_h = self.config.thumb_size as f32;
         let cell_w = (cell_h / std::f32::consts::SQRT_2).round();
@@ -535,6 +572,7 @@ impl NekoviewApp {
                 .show(ui, |ui| {
                     let mut cell_index: usize = 0;
                     let mut pending_navigate: Option<PathBuf> = None;
+                    let grid_focused = self.focused_pane == FocusPane::Grid;
 
                     // 並び順: ↑（先頭・非ソート・ルートで非表示）→ フォルダ群 → 通常のarchivesグリッド。
                     // お気に入り一覧表示中は実フォルダのナビゲーション概念が無いため出さない。
@@ -555,6 +593,14 @@ impl NekoviewApp {
                             if ui.is_rect_visible(rect) {
                                 ui.painter().rect_filled(rect, 4.0, ui.visuals().faint_bg_color);
                                 nav_icons::draw_up_icon(ui.painter(), rect, nav_icons::NAV_ICON_COLOR);
+                            }
+                            if grid_focused && self.grid_cursor.as_ref() == Some(&GridEntry::Up(parent.clone())) {
+                                draw_cursor_ring(ui, rect);
+                            }
+                            if response.clicked() {
+                                self.grid_cursor = Some(GridEntry::Up(parent.clone()));
+                                self.selected_archive_index = None;
+                                self.selected_archive_meta = None;
                             }
                             if response.double_clicked() {
                                 pending_navigate = Some(parent);
@@ -629,6 +675,14 @@ impl NekoviewApp {
                                 } else if matches!(&self.folder_label_hover, Some((p, _)) if p == dir_path) {
                                     self.folder_label_hover = None;
                                 }
+                            }
+                            if grid_focused && self.grid_cursor.as_ref() == Some(&GridEntry::Subdir(dir_path.clone())) {
+                                draw_cursor_ring(ui, rect);
+                            }
+                            if response.clicked() {
+                                self.grid_cursor = Some(GridEntry::Subdir(dir_path.clone()));
+                                self.selected_archive_index = None;
+                                self.selected_archive_meta = None;
                             }
                             if response.double_clicked() {
                                 pending_navigate = Some(dir_path.clone());
@@ -775,10 +829,14 @@ impl NekoviewApp {
                                     egui::StrokeKind::Inside,
                                 );
                             }
+                            if grid_focused && self.grid_cursor.as_ref() == Some(&GridEntry::Archive(real_idx)) {
+                                draw_cursor_ring(ui, rect);
+                            }
                         }
 
                         let is_raw = self.raw_image_files.contains(path);
                         if response.clicked() {
+                            self.grid_cursor = Some(GridEntry::Archive(real_idx));
                             let modifiers = ui.input(|i| i.modifiers);
                             if modifiers.command {
                                 // Ctrl(Cmd)+クリック: トグル追加/除外

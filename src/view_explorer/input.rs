@@ -327,111 +327,139 @@ impl NekoviewApp {
         if self.focused_pane != FocusPane::Grid {
             return;
         }
+        self.handle_grid_keys(ctx);
+    }
 
-        // ── エクスプローラー キーナビゲーション ─────────────────────────────
-        // フィルタ適用中は見えている項目（filtered_indices）だけを移動対象にする。
-        let filtered = self.filtered_indices.clone();
-        let total = filtered.len();
+    /// Grid（↑・サブフォルダ・アーカイブファイルを連続した1本の列として扱う）の
+    /// キーボードカーソル操作。フォルダ系エントリはEnterで即navigate（複数選択は破棄）。
+    /// アーカイブエントリはEnterでカーソル位置の1件のみを開く（複数選択は維持したまま）。
+    /// Escで複数選択解除。
+    fn handle_grid_keys(&mut self, ctx: &egui::Context) {
+        // Escは常時（矢印等が押されてなくても）反応させる
+        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+            self.multi_selected.clear();
+            self.select_anchor = None;
+        }
+
+        let entries = self.grid_entries();
+        if entries.is_empty() {
+            return;
+        }
+        let total = entries.len();
         let cols = self.explorer_cols.max(1);
         let cell_h = self.config.thumb_size as f32;
         const KEY_GAP: f32 = 8.0;
-        if total > 0 {
-            let prev = self.selected_archive_index;
-            let cur_pos = self.selected_archive_index
-                .and_then(|idx| filtered.iter().position(|&i| i == idx));
 
-            // キー入力を一括消費してからクロージャ外で処理する（borrow 競合回避）
-            let (key_left, key_right, key_down, key_up, key_home, key_end) = ctx.input_mut(|i| (
-                i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowLeft),
-                i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowRight),
-                i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown),
-                i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp),
-                i.consume_key(egui::Modifiers::NONE, egui::Key::Home),
-                i.consume_key(egui::Modifiers::NONE, egui::Key::End),
-            ));
-            // Shift併用版（範囲選択の拡張用）
-            let (skey_left, skey_right, skey_down, skey_up, skey_home, skey_end) = ctx.input_mut(|i| (
-                i.consume_key(egui::Modifiers::SHIFT, egui::Key::ArrowLeft),
-                i.consume_key(egui::Modifiers::SHIFT, egui::Key::ArrowRight),
-                i.consume_key(egui::Modifiers::SHIFT, egui::Key::ArrowDown),
-                i.consume_key(egui::Modifiers::SHIFT, egui::Key::ArrowUp),
-                i.consume_key(egui::Modifiers::SHIFT, egui::Key::Home),
-                i.consume_key(egui::Modifiers::SHIFT, egui::Key::End),
-            ));
-            let key_left = key_left || skey_left;
-            let key_right = key_right || skey_right;
-            let key_down = key_down || skey_down;
-            let key_up = key_up || skey_up;
-            let key_home = key_home || skey_home;
-            let key_end = key_end || skey_end;
-            let extend = skey_left || skey_right || skey_down || skey_up || skey_home || skey_end;
-            if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::A)) {
-                self.multi_selected = filtered.iter().copied().collect();
-                if self.select_anchor.is_none() {
-                    self.select_anchor = filtered.first().copied();
-                }
-                if let Some(&last) = filtered.last() {
-                    self.selected_archive_index = Some(last);
-                }
+        let cur_entry = self.grid_cursor.clone()
+            .filter(|e| entries.contains(e))
+            .or_else(|| self.selected_archive_index
+                .map(GridEntry::Archive)
+                .filter(|e| entries.contains(e)))
+            .unwrap_or_else(|| entries[0].clone());
+        let pos = entries.iter().position(|e| *e == cur_entry).unwrap_or(0);
+
+        // キー入力を一括消費してからクロージャ外で処理する（borrow 競合回避）
+        let (key_left, key_right, key_down, key_up, key_home, key_end) = ctx.input_mut(|i| (
+            i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowLeft),
+            i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowRight),
+            i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown),
+            i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp),
+            i.consume_key(egui::Modifiers::NONE, egui::Key::Home),
+            i.consume_key(egui::Modifiers::NONE, egui::Key::End),
+        ));
+        // Shift併用版（範囲選択の拡張用。アーカイブ間の移動時のみ意味を持つ）
+        let (skey_left, skey_right, skey_down, skey_up, skey_home, skey_end) = ctx.input_mut(|i| (
+            i.consume_key(egui::Modifiers::SHIFT, egui::Key::ArrowLeft),
+            i.consume_key(egui::Modifiers::SHIFT, egui::Key::ArrowRight),
+            i.consume_key(egui::Modifiers::SHIFT, egui::Key::ArrowDown),
+            i.consume_key(egui::Modifiers::SHIFT, egui::Key::ArrowUp),
+            i.consume_key(egui::Modifiers::SHIFT, egui::Key::Home),
+            i.consume_key(egui::Modifiers::SHIFT, egui::Key::End),
+        ));
+        let key_left = key_left || skey_left;
+        let key_right = key_right || skey_right;
+        let key_down = key_down || skey_down;
+        let key_up = key_up || skey_up;
+        let key_home = key_home || skey_home;
+        let key_end = key_end || skey_end;
+        let extend = skey_left || skey_right || skey_down || skey_up || skey_home || skey_end;
+        let key_enter = ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
+
+        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::A)) {
+            // Ctrl+A: 複数選択の対象はアーカイブファイルのみ
+            self.multi_selected = self.filtered_indices.iter().copied().collect();
+            if self.select_anchor.is_none() {
+                self.select_anchor = self.filtered_indices.first().copied();
             }
+            if let Some(&last) = self.filtered_indices.last() {
+                self.selected_archive_index = Some(last);
+                self.grid_cursor = Some(GridEntry::Archive(last));
+            }
+        }
 
-            // 段階4（窓ごとキー配送）: ビューアーは独立した OS 窓になり、自分の左右キーで
-            // ファイル間ナビゲーションを処理する（view_reader::process_navigation →
-            // ViewerOutput.nav → render_viewer）。よって 86eca4b の「ビューア起動中は
-            // エクスプローラー窓の左右キーで viewer nav を肩代わりする」回避策は撤去する。
-            // エクスプローラー窓の左右キーは常にグリッド選択移動とする。
-            let mut move_to: Option<usize> = None;
-            if key_right {
-                if let Some(pos) = cur_pos {
-                    if pos + 1 < total {
-                        move_to = Some(filtered[pos + 1]);
+        // 段階4（窓ごとキー配送）: ビューアーは独立した OS 窓になり、自分の左右キーで
+        // ファイル間ナビゲーションを処理する（view_reader::process_navigation →
+        // ViewerOutput.nav → render_viewer）。よって 86eca4b の「ビューア起動中は
+        // エクスプローラー窓の左右キーで viewer nav を肩代わりする」回避策は撤去する。
+        // エクスプローラー窓の左右キーは常にグリッド選択移動とする。
+        let mut move_to: Option<usize> = None;
+        if key_right && pos + 1 < total {
+            move_to = Some(pos + 1);
+        }
+        if key_left && pos > 0 {
+            move_to = Some(pos - 1);
+        }
+        if key_down {
+            let current_row = pos / cols;
+            let last_row = (total - 1) / cols;
+            if current_row < last_row {
+                move_to = Some((pos + cols).min(total - 1));
+            }
+        }
+        if key_up && pos >= cols {
+            move_to = Some(pos - cols);
+        }
+        if key_home {
+            move_to = Some(0);
+        }
+        if key_end {
+            move_to = Some(total - 1);
+        }
+
+        let prev_selected = self.selected_archive_index;
+        let effective_entry = if let Some(target_pos) = move_to {
+            let target = entries[target_pos].clone();
+            self.grid_cursor = Some(target.clone());
+            match &target {
+                GridEntry::Archive(idx) => {
+                    if extend {
+                        self.extend_selection_to(*idx, &self.filtered_indices.clone());
+                    } else {
+                        self.select_single(*idx);
                     }
                 }
-            }
-            if key_left {
-                if let Some(pos) = cur_pos {
-                    if pos > 0 {
-                        move_to = Some(filtered[pos - 1]);
-                    }
+                GridEntry::Up(_) | GridEntry::Subdir(_) => {
+                    // フォルダ系エントリに乗った間はアーカイブ選択枠・ファイル情報を消す
+                    // （複数選択そのものは維持し、Enterで実際に移動した時だけ破棄する）
+                    self.selected_archive_index = None;
+                    self.selected_archive_meta = None;
                 }
             }
+            target
+        } else {
+            cur_entry
+        };
 
-            // 上下キーは常にグリッド選択移動
-            if key_down {
-                if let Some(pos) = cur_pos {
-                    let current_row = pos / cols;
-                    let last_row = (total - 1) / cols;
-                    if current_row < last_row {
-                        move_to = Some(filtered[(pos + cols).min(total - 1)]);
-                    }
+        if key_enter {
+            match &effective_entry {
+                GridEntry::Up(path) | GridEntry::Subdir(path) => {
+                    self.multi_selected.clear();
+                    self.select_anchor = None;
+                    self.navigate_to(path.clone());
                 }
-            }
-            if key_up {
-                if let Some(pos) = cur_pos {
-                    if pos >= cols {
-                        move_to = Some(filtered[pos - cols]);
-                    }
-                }
-            }
-
-            // Home/End: ファイラー先頭（左上）/末尾（右下）へ絶対ジャンプ
-            if key_home {
-                move_to = Some(filtered[0]);
-            }
-            if key_end {
-                move_to = Some(filtered[total - 1]);
-            }
-            if let Some(target) = move_to {
-                if extend {
-                    self.extend_selection_to(target, &filtered);
-                } else {
-                    self.select_single(target);
-                }
-            }
-
-            if ctx.input(|i| i.key_pressed(egui::Key::Enter)) {
-                if let Some(idx) = self.selected_archive_index {
-                    if let Some(path) = self.archives.get(idx).cloned() {
+                GridEntry::Archive(idx) => {
+                    // 複数選択中でもEnter時点のカーソル位置1件のみを開く（複数選択は維持）
+                    if let Some(path) = self.archives.get(*idx).cloned() {
                         if self.network_gate(&path) {
                             let is_raw = self.raw_image_files.contains(&path);
                             let state = if is_raw {
@@ -448,25 +476,24 @@ impl NekoviewApp {
                     }
                 }
             }
-            // 選択が変わったらコンテンツ空間で最小スクロールを計算（アニメーションなし）
-            if self.selected_archive_index != prev {
-                self.selected_archive_meta = self.selected_archive_index
-                    .and_then(|idx| self.archives.get(idx))
-                    .and_then(|path| std::fs::metadata(path).ok())
-                    .map(|m| (m.modified().unwrap_or(std::time::UNIX_EPOCH), m.len()));
-                if let Some(idx) = self.selected_archive_index {
-                    if let Some(pos) = filtered.iter().position(|&i| i == idx) {
-                        let row = pos / cols;
-                        let item_top = row as f32 * (cell_h + KEY_GAP);
-                        let item_bottom = item_top + cell_h;
-                        let vp = self.explorer_viewport_h;
-                        if item_top < self.explorer_scroll_offset {
-                            self.explorer_scroll_offset = item_top;
-                        } else if vp > 0.0 && item_bottom > self.explorer_scroll_offset + vp {
-                            self.explorer_scroll_offset = item_bottom - vp;
-                        }
-                    }
-                }
+        }
+
+        // 選択が変わったらコンテンツ空間で最小スクロールを計算（アニメーションなし）
+        if self.selected_archive_index != prev_selected {
+            self.selected_archive_meta = self.selected_archive_index
+                .and_then(|idx| self.archives.get(idx))
+                .and_then(|path| std::fs::metadata(path).ok())
+                .map(|m| (m.modified().unwrap_or(std::time::UNIX_EPOCH), m.len()));
+        }
+        if let Some(target_pos) = move_to {
+            let row = target_pos / cols;
+            let item_top = row as f32 * (cell_h + KEY_GAP);
+            let item_bottom = item_top + cell_h;
+            let vp = self.explorer_viewport_h;
+            if item_top < self.explorer_scroll_offset {
+                self.explorer_scroll_offset = item_top;
+            } else if vp > 0.0 && item_bottom > self.explorer_scroll_offset + vp {
+                self.explorer_scroll_offset = item_bottom - vp;
             }
         }
     }
