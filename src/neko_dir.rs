@@ -35,21 +35,25 @@ pub fn open_cache_db(neko_dir: &Path) -> Option<Arc<Mutex<Database>>> {
     Some(Arc::new(Mutex::new(db)))
 }
 
-/// サムネをDBから読み込む。source_mtime が一致しない場合は None（再生成が必要）。
-pub fn read_thumb(db: &Arc<Mutex<Database>>, filename: &str, source_mtime: i64) -> Option<Vec<u8>> {
+/// サムネをmtime検証なしでDBから読み込む。戻り値は (保存時のsource_mtime, jpeg)。
+/// mtime検証は呼び出し側が表示後に後追いで行う（stale-while-revalidate）。
+/// ネットワークパスではstatがDB読みより桁違いに遅い・失敗しうるため、
+/// 検証をこの関数に含めない。
+pub fn read_thumb_unchecked(db: &Arc<Mutex<Database>>, filename: &str) -> Option<(i64, Vec<u8>)> {
     let db = db.lock().ok()?;
     let tx = db.begin_read().ok()?;
     let table = tx.open_table(THUMBS_TABLE).ok()?;
     let guard = table.get(filename).ok()??;
     let (stored_mtime, jpeg) = guard.value();
-    if stored_mtime != source_mtime {
-        return None;
-    }
-    Some(jpeg.to_vec())
+    Some((stored_mtime, jpeg.to_vec()))
 }
 
-/// サムネをDBに書き込む。
+/// サムネをDBに書き込む。source_mtime==0（stat失敗）のエントリは保存しない。
+/// 0を保存するとネットワーク回復後に実mtimeと不一致になり、恒久的に再生成が走る。
 pub fn write_thumb(db: &Arc<Mutex<Database>>, filename: &str, source_mtime: i64, jpeg: &[u8]) {
+    if source_mtime == 0 {
+        return;
+    }
     let Ok(db) = db.lock() else { return };
     let Ok(tx) = db.begin_write() else { return };
     if let Ok(mut table) = tx.open_table(THUMBS_TABLE) {
@@ -69,15 +73,19 @@ pub fn mark_invalid(db: &Arc<Mutex<Database>>, filename: &str, source_mtime: i64
 }
 
 /// 非画像ZIPマーカーが存在し、かつZIPが差し替えられていない場合 true。
+/// 先にローカルDBを引き、マーク済みの場合のみstatする。
+/// マーク無しが大多数のため、ネットワークパスへの全件statを避けられる。
 pub fn is_invalid_and_current(db: &Arc<Mutex<Database>>, filename: &str, archive_path: &Path) -> bool {
-    let current_mtime = file_mtime(archive_path);
-    let Ok(db) = db.lock() else { return false };
-    let Ok(tx) = db.begin_read() else { return false };
-    let Ok(table) = tx.open_table(INVALID_TABLE) else { return false };
-    match table.get(filename) {
-        Ok(Some(guard)) => guard.value() == current_mtime,
-        _ => false,
-    }
+    let stored_mtime = {
+        let Ok(db) = db.lock() else { return false };
+        let Ok(tx) = db.begin_read() else { return false };
+        let Ok(table) = tx.open_table(INVALID_TABLE) else { return false };
+        match table.get(filename) {
+            Ok(Some(guard)) => guard.value(),
+            _ => return false,
+        }
+    };
+    stored_mtime == file_mtime(archive_path)
 }
 
 /// キャッシュ済みサムネ件数をカウントする（ツリービュー表示用）。

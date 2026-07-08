@@ -84,7 +84,23 @@ impl NekoviewApp {
             self.selected_archive_index = if self.archives.is_empty() { None } else { Some(0) };
             self.multi_selected.clear();
             self.select_anchor = None;
+            // サマリーはスキャン済みリストを使い回して起動する（ネットワークの再列挙を避ける）
+            if self.viewing_dir.as_ref() == Some(&self.current_dir) {
+                self.cd_summary_rx = Some(spawn_summary_worker(
+                    self.current_dir.clone(),
+                    self.archive_filenames(),
+                    self.cache_db.clone(),
+                    self.egui_ctx.clone(),
+                ));
+            }
         }
+    }
+
+    /// 現在の archives（生画像含む）のファイル名一覧。サマリー計算用。
+    pub(super) fn archive_filenames(&self) -> Vec<String> {
+        self.archives.iter()
+            .filter_map(|p| p.file_name().and_then(|n| n.to_str()).map(str::to_string))
+            .collect()
     }
 
     /// フレームごとにツリー展開スキャン結果をポーリングして反映する
@@ -196,22 +212,18 @@ impl NekoviewApp {
 }
 
 /// cd_summary の計算をバックグラウンドスレッドで行い、受信チャンネルを返す。
+/// ディレクトリの再列挙はせず、スキャン済みのファイル名一覧を受け取って
+/// ローカルDBのカウントだけを行う（ネットワークI/Oなし）。
 pub(super) fn spawn_summary_worker(
     path: PathBuf,
+    filenames: Vec<String>,
     db: Option<std::sync::Arc<std::sync::Mutex<redb::Database>>>,
     ctx: egui::Context,
 ) -> mpsc::Receiver<(PathBuf, usize, usize)> {
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
-        let archives = dir::list_archives(&path);
-        let raw_images = dir::list_raw_images(&path);
-        let total = archives.len() + raw_images.len();
-        let saved = db.map(|db| {
-            let filenames: Vec<String> = archives.iter().chain(raw_images.iter())
-                .filter_map(|p| p.file_name().and_then(|n| n.to_str()).map(|s| s.to_owned()))
-                .collect();
-            neko_dir::count_cached_thumbs(&db, &filenames)
-        }).unwrap_or(0);
+        let total = filenames.len();
+        let saved = db.map(|db| neko_dir::count_cached_thumbs(&db, &filenames)).unwrap_or(0);
         let _ = tx.send((path, saved, total));
         // ROOT を起こして poll_workers に結果を回収させる
         ctx.request_repaint();

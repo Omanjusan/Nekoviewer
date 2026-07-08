@@ -215,9 +215,18 @@ impl NekoviewApp {
                 .cd_summary_updated_at
                 .map_or(f32::MAX, |t| t.elapsed().as_secs_f32());
             if just_finished || elapsed >= 2.0 {
-                if let Some((ref cd_path, _, _)) = self.cd_summary {
-                    let path = cd_path.clone();
-                    self.cd_summary_rx = Some(spawn_summary_worker(path, self.cache_db.clone(), self.egui_ctx.clone()));
+                // archives は current_dir のものなので、サマリー対象が一致する場合のみ再計算する
+                let refresh_target = match self.cd_summary {
+                    Some((ref cd_path, _, _)) if *cd_path == self.current_dir => Some(cd_path.clone()),
+                    _ => None,
+                };
+                if let Some(path) = refresh_target {
+                    self.cd_summary_rx = Some(spawn_summary_worker(
+                        path,
+                        self.archive_filenames(),
+                        self.cache_db.clone(),
+                        self.egui_ctx.clone(),
+                    ));
                 }
             }
         }

@@ -809,25 +809,68 @@ pub struct ThumbResult {
     pub rgba: Option<image::RgbaImage>,
 }
 
+/// プローブレーンのスレッド数。ローカルDB読み＋JPEGデコードのみで軽いため少数で足りる。
+const THUMB_PROBE_THREADS: usize = 2;
+
+/// サムネイルワーカーを2レーン構成で起動する。
+/// - プローブレーン: ローカルDBだけを見てキャッシュ済みサムネを即返す（ネットワークI/Oなし）。
+///   ミス分と要再生成分は生成レーンへ転送する。
+/// - 生成レーン: 元ファイルからの生成（ネットワークパスでは遅い）。
+/// キャッシュ済みサムネが未格納分の生成待ち行列に並ばされて遅延するのを防ぐ。
 pub fn spawn_thumb_worker(filter: image::imageops::FilterType, num_threads: usize, ctx: egui::Context) -> (mpsc::SyncSender<ThumbRequest>, mpsc::Receiver<ThumbResult>) {
-    let capacity = num_threads * 2;
-    let (req_tx, req_rx) = mpsc::sync_channel::<ThumbRequest>(capacity);
+    let capacity = (num_threads * 2).max(16);
+    let (req_tx, probe_rx) = mpsc::sync_channel::<ThumbRequest>(capacity);
     let (res_tx, res_rx) = mpsc::channel::<ThumbResult>();
+    let (gen_tx, gen_rx) = mpsc::channel::<ThumbRequest>();
 
-    let req_rx = Arc::new(Mutex::new(req_rx));
+    let probe_rx = Arc::new(Mutex::new(probe_rx));
+    let gen_rx = Arc::new(Mutex::new(gen_rx));
 
-    for _ in 0..num_threads {
-        let req_rx = Arc::clone(&req_rx);
+    for _ in 0..THUMB_PROBE_THREADS {
+        let probe_rx = Arc::clone(&probe_rx);
+        let gen_tx = gen_tx.clone();
         let res_tx = res_tx.clone();
         let ctx = ctx.clone();
         std::thread::spawn(move || {
             loop {
-                let req = match req_rx.lock().unwrap().recv() {
+                let req = match probe_rx.lock().unwrap().recv() {
+                    Ok(r) => r,
+                    Err(_) => break,
+                };
+                match probe_cached_thumb(&req) {
+                    Some((rgba, stored_mtime)) => {
+                        // キャッシュヒット: statを待たずに先に表示へ回す
+                        let _ = res_tx.send(ThumbResult { path: req.archive_path.clone(), rgba: Some(rgba) });
+                        ctx.request_repaint();
+                        // 後追い検証: statが成功してmtimeが変わっていた場合のみ再生成へ。
+                        // stat失敗（ネットワーク不調）はキャッシュ表示のまま維持する。
+                        let current_mtime = crate::neko_dir::file_mtime(&req.archive_path);
+                        if current_mtime != 0 && current_mtime != stored_mtime {
+                            let _ = gen_tx.send(req);
+                        }
+                    }
+                    None => {
+                        let _ = gen_tx.send(req);
+                    }
+                }
+            }
+        });
+    }
+    // 全 gen_tx（プローブスレッド保持分）が閉じると生成レーンも終了する
+    drop(gen_tx);
+
+    for _ in 0..num_threads {
+        let gen_rx = Arc::clone(&gen_rx);
+        let res_tx = res_tx.clone();
+        let ctx = ctx.clone();
+        std::thread::spawn(move || {
+            loop {
+                let req = match gen_rx.lock().unwrap().recv() {
                     Ok(r) => r,
                     Err(_) => break,
                 };
                 // 失敗（None）でも必ず返送し、呼び元が thumb_pending を解放できるようにする
-                let rgba = resolve_thumb(&req, filter);
+                let rgba = generate_thumb(&req, filter);
                 let _ = res_tx.send(ThumbResult { path: req.archive_path, rgba });
                 // ROOT を起こして poll_workers に結果を回収させる
                 ctx.request_repaint();
@@ -964,8 +1007,20 @@ fn load_first_image_smb(path: PathBuf) -> Option<image::DynamicImage> {
     rx.recv_timeout(timeout).ok().flatten()
 }
 
-/// 1件のサムネイルリクエストを処理する。失敗時は None を返す（スレッドは死なない）。
-fn resolve_thumb(req: &ThumbRequest, filter: image::imageops::FilterType) -> Option<image::RgbaImage> {
+/// ローカルDBだけを見てキャッシュ済みサムネを返す（ネットワークI/Oなし）。
+/// 戻り値は (デコード済みRGBA, 保存時のsource_mtime)。mtime検証は呼び出し側が後追いで行う。
+fn probe_cached_thumb(req: &ThumbRequest) -> Option<(image::RgbaImage, i64)> {
+    let db = req.db.as_ref()?;
+    let filename = req.archive_path.file_name().and_then(|n| n.to_str())?;
+    let (stored_mtime, jpeg) = crate::neko_dir::read_thumb_unchecked(db, filename)?;
+    let t0 = std::time::Instant::now();
+    let rgba = image::load_from_memory(&jpeg).ok()?.to_rgba8();
+    log_perf!("[perf/thumb] db_cache={:.1}ms", t0.elapsed().as_secs_f64() * 1000.0);
+    Some((rgba, stored_mtime))
+}
+
+/// 元ファイルからサムネを生成してDBへ保存する。失敗時は None を返す（スレッドは死なない）。
+fn generate_thumb(req: &ThumbRequest, filter: image::imageops::FilterType) -> Option<image::RgbaImage> {
     let filename = req.archive_path
         .file_name()
         .and_then(|n| n.to_str())
@@ -973,17 +1028,6 @@ fn resolve_thumb(req: &ThumbRequest, filter: image::imageops::FilterType) -> Opt
         .to_owned();
     let source_mtime = crate::neko_dir::file_mtime(&req.archive_path);
 
-    // DBキャッシュを試みる
-    if let Some(ref db) = req.db {
-        if let Some(jpeg) = crate::neko_dir::read_thumb(db, &filename, source_mtime) {
-            let t0 = std::time::Instant::now();
-            let result = image::load_from_memory(&jpeg).ok().map(|img| img.to_rgba8());
-            log_perf!("[perf/thumb] db_cache={:.1}ms", t0.elapsed().as_secs_f64() * 1000.0);
-            return result;
-        }
-    }
-
-    // キャッシュミス: 元ファイルから生成
     let rgba = if req.is_raw_file {
         let buf = std::fs::read(&req.archive_path).ok()?;
         let img = crate::fs::archive::decode_image_bytes(&buf)?;

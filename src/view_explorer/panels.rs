@@ -7,7 +7,6 @@ use crate::types::ExplorerSortKey;
 use crate::fs::dir;
 use crate::view_reader::{PageMode, ViewerState};
 use super::*;
-use super::scan::spawn_summary_worker;
 
 impl NekoviewApp {
     /// エクスプローラー窓の中身を描画する（旧 eframe::App::ui 相当）。
@@ -241,8 +240,10 @@ impl NekoviewApp {
                 self.viewing_favorites = None;
                 self.current_dir = path.clone();
                 self.viewing_dir = Some(path.clone());
-                self.start_scan(); // cache_db をここで確定させてから clone して渡す
-                self.cd_summary_rx = Some(spawn_summary_worker(path.clone(), self.cache_db.clone(), self.egui_ctx.clone()));
+                // サマリーはスキャン完了時（poll_scan）にスキャン結果から起動する
+                self.cd_summary = None;
+                self.cd_summary_rx = None;
+                self.start_scan();
                 self.persist_state();
             }
         }
