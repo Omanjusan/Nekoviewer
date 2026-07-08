@@ -66,7 +66,47 @@ impl NekoviewApp {
         // ROOT は入力イベント・各ワーカーの起床通知・ステータス窓の1Hzハートビートで再描画される。
     }
 
+    /// MenuBarの各ボタンの並び順・有効状態を計算する（MENU_BAR_ORDERに対応）。
+    /// draw_menu_barの描画とhandle_menu_bar_keysの移動対象決定の両方から参照する単一の情報源。
+    pub(super) fn menu_bar_items(&self) -> Vec<(MenuBarButton, bool)> {
+        let (viewer_open, is_raw_viewer, is_spread, can_back, can_fwd) = {
+            let guard = self.viewer.lock().unwrap();
+            let viewer_open = guard.is_some();
+            let is_raw_viewer = guard.as_ref().map_or(false, |v| v.is_raw_file());
+            let cur_mode = guard.as_ref().map(|v| v.page_mode());
+            let is_spread = cur_mode.map_or(false, |m| m != PageMode::Single);
+            let can_back = guard.as_ref().map_or(false, |v| v.can_shift_backward());
+            let can_fwd = guard.as_ref().map_or(false, |v| v.can_shift_forward());
+            (viewer_open, is_raw_viewer, is_spread, can_back, can_fwd)
+        };
+        MENU_BAR_ORDER.iter().map(|&b| {
+            let enabled = match b {
+                MenuBarButton::PageSingle => viewer_open,
+                MenuBarButton::PageSpreadLeft | MenuBarButton::PageSpreadRight => viewer_open && !is_raw_viewer,
+                MenuBarButton::SpreadBack => viewer_open && is_spread && !is_raw_viewer && can_back,
+                MenuBarButton::SpreadFwd => viewer_open && is_spread && !is_raw_viewer && can_fwd,
+                MenuBarButton::SortName
+                | MenuBarButton::SortDate
+                | MenuBarButton::SortSize
+                | MenuBarButton::SortOrder
+                | MenuBarButton::StatusToggle
+                | MenuBarButton::Settings => true,
+            };
+            (b, enabled)
+        }).collect()
+    }
+
     fn draw_menu_bar(&mut self, ui: &mut egui::Ui) {
+        let menu_focused = self.focused_pane == FocusPane::MenuBar;
+        let cursor_button = MENU_BAR_ORDER.get(self.menu_cursor).copied();
+        let is_cursor = |b: MenuBarButton| menu_focused && cursor_button == Some(b);
+        // カーソル位置のボタンを強調する枠線を乗せるスコープ（他ペインのフォーカス表現と共通）
+        let cursor_stroke = |ui: &mut egui::Ui| {
+            ui.visuals_mut().widgets.inactive.bg_stroke =
+                egui::Stroke::new(1.5, ui.visuals().selection.bg_fill);
+            ui.visuals_mut().widgets.hovered.bg_stroke =
+                egui::Stroke::new(1.5, ui.visuals().selection.bg_fill);
+        };
         ui.horizontal(|ui| {
             // 隠しファイル表示トグルは設定ダイアログの「共通」タブへ移設した。
 
@@ -84,19 +124,31 @@ impl NekoviewApp {
             };
 
             ui.add_enabled_ui(viewer_open, |ui| {
-                if ui.selectable_label(cur_mode == Some(PageMode::Single), i18n::t().page_single()).clicked() {
+                let clicked = ui.scope(|ui| {
+                    if is_cursor(MenuBarButton::PageSingle) { cursor_stroke(ui); }
+                    ui.selectable_label(cur_mode == Some(PageMode::Single), i18n::t().page_single())
+                }).inner.clicked();
+                if clicked {
                     let mut v_guard = self.viewer.lock().unwrap();
                     let mut cfg_guard = self.viewer_cfg.lock().unwrap();
                     if let Some(v) = v_guard.as_mut() { v.set_page_mode(PageMode::Single, &mut *cfg_guard); }
                 }
             });
             ui.add_enabled_ui(viewer_open && !is_raw_viewer, |ui| {
-                if ui.selectable_label(cur_mode == Some(PageMode::SpreadLeft), i18n::t().page_spread_left()).clicked() {
+                let clicked_left = ui.scope(|ui| {
+                    if is_cursor(MenuBarButton::PageSpreadLeft) { cursor_stroke(ui); }
+                    ui.selectable_label(cur_mode == Some(PageMode::SpreadLeft), i18n::t().page_spread_left())
+                }).inner.clicked();
+                if clicked_left {
                     let mut v_guard = self.viewer.lock().unwrap();
                     let mut cfg_guard = self.viewer_cfg.lock().unwrap();
                     if let Some(v) = v_guard.as_mut() { v.set_page_mode(PageMode::SpreadLeft, &mut *cfg_guard); }
                 }
-                if ui.selectable_label(cur_mode == Some(PageMode::SpreadRight), i18n::t().page_spread_right()).clicked() {
+                let clicked_right = ui.scope(|ui| {
+                    if is_cursor(MenuBarButton::PageSpreadRight) { cursor_stroke(ui); }
+                    ui.selectable_label(cur_mode == Some(PageMode::SpreadRight), i18n::t().page_spread_right())
+                }).inner.clicked();
+                if clicked_right {
                     let mut v_guard = self.viewer.lock().unwrap();
                     let mut cfg_guard = self.viewer_cfg.lock().unwrap();
                     if let Some(v) = v_guard.as_mut() { v.set_page_mode(PageMode::SpreadRight, &mut *cfg_guard); }
@@ -104,10 +156,18 @@ impl NekoviewApp {
             });
 
             ui.add_enabled_ui(viewer_open && is_spread && !is_raw_viewer, |ui| {
-                if ui.add_enabled(can_back, egui::Button::new(i18n::t().spread_back())).clicked() {
+                let clicked_back = ui.scope(|ui| {
+                    if is_cursor(MenuBarButton::SpreadBack) { cursor_stroke(ui); }
+                    ui.add_enabled(can_back, egui::Button::new(i18n::t().spread_back()))
+                }).inner.clicked();
+                if clicked_back {
                     if let Some(v) = self.viewer.lock().unwrap().as_mut() { v.shift_offset_backward(); }
                 }
-                if ui.add_enabled(can_fwd, egui::Button::new(i18n::t().spread_fwd())).clicked() {
+                let clicked_fwd = ui.scope(|ui| {
+                    if is_cursor(MenuBarButton::SpreadFwd) { cursor_stroke(ui); }
+                    ui.add_enabled(can_fwd, egui::Button::new(i18n::t().spread_fwd()))
+                }).inner.clicked();
+                if clicked_fwd {
                     if let Some(v) = self.viewer.lock().unwrap().as_mut() { v.shift_offset_forward(); }
                 }
                 ui.label(if is_offset { i18n::t().spread_offset_on() } else { i18n::t().spread_aligned() });
@@ -117,7 +177,11 @@ impl NekoviewApp {
 
             // ── エクスプローラーソート ────────────────────────────────────
             let mut sort_changed = false;
-            for key in [ExplorerSortKey::Name, ExplorerSortKey::Date, ExplorerSortKey::Size] {
+            for (key, btn) in [
+                (ExplorerSortKey::Name, MenuBarButton::SortName),
+                (ExplorerSortKey::Date, MenuBarButton::SortDate),
+                (ExplorerSortKey::Size, MenuBarButton::SortSize),
+            ] {
                 let active = self.sort_key == key;
                 let clicked = ui.scope(|ui| {
                     if active {
@@ -125,6 +189,7 @@ impl NekoviewApp {
                             egui::Color32::from_rgb(30, 100, 200);
                         ui.visuals_mut().selection.stroke.color = egui::Color32::WHITE;
                     }
+                    if is_cursor(btn) { cursor_stroke(ui); }
                     ui.selectable_label(active, key.label()).clicked()
                 }).inner;
                 if clicked {
@@ -136,7 +201,11 @@ impl NekoviewApp {
             ui.label(":");
 
             let order_label = if self.sort_ascending { i18n::t().sort_asc() } else { i18n::t().sort_desc() };
-            if ui.button(order_label).clicked() {
+            let order_clicked = ui.scope(|ui| {
+                if is_cursor(MenuBarButton::SortOrder) { cursor_stroke(ui); }
+                ui.button(order_label)
+            }).inner.clicked();
+            if order_clicked {
                 self.sort_ascending = !self.sort_ascending;
                 sort_changed = true;
             }
@@ -151,16 +220,23 @@ impl NekoviewApp {
 
             // ── ステータスウィンドウボタン（右端） ────────────────────────
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let btn = ui.button("[?]");
-                if btn.clicked() {
+                // 右→左レイアウトのため最初に追加した方が最も右端（[?]が視覚上の右端）。
+                // MENU_BAR_ORDERは視覚上の左→右（…設定, [?]）なので描画順は逆になる。
+                let status_clicked = ui.scope(|ui| {
+                    if is_cursor(MenuBarButton::StatusToggle) { cursor_stroke(ui); }
+                    ui.button("[?]")
+                }).inner.clicked();
+                if status_clicked {
                     self.show_status_window = !self.show_status_window;
                 }
 
                 ui.separator();
 
-                // 設定ダイアログを開く。旧・再デコードトグル/デバウンスサイクル/言語切替
-                // ボタン列はダイアログの「共通」タブに統合した。
-                if ui.button(i18n::t().settings_button()).clicked() {
+                let settings_clicked = ui.scope(|ui| {
+                    if is_cursor(MenuBarButton::Settings) { cursor_stroke(ui); }
+                    ui.button(i18n::t().settings_button())
+                }).inner.clicked();
+                if settings_clicked {
                     self.open_settings();
                 }
             });

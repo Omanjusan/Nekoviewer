@@ -96,6 +96,38 @@ enum FavoriteSelection {
     Folder(u8),
 }
 
+/// メニューバー内のボタンをインデックス化した識別子（左から右への表示順そのもの）。
+/// キーボードでの左右移動・Enter確定（handle_menu_bar_keys）の対象になる。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum MenuBarButton {
+    PageSingle,
+    PageSpreadLeft,
+    PageSpreadRight,
+    SpreadBack,
+    SpreadFwd,
+    SortName,
+    SortDate,
+    SortSize,
+    SortOrder,
+    StatusToggle,
+    Settings,
+}
+
+/// 表示順そのもの（draw_menu_barの描画順と一致させること）
+pub(crate) const MENU_BAR_ORDER: [MenuBarButton; 11] = [
+    MenuBarButton::PageSingle,
+    MenuBarButton::PageSpreadLeft,
+    MenuBarButton::PageSpreadRight,
+    MenuBarButton::SpreadBack,
+    MenuBarButton::SpreadFwd,
+    MenuBarButton::SortName,
+    MenuBarButton::SortDate,
+    MenuBarButton::SortSize,
+    MenuBarButton::SortOrder,
+    MenuBarButton::Settings,
+    MenuBarButton::StatusToggle,
+];
+
 #[derive(Clone, Copy)]
 enum FavoriteDialogMode {
     Create,
@@ -222,6 +254,8 @@ pub struct NekoviewApp {
     drive_cursor: Option<PathBuf>,
     /// お気に入りタブ内のプレターゲティングカーソル（[未整理, フォルダ...]の並び）
     favorite_cursor: Option<FavoriteSelection>,
+    /// MenuBar内のプレターゲティングカーソル（MENU_BAR_ORDER上のインデックス）
+    menu_cursor: usize,
     /// 定義済みお気に入りフォルダ一覧のキャッシュ（DB操作の都度リフレッシュ）
     favorite_folders: Vec<crate::favorites::FavoriteFolder>,
     favorite_selected: FavoriteSelection,
@@ -412,6 +446,7 @@ impl NekoviewApp {
             tree_cursor: None,
             drive_cursor: None,
             favorite_cursor: None,
+            menu_cursor: 0,
             favorite_folders: Vec::new(),
             favorite_selected: FavoriteSelection::None,
             favorite_dialog: None,
