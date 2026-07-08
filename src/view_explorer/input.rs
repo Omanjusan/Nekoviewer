@@ -1,10 +1,148 @@
+use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 
+use crate::fs::dir;
 use crate::view_reader::ViewerState;
 use super::*;
 
 impl NekoviewApp {
+    /// フォーカス巡回: Tab/Shift+Tabで TreeTab→FavoriteTab→Drives→Grid→Filter→MenuBar
+    /// を一周する。着地したペインに応じてタブ切替・カーソル復元を追従させる。
+    pub(super) fn handle_focus_keys(&mut self, ctx: &egui::Context) {
+        let (tab, shift_tab) = ctx.input_mut(|i| (
+            i.consume_key(egui::Modifiers::NONE, egui::Key::Tab),
+            i.consume_key(egui::Modifiers::SHIFT, egui::Key::Tab),
+        ));
+        if !tab && !shift_tab {
+            return;
+        }
+        self.focused_pane = if shift_tab { self.focused_pane.prev() } else { self.focused_pane.next() };
+        self.on_focus_pane_changed();
+    }
+
+    fn on_focus_pane_changed(&mut self) {
+        match self.focused_pane {
+            FocusPane::TreeTab => {
+                self.folder_pane_tab = FolderPaneTab::RealTree;
+                self.exit_favorite_view();
+            }
+            FocusPane::FavoriteTab => {
+                self.folder_pane_tab = FolderPaneTab::Favorites;
+            }
+            FocusPane::Drives => {
+                // Drivesは実ツリー配下にのみ存在するため、Favorites経由での到達時は
+                // 実ツリー表示へ復帰させる。カーソルは前回位置を復元、無効なら先頭へ。
+                self.folder_pane_tab = FolderPaneTab::RealTree;
+                self.exit_favorite_view();
+                let valid = self.drive_cursor.as_ref()
+                    .is_some_and(|p| self.drives.iter().any(|d| &d.path == p));
+                if !valid {
+                    self.drive_cursor = self.drives.first().map(|d| d.path.clone());
+                }
+            }
+            FocusPane::Grid | FocusPane::Filter | FocusPane::MenuBar => {}
+        }
+    }
+
+    /// 実ツリーの現在展開状態における「見えているノード」を上から順に平坦化したもの。
+    /// ツリーカーソルの上下移動対象になる。
+    pub(super) fn flatten_visible_tree(&self) -> Vec<PathBuf> {
+        let mut out = Vec::new();
+        fn walk(
+            path: &PathBuf,
+            tree_expanded: &HashSet<PathBuf>,
+            tree_children: &HashMap<PathBuf, Vec<PathBuf>>,
+            show_hidden: bool,
+            out: &mut Vec<PathBuf>,
+        ) {
+            out.push(path.clone());
+            if tree_expanded.contains(path) {
+                if let Some(children) = tree_children.get(path) {
+                    for child in children {
+                        if !show_hidden {
+                            let hidden = child.file_name()
+                                .and_then(|n| n.to_str())
+                                .map_or(false, |n| n.starts_with('.'));
+                            if hidden {
+                                continue;
+                            }
+                        }
+                        walk(child, tree_expanded, tree_children, show_hidden, out);
+                    }
+                }
+            }
+        }
+        walk(&self.tree_root, &self.tree_expanded, &self.tree_children, self.show_hidden, &mut out);
+        out
+    }
+
+    /// ツリータブにフォーカスがある間のプレターゲティングカーソル操作。
+    /// 上下=移動、右=展開（未取得なら取得も要求）、左=折り畳み/親へ、Enter=確定navigate。
+    fn handle_tree_keys(&mut self, ctx: &egui::Context) {
+        let (key_down, key_up, key_right, key_left, key_enter) = ctx.input_mut(|i| (
+            i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown),
+            i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp),
+            i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowRight),
+            i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowLeft),
+            i.consume_key(egui::Modifiers::NONE, egui::Key::Enter),
+        ));
+        if !(key_down || key_up || key_right || key_left || key_enter) {
+            return;
+        }
+
+        let flat = self.flatten_visible_tree();
+        if flat.is_empty() {
+            return;
+        }
+        let cur = self.tree_cursor.clone()
+            .filter(|p| flat.contains(p))
+            .unwrap_or_else(|| self.viewing_dir.clone().filter(|p| flat.contains(p)).unwrap_or_else(|| flat[0].clone()));
+        let pos = flat.iter().position(|p| *p == cur).unwrap_or(0);
+
+        if key_down && pos + 1 < flat.len() {
+            self.tree_cursor = Some(flat[pos + 1].clone());
+        }
+        if key_up && pos > 0 {
+            self.tree_cursor = Some(flat[pos - 1].clone());
+        }
+        if key_right {
+            if !self.tree_expanded.contains(&cur) {
+                self.tree_expanded.insert(cur.clone());
+                if !self.tree_children.contains_key(&cur) {
+                    self.tree_scan_pending = Some(TreeScanPending {
+                        path: cur.clone(),
+                        rx: dir::spawn_scan_subdirs(cur.clone(), {
+                            let c = self.egui_ctx.clone();
+                            move || c.request_repaint()
+                        }),
+                    });
+                }
+            }
+            self.tree_cursor = Some(cur.clone());
+        }
+        if key_left {
+            if self.tree_expanded.contains(&cur) {
+                self.tree_expanded.remove(&cur);
+                self.tree_cursor = Some(cur.clone());
+            } else if let Some(parent) = cur.parent().map(|p| p.to_path_buf()) {
+                if flat.contains(&parent) {
+                    self.tree_cursor = Some(parent);
+                }
+            }
+        }
+        if key_enter {
+            self.navigate_to(cur);
+        }
+    }
+
     pub(super) fn handle_explorer_keys(&mut self, ctx: &egui::Context) {
+        self.handle_focus_keys(ctx);
+        if self.focused_pane == FocusPane::TreeTab {
+            self.handle_tree_keys(ctx);
+            return;
+        }
         // ── お気に入りペイン: F2でリネームダイアログを開く ──────────────────
+        // (フォーカス位置に関わらず、お気に入りタブ表示中は従来通り有効)
         if self.folder_pane_tab == FolderPaneTab::Favorites
             && self.favorite_dialog.is_none()
             && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::F2))
@@ -20,6 +158,10 @@ impl NekoviewApp {
                     });
                 }
             }
+        }
+
+        if self.focused_pane != FocusPane::Grid {
+            return;
         }
 
         // ── エクスプローラー キーナビゲーション ─────────────────────────────

@@ -20,6 +20,28 @@ impl NekoviewApp {
         self.persist_state();
     }
 
+    /// 指定ドライブへ切り替える（ドライブ一覧のクリック・キーボードEnter共通処理）。
+    /// ツリーのルート自体をそのドライブへ差し替え、展開状態をリセットする。
+    pub(super) fn navigate_to_drive(&mut self, path: PathBuf) {
+        self.current_dir = path.clone();
+        self.start_scan();
+        self.tree_root = path.clone();
+        self.tree_expanded.clear();
+        self.tree_children.clear();
+        self.tree_cursor = None;
+        self.viewing_dir = None;
+        self.cd_summary = None;
+        self.cd_summary_rx = None;
+        self.tree_scan_pending = Some(TreeScanPending {
+            path: path.clone(),
+            rx: dir::spawn_scan_subdirs(path, {
+                let c = self.egui_ctx.clone();
+                move || c.request_repaint()
+            }),
+        });
+        self.persist_state();
+    }
+
     /// バックグラウンドスキャンを起動する（UIをブロックしない）
     pub(super) fn start_scan(&mut self) {
         let rx = dir::spawn_scan(self.current_dir.clone(), {

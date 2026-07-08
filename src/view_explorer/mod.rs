@@ -50,6 +50,44 @@ enum FolderPaneTab {
     Favorites,
 }
 
+/// キーボード操作のフォーカス巡回順（Tab/Shift+Tabで一周する）。
+/// TreeTab/FavoriteTab は左ペインのタブ切替を兼ねる。Drives は実ツリー配下の
+/// ドライブ一覧のみを指し、Favorites表示中でも巡回上は残る（着地時に実ツリーへ
+/// 自動復帰する）。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum FocusPane {
+    TreeTab,
+    FavoriteTab,
+    Drives,
+    Grid,
+    Filter,
+    MenuBar,
+}
+
+impl FocusPane {
+    fn next(self) -> Self {
+        match self {
+            Self::TreeTab => Self::FavoriteTab,
+            Self::FavoriteTab => Self::Drives,
+            Self::Drives => Self::Grid,
+            Self::Grid => Self::Filter,
+            Self::Filter => Self::MenuBar,
+            Self::MenuBar => Self::TreeTab,
+        }
+    }
+
+    fn prev(self) -> Self {
+        match self {
+            Self::TreeTab => Self::MenuBar,
+            Self::FavoriteTab => Self::TreeTab,
+            Self::Drives => Self::FavoriteTab,
+            Self::Grid => Self::Drives,
+            Self::Filter => Self::Grid,
+            Self::MenuBar => Self::Filter,
+        }
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum FavoriteSelection {
     None,
@@ -175,6 +213,13 @@ pub struct NekoviewApp {
     tree_children: HashMap<PathBuf, Vec<PathBuf>>,
     /// 左ペイン: 実フォルダツリー / お気に入りペインの切替状態
     folder_pane_tab: FolderPaneTab,
+    /// キーボードフォーカスが現在どの領域にあるか（Tab/Shift+Tabで巡回）
+    pub(crate) focused_pane: FocusPane,
+    /// 実ツリー内のプレターゲティングカーソル（Enterで確定navigate）
+    tree_cursor: Option<PathBuf>,
+    /// ドライブ一覧内のプレターゲティングカーソル。Favoritesタブ経由でDrivesへ
+    /// 移動した際、実ツリー側にいた頃のこの値を復元する（無効ならフォールバック）
+    drive_cursor: Option<PathBuf>,
     /// 定義済みお気に入りフォルダ一覧のキャッシュ（DB操作の都度リフレッシュ）
     favorite_folders: Vec<crate::favorites::FavoriteFolder>,
     favorite_selected: FavoriteSelection,
@@ -361,6 +406,9 @@ impl NekoviewApp {
             tree_expanded: HashSet::new(),
             tree_children: HashMap::new(),
             folder_pane_tab: FolderPaneTab::RealTree,
+            focused_pane: FocusPane::Grid,
+            tree_cursor: None,
+            drive_cursor: None,
             favorite_folders: Vec::new(),
             favorite_selected: FavoriteSelection::None,
             favorite_dialog: None,

@@ -169,18 +169,34 @@ impl NekoviewApp {
 
     fn draw_folder_panel(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            if ui
-                .selectable_label(self.folder_pane_tab == FolderPaneTab::RealTree, i18n::t().folder_tab_real())
-                .clicked()
-            {
+            let real_focused = self.focused_pane == FocusPane::TreeTab;
+            let real_resp = ui.scope(|ui| {
+                if real_focused {
+                    ui.visuals_mut().widgets.inactive.bg_stroke =
+                        egui::Stroke::new(1.5, ui.visuals().selection.bg_fill);
+                    ui.visuals_mut().widgets.hovered.bg_stroke =
+                        egui::Stroke::new(1.5, ui.visuals().selection.bg_fill);
+                }
+                ui.selectable_label(self.folder_pane_tab == FolderPaneTab::RealTree, i18n::t().folder_tab_real())
+            }).inner;
+            if real_resp.clicked() {
                 self.folder_pane_tab = FolderPaneTab::RealTree;
+                self.focused_pane = FocusPane::TreeTab;
                 self.exit_favorite_view();
             }
-            if ui
-                .selectable_label(self.folder_pane_tab == FolderPaneTab::Favorites, i18n::t().folder_tab_favorites())
-                .clicked()
-            {
+            let fav_focused = self.focused_pane == FocusPane::FavoriteTab;
+            let fav_resp = ui.scope(|ui| {
+                if fav_focused {
+                    ui.visuals_mut().widgets.inactive.bg_stroke =
+                        egui::Stroke::new(1.5, ui.visuals().selection.bg_fill);
+                    ui.visuals_mut().widgets.hovered.bg_stroke =
+                        egui::Stroke::new(1.5, ui.visuals().selection.bg_fill);
+                }
+                ui.selectable_label(self.folder_pane_tab == FolderPaneTab::Favorites, i18n::t().folder_tab_favorites())
+            }).inner;
+            if fav_resp.clicked() {
                 self.folder_pane_tab = FolderPaneTab::Favorites;
+                self.focused_pane = FocusPane::FavoriteTab;
             }
         });
         ui.separator();
@@ -210,6 +226,8 @@ impl NekoviewApp {
                     &self.tree_root.clone(),
                     0,
                     &self.viewing_dir,
+                    &self.tree_cursor,
+                    self.focused_pane == FocusPane::TreeTab,
                     &self.tree_expanded,
                     &self.tree_children,
                     self.show_hidden,
@@ -237,6 +255,8 @@ impl NekoviewApp {
                 }
             }
             TreeAction::Navigate(path) => {
+                self.focused_pane = FocusPane::TreeTab;
+                self.tree_cursor = Some(path.clone());
                 self.navigate_to(path);
             }
         }
@@ -244,7 +264,13 @@ impl NekoviewApp {
         ui.separator();
 
         // ── 下部: ドライブ選択 ──
-        ui.small(i18n::t().drives());
+        let drives_focused = self.focused_pane == FocusPane::Drives;
+        ui.scope(|ui| {
+            if drives_focused {
+                ui.visuals_mut().override_text_color = Some(ui.visuals().selection.bg_fill);
+            }
+            ui.small(i18n::t().drives());
+        });
         egui::ScrollArea::vertical()
             .id_salt("drive_scroll")
             .auto_shrink([false, true])
@@ -256,25 +282,18 @@ impl NekoviewApp {
                     .collect();
                 for (label, path) in drives {
                     let selected = self.tree_root == path;
-                    if ui.selectable_label(selected, &label).clicked() {
-                        self.current_dir = path.clone();
-                        self.start_scan();
-                        // ツリーのルートをドライブに切り替え
-                        self.tree_root = path.clone();
-                        self.tree_expanded.clear();
-                        self.tree_children.clear();
-                        self.viewing_dir = None;
-                        self.cd_summary = None;
-                        self.cd_summary_rx = None;
-                        // ドライブルートのサブディレクトリをバックグラウンドで取得
-                        self.tree_scan_pending = Some(TreeScanPending {
-                            path: path.clone(),
-                            rx: dir::spawn_scan_subdirs(path, {
-                                let c = self.egui_ctx.clone();
-                                move || c.request_repaint()
-                            }),
-                        });
-                        self.persist_state();
+                    let is_cursor = drives_focused && self.drive_cursor.as_ref() == Some(&path);
+                    let resp = ui.scope(|ui| {
+                        if is_cursor {
+                            ui.visuals_mut().widgets.inactive.bg_stroke =
+                                egui::Stroke::new(1.5, ui.visuals().selection.bg_fill);
+                        }
+                        ui.selectable_label(selected, &label)
+                    }).inner;
+                    if resp.clicked() {
+                        self.focused_pane = FocusPane::Drives;
+                        self.drive_cursor = Some(path.clone());
+                        self.navigate_to_drive(path);
                     }
                 }
             });
@@ -371,12 +390,24 @@ impl NekoviewApp {
         ui.horizontal(|ui| {
             ui.label(i18n::t().explorer_filter_label());
             let mut changed = ui.checkbox(&mut self.filter_enabled, "").changed();
+            let filter_focused = self.focused_pane == FocusPane::Filter;
             let resp = ui.add_enabled(
                 self.filter_enabled,
                 egui::TextEdit::singleline(&mut self.filter_text)
                     .hint_text(i18n::t().explorer_filter_hint())
                     .desired_width(ui.available_width()),
             );
+            if filter_focused {
+                if !resp.has_focus() {
+                    resp.request_focus();
+                }
+                ui.painter().rect_stroke(
+                    resp.rect,
+                    2.0,
+                    egui::Stroke::new(1.5, ui.visuals().selection.bg_fill),
+                    egui::StrokeKind::Outside,
+                );
+            }
             if resp.changed() {
                 changed = true;
             }
@@ -769,6 +800,8 @@ fn show_tree_node(
     path: &PathBuf,
     depth: usize,
     viewing_dir: &Option<PathBuf>,
+    tree_cursor: &Option<PathBuf>,
+    tree_focused: bool,
     tree_expanded: &HashSet<PathBuf>,
     tree_children: &HashMap<PathBuf, Vec<PathBuf>>,
     show_hidden: bool,
@@ -786,6 +819,7 @@ fn show_tree_node(
 
     let is_expanded = tree_expanded.contains(path);
     let is_current = viewing_dir.as_ref() == Some(path);
+    let is_cursor = tree_focused && tree_cursor.as_ref() == Some(path);
 
     let show_arrow = is_expanded
         || match tree_children.get(path) {
@@ -814,6 +848,10 @@ fn show_tree_node(
                     egui::Color32::from_rgb(160, 50, 50);
                 ui.visuals_mut().selection.stroke.color = egui::Color32::WHITE;
             }
+            if is_cursor {
+                ui.visuals_mut().widgets.inactive.bg_stroke =
+                    egui::Stroke::new(1.5, ui.visuals().selection.bg_fill);
+            }
             ui.selectable_label(is_current, &name)
         }).inner;
         if r.clicked() && matches!(*action, TreeAction::None) {
@@ -839,6 +877,8 @@ fn show_tree_node(
                     child,
                     depth + 1,
                     viewing_dir,
+                    tree_cursor,
+                    tree_focused,
                     tree_expanded,
                     tree_children,
                     show_hidden,
