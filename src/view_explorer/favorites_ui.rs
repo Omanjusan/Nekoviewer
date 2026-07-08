@@ -77,20 +77,16 @@ impl NekoviewApp {
             .auto_shrink([false, false])
             .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
             .show(ui, |ui| {
-                let favorites_focused = self.focused_pane == FocusPane::FavoriteTab;
+                let favorites_focused = self.focused_pane == FocusPane::FavoriteTab && !self.favorite_at_tab;
 
                 // 特別枠: 未整理のお気に入り。ソート設定に関わらず常に最上位固定。
                 let unsorted_selected = self.favorite_selected == FavoriteSelection::Unsorted;
                 let unsorted_cursor = favorites_focused && self.favorite_cursor == Some(FavoriteSelection::Unsorted);
-                let unsorted_resp = ui.scope(|ui| {
-                    if unsorted_cursor {
-                        ui.visuals_mut().widgets.inactive.bg_stroke =
-                            egui::Stroke::new(1.5, ui.visuals().selection.bg_fill);
-                    }
-                    ui.selectable_label(unsorted_selected, i18n::t().favorite_unsorted_label())
-                }).inner;
+                let unsorted_resp = ui.selectable_label(unsorted_selected, i18n::t().favorite_unsorted_label());
+                if unsorted_cursor { super::panels::draw_cursor_ring(ui, unsorted_resp.rect); }
                 if unsorted_resp.clicked() {
                     self.focused_pane = FocusPane::FavoriteTab;
+                    self.favorite_at_tab = false;
                     self.favorite_cursor = Some(FavoriteSelection::Unsorted);
                     self.enter_favorite_view(FavoriteSelection::Unsorted);
                 }
@@ -99,15 +95,11 @@ impl NekoviewApp {
                     let label = format!("{} {}", folder.marker, folder.name);
                     let selected = self.favorite_selected == FavoriteSelection::Folder(folder.id);
                     let is_cursor = favorites_focused && self.favorite_cursor == Some(FavoriteSelection::Folder(folder.id));
-                    let resp = ui.scope(|ui| {
-                        if is_cursor {
-                            ui.visuals_mut().widgets.inactive.bg_stroke =
-                                egui::Stroke::new(1.5, ui.visuals().selection.bg_fill);
-                        }
-                        ui.selectable_label(selected, label)
-                    }).inner;
+                    let resp = ui.selectable_label(selected, label);
+                    if is_cursor { super::panels::draw_cursor_ring(ui, resp.rect); }
                     if resp.clicked() {
                         self.focused_pane = FocusPane::FavoriteTab;
+                        self.favorite_at_tab = false;
                         self.favorite_cursor = Some(FavoriteSelection::Folder(folder.id));
                         self.enter_favorite_view(FavoriteSelection::Folder(folder.id));
                     }

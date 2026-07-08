@@ -249,11 +249,16 @@ pub struct NekoviewApp {
     pub(crate) focused_pane: FocusPane,
     /// 実ツリー内のプレターゲティングカーソル（Enterで確定navigate）
     tree_cursor: Option<PathBuf>,
+    /// true: カーソルはツリー本体ではなくTreeTabボタン自体にいる（上下キーでの
+    /// タブ⇄本体の行き来を表現する。本体先頭ノードでUp、またはこの状態でDownで切替）
+    tree_at_tab: bool,
     /// ドライブ一覧内のプレターゲティングカーソル。Favoritesタブ経由でDrivesへ
     /// 移動した際、実ツリー側にいた頃のこの値を復元する（無効ならフォールバック）
     drive_cursor: Option<PathBuf>,
     /// お気に入りタブ内のプレターゲティングカーソル（[未整理, フォルダ...]の並び）
     favorite_cursor: Option<FavoriteSelection>,
+    /// true: カーソルは本体リストではなくFavoriteTabボタン自体にいる（tree_at_tabと同様）
+    favorite_at_tab: bool,
     /// MenuBar内のプレターゲティングカーソル（MENU_BAR_ORDER上のインデックス）
     menu_cursor: usize,
     /// 定義済みお気に入りフォルダ一覧のキャッシュ（DB操作の都度リフレッシュ）
@@ -442,10 +447,12 @@ impl NekoviewApp {
             tree_expanded: HashSet::new(),
             tree_children: HashMap::new(),
             folder_pane_tab: FolderPaneTab::RealTree,
-            focused_pane: FocusPane::Grid,
+            focused_pane: FocusPane::TreeTab,
             tree_cursor: None,
+            tree_at_tab: false,
             drive_cursor: None,
             favorite_cursor: None,
+            favorite_at_tab: false,
             menu_cursor: 0,
             favorite_folders: Vec::new(),
             favorite_selected: FavoriteSelection::None,

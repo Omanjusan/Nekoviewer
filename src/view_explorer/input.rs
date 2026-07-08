@@ -25,9 +25,25 @@ impl NekoviewApp {
             FocusPane::TreeTab => {
                 self.folder_pane_tab = FolderPaneTab::RealTree;
                 self.exit_favorite_view();
+                self.tree_at_tab = false;
+                let flat = self.flatten_visible_tree();
+                let valid = self.tree_cursor.as_ref().is_some_and(|p| flat.contains(p));
+                if !valid {
+                    self.tree_cursor = self.viewing_dir.clone()
+                        .filter(|p| flat.contains(p))
+                        .or_else(|| flat.first().cloned());
+                }
             }
             FocusPane::FavoriteTab => {
                 self.folder_pane_tab = FolderPaneTab::Favorites;
+                self.favorite_at_tab = false;
+                let items: Vec<FavoriteSelection> = std::iter::once(FavoriteSelection::Unsorted)
+                    .chain(self.favorite_folders.iter().map(|f| FavoriteSelection::Folder(f.id)))
+                    .collect();
+                let valid = self.favorite_cursor.is_some_and(|c| items.contains(&c));
+                if !valid {
+                    self.favorite_cursor = Some(FavoriteSelection::Unsorted);
+                }
             }
             FocusPane::Drives => {
                 // Drivesは実ツリー配下にのみ存在するため、Favorites経由での到達時は
@@ -94,6 +110,21 @@ impl NekoviewApp {
         if flat.is_empty() {
             return;
         }
+
+        // TreeTabボタン自体にカーソルがある状態。Downで本体先頭へ入る。
+        if self.tree_at_tab {
+            if key_down {
+                self.tree_at_tab = false;
+                let valid = self.tree_cursor.as_ref().is_some_and(|p| flat.contains(p));
+                if !valid {
+                    self.tree_cursor = self.viewing_dir.clone()
+                        .filter(|p| flat.contains(p))
+                        .or_else(|| flat.first().cloned());
+                }
+            }
+            return;
+        }
+
         let cur = self.tree_cursor.clone()
             .filter(|p| flat.contains(p))
             .unwrap_or_else(|| self.viewing_dir.clone().filter(|p| flat.contains(p)).unwrap_or_else(|| flat[0].clone()));
@@ -102,8 +133,14 @@ impl NekoviewApp {
         if key_down && pos + 1 < flat.len() {
             self.tree_cursor = Some(flat[pos + 1].clone());
         }
-        if key_up && pos > 0 {
-            self.tree_cursor = Some(flat[pos - 1].clone());
+        if key_up {
+            if pos > 0 {
+                self.tree_cursor = Some(flat[pos - 1].clone());
+            } else {
+                // 先頭ノードでさらにUp: TreeTabボタン自体へ退避する
+                self.tree_at_tab = true;
+                return;
+            }
         }
         if key_right {
             if !self.tree_expanded.contains(&cur) {
@@ -170,6 +207,18 @@ impl NekoviewApp {
         if items.is_empty() {
             return;
         }
+
+        // FavoriteTabボタン自体にカーソルがある状態。Downで本体先頭へ入る。
+        if self.favorite_at_tab {
+            if key_down {
+                self.favorite_at_tab = false;
+                if !self.favorite_cursor.is_some_and(|c| items.contains(&c)) {
+                    self.favorite_cursor = Some(items[0]);
+                }
+            }
+            return;
+        }
+
         let cur = self.favorite_cursor
             .filter(|c| items.contains(c))
             .unwrap_or(items[0]);
@@ -178,8 +227,14 @@ impl NekoviewApp {
         if key_down && pos + 1 < items.len() {
             new_pos = pos + 1;
         }
-        if key_up && pos > 0 {
-            new_pos = pos - 1;
+        if key_up {
+            if pos > 0 {
+                new_pos = pos - 1;
+            } else {
+                // 先頭項目でさらにUp: FavoriteTabボタン自体へ退避する
+                self.favorite_at_tab = true;
+                return;
+            }
         }
         if new_pos != pos {
             self.favorite_cursor = Some(items[new_pos]);
