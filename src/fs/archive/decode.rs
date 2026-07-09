@@ -16,13 +16,47 @@ fn has_avif_signature(buf: &[u8]) -> bool {
     buf.len() >= 12 && &buf[4..8] == b"ftyp" && matches!(&buf[8..12], b"avif" | b"avis")
 }
 
+/// WebPのRIFFコンテナからEXIFチャンクを探してOrientationを返す（無ければNoTransforms）。
+/// `webp` crateにexif APIが無いため、RIFFチャンク構造（FourCC 4byte + size 4byte LE +
+/// データ、偶数バイトにパディング）を自前で走査する。WebPのEXIFチャンクはJPEGのAPP1と
+/// 違い"Exif\0\0"プレフィックスを持たず、TIFFヘッダから直接始まるため`from_exif_chunk`に
+/// そのまま渡せる。
+pub(crate) fn webp_exif_orientation(buf: &[u8]) -> image::metadata::Orientation {
+    use image::metadata::Orientation;
+
+    if !has_webp_signature(buf) {
+        return Orientation::NoTransforms;
+    }
+    let mut pos = 12usize;
+    while pos + 8 <= buf.len() {
+        let fourcc = &buf[pos..pos + 4];
+        let size = u32::from_le_bytes(buf[pos + 4..pos + 8].try_into().unwrap()) as usize;
+        let data_start = pos + 8;
+        let Some(data_end) = data_start.checked_add(size) else { break };
+        if data_end > buf.len() {
+            break;
+        }
+        if fourcc == b"EXIF" {
+            return Orientation::from_exif_chunk(&buf[data_start..data_end])
+                .unwrap_or(Orientation::NoTransforms);
+        }
+        // チャンクは偶数バイトにパディングされる
+        pos = data_end + (size % 2);
+    }
+    Orientation::NoTransforms
+}
+
 /// バイト列から静止画をデコードする（外部から呼び出し可能）。
 /// 拡張子ではなく先頭バイトのシグネチャで実フォーマットを判定するため、
 /// 拡張子と中身が食い違うファイルでも正しいデコーダへ振り分けられる。
 pub fn decode_image_bytes(buf: &[u8]) -> Option<image::DynamicImage> {
     if has_webp_signature(buf) {
+        // このパスは常に単一の静的画像を返す（アニメ再生自体は別経路のRingAnimationが担う）
+        // ため、どちらの分岐で取れたフレームに対してもExif Orientationを適用してよい。
+        let orientation = webp_exif_orientation(buf);
         // 静止画デコードを先に試みる
-        if let Some(img) = webp::Decoder::new(buf).decode().map(|w| w.to_image()) {
+        if let Some(mut img) = webp::Decoder::new(buf).decode().map(|w| w.to_image()) {
+            img.apply_orientation(orientation);
             return Some(img);
         }
         // アニメーション WebP: 最初のフレームを静止画として返す
@@ -40,7 +74,9 @@ pub fn decode_image_bytes(buf: &[u8]) -> Option<image::DynamicImage> {
                         image::RgbaImage::from_raw(w, h, data)
                     }
                 };
-                return rgba.map(image::DynamicImage::ImageRgba8);
+                let mut img = rgba.map(image::DynamicImage::ImageRgba8)?;
+                img.apply_orientation(orientation);
+                return Some(img);
             }
         }
         None
@@ -195,8 +231,8 @@ mod tests {
         assert_eq!(estimated, 4 * 3 * 4);
     }
 
-    /// Exif Orientationタグ(6 = 時計回り90度回転)を持つ最小JPEG APP1セグメントを組み立てる。
-    fn build_exif_orientation_app1(orientation: u16) -> Vec<u8> {
+    /// Orientationタグ1個だけを持つ最小TIFF形式Exifチャンクを組み立てる（値はintel/LE）。
+    fn build_minimal_exif_tiff(orientation: u16) -> Vec<u8> {
         let mut tiff = Vec::new();
         tiff.extend_from_slice(b"II"); // little-endian
         tiff.extend_from_slice(&0x002Au16.to_le_bytes());
@@ -207,14 +243,54 @@ mod tests {
         tiff.extend_from_slice(&1u32.to_le_bytes()); // count
         tiff.extend_from_slice(&(orientation as u32).to_le_bytes()); // inline value
         tiff.extend_from_slice(&0u32.to_le_bytes()); // next IFD offset
+        tiff
+    }
 
+    /// Exif Orientationタグ(6 = 時計回り90度回転)を持つ最小JPEG APP1セグメントを組み立てる。
+    fn build_exif_orientation_app1(orientation: u16) -> Vec<u8> {
         let mut payload = b"Exif\0\0".to_vec();
-        payload.extend_from_slice(&tiff);
+        payload.extend_from_slice(&build_minimal_exif_tiff(orientation));
 
         let mut app1 = vec![0xFF, 0xE1];
         app1.extend_from_slice(&((payload.len() + 2) as u16).to_be_bytes());
         app1.extend_from_slice(&payload);
         app1
+    }
+
+    /// EXIFチャンク（Orientation付き）を1つだけ持つ最小RIFF/WEBPバイト列を組み立てる。
+    /// 実際のVP8/VP8Xピクセルデータは含まない（`webp_exif_orientation`はチャンク走査のみ行うため不要）。
+    fn build_minimal_webp_with_exif(orientation: u16) -> Vec<u8> {
+        let tiff = build_minimal_exif_tiff(orientation);
+        let mut exif_chunk = Vec::new();
+        exif_chunk.extend_from_slice(b"EXIF");
+        exif_chunk.extend_from_slice(&(tiff.len() as u32).to_le_bytes());
+        exif_chunk.extend_from_slice(&tiff);
+        if tiff.len() % 2 != 0 {
+            exif_chunk.push(0); // パディング
+        }
+
+        let mut riff_body = Vec::new();
+        riff_body.extend_from_slice(b"WEBP");
+        riff_body.extend_from_slice(&exif_chunk);
+
+        let mut out = Vec::new();
+        out.extend_from_slice(b"RIFF");
+        out.extend_from_slice(&(riff_body.len() as u32).to_le_bytes());
+        out.extend_from_slice(&riff_body);
+        out
+    }
+
+    #[test]
+    fn webp_exif_orientation_reads_orientation_tag() {
+        let buf = build_minimal_webp_with_exif(6);
+        assert_eq!(webp_exif_orientation(&buf), image::metadata::Orientation::Rotate90);
+    }
+
+    #[test]
+    fn webp_exif_orientation_defaults_to_no_transforms_without_exif_chunk() {
+        // testフィクスチャの実webp: VP8チャンクのみでEXIFチャンクを持たない
+        let buf = std::fs::read("test/IMG_20260626_134522.jpg.webp").unwrap();
+        assert_eq!(webp_exif_orientation(&buf), image::metadata::Orientation::NoTransforms);
     }
 
     #[test]

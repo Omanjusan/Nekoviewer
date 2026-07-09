@@ -429,6 +429,15 @@ impl RingAnimation {
     /// フレーム0のバイト数から通常表示用のリサイズ先・リング容量を算出し、以降の再生中は変更しない（フェーズ4）。
     /// `target_size` はフェーズ6: 表示上限（Noneは無制限=原寸のまま）。
     fn from_source(format: AnimFormat, source: Arc<[u8]>, filter: image::imageops::FilterType, ring_budget_bytes: usize, ring_bounds: (usize, usize), frame_hard_limit_bytes: usize, target_size: Option<(u32, u32)>) -> RingDecodeOutcome {
+        // WebPのExif Orientationは静止画（1フレームしかない）確定時のみ適用する。アニメ全体への
+        // 一律適用は未対応のため、先にframe0だけ回転してしまうと「先頭フレームだけ回転済み・
+        // 残りは無回転」という不整合が起きる。そのため判定（frame1の有無）より前には触らない。
+        let webp_orientation = if format == AnimFormat::Webp {
+            crate::fs::archive::decode::webp_exif_orientation(&source)
+        } else {
+            image::metadata::Orientation::NoTransforms
+        };
+
         let mut decoder = match SequentialAnimDecoder::new(format, source) {
             Some(d) => d,
             None => return RingDecodeOutcome::NotThisFormat,
@@ -437,6 +446,25 @@ impl RingAnimation {
             Some(f) => f,
             None => return RingDecodeOutcome::NotThisFormat,
         };
+        let frame1 = decoder.next_frame();
+
+        if frame1.is_none() {
+            let mut frame0 = frame0;
+            if webp_orientation != image::metadata::Orientation::NoTransforms {
+                let mut img = image::DynamicImage::ImageRgba8(frame0.image);
+                img.apply_orientation(webp_orientation);
+                frame0.image = img.into_rgba8();
+            }
+            let frame0 = Self::guard_frame_size(frame0, frame_hard_limit_bytes, filter, 0);
+            let (w, h) = (frame0.image.width(), frame0.image.height());
+            let resize_to = target_size.and_then(|(tw, th)| {
+                let (nw, nh) = crate::anim::fit_within(w, h, tw, th);
+                if (nw, nh) == (w, h) { None } else { Some((nw, nh)) }
+            });
+            let frame0 = Self::apply_resize(frame0, resize_to, filter);
+            return RingDecodeOutcome::SingleFrame(frame0);
+        }
+
         let frame0 = Self::guard_frame_size(frame0, frame_hard_limit_bytes, filter, 0);
 
         let (w, h) = (frame0.image.width(), frame0.image.height());
@@ -447,10 +475,7 @@ impl RingAnimation {
 
         let frame0 = Self::apply_resize(frame0, resize_to, filter);
 
-        let frame1 = match decoder.next_frame() {
-            Some(f) => f,
-            None => return RingDecodeOutcome::SingleFrame(frame0),
-        };
+        let frame1 = frame1.unwrap();
         let frame1 = Self::guard_frame_size(frame1, frame_hard_limit_bytes, filter, 1);
         let frame1 = Self::apply_resize(frame1, resize_to, filter);
 
