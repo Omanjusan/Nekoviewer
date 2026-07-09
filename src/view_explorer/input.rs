@@ -9,9 +9,11 @@ impl NekoviewApp {
     /// フォーカス巡回: Tab/Shift+Tabで TreeTab→FavoriteTab→Drives→Grid→Filter→MenuBar
     /// を一周する。着地したペインに応じてタブ切替・カーソル復元を追従させる。
     pub(super) fn handle_focus_keys(&mut self, ctx: &egui::Context) {
-        let (tab, shift_tab) = ctx.input_mut(|i| (
-            i.consume_key(egui::Modifiers::NONE, egui::Key::Tab),
+        // consume_key は matches_logically でShift/Altの有無を無視して照合するため、
+        // 先にNONE版を呼ぶとShift+TabもTabとして食われてしまう。SHIFT版を先に消費すること。
+        let (shift_tab, tab) = ctx.input_mut(|i| (
             i.consume_key(egui::Modifiers::SHIFT, egui::Key::Tab),
+            i.consume_key(egui::Modifiers::NONE, egui::Key::Tab),
         ));
         if !tab && !shift_tab {
             return;
@@ -366,16 +368,9 @@ impl NekoviewApp {
             .unwrap_or_else(|| entries[0].clone());
         let pos = entries.iter().position(|e| *e == cur_entry).unwrap_or(0);
 
-        // キー入力を一括消費してからクロージャ外で処理する（borrow 競合回避）
-        let (key_left, key_right, key_down, key_up, key_home, key_end) = ctx.input_mut(|i| (
-            i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowLeft),
-            i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowRight),
-            i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown),
-            i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp),
-            i.consume_key(egui::Modifiers::NONE, egui::Key::Home),
-            i.consume_key(egui::Modifiers::NONE, egui::Key::End),
-        ));
-        // Shift併用版（範囲選択の拡張用。アーカイブ間の移動時のみ意味を持つ）
+        // キー入力を一括消費してからクロージャ外で処理する（borrow 競合回避）。
+        // consume_key は matches_logically でShift/Altの有無を無視して照合するため、
+        // 先にNONE版を消費するとShift併用も食われてしまう。SHIFT版を先に消費すること。
         let (skey_left, skey_right, skey_down, skey_up, skey_home, skey_end) = ctx.input_mut(|i| (
             i.consume_key(egui::Modifiers::SHIFT, egui::Key::ArrowLeft),
             i.consume_key(egui::Modifiers::SHIFT, egui::Key::ArrowRight),
@@ -383,6 +378,14 @@ impl NekoviewApp {
             i.consume_key(egui::Modifiers::SHIFT, egui::Key::ArrowUp),
             i.consume_key(egui::Modifiers::SHIFT, egui::Key::Home),
             i.consume_key(egui::Modifiers::SHIFT, egui::Key::End),
+        ));
+        let (key_left, key_right, key_down, key_up, key_home, key_end) = ctx.input_mut(|i| (
+            i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowLeft),
+            i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowRight),
+            i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown),
+            i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp),
+            i.consume_key(egui::Modifiers::NONE, egui::Key::Home),
+            i.consume_key(egui::Modifiers::NONE, egui::Key::End),
         ));
         let key_left = key_left || skey_left;
         let key_right = key_right || skey_right;

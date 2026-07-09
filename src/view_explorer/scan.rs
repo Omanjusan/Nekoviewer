@@ -130,7 +130,16 @@ impl NekoviewApp {
             }
             self.scan_state = ScanState::Done;
             self.sort_archives();
-            self.selected_archive_index = if self.archives.is_empty() { None } else { Some(0) };
+            // グリッドの統一カーソルを新しいディレクトリの先頭（↑があればそれ）へ即座に
+            // 合わせる。矢印キーを押すまで何もカーソルが出ない空白期間を作らないため。
+            let entries = self.grid_entries();
+            if let Some(first) = entries.first() {
+                self.set_grid_cursor(first.clone());
+            } else {
+                self.grid_cursor = None;
+                self.selected_archive_index = None;
+                self.selected_archive_meta = None;
+            }
             self.multi_selected.clear();
             self.select_anchor = None;
             // サマリーはスキャン済みリストを使い回して起動する（ネットワークの再列挙を避ける）
