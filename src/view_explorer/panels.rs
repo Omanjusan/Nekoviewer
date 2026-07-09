@@ -52,6 +52,16 @@ impl NekoviewApp {
         }
 
         self.handle_explorer_keys(&ctx);
+        // egui標準のTab/矢印キーによるネイティブなウィジェットフォーカス移動
+        // （Memory::focus_direction、選択ラベル/ボタンも対象になる）は、今回自前で
+        // 構築したFocusPaneベースのキーボード操作と二重に動いてしまう
+        // （例: MenuBarのボタンがネイティブフォーカスを奪い、それを起点に矢印キーで
+        // 隣接ウィジェットへ移り歩いてしまい、ツリー等の自前カーソル移動と競合して見える）。
+        // Filter欄だけは実際のテキスト入力フォーカスが必要なので、それ以外は毎フレーム
+        // ネイティブフォーカスを解除し、見た目上のカーソル表現を自前のハイライトに一本化する。
+        if self.focused_pane != FocusPane::Filter {
+            ctx.memory_mut(|mem| mem.stop_text_input());
+        }
         // release ビルドは ROOT 内フローティングウィンドウのため ui() で描画する。
         // debug ビルドの独立 deferred viewport は logic() 側で駆動する（上記参照）。
         #[cfg(not(debug_assertions))]
@@ -66,7 +76,99 @@ impl NekoviewApp {
         // ROOT は入力イベント・各ワーカーの起床通知・ステータス窓の1Hzハートビートで再描画される。
     }
 
+    /// MenuBarの各ボタンの並び順・有効状態を計算する（MENU_BAR_ORDERに対応）。
+    /// draw_menu_barの描画とhandle_menu_bar_keysの移動対象決定の両方から参照する単一の情報源。
+    pub(super) fn menu_bar_items(&self) -> Vec<(MenuBarButton, bool)> {
+        let (viewer_open, is_raw_viewer, is_spread, can_back, can_fwd) = {
+            let guard = self.viewer.lock().unwrap();
+            let viewer_open = guard.is_some();
+            let is_raw_viewer = guard.as_ref().map_or(false, |v| v.is_raw_file());
+            let cur_mode = guard.as_ref().map(|v| v.page_mode());
+            let is_spread = cur_mode.map_or(false, |m| m != PageMode::Single);
+            let can_back = guard.as_ref().map_or(false, |v| v.can_shift_backward());
+            let can_fwd = guard.as_ref().map_or(false, |v| v.can_shift_forward());
+            (viewer_open, is_raw_viewer, is_spread, can_back, can_fwd)
+        };
+        MENU_BAR_ORDER.iter().map(|&b| {
+            let enabled = match b {
+                MenuBarButton::PageSingle => viewer_open,
+                MenuBarButton::PageSpreadLeft | MenuBarButton::PageSpreadRight => viewer_open && !is_raw_viewer,
+                MenuBarButton::SpreadBack => viewer_open && is_spread && !is_raw_viewer && can_back,
+                MenuBarButton::SpreadFwd => viewer_open && is_spread && !is_raw_viewer && can_fwd,
+                MenuBarButton::SortName
+                | MenuBarButton::SortDate
+                | MenuBarButton::SortSize
+                | MenuBarButton::SortOrder
+                | MenuBarButton::StatusToggle
+                | MenuBarButton::Settings => true,
+            };
+            (b, enabled)
+        }).collect()
+    }
+
+    /// ソートキー・昇降順の変更後に共通で行う後処理（クリック・キーボード両経路で使う）。
+    fn finish_sort_change(&mut self) {
+        self.sort_archives();
+        // ソート変更で archives の並びが変わり、インデックスベースの複数選択が
+        // 無関係な項目を指す可能性があるため安全側に倒して解除する
+        self.multi_selected.clear();
+        self.select_anchor = None;
+    }
+
+    /// MenuBarキーボード操作（Enter確定）から、指定ボタンのクリック相当処理を発火する。
+    /// 呼び出し側で有効/無効チェック済みであることを前提とする。
+    pub(super) fn activate_menu_button(&mut self, button: MenuBarButton) {
+        match button {
+            MenuBarButton::PageSingle => {
+                let mut v_guard = self.viewer.lock().unwrap();
+                let mut cfg_guard = self.viewer_cfg.lock().unwrap();
+                if let Some(v) = v_guard.as_mut() { v.set_page_mode(PageMode::Single, &mut *cfg_guard); }
+            }
+            MenuBarButton::PageSpreadLeft => {
+                let mut v_guard = self.viewer.lock().unwrap();
+                let mut cfg_guard = self.viewer_cfg.lock().unwrap();
+                if let Some(v) = v_guard.as_mut() { v.set_page_mode(PageMode::SpreadLeft, &mut *cfg_guard); }
+            }
+            MenuBarButton::PageSpreadRight => {
+                let mut v_guard = self.viewer.lock().unwrap();
+                let mut cfg_guard = self.viewer_cfg.lock().unwrap();
+                if let Some(v) = v_guard.as_mut() { v.set_page_mode(PageMode::SpreadRight, &mut *cfg_guard); }
+            }
+            MenuBarButton::SpreadBack => {
+                if let Some(v) = self.viewer.lock().unwrap().as_mut() { v.shift_offset_backward(); }
+            }
+            MenuBarButton::SpreadFwd => {
+                if let Some(v) = self.viewer.lock().unwrap().as_mut() { v.shift_offset_forward(); }
+            }
+            MenuBarButton::SortName => {
+                self.sort_key = ExplorerSortKey::Name;
+                self.finish_sort_change();
+            }
+            MenuBarButton::SortDate => {
+                self.sort_key = ExplorerSortKey::Date;
+                self.finish_sort_change();
+            }
+            MenuBarButton::SortSize => {
+                self.sort_key = ExplorerSortKey::Size;
+                self.finish_sort_change();
+            }
+            MenuBarButton::SortOrder => {
+                self.sort_ascending = !self.sort_ascending;
+                self.finish_sort_change();
+            }
+            MenuBarButton::StatusToggle => {
+                self.show_status_window = !self.show_status_window;
+            }
+            MenuBarButton::Settings => {
+                self.open_settings();
+            }
+        }
+    }
+
     fn draw_menu_bar(&mut self, ui: &mut egui::Ui) {
+        let menu_focused = self.focused_pane == FocusPane::MenuBar;
+        let cursor_button = MENU_BAR_ORDER.get(self.menu_cursor).copied();
+        let is_cursor = |b: MenuBarButton| menu_focused && cursor_button == Some(b);
         ui.horizontal(|ui| {
             // 隠しファイル表示トグルは設定ダイアログの「共通」タブへ移設した。
 
@@ -84,19 +186,25 @@ impl NekoviewApp {
             };
 
             ui.add_enabled_ui(viewer_open, |ui| {
-                if ui.selectable_label(cur_mode == Some(PageMode::Single), i18n::t().page_single()).clicked() {
+                let r = ui.selectable_label(cur_mode == Some(PageMode::Single), i18n::t().page_single());
+                if is_cursor(MenuBarButton::PageSingle) { draw_cursor_ring(ui, r.rect); }
+                if r.clicked() {
                     let mut v_guard = self.viewer.lock().unwrap();
                     let mut cfg_guard = self.viewer_cfg.lock().unwrap();
                     if let Some(v) = v_guard.as_mut() { v.set_page_mode(PageMode::Single, &mut *cfg_guard); }
                 }
             });
             ui.add_enabled_ui(viewer_open && !is_raw_viewer, |ui| {
-                if ui.selectable_label(cur_mode == Some(PageMode::SpreadLeft), i18n::t().page_spread_left()).clicked() {
+                let r_left = ui.selectable_label(cur_mode == Some(PageMode::SpreadLeft), i18n::t().page_spread_left());
+                if is_cursor(MenuBarButton::PageSpreadLeft) { draw_cursor_ring(ui, r_left.rect); }
+                if r_left.clicked() {
                     let mut v_guard = self.viewer.lock().unwrap();
                     let mut cfg_guard = self.viewer_cfg.lock().unwrap();
                     if let Some(v) = v_guard.as_mut() { v.set_page_mode(PageMode::SpreadLeft, &mut *cfg_guard); }
                 }
-                if ui.selectable_label(cur_mode == Some(PageMode::SpreadRight), i18n::t().page_spread_right()).clicked() {
+                let r_right = ui.selectable_label(cur_mode == Some(PageMode::SpreadRight), i18n::t().page_spread_right());
+                if is_cursor(MenuBarButton::PageSpreadRight) { draw_cursor_ring(ui, r_right.rect); }
+                if r_right.clicked() {
                     let mut v_guard = self.viewer.lock().unwrap();
                     let mut cfg_guard = self.viewer_cfg.lock().unwrap();
                     if let Some(v) = v_guard.as_mut() { v.set_page_mode(PageMode::SpreadRight, &mut *cfg_guard); }
@@ -104,10 +212,14 @@ impl NekoviewApp {
             });
 
             ui.add_enabled_ui(viewer_open && is_spread && !is_raw_viewer, |ui| {
-                if ui.add_enabled(can_back, egui::Button::new(i18n::t().spread_back())).clicked() {
+                let r_back = ui.add_enabled(can_back, egui::Button::new(i18n::t().spread_back()));
+                if is_cursor(MenuBarButton::SpreadBack) { draw_cursor_ring(ui, r_back.rect); }
+                if r_back.clicked() {
                     if let Some(v) = self.viewer.lock().unwrap().as_mut() { v.shift_offset_backward(); }
                 }
-                if ui.add_enabled(can_fwd, egui::Button::new(i18n::t().spread_fwd())).clicked() {
+                let r_fwd = ui.add_enabled(can_fwd, egui::Button::new(i18n::t().spread_fwd()));
+                if is_cursor(MenuBarButton::SpreadFwd) { draw_cursor_ring(ui, r_fwd.rect); }
+                if r_fwd.clicked() {
                     if let Some(v) = self.viewer.lock().unwrap().as_mut() { v.shift_offset_forward(); }
                 }
                 ui.label(if is_offset { i18n::t().spread_offset_on() } else { i18n::t().spread_aligned() });
@@ -117,17 +229,22 @@ impl NekoviewApp {
 
             // ── エクスプローラーソート ────────────────────────────────────
             let mut sort_changed = false;
-            for key in [ExplorerSortKey::Name, ExplorerSortKey::Date, ExplorerSortKey::Size] {
+            for (key, btn) in [
+                (ExplorerSortKey::Name, MenuBarButton::SortName),
+                (ExplorerSortKey::Date, MenuBarButton::SortDate),
+                (ExplorerSortKey::Size, MenuBarButton::SortSize),
+            ] {
                 let active = self.sort_key == key;
-                let clicked = ui.scope(|ui| {
+                let r = ui.scope(|ui| {
                     if active {
                         ui.visuals_mut().selection.bg_fill =
                             egui::Color32::from_rgb(30, 100, 200);
                         ui.visuals_mut().selection.stroke.color = egui::Color32::WHITE;
                     }
-                    ui.selectable_label(active, key.label()).clicked()
+                    ui.selectable_label(active, key.label())
                 }).inner;
-                if clicked {
+                if is_cursor(btn) { draw_cursor_ring(ui, r.rect); }
+                if r.clicked() {
                     self.sort_key = key;
                     sort_changed = true;
                 }
@@ -136,31 +253,32 @@ impl NekoviewApp {
             ui.label(":");
 
             let order_label = if self.sort_ascending { i18n::t().sort_asc() } else { i18n::t().sort_desc() };
-            if ui.button(order_label).clicked() {
+            let r_order = ui.button(order_label);
+            if is_cursor(MenuBarButton::SortOrder) { draw_cursor_ring(ui, r_order.rect); }
+            if r_order.clicked() {
                 self.sort_ascending = !self.sort_ascending;
                 sort_changed = true;
             }
 
             if sort_changed {
-                self.sort_archives();
-                // ソート変更で archives の並びが変わり、インデックスベースの複数選択が
-                // 無関係な項目を指す可能性があるため安全側に倒して解除する
-                self.multi_selected.clear();
-                self.select_anchor = None;
+                self.finish_sort_change();
             }
 
             // ── ステータスウィンドウボタン（右端） ────────────────────────
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let btn = ui.button("[?]");
-                if btn.clicked() {
+                // 右→左レイアウトのため最初に追加した方が最も右端（[?]が視覚上の右端）。
+                // MENU_BAR_ORDERは視覚上の左→右（…設定, [?]）なので描画順は逆になる。
+                let r_status = ui.button("[?]");
+                if is_cursor(MenuBarButton::StatusToggle) { draw_cursor_ring(ui, r_status.rect); }
+                if r_status.clicked() {
                     self.show_status_window = !self.show_status_window;
                 }
 
                 ui.separator();
 
-                // 設定ダイアログを開く。旧・再デコードトグル/デバウンスサイクル/言語切替
-                // ボタン列はダイアログの「共通」タブに統合した。
-                if ui.button(i18n::t().settings_button()).clicked() {
+                let r_settings = ui.button(i18n::t().settings_button());
+                if is_cursor(MenuBarButton::Settings) { draw_cursor_ring(ui, r_settings.rect); }
+                if r_settings.clicked() {
                     self.open_settings();
                 }
             });
@@ -169,18 +287,22 @@ impl NekoviewApp {
 
     fn draw_folder_panel(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            if ui
-                .selectable_label(self.folder_pane_tab == FolderPaneTab::RealTree, i18n::t().folder_tab_real())
-                .clicked()
-            {
-                self.folder_pane_tab = FolderPaneTab::RealTree;
-                self.exit_favorite_view();
-            }
-            if ui
-                .selectable_label(self.folder_pane_tab == FolderPaneTab::Favorites, i18n::t().folder_tab_favorites())
-                .clicked()
-            {
+            let fav_focused = self.focused_pane == FocusPane::FavoriteTab && self.favorite_at_tab;
+            let fav_resp = ui.selectable_label(self.folder_pane_tab == FolderPaneTab::Favorites, i18n::t().folder_tab_favorites());
+            if fav_focused { draw_cursor_ring(ui, fav_resp.rect); }
+            if fav_resp.clicked() {
                 self.folder_pane_tab = FolderPaneTab::Favorites;
+                self.favorite_at_tab = false;
+                self.focused_pane = FocusPane::FavoriteTab;
+            }
+            let real_focused = self.focused_pane == FocusPane::TreeTab && self.tree_at_tab;
+            let real_resp = ui.selectable_label(self.folder_pane_tab == FolderPaneTab::RealTree, i18n::t().folder_tab_real());
+            if real_focused { draw_cursor_ring(ui, real_resp.rect); }
+            if real_resp.clicked() {
+                self.folder_pane_tab = FolderPaneTab::RealTree;
+                self.focused_pane = FocusPane::TreeTab;
+                self.tree_at_tab = false;
+                self.exit_favorite_view();
             }
         });
         ui.separator();
@@ -210,6 +332,8 @@ impl NekoviewApp {
                     &self.tree_root.clone(),
                     0,
                     &self.viewing_dir,
+                    &self.tree_cursor,
+                    self.focused_pane == FocusPane::TreeTab && !self.tree_at_tab,
                     &self.tree_expanded,
                     &self.tree_children,
                     self.show_hidden,
@@ -237,6 +361,9 @@ impl NekoviewApp {
                 }
             }
             TreeAction::Navigate(path) => {
+                self.focused_pane = FocusPane::TreeTab;
+                self.tree_at_tab = false;
+                self.tree_cursor = Some(path.clone());
                 self.navigate_to(path);
             }
         }
@@ -244,7 +371,13 @@ impl NekoviewApp {
         ui.separator();
 
         // ── 下部: ドライブ選択 ──
-        ui.small(i18n::t().drives());
+        let drives_focused = self.focused_pane == FocusPane::Drives;
+        ui.scope(|ui| {
+            if drives_focused {
+                ui.visuals_mut().override_text_color = Some(ui.visuals().selection.bg_fill);
+            }
+            ui.small(i18n::t().drives());
+        });
         egui::ScrollArea::vertical()
             .id_salt("drive_scroll")
             .auto_shrink([false, true])
@@ -256,25 +389,13 @@ impl NekoviewApp {
                     .collect();
                 for (label, path) in drives {
                     let selected = self.tree_root == path;
-                    if ui.selectable_label(selected, &label).clicked() {
-                        self.current_dir = path.clone();
-                        self.start_scan();
-                        // ツリーのルートをドライブに切り替え
-                        self.tree_root = path.clone();
-                        self.tree_expanded.clear();
-                        self.tree_children.clear();
-                        self.viewing_dir = None;
-                        self.cd_summary = None;
-                        self.cd_summary_rx = None;
-                        // ドライブルートのサブディレクトリをバックグラウンドで取得
-                        self.tree_scan_pending = Some(TreeScanPending {
-                            path: path.clone(),
-                            rx: dir::spawn_scan_subdirs(path, {
-                                let c = self.egui_ctx.clone();
-                                move || c.request_repaint()
-                            }),
-                        });
-                        self.persist_state();
+                    let is_cursor = drives_focused && self.drive_cursor.as_ref() == Some(&path);
+                    let resp = ui.selectable_label(selected, &label);
+                    if is_cursor { draw_cursor_ring(ui, resp.rect); }
+                    if resp.clicked() {
+                        self.focused_pane = FocusPane::Drives;
+                        self.drive_cursor = Some(path.clone());
+                        self.navigate_to_drive(path);
                     }
                 }
             });
@@ -371,12 +492,19 @@ impl NekoviewApp {
         ui.horizontal(|ui| {
             ui.label(i18n::t().explorer_filter_label());
             let mut changed = ui.checkbox(&mut self.filter_enabled, "").changed();
+            let filter_focused = self.focused_pane == FocusPane::Filter;
             let resp = ui.add_enabled(
                 self.filter_enabled,
                 egui::TextEdit::singleline(&mut self.filter_text)
                     .hint_text(i18n::t().explorer_filter_hint())
                     .desired_width(ui.available_width()),
             );
+            if filter_focused {
+                if !resp.has_focus() {
+                    resp.request_focus();
+                }
+                draw_cursor_ring(ui, resp.rect);
+            }
             if resp.changed() {
                 changed = true;
             }
@@ -384,6 +512,61 @@ impl NekoviewApp {
                 self.recompute_filter();
             }
         });
+    }
+
+    /// グリッドの統一カーソルを指定エントリへ移動し、アーカイブ選択状態（選択枠・
+    /// ファイル情報）を追従させる。Tab着地時の初期カーソル設定などで使う。
+    pub(super) fn set_grid_cursor(&mut self, entry: GridEntry) {
+        match &entry {
+            GridEntry::Archive(idx) => {
+                self.selected_archive_index = Some(*idx);
+                self.selected_archive_meta = self.archives.get(*idx)
+                    .and_then(|p| std::fs::metadata(p).ok())
+                    .map(|m| (m.modified().unwrap_or(std::time::UNIX_EPOCH), m.len()));
+            }
+            GridEntry::Up(_) | GridEntry::Subdir(_) => {
+                self.selected_archive_index = None;
+                self.selected_archive_meta = None;
+            }
+        }
+        self.grid_cursor = Some(entry);
+    }
+
+    /// サムネグリッドで実際に描画される「↑・サブフォルダ・アーカイブ」の並び順を
+    /// draw_archive_gridと同一ロジックで再現したもの。キーボードカーソルの移動対象になる。
+    /// draw_archive_grid側の並び替え条件を変えたら、ここも同じように変えること。
+    pub(super) fn grid_entries(&self) -> Vec<GridEntry> {
+        let mut out = Vec::new();
+        if self.viewing_favorites.is_none() {
+            let up_target = if self.current_dir == self.tree_root {
+                None
+            } else {
+                crate::fs::mount::up_target(&self.current_dir)
+            };
+            if let Some(parent) = up_target {
+                out.push(GridEntry::Up(parent));
+            }
+
+            let show_hidden = self.show_hidden;
+            let mut sorted_subdirs: Vec<PathBuf> = self.subdirs.iter()
+                .filter(|p| {
+                    show_hidden || !p.file_name()
+                        .and_then(|n| n.to_str())
+                        .is_some_and(|n| n.starts_with('.'))
+                })
+                .cloned()
+                .collect();
+            let ascending = self.sort_ascending;
+            sorted_subdirs.sort_by(|a, b| {
+                let na = a.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                let nb = b.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                let cmp = na.cmp(nb);
+                if ascending { cmp } else { cmp.reverse() }
+            });
+            out.extend(sorted_subdirs.into_iter().map(GridEntry::Subdir));
+        }
+        out.extend(self.filtered_indices.iter().map(|&idx| GridEntry::Archive(idx)));
+        out
     }
 
     fn draw_archive_grid(&mut self, ui: &mut egui::Ui) {
@@ -407,6 +590,7 @@ impl NekoviewApp {
                 .show(ui, |ui| {
                     let mut cell_index: usize = 0;
                     let mut pending_navigate: Option<PathBuf> = None;
+                    let grid_focused = self.focused_pane == FocusPane::Grid;
 
                     // 並び順: ↑（先頭・非ソート・ルートで非表示）→ フォルダ群 → 通常のarchivesグリッド。
                     // お気に入り一覧表示中は実フォルダのナビゲーション概念が無いため出さない。
@@ -427,6 +611,14 @@ impl NekoviewApp {
                             if ui.is_rect_visible(rect) {
                                 ui.painter().rect_filled(rect, 4.0, ui.visuals().faint_bg_color);
                                 nav_icons::draw_up_icon(ui.painter(), rect, nav_icons::NAV_ICON_COLOR);
+                            }
+                            if grid_focused && self.grid_cursor.as_ref() == Some(&GridEntry::Up(parent.clone())) {
+                                draw_cursor_ring(ui, rect);
+                            }
+                            if response.clicked() {
+                                self.grid_cursor = Some(GridEntry::Up(parent.clone()));
+                                self.selected_archive_index = None;
+                                self.selected_archive_meta = None;
                             }
                             if response.double_clicked() {
                                 pending_navigate = Some(parent);
@@ -501,6 +693,14 @@ impl NekoviewApp {
                                 } else if matches!(&self.folder_label_hover, Some((p, _)) if p == dir_path) {
                                     self.folder_label_hover = None;
                                 }
+                            }
+                            if grid_focused && self.grid_cursor.as_ref() == Some(&GridEntry::Subdir(dir_path.clone())) {
+                                draw_cursor_ring(ui, rect);
+                            }
+                            if response.clicked() {
+                                self.grid_cursor = Some(GridEntry::Subdir(dir_path.clone()));
+                                self.selected_archive_index = None;
+                                self.selected_archive_meta = None;
                             }
                             if response.double_clicked() {
                                 pending_navigate = Some(dir_path.clone());
@@ -647,10 +847,14 @@ impl NekoviewApp {
                                     egui::StrokeKind::Inside,
                                 );
                             }
+                            if grid_focused && self.grid_cursor.as_ref() == Some(&GridEntry::Archive(real_idx)) {
+                                draw_cursor_ring(ui, rect);
+                            }
                         }
 
                         let is_raw = self.raw_image_files.contains(path);
                         if response.clicked() {
+                            self.grid_cursor = Some(GridEntry::Archive(real_idx));
                             let modifiers = ui.input(|i| i.modifiers);
                             if modifiers.command {
                                 // Ctrl(Cmd)+クリック: トグル追加/除外
@@ -769,6 +973,8 @@ fn show_tree_node(
     path: &PathBuf,
     depth: usize,
     viewing_dir: &Option<PathBuf>,
+    tree_cursor: &Option<PathBuf>,
+    tree_focused: bool,
     tree_expanded: &HashSet<PathBuf>,
     tree_children: &HashMap<PathBuf, Vec<PathBuf>>,
     show_hidden: bool,
@@ -786,6 +992,7 @@ fn show_tree_node(
 
     let is_expanded = tree_expanded.contains(path);
     let is_current = viewing_dir.as_ref() == Some(path);
+    let is_cursor = tree_focused && tree_cursor.as_ref() == Some(path);
 
     let show_arrow = is_expanded
         || match tree_children.get(path) {
@@ -816,6 +1023,7 @@ fn show_tree_node(
             }
             ui.selectable_label(is_current, &name)
         }).inner;
+        if is_cursor { draw_cursor_ring(ui, r.rect); }
         if r.clicked() && matches!(*action, TreeAction::None) {
             *action = TreeAction::Navigate(path.clone());
         }
@@ -839,6 +1047,8 @@ fn show_tree_node(
                     child,
                     depth + 1,
                     viewing_dir,
+                    tree_cursor,
+                    tree_focused,
                     tree_expanded,
                     tree_children,
                     show_hidden,
@@ -847,6 +1057,19 @@ fn show_tree_node(
             }
         }
     }
+}
+
+/// フォーカス+キーボードカーソルの共通表示。egui標準のButton/SelectableLabelは
+/// 非選択かつ非ホバー時にフレーム自体を描画しない仕様（frame_when_inactive）のため、
+/// visualsの上書きでは何も表示されない。Responseのrectに対して直接描画することで、
+/// 選択状態・有効/無効に関わらず確実に見せる（グリッドの選択枠と同じ方式）。
+pub(super) fn draw_cursor_ring(ui: &egui::Ui, rect: egui::Rect) {
+    ui.painter().rect_stroke(
+        rect,
+        3.0,
+        egui::Stroke::new(2.0, egui::Color32::WHITE),
+        egui::StrokeKind::Outside,
+    );
 }
 
 fn truncate_filename(path: &std::path::Path) -> String {

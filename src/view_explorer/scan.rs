@@ -20,6 +20,28 @@ impl NekoviewApp {
         self.persist_state();
     }
 
+    /// 指定ドライブへ切り替える（ドライブ一覧のクリック・キーボードEnter共通処理）。
+    /// ツリーのルート自体をそのドライブへ差し替え、展開状態をリセットする。
+    pub(super) fn navigate_to_drive(&mut self, path: PathBuf) {
+        self.current_dir = path.clone();
+        self.start_scan();
+        self.tree_root = path.clone();
+        self.tree_expanded.clear();
+        self.tree_children.clear();
+        self.tree_cursor = None;
+        self.viewing_dir = None;
+        self.cd_summary = None;
+        self.cd_summary_rx = None;
+        self.tree_scan_pending = Some(TreeScanPending {
+            path: path.clone(),
+            rx: dir::spawn_scan_subdirs(path, {
+                let c = self.egui_ctx.clone();
+                move || c.request_repaint()
+            }),
+        });
+        self.persist_state();
+    }
+
     /// バックグラウンドスキャンを起動する（UIをブロックしない）
     pub(super) fn start_scan(&mut self) {
         let rx = dir::spawn_scan(self.current_dir.clone(), {
@@ -108,7 +130,16 @@ impl NekoviewApp {
             }
             self.scan_state = ScanState::Done;
             self.sort_archives();
-            self.selected_archive_index = if self.archives.is_empty() { None } else { Some(0) };
+            // グリッドの統一カーソルを新しいディレクトリの先頭（↑があればそれ）へ即座に
+            // 合わせる。矢印キーを押すまで何もカーソルが出ない空白期間を作らないため。
+            let entries = self.grid_entries();
+            if let Some(first) = entries.first() {
+                self.set_grid_cursor(first.clone());
+            } else {
+                self.grid_cursor = None;
+                self.selected_archive_index = None;
+                self.selected_archive_meta = None;
+            }
             self.multi_selected.clear();
             self.select_anchor = None;
             // サマリーはスキャン済みリストを使い回して起動する（ネットワークの再列挙を避ける）
