@@ -51,6 +51,7 @@ enum FolderPaneTab {
 }
 
 /// キーボード操作のフォーカス巡回順（Tab/Shift+Tabで一周する）。
+/// 順序: TreeTab(初期値) → Grid → Filter → Drives → MenuBar → FavoriteTab → (先頭に戻る)
 /// TreeTab/FavoriteTab は左ペインのタブ切替を兼ねる。Drives は実ツリー配下の
 /// ドライブ一覧のみを指し、Favorites表示中でも巡回上は残る（着地時に実ツリーへ
 /// 自動復帰する）。
@@ -67,23 +68,23 @@ pub(crate) enum FocusPane {
 impl FocusPane {
     fn next(self) -> Self {
         match self {
-            Self::TreeTab => Self::FavoriteTab,
-            Self::FavoriteTab => Self::Drives,
-            Self::Drives => Self::Grid,
+            Self::TreeTab => Self::Grid,
             Self::Grid => Self::Filter,
-            Self::Filter => Self::MenuBar,
-            Self::MenuBar => Self::TreeTab,
+            Self::Filter => Self::Drives,
+            Self::Drives => Self::MenuBar,
+            Self::MenuBar => Self::FavoriteTab,
+            Self::FavoriteTab => Self::TreeTab,
         }
     }
 
     fn prev(self) -> Self {
         match self {
-            Self::TreeTab => Self::MenuBar,
-            Self::FavoriteTab => Self::TreeTab,
-            Self::Drives => Self::FavoriteTab,
-            Self::Grid => Self::Drives,
+            Self::TreeTab => Self::FavoriteTab,
+            Self::Grid => Self::TreeTab,
             Self::Filter => Self::Grid,
-            Self::MenuBar => Self::Filter,
+            Self::Drives => Self::Filter,
+            Self::MenuBar => Self::Drives,
+            Self::FavoriteTab => Self::MenuBar,
         }
     }
 }

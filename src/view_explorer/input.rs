@@ -56,7 +56,15 @@ impl NekoviewApp {
                     self.drive_cursor = self.drives.first().map(|d| d.path.clone());
                 }
             }
-            FocusPane::Grid | FocusPane::Filter | FocusPane::MenuBar => {}
+            FocusPane::Grid => {
+                // Gridへ着地した時は常にグリッド先頭（↑があればそれ、無ければ一番左上）へ
+                // カーソルを戻す。以前どこにいたかは覚えない。
+                let entries = self.grid_entries();
+                if let Some(first) = entries.first() {
+                    self.set_grid_cursor(first.clone());
+                }
+            }
+            FocusPane::Filter | FocusPane::MenuBar => {}
         }
     }
 

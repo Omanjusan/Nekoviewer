@@ -287,6 +287,14 @@ impl NekoviewApp {
 
     fn draw_folder_panel(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
+            let fav_focused = self.focused_pane == FocusPane::FavoriteTab && self.favorite_at_tab;
+            let fav_resp = ui.selectable_label(self.folder_pane_tab == FolderPaneTab::Favorites, i18n::t().folder_tab_favorites());
+            if fav_focused { draw_cursor_ring(ui, fav_resp.rect); }
+            if fav_resp.clicked() {
+                self.folder_pane_tab = FolderPaneTab::Favorites;
+                self.favorite_at_tab = false;
+                self.focused_pane = FocusPane::FavoriteTab;
+            }
             let real_focused = self.focused_pane == FocusPane::TreeTab && self.tree_at_tab;
             let real_resp = ui.selectable_label(self.folder_pane_tab == FolderPaneTab::RealTree, i18n::t().folder_tab_real());
             if real_focused { draw_cursor_ring(ui, real_resp.rect); }
@@ -295,14 +303,6 @@ impl NekoviewApp {
                 self.focused_pane = FocusPane::TreeTab;
                 self.tree_at_tab = false;
                 self.exit_favorite_view();
-            }
-            let fav_focused = self.focused_pane == FocusPane::FavoriteTab && self.favorite_at_tab;
-            let fav_resp = ui.selectable_label(self.folder_pane_tab == FolderPaneTab::Favorites, i18n::t().folder_tab_favorites());
-            if fav_focused { draw_cursor_ring(ui, fav_resp.rect); }
-            if fav_resp.clicked() {
-                self.folder_pane_tab = FolderPaneTab::Favorites;
-                self.favorite_at_tab = false;
-                self.focused_pane = FocusPane::FavoriteTab;
             }
         });
         ui.separator();
@@ -512,6 +512,24 @@ impl NekoviewApp {
                 self.recompute_filter();
             }
         });
+    }
+
+    /// グリッドの統一カーソルを指定エントリへ移動し、アーカイブ選択状態（選択枠・
+    /// ファイル情報）を追従させる。Tab着地時の初期カーソル設定などで使う。
+    pub(super) fn set_grid_cursor(&mut self, entry: GridEntry) {
+        match &entry {
+            GridEntry::Archive(idx) => {
+                self.selected_archive_index = Some(*idx);
+                self.selected_archive_meta = self.archives.get(*idx)
+                    .and_then(|p| std::fs::metadata(p).ok())
+                    .map(|m| (m.modified().unwrap_or(std::time::UNIX_EPOCH), m.len()));
+            }
+            GridEntry::Up(_) | GridEntry::Subdir(_) => {
+                self.selected_archive_index = None;
+                self.selected_archive_meta = None;
+            }
+        }
+        self.grid_cursor = Some(entry);
     }
 
     /// サムネグリッドで実際に描画される「↑・サブフォルダ・アーカイブ」の並び順を
