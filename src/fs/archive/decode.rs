@@ -47,8 +47,29 @@ pub fn decode_image_bytes(buf: &[u8]) -> Option<image::DynamicImage> {
     } else if has_avif_signature(buf) {
         decode_avif(buf)
     } else {
-        image::load_from_memory(buf).ok()
+        decode_native_with_orientation(buf)
     }
+}
+
+/// image crateネイティブ対応フォーマット（JPEG/PNG/TIFF/BMP/GIF等）用。
+/// Exif Orientationタグを検出し、デコード直後に画素へ適用する。以降の呼び出し元
+/// （サムネ生成・ビューアーのページ表示、いずれもここを通る）は回転後の寸法を
+/// そのまま使えばよく、個別の回転対応は不要になる。
+/// WebP/AVIFは別デコーダ（webp crate / libavif）経由のため対象外（未対応、既知の制限）。
+fn decode_native_with_orientation(buf: &[u8]) -> Option<image::DynamicImage> {
+    use image::ImageDecoder;
+
+    let reader = image::ImageReader::new(std::io::Cursor::new(buf))
+        .with_guessed_format()
+        .ok()?;
+    let mut decoder = reader.into_decoder().ok()?;
+    let exif_chunk: Option<Vec<u8>> = decoder.exif_metadata().ok().flatten();
+    let orientation = exif_chunk
+        .and_then(|chunk| image::metadata::Orientation::from_exif_chunk(&chunk))
+        .unwrap_or(image::metadata::Orientation::NoTransforms);
+    let mut img = image::DynamicImage::from_decoder(decoder).ok()?;
+    img.apply_orientation(orientation);
+    Some(img)
 }
 
 fn decode_avif(buf: &[u8]) -> Option<image::DynamicImage> {
@@ -172,5 +193,45 @@ mod tests {
 
         let estimated = estimate_static_decoded_bytes(&bytes, 1920).expect("tiff header should be readable");
         assert_eq!(estimated, 4 * 3 * 4);
+    }
+
+    /// Exif Orientationタグ(6 = 時計回り90度回転)を持つ最小JPEG APP1セグメントを組み立てる。
+    fn build_exif_orientation_app1(orientation: u16) -> Vec<u8> {
+        let mut tiff = Vec::new();
+        tiff.extend_from_slice(b"II"); // little-endian
+        tiff.extend_from_slice(&0x002Au16.to_le_bytes());
+        tiff.extend_from_slice(&8u32.to_le_bytes()); // IFD0 offset
+        tiff.extend_from_slice(&1u16.to_le_bytes()); // entry count
+        tiff.extend_from_slice(&0x0112u16.to_le_bytes()); // tag: Orientation
+        tiff.extend_from_slice(&3u16.to_le_bytes()); // type: SHORT
+        tiff.extend_from_slice(&1u32.to_le_bytes()); // count
+        tiff.extend_from_slice(&(orientation as u32).to_le_bytes()); // inline value
+        tiff.extend_from_slice(&0u32.to_le_bytes()); // next IFD offset
+
+        let mut payload = b"Exif\0\0".to_vec();
+        payload.extend_from_slice(&tiff);
+
+        let mut app1 = vec![0xFF, 0xE1];
+        app1.extend_from_slice(&((payload.len() + 2) as u16).to_be_bytes());
+        app1.extend_from_slice(&payload);
+        app1
+    }
+
+    #[test]
+    fn decode_image_bytes_applies_jpeg_exif_orientation() {
+        // 4x2の非正方形画像で回転による寸法入れ替えを検出できるようにする
+        let img = image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(4, 2, image::Rgb([200, 10, 10])));
+        let mut jpeg_buf = std::io::Cursor::new(Vec::new());
+        img.write_to(&mut jpeg_buf, image::ImageFormat::Jpeg).unwrap();
+        let jpeg_bytes = jpeg_buf.into_inner();
+
+        // SOI(FFD8)直後にExif Orientation=6(時計回り90度)のAPP1セグメントを挿入する
+        let mut with_exif = Vec::new();
+        with_exif.extend_from_slice(&jpeg_bytes[0..2]);
+        with_exif.extend_from_slice(&build_exif_orientation_app1(6));
+        with_exif.extend_from_slice(&jpeg_bytes[2..]);
+
+        let decoded = decode_image_bytes(&with_exif).expect("exif付きjpegはデコードできるはず");
+        assert_eq!((decoded.width(), decoded.height()), (2, 4), "90度回転で幅高さが入れ替わるはず");
     }
 }
