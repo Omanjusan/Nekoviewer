@@ -50,6 +50,56 @@ enum FolderPaneTab {
     Favorites,
 }
 
+/// キーボード操作のフォーカス巡回順（Tab/Shift+Tabで一周する）。
+/// 順序: TreeTab(初期値) → Grid → Filter → Drives → MenuBar → FavoriteTab → (先頭に戻る)
+/// TreeTab/FavoriteTab は左ペインのタブ切替を兼ねる。Drives は実ツリー配下の
+/// ドライブ一覧のみを指し、Favorites表示中でも巡回上は残る（着地時に実ツリーへ
+/// 自動復帰する）。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum FocusPane {
+    TreeTab,
+    FavoriteTab,
+    Drives,
+    Grid,
+    Filter,
+    MenuBar,
+}
+
+impl FocusPane {
+    fn next(self) -> Self {
+        match self {
+            Self::TreeTab => Self::Grid,
+            Self::Grid => Self::Filter,
+            Self::Filter => Self::Drives,
+            Self::Drives => Self::MenuBar,
+            Self::MenuBar => Self::FavoriteTab,
+            Self::FavoriteTab => Self::TreeTab,
+        }
+    }
+
+    fn prev(self) -> Self {
+        match self {
+            Self::TreeTab => Self::FavoriteTab,
+            Self::Grid => Self::TreeTab,
+            Self::Filter => Self::Grid,
+            Self::Drives => Self::Filter,
+            Self::MenuBar => Self::Drives,
+            Self::FavoriteTab => Self::MenuBar,
+        }
+    }
+}
+
+/// サムネグリッドの「↑・サブフォルダ・アーカイブファイル」を貫通する統一カーソル位置。
+/// draw_archive_grid内で実際に描画される順序（↑→サブフォルダ→フィルタ後アーカイブ）と
+/// 一致させること（grid_entries()参照）。
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) enum GridEntry {
+    Up(PathBuf),
+    Subdir(PathBuf),
+    /// archives へのインデックス（実インデックス、filtered_indices経由ではない）
+    Archive(usize),
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum FavoriteSelection {
     None,
@@ -57,6 +107,38 @@ enum FavoriteSelection {
     Unsorted,
     Folder(u8),
 }
+
+/// メニューバー内のボタンをインデックス化した識別子（左から右への表示順そのもの）。
+/// キーボードでの左右移動・Enter確定（handle_menu_bar_keys）の対象になる。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum MenuBarButton {
+    PageSingle,
+    PageSpreadLeft,
+    PageSpreadRight,
+    SpreadBack,
+    SpreadFwd,
+    SortName,
+    SortDate,
+    SortSize,
+    SortOrder,
+    StatusToggle,
+    Settings,
+}
+
+/// 表示順そのもの（draw_menu_barの描画順と一致させること）
+pub(crate) const MENU_BAR_ORDER: [MenuBarButton; 11] = [
+    MenuBarButton::PageSingle,
+    MenuBarButton::PageSpreadLeft,
+    MenuBarButton::PageSpreadRight,
+    MenuBarButton::SpreadBack,
+    MenuBarButton::SpreadFwd,
+    MenuBarButton::SortName,
+    MenuBarButton::SortDate,
+    MenuBarButton::SortSize,
+    MenuBarButton::SortOrder,
+    MenuBarButton::Settings,
+    MenuBarButton::StatusToggle,
+];
 
 #[derive(Clone, Copy)]
 enum FavoriteDialogMode {
@@ -175,6 +257,22 @@ pub struct NekoviewApp {
     tree_children: HashMap<PathBuf, Vec<PathBuf>>,
     /// 左ペイン: 実フォルダツリー / お気に入りペインの切替状態
     folder_pane_tab: FolderPaneTab,
+    /// キーボードフォーカスが現在どの領域にあるか（Tab/Shift+Tabで巡回）
+    pub(crate) focused_pane: FocusPane,
+    /// 実ツリー内のプレターゲティングカーソル（Enterで確定navigate）
+    tree_cursor: Option<PathBuf>,
+    /// true: カーソルはツリー本体ではなくTreeTabボタン自体にいる（上下キーでの
+    /// タブ⇄本体の行き来を表現する。本体先頭ノードでUp、またはこの状態でDownで切替）
+    tree_at_tab: bool,
+    /// ドライブ一覧内のプレターゲティングカーソル。Favoritesタブ経由でDrivesへ
+    /// 移動した際、実ツリー側にいた頃のこの値を復元する（無効ならフォールバック）
+    drive_cursor: Option<PathBuf>,
+    /// お気に入りタブ内のプレターゲティングカーソル（[未整理, フォルダ...]の並び）
+    favorite_cursor: Option<FavoriteSelection>,
+    /// true: カーソルは本体リストではなくFavoriteTabボタン自体にいる（tree_at_tabと同様）
+    favorite_at_tab: bool,
+    /// MenuBar内のプレターゲティングカーソル（MENU_BAR_ORDER上のインデックス）
+    menu_cursor: usize,
     /// 定義済みお気に入りフォルダ一覧のキャッシュ（DB操作の都度リフレッシュ）
     favorite_folders: Vec<crate::favorites::FavoriteFolder>,
     favorite_selected: FavoriteSelection,
@@ -194,6 +292,9 @@ pub struct NekoviewApp {
     cd_summary_updated_at: Option<std::time::Instant>,
     /// 現在ディレクトリの redb キャッシュDB（キャッシュ無効なら None）
     cache_db: Option<std::sync::Arc<std::sync::Mutex<redb::Database>>>,
+    /// 現在ディレクトリに対応するキャッシュディレクトリのパス。
+    /// DB未作成のフォルダで対象ファイルが見つかった時点の遅延作成に使う。
+    cache_neko_dir: Option<PathBuf>,
     /// exe横の見開き状態DB（アプリ起動時に一度だけ開き、使い回す）
     spread_db: Option<std::sync::Arc<std::sync::Mutex<redb::Database>>>,
     /// 現在ディレクトリ内で保存済みの見開き状態 (filename -> (mode, offset, page_index))
@@ -261,6 +362,8 @@ pub struct NekoviewApp {
     pub(crate) show_hidden: bool,
     sort_key: ExplorerSortKey,
     sort_ascending: bool,
+    /// サムネグリッドの統一カーソル位置（↑/サブフォルダ/アーカイブを貫通）
+    grid_cursor: Option<GridEntry>,
     selected_archive_index: Option<usize>,
     selected_archive_meta: Option<(std::time::SystemTime, u64)>,
     /// Ctrl/Shift併用による複数選択の集合（archivesへのインデックス）。
@@ -275,6 +378,8 @@ pub struct NekoviewApp {
     explorer_cols: usize,
     explorer_scroll_offset: f32,
     explorer_viewport_h: f32,
+    /// フォルダ名ラベルの1秒ホバー救済用: (対象パス, ホバー開始時刻)
+    folder_label_hover: Option<(PathBuf, std::time::Instant)>,
     /// ステータスウィンドウ表示フラグ（[?] ボタンでトグル）
     show_status_window: bool,
     status_window_data: Arc<Mutex<crate::view_status::StatusData>>,
@@ -300,6 +405,7 @@ mod input;
 mod panels;
 mod favorites_ui;
 mod status;
+mod nav_icons;
 
 #[cfg(test)]
 mod glyph_audit;
@@ -355,6 +461,13 @@ impl NekoviewApp {
             tree_expanded: HashSet::new(),
             tree_children: HashMap::new(),
             folder_pane_tab: FolderPaneTab::RealTree,
+            focused_pane: FocusPane::TreeTab,
+            tree_cursor: None,
+            tree_at_tab: false,
+            drive_cursor: None,
+            favorite_cursor: None,
+            favorite_at_tab: false,
+            menu_cursor: 0,
             favorite_folders: Vec::new(),
             favorite_selected: FavoriteSelection::None,
             favorite_dialog: None,
@@ -366,6 +479,7 @@ impl NekoviewApp {
             cd_summary_rx: None,
             cd_summary_updated_at: None,
             cache_db: None,
+            cache_neko_dir: None,
             spread_db: {
                 let db = crate::spread_state::open_spread_db();
                 if let Some(db) = &db {
@@ -416,6 +530,7 @@ impl NekoviewApp {
             show_hidden,
             sort_key: ExplorerSortKey::from_state_key(&sort_state.key),
             sort_ascending: sort_state.ascending,
+            grid_cursor: None,
             selected_archive_index: None,
             selected_archive_meta: None,
             multi_selected: std::collections::HashSet::new(),
@@ -426,6 +541,7 @@ impl NekoviewApp {
             explorer_cols: 1,
             explorer_scroll_offset: 0.0,
             explorer_viewport_h: 0.0,
+            folder_label_hover: None,
             show_status_window: false,
             status_window_data: Arc::new(Mutex::new(crate::view_status::StatusData::default())),
             last_status_update: std::time::Instant::now(),

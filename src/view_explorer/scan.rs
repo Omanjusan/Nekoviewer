@@ -7,6 +7,41 @@ use crate::fs::dir;
 use super::*;
 
 impl NekoviewApp {
+    /// 指定ディレクトリへ遷移する（ツリーパネル・サムネグリッドの↑/フォルダクリック共通処理）。
+    /// お気に入りタブ表示中ならそれを解除し、現在地・監視先を更新してスキャンを開始する。
+    pub(super) fn navigate_to(&mut self, path: PathBuf) {
+        self.viewing_favorites = None;
+        self.current_dir = path.clone();
+        self.viewing_dir = Some(path);
+        // サマリーはスキャン完了時（poll_scan）にスキャン結果から起動する
+        self.cd_summary = None;
+        self.cd_summary_rx = None;
+        self.start_scan();
+        self.persist_state();
+    }
+
+    /// 指定ドライブへ切り替える（ドライブ一覧のクリック・キーボードEnter共通処理）。
+    /// ツリーのルート自体をそのドライブへ差し替え、展開状態をリセットする。
+    pub(super) fn navigate_to_drive(&mut self, path: PathBuf) {
+        self.current_dir = path.clone();
+        self.start_scan();
+        self.tree_root = path.clone();
+        self.tree_expanded.clear();
+        self.tree_children.clear();
+        self.tree_cursor = None;
+        self.viewing_dir = None;
+        self.cd_summary = None;
+        self.cd_summary_rx = None;
+        self.tree_scan_pending = Some(TreeScanPending {
+            path: path.clone(),
+            rx: dir::spawn_scan_subdirs(path, {
+                let c = self.egui_ctx.clone();
+                move || c.request_repaint()
+            }),
+        });
+        self.persist_state();
+    }
+
     /// バックグラウンドスキャンを起動する（UIをブロックしない）
     pub(super) fn start_scan(&mut self) {
         let rx = dir::spawn_scan(self.current_dir.clone(), {
@@ -23,9 +58,19 @@ impl NekoviewApp {
         self.filtered_indices.clear();
         self.raw_image_files.clear();
         self.invalid_archives.clear();
-        self.thumb_failed.clear();
-        self.cache_db = neko_dir::neko_dir_for(&self.current_dir, &self.config)
-            .and_then(|nd| neko_dir::open_cache_db(&nd));
+        // thumb_failed はセッション内で保持する（再入場のたびの無駄な再試行を避ける）。
+        // ネットワーク失敗分はマウント回復検知（poll_mount_checks）で解禁される。
+        // リンク切れ表示中のマウント配下へ入る場合は到達可否を再確認する（回復検知の入口）
+        if let Some(root) = self.network_unreachable_mounts.iter()
+            .find(|r| self.current_dir.starts_with(r))
+            .cloned()
+        {
+            self.spawn_mount_check_if_needed(root);
+        }
+        // DBは既存の場合のみ開く。新規作成は対象ファイルの存在が確定してから
+        // （poll_scan）行い、通過しただけのフォルダに空DBを作らない。
+        self.cache_neko_dir = neko_dir::neko_dir_for(&self.current_dir, &self.config);
+        self.cache_db = self.cache_neko_dir.as_deref().and_then(neko_dir::open_cache_db_if_exists);
         self.thumbnails.clear();
         self.thumb_pending.clear();
         self.pending_loads.lock().unwrap().clear();
@@ -50,6 +95,10 @@ impl NekoviewApp {
         };
 
         if let Some((subdirs, archives, raw_images)) = result {
+            // 対象ファイルが存在するフォルダに限りDBを新規作成する
+            if self.cache_db.is_none() && !(archives.is_empty() && raw_images.is_empty()) {
+                self.cache_db = self.cache_neko_dir.as_deref().and_then(neko_dir::open_cache_db);
+            }
             self.subdirs = subdirs;
             self.archives = archives.into_iter()
                 .filter(|p| {
@@ -81,10 +130,35 @@ impl NekoviewApp {
             }
             self.scan_state = ScanState::Done;
             self.sort_archives();
-            self.selected_archive_index = if self.archives.is_empty() { None } else { Some(0) };
+            // グリッドの統一カーソルを新しいディレクトリの先頭（↑があればそれ）へ即座に
+            // 合わせる。矢印キーを押すまで何もカーソルが出ない空白期間を作らないため。
+            let entries = self.grid_entries();
+            if let Some(first) = entries.first() {
+                self.set_grid_cursor(first.clone());
+            } else {
+                self.grid_cursor = None;
+                self.selected_archive_index = None;
+                self.selected_archive_meta = None;
+            }
             self.multi_selected.clear();
             self.select_anchor = None;
+            // サマリーはスキャン済みリストを使い回して起動する（ネットワークの再列挙を避ける）
+            if self.viewing_dir.as_ref() == Some(&self.current_dir) {
+                self.cd_summary_rx = Some(spawn_summary_worker(
+                    self.current_dir.clone(),
+                    self.archive_filenames(),
+                    self.cache_db.clone(),
+                    self.egui_ctx.clone(),
+                ));
+            }
         }
+    }
+
+    /// 現在の archives（生画像含む）のファイル名一覧。サマリー計算用。
+    pub(super) fn archive_filenames(&self) -> Vec<String> {
+        self.archives.iter()
+            .filter_map(|p| p.file_name().and_then(|n| n.to_str()).map(str::to_string))
+            .collect()
     }
 
     /// フレームごとにツリー展開スキャン結果をポーリングして反映する
@@ -196,22 +270,18 @@ impl NekoviewApp {
 }
 
 /// cd_summary の計算をバックグラウンドスレッドで行い、受信チャンネルを返す。
+/// ディレクトリの再列挙はせず、スキャン済みのファイル名一覧を受け取って
+/// ローカルDBのカウントだけを行う（ネットワークI/Oなし）。
 pub(super) fn spawn_summary_worker(
     path: PathBuf,
+    filenames: Vec<String>,
     db: Option<std::sync::Arc<std::sync::Mutex<redb::Database>>>,
     ctx: egui::Context,
 ) -> mpsc::Receiver<(PathBuf, usize, usize)> {
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
-        let archives = dir::list_archives(&path);
-        let raw_images = dir::list_raw_images(&path);
-        let total = archives.len() + raw_images.len();
-        let saved = db.map(|db| {
-            let filenames: Vec<String> = archives.iter().chain(raw_images.iter())
-                .filter_map(|p| p.file_name().and_then(|n| n.to_str()).map(|s| s.to_owned()))
-                .collect();
-            neko_dir::count_cached_thumbs(&db, &filenames)
-        }).unwrap_or(0);
+        let total = filenames.len();
+        let saved = db.map(|db| neko_dir::count_cached_thumbs(&db, &filenames)).unwrap_or(0);
         let _ = tx.send((path, saved, total));
         // ROOT を起こして poll_workers に結果を回収させる
         ctx.request_repaint();

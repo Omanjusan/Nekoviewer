@@ -15,8 +15,12 @@ Browse folders like a bookshelf, navigate into archives, and view their images �
 - Lightweight — thumbnail cache reduces redraw cost; Rust eliminates memory leaks and keeps it fast
 - Single binary — no installation needed. Just the executable and its config file. Running it from a dedicated folder is recommended, especially when keeping the cache alongside the binary.
 - No uninstaller needed — no registry writes. Delete the EXE and its auto-generated subfolders and you're clean.
-- Network share (SMB) support — cache is stored locally, so paths with unusual network prefixes are handled correctly.
-- Multilingual menu bar (config file support in progress)
+- Network share (SMB) support — cache is stored locally, so it keeps working even with unusual network paths.
+- Animated GIF, WebP, and AVIF playback — ring-buffer playback supports a wide range of file sizes, even large animations.
+- Favorite file support — a single flag can apply to many favorite folders at once.
+- Per-archive spread mode setting — saved automatically and restored on reopen.
+- Multilingual support (ja/en/cn)
+- No ads, no telemetry
 
 ---
 
@@ -24,7 +28,7 @@ Browse folders like a bookshelf, navigate into archives, and view their images �
 
 ### Windows
 
-Download the latest `nekoviewer.exe` from [GitHub Releases](https://github.com/Omanjusan/Nekoviewer/releases/latest) and place it in any folder. No installation required.
+Download the latest `nekoviewer.exe` from [GitHub Releases](https://github.com/Omanjusan/Nekoviewer/releases/latest) and place it in any folder. No installation required, but running it from a dedicated folder is recommended.
 
 ### Linux
 
@@ -56,13 +60,18 @@ Run `make help` if you're not sure what to do.
 
 ## Usage
 
+### Updating on Windows / Linux
+
+When updating, it's recommended to delete the state file and config file in the folder where the executable (or binary on Linux) is located.
+There's no automatic migration for newly added settings yet.
+
 ### Launch
 
 ```
 nekoviewer [folder path]
 ```
 
-If no argument is given, the app starts from the folder set in `nekoviewer.conf` or the last opened folder.
+If no argument is given, the app starts from the folder set in `nekoviewer.conf` or the last opened folder. In general, running it without arguments is fine.
 
 ### Controls
 
@@ -87,8 +96,8 @@ The selector is shown in blue for archive files and red for standalone image fil
 | `SHIFT+↑` / `SHIFT+Scroll up` | Move to previous file (when at first page) |
 | `←` | Next file (jump to page 1, regardless of current page) |
 | `→` | Previous file (jump to page 1, regardless of current page) |
-| `Home` | First page (not yet implemented) |
-| `End` | Last page (not yet implemented) |
+| `Home` | First page |
+| `End` | Last page |
 | `1` | Single page view |
 | `2` | Spread view (left binding) |
 | `3` | Spread view (right binding) |

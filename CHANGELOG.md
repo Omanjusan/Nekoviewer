@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.3.0] - 2026-07-09
+
+### Added
+
+- Added support for folder items inside the thumbnail grid
+- Added full keyboard operation support
+  Tab / Shift+Tab moves focus between explorer panes, and arrow keys, Enter, and Esc cover most of the main operations from there
+  (submenu access is not supported)
+
+### Fixed
+
+- Fixed a delay when accessing network drives, especially over SMB
+
 ## [1.2.0] - 2026-07-07
 
 ### Added
