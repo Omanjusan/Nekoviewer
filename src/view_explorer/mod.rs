@@ -194,6 +194,9 @@ pub struct NekoviewApp {
     cd_summary_updated_at: Option<std::time::Instant>,
     /// 現在ディレクトリの redb キャッシュDB（キャッシュ無効なら None）
     cache_db: Option<std::sync::Arc<std::sync::Mutex<redb::Database>>>,
+    /// 現在ディレクトリに対応するキャッシュディレクトリのパス。
+    /// DB未作成のフォルダで対象ファイルが見つかった時点の遅延作成に使う。
+    cache_neko_dir: Option<PathBuf>,
     /// exe横の見開き状態DB（アプリ起動時に一度だけ開き、使い回す）
     spread_db: Option<std::sync::Arc<std::sync::Mutex<redb::Database>>>,
     /// 現在ディレクトリ内で保存済みの見開き状態 (filename -> (mode, offset, page_index))
@@ -366,6 +369,7 @@ impl NekoviewApp {
             cd_summary_rx: None,
             cd_summary_updated_at: None,
             cache_db: None,
+            cache_neko_dir: None,
             spread_db: {
                 let db = crate::spread_state::open_spread_db();
                 if let Some(db) = &db {

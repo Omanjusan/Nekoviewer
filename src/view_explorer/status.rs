@@ -186,13 +186,18 @@ impl NekoviewApp {
     }
 
     /// バックグラウンドで進行中のマウント到達可否チェックの結果を回収する。
+    /// リンク切れ→到達可の遷移を検知した場合、そのマウント配下のサムネ失敗記憶を
+    /// 破棄してリトライを解禁する（遷移時のみ。失敗→即再試行の無限ループを避ける）。
     pub(super) fn poll_mount_checks(&mut self) {
         let mut still_pending = Vec::new();
         for (root, rx) in self.mount_check_pending.drain(..) {
             match rx.try_recv() {
                 Ok((root, reachable)) => {
                     if reachable {
-                        self.network_unreachable_mounts.remove(&root);
+                        let recovered = self.network_unreachable_mounts.remove(&root);
+                        if recovered {
+                            self.thumb_failed.retain(|p| !p.starts_with(&root));
+                        }
                     } else {
                         self.network_unreachable_mounts.insert(root);
                     }
@@ -206,7 +211,7 @@ impl NekoviewApp {
 
     /// path が既知のネットワークマウント配下にあり、まだチェック中でなければ
     /// 到達可否のバックグラウンド確認を1件発火する（定期ポーリングはしない）。
-    fn spawn_mount_check_if_needed(&mut self, root: PathBuf) {
+    pub(super) fn spawn_mount_check_if_needed(&mut self, root: PathBuf) {
         if self.mount_check_pending.iter().any(|(r, _)| *r == root) {
             return;
         }
