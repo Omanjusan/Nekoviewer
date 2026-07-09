@@ -7,6 +7,19 @@ use crate::fs::dir;
 use super::*;
 
 impl NekoviewApp {
+    /// 指定ディレクトリへ遷移する（ツリーパネル・サムネグリッドの↑/フォルダクリック共通処理）。
+    /// お気に入りタブ表示中ならそれを解除し、現在地・監視先を更新してスキャンを開始する。
+    pub(super) fn navigate_to(&mut self, path: PathBuf) {
+        self.viewing_favorites = None;
+        self.current_dir = path.clone();
+        self.viewing_dir = Some(path);
+        // サマリーはスキャン完了時（poll_scan）にスキャン結果から起動する
+        self.cd_summary = None;
+        self.cd_summary_rx = None;
+        self.start_scan();
+        self.persist_state();
+    }
+
     /// バックグラウンドスキャンを起動する（UIをブロックしない）
     pub(super) fn start_scan(&mut self) {
         let rx = dir::spawn_scan(self.current_dir.clone(), {

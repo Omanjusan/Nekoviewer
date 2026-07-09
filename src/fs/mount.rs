@@ -45,6 +45,22 @@ pub fn network_mount_root(_path: &Path) -> Option<PathBuf> {
     None
 }
 
+/// サムネグリッドの「↑」用: path の一つ上の階層を返す。
+/// ローカルのファイルシステムルート・ドライブ文字ルートは `Path::parent()` が
+/// 自然に `None` を返すため素通りでよい。ネットワークマウント（gvfs の SMB や
+/// Windows のリモートドライブ）は大元（`network_mount_root`）に到達した時点で
+/// `None` を返し、その上位（gvfs のマウント列挙ディレクトリ等）へは進ませない。
+/// Windows のネットワークドライブはドライブ文字ルートで `parent()` が止まるため
+/// ローカルドライブと同じ経路に合流し、特別な分岐は不要。
+pub fn up_target(path: &Path) -> Option<PathBuf> {
+    if let Some(mount_root) = network_mount_root(path)
+        && path == mount_root
+    {
+        return None;
+    }
+    path.parent().map(|p| p.to_path_buf())
+}
+
 /// マウント大元への到達可否を1アクション（read_dir）で判定する。
 /// ネットワークI/Oでブロックしうるため、呼び出し側は必ずバックグラウンドスレッドで呼ぶこと。
 pub fn check_mount_reachable(root: &Path) -> bool {
@@ -213,5 +229,39 @@ fn parse_smb_label(name: &str) -> String {
         name.to_string()
     } else {
         format!("{server}/{share}")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn up_target_ascends_local_parent() {
+        let dir = std::env::temp_dir().join("nekoviewer_up_target_test").join("child");
+        let expected = dir.parent().map(|p| p.to_path_buf());
+        assert_eq!(up_target(&dir), expected);
+    }
+
+    #[test]
+    fn up_target_none_at_filesystem_root() {
+        // network_mount_root がこの環境で誤検出しない前提のローカルルート判定。
+        let roots = path_roots();
+        for root in roots {
+            if network_mount_root(&root).is_none() {
+                assert_eq!(up_target(&root), None);
+            }
+        }
+    }
+
+    fn path_roots() -> Vec<PathBuf> {
+        #[cfg(windows)]
+        {
+            vec![PathBuf::from("C:\\")]
+        }
+        #[cfg(not(windows))]
+        {
+            vec![PathBuf::from("/")]
+        }
     }
 }

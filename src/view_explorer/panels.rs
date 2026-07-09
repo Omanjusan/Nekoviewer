@@ -237,14 +237,7 @@ impl NekoviewApp {
                 }
             }
             TreeAction::Navigate(path) => {
-                self.viewing_favorites = None;
-                self.current_dir = path.clone();
-                self.viewing_dir = Some(path.clone());
-                // サマリーはスキャン完了時（poll_scan）にスキャン結果から起動する
-                self.cd_summary = None;
-                self.cd_summary_rx = None;
-                self.start_scan();
-                self.persist_state();
+                self.navigate_to(path);
             }
         }
 
@@ -408,10 +401,117 @@ impl NekoviewApp {
                 .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
                 .vertical_scroll_offset(self.explorer_scroll_offset)
                 .show(ui, |ui| {
-            egui::Grid::new("archive_grid")
+            let grid_response = egui::Grid::new("archive_grid")
                 .num_columns(cols)
                 .spacing([GAP, GAP])
                 .show(ui, |ui| {
+                    let mut cell_index: usize = 0;
+                    let mut pending_navigate: Option<PathBuf> = None;
+
+                    // 並び順: ↑（先頭・非ソート・ルートで非表示）→ フォルダ群 → 通常のarchivesグリッド。
+                    // お気に入り一覧表示中は実フォルダのナビゲーション概念が無いため出さない。
+                    if self.viewing_favorites.is_none() {
+                        // ツリー側のルート（ドライブ/ホーム/ネットワーク共有の選択に連動）を天井にする。
+                        // mount::up_target 単体だと「ホーム」ドライブのような疑似ルートを知らず、
+                        // ホーム配下を素通りしてツリーが表示しない領域まで昇れてしまうため。
+                        let up_target = if self.current_dir == self.tree_root {
+                            None
+                        } else {
+                            crate::fs::mount::up_target(&self.current_dir)
+                        };
+                        if let Some(parent) = up_target {
+                            let (rect, response) = ui.allocate_exact_size(
+                                egui::vec2(cell_w, cell_h),
+                                egui::Sense::click(),
+                            );
+                            if ui.is_rect_visible(rect) {
+                                ui.painter().rect_filled(rect, 4.0, ui.visuals().faint_bg_color);
+                                nav_icons::draw_up_icon(ui.painter(), rect, nav_icons::NAV_ICON_COLOR);
+                            }
+                            if response.double_clicked() {
+                                pending_navigate = Some(parent);
+                            }
+                            cell_index += 1;
+                            if cell_index % cols == 0 {
+                                ui.end_row();
+                            }
+                        }
+
+                        let show_hidden = self.show_hidden;
+                        let mut sorted_subdirs: Vec<PathBuf> = self.subdirs.iter()
+                            .filter(|p| {
+                                show_hidden || !p.file_name()
+                                    .and_then(|n| n.to_str())
+                                    .is_some_and(|n| n.starts_with('.'))
+                            })
+                            .cloned()
+                            .collect();
+                        let ascending = self.sort_ascending;
+                        sorted_subdirs.sort_by(|a, b| {
+                            let na = a.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                            let nb = b.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                            let cmp = na.cmp(nb);
+                            if ascending { cmp } else { cmp.reverse() }
+                        });
+                        for dir_path in &sorted_subdirs {
+                            let (rect, response) = ui.allocate_exact_size(
+                                egui::vec2(cell_w, cell_h),
+                                egui::Sense::click(),
+                            );
+                            if ui.is_rect_visible(rect) {
+                                let label_h = (cell_h * 0.16).clamp(12.0, 28.0);
+                                let icon_rect = egui::Rect::from_min_size(
+                                    rect.min,
+                                    egui::vec2(cell_w, cell_h - label_h),
+                                );
+                                ui.painter().rect_filled(rect, 4.0, ui.visuals().faint_bg_color);
+                                nav_icons::draw_folder_icon(ui.painter(), icon_rect, nav_icons::NAV_ICON_COLOR);
+
+                                let full_name = dir_path.file_name()
+                                    .and_then(|n| n.to_str())
+                                    .unwrap_or("")
+                                    .to_string();
+                                let font_id = egui::FontId::proportional((cell_h * 0.075).clamp(9.0, 18.0));
+                                let label = nav_icons::truncate_to_width(ui, &full_name, font_id.clone(), cell_w * 0.92);
+                                ui.painter().text(
+                                    egui::pos2(rect.center().x, rect.max.y - label_h / 2.0),
+                                    egui::Align2::CENTER_CENTER,
+                                    &label,
+                                    font_id,
+                                    ui.visuals().text_color(),
+                                );
+
+                                // 1秒ホバー救済: 後方カットで読めなくなった分をツールチップで全表示
+                                if response.hovered() {
+                                    let now = std::time::Instant::now();
+                                    let past_delay = match &self.folder_label_hover {
+                                        Some((p, since)) if p == dir_path => {
+                                            now.duration_since(*since).as_secs_f32() >= 1.0
+                                        }
+                                        _ => {
+                                            self.folder_label_hover = Some((dir_path.clone(), now));
+                                            false
+                                        }
+                                    };
+                                    if past_delay {
+                                        response.show_tooltip_text(&full_name);
+                                    } else {
+                                        ui.ctx().request_repaint_after(std::time::Duration::from_millis(120));
+                                    }
+                                } else if matches!(&self.folder_label_hover, Some((p, _)) if p == dir_path) {
+                                    self.folder_label_hover = None;
+                                }
+                            }
+                            if response.double_clicked() {
+                                pending_navigate = Some(dir_path.clone());
+                            }
+                            cell_index += 1;
+                            if cell_index % cols == 0 {
+                                ui.end_row();
+                            }
+                        }
+                    }
+
                     // フィルタ適用中は filtered_indices（archives へのインデックス）のみ描画対象にする
                     let visible: Vec<(usize, PathBuf)> = self.filtered_indices.iter()
                         .map(|&idx| (idx, self.archives[idx].clone()))
@@ -637,13 +737,15 @@ impl NekoviewApp {
                             }
                         });
 
-                        if (i + 1) % cols == 0 {
+                        cell_index += 1;
+                        if cell_index % cols == 0 {
                             ui.end_row();
                         }
                     }
-                    if !visible.is_empty() && visible.len() % cols != 0 {
+                    if cell_index % cols != 0 {
                         ui.end_row();
                     }
+                    pending_navigate
                 });
             // グリッド下の余白（サムネの無い領域）への右クリック: メニューは出すが非活性にする
             let bg_size = egui::vec2(ui.available_width(), ui.available_height().max(40.0));
@@ -651,10 +753,14 @@ impl NekoviewApp {
             bg_response.context_menu(|ui| {
                 ui.add_enabled(false, egui::Button::new(i18n::t().favorite_detail_menu()));
             });
+            grid_response.inner
         });
         // ユーザーの手動スクロールを読み戻してストアを更新
         self.explorer_scroll_offset = output.state.offset.y;
         self.explorer_viewport_h = output.inner_rect.height();
+        if let Some(path) = output.inner {
+            self.navigate_to(path);
+        }
     }
 }
 
