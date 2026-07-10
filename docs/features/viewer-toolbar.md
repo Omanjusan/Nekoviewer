@@ -47,8 +47,12 @@ todo (E)「見開きボタンをビューアーウィンドウに移動」の実
 将来の「ライブ項目並べ替え」「溢れ時のオーバーフロー畳み込み」の両方が同じデータ構造に
 乗るため、先に基盤だけ敷く。**今回は編集UIなし・実質固定順**。
 
-- `ViewerBarItem`（項目ID enum）と順序`Vec<ViewerBarItem>`を定義し、top bar /
-  fs_sort_barの描画をVec順ループに再構成する
+- `ViewerBarItem`（項目ID enum）と順序（全項目の順列）を定義し、top bar /
+  fs_sort_barの描画を順序ループに再構成する。実装は`[ViewerBarItem; N]`の
+  固定長配列（[toolbar.rs](../../src/toolbar.rs)）— `ViewerConfig`の`Copy`を
+  維持するためVecではなく順列配列を採用。機能上の差はない
+- グループ間セパレータは固定位置の項目ではなく「隣接項目のグループが変わる位置に
+  描画側が挟む」方式（並べ替え後も区切りが自然に追随する）
 - 状態ファイルにカンマ区切り文字列で1キー保存（`viewer_bar_order`等）。
   gui_config.rsの手書きkey=valueパーサに追随
 - **前方互換の解決規則を最初から実装する**（ここを省くと将来項目追加時に二度手間）:
