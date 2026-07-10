@@ -22,7 +22,6 @@ egui-wgpu = { version = "0.35", features = ["winit"] }
 winit = "0.30"
 pollster = "0.4"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif", "bmp", "tiff"] }
-libavif = "0.14"
 libavif-sys = "0.17"
 zip = "2"
 sevenz-rust2 = { version = "0.21", optional = true }

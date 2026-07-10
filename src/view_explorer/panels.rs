@@ -5,7 +5,7 @@ use crate::cache::ThumbRequest;
 use crate::i18n;
 use crate::types::ExplorerSortKey;
 use crate::fs::dir;
-use crate::view_reader::{PageMode, ViewerState};
+use crate::view_reader::{fit_rect_contain, PageMode, ViewerState};
 use super::*;
 
 impl NekoviewApp {
@@ -727,9 +727,16 @@ impl NekoviewApp {
 
                         if ui.is_rect_visible(rect) {
                             if let Some(tex) = self.thumbnails.get(path) {
+                                let letterbox_color = if ui.visuals().dark_mode {
+                                    egui::Color32::BLACK
+                                } else {
+                                    egui::Color32::WHITE
+                                };
+                                ui.painter().rect_filled(rect, 4.0, letterbox_color);
+                                let img_rect = fit_rect_contain(rect, tex.size_vec2());
                                 ui.painter().image(
                                     tex.id(),
-                                    rect,
+                                    img_rect,
                                     egui::Rect::from_min_max(
                                         egui::pos2(0.0, 0.0),
                                         egui::pos2(1.0, 1.0),

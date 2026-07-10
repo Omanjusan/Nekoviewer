@@ -53,7 +53,7 @@ fn upload_ring_frame(
 
 /// `bounds` の中に `img_size` を縦横比を保ったまま収める（contain-fit）矩形を返す。
 /// サムネイルバーの正方形枠に、実際のサムネイル画像(縦長/横長)を収めるのに使う。
-fn fit_rect_contain(bounds: egui::Rect, img_size: egui::Vec2) -> egui::Rect {
+pub(crate) fn fit_rect_contain(bounds: egui::Rect, img_size: egui::Vec2) -> egui::Rect {
     if img_size.x <= 0.0 || img_size.y <= 0.0 {
         return bounds;
     }
