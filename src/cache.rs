@@ -94,6 +94,8 @@ pub struct LoadRequest {
     /// フェーズ6: デコード時の表示ターゲットサイズ上限（拡大はしない）。
     /// None は無制限（zoom_actual時、原寸）を意味する。
     pub target_size: Option<(u32, u32)>,
+    /// 項目(D): Exif Orientation自動回転をデコード時に適用するか（ViewerConfigから都度取得）。
+    pub exif_enabled: bool,
 }
 
 /// ワーカースレッド内で保持する開きっぱなしアーカイブ（ディスク版・メモリ版を統合）
@@ -132,13 +134,13 @@ fn open_archive_from_disk(path: &std::path::Path) -> Option<OpenArchive> {
 }
 
 impl OpenArchive {
-    fn load_page(&mut self, entry_name: &str, filter: image::imageops::FilterType, cache_budget_bytes: usize, ring_bounds: (usize, usize), frame_hard_limit_bytes: usize, target_size: Option<(u32, u32)>) -> Option<PageContent> {
+    fn load_page(&mut self, entry_name: &str, filter: image::imageops::FilterType, cache_budget_bytes: usize, ring_bounds: (usize, usize), frame_hard_limit_bytes: usize, target_size: Option<(u32, u32)>, exif_enabled: bool) -> Option<PageContent> {
         match self {
-            Self::Disk(a) => load_page_content(a, entry_name, filter, cache_budget_bytes, ring_bounds, frame_hard_limit_bytes, target_size),
-            Self::Mem(a)  => load_page_content(a, entry_name, filter, cache_budget_bytes, ring_bounds, frame_hard_limit_bytes, target_size),
+            Self::Disk(a) => load_page_content(a, entry_name, filter, cache_budget_bytes, ring_bounds, frame_hard_limit_bytes, target_size, exif_enabled),
+            Self::Mem(a)  => load_page_content(a, entry_name, filter, cache_budget_bytes, ring_bounds, frame_hard_limit_bytes, target_size, exif_enabled),
             Self::Extracted(map) => {
                 let buf = map.get(entry_name)?;
-                decode_bytes_to_content(buf, entry_name, filter, cache_budget_bytes, ring_bounds, frame_hard_limit_bytes, target_size)
+                decode_bytes_to_content(buf, entry_name, filter, cache_budget_bytes, ring_bounds, frame_hard_limit_bytes, target_size, exif_enabled)
             }
         }
     }
@@ -189,12 +191,13 @@ pub fn spawn_worker(filter: image::imageops::FilterType, num_threads: usize, ctx
 
                 let t_total = std::time::Instant::now();
                 let target_size = req.target_size;
+                let exif_enabled = req.exif_enabled;
                 let content = if req.is_raw_file {
                     match req.file_cache_entry {
                         Some(FileCacheEntry::Raw(bytes)) => {
-                            load_raw_content_from_bytes(&bytes, &req.archive_path, filter, cache_budget_bytes, ring_bounds, frame_hard_limit_bytes, target_size)
+                            load_raw_content_from_bytes(&bytes, &req.archive_path, filter, cache_budget_bytes, ring_bounds, frame_hard_limit_bytes, target_size, exif_enabled)
                         }
-                        _ => load_raw_file_content(&req.archive_path, filter, cache_budget_bytes, ring_bounds, frame_hard_limit_bytes, target_size),
+                        _ => load_raw_file_content(&req.archive_path, filter, cache_budget_bytes, ring_bounds, frame_hard_limit_bytes, target_size, exif_enabled),
                     }
                 } else if let Some(FileCacheEntry::Extracted(map)) = req.file_cache_entry.clone() {
                     // FileCache が既に展開済み(7z等): スレッドローカルの再展開はせず共有Arcを使う
@@ -204,7 +207,7 @@ pub fn spawn_worker(filter: image::imageops::FilterType, num_threads: usize, ctx
                     if !is_same {
                         open_archive = Some((req.archive_path.clone(), OpenArchive::Extracted(map)));
                     }
-                    open_archive.as_mut().and_then(|(_, a)| a.load_page(&req.entry_name, filter, cache_budget_bytes, ring_bounds, frame_hard_limit_bytes, target_size))
+                    open_archive.as_mut().and_then(|(_, a)| a.load_page(&req.entry_name, filter, cache_budget_bytes, ring_bounds, frame_hard_limit_bytes, target_size, exif_enabled))
                 } else if let Some(FileCacheEntry::Raw(bytes)) = req.file_cache_entry {
                     // FileCache ヒット(ZIP): メモリからアーカイブを開く
                     let is_same = open_archive.as_ref().map_or(false, |(p, a)| {
@@ -215,7 +218,7 @@ pub fn spawn_worker(filter: image::imageops::FilterType, num_threads: usize, ctx
                             .ok()
                             .map(|a| (req.archive_path.clone(), OpenArchive::Mem(a)));
                     }
-                    open_archive.as_mut().and_then(|(_, a)| a.load_page(&req.entry_name, filter, cache_budget_bytes, ring_bounds, frame_hard_limit_bytes, target_size))
+                    open_archive.as_mut().and_then(|(_, a)| a.load_page(&req.entry_name, filter, cache_budget_bytes, ring_bounds, frame_hard_limit_bytes, target_size, exif_enabled))
                 } else {
                     // FileCache ミス: ディスクから開く（従来の動作。ソリッド形式はここに来た場合のみ
                     // スレッドローカルに展開する安全弁で、通常はFileCache側の先出しにより
@@ -227,7 +230,7 @@ pub fn spawn_worker(filter: image::imageops::FilterType, num_threads: usize, ctx
                         open_archive = open_archive_from_disk(&req.archive_path)
                             .map(|a| (req.archive_path.clone(), a));
                     }
-                    open_archive.as_mut().and_then(|(_, a)| a.load_page(&req.entry_name, filter, cache_budget_bytes, ring_bounds, frame_hard_limit_bytes, target_size))
+                    open_archive.as_mut().and_then(|(_, a)| a.load_page(&req.entry_name, filter, cache_budget_bytes, ring_bounds, frame_hard_limit_bytes, target_size, exif_enabled))
                 };
 
                 if let Some(content) = content {
@@ -285,15 +288,15 @@ fn fir_resize(img: image::DynamicImage, nw: u32, nh: u32, filter: image::imageop
 }
 
 /// 生画像ファイルを PageContent としてデコードする（ZIP不使用）
-fn load_raw_file_content(path: &std::path::Path, filter: image::imageops::FilterType, cache_budget_bytes: usize, ring_bounds: (usize, usize), frame_hard_limit_bytes: usize, target_size: Option<(u32, u32)>) -> Option<PageContent> {
+fn load_raw_file_content(path: &std::path::Path, filter: image::imageops::FilterType, cache_budget_bytes: usize, ring_bounds: (usize, usize), frame_hard_limit_bytes: usize, target_size: Option<(u32, u32)>, exif_enabled: bool) -> Option<PageContent> {
     let buf = std::fs::read(path).ok()?;
-    load_raw_content_from_bytes(&buf, path, filter, cache_budget_bytes, ring_bounds, frame_hard_limit_bytes, target_size)
+    load_raw_content_from_bytes(&buf, path, filter, cache_budget_bytes, ring_bounds, frame_hard_limit_bytes, target_size, exif_enabled)
 }
 
 /// GIF/APNG/AVIF/WebP（フェーズ3/3.5）をリングバッファ方式でデコードし PageContent に変換する。
 /// 実質1フレームしか無い場合は静止画として扱う。対象フォーマットでない場合は None。
-fn decode_ring_anim(buf: &[u8], format: AnimFormat, filter: image::imageops::FilterType, ring_budget_bytes: usize, ring_bounds: (usize, usize), frame_hard_limit_bytes: usize, target_size: Option<(u32, u32)>) -> Option<PageContent> {
-    match RingAnimation::from_source(format, std::sync::Arc::from(buf), filter, ring_budget_bytes, ring_bounds, frame_hard_limit_bytes, target_size) {
+fn decode_ring_anim(buf: &[u8], format: AnimFormat, filter: image::imageops::FilterType, ring_budget_bytes: usize, ring_bounds: (usize, usize), frame_hard_limit_bytes: usize, target_size: Option<(u32, u32)>, exif_enabled: bool) -> Option<PageContent> {
+    match RingAnimation::from_source(format, std::sync::Arc::from(buf), filter, ring_budget_bytes, ring_bounds, frame_hard_limit_bytes, target_size, exif_enabled) {
         RingDecodeOutcome::NotThisFormat => None,
         RingDecodeOutcome::SingleFrame(frame) => {
             Some(PageContent::Static(frame.image))
@@ -309,30 +312,30 @@ fn decode_ring_anim(buf: &[u8], format: AnimFormat, filter: image::imageops::Fil
 /// `cache_budget_bytes` はページキャッシュ全体の予算（page_max）。フェーズ4では
 /// その一部（ANIM_RING_BUDGET_PCT）をアニメ1本のリング予算として使う。
 /// `target_size` はフェーズ6: デコード時の表示上限（Noneは無制限=原寸）。
-fn decode_anim_from_ext(buf: &[u8], ext: &str, filter: image::imageops::FilterType, cache_budget_bytes: usize, ring_bounds: (usize, usize), frame_hard_limit_bytes: usize, target_size: Option<(u32, u32)>) -> Option<PageContent> {
+fn decode_anim_from_ext(buf: &[u8], ext: &str, filter: image::imageops::FilterType, cache_budget_bytes: usize, ring_bounds: (usize, usize), frame_hard_limit_bytes: usize, target_size: Option<(u32, u32)>, exif_enabled: bool) -> Option<PageContent> {
     let ring_budget_bytes = cache_budget_bytes * ANIM_RING_BUDGET_PCT / 100;
     match ext {
-        "gif"  => decode_ring_anim(buf, AnimFormat::Gif, filter, ring_budget_bytes, ring_bounds, frame_hard_limit_bytes, target_size),
-        "png"  => decode_ring_anim(buf, AnimFormat::Apng, filter, ring_budget_bytes, ring_bounds, frame_hard_limit_bytes, target_size),
-        "avif" => decode_ring_anim(buf, AnimFormat::Avif, filter, ring_budget_bytes, ring_bounds, frame_hard_limit_bytes, target_size),
-        "webp" => decode_ring_anim(buf, AnimFormat::Webp, filter, ring_budget_bytes, ring_bounds, frame_hard_limit_bytes, target_size),
+        "gif"  => decode_ring_anim(buf, AnimFormat::Gif, filter, ring_budget_bytes, ring_bounds, frame_hard_limit_bytes, target_size, exif_enabled),
+        "png"  => decode_ring_anim(buf, AnimFormat::Apng, filter, ring_budget_bytes, ring_bounds, frame_hard_limit_bytes, target_size, exif_enabled),
+        "avif" => decode_ring_anim(buf, AnimFormat::Avif, filter, ring_budget_bytes, ring_bounds, frame_hard_limit_bytes, target_size, exif_enabled),
+        "webp" => decode_ring_anim(buf, AnimFormat::Webp, filter, ring_budget_bytes, ring_bounds, frame_hard_limit_bytes, target_size, exif_enabled),
         _      => None,
     }
 }
 
 /// バイト列から生画像を PageContent としてデコードする（FileCache ヒット時用）
-fn load_raw_content_from_bytes(buf: &[u8], path: &std::path::Path, filter: image::imageops::FilterType, cache_budget_bytes: usize, ring_bounds: (usize, usize), frame_hard_limit_bytes: usize, target_size: Option<(u32, u32)>) -> Option<PageContent> {
+fn load_raw_content_from_bytes(buf: &[u8], path: &std::path::Path, filter: image::imageops::FilterType, cache_budget_bytes: usize, ring_bounds: (usize, usize), frame_hard_limit_bytes: usize, target_size: Option<(u32, u32)>, exif_enabled: bool) -> Option<PageContent> {
     let ext = path
         .extension()
         .and_then(|e| e.to_str())
         .map(|s| s.to_ascii_lowercase())
         .unwrap_or_default();
 
-    if let Some(c) = decode_anim_from_ext(buf, &ext, filter, cache_budget_bytes, ring_bounds, frame_hard_limit_bytes, target_size) {
+    if let Some(c) = decode_anim_from_ext(buf, &ext, filter, cache_budget_bytes, ring_bounds, frame_hard_limit_bytes, target_size, exif_enabled) {
         return Some(c);
     }
 
-    let img = crate::fs::archive::decode_image_bytes(buf)?;
+    let img = crate::fs::archive::decode_image_bytes(buf, exif_enabled)?;
     Some(PageContent::Static(resize_for_display(img, filter, target_size)))
 }
 
@@ -345,9 +348,10 @@ fn load_page_content<R: std::io::Read + std::io::Seek>(
     ring_bounds: (usize, usize),
     frame_hard_limit_bytes: usize,
     target_size: Option<(u32, u32)>,
+    exif_enabled: bool,
 ) -> Option<PageContent> {
     let (buf, display_name) = crate::fs::archive::load_bytes_from_archive(archive, entry_name)?;
-    decode_bytes_to_content(&buf, &display_name, filter, cache_budget_bytes, ring_bounds, frame_hard_limit_bytes, target_size)
+    decode_bytes_to_content(&buf, &display_name, filter, cache_budget_bytes, ring_bounds, frame_hard_limit_bytes, target_size, exif_enabled)
 }
 
 /// 展開済みバイト列を PageContent としてデコードする（ZIP/7z共通処理）。
@@ -360,15 +364,16 @@ fn decode_bytes_to_content(
     ring_bounds: (usize, usize),
     frame_hard_limit_bytes: usize,
     target_size: Option<(u32, u32)>,
+    exif_enabled: bool,
 ) -> Option<PageContent> {
     let lower = entry_name.to_ascii_lowercase();
     let ext = lower.rsplit_once('.').map(|(_, e)| e).unwrap_or("");
 
-    if let Some(c) = decode_anim_from_ext(buf, ext, filter, cache_budget_bytes, ring_bounds, frame_hard_limit_bytes, target_size) {
+    if let Some(c) = decode_anim_from_ext(buf, ext, filter, cache_budget_bytes, ring_bounds, frame_hard_limit_bytes, target_size, exif_enabled) {
         return Some(c);
     }
 
-    let img = crate::fs::archive::decode_image_bytes(buf)?;
+    let img = crate::fs::archive::decode_image_bytes(buf, exif_enabled)?;
     Some(PageContent::Static(resize_for_display(img, filter, target_size)))
 }
 
@@ -428,11 +433,11 @@ impl RingAnimation {
     /// どちらも超過時はそのフレームだけ縮小して継続する（同一アニメ内で解像度が変則的なファイル対策）。
     /// フレーム0のバイト数から通常表示用のリサイズ先・リング容量を算出し、以降の再生中は変更しない（フェーズ4）。
     /// `target_size` はフェーズ6: 表示上限（Noneは無制限=原寸のまま）。
-    fn from_source(format: AnimFormat, source: Arc<[u8]>, filter: image::imageops::FilterType, ring_budget_bytes: usize, ring_bounds: (usize, usize), frame_hard_limit_bytes: usize, target_size: Option<(u32, u32)>) -> RingDecodeOutcome {
+    fn from_source(format: AnimFormat, source: Arc<[u8]>, filter: image::imageops::FilterType, ring_budget_bytes: usize, ring_bounds: (usize, usize), frame_hard_limit_bytes: usize, target_size: Option<(u32, u32)>, exif_enabled: bool) -> RingDecodeOutcome {
         // WebPのExif Orientationは静止画（1フレームしかない）確定時のみ適用する。アニメ全体への
         // 一律適用は未対応のため、先にframe0だけ回転してしまうと「先頭フレームだけ回転済み・
         // 残りは無回転」という不整合が起きる。そのため判定（frame1の有無）より前には触らない。
-        let webp_orientation = if format == AnimFormat::Webp {
+        let webp_orientation = if format == AnimFormat::Webp && exif_enabled {
             crate::fs::archive::decode::webp_exif_orientation(&source)
         } else {
             image::metadata::Orientation::NoTransforms
@@ -450,7 +455,7 @@ impl RingAnimation {
         // 読めない（コンテナのRIFF/box自前パースのような事前スキャンができない）ため、
         // frame0が獲れた直後、かつ静止画/アニメ判定と同じ理由でframe1取得より前に確定させる。
         let orientation = if format == AnimFormat::Avif {
-            decoder.avif_orientation()
+            if exif_enabled { decoder.avif_orientation() } else { image::metadata::Orientation::NoTransforms }
         } else {
             webp_orientation
         };
@@ -989,12 +994,13 @@ pub fn spawn_entry_thumb_worker(filter: image::imageops::FilterType, num_threads
                 // 容量1だと frame0 が即エビクトされ with_frame(0) が常に None になる
                 // （アニメエントリのサムネが100%失敗→毎フレーム再デコードし続ける原因だった）。
                 let ring_bounds = (2, 2);
+                // アーカイブ内サムネイルはビューアーのExif ON/OFF設定(D)と独立、常時EXIF自動回転を適用する。
                 let content = if req.is_raw_file {
                     match &req.file_cache_entry {
                         Some(FileCacheEntry::Raw(bytes)) => {
-                            load_raw_content_from_bytes(bytes, &req.archive_path, filter, ENTRY_THUMB_RING_BUDGET_BYTES, ring_bounds, ENTRY_THUMB_FRAME_HARD_LIMIT_BYTES, target)
+                            load_raw_content_from_bytes(bytes, &req.archive_path, filter, ENTRY_THUMB_RING_BUDGET_BYTES, ring_bounds, ENTRY_THUMB_FRAME_HARD_LIMIT_BYTES, target, true)
                         }
-                        _ => load_raw_file_content(&req.archive_path, filter, ENTRY_THUMB_RING_BUDGET_BYTES, ring_bounds, ENTRY_THUMB_FRAME_HARD_LIMIT_BYTES, target),
+                        _ => load_raw_file_content(&req.archive_path, filter, ENTRY_THUMB_RING_BUDGET_BYTES, ring_bounds, ENTRY_THUMB_FRAME_HARD_LIMIT_BYTES, target, true),
                     }
                 } else if let Some(FileCacheEntry::Extracted(map)) = req.file_cache_entry.clone() {
                     // FileCache が既に展開済み(7z等): スレッドローカルの再展開はせず共有Arcを使う
@@ -1005,7 +1011,7 @@ pub fn spawn_entry_thumb_worker(filter: image::imageops::FilterType, num_threads
                         open_archive = Some((req.archive_path.clone(), OpenArchive::Extracted(map)));
                     }
                     open_archive.as_mut().and_then(|(_, a)| {
-                        a.load_page(&req.entry_name, filter, ENTRY_THUMB_RING_BUDGET_BYTES, ring_bounds, ENTRY_THUMB_FRAME_HARD_LIMIT_BYTES, target)
+                        a.load_page(&req.entry_name, filter, ENTRY_THUMB_RING_BUDGET_BYTES, ring_bounds, ENTRY_THUMB_FRAME_HARD_LIMIT_BYTES, target, true)
                     })
                 } else if let Some(FileCacheEntry::Raw(bytes)) = req.file_cache_entry {
                     // FileCache ヒット(ZIP): メモリからアーカイブを開く
@@ -1018,7 +1024,7 @@ pub fn spawn_entry_thumb_worker(filter: image::imageops::FilterType, num_threads
                             .map(|a| (req.archive_path.clone(), OpenArchive::Mem(a)));
                     }
                     open_archive.as_mut().and_then(|(_, a)| {
-                        a.load_page(&req.entry_name, filter, ENTRY_THUMB_RING_BUDGET_BYTES, ring_bounds, ENTRY_THUMB_FRAME_HARD_LIMIT_BYTES, target)
+                        a.load_page(&req.entry_name, filter, ENTRY_THUMB_RING_BUDGET_BYTES, ring_bounds, ENTRY_THUMB_FRAME_HARD_LIMIT_BYTES, target, true)
                     })
                 } else {
                     // FileCache ミス: ディスクから開く（従来の動作。ソリッド形式はここに来た場合のみ
@@ -1032,7 +1038,7 @@ pub fn spawn_entry_thumb_worker(filter: image::imageops::FilterType, num_threads
                             .map(|a| (req.archive_path.clone(), a));
                     }
                     open_archive.as_mut().and_then(|(_, a)| {
-                        a.load_page(&req.entry_name, filter, ENTRY_THUMB_RING_BUDGET_BYTES, ring_bounds, ENTRY_THUMB_FRAME_HARD_LIMIT_BYTES, target)
+                        a.load_page(&req.entry_name, filter, ENTRY_THUMB_RING_BUDGET_BYTES, ring_bounds, ENTRY_THUMB_FRAME_HARD_LIMIT_BYTES, target, true)
                     })
                 };
 
@@ -1088,7 +1094,8 @@ fn generate_thumb(req: &ThumbRequest, filter: image::imageops::FilterType) -> Op
 
     let rgba = if req.is_raw_file {
         let buf = std::fs::read(&req.archive_path).ok()?;
-        let img = crate::fs::archive::decode_image_bytes(&buf)?;
+        // サムネイルはビューアーのExif ON/OFF設定(D)と独立、常時EXIF自動回転を適用する。
+        let img = crate::fs::archive::decode_image_bytes(&buf, true)?;
         resize_thumbnail(img, filter)
     } else {
         let t_total = std::time::Instant::now();
@@ -1157,7 +1164,7 @@ mod ring_integration_tests {
         let path = std::path::Path::new("test/nouka.gif");
         let buf = std::fs::read(path).expect("test/nouka.gif が見つからない");
 
-        let content = decode_ring_anim(&buf, AnimFormat::Gif, image::imageops::FilterType::Triangle, TEST_RING_BUDGET_BYTES, TEST_RING_BOUNDS, TEST_FRAME_HARD_LIMIT_BYTES, Some((1920, 1080)))
+        let content = decode_ring_anim(&buf, AnimFormat::Gif, image::imageops::FilterType::Triangle, TEST_RING_BUDGET_BYTES, TEST_RING_BOUNDS, TEST_FRAME_HARD_LIMIT_BYTES, Some((1920, 1080)), true)
             .expect("GIFとしてデコードできるはず");
 
         let PageContent::Animated(ring) = content else {
@@ -1197,7 +1204,7 @@ mod ring_integration_tests {
     #[test]
     fn page_cache_accounts_anim_by_reservation_symmetrically() {
         let bytes = encode_gif_frames_mixed(&[(10, 10), (10, 10), (10, 10)]);
-        let content = decode_ring_anim(&bytes, AnimFormat::Gif, image::imageops::FilterType::Triangle, TEST_RING_BUDGET_BYTES, TEST_RING_BOUNDS, TEST_FRAME_HARD_LIMIT_BYTES, Some((1920, 1080)))
+        let content = decode_ring_anim(&bytes, AnimFormat::Gif, image::imageops::FilterType::Triangle, TEST_RING_BUDGET_BYTES, TEST_RING_BOUNDS, TEST_FRAME_HARD_LIMIT_BYTES, Some((1920, 1080)), true)
             .expect("GIFとしてデコードできるはず");
         let PageContent::Animated(ref ring) = content else {
             panic!("3フレームあるので Animated になるはず");
@@ -1231,7 +1238,7 @@ mod ring_integration_tests {
         let path = std::path::Path::new("test/nouka.gif");
         let buf = std::fs::read(path).expect("test/nouka.gif が見つからない");
 
-        let content = decode_ring_anim(&buf, AnimFormat::Gif, image::imageops::FilterType::Triangle, TEST_RING_BUDGET_BYTES, TEST_RING_BOUNDS, TEST_FRAME_HARD_LIMIT_BYTES, Some((1920, 1080)))
+        let content = decode_ring_anim(&buf, AnimFormat::Gif, image::imageops::FilterType::Triangle, TEST_RING_BUDGET_BYTES, TEST_RING_BOUNDS, TEST_FRAME_HARD_LIMIT_BYTES, Some((1920, 1080)), true)
             .expect("GIFとしてデコードできるはず");
         let PageContent::Animated(ring) = content else {
             panic!("Animated になるはず");
@@ -1266,7 +1273,7 @@ mod ring_integration_tests {
     fn ring_anim_webp_stays_bounded_on_real_large_file() {
         let buf = load_webp_entry_from_test_zip();
 
-        let content = decode_ring_anim(&buf, AnimFormat::Webp, image::imageops::FilterType::Triangle, TEST_RING_BUDGET_BYTES, TEST_RING_BOUNDS, TEST_FRAME_HARD_LIMIT_BYTES, Some((1920, 1080)))
+        let content = decode_ring_anim(&buf, AnimFormat::Webp, image::imageops::FilterType::Triangle, TEST_RING_BUDGET_BYTES, TEST_RING_BOUNDS, TEST_FRAME_HARD_LIMIT_BYTES, Some((1920, 1080)), true)
             .expect("WebPとしてデコードできるはず");
         let PageContent::Animated(ring) = content else {
             panic!("243フレームあるので Animated になるはず（Static ではない）");
@@ -1300,7 +1307,7 @@ mod ring_integration_tests {
     fn ring_anim_webp_restart_replays_from_head() {
         let buf = load_webp_entry_from_test_zip();
 
-        let content = decode_ring_anim(&buf, AnimFormat::Webp, image::imageops::FilterType::Triangle, TEST_RING_BUDGET_BYTES, TEST_RING_BOUNDS, TEST_FRAME_HARD_LIMIT_BYTES, Some((1920, 1080)))
+        let content = decode_ring_anim(&buf, AnimFormat::Webp, image::imageops::FilterType::Triangle, TEST_RING_BUDGET_BYTES, TEST_RING_BOUNDS, TEST_FRAME_HARD_LIMIT_BYTES, Some((1920, 1080)), true)
             .expect("WebPとしてデコードできるはず");
         let PageContent::Animated(ring) = content else {
             panic!("Animated になるはず");
@@ -1338,7 +1345,7 @@ mod ring_integration_tests {
         let bytes = encode_gif_frames_mixed(&[(10, 10), (4000, 4000), (10, 10)]);
         let hard_limit_bytes = 1000; // 4000x4000の生サイズ(64,000,000 bytes)を大きく下回る極小値
 
-        let content = decode_ring_anim(&bytes, AnimFormat::Gif, image::imageops::FilterType::Triangle, TEST_RING_BUDGET_BYTES, TEST_RING_BOUNDS, hard_limit_bytes, Some((1920, 1080)))
+        let content = decode_ring_anim(&bytes, AnimFormat::Gif, image::imageops::FilterType::Triangle, TEST_RING_BUDGET_BYTES, TEST_RING_BOUNDS, hard_limit_bytes, Some((1920, 1080)), true)
             .expect("GIFとしてデコードできるはず");
         let PageContent::Animated(ring) = content else {
             panic!("3フレームあるので Animated になるはず");
@@ -1359,7 +1366,7 @@ mod ring_integration_tests {
         let bytes = encode_gif_frames_mixed(&[(4000, 4000), (10, 10)]);
         let hard_limit_bytes = 1000;
 
-        let content = decode_ring_anim(&bytes, AnimFormat::Gif, image::imageops::FilterType::Triangle, TEST_RING_BUDGET_BYTES, TEST_RING_BOUNDS, hard_limit_bytes, Some((1920, 1080)))
+        let content = decode_ring_anim(&bytes, AnimFormat::Gif, image::imageops::FilterType::Triangle, TEST_RING_BUDGET_BYTES, TEST_RING_BOUNDS, hard_limit_bytes, Some((1920, 1080)), true)
             .expect("GIFとしてデコードできるはず");
         let PageContent::Animated(ring) = content else {
             panic!("2フレームあるので Animated になるはず（静止画フォールバックしない）");

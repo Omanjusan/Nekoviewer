@@ -764,6 +764,22 @@ impl Lang {
         }
     }
 
+    pub fn settings_exif_orientation_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "■ Exif Orientationによる自動回転",
+            Lang::English  => "■ Auto-rotate via Exif Orientation",
+            Lang::Chinese  => "■ 根据Exif Orientation自动旋转",
+        }
+    }
+
+    pub fn settings_exif_orientation_explain(self) -> &'static str {
+        match self {
+            Lang::Japanese => "OFFにすると、画像に埋め込まれたExif Orientationタグ（誤って付与されている場合を含む）を無視して表示する。ビューアーのみに効き、サムネイルには影響しない。",
+            Lang::English  => "When off, the Exif Orientation tag embedded in images (including incorrectly-tagged ones) is ignored when displaying. Affects the viewer only, not thumbnails.",
+            Lang::Chinese  => "关闭后，显示时将忽略图像内嵌的Exif Orientation标签（包括错误标签）。仅影响查看器，不影响缩略图。",
+        }
+    }
+
     /// ダイアログ下部に1回だけ出す凡例。全項目に■が付き、[反映]後に次回起動が必要な
     /// 項目だけ■の直後に※も付く（■ ※<ラベル>）。
     pub fn settings_legend(self) -> &'static str {

@@ -53,6 +53,7 @@ pub(crate) struct SettingsDraft {
     thumbbar_marker_g: u8,
     thumbbar_marker_b: u8,
     thumbbar_marker_a: u8,
+    exif_orientation_enabled: bool,
 }
 
 impl SettingsDraft {
@@ -80,6 +81,7 @@ impl SettingsDraft {
             thumbbar_marker_g: viewer_cfg.thumbbar_marker_g,
             thumbbar_marker_b: viewer_cfg.thumbbar_marker_b,
             thumbbar_marker_a: viewer_cfg.thumbbar_marker_a,
+            exif_orientation_enabled: viewer_cfg.exif_orientation_enabled,
         }
     }
 
@@ -111,6 +113,7 @@ impl SettingsDraft {
         viewer_cfg.thumbbar_marker_g = self.thumbbar_marker_g;
         viewer_cfg.thumbbar_marker_b = self.thumbbar_marker_b;
         viewer_cfg.thumbbar_marker_a = self.thumbbar_marker_a;
+        viewer_cfg.exif_orientation_enabled = self.exif_orientation_enabled;
     }
 }
 
@@ -226,6 +229,13 @@ fn draw_settings_tab_anim(ui: &mut egui::Ui, draft: &mut SettingsDraft) {
 }
 
 fn draw_settings_tab_viewer(ui: &mut egui::Ui, draft: &mut SettingsDraft) {
+    ui.horizontal(|ui| {
+        ui.label(i18n::t().settings_exif_orientation_label());
+        ui.checkbox(&mut draft.exif_orientation_enabled, "");
+    });
+    ui.label(i18n::t().settings_exif_orientation_explain());
+    ui.separator();
+
     // 大項目見出し。下の各項目ラベル(■付き)と混同しないよう太字・大きめで区別する。
     ui.label(egui::RichText::new(i18n::t().settings_thumbbar_section_label()).strong().size(15.0));
 

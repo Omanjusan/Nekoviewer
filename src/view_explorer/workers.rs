@@ -133,6 +133,7 @@ impl NekoviewApp {
             (path, is_raw_file, pages)
         };
 
+        let exif_enabled = self.viewer_cfg.lock().unwrap().exif_orientation_enabled;
         for (orig_i, entry_name) in &pages {
             self.page_cache.lock().unwrap().remove(&path, *orig_i);
             let key = (path.clone(), *orig_i);
@@ -144,6 +145,7 @@ impl NekoviewApp {
                 is_raw_file,
                 file_cache_entry: None,
                 target_size: target,
+                exif_enabled,
             });
         }
 
@@ -310,6 +312,7 @@ impl NekoviewApp {
             let cur_orig_i = entries.get(cur).map(|e| e.original_index);
             let start = cur.saturating_sub(crate::cache::PREFETCH_BEHIND);
             let end = (cur + crate::cache::PREFETCH_AHEAD + 1).min(total);
+            let exif_enabled = self.viewer_cfg.lock().unwrap().exif_orientation_enabled;
             for i in start..end {
                 let orig_i = entries[i].original_index;
                 // 予算超過(bypass)と判明済みのページは、現在表示中でない限り先読み対象から外す。
@@ -327,6 +330,7 @@ impl NekoviewApp {
                         is_raw_file,
                         file_cache_entry: None,
                         target_size: self.decode_target,
+                        exif_enabled,
                     });
                 }
             }

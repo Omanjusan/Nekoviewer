@@ -71,8 +71,9 @@ pub(crate) fn estimate_bytes_for_entry(buf: &[u8], display_name: &str, budget_by
         return Some(to_entry_estimate(n, budget_bytes));
     }
 
-    // ヘッダ解析失敗時の最終手段: フルデコードして実寸法を使う。
-    let img = decode::decode_image_bytes(buf)?;
+    // ヘッダ解析失敗時の最終手段: フルデコードして実寸法を使う。キャッシュ予算見積もり用の
+    // 寸法取得のみが目的で実際の表示には使わないため、項目(D)設定に関わらず常時trueでよい。
+    let img = decode::decode_image_bytes(buf, true)?;
     let (rw, rh) = crate::anim::fit_within(img.width(), img.height(), max_decode_edge, max_decode_edge);
     let n = (rw as usize) * (rh as usize) * 4;
     Some(to_entry_estimate(n, budget_bytes))
@@ -378,7 +379,7 @@ mod tests {
         assert_eq!(map.len(), 3, "一括展開後のエントリ数が一覧と一致しない");
         for e in &entries {
             let buf = map.get(&e.entry_name).expect("展開済みマップにエントリが無い");
-            let img = decode_image_bytes(buf);
+            let img = decode_image_bytes(buf, true);
             assert!(img.is_some(), "{} のデコードに失敗", e.display_name);
         }
     }

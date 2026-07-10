@@ -1,9 +1,11 @@
 //! フォーマット非依存の画像バイト処理。
 //! シグネチャ判定・静止画/アニメーションのデコードとデコード後サイズ見積もりを担う。
 
-/// バイト列から静止画をデコードする（内部ラッパ）。
+/// バイト列から静止画をデコードする（内部ラッパ）。サムネイル生成専用の経路のため、
+/// 項目(D)のExif Orientation ON/OFF設定に関わらず常時Orientationを適用する
+/// （サムネイルはビューアーの設定と独立、常にEXIF自動回転ON固定）。
 pub(crate) fn decode_image(buf: &[u8]) -> Option<image::DynamicImage> {
-    decode_image_bytes(buf)
+    decode_image_bytes(buf, true)
 }
 
 /// RIFF/WEBP シグネチャを先頭バイトから判定する
@@ -49,11 +51,13 @@ pub(crate) fn webp_exif_orientation(buf: &[u8]) -> image::metadata::Orientation 
 /// バイト列から静止画をデコードする（外部から呼び出し可能）。
 /// 拡張子ではなく先頭バイトのシグネチャで実フォーマットを判定するため、
 /// 拡張子と中身が食い違うファイルでも正しいデコーダへ振り分けられる。
-pub fn decode_image_bytes(buf: &[u8]) -> Option<image::DynamicImage> {
+/// `exif_enabled`: 項目(D)。falseならOrientation検出自体は行うが適用をスキップする
+/// （誤ったOrientationタグが埋め込まれたアーカイブ向けの逃げ道）。
+pub fn decode_image_bytes(buf: &[u8], exif_enabled: bool) -> Option<image::DynamicImage> {
     if has_webp_signature(buf) {
         // このパスは常に単一の静的画像を返す（アニメ再生自体は別経路のRingAnimationが担う）
         // ため、どちらの分岐で取れたフレームに対してもExif Orientationを適用してよい。
-        let orientation = webp_exif_orientation(buf);
+        let orientation = if exif_enabled { webp_exif_orientation(buf) } else { image::metadata::Orientation::NoTransforms };
         // 静止画デコードを先に試みる
         if let Some(mut img) = webp::Decoder::new(buf).decode().map(|w| w.to_image()) {
             img.apply_orientation(orientation);
@@ -81,9 +85,9 @@ pub fn decode_image_bytes(buf: &[u8]) -> Option<image::DynamicImage> {
         }
         None
     } else if has_avif_signature(buf) {
-        decode_avif(buf)
+        decode_avif(buf, exif_enabled)
     } else {
-        decode_native_with_orientation(buf)
+        decode_native_with_orientation(buf, exif_enabled)
     }
 }
 
@@ -92,17 +96,21 @@ pub fn decode_image_bytes(buf: &[u8]) -> Option<image::DynamicImage> {
 /// （サムネ生成・ビューアーのページ表示、いずれもここを通る）は回転後の寸法を
 /// そのまま使えばよく、個別の回転対応は不要になる。
 /// WebP/AVIFは別デコーダ（webp crate / libavif）経由のため対象外（未対応、既知の制限）。
-fn decode_native_with_orientation(buf: &[u8]) -> Option<image::DynamicImage> {
+fn decode_native_with_orientation(buf: &[u8], exif_enabled: bool) -> Option<image::DynamicImage> {
     use image::ImageDecoder;
 
     let reader = image::ImageReader::new(std::io::Cursor::new(buf))
         .with_guessed_format()
         .ok()?;
     let mut decoder = reader.into_decoder().ok()?;
-    let exif_chunk: Option<Vec<u8>> = decoder.exif_metadata().ok().flatten();
-    let orientation = exif_chunk
-        .and_then(|chunk| image::metadata::Orientation::from_exif_chunk(&chunk))
-        .unwrap_or(image::metadata::Orientation::NoTransforms);
+    let orientation = if exif_enabled {
+        let exif_chunk: Option<Vec<u8>> = decoder.exif_metadata().ok().flatten();
+        exif_chunk
+            .and_then(|chunk| image::metadata::Orientation::from_exif_chunk(&chunk))
+            .unwrap_or(image::metadata::Orientation::NoTransforms)
+    } else {
+        image::metadata::Orientation::NoTransforms
+    };
     let mut img = image::DynamicImage::from_decoder(decoder).ok()?;
     img.apply_orientation(orientation);
     Some(img)
@@ -169,7 +177,7 @@ pub(crate) unsafe fn avif_orientation_from_image(avif_image: *const libavif_sys:
 
 /// `libavif`クレート(安全ラッパー)にはExif/irot/imirへのアクセスが無いため、生FFI
 /// (`libavif-sys`)で直接デコードする。`anim.rs`の`AvifSeqState`と同系統のFFI呼び出しパターン。
-fn decode_avif(buf: &[u8]) -> Option<image::DynamicImage> {
+fn decode_avif(buf: &[u8], exif_enabled: bool) -> Option<image::DynamicImage> {
     use libavif_sys::*;
 
     struct DecoderGuard(*mut avifDecoder);
@@ -220,7 +228,8 @@ fn decode_avif(buf: &[u8]) -> Option<image::DynamicImage> {
         avifRGBImageFreePixels(&mut rgb);
 
         let mut img = image::RgbaImage::from_raw(w, h, pixels?).map(image::DynamicImage::ImageRgba8)?;
-        img.apply_orientation(avif_orientation_from_image(avif_image));
+        let orientation = if exif_enabled { avif_orientation_from_image(avif_image) } else { image::metadata::Orientation::NoTransforms };
+        img.apply_orientation(orientation);
         Some(img)
     }
 }
@@ -372,7 +381,7 @@ mod tests {
         img.write_to(&mut buf, image::ImageFormat::Tiff).unwrap();
         let bytes = buf.into_inner();
 
-        let decoded = decode_image_bytes(&bytes).expect("tiff should decode");
+        let decoded = decode_image_bytes(&bytes, true).expect("tiff should decode");
         assert_eq!((decoded.width(), decoded.height()), (4, 3));
 
         let estimated = estimate_static_decoded_bytes(&bytes, 1920).expect("tiff header should be readable");
@@ -455,7 +464,7 @@ mod tests {
         with_exif.extend_from_slice(&build_exif_orientation_app1(6));
         with_exif.extend_from_slice(&jpeg_bytes[2..]);
 
-        let decoded = decode_image_bytes(&with_exif).expect("exif付きjpegはデコードできるはず");
+        let decoded = decode_image_bytes(&with_exif, true).expect("exif付きjpegはデコードできるはず");
         assert_eq!((decoded.width(), decoded.height()), (2, 4), "90度回転で幅高さが入れ替わるはず");
     }
 
@@ -537,7 +546,7 @@ mod tests {
         // irot.angle=3 (反時計回り270度=時計回り90度) → 幅高さが入れ替わるはず
         let buf = build_test_avif(4, 2, &rgba, Some(3), None, None);
 
-        let decoded = decode_image_bytes(&buf).expect("自作AVIF(irot)はデコードできるはず");
+        let decoded = decode_image_bytes(&buf, true).expect("自作AVIF(irot)はデコードできるはず");
         assert_eq!((decoded.width(), decoded.height()), (2, 4), "irot反映で幅高さが入れ替わるはず");
     }
 
@@ -547,7 +556,7 @@ mod tests {
         // imir単体（回転なし）は寸法を変えないため、ピクセル内容で左右反転を検証する
         let buf = build_test_avif(4, 2, &rgba, None, Some(1), None);
 
-        let decoded = decode_image_bytes(&buf).expect("自作AVIF(imir)はデコードできるはず");
+        let decoded = decode_image_bytes(&buf, true).expect("自作AVIF(imir)はデコードできるはず");
         let decoded = decoded.to_rgba8();
         assert_eq!((decoded.width(), decoded.height()), (4, 2));
         // axis=1(左右反転)適用後は元画像の右端列(x=3)が復号後の左端(x=0)に来るはず
@@ -562,7 +571,7 @@ mod tests {
         let exif_tiff = build_minimal_exif_tiff(6); // 6 = 時計回り90度
         let buf = build_test_avif(4, 2, &rgba, None, None, Some(&exif_tiff));
 
-        let decoded = decode_image_bytes(&buf).expect("自作AVIF(exif)はデコードできるはず");
+        let decoded = decode_image_bytes(&buf, true).expect("自作AVIF(exif)はデコードできるはず");
         assert_eq!((decoded.width(), decoded.height()), (2, 4), "Exif Orientationフォールバックで幅高さが入れ替わるはず");
     }
 }
