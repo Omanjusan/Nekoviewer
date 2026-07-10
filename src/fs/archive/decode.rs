@@ -458,4 +458,111 @@ mod tests {
         let decoded = decode_image_bytes(&with_exif).expect("exif付きjpegはデコードできるはず");
         assert_eq!((decoded.width(), decoded.height()), (2, 4), "90度回転で幅高さが入れ替わるはず");
     }
+
+    /// 生FFI(libavif-sys)で実際のAVIFバイト列をエンコードする。RIFF/WebPと違いISOBMFF boxの
+    /// 自前組み立ては現実的でないため、libavifのエンコーダを直接叩く（フェーズ3・B案）。
+    /// irot/imir・Exifは`libavif`の安全ラッパーには無いフィールドで、デコード側(`decode_avif`)
+    /// と同じ生FFI操作でしかセットできない。可逆設定でエンコードし、幅高さの入れ替わりで
+    /// 回転が実際に反映されたことを確認する（AV1は非可逆コーデックのためピクセル完全一致は見ない）。
+    fn build_test_avif(w: u32, h: u32, rgba: &[u8], irot_angle: Option<u8>, imir_axis: Option<u8>, exif: Option<&[u8]>) -> Vec<u8> {
+        use libavif_sys::*;
+        unsafe {
+            let image = avifImageCreate(w, h, 8, AVIF_PIXEL_FORMAT_YUV444);
+            assert!(!image.is_null());
+
+            if let Some(angle) = irot_angle {
+                (*image).transformFlags |= AVIF_TRANSFORM_IROT;
+                (*image).irot.angle = angle;
+            }
+            if let Some(axis) = imir_axis {
+                (*image).transformFlags |= AVIF_TRANSFORM_IMIR;
+                (*image).imir.axis = axis;
+            }
+
+            let mut rgb: avifRGBImage = std::mem::zeroed();
+            avifRGBImageSetDefaults(&mut rgb, image);
+            rgb.format = AVIF_RGB_FORMAT_RGBA;
+            rgb.depth = 8;
+            assert_eq!(avifRGBImageAllocatePixels(&mut rgb), AVIF_RESULT_OK);
+            for row in 0..h as usize {
+                let src = &rgba[row * (w as usize) * 4..(row + 1) * (w as usize) * 4];
+                let dst = std::slice::from_raw_parts_mut(rgb.pixels.add(row * rgb.rowBytes as usize), (w as usize) * 4);
+                dst.copy_from_slice(src);
+            }
+            assert_eq!(avifImageRGBToYUV(image, &rgb), AVIF_RESULT_OK);
+            avifRGBImageFreePixels(&mut rgb);
+
+            // Exifは`avifImageSetMetadataExif`がirot/imirも自動解釈して上書きするため、
+            // irot/imirを明示指定するテストケースとは排他で使う。
+            if let Some(exif_bytes) = exif {
+                assert_eq!(avifImageSetMetadataExif(image, exif_bytes.as_ptr(), exif_bytes.len()), AVIF_RESULT_OK);
+            }
+
+            let encoder = avifEncoderCreate();
+            assert!(!encoder.is_null());
+            (*encoder).speed = 10;
+            (*encoder).quality = AVIF_QUALITY_LOSSLESS as i32;
+            (*encoder).minQuantizer = AVIF_QUANTIZER_LOSSLESS as i32;
+            (*encoder).maxQuantizer = AVIF_QUANTIZER_LOSSLESS as i32;
+
+            assert_eq!(
+                avifEncoderAddImage(encoder, image, 1, AVIF_ADD_IMAGE_FLAG_SINGLE),
+                AVIF_RESULT_OK
+            );
+            let mut output: avifRWData = std::mem::zeroed();
+            assert_eq!(avifEncoderFinish(encoder, &mut output), AVIF_RESULT_OK);
+            let bytes = std::slice::from_raw_parts(output.data, output.size).to_vec();
+
+            avifRWDataFree(&mut output);
+            avifEncoderDestroy(encoder);
+            avifImageDestroy(image);
+            bytes
+        }
+    }
+
+    /// 4x2の非対称RGBA画像（座標(x,y)をそのままR,Gに埋め込む）を作る。
+    fn asymmetric_rgba(w: u32, h: u32) -> Vec<u8> {
+        let mut out = Vec::with_capacity((w * h * 4) as usize);
+        for y in 0..h {
+            for x in 0..w {
+                out.extend_from_slice(&[x as u8 * 40, y as u8 * 40, 0, 255]);
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn decode_avif_applies_irot_orientation() {
+        let rgba = asymmetric_rgba(4, 2);
+        // irot.angle=3 (反時計回り270度=時計回り90度) → 幅高さが入れ替わるはず
+        let buf = build_test_avif(4, 2, &rgba, Some(3), None, None);
+
+        let decoded = decode_image_bytes(&buf).expect("自作AVIF(irot)はデコードできるはず");
+        assert_eq!((decoded.width(), decoded.height()), (2, 4), "irot反映で幅高さが入れ替わるはず");
+    }
+
+    #[test]
+    fn decode_avif_applies_imir_orientation() {
+        let rgba = asymmetric_rgba(4, 2);
+        // imir単体（回転なし）は寸法を変えないため、ピクセル内容で左右反転を検証する
+        let buf = build_test_avif(4, 2, &rgba, None, Some(1), None);
+
+        let decoded = decode_image_bytes(&buf).expect("自作AVIF(imir)はデコードできるはず");
+        let decoded = decoded.to_rgba8();
+        assert_eq!((decoded.width(), decoded.height()), (4, 2));
+        // axis=1(左右反転)適用後は元画像の右端列(x=3)が復号後の左端(x=0)に来るはず
+        // （YUV往復による丸め誤差を避けるため、位置を表すR/Gチャンネルのみ見る）
+        let px = decoded.get_pixel(0, 0).0;
+        assert_eq!([px[0], px[1]], [3 * 40, 0]);
+    }
+
+    #[test]
+    fn decode_avif_falls_back_to_exif_orientation_without_irot_imir() {
+        let rgba = asymmetric_rgba(4, 2);
+        let exif_tiff = build_minimal_exif_tiff(6); // 6 = 時計回り90度
+        let buf = build_test_avif(4, 2, &rgba, None, None, Some(&exif_tiff));
+
+        let decoded = decode_image_bytes(&buf).expect("自作AVIF(exif)はデコードできるはず");
+        assert_eq!((decoded.width(), decoded.height()), (2, 4), "Exif Orientationフォールバックで幅高さが入れ替わるはず");
+    }
 }
