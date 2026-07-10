@@ -113,6 +113,24 @@ pub fn effective_angle(base_exif_deg: i32, exif_enabled: bool, manual_delta: i32
     normalize_360(start + manual_delta)
 }
 
+/// 角度引き継ぎトグル(carry_over)の状態に応じて、ページ単位のRotationStateと
+/// ViewerConfig::rotation_session_angle のどちらを更新するかを決める薄いラッパー。
+/// ViewerState::rotate_cw/rotate_ccw から呼ばれる（UI/egui非依存で単体テスト可能にするため分離）。
+pub fn rotate(carry_over: bool, page_state: &mut RotationState, session_angle: &mut i32, cw: bool) {
+    if carry_over {
+        *session_angle = normalize_360(*session_angle + if cw { 90 } else { -90 });
+    } else if cw {
+        page_state.rotate_cw();
+    } else {
+        page_state.rotate_ccw();
+    }
+}
+
+/// carry_overの状態に応じて「今どちらの回転値が有効か」を返す。
+pub fn manual_angle(carry_over: bool, page_state: &RotationState, session_angle: i32) -> i32 {
+    if carry_over { session_angle } else { page_state.angle() }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -168,5 +186,33 @@ mod tests {
     fn effective_angle_ignores_exif_when_disabled() {
         assert_eq!(effective_angle(90, false, 90), 90);
         assert_eq!(effective_angle(90, true, 90), 180);
+    }
+
+    #[test]
+    fn rotate_updates_page_state_when_carry_over_off() {
+        let mut page = RotationState::new();
+        let mut session = 0;
+        rotate(false, &mut page, &mut session, true);
+        assert_eq!(page.angle(), 90);
+        assert_eq!(session, 0, "carry_over無効時はsession_angleを触らない");
+    }
+
+    #[test]
+    fn rotate_updates_session_angle_when_carry_over_on() {
+        let mut page = RotationState::new();
+        let mut session = 0;
+        rotate(true, &mut page, &mut session, true);
+        assert_eq!(session, 90);
+        assert_eq!(page.angle(), 0, "carry_over有効時はpage_stateを触らない");
+        rotate(true, &mut page, &mut session, false);
+        assert_eq!(session, 0);
+    }
+
+    #[test]
+    fn manual_angle_selects_source_by_carry_over() {
+        let mut page = RotationState::new();
+        page.rotate_cw();
+        assert_eq!(manual_angle(false, &page, 270), 90, "OFF時はpage_state基準");
+        assert_eq!(manual_angle(true, &page, 270), 270, "ON時はsession_angle基準");
     }
 }

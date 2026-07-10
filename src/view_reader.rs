@@ -658,27 +658,15 @@ impl ViewerState {
 
     /// TODO項目B: carry_overトグルの状態に応じて「今どちらの回転値が有効か」を切り替える。
     fn manual_rotation_angle(&self, cfg: &ViewerConfig) -> i32 {
-        if cfg.rotation_carry_over {
-            cfg.rotation_session_angle
-        } else {
-            self.rotation.angle()
-        }
+        rotation::manual_angle(cfg.rotation_carry_over, &self.rotation, cfg.rotation_session_angle)
     }
 
     fn rotate_cw(&mut self, cfg: &mut ViewerConfig) {
-        if cfg.rotation_carry_over {
-            cfg.rotation_session_angle = rotation::normalize_360(cfg.rotation_session_angle + 90);
-        } else {
-            self.rotation.rotate_cw();
-        }
+        rotation::rotate(cfg.rotation_carry_over, &mut self.rotation, &mut cfg.rotation_session_angle, true);
     }
 
     fn rotate_ccw(&mut self, cfg: &mut ViewerConfig) {
-        if cfg.rotation_carry_over {
-            cfg.rotation_session_angle = rotation::normalize_360(cfg.rotation_session_angle - 90);
-        } else {
-            self.rotation.rotate_ccw();
-        }
+        rotation::rotate(cfg.rotation_carry_over, &mut self.rotation, &mut cfg.rotation_session_angle, false);
     }
 
     pub fn title(&self) -> String {
@@ -1831,14 +1819,46 @@ impl ViewerState {
         tex_left: &Option<egui::TextureHandle>,
         tex_right: &Option<egui::TextureHandle>,
     ) -> (egui::Rect, egui::Rect) {
-        let sl = Self::spread_page_size(tex_left);
-        let sr = Self::spread_page_size(tex_right);
+        Self::local_rects_from_sizes(Self::spread_page_size(tex_left), Self::spread_page_size(tex_right))
+    }
+
+    /// spread_local_rectsの核となる幾何計算（テクスチャサイズを直接受け取る版、単体テスト用）。
+    fn local_rects_from_sizes(sl: egui::Vec2, sr: egui::Vec2) -> (egui::Rect, egui::Rect) {
         let h = 1.0;
         let w_l = sl.x / sl.y * h;
         let w_r = sr.x / sr.y * h;
         let rect_l = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(w_l, h));
         let rect_r = egui::Rect::from_min_size(egui::pos2(w_l,  0.0), egui::vec2(w_r, h));
         (rect_l, rect_r)
+    }
+
+    /// 見開き回転の幾何計算だけを抜き出した純粋関数（TextureHandle非依存、単体テスト可能）。
+    /// `local_l`/`local_r` は高さ1.0基準のローカル矩形。左右ページ中心の画面座標と、
+    /// ローカル単位→画面px換算率(scale)を返す（scale自体はテクスチャ実ピクセルには未換算）。
+    /// 直近の見開き回転バグ（ローカル単位のscaleをテクスチャ実ピクセルへ直接適用して破綻した件）を
+    /// 構造的に防ぐため、テクスチャピクセルサイズは一切扱わない。
+    fn spread_rotation_fit(
+        local_l: egui::Rect,
+        local_r: egui::Rect,
+        bounds: egui::Rect,
+        angle_deg: i32,
+    ) -> Option<(egui::Pos2, egui::Pos2, f32)> {
+        let footprint = local_l.union(local_r);
+        let footprint_center = footprint.center();
+        let rotated_size = if angle_deg == 90 || angle_deg == 270 {
+            egui::vec2(footprint.height(), footprint.width())
+        } else {
+            footprint.size()
+        };
+        let fit = fit_rect_contain(bounds, rotated_size);
+        let scale = (fit.width() / rotated_size.x).min(fit.height() / rotated_size.y);
+        if !scale.is_finite() || scale <= 0.0 {
+            return None;
+        }
+        let rot = egui::emath::Rot2::from_angle((angle_deg as f32).to_radians());
+        let center_l = fit.center() + rot * ((local_l.center() - footprint_center) * scale);
+        let center_r = fit.center() + rot * ((local_r.center() - footprint_center) * scale);
+        Some((center_l, center_r, scale))
     }
 
     /// 見開き全体（左右2ページ）を1つの剛体として `bounds` にcontain-fitしつつ
@@ -1852,22 +1872,12 @@ impl ViewerState {
         angle_deg: i32,
     ) {
         let (local_l, local_r) = Self::spread_local_rects(tex_left, tex_right);
-        let footprint = local_l.union(local_r);
-        let footprint_center = footprint.center();
-        let rotated_size = if angle_deg == 90 || angle_deg == 270 {
-            egui::vec2(footprint.height(), footprint.width())
-        } else {
-            footprint.size()
-        };
-        let fit = fit_rect_contain(bounds, rotated_size);
-        let scale = (fit.width() / rotated_size.x).min(fit.height() / rotated_size.y);
-        if !scale.is_finite() || scale <= 0.0 {
+        let Some((center_l, center_r, scale)) =
+            Self::spread_rotation_fit(local_l, local_r, bounds, angle_deg)
+        else {
             return;
-        }
-        let rot = egui::emath::Rot2::from_angle((angle_deg as f32).to_radians());
-        for (tex, local_rect) in [(tex_left, local_l), (tex_right, local_r)] {
-            let local_offset = (local_rect.center() - footprint_center) * scale;
-            let center = fit.center() + rot * local_offset;
+        };
+        for (tex, local_rect, center) in [(tex_left, local_l, center_l), (tex_right, local_r, center_r)] {
             match tex {
                 Some(t) => {
                     // local_rect は高さ1.0基準の正規化座標なので、scale(ローカル単位→画面px)を
@@ -1994,5 +2004,49 @@ impl ViewerState {
             let tl    = origin + (avail - size) / 2.0 + egui::vec2(offset_x, 0.0);
             painter.image(tex.id(), egui::Rect::from_min_size(tl, size), FULL_UV, egui::Color32::WHITE);
         }
+    }
+}
+
+#[cfg(test)]
+mod spread_rotation_tests {
+    use super::*;
+
+    /// 見開き回転バグの再発防止: spread_rotation_fit はローカル単位のscaleのみを返し、
+    /// テクスチャの実ピクセルサイズを一切扱わない（呼び出し側でpixel_scale = scale/tex_hを
+    /// 挟む前提の関数であることをシグネチャで固定する）。ここでは幾何計算そのものが
+    /// bounds/角度に対して妥当な値になることを検証する。
+    #[test]
+    fn angle_0_places_pages_side_by_side() {
+        let (local_l, local_r) = ViewerState::local_rects_from_sizes(
+            egui::vec2(1.0, 1.0), egui::vec2(1.0, 1.0),
+        );
+        let bounds = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(200.0, 100.0));
+        let (center_l, center_r, scale) =
+            ViewerState::spread_rotation_fit(local_l, local_r, bounds, 0).unwrap();
+        assert!(center_l.x < center_r.x, "左ページ中心は右ページ中心より左");
+        assert!((center_l.y - center_r.y).abs() < 1e-3, "0度時は上下が揃う");
+        assert!((scale - 100.0).abs() < 1e-3, "footprint(2x1)がbounds(200x100)にcontain-fit");
+    }
+
+    #[test]
+    fn angle_90_swaps_layout_to_vertical() {
+        let (local_l, local_r) = ViewerState::local_rects_from_sizes(
+            egui::vec2(1.0, 1.0), egui::vec2(1.0, 1.0),
+        );
+        let bounds = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(100.0, 200.0));
+        let (center_l, center_r, scale) =
+            ViewerState::spread_rotation_fit(local_l, local_r, bounds, 90).unwrap();
+        assert!((center_l.x - center_r.x).abs() < 1e-3, "90度回転後は左右中心のx座標が揃う");
+        assert!(center_l.y < center_r.y, "時計回り90度で元の左ページが上に来る");
+        assert!((scale - 100.0).abs() < 1e-3, "footprint回転後(1x2)がbounds(100x200)にcontain-fit");
+    }
+
+    #[test]
+    fn degenerate_bounds_returns_none_without_panicking() {
+        let (local_l, local_r) = ViewerState::local_rects_from_sizes(
+            egui::vec2(1.0, 1.0), egui::vec2(1.0, 1.0),
+        );
+        let bounds = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(0.0, 0.0));
+        assert!(ViewerState::spread_rotation_fit(local_l, local_r, bounds, 90).is_none());
     }
 }
