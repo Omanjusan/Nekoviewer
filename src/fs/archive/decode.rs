@@ -491,6 +491,37 @@ mod tests {
         assert_eq!((decoded.width(), decoded.height()), (2, 4), "90度回転で幅高さが入れ替わるはず");
     }
 
+    /// 項目(D)ON→OFF切替の角度補正用軽量パスが、JPEG/WebPではデコードなしで
+    /// Exif Orientationを正しく検出できることを確認する。
+    #[test]
+    fn detect_orientation_for_toggle_reads_jpeg_exif() {
+        let img = image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(4, 2, image::Rgb([200, 10, 10])));
+        let mut jpeg_buf = std::io::Cursor::new(Vec::new());
+        img.write_to(&mut jpeg_buf, image::ImageFormat::Jpeg).unwrap();
+        let jpeg_bytes = jpeg_buf.into_inner();
+
+        let mut with_exif = Vec::new();
+        with_exif.extend_from_slice(&jpeg_bytes[0..2]);
+        with_exif.extend_from_slice(&build_exif_orientation_app1(6)); // 6 = 時計回り90度
+        with_exif.extend_from_slice(&jpeg_bytes[2..]);
+
+        assert_eq!(detect_orientation_for_toggle(&with_exif), image::metadata::Orientation::Rotate90);
+    }
+
+    #[test]
+    fn detect_orientation_for_toggle_reads_webp_exif() {
+        let buf = build_minimal_webp_with_exif(6);
+        assert_eq!(detect_orientation_for_toggle(&buf), image::metadata::Orientation::Rotate90);
+    }
+
+    #[test]
+    fn detect_orientation_for_toggle_defaults_without_exif() {
+        let img = image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(4, 3, image::Rgba([10, 20, 30, 255])));
+        let mut buf = std::io::Cursor::new(Vec::new());
+        img.write_to(&mut buf, image::ImageFormat::Tiff).unwrap();
+        assert_eq!(detect_orientation_for_toggle(&buf.into_inner()), image::metadata::Orientation::NoTransforms);
+    }
+
     /// 生FFI(libavif-sys)で実際のAVIFバイト列をエンコードする。RIFF/WebPと違いISOBMFF boxの
     /// 自前組み立ては現実的でないため、libavifのエンコーダを直接叩く（フェーズ3・B案）。
     /// irot/imir・Exifは`libavif`の安全ラッパーには無いフィールドで、デコード側(`decode_avif`)
@@ -596,5 +627,14 @@ mod tests {
 
         let decoded = decode_image_bytes(&buf, true).expect("自作AVIF(exif)はデコードできるはず");
         assert_eq!((decoded.width(), decoded.height()), (2, 4), "Exif Orientationフォールバックで幅高さが入れ替わるはず");
+    }
+
+    /// 項目(D)ON→OFF切替の角度補正: AVIFはirotを持っていても軽量パスでは常にNoTransforms扱い
+    /// にする既知の制限（フルデコード相当のFFI呼び出しコストを避けるための割り切り）。
+    #[test]
+    fn detect_orientation_for_toggle_ignores_avif_irot() {
+        let rgba = asymmetric_rgba(4, 2);
+        let buf = build_test_avif(4, 2, &rgba, Some(3), None, None);
+        assert_eq!(detect_orientation_for_toggle(&buf), image::metadata::Orientation::NoTransforms);
     }
 }

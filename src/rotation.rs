@@ -167,6 +167,31 @@ mod tests {
     }
 
     #[test]
+    fn on_exif_enabled_discards_manual_delta() {
+        let mut s = RotationState::new();
+        s.rotate_cw();
+        s.rotate_cw();
+        s.on_exif_enabled();
+        assert_eq!(s.angle(), 0);
+    }
+
+    #[test]
+    fn on_exif_disabled_adds_and_normalizes_exif_degrees() {
+        let mut s = RotationState::new();
+        s.rotate_cw(); // manual_delta = 90
+        s.on_exif_disabled(90); // 90 + 90 = 180
+        assert_eq!(s.angle(), 180);
+    }
+
+    #[test]
+    fn on_exif_disabled_wraps_across_360() {
+        let mut s = RotationState::new();
+        s.rotate_ccw(); // manual_delta = 270
+        s.on_exif_disabled(180); // 270 + 180 = 450 -> 90
+        assert_eq!(s.angle(), 90);
+    }
+
+    #[test]
     fn orientation_rotation_degrees_drops_mirror_component() {
         assert_eq!(orientation_rotation_degrees(Orientation::FlipHorizontal), 0);
         assert_eq!(orientation_rotation_degrees(Orientation::FlipVertical), 180);
