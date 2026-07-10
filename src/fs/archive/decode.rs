@@ -48,6 +48,20 @@ pub(crate) fn webp_exif_orientation(buf: &[u8]) -> image::metadata::Orientation 
     Orientation::NoTransforms
 }
 
+/// 項目(D)のON→OFF切替時、手動回転(B)の角度補正用にOrientationだけを検出する
+/// （デコードはしない、軽量パス）。AVIFは向き判定にフルデコード相当のFFI呼び出しが
+/// 必要でコストに見合わないため対象外とし、常にNoTransforms扱いとする（既知の制限、
+/// 該当ページのみON→OFF切替時に見た目が一瞬ズレることを許容する）。
+pub(crate) fn detect_orientation_for_toggle(buf: &[u8]) -> image::metadata::Orientation {
+    if has_webp_signature(buf) {
+        webp_exif_orientation(buf)
+    } else if has_avif_signature(buf) {
+        image::metadata::Orientation::NoTransforms
+    } else {
+        native_exif_orientation(buf)
+    }
+}
+
 /// バイト列から静止画をデコードする（外部から呼び出し可能）。
 /// 拡張子ではなく先頭バイトのシグネチャで実フォーマットを判定するため、
 /// 拡張子と中身が食い違うファイルでも正しいデコーダへ振り分けられる。
@@ -91,26 +105,35 @@ pub fn decode_image_bytes(buf: &[u8], exif_enabled: bool) -> Option<image::Dynam
     }
 }
 
+/// image crateネイティブ対応フォーマット（JPEG/PNG/TIFF/BMP/GIF等）のExif Orientationタグを
+/// 検出する（デコードはしない）。ピクセルへの適用は呼び出し側の責務。
+/// 項目(D)のON/OFF切替時、手動回転(B)の角度補正のためにOrientationだけ知りたい場面
+/// （`crate::rotation::orientation_rotation_degrees`と組み合わせる）でも使う。
+pub(crate) fn native_exif_orientation(buf: &[u8]) -> image::metadata::Orientation {
+    use image::ImageDecoder;
+
+    (|| -> Option<image::metadata::Orientation> {
+        let reader = image::ImageReader::new(std::io::Cursor::new(buf))
+            .with_guessed_format()
+            .ok()?;
+        let mut decoder = reader.into_decoder().ok()?;
+        let exif_chunk: Option<Vec<u8>> = decoder.exif_metadata().ok().flatten();
+        exif_chunk.and_then(|chunk| image::metadata::Orientation::from_exif_chunk(&chunk))
+    })()
+    .unwrap_or(image::metadata::Orientation::NoTransforms)
+}
+
 /// image crateネイティブ対応フォーマット（JPEG/PNG/TIFF/BMP/GIF等）用。
 /// Exif Orientationタグを検出し、デコード直後に画素へ適用する。以降の呼び出し元
 /// （サムネ生成・ビューアーのページ表示、いずれもここを通る）は回転後の寸法を
 /// そのまま使えばよく、個別の回転対応は不要になる。
 /// WebP/AVIFは別デコーダ（webp crate / libavif）経由のため対象外（未対応、既知の制限）。
 fn decode_native_with_orientation(buf: &[u8], exif_enabled: bool) -> Option<image::DynamicImage> {
-    use image::ImageDecoder;
-
+    let orientation = if exif_enabled { native_exif_orientation(buf) } else { image::metadata::Orientation::NoTransforms };
     let reader = image::ImageReader::new(std::io::Cursor::new(buf))
         .with_guessed_format()
         .ok()?;
-    let mut decoder = reader.into_decoder().ok()?;
-    let orientation = if exif_enabled {
-        let exif_chunk: Option<Vec<u8>> = decoder.exif_metadata().ok().flatten();
-        exif_chunk
-            .and_then(|chunk| image::metadata::Orientation::from_exif_chunk(&chunk))
-            .unwrap_or(image::metadata::Orientation::NoTransforms)
-    } else {
-        image::metadata::Orientation::NoTransforms
-    };
+    let decoder = reader.into_decoder().ok()?;
     let mut img = image::DynamicImage::from_decoder(decoder).ok()?;
     img.apply_orientation(orientation);
     Some(img)

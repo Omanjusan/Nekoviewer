@@ -412,7 +412,7 @@ impl NekoviewApp {
                 let exif_enabled_before = self.viewer_cfg.lock().unwrap().exif_orientation_enabled;
                 self.settings_draft.apply_to(&mut self.config, &mut self.viewer_cfg.lock().unwrap());
                 if self.settings_draft.exif_orientation_enabled != exif_enabled_before {
-                    self.redecode_after_exif_toggle();
+                    self.redecode_after_exif_toggle(self.settings_draft.exif_orientation_enabled);
                 }
                 self.show_hidden = self.settings_draft.show_hidden;
                 self.persist_state();

@@ -168,15 +168,55 @@ impl NekoviewApp {
     /// ビューアー側のテクスチャ/アニメ状態も全ページぶん破棄する。以降は毎フレームの
     /// prefetch_pages()/update_textures() が通常フローで再デコード・再アップロードを拾う
     /// （アニメは新規RingAnimationとして作り直されるため再生位置は先頭に戻る）。
-    pub(crate) fn redecode_after_exif_toggle(&mut self) {
-        let path = {
+    /// `enabled_now`: 切替後の値。OFF→ONなら手動回転をEXIF値へ強制リセット、ON→OFFなら
+    /// 見た目維持のためEXIF回転角度ぶんを手動回転へ加算補正する（Bとの確定仕様）。
+    pub(crate) fn redecode_after_exif_toggle(&mut self, enabled_now: bool) {
+        let (path, is_raw_file, reference) = {
             let viewer = self.viewer.lock().unwrap();
             let Some(v) = viewer.as_ref() else { return };
-            v.archive_path().clone()
+            (v.archive_path().clone(), v.is_raw_file(), v.rotation_correction_reference_page())
         };
+
+        {
+            let mut cfg = self.viewer_cfg.lock().unwrap();
+            let mut viewer = self.viewer.lock().unwrap();
+            if let Some(v) = viewer.as_mut() {
+                if enabled_now {
+                    v.on_exif_orientation_enabled(&mut cfg);
+                } else {
+                    // ON→OFFの角度補正はAVIFを除く（軽量なOrientation単体検出パスが無いため既知の制限）。
+                    let exif_deg = reference
+                        .and_then(|(_, entry_name)| self.read_entry_bytes_sync(&path, is_raw_file, &entry_name))
+                        .map(|buf| crate::fs::archive::decode::detect_orientation_for_toggle(&buf))
+                        .map(crate::rotation::orientation_rotation_degrees)
+                        .unwrap_or(0);
+                    v.on_exif_orientation_disabled(&mut cfg, exif_deg);
+                }
+            }
+        }
+
         self.page_cache.lock().unwrap().remove_all_for_path(&path);
         if let Some(v) = self.viewer.lock().unwrap().as_mut() {
             v.invalidate_all_pages();
+        }
+    }
+
+    /// 項目(D)ON→OFF切替の角度補正専用: 1エントリの生バイトを同期的に読む（FileCacheヒット
+    /// 優先、ミス時は生画像ファイルのみディスクへフォールバック）。小さい単発読み込みのため
+    /// メインスレッドで同期実行しても許容できる想定。取得できなければ補正無し(0度)として扱う。
+    fn read_entry_bytes_sync(&self, path: &std::path::Path, is_raw_file: bool, entry_name: &str) -> Option<Vec<u8>> {
+        if is_raw_file {
+            return match self.file_cache.get(&path.to_path_buf()) {
+                Some(crate::cache::FileCacheEntry::Raw(bytes)) => Some(bytes.to_vec()),
+                _ => std::fs::read(path).ok(),
+            };
+        }
+        match self.file_cache.get(&path.to_path_buf())? {
+            crate::cache::FileCacheEntry::Extracted(map) => map.get(entry_name).cloned(),
+            crate::cache::FileCacheEntry::Raw(bytes) => {
+                let mut archive = ::zip::ZipArchive::new(std::io::Cursor::new(bytes.to_vec())).ok()?;
+                crate::fs::archive::load_bytes_from_archive(&mut archive, entry_name).map(|(b, _)| b)
+            }
         }
     }
 

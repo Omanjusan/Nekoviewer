@@ -93,6 +93,12 @@ impl RotationState {
     pub fn on_exif_enabled(&mut self) {
         self.manual_delta = 0;
     }
+
+    /// D設定をON→OFFに切り替えた瞬間の処理。デコード時のEXIF焼き込みが無くなる分、
+    /// 「見た目維持」のためEXIF回転角度ぶんを手動角度へ加算補正する。
+    pub fn on_exif_disabled(&mut self, exif_deg: i32) {
+        self.manual_delta = normalize_360(self.manual_delta + exif_deg);
+    }
 }
 
 impl Default for RotationState {
