@@ -31,6 +31,7 @@ impl NekoviewApp {
     /// からも呼ぶ必要がある（ビューアー窓だけを操作している間はエクスプローラー窓が
     /// 再描画されないため）。
     pub(super) fn poll_resize_redecode(&mut self, ctx: &egui::Context) {
+        self.poll_exif_toggle();
         let (redecode_on, debounce_ms, seq) = {
             let cfg = self.viewer_cfg.lock().unwrap();
             (cfg.redecode_on_resize, cfg.resize_debounce_ms, cfg.redecode_trigger_seq)
@@ -163,6 +164,18 @@ impl NekoviewApp {
         self.viewer_cfg.lock().unwrap().redecode_trigger_seq += 1;
     }
 
+    /// 項目(D): 設定ダイアログの[反映]・ビューアーツールバーのチェックボックス、
+    /// どちらの経路で viewer_cfg.exif_orientation_enabled が変わっても毎フレーム拾えるように
+    /// poll_resize_redecode() と同じ「変化検知」方式にする（zoom_actual切替のredecode_trigger_seq
+    /// とは違いデバウンス不要なので専用のseqは持たず、値そのものを直接比較する）。
+    fn poll_exif_toggle(&mut self) {
+        let now = self.viewer_cfg.lock().unwrap().exif_orientation_enabled;
+        if now != self.exif_orientation_enabled_last_seen {
+            self.exif_orientation_enabled_last_seen = now;
+            self.redecode_after_exif_toggle(now);
+        }
+    }
+
     /// 項目(D): Exif Orientation ON/OFF設定を切り替えた直後に呼ぶ。リサイズ再デコードと違い
     /// デバウンスせず即時発火する。開いているアーカイブのPageCacheエントリを全破棄し、
     /// ビューアー側のテクスチャ/アニメ状態も全ページぶん破棄する。以降は毎フレームの
@@ -170,7 +183,7 @@ impl NekoviewApp {
     /// （アニメは新規RingAnimationとして作り直されるため再生位置は先頭に戻る）。
     /// `enabled_now`: 切替後の値。OFF→ONなら手動回転をEXIF値へ強制リセット、ON→OFFなら
     /// 見た目維持のためEXIF回転角度ぶんを手動回転へ加算補正する（Bとの確定仕様）。
-    pub(crate) fn redecode_after_exif_toggle(&mut self, enabled_now: bool) {
+    fn redecode_after_exif_toggle(&mut self, enabled_now: bool) {
         let (path, is_raw_file, reference) = {
             let viewer = self.viewer.lock().unwrap();
             let Some(v) = viewer.as_ref() else { return };

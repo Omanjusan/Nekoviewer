@@ -1699,6 +1699,8 @@ impl ViewerState {
             self.rotate_cw(cfg);
         }
         ui.checkbox(&mut cfg.rotation_carry_over, i18n::t().rotation_carry_over_label());
+        ui.checkbox(&mut cfg.exif_orientation_enabled, i18n::t().exif_orientation_toolbar_label())
+            .on_hover_text(i18n::t().settings_exif_orientation_explain());
     }
 
     /// 画像本体の右クリックメニュー（見開き設定の保存トグル／上書き保存）を描画する

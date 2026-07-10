@@ -96,6 +96,14 @@ impl Lang {
         }
     }
 
+    pub fn exif_orientation_toolbar_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "EXIF回転",
+            Lang::English  => "Exif rotation",
+            Lang::Chinese  => "Exif旋转",
+        }
+    }
+
     pub fn page_single(self) -> &'static str {
         match self {
             Lang::Japanese => "[単ページ]",
