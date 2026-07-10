@@ -7,6 +7,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::config::{AppConfig, ResizeFilter, filter_to_str, parse_filter};
+use crate::toolbar::{BAR_ITEM_COUNT, DEFAULT_BAR_ORDER, ViewerBarItem, bar_order_to_str, parse_bar_order};
 
 // ── State ファイル（動的状態: 最後のディレクトリ・ウィンドウサイズ）────────────
 
@@ -92,6 +93,9 @@ pub struct ViewerConfig {
     /// false = デコード時のOrientation適用をスキップする（誤ったOrientationタグ対策）。
     /// 永続設定（save_state/load_state対象）。ビューアーのみに効き、サムネイルには影響しない。
     pub exif_orientation_enabled: bool,
+    /// ビューアーツールバーの項目並び順（全項目の順列、toolbar.rs 参照）。
+    /// 永続設定。現時点で編集UIは無く実質固定（state を直接編集すれば並べ替え可能）。
+    pub bar_order: [ViewerBarItem; BAR_ITEM_COUNT],
 }
 
 impl Default for ViewerConfig {
@@ -113,6 +117,7 @@ impl Default for ViewerConfig {
             rotation_carry_over: false,
             rotation_session_angle: 0,
             exif_orientation_enabled: true,
+            bar_order: DEFAULT_BAR_ORDER,
         }
     }
 }
@@ -244,6 +249,7 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
     let mut thumbbar_marker_b: Option<u8> = None;
     let mut thumbbar_marker_a: Option<u8> = None;
     let mut exif_orientation_enabled: Option<bool> = None;
+    let mut viewer_bar_order: Option<[ViewerBarItem; BAR_ITEM_COUNT]> = None;
     let mut has_kv = false;
 
     for line in content.lines() {
@@ -312,6 +318,7 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
                 "thumbbar_marker_b" => { thumbbar_marker_b = v.trim().parse().ok(); }
                 "thumbbar_marker_a" => { thumbbar_marker_a = v.trim().parse().ok(); }
                 "exif_orientation_enabled" => { exif_orientation_enabled = v.trim().parse().ok(); }
+                "viewer_bar_order" => { viewer_bar_order = Some(parse_bar_order(v)); }
                 _ => {}
             }
         }
@@ -368,6 +375,7 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
             rotation_carry_over: false,
             rotation_session_angle: 0,
             exif_orientation_enabled: exif_orientation_enabled.unwrap_or(true),
+            bar_order: viewer_bar_order.unwrap_or(DEFAULT_BAR_ORDER),
         },
         show_hidden: show_hidden.unwrap_or(false),
         app_cache_total_mb,
@@ -399,6 +407,10 @@ pub fn save_state(dir: &Path, window_size: (u32, u32), viewer_slots: &[Option<Wi
     content.push_str(&format!(
         "exif_orientation_enabled={}\n",
         viewer_cfg.exif_orientation_enabled,
+    ));
+    content.push_str(&format!(
+        "viewer_bar_order={}\n",
+        bar_order_to_str(&viewer_cfg.bar_order),
     ));
     // 設定ダイアログ（共通/アニメタブ）が編集する AppConfig 系の値。次回起動から反映されるため、
     // ここでは現在の有効値をそのまま state に書き戻すだけでよい（即時のワーカー再構築は不要）。

@@ -112,11 +112,6 @@ enum FavoriteSelection {
 /// キーボードでの左右移動・Enter確定（handle_menu_bar_keys）の対象になる。
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum MenuBarButton {
-    PageSingle,
-    PageSpreadLeft,
-    PageSpreadRight,
-    SpreadBack,
-    SpreadFwd,
     SortName,
     SortDate,
     SortSize,
@@ -125,13 +120,9 @@ pub(crate) enum MenuBarButton {
     Settings,
 }
 
-/// 表示順そのもの（draw_menu_barの描画順と一致させること）
-pub(crate) const MENU_BAR_ORDER: [MenuBarButton; 11] = [
-    MenuBarButton::PageSingle,
-    MenuBarButton::PageSpreadLeft,
-    MenuBarButton::PageSpreadRight,
-    MenuBarButton::SpreadBack,
-    MenuBarButton::SpreadFwd,
+/// 表示順そのもの（draw_menu_barの描画順と一致させること）。
+/// 見開き・ページモード群はビューアーツールバーへ移設した（toolbar.rs 参照）。
+pub(crate) const MENU_BAR_ORDER: [MenuBarButton; 6] = [
     MenuBarButton::SortName,
     MenuBarButton::SortDate,
     MenuBarButton::SortSize,

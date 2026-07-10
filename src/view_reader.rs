@@ -13,6 +13,7 @@ use crate::gui_config::WindowSlot;
 use crate::fs::archive;
 use crate::spread_offset::SpreadOffset;
 use crate::rotation::{self, RotationState};
+use crate::toolbar::{BarGroup, ViewerBarItem};
 
 const SCROLL_THRESHOLD: f32 = 50.0;
 /// content_px の初回フレーム前プレースホルダ。draw() 冒頭で毎フレーム実測値に
@@ -307,7 +308,6 @@ impl ViewerState {
     pub fn archive_path(&self) -> &PathBuf { &self.archive_path }
     pub fn entries(&self) -> &[ViewerEntry] { &self.entries }
     pub fn is_raw_file(&self) -> bool { self.is_raw_file }
-    pub fn page_mode(&self) -> PageMode { self.page_mode }
 
     /// フェーズ6: 現在表示中のページ(見開き時は2枚)の original_index を返す。
     pub fn visible_original_indices(&self) -> Vec<usize> {
@@ -530,10 +530,6 @@ impl ViewerState {
     }
 
     /// オフセットがずれているか（UI表示用）
-    pub fn is_spread_offset(&self) -> bool {
-        self.offset.is_nonzero()
-    }
-
     pub fn can_shift_forward(&self) -> bool {
         self.offset.can_advance()
     }
@@ -976,9 +972,7 @@ impl ViewerState {
                 .frame(egui::Frame::side_top_panel(style))
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
-                        self.draw_sort_buttons(ui);
-                        ui.separator();
-                        self.draw_rotation_buttons(ui, cfg);
+                        self.draw_bar_items(ui, cfg);
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             for i in (0..4usize).rev() {
                                 let label = i18n::t().slot_label(i + 5);
@@ -1025,9 +1019,7 @@ impl ViewerState {
                     .frame(egui::Frame::side_top_panel(style))
                     .show(ui, |ui| {
                         ui.horizontal(|ui| {
-                            self.draw_sort_buttons(ui);
-                            ui.separator();
-                            self.draw_rotation_buttons(ui, cfg);
+                            self.draw_bar_items(ui, cfg);
                         });
                     });
             }
@@ -1666,41 +1658,122 @@ impl ViewerState {
         }
     }
 
-    /// ソートキー切り替えボタン群（通常バーとフルスクリーンバーで共用）
-    fn draw_sort_buttons(&mut self, ui: &mut egui::Ui) {
-        let mut sort_changed = false;
-        let t = i18n::t();
-        for (key, label) in [
-            (ViewerSortKey::Name,    t.sort_name()),
-            (ViewerSortKey::Natural, t.sort_natural()),
-            (ViewerSortKey::Date,    t.sort_date()),
-        ] {
-            let active = self.sort_key == key;
-            if ui.selectable_label(active, label).clicked() {
-                self.sort_key = key;
-                sort_changed = true;
+    /// ツールバー項目を cfg.bar_order の順に描画する（top bar / fs_sort_bar 共用）。
+    /// 隣接項目のグループが変わる位置にセパレータを挟む（toolbar.rs::BarGroup 参照）。
+    fn draw_bar_items(&mut self, ui: &mut egui::Ui, cfg: &mut ViewerConfig) {
+        let order = cfg.bar_order;
+        let mut prev_group: Option<BarGroup> = None;
+        for item in order {
+            if prev_group.is_some_and(|g| g != item.group()) {
+                ui.separator();
             }
+            prev_group = Some(item.group());
+            self.draw_bar_item(ui, cfg, item);
         }
-        ui.label(":");
-        let order_label = if self.sort_ascending { t.sort_asc() } else { t.sort_desc() };
-        if ui.button(order_label).clicked() {
-            self.sort_ascending = !self.sort_ascending;
-            sort_changed = true;
-        }
-        if sort_changed { self.sort_entries(); }
     }
 
-    /// TODO項目B: 手動回転CW/CCWボタン（アイコンのみ、i18n対象外）＋角度引き継ぎトグル
-    fn draw_rotation_buttons(&mut self, ui: &mut egui::Ui, cfg: &mut ViewerConfig) {
-        if ui.button("⟲").on_hover_text(i18n::t().rotate_ccw()).clicked() {
-            self.rotate_ccw(cfg);
+    fn draw_bar_item(&mut self, ui: &mut egui::Ui, cfg: &mut ViewerConfig, item: ViewerBarItem) {
+        let t = i18n::t();
+        match item {
+            ViewerBarItem::SortName | ViewerBarItem::SortNatural | ViewerBarItem::SortDate => {
+                let (key, label) = match item {
+                    ViewerBarItem::SortName    => (ViewerSortKey::Name,    t.sort_name()),
+                    ViewerBarItem::SortNatural => (ViewerSortKey::Natural, t.sort_natural()),
+                    _                          => (ViewerSortKey::Date,    t.sort_date()),
+                };
+                if ui.selectable_label(self.sort_key == key, label).clicked() {
+                    self.sort_key = key;
+                    self.sort_entries();
+                }
+            }
+            ViewerBarItem::SortOrder => {
+                ui.label(":");
+                let order_label = if self.sort_ascending { t.sort_asc() } else { t.sort_desc() };
+                if ui.button(order_label).clicked() {
+                    self.sort_ascending = !self.sort_ascending;
+                    self.sort_entries();
+                }
+            }
+            // ページ表示モード3択（アイコントグル、選択状態=現在モード）
+            ViewerBarItem::PageSingle | ViewerBarItem::SpreadLeft | ViewerBarItem::SpreadRight => {
+                let (mode, tip) = match item {
+                    ViewerBarItem::PageSingle => (PageMode::Single,      t.page_single()),
+                    ViewerBarItem::SpreadLeft => (PageMode::SpreadLeft,  t.page_spread_left()),
+                    _                         => (PageMode::SpreadRight, t.page_spread_right()),
+                };
+                // i18nラベルは "[単ページ]" 形式なのでツールチップでは囲みを外す
+                let tip = tip.trim_matches(['[', ']']);
+                // 単一画像ファイル直接表示（rawビューアー）では見開き系を選べない
+                let enabled = mode == PageMode::Single || !self.is_raw_file();
+                ui.add_enabled_ui(enabled, |ui| {
+                    if ui.selectable_label(self.page_mode == mode, item.icon().unwrap_or("?"))
+                        .on_hover_text(tip)
+                        .clicked()
+                    {
+                        self.set_page_mode(mode, cfg);
+                    }
+                });
+            }
+            // 見開き1Pシフト（キー4/5と同じ操作のボタン経路）
+            ViewerBarItem::SpreadBack | ViewerBarItem::SpreadFwd => {
+                let back = item == ViewerBarItem::SpreadBack;
+                let (label, tip, can) = if back {
+                    ("-1P", t.spread_back(), self.can_shift_backward())
+                } else {
+                    ("+1P", t.spread_fwd(), self.can_shift_forward())
+                };
+                let tip = tip.trim_matches(['[', ']']);
+                let enabled = self.page_mode != PageMode::Single && !self.is_raw_file() && can;
+                if ui.add_enabled(enabled, egui::Button::new(label))
+                    .on_hover_text(tip)
+                    .clicked()
+                {
+                    if back { self.shift_offset_backward(); } else { self.shift_offset_forward(); }
+                }
+            }
+            // ずれ状態の表示専用インジケータ。単ページ時は非表示（決定事項）。
+            // 矢印は綴じ方向によるページ進行方向を反映（SpreadRight=左へ進行）
+            ViewerBarItem::OffsetIndicator => {
+                if self.page_mode == PageMode::Single { return; }
+                let text = match (self.page_mode, self.offset.value()) {
+                    (_, 0) => "0",
+                    (PageMode::SpreadRight, 1) | (PageMode::SpreadLeft, -1) => "←1",
+                    _ => "1→",
+                };
+                ui.label(text);
+            }
+            // 手動回転CW/CCWボタン（アイコンのみ、i18n対象外）
+            ViewerBarItem::RotateCcw | ViewerBarItem::RotateCw => {
+                let ccw = item == ViewerBarItem::RotateCcw;
+                let tip = if ccw { t.rotate_ccw() } else { t.rotate_cw() };
+                if ui.button(item.icon().unwrap_or("?")).on_hover_text(tip).clicked() {
+                    if ccw { self.rotate_ccw(cfg); } else { self.rotate_cw(cfg); }
+                }
+            }
+            // トグル2種は幅圧縮のためテキストラベル付きチェックボックスから
+            // アイコントグル（選択状態=ON）へ変更。説明はホバーツールチップで補う
+            ViewerBarItem::RotationCarry => {
+                if ui.selectable_label(cfg.rotation_carry_over, item.icon().unwrap_or("?"))
+                    .on_hover_text(t.rotation_carry_over_label())
+                    .clicked()
+                {
+                    cfg.rotation_carry_over = !cfg.rotation_carry_over;
+                }
+            }
+            ViewerBarItem::ExifRotation => {
+                let tip = format!(
+                    "{}\n{}",
+                    t.exif_orientation_toolbar_label(),
+                    t.settings_exif_orientation_explain()
+                );
+                if ui.selectable_label(cfg.exif_orientation_enabled, "EXIF")
+                    .on_hover_text(tip)
+                    .clicked()
+                {
+                    cfg.exif_orientation_enabled = !cfg.exif_orientation_enabled;
+                }
+            }
         }
-        if ui.button("⟳").on_hover_text(i18n::t().rotate_cw()).clicked() {
-            self.rotate_cw(cfg);
-        }
-        ui.checkbox(&mut cfg.rotation_carry_over, i18n::t().rotation_carry_over_label());
-        ui.checkbox(&mut cfg.exif_orientation_enabled, i18n::t().exif_orientation_toolbar_label())
-            .on_hover_text(i18n::t().settings_exif_orientation_explain());
     }
 
     /// 画像本体の右クリックメニュー（見開き設定の保存トグル／上書き保存）を描画する
