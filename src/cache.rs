@@ -644,6 +644,27 @@ impl PageCache {
         self.known_bypass.remove(&(path.clone(), index));
     }
 
+    /// 項目(D): Exif Orientation ON/OFF切替時に、指定アーカイブの全エントリ（bypassスロット・
+    /// known_bypass記憶も含む）を破棄する。ページ単位の`remove`と違い、可視ページに限らず
+    /// アーカイブ全体を対象にする（先読み済みページが古いOrientationのまま残るのを防ぐため）。
+    pub fn remove_all_for_path(&mut self, path: &PathBuf) {
+        let stale_keys: Vec<(PathBuf, usize)> = self.entries.keys()
+            .filter(|(p, _)| p == path)
+            .cloned()
+            .collect();
+        for key in stale_keys {
+            if let Some(content) = self.entries.remove(&key) {
+                self.total_bytes = self.total_bytes.saturating_sub(content_bytes(&content));
+            }
+        }
+        if let Some(((bp, _), _)) = &self.bypass {
+            if bp == path {
+                self.bypass = None;
+            }
+        }
+        self.known_bypass.retain(|(p, _)| p != path);
+    }
+
     /// キャッシュに追加する。予算超過時は最遠エントリを evict する。
     /// 単一アイテムが予算全体を超える場合は LRU を汚さず bypass スロットに格納する。
     pub fn insert(

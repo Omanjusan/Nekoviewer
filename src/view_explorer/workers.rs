@@ -163,6 +163,23 @@ impl NekoviewApp {
         self.viewer_cfg.lock().unwrap().redecode_trigger_seq += 1;
     }
 
+    /// 項目(D): Exif Orientation ON/OFF設定を切り替えた直後に呼ぶ。リサイズ再デコードと違い
+    /// デバウンスせず即時発火する。開いているアーカイブのPageCacheエントリを全破棄し、
+    /// ビューアー側のテクスチャ/アニメ状態も全ページぶん破棄する。以降は毎フレームの
+    /// prefetch_pages()/update_textures() が通常フローで再デコード・再アップロードを拾う
+    /// （アニメは新規RingAnimationとして作り直されるため再生位置は先頭に戻る）。
+    pub(crate) fn redecode_after_exif_toggle(&mut self) {
+        let path = {
+            let viewer = self.viewer.lock().unwrap();
+            let Some(v) = viewer.as_ref() else { return };
+            v.archive_path().clone()
+        };
+        self.page_cache.lock().unwrap().remove_all_for_path(&path);
+        if let Some(v) = self.viewer.lock().unwrap().as_mut() {
+            v.invalidate_all_pages();
+        }
+    }
+
     /// 終了時に状態を永続化する（旧 eframe::App::on_exit 相当）。
     pub fn on_exit(&mut self) {
         self.persist_state();

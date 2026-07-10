@@ -409,7 +409,11 @@ impl NekoviewApp {
             // キャッシュ合計がシステムRAMの50%を超えている間は保存を拒否する
             // （警告は同フレーム内で既に赤文字表示済み）。
             if !self.settings_draft.cache_over_budget() {
+                let exif_enabled_before = self.viewer_cfg.lock().unwrap().exif_orientation_enabled;
                 self.settings_draft.apply_to(&mut self.config, &mut self.viewer_cfg.lock().unwrap());
+                if self.settings_draft.exif_orientation_enabled != exif_enabled_before {
+                    self.redecode_after_exif_toggle();
+                }
                 self.show_hidden = self.settings_draft.show_hidden;
                 self.persist_state();
                 close = true;

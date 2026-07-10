@@ -393,6 +393,15 @@ impl ViewerState {
 
     /// フェーズ6: 再デコード発火時に、指定ページのテクスチャ・アニメ再生状態を破棄する。
     /// 次の update_textures() で PageCache から作り直させる（アニメはフレーム0から再生し直す）。
+    /// 項目(D): Exif Orientation ON/OFF切替時に、開いているアーカイブの全ページのテクスチャ・
+    /// アニメ再生状態を破棄する。`invalidate_pages`(可視ページのみ)と違い、先読みウィンドウ内
+    /// (update_textures の表示ウィンドウ)で既にテクスチャを持つ裏ページも古いOrientationの
+    /// まま残ってしまうため、開いているアーカイブ全体を対象にする。
+    pub fn invalidate_all_pages(&mut self) {
+        self.textures.clear();
+        self.anim_states.clear();
+    }
+
     pub fn invalidate_pages(&mut self, orig_indices: &[usize]) {
         for orig_i in orig_indices {
             self.textures.remove(orig_i);
