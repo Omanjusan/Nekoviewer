@@ -96,6 +96,14 @@ impl Lang {
         }
     }
 
+    pub fn exif_orientation_toolbar_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "EXIF回転",
+            Lang::English  => "Exif rotation",
+            Lang::Chinese  => "Exif旋转",
+        }
+    }
+
     pub fn page_single(self) -> &'static str {
         match self {
             Lang::Japanese => "[単ページ]",
@@ -761,6 +769,22 @@ impl Lang {
             Lang::Japanese => "サムネイルバー上で現在表示中のページ（見開きなら2枚とも）に重ねる半透明ボックスの色。",
             Lang::English  => "Color of the translucent box overlaid on the currently viewed page(s) in the thumbnail bar (both pages when in spread mode).",
             Lang::Chinese  => "叠加在缩略图栏中当前显示页面（跨页时为两页）上的半透明方块颜色。",
+        }
+    }
+
+    pub fn settings_exif_orientation_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "■ Exif Orientationによる自動回転",
+            Lang::English  => "■ Auto-rotate via Exif Orientation",
+            Lang::Chinese  => "■ 根据Exif Orientation自动旋转",
+        }
+    }
+
+    pub fn settings_exif_orientation_explain(self) -> &'static str {
+        match self {
+            Lang::Japanese => "OFFにすると、画像に埋め込まれたExif Orientationタグ（誤って付与されている場合を含む）を無視して表示する。ビューアーのみに効き、サムネイルには影響しない。",
+            Lang::English  => "When off, the Exif Orientation tag embedded in images (including incorrectly-tagged ones) is ignored when displaying. Affects the viewer only, not thumbnails.",
+            Lang::Chinese  => "关闭后，显示时将忽略图像内嵌的Exif Orientation标签（包括错误标签）。仅影响查看器，不影响缩略图。",
         }
     }
 

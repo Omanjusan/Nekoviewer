@@ -393,6 +393,15 @@ impl ViewerState {
 
     /// フェーズ6: 再デコード発火時に、指定ページのテクスチャ・アニメ再生状態を破棄する。
     /// 次の update_textures() で PageCache から作り直させる（アニメはフレーム0から再生し直す）。
+    /// 項目(D): Exif Orientation ON/OFF切替時に、開いているアーカイブの全ページのテクスチャ・
+    /// アニメ再生状態を破棄する。`invalidate_pages`(可視ページのみ)と違い、先読みウィンドウ内
+    /// (update_textures の表示ウィンドウ)で既にテクスチャを持つ裏ページも古いOrientationの
+    /// まま残ってしまうため、開いているアーカイブ全体を対象にする。
+    pub fn invalidate_all_pages(&mut self) {
+        self.textures.clear();
+        self.anim_states.clear();
+    }
+
     pub fn invalidate_pages(&mut self, orig_indices: &[usize]) {
         for orig_i in orig_indices {
             self.textures.remove(orig_i);
@@ -667,6 +676,50 @@ impl ViewerState {
 
     fn rotate_ccw(&mut self, cfg: &mut ViewerConfig) {
         rotation::rotate(cfg.rotation_carry_over, &mut self.rotation, &mut cfg.rotation_session_angle, false);
+    }
+
+    /// 項目(D)OFF→ON切替時: 「EXIF値のみを見る」という意思表示になるため、
+    /// 手動回転の加算分を破棄する（carry_over中はセッション共有角度も0に戻す）。
+    pub fn on_exif_orientation_enabled(&mut self, cfg: &mut ViewerConfig) {
+        self.rotation.on_exif_enabled();
+        cfg.rotation_session_angle = 0;
+    }
+
+    /// 項目(D)ON→OFF切替時: デコード時のEXIF焼き込みが無くなる分、見た目維持のため
+    /// EXIF回転角度ぶんを手動回転角度へ加算補正する（carry_over中はセッション共有角度側）。
+    pub fn on_exif_orientation_disabled(&mut self, cfg: &mut ViewerConfig, exif_deg: i32) {
+        if cfg.rotation_carry_over {
+            cfg.rotation_session_angle = rotation::normalize_360(cfg.rotation_session_angle + exif_deg);
+        } else {
+            self.rotation.on_exif_disabled(exif_deg);
+        }
+    }
+
+    /// 項目(D)ON→OFF切替の角度補正で基準にするページの(original_index, entry_name)。
+    /// 見開き時のEXIF基準点決定（仮想ページでない方を優先→両方実ページならインデックスが
+    /// 若い方）と同じ優先順位を使う（Bの確定仕様）。
+    pub fn rotation_correction_reference_page(&self) -> Option<(usize, String)> {
+        let total = self.entries.len() as i32;
+        if total == 0 {
+            return None;
+        }
+        let lo = self.spread_lo();
+        let pick = |i: i32| -> Option<(usize, String)> {
+            if i < 0 || i >= total { return None; }
+            self.entries.get(i as usize).map(|e| (e.original_index, e.entry_name.clone()))
+        };
+        if self.page_mode == PageMode::Single {
+            return pick(lo.clamp(0, total - 1));
+        }
+        let hi = lo + 1;
+        let virtual_left = lo < 0 || lo >= total;
+        let virtual_right = hi < 0 || hi >= total;
+        match (virtual_left, virtual_right) {
+            (true, true) => None,
+            (true, false) => pick(hi),
+            (false, true) => pick(lo),
+            (false, false) => pick(lo), // lo < hi は常に成立するので若い方=lo
+        }
     }
 
     pub fn title(&self) -> String {
@@ -1646,6 +1699,8 @@ impl ViewerState {
             self.rotate_cw(cfg);
         }
         ui.checkbox(&mut cfg.rotation_carry_over, i18n::t().rotation_carry_over_label());
+        ui.checkbox(&mut cfg.exif_orientation_enabled, i18n::t().exif_orientation_toolbar_label())
+            .on_hover_text(i18n::t().settings_exif_orientation_explain());
     }
 
     /// 画像本体の右クリックメニュー（見開き設定の保存トグル／上書き保存）を描画する

@@ -88,6 +88,10 @@ pub struct ViewerConfig {
     /// rotation_carry_over が true のとき、全ページ共通で使う回転角度(度)。
     /// 非永続・実行時のみ。
     pub rotation_session_angle: i32,
+    /// 項目(D): Exif Orientation自動回転(A)の適用有無。true = 従来通り自動回転を適用。
+    /// false = デコード時のOrientation適用をスキップする（誤ったOrientationタグ対策）。
+    /// 永続設定（save_state/load_state対象）。ビューアーのみに効き、サムネイルには影響しない。
+    pub exif_orientation_enabled: bool,
 }
 
 impl Default for ViewerConfig {
@@ -108,6 +112,7 @@ impl Default for ViewerConfig {
             thumbbar_marker_a: 35,
             rotation_carry_over: false,
             rotation_session_angle: 0,
+            exif_orientation_enabled: true,
         }
     }
 }
@@ -238,6 +243,7 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
     let mut thumbbar_marker_g: Option<u8> = None;
     let mut thumbbar_marker_b: Option<u8> = None;
     let mut thumbbar_marker_a: Option<u8> = None;
+    let mut exif_orientation_enabled: Option<bool> = None;
     let mut has_kv = false;
 
     for line in content.lines() {
@@ -305,6 +311,7 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
                 "thumbbar_marker_g" => { thumbbar_marker_g = v.trim().parse().ok(); }
                 "thumbbar_marker_b" => { thumbbar_marker_b = v.trim().parse().ok(); }
                 "thumbbar_marker_a" => { thumbbar_marker_a = v.trim().parse().ok(); }
+                "exif_orientation_enabled" => { exif_orientation_enabled = v.trim().parse().ok(); }
                 _ => {}
             }
         }
@@ -360,6 +367,7 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
             thumbbar_marker_a: thumbbar_marker_a.unwrap_or(35),
             rotation_carry_over: false,
             rotation_session_angle: 0,
+            exif_orientation_enabled: exif_orientation_enabled.unwrap_or(true),
         },
         show_hidden: show_hidden.unwrap_or(false),
         app_cache_total_mb,
@@ -387,6 +395,10 @@ pub fn save_state(dir: &Path, window_size: (u32, u32), viewer_slots: &[Option<Wi
         thumbbar_pos_to_str(viewer_cfg.thumbbar_pos), viewer_cfg.thumbbar_thumb_size, viewer_cfg.thumbbar_idle_hide_ms,
         viewer_cfg.thumbbar_overlap, viewer_cfg.thumbbar_marker_r, viewer_cfg.thumbbar_marker_g,
         viewer_cfg.thumbbar_marker_b, viewer_cfg.thumbbar_marker_a,
+    ));
+    content.push_str(&format!(
+        "exif_orientation_enabled={}\n",
+        viewer_cfg.exif_orientation_enabled,
     ));
     // 設定ダイアログ（共通/アニメタブ）が編集する AppConfig 系の値。次回起動から反映されるため、
     // ここでは現在の有効値をそのまま state に書き戻すだけでよい（即時のワーカー再構築は不要）。

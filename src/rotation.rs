@@ -93,6 +93,12 @@ impl RotationState {
     pub fn on_exif_enabled(&mut self) {
         self.manual_delta = 0;
     }
+
+    /// D設定をON→OFFに切り替えた瞬間の処理。デコード時のEXIF焼き込みが無くなる分、
+    /// 「見た目維持」のためEXIF回転角度ぶんを手動角度へ加算補正する。
+    pub fn on_exif_disabled(&mut self, exif_deg: i32) {
+        self.manual_delta = normalize_360(self.manual_delta + exif_deg);
+    }
 }
 
 impl Default for RotationState {
@@ -158,6 +164,31 @@ mod tests {
         let mut s = RotationState::new();
         s.rotate_ccw();
         assert_eq!(s.angle(), 270);
+    }
+
+    #[test]
+    fn on_exif_enabled_discards_manual_delta() {
+        let mut s = RotationState::new();
+        s.rotate_cw();
+        s.rotate_cw();
+        s.on_exif_enabled();
+        assert_eq!(s.angle(), 0);
+    }
+
+    #[test]
+    fn on_exif_disabled_adds_and_normalizes_exif_degrees() {
+        let mut s = RotationState::new();
+        s.rotate_cw(); // manual_delta = 90
+        s.on_exif_disabled(90); // 90 + 90 = 180
+        assert_eq!(s.angle(), 180);
+    }
+
+    #[test]
+    fn on_exif_disabled_wraps_across_360() {
+        let mut s = RotationState::new();
+        s.rotate_ccw(); // manual_delta = 270
+        s.on_exif_disabled(180); // 270 + 180 = 450 -> 90
+        assert_eq!(s.angle(), 90);
     }
 
     #[test]
