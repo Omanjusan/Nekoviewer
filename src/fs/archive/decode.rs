@@ -108,15 +108,103 @@ fn decode_native_with_orientation(buf: &[u8]) -> Option<image::DynamicImage> {
     Some(img)
 }
 
-fn decode_avif(buf: &[u8]) -> Option<image::DynamicImage> {
-    let rgb = match libavif::decode_rgb(buf) {
-        Ok(r) => r,
-        Err(_) => return None,
+/// AVIFコンテナ自身が持つ`irot`(90度単位回転)/`imir`(ミラー)変換と、埋め込みExif Orientation
+/// タグの2系統から最終的な向きを決定して適用する。両方あった場合はコンテナ側の`irot`/`imir`を
+/// 優先しExifタグは無視する（仕様上Exifは冗長・レガシー扱いで、実際のエンコーダの多くは
+/// irot/imirの方を使うため）。`irot`は反時計回りangle*90度、`imir`はaxis=0で上下反転・
+/// axis=1で左右反転、この順（回転→ミラー）で適用する。
+fn apply_avif_orientation(img: image::DynamicImage, avif_image: *const libavif_sys::avifImage) -> image::DynamicImage {
+    use libavif_sys::{AVIF_TRANSFORM_IMIR, AVIF_TRANSFORM_IROT};
+
+    let (transform_flags, irot_angle, imir_axis, exif) = unsafe {
+        ((*avif_image).transformFlags, (*avif_image).irot.angle, (*avif_image).imir.axis, (*avif_image).exif)
     };
-    let w = rgb.width();
-    let h = rgb.height();
-    let pixels = rgb.as_slice().to_vec();
-    image::RgbaImage::from_raw(w, h, pixels).map(image::DynamicImage::ImageRgba8)
+    let has_irot = transform_flags & AVIF_TRANSFORM_IROT != 0;
+    let has_imir = transform_flags & AVIF_TRANSFORM_IMIR != 0;
+
+    if has_irot || has_imir {
+        let mut img = img;
+        if has_irot {
+            // irot.angle: 反時計回りangle*90度。image crateのrotate90/270は時計回りのため対応が逆になる。
+            img = match irot_angle {
+                1 => img.rotate270(),
+                2 => img.rotate180(),
+                3 => img.rotate90(),
+                _ => img,
+            };
+        }
+        if has_imir {
+            img = if imir_axis == 0 { img.flipv() } else { img.fliph() };
+        }
+        return img;
+    }
+
+    if !exif.data.is_null() && exif.size > 0 {
+        let exif_bytes = unsafe { std::slice::from_raw_parts(exif.data, exif.size) };
+        if let Some(orientation) = image::metadata::Orientation::from_exif_chunk(exif_bytes) {
+            let mut img = img;
+            img.apply_orientation(orientation);
+            return img;
+        }
+    }
+    img
+}
+
+/// `libavif`クレート(安全ラッパー)にはExif/irot/imirへのアクセスが無いため、生FFI
+/// (`libavif-sys`)で直接デコードする。`anim.rs`の`AvifSeqState`と同系統のFFI呼び出しパターン。
+fn decode_avif(buf: &[u8]) -> Option<image::DynamicImage> {
+    use libavif_sys::*;
+
+    struct DecoderGuard(*mut avifDecoder);
+    impl Drop for DecoderGuard {
+        fn drop(&mut self) {
+            unsafe { avifDecoderDestroy(self.0) };
+        }
+    }
+
+    unsafe {
+        let decoder = avifDecoderCreate();
+        if decoder.is_null() {
+            return None;
+        }
+        let _guard = DecoderGuard(decoder);
+
+        if avifDecoderSetIOMemory(decoder, buf.as_ptr(), buf.len()) != AVIF_RESULT_OK {
+            return None;
+        }
+        if avifDecoderParse(decoder) != AVIF_RESULT_OK {
+            return None;
+        }
+        if avifDecoderNextImage(decoder) != AVIF_RESULT_OK {
+            return None;
+        }
+        let avif_image = (*decoder).image;
+        if avif_image.is_null() {
+            return None;
+        }
+
+        let w = (*avif_image).width;
+        let h = (*avif_image).height;
+
+        let mut rgb: avifRGBImage = std::mem::zeroed();
+        avifRGBImageSetDefaults(&mut rgb, avif_image);
+        rgb.format = AVIF_RGB_FORMAT_RGBA;
+        rgb.depth = 8;
+        if avifRGBImageAllocatePixels(&mut rgb) != AVIF_RESULT_OK {
+            return None;
+        }
+        let ok = avifImageYUVToRGB(avif_image, &mut rgb) == AVIF_RESULT_OK;
+        let pixels = if ok {
+            let pixels_len = (rgb.rowBytes * h) as usize;
+            Some(std::slice::from_raw_parts(rgb.pixels, pixels_len).to_vec())
+        } else {
+            None
+        };
+        avifRGBImageFreePixels(&mut rgb);
+
+        let img = image::RgbaImage::from_raw(w, h, pixels?).map(image::DynamicImage::ImageRgba8)?;
+        Some(apply_avif_orientation(img, avif_image))
+    }
 }
 
 /// フェーズ2: 静止画1エントリのデコード後サイズ(RGBA, byte)をヘッダ情報のみから推定する。

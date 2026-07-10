@@ -1,10 +1,9 @@
-(A) Exif Orientation対応の残作業（WebP/AVIF）
+(A) Exif Orientation対応の残作業（AVIF）
     - v1.3.0でJPEG/PNG/TIFF等image crateネイティブ対応フォーマットのExif Orientation検出・適用は
       実装済み（decode_image_bytes、サムネ・ビューアー双方に自動反映）。
-    - WebP: `webp` crateにexif APIが無いためスコープ外。RIFFコンテナのExifチャンクを自前パースすれば
-      追加依存なしで対応可能（バイナリ形式は単純）。ただし静止画WebPは`decode_image_bytes`に来る前に
-      anim.rs側の`RingAnimation::from_source`（SingleFrame判定）を通ってしまうため、そちらにも
-      Orientation検出・適用を組み込む必要がある。
+    - WebP: 実装済み（37fbb55）。RIFFチャンクを自前パースしてEXIFチャンクのOrientationを検出
+      （decode.rs `webp_exif_orientation`）。静止画・アニメフォールバック双方のdecode_image_bytes分岐、
+      および`RingAnimation::from_source`（cache.rs、静止画確定時のみ適用）に反映済み。
     - AVIF: `libavif` crate(Rustラッパー)にexif APIが無く、下層の`libavif-sys`(生FFI)の
       `avifImage.exif`フィールドにしか露出していない。対応するにはunsafeなFFI呼び出しが必要
       （安全なバイナリパースでは済まない）。
