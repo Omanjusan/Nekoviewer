@@ -446,13 +446,21 @@ impl RingAnimation {
             Some(f) => f,
             None => return RingDecodeOutcome::NotThisFormat,
         };
+        // AVIFはWebPと違い、向き（Exif/irot/imir）がframe0デコード後のデコーダ状態からしか
+        // 読めない（コンテナのRIFF/box自前パースのような事前スキャンができない）ため、
+        // frame0が獲れた直後、かつ静止画/アニメ判定と同じ理由でframe1取得より前に確定させる。
+        let orientation = if format == AnimFormat::Avif {
+            decoder.avif_orientation()
+        } else {
+            webp_orientation
+        };
         let frame1 = decoder.next_frame();
 
         if frame1.is_none() {
             let mut frame0 = frame0;
-            if webp_orientation != image::metadata::Orientation::NoTransforms {
+            if orientation != image::metadata::Orientation::NoTransforms {
                 let mut img = image::DynamicImage::ImageRgba8(frame0.image);
-                img.apply_orientation(webp_orientation);
+                img.apply_orientation(orientation);
                 frame0.image = img.into_rgba8();
             }
             let frame0 = Self::guard_frame_size(frame0, frame_hard_limit_bytes, filter, 0);

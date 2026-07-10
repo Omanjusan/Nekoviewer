@@ -109,45 +109,62 @@ fn decode_native_with_orientation(buf: &[u8]) -> Option<image::DynamicImage> {
 }
 
 /// AVIFコンテナ自身が持つ`irot`(90度単位回転)/`imir`(ミラー)変換と、埋め込みExif Orientation
-/// タグの2系統から最終的な向きを決定して適用する。両方あった場合はコンテナ側の`irot`/`imir`を
-/// 優先しExifタグは無視する（仕様上Exifは冗長・レガシー扱いで、実際のエンコーダの多くは
-/// irot/imirの方を使うため）。`irot`は反時計回りangle*90度、`imir`はaxis=0で上下反転・
-/// axis=1で左右反転、この順（回転→ミラー）で適用する。
-fn apply_avif_orientation(img: image::DynamicImage, avif_image: *const libavif_sys::avifImage) -> image::DynamicImage {
+/// タグの2系統から最終的な向きを1つの`Orientation`に統合する。両方あった場合はコンテナ側の
+/// `irot`/`imir`を優先しExifタグは無視する（仕様上Exifは冗長・レガシー扱いで、実際のエンコーダの
+/// 多くはirot/imirの方を使うため）。
+///
+/// `irot`は反時計回りangle*90度、`imir`はaxis=0で上下反転・axis=1で左右反転、この順
+/// （回転→ミラー）で適用される。image crateの`Orientation`は「回転→左右反転」の合成でしか
+/// 8通りを表現できない（上下反転単体はFlipVerticalとして持つが、回転+上下反転の組は無い）ため、
+/// axis=0(上下反転)のケースは「180度回転を上乗せしてから左右反転」に正規化してから当てはめる
+/// （180度回転してから左右反転 = 上下反転、という恒等式を利用）。生成される`Orientation`を返す
+/// 純粋関数にしておくことで、静止画パス(`decode_avif`)とアニメーション単一フレーム確定時
+/// （`cache.rs::RingAnimation::from_source`）の両方から共有できる。
+pub(crate) fn avif_container_orientation(transform_flags: u32, irot_angle: u8, imir_axis: u8, exif: Option<&[u8]>) -> image::metadata::Orientation {
+    use image::metadata::Orientation;
     use libavif_sys::{AVIF_TRANSFORM_IMIR, AVIF_TRANSFORM_IROT};
 
-    let (transform_flags, irot_angle, imir_axis, exif) = unsafe {
-        ((*avif_image).transformFlags, (*avif_image).irot.angle, (*avif_image).imir.axis, (*avif_image).exif)
-    };
     let has_irot = transform_flags & AVIF_TRANSFORM_IROT != 0;
     let has_imir = transform_flags & AVIF_TRANSFORM_IMIR != 0;
 
     if has_irot || has_imir {
-        let mut img = img;
-        if has_irot {
-            // irot.angle: 反時計回りangle*90度。image crateのrotate90/270は時計回りのため対応が逆になる。
-            img = match irot_angle {
-                1 => img.rotate270(),
-                2 => img.rotate180(),
-                3 => img.rotate90(),
-                _ => img,
+        // 反時計回りangle*90度 → 時計回りquarter-turn数へ変換
+        let k = if has_irot { (4 - (irot_angle as u32 % 4)) % 4 } else { 0 };
+        if has_imir {
+            let k = if imir_axis == 0 { (k + 2) % 4 } else { k };
+            return match k {
+                0 => Orientation::FlipHorizontal,
+                1 => Orientation::Rotate90FlipH,
+                2 => Orientation::FlipVertical,
+                _ => Orientation::Rotate270FlipH,
             };
         }
-        if has_imir {
-            img = if imir_axis == 0 { img.flipv() } else { img.fliph() };
-        }
-        return img;
+        return match k {
+            0 => Orientation::NoTransforms,
+            1 => Orientation::Rotate90,
+            2 => Orientation::Rotate180,
+            _ => Orientation::Rotate270,
+        };
     }
 
-    if !exif.data.is_null() && exif.size > 0 {
-        let exif_bytes = unsafe { std::slice::from_raw_parts(exif.data, exif.size) };
-        if let Some(orientation) = image::metadata::Orientation::from_exif_chunk(exif_bytes) {
-            let mut img = img;
-            img.apply_orientation(orientation);
-            return img;
-        }
-    }
-    img
+    exif.and_then(Orientation::from_exif_chunk).unwrap_or(Orientation::NoTransforms)
+}
+
+/// `avifImage`の生ポインタから向き判定に必要な値を読み出し、`avif_container_orientation`に渡す。
+/// Exifバイト列は`avifImage`（＝デコーダ）が生きている間しか有効でないため、ここで判定まで
+/// 完結させる（呼び出し元へ生ポインタや借用を持ち出させない）。
+///
+/// # Safety
+/// `avif_image`は`avifDecoderNextImage`成功後に得た有効な`avifImage`ポインタでなければならない。
+pub(crate) unsafe fn avif_orientation_from_image(avif_image: *const libavif_sys::avifImage) -> image::metadata::Orientation {
+    let (transform_flags, irot_angle, imir_axis, exif) =
+        unsafe { ((*avif_image).transformFlags, (*avif_image).irot.angle, (*avif_image).imir.axis, (*avif_image).exif) };
+    let exif_bytes = if !exif.data.is_null() && exif.size > 0 {
+        Some(unsafe { std::slice::from_raw_parts(exif.data, exif.size) })
+    } else {
+        None
+    };
+    avif_container_orientation(transform_flags, irot_angle, imir_axis, exif_bytes)
 }
 
 /// `libavif`クレート(安全ラッパー)にはExif/irot/imirへのアクセスが無いため、生FFI
@@ -202,8 +219,9 @@ fn decode_avif(buf: &[u8]) -> Option<image::DynamicImage> {
         };
         avifRGBImageFreePixels(&mut rgb);
 
-        let img = image::RgbaImage::from_raw(w, h, pixels?).map(image::DynamicImage::ImageRgba8)?;
-        Some(apply_avif_orientation(img, avif_image))
+        let mut img = image::RgbaImage::from_raw(w, h, pixels?).map(image::DynamicImage::ImageRgba8)?;
+        img.apply_orientation(avif_orientation_from_image(avif_image));
+        Some(img)
     }
 }
 
@@ -304,6 +322,48 @@ pub fn estimate_anim_sample_bytes(buf: &[u8], ext: &str, budget_bytes: usize, ri
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `avif_container_orientation`が「irot→imir逐次適用」と等価であることを、
+    /// image crateの生の回転・反転関数を使った素朴なシミュレーションと突き合わせて検証する。
+    /// 特にimir.axis==0(上下反転)を「180度回転+左右反転」に正規化する変換が正しいかどうかが要。
+    #[test]
+    fn avif_container_orientation_matches_sequential_irot_then_imir() {
+        use libavif_sys::{AVIF_TRANSFORM_IMIR, AVIF_TRANSFORM_IROT};
+
+        // 非対称な3x2画像（回転・反転すると別物になる）
+        let base = image::RgbaImage::from_fn(3, 2, |x, y| image::Rgba([x as u8, y as u8, 0, 255]));
+
+        for irot_angle in 0u8..4 {
+            for imir_axis in [None, Some(0u8), Some(1u8)] {
+                let mut transform_flags = AVIF_TRANSFORM_IROT;
+                if imir_axis.is_some() {
+                    transform_flags |= AVIF_TRANSFORM_IMIR;
+                }
+
+                // 素朴なシミュレーション: irotを反時計回りangle*90度→rotate90/270へ変換して適用、
+                // その後imirをaxis通りに適用する。
+                let mut expected = image::DynamicImage::ImageRgba8(base.clone());
+                expected = match irot_angle % 4 {
+                    1 => expected.rotate270(),
+                    2 => expected.rotate180(),
+                    3 => expected.rotate90(),
+                    _ => expected,
+                };
+                if let Some(axis) = imir_axis {
+                    expected = if axis == 0 { expected.flipv() } else { expected.fliph() };
+                }
+
+                let orientation = avif_container_orientation(transform_flags, irot_angle, imir_axis.unwrap_or(0), None);
+                let mut actual = image::DynamicImage::ImageRgba8(base.clone());
+                actual.apply_orientation(orientation);
+
+                assert_eq!(
+                    actual.to_rgba8(), expected.to_rgba8(),
+                    "irot_angle={irot_angle}, imir_axis={imir_axis:?} で不一致"
+                );
+            }
+        }
+    }
 
     #[test]
     fn decode_image_bytes_reads_tiff() {
