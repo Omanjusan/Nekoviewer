@@ -10,7 +10,7 @@
       する`avif_container_orientation`を新設（`Orientation`列挙体に正規化、`decode_avif`と
       アニメ単一フレーム確定時の両方から共有）。未使用になった`libavif`クレート依存はCargo.tomlから削除。
       テストはlibavif-sys生FFIでの自作AVIFエンコード（irot/imir/Exifそれぞれ）で検証。
-(B) 手動回転機能 — 完了（feat/image-rotationブランチ、未コミット）
+(B) 手動回転機能 — 完了（feat/image-rotationブランチ）
     - ビューアーでユーザーが任意にページを90/180/270度回転できる操作。Exif自動回転(A)とは独立
       （EXIFは既にデコード時にピクセルへ焼き込み済みのため、手動回転は単純加算のみで済む）。
     - 回転は時計回り・逆時計回りボタン（top bar/フルスクリーンソートバー）で操作。
@@ -26,13 +26,27 @@
       （項目(D)実装時にEXIF基準角度の再計算で使う想定、削除しない）。
 (C) 拡縮
     - ズーム・パン。手動回転(B)と合わせてページの見た目調整の一群として扱う。
-(D) Exif Orientation ON/OFF設定
+(D) Exif Orientation ON/OFF設定 — 完了（feat/toggle-exif-orientationブランチ）
     - スキャン・加工ツール経由の漫画アーカイブでは誤ったOrientationタグが埋め込まれるケースがあるため、
       自動回転の適用有無を設定値で切り替えられるようにする。(B)の手動回転が先にあれば個別補正はできるため、
       本項目はグローバルな一括対応の位置づけ。
-    - 着手前の要検討事項: EXIF自動回転(A)は既にデコード時にピクセルへ焼き込み済みのため、OFF化には
-      「再デコードでOrientation適用をスキップする」か「レンダリング時に逆回転を掛ける」のどちらかの
-      方式選定が必要（詳細はauto-memory `feat-image-rotation-handoff` 参照）。
+    - 方式は「再デコードでOrientation適用をスキップ」を採用（`exif_orientation_enabled`を
+      `target_size`と同型でデコード層まで貫通）。サムネイルはビューアーの設定と独立、常時EXIF自動回転
+      ON固定（サムネDBキャッシュがfilename+mtimeキーのみでOrientation適用有無を区別できないため）。
+    - `ViewerConfig::exif_orientation_enabled`（永続設定）。設定ダイアログのViewerタブ、および
+      ビューアーツールバー（top bar/フルスクリーンソートバー、回転引き継ぎチェックボックスの隣）の
+      両方から切替可能。どちらの経路で変更されても`poll_resize_redecode`と同じ「毎フレーム値比較」
+      方式（`exif_orientation_enabled_last_seen`）で検知し、開いているアーカイブのPageCache全破棄＋
+      ビューアー側の全ページテクスチャ破棄を即時発火。以降は通常の毎フレームフロー
+      （prefetch_pages/update_textures）が再デコード・再アップロードを拾う。
+    - 手動回転(B)との整合: OFF→ON=手動回転をEXIF値へ強制リセット、ON→OFF=EXIF回転角度を手動角度へ
+      加算補正して見た目を維持（`RotationState::on_exif_enabled`/`on_exif_disabled`）。見開き時の
+      EXIF基準ページは「仮想ページでない方を優先→両方実ページならインデックスが若い方」（Bの確定仕様）。
+    - 既知の制限: AVIFのみOrientation単体検出の軽量パスが無く（フルデコード相当のFFIコストを避けるため）
+      ON→OFF切替時に常にNoTransforms扱い。該当ページがirot/imir/exifを実際に持つ場合のみ、切替の瞬間
+      90度単位で一瞬ズレることがある（発生頻度は低い想定、既知の割り切り）。
+    - 単体テスト: rotation.rs 3件（on_exif_enabled/on_exif_disabled）、decode.rs 4件
+      （`detect_orientation_for_toggle`のJPEG/WebP/デフォルト/AVIF既知制限）。cargo test 97件 all green。
 (E) 見開きボタンをビューアーウィンドウに移動
 (F) コマフォーカス移動
 (G) OCR-翻訳接続
