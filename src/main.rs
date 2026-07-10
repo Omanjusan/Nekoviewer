@@ -10,6 +10,7 @@ mod i18n;
 mod types;
 mod model_innerlog;
 mod neko_dir;
+mod rotation;
 mod single_instance;
 mod spread_offset;
 mod spread_state;

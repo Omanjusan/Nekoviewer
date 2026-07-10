@@ -72,6 +72,30 @@ impl Lang {
         }
     }
 
+    pub fn rotate_ccw(self) -> &'static str {
+        match self {
+            Lang::Japanese => "反時計回りに回転",
+            Lang::English  => "Rotate counter-clockwise",
+            Lang::Chinese  => "逆时针旋转",
+        }
+    }
+
+    pub fn rotate_cw(self) -> &'static str {
+        match self {
+            Lang::Japanese => "時計回りに回転",
+            Lang::English  => "Rotate clockwise",
+            Lang::Chinese  => "顺时针旋转",
+        }
+    }
+
+    pub fn rotation_carry_over_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "回転を引き継ぐ",
+            Lang::English  => "Carry over rotation",
+            Lang::Chinese  => "旋转跨页保留",
+        }
+    }
+
     pub fn page_single(self) -> &'static str {
         match self {
             Lang::Japanese => "[単ページ]",
