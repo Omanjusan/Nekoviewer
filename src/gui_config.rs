@@ -82,6 +82,12 @@ pub struct ViewerConfig {
     pub thumbbar_marker_b: u8,
     /// 現在地マーカーの不透明度(0〜100%)
     pub thumbbar_marker_a: u8,
+    /// 手動回転角度の引き継ぎトグル。true = ページ送りをまたいで回転角度を維持する。
+    /// 非永続・実行時のみ（アプリセッション中は保持、再起動でリセット）。
+    pub rotation_carry_over: bool,
+    /// rotation_carry_over が true のとき、全ページ共通で使う回転角度(度)。
+    /// 非永続・実行時のみ。
+    pub rotation_session_angle: i32,
 }
 
 impl Default for ViewerConfig {
@@ -100,6 +106,8 @@ impl Default for ViewerConfig {
             thumbbar_marker_g: 169,
             thumbbar_marker_b: 79,
             thumbbar_marker_a: 35,
+            rotation_carry_over: false,
+            rotation_session_angle: 0,
         }
     }
 }
@@ -350,6 +358,8 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
             thumbbar_marker_g: thumbbar_marker_g.unwrap_or(169),
             thumbbar_marker_b: thumbbar_marker_b.unwrap_or(79),
             thumbbar_marker_a: thumbbar_marker_a.unwrap_or(35),
+            rotation_carry_over: false,
+            rotation_session_angle: 0,
         },
         show_hidden: show_hidden.unwrap_or(false),
         app_cache_total_mb,
