@@ -31,11 +31,6 @@ impl SpreadOffset {
         }
     }
 
-    /// 整列状態でないか（UI の「ずれ中」表示用）
-    pub fn is_nonzero(&self) -> bool {
-        !matches!(self.state, SpreadDisplayState::Aligned)
-    }
-
     /// + 方向への調整が可能か
     /// ShiftedOne（+1 上限）または末尾仮想（これ以上進む実ページなし）のときは不可
     pub fn can_advance(&self) -> bool {

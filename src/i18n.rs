@@ -144,21 +144,8 @@ impl Lang {
         }
     }
 
-    pub fn spread_offset_on(self) -> &'static str {
-        match self {
-            Lang::Japanese => "+1Pずれ中",
-            Lang::English  => "+1P offset",
-            Lang::Chinese  => "+1页偏移",
-        }
-    }
-
-    pub fn spread_aligned(self) -> &'static str {
-        match self {
-            Lang::Japanese => "整列中",
-            Lang::English  => "aligned",
-            Lang::Chinese  => "对齐",
-        }
-    }
+    // spread_offset_on / spread_aligned は廃止（ずれ状態はビューアーツールバーの
+    // OffsetIndicator が文言なしの「0 / ←1 / 1→」で表示する。toolbar.rs 参照）
 
     pub fn spread_save_toggle_label(self) -> &'static str {
         match self {

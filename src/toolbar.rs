@@ -20,6 +20,18 @@ pub enum ViewerBarItem {
     SortDate,
     /// アーカイブ内ソート: 昇順/降順トグル
     SortOrder,
+    /// ページ表示モード: 単ページ
+    PageSingle,
+    /// ページ表示モード: 見開き左
+    SpreadLeft,
+    /// ページ表示モード: 見開き右
+    SpreadRight,
+    /// 見開き1Pシフト: 戻す
+    SpreadBack,
+    /// 見開き1Pシフト: 進む
+    SpreadFwd,
+    /// 見開きオフセット状態の表示専用インジケータ（0 / ←1 / 1→、単ページ時は非表示）
+    OffsetIndicator,
     /// 手動回転: 反時計回り
     RotateCcw,
     /// 手動回転: 時計回り
@@ -30,14 +42,20 @@ pub enum ViewerBarItem {
     ExifRotation,
 }
 
-pub const BAR_ITEM_COUNT: usize = 8;
+pub const BAR_ITEM_COUNT: usize = 14;
 
-/// 既定の並び順。現行ツールバーの表示順と同一。
+/// 既定の並び順。ソート群 → ページ群 → 回転群。
 pub const DEFAULT_BAR_ORDER: [ViewerBarItem; BAR_ITEM_COUNT] = [
     ViewerBarItem::SortName,
     ViewerBarItem::SortNatural,
     ViewerBarItem::SortDate,
     ViewerBarItem::SortOrder,
+    ViewerBarItem::PageSingle,
+    ViewerBarItem::SpreadLeft,
+    ViewerBarItem::SpreadRight,
+    ViewerBarItem::SpreadBack,
+    ViewerBarItem::SpreadFwd,
+    ViewerBarItem::OffsetIndicator,
     ViewerBarItem::RotateCcw,
     ViewerBarItem::RotateCw,
     ViewerBarItem::RotationCarry,
@@ -49,6 +67,7 @@ pub const DEFAULT_BAR_ORDER: [ViewerBarItem; BAR_ITEM_COUNT] = [
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum BarGroup {
     Sort,
+    Page,
     Rotation,
 }
 
@@ -56,27 +75,39 @@ impl ViewerBarItem {
     /// state ファイル永続化用ID。一度リリースしたIDは変更しない（前方互換の要）。
     pub fn id(self) -> &'static str {
         match self {
-            ViewerBarItem::SortName      => "sort_name",
-            ViewerBarItem::SortNatural   => "sort_natural",
-            ViewerBarItem::SortDate      => "sort_date",
-            ViewerBarItem::SortOrder     => "sort_order",
-            ViewerBarItem::RotateCcw     => "rotate_ccw",
-            ViewerBarItem::RotateCw      => "rotate_cw",
-            ViewerBarItem::RotationCarry => "rotation_carry",
-            ViewerBarItem::ExifRotation  => "exif_rotation",
+            ViewerBarItem::SortName        => "sort_name",
+            ViewerBarItem::SortNatural     => "sort_natural",
+            ViewerBarItem::SortDate        => "sort_date",
+            ViewerBarItem::SortOrder       => "sort_order",
+            ViewerBarItem::PageSingle      => "page_single",
+            ViewerBarItem::SpreadLeft      => "spread_left",
+            ViewerBarItem::SpreadRight     => "spread_right",
+            ViewerBarItem::SpreadBack      => "spread_back",
+            ViewerBarItem::SpreadFwd       => "spread_fwd",
+            ViewerBarItem::OffsetIndicator => "offset_indicator",
+            ViewerBarItem::RotateCcw       => "rotate_ccw",
+            ViewerBarItem::RotateCw        => "rotate_cw",
+            ViewerBarItem::RotationCarry   => "rotation_carry",
+            ViewerBarItem::ExifRotation    => "exif_rotation",
         }
     }
 
     pub fn from_id(s: &str) -> Option<Self> {
         Some(match s {
-            "sort_name"      => ViewerBarItem::SortName,
-            "sort_natural"   => ViewerBarItem::SortNatural,
-            "sort_date"      => ViewerBarItem::SortDate,
-            "sort_order"     => ViewerBarItem::SortOrder,
-            "rotate_ccw"     => ViewerBarItem::RotateCcw,
-            "rotate_cw"      => ViewerBarItem::RotateCw,
-            "rotation_carry" => ViewerBarItem::RotationCarry,
-            "exif_rotation"  => ViewerBarItem::ExifRotation,
+            "sort_name"        => ViewerBarItem::SortName,
+            "sort_natural"     => ViewerBarItem::SortNatural,
+            "sort_date"        => ViewerBarItem::SortDate,
+            "sort_order"       => ViewerBarItem::SortOrder,
+            "page_single"      => ViewerBarItem::PageSingle,
+            "spread_left"      => ViewerBarItem::SpreadLeft,
+            "spread_right"     => ViewerBarItem::SpreadRight,
+            "spread_back"      => ViewerBarItem::SpreadBack,
+            "spread_fwd"       => ViewerBarItem::SpreadFwd,
+            "offset_indicator" => ViewerBarItem::OffsetIndicator,
+            "rotate_ccw"       => ViewerBarItem::RotateCcw,
+            "rotate_cw"        => ViewerBarItem::RotateCw,
+            "rotation_carry"   => ViewerBarItem::RotationCarry,
+            "exif_rotation"    => ViewerBarItem::ExifRotation,
             _ => return None,
         })
     }
@@ -87,6 +118,12 @@ impl ViewerBarItem {
     /// （view_explorer/glyph_audit.rs の toolbar_icon_glyphs_are_available）の両方が参照する。
     pub fn icon(self) -> Option<&'static str> {
         match self {
+            // ページモード3択は ▯(U+25AF)・◧◨(U+25E7/E8)が豆腐（glyph_auditで検出）。
+            // □▌▐ は Linux/Windows 双方の CJK フォントで同一フォント供給が見込め、
+            // ペアの描画スタイルが揃うためこれを採用
+            ViewerBarItem::PageSingle    => Some("□"),
+            ViewerBarItem::SpreadLeft    => Some("▌"),
+            ViewerBarItem::SpreadRight   => Some("▐"),
             ViewerBarItem::RotateCcw     => Some("⟲"),
             ViewerBarItem::RotateCw      => Some("⟳"),
             ViewerBarItem::RotationCarry => Some("📌"),
@@ -100,6 +137,12 @@ impl ViewerBarItem {
             | ViewerBarItem::SortNatural
             | ViewerBarItem::SortDate
             | ViewerBarItem::SortOrder => BarGroup::Sort,
+            ViewerBarItem::PageSingle
+            | ViewerBarItem::SpreadLeft
+            | ViewerBarItem::SpreadRight
+            | ViewerBarItem::SpreadBack
+            | ViewerBarItem::SpreadFwd
+            | ViewerBarItem::OffsetIndicator => BarGroup::Page,
             ViewerBarItem::RotateCcw
             | ViewerBarItem::RotateCw
             | ViewerBarItem::RotationCarry
@@ -184,34 +227,25 @@ mod tests {
 
     #[test]
     fn unknown_ids_are_ignored() {
-        let s = "sort_name,future_item_xyz,sort_natural,sort_date,sort_order,\
-                 rotate_ccw,rotate_cw,rotation_carry,exif_rotation";
-        assert_eq!(parse_bar_order(s), DEFAULT_BAR_ORDER);
+        let s = format!("future_item_xyz,{}", bar_order_to_str(&DEFAULT_BAR_ORDER));
+        assert_eq!(parse_bar_order(&s), DEFAULT_BAR_ORDER);
     }
 
     #[test]
     fn duplicates_keep_first() {
-        let s = "sort_date,sort_date,sort_name,sort_natural,sort_order,\
-                 rotate_ccw,rotate_cw,rotation_carry,exif_rotation";
-        let order = parse_bar_order(s);
+        // SortDate を既定順の前に重複させる → 先頭の SortDate が勝つ
+        let s = format!("sort_date,{}", bar_order_to_str(&DEFAULT_BAR_ORDER));
+        let order = parse_bar_order(&s);
         assert_eq!(order[0], ViewerBarItem::SortDate);
         assert_eq!(order[1], ViewerBarItem::SortName);
         assert_eq!(order[2], ViewerBarItem::SortNatural);
     }
 
-    /// 並べ替えた保存順序はそのまま維持されること（回転群をソート群より前へ）。
+    /// 並べ替えた保存順序はそのまま維持されること（全体を逆順に）。
     #[test]
     fn custom_order_is_preserved() {
-        let custom = [
-            ViewerBarItem::RotateCcw,
-            ViewerBarItem::RotateCw,
-            ViewerBarItem::RotationCarry,
-            ViewerBarItem::ExifRotation,
-            ViewerBarItem::SortName,
-            ViewerBarItem::SortNatural,
-            ViewerBarItem::SortDate,
-            ViewerBarItem::SortOrder,
-        ];
+        let mut custom = DEFAULT_BAR_ORDER;
+        custom.reverse();
         let s = bar_order_to_str(&custom);
         assert_eq!(parse_bar_order(&s), custom);
     }
@@ -220,20 +254,31 @@ mod tests {
     /// 旧バージョンの state（新項目を知らない）を新バージョンが読むケースの再現。
     #[test]
     fn missing_id_is_inserted_at_default_position() {
-        // SortDate を欠いた保存順序 → SortNatural の直後に補完される
-        let s = "sort_name,sort_natural,sort_order,rotate_ccw,rotate_cw,\
-                 rotation_carry,exif_rotation";
-        assert_eq!(parse_bar_order(s), DEFAULT_BAR_ORDER);
+        let saved: Vec<ViewerBarItem> = DEFAULT_BAR_ORDER
+            .iter()
+            .copied()
+            .filter(|&it| it != ViewerBarItem::SortDate)
+            .collect();
+        assert_eq!(resolve_bar_order(&saved), DEFAULT_BAR_ORDER);
     }
 
     /// 並べ替え済み順序への欠落補完も、既定順の前隣を基準に挿入されること。
     #[test]
     fn missing_id_follows_default_predecessor_in_custom_order() {
-        // 回転群を前に出した順序から RotateCw を欠落させる
+        // 回転群を先頭に出した順序から RotateCw を欠落させる
         // → 既定順の前隣 RotateCcw の直後に補完される
-        let s = "rotate_ccw,rotation_carry,exif_rotation,\
-                 sort_name,sort_natural,sort_date,sort_order";
-        let order = parse_bar_order(s);
+        let mut saved = vec![
+            ViewerBarItem::RotateCcw,
+            ViewerBarItem::RotationCarry,
+            ViewerBarItem::ExifRotation,
+        ];
+        saved.extend(
+            DEFAULT_BAR_ORDER
+                .iter()
+                .copied()
+                .filter(|it| it.group() != BarGroup::Rotation),
+        );
+        let order = resolve_bar_order(&saved);
         assert_eq!(order[0], ViewerBarItem::RotateCcw);
         assert_eq!(order[1], ViewerBarItem::RotateCw);
         assert_eq!(order[2], ViewerBarItem::RotationCarry);
@@ -242,8 +287,11 @@ mod tests {
     /// 既定順先頭の項目が欠落した場合は先頭へ補完されること。
     #[test]
     fn missing_first_item_goes_to_front() {
-        let s = "sort_natural,sort_date,sort_order,rotate_ccw,rotate_cw,\
-                 rotation_carry,exif_rotation";
-        assert_eq!(parse_bar_order(s), DEFAULT_BAR_ORDER);
+        let saved: Vec<ViewerBarItem> = DEFAULT_BAR_ORDER
+            .iter()
+            .copied()
+            .filter(|&it| it != ViewerBarItem::SortName)
+            .collect();
+        assert_eq!(resolve_bar_order(&saved), DEFAULT_BAR_ORDER);
     }
 }

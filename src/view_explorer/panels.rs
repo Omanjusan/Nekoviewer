@@ -5,7 +5,7 @@ use crate::cache::ThumbRequest;
 use crate::i18n;
 use crate::types::ExplorerSortKey;
 use crate::fs::dir;
-use crate::view_reader::{fit_rect_contain, PageMode, ViewerState};
+use crate::view_reader::{fit_rect_contain, ViewerState};
 use super::*;
 
 impl NekoviewApp {
@@ -78,32 +78,9 @@ impl NekoviewApp {
 
     /// MenuBarの各ボタンの並び順・有効状態を計算する（MENU_BAR_ORDERに対応）。
     /// draw_menu_barの描画とhandle_menu_bar_keysの移動対象決定の両方から参照する単一の情報源。
+    /// 見開き群のビューアー移設後、残る項目はすべて常時有効。
     pub(super) fn menu_bar_items(&self) -> Vec<(MenuBarButton, bool)> {
-        let (viewer_open, is_raw_viewer, is_spread, can_back, can_fwd) = {
-            let guard = self.viewer.lock().unwrap();
-            let viewer_open = guard.is_some();
-            let is_raw_viewer = guard.as_ref().map_or(false, |v| v.is_raw_file());
-            let cur_mode = guard.as_ref().map(|v| v.page_mode());
-            let is_spread = cur_mode.map_or(false, |m| m != PageMode::Single);
-            let can_back = guard.as_ref().map_or(false, |v| v.can_shift_backward());
-            let can_fwd = guard.as_ref().map_or(false, |v| v.can_shift_forward());
-            (viewer_open, is_raw_viewer, is_spread, can_back, can_fwd)
-        };
-        MENU_BAR_ORDER.iter().map(|&b| {
-            let enabled = match b {
-                MenuBarButton::PageSingle => viewer_open,
-                MenuBarButton::PageSpreadLeft | MenuBarButton::PageSpreadRight => viewer_open && !is_raw_viewer,
-                MenuBarButton::SpreadBack => viewer_open && is_spread && !is_raw_viewer && can_back,
-                MenuBarButton::SpreadFwd => viewer_open && is_spread && !is_raw_viewer && can_fwd,
-                MenuBarButton::SortName
-                | MenuBarButton::SortDate
-                | MenuBarButton::SortSize
-                | MenuBarButton::SortOrder
-                | MenuBarButton::StatusToggle
-                | MenuBarButton::Settings => true,
-            };
-            (b, enabled)
-        }).collect()
+        MENU_BAR_ORDER.iter().map(|&b| (b, true)).collect()
     }
 
     /// ソートキー・昇降順の変更後に共通で行う後処理（クリック・キーボード両経路で使う）。
@@ -119,27 +96,6 @@ impl NekoviewApp {
     /// 呼び出し側で有効/無効チェック済みであることを前提とする。
     pub(super) fn activate_menu_button(&mut self, button: MenuBarButton) {
         match button {
-            MenuBarButton::PageSingle => {
-                let mut v_guard = self.viewer.lock().unwrap();
-                let mut cfg_guard = self.viewer_cfg.lock().unwrap();
-                if let Some(v) = v_guard.as_mut() { v.set_page_mode(PageMode::Single, &mut *cfg_guard); }
-            }
-            MenuBarButton::PageSpreadLeft => {
-                let mut v_guard = self.viewer.lock().unwrap();
-                let mut cfg_guard = self.viewer_cfg.lock().unwrap();
-                if let Some(v) = v_guard.as_mut() { v.set_page_mode(PageMode::SpreadLeft, &mut *cfg_guard); }
-            }
-            MenuBarButton::PageSpreadRight => {
-                let mut v_guard = self.viewer.lock().unwrap();
-                let mut cfg_guard = self.viewer_cfg.lock().unwrap();
-                if let Some(v) = v_guard.as_mut() { v.set_page_mode(PageMode::SpreadRight, &mut *cfg_guard); }
-            }
-            MenuBarButton::SpreadBack => {
-                if let Some(v) = self.viewer.lock().unwrap().as_mut() { v.shift_offset_backward(); }
-            }
-            MenuBarButton::SpreadFwd => {
-                if let Some(v) = self.viewer.lock().unwrap().as_mut() { v.shift_offset_forward(); }
-            }
             MenuBarButton::SortName => {
                 self.sort_key = ExplorerSortKey::Name;
                 self.finish_sort_change();
@@ -171,61 +127,7 @@ impl NekoviewApp {
         let is_cursor = |b: MenuBarButton| menu_focused && cursor_button == Some(b);
         ui.horizontal(|ui| {
             // 隠しファイル表示トグルは設定ダイアログの「共通」タブへ移設した。
-
-            // ── ページ表示モード ──────────────────────────────────────────
-            let (viewer_open, is_raw_viewer, cur_mode, is_spread, can_back, can_fwd, is_offset) = {
-                let guard = self.viewer.lock().unwrap();
-                let viewer_open = guard.is_some();
-                let is_raw_viewer = guard.as_ref().map_or(false, |v| v.is_raw_file());
-                let cur_mode = guard.as_ref().map(|v| v.page_mode());
-                let is_spread = cur_mode.map_or(false, |m| m != PageMode::Single);
-                let can_back = guard.as_ref().map_or(false, |v| v.can_shift_backward());
-                let can_fwd  = guard.as_ref().map_or(false, |v| v.can_shift_forward());
-                let is_offset = guard.as_ref().map_or(false, |v| v.is_spread_offset());
-                (viewer_open, is_raw_viewer, cur_mode, is_spread, can_back, can_fwd, is_offset)
-            };
-
-            ui.add_enabled_ui(viewer_open, |ui| {
-                let r = ui.selectable_label(cur_mode == Some(PageMode::Single), i18n::t().page_single());
-                if is_cursor(MenuBarButton::PageSingle) { draw_cursor_ring(ui, r.rect); }
-                if r.clicked() {
-                    let mut v_guard = self.viewer.lock().unwrap();
-                    let mut cfg_guard = self.viewer_cfg.lock().unwrap();
-                    if let Some(v) = v_guard.as_mut() { v.set_page_mode(PageMode::Single, &mut *cfg_guard); }
-                }
-            });
-            ui.add_enabled_ui(viewer_open && !is_raw_viewer, |ui| {
-                let r_left = ui.selectable_label(cur_mode == Some(PageMode::SpreadLeft), i18n::t().page_spread_left());
-                if is_cursor(MenuBarButton::PageSpreadLeft) { draw_cursor_ring(ui, r_left.rect); }
-                if r_left.clicked() {
-                    let mut v_guard = self.viewer.lock().unwrap();
-                    let mut cfg_guard = self.viewer_cfg.lock().unwrap();
-                    if let Some(v) = v_guard.as_mut() { v.set_page_mode(PageMode::SpreadLeft, &mut *cfg_guard); }
-                }
-                let r_right = ui.selectable_label(cur_mode == Some(PageMode::SpreadRight), i18n::t().page_spread_right());
-                if is_cursor(MenuBarButton::PageSpreadRight) { draw_cursor_ring(ui, r_right.rect); }
-                if r_right.clicked() {
-                    let mut v_guard = self.viewer.lock().unwrap();
-                    let mut cfg_guard = self.viewer_cfg.lock().unwrap();
-                    if let Some(v) = v_guard.as_mut() { v.set_page_mode(PageMode::SpreadRight, &mut *cfg_guard); }
-                }
-            });
-
-            ui.add_enabled_ui(viewer_open && is_spread && !is_raw_viewer, |ui| {
-                let r_back = ui.add_enabled(can_back, egui::Button::new(i18n::t().spread_back()));
-                if is_cursor(MenuBarButton::SpreadBack) { draw_cursor_ring(ui, r_back.rect); }
-                if r_back.clicked() {
-                    if let Some(v) = self.viewer.lock().unwrap().as_mut() { v.shift_offset_backward(); }
-                }
-                let r_fwd = ui.add_enabled(can_fwd, egui::Button::new(i18n::t().spread_fwd()));
-                if is_cursor(MenuBarButton::SpreadFwd) { draw_cursor_ring(ui, r_fwd.rect); }
-                if r_fwd.clicked() {
-                    if let Some(v) = self.viewer.lock().unwrap().as_mut() { v.shift_offset_forward(); }
-                }
-                ui.label(if is_offset { i18n::t().spread_offset_on() } else { i18n::t().spread_aligned() });
-            });
-
-            ui.separator();
+            // ページ表示モード・見開き1Pシフト群はビューアーツールバーへ移設した（toolbar.rs 参照）。
 
             // ── エクスプローラーソート ────────────────────────────────────
             let mut sort_changed = false;

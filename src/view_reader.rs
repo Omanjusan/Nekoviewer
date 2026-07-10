@@ -308,7 +308,6 @@ impl ViewerState {
     pub fn archive_path(&self) -> &PathBuf { &self.archive_path }
     pub fn entries(&self) -> &[ViewerEntry] { &self.entries }
     pub fn is_raw_file(&self) -> bool { self.is_raw_file }
-    pub fn page_mode(&self) -> PageMode { self.page_mode }
 
     /// フェーズ6: 現在表示中のページ(見開き時は2枚)の original_index を返す。
     pub fn visible_original_indices(&self) -> Vec<usize> {
@@ -531,10 +530,6 @@ impl ViewerState {
     }
 
     /// オフセットがずれているか（UI表示用）
-    pub fn is_spread_offset(&self) -> bool {
-        self.offset.is_nonzero()
-    }
-
     pub fn can_shift_forward(&self) -> bool {
         self.offset.can_advance()
     }
@@ -1698,6 +1693,54 @@ impl ViewerState {
                     self.sort_ascending = !self.sort_ascending;
                     self.sort_entries();
                 }
+            }
+            // ページ表示モード3択（アイコントグル、選択状態=現在モード）
+            ViewerBarItem::PageSingle | ViewerBarItem::SpreadLeft | ViewerBarItem::SpreadRight => {
+                let (mode, tip) = match item {
+                    ViewerBarItem::PageSingle => (PageMode::Single,      t.page_single()),
+                    ViewerBarItem::SpreadLeft => (PageMode::SpreadLeft,  t.page_spread_left()),
+                    _                         => (PageMode::SpreadRight, t.page_spread_right()),
+                };
+                // i18nラベルは "[単ページ]" 形式なのでツールチップでは囲みを外す
+                let tip = tip.trim_matches(['[', ']']);
+                // 単一画像ファイル直接表示（rawビューアー）では見開き系を選べない
+                let enabled = mode == PageMode::Single || !self.is_raw_file();
+                ui.add_enabled_ui(enabled, |ui| {
+                    if ui.selectable_label(self.page_mode == mode, item.icon().unwrap_or("?"))
+                        .on_hover_text(tip)
+                        .clicked()
+                    {
+                        self.set_page_mode(mode, cfg);
+                    }
+                });
+            }
+            // 見開き1Pシフト（キー4/5と同じ操作のボタン経路）
+            ViewerBarItem::SpreadBack | ViewerBarItem::SpreadFwd => {
+                let back = item == ViewerBarItem::SpreadBack;
+                let (label, tip, can) = if back {
+                    ("-1P", t.spread_back(), self.can_shift_backward())
+                } else {
+                    ("+1P", t.spread_fwd(), self.can_shift_forward())
+                };
+                let tip = tip.trim_matches(['[', ']']);
+                let enabled = self.page_mode != PageMode::Single && !self.is_raw_file() && can;
+                if ui.add_enabled(enabled, egui::Button::new(label))
+                    .on_hover_text(tip)
+                    .clicked()
+                {
+                    if back { self.shift_offset_backward(); } else { self.shift_offset_forward(); }
+                }
+            }
+            // ずれ状態の表示専用インジケータ。単ページ時は非表示（決定事項）。
+            // 矢印は綴じ方向によるページ進行方向を反映（SpreadRight=左へ進行）
+            ViewerBarItem::OffsetIndicator => {
+                if self.page_mode == PageMode::Single { return; }
+                let text = match (self.page_mode, self.offset.value()) {
+                    (_, 0) => "0",
+                    (PageMode::SpreadRight, 1) | (PageMode::SpreadLeft, -1) => "←1",
+                    _ => "1→",
+                };
+                ui.label(text);
             }
             // 手動回転CW/CCWボタン（アイコンのみ、i18n対象外）
             ViewerBarItem::RotateCcw | ViewerBarItem::RotateCw => {
