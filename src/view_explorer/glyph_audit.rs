@@ -128,6 +128,27 @@ fn all_marker_candidates_are_filled_glyphs() {
     }
 }
 
+/// ビューアーツールバーの全アイコングリフがフォントチェーンに収録されていること。
+/// マーカーと違い単色マスク表示のため塗り率は問わず、豆腐（未収録）チェックのみ。
+/// 候補は toolbar.rs::ViewerBarItem::icon() が唯一の定義元（追加したら自動で対象になる）。
+#[test]
+fn toolbar_icon_glyphs_are_available() {
+    let chain = font_chain();
+    assert!(!chain.is_empty(), "フォントチェーンが空（egui標準フォントの取得に失敗）");
+
+    for item in crate::toolbar::DEFAULT_BAR_ORDER {
+        let Some(s) = item.icon() else { continue };
+        let ch = s.chars().next().unwrap();
+        let r = audit_char(&chain, ch);
+        assert!(
+            r.font_name.is_some(),
+            "{:?} のアイコン {s} (U+{:04X}) はフォントチェーンに収録がなく豆腐になる",
+            item,
+            ch as u32
+        );
+    }
+}
+
 /// 移行対応表の妥当性: 移行元は候補リストから除外済み、移行先は候補リストに存在すること。
 #[test]
 fn migration_table_is_consistent() {

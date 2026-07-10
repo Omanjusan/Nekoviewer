@@ -1663,7 +1663,6 @@ impl ViewerState {
         }
     }
 
-    /// ソートキー切り替えボタン群（通常バーとフルスクリーンバーで共用）
     /// ツールバー項目を cfg.bar_order の順に描画する（top bar / fs_sort_bar 共用）。
     /// 隣接項目のグループが変わる位置にセパレータを挟む（toolbar.rs::BarGroup 参照）。
     fn draw_bar_items(&mut self, ui: &mut egui::Ui, cfg: &mut ViewerConfig) {
@@ -1701,22 +1700,35 @@ impl ViewerState {
                 }
             }
             // 手動回転CW/CCWボタン（アイコンのみ、i18n対象外）
-            ViewerBarItem::RotateCcw => {
-                if ui.button("⟲").on_hover_text(t.rotate_ccw()).clicked() {
-                    self.rotate_ccw(cfg);
+            ViewerBarItem::RotateCcw | ViewerBarItem::RotateCw => {
+                let ccw = item == ViewerBarItem::RotateCcw;
+                let tip = if ccw { t.rotate_ccw() } else { t.rotate_cw() };
+                if ui.button(item.icon().unwrap_or("?")).on_hover_text(tip).clicked() {
+                    if ccw { self.rotate_ccw(cfg); } else { self.rotate_cw(cfg); }
                 }
             }
-            ViewerBarItem::RotateCw => {
-                if ui.button("⟳").on_hover_text(t.rotate_cw()).clicked() {
-                    self.rotate_cw(cfg);
-                }
-            }
+            // トグル2種は幅圧縮のためテキストラベル付きチェックボックスから
+            // アイコントグル（選択状態=ON）へ変更。説明はホバーツールチップで補う
             ViewerBarItem::RotationCarry => {
-                ui.checkbox(&mut cfg.rotation_carry_over, t.rotation_carry_over_label());
+                if ui.selectable_label(cfg.rotation_carry_over, item.icon().unwrap_or("?"))
+                    .on_hover_text(t.rotation_carry_over_label())
+                    .clicked()
+                {
+                    cfg.rotation_carry_over = !cfg.rotation_carry_over;
+                }
             }
             ViewerBarItem::ExifRotation => {
-                ui.checkbox(&mut cfg.exif_orientation_enabled, t.exif_orientation_toolbar_label())
-                    .on_hover_text(t.settings_exif_orientation_explain());
+                let tip = format!(
+                    "{}\n{}",
+                    t.exif_orientation_toolbar_label(),
+                    t.settings_exif_orientation_explain()
+                );
+                if ui.selectable_label(cfg.exif_orientation_enabled, "EXIF")
+                    .on_hover_text(tip)
+                    .clicked()
+                {
+                    cfg.exif_orientation_enabled = !cfg.exif_orientation_enabled;
+                }
             }
         }
     }

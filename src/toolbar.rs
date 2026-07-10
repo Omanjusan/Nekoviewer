@@ -81,6 +81,19 @@ impl ViewerBarItem {
         })
     }
 
+    /// ツールバー表示用アイコン（Unicodeグリフ、単一文字）。
+    /// テキスト表示の項目は None（例: EXIF トグルは ASCII "EXIF" 表示のため対象外）。
+    /// ここが唯一の定義元で、描画（view_reader.rs）と豆腐チェック
+    /// （view_explorer/glyph_audit.rs の toolbar_icon_glyphs_are_available）の両方が参照する。
+    pub fn icon(self) -> Option<&'static str> {
+        match self {
+            ViewerBarItem::RotateCcw     => Some("⟲"),
+            ViewerBarItem::RotateCw      => Some("⟳"),
+            ViewerBarItem::RotationCarry => Some("📌"),
+            _ => None,
+        }
+    }
+
     pub fn group(self) -> BarGroup {
         match self {
             ViewerBarItem::SortName
