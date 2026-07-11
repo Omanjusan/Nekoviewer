@@ -147,7 +147,7 @@ impl NekoviewApp {
     /// 子ウィンドウの[再取得]: `translate_child_cursor`が指す1ページのみOCRを再実行する。
     /// 既存のtxt直置きパイプライン(start_ocr_for/translate_ocr_rx)をそのまま流用する。
     fn trigger_child_ocr_retry(&mut self, ctx: &egui::Context) {
-        if self.translate_cfg.model.trim().is_empty() {
+        if self.translate_cfg.ocr_model.trim().is_empty() {
             self.translate_ocr_status = Some(i18n::t().translate_overlay_model_missing().to_string());
             return;
         }
@@ -167,7 +167,7 @@ impl NekoviewApp {
             self.translate_translate_status = Some(i18n::t().translate_child_ocr_required().to_string());
             return;
         }
-        if self.translate_cfg.model.trim().is_empty() {
+        if self.translate_cfg.translation_model.trim().is_empty() {
             self.translate_translate_status = Some(i18n::t().translate_overlay_model_missing().to_string());
             return;
         }
@@ -177,7 +177,7 @@ impl NekoviewApp {
         self.translate_translate_rx = Some(crate::translate::spawn_translate_request(
             ctx.clone(),
             self.translate_cfg.base_url.clone(),
-            self.translate_cfg.model.clone(),
+            self.translate_cfg.translation_model.clone(),
             self.translate_child_ocr_lines.clone(),
             self.translate_child_target_lang,
         ));
@@ -656,7 +656,7 @@ impl NekoviewApp {
         self.translate_ocr_rx = Some(crate::translate::spawn_ocr_request(
             ctx.clone(),
             self.translate_cfg.base_url.clone(),
-            self.translate_cfg.model.clone(),
+            self.translate_cfg.ocr_model.clone(),
             image,
         ));
     }

@@ -57,7 +57,13 @@ pub(crate) struct SettingsDraft {
     thumbbar_marker_a: u8,
     exif_orientation_enabled: bool,
     translate_base_url: String,
-    translate_model: String,
+    translate_ocr_model: String,
+    translate_translation_model: String,
+    /// OCRモデルをユーザーが自分のドロップダウンから明示的に選び直したか。falseの間は
+    /// 翻訳モデルの変更にOCRモデルが追従し続ける（翻訳モデルが主、OCRは従の関係）。
+    translate_ocr_model_overridden: bool,
+    /// 直近の「モデル取得」で得たモデル一覧（未取得なら空、ダイアログ内のみの一時状態）。
+    translate_available_models: Vec<String>,
     translate_overlay_width: u32,
     translate_overlay_corner: OverlayCorner,
 }
@@ -89,7 +95,10 @@ impl SettingsDraft {
             thumbbar_marker_a: viewer_cfg.thumbbar_marker_a,
             exif_orientation_enabled: viewer_cfg.exif_orientation_enabled,
             translate_base_url: translate_cfg.base_url.clone(),
-            translate_model: translate_cfg.model.clone(),
+            translate_ocr_model: translate_cfg.ocr_model.clone(),
+            translate_translation_model: translate_cfg.translation_model.clone(),
+            translate_ocr_model_overridden: translate_cfg.ocr_model != translate_cfg.translation_model,
+            translate_available_models: Vec::new(),
             translate_overlay_width: translate_cfg.overlay_width,
             translate_overlay_corner: translate_cfg.overlay_corner,
         }
@@ -126,7 +135,8 @@ impl SettingsDraft {
         viewer_cfg.exif_orientation_enabled = self.exif_orientation_enabled;
 
         translate_cfg.base_url = self.translate_base_url.trim().to_string();
-        translate_cfg.model = self.translate_model.trim().to_string();
+        translate_cfg.ocr_model = self.translate_ocr_model.trim().to_string();
+        translate_cfg.translation_model = self.translate_translation_model.trim().to_string();
         translate_cfg.overlay_width = self.translate_overlay_width;
         translate_cfg.overlay_corner = self.translate_overlay_corner;
     }
@@ -443,19 +453,20 @@ impl NekoviewApp {
         ui.label(i18n::t().settings_static_placeholder());
     }
 
-    /// 翻訳機能(実験的)タブ。ローカルAI(OpenAI互換API)のURL・モデル名・接続テストと、
+    /// 翻訳機能(実験的)タブ。ローカルAI(OpenAI互換API)のURL・モデル取得・翻訳/OCRモデル選択と、
     /// OCR結果オーバーレイの横幅・配置(四隅)を設定する。クラウドAPIキー管理は対象外。
+    /// モデル名はフリーテキスト入力を廃止し、「モデル取得」で得た一覧からの選択のみ受け付ける。
     fn draw_settings_tab_translate(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        // 接続テストの結果をポーリング（成功時は ModelsOk → モデル未指定なら完了、
-        // 指定ありなら続けて VisionOk/Failed を待つ。失敗はどの段階でも即終了）。
+        // モデル取得の結果をポーリング（成功時は ModelsOk → 一覧をドロップダウンへ反映。
+        // OCRモデルが選択済みならそのモデルで続けてVisionOk/Failedを待つ。失敗はどの段階でも即終了）。
         if let Some(rx) = &self.translate_conn_rx {
             let mut finished = false;
             while let Ok(msg) = rx.try_recv() {
                 match msg {
                     crate::translate::ConnCheckMsg::ModelsOk(models) => {
-                        let list = if models.is_empty() { String::new() } else { format!("（利用可能: {}）", models.join(", ")) };
-                        self.translate_conn_status = Some(format!("疎通OK{list}"));
-                        if self.settings_draft_translate_model_empty() {
+                        self.translate_conn_status = Some(format!("疎通OK（{}件取得）", models.len()));
+                        self.settings_draft.translate_available_models = models;
+                        if self.settings_draft.translate_ocr_model.trim().is_empty() {
                             finished = true;
                         }
                     }
@@ -464,6 +475,7 @@ impl NekoviewApp {
                         finished = true;
                     }
                     crate::translate::ConnCheckMsg::Failed(e) => {
+                        // eにはHTTPステータスや接続エラーの詳細が含まれる(translate.rs参照)。
                         self.translate_conn_status = Some(format!("失敗: {e}"));
                         finished = true;
                     }
@@ -479,15 +491,14 @@ impl NekoviewApp {
 
         ui.label(i18n::t().settings_translate_url_label());
         ui.text_edit_singleline(&mut self.settings_draft.translate_base_url);
-        ui.label(i18n::t().settings_translate_model_label());
-        ui.text_edit_singleline(&mut self.settings_draft.translate_model);
 
         ui.horizontal(|ui| {
             let testing = self.translate_conn_rx.is_some();
-            ui.add_enabled_ui(!testing, |ui| {
+            let url_empty = self.settings_draft.translate_base_url.trim().is_empty();
+            ui.add_enabled_ui(!testing && !url_empty, |ui| {
                 if ui.button(i18n::t().settings_translate_test_button()).clicked() {
                     let base_url = self.settings_draft.translate_base_url.trim().to_string();
-                    let model = self.settings_draft.translate_model.trim().to_string();
+                    let model = self.settings_draft.translate_ocr_model.trim().to_string();
                     self.translate_conn_status = None;
                     self.translate_conn_rx = Some(crate::translate::spawn_conn_check(ctx.clone(), base_url, model));
                 }
@@ -498,6 +509,52 @@ impl NekoviewApp {
         });
         if let Some(status) = &self.translate_conn_status {
             ui.label(status);
+        }
+        ui.separator();
+
+        let unselected = i18n::t().settings_translate_model_unselected();
+        let models = self.settings_draft.translate_available_models.clone();
+
+        ui.label(i18n::t().settings_translate_translation_model_label());
+        if models.is_empty() {
+            ui.weak(i18n::t().settings_translate_no_models_hint());
+        } else {
+            let selected = if self.settings_draft.translate_translation_model.is_empty() {
+                unselected
+            } else {
+                self.settings_draft.translate_translation_model.as_str()
+            };
+            egui::ComboBox::from_id_salt("settings_translate_translation_model").selected_text(selected).show_ui(ui, |ui| {
+                for m in &models {
+                    if ui.selectable_label(self.settings_draft.translate_translation_model == *m, m).clicked() {
+                        self.settings_draft.translate_translation_model = m.clone();
+                        // 翻訳モデルが主。OCRモデルをユーザーがまだ明示的に選び直していなければ追従させる。
+                        if !self.settings_draft.translate_ocr_model_overridden {
+                            self.settings_draft.translate_ocr_model = m.clone();
+                        }
+                    }
+                }
+            });
+        }
+
+        ui.label(i18n::t().settings_translate_ocr_model_label());
+        if models.is_empty() {
+            ui.weak(i18n::t().settings_translate_no_models_hint());
+        } else {
+            let selected = if self.settings_draft.translate_ocr_model.is_empty() {
+                unselected
+            } else {
+                self.settings_draft.translate_ocr_model.as_str()
+            };
+            egui::ComboBox::from_id_salt("settings_translate_ocr_model").selected_text(selected).show_ui(ui, |ui| {
+                for m in &models {
+                    if ui.selectable_label(self.settings_draft.translate_ocr_model == *m, m).clicked() {
+                        self.settings_draft.translate_ocr_model = m.clone();
+                        // 明示的に選び直した時点で、以後は翻訳モデルの変更に追従しない。
+                        self.settings_draft.translate_ocr_model_overridden = true;
+                    }
+                }
+            });
         }
         ui.separator();
 
@@ -519,10 +576,6 @@ impl NekoviewApp {
             ui.selectable_value(&mut self.settings_draft.translate_overlay_corner, OverlayCorner::BottomLeft, t.settings_translate_corner_bottom_left());
             ui.selectable_value(&mut self.settings_draft.translate_overlay_corner, OverlayCorner::BottomRight, t.settings_translate_corner_bottom_right());
         });
-    }
-
-    fn settings_draft_translate_model_empty(&self) -> bool {
-        self.settings_draft.translate_model.trim().is_empty()
     }
 
     fn draw_settings_tab_other(&mut self, ui: &mut egui::Ui) {

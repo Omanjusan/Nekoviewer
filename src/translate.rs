@@ -55,8 +55,10 @@ impl TargetLang {
 pub struct TranslateConfig {
     /// OpenAI互換APIのベースURL（例: http://172.17.0.1:11434）。空文字 = 未設定。
     pub base_url: String,
-    /// 使用するモデル名（例: qwen3.5:latest）。
-    pub model: String,
+    /// 翻訳に使うモデル名。設定UI上は上位（主）の項目で、OCRモデルは既定でこれに追従する。
+    pub translation_model: String,
+    /// OCRに使うモデル名。設定UIでユーザーが明示的に選び直すまでは翻訳モデルに追従する。
+    pub ocr_model: String,
     /// オーバーレイウィンドウの横幅(px)。
     pub overlay_width: u32,
     /// オーバーレイウィンドウの配置(四隅)。
@@ -67,7 +69,8 @@ impl Default for TranslateConfig {
     fn default() -> Self {
         Self {
             base_url: String::new(),
-            model: String::new(),
+            translation_model: String::new(),
+            ocr_model: String::new(),
             overlay_width: 360,
             overlay_corner: OverlayCorner::TopRight,
         }

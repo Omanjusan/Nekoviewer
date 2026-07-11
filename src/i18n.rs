@@ -985,19 +985,45 @@ impl Lang {
         }
     }
 
-    pub fn settings_translate_model_label(self) -> &'static str {
+    /// 翻訳モデル選択(主)。OCRモデルは既定でこの値に追従する。
+    pub fn settings_translate_translation_model_label(self) -> &'static str {
         match self {
-            Lang::Japanese => "モデル名",
-            Lang::English  => "Model name",
-            Lang::Chinese  => "模型名称",
+            Lang::Japanese => "翻訳モデル",
+            Lang::English  => "Translation model",
+            Lang::Chinese  => "翻译模型",
+        }
+    }
+
+    /// OCRモデル選択。未変更なら翻訳モデルに追従し、選ぶと以後は独立する。
+    pub fn settings_translate_ocr_model_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "OCRモデル",
+            Lang::English  => "OCR model",
+            Lang::Chinese  => "OCR模型",
+        }
+    }
+
+    pub fn settings_translate_model_unselected(self) -> &'static str {
+        match self {
+            Lang::Japanese => "(未選択)",
+            Lang::English  => "(none selected)",
+            Lang::Chinese  => "(未选择)",
+        }
+    }
+
+    pub fn settings_translate_no_models_hint(self) -> &'static str {
+        match self {
+            Lang::Japanese => "先に「モデル取得」を実行してください",
+            Lang::English  => "Fetch the model list first",
+            Lang::Chinese  => "请先执行「获取模型」",
         }
     }
 
     pub fn settings_translate_test_button(self) -> &'static str {
         match self {
-            Lang::Japanese => "接続テスト",
-            Lang::English  => "Test connection",
-            Lang::Chinese  => "连接测试",
+            Lang::Japanese => "モデル取得",
+            Lang::English  => "Fetch models",
+            Lang::Chinese  => "获取模型",
         }
     }
 

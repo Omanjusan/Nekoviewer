@@ -255,7 +255,10 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
     let mut exif_orientation_enabled: Option<bool> = None;
     let mut viewer_bar_order: Option<[ViewerBarItem; BAR_ITEM_COUNT]> = None;
     let mut translate_base_url: Option<String> = None;
-    let mut translate_model: Option<String> = None;
+    // 旧キー(単一モデル)。新キー未設定時にocr_model/translation_modelへ後方互換で引き継ぐ。
+    let mut translate_model_legacy: Option<String> = None;
+    let mut translate_ocr_model: Option<String> = None;
+    let mut translate_translation_model: Option<String> = None;
     let mut translate_overlay_width: Option<u32> = None;
     let mut translate_overlay_corner: Option<crate::translate::OverlayCorner> = None;
     let mut has_kv = false;
@@ -333,7 +336,15 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
                 }
                 "translate_model" => {
                     let v = v.trim();
-                    if !v.is_empty() { translate_model = Some(v.to_string()); }
+                    if !v.is_empty() { translate_model_legacy = Some(v.to_string()); }
+                }
+                "translate_ocr_model" => {
+                    let v = v.trim();
+                    if !v.is_empty() { translate_ocr_model = Some(v.to_string()); }
+                }
+                "translate_translation_model" => {
+                    let v = v.trim();
+                    if !v.is_empty() { translate_translation_model = Some(v.to_string()); }
                 }
                 "translate_overlay_width" => {
                     translate_overlay_width = v.trim().parse::<u32>().ok()
@@ -407,7 +418,8 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
         app_max_decode_edge,
         translate_cfg: TranslateConfig {
             base_url: translate_base_url.unwrap_or_default(),
-            model: translate_model.unwrap_or_default(),
+            translation_model: translate_translation_model.clone().or_else(|| translate_model_legacy.clone()).unwrap_or_default(),
+            ocr_model: translate_ocr_model.or(translate_translation_model).or(translate_model_legacy).unwrap_or_default(),
             overlay_width: translate_overlay_width.unwrap_or(360),
             overlay_corner: translate_overlay_corner.unwrap_or(crate::translate::OverlayCorner::TopRight),
         },
@@ -440,8 +452,8 @@ pub fn save_state(dir: &Path, window_size: (u32, u32), viewer_slots: &[Option<Wi
         bar_order_to_str(&viewer_cfg.bar_order),
     ));
     content.push_str(&format!(
-        "translate_base_url={}\ntranslate_model={}\ntranslate_overlay_width={}\ntranslate_overlay_corner={}\n",
-        translate_cfg.base_url, translate_cfg.model, translate_cfg.overlay_width,
+        "translate_base_url={}\ntranslate_ocr_model={}\ntranslate_translation_model={}\ntranslate_overlay_width={}\ntranslate_overlay_corner={}\n",
+        translate_cfg.base_url, translate_cfg.ocr_model, translate_cfg.translation_model, translate_cfg.overlay_width,
         overlay_corner_to_str(translate_cfg.overlay_corner),
     ));
     // 設定ダイアログ（共通/アニメタブ）が編集する AppConfig 系の値。次回起動から反映されるため、
