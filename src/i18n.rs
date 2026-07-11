@@ -961,6 +961,102 @@ impl Lang {
         }
     }
 
+    pub fn settings_tab_translate(self) -> &'static str {
+        match self {
+            Lang::Japanese => "翻訳機能",
+            Lang::English  => "Translate",
+            Lang::Chinese  => "翻译功能",
+        }
+    }
+
+    pub fn settings_translate_experimental_note(self) -> &'static str {
+        match self {
+            Lang::Japanese => "実験的機能: ローカルAI(Ollama/OpenWebUI等のOpenAI互換API)を利用したOCRテキスト抽出。クラウドAPIは未対応。",
+            Lang::English  => "Experimental: OCR text extraction via a local AI (Ollama/OpenWebUI-style OpenAI-compatible API). Cloud APIs are not supported.",
+            Lang::Chinese  => "实验性功能：通过本地AI(Ollama/OpenWebUI等OpenAI兼容API)进行OCR文本提取。暂不支持云端API。",
+        }
+    }
+
+    pub fn settings_translate_url_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "APIベースURL",
+            Lang::English  => "API base URL",
+            Lang::Chinese  => "API基础URL",
+        }
+    }
+
+    pub fn settings_translate_model_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "モデル名",
+            Lang::English  => "Model name",
+            Lang::Chinese  => "模型名称",
+        }
+    }
+
+    pub fn settings_translate_test_button(self) -> &'static str {
+        match self {
+            Lang::Japanese => "接続テスト",
+            Lang::English  => "Test connection",
+            Lang::Chinese  => "连接测试",
+        }
+    }
+
+    pub fn settings_translate_testing(self) -> &'static str {
+        match self {
+            Lang::Japanese => "確認中…",
+            Lang::English  => "Checking…",
+            Lang::Chinese  => "确认中…",
+        }
+    }
+
+    pub fn settings_translate_overlay_width_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "オーバーレイ横幅",
+            Lang::English  => "Overlay width",
+            Lang::Chinese  => "浮层宽度",
+        }
+    }
+
+    pub fn settings_translate_overlay_corner_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "オーバーレイ配置(四隅)",
+            Lang::English  => "Overlay position (corner)",
+            Lang::Chinese  => "浮层位置(四角)",
+        }
+    }
+
+    pub fn settings_translate_corner_top_left(self) -> &'static str {
+        match self {
+            Lang::Japanese => "左上",
+            Lang::English  => "Top-left",
+            Lang::Chinese  => "左上",
+        }
+    }
+
+    pub fn settings_translate_corner_top_right(self) -> &'static str {
+        match self {
+            Lang::Japanese => "右上",
+            Lang::English  => "Top-right",
+            Lang::Chinese  => "右上",
+        }
+    }
+
+    pub fn settings_translate_corner_bottom_left(self) -> &'static str {
+        match self {
+            Lang::Japanese => "左下",
+            Lang::English  => "Bottom-left",
+            Lang::Chinese  => "左下",
+        }
+    }
+
+    pub fn settings_translate_corner_bottom_right(self) -> &'static str {
+        match self {
+            Lang::Japanese => "右下",
+            Lang::English  => "Bottom-right",
+            Lang::Chinese  => "右下",
+        }
+    }
+
     pub fn settings_static_placeholder(self) -> &'static str {
         match self {
             Lang::Japanese => "現在、静止画専用の設定項目はありません",

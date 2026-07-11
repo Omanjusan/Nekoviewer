@@ -5,6 +5,7 @@
 use crate::config::{AppConfig, ResizeFilter, filter_to_str};
 use crate::gui_config::{ThumbbarPos, ViewerConfig};
 use crate::i18n;
+use crate::translate::{OVERLAY_WIDTH_CEILING, OVERLAY_WIDTH_FLOOR, OverlayCorner, TranslateConfig};
 use crate::view_explorer::NekoviewApp;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -13,6 +14,7 @@ pub(crate) enum SettingsTab {
     Anim,
     Static,
     Viewer,
+    Translate,
     Other,
 }
 
@@ -54,10 +56,14 @@ pub(crate) struct SettingsDraft {
     thumbbar_marker_b: u8,
     thumbbar_marker_a: u8,
     exif_orientation_enabled: bool,
+    translate_base_url: String,
+    translate_model: String,
+    translate_overlay_width: u32,
+    translate_overlay_corner: OverlayCorner,
 }
 
 impl SettingsDraft {
-    pub(crate) fn from_current(config: &AppConfig, viewer_cfg: &ViewerConfig, show_hidden: bool) -> Self {
+    pub(crate) fn from_current(config: &AppConfig, viewer_cfg: &ViewerConfig, show_hidden: bool, translate_cfg: &TranslateConfig) -> Self {
         let system_ram_mb = crate::cache::system_total_ram_mb();
         Self {
             redecode_on_resize: viewer_cfg.redecode_on_resize,
@@ -82,6 +88,10 @@ impl SettingsDraft {
             thumbbar_marker_b: viewer_cfg.thumbbar_marker_b,
             thumbbar_marker_a: viewer_cfg.thumbbar_marker_a,
             exif_orientation_enabled: viewer_cfg.exif_orientation_enabled,
+            translate_base_url: translate_cfg.base_url.clone(),
+            translate_model: translate_cfg.model.clone(),
+            translate_overlay_width: translate_cfg.overlay_width,
+            translate_overlay_corner: translate_cfg.overlay_corner,
         }
     }
 
@@ -92,7 +102,7 @@ impl SettingsDraft {
 
     /// [反映]クリック時に実際の設定へ書き戻す。呼び出し側は事前に `cache_over_budget()` を
     /// 確認し、超過時はそもそも呼ばない（保存を拒否する）こと。
-    fn apply_to(&self, config: &mut AppConfig, viewer_cfg: &mut ViewerConfig) {
+    fn apply_to(&self, config: &mut AppConfig, viewer_cfg: &mut ViewerConfig, translate_cfg: &mut TranslateConfig) {
         viewer_cfg.redecode_on_resize = self.redecode_on_resize;
         viewer_cfg.resize_debounce_ms = self.debounce_ms;
         config.cache_total_mb = if self.cache_total_user_set { Some(self.cache_total_mb) } else { None };
@@ -114,6 +124,11 @@ impl SettingsDraft {
         viewer_cfg.thumbbar_marker_b = self.thumbbar_marker_b;
         viewer_cfg.thumbbar_marker_a = self.thumbbar_marker_a;
         viewer_cfg.exif_orientation_enabled = self.exif_orientation_enabled;
+
+        translate_cfg.base_url = self.translate_base_url.trim().to_string();
+        translate_cfg.model = self.translate_model.trim().to_string();
+        translate_cfg.overlay_width = self.translate_overlay_width;
+        translate_cfg.overlay_corner = self.translate_overlay_corner;
     }
 }
 
@@ -333,7 +348,9 @@ impl NekoviewApp {
     /// 設定ダイアログを開く。編集用の下書き(draft)を現在値から作り直す
     /// （[反映]を押すまで実際の設定には反映されない）。
     pub fn open_settings(&mut self) {
-        self.settings_draft = SettingsDraft::from_current(&self.config, &self.viewer_cfg.lock().unwrap(), self.show_hidden);
+        self.settings_draft = SettingsDraft::from_current(&self.config, &self.viewer_cfg.lock().unwrap(), self.show_hidden, &self.translate_cfg);
+        self.translate_conn_rx = None;
+        self.translate_conn_status = None;
         self.settings_open = true;
     }
 
@@ -375,6 +392,7 @@ impl NekoviewApp {
                     (SettingsTab::Anim, i18n::t().settings_tab_anim()),
                     (SettingsTab::Static, i18n::t().settings_tab_static()),
                     (SettingsTab::Viewer, i18n::t().settings_tab_viewer()),
+                    (SettingsTab::Translate, i18n::t().settings_tab_translate()),
                     (SettingsTab::Other, i18n::t().settings_tab_other()),
                 ] {
                     ui.selectable_value(&mut self.settings_tab, tab, label);
@@ -387,6 +405,7 @@ impl NekoviewApp {
                 SettingsTab::Anim => draw_settings_tab_anim(ui, &mut self.settings_draft),
                 SettingsTab::Static => self.draw_settings_tab_static(ui),
                 SettingsTab::Viewer => draw_settings_tab_viewer(ui, &mut self.settings_draft),
+                SettingsTab::Translate => self.draw_settings_tab_translate(ui, ctx),
                 SettingsTab::Other => self.draw_settings_tab_other(ui),
             }
 
@@ -409,7 +428,7 @@ impl NekoviewApp {
             // キャッシュ合計がシステムRAMの50%を超えている間は保存を拒否する
             // （警告は同フレーム内で既に赤文字表示済み）。
             if !self.settings_draft.cache_over_budget() {
-                self.settings_draft.apply_to(&mut self.config, &mut self.viewer_cfg.lock().unwrap());
+                self.settings_draft.apply_to(&mut self.config, &mut self.viewer_cfg.lock().unwrap(), &mut self.translate_cfg);
                 self.show_hidden = self.settings_draft.show_hidden;
                 self.persist_state();
                 close = true;
@@ -422,6 +441,88 @@ impl NekoviewApp {
 
     fn draw_settings_tab_static(&mut self, ui: &mut egui::Ui) {
         ui.label(i18n::t().settings_static_placeholder());
+    }
+
+    /// 翻訳機能(実験的)タブ。ローカルAI(OpenAI互換API)のURL・モデル名・接続テストと、
+    /// OCR結果オーバーレイの横幅・配置(四隅)を設定する。クラウドAPIキー管理は対象外。
+    fn draw_settings_tab_translate(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        // 接続テストの結果をポーリング（成功時は ModelsOk → モデル未指定なら完了、
+        // 指定ありなら続けて VisionOk/Failed を待つ。失敗はどの段階でも即終了）。
+        if let Some(rx) = &self.translate_conn_rx {
+            let mut finished = false;
+            while let Ok(msg) = rx.try_recv() {
+                match msg {
+                    crate::translate::ConnCheckMsg::ModelsOk(models) => {
+                        let list = if models.is_empty() { String::new() } else { format!("（利用可能: {}）", models.join(", ")) };
+                        self.translate_conn_status = Some(format!("疎通OK{list}"));
+                        if self.settings_draft_translate_model_empty() {
+                            finished = true;
+                        }
+                    }
+                    crate::translate::ConnCheckMsg::VisionOk(preview) => {
+                        self.translate_conn_status = Some(format!("画像入力OK（応答例: {preview}）"));
+                        finished = true;
+                    }
+                    crate::translate::ConnCheckMsg::Failed(e) => {
+                        self.translate_conn_status = Some(format!("失敗: {e}"));
+                        finished = true;
+                    }
+                }
+            }
+            if finished {
+                self.translate_conn_rx = None;
+            }
+        }
+
+        ui.label(i18n::t().settings_translate_experimental_note());
+        ui.separator();
+
+        ui.label(i18n::t().settings_translate_url_label());
+        ui.text_edit_singleline(&mut self.settings_draft.translate_base_url);
+        ui.label(i18n::t().settings_translate_model_label());
+        ui.text_edit_singleline(&mut self.settings_draft.translate_model);
+
+        ui.horizontal(|ui| {
+            let testing = self.translate_conn_rx.is_some();
+            ui.add_enabled_ui(!testing, |ui| {
+                if ui.button(i18n::t().settings_translate_test_button()).clicked() {
+                    let base_url = self.settings_draft.translate_base_url.trim().to_string();
+                    let model = self.settings_draft.translate_model.trim().to_string();
+                    self.translate_conn_status = None;
+                    self.translate_conn_rx = Some(crate::translate::spawn_conn_check(ctx.clone(), base_url, model));
+                }
+            });
+            if self.translate_conn_rx.is_some() {
+                ui.label(i18n::t().settings_translate_testing());
+            }
+        });
+        if let Some(status) = &self.translate_conn_status {
+            ui.label(status);
+        }
+        ui.separator();
+
+        ui.label(i18n::t().settings_translate_overlay_width_label());
+        ui.scope(|ui| {
+            ui.spacing_mut().slider_width = 260.0;
+            ui.horizontal(|ui| {
+                ui.add(egui::Slider::new(&mut self.settings_draft.translate_overlay_width, OVERLAY_WIDTH_FLOOR..=OVERLAY_WIDTH_CEILING).show_value(false));
+                ui.label(format!("{} px", self.settings_draft.translate_overlay_width));
+            });
+        });
+        ui.separator();
+
+        ui.label(i18n::t().settings_translate_overlay_corner_label());
+        ui.horizontal(|ui| {
+            let t = i18n::t();
+            ui.selectable_value(&mut self.settings_draft.translate_overlay_corner, OverlayCorner::TopLeft, t.settings_translate_corner_top_left());
+            ui.selectable_value(&mut self.settings_draft.translate_overlay_corner, OverlayCorner::TopRight, t.settings_translate_corner_top_right());
+            ui.selectable_value(&mut self.settings_draft.translate_overlay_corner, OverlayCorner::BottomLeft, t.settings_translate_corner_bottom_left());
+            ui.selectable_value(&mut self.settings_draft.translate_overlay_corner, OverlayCorner::BottomRight, t.settings_translate_corner_bottom_right());
+        });
+    }
+
+    fn settings_draft_translate_model_empty(&self) -> bool {
+        self.settings_draft.translate_model.trim().is_empty()
     }
 
     fn draw_settings_tab_other(&mut self, ui: &mut egui::Ui) {

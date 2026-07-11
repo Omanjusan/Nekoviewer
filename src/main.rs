@@ -15,6 +15,7 @@ mod single_instance;
 mod spread_offset;
 mod spread_state;
 mod toolbar;
+mod translate;
 mod view_explorer;
 mod view_gui_config;
 mod view_innerlog;

@@ -312,6 +312,7 @@ impl WinitApp {
             state.sort_state,
             state.viewer_cfg,
             state.show_hidden,
+            state.translate_cfg,
             win.egui_ctx.clone(),
         );
 

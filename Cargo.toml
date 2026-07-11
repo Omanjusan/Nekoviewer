@@ -36,6 +36,12 @@ webp = "0.3"
 libwebp-sys = "0.9"
 sysinfo = { version = "0.32", default-features = false, features = ["system"] }
 redb = "4"
+# 翻訳機能(実験的): ローカルAI(Ollama/OpenWebUI等のOpenAI互換API)への疎通・OCRリクエスト用。
+# openssl は musl単一バイナリ配布と相性が悪いため rustls-tls 固定（default-features無効化でopenssl経路を断つ）。
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+base64 = "0.22"
 
 [dev-dependencies]
 # マーカー候補グリフの収録・塗りつぶし検証テスト用（epaint 経由で既にロック済みの版に合わせる）

@@ -348,6 +348,12 @@ pub struct NekoviewApp {
     pub(crate) settings_open: bool,
     pub(crate) settings_tab: SettingsTab,
     pub(crate) settings_draft: SettingsDraft,
+    /// 翻訳機能(実験的)の永続設定。設定ダイアログの[反映]でのみ書き換わる。
+    pub(crate) translate_cfg: crate::translate::TranslateConfig,
+    /// 接続テストの進行中受信チャンネル（ダイアログを閉じたら破棄）。
+    pub(crate) translate_conn_rx: Option<mpsc::Receiver<crate::translate::ConnCheckMsg>>,
+    /// 直近の接続テスト結果表示用（疎通/vision結果の文字列、または失敗理由）。
+    pub(crate) translate_conn_status: Option<String>,
     /// ビューアウィンドウをフォーカス前面に出すフラグ
     viewer_focus_requested: bool,
     pub(crate) show_hidden: bool,
@@ -406,14 +412,14 @@ mod glyph_audit;
 
 
 impl NekoviewApp {
-    pub fn new(start_dir: PathBuf, config: AppConfig, viewer_slots: [Option<WindowSlot>; 4], sort_state: SortState, viewer_cfg: ViewerConfig, show_hidden: bool, ctx: egui::Context) -> Self {
+    pub fn new(start_dir: PathBuf, config: AppConfig, viewer_slots: [Option<WindowSlot>; 4], sort_state: SortState, viewer_cfg: ViewerConfig, show_hidden: bool, translate_cfg: crate::translate::TranslateConfig, ctx: egui::Context) -> Self {
         let (cache_max, cache_min, file_cache_max) = crate::cache::resolve_cache_budgets(config.cache_total_mb);
         let ring_bounds = (config.anim_ring_min_frames, config.anim_ring_max_frames);
         let frame_hard_limit_bytes = config.anim_frame_hard_limit_mb * 1024 * 1024;
         // 長辺px上限のみ指定し、正方形の箱として resize_for_display に渡す。
         // fit-within(縦横比維持)なので短辺は箱の中に自動的に収まる。
         let max_decode_target = (config.max_decode_edge, config.max_decode_edge);
-        let settings_draft = SettingsDraft::from_current(&config, &viewer_cfg, show_hidden);
+        let settings_draft = SettingsDraft::from_current(&config, &viewer_cfg, show_hidden, &translate_cfg);
         let (req_tx, res_rx) = spawn_worker(config.viewer_filter.to_image_filter(), config.resolved_decode_threads(), ctx.clone(), cache_max, ring_bounds, frame_hard_limit_bytes);
         let (thumb_req_tx, thumb_res_rx) = spawn_thumb_worker(config.thumb_filter.to_image_filter(), config.resolved_decode_threads(), ctx.clone());
         let (entry_thumb_req_tx, entry_thumb_res_rx) = spawn_entry_thumb_worker(config.thumb_filter.to_image_filter(), config.resolved_decode_threads(), ctx.clone());
@@ -520,6 +526,9 @@ impl NekoviewApp {
             settings_open: false,
             settings_tab: SettingsTab::Common,
             settings_draft,
+            translate_cfg,
+            translate_conn_rx: None,
+            translate_conn_status: None,
             viewer_focus_requested: false,
             show_hidden,
             sort_key: ExplorerSortKey::from_state_key(&sort_state.key),
@@ -561,6 +570,7 @@ impl NekoviewApp {
             &*self.viewer_cfg.lock().unwrap(),
             self.show_hidden,
             &self.config,
+            &self.translate_cfg,
         );
     }
 }
