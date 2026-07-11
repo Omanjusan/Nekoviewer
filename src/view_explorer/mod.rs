@@ -370,6 +370,12 @@ pub struct NekoviewApp {
     /// 切り分け・ラベル付けは常にアプリ側(この構造)で行い、モデルには単独ページとして
     /// 1枚ずつ渡す。
     pub(crate) translate_ocr_queue: std::collections::VecDeque<(PathBuf, usize)>,
+    /// OCR/翻訳子ウィンドウ（独立OS窓）の表示状態。既存txtが1P分でも残っていれば
+    /// 自動で開き、無ければビューアー部の[翻訳]ボタンでユーザーが開く。
+    pub(crate) translate_window_open: bool,
+    /// 直近に自動オープン判定を行ったアーカイブパス（同一アーカイブ内での毎フレーム
+    /// 再チェックを避けるためのキャッシュ）。
+    pub(crate) translate_window_autocheck_done_for: Option<PathBuf>,
     /// ビューアウィンドウをフォーカス前面に出すフラグ
     viewer_focus_requested: bool,
     pub(crate) show_hidden: bool,
@@ -549,6 +555,8 @@ impl NekoviewApp {
             translate_ocr_rx: None,
             translate_ocr_status: None,
             translate_ocr_loaded_keys: Vec::new(),
+            translate_window_open: false,
+            translate_window_autocheck_done_for: None,
             translate_ocr_inflight_key: None,
             translate_ocr_queue: std::collections::VecDeque::new(),
             viewer_focus_requested: false,

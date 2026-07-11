@@ -51,6 +51,11 @@ fn status_viewport_id() -> ViewportId {
     ViewportId::from_hash_of("status_window")
 }
 
+/// OCR/翻訳子ウィンドウに割り当てる ViewportId。
+fn translate_viewport_id() -> ViewportId {
+    ViewportId::from_hash_of("translate_window")
+}
+
 /// 自前ループへ送る独自イベント。今は再描画要求のみ。
 #[derive(Debug)]
 enum UserEvent {
@@ -273,6 +278,8 @@ struct WinitApp {
     viewer: Option<EguiWindow>,
     /// ステータス窓（debug ビルドでのみ生成される。release では常に `None`）。
     status: Option<EguiWindow>,
+    /// OCR/翻訳子ウィンドウ（1P担当、独立OS窓）。
+    translate: Option<EguiWindow>,
     app: Option<NekoviewApp>,
 }
 
@@ -289,6 +296,7 @@ impl WinitApp {
             explorer: None,
             viewer: None,
             status: None,
+            translate: None,
             app: None,
         }
     }
@@ -386,6 +394,27 @@ impl WinitApp {
         let _ = event_loop;
     }
 
+    /// `NekoviewApp::translate_window_is_open()` に合わせて OCR/翻訳子ウィンドウを
+    /// 生成/破棄する（status_window と同じ枠組み。ただし debug 限定ではない）。
+    fn sync_translate_window(&mut self, event_loop: &ActiveEventLoop) {
+        let Some(app) = self.app.as_mut() else { return };
+        let want = app.translate_window_is_open();
+        let have = self.translate.is_some();
+
+        if want && !have {
+            let attrs = Window::default_attributes()
+                .with_title("Nekoview OCR/Translate")
+                .with_inner_size(winit::dpi::LogicalSize::new(480.0, 640.0));
+            let window = Arc::new(event_loop.create_window(attrs).expect("create translate window"));
+            let win = make_egui_window(window, translate_viewport_id(), &self.proxy);
+            self.translate = Some(win);
+            crate::log_common!("[translate] window created");
+        } else if !want && have {
+            self.translate = None;
+            crate::log_common!("[translate] window destroyed");
+        }
+    }
+
     /// 期限が来た窓をループ本体から直接 render する。
     /// render 後は「render 開始＋最小フレーム間隔」を `not_before` に記録し、
     /// 次回予定をそれ以降にクランプする（vsync 非依存のフレームキャップ）。
@@ -433,12 +462,22 @@ impl WinitApp {
                 finish_frame(win, started, delay);
             }
         }
+
+        if self.translate.as_ref().map_or(false, |w| w.due(now)) {
+            if let (Some(win), Some(app)) = (self.translate.as_mut(), self.app.as_mut()) {
+                let started = Instant::now();
+                let delay = render_window(win, |ui| {
+                    app.render_translate_window(ui);
+                });
+                finish_frame(win, started, delay);
+            }
+        }
     }
 
     /// 全窓の `next_repaint` のうち最短を返す。
     fn earliest_repaint(&self) -> Option<Instant> {
         let mut earliest: Option<Instant> = None;
-        for w in [self.explorer.as_ref(), self.viewer.as_ref(), self.status.as_ref()] {
+        for w in [self.explorer.as_ref(), self.viewer.as_ref(), self.status.as_ref(), self.translate.as_ref()] {
             if let Some(t) = w.and_then(|w| w.next_repaint) {
                 earliest = Some(earliest.map_or(t, |e| e.min(t)));
             }
@@ -454,6 +493,8 @@ impl WinitApp {
             self.viewer.as_mut()
         } else if self.status.as_ref().map_or(false, |w| w.window.id() == window_id) {
             self.status.as_mut()
+        } else if self.translate.as_ref().map_or(false, |w| w.window.id() == window_id) {
+            self.translate.as_mut()
         } else {
             None
         }
@@ -480,6 +521,7 @@ impl ApplicationHandler<UserEvent> for WinitApp {
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
         self.viewer = None;
         self.status = None;
+        self.translate = None;
         self.explorer = None;
     }
 
@@ -498,6 +540,10 @@ impl ApplicationHandler<UserEvent> for WinitApp {
                     }
                 } else if self.status.as_ref().map_or(false, |w| w.viewport_id == viewport_id) {
                     if let Some(w) = self.status.as_mut() {
+                        w.bump(when);
+                    }
+                } else if self.translate.as_ref().map_or(false, |w| w.viewport_id == viewport_id) {
+                    if let Some(w) = self.translate.as_mut() {
                         w.bump(when);
                     }
                 }
@@ -521,7 +567,8 @@ impl ApplicationHandler<UserEvent> for WinitApp {
         let is_explorer = self.explorer.as_ref().map_or(false, |w| w.window.id() == window_id);
         let is_viewer = self.viewer.as_ref().map_or(false, |w| w.window.id() == window_id);
         let is_status = self.status.as_ref().map_or(false, |w| w.window.id() == window_id);
-        if !is_explorer && !is_viewer && !is_status {
+        let is_translate = self.translate.as_ref().map_or(false, |w| w.window.id() == window_id);
+        if !is_explorer && !is_viewer && !is_status && !is_translate {
             return;
         }
 
@@ -557,12 +604,19 @@ impl ApplicationHandler<UserEvent> for WinitApp {
                     }
                     self.sync_viewer_window(event_loop);
                     return;
-                } else {
+                } else if is_status {
                     // ステータス窓の OS クローズ。トグルを下ろし、窓を破棄する。
                     if let Some(app) = self.app.as_mut() {
                         app.close_status();
                     }
                     self.sync_status_window(event_loop);
+                    return;
+                } else {
+                    // OCR/翻訳子ウィンドウの OS クローズ。トグルを下ろし、窓を破棄する。
+                    if let Some(app) = self.app.as_mut() {
+                        app.close_translate_window();
+                    }
+                    self.sync_translate_window(event_loop);
                     return;
                 }
             }
@@ -602,11 +656,13 @@ impl ApplicationHandler<UserEvent> for WinitApp {
         // エクスプローラーの操作でビューアー/ステータス窓が開いた/閉じた可能性に追従する。
         self.sync_viewer_window(event_loop);
         self.sync_status_window(event_loop);
+        self.sync_translate_window(event_loop);
         // 期限の来た窓を描画する。
         self.render_due_windows();
         // 描画中（ビューアーの ESC/X、ステータスの [?] トグル等）に窓が閉じられた可能性に追従する。
         self.sync_viewer_window(event_loop);
         self.sync_status_window(event_loop);
+        self.sync_translate_window(event_loop);
 
         // 全窓の最短再描画予定で ControlFlow を決める。
         match self.earliest_repaint() {

@@ -397,6 +397,13 @@ pub fn load_ocr_text(neko_dir: &Path, archive_filename: &str, original_index: us
     Some(content.lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_string).collect())
 }
 
+/// アーカイブ内に1P分でもOCR txtが残っているか（OCR/翻訳子ウィンドウの自動オープン判定用）。
+pub fn has_any_ocr_text(neko_dir: &Path, archive_filename: &str) -> bool {
+    let dir = ocr_text_dir(neko_dir, archive_filename);
+    let Ok(entries) = std::fs::read_dir(&dir) else { return false };
+    entries.filter_map(|e| e.ok()).any(|e| e.path().extension().is_some_and(|ext| ext == "txt"))
+}
+
 /// OS標準のファイラーでフォルダを開く（ベストエフォート、失敗しても無視する）。
 pub fn open_in_file_manager(path: &Path) {
     let _ = std::fs::create_dir_all(path);

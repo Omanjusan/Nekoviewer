@@ -35,6 +35,43 @@ impl NekoviewApp {
         *self.viewer.lock().unwrap() = None;
     }
 
+    /// OCR/翻訳子ウィンドウが開いているか（winit_app が窓の生成/破棄判定に使う）。
+    pub fn translate_window_is_open(&self) -> bool {
+        self.translate_window_open
+    }
+
+    /// OCR/翻訳子ウィンドウを閉じる（OS のクローズボタンから winit_app が呼ぶ）。
+    pub fn close_translate_window(&mut self) {
+        self.translate_window_open = false;
+    }
+
+    /// アーカイブ内に1P分でもOCR txtが残っているか。
+    fn archive_has_any_ocr_text(&self, archive_path: &std::path::Path) -> bool {
+        let Some(neko_dir) = self.translate_neko_dir_for(archive_path) else { return false };
+        let Some(filename) = archive_path.file_name().and_then(|n| n.to_str()) else { return false };
+        crate::translate::has_any_ocr_text(&neko_dir, filename)
+    }
+
+    /// アーカイブ切替時に1度だけ、既存OCR txtの有無を見て子ウィンドウの自動オープンを判定する。
+    fn maybe_autoopen_translate_window(&mut self) {
+        let Some((archive_path, _)) = self.current_page_keys().into_iter().next() else { return };
+        if self.translate_window_autocheck_done_for.as_ref() == Some(&archive_path) {
+            return;
+        }
+        self.translate_window_autocheck_done_for = Some(archive_path.clone());
+        if !self.translate_window_open && self.archive_has_any_ocr_text(&archive_path) {
+            self.translate_window_open = true;
+        }
+    }
+
+    /// OCR/翻訳子ウィンドウの1フレーム描画。winit_app が子窓の egui パスから呼ぶ。
+    /// Phase1時点ではプレースホルダのみ。中身の左右分割表示はPhase3で実装する。
+    pub fn render_translate_window(&mut self, ui: &mut egui::Ui) {
+        ui.label(i18n::t().translate_overlay_title());
+        ui.separator();
+        ui.weak(i18n::t().translate_overlay_empty());
+    }
+
     /// ビューアー独立窓の 1 フレーム描画。winit_app がビューアー窓の egui パスから呼ぶ。
     /// 旧 `draw_viewer_viewport` の deferred callback 相当（ページ供給 → show → nav/close 処理）。
     pub fn render_viewer(&mut self, ui: &mut egui::Ui) {
@@ -76,6 +113,7 @@ impl NekoviewApp {
             }
         };
 
+        self.maybe_autoopen_translate_window();
         self.draw_translate_overlay(ui.ctx());
 
         if let Some(slots) = output.save_slots {
@@ -380,6 +418,12 @@ impl NekoviewApp {
                         ui.set_width(width);
                         ui.horizontal(|ui| {
                             ui.label(egui::RichText::new(i18n::t().translate_overlay_title()).strong());
+                            // OCR/翻訳子ウィンドウ（独立OS窓）を開く導線。既存txtがあれば
+                            // 自動で開くが(maybe_autoopen_translate_window)、無い場合はここで
+                            // ユーザーの意思により開く。
+                            if ui.small_button(i18n::t().translate_open_window_button()).clicked() {
+                                self.translate_window_open = true;
+                            }
                             if ui.small_button(i18n::t().translate_overlay_run_button()).clicked() {
                                 self.trigger_translate_ocr(ctx);
                             }

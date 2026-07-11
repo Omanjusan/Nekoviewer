@@ -1081,6 +1081,15 @@ impl Lang {
         }
     }
 
+    /// ビューアー部の[翻訳]ボタン。OCR/翻訳子ウィンドウをユーザーの意思で開く導線。
+    pub fn translate_open_window_button(self) -> &'static str {
+        match self {
+            Lang::Japanese => "翻訳",
+            Lang::English  => "Translate",
+            Lang::Chinese  => "翻译",
+        }
+    }
+
     /// 見開き時、2ページぶんの結果を「ページ数XX:」ラベルで区切って表示するための見出し。
     /// ページ区切り・ラベル付けは常にアプリ側で行う（モデルの自己申告に頼らない）。
     pub fn translate_overlay_page_label(self, page_number: usize) -> String {
