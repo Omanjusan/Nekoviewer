@@ -1081,6 +1081,16 @@ impl Lang {
         }
     }
 
+    /// 見開き時、2ページぶんの結果を「ページ数XX:」ラベルで区切って表示するための見出し。
+    /// ページ区切り・ラベル付けは常にアプリ側で行う（モデルの自己申告に頼らない）。
+    pub fn translate_overlay_page_label(self, page_number: usize) -> String {
+        match self {
+            Lang::Japanese => format!("ページ数{page_number}:"),
+            Lang::English  => format!("Page {page_number}:"),
+            Lang::Chinese  => format!("第{page_number}页:"),
+        }
+    }
+
     pub fn translate_overlay_copy_button(self) -> &'static str {
         match self {
             Lang::Japanese => "コピー",

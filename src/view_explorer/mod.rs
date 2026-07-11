@@ -359,12 +359,17 @@ pub struct NekoviewApp {
     pub(crate) translate_ocr_lines: Vec<String>,
     pub(crate) translate_ocr_rx: Option<mpsc::Receiver<crate::translate::OcrMsg>>,
     pub(crate) translate_ocr_status: Option<String>,
-    /// 現在オーバーレイに表示中の内容がどのページ分か(アーカイブパス, original_index)。
+    /// 現在オーバーレイに表示中の内容がどのページ集合分か(見開き時は2件)。
     /// ページ送りでこれが変わったら、そのページ用のtxtキャッシュを読み直す。
-    pub(crate) translate_ocr_loaded_key: Option<(PathBuf, usize)>,
+    pub(crate) translate_ocr_loaded_keys: Vec<(PathBuf, usize)>,
     /// 実行中のOCRリクエストがどのページ宛てか。結果到着時にそのページ用のtxtへ保存する
     /// （待っている間にユーザーがページ送りしても、要求時点のページへ正しく保存するため）。
     pub(crate) translate_ocr_inflight_key: Option<(PathBuf, usize)>,
+    /// 見開き時、2ページぶんを1リクエストに結合せず個別に逐次実行するための残りキュー。
+    /// モデルに「どこまでが左ページか」を自己申告させると信頼できないため、ページの
+    /// 切り分け・ラベル付けは常にアプリ側(この構造)で行い、モデルには単独ページとして
+    /// 1枚ずつ渡す。
+    pub(crate) translate_ocr_queue: std::collections::VecDeque<(PathBuf, usize)>,
     /// ビューアウィンドウをフォーカス前面に出すフラグ
     viewer_focus_requested: bool,
     pub(crate) show_hidden: bool,
@@ -543,8 +548,9 @@ impl NekoviewApp {
             translate_ocr_lines: Vec::new(),
             translate_ocr_rx: None,
             translate_ocr_status: None,
-            translate_ocr_loaded_key: None,
+            translate_ocr_loaded_keys: Vec::new(),
             translate_ocr_inflight_key: None,
+            translate_ocr_queue: std::collections::VecDeque::new(),
             viewer_focus_requested: false,
             show_hidden,
             sort_key: ExplorerSortKey::from_state_key(&sort_state.key),

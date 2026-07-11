@@ -312,39 +312,48 @@ impl NekoviewApp {
             if let Ok(msg) = rx.try_recv() {
                 match msg {
                     crate::translate::OcrMsg::Result(page) => {
-                        self.translate_ocr_lines = page.lines.clone();
-                        self.translate_ocr_status = if page.raw_fallback {
-                            Some(i18n::t().translate_overlay_fallback_notice().to_string())
-                        } else {
-                            None
-                        };
                         // 要求時点のページへ保存する（待機中にページ送りされても取り違えないよう
                         // trigger_translate_ocr側で退避しておいたキーを使う）。
                         if let Some((archive_path, orig)) = self.translate_ocr_inflight_key.take() {
                             self.save_ocr_text_for(&archive_path, orig, &page.lines);
                         }
+                        self.translate_ocr_status = if page.raw_fallback {
+                            Some(i18n::t().translate_overlay_fallback_notice().to_string())
+                        } else {
+                            None
+                        };
+                        if let Some(next) = self.translate_ocr_queue.pop_front() {
+                            // 見開きの残り1ページを続けて処理する。
+                            self.start_ocr_for(ctx, next);
+                        } else {
+                            // 全ページ完了。表示中の全ページ分をtxtから読み直して結合し直す
+                            // （モデルの自己申告に頼らず、ページ区切り・ラベル付けは常にここで行う）。
+                            self.rebuild_translate_overlay_display();
+                        }
                     }
                     crate::translate::OcrMsg::Failed(e) => {
                         self.translate_ocr_status = Some(format!("{}: {e}", i18n::t().translate_overlay_failed_prefix()));
                         self.translate_ocr_inflight_key = None;
+                        self.translate_ocr_queue.clear();
                     }
                 }
                 self.translate_ocr_rx = None;
             }
         }
 
-        // ページが切り替わったら、そのページ用の保存済みtxtを読み直す（無ければ空表示に戻す）。
-        // OCR実行中(rxが生きている間)は取りこぼし防止のため切り替えを保留する。
-        if self.translate_ocr_rx.is_none() {
-            let current_key = self.current_page_key();
-            if current_key != self.translate_ocr_loaded_key {
+        // ページが切り替わったら、そのページ集合用の保存済みtxtを読み直す。
+        // OCR実行中でも切り替え検知は止めない。表示は常に「今見ているページ」に追従させ、
+        // バックグラウンドのOCRは要求時点のページ(translate_ocr_inflight_key)宛てのまま
+        // 独立して進行させ、完了時はtxtへ保存するだけにする。以前はrx生存中ここを丸ごと
+        // 止めていたため、OCR待機中はオーバーレイが古いページの内容のまま固まり、完了時に
+        // 古いキー基準で再構築されて実際の表示とズレる不具合になっていた。
+        let current_keys = self.current_page_keys();
+        if current_keys != self.translate_ocr_loaded_keys {
+            self.translate_ocr_loaded_keys = current_keys;
+            if self.translate_ocr_rx.is_none() {
                 self.translate_ocr_status = None;
-                self.translate_ocr_lines = current_key
-                    .as_ref()
-                    .and_then(|(path, orig)| self.load_ocr_text_for(path, *orig))
-                    .unwrap_or_default();
-                self.translate_ocr_loaded_key = current_key;
             }
+            self.rebuild_translate_overlay_display();
         }
 
         if self.translate_cfg.base_url.trim().is_empty() {
@@ -410,81 +419,84 @@ impl NekoviewApp {
             });
     }
 
-    /// 現在ページに対してOCRリクエストを発火する（1ページ単位。アーカイブ一括OCRは
-    /// 規模が大きいため今回は見送り、まずページ単位の永続化を優先した）。
+    /// 現在表示中の全ページ(見開き時は2件)に対してOCRリクエストを発火する。
+    /// モデルには常に単独ページの画像を1枚ずつ渡し（結合画像は使わない）、ページの
+    /// 切り分け・「ページ数XX:」ラベル付けはアプリ側(rebuild_translate_overlay_display)
+    /// で行う。モデルに自己申告させると境界判定が信頼できないため。
     fn trigger_translate_ocr(&mut self, ctx: &egui::Context) {
         if self.translate_cfg.model.trim().is_empty() {
             self.translate_ocr_status = Some(i18n::t().translate_overlay_model_missing().to_string());
             return;
         }
-        let Some(key) = self.current_page_key() else {
+        let keys = self.current_page_keys();
+        let Some((first, rest)) = keys.split_first() else {
             self.translate_ocr_status = Some(i18n::t().translate_overlay_no_page().to_string());
             return;
         };
-        let Some(rgba) = self.current_page_rgba_for_ocr() else {
+        self.translate_ocr_queue = rest.to_vec().into();
+        self.start_ocr_for(ctx, first.clone());
+    }
+
+    /// キュー内の次の1ページ分のOCRリクエストを実際に発火する。
+    fn start_ocr_for(&mut self, ctx: &egui::Context, key: (std::path::PathBuf, usize)) {
+        let Some(rgba) = self.page_rgba_at(&key.0, key.1) else {
             self.translate_ocr_status = Some(i18n::t().translate_overlay_no_page().to_string());
             return;
         };
-        let page_mode = self.viewer.lock().unwrap().as_ref()
-            .map(|v| v.current_spread_snapshot().0)
-            .unwrap_or(crate::types::PageMode::Single);
         let image = image::DynamicImage::ImageRgba8(rgba);
         self.translate_ocr_status = Some(i18n::t().translate_overlay_running().to_string());
-        self.translate_ocr_lines.clear();
         self.translate_ocr_inflight_key = Some(key);
         self.translate_ocr_rx = Some(crate::translate::spawn_ocr_request(
             ctx.clone(),
             self.translate_cfg.base_url.clone(),
             self.translate_cfg.model.clone(),
             image,
-            page_mode,
         ));
     }
 
-    /// 現在表示中ページ(見開き時は先頭側)を一意に表す(アーカイブパス, original_index)。
-    fn current_page_key(&self) -> Option<(std::path::PathBuf, usize)> {
+    /// 現在表示中の全ページ(見開き時は2件、単独ページなら1件)を
+    /// (アーカイブパス, original_index)の一覧として、entries順(=読み順どおり)に返す。
+    fn current_page_keys(&self) -> Vec<(std::path::PathBuf, usize)> {
         let viewer_guard = self.viewer.lock().unwrap();
-        let viewer = viewer_guard.as_ref()?;
-        let orig = *viewer.visible_original_indices().first()?;
-        Some((viewer.archive_path().clone(), orig))
+        let Some(viewer) = viewer_guard.as_ref() else { return Vec::new() };
+        let path = viewer.archive_path().clone();
+        viewer.visible_original_indices().into_iter().map(|orig| (path.clone(), orig)).collect()
     }
 
-    /// OCR送信用の画像を取得する。見開き表示中は「画面に見えている通り」の1枚に
-    /// 左右のページを結合する（indices配列はentries順=[lo, lo+1]で画面左右とは
-    /// 限らないため、綴じ方向(page_mode)で画面左右へ並べ替えてから結合する）。
-    /// 単独ページ判定はentries数(1枚のみ返る)で行う。アニメーションページは非対応。
-    fn current_page_rgba_for_ocr(&self) -> Option<image::RgbaImage> {
-        let viewer_guard = self.viewer.lock().unwrap();
-        let viewer = viewer_guard.as_ref()?;
-        let page_mode = viewer.current_spread_snapshot().0;
-        let indices = viewer.visible_original_indices();
-        let path = viewer.archive_path().clone();
-        drop(viewer_guard);
-
+    /// 指定ページのRGBA画像をページキャッシュから取得する。
+    /// アニメーションページはOCR対象外（先頭フレームのみでは意味が薄いため今回は非対応）。
+    fn page_rgba_at(&self, archive_path: &std::path::Path, original_index: usize) -> Option<image::RgbaImage> {
         let cache = self.page_cache.lock().unwrap();
-        let get_rgba = |orig: usize| -> Option<image::RgbaImage> {
-            match cache.get(&path, orig)? {
-                crate::cache::PageContent::Static(rgba) => Some(rgba.clone()),
-                crate::cache::PageContent::Animated(_) => None,
-            }
-        };
-
-        match indices.as_slice() {
-            [single] => get_rgba(*single),
-            [lo, hi, ..] => {
-                let (screen_left, screen_right) = match page_mode {
-                    crate::types::PageMode::SpreadLeft => (*lo, *hi),
-                    // SpreadRight(一般的な右綴じ): entries順で先=lo が画面右、後=hiが画面左
-                    // （render_spreadの呼び出し ` render_spread(tex_hi, tex_lo)` に合わせる）。
-                    crate::types::PageMode::SpreadRight => (*hi, *lo),
-                    crate::types::PageMode::Single => (*lo, *lo),
-                };
-                let left = get_rgba(screen_left)?;
-                let right = get_rgba(screen_right)?;
-                Some(compose_side_by_side(&left, &right))
-            }
-            [] => None,
+        match cache.get(&archive_path.to_path_buf(), original_index)? {
+            crate::cache::PageContent::Static(rgba) => Some(rgba.clone()),
+            crate::cache::PageContent::Animated(_) => None,
         }
+    }
+
+    /// 表示中の全ページぶんの保存済みtxtを読み込み、「ページ数XX:」ラベル付きで結合した
+    /// 表示用テキストを組み立てる（2ページ以上の時のみラベルを付ける）。
+    /// モデルにページ区切りを申告させず、常にこの関数がラベル付け・結合を行う。
+    fn rebuild_translate_overlay_display(&mut self) {
+        let keys = self.translate_ocr_loaded_keys.clone();
+        let multi = keys.len() > 1;
+        let mut lines = Vec::new();
+        for (path, orig) in &keys {
+            let page_lines = self.load_ocr_text_for(path, *orig).unwrap_or_default();
+            if multi {
+                if !lines.is_empty() {
+                    lines.push(String::new());
+                }
+                lines.push(i18n::t().translate_overlay_page_label(orig + 1));
+            }
+            if page_lines.is_empty() {
+                // 見出しだけで中身が空だと「取りこぼした」ように見えるため、
+                // 未実行であることを明示する（取りこぼしとの区別）。
+                lines.push(i18n::t().translate_overlay_empty().to_string());
+            } else {
+                lines.extend(page_lines);
+            }
+        }
+        self.translate_ocr_lines = lines;
     }
 
     /// アーカイブパスからOCR txt保存先のキャッシュディレクトリを解決する。
@@ -509,21 +521,9 @@ impl NekoviewApp {
     /// 現在のアーカイブに対応するOCR txtフォルダをOSのファイラーで開く
     /// （手動でのノイズ取り・整形をそのまま「翻訳の原本」として使ってもらうための導線）。
     fn open_translate_text_folder(&self) {
-        let Some((archive_path, _)) = self.current_page_key() else { return };
+        let Some((archive_path, _)) = self.current_page_keys().into_iter().next() else { return };
         let Some(neko_dir) = self.translate_neko_dir_for(&archive_path) else { return };
         let Some(filename) = archive_path.file_name().and_then(|n| n.to_str()) else { return };
         crate::translate::open_in_file_manager(&crate::translate::ocr_text_dir(&neko_dir, filename));
     }
-}
-
-/// 見開きOCR用: 画面表示順どおりに左右のページ画像を1枚へ横結合する。
-/// 高さが異なる場合は白背景の上に上詰めで配置する（下に余白ができるだけで、
-/// テキスト認識への影響はほぼ無い想定）。
-fn compose_side_by_side(left: &image::RgbaImage, right: &image::RgbaImage) -> image::RgbaImage {
-    let width = left.width() + right.width();
-    let height = left.height().max(right.height());
-    let mut canvas = image::RgbaImage::from_pixel(width, height, image::Rgba([255, 255, 255, 255]));
-    image::imageops::overlay(&mut canvas, left, 0, 0);
-    image::imageops::overlay(&mut canvas, right, left.width() as i64, 0);
-    canvas
 }

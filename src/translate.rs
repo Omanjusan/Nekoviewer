@@ -282,45 +282,17 @@ const OCR_REQUEST_TIMEOUT_SECS: u64 = 300;
 /// 実機で空応答が再現した後に導入。
 const OCR_MAX_TOKENS: u32 = 4096;
 
-/// 綴じ方向・見開き状態に応じたコマ読み順の指示文。Nekoviewerは`PageMode`
-/// (Single/SpreadLeft/SpreadRight)を既にページ送り方向の決定に使っており、
-/// OCR時にも同じ情報を渡すことで、モデルが読み順をゼロから推測せずに済む
-/// （実機検証で、この指示が曖昧なままだと読み順の自問自答だけで思考トークンを
-/// 使い切り、最終回答を出せずに終わるケースを確認したため導入）。
-/// 手動でのプロンプト差し替え(綴じ方向別ユーザー定義テンプレート等)は別スコープ。
-fn panel_order_instruction(page_mode: crate::types::PageMode) -> &'static str {
-    match page_mode {
-        crate::types::PageMode::Single => {
-            "この画像は単独の1ページです。コマの読み順は右上のコマから開始し、\
-             同じ段の中では右→左、段は上→下の順に進めてください。"
-        }
-        crate::types::PageMode::SpreadRight => {
-            "この画像は見開き2ページを画面表示のとおり横に結合したものです（左半分・右半分に\
-             それぞれ1ページずつ写っています）。右綴じ（一般的な日本の漫画と同じ、右ページが先・\
-             左ページが後）です。まず右半分（右ページ）のコマを右上から右→左・上→下の順に処理し、\
-             その後左半分（左ページ）のコマも同様に右上から右→左・上→下の順に処理してください。"
-        }
-        crate::types::PageMode::SpreadLeft => {
-            "この画像は見開き2ページを画面表示のとおり横に結合したものです（左半分・右半分に\
-             それぞれ1ページずつ写っています）。左綴じ（左ページが先・右ページが後）です。\
-             まず左半分（左ページ）のコマを左上から左→右・上→下の順に処理し、\
-             その後右半分（右ページ）のコマも同様に左上から左→右・上→下の順に処理してください。"
-        }
-    }
-}
-
-/// モデルへ渡すプロンプトを組み立てる。実機検証(qwen3.5:latest)で「説明文なし・
-/// コードフェンスなしのJSON配列文字列」がそのまま`content`に返ることを確認済み。
-/// bboxは要求しない（オーバーレイ表示は縦スクロールのテキスト一覧のみのため、
-/// 座標情報は不要）。
-fn build_ocr_prompt(page_mode: crate::types::PageMode) -> String {
-    format!(
-        "この漫画ページ画像から、吹き出し内のテキストを読み順で抽出してください。{}\
-         出力は説明文なしで、各吹き出しのテキストを1要素とするJSON配列のみを返してください。\
-         例: [\"セリフ1\",\"セリフ2\"]",
-        panel_order_instruction(page_mode)
-    )
-}
+/// モデルへ渡すプロンプト。実機検証(qwen3.5:latest)で「説明文なし・コードフェンスなしの
+/// JSON配列文字列」がそのまま`content`に返ることを確認済み。bboxは要求しない
+/// （オーバーレイ表示は縦スクロールのテキスト一覧のみのため、座標情報は不要）。
+///
+/// 見開きは1枚の結合画像として渡さず、常に単独ページの画像を1枚ずつ渡す方式に変更した
+/// （呼び出し側`viewer_host.rs`の`trigger_translate_ocr`参照）。結合画像1枚に対して
+/// 「どこまでが左ページか」をモデルに自己申告させると境界判定が信頼できず、実機検証でも
+/// 読み順の自問自答だけで思考トークンを使い切るケースを確認したため。ページの切り分け・
+/// 「ページ数XX:」ラベル付けは常にアプリ側で行う。単独ページのコマ内読み順（右上開始、
+/// 右→左・上→下）は綴じ方向に関係なく同じなので、page_modeの考慮は不要。
+const OCR_PROMPT: &str = "この漫画ページ画像から、吹き出し内のテキストを自然な読み順（右上のコマから開始し、右→左・上→下の順、日本語漫画の一般的な順序）で抽出してください。出力は説明文なしで、各吹き出しのテキストを1要素とするJSON配列のみを返してください。例: [\"セリフ1\",\"セリフ2\"]";
 
 /// OCR結果1ページぶん。
 pub struct OcrPageResult {
@@ -368,16 +340,15 @@ fn encode_image_png_base64(image: &image::DynamicImage) -> Result<String, String
     Ok(base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &buf))
 }
 
-/// 1ページぶんのOCRリクエストをバックグラウンドスレッドで実行する。
-/// `page_mode`は見開き・綴じ方向に応じた読み順の指示文組み立てに使う。
-pub fn spawn_ocr_request(ctx: egui::Context, base_url: String, model: String, image: image::DynamicImage, page_mode: crate::types::PageMode) -> mpsc::Receiver<OcrMsg> {
+/// 1ページぶんのOCRリクエストをバックグラウンドスレッドで実行する。常に単独ページの
+/// 画像1枚を渡す（見開きの2ページ分割・逐次実行は呼び出し側`viewer_host.rs`が行う）。
+pub fn spawn_ocr_request(ctx: egui::Context, base_url: String, model: String, image: image::DynamicImage) -> mpsc::Receiver<OcrMsg> {
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
         let result = (|| -> Result<OcrPageResult, String> {
             let data_url_body = encode_image_png_base64(&image)?;
             let client = http_client(Duration::from_secs(OCR_REQUEST_TIMEOUT_SECS))?;
-            let prompt = build_ocr_prompt(page_mode);
-            let content = send_chat_with_image(&client, &base_url, &model, &prompt, format!("data:image/png;base64,{data_url_body}"), Some(OCR_MAX_TOKENS))?;
+            let content = send_chat_with_image(&client, &base_url, &model, OCR_PROMPT, format!("data:image/png;base64,{data_url_body}"), Some(OCR_MAX_TOKENS))?;
             Ok(parse_ocr_content(&content))
         })();
         match result {
