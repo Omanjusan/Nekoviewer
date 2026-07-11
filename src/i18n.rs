@@ -1119,12 +1119,13 @@ impl Lang {
         }
     }
 
-    /// 翻訳連携が未実装であることを示すメッセージ(モックボタン用)。
-    pub fn translate_child_not_implemented(self) -> &'static str {
+    /// 翻訳実行の絶対条件(OCR txt取得済み)を満たさない場合のフォールバックメッセージ。
+    /// OCRと翻訳は完全に独立したボタン/処理であり、E2Eで自動連鎖はしない。
+    pub fn translate_child_ocr_required(self) -> &'static str {
         match self {
-            Lang::Japanese => "翻訳連携は未実装です",
-            Lang::English  => "Translation backend not implemented yet",
-            Lang::Chinese  => "翻译功能尚未实现",
+            Lang::Japanese => "OCRを取得してから実行してください",
+            Lang::English  => "Run OCR first before translating",
+            Lang::Chinese  => "请先执行OCR后再翻译",
         }
     }
 

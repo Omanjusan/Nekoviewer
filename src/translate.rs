@@ -492,6 +492,33 @@ pub fn has_any_ocr_text(neko_dir: &Path, archive_filename: &str) -> bool {
     entries.filter_map(|e| e.ok()).any(|e| e.path().extension().is_some_and(|ext| ext == "txt"))
 }
 
+// ── 翻訳結果テキストの永続化(Phase 6-C) ────────────────────────────────────
+// OCR txtと同じ命名規則(archive_filename/{index:04}.txt)を、"translated_text"という
+// 別の固定フォルダ名の下にそのまま踏襲する。言語別には分けず、直近に翻訳した内容で
+// 上書きする（OCR原本と同じ「最新版だけ保持」方式）。
+
+pub fn translated_text_dir(neko_dir: &Path, archive_filename: &str) -> PathBuf {
+    neko_dir.join("translated_text").join(archive_filename)
+}
+
+fn translated_text_path(neko_dir: &Path, archive_filename: &str, original_index: usize) -> PathBuf {
+    translated_text_dir(neko_dir, archive_filename).join(format!("{original_index:04}.txt"))
+}
+
+pub fn save_translated_text(neko_dir: &Path, archive_filename: &str, original_index: usize, lines: &[String]) -> std::io::Result<()> {
+    let path = translated_text_path(neko_dir, archive_filename, original_index);
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    std::fs::write(path, lines.join("\n"))
+}
+
+pub fn load_translated_text(neko_dir: &Path, archive_filename: &str, original_index: usize) -> Option<Vec<String>> {
+    let path = translated_text_path(neko_dir, archive_filename, original_index);
+    let content = std::fs::read_to_string(path).ok()?;
+    Some(content.lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_string).collect())
+}
+
 /// OS標準のファイラーでフォルダを開く（ベストエフォート、失敗しても無視する）。
 pub fn open_in_file_manager(path: &Path) {
     let _ = std::fs::create_dir_all(path);

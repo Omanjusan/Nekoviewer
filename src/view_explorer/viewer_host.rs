@@ -107,7 +107,7 @@ impl NekoviewApp {
             self.translate_child_cursor = keys.get(next_idx).cloned();
         }
         self.translate_ocr_status = None;
-        self.sync_child_ocr_display();
+        self.sync_child_panes_display();
     }
 
     /// `translate_child_cursor`が親の現在の可視集合に含まれなくなっていたら
@@ -117,7 +117,7 @@ impl NekoviewApp {
         let still_valid = self.translate_child_cursor.as_ref().is_some_and(|cur| keys.contains(cur));
         if !still_valid {
             self.translate_child_cursor = keys.first().cloned();
-            self.sync_child_ocr_display();
+            self.sync_child_panes_display();
         }
     }
 
@@ -127,6 +127,21 @@ impl NekoviewApp {
             Some((path, orig)) => self.load_ocr_text_for(&path, orig).unwrap_or_default(),
             None => Vec::new(),
         };
+    }
+
+    /// `translate_child_cursor`が指すページの保存済み翻訳txtを読み直し、右ペイン表示を更新する。
+    /// OCRとは完全に独立した処理単位なので、OCR未実行でも空のまま(未実行扱い)で構わない。
+    fn sync_child_translation_display(&mut self) {
+        self.translate_child_translation_lines = match self.translate_child_cursor.clone() {
+            Some((path, orig)) => self.load_translated_text_for(&path, orig).unwrap_or_default(),
+            None => Vec::new(),
+        };
+    }
+
+    /// カーソル移動時にOCR・翻訳の両ペインをまとめて読み直す。
+    fn sync_child_panes_display(&mut self) {
+        self.sync_child_ocr_display();
+        self.sync_child_translation_display();
     }
 
     /// 子ウィンドウの[再取得]: `translate_child_cursor`が指す1ページのみOCRを再実行する。
@@ -144,18 +159,70 @@ impl NekoviewApp {
         self.start_ocr_for(ctx, key);
     }
 
+    /// 子ウィンドウの[再翻訳]: OCR・翻訳は完全に独立したボタン/処理なので、E2Eで自動連鎖は
+    /// しない。絶対条件として対象ページのOCR txtが取得済みであることを要求し、未取得なら
+    /// フォールバックメッセージを出すだけで実処理は走らせない。
+    fn trigger_child_retranslate(&mut self, ctx: &egui::Context) {
+        if self.translate_child_ocr_lines.is_empty() {
+            self.translate_translate_status = Some(i18n::t().translate_child_ocr_required().to_string());
+            return;
+        }
+        if self.translate_cfg.model.trim().is_empty() {
+            self.translate_translate_status = Some(i18n::t().translate_overlay_model_missing().to_string());
+            return;
+        }
+        let Some(key) = self.translate_child_cursor.clone() else { return };
+        self.translate_translate_status = Some(i18n::t().translate_overlay_running().to_string());
+        self.translate_translate_inflight_key = Some(key);
+        self.translate_translate_rx = Some(crate::translate::spawn_translate_request(
+            ctx.clone(),
+            self.translate_cfg.base_url.clone(),
+            self.translate_cfg.model.clone(),
+            self.translate_child_ocr_lines.clone(),
+            self.translate_child_target_lang,
+        ));
+    }
+
+    /// 翻訳リクエストの完了/失敗をポーリングする。OCRのポーリング(poll_translate_ocr)とは
+    /// 別経路・別状態（完全に独立した処理単位のため）。
+    fn poll_translate_translation(&mut self) {
+        let Some(rx) = &self.translate_translate_rx else { return };
+        let Ok(msg) = rx.try_recv() else { return };
+        match msg {
+            crate::translate::TranslateMsg::Result(page) => {
+                if let Some((archive_path, orig)) = self.translate_translate_inflight_key.take() {
+                    self.save_translated_text_for(&archive_path, orig, &page.lines);
+                    if self.translate_child_cursor.as_ref() == Some(&(archive_path, orig)) {
+                        self.sync_child_translation_display();
+                    }
+                }
+                self.translate_translate_status = if page.raw_fallback {
+                    Some(i18n::t().translate_overlay_fallback_notice().to_string())
+                } else {
+                    None
+                };
+            }
+            crate::translate::TranslateMsg::Failed(e) => {
+                self.translate_translate_status = Some(format!("{}: {e}", i18n::t().translate_overlay_failed_prefix()));
+                self.translate_translate_inflight_key = None;
+            }
+        }
+        self.translate_translate_rx = None;
+    }
+
     /// OCR/翻訳子ウィンドウの1フレーム描画。winit_app が子窓の egui パスから呼ぶ。
-    /// 左＝OCR原文、右＝翻訳結果（翻訳API未連携のためモック表示）のDIFF風2ペイン。
+    /// 左＝OCR原文、右＝翻訳結果のDIFF風2ペイン。OCRと翻訳は完全に独立したボタン/処理単位。
     pub fn render_translate_window(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
         // ビューアー窓側の通常のページ送りでこの独立Contextの窓を起こせるよう、
         // 毎フレーム自身の ctx を保持しておく（render_viewer側の対応処理と対）。
         self.translate_egui_ctx = Some(ctx.clone());
         self.poll_translate_ocr(&ctx);
+        self.poll_translate_translation();
 
         if self.translate_child_cursor.is_none() {
             self.translate_child_cursor = self.current_page_keys().into_iter().next();
-            self.sync_child_ocr_display();
+            self.sync_child_panes_display();
         }
         self.resync_child_cursor_if_needed();
 
@@ -178,7 +245,7 @@ impl NekoviewApp {
                     }
                 });
             if ui.small_button(i18n::t().translate_child_retranslate_button()).clicked() {
-                self.translate_ocr_status = Some(i18n::t().translate_child_not_implemented().to_string());
+                self.trigger_child_retranslate(&ctx);
             }
             // txtは手動でノイズ取り(誤読訂正・整形)した内容を「翻訳の原本」として
             // 扱いたいという要望から、OSのファイラーで直接開けるようにしている。
@@ -208,7 +275,18 @@ impl NekoviewApp {
             });
             columns[1].vertical(|ui| {
                 ui.label(egui::RichText::new(i18n::t().translate_child_translation_pane_title()).strong());
-                ui.weak(i18n::t().translate_child_not_implemented());
+                if let Some(status) = &self.translate_translate_status {
+                    ui.colored_label(egui::Color32::from_rgb(230, 140, 140), status.as_str());
+                }
+                egui::ScrollArea::vertical().id_salt("translate_child_translation_scroll").show(ui, |ui| {
+                    if self.translate_child_translation_lines.is_empty() {
+                        ui.weak(i18n::t().translate_overlay_empty());
+                    } else {
+                        for line in &self.translate_child_translation_lines {
+                            ui.label(line.as_str());
+                        }
+                    }
+                });
             });
         });
 
@@ -633,6 +711,18 @@ impl NekoviewApp {
         let neko_dir = self.translate_neko_dir_for(archive_path)?;
         let filename = archive_path.file_name().and_then(|n| n.to_str())?;
         crate::translate::load_ocr_text(&neko_dir, filename, original_index)
+    }
+
+    fn save_translated_text_for(&self, archive_path: &std::path::Path, original_index: usize, lines: &[String]) {
+        let Some(neko_dir) = self.translate_neko_dir_for(archive_path) else { return };
+        let Some(filename) = archive_path.file_name().and_then(|n| n.to_str()) else { return };
+        let _ = crate::translate::save_translated_text(&neko_dir, filename, original_index, lines);
+    }
+
+    fn load_translated_text_for(&self, archive_path: &std::path::Path, original_index: usize) -> Option<Vec<String>> {
+        let neko_dir = self.translate_neko_dir_for(archive_path)?;
+        let filename = archive_path.file_name().and_then(|n| n.to_str())?;
+        crate::translate::load_translated_text(&neko_dir, filename, original_index)
     }
 
     /// 現在のアーカイブに対応するOCR txtフォルダをOSのファイラーで開く
