@@ -1057,22 +1057,6 @@ impl Lang {
         }
     }
 
-    pub fn translate_overlay_title(self) -> &'static str {
-        match self {
-            Lang::Japanese => "OCR(実験的)",
-            Lang::English  => "OCR (experimental)",
-            Lang::Chinese  => "OCR(实验性)",
-        }
-    }
-
-    pub fn translate_overlay_run_button(self) -> &'static str {
-        match self {
-            Lang::Japanese => "実行",
-            Lang::English  => "Run",
-            Lang::Chinese  => "运行",
-        }
-    }
-
     pub fn translate_overlay_open_folder_button(self) -> &'static str {
         match self {
             Lang::Japanese => "フォルダを開く",
@@ -1141,24 +1125,6 @@ impl Lang {
             Lang::Japanese => "翻訳連携は未実装です",
             Lang::English  => "Translation backend not implemented yet",
             Lang::Chinese  => "翻译功能尚未实现",
-        }
-    }
-
-    /// 見開き時、2ページぶんの結果を「ページ数XX:」ラベルで区切って表示するための見出し。
-    /// ページ区切り・ラベル付けは常にアプリ側で行う（モデルの自己申告に頼らない）。
-    pub fn translate_overlay_page_label(self, page_number: usize) -> String {
-        match self {
-            Lang::Japanese => format!("ページ数{page_number}:"),
-            Lang::English  => format!("Page {page_number}:"),
-            Lang::Chinese  => format!("第{page_number}页:"),
-        }
-    }
-
-    pub fn translate_overlay_copy_button(self) -> &'static str {
-        match self {
-            Lang::Japanese => "コピー",
-            Lang::English  => "Copy",
-            Lang::Chinese  => "复制",
         }
     }
 

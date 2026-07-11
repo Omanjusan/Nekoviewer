@@ -354,14 +354,8 @@ pub struct NekoviewApp {
     pub(crate) translate_conn_rx: Option<mpsc::Receiver<crate::translate::ConnCheckMsg>>,
     /// 直近の接続テスト結果表示用（疎通/vision結果の文字列、または失敗理由）。
     pub(crate) translate_conn_status: Option<String>,
-    /// 翻訳機能(実験的): 現在ページのOCR結果（読み順テキスト一覧）。Phase3でページ送り時の
-    /// 自動クリア/キャッシュ読込に置き換える予定。現時点は手動実行のみ。
-    pub(crate) translate_ocr_lines: Vec<String>,
     pub(crate) translate_ocr_rx: Option<mpsc::Receiver<crate::translate::OcrMsg>>,
     pub(crate) translate_ocr_status: Option<String>,
-    /// 現在オーバーレイに表示中の内容がどのページ集合分か(見開き時は2件)。
-    /// ページ送りでこれが変わったら、そのページ用のtxtキャッシュを読み直す。
-    pub(crate) translate_ocr_loaded_keys: Vec<(PathBuf, usize)>,
     /// 実行中のOCRリクエストがどのページ宛てか。結果到着時にそのページ用のtxtへ保存する
     /// （待っている間にユーザーがページ送りしても、要求時点のページへ正しく保存するため）。
     pub(crate) translate_ocr_inflight_key: Option<(PathBuf, usize)>,
@@ -563,10 +557,8 @@ impl NekoviewApp {
             translate_cfg,
             translate_conn_rx: None,
             translate_conn_status: None,
-            translate_ocr_lines: Vec::new(),
             translate_ocr_rx: None,
             translate_ocr_status: None,
-            translate_ocr_loaded_keys: Vec::new(),
             translate_window_open: false,
             translate_window_always_on_top: false,
             translate_child_cursor: None,

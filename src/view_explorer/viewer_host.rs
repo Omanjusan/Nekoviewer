@@ -147,13 +147,15 @@ impl NekoviewApp {
     /// OCR/翻訳子ウィンドウの1フレーム描画。winit_app が子窓の egui パスから呼ぶ。
     /// 左＝OCR原文、右＝翻訳結果（翻訳API未連携のためモック表示）のDIFF風2ペイン。
     pub fn render_translate_window(&mut self, ui: &mut egui::Ui) {
+        let ctx = ui.ctx().clone();
+        self.poll_translate_ocr(&ctx);
+
         if self.translate_child_cursor.is_none() {
             self.translate_child_cursor = self.current_page_keys().into_iter().next();
             self.sync_child_ocr_display();
         }
         self.resync_child_cursor_if_needed();
 
-        let ctx = ui.ctx().clone();
         ui.horizontal(|ui| {
             if ui.small_button("<").clicked() {
                 self.step_child_page(false);
@@ -167,6 +169,11 @@ impl NekoviewApp {
             }
             if ui.small_button(i18n::t().translate_child_retranslate_button()).clicked() {
                 self.translate_ocr_status = Some(i18n::t().translate_child_not_implemented().to_string());
+            }
+            // txtは手動でノイズ取り(誤読訂正・整形)した内容を「翻訳の原本」として
+            // 扱いたいという要望から、OSのファイラーで直接開けるようにしている。
+            if ui.small_button(i18n::t().translate_overlay_open_folder_button()).clicked() {
+                self.open_translate_text_folder();
             }
             ui.separator();
             ui.checkbox(&mut self.translate_window_always_on_top, i18n::t().translate_child_always_on_top_toggle());
@@ -241,7 +248,7 @@ impl NekoviewApp {
         };
 
         self.maybe_autoopen_translate_window();
-        self.draw_translate_overlay(ui.ctx());
+        self.draw_translate_open_button(ui.ctx());
 
         if let Some(slots) = output.save_slots {
             self.viewer_slots = slots;
@@ -468,69 +475,51 @@ impl NekoviewApp {
         self.viewer_focus_requested = true;
     }
 
-    /// 翻訳機能(実験的)の半透明オーバーレイ。URL未設定なら何も描画しない
-    /// （既定では非表示のまま、使わないユーザーの画面に余計なUIを出さない）。
-    /// 位置(四隅)・横幅は設定タブ側の値のみで決まり、ビューアー上での
-    /// ドラッグ・リサイズは行わない（`movable(false)`）。
-    fn draw_translate_overlay(&mut self, ctx: &egui::Context) {
-        if let Some(rx) = &self.translate_ocr_rx {
-            if let Ok(msg) = rx.try_recv() {
-                match msg {
-                    crate::translate::OcrMsg::Result(page) => {
-                        // 要求時点のページへ保存する（待機中にページ送りされても取り違えないよう
-                        // trigger_translate_ocr側で退避しておいたキーを使う）。
-                        if let Some((archive_path, orig)) = self.translate_ocr_inflight_key.take() {
-                            self.save_ocr_text_for(&archive_path, orig, &page.lines);
-                            if self.translate_child_cursor.as_ref() == Some(&(archive_path, orig)) {
-                                self.sync_child_ocr_display();
-                            }
-                        }
-                        self.translate_ocr_status = if page.raw_fallback {
-                            Some(i18n::t().translate_overlay_fallback_notice().to_string())
-                        } else {
-                            None
-                        };
-                        if let Some(next) = self.translate_ocr_queue.pop_front() {
-                            // 見開きの残り1ページを続けて処理する。
-                            self.start_ocr_for(ctx, next);
-                        } else {
-                            // 全ページ完了。表示中の全ページ分をtxtから読み直して結合し直す
-                            // （モデルの自己申告に頼らず、ページ区切り・ラベル付けは常にここで行う）。
-                            self.rebuild_translate_overlay_display();
-                        }
-                    }
-                    crate::translate::OcrMsg::Failed(e) => {
-                        self.translate_ocr_status = Some(format!("{}: {e}", i18n::t().translate_overlay_failed_prefix()));
-                        self.translate_ocr_inflight_key = None;
-                        self.translate_ocr_queue.clear();
+    /// OCRリクエストの完了/失敗をポーリングする。子ウィンドウ（[再取得]ボタン）からの
+    /// リクエストのみが対象（Phase5でビューアー側テストUIの手動実行導線は撤去した）。
+    /// 子ウィンドウが閉じていて誰も呼ばなくても、次に開いたときのrender_translate_windowで
+    /// 追いついて処理される。
+    fn poll_translate_ocr(&mut self, ctx: &egui::Context) {
+        let Some(rx) = &self.translate_ocr_rx else { return };
+        let Ok(msg) = rx.try_recv() else { return };
+        match msg {
+            crate::translate::OcrMsg::Result(page) => {
+                // 要求時点のページへ保存する（待機中にページ送りされても取り違えないよう
+                // trigger_child_ocr_retry側で退避しておいたキーを使う）。
+                if let Some((archive_path, orig)) = self.translate_ocr_inflight_key.take() {
+                    self.save_ocr_text_for(&archive_path, orig, &page.lines);
+                    if self.translate_child_cursor.as_ref() == Some(&(archive_path, orig)) {
+                        self.sync_child_ocr_display();
                     }
                 }
-                self.translate_ocr_rx = None;
+                self.translate_ocr_status = if page.raw_fallback {
+                    Some(i18n::t().translate_overlay_fallback_notice().to_string())
+                } else {
+                    None
+                };
+                if let Some(next) = self.translate_ocr_queue.pop_front() {
+                    self.start_ocr_for(ctx, next);
+                }
+            }
+            crate::translate::OcrMsg::Failed(e) => {
+                self.translate_ocr_status = Some(format!("{}: {e}", i18n::t().translate_overlay_failed_prefix()));
+                self.translate_ocr_inflight_key = None;
+                self.translate_ocr_queue.clear();
             }
         }
+        self.translate_ocr_rx = None;
+    }
 
-        // ページが切り替わったら、そのページ集合用の保存済みtxtを読み直す。
-        // OCR実行中でも切り替え検知は止めない。表示は常に「今見ているページ」に追従させ、
-        // バックグラウンドのOCRは要求時点のページ(translate_ocr_inflight_key)宛てのまま
-        // 独立して進行させ、完了時はtxtへ保存するだけにする。以前はrx生存中ここを丸ごと
-        // 止めていたため、OCR待機中はオーバーレイが古いページの内容のまま固まり、完了時に
-        // 古いキー基準で再構築されて実際の表示とズレる不具合になっていた。
-        let current_keys = self.current_page_keys();
-        if current_keys != self.translate_ocr_loaded_keys {
-            self.translate_ocr_loaded_keys = current_keys;
-            if self.translate_ocr_rx.is_none() {
-                self.translate_ocr_status = None;
-            }
-            self.rebuild_translate_overlay_display();
-        }
-
-        if self.translate_cfg.base_url.trim().is_empty() {
+    /// ビューアー窓側の最小限の導線: 既存txtが無いアーカイブでOCR/翻訳子ウィンドウを
+    /// ユーザーの意思で開くための[翻訳]ボタンのみ（旧テストUIはPhase5で撤去）。
+    /// URL未設定なら何も描画しない。
+    fn draw_translate_open_button(&mut self, ctx: &egui::Context) {
+        if self.translate_window_open || self.translate_cfg.base_url.trim().is_empty() {
             return;
         }
 
         use crate::translate::OverlayCorner;
         let corner = self.translate_cfg.overlay_corner;
-        let width = self.translate_cfg.overlay_width as f32;
         let (anchor, offset) = match corner {
             OverlayCorner::TopLeft => (egui::Align2::LEFT_TOP, egui::vec2(8.0, 8.0)),
             OverlayCorner::TopRight => (egui::Align2::RIGHT_TOP, egui::vec2(-8.0, 8.0)),
@@ -538,77 +527,16 @@ impl NekoviewApp {
             OverlayCorner::BottomRight => (egui::Align2::RIGHT_BOTTOM, egui::vec2(-8.0, -8.0)),
         };
 
-        egui::Area::new(egui::Id::new("translate_overlay"))
+        egui::Area::new(egui::Id::new("translate_open_button"))
             .anchor(anchor, offset)
             .movable(false)
             .show(ctx, |ui| {
-                egui::Frame::popup(ui.style())
-                    .fill(egui::Color32::from_black_alpha(190))
-                    .show(ui, |ui| {
-                        ui.set_width(width);
-                        ui.horizontal(|ui| {
-                            ui.label(egui::RichText::new(i18n::t().translate_overlay_title()).strong());
-                            // OCR/翻訳子ウィンドウ（独立OS窓）を開く導線。既存txtがあれば
-                            // 自動で開くが(maybe_autoopen_translate_window)、無い場合はここで
-                            // ユーザーの意思により開く。
-                            if ui.small_button(i18n::t().translate_open_window_button()).clicked() {
-                                self.translate_window_open = true;
-                            }
-                            if ui.small_button(i18n::t().translate_overlay_run_button()).clicked() {
-                                self.trigger_translate_ocr(ctx);
-                            }
-                            // オーバーレイ内は自前キーボードナビゲーションと競合し、矢印キーでの
-                            // テキスト範囲選択ができないため、範囲選択の代わりに全文コピーボタンを置く。
-                            ui.add_enabled_ui(!self.translate_ocr_lines.is_empty(), |ui| {
-                                if ui.small_button(i18n::t().translate_overlay_copy_button()).clicked() {
-                                    ctx.copy_text(self.translate_ocr_lines.join("\n"));
-                                }
-                            });
-                            // txtは手動でノイズ取り(誤読訂正・整形)した内容を「翻訳の原本」として
-                            // 扱いたいという要望から、OSのファイラーで直接開けるようにしている。
-                            if ui.small_button(i18n::t().translate_overlay_open_folder_button()).clicked() {
-                                self.open_translate_text_folder();
-                            }
-                        });
-                        if let Some(status) = &self.translate_ocr_status {
-                            ui.colored_label(egui::Color32::from_rgb(230, 140, 140), status.as_str());
-                        }
-                        ui.separator();
-                        egui::ScrollArea::vertical()
-                            .max_height(320.0)
-                            .id_salt("translate_overlay_scroll")
-                            .show(ui, |ui| {
-                                // フレーム内側の余白ぶんを差し引き、折返しをオーバーレイ幅に追従させる。
-                                ui.set_width((width - 16.0).max(40.0));
-                                if self.translate_ocr_lines.is_empty() {
-                                    ui.weak(i18n::t().translate_overlay_empty());
-                                } else {
-                                    for line in &self.translate_ocr_lines {
-                                        ui.label(egui::RichText::new(line.as_str()).size(14.0));
-                                        ui.add_space(6.0);
-                                    }
-                                }
-                            });
-                    });
+                egui::Frame::popup(ui.style()).fill(egui::Color32::from_black_alpha(190)).show(ui, |ui| {
+                    if ui.small_button(i18n::t().translate_open_window_button()).clicked() {
+                        self.translate_window_open = true;
+                    }
+                });
             });
-    }
-
-    /// 現在表示中の全ページ(見開き時は2件)に対してOCRリクエストを発火する。
-    /// モデルには常に単独ページの画像を1枚ずつ渡し（結合画像は使わない）、ページの
-    /// 切り分け・「ページ数XX:」ラベル付けはアプリ側(rebuild_translate_overlay_display)
-    /// で行う。モデルに自己申告させると境界判定が信頼できないため。
-    fn trigger_translate_ocr(&mut self, ctx: &egui::Context) {
-        if self.translate_cfg.model.trim().is_empty() {
-            self.translate_ocr_status = Some(i18n::t().translate_overlay_model_missing().to_string());
-            return;
-        }
-        let keys = self.current_page_keys();
-        let Some((first, rest)) = keys.split_first() else {
-            self.translate_ocr_status = Some(i18n::t().translate_overlay_no_page().to_string());
-            return;
-        };
-        self.translate_ocr_queue = rest.to_vec().into();
-        self.start_ocr_for(ctx, first.clone());
     }
 
     /// キュー内の次の1ページ分のOCRリクエストを実際に発火する。
@@ -645,32 +573,6 @@ impl NekoviewApp {
             crate::cache::PageContent::Static(rgba) => Some(rgba.clone()),
             crate::cache::PageContent::Animated(_) => None,
         }
-    }
-
-    /// 表示中の全ページぶんの保存済みtxtを読み込み、「ページ数XX:」ラベル付きで結合した
-    /// 表示用テキストを組み立てる（2ページ以上の時のみラベルを付ける）。
-    /// モデルにページ区切りを申告させず、常にこの関数がラベル付け・結合を行う。
-    fn rebuild_translate_overlay_display(&mut self) {
-        let keys = self.translate_ocr_loaded_keys.clone();
-        let multi = keys.len() > 1;
-        let mut lines = Vec::new();
-        for (path, orig) in &keys {
-            let page_lines = self.load_ocr_text_for(path, *orig).unwrap_or_default();
-            if multi {
-                if !lines.is_empty() {
-                    lines.push(String::new());
-                }
-                lines.push(i18n::t().translate_overlay_page_label(orig + 1));
-            }
-            if page_lines.is_empty() {
-                // 見出しだけで中身が空だと「取りこぼした」ように見えるため、
-                // 未実行であることを明示する（取りこぼしとの区別）。
-                lines.push(i18n::t().translate_overlay_empty().to_string());
-            } else {
-                lines.extend(page_lines);
-            }
-        }
-        self.translate_ocr_lines = lines;
     }
 
     /// アーカイブパスからOCR txt保存先のキャッシュディレクトリを解決する。
