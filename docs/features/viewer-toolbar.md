@@ -29,7 +29,10 @@ todo (E)「見開きボタンをビューアーウィンドウに移動」の実
 
 - ページモード3択はアイコン化＋ホバーツールチップ。採用グリフは「□▌▐」
   （当初候補の ▯(U+25AF)・◧◨(U+25E7/E8) はglyph_auditが豆腐と判定。□▌▐ は
-  Linux では3つとも PrimaryCJK 供給でスタイルが揃う。Windows は要再監査）
+  Linux では3つとも PrimaryCJK 供給でスタイルが揃う。Windows は
+  `toolbar_icon_glyphs_are_available` で豆腐でないことを確認済み（2026-07-11）。
+  ただしPrimaryCJK供給フォントがOS間で異なる（Win: Meiryo系 / Linux: NotoSansCJK）ため
+  スタイル揃いの見た目確認はLinux実機で別途行う）
 - 1P戻す/進むはコンパクトテキスト「-1P」「+1P」のボタンとしてビューアーbarに常設
   （右クリックメニュー移設案は不採用。ASCII のためグリフ監査対象外）
 - ずれ状態表示: オフセット値（-1/0/+1、[spread_offset.rs](../../src/spread_offset.rs)）を
@@ -91,3 +94,15 @@ todo (E)「見開きボタンをビューアーウィンドウに移動」の実
 - ずれ表示の矢印向きマッピング（綴じ方向×オフセット符号の4通り）は実装時に
   実表示で最終確認する
 - アイコングリフの最終選定はglyph_audit拡張テストの両OS結果を見て確定する
+  - **Windows: 確認済み（2026-07-11）**。`cargo test glyph -- --nocapture`
+    （4テスト）は全てpass。`FAVORITE_MARKER_CANDIDATES`全候補・
+    `DEFAULT_BAR_ORDER`のツールバーアイコン（□▌▐⟲⟳📌）ともに
+    ✗豆腐・△空洞は0件（塗り率しきい値0.35未満は`STROKE_STYLE_ALLOWLIST`の
+    ✔♪♫♬のみで許容範囲内）。フォント供給元は`emoji-icon-font`/
+    `NotoEmoji-Regular`（egui組み込み・OS非依存）と`PrimaryCJK`（Meiryo系）
+  - **Linux: 未確認**。`PrimaryCJK`経由で供給される候補
+    （●▲▼◆◢◥、U+25CF/25B2/25BC/25C6/25E2/25E5）はNotoSansCJK供給に
+    変わるためインク塗り率が変動しうる。Wayland環境で同じ
+    `cargo test glyph -- --nocapture`を実行し、この6文字が
+    しきい値0.35を下回らないか確認すること。pass確認後に本項目を
+    「両OS確認済み」に更新し、最終選定を確定する
