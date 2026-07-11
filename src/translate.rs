@@ -35,6 +35,21 @@ pub fn parse_overlay_corner(s: &str) -> OverlayCorner {
     }
 }
 
+/// 翻訳先言語（子ウィンドウのドロップダウンで選択）。原文言語(常に日本語固定、OCRが真実)は
+/// 含めない。検出ロジックは持たず、Nekoviewerが漫画OCR前提であることから固定扱いにしている。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum TargetLang {
+    ChineseSimplified,
+    ChineseTraditional,
+    English,
+    Korean,
+}
+
+impl TargetLang {
+    pub const ALL: [TargetLang; 4] =
+        [TargetLang::ChineseSimplified, TargetLang::ChineseTraditional, TargetLang::English, TargetLang::Korean];
+}
+
 /// 「翻訳機能」設定タブで編集する永続設定。
 #[derive(Clone)]
 pub struct TranslateConfig {

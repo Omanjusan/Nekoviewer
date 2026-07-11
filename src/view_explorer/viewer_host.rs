@@ -170,6 +170,13 @@ impl NekoviewApp {
             if ui.small_button(i18n::t().translate_child_retry_button()).clicked() {
                 self.trigger_child_ocr_retry(&ctx);
             }
+            egui::ComboBox::from_id_salt("translate_child_target_lang")
+                .selected_text(i18n::t().translate_target_lang_label(self.translate_child_target_lang))
+                .show_ui(ui, |ui| {
+                    for lang in crate::translate::TargetLang::ALL {
+                        ui.selectable_value(&mut self.translate_child_target_lang, lang, i18n::t().translate_target_lang_label(lang));
+                    }
+                });
             if ui.small_button(i18n::t().translate_child_retranslate_button()).clicked() {
                 self.translate_ocr_status = Some(i18n::t().translate_child_not_implemented().to_string());
             }

@@ -1128,6 +1128,25 @@ impl Lang {
         }
     }
 
+    /// 翻訳先言語ドロップダウンの表示名。
+    pub fn translate_target_lang_label(self, lang: crate::translate::TargetLang) -> &'static str {
+        use crate::translate::TargetLang;
+        match (self, lang) {
+            (Lang::Japanese, TargetLang::ChineseSimplified)  => "中国語(簡体字)",
+            (Lang::Japanese, TargetLang::ChineseTraditional) => "中国語(繁体字)",
+            (Lang::Japanese, TargetLang::English)            => "英語",
+            (Lang::Japanese, TargetLang::Korean)             => "韓国語",
+            (Lang::English, TargetLang::ChineseSimplified)  => "Chinese (Simplified)",
+            (Lang::English, TargetLang::ChineseTraditional) => "Chinese (Traditional)",
+            (Lang::English, TargetLang::English)            => "English",
+            (Lang::English, TargetLang::Korean)             => "Korean",
+            (Lang::Chinese, TargetLang::ChineseSimplified)  => "简体中文",
+            (Lang::Chinese, TargetLang::ChineseTraditional) => "繁体中文",
+            (Lang::Chinese, TargetLang::English)            => "英语",
+            (Lang::Chinese, TargetLang::Korean)             => "韩语",
+        }
+    }
+
     pub fn translate_overlay_running(self) -> &'static str {
         match self {
             Lang::Japanese => "解析中…（モデル未ロード時は数十秒以上かかることがあります）",
