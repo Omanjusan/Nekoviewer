@@ -373,6 +373,11 @@ pub struct NekoviewApp {
     /// OCR/翻訳子ウィンドウ（独立OS窓）の表示状態。既存txtが1P分でも残っていれば
     /// 自動で開き、無ければビューアー部の[翻訳]ボタンでユーザーが開く。
     pub(crate) translate_window_open: bool,
+    /// OCR/翻訳子ウィンドウが現在フォーカスしている単一ページ。見開き中は親の可視2ページの
+    /// うちどちらかを指す。親の可視集合に含まれなくなったら(=親が別に動いた)先頭へ再同期する。
+    pub(crate) translate_child_cursor: Option<(PathBuf, usize)>,
+    /// 子ウィンドウ左ペイン(OCR原文)の表示内容。`translate_child_cursor`のページ分のtxt。
+    pub(crate) translate_child_ocr_lines: Vec<String>,
     /// 直近に自動オープン判定を行ったアーカイブパス（同一アーカイブ内での毎フレーム
     /// 再チェックを避けるためのキャッシュ）。
     pub(crate) translate_window_autocheck_done_for: Option<PathBuf>,
@@ -408,6 +413,10 @@ pub struct NekoviewApp {
     status_update_requested: Arc<std::sync::atomic::AtomicBool>,
     /// バックグラウンドワーカーから ROOT を起こす（イベント駆動再描画）ために保持する ctx
     egui_ctx: egui::Context,
+    /// ビューアー窓自身の ctx（render_viewer 毎フレーム更新）。OCR/翻訳子ウィンドウから
+    /// ページ送りで共有 ViewerState を書き換えた際、独立 Context のビューアー窓を
+    /// 起こす（request_repaint）ために保持する。
+    viewer_egui_ctx: Option<egui::Context>,
     /// フェーズ6: viewer_cfg.redecode_trigger_seq のうち処理済みの値（変化検知用）
     resize_redecode_last_seq: u64,
     /// フェーズ6: デバウンス期限（この時刻を過ぎたら再デコード発火）。None = 待ち無し
@@ -556,6 +565,8 @@ impl NekoviewApp {
             translate_ocr_status: None,
             translate_ocr_loaded_keys: Vec::new(),
             translate_window_open: false,
+            translate_child_cursor: None,
+            translate_child_ocr_lines: Vec::new(),
             translate_window_autocheck_done_for: None,
             translate_ocr_inflight_key: None,
             translate_ocr_queue: std::collections::VecDeque::new(),
@@ -580,6 +591,7 @@ impl NekoviewApp {
             last_status_update: std::time::Instant::now(),
             status_update_requested: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             egui_ctx: ctx,
+            viewer_egui_ctx: None,
             resize_redecode_last_seq: viewer_cfg.redecode_trigger_seq,
             resize_redecode_deadline: None,
             decode_target: Some(max_decode_target),

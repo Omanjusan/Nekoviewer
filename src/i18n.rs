@@ -1090,6 +1090,51 @@ impl Lang {
         }
     }
 
+    /// 子ウィンドウ左ペインの見出し(OCR原文)。
+    pub fn translate_child_ocr_pane_title(self) -> &'static str {
+        match self {
+            Lang::Japanese => "OCR原文",
+            Lang::English  => "OCR text",
+            Lang::Chinese  => "OCR原文",
+        }
+    }
+
+    /// 子ウィンドウ右ペインの見出し(翻訳結果)。
+    pub fn translate_child_translation_pane_title(self) -> &'static str {
+        match self {
+            Lang::Japanese => "翻訳結果",
+            Lang::English  => "Translation",
+            Lang::Chinese  => "翻译结果",
+        }
+    }
+
+    /// 子ウィンドウの[再取得]ボタン(1P単位でOCRを再実行)。
+    pub fn translate_child_retry_button(self) -> &'static str {
+        match self {
+            Lang::Japanese => "再取得",
+            Lang::English  => "Retry OCR",
+            Lang::Chinese  => "重新识别",
+        }
+    }
+
+    /// 子ウィンドウの[再翻訳]ボタン(モック、実処理未実装)。
+    pub fn translate_child_retranslate_button(self) -> &'static str {
+        match self {
+            Lang::Japanese => "再翻訳",
+            Lang::English  => "Re-translate",
+            Lang::Chinese  => "重新翻译",
+        }
+    }
+
+    /// 翻訳連携が未実装であることを示すメッセージ(モックボタン用)。
+    pub fn translate_child_not_implemented(self) -> &'static str {
+        match self {
+            Lang::Japanese => "翻訳連携は未実装です",
+            Lang::English  => "Translation backend not implemented yet",
+            Lang::Chinese  => "翻译功能尚未实现",
+        }
+    }
+
     /// 見開き時、2ページぶんの結果を「ページ数XX:」ラベルで区切って表示するための見出し。
     /// ページ区切り・ラベル付けは常にアプリ側で行う（モデルの自己申告に頼らない）。
     pub fn translate_overlay_page_label(self, page_number: usize) -> String {

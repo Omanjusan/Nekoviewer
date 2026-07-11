@@ -64,17 +64,137 @@ impl NekoviewApp {
         }
     }
 
+    /// OCR/翻訳子ウィンドウ用: 見開き内の2ページを子カーソルだけで行き来し、
+    /// 両方見終わった時にだけ親を実際に1見開き分進める（親のオフセットには一切触れない）。
+    /// シングルページモードは可視集合が常に1件なので、毎回親を直接1P送りする＝完全同期。
+    fn step_child_page(&mut self, forward: bool) {
+        let keys = self.current_page_keys();
+        if keys.is_empty() { return; }
+        let cur_idx = self.translate_child_cursor.as_ref()
+            .and_then(|cur| keys.iter().position(|k| k == cur))
+            .unwrap_or(0);
+        let last_idx = keys.len() - 1;
+        let need_parent_advance = if forward { cur_idx >= last_idx } else { cur_idx == 0 };
+
+        if need_parent_advance {
+            // アーカイブ端では advance_spread_step が境界ガードで何もしないことがある。
+            // その場合は「親が実際には動いていない」ので、反対側のページへカーソルを
+            // 飛ばしてはいけない（無条件フリップになっていたのが不具合の原因）。
+            let moved = {
+                let mut viewer_guard = self.viewer.lock().unwrap();
+                let Some(viewer) = viewer_guard.as_mut() else { return };
+                let before = viewer.spread_lo();
+                let total = viewer.entries().len();
+                viewer.advance_spread_step(total, forward);
+                viewer.spread_lo() != before
+            };
+            if moved {
+                // 独立Contextのビューアー窓を起こして、書き換えた表示ページを即座に反映させる
+                // （でないと次にビューアー窓側で入力が起きるまで再描画されない）。
+                if let Some(ctx) = &self.viewer_egui_ctx {
+                    ctx.request_repaint();
+                }
+                let new_keys = self.current_page_keys();
+                self.translate_child_cursor = if forward { new_keys.first().cloned() } else { new_keys.last().cloned() };
+            }
+        } else {
+            let next_idx = if forward { cur_idx + 1 } else { cur_idx - 1 };
+            self.translate_child_cursor = keys.get(next_idx).cloned();
+        }
+        self.translate_ocr_status = None;
+        self.sync_child_ocr_display();
+    }
+
+    /// `translate_child_cursor`が親の現在の可視集合に含まれなくなっていたら
+    /// （＝子ウィンドウの操作以外で親が動いた）先頭ページへ再同期する。
+    fn resync_child_cursor_if_needed(&mut self) {
+        let keys = self.current_page_keys();
+        let still_valid = self.translate_child_cursor.as_ref().is_some_and(|cur| keys.contains(cur));
+        if !still_valid {
+            self.translate_child_cursor = keys.first().cloned();
+            self.sync_child_ocr_display();
+        }
+    }
+
+    /// `translate_child_cursor`が指すページの保存済みOCR txtを読み直し、左ペイン表示を更新する。
+    fn sync_child_ocr_display(&mut self) {
+        self.translate_child_ocr_lines = match self.translate_child_cursor.clone() {
+            Some((path, orig)) => self.load_ocr_text_for(&path, orig).unwrap_or_default(),
+            None => Vec::new(),
+        };
+    }
+
+    /// 子ウィンドウの[再取得]: `translate_child_cursor`が指す1ページのみOCRを再実行する。
+    /// 既存のtxt直置きパイプライン(start_ocr_for/translate_ocr_rx)をそのまま流用する。
+    fn trigger_child_ocr_retry(&mut self, ctx: &egui::Context) {
+        if self.translate_cfg.model.trim().is_empty() {
+            self.translate_ocr_status = Some(i18n::t().translate_overlay_model_missing().to_string());
+            return;
+        }
+        let Some(key) = self.translate_child_cursor.clone() else {
+            self.translate_ocr_status = Some(i18n::t().translate_overlay_no_page().to_string());
+            return;
+        };
+        self.translate_ocr_queue.clear();
+        self.start_ocr_for(ctx, key);
+    }
+
     /// OCR/翻訳子ウィンドウの1フレーム描画。winit_app が子窓の egui パスから呼ぶ。
-    /// Phase1時点ではプレースホルダのみ。中身の左右分割表示はPhase3で実装する。
+    /// 左＝OCR原文、右＝翻訳結果（翻訳API未連携のためモック表示）のDIFF風2ペイン。
     pub fn render_translate_window(&mut self, ui: &mut egui::Ui) {
-        ui.label(i18n::t().translate_overlay_title());
+        if self.translate_child_cursor.is_none() {
+            self.translate_child_cursor = self.current_page_keys().into_iter().next();
+            self.sync_child_ocr_display();
+        }
+        self.resync_child_cursor_if_needed();
+
+        let ctx = ui.ctx().clone();
+        ui.horizontal(|ui| {
+            if ui.small_button("<").clicked() {
+                self.step_child_page(false);
+            }
+            if ui.small_button(">").clicked() {
+                self.step_child_page(true);
+            }
+            ui.separator();
+            if ui.small_button(i18n::t().translate_child_retry_button()).clicked() {
+                self.trigger_child_ocr_retry(&ctx);
+            }
+            if ui.small_button(i18n::t().translate_child_retranslate_button()).clicked() {
+                self.translate_ocr_status = Some(i18n::t().translate_child_not_implemented().to_string());
+            }
+        });
+        if let Some(status) = &self.translate_ocr_status {
+            ui.colored_label(egui::Color32::from_rgb(230, 140, 140), status.as_str());
+        }
         ui.separator();
-        ui.weak(i18n::t().translate_overlay_empty());
+
+        ui.columns(2, |columns| {
+            columns[0].vertical(|ui| {
+                ui.label(egui::RichText::new(i18n::t().translate_child_ocr_pane_title()).strong());
+                egui::ScrollArea::vertical().id_salt("translate_child_ocr_scroll").show(ui, |ui| {
+                    if self.translate_child_ocr_lines.is_empty() {
+                        ui.weak(i18n::t().translate_overlay_empty());
+                    } else {
+                        for line in &self.translate_child_ocr_lines {
+                            ui.label(line.as_str());
+                        }
+                    }
+                });
+            });
+            columns[1].vertical(|ui| {
+                ui.label(egui::RichText::new(i18n::t().translate_child_translation_pane_title()).strong());
+                ui.weak(i18n::t().translate_child_not_implemented());
+            });
+        });
     }
 
     /// ビューアー独立窓の 1 フレーム描画。winit_app がビューアー窓の egui パスから呼ぶ。
     /// 旧 `draw_viewer_viewport` の deferred callback 相当（ページ供給 → show → nav/close 処理）。
     pub fn render_viewer(&mut self, ui: &mut egui::Ui) {
+        // OCR/翻訳子ウィンドウから共有 ViewerState 経由でページ送りされた際に、独立 Context
+        // のこの窓を起こせるよう毎フレーム自身の ctx を保持しておく。
+        self.viewer_egui_ctx = Some(ui.ctx().clone());
         // フェーズ6-E: poll_resize_redecode()はエクスプローラー窓のlogic()からしか
         // 呼ばれていなかったため、ビューアー窓だけを操作している間はエクスプローラー窓が
         // 再描画されずデバウンスが発火しないバグがあった。ビューアー窓自身の毎フレームでも
@@ -354,6 +474,9 @@ impl NekoviewApp {
                         // trigger_translate_ocr側で退避しておいたキーを使う）。
                         if let Some((archive_path, orig)) = self.translate_ocr_inflight_key.take() {
                             self.save_ocr_text_for(&archive_path, orig, &page.lines);
+                            if self.translate_child_cursor.as_ref() == Some(&(archive_path, orig)) {
+                                self.sync_child_ocr_display();
+                            }
                         }
                         self.translate_ocr_status = if page.raw_fallback {
                             Some(i18n::t().translate_overlay_fallback_notice().to_string())
