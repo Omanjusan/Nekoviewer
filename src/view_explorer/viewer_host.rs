@@ -148,6 +148,9 @@ impl NekoviewApp {
     /// 左＝OCR原文、右＝翻訳結果（翻訳API未連携のためモック表示）のDIFF風2ペイン。
     pub fn render_translate_window(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
+        // ビューアー窓側の通常のページ送りでこの独立Contextの窓を起こせるよう、
+        // 毎フレーム自身の ctx を保持しておく（render_viewer側の対応処理と対）。
+        self.translate_egui_ctx = Some(ctx.clone());
         self.poll_translate_ocr(&ctx);
 
         if self.translate_child_cursor.is_none() {
@@ -201,6 +204,12 @@ impl NekoviewApp {
                 ui.weak(i18n::t().translate_child_not_implemented());
             });
         });
+
+        // ビューアー窓からのcross-context起床(request_repaint)が環境によっては効かない
+        // ケースがある（Wayland: フォーカスの無い窓は自然な再描画要因が無く休止しきってしまい、
+        // 明示的な起床だけに頼ると反映が遅れる/効かないことがある）ため、ステータス窓と同じ
+        // 「開いている間は自前で定期的に起こし続ける」方式を保険として併用する。
+        ctx.request_repaint_after(std::time::Duration::from_millis(400));
     }
 
     /// ビューアー独立窓の 1 フレーム描画。winit_app がビューアー窓の egui パスから呼ぶ。
@@ -249,6 +258,17 @@ impl NekoviewApp {
 
         self.maybe_autoopen_translate_window();
         self.draw_translate_open_button(ui.ctx());
+
+        // ビューアー窓自身の通常操作（矢印キー等、viewer.show()内部で完結しoutput.navには
+        // 出てこない）でページが変わった場合、独立Contextの子ウィンドウには何も伝わらず
+        // フォーカスするまで再描画されない。可視ページ集合の変化を検知して明示的に起こす。
+        let current_keys_for_translate = self.current_page_keys();
+        if current_keys_for_translate != self.translate_last_seen_parent_keys {
+            self.translate_last_seen_parent_keys = current_keys_for_translate;
+            if let Some(ctx) = &self.translate_egui_ctx {
+                ctx.request_repaint();
+            }
+        }
 
         if let Some(slots) = output.save_slots {
             self.viewer_slots = slots;

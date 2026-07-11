@@ -414,6 +414,12 @@ pub struct NekoviewApp {
     /// ページ送りで共有 ViewerState を書き換えた際、独立 Context のビューアー窓を
     /// 起こす（request_repaint）ために保持する。
     viewer_egui_ctx: Option<egui::Context>,
+    /// OCR/翻訳子ウィンドウ自身の ctx（render_translate_window 毎フレーム更新）。
+    /// ビューアー窓側の通常のページ送り（子ウィンドウの操作を介さない）で子ウィンドウを
+    /// 起こす（request_repaint）ために保持する。
+    translate_egui_ctx: Option<egui::Context>,
+    /// 直近にrender_viewerが観測した親の可視ページ集合。変化を検知したら子ウィンドウを起こす。
+    translate_last_seen_parent_keys: Vec<(PathBuf, usize)>,
     /// フェーズ6: viewer_cfg.redecode_trigger_seq のうち処理済みの値（変化検知用）
     resize_redecode_last_seq: u64,
     /// フェーズ6: デバウンス期限（この時刻を過ぎたら再デコード発火）。None = 待ち無し
@@ -588,6 +594,8 @@ impl NekoviewApp {
             status_update_requested: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             egui_ctx: ctx,
             viewer_egui_ctx: None,
+            translate_egui_ctx: None,
+            translate_last_seen_parent_keys: Vec::new(),
             resize_redecode_last_seq: viewer_cfg.redecode_trigger_seq,
             resize_redecode_deadline: None,
             decode_target: Some(max_decode_target),
