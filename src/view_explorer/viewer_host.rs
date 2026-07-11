@@ -561,7 +561,7 @@ impl NekoviewApp {
 
     /// キュー内の次の1ページ分のOCRリクエストを実際に発火する。
     fn start_ocr_for(&mut self, ctx: &egui::Context, key: (std::path::PathBuf, usize)) {
-        let Some(rgba) = self.page_rgba_at(&key.0, key.1) else {
+        let Some(rgba) = self.full_res_page_rgba_at(&key.0, key.1) else {
             self.translate_ocr_status = Some(i18n::t().translate_overlay_no_page().to_string());
             return;
         };
@@ -585,14 +585,28 @@ impl NekoviewApp {
         viewer.visible_original_indices().into_iter().map(|orig| (path.clone(), orig)).collect()
     }
 
-    /// 指定ページのRGBA画像をページキャッシュから取得する。
-    /// アニメーションページはOCR対象外（先頭フレームのみでは意味が薄いため今回は非対応）。
-    fn page_rgba_at(&self, archive_path: &std::path::Path, original_index: usize) -> Option<image::RgbaImage> {
-        let cache = self.page_cache.lock().unwrap();
-        match cache.get(&archive_path.to_path_buf(), original_index)? {
-            crate::cache::PageContent::Static(rgba) => Some(rgba.clone()),
-            crate::cache::PageContent::Animated(_) => None,
-        }
+    /// OCR用: 表示解像度に依存しない原寸デコードで指定ページのRGBA画像を取得する。
+    /// 通常表示用のpage_cache（ビューアー窓の実描画サイズへ縮小済み）とは別に、都度
+    /// アーカイブから直接デコードする（OCR専用、呼び出し頻度が低いため通常のprefetch/
+    /// キャッシュ経路には乗せない）。アニメーションページはOCR対象外。
+    fn full_res_page_rgba_at(&self, archive_path: &std::path::Path, original_index: usize) -> Option<image::RgbaImage> {
+        let entry_name = {
+            let viewer_guard = self.viewer.lock().unwrap();
+            let viewer = viewer_guard.as_ref()?;
+            if viewer.archive_path().as_path() != archive_path { return None; }
+            viewer.entry_name_for(original_index)?.to_string()
+        };
+        let filter = self.config.viewer_filter.to_image_filter();
+        let exif_enabled = self.viewer_cfg.lock().unwrap().exif_orientation_enabled;
+        crate::cache::decode_full_res_static_page(
+            archive_path,
+            &entry_name,
+            filter,
+            self.cache_budget_bytes,
+            self.anim_ring_bounds,
+            self.config.anim_frame_hard_limit_mb * 1024 * 1024,
+            exif_enabled,
+        )
     }
 
     /// アーカイブパスからOCR txt保存先のキャッシュディレクトリを解決する。
