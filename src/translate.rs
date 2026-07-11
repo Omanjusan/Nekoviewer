@@ -184,29 +184,19 @@ fn fetch_models(client: &reqwest::blocking::Client, base_url: &str) -> Result<Ve
     Ok(parsed.data.into_iter().map(|m| m.id).collect())
 }
 
-/// 画像1枚 + プロンプトを`/v1/chat/completions`へ投げ、応答本文(content)を返す。
-/// vision能力チェック・実OCRリクエストの両方から共有する。
-fn send_chat_with_image(
+/// `/v1/chat/completions`へ投げ、応答本文(content)を返す。vision能力チェック・実OCR
+/// リクエスト・翻訳リクエストで共有する（contentパーツの組み立てだけ呼び出し側で変える）。
+fn send_chat(
     client: &reqwest::blocking::Client,
     base_url: &str,
     model: &str,
-    prompt: &str,
-    image_data_url: String,
+    content: Vec<ChatContentPart>,
     max_tokens: Option<u32>,
 ) -> Result<String, String> {
     let url = format!("{}/v1/chat/completions", base_url.trim_end_matches('/'));
     let req = ChatRequest {
         model,
-        messages: vec![ChatMessage {
-            role: "user",
-            content: vec![
-                ChatContentPart::Text(ChatMessageContentText { kind: "text", text: prompt }),
-                ChatContentPart::Image(ChatMessageContentImage {
-                    kind: "image_url",
-                    image_url: ImageUrl { url: image_data_url },
-                }),
-            ],
-        }],
+        messages: vec![ChatMessage { role: "user", content }],
         max_tokens,
     };
     let resp = client.post(&url).json(&req).send().map_err(|e| format!("接続失敗: {e}"))?;
@@ -223,18 +213,28 @@ fn send_chat_with_image(
         None => String::new(),
     };
     if content.trim().is_empty() {
-        return Err("応答が空でした（画像入力に対応していない可能性、またはトークン上限到達）".to_string());
+        return Err("応答が空でした（入力形式に対応していない可能性、またはトークン上限到達）".to_string());
     }
     Ok(content)
 }
 
+fn text_and_image_content(prompt: &str, image_data_url: String) -> Vec<ChatContentPart<'_>> {
+    vec![
+        ChatContentPart::Text(ChatMessageContentText { kind: "text", text: prompt }),
+        ChatContentPart::Image(ChatMessageContentImage { kind: "image_url", image_url: ImageUrl { url: image_data_url } }),
+    ]
+}
+
+fn text_only_content(prompt: &str) -> Vec<ChatContentPart<'_>> {
+    vec![ChatContentPart::Text(ChatMessageContentText { kind: "text", text: prompt })]
+}
+
 fn check_vision(client: &reqwest::blocking::Client, base_url: &str, model: &str) -> Result<String, String> {
-    send_chat_with_image(
+    send_chat(
         client,
         base_url,
         model,
-        "この画像は何色？一言で答えて",
-        format!("data:image/png;base64,{PROBE_IMAGE_PNG_BASE64}"),
+        text_and_image_content("この画像は何色？一言で答えて", format!("data:image/png;base64,{PROBE_IMAGE_PNG_BASE64}")),
         None,
     )
 }
@@ -322,18 +322,19 @@ pub enum OcrMsg {
     Failed(String),
 }
 
-/// モデル応答本文からOCR結果を取り出す。まずJSON配列としてパースを試み、失敗したら
+/// モデル応答本文から文字列配列を取り出す。まずJSON配列としてパースを試み、失敗したら
 /// 応答中の最初の`[`〜最後の`]`を抜き出して再試行（コードフェンス等の前後余分な文字に対処）、
-/// それでも失敗したら非空行への単純分割にフォールバックする。
-fn parse_ocr_content(content: &str) -> OcrPageResult {
+/// それでも失敗したら非空行への単純分割にフォールバックする。戻り値の2番目はフォールバックか否か。
+/// OCR・翻訳の両リクエストで応答形式(説明文なしJSON配列)を共通にしているため共有する。
+fn parse_string_array_or_lines(content: &str) -> (Vec<String>, bool) {
     let trimmed = content.trim();
     if let Ok(lines) = serde_json::from_str::<Vec<String>>(trimmed) {
-        return OcrPageResult { lines, raw_fallback: false };
+        return (lines, false);
     }
     if let (Some(start), Some(end)) = (trimmed.find('['), trimmed.rfind(']')) {
         if start < end {
             if let Ok(lines) = serde_json::from_str::<Vec<String>>(&trimmed[start..=end]) {
-                return OcrPageResult { lines, raw_fallback: false };
+                return (lines, false);
             }
         }
     }
@@ -343,7 +344,12 @@ fn parse_ocr_content(content: &str) -> OcrPageResult {
         .filter(|l| !l.is_empty())
         .map(str::to_string)
         .collect();
-    OcrPageResult { lines, raw_fallback: true }
+    (lines, true)
+}
+
+fn parse_ocr_content(content: &str) -> OcrPageResult {
+    let (lines, raw_fallback) = parse_string_array_or_lines(content);
+    OcrPageResult { lines, raw_fallback }
 }
 
 /// `image::DynamicImage` をPNGへエンコードしてBase64文字列にする（data URL用）。
@@ -363,12 +369,79 @@ pub fn spawn_ocr_request(ctx: egui::Context, base_url: String, model: String, im
         let result = (|| -> Result<OcrPageResult, String> {
             let data_url_body = encode_image_png_base64(&image)?;
             let client = http_client(Duration::from_secs(OCR_REQUEST_TIMEOUT_SECS))?;
-            let content = send_chat_with_image(&client, &base_url, &model, OCR_PROMPT, format!("data:image/png;base64,{data_url_body}"), Some(OCR_MAX_TOKENS))?;
+            let content = send_chat(&client, &base_url, &model, text_and_image_content(OCR_PROMPT, format!("data:image/png;base64,{data_url_body}")), Some(OCR_MAX_TOKENS))?;
             Ok(parse_ocr_content(&content))
         })();
         match result {
             Ok(page) => { let _ = tx.send(OcrMsg::Result(page)); }
             Err(e) => { let _ = tx.send(OcrMsg::Failed(e)); }
+        }
+        ctx.request_repaint();
+    });
+    rx
+}
+
+// ── 翻訳リクエスト(Phase 6-B) ────────────────────────────────────────────
+
+/// 翻訳リクエストのタイムアウト。画像を含まないテキスト専用リクエストなのでOCRより短めでよい。
+const TRANSLATE_REQUEST_TIMEOUT_SECS: u64 = 120;
+/// 翻訳リクエストの応答トークン上限。OCRと同じくreasoningモデルの保険として大きめにしておく。
+const TRANSLATE_MAX_TOKENS: u32 = 4096;
+
+fn target_lang_prompt_name(lang: TargetLang) -> &'static str {
+    match lang {
+        TargetLang::ChineseSimplified => "Simplified Chinese (简体中文)",
+        TargetLang::ChineseTraditional => "Traditional Chinese (繁體中文)",
+        TargetLang::English => "English",
+        TargetLang::Korean => "Korean (한국어)",
+    }
+}
+
+/// 翻訳先言語ごとに変わる部分だけプロンプトへ差し込む。原文はOCR結果の行配列をそのまま
+/// JSON化して埋め込み、モデルには「同じ要素数・同じ順序で翻訳したJSON配列のみ」を求める
+/// （OCRの読み順維持と同じ考え方で、モデルに構造判断をさせない）。
+fn build_translate_prompt(lines: &[String], target: TargetLang) -> String {
+    let lang_name = target_lang_prompt_name(target);
+    let source_json = serde_json::to_string(lines).unwrap_or_default();
+    format!(
+        "以下は日本語の漫画の吹き出しテキストをJSON配列にしたものです。各要素を{lang_name}へ翻訳してください。\
+出力は説明文なしで、原文と同じ要素数・同じ順序のJSON配列のみを返してください。\
+原文: {source_json}"
+    )
+}
+
+/// 翻訳結果1ページぶん。
+pub struct TranslatePageResult {
+    /// OCR原文と同じ順序に対応した翻訳済みテキスト一覧。
+    pub lines: Vec<String>,
+    /// true = JSON配列としてのパースに失敗し、応答本文を行分割しただけのフォールバック。
+    pub raw_fallback: bool,
+}
+
+pub enum TranslateMsg {
+    Result(TranslatePageResult),
+    Failed(String),
+}
+
+fn parse_translate_content(content: &str) -> TranslatePageResult {
+    let (lines, raw_fallback) = parse_string_array_or_lines(content);
+    TranslatePageResult { lines, raw_fallback }
+}
+
+/// 1ページぶんの翻訳リクエストをバックグラウンドスレッドで実行する。画像は送らず、
+/// OCR原文の行配列だけをテキストとして渡す（OCRと翻訳は完全に独立した処理単位）。
+pub fn spawn_translate_request(ctx: egui::Context, base_url: String, model: String, lines: Vec<String>, target: TargetLang) -> mpsc::Receiver<TranslateMsg> {
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let result = (|| -> Result<TranslatePageResult, String> {
+            let client = http_client(Duration::from_secs(TRANSLATE_REQUEST_TIMEOUT_SECS))?;
+            let prompt = build_translate_prompt(&lines, target);
+            let content = send_chat(&client, &base_url, &model, text_only_content(&prompt), Some(TRANSLATE_MAX_TOKENS))?;
+            Ok(parse_translate_content(&content))
+        })();
+        match result {
+            Ok(page) => { let _ = tx.send(TranslateMsg::Result(page)); }
+            Err(e) => { let _ = tx.send(TranslateMsg::Failed(e)); }
         }
         ctx.request_repaint();
     });
