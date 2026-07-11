@@ -45,6 +45,11 @@ impl NekoviewApp {
         self.translate_window_open = false;
     }
 
+    /// OCR/翻訳子ウィンドウの最前面固定トグルが有効か（winit_app が WindowLevel 反映に使う）。
+    pub fn translate_window_always_on_top(&self) -> bool {
+        self.translate_window_always_on_top
+    }
+
     /// アーカイブ内に1P分でもOCR txtが残っているか。
     fn archive_has_any_ocr_text(&self, archive_path: &std::path::Path) -> bool {
         let Some(neko_dir) = self.translate_neko_dir_for(archive_path) else { return false };
@@ -163,6 +168,8 @@ impl NekoviewApp {
             if ui.small_button(i18n::t().translate_child_retranslate_button()).clicked() {
                 self.translate_ocr_status = Some(i18n::t().translate_child_not_implemented().to_string());
             }
+            ui.separator();
+            ui.checkbox(&mut self.translate_window_always_on_top, i18n::t().translate_child_always_on_top_toggle());
         });
         if let Some(status) = &self.translate_ocr_status {
             ui.colored_label(egui::Color32::from_rgb(230, 140, 140), status.as_str());

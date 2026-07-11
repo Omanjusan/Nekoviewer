@@ -373,6 +373,9 @@ pub struct NekoviewApp {
     /// OCR/翻訳子ウィンドウ（独立OS窓）の表示状態。既存txtが1P分でも残っていれば
     /// 自動で開き、無ければビューアー部の[翻訳]ボタンでユーザーが開く。
     pub(crate) translate_window_open: bool,
+    /// OCR/翻訳子ウィンドウの最前面固定トグル。低解像度モニターでウィンドウが混線する
+    /// 環境向け。ONのときは本体窓の操作を奪ってよい（子側優先の設計）。
+    pub(crate) translate_window_always_on_top: bool,
     /// OCR/翻訳子ウィンドウが現在フォーカスしている単一ページ。見開き中は親の可視2ページの
     /// うちどちらかを指す。親の可視集合に含まれなくなったら(=親が別に動いた)先頭へ再同期する。
     pub(crate) translate_child_cursor: Option<(PathBuf, usize)>,
@@ -565,6 +568,7 @@ impl NekoviewApp {
             translate_ocr_status: None,
             translate_ocr_loaded_keys: Vec::new(),
             translate_window_open: false,
+            translate_window_always_on_top: false,
             translate_child_cursor: None,
             translate_child_ocr_lines: Vec::new(),
             translate_window_autocheck_done_for: None,

@@ -1126,6 +1126,15 @@ impl Lang {
         }
     }
 
+    /// 子ウィンドウの最前面固定トグル。
+    pub fn translate_child_always_on_top_toggle(self) -> &'static str {
+        match self {
+            Lang::Japanese => "最前面固定",
+            Lang::English  => "Always on top",
+            Lang::Chinese  => "始终置顶",
+        }
+    }
+
     /// 翻訳連携が未実装であることを示すメッセージ(モックボタン用)。
     pub fn translate_child_not_implemented(self) -> &'static str {
         match self {

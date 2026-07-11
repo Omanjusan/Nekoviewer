@@ -280,6 +280,9 @@ struct WinitApp {
     status: Option<EguiWindow>,
     /// OCR/翻訳子ウィンドウ（1P担当、独立OS窓）。
     translate: Option<EguiWindow>,
+    /// 直近に`translate`窓へ適用したWindowLevel（最前面固定トグル）。
+    /// 窓生成のたびNormalへ戻るため、生成時は必ずfalse扱いにする。
+    translate_always_on_top_applied: bool,
     app: Option<NekoviewApp>,
 }
 
@@ -297,6 +300,7 @@ impl WinitApp {
             viewer: None,
             status: None,
             translate: None,
+            translate_always_on_top_applied: false,
             app: None,
         }
     }
@@ -408,10 +412,26 @@ impl WinitApp {
             let window = Arc::new(event_loop.create_window(attrs).expect("create translate window"));
             let win = make_egui_window(window, translate_viewport_id(), &self.proxy);
             self.translate = Some(win);
+            self.translate_always_on_top_applied = false;
             crate::log_common!("[translate] window created");
         } else if !want && have {
             self.translate = None;
             crate::log_common!("[translate] window destroyed");
+        }
+
+        // 最前面固定トグルの反映。低解像度モニターでのウィンドウ混線対策で、
+        // ONのときは本体窓の操作を奪ってよい（子側優先で仕様確定済み）。
+        if let Some(win) = self.translate.as_ref() {
+            let want_top = app.translate_window_always_on_top();
+            if want_top != self.translate_always_on_top_applied {
+                let level = if want_top {
+                    winit::window::WindowLevel::AlwaysOnTop
+                } else {
+                    winit::window::WindowLevel::Normal
+                };
+                win.window.set_window_level(level);
+                self.translate_always_on_top_applied = want_top;
+            }
         }
     }
 
