@@ -312,18 +312,38 @@ impl NekoviewApp {
             if let Ok(msg) = rx.try_recv() {
                 match msg {
                     crate::translate::OcrMsg::Result(page) => {
-                        self.translate_ocr_lines = page.lines;
+                        self.translate_ocr_lines = page.lines.clone();
                         self.translate_ocr_status = if page.raw_fallback {
                             Some(i18n::t().translate_overlay_fallback_notice().to_string())
                         } else {
                             None
                         };
+                        // 要求時点のページへ保存する（待機中にページ送りされても取り違えないよう
+                        // trigger_translate_ocr側で退避しておいたキーを使う）。
+                        if let Some((archive_path, orig)) = self.translate_ocr_inflight_key.take() {
+                            self.save_ocr_text_for(&archive_path, orig, &page.lines);
+                        }
                     }
                     crate::translate::OcrMsg::Failed(e) => {
                         self.translate_ocr_status = Some(format!("{}: {e}", i18n::t().translate_overlay_failed_prefix()));
+                        self.translate_ocr_inflight_key = None;
                     }
                 }
                 self.translate_ocr_rx = None;
+            }
+        }
+
+        // ページが切り替わったら、そのページ用の保存済みtxtを読み直す（無ければ空表示に戻す）。
+        // OCR実行中(rxが生きている間)は取りこぼし防止のため切り替えを保留する。
+        if self.translate_ocr_rx.is_none() {
+            let current_key = self.current_page_key();
+            if current_key != self.translate_ocr_loaded_key {
+                self.translate_ocr_status = None;
+                self.translate_ocr_lines = current_key
+                    .as_ref()
+                    .and_then(|(path, orig)| self.load_ocr_text_for(path, *orig))
+                    .unwrap_or_default();
+                self.translate_ocr_loaded_key = current_key;
             }
         }
 
@@ -354,6 +374,18 @@ impl NekoviewApp {
                             if ui.small_button(i18n::t().translate_overlay_run_button()).clicked() {
                                 self.trigger_translate_ocr(ctx);
                             }
+                            // オーバーレイ内は自前キーボードナビゲーションと競合し、矢印キーでの
+                            // テキスト範囲選択ができないため、範囲選択の代わりに全文コピーボタンを置く。
+                            ui.add_enabled_ui(!self.translate_ocr_lines.is_empty(), |ui| {
+                                if ui.small_button(i18n::t().translate_overlay_copy_button()).clicked() {
+                                    ctx.copy_text(self.translate_ocr_lines.join("\n"));
+                                }
+                            });
+                            // txtは手動でノイズ取り(誤読訂正・整形)した内容を「翻訳の原本」として
+                            // 扱いたいという要望から、OSのファイラーで直接開けるようにしている。
+                            if ui.small_button(i18n::t().translate_overlay_open_folder_button()).clicked() {
+                                self.open_translate_text_folder();
+                            }
                         });
                         if let Some(status) = &self.translate_ocr_status {
                             ui.colored_label(egui::Color32::from_rgb(230, 140, 140), status.as_str());
@@ -378,40 +410,120 @@ impl NekoviewApp {
             });
     }
 
-    /// 現在ページに対してOCRリクエストを発火する（動作確認用の簡易トリガー。
-    /// ページ/アーカイブ単位のバッチ実行とキャッシュ保存はPhase3で実装する）。
+    /// 現在ページに対してOCRリクエストを発火する（1ページ単位。アーカイブ一括OCRは
+    /// 規模が大きいため今回は見送り、まずページ単位の永続化を優先した）。
     fn trigger_translate_ocr(&mut self, ctx: &egui::Context) {
         if self.translate_cfg.model.trim().is_empty() {
             self.translate_ocr_status = Some(i18n::t().translate_overlay_model_missing().to_string());
             return;
         }
-        let Some(rgba) = self.current_page_rgba() else {
+        let Some(key) = self.current_page_key() else {
             self.translate_ocr_status = Some(i18n::t().translate_overlay_no_page().to_string());
             return;
         };
+        let Some(rgba) = self.current_page_rgba_for_ocr() else {
+            self.translate_ocr_status = Some(i18n::t().translate_overlay_no_page().to_string());
+            return;
+        };
+        let page_mode = self.viewer.lock().unwrap().as_ref()
+            .map(|v| v.current_spread_snapshot().0)
+            .unwrap_or(crate::types::PageMode::Single);
         let image = image::DynamicImage::ImageRgba8(rgba);
         self.translate_ocr_status = Some(i18n::t().translate_overlay_running().to_string());
         self.translate_ocr_lines.clear();
+        self.translate_ocr_inflight_key = Some(key);
         self.translate_ocr_rx = Some(crate::translate::spawn_ocr_request(
             ctx.clone(),
             self.translate_cfg.base_url.clone(),
             self.translate_cfg.model.clone(),
             image,
+            page_mode,
         ));
     }
 
-    /// 現在表示中ページ(見開き時は先頭側)のRGBA画像をページキャッシュから取得する。
-    /// アニメーションページはOCR対象外（先頭フレームのみでは意味が薄いため今回は非対応）。
-    fn current_page_rgba(&self) -> Option<image::RgbaImage> {
+    /// 現在表示中ページ(見開き時は先頭側)を一意に表す(アーカイブパス, original_index)。
+    fn current_page_key(&self) -> Option<(std::path::PathBuf, usize)> {
         let viewer_guard = self.viewer.lock().unwrap();
         let viewer = viewer_guard.as_ref()?;
         let orig = *viewer.visible_original_indices().first()?;
+        Some((viewer.archive_path().clone(), orig))
+    }
+
+    /// OCR送信用の画像を取得する。見開き表示中は「画面に見えている通り」の1枚に
+    /// 左右のページを結合する（indices配列はentries順=[lo, lo+1]で画面左右とは
+    /// 限らないため、綴じ方向(page_mode)で画面左右へ並べ替えてから結合する）。
+    /// 単独ページ判定はentries数(1枚のみ返る)で行う。アニメーションページは非対応。
+    fn current_page_rgba_for_ocr(&self) -> Option<image::RgbaImage> {
+        let viewer_guard = self.viewer.lock().unwrap();
+        let viewer = viewer_guard.as_ref()?;
+        let page_mode = viewer.current_spread_snapshot().0;
+        let indices = viewer.visible_original_indices();
         let path = viewer.archive_path().clone();
         drop(viewer_guard);
+
         let cache = self.page_cache.lock().unwrap();
-        match cache.get(&path, orig)? {
-            crate::cache::PageContent::Static(rgba) => Some(rgba.clone()),
-            crate::cache::PageContent::Animated(_) => None,
+        let get_rgba = |orig: usize| -> Option<image::RgbaImage> {
+            match cache.get(&path, orig)? {
+                crate::cache::PageContent::Static(rgba) => Some(rgba.clone()),
+                crate::cache::PageContent::Animated(_) => None,
+            }
+        };
+
+        match indices.as_slice() {
+            [single] => get_rgba(*single),
+            [lo, hi, ..] => {
+                let (screen_left, screen_right) = match page_mode {
+                    crate::types::PageMode::SpreadLeft => (*lo, *hi),
+                    // SpreadRight(一般的な右綴じ): entries順で先=lo が画面右、後=hiが画面左
+                    // （render_spreadの呼び出し ` render_spread(tex_hi, tex_lo)` に合わせる）。
+                    crate::types::PageMode::SpreadRight => (*hi, *lo),
+                    crate::types::PageMode::Single => (*lo, *lo),
+                };
+                let left = get_rgba(screen_left)?;
+                let right = get_rgba(screen_right)?;
+                Some(compose_side_by_side(&left, &right))
+            }
+            [] => None,
         }
     }
+
+    /// アーカイブパスからOCR txt保存先のキャッシュディレクトリを解決する。
+    /// キャッシュ無効設定(cache_root未設定)の環境ではNone（永続化自体をスキップ）。
+    fn translate_neko_dir_for(&self, archive_path: &std::path::Path) -> Option<std::path::PathBuf> {
+        let dir = archive_path.parent()?;
+        crate::neko_dir::neko_dir_for(dir, &self.config)
+    }
+
+    fn save_ocr_text_for(&self, archive_path: &std::path::Path, original_index: usize, lines: &[String]) {
+        let Some(neko_dir) = self.translate_neko_dir_for(archive_path) else { return };
+        let Some(filename) = archive_path.file_name().and_then(|n| n.to_str()) else { return };
+        let _ = crate::translate::save_ocr_text(&neko_dir, filename, original_index, lines);
+    }
+
+    fn load_ocr_text_for(&self, archive_path: &std::path::Path, original_index: usize) -> Option<Vec<String>> {
+        let neko_dir = self.translate_neko_dir_for(archive_path)?;
+        let filename = archive_path.file_name().and_then(|n| n.to_str())?;
+        crate::translate::load_ocr_text(&neko_dir, filename, original_index)
+    }
+
+    /// 現在のアーカイブに対応するOCR txtフォルダをOSのファイラーで開く
+    /// （手動でのノイズ取り・整形をそのまま「翻訳の原本」として使ってもらうための導線）。
+    fn open_translate_text_folder(&self) {
+        let Some((archive_path, _)) = self.current_page_key() else { return };
+        let Some(neko_dir) = self.translate_neko_dir_for(&archive_path) else { return };
+        let Some(filename) = archive_path.file_name().and_then(|n| n.to_str()) else { return };
+        crate::translate::open_in_file_manager(&crate::translate::ocr_text_dir(&neko_dir, filename));
+    }
+}
+
+/// 見開きOCR用: 画面表示順どおりに左右のページ画像を1枚へ横結合する。
+/// 高さが異なる場合は白背景の上に上詰めで配置する（下に余白ができるだけで、
+/// テキスト認識への影響はほぼ無い想定）。
+fn compose_side_by_side(left: &image::RgbaImage, right: &image::RgbaImage) -> image::RgbaImage {
+    let width = left.width() + right.width();
+    let height = left.height().max(right.height());
+    let mut canvas = image::RgbaImage::from_pixel(width, height, image::Rgba([255, 255, 255, 255]));
+    image::imageops::overlay(&mut canvas, left, 0, 0);
+    image::imageops::overlay(&mut canvas, right, left.width() as i64, 0);
+    canvas
 }

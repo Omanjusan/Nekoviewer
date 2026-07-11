@@ -1073,11 +1073,27 @@ impl Lang {
         }
     }
 
+    pub fn translate_overlay_open_folder_button(self) -> &'static str {
+        match self {
+            Lang::Japanese => "フォルダを開く",
+            Lang::English  => "Open folder",
+            Lang::Chinese  => "打开文件夹",
+        }
+    }
+
+    pub fn translate_overlay_copy_button(self) -> &'static str {
+        match self {
+            Lang::Japanese => "コピー",
+            Lang::English  => "Copy",
+            Lang::Chinese  => "复制",
+        }
+    }
+
     pub fn translate_overlay_running(self) -> &'static str {
         match self {
-            Lang::Japanese => "解析中…",
-            Lang::English  => "Analyzing…",
-            Lang::Chinese  => "分析中…",
+            Lang::Japanese => "解析中…（モデル未ロード時は数十秒以上かかることがあります）",
+            Lang::English  => "Analyzing… (can take a while on first run if the model needs to load)",
+            Lang::Chinese  => "分析中…（模型首次加载时可能需要较长时间）",
         }
     }
 

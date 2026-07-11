@@ -2,6 +2,7 @@
 //! OpenAI互換API)へHTTPで接続し、疎通確認・vision能力確認・OCRリクエストを行う。
 //! クラウドAPIは対象外（APIキー管理は今回のスコープ外）。
 
+use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::Duration;
 
@@ -115,6 +116,11 @@ struct ChatMessage<'a> {
 struct ChatRequest<'a> {
     model: &'a str,
     messages: Vec<ChatMessage<'a>>,
+    /// 未指定(None)ならサーバ既定値。reasoningモデルは画像解析の思考に予算を消費しがちで、
+    /// 既定値のままだと最終回答(content)を出す前に打ち切られ空応答になることがあるため、
+    /// OCRリクエストでは大きめの値を明示する。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_tokens: Option<u32>,
 }
 
 #[derive(Deserialize)]
@@ -130,6 +136,10 @@ struct ChatChoice {
 #[derive(Deserialize)]
 struct ChatChoiceMessage {
     content: String,
+    /// reasoningモデル(qwen系等)が思考過程を分離して返すフィールド。contentが空だった際の
+    /// フォールバック抽出元として使う（打ち切られてcontentへ回答をコピーし損ねた場合の救済）。
+    #[serde(default)]
+    reasoning: Option<String>,
 }
 
 /// 接続チェックの進行状態。設定ダイアログ側でこれを見てUI表示を切り替える。
@@ -167,6 +177,7 @@ fn send_chat_with_image(
     model: &str,
     prompt: &str,
     image_data_url: String,
+    max_tokens: Option<u32>,
 ) -> Result<String, String> {
     let url = format!("{}/v1/chat/completions", base_url.trim_end_matches('/'));
     let req = ChatRequest {
@@ -181,20 +192,23 @@ fn send_chat_with_image(
                 }),
             ],
         }],
+        max_tokens,
     };
     let resp = client.post(&url).json(&req).send().map_err(|e| format!("接続失敗: {e}"))?;
     if !resp.status().is_success() {
         return Err(format!("HTTP {}", resp.status()));
     }
     let parsed: ChatResponse = resp.json().map_err(|e| format!("応答の解析に失敗: {e}"))?;
-    let content = parsed
-        .choices
-        .into_iter()
-        .next()
-        .map(|c| c.message.content)
-        .unwrap_or_default();
+    let message = parsed.choices.into_iter().next().map(|c| c.message);
+    let content = match message {
+        Some(m) if !m.content.trim().is_empty() => m.content,
+        // contentが空でも、reasoningフィールドに思考過程ごと出力が残っていることがある
+        // （max_tokens到達等でcontentへコピーされる前に打ち切られたケースの救済）。
+        Some(m) => m.reasoning.filter(|r| !r.trim().is_empty()).unwrap_or_default(),
+        None => String::new(),
+    };
     if content.trim().is_empty() {
-        return Err("応答が空でした（画像入力に対応していない可能性）".to_string());
+        return Err("応答が空でした（画像入力に対応していない可能性、またはトークン上限到達）".to_string());
     }
     Ok(content)
 }
@@ -206,6 +220,7 @@ fn check_vision(client: &reqwest::blocking::Client, base_url: &str, model: &str)
         model,
         "この画像は何色？一言で答えて",
         format!("data:image/png;base64,{PROBE_IMAGE_PNG_BASE64}"),
+        None,
     )
 }
 
@@ -258,12 +273,54 @@ pub fn spawn_conn_check(ctx: egui::Context, base_url: String, model: String) -> 
 // ── OCRリクエスト(Phase 1) ──────────────────────────────────────────────
 
 /// OCRリクエストのタイムアウト。ページ全体の解析は色確認より長くかかるため接続チェックより長め。
-const OCR_REQUEST_TIMEOUT_SECS: u64 = 120;
+/// 実機検証で、モデルランナーがコールド状態(アイドルによるアンロード後の初回リクエスト等)だと
+/// ロードだけで数十秒かかり、120秒では不足するケースを確認したため余裕を持たせている。
+const OCR_REQUEST_TIMEOUT_SECS: u64 = 300;
 
-/// モデルへ渡すプロンプト。実機検証(qwen3.5:latest)で「説明文なし・コードフェンスなしの
-/// JSON配列文字列」がそのまま`content`に返ることを確認済み。bboxは要求しない
-/// （オーバーレイ表示は縦スクロールのテキスト一覧のみのため、座標情報は不要）。
-const OCR_PROMPT: &str = "この漫画ページ画像から、吹き出し内のテキストを自然な読み順（右上から左下、日本語漫画の一般的な順序）で抽出してください。出力は説明文なしで、各吹き出しのテキストを1要素とするJSON配列のみを返してください。例: [\"セリフ1\",\"セリフ2\"]";
+/// OCRリクエストの応答トークン上限。reasoningモデルは画像解析の思考が長くなりがちで、
+/// サーバ既定値のままだと最終回答(JSON配列)を出す前に打ち切られ空応答になったため、
+/// 実機で空応答が再現した後に導入。
+const OCR_MAX_TOKENS: u32 = 4096;
+
+/// 綴じ方向・見開き状態に応じたコマ読み順の指示文。Nekoviewerは`PageMode`
+/// (Single/SpreadLeft/SpreadRight)を既にページ送り方向の決定に使っており、
+/// OCR時にも同じ情報を渡すことで、モデルが読み順をゼロから推測せずに済む
+/// （実機検証で、この指示が曖昧なままだと読み順の自問自答だけで思考トークンを
+/// 使い切り、最終回答を出せずに終わるケースを確認したため導入）。
+/// 手動でのプロンプト差し替え(綴じ方向別ユーザー定義テンプレート等)は別スコープ。
+fn panel_order_instruction(page_mode: crate::types::PageMode) -> &'static str {
+    match page_mode {
+        crate::types::PageMode::Single => {
+            "この画像は単独の1ページです。コマの読み順は右上のコマから開始し、\
+             同じ段の中では右→左、段は上→下の順に進めてください。"
+        }
+        crate::types::PageMode::SpreadRight => {
+            "この画像は見開き2ページを画面表示のとおり横に結合したものです（左半分・右半分に\
+             それぞれ1ページずつ写っています）。右綴じ（一般的な日本の漫画と同じ、右ページが先・\
+             左ページが後）です。まず右半分（右ページ）のコマを右上から右→左・上→下の順に処理し、\
+             その後左半分（左ページ）のコマも同様に右上から右→左・上→下の順に処理してください。"
+        }
+        crate::types::PageMode::SpreadLeft => {
+            "この画像は見開き2ページを画面表示のとおり横に結合したものです（左半分・右半分に\
+             それぞれ1ページずつ写っています）。左綴じ（左ページが先・右ページが後）です。\
+             まず左半分（左ページ）のコマを左上から左→右・上→下の順に処理し、\
+             その後右半分（右ページ）のコマも同様に左上から左→右・上→下の順に処理してください。"
+        }
+    }
+}
+
+/// モデルへ渡すプロンプトを組み立てる。実機検証(qwen3.5:latest)で「説明文なし・
+/// コードフェンスなしのJSON配列文字列」がそのまま`content`に返ることを確認済み。
+/// bboxは要求しない（オーバーレイ表示は縦スクロールのテキスト一覧のみのため、
+/// 座標情報は不要）。
+fn build_ocr_prompt(page_mode: crate::types::PageMode) -> String {
+    format!(
+        "この漫画ページ画像から、吹き出し内のテキストを読み順で抽出してください。{}\
+         出力は説明文なしで、各吹き出しのテキストを1要素とするJSON配列のみを返してください。\
+         例: [\"セリフ1\",\"セリフ2\"]",
+        panel_order_instruction(page_mode)
+    )
+}
 
 /// OCR結果1ページぶん。
 pub struct OcrPageResult {
@@ -312,13 +369,15 @@ fn encode_image_png_base64(image: &image::DynamicImage) -> Result<String, String
 }
 
 /// 1ページぶんのOCRリクエストをバックグラウンドスレッドで実行する。
-pub fn spawn_ocr_request(ctx: egui::Context, base_url: String, model: String, image: image::DynamicImage) -> mpsc::Receiver<OcrMsg> {
+/// `page_mode`は見開き・綴じ方向に応じた読み順の指示文組み立てに使う。
+pub fn spawn_ocr_request(ctx: egui::Context, base_url: String, model: String, image: image::DynamicImage, page_mode: crate::types::PageMode) -> mpsc::Receiver<OcrMsg> {
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
         let result = (|| -> Result<OcrPageResult, String> {
             let data_url_body = encode_image_png_base64(&image)?;
             let client = http_client(Duration::from_secs(OCR_REQUEST_TIMEOUT_SECS))?;
-            let content = send_chat_with_image(&client, &base_url, &model, OCR_PROMPT, format!("data:image/png;base64,{data_url_body}"))?;
+            let prompt = build_ocr_prompt(page_mode);
+            let content = send_chat_with_image(&client, &base_url, &model, &prompt, format!("data:image/png;base64,{data_url_body}"), Some(OCR_MAX_TOKENS))?;
             Ok(parse_ocr_content(&content))
         })();
         match result {
@@ -328,4 +387,54 @@ pub fn spawn_ocr_request(ctx: egui::Context, base_url: String, model: String, im
         ctx.request_repaint();
     });
     rx
+}
+
+// ── OCRテキストの永続化(Phase 3) ──────────────────────────────────────────
+// redbへのBLOB登録ではなく、フォルダのキャッシュディレクトリ(サムネDBの脇)に
+// アーカイブ名のサブフォルダを掘り、ページごとに素のtxtとして書き出す方式にした。
+// 理由: ユーザーがOSのファイラーで直接txtを開いて手動でノイズ取り（OCR誤読の訂正・
+// 整形）できるようにするため。この編集後のtxtを「翻訳の原本」として扱いたいという
+// 要望があり、redb格納だと編集導線・エクスポート導線をこちらで別途作り込む必要が
+// あったが、txt直置きならOSのファイラー・エディタがそのまま導線になる。
+
+/// アーカイブ1本ぶんのOCR txtを置くフォルダ（サムネ等のcache.redbと同じ
+/// キャッシュディレクトリ配下）。まだ存在しなくてもパスだけ返す（作成しない）。
+pub fn ocr_text_dir(neko_dir: &Path, archive_filename: &str) -> PathBuf {
+    neko_dir.join("ocr_text").join(archive_filename)
+}
+
+fn ocr_text_path(neko_dir: &Path, archive_filename: &str, original_index: usize) -> PathBuf {
+    ocr_text_dir(neko_dir, archive_filename).join(format!("{original_index:04}.txt"))
+}
+
+/// OCR結果をページ単位のtxtとして保存する（既存があれば上書き）。
+/// 上書きなので、手動編集済みのtxtに対して再実行すると編集内容は失われる
+/// （「原本を作り直す」操作として扱う）。
+pub fn save_ocr_text(neko_dir: &Path, archive_filename: &str, original_index: usize, lines: &[String]) -> std::io::Result<()> {
+    let path = ocr_text_path(neko_dir, archive_filename, original_index);
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    std::fs::write(path, lines.join("\n"))
+}
+
+/// 保存済みのOCR txtを読み込む（ユーザーが手編集した内容もそのまま反映される）。
+/// 存在しなければ None（＝未実行扱い）。
+pub fn load_ocr_text(neko_dir: &Path, archive_filename: &str, original_index: usize) -> Option<Vec<String>> {
+    let path = ocr_text_path(neko_dir, archive_filename, original_index);
+    let content = std::fs::read_to_string(path).ok()?;
+    Some(content.lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_string).collect())
+}
+
+/// OS標準のファイラーでフォルダを開く（ベストエフォート、失敗しても無視する）。
+pub fn open_in_file_manager(path: &Path) {
+    let _ = std::fs::create_dir_all(path);
+    #[cfg(windows)]
+    {
+        let _ = std::process::Command::new("explorer").arg(path).spawn();
+    }
+    #[cfg(unix)]
+    {
+        let _ = std::process::Command::new("xdg-open").arg(path).spawn();
+    }
 }
