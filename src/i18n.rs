@@ -1057,6 +1057,70 @@ impl Lang {
         }
     }
 
+    pub fn translate_overlay_title(self) -> &'static str {
+        match self {
+            Lang::Japanese => "OCR(実験的)",
+            Lang::English  => "OCR (experimental)",
+            Lang::Chinese  => "OCR(实验性)",
+        }
+    }
+
+    pub fn translate_overlay_run_button(self) -> &'static str {
+        match self {
+            Lang::Japanese => "実行",
+            Lang::English  => "Run",
+            Lang::Chinese  => "运行",
+        }
+    }
+
+    pub fn translate_overlay_running(self) -> &'static str {
+        match self {
+            Lang::Japanese => "解析中…",
+            Lang::English  => "Analyzing…",
+            Lang::Chinese  => "分析中…",
+        }
+    }
+
+    pub fn translate_overlay_empty(self) -> &'static str {
+        match self {
+            Lang::Japanese => "(未実行)",
+            Lang::English  => "(not run yet)",
+            Lang::Chinese  => "(尚未运行)",
+        }
+    }
+
+    pub fn translate_overlay_failed_prefix(self) -> &'static str {
+        match self {
+            Lang::Japanese => "失敗",
+            Lang::English  => "Failed",
+            Lang::Chinese  => "失败",
+        }
+    }
+
+    pub fn translate_overlay_fallback_notice(self) -> &'static str {
+        match self {
+            Lang::Japanese => "形式解析に失敗、簡易表示です",
+            Lang::English  => "Structured parse failed; showing raw fallback",
+            Lang::Chinese  => "结构化解析失败，显示为简易结果",
+        }
+    }
+
+    pub fn translate_overlay_model_missing(self) -> &'static str {
+        match self {
+            Lang::Japanese => "モデル名が未設定です",
+            Lang::English  => "Model name is not set",
+            Lang::Chinese  => "尚未设置模型名称",
+        }
+    }
+
+    pub fn translate_overlay_no_page(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ページ画像を取得できませんでした",
+            Lang::English  => "Could not read the current page image",
+            Lang::Chinese  => "无法获取当前页面图像",
+        }
+    }
+
     pub fn settings_static_placeholder(self) -> &'static str {
         match self {
             Lang::Japanese => "現在、静止画専用の設定項目はありません",

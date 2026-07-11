@@ -76,6 +76,8 @@ impl NekoviewApp {
             }
         };
 
+        self.draw_translate_overlay(ui.ctx());
+
         if let Some(slots) = output.save_slots {
             self.viewer_slots = slots;
             self.persist_state();
@@ -299,5 +301,117 @@ impl NekoviewApp {
         *self.viewer.lock().unwrap() = Some(state);
         self.ensure_file_cached(path);
         self.viewer_focus_requested = true;
+    }
+
+    /// 翻訳機能(実験的)の半透明オーバーレイ。URL未設定なら何も描画しない
+    /// （既定では非表示のまま、使わないユーザーの画面に余計なUIを出さない）。
+    /// 位置(四隅)・横幅は設定タブ側の値のみで決まり、ビューアー上での
+    /// ドラッグ・リサイズは行わない（`movable(false)`）。
+    fn draw_translate_overlay(&mut self, ctx: &egui::Context) {
+        if let Some(rx) = &self.translate_ocr_rx {
+            if let Ok(msg) = rx.try_recv() {
+                match msg {
+                    crate::translate::OcrMsg::Result(page) => {
+                        self.translate_ocr_lines = page.lines;
+                        self.translate_ocr_status = if page.raw_fallback {
+                            Some(i18n::t().translate_overlay_fallback_notice().to_string())
+                        } else {
+                            None
+                        };
+                    }
+                    crate::translate::OcrMsg::Failed(e) => {
+                        self.translate_ocr_status = Some(format!("{}: {e}", i18n::t().translate_overlay_failed_prefix()));
+                    }
+                }
+                self.translate_ocr_rx = None;
+            }
+        }
+
+        if self.translate_cfg.base_url.trim().is_empty() {
+            return;
+        }
+
+        use crate::translate::OverlayCorner;
+        let corner = self.translate_cfg.overlay_corner;
+        let width = self.translate_cfg.overlay_width as f32;
+        let (anchor, offset) = match corner {
+            OverlayCorner::TopLeft => (egui::Align2::LEFT_TOP, egui::vec2(8.0, 8.0)),
+            OverlayCorner::TopRight => (egui::Align2::RIGHT_TOP, egui::vec2(-8.0, 8.0)),
+            OverlayCorner::BottomLeft => (egui::Align2::LEFT_BOTTOM, egui::vec2(8.0, -8.0)),
+            OverlayCorner::BottomRight => (egui::Align2::RIGHT_BOTTOM, egui::vec2(-8.0, -8.0)),
+        };
+
+        egui::Area::new(egui::Id::new("translate_overlay"))
+            .anchor(anchor, offset)
+            .movable(false)
+            .show(ctx, |ui| {
+                egui::Frame::popup(ui.style())
+                    .fill(egui::Color32::from_black_alpha(190))
+                    .show(ui, |ui| {
+                        ui.set_width(width);
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new(i18n::t().translate_overlay_title()).strong());
+                            if ui.small_button(i18n::t().translate_overlay_run_button()).clicked() {
+                                self.trigger_translate_ocr(ctx);
+                            }
+                        });
+                        if let Some(status) = &self.translate_ocr_status {
+                            ui.colored_label(egui::Color32::from_rgb(230, 140, 140), status.as_str());
+                        }
+                        ui.separator();
+                        egui::ScrollArea::vertical()
+                            .max_height(320.0)
+                            .id_salt("translate_overlay_scroll")
+                            .show(ui, |ui| {
+                                // フレーム内側の余白ぶんを差し引き、折返しをオーバーレイ幅に追従させる。
+                                ui.set_width((width - 16.0).max(40.0));
+                                if self.translate_ocr_lines.is_empty() {
+                                    ui.weak(i18n::t().translate_overlay_empty());
+                                } else {
+                                    for line in &self.translate_ocr_lines {
+                                        ui.label(egui::RichText::new(line.as_str()).size(14.0));
+                                        ui.add_space(6.0);
+                                    }
+                                }
+                            });
+                    });
+            });
+    }
+
+    /// 現在ページに対してOCRリクエストを発火する（動作確認用の簡易トリガー。
+    /// ページ/アーカイブ単位のバッチ実行とキャッシュ保存はPhase3で実装する）。
+    fn trigger_translate_ocr(&mut self, ctx: &egui::Context) {
+        if self.translate_cfg.model.trim().is_empty() {
+            self.translate_ocr_status = Some(i18n::t().translate_overlay_model_missing().to_string());
+            return;
+        }
+        let Some(rgba) = self.current_page_rgba() else {
+            self.translate_ocr_status = Some(i18n::t().translate_overlay_no_page().to_string());
+            return;
+        };
+        let image = image::DynamicImage::ImageRgba8(rgba);
+        self.translate_ocr_status = Some(i18n::t().translate_overlay_running().to_string());
+        self.translate_ocr_lines.clear();
+        self.translate_ocr_rx = Some(crate::translate::spawn_ocr_request(
+            ctx.clone(),
+            self.translate_cfg.base_url.clone(),
+            self.translate_cfg.model.clone(),
+            image,
+        ));
+    }
+
+    /// 現在表示中ページ(見開き時は先頭側)のRGBA画像をページキャッシュから取得する。
+    /// アニメーションページはOCR対象外（先頭フレームのみでは意味が薄いため今回は非対応）。
+    fn current_page_rgba(&self) -> Option<image::RgbaImage> {
+        let viewer_guard = self.viewer.lock().unwrap();
+        let viewer = viewer_guard.as_ref()?;
+        let orig = *viewer.visible_original_indices().first()?;
+        let path = viewer.archive_path().clone();
+        drop(viewer_guard);
+        let cache = self.page_cache.lock().unwrap();
+        match cache.get(&path, orig)? {
+            crate::cache::PageContent::Static(rgba) => Some(rgba.clone()),
+            crate::cache::PageContent::Animated(_) => None,
+        }
     }
 }

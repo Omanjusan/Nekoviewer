@@ -354,6 +354,11 @@ pub struct NekoviewApp {
     pub(crate) translate_conn_rx: Option<mpsc::Receiver<crate::translate::ConnCheckMsg>>,
     /// 直近の接続テスト結果表示用（疎通/vision結果の文字列、または失敗理由）。
     pub(crate) translate_conn_status: Option<String>,
+    /// 翻訳機能(実験的): 現在ページのOCR結果（読み順テキスト一覧）。Phase3でページ送り時の
+    /// 自動クリア/キャッシュ読込に置き換える予定。現時点は手動実行のみ。
+    pub(crate) translate_ocr_lines: Vec<String>,
+    pub(crate) translate_ocr_rx: Option<mpsc::Receiver<crate::translate::OcrMsg>>,
+    pub(crate) translate_ocr_status: Option<String>,
     /// ビューアウィンドウをフォーカス前面に出すフラグ
     viewer_focus_requested: bool,
     pub(crate) show_hidden: bool,
@@ -529,6 +534,9 @@ impl NekoviewApp {
             translate_cfg,
             translate_conn_rx: None,
             translate_conn_status: None,
+            translate_ocr_lines: Vec::new(),
+            translate_ocr_rx: None,
+            translate_ocr_status: None,
             viewer_focus_requested: false,
             show_hidden,
             sort_key: ExplorerSortKey::from_state_key(&sort_state.key),
