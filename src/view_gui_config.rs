@@ -410,42 +410,103 @@ fn draw_settings_tab_viewer(ui: &mut egui::Ui, draft: &mut SettingsDraft) {
 }
 
 /// キーアサインタブ: ReaderAction/ExplorerActionの現在の割り当てをセクション分けして
-/// 一覧表示する。「変更」ボタン押下で次のキー/マウス入力を捕捉して確定する
-/// （フェーズ3-B）。リセット機能はフェーズ3-Cで追加予定。
-const KEYMAP_BUTTON_W: f32 = 90.0;
-const KEYMAP_DETAIL_LABEL_W: f32 = 90.0;
+/// 一覧表示する。「変更」ボタン押下で次のキー/マウス入力を捕捉して確定する。
+///
+/// 表示は egui::Grid ではなく手動レイアウトで組む。Gridの自動列幅・自動間隔では
+/// 「列間の隙間ゼロ」「行をまたいで機能〜マウスまで一本につながる罫線」「セル内容の
+/// 上下中央揃え」「機能名の長さに引きずられない完全固定の列幅」を同時に満たせなかった
+/// ため、各セルの矩形を allocate_exact_size で自前に確保し、背景・罫線を painter で直接描く。
+const KEYMAP_ROW_H: f32 = 44.0;
+const KEYMAP_COL_FEATURE_W: f32 = 150.0;
+const KEYMAP_COL_KB_W: f32 = 290.0;
+const KEYMAP_COL_MOUSE_W: f32 = 230.0;
+const KEYMAP_BUTTON_W: f32 = 46.0;
+const KEYMAP_RESET_W: f32 = 22.0;
+const KEYMAP_CELL_PAD: f32 = 8.0;
 
-/// キーボード割り当てを SHIFT/CTRL/ALT/KEY の2x2に分解して表示する（コンボキーで
-/// 横幅が伸び続けるのを避けるため、詳細は2行×2列に収める）。
-fn draw_key_combo_rows(ui: &mut egui::Ui, kb: Option<KeyCombo>) {
-    let (ctrl, shift, alt, key) = match kb {
-        Some(k) => (k.ctrl, k.shift, k.alt, format!("{:?}", k.key)),
-        None => (false, false, false, "-".to_string()),
+/// SHIFT/CTRL/ALTを1文字バッジで表示し、本体キー/マウス動作と同じ1行に収める
+/// （コンボキーでも縦に伸びないよう、詳細は横一列にまとめる）。
+fn draw_mod_badge(ui: &mut egui::Ui, label: &str, on: bool) {
+    let (rect, _resp) = ui.allocate_exact_size(egui::vec2(18.0, 18.0), egui::Sense::hover());
+    let visuals = ui.visuals();
+    let (bg, fg, stroke) = if on {
+        (visuals.selection.bg_fill, egui::Color32::WHITE, visuals.selection.bg_fill)
+    } else {
+        (visuals.extreme_bg_color, visuals.weak_text_color(), visuals.widgets.noninteractive.bg_stroke.color)
     };
-    ui.horizontal(|ui| {
-        ui.add_sized([KEYMAP_DETAIL_LABEL_W, 0.0], egui::Label::new(format!("SHIFT: {}", if shift { "ON" } else { "OFF" })));
-        ui.add_sized([KEYMAP_DETAIL_LABEL_W, 0.0], egui::Label::new(format!("CTRL: {}", if ctrl { "ON" } else { "OFF" })));
-    });
-    ui.horizontal(|ui| {
-        ui.add_sized([KEYMAP_DETAIL_LABEL_W, 0.0], egui::Label::new(format!("ALT: {}", if alt { "ON" } else { "OFF" })));
-        ui.label(egui::RichText::new(format!("KEY: {key}")).strong());
-    });
+    ui.painter().rect_filled(rect, 4.0, bg);
+    ui.painter().rect_stroke(rect, 4.0, egui::Stroke::new(1.0, stroke), egui::StrokeKind::Inside);
+    ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, label, egui::FontId::new(10.0, egui::FontFamily::Monospace), fg);
 }
 
-/// マウス割り当てを SHIFT/CTRL/ALT/ACTION の2x2に分解して表示する。
-fn draw_mouse_combo_rows(ui: &mut egui::Ui, mc: Option<MouseCombo>) {
-    let (ctrl, shift, alt, action) = match mc {
-        Some(m) => (m.ctrl, m.shift, m.alt, mouse_action_name(m.action)),
-        None => (false, false, false, "-"),
+fn draw_key_combo_line(ui: &mut egui::Ui, kb: Option<KeyCombo>) {
+    let (shift, ctrl, alt, key) = match kb {
+        Some(k) => (k.shift, k.ctrl, k.alt, format!("{:?}", k.key)),
+        None => (false, false, false, "-".to_string()),
     };
-    ui.horizontal(|ui| {
-        ui.add_sized([KEYMAP_DETAIL_LABEL_W, 0.0], egui::Label::new(format!("SHIFT: {}", if shift { "ON" } else { "OFF" })));
-        ui.add_sized([KEYMAP_DETAIL_LABEL_W, 0.0], egui::Label::new(format!("CTRL: {}", if ctrl { "ON" } else { "OFF" })));
-    });
-    ui.horizontal(|ui| {
-        ui.add_sized([KEYMAP_DETAIL_LABEL_W, 0.0], egui::Label::new(format!("ALT: {}", if alt { "ON" } else { "OFF" })));
-        ui.label(egui::RichText::new(format!("ACTION: {action}")).strong());
-    });
+    ui.spacing_mut().item_spacing.x = 3.0;
+    draw_mod_badge(ui, "S", shift);
+    draw_mod_badge(ui, "C", ctrl);
+    draw_mod_badge(ui, "A", alt);
+    ui.add_space(4.0);
+    ui.label(egui::RichText::new(key).monospace());
+}
+
+fn draw_mouse_combo_line(ui: &mut egui::Ui, mc: Option<MouseCombo>) {
+    let (shift, ctrl, alt, action) = match mc {
+        Some(m) => (m.shift, m.ctrl, m.alt, mouse_action_name(m.action).to_string()),
+        None => (false, false, false, "-".to_string()),
+    };
+    ui.spacing_mut().item_spacing.x = 3.0;
+    draw_mod_badge(ui, "S", shift);
+    draw_mod_badge(ui, "C", ctrl);
+    draw_mod_badge(ui, "A", alt);
+    ui.add_space(4.0);
+    ui.label(egui::RichText::new(action).monospace());
+}
+
+/// 「既定値」= 巻き戻し矢印1文字のシンボルボタン。カスタム値があるときだけ押せる。
+fn draw_reset_button(ui: &mut egui::Ui, enabled: bool) -> bool {
+    ui.add_enabled(
+        enabled,
+        egui::Button::new(egui::RichText::new("↺").size(13.0)).min_size(egui::vec2(KEYMAP_RESET_W, 18.0)),
+    ).on_hover_text("既定値に戻す").clicked()
+}
+
+/// 1セル分の矩形を確保し、背景を塗って中身を左詰め・上下中央揃えで描画する。
+/// 矩形を返すので、呼び出し元で行をまたぐ罫線をまとめて引ける。
+fn keymap_cell(ui: &mut egui::Ui, bg: egui::Color32, width: f32, add_contents: impl FnOnce(&mut egui::Ui)) -> egui::Rect {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(width, KEYMAP_ROW_H), egui::Sense::hover());
+    ui.painter().rect_filled(rect, 0.0, bg);
+    let content_rect = egui::Rect::from_min_max(rect.min + egui::vec2(KEYMAP_CELL_PAD, 0.0), rect.max);
+    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(content_rect).layout(egui::Layout::left_to_right(egui::Align::Center)));
+    child.spacing_mut().item_spacing.x = 4.0;
+    add_contents(&mut child);
+    rect
+}
+
+/// 「機能」列専用セル。長いラベルは折り返す（行高さ内に収まるよう小さめのフォントで）。
+fn keymap_feature_cell(ui: &mut egui::Ui, bg: egui::Color32, width: f32, label: &str) -> egui::Rect {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(width, KEYMAP_ROW_H), egui::Sense::hover());
+    ui.painter().rect_filled(rect, 0.0, bg);
+    let content_rect = egui::Rect::from_min_max(rect.min + egui::vec2(KEYMAP_CELL_PAD, 0.0), rect.max - egui::vec2(KEYMAP_CELL_PAD, 0.0));
+    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(content_rect).layout(egui::Layout::left_to_right(egui::Align::Center)));
+    child.add(egui::Label::new(egui::RichText::new(label).size(12.5)).wrap());
+    rect
+}
+
+/// 行の罫線をまとめて描く: 機能セル左端〜末尾セル右端まで一本の横線、各列境界に縦線。
+fn draw_keymap_row_borders(ui: &mut egui::Ui, cells: &[egui::Rect]) {
+    let color = ui.visuals().widgets.noninteractive.bg_stroke.color;
+    let stroke = egui::Stroke::new(1.0, color);
+    let Some(first) = cells.first() else { return };
+    let Some(last) = cells.last() else { return };
+    let bottom = cells.iter().map(|r| r.bottom()).fold(f32::MIN, f32::max);
+    ui.painter().line_segment([egui::pos2(first.left(), bottom), egui::pos2(last.right(), bottom)], stroke);
+    // 縦線は列の境界だけに引く（最後のセルの右端には引かない）。
+    for r in &cells[..cells.len().saturating_sub(1)] {
+        ui.painter().line_segment([egui::pos2(r.right(), r.top()), egui::pos2(r.right(), bottom)], stroke);
+    }
 }
 
 fn draw_settings_tab_keymap(ui: &mut egui::Ui, draft: &mut SettingsDraft) {
@@ -500,79 +561,72 @@ fn draw_settings_tab_keymap(ui: &mut egui::Ui, draft: &mut SettingsDraft) {
         ui.separator();
     }
 
-    egui::Grid::new("keymap_reader_grid")
-        .num_columns(3)
-        .striped(true)
-        .show(ui, |ui| {
-            ui.strong("機能");
-            ui.strong("キーボード");
-            ui.strong("マウス");
-            ui.end_row();
-            for action in ReaderAction::ALL.iter().copied() {
-                let binding = draft.keymap.reader_binding(action);
-                ui.label(action.display_name());
-                ui.vertical(|ui| {
-                    ui.horizontal(|ui| {
-                        if ui.add_sized([KEYMAP_BUTTON_W, 0.0], egui::Button::new("変更").small()).clicked() {
-                            draft.key_capture_dialog = Some(KeyCaptureDialogState::new(KeymapCaptureTarget::Reader(action), binding.keyboard.or(binding.default_keyboard)));
-                        }
-                        ui.add_enabled_ui(binding.keyboard.is_some(), |ui| {
-                            if ui.add_sized([KEYMAP_BUTTON_W, 0.0], egui::Button::new("既定値").small()).clicked() {
-                                draft.keymap.set_reader_keyboard(action, None);
-                            }
-                        });
-                    });
-                    draw_key_combo_rows(ui, binding.keyboard.or(binding.default_keyboard));
-                });
-                ui.vertical(|ui| {
-                    ui.horizontal(|ui| {
-                        if ui.add_sized([KEYMAP_BUTTON_W, 0.0], egui::Button::new("変更").small()).clicked() {
-                            draft.keymap_capturing = Some(action);
-                        }
-                        ui.add_enabled_ui(binding.mouse.is_some(), |ui| {
-                            if ui.add_sized([KEYMAP_BUTTON_W, 0.0], egui::Button::new("既定値").small()).clicked() {
-                                draft.keymap.set_reader_mouse(action, None);
-                            }
-                        });
-                    });
-                    draw_mouse_combo_rows(ui, binding.mouse.or(binding.default_mouse));
-                });
-                ui.end_row();
-            }
+    // 列ごとの背景色分けはやめて全列同色にする（境界は縦罫線のみで示す）。
+    let cell_bg = ui.visuals().faint_bg_color;
+
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 0.0;
+        let r1 = keymap_feature_cell(ui, cell_bg, KEYMAP_COL_FEATURE_W, "機能");
+        let r2 = keymap_cell(ui, cell_bg, KEYMAP_COL_KB_W, |ui| { ui.strong("キーボード"); });
+        let r3 = keymap_cell(ui, cell_bg, KEYMAP_COL_MOUSE_W, |ui| { ui.strong("マウス"); });
+        draw_keymap_row_borders(ui, &[r1, r2, r3]);
+    });
+    for action in ReaderAction::ALL.iter().copied() {
+        let binding = draft.keymap.reader_binding(action);
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 0.0;
+            let r1 = keymap_feature_cell(ui, cell_bg, KEYMAP_COL_FEATURE_W, action.display_name());
+            let r2 = keymap_cell(ui, cell_bg, KEYMAP_COL_KB_W, |ui| {
+                if ui.add_sized([KEYMAP_BUTTON_W, 18.0], egui::Button::new("変更").small()).clicked() {
+                    draft.key_capture_dialog = Some(KeyCaptureDialogState::new(KeymapCaptureTarget::Reader(action), binding.keyboard.or(binding.default_keyboard)));
+                }
+                if draw_reset_button(ui, binding.keyboard.is_some()) {
+                    draft.keymap.set_reader_keyboard(action, None);
+                }
+                draw_key_combo_line(ui, binding.keyboard.or(binding.default_keyboard));
+            });
+            let r3 = keymap_cell(ui, cell_bg, KEYMAP_COL_MOUSE_W, |ui| {
+                if ui.add_sized([KEYMAP_BUTTON_W, 18.0], egui::Button::new("変更").small()).clicked() {
+                    draft.keymap_capturing = Some(action);
+                }
+                if draw_reset_button(ui, binding.mouse.is_some()) {
+                    draft.keymap.set_reader_mouse(action, None);
+                }
+                draw_mouse_combo_line(ui, binding.mouse.or(binding.default_mouse));
+            });
+            draw_keymap_row_borders(ui, &[r1, r2, r3]);
         });
+    }
 
     ui.add_space(8.0);
     ui.heading("エクスプローラー");
-    egui::Grid::new("keymap_explorer_grid")
-        .num_columns(2)
-        .striped(true)
-        .show(ui, |ui| {
-            ui.strong("機能");
-            ui.strong("キーボード");
-            ui.end_row();
-            for action in ExplorerAction::ALL.iter().copied() {
-                let binding = draft.keymap.explorer_binding(action);
-                let editable = action.is_editable();
-                let name = if editable { action.display_name().to_string() } else { format!("{}（固定）", action.display_name()) };
-                ui.label(name);
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 0.0;
+        let r1 = keymap_feature_cell(ui, cell_bg, KEYMAP_COL_FEATURE_W, "機能");
+        let r2 = keymap_cell(ui, cell_bg, KEYMAP_COL_KB_W, |ui| { ui.strong("キーボード"); });
+        draw_keymap_row_borders(ui, &[r1, r2]);
+    });
+    for action in ExplorerAction::ALL.iter().copied() {
+        let binding = draft.keymap.explorer_binding(action);
+        let editable = action.is_editable();
+        let name = if editable { action.display_name().to_string() } else { format!("{}（固定）", action.display_name()) };
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 0.0;
+            let r1 = keymap_feature_cell(ui, cell_bg, KEYMAP_COL_FEATURE_W, &name);
+            let r2 = keymap_cell(ui, cell_bg, KEYMAP_COL_KB_W, |ui| {
                 ui.add_enabled_ui(editable, |ui| {
-                    ui.vertical(|ui| {
-                        ui.horizontal(|ui| {
-                            if ui.add_sized([KEYMAP_BUTTON_W, 0.0], egui::Button::new("変更").small()).clicked() {
-                                draft.key_capture_dialog = Some(KeyCaptureDialogState::new(KeymapCaptureTarget::Explorer(action), binding.keyboard.or(binding.default_keyboard)));
-                            }
-                            ui.add_enabled_ui(binding.keyboard.is_some(), |ui| {
-                                if ui.add_sized([KEYMAP_BUTTON_W, 0.0], egui::Button::new("既定値").small()).clicked() {
-                                    draft.keymap.set_explorer_keyboard(action, None);
-                                }
-                            });
-                        });
-                        draw_key_combo_rows(ui, binding.keyboard.or(binding.default_keyboard));
-                    });
+                    if ui.add_sized([KEYMAP_BUTTON_W, 18.0], egui::Button::new("変更").small()).clicked() {
+                        draft.key_capture_dialog = Some(KeyCaptureDialogState::new(KeymapCaptureTarget::Explorer(action), binding.keyboard.or(binding.default_keyboard)));
+                    }
+                    if draw_reset_button(ui, binding.keyboard.is_some()) {
+                        draft.keymap.set_explorer_keyboard(action, None);
+                    }
+                    draw_key_combo_line(ui, binding.keyboard.or(binding.default_keyboard));
                 });
-                ui.end_row();
-            }
+            });
+            draw_keymap_row_borders(ui, &[r1, r2]);
         });
+    }
 }
 
 /// SHIFT/CTRL/ALTトグルボタン。押し込み状態はegui標準のselected色で表現する。
