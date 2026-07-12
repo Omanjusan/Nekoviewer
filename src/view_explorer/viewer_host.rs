@@ -336,7 +336,7 @@ impl NekoviewApp {
             let page_cache_guard = self.page_cache.lock().unwrap();
             let mut cfg_guard = self.viewer_cfg.lock().unwrap();
             match viewer_guard.as_mut() {
-                Some(viewer) => viewer.show(ui, &*page_cache_guard, &mut *cfg_guard),
+                Some(viewer) => viewer.show(ui, &*page_cache_guard, &mut *cfg_guard, &self.config.keymap),
                 None => return,
             }
         };

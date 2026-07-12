@@ -57,6 +57,14 @@ impl KeyCombo {
         }
         key.map(|key| Self { key, ctrl, shift, alt })
     }
+
+    /// このフレームで押されたか（修飾キーの有無も完全一致で判定）。
+    pub fn pressed(self, i: &egui::InputState) -> bool {
+        i.modifiers.ctrl == self.ctrl
+            && i.modifiers.shift == self.shift
+            && i.modifiers.alt == self.alt
+            && i.key_pressed(self.key)
+    }
 }
 
 fn key_name(k: Key) -> &'static str {
@@ -173,6 +181,11 @@ impl ActionBinding {
     /// 現在有効なマウス割り当て（ユーザー設定 > 既定）
     pub fn effective_mouse(&self) -> Option<MouseInput> {
         self.mouse.or(self.default_mouse)
+    }
+
+    /// このフレームで、割り当てられたキーボード入力が押されたか。
+    pub fn key_pressed(&self, i: &egui::InputState) -> bool {
+        self.effective_keyboard().is_some_and(|kb| kb.pressed(i))
     }
 }
 
