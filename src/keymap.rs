@@ -281,6 +281,33 @@ define_action_enum!(ReaderAction {
 });
 
 impl ReaderAction {
+    /// キーアサイン設定タブでの表示名（日本語固定。多言語化は将来対応）。
+    pub fn display_name(self) -> &'static str {
+        match self {
+            Self::PagePrev            => "前のページ",
+            Self::PageNext            => "次のページ",
+            Self::PageAdvanceSpace    => "次のページ（Space）",
+            Self::FileNavPrev         => "前のファイル",
+            Self::FileNavNext         => "次のファイル",
+            Self::FileNavPrevAlt      => "前のファイル（副）",
+            Self::FileNavNextAlt      => "次のファイル（副）",
+            Self::JumpFirstPage       => "先頭ページへ",
+            Self::JumpLastPage        => "末尾ページへ",
+            Self::ToggleZoomActual    => "等倍/fit切替",
+            Self::ToggleFullscreen    => "フルスクリーン切替",
+            Self::CloseOrExitFullscreen => "閉じる/フルスクリーン解除",
+            Self::PageModeSingle      => "シングルページ表示",
+            Self::PageModeSpreadLeft  => "見開き表示（左開始）",
+            Self::PageModeSpreadRight => "見開き表示（右開始）",
+            Self::SpreadOffsetPrev    => "見開きオフセット（前）",
+            Self::SpreadOffsetNext    => "見開きオフセット（次）",
+            Self::ApplySlot1          => "ウィンドウスロット1適用",
+            Self::ApplySlot2          => "ウィンドウスロット2適用",
+            Self::ApplySlot3          => "ウィンドウスロット3適用",
+            Self::ApplySlot4          => "ウィンドウスロット4適用",
+        }
+    }
+
     pub fn default_binding(self) -> ActionBinding {
         match self {
             Self::PagePrev            => ActionBinding::both(KeyCombo::plain(Key::ArrowUp), MouseCombo::plain(MouseAction::WheelUp)),
@@ -330,6 +357,30 @@ define_action_enum!(ExplorerAction {
 });
 
 impl ExplorerAction {
+    /// キーアサイン設定タブでの表示名（日本語固定。多言語化は将来対応）。
+    pub fn display_name(self) -> &'static str {
+        match self {
+            Self::FocusNext      => "次のペインへフォーカス移動",
+            Self::FocusPrev      => "前のペインへフォーカス移動",
+            Self::Rename         => "お気に入りフォルダ名変更",
+            Self::SelectAll      => "全選択",
+            Self::ClearSelection => "選択解除",
+            Self::NavUp          => "上へ移動",
+            Self::NavDown        => "下へ移動",
+            Self::NavLeft        => "左へ移動",
+            Self::NavRight       => "右へ移動",
+            Self::NavHome        => "先頭へ移動",
+            Self::NavEnd         => "末尾へ移動",
+            Self::Confirm        => "確定/開く",
+            Self::ExtendUp       => "範囲選択拡張（上）",
+            Self::ExtendDown     => "範囲選択拡張（下）",
+            Self::ExtendLeft     => "範囲選択拡張（左）",
+            Self::ExtendRight    => "範囲選択拡張（右）",
+            Self::ExtendHome     => "範囲選択拡張（先頭）",
+            Self::ExtendEnd      => "範囲選択拡張（末尾）",
+        }
+    }
+
     pub fn default_binding(self) -> ActionBinding {
         match self {
             Self::FocusNext      => ActionBinding::keyboard_only(KeyCombo::plain(Key::Tab)),
@@ -365,6 +416,7 @@ impl ExplorerAction {
 }
 
 /// キーアサイン全体。ReaderAction/ExplorerActionそれぞれの割り当てを保持する。
+#[derive(Clone)]
 pub struct Keymap {
     reader: std::collections::BTreeMap<ReaderAction, ActionBinding>,
     explorer: std::collections::BTreeMap<ExplorerAction, ActionBinding>,

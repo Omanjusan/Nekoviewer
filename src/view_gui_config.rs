@@ -5,6 +5,7 @@
 use crate::config::{AppConfig, ResizeFilter, filter_to_str};
 use crate::gui_config::{ThumbbarPos, ViewerConfig};
 use crate::i18n;
+use crate::keymap::{Keymap, ReaderAction, ExplorerAction, KeyCombo, MouseCombo, MouseAction};
 use crate::translate::{OVERLAY_WIDTH_CEILING, OVERLAY_WIDTH_FLOOR, OverlayCorner, TranslateConfig};
 use crate::view_explorer::NekoviewApp;
 
@@ -15,6 +16,7 @@ pub(crate) enum SettingsTab {
     Static,
     Viewer,
     Translate,
+    Keymap,
     Other,
 }
 
@@ -66,6 +68,21 @@ pub(crate) struct SettingsDraft {
     translate_available_models: Vec<String>,
     translate_overlay_width: u32,
     translate_overlay_corner: OverlayCorner,
+    keymap: Keymap,
+    /// 「変更」ボタン押下中: 次のキー/マウス入力を捕捉してこのスロットへ確定する。
+    keymap_capturing: Option<(KeymapCaptureTarget, KeymapCaptureSlot)>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum KeymapCaptureTarget {
+    Reader(ReaderAction),
+    Explorer(ExplorerAction),
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum KeymapCaptureSlot {
+    Keyboard,
+    Mouse,
 }
 
 impl SettingsDraft {
@@ -101,6 +118,8 @@ impl SettingsDraft {
             translate_available_models: Vec::new(),
             translate_overlay_width: translate_cfg.overlay_width,
             translate_overlay_corner: translate_cfg.overlay_corner,
+            keymap: config.keymap.clone(),
+            keymap_capturing: None,
         }
     }
 
@@ -139,6 +158,7 @@ impl SettingsDraft {
         translate_cfg.translation_model = self.translate_translation_model.trim().to_string();
         translate_cfg.overlay_width = self.translate_overlay_width;
         translate_cfg.overlay_corner = self.translate_overlay_corner;
+        config.keymap = self.keymap.clone();
     }
 }
 
@@ -350,6 +370,136 @@ fn draw_settings_tab_viewer(ui: &mut egui::Ui, draft: &mut SettingsDraft) {
     });
 }
 
+/// キーアサインタブ: ReaderAction/ExplorerActionの現在の割り当てをセクション分けして
+/// 一覧表示する。「変更」ボタン押下で次のキー/マウス入力を捕捉して確定する
+/// （フェーズ3-B）。リセット機能はフェーズ3-Cで追加予定。
+fn draw_settings_tab_keymap(ui: &mut egui::Ui, draft: &mut SettingsDraft) {
+    if ui.button("すべて既定に戻す").clicked() {
+        draft.keymap = Keymap::default();
+        draft.keymap_capturing = None;
+    }
+    ui.separator();
+
+    if let Some((target, slot)) = draft.keymap_capturing {
+        ui.horizontal(|ui| {
+            ui.colored_label(egui::Color32::from_rgb(220, 160, 40), "入力待ち…（Escでキャンセル）");
+            if ui.small_button("キャンセル").clicked() {
+                draft.keymap_capturing = None;
+            }
+        });
+        let ctx = ui.ctx().clone();
+        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            draft.keymap_capturing = None;
+        } else {
+            match slot {
+                KeymapCaptureSlot::Keyboard => {
+                    let captured = ctx.input(|i| i.events.iter().find_map(|e| match e {
+                        egui::Event::Key { key, pressed: true, modifiers, .. } => Some(KeyCombo {
+                            key: *key, ctrl: modifiers.ctrl, shift: modifiers.shift, alt: modifiers.alt,
+                        }),
+                        _ => None,
+                    }));
+                    if let Some(kb) = captured {
+                        match target {
+                            KeymapCaptureTarget::Reader(a) => draft.keymap.set_reader_keyboard(a, Some(kb)),
+                            KeymapCaptureTarget::Explorer(a) => draft.keymap.set_explorer_keyboard(a, Some(kb)),
+                        }
+                        draft.keymap_capturing = None;
+                    }
+                }
+                KeymapCaptureSlot::Mouse => {
+                    let captured = ctx.input(|i| {
+                        let m = i.modifiers;
+                        if i.pointer.button_clicked(egui::PointerButton::Middle) {
+                            Some(MouseCombo { action: MouseAction::MiddleClick, ctrl: m.ctrl, shift: m.shift, alt: m.alt })
+                        } else {
+                            let sd = i.smooth_scroll_delta();
+                            if sd.y > 5.0 {
+                                Some(MouseCombo { action: MouseAction::WheelUp, ctrl: m.ctrl, shift: m.shift, alt: m.alt })
+                            } else if sd.y < -5.0 {
+                                Some(MouseCombo { action: MouseAction::WheelDown, ctrl: m.ctrl, shift: m.shift, alt: m.alt })
+                            } else {
+                                None
+                            }
+                        }
+                    });
+                    if let Some(mc) = captured {
+                        // Explorer側は現状マウス割り当て未使用のため、Readerのみ確定させる。
+                        if let KeymapCaptureTarget::Reader(a) = target {
+                            draft.keymap.set_reader_mouse(a, Some(mc));
+                        }
+                        draft.keymap_capturing = None;
+                    }
+                }
+            }
+        }
+        ctx.request_repaint();
+        ui.separator();
+    }
+
+    egui::Grid::new("keymap_reader_grid")
+        .num_columns(3)
+        .striped(true)
+        .show(ui, |ui| {
+            ui.strong("機能");
+            ui.strong("キーボード");
+            ui.strong("マウス");
+            ui.end_row();
+            for action in ReaderAction::ALL.iter().copied() {
+                let binding = draft.keymap.reader_binding(action);
+                ui.label(action.display_name());
+                ui.horizontal(|ui| {
+                    ui.label(binding.keyboard.or(binding.default_keyboard).map(|k| k.to_config_string()).unwrap_or_default());
+                    if ui.small_button("変更").clicked() {
+                        draft.keymap_capturing = Some((KeymapCaptureTarget::Reader(action), KeymapCaptureSlot::Keyboard));
+                    }
+                    if binding.keyboard.is_some() && ui.small_button("既定に戻す").clicked() {
+                        draft.keymap.set_reader_keyboard(action, None);
+                    }
+                });
+                ui.horizontal(|ui| {
+                    ui.label(binding.mouse.or(binding.default_mouse).map(|m| m.to_config_string()).unwrap_or_default());
+                    if ui.small_button("変更").clicked() {
+                        draft.keymap_capturing = Some((KeymapCaptureTarget::Reader(action), KeymapCaptureSlot::Mouse));
+                    }
+                    if binding.mouse.is_some() && ui.small_button("既定に戻す").clicked() {
+                        draft.keymap.set_reader_mouse(action, None);
+                    }
+                });
+                ui.end_row();
+            }
+        });
+
+    ui.add_space(8.0);
+    ui.heading("エクスプローラー");
+    egui::Grid::new("keymap_explorer_grid")
+        .num_columns(2)
+        .striped(true)
+        .show(ui, |ui| {
+            ui.strong("機能");
+            ui.strong("キーボード");
+            ui.end_row();
+            for action in ExplorerAction::ALL.iter().copied() {
+                let binding = draft.keymap.explorer_binding(action);
+                let editable = action.is_editable();
+                let name = if editable { action.display_name().to_string() } else { format!("{}（固定）", action.display_name()) };
+                ui.label(name);
+                ui.add_enabled_ui(editable, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(binding.keyboard.or(binding.default_keyboard).map(|k| k.to_config_string()).unwrap_or_default());
+                        if ui.small_button("変更").clicked() {
+                            draft.keymap_capturing = Some((KeymapCaptureTarget::Explorer(action), KeymapCaptureSlot::Keyboard));
+                        }
+                        if binding.keyboard.is_some() && ui.small_button("既定に戻す").clicked() {
+                            draft.keymap.set_explorer_keyboard(action, None);
+                        }
+                    });
+                });
+                ui.end_row();
+            }
+        });
+}
+
 impl NekoviewApp {
     pub fn settings_is_open(&self) -> bool {
         self.settings_open
@@ -403,6 +553,7 @@ impl NekoviewApp {
                     (SettingsTab::Static, i18n::t().settings_tab_static()),
                     (SettingsTab::Viewer, i18n::t().settings_tab_viewer()),
                     (SettingsTab::Translate, i18n::t().settings_tab_translate()),
+                    (SettingsTab::Keymap, "キーアサイン"),
                     (SettingsTab::Other, i18n::t().settings_tab_other()),
                 ] {
                     ui.selectable_value(&mut self.settings_tab, tab, label);
@@ -416,6 +567,7 @@ impl NekoviewApp {
                 SettingsTab::Static => self.draw_settings_tab_static(ui),
                 SettingsTab::Viewer => draw_settings_tab_viewer(ui, &mut self.settings_draft),
                 SettingsTab::Translate => self.draw_settings_tab_translate(ui, ctx),
+                SettingsTab::Keymap => draw_settings_tab_keymap(ui, &mut self.settings_draft),
                 SettingsTab::Other => self.draw_settings_tab_other(ui),
             }
 
