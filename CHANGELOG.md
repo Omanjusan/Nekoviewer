@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.4.0] - 2026-07-13
+
+### Added
+
+- Experimental: added OCR-to-translation feature via connection to a local LLM
+- Added key assignment feature (work in progress, not yet complete)
+
+### Fixed
+
+- Fixed settings items not being saved/restored correctly
+- Fixed thumbnails being stretched to match the display frame's aspect ratio instead of preserving the original aspect ratio
+
 ## [1.3.0] - 2026-07-09
 
 ### Added
