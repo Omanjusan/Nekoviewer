@@ -69,10 +69,13 @@ pub(crate) struct SettingsDraft {
     translate_overlay_width: u32,
     translate_overlay_corner: OverlayCorner,
     keymap: Keymap,
-    /// 「変更」ボタン押下中: 次のキー/マウス入力を捕捉してこのスロットへ確定する。
-    keymap_capturing: Option<(KeymapCaptureTarget, KeymapCaptureSlot)>,
+    /// マウスの「変更」ボタン押下中: 次のマウス入力を捕捉してReaderActionのマウススロットへ
+    /// 確定する（キーボードはKeyCaptureDialogStateに移行済みのため、マウス専用でよい）。
+    keymap_capturing: Option<ReaderAction>,
     /// 直近のキャプチャが衝突拒否された際の案内文（次の入力待ちの間、表示し続ける）。
     keymap_capture_error: Option<String>,
+    /// キーボードの「変更」ボタンで開く専用ダイアログの状態。Some の間だけ表示する。
+    key_capture_dialog: Option<KeyCaptureDialogState>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -81,10 +84,42 @@ enum KeymapCaptureTarget {
     Explorer(ExplorerAction),
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum KeymapCaptureSlot {
-    Keyboard,
-    Mouse,
+/// キーボード用キャプチャダイアログの編集状態。SHIFT/CTRL/ALTはトグルで独立管理し、
+/// 「設定開始」中に拾うキーイベントは本体キー1つだけに使う。これにより、コンボキー
+/// （例: SHIFT+A）を狙った際に修飾キー単体を本体キーとして誤登録する問題を構造的に防ぐ。
+struct KeyCaptureDialogState {
+    target: KeymapCaptureTarget,
+    shift: bool,
+    ctrl: bool,
+    alt: bool,
+    key: Option<egui::Key>,
+    /// 「設定開始」押下後、次のキー入力を待っている間 true。
+    listening: bool,
+    /// [設定]で確定しようとして衝突拒否された場合の案内文。
+    error: Option<String>,
+}
+
+impl KeyCaptureDialogState {
+    fn new(target: KeymapCaptureTarget, current: Option<KeyCombo>) -> Self {
+        Self {
+            target,
+            shift: current.is_some_and(|k| k.shift),
+            ctrl: current.is_some_and(|k| k.ctrl),
+            alt: current.is_some_and(|k| k.alt),
+            key: current.map(|k| k.key),
+            listening: false,
+            error: None,
+        }
+    }
+}
+
+impl KeymapCaptureTarget {
+    fn display_name(self) -> &'static str {
+        match self {
+            Self::Reader(a) => a.display_name(),
+            Self::Explorer(a) => a.display_name(),
+        }
+    }
 }
 
 impl SettingsDraft {
@@ -123,6 +158,7 @@ impl SettingsDraft {
             keymap: config.keymap.clone(),
             keymap_capturing: None,
             keymap_capture_error: None,
+            key_capture_dialog: None,
         }
     }
 
@@ -377,30 +413,39 @@ fn draw_settings_tab_viewer(ui: &mut egui::Ui, draft: &mut SettingsDraft) {
 /// 一覧表示する。「変更」ボタン押下で次のキー/マウス入力を捕捉して確定する
 /// （フェーズ3-B）。リセット機能はフェーズ3-Cで追加予定。
 const KEYMAP_BUTTON_W: f32 = 90.0;
+const KEYMAP_DETAIL_LABEL_W: f32 = 90.0;
 
-/// キーボード割り当てを SHIFT/ALT/CTRL/KEY の行に分解して表示する（コンボキーで
-/// 横幅が伸び続けるのを避けるため、詳細は縦に並べる）。
+/// キーボード割り当てを SHIFT/CTRL/ALT/KEY の2x2に分解して表示する（コンボキーで
+/// 横幅が伸び続けるのを避けるため、詳細は2行×2列に収める）。
 fn draw_key_combo_rows(ui: &mut egui::Ui, kb: Option<KeyCombo>) {
     let (ctrl, shift, alt, key) = match kb {
         Some(k) => (k.ctrl, k.shift, k.alt, format!("{:?}", k.key)),
         None => (false, false, false, "-".to_string()),
     };
-    ui.label(format!("SHIFT: {}", if shift { "ON" } else { "OFF" }));
-    ui.label(format!("ALT: {}", if alt { "ON" } else { "OFF" }));
-    ui.label(format!("CTRL: {}", if ctrl { "ON" } else { "OFF" }));
-    ui.strong(format!("KEY: {key}"));
+    ui.horizontal(|ui| {
+        ui.add_sized([KEYMAP_DETAIL_LABEL_W, 0.0], egui::Label::new(format!("SHIFT: {}", if shift { "ON" } else { "OFF" })));
+        ui.add_sized([KEYMAP_DETAIL_LABEL_W, 0.0], egui::Label::new(format!("CTRL: {}", if ctrl { "ON" } else { "OFF" })));
+    });
+    ui.horizontal(|ui| {
+        ui.add_sized([KEYMAP_DETAIL_LABEL_W, 0.0], egui::Label::new(format!("ALT: {}", if alt { "ON" } else { "OFF" })));
+        ui.label(egui::RichText::new(format!("KEY: {key}")).strong());
+    });
 }
 
-/// マウス割り当てを SHIFT/ALT/CTRL/ACTION の行に分解して表示する。
+/// マウス割り当てを SHIFT/CTRL/ALT/ACTION の2x2に分解して表示する。
 fn draw_mouse_combo_rows(ui: &mut egui::Ui, mc: Option<MouseCombo>) {
     let (ctrl, shift, alt, action) = match mc {
         Some(m) => (m.ctrl, m.shift, m.alt, mouse_action_name(m.action)),
         None => (false, false, false, "-"),
     };
-    ui.label(format!("SHIFT: {}", if shift { "ON" } else { "OFF" }));
-    ui.label(format!("ALT: {}", if alt { "ON" } else { "OFF" }));
-    ui.label(format!("CTRL: {}", if ctrl { "ON" } else { "OFF" }));
-    ui.strong(format!("ACTION: {action}"));
+    ui.horizontal(|ui| {
+        ui.add_sized([KEYMAP_DETAIL_LABEL_W, 0.0], egui::Label::new(format!("SHIFT: {}", if shift { "ON" } else { "OFF" })));
+        ui.add_sized([KEYMAP_DETAIL_LABEL_W, 0.0], egui::Label::new(format!("CTRL: {}", if ctrl { "ON" } else { "OFF" })));
+    });
+    ui.horizontal(|ui| {
+        ui.add_sized([KEYMAP_DETAIL_LABEL_W, 0.0], egui::Label::new(format!("ALT: {}", if alt { "ON" } else { "OFF" })));
+        ui.label(egui::RichText::new(format!("ACTION: {action}")).strong());
+    });
 }
 
 fn draw_settings_tab_keymap(ui: &mut egui::Ui, draft: &mut SettingsDraft) {
@@ -410,7 +455,7 @@ fn draw_settings_tab_keymap(ui: &mut egui::Ui, draft: &mut SettingsDraft) {
     }
     ui.separator();
 
-    if let Some((target, slot)) = draft.keymap_capturing {
+    if let Some(action) = draft.keymap_capturing {
         ui.horizontal(|ui| {
             ui.colored_label(egui::Color32::from_rgb(220, 160, 40), "入力待ち…（Escでキャンセル）");
             if ui.small_button("キャンセル").clicked() {
@@ -426,62 +471,28 @@ fn draw_settings_tab_keymap(ui: &mut egui::Ui, draft: &mut SettingsDraft) {
             draft.keymap_capturing = None;
             draft.keymap_capture_error = None;
         } else {
-            match slot {
-                KeymapCaptureSlot::Keyboard => {
-                    let captured = ctx.input(|i| i.events.iter().find_map(|e| match e {
-                        egui::Event::Key { key, pressed: true, modifiers, .. } => Some(KeyCombo {
-                            key: *key, ctrl: modifiers.ctrl, shift: modifiers.shift, alt: modifiers.alt,
-                        }),
-                        _ => None,
-                    }));
-                    if let Some(kb) = captured {
-                        let conflict = match target {
-                            KeymapCaptureTarget::Reader(a) => draft.keymap.find_reader_keyboard_conflict(kb, a).map(|c| c.display_name()),
-                            KeymapCaptureTarget::Explorer(a) => draft.keymap.find_explorer_keyboard_conflict(kb, a).map(|c| c.display_name()),
-                        };
-                        if let Some(name) = conflict {
-                            draft.keymap_capture_error = Some(format!("「{name}」と重複しています。別のキーを入力するかキャンセルしてください。"));
-                        } else {
-                            match target {
-                                KeymapCaptureTarget::Reader(a) => draft.keymap.set_reader_keyboard(a, Some(kb)),
-                                KeymapCaptureTarget::Explorer(a) => draft.keymap.set_explorer_keyboard(a, Some(kb)),
-                            }
-                            draft.keymap_capturing = None;
-                            draft.keymap_capture_error = None;
-                        }
+            let captured = ctx.input(|i| {
+                let m = i.modifiers;
+                if i.pointer.button_clicked(egui::PointerButton::Middle) {
+                    Some(MouseCombo { action: MouseAction::MiddleClick, ctrl: m.ctrl, shift: m.shift, alt: m.alt })
+                } else {
+                    let sd = i.smooth_scroll_delta();
+                    if sd.y > 5.0 {
+                        Some(MouseCombo { action: MouseAction::WheelUp, ctrl: m.ctrl, shift: m.shift, alt: m.alt })
+                    } else if sd.y < -5.0 {
+                        Some(MouseCombo { action: MouseAction::WheelDown, ctrl: m.ctrl, shift: m.shift, alt: m.alt })
+                    } else {
+                        None
                     }
                 }
-                KeymapCaptureSlot::Mouse => {
-                    let captured = ctx.input(|i| {
-                        let m = i.modifiers;
-                        if i.pointer.button_clicked(egui::PointerButton::Middle) {
-                            Some(MouseCombo { action: MouseAction::MiddleClick, ctrl: m.ctrl, shift: m.shift, alt: m.alt })
-                        } else {
-                            let sd = i.smooth_scroll_delta();
-                            if sd.y > 5.0 {
-                                Some(MouseCombo { action: MouseAction::WheelUp, ctrl: m.ctrl, shift: m.shift, alt: m.alt })
-                            } else if sd.y < -5.0 {
-                                Some(MouseCombo { action: MouseAction::WheelDown, ctrl: m.ctrl, shift: m.shift, alt: m.alt })
-                            } else {
-                                None
-                            }
-                        }
-                    });
-                    if let Some(mc) = captured {
-                        // Explorer側は現状マウス割り当て未使用のため、Readerのみ確定させる。
-                        if let KeymapCaptureTarget::Reader(a) = target {
-                            if let Some(conflict) = draft.keymap.find_reader_mouse_conflict(mc, a) {
-                                draft.keymap_capture_error = Some(format!("「{}」と重複しています。別の入力にするかキャンセルしてください。", conflict.display_name()));
-                            } else {
-                                draft.keymap.set_reader_mouse(a, Some(mc));
-                                draft.keymap_capturing = None;
-                                draft.keymap_capture_error = None;
-                            }
-                        } else {
-                            draft.keymap_capturing = None;
-                            draft.keymap_capture_error = None;
-                        }
-                    }
+            });
+            if let Some(mc) = captured {
+                if let Some(conflict) = draft.keymap.find_reader_mouse_conflict(mc, action) {
+                    draft.keymap_capture_error = Some(format!("「{}」と重複しています。別の入力にするかキャンセルしてください。", conflict.display_name()));
+                } else {
+                    draft.keymap.set_reader_mouse(action, Some(mc));
+                    draft.keymap_capturing = None;
+                    draft.keymap_capture_error = None;
                 }
             }
         }
@@ -503,7 +514,7 @@ fn draw_settings_tab_keymap(ui: &mut egui::Ui, draft: &mut SettingsDraft) {
                 ui.vertical(|ui| {
                     ui.horizontal(|ui| {
                         if ui.add_sized([KEYMAP_BUTTON_W, 0.0], egui::Button::new("変更").small()).clicked() {
-                            draft.keymap_capturing = Some((KeymapCaptureTarget::Reader(action), KeymapCaptureSlot::Keyboard));
+                            draft.key_capture_dialog = Some(KeyCaptureDialogState::new(KeymapCaptureTarget::Reader(action), binding.keyboard.or(binding.default_keyboard)));
                         }
                         ui.add_enabled_ui(binding.keyboard.is_some(), |ui| {
                             if ui.add_sized([KEYMAP_BUTTON_W, 0.0], egui::Button::new("既定値").small()).clicked() {
@@ -516,7 +527,7 @@ fn draw_settings_tab_keymap(ui: &mut egui::Ui, draft: &mut SettingsDraft) {
                 ui.vertical(|ui| {
                     ui.horizontal(|ui| {
                         if ui.add_sized([KEYMAP_BUTTON_W, 0.0], egui::Button::new("変更").small()).clicked() {
-                            draft.keymap_capturing = Some((KeymapCaptureTarget::Reader(action), KeymapCaptureSlot::Mouse));
+                            draft.keymap_capturing = Some(action);
                         }
                         ui.add_enabled_ui(binding.mouse.is_some(), |ui| {
                             if ui.add_sized([KEYMAP_BUTTON_W, 0.0], egui::Button::new("既定値").small()).clicked() {
@@ -548,7 +559,7 @@ fn draw_settings_tab_keymap(ui: &mut egui::Ui, draft: &mut SettingsDraft) {
                     ui.vertical(|ui| {
                         ui.horizontal(|ui| {
                             if ui.add_sized([KEYMAP_BUTTON_W, 0.0], egui::Button::new("変更").small()).clicked() {
-                                draft.keymap_capturing = Some((KeymapCaptureTarget::Explorer(action), KeymapCaptureSlot::Keyboard));
+                                draft.key_capture_dialog = Some(KeyCaptureDialogState::new(KeymapCaptureTarget::Explorer(action), binding.keyboard.or(binding.default_keyboard)));
                             }
                             ui.add_enabled_ui(binding.keyboard.is_some(), |ui| {
                                 if ui.add_sized([KEYMAP_BUTTON_W, 0.0], egui::Button::new("既定値").small()).clicked() {
@@ -562,6 +573,109 @@ fn draw_settings_tab_keymap(ui: &mut egui::Ui, draft: &mut SettingsDraft) {
                 ui.end_row();
             }
         });
+}
+
+/// SHIFT/CTRL/ALTトグルボタン。押し込み状態はegui標準のselected色で表現する。
+fn draw_mod_toggle(ui: &mut egui::Ui, label: &str, value: &mut bool) {
+    let text = format!("{label}\n{}", if *value { "ON" } else { "OFF" });
+    if ui.add_sized([86.0, 34.0], egui::Button::new(text).selected(*value)).clicked() {
+        *value = !*value;
+    }
+}
+
+/// キーボード用キャプチャダイアログ。設定ダイアログのModal内から毎フレーム呼ばれ、
+/// draft.key_capture_dialogがSomeの間だけ表示する。SHIFT/CTRL/ALTはトグルで独立管理し、
+/// 「設定開始」中に拾うキーイベントは本体キー1つだけに使う。これによりコンボキー
+/// （例: SHIFT+A）を狙った際に、修飾キー単体を本体キーとして誤登録する問題を防ぐ。
+fn draw_key_capture_dialog(ctx: &egui::Context, draft: &mut SettingsDraft) {
+    if draft.key_capture_dialog.is_none() {
+        return;
+    }
+    let mut close_cancel = false;
+    let mut confirm: Option<KeyCombo> = None;
+
+    egui::Modal::new(egui::Id::new("key_capture_dialog")).show(ctx, |ui| {
+        let state = draft.key_capture_dialog.as_mut().unwrap();
+        ui.set_min_width(380.0);
+        ui.heading("キーアサイン変更");
+        ui.label(format!("対象: {} / キーボード", state.target.display_name()));
+        ui.separator();
+
+        ui.label("修飾キー");
+        ui.horizontal(|ui| {
+            draw_mod_toggle(ui, "SHIFT", &mut state.shift);
+            draw_mod_toggle(ui, "CTRL", &mut state.ctrl);
+            draw_mod_toggle(ui, "ALT", &mut state.alt);
+        });
+        ui.add_space(8.0);
+
+        ui.label("本体キー");
+        ui.horizontal(|ui| {
+            let mut key_label = state.key.map(|k| format!("{k:?}")).unwrap_or_else(|| "-".to_string());
+            ui.add_sized([180.0, 0.0], egui::TextEdit::singleline(&mut key_label).interactive(false));
+            let btn_label = if state.listening { "待機中…" } else { "設定開始" };
+            if ui.add_sized([90.0, 0.0], egui::Button::new(btn_label).selected(state.listening)).clicked() {
+                state.listening = !state.listening;
+            }
+            if ui.add_sized([70.0, 0.0], egui::Button::new("消去")).clicked() {
+                state.key = None;
+                state.listening = false;
+            }
+        });
+
+        if state.listening {
+            ui.colored_label(egui::Color32::from_rgb(220, 160, 40), "キーを押してください（修飾キー単体は無視します）");
+            let captured = ctx.input(|i| i.events.iter().find_map(|e| match e {
+                egui::Event::Key { key, pressed: true, .. } => Some(*key),
+                _ => None,
+            }));
+            if let Some(k) = captured {
+                state.key = Some(k);
+                state.listening = false;
+            }
+            ctx.request_repaint();
+        }
+
+        if let Some(err) = &state.error {
+            ui.colored_label(egui::Color32::from_rgb(220, 60, 60), err);
+        }
+
+        ui.separator();
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if ui.button("設定").clicked() {
+                if let Some(key) = state.key {
+                    confirm = Some(KeyCombo { key, ctrl: state.ctrl, shift: state.shift, alt: state.alt });
+                } else {
+                    state.error = Some("本体キーが未設定です。「設定開始」でキーを入力してください。".to_string());
+                }
+            }
+            if ui.button("キャンセル").clicked() {
+                close_cancel = true;
+            }
+        });
+    });
+
+    if close_cancel {
+        draft.key_capture_dialog = None;
+        return;
+    }
+    if let Some(combo) = confirm {
+        let target = draft.key_capture_dialog.as_ref().unwrap().target;
+        let conflict = match target {
+            KeymapCaptureTarget::Reader(a) => draft.keymap.find_reader_keyboard_conflict(combo, a).map(|c| c.display_name()),
+            KeymapCaptureTarget::Explorer(a) => draft.keymap.find_explorer_keyboard_conflict(combo, a).map(|c| c.display_name()),
+        };
+        if let Some(name) = conflict {
+            draft.key_capture_dialog.as_mut().unwrap().error =
+                Some(format!("「{name}」と重複しています。別のキーか修飾キーの組み合わせにしてください。"));
+        } else {
+            match target {
+                KeymapCaptureTarget::Reader(a) => draft.keymap.set_reader_keyboard(a, Some(combo)),
+                KeymapCaptureTarget::Explorer(a) => draft.keymap.set_explorer_keyboard(a, Some(combo)),
+            }
+            draft.key_capture_dialog = None;
+        }
+    }
 }
 
 impl NekoviewApp {
@@ -650,6 +764,9 @@ impl NekoviewApp {
             });
             });
         });
+        // キーボード用キャプチャダイアログ: 設定ダイアログ本体の後に描画し、レイヤー順で
+        // 最前面（=入力を受け付ける対象）にする。
+        draw_key_capture_dialog(ctx, &mut self.settings_draft);
         if apply {
             // キャッシュ合計がシステムRAMの50%を超えている間は保存を拒否する
             // （警告は同フレーム内で既に赤文字表示済み）。
