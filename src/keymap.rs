@@ -2,7 +2,7 @@
 //!
 //! 実際のキー判定への組み込み（既存ハードコードキーの置き換え）はフェーズ1(view_reader)/
 //! フェーズ2(view_explorer)で行う。ここでは以下のみを扱う:
-//!   - KeyCombo / MouseInput: 1つの入力を表す値
+//!   - KeyCombo / MouseCombo: 1つの入力を表す値（どちらも修飾キー+本体という対称構造）
 //!   - ActionBinding: 1アクションにつき「既定キーボード/既定マウス/ユーザー設定キーボード/
 //!     ユーザー設定マウス」の4スロット（UI上は「既定・マウス・キーボード」の3項目として見せる）
 //!   - ReaderAction / ExplorerAction: 画面ごとに分けたアクションenum
@@ -121,56 +121,97 @@ fn key_from_name(s: &str) -> Option<Key> {
     })
 }
 
-/// マウス入力1つ分。ホイール系はページ送り等、既存キーからの移行分のみを対象にする。
-/// Ctrl+ホイール等ズーム(TODO項目C)向けの種別は、C実装時にここへ追加する。
+/// マウスの動作種別。ホイール系はページ送り等、既存キーからの移行分のみを対象にする。
+/// ドラッグ等(TODO項目C向け)は、C実装時にここへ追加する。
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum MouseInput {
+pub enum MouseAction {
     WheelUp,
     WheelDown,
-    ShiftWheelUp,
-    ShiftWheelDown,
     MiddleClick,
 }
 
-impl MouseInput {
-    pub fn to_config_string(self) -> &'static str {
-        match self {
-            Self::WheelUp        => "wheel_up",
-            Self::WheelDown      => "wheel_down",
-            Self::ShiftWheelUp   => "shift_wheel_up",
-            Self::ShiftWheelDown => "shift_wheel_down",
-            Self::MiddleClick    => "middle_click",
-        }
+fn mouse_action_name(a: MouseAction) -> &'static str {
+    match a {
+        MouseAction::WheelUp     => "wheel_up",
+        MouseAction::WheelDown   => "wheel_down",
+        MouseAction::MiddleClick => "middle_click",
+    }
+}
+
+fn mouse_action_from_name(s: &str) -> Option<MouseAction> {
+    Some(match s {
+        "wheel_up"     => MouseAction::WheelUp,
+        "wheel_down"   => MouseAction::WheelDown,
+        "middle_click" => MouseAction::MiddleClick,
+        _ => return None,
+    })
+}
+
+/// マウス入力1つ分（修飾キー+動作種別）。KeyComboと対称的な構造にしてあり、キーアサインUIで
+/// 「修飾キーのチェックボックス＋動作選択」という共通コンポーネントを両方に使い回せる。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct MouseCombo {
+    pub action: MouseAction,
+    pub ctrl: bool,
+    pub shift: bool,
+    pub alt: bool,
+}
+
+impl MouseCombo {
+    pub const fn plain(action: MouseAction) -> Self {
+        Self { action, ctrl: false, shift: false, alt: false }
+    }
+    pub const fn shift(action: MouseAction) -> Self {
+        Self { action, ctrl: false, shift: true, alt: false }
+    }
+
+    pub fn to_config_string(self) -> String {
+        let mut parts = Vec::new();
+        if self.ctrl  { parts.push("ctrl"); }
+        if self.shift { parts.push("shift"); }
+        if self.alt   { parts.push("alt"); }
+        parts.push(mouse_action_name(self.action));
+        parts.join("+")
     }
 
     pub fn from_config_str(s: &str) -> Option<Self> {
-        Some(match s {
-            "wheel_up"        => Self::WheelUp,
-            "wheel_down"      => Self::WheelDown,
-            "shift_wheel_up"  => Self::ShiftWheelUp,
-            "shift_wheel_down" => Self::ShiftWheelDown,
-            "middle_click"    => Self::MiddleClick,
-            _ => return None,
-        })
+        let mut ctrl = false;
+        let mut shift = false;
+        let mut alt = false;
+        let mut action = None;
+        for part in s.split('+') {
+            match part {
+                "ctrl"  => ctrl = true,
+                "shift" => shift = true,
+                "alt"   => alt = true,
+                other   => action = mouse_action_from_name(other),
+            }
+        }
+        action.map(|action| Self { action, ctrl, shift, alt })
+    }
+
+    /// 修飾キーの状態がこのコンボと一致するか（動作自体が起きたかは呼び出し側が判定する）。
+    pub fn modifiers_match(self, i: &egui::InputState) -> bool {
+        i.modifiers.ctrl == self.ctrl && i.modifiers.shift == self.shift && i.modifiers.alt == self.alt
     }
 }
 
 /// 1アクションぶんの割り当て。既定値2種（キーボード/マウス）と、ユーザーがカスタムした
-/// 場合の上書き値2種を持つ。UI上は「既定・マウス・キーボード」の3項目として見せる想定
+/// 場合の上書き値2種を持つ。UI上は「既定・キーボード・マウス」の3項目として見せる想定
 /// （「既定」列は default_keyboard/default_mouse のうち設定されている方を表示する）。
 #[derive(Clone, Copy, Default)]
 pub struct ActionBinding {
     pub default_keyboard: Option<KeyCombo>,
-    pub default_mouse: Option<MouseInput>,
+    pub default_mouse: Option<MouseCombo>,
     pub keyboard: Option<KeyCombo>,
-    pub mouse: Option<MouseInput>,
+    pub mouse: Option<MouseCombo>,
 }
 
 impl ActionBinding {
     const fn keyboard_only(default: KeyCombo) -> Self {
         Self { default_keyboard: Some(default), default_mouse: None, keyboard: None, mouse: None }
     }
-    const fn both(kb: KeyCombo, mouse: MouseInput) -> Self {
+    const fn both(kb: KeyCombo, mouse: MouseCombo) -> Self {
         Self { default_keyboard: Some(kb), default_mouse: Some(mouse), keyboard: None, mouse: None }
     }
 
@@ -179,7 +220,7 @@ impl ActionBinding {
         self.keyboard.or(self.default_keyboard)
     }
     /// 現在有効なマウス割り当て（ユーザー設定 > 既定）
-    pub fn effective_mouse(&self) -> Option<MouseInput> {
+    pub fn effective_mouse(&self) -> Option<MouseCombo> {
         self.mouse.or(self.default_mouse)
     }
 
@@ -242,17 +283,17 @@ define_action_enum!(ReaderAction {
 impl ReaderAction {
     pub fn default_binding(self) -> ActionBinding {
         match self {
-            Self::PagePrev            => ActionBinding::both(KeyCombo::plain(Key::ArrowUp), MouseInput::WheelUp),
-            Self::PageNext            => ActionBinding::both(KeyCombo::plain(Key::ArrowDown), MouseInput::WheelDown),
+            Self::PagePrev            => ActionBinding::both(KeyCombo::plain(Key::ArrowUp), MouseCombo::plain(MouseAction::WheelUp)),
+            Self::PageNext            => ActionBinding::both(KeyCombo::plain(Key::ArrowDown), MouseCombo::plain(MouseAction::WheelDown)),
             Self::PageAdvanceSpace    => ActionBinding::keyboard_only(KeyCombo::plain(Key::Space)),
             Self::FileNavPrev         => ActionBinding::keyboard_only(KeyCombo::plain(Key::ArrowLeft)),
             Self::FileNavNext         => ActionBinding::keyboard_only(KeyCombo::plain(Key::ArrowRight)),
-            Self::FileNavPrevAlt      => ActionBinding::both(KeyCombo::shift(Key::ArrowUp), MouseInput::ShiftWheelUp),
-            Self::FileNavNextAlt      => ActionBinding::both(KeyCombo::shift(Key::ArrowDown), MouseInput::ShiftWheelDown),
+            Self::FileNavPrevAlt      => ActionBinding::both(KeyCombo::shift(Key::ArrowUp), MouseCombo::shift(MouseAction::WheelUp)),
+            Self::FileNavNextAlt      => ActionBinding::both(KeyCombo::shift(Key::ArrowDown), MouseCombo::shift(MouseAction::WheelDown)),
             Self::JumpFirstPage       => ActionBinding::keyboard_only(KeyCombo::plain(Key::Home)),
             Self::JumpLastPage        => ActionBinding::keyboard_only(KeyCombo::plain(Key::End)),
             Self::ToggleZoomActual    => ActionBinding::keyboard_only(KeyCombo::plain(Key::Enter)),
-            Self::ToggleFullscreen    => ActionBinding::both(KeyCombo::alt(Key::Enter), MouseInput::MiddleClick),
+            Self::ToggleFullscreen    => ActionBinding::both(KeyCombo::alt(Key::Enter), MouseCombo::plain(MouseAction::MiddleClick)),
             Self::CloseOrExitFullscreen => ActionBinding::keyboard_only(KeyCombo::plain(Key::Escape)),
             Self::PageModeSingle      => ActionBinding::keyboard_only(KeyCombo::plain(Key::Num1)),
             Self::PageModeSpreadLeft  => ActionBinding::keyboard_only(KeyCombo::plain(Key::Num2)),
@@ -314,13 +355,13 @@ impl Keymap {
     pub fn set_reader_keyboard(&mut self, action: ReaderAction, kb: Option<KeyCombo>) {
         self.reader.entry(action).or_insert_with(|| action.default_binding()).keyboard = kb;
     }
-    pub fn set_reader_mouse(&mut self, action: ReaderAction, m: Option<MouseInput>) {
+    pub fn set_reader_mouse(&mut self, action: ReaderAction, m: Option<MouseCombo>) {
         self.reader.entry(action).or_insert_with(|| action.default_binding()).mouse = m;
     }
     pub fn set_explorer_keyboard(&mut self, action: ExplorerAction, kb: Option<KeyCombo>) {
         self.explorer.entry(action).or_insert_with(|| action.default_binding()).keyboard = kb;
     }
-    pub fn set_explorer_mouse(&mut self, action: ExplorerAction, m: Option<MouseInput>) {
+    pub fn set_explorer_mouse(&mut self, action: ExplorerAction, m: Option<MouseCombo>) {
         self.explorer.entry(action).or_insert_with(|| action.default_binding()).mouse = m;
     }
 
@@ -372,7 +413,7 @@ impl Default for Keymap {
 fn apply_slot_reader(map: &mut Keymap, action: ReaderAction, slot: &str, value: &str) {
     match slot {
         "keyboard" => map.set_reader_keyboard(action, KeyCombo::from_config_str(value)),
-        "mouse"    => map.set_reader_mouse(action, MouseInput::from_config_str(value)),
+        "mouse"    => map.set_reader_mouse(action, MouseCombo::from_config_str(value)),
         _ => {}
     }
 }
@@ -380,7 +421,7 @@ fn apply_slot_reader(map: &mut Keymap, action: ReaderAction, slot: &str, value: 
 fn apply_slot_explorer(map: &mut Keymap, action: ExplorerAction, slot: &str, value: &str) {
     match slot {
         "keyboard" => map.set_explorer_keyboard(action, KeyCombo::from_config_str(value)),
-        "mouse"    => map.set_explorer_mouse(action, MouseInput::from_config_str(value)),
+        "mouse"    => map.set_explorer_mouse(action, MouseCombo::from_config_str(value)),
         _ => {}
     }
 }
@@ -407,9 +448,16 @@ mod tests {
     }
 
     #[test]
-    fn mouse_input_roundtrip() {
-        for m in [MouseInput::WheelUp, MouseInput::WheelDown, MouseInput::ShiftWheelUp, MouseInput::ShiftWheelDown, MouseInput::MiddleClick] {
-            assert_eq!(MouseInput::from_config_str(m.to_config_string()), Some(m));
+    fn mouse_combo_roundtrip() {
+        for m in [
+            MouseCombo::plain(MouseAction::WheelUp),
+            MouseCombo::plain(MouseAction::WheelDown),
+            MouseCombo::shift(MouseAction::WheelUp),
+            MouseCombo::shift(MouseAction::WheelDown),
+            MouseCombo::plain(MouseAction::MiddleClick),
+        ] {
+            let s = m.to_config_string();
+            assert_eq!(MouseCombo::from_config_str(&s), Some(m));
         }
     }
 
@@ -418,7 +466,7 @@ mod tests {
         let km = Keymap::default();
         let page_prev = km.reader_binding(ReaderAction::PagePrev);
         assert_eq!(page_prev.effective_keyboard(), Some(KeyCombo::plain(Key::ArrowUp)));
-        assert_eq!(page_prev.effective_mouse(), Some(MouseInput::WheelUp));
+        assert_eq!(page_prev.effective_mouse(), Some(MouseCombo::plain(MouseAction::WheelUp)));
     }
 
     #[test]
