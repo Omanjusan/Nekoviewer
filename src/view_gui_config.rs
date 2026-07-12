@@ -592,6 +592,8 @@ impl NekoviewApp {
             if !self.settings_draft.cache_over_budget() {
                 self.settings_draft.apply_to(&mut self.config, &mut self.viewer_cfg.lock().unwrap(), &mut self.translate_cfg);
                 self.show_hidden = self.settings_draft.show_hidden;
+                // thumb_size/thumb_filterはstateファイルに乗っていないためconfig.iniへ直接保存する。
+                self.config.save();
                 self.persist_state();
                 close = true;
             }
