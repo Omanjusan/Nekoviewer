@@ -69,13 +69,14 @@ pub(crate) struct SettingsDraft {
     translate_overlay_width: u32,
     translate_overlay_corner: OverlayCorner,
     keymap: Keymap,
-    /// マウスの「変更」ボタン押下中: 次のマウス入力を捕捉してReaderActionのマウススロットへ
-    /// 確定する（キーボードはKeyCaptureDialogStateに移行済みのため、マウス専用でよい）。
-    keymap_capturing: Option<ReaderAction>,
-    /// 直近のキャプチャが衝突拒否された際の案内文（次の入力待ちの間、表示し続ける）。
-    keymap_capture_error: Option<String>,
     /// キーボードの「変更」ボタンで開く専用ダイアログの状態。Some の間だけ表示する。
     key_capture_dialog: Option<KeyCaptureDialogState>,
+    /// マウスの「変更」ボタンで開く専用ダイアログの状態。Some の間だけ表示する。
+    /// キーボード版と同じModal方式に統一済み（マウスはReaderActionのみ対象）。
+    mouse_capture_dialog: Option<MouseCaptureDialogState>,
+    /// 直近の登録が他アクションと重複していた場合の警告文。登録自体はブロックしない
+    /// （入れ替えを行うには一時的な重複を経由する必要があるため）。次の登録操作まで表示し続ける。
+    keymap_last_warning: Option<String>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -107,6 +108,34 @@ impl KeyCaptureDialogState {
             ctrl: current.is_some_and(|k| k.ctrl),
             alt: current.is_some_and(|k| k.alt),
             key: current.map(|k| k.key),
+            listening: false,
+            error: None,
+        }
+    }
+}
+
+/// マウス用キャプチャダイアログの編集状態。キーボード版(KeyCaptureDialogState)と同じ構造で、
+/// 「本体キー」を「マウスボタン」に置き換えただけ。マウスはReaderActionのみが対象。
+struct MouseCaptureDialogState {
+    action: ReaderAction,
+    shift: bool,
+    ctrl: bool,
+    alt: bool,
+    mouse_action: Option<MouseAction>,
+    /// 「設定開始」押下後、次のマウス入力を待っている間 true。
+    listening: bool,
+    /// [設定]で確定しようとしてマウスボタン未設定だった場合の案内文。
+    error: Option<String>,
+}
+
+impl MouseCaptureDialogState {
+    fn new(action: ReaderAction, current: Option<MouseCombo>) -> Self {
+        Self {
+            action,
+            shift: current.is_some_and(|m| m.shift),
+            ctrl: current.is_some_and(|m| m.ctrl),
+            alt: current.is_some_and(|m| m.alt),
+            mouse_action: current.map(|m| m.action),
             listening: false,
             error: None,
         }
@@ -156,9 +185,9 @@ impl SettingsDraft {
             translate_overlay_width: translate_cfg.overlay_width,
             translate_overlay_corner: translate_cfg.overlay_corner,
             keymap: config.keymap.clone(),
-            keymap_capturing: None,
-            keymap_capture_error: None,
             key_capture_dialog: None,
+            mouse_capture_dialog: None,
+            keymap_last_warning: None,
         }
     }
 
@@ -512,76 +541,12 @@ fn draw_keymap_row_borders(ui: &mut egui::Ui, cells: &[egui::Rect]) {
 fn draw_settings_tab_keymap(ui: &mut egui::Ui, draft: &mut SettingsDraft) {
     if ui.button("すべて既定に戻す").clicked() {
         draft.keymap = Keymap::default();
-        draft.keymap_capturing = None;
+        draft.keymap_last_warning = None;
+    }
+    if let Some(warning) = &draft.keymap_last_warning {
+        ui.colored_label(egui::Color32::from_rgb(220, 160, 40), warning);
     }
     ui.separator();
-
-    if let Some(action) = draft.keymap_capturing {
-        let mut cancelled = false;
-        ui.horizontal(|ui| {
-            ui.colored_label(egui::Color32::from_rgb(220, 160, 40), "入力待ち…（Escでキャンセル）");
-            if ui.small_button("キャンセル").clicked() {
-                draft.keymap_capturing = None;
-                draft.keymap_capture_error = None;
-                cancelled = true;
-            }
-        });
-        if let Some(err) = &draft.keymap_capture_error {
-            ui.colored_label(egui::Color32::from_rgb(220, 60, 60), err);
-        }
-        let ctx = ui.ctx().clone();
-        // 「キャンセル」ボタン自体のクリックを左クリック入力として誤検出しないよう、
-        // キャンセルボタンが押された場合は以降の入力検出をスキップする。
-        if cancelled {
-        } else if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
-            draft.keymap_capturing = None;
-            draft.keymap_capture_error = None;
-        } else {
-            let captured = ctx.input(|i| {
-                let m = i.modifiers;
-                let combo = |action| MouseCombo { action, ctrl: m.ctrl, shift: m.shift, alt: m.alt };
-                // ダブルクリックはbutton_clicked()でもtrueになるため、各ボタンとも先に判定する。
-                use egui::PointerButton::*;
-                if i.pointer.button_double_clicked(Primary) {
-                    Some(combo(MouseAction::LeftDoubleClick))
-                } else if i.pointer.button_double_clicked(Secondary) {
-                    Some(combo(MouseAction::RightDoubleClick))
-                } else if i.pointer.button_double_clicked(Middle) {
-                    Some(combo(MouseAction::MiddleDoubleClick))
-                } else if i.pointer.button_clicked(Primary) {
-                    Some(combo(MouseAction::LeftClick))
-                } else if i.pointer.button_clicked(Secondary) {
-                    Some(combo(MouseAction::RightClick))
-                } else if i.pointer.button_clicked(Middle) {
-                    Some(combo(MouseAction::MiddleClick))
-                } else if i.pointer.button_clicked(Extra1) {
-                    Some(combo(MouseAction::Extra1))
-                } else if i.pointer.button_clicked(Extra2) {
-                    Some(combo(MouseAction::Extra2))
-                } else {
-                    let sd = i.smooth_scroll_delta();
-                    if sd.y > 5.0 {
-                        Some(combo(MouseAction::WheelUp))
-                    } else if sd.y < -5.0 {
-                        Some(combo(MouseAction::WheelDown))
-                    } else {
-                        None
-                    }
-                }
-            });
-            if let Some(mc) = captured {
-                if let Some(conflict) = draft.keymap.find_reader_mouse_conflict(mc, action) {
-                    draft.keymap_capture_error = Some(format!("「{}」と重複しています。別の入力にするかキャンセルしてください。", conflict.display_name()));
-                } else {
-                    draft.keymap.set_reader_mouse(action, Some(mc));
-                    draft.keymap_capturing = None;
-                    draft.keymap_capture_error = None;
-                }
-            }
-        }
-        ctx.request_repaint();
-        ui.separator();
-    }
 
     // 列ごとの背景色分けはやめて全列同色にする（境界は縦罫線のみで示す）。
     let cell_bg = ui.visuals().faint_bg_color;
@@ -609,7 +574,7 @@ fn draw_settings_tab_keymap(ui: &mut egui::Ui, draft: &mut SettingsDraft) {
             });
             let r3 = keymap_cell(ui, cell_bg, KEYMAP_COL_MOUSE_W, |ui| {
                 if ui.add_sized([KEYMAP_BUTTON_W, 18.0], egui::Button::new("変更").small()).clicked() {
-                    draft.keymap_capturing = Some(action);
+                    draft.mouse_capture_dialog = Some(MouseCaptureDialogState::new(action, binding.mouse.or(binding.default_mouse)));
                 }
                 if draw_reset_button(ui, binding.mouse.is_some()) {
                     draft.keymap.set_reader_mouse(action, None);
@@ -686,17 +651,20 @@ fn draw_key_capture_dialog(ctx: &egui::Context, draft: &mut SettingsDraft) {
         ui.add_space(8.0);
 
         ui.label("本体キー");
-        ui.horizontal(|ui| {
+        ui.vertical_centered(|ui| {
             let mut key_label = state.key.map(|k| format!("{k:?}")).unwrap_or_else(|| "-".to_string());
-            ui.add_sized([180.0, 0.0], egui::TextEdit::singleline(&mut key_label).interactive(false));
-            let btn_label = if state.listening { "待機中…" } else { "設定開始" };
-            if ui.add_sized([90.0, 0.0], egui::Button::new(btn_label).selected(state.listening)).clicked() {
-                state.listening = !state.listening;
-            }
-            if ui.add_sized([70.0, 0.0], egui::Button::new("消去")).clicked() {
-                state.key = None;
-                state.listening = false;
-            }
+            ui.add_sized([300.0, 0.0], egui::TextEdit::singleline(&mut key_label).interactive(false));
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                let btn_label = if state.listening { "待機中…" } else { "設定開始" };
+                if ui.add_sized([90.0, 0.0], egui::Button::new(btn_label).selected(state.listening)).clicked() {
+                    state.listening = !state.listening;
+                }
+                if ui.add_sized([70.0, 0.0], egui::Button::new("消去")).clicked() {
+                    state.key = None;
+                    state.listening = false;
+                }
+            });
         });
 
         if state.listening {
@@ -741,16 +709,140 @@ fn draw_key_capture_dialog(ctx: &egui::Context, draft: &mut SettingsDraft) {
             KeymapCaptureTarget::Reader(a) => draft.keymap.find_reader_keyboard_conflict(combo, a).map(|c| c.display_name()),
             KeymapCaptureTarget::Explorer(a) => draft.keymap.find_explorer_keyboard_conflict(combo, a).map(|c| c.display_name()),
         };
-        if let Some(name) = conflict {
-            draft.key_capture_dialog.as_mut().unwrap().error =
-                Some(format!("「{name}」と重複しています。別のキーか修飾キーの組み合わせにしてください。"));
-        } else {
-            match target {
-                KeymapCaptureTarget::Reader(a) => draft.keymap.set_reader_keyboard(a, Some(combo)),
-                KeymapCaptureTarget::Explorer(a) => draft.keymap.set_explorer_keyboard(a, Some(combo)),
-            }
-            draft.key_capture_dialog = None;
+        match target {
+            KeymapCaptureTarget::Reader(a) => draft.keymap.set_reader_keyboard(a, Some(combo)),
+            KeymapCaptureTarget::Explorer(a) => draft.keymap.set_explorer_keyboard(a, Some(combo)),
         }
+        draft.keymap_last_warning = conflict.map(|name| format!("「{name}」と重複する入力を登録しました。"));
+        draft.key_capture_dialog = None;
+    }
+}
+
+/// マウス用キャプチャダイアログ。draw_key_capture_dialog()と同じ構造・レイアウトで、
+/// 「本体キー」を「マウスボタン」に置き換えたもの。修飾キーはトグルが真実の情報源で、
+/// 「設定開始」中に拾うのはマウスの物理入力（クリック種別／ホイール）1つだけ。
+fn draw_mouse_capture_dialog(ctx: &egui::Context, draft: &mut SettingsDraft) {
+    if draft.mouse_capture_dialog.is_none() {
+        return;
+    }
+    let mut close_cancel = false;
+    let mut confirm: Option<MouseCombo> = None;
+    // 「設定開始」ボタン自体のクリックを即座にLeftClickとして誤検出しないよう、
+    // このフレームの冒頭時点(=前フレームまで)で listening だったかどうかで判定する。
+    let was_listening = draft.mouse_capture_dialog.as_ref().unwrap().listening;
+    let mut dialog_button_clicked = false;
+
+    egui::Modal::new(egui::Id::new("mouse_capture_dialog")).show(ctx, |ui| {
+        let state = draft.mouse_capture_dialog.as_mut().unwrap();
+        ui.set_min_width(380.0);
+        ui.heading("キーアサイン変更");
+        ui.label(format!("対象: {} / マウス", state.action.display_name()));
+        ui.separator();
+
+        ui.label("修飾キー");
+        ui.horizontal(|ui| {
+            draw_mod_toggle(ui, "SHIFT", &mut state.shift);
+            draw_mod_toggle(ui, "CTRL", &mut state.ctrl);
+            draw_mod_toggle(ui, "ALT", &mut state.alt);
+        });
+        ui.add_space(8.0);
+
+        ui.label("マウスボタン");
+        ui.vertical_centered(|ui| {
+            let mut action_label = state.mouse_action.map(mouse_action_name).unwrap_or("-").to_string();
+            ui.add_sized([300.0, 0.0], egui::TextEdit::singleline(&mut action_label).interactive(false));
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                let btn_label = if state.listening { "待機中…" } else { "設定開始" };
+                if ui.add_sized([90.0, 0.0], egui::Button::new(btn_label).selected(state.listening)).clicked() {
+                    state.listening = !state.listening;
+                    dialog_button_clicked = true;
+                }
+                if ui.add_sized([70.0, 0.0], egui::Button::new("消去")).clicked() {
+                    state.mouse_action = None;
+                    state.listening = false;
+                    dialog_button_clicked = true;
+                }
+            });
+        });
+
+        if state.listening {
+            ui.colored_label(egui::Color32::from_rgb(220, 160, 40), "マウスを操作してください");
+        }
+
+        if let Some(err) = &state.error {
+            ui.colored_label(egui::Color32::from_rgb(220, 60, 60), err);
+        }
+
+        ui.separator();
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if ui.button("設定").clicked() {
+                dialog_button_clicked = true;
+                if let Some(action) = state.mouse_action {
+                    confirm = Some(MouseCombo { action, ctrl: state.ctrl, shift: state.shift, alt: state.alt });
+                } else {
+                    state.error = Some("マウスボタンが未設定です。「設定開始」でマウスを操作してください。".to_string());
+                }
+            }
+            if ui.button("キャンセル").clicked() {
+                dialog_button_clicked = true;
+                close_cancel = true;
+            }
+        });
+    });
+
+    if close_cancel {
+        draft.mouse_capture_dialog = None;
+        return;
+    }
+
+    // ダイアログ自身のボタンクリックを物理マウス入力として誤検出しないよう、
+    // was_listening（前フレームまでの状態）かつ今フレームでダイアログのボタンを
+    // 押していない場合のみ、次の物理入力を1つ拾う。
+    if was_listening && !dialog_button_clicked {
+        let captured = ctx.input(|i| {
+            use egui::PointerButton::*;
+            if i.pointer.button_double_clicked(Primary) {
+                Some(MouseAction::LeftDoubleClick)
+            } else if i.pointer.button_double_clicked(Secondary) {
+                Some(MouseAction::RightDoubleClick)
+            } else if i.pointer.button_double_clicked(Middle) {
+                Some(MouseAction::MiddleDoubleClick)
+            } else if i.pointer.button_clicked(Primary) {
+                Some(MouseAction::LeftClick)
+            } else if i.pointer.button_clicked(Secondary) {
+                Some(MouseAction::RightClick)
+            } else if i.pointer.button_clicked(Middle) {
+                Some(MouseAction::MiddleClick)
+            } else if i.pointer.button_clicked(Extra1) {
+                Some(MouseAction::Extra1)
+            } else if i.pointer.button_clicked(Extra2) {
+                Some(MouseAction::Extra2)
+            } else {
+                let sd = i.smooth_scroll_delta();
+                if sd.y > 5.0 {
+                    Some(MouseAction::WheelUp)
+                } else if sd.y < -5.0 {
+                    Some(MouseAction::WheelDown)
+                } else {
+                    None
+                }
+            }
+        });
+        if let Some(action) = captured {
+            let state = draft.mouse_capture_dialog.as_mut().unwrap();
+            state.mouse_action = Some(action);
+            state.listening = false;
+        }
+        ctx.request_repaint();
+    }
+
+    if let Some(combo) = confirm {
+        let action = draft.mouse_capture_dialog.as_ref().unwrap().action;
+        let conflict = draft.keymap.find_reader_mouse_conflict(combo, action).map(|c| c.display_name());
+        draft.keymap.set_reader_mouse(action, Some(combo));
+        draft.keymap_last_warning = conflict.map(|name| format!("「{name}」と重複する入力を登録しました。"));
+        draft.mouse_capture_dialog = None;
     }
 }
 
@@ -840,9 +932,10 @@ impl NekoviewApp {
             });
             });
         });
-        // キーボード用キャプチャダイアログ: 設定ダイアログ本体の後に描画し、レイヤー順で
-        // 最前面（=入力を受け付ける対象）にする。
+        // キーボード/マウス用キャプチャダイアログ: 設定ダイアログ本体の後に描画し、
+        // レイヤー順で最前面（=入力を受け付ける対象）にする。
         draw_key_capture_dialog(ctx, &mut self.settings_draft);
+        draw_mouse_capture_dialog(ctx, &mut self.settings_draft);
         if apply {
             // キャッシュ合計がシステムRAMの50%を超えている間は保存を拒否する
             // （警告は同フレーム内で既に赤文字表示済み）。
