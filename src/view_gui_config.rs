@@ -71,6 +71,8 @@ pub(crate) struct SettingsDraft {
     keymap: Keymap,
     /// 「変更」ボタン押下中: 次のキー/マウス入力を捕捉してこのスロットへ確定する。
     keymap_capturing: Option<(KeymapCaptureTarget, KeymapCaptureSlot)>,
+    /// 直近のキャプチャが衝突拒否された際の案内文（次の入力待ちの間、表示し続ける）。
+    keymap_capture_error: Option<String>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -120,6 +122,7 @@ impl SettingsDraft {
             translate_overlay_corner: translate_cfg.overlay_corner,
             keymap: config.keymap.clone(),
             keymap_capturing: None,
+            keymap_capture_error: None,
         }
     }
 
@@ -385,11 +388,16 @@ fn draw_settings_tab_keymap(ui: &mut egui::Ui, draft: &mut SettingsDraft) {
             ui.colored_label(egui::Color32::from_rgb(220, 160, 40), "入力待ち…（Escでキャンセル）");
             if ui.small_button("キャンセル").clicked() {
                 draft.keymap_capturing = None;
+                draft.keymap_capture_error = None;
             }
         });
+        if let Some(err) = &draft.keymap_capture_error {
+            ui.colored_label(egui::Color32::from_rgb(220, 60, 60), err);
+        }
         let ctx = ui.ctx().clone();
         if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
             draft.keymap_capturing = None;
+            draft.keymap_capture_error = None;
         } else {
             match slot {
                 KeymapCaptureSlot::Keyboard => {
@@ -400,11 +408,20 @@ fn draw_settings_tab_keymap(ui: &mut egui::Ui, draft: &mut SettingsDraft) {
                         _ => None,
                     }));
                     if let Some(kb) = captured {
-                        match target {
-                            KeymapCaptureTarget::Reader(a) => draft.keymap.set_reader_keyboard(a, Some(kb)),
-                            KeymapCaptureTarget::Explorer(a) => draft.keymap.set_explorer_keyboard(a, Some(kb)),
+                        let conflict = match target {
+                            KeymapCaptureTarget::Reader(a) => draft.keymap.find_reader_keyboard_conflict(kb, a).map(|c| c.display_name()),
+                            KeymapCaptureTarget::Explorer(a) => draft.keymap.find_explorer_keyboard_conflict(kb, a).map(|c| c.display_name()),
+                        };
+                        if let Some(name) = conflict {
+                            draft.keymap_capture_error = Some(format!("「{name}」と重複しています。別のキーを入力するかキャンセルしてください。"));
+                        } else {
+                            match target {
+                                KeymapCaptureTarget::Reader(a) => draft.keymap.set_reader_keyboard(a, Some(kb)),
+                                KeymapCaptureTarget::Explorer(a) => draft.keymap.set_explorer_keyboard(a, Some(kb)),
+                            }
+                            draft.keymap_capturing = None;
+                            draft.keymap_capture_error = None;
                         }
-                        draft.keymap_capturing = None;
                     }
                 }
                 KeymapCaptureSlot::Mouse => {
@@ -426,9 +443,17 @@ fn draw_settings_tab_keymap(ui: &mut egui::Ui, draft: &mut SettingsDraft) {
                     if let Some(mc) = captured {
                         // Explorer側は現状マウス割り当て未使用のため、Readerのみ確定させる。
                         if let KeymapCaptureTarget::Reader(a) = target {
-                            draft.keymap.set_reader_mouse(a, Some(mc));
+                            if let Some(conflict) = draft.keymap.find_reader_mouse_conflict(mc, a) {
+                                draft.keymap_capture_error = Some(format!("「{}」と重複しています。別の入力にするかキャンセルしてください。", conflict.display_name()));
+                            } else {
+                                draft.keymap.set_reader_mouse(a, Some(mc));
+                                draft.keymap_capturing = None;
+                                draft.keymap_capture_error = None;
+                            }
+                        } else {
+                            draft.keymap_capturing = None;
+                            draft.keymap_capture_error = None;
                         }
-                        draft.keymap_capturing = None;
                     }
                 }
             }

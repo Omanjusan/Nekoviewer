@@ -443,6 +443,22 @@ impl Keymap {
         self.explorer.entry(action).or_insert_with(|| action.default_binding()).mouse = m;
     }
 
+    /// 指定のキーボード入力が、同じ画面(Reader)内の他のアクションと衝突していないか調べる。
+    /// `exclude` は判定対象自身（変更しようとしているアクション）。is_editable() == false の
+    /// 固定アクションも判定対象に含める（範囲選択拡張系のキーへ他アクションを重ねさせないため）。
+    pub fn find_reader_keyboard_conflict(&self, kb: KeyCombo, exclude: ReaderAction) -> Option<ReaderAction> {
+        ReaderAction::ALL.iter().copied()
+            .find(|&a| a != exclude && self.reader_binding(a).effective_keyboard() == Some(kb))
+    }
+    pub fn find_reader_mouse_conflict(&self, mc: MouseCombo, exclude: ReaderAction) -> Option<ReaderAction> {
+        ReaderAction::ALL.iter().copied()
+            .find(|&a| a != exclude && self.reader_binding(a).effective_mouse() == Some(mc))
+    }
+    pub fn find_explorer_keyboard_conflict(&self, kb: KeyCombo, exclude: ExplorerAction) -> Option<ExplorerAction> {
+        ExplorerAction::ALL.iter().copied()
+            .find(|&a| a != exclude && self.explorer_binding(a).effective_keyboard() == Some(kb))
+    }
+
     /// config.ini [keymap] セクションの1行 "reader.PagePrev.keyboard" = "shift+ArrowUp" を適用する。
     /// 未知のアクション名・スロット名・値は無視する（既存パターン踏襲）。
     pub fn apply_ini_entry(&mut self, key: &str, value: &str) {
@@ -589,6 +605,48 @@ fn push_binding_lines(lines: &mut Vec<String>, scope: &str, action_name: &str, b
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn find_reader_keyboard_conflict_detects_default_binding() {
+        let km = Keymap::default();
+        // ArrowUp(修飾なし)は既定でPagePrevに割り当て済み。他アクションで同じ組み合わせを
+        // 使おうとすると、たとえユーザーが何もカスタムしていなくても既定値との衝突を検出する。
+        let conflict = km.find_reader_keyboard_conflict(KeyCombo::plain(Key::ArrowUp), ReaderAction::PageModeSingle);
+        assert_eq!(conflict, Some(ReaderAction::PagePrev));
+    }
+
+    #[test]
+    fn find_reader_keyboard_conflict_excludes_self() {
+        let km = Keymap::default();
+        // 自分自身(PagePrev)に対して、既定のArrowUpをそのまま使っても衝突と判定しない。
+        let conflict = km.find_reader_keyboard_conflict(KeyCombo::plain(Key::ArrowUp), ReaderAction::PagePrev);
+        assert_eq!(conflict, None);
+    }
+
+    #[test]
+    fn find_reader_keyboard_conflict_after_user_override() {
+        let mut km = Keymap::default();
+        km.set_reader_keyboard(ReaderAction::JumpFirstPage, Some(KeyCombo::plain(Key::F5)));
+        // F5は既定でApplySlot1に割り当て済みなので、JumpFirstPageをF5に変えようとすると衝突する。
+        let conflict = km.find_reader_keyboard_conflict(KeyCombo::plain(Key::F5), ReaderAction::JumpFirstPage);
+        assert_eq!(conflict, Some(ReaderAction::ApplySlot1));
+    }
+
+    #[test]
+    fn find_reader_mouse_conflict_detects_default_binding() {
+        let km = Keymap::default();
+        let conflict = km.find_reader_mouse_conflict(MouseCombo::plain(MouseAction::WheelUp), ReaderAction::PageModeSingle);
+        assert_eq!(conflict, Some(ReaderAction::PagePrev));
+    }
+
+    #[test]
+    fn find_explorer_keyboard_conflict_includes_fixed_extend_actions() {
+        let km = Keymap::default();
+        // ExtendUp(Shift+ArrowUp)は編集不可の固定アクションだが、他のアクションが
+        // 同じ組み合わせへ変更しようとした場合は衝突として検出する対象に含める。
+        let conflict = km.find_explorer_keyboard_conflict(KeyCombo::shift(Key::ArrowUp), ExplorerAction::FocusNext);
+        assert_eq!(conflict, Some(ExplorerAction::ExtendUp));
+    }
 
     #[test]
     fn key_combo_roundtrip() {
