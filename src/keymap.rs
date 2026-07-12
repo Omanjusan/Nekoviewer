@@ -117,7 +117,7 @@ pub enum MouseAction {
     MiddleClick,
 }
 
-fn mouse_action_name(a: MouseAction) -> &'static str {
+pub fn mouse_action_name(a: MouseAction) -> &'static str {
     match a {
         MouseAction::WheelUp     => "wheel_up",
         MouseAction::WheelDown   => "wheel_down",

@@ -5,7 +5,7 @@
 use crate::config::{AppConfig, ResizeFilter, filter_to_str};
 use crate::gui_config::{ThumbbarPos, ViewerConfig};
 use crate::i18n;
-use crate::keymap::{Keymap, ReaderAction, ExplorerAction, KeyCombo, MouseCombo, MouseAction};
+use crate::keymap::{Keymap, ReaderAction, ExplorerAction, KeyCombo, MouseCombo, MouseAction, mouse_action_name};
 use crate::translate::{OVERLAY_WIDTH_CEILING, OVERLAY_WIDTH_FLOOR, OverlayCorner, TranslateConfig};
 use crate::view_explorer::NekoviewApp;
 
@@ -376,6 +376,33 @@ fn draw_settings_tab_viewer(ui: &mut egui::Ui, draft: &mut SettingsDraft) {
 /// キーアサインタブ: ReaderAction/ExplorerActionの現在の割り当てをセクション分けして
 /// 一覧表示する。「変更」ボタン押下で次のキー/マウス入力を捕捉して確定する
 /// （フェーズ3-B）。リセット機能はフェーズ3-Cで追加予定。
+const KEYMAP_BUTTON_W: f32 = 90.0;
+
+/// キーボード割り当てを SHIFT/ALT/CTRL/KEY の行に分解して表示する（コンボキーで
+/// 横幅が伸び続けるのを避けるため、詳細は縦に並べる）。
+fn draw_key_combo_rows(ui: &mut egui::Ui, kb: Option<KeyCombo>) {
+    let (ctrl, shift, alt, key) = match kb {
+        Some(k) => (k.ctrl, k.shift, k.alt, format!("{:?}", k.key)),
+        None => (false, false, false, "-".to_string()),
+    };
+    ui.label(format!("SHIFT: {}", if shift { "ON" } else { "OFF" }));
+    ui.label(format!("ALT: {}", if alt { "ON" } else { "OFF" }));
+    ui.label(format!("CTRL: {}", if ctrl { "ON" } else { "OFF" }));
+    ui.strong(format!("KEY: {key}"));
+}
+
+/// マウス割り当てを SHIFT/ALT/CTRL/ACTION の行に分解して表示する。
+fn draw_mouse_combo_rows(ui: &mut egui::Ui, mc: Option<MouseCombo>) {
+    let (ctrl, shift, alt, action) = match mc {
+        Some(m) => (m.ctrl, m.shift, m.alt, mouse_action_name(m.action)),
+        None => (false, false, false, "-"),
+    };
+    ui.label(format!("SHIFT: {}", if shift { "ON" } else { "OFF" }));
+    ui.label(format!("ALT: {}", if alt { "ON" } else { "OFF" }));
+    ui.label(format!("CTRL: {}", if ctrl { "ON" } else { "OFF" }));
+    ui.strong(format!("ACTION: {action}"));
+}
+
 fn draw_settings_tab_keymap(ui: &mut egui::Ui, draft: &mut SettingsDraft) {
     if ui.button("すべて既定に戻す").clicked() {
         draft.keymap = Keymap::default();
@@ -473,23 +500,31 @@ fn draw_settings_tab_keymap(ui: &mut egui::Ui, draft: &mut SettingsDraft) {
             for action in ReaderAction::ALL.iter().copied() {
                 let binding = draft.keymap.reader_binding(action);
                 ui.label(action.display_name());
-                ui.horizontal(|ui| {
-                    ui.label(binding.keyboard.or(binding.default_keyboard).map(|k| k.to_config_string()).unwrap_or_default());
-                    if ui.small_button("変更").clicked() {
-                        draft.keymap_capturing = Some((KeymapCaptureTarget::Reader(action), KeymapCaptureSlot::Keyboard));
-                    }
-                    if binding.keyboard.is_some() && ui.small_button("既定に戻す").clicked() {
-                        draft.keymap.set_reader_keyboard(action, None);
-                    }
+                ui.vertical(|ui| {
+                    ui.horizontal(|ui| {
+                        if ui.add_sized([KEYMAP_BUTTON_W, 0.0], egui::Button::new("変更").small()).clicked() {
+                            draft.keymap_capturing = Some((KeymapCaptureTarget::Reader(action), KeymapCaptureSlot::Keyboard));
+                        }
+                        ui.add_enabled_ui(binding.keyboard.is_some(), |ui| {
+                            if ui.add_sized([KEYMAP_BUTTON_W, 0.0], egui::Button::new("既定値").small()).clicked() {
+                                draft.keymap.set_reader_keyboard(action, None);
+                            }
+                        });
+                    });
+                    draw_key_combo_rows(ui, binding.keyboard.or(binding.default_keyboard));
                 });
-                ui.horizontal(|ui| {
-                    ui.label(binding.mouse.or(binding.default_mouse).map(|m| m.to_config_string()).unwrap_or_default());
-                    if ui.small_button("変更").clicked() {
-                        draft.keymap_capturing = Some((KeymapCaptureTarget::Reader(action), KeymapCaptureSlot::Mouse));
-                    }
-                    if binding.mouse.is_some() && ui.small_button("既定に戻す").clicked() {
-                        draft.keymap.set_reader_mouse(action, None);
-                    }
+                ui.vertical(|ui| {
+                    ui.horizontal(|ui| {
+                        if ui.add_sized([KEYMAP_BUTTON_W, 0.0], egui::Button::new("変更").small()).clicked() {
+                            draft.keymap_capturing = Some((KeymapCaptureTarget::Reader(action), KeymapCaptureSlot::Mouse));
+                        }
+                        ui.add_enabled_ui(binding.mouse.is_some(), |ui| {
+                            if ui.add_sized([KEYMAP_BUTTON_W, 0.0], egui::Button::new("既定値").small()).clicked() {
+                                draft.keymap.set_reader_mouse(action, None);
+                            }
+                        });
+                    });
+                    draw_mouse_combo_rows(ui, binding.mouse.or(binding.default_mouse));
                 });
                 ui.end_row();
             }
@@ -510,14 +545,18 @@ fn draw_settings_tab_keymap(ui: &mut egui::Ui, draft: &mut SettingsDraft) {
                 let name = if editable { action.display_name().to_string() } else { format!("{}（固定）", action.display_name()) };
                 ui.label(name);
                 ui.add_enabled_ui(editable, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label(binding.keyboard.or(binding.default_keyboard).map(|k| k.to_config_string()).unwrap_or_default());
-                        if ui.small_button("変更").clicked() {
-                            draft.keymap_capturing = Some((KeymapCaptureTarget::Explorer(action), KeymapCaptureSlot::Keyboard));
-                        }
-                        if binding.keyboard.is_some() && ui.small_button("既定に戻す").clicked() {
-                            draft.keymap.set_explorer_keyboard(action, None);
-                        }
+                    ui.vertical(|ui| {
+                        ui.horizontal(|ui| {
+                            if ui.add_sized([KEYMAP_BUTTON_W, 0.0], egui::Button::new("変更").small()).clicked() {
+                                draft.keymap_capturing = Some((KeymapCaptureTarget::Explorer(action), KeymapCaptureSlot::Keyboard));
+                            }
+                            ui.add_enabled_ui(binding.keyboard.is_some(), |ui| {
+                                if ui.add_sized([KEYMAP_BUTTON_W, 0.0], egui::Button::new("既定値").small()).clicked() {
+                                    draft.keymap.set_explorer_keyboard(action, None);
+                                }
+                            });
+                        });
+                        draw_key_combo_rows(ui, binding.keyboard.or(binding.default_keyboard));
                     });
                 });
                 ui.end_row();
