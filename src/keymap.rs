@@ -318,7 +318,15 @@ define_action_enum!(ExplorerAction {
     NavDown        => "NavDown",
     NavLeft        => "NavLeft",
     NavRight       => "NavRight",
+    NavHome        => "NavHome",
+    NavEnd         => "NavEnd",
     Confirm        => "Confirm",
+    ExtendUp       => "ExtendUp",
+    ExtendDown     => "ExtendDown",
+    ExtendLeft     => "ExtendLeft",
+    ExtendRight    => "ExtendRight",
+    ExtendHome     => "ExtendHome",
+    ExtendEnd      => "ExtendEnd",
 });
 
 impl ExplorerAction {
@@ -333,8 +341,26 @@ impl ExplorerAction {
             Self::NavDown        => ActionBinding::keyboard_only(KeyCombo::plain(Key::ArrowDown)),
             Self::NavLeft        => ActionBinding::keyboard_only(KeyCombo::plain(Key::ArrowLeft)),
             Self::NavRight       => ActionBinding::keyboard_only(KeyCombo::plain(Key::ArrowRight)),
+            Self::NavHome        => ActionBinding::keyboard_only(KeyCombo::plain(Key::Home)),
+            Self::NavEnd         => ActionBinding::keyboard_only(KeyCombo::plain(Key::End)),
             Self::Confirm        => ActionBinding::keyboard_only(KeyCombo::plain(Key::Enter)),
+            Self::ExtendUp       => ActionBinding::keyboard_only(KeyCombo::shift(Key::ArrowUp)),
+            Self::ExtendDown     => ActionBinding::keyboard_only(KeyCombo::shift(Key::ArrowDown)),
+            Self::ExtendLeft     => ActionBinding::keyboard_only(KeyCombo::shift(Key::ArrowLeft)),
+            Self::ExtendRight    => ActionBinding::keyboard_only(KeyCombo::shift(Key::ArrowRight)),
+            Self::ExtendHome     => ActionBinding::keyboard_only(KeyCombo::shift(Key::Home)),
+            Self::ExtendEnd      => ActionBinding::keyboard_only(KeyCombo::shift(Key::End)),
         }
+    }
+
+    /// キーアサインUIで変更可能か。範囲選択拡張系(Shift+矢印/Home/End)は現時点で固定仕様とし、
+    /// キーIDとしては公開するがUI上は編集不可（将来の再検討用にスタンバイさせておく）。
+    pub fn is_editable(self) -> bool {
+        !matches!(
+            self,
+            Self::ExtendUp | Self::ExtendDown | Self::ExtendLeft | Self::ExtendRight
+                | Self::ExtendHome | Self::ExtendEnd
+        )
     }
 }
 
