@@ -594,6 +594,8 @@ impl NekoviewApp {
                 self.show_hidden = self.settings_draft.show_hidden;
                 // thumb_size/thumb_filterはstateファイルに乗っていないためconfig.iniへ直接保存する。
                 self.config.save();
+                // keymapは行数可変のため専用ファイル(keymap.ini)へ別途保存する。
+                self.config.keymap.save();
                 self.persist_state();
                 close = true;
             }

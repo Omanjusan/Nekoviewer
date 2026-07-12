@@ -477,7 +477,80 @@ impl Keymap {
         }
         lines
     }
+
+    /// 実行ファイルと同じフォルダの keymap.ini を読み込む。無ければコメント付きテンプレートを
+    /// 生成して既定値を返す（config.ini の起動時生成パターンを踏襲）。
+    pub fn load() -> Self {
+        let Some(dir) = std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.to_path_buf())) else {
+            return Self::default();
+        };
+        let path = dir.join("keymap.ini");
+        let content = match std::fs::read_to_string(&path) {
+            Ok(c) => c,
+            Err(_) => {
+                let _ = std::fs::write(&path, KEYMAP_INI_HEADER);
+                return Self::default();
+            }
+        };
+        let mut km = Self::default();
+        let mut section = String::new();
+        for line in content.lines() {
+            let line = line.trim();
+            if line.starts_with('#') || line.starts_with(';') || line.is_empty() {
+                continue;
+            }
+            if line.starts_with('[') && line.ends_with(']') {
+                section = line[1..line.len() - 1].to_string();
+                continue;
+            }
+            if section != "keymap" {
+                continue;
+            }
+            if let Some((k, v)) = line.split_once('=') {
+                km.apply_ini_entry(k.trim(), v.trim());
+            }
+        }
+        km
+    }
+
+    /// 設定ダイアログの[反映]時に呼ぶ。tmp→renameで安全に書き込み、bakも残す
+    /// （config.ini保存(AppConfig::save)と同じパターン）。
+    pub fn save(&self) {
+        let Some(dir) = std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.to_path_buf())) else { return };
+        let path = dir.join("keymap.ini");
+        let mut content = String::from(KEYMAP_INI_HEADER);
+        for line in self.to_ini_lines() {
+            content.push_str(&line);
+            content.push('\n');
+        }
+
+        let tmp = dir.join("keymap.ini.tmp");
+        let bak = dir.join("keymap.ini.bak");
+        if std::fs::write(&tmp, &content).is_err() { return; }
+        if std::fs::rename(&tmp, &path).is_err() {
+            let _ = std::fs::remove_file(&tmp);
+            return;
+        }
+        let _ = std::fs::write(&bak, &content);
+    }
 }
+
+const KEYMAP_INI_HEADER: &str = "\
+# ============================================================================
+#  Nekoviewer キーアサイン設定 (keymap.ini)
+#
+#  ・この実行ファイルと同じフォルダに置かれます。
+#  ・ファイルを削除すると、次回起動時に既定のキー割り当てに戻ります。
+#  ・通常は設定ダイアログの「キーアサイン」タブから変更してください。
+#  ・手動編集する場合の形式:
+#      reader.<アクション名>.keyboard / .mouse = 値
+#      explorer.<アクション名>.keyboard = 値
+#    キーボード値の例: ArrowUp / shift+ArrowUp / alt+Enter
+#    マウス値の例: wheel_up / shift_wheel_down / middle_click
+# ============================================================================
+
+[keymap]
+";
 
 impl Default for Keymap {
     fn default() -> Self {
