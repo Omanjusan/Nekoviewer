@@ -14,7 +14,7 @@ use crate::fs::archive;
 use crate::spread_offset::SpreadOffset;
 use crate::rotation::{self, RotationState};
 use crate::toolbar::{BarGroup, ViewerBarItem};
-use crate::keymap::{Keymap, ReaderAction};
+use crate::keymap::{Keymap, ReaderAction, MouseAction, MouseCombo};
 
 const SCROLL_THRESHOLD: f32 = 50.0;
 /// content_px の初回フレーム前プレースホルダ。draw() 冒頭で毎フレーム実測値に
@@ -118,16 +118,25 @@ struct FrameInput {
 }
 
 impl FrameInput {
-    /// キー判定はキーアサイン設定(TODO項目J、[keymap.rs](../keymap.rs))経由。
-    /// マウス（ホイール/クリック）はフェーズ1.5でキーマップ化予定、現状は既定固定のまま。
+    /// キー・マウス判定はキーアサイン設定(TODO項目J、[keymap.rs](../keymap.rs))経由。
+    /// ホイールは「PagePrev/PageNextのマウス割り当て」「FileNavPrevAlt/NextAltのマウス割り当て」
+    /// それぞれの修飾キー条件が現在の入力状態と一致するかを見て、一致した方に生delta(sd.y、
+    /// shift成分ありなら+sd.x)を渡す。PagePrev/PageNextは対で同じ条件を持つ想定のため、
+    /// 片方から拾えれば十分（Prev側優先、無ければNext側）。
     fn collect(ctx: &egui::Context, zoom_actual: bool, keymap: &Keymap) -> Self {
         ctx.input(|i| {
-            let sh = i.modifiers.shift;
-            let raw = if zoom_actual { 0.0 } else {
-                let sd = i.smooth_scroll_delta();
-                sd.y + if sh { sd.x } else { 0.0 }
+            let sd = if zoom_actual { egui::Vec2::ZERO } else { i.smooth_scroll_delta() };
+            let wheel_amount = |m: MouseCombo| -> f32 {
+                if !m.modifiers_match(i) { return 0.0; }
+                sd.y + if m.shift { sd.x } else { 0.0 }
             };
             let act = |a: ReaderAction| keymap.reader_binding(a).key_pressed(i);
+            let mouse_of = |a: ReaderAction| keymap.reader_binding(a).effective_mouse();
+            let page_mouse = mouse_of(ReaderAction::PagePrev).or_else(|| mouse_of(ReaderAction::PageNext));
+            let file_mouse = mouse_of(ReaderAction::FileNavPrevAlt).or_else(|| mouse_of(ReaderAction::FileNavNextAlt));
+            let middle_clicked = mouse_of(ReaderAction::ToggleFullscreen)
+                .is_some_and(|m| m.action == MouseAction::MiddleClick && m.modifiers_match(i))
+                && i.pointer.button_clicked(egui::PointerButton::Middle);
             let slot_apply =
                 if      act(ReaderAction::ApplySlot1) { Some(0) }
                 else if act(ReaderAction::ApplySlot2) { Some(1) }
@@ -154,10 +163,10 @@ impl FrameInput {
                 key_home:           act(ReaderAction::JumpFirstPage),
                 key_end:            act(ReaderAction::JumpLastPage),
                 slot_apply,
-                scroll_delta:       raw,
-                shift_scroll_delta: if sh { raw } else { 0.0 },
+                scroll_delta:       page_mouse.map(wheel_amount).unwrap_or(0.0),
+                shift_scroll_delta: file_mouse.map(wheel_amount).unwrap_or(0.0),
                 hover_pos:          i.pointer.hover_pos(),
-                middle_clicked:     i.pointer.button_clicked(egui::PointerButton::Middle),
+                middle_clicked,
                 outer_rect:         vp.outer_rect,
                 inner_rect:         vp.inner_rect,
                 monitor_size:       vp.monitor_size,
