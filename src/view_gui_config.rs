@@ -517,31 +517,53 @@ fn draw_settings_tab_keymap(ui: &mut egui::Ui, draft: &mut SettingsDraft) {
     ui.separator();
 
     if let Some(action) = draft.keymap_capturing {
+        let mut cancelled = false;
         ui.horizontal(|ui| {
             ui.colored_label(egui::Color32::from_rgb(220, 160, 40), "入力待ち…（Escでキャンセル）");
             if ui.small_button("キャンセル").clicked() {
                 draft.keymap_capturing = None;
                 draft.keymap_capture_error = None;
+                cancelled = true;
             }
         });
         if let Some(err) = &draft.keymap_capture_error {
             ui.colored_label(egui::Color32::from_rgb(220, 60, 60), err);
         }
         let ctx = ui.ctx().clone();
-        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+        // 「キャンセル」ボタン自体のクリックを左クリック入力として誤検出しないよう、
+        // キャンセルボタンが押された場合は以降の入力検出をスキップする。
+        if cancelled {
+        } else if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
             draft.keymap_capturing = None;
             draft.keymap_capture_error = None;
         } else {
             let captured = ctx.input(|i| {
                 let m = i.modifiers;
-                if i.pointer.button_clicked(egui::PointerButton::Middle) {
-                    Some(MouseCombo { action: MouseAction::MiddleClick, ctrl: m.ctrl, shift: m.shift, alt: m.alt })
+                let combo = |action| MouseCombo { action, ctrl: m.ctrl, shift: m.shift, alt: m.alt };
+                // ダブルクリックはbutton_clicked()でもtrueになるため、各ボタンとも先に判定する。
+                use egui::PointerButton::*;
+                if i.pointer.button_double_clicked(Primary) {
+                    Some(combo(MouseAction::LeftDoubleClick))
+                } else if i.pointer.button_double_clicked(Secondary) {
+                    Some(combo(MouseAction::RightDoubleClick))
+                } else if i.pointer.button_double_clicked(Middle) {
+                    Some(combo(MouseAction::MiddleDoubleClick))
+                } else if i.pointer.button_clicked(Primary) {
+                    Some(combo(MouseAction::LeftClick))
+                } else if i.pointer.button_clicked(Secondary) {
+                    Some(combo(MouseAction::RightClick))
+                } else if i.pointer.button_clicked(Middle) {
+                    Some(combo(MouseAction::MiddleClick))
+                } else if i.pointer.button_clicked(Extra1) {
+                    Some(combo(MouseAction::Extra1))
+                } else if i.pointer.button_clicked(Extra2) {
+                    Some(combo(MouseAction::Extra2))
                 } else {
                     let sd = i.smooth_scroll_delta();
                     if sd.y > 5.0 {
-                        Some(MouseCombo { action: MouseAction::WheelUp, ctrl: m.ctrl, shift: m.shift, alt: m.alt })
+                        Some(combo(MouseAction::WheelUp))
                     } else if sd.y < -5.0 {
-                        Some(MouseCombo { action: MouseAction::WheelDown, ctrl: m.ctrl, shift: m.shift, alt: m.alt })
+                        Some(combo(MouseAction::WheelDown))
                     } else {
                         None
                     }
