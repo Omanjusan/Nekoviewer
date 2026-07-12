@@ -14,6 +14,7 @@ use crate::fs::archive;
 use crate::spread_offset::SpreadOffset;
 use crate::rotation::{self, RotationState};
 use crate::toolbar::{BarGroup, ViewerBarItem};
+use crate::keymap::{Keymap, ReaderAction, MouseAction, MouseCombo};
 
 const SCROLL_THRESHOLD: f32 = 50.0;
 /// content_px の初回フレーム前プレースホルダ。draw() 冒頭で毎フレーム実測値に
@@ -117,43 +118,55 @@ struct FrameInput {
 }
 
 impl FrameInput {
-    fn collect(ctx: &egui::Context, zoom_actual: bool) -> Self {
+    /// キー・マウス判定はキーアサイン設定(TODO項目J、[keymap.rs](../keymap.rs))経由。
+    /// ホイールは「PagePrev/PageNextのマウス割り当て」「FileNavPrevAlt/NextAltのマウス割り当て」
+    /// それぞれの修飾キー条件が現在の入力状態と一致するかを見て、一致した方に生delta(sd.y、
+    /// shift成分ありなら+sd.x)を渡す。PagePrev/PageNextは対で同じ条件を持つ想定のため、
+    /// 片方から拾えれば十分（Prev側優先、無ければNext側）。
+    fn collect(ctx: &egui::Context, zoom_actual: bool, keymap: &Keymap) -> Self {
         ctx.input(|i| {
-            let sh = i.modifiers.shift;
-            let raw = if zoom_actual { 0.0 } else {
-                let sd = i.smooth_scroll_delta();
-                sd.y + if sh { sd.x } else { 0.0 }
+            let sd = if zoom_actual { egui::Vec2::ZERO } else { i.smooth_scroll_delta() };
+            let wheel_amount = |m: MouseCombo| -> f32 {
+                if !m.modifiers_match(i) { return 0.0; }
+                sd.y + if m.shift { sd.x } else { 0.0 }
             };
+            let act = |a: ReaderAction| keymap.reader_binding(a).key_pressed(i);
+            let mouse_of = |a: ReaderAction| keymap.reader_binding(a).effective_mouse();
+            let page_mouse = mouse_of(ReaderAction::PagePrev).or_else(|| mouse_of(ReaderAction::PageNext));
+            let file_mouse = mouse_of(ReaderAction::FileNavPrevAlt).or_else(|| mouse_of(ReaderAction::FileNavNextAlt));
+            let middle_clicked = mouse_of(ReaderAction::ToggleFullscreen)
+                .is_some_and(|m| m.action == MouseAction::MiddleClick && m.modifiers_match(i))
+                && i.pointer.button_clicked(egui::PointerButton::Middle);
             let slot_apply =
-                if      i.key_pressed(egui::Key::F5) { Some(0) }
-                else if i.key_pressed(egui::Key::F6) { Some(1) }
-                else if i.key_pressed(egui::Key::F7) { Some(2) }
-                else if i.key_pressed(egui::Key::F8) { Some(3) }
+                if      act(ReaderAction::ApplySlot1) { Some(0) }
+                else if act(ReaderAction::ApplySlot2) { Some(1) }
+                else if act(ReaderAction::ApplySlot3) { Some(2) }
+                else if act(ReaderAction::ApplySlot4) { Some(3) }
                 else { None };
             let vp = i.viewport();
             Self {
-                key_left:           i.key_pressed(egui::Key::ArrowLeft)  && !sh,
-                key_right:          i.key_pressed(egui::Key::ArrowRight) && !sh,
-                key_up:             i.key_pressed(egui::Key::ArrowUp)    && !sh,
-                key_down:           i.key_pressed(egui::Key::ArrowDown)  && !sh,
-                key_space:          i.key_pressed(egui::Key::Space),
-                esc:                i.key_pressed(egui::Key::Escape),
-                zoom_key:           i.key_pressed(egui::Key::Enter) && !i.modifiers.alt,
-                fs_key:             i.key_pressed(egui::Key::Enter) &&  i.modifiers.alt,
-                mode1:              i.key_pressed(egui::Key::Num1),
-                mode2:              i.key_pressed(egui::Key::Num2),
-                mode3:              i.key_pressed(egui::Key::Num3),
-                shift4:             i.key_pressed(egui::Key::Num4),
-                shift5:             i.key_pressed(egui::Key::Num5),
-                shift_nav_up:       i.key_pressed(egui::Key::ArrowUp)   && sh,
-                shift_nav_down:     i.key_pressed(egui::Key::ArrowDown) && sh,
-                key_home:           i.key_pressed(egui::Key::Home),
-                key_end:            i.key_pressed(egui::Key::End),
+                key_left:           act(ReaderAction::FileNavPrev),
+                key_right:          act(ReaderAction::FileNavNext),
+                key_up:             act(ReaderAction::PagePrev),
+                key_down:           act(ReaderAction::PageNext),
+                key_space:          act(ReaderAction::PageAdvanceSpace),
+                esc:                act(ReaderAction::CloseOrExitFullscreen),
+                zoom_key:           act(ReaderAction::ToggleZoomActual),
+                fs_key:             act(ReaderAction::ToggleFullscreen),
+                mode1:              act(ReaderAction::PageModeSingle),
+                mode2:              act(ReaderAction::PageModeSpreadLeft),
+                mode3:              act(ReaderAction::PageModeSpreadRight),
+                shift4:             act(ReaderAction::SpreadOffsetPrev),
+                shift5:             act(ReaderAction::SpreadOffsetNext),
+                shift_nav_up:       act(ReaderAction::FileNavPrevAlt),
+                shift_nav_down:     act(ReaderAction::FileNavNextAlt),
+                key_home:           act(ReaderAction::JumpFirstPage),
+                key_end:            act(ReaderAction::JumpLastPage),
                 slot_apply,
-                scroll_delta:       raw,
-                shift_scroll_delta: if sh { raw } else { 0.0 },
+                scroll_delta:       page_mouse.map(wheel_amount).unwrap_or(0.0),
+                shift_scroll_delta: file_mouse.map(wheel_amount).unwrap_or(0.0),
                 hover_pos:          i.pointer.hover_pos(),
-                middle_clicked:     i.pointer.button_clicked(egui::PointerButton::Middle),
+                middle_clicked,
                 outer_rect:         vp.outer_rect,
                 inner_rect:         vp.inner_rect,
                 monitor_size:       vp.monitor_size,
@@ -743,7 +756,7 @@ impl ViewerState {
         self.archive_path.file_name().and_then(|n| n.to_str()).unwrap_or(i18n::t().viewer_fallback()).to_string()
     }
 
-    pub fn show(&mut self, ui: &mut egui::Ui, page_cache: &PageCache, cfg: &mut ViewerConfig) -> ViewerOutput {
+    pub fn show(&mut self, ui: &mut egui::Ui, page_cache: &PageCache, cfg: &mut ViewerConfig, keymap: &Keymap) -> ViewerOutput {
         let ctx = ui.ctx().clone();
         let viewer_style = ui.style().clone();
         if !self.open || self.entries.is_empty() {
@@ -751,7 +764,7 @@ impl ViewerState {
         }
 
         // ── フレーム入力を一括収集（ctx.input はこの1回のみ）────────────────
-        let input = FrameInput::collect(&ctx, cfg.zoom_actual);
+        let input = FrameInput::collect(&ctx, cfg.zoom_actual, keymap);
 
         // フェーズ6: リサイズ再デコードのターゲットサイズ算出用に、現在の描画領域サイズ（物理px）を記録する。
         let screen = ctx.content_rect().size() * ctx.pixels_per_point();

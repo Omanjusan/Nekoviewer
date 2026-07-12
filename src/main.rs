@@ -8,6 +8,7 @@ mod fs;
 mod gui_config;
 mod i18n;
 mod types;
+mod keymap;
 mod model_innerlog;
 mod neko_dir;
 mod rotation;

@@ -3,17 +3,21 @@ use std::path::PathBuf;
 
 use crate::fs::dir;
 use crate::view_reader::ViewerState;
+use crate::keymap::ExplorerAction;
 use super::*;
 
 impl NekoviewApp {
     /// フォーカス巡回: Tab/Shift+Tabで TreeTab→FavoriteTab→Drives→Grid→Filter→MenuBar
     /// を一周する。着地したペインに応じてタブ切替・カーソル復元を追従させる。
+    ///
+    /// キー判定はキーアサイン設定(TODO項目J)経由。ActionBinding::pressedは修飾キー完全一致で
+    /// 判定するため、旧来の consume_key(matches_logically) が抱えていた
+    /// 「Shift+TabをTabとして誤検出する」問題は起きず、消費順序に気を配る必要もない。
     pub(super) fn handle_focus_keys(&mut self, ctx: &egui::Context) {
-        // consume_key は matches_logically でShift/Altの有無を無視して照合するため、
-        // 先にNONE版を呼ぶとShift+TabもTabとして食われてしまう。SHIFT版を先に消費すること。
-        let (shift_tab, tab) = ctx.input_mut(|i| (
-            i.consume_key(egui::Modifiers::SHIFT, egui::Key::Tab),
-            i.consume_key(egui::Modifiers::NONE, egui::Key::Tab),
+        let km = &self.config.keymap;
+        let (tab, shift_tab) = ctx.input(|i| (
+            km.explorer_binding(ExplorerAction::FocusNext).key_pressed(i),
+            km.explorer_binding(ExplorerAction::FocusPrev).key_pressed(i),
         ));
         if !tab && !shift_tab {
             return;
@@ -105,12 +109,13 @@ impl NekoviewApp {
     /// ツリータブにフォーカスがある間のプレターゲティングカーソル操作。
     /// 上下=移動、右=展開（未取得なら取得も要求）、左=折り畳み/親へ、Enter=確定navigate。
     fn handle_tree_keys(&mut self, ctx: &egui::Context) {
-        let (key_down, key_up, key_right, key_left, key_enter) = ctx.input_mut(|i| (
-            i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown),
-            i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp),
-            i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowRight),
-            i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowLeft),
-            i.consume_key(egui::Modifiers::NONE, egui::Key::Enter),
+        let km = &self.config.keymap;
+        let (key_down, key_up, key_right, key_left, key_enter) = ctx.input(|i| (
+            km.explorer_binding(ExplorerAction::NavDown).key_pressed(i),
+            km.explorer_binding(ExplorerAction::NavUp).key_pressed(i),
+            km.explorer_binding(ExplorerAction::NavRight).key_pressed(i),
+            km.explorer_binding(ExplorerAction::NavLeft).key_pressed(i),
+            km.explorer_binding(ExplorerAction::Confirm).key_pressed(i),
         ));
         if !(key_down || key_up || key_right || key_left || key_enter) {
             return;
@@ -185,9 +190,11 @@ impl NekoviewApp {
     /// お気に入りタブにフォーカスがある間のプレターゲティングカーソル操作。
     /// 並びは [未整理, 定義済みフォルダ...]。上下=移動、Enter=確定enter_favorite_view。
     fn handle_favorites_keys(&mut self, ctx: &egui::Context) {
-        // F2: カーソル位置のフォルダをリネーム（未整理枠はリネーム対象外）
+        let km = &self.config.keymap;
+        // F2: カーソル位置のフォルダをリネーム（未整理枠はリネーム対象外）。
+        // ガード（favorite_dialogが開いていない事）はアクション化せず既存のif文のまま維持する。
         if self.favorite_dialog.is_none()
-            && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::F2))
+            && ctx.input(|i| km.explorer_binding(ExplorerAction::Rename).key_pressed(i))
         {
             if let Some(FavoriteSelection::Folder(id)) = self.favorite_cursor {
                 if let Some(folder) = self.favorite_folders.iter().find(|f| f.id == id) {
@@ -202,10 +209,11 @@ impl NekoviewApp {
             }
         }
 
-        let (key_down, key_up, key_enter) = ctx.input_mut(|i| (
-            i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown),
-            i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp),
-            i.consume_key(egui::Modifiers::NONE, egui::Key::Enter),
+        let km = &self.config.keymap;
+        let (key_down, key_up, key_enter) = ctx.input(|i| (
+            km.explorer_binding(ExplorerAction::NavDown).key_pressed(i),
+            km.explorer_binding(ExplorerAction::NavUp).key_pressed(i),
+            km.explorer_binding(ExplorerAction::Confirm).key_pressed(i),
         ));
         if !(key_down || key_up || key_enter) {
             return;
@@ -257,10 +265,11 @@ impl NekoviewApp {
     /// Drivesにフォーカスがある間のプレターゲティングカーソル操作。
     /// 上下=移動、Enter=確定navigate_to_drive。
     fn handle_drives_keys(&mut self, ctx: &egui::Context) {
-        let (key_down, key_up, key_enter) = ctx.input_mut(|i| (
-            i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown),
-            i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp),
-            i.consume_key(egui::Modifiers::NONE, egui::Key::Enter),
+        let km = &self.config.keymap;
+        let (key_down, key_up, key_enter) = ctx.input(|i| (
+            km.explorer_binding(ExplorerAction::NavDown).key_pressed(i),
+            km.explorer_binding(ExplorerAction::NavUp).key_pressed(i),
+            km.explorer_binding(ExplorerAction::Confirm).key_pressed(i),
         ));
         if !(key_down || key_up || key_enter) {
             return;
@@ -288,10 +297,11 @@ impl NekoviewApp {
     /// MenuBarにフォーカスがある間の操作。左右=次の有効ボタンへ移動（無効ボタンは飛ばす）、
     /// Enter=クリック相当を発火。
     fn handle_menu_bar_keys(&mut self, ctx: &egui::Context) {
-        let (key_left, key_right, key_enter) = ctx.input_mut(|i| (
-            i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowLeft),
-            i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowRight),
-            i.consume_key(egui::Modifiers::NONE, egui::Key::Enter),
+        let km = &self.config.keymap;
+        let (key_left, key_right, key_enter) = ctx.input(|i| (
+            km.explorer_binding(ExplorerAction::NavLeft).key_pressed(i),
+            km.explorer_binding(ExplorerAction::NavRight).key_pressed(i),
+            km.explorer_binding(ExplorerAction::Confirm).key_pressed(i),
         ));
         if !(key_left || key_right || key_enter) {
             return;
@@ -346,7 +356,7 @@ impl NekoviewApp {
     /// Escで複数選択解除。
     fn handle_grid_keys(&mut self, ctx: &egui::Context) {
         // Escは常時（矢印等が押されてなくても）反応させる
-        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+        if ctx.input(|i| self.config.keymap.explorer_binding(ExplorerAction::ClearSelection).key_pressed(i)) {
             self.multi_selected.clear();
             self.select_anchor = None;
         }
@@ -368,24 +378,27 @@ impl NekoviewApp {
             .unwrap_or_else(|| entries[0].clone());
         let pos = entries.iter().position(|e| *e == cur_entry).unwrap_or(0);
 
-        // キー入力を一括消費してからクロージャ外で処理する（borrow 競合回避）。
-        // consume_key は matches_logically でShift/Altの有無を無視して照合するため、
-        // 先にNONE版を消費するとShift併用も食われてしまう。SHIFT版を先に消費すること。
-        let (skey_left, skey_right, skey_down, skey_up, skey_home, skey_end) = ctx.input_mut(|i| (
-            i.consume_key(egui::Modifiers::SHIFT, egui::Key::ArrowLeft),
-            i.consume_key(egui::Modifiers::SHIFT, egui::Key::ArrowRight),
-            i.consume_key(egui::Modifiers::SHIFT, egui::Key::ArrowDown),
-            i.consume_key(egui::Modifiers::SHIFT, egui::Key::ArrowUp),
-            i.consume_key(egui::Modifiers::SHIFT, egui::Key::Home),
-            i.consume_key(egui::Modifiers::SHIFT, egui::Key::End),
+        // キー判定はキーアサイン設定(TODO項目J)経由。ActionBinding::key_pressedは修飾キー
+        // 完全一致で判定するため、旧来の consume_key(matches_logically) が抱えていた
+        // 「Shift+矢印を無修飾矢印として誤検出する」問題は起きず、消費順序を気にする必要もない。
+        // Shift+矢印/Home/End(Extend系)は現時点でキーアサインUIからは変更不可の固定仕様
+        // （ExplorerAction::is_editable() == false）。
+        let km = &self.config.keymap;
+        let (skey_left, skey_right, skey_down, skey_up, skey_home, skey_end) = ctx.input(|i| (
+            km.explorer_binding(ExplorerAction::ExtendLeft).key_pressed(i),
+            km.explorer_binding(ExplorerAction::ExtendRight).key_pressed(i),
+            km.explorer_binding(ExplorerAction::ExtendDown).key_pressed(i),
+            km.explorer_binding(ExplorerAction::ExtendUp).key_pressed(i),
+            km.explorer_binding(ExplorerAction::ExtendHome).key_pressed(i),
+            km.explorer_binding(ExplorerAction::ExtendEnd).key_pressed(i),
         ));
-        let (key_left, key_right, key_down, key_up, key_home, key_end) = ctx.input_mut(|i| (
-            i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowLeft),
-            i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowRight),
-            i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown),
-            i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp),
-            i.consume_key(egui::Modifiers::NONE, egui::Key::Home),
-            i.consume_key(egui::Modifiers::NONE, egui::Key::End),
+        let (key_left, key_right, key_down, key_up, key_home, key_end) = ctx.input(|i| (
+            km.explorer_binding(ExplorerAction::NavLeft).key_pressed(i),
+            km.explorer_binding(ExplorerAction::NavRight).key_pressed(i),
+            km.explorer_binding(ExplorerAction::NavDown).key_pressed(i),
+            km.explorer_binding(ExplorerAction::NavUp).key_pressed(i),
+            km.explorer_binding(ExplorerAction::NavHome).key_pressed(i),
+            km.explorer_binding(ExplorerAction::NavEnd).key_pressed(i),
         ));
         let key_left = key_left || skey_left;
         let key_right = key_right || skey_right;
@@ -394,9 +407,10 @@ impl NekoviewApp {
         let key_home = key_home || skey_home;
         let key_end = key_end || skey_end;
         let extend = skey_left || skey_right || skey_down || skey_up || skey_home || skey_end;
-        let key_enter = ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
+        let key_enter = ctx.input(|i| km.explorer_binding(ExplorerAction::Confirm).key_pressed(i));
+        let select_all = ctx.input(|i| km.explorer_binding(ExplorerAction::SelectAll).key_pressed(i));
 
-        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::A)) {
+        if select_all {
             // Ctrl+A: 複数選択の対象はアーカイブファイルのみ
             self.multi_selected = self.filtered_indices.iter().copied().collect();
             if self.select_anchor.is_none() {
