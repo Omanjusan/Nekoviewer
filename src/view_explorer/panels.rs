@@ -521,6 +521,7 @@ impl NekoviewApp {
                                 draw_cursor_ring(ui, rect);
                             }
                             if response.clicked() {
+                                self.focused_pane = FocusPane::Grid;
                                 self.grid_cursor = Some(GridEntry::Up(parent.clone()));
                                 self.selected_archive_index = None;
                                 self.selected_archive_meta = None;
@@ -603,6 +604,7 @@ impl NekoviewApp {
                                 draw_cursor_ring(ui, rect);
                             }
                             if response.clicked() {
+                                self.focused_pane = FocusPane::Grid;
                                 self.grid_cursor = Some(GridEntry::Subdir(dir_path.clone()));
                                 self.selected_archive_index = None;
                                 self.selected_archive_meta = None;
@@ -766,6 +768,7 @@ impl NekoviewApp {
 
                         let is_raw = self.raw_image_files.contains(path);
                         if response.clicked() {
+                            self.focused_pane = FocusPane::Grid;
                             self.grid_cursor = Some(GridEntry::Archive(real_idx));
                             let modifiers = ui.input(|i| i.modifiers);
                             if modifiers.command {
