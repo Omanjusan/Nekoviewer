@@ -2,6 +2,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::gui_config::AppState;
+use crate::keymap::Keymap;
 
 // ── ログ設定グローバル ─────────────────────────────────────────────────────────
 // AtomicBool を使うのは、AppConfig::load() より前（main() 冒頭）で一度 log() が
@@ -118,6 +119,8 @@ pub struct AppConfig {
     /// 表示デコードの取り扱い上限（長辺px）。短辺は縦横比を保って自動的に収まる。
     /// config.ini には持たず、既定値はここに直書き（stateファイル経由の上書きのみ）。
     pub max_decode_edge: u32,
+    /// キーアサイン設定（TODO項目J）。[keymap] セクションから読み込む。
+    pub keymap: Keymap,
 }
 
 impl AppConfig {
@@ -173,6 +176,7 @@ impl AppConfig {
             anim_ring_max_frames: parsed.anim_ring_max_frames.0,
             anim_frame_hard_limit_mb: parsed.anim_frame_hard_limit_mb.0,
             max_decode_edge: 1920,
+            keymap: parsed.keymap,
         }
     }
 
@@ -252,6 +256,7 @@ struct ParsedIni {
     anim_ring_min_frames: UsizeDefault<4>,
     anim_ring_max_frames: UsizeDefault<32>,
     anim_frame_hard_limit_mb: UsizeDefault<100>,
+    keymap: Keymap,
 }
 
 /// usize のデフォルト値を const ジェネリクスで指定するラッパー（空欄/不正値は既定にフォールバック）
@@ -303,6 +308,10 @@ fn parse_ini(path: &std::path::Path) -> ParsedIni {
         }
         if let Some((key, val)) = line.split_once('=') {
             let (k, v) = (key.trim(), val.trim());
+            if section == "keymap" {
+                result.keymap.apply_ini_entry(k, v);
+                continue;
+            }
             match (section.as_str(), k) {
                 ("cache", "storage") => {
                     result.storage = match v {
@@ -498,6 +507,13 @@ storage = local
 # 一般的なアニメ解像度（4K級まで）は約34MB程度に収まるため、既定100MBで十分な余裕があります。
 # 空欄・不正値は既定（100）にフォールバックします。
 # anim_frame_hard_limit_mb = 100
+
+# ── キーアサイン ────────────────────────────────────────────────────────────
+[keymap]
+# キー割り当てのカスタマイズ（TODO項目J、設定UIは今後追加予定）。
+# 形式: reader.<アクション名>.keyboard / .mouse = 値（未指定のアクションは既定値を使用）。
+# キーボード値の例: ArrowUp / shift+ArrowUp / alt+Enter
+# マウス値の例: wheel_up / shift_wheel_down / middle_click
 
 # ── ログ ────────────────────────────────────────────────────────────────────
 [log]
