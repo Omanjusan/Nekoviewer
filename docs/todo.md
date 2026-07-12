@@ -1,9 +1,7 @@
 (C) 拡縮
     - ズーム・パン。手動回転（実装済み、[docs/features/image-orientation.md](features/image-orientation.md)）
       と合わせてページの見た目調整の一群として扱う。
-(E) 見開きボタンをビューアーウィンドウに移動
-    - ツールバー再編として実施（実装メモ: [docs/features/viewer-toolbar.md](features/viewer-toolbar.md)）
 (F) コマフォーカス移動
-(G) OCR-翻訳接続
 (H) コピペ（当アプリからのコピーだけでいい書き込みをみる系はやらない。エクスプローラー代替にはならない）OS側のエクスプローラーを呼ぶのはあってもいいかも
 (I) キーボードオペレーション対応をエクスプローラー部でも行う(詳細、メニューアクセスとか)
+(J) キーアサイン機能
