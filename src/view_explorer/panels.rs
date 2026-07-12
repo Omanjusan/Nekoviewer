@@ -51,7 +51,12 @@ impl NekoviewApp {
                 });
         }
 
-        self.handle_explorer_keys(&ctx);
+        // 設定ダイアログ（egui::Modal）は自動でキーボード入力をブロックしないため、開いている
+        // 間はエクスプローラー本体のキー操作を止める。止めないと、ダイアログのキーアサイン
+        // 変更キャプチャ中に裏でF2(Rename)等が同時に反応し、キャプチャ側の入力検出と競合する。
+        if !self.settings_is_open() {
+            self.handle_explorer_keys(&ctx);
+        }
         // egui標準のTab/矢印キーによるネイティブなウィジェットフォーカス移動
         // （Memory::focus_direction、選択ラベル/ボタンも対象になる）は、今回自前で
         // 構築したFocusPaneベースのキーボード操作と二重に動いてしまう

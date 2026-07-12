@@ -33,12 +33,15 @@ impl KeyCombo {
         Self { key, ctrl: false, shift: false, alt: true }
     }
 
+    /// 表示・保存共用の文字列化。キー本体はegui::KeyのDebug出力をそのまま使うため、
+    /// key_from_name（読み込み側）が未対応のキーでも表示は必ず正しいキー名になる
+    /// （読み込み側が追いついていないキーは、保存はできても次回起動時は既定値に戻る）。
     pub fn to_config_string(self) -> String {
         let mut parts = Vec::new();
-        if self.ctrl  { parts.push("ctrl"); }
-        if self.shift { parts.push("shift"); }
-        if self.alt   { parts.push("alt"); }
-        parts.push(key_name(self.key));
+        if self.ctrl  { parts.push("ctrl".to_string()); }
+        if self.shift { parts.push("shift".to_string()); }
+        if self.alt   { parts.push("alt".to_string()); }
+        parts.push(format!("{:?}", self.key));
         parts.join("+")
     }
 
@@ -67,33 +70,9 @@ impl KeyCombo {
     }
 }
 
-fn key_name(k: Key) -> &'static str {
-    match k {
-        Key::ArrowUp    => "ArrowUp",
-        Key::ArrowDown  => "ArrowDown",
-        Key::ArrowLeft  => "ArrowLeft",
-        Key::ArrowRight => "ArrowRight",
-        Key::Space      => "Space",
-        Key::Enter      => "Enter",
-        Key::Escape     => "Escape",
-        Key::Home       => "Home",
-        Key::End        => "End",
-        Key::Tab        => "Tab",
-        Key::F2         => "F2",
-        Key::F5         => "F5",
-        Key::F6         => "F6",
-        Key::F7         => "F7",
-        Key::F8         => "F8",
-        Key::Num1       => "Num1",
-        Key::Num2       => "Num2",
-        Key::Num3       => "Num3",
-        Key::Num4       => "Num4",
-        Key::Num5       => "Num5",
-        Key::A          => "A",
-        _               => "Unknown",
-    }
-}
-
+/// keymap.ini等からの読み込み専用。to_config_string側はegui::KeyのDebug出力を直接使うため
+/// ここにキーを追加しなくても表示は壊れないが、追加し忘れたキーで保存した設定は
+/// 次回起動時に既定値へフォールバックしてしまう。よく使われそうなキーは網羅しておくこと。
 fn key_from_name(s: &str) -> Option<Key> {
     Some(match s {
         "ArrowUp"    => Key::ArrowUp,
@@ -106,18 +85,26 @@ fn key_from_name(s: &str) -> Option<Key> {
         "Home"       => Key::Home,
         "End"        => Key::End,
         "Tab"        => Key::Tab,
-        "F2"         => Key::F2,
-        "F5"         => Key::F5,
-        "F6"         => Key::F6,
-        "F7"         => Key::F7,
-        "F8"         => Key::F8,
-        "Num1"       => Key::Num1,
-        "Num2"       => Key::Num2,
-        "Num3"       => Key::Num3,
-        "Num4"       => Key::Num4,
-        "Num5"       => Key::Num5,
-        "A"          => Key::A,
-        _            => return None,
+        "Backspace"  => Key::Backspace,
+        "Delete"     => Key::Delete,
+        "Insert"     => Key::Insert,
+        "PageUp"     => Key::PageUp,
+        "PageDown"   => Key::PageDown,
+        "F1"  => Key::F1,  "F2"  => Key::F2,  "F3"  => Key::F3,  "F4"  => Key::F4,
+        "F5"  => Key::F5,  "F6"  => Key::F6,  "F7"  => Key::F7,  "F8"  => Key::F8,
+        "F9"  => Key::F9,  "F10" => Key::F10, "F11" => Key::F11, "F12" => Key::F12,
+        "F13" => Key::F13, "F14" => Key::F14, "F15" => Key::F15, "F16" => Key::F16,
+        "F17" => Key::F17, "F18" => Key::F18, "F19" => Key::F19, "F20" => Key::F20,
+        "Num0" => Key::Num0, "Num1" => Key::Num1, "Num2" => Key::Num2, "Num3" => Key::Num3,
+        "Num4" => Key::Num4, "Num5" => Key::Num5, "Num6" => Key::Num6, "Num7" => Key::Num7,
+        "Num8" => Key::Num8, "Num9" => Key::Num9,
+        "A" => Key::A, "B" => Key::B, "C" => Key::C, "D" => Key::D, "E" => Key::E,
+        "F" => Key::F, "G" => Key::G, "H" => Key::H, "I" => Key::I, "J" => Key::J,
+        "K" => Key::K, "L" => Key::L, "M" => Key::M, "N" => Key::N, "O" => Key::O,
+        "P" => Key::P, "Q" => Key::Q, "R" => Key::R, "S" => Key::S, "T" => Key::T,
+        "U" => Key::U, "V" => Key::V, "W" => Key::W, "X" => Key::X, "Y" => Key::Y,
+        "Z" => Key::Z,
+        _ => return None,
     })
 }
 
