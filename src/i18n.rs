@@ -961,6 +961,267 @@ impl Lang {
         }
     }
 
+    pub fn settings_tab_translate(self) -> &'static str {
+        match self {
+            Lang::Japanese => "翻訳機能",
+            Lang::English  => "Translate",
+            Lang::Chinese  => "翻译功能",
+        }
+    }
+
+    pub fn settings_translate_experimental_note(self) -> &'static str {
+        match self {
+            Lang::Japanese => "実験的機能: ローカルAI(Ollama/OpenWebUI等のOpenAI互換API)を利用したOCRテキスト抽出。クラウドAPIは未対応。",
+            Lang::English  => "Experimental: OCR text extraction via a local AI (Ollama/OpenWebUI-style OpenAI-compatible API). Cloud APIs are not supported.",
+            Lang::Chinese  => "实验性功能：通过本地AI(Ollama/OpenWebUI等OpenAI兼容API)进行OCR文本提取。暂不支持云端API。",
+        }
+    }
+
+    pub fn settings_translate_url_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "APIベースURL",
+            Lang::English  => "API base URL",
+            Lang::Chinese  => "API基础URL",
+        }
+    }
+
+    /// 翻訳モデル選択(主)。OCRモデルは既定でこの値に追従する。
+    pub fn settings_translate_translation_model_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "翻訳モデル",
+            Lang::English  => "Translation model",
+            Lang::Chinese  => "翻译模型",
+        }
+    }
+
+    /// OCRモデル選択。未変更なら翻訳モデルに追従し、選ぶと以後は独立する。
+    pub fn settings_translate_ocr_model_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "OCRモデル",
+            Lang::English  => "OCR model",
+            Lang::Chinese  => "OCR模型",
+        }
+    }
+
+    pub fn settings_translate_model_unselected(self) -> &'static str {
+        match self {
+            Lang::Japanese => "(未選択)",
+            Lang::English  => "(none selected)",
+            Lang::Chinese  => "(未选择)",
+        }
+    }
+
+    pub fn settings_translate_no_models_hint(self) -> &'static str {
+        match self {
+            Lang::Japanese => "先に「モデル取得」を実行してください",
+            Lang::English  => "Fetch the model list first",
+            Lang::Chinese  => "请先执行「获取模型」",
+        }
+    }
+
+    pub fn settings_translate_test_button(self) -> &'static str {
+        match self {
+            Lang::Japanese => "モデル取得",
+            Lang::English  => "Fetch models",
+            Lang::Chinese  => "获取模型",
+        }
+    }
+
+    pub fn settings_translate_testing(self) -> &'static str {
+        match self {
+            Lang::Japanese => "確認中…",
+            Lang::English  => "Checking…",
+            Lang::Chinese  => "确认中…",
+        }
+    }
+
+    pub fn settings_translate_overlay_width_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "オーバーレイ横幅",
+            Lang::English  => "Overlay width",
+            Lang::Chinese  => "浮层宽度",
+        }
+    }
+
+    pub fn settings_translate_overlay_corner_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "オーバーレイ配置(四隅)",
+            Lang::English  => "Overlay position (corner)",
+            Lang::Chinese  => "浮层位置(四角)",
+        }
+    }
+
+    pub fn settings_translate_corner_top_left(self) -> &'static str {
+        match self {
+            Lang::Japanese => "左上",
+            Lang::English  => "Top-left",
+            Lang::Chinese  => "左上",
+        }
+    }
+
+    pub fn settings_translate_corner_top_right(self) -> &'static str {
+        match self {
+            Lang::Japanese => "右上",
+            Lang::English  => "Top-right",
+            Lang::Chinese  => "右上",
+        }
+    }
+
+    pub fn settings_translate_corner_bottom_left(self) -> &'static str {
+        match self {
+            Lang::Japanese => "左下",
+            Lang::English  => "Bottom-left",
+            Lang::Chinese  => "左下",
+        }
+    }
+
+    pub fn settings_translate_corner_bottom_right(self) -> &'static str {
+        match self {
+            Lang::Japanese => "右下",
+            Lang::English  => "Bottom-right",
+            Lang::Chinese  => "右下",
+        }
+    }
+
+    pub fn translate_overlay_open_folder_button(self) -> &'static str {
+        match self {
+            Lang::Japanese => "フォルダを開く",
+            Lang::English  => "Open folder",
+            Lang::Chinese  => "打开文件夹",
+        }
+    }
+
+    /// ビューアー部の[翻訳]ボタン。OCR/翻訳子ウィンドウをユーザーの意思で開く導線。
+    pub fn translate_open_window_button(self) -> &'static str {
+        match self {
+            Lang::Japanese => "翻訳",
+            Lang::English  => "Translate",
+            Lang::Chinese  => "翻译",
+        }
+    }
+
+    /// 子ウィンドウ左ペインの見出し(OCR原文)。
+    pub fn translate_child_ocr_pane_title(self) -> &'static str {
+        match self {
+            Lang::Japanese => "OCR原文",
+            Lang::English  => "OCR text",
+            Lang::Chinese  => "OCR原文",
+        }
+    }
+
+    /// 子ウィンドウ右ペインの見出し(翻訳結果)。
+    pub fn translate_child_translation_pane_title(self) -> &'static str {
+        match self {
+            Lang::Japanese => "翻訳結果",
+            Lang::English  => "Translation",
+            Lang::Chinese  => "翻译结果",
+        }
+    }
+
+    /// 子ウィンドウの[再取得]ボタン(1P単位でOCRを再実行)。
+    pub fn translate_child_retry_button(self) -> &'static str {
+        match self {
+            Lang::Japanese => "再取得",
+            Lang::English  => "Retry OCR",
+            Lang::Chinese  => "重新识别",
+        }
+    }
+
+    /// 子ウィンドウの[再翻訳]ボタン(モック、実処理未実装)。
+    pub fn translate_child_retranslate_button(self) -> &'static str {
+        match self {
+            Lang::Japanese => "再翻訳",
+            Lang::English  => "Re-translate",
+            Lang::Chinese  => "重新翻译",
+        }
+    }
+
+    /// 子ウィンドウの最前面固定トグル。
+    pub fn translate_child_always_on_top_toggle(self) -> &'static str {
+        match self {
+            Lang::Japanese => "最前面固定",
+            Lang::English  => "Always on top",
+            Lang::Chinese  => "始终置顶",
+        }
+    }
+
+    /// 翻訳実行の絶対条件(OCR txt取得済み)を満たさない場合のフォールバックメッセージ。
+    /// OCRと翻訳は完全に独立したボタン/処理であり、E2Eで自動連鎖はしない。
+    pub fn translate_child_ocr_required(self) -> &'static str {
+        match self {
+            Lang::Japanese => "OCRを取得してから実行してください",
+            Lang::English  => "Run OCR first before translating",
+            Lang::Chinese  => "请先执行OCR后再翻译",
+        }
+    }
+
+    /// 翻訳先言語ドロップダウンの表示名。
+    pub fn translate_target_lang_label(self, lang: crate::translate::TargetLang) -> &'static str {
+        use crate::translate::TargetLang;
+        match (self, lang) {
+            (Lang::Japanese, TargetLang::ChineseSimplified)  => "中国語(簡体字)",
+            (Lang::Japanese, TargetLang::ChineseTraditional) => "中国語(繁体字)",
+            (Lang::Japanese, TargetLang::English)            => "英語",
+            (Lang::Japanese, TargetLang::Korean)             => "韓国語",
+            (Lang::English, TargetLang::ChineseSimplified)  => "Chinese (Simplified)",
+            (Lang::English, TargetLang::ChineseTraditional) => "Chinese (Traditional)",
+            (Lang::English, TargetLang::English)            => "English",
+            (Lang::English, TargetLang::Korean)             => "Korean",
+            (Lang::Chinese, TargetLang::ChineseSimplified)  => "简体中文",
+            (Lang::Chinese, TargetLang::ChineseTraditional) => "繁体中文",
+            (Lang::Chinese, TargetLang::English)            => "英语",
+            (Lang::Chinese, TargetLang::Korean)             => "韩语",
+        }
+    }
+
+    pub fn translate_overlay_running(self) -> &'static str {
+        match self {
+            Lang::Japanese => "解析中…（モデル未ロード時は数十秒以上かかることがあります）",
+            Lang::English  => "Analyzing… (can take a while on first run if the model needs to load)",
+            Lang::Chinese  => "分析中…（模型首次加载时可能需要较长时间）",
+        }
+    }
+
+    pub fn translate_overlay_empty(self) -> &'static str {
+        match self {
+            Lang::Japanese => "(未実行)",
+            Lang::English  => "(not run yet)",
+            Lang::Chinese  => "(尚未运行)",
+        }
+    }
+
+    pub fn translate_overlay_failed_prefix(self) -> &'static str {
+        match self {
+            Lang::Japanese => "失敗",
+            Lang::English  => "Failed",
+            Lang::Chinese  => "失败",
+        }
+    }
+
+    pub fn translate_overlay_fallback_notice(self) -> &'static str {
+        match self {
+            Lang::Japanese => "形式解析に失敗、簡易表示です",
+            Lang::English  => "Structured parse failed; showing raw fallback",
+            Lang::Chinese  => "结构化解析失败，显示为简易结果",
+        }
+    }
+
+    pub fn translate_overlay_model_missing(self) -> &'static str {
+        match self {
+            Lang::Japanese => "モデル名が未設定です",
+            Lang::English  => "Model name is not set",
+            Lang::Chinese  => "尚未设置模型名称",
+        }
+    }
+
+    pub fn translate_overlay_no_page(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ページ画像を取得できませんでした",
+            Lang::English  => "Could not read the current page image",
+            Lang::Chinese  => "无法获取当前页面图像",
+        }
+    }
+
     pub fn settings_static_placeholder(self) -> &'static str {
         match self {
             Lang::Japanese => "現在、静止画専用の設定項目はありません",

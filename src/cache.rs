@@ -146,6 +146,26 @@ impl OpenArchive {
     }
 }
 
+/// OCR用: 表示解像度に依存しない原寸デコード。通常のページキャッシュ(target_size付き、
+/// ビューアー窓の実描画サイズに縮小される)とは別経路で、アーカイブから直接1ページぶんだけ
+/// 都度デコードする。呼び出し頻度が低いOCR専用なので通常のprefetch/キャッシュ経路には乗せない。
+/// アニメーションページは対象外（先頭フレームのみでは意味が薄いため）。
+pub fn decode_full_res_static_page(
+    archive_path: &std::path::Path,
+    entry_name: &str,
+    filter: image::imageops::FilterType,
+    cache_budget_bytes: usize,
+    ring_bounds: (usize, usize),
+    frame_hard_limit_bytes: usize,
+    exif_enabled: bool,
+) -> Option<image::RgbaImage> {
+    let mut archive = open_archive_from_disk(archive_path)?;
+    match archive.load_page(entry_name, filter, cache_budget_bytes, ring_bounds, frame_hard_limit_bytes, None, exif_enabled)? {
+        PageContent::Static(rgba) => Some(rgba),
+        PageContent::Animated(_) => None,
+    }
+}
+
 /// ページキャッシュの値型。静止画とアニメーションを統一して扱う。
 /// アニメーション(GIF/APNG/AVIF/WebP)は全フレーム一括保持をやめ、
 /// 逐次デコード+リングバッファ(`RingAnimation`)で保持する（フェーズ3/3.5）。

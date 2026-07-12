@@ -59,7 +59,10 @@ impl NekoviewApp {
         // 隣接ウィジェットへ移り歩いてしまい、ツリー等の自前カーソル移動と競合して見える）。
         // Filter欄だけは実際のテキスト入力フォーカスが必要なので、それ以外は毎フレーム
         // ネイティブフォーカスを解除し、見た目上のカーソル表現を自前のハイライトに一本化する。
-        if self.focused_pane != FocusPane::Filter {
+        // 設定ダイアログ（翻訳機能タブのURL/モデル名入力欄など）が開いている間は、
+        // 自前カーソル用の強制フォーカス解除を止める。解除したままだと入力した
+        // 次フレームで即座にフォーカスが外れ、テキスト入力が一切通らなくなる。
+        if self.focused_pane != FocusPane::Filter && !self.settings_is_open() {
             ctx.memory_mut(|mem| mem.stop_text_input());
         }
         // release ビルドは ROOT 内フローティングウィンドウのため ui() で描画する。

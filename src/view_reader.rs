@@ -546,6 +546,27 @@ impl ViewerState {
         self.offset.retreat();
     }
 
+    /// OCR/翻訳子ウィンドウ用: 見開きを1組ぶん(step)実際に送る/戻す。
+    /// オフセット(-1/0/+1)には一切触れない（4/5キーの見開き内シフトとは無関係）。
+    /// 呼び出し側（子ウィンドウ）が「見開き内の2ページを見終わった」と判定した時にだけ
+    /// 呼ぶことで、子2回操作＝親1回送りを実現する（シングルページモードはstep=1で毎回呼ぶ）。
+    pub fn advance_spread_step(&mut self, total: usize, forward: bool) {
+        let is_spread = self.page_mode != PageMode::Single;
+        let step: i32 = if is_spread { 2 } else { 1 };
+        let total_i = total as i32;
+        let off = self.offset.value();
+
+        if forward {
+            let next_base = self.spread_base + step;
+            if next_base + off <= total_i - 1 { self.spread_base = next_base; }
+        } else {
+            let prev_base = self.spread_base - step;
+            let min_lo = if is_spread { -1 } else { 0 };
+            if prev_base + off >= min_lo { self.spread_base = prev_base; }
+        }
+        self.offset.update_virtual_right(is_spread && self.spread_lo() + 1 >= total_i);
+    }
+
     /// ページモードを切り替え、spread_base とオフセットを整合させる
     pub fn set_page_mode(&mut self, mode: PageMode, cfg: &mut ViewerConfig) {
         match mode {

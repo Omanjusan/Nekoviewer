@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 
 use crate::config::{AppConfig, ResizeFilter, filter_to_str, parse_filter};
 use crate::toolbar::{BAR_ITEM_COUNT, DEFAULT_BAR_ORDER, ViewerBarItem, bar_order_to_str, parse_bar_order};
+use crate::translate::{TranslateConfig, overlay_corner_to_str, parse_overlay_corner};
 
 // ── State ファイル（動的状態: 最後のディレクトリ・ウィンドウサイズ）────────────
 
@@ -162,6 +163,8 @@ pub struct AppState {
     pub app_anim_frame_hard_limit_mb: Option<usize>,
     pub app_viewer_filter: Option<ResizeFilter>,
     pub app_max_decode_edge: Option<u32>,
+    /// 翻訳機能(実験的)の接続先・オーバーレイ設定。
+    pub translate_cfg: TranslateConfig,
 }
 
 impl Default for AppState {
@@ -180,6 +183,7 @@ impl Default for AppState {
             app_anim_frame_hard_limit_mb: None,
             app_viewer_filter: None,
             app_max_decode_edge: None,
+            translate_cfg: TranslateConfig::default(),
         }
     }
 }
@@ -250,6 +254,13 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
     let mut thumbbar_marker_a: Option<u8> = None;
     let mut exif_orientation_enabled: Option<bool> = None;
     let mut viewer_bar_order: Option<[ViewerBarItem; BAR_ITEM_COUNT]> = None;
+    let mut translate_base_url: Option<String> = None;
+    // 旧キー(単一モデル)。新キー未設定時にocr_model/translation_modelへ後方互換で引き継ぐ。
+    let mut translate_model_legacy: Option<String> = None;
+    let mut translate_ocr_model: Option<String> = None;
+    let mut translate_translation_model: Option<String> = None;
+    let mut translate_overlay_width: Option<u32> = None;
+    let mut translate_overlay_corner: Option<crate::translate::OverlayCorner> = None;
     let mut has_kv = false;
 
     for line in content.lines() {
@@ -319,6 +330,27 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
                 "thumbbar_marker_a" => { thumbbar_marker_a = v.trim().parse().ok(); }
                 "exif_orientation_enabled" => { exif_orientation_enabled = v.trim().parse().ok(); }
                 "viewer_bar_order" => { viewer_bar_order = Some(parse_bar_order(v)); }
+                "translate_base_url" => {
+                    let v = v.trim();
+                    if !v.is_empty() { translate_base_url = Some(v.to_string()); }
+                }
+                "translate_model" => {
+                    let v = v.trim();
+                    if !v.is_empty() { translate_model_legacy = Some(v.to_string()); }
+                }
+                "translate_ocr_model" => {
+                    let v = v.trim();
+                    if !v.is_empty() { translate_ocr_model = Some(v.to_string()); }
+                }
+                "translate_translation_model" => {
+                    let v = v.trim();
+                    if !v.is_empty() { translate_translation_model = Some(v.to_string()); }
+                }
+                "translate_overlay_width" => {
+                    translate_overlay_width = v.trim().parse::<u32>().ok()
+                        .map(|n| n.clamp(crate::translate::OVERLAY_WIDTH_FLOOR, crate::translate::OVERLAY_WIDTH_CEILING));
+                }
+                "translate_overlay_corner" => { translate_overlay_corner = Some(parse_overlay_corner(v.trim())); }
                 _ => {}
             }
         }
@@ -384,10 +416,17 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
         app_anim_frame_hard_limit_mb,
         app_viewer_filter,
         app_max_decode_edge,
+        translate_cfg: TranslateConfig {
+            base_url: translate_base_url.unwrap_or_default(),
+            translation_model: translate_translation_model.clone().or_else(|| translate_model_legacy.clone()).unwrap_or_default(),
+            ocr_model: translate_ocr_model.or(translate_translation_model).or(translate_model_legacy).unwrap_or_default(),
+            overlay_width: translate_overlay_width.unwrap_or(360),
+            overlay_corner: translate_overlay_corner.unwrap_or(crate::translate::OverlayCorner::TopRight),
+        },
     })
 }
 
-pub fn save_state(dir: &Path, window_size: (u32, u32), viewer_slots: &[Option<WindowSlot>; 4], sort_state: &SortState, lang: &str, viewer_cfg: &ViewerConfig, show_hidden: bool, app_cfg: &AppConfig) {
+pub fn save_state(dir: &Path, window_size: (u32, u32), viewer_slots: &[Option<WindowSlot>; 4], sort_state: &SortState, lang: &str, viewer_cfg: &ViewerConfig, show_hidden: bool, app_cfg: &AppConfig, translate_cfg: &TranslateConfig) {
     let (Some(path), Some(bak), Some(tmp)) =
         (state_path(), state_bak_path(), state_tmp_path())
     else { return; };
@@ -411,6 +450,11 @@ pub fn save_state(dir: &Path, window_size: (u32, u32), viewer_slots: &[Option<Wi
     content.push_str(&format!(
         "viewer_bar_order={}\n",
         bar_order_to_str(&viewer_cfg.bar_order),
+    ));
+    content.push_str(&format!(
+        "translate_base_url={}\ntranslate_ocr_model={}\ntranslate_translation_model={}\ntranslate_overlay_width={}\ntranslate_overlay_corner={}\n",
+        translate_cfg.base_url, translate_cfg.ocr_model, translate_cfg.translation_model, translate_cfg.overlay_width,
+        overlay_corner_to_str(translate_cfg.overlay_corner),
     ));
     // 設定ダイアログ（共通/アニメタブ）が編集する AppConfig 系の値。次回起動から反映されるため、
     // ここでは現在の有効値をそのまま state に書き戻すだけでよい（即時のワーカー再構築は不要）。
