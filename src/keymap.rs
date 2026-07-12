@@ -108,28 +108,49 @@ fn key_from_name(s: &str) -> Option<Key> {
     })
 }
 
-/// マウスの動作種別。ホイール系はページ送り等、既存キーからの移行分のみを対象にする。
-/// ドラッグ等(TODO項目C向け)は、C実装時にここへ追加する。
+/// マウスの動作種別。ホイール系はページ送り等、既存キーからの移行分。
+/// 既存3種(WheelUp/WheelDown/MiddleClick)の名前・意味はini後方互換のため変更しない。
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum MouseAction {
     WheelUp,
     WheelDown,
+    LeftClick,
+    RightClick,
     MiddleClick,
+    LeftDoubleClick,
+    RightDoubleClick,
+    MiddleDoubleClick,
+    Extra1,
+    Extra2,
 }
 
 pub fn mouse_action_name(a: MouseAction) -> &'static str {
     match a {
-        MouseAction::WheelUp     => "wheel_up",
-        MouseAction::WheelDown   => "wheel_down",
-        MouseAction::MiddleClick => "middle_click",
+        MouseAction::WheelUp           => "wheel_up",
+        MouseAction::WheelDown         => "wheel_down",
+        MouseAction::LeftClick         => "left_click",
+        MouseAction::RightClick        => "right_click",
+        MouseAction::MiddleClick       => "middle_click",
+        MouseAction::LeftDoubleClick   => "left_double_click",
+        MouseAction::RightDoubleClick  => "right_double_click",
+        MouseAction::MiddleDoubleClick => "middle_double_click",
+        MouseAction::Extra1            => "extra1",
+        MouseAction::Extra2            => "extra2",
     }
 }
 
 fn mouse_action_from_name(s: &str) -> Option<MouseAction> {
     Some(match s {
-        "wheel_up"     => MouseAction::WheelUp,
-        "wheel_down"   => MouseAction::WheelDown,
-        "middle_click" => MouseAction::MiddleClick,
+        "wheel_up"            => MouseAction::WheelUp,
+        "wheel_down"          => MouseAction::WheelDown,
+        "left_click"          => MouseAction::LeftClick,
+        "right_click"         => MouseAction::RightClick,
+        "middle_click"        => MouseAction::MiddleClick,
+        "left_double_click"   => MouseAction::LeftDoubleClick,
+        "right_double_click"  => MouseAction::RightDoubleClick,
+        "middle_double_click" => MouseAction::MiddleDoubleClick,
+        "extra1"              => MouseAction::Extra1,
+        "extra2"              => MouseAction::Extra2,
         _ => return None,
     })
 }
