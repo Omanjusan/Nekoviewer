@@ -8,7 +8,9 @@ A single-binary desktop viewer for comfortably reading manga archives in ZIP / C
 
 ## Purpose
 
-Browse folders like a bookshelf, navigate into archives, and view their images — all within a single in-app viewer window.
+- Browse folders like a bookshelf, navigate into archives, and view their images — all within a single in-app viewer window.
+- A viewer for people who collect and organize archives.
+- An experiment in how far AI coding can go.
 
 - Linux / Windows support
 - Direct filesystem access — no external database or service required
