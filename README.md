@@ -22,6 +22,11 @@ Browse folders like a bookshelf, navigate into archives, and view their images â
 - Multilingual support (ja/en/cn)
 - No ads, no telemetry
 
+Demo GIF
+<p align="center">
+  <img width="600" alt="Nekoviewer demo" src="https://github.com/user-attachments/assets/e1320011-5cba-4e2c-91ec-5526d8b0f9c2" />
+</p>
+
 ---
 
 ## Installation / Build
@@ -60,20 +65,22 @@ Run `make help` if you're not sure what to do.
 
 ## Usage
 
-### Updating on Windows / Linux
+### Updating on Windows
 
-When updating, it's recommended to delete the state file and config file in the folder where the executable (or binary on Linux) is located.
-There's no automatic migration for newly added settings yet.
+Windows SmartScreen may block the app from launching â€” this is not a bug. Click "More info" and then "Run anyway" to launch it. This happens on every release.
 
 ### Launch
 
 ```
-nekoviewer [folder path]
+Windows: nekoviewer.exe
+Linux: nekoviewer
 ```
 
-If no argument is given, the app starts from the folder set in `nekoviewer.conf` or the last opened folder. In general, running it without arguments is fine.
+A [folder path] argument is accepted, but in general, running it without arguments is fine.
 
 ### Controls
+
+Key assignment is supported; the defaults are listed below.
 
 #### Main Window
 
