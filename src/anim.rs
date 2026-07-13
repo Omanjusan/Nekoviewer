@@ -102,6 +102,17 @@ impl SequentialAnimDecoder {
         }
     }
 
+    /// 直近に`next_frame()`で得たAVIFフレームのExif/irot/imir統合済みの向き。AVIF以外は常に
+    /// `NoTransforms`。呼び出し元（`cache.rs::RingAnimation::from_source`）はフレーム1の有無で
+    /// 静止画/アニメーションを判定した後、静止画確定時のみこれを適用する
+    /// （WebPの`webp_exif_orientation`と対になる、AVIF向けの向き取得口）。
+    pub fn avif_orientation(&self) -> image::metadata::Orientation {
+        match &self.kind {
+            SeqDecoderKind::Avif(state) => state.last_orientation,
+            _ => image::metadata::Orientation::NoTransforms,
+        }
+    }
+
     /// ループ境界（最終フレーム→先頭）: デコーダを元データから作り直し、フレーム0から再開する。
     /// 失敗時は既存の状態を保持したまま false を返す。
     pub fn restart(&mut self) -> bool {
@@ -125,6 +136,11 @@ unsafe impl Send for SequentialAnimDecoder {}
 struct AvifSeqState {
     decoder: *mut libavif_sys::avifDecoder,
     timescale: f64,
+    /// 直近にデコードしたフレームのExif/irot/imirから統合した向き。生の`avifImage`ポインタは
+    /// 次の`avifDecoderNextImage`呼び出しやデコーダ破棄で無効になるため、`next_frame()`内で
+    /// 値として確定・退避しておく（呼び出し元は`SequentialAnimDecoder::avif_orientation()`
+    /// 経由でいつでも参照できる）。
+    last_orientation: image::metadata::Orientation,
 }
 
 impl AvifSeqState {
@@ -146,7 +162,7 @@ impl AvifSeqState {
                 return None;
             }
             let timescale = (*decoder).timescale as f64;
-            Some(Self { decoder, timescale })
+            Some(Self { decoder, timescale, last_orientation: image::metadata::Orientation::NoTransforms })
         }
     }
 
@@ -158,6 +174,8 @@ impl AvifSeqState {
             }
             let avif_image = (*self.decoder).image;
             if avif_image.is_null() { return None; }
+
+            self.last_orientation = crate::fs::archive::decode::avif_orientation_from_image(avif_image);
 
             let w = (*avif_image).width;
             let h = (*avif_image).height;

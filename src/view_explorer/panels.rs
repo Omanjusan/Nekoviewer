@@ -5,7 +5,7 @@ use crate::cache::ThumbRequest;
 use crate::i18n;
 use crate::types::ExplorerSortKey;
 use crate::fs::dir;
-use crate::view_reader::{PageMode, ViewerState};
+use crate::view_reader::{fit_rect_contain, ViewerState};
 use super::*;
 
 impl NekoviewApp {
@@ -51,7 +51,12 @@ impl NekoviewApp {
                 });
         }
 
-        self.handle_explorer_keys(&ctx);
+        // 設定ダイアログ（egui::Modal）は自動でキーボード入力をブロックしないため、開いている
+        // 間はエクスプローラー本体のキー操作を止める。止めないと、ダイアログのキーアサイン
+        // 変更キャプチャ中に裏でF2(Rename)等が同時に反応し、キャプチャ側の入力検出と競合する。
+        if !self.settings_is_open() {
+            self.handle_explorer_keys(&ctx);
+        }
         // egui標準のTab/矢印キーによるネイティブなウィジェットフォーカス移動
         // （Memory::focus_direction、選択ラベル/ボタンも対象になる）は、今回自前で
         // 構築したFocusPaneベースのキーボード操作と二重に動いてしまう
@@ -59,7 +64,10 @@ impl NekoviewApp {
         // 隣接ウィジェットへ移り歩いてしまい、ツリー等の自前カーソル移動と競合して見える）。
         // Filter欄だけは実際のテキスト入力フォーカスが必要なので、それ以外は毎フレーム
         // ネイティブフォーカスを解除し、見た目上のカーソル表現を自前のハイライトに一本化する。
-        if self.focused_pane != FocusPane::Filter {
+        // 設定ダイアログ（翻訳機能タブのURL/モデル名入力欄など）が開いている間は、
+        // 自前カーソル用の強制フォーカス解除を止める。解除したままだと入力した
+        // 次フレームで即座にフォーカスが外れ、テキスト入力が一切通らなくなる。
+        if self.focused_pane != FocusPane::Filter && !self.settings_is_open() {
             ctx.memory_mut(|mem| mem.stop_text_input());
         }
         // release ビルドは ROOT 内フローティングウィンドウのため ui() で描画する。
@@ -78,32 +86,9 @@ impl NekoviewApp {
 
     /// MenuBarの各ボタンの並び順・有効状態を計算する（MENU_BAR_ORDERに対応）。
     /// draw_menu_barの描画とhandle_menu_bar_keysの移動対象決定の両方から参照する単一の情報源。
+    /// 見開き群のビューアー移設後、残る項目はすべて常時有効。
     pub(super) fn menu_bar_items(&self) -> Vec<(MenuBarButton, bool)> {
-        let (viewer_open, is_raw_viewer, is_spread, can_back, can_fwd) = {
-            let guard = self.viewer.lock().unwrap();
-            let viewer_open = guard.is_some();
-            let is_raw_viewer = guard.as_ref().map_or(false, |v| v.is_raw_file());
-            let cur_mode = guard.as_ref().map(|v| v.page_mode());
-            let is_spread = cur_mode.map_or(false, |m| m != PageMode::Single);
-            let can_back = guard.as_ref().map_or(false, |v| v.can_shift_backward());
-            let can_fwd = guard.as_ref().map_or(false, |v| v.can_shift_forward());
-            (viewer_open, is_raw_viewer, is_spread, can_back, can_fwd)
-        };
-        MENU_BAR_ORDER.iter().map(|&b| {
-            let enabled = match b {
-                MenuBarButton::PageSingle => viewer_open,
-                MenuBarButton::PageSpreadLeft | MenuBarButton::PageSpreadRight => viewer_open && !is_raw_viewer,
-                MenuBarButton::SpreadBack => viewer_open && is_spread && !is_raw_viewer && can_back,
-                MenuBarButton::SpreadFwd => viewer_open && is_spread && !is_raw_viewer && can_fwd,
-                MenuBarButton::SortName
-                | MenuBarButton::SortDate
-                | MenuBarButton::SortSize
-                | MenuBarButton::SortOrder
-                | MenuBarButton::StatusToggle
-                | MenuBarButton::Settings => true,
-            };
-            (b, enabled)
-        }).collect()
+        MENU_BAR_ORDER.iter().map(|&b| (b, true)).collect()
     }
 
     /// ソートキー・昇降順の変更後に共通で行う後処理（クリック・キーボード両経路で使う）。
@@ -119,27 +104,6 @@ impl NekoviewApp {
     /// 呼び出し側で有効/無効チェック済みであることを前提とする。
     pub(super) fn activate_menu_button(&mut self, button: MenuBarButton) {
         match button {
-            MenuBarButton::PageSingle => {
-                let mut v_guard = self.viewer.lock().unwrap();
-                let mut cfg_guard = self.viewer_cfg.lock().unwrap();
-                if let Some(v) = v_guard.as_mut() { v.set_page_mode(PageMode::Single, &mut *cfg_guard); }
-            }
-            MenuBarButton::PageSpreadLeft => {
-                let mut v_guard = self.viewer.lock().unwrap();
-                let mut cfg_guard = self.viewer_cfg.lock().unwrap();
-                if let Some(v) = v_guard.as_mut() { v.set_page_mode(PageMode::SpreadLeft, &mut *cfg_guard); }
-            }
-            MenuBarButton::PageSpreadRight => {
-                let mut v_guard = self.viewer.lock().unwrap();
-                let mut cfg_guard = self.viewer_cfg.lock().unwrap();
-                if let Some(v) = v_guard.as_mut() { v.set_page_mode(PageMode::SpreadRight, &mut *cfg_guard); }
-            }
-            MenuBarButton::SpreadBack => {
-                if let Some(v) = self.viewer.lock().unwrap().as_mut() { v.shift_offset_backward(); }
-            }
-            MenuBarButton::SpreadFwd => {
-                if let Some(v) = self.viewer.lock().unwrap().as_mut() { v.shift_offset_forward(); }
-            }
             MenuBarButton::SortName => {
                 self.sort_key = ExplorerSortKey::Name;
                 self.finish_sort_change();
@@ -171,61 +135,7 @@ impl NekoviewApp {
         let is_cursor = |b: MenuBarButton| menu_focused && cursor_button == Some(b);
         ui.horizontal(|ui| {
             // 隠しファイル表示トグルは設定ダイアログの「共通」タブへ移設した。
-
-            // ── ページ表示モード ──────────────────────────────────────────
-            let (viewer_open, is_raw_viewer, cur_mode, is_spread, can_back, can_fwd, is_offset) = {
-                let guard = self.viewer.lock().unwrap();
-                let viewer_open = guard.is_some();
-                let is_raw_viewer = guard.as_ref().map_or(false, |v| v.is_raw_file());
-                let cur_mode = guard.as_ref().map(|v| v.page_mode());
-                let is_spread = cur_mode.map_or(false, |m| m != PageMode::Single);
-                let can_back = guard.as_ref().map_or(false, |v| v.can_shift_backward());
-                let can_fwd  = guard.as_ref().map_or(false, |v| v.can_shift_forward());
-                let is_offset = guard.as_ref().map_or(false, |v| v.is_spread_offset());
-                (viewer_open, is_raw_viewer, cur_mode, is_spread, can_back, can_fwd, is_offset)
-            };
-
-            ui.add_enabled_ui(viewer_open, |ui| {
-                let r = ui.selectable_label(cur_mode == Some(PageMode::Single), i18n::t().page_single());
-                if is_cursor(MenuBarButton::PageSingle) { draw_cursor_ring(ui, r.rect); }
-                if r.clicked() {
-                    let mut v_guard = self.viewer.lock().unwrap();
-                    let mut cfg_guard = self.viewer_cfg.lock().unwrap();
-                    if let Some(v) = v_guard.as_mut() { v.set_page_mode(PageMode::Single, &mut *cfg_guard); }
-                }
-            });
-            ui.add_enabled_ui(viewer_open && !is_raw_viewer, |ui| {
-                let r_left = ui.selectable_label(cur_mode == Some(PageMode::SpreadLeft), i18n::t().page_spread_left());
-                if is_cursor(MenuBarButton::PageSpreadLeft) { draw_cursor_ring(ui, r_left.rect); }
-                if r_left.clicked() {
-                    let mut v_guard = self.viewer.lock().unwrap();
-                    let mut cfg_guard = self.viewer_cfg.lock().unwrap();
-                    if let Some(v) = v_guard.as_mut() { v.set_page_mode(PageMode::SpreadLeft, &mut *cfg_guard); }
-                }
-                let r_right = ui.selectable_label(cur_mode == Some(PageMode::SpreadRight), i18n::t().page_spread_right());
-                if is_cursor(MenuBarButton::PageSpreadRight) { draw_cursor_ring(ui, r_right.rect); }
-                if r_right.clicked() {
-                    let mut v_guard = self.viewer.lock().unwrap();
-                    let mut cfg_guard = self.viewer_cfg.lock().unwrap();
-                    if let Some(v) = v_guard.as_mut() { v.set_page_mode(PageMode::SpreadRight, &mut *cfg_guard); }
-                }
-            });
-
-            ui.add_enabled_ui(viewer_open && is_spread && !is_raw_viewer, |ui| {
-                let r_back = ui.add_enabled(can_back, egui::Button::new(i18n::t().spread_back()));
-                if is_cursor(MenuBarButton::SpreadBack) { draw_cursor_ring(ui, r_back.rect); }
-                if r_back.clicked() {
-                    if let Some(v) = self.viewer.lock().unwrap().as_mut() { v.shift_offset_backward(); }
-                }
-                let r_fwd = ui.add_enabled(can_fwd, egui::Button::new(i18n::t().spread_fwd()));
-                if is_cursor(MenuBarButton::SpreadFwd) { draw_cursor_ring(ui, r_fwd.rect); }
-                if r_fwd.clicked() {
-                    if let Some(v) = self.viewer.lock().unwrap().as_mut() { v.shift_offset_forward(); }
-                }
-                ui.label(if is_offset { i18n::t().spread_offset_on() } else { i18n::t().spread_aligned() });
-            });
-
-            ui.separator();
+            // ページ表示モード・見開き1Pシフト群はビューアーツールバーへ移設した（toolbar.rs 参照）。
 
             // ── エクスプローラーソート ────────────────────────────────────
             let mut sort_changed = false;
@@ -616,6 +526,7 @@ impl NekoviewApp {
                                 draw_cursor_ring(ui, rect);
                             }
                             if response.clicked() {
+                                self.focused_pane = FocusPane::Grid;
                                 self.grid_cursor = Some(GridEntry::Up(parent.clone()));
                                 self.selected_archive_index = None;
                                 self.selected_archive_meta = None;
@@ -698,6 +609,7 @@ impl NekoviewApp {
                                 draw_cursor_ring(ui, rect);
                             }
                             if response.clicked() {
+                                self.focused_pane = FocusPane::Grid;
                                 self.grid_cursor = Some(GridEntry::Subdir(dir_path.clone()));
                                 self.selected_archive_index = None;
                                 self.selected_archive_meta = None;
@@ -727,9 +639,16 @@ impl NekoviewApp {
 
                         if ui.is_rect_visible(rect) {
                             if let Some(tex) = self.thumbnails.get(path) {
+                                let letterbox_color = if ui.visuals().dark_mode {
+                                    egui::Color32::BLACK
+                                } else {
+                                    egui::Color32::WHITE
+                                };
+                                ui.painter().rect_filled(rect, 4.0, letterbox_color);
+                                let img_rect = fit_rect_contain(rect, tex.size_vec2());
                                 ui.painter().image(
                                     tex.id(),
-                                    rect,
+                                    img_rect,
                                     egui::Rect::from_min_max(
                                         egui::pos2(0.0, 0.0),
                                         egui::pos2(1.0, 1.0),
@@ -854,6 +773,7 @@ impl NekoviewApp {
 
                         let is_raw = self.raw_image_files.contains(path);
                         if response.clicked() {
+                            self.focused_pane = FocusPane::Grid;
                             self.grid_cursor = Some(GridEntry::Archive(real_idx));
                             let modifiers = ui.input(|i| i.modifiers);
                             if modifiers.command {

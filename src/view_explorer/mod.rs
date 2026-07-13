@@ -112,11 +112,6 @@ enum FavoriteSelection {
 /// キーボードでの左右移動・Enter確定（handle_menu_bar_keys）の対象になる。
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum MenuBarButton {
-    PageSingle,
-    PageSpreadLeft,
-    PageSpreadRight,
-    SpreadBack,
-    SpreadFwd,
     SortName,
     SortDate,
     SortSize,
@@ -125,13 +120,9 @@ pub(crate) enum MenuBarButton {
     Settings,
 }
 
-/// 表示順そのもの（draw_menu_barの描画順と一致させること）
-pub(crate) const MENU_BAR_ORDER: [MenuBarButton; 11] = [
-    MenuBarButton::PageSingle,
-    MenuBarButton::PageSpreadLeft,
-    MenuBarButton::PageSpreadRight,
-    MenuBarButton::SpreadBack,
-    MenuBarButton::SpreadFwd,
+/// 表示順そのもの（draw_menu_barの描画順と一致させること）。
+/// 見開き・ページモード群はビューアーツールバーへ移設した（toolbar.rs 参照）。
+pub(crate) const MENU_BAR_ORDER: [MenuBarButton; 6] = [
     MenuBarButton::SortName,
     MenuBarButton::SortDate,
     MenuBarButton::SortSize,
@@ -357,6 +348,44 @@ pub struct NekoviewApp {
     pub(crate) settings_open: bool,
     pub(crate) settings_tab: SettingsTab,
     pub(crate) settings_draft: SettingsDraft,
+    /// 翻訳機能(実験的)の永続設定。設定ダイアログの[反映]でのみ書き換わる。
+    pub(crate) translate_cfg: crate::translate::TranslateConfig,
+    /// 接続テストの進行中受信チャンネル（ダイアログを閉じたら破棄）。
+    pub(crate) translate_conn_rx: Option<mpsc::Receiver<crate::translate::ConnCheckMsg>>,
+    /// 直近の接続テスト結果表示用（疎通/vision結果の文字列、または失敗理由）。
+    pub(crate) translate_conn_status: Option<String>,
+    pub(crate) translate_ocr_rx: Option<mpsc::Receiver<crate::translate::OcrMsg>>,
+    pub(crate) translate_ocr_status: Option<String>,
+    /// 実行中のOCRリクエストがどのページ宛てか。結果到着時にそのページ用のtxtへ保存する
+    /// （待っている間にユーザーがページ送りしても、要求時点のページへ正しく保存するため）。
+    pub(crate) translate_ocr_inflight_key: Option<(PathBuf, usize)>,
+    /// 見開き時、2ページぶんを1リクエストに結合せず個別に逐次実行するための残りキュー。
+    /// モデルに「どこまでが左ページか」を自己申告させると信頼できないため、ページの
+    /// 切り分け・ラベル付けは常にアプリ側(この構造)で行い、モデルには単独ページとして
+    /// 1枚ずつ渡す。
+    pub(crate) translate_ocr_queue: std::collections::VecDeque<(PathBuf, usize)>,
+    /// OCR/翻訳子ウィンドウ（独立OS窓）の表示状態。既存txtが1P分でも残っていれば
+    /// 自動で開き、無ければビューアー部の[翻訳]ボタンでユーザーが開く。
+    pub(crate) translate_window_open: bool,
+    /// OCR/翻訳子ウィンドウの最前面固定トグル。低解像度モニターでウィンドウが混線する
+    /// 環境向け。ONのときは本体窓の操作を奪ってよい（子側優先の設計）。
+    pub(crate) translate_window_always_on_top: bool,
+    /// OCR/翻訳子ウィンドウが現在フォーカスしている単一ページ。見開き中は親の可視2ページの
+    /// うちどちらかを指す。親の可視集合に含まれなくなったら(=親が別に動いた)先頭へ再同期する。
+    pub(crate) translate_child_cursor: Option<(PathBuf, usize)>,
+    /// 子ウィンドウ左ペイン(OCR原文)の表示内容。`translate_child_cursor`のページ分のtxt。
+    pub(crate) translate_child_ocr_lines: Vec<String>,
+    /// 子ウィンドウで選択中の翻訳先言語。原文(日本語固定)は選択肢から除く。
+    pub(crate) translate_child_target_lang: crate::translate::TargetLang,
+    /// 子ウィンドウ右ペイン(翻訳結果)の表示内容。OCRとは完全に独立した処理単位・状態。
+    pub(crate) translate_child_translation_lines: Vec<String>,
+    pub(crate) translate_translate_rx: Option<mpsc::Receiver<crate::translate::TranslateMsg>>,
+    pub(crate) translate_translate_status: Option<String>,
+    /// 実行中の翻訳リクエストがどのページ宛てか。OCRのinflight_keyと同じ理由で保持する。
+    pub(crate) translate_translate_inflight_key: Option<(PathBuf, usize)>,
+    /// 直近に自動オープン判定を行ったアーカイブパス（同一アーカイブ内での毎フレーム
+    /// 再チェックを避けるためのキャッシュ）。
+    pub(crate) translate_window_autocheck_done_for: Option<PathBuf>,
     /// ビューアウィンドウをフォーカス前面に出すフラグ
     viewer_focus_requested: bool,
     pub(crate) show_hidden: bool,
@@ -389,6 +418,16 @@ pub struct NekoviewApp {
     status_update_requested: Arc<std::sync::atomic::AtomicBool>,
     /// バックグラウンドワーカーから ROOT を起こす（イベント駆動再描画）ために保持する ctx
     egui_ctx: egui::Context,
+    /// ビューアー窓自身の ctx（render_viewer 毎フレーム更新）。OCR/翻訳子ウィンドウから
+    /// ページ送りで共有 ViewerState を書き換えた際、独立 Context のビューアー窓を
+    /// 起こす（request_repaint）ために保持する。
+    viewer_egui_ctx: Option<egui::Context>,
+    /// OCR/翻訳子ウィンドウ自身の ctx（render_translate_window 毎フレーム更新）。
+    /// ビューアー窓側の通常のページ送り（子ウィンドウの操作を介さない）で子ウィンドウを
+    /// 起こす（request_repaint）ために保持する。
+    translate_egui_ctx: Option<egui::Context>,
+    /// 直近にrender_viewerが観測した親の可視ページ集合。変化を検知したら子ウィンドウを起こす。
+    translate_last_seen_parent_keys: Vec<(PathBuf, usize)>,
     /// フェーズ6: viewer_cfg.redecode_trigger_seq のうち処理済みの値（変化検知用）
     resize_redecode_last_seq: u64,
     /// フェーズ6: デバウンス期限（この時刻を過ぎたら再デコード発火）。None = 待ち無し
@@ -396,6 +435,9 @@ pub struct NekoviewApp {
     /// フェーズ6: 直近の再デコードで決まった、以降のデコード要求(先読み含む)に使うターゲットサイズ。
     /// None = 無制限(原寸、zoom_actual時)。起動直後の既定値は従来の固定上限と同じ。
     decode_target: Option<(u32, u32)>,
+    /// 項目(D): viewer_cfg.exif_orientation_enabled の変化検知用（設定ダイアログ・
+    /// ビューアーツールバーのチェックボックス、どちらの経路で変更されても拾えるようにする）。
+    exif_orientation_enabled_last_seen: bool,
 }
 
 mod scan;
@@ -412,14 +454,14 @@ mod glyph_audit;
 
 
 impl NekoviewApp {
-    pub fn new(start_dir: PathBuf, config: AppConfig, viewer_slots: [Option<WindowSlot>; 4], sort_state: SortState, viewer_cfg: ViewerConfig, show_hidden: bool, ctx: egui::Context) -> Self {
+    pub fn new(start_dir: PathBuf, config: AppConfig, viewer_slots: [Option<WindowSlot>; 4], sort_state: SortState, viewer_cfg: ViewerConfig, show_hidden: bool, translate_cfg: crate::translate::TranslateConfig, ctx: egui::Context) -> Self {
         let (cache_max, cache_min, file_cache_max) = crate::cache::resolve_cache_budgets(config.cache_total_mb);
         let ring_bounds = (config.anim_ring_min_frames, config.anim_ring_max_frames);
         let frame_hard_limit_bytes = config.anim_frame_hard_limit_mb * 1024 * 1024;
         // 長辺px上限のみ指定し、正方形の箱として resize_for_display に渡す。
         // fit-within(縦横比維持)なので短辺は箱の中に自動的に収まる。
         let max_decode_target = (config.max_decode_edge, config.max_decode_edge);
-        let settings_draft = SettingsDraft::from_current(&config, &viewer_cfg, show_hidden);
+        let settings_draft = SettingsDraft::from_current(&config, &viewer_cfg, show_hidden, &translate_cfg);
         let (req_tx, res_rx) = spawn_worker(config.viewer_filter.to_image_filter(), config.resolved_decode_threads(), ctx.clone(), cache_max, ring_bounds, frame_hard_limit_bytes);
         let (thumb_req_tx, thumb_res_rx) = spawn_thumb_worker(config.thumb_filter.to_image_filter(), config.resolved_decode_threads(), ctx.clone());
         let (entry_thumb_req_tx, entry_thumb_res_rx) = spawn_entry_thumb_worker(config.thumb_filter.to_image_filter(), config.resolved_decode_threads(), ctx.clone());
@@ -526,6 +568,23 @@ impl NekoviewApp {
             settings_open: false,
             settings_tab: SettingsTab::Common,
             settings_draft,
+            translate_cfg,
+            translate_conn_rx: None,
+            translate_conn_status: None,
+            translate_ocr_rx: None,
+            translate_ocr_status: None,
+            translate_window_open: false,
+            translate_window_always_on_top: false,
+            translate_child_cursor: None,
+            translate_child_ocr_lines: Vec::new(),
+            translate_child_target_lang: crate::translate::TargetLang::ChineseSimplified,
+            translate_child_translation_lines: Vec::new(),
+            translate_translate_rx: None,
+            translate_translate_status: None,
+            translate_translate_inflight_key: None,
+            translate_window_autocheck_done_for: None,
+            translate_ocr_inflight_key: None,
+            translate_ocr_queue: std::collections::VecDeque::new(),
             viewer_focus_requested: false,
             show_hidden,
             sort_key: ExplorerSortKey::from_state_key(&sort_state.key),
@@ -547,9 +606,13 @@ impl NekoviewApp {
             last_status_update: std::time::Instant::now(),
             status_update_requested: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             egui_ctx: ctx,
+            viewer_egui_ctx: None,
+            translate_egui_ctx: None,
+            translate_last_seen_parent_keys: Vec::new(),
             resize_redecode_last_seq: viewer_cfg.redecode_trigger_seq,
             resize_redecode_deadline: None,
             decode_target: Some(max_decode_target),
+            exif_orientation_enabled_last_seen: viewer_cfg.exif_orientation_enabled,
         };
         app.start_scan();
         app.refresh_favorite_folders();
@@ -566,6 +629,7 @@ impl NekoviewApp {
             &*self.viewer_cfg.lock().unwrap(),
             self.show_hidden,
             &self.config,
+            &self.translate_cfg,
         );
     }
 }

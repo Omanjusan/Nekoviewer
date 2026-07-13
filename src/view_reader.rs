@@ -12,6 +12,9 @@ use crate::cache::{PageCache, PageContent};
 use crate::gui_config::WindowSlot;
 use crate::fs::archive;
 use crate::spread_offset::SpreadOffset;
+use crate::rotation::{self, RotationState};
+use crate::toolbar::{BarGroup, ViewerBarItem};
+use crate::keymap::{Keymap, ReaderAction, MouseAction, MouseCombo};
 
 const SCROLL_THRESHOLD: f32 = 50.0;
 /// content_px の初回フレーム前プレースホルダ。draw() 冒頭で毎フレーム実測値に
@@ -53,7 +56,7 @@ fn upload_ring_frame(
 
 /// `bounds` の中に `img_size` を縦横比を保ったまま収める（contain-fit）矩形を返す。
 /// サムネイルバーの正方形枠に、実際のサムネイル画像(縦長/横長)を収めるのに使う。
-fn fit_rect_contain(bounds: egui::Rect, img_size: egui::Vec2) -> egui::Rect {
+pub(crate) fn fit_rect_contain(bounds: egui::Rect, img_size: egui::Vec2) -> egui::Rect {
     if img_size.x <= 0.0 || img_size.y <= 0.0 {
         return bounds;
     }
@@ -115,43 +118,55 @@ struct FrameInput {
 }
 
 impl FrameInput {
-    fn collect(ctx: &egui::Context, zoom_actual: bool) -> Self {
+    /// キー・マウス判定はキーアサイン設定(TODO項目J、[keymap.rs](../keymap.rs))経由。
+    /// ホイールは「PagePrev/PageNextのマウス割り当て」「FileNavPrevAlt/NextAltのマウス割り当て」
+    /// それぞれの修飾キー条件が現在の入力状態と一致するかを見て、一致した方に生delta(sd.y、
+    /// shift成分ありなら+sd.x)を渡す。PagePrev/PageNextは対で同じ条件を持つ想定のため、
+    /// 片方から拾えれば十分（Prev側優先、無ければNext側）。
+    fn collect(ctx: &egui::Context, zoom_actual: bool, keymap: &Keymap) -> Self {
         ctx.input(|i| {
-            let sh = i.modifiers.shift;
-            let raw = if zoom_actual { 0.0 } else {
-                let sd = i.smooth_scroll_delta();
-                sd.y + if sh { sd.x } else { 0.0 }
+            let sd = if zoom_actual { egui::Vec2::ZERO } else { i.smooth_scroll_delta() };
+            let wheel_amount = |m: MouseCombo| -> f32 {
+                if !m.modifiers_match(i) { return 0.0; }
+                sd.y + if m.shift { sd.x } else { 0.0 }
             };
+            let act = |a: ReaderAction| keymap.reader_binding(a).key_pressed(i);
+            let mouse_of = |a: ReaderAction| keymap.reader_binding(a).effective_mouse();
+            let page_mouse = mouse_of(ReaderAction::PagePrev).or_else(|| mouse_of(ReaderAction::PageNext));
+            let file_mouse = mouse_of(ReaderAction::FileNavPrevAlt).or_else(|| mouse_of(ReaderAction::FileNavNextAlt));
+            let middle_clicked = mouse_of(ReaderAction::ToggleFullscreen)
+                .is_some_and(|m| m.action == MouseAction::MiddleClick && m.modifiers_match(i))
+                && i.pointer.button_clicked(egui::PointerButton::Middle);
             let slot_apply =
-                if      i.key_pressed(egui::Key::F5) { Some(0) }
-                else if i.key_pressed(egui::Key::F6) { Some(1) }
-                else if i.key_pressed(egui::Key::F7) { Some(2) }
-                else if i.key_pressed(egui::Key::F8) { Some(3) }
+                if      act(ReaderAction::ApplySlot1) { Some(0) }
+                else if act(ReaderAction::ApplySlot2) { Some(1) }
+                else if act(ReaderAction::ApplySlot3) { Some(2) }
+                else if act(ReaderAction::ApplySlot4) { Some(3) }
                 else { None };
             let vp = i.viewport();
             Self {
-                key_left:           i.key_pressed(egui::Key::ArrowLeft)  && !sh,
-                key_right:          i.key_pressed(egui::Key::ArrowRight) && !sh,
-                key_up:             i.key_pressed(egui::Key::ArrowUp)    && !sh,
-                key_down:           i.key_pressed(egui::Key::ArrowDown)  && !sh,
-                key_space:          i.key_pressed(egui::Key::Space),
-                esc:                i.key_pressed(egui::Key::Escape),
-                zoom_key:           i.key_pressed(egui::Key::Enter) && !i.modifiers.alt,
-                fs_key:             i.key_pressed(egui::Key::Enter) &&  i.modifiers.alt,
-                mode1:              i.key_pressed(egui::Key::Num1),
-                mode2:              i.key_pressed(egui::Key::Num2),
-                mode3:              i.key_pressed(egui::Key::Num3),
-                shift4:             i.key_pressed(egui::Key::Num4),
-                shift5:             i.key_pressed(egui::Key::Num5),
-                shift_nav_up:       i.key_pressed(egui::Key::ArrowUp)   && sh,
-                shift_nav_down:     i.key_pressed(egui::Key::ArrowDown) && sh,
-                key_home:           i.key_pressed(egui::Key::Home),
-                key_end:            i.key_pressed(egui::Key::End),
+                key_left:           act(ReaderAction::FileNavPrev),
+                key_right:          act(ReaderAction::FileNavNext),
+                key_up:             act(ReaderAction::PagePrev),
+                key_down:           act(ReaderAction::PageNext),
+                key_space:          act(ReaderAction::PageAdvanceSpace),
+                esc:                act(ReaderAction::CloseOrExitFullscreen),
+                zoom_key:           act(ReaderAction::ToggleZoomActual),
+                fs_key:             act(ReaderAction::ToggleFullscreen),
+                mode1:              act(ReaderAction::PageModeSingle),
+                mode2:              act(ReaderAction::PageModeSpreadLeft),
+                mode3:              act(ReaderAction::PageModeSpreadRight),
+                shift4:             act(ReaderAction::SpreadOffsetPrev),
+                shift5:             act(ReaderAction::SpreadOffsetNext),
+                shift_nav_up:       act(ReaderAction::FileNavPrevAlt),
+                shift_nav_down:     act(ReaderAction::FileNavNextAlt),
+                key_home:           act(ReaderAction::JumpFirstPage),
+                key_end:            act(ReaderAction::JumpLastPage),
                 slot_apply,
-                scroll_delta:       raw,
-                shift_scroll_delta: if sh { raw } else { 0.0 },
+                scroll_delta:       page_mouse.map(wheel_amount).unwrap_or(0.0),
+                shift_scroll_delta: file_mouse.map(wheel_amount).unwrap_or(0.0),
                 hover_pos:          i.pointer.hover_pos(),
-                middle_clicked:     i.pointer.button_clicked(egui::PointerButton::Middle),
+                middle_clicked,
                 outer_rect:         vp.outer_rect,
                 inner_rect:         vp.inner_rect,
                 monitor_size:       vp.monitor_size,
@@ -215,6 +230,8 @@ struct RenderFrame {
     page_mode:   PageMode,
     zoom_actual: bool,
     monitor:     Option<egui::Vec2>,
+    /// TODO項目B: シングルページ表示に適用する手動回転角度(0/90/180/270)
+    rotation_angle: i32,
 }
 
 pub struct ViewerState {
@@ -289,6 +306,14 @@ pub struct ViewerState {
     pending_spread_action: Option<crate::controller::SpreadSaveAction>,
     /// 右クリックメニュー「お気に入り詳細設定」が押されたか（1フレームで消費）
     pending_open_favorite_dialog: bool,
+    /// TODO項目B: 現在ページの手動回転状態。rotation_carry_over が true の間は
+    /// この値ではなく ViewerConfig::rotation_session_angle を使う（呼び出し側判断）。
+    rotation: RotationState,
+    /// TODO項目D相当のダミーフラグ。D本体（設定UI・永続化）は未実装のため常時true固定
+    /// （EXIF自動回転は既にデコード時にピクセルへ焼き込み済みのため、Bの範囲では
+    /// このフラグを実際の分岐には使わない）。
+    #[allow(dead_code)]
+    exif_enabled: bool,
 }
 
 impl ViewerState {
@@ -296,7 +321,6 @@ impl ViewerState {
     pub fn archive_path(&self) -> &PathBuf { &self.archive_path }
     pub fn entries(&self) -> &[ViewerEntry] { &self.entries }
     pub fn is_raw_file(&self) -> bool { self.is_raw_file }
-    pub fn page_mode(&self) -> PageMode { self.page_mode }
 
     /// フェーズ6: 現在表示中のページ(見開き時は2枚)の original_index を返す。
     pub fn visible_original_indices(&self) -> Vec<usize> {
@@ -382,6 +406,15 @@ impl ViewerState {
 
     /// フェーズ6: 再デコード発火時に、指定ページのテクスチャ・アニメ再生状態を破棄する。
     /// 次の update_textures() で PageCache から作り直させる（アニメはフレーム0から再生し直す）。
+    /// 項目(D): Exif Orientation ON/OFF切替時に、開いているアーカイブの全ページのテクスチャ・
+    /// アニメ再生状態を破棄する。`invalidate_pages`(可視ページのみ)と違い、先読みウィンドウ内
+    /// (update_textures の表示ウィンドウ)で既にテクスチャを持つ裏ページも古いOrientationの
+    /// まま残ってしまうため、開いているアーカイブ全体を対象にする。
+    pub fn invalidate_all_pages(&mut self) {
+        self.textures.clear();
+        self.anim_states.clear();
+    }
+
     pub fn invalidate_pages(&mut self, orig_indices: &[usize]) {
         for orig_i in orig_indices {
             self.textures.remove(orig_i);
@@ -440,6 +473,8 @@ impl ViewerState {
             saved_spread: None,
             pending_spread_action: None,
             pending_open_favorite_dialog: false,
+            rotation: RotationState::new(),
+            exif_enabled: true,
         })
     }
 
@@ -492,6 +527,8 @@ impl ViewerState {
             saved_spread: None,
             pending_spread_action: None,
             pending_open_favorite_dialog: false,
+            rotation: RotationState::new(),
+            exif_enabled: true,
         }
     }
 
@@ -506,10 +543,6 @@ impl ViewerState {
     }
 
     /// オフセットがずれているか（UI表示用）
-    pub fn is_spread_offset(&self) -> bool {
-        self.offset.is_nonzero()
-    }
-
     pub fn can_shift_forward(&self) -> bool {
         self.offset.can_advance()
     }
@@ -524,6 +557,27 @@ impl ViewerState {
 
     pub fn shift_offset_backward(&mut self) {
         self.offset.retreat();
+    }
+
+    /// OCR/翻訳子ウィンドウ用: 見開きを1組ぶん(step)実際に送る/戻す。
+    /// オフセット(-1/0/+1)には一切触れない（4/5キーの見開き内シフトとは無関係）。
+    /// 呼び出し側（子ウィンドウ）が「見開き内の2ページを見終わった」と判定した時にだけ
+    /// 呼ぶことで、子2回操作＝親1回送りを実現する（シングルページモードはstep=1で毎回呼ぶ）。
+    pub fn advance_spread_step(&mut self, total: usize, forward: bool) {
+        let is_spread = self.page_mode != PageMode::Single;
+        let step: i32 = if is_spread { 2 } else { 1 };
+        let total_i = total as i32;
+        let off = self.offset.value();
+
+        if forward {
+            let next_base = self.spread_base + step;
+            if next_base + off <= total_i - 1 { self.spread_base = next_base; }
+        } else {
+            let prev_base = self.spread_base - step;
+            let min_lo = if is_spread { -1 } else { 0 };
+            if prev_base + off >= min_lo { self.spread_base = prev_base; }
+        }
+        self.offset.update_virtual_right(is_spread && self.spread_lo() + 1 >= total_i);
     }
 
     /// ページモードを切り替え、spread_base とオフセットを整合させる
@@ -637,13 +691,72 @@ impl ViewerState {
         self.anim_active = false;
         self.anim_progress = 1.0;
         self.prev_spread_lo = 0;
+        // 表示ページが変わるため手動回転もリセット（carry_over中はcfg側の共有角度を使うため無害）
+        self.rotation.reset();
+    }
+
+    /// TODO項目B: carry_overトグルの状態に応じて「今どちらの回転値が有効か」を切り替える。
+    fn manual_rotation_angle(&self, cfg: &ViewerConfig) -> i32 {
+        rotation::manual_angle(cfg.rotation_carry_over, &self.rotation, cfg.rotation_session_angle)
+    }
+
+    fn rotate_cw(&mut self, cfg: &mut ViewerConfig) {
+        rotation::rotate(cfg.rotation_carry_over, &mut self.rotation, &mut cfg.rotation_session_angle, true);
+    }
+
+    fn rotate_ccw(&mut self, cfg: &mut ViewerConfig) {
+        rotation::rotate(cfg.rotation_carry_over, &mut self.rotation, &mut cfg.rotation_session_angle, false);
+    }
+
+    /// 項目(D)OFF→ON切替時: 「EXIF値のみを見る」という意思表示になるため、
+    /// 手動回転の加算分を破棄する（carry_over中はセッション共有角度も0に戻す）。
+    pub fn on_exif_orientation_enabled(&mut self, cfg: &mut ViewerConfig) {
+        self.rotation.on_exif_enabled();
+        cfg.rotation_session_angle = 0;
+    }
+
+    /// 項目(D)ON→OFF切替時: デコード時のEXIF焼き込みが無くなる分、見た目維持のため
+    /// EXIF回転角度ぶんを手動回転角度へ加算補正する（carry_over中はセッション共有角度側）。
+    pub fn on_exif_orientation_disabled(&mut self, cfg: &mut ViewerConfig, exif_deg: i32) {
+        if cfg.rotation_carry_over {
+            cfg.rotation_session_angle = rotation::normalize_360(cfg.rotation_session_angle + exif_deg);
+        } else {
+            self.rotation.on_exif_disabled(exif_deg);
+        }
+    }
+
+    /// 項目(D)ON→OFF切替の角度補正で基準にするページの(original_index, entry_name)。
+    /// 見開き時のEXIF基準点決定（仮想ページでない方を優先→両方実ページならインデックスが
+    /// 若い方）と同じ優先順位を使う（Bの確定仕様）。
+    pub fn rotation_correction_reference_page(&self) -> Option<(usize, String)> {
+        let total = self.entries.len() as i32;
+        if total == 0 {
+            return None;
+        }
+        let lo = self.spread_lo();
+        let pick = |i: i32| -> Option<(usize, String)> {
+            if i < 0 || i >= total { return None; }
+            self.entries.get(i as usize).map(|e| (e.original_index, e.entry_name.clone()))
+        };
+        if self.page_mode == PageMode::Single {
+            return pick(lo.clamp(0, total - 1));
+        }
+        let hi = lo + 1;
+        let virtual_left = lo < 0 || lo >= total;
+        let virtual_right = hi < 0 || hi >= total;
+        match (virtual_left, virtual_right) {
+            (true, true) => None,
+            (true, false) => pick(hi),
+            (false, true) => pick(lo),
+            (false, false) => pick(lo), // lo < hi は常に成立するので若い方=lo
+        }
     }
 
     pub fn title(&self) -> String {
         self.archive_path.file_name().and_then(|n| n.to_str()).unwrap_or(i18n::t().viewer_fallback()).to_string()
     }
 
-    pub fn show(&mut self, ui: &mut egui::Ui, page_cache: &PageCache, cfg: &mut ViewerConfig) -> ViewerOutput {
+    pub fn show(&mut self, ui: &mut egui::Ui, page_cache: &PageCache, cfg: &mut ViewerConfig, keymap: &Keymap) -> ViewerOutput {
         let ctx = ui.ctx().clone();
         let viewer_style = ui.style().clone();
         if !self.open || self.entries.is_empty() {
@@ -651,7 +764,7 @@ impl ViewerState {
         }
 
         // ── フレーム入力を一括収集（ctx.input はこの1回のみ）────────────────
-        let input = FrameInput::collect(&ctx, cfg.zoom_actual);
+        let input = FrameInput::collect(&ctx, cfg.zoom_actual, keymap);
 
         // フェーズ6: リサイズ再デコードのターゲットサイズ算出用に、現在の描画領域サイズ（物理px）を記録する。
         let screen = ctx.content_rect().size() * ctx.pixels_per_point();
@@ -660,7 +773,7 @@ impl ViewerState {
         // 既定スロットを初回フレームで一度だけ適用（クランプ付き）。
         self.apply_default_slot(&ctx, input.monitor_size);
 
-        let (animating, t) = self.update_animation(&ctx, input.dt);
+        let (animating, t) = self.update_animation(&ctx, input.dt, cfg);
 
         self.update_textures(&ctx, page_cache);
 
@@ -771,6 +884,7 @@ impl ViewerState {
         }
         let viewport_before_central = ui.max_rect();
 
+        let rotation_angle = self.manual_rotation_angle(cfg);
         let frame = RenderFrame {
             tex_lo, tex_hi, prev_tex_lo, prev_tex_hi,
             animating,
@@ -779,6 +893,7 @@ impl ViewerState {
             page_mode:   self.page_mode,
             zoom_actual: cfg.zoom_actual,
             monitor:     input.monitor_size,
+            rotation_angle,
         };
         let (double_clicked, single_clicked) = self.draw_central_panel(ui, &frame);
 
@@ -829,7 +944,7 @@ impl ViewerState {
         log_key!("[slot] apply default → pos=({},{}) size={}x{}", cx, cy, slot.w, slot.h);
     }
 
-    fn update_animation(&mut self, ctx: &egui::Context, dt: f32) -> (bool, f32) {
+    fn update_animation(&mut self, ctx: &egui::Context, dt: f32, cfg: &ViewerConfig) -> (bool, f32) {
         let current_lo = self.spread_lo();
         if current_lo != self.prev_spread_lo {
             let delta = current_lo - self.prev_spread_lo;
@@ -841,6 +956,11 @@ impl ViewerState {
             self.anim_progress = 0.0;
             self.anim_active = true;
             self.prev_spread_lo = current_lo;
+            // 表示画像が差し替わったので手動回転をリセット（角度引き継ぎトグルONの間は
+            // cfg側の共有角度をそのまま使い続けるため、ここではリセットしない）
+            if !cfg.rotation_carry_over {
+                self.rotation.reset();
+            }
         }
 
         if self.anim_active {
@@ -858,7 +978,7 @@ impl ViewerState {
         ctx: &egui::Context,
         input: &FrameInput,
         style: &egui::Style,
-        cfg: &ViewerConfig,
+        cfg: &mut ViewerConfig,
     ) -> Option<[Option<WindowSlot>; 4]> {
         let mut save_slots = None;
 
@@ -886,7 +1006,7 @@ impl ViewerState {
                 .frame(egui::Frame::side_top_panel(style))
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
-                        self.draw_sort_buttons(ui);
+                        self.draw_bar_items(ui, cfg);
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             for i in (0..4usize).rev() {
                                 let label = i18n::t().slot_label(i + 5);
@@ -932,7 +1052,9 @@ impl ViewerState {
                 egui::Panel::top("fs_sort_bar")
                     .frame(egui::Frame::side_top_panel(style))
                     .show(ui, |ui| {
-                        ui.horizontal(|ui| { self.draw_sort_buttons(ui); });
+                        ui.horizontal(|ui| {
+                            self.draw_bar_items(ui, cfg);
+                        });
                     });
             }
         }
@@ -1049,13 +1171,13 @@ impl ViewerState {
                 // ── 通常レンダリング ──────────────────────────────────────────
                 match frame.page_mode {
                     PageMode::Single => {
-                        self.render_single(ui, &frame.tex_lo, frame.zoom_actual, &mut double_clicked, &mut single_clicked);
+                        self.render_single(ui, &frame.tex_lo, frame.zoom_actual, frame.rotation_angle, &mut double_clicked, &mut single_clicked);
                     }
                     PageMode::SpreadLeft => {
-                        self.render_spread(ui, &frame.tex_lo, &frame.tex_hi, frame.monitor, &mut single_clicked);
+                        self.render_spread(ui, &frame.tex_lo, &frame.tex_hi, frame.monitor, frame.rotation_angle, &mut single_clicked);
                     }
                     PageMode::SpreadRight => {
-                        self.render_spread(ui, &frame.tex_hi, &frame.tex_lo, frame.monitor, &mut single_clicked);
+                        self.render_spread(ui, &frame.tex_hi, &frame.tex_lo, frame.monitor, frame.rotation_angle, &mut single_clicked);
                     }
                 }
             } else {
@@ -1570,28 +1692,122 @@ impl ViewerState {
         }
     }
 
-    /// ソートキー切り替えボタン群（通常バーとフルスクリーンバーで共用）
-    fn draw_sort_buttons(&mut self, ui: &mut egui::Ui) {
-        let mut sort_changed = false;
+    /// ツールバー項目を cfg.bar_order の順に描画する（top bar / fs_sort_bar 共用）。
+    /// 隣接項目のグループが変わる位置にセパレータを挟む（toolbar.rs::BarGroup 参照）。
+    fn draw_bar_items(&mut self, ui: &mut egui::Ui, cfg: &mut ViewerConfig) {
+        let order = cfg.bar_order;
+        let mut prev_group: Option<BarGroup> = None;
+        for item in order {
+            if prev_group.is_some_and(|g| g != item.group()) {
+                ui.separator();
+            }
+            prev_group = Some(item.group());
+            self.draw_bar_item(ui, cfg, item);
+        }
+    }
+
+    fn draw_bar_item(&mut self, ui: &mut egui::Ui, cfg: &mut ViewerConfig, item: ViewerBarItem) {
         let t = i18n::t();
-        for (key, label) in [
-            (ViewerSortKey::Name,    t.sort_name()),
-            (ViewerSortKey::Natural, t.sort_natural()),
-            (ViewerSortKey::Date,    t.sort_date()),
-        ] {
-            let active = self.sort_key == key;
-            if ui.selectable_label(active, label).clicked() {
-                self.sort_key = key;
-                sort_changed = true;
+        match item {
+            ViewerBarItem::SortName | ViewerBarItem::SortNatural | ViewerBarItem::SortDate => {
+                let (key, label) = match item {
+                    ViewerBarItem::SortName    => (ViewerSortKey::Name,    t.sort_name()),
+                    ViewerBarItem::SortNatural => (ViewerSortKey::Natural, t.sort_natural()),
+                    _                          => (ViewerSortKey::Date,    t.sort_date()),
+                };
+                if ui.selectable_label(self.sort_key == key, label).clicked() {
+                    self.sort_key = key;
+                    self.sort_entries();
+                }
+            }
+            ViewerBarItem::SortOrder => {
+                ui.label(":");
+                let order_label = if self.sort_ascending { t.sort_asc() } else { t.sort_desc() };
+                if ui.button(order_label).clicked() {
+                    self.sort_ascending = !self.sort_ascending;
+                    self.sort_entries();
+                }
+            }
+            // ページ表示モード3択（アイコントグル、選択状態=現在モード）
+            ViewerBarItem::PageSingle | ViewerBarItem::SpreadLeft | ViewerBarItem::SpreadRight => {
+                let (mode, tip) = match item {
+                    ViewerBarItem::PageSingle => (PageMode::Single,      t.page_single()),
+                    ViewerBarItem::SpreadLeft => (PageMode::SpreadLeft,  t.page_spread_left()),
+                    _                         => (PageMode::SpreadRight, t.page_spread_right()),
+                };
+                // i18nラベルは "[単ページ]" 形式なのでツールチップでは囲みを外す
+                let tip = tip.trim_matches(['[', ']']);
+                // 単一画像ファイル直接表示（rawビューアー）では見開き系を選べない
+                let enabled = mode == PageMode::Single || !self.is_raw_file();
+                ui.add_enabled_ui(enabled, |ui| {
+                    if ui.selectable_label(self.page_mode == mode, item.icon().unwrap_or("?"))
+                        .on_hover_text(tip)
+                        .clicked()
+                    {
+                        self.set_page_mode(mode, cfg);
+                    }
+                });
+            }
+            // 見開き1Pシフト（キー4/5と同じ操作のボタン経路）
+            ViewerBarItem::SpreadBack | ViewerBarItem::SpreadFwd => {
+                let back = item == ViewerBarItem::SpreadBack;
+                let (label, tip, can) = if back {
+                    ("-1P", t.spread_back(), self.can_shift_backward())
+                } else {
+                    ("+1P", t.spread_fwd(), self.can_shift_forward())
+                };
+                let tip = tip.trim_matches(['[', ']']);
+                let enabled = self.page_mode != PageMode::Single && !self.is_raw_file() && can;
+                if ui.add_enabled(enabled, egui::Button::new(label))
+                    .on_hover_text(tip)
+                    .clicked()
+                {
+                    if back { self.shift_offset_backward(); } else { self.shift_offset_forward(); }
+                }
+            }
+            // ずれ状態の表示専用インジケータ。単ページ時は非表示（決定事項）。
+            // 矢印は綴じ方向によるページ進行方向を反映（SpreadRight=左へ進行）
+            ViewerBarItem::OffsetIndicator => {
+                if self.page_mode == PageMode::Single { return; }
+                let text = match (self.page_mode, self.offset.value()) {
+                    (_, 0) => "0",
+                    (PageMode::SpreadRight, 1) | (PageMode::SpreadLeft, -1) => "←1",
+                    _ => "1→",
+                };
+                ui.label(text);
+            }
+            // 手動回転CW/CCWボタン（アイコンのみ、i18n対象外）
+            ViewerBarItem::RotateCcw | ViewerBarItem::RotateCw => {
+                let ccw = item == ViewerBarItem::RotateCcw;
+                let tip = if ccw { t.rotate_ccw() } else { t.rotate_cw() };
+                if ui.button(item.icon().unwrap_or("?")).on_hover_text(tip).clicked() {
+                    if ccw { self.rotate_ccw(cfg); } else { self.rotate_cw(cfg); }
+                }
+            }
+            // トグル2種は幅圧縮のためテキストラベル付きチェックボックスから
+            // アイコントグル（選択状態=ON）へ変更。説明はホバーツールチップで補う
+            ViewerBarItem::RotationCarry => {
+                if ui.selectable_label(cfg.rotation_carry_over, item.icon().unwrap_or("?"))
+                    .on_hover_text(t.rotation_carry_over_label())
+                    .clicked()
+                {
+                    cfg.rotation_carry_over = !cfg.rotation_carry_over;
+                }
+            }
+            ViewerBarItem::ExifRotation => {
+                let tip = format!(
+                    "{}\n{}",
+                    t.exif_orientation_toolbar_label(),
+                    t.settings_exif_orientation_explain()
+                );
+                if ui.selectable_label(cfg.exif_orientation_enabled, "EXIF")
+                    .on_hover_text(tip)
+                    .clicked()
+                {
+                    cfg.exif_orientation_enabled = !cfg.exif_orientation_enabled;
+                }
             }
         }
-        ui.label(":");
-        let order_label = if self.sort_ascending { t.sort_asc() } else { t.sort_desc() };
-        if ui.button(order_label).clicked() {
-            self.sort_ascending = !self.sort_ascending;
-            sort_changed = true;
-        }
-        if sort_changed { self.sort_entries(); }
     }
 
     /// 画像本体の右クリックメニュー（見開き設定の保存トグル／上書き保存）を描画する
@@ -1633,6 +1849,7 @@ impl ViewerState {
         ui: &mut egui::Ui,
         tex: &Option<egui::TextureHandle>,
         zoom_actual: bool,
+        angle_deg: i32,
         double_clicked: &mut bool,
         single_clicked: &mut bool,
     ) {
@@ -1645,32 +1862,36 @@ impl ViewerState {
             let [img_w, img_h] = tex.size();
             if zoom_actual {
                 // ビューポートより画像が小さい場合は中央寄せ、大きい場合はスクロール領域いっぱいに
-                // 敷いて従来どおりの原寸表示にする。
+                // 敷いて従来どおりの原寸表示にする。90/270度時は回転後の外接サイズで
+                // スクロール範囲を確保してから、その中心を軸に回転させる（等倍・拡縮なし）。
                 let outer_available = ui.available_size();
                 egui::ScrollArea::both().show(ui, |ui| {
                     let img_size = egui::vec2(img_w as f32, img_h as f32);
-                    let content_size = img_size.max(outer_available);
+                    let rotated_size = if angle_deg == 90 || angle_deg == 270 {
+                        egui::vec2(img_size.y, img_size.x)
+                    } else {
+                        img_size
+                    };
+                    let content_size = rotated_size.max(outer_available);
                     let (content_rect, resp) = ui.allocate_exact_size(content_size, egui::Sense::click());
-                    let img_rect = egui::Rect::from_min_size(
-                        content_rect.min + (content_size - img_size) / 2.0,
-                        img_size,
+                    let bbox = egui::Rect::from_min_size(
+                        content_rect.min + (content_size - rotated_size) / 2.0,
+                        rotated_size,
                     );
-                    ui.painter().image(tex.id(), img_rect, FULL_UV, egui::Color32::WHITE);
+                    if angle_deg == 0 {
+                        ui.painter().image(tex.id(), bbox, FULL_UV, egui::Color32::WHITE);
+                    } else {
+                        Self::paint_texture_rotated_at(ui.painter(), tex, bbox.center(), 1.0, angle_deg);
+                    }
                     if resp.double_clicked() { *double_clicked = true; }
                     if resp.clicked() && !resp.double_clicked() { *single_clicked = true; }
                     resp.context_menu(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, open_favorite_dialog));
                 });
             } else {
                 let available = ui.available_size();
-                let scale = (available.x / img_w as f32).min(available.y / img_h as f32);
-                if !scale.is_finite() || scale <= 0.0 {
-                    return;
-                }
-                let size  = egui::vec2(img_w as f32 * scale, img_h as f32 * scale);
-                let tl    = ui.cursor().left_top() + (available - size) / 2.0;
-                let rect  = egui::Rect::from_min_size(tl, size);
-                let resp  = ui.allocate_rect(rect, egui::Sense::click());
-                ui.painter().image(tex.id(), rect, FULL_UV, egui::Color32::WHITE);
+                let bounds = egui::Rect::from_min_size(ui.cursor().left_top(), available);
+                let fit = Self::paint_page_rotated(ui.painter(), tex, bounds, angle_deg);
+                let resp  = ui.allocate_rect(fit, egui::Sense::click());
                 if resp.double_clicked() { *double_clicked = true; }
                 if resp.clicked() && !resp.double_clicked() { *single_clicked = true; }
                 resp.context_menu(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, open_favorite_dialog));
@@ -1688,6 +1909,7 @@ impl ViewerState {
         tex_left: &Option<egui::TextureHandle>,
         tex_right: &Option<egui::TextureHandle>,
         monitor: Option<egui::Vec2>,
+        angle_deg: i32,
         single_clicked: &mut bool,
     ) {
         let toggle_enabled = self.spread_save_toggle_enabled();
@@ -1703,10 +1925,14 @@ impl ViewerState {
         if resp.clicked() && !resp.double_clicked() { *single_clicked = true; }
         resp.context_menu(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, open_favorite_dialog));
 
-        let (rect_l, rect_r) = Self::spread_rects(available, origin, tex_left, tex_right, monitor);
-        let painter = ui.painter();
-        Self::paint_page(painter, tex_left,  rect_l);
-        Self::paint_page(painter, tex_right, rect_r);
+        if angle_deg == 0 {
+            let (rect_l, rect_r) = Self::spread_rects(available, origin, tex_left, tex_right, monitor);
+            let painter = ui.painter();
+            Self::paint_page(painter, tex_left,  rect_l);
+            Self::paint_page(painter, tex_right, rect_r);
+        } else {
+            Self::paint_spread_rotated(ui.painter(), full_rect, tex_left, tex_right, angle_deg);
+        }
     }
 
     /// 見開き2ページのレイアウト計算（左右の Rect を返す）
@@ -1722,13 +1948,8 @@ impl ViewerState {
             return (egui::Rect::NOTHING, egui::Rect::NOTHING);
         }
 
-        let page_size = |tex: &Option<egui::TextureHandle>| -> egui::Vec2 {
-            tex.as_ref()
-                .map(|t| { let [w, h] = t.size(); egui::vec2(w as f32, h as f32) })
-                .unwrap_or_else(|| egui::vec2(1.0, std::f32::consts::SQRT_2))
-        };
-        let sl = page_size(tex_left);
-        let sr = page_size(tex_right);
+        let sl = Self::spread_page_size(tex_left);
+        let sr = Self::spread_page_size(tex_right);
         let ratio_sum = sl.x / sl.y + sr.x / sr.y;
         if !ratio_sum.is_finite() || ratio_sum < 0.01 {
             return (egui::Rect::NOTHING, egui::Rect::NOTHING);
@@ -1747,11 +1968,178 @@ impl ViewerState {
         (rect_l, rect_r)
     }
 
+    /// テクスチャ未取得時のプレースホルダを含むページサイズ取得（spread_rects/spread_local_rects共通）
+    fn spread_page_size(tex: &Option<egui::TextureHandle>) -> egui::Vec2 {
+        tex.as_ref()
+            .map(|t| { let [w, h] = t.size(); egui::vec2(w as f32, h as f32) })
+            .unwrap_or_else(|| egui::vec2(1.0, std::f32::consts::SQRT_2))
+    }
+
+    /// 見開き2ページの「回転前・高さ1.0基準」ローカル矩形(rect_l, rect_r)を返す。
+    /// 原点(0,0)基準、spread_rectsと同じ比率ロジックを流用（横並び幅のみが違う）。
+    fn spread_local_rects(
+        tex_left: &Option<egui::TextureHandle>,
+        tex_right: &Option<egui::TextureHandle>,
+    ) -> (egui::Rect, egui::Rect) {
+        Self::local_rects_from_sizes(Self::spread_page_size(tex_left), Self::spread_page_size(tex_right))
+    }
+
+    /// spread_local_rectsの核となる幾何計算（テクスチャサイズを直接受け取る版、単体テスト用）。
+    fn local_rects_from_sizes(sl: egui::Vec2, sr: egui::Vec2) -> (egui::Rect, egui::Rect) {
+        let h = 1.0;
+        let w_l = sl.x / sl.y * h;
+        let w_r = sr.x / sr.y * h;
+        let rect_l = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(w_l, h));
+        let rect_r = egui::Rect::from_min_size(egui::pos2(w_l,  0.0), egui::vec2(w_r, h));
+        (rect_l, rect_r)
+    }
+
+    /// 見開き回転の幾何計算だけを抜き出した純粋関数（TextureHandle非依存、単体テスト可能）。
+    /// `local_l`/`local_r` は高さ1.0基準のローカル矩形。左右ページ中心の画面座標と、
+    /// ローカル単位→画面px換算率(scale)を返す（scale自体はテクスチャ実ピクセルには未換算）。
+    /// 直近の見開き回転バグ（ローカル単位のscaleをテクスチャ実ピクセルへ直接適用して破綻した件）を
+    /// 構造的に防ぐため、テクスチャピクセルサイズは一切扱わない。
+    fn spread_rotation_fit(
+        local_l: egui::Rect,
+        local_r: egui::Rect,
+        bounds: egui::Rect,
+        angle_deg: i32,
+    ) -> Option<(egui::Pos2, egui::Pos2, f32)> {
+        let footprint = local_l.union(local_r);
+        let footprint_center = footprint.center();
+        let rotated_size = if angle_deg == 90 || angle_deg == 270 {
+            egui::vec2(footprint.height(), footprint.width())
+        } else {
+            footprint.size()
+        };
+        let fit = fit_rect_contain(bounds, rotated_size);
+        let scale = (fit.width() / rotated_size.x).min(fit.height() / rotated_size.y);
+        if !scale.is_finite() || scale <= 0.0 {
+            return None;
+        }
+        let rot = egui::emath::Rot2::from_angle((angle_deg as f32).to_radians());
+        let center_l = fit.center() + rot * ((local_l.center() - footprint_center) * scale);
+        let center_r = fit.center() + rot * ((local_r.center() - footprint_center) * scale);
+        Some((center_l, center_r, scale))
+    }
+
+    /// 見開き全体（左右2ページ）を1つの剛体として `bounds` にcontain-fitしつつ
+    /// `angle_deg` 度回転させて描画する（TODO項目B）。EXIFは既にデコード時にピクセルへ
+    /// 焼き込み済みのため、基準点判定は不要で手動回転角度のみを外接矩形に適用する。
+    fn paint_spread_rotated(
+        painter: &egui::Painter,
+        bounds: egui::Rect,
+        tex_left: &Option<egui::TextureHandle>,
+        tex_right: &Option<egui::TextureHandle>,
+        angle_deg: i32,
+    ) {
+        let (local_l, local_r) = Self::spread_local_rects(tex_left, tex_right);
+        let Some((center_l, center_r, scale)) =
+            Self::spread_rotation_fit(local_l, local_r, bounds, angle_deg)
+        else {
+            return;
+        };
+        for (tex, local_rect, center) in [(tex_left, local_l, center_l), (tex_right, local_r, center_r)] {
+            match tex {
+                Some(t) => {
+                    // local_rect は高さ1.0基準の正規化座標なので、scale(ローカル単位→画面px)を
+                    // そのままテクスチャの実ピクセルサイズに掛けると単位が合わず破綻する。
+                    // テクスチャ高さ→ローカル単位1.0への換算(pixel_scale)を挟む。
+                    let [_, tex_h] = t.size();
+                    if tex_h > 0 {
+                        let pixel_scale = scale / tex_h as f32;
+                        Self::paint_texture_rotated_at(painter, t, center, pixel_scale, angle_deg);
+                    }
+                }
+                None => {
+                    let half = local_rect.size() * scale / 2.0;
+                    let points = Self::rotated_quad_points(center, half, angle_deg);
+                    painter.add(egui::Shape::convex_polygon(
+                        points.to_vec(),
+                        egui::Color32::from_gray(40),
+                        egui::Stroke::NONE,
+                    ));
+                }
+            }
+        }
+    }
+
     fn paint_page(painter: &egui::Painter, tex: &Option<egui::TextureHandle>, rect: egui::Rect) {
         match tex {
             Some(t) => { painter.image(t.id(), rect, FULL_UV, egui::Color32::WHITE); }
             None    => { painter.rect_filled(rect, 0.0, egui::Color32::from_gray(40)); }
         }
+    }
+
+    /// 中心点 `center`・半径(半幅半高) `half`・`angle_deg` 度で回転させた矩形の4頂点
+    /// （左上→右上→右下→左下の順）を返す共通ヘルパー。
+    fn rotated_quad_points(center: egui::Pos2, half: egui::Vec2, angle_deg: i32) -> [egui::Pos2; 4] {
+        let rot = egui::emath::Rot2::from_angle((angle_deg as f32).to_radians());
+        [
+            center + rot * egui::vec2(-half.x, -half.y),
+            center + rot * egui::vec2( half.x, -half.y),
+            center + rot * egui::vec2( half.x,  half.y),
+            center + rot * egui::vec2(-half.x,  half.y),
+        ]
+    }
+
+    /// テクスチャ全体を中心点 `center` 周りに `scale` 倍・`angle_deg` 度回転させて描画する
+    /// 共通ヘルパー（実ピクセル合成はしない、頂点座標の回転のみ）。
+    fn paint_texture_rotated_at(
+        painter: &egui::Painter,
+        tex: &egui::TextureHandle,
+        center: egui::Pos2,
+        scale: f32,
+        angle_deg: i32,
+    ) {
+        let [tw, th] = tex.size();
+        let half = egui::vec2(tw as f32, th as f32) * scale / 2.0;
+        let corners = Self::rotated_quad_points(center, half, angle_deg);
+        let uvs = [
+            egui::pos2(0.0, 0.0),
+            egui::pos2(1.0, 0.0),
+            egui::pos2(1.0, 1.0),
+            egui::pos2(0.0, 1.0),
+        ];
+        let mut mesh = egui::Mesh::with_texture(tex.id());
+        for i in 0..4 {
+            mesh.vertices.push(egui::epaint::Vertex {
+                pos: corners[i],
+                uv: uvs[i],
+                color: egui::Color32::WHITE,
+            });
+        }
+        mesh.indices.extend_from_slice(&[0, 1, 2, 0, 2, 3]);
+        painter.add(egui::Shape::mesh(mesh));
+    }
+
+    /// 手動回転(TODO項目B)を適用したテクスチャ描画（contain-fitモード用）。
+    /// `bounds` にはcontain-fit前の利用可能領域を渡す。90/270度時は縦横が入れ替わった
+    /// 外接サイズでcontain-fitしてから、その中心を軸にテクスチャ矩形を回転させる。
+    /// クリック判定用に、実際に使ったfit矩形(回転後の外接矩形)を返す。
+    fn paint_page_rotated(
+        painter: &egui::Painter,
+        tex: &egui::TextureHandle,
+        bounds: egui::Rect,
+        angle_deg: i32,
+    ) -> egui::Rect {
+        let [tw, th] = tex.size();
+        let (tw, th) = (tw as f32, th as f32);
+        let rotated_size = if angle_deg == 90 || angle_deg == 270 {
+            egui::vec2(th, tw)
+        } else {
+            egui::vec2(tw, th)
+        };
+        let fit = fit_rect_contain(bounds, rotated_size);
+        if angle_deg == 0 {
+            painter.image(tex.id(), fit, FULL_UV, egui::Color32::WHITE);
+            return fit;
+        }
+        let scale = (fit.width() / rotated_size.x).min(fit.height() / rotated_size.y);
+        if scale.is_finite() && scale > 0.0 {
+            Self::paint_texture_rotated_at(painter, tex, fit.center(), scale, angle_deg);
+        }
+        fit
     }
 
     /// スロット位置をモニター内に収まるようクランプする（少なくとも 100px は画面内に残す）
@@ -1778,5 +2166,49 @@ impl ViewerState {
             let tl    = origin + (avail - size) / 2.0 + egui::vec2(offset_x, 0.0);
             painter.image(tex.id(), egui::Rect::from_min_size(tl, size), FULL_UV, egui::Color32::WHITE);
         }
+    }
+}
+
+#[cfg(test)]
+mod spread_rotation_tests {
+    use super::*;
+
+    /// 見開き回転バグの再発防止: spread_rotation_fit はローカル単位のscaleのみを返し、
+    /// テクスチャの実ピクセルサイズを一切扱わない（呼び出し側でpixel_scale = scale/tex_hを
+    /// 挟む前提の関数であることをシグネチャで固定する）。ここでは幾何計算そのものが
+    /// bounds/角度に対して妥当な値になることを検証する。
+    #[test]
+    fn angle_0_places_pages_side_by_side() {
+        let (local_l, local_r) = ViewerState::local_rects_from_sizes(
+            egui::vec2(1.0, 1.0), egui::vec2(1.0, 1.0),
+        );
+        let bounds = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(200.0, 100.0));
+        let (center_l, center_r, scale) =
+            ViewerState::spread_rotation_fit(local_l, local_r, bounds, 0).unwrap();
+        assert!(center_l.x < center_r.x, "左ページ中心は右ページ中心より左");
+        assert!((center_l.y - center_r.y).abs() < 1e-3, "0度時は上下が揃う");
+        assert!((scale - 100.0).abs() < 1e-3, "footprint(2x1)がbounds(200x100)にcontain-fit");
+    }
+
+    #[test]
+    fn angle_90_swaps_layout_to_vertical() {
+        let (local_l, local_r) = ViewerState::local_rects_from_sizes(
+            egui::vec2(1.0, 1.0), egui::vec2(1.0, 1.0),
+        );
+        let bounds = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(100.0, 200.0));
+        let (center_l, center_r, scale) =
+            ViewerState::spread_rotation_fit(local_l, local_r, bounds, 90).unwrap();
+        assert!((center_l.x - center_r.x).abs() < 1e-3, "90度回転後は左右中心のx座標が揃う");
+        assert!(center_l.y < center_r.y, "時計回り90度で元の左ページが上に来る");
+        assert!((scale - 100.0).abs() < 1e-3, "footprint回転後(1x2)がbounds(100x200)にcontain-fit");
+    }
+
+    #[test]
+    fn degenerate_bounds_returns_none_without_panicking() {
+        let (local_l, local_r) = ViewerState::local_rects_from_sizes(
+            egui::vec2(1.0, 1.0), egui::vec2(1.0, 1.0),
+        );
+        let bounds = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(0.0, 0.0));
+        assert!(ViewerState::spread_rotation_fit(local_l, local_r, bounds, 90).is_none());
     }
 }

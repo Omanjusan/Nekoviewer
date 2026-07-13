@@ -2,6 +2,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::gui_config::AppState;
+use crate::keymap::Keymap;
 
 // ── ログ設定グローバル ─────────────────────────────────────────────────────────
 // AtomicBool を使うのは、AppConfig::load() より前（main() 冒頭）で一度 log() が
@@ -118,6 +119,9 @@ pub struct AppConfig {
     /// 表示デコードの取り扱い上限（長辺px）。短辺は縦横比を保って自動的に収まる。
     /// config.ini には持たず、既定値はここに直書き（stateファイル経由の上書きのみ）。
     pub max_decode_edge: u32,
+    /// キーアサイン設定（TODO項目J）。config.iniとは別のkeymap.iniから読み込む
+    /// （Keymap::load/save参照）。行数が可変長で他のスカラー設定と性質が異なるため分離した。
+    pub keymap: Keymap,
 }
 
 impl AppConfig {
@@ -173,6 +177,7 @@ impl AppConfig {
             anim_ring_max_frames: parsed.anim_ring_max_frames.0,
             anim_frame_hard_limit_mb: parsed.anim_frame_hard_limit_mb.0,
             max_decode_edge: 1920,
+            keymap: Keymap::load(),
         }
     }
 
@@ -209,6 +214,31 @@ impl AppConfig {
         let fallback = resolve_fallback_dir(fixed);
         log_common!("[startup] → フォールバック先: {:?}", fallback);
         fallback
+    }
+
+    /// 設定ダイアログの[反映]時に呼ぶ。config.ini本体のうち、ダイアログ経由で変更可能だが
+    /// これまで永続化されていなかった単純スカラー項目（thumb_size, thumb_filter）を
+    /// 行単位で書き換えて保存する。他の項目（cache_total_mb等）は既にstateファイル
+    /// (gui_config::save_state)経由で永続化済みのためここでは触らない。
+    pub fn save(&self) {
+        let Some(dir) = std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.to_path_buf())) else { return };
+        let path = dir.join("nekoviewer.conf");
+        let content = std::fs::read_to_string(&path).unwrap_or_else(|_| DEFAULT_INI.to_string());
+
+        let updates = [
+            ("thumbnail", "filter", filter_to_str(self.thumb_filter).to_string()),
+            ("grid", "thumb_size", self.thumb_size.to_string()),
+        ];
+        let new_content = apply_ini_updates(&content, &updates);
+
+        let tmp = dir.join("nekoviewer.conf.tmp");
+        let bak = dir.join("nekoviewer.conf.bak");
+        if std::fs::write(&tmp, &new_content).is_err() { return; }
+        if std::fs::rename(&tmp, &path).is_err() {
+            let _ = std::fs::remove_file(&tmp);
+            return;
+        }
+        let _ = std::fs::write(&bak, &new_content);
     }
 
     pub fn cache_root(&self) -> Option<PathBuf> {
@@ -374,6 +404,42 @@ fn parse_ini(path: &std::path::Path) -> ParsedIni {
     result
 }
 
+/// `[section]\nkey = value` 形式の行を、行単位で書き換える（コメント行・他のキーの行は
+/// そのまま保持）。コメントアウトされている対象キー（`# key = ...`）は非コメント化して
+/// 値を書き込む。対象キーがそのセクションに存在しない場合は、末尾に新規セクションとして追記する。
+fn apply_ini_updates(content: &str, updates: &[(&str, &str, String)]) -> String {
+    let mut out = String::new();
+    let mut section = String::new();
+    let mut applied = vec![false; updates.len()];
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') && trimmed.ends_with(']') {
+            section = trimmed[1..trimmed.len() - 1].to_string();
+            out.push_str(line);
+            out.push('\n');
+            continue;
+        }
+        let body = trimmed.strip_prefix('#').or_else(|| trimmed.strip_prefix(';'))
+            .map(|s| s.trim_start()).unwrap_or(trimmed);
+        if let Some((k, _)) = body.split_once('=') {
+            let k = k.trim();
+            if let Some(idx) = updates.iter().position(|(s, key, _)| *s == section && *key == k) {
+                out.push_str(&format!("{} = {}\n", k, updates[idx].2));
+                applied[idx] = true;
+                continue;
+            }
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    for (idx, (sec, key, val)) in updates.iter().enumerate() {
+        if !applied[idx] {
+            out.push_str(&format!("\n[{sec}]\n{key} = {val}\n"));
+        }
+    }
+    out
+}
+
 fn resolve_fallback_dir(fixed: Option<&std::path::Path>) -> PathBuf {
     if let Some(p) = fixed {
         if p.is_dir() {
@@ -508,3 +574,41 @@ key = true
 # 起動・初期化など共通ログ。
 common = true
 ";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn apply_ini_updates_rewrites_existing_key_in_place() {
+        let content = "[thumbnail]\n# 縮小時のフィルタ\nfilter = triangle\n\n[grid]\nthumb_size = 256\n";
+        let updates = [
+            ("thumbnail", "filter", "lanczos3".to_string()),
+            ("grid", "thumb_size", "320".to_string()),
+        ];
+        let out = apply_ini_updates(content, &updates);
+        assert!(out.contains("filter = lanczos3"));
+        assert!(out.contains("thumb_size = 320"));
+        assert!(out.contains("# 縮小時のフィルタ"), "コメント行は保持される");
+        assert!(!out.contains("filter = triangle"));
+    }
+
+    #[test]
+    fn apply_ini_updates_uncomments_commented_key() {
+        let content = "[cache]\n# cache_total_mb = 2048\n";
+        let updates = [("cache", "cache_total_mb", "3000".to_string())];
+        let out = apply_ini_updates(content, &updates);
+        assert!(out.contains("cache_total_mb = 3000"));
+        assert!(!out.contains("# cache_total_mb"));
+    }
+
+    #[test]
+    fn apply_ini_updates_appends_missing_key_as_new_section() {
+        let content = "[startup]\nuse_last_dir = false\n";
+        let updates = [("grid", "thumb_size", "128".to_string())];
+        let out = apply_ini_updates(content, &updates);
+        assert!(out.contains("use_last_dir = false"), "既存の内容は維持");
+        assert!(out.contains("[grid]"));
+        assert!(out.contains("thumb_size = 128"));
+    }
+}

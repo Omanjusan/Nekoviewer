@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
-use redb::{Database, ReadableDatabase, TableDefinition};
+use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 use sha2::{Digest, Sha256};
 
 use crate::config::AppConfig;
@@ -12,6 +12,15 @@ pub const THUMBS_TABLE: TableDefinition<&str, (i64, &[u8])> = TableDefinition::n
 
 /// 非画像ZIPマーカーテーブル: キー=ファイル名, バリュー=source_mtime_secs: i64
 pub const INVALID_TABLE: TableDefinition<&str, i64> = TableDefinition::new("invalid");
+
+/// メタ情報テーブル: キー="schema_version"等の固定文字列, バリュー=u32
+const META_TABLE: TableDefinition<&str, u32> = TableDefinition::new("meta");
+const SCHEMA_VERSION_KEY: &str = "schema_version";
+
+/// サムネ生成ロジック（Exif Orientation対応等）を変えてキャッシュ済みJPEG blobの
+/// 中身が古い前提と食い違うようになった時にインクリメントする。アプリのバージョン
+/// (Cargo.toml)とは無関係の、DBスキーマ専用の値。
+const SCHEMA_VERSION: u32 = 1;
 
 /// dir に対応するキャッシュディレクトリのパスを返す（まだ作成しない）。
 pub fn neko_dir_for(dir: &Path, config: &AppConfig) -> Option<PathBuf> {
@@ -50,13 +59,93 @@ pub fn open_cache_db(neko_dir: &Path) -> Option<Arc<Mutex<Database>>> {
     // テーブルを初期化（存在しなければ作成）
     {
         let tx = db.begin_write().ok()?;
-        tx.open_table(THUMBS_TABLE).ok()?;
         tx.open_table(INVALID_TABLE).ok()?;
+        tx.open_table(THUMBS_TABLE).ok()?;
         tx.commit().ok()?;
     }
+    enforce_schema_version(&db);
     let db = Arc::new(Mutex::new(db));
     registry.insert(db_path, Arc::clone(&db));
     Some(db)
+}
+
+/// スキーマバージョン不一致（未対応の生成ロジックで焼かれた古いサムネが混在しうる）
+/// ならサムネだけ丸ごと破棄して全再生成させる。失敗時は何もしない（次回オープン時に再試行される）。
+fn enforce_schema_version(db: &Database) {
+    let Ok(tx) = db.begin_write() else { return };
+    {
+        let Ok(mut thumbs) = tx.open_table(THUMBS_TABLE) else { return };
+        let Ok(mut meta) = tx.open_table(META_TABLE) else { return };
+        let stored_version = meta.get(SCHEMA_VERSION_KEY).ok().flatten().map(|g| g.value());
+        if stored_version != Some(SCHEMA_VERSION) {
+            let _ = thumbs.retain(|_, _| false);
+            let _ = meta.insert(SCHEMA_VERSION_KEY, SCHEMA_VERSION);
+        }
+    }
+    let _ = tx.commit();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn unique_test_db_path(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "nekoviewer_test_{tag}_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos(),
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir.join("cache.redb")
+    }
+
+    #[test]
+    fn enforce_schema_version_clears_thumbs_on_version_mismatch() {
+        let db_path = unique_test_db_path("schema_version");
+        let db = Database::create(&db_path).unwrap();
+        {
+            let tx = db.begin_write().unwrap();
+            tx.open_table(THUMBS_TABLE).unwrap();
+            tx.open_table(META_TABLE).unwrap();
+            tx.commit().unwrap();
+        }
+
+        // 初回: バージョン未記録 -> サムネ書き込み後もこの時点では影響なし
+        enforce_schema_version(&db);
+        {
+            let tx = db.begin_write().unwrap();
+            let mut thumbs = tx.open_table(THUMBS_TABLE).unwrap();
+            thumbs.insert("a.zip", (100i64, b"jpeg-bytes".as_slice())).unwrap();
+            drop(thumbs);
+            tx.commit().unwrap();
+        }
+        assert!({
+            let tx = db.begin_read().unwrap();
+            let thumbs = tx.open_table(THUMBS_TABLE).unwrap();
+            thumbs.get("a.zip").unwrap().is_some()
+        });
+
+        // バージョンを意図的に古い値へ書き換えて再度enforceすると、サムネが一掃される
+        {
+            let tx = db.begin_write().unwrap();
+            {
+                let mut meta = tx.open_table(META_TABLE).unwrap();
+                meta.insert(SCHEMA_VERSION_KEY, SCHEMA_VERSION.wrapping_sub(1)).unwrap();
+            }
+            tx.commit().unwrap();
+        }
+        enforce_schema_version(&db);
+        {
+            let tx = db.begin_read().unwrap();
+            let thumbs = tx.open_table(THUMBS_TABLE).unwrap();
+            assert!(thumbs.get("a.zip").unwrap().is_none(), "バージョン不一致でサムネが破棄されるはず");
+            let meta = tx.open_table(META_TABLE).unwrap();
+            assert_eq!(meta.get(SCHEMA_VERSION_KEY).unwrap().unwrap().value(), SCHEMA_VERSION);
+        }
+
+        drop(db);
+        let _ = std::fs::remove_dir_all(db_path.parent().unwrap());
+    }
 }
 
 /// サムネをmtime検証なしでDBから読み込む。戻り値は (保存時のsource_mtime, jpeg)。
