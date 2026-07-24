@@ -175,6 +175,49 @@ impl NekoviewApp {
         self.start_ocr_for(ctx, key);
     }
 
+    /// 子ウィンドウの[言語判定]: OCR原文を翻訳モデルへ渡し、原文言語を推測させて
+    /// 原文言語欄に反映する。ユーザーが明示的に押した時だけ実行し、自動実行はしない。
+    /// 判定結果はあくまでサジェストで、既存の選択を問答無用で上書きするが、その後は
+    /// 通常通りドロップダウンから自由に変更できる。
+    fn trigger_child_lang_detect(&mut self, ctx: &egui::Context) {
+        if self.translate_child_ocr_lines.is_empty() {
+            self.translate_lang_detect_status = Some(i18n::t().translate_child_ocr_required().to_string());
+            return;
+        }
+        if self.translate_cfg.translation_model.trim().is_empty() {
+            self.translate_lang_detect_status = Some(i18n::t().translate_overlay_model_missing().to_string());
+            return;
+        }
+        self.translate_lang_detect_status = Some(i18n::t().translate_overlay_running().to_string());
+        self.translate_lang_detect_rx = Some(crate::translate::spawn_lang_detect_request(
+            ctx.clone(),
+            self.translate_cfg.base_url.clone(),
+            self.translate_cfg.translation_model.clone(),
+            self.translate_child_ocr_lines.clone(),
+        ));
+    }
+
+    /// 言語判定リクエストの完了/失敗をポーリングする。
+    fn poll_translate_lang_detect(&mut self) {
+        let Some(rx) = &self.translate_lang_detect_rx else { return };
+        let Ok(msg) = rx.try_recv() else { return };
+        match msg {
+            crate::translate::LangDetectMsg::Result(lang) => {
+                self.translate_child_source_lang = Some(lang);
+                // 判定結果が翻訳先と衝突する場合は「原文=翻訳先を禁止」の制約を優先し、
+                // 翻訳先側を未設定に戻す（判定結果を優先的に反映するため）。
+                if self.translate_child_target_lang == Some(lang) {
+                    self.translate_child_target_lang = None;
+                }
+                self.translate_lang_detect_status = None;
+            }
+            crate::translate::LangDetectMsg::Failed(e) => {
+                self.translate_lang_detect_status = Some(format!("{}: {e}", i18n::t().translate_overlay_failed_prefix()));
+            }
+        }
+        self.translate_lang_detect_rx = None;
+    }
+
     /// 子ウィンドウの[再翻訳]: OCR・翻訳は完全に独立したボタン/処理なので、E2Eで自動連鎖は
     /// しない。絶対条件として対象ページのOCR txtが取得済みであることを要求し、未取得なら
     /// フォールバックメッセージを出すだけで実処理は走らせない。
@@ -254,6 +297,7 @@ impl NekoviewApp {
         self.translate_egui_ctx = Some(ctx.clone());
         self.poll_translate_ocr(&ctx);
         self.poll_translate_translation();
+        self.poll_translate_lang_detect();
 
         if self.translate_child_cursor.is_none() {
             self.translate_child_cursor = self.current_page_keys().into_iter().next();
@@ -271,6 +315,9 @@ impl NekoviewApp {
             ui.separator();
             if ui.small_button(i18n::t().translate_child_retry_button()).clicked() {
                 self.trigger_child_ocr_retry(&ctx);
+            }
+            if ui.add_enabled(!self.translate_child_ocr_lines.is_empty(), egui::Button::new(i18n::t().translate_child_lang_detect_button())).clicked() {
+                self.trigger_child_lang_detect(&ctx);
             }
             egui::ComboBox::from_id_salt("translate_child_source_lang")
                 .selected_text(
@@ -325,6 +372,9 @@ impl NekoviewApp {
             }
         }
         if let Some(status) = &self.translate_ocr_status {
+            ui.colored_label(egui::Color32::from_rgb(230, 140, 140), status.as_str());
+        }
+        if let Some(status) = &self.translate_lang_detect_status {
             ui.colored_label(egui::Color32::from_rgb(230, 140, 140), status.as_str());
         }
         ui.separator();

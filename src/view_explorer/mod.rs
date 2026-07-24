@@ -391,6 +391,10 @@ pub struct NekoviewApp {
     /// 実行中の翻訳リクエストで使った言語ペア。完了時にアーカイブ単位の言語メタとして
     /// 保存するために、リクエスト開始時点の値を保持しておく。
     pub(crate) translate_translate_inflight_lang: Option<(crate::translate::TranslateLang, crate::translate::TranslateLang)>,
+    /// 原文言語判定リクエストの受信チャネル・ステータス表示。[言語判定]ボタンが
+    /// 押された時だけ発火する（自動実行はしない）。
+    pub(crate) translate_lang_detect_rx: Option<mpsc::Receiver<crate::translate::LangDetectMsg>>,
+    pub(crate) translate_lang_detect_status: Option<String>,
     /// 直近に子ウィンドウの原文/翻訳先言語を保存済みメタから同期したアーカイブパス。
     /// アーカイブが変わった時だけ復元処理を行うためのキャッシュ。
     pub(crate) translate_child_lang_synced_for: Option<PathBuf>,
@@ -596,6 +600,8 @@ impl NekoviewApp {
             translate_translate_status: None,
             translate_translate_inflight_key: None,
             translate_translate_inflight_lang: None,
+            translate_lang_detect_rx: None,
+            translate_lang_detect_status: None,
             translate_child_lang_synced_for: None,
             translate_window_autocheck_done_for: None,
             translate_ocr_inflight_key: None,

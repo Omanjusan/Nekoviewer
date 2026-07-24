@@ -459,6 +459,61 @@ pub fn spawn_translate_request(ctx: egui::Context, base_url: String, model: Stri
     rx
 }
 
+// ── 原文言語判定(Phase 6) ────────────────────────────────────────────────
+// OCR自体は言語を判定せず読み取るだけ（読み順プロンプトが言語非依存のため）。
+// 「言語判定」ボタンが押されたときだけ、OCR原文を翻訳モデルへ渡して言語コードを
+// 1つ返させる。自動実行はしない（ユーザーが明示的に押した時のみ）。
+
+fn build_lang_detect_prompt(lines: &[String]) -> String {
+    let source_json = serde_json::to_string(lines).unwrap_or_default();
+    format!(
+        "以下は漫画の吹き出しから抽出したテキストをJSON配列にしたものです。このテキスト全体が\
+何語で書かれているか判定してください。出力は説明文なしで、次のいずれか1つの言語コードのみを\
+返してください: ja, zh-Hans, zh-Hant, en, ko\
+テキスト: {source_json}"
+    )
+}
+
+fn parse_lang_detect_content(content: &str) -> Option<TranslateLang> {
+    let trimmed = content.trim();
+    if let Some(lang) = translate_lang_from_code(trimmed) {
+        return Some(lang);
+    }
+    // 説明文が混ざった応答へのフォールバック。zh-Hans/zh-Hantを先に見る
+    // （"en"等の短いコードが長いコードの一部に誤マッチしないようにするため）。
+    for code in ["zh-Hans", "zh-Hant", "ja", "en", "ko"] {
+        if trimmed.contains(code) {
+            return translate_lang_from_code(code);
+        }
+    }
+    None
+}
+
+pub enum LangDetectMsg {
+    Result(TranslateLang),
+    Failed(String),
+}
+
+/// OCR原文の言語判定リクエストをバックグラウンドスレッドで実行する。
+/// 翻訳リクエストと同じモデル(translation_model)・エンドポイントを使う。
+pub fn spawn_lang_detect_request(ctx: egui::Context, base_url: String, model: String, lines: Vec<String>) -> mpsc::Receiver<LangDetectMsg> {
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let result = (|| -> Result<TranslateLang, String> {
+            let client = http_client(Duration::from_secs(TRANSLATE_REQUEST_TIMEOUT_SECS))?;
+            let prompt = build_lang_detect_prompt(&lines);
+            let content = send_chat(&client, &base_url, &model, text_only_content(&prompt), Some(TRANSLATE_MAX_TOKENS))?;
+            parse_lang_detect_content(&content).ok_or_else(|| "言語判定結果を解釈できませんでした".to_string())
+        })();
+        match result {
+            Ok(lang) => { let _ = tx.send(LangDetectMsg::Result(lang)); }
+            Err(e) => { let _ = tx.send(LangDetectMsg::Failed(e)); }
+        }
+        ctx.request_repaint();
+    });
+    rx
+}
+
 // ── OCRテキストの永続化(Phase 3) ──────────────────────────────────────────
 // redbへのBLOB登録ではなく、フォルダのキャッシュディレクトリ(サムネDBの脇)に
 // アーカイブ名のサブフォルダを掘り、ページごとに素のtxtとして書き出す方式にした。

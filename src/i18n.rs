@@ -1205,6 +1205,15 @@ impl Lang {
         }
     }
 
+    /// 子ウィンドウの[言語判定]ボタン。OCR原文を翻訳モデルへ渡して原文言語を推測する。
+    pub fn translate_child_lang_detect_button(self) -> &'static str {
+        match self {
+            Lang::Japanese => "言語判定",
+            Lang::English  => "Detect language",
+            Lang::Chinese  => "语言判定",
+        }
+    }
+
     pub fn translate_overlay_running(self) -> &'static str {
         match self {
             Lang::Japanese => "解析中…（モデル未ロード時は数十秒以上かかることがあります）",
