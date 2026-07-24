@@ -354,6 +354,11 @@ pub struct NekoviewApp {
     pub(crate) translate_conn_rx: Option<mpsc::Receiver<crate::translate::ConnCheckMsg>>,
     /// 直近の接続テスト結果表示用（疎通/vision結果の文字列、または失敗理由）。
     pub(crate) translate_conn_status: Option<String>,
+    /// ツールバーの翻訳トグルボタンを有効化してよいか（セッション単位、非永続）。
+    /// [反映]時に、直前の疎通チェック成功URLと実際に反映されるURLが一致する場合だけtrueになる。
+    pub(crate) translate_conn_verified: bool,
+    /// 直近に疎通チェックが成功した時点のURL（[反映]時のURL一致検証に使う）。
+    pub(crate) translate_conn_verified_url: Option<String>,
     pub(crate) translate_ocr_rx: Option<mpsc::Receiver<crate::translate::OcrMsg>>,
     pub(crate) translate_ocr_status: Option<String>,
     /// 実行中のOCRリクエストがどのページ宛てか。結果到着時にそのページ用のtxtへ保存する
@@ -375,14 +380,32 @@ pub struct NekoviewApp {
     pub(crate) translate_child_cursor: Option<(PathBuf, usize)>,
     /// 子ウィンドウ左ペイン(OCR原文)の表示内容。`translate_child_cursor`のページ分のtxt。
     pub(crate) translate_child_ocr_lines: Vec<String>,
-    /// 子ウィンドウで選択中の翻訳先言語。原文(日本語固定)は選択肢から除く。
-    pub(crate) translate_child_target_lang: crate::translate::TargetLang,
+    /// 子ウィンドウで選択中の原文言語。未設定(None)ならOCR/翻訳プロンプトへは反映しない。
+    pub(crate) translate_child_source_lang: Option<crate::translate::TranslateLang>,
+    /// 子ウィンドウで選択中の翻訳先言語。未設定(None)なら翻訳を実行できない。
+    pub(crate) translate_child_target_lang: Option<crate::translate::TranslateLang>,
+    /// 保存済み翻訳データが記録している言語ペア（アーカイブを開いた/翻訳を保存した時点の
+    /// スナップショット）。現在UIで選択中の言語ペアとの食い違いをUIへ警告表示するために使う。
+    pub(crate) translate_child_saved_lang_meta: Option<(crate::translate::TranslateLang, crate::translate::TranslateLang)>,
     /// 子ウィンドウ右ペイン(翻訳結果)の表示内容。OCRとは完全に独立した処理単位・状態。
     pub(crate) translate_child_translation_lines: Vec<String>,
     pub(crate) translate_translate_rx: Option<mpsc::Receiver<crate::translate::TranslateMsg>>,
     pub(crate) translate_translate_status: Option<String>,
     /// 実行中の翻訳リクエストがどのページ宛てか。OCRのinflight_keyと同じ理由で保持する。
     pub(crate) translate_translate_inflight_key: Option<(PathBuf, usize)>,
+    /// 実行中の翻訳リクエストで使った言語ペア。完了時にアーカイブ単位の言語メタとして
+    /// 保存するために、リクエスト開始時点の値を保持しておく。
+    pub(crate) translate_translate_inflight_lang: Option<(crate::translate::TranslateLang, crate::translate::TranslateLang)>,
+    /// 原文言語判定リクエストの受信チャネル・ステータス表示。[言語判定]ボタンが
+    /// 押された時だけ発火する（自動実行はしない）。
+    pub(crate) translate_lang_detect_rx: Option<mpsc::Receiver<crate::translate::LangDetectMsg>>,
+    pub(crate) translate_lang_detect_status: Option<String>,
+    /// 判定結果が現在の原文/翻訳先設定と食い違う場合の確認待ち状態。Some中はUIに
+    /// 「判定結果を設定」「現在の設定を維持」の選択を出し、ユーザーが選ぶまで反映しない。
+    pub(crate) translate_lang_detect_pending: Option<crate::translate::TranslateLang>,
+    /// 直近に子ウィンドウの原文/翻訳先言語を保存済みメタから同期したアーカイブパス。
+    /// アーカイブが変わった時だけ復元処理を行うためのキャッシュ。
+    pub(crate) translate_child_lang_synced_for: Option<PathBuf>,
     /// 直近に自動オープン判定を行ったアーカイブパス（同一アーカイブ内での毎フレーム
     /// 再チェックを避けるためのキャッシュ）。
     pub(crate) translate_window_autocheck_done_for: Option<PathBuf>,
@@ -571,17 +594,26 @@ impl NekoviewApp {
             translate_cfg,
             translate_conn_rx: None,
             translate_conn_status: None,
+            translate_conn_verified: false,
+            translate_conn_verified_url: None,
             translate_ocr_rx: None,
             translate_ocr_status: None,
             translate_window_open: false,
             translate_window_always_on_top: false,
             translate_child_cursor: None,
             translate_child_ocr_lines: Vec::new(),
-            translate_child_target_lang: crate::translate::TargetLang::ChineseSimplified,
+            translate_child_source_lang: None,
+            translate_child_target_lang: None,
+            translate_child_saved_lang_meta: None,
             translate_child_translation_lines: Vec::new(),
             translate_translate_rx: None,
             translate_translate_status: None,
             translate_translate_inflight_key: None,
+            translate_translate_inflight_lang: None,
+            translate_lang_detect_rx: None,
+            translate_lang_detect_status: None,
+            translate_lang_detect_pending: None,
+            translate_child_lang_synced_for: None,
             translate_window_autocheck_done_for: None,
             translate_ocr_inflight_key: None,
             translate_ocr_queue: std::collections::VecDeque::new(),

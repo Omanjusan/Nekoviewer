@@ -142,6 +142,22 @@ impl NekoviewApp {
     fn sync_child_panes_display(&mut self) {
         self.sync_child_ocr_display();
         self.sync_child_translation_display();
+        self.sync_child_lang_from_meta_if_new_archive();
+    }
+
+    /// アーカイブが切り替わった時だけ、原文/翻訳先言語を保存済みメタから復元する。
+    /// 保存済みメタが無ければ未設定(None)に戻す（アーカイブごとに言語が違う可能性があり、
+    /// 前のアーカイブの選択を持ち越すと誤訳の温床になるため）。
+    fn sync_child_lang_from_meta_if_new_archive(&mut self) {
+        let Some((archive_path, _)) = self.translate_child_cursor.clone() else { return };
+        if self.translate_child_lang_synced_for.as_ref() == Some(&archive_path) {
+            return;
+        }
+        self.translate_child_lang_synced_for = Some(archive_path.clone());
+        let meta = self.load_translate_lang_meta_for(&archive_path);
+        self.translate_child_source_lang = meta.map(|(source, _)| source);
+        self.translate_child_target_lang = meta.map(|(_, target)| target);
+        self.translate_child_saved_lang_meta = meta;
     }
 
     /// 子ウィンドウの[再取得]: `translate_child_cursor`が指す1ページのみOCRを再実行する。
@@ -159,6 +175,53 @@ impl NekoviewApp {
         self.start_ocr_for(ctx, key);
     }
 
+    /// 子ウィンドウの[言語判定]: OCR原文を翻訳モデルへ渡し、原文言語を推測させて
+    /// 原文言語欄に反映する。ユーザーが明示的に押した時だけ実行し、自動実行はしない。
+    /// 判定結果はあくまでサジェストで、既存の選択を問答無用で上書きするが、その後は
+    /// 通常通りドロップダウンから自由に変更できる。
+    fn trigger_child_lang_detect(&mut self, ctx: &egui::Context) {
+        if self.translate_child_ocr_lines.is_empty() {
+            self.translate_lang_detect_status = Some(i18n::t().translate_child_ocr_required().to_string());
+            return;
+        }
+        if self.translate_cfg.translation_model.trim().is_empty() {
+            self.translate_lang_detect_status = Some(i18n::t().translate_overlay_model_missing().to_string());
+            return;
+        }
+        self.translate_lang_detect_status = Some(i18n::t().translate_overlay_running().to_string());
+        self.translate_lang_detect_rx = Some(crate::translate::spawn_lang_detect_request(
+            ctx.clone(),
+            self.translate_cfg.base_url.clone(),
+            self.translate_cfg.translation_model.clone(),
+            self.translate_child_ocr_lines.clone(),
+        ));
+    }
+
+    /// 言語判定リクエストの完了/失敗をポーリングする。
+    fn poll_translate_lang_detect(&mut self) {
+        let Some(rx) = &self.translate_lang_detect_rx else { return };
+        let Ok(msg) = rx.try_recv() else { return };
+        match msg {
+            crate::translate::LangDetectMsg::Result(lang) => {
+                // 原文言語が既に別の値へ設定済み、または判定結果が現在の翻訳先と衝突する
+                // 場合は、勝手に上書き/リセットせずユーザーへ確認する。未設定または
+                // 既に同じ値なら食い違いが無いのでそのまま反映する。
+                let conflicts = self.translate_child_source_lang.is_some_and(|cur| cur != lang)
+                    || self.translate_child_target_lang == Some(lang);
+                if conflicts {
+                    self.translate_lang_detect_pending = Some(lang);
+                } else {
+                    self.translate_child_source_lang = Some(lang);
+                }
+                self.translate_lang_detect_status = None;
+            }
+            crate::translate::LangDetectMsg::Failed(e) => {
+                self.translate_lang_detect_status = Some(format!("{}: {e}", i18n::t().translate_overlay_failed_prefix()));
+            }
+        }
+        self.translate_lang_detect_rx = None;
+    }
+
     /// 子ウィンドウの[再翻訳]: OCR・翻訳は完全に独立したボタン/処理なので、E2Eで自動連鎖は
     /// しない。絶対条件として対象ページのOCR txtが取得済みであることを要求し、未取得なら
     /// フォールバックメッセージを出すだけで実処理は走らせない。
@@ -167,6 +230,14 @@ impl NekoviewApp {
             self.translate_translate_status = Some(i18n::t().translate_child_ocr_required().to_string());
             return;
         }
+        let Some(source) = self.translate_child_source_lang else {
+            self.translate_translate_status = Some(i18n::t().translate_child_lang_required().to_string());
+            return;
+        };
+        let Some(target) = self.translate_child_target_lang else {
+            self.translate_translate_status = Some(i18n::t().translate_child_lang_required().to_string());
+            return;
+        };
         if self.translate_cfg.translation_model.trim().is_empty() {
             self.translate_translate_status = Some(i18n::t().translate_overlay_model_missing().to_string());
             return;
@@ -174,12 +245,14 @@ impl NekoviewApp {
         let Some(key) = self.translate_child_cursor.clone() else { return };
         self.translate_translate_status = Some(i18n::t().translate_overlay_running().to_string());
         self.translate_translate_inflight_key = Some(key);
+        self.translate_translate_inflight_lang = Some((source, target));
         self.translate_translate_rx = Some(crate::translate::spawn_translate_request(
             ctx.clone(),
             self.translate_cfg.base_url.clone(),
             self.translate_cfg.translation_model.clone(),
             self.translate_child_ocr_lines.clone(),
-            self.translate_child_target_lang,
+            source,
+            target,
         ));
     }
 
@@ -192,6 +265,14 @@ impl NekoviewApp {
             crate::translate::TranslateMsg::Result(page) => {
                 if let Some((archive_path, orig)) = self.translate_translate_inflight_key.take() {
                     self.save_translated_text_for(&archive_path, orig, &page.lines);
+                    if let Some((source, target)) = self.translate_translate_inflight_lang.take() {
+                        self.save_translate_lang_meta_for(&archive_path, source, target);
+                        // 今保存した内容がそのまま「保存済み」の最新スナップショットになる
+                        // （子ウィンドウが今もこのアーカイブを見ている場合のみ、UI差分表示を更新）。
+                        if self.translate_child_cursor.as_ref().is_some_and(|(p, _)| *p == archive_path) {
+                            self.translate_child_saved_lang_meta = Some((source, target));
+                        }
+                    }
                     if self.translate_child_cursor.as_ref() == Some(&(archive_path, orig)) {
                         self.sync_child_translation_display();
                     }
@@ -205,6 +286,7 @@ impl NekoviewApp {
             crate::translate::TranslateMsg::Failed(e) => {
                 self.translate_translate_status = Some(format!("{}: {e}", i18n::t().translate_overlay_failed_prefix()));
                 self.translate_translate_inflight_key = None;
+                self.translate_translate_inflight_lang = None;
             }
         }
         self.translate_translate_rx = None;
@@ -219,6 +301,7 @@ impl NekoviewApp {
         self.translate_egui_ctx = Some(ctx.clone());
         self.poll_translate_ocr(&ctx);
         self.poll_translate_translation();
+        self.poll_translate_lang_detect();
 
         if self.translate_child_cursor.is_none() {
             self.translate_child_cursor = self.current_page_keys().into_iter().next();
@@ -237,11 +320,34 @@ impl NekoviewApp {
             if ui.small_button(i18n::t().translate_child_retry_button()).clicked() {
                 self.trigger_child_ocr_retry(&ctx);
             }
-            egui::ComboBox::from_id_salt("translate_child_target_lang")
-                .selected_text(i18n::t().translate_target_lang_label(self.translate_child_target_lang))
+            if ui.add_enabled(!self.translate_child_ocr_lines.is_empty(), egui::Button::new(i18n::t().translate_child_lang_detect_button())).clicked() {
+                self.trigger_child_lang_detect(&ctx);
+            }
+            egui::ComboBox::from_id_salt("translate_child_source_lang")
+                .selected_text(
+                    self.translate_child_source_lang
+                        .map(|l| i18n::t().translate_lang_label(l))
+                        .unwrap_or_else(|| i18n::t().translate_lang_unset_label()),
+                )
                 .show_ui(ui, |ui| {
-                    for lang in crate::translate::TargetLang::ALL {
-                        ui.selectable_value(&mut self.translate_child_target_lang, lang, i18n::t().translate_target_lang_label(lang));
+                    ui.selectable_value(&mut self.translate_child_source_lang, None, i18n::t().translate_lang_unset_label());
+                    // 翻訳先と同じ言語は選べない（原文=翻訳先を弾く）。
+                    for lang in crate::translate::TranslateLang::ALL.into_iter().filter(|l| Some(*l) != self.translate_child_target_lang) {
+                        ui.selectable_value(&mut self.translate_child_source_lang, Some(lang), i18n::t().translate_lang_label(lang));
+                    }
+                });
+            ui.label("→");
+            egui::ComboBox::from_id_salt("translate_child_target_lang")
+                .selected_text(
+                    self.translate_child_target_lang
+                        .map(|l| i18n::t().translate_lang_label(l))
+                        .unwrap_or_else(|| i18n::t().translate_lang_unset_label()),
+                )
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut self.translate_child_target_lang, None, i18n::t().translate_lang_unset_label());
+                    // 原文と同じ言語は選べない（原文=翻訳先を弾く）。
+                    for lang in crate::translate::TranslateLang::ALL.into_iter().filter(|l| Some(*l) != self.translate_child_source_lang) {
+                        ui.selectable_value(&mut self.translate_child_target_lang, Some(lang), i18n::t().translate_lang_label(lang));
                     }
                 });
             if ui.small_button(i18n::t().translate_child_retranslate_button()).clicked() {
@@ -255,7 +361,43 @@ impl NekoviewApp {
             ui.separator();
             ui.checkbox(&mut self.translate_window_always_on_top, i18n::t().translate_child_always_on_top_toggle());
         });
+        // 保存済み翻訳データの言語ペアと現在の選択が食い違う場合の警告。自動での再翻訳は
+        // 行わず、ユーザーがこれを見て手動で[翻訳]を押すかどうかを判断する運用にしている。
+        if let Some((saved_source, saved_target)) = self.translate_child_saved_lang_meta {
+            let mismatch = Some(saved_source) != self.translate_child_source_lang
+                || Some(saved_target) != self.translate_child_target_lang;
+            if mismatch {
+                let saved_label = format!(
+                    "{} → {}",
+                    i18n::t().translate_lang_label(saved_source),
+                    i18n::t().translate_lang_label(saved_target)
+                );
+                ui.colored_label(egui::Color32::from_rgb(230, 180, 90), i18n::t().translate_child_lang_mismatch_notice(&saved_label));
+            }
+        }
+        // 言語判定結果が現在の原文/翻訳先設定と食い違う場合、ユーザーが選ぶまで反映しない。
+        if let Some(pending_lang) = self.translate_lang_detect_pending {
+            ui.horizontal(|ui| {
+                ui.colored_label(
+                    egui::Color32::from_rgb(230, 180, 90),
+                    i18n::t().translate_lang_detect_conflict_notice(i18n::t().translate_lang_label(pending_lang)),
+                );
+                if ui.small_button(i18n::t().translate_lang_detect_apply_button()).clicked() {
+                    self.translate_child_source_lang = Some(pending_lang);
+                    if self.translate_child_target_lang == Some(pending_lang) {
+                        self.translate_child_target_lang = None;
+                    }
+                    self.translate_lang_detect_pending = None;
+                }
+                if ui.small_button(i18n::t().translate_lang_detect_keep_button()).clicked() {
+                    self.translate_lang_detect_pending = None;
+                }
+            });
+        }
         if let Some(status) = &self.translate_ocr_status {
+            ui.colored_label(egui::Color32::from_rgb(230, 140, 140), status.as_str());
+        }
+        if let Some(status) = &self.translate_lang_detect_status {
             ui.colored_label(egui::Color32::from_rgb(230, 140, 140), status.as_str());
         }
         ui.separator();
@@ -331,18 +473,24 @@ impl NekoviewApp {
         // Painter からは見えない（テクスチャがデコードはできても描画されない原因だった）。
         self.pump_thumbbar_entries(ui.ctx());
 
+        // ツールバーの翻訳トグルボタンは、セッション内で疎通確認済み(URL一致)かつ
+        // 翻訳モデルが選択済みの場合のみ有効化する。
+        let translate_toggle_enabled = self.translate_conn_verified && !self.translate_cfg.translation_model.trim().is_empty();
         let output = {
             let mut viewer_guard = self.viewer.lock().unwrap();
             let page_cache_guard = self.page_cache.lock().unwrap();
             let mut cfg_guard = self.viewer_cfg.lock().unwrap();
             match viewer_guard.as_mut() {
-                Some(viewer) => viewer.show(ui, &*page_cache_guard, &mut *cfg_guard, &self.config.keymap),
+                Some(viewer) => viewer.show(ui, &*page_cache_guard, &mut *cfg_guard, &self.config.keymap, self.translate_window_open, translate_toggle_enabled),
                 None => return,
             }
         };
 
+        if output.toggle_translate_window {
+            self.translate_window_open = !self.translate_window_open;
+        }
+
         self.maybe_autoopen_translate_window();
-        self.draw_translate_open_button(ui.ctx());
 
         // ビューアー窓自身の通常操作（矢印キー等、viewer.show()内部で完結しoutput.navには
         // 出てこない）でページが変わった場合、独立Contextの子ウィンドウには何も伝わらず
@@ -615,35 +763,6 @@ impl NekoviewApp {
         self.translate_ocr_rx = None;
     }
 
-    /// ビューアー窓側の最小限の導線: 既存txtが無いアーカイブでOCR/翻訳子ウィンドウを
-    /// ユーザーの意思で開くための[翻訳]ボタンのみ（旧テストUIはPhase5で撤去）。
-    /// URL未設定なら何も描画しない。
-    fn draw_translate_open_button(&mut self, ctx: &egui::Context) {
-        if self.translate_window_open || self.translate_cfg.base_url.trim().is_empty() {
-            return;
-        }
-
-        use crate::translate::OverlayCorner;
-        let corner = self.translate_cfg.overlay_corner;
-        let (anchor, offset) = match corner {
-            OverlayCorner::TopLeft => (egui::Align2::LEFT_TOP, egui::vec2(8.0, 8.0)),
-            OverlayCorner::TopRight => (egui::Align2::RIGHT_TOP, egui::vec2(-8.0, 8.0)),
-            OverlayCorner::BottomLeft => (egui::Align2::LEFT_BOTTOM, egui::vec2(8.0, -8.0)),
-            OverlayCorner::BottomRight => (egui::Align2::RIGHT_BOTTOM, egui::vec2(-8.0, -8.0)),
-        };
-
-        egui::Area::new(egui::Id::new("translate_open_button"))
-            .anchor(anchor, offset)
-            .movable(false)
-            .show(ctx, |ui| {
-                egui::Frame::popup(ui.style()).fill(egui::Color32::from_black_alpha(190)).show(ui, |ui| {
-                    if ui.small_button(i18n::t().translate_open_window_button()).clicked() {
-                        self.translate_window_open = true;
-                    }
-                });
-            });
-    }
-
     /// キュー内の次の1ページ分のOCRリクエストを実際に発火する。
     fn start_ocr_for(&mut self, ctx: &egui::Context, key: (std::path::PathBuf, usize)) {
         let Some(rgba) = self.full_res_page_rgba_at(&key.0, key.1) else {
@@ -723,6 +842,18 @@ impl NekoviewApp {
         let neko_dir = self.translate_neko_dir_for(archive_path)?;
         let filename = archive_path.file_name().and_then(|n| n.to_str())?;
         crate::translate::load_translated_text(&neko_dir, filename, original_index)
+    }
+
+    fn save_translate_lang_meta_for(&self, archive_path: &std::path::Path, source: crate::translate::TranslateLang, target: crate::translate::TranslateLang) {
+        let Some(neko_dir) = self.translate_neko_dir_for(archive_path) else { return };
+        let Some(filename) = archive_path.file_name().and_then(|n| n.to_str()) else { return };
+        let _ = crate::translate::save_translate_lang_meta(&neko_dir, filename, source, target);
+    }
+
+    fn load_translate_lang_meta_for(&self, archive_path: &std::path::Path) -> Option<(crate::translate::TranslateLang, crate::translate::TranslateLang)> {
+        let neko_dir = self.translate_neko_dir_for(archive_path)?;
+        let filename = archive_path.file_name().and_then(|n| n.to_str())?;
+        crate::translate::load_translate_lang_meta(&neko_dir, filename)
     }
 
     /// 現在のアーカイブに対応するOCR txtフォルダをOSのファイラーで開く

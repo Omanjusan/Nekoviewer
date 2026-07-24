@@ -6,7 +6,7 @@ use crate::config::{AppConfig, ResizeFilter, filter_to_str};
 use crate::gui_config::{ThumbbarPos, ViewerConfig};
 use crate::i18n;
 use crate::keymap::{Keymap, ReaderAction, ExplorerAction, KeyCombo, MouseCombo, MouseAction, mouse_action_name};
-use crate::translate::{OVERLAY_WIDTH_CEILING, OVERLAY_WIDTH_FLOOR, OverlayCorner, TranslateConfig};
+use crate::translate::{OVERLAY_WIDTH_CEILING, OVERLAY_WIDTH_FLOOR, TranslateConfig};
 use crate::view_explorer::NekoviewApp;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -67,7 +67,6 @@ pub(crate) struct SettingsDraft {
     /// 直近の「モデル取得」で得たモデル一覧（未取得なら空、ダイアログ内のみの一時状態）。
     translate_available_models: Vec<String>,
     translate_overlay_width: u32,
-    translate_overlay_corner: OverlayCorner,
     keymap: Keymap,
     /// キーボードの「変更」ボタンで開く専用ダイアログの状態。Some の間だけ表示する。
     key_capture_dialog: Option<KeyCaptureDialogState>,
@@ -183,7 +182,6 @@ impl SettingsDraft {
             translate_ocr_model_overridden: translate_cfg.ocr_model != translate_cfg.translation_model,
             translate_available_models: Vec::new(),
             translate_overlay_width: translate_cfg.overlay_width,
-            translate_overlay_corner: translate_cfg.overlay_corner,
             keymap: config.keymap.clone(),
             key_capture_dialog: None,
             mouse_capture_dialog: None,
@@ -225,7 +223,6 @@ impl SettingsDraft {
         translate_cfg.ocr_model = self.translate_ocr_model.trim().to_string();
         translate_cfg.translation_model = self.translate_translation_model.trim().to_string();
         translate_cfg.overlay_width = self.translate_overlay_width;
-        translate_cfg.overlay_corner = self.translate_overlay_corner;
         config.keymap = self.keymap.clone();
     }
 }
@@ -940,7 +937,13 @@ impl NekoviewApp {
             // キャッシュ合計がシステムRAMの50%を超えている間は保存を拒否する
             // （警告は同フレーム内で既に赤文字表示済み）。
             if !self.settings_draft.cache_over_budget() {
+                // 疎通確認済みフラグは「実際に反映されるURLが、直前に疎通チェックへ成功した
+                // URLと一致する場合」だけ引き継ぐ。URLだけ変えて疎通チェックし直さずに反映
+                // した場合は不一致になりfalseへ落ちる（セッション単位の安全側判定）。
+                let verified_url_matches = self.translate_conn_verified_url.as_deref()
+                    == Some(self.settings_draft.translate_base_url.trim());
                 self.settings_draft.apply_to(&mut self.config, &mut self.viewer_cfg.lock().unwrap(), &mut self.translate_cfg);
+                self.translate_conn_verified = verified_url_matches;
                 self.show_hidden = self.settings_draft.show_hidden;
                 // thumb_size/thumb_filterはstateファイルに乗っていないためconfig.iniへ直接保存する。
                 self.config.save();
@@ -972,6 +975,8 @@ impl NekoviewApp {
                     crate::translate::ConnCheckMsg::ModelsOk(models) => {
                         self.translate_conn_status = Some(format!("疎通OK（{}件取得）", models.len()));
                         self.settings_draft.translate_available_models = models;
+                        // どのURLに対する疎通成功かを記録しておく（[反映]時にURL一致を検証するため）。
+                        self.translate_conn_verified_url = Some(self.settings_draft.translate_base_url.trim().to_string());
                         if self.settings_draft.translate_ocr_model.trim().is_empty() {
                             finished = true;
                         }
@@ -1023,6 +1028,12 @@ impl NekoviewApp {
 
         ui.label(i18n::t().settings_translate_translation_model_label());
         if models.is_empty() {
+            // 一覧未取得(ダイアログを開き直すたびにリセットされる一時状態)でも、
+            // 既に保存済みの選択値があればそれを見せる。空欄に見せると「設定が
+            // 消えた」ように誤解される（実際はtranslate_cfgに残っている）。
+            if !self.settings_draft.translate_translation_model.is_empty() {
+                ui.label(i18n::t().settings_translate_current_model_label(&self.settings_draft.translate_translation_model));
+            }
             ui.weak(i18n::t().settings_translate_no_models_hint());
         } else {
             let selected = if self.settings_draft.translate_translation_model.is_empty() {
@@ -1045,6 +1056,9 @@ impl NekoviewApp {
 
         ui.label(i18n::t().settings_translate_ocr_model_label());
         if models.is_empty() {
+            if !self.settings_draft.translate_ocr_model.is_empty() {
+                ui.label(i18n::t().settings_translate_current_model_label(&self.settings_draft.translate_ocr_model));
+            }
             ui.weak(i18n::t().settings_translate_no_models_hint());
         } else {
             let selected = if self.settings_draft.translate_ocr_model.is_empty() {
@@ -1064,6 +1078,9 @@ impl NekoviewApp {
         }
         ui.separator();
 
+        // 注意: このスライダーはどの描画コードからも参照されていない(未使用設定)。
+        // 旧・画面隅フローティングオーバーレイ用に用意されたが、翻訳ボタンをツールバーへ
+        // 昇格した際にオーバーレイ自体を撤去したため宙に浮いている。値は保持のみ残す。
         ui.label(i18n::t().settings_translate_overlay_width_label());
         ui.scope(|ui| {
             ui.spacing_mut().slider_width = 260.0;
@@ -1071,16 +1088,6 @@ impl NekoviewApp {
                 ui.add(egui::Slider::new(&mut self.settings_draft.translate_overlay_width, OVERLAY_WIDTH_FLOOR..=OVERLAY_WIDTH_CEILING).show_value(false));
                 ui.label(format!("{} px", self.settings_draft.translate_overlay_width));
             });
-        });
-        ui.separator();
-
-        ui.label(i18n::t().settings_translate_overlay_corner_label());
-        ui.horizontal(|ui| {
-            let t = i18n::t();
-            ui.selectable_value(&mut self.settings_draft.translate_overlay_corner, OverlayCorner::TopLeft, t.settings_translate_corner_top_left());
-            ui.selectable_value(&mut self.settings_draft.translate_overlay_corner, OverlayCorner::TopRight, t.settings_translate_corner_top_right());
-            ui.selectable_value(&mut self.settings_draft.translate_overlay_corner, OverlayCorner::BottomLeft, t.settings_translate_corner_bottom_left());
-            ui.selectable_value(&mut self.settings_draft.translate_overlay_corner, OverlayCorner::BottomRight, t.settings_translate_corner_bottom_right());
         });
     }
 

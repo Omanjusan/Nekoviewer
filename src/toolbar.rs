@@ -40,11 +40,13 @@ pub enum ViewerBarItem {
     RotationCarry,
     /// Exif Orientation自動回転の適用トグル
     ExifRotation,
+    /// OCR/翻訳子ウィンドウの開閉トグル（旧: 画面隅フローティングボタン、ツールバーへ昇格）
+    TranslateToggle,
 }
 
-pub const BAR_ITEM_COUNT: usize = 14;
+pub const BAR_ITEM_COUNT: usize = 15;
 
-/// 既定の並び順。ソート群 → ページ群 → 回転群。
+/// 既定の並び順。ソート群 → ページ群 → 回転群 → 翻訳群。
 pub const DEFAULT_BAR_ORDER: [ViewerBarItem; BAR_ITEM_COUNT] = [
     ViewerBarItem::SortName,
     ViewerBarItem::SortNatural,
@@ -60,6 +62,7 @@ pub const DEFAULT_BAR_ORDER: [ViewerBarItem; BAR_ITEM_COUNT] = [
     ViewerBarItem::RotateCw,
     ViewerBarItem::RotationCarry,
     ViewerBarItem::ExifRotation,
+    ViewerBarItem::TranslateToggle,
 ];
 
 /// 描画グループ。隣接項目のグループが変わる位置に描画側がセパレータを挟む
@@ -69,6 +72,7 @@ pub enum BarGroup {
     Sort,
     Page,
     Rotation,
+    Translate,
 }
 
 impl ViewerBarItem {
@@ -89,6 +93,7 @@ impl ViewerBarItem {
             ViewerBarItem::RotateCw        => "rotate_cw",
             ViewerBarItem::RotationCarry   => "rotation_carry",
             ViewerBarItem::ExifRotation    => "exif_rotation",
+            ViewerBarItem::TranslateToggle => "translate_toggle",
         }
     }
 
@@ -108,6 +113,7 @@ impl ViewerBarItem {
             "rotate_cw"        => ViewerBarItem::RotateCw,
             "rotation_carry"   => ViewerBarItem::RotationCarry,
             "exif_rotation"    => ViewerBarItem::ExifRotation,
+            "translate_toggle" => ViewerBarItem::TranslateToggle,
             _ => return None,
         })
     }
@@ -147,6 +153,7 @@ impl ViewerBarItem {
             | ViewerBarItem::RotateCw
             | ViewerBarItem::RotationCarry
             | ViewerBarItem::ExifRotation => BarGroup::Rotation,
+            ViewerBarItem::TranslateToggle => BarGroup::Translate,
         }
     }
 }

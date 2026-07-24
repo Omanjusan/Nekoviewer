@@ -104,6 +104,27 @@ impl Lang {
         }
     }
 
+    /// ツールバーの[翻訳]ボタン(OCR/翻訳子ウィンドウの開閉トグル)。英語のみ幅を抑えて[Tr.]。
+    pub fn toolbar_translate_toggle_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "翻訳",
+            Lang::English  => "[Tr.]",
+            Lang::Chinese  => "翻译",
+        }
+    }
+
+    /// 上記ボタンのホバーツールチップ。押せない場合は理由を説明する。
+    pub fn toolbar_translate_toggle_tip(self, enabled: bool) -> &'static str {
+        match (self, enabled) {
+            (Lang::Japanese, true)  => "OCR/翻訳ウィンドウの表示切替",
+            (Lang::Japanese, false) => "設定タブで疎通確認と翻訳モデルの選択が必要です",
+            (Lang::English, true)   => "Toggle the OCR/translation window",
+            (Lang::English, false)  => "Test the connection and select a translation model in Settings first",
+            (Lang::Chinese, true)   => "切换OCR/翻译窗口显示",
+            (Lang::Chinese, false)  => "请先在设置中测试连接并选择翻译模型",
+        }
+    }
+
     pub fn page_single(self) -> &'static str {
         match self {
             Lang::Japanese => "[単ページ]",
@@ -1019,6 +1040,17 @@ impl Lang {
         }
     }
 
+    /// モデル一覧が未取得(ダイアログ限定の一時状態、開き直すたびに空になる)でも、
+    /// 保存済みの選択値自体は消えていないことを示す表示。「設定が消えた」ように
+    /// 見せないための保険（実際の値はtranslate_cfgに残ったまま）。
+    pub fn settings_translate_current_model_label(self, model: &str) -> String {
+        match self {
+            Lang::Japanese => format!("現在の設定: {model}"),
+            Lang::English  => format!("Current: {model}"),
+            Lang::Chinese  => format!("当前设置: {model}"),
+        }
+    }
+
     pub fn settings_translate_test_button(self) -> &'static str {
         match self {
             Lang::Japanese => "モデル取得",
@@ -1043,60 +1075,11 @@ impl Lang {
         }
     }
 
-    pub fn settings_translate_overlay_corner_label(self) -> &'static str {
-        match self {
-            Lang::Japanese => "オーバーレイ配置(四隅)",
-            Lang::English  => "Overlay position (corner)",
-            Lang::Chinese  => "浮层位置(四角)",
-        }
-    }
-
-    pub fn settings_translate_corner_top_left(self) -> &'static str {
-        match self {
-            Lang::Japanese => "左上",
-            Lang::English  => "Top-left",
-            Lang::Chinese  => "左上",
-        }
-    }
-
-    pub fn settings_translate_corner_top_right(self) -> &'static str {
-        match self {
-            Lang::Japanese => "右上",
-            Lang::English  => "Top-right",
-            Lang::Chinese  => "右上",
-        }
-    }
-
-    pub fn settings_translate_corner_bottom_left(self) -> &'static str {
-        match self {
-            Lang::Japanese => "左下",
-            Lang::English  => "Bottom-left",
-            Lang::Chinese  => "左下",
-        }
-    }
-
-    pub fn settings_translate_corner_bottom_right(self) -> &'static str {
-        match self {
-            Lang::Japanese => "右下",
-            Lang::English  => "Bottom-right",
-            Lang::Chinese  => "右下",
-        }
-    }
-
     pub fn translate_overlay_open_folder_button(self) -> &'static str {
         match self {
             Lang::Japanese => "フォルダを開く",
             Lang::English  => "Open folder",
             Lang::Chinese  => "打开文件夹",
-        }
-    }
-
-    /// ビューアー部の[翻訳]ボタン。OCR/翻訳子ウィンドウをユーザーの意思で開く導線。
-    pub fn translate_open_window_button(self) -> &'static str {
-        match self {
-            Lang::Japanese => "翻訳",
-            Lang::English  => "Translate",
-            Lang::Chinese  => "翻译",
         }
     }
 
@@ -1118,21 +1101,21 @@ impl Lang {
         }
     }
 
-    /// 子ウィンドウの[再取得]ボタン(1P単位でOCRを再実行)。
+    /// 子ウィンドウの[取得]ボタン(1P単位でOCRを実行)。
     pub fn translate_child_retry_button(self) -> &'static str {
         match self {
-            Lang::Japanese => "再取得",
-            Lang::English  => "Retry OCR",
-            Lang::Chinese  => "重新识别",
+            Lang::Japanese => "取得",
+            Lang::English  => "OCR",
+            Lang::Chinese  => "识别",
         }
     }
 
-    /// 子ウィンドウの[再翻訳]ボタン(モック、実処理未実装)。
+    /// 子ウィンドウの[翻訳]ボタン。
     pub fn translate_child_retranslate_button(self) -> &'static str {
         match self {
-            Lang::Japanese => "再翻訳",
-            Lang::English  => "Re-translate",
-            Lang::Chinese  => "重新翻译",
+            Lang::Japanese => "翻訳",
+            Lang::English  => "Translate",
+            Lang::Chinese  => "翻译",
         }
     }
 
@@ -1155,22 +1138,89 @@ impl Lang {
         }
     }
 
-    /// 翻訳先言語ドロップダウンの表示名。
-    pub fn translate_target_lang_label(self, lang: crate::translate::TargetLang) -> &'static str {
-        use crate::translate::TargetLang;
+    /// 翻訳機能の言語ドロップダウン（原文/翻訳先共通）の表示名。
+    pub fn translate_lang_label(self, lang: crate::translate::TranslateLang) -> &'static str {
+        use crate::translate::TranslateLang;
         match (self, lang) {
-            (Lang::Japanese, TargetLang::ChineseSimplified)  => "中国語(簡体字)",
-            (Lang::Japanese, TargetLang::ChineseTraditional) => "中国語(繁体字)",
-            (Lang::Japanese, TargetLang::English)            => "英語",
-            (Lang::Japanese, TargetLang::Korean)             => "韓国語",
-            (Lang::English, TargetLang::ChineseSimplified)  => "Chinese (Simplified)",
-            (Lang::English, TargetLang::ChineseTraditional) => "Chinese (Traditional)",
-            (Lang::English, TargetLang::English)            => "English",
-            (Lang::English, TargetLang::Korean)             => "Korean",
-            (Lang::Chinese, TargetLang::ChineseSimplified)  => "简体中文",
-            (Lang::Chinese, TargetLang::ChineseTraditional) => "繁体中文",
-            (Lang::Chinese, TargetLang::English)            => "英语",
-            (Lang::Chinese, TargetLang::Korean)             => "韩语",
+            (Lang::Japanese, TranslateLang::Japanese)         => "日本語",
+            (Lang::Japanese, TranslateLang::ChineseSimplified)  => "中国語(簡体字)",
+            (Lang::Japanese, TranslateLang::ChineseTraditional) => "中国語(繁体字)",
+            (Lang::Japanese, TranslateLang::English)            => "英語",
+            (Lang::Japanese, TranslateLang::Korean)             => "韓国語",
+            (Lang::English, TranslateLang::Japanese)          => "Japanese",
+            (Lang::English, TranslateLang::ChineseSimplified)  => "Chinese (Simplified)",
+            (Lang::English, TranslateLang::ChineseTraditional) => "Chinese (Traditional)",
+            (Lang::English, TranslateLang::English)            => "English",
+            (Lang::English, TranslateLang::Korean)             => "Korean",
+            (Lang::Chinese, TranslateLang::Japanese)          => "日语",
+            (Lang::Chinese, TranslateLang::ChineseSimplified)  => "简体中文",
+            (Lang::Chinese, TranslateLang::ChineseTraditional) => "繁体中文",
+            (Lang::Chinese, TranslateLang::English)            => "英语",
+            (Lang::Chinese, TranslateLang::Korean)             => "韩语",
+        }
+    }
+
+    /// 言語ドロップダウンが未設定状態のときの表示名。
+    pub fn translate_lang_unset_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "未設定",
+            Lang::English  => "Not set",
+            Lang::Chinese  => "未设置",
+        }
+    }
+
+    /// 原文/翻訳先言語のどちらかが未設定のまま翻訳を実行しようとした場合のエラー。
+    pub fn translate_child_lang_required(self) -> &'static str {
+        match self {
+            Lang::Japanese => "原文言語と翻訳先言語を設定してください",
+            Lang::English  => "Please set both the source and target languages",
+            Lang::Chinese  => "请设置原文语言和翻译目标语言",
+        }
+    }
+
+    /// 保存済み翻訳データの言語ペアと、現在UIで選択中の言語ペアが食い違っている場合の警告。
+    /// `saved`には「原文→翻訳先」形式でラベル済みの文字列を渡す。
+    pub fn translate_child_lang_mismatch_notice(self, saved: &str) -> String {
+        match self {
+            Lang::Japanese => format!("保存済みデータの言語: {saved}（現在の選択と異なります）"),
+            Lang::English  => format!("Saved data language: {saved} (differs from current selection)"),
+            Lang::Chinese  => format!("已保存数据的语言: {saved}（与当前选择不同）"),
+        }
+    }
+
+    /// 子ウィンドウの[言語判定]ボタン。OCR原文を翻訳モデルへ渡して原文言語を推測する。
+    pub fn translate_child_lang_detect_button(self) -> &'static str {
+        match self {
+            Lang::Japanese => "言語判定",
+            Lang::English  => "Detect language",
+            Lang::Chinese  => "语言判定",
+        }
+    }
+
+    /// 言語判定結果が現在の原文/翻訳先設定と食い違う場合の確認メッセージ。
+    pub fn translate_lang_detect_conflict_notice(self, detected: &str) -> String {
+        match self {
+            Lang::Japanese => format!("判定結果: {detected}（現在の設定と異なります）"),
+            Lang::English  => format!("Detected: {detected} (differs from current setting)"),
+            Lang::Chinese  => format!("判定结果: {detected}（与当前设置不同）"),
+        }
+    }
+
+    /// 上記確認の[判定結果を設定]ボタン。
+    pub fn translate_lang_detect_apply_button(self) -> &'static str {
+        match self {
+            Lang::Japanese => "判定結果を設定",
+            Lang::English  => "Apply detected",
+            Lang::Chinese  => "应用判定结果",
+        }
+    }
+
+    /// 上記確認の[現在の設定を維持]ボタン。
+    pub fn translate_lang_detect_keep_button(self) -> &'static str {
+        match self {
+            Lang::Japanese => "現在の設定を維持",
+            Lang::English  => "Keep current setting",
+            Lang::Chinese  => "保留当前设置",
         }
     }
 

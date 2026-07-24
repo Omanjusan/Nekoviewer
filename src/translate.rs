@@ -8,46 +8,25 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
-/// 半透明オーバーレイウィンドウの配置（ビューアー画面を軸とした四隅）。
+/// 翻訳機能で扱う言語（原文言語・翻訳先言語の両方で共有する）。
+/// i18n::Lang（アプリUI表示言語）とは別概念のため名前を分けている。
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum OverlayCorner {
-    TopLeft,
-    TopRight,
-    BottomLeft,
-    BottomRight,
-}
-
-pub fn overlay_corner_to_str(c: OverlayCorner) -> &'static str {
-    match c {
-        OverlayCorner::TopLeft => "top_left",
-        OverlayCorner::TopRight => "top_right",
-        OverlayCorner::BottomLeft => "bottom_left",
-        OverlayCorner::BottomRight => "bottom_right",
-    }
-}
-
-pub fn parse_overlay_corner(s: &str) -> OverlayCorner {
-    match s {
-        "top_left" => OverlayCorner::TopLeft,
-        "bottom_left" => OverlayCorner::BottomLeft,
-        "bottom_right" => OverlayCorner::BottomRight,
-        _ => OverlayCorner::TopRight,
-    }
-}
-
-/// 翻訳先言語（子ウィンドウのドロップダウンで選択）。原文言語(常に日本語固定、OCRが真実)は
-/// 含めない。検出ロジックは持たず、Nekoviewerが漫画OCR前提であることから固定扱いにしている。
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum TargetLang {
+pub enum TranslateLang {
+    Japanese,
     ChineseSimplified,
     ChineseTraditional,
     English,
     Korean,
 }
 
-impl TargetLang {
-    pub const ALL: [TargetLang; 4] =
-        [TargetLang::ChineseSimplified, TargetLang::ChineseTraditional, TargetLang::English, TargetLang::Korean];
+impl TranslateLang {
+    pub const ALL: [TranslateLang; 5] = [
+        TranslateLang::Japanese,
+        TranslateLang::ChineseSimplified,
+        TranslateLang::ChineseTraditional,
+        TranslateLang::English,
+        TranslateLang::Korean,
+    ];
 }
 
 /// 「翻訳機能」設定タブで編集する永続設定。
@@ -60,9 +39,10 @@ pub struct TranslateConfig {
     /// OCRに使うモデル名。設定UIでユーザーが明示的に選び直すまでは翻訳モデルに追従する。
     pub ocr_model: String,
     /// オーバーレイウィンドウの横幅(px)。
+    /// 現状どの描画コードからも参照されていない未使用設定（旧・画面隅フローティング
+    /// オーバーレイ用に用意されたが、子ウィンドウは480x640固定サイズで運用されている）。
+    /// 設定タブ・state永続化には残っているため、値自体は保持しておく。
     pub overlay_width: u32,
-    /// オーバーレイウィンドウの配置(四隅)。
-    pub overlay_corner: OverlayCorner,
 }
 
 impl Default for TranslateConfig {
@@ -72,7 +52,6 @@ impl Default for TranslateConfig {
             translation_model: String::new(),
             ocr_model: String::new(),
             overlay_width: 360,
-            overlay_corner: OverlayCorner::TopRight,
         }
     }
 }
@@ -391,23 +370,25 @@ const TRANSLATE_REQUEST_TIMEOUT_SECS: u64 = 120;
 /// 翻訳リクエストの応答トークン上限。OCRと同じくreasoningモデルの保険として大きめにしておく。
 const TRANSLATE_MAX_TOKENS: u32 = 4096;
 
-fn target_lang_prompt_name(lang: TargetLang) -> &'static str {
+fn translate_lang_prompt_name(lang: TranslateLang) -> &'static str {
     match lang {
-        TargetLang::ChineseSimplified => "Simplified Chinese (简体中文)",
-        TargetLang::ChineseTraditional => "Traditional Chinese (繁體中文)",
-        TargetLang::English => "English",
-        TargetLang::Korean => "Korean (한국어)",
+        TranslateLang::Japanese => "Japanese (日本語)",
+        TranslateLang::ChineseSimplified => "Simplified Chinese (简体中文)",
+        TranslateLang::ChineseTraditional => "Traditional Chinese (繁體中文)",
+        TranslateLang::English => "English",
+        TranslateLang::Korean => "Korean (한국어)",
     }
 }
 
-/// 翻訳先言語ごとに変わる部分だけプロンプトへ差し込む。原文はOCR結果の行配列をそのまま
-/// JSON化して埋め込み、モデルには「同じ要素数・同じ順序で翻訳したJSON配列のみ」を求める
-/// （OCRの読み順維持と同じ考え方で、モデルに構造判断をさせない）。
-fn build_translate_prompt(lines: &[String], target: TargetLang) -> String {
-    let lang_name = target_lang_prompt_name(target);
+/// 原文言語・翻訳先言語ごとに変わる部分だけプロンプトへ差し込む。原文はOCR結果の行配列を
+/// そのままJSON化して埋め込み、モデルには「同じ要素数・同じ順序で翻訳したJSON配列のみ」を
+/// 求める（OCRの読み順維持と同じ考え方で、モデルに構造判断をさせない）。
+fn build_translate_prompt(lines: &[String], source: TranslateLang, target: TranslateLang) -> String {
+    let source_lang_name = translate_lang_prompt_name(source);
+    let target_lang_name = translate_lang_prompt_name(target);
     let source_json = serde_json::to_string(lines).unwrap_or_default();
     format!(
-        "以下は日本語の漫画の吹き出しテキストをJSON配列にしたものです。各要素を{lang_name}へ翻訳してください。\
+        "以下は{source_lang_name}の漫画の吹き出しテキストをJSON配列にしたものです。各要素を{target_lang_name}へ翻訳してください。\
 出力は説明文なしで、原文と同じ要素数・同じ順序のJSON配列のみを返してください。\
 原文: {source_json}"
     )
@@ -433,18 +414,73 @@ fn parse_translate_content(content: &str) -> TranslatePageResult {
 
 /// 1ページぶんの翻訳リクエストをバックグラウンドスレッドで実行する。画像は送らず、
 /// OCR原文の行配列だけをテキストとして渡す（OCRと翻訳は完全に独立した処理単位）。
-pub fn spawn_translate_request(ctx: egui::Context, base_url: String, model: String, lines: Vec<String>, target: TargetLang) -> mpsc::Receiver<TranslateMsg> {
+pub fn spawn_translate_request(ctx: egui::Context, base_url: String, model: String, lines: Vec<String>, source: TranslateLang, target: TranslateLang) -> mpsc::Receiver<TranslateMsg> {
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
         let result = (|| -> Result<TranslatePageResult, String> {
             let client = http_client(Duration::from_secs(TRANSLATE_REQUEST_TIMEOUT_SECS))?;
-            let prompt = build_translate_prompt(&lines, target);
+            let prompt = build_translate_prompt(&lines, source, target);
             let content = send_chat(&client, &base_url, &model, text_only_content(&prompt), Some(TRANSLATE_MAX_TOKENS))?;
             Ok(parse_translate_content(&content))
         })();
         match result {
             Ok(page) => { let _ = tx.send(TranslateMsg::Result(page)); }
             Err(e) => { let _ = tx.send(TranslateMsg::Failed(e)); }
+        }
+        ctx.request_repaint();
+    });
+    rx
+}
+
+// ── 原文言語判定(Phase 6) ────────────────────────────────────────────────
+// OCR自体は言語を判定せず読み取るだけ（読み順プロンプトが言語非依存のため）。
+// 「言語判定」ボタンが押されたときだけ、OCR原文を翻訳モデルへ渡して言語コードを
+// 1つ返させる。自動実行はしない（ユーザーが明示的に押した時のみ）。
+
+fn build_lang_detect_prompt(lines: &[String]) -> String {
+    let source_json = serde_json::to_string(lines).unwrap_or_default();
+    format!(
+        "以下は漫画の吹き出しから抽出したテキストをJSON配列にしたものです。このテキスト全体が\
+何語で書かれているか判定してください。出力は説明文なしで、次のいずれか1つの言語コードのみを\
+返してください: ja, zh-Hans, zh-Hant, en, ko\
+テキスト: {source_json}"
+    )
+}
+
+fn parse_lang_detect_content(content: &str) -> Option<TranslateLang> {
+    let trimmed = content.trim();
+    if let Some(lang) = translate_lang_from_code(trimmed) {
+        return Some(lang);
+    }
+    // 説明文が混ざった応答へのフォールバック。zh-Hans/zh-Hantを先に見る
+    // （"en"等の短いコードが長いコードの一部に誤マッチしないようにするため）。
+    for code in ["zh-Hans", "zh-Hant", "ja", "en", "ko"] {
+        if trimmed.contains(code) {
+            return translate_lang_from_code(code);
+        }
+    }
+    None
+}
+
+pub enum LangDetectMsg {
+    Result(TranslateLang),
+    Failed(String),
+}
+
+/// OCR原文の言語判定リクエストをバックグラウンドスレッドで実行する。
+/// 翻訳リクエストと同じモデル(translation_model)・エンドポイントを使う。
+pub fn spawn_lang_detect_request(ctx: egui::Context, base_url: String, model: String, lines: Vec<String>) -> mpsc::Receiver<LangDetectMsg> {
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let result = (|| -> Result<TranslateLang, String> {
+            let client = http_client(Duration::from_secs(TRANSLATE_REQUEST_TIMEOUT_SECS))?;
+            let prompt = build_lang_detect_prompt(&lines);
+            let content = send_chat(&client, &base_url, &model, text_only_content(&prompt), Some(TRANSLATE_MAX_TOKENS))?;
+            parse_lang_detect_content(&content).ok_or_else(|| "言語判定結果を解釈できませんでした".to_string())
+        })();
+        match result {
+            Ok(lang) => { let _ = tx.send(LangDetectMsg::Result(lang)); }
+            Err(e) => { let _ = tx.send(LangDetectMsg::Failed(e)); }
         }
         ctx.request_repaint();
     });
@@ -513,13 +549,106 @@ pub fn save_translated_text(neko_dir: &Path, archive_filename: &str, original_in
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    std::fs::write(path, lines.join("\n"))
+    // 0000.txtの1行目はアーカイブ全体の言語ペアを記録するメタ行として使う場所なので、
+    // 既にあれば保持したまま本文だけ上書きする（save_translate_lang_meta参照）。
+    let existing_meta_line = if original_index == 0 {
+        std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|content| content.lines().next().map(str::to_string))
+            .filter(|line| line.starts_with(TRANSLATE_LANG_META_PREFIX))
+    } else {
+        None
+    };
+    let mut out: Vec<String> = existing_meta_line.into_iter().collect();
+    out.extend(lines.iter().cloned());
+    std::fs::write(path, out.join("\n"))
 }
 
 pub fn load_translated_text(neko_dir: &Path, archive_filename: &str, original_index: usize) -> Option<Vec<String>> {
     let path = translated_text_path(neko_dir, archive_filename, original_index);
     let content = std::fs::read_to_string(path).ok()?;
-    Some(content.lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_string).collect())
+    Some(
+        content
+            .lines()
+            .filter(|line| !line.starts_with(TRANSLATE_LANG_META_PREFIX))
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .map(str::to_string)
+            .collect(),
+    )
+}
+
+/// 翻訳言語ペアのメタ行に付ける目印。手動編集者が見ても「システムが書いた行」と
+/// 分かるよう先頭にコメント記号+アプリ名を置く。
+const TRANSLATE_LANG_META_PREFIX: &str = "# [Nekoviewer] ";
+
+fn translate_lang_code(lang: TranslateLang) -> &'static str {
+    match lang {
+        TranslateLang::Japanese => "ja",
+        TranslateLang::ChineseSimplified => "zh-Hans",
+        TranslateLang::ChineseTraditional => "zh-Hant",
+        TranslateLang::English => "en",
+        TranslateLang::Korean => "ko",
+    }
+}
+
+fn translate_lang_from_code(code: &str) -> Option<TranslateLang> {
+    match code {
+        "ja" => Some(TranslateLang::Japanese),
+        "zh-Hans" => Some(TranslateLang::ChineseSimplified),
+        "zh-Hant" => Some(TranslateLang::ChineseTraditional),
+        "en" => Some(TranslateLang::English),
+        "ko" => Some(TranslateLang::Korean),
+        _ => None,
+    }
+}
+
+fn format_translate_lang_meta_line(source: TranslateLang, target: TranslateLang) -> String {
+    format!(
+        "{TRANSLATE_LANG_META_PREFIX}このアーカイブを翻訳した際の言語設定を自動記録しています(lang={}:{})。削除しても翻訳結果自体には影響しません。",
+        translate_lang_code(source),
+        translate_lang_code(target)
+    )
+}
+
+fn parse_translate_lang_meta_line(line: &str) -> Option<(TranslateLang, TranslateLang)> {
+    let after = line.split_once("lang=")?.1;
+    let pair = after.split(')').next()?;
+    let (src, dst) = pair.split_once(':')?;
+    Some((translate_lang_from_code(src)?, translate_lang_from_code(dst)?))
+}
+
+/// アーカイブ単位の翻訳言語ペアを記録する。0000.txtの1行目をメタ行として
+/// 追加/更新する（本文（翻訳結果）が既にあれば保持する）。
+pub fn save_translate_lang_meta(neko_dir: &Path, archive_filename: &str, source: TranslateLang, target: TranslateLang) -> std::io::Result<()> {
+    let path = translated_text_path(neko_dir, archive_filename, 0);
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let existing = std::fs::read_to_string(&path).ok();
+    let body_lines: Vec<&str> = existing
+        .as_deref()
+        .map(|content| {
+            let mut lines: Vec<&str> = content.lines().collect();
+            if lines.first().is_some_and(|l| l.starts_with(TRANSLATE_LANG_META_PREFIX)) {
+                lines.remove(0);
+            }
+            lines
+        })
+        .unwrap_or_default();
+    let meta_line = format_translate_lang_meta_line(source, target);
+    let mut out = vec![meta_line];
+    out.extend(body_lines.into_iter().map(str::to_string));
+    std::fs::write(path, out.join("\n"))
+}
+
+/// 保存済みの翻訳言語ペアを読み込む。0000.txtが無い、またはメタ行が無ければNone
+/// （＝未翻訳、またはPhase4以前に保存されたデータ）。
+pub fn load_translate_lang_meta(neko_dir: &Path, archive_filename: &str) -> Option<(TranslateLang, TranslateLang)> {
+    let path = translated_text_path(neko_dir, archive_filename, 0);
+    let content = std::fs::read_to_string(path).ok()?;
+    let first_line = content.lines().next()?;
+    parse_translate_lang_meta_line(first_line)
 }
 
 /// OS標準のファイラーでフォルダを開く（ベストエフォート、失敗しても無視する）。

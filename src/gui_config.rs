@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use crate::config::{AppConfig, ResizeFilter, filter_to_str, parse_filter};
 use crate::toolbar::{BAR_ITEM_COUNT, DEFAULT_BAR_ORDER, ViewerBarItem, bar_order_to_str, parse_bar_order};
-use crate::translate::{TranslateConfig, overlay_corner_to_str, parse_overlay_corner};
+use crate::translate::TranslateConfig;
 
 // ── State ファイル（動的状態: 最後のディレクトリ・ウィンドウサイズ）────────────
 
@@ -260,7 +260,6 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
     let mut translate_ocr_model: Option<String> = None;
     let mut translate_translation_model: Option<String> = None;
     let mut translate_overlay_width: Option<u32> = None;
-    let mut translate_overlay_corner: Option<crate::translate::OverlayCorner> = None;
     let mut has_kv = false;
 
     for line in content.lines() {
@@ -350,7 +349,8 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
                     translate_overlay_width = v.trim().parse::<u32>().ok()
                         .map(|n| n.clamp(crate::translate::OVERLAY_WIDTH_FLOOR, crate::translate::OVERLAY_WIDTH_CEILING));
                 }
-                "translate_overlay_corner" => { translate_overlay_corner = Some(parse_overlay_corner(v.trim())); }
+                // "translate_overlay_corner"は廃止済み(EXPERIMENTAL配置オプション撤去)。
+                // 旧state ファイルに残っていても単に無視される。
                 _ => {}
             }
         }
@@ -421,7 +421,6 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
             translation_model: translate_translation_model.clone().or_else(|| translate_model_legacy.clone()).unwrap_or_default(),
             ocr_model: translate_ocr_model.or(translate_translation_model).or(translate_model_legacy).unwrap_or_default(),
             overlay_width: translate_overlay_width.unwrap_or(360),
-            overlay_corner: translate_overlay_corner.unwrap_or(crate::translate::OverlayCorner::TopRight),
         },
     })
 }
@@ -452,9 +451,8 @@ pub fn save_state(dir: &Path, window_size: (u32, u32), viewer_slots: &[Option<Wi
         bar_order_to_str(&viewer_cfg.bar_order),
     ));
     content.push_str(&format!(
-        "translate_base_url={}\ntranslate_ocr_model={}\ntranslate_translation_model={}\ntranslate_overlay_width={}\ntranslate_overlay_corner={}\n",
+        "translate_base_url={}\ntranslate_ocr_model={}\ntranslate_translation_model={}\ntranslate_overlay_width={}\n",
         translate_cfg.base_url, translate_cfg.ocr_model, translate_cfg.translation_model, translate_cfg.overlay_width,
-        overlay_corner_to_str(translate_cfg.overlay_corner),
     ));
     // 設定ダイアログ（共通/アニメタブ）が編集する AppConfig 系の値。次回起動から反映されるため、
     // ここでは現在の有効値をそのまま state に書き戻すだけでよい（即時のワーカー再構築は不要）。

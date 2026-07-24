@@ -306,6 +306,13 @@ pub struct ViewerState {
     pending_spread_action: Option<crate::controller::SpreadSaveAction>,
     /// 右クリックメニュー「お気に入り詳細設定」が押されたか（1フレームで消費）
     pending_open_favorite_dialog: bool,
+    /// OCR/翻訳子ウィンドウが現在開いているか。show()呼び出し時に外部(NekoviewApp)から
+    /// 渡され、ツールバーのトグルボタン表示にのみ使う（真の状態はapp側が持つ）。
+    translate_window_open: bool,
+    /// ツールバーの翻訳トグルボタンを押せる状態か（疎通確認済み・翻訳モデル選択済み等）。
+    translate_toggle_enabled: bool,
+    /// ツールバーの翻訳トグルボタンが押されたか（1フレームで消費してViewerOutputへ渡す）
+    pending_toggle_translate_window: bool,
     /// TODO項目B: 現在ページの手動回転状態。rotation_carry_over が true の間は
     /// この値ではなく ViewerConfig::rotation_session_angle を使う（呼び出し側判断）。
     rotation: RotationState,
@@ -473,6 +480,9 @@ impl ViewerState {
             saved_spread: None,
             pending_spread_action: None,
             pending_open_favorite_dialog: false,
+            translate_window_open: false,
+            translate_toggle_enabled: false,
+            pending_toggle_translate_window: false,
             rotation: RotationState::new(),
             exif_enabled: true,
         })
@@ -527,6 +537,9 @@ impl ViewerState {
             saved_spread: None,
             pending_spread_action: None,
             pending_open_favorite_dialog: false,
+            translate_window_open: false,
+            translate_toggle_enabled: false,
+            pending_toggle_translate_window: false,
             rotation: RotationState::new(),
             exif_enabled: true,
         }
@@ -648,6 +661,11 @@ impl ViewerState {
         std::mem::take(&mut self.pending_open_favorite_dialog)
     }
 
+    /// ツールバーの翻訳トグルボタンが押された要求を取り出す（1フレームで消費）
+    fn take_translate_toggle_request(&mut self) -> bool {
+        std::mem::take(&mut self.pending_toggle_translate_window)
+    }
+
     /// spread_lo を基に lo/hi テクスチャを返す（original_index でキャッシュ参照）
     fn page_textures_for(&self, lo: i32) -> (Option<egui::TextureHandle>, Option<egui::TextureHandle>) {
         let total = self.entries.len() as i32;
@@ -756,11 +774,21 @@ impl ViewerState {
         self.archive_path.file_name().and_then(|n| n.to_str()).unwrap_or(i18n::t().viewer_fallback()).to_string()
     }
 
-    pub fn show(&mut self, ui: &mut egui::Ui, page_cache: &PageCache, cfg: &mut ViewerConfig, keymap: &Keymap) -> ViewerOutput {
+    pub fn show(
+        &mut self,
+        ui: &mut egui::Ui,
+        page_cache: &PageCache,
+        cfg: &mut ViewerConfig,
+        keymap: &Keymap,
+        translate_window_open: bool,
+        translate_toggle_enabled: bool,
+    ) -> ViewerOutput {
+        self.translate_window_open = translate_window_open;
+        self.translate_toggle_enabled = translate_toggle_enabled;
         let ctx = ui.ctx().clone();
         let viewer_style = ui.style().clone();
         if !self.open || self.entries.is_empty() {
-            return ViewerOutput { nav: ViewerNav::None, close_requested: !self.open, save_slots: None, spread_save_action: None, open_favorite_dialog: false };
+            return ViewerOutput { nav: ViewerNav::None, close_requested: !self.open, save_slots: None, spread_save_action: None, open_favorite_dialog: false, toggle_translate_window: false };
         }
 
         // ── フレーム入力を一括収集（ctx.input はこの1回のみ）────────────────
@@ -916,7 +944,8 @@ impl ViewerState {
 
         let spread_save_action = self.take_spread_action();
         let open_favorite_dialog = self.take_favorite_dialog_request();
-        ViewerOutput { nav, close_requested: close_self, save_slots, spread_save_action, open_favorite_dialog }
+        let toggle_translate_window = self.take_translate_toggle_request();
+        ViewerOutput { nav, close_requested: close_self, save_slots, spread_save_action, open_favorite_dialog, toggle_translate_window }
     }
 
     /// ビューアーを開いた直後（初回フレーム）に conf 既定スロットを一度だけ適用する。
@@ -1806,6 +1835,19 @@ impl ViewerState {
                 {
                     cfg.exif_orientation_enabled = !cfg.exif_orientation_enabled;
                 }
+            }
+            // OCR/翻訳子ウィンドウの開閉トグル。実際の開閉状態はapp側が持ち、show()呼び出し時に
+            // translate_window_openとして受け取って表示にのみ使う（真の状態はここでは変更しない）。
+            ViewerBarItem::TranslateToggle => {
+                let enabled = self.translate_toggle_enabled;
+                ui.add_enabled_ui(enabled, |ui| {
+                    if ui.selectable_label(self.translate_window_open, t.toolbar_translate_toggle_label())
+                        .on_hover_text(t.toolbar_translate_toggle_tip(enabled))
+                        .clicked()
+                    {
+                        self.pending_toggle_translate_window = true;
+                    }
+                });
             }
         }
     }
