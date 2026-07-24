@@ -1195,6 +1195,16 @@ impl Lang {
         }
     }
 
+    /// 保存済み翻訳データの言語ペアと、現在UIで選択中の言語ペアが食い違っている場合の警告。
+    /// `saved`には「原文→翻訳先」形式でラベル済みの文字列を渡す。
+    pub fn translate_child_lang_mismatch_notice(self, saved: &str) -> String {
+        match self {
+            Lang::Japanese => format!("保存済みデータの言語: {saved}（現在の選択と異なります）"),
+            Lang::English  => format!("Saved data language: {saved} (differs from current selection)"),
+            Lang::Chinese  => format!("已保存数据的语言: {saved}（与当前选择不同）"),
+        }
+    }
+
     pub fn translate_overlay_running(self) -> &'static str {
         match self {
             Lang::Japanese => "解析中…（モデル未ロード時は数十秒以上かかることがあります）",

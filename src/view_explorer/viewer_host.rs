@@ -157,6 +157,7 @@ impl NekoviewApp {
         let meta = self.load_translate_lang_meta_for(&archive_path);
         self.translate_child_source_lang = meta.map(|(source, _)| source);
         self.translate_child_target_lang = meta.map(|(_, target)| target);
+        self.translate_child_saved_lang_meta = meta;
     }
 
     /// 子ウィンドウの[再取得]: `translate_child_cursor`が指す1ページのみOCRを再実行する。
@@ -219,6 +220,11 @@ impl NekoviewApp {
                     self.save_translated_text_for(&archive_path, orig, &page.lines);
                     if let Some((source, target)) = self.translate_translate_inflight_lang.take() {
                         self.save_translate_lang_meta_for(&archive_path, source, target);
+                        // 今保存した内容がそのまま「保存済み」の最新スナップショットになる
+                        // （子ウィンドウが今もこのアーカイブを見ている場合のみ、UI差分表示を更新）。
+                        if self.translate_child_cursor.as_ref().is_some_and(|(p, _)| *p == archive_path) {
+                            self.translate_child_saved_lang_meta = Some((source, target));
+                        }
                     }
                     if self.translate_child_cursor.as_ref() == Some(&(archive_path, orig)) {
                         self.sync_child_translation_display();
@@ -304,6 +310,20 @@ impl NekoviewApp {
             ui.separator();
             ui.checkbox(&mut self.translate_window_always_on_top, i18n::t().translate_child_always_on_top_toggle());
         });
+        // 保存済み翻訳データの言語ペアと現在の選択が食い違う場合の警告。自動での再翻訳は
+        // 行わず、ユーザーがこれを見て手動で[翻訳]を押すかどうかを判断する運用にしている。
+        if let Some((saved_source, saved_target)) = self.translate_child_saved_lang_meta {
+            let mismatch = Some(saved_source) != self.translate_child_source_lang
+                || Some(saved_target) != self.translate_child_target_lang;
+            if mismatch {
+                let saved_label = format!(
+                    "{} → {}",
+                    i18n::t().translate_lang_label(saved_source),
+                    i18n::t().translate_lang_label(saved_target)
+                );
+                ui.colored_label(egui::Color32::from_rgb(230, 180, 90), i18n::t().translate_child_lang_mismatch_notice(&saved_label));
+            }
+        }
         if let Some(status) = &self.translate_ocr_status {
             ui.colored_label(egui::Color32::from_rgb(230, 140, 140), status.as_str());
         }

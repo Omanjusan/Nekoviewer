@@ -379,6 +379,9 @@ pub struct NekoviewApp {
     pub(crate) translate_child_source_lang: Option<crate::translate::TranslateLang>,
     /// 子ウィンドウで選択中の翻訳先言語。未設定(None)なら翻訳を実行できない。
     pub(crate) translate_child_target_lang: Option<crate::translate::TranslateLang>,
+    /// 保存済み翻訳データが記録している言語ペア（アーカイブを開いた/翻訳を保存した時点の
+    /// スナップショット）。現在UIで選択中の言語ペアとの食い違いをUIへ警告表示するために使う。
+    pub(crate) translate_child_saved_lang_meta: Option<(crate::translate::TranslateLang, crate::translate::TranslateLang)>,
     /// 子ウィンドウ右ペイン(翻訳結果)の表示内容。OCRとは完全に独立した処理単位・状態。
     pub(crate) translate_child_translation_lines: Vec<String>,
     pub(crate) translate_translate_rx: Option<mpsc::Receiver<crate::translate::TranslateMsg>>,
@@ -587,6 +590,7 @@ impl NekoviewApp {
             translate_child_ocr_lines: Vec::new(),
             translate_child_source_lang: None,
             translate_child_target_lang: None,
+            translate_child_saved_lang_meta: None,
             translate_child_translation_lines: Vec::new(),
             translate_translate_rx: None,
             translate_translate_status: None,
