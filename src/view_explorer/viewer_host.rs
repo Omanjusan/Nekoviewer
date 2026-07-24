@@ -203,11 +203,15 @@ impl NekoviewApp {
         let Ok(msg) = rx.try_recv() else { return };
         match msg {
             crate::translate::LangDetectMsg::Result(lang) => {
-                self.translate_child_source_lang = Some(lang);
-                // 判定結果が翻訳先と衝突する場合は「原文=翻訳先を禁止」の制約を優先し、
-                // 翻訳先側を未設定に戻す（判定結果を優先的に反映するため）。
-                if self.translate_child_target_lang == Some(lang) {
-                    self.translate_child_target_lang = None;
+                // 原文言語が既に別の値へ設定済み、または判定結果が現在の翻訳先と衝突する
+                // 場合は、勝手に上書き/リセットせずユーザーへ確認する。未設定または
+                // 既に同じ値なら食い違いが無いのでそのまま反映する。
+                let conflicts = self.translate_child_source_lang.is_some_and(|cur| cur != lang)
+                    || self.translate_child_target_lang == Some(lang);
+                if conflicts {
+                    self.translate_lang_detect_pending = Some(lang);
+                } else {
+                    self.translate_child_source_lang = Some(lang);
                 }
                 self.translate_lang_detect_status = None;
             }
@@ -370,6 +374,25 @@ impl NekoviewApp {
                 );
                 ui.colored_label(egui::Color32::from_rgb(230, 180, 90), i18n::t().translate_child_lang_mismatch_notice(&saved_label));
             }
+        }
+        // 言語判定結果が現在の原文/翻訳先設定と食い違う場合、ユーザーが選ぶまで反映しない。
+        if let Some(pending_lang) = self.translate_lang_detect_pending {
+            ui.horizontal(|ui| {
+                ui.colored_label(
+                    egui::Color32::from_rgb(230, 180, 90),
+                    i18n::t().translate_lang_detect_conflict_notice(i18n::t().translate_lang_label(pending_lang)),
+                );
+                if ui.small_button(i18n::t().translate_lang_detect_apply_button()).clicked() {
+                    self.translate_child_source_lang = Some(pending_lang);
+                    if self.translate_child_target_lang == Some(pending_lang) {
+                        self.translate_child_target_lang = None;
+                    }
+                    self.translate_lang_detect_pending = None;
+                }
+                if ui.small_button(i18n::t().translate_lang_detect_keep_button()).clicked() {
+                    self.translate_lang_detect_pending = None;
+                }
+            });
         }
         if let Some(status) = &self.translate_ocr_status {
             ui.colored_label(egui::Color32::from_rgb(230, 140, 140), status.as_str());

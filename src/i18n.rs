@@ -1214,6 +1214,33 @@ impl Lang {
         }
     }
 
+    /// 言語判定結果が現在の原文/翻訳先設定と食い違う場合の確認メッセージ。
+    pub fn translate_lang_detect_conflict_notice(self, detected: &str) -> String {
+        match self {
+            Lang::Japanese => format!("判定結果: {detected}（現在の設定と異なります）"),
+            Lang::English  => format!("Detected: {detected} (differs from current setting)"),
+            Lang::Chinese  => format!("判定结果: {detected}（与当前设置不同）"),
+        }
+    }
+
+    /// 上記確認の[判定結果を設定]ボタン。
+    pub fn translate_lang_detect_apply_button(self) -> &'static str {
+        match self {
+            Lang::Japanese => "判定結果を設定",
+            Lang::English  => "Apply detected",
+            Lang::Chinese  => "应用判定结果",
+        }
+    }
+
+    /// 上記確認の[現在の設定を維持]ボタン。
+    pub fn translate_lang_detect_keep_button(self) -> &'static str {
+        match self {
+            Lang::Japanese => "現在の設定を維持",
+            Lang::English  => "Keep current setting",
+            Lang::Chinese  => "保留当前设置",
+        }
+    }
+
     pub fn translate_overlay_running(self) -> &'static str {
         match self {
             Lang::Japanese => "解析中…（モデル未ロード時は数十秒以上かかることがあります）",

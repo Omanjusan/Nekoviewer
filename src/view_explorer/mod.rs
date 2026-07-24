@@ -395,6 +395,9 @@ pub struct NekoviewApp {
     /// 押された時だけ発火する（自動実行はしない）。
     pub(crate) translate_lang_detect_rx: Option<mpsc::Receiver<crate::translate::LangDetectMsg>>,
     pub(crate) translate_lang_detect_status: Option<String>,
+    /// 判定結果が現在の原文/翻訳先設定と食い違う場合の確認待ち状態。Some中はUIに
+    /// 「判定結果を設定」「現在の設定を維持」の選択を出し、ユーザーが選ぶまで反映しない。
+    pub(crate) translate_lang_detect_pending: Option<crate::translate::TranslateLang>,
     /// 直近に子ウィンドウの原文/翻訳先言語を保存済みメタから同期したアーカイブパス。
     /// アーカイブが変わった時だけ復元処理を行うためのキャッシュ。
     pub(crate) translate_child_lang_synced_for: Option<PathBuf>,
@@ -602,6 +605,7 @@ impl NekoviewApp {
             translate_translate_inflight_lang: None,
             translate_lang_detect_rx: None,
             translate_lang_detect_status: None,
+            translate_lang_detect_pending: None,
             translate_child_lang_synced_for: None,
             translate_window_autocheck_done_for: None,
             translate_ocr_inflight_key: None,
