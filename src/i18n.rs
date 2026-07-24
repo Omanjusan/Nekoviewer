@@ -1040,6 +1040,17 @@ impl Lang {
         }
     }
 
+    /// モデル一覧が未取得(ダイアログ限定の一時状態、開き直すたびに空になる)でも、
+    /// 保存済みの選択値自体は消えていないことを示す表示。「設定が消えた」ように
+    /// 見せないための保険（実際の値はtranslate_cfgに残ったまま）。
+    pub fn settings_translate_current_model_label(self, model: &str) -> String {
+        match self {
+            Lang::Japanese => format!("現在の設定: {model}"),
+            Lang::English  => format!("Current: {model}"),
+            Lang::Chinese  => format!("当前设置: {model}"),
+        }
+    }
+
     pub fn settings_translate_test_button(self) -> &'static str {
         match self {
             Lang::Japanese => "モデル取得",

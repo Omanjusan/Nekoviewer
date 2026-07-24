@@ -1028,6 +1028,12 @@ impl NekoviewApp {
 
         ui.label(i18n::t().settings_translate_translation_model_label());
         if models.is_empty() {
+            // 一覧未取得(ダイアログを開き直すたびにリセットされる一時状態)でも、
+            // 既に保存済みの選択値があればそれを見せる。空欄に見せると「設定が
+            // 消えた」ように誤解される（実際はtranslate_cfgに残っている）。
+            if !self.settings_draft.translate_translation_model.is_empty() {
+                ui.label(i18n::t().settings_translate_current_model_label(&self.settings_draft.translate_translation_model));
+            }
             ui.weak(i18n::t().settings_translate_no_models_hint());
         } else {
             let selected = if self.settings_draft.translate_translation_model.is_empty() {
@@ -1050,6 +1056,9 @@ impl NekoviewApp {
 
         ui.label(i18n::t().settings_translate_ocr_model_label());
         if models.is_empty() {
+            if !self.settings_draft.translate_ocr_model.is_empty() {
+                ui.label(i18n::t().settings_translate_current_model_label(&self.settings_draft.translate_ocr_model));
+            }
             ui.weak(i18n::t().settings_translate_no_models_hint());
         } else {
             let selected = if self.settings_draft.translate_ocr_model.is_empty() {
