@@ -167,9 +167,7 @@ impl NekoviewApp {
             self.translate_translate_status = Some(i18n::t().translate_child_ocr_required().to_string());
             return;
         }
-        // 原文言語はPhase3でプロンプトへ反映する予定。Phase2時点では
-        // 「未設定のまま実行させない」ガードとしてのみ使う。
-        let Some(_source) = self.translate_child_source_lang else {
+        let Some(source) = self.translate_child_source_lang else {
             self.translate_translate_status = Some(i18n::t().translate_child_lang_required().to_string());
             return;
         };
@@ -189,6 +187,7 @@ impl NekoviewApp {
             self.translate_cfg.base_url.clone(),
             self.translate_cfg.translation_model.clone(),
             self.translate_child_ocr_lines.clone(),
+            source,
             target,
         ));
     }

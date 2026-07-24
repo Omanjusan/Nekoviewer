@@ -397,7 +397,7 @@ const TRANSLATE_REQUEST_TIMEOUT_SECS: u64 = 120;
 /// 翻訳リクエストの応答トークン上限。OCRと同じくreasoningモデルの保険として大きめにしておく。
 const TRANSLATE_MAX_TOKENS: u32 = 4096;
 
-fn target_lang_prompt_name(lang: TranslateLang) -> &'static str {
+fn translate_lang_prompt_name(lang: TranslateLang) -> &'static str {
     match lang {
         TranslateLang::Japanese => "Japanese (日本語)",
         TranslateLang::ChineseSimplified => "Simplified Chinese (简体中文)",
@@ -407,14 +407,15 @@ fn target_lang_prompt_name(lang: TranslateLang) -> &'static str {
     }
 }
 
-/// 翻訳先言語ごとに変わる部分だけプロンプトへ差し込む。原文はOCR結果の行配列をそのまま
-/// JSON化して埋め込み、モデルには「同じ要素数・同じ順序で翻訳したJSON配列のみ」を求める
-/// （OCRの読み順維持と同じ考え方で、モデルに構造判断をさせない）。
-fn build_translate_prompt(lines: &[String], target: TranslateLang) -> String {
-    let lang_name = target_lang_prompt_name(target);
+/// 原文言語・翻訳先言語ごとに変わる部分だけプロンプトへ差し込む。原文はOCR結果の行配列を
+/// そのままJSON化して埋め込み、モデルには「同じ要素数・同じ順序で翻訳したJSON配列のみ」を
+/// 求める（OCRの読み順維持と同じ考え方で、モデルに構造判断をさせない）。
+fn build_translate_prompt(lines: &[String], source: TranslateLang, target: TranslateLang) -> String {
+    let source_lang_name = translate_lang_prompt_name(source);
+    let target_lang_name = translate_lang_prompt_name(target);
     let source_json = serde_json::to_string(lines).unwrap_or_default();
     format!(
-        "以下は日本語の漫画の吹き出しテキストをJSON配列にしたものです。各要素を{lang_name}へ翻訳してください。\
+        "以下は{source_lang_name}の漫画の吹き出しテキストをJSON配列にしたものです。各要素を{target_lang_name}へ翻訳してください。\
 出力は説明文なしで、原文と同じ要素数・同じ順序のJSON配列のみを返してください。\
 原文: {source_json}"
     )
@@ -440,12 +441,12 @@ fn parse_translate_content(content: &str) -> TranslatePageResult {
 
 /// 1ページぶんの翻訳リクエストをバックグラウンドスレッドで実行する。画像は送らず、
 /// OCR原文の行配列だけをテキストとして渡す（OCRと翻訳は完全に独立した処理単位）。
-pub fn spawn_translate_request(ctx: egui::Context, base_url: String, model: String, lines: Vec<String>, target: TranslateLang) -> mpsc::Receiver<TranslateMsg> {
+pub fn spawn_translate_request(ctx: egui::Context, base_url: String, model: String, lines: Vec<String>, source: TranslateLang, target: TranslateLang) -> mpsc::Receiver<TranslateMsg> {
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
         let result = (|| -> Result<TranslatePageResult, String> {
             let client = http_client(Duration::from_secs(TRANSLATE_REQUEST_TIMEOUT_SECS))?;
-            let prompt = build_translate_prompt(&lines, target);
+            let prompt = build_translate_prompt(&lines, source, target);
             let content = send_chat(&client, &base_url, &model, text_only_content(&prompt), Some(TRANSLATE_MAX_TOKENS))?;
             Ok(parse_translate_content(&content))
         })();
