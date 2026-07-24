@@ -521,13 +521,106 @@ pub fn save_translated_text(neko_dir: &Path, archive_filename: &str, original_in
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    std::fs::write(path, lines.join("\n"))
+    // 0000.txtの1行目はアーカイブ全体の言語ペアを記録するメタ行として使う場所なので、
+    // 既にあれば保持したまま本文だけ上書きする（save_translate_lang_meta参照）。
+    let existing_meta_line = if original_index == 0 {
+        std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|content| content.lines().next().map(str::to_string))
+            .filter(|line| line.starts_with(TRANSLATE_LANG_META_PREFIX))
+    } else {
+        None
+    };
+    let mut out: Vec<String> = existing_meta_line.into_iter().collect();
+    out.extend(lines.iter().cloned());
+    std::fs::write(path, out.join("\n"))
 }
 
 pub fn load_translated_text(neko_dir: &Path, archive_filename: &str, original_index: usize) -> Option<Vec<String>> {
     let path = translated_text_path(neko_dir, archive_filename, original_index);
     let content = std::fs::read_to_string(path).ok()?;
-    Some(content.lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_string).collect())
+    Some(
+        content
+            .lines()
+            .filter(|line| !line.starts_with(TRANSLATE_LANG_META_PREFIX))
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .map(str::to_string)
+            .collect(),
+    )
+}
+
+/// 翻訳言語ペアのメタ行に付ける目印。手動編集者が見ても「システムが書いた行」と
+/// 分かるよう先頭にコメント記号+アプリ名を置く。
+const TRANSLATE_LANG_META_PREFIX: &str = "# [Nekoviewer] ";
+
+fn translate_lang_code(lang: TranslateLang) -> &'static str {
+    match lang {
+        TranslateLang::Japanese => "ja",
+        TranslateLang::ChineseSimplified => "zh-Hans",
+        TranslateLang::ChineseTraditional => "zh-Hant",
+        TranslateLang::English => "en",
+        TranslateLang::Korean => "ko",
+    }
+}
+
+fn translate_lang_from_code(code: &str) -> Option<TranslateLang> {
+    match code {
+        "ja" => Some(TranslateLang::Japanese),
+        "zh-Hans" => Some(TranslateLang::ChineseSimplified),
+        "zh-Hant" => Some(TranslateLang::ChineseTraditional),
+        "en" => Some(TranslateLang::English),
+        "ko" => Some(TranslateLang::Korean),
+        _ => None,
+    }
+}
+
+fn format_translate_lang_meta_line(source: TranslateLang, target: TranslateLang) -> String {
+    format!(
+        "{TRANSLATE_LANG_META_PREFIX}このアーカイブを翻訳した際の言語設定を自動記録しています(lang={}:{})。削除しても翻訳結果自体には影響しません。",
+        translate_lang_code(source),
+        translate_lang_code(target)
+    )
+}
+
+fn parse_translate_lang_meta_line(line: &str) -> Option<(TranslateLang, TranslateLang)> {
+    let after = line.split_once("lang=")?.1;
+    let pair = after.split(')').next()?;
+    let (src, dst) = pair.split_once(':')?;
+    Some((translate_lang_from_code(src)?, translate_lang_from_code(dst)?))
+}
+
+/// アーカイブ単位の翻訳言語ペアを記録する。0000.txtの1行目をメタ行として
+/// 追加/更新する（本文（翻訳結果）が既にあれば保持する）。
+pub fn save_translate_lang_meta(neko_dir: &Path, archive_filename: &str, source: TranslateLang, target: TranslateLang) -> std::io::Result<()> {
+    let path = translated_text_path(neko_dir, archive_filename, 0);
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let existing = std::fs::read_to_string(&path).ok();
+    let body_lines: Vec<&str> = existing
+        .as_deref()
+        .map(|content| {
+            let mut lines: Vec<&str> = content.lines().collect();
+            if lines.first().is_some_and(|l| l.starts_with(TRANSLATE_LANG_META_PREFIX)) {
+                lines.remove(0);
+            }
+            lines
+        })
+        .unwrap_or_default();
+    let meta_line = format_translate_lang_meta_line(source, target);
+    let mut out = vec![meta_line];
+    out.extend(body_lines.into_iter().map(str::to_string));
+    std::fs::write(path, out.join("\n"))
+}
+
+/// 保存済みの翻訳言語ペアを読み込む。0000.txtが無い、またはメタ行が無ければNone
+/// （＝未翻訳、またはPhase4以前に保存されたデータ）。
+pub fn load_translate_lang_meta(neko_dir: &Path, archive_filename: &str) -> Option<(TranslateLang, TranslateLang)> {
+    let path = translated_text_path(neko_dir, archive_filename, 0);
+    let content = std::fs::read_to_string(path).ok()?;
+    let first_line = content.lines().next()?;
+    parse_translate_lang_meta_line(first_line)
 }
 
 /// OS標準のファイラーでフォルダを開く（ベストエフォート、失敗しても無視する）。

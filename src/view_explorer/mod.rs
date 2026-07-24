@@ -385,6 +385,12 @@ pub struct NekoviewApp {
     pub(crate) translate_translate_status: Option<String>,
     /// 実行中の翻訳リクエストがどのページ宛てか。OCRのinflight_keyと同じ理由で保持する。
     pub(crate) translate_translate_inflight_key: Option<(PathBuf, usize)>,
+    /// 実行中の翻訳リクエストで使った言語ペア。完了時にアーカイブ単位の言語メタとして
+    /// 保存するために、リクエスト開始時点の値を保持しておく。
+    pub(crate) translate_translate_inflight_lang: Option<(crate::translate::TranslateLang, crate::translate::TranslateLang)>,
+    /// 直近に子ウィンドウの原文/翻訳先言語を保存済みメタから同期したアーカイブパス。
+    /// アーカイブが変わった時だけ復元処理を行うためのキャッシュ。
+    pub(crate) translate_child_lang_synced_for: Option<PathBuf>,
     /// 直近に自動オープン判定を行ったアーカイブパス（同一アーカイブ内での毎フレーム
     /// 再チェックを避けるためのキャッシュ）。
     pub(crate) translate_window_autocheck_done_for: Option<PathBuf>,
@@ -585,6 +591,8 @@ impl NekoviewApp {
             translate_translate_rx: None,
             translate_translate_status: None,
             translate_translate_inflight_key: None,
+            translate_translate_inflight_lang: None,
+            translate_child_lang_synced_for: None,
             translate_window_autocheck_done_for: None,
             translate_ocr_inflight_key: None,
             translate_ocr_queue: std::collections::VecDeque::new(),

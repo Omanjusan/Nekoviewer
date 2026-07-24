@@ -142,6 +142,21 @@ impl NekoviewApp {
     fn sync_child_panes_display(&mut self) {
         self.sync_child_ocr_display();
         self.sync_child_translation_display();
+        self.sync_child_lang_from_meta_if_new_archive();
+    }
+
+    /// アーカイブが切り替わった時だけ、原文/翻訳先言語を保存済みメタから復元する。
+    /// 保存済みメタが無ければ未設定(None)に戻す（アーカイブごとに言語が違う可能性があり、
+    /// 前のアーカイブの選択を持ち越すと誤訳の温床になるため）。
+    fn sync_child_lang_from_meta_if_new_archive(&mut self) {
+        let Some((archive_path, _)) = self.translate_child_cursor.clone() else { return };
+        if self.translate_child_lang_synced_for.as_ref() == Some(&archive_path) {
+            return;
+        }
+        self.translate_child_lang_synced_for = Some(archive_path.clone());
+        let meta = self.load_translate_lang_meta_for(&archive_path);
+        self.translate_child_source_lang = meta.map(|(source, _)| source);
+        self.translate_child_target_lang = meta.map(|(_, target)| target);
     }
 
     /// 子ウィンドウの[再取得]: `translate_child_cursor`が指す1ページのみOCRを再実行する。
@@ -182,6 +197,7 @@ impl NekoviewApp {
         let Some(key) = self.translate_child_cursor.clone() else { return };
         self.translate_translate_status = Some(i18n::t().translate_overlay_running().to_string());
         self.translate_translate_inflight_key = Some(key);
+        self.translate_translate_inflight_lang = Some((source, target));
         self.translate_translate_rx = Some(crate::translate::spawn_translate_request(
             ctx.clone(),
             self.translate_cfg.base_url.clone(),
@@ -201,6 +217,9 @@ impl NekoviewApp {
             crate::translate::TranslateMsg::Result(page) => {
                 if let Some((archive_path, orig)) = self.translate_translate_inflight_key.take() {
                     self.save_translated_text_for(&archive_path, orig, &page.lines);
+                    if let Some((source, target)) = self.translate_translate_inflight_lang.take() {
+                        self.save_translate_lang_meta_for(&archive_path, source, target);
+                    }
                     if self.translate_child_cursor.as_ref() == Some(&(archive_path, orig)) {
                         self.sync_child_translation_display();
                     }
@@ -214,6 +233,7 @@ impl NekoviewApp {
             crate::translate::TranslateMsg::Failed(e) => {
                 self.translate_translate_status = Some(format!("{}: {e}", i18n::t().translate_overlay_failed_prefix()));
                 self.translate_translate_inflight_key = None;
+                self.translate_translate_inflight_lang = None;
             }
         }
         self.translate_translate_rx = None;
@@ -752,6 +772,18 @@ impl NekoviewApp {
         let neko_dir = self.translate_neko_dir_for(archive_path)?;
         let filename = archive_path.file_name().and_then(|n| n.to_str())?;
         crate::translate::load_translated_text(&neko_dir, filename, original_index)
+    }
+
+    fn save_translate_lang_meta_for(&self, archive_path: &std::path::Path, source: crate::translate::TranslateLang, target: crate::translate::TranslateLang) {
+        let Some(neko_dir) = self.translate_neko_dir_for(archive_path) else { return };
+        let Some(filename) = archive_path.file_name().and_then(|n| n.to_str()) else { return };
+        let _ = crate::translate::save_translate_lang_meta(&neko_dir, filename, source, target);
+    }
+
+    fn load_translate_lang_meta_for(&self, archive_path: &std::path::Path) -> Option<(crate::translate::TranslateLang, crate::translate::TranslateLang)> {
+        let neko_dir = self.translate_neko_dir_for(archive_path)?;
+        let filename = archive_path.file_name().and_then(|n| n.to_str())?;
+        crate::translate::load_translate_lang_meta(&neko_dir, filename)
     }
 
     /// 現在のアーカイブに対応するOCR txtフォルダをOSのファイラーで開く
