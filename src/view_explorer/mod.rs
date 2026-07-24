@@ -375,8 +375,8 @@ pub struct NekoviewApp {
     pub(crate) translate_child_cursor: Option<(PathBuf, usize)>,
     /// 子ウィンドウ左ペイン(OCR原文)の表示内容。`translate_child_cursor`のページ分のtxt。
     pub(crate) translate_child_ocr_lines: Vec<String>,
-    /// 子ウィンドウで選択中の翻訳先言語。原文(日本語固定)は選択肢から除く。
-    pub(crate) translate_child_target_lang: crate::translate::TargetLang,
+    /// 子ウィンドウで選択中の翻訳先言語。原文言語の独立選択はPhase2で追加予定。
+    pub(crate) translate_child_target_lang: crate::translate::TranslateLang,
     /// 子ウィンドウ右ペイン(翻訳結果)の表示内容。OCRとは完全に独立した処理単位・状態。
     pub(crate) translate_child_translation_lines: Vec<String>,
     pub(crate) translate_translate_rx: Option<mpsc::Receiver<crate::translate::TranslateMsg>>,
@@ -577,7 +577,7 @@ impl NekoviewApp {
             translate_window_always_on_top: false,
             translate_child_cursor: None,
             translate_child_ocr_lines: Vec::new(),
-            translate_child_target_lang: crate::translate::TargetLang::ChineseSimplified,
+            translate_child_target_lang: crate::translate::TranslateLang::ChineseSimplified,
             translate_child_translation_lines: Vec::new(),
             translate_translate_rx: None,
             translate_translate_status: None,

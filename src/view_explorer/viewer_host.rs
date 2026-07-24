@@ -238,10 +238,12 @@ impl NekoviewApp {
                 self.trigger_child_ocr_retry(&ctx);
             }
             egui::ComboBox::from_id_salt("translate_child_target_lang")
-                .selected_text(i18n::t().translate_target_lang_label(self.translate_child_target_lang))
+                .selected_text(i18n::t().translate_lang_label(self.translate_child_target_lang))
                 .show_ui(ui, |ui| {
-                    for lang in crate::translate::TargetLang::ALL {
-                        ui.selectable_value(&mut self.translate_child_target_lang, lang, i18n::t().translate_target_lang_label(lang));
+                    // Phase1時点では翻訳先の選択肢はまだ従来通り（日本語を除く4言語）。
+                    // 原文/翻訳先の独立選択・日本語を含む選択肢の解禁はPhase2で対応する。
+                    for lang in crate::translate::TranslateLang::ALL.into_iter().filter(|l| *l != crate::translate::TranslateLang::Japanese) {
+                        ui.selectable_value(&mut self.translate_child_target_lang, lang, i18n::t().translate_lang_label(lang));
                     }
                 });
             if ui.small_button(i18n::t().translate_child_retranslate_button()).clicked() {

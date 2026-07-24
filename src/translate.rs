@@ -35,19 +35,25 @@ pub fn parse_overlay_corner(s: &str) -> OverlayCorner {
     }
 }
 
-/// 翻訳先言語（子ウィンドウのドロップダウンで選択）。原文言語(常に日本語固定、OCRが真実)は
-/// 含めない。検出ロジックは持たず、Nekoviewerが漫画OCR前提であることから固定扱いにしている。
+/// 翻訳機能で扱う言語（原文言語・翻訳先言語の両方で共有する）。
+/// i18n::Lang（アプリUI表示言語）とは別概念のため名前を分けている。
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum TargetLang {
+pub enum TranslateLang {
+    Japanese,
     ChineseSimplified,
     ChineseTraditional,
     English,
     Korean,
 }
 
-impl TargetLang {
-    pub const ALL: [TargetLang; 4] =
-        [TargetLang::ChineseSimplified, TargetLang::ChineseTraditional, TargetLang::English, TargetLang::Korean];
+impl TranslateLang {
+    pub const ALL: [TranslateLang; 5] = [
+        TranslateLang::Japanese,
+        TranslateLang::ChineseSimplified,
+        TranslateLang::ChineseTraditional,
+        TranslateLang::English,
+        TranslateLang::Korean,
+    ];
 }
 
 /// 「翻訳機能」設定タブで編集する永続設定。
@@ -391,19 +397,20 @@ const TRANSLATE_REQUEST_TIMEOUT_SECS: u64 = 120;
 /// 翻訳リクエストの応答トークン上限。OCRと同じくreasoningモデルの保険として大きめにしておく。
 const TRANSLATE_MAX_TOKENS: u32 = 4096;
 
-fn target_lang_prompt_name(lang: TargetLang) -> &'static str {
+fn target_lang_prompt_name(lang: TranslateLang) -> &'static str {
     match lang {
-        TargetLang::ChineseSimplified => "Simplified Chinese (简体中文)",
-        TargetLang::ChineseTraditional => "Traditional Chinese (繁體中文)",
-        TargetLang::English => "English",
-        TargetLang::Korean => "Korean (한국어)",
+        TranslateLang::Japanese => "Japanese (日本語)",
+        TranslateLang::ChineseSimplified => "Simplified Chinese (简体中文)",
+        TranslateLang::ChineseTraditional => "Traditional Chinese (繁體中文)",
+        TranslateLang::English => "English",
+        TranslateLang::Korean => "Korean (한국어)",
     }
 }
 
 /// 翻訳先言語ごとに変わる部分だけプロンプトへ差し込む。原文はOCR結果の行配列をそのまま
 /// JSON化して埋め込み、モデルには「同じ要素数・同じ順序で翻訳したJSON配列のみ」を求める
 /// （OCRの読み順維持と同じ考え方で、モデルに構造判断をさせない）。
-fn build_translate_prompt(lines: &[String], target: TargetLang) -> String {
+fn build_translate_prompt(lines: &[String], target: TranslateLang) -> String {
     let lang_name = target_lang_prompt_name(target);
     let source_json = serde_json::to_string(lines).unwrap_or_default();
     format!(
@@ -433,7 +440,7 @@ fn parse_translate_content(content: &str) -> TranslatePageResult {
 
 /// 1ページぶんの翻訳リクエストをバックグラウンドスレッドで実行する。画像は送らず、
 /// OCR原文の行配列だけをテキストとして渡す（OCRと翻訳は完全に独立した処理単位）。
-pub fn spawn_translate_request(ctx: egui::Context, base_url: String, model: String, lines: Vec<String>, target: TargetLang) -> mpsc::Receiver<TranslateMsg> {
+pub fn spawn_translate_request(ctx: egui::Context, base_url: String, model: String, lines: Vec<String>, target: TranslateLang) -> mpsc::Receiver<TranslateMsg> {
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
         let result = (|| -> Result<TranslatePageResult, String> {

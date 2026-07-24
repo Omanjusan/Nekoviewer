@@ -1155,22 +1155,25 @@ impl Lang {
         }
     }
 
-    /// 翻訳先言語ドロップダウンの表示名。
-    pub fn translate_target_lang_label(self, lang: crate::translate::TargetLang) -> &'static str {
-        use crate::translate::TargetLang;
+    /// 翻訳機能の言語ドロップダウン（原文/翻訳先共通）の表示名。
+    pub fn translate_lang_label(self, lang: crate::translate::TranslateLang) -> &'static str {
+        use crate::translate::TranslateLang;
         match (self, lang) {
-            (Lang::Japanese, TargetLang::ChineseSimplified)  => "中国語(簡体字)",
-            (Lang::Japanese, TargetLang::ChineseTraditional) => "中国語(繁体字)",
-            (Lang::Japanese, TargetLang::English)            => "英語",
-            (Lang::Japanese, TargetLang::Korean)             => "韓国語",
-            (Lang::English, TargetLang::ChineseSimplified)  => "Chinese (Simplified)",
-            (Lang::English, TargetLang::ChineseTraditional) => "Chinese (Traditional)",
-            (Lang::English, TargetLang::English)            => "English",
-            (Lang::English, TargetLang::Korean)             => "Korean",
-            (Lang::Chinese, TargetLang::ChineseSimplified)  => "简体中文",
-            (Lang::Chinese, TargetLang::ChineseTraditional) => "繁体中文",
-            (Lang::Chinese, TargetLang::English)            => "英语",
-            (Lang::Chinese, TargetLang::Korean)             => "韩语",
+            (Lang::Japanese, TranslateLang::Japanese)         => "日本語",
+            (Lang::Japanese, TranslateLang::ChineseSimplified)  => "中国語(簡体字)",
+            (Lang::Japanese, TranslateLang::ChineseTraditional) => "中国語(繁体字)",
+            (Lang::Japanese, TranslateLang::English)            => "英語",
+            (Lang::Japanese, TranslateLang::Korean)             => "韓国語",
+            (Lang::English, TranslateLang::Japanese)          => "Japanese",
+            (Lang::English, TranslateLang::ChineseSimplified)  => "Chinese (Simplified)",
+            (Lang::English, TranslateLang::ChineseTraditional) => "Chinese (Traditional)",
+            (Lang::English, TranslateLang::English)            => "English",
+            (Lang::English, TranslateLang::Korean)             => "Korean",
+            (Lang::Chinese, TranslateLang::Japanese)          => "日语",
+            (Lang::Chinese, TranslateLang::ChineseSimplified)  => "简体中文",
+            (Lang::Chinese, TranslateLang::ChineseTraditional) => "繁体中文",
+            (Lang::Chinese, TranslateLang::English)            => "英语",
+            (Lang::Chinese, TranslateLang::Korean)             => "韩语",
         }
     }
 
