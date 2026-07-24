@@ -167,6 +167,16 @@ impl NekoviewApp {
             self.translate_translate_status = Some(i18n::t().translate_child_ocr_required().to_string());
             return;
         }
+        // 原文言語はPhase3でプロンプトへ反映する予定。Phase2時点では
+        // 「未設定のまま実行させない」ガードとしてのみ使う。
+        let Some(_source) = self.translate_child_source_lang else {
+            self.translate_translate_status = Some(i18n::t().translate_child_lang_required().to_string());
+            return;
+        };
+        let Some(target) = self.translate_child_target_lang else {
+            self.translate_translate_status = Some(i18n::t().translate_child_lang_required().to_string());
+            return;
+        };
         if self.translate_cfg.translation_model.trim().is_empty() {
             self.translate_translate_status = Some(i18n::t().translate_overlay_model_missing().to_string());
             return;
@@ -179,7 +189,7 @@ impl NekoviewApp {
             self.translate_cfg.base_url.clone(),
             self.translate_cfg.translation_model.clone(),
             self.translate_child_ocr_lines.clone(),
-            self.translate_child_target_lang,
+            target,
         ));
     }
 
@@ -237,13 +247,31 @@ impl NekoviewApp {
             if ui.small_button(i18n::t().translate_child_retry_button()).clicked() {
                 self.trigger_child_ocr_retry(&ctx);
             }
-            egui::ComboBox::from_id_salt("translate_child_target_lang")
-                .selected_text(i18n::t().translate_lang_label(self.translate_child_target_lang))
+            egui::ComboBox::from_id_salt("translate_child_source_lang")
+                .selected_text(
+                    self.translate_child_source_lang
+                        .map(|l| i18n::t().translate_lang_label(l))
+                        .unwrap_or_else(|| i18n::t().translate_lang_unset_label()),
+                )
                 .show_ui(ui, |ui| {
-                    // Phase1時点では翻訳先の選択肢はまだ従来通り（日本語を除く4言語）。
-                    // 原文/翻訳先の独立選択・日本語を含む選択肢の解禁はPhase2で対応する。
-                    for lang in crate::translate::TranslateLang::ALL.into_iter().filter(|l| *l != crate::translate::TranslateLang::Japanese) {
-                        ui.selectable_value(&mut self.translate_child_target_lang, lang, i18n::t().translate_lang_label(lang));
+                    ui.selectable_value(&mut self.translate_child_source_lang, None, i18n::t().translate_lang_unset_label());
+                    // 翻訳先と同じ言語は選べない（原文=翻訳先を弾く）。
+                    for lang in crate::translate::TranslateLang::ALL.into_iter().filter(|l| Some(*l) != self.translate_child_target_lang) {
+                        ui.selectable_value(&mut self.translate_child_source_lang, Some(lang), i18n::t().translate_lang_label(lang));
+                    }
+                });
+            ui.label("→");
+            egui::ComboBox::from_id_salt("translate_child_target_lang")
+                .selected_text(
+                    self.translate_child_target_lang
+                        .map(|l| i18n::t().translate_lang_label(l))
+                        .unwrap_or_else(|| i18n::t().translate_lang_unset_label()),
+                )
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut self.translate_child_target_lang, None, i18n::t().translate_lang_unset_label());
+                    // 原文と同じ言語は選べない（原文=翻訳先を弾く）。
+                    for lang in crate::translate::TranslateLang::ALL.into_iter().filter(|l| Some(*l) != self.translate_child_source_lang) {
+                        ui.selectable_value(&mut self.translate_child_target_lang, Some(lang), i18n::t().translate_lang_label(lang));
                     }
                 });
             if ui.small_button(i18n::t().translate_child_retranslate_button()).clicked() {

@@ -1118,21 +1118,21 @@ impl Lang {
         }
     }
 
-    /// 子ウィンドウの[再取得]ボタン(1P単位でOCRを再実行)。
+    /// 子ウィンドウの[取得]ボタン(1P単位でOCRを実行)。
     pub fn translate_child_retry_button(self) -> &'static str {
         match self {
-            Lang::Japanese => "再取得",
-            Lang::English  => "Retry OCR",
-            Lang::Chinese  => "重新识别",
+            Lang::Japanese => "取得",
+            Lang::English  => "OCR",
+            Lang::Chinese  => "识别",
         }
     }
 
-    /// 子ウィンドウの[再翻訳]ボタン(モック、実処理未実装)。
+    /// 子ウィンドウの[翻訳]ボタン。
     pub fn translate_child_retranslate_button(self) -> &'static str {
         match self {
-            Lang::Japanese => "再翻訳",
-            Lang::English  => "Re-translate",
-            Lang::Chinese  => "重新翻译",
+            Lang::Japanese => "翻訳",
+            Lang::English  => "Translate",
+            Lang::Chinese  => "翻译",
         }
     }
 
@@ -1174,6 +1174,24 @@ impl Lang {
             (Lang::Chinese, TranslateLang::ChineseTraditional) => "繁体中文",
             (Lang::Chinese, TranslateLang::English)            => "英语",
             (Lang::Chinese, TranslateLang::Korean)             => "韩语",
+        }
+    }
+
+    /// 言語ドロップダウンが未設定状態のときの表示名。
+    pub fn translate_lang_unset_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "未設定",
+            Lang::English  => "Not set",
+            Lang::Chinese  => "未设置",
+        }
+    }
+
+    /// 原文/翻訳先言語のどちらかが未設定のまま翻訳を実行しようとした場合のエラー。
+    pub fn translate_child_lang_required(self) -> &'static str {
+        match self {
+            Lang::Japanese => "原文言語と翻訳先言語を設定してください",
+            Lang::English  => "Please set both the source and target languages",
+            Lang::Chinese  => "请设置原文语言和翻译目标语言",
         }
     }
 
