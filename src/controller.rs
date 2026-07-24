@@ -38,6 +38,8 @@ pub struct ViewerOutput {
     pub spread_save_action: Option<SpreadSaveAction>,
     /// true のとき app 側でお気に入り詳細設定ダイアログを開く
     pub open_favorite_dialog: bool,
+    /// true のとき app 側でOCR/翻訳子ウィンドウの開閉をトグルする
+    pub toggle_translate_window: bool,
 }
 
 // ── ステータス即時更新要求 ────────────────────────────────────────────────────

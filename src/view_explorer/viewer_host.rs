@@ -473,15 +473,22 @@ impl NekoviewApp {
         // Painter からは見えない（テクスチャがデコードはできても描画されない原因だった）。
         self.pump_thumbbar_entries(ui.ctx());
 
+        // Phase3で「疎通確認済み・翻訳モデル選択済み」に条件を差し替える予定。
+        // 暫定的に旧フローティングボタンと同じ条件(URL設定済み)にしておく。
+        let translate_toggle_enabled = !self.translate_cfg.base_url.trim().is_empty();
         let output = {
             let mut viewer_guard = self.viewer.lock().unwrap();
             let page_cache_guard = self.page_cache.lock().unwrap();
             let mut cfg_guard = self.viewer_cfg.lock().unwrap();
             match viewer_guard.as_mut() {
-                Some(viewer) => viewer.show(ui, &*page_cache_guard, &mut *cfg_guard, &self.config.keymap),
+                Some(viewer) => viewer.show(ui, &*page_cache_guard, &mut *cfg_guard, &self.config.keymap, self.translate_window_open, translate_toggle_enabled),
                 None => return,
             }
         };
+
+        if output.toggle_translate_window {
+            self.translate_window_open = !self.translate_window_open;
+        }
 
         self.maybe_autoopen_translate_window();
         self.draw_translate_open_button(ui.ctx());

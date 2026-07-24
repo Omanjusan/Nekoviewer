@@ -104,6 +104,27 @@ impl Lang {
         }
     }
 
+    /// ツールバーの[翻訳]ボタン(OCR/翻訳子ウィンドウの開閉トグル)。英語のみ幅を抑えて[Tr.]。
+    pub fn toolbar_translate_toggle_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "翻訳",
+            Lang::English  => "[Tr.]",
+            Lang::Chinese  => "翻译",
+        }
+    }
+
+    /// 上記ボタンのホバーツールチップ。押せない場合は理由を説明する。
+    pub fn toolbar_translate_toggle_tip(self, enabled: bool) -> &'static str {
+        match (self, enabled) {
+            (Lang::Japanese, true)  => "OCR/翻訳ウィンドウの表示切替",
+            (Lang::Japanese, false) => "設定タブで疎通確認と翻訳モデルの選択が必要です",
+            (Lang::English, true)   => "Toggle the OCR/translation window",
+            (Lang::English, false)  => "Test the connection and select a translation model in Settings first",
+            (Lang::Chinese, true)   => "切换OCR/翻译窗口显示",
+            (Lang::Chinese, false)  => "请先在设置中测试连接并选择翻译模型",
+        }
+    }
+
     pub fn page_single(self) -> &'static str {
         match self {
             Lang::Japanese => "[単ページ]",
