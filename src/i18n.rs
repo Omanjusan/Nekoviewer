@@ -1064,60 +1064,11 @@ impl Lang {
         }
     }
 
-    pub fn settings_translate_overlay_corner_label(self) -> &'static str {
-        match self {
-            Lang::Japanese => "オーバーレイ配置(四隅)",
-            Lang::English  => "Overlay position (corner)",
-            Lang::Chinese  => "浮层位置(四角)",
-        }
-    }
-
-    pub fn settings_translate_corner_top_left(self) -> &'static str {
-        match self {
-            Lang::Japanese => "左上",
-            Lang::English  => "Top-left",
-            Lang::Chinese  => "左上",
-        }
-    }
-
-    pub fn settings_translate_corner_top_right(self) -> &'static str {
-        match self {
-            Lang::Japanese => "右上",
-            Lang::English  => "Top-right",
-            Lang::Chinese  => "右上",
-        }
-    }
-
-    pub fn settings_translate_corner_bottom_left(self) -> &'static str {
-        match self {
-            Lang::Japanese => "左下",
-            Lang::English  => "Bottom-left",
-            Lang::Chinese  => "左下",
-        }
-    }
-
-    pub fn settings_translate_corner_bottom_right(self) -> &'static str {
-        match self {
-            Lang::Japanese => "右下",
-            Lang::English  => "Bottom-right",
-            Lang::Chinese  => "右下",
-        }
-    }
-
     pub fn translate_overlay_open_folder_button(self) -> &'static str {
         match self {
             Lang::Japanese => "フォルダを開く",
             Lang::English  => "Open folder",
             Lang::Chinese  => "打开文件夹",
-        }
-    }
-
-    /// ビューアー部の[翻訳]ボタン。OCR/翻訳子ウィンドウをユーザーの意思で開く導線。
-    pub fn translate_open_window_button(self) -> &'static str {
-        match self {
-            Lang::Japanese => "翻訳",
-            Lang::English  => "Translate",
-            Lang::Chinese  => "翻译",
         }
     }
 

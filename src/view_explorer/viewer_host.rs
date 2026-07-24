@@ -473,9 +473,9 @@ impl NekoviewApp {
         // Painter からは見えない（テクスチャがデコードはできても描画されない原因だった）。
         self.pump_thumbbar_entries(ui.ctx());
 
-        // Phase3で「疎通確認済み・翻訳モデル選択済み」に条件を差し替える予定。
-        // 暫定的に旧フローティングボタンと同じ条件(URL設定済み)にしておく。
-        let translate_toggle_enabled = !self.translate_cfg.base_url.trim().is_empty();
+        // ツールバーの翻訳トグルボタンは、セッション内で疎通確認済み(URL一致)かつ
+        // 翻訳モデルが選択済みの場合のみ有効化する。
+        let translate_toggle_enabled = self.translate_conn_verified && !self.translate_cfg.translation_model.trim().is_empty();
         let output = {
             let mut viewer_guard = self.viewer.lock().unwrap();
             let page_cache_guard = self.page_cache.lock().unwrap();
@@ -491,7 +491,6 @@ impl NekoviewApp {
         }
 
         self.maybe_autoopen_translate_window();
-        self.draw_translate_open_button(ui.ctx());
 
         // ビューアー窓自身の通常操作（矢印キー等、viewer.show()内部で完結しoutput.navには
         // 出てこない）でページが変わった場合、独立Contextの子ウィンドウには何も伝わらず
@@ -762,35 +761,6 @@ impl NekoviewApp {
             }
         }
         self.translate_ocr_rx = None;
-    }
-
-    /// ビューアー窓側の最小限の導線: 既存txtが無いアーカイブでOCR/翻訳子ウィンドウを
-    /// ユーザーの意思で開くための[翻訳]ボタンのみ（旧テストUIはPhase5で撤去）。
-    /// URL未設定なら何も描画しない。
-    fn draw_translate_open_button(&mut self, ctx: &egui::Context) {
-        if self.translate_window_open || self.translate_cfg.base_url.trim().is_empty() {
-            return;
-        }
-
-        use crate::translate::OverlayCorner;
-        let corner = self.translate_cfg.overlay_corner;
-        let (anchor, offset) = match corner {
-            OverlayCorner::TopLeft => (egui::Align2::LEFT_TOP, egui::vec2(8.0, 8.0)),
-            OverlayCorner::TopRight => (egui::Align2::RIGHT_TOP, egui::vec2(-8.0, 8.0)),
-            OverlayCorner::BottomLeft => (egui::Align2::LEFT_BOTTOM, egui::vec2(8.0, -8.0)),
-            OverlayCorner::BottomRight => (egui::Align2::RIGHT_BOTTOM, egui::vec2(-8.0, -8.0)),
-        };
-
-        egui::Area::new(egui::Id::new("translate_open_button"))
-            .anchor(anchor, offset)
-            .movable(false)
-            .show(ctx, |ui| {
-                egui::Frame::popup(ui.style()).fill(egui::Color32::from_black_alpha(190)).show(ui, |ui| {
-                    if ui.small_button(i18n::t().translate_open_window_button()).clicked() {
-                        self.translate_window_open = true;
-                    }
-                });
-            });
     }
 
     /// キュー内の次の1ページ分のOCRリクエストを実際に発火する。

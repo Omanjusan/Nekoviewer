@@ -354,6 +354,11 @@ pub struct NekoviewApp {
     pub(crate) translate_conn_rx: Option<mpsc::Receiver<crate::translate::ConnCheckMsg>>,
     /// 直近の接続テスト結果表示用（疎通/vision結果の文字列、または失敗理由）。
     pub(crate) translate_conn_status: Option<String>,
+    /// ツールバーの翻訳トグルボタンを有効化してよいか（セッション単位、非永続）。
+    /// [反映]時に、直前の疎通チェック成功URLと実際に反映されるURLが一致する場合だけtrueになる。
+    pub(crate) translate_conn_verified: bool,
+    /// 直近に疎通チェックが成功した時点のURL（[反映]時のURL一致検証に使う）。
+    pub(crate) translate_conn_verified_url: Option<String>,
     pub(crate) translate_ocr_rx: Option<mpsc::Receiver<crate::translate::OcrMsg>>,
     pub(crate) translate_ocr_status: Option<String>,
     /// 実行中のOCRリクエストがどのページ宛てか。結果到着時にそのページ用のtxtへ保存する
@@ -589,6 +594,8 @@ impl NekoviewApp {
             translate_cfg,
             translate_conn_rx: None,
             translate_conn_status: None,
+            translate_conn_verified: false,
+            translate_conn_verified_url: None,
             translate_ocr_rx: None,
             translate_ocr_status: None,
             translate_window_open: false,

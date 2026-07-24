@@ -8,33 +8,6 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
-/// 半透明オーバーレイウィンドウの配置（ビューアー画面を軸とした四隅）。
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum OverlayCorner {
-    TopLeft,
-    TopRight,
-    BottomLeft,
-    BottomRight,
-}
-
-pub fn overlay_corner_to_str(c: OverlayCorner) -> &'static str {
-    match c {
-        OverlayCorner::TopLeft => "top_left",
-        OverlayCorner::TopRight => "top_right",
-        OverlayCorner::BottomLeft => "bottom_left",
-        OverlayCorner::BottomRight => "bottom_right",
-    }
-}
-
-pub fn parse_overlay_corner(s: &str) -> OverlayCorner {
-    match s {
-        "top_left" => OverlayCorner::TopLeft,
-        "bottom_left" => OverlayCorner::BottomLeft,
-        "bottom_right" => OverlayCorner::BottomRight,
-        _ => OverlayCorner::TopRight,
-    }
-}
-
 /// 翻訳機能で扱う言語（原文言語・翻訳先言語の両方で共有する）。
 /// i18n::Lang（アプリUI表示言語）とは別概念のため名前を分けている。
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -66,9 +39,10 @@ pub struct TranslateConfig {
     /// OCRに使うモデル名。設定UIでユーザーが明示的に選び直すまでは翻訳モデルに追従する。
     pub ocr_model: String,
     /// オーバーレイウィンドウの横幅(px)。
+    /// 現状どの描画コードからも参照されていない未使用設定（旧・画面隅フローティング
+    /// オーバーレイ用に用意されたが、子ウィンドウは480x640固定サイズで運用されている）。
+    /// 設定タブ・state永続化には残っているため、値自体は保持しておく。
     pub overlay_width: u32,
-    /// オーバーレイウィンドウの配置(四隅)。
-    pub overlay_corner: OverlayCorner,
 }
 
 impl Default for TranslateConfig {
@@ -78,7 +52,6 @@ impl Default for TranslateConfig {
             translation_model: String::new(),
             ocr_model: String::new(),
             overlay_width: 360,
-            overlay_corner: OverlayCorner::TopRight,
         }
     }
 }
