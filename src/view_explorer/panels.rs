@@ -67,7 +67,11 @@ impl NekoviewApp {
         // 設定ダイアログ（翻訳機能タブのURL/モデル名入力欄など）が開いている間は、
         // 自前カーソル用の強制フォーカス解除を止める。解除したままだと入力した
         // 次フレームで即座にフォーカスが外れ、テキスト入力が一切通らなくなる。
-        if self.focused_pane != FocusPane::Filter && !self.settings_is_open() {
+        if self.focused_pane != FocusPane::Filter
+            && !self.settings_is_open()
+            && self.favorite_dialog.is_none()
+            && self.favorite_detail_dialog.is_none()
+        {
             ctx.memory_mut(|mem| mem.stop_text_input());
         }
         // release ビルドは ROOT 内フローティングウィンドウのため ui() で描画する。
