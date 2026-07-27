@@ -244,6 +244,7 @@ impl NekoviewApp {
         // バックグラウンドスキャン結果をポーリング
         self.poll_scan();
         self.poll_tree_scan();
+        self.poll_tree_reload();
 
         // サムネイルワーカーからの結果を受信してGPUテクスチャへアップロード
         let was_pending = !self.thumb_pending.is_empty();

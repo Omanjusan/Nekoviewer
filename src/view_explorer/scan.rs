@@ -42,10 +42,22 @@ impl NekoviewApp {
         self.persist_state();
     }
 
-    /// リロードボタンから呼ばれる。現在CD位置を再スキャンする。
-    /// ツリー・ドライブ一覧の再取得は後続フェーズで追加する。
+    /// リロードボタンから呼ばれる。現在CD位置とツリーを再スキャンする。
+    /// ドライブ一覧の再取得は後続フェーズで追加する。
     pub(super) fn reload_current(&mut self) {
         self.start_scan();
+
+        // ツリー: ルート + 展開済み全ノードをスレッド1本でまとめて再取得する。
+        // 個別ノードの遅延展開（tree_scan_pending）が進行中でも衝突はしない
+        // （どちらが後から書き込んでも tree_children の内容は同じソースから来るため実害なし）。
+        let mut targets: Vec<PathBuf> = vec![self.tree_root.clone()];
+        targets.extend(self.tree_expanded.iter().cloned());
+        self.tree_reload_pending = Some(TreeReloadPending {
+            rx: dir::spawn_scan_subdirs_many(targets, {
+                let c = self.egui_ctx.clone();
+                move || c.request_repaint()
+            }),
+        });
     }
 
     /// バックグラウンドスキャンを起動する（UIをブロックしない）
@@ -183,6 +195,17 @@ impl NekoviewApp {
             }
             self.tree_scan_pending = None;
         }
+    }
+
+    /// フレームごとにツリー一括リロードの結果をポーリングして反映する。
+    /// 取得前に tree_children をクリアしないため、更新中に子が消えて見えるチラつきは無い。
+    pub(super) fn poll_tree_reload(&mut self) {
+        let Some(ref pending) = self.tree_reload_pending else { return };
+        let Ok(results) = pending.rx.try_recv() else { return };
+        for (path, children) in results {
+            self.tree_children.insert(path, children);
+        }
+        self.tree_reload_pending = None;
     }
 
     pub(super) fn sort_archives(&mut self) {
