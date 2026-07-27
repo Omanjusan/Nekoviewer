@@ -753,7 +753,7 @@ impl NekoviewApp {
                             }
 
                             // ネットワークリンク切れマーカー: 右上（大元マウント単位で判定済みのもののみ）
-                            if let Some(root) = crate::fs::mount::network_mount_root(path)
+                            if let Some(root) = self.network_mount_root_cached(path)
                                 && self.network_unreachable_mounts.contains(&root)
                             {
                                 let mark_size = 16.0;

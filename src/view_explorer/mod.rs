@@ -317,6 +317,12 @@ pub struct NekoviewApp {
     /// ファイル切替後も維持するビューア設定（zoom・fullscreen 等）
     pub(crate) viewer_cfg: Arc<Mutex<ViewerConfig>>,
     drives: Vec<MountEntry>,
+    /// 既知のGVFS SMBマウント一覧（到達可否に関係なく列挙時点の全件）。
+    /// panels.rs等でパス単位の判定に使う際、毎フレーム read_dir("/run/user/uid/gvfs")
+    /// を避けるためのキャッシュ。reload_current() 側で「進行中の到達可否チェックが
+    /// 無い時だけ」readdirして更新する（進行中チェックと同時にreaddirすると
+    /// gvfsd内部でロック競合してメインスレッドがブロックされるため）。
+    gvfs_mount_entries: Vec<MountEntry>,
     page_cache: Arc<Mutex<PageCache>>,
     file_cache: FileCache,
     file_cache_req_tx: mpsc::Sender<std::path::PathBuf>,
@@ -498,7 +504,9 @@ impl NekoviewApp {
         let (entry_thumb_req_tx, entry_thumb_res_rx) = spawn_entry_thumb_worker(config.thumb_filter.to_image_filter(), config.resolved_decode_threads(), ctx.clone());
         let (file_cache_req_tx, file_cache_res_rx) = spawn_file_cache_worker(ctx.clone(), file_cache_max);
         let mut drives = list_local_drives();
-        drives.extend(list_gvfs_smb_mounts());
+        let gvfs_mounts = list_gvfs_smb_mounts();
+        let gvfs_mount_entries = gvfs_mounts.clone();
+        drives.extend(gvfs_mounts);
 
         // start_dir を含むドライブのパスをツリーのルートにする
         let tree_root = drives
@@ -576,6 +584,7 @@ impl NekoviewApp {
             viewer: Arc::new(Mutex::new(None)),
             viewer_cfg: Arc::new(Mutex::new(viewer_cfg)),
             drives,
+            gvfs_mount_entries,
             page_cache: Arc::new(Mutex::new(PageCache::new(cache_max, cache_min))),
             file_cache: FileCache::new(file_cache_max),
             file_cache_req_tx,
@@ -657,6 +666,12 @@ impl NekoviewApp {
         };
         app.start_scan();
         app.refresh_favorite_folders();
+        // 起動時点でGVFSマウントの到達可否確認を仕込んでおく。
+        // ユーザーが最初にリロードを押す頃には判定が終わっている見込みが立ち、
+        // 「初回リロードでは切断先が消えない」体感を和らげる。
+        for mount in app.gvfs_mount_entries.clone() {
+            app.spawn_mount_check_if_needed(mount.path);
+        }
         app
     }
 

@@ -53,14 +53,40 @@ impl NekoviewApp {
         }
 
         // ドライブ一覧の再取得（同期・軽量なローカル列挙のみ、ネットワークI/Oは行わない）。
-        // GVFS切断で消えたマウントは一覧から自然に消える。
+        // GVFS切断（電源off等）は gvfsd がマウントエントリを即座に消さないため、
+        // readdir だけでは検知できない。到達可否はバックグラウンドで別途確認し、
+        // 不通と判明した時点で network_unreachable_mounts に記録される。
+        // 既に不通判定済みのマウントは、復活が確認できるまで一覧に出さない
+        // （出してしまうと次のリロードごとに表示→非表示を繰り返すため）。
+        //
+        // mount_check_pending が空でない（＝バックグラウンドの到達可否チェックが
+        // 進行中）間は list_gvfs_smb_mounts() を呼ばない。進行中チェックの read_dir と
+        // 同時にトップレベル /run/user/uid/gvfs を readdir すると gvfsd 内部で
+        // ロック競合し、メインスレッドまでブロックされることがあるため。
+        // その間は直前に取得済みの gvfs_mount_entries をそのまま使い回す。
         let mut drives = list_local_drives();
-        drives.extend(list_gvfs_smb_mounts());
+        if self.mount_check_pending.is_empty() {
+            let gvfs_mounts = list_gvfs_smb_mounts();
+            for mount in &gvfs_mounts {
+                self.spawn_mount_check_if_needed(mount.path.clone());
+            }
+            self.gvfs_mount_entries = gvfs_mounts;
+        }
+        drives.extend(
+            self.gvfs_mount_entries
+                .iter()
+                .filter(|m| !self.network_unreachable_mounts.contains(&m.path))
+                .cloned(),
+        );
         self.drives = drives;
         let home = self.drives.first().map(|d| d.path.clone());
 
         // ツリールート自体が消えたマウント配下だった場合、安全にホームドライブへ退避する。
-        if !self.tree_root.exists() {
+        // ネットワークマウント配下は同期 exists() を使わず、バックグラウンドで確認済みの
+        // 到達可否（network_unreachable_mounts）を参照する
+        // （不通の GVFS マウント配下で exists() を呼ぶと CIFS タイムアウトまで
+        // メインスレッドがブロックされ、リロード操作でUIごと固まってしまうため）。
+        if !self.path_reachable(&self.tree_root.clone()) {
             if let Some(home) = home {
                 self.navigate_to_drive(home);
             }
@@ -69,7 +95,7 @@ impl NekoviewApp {
 
         // ツリールートは無事だが、CD位置だけが消えたマウント配下だった場合はホームへ移動する。
         if let Some(viewing) = self.viewing_dir.clone() {
-            if !viewing.exists() {
+            if !self.path_reachable(&viewing) {
                 if let Some(home) = home {
                     self.navigate_to(home);
                 }
@@ -90,6 +116,16 @@ impl NekoviewApp {
                 move || c.request_repaint()
             }),
         });
+    }
+
+    /// path の到達可否を判定する。ネットワークマウント配下は同期I/Oを行わず、
+    /// バックグラウンドで確認済みの network_unreachable_mounts を参照する
+    /// （未確認の場合は楽観的に到達可能とみなす）。それ以外は通常の exists()。
+    pub(super) fn path_reachable(&self, path: &std::path::Path) -> bool {
+        match self.network_mount_root_cached(path) {
+            Some(root) => !self.network_unreachable_mounts.contains(&root),
+            None => path.exists(),
+        }
     }
 
     /// バックグラウンドスキャンを起動する（UIをブロックしない）
