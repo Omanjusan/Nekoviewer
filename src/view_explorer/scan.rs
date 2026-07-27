@@ -42,6 +42,12 @@ impl NekoviewApp {
         self.persist_state();
     }
 
+    /// リロードボタンから呼ばれる。現在CD位置を再スキャンする。
+    /// ツリー・ドライブ一覧の再取得は後続フェーズで追加する。
+    pub(super) fn reload_current(&mut self) {
+        self.start_scan();
+    }
+
     /// バックグラウンドスキャンを起動する（UIをブロックしない）
     pub(super) fn start_scan(&mut self) {
         let rx = dir::spawn_scan(self.current_dir.clone(), {
