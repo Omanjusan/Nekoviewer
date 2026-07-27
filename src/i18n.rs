@@ -240,6 +240,62 @@ impl Lang {
         }
     }
 
+    pub fn file_detail_menu(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ファイル詳細",
+            Lang::English  => "File Details...",
+            Lang::Chinese  => "文件详细信息",
+        }
+    }
+
+    pub fn file_detail_dialog_title(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ファイル詳細",
+            Lang::English  => "File Details",
+            Lang::Chinese  => "文件详细信息",
+        }
+    }
+
+    pub fn file_detail_entry_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ファイル名:",
+            Lang::English  => "File:",
+            Lang::Chinese  => "文件名:",
+        }
+    }
+
+    pub fn file_detail_entry_right_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ファイル名（右ページ）:",
+            Lang::English  => "File (right page):",
+            Lang::Chinese  => "文件名（右页）:",
+        }
+    }
+
+    pub fn file_detail_entry_left_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ファイル名（左ページ）:",
+            Lang::English  => "File (left page):",
+            Lang::Chinese  => "文件名（左页）:",
+        }
+    }
+
+    pub fn file_detail_archive_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "アーカイブファイル名:",
+            Lang::English  => "Archive:",
+            Lang::Chinese  => "压缩包文件名:",
+        }
+    }
+
+    pub fn file_detail_close(self) -> &'static str {
+        match self {
+            Lang::Japanese => "閉じる",
+            Lang::English  => "Close",
+            Lang::Chinese  => "关闭",
+        }
+    }
+
     pub fn favorite_overwrite_confirm_title(self) -> &'static str {
         match self {
             Lang::Japanese => "お気に入り一括設定の確認",
