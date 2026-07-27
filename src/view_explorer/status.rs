@@ -221,10 +221,29 @@ impl NekoviewApp {
         self.mount_check_pending.push((root, rx));
     }
 
+    /// path が既知のネットワークマウント配下にあれば、そのルートを返す。
+    /// Unix: gvfs_mount_entries キャッシュへの starts_with 判定のみで readdir は行わない
+    /// （GVFS先が不通のとき毎フレーム read_dir("/run/user/uid/gvfs") してUIが
+    /// フリーズするのを避けるため。キャッシュは起動時・reload_current() でのみ更新）。
+    /// Windows: GetDriveTypeW ベースで元々軽量なため、従来の network_mount_root を使う。
+    #[cfg(unix)]
+    pub(super) fn network_mount_root_cached(&self, path: &Path) -> Option<PathBuf> {
+        self.gvfs_mount_entries
+            .iter()
+            .map(|m| &m.path)
+            .find(|root| path.starts_with(root))
+            .cloned()
+    }
+
+    #[cfg(not(unix))]
+    pub(super) fn network_mount_root_cached(&self, path: &Path) -> Option<PathBuf> {
+        crate::fs::mount::network_mount_root(path)
+    }
+
     /// サムネ失敗・無効ZIP確定などの開封失敗を検知した際、それがネットワーク
     /// マウント配下のファイルであれば大元の到達可否を確認する（1アクション判定）。
     pub(super) fn maybe_check_mount_after_failure(&mut self, path: &Path) {
-        if let Some(root) = crate::fs::mount::network_mount_root(path)
+        if let Some(root) = self.network_mount_root_cached(path)
             && !self.network_unreachable_mounts.contains(&root)
         {
             self.spawn_mount_check_if_needed(root);
@@ -235,7 +254,7 @@ impl NekoviewApp {
     /// すでにリンク切れ表示中のマウントに対する明示的なオープン試行の場合は、
     /// ここで再チェックを発火しつつ今回のオープンは保留する（true を返さない）。
     pub(super) fn network_gate(&mut self, path: &Path) -> bool {
-        let Some(root) = crate::fs::mount::network_mount_root(path) else {
+        let Some(root) = self.network_mount_root_cached(path) else {
             return true;
         };
         if self.network_unreachable_mounts.contains(&root) {
