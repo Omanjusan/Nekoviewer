@@ -45,6 +45,13 @@ impl NekoviewApp {
 
     /// リロードボタンから呼ばれる。ドライブ一覧・現在CD位置・ツリーを再スキャンする。
     pub(super) fn reload_current(&mut self) {
+        // お気に入り一覧表示中は実ディレクトリの概念が無く、start_scan()を呼ぶと
+        // enter_favorite_view が差し替えた self.archives を実フォルダの中身で
+        // 上書きしてしまう（exit_favorite_view相当が意図せず起きる）ため何もしない。
+        if self.viewing_favorites.is_some() {
+            return;
+        }
+
         // ドライブ一覧の再取得（同期・軽量なローカル列挙のみ、ネットワークI/Oは行わない）。
         // GVFS切断で消えたマウントは一覧から自然に消える。
         let mut drives = list_local_drives();
