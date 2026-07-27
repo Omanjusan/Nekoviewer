@@ -234,6 +234,18 @@ struct RenderFrame {
     rotation_angle: i32,
 }
 
+/// 右クリック「ファイル詳細」ダイアログの状態。開いた瞬間の情報をスナップショットして保持する
+/// （以後のページ送りには追従しない）。
+#[derive(Clone)]
+struct FileDetailDialogState {
+    /// 親アーカイブのファイル名。生ファイル表示中（アーカイブなし）はNone（空白表示）
+    archive_name: Option<String>,
+    /// 画面右側ページのファイル名（見開きでなければ「ファイル名」欄そのもの）
+    right_name: Option<String>,
+    /// 画面左側ページのファイル名。見開きでなければNone
+    left_name: Option<String>,
+}
+
 pub struct ViewerState {
     archive_path: PathBuf,
     entries: Vec<ViewerEntry>,
@@ -306,6 +318,10 @@ pub struct ViewerState {
     pending_spread_action: Option<crate::controller::SpreadSaveAction>,
     /// 右クリックメニュー「お気に入り詳細設定」が押されたか（1フレームで消費）
     pending_open_favorite_dialog: bool,
+    /// 右クリックメニュー「ファイル詳細」が押されたか（1フレームで消費）
+    pending_open_file_detail: bool,
+    /// ファイル詳細ダイアログの状態。Some の間、draw_file_detail_dialogが表示する
+    file_detail_dialog: Option<FileDetailDialogState>,
     /// OCR/翻訳子ウィンドウが現在開いているか。show()呼び出し時に外部(NekoviewApp)から
     /// 渡され、ツールバーのトグルボタン表示にのみ使う（真の状態はapp側が持つ）。
     translate_window_open: bool,
@@ -480,6 +496,8 @@ impl ViewerState {
             saved_spread: None,
             pending_spread_action: None,
             pending_open_favorite_dialog: false,
+            pending_open_file_detail: false,
+            file_detail_dialog: None,
             translate_window_open: false,
             translate_toggle_enabled: false,
             pending_toggle_translate_window: false,
@@ -537,6 +555,8 @@ impl ViewerState {
             saved_spread: None,
             pending_spread_action: None,
             pending_open_favorite_dialog: false,
+            pending_open_file_detail: false,
+            file_detail_dialog: None,
             translate_window_open: false,
             translate_toggle_enabled: false,
             pending_toggle_translate_window: false,
@@ -774,6 +794,78 @@ impl ViewerState {
         self.archive_path.file_name().and_then(|n| n.to_str()).unwrap_or(i18n::t().viewer_fallback()).to_string()
     }
 
+    /// 右クリック「ファイル詳細」が押された1フレーム後、開いた瞬間の情報をスナップショットして
+    /// ダイアログ状態を確定する（以後のページ送りには追従しない）。
+    fn maybe_open_file_detail_dialog(&mut self) {
+        if !std::mem::take(&mut self.pending_open_file_detail) {
+            return;
+        }
+        if self.is_raw_file {
+            self.file_detail_dialog = Some(FileDetailDialogState {
+                archive_name: None,
+                right_name: Some(self.title()),
+                left_name: None,
+            });
+            return;
+        }
+        let total = self.entries.len() as i32;
+        let get = |i: i32| -> Option<String> {
+            if i < 0 || i >= total { return None; }
+            self.entries.get(i as usize).map(|e| e.entry_name.clone())
+        };
+        let lo = self.spread_lo();
+        // 画面上の左右位置基準（SpreadRight=右綴じでは lo が画面右側に来る。render_spread の
+        // 実際の引数順（tex_left, tex_right）と揃える）。
+        let (right_name, left_name) = match self.page_mode {
+            PageMode::Single => (get(lo.clamp(0, total - 1)), None),
+            PageMode::SpreadLeft => (get(lo + 1), get(lo)),
+            PageMode::SpreadRight => (get(lo), get(lo + 1)),
+        };
+        self.file_detail_dialog = Some(FileDetailDialogState {
+            archive_name: Some(self.title()),
+            right_name,
+            left_name,
+        });
+    }
+
+    /// ファイル詳細ダイアログを描画する（ビューアー窓自身のCtx内、表示のみ・編集不可）。
+    fn draw_file_detail_dialog(&mut self, ctx: &egui::Context) {
+        let Some(dialog) = self.file_detail_dialog.clone() else {
+            return;
+        };
+        let t = i18n::t();
+        let mut close = false;
+        egui::Window::new(t.file_detail_dialog_title())
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .max_width(420.0)
+            .show(ctx, |ui| {
+                ui.label(t.file_detail_archive_label());
+                ui.add(egui::Label::new(dialog.archive_name.as_deref().unwrap_or("")).wrap());
+                ui.add_space(8.0);
+                if let Some(left_name) = &dialog.left_name {
+                    ui.label(t.file_detail_entry_right_label());
+                    ui.add(egui::Label::new(dialog.right_name.as_deref().unwrap_or("")).wrap());
+                    ui.add_space(4.0);
+                    ui.label(t.file_detail_entry_left_label());
+                    ui.add(egui::Label::new(left_name.as_str()).wrap());
+                } else {
+                    ui.label(t.file_detail_entry_label());
+                    ui.add(egui::Label::new(dialog.right_name.as_deref().unwrap_or("")).wrap());
+                }
+                ui.add_space(12.0);
+                ui.vertical_centered(|ui| {
+                    if ui.button(t.file_detail_close()).clicked() {
+                        close = true;
+                    }
+                });
+            });
+        if close {
+            self.file_detail_dialog = None;
+        }
+    }
+
     pub fn show(
         &mut self,
         ui: &mut egui::Ui,
@@ -888,8 +980,10 @@ impl ViewerState {
         let is_spread = self.page_mode != PageMode::Single;
         let step = if is_spread { 2i32 } else { 1i32 };
 
-        // タイトルを独立ウィンドウのタイトルバーに反映
-        ctx.send_viewport_cmd(egui::ViewportCommand::Title(self.title()));
+        // OSネイティブのタイトルバーは固定の英字文字列にする（Wayland/GNOME環境の
+        // CSDフォールバック描画がCJKグリフを持たないシステムフォントに解決されると
+        // 豆腐になるため。実ファイル名は右クリック「ファイル詳細」で確認できる）。
+        ctx.send_viewport_cmd(egui::ViewportCommand::Title("Nekoviewer - Imageview".to_owned()));
 
         let save_slots = self.draw_top_bar(ui, &ctx, &input, &viewer_style, cfg);
 
@@ -945,6 +1039,8 @@ impl ViewerState {
         let spread_save_action = self.take_spread_action();
         let open_favorite_dialog = self.take_favorite_dialog_request();
         let toggle_translate_window = self.take_translate_toggle_request();
+        self.maybe_open_file_detail_dialog();
+        self.draw_file_detail_dialog(&ctx);
         ViewerOutput { nav, close_requested: close_self, save_slots, spread_save_action, open_favorite_dialog, toggle_translate_window }
     }
 
@@ -1860,6 +1956,7 @@ impl ViewerState {
         overwrite_enabled: bool,
         action: &mut Option<crate::controller::SpreadSaveAction>,
         open_favorite_dialog: &mut bool,
+        open_file_detail: &mut bool,
     ) {
         let t = i18n::t();
         let mut toggle_on = toggle_on_init;
@@ -1884,6 +1981,10 @@ impl ViewerState {
             *open_favorite_dialog = true;
             ui.close();
         }
+        if ui.button(t.file_detail_menu()).clicked() {
+            *open_file_detail = true;
+            ui.close();
+        }
     }
 
     fn render_single(
@@ -1900,6 +2001,7 @@ impl ViewerState {
         let overwrite_enabled = self.spread_overwrite_enabled();
         let action = &mut self.pending_spread_action;
         let open_favorite_dialog = &mut self.pending_open_favorite_dialog;
+        let open_file_detail = &mut self.pending_open_file_detail;
         if let Some(tex) = tex {
             let [img_w, img_h] = tex.size();
             if zoom_actual {
@@ -1927,7 +2029,7 @@ impl ViewerState {
                     }
                     if resp.double_clicked() { *double_clicked = true; }
                     if resp.clicked() && !resp.double_clicked() { *single_clicked = true; }
-                    resp.context_menu(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, open_favorite_dialog));
+                    resp.context_menu(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, open_favorite_dialog, open_file_detail));
                 });
             } else {
                 let available = ui.available_size();
@@ -1936,7 +2038,7 @@ impl ViewerState {
                 let resp  = ui.allocate_rect(fit, egui::Sense::click());
                 if resp.double_clicked() { *double_clicked = true; }
                 if resp.clicked() && !resp.double_clicked() { *single_clicked = true; }
-                resp.context_menu(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, open_favorite_dialog));
+                resp.context_menu(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, open_favorite_dialog, open_file_detail));
             }
         } else {
             let rect = egui::Rect::from_min_size(ui.cursor().left_top(), ui.available_size());
@@ -1959,13 +2061,14 @@ impl ViewerState {
         let overwrite_enabled = self.spread_overwrite_enabled();
         let action = &mut self.pending_spread_action;
         let open_favorite_dialog = &mut self.pending_open_favorite_dialog;
+        let open_file_detail = &mut self.pending_open_file_detail;
         let available = ui.available_size();
         let origin = ui.cursor().left_top();
 
         let full_rect = egui::Rect::from_min_size(origin, available);
         let resp = ui.allocate_rect(full_rect, egui::Sense::click());
         if resp.clicked() && !resp.double_clicked() { *single_clicked = true; }
-        resp.context_menu(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, open_favorite_dialog));
+        resp.context_menu(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, open_favorite_dialog, open_file_detail));
 
         if angle_deg == 0 {
             let (rect_l, rect_r) = Self::spread_rects(available, origin, tex_left, tex_right, monitor);
