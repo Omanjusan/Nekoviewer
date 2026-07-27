@@ -4,6 +4,7 @@ use std::sync::mpsc;
 use crate::types::ExplorerSortKey;
 use crate::neko_dir;
 use crate::fs::dir;
+use crate::fs::mount::{list_gvfs_smb_mounts, list_local_drives};
 use super::*;
 
 impl NekoviewApp {
@@ -42,9 +43,33 @@ impl NekoviewApp {
         self.persist_state();
     }
 
-    /// リロードボタンから呼ばれる。現在CD位置とツリーを再スキャンする。
-    /// ドライブ一覧の再取得は後続フェーズで追加する。
+    /// リロードボタンから呼ばれる。ドライブ一覧・現在CD位置・ツリーを再スキャンする。
     pub(super) fn reload_current(&mut self) {
+        // ドライブ一覧の再取得（同期・軽量なローカル列挙のみ、ネットワークI/Oは行わない）。
+        // GVFS切断で消えたマウントは一覧から自然に消える。
+        let mut drives = list_local_drives();
+        drives.extend(list_gvfs_smb_mounts());
+        self.drives = drives;
+        let home = self.drives.first().map(|d| d.path.clone());
+
+        // ツリールート自体が消えたマウント配下だった場合、安全にホームドライブへ退避する。
+        if !self.tree_root.exists() {
+            if let Some(home) = home {
+                self.navigate_to_drive(home);
+            }
+            return;
+        }
+
+        // ツリールートは無事だが、CD位置だけが消えたマウント配下だった場合はホームへ移動する。
+        if let Some(viewing) = self.viewing_dir.clone() {
+            if !viewing.exists() {
+                if let Some(home) = home {
+                    self.navigate_to(home);
+                }
+                return;
+            }
+        }
+
         self.start_scan();
 
         // ツリー: ルート + 展開済み全ノードをスレッド1本でまとめて再取得する。
