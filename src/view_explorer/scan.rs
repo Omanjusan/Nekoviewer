@@ -53,9 +53,21 @@ impl NekoviewApp {
         }
 
         // ドライブ一覧の再取得（同期・軽量なローカル列挙のみ、ネットワークI/Oは行わない）。
-        // GVFS切断で消えたマウントは一覧から自然に消える。
+        // GVFS切断（電源off等）は gvfsd がマウントエントリを即座に消さないため、
+        // readdir だけでは検知できない。到達可否はバックグラウンドで別途確認し、
+        // 不通と判明した時点で network_unreachable_mounts に記録される。
+        // 既に不通判定済みのマウントは、復活が確認できるまで一覧に出さない
+        // （出してしまうと次のリロードごとに表示→非表示を繰り返すため）。
         let mut drives = list_local_drives();
-        drives.extend(list_gvfs_smb_mounts());
+        let gvfs_mounts = list_gvfs_smb_mounts();
+        for mount in &gvfs_mounts {
+            self.spawn_mount_check_if_needed(mount.path.clone());
+        }
+        drives.extend(
+            gvfs_mounts
+                .into_iter()
+                .filter(|m| !self.network_unreachable_mounts.contains(&m.path)),
+        );
         self.drives = drives;
         let home = self.drives.first().map(|d| d.path.clone());
 

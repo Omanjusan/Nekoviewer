@@ -199,7 +199,8 @@ impl NekoviewApp {
                             self.thumb_failed.retain(|p| !p.starts_with(&root));
                         }
                     } else {
-                        self.network_unreachable_mounts.insert(root);
+                        self.network_unreachable_mounts.insert(root.clone());
+                        self.drives.retain(|d| d.path != root);
                     }
                 }
                 Err(mpsc::TryRecvError::Empty) => still_pending.push((root, rx)),
