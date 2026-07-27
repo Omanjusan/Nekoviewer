@@ -56,6 +56,28 @@ pub fn spawn_scan_subdirs(
     rx
 }
 
+/// ツリーの一括リロード用。複数フォルダの子ディレクトリ一覧をスレッド1本の中で
+/// 順番に取得し、まとめて1回で返す（フォルダごとにスレッドを立てない）。
+/// 到達不能なパス（GVFS切断等）は list_subdirs が空Vecを返すだけで panic しない。
+pub fn spawn_scan_subdirs_many(
+    dirs: Vec<PathBuf>,
+    wake: impl Fn() + Send + 'static,
+) -> mpsc::Receiver<Vec<(PathBuf, Vec<PathBuf>)>> {
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let results = dirs
+            .into_iter()
+            .map(|d| {
+                let children = list_subdirs(&d);
+                (d, children)
+            })
+            .collect();
+        let _ = tx.send(results);
+        wake();
+    });
+    rx
+}
+
 /// パスが対応アーカイブのファイル名サフィックスを持つか。
 /// `.tar.gz` のような二重拡張子を正しく扱うため `extension()` ではなくファイル名末尾で判定する。
 /// 7z/tar は対応 feature が有効なときのみ列挙対象に含める。

@@ -112,6 +112,7 @@ enum FavoriteSelection {
 /// キーボードでの左右移動・Enter確定（handle_menu_bar_keys）の対象になる。
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum MenuBarButton {
+    Reload,
     SortName,
     SortDate,
     SortSize,
@@ -122,7 +123,8 @@ pub(crate) enum MenuBarButton {
 
 /// 表示順そのもの（draw_menu_barの描画順と一致させること）。
 /// 見開き・ページモード群はビューアーツールバーへ移設した（toolbar.rs 参照）。
-pub(crate) const MENU_BAR_ORDER: [MenuBarButton; 6] = [
+pub(crate) const MENU_BAR_ORDER: [MenuBarButton; 7] = [
+    MenuBarButton::Reload,
     MenuBarButton::SortName,
     MenuBarButton::SortDate,
     MenuBarButton::SortSize,
@@ -231,6 +233,11 @@ struct TreeScanPending {
     rx: mpsc::Receiver<Vec<PathBuf>>,
 }
 
+/// リロードボタンによるツリー一括再取得の待ち状態（スレッド1本で全対象を処理）
+struct TreeReloadPending {
+    rx: mpsc::Receiver<Vec<(PathBuf, Vec<PathBuf>)>>,
+}
+
 /// 7zのFileCache展開待ちで保留したページ/サムネ要求。
 /// FileCache結果が届いた時点でこれをまとめて実際のワーカーへ送出する。
 enum DeferredArchiveRequest {
@@ -324,6 +331,7 @@ pub struct NekoviewApp {
     pending_loads: Arc<Mutex<HashSet<(PathBuf, usize)>>>,
     scan_state: ScanState,
     tree_scan_pending: Option<TreeScanPending>,
+    tree_reload_pending: Option<TreeReloadPending>,
     /// フレームごとに更新されるウィンドウサイズ（論理ピクセル）
     window_size: (u32, u32),
     /// ビューアウィンドウの位置・サイズスロット（viewer と共有して永続化）
@@ -579,6 +587,7 @@ impl NekoviewApp {
             pending_loads: Arc::new(Mutex::new(HashSet::new())),
             scan_state: ScanState::Idle,
             tree_scan_pending,
+            tree_reload_pending: None,
             window_size: (1024, 768),
             viewer_slots,
             raw_image_files: std::collections::HashSet::new(),

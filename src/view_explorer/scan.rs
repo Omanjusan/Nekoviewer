@@ -4,6 +4,7 @@ use std::sync::mpsc;
 use crate::types::ExplorerSortKey;
 use crate::neko_dir;
 use crate::fs::dir;
+use crate::fs::mount::{list_gvfs_smb_mounts, list_local_drives};
 use super::*;
 
 impl NekoviewApp {
@@ -40,6 +41,55 @@ impl NekoviewApp {
             }),
         });
         self.persist_state();
+    }
+
+    /// リロードボタンから呼ばれる。ドライブ一覧・現在CD位置・ツリーを再スキャンする。
+    pub(super) fn reload_current(&mut self) {
+        // お気に入り一覧表示中は実ディレクトリの概念が無く、start_scan()を呼ぶと
+        // enter_favorite_view が差し替えた self.archives を実フォルダの中身で
+        // 上書きしてしまう（exit_favorite_view相当が意図せず起きる）ため何もしない。
+        if self.viewing_favorites.is_some() {
+            return;
+        }
+
+        // ドライブ一覧の再取得（同期・軽量なローカル列挙のみ、ネットワークI/Oは行わない）。
+        // GVFS切断で消えたマウントは一覧から自然に消える。
+        let mut drives = list_local_drives();
+        drives.extend(list_gvfs_smb_mounts());
+        self.drives = drives;
+        let home = self.drives.first().map(|d| d.path.clone());
+
+        // ツリールート自体が消えたマウント配下だった場合、安全にホームドライブへ退避する。
+        if !self.tree_root.exists() {
+            if let Some(home) = home {
+                self.navigate_to_drive(home);
+            }
+            return;
+        }
+
+        // ツリールートは無事だが、CD位置だけが消えたマウント配下だった場合はホームへ移動する。
+        if let Some(viewing) = self.viewing_dir.clone() {
+            if !viewing.exists() {
+                if let Some(home) = home {
+                    self.navigate_to(home);
+                }
+                return;
+            }
+        }
+
+        self.start_scan();
+
+        // ツリー: ルート + 展開済み全ノードをスレッド1本でまとめて再取得する。
+        // 個別ノードの遅延展開（tree_scan_pending）が進行中でも衝突はしない
+        // （どちらが後から書き込んでも tree_children の内容は同じソースから来るため実害なし）。
+        let mut targets: Vec<PathBuf> = vec![self.tree_root.clone()];
+        targets.extend(self.tree_expanded.iter().cloned());
+        self.tree_reload_pending = Some(TreeReloadPending {
+            rx: dir::spawn_scan_subdirs_many(targets, {
+                let c = self.egui_ctx.clone();
+                move || c.request_repaint()
+            }),
+        });
     }
 
     /// バックグラウンドスキャンを起動する（UIをブロックしない）
@@ -177,6 +227,17 @@ impl NekoviewApp {
             }
             self.tree_scan_pending = None;
         }
+    }
+
+    /// フレームごとにツリー一括リロードの結果をポーリングして反映する。
+    /// 取得前に tree_children をクリアしないため、更新中に子が消えて見えるチラつきは無い。
+    pub(super) fn poll_tree_reload(&mut self) {
+        let Some(ref pending) = self.tree_reload_pending else { return };
+        let Ok(results) = pending.rx.try_recv() else { return };
+        for (path, children) in results {
+            self.tree_children.insert(path, children);
+        }
+        self.tree_reload_pending = None;
     }
 
     pub(super) fn sort_archives(&mut self) {

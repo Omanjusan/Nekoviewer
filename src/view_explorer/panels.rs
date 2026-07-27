@@ -108,6 +108,9 @@ impl NekoviewApp {
     /// 呼び出し側で有効/無効チェック済みであることを前提とする。
     pub(super) fn activate_menu_button(&mut self, button: MenuBarButton) {
         match button {
+            MenuBarButton::Reload => {
+                self.reload_current();
+            }
             MenuBarButton::SortName => {
                 self.sort_key = ExplorerSortKey::Name;
                 self.finish_sort_change();
@@ -140,6 +143,15 @@ impl NekoviewApp {
         ui.horizontal(|ui| {
             // 隠しファイル表示トグルは設定ダイアログの「共通」タブへ移設した。
             // ページ表示モード・見開き1Pシフト群はビューアーツールバーへ移設した（toolbar.rs 参照）。
+
+            // ── リロード（ツリー・現在CD位置の再スキャン） ────────────────
+            let r_reload = ui.button("⟳");
+            if is_cursor(MenuBarButton::Reload) { draw_cursor_ring(ui, r_reload.rect); }
+            if r_reload.clicked() {
+                self.reload_current();
+            }
+
+            ui.separator();
 
             // ── エクスプローラーソート ────────────────────────────────────
             let mut sort_changed = false;
