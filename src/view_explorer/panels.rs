@@ -425,6 +425,9 @@ impl NekoviewApp {
                     .hint_text(i18n::t().explorer_filter_hint())
                     .desired_width(ui.available_width()),
             );
+            if resp.clicked() {
+                self.focused_pane = FocusPane::Filter;
+            }
             if filter_focused {
                 if !resp.has_focus() {
                     resp.request_focus();
