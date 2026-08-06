@@ -1,6 +1,7 @@
 name: Build
 
 on:
+  workflow_dispatch:             # Actions画面またはgh CLIから手動実行
   pull_request:
     branches: [develop, main]   # feat→dev、dev→mainのPR時にCI検証
   push:
@@ -45,7 +46,7 @@ jobs:
           restore-keys: ${{ runner.os }}-cargo-
 
       - name: Build (PR check)
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && !startsWith(github.ref, 'refs/tags/'))
         run: cargo build
 
       - name: Build release (tag)
@@ -59,4 +60,3 @@ jobs:
           name: nekoviewer-windows-x64
           path: C:\cgt\release\nekoviewer.exe
           retention-days: 30
-
