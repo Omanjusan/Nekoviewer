@@ -466,6 +466,9 @@ pub struct NekoviewApp {
     /// フェーズ6: 直近の再デコードで決まった、以降のデコード要求(先読み含む)に使うターゲットサイズ。
     /// None = 無制限(原寸、zoom_actual時)。起動直後の既定値は従来の固定上限と同じ。
     decode_target: Option<(u32, u32)>,
+    /// PageCacheへ投入してよいデコード条件の現行世代。サイズ・Orientation変更のたびに進め、
+    /// 変更前から処理中だったワーカー結果を回収時に破棄する。
+    decode_generation: u64,
     /// 項目(D): viewer_cfg.exif_orientation_enabled の変化検知用（設定ダイアログ・
     /// ビューアーツールバーのチェックボックス、どちらの経路で変更されても拾えるようにする）。
     exif_orientation_enabled_last_seen: bool,
@@ -653,6 +656,7 @@ impl NekoviewApp {
             resize_redecode_last_seq: viewer_cfg.redecode_trigger_seq,
             resize_redecode_deadline: None,
             decode_target: Some(max_decode_target),
+            decode_generation: 0,
             exif_orientation_enabled_last_seen: viewer_cfg.exif_orientation_enabled,
         };
         app.start_scan();
