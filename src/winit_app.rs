@@ -661,6 +661,18 @@ impl ApplicationHandler<UserEvent> for WinitApp {
                     }
                 }
             }
+            WindowEvent::ScaleFactorChanged { .. } => {
+                // 論理サイズが同じでも、別DPIモニターへの移動では必要な物理px数が変わる。
+                // Resizedの併発有無に依存せず、ビューアーのデコード世代を更新対象にする。
+                if let Some(w) = self.window_mut(window_id) {
+                    w.bump_now();
+                }
+                if is_viewer {
+                    if let Some(app) = self.app.as_mut() {
+                        app.notify_viewer_resized();
+                    }
+                }
+            }
             _ => {}
         }
 

@@ -438,13 +438,6 @@ impl ViewerState {
         self.anim_states.clear();
     }
 
-    pub fn invalidate_pages(&mut self, orig_indices: &[usize]) {
-        for orig_i in orig_indices {
-            self.textures.remove(orig_i);
-            self.anim_states.remove(orig_i);
-        }
-    }
-
     pub fn new(archive_path: PathBuf, slots: [Option<WindowSlot>; 4], default_slot: Option<usize>) -> Option<Self> {
         let image_entries = archive::list_images(&archive_path);
         if image_entries.is_empty() {

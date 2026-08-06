@@ -96,6 +96,9 @@ pub struct LoadRequest {
     pub target_size: Option<(u32, u32)>,
     /// 項目(D): Exif Orientation自動回転をデコード時に適用するか（ViewerConfigから都度取得）。
     pub exif_enabled: bool,
+    /// 表示解像度・Orientation等、デコード条件の世代。結果回収時に現行世代と一致しない
+    /// 結果を破棄し、リサイズ前の遅い要求が新しいキャッシュを上書きするのを防ぐ。
+    pub generation: u64,
 }
 
 /// ワーカースレッド内で保持する開きっぱなしアーカイブ（ディスク版・メモリ版を統合）
@@ -179,6 +182,13 @@ pub struct LoadResult {
     pub archive_path: PathBuf,
     pub index: usize,
     pub content: PageContent,
+    pub generation: u64,
+}
+
+impl LoadResult {
+    pub fn belongs_to_generation(&self, generation: u64) -> bool {
+        self.generation == generation
+    }
 }
 
 /// バックグラウンドデコードワーカーを `num_threads` 本起動する。
@@ -263,6 +273,7 @@ pub fn spawn_worker(filter: image::imageops::FilterType, num_threads: usize, ctx
                         archive_path: req.archive_path,
                         index: req.index,
                         content,
+                        generation: req.generation,
                     });
                     ctx.request_repaint_after(std::time::Duration::from_millis(8));
                 }
@@ -630,6 +641,15 @@ impl PageCache {
     pub fn total_bytes(&self) -> usize { self.total_bytes }
     pub fn max_bytes(&self) -> usize { self.max_bytes }
 
+    /// 表示解像度の世代変更時に、旧ターゲットで作られた全ページを破棄する。
+    /// FileCache（圧縮済み/展開済みの元データ）は別層なので影響しない。
+    pub fn clear(&mut self) {
+        self.entries.clear();
+        self.total_bytes = 0;
+        self.bypass = None;
+        self.known_bypass.clear();
+    }
+
     pub fn contains(&self, path: &PathBuf, index: usize) -> bool {
         self.entries.contains_key(&(path.clone(), index))
             || self.bypass.as_ref()
@@ -652,6 +672,7 @@ impl PageCache {
 
     /// フェーズ6: 再デコードのため既存エントリを強制的に破棄する（bypassスロットも対象）。
     /// 次の insert() で新しいデコード結果を通常どおり入れ直す前提。
+    #[cfg(test)]
     pub fn remove(&mut self, path: &PathBuf, index: usize) {
         if let Some(content) = self.entries.remove(&(path.clone(), index)) {
             self.total_bytes = self.total_bytes.saturating_sub(content_bytes(&content));
@@ -1271,6 +1292,77 @@ mod ring_integration_tests {
         // removeで同額が引かれゼロに戻る（挿入と削除の対称性）。
         cache.remove(&path, 0);
         assert_eq!(cache.total_bytes(), 0, "予約額と同額が引かれてゼロに戻るべき");
+    }
+
+    /// 表示解像度の世代変更では通常エントリだけでなく、予算超過bypassと
+    /// 再要求抑止記録もまとめて初期化されるべき。
+    #[test]
+    fn page_cache_clear_removes_all_resolution_dependent_state() {
+        let mut cache = PageCache::new(1024, 0);
+        let normal_path = PathBuf::from("normal.png");
+        cache.insert(
+            normal_path.clone(),
+            0,
+            PageContent::Static(image::RgbaImage::new(10, 10)),
+            &normal_path,
+            0,
+        );
+
+        let bypass_path = PathBuf::from("oversized.png");
+        cache.insert(
+            bypass_path.clone(),
+            0,
+            PageContent::Static(image::RgbaImage::new(20, 20)),
+            &normal_path,
+            0,
+        );
+        assert!(cache.contains(&normal_path, 0));
+        assert!(cache.contains(&bypass_path, 0));
+        assert!(cache.is_known_bypass(&bypass_path, 0));
+
+        cache.clear();
+
+        assert_eq!(cache.total_bytes(), 0);
+        assert!(!cache.contains(&normal_path, 0));
+        assert!(!cache.contains(&bypass_path, 0));
+        assert!(!cache.is_known_bypass(&bypass_path, 0));
+    }
+
+    #[test]
+    fn load_result_generation_rejects_stale_decode() {
+        let static_result = LoadResult {
+            archive_path: PathBuf::from("page.png"),
+            index: 0,
+            content: PageContent::Static(image::RgbaImage::new(1, 1)),
+            generation: 8,
+        };
+
+        assert!(static_result.belongs_to_generation(8));
+        assert!(!static_result.belongs_to_generation(7));
+        assert!(!static_result.belongs_to_generation(9));
+
+        let bytes = encode_gif_frames_mixed(&[(2, 2), (2, 2)]);
+        let animated = decode_ring_anim(
+            &bytes,
+            AnimFormat::Gif,
+            image::imageops::FilterType::Triangle,
+            TEST_RING_BUDGET_BYTES,
+            TEST_RING_BOUNDS,
+            TEST_FRAME_HARD_LIMIT_BYTES,
+            Some((1920, 1080)),
+            true,
+        )
+        .expect("アニメーション結果を生成できるはず");
+        assert!(matches!(animated, PageContent::Animated(_)));
+        let animated_result = LoadResult {
+            archive_path: PathBuf::from("page.gif"),
+            index: 0,
+            content: animated,
+            generation: 12,
+        };
+
+        assert!(animated_result.belongs_to_generation(12));
+        assert!(!animated_result.belongs_to_generation(11));
     }
 
     /// フェーズ3.6: ループ境界(終端→restart→先頭)が実際に機能することを確認する。

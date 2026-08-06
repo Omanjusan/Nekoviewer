@@ -47,6 +47,7 @@ impl NekoviewApp {
             let guardrail = Some((self.config.max_decode_edge, self.config.max_decode_edge));
             if self.decode_target != guardrail {
                 self.decode_target = guardrail;
+                self.begin_new_decode_generation();
                 self.redecode_visible_pages(guardrail);
                 crate::log_common!("[resize-redecode] restored guardrail target={:?}", guardrail);
             }
@@ -83,6 +84,7 @@ impl NekoviewApp {
             }
         };
         self.decode_target = target;
+        self.begin_new_decode_generation();
         let pages = self.redecode_visible_pages(target);
 
         crate::log_common!(
@@ -134,9 +136,15 @@ impl NekoviewApp {
             (path, is_raw_file, pages)
         };
 
+        // PageCacheのキーには解像度を含めないため、可視ページだけでなく他ファイルを含む
+        // 旧世代の全ページを破棄する。元データのFileCacheは維持され、再展開は避けられる。
+        self.page_cache.lock().unwrap().clear();
+        if let Some(v) = self.viewer.lock().unwrap().as_mut() {
+            v.invalidate_all_pages();
+        }
+
         let exif_enabled = self.viewer_cfg.lock().unwrap().exif_orientation_enabled;
         for (orig_i, entry_name) in &pages {
-            self.page_cache.lock().unwrap().remove(&path, *orig_i);
             let key = (path.clone(), *orig_i);
             self.pending_loads.lock().unwrap().insert(key);
             self.dispatch_load_request(LoadRequest {
@@ -147,15 +155,18 @@ impl NekoviewApp {
                 file_cache_entry: None,
                 target_size: target,
                 exif_enabled,
+                generation: self.decode_generation,
             });
         }
 
-        if let Some(v) = self.viewer.lock().unwrap().as_mut() {
-            let orig_indices: Vec<usize> = pages.iter().map(|(i, _)| *i).collect();
-            v.invalidate_pages(&orig_indices);
-        }
-
         pages.len()
+    }
+
+    /// デコード条件を変更し、旧世代の保留記録を解放する。処理中の要求自体は停止できないが、
+    /// LoadResultのgeneration照合でキャッシュ投入前に破棄される。
+    fn begin_new_decode_generation(&mut self) {
+        self.decode_generation = self.decode_generation.wrapping_add(1);
+        self.pending_loads.lock().unwrap().clear();
     }
 
     /// フェーズ6: ビューアー窓のリサイズを通知する（winit_app.rs の WindowEvent::Resized から呼ぶ）。
@@ -209,6 +220,7 @@ impl NekoviewApp {
         }
 
         self.page_cache.lock().unwrap().remove_all_for_path(&path);
+        self.begin_new_decode_generation();
         if let Some(v) = self.viewer.lock().unwrap().as_mut() {
             v.invalidate_all_pages();
         }
@@ -360,6 +372,13 @@ impl NekoviewApp {
             })
             .unwrap_or_default();
         for result in results {
+            if !result.belongs_to_generation(self.decode_generation) {
+                crate::log_common!(
+                    "[page-cache] discarded stale result generation={} current={} path={:?} index={}",
+                    result.generation, self.decode_generation, result.archive_path, result.index,
+                );
+                continue;
+            }
             self.pending_loads.lock().unwrap()
                 .remove(&(result.archive_path.clone(), result.index));
             self.page_cache.lock().unwrap().insert(
@@ -402,6 +421,7 @@ impl NekoviewApp {
                         file_cache_entry: None,
                         target_size: self.decode_target,
                         exif_enabled,
+                        generation: self.decode_generation,
                     });
                 }
             }

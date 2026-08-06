@@ -593,6 +593,13 @@ impl NekoviewApp {
                 })
                 .unwrap_or_default();
             for result in results {
+                if !result.belongs_to_generation(self.decode_generation) {
+                    crate::log_common!(
+                        "[page-cache] discarded stale result generation={} current={} path={:?} index={}",
+                        result.generation, self.decode_generation, result.archive_path, result.index,
+                    );
+                    continue;
+                }
                 self.pending_loads.lock().unwrap()
                     .remove(&(result.archive_path.clone(), result.index));
                 self.page_cache.lock().unwrap().insert(
