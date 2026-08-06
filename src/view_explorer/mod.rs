@@ -112,6 +112,7 @@ enum FavoriteSelection {
 /// キーボードでの左右移動・Enter確定（handle_menu_bar_keys）の対象になる。
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum MenuBarButton {
+    Reload,
     SortName,
     SortDate,
     SortSize,
@@ -122,7 +123,8 @@ pub(crate) enum MenuBarButton {
 
 /// 表示順そのもの（draw_menu_barの描画順と一致させること）。
 /// 見開き・ページモード群はビューアーツールバーへ移設した（toolbar.rs 参照）。
-pub(crate) const MENU_BAR_ORDER: [MenuBarButton; 6] = [
+pub(crate) const MENU_BAR_ORDER: [MenuBarButton; 7] = [
+    MenuBarButton::Reload,
     MenuBarButton::SortName,
     MenuBarButton::SortDate,
     MenuBarButton::SortSize,
@@ -231,6 +233,11 @@ struct TreeScanPending {
     rx: mpsc::Receiver<Vec<PathBuf>>,
 }
 
+/// リロードボタンによるツリー一括再取得の待ち状態（スレッド1本で全対象を処理）
+struct TreeReloadPending {
+    rx: mpsc::Receiver<Vec<(PathBuf, Vec<PathBuf>)>>,
+}
+
 /// 7zのFileCache展開待ちで保留したページ/サムネ要求。
 /// FileCache結果が届いた時点でこれをまとめて実際のワーカーへ送出する。
 enum DeferredArchiveRequest {
@@ -310,6 +317,12 @@ pub struct NekoviewApp {
     /// ファイル切替後も維持するビューア設定（zoom・fullscreen 等）
     pub(crate) viewer_cfg: Arc<Mutex<ViewerConfig>>,
     drives: Vec<MountEntry>,
+    /// 既知のGVFS SMBマウント一覧（到達可否に関係なく列挙時点の全件）。
+    /// panels.rs等でパス単位の判定に使う際、毎フレーム read_dir("/run/user/uid/gvfs")
+    /// を避けるためのキャッシュ。reload_current() 側で「進行中の到達可否チェックが
+    /// 無い時だけ」readdirして更新する（進行中チェックと同時にreaddirすると
+    /// gvfsd内部でロック競合してメインスレッドがブロックされるため）。
+    gvfs_mount_entries: Vec<MountEntry>,
     page_cache: Arc<Mutex<PageCache>>,
     file_cache: FileCache,
     file_cache_req_tx: mpsc::Sender<std::path::PathBuf>,
@@ -324,6 +337,7 @@ pub struct NekoviewApp {
     pending_loads: Arc<Mutex<HashSet<(PathBuf, usize)>>>,
     scan_state: ScanState,
     tree_scan_pending: Option<TreeScanPending>,
+    tree_reload_pending: Option<TreeReloadPending>,
     /// フレームごとに更新されるウィンドウサイズ（論理ピクセル）
     window_size: (u32, u32),
     /// ビューアウィンドウの位置・サイズスロット（viewer と共有して永続化）
@@ -458,6 +472,9 @@ pub struct NekoviewApp {
     /// フェーズ6: 直近の再デコードで決まった、以降のデコード要求(先読み含む)に使うターゲットサイズ。
     /// None = 無制限(原寸、zoom_actual時)。起動直後の既定値は従来の固定上限と同じ。
     decode_target: Option<(u32, u32)>,
+    /// PageCacheへ投入してよいデコード条件の現行世代。サイズ・Orientation変更のたびに進め、
+    /// 変更前から処理中だったワーカー結果を回収時に破棄する。
+    decode_generation: u64,
     /// 項目(D): viewer_cfg.exif_orientation_enabled の変化検知用（設定ダイアログ・
     /// ビューアーツールバーのチェックボックス、どちらの経路で変更されても拾えるようにする）。
     exif_orientation_enabled_last_seen: bool,
@@ -490,7 +507,9 @@ impl NekoviewApp {
         let (entry_thumb_req_tx, entry_thumb_res_rx) = spawn_entry_thumb_worker(config.thumb_filter.to_image_filter(), config.resolved_decode_threads(), ctx.clone());
         let (file_cache_req_tx, file_cache_res_rx) = spawn_file_cache_worker(ctx.clone(), file_cache_max);
         let mut drives = list_local_drives();
-        drives.extend(list_gvfs_smb_mounts());
+        let gvfs_mounts = list_gvfs_smb_mounts();
+        let gvfs_mount_entries = gvfs_mounts.clone();
+        drives.extend(gvfs_mounts);
 
         // start_dir を含むドライブのパスをツリーのルートにする
         let tree_root = drives
@@ -568,6 +587,7 @@ impl NekoviewApp {
             viewer: Arc::new(Mutex::new(None)),
             viewer_cfg: Arc::new(Mutex::new(viewer_cfg)),
             drives,
+            gvfs_mount_entries,
             page_cache: Arc::new(Mutex::new(PageCache::new(cache_max, cache_min))),
             file_cache: FileCache::new(file_cache_max),
             file_cache_req_tx,
@@ -579,6 +599,7 @@ impl NekoviewApp {
             pending_loads: Arc::new(Mutex::new(HashSet::new())),
             scan_state: ScanState::Idle,
             tree_scan_pending,
+            tree_reload_pending: None,
             window_size: (1024, 768),
             viewer_slots,
             raw_image_files: std::collections::HashSet::new(),
@@ -644,10 +665,17 @@ impl NekoviewApp {
             resize_redecode_last_seq: viewer_cfg.redecode_trigger_seq,
             resize_redecode_deadline: None,
             decode_target: Some(max_decode_target),
+            decode_generation: 0,
             exif_orientation_enabled_last_seen: viewer_cfg.exif_orientation_enabled,
         };
         app.start_scan();
         app.refresh_favorite_folders();
+        // 起動時点でGVFSマウントの到達可否確認を仕込んでおく。
+        // ユーザーが最初にリロードを押す頃には判定が終わっている見込みが立ち、
+        // 「初回リロードでは切断先が消えない」体感を和らげる。
+        for mount in app.gvfs_mount_entries.clone() {
+            app.spawn_mount_check_if_needed(mount.path);
+        }
         app
     }
 
