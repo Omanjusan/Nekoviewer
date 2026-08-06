@@ -2,6 +2,23 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.4.4] - 2026-08-07
+
+### Fixed
+
+- Fixed text input being blocked in the filter field
+- Fixed moiré and blurring caused by stale decoded images being displayed
+
+## [1.4.2]
+
+### Changed
+
+- Promoted the translation feature from experimental status
+
+### Fixed
+
+- Fixed the favorite creation dialog not working correctly
+
 ## [1.4.0] - 2026-07-13
 
 ### Added
