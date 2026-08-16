@@ -95,4 +95,11 @@ jobs:
           bundle: Nekoviewer-x86_64.flatpak
           manifest-path: io.github.Omanjusan.Nekoviewer.yml
           cache-key: flatpak-builder-${{ hashFiles('Cargo.lock', 'io.github.Omanjusan.Nekoviewer.yml', 'packaging/flatpak/cargo-sources.json') }}
-          artifact-name: nekoviewer-linux-x86_64-flatpak
+          upload-artifact: false
+
+      - name: Upload Flatpak artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nekoviewer-linux-x86_64-flatpak
+          path: Nekoviewer-x86_64.flatpak
+          retention-days: 30
