@@ -810,4 +810,68 @@ mod tests {
         assert!(out.contains("[grid]"));
         assert!(out.contains("thumb_size = 128"));
     }
+
+    #[test]
+    fn format_epoch_known_value() {
+        // 2024-01-01 00:00:00 UTC
+        assert_eq!(format_epoch(1704067200), "2024-01-01 00:00:00 UTC");
+    }
+
+    #[test]
+    fn format_epoch_epoch_zero() {
+        assert_eq!(format_epoch(0), "1970-01-01 00:00:00 UTC");
+    }
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("nekoviewer_test_{name}_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn migrate_storage_files_copies_and_deletes_source() {
+        let from = temp_dir("migrate_from_a");
+        let to = temp_dir("migrate_to_a");
+        std::fs::write(from.join("nekoviewer.conf"), "dummy conf").unwrap();
+        std::fs::write(from.join("keymap.ini"), "dummy keymap").unwrap();
+        // state/spread.redb は存在しないケース(未使用ユーザー)も許容する
+
+        let failed = migrate_storage_files(&from, &to);
+
+        assert!(failed.is_empty(), "削除失敗が無いこと: {failed:?}");
+        assert!(to.join("nekoviewer.conf").exists(), "コピー先にconfが存在する");
+        assert!(to.join("keymap.ini").exists(), "コピー先にkeymapが存在する");
+        assert!(!from.join("nekoviewer.conf").exists(), "コピー元のconfは削除される");
+        assert!(!from.join("keymap.ini").exists(), "コピー元のkeymapは削除される");
+        assert_eq!(std::fs::read_to_string(to.join("nekoviewer.conf")).unwrap(), "dummy conf");
+
+        let _ = std::fs::remove_dir_all(&from);
+        let _ = std::fs::remove_dir_all(&to);
+    }
+
+    #[test]
+    fn migrate_storage_files_skips_absent_files_without_error() {
+        let from = temp_dir("migrate_from_b");
+        let to = temp_dir("migrate_to_b");
+        // from は空（何もコピーされないはず）
+
+        let failed = migrate_storage_files(&from, &to);
+
+        assert!(failed.is_empty());
+        assert!(!to.join("nekoviewer.conf").exists());
+
+        let _ = std::fs::remove_dir_all(&from);
+        let _ = std::fs::remove_dir_all(&to);
+    }
+
+    #[test]
+    fn is_appimage_reflects_env_var() {
+        // 他テストと並列実行されるため env::set_var の副作用リスクはあるが、
+        // このテストは自分で set→unset まで完結させるので実害は無い。
+        unsafe { std::env::set_var("APPIMAGE", "/tmp/dummy.AppImage"); }
+        assert!(is_appimage());
+        unsafe { std::env::remove_var("APPIMAGE"); }
+        assert!(!is_appimage());
+    }
 }
