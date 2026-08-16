@@ -17,8 +17,8 @@ pub struct LogConfig {
 }
 
 static LOG_PERF:   AtomicBool = AtomicBool::new(false);
-static LOG_KEY:    AtomicBool = AtomicBool::new(true);
-static LOG_COMMON: AtomicBool = AtomicBool::new(true);
+static LOG_KEY:    AtomicBool = AtomicBool::new(false);
+static LOG_COMMON: AtomicBool = AtomicBool::new(false);
 
 /// どこからでも呼べるログ設定取得。AppConfig::load() より前に呼ぶとデフォルト値を返す。
 pub fn log() -> LogConfig {
@@ -305,7 +305,7 @@ impl AppConfig {
         });
 
         AppConfig {
-            cache_storage: parsed.storage,
+            cache_storage: effective_cache_storage(parsed.storage, is_read_only_package()),
             thumb_filter: parsed.thumb_filter,
             viewer_filter: parsed.viewer_filter,
             thumb_size: parsed.thumb_size.0,
@@ -460,7 +460,14 @@ impl AppConfig {
     }
 }
 
-#[derive(Default)]
+fn effective_cache_storage(configured: CacheStorage, is_read_only_package: bool) -> CacheStorage {
+    if is_read_only_package {
+        CacheStorage::Xdg
+    } else {
+        configured
+    }
+}
+
 struct ParsedIni {
     storage: CacheStorage,
     thumb_filter: ResizeFilter,
@@ -468,8 +475,8 @@ struct ParsedIni {
     thumb_size: ThumbSize,
     decode_threads: usize,
     log_perf:   bool,
-    log_key:    LogDefault<true>,
-    log_common: LogDefault<true>,
+    log_key:    LogDefault<false>,
+    log_common: LogDefault<false>,
     startup_use_last_dir: bool,
     startup_fixed_dir: Option<PathBuf>,
     cache_total_mb: Option<u64>,
@@ -480,6 +487,29 @@ struct ParsedIni {
     /// [meta] updated_at（unix epoch秒）。バイナリ横・XDG両方にconfが見つかった際に
     /// どちらが新しいか比較するために使う。無ければ None（未対応の旧フォーマット扱い）。
     updated_at: Option<u64>,
+}
+
+impl Default for ParsedIni {
+    fn default() -> Self {
+        Self {
+            storage: CacheStorage::default(),
+            thumb_filter: ResizeFilter::Triangle,
+            viewer_filter: ResizeFilter::Lanczos3,
+            thumb_size: ThumbSize::default(),
+            decode_threads: 0,
+            log_perf: false,
+            log_key: LogDefault(false),
+            log_common: LogDefault(false),
+            startup_use_last_dir: false,
+            startup_fixed_dir: None,
+            cache_total_mb: None,
+            default_slot: None,
+            anim_ring_min_frames: UsizeDefault::default(),
+            anim_ring_max_frames: UsizeDefault::default(),
+            anim_frame_hard_limit_mb: UsizeDefault::default(),
+            updated_at: None,
+        }
+    }
 }
 
 /// usize のデフォルト値を const ジェネリクスで指定するラッパー（空欄/不正値は既定にフォールバック）
@@ -585,8 +615,8 @@ fn parse_ini(path: &std::path::Path) -> ParsedIni {
                     }
                 }
                 ("log", "perf")   => result.log_perf   = parse_bool(v, false),
-                ("log", "key")    => result.log_key    = LogDefault(parse_bool(v, true)),
-                ("log", "common") => result.log_common = LogDefault(parse_bool(v, true)),
+                ("log", "key")    => result.log_key    = LogDefault(parse_bool(v, false)),
+                ("log", "common") => result.log_common = LogDefault(parse_bool(v, false)),
                 ("startup", "use_last_dir") => {
                     result.startup_use_last_dir = parse_bool(v, false);
                 }
@@ -724,8 +754,8 @@ fixed_dir =
 # ── ビューアー ──────────────────────────────────────────────────────────────
 [viewer]
 # 表示時の拡大縮小フィルタ：nearest / triangle / catmullrom / lanczos3
-# catmullrom 推奨（フルサイズ表示で品質差が目に見えるためバランス重視）。
-filter = catmullrom
+# lanczos3 推奨（ビューアー表示の画質を優先）。
+filter = lanczos3
 
 # ビューアーを開くときの既定の位置・サイズに使うスロット番号（5 / 6 / 7 / 8 / 空欄）。
 # F5〜F8 で保存したスロットを既定値として、ビューアーを開くたびに適用します。
@@ -780,9 +810,9 @@ storage = xdg
 # パフォーマンス計測ログ（ページ読み込み時間など）。
 perf = false
 # キーイベント・スクロールの入力ログ。
-key = true
+key = false
 # 起動・初期化など共通ログ。
-common = true
+common = false
 
 # ── メタ情報（手動編集不要）─────────────────────────────────────────────────
 [meta]
@@ -799,6 +829,34 @@ fn default_ini_with_timestamp() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn new_config_defaults_to_quiet_logs_and_lanczos_viewer_filter() {
+        let parsed = ParsedIni::default();
+        assert!(!parsed.log_perf);
+        assert!(!parsed.log_key.0);
+        assert!(!parsed.log_common.0);
+        assert!(matches!(parsed.thumb_filter, ResizeFilter::Triangle));
+        assert!(matches!(parsed.viewer_filter, ResizeFilter::Lanczos3));
+
+        assert!(DEFAULT_INI.contains("[viewer]\n"));
+        assert!(DEFAULT_INI.contains("filter = lanczos3"));
+        assert!(DEFAULT_INI.contains("perf = false"));
+        assert!(DEFAULT_INI.contains("key = false"));
+        assert!(DEFAULT_INI.contains("common = false"));
+    }
+
+    #[test]
+    fn read_only_package_reports_xdg_as_effective_storage() {
+        assert!(matches!(
+            effective_cache_storage(CacheStorage::Local, true),
+            CacheStorage::Xdg
+        ));
+        assert!(matches!(
+            effective_cache_storage(CacheStorage::Local, false),
+            CacheStorage::Local
+        ));
+    }
 
     #[test]
     fn apply_ini_updates_rewrites_existing_key_in_place() {
