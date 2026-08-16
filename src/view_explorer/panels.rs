@@ -84,6 +84,9 @@ impl NekoviewApp {
         self.draw_favorite_delete_confirm_dialog(&ctx);
         self.draw_favorite_detail_dialog(&ctx);
         self.draw_settings_dialog(&ctx);
+        self.draw_storage_migrate_confirm_dialog(&ctx);
+        self.draw_storage_delete_failed_dialog(&ctx);
+        self.draw_config_conflict_dialog(&ctx);
         // 旧来の無条件 ctx.request_repaint() は撤去（イベント駆動化）。
         // ROOT は入力イベント・各ワーカーの起床通知・ステータス窓の1Hzハートビートで再描画される。
     }

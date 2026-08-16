@@ -11,10 +11,11 @@ use crate::types::PageMode;
 /// ズレ状態」(-1/0/+1) で、絶対ページ位置は保存しない。
 pub const SPREAD_TABLE: TableDefinition<&str, (u8, i32)> = TableDefinition::new("spread_state");
 
-/// exe横の spread_state.redb を開く。失敗時は None（保存機能自体を無効化）。
-pub fn open_spread_db() -> Option<Arc<Mutex<Database>>> {
-    let exe_dir = std::env::current_exe().ok()?.parent()?.to_path_buf();
-    let db_path = exe_dir.join("nekoviewer_spread.redb");
+/// root（config.rsが解決したconf置き場所）の nekoviewer_spread.redb を開く。
+/// 失敗時は None（保存機能自体を無効化）。
+pub fn open_spread_db(root: &Path) -> Option<Arc<Mutex<Database>>> {
+    let _ = std::fs::create_dir_all(root);
+    let db_path = root.join("nekoviewer_spread.redb");
     let db = Database::create(&db_path).ok()?;
     {
         let tx = db.begin_write().ok()?;

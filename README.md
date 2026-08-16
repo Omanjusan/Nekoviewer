@@ -39,10 +39,16 @@ Download the latest `nekoviewer.exe` from [GitHub Releases](https://github.com/O
 
 ### Linux
 
+Download `Nekoviewer-*-x86_64.AppImage` from [GitHub Releases](https://github.com/Omanjusan/Nekoviewer/releases/latest), make it executable, and run it — no dependencies required (single static binary).
 
-Requires the Rust toolchain (`cargo`) and `make`.
+```bash
+chmod +x Nekoviewer-*-x86_64.AppImage
+./Nekoviewer-*-x86_64.AppImage
+```
 
-#### First time
+Building from source requires the Rust toolchain (`cargo`) and `make`.
+
+#### First time (source build)
 
 ```bash
 git clone https://github.com/Omanjusan/Nekoviewer.git
@@ -62,6 +68,17 @@ make release
 ```
 
 Run `make help` if you're not sure what to do.
+
+#### Static (musl) build
+
+For a single dependency-free binary suitable for distribution:
+
+```bash
+make release-musl
+./target/x86_64-unknown-linux-musl/release/nekoviewer
+```
+
+This will guide you through installing `musl-tools`, the `x86_64-unknown-linux-musl` target, and a musl-built dav1d (installed separately under `/usr/local/musl`, alongside the regular `make release` setup).
 
 ---
 

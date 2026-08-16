@@ -188,36 +188,27 @@ impl Default for AppState {
     }
 }
 
-fn state_path() -> Option<PathBuf> {
-    std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|d| d.join("nekoviewer.state")))
+fn state_path(root: &Path) -> PathBuf {
+    root.join("nekoviewer.state")
 }
 
-fn state_bak_path() -> Option<PathBuf> {
-    std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|d| d.join("nekoviewer.state.bak")))
+fn state_bak_path(root: &Path) -> PathBuf {
+    root.join("nekoviewer.state.bak")
 }
 
-fn state_tmp_path() -> Option<PathBuf> {
-    std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|d| d.join("nekoviewer.state.tmp")))
+fn state_tmp_path(root: &Path) -> PathBuf {
+    root.join("nekoviewer.state.tmp")
 }
 
-pub fn load_state() -> AppState {
-    if let Some(path) = state_path() {
-        if let Some(state) = parse_state_file(&path) {
-            return state;
-        }
+/// root（config.rsが解決したconf置き場所）の nekoviewer.state を読み込む。
+pub fn load_state(root: &Path) -> AppState {
+    if let Some(state) = parse_state_file(&state_path(root)) {
+        return state;
     }
     // メインが読めなければ bak を試みる
-    if let Some(bak) = state_bak_path() {
-        if let Some(state) = parse_state_file(&bak) {
-            crate::log_common!("[state] メイン読み込み失敗 → bak から復元");
-            return state;
-        }
+    if let Some(state) = parse_state_file(&state_bak_path(root)) {
+        crate::log_common!("[state] メイン読み込み失敗 → bak から復元");
+        return state;
     }
     AppState::default()
 }
@@ -425,10 +416,10 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
     })
 }
 
-pub fn save_state(dir: &Path, window_size: (u32, u32), viewer_slots: &[Option<WindowSlot>; 4], sort_state: &SortState, lang: &str, viewer_cfg: &ViewerConfig, show_hidden: bool, app_cfg: &AppConfig, translate_cfg: &TranslateConfig) {
-    let (Some(path), Some(bak), Some(tmp)) =
-        (state_path(), state_bak_path(), state_tmp_path())
-    else { return; };
+#[allow(clippy::too_many_arguments)]
+pub fn save_state(root: &Path, dir: &Path, window_size: (u32, u32), viewer_slots: &[Option<WindowSlot>; 4], sort_state: &SortState, lang: &str, viewer_cfg: &ViewerConfig, show_hidden: bool, app_cfg: &AppConfig, translate_cfg: &TranslateConfig) {
+    let _ = std::fs::create_dir_all(root);
+    let (path, bak, tmp) = (state_path(root), state_bak_path(root), state_tmp_path(root));
 
     let mut content = format!(
         "last_dir={}\nwindow_width={}\nwindow_height={}\nsort_key={}\nsort_ascending={}\nlang={}\nviewer_zoom={}\nviewer_fullscreen={}\nredecode_on_resize={}\nresize_debounce_ms={}\nshow_hidden={}\n",

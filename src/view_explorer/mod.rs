@@ -282,6 +282,12 @@ pub struct NekoviewApp {
     /// Some(_) の間、中央グリッドは実ディレクトリではなく選択中のお気に入り
     /// （フォルダ横断）一覧を表示している。
     viewing_favorites: Option<FavoriteSelection>,
+    /// フェーズ2: 設定ファイル保存先(local/xdg)切り替えの確認待ち。Some(切替先) の間だけ表示。
+    pub(crate) storage_migrate_confirm: Option<crate::config::CacheStorage>,
+    /// フェーズ2: 保存先切り替え後、旧側の削除に失敗したファイル一覧（手動削除案内用）。
+    pub(crate) storage_delete_failed: Option<Vec<std::path::PathBuf>>,
+    /// フェーズ2: 起動時にバイナリ横・XDG両方で有効なconfが見つかった場合の選択待ち。
+    pub(crate) config_conflict: Option<crate::config::ConfigConflict>,
     viewing_dir: Option<PathBuf>,
     /// CD/LSディレクトリのサマリーキャッシュ (path, saved_thumbs, total_archives)
     cd_summary: Option<(PathBuf, usize, usize)>,
@@ -501,6 +507,8 @@ impl NekoviewApp {
         // 長辺px上限のみ指定し、正方形の箱として resize_for_display に渡す。
         // fit-within(縦横比維持)なので短辺は箱の中に自動的に収まる。
         let max_decode_target = (config.max_decode_edge, config.max_decode_edge);
+        let config_root = config.config_root.clone();
+        let config_conflict = config.conflict.clone();
         let settings_draft = SettingsDraft::from_current(&config, &viewer_cfg, show_hidden, &translate_cfg);
         let (req_tx, res_rx) = spawn_worker(config.viewer_filter.to_image_filter(), config.resolved_decode_threads(), ctx.clone(), cache_max, ring_bounds, frame_hard_limit_bytes);
         let (thumb_req_tx, thumb_res_rx) = spawn_thumb_worker(config.thumb_filter.to_image_filter(), config.resolved_decode_threads(), ctx.clone());
@@ -558,6 +566,9 @@ impl NekoviewApp {
             favorite_delete_confirm: None,
             favorite_detail_dialog: None,
             viewing_favorites: None,
+            storage_migrate_confirm: None,
+            storage_delete_failed: None,
+            config_conflict,
             viewing_dir: None,
             cd_summary: None,
             cd_summary_rx: None,
@@ -565,7 +576,7 @@ impl NekoviewApp {
             cache_db: None,
             cache_neko_dir: None,
             spread_db: {
-                let db = crate::spread_state::open_spread_db();
+                let db = crate::spread_state::open_spread_db(&config_root);
                 if let Some(db) = &db {
                     crate::favorites::init_favorite_tables(db);
                     // 候補刷新で廃止した空洞・豆腐マーカーを塗り版へ一括移行
@@ -683,6 +694,7 @@ impl NekoviewApp {
     /// 編集されうる AppConfig 値をまとめて state ファイルへ書き戻す。
     pub(crate) fn persist_state(&self) {
         crate::gui_config::save_state(
+            &self.config.config_root,
             &self.current_dir, self.window_size, &self.viewer_slots,
             &SortState { key: self.sort_key.as_state_key().to_string(), ascending: self.sort_ascending },
             i18n::lang_code(),
