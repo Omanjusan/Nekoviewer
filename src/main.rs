@@ -183,15 +183,41 @@ fn simplified_chinese_font_data() -> Option<Vec<u8>> {
     candidates.iter().find_map(|p| std::fs::read(p).ok())
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(target_os = "linux")]
 fn japanese_font_data() -> Option<Vec<u8>> {
     let candidates = [
+        // Flatpak exposes the host fonts below /run/host/fonts.  Reading the
+        // font bytes directly is necessary because egui does not use
+        // fontconfig by itself.
+        "/run/host/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/run/host/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
+        "/run/host/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
         "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
         "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
         "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
-        "/System/Library/Fonts/ヒラギノ角ゴシック W3.ttc",
     ];
-    candidates.iter().find_map(|p| std::fs::read(p).ok())
+    candidates.iter().find_map(|p| std::fs::read(p).ok()).or_else(|| {
+        // Font locations differ between distributions and host setups.
+        // Flatpak makes the host fontconfig database available, so ask it for
+        // a Japanese-capable sans-serif font when no known path matched.
+        let output = std::process::Command::new("fc-match")
+            .args(["-f", "%{file}\n", "sans-serif:lang=ja"])
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let path = String::from_utf8(output.stdout).ok()?;
+        path.lines()
+            .map(str::trim)
+            .find(|line| !line.is_empty())
+            .and_then(|path| std::fs::read(path).ok())
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn japanese_font_data() -> Option<Vec<u8>> {
+    std::fs::read("/System/Library/Fonts/ヒラギノ角ゴシック W3.ttc").ok()
 }
 
 #[cfg(not(target_os = "windows"))]

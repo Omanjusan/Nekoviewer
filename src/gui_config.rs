@@ -104,7 +104,7 @@ impl Default for ViewerConfig {
         Self {
             zoom_actual: false,
             fullscreen: false,
-            redecode_on_resize: false,
+            redecode_on_resize: true,
             resize_debounce_ms: 300,
             redecode_trigger_seq: 0,
             thumbbar_pos: ThumbbarPos::None,
@@ -384,7 +384,7 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
             // 起動時は常にフィット表示から始める（原寸表示は前回終了時の状態を引き継がない）。
             zoom_actual: false,
             fullscreen: viewer_fullscreen.unwrap_or(false),
-            redecode_on_resize: redecode_on_resize.unwrap_or(false),
+            redecode_on_resize: redecode_on_resize.unwrap_or(true),
             resize_debounce_ms: resize_debounce_ms.unwrap_or(300),
             redecode_trigger_seq: 0,
             thumbbar_pos: thumbbar_pos.unwrap_or(ThumbbarPos::None),
@@ -473,4 +473,16 @@ pub fn save_state(root: &Path, dir: &Path, window_size: (u32, u32), viewer_slots
     }
     // 書き込み成功を確認してから bak に同内容をミラー
     let _ = std::fs::write(&bak, &content);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn viewer_defaults_to_window_size_following() {
+        let config = ViewerConfig::default();
+        assert!(!config.zoom_actual);
+        assert!(config.redecode_on_resize);
+    }
 }

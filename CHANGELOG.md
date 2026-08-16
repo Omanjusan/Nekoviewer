@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+## [1.5.1] - 2026-08-16
+
+### Changed
+
+- Replaced the failed Linux AppImage distribution path with a Flatpak package using the Freedesktop runtime.
+- Enforced read-only access to user content in the Flatpak sandbox while keeping settings and caches writable in the app-private XDG directories.
+- Defaulted console logging to off, viewer resizing to Lanczos3, and image decoding to follow the viewer window size.
+
 ## [1.5.0] - 2026-08-16
 
 ### Added

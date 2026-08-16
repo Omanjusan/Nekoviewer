@@ -41,12 +41,14 @@ ZIP / CBZ 形式のマンガアーカイブを快適に閲覧するための、�
 
 ### Linux
 
-[GitHub Releases](https://github.com/Omanjusan/Nekoviewer/releases/latest) から `Nekoviewer-*-x86_64.AppImage` をダウンロードし、実行権限を付けて起動するだけで使えます（依存ライブラリ不要の単一バイナリ）。
+NekoViewerのLinux版はFlatpakで配布します。Flathub公開までは、[GitHub Releases](https://github.com/Omanjusan/Nekoviewer/releases/latest) から `Nekoviewer-*-x86_64.flatpak` をダウンロードしてインストールしてください。
 
 ```bash
-chmod +x Nekoviewer-*-x86_64.AppImage
-./Nekoviewer-*-x86_64.AppImage
+flatpak install --user ./Nekoviewer-*-x86_64.flatpak
+flatpak run io.github.Omanjusan.Nekoviewer
 ```
+
+Flatpak版はHOME配下とマウント済みドライブを読み取り専用で閲覧します。書き込むのは `~/.var/app/io.github.Omanjusan.Nekoviewer/` 配下の設定とキャッシュだけです。
 
 ソースからビルドする場合は Rust toolchain（`cargo`）と `make` が必要です。
 
@@ -71,16 +73,14 @@ make release
 
 `make help` ヘルプ表示。迷ったらこれで。
 
-#### 静的バイナリ（musl）のビルド
+#### Flatpak開発ビルド
 
-配布用に依存ライブラリを持ち歩かない単一バイナリが欲しい場合：
+公式Flathub BuilderとRust SDK拡張を導入してから `make flatpak` を実行します。
 
 ```bash
-make release-musl
-./target/x86_64-unknown-linux-musl/release/nekoviewer
+flatpak install --user flathub org.flatpak.Builder org.freedesktop.Sdk.Extension.rust-stable//25.08
+make flatpak
 ```
-
-`musl-tools`・`x86_64-unknown-linux-musl`ターゲット・musl向けdav1dの導入を案内します（通常の`make release`とは別系統で`/usr/local/musl`にインストール）。
 
 ---
 

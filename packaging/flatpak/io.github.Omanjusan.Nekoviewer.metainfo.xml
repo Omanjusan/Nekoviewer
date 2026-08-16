@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.Omanjusan.Nekoviewer</id>
+  <name>NekoViewer</name>
+  <summary>Read-only image and comic archive viewer</summary>
+  <summary xml:lang="ja">読み取り専用の画像・コミックアーカイブビューアー</summary>
+  <developer id="io.github.omanjusan">
+    <name>Omanjusan</name>
+  </developer>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <description>
+    <p>NekoViewer is a read-only file browser and image viewer for image collections and comic archives.</p>
+    <p>Browse directories, open standalone images and supported archives, and move between viewable files in the same directory. NekoViewer writes only its own settings and cache data.</p>
+    <p xml:lang="ja">NekoViewerは、画像コレクションとコミックアーカイブ向けの読み取り専用ファイラー兼画像ビューアーです。</p>
+    <p xml:lang="ja">ディレクトリを移動し、単体画像や対応アーカイブを開き、同じディレクトリ内の閲覧可能ファイル間を移動できます。書き込むのはNekoViewer自身の設定とキャッシュだけです。</p>
+  </description>
+  <launchable type="desktop-id">io.github.Omanjusan.Nekoviewer.desktop</launchable>
+  <url type="homepage">https://github.com/Omanjusan/Nekoviewer</url>
+  <url type="bugtracker">https://github.com/Omanjusan/Nekoviewer/issues</url>
+  <screenshots>
+    <screenshot type="default">
+      <image>https://github.com/user-attachments/assets/e1320011-5cba-4e2c-91ec-5526d8b0f9c2</image>
+      <caption>NekoViewer file browser and viewer</caption>
+    </screenshot>
+  </screenshots>
+  <releases>
+    <release version="1.5.1" date="2026-08-16"/>
+  </releases>
+  <content_rating type="oars-1.1"/>
+  <requires>
+    <control>keyboard</control>
+    <control>pointing</control>
+    <display_length compare="ge">768</display_length>
+  </requires>
+</component>

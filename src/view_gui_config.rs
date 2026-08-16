@@ -1106,12 +1106,12 @@ impl NekoviewApp {
     /// （移行はコピー+削除を伴う重い操作のため、他の設定と同時に暗黙適用したくない）。
     fn draw_storage_section(&mut self, ui: &mut egui::Ui) {
         use crate::config::CacheStorage;
-        let is_appimage = crate::config::is_appimage();
+        let is_read_only_package = crate::config::is_read_only_package();
         let current = self.config.cache_storage;
 
         ui.label(i18n::t().settings_storage_label());
         ui.horizontal(|ui| {
-            if ui.add_enabled(!is_appimage, egui::RadioButton::new(current == CacheStorage::Local, i18n::t().settings_storage_local())).clicked()
+            if ui.add_enabled(!is_read_only_package, egui::RadioButton::new(current == CacheStorage::Local, i18n::t().settings_storage_local())).clicked()
                 && current != CacheStorage::Local {
                 self.storage_migrate_confirm = Some(CacheStorage::Local);
             }
@@ -1120,8 +1120,8 @@ impl NekoviewApp {
                 self.storage_migrate_confirm = Some(CacheStorage::Xdg);
             }
         });
-        if is_appimage {
-            ui.label(i18n::t().settings_storage_appimage_note());
+        if is_read_only_package {
+            ui.label(i18n::t().settings_storage_package_note());
         }
     }
 

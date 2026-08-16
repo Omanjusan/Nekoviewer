@@ -4,3 +4,9 @@
 
 # Rust build artifacts in any nested crate (e.g. poc/)
 target/
+
+# Local Flatpak build output
+/.flatpak-builder/
+/builddir/
+/repo/
+/*.flatpak

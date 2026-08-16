@@ -39,12 +39,14 @@ Download the latest `nekoviewer.exe` from [GitHub Releases](https://github.com/O
 
 ### Linux
 
-Download `Nekoviewer-*-x86_64.AppImage` from [GitHub Releases](https://github.com/Omanjusan/Nekoviewer/releases/latest), make it executable, and run it — no dependencies required (single static binary).
+NekoViewer is distributed as a Flatpak. Until the Flathub listing is available, download `Nekoviewer-*-x86_64.flatpak` from [GitHub Releases](https://github.com/Omanjusan/Nekoviewer/releases/latest) and install it locally:
 
 ```bash
-chmod +x Nekoviewer-*-x86_64.AppImage
-./Nekoviewer-*-x86_64.AppImage
+flatpak install --user ./Nekoviewer-*-x86_64.flatpak
+flatpak run io.github.Omanjusan.Nekoviewer
 ```
+
+The Flatpak can browse home folders and mounted drives read-only. NekoViewer writes only its private settings and cache data under `~/.var/app/io.github.Omanjusan.Nekoviewer/`.
 
 Building from source requires the Rust toolchain (`cargo`) and `make`.
 
@@ -69,16 +71,14 @@ make release
 
 Run `make help` if you're not sure what to do.
 
-#### Static (musl) build
+#### Flatpak development build
 
-For a single dependency-free binary suitable for distribution:
+Install the official Flathub Builder and the Rust SDK extension, then run `make flatpak`:
 
 ```bash
-make release-musl
-./target/x86_64-unknown-linux-musl/release/nekoviewer
+flatpak install --user flathub org.flatpak.Builder org.freedesktop.Sdk.Extension.rust-stable//25.08
+make flatpak
 ```
-
-This will guide you through installing `musl-tools`, the `x86_64-unknown-linux-musl` target, and a musl-built dav1d (installed separately under `/usr/local/musl`, alongside the regular `make release` setup).
 
 ---
 

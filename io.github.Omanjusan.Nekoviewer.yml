@@ -1,0 +1,44 @@
+app-id: io.github.Omanjusan.Nekoviewer
+runtime: org.freedesktop.Platform
+runtime-version: '25.08'
+sdk: org.freedesktop.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+command: nekoviewer
+
+finish-args:
+  - --share=ipc
+  - --share=network
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --device=dri
+  - --filesystem=home:ro
+  - --filesystem=/mnt:ro
+  - --filesystem=/media:ro
+  - --filesystem=/run/media:ro
+  - --filesystem=xdg-run/gvfs:ro
+
+modules:
+  - name: nekoviewer
+    buildsystem: simple
+    build-options:
+      append-path: /usr/lib/sdk/rust-stable/bin
+      env:
+        CARGO_HOME: /run/build/nekoviewer/cargo
+        CARGO_NET_OFFLINE: 'true'
+    build-commands:
+      - cargo build --offline --release --locked
+      - install -Dm0755 target/release/nekoviewer /app/bin/nekoviewer
+      - install -Dm0644 packaging/flatpak/io.github.Omanjusan.Nekoviewer.desktop /app/share/applications/io.github.Omanjusan.Nekoviewer.desktop
+      - install -Dm0644 packaging/flatpak/io.github.Omanjusan.Nekoviewer.metainfo.xml /app/share/metainfo/io.github.Omanjusan.Nekoviewer.metainfo.xml
+      - install -Dm0644 packaging/flatpak/io.github.Omanjusan.Nekoviewer.png /app/share/icons/hicolor/512x512/apps/io.github.Omanjusan.Nekoviewer.png
+    sources:
+      - type: dir
+        path: .
+        skip:
+          - .flatpak-builder
+          - build-dir
+          - repo
+          - target
+      - packaging/flatpak/cargo-sources.json
+

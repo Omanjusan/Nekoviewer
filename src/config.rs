@@ -17,8 +17,8 @@ pub struct LogConfig {
 }
 
 static LOG_PERF:   AtomicBool = AtomicBool::new(false);
-static LOG_KEY:    AtomicBool = AtomicBool::new(true);
-static LOG_COMMON: AtomicBool = AtomicBool::new(true);
+static LOG_KEY:    AtomicBool = AtomicBool::new(false);
+static LOG_COMMON: AtomicBool = AtomicBool::new(false);
 
 /// どこからでも呼べるログ設定取得。AppConfig::load() より前に呼ぶとデフォルト値を返す。
 pub fn log() -> LogConfig {
@@ -80,6 +80,16 @@ pub enum CacheStorage {
 /// この場合は storage 設定に関わらず常に XDG を使う。
 pub fn is_appimage() -> bool {
     std::env::var_os("APPIMAGE").is_some()
+}
+
+/// Flatpak sandbox 内で実行中かどうか。
+/// Flatpak は `/app` を読み取り専用で提供するため、実行ファイル横への保存は許可しない。
+pub fn is_flatpak() -> bool {
+    std::env::var_os("FLATPAK_ID").is_some()
+}
+
+pub fn is_read_only_package() -> bool {
+    is_appimage() || is_flatpak()
 }
 
 /// 設定ファイル本体（conf/keymap/state/spread.redb）用の XDG ルート。
@@ -144,13 +154,13 @@ pub struct ConfigConflict {
 }
 
 /// conf の置き場所を解決する。
-/// 優先順位: ①AppImage実行中なら常にXDG ②バイナリ横に既存confがあればそれ（後方互換）
+/// 優先順位: ①読み取り専用パッケージ内なら常にXDG ②バイナリ横に既存confがあればそれ（後方互換）
 /// ③XDGに既存confがあればそれ ④どちらにも無ければ新規はXDG（新規インストールの既定値）
 /// ⑤両方に既存confがあれば暫定でXDGを採用しつつ conflict を返す（起動後にダイアログで解消）
 fn resolve_config_root() -> (PathBuf, Option<ConfigConflict>) {
     let xdg_root = xdg_config_root();
 
-    if is_appimage() {
+    if is_read_only_package() {
         return (xdg_root, None);
     }
 
@@ -295,7 +305,7 @@ impl AppConfig {
         });
 
         AppConfig {
-            cache_storage: parsed.storage,
+            cache_storage: effective_cache_storage(parsed.storage, is_read_only_package()),
             thumb_filter: parsed.thumb_filter,
             viewer_filter: parsed.viewer_filter,
             thumb_size: parsed.thumb_size.0,
@@ -397,6 +407,7 @@ impl AppConfig {
     pub fn migrate_storage(&mut self, to: CacheStorage) -> Vec<PathBuf> {
         let from_root = self.config_root.clone();
         let to_root = match to {
+            CacheStorage::Local if is_read_only_package() => xdg_config_root(),
             CacheStorage::Local => exe_dir().unwrap_or_else(|| from_root.clone()),
             CacheStorage::Xdg => xdg_config_root(),
         };
@@ -415,6 +426,17 @@ impl AppConfig {
     }
 
     pub fn cache_root(&self) -> Option<PathBuf> {
+        if is_flatpak() {
+            let base = std::env::var("XDG_CACHE_HOME")
+                .map(PathBuf::from)
+                .unwrap_or_else(|_| {
+                    std::env::var("HOME")
+                        .map(|h| PathBuf::from(h).join(".cache"))
+                        .unwrap_or_else(|_| PathBuf::from(".cache"))
+                });
+            return Some(base.join("nekoview"));
+        }
+
         match self.cache_storage {
             CacheStorage::Local => std::env::current_exe()
                 .ok()
@@ -438,7 +460,14 @@ impl AppConfig {
     }
 }
 
-#[derive(Default)]
+fn effective_cache_storage(configured: CacheStorage, is_read_only_package: bool) -> CacheStorage {
+    if is_read_only_package {
+        CacheStorage::Xdg
+    } else {
+        configured
+    }
+}
+
 struct ParsedIni {
     storage: CacheStorage,
     thumb_filter: ResizeFilter,
@@ -446,8 +475,8 @@ struct ParsedIni {
     thumb_size: ThumbSize,
     decode_threads: usize,
     log_perf:   bool,
-    log_key:    LogDefault<true>,
-    log_common: LogDefault<true>,
+    log_key:    LogDefault<false>,
+    log_common: LogDefault<false>,
     startup_use_last_dir: bool,
     startup_fixed_dir: Option<PathBuf>,
     cache_total_mb: Option<u64>,
@@ -458,6 +487,29 @@ struct ParsedIni {
     /// [meta] updated_at（unix epoch秒）。バイナリ横・XDG両方にconfが見つかった際に
     /// どちらが新しいか比較するために使う。無ければ None（未対応の旧フォーマット扱い）。
     updated_at: Option<u64>,
+}
+
+impl Default for ParsedIni {
+    fn default() -> Self {
+        Self {
+            storage: CacheStorage::default(),
+            thumb_filter: ResizeFilter::Triangle,
+            viewer_filter: ResizeFilter::Lanczos3,
+            thumb_size: ThumbSize::default(),
+            decode_threads: 0,
+            log_perf: false,
+            log_key: LogDefault(false),
+            log_common: LogDefault(false),
+            startup_use_last_dir: false,
+            startup_fixed_dir: None,
+            cache_total_mb: None,
+            default_slot: None,
+            anim_ring_min_frames: UsizeDefault::default(),
+            anim_ring_max_frames: UsizeDefault::default(),
+            anim_frame_hard_limit_mb: UsizeDefault::default(),
+            updated_at: None,
+        }
+    }
 }
 
 /// usize のデフォルト値を const ジェネリクスで指定するラッパー（空欄/不正値は既定にフォールバック）
@@ -563,8 +615,8 @@ fn parse_ini(path: &std::path::Path) -> ParsedIni {
                     }
                 }
                 ("log", "perf")   => result.log_perf   = parse_bool(v, false),
-                ("log", "key")    => result.log_key    = LogDefault(parse_bool(v, true)),
-                ("log", "common") => result.log_common = LogDefault(parse_bool(v, true)),
+                ("log", "key")    => result.log_key    = LogDefault(parse_bool(v, false)),
+                ("log", "common") => result.log_common = LogDefault(parse_bool(v, false)),
                 ("startup", "use_last_dir") => {
                     result.startup_use_last_dir = parse_bool(v, false);
                 }
@@ -680,7 +732,7 @@ const DEFAULT_INI: &str = "\
 #  Nekoviewer 設定ファイル (nekoviewer.conf)
 #
 #  ・[cache] storage 設定に従い、実行ファイルと同じフォルダ、または
-#    ~/.config/nekoview/ に置かれます（AppImageでは常に後者）。
+#    ~/.config/nekoview/ に置かれます（AppImage/Flatpakでは常に後者）。
 #  ・ファイルを削除すると、次回起動時にこの既定値で再生成されます。
 #  ・'#' または ';' で始まる行はコメントです。'キー = 値' 形式で記述します。
 #  ・不明なキーや不正な値は無視され、そのキーの既定値が使われます。
@@ -702,8 +754,8 @@ fixed_dir =
 # ── ビューアー ──────────────────────────────────────────────────────────────
 [viewer]
 # 表示時の拡大縮小フィルタ：nearest / triangle / catmullrom / lanczos3
-# catmullrom 推奨（フルサイズ表示で品質差が目に見えるためバランス重視）。
-filter = catmullrom
+# lanczos3 推奨（ビューアー表示の画質を優先）。
+filter = lanczos3
 
 # ビューアーを開くときの既定の位置・サイズに使うスロット番号（5 / 6 / 7 / 8 / 空欄）。
 # F5〜F8 で保存したスロットを既定値として、ビューアーを開くたびに適用します。
@@ -731,8 +783,8 @@ decode_threads = 0
 # ── キャッシュ ──────────────────────────────────────────────────────────────
 [cache]
 # サムネイルのディスクキャッシュ保存先。conf/keymap.ini/state/spread.redbの置き場所も
-# これに従います（AppImage実行時は常にxdg扱いになります）。
-#   local : 実行ファイル配下に保存（開発・確認用。AppImageでは機能しません）
+# これに従います（AppImage/Flatpak実行時は常にxdg扱いになります）。
+#   local : 実行ファイル配下に保存（開発・確認用。AppImage/Flatpakでは機能しません）
 #   xdg   : ~/.config/nekoview/（設定）・~/.local/share/nekoview/cache/（キャッシュ）に保存（推奨）
 storage = xdg
 
@@ -758,9 +810,9 @@ storage = xdg
 # パフォーマンス計測ログ（ページ読み込み時間など）。
 perf = false
 # キーイベント・スクロールの入力ログ。
-key = true
+key = false
 # 起動・初期化など共通ログ。
-common = true
+common = false
 
 # ── メタ情報（手動編集不要）─────────────────────────────────────────────────
 [meta]
@@ -777,6 +829,34 @@ fn default_ini_with_timestamp() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn new_config_defaults_to_quiet_logs_and_lanczos_viewer_filter() {
+        let parsed = ParsedIni::default();
+        assert!(!parsed.log_perf);
+        assert!(!parsed.log_key.0);
+        assert!(!parsed.log_common.0);
+        assert!(matches!(parsed.thumb_filter, ResizeFilter::Triangle));
+        assert!(matches!(parsed.viewer_filter, ResizeFilter::Lanczos3));
+
+        assert!(DEFAULT_INI.contains("[viewer]\n"));
+        assert!(DEFAULT_INI.contains("filter = lanczos3"));
+        assert!(DEFAULT_INI.contains("perf = false"));
+        assert!(DEFAULT_INI.contains("key = false"));
+        assert!(DEFAULT_INI.contains("common = false"));
+    }
+
+    #[test]
+    fn read_only_package_reports_xdg_as_effective_storage() {
+        assert!(matches!(
+            effective_cache_storage(CacheStorage::Local, true),
+            CacheStorage::Xdg
+        ));
+        assert!(matches!(
+            effective_cache_storage(CacheStorage::Local, false),
+            CacheStorage::Local
+        ));
+    }
 
     #[test]
     fn apply_ini_updates_rewrites_existing_key_in_place() {
@@ -873,5 +953,13 @@ mod tests {
         assert!(is_appimage());
         unsafe { std::env::remove_var("APPIMAGE"); }
         assert!(!is_appimage());
+    }
+
+    #[test]
+    fn is_flatpak_reflects_env_var() {
+        unsafe { std::env::set_var("FLATPAK_ID", "io.github.Omanjusan.Nekoviewer"); }
+        assert!(is_flatpak());
+        unsafe { std::env::remove_var("FLATPAK_ID"); }
+        assert!(!is_flatpak());
     }
 }

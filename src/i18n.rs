@@ -713,11 +713,11 @@ impl Lang {
         }
     }
 
-    pub fn settings_storage_appimage_note(self) -> &'static str {
+    pub fn settings_storage_package_note(self) -> &'static str {
         match self {
-            Lang::Japanese => "AppImage実行中は「実行ファイルの横」を選べません（起動毎に場所が変わるため）",
-            Lang::English  => "\"Next to the executable\" is unavailable while running as an AppImage (its path changes on every launch).",
-            Lang::Chinese  => "以 AppImage 运行时无法选择“可执行文件旁边”（该路径每次启动都会变化）",
+            Lang::Japanese => "パッケージ版では「実行ファイルの横」を選べません（インストール領域が読み取り専用のため）",
+            Lang::English  => "\"Next to the executable\" is unavailable in packaged builds because the installation is read-only.",
+            Lang::Chinese  => "软件包版本无法选择“可执行文件旁边”，因为安装区域为只读。",
         }
     }
 
