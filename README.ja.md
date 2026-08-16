@@ -64,6 +64,17 @@ make release
 
 `make help` ヘルプ表示。迷ったらこれで。
 
+#### 静的バイナリ（musl）のビルド
+
+配布用に依存ライブラリを持ち歩かない単一バイナリが欲しい場合：
+
+```bash
+make release-musl
+./target/x86_64-unknown-linux-musl/release/nekoviewer
+```
+
+`musl-tools`・`x86_64-unknown-linux-musl`ターゲット・musl向けdav1dの導入を案内します（通常の`make release`とは別系統で`/usr/local/musl`にインストール）。
+
 ---
 
 ## 使い方

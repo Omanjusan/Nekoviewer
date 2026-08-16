@@ -63,6 +63,17 @@ make release
 
 Run `make help` if you're not sure what to do.
 
+#### Static (musl) build
+
+For a single dependency-free binary suitable for distribution:
+
+```bash
+make release-musl
+./target/x86_64-unknown-linux-musl/release/nekoviewer
+```
+
+This will guide you through installing `musl-tools`, the `x86_64-unknown-linux-musl` target, and a musl-built dav1d (installed separately under `/usr/local/musl`, alongside the regular `make release` setup).
+
 ---
 
 ## Usage
