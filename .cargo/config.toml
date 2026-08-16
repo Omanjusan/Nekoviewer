@@ -1,2 +1,12 @@
 [http]
 multiplexing = false
+
+[target.x86_64-unknown-linux-musl]
+linker = "rust-lld"
+# libdl.a/libpthread.a等の互換スタブはrustup同梱のself-containedディレクトリに無く、
+# musl-tools(apt)がインストールする /usr/lib/x86_64-linux-musl/ 側にのみ存在するため明示的に追加。
+rustflags = [
+    "-C", "target-feature=+crt-static",
+    "-C", "link-self-contained=yes",
+    "-L", "native=/usr/lib/x86_64-linux-musl",
+]

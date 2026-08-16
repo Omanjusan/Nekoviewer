@@ -23,7 +23,11 @@ winit = "0.30"
 pollster = "0.4"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif", "bmp", "tiff"] }
 libavif-sys = "0.17"
-zip = "2"
+# xz feature（CompressionMethod::Xz、zip内の稀なXZ圧縮エントリ用）はxz2/lzma-sys経由で
+# システムのliblzmaを動的リンクしてしまい、単一musl静的バイナリ配布と相性が悪いため除外。
+# LZMA圧縮（CompressionMethod::Lzma、method 14）はlzma-rsによる純Rust実装のlzma featureで
+# 別途サポートされており、そちらは維持する。
+zip = { version = "2", default-features = false, features = ["aes-crypto", "bzip2", "deflate64", "deflate", "lzma", "time", "zstd"] }
 sevenz-rust2 = { version = "0.21", optional = true }
 tar = { version = "0.4", optional = true }
 ruzstd = { version = "0.8", optional = true }
