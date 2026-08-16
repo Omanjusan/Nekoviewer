@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.5.1] - 2026-08-16
+
 ### Changed
 
 - Replaced the failed Linux AppImage distribution path with a Flatpak package using the Freedesktop runtime.
