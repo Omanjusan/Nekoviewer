@@ -58,7 +58,7 @@ fn main() {
         let mut cfg = config::AppConfig::load();
         log_common!("[startup] config loaded");
 
-        let state = gui_config::load_state();
+        let state = gui_config::load_state(&cfg.config_root);
         log_common!("[startup] state loaded (window_size = {:?})", state.window_size);
         i18n::set_from_code(&state.lang);
 

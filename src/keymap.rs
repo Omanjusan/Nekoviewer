@@ -502,16 +502,14 @@ impl Keymap {
         lines
     }
 
-    /// 実行ファイルと同じフォルダの keymap.ini を読み込む。無ければコメント付きテンプレートを
-    /// 生成して既定値を返す（config.ini の起動時生成パターンを踏襲）。
-    pub fn load() -> Self {
-        let Some(dir) = std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.to_path_buf())) else {
-            return Self::default();
-        };
-        let path = dir.join("keymap.ini");
+    /// root（config.rsが解決したconf置き場所）の keymap.ini を読み込む。無ければ
+    /// コメント付きテンプレートを生成して既定値を返す（config.ini の起動時生成パターンを踏襲）。
+    pub fn load(root: &std::path::Path) -> Self {
+        let path = root.join("keymap.ini");
         let content = match std::fs::read_to_string(&path) {
             Ok(c) => c,
             Err(_) => {
+                let _ = std::fs::create_dir_all(root);
                 let _ = std::fs::write(&path, KEYMAP_INI_HEADER);
                 return Self::default();
             }
@@ -539,8 +537,9 @@ impl Keymap {
 
     /// 設定ダイアログの[反映]時に呼ぶ。tmp→renameで安全に書き込み、bakも残す
     /// （config.ini保存(AppConfig::save)と同じパターン）。
-    pub fn save(&self) {
-        let Some(dir) = std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.to_path_buf())) else { return };
+    pub fn save(&self, root: &std::path::Path) {
+        let dir = root;
+        let _ = std::fs::create_dir_all(dir);
         let path = dir.join("keymap.ini");
         let mut content = String::from(KEYMAP_INI_HEADER);
         for line in self.to_ini_lines() {
@@ -563,7 +562,7 @@ const KEYMAP_INI_HEADER: &str = "\
 # ============================================================================
 #  Nekoviewer キーアサイン設定 (keymap.ini)
 #
-#  ・この実行ファイルと同じフォルダに置かれます。
+#  ・nekoviewer.conf と同じ場所（[cache] storage 設定に従う）に置かれます。
 #  ・ファイルを削除すると、次回起動時に既定のキー割り当てに戻ります。
 #  ・通常は設定ダイアログの「キーアサイン」タブから変更してください。
 #  ・手動編集する場合の形式:

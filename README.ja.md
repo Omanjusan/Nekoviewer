@@ -41,9 +41,16 @@ ZIP / CBZ 形式のマンガアーカイブを快適に閲覧するための、�
 
 ### Linux
 
-Rust toolchain（`cargo`）と `make` が必要です。
+[GitHub Releases](https://github.com/Omanjusan/Nekoviewer/releases/latest) から `Nekoviewer-*-x86_64.AppImage` をダウンロードし、実行権限を付けて起動するだけで使えます（依存ライブラリ不要の単一バイナリ）。
 
-#### 初回
+```bash
+chmod +x Nekoviewer-*-x86_64.AppImage
+./Nekoviewer-*-x86_64.AppImage
+```
+
+ソースからビルドする場合は Rust toolchain（`cargo`）と `make` が必要です。
+
+#### 初回（ソースビルド）
 
 ```bash
 git clone https://github.com/Omanjusan/Nekoviewer.git
@@ -63,6 +70,17 @@ make release
 ```
 
 `make help` ヘルプ表示。迷ったらこれで。
+
+#### 静的バイナリ（musl）のビルド
+
+配布用に依存ライブラリを持ち歩かない単一バイナリが欲しい場合：
+
+```bash
+make release-musl
+./target/x86_64-unknown-linux-musl/release/nekoviewer
+```
+
+`musl-tools`・`x86_64-unknown-linux-musl`ターゲット・musl向けdav1dの導入を案内します（通常の`make release`とは別系統で`/usr/local/musl`にインストール）。
 
 ---
 

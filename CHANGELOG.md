@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.5.0] - 2026-08-16
+
+### Added
+
+- Added a Linux AppImage to Releases
+
+### Changed
+
+- Config/state storage now defaults to XDG locations (`%APPDATA%` on Windows). A `nekoview` folder is created there to hold the config files.
+- Added a migration feature for switching away from binary-adjacent storage. After migration, only the old config file is deleted; other leftover files must be removed manually.
+
 ## [1.4.4] - 2026-08-07
 
 ### Fixed
