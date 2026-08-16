@@ -39,10 +39,16 @@ Download the latest `nekoviewer.exe` from [GitHub Releases](https://github.com/O
 
 ### Linux
 
+Download `Nekoviewer-*-x86_64.AppImage` from [GitHub Releases](https://github.com/Omanjusan/Nekoviewer/releases/latest), make it executable, and run it — no dependencies required (single static binary).
 
-Requires the Rust toolchain (`cargo`) and `make`.
+```bash
+chmod +x Nekoviewer-*-x86_64.AppImage
+./Nekoviewer-*-x86_64.AppImage
+```
 
-#### First time
+Building from source requires the Rust toolchain (`cargo`) and `make`.
+
+#### First time (source build)
 
 ```bash
 git clone https://github.com/Omanjusan/Nekoviewer.git

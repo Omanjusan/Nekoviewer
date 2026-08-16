@@ -27,6 +27,13 @@ jobs:
           run-id: ${{ github.event.workflow_run.id }}
           github-token: ${{ github.token }}
 
+      - name: Download Linux AppImage artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: nekoviewer-linux-x86_64-appimage
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+
       - name: Extract release notes
         run: |
           VERSION="${{ github.event.workflow_run.head_branch }}"
@@ -44,5 +51,5 @@ jobs:
           if [[ "$TAG" == *-beta* ]]; then
             PRERELEASE_FLAG="--prerelease"
           fi
-          gh release create "$TAG" nekoviewer.exe \
+          gh release create "$TAG" nekoviewer.exe Nekoviewer-*-x86_64.AppImage \
             --notes-file release_notes.md $PRERELEASE_FLAG
