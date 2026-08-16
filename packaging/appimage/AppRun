@@ -1,5 +1,0 @@
-#!/bin/sh
-# AppImage実行時のエントリポイント。フルスタティックmuslバイナリなので
-# LD_LIBRARY_PATH等の細工は不要、そのままexecするだけでよい。
-HERE="$(dirname "$(readlink -f "${0}")")"
-exec "${HERE}/usr/bin/nekoviewer" "$@"

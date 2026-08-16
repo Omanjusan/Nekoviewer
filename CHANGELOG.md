@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Changed
+
+- Replaced the failed Linux AppImage distribution path with a Flatpak package using the Freedesktop runtime.
+- Enforced read-only access to user content in the Flatpak sandbox while keeping settings and caches writable in the app-private XDG directories.
+
 ## [1.5.0] - 2026-08-16
 
 ### Added

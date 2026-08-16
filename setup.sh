@@ -15,11 +15,6 @@ ask() {
     case $yn in [Yy]*) return 0;; *) return 1;; esac
 }
 
-MUSL=false
-if [ "${1:-}" = "--musl" ]; then
-    MUSL=true
-fi
-
 echo "=== Nekoviewer セットアップ ==="
 echo ""
 
@@ -135,58 +130,3 @@ fi
 echo ""
 info "セットアップ完了！以下のコマンドでビルドできます:"
 echo "  cargo build"
-
-# musl 静的リンクビルド（配布用単一バイナリ、--musl 指定時のみ）
-if $MUSL; then
-    echo ""
-    echo "=== musl 静的ビルド セットアップ ==="
-    echo ""
-
-    if [ "$PM" = "apk" ]; then
-        warn "Alpine（musl ネイティブ環境）では --musl は不要です。'make release' でそのまま静的寄りのバイナリになります"
-    else
-        if ! command -v musl-gcc &>/dev/null; then
-            if ask "musl-tools をインストールしますか？"; then
-                pkg_install musl-tools
-            else
-                error "musl-gcc が必要です"
-            fi
-        fi
-
-        if ! rustup target list --installed 2>/dev/null | grep -q x86_64-unknown-linux-musl; then
-            info "musl ターゲットを追加します"
-            rustup target add x86_64-unknown-linux-musl
-        else
-            info "musl ターゲット（rustup）"
-        fi
-
-        # dav1d を musl-gcc で静的ビルドし、/usr/local/musl にインストール
-        # （通常の dav1d インストール先 /usr/local とは別系統。pkg-config の解決先を
-        #   PKG_CONFIG_PATH で切り替えて、glibc/musl 両方のビルドを共存させる）
-        MUSL_PREFIX=/usr/local/musl
-        if [ -f "$MUSL_PREFIX/lib/pkgconfig/dav1d.pc" ]; then
-            info "dav1d（musl 静的ライブラリ）"
-        else
-            echo "dav1d を musl-gcc で静的ビルドします（インストール先: $MUSL_PREFIX）"
-            if ask "続けますか？"; then
-                BUILD_DIR=$(mktemp -d)
-                git clone --depth 1 https://code.videolan.org/videolan/dav1d.git "$BUILD_DIR/dav1d"
-                CC=musl-gcc meson setup "$BUILD_DIR/build" "$BUILD_DIR/dav1d" \
-                    --default-library=static \
-                    --buildtype=release \
-                    --libdir=lib \
-                    --prefix="$MUSL_PREFIX"
-                ninja -C "$BUILD_DIR/build"
-                sudo ninja -C "$BUILD_DIR/build" install
-                info "dav1d（musl）インストール完了"
-            else
-                error "musl 向け dav1d が必要です"
-            fi
-        fi
-
-        echo ""
-        info "musl セットアップ完了！以下のコマンドで静的バイナリをビルドできます:"
-        echo "  PKG_CONFIG_PATH=$MUSL_PREFIX/lib/pkgconfig PKG_CONFIG_ALLOW_CROSS=1 CC_x86_64_unknown_linux_musl=musl-gcc \\"
-        echo "    cargo build --release --target x86_64-unknown-linux-musl"
-    fi
-fi

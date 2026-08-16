@@ -82,6 +82,16 @@ pub fn is_appimage() -> bool {
     std::env::var_os("APPIMAGE").is_some()
 }
 
+/// Flatpak sandbox 内で実行中かどうか。
+/// Flatpak は `/app` を読み取り専用で提供するため、実行ファイル横への保存は許可しない。
+pub fn is_flatpak() -> bool {
+    std::env::var_os("FLATPAK_ID").is_some()
+}
+
+pub fn is_read_only_package() -> bool {
+    is_appimage() || is_flatpak()
+}
+
 /// 設定ファイル本体（conf/keymap/state/spread.redb）用の XDG ルート。
 /// キャッシュ本体（cache_root()）は XDG_DATA_HOME を使うが、こちらは設定ファイルらしく
 /// XDG_CONFIG_HOME を使う（Windowsは %APPDATA%）。
@@ -144,13 +154,13 @@ pub struct ConfigConflict {
 }
 
 /// conf の置き場所を解決する。
-/// 優先順位: ①AppImage実行中なら常にXDG ②バイナリ横に既存confがあればそれ（後方互換）
+/// 優先順位: ①読み取り専用パッケージ内なら常にXDG ②バイナリ横に既存confがあればそれ（後方互換）
 /// ③XDGに既存confがあればそれ ④どちらにも無ければ新規はXDG（新規インストールの既定値）
 /// ⑤両方に既存confがあれば暫定でXDGを採用しつつ conflict を返す（起動後にダイアログで解消）
 fn resolve_config_root() -> (PathBuf, Option<ConfigConflict>) {
     let xdg_root = xdg_config_root();
 
-    if is_appimage() {
+    if is_read_only_package() {
         return (xdg_root, None);
     }
 
@@ -397,6 +407,7 @@ impl AppConfig {
     pub fn migrate_storage(&mut self, to: CacheStorage) -> Vec<PathBuf> {
         let from_root = self.config_root.clone();
         let to_root = match to {
+            CacheStorage::Local if is_read_only_package() => xdg_config_root(),
             CacheStorage::Local => exe_dir().unwrap_or_else(|| from_root.clone()),
             CacheStorage::Xdg => xdg_config_root(),
         };
@@ -415,6 +426,17 @@ impl AppConfig {
     }
 
     pub fn cache_root(&self) -> Option<PathBuf> {
+        if is_flatpak() {
+            let base = std::env::var("XDG_CACHE_HOME")
+                .map(PathBuf::from)
+                .unwrap_or_else(|_| {
+                    std::env::var("HOME")
+                        .map(|h| PathBuf::from(h).join(".cache"))
+                        .unwrap_or_else(|_| PathBuf::from(".cache"))
+                });
+            return Some(base.join("nekoview"));
+        }
+
         match self.cache_storage {
             CacheStorage::Local => std::env::current_exe()
                 .ok()
@@ -680,7 +702,7 @@ const DEFAULT_INI: &str = "\
 #  Nekoviewer 設定ファイル (nekoviewer.conf)
 #
 #  ・[cache] storage 設定に従い、実行ファイルと同じフォルダ、または
-#    ~/.config/nekoview/ に置かれます（AppImageでは常に後者）。
+#    ~/.config/nekoview/ に置かれます（AppImage/Flatpakでは常に後者）。
 #  ・ファイルを削除すると、次回起動時にこの既定値で再生成されます。
 #  ・'#' または ';' で始まる行はコメントです。'キー = 値' 形式で記述します。
 #  ・不明なキーや不正な値は無視され、そのキーの既定値が使われます。
@@ -731,8 +753,8 @@ decode_threads = 0
 # ── キャッシュ ──────────────────────────────────────────────────────────────
 [cache]
 # サムネイルのディスクキャッシュ保存先。conf/keymap.ini/state/spread.redbの置き場所も
-# これに従います（AppImage実行時は常にxdg扱いになります）。
-#   local : 実行ファイル配下に保存（開発・確認用。AppImageでは機能しません）
+# これに従います（AppImage/Flatpak実行時は常にxdg扱いになります）。
+#   local : 実行ファイル配下に保存（開発・確認用。AppImage/Flatpakでは機能しません）
 #   xdg   : ~/.config/nekoview/（設定）・~/.local/share/nekoview/cache/（キャッシュ）に保存（推奨）
 storage = xdg
 
@@ -873,5 +895,13 @@ mod tests {
         assert!(is_appimage());
         unsafe { std::env::remove_var("APPIMAGE"); }
         assert!(!is_appimage());
+    }
+
+    #[test]
+    fn is_flatpak_reflects_env_var() {
+        unsafe { std::env::set_var("FLATPAK_ID", "io.github.Omanjusan.Nekoviewer"); }
+        assert!(is_flatpak());
+        unsafe { std::env::remove_var("FLATPAK_ID"); }
+        assert!(!is_flatpak());
     }
 }
