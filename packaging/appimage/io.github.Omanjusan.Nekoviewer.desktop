@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=NekoViewer
+GenericName=Image and Comic Viewer
+GenericName[ja]=画像・コミックビューアー
+Comment=Browse images and comic archives without modifying them
+Comment[ja]=画像とコミックアーカイブを変更せずに閲覧します
+Exec=nekoviewer %f
+Icon=io.github.Omanjusan.Nekoviewer
+Categories=Graphics;Viewer;
+MimeType=image/jpeg;image/png;image/webp;image/gif;image/bmp;image/avif;image/tiff;application/zip;application/x-7z-compressed;application/x-tar;application/gzip;application/zstd;
+Terminal=false
+StartupNotify=true
