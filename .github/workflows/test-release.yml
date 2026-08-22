@@ -78,6 +78,9 @@ jobs:
         if: steps.check.outputs.any == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
+          # test-releaseジョブはactions/checkoutしていないためワークスペースがgitリポジトリで
+          # なく、ghコマンドがリポジトリを自動検出できない。GH_REPOで明示する。
+          GH_REPO: ${{ github.repository }}
         run: |
           TAG="test-$(date -u +%Y%m%d-%H%M)"
           SHORT_SHA="${GITHUB_SHA:0:7}"
