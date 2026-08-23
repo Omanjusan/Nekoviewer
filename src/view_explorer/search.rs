@@ -148,6 +148,37 @@ impl NekoviewApp {
         let label = i18n::t().search_result_label(&self.search_form.name_pattern, hits.len());
         push_search_result(&mut self.search_history, SearchResultEntry { label, hits });
         self.search_selected = Some(0);
+        self.enter_search_view(0);
+    }
+
+    /// 検索結果履歴の idx 番目を中央グリッドにフラット一覧として表示する
+    /// （enter_favorite_view と同じ「archivesを差し替える」方式で、既存のグリッド描画・
+    /// サムネ取得ワーカーをそのまま流用する）。
+    pub(super) fn enter_search_view(&mut self, idx: usize) {
+        let Some(entry) = self.search_history.get(idx) else { return };
+        self.archives = entry.hits.clone();
+        self.raw_image_files.clear();
+        // 複数ディレクトリ横断のため単一ディレクトリ前提のキャッシュDB/セッション状態は無効化する
+        self.cache_db = None;
+        self.invalid_archives.clear();
+        self.thumb_failed.clear();
+        self.viewing_search = Some(idx);
+        self.search_selected = Some(idx);
+        self.sort_archives();
+        self.recompute_filter();
+        self.selected_archive_index = if self.archives.is_empty() { None } else { Some(0) };
+        self.selected_archive_meta = None;
+        self.multi_selected.clear();
+        self.select_anchor = None;
+    }
+
+    /// 検索結果表示を終え、実ディレクトリ（current_dir）表示に戻す。
+    pub(super) fn exit_search_view(&mut self) {
+        if self.viewing_search.is_none() {
+            return;
+        }
+        self.viewing_search = None;
+        self.start_scan();
     }
 }
 

@@ -31,6 +31,7 @@ impl NekoviewApp {
             FocusPane::TreeTab => {
                 self.folder_pane_tab = FolderPaneTab::RealTree;
                 self.exit_favorite_view();
+                self.exit_search_view();
                 self.tree_at_tab = false;
                 let flat = self.flatten_visible_tree();
                 let valid = self.tree_cursor.as_ref().is_some_and(|p| flat.contains(p));
@@ -43,6 +44,7 @@ impl NekoviewApp {
             FocusPane::FavoriteTab => {
                 self.folder_pane_tab = FolderPaneTab::Favorites;
                 self.favorite_at_tab = false;
+                self.exit_search_view();
                 let items: Vec<FavoriteSelection> = std::iter::once(FavoriteSelection::Unsorted)
                     .chain(self.favorite_folders.iter().map(|f| FavoriteSelection::Folder(f.id)))
                     .collect();
@@ -65,6 +67,7 @@ impl NekoviewApp {
                 // 実ツリー表示へ復帰させる。カーソルは前回位置を復元、無効なら先頭へ。
                 self.folder_pane_tab = FolderPaneTab::RealTree;
                 self.exit_favorite_view();
+                self.exit_search_view();
                 let valid = self.drive_cursor.as_ref()
                     .is_some_and(|p| self.drives.iter().any(|d| &d.path == p));
                 if !valid {

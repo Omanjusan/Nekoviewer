@@ -31,7 +31,7 @@ impl NekoviewApp {
                     if resp.clicked() {
                         self.focused_pane = FocusPane::SearchTab;
                         self.search_at_tab = false;
-                        self.search_selected = Some(idx);
+                        self.enter_search_view(idx);
                     }
                 }
             });

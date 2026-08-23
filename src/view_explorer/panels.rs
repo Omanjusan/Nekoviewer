@@ -224,6 +224,7 @@ impl NekoviewApp {
                 self.folder_pane_tab = FolderPaneTab::Favorites;
                 self.favorite_at_tab = false;
                 self.focused_pane = FocusPane::FavoriteTab;
+                self.exit_search_view();
             }
             let real_focused = self.focused_pane == FocusPane::TreeTab && self.tree_at_tab;
             let real_resp = ui.selectable_label(self.folder_pane_tab == FolderPaneTab::RealTree, i18n::t().folder_tab_real());
@@ -233,6 +234,7 @@ impl NekoviewApp {
                 self.focused_pane = FocusPane::TreeTab;
                 self.tree_at_tab = false;
                 self.exit_favorite_view();
+                self.exit_search_view();
             }
             let search_focused = self.focused_pane == FocusPane::SearchTab && self.search_at_tab;
             let search_resp = ui.selectable_label(self.folder_pane_tab == FolderPaneTab::Search, i18n::t().folder_tab_search());
@@ -377,35 +379,43 @@ impl NekoviewApp {
     }
 
     fn draw_central_panel_content(&mut self, ui: &mut egui::Ui) {
-        // お気に入りタブ中は実ディレクトリ由来の表示（パス・サマリー）を出さない。
+        // お気に入り/検索タブ中は実ディレクトリ由来の表示（パス・サマリー）を出さない。
         // cd_summary はワーカーが非同期で書き込むため、状態クリアではなく描画側でゲートする。
         let in_favorites_ui = self.folder_pane_tab == FolderPaneTab::Favorites
             || self.viewing_favorites.is_some();
+        let in_search_ui = self.folder_pane_tab == FolderPaneTab::Search
+            || self.viewing_search.is_some();
 
-        match self.viewing_favorites {
-            Some(FavoriteSelection::Unsorted) => {
-                ui.label(i18n::t().favorite_view_header_unsorted());
-            }
-            Some(FavoriteSelection::Folder(id)) => {
-                let name = self
-                    .favorite_folders
-                    .iter()
-                    .find(|f| f.id == id)
-                    .map(|f| f.name.clone())
-                    .unwrap_or_default();
-                ui.label(i18n::t().favorite_view_header_folder(&name));
-            }
-            _ if in_favorites_ui => {
-                ui.label("");
-            }
-            _ => {
-                ui.label(self.current_dir.display().to_string());
+        if let Some(idx) = self.viewing_search {
+            let label = self.search_history.get(idx).map(|e| e.label.clone()).unwrap_or_default();
+            ui.label(label);
+        } else {
+            match self.viewing_favorites {
+                Some(FavoriteSelection::Unsorted) => {
+                    ui.label(i18n::t().favorite_view_header_unsorted());
+                }
+                Some(FavoriteSelection::Folder(id)) => {
+                    let name = self
+                        .favorite_folders
+                        .iter()
+                        .find(|f| f.id == id)
+                        .map(|f| f.name.clone())
+                        .unwrap_or_default();
+                    ui.label(i18n::t().favorite_view_header_folder(&name));
+                }
+                _ if in_favorites_ui || in_search_ui => {
+                    ui.label("");
+                }
+                _ => {
+                    ui.label(self.current_dir.display().to_string());
+                }
             }
         }
 
         // CD/LS状態: ディレクトリのサマリーを表示
         if let Some((cd_path, saved, total)) = &self.cd_summary
             && !in_favorites_ui
+            && !in_search_ui
         {
             let dir_name = cd_path
                 .file_name()

@@ -509,6 +509,9 @@ pub struct NekoviewApp {
     search_running: bool,
     /// 検索ワーカーからの結果受信チャンネル（実行中のみSome）
     search_pending: Option<mpsc::Receiver<Vec<PathBuf>>>,
+    /// Some(_) の間、中央グリッドは実ディレクトリではなく選択中の検索結果
+    /// （search_history[idx]）のフラット一覧を表示している。
+    viewing_search: Option<usize>,
     explorer_cols: usize,
     explorer_scroll_offset: f32,
     explorer_viewport_h: f32,
@@ -734,6 +737,7 @@ impl NekoviewApp {
             search_form: SearchFormState::default(),
             search_running: false,
             search_pending: None,
+            viewing_search: None,
             explorer_cols: 1,
             explorer_scroll_offset: 0.0,
             explorer_viewport_h: 0.0,
