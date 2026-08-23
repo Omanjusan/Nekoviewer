@@ -254,7 +254,8 @@ impl NekoviewApp {
         // DBは既存の場合のみ開く。新規作成は対象ファイルの存在が確定してから
         // （poll_scan）行い、通過しただけのフォルダに空DBを作らない。
         self.cache_neko_dir = neko_dir::neko_dir_for(&self.current_dir, &self.config);
-        self.cache_db = self.cache_neko_dir.as_deref().and_then(neko_dir::open_cache_db_if_exists);
+        self.cache_db = self.cache_neko_dir.as_deref()
+            .and_then(|p| neko_dir::open_cache_db_if_exists(p, &self.current_dir));
         self.thumbnails.clear();
         self.thumb_pending.clear();
         self.pending_loads.lock().unwrap().clear();
@@ -281,7 +282,8 @@ impl NekoviewApp {
         if let Some((subdirs, archives, raw_images)) = result {
             // 対象ファイルが存在するフォルダに限りDBを新規作成する
             if self.cache_db.is_none() && !(archives.is_empty() && raw_images.is_empty()) {
-                self.cache_db = self.cache_neko_dir.as_deref().and_then(neko_dir::open_cache_db);
+                self.cache_db = self.cache_neko_dir.as_deref()
+                    .and_then(|p| neko_dir::open_cache_db(p, &self.current_dir));
             }
             self.subdirs = subdirs;
             self.archives = archives.into_iter()

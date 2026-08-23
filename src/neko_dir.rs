@@ -13,6 +13,15 @@ pub const THUMBS_TABLE: TableDefinition<&str, (i64, &[u8])> = TableDefinition::n
 /// 非画像ZIPマーカーテーブル: キー=ファイル名, バリュー=source_mtime_secs: i64
 pub const INVALID_TABLE: TableDefinition<&str, i64> = TableDefinition::new("invalid");
 
+/// ファイル索引テーブル（検索機能用）: キー=ファイル名, バリュー=(mtime_secs: i64, size_bytes: u64)
+/// サムネ生成が完了したファイルのみ記録される（サムネ未取得ファイルは検索対象外）。
+pub const FILES_TABLE: TableDefinition<&str, (i64, u64)> = TableDefinition::new("files");
+
+/// 逆引き用テーブル: キー="source_dir"固定, バリュー=このDBに対応する実ディレクトリの絶対パス文字列。
+/// neko_dir_for() が一方向ハッシュのため、DBファイル単体からPWDを算出するにはこれが要る。
+const SOURCE_DIR_TABLE: TableDefinition<&str, &str> = TableDefinition::new("source_dir");
+const SOURCE_DIR_KEY: &str = "source_dir";
+
 /// メタ情報テーブル: キー="schema_version"等の固定文字列, バリュー=u32
 const META_TABLE: TableDefinition<&str, u32> = TableDefinition::new("meta");
 const SCHEMA_VERSION_KEY: &str = "schema_version";
@@ -37,17 +46,18 @@ static OPEN_DBS: OnceLock<Mutex<HashMap<PathBuf, Arc<Mutex<Database>>>>> = OnceL
 
 /// cache.redb が既に存在する場合のみ開いて返す。無ければ None（作成しない）。
 /// 対象ファイルの無いフォルダに空DBを量産しないための入口。
-pub fn open_cache_db_if_exists(neko_dir: &Path) -> Option<Arc<Mutex<Database>>> {
+pub fn open_cache_db_if_exists(neko_dir: &Path, source_dir: &Path) -> Option<Arc<Mutex<Database>>> {
     if !neko_dir.join("cache.redb").exists() {
         return None;
     }
-    open_cache_db(neko_dir)
+    open_cache_db(neko_dir, source_dir)
 }
 
 /// キャッシュディレクトリ以下の cache.redb を開いて返す。
 /// ディレクトリが存在しなければ作成する。失敗時は None。
 /// 同じDBを既に開いている場合はレジストリの既存ハンドルを返す。
-pub fn open_cache_db(neko_dir: &Path) -> Option<Arc<Mutex<Database>>> {
+/// source_dir は検索機能の逆引き（DB→PWD）用に SOURCE_DIR_TABLE へ記録する。
+pub fn open_cache_db(neko_dir: &Path, source_dir: &Path) -> Option<Arc<Mutex<Database>>> {
     let db_path = neko_dir.join("cache.redb");
     let registry = OPEN_DBS.get_or_init(|| Mutex::new(HashMap::new()));
     let mut registry = registry.lock().ok()?;
@@ -61,12 +71,28 @@ pub fn open_cache_db(neko_dir: &Path) -> Option<Arc<Mutex<Database>>> {
         let tx = db.begin_write().ok()?;
         tx.open_table(INVALID_TABLE).ok()?;
         tx.open_table(THUMBS_TABLE).ok()?;
+        tx.open_table(FILES_TABLE).ok()?;
+        {
+            let mut source_dir_table = tx.open_table(SOURCE_DIR_TABLE).ok()?;
+            let abs = source_dir.to_string_lossy();
+            let _ = source_dir_table.insert(SOURCE_DIR_KEY, abs.as_ref());
+        }
         tx.commit().ok()?;
     }
     enforce_schema_version(&db);
     let db = Arc::new(Mutex::new(db));
     registry.insert(db_path, Arc::clone(&db));
     Some(db)
+}
+
+/// このDBファイルが対応する実ディレクトリの絶対パスを返す（PWDの逆引き）。
+/// 検索機能で「cache.redb一覧→対応PWD」を辿るために使う。
+pub fn dir_for_db(db: &Arc<Mutex<Database>>) -> Option<PathBuf> {
+    let db = db.lock().ok()?;
+    let tx = db.begin_read().ok()?;
+    let table = tx.open_table(SOURCE_DIR_TABLE).ok()?;
+    let guard = table.get(SOURCE_DIR_KEY).ok()??;
+    Some(PathBuf::from(guard.value()))
 }
 
 /// スキーマバージョン不一致（未対応の生成ロジックで焼かれた古いサムネが混在しうる）
@@ -175,6 +201,17 @@ pub fn write_thumb(db: &Arc<Mutex<Database>>, filename: &str, source_mtime: i64,
     let _ = tx.commit();
 }
 
+/// ファイル索引（検索用）をDBに書き込む。write_thumb と対で呼ぶ想定
+/// （サムネ生成が完了したファイルのみ検索対象になる）。
+pub fn write_file_record(db: &Arc<Mutex<Database>>, filename: &str, mtime: i64, size: u64) {
+    let Ok(db) = db.lock() else { return };
+    let Ok(tx) = db.begin_write() else { return };
+    if let Ok(mut table) = tx.open_table(FILES_TABLE) {
+        let _ = table.insert(filename, (mtime, size));
+    }
+    let _ = tx.commit();
+}
+
 /// 非画像ZIPマーカーを書き込む。
 pub fn mark_invalid(db: &Arc<Mutex<Database>>, filename: &str, source_mtime: i64) {
     let Ok(db) = db.lock() else { return };
@@ -217,6 +254,50 @@ pub fn file_mtime(path: &Path) -> i64 {
         .and_then(|m| m.modified())
         .map(|t| t.duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as i64)
         .unwrap_or(0)
+}
+
+/// ファイルサイズをバイト単位で返す。取得失敗時は0。
+pub fn file_size(path: &Path) -> u64 {
+    std::fs::metadata(path).map(|m| m.len()).unwrap_or(0)
+}
+
+/// FILES_TABLE をAND条件で絞り込み、マッチしたファイル名一覧を返す
+/// （検索機能用。ファイル名判定は呼び出し側のクロージャに委ねる＝既存filterのglob/部分一致
+/// ロジックをそのまま渡せる）。size/mtime の各範囲は None で無条件（下限のみ・上限のみも可）。
+pub fn search_files(
+    db: &Arc<Mutex<Database>>,
+    name_matches: impl Fn(&str) -> bool,
+    size_min: Option<u64>,
+    size_max: Option<u64>,
+    mtime_min: Option<i64>,
+    mtime_max: Option<i64>,
+) -> Vec<String> {
+    let Ok(db) = db.lock() else { return Vec::new() };
+    let Ok(tx) = db.begin_read() else { return Vec::new() };
+    let Ok(table) = tx.open_table(FILES_TABLE) else { return Vec::new() };
+    let Ok(iter) = table.iter() else { return Vec::new() };
+    iter.filter_map(|entry| entry.ok())
+        .filter_map(|(k, v)| {
+            let name = k.value().to_string();
+            let (mtime, size) = v.value();
+            if !name_matches(&name) {
+                return None;
+            }
+            if size_min.is_some_and(|min| size < min) {
+                return None;
+            }
+            if size_max.is_some_and(|max| size > max) {
+                return None;
+            }
+            if mtime_min.is_some_and(|min| mtime < min) {
+                return None;
+            }
+            if mtime_max.is_some_and(|max| mtime > max) {
+                return None;
+            }
+            Some(name)
+        })
+        .collect()
 }
 
 fn sha256_hex(data: &[u8]) -> String {
