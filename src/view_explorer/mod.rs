@@ -233,6 +233,18 @@ struct TreeScanPending {
     rx: mpsc::Receiver<Vec<PathBuf>>,
 }
 
+/// ディレクトリツリーの自動追従（現在地までの祖先チェーンを1階層ずつ展開していく）の進行状態。
+/// root から target までの経路は既知の一本道なので、探索ではなく構築として扱う
+/// （兄弟ディレクトリの中身には踏み込まない）。
+struct TreeAutoFocus {
+    /// 最終的にカーソル・選択状態を合わせる対象パス
+    target: PathBuf,
+    /// これから展開すべき残りの path component（root寄りが先頭）
+    remaining: std::collections::VecDeque<std::ffi::OsString>,
+    /// 現時点で到達済みのノード（この直下から remaining の先頭を探す）
+    current: PathBuf,
+}
+
 /// リロードボタンによるツリー一括再取得の待ち状態（スレッド1本で全対象を処理）
 struct TreeReloadPending {
     rx: mpsc::Receiver<Vec<(PathBuf, Vec<PathBuf>)>>,
@@ -344,6 +356,13 @@ pub struct NekoviewApp {
     scan_state: ScanState,
     tree_scan_pending: Option<TreeScanPending>,
     tree_reload_pending: Option<TreeReloadPending>,
+    /// ディレクトリツリーの自動追従の進行状態。手動トグル展開（tree_scan_pending）とは
+    /// 別レーンで動かし、互いのロード結果を潰さないようにする。
+    tree_autofocus: Option<TreeAutoFocus>,
+    /// 自動追従が発行した子ディレクトリロードの待ち状態（tree_scan_pendingとは独立）
+    tree_autofocus_pending: Option<TreeScanPending>,
+    /// 自動追従が完了した直後の1フレームだけtrueにし、対象ノード描画時にスクロールを行わせる
+    tree_autofocus_scroll_pending: bool,
     /// フレームごとに更新されるウィンドウサイズ（論理ピクセル）
     window_size: (u32, u32),
     /// ビューアウィンドウの位置・サイズスロット（viewer と共有して永続化）
@@ -611,6 +630,9 @@ impl NekoviewApp {
             scan_state: ScanState::Idle,
             tree_scan_pending,
             tree_reload_pending: None,
+            tree_autofocus: None,
+            tree_autofocus_pending: None,
+            tree_autofocus_scroll_pending: false,
             window_size: (1024, 768),
             viewer_slots,
             raw_image_files: std::collections::HashSet::new(),

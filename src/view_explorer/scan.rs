@@ -13,12 +13,108 @@ impl NekoviewApp {
     pub(super) fn navigate_to(&mut self, path: PathBuf) {
         self.viewing_favorites = None;
         self.current_dir = path.clone();
-        self.viewing_dir = Some(path);
+        self.viewing_dir = Some(path.clone());
         // サマリーはスキャン完了時（poll_scan）にスキャン結果から起動する
         self.cd_summary = None;
         self.cd_summary_rx = None;
         self.start_scan();
+        self.start_tree_autofocus(path);
         self.persist_state();
+    }
+
+    /// ディレクトリツリー側を現在地まで自動展開させる。root(tree_root) から target までの
+    /// path component 列を計算し、1階層ずつ逐次展開する TreeAutoFocus 状態をセットする。
+    /// target が tree_root 配下でない場合（別ドライブ切替直後の競合等）は何もしない。
+    pub(super) fn start_tree_autofocus(&mut self, target: PathBuf) {
+        self.tree_autofocus_pending = None;
+        let Ok(rel) = target.strip_prefix(&self.tree_root) else {
+            self.tree_autofocus = None;
+            return;
+        };
+        let remaining: std::collections::VecDeque<std::ffi::OsString> = rel
+            .components()
+            .filter_map(|c| match c {
+                std::path::Component::Normal(s) => Some(s.to_os_string()),
+                _ => None,
+            })
+            .collect();
+        if remaining.is_empty() {
+            // target 自体が tree_root（ルート直下を見ている）
+            self.tree_cursor = Some(target);
+            self.tree_autofocus = None;
+            self.tree_autofocus_scroll_pending = true;
+            return;
+        }
+        self.tree_autofocus = Some(TreeAutoFocus {
+            target,
+            remaining,
+            current: self.tree_root.clone(),
+        });
+    }
+
+    /// フレームごとにツリー自動追従を1階層分だけ進める。
+    /// 兄弟ディレクトリの中身には踏み込まず、常に一本道の経路だけを辿る。
+    pub(super) fn poll_tree_autofocus(&mut self) {
+        // 自動追従専用レーンのロード結果を受信する
+        if let Some(pending) = &self.tree_autofocus_pending {
+            match pending.rx.try_recv() {
+                Ok(subdirs) => {
+                    self.tree_children.insert(pending.path.clone(), subdirs);
+                    self.tree_autofocus_pending = None;
+                }
+                Err(_) => return, // まだロード中
+            }
+        }
+
+        // tree_children に既にキャッシュ済みの階層は非同期を挟まず同一フレーム内で
+        // 連鎖処理する（イベント駆動の repaint に頼らず一気に進める。ロードが要る
+        // 階層に当たった時だけ抜けて次フレームへ持ち越す）。
+        loop {
+            let Some(af) = self.tree_autofocus.as_ref() else { return };
+
+            let Some(component) = af.remaining.front().cloned() else {
+                // 全階層展開完了 → カーソルを合わせて終了
+                let target = af.target.clone();
+                self.tree_cursor = Some(target);
+                self.tree_autofocus = None;
+                self.tree_autofocus_scroll_pending = true;
+                return;
+            };
+
+            let current = af.current.clone();
+            let found = match self.tree_children.get(&current) {
+                Some(children) => {
+                    // direct child directory の中から component 名と一致するものだけを探す
+                    // （兄弟ディレクトリの内部へは踏み込まない）
+                    children.iter().find(|c| c.file_name() == Some(component.as_os_str())).cloned()
+                }
+                None => {
+                    // 未ロードならこの階層だけロードして次フレームへ持ち越す
+                    self.tree_autofocus_pending = Some(TreeScanPending {
+                        path: current.clone(),
+                        rx: dir::spawn_scan_subdirs(current, {
+                            let c = self.egui_ctx.clone();
+                            move || c.request_repaint()
+                        }),
+                    });
+                    return;
+                }
+            };
+
+            match found {
+                Some(child) => {
+                    self.tree_expanded.insert(current);
+                    let af = self.tree_autofocus.as_mut().expect("checked above");
+                    af.remaining.pop_front();
+                    af.current = child;
+                }
+                None => {
+                    // 対象パスがツリー上に存在しない（隠しディレクトリ等）→ ここまでで打ち切り
+                    self.tree_autofocus = None;
+                    return;
+                }
+            }
+        }
     }
 
     /// 指定ドライブへ切り替える（ドライブ一覧のクリック・キーボードEnter共通処理）。
@@ -30,6 +126,8 @@ impl NekoviewApp {
         self.tree_expanded.clear();
         self.tree_children.clear();
         self.tree_cursor = None;
+        self.tree_autofocus = None;
+        self.tree_autofocus_pending = None;
         self.viewing_dir = None;
         self.cd_summary = None;
         self.cd_summary_rx = None;

@@ -250,6 +250,9 @@ impl NekoviewApp {
 
         // ── 上部: ディレクトリツリー ──
         let mut tree_action = TreeAction::None;
+        // 自動追従が現在地までの展開を完了した直後の1フレームだけ、対象ノードへスクロールする。
+        // 消費できたら親側のフラグも下ろす（ノードがフィルタ等でまだ描画されなければ次フレームに持ち越す）。
+        let mut scroll_pending = self.tree_autofocus_scroll_pending;
         egui::ScrollArea::both()
             .id_salt("folder_scroll")
             .max_height(top_h)
@@ -267,8 +270,12 @@ impl NekoviewApp {
                     &self.tree_children,
                     self.show_hidden,
                     &mut tree_action,
+                    &mut scroll_pending,
                 );
             });
+        if !scroll_pending {
+            self.tree_autofocus_scroll_pending = false;
+        }
 
         match tree_action {
             TreeAction::None => {}
@@ -921,6 +928,7 @@ fn show_tree_node(
     tree_children: &HashMap<PathBuf, Vec<PathBuf>>,
     show_hidden: bool,
     action: &mut TreeAction,
+    scroll_pending: &mut bool,
 ) {
     if !matches!(action, TreeAction::None) {
         return;
@@ -969,6 +977,13 @@ fn show_tree_node(
         if r.clicked() && matches!(*action, TreeAction::None) {
             *action = TreeAction::Navigate(path.clone());
         }
+        // 自動追従の展開完了直後、現在地ノードが実際に描画されたこのフレームでスクロールする。
+        // align=None は「はみ出ている分だけ最小スクロールで見える位置に持ってくる」動作なので、
+        // 現在地が可視範囲より上ならその分だけ上へ、下ならその分だけ下へ寄る。
+        if is_current && *scroll_pending {
+            r.scroll_to_me(None);
+            *scroll_pending = false;
+        }
     });
 
     if is_expanded {
@@ -995,6 +1010,7 @@ fn show_tree_node(
                     tree_children,
                     show_hidden,
                     action,
+                    scroll_pending,
                 );
             }
         }
