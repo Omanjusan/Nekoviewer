@@ -4,8 +4,7 @@ use super::panels::draw_cursor_ring;
 use super::{FocusPane, NekoviewApp, SearchFormState};
 
 impl NekoviewApp {
-    /// 左ペイン「検索」タブの中身。Phase1時点では結果リストの表示のみ
-    /// （検索フォーム・検索実行はPhase2/3で追加）。
+    /// 左ペイン「検索」タブの中身。検索結果の履歴リストを表示する。
     pub(super) fn draw_search_pane(&mut self, ui: &mut egui::Ui) {
         if self.search_history.is_empty() {
             ui.add_space(8.0);
@@ -40,12 +39,12 @@ impl NekoviewApp {
 
     /// アイテムペイン左側の「検索ペイン」。最上位に検索開始/条件クリアボタン、
     /// その直下にスプリッター線、それ以下に検索条件フォームを並べる。
-    /// 検索開始の実処理（再帰スキャン＋DB照会）はPhase3で接続する。
     pub(super) fn draw_search_condition_pane(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             let start_enabled = !self.search_running;
             if ui.add_enabled(start_enabled, egui::Button::new(i18n::t().search_start_button())).clicked() {
-                // Phase3で再帰スキャン＋DB照会を接続する。
+                let ctx = ui.ctx().clone();
+                self.start_search(&ctx);
             }
             if ui.button(i18n::t().search_clear_button()).clicked() {
                 self.search_form = SearchFormState::default();

@@ -258,6 +258,7 @@ impl NekoviewApp {
         self.poll_tree_scan();
         self.poll_tree_reload();
         self.poll_tree_autofocus();
+        self.poll_search();
 
         // サムネイルワーカーからの結果を受信してGPUテクスチャへアップロード
         let was_pending = !self.thumb_pending.is_empty();

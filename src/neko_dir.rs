@@ -33,9 +33,16 @@ const SCHEMA_VERSION: u32 = 1;
 
 /// dir に対応するキャッシュディレクトリのパスを返す（まだ作成しない）。
 pub fn neko_dir_for(dir: &Path, config: &AppConfig) -> Option<PathBuf> {
+    Some(neko_dir_for_root(dir, &config.cache_root()?))
+}
+
+/// dir に対応するキャッシュディレクトリのパスを、cache_root を直接指定して返す。
+/// バックグラウンドスレッドなど AppConfig（非Send/Clone）を持ち込めない文脈から使う
+/// （検索ワーカー等）。cache_root は呼び出し側が事前に config.cache_root() で取得しておく。
+pub fn neko_dir_for_root(dir: &Path, cache_root: &Path) -> PathBuf {
     let key = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
     let hash = sha256_hex(key.to_string_lossy().as_bytes());
-    Some(config.cache_root()?.join(hash))
+    cache_root.join(hash)
 }
 
 /// プロセス内で開いた cache.redb のレジストリ（メモリ上のみ。ディスクには何も作らない）。

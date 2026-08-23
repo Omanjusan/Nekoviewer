@@ -507,6 +507,8 @@ pub struct NekoviewApp {
     search_form: SearchFormState,
     /// true: 検索実行中（完了までは多重実行不可、検索開始ボタンを無効化する）
     search_running: bool,
+    /// 検索ワーカーからの結果受信チャンネル（実行中のみSome）
+    search_pending: Option<mpsc::Receiver<Vec<PathBuf>>>,
     explorer_cols: usize,
     explorer_scroll_offset: f32,
     explorer_viewport_h: f32,
@@ -553,6 +555,7 @@ mod input;
 mod panels;
 mod favorites_ui;
 mod search_ui;
+mod search;
 mod status;
 mod nav_icons;
 
@@ -730,6 +733,7 @@ impl NekoviewApp {
             search_at_tab: false,
             search_form: SearchFormState::default(),
             search_running: false,
+            search_pending: None,
             explorer_cols: 1,
             explorer_scroll_offset: 0.0,
             explorer_viewport_h: 0.0,

@@ -464,6 +464,24 @@ impl Lang {
         }
     }
 
+    /// 検索結果リストの1行ラベル（検索ファイル名/パターンが表示できるだけの文字数で見える）。
+    pub fn search_result_label(self, pattern: &str, count: usize) -> String {
+        let name = if pattern.trim().is_empty() {
+            match self {
+                Lang::Japanese => "(全ファイル)".to_string(),
+                Lang::English  => "(all files)".to_string(),
+                Lang::Chinese  => "(所有文件)".to_string(),
+            }
+        } else {
+            pattern.to_string()
+        };
+        match self {
+            Lang::Japanese => format!("{name} ({count}件)"),
+            Lang::English  => format!("{name} ({count} items)"),
+            Lang::Chinese  => format!("{name} ({count}项)"),
+        }
+    }
+
     pub fn search_no_results_hint(self) -> &'static str {
         match self {
             Lang::Japanese => "検索結果はまだありません",
