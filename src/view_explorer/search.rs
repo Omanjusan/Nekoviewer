@@ -158,6 +158,9 @@ impl NekoviewApp {
         let Some(entry) = self.search_history.get(idx) else { return };
         self.archives = entry.hits.clone();
         self.raw_image_files.clear();
+        // 階層概念を持ち込まない平坦一覧という契約のため、サブフォルダ一覧も明示的に空にする
+        // （grid_entries/draw_archive_grid側もviewing_searchをガードしているが二重の防御）。
+        self.subdirs.clear();
         // 複数ディレクトリ横断のため単一ディレクトリ前提のキャッシュDB/セッション状態は無効化する
         self.cache_db = None;
         self.invalid_archives.clear();

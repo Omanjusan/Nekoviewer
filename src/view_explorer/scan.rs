@@ -267,6 +267,19 @@ impl NekoviewApp {
 
     /// フレームごとにスキャン結果をポーリングして反映する
     pub(super) fn poll_scan(&mut self) {
+        // お気に入り/検索結果の横断表示中はarchives/subdirsを差し替えているため、
+        // 入室時に開始していた実ディレクトリの背後スキャン結果が遅れて届くと
+        // 無条件の上書きで表示が壊れる（検索完了直後にサブフォルダが復活する等）。
+        // 表示を抜けるとき（exit_favorite_view/exit_search_view、switch_folder_tab経由で
+        // 必ず呼ばれる）に改めてstart_scan()されるため、ここでは単に無視すればよい。
+        // folder_pane_tab とOptionフラグの二重チェック（タブ状態を唯一の一次判定にしつつ、
+        // フラグの取りこぼしがあっても安全側に倒す）。
+        if self.folder_pane_tab != FolderPaneTab::RealTree
+            || self.viewing_favorites.is_some()
+            || self.viewing_search.is_some()
+        {
+            return;
+        }
         let result = match self.scan_state {
             ScanState::Loading { ref dir, ref rx, .. } => {
                 // 移動先が変わっていたら古い結果を捨てる

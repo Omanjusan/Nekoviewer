@@ -215,35 +215,45 @@ impl NekoviewApp {
         });
     }
 
+    /// 左ペインのタブを切り替える唯一の入口。folder_pane_tab の変更は必ずこの関数を通し、
+    /// 「今のタブ以外の横断表示（お気に入り一覧・検索結果一覧）は必ず終了する」ことを保証する。
+    /// 個別のクリック/フォーカスハンドラ側で exit_favorite_view/exit_search_view を
+    /// 書き忘れる事故を構造的に防ぐ（背後の非同期スキャンが横断表示を汚染したバグの再発防止）。
+    pub(super) fn switch_folder_tab(&mut self, tab: FolderPaneTab) {
+        self.folder_pane_tab = tab;
+        if tab != FolderPaneTab::Favorites {
+            self.exit_favorite_view();
+        }
+        if tab != FolderPaneTab::Search {
+            self.exit_search_view();
+        }
+    }
+
     fn draw_folder_panel(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             let fav_focused = self.focused_pane == FocusPane::FavoriteTab && self.favorite_at_tab;
             let fav_resp = ui.selectable_label(self.folder_pane_tab == FolderPaneTab::Favorites, i18n::t().folder_tab_favorites());
             if fav_focused { draw_cursor_ring(ui, fav_resp.rect); }
             if fav_resp.clicked() {
-                self.folder_pane_tab = FolderPaneTab::Favorites;
+                self.switch_folder_tab(FolderPaneTab::Favorites);
                 self.favorite_at_tab = false;
                 self.focused_pane = FocusPane::FavoriteTab;
-                self.exit_search_view();
             }
             let real_focused = self.focused_pane == FocusPane::TreeTab && self.tree_at_tab;
             let real_resp = ui.selectable_label(self.folder_pane_tab == FolderPaneTab::RealTree, i18n::t().folder_tab_real());
             if real_focused { draw_cursor_ring(ui, real_resp.rect); }
             if real_resp.clicked() {
-                self.folder_pane_tab = FolderPaneTab::RealTree;
+                self.switch_folder_tab(FolderPaneTab::RealTree);
                 self.focused_pane = FocusPane::TreeTab;
                 self.tree_at_tab = false;
-                self.exit_favorite_view();
-                self.exit_search_view();
             }
             let search_focused = self.focused_pane == FocusPane::SearchTab && self.search_at_tab;
             let search_resp = ui.selectable_label(self.folder_pane_tab == FolderPaneTab::Search, i18n::t().folder_tab_search());
             if search_focused { draw_cursor_ring(ui, search_resp.rect); }
             if search_resp.clicked() {
-                self.folder_pane_tab = FolderPaneTab::Search;
+                self.switch_folder_tab(FolderPaneTab::Search);
                 self.focused_pane = FocusPane::SearchTab;
                 self.search_at_tab = false;
-                self.exit_favorite_view();
             }
         });
         ui.separator();
@@ -524,8 +534,15 @@ impl NekoviewApp {
     /// draw_archive_gridと同一ロジックで再現したもの。キーボードカーソルの移動対象になる。
     /// draw_archive_grid側の並び替え条件を変えたら、ここも同じように変えること。
     pub(super) fn grid_entries(&self) -> Vec<GridEntry> {
+        // 検索タブを開いた直後、まだ検索結果を選択していない間はアイテムペインを全クリアする
+        // （draw_archive_grid側の早期リターンと対にする）。
+        if self.folder_pane_tab == FolderPaneTab::Search && self.viewing_search.is_none() {
+            return Vec::new();
+        }
         let mut out = Vec::new();
-        if self.viewing_favorites.is_none() {
+        // 検索結果は複数ディレクトリを横断した平坦な一覧という契約のため、お気に入り横断表示と
+        // 同様に「↑」・サブフォルダは一切出さない（階層概念を持ち込まない）。
+        if self.viewing_favorites.is_none() && self.viewing_search.is_none() {
             let up_target = if self.current_dir == self.tree_root {
                 None
             } else {
@@ -558,6 +575,16 @@ impl NekoviewApp {
     }
 
     fn draw_archive_grid(&mut self, ui: &mut egui::Ui) {
+        // 検索タブを開いた瞬間、まだどの検索結果も選択していない間は実ディレクトリの中身が
+        // 一瞬見えてしまう（archivesは前の表示のまま残っている）。理想は切替と同時に
+        // アイテムペインが全クリアされることなので、ここで早期リターンする。
+        if self.folder_pane_tab == FolderPaneTab::Search && self.viewing_search.is_none() {
+            ui.centered_and_justified(|ui| {
+                ui.weak(i18n::t().search_select_result_hint());
+            });
+            return;
+        }
+
         let cell_h = self.config.thumb_size as f32;
         let cell_w = (cell_h / std::f32::consts::SQRT_2).round();
         const GAP: f32 = 8.0;
@@ -581,8 +608,8 @@ impl NekoviewApp {
                     let grid_focused = self.focused_pane == FocusPane::Grid;
 
                     // 並び順: ↑（先頭・非ソート・ルートで非表示）→ フォルダ群 → 通常のarchivesグリッド。
-                    // お気に入り一覧表示中は実フォルダのナビゲーション概念が無いため出さない。
-                    if self.viewing_favorites.is_none() {
+                    // お気に入り/検索結果の横断一覧表示中は実フォルダのナビゲーション概念が無いため出さない。
+                    if self.viewing_favorites.is_none() && self.viewing_search.is_none() {
                         // ツリー側のルート（ドライブ/ホーム/ネットワーク共有の選択に連動）を天井にする。
                         // mount::up_target 単体だと「ホーム」ドライブのような疑似ルートを知らず、
                         // ホーム配下を素通りしてツリーが表示しない領域まで昇れてしまうため。

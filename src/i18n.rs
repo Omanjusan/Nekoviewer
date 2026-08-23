@@ -482,6 +482,15 @@ impl Lang {
         }
     }
 
+    /// 検索タブを開いていて、まだどの検索結果も選択していない間のアイテムペイン表示。
+    pub fn search_select_result_hint(self) -> &'static str {
+        match self {
+            Lang::Japanese => "検索結果を選択してください",
+            Lang::English  => "Select a search result",
+            Lang::Chinese  => "请选择搜索结果",
+        }
+    }
+
     pub fn search_no_results_hint(self) -> &'static str {
         match self {
             Lang::Japanese => "検索結果はまだありません",
