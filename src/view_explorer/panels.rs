@@ -233,12 +233,22 @@ impl NekoviewApp {
                 self.tree_at_tab = false;
                 self.exit_favorite_view();
             }
+            let search_focused = self.focused_pane == FocusPane::SearchTab && self.search_at_tab;
+            let search_resp = ui.selectable_label(self.folder_pane_tab == FolderPaneTab::Search, i18n::t().folder_tab_search());
+            if search_focused { draw_cursor_ring(ui, search_resp.rect); }
+            if search_resp.clicked() {
+                self.folder_pane_tab = FolderPaneTab::Search;
+                self.focused_pane = FocusPane::SearchTab;
+                self.search_at_tab = false;
+                self.exit_favorite_view();
+            }
         });
         ui.separator();
 
         match self.folder_pane_tab {
             FolderPaneTab::RealTree => self.draw_real_tree_panel(ui),
             FolderPaneTab::Favorites => self.draw_favorites_pane(ui),
+            FolderPaneTab::Search => self.draw_search_pane(ui),
         }
     }
 

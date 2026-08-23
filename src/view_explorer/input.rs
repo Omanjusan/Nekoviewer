@@ -51,6 +51,15 @@ impl NekoviewApp {
                     self.favorite_cursor = Some(FavoriteSelection::Unsorted);
                 }
             }
+            FocusPane::SearchTab => {
+                self.folder_pane_tab = FolderPaneTab::Search;
+                self.exit_favorite_view();
+                self.search_at_tab = false;
+                let valid = self.search_selected.is_some_and(|i| i < self.search_history.len());
+                if !valid {
+                    self.search_selected = if self.search_history.is_empty() { None } else { Some(0) };
+                }
+            }
             FocusPane::Drives => {
                 // Drivesは実ツリー配下にのみ存在するため、Favorites経由での到達時は
                 // 実ツリー表示へ復帰させる。カーソルは前回位置を復元、無効なら先頭へ。

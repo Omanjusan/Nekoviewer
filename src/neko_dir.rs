@@ -125,6 +125,16 @@ mod tests {
         dir.join("cache.redb")
     }
 
+    /// open_cache_db に渡す neko_dir（キャッシュ先ディレクトリ）用のユニークな未作成パスを返す。
+    /// ディレクトリ自体は open_cache_db 側が作成する。
+    fn unique_test_neko_dir(tag: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "nekoviewer_test_{tag}_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos(),
+        ))
+    }
+
     #[test]
     fn enforce_schema_version_clears_thumbs_on_version_mismatch() {
         let db_path = unique_test_db_path("schema_version");
@@ -171,6 +181,78 @@ mod tests {
 
         drop(db);
         let _ = std::fs::remove_dir_all(db_path.parent().unwrap());
+    }
+
+    #[test]
+    fn dir_for_db_round_trips_source_dir() {
+        let neko_dir = unique_test_neko_dir("source_dir_roundtrip");
+        let source_dir = PathBuf::from("/tmp/fake_source_dir_for_test");
+        let db = open_cache_db(&neko_dir, &source_dir).expect("db should open");
+
+        let recovered = dir_for_db(&db).expect("source dir should be recorded");
+        assert_eq!(recovered, source_dir);
+
+        let _ = std::fs::remove_dir_all(&neko_dir);
+    }
+
+    #[test]
+    fn search_files_applies_and_conditions() {
+        let neko_dir = unique_test_neko_dir("search_and");
+        let source_dir = PathBuf::from("/tmp/fake_source_dir_for_search_test");
+        let db = open_cache_db(&neko_dir, &source_dir).expect("db should open");
+
+        // a.zip: 10MB, 2024-01-01 / b.zip: 20MB, 2024-06-01 / c.zip: 5MB, 2024-06-01
+        const JAN1_2024: i64 = 1_704_067_200;
+        const JUN1_2024: i64 = 1_717_200_000;
+        const MB: u64 = 1024 * 1024;
+        write_file_record(&db, "a.zip", JAN1_2024, 10 * MB);
+        write_file_record(&db, "b.zip", JUN1_2024, 20 * MB);
+        write_file_record(&db, "c.zip", JUN1_2024, 5 * MB);
+
+        // ファイル名条件のみ
+        let by_name = search_files(&db, |n| n.starts_with('a'), None, None, None, None);
+        assert_eq!(by_name, vec!["a.zip".to_string()]);
+
+        // サイズ10MB以上
+        let mut by_size_min = search_files(&db, |_| true, Some(10 * MB), None, None, None);
+        by_size_min.sort();
+        assert_eq!(by_size_min, vec!["a.zip".to_string(), "b.zip".to_string()]);
+
+        // サイズ10MB以下
+        let mut by_size_max = search_files(&db, |_| true, None, Some(10 * MB), None, None);
+        by_size_max.sort();
+        assert_eq!(by_size_max, vec!["a.zip".to_string(), "c.zip".to_string()]);
+
+        // 2024-06-01以降
+        let mut by_mtime_min = search_files(&db, |_| true, None, None, Some(JUN1_2024), None);
+        by_mtime_min.sort();
+        assert_eq!(by_mtime_min, vec!["b.zip".to_string(), "c.zip".to_string()]);
+
+        // 2024-06-01より前
+        let by_mtime_max = search_files(&db, |_| true, None, None, None, Some(JAN1_2024));
+        assert_eq!(by_mtime_max, vec!["a.zip".to_string()]);
+
+        // AND条件: サイズ10MB以上 かつ 2024-06-01以降 -> b.zipのみ
+        let and_result = search_files(&db, |_| true, Some(10 * MB), None, Some(JUN1_2024), None);
+        assert_eq!(and_result, vec!["b.zip".to_string()]);
+
+        let _ = std::fs::remove_dir_all(&neko_dir);
+    }
+
+    #[test]
+    fn search_files_excludes_thumbnail_not_generated_files() {
+        let neko_dir = unique_test_neko_dir("search_excludes_no_thumb");
+        let source_dir = PathBuf::from("/tmp/fake_source_dir_for_exclude_test");
+        let db = open_cache_db(&neko_dir, &source_dir).expect("db should open");
+
+        // サムネ取得済み(FILES_TABLE書き込み済み)のファイルのみ検索対象になる。
+        // "not_indexed.zip" はあえて write_file_record を呼ばず、サムネ未取得状態を模す。
+        write_file_record(&db, "indexed.zip", 0, 100);
+
+        let results = search_files(&db, |_| true, None, None, None, None);
+        assert_eq!(results, vec!["indexed.zip".to_string()]);
+
+        let _ = std::fs::remove_dir_all(&neko_dir);
     }
 }
 

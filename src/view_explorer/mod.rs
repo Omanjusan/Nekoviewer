@@ -48,17 +48,19 @@ enum TreeAction {
 enum FolderPaneTab {
     RealTree,
     Favorites,
+    Search,
 }
 
 /// キーボード操作のフォーカス巡回順（Tab/Shift+Tabで一周する）。
-/// 順序: TreeTab(初期値) → Grid → Filter → Drives → MenuBar → FavoriteTab → (先頭に戻る)
-/// TreeTab/FavoriteTab は左ペインのタブ切替を兼ねる。Drives は実ツリー配下の
-/// ドライブ一覧のみを指し、Favorites表示中でも巡回上は残る（着地時に実ツリーへ
+/// 順序: TreeTab(初期値) → Grid → Filter → Drives → MenuBar → FavoriteTab → SearchTab → (先頭に戻る)
+/// TreeTab/FavoriteTab/SearchTab は左ペインのタブ切替を兼ねる。Drives は実ツリー配下の
+/// ドライブ一覧のみを指し、Favorites/Search表示中でも巡回上は残る（着地時に実ツリーへ
 /// 自動復帰する）。
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum FocusPane {
     TreeTab,
     FavoriteTab,
+    SearchTab,
     Drives,
     Grid,
     Filter,
@@ -73,20 +75,37 @@ impl FocusPane {
             Self::Filter => Self::Drives,
             Self::Drives => Self::MenuBar,
             Self::MenuBar => Self::FavoriteTab,
-            Self::FavoriteTab => Self::TreeTab,
+            Self::FavoriteTab => Self::SearchTab,
+            Self::SearchTab => Self::TreeTab,
         }
     }
 
     fn prev(self) -> Self {
         match self {
-            Self::TreeTab => Self::FavoriteTab,
+            Self::TreeTab => Self::SearchTab,
             Self::Grid => Self::TreeTab,
             Self::Filter => Self::Grid,
             Self::Drives => Self::Filter,
             Self::MenuBar => Self::Drives,
             Self::FavoriteTab => Self::MenuBar,
+            Self::SearchTab => Self::FavoriteTab,
         }
     }
+}
+
+/// 1回の検索実行結果。左ペインの検索結果リストに1行として表示される
+/// （検索された順で最上位に追加され、下へ送られていく）。
+#[derive(Clone)]
+pub(crate) struct SearchResultEntry {
+    /// リスト表示用ラベル（検索ファイル名の表示ができるだけの文字数）
+    pub label: String,
+    /// ヒットしたファイルのフルパス一覧
+    pub hits: Vec<PathBuf>,
+}
+
+/// 検索結果を履歴の先頭に追加する（新しい実行が最上位に来て、既存分は下に送られる）。
+pub(crate) fn push_search_result(history: &mut Vec<SearchResultEntry>, entry: SearchResultEntry) {
+    history.insert(0, entry);
 }
 
 /// サムネグリッドの「↑・サブフォルダ・アーカイブファイル」を貫通する統一カーソル位置。
@@ -466,6 +485,12 @@ pub struct NekoviewApp {
     filter_enabled: bool,
     filter_text: String,
     filtered_indices: Vec<usize>,
+    /// 検索結果の履歴（新しい実行が先頭。セッション内のみ保持）
+    search_history: Vec<SearchResultEntry>,
+    /// 履歴内で選択中の位置（Someなら中央ペインにその結果を表示）
+    search_selected: Option<usize>,
+    /// true: カーソルはSearchTabボタン自体にいる（tree_at_tab/favorite_at_tabと同様）
+    search_at_tab: bool,
     explorer_cols: usize,
     explorer_scroll_offset: f32,
     explorer_viewport_h: f32,
@@ -511,6 +536,7 @@ mod viewer_host;
 mod input;
 mod panels;
 mod favorites_ui;
+mod search_ui;
 mod status;
 mod nav_icons;
 
@@ -683,6 +709,9 @@ impl NekoviewApp {
             filter_enabled: true,
             filter_text: String::new(),
             filtered_indices: Vec::new(),
+            search_history: Vec::new(),
+            search_selected: None,
+            search_at_tab: false,
             explorer_cols: 1,
             explorer_scroll_offset: 0.0,
             explorer_viewport_h: 0.0,
@@ -724,6 +753,32 @@ impl NekoviewApp {
             self.show_hidden,
             &self.config,
             &self.translate_cfg,
+        );
+    }
+}
+
+#[cfg(test)]
+mod search_result_tests {
+    use super::{push_search_result, SearchResultEntry};
+
+    #[test]
+    fn push_search_result_inserts_newest_at_top() {
+        let mut history: Vec<SearchResultEntry> = Vec::new();
+
+        push_search_result(&mut history, SearchResultEntry { label: "1回目".to_string(), hits: vec![] });
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].label, "1回目");
+
+        push_search_result(&mut history, SearchResultEntry { label: "2回目".to_string(), hits: vec![] });
+        assert_eq!(history.len(), 2);
+        // 新しい実行が最上位、既存分は下に送られる
+        assert_eq!(history[0].label, "2回目");
+        assert_eq!(history[1].label, "1回目");
+
+        push_search_result(&mut history, SearchResultEntry { label: "3回目".to_string(), hits: vec![] });
+        assert_eq!(
+            history.iter().map(|e| e.label.as_str()).collect::<Vec<_>>(),
+            vec!["3回目", "2回目", "1回目"],
         );
     }
 }

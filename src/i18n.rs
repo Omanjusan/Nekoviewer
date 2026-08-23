@@ -392,6 +392,22 @@ impl Lang {
         }
     }
 
+    pub fn folder_tab_search(self) -> &'static str {
+        match self {
+            Lang::Japanese => "検索",
+            Lang::English  => "Search",
+            Lang::Chinese  => "搜索",
+        }
+    }
+
+    pub fn search_no_results_hint(self) -> &'static str {
+        match self {
+            Lang::Japanese => "検索結果はまだありません",
+            Lang::English  => "No search results yet",
+            Lang::Chinese  => "暂无搜索结果",
+        }
+    }
+
     pub fn favorite_unsorted_label(self) -> &'static str {
         match self {
             Lang::Japanese => "（未整理のお気に入り）",
