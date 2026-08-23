@@ -2,7 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
+## [1.6.0] - 2026-08-22
+
+### Added
+
+- Re-added a Linux AppImage to Releases
+- Folder navigation in the item pane now reflects in the folder tree pane
+
+### Fixed
+
+- Fixed the mouse cursor icon not rendering correctly in the Flatpak build
 
 ## [1.5.1] - 2026-08-16
 
