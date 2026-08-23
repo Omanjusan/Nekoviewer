@@ -400,6 +400,70 @@ impl Lang {
         }
     }
 
+    pub fn search_start_button(self) -> &'static str {
+        match self {
+            Lang::Japanese => "検索開始",
+            Lang::English  => "Search",
+            Lang::Chinese  => "开始搜索",
+        }
+    }
+
+    pub fn search_clear_button(self) -> &'static str {
+        match self {
+            Lang::Japanese => "条件クリア",
+            Lang::English  => "Clear",
+            Lang::Chinese  => "清除条件",
+        }
+    }
+
+    pub fn search_name_pattern_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ファイル名",
+            Lang::English  => "Name",
+            Lang::Chinese  => "文件名",
+        }
+    }
+
+    pub fn search_include_subdirs_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "サブディレクトリを含む",
+            Lang::English  => "Include subdirectories",
+            Lang::Chinese  => "包含子目录",
+        }
+    }
+
+    pub fn search_size_min_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "サイズ以上(MB)",
+            Lang::English  => "Size ≥ (MB)",
+            Lang::Chinese  => "大小 ≥ (MB)",
+        }
+    }
+
+    pub fn search_size_max_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "サイズ以下(MB)",
+            Lang::English  => "Size ≤ (MB)",
+            Lang::Chinese  => "大小 ≤ (MB)",
+        }
+    }
+
+    pub fn search_date_after_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "日付以降(YYYY-MM-DD)",
+            Lang::English  => "After (YYYY-MM-DD)",
+            Lang::Chinese  => "此日期之后 (YYYY-MM-DD)",
+        }
+    }
+
+    pub fn search_date_before_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "日付以前(YYYY-MM-DD)",
+            Lang::English  => "Before (YYYY-MM-DD)",
+            Lang::Chinese  => "此日期之前 (YYYY-MM-DD)",
+        }
+    }
+
     pub fn search_no_results_hint(self) -> &'static str {
         match self {
             Lang::Japanese => "検索結果はまだありません",

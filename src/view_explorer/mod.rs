@@ -108,6 +108,18 @@ pub(crate) fn push_search_result(history: &mut Vec<SearchResultEntry>, entry: Se
     history.insert(0, entry);
 }
 
+/// 検索条件フォームの入力状態。テキスト欄はすべて未パース文字列のまま保持し、
+/// 実行時（Phase3）にパースする。
+#[derive(Default, Clone)]
+pub(crate) struct SearchFormState {
+    pub name_pattern: String,
+    pub include_subdirs: bool,
+    pub size_min_mb: String,
+    pub size_max_mb: String,
+    pub date_after: String,
+    pub date_before: String,
+}
+
 /// サムネグリッドの「↑・サブフォルダ・アーカイブファイル」を貫通する統一カーソル位置。
 /// draw_archive_grid内で実際に描画される順序（↑→サブフォルダ→フィルタ後アーカイブ）と
 /// 一致させること（grid_entries()参照）。
@@ -491,6 +503,10 @@ pub struct NekoviewApp {
     search_selected: Option<usize>,
     /// true: カーソルはSearchTabボタン自体にいる（tree_at_tab/favorite_at_tabと同様）
     search_at_tab: bool,
+    /// 検索条件フォームの入力状態
+    search_form: SearchFormState,
+    /// true: 検索実行中（完了までは多重実行不可、検索開始ボタンを無効化する）
+    search_running: bool,
     explorer_cols: usize,
     explorer_scroll_offset: f32,
     explorer_viewport_h: f32,
@@ -712,6 +728,8 @@ impl NekoviewApp {
             search_history: Vec::new(),
             search_selected: None,
             search_at_tab: false,
+            search_form: SearchFormState::default(),
+            search_running: false,
             explorer_cols: 1,
             explorer_scroll_offset: 0.0,
             explorer_viewport_h: 0.0,

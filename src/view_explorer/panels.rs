@@ -68,6 +68,7 @@ impl NekoviewApp {
         // 自前カーソル用の強制フォーカス解除を止める。解除したままだと入力した
         // 次フレームで即座にフォーカスが外れ、テキスト入力が一切通らなくなる。
         if self.focused_pane != FocusPane::Filter
+            && self.focused_pane != FocusPane::SearchTab
             && !self.settings_is_open()
             && self.favorite_dialog.is_none()
             && self.favorite_detail_dialog.is_none()
@@ -348,6 +349,34 @@ impl NekoviewApp {
     }
 
     fn draw_central_panel(&mut self, ui: &mut egui::Ui) {
+        // 検索タブ選択中のみアイテムペインを縦割りにする（左: 検索ペイン固定幅、右: 従来の中身）。
+        // 検索条件の微調整〜結果閲覧をダイアログの開閉なしで往復できるようにするための構成。
+        if self.folder_pane_tab == FolderPaneTab::Search {
+            const SEARCH_PANE_WIDTH: f32 = 200.0;
+            // ui.horizontal + ui.vertical のネストだと子の available_height() が
+            // 正しく伝播しない（egui挙動）ため、両ペインとも allocate_ui_with_layout で
+            // 明示的にサイズを渡す（draw_real_tree_panel と同じ方式）。
+            let avail_h = ui.available_height();
+            ui.horizontal(|ui| {
+                ui.allocate_ui_with_layout(
+                    egui::vec2(SEARCH_PANE_WIDTH, avail_h),
+                    egui::Layout::top_down(egui::Align::Min),
+                    |ui| self.draw_search_condition_pane(ui),
+                );
+                ui.separator();
+                let remain_w = ui.available_width();
+                ui.allocate_ui_with_layout(
+                    egui::vec2(remain_w, avail_h),
+                    egui::Layout::top_down(egui::Align::Min),
+                    |ui| self.draw_central_panel_content(ui),
+                );
+            });
+            return;
+        }
+        self.draw_central_panel_content(ui);
+    }
+
+    fn draw_central_panel_content(&mut self, ui: &mut egui::Ui) {
         // お気に入りタブ中は実ディレクトリ由来の表示（パス・サマリー）を出さない。
         // cd_summary はワーカーが非同期で書き込むため、状態クリアではなく描画側でゲートする。
         let in_favorites_ui = self.folder_pane_tab == FolderPaneTab::Favorites
