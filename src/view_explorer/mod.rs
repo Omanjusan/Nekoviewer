@@ -618,6 +618,9 @@ mod search_ui;
 mod search;
 mod status;
 mod nav_icons;
+// 検索フォームへの接続前の独立GUI部品。接続フェーズまで未使用項目を許容する。
+#[allow(dead_code)]
+mod calendar_gui;
 
 #[cfg(test)]
 mod glyph_audit;
