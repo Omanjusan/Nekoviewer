@@ -68,7 +68,7 @@ impl NekoviewApp {
         // 自前カーソル用の強制フォーカス解除を止める。解除したままだと入力した
         // 次フレームで即座にフォーカスが外れ、テキスト入力が一切通らなくなる。
         if self.focused_pane != FocusPane::Filter
-            && self.focused_pane != FocusPane::SearchTab
+            && self.focused_pane != FocusPane::SearchForm
             && !self.settings_is_open()
             && self.favorite_dialog.is_none()
             && self.favorite_detail_dialog.is_none()
@@ -76,11 +76,11 @@ impl NekoviewApp {
             ctx.memory_mut(|mem| mem.stop_text_input());
         }
         // 矢印キーによるネイティブなwidget間移動（Memory::focus_direction）は常時無効化する。
-        // Filter/SearchTab中のテキスト編集（左右キーでのカーソル内移動等）はTextEditが
+        // Filter/SearchForm中のテキスト編集（左右キーでのカーソル内移動等）はTextEditが
         // vertical/horizontal_arrowsで自分のイベントとして先取りするため影響しない一方、
         // 一度何らかの理由でテキスト欄以外（ボタン等）にネイティブフォーカスが渡ってしまうと、
         // 以後は誰も event_filter で握っていないためこの move_focus が無いと上下キーで
-        // 次々に別ウィジェットへ渡り歩いてしまう（実測: focused_pane は SearchTab のまま
+        // 次々に別ウィジェットへ渡り歩いてしまう（実測: focused_pane は SearchForm のまま
         // 動かず、egui内部のfocused widget idだけが上下キー毎に変わり続けていた）。
         if !self.settings_is_open() {
             ctx.memory_mut(|mem| mem.move_focus(egui::FocusDirection::None));
@@ -266,7 +266,9 @@ impl NekoviewApp {
             if tab_bar_focused && self.folder_pane_tab == FolderPaneTab::Search { draw_cursor_ring(ui, search_resp.rect); }
             if search_resp.clicked() {
                 self.switch_folder_tab(FolderPaneTab::Search);
-                self.focused_pane = FocusPane::SearchTab;
+                self.focused_pane = FocusPane::SearchForm;
+                self.search_form_focus = SearchFormFocus::NamePattern;
+                self.search_form_focus_request = true;
             }
         });
         ui.separator();

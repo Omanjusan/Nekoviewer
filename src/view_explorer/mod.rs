@@ -55,7 +55,7 @@ enum FolderPaneTab {
 /// 選んでいるかで経路が変わる（本体の中身がタブごとに違うため）:
 ///   RealTree:  FolderTabBar → TreeTab(本体) → Drives → Grid → Filter → MenuBar → (戻る)
 ///   Favorites: FolderTabBar → FavoriteTab(本体) → Grid → Filter → MenuBar → (戻る)  ※Drivesなし
-///   Search:    FolderTabBar → SearchTab(本体) → TreeTab(アイテムペイン内) → Drives(同) → Grid → Filter → MenuBar → (戻る)
+///   Search:    FolderTabBar → SearchForm(各項目) → SearchHistory → TreeTab → Drives → Grid → Filter → MenuBar → (戻る)
 /// FolderTabBar はタブ切替バー自体（左右キーでswitch_folder_tab、Tab/Shift+Tabでは巡回の
 /// 起点/終点として1箇所だけ現れる）。TreeTab/Drives は実ツリー選択時とSearch選択時の両方で
 /// 使われる（アイテムペイン内のツリー/ドライブと表示・状態を共有する二重の顔を持つ）。
@@ -64,7 +64,8 @@ pub(crate) enum FocusPane {
     FolderTabBar,
     TreeTab,
     FavoriteTab,
-    SearchTab,
+    SearchForm,
+    SearchHistory,
     Drives,
     Grid,
     Filter,
@@ -77,10 +78,11 @@ impl FocusPane {
             Self::FolderTabBar => match tab {
                 FolderPaneTab::RealTree => Self::TreeTab,
                 FolderPaneTab::Favorites => Self::FavoriteTab,
-                FolderPaneTab::Search => Self::SearchTab,
+                FolderPaneTab::Search => Self::SearchForm,
             },
             Self::TreeTab => Self::Drives,
-            Self::SearchTab => Self::TreeTab,
+            Self::SearchForm => Self::SearchHistory,
+            Self::SearchHistory => Self::TreeTab,
             Self::Drives => Self::Grid,
             Self::FavoriteTab => Self::Grid,
             Self::Grid => Self::Filter,
@@ -93,10 +95,11 @@ impl FocusPane {
         match self {
             Self::FolderTabBar => Self::MenuBar,
             Self::TreeTab => match tab {
-                FolderPaneTab::Search => Self::SearchTab,
+                FolderPaneTab::Search => Self::SearchHistory,
                 _ => Self::FolderTabBar,
             },
-            Self::SearchTab => Self::FolderTabBar,
+            Self::SearchForm => Self::FolderTabBar,
+            Self::SearchHistory => Self::SearchForm,
             Self::Drives => Self::TreeTab,
             Self::FavoriteTab => Self::FolderTabBar,
             Self::Grid => match tab {
@@ -106,6 +109,45 @@ impl FocusPane {
             Self::Filter => Self::Grid,
             Self::MenuBar => Self::Filter,
         }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum SearchFormFocus {
+    NamePattern, IncludeSubdirs, SizeMin, SizeMax, DateAfter, DateBefore, Start, Clear,
+}
+
+impl SearchFormFocus {
+    fn next(self) -> Option<Self> { Some(match self {
+        Self::NamePattern => Self::IncludeSubdirs, Self::IncludeSubdirs => Self::SizeMin,
+        Self::SizeMin => Self::SizeMax, Self::SizeMax => Self::DateAfter,
+        Self::DateAfter => Self::DateBefore, Self::DateBefore => Self::Start,
+        Self::Start => Self::Clear, Self::Clear => return None,
+    }) }
+    fn prev(self) -> Option<Self> { Some(match self {
+        Self::NamePattern => return None, Self::IncludeSubdirs => Self::NamePattern,
+        Self::SizeMin => Self::IncludeSubdirs, Self::SizeMax => Self::SizeMin,
+        Self::DateAfter => Self::SizeMax, Self::DateBefore => Self::DateAfter,
+        Self::Start => Self::DateBefore, Self::Clear => Self::Start,
+    }) }
+}
+
+#[cfg(test)]
+mod search_focus_tests {
+    use super::SearchFormFocus::*;
+
+    #[test]
+    fn search_form_focus_visits_every_field_in_confirmed_order() {
+        let mut current = NamePattern;
+        let mut visited = vec![current];
+        while let Some(next) = current.next() {
+            visited.push(next);
+            current = next;
+        }
+        assert_eq!(visited, vec![NamePattern, IncludeSubdirs, SizeMin, SizeMax,
+            DateAfter, DateBefore, Start, Clear]);
+        assert_eq!(NamePattern.prev(), None);
+        assert_eq!(Clear.next(), None);
     }
 }
 
@@ -518,6 +560,8 @@ pub struct NekoviewApp {
     search_selected: Option<usize>,
     /// 検索条件フォームの入力状態
     search_form: SearchFormState,
+    search_form_focus: SearchFormFocus,
+    search_form_focus_request: bool,
     /// true: 検索実行中（完了までは多重実行不可、検索開始ボタンを無効化する）
     search_running: bool,
     /// 検索ワーカーからの結果受信チャンネル（実行中のみSome）
@@ -745,6 +789,8 @@ impl NekoviewApp {
             search_history: Vec::new(),
             search_selected: None,
             search_form: SearchFormState::default(),
+            search_form_focus: SearchFormFocus::NamePattern,
+            search_form_focus_request: false,
             search_running: false,
             search_pending: None,
             viewing_search: None,

@@ -7,8 +7,8 @@ use crate::keymap::ExplorerAction;
 use super::*;
 
 impl NekoviewApp {
-    /// フォーカス巡回: Tab/Shift+Tabで TreeTab→Grid→Filter→Drives→MenuBar→FavoriteTab→SearchTab
-    /// を一周する。着地したペインに応じてタブ切替・カーソル復元を追従させる。
+    /// フォーカス巡回。検索フォームは全項目を回り、その後に履歴へ進む。
+    /// 履歴が空ならその位置は飛ばす。着地したペインのカーソルも復元する。
     /// TreeTab/Drivesは「今folder_pane_tabが検索タブかどうか」で意味が変わる二重の顔を持つ：
     /// 実ツリータブ選択中は左ペインの実ツリー/ドライブ、検索タブ選択中はアイテムペイン内の
     /// ツリー/ドライブ（検索基点選択ツール、実ナビゲーションはしない）を指す。
@@ -25,24 +25,43 @@ impl NekoviewApp {
         if !tab && !shift_tab {
             return;
         }
+        if self.focused_pane == FocusPane::SearchForm {
+            let next = if shift_tab { self.search_form_focus.prev() } else { self.search_form_focus.next() };
+            if let Some(next) = next {
+                self.search_form_focus = next;
+                self.search_form_focus_request = true;
+                return;
+            }
+            self.focused_pane = if shift_tab { FocusPane::FolderTabBar } else if self.search_history.is_empty() { FocusPane::TreeTab } else { FocusPane::SearchHistory };
+            self.surrender_native_focus(ctx);
+            self.on_focus_pane_changed();
+            return;
+        }
         self.focused_pane = if shift_tab {
             self.focused_pane.prev(self.folder_pane_tab)
         } else {
             self.focused_pane.next(self.folder_pane_tab)
         };
+        if self.focused_pane == FocusPane::SearchHistory && self.search_history.is_empty() {
+            self.focused_pane = if shift_tab { FocusPane::SearchForm } else { FocusPane::TreeTab };
+        }
+        if self.focused_pane == FocusPane::SearchForm {
+            self.search_form_focus = if shift_tab { SearchFormFocus::Clear } else { SearchFormFocus::NamePattern };
+            self.search_form_focus_request = true;
+        }
         // 検索条件フォームのテキスト欄は lock_focus(true) にしているため、Tabで
         // focused_pane を進めても egui ネイティブのフォーカスはテキスト欄に残り続ける。
         // 放置すると次フレームの has_focus/gained_focus 判定と自前状態が食い違って
         // 行き来してしまうため、ここで egui 側のフォーカスを明示的に外す
         // （Filter欄のように自前状態→egui の一方向で揃える）。
-        if self.focused_pane != FocusPane::SearchTab && self.focused_pane != FocusPane::Filter {
-            ctx.memory_mut(|m| {
-                if let Some(id) = m.focused() {
-                    m.surrender_focus(id);
-                }
-            });
+        if self.focused_pane != FocusPane::SearchForm && self.focused_pane != FocusPane::Filter {
+            self.surrender_native_focus(ctx);
         }
         self.on_focus_pane_changed();
+    }
+
+    fn surrender_native_focus(&self, ctx: &egui::Context) {
+        ctx.memory_mut(|m| if let Some(id) = m.focused() { m.surrender_focus(id); });
     }
 
     fn on_focus_pane_changed(&mut self) {
@@ -69,7 +88,8 @@ impl NekoviewApp {
                     self.favorite_cursor = Some(FavoriteSelection::Unsorted);
                 }
             }
-            FocusPane::SearchTab => {
+            FocusPane::SearchForm => {}
+            FocusPane::SearchHistory => {
                 let valid = self.search_selected.is_some_and(|i| i < self.search_history.len());
                 if !valid {
                     self.search_selected = if self.search_history.is_empty() { None } else { Some(0) };
@@ -92,6 +112,21 @@ impl NekoviewApp {
             }
             FocusPane::Filter | FocusPane::MenuBar => {}
         }
+    }
+
+    fn handle_search_history_keys(&mut self, ctx: &egui::Context) {
+        if self.search_history.is_empty() { return; }
+        let km = &self.config.keymap;
+        let (up, down, enter) = ctx.input(|i| (
+            km.explorer_binding(ExplorerAction::NavUp).key_pressed(i),
+            km.explorer_binding(ExplorerAction::NavDown).key_pressed(i),
+            km.explorer_binding(ExplorerAction::Confirm).key_pressed(i),
+        ));
+        let mut idx = self.search_selected.unwrap_or(0).min(self.search_history.len() - 1);
+        if up && idx > 0 { idx -= 1; }
+        if down && idx + 1 < self.search_history.len() { idx += 1; }
+        self.search_selected = Some(idx);
+        if enter { self.enter_search_view(idx); }
     }
 
     /// 実ツリーの現在展開状態における「見えているノード」を上から順に平坦化したもの。
@@ -368,6 +403,10 @@ impl NekoviewApp {
         }
         if self.focused_pane == FocusPane::FavoriteTab {
             self.handle_favorites_keys(ctx);
+            return;
+        }
+        if self.focused_pane == FocusPane::SearchHistory {
+            self.handle_search_history_keys(ctx);
             return;
         }
         if self.focused_pane == FocusPane::Drives {

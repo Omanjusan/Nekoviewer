@@ -1,7 +1,7 @@
 use crate::i18n;
 
 use super::panels::draw_cursor_ring;
-use super::{FocusPane, NekoviewApp, SearchFormState};
+use super::{FocusPane, NekoviewApp, SearchFormFocus, SearchFormState};
 
 impl NekoviewApp {
     /// 左ペイン「検索」タブの中身。上＝検索条件フォーム（固定高さ）、下＝検索結果履歴。
@@ -34,14 +34,14 @@ impl NekoviewApp {
                 // 「検索された順で最上位に追加され、下に送られていく」表示になる。
                 for idx in 0..self.search_history.len() {
                     let label = self.search_history[idx].label.clone();
-                    let is_cursor = self.focused_pane == FocusPane::SearchTab
+                    let is_cursor = self.focused_pane == FocusPane::SearchHistory
                         && self.search_selected == Some(idx);
                     let resp = ui.selectable_label(self.search_selected == Some(idx), &label);
                     if is_cursor {
                         draw_cursor_ring(ui, resp.rect);
                     }
                     if resp.clicked() {
-                        self.focused_pane = FocusPane::SearchTab;
+                        self.focused_pane = FocusPane::SearchHistory;
                         self.enter_search_view(idx);
                     }
                 }
@@ -53,11 +53,15 @@ impl NekoviewApp {
     pub(super) fn draw_search_condition_pane(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             let start_enabled = !self.search_running;
-            if ui.add_enabled(start_enabled, egui::Button::new(i18n::t().search_start_button())).clicked() {
+            let start = ui.add_enabled(start_enabled, egui::Button::new(i18n::t().search_start_button()));
+            self.sync_search_form_response(&start, SearchFormFocus::Start, start_enabled);
+            if start.clicked() {
                 let ctx = ui.ctx().clone();
                 self.start_search(&ctx);
             }
-            if ui.button(i18n::t().search_clear_button()).clicked() {
+            let clear = ui.button(i18n::t().search_clear_button());
+            self.sync_search_form_response(&clear, SearchFormFocus::Clear, true);
+            if clear.clicked() {
                 // 基点ディレクトリはツリー/ドライブで選ぶものなので、条件クリアの対象外にする。
                 let base_dir = self.search_form.base_dir.clone();
                 self.search_form = SearchFormState { base_dir, ..SearchFormState::default() };
@@ -78,34 +82,41 @@ impl NekoviewApp {
                 ui.add_space(4.0);
                 ui.label(i18n::t().search_name_pattern_label());
                 let r = ui.add(egui::TextEdit::singleline(&mut self.search_form.name_pattern).lock_focus(true));
-                if r.gained_focus() { self.focused_pane = FocusPane::SearchTab; }
-                // Tab巡回でSearchTabに着地した直後は、まだどのテキスト欄にもegui側の
-                // ネイティブフォーカスが無く画面上の変化が一切見えない（Filter欄と違いここまで
-                // 何もしていなかった）。最初の項目（ファイル名）へ自動的にフォーカスを送ることで、
-                // Grid同様に「着地したのに何も動いていないように見える」ちらつきを解消する。
-                if self.focused_pane == FocusPane::SearchTab
-                    && !r.has_focus()
-                    && ui.ctx().memory(|m| m.focused()).is_none()
-                {
-                    r.request_focus();
-                }
-                ui.checkbox(&mut self.search_form.include_subdirs, i18n::t().search_include_subdirs_label());
+                self.sync_search_form_response(&r, SearchFormFocus::NamePattern, true);
+                let r = ui.checkbox(&mut self.search_form.include_subdirs, i18n::t().search_include_subdirs_label());
+                self.sync_search_form_response(&r, SearchFormFocus::IncludeSubdirs, true);
 
                 ui.add_space(4.0);
                 ui.label(i18n::t().search_size_min_label());
                 let r = ui.add(egui::TextEdit::singleline(&mut self.search_form.size_min_mb).lock_focus(true));
-                if r.gained_focus() { self.focused_pane = FocusPane::SearchTab; }
+                self.sync_search_form_response(&r, SearchFormFocus::SizeMin, true);
                 ui.label(i18n::t().search_size_max_label());
                 let r = ui.add(egui::TextEdit::singleline(&mut self.search_form.size_max_mb).lock_focus(true));
-                if r.gained_focus() { self.focused_pane = FocusPane::SearchTab; }
+                self.sync_search_form_response(&r, SearchFormFocus::SizeMax, true);
 
                 ui.add_space(4.0);
                 ui.label(i18n::t().search_date_after_label());
                 let r = ui.add(egui::TextEdit::singleline(&mut self.search_form.date_after).lock_focus(true));
-                if r.gained_focus() { self.focused_pane = FocusPane::SearchTab; }
+                self.sync_search_form_response(&r, SearchFormFocus::DateAfter, true);
                 ui.label(i18n::t().search_date_before_label());
                 let r = ui.add(egui::TextEdit::singleline(&mut self.search_form.date_before).lock_focus(true));
-                if r.gained_focus() { self.focused_pane = FocusPane::SearchTab; }
+                self.sync_search_form_response(&r, SearchFormFocus::DateBefore, true);
             });
+    }
+
+    fn sync_search_form_response(&mut self, r: &egui::Response, field: SearchFormFocus, enabled: bool) {
+        if self.focused_pane == FocusPane::SearchForm && self.search_form_focus == field
+            && self.search_form_focus_request && enabled {
+            r.request_focus();
+            self.search_form_focus_request = false;
+        }
+        // キーボードの着地先は SearchFormFocus から request_focus で一方向に同期する。
+        // gained_focus を逆方向の同期に使うと、チェックボックからのTabでegui標準巡回と
+        // 独自巡回が同じフレームに二重で進み、SizeMinを飛ばしてしまう。
+        // マウス操作の独自位置同期に必要な clicked だけを残す。
+        if r.clicked() {
+            self.focused_pane = FocusPane::SearchForm;
+            self.search_form_focus = field;
+        }
     }
 }
