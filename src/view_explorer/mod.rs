@@ -112,6 +112,10 @@ pub(crate) fn push_search_result(history: &mut Vec<SearchResultEntry>, entry: Se
 /// 実行時（Phase3）にパースする。
 #[derive(Default, Clone)]
 pub(crate) struct SearchFormState {
+    /// 検索の基点ディレクトリ。None のうちは検索タブ初回入場時に current_dir で初期化される
+    /// （switch_folder_tab参照）。以降はアイテムペイン内ツリー/ドライブのクリックで更新され、
+    /// タブを行き来しても保持される。
+    pub base_dir: Option<PathBuf>,
     pub name_pattern: String,
     pub include_subdirs: bool,
     pub size_min_mb: String,

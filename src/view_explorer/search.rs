@@ -4,7 +4,7 @@ use std::sync::mpsc;
 use crate::fs::dir;
 use crate::neko_dir;
 
-use super::{push_search_result, NekoviewApp, SearchFormState, SearchResultEntry};
+use super::{push_search_result, NekoviewApp, SearchFormState, SearchResultEntry, TreeScanPending};
 use crate::i18n;
 
 /// フォーム入力をパース済みにした検索条件。バックグラウンドスレッドへそのまま渡す
@@ -131,7 +131,7 @@ impl NekoviewApp {
         }
         let Some(cache_root) = self.config.cache_root() else { return };
         let conditions = parse_search_form(&self.search_form);
-        let root = self.current_dir.clone();
+        let root = self.search_form.base_dir.clone().unwrap_or_else(|| self.current_dir.clone());
         let include_subdirs = self.search_form.include_subdirs;
         let ctx = ctx.clone();
         self.search_pending = Some(spawn_search(root, include_subdirs, cache_root, conditions, move || ctx.request_repaint()));
@@ -182,6 +182,27 @@ impl NekoviewApp {
         }
         self.viewing_search = None;
         self.start_scan();
+    }
+
+    /// 検索タブ内でドライブをクリックした時の処理。ツリー表示のルートを実ツリーと同じ要領で
+    /// 切り替えつつ、検索条件の基点ディレクトリを更新する。navigate_to_drive と異なり、
+    /// current_dir・実スキャン（start_scan）・viewing_dir・cd_summary には一切触れない
+    /// （ツリー/ドライブは検索条件の基点選択ツールであり、実ナビゲーションとは切り離す）。
+    pub(super) fn set_search_base_drive(&mut self, path: PathBuf) {
+        self.search_form.base_dir = Some(path.clone());
+        self.tree_root = path.clone();
+        self.tree_expanded.clear();
+        self.tree_children.clear();
+        self.tree_cursor = None;
+        self.tree_autofocus = None;
+        self.tree_autofocus_pending = None;
+        self.tree_scan_pending = Some(TreeScanPending {
+            path: path.clone(),
+            rx: dir::spawn_scan_subdirs(path, {
+                let c = self.egui_ctx.clone();
+                move || c.request_repaint()
+            }),
+        });
     }
 }
 

@@ -221,6 +221,11 @@ impl NekoviewApp {
     /// 書き忘れる事故を構造的に防ぐ（背後の非同期スキャンが横断表示を汚染したバグの再発防止）。
     pub(super) fn switch_folder_tab(&mut self, tab: FolderPaneTab) {
         self.folder_pane_tab = tab;
+        // 検索タブへの初回入場時のみ、その時点のPWDを検索基点の初期値にする。
+        // 既にユーザーがツリー/ドライブで基点を選んでいれば（Some）上書きしない。
+        if tab == FolderPaneTab::Search && self.search_form.base_dir.is_none() {
+            self.search_form.base_dir = Some(self.current_dir.clone());
+        }
         if tab != FolderPaneTab::Favorites {
             self.exit_favorite_view();
         }
@@ -323,7 +328,13 @@ impl NekoviewApp {
                 self.focused_pane = FocusPane::TreeTab;
                 self.tree_at_tab = false;
                 self.tree_cursor = Some(path.clone());
-                self.navigate_to(path);
+                // 検索タブ内のツリーは検索条件の基点ディレクトリ選択ツールであり、
+                // 実ナビゲーション（current_dir変更・実スキャン）は行わない。
+                if self.folder_pane_tab == FolderPaneTab::Search {
+                    self.search_form.base_dir = Some(path);
+                } else {
+                    self.navigate_to(path);
+                }
             }
         }
 
@@ -354,7 +365,11 @@ impl NekoviewApp {
                     if resp.clicked() {
                         self.focused_pane = FocusPane::Drives;
                         self.drive_cursor = Some(path.clone());
-                        self.navigate_to_drive(path);
+                        if self.folder_pane_tab == FolderPaneTab::Search {
+                            self.set_search_base_drive(path);
+                        } else {
+                            self.navigate_to_drive(path);
+                        }
                     }
                 }
             });

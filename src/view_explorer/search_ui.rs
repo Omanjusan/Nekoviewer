@@ -60,7 +60,9 @@ impl NekoviewApp {
                 self.start_search(&ctx);
             }
             if ui.button(i18n::t().search_clear_button()).clicked() {
-                self.search_form = SearchFormState::default();
+                // 基点ディレクトリはツリー/ドライブで選ぶものなので、条件クリアの対象外にする。
+                let base_dir = self.search_form.base_dir.clone();
+                self.search_form = SearchFormState { base_dir, ..SearchFormState::default() };
             }
         });
         ui.separator();
