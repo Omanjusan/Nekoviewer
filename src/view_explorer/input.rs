@@ -7,8 +7,11 @@ use crate::keymap::ExplorerAction;
 use super::*;
 
 impl NekoviewApp {
-    /// フォーカス巡回: Tab/Shift+Tabで TreeTab→FavoriteTab→Drives→Grid→Filter→MenuBar
+    /// フォーカス巡回: Tab/Shift+Tabで TreeTab→Grid→Filter→Drives→MenuBar→FavoriteTab→SearchTab
     /// を一周する。着地したペインに応じてタブ切替・カーソル復元を追従させる。
+    /// TreeTab/Drivesは「今folder_pane_tabが検索タブかどうか」で意味が変わる二重の顔を持つ：
+    /// 実ツリータブ選択中は左ペインの実ツリー/ドライブ、検索タブ選択中はアイテムペイン内の
+    /// ツリー/ドライブ（検索基点選択ツール、実ナビゲーションはしない）を指す。
     ///
     /// キー判定はキーアサイン設定(TODO項目J)経由。ActionBinding::pressedは修飾キー完全一致で
     /// 判定するため、旧来の consume_key(matches_logically) が抱えていた
@@ -29,7 +32,11 @@ impl NekoviewApp {
     fn on_focus_pane_changed(&mut self) {
         match self.focused_pane {
             FocusPane::TreeTab => {
-                self.switch_folder_tab(FolderPaneTab::RealTree);
+                // 検索タブ選択中はアイテムペイン内ツリー（検索基点選択用）を指す。
+                // 実ツリータブへは切り替えない（switch_folder_tabを呼ぶと横断表示が終了してしまう）。
+                if self.folder_pane_tab != FolderPaneTab::Search {
+                    self.switch_folder_tab(FolderPaneTab::RealTree);
+                }
                 self.tree_at_tab = false;
                 let flat = self.flatten_visible_tree();
                 let valid = self.tree_cursor.as_ref().is_some_and(|p| flat.contains(p));
@@ -59,9 +66,12 @@ impl NekoviewApp {
                 }
             }
             FocusPane::Drives => {
-                // Drivesは実ツリー配下にのみ存在するため、Favorites経由での到達時は
-                // 実ツリー表示へ復帰させる。カーソルは前回位置を復元、無効なら先頭へ。
-                self.switch_folder_tab(FolderPaneTab::RealTree);
+                // Drivesは実ツリー配下と検索タブのアイテムペイン内の両方に存在する。
+                // Favorites経由での到達時は実ツリー表示へ復帰させるが、検索タブ選択中は
+                // アイテムペイン内ドライブ（検索基点選択用）を指すので切り替えない。
+                if self.folder_pane_tab != FolderPaneTab::Search {
+                    self.switch_folder_tab(FolderPaneTab::RealTree);
+                }
                 let valid = self.drive_cursor.as_ref()
                     .is_some_and(|p| self.drives.iter().any(|d| &d.path == p));
                 if !valid {
@@ -189,7 +199,11 @@ impl NekoviewApp {
             }
         }
         if key_enter {
-            self.navigate_to(cur);
+            if self.folder_pane_tab == FolderPaneTab::Search {
+                self.search_form.base_dir = Some(cur);
+            } else {
+                self.navigate_to(cur);
+            }
         }
     }
 
@@ -296,7 +310,12 @@ impl NekoviewApp {
             self.drive_cursor = Some(self.drives[new_pos].path.clone());
         }
         if key_enter {
-            self.navigate_to_drive(self.drives[new_pos].path.clone());
+            let path = self.drives[new_pos].path.clone();
+            if self.folder_pane_tab == FolderPaneTab::Search {
+                self.set_search_base_drive(path);
+            } else {
+                self.navigate_to_drive(path);
+            }
         }
     }
 
