@@ -30,6 +30,7 @@ modules:
       env:
         CARGO_HOME: /run/build/nekoviewer/cargo
         CARGO_NET_OFFLINE: 'true'
+        NEKOVIEWER_DAV1D_DYNAMIC: '1'
     build-commands:
       - cargo build --offline --release --locked
       - install -Dm0755 target/release/nekoviewer /app/bin/nekoviewer
@@ -45,4 +46,3 @@ modules:
           - repo
           - target
       - packaging/flatpak/cargo-sources.json
-
