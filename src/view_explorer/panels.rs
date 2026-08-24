@@ -54,7 +54,10 @@ impl NekoviewApp {
         // 設定ダイアログ（egui::Modal）は自動でキーボード入力をブロックしないため、開いている
         // 間はエクスプローラー本体のキー操作を止める。止めないと、ダイアログのキーアサイン
         // 変更キャプチャ中に裏でF2(Rename)等が同時に反応し、キャプチャ側の入力検出と競合する。
-        if !self.settings_is_open() {
+        if !self.settings_is_open()
+            && !self.search_date_start_calendar.is_open()
+            && !self.search_date_end_calendar.is_open()
+        {
             self.handle_explorer_keys(&ctx);
         }
         // egui標準のTab/矢印キーによるネイティブなウィジェットフォーカス移動

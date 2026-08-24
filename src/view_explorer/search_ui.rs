@@ -1,6 +1,7 @@
 use crate::i18n;
 
 use super::panels::draw_cursor_ring;
+use super::calendar_gui::{apply_outcome_to_form, LocalDate};
 use super::{FocusPane, NekoviewApp, SearchFormFocus, SearchFormState};
 
 impl NekoviewApp {
@@ -96,11 +97,23 @@ impl NekoviewApp {
 
                 ui.add_space(4.0);
                 ui.label(i18n::t().search_date_after_label());
-                let r = ui.add(egui::TextEdit::singleline(&mut self.search_form.date_after).lock_focus(true));
-                self.sync_search_form_response(&r, SearchFormFocus::DateAfter, true);
+                ui.horizontal(|ui| {
+                    ui.add_enabled(false, egui::TextEdit::singleline(&mut self.search_form.date_after).desired_width(110.0));
+                    let selected = LocalDate::parse_yyyy_mm_dd(&self.search_form.date_after);
+                    let (r, outcome) = self.search_date_start_calendar.show(
+                        ui, egui::Id::new("search_date_start"), selected, self.search_calendar_today);
+                    self.sync_search_form_response(&r, SearchFormFocus::DateAfter, true);
+                    apply_outcome_to_form(&mut self.search_form.date_after, outcome);
+                });
                 ui.label(i18n::t().search_date_before_label());
-                let r = ui.add(egui::TextEdit::singleline(&mut self.search_form.date_before).lock_focus(true));
-                self.sync_search_form_response(&r, SearchFormFocus::DateBefore, true);
+                ui.horizontal(|ui| {
+                    ui.add_enabled(false, egui::TextEdit::singleline(&mut self.search_form.date_before).desired_width(110.0));
+                    let selected = LocalDate::parse_yyyy_mm_dd(&self.search_form.date_before);
+                    let (r, outcome) = self.search_date_end_calendar.show(
+                        ui, egui::Id::new("search_date_end"), selected, self.search_calendar_today);
+                    self.sync_search_form_response(&r, SearchFormFocus::DateBefore, true);
+                    apply_outcome_to_form(&mut self.search_form.date_before, outcome);
+                });
             });
     }
 

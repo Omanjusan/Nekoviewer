@@ -562,6 +562,9 @@ pub struct NekoviewApp {
     search_form: SearchFormState,
     search_form_focus: SearchFormFocus,
     search_form_focus_request: bool,
+    search_date_start_calendar: calendar_gui::CalendarGui,
+    search_date_end_calendar: calendar_gui::CalendarGui,
+    search_calendar_today: calendar_gui::LocalDate,
     /// true: 検索実行中（完了までは多重実行不可、検索開始ボタンを無効化する）
     search_running: bool,
     /// 検索ワーカーからの結果受信チャンネル（実行中のみSome）
@@ -618,8 +621,6 @@ mod search_ui;
 mod search;
 mod status;
 mod nav_icons;
-// 検索フォームへの接続前の独立GUI部品。接続フェーズまで未使用項目を許容する。
-#[allow(dead_code)]
 mod calendar_gui;
 
 #[cfg(test)]
@@ -628,6 +629,8 @@ mod glyph_audit;
 
 impl NekoviewApp {
     pub fn new(start_dir: PathBuf, config: AppConfig, viewer_slots: [Option<WindowSlot>; 4], sort_state: SortState, viewer_cfg: ViewerConfig, show_hidden: bool, translate_cfg: crate::translate::TranslateConfig, ctx: egui::Context) -> Self {
+        // timeのローカルオフセット取得は、Unixでは他スレッド起動前に行う必要がある。
+        let local_today = calendar_gui::LocalDate::today_local();
         let (cache_max, cache_min, file_cache_max) = crate::cache::resolve_cache_budgets(config.cache_total_mb);
         let ring_bounds = (config.anim_ring_min_frames, config.anim_ring_max_frames);
         let frame_hard_limit_bytes = config.anim_frame_hard_limit_mb * 1024 * 1024;
@@ -794,6 +797,9 @@ impl NekoviewApp {
             search_form: SearchFormState::default(),
             search_form_focus: SearchFormFocus::NamePattern,
             search_form_focus_request: false,
+            search_date_start_calendar: calendar_gui::CalendarGui::new(local_today),
+            search_date_end_calendar: calendar_gui::CalendarGui::new(local_today),
+            search_calendar_today: local_today,
             search_running: false,
             search_pending: None,
             viewing_search: None,

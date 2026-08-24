@@ -46,6 +46,7 @@ reqwest = { version = "0.12", default-features = false, features = ["blocking", 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 base64 = "0.22"
+time = { version = "0.3.55", features = ["local-offset"] }
 
 [dev-dependencies]
 # マーカー候補グリフの収録・塗りつぶし検証テスト用（epaint 経由で既にロック済みの版に合わせる）

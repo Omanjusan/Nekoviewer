@@ -149,6 +149,20 @@ fn toolbar_icon_glyphs_are_available() {
     }
 }
 
+/// 検索日付ボタンのカレンダー絵文字が豆腐表示にならないこと。
+#[test]
+fn calendar_button_glyph_is_available() {
+    let chain = font_chain();
+    let glyph = super::calendar_gui::CALENDAR_BUTTON_GLYPH;
+    let ch = glyph.chars().next().unwrap();
+    let report = audit_char(&chain, ch);
+    assert!(
+        report.font_name.is_some(),
+        "calendar icon {glyph} (U+{:04X}) はフォントチェーンに収録がなく豆腐になる",
+        ch as u32
+    );
+}
+
 /// 移行対応表の妥当性: 移行元は候補リストから除外済み、移行先は候補リストに存在すること。
 #[test]
 fn migration_table_is_consistent() {

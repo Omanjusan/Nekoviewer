@@ -27,6 +27,23 @@ impl LocalDate {
     pub(crate) fn to_yyyy_mm_dd(self) -> String {
         format!("{:04}-{:02}-{:02}", self.year, self.month, self.day)
     }
+
+    pub(crate) fn parse_yyyy_mm_dd(value: &str) -> Option<Self> {
+        let mut parts = value.split('-');
+        let year = parts.next()?.parse().ok()?;
+        let month = parts.next()?.parse().ok()?;
+        let day = parts.next()?.parse().ok()?;
+        if parts.next().is_some() {
+            return None;
+        }
+        Self::new(year, month, day)
+    }
+
+    pub(crate) fn today_local() -> Self {
+        let now =
+            time::OffsetDateTime::now_local().unwrap_or_else(|_| time::OffsetDateTime::now_utc());
+        Self::valid(now.year(), u8::from(now.month()), now.day())
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -48,10 +65,6 @@ impl CalendarModel {
         Self {
             cursor: selected.unwrap_or(today),
         }
-    }
-
-    pub(crate) fn cursor(self) -> LocalDate {
-        self.cursor
     }
 
     pub(crate) fn confirm(self) -> CalendarOutcome {
@@ -114,23 +127,28 @@ impl CalendarGui {
     }
 
     /// 日付ボタンとカレンダー窓を描画する。ローカル本日は呼び出し側が渡す。
+    pub(crate) fn is_open(&self) -> bool {
+        self.open
+    }
+
+    fn open_for_selection(&mut self, today: LocalDate, selected: Option<LocalDate>) {
+        self.model = CalendarModel::open(today, selected);
+        self.open = true;
+    }
+
     pub(crate) fn show(
         &mut self,
         ui: &mut egui::Ui,
         id: egui::Id,
         selected: Option<LocalDate>,
         today: LocalDate,
-    ) -> CalendarOutcome {
-        let text = selected.map_or_else(
-            || format!("未指定 {CALENDAR_BUTTON_GLYPH}"),
-            |date| format!("{} {CALENDAR_BUTTON_GLYPH}", date.to_yyyy_mm_dd()),
-        );
-        if ui.button(text).clicked() {
-            self.model = CalendarModel::open(today, selected);
-            self.open = true;
+    ) -> (egui::Response, CalendarOutcome) {
+        let button = ui.button(CALENDAR_BUTTON_GLYPH);
+        if button.clicked() {
+            self.open_for_selection(today, selected);
         }
         if !self.open {
-            return CalendarOutcome::None;
+            return (button, CalendarOutcome::None);
         }
 
         let mut window_open = self.open;
@@ -201,7 +219,15 @@ impl CalendarGui {
             outcome = CalendarOutcome::Cancelled;
         }
         self.open = window_open;
-        outcome
+        (button, outcome)
+    }
+}
+
+pub(crate) fn apply_outcome_to_form(value: &mut String, outcome: CalendarOutcome) {
+    match outcome {
+        CalendarOutcome::Confirmed(date) => *value = date.to_yyyy_mm_dd(),
+        CalendarOutcome::Cleared => value.clear(),
+        CalendarOutcome::None | CalendarOutcome::Cancelled => {}
     }
 }
 
@@ -254,7 +280,7 @@ mod tests {
     fn selected_date_takes_priority_over_today_when_opened() {
         let selected = date(2025, 12, 31);
         let calendar = CalendarModel::open(date(2026, 8, 24), Some(selected));
-        assert_eq!(calendar.cursor(), selected);
+        assert_eq!(calendar.cursor, selected);
     }
 
     #[test]
@@ -268,10 +294,10 @@ mod tests {
     fn month_navigation_crosses_year_and_clamps_day() {
         let mut calendar = CalendarModel::open(date(2024, 1, 31), None);
         calendar.next_month();
-        assert_eq!(calendar.cursor(), date(2024, 2, 29));
+        assert_eq!(calendar.cursor, date(2024, 2, 29));
         calendar = CalendarModel::open(date(2026, 1, 15), None);
         calendar.previous_month();
-        assert_eq!(calendar.cursor(), date(2025, 12, 15));
+        assert_eq!(calendar.cursor, date(2025, 12, 15));
     }
 
     #[test]
@@ -286,5 +312,41 @@ mod tests {
         let calendar = CalendarModel::open(date(2026, 8, 24), None);
         assert_eq!(calendar.clear(), CalendarOutcome::Cleared);
         assert_eq!(calendar.cancel(), CalendarOutcome::Cancelled);
+    }
+
+    #[test]
+    fn parses_existing_form_string_and_rejects_invalid_text() {
+        assert_eq!(
+            LocalDate::parse_yyyy_mm_dd("2026-08-24"),
+            Some(date(2026, 8, 24))
+        );
+        assert_eq!(LocalDate::parse_yyyy_mm_dd("2026-02-31"), None);
+        assert_eq!(LocalDate::parse_yyyy_mm_dd("２０２６-08-24"), None);
+    }
+
+    #[test]
+    fn start_and_end_outcomes_update_only_their_own_form_strings() {
+        let mut start = String::new();
+        let mut end = String::new();
+        apply_outcome_to_form(&mut start, CalendarOutcome::Confirmed(date(2026, 8, 1)));
+        assert_eq!(start, "2026-08-01");
+        assert!(end.is_empty());
+        apply_outcome_to_form(&mut end, CalendarOutcome::Confirmed(date(2026, 8, 31)));
+        assert_eq!(start, "2026-08-01");
+        assert_eq!(end, "2026-08-31");
+    }
+
+    #[test]
+    fn independent_start_and_end_buttons_open_with_their_own_initial_dates() {
+        let today = date(2026, 8, 24);
+        let mut start = CalendarGui::new(today);
+        let mut end = CalendarGui::new(today);
+        start.open_for_selection(today, Some(date(2026, 8, 1)));
+        end.open_for_selection(today, None);
+        assert_eq!(
+            start.model.confirm(),
+            CalendarOutcome::Confirmed(date(2026, 8, 1))
+        );
+        assert_eq!(end.model.confirm(), CalendarOutcome::Confirmed(today));
     }
 }
