@@ -44,21 +44,28 @@ enum TreeAction {
     Navigate(PathBuf),
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum FolderPaneTab {
     RealTree,
     Favorites,
+    Search,
 }
 
-/// キーボード操作のフォーカス巡回順（Tab/Shift+Tabで一周する）。
-/// 順序: TreeTab(初期値) → Grid → Filter → Drives → MenuBar → FavoriteTab → (先頭に戻る)
-/// TreeTab/FavoriteTab は左ペインのタブ切替を兼ねる。Drives は実ツリー配下の
-/// ドライブ一覧のみを指し、Favorites表示中でも巡回上は残る（着地時に実ツリーへ
-/// 自動復帰する）。
+/// キーボード操作のフォーカス巡回順（Tab/Shift+Tabで一周する）。今どのタブ（folder_pane_tab）を
+/// 選んでいるかで経路が変わる（本体の中身がタブごとに違うため）:
+///   RealTree:  FolderTabBar → TreeTab(本体) → Drives → Grid → Filter → MenuBar → (戻る)
+///   Favorites: FolderTabBar → FavoriteTab(本体) → Grid → Filter → MenuBar → (戻る)  ※Drivesなし
+///   Search:    FolderTabBar → SearchForm(各項目) → SearchHistory → TreeTab → Drives → Grid → Filter → MenuBar → (戻る)
+/// FolderTabBar はタブ切替バー自体（左右キーでswitch_folder_tab、Tab/Shift+Tabでは巡回の
+/// 起点/終点として1箇所だけ現れる）。TreeTab/Drives は実ツリー選択時とSearch選択時の両方で
+/// 使われる（アイテムペイン内のツリー/ドライブと表示・状態を共有する二重の顔を持つ）。
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum FocusPane {
+    FolderTabBar,
     TreeTab,
     FavoriteTab,
+    SearchForm,
+    SearchHistory,
     Drives,
     Grid,
     Filter,
@@ -66,27 +73,115 @@ pub(crate) enum FocusPane {
 }
 
 impl FocusPane {
-    fn next(self) -> Self {
+    fn next(self, tab: FolderPaneTab) -> Self {
         match self {
-            Self::TreeTab => Self::Grid,
+            Self::FolderTabBar => match tab {
+                FolderPaneTab::RealTree => Self::TreeTab,
+                FolderPaneTab::Favorites => Self::FavoriteTab,
+                FolderPaneTab::Search => Self::SearchForm,
+            },
+            Self::TreeTab => Self::Drives,
+            Self::SearchForm => Self::SearchHistory,
+            Self::SearchHistory => Self::TreeTab,
+            Self::Drives => Self::Grid,
+            Self::FavoriteTab => Self::Grid,
             Self::Grid => Self::Filter,
-            Self::Filter => Self::Drives,
-            Self::Drives => Self::MenuBar,
-            Self::MenuBar => Self::FavoriteTab,
-            Self::FavoriteTab => Self::TreeTab,
+            Self::Filter => Self::MenuBar,
+            Self::MenuBar => Self::FolderTabBar,
         }
     }
 
-    fn prev(self) -> Self {
+    fn prev(self, tab: FolderPaneTab) -> Self {
         match self {
-            Self::TreeTab => Self::FavoriteTab,
-            Self::Grid => Self::TreeTab,
+            Self::FolderTabBar => Self::MenuBar,
+            Self::TreeTab => match tab {
+                FolderPaneTab::Search => Self::SearchHistory,
+                _ => Self::FolderTabBar,
+            },
+            Self::SearchForm => Self::FolderTabBar,
+            Self::SearchHistory => Self::SearchForm,
+            Self::Drives => Self::TreeTab,
+            Self::FavoriteTab => Self::FolderTabBar,
+            Self::Grid => match tab {
+                FolderPaneTab::Favorites => Self::FavoriteTab,
+                _ => Self::Drives,
+            },
             Self::Filter => Self::Grid,
-            Self::Drives => Self::Filter,
-            Self::MenuBar => Self::Drives,
-            Self::FavoriteTab => Self::MenuBar,
+            Self::MenuBar => Self::Filter,
         }
     }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum SearchFormFocus {
+    NamePattern, IncludeSubdirs, SizeMin, SizeMax, DateAfter, DateBefore, Start, Clear,
+}
+
+impl SearchFormFocus {
+    fn next(self) -> Option<Self> { Some(match self {
+        Self::NamePattern => Self::IncludeSubdirs, Self::IncludeSubdirs => Self::SizeMin,
+        Self::SizeMin => Self::SizeMax, Self::SizeMax => Self::DateAfter,
+        Self::DateAfter => Self::DateBefore, Self::DateBefore => Self::Start,
+        Self::Start => Self::Clear, Self::Clear => return None,
+    }) }
+    fn prev(self) -> Option<Self> { Some(match self {
+        Self::NamePattern => return None, Self::IncludeSubdirs => Self::NamePattern,
+        Self::SizeMin => Self::IncludeSubdirs, Self::SizeMax => Self::SizeMin,
+        Self::DateAfter => Self::SizeMax, Self::DateBefore => Self::DateAfter,
+        Self::Start => Self::DateBefore, Self::Clear => Self::Start,
+    }) }
+}
+
+#[cfg(test)]
+mod search_focus_tests {
+    use super::SearchFormFocus::*;
+
+    #[test]
+    fn search_form_focus_visits_every_field_in_confirmed_order() {
+        let mut current = NamePattern;
+        let mut visited = vec![current];
+        while let Some(next) = current.next() {
+            visited.push(next);
+            current = next;
+        }
+        assert_eq!(visited, vec![NamePattern, IncludeSubdirs, SizeMin, SizeMax,
+            DateAfter, DateBefore, Start, Clear]);
+        assert_eq!(NamePattern.prev(), None);
+        assert_eq!(Clear.next(), None);
+    }
+}
+
+/// 1回の検索実行結果。左ペインの検索結果リストに1行として表示される
+/// （検索された順で最上位に追加され、下へ送られていく）。
+#[derive(Clone)]
+pub(crate) struct SearchResultEntry {
+    /// リスト表示用ラベル（検索ファイル名の表示ができるだけの文字数）
+    pub label: String,
+    /// ヒットしたファイルのフルパス一覧
+    pub hits: Vec<PathBuf>,
+    /// 検索開始時点のフォーム入力。履歴を選択した際にフォームへ復元する。
+    pub form: SearchFormState,
+}
+
+/// 検索結果を履歴の先頭に追加する（新しい実行が最上位に来て、既存分は下に送られる）。
+pub(crate) fn push_search_result(history: &mut Vec<SearchResultEntry>, entry: SearchResultEntry) {
+    history.insert(0, entry);
+}
+
+/// 検索条件フォームの入力状態。テキスト欄はすべて未パース文字列のまま保持し、
+/// 実行時（Phase3）にパースする。
+#[derive(Default, Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SearchFormState {
+    /// 検索の基点ディレクトリ。None のうちは検索タブ初回入場時に current_dir で初期化される
+    /// （switch_folder_tab参照）。以降はアイテムペイン内ツリー/ドライブのクリックで更新され、
+    /// タブを行き来しても保持される。
+    pub base_dir: Option<PathBuf>,
+    pub name_pattern: String,
+    pub include_subdirs: bool,
+    pub size_min_mb: String,
+    pub size_max_mb: String,
+    pub date_after: String,
+    pub date_before: String,
 }
 
 /// サムネグリッドの「↑・サブフォルダ・アーカイブファイル」を貫通する統一カーソル位置。
@@ -233,6 +328,18 @@ struct TreeScanPending {
     rx: mpsc::Receiver<Vec<PathBuf>>,
 }
 
+/// ディレクトリツリーの自動追従（現在地までの祖先チェーンを1階層ずつ展開していく）の進行状態。
+/// root から target までの経路は既知の一本道なので、探索ではなく構築として扱う
+/// （兄弟ディレクトリの中身には踏み込まない）。
+struct TreeAutoFocus {
+    /// 最終的にカーソル・選択状態を合わせる対象パス
+    target: PathBuf,
+    /// これから展開すべき残りの path component（root寄りが先頭）
+    remaining: std::collections::VecDeque<std::ffi::OsString>,
+    /// 現時点で到達済みのノード（この直下から remaining の先頭を探す）
+    current: PathBuf,
+}
+
 /// リロードボタンによるツリー一括再取得の待ち状態（スレッド1本で全対象を処理）
 struct TreeReloadPending {
     rx: mpsc::Receiver<Vec<(PathBuf, Vec<PathBuf>)>>,
@@ -259,16 +366,11 @@ pub struct NekoviewApp {
     pub(crate) focused_pane: FocusPane,
     /// 実ツリー内のプレターゲティングカーソル（Enterで確定navigate）
     tree_cursor: Option<PathBuf>,
-    /// true: カーソルはツリー本体ではなくTreeTabボタン自体にいる（上下キーでの
-    /// タブ⇄本体の行き来を表現する。本体先頭ノードでUp、またはこの状態でDownで切替）
-    tree_at_tab: bool,
     /// ドライブ一覧内のプレターゲティングカーソル。Favoritesタブ経由でDrivesへ
     /// 移動した際、実ツリー側にいた頃のこの値を復元する（無効ならフォールバック）
     drive_cursor: Option<PathBuf>,
     /// お気に入りタブ内のプレターゲティングカーソル（[未整理, フォルダ...]の並び）
     favorite_cursor: Option<FavoriteSelection>,
-    /// true: カーソルは本体リストではなくFavoriteTabボタン自体にいる（tree_at_tabと同様）
-    favorite_at_tab: bool,
     /// MenuBar内のプレターゲティングカーソル（MENU_BAR_ORDER上のインデックス）
     menu_cursor: usize,
     /// 定義済みお気に入りフォルダ一覧のキャッシュ（DB操作の都度リフレッシュ）
@@ -344,6 +446,13 @@ pub struct NekoviewApp {
     scan_state: ScanState,
     tree_scan_pending: Option<TreeScanPending>,
     tree_reload_pending: Option<TreeReloadPending>,
+    /// ディレクトリツリーの自動追従の進行状態。手動トグル展開（tree_scan_pending）とは
+    /// 別レーンで動かし、互いのロード結果を潰さないようにする。
+    tree_autofocus: Option<TreeAutoFocus>,
+    /// 自動追従が発行した子ディレクトリロードの待ち状態（tree_scan_pendingとは独立）
+    tree_autofocus_pending: Option<TreeScanPending>,
+    /// 自動追従が完了した直後の1フレームだけtrueにし、対象ノード描画時にスクロールを行わせる
+    tree_autofocus_scroll_pending: bool,
     /// フレームごとに更新されるウィンドウサイズ（論理ピクセル）
     window_size: (u32, u32),
     /// ビューアウィンドウの位置・サイズスロット（viewer と共有して永続化）
@@ -447,6 +556,26 @@ pub struct NekoviewApp {
     filter_enabled: bool,
     filter_text: String,
     filtered_indices: Vec<usize>,
+    /// 検索結果の履歴（新しい実行が先頭。セッション内のみ保持）
+    search_history: Vec<SearchResultEntry>,
+    /// 履歴内で選択中の位置（Someなら中央ペインにその結果を表示）
+    search_selected: Option<usize>,
+    /// 検索条件フォームの入力状態
+    search_form: SearchFormState,
+    search_form_focus: SearchFormFocus,
+    search_form_focus_request: bool,
+    search_date_start_calendar: calendar_gui::CalendarGui,
+    search_date_end_calendar: calendar_gui::CalendarGui,
+    search_calendar_today: calendar_gui::LocalDate,
+    /// true: 検索実行中（完了までは多重実行不可、検索開始ボタンを無効化する）
+    search_running: bool,
+    /// 検索ワーカーからの結果受信チャンネル（実行中のみSome）
+    search_pending: Option<mpsc::Receiver<Vec<PathBuf>>>,
+    /// 実行中の検索を開始した時点のフォーム入力。
+    search_pending_form: Option<SearchFormState>,
+    /// Some(_) の間、中央グリッドは実ディレクトリではなく選択中の検索結果
+    /// （search_history[idx]）のフラット一覧を表示している。
+    viewing_search: Option<usize>,
     explorer_cols: usize,
     explorer_scroll_offset: f32,
     explorer_viewport_h: f32,
@@ -492,8 +621,11 @@ mod viewer_host;
 mod input;
 mod panels;
 mod favorites_ui;
+mod search_ui;
+mod search;
 mod status;
 mod nav_icons;
+mod calendar_gui;
 
 #[cfg(test)]
 mod glyph_audit;
@@ -501,6 +633,8 @@ mod glyph_audit;
 
 impl NekoviewApp {
     pub fn new(start_dir: PathBuf, config: AppConfig, viewer_slots: [Option<WindowSlot>; 4], sort_state: SortState, viewer_cfg: ViewerConfig, show_hidden: bool, translate_cfg: crate::translate::TranslateConfig, ctx: egui::Context) -> Self {
+        // timeのローカルオフセット取得は、Unixでは他スレッド起動前に行う必要がある。
+        let local_today = calendar_gui::LocalDate::today_local();
         let (cache_max, cache_min, file_cache_max) = crate::cache::resolve_cache_budgets(config.cache_total_mb);
         let ring_bounds = (config.anim_ring_min_frames, config.anim_ring_max_frames);
         let frame_hard_limit_bytes = config.anim_frame_hard_limit_mb * 1024 * 1024;
@@ -555,10 +689,8 @@ impl NekoviewApp {
             folder_pane_tab: FolderPaneTab::RealTree,
             focused_pane: FocusPane::TreeTab,
             tree_cursor: None,
-            tree_at_tab: false,
             drive_cursor: None,
             favorite_cursor: None,
-            favorite_at_tab: false,
             menu_cursor: 0,
             favorite_folders: Vec::new(),
             favorite_selected: FavoriteSelection::None,
@@ -611,6 +743,9 @@ impl NekoviewApp {
             scan_state: ScanState::Idle,
             tree_scan_pending,
             tree_reload_pending: None,
+            tree_autofocus: None,
+            tree_autofocus_pending: None,
+            tree_autofocus_scroll_pending: false,
             window_size: (1024, 768),
             viewer_slots,
             raw_image_files: std::collections::HashSet::new(),
@@ -661,6 +796,18 @@ impl NekoviewApp {
             filter_enabled: true,
             filter_text: String::new(),
             filtered_indices: Vec::new(),
+            search_history: Vec::new(),
+            search_selected: None,
+            search_form: SearchFormState::default(),
+            search_form_focus: SearchFormFocus::NamePattern,
+            search_form_focus_request: false,
+            search_date_start_calendar: calendar_gui::CalendarGui::new(local_today),
+            search_date_end_calendar: calendar_gui::CalendarGui::new(local_today),
+            search_calendar_today: local_today,
+            search_running: false,
+            search_pending: None,
+            search_pending_form: None,
+            viewing_search: None,
             explorer_cols: 1,
             explorer_scroll_offset: 0.0,
             explorer_viewport_h: 0.0,
@@ -702,6 +849,32 @@ impl NekoviewApp {
             self.show_hidden,
             &self.config,
             &self.translate_cfg,
+        );
+    }
+}
+
+#[cfg(test)]
+mod search_result_tests {
+    use super::{push_search_result, SearchResultEntry};
+
+    #[test]
+    fn push_search_result_inserts_newest_at_top() {
+        let mut history: Vec<SearchResultEntry> = Vec::new();
+
+        push_search_result(&mut history, SearchResultEntry { label: "1回目".to_string(), hits: vec![], form: Default::default() });
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].label, "1回目");
+
+        push_search_result(&mut history, SearchResultEntry { label: "2回目".to_string(), hits: vec![], form: Default::default() });
+        assert_eq!(history.len(), 2);
+        // 新しい実行が最上位、既存分は下に送られる
+        assert_eq!(history[0].label, "2回目");
+        assert_eq!(history[1].label, "1回目");
+
+        push_search_result(&mut history, SearchResultEntry { label: "3回目".to_string(), hits: vec![], form: Default::default() });
+        assert_eq!(
+            history.iter().map(|e| e.label.as_str()).collect::<Vec<_>>(),
+            vec!["3回目", "2回目", "1回目"],
         );
     }
 }

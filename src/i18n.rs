@@ -392,6 +392,121 @@ impl Lang {
         }
     }
 
+    pub fn folder_tab_search(self) -> &'static str {
+        match self {
+            Lang::Japanese => "検索",
+            Lang::English  => "Search",
+            Lang::Chinese  => "搜索",
+        }
+    }
+
+    pub fn search_start_button(self) -> &'static str {
+        match self {
+            Lang::Japanese => "検索開始",
+            Lang::English  => "Search",
+            Lang::Chinese  => "开始搜索",
+        }
+    }
+
+    pub fn search_clear_button(self) -> &'static str {
+        match self {
+            Lang::Japanese => "条件クリア",
+            Lang::English  => "Clear",
+            Lang::Chinese  => "清除条件",
+        }
+    }
+
+    pub fn search_base_dir_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "検索基底フォルダ",
+            Lang::English  => "Search base folder",
+            Lang::Chinese  => "搜索根目录",
+        }
+    }
+
+    pub fn search_name_pattern_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ファイル名",
+            Lang::English  => "Name",
+            Lang::Chinese  => "文件名",
+        }
+    }
+
+    pub fn search_include_subdirs_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "サブディレクトリを含む",
+            Lang::English  => "Include subdirectories",
+            Lang::Chinese  => "包含子目录",
+        }
+    }
+
+    pub fn search_size_min_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "サイズ以上(MB)",
+            Lang::English  => "Size ≥ (MB)",
+            Lang::Chinese  => "大小 ≥ (MB)",
+        }
+    }
+
+    pub fn search_size_max_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "サイズ以下(MB)",
+            Lang::English  => "Size ≤ (MB)",
+            Lang::Chinese  => "大小 ≤ (MB)",
+        }
+    }
+
+    pub fn search_date_after_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "日付以降(YYYY-MM-DD)",
+            Lang::English  => "After (YYYY-MM-DD)",
+            Lang::Chinese  => "此日期之后 (YYYY-MM-DD)",
+        }
+    }
+
+    pub fn search_date_before_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "日付以前(YYYY-MM-DD)",
+            Lang::English  => "Before (YYYY-MM-DD)",
+            Lang::Chinese  => "此日期之前 (YYYY-MM-DD)",
+        }
+    }
+
+    /// 検索結果リストの1行ラベル（検索ファイル名/パターンが表示できるだけの文字数で見える）。
+    pub fn search_result_label(self, pattern: &str, count: usize) -> String {
+        let name = if pattern.trim().is_empty() {
+            match self {
+                Lang::Japanese => "(全ファイル)".to_string(),
+                Lang::English  => "(all files)".to_string(),
+                Lang::Chinese  => "(所有文件)".to_string(),
+            }
+        } else {
+            pattern.to_string()
+        };
+        match self {
+            Lang::Japanese => format!("{name} ({count}件)"),
+            Lang::English  => format!("{name} ({count} items)"),
+            Lang::Chinese  => format!("{name} ({count}项)"),
+        }
+    }
+
+    /// 検索タブを開いていて、まだどの検索結果も選択していない間のアイテムペイン表示。
+    pub fn search_select_result_hint(self) -> &'static str {
+        match self {
+            Lang::Japanese => "検索結果を選択してください",
+            Lang::English  => "Select a search result",
+            Lang::Chinese  => "请选择搜索结果",
+        }
+    }
+
+    pub fn search_no_results_hint(self) -> &'static str {
+        match self {
+            Lang::Japanese => "検索結果はまだありません",
+            Lang::English  => "No search results yet",
+            Lang::Chinese  => "暂无搜索结果",
+        }
+    }
+
     pub fn favorite_unsorted_label(self) -> &'static str {
         match self {
             Lang::Japanese => "（未整理のお気に入り）",

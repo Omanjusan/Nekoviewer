@@ -54,7 +54,10 @@ impl NekoviewApp {
         // 設定ダイアログ（egui::Modal）は自動でキーボード入力をブロックしないため、開いている
         // 間はエクスプローラー本体のキー操作を止める。止めないと、ダイアログのキーアサイン
         // 変更キャプチャ中に裏でF2(Rename)等が同時に反応し、キャプチャ側の入力検出と競合する。
-        if !self.settings_is_open() {
+        if !self.settings_is_open()
+            && !self.search_date_start_calendar.is_open()
+            && !self.search_date_end_calendar.is_open()
+        {
             self.handle_explorer_keys(&ctx);
         }
         // egui標準のTab/矢印キーによるネイティブなウィジェットフォーカス移動
@@ -68,11 +71,22 @@ impl NekoviewApp {
         // 自前カーソル用の強制フォーカス解除を止める。解除したままだと入力した
         // 次フレームで即座にフォーカスが外れ、テキスト入力が一切通らなくなる。
         if self.focused_pane != FocusPane::Filter
+            && self.focused_pane != FocusPane::SearchForm
             && !self.settings_is_open()
             && self.favorite_dialog.is_none()
             && self.favorite_detail_dialog.is_none()
         {
             ctx.memory_mut(|mem| mem.stop_text_input());
+        }
+        // 矢印キーによるネイティブなwidget間移動（Memory::focus_direction）は常時無効化する。
+        // Filter/SearchForm中のテキスト編集（左右キーでのカーソル内移動等）はTextEditが
+        // vertical/horizontal_arrowsで自分のイベントとして先取りするため影響しない一方、
+        // 一度何らかの理由でテキスト欄以外（ボタン等）にネイティブフォーカスが渡ってしまうと、
+        // 以後は誰も event_filter で握っていないためこの move_focus が無いと上下キーで
+        // 次々に別ウィジェットへ渡り歩いてしまう（実測: focused_pane は SearchForm のまま
+        // 動かず、egui内部のfocused widget idだけが上下キー毎に変わり続けていた）。
+        if !self.settings_is_open() {
+            ctx.memory_mut(|mem| mem.move_focus(egui::FocusDirection::None));
         }
         // release ビルドは ROOT 内フローティングウィンドウのため ui() で描画する。
         // debug ビルドの独立 deferred viewport は logic() 側で駆動する（上記参照）。
@@ -214,24 +228,50 @@ impl NekoviewApp {
         });
     }
 
+    /// 左ペインのタブを切り替える唯一の入口。folder_pane_tab の変更は必ずこの関数を通し、
+    /// 「今のタブ以外の横断表示（お気に入り一覧・検索結果一覧）は必ず終了する」ことを保証する。
+    /// 個別のクリック/フォーカスハンドラ側で exit_favorite_view/exit_search_view を
+    /// 書き忘れる事故を構造的に防ぐ（背後の非同期スキャンが横断表示を汚染したバグの再発防止）。
+    pub(super) fn switch_folder_tab(&mut self, tab: FolderPaneTab) {
+        self.folder_pane_tab = tab;
+        // 検索タブへの初回入場時のみ、その時点のPWDを検索基点の初期値にする。
+        // 既にユーザーがツリー/ドライブで基点を選んでいれば（Some）上書きしない。
+        if tab == FolderPaneTab::Search && self.search_form.base_dir.is_none() {
+            self.search_form.base_dir = Some(self.current_dir.clone());
+        }
+        if tab != FolderPaneTab::Favorites {
+            self.exit_favorite_view();
+        }
+        if tab != FolderPaneTab::Search {
+            self.exit_search_view();
+        }
+    }
+
     fn draw_folder_panel(&mut self, ui: &mut egui::Ui) {
+        // タブボタンのカーソルリングは FocusPane::FolderTabBar にいる間だけ表示する
+        // （タブそのものが独立したフォーカス位置。左右キーでの切替は
+        // handle_folder_tab_bar_keys が担う）。
+        let tab_bar_focused = self.focused_pane == FocusPane::FolderTabBar;
         ui.horizontal(|ui| {
-            let fav_focused = self.focused_pane == FocusPane::FavoriteTab && self.favorite_at_tab;
             let fav_resp = ui.selectable_label(self.folder_pane_tab == FolderPaneTab::Favorites, i18n::t().folder_tab_favorites());
-            if fav_focused { draw_cursor_ring(ui, fav_resp.rect); }
+            if tab_bar_focused && self.folder_pane_tab == FolderPaneTab::Favorites { draw_cursor_ring(ui, fav_resp.rect); }
             if fav_resp.clicked() {
-                self.folder_pane_tab = FolderPaneTab::Favorites;
-                self.favorite_at_tab = false;
+                self.switch_folder_tab(FolderPaneTab::Favorites);
                 self.focused_pane = FocusPane::FavoriteTab;
             }
-            let real_focused = self.focused_pane == FocusPane::TreeTab && self.tree_at_tab;
             let real_resp = ui.selectable_label(self.folder_pane_tab == FolderPaneTab::RealTree, i18n::t().folder_tab_real());
-            if real_focused { draw_cursor_ring(ui, real_resp.rect); }
+            if tab_bar_focused && self.folder_pane_tab == FolderPaneTab::RealTree { draw_cursor_ring(ui, real_resp.rect); }
             if real_resp.clicked() {
-                self.folder_pane_tab = FolderPaneTab::RealTree;
+                self.switch_folder_tab(FolderPaneTab::RealTree);
                 self.focused_pane = FocusPane::TreeTab;
-                self.tree_at_tab = false;
-                self.exit_favorite_view();
+            }
+            let search_resp = ui.selectable_label(self.folder_pane_tab == FolderPaneTab::Search, i18n::t().folder_tab_search());
+            if tab_bar_focused && self.folder_pane_tab == FolderPaneTab::Search { draw_cursor_ring(ui, search_resp.rect); }
+            if search_resp.clicked() {
+                self.switch_folder_tab(FolderPaneTab::Search);
+                self.focused_pane = FocusPane::SearchForm;
+                self.search_form_focus = SearchFormFocus::NamePattern;
+                self.search_form_focus_request = true;
             }
         });
         ui.separator();
@@ -239,6 +279,7 @@ impl NekoviewApp {
         match self.folder_pane_tab {
             FolderPaneTab::RealTree => self.draw_real_tree_panel(ui),
             FolderPaneTab::Favorites => self.draw_favorites_pane(ui),
+            FolderPaneTab::Search => self.draw_search_left_pane(ui),
         }
     }
 
@@ -250,6 +291,9 @@ impl NekoviewApp {
 
         // ── 上部: ディレクトリツリー ──
         let mut tree_action = TreeAction::None;
+        // 自動追従が現在地までの展開を完了した直後の1フレームだけ、対象ノードへスクロールする。
+        // 消費できたら親側のフラグも下ろす（ノードがフィルタ等でまだ描画されなければ次フレームに持ち越す）。
+        let mut scroll_pending = self.tree_autofocus_scroll_pending;
         egui::ScrollArea::both()
             .id_salt("folder_scroll")
             .max_height(top_h)
@@ -262,13 +306,17 @@ impl NekoviewApp {
                     0,
                     &self.viewing_dir,
                     &self.tree_cursor,
-                    self.focused_pane == FocusPane::TreeTab && !self.tree_at_tab,
+                    self.focused_pane == FocusPane::TreeTab,
                     &self.tree_expanded,
                     &self.tree_children,
                     self.show_hidden,
                     &mut tree_action,
+                    &mut scroll_pending,
                 );
             });
+        if !scroll_pending {
+            self.tree_autofocus_scroll_pending = false;
+        }
 
         match tree_action {
             TreeAction::None => {}
@@ -291,9 +339,14 @@ impl NekoviewApp {
             }
             TreeAction::Navigate(path) => {
                 self.focused_pane = FocusPane::TreeTab;
-                self.tree_at_tab = false;
                 self.tree_cursor = Some(path.clone());
-                self.navigate_to(path);
+                // 検索タブ内のツリーは検索条件の基点ディレクトリ選択ツールであり、
+                // 実ナビゲーション（current_dir変更・実スキャン）は行わない。
+                if self.folder_pane_tab == FolderPaneTab::Search {
+                    self.search_form.base_dir = Some(path);
+                } else {
+                    self.navigate_to(path);
+                }
             }
         }
 
@@ -324,42 +377,83 @@ impl NekoviewApp {
                     if resp.clicked() {
                         self.focused_pane = FocusPane::Drives;
                         self.drive_cursor = Some(path.clone());
-                        self.navigate_to_drive(path);
+                        if self.folder_pane_tab == FolderPaneTab::Search {
+                            self.set_search_base_drive(path);
+                        } else {
+                            self.navigate_to_drive(path);
+                        }
                     }
                 }
             });
     }
 
     fn draw_central_panel(&mut self, ui: &mut egui::Ui) {
-        // お気に入りタブ中は実ディレクトリ由来の表示（パス・サマリー）を出さない。
+        // 検索タブ選択中のみアイテムペインを縦割りにする（左: ツリー+ドライブ固定幅、右: 従来の中身）。
+        // [Phase A] レイアウトのモック確認用: ツリー/ドライブは実ツリーと表示・状態を共有しており、
+        // クリック時の動作もまだ実ナビゲーションのまま（検索基点への分離はPhase Bで対応）。
+        if self.folder_pane_tab == FolderPaneTab::Search {
+            const TREE_PANE_WIDTH: f32 = 200.0;
+            // ui.horizontal + ui.vertical のネストだと子の available_height() が
+            // 正しく伝播しない（egui挙動）ため、両ペインとも allocate_ui_with_layout で
+            // 明示的にサイズを渡す（draw_real_tree_panel と同じ方式）。
+            let avail_h = ui.available_height();
+            ui.horizontal(|ui| {
+                ui.allocate_ui_with_layout(
+                    egui::vec2(TREE_PANE_WIDTH, avail_h),
+                    egui::Layout::top_down(egui::Align::Min),
+                    |ui| self.draw_real_tree_panel(ui),
+                );
+                ui.separator();
+                let remain_w = ui.available_width();
+                ui.allocate_ui_with_layout(
+                    egui::vec2(remain_w, avail_h),
+                    egui::Layout::top_down(egui::Align::Min),
+                    |ui| self.draw_central_panel_content(ui),
+                );
+            });
+            return;
+        }
+        self.draw_central_panel_content(ui);
+    }
+
+    fn draw_central_panel_content(&mut self, ui: &mut egui::Ui) {
+        // お気に入り/検索タブ中は実ディレクトリ由来の表示（パス・サマリー）を出さない。
         // cd_summary はワーカーが非同期で書き込むため、状態クリアではなく描画側でゲートする。
         let in_favorites_ui = self.folder_pane_tab == FolderPaneTab::Favorites
             || self.viewing_favorites.is_some();
+        let in_search_ui = self.folder_pane_tab == FolderPaneTab::Search
+            || self.viewing_search.is_some();
 
-        match self.viewing_favorites {
-            Some(FavoriteSelection::Unsorted) => {
-                ui.label(i18n::t().favorite_view_header_unsorted());
-            }
-            Some(FavoriteSelection::Folder(id)) => {
-                let name = self
-                    .favorite_folders
-                    .iter()
-                    .find(|f| f.id == id)
-                    .map(|f| f.name.clone())
-                    .unwrap_or_default();
-                ui.label(i18n::t().favorite_view_header_folder(&name));
-            }
-            _ if in_favorites_ui => {
-                ui.label("");
-            }
-            _ => {
-                ui.label(self.current_dir.display().to_string());
+        if let Some(idx) = self.viewing_search {
+            let label = self.search_history.get(idx).map(|e| e.label.clone()).unwrap_or_default();
+            ui.label(label);
+        } else {
+            match self.viewing_favorites {
+                Some(FavoriteSelection::Unsorted) => {
+                    ui.label(i18n::t().favorite_view_header_unsorted());
+                }
+                Some(FavoriteSelection::Folder(id)) => {
+                    let name = self
+                        .favorite_folders
+                        .iter()
+                        .find(|f| f.id == id)
+                        .map(|f| f.name.clone())
+                        .unwrap_or_default();
+                    ui.label(i18n::t().favorite_view_header_folder(&name));
+                }
+                _ if in_favorites_ui || in_search_ui => {
+                    ui.label("");
+                }
+                _ => {
+                    ui.label(self.current_dir.display().to_string());
+                }
             }
         }
 
         // CD/LS状態: ディレクトリのサマリーを表示
         if let Some((cd_path, saved, total)) = &self.cd_summary
             && !in_favorites_ui
+            && !in_search_ui
         {
             let dir_name = cd_path
                 .file_name()
@@ -468,8 +562,15 @@ impl NekoviewApp {
     /// draw_archive_gridと同一ロジックで再現したもの。キーボードカーソルの移動対象になる。
     /// draw_archive_grid側の並び替え条件を変えたら、ここも同じように変えること。
     pub(super) fn grid_entries(&self) -> Vec<GridEntry> {
+        // 検索タブを開いた直後、まだ検索結果を選択していない間はアイテムペインを全クリアする
+        // （draw_archive_grid側の早期リターンと対にする）。
+        if self.folder_pane_tab == FolderPaneTab::Search && self.viewing_search.is_none() {
+            return Vec::new();
+        }
         let mut out = Vec::new();
-        if self.viewing_favorites.is_none() {
+        // 検索結果は複数ディレクトリを横断した平坦な一覧という契約のため、お気に入り横断表示と
+        // 同様に「↑」・サブフォルダは一切出さない（階層概念を持ち込まない）。
+        if self.viewing_favorites.is_none() && self.viewing_search.is_none() {
             let up_target = if self.current_dir == self.tree_root {
                 None
             } else {
@@ -502,6 +603,22 @@ impl NekoviewApp {
     }
 
     fn draw_archive_grid(&mut self, ui: &mut egui::Ui) {
+        // 検索タブを開いた瞬間、まだどの検索結果も選択していない間は実ディレクトリの中身が
+        // 一瞬見えてしまう（archivesは前の表示のまま残っている）。理想は切替と同時に
+        // アイテムペインが全クリアされることなので、ここで早期リターンする。
+        if self.folder_pane_tab == FolderPaneTab::Search && self.viewing_search.is_none() {
+            let grid_focused = self.focused_pane == FocusPane::Grid;
+            ui.centered_and_justified(|ui| {
+                let resp = ui.weak(i18n::t().search_select_result_hint());
+                // Gridにフォーカスがある間は視覚的な手がかりが他に何もないため、
+                // ヒントテキスト自体にカーソルリングを出す（往復に見えるちらつき対策）。
+                if grid_focused {
+                    draw_cursor_ring(ui, resp.rect);
+                }
+            });
+            return;
+        }
+
         let cell_h = self.config.thumb_size as f32;
         let cell_w = (cell_h / std::f32::consts::SQRT_2).round();
         const GAP: f32 = 8.0;
@@ -512,6 +629,9 @@ impl NekoviewApp {
         self.explorer_cols = cols;
 
         let output = egui::ScrollArea::vertical()
+                // アイテム上または空白を左ドラッグして一覧をスクロールできるようにする。
+                // セル側はSense::click()のままなので、短いクリックの選択/開く操作は維持される。
+                .scroll_source(egui::scroll_area::ScrollSource::ALL)
                 .auto_shrink([false, false])
                 .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
                 .vertical_scroll_offset(self.explorer_scroll_offset)
@@ -525,8 +645,8 @@ impl NekoviewApp {
                     let grid_focused = self.focused_pane == FocusPane::Grid;
 
                     // 並び順: ↑（先頭・非ソート・ルートで非表示）→ フォルダ群 → 通常のarchivesグリッド。
-                    // お気に入り一覧表示中は実フォルダのナビゲーション概念が無いため出さない。
-                    if self.viewing_favorites.is_none() {
+                    // お気に入り/検索結果の横断一覧表示中は実フォルダのナビゲーション概念が無いため出さない。
+                    if self.viewing_favorites.is_none() && self.viewing_search.is_none() {
                         // ツリー側のルート（ドライブ/ホーム/ネットワーク共有の選択に連動）を天井にする。
                         // mount::up_target 単体だと「ホーム」ドライブのような疑似ルートを知らず、
                         // ホーム配下を素通りしてツリーが表示しない領域まで昇れてしまうため。
@@ -921,6 +1041,7 @@ fn show_tree_node(
     tree_children: &HashMap<PathBuf, Vec<PathBuf>>,
     show_hidden: bool,
     action: &mut TreeAction,
+    scroll_pending: &mut bool,
 ) {
     if !matches!(action, TreeAction::None) {
         return;
@@ -969,6 +1090,13 @@ fn show_tree_node(
         if r.clicked() && matches!(*action, TreeAction::None) {
             *action = TreeAction::Navigate(path.clone());
         }
+        // 自動追従の展開完了直後、現在地ノードが実際に描画されたこのフレームでスクロールする。
+        // align=None は「はみ出ている分だけ最小スクロールで見える位置に持ってくる」動作なので、
+        // 現在地が可視範囲より上ならその分だけ上へ、下ならその分だけ下へ寄る。
+        if is_current && *scroll_pending {
+            r.scroll_to_me(None);
+            *scroll_pending = false;
+        }
     });
 
     if is_expanded {
@@ -995,6 +1123,7 @@ fn show_tree_node(
                     tree_children,
                     show_hidden,
                     action,
+                    scroll_pending,
                 );
             }
         }

@@ -17,6 +17,10 @@ finish-args:
   - --filesystem=/media:ro
   - --filesystem=/run/media:ro
   - --filesystem=xdg-run/gvfs:ro
+  # サンドボックス内では XCURSOR_THEME が未設定になり、"default" テーマ名の解決に失敗して
+  # winit の CSD フォールバック（sctk-adwaita）のリサイズカーソル判定が機能しなくなるため固定指定。
+  # Platform ランタイムに同梱済みの Adwaita を明示することで、ホストのテーマ設定に依存せず解決させる。
+  - --env=XCURSOR_THEME=Adwaita
 
 modules:
   - name: nekoviewer

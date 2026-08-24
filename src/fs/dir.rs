@@ -78,6 +78,28 @@ pub fn spawn_scan_subdirs_many(
     rx
 }
 
+/// ファイル名がフィルタ/検索条件にマッチするか判定する（フィルタ機能・検索機能で共有）。
+/// glob特殊文字（*, ?, [）を含む場合はglobパターンとして、それ以外は小文字部分一致として扱う
+/// （globとして不正な場合も部分一致にフォールバックする）。pattern_text が空（trim後）なら
+/// 常にマッチする。
+pub fn name_matches(pattern_text: &str, filename: &str) -> bool {
+    let text = pattern_text.trim();
+    if text.is_empty() {
+        return true;
+    }
+    if text.contains(['*', '?', '[']) {
+        if let Ok(pat) = glob::Pattern::new(text) {
+            let match_opts = glob::MatchOptions {
+                case_sensitive: false,
+                require_literal_separator: false,
+                require_literal_leading_dot: false,
+            };
+            return pat.matches_with(filename, match_opts);
+        }
+    }
+    filename.to_lowercase().contains(&text.to_lowercase())
+}
+
 /// パスが対応アーカイブのファイル名サフィックスを持つか。
 /// `.tar.gz` のような二重拡張子を正しく扱うため `extension()` ではなくファイル名末尾で判定する。
 /// 7z/tar は対応 feature が有効なときのみ列挙対象に含める。

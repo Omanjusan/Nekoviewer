@@ -15,12 +15,13 @@ A single-binary desktop viewer for comfortably reading manga archives in ZIP / C
 - Linux / Windows support
 - Direct filesystem access — no external database or service required
 - Lightweight — thumbnail cache reduces redraw cost; Rust eliminates memory leaks and keeps it fast
-- Single binary — no installation needed. Just the executable and its config file. Running it from a dedicated folder is recommended, especially when keeping the cache alongside the binary.
-- No uninstaller needed — no registry writes. Delete the EXE and its auto-generated subfolders and you're clean.
+- No uninstaller needed — no registry writes. Delete the EXE and the `nekoview` folder in your user directory for a clean removal.
 - Network share (SMB) support — cache is stored locally, so it keeps working even with unusual network paths.
 - Animated GIF, WebP, and AVIF playback — ring-buffer playback supports a wide range of file sizes, even large animations.
 - Favorite file support — a single flag can apply to many favorite folders at once.
+- Limited search — search files that already have cached thumbnails.
 - Per-archive spread mode setting — saved automatically and restored on reopen.
+- Focused purely on viewing, without file-manager operations such as move, delete, or copy, reducing the risk of accidental changes.
 - Multilingual support (ja/en/cn)
 - No ads, no telemetry
 

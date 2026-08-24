@@ -1,0 +1,91 @@
+name: (reusable) Build Linux AppImage
+
+on:
+  workflow_call:
+    inputs:
+      retention-days:
+        type: number
+        default: 30
+
+env:
+  ZIG_VERSION: "0.13.0"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-gnu
+
+      - name: Install build dependencies
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends nasm cmake ninja-build pkg-config python3 python3-pip file
+
+      - name: Ensure meson>=1.0
+        # apt標準のmesonがdav1d最新masterのビルド要求(>=0.54.0)を満たさない環境があるため固定する。
+        # meson/ninjaはビルドツールであり生成物には含まれないため、glibc ABIターゲットには影響しない。
+        run: |
+          pip3 install --user "meson>=1.0"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Cache dav1d (静的ビルド)
+        uses: actions/cache@v4
+        id: dav1d-cache
+        with:
+          path: ~/dav1d-static
+          key: dav1d-glibc-static-v1
+
+      - name: Build dav1d (静的)
+        if: steps.dav1d-cache.outputs.cache-hit != 'true'
+        run: |
+          BUILD_DIR=$(mktemp -d)
+          git clone --depth 1 https://code.videolan.org/videolan/dav1d.git "$BUILD_DIR/dav1d"
+          meson setup "$BUILD_DIR/build" "$BUILD_DIR/dav1d" \
+            --default-library=static --buildtype=release --libdir=lib --prefix="$HOME/dav1d-static"
+          ninja -C "$BUILD_DIR/build"
+          ninja -C "$BUILD_DIR/build" install
+
+      - name: Cache zig
+        uses: actions/cache@v4
+        id: zig-cache
+        with:
+          path: ~/.local/zig
+          key: zig-${{ env.ZIG_VERSION }}-linux-x86_64
+
+      - name: Install zig
+        if: steps.zig-cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ~/.local/zig
+          curl -L -o /tmp/zig.tar.xz "https://ziglang.org/download/${ZIG_VERSION}/zig-linux-x86_64-${ZIG_VERSION}.tar.xz"
+          tar -xJf /tmp/zig.tar.xz -C ~/.local/zig --strip-components=1
+
+      - name: Install cargo-zigbuild
+        run: cargo install cargo-zigbuild --locked
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-appimage-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-appimage-cargo-
+
+      - name: Build (glibc 2.17 ABI固定) + AppImage生成
+        run: |
+          export PATH="$HOME/.local/zig:$PATH"
+          export PKG_CONFIG_PATH="$HOME/dav1d-static/lib/pkgconfig"
+          cargo zigbuild --release --target x86_64-unknown-linux-gnu.2.17
+          ./packaging/appimage/build-appimage.sh
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nekoviewer-linux-x86_64-appimage
+          path: target/appimage/Nekoviewer-*-x86_64.AppImage
+          retention-days: ${{ inputs.retention-days }}

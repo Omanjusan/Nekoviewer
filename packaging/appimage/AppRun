@@ -1,0 +1,8 @@
+#!/bin/sh
+# AppImage実行時のエントリポイント。
+# cargo-zigbuild で glibc 2.17 ABI に固定した通常の動的リンクバイナリなので、
+# glibc自体はホストのものにそのまま委ねる（同梱しない）。X11/Wayland/OpenGL/Vulkan等も
+# 実行時dlopenで解決される設計（xkbcommon-dl/ash/khronos-egl等）のため、AppRunでの
+# LD_LIBRARY_PATH等の細工は不要。
+HERE="$(dirname "$(readlink -f "${0}")")"
+exec "${HERE}/usr/bin/nekoviewer" "$@"

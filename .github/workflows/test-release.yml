@@ -1,0 +1,126 @@
+name: Test Release
+
+# develop等どのブランチからでも手動実行できる実験用リリース。
+# Win/Flatpak/AppImageをそれぞれ選んでビルドし、1つでも成功すればdraft+prereleaseの
+# 「test-<日時>」タグでリリースを作成する（正式なv*タグのリリースフローとは別経路）。
+on:
+  workflow_dispatch:
+    inputs:
+      build_windows:
+        description: "Windows版をビルドする"
+        type: boolean
+        default: true
+      build_flatpak:
+        description: "Flatpak版をビルドする"
+        type: boolean
+        default: true
+      build_appimage:
+        description: "AppImage版をビルドする"
+        type: boolean
+        default: true
+
+jobs:
+  build-windows:
+    if: ${{ inputs.build_windows }}
+    uses: ./.github/workflows/_build-windows.yml
+    with:
+      retention-days: 7
+
+  build-linux-flatpak:
+    if: ${{ inputs.build_flatpak }}
+    uses: ./.github/workflows/_build-linux-flatpak.yml
+    with:
+      retention-days: 7
+
+  build-linux-appimage:
+    if: ${{ inputs.build_appimage }}
+    uses: ./.github/workflows/_build-linux-appimage.yml
+    with:
+      retention-days: 7
+
+  test-release:
+    needs: [build-windows, build-linux-flatpak, build-linux-appimage]
+    if: always()
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download Windows artifact
+        if: needs.build-windows.result == 'success'
+        uses: actions/download-artifact@v4
+        with:
+          name: nekoviewer-windows-x64
+
+      - name: Download Flatpak artifact
+        if: needs.build-linux-flatpak.result == 'success'
+        uses: actions/download-artifact@v4
+        with:
+          name: nekoviewer-linux-x86_64-flatpak
+
+      - name: Download AppImage artifact
+        if: needs.build-linux-appimage.result == 'success'
+        uses: actions/download-artifact@v4
+        with:
+          name: nekoviewer-linux-x86_64-appimage
+
+      - name: Determine if anything succeeded
+        id: check
+        run: |
+          ANY=false
+          [ "${{ needs.build-windows.result }}" = "success" ] && ANY=true || true
+          [ "${{ needs.build-linux-flatpak.result }}" = "success" ] && ANY=true || true
+          [ "${{ needs.build-linux-appimage.result }}" = "success" ] && ANY=true || true
+          echo "any=$ANY" >> "$GITHUB_OUTPUT"
+
+      - name: Create draft test release
+        if: steps.check.outputs.any == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # test-releaseジョブはactions/checkoutしていないためワークスペースがgitリポジトリで
+          # なく、ghコマンドがリポジトリを自動検出できない。GH_REPOで明示する。
+          GH_REPO: ${{ github.repository }}
+        run: |
+          TAG="test-$(date -u +%Y%m%d-%H%M)"
+          SHORT_SHA="${GITHUB_SHA:0:7}"
+          {
+            echo "テストビルド（実験用・非正式リリース）"
+            echo ""
+            echo "- ブランチ: ${GITHUB_REF_NAME}"
+            echo "- コミット: ${SHORT_SHA}"
+            echo "- Windows: ${{ needs.build-windows.result }}"
+            echo "- Flatpak: ${{ needs.build-linux-flatpak.result }}"
+            echo "- AppImage: ${{ needs.build-linux-appimage.result }}"
+          } > release_notes.md
+
+          # 正式リリースと見分けが付くよう、アップロード直前にTest_プレフィックスを付けてリネームする
+          # （build-appimage.sh・Flatpakのbundle名自体は本筋リリースと共用のため変更しない）。
+          FILES=()
+          if [ -f nekoviewer.exe ]; then
+            mv nekoviewer.exe Test_Nekoviewer.exe
+            FILES+=(Test_Nekoviewer.exe)
+          fi
+          if [ -f Nekoviewer-x86_64.flatpak ]; then
+            mv Nekoviewer-x86_64.flatpak Test_Nekoviewer-x86_64.flatpak
+            FILES+=(Test_Nekoviewer-x86_64.flatpak)
+          fi
+          APPIMAGE_FILE=$(find . -maxdepth 4 -iname "Nekoviewer-*-x86_64.AppImage" | head -1)
+          if [ -n "$APPIMAGE_FILE" ]; then
+            APPIMAGE_NEW_NAME="Test_$(basename "$APPIMAGE_FILE")"
+            mv "$APPIMAGE_FILE" "$APPIMAGE_NEW_NAME"
+            FILES+=("$APPIMAGE_NEW_NAME")
+          fi
+
+          gh release create "$TAG" \
+            --target "$GITHUB_SHA" \
+            --title "Test build $TAG (${GITHUB_REF_NAME} @ ${SHORT_SHA})" \
+            --notes-file release_notes.md \
+            --draft --prerelease \
+            "${FILES[@]}"
+
+      - name: No successful build
+        if: steps.check.outputs.any != 'true'
+        run: |
+          echo "::error::選択したジョブが全て失敗/スキップされたため、テストリリースは作成しませんでした"
+          exit 1

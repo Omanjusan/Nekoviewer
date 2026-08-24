@@ -13,12 +13,108 @@ impl NekoviewApp {
     pub(super) fn navigate_to(&mut self, path: PathBuf) {
         self.viewing_favorites = None;
         self.current_dir = path.clone();
-        self.viewing_dir = Some(path);
+        self.viewing_dir = Some(path.clone());
         // サマリーはスキャン完了時（poll_scan）にスキャン結果から起動する
         self.cd_summary = None;
         self.cd_summary_rx = None;
         self.start_scan();
+        self.start_tree_autofocus(path);
         self.persist_state();
+    }
+
+    /// ディレクトリツリー側を現在地まで自動展開させる。root(tree_root) から target までの
+    /// path component 列を計算し、1階層ずつ逐次展開する TreeAutoFocus 状態をセットする。
+    /// target が tree_root 配下でない場合（別ドライブ切替直後の競合等）は何もしない。
+    pub(super) fn start_tree_autofocus(&mut self, target: PathBuf) {
+        self.tree_autofocus_pending = None;
+        let Ok(rel) = target.strip_prefix(&self.tree_root) else {
+            self.tree_autofocus = None;
+            return;
+        };
+        let remaining: std::collections::VecDeque<std::ffi::OsString> = rel
+            .components()
+            .filter_map(|c| match c {
+                std::path::Component::Normal(s) => Some(s.to_os_string()),
+                _ => None,
+            })
+            .collect();
+        if remaining.is_empty() {
+            // target 自体が tree_root（ルート直下を見ている）
+            self.tree_cursor = Some(target);
+            self.tree_autofocus = None;
+            self.tree_autofocus_scroll_pending = true;
+            return;
+        }
+        self.tree_autofocus = Some(TreeAutoFocus {
+            target,
+            remaining,
+            current: self.tree_root.clone(),
+        });
+    }
+
+    /// フレームごとにツリー自動追従を1階層分だけ進める。
+    /// 兄弟ディレクトリの中身には踏み込まず、常に一本道の経路だけを辿る。
+    pub(super) fn poll_tree_autofocus(&mut self) {
+        // 自動追従専用レーンのロード結果を受信する
+        if let Some(pending) = &self.tree_autofocus_pending {
+            match pending.rx.try_recv() {
+                Ok(subdirs) => {
+                    self.tree_children.insert(pending.path.clone(), subdirs);
+                    self.tree_autofocus_pending = None;
+                }
+                Err(_) => return, // まだロード中
+            }
+        }
+
+        // tree_children に既にキャッシュ済みの階層は非同期を挟まず同一フレーム内で
+        // 連鎖処理する（イベント駆動の repaint に頼らず一気に進める。ロードが要る
+        // 階層に当たった時だけ抜けて次フレームへ持ち越す）。
+        loop {
+            let Some(af) = self.tree_autofocus.as_ref() else { return };
+
+            let Some(component) = af.remaining.front().cloned() else {
+                // 全階層展開完了 → カーソルを合わせて終了
+                let target = af.target.clone();
+                self.tree_cursor = Some(target);
+                self.tree_autofocus = None;
+                self.tree_autofocus_scroll_pending = true;
+                return;
+            };
+
+            let current = af.current.clone();
+            let found = match self.tree_children.get(&current) {
+                Some(children) => {
+                    // direct child directory の中から component 名と一致するものだけを探す
+                    // （兄弟ディレクトリの内部へは踏み込まない）
+                    children.iter().find(|c| c.file_name() == Some(component.as_os_str())).cloned()
+                }
+                None => {
+                    // 未ロードならこの階層だけロードして次フレームへ持ち越す
+                    self.tree_autofocus_pending = Some(TreeScanPending {
+                        path: current.clone(),
+                        rx: dir::spawn_scan_subdirs(current, {
+                            let c = self.egui_ctx.clone();
+                            move || c.request_repaint()
+                        }),
+                    });
+                    return;
+                }
+            };
+
+            match found {
+                Some(child) => {
+                    self.tree_expanded.insert(current);
+                    let af = self.tree_autofocus.as_mut().expect("checked above");
+                    af.remaining.pop_front();
+                    af.current = child;
+                }
+                None => {
+                    // 対象パスがツリー上に存在しない（隠しディレクトリ等）→ ここまでで打ち切り
+                    self.tree_autofocus = None;
+                    return;
+                }
+            }
+        }
     }
 
     /// 指定ドライブへ切り替える（ドライブ一覧のクリック・キーボードEnter共通処理）。
@@ -30,6 +126,8 @@ impl NekoviewApp {
         self.tree_expanded.clear();
         self.tree_children.clear();
         self.tree_cursor = None;
+        self.tree_autofocus = None;
+        self.tree_autofocus_pending = None;
         self.viewing_dir = None;
         self.cd_summary = None;
         self.cd_summary_rx = None;
@@ -156,7 +254,8 @@ impl NekoviewApp {
         // DBは既存の場合のみ開く。新規作成は対象ファイルの存在が確定してから
         // （poll_scan）行い、通過しただけのフォルダに空DBを作らない。
         self.cache_neko_dir = neko_dir::neko_dir_for(&self.current_dir, &self.config);
-        self.cache_db = self.cache_neko_dir.as_deref().and_then(neko_dir::open_cache_db_if_exists);
+        self.cache_db = self.cache_neko_dir.as_deref()
+            .and_then(|p| neko_dir::open_cache_db_if_exists(p, &self.current_dir));
         self.thumbnails.clear();
         self.thumb_pending.clear();
         self.pending_loads.lock().unwrap().clear();
@@ -168,6 +267,19 @@ impl NekoviewApp {
 
     /// フレームごとにスキャン結果をポーリングして反映する
     pub(super) fn poll_scan(&mut self) {
+        // お気に入り/検索結果の横断表示中はarchives/subdirsを差し替えているため、
+        // 入室時に開始していた実ディレクトリの背後スキャン結果が遅れて届くと
+        // 無条件の上書きで表示が壊れる（検索完了直後にサブフォルダが復活する等）。
+        // 表示を抜けるとき（exit_favorite_view/exit_search_view、switch_folder_tab経由で
+        // 必ず呼ばれる）に改めてstart_scan()されるため、ここでは単に無視すればよい。
+        // folder_pane_tab とOptionフラグの二重チェック（タブ状態を唯一の一次判定にしつつ、
+        // フラグの取りこぼしがあっても安全側に倒す）。
+        if self.folder_pane_tab != FolderPaneTab::RealTree
+            || self.viewing_favorites.is_some()
+            || self.viewing_search.is_some()
+        {
+            return;
+        }
         let result = match self.scan_state {
             ScanState::Loading { ref dir, ref rx, .. } => {
                 // 移動先が変わっていたら古い結果を捨てる
@@ -183,7 +295,8 @@ impl NekoviewApp {
         if let Some((subdirs, archives, raw_images)) = result {
             // 対象ファイルが存在するフォルダに限りDBを新規作成する
             if self.cache_db.is_none() && !(archives.is_empty() && raw_images.is_empty()) {
-                self.cache_db = self.cache_neko_dir.as_deref().and_then(neko_dir::open_cache_db);
+                self.cache_db = self.cache_neko_dir.as_deref()
+                    .and_then(|p| neko_dir::open_cache_db(p, &self.current_dir));
             }
             self.subdirs = subdirs;
             self.archives = archives.into_iter()
@@ -326,27 +439,11 @@ impl NekoviewApp {
     /// 表示・選択・キー操作の対象となる `filtered_indices` を作り直す。
     pub(super) fn recompute_filter(&mut self) {
         if self.filter_enabled && !self.filter_text.trim().is_empty() {
-            let text = self.filter_text.trim();
-            // *, ?, [...] / [!...] が含まれる場合のみ glob パターンとして扱う。
-            // 含まれない場合や glob として不正な場合は従来通りの部分一致にフォールバックする。
-            let pattern = if text.contains(['*', '?', '[']) {
-                glob::Pattern::new(text).ok()
-            } else {
-                None
-            };
-            let match_opts = glob::MatchOptions {
-                case_sensitive: false,
-                require_literal_separator: false,
-                require_literal_leading_dot: false,
-            };
-            let needle = text.to_lowercase();
+            let text = self.filter_text.clone();
             self.filtered_indices = self.archives.iter().enumerate()
                 .filter(|(_, p)| {
                     let Some(name) = p.file_name().and_then(|n| n.to_str()) else { return false };
-                    match &pattern {
-                        Some(pat) => pat.matches_with(name, match_opts),
-                        None => name.to_lowercase().contains(&needle),
-                    }
+                    dir::name_matches(&text, name)
                 })
                 .map(|(i, _)| i)
                 .collect();

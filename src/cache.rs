@@ -1179,10 +1179,12 @@ fn generate_thumb(req: &ThumbRequest, filter: image::imageops::FilterType) -> Op
         result
     };
 
-    // DBに保存
+    // DBに保存（サムネ本体＋検索用ファイル索引）
     if let Some(ref db) = req.db {
         if let Some(jpeg) = encode_jpeg(&rgba) {
             crate::neko_dir::write_thumb(db, &filename, source_mtime, &jpeg);
+            let size = crate::neko_dir::file_size(&req.archive_path);
+            crate::neko_dir::write_file_record(db, &filename, source_mtime, size);
         }
     }
 

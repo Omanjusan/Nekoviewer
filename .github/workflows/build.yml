@@ -103,3 +103,9 @@ jobs:
           name: nekoviewer-linux-x86_64-flatpak
           path: Nekoviewer-x86_64.flatpak
           retention-days: 30
+
+  build-linux-appimage:
+    needs: verify-release-ref
+    uses: ./.github/workflows/_build-linux-appimage.yml
+    with:
+      retention-days: 30

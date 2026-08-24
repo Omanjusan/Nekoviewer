@@ -2108,7 +2108,7 @@ dependencies = [
 
 [[package]]
 name = "nekoviewer"
-version = "1.5.1"
+version = "1.6.0"
 dependencies = [
  "ab_glyph",
  "base64",
@@ -2133,6 +2133,7 @@ dependencies = [
  "sha2 0.10.9",
  "sysinfo",
  "tar",
+ "time",
  "webp",
  "windows-sys 0.52.0",
  "winit",
@@ -2252,6 +2253,15 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
+]
+
+[[package]]
+name = "num_threads"
+version = "0.1.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5c7398b9c8b70908f6371f47ed36737907c87c52af34c268fed0bf0ceb92ead9"
+dependencies = [
+ "libc",
 ]
 
 [[package]]
@@ -3754,12 +3764,14 @@ dependencies = [
 
 [[package]]
 name = "time"
-version = "0.3.51"
+version = "0.3.55"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "85c17d80feb7334b40c484e45ed1a5273dfd8bfda537c3be2e74a06a6686f327"
+checksum = "cdb87b95ec50ddfa440816d227a17b2ccbdda963a316a727fda0fc4334f7d134"
 dependencies = [
  "deranged",
+ "libc",
  "num-conv",
+ "num_threads",
  "powerfmt",
  "serde_core",
  "time-core",
