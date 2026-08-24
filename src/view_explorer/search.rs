@@ -29,6 +29,18 @@ pub(super) fn parse_search_form(form: &SearchFormState) -> SearchConditions {
     }
 }
 
+fn restore_search_form(
+    current: &mut SearchFormState,
+    history: &[SearchResultEntry],
+    idx: usize,
+) -> bool {
+    let Some(saved) = history.get(idx).map(|entry| entry.form.clone()) else {
+        return false;
+    };
+    *current = saved;
+    true
+}
+
 fn parse_mb(s: &str) -> Option<u64> {
     let s = s.trim();
     if s.is_empty() {
@@ -130,11 +142,16 @@ impl NekoviewApp {
             return;
         }
         let Some(cache_root) = self.config.cache_root() else { return };
-        let conditions = parse_search_form(&self.search_form);
-        let root = self.search_form.base_dir.clone().unwrap_or_else(|| self.current_dir.clone());
-        let include_subdirs = self.search_form.include_subdirs;
+        let mut submitted_form = self.search_form.clone();
+        if submitted_form.base_dir.is_none() {
+            submitted_form.base_dir = Some(self.current_dir.clone());
+        }
+        let conditions = parse_search_form(&submitted_form);
+        let root = submitted_form.base_dir.clone().expect("search base directory is resolved");
+        let include_subdirs = submitted_form.include_subdirs;
         let ctx = ctx.clone();
         self.search_pending = Some(spawn_search(root, include_subdirs, cache_root, conditions, move || ctx.request_repaint()));
+        self.search_pending_form = Some(submitted_form);
         self.search_running = true;
     }
 
@@ -145,10 +162,19 @@ impl NekoviewApp {
         let Ok(hits) = rx.try_recv() else { return };
         self.search_pending = None;
         self.search_running = false;
-        let label = i18n::t().search_result_label(&self.search_form.name_pattern, hits.len());
-        push_search_result(&mut self.search_history, SearchResultEntry { label, hits });
+        let form = self.search_pending_form.take().unwrap_or_else(|| self.search_form.clone());
+        let label = i18n::t().search_result_label(&form.name_pattern, hits.len());
+        push_search_result(&mut self.search_history, SearchResultEntry { label, hits, form });
         self.search_selected = Some(0);
         self.enter_search_view(0);
+    }
+
+    /// 履歴をユーザーが確定したとき、実行時の全条件をフォームへ上書きして結果を表示する。
+    pub(super) fn select_search_history(&mut self, idx: usize) {
+        if !restore_search_form(&mut self.search_form, &self.search_history, idx) {
+            return;
+        }
+        self.enter_search_view(idx);
     }
 
     /// 検索結果履歴の idx 番目を中央グリッドにフラット一覧として表示する
@@ -237,6 +263,48 @@ mod tests {
         assert_eq!(parse_mb("0.5"), Some((0.5 * 1024.0 * 1024.0) as u64));
         assert_eq!(parse_mb(""), None);
         assert_eq!(parse_mb("abc"), None);
+    }
+
+    #[test]
+    fn selecting_history_overwrites_every_search_form_field() {
+        let saved = SearchFormState {
+            base_dir: Some(PathBuf::from("/saved/base")),
+            name_pattern: "saved*.zip".to_string(),
+            include_subdirs: true,
+            size_min_mb: "10".to_string(),
+            size_max_mb: "20".to_string(),
+            date_after: "2025-01-02".to_string(),
+            date_before: "2025-03-04".to_string(),
+        };
+        let history = vec![SearchResultEntry {
+            label: "saved".to_string(),
+            hits: Vec::new(),
+            form: saved.clone(),
+        }];
+        let mut current = SearchFormState {
+            base_dir: Some(PathBuf::from("/current/base")),
+            name_pattern: "current".to_string(),
+            include_subdirs: false,
+            size_min_mb: "1".to_string(),
+            size_max_mb: "2".to_string(),
+            date_after: "2026-05-06".to_string(),
+            date_before: "2026-07-08".to_string(),
+        };
+
+        assert!(restore_search_form(&mut current, &history, 0));
+        assert_eq!(current, saved);
+    }
+
+    #[test]
+    fn invalid_history_index_keeps_current_form() {
+        let mut current = SearchFormState {
+            name_pattern: "keep me".to_string(),
+            ..Default::default()
+        };
+        let before = current.clone();
+
+        assert!(!restore_search_form(&mut current, &[], 0));
+        assert_eq!(current, before);
     }
 
     #[test]

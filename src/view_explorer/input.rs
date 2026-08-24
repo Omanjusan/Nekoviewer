@@ -126,7 +126,7 @@ impl NekoviewApp {
         if up && idx > 0 { idx -= 1; }
         if down && idx + 1 < self.search_history.len() { idx += 1; }
         self.search_selected = Some(idx);
-        if enter { self.enter_search_view(idx); }
+        if enter { self.select_search_history(idx); }
     }
 
     /// 実ツリーの現在展開状態における「見えているノード」を上から順に平坦化したもの。

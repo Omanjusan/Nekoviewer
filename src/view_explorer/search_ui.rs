@@ -43,7 +43,7 @@ impl NekoviewApp {
                     }
                     if resp.clicked() {
                         self.focused_pane = FocusPane::SearchHistory;
-                        self.enter_search_view(idx);
+                        self.select_search_history(idx);
                     }
                 }
             });

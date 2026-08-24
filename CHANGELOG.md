@@ -8,10 +8,35 @@ All notable changes to this project will be documented in this file.
 
 - Re-added a Linux AppImage to Releases
 - Folder navigation in the item pane now reflects in the folder tree pane
+- Added mouse drag-and-drop scrolling to the thumbnail item area
+
+#### Added file search limited to thumbnail-cached data
+
+- Added a Search tab to the file explorer. The search feature is available from this tab.
+- To avoid overly complex results from a global search, searches are limited to the current folder, with an option to include its subdirectories. Only files with cached thumbnails within that scope are searched.
+
+##### How to search
+
+1. Select the Search tab.
+2. The pane layout changes; use the drive list and folder tree to choose the base folder to search.
+3. Set the search criteria in the leftmost pane.
+4. Press the Start Search button.
+5. Matching items appear in the area on the right.
+
+##### Search limitations
+
+- This is not a general-purpose search like `find` or Windows Search.
+- Newly created image directories cannot be searched at all until at least one file has a cached thumbnail, which makes the directory recognizable as a search target.
+- Files without thumbnails are not added to the thumbnail cache during a search.
+- Search history is reset for each application session.
 
 ### Fixed
 
 - Fixed the mouse cursor icon not rendering correctly in the Flatpak build
+
+### Changed
+
+- XDG/user-directory storage is now the official location for settings. If settings are still stored next to the executable, a migration choice is shown at startup. Leftover files must be removed manually.
 
 ## [1.5.1] - 2026-08-16
 
