@@ -261,7 +261,7 @@ impl NekoviewApp {
         match self.folder_pane_tab {
             FolderPaneTab::RealTree => self.draw_real_tree_panel(ui),
             FolderPaneTab::Favorites => self.draw_favorites_pane(ui),
-            FolderPaneTab::Search => self.draw_search_pane(ui),
+            FolderPaneTab::Search => self.draw_search_left_pane(ui),
         }
     }
 
@@ -361,19 +361,20 @@ impl NekoviewApp {
     }
 
     fn draw_central_panel(&mut self, ui: &mut egui::Ui) {
-        // 検索タブ選択中のみアイテムペインを縦割りにする（左: 検索ペイン固定幅、右: 従来の中身）。
-        // 検索条件の微調整〜結果閲覧をダイアログの開閉なしで往復できるようにするための構成。
+        // 検索タブ選択中のみアイテムペインを縦割りにする（左: ツリー+ドライブ固定幅、右: 従来の中身）。
+        // [Phase A] レイアウトのモック確認用: ツリー/ドライブは実ツリーと表示・状態を共有しており、
+        // クリック時の動作もまだ実ナビゲーションのまま（検索基点への分離はPhase Bで対応）。
         if self.folder_pane_tab == FolderPaneTab::Search {
-            const SEARCH_PANE_WIDTH: f32 = 200.0;
+            const TREE_PANE_WIDTH: f32 = 200.0;
             // ui.horizontal + ui.vertical のネストだと子の available_height() が
             // 正しく伝播しない（egui挙動）ため、両ペインとも allocate_ui_with_layout で
             // 明示的にサイズを渡す（draw_real_tree_panel と同じ方式）。
             let avail_h = ui.available_height();
             ui.horizontal(|ui| {
                 ui.allocate_ui_with_layout(
-                    egui::vec2(SEARCH_PANE_WIDTH, avail_h),
+                    egui::vec2(TREE_PANE_WIDTH, avail_h),
                     egui::Layout::top_down(egui::Align::Min),
-                    |ui| self.draw_search_condition_pane(ui),
+                    |ui| self.draw_real_tree_panel(ui),
                 );
                 ui.separator();
                 let remain_w = ui.available_width();

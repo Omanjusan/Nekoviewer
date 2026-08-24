@@ -4,8 +4,21 @@ use super::panels::draw_cursor_ring;
 use super::{FocusPane, NekoviewApp, SearchFormState};
 
 impl NekoviewApp {
-    /// 左ペイン「検索」タブの中身。検索結果の履歴リストを表示する。
-    pub(super) fn draw_search_pane(&mut self, ui: &mut egui::Ui) {
+    /// 左ペイン「検索」タブの中身。上＝検索条件フォーム（固定高さ）、下＝検索結果履歴。
+    /// [Phase A] レイアウトのモック確認用。ツリー/ドライブの基点ディレクトリ連携（Phase B）は未接続。
+    pub(super) fn draw_search_left_pane(&mut self, ui: &mut egui::Ui) {
+        const CONDITION_H: f32 = 250.0;
+        ui.allocate_ui_with_layout(
+            egui::vec2(ui.available_width(), CONDITION_H),
+            egui::Layout::top_down(egui::Align::Min),
+            |ui| self.draw_search_condition_pane(ui),
+        );
+        ui.separator();
+        self.draw_search_pane(ui);
+    }
+
+    /// 検索結果の履歴リスト（draw_search_left_pane の下段）。
+    fn draw_search_pane(&mut self, ui: &mut egui::Ui) {
         if self.search_history.is_empty() {
             ui.add_space(8.0);
             ui.weak(i18n::t().search_no_results_hint());
