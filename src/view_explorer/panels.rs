@@ -626,6 +626,9 @@ impl NekoviewApp {
         self.explorer_cols = cols;
 
         let output = egui::ScrollArea::vertical()
+                // アイテム上または空白を左ドラッグして一覧をスクロールできるようにする。
+                // セル側はSense::click()のままなので、短いクリックの選択/開く操作は維持される。
+                .scroll_source(egui::scroll_area::ScrollSource::ALL)
                 .auto_shrink([false, false])
                 .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
                 .vertical_scroll_offset(self.explorer_scroll_offset)
