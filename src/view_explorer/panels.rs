@@ -75,6 +75,16 @@ impl NekoviewApp {
         {
             ctx.memory_mut(|mem| mem.stop_text_input());
         }
+        // 矢印キーによるネイティブなwidget間移動（Memory::focus_direction）は常時無効化する。
+        // Filter/SearchTab中のテキスト編集（左右キーでのカーソル内移動等）はTextEditが
+        // vertical/horizontal_arrowsで自分のイベントとして先取りするため影響しない一方、
+        // 一度何らかの理由でテキスト欄以外（ボタン等）にネイティブフォーカスが渡ってしまうと、
+        // 以後は誰も event_filter で握っていないためこの move_focus が無いと上下キーで
+        // 次々に別ウィジェットへ渡り歩いてしまう（実測: focused_pane は SearchTab のまま
+        // 動かず、egui内部のfocused widget idだけが上下キー毎に変わり続けていた）。
+        if !self.settings_is_open() {
+            ctx.memory_mut(|mem| mem.move_focus(egui::FocusDirection::None));
+        }
         // release ビルドは ROOT 内フローティングウィンドウのため ui() で描画する。
         // debug ビルドの独立 deferred viewport は logic() 側で駆動する（上記参照）。
         #[cfg(not(debug_assertions))]
@@ -592,8 +602,14 @@ impl NekoviewApp {
         // 一瞬見えてしまう（archivesは前の表示のまま残っている）。理想は切替と同時に
         // アイテムペインが全クリアされることなので、ここで早期リターンする。
         if self.folder_pane_tab == FolderPaneTab::Search && self.viewing_search.is_none() {
+            let grid_focused = self.focused_pane == FocusPane::Grid;
             ui.centered_and_justified(|ui| {
-                ui.weak(i18n::t().search_select_result_hint());
+                let resp = ui.weak(i18n::t().search_select_result_hint());
+                // Gridにフォーカスがある間は視覚的な手がかりが他に何もないため、
+                // ヒントテキスト自体にカーソルリングを出す（往復に見えるちらつき対策）。
+                if grid_focused {
+                    draw_cursor_ring(ui, resp.rect);
+                }
             });
             return;
         }

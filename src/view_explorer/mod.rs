@@ -44,7 +44,7 @@ enum TreeAction {
     Navigate(PathBuf),
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum FolderPaneTab {
     RealTree,
     Favorites,

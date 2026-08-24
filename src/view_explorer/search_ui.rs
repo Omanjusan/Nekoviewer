@@ -79,6 +79,16 @@ impl NekoviewApp {
                 ui.label(i18n::t().search_name_pattern_label());
                 let r = ui.add(egui::TextEdit::singleline(&mut self.search_form.name_pattern).lock_focus(true));
                 if r.gained_focus() { self.focused_pane = FocusPane::SearchTab; }
+                // Tab巡回でSearchTabに着地した直後は、まだどのテキスト欄にもegui側の
+                // ネイティブフォーカスが無く画面上の変化が一切見えない（Filter欄と違いここまで
+                // 何もしていなかった）。最初の項目（ファイル名）へ自動的にフォーカスを送ることで、
+                // Grid同様に「着地したのに何も動いていないように見える」ちらつきを解消する。
+                if self.focused_pane == FocusPane::SearchTab
+                    && !r.has_focus()
+                    && ui.ctx().memory(|m| m.focused()).is_none()
+                {
+                    r.request_focus();
+                }
                 ui.checkbox(&mut self.search_form.include_subdirs, i18n::t().search_include_subdirs_label());
 
                 ui.add_space(4.0);
