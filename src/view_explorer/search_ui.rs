@@ -7,7 +7,7 @@ impl NekoviewApp {
     /// 左ペイン「検索」タブの中身。上＝検索条件フォーム（固定高さ）、下＝検索結果履歴。
     /// [Phase A] レイアウトのモック確認用。ツリー/ドライブの基点ディレクトリ連携（Phase B）は未接続。
     pub(super) fn draw_search_left_pane(&mut self, ui: &mut egui::Ui) {
-        const CONDITION_H: f32 = 250.0;
+        const CONDITION_H: f32 = 285.0;
         ui.allocate_ui_with_layout(
             egui::vec2(ui.available_width(), CONDITION_H),
             egui::Layout::top_down(egui::Align::Min),
@@ -71,6 +71,13 @@ impl NekoviewApp {
             .id_salt("search_condition_scroll")
             .auto_shrink([false, false])
             .show(ui, |ui| {
+                ui.label(i18n::t().search_base_dir_label());
+                let mut base_dir_display = self.search_form.base_dir.as_ref()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_default();
+                ui.add_enabled(false, egui::TextEdit::singleline(&mut base_dir_display));
+
+                ui.add_space(4.0);
                 ui.label(i18n::t().search_name_pattern_label());
                 let r = ui.text_edit_singleline(&mut self.search_form.name_pattern);
                 if r.has_focus() { self.focused_pane = FocusPane::SearchTab; }

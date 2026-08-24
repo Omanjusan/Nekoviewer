@@ -416,6 +416,14 @@ impl Lang {
         }
     }
 
+    pub fn search_base_dir_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "検索基底フォルダ",
+            Lang::English  => "Search base folder",
+            Lang::Chinese  => "搜索根目录",
+        }
+    }
+
     pub fn search_name_pattern_label(self) -> &'static str {
         match self {
             Lang::Japanese => "ファイル名",
