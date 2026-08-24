@@ -25,19 +25,33 @@ impl NekoviewApp {
         if !tab && !shift_tab {
             return;
         }
-        self.focused_pane = if shift_tab { self.focused_pane.prev() } else { self.focused_pane.next() };
+        self.focused_pane = if shift_tab {
+            self.focused_pane.prev(self.folder_pane_tab)
+        } else {
+            self.focused_pane.next(self.folder_pane_tab)
+        };
+        // 検索条件フォームのテキスト欄は lock_focus(true) にしているため、Tabで
+        // focused_pane を進めても egui ネイティブのフォーカスはテキスト欄に残り続ける。
+        // 放置すると次フレームの has_focus/gained_focus 判定と自前状態が食い違って
+        // 行き来してしまうため、ここで egui 側のフォーカスを明示的に外す
+        // （Filter欄のように自前状態→egui の一方向で揃える）。
+        if self.focused_pane != FocusPane::SearchTab && self.focused_pane != FocusPane::Filter {
+            ctx.memory_mut(|m| {
+                if let Some(id) = m.focused() {
+                    m.surrender_focus(id);
+                }
+            });
+        }
         self.on_focus_pane_changed();
     }
 
     fn on_focus_pane_changed(&mut self) {
         match self.focused_pane {
+            FocusPane::FolderTabBar => {
+                // タブバー自体。folder_pane_tabは既に確定済みなのでリセットは不要
+                // （左右キーでの切替はhandle_folder_tab_bar_keysが担う）。
+            }
             FocusPane::TreeTab => {
-                // 検索タブ選択中はアイテムペイン内ツリー（検索基点選択用）を指す。
-                // 実ツリータブへは切り替えない（switch_folder_tabを呼ぶと横断表示が終了してしまう）。
-                if self.folder_pane_tab != FolderPaneTab::Search {
-                    self.switch_folder_tab(FolderPaneTab::RealTree);
-                }
-                self.tree_at_tab = false;
                 let flat = self.flatten_visible_tree();
                 let valid = self.tree_cursor.as_ref().is_some_and(|p| flat.contains(p));
                 if !valid {
@@ -47,8 +61,6 @@ impl NekoviewApp {
                 }
             }
             FocusPane::FavoriteTab => {
-                self.switch_folder_tab(FolderPaneTab::Favorites);
-                self.favorite_at_tab = false;
                 let items: Vec<FavoriteSelection> = std::iter::once(FavoriteSelection::Unsorted)
                     .chain(self.favorite_folders.iter().map(|f| FavoriteSelection::Folder(f.id)))
                     .collect();
@@ -58,20 +70,12 @@ impl NekoviewApp {
                 }
             }
             FocusPane::SearchTab => {
-                self.switch_folder_tab(FolderPaneTab::Search);
-                self.search_at_tab = false;
                 let valid = self.search_selected.is_some_and(|i| i < self.search_history.len());
                 if !valid {
                     self.search_selected = if self.search_history.is_empty() { None } else { Some(0) };
                 }
             }
             FocusPane::Drives => {
-                // Drivesは実ツリー配下と検索タブのアイテムペイン内の両方に存在する。
-                // Favorites経由での到達時は実ツリー表示へ復帰させるが、検索タブ選択中は
-                // アイテムペイン内ドライブ（検索基点選択用）を指すので切り替えない。
-                if self.folder_pane_tab != FolderPaneTab::Search {
-                    self.switch_folder_tab(FolderPaneTab::RealTree);
-                }
                 let valid = self.drive_cursor.as_ref()
                     .is_some_and(|p| self.drives.iter().any(|d| &d.path == p));
                 if !valid {
@@ -142,20 +146,6 @@ impl NekoviewApp {
             return;
         }
 
-        // TreeTabボタン自体にカーソルがある状態。Downで本体先頭へ入る。
-        if self.tree_at_tab {
-            if key_down {
-                self.tree_at_tab = false;
-                let valid = self.tree_cursor.as_ref().is_some_and(|p| flat.contains(p));
-                if !valid {
-                    self.tree_cursor = self.viewing_dir.clone()
-                        .filter(|p| flat.contains(p))
-                        .or_else(|| flat.first().cloned());
-                }
-            }
-            return;
-        }
-
         let cur = self.tree_cursor.clone()
             .filter(|p| flat.contains(p))
             .unwrap_or_else(|| self.viewing_dir.clone().filter(|p| flat.contains(p)).unwrap_or_else(|| flat[0].clone()));
@@ -168,8 +158,8 @@ impl NekoviewApp {
             if pos > 0 {
                 self.tree_cursor = Some(flat[pos - 1].clone());
             } else {
-                // 先頭ノードでさらにUp: TreeTabボタン自体へ退避する
-                self.tree_at_tab = true;
+                // 先頭ノードでさらにUp: タブバーへ戻る
+                self.focused_pane = FocusPane::FolderTabBar;
                 return;
             }
         }
@@ -246,17 +236,6 @@ impl NekoviewApp {
             return;
         }
 
-        // FavoriteTabボタン自体にカーソルがある状態。Downで本体先頭へ入る。
-        if self.favorite_at_tab {
-            if key_down {
-                self.favorite_at_tab = false;
-                if !self.favorite_cursor.is_some_and(|c| items.contains(&c)) {
-                    self.favorite_cursor = Some(items[0]);
-                }
-            }
-            return;
-        }
-
         let cur = self.favorite_cursor
             .filter(|c| items.contains(c))
             .unwrap_or(items[0]);
@@ -269,8 +248,8 @@ impl NekoviewApp {
             if pos > 0 {
                 new_pos = pos - 1;
             } else {
-                // 先頭項目でさらにUp: FavoriteTabボタン自体へ退避する
-                self.favorite_at_tab = true;
+                // 先頭項目でさらにUp: タブバーへ戻る
+                self.focused_pane = FocusPane::FolderTabBar;
                 return;
             }
         }
@@ -351,8 +330,38 @@ impl NekoviewApp {
         }
     }
 
+    /// FolderTabBar（タブ切替バー自体）にフォーカスがある間の操作。
+    /// 左右キーでタブ（実ツリー/お気に入り/検索）を切り替える。表示順（お気に入り→
+    /// フォルダ→検索）に合わせた並びで左右移動する。
+    fn handle_folder_tab_bar_keys(&mut self, ctx: &egui::Context) {
+        let km = &self.config.keymap;
+        let (key_left, key_right) = ctx.input(|i| (
+            km.explorer_binding(ExplorerAction::NavLeft).key_pressed(i),
+            km.explorer_binding(ExplorerAction::NavRight).key_pressed(i),
+        ));
+        if !(key_left || key_right) {
+            return;
+        }
+        const ORDER: [FolderPaneTab; 3] = [FolderPaneTab::Favorites, FolderPaneTab::RealTree, FolderPaneTab::Search];
+        let pos = ORDER.iter().position(|&t| t == self.folder_pane_tab).unwrap_or(1);
+        let mut new_pos = pos;
+        if key_left && pos > 0 {
+            new_pos = pos - 1;
+        }
+        if key_right && pos + 1 < ORDER.len() {
+            new_pos = pos + 1;
+        }
+        if new_pos != pos {
+            self.switch_folder_tab(ORDER[new_pos]);
+        }
+    }
+
     pub(super) fn handle_explorer_keys(&mut self, ctx: &egui::Context) {
         self.handle_focus_keys(ctx);
+        if self.focused_pane == FocusPane::FolderTabBar {
+            self.handle_folder_tab_bar_keys(ctx);
+            return;
+        }
         if self.focused_pane == FocusPane::TreeTab {
             self.handle_tree_keys(ctx);
             return;

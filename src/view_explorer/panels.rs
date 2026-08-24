@@ -235,30 +235,28 @@ impl NekoviewApp {
     }
 
     fn draw_folder_panel(&mut self, ui: &mut egui::Ui) {
+        // タブボタンのカーソルリングは FocusPane::FolderTabBar にいる間だけ表示する
+        // （タブそのものが独立したフォーカス位置。左右キーでの切替は
+        // handle_folder_tab_bar_keys が担う）。
+        let tab_bar_focused = self.focused_pane == FocusPane::FolderTabBar;
         ui.horizontal(|ui| {
-            let fav_focused = self.focused_pane == FocusPane::FavoriteTab && self.favorite_at_tab;
             let fav_resp = ui.selectable_label(self.folder_pane_tab == FolderPaneTab::Favorites, i18n::t().folder_tab_favorites());
-            if fav_focused { draw_cursor_ring(ui, fav_resp.rect); }
+            if tab_bar_focused && self.folder_pane_tab == FolderPaneTab::Favorites { draw_cursor_ring(ui, fav_resp.rect); }
             if fav_resp.clicked() {
                 self.switch_folder_tab(FolderPaneTab::Favorites);
-                self.favorite_at_tab = false;
                 self.focused_pane = FocusPane::FavoriteTab;
             }
-            let real_focused = self.focused_pane == FocusPane::TreeTab && self.tree_at_tab;
             let real_resp = ui.selectable_label(self.folder_pane_tab == FolderPaneTab::RealTree, i18n::t().folder_tab_real());
-            if real_focused { draw_cursor_ring(ui, real_resp.rect); }
+            if tab_bar_focused && self.folder_pane_tab == FolderPaneTab::RealTree { draw_cursor_ring(ui, real_resp.rect); }
             if real_resp.clicked() {
                 self.switch_folder_tab(FolderPaneTab::RealTree);
                 self.focused_pane = FocusPane::TreeTab;
-                self.tree_at_tab = false;
             }
-            let search_focused = self.focused_pane == FocusPane::SearchTab && self.search_at_tab;
             let search_resp = ui.selectable_label(self.folder_pane_tab == FolderPaneTab::Search, i18n::t().folder_tab_search());
-            if search_focused { draw_cursor_ring(ui, search_resp.rect); }
+            if tab_bar_focused && self.folder_pane_tab == FolderPaneTab::Search { draw_cursor_ring(ui, search_resp.rect); }
             if search_resp.clicked() {
                 self.switch_folder_tab(FolderPaneTab::Search);
                 self.focused_pane = FocusPane::SearchTab;
-                self.search_at_tab = false;
             }
         });
         ui.separator();
@@ -293,7 +291,7 @@ impl NekoviewApp {
                     0,
                     &self.viewing_dir,
                     &self.tree_cursor,
-                    self.focused_pane == FocusPane::TreeTab && !self.tree_at_tab,
+                    self.focused_pane == FocusPane::TreeTab,
                     &self.tree_expanded,
                     &self.tree_children,
                     self.show_hidden,
@@ -326,7 +324,6 @@ impl NekoviewApp {
             }
             TreeAction::Navigate(path) => {
                 self.focused_pane = FocusPane::TreeTab;
-                self.tree_at_tab = false;
                 self.tree_cursor = Some(path.clone());
                 // 検索タブ内のツリーは検索条件の基点ディレクトリ選択ツールであり、
                 // 実ナビゲーション（current_dir変更・実スキャン）は行わない。

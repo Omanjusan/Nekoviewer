@@ -51,13 +51,17 @@ enum FolderPaneTab {
     Search,
 }
 
-/// キーボード操作のフォーカス巡回順（Tab/Shift+Tabで一周する）。
-/// 順序: TreeTab(初期値) → Grid → Filter → Drives → MenuBar → FavoriteTab → SearchTab → (先頭に戻る)
-/// TreeTab/FavoriteTab/SearchTab は左ペインのタブ切替を兼ねる。Drives は実ツリー配下の
-/// ドライブ一覧のみを指し、Favorites/Search表示中でも巡回上は残る（着地時に実ツリーへ
-/// 自動復帰する）。
+/// キーボード操作のフォーカス巡回順（Tab/Shift+Tabで一周する）。今どのタブ（folder_pane_tab）を
+/// 選んでいるかで経路が変わる（本体の中身がタブごとに違うため）:
+///   RealTree:  FolderTabBar → TreeTab(本体) → Drives → Grid → Filter → MenuBar → (戻る)
+///   Favorites: FolderTabBar → FavoriteTab(本体) → Grid → Filter → MenuBar → (戻る)  ※Drivesなし
+///   Search:    FolderTabBar → SearchTab(本体) → TreeTab(アイテムペイン内) → Drives(同) → Grid → Filter → MenuBar → (戻る)
+/// FolderTabBar はタブ切替バー自体（左右キーでswitch_folder_tab、Tab/Shift+Tabでは巡回の
+/// 起点/終点として1箇所だけ現れる）。TreeTab/Drives は実ツリー選択時とSearch選択時の両方で
+/// 使われる（アイテムペイン内のツリー/ドライブと表示・状態を共有する二重の顔を持つ）。
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum FocusPane {
+    FolderTabBar,
     TreeTab,
     FavoriteTab,
     SearchTab,
@@ -68,27 +72,39 @@ pub(crate) enum FocusPane {
 }
 
 impl FocusPane {
-    fn next(self) -> Self {
+    fn next(self, tab: FolderPaneTab) -> Self {
         match self {
-            Self::TreeTab => Self::Grid,
-            Self::Grid => Self::Filter,
-            Self::Filter => Self::Drives,
-            Self::Drives => Self::MenuBar,
-            Self::MenuBar => Self::FavoriteTab,
-            Self::FavoriteTab => Self::SearchTab,
+            Self::FolderTabBar => match tab {
+                FolderPaneTab::RealTree => Self::TreeTab,
+                FolderPaneTab::Favorites => Self::FavoriteTab,
+                FolderPaneTab::Search => Self::SearchTab,
+            },
+            Self::TreeTab => Self::Drives,
             Self::SearchTab => Self::TreeTab,
+            Self::Drives => Self::Grid,
+            Self::FavoriteTab => Self::Grid,
+            Self::Grid => Self::Filter,
+            Self::Filter => Self::MenuBar,
+            Self::MenuBar => Self::FolderTabBar,
         }
     }
 
-    fn prev(self) -> Self {
+    fn prev(self, tab: FolderPaneTab) -> Self {
         match self {
-            Self::TreeTab => Self::SearchTab,
-            Self::Grid => Self::TreeTab,
+            Self::FolderTabBar => Self::MenuBar,
+            Self::TreeTab => match tab {
+                FolderPaneTab::Search => Self::SearchTab,
+                _ => Self::FolderTabBar,
+            },
+            Self::SearchTab => Self::FolderTabBar,
+            Self::Drives => Self::TreeTab,
+            Self::FavoriteTab => Self::FolderTabBar,
+            Self::Grid => match tab {
+                FolderPaneTab::Favorites => Self::FavoriteTab,
+                _ => Self::Drives,
+            },
             Self::Filter => Self::Grid,
-            Self::Drives => Self::Filter,
-            Self::MenuBar => Self::Drives,
-            Self::FavoriteTab => Self::MenuBar,
-            Self::SearchTab => Self::FavoriteTab,
+            Self::MenuBar => Self::Filter,
         }
     }
 }
@@ -306,16 +322,11 @@ pub struct NekoviewApp {
     pub(crate) focused_pane: FocusPane,
     /// 実ツリー内のプレターゲティングカーソル（Enterで確定navigate）
     tree_cursor: Option<PathBuf>,
-    /// true: カーソルはツリー本体ではなくTreeTabボタン自体にいる（上下キーでの
-    /// タブ⇄本体の行き来を表現する。本体先頭ノードでUp、またはこの状態でDownで切替）
-    tree_at_tab: bool,
     /// ドライブ一覧内のプレターゲティングカーソル。Favoritesタブ経由でDrivesへ
     /// 移動した際、実ツリー側にいた頃のこの値を復元する（無効ならフォールバック）
     drive_cursor: Option<PathBuf>,
     /// お気に入りタブ内のプレターゲティングカーソル（[未整理, フォルダ...]の並び）
     favorite_cursor: Option<FavoriteSelection>,
-    /// true: カーソルは本体リストではなくFavoriteTabボタン自体にいる（tree_at_tabと同様）
-    favorite_at_tab: bool,
     /// MenuBar内のプレターゲティングカーソル（MENU_BAR_ORDER上のインデックス）
     menu_cursor: usize,
     /// 定義済みお気に入りフォルダ一覧のキャッシュ（DB操作の都度リフレッシュ）
@@ -505,8 +516,6 @@ pub struct NekoviewApp {
     search_history: Vec<SearchResultEntry>,
     /// 履歴内で選択中の位置（Someなら中央ペインにその結果を表示）
     search_selected: Option<usize>,
-    /// true: カーソルはSearchTabボタン自体にいる（tree_at_tab/favorite_at_tabと同様）
-    search_at_tab: bool,
     /// 検索条件フォームの入力状態
     search_form: SearchFormState,
     /// true: 検索実行中（完了までは多重実行不可、検索開始ボタンを無効化する）
@@ -626,10 +635,8 @@ impl NekoviewApp {
             folder_pane_tab: FolderPaneTab::RealTree,
             focused_pane: FocusPane::TreeTab,
             tree_cursor: None,
-            tree_at_tab: false,
             drive_cursor: None,
             favorite_cursor: None,
-            favorite_at_tab: false,
             menu_cursor: 0,
             favorite_folders: Vec::new(),
             favorite_selected: FavoriteSelection::None,
@@ -737,7 +744,6 @@ impl NekoviewApp {
             filtered_indices: Vec::new(),
             search_history: Vec::new(),
             search_selected: None,
-            search_at_tab: false,
             search_form: SearchFormState::default(),
             search_running: false,
             search_pending: None,

@@ -77,7 +77,7 @@ impl NekoviewApp {
             .auto_shrink([false, false])
             .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
             .show(ui, |ui| {
-                let favorites_focused = self.focused_pane == FocusPane::FavoriteTab && !self.favorite_at_tab;
+                let favorites_focused = self.focused_pane == FocusPane::FavoriteTab;
 
                 // 特別枠: 未整理のお気に入り。ソート設定に関わらず常に最上位固定。
                 let unsorted_selected = self.favorite_selected == FavoriteSelection::Unsorted;
@@ -86,7 +86,6 @@ impl NekoviewApp {
                 if unsorted_cursor { super::panels::draw_cursor_ring(ui, unsorted_resp.rect); }
                 if unsorted_resp.clicked() {
                     self.focused_pane = FocusPane::FavoriteTab;
-                    self.favorite_at_tab = false;
                     self.favorite_cursor = Some(FavoriteSelection::Unsorted);
                     self.enter_favorite_view(FavoriteSelection::Unsorted);
                 }
@@ -99,7 +98,6 @@ impl NekoviewApp {
                     if is_cursor { super::panels::draw_cursor_ring(ui, resp.rect); }
                     if resp.clicked() {
                         self.focused_pane = FocusPane::FavoriteTab;
-                        self.favorite_at_tab = false;
                         self.favorite_cursor = Some(FavoriteSelection::Folder(folder.id));
                         self.enter_favorite_view(FavoriteSelection::Folder(folder.id));
                     }

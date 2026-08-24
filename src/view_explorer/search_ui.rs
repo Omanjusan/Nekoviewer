@@ -35,7 +35,6 @@ impl NekoviewApp {
                 for idx in 0..self.search_history.len() {
                     let label = self.search_history[idx].label.clone();
                     let is_cursor = self.focused_pane == FocusPane::SearchTab
-                        && !self.search_at_tab
                         && self.search_selected == Some(idx);
                     let resp = ui.selectable_label(self.search_selected == Some(idx), &label);
                     if is_cursor {
@@ -43,7 +42,6 @@ impl NekoviewApp {
                     }
                     if resp.clicked() {
                         self.focused_pane = FocusPane::SearchTab;
-                        self.search_at_tab = false;
                         self.enter_search_view(idx);
                     }
                 }
@@ -79,25 +77,25 @@ impl NekoviewApp {
 
                 ui.add_space(4.0);
                 ui.label(i18n::t().search_name_pattern_label());
-                let r = ui.text_edit_singleline(&mut self.search_form.name_pattern);
-                if r.has_focus() { self.focused_pane = FocusPane::SearchTab; }
+                let r = ui.add(egui::TextEdit::singleline(&mut self.search_form.name_pattern).lock_focus(true));
+                if r.gained_focus() { self.focused_pane = FocusPane::SearchTab; }
                 ui.checkbox(&mut self.search_form.include_subdirs, i18n::t().search_include_subdirs_label());
 
                 ui.add_space(4.0);
                 ui.label(i18n::t().search_size_min_label());
-                let r = ui.text_edit_singleline(&mut self.search_form.size_min_mb);
-                if r.has_focus() { self.focused_pane = FocusPane::SearchTab; }
+                let r = ui.add(egui::TextEdit::singleline(&mut self.search_form.size_min_mb).lock_focus(true));
+                if r.gained_focus() { self.focused_pane = FocusPane::SearchTab; }
                 ui.label(i18n::t().search_size_max_label());
-                let r = ui.text_edit_singleline(&mut self.search_form.size_max_mb);
-                if r.has_focus() { self.focused_pane = FocusPane::SearchTab; }
+                let r = ui.add(egui::TextEdit::singleline(&mut self.search_form.size_max_mb).lock_focus(true));
+                if r.gained_focus() { self.focused_pane = FocusPane::SearchTab; }
 
                 ui.add_space(4.0);
                 ui.label(i18n::t().search_date_after_label());
-                let r = ui.text_edit_singleline(&mut self.search_form.date_after);
-                if r.has_focus() { self.focused_pane = FocusPane::SearchTab; }
+                let r = ui.add(egui::TextEdit::singleline(&mut self.search_form.date_after).lock_focus(true));
+                if r.gained_focus() { self.focused_pane = FocusPane::SearchTab; }
                 ui.label(i18n::t().search_date_before_label());
-                let r = ui.text_edit_singleline(&mut self.search_form.date_before);
-                if r.has_focus() { self.focused_pane = FocusPane::SearchTab; }
+                let r = ui.add(egui::TextEdit::singleline(&mut self.search_form.date_before).lock_focus(true));
+                if r.gained_focus() { self.focused_pane = FocusPane::SearchTab; }
             });
     }
 }
