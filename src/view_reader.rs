@@ -43,15 +43,30 @@ fn upload_ring_frame(
     ring: &crate::cache::RingAnimation,
     index: usize,
 ) -> Option<egui::TextureHandle> {
+    let started = Instant::now();
     let (w, h, raw) = ring.with_frame(index, |f| {
         (f.image.width(), f.image.height(), f.image.as_raw().clone())
     })?;
+    let copied_at = Instant::now();
     let color_image = egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], &raw);
-    Some(ctx.load_texture(
+    let tex = ctx.load_texture(
         format!("page_{orig_i}"),
         color_image,
         egui::TextureOptions::LINEAR,
-    ))
+    );
+    let elapsed = started.elapsed();
+    if elapsed >= Duration::from_millis(8) {
+        crate::log_perf!(
+            "[perf/anim-upload] page={} frame={} size={}x{} copy={:.1}ms total={:.1}ms",
+            orig_i,
+            index,
+            w,
+            h,
+            copied_at.duration_since(started).as_secs_f64() * 1000.0,
+            elapsed.as_secs_f64() * 1000.0,
+        );
+    }
+    Some(tex)
 }
 
 /// `bounds` の中に `img_size` を縦横比を保ったまま収める（contain-fit）矩形を返す。
@@ -254,6 +269,8 @@ pub struct ViewerState {
     /// オフセット状態。spread_lo() = spread_base + offset.value()
     offset: SpreadOffset,
     textures: HashMap<usize, egui::TextureHandle>,
+    /// 各GPUテクスチャがどのデコード世代から作られたか。
+    texture_generations: HashMap<usize, u64>,
     open: bool,
     page_mode: PageMode,
     scroll_acc: f32,
@@ -447,6 +464,7 @@ impl ViewerState {
     /// まま残ってしまうため、開いているアーカイブ全体を対象にする。
     pub fn invalidate_all_pages(&mut self) {
         self.textures.clear();
+        self.texture_generations.clear();
         self.anim_states.clear();
     }
 
@@ -471,6 +489,7 @@ impl ViewerState {
             spread_base: 0,
             offset: SpreadOffset::new(),
             textures: HashMap::new(),
+            texture_generations: HashMap::new(),
             open: true,
             page_mode: PageMode::Single,
             scroll_acc: 0.0,
@@ -536,6 +555,7 @@ impl ViewerState {
             spread_base: 0,
             offset: SpreadOffset::new(),
             textures: HashMap::new(),
+            texture_generations: HashMap::new(),
             open: true,
             page_mode: PageMode::Single,
             scroll_acc: 0.0,
@@ -938,7 +958,9 @@ impl ViewerState {
     pub fn show(
         &mut self,
         ui: &mut egui::Ui,
-        page_cache: &PageCache,
+        page_cache: &mut PageCache,
+        active_generation: u64,
+        preparing_generation: Option<u64>,
         cfg: &mut ViewerConfig,
         keymap: &Keymap,
         translate_window_open: bool,
@@ -964,7 +986,12 @@ impl ViewerState {
 
         let (animating, t) = self.update_animation(&ctx, input.dt, cfg);
 
-        self.update_textures(&ctx, page_cache);
+        self.update_textures(
+            &ctx,
+            page_cache,
+            active_generation,
+            preparing_generation,
+        );
 
         let total = self.entries.len();
         let (tex_lo, tex_hi) = self.page_textures_for(self.spread_lo());
@@ -1702,7 +1729,13 @@ impl ViewerState {
 
     /// 表示ウィンドウ付近のページをキャッシュからテクスチャに変換し、
     /// ウィンドウ外のテクスチャを破棄する。GIF アニメーションのフレーム送りも担う。
-    fn update_textures(&mut self, ctx: &egui::Context, page_cache: &PageCache) {
+    fn update_textures(
+        &mut self,
+        ctx: &egui::Context,
+        page_cache: &mut PageCache,
+        active_generation: u64,
+        preparing_generation: Option<u64>,
+    ) {
         let total = self.entries.len();
         let anchor = self.spread_lo().max(0) as usize;
         let start = anchor.saturating_sub(5);
@@ -1716,11 +1749,26 @@ impl ViewerState {
         let now = Instant::now();
         let mut min_repaint_after = Duration::MAX;
 
+        let mut promoted_pages = Vec::new();
         for i in start..end {
             let orig_i = self.entries[i].original_index;
-            match page_cache.get(&self.archive_path, orig_i) {
-                Some(PageContent::Static(img)) => {
-                    if !self.textures.contains_key(&orig_i) {
+            let Some((generation, content)) = page_cache.get_best(
+                &self.archive_path,
+                orig_i,
+                active_generation,
+                preparing_generation,
+            ) else {
+                ctx.request_repaint_after(Duration::from_millis(100));
+                continue;
+            };
+            let generation_changed = self.texture_generations.get(&orig_i).copied()
+                != Some(generation);
+            if generation_changed {
+                self.anim_states.remove(&orig_i);
+            }
+            match content {
+                PageContent::Static(img) => {
+                    if generation_changed || !self.textures.contains_key(&orig_i) {
                         let color_image = egui::ColorImage::from_rgba_unmultiplied(
                             [img.width() as usize, img.height() as usize],
                             img.as_raw(),
@@ -1731,9 +1779,12 @@ impl ViewerState {
                             egui::TextureOptions::LINEAR,
                         );
                         self.textures.insert(orig_i, tex);
+                        self.texture_generations.insert(orig_i, generation);
+                        promoted_pages.push((orig_i, generation));
                     }
                 }
-                Some(PageContent::Animated(ring)) => {
+                PageContent::Animated(ring) => {
+                    let tick_started = Instant::now();
                     // フェーズ3/3.5: GIF/APNG/AVIF/WebP。全フレーム常駐ではなく逐次デコード+リングバッファ。
                     // デコーダが終端(None)を返した時点をループ境界とみなし restart() する
                     // (この再デコードによる一瞬のフリーズは許容する設計上の割り切り)。
@@ -1743,11 +1794,13 @@ impl ViewerState {
                         if let Some(state) = self.anim_states.get_mut(&orig_i) {
                             state.paused = true;
                         }
-                        if !self.textures.contains_key(&orig_i) {
+                        if generation_changed || !self.textures.contains_key(&orig_i) {
                             let frozen_index =
                                 self.anim_states.get(&orig_i).map_or(0, |s| s.frame_index);
                             if let Some(tex) = upload_ring_frame(ctx, orig_i, ring, frozen_index) {
                                 self.textures.insert(orig_i, tex);
+                                self.texture_generations.insert(orig_i, generation);
+                                promoted_pages.push((orig_i, generation));
                             }
                         }
                         continue;
@@ -1763,11 +1816,12 @@ impl ViewerState {
                         state.paused = false;
                         state.last_frame_at = now;
                     }
-                    let mut needs_upload = !self.textures.contains_key(&orig_i);
+                    let mut needs_upload = generation_changed || !self.textures.contains_key(&orig_i);
                     // 遅れが1フレーム分を超えていたら複数フレーム進めて追いつく
                     // (テクスチャアップロードは最後の1枚だけ)。スキップ分のデコードも
                     // UIスレッドで走るため、上限 MAX_CATCHUP_FRAMES で打ち切る。
                     let mut advanced = false;
+                    let mut advanced_count = 0usize;
                     for _ in 0..MAX_CATCHUP_FRAMES {
                         let current_delay = ring
                             .with_frame(state.frame_index, |f| f.delay)
@@ -1778,6 +1832,7 @@ impl ViewerState {
                         let next_index = state.frame_index + 1;
                         if ring.with_frame(next_index, |_| ()).is_some() {
                             state.frame_index = next_index;
+                            advanced_count += 1;
                             // 超過分(elapsed - delay)を次フレームへ繰り越して蓄積誤差を防ぐ
                             state.last_frame_at += current_delay;
                         } else {
@@ -1808,6 +1863,10 @@ impl ViewerState {
                         let frame_index = state.frame_index;
                         if let Some(tex) = upload_ring_frame(ctx, orig_i, ring, frame_index) {
                             self.textures.insert(orig_i, tex);
+                            self.texture_generations.insert(orig_i, generation);
+                            if generation_changed {
+                                promoted_pages.push((orig_i, generation));
+                            }
                         }
                     }
 
@@ -1821,17 +1880,34 @@ impl ViewerState {
                         .unwrap_or(Duration::from_millis(100));
                     let remaining = next_delay.saturating_sub(elapsed_after_upload);
                     min_repaint_after = min_repaint_after.min(remaining);
-                }
-                None => {
-                    ctx.request_repaint_after(Duration::from_millis(100));
+                    let tick_elapsed = tick_started.elapsed();
+                    if tick_elapsed >= Duration::from_millis(16) {
+                        crate::log_perf!(
+                            "[perf/anim-tick] archive={:?} page={} generation={} frame={} advanced={} tick={:.1}ms next_delay={:.1}ms remaining={:.1}ms",
+                            self.archive_path,
+                            orig_i,
+                            generation,
+                            state.frame_index,
+                            advanced_count,
+                            tick_elapsed.as_secs_f64() * 1000.0,
+                            next_delay.as_secs_f64() * 1000.0,
+                            remaining.as_secs_f64() * 1000.0,
+                        );
+                    }
                 }
             }
+        }
+
+        // 新GPUテクスチャの作成に成功したページだけ、旧CPU世代を後から解放する。
+        for (orig_i, generation) in promoted_pages {
+            page_cache.remove_older_versions(&self.archive_path, orig_i, generation);
         }
 
         let window_orig: HashSet<usize> = (start..end)
             .map(|i| self.entries[i].original_index)
             .collect();
         self.textures.retain(|orig_i, _| window_orig.contains(orig_i));
+        self.texture_generations.retain(|orig_i, _| window_orig.contains(orig_i));
         self.anim_states.retain(|orig_i, _| window_orig.contains(orig_i));
 
         if min_repaint_after < Duration::MAX {

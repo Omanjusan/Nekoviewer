@@ -480,10 +480,19 @@ impl NekoviewApp {
         let translate_toggle_enabled = self.translate_conn_verified && !self.translate_cfg.translation_model.trim().is_empty();
         let output = {
             let mut viewer_guard = self.viewer.lock().unwrap();
-            let page_cache_guard = self.page_cache.lock().unwrap();
+            let mut page_cache_guard = self.page_cache.lock().unwrap();
             let mut cfg_guard = self.viewer_cfg.lock().unwrap();
             match viewer_guard.as_mut() {
-                Some(viewer) => viewer.show(ui, &*page_cache_guard, &mut *cfg_guard, &self.config.keymap, self.translate_window_open, translate_toggle_enabled),
+                Some(viewer) => viewer.show(
+                    ui,
+                    &mut *page_cache_guard,
+                    self.active_decode_generation,
+                    self.preparing_decode_generation,
+                    &mut *cfg_guard,
+                    &self.config.keymap,
+                    self.translate_window_open,
+                    translate_toggle_enabled,
+                ),
                 None => return,
             }
         };
@@ -604,7 +613,9 @@ impl NekoviewApp {
                 })
                 .unwrap_or_default();
             for result in results {
-                if !result.belongs_to_generation(self.decode_generation) {
+                if result.generation != self.active_decode_generation
+                    && Some(result.generation) != self.preparing_decode_generation
+                {
                     crate::log_common!(
                         "[page-cache] discarded stale result generation={} current={} path={:?} index={}",
                         result.generation, self.decode_generation, result.archive_path, result.index,
@@ -624,6 +635,7 @@ impl NekoviewApp {
                         self.page_cache.lock().unwrap().insert(
                             result.archive_path,
                             result.index,
+                            result.generation,
                             content,
                             &cur_path,
                             cur_idx,

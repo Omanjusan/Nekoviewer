@@ -38,7 +38,7 @@ fn delay_from_image(d: image::Delay) -> Duration {
 // `restart()` でデコーダを元データから作り直す（この再デコードによる一瞬のフリーズは許容する）。
 
 /// フェーズ3のリングバッファが対象にするフォーマット。WebPはフェーズ3.5で別途対応。
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AnimFormat {
     Gif,
     Apng,

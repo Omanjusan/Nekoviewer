@@ -48,7 +48,7 @@ impl NekoviewApp {
             let guardrail = Some((self.config.max_decode_edge, self.config.max_decode_edge));
             if self.decode_target != guardrail {
                 self.decode_target = guardrail;
-                self.begin_new_decode_generation();
+                self.begin_lazy_decode_generation();
                 self.redecode_visible_pages(guardrail);
                 crate::log_common!("[resize-redecode] restored guardrail target={:?}", guardrail);
             }
@@ -85,7 +85,7 @@ impl NekoviewApp {
             }
         };
         self.decode_target = target;
-        self.begin_new_decode_generation();
+        self.begin_lazy_decode_generation();
         let pages = self.redecode_visible_pages(target);
 
         crate::log_common!(
@@ -153,13 +153,6 @@ impl NekoviewApp {
             (path, is_raw_file, pages)
         };
 
-        // PageCacheのキーには解像度を含めないため、可視ページだけでなく他ファイルを含む
-        // 旧世代の全ページを破棄する。元データのFileCacheは維持され、再展開は避けられる。
-        self.page_cache.lock().unwrap().clear();
-        if let Some(v) = self.viewer.lock().unwrap().as_mut() {
-            v.invalidate_all_pages();
-        }
-
         let exif_enabled = self.viewer_cfg.lock().unwrap().exif_orientation_enabled;
         for (visible_order, (orig_i, entry_name)) in pages.iter().enumerate() {
             let key = (path.clone(), *orig_i);
@@ -183,19 +176,58 @@ impl NekoviewApp {
         pages.len()
     }
 
-    /// デコード条件を変更し、旧世代の保留記録を解放する。処理中の要求自体は停止できないが、
-    /// LoadResultのgeneration照合でキャッシュ投入前に破棄される。
+    /// デコード条件を即時変更し、旧世代の保留記録と表示用キャッシュを解放する。
+    /// 処理中の要求自体は停止できないが、LoadResultのgeneration照合で投入前に破棄される。
     fn begin_new_decode_generation(&mut self) {
         self.decode_generation = self.decode_generation.wrapping_add(1);
-        self.req_tx.set_generations(self.decode_generation, None);
+        self.active_decode_generation = self.decode_generation;
+        self.preparing_decode_generation = None;
+        self.req_tx.set_generations(self.active_decode_generation, None);
+        self.page_cache.lock().unwrap().retain_generations(
+            self.active_decode_generation,
+            None,
+        );
         self.pending_loads.lock().unwrap().clear();
         self.failed_loads.clear();
+    }
+
+    /// リサイズ系の再デコードでは旧表示を残し、最新世代をpreparingとして追加する。
+    /// さらにリサイズされた場合は直前のpreparingをactiveへ昇格し、3世代以上を保持しない。
+    fn begin_lazy_decode_generation(&mut self) {
+        if let Some(preparing) = self.preparing_decode_generation {
+            self.active_decode_generation = preparing;
+        }
+        self.decode_generation = self.decode_generation.wrapping_add(1);
+        self.preparing_decode_generation = Some(self.decode_generation);
+        self.req_tx.set_generations(
+            self.active_decode_generation,
+            self.preparing_decode_generation,
+        );
+        self.page_cache.lock().unwrap().retain_generations(
+            self.active_decode_generation,
+            self.preparing_decode_generation,
+        );
+        self.pending_loads.lock().unwrap().clear();
+        self.failed_loads.retain(|key| {
+            key.generation == self.active_decode_generation
+                || Some(key.generation) == self.preparing_decode_generation
+        });
     }
 
     /// フェーズ6: ビューアー窓のリサイズを通知する（winit_app.rs の WindowEvent::Resized から呼ぶ）。
     /// viewer_cfg.redecode_trigger_seq を進め、poll_resize_redecode() 側の変化検知に拾わせる。
     pub fn notify_viewer_resized(&mut self) {
         self.viewer_cfg.lock().unwrap().redecode_trigger_seq += 1;
+    }
+
+    /// ウィンドウ生成直後の最初のResizedでは、ちらつき防止のため再デコードを予約しない。
+    /// ただし初回デコード自体は実ウィンドウ寸法で行わないと、特にアニメーションが
+    /// max_decode_edge相当の巨大フレームを逐次処理して再生不能になるため、ターゲットだけ先に合わせる。
+    pub fn initialize_viewer_decode_target(&mut self, physical_size: (u32, u32)) {
+        let cfg = self.viewer_cfg.lock().unwrap();
+        if cfg.redecode_on_resize && !cfg.zoom_actual {
+            self.decode_target = Some((physical_size.0.max(1), physical_size.1.max(1)));
+        }
     }
 
     /// 項目(D): 設定ダイアログの[反映]・ビューアーツールバーのチェックボックス、
@@ -364,7 +396,9 @@ impl NekoviewApp {
                     match d {
                         DeferredArchiveRequest::Page(mut job) => {
                             job.payload.file_cache_entry = file_cache_entry.clone();
-                            if job.key.generation == self.decode_generation {
+                            if job.key.generation == self.active_decode_generation
+                                || Some(job.key.generation) == self.preparing_decode_generation
+                            {
                                 let _ = self.req_tx.submit(job);
                             }
                         }
@@ -403,7 +437,9 @@ impl NekoviewApp {
             })
             .unwrap_or_default();
         for result in results {
-            if !result.belongs_to_generation(self.decode_generation) {
+            if result.generation != self.active_decode_generation
+                && Some(result.generation) != self.preparing_decode_generation
+            {
                 crate::log_common!(
                     "[page-cache] discarded stale result generation={} current={} path={:?} index={}",
                     result.generation, self.decode_generation, result.archive_path, result.index,
@@ -423,6 +459,7 @@ impl NekoviewApp {
                     self.page_cache.lock().unwrap().insert(
                         result.archive_path,
                         result.index,
+                        result.generation,
                         content,
                         &cur_path,
                         cur_idx,
@@ -457,6 +494,8 @@ impl NekoviewApp {
             let start = cur.saturating_sub(crate::cache::PREFETCH_BEHIND);
             let end = (cur + crate::cache::PREFETCH_AHEAD + 1).min(total);
             let exif_enabled = self.viewer_cfg.lock().unwrap().exif_orientation_enabled;
+            let requested_generation = self.preparing_decode_generation
+                .unwrap_or(self.active_decode_generation);
             // submit直後にワーカーが起床できるため、投入順自体も優先順に揃える。
             let ordered_indices = visible_positions.iter().copied()
                 .chain((visible_hi + 1)..end)
@@ -465,15 +504,17 @@ impl NekoviewApp {
                 let orig_i = entries[i].original_index;
                 // 予算超過(bypass)と判明済みのページは、現在表示中でない限り先読み対象から外す。
                 // bypass はキャッシュに残らないため、先読みし続けると無限に再デコードされてしまう。
-                if !visible_orig.contains(&orig_i) && self.page_cache.lock().unwrap().is_known_bypass(&path, orig_i) {
+                if !visible_orig.contains(&orig_i)
+                    && self.page_cache.lock().unwrap().is_known_bypass(&path, orig_i, requested_generation)
+                {
                     continue;
                 }
                 let key = (path.clone(), orig_i);
-                if !self.page_cache.lock().unwrap().contains(&path, orig_i) {
+                if !self.page_cache.lock().unwrap().contains(&path, orig_i, requested_generation) {
                     let job_key = DecodeJobKey {
                         archive_path: path.clone(),
                         page_index: orig_i,
-                        generation: self.decode_generation,
+                        generation: requested_generation,
                     };
                     if self.failed_loads.contains(&job_key) {
                         continue;
@@ -501,7 +542,7 @@ impl NekoviewApp {
                                 file_cache_entry: None,
                                 target_size: self.decode_target,
                                 exif_enabled,
-                                generation: self.decode_generation,
+                                generation: requested_generation,
                             },
                             class,
                             distance,

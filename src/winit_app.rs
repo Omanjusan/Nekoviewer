@@ -354,6 +354,8 @@ impl WinitApp {
                 attrs = attrs.with_inner_size(winit::dpi::LogicalSize::new(800.0, 600.0));
             }
             let window = Arc::new(event_loop.create_window(attrs).expect("create viewer window"));
+            let initial_size = window.inner_size();
+            app.initialize_viewer_decode_target((initial_size.width, initial_size.height));
             let win = make_egui_window(window.clone(), viewer_viewport_id(), &self.proxy);
             if app.take_viewer_focus_request() {
                 window.focus_window();
@@ -661,9 +663,14 @@ impl ApplicationHandler<UserEvent> for WinitApp {
                 }
                 // フェーズ6: ビューアー窓のリサイズのみ再デコードのデバウンス対象にする
                 // （エクスプローラー窓のリサイズは表示画像と無関係）。
-                if is_viewer && !std::mem::take(&mut self.viewer_initial_resize_pending) {
+                if is_viewer {
+                    let initial_resize = std::mem::take(&mut self.viewer_initial_resize_pending);
                     if let Some(app) = self.app.as_mut() {
-                        app.notify_viewer_resized();
+                        if initial_resize {
+                            app.initialize_viewer_decode_target((size.width, size.height));
+                        } else {
+                            app.notify_viewer_resized();
+                        }
                     }
                 }
             }

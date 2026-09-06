@@ -186,12 +186,6 @@ pub struct LoadResult {
     pub generation: u64,
 }
 
-impl LoadResult {
-    pub fn belongs_to_generation(&self, generation: u64) -> bool {
-        self.generation == generation
-    }
-}
-
 /// バックグラウンドデコードワーカーを `num_threads` 本起動する。
 /// `cache_budget_bytes` はページキャッシュの予算（PageCache::max_bytes）。
 /// これを超えて展開されるアニメーションは先頭フレームのみの静止画にフォールバックする。
@@ -460,6 +454,7 @@ struct RingAnimState {
 /// その際は `restart()` でデコーダを先頭から作り直す（この再デコードによる一瞬のフリーズは許容する）。
 pub struct RingAnimation {
     state: Mutex<RingAnimState>,
+    format: AnimFormat,
     /// PageCache への計上額（リング容量 × リサイズ後フレームサイズ）。構築時に確定し不変。
     /// 挿入時点の実常駐（2フレーム分）で計上すると、再生でリングが容量まで育ったとき
     /// 帳簿が実態を大幅に過小評価して evict が動かなくなるため、
@@ -542,7 +537,7 @@ impl RingAnimation {
         ring.push(1, frame1);
 
         let state = RingAnimState { decoder, ring, next_index: 2, resize_to, filter, frame_hard_limit_bytes };
-        RingDecodeOutcome::Animated(Self { state: Mutex::new(state), reserved_bytes })
+        RingDecodeOutcome::Animated(Self { state: Mutex::new(state), format, reserved_bytes })
     }
 
     /// フレームの生デコードサイズ(リサイズ前、w*h*4)が`hard_limit_bytes`を超える場合、
@@ -587,11 +582,32 @@ impl RingAnimation {
                 // 前進専用のためエビクト済みフレームへは戻れない。
                 return None;
             }
+            let decode_started = std::time::Instant::now();
             let next = state.decoder.next_frame()?;
+            let decode_elapsed = decode_started.elapsed();
             let idx = state.next_index;
             state.next_index += 1;
+            let source_size = next.image.dimensions();
+            let resize_started = std::time::Instant::now();
             let next = Self::guard_frame_size(next, state.frame_hard_limit_bytes, state.filter, idx);
             let resized = Self::apply_resize(next, state.resize_to, state.filter);
+            let resize_elapsed = resize_started.elapsed();
+            if decode_elapsed >= std::time::Duration::from_millis(8)
+                || resize_elapsed >= std::time::Duration::from_millis(8)
+            {
+                log_perf!(
+                    "[perf/anim-frame] format={:?} frame={} source={}x{} output={}x{} decode={:.1}ms resize={:.1}ms delay={:.1}ms",
+                    self.format,
+                    idx,
+                    source_size.0,
+                    source_size.1,
+                    resized.image.width(),
+                    resized.image.height(),
+                    decode_elapsed.as_secs_f64() * 1000.0,
+                    resize_elapsed.as_secs_f64() * 1000.0,
+                    resized.delay.as_secs_f64() * 1000.0,
+                );
+            }
             state.ring.push(idx, resized);
         }
     }
@@ -623,16 +639,16 @@ impl RingAnimation {
 }
 
 pub struct PageCache {
-    entries: HashMap<(PathBuf, usize), PageContent>,
+    entries: HashMap<(PathBuf, usize, u64), PageContent>,
     total_bytes: usize,
     max_bytes: usize,
     min_bytes: usize,
     /// LRU 予算を超える単一アイテムを表示のためだけに保持するスロット（1件のみ）
-    bypass: Option<((PathBuf, usize), PageContent)>,
+    bypass: Option<((PathBuf, usize, u64), PageContent)>,
     /// 一度でも予算超過(bypass)と判定された(path, index)の記憶。
     /// bypass スロットから追い出された後も先読みが再要求しないようにするためのもので、
     /// 中身は保持しない（キャッシュを汚染しない）。
-    known_bypass: HashSet<(PathBuf, usize)>,
+    known_bypass: HashSet<(PathBuf, usize, u64)>,
 }
 
 impl PageCache {
@@ -652,6 +668,7 @@ impl PageCache {
 
     /// 表示解像度の世代変更時に、旧ターゲットで作られた全ページを破棄する。
     /// FileCache（圧縮済み/展開済みの元データ）は別層なので影響しない。
+    #[cfg(test)]
     pub fn clear(&mut self) {
         self.entries.clear();
         self.total_bytes = 0;
@@ -659,22 +676,35 @@ impl PageCache {
         self.known_bypass.clear();
     }
 
-    pub fn contains(&self, path: &PathBuf, index: usize) -> bool {
-        self.entries.contains_key(&(path.clone(), index))
+    pub fn contains(&self, path: &PathBuf, index: usize, generation: u64) -> bool {
+        self.entries.contains_key(&(path.clone(), index, generation))
             || self.bypass.as_ref()
-                .map_or(false, |((bp, bi), _)| bp == path && *bi == index)
+                .map_or(false, |((bp, bi, bg), _)| bp == path && *bi == index && *bg == generation)
     }
 
     /// この(path, index)が過去に予算超過(bypass)と判定されたことがあるか。
     /// 先読みウィンドウが同じページを何度もデコードし直すループを防ぐために使う。
-    pub fn is_known_bypass(&self, path: &PathBuf, index: usize) -> bool {
-        self.known_bypass.contains(&(path.clone(), index))
+    pub fn is_known_bypass(&self, path: &PathBuf, index: usize, generation: u64) -> bool {
+        self.known_bypass.contains(&(path.clone(), index, generation))
     }
 
-    pub fn get(&self, path: &PathBuf, index: usize) -> Option<&PageContent> {
-        self.entries.get(&(path.clone(), index)).or_else(|| {
-            self.bypass.as_ref().and_then(|((bp, bi), c)| {
-                if bp == path && *bi == index { Some(c) } else { None }
+    /// preparingが完成済みなら優先し、未完成ならactiveへフォールバックする。
+    pub fn get_best(
+        &self,
+        path: &PathBuf,
+        index: usize,
+        active: u64,
+        preparing: Option<u64>,
+    ) -> Option<(u64, &PageContent)> {
+        preparing
+            .and_then(|generation| self.get_generation(path, index, generation).map(|c| (generation, c)))
+            .or_else(|| self.get_generation(path, index, active).map(|c| (active, c)))
+    }
+
+    fn get_generation(&self, path: &PathBuf, index: usize, generation: u64) -> Option<&PageContent> {
+        self.entries.get(&(path.clone(), index, generation)).or_else(|| {
+            self.bypass.as_ref().and_then(|((bp, bi, bg), c)| {
+                if bp == path && *bi == index && *bg == generation { Some(c) } else { None }
             })
         })
     }
@@ -682,24 +712,64 @@ impl PageCache {
     /// フェーズ6: 再デコードのため既存エントリを強制的に破棄する（bypassスロットも対象）。
     /// 次の insert() で新しいデコード結果を通常どおり入れ直す前提。
     #[cfg(test)]
-    pub fn remove(&mut self, path: &PathBuf, index: usize) {
-        if let Some(content) = self.entries.remove(&(path.clone(), index)) {
+    pub fn remove(&mut self, path: &PathBuf, index: usize, generation: u64) {
+        if let Some(content) = self.entries.remove(&(path.clone(), index, generation)) {
             self.total_bytes = self.total_bytes.saturating_sub(content_bytes(&content));
         }
-        if let Some(((bp, bi), _)) = &self.bypass {
-            if bp == path && *bi == index {
+        if let Some(((bp, bi, bg), _)) = &self.bypass {
+            if bp == path && *bi == index && *bg == generation {
                 self.bypass = None;
             }
         }
-        self.known_bypass.remove(&(path.clone(), index));
+        self.known_bypass.remove(&(path.clone(), index, generation));
+    }
+
+    /// 新GPUテクスチャへの交換後、同じページの古いCPU世代だけを解放する。
+    pub fn remove_older_versions(&mut self, path: &PathBuf, index: usize, keep_generation: u64) {
+        let stale: Vec<_> = self.entries.keys()
+            .filter(|(p, i, g)| p == path && *i == index && *g != keep_generation)
+            .cloned()
+            .collect();
+        for (p, i, g) in stale {
+            if let Some(content) = self.entries.remove(&(p, i, g)) {
+                self.total_bytes = self.total_bytes.saturating_sub(content_bytes(&content));
+            }
+        }
+        if self.bypass.as_ref().is_some_and(|((p, i, g), _)| {
+            p == path && *i == index && *g != keep_generation
+        }) {
+            self.bypass = None;
+        }
+        self.known_bypass.retain(|(p, i, g)| {
+            p != path || *i != index || *g == keep_generation
+        });
+    }
+
+    /// 連続リサイズ時にactive/preparing以外の世代を一括破棄する。
+    pub fn retain_generations(&mut self, active: u64, preparing: Option<u64>) {
+        let stale: Vec<_> = self.entries.keys()
+            .filter(|(_, _, g)| *g != active && Some(*g) != preparing)
+            .cloned()
+            .collect();
+        for key in stale {
+            if let Some(content) = self.entries.remove(&key) {
+                self.total_bytes = self.total_bytes.saturating_sub(content_bytes(&content));
+            }
+        }
+        if self.bypass.as_ref().is_some_and(|((_, _, g), _)| {
+            *g != active && Some(*g) != preparing
+        }) {
+            self.bypass = None;
+        }
+        self.known_bypass.retain(|(_, _, g)| *g == active || Some(*g) == preparing);
     }
 
     /// 項目(D): Exif Orientation ON/OFF切替時に、指定アーカイブの全エントリ（bypassスロット・
     /// known_bypass記憶も含む）を破棄する。ページ単位の`remove`と違い、可視ページに限らず
     /// アーカイブ全体を対象にする（先読み済みページが古いOrientationのまま残るのを防ぐため）。
     pub fn remove_all_for_path(&mut self, path: &PathBuf) {
-        let stale_keys: Vec<(PathBuf, usize)> = self.entries.keys()
-            .filter(|(p, _)| p == path)
+        let stale_keys: Vec<(PathBuf, usize, u64)> = self.entries.keys()
+            .filter(|(p, _, _)| p == path)
             .cloned()
             .collect();
         for key in stale_keys {
@@ -707,12 +777,12 @@ impl PageCache {
                 self.total_bytes = self.total_bytes.saturating_sub(content_bytes(&content));
             }
         }
-        if let Some(((bp, _), _)) = &self.bypass {
+        if let Some(((bp, _, _), _)) = &self.bypass {
             if bp == path {
                 self.bypass = None;
             }
         }
-        self.known_bypass.retain(|(p, _)| p != path);
+        self.known_bypass.retain(|(p, _, _)| p != path);
     }
 
     /// キャッシュに追加する。予算超過時は最遠エントリを evict する。
@@ -721,11 +791,18 @@ impl PageCache {
         &mut self,
         path: PathBuf,
         index: usize,
+        generation: u64,
         content: PageContent,
         current_path: &PathBuf,
         current_index: usize,
     ) {
         let incoming = content_bytes(&content);
+
+        // 同一世代・同一ページの再投入は置換として扱い、帳簿を二重加算しない。
+        // 通常はジョブ重複排除で起きないが、結果配送と再要求が競合しても安全にする。
+        if let Some(previous) = self.entries.remove(&(path.clone(), index, generation)) {
+            self.total_bytes = self.total_bytes.saturating_sub(content_bytes(&previous));
+        }
 
         if incoming >= self.max_bytes {
             eprintln!(
@@ -734,13 +811,13 @@ impl PageCache {
                 incoming / MB,
                 self.max_bytes / MB,
             );
-            self.known_bypass.insert((path.clone(), index));
-            self.bypass = Some(((path, index), content));
+            self.known_bypass.insert((path.clone(), index, generation));
+            self.bypass = Some(((path, index, generation), content));
             return;
         }
 
         // 現在位置が変わっていたら stale な bypass エントリを解放する
-        if let Some(((bp, bi), _)) = &self.bypass {
+        if let Some(((bp, bi, _), _)) = &self.bypass {
             if bp != current_path || *bi != current_index {
                 self.bypass = None;
             }
@@ -753,7 +830,7 @@ impl PageCache {
             self.evict_furthest(current_path, current_index);
         }
         self.total_bytes += incoming;
-        self.entries.insert((path, index), content);
+        self.entries.insert((path, index, generation), content);
     }
 
     /// 現在ページから最も遠いエントリを1件解放する。
@@ -762,7 +839,7 @@ impl PageCache {
         let key = self
             .entries
             .keys()
-            .max_by_key(|(path, idx)| {
+            .max_by_key(|(path, idx, _)| {
                 let other_archive = path != current_path;
                 let dist = idx.abs_diff(current_index);
                 (other_archive, dist)
@@ -1341,11 +1418,11 @@ mod ring_integration_tests {
 
         let mut cache = PageCache::new(10 * MB, 0);
         let path = std::path::PathBuf::from("test.zip");
-        cache.insert(path.clone(), 0, content, &path, 0);
+        cache.insert(path.clone(), 0, 0, content, &path, 0);
         assert_eq!(cache.total_bytes(), reserved, "挿入時点で予約額が計上されるべき");
 
         // 再生を進めてリングを育てても帳簿は不変（挿入時確定の予約方式）。
-        if let Some(PageContent::Animated(ring)) = cache.get(&path, 0) {
+        if let Some((0, PageContent::Animated(ring))) = cache.get_best(&path, 0, 0, None) {
             for i in 0..3 {
                 let _ = ring.with_frame(i, |_| ());
             }
@@ -1354,7 +1431,7 @@ mod ring_integration_tests {
         assert_eq!(cache.total_bytes(), reserved, "リングが育っても帳簿は変わらないべき");
 
         // removeで同額が引かれゼロに戻る（挿入と削除の対称性）。
-        cache.remove(&path, 0);
+        cache.remove(&path, 0, 0);
         assert_eq!(cache.total_bytes(), 0, "予約額と同額が引かれてゼロに戻るべき");
     }
 
@@ -1367,6 +1444,7 @@ mod ring_integration_tests {
         cache.insert(
             normal_path.clone(),
             0,
+            0,
             PageContent::Static(image::RgbaImage::new(10, 10)),
             &normal_path,
             0,
@@ -1376,57 +1454,85 @@ mod ring_integration_tests {
         cache.insert(
             bypass_path.clone(),
             0,
+            0,
             PageContent::Static(image::RgbaImage::new(20, 20)),
             &normal_path,
             0,
         );
-        assert!(cache.contains(&normal_path, 0));
-        assert!(cache.contains(&bypass_path, 0));
-        assert!(cache.is_known_bypass(&bypass_path, 0));
+        assert!(cache.contains(&normal_path, 0, 0));
+        assert!(cache.contains(&bypass_path, 0, 0));
+        assert!(cache.is_known_bypass(&bypass_path, 0, 0));
 
         cache.clear();
 
         assert_eq!(cache.total_bytes(), 0);
-        assert!(!cache.contains(&normal_path, 0));
-        assert!(!cache.contains(&bypass_path, 0));
-        assert!(!cache.is_known_bypass(&bypass_path, 0));
+        assert!(!cache.contains(&normal_path, 0, 0));
+        assert!(!cache.contains(&bypass_path, 0, 0));
+        assert!(!cache.is_known_bypass(&bypass_path, 0, 0));
     }
 
     #[test]
-    fn load_result_generation_rejects_stale_decode() {
-        let static_result = LoadResult {
-            archive_path: PathBuf::from("page.png"),
-            index: 0,
-            outcome: DecodeJobOutcome::Ready(PageContent::Static(image::RgbaImage::new(1, 1))),
-            generation: 8,
-        };
+    fn page_cache_prefers_preparing_then_falls_back_to_active() {
+        let mut cache = PageCache::new(1024, 0);
+        let path = PathBuf::from("page.png");
+        cache.insert(
+            path.clone(), 0, 10,
+            PageContent::Static(image::RgbaImage::new(1, 1)),
+            &path, 0,
+        );
 
-        assert!(static_result.belongs_to_generation(8));
-        assert!(!static_result.belongs_to_generation(7));
-        assert!(!static_result.belongs_to_generation(9));
+        let (generation, _) = cache.get_best(&path, 0, 10, Some(11)).unwrap();
+        assert_eq!(generation, 10, "新世代の完成前は現世代へフォールバックする");
 
-        let bytes = encode_gif_frames_mixed(&[(2, 2), (2, 2)]);
-        let animated = decode_ring_anim(
-            &bytes,
-            AnimFormat::Gif,
-            image::imageops::FilterType::Triangle,
-            TEST_RING_BUDGET_BYTES,
-            TEST_RING_BOUNDS,
-            TEST_FRAME_HARD_LIMIT_BYTES,
-            Some((1920, 1080)),
-            true,
-        )
-        .expect("アニメーション結果を生成できるはず");
-        assert!(matches!(animated, PageContent::Animated(_)));
-        let animated_result = LoadResult {
-            archive_path: PathBuf::from("page.gif"),
-            index: 0,
-            outcome: DecodeJobOutcome::Ready(animated),
-            generation: 12,
-        };
+        cache.insert(
+            path.clone(), 0, 11,
+            PageContent::Static(image::RgbaImage::new(2, 2)),
+            &path, 0,
+        );
+        let (generation, content) = cache.get_best(&path, 0, 10, Some(11)).unwrap();
+        assert_eq!(generation, 11, "新世代が完成したページは新世代を優先する");
+        assert!(matches!(content, PageContent::Static(img) if img.width() == 2));
 
-        assert!(animated_result.belongs_to_generation(12));
-        assert!(!animated_result.belongs_to_generation(11));
+        cache.remove_older_versions(&path, 0, 11);
+        assert!(!cache.contains(&path, 0, 10));
+        assert!(cache.contains(&path, 0, 11));
+    }
+
+    #[test]
+    fn page_cache_repeated_resize_retains_only_active_and_preparing() {
+        let mut cache = PageCache::new(1024, 0);
+        let path = PathBuf::from("page.png");
+        for generation in 10..=12 {
+            cache.insert(
+                path.clone(), 0, generation,
+                PageContent::Static(image::RgbaImage::new(1, 1)),
+                &path, 0,
+            );
+        }
+
+        cache.retain_generations(11, Some(12));
+
+        assert!(!cache.contains(&path, 0, 10));
+        assert!(cache.contains(&path, 0, 11));
+        assert!(cache.contains(&path, 0, 12));
+    }
+
+    #[test]
+    fn page_cache_replacing_same_generation_keeps_accounting_symmetric() {
+        let mut cache = PageCache::new(1024, 0);
+        let path = PathBuf::from("page.png");
+        cache.insert(
+            path.clone(), 0, 1,
+            PageContent::Static(image::RgbaImage::new(2, 2)),
+            &path, 0,
+        );
+        cache.insert(
+            path.clone(), 0, 1,
+            PageContent::Static(image::RgbaImage::new(3, 3)),
+            &path, 0,
+        );
+
+        assert_eq!(cache.total_bytes(), 3 * 3 * 4);
     }
 
     #[test]
