@@ -314,6 +314,8 @@ pub struct ViewerState {
     thumbbar_visible_range: Option<(i32, i32)>,
     /// 保存済み見開き状態のキャッシュ（app側がopen_viewer時にセット/操作後に更新）
     saved_spread: Option<(PageMode, i32)>,
+    /// 保存済みソート条件のキャッシュ。None は保存OFFを表す。
+    saved_sort: Option<(ViewerSortKey, bool)>,
     /// 保存メニューでのユーザー操作要求（1フレームで消費してViewerOutputへ渡す）
     pending_spread_action: Option<crate::controller::SpreadSaveAction>,
     /// 右クリックメニュー「お気に入り詳細設定」が押されたか（1フレームで消費）
@@ -487,6 +489,7 @@ impl ViewerState {
             thumbbar_scrolled_lo: None,
             thumbbar_visible_range: None,
             saved_spread: None,
+            saved_sort: None,
             pending_spread_action: None,
             pending_open_favorite_dialog: false,
             pending_open_file_detail: false,
@@ -546,6 +549,7 @@ impl ViewerState {
             thumbbar_scrolled_lo: None,
             thumbbar_visible_range: None,
             saved_spread: None,
+            saved_sort: None,
             pending_spread_action: None,
             pending_open_favorite_dialog: false,
             pending_open_file_detail: false,
@@ -661,6 +665,37 @@ impl ViewerState {
         match self.saved_spread {
             None => false,
             Some((mode, offset)) => mode != self.page_mode || offset != self.offset.value(),
+        }
+    }
+
+    /// 現在のソート条件を保存値と同じ形式で返す。
+    pub fn current_sort_snapshot(&self) -> (ViewerSortKey, bool) {
+        (self.sort_key, self.sort_ascending)
+    }
+
+    /// app側がDBの読み込み・保存結果をViewerStateへ反映する。
+    pub fn set_saved_sort(&mut self, value: Option<(ViewerSortKey, bool)>) {
+        self.saved_sort = value;
+    }
+
+    pub fn sort_save_toggle_on(&self) -> bool {
+        self.saved_sort.is_some()
+    }
+
+    /// 保存ONで、現在値が保存済み値から変わっている場合だけtrue。
+    pub fn sort_save_changed(&self) -> bool {
+        self.saved_sort
+            .is_some_and(|saved| saved != self.current_sort_snapshot())
+    }
+
+    /// 保存を解除し、従来の初期ソート（名前・昇順）へ戻す。
+    /// 既に初期値なら不要な再ソートやページ位置リセットは行わない。
+    pub fn clear_saved_sort_and_restore_default(&mut self) {
+        self.saved_sort = None;
+        if self.sort_key != ViewerSortKey::Name || !self.sort_ascending {
+            self.sort_key = ViewerSortKey::Name;
+            self.sort_ascending = true;
+            self.sort_entries();
         }
     }
 
@@ -2348,5 +2383,87 @@ mod spread_rotation_tests {
         );
         let bounds = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(0.0, 0.0));
         assert!(ViewerState::spread_rotation_fit(local_l, local_r, bounds, 90).is_none());
+    }
+}
+
+#[cfg(test)]
+mod sort_save_state_tests {
+    use super::*;
+
+    fn viewer() -> ViewerState {
+        ViewerState::new_raw(PathBuf::from("test.png"), [None; 4], None)
+    }
+
+    #[test]
+    fn unsaved_viewer_keeps_existing_name_ascending_default() {
+        let viewer = viewer();
+        let current = viewer.current_sort_snapshot();
+        assert!(matches!(current.0, ViewerSortKey::Name));
+        assert!(current.1);
+        assert!(!viewer.sort_save_toggle_on());
+        assert!(!viewer.sort_save_changed());
+    }
+
+    #[test]
+    fn saved_sort_reports_changes_to_key_or_direction() {
+        let mut viewer = viewer();
+        viewer.set_saved_sort(Some((ViewerSortKey::Name, true)));
+        assert!(viewer.sort_save_toggle_on());
+        assert!(!viewer.sort_save_changed());
+
+        viewer.sort_key = ViewerSortKey::Natural;
+        assert!(viewer.sort_save_changed());
+
+        viewer.sort_key = ViewerSortKey::Name;
+        viewer.sort_ascending = false;
+        assert!(viewer.sort_save_changed());
+
+        viewer.set_saved_sort(Some((ViewerSortKey::Name, false)));
+        assert!(!viewer.sort_save_changed());
+    }
+
+    #[test]
+    fn clearing_saved_sort_restores_default_through_existing_sort_logic() {
+        let mut viewer = viewer();
+        viewer.entries = vec![
+            ViewerEntry {
+                entry_name: "b".to_string(),
+                display_name: "b".to_string(),
+                date_key: 2,
+                original_index: 0,
+            },
+            ViewerEntry {
+                entry_name: "a".to_string(),
+                display_name: "a".to_string(),
+                date_key: 1,
+                original_index: 1,
+            },
+        ];
+        viewer.sort_key = ViewerSortKey::Date;
+        viewer.sort_ascending = false;
+        viewer.saved_sort = Some((ViewerSortKey::Date, false));
+        viewer.spread_base = 4;
+
+        viewer.clear_saved_sort_and_restore_default();
+
+        assert!(!viewer.sort_save_toggle_on());
+        let current = viewer.current_sort_snapshot();
+        assert!(matches!(current.0, ViewerSortKey::Name));
+        assert!(current.1);
+        assert_eq!(viewer.entries[0].display_name, "a");
+        assert_eq!(viewer.entries[1].display_name, "b");
+        assert_eq!(viewer.spread_base, 0);
+    }
+
+    #[test]
+    fn clearing_already_default_sort_does_not_reset_page_position() {
+        let mut viewer = viewer();
+        viewer.saved_sort = Some((ViewerSortKey::Name, true));
+        viewer.spread_base = 4;
+
+        viewer.clear_saved_sort_and_restore_default();
+
+        assert!(!viewer.sort_save_toggle_on());
+        assert_eq!(viewer.spread_base, 4);
     }
 }
