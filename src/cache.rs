@@ -4,6 +4,7 @@ use crate::decode_jobs::{DecodeJobOutcome, DecodeJobQueue};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{mpsc, Arc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use fast_image_resize::images::Image as FirImage;
 use fast_image_resize::{FilterType as FirFilter, PixelType, ResizeAlg, ResizeOptions, Resizer};
@@ -216,7 +217,6 @@ pub fn spawn_worker(filter: image::imageops::FilterType, num_threads: usize, ctx
                 let job_id = scheduled.id;
                 let req = scheduled.payload;
 
-                let t_total = std::time::Instant::now();
                 let target_size = req.target_size;
                 let exif_enabled = req.exif_enabled;
                 let content = if req.is_raw_file {
@@ -260,13 +260,6 @@ pub fn spawn_worker(filter: image::imageops::FilterType, num_threads: usize, ctx
                     open_archive.as_mut().and_then(|(_, a)| a.load_page(&req.entry_name, filter, cache_budget_bytes, ring_bounds, frame_hard_limit_bytes, target_size, exif_enabled))
                 };
 
-                if content.is_some() {
-                    log_perf!(
-                        "[perf/page] total={:.1}ms entry={}",
-                        t_total.elapsed().as_secs_f64() * 1000.0,
-                        req.entry_name,
-                    );
-                }
                 if worker_queue.finish(job_id) {
                     let outcome = match content {
                         Some(content) => DecodeJobOutcome::Ready(content),
@@ -439,7 +432,7 @@ enum RingDecodeOutcome {
 }
 
 struct RingAnimState {
-    decoder: SequentialAnimDecoder,
+    decoder: Option<SequentialAnimDecoder>,
     ring: FrameRingBuffer,
     /// 次に decoder.next_frame() で得られるフレームに割り振るインデックス
     next_index: usize,
@@ -453,7 +446,10 @@ struct RingAnimState {
 /// 再生は前進のみを前提とし、デコーダが終端(None)を返した時点がループ境界の合図になる。
 /// その際は `restart()` でデコーダを先頭から作り直す（この再デコードによる一瞬のフリーズは許容する）。
 pub struct RingAnimation {
-    state: Mutex<RingAnimState>,
+    state: Arc<Mutex<RingAnimState>>,
+    /// 可視アニメ用の次フレーム生成が走っている間だけtrue。
+    /// 1アニメにつき同時に1本までとし、ページを離れた後も走り始めた1本だけは完走させる。
+    frame_worker_running: Arc<AtomicBool>,
     format: AnimFormat,
     /// PageCache への計上額（リング容量 × リサイズ後フレームサイズ）。構築時に確定し不変。
     /// 挿入時点の実常駐（2フレーム分）で計上すると、再生でリングが容量まで育ったとき
@@ -536,8 +532,13 @@ impl RingAnimation {
         ring.push(0, frame0);
         ring.push(1, frame1);
 
-        let state = RingAnimState { decoder, ring, next_index: 2, resize_to, filter, frame_hard_limit_bytes };
-        RingDecodeOutcome::Animated(Self { state: Mutex::new(state), format, reserved_bytes })
+        let state = RingAnimState { decoder: Some(decoder), ring, next_index: 2, resize_to, filter, frame_hard_limit_bytes };
+        RingDecodeOutcome::Animated(Self {
+            state: Arc::new(Mutex::new(state)),
+            frame_worker_running: Arc::new(AtomicBool::new(false)),
+            format,
+            reserved_bytes,
+        })
     }
 
     /// フレームの生デコードサイズ(リサイズ前、w*h*4)が`hard_limit_bytes`を超える場合、
@@ -583,7 +584,7 @@ impl RingAnimation {
                 return None;
             }
             let decode_started = std::time::Instant::now();
-            let next = state.decoder.next_frame()?;
+            let next = state.decoder.as_mut()?.next_frame()?;
             let decode_elapsed = decode_started.elapsed();
             let idx = state.next_index;
             state.next_index += 1;
@@ -596,7 +597,7 @@ impl RingAnimation {
                 || resize_elapsed >= std::time::Duration::from_millis(8)
             {
                 log_perf!(
-                    "[perf/anim-frame] format={:?} frame={} source={}x{} output={}x{} decode={:.1}ms resize={:.1}ms delay={:.1}ms",
+                    "[diag/anim-frame] format={:?} frame={} source={}x{} output={}x{} decode={:.1}ms resize={:.1}ms delay={:.1}ms",
                     self.format,
                     idx,
                     source_size.0,
@@ -612,10 +613,103 @@ impl RingAnimation {
         }
     }
 
+    /// UIスレッド用の非ブロッキング参照。バックグラウンド生成中にMutexを待たず、
+    /// まだ使える旧フレームを描画し続けられるようにする。
+    pub fn try_with_frame<R>(&self, index: usize, f: impl FnOnce(&AnimFrame) -> R) -> Option<R> {
+        let state = self.state.try_lock().ok()?;
+        state.ring.get(index).map(f)
+    }
+
+    /// `index` が未生成なら、可視アニメ専用の短命ワーカーで次の1フレームを生成する。
+    /// デコード・リサイズ中はstateのMutexを保持しないため、UIは現在フレームを継続表示できる。
+    /// 終端ではデコーダを巻き戻し、単調増加する表示indexへ次ループの先頭を割り当てる。
+    pub fn request_frame(&self, index: usize) -> bool {
+        {
+            let state = self.state.lock().unwrap();
+            if state.ring.get(index).is_some() {
+                return true;
+            }
+            if index < state.next_index || state.decoder.is_none() {
+                return false;
+            }
+        }
+        if self.frame_worker_running.compare_exchange(
+            false,
+            true,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ).is_err() {
+            return false;
+        }
+
+        let (mut decoder, frame_index, resize_to, filter, frame_hard_limit_bytes) = {
+            let mut state = self.state.lock().unwrap();
+            if state.ring.get(index).is_some() || index < state.next_index {
+                self.frame_worker_running.store(false, Ordering::Release);
+                return true;
+            }
+            let Some(decoder) = state.decoder.take() else {
+                self.frame_worker_running.store(false, Ordering::Release);
+                return false;
+            };
+            (decoder, state.next_index, state.resize_to, state.filter, state.frame_hard_limit_bytes)
+        };
+
+        let state = Arc::clone(&self.state);
+        let running = Arc::clone(&self.frame_worker_running);
+        let format = self.format;
+        std::thread::spawn(move || {
+            let decode_started = std::time::Instant::now();
+            let mut next = decoder.next_frame();
+            if next.is_none() && decoder.restart() {
+                next = decoder.next_frame();
+            }
+            let decode_elapsed = decode_started.elapsed();
+
+            let resized = next.map(|next| {
+                let source_size = next.image.dimensions();
+                let resize_started = std::time::Instant::now();
+                let next = Self::guard_frame_size(next, frame_hard_limit_bytes, filter, frame_index);
+                let resized = Self::apply_resize(next, resize_to, filter);
+                let resize_elapsed = resize_started.elapsed();
+                if decode_elapsed >= std::time::Duration::from_millis(8)
+                    || resize_elapsed >= std::time::Duration::from_millis(8)
+                {
+                    log_perf!(
+                        "[diag/anim-frame] format={:?} frame={} source={}x{} output={}x{} decode={:.1}ms resize={:.1}ms delay={:.1}ms worker=background",
+                        format,
+                        frame_index,
+                        source_size.0,
+                        source_size.1,
+                        resized.image.width(),
+                        resized.image.height(),
+                        decode_elapsed.as_secs_f64() * 1000.0,
+                        resize_elapsed.as_secs_f64() * 1000.0,
+                        resized.delay.as_secs_f64() * 1000.0,
+                    );
+                }
+                resized
+            });
+
+            let mut state = state.lock().unwrap();
+            state.decoder = Some(decoder);
+            if let Some(resized) = resized {
+                if state.next_index == frame_index {
+                    state.next_index += 1;
+                    state.ring.push(frame_index, resized);
+                }
+            }
+            running.store(false, Ordering::Release);
+        });
+        false
+    }
+
     /// ループ境界（最終フレーム→先頭）: デコーダを元データから作り直す。
+    #[cfg(test)]
     pub fn restart(&self) -> bool {
         let mut state = self.state.lock().unwrap();
-        if state.decoder.restart() {
+        let Some(decoder) = state.decoder.as_mut() else { return false };
+        if decoder.restart() {
             state.ring.clear();
             state.next_index = 0;
             true
@@ -1680,6 +1774,61 @@ mod ring_integration_tests {
             }
         }
         buf
+    }
+
+    fn wait_for_async_frame(ring: &RingAnimation, index: usize) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while std::time::Instant::now() < deadline {
+            if ring.try_with_frame(index, |_| ()).is_some() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        panic!("background frame {index} was not produced before timeout");
+    }
+
+    #[test]
+    fn ring_anim_background_request_produces_next_frame_without_sync_decode() {
+        let bytes = encode_gif_frames_mixed(&[(10, 10), (10, 10), (10, 10)]);
+        let content = decode_ring_anim(
+            &bytes,
+            AnimFormat::Gif,
+            image::imageops::FilterType::Triangle,
+            TEST_RING_BUDGET_BYTES,
+            TEST_RING_BOUNDS,
+            TEST_FRAME_HARD_LIMIT_BYTES,
+            Some((10, 10)),
+            true,
+        )
+        .expect("GIF should decode");
+        let PageContent::Animated(ring) = content else { panic!("expected animation") };
+
+        assert!(ring.try_with_frame(0, |_| ()).is_some());
+        assert!(!ring.request_frame(2), "new frame should be produced asynchronously");
+        wait_for_async_frame(&ring, 2);
+        assert!(ring.request_frame(2), "completed frame should report ready");
+    }
+
+    #[test]
+    fn ring_anim_background_request_continues_across_loop_boundary() {
+        let bytes = encode_gif_frames_mixed(&[(10, 10), (10, 10), (10, 10)]);
+        let content = decode_ring_anim(
+            &bytes,
+            AnimFormat::Gif,
+            image::imageops::FilterType::Triangle,
+            TEST_RING_BUDGET_BYTES,
+            TEST_RING_BOUNDS,
+            TEST_FRAME_HARD_LIMIT_BYTES,
+            Some((10, 10)),
+            true,
+        )
+        .expect("GIF should decode");
+        let PageContent::Animated(ring) = content else { panic!("expected animation") };
+
+        ring.request_frame(2);
+        wait_for_async_frame(&ring, 2);
+        ring.request_frame(3);
+        wait_for_async_frame(&ring, 3);
     }
 
     /// フェーズ5: 同一アニメ内でframe0より大幅に大きい中間フレームに遭遇しても、

@@ -21,10 +21,6 @@ const SCROLL_THRESHOLD: f32 = 50.0;
 /// 上書きされるため、実際のデコードターゲットには事実上使われない。
 const CONTENT_PX_PLACEHOLDER: (u32, u32) = (1920, 1080);
 const ANIM_SECS: f32 = 0.4;
-/// アニメ再生のキャッチアップ: 1tickで進める最大フレーム数。
-/// フレーム送りはUIスレッド上の同期デコード(RingAnimation::with_frame)を伴うため、
-/// 上限なしで追走するとrepaintが長時間ブロックしてUIが固まる。
-const MAX_CATCHUP_FRAMES: usize = 4;
 /// サムネイルバー: 現在ページを中心にこの枚数分だけ先取り要求する（暫定固定値）。
 /// フェーズ2で実際の可視範囲ベースに置き換え予定。
 const THUMBBAR_ENQUEUE_WINDOW: i32 = 40;
@@ -43,30 +39,40 @@ fn upload_ring_frame(
     ring: &crate::cache::RingAnimation,
     index: usize,
 ) -> Option<egui::TextureHandle> {
-    let started = Instant::now();
-    let (w, h, raw) = ring.with_frame(index, |f| {
+    let (w, h, raw) = ring.try_with_frame(index, |f| {
         (f.image.width(), f.image.height(), f.image.as_raw().clone())
     })?;
-    let copied_at = Instant::now();
     let color_image = egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], &raw);
-    let tex = ctx.load_texture(
+    Some(ctx.load_texture(
         format!("page_{orig_i}"),
         color_image,
         egui::TextureOptions::LINEAR,
-    );
-    let elapsed = started.elapsed();
-    if elapsed >= Duration::from_millis(8) {
+    ))
+}
+
+fn log_anim_texture_upload(
+    archive_path: &std::path::Path,
+    orig_i: usize,
+    previous_generation: Option<u64>,
+    generation: u64,
+    frame_index: usize,
+    visible: bool,
+    generation_changed: bool,
+    elapsed: Duration,
+) {
+    if generation_changed || elapsed >= Duration::from_millis(8) {
         crate::log_perf!(
-            "[perf/anim-upload] page={} frame={} size={}x{} copy={:.1}ms total={:.1}ms",
+            "[diag/anim-texture] archive={:?} page={} previous_generation={:?} generation={} frame={} visible={} reason={} upload={:.1}ms",
+            archive_path,
             orig_i,
-            index,
-            w,
-            h,
-            copied_at.duration_since(started).as_secs_f64() * 1000.0,
+            previous_generation,
+            generation,
+            frame_index,
+            visible,
+            if generation_changed { "generation-change" } else { "frame-update" },
             elapsed.as_secs_f64() * 1000.0,
         );
     }
-    Some(tex)
 }
 
 /// `bounds` の中に `img_size` を縦横比を保ったまま収める（contain-fit）矩形を返す。
@@ -454,6 +460,27 @@ impl ViewerState {
     /// zoom_actual時は無制限(原寸)、それ以外は直近の描画領域サイズ(物理px)を上限にする。
     pub fn current_decode_target(&self, zoom_actual: bool) -> Option<(u32, u32)> {
         if zoom_actual { None } else { Some(self.content_px) }
+    }
+
+    /// 現在の見開きにアニメーションが含まれるか。可視アニメのフレーム生成中は
+    /// ページ先読みジョブの新規開始を止め、CPU時間を現在ページへ優先配分するために使う。
+    pub fn has_visible_animation(
+        &self,
+        page_cache: &PageCache,
+        active_generation: u64,
+        preparing_generation: Option<u64>,
+    ) -> bool {
+        self.visible_original_indices().into_iter().any(|orig_i| {
+            matches!(
+                page_cache.get_best(
+                    &self.archive_path,
+                    orig_i,
+                    active_generation,
+                    preparing_generation,
+                ),
+                Some((_, PageContent::Animated(_)))
+            )
+        })
     }
 
     /// フェーズ6: 再デコード発火時に、指定ページのテクスチャ・アニメ再生状態を破棄する。
@@ -1761,8 +1788,8 @@ impl ViewerState {
                 ctx.request_repaint_after(Duration::from_millis(100));
                 continue;
             };
-            let generation_changed = self.texture_generations.get(&orig_i).copied()
-                != Some(generation);
+            let previous_generation = self.texture_generations.get(&orig_i).copied();
+            let generation_changed = previous_generation != Some(generation);
             if generation_changed {
                 self.anim_states.remove(&orig_i);
             }
@@ -1784,10 +1811,9 @@ impl ViewerState {
                     }
                 }
                 PageContent::Animated(ring) => {
-                    let tick_started = Instant::now();
                     // フェーズ3/3.5: GIF/APNG/AVIF/WebP。全フレーム常駐ではなく逐次デコード+リングバッファ。
-                    // デコーダが終端(None)を返した時点をループ境界とみなし restart() する
-                    // (この再デコードによる一瞬のフリーズは許容する設計上の割り切り)。
+                    // 可視ページの次フレーム生成はバックグラウンドへ要求し、UIスレッドでは
+                    // 完成済みフレームだけを採用する。未完成中は現在のテクスチャを保持する。
                     if !visible_orig.contains(&orig_i) {
                         // 裏ページ: 位置を凍結（tickしない）。ページ送り時の白フラッシュ防止に、
                         // テクスチャ未保有時のみ凍結位置のフレームを1回だけアップロードする。
@@ -1797,9 +1823,21 @@ impl ViewerState {
                         if generation_changed || !self.textures.contains_key(&orig_i) {
                             let frozen_index =
                                 self.anim_states.get(&orig_i).map_or(0, |s| s.frame_index);
+                            let upload_started = Instant::now();
                             if let Some(tex) = upload_ring_frame(ctx, orig_i, ring, frozen_index) {
+                                let upload_elapsed = upload_started.elapsed();
                                 self.textures.insert(orig_i, tex);
                                 self.texture_generations.insert(orig_i, generation);
+                                log_anim_texture_upload(
+                                    &self.archive_path,
+                                    orig_i,
+                                    previous_generation,
+                                    generation,
+                                    frozen_index,
+                                    false,
+                                    generation_changed,
+                                    upload_elapsed,
+                                );
                                 promoted_pages.push((orig_i, generation));
                             }
                         }
@@ -1817,53 +1855,41 @@ impl ViewerState {
                         state.last_frame_at = now;
                     }
                     let mut needs_upload = generation_changed || !self.textures.contains_key(&orig_i);
-                    // 遅れが1フレーム分を超えていたら複数フレーム進めて追いつく
-                    // (テクスチャアップロードは最後の1枚だけ)。スキップ分のデコードも
-                    // UIスレッドで走るため、上限 MAX_CATCHUP_FRAMES で打ち切る。
-                    let mut advanced = false;
-                    let mut advanced_count = 0usize;
-                    for _ in 0..MAX_CATCHUP_FRAMES {
-                        let current_delay = ring
-                            .with_frame(state.frame_index, |f| f.delay)
-                            .unwrap_or(Duration::from_millis(100));
-                        if now.duration_since(state.last_frame_at) < current_delay {
-                            break;
-                        }
-                        let next_index = state.frame_index + 1;
-                        if ring.with_frame(next_index, |_| ()).is_some() {
-                            state.frame_index = next_index;
-                            advanced_count += 1;
-                            // 超過分(elapsed - delay)を次フレームへ繰り越して蓄積誤差を防ぐ
-                            state.last_frame_at += current_delay;
-                        } else {
-                            // ループ境界: restart()はリング全クリア+先頭からの再デコードで
-                            // コストが読めないため、境界を跨ぐ追走はせずフレーム0から仕切り直す。
-                            ring.restart();
-                            state.frame_index = 0;
-                            state.last_frame_at = now;
-                            advanced = true;
-                            break;
-                        }
-                        advanced = true;
-                    }
-                    if advanced {
+                    let current_delay = ring
+                        .try_with_frame(state.frame_index, |f| f.delay)
+                        .unwrap_or(Duration::from_millis(100));
+                    let next_index = state.frame_index + 1;
+
+                    // 表示期限より前から次フレームを生成しておく。生成が期限に間に合わなくても
+                    // 同期的に待たず、現在フレームをそのまま表示する。
+                    let next_ready = ring.request_frame(next_index);
+                    if now.duration_since(state.last_frame_at) >= current_delay && next_ready {
+                        state.frame_index = next_index;
+                        // 遅れを次フレームへ持ち越すと、重い素材で永久に複数枚追走するため、
+                        // 実際に表示できた時点を新しい基準時刻にする。
+                        state.last_frame_at = now;
                         needs_upload = true;
-                        // 上限まで進めてもまだ1フレーム分以上遅れている場合
-                        // (デコードが再生速度に追いつかない高速アニメ、最小化からの復帰直後など)は
-                        // 追走を諦めて now に切り直し「遅いなり再生」に落とす(無限追走スパイラル防止)。
-                        let current_delay = ring
-                            .with_frame(state.frame_index, |f| f.delay)
-                            .unwrap_or(Duration::from_millis(100));
-                        if now.duration_since(state.last_frame_at) >= current_delay {
-                            state.last_frame_at = now;
-                        }
+                        // 次の生成もすぐ開始し、表示中のdelayとバックグラウンド処理を重ねる。
+                        ring.request_frame(state.frame_index + 1);
                     }
 
                     if needs_upload {
                         let frame_index = state.frame_index;
+                        let upload_started = Instant::now();
                         if let Some(tex) = upload_ring_frame(ctx, orig_i, ring, frame_index) {
+                            let upload_elapsed = upload_started.elapsed();
                             self.textures.insert(orig_i, tex);
                             self.texture_generations.insert(orig_i, generation);
+                            log_anim_texture_upload(
+                                &self.archive_path,
+                                orig_i,
+                                previous_generation,
+                                generation,
+                                frame_index,
+                                true,
+                                generation_changed,
+                                upload_elapsed,
+                            );
                             if generation_changed {
                                 promoted_pages.push((orig_i, generation));
                             }
@@ -1876,24 +1902,15 @@ impl ViewerState {
                     let now2 = Instant::now();
                     let elapsed_after_upload = now2.duration_since(state.last_frame_at);
                     let next_delay = ring
-                        .with_frame(state.frame_index, |f| f.delay)
+                        .try_with_frame(state.frame_index, |f| f.delay)
                         .unwrap_or(Duration::from_millis(100));
-                    let remaining = next_delay.saturating_sub(elapsed_after_upload);
+                    // 未完成フレームは短いポーリングだけ予約し、OS入力を妨げる同期waitはしない。
+                    let remaining = if ring.request_frame(state.frame_index + 1) {
+                        next_delay.saturating_sub(elapsed_after_upload)
+                    } else {
+                        Duration::from_millis(8)
+                    };
                     min_repaint_after = min_repaint_after.min(remaining);
-                    let tick_elapsed = tick_started.elapsed();
-                    if tick_elapsed >= Duration::from_millis(16) {
-                        crate::log_perf!(
-                            "[perf/anim-tick] archive={:?} page={} generation={} frame={} advanced={} tick={:.1}ms next_delay={:.1}ms remaining={:.1}ms",
-                            self.archive_path,
-                            orig_i,
-                            generation,
-                            state.frame_index,
-                            advanced_count,
-                            tick_elapsed.as_secs_f64() * 1000.0,
-                            next_delay.as_secs_f64() * 1000.0,
-                            remaining.as_secs_f64() * 1000.0,
-                        );
-                    }
                 }
             }
         }

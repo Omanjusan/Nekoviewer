@@ -98,6 +98,7 @@ struct QueuedJob<T> {
 
 struct RunningJob {
     key: DecodeJobKey,
+    class: PagePriorityClass,
     cancelled: Arc<AtomicBool>,
 }
 
@@ -134,6 +135,8 @@ struct QueueState<T> {
     queued: HashMap<DecodeJobKey, QueuedJob<T>>,
     heap: BinaryHeap<HeapEntry>,
     running: HashMap<u64, RunningJob>,
+    /// Visible以外（Ahead/Behind）を同時実行してよい最大数。
+    max_speculative_running: usize,
     next_id: u64,
     next_order: u64,
     shutting_down: bool,
@@ -167,17 +170,32 @@ impl<T> QueueState<T> {
     }
 
     fn pop_next(&mut self) -> Option<ScheduledDecodeJob<T>> {
+        let visible_running = self.running.values().any(|job| job.class == PagePriorityClass::Visible);
+        let speculative_running = self.running.values()
+            .filter(|job| job.class != PagePriorityClass::Visible)
+            .count();
+        let mut blocked = Vec::new();
         while let Some(entry) = self.heap.pop() {
-            let Some(job) = self.queued.remove(&entry.key) else {
+            let Some(job) = self.queued.get(&entry.key) else {
                 continue;
             };
             if job.id != entry.id || job.cancelled.load(AtomicOrdering::Acquire) {
+                self.queued.remove(&entry.key);
                 continue;
             }
             if !self.generations.accepts(job.key.generation) {
                 job.cancelled.store(true, AtomicOrdering::Release);
+                self.queued.remove(&entry.key);
                 continue;
             }
+            let speculative = job.class != PagePriorityClass::Visible;
+            if speculative
+                && (visible_running || speculative_running >= self.max_speculative_running)
+            {
+                blocked.push(entry);
+                continue;
+            }
+            let job = self.queued.remove(&entry.key).unwrap();
             let scheduled = ScheduledDecodeJob {
                 id: job.id,
                 key: job.key.clone(),
@@ -188,11 +206,14 @@ impl<T> QueueState<T> {
                 job.id,
                 RunningJob {
                     key: job.key,
+                    class: job.class,
                     cancelled: job.cancelled,
                 },
             );
+            self.heap.extend(blocked);
             return Some(scheduled);
         }
+        self.heap.extend(blocked);
         None
     }
 }
@@ -226,6 +247,7 @@ impl<T> DecodeJobQueue<T> {
                     queued: HashMap::new(),
                     heap: BinaryHeap::new(),
                     running: HashMap::new(),
+                    max_speculative_running: 1,
                     next_id: 0,
                     next_order: 0,
                     shutting_down: false,
@@ -233,6 +255,14 @@ impl<T> DecodeJobQueue<T> {
                 wake: Condvar::new(),
             }),
         }
+    }
+
+    /// Ahead/Behindの最大同時実行数を変更する。実行中ジョブは止めず、以後の開始数を制限する。
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn set_max_speculative_running(&self, max: usize) {
+        let mut state = self.shared.state.lock().unwrap();
+        state.max_speculative_running = max;
+        self.shared.wake.notify_all();
     }
 
     /// active/preparing以外の待機ジョブを削除し、実行中ジョブには停止信号を立てる。
@@ -411,8 +441,11 @@ impl<T> DecodeJobQueue<T> {
         let Some(job) = state.running.remove(&id) else {
             return false;
         };
-        !job.cancelled.load(AtomicOrdering::Acquire)
+        let accepted = !job.cancelled.load(AtomicOrdering::Acquire)
             && state.generations.accepts(job.key.generation)
+        ;
+        self.shared.wake.notify_all();
+        accepted
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
@@ -556,8 +589,10 @@ mod tests {
         queue.retain_desired_keys(&keep);
 
         assert!(running.is_cancelled());
-        assert_eq!(take_pages(&queue), vec![101]);
+        // キャンセル済みでも実処理はfinishまでCPUを使い続けるため、先読み枠を空けない。
+        assert!(queue.try_take().is_none());
         assert!(!queue.finish(running.id));
+        assert_eq!(take_pages(&queue), vec![101]);
     }
 
     #[test]
@@ -572,6 +607,58 @@ mod tests {
             job(1, 101, PagePriorityClass::Visible, 0),
         ]);
         assert_eq!(take_pages(&queue), vec![101, 100]);
+    }
+
+    #[test]
+    fn speculative_job_waits_until_visible_job_finishes() {
+        let queue = DecodeJobQueue::new(1);
+        queue.replace_desired(vec![
+            job(1, 100, PagePriorityClass::Visible, 0),
+            job(1, 101, PagePriorityClass::Ahead, 1),
+        ]);
+
+        let visible = queue.try_take().unwrap();
+        assert_eq!(visible.key.page_index, 100);
+        assert!(queue.try_take().is_none());
+
+        assert!(queue.finish(visible.id));
+        let ahead = queue.try_take().unwrap();
+        assert_eq!(ahead.key.page_index, 101);
+        assert!(queue.finish(ahead.id));
+    }
+
+    #[test]
+    fn speculative_parallelism_is_runtime_configurable() {
+        let queue = DecodeJobQueue::new(1);
+        queue.replace_desired(vec![
+            job(1, 101, PagePriorityClass::Ahead, 1),
+            job(1, 102, PagePriorityClass::Ahead, 2),
+        ]);
+
+        let first = queue.try_take().unwrap();
+        assert!(queue.try_take().is_none());
+
+        queue.set_max_speculative_running(2);
+        let second = queue.try_take().unwrap();
+        assert_ne!(first.key.page_index, second.key.page_index);
+        assert!(queue.finish(first.id));
+        assert!(queue.finish(second.id));
+    }
+
+    #[test]
+    fn queued_visible_job_bypasses_a_saturated_speculative_lane() {
+        let queue = DecodeJobQueue::new(1);
+        queue.replace_desired(vec![
+            job(1, 101, PagePriorityClass::Ahead, 1),
+            job(1, 102, PagePriorityClass::Ahead, 2),
+        ]);
+        let ahead = queue.try_take().unwrap();
+        assert!(queue.submit(job(1, 100, PagePriorityClass::Visible, 0)));
+
+        let visible = queue.try_take().unwrap();
+        assert_eq!(visible.key.page_index, 100);
+        assert!(queue.finish(visible.id));
+        assert!(queue.finish(ahead.id));
     }
 
     #[test]

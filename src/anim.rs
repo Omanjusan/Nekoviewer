@@ -337,6 +337,7 @@ impl FrameRingBuffer {
         self.frames.iter().find(|(i, _)| *i == index).map(|(_, f)| f)
     }
 
+    #[cfg(test)]
     pub fn clear(&mut self) {
         self.frames.clear();
     }

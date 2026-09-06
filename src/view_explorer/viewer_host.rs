@@ -478,24 +478,35 @@ impl NekoviewApp {
         // ツールバーの翻訳トグルボタンは、セッション内で疎通確認済み(URL一致)かつ
         // 翻訳モデルが選択済みの場合のみ有効化する。
         let translate_toggle_enabled = self.translate_conn_verified && !self.translate_cfg.translation_model.trim().is_empty();
-        let output = {
+        let (output, visible_animation) = {
             let mut viewer_guard = self.viewer.lock().unwrap();
             let mut page_cache_guard = self.page_cache.lock().unwrap();
             let mut cfg_guard = self.viewer_cfg.lock().unwrap();
             match viewer_guard.as_mut() {
-                Some(viewer) => viewer.show(
-                    ui,
-                    &mut *page_cache_guard,
-                    self.active_decode_generation,
-                    self.preparing_decode_generation,
-                    &mut *cfg_guard,
-                    &self.config.keymap,
-                    self.translate_window_open,
-                    translate_toggle_enabled,
-                ),
+                Some(viewer) => {
+                    let visible_animation = viewer.has_visible_animation(
+                        &page_cache_guard,
+                        self.active_decode_generation,
+                        self.preparing_decode_generation,
+                    );
+                    let output = viewer.show(
+                        ui,
+                        &mut *page_cache_guard,
+                        self.active_decode_generation,
+                        self.preparing_decode_generation,
+                        &mut *cfg_guard,
+                        &self.config.keymap,
+                        self.translate_window_open,
+                        translate_toggle_enabled,
+                    );
+                    (output, visible_animation)
+                }
                 None => return,
             }
         };
+        // 実行中の先読みは止めないが、可視アニメ中は新しいAhead/Behindを開始しない。
+        // 静止画へ移動した時点で通常の1並列へ戻す。
+        self.req_tx.set_max_speculative_running(if visible_animation { 0 } else { 1 });
 
         if output.toggle_translate_window {
             self.translate_window_open = !self.translate_window_open;

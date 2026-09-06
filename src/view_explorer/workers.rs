@@ -220,9 +220,9 @@ impl NekoviewApp {
         self.viewer_cfg.lock().unwrap().redecode_trigger_seq += 1;
     }
 
-    /// ウィンドウ生成直後の最初のResizedでは、ちらつき防止のため再デコードを予約しない。
-    /// ただし初回デコード自体は実ウィンドウ寸法で行わないと、特にアニメーションが
-    /// max_decode_edge相当の巨大フレームを逐次処理して再生不能になるため、ターゲットだけ先に合わせる。
+    /// ビューアー窓の生成時に、最初のページ要求から実ウィンドウ寸法を使わせる。
+    /// 初回の同一サイズ Resized は再デコード対象にしないため、ここでは世代を進めず
+    /// decode_target だけをページワーカーが走り出す前に合わせる。
     pub fn initialize_viewer_decode_target(&mut self, physical_size: (u32, u32)) {
         let cfg = self.viewer_cfg.lock().unwrap();
         if cfg.redecode_on_resize && !cfg.zoom_actual {

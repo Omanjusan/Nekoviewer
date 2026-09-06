@@ -276,9 +276,9 @@ struct WinitApp {
     proxy: EventLoopProxy<UserEvent>,
     explorer: Option<EguiWindow>,
     viewer: Option<EguiWindow>,
-    /// 新規作成直後にOSから届く初回 Resized は、ユーザー操作によるリサイズではない。
-    /// 初回表示済みページを直後に再デコードして暗転させないため、この1回だけ通知を抑止する。
-    viewer_initial_resize_pending: bool,
+    /// ビューアー窓で最後に観測した物理サイズ。同一サイズの重複Resizedや、物理サイズが
+    /// 変わらないScaleFactorChangedで不要な再デコード世代を作らないために保持する。
+    viewer_last_physical_size: Option<(u32, u32)>,
     /// ステータス窓（debug ビルドでのみ生成される。release では常に `None`）。
     status: Option<EguiWindow>,
     /// OCR/翻訳子ウィンドウ（1P担当、独立OS窓）。
@@ -287,6 +287,13 @@ struct WinitApp {
     /// 窓生成のたびNormalへ戻るため、生成時は必ずfalse扱いにする。
     translate_always_on_top_applied: bool,
     app: Option<NekoviewApp>,
+}
+
+fn observe_physical_size(last: &mut Option<(u32, u32)>, current: (u32, u32)) -> bool {
+    match last.replace(current) {
+        Some(previous) => previous != current,
+        None => false,
+    }
 }
 
 impl WinitApp {
@@ -301,7 +308,7 @@ impl WinitApp {
             proxy,
             explorer: None,
             viewer: None,
-            viewer_initial_resize_pending: false,
+            viewer_last_physical_size: None,
             status: None,
             translate: None,
             translate_always_on_top_applied: false,
@@ -361,13 +368,13 @@ impl WinitApp {
                 window.focus_window();
             }
             self.viewer = Some(win);
-            self.viewer_initial_resize_pending = true;
+            self.viewer_last_physical_size = Some((initial_size.width, initial_size.height));
             crate::log_common!("[viewer] window created");
         } else if !want && have {
             // 窓を破棄。EguiWindow を drop すると専用 Painter（サーフェス・Device・Renderer）も
             // 一緒に解放される（共有 Painter 時代の gc_viewports は不要）。
             self.viewer = None;
-            self.viewer_initial_resize_pending = false;
+            self.viewer_last_physical_size = None;
             crate::log_common!("[viewer] window destroyed");
         } else if want && have {
             // 既存窓のままファイル切替したとき等のフォーカス前面化要求を処理。
@@ -473,10 +480,20 @@ impl WinitApp {
 
         if self.viewer.as_ref().map_or(false, |w| w.due(now)) {
             if let (Some(win), Some(app)) = (self.viewer.as_mut(), self.app.as_mut()) {
+                let frame_cap = win.frame_cap_interval();
                 let started = Instant::now();
                 let delay = render_window(win, |ui| {
                     app.render_viewer(ui);
                 });
+                let render_elapsed = started.elapsed();
+                if render_elapsed >= frame_cap {
+                    crate::log_perf!(
+                        "[diag/viewer-render] total={:.1}ms frame_cap={:.1}ms requested_delay={:.1}ms",
+                        render_elapsed.as_secs_f64() * 1000.0,
+                        frame_cap.as_secs_f64() * 1000.0,
+                        delay.as_secs_f64() * 1000.0,
+                    );
+                }
                 finish_frame(win, started, delay);
             }
         }
@@ -663,24 +680,33 @@ impl ApplicationHandler<UserEvent> for WinitApp {
                 }
                 // フェーズ6: ビューアー窓のリサイズのみ再デコードのデバウンス対象にする
                 // （エクスプローラー窓のリサイズは表示画像と無関係）。
-                if is_viewer {
-                    let initial_resize = std::mem::take(&mut self.viewer_initial_resize_pending);
+                let viewer_size_changed = is_viewer
+                    && observe_physical_size(
+                        &mut self.viewer_last_physical_size,
+                        (size.width, size.height),
+                    );
+                if viewer_size_changed {
                     if let Some(app) = self.app.as_mut() {
-                        if initial_resize {
-                            app.initialize_viewer_decode_target((size.width, size.height));
-                        } else {
-                            app.notify_viewer_resized();
-                        }
+                        app.notify_viewer_resized();
                     }
                 }
             }
             WindowEvent::ScaleFactorChanged { .. } => {
-                // 論理サイズが同じでも、別DPIモニターへの移動では必要な物理px数が変わる。
-                // Resizedの併発有無に依存せず、ビューアーのデコード世代を更新対象にする。
+                // DPI変更後も物理サイズが変わった場合だけデコード世代を更新する。
+                // 同じ物理サイズのResizedが併発しても、サイズ追跡により二重通知しない。
                 if let Some(w) = self.window_mut(window_id) {
                     w.bump_now();
                 }
-                if is_viewer {
+                let viewer_size = self.viewer.as_ref()
+                    .filter(|w| w.window.id() == window_id)
+                    .map(|w| w.window.inner_size());
+                let viewer_size_changed = viewer_size.is_some_and(|size| {
+                    observe_physical_size(
+                        &mut self.viewer_last_physical_size,
+                        (size.width, size.height),
+                    )
+                });
+                if viewer_size_changed {
                     if let Some(app) = self.app.as_mut() {
                         app.notify_viewer_resized();
                     }
@@ -737,4 +763,30 @@ pub fn run(start_dir: PathBuf, cfg: AppConfig, state: AppState) {
 
     let mut app = WinitApp::new(start_dir, cfg, state, proxy);
     event_loop.run_app(&mut app).expect("run_app");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::observe_physical_size;
+
+    #[test]
+    fn first_physical_size_observation_only_establishes_the_baseline() {
+        let mut last = None;
+        assert!(!observe_physical_size(&mut last, (800, 600)));
+        assert_eq!(last, Some((800, 600)));
+    }
+
+    #[test]
+    fn duplicate_physical_size_does_not_request_redecode() {
+        let mut last = Some((800, 600));
+        assert!(!observe_physical_size(&mut last, (800, 600)));
+    }
+
+    #[test]
+    fn changed_physical_size_requests_redecode_and_becomes_the_new_baseline() {
+        let mut last = Some((800, 600));
+        assert!(observe_physical_size(&mut last, (900, 700)));
+        assert_eq!(last, Some((900, 700)));
+        assert!(!observe_physical_size(&mut last, (900, 700)));
+    }
 }
