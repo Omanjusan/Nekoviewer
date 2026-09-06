@@ -661,14 +661,8 @@ impl ApplicationHandler<UserEvent> for WinitApp {
                 }
                 // フェーズ6: ビューアー窓のリサイズのみ再デコードのデバウンス対象にする
                 // （エクスプローラー窓のリサイズは表示画像と無関係）。
-                if is_viewer {
-                    if std::mem::take(&mut self.viewer_initial_resize_pending) {
-                        crate::log_common!(
-                            "[viewer] ignored initial resize for redecode ({}x{})",
-                            size.width,
-                            size.height,
-                        );
-                    } else if let Some(app) = self.app.as_mut() {
+                if is_viewer && !std::mem::take(&mut self.viewer_initial_resize_pending) {
+                    if let Some(app) = self.app.as_mut() {
                         app.notify_viewer_resized();
                     }
                 }
