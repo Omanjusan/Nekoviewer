@@ -512,6 +512,10 @@ impl NekoviewApp {
             self.handle_spread_save_action(action);
         }
 
+        if let Some(action) = output.sort_save_action {
+            self.handle_sort_save_action(action);
+        }
+
         if output.open_favorite_dialog {
             self.open_favorite_detail_dialog();
         }
@@ -716,6 +720,38 @@ impl NekoviewApp {
                     viewer.set_saved_spread(Some((mode, offset)));
                     self.spread_states.insert(filename, (mode, offset));
                 }
+            }
+        }
+    }
+
+    /// 右クリックメニューでのソート条件保存操作を反映する。
+    fn handle_sort_save_action(&mut self, action: crate::controller::SortSaveAction) {
+        let db = self.spread_db.clone();
+        let mut viewer_guard = self.viewer.lock().unwrap();
+        let Some(viewer) = viewer_guard.as_mut() else { return };
+        let filename = match viewer.archive_path().file_name().and_then(|n| n.to_str()) {
+            Some(f) => f.to_string(),
+            None => return,
+        };
+
+        match action {
+            crate::controller::SortSaveAction::Enable => {
+                let Some(db) = db else { return };
+                let (key, ascending) = viewer.current_sort_snapshot();
+                crate::spread_state::write_archive_sort(
+                    &db,
+                    &self.current_dir,
+                    &filename,
+                    key,
+                    ascending,
+                );
+                viewer.set_saved_sort(Some((key, ascending)));
+            }
+            crate::controller::SortSaveAction::Disable => {
+                if let Some(db) = db {
+                    crate::spread_state::remove_archive_sort(&db, &self.current_dir, &filename);
+                }
+                viewer.clear_saved_sort_and_restore_default();
             }
         }
     }

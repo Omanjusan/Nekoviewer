@@ -318,6 +318,8 @@ pub struct ViewerState {
     saved_sort: Option<(ViewerSortKey, bool)>,
     /// 保存メニューでのユーザー操作要求（1フレームで消費してViewerOutputへ渡す）
     pending_spread_action: Option<crate::controller::SpreadSaveAction>,
+    /// ソート保存メニューでのユーザー操作要求（1フレームで消費）
+    pending_sort_action: Option<crate::controller::SortSaveAction>,
     /// 右クリックメニュー「お気に入り詳細設定」が押されたか（1フレームで消費）
     pending_open_favorite_dialog: bool,
     /// 右クリックメニュー「ファイル詳細」が押されたか（1フレームで消費）
@@ -491,6 +493,7 @@ impl ViewerState {
             saved_spread: None,
             saved_sort: None,
             pending_spread_action: None,
+            pending_sort_action: None,
             pending_open_favorite_dialog: false,
             pending_open_file_detail: false,
             file_detail_dialog: None,
@@ -551,6 +554,7 @@ impl ViewerState {
             saved_spread: None,
             saved_sort: None,
             pending_spread_action: None,
+            pending_sort_action: None,
             pending_open_favorite_dialog: false,
             pending_open_file_detail: false,
             file_detail_dialog: None,
@@ -682,6 +686,10 @@ impl ViewerState {
         self.saved_sort.is_some()
     }
 
+    pub fn sort_save_toggle_enabled(&self) -> bool {
+        !self.is_raw_file
+    }
+
     /// 保存ONで、現在値が保存済み値から変わっている場合だけtrue。
     pub fn sort_save_changed(&self) -> bool {
         self.saved_sort
@@ -697,6 +705,10 @@ impl ViewerState {
             self.sort_ascending = true;
             self.sort_entries();
         }
+    }
+
+    pub fn take_sort_action(&mut self) -> Option<crate::controller::SortSaveAction> {
+        self.pending_sort_action.take()
     }
 
     /// メニュー操作で立てられた保存要求を取り出す（1フレームで消費）
@@ -908,7 +920,7 @@ impl ViewerState {
         let ctx = ui.ctx().clone();
         let viewer_style = ui.style().clone();
         if !self.open || self.entries.is_empty() {
-            return ViewerOutput { nav: ViewerNav::None, close_requested: !self.open, save_slots: None, spread_save_action: None, open_favorite_dialog: false, toggle_translate_window: false };
+            return ViewerOutput { nav: ViewerNav::None, close_requested: !self.open, save_slots: None, spread_save_action: None, sort_save_action: None, open_favorite_dialog: false, toggle_translate_window: false };
         }
 
         // ── フレーム入力を一括収集（ctx.input はこの1回のみ）────────────────
@@ -1065,11 +1077,12 @@ impl ViewerState {
         self.tick_toast(&ctx, input.time);
 
         let spread_save_action = self.take_spread_action();
+        let sort_save_action = self.take_sort_action();
         let open_favorite_dialog = self.take_favorite_dialog_request();
         let toggle_translate_window = self.take_translate_toggle_request();
         self.maybe_open_file_detail_dialog();
         self.draw_file_detail_dialog(&ctx);
-        ViewerOutput { nav, close_requested: close_self, save_slots, spread_save_action, open_favorite_dialog, toggle_translate_window }
+        ViewerOutput { nav, close_requested: close_self, save_slots, spread_save_action, sort_save_action, open_favorite_dialog, toggle_translate_window }
     }
 
     /// ビューアーを開いた直後（初回フレーム）に conf 既定スロットを一度だけ適用する。
@@ -1976,13 +1989,32 @@ impl ViewerState {
         }
     }
 
-    /// 画像本体の右クリックメニュー（見開き設定の保存トグル／上書き保存）を描画する
+    fn sort_setting_text(key: ViewerSortKey, ascending: bool, t: i18n::Lang) -> String {
+        let key_label = match key {
+            ViewerSortKey::Name => t.sort_name(),
+            ViewerSortKey::Natural => t.sort_natural(),
+            ViewerSortKey::Date => t.sort_date(),
+        };
+        let order_label = if ascending { t.sort_asc() } else { t.sort_desc() };
+        format!(
+            "{} {}",
+            key_label.trim_matches(['[', ']']),
+            order_label.trim_matches(['[', ']'])
+        )
+    }
+
+    /// 画像本体の右クリックメニュー（見開き・ソート設定の保存）を描画する
     fn spread_save_context_menu(
         ui: &mut egui::Ui,
         toggle_enabled: bool,
         toggle_on_init: bool,
         overwrite_enabled: bool,
         action: &mut Option<crate::controller::SpreadSaveAction>,
+        sort_toggle_enabled: bool,
+        sort_toggle_on_init: bool,
+        sort_changed: bool,
+        current_sort: (ViewerSortKey, bool),
+        sort_action: &mut Option<crate::controller::SortSaveAction>,
         open_favorite_dialog: &mut bool,
         open_file_detail: &mut bool,
     ) {
@@ -2004,6 +2036,25 @@ impl ViewerState {
                 ui.close();
             }
         });
+        let mut sort_toggle_on = sort_toggle_on_init;
+        ui.add_enabled_ui(sort_toggle_enabled, |ui| {
+            if ui.checkbox(&mut sort_toggle_on, t.sort_save_toggle_label()).changed() {
+                *sort_action = Some(if sort_toggle_on {
+                    crate::controller::SortSaveAction::Enable
+                } else {
+                    crate::controller::SortSaveAction::Disable
+                });
+                ui.close();
+            }
+        });
+        let sort_text = Self::sort_setting_text(current_sort.0, current_sort.1, t);
+        ui.label(format!("{} : {}", t.sort_save_current_label(), sort_text));
+        let changed_suffix = if sort_changed {
+            format!("（{}）", t.sort_save_changed_label())
+        } else {
+            String::new()
+        };
+        ui.label(format!("{} : {}{}", t.sort_save_new_label(), sort_text, changed_suffix));
         ui.separator();
         if ui.button(t.favorite_detail_menu()).clicked() {
             *open_favorite_dialog = true;
@@ -2027,7 +2078,12 @@ impl ViewerState {
         let toggle_enabled = self.spread_save_toggle_enabled();
         let toggle_on = self.spread_save_toggle_on();
         let overwrite_enabled = self.spread_overwrite_enabled();
+        let sort_toggle_enabled = self.sort_save_toggle_enabled();
+        let sort_toggle_on = self.sort_save_toggle_on();
+        let sort_changed = self.sort_save_changed();
+        let current_sort = self.current_sort_snapshot();
         let action = &mut self.pending_spread_action;
+        let sort_action = &mut self.pending_sort_action;
         let open_favorite_dialog = &mut self.pending_open_favorite_dialog;
         let open_file_detail = &mut self.pending_open_file_detail;
         if let Some(tex) = tex {
@@ -2057,7 +2113,7 @@ impl ViewerState {
                     }
                     if resp.double_clicked() { *double_clicked = true; }
                     if resp.clicked() && !resp.double_clicked() { *single_clicked = true; }
-                    resp.context_menu(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, open_favorite_dialog, open_file_detail));
+                    resp.context_menu(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort, sort_action, open_favorite_dialog, open_file_detail));
                 });
             } else {
                 let available = ui.available_size();
@@ -2066,7 +2122,7 @@ impl ViewerState {
                 let resp  = ui.allocate_rect(fit, egui::Sense::click());
                 if resp.double_clicked() { *double_clicked = true; }
                 if resp.clicked() && !resp.double_clicked() { *single_clicked = true; }
-                resp.context_menu(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, open_favorite_dialog, open_file_detail));
+                resp.context_menu(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort, sort_action, open_favorite_dialog, open_file_detail));
             }
         } else {
             let rect = egui::Rect::from_min_size(ui.cursor().left_top(), ui.available_size());
@@ -2087,7 +2143,12 @@ impl ViewerState {
         let toggle_enabled = self.spread_save_toggle_enabled();
         let toggle_on = self.spread_save_toggle_on();
         let overwrite_enabled = self.spread_overwrite_enabled();
+        let sort_toggle_enabled = self.sort_save_toggle_enabled();
+        let sort_toggle_on = self.sort_save_toggle_on();
+        let sort_changed = self.sort_save_changed();
+        let current_sort = self.current_sort_snapshot();
         let action = &mut self.pending_spread_action;
+        let sort_action = &mut self.pending_sort_action;
         let open_favorite_dialog = &mut self.pending_open_favorite_dialog;
         let open_file_detail = &mut self.pending_open_file_detail;
         let available = ui.available_size();
@@ -2096,7 +2157,7 @@ impl ViewerState {
         let full_rect = egui::Rect::from_min_size(origin, available);
         let resp = ui.allocate_rect(full_rect, egui::Sense::click());
         if resp.clicked() && !resp.double_clicked() { *single_clicked = true; }
-        resp.context_menu(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, open_favorite_dialog, open_file_detail));
+        resp.context_menu(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort, sort_action, open_favorite_dialog, open_file_detail));
 
         if angle_deg == 0 {
             let (rect_l, rect_r) = Self::spread_rects(available, origin, tex_left, tex_right, monitor);
@@ -2465,5 +2526,21 @@ mod sort_save_state_tests {
 
         assert!(!viewer.sort_save_toggle_on());
         assert_eq!(viewer.spread_base, 4);
+    }
+
+    #[test]
+    fn sort_setting_text_uses_unbracketed_localized_labels() {
+        assert_eq!(
+            ViewerState::sort_setting_text(ViewerSortKey::Name, true, i18n::Lang::Japanese),
+            "名前 昇順"
+        );
+        assert_eq!(
+            ViewerState::sort_setting_text(ViewerSortKey::Natural, false, i18n::Lang::English),
+            "Natural Desc"
+        );
+        assert_eq!(
+            ViewerState::sort_setting_text(ViewerSortKey::Date, true, i18n::Lang::Chinese),
+            "日期 升序"
+        );
     }
 }

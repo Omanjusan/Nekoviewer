@@ -184,6 +184,38 @@ impl Lang {
         }
     }
 
+    pub fn sort_save_toggle_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "現在のソート条件を保存する",
+            Lang::English  => "Save current sort settings",
+            Lang::Chinese  => "保存当前排序条件",
+        }
+    }
+
+    pub fn sort_save_current_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "現在値",
+            Lang::English  => "Current",
+            Lang::Chinese  => "当前值",
+        }
+    }
+
+    pub fn sort_save_new_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "新しい保存値",
+            Lang::English  => "New saved value",
+            Lang::Chinese  => "新的保存值",
+        }
+    }
+
+    pub fn sort_save_changed_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "変更あり",
+            Lang::English  => "changed",
+            Lang::Chinese  => "有更改",
+        }
+    }
+
     pub fn loading(self) -> &'static str {
         match self {
             Lang::Japanese => "読み込み中...",
