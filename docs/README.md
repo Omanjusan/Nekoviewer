@@ -22,6 +22,7 @@
 - [features/favorite-files-dirs.md](features/favorite-files-dirs.md) — お気に入り機能
 - [features/image-orientation.md](features/image-orientation.md) — Exif自動回転・手動回転・
   Exif ON/OFF設定
+- [features/archive-sort-state.md](features/archive-sort-state.md) — アーカイブ単位のソート条件保存
 
 ## 4. 決定記録（過去の経緯・完了済み計画）
 

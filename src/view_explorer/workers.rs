@@ -247,6 +247,7 @@ impl NekoviewApp {
 
     /// 終了時に状態を永続化する（旧 eframe::App::on_exit 相当）。
     pub fn on_exit(&mut self) {
+        self.flush_current_sort_if_changed();
         self.persist_state();
     }
 

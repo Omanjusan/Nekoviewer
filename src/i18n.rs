@@ -192,14 +192,6 @@ impl Lang {
         }
     }
 
-    pub fn sort_save_current_label(self) -> &'static str {
-        match self {
-            Lang::Japanese => "現在値",
-            Lang::English  => "Current",
-            Lang::Chinese  => "当前值",
-        }
-    }
-
     pub fn sort_save_new_label(self) -> &'static str {
         match self {
             Lang::Japanese => "新しい保存値",

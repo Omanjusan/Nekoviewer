@@ -32,7 +32,7 @@ pub enum SpreadSaveAction {
 pub enum SortSaveAction {
     /// 保存ON: 現在のソート条件を保存する。
     Enable,
-    /// 保存OFF: 保存値を削除し、名前・昇順へ戻す。
+    /// 保存OFF: 保存値だけを削除し、現在のソート条件は維持する。
     Disable,
 }
 

@@ -707,15 +707,9 @@ impl ViewerState {
             .is_some_and(|saved| saved != self.current_sort_snapshot())
     }
 
-    /// 保存を解除し、従来の初期ソート（名前・昇順）へ戻す。
-    /// 既に初期値なら不要な再ソートやページ位置リセットは行わない。
-    pub fn clear_saved_sort_and_restore_default(&mut self) {
+    /// 保存を解除する。現在のソート条件とページ位置は変更しない。
+    pub fn clear_saved_sort(&mut self) {
         self.saved_sort = None;
-        if self.sort_key != ViewerSortKey::Name || !self.sort_ascending {
-            self.sort_key = ViewerSortKey::Name;
-            self.sort_ascending = true;
-            self.sort_entries();
-        }
     }
 
     pub fn take_sort_action(&mut self) -> Option<crate::controller::SortSaveAction> {
@@ -2059,7 +2053,6 @@ impl ViewerState {
             }
         });
         let sort_text = Self::sort_setting_text(current_sort.0, current_sort.1, t);
-        ui.label(format!("{} : {}", t.sort_save_current_label(), sort_text));
         let changed_suffix = if sort_changed {
             format!("（{}）", t.sort_save_changed_label())
         } else {
@@ -2495,7 +2488,7 @@ mod sort_save_state_tests {
     }
 
     #[test]
-    fn clearing_saved_sort_restores_default_through_existing_sort_logic() {
+    fn clearing_saved_sort_keeps_current_sort_and_page_position() {
         let mut viewer = viewer();
         viewer.entries = vec![
             ViewerEntry {
@@ -2516,15 +2509,15 @@ mod sort_save_state_tests {
         viewer.saved_sort = Some((ViewerSortKey::Date, false));
         viewer.spread_base = 4;
 
-        viewer.clear_saved_sort_and_restore_default();
+        viewer.clear_saved_sort();
 
         assert!(!viewer.sort_save_toggle_on());
         let current = viewer.current_sort_snapshot();
-        assert!(matches!(current.0, ViewerSortKey::Name));
-        assert!(current.1);
-        assert_eq!(viewer.entries[0].display_name, "a");
-        assert_eq!(viewer.entries[1].display_name, "b");
-        assert_eq!(viewer.spread_base, 0);
+        assert!(matches!(current.0, ViewerSortKey::Date));
+        assert!(!current.1);
+        assert_eq!(viewer.entries[0].display_name, "b");
+        assert_eq!(viewer.entries[1].display_name, "a");
+        assert_eq!(viewer.spread_base, 4);
     }
 
     #[test]
@@ -2533,7 +2526,7 @@ mod sort_save_state_tests {
         viewer.saved_sort = Some((ViewerSortKey::Name, true));
         viewer.spread_base = 4;
 
-        viewer.clear_saved_sort_and_restore_default();
+        viewer.clear_saved_sort();
 
         assert!(!viewer.sort_save_toggle_on());
         assert_eq!(viewer.spread_base, 4);

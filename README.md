@@ -21,6 +21,7 @@ A single-binary desktop viewer for comfortably reading manga archives in ZIP / C
 - Favorite file support — a single flag can apply to many favorite folders at once.
 - Limited search — search files that already have cached thumbnails.
 - Per-archive spread mode setting — saved automatically and restored on reopen.
+- Optional per-archive sort settings — restored on reopen and updated when leaving the viewer.
 - Focused purely on viewing, without file-manager operations such as move, delete, or copy, reducing the risk of accidental changes.
 - Multilingual support (ja/en/cn)
 - No ads, no telemetry

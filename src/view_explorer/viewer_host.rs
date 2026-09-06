@@ -32,6 +32,7 @@ impl NekoviewApp {
 
     /// ビューアーを閉じる（OS のクローズボタン等から winit_app が呼ぶ）。
     pub fn close_viewer(&mut self) {
+        self.flush_current_sort_if_changed();
         *self.viewer.lock().unwrap() = None;
     }
 
@@ -526,6 +527,7 @@ impl NekoviewApp {
 
         let had_nav = output.nav != ViewerNav::None;
         if output.close_requested {
+            self.flush_current_sort_if_changed();
             *self.viewer.lock().unwrap() = None;
             controller::request_status_update(&self.status_update_requested);
             self.egui_ctx.request_repaint();
@@ -757,7 +759,7 @@ impl NekoviewApp {
                 if let Some(db) = db {
                     crate::spread_state::remove_archive_sort(&db, &archive_dir, &filename);
                 }
-                viewer.clear_saved_sort_and_restore_default();
+                viewer.clear_saved_sort();
                 if is_current_dir {
                     self.archive_sort_states.remove(&filename);
                 }
@@ -765,8 +767,32 @@ impl NekoviewApp {
         }
     }
 
+    /// 保存ONかつ現在値に変更がある場合だけ、現在のアーカイブの保存値を上書きする。
+    /// ViewerStateを破棄・置換する直前の全経路から呼ぶ。
+    pub(super) fn flush_current_sort_if_changed(&mut self) {
+        let Some(db) = self.spread_db.clone() else { return };
+        let mut viewer_guard = self.viewer.lock().unwrap();
+        let Some(viewer) = viewer_guard.as_mut() else { return };
+        if !viewer.sort_save_changed() {
+            return;
+        }
+        let Some(filename) = viewer.archive_path().file_name().and_then(|n| n.to_str()).map(str::to_string) else {
+            return;
+        };
+        let archive_dir = viewer.archive_path().parent()
+            .unwrap_or(&self.current_dir)
+            .to_path_buf();
+        let (key, ascending) = viewer.current_sort_snapshot();
+        crate::spread_state::write_archive_sort(&db, &archive_dir, &filename, key, ascending);
+        viewer.set_saved_sort(Some((key, ascending)));
+        if archive_dir == self.current_dir {
+            self.archive_sort_states.insert(filename, (key, ascending));
+        }
+    }
+
     /// ビューアを開く（ページキャッシュクリア・ファイルキャッシュ投入・フォーカス要求を一括処理）
     pub(super) fn open_viewer(&mut self, mut state: ViewerState) {
+        self.flush_current_sort_if_changed();
         let path = state.archive_path().clone();
         let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
         let archive_dir = path.parent().unwrap_or(&self.current_dir);
