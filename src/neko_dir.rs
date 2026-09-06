@@ -9,6 +9,8 @@ use crate::config::AppConfig;
 
 /// サムネキャッシュテーブル: キー=ファイル名, バリュー=(source_mtime_secs: i64, jpeg_blob: Vec<u8>)
 pub const THUMBS_TABLE: TableDefinition<&str, (i64, &[u8])> = TableDefinition::new("thumbs");
+/// サムネイルJPEGの生成元entry_name。空文字は従来のデフォルト（先頭画像）。
+pub const THUMB_SOURCES_TABLE: TableDefinition<&str, &str> = TableDefinition::new("thumb_sources_v1");
 
 /// 非画像ZIPマーカーテーブル: キー=ファイル名, バリュー=source_mtime_secs: i64
 pub const INVALID_TABLE: TableDefinition<&str, i64> = TableDefinition::new("invalid");
@@ -78,6 +80,7 @@ pub fn open_cache_db(neko_dir: &Path, source_dir: &Path) -> Option<Arc<Mutex<Dat
         let tx = db.begin_write().ok()?;
         tx.open_table(INVALID_TABLE).ok()?;
         tx.open_table(THUMBS_TABLE).ok()?;
+        tx.open_table(THUMB_SOURCES_TABLE).ok()?;
         tx.open_table(FILES_TABLE).ok()?;
         {
             let mut source_dir_table = tx.open_table(SOURCE_DIR_TABLE).ok()?;
@@ -203,6 +206,21 @@ mod tests {
     }
 
     #[test]
+    fn thumb_source_roundtrips_default_and_registered_entry() {
+        let neko_dir = unique_test_neko_dir("thumb_source_roundtrip");
+        let source_dir = PathBuf::from("/tmp/fake_source_dir_for_thumb_source");
+        let db = open_cache_db(&neko_dir, &source_dir).expect("db should open");
+
+        assert!(read_thumb_source(&db, "book.zip").is_none());
+        write_thumb_source(&db, "book.zip", Some("pages/cover.jpg"));
+        assert_eq!(read_thumb_source(&db, "book.zip").as_deref(), Some("pages/cover.jpg"));
+        write_thumb_source(&db, "book.zip", None);
+        assert_eq!(read_thumb_source(&db, "book.zip").as_deref(), Some(""));
+
+        let _ = std::fs::remove_dir_all(&neko_dir);
+    }
+
+    #[test]
     fn search_files_applies_and_conditions() {
         let neko_dir = unique_test_neko_dir("search_and");
         let source_dir = PathBuf::from("/tmp/fake_source_dir_for_search_test");
@@ -286,6 +304,22 @@ pub fn write_thumb(db: &Arc<Mutex<Database>>, filename: &str, source_mtime: i64,
     let Ok(tx) = db.begin_write() else { return };
     if let Ok(mut table) = tx.open_table(THUMBS_TABLE) {
         let _ = table.insert(filename, (source_mtime, jpeg));
+    }
+    let _ = tx.commit();
+}
+
+pub fn read_thumb_source(db: &Arc<Mutex<Database>>, filename: &str) -> Option<String> {
+    let db = db.lock().ok()?;
+    let tx = db.begin_read().ok()?;
+    let table = tx.open_table(THUMB_SOURCES_TABLE).ok()?;
+    Some(table.get(filename).ok()??.value().to_string())
+}
+
+pub fn write_thumb_source(db: &Arc<Mutex<Database>>, filename: &str, entry_name: Option<&str>) {
+    let Ok(db) = db.lock() else { return };
+    let Ok(tx) = db.begin_write() else { return };
+    if let Ok(mut table) = tx.open_table(THUMB_SOURCES_TABLE) {
+        let _ = table.insert(filename, entry_name.unwrap_or(""));
     }
     let _ = tx.commit();
 }

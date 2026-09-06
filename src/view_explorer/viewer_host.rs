@@ -780,6 +780,7 @@ impl NekoviewApp {
         let Some(filename) = archive_path.file_name().and_then(|n| n.to_str()) else { return };
         let archive_dir = archive_path.parent().unwrap_or(&self.current_dir);
 
+        let mut selected_entry = None;
         match action {
             crate::controller::ThumbnailSaveAction::Enable { entry_name } => {
                 // UIで解決した値を盲信せず、書き込み直前にも実エントリの存在を確認する。
@@ -787,6 +788,7 @@ impl NekoviewApp {
                     crate::spread_state::write_thumbnail_selection(
                         &db, archive_dir, filename, &entry_name,
                     );
+                    selected_entry = Some(entry_name.clone());
                     viewer.set_saved_thumbnail_entry(Some(entry_name));
                 }
             }
@@ -794,6 +796,25 @@ impl NekoviewApp {
                 crate::spread_state::remove_thumbnail_selection(&db, archive_dir, filename);
                 viewer.set_saved_thumbnail_entry(None);
             }
+        }
+        let archive_dir = archive_dir.to_path_buf();
+        drop(viewer_guard);
+
+        // 現在のグリッドに属するアーカイブなら、メモリ上の旧画像を対象限定で破棄し、
+        // 新しい登録値を付けて即時再生成する。キュー満杯時は通常描画経路が再要求する。
+        if archive_dir == self.current_dir {
+            self.thumbnails.remove(&archive_path);
+            self.thumb_pending.remove(&archive_path);
+            self.thumb_failed.remove(&archive_path);
+            if self.thumb_req_tx.try_send(crate::cache::ThumbRequest {
+                archive_path: archive_path.clone(),
+                db: self.cache_db.clone(),
+                is_raw_file: false,
+                thumbnail_entry_name: selected_entry,
+            }).is_ok() {
+                self.thumb_pending.insert(archive_path);
+            }
+            self.egui_ctx.request_repaint();
         }
     }
 

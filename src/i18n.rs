@@ -224,14 +224,6 @@ impl Lang {
         }
     }
 
-    pub fn thumbnail_debug_waiting(self) -> &'static str {
-        match self {
-            Lang::Japanese => "判定待ち",
-            Lang::English  => "waiting for hit test",
-            Lang::Chinese  => "等待点击判定",
-        }
-    }
-
     pub fn thumbnail_default_label(self) -> &'static str {
         match self {
             Lang::Japanese => "デフォルト",

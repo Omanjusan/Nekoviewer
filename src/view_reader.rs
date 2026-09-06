@@ -323,9 +323,6 @@ pub struct ViewerState {
     pending_spread_action: Option<crate::controller::SpreadSaveAction>,
     /// ソート保存メニューでのユーザー操作要求（1フレームで消費）
     pending_sort_action: Option<crate::controller::SortSaveAction>,
-    /// サムネイル登録の座標判定フェーズ用。右クリック時点の対象ページと座標を保持する。
-    /// このフェーズでは永続化やサムネイル差し替えには接続しない。
-    thumbnail_hit_debug: Option<String>,
     /// 最後に右クリック座標から解決した実ページ(entry_name, display_name)。
     thumbnail_context_entry: Option<(String, String)>,
     /// DBから復元した登録サムネイルのentry_name。Noneはデフォルト。
@@ -506,7 +503,6 @@ impl ViewerState {
             saved_sort: None,
             pending_spread_action: None,
             pending_sort_action: None,
-            thumbnail_hit_debug: None,
             thumbnail_context_entry: None,
             saved_thumbnail_entry: None,
             pending_thumbnail_action: None,
@@ -572,7 +568,6 @@ impl ViewerState {
             saved_sort: None,
             pending_spread_action: None,
             pending_sort_action: None,
-            thumbnail_hit_debug: None,
             thumbnail_context_entry: None,
             saved_thumbnail_entry: None,
             pending_thumbnail_action: None,
@@ -2090,7 +2085,6 @@ impl ViewerState {
         sort_changed: bool,
         current_sort: (ViewerSortKey, bool),
         sort_action: &mut Option<crate::controller::SortSaveAction>,
-        thumbnail_hit_debug: Option<&str>,
         thumbnail_target: Option<&(String, String)>,
         saved_thumbnail_entry: Option<&str>,
         saved_thumbnail_display: Option<&str>,
@@ -2134,9 +2128,10 @@ impl ViewerState {
             String::new()
         };
         ui.label(format!("{} : {}{}", t.sort_save_new_label(), sort_text, changed_suffix));
-        let mut thumbnail_register = thumbnail_target.is_some_and(|(entry_name, _)| {
-            saved_thumbnail_entry == Some(entry_name.as_str())
-        });
+        // チェックは「このアーカイブに登録サムネイルがある」状態を表す。
+        // 右クリックしたページとの一致判定にすると、再オープン時の表示ページが異なるだけで
+        // 未チェックに見えてしまうため、保存値の有無だけから復元する。
+        let mut thumbnail_register = saved_thumbnail_entry.is_some();
         ui.add_enabled_ui(thumbnail_target.is_some(), |ui| {
             if ui.checkbox(&mut thumbnail_register, t.thumbnail_register_page_label()).changed() {
                 *thumbnail_action = if thumbnail_register {
@@ -2153,10 +2148,9 @@ impl ViewerState {
             .map(Self::thumbnail_status_name)
             .unwrap_or_else(|| t.thumbnail_default_label().to_string());
         let status_response = ui.label(format!(
-            "{}: {} [{}]",
+            "{}: {}",
             t.thumbnail_current_label(),
             saved_display,
-            thumbnail_hit_debug.unwrap_or(t.thumbnail_debug_waiting()),
         ));
         if let Some(full_name) = saved_thumbnail_display {
             status_response.on_hover_text(full_name);
@@ -2230,11 +2224,8 @@ impl ViewerState {
                     if resp.double_clicked() { *double_clicked = true; }
                     if resp.clicked() && !resp.double_clicked() { *single_clicked = true; }
                     if resp.secondary_clicked() {
-                        if let Some(pos) = resp.interact_pointer_pos() {
-                            self.set_thumbnail_context(Some(self.spread_lo()), format!("単ページ（座標X: {:.0}, Y: {:.0}）", pos.x, pos.y));
-                        }
+                        self.set_thumbnail_context(Some(self.spread_lo()));
                     }
-                    let thumbnail_hit_debug = self.thumbnail_hit_debug.as_deref();
                     let thumbnail_target = self.thumbnail_context_entry.as_ref();
                     let saved_thumbnail_entry = self.saved_thumbnail_entry.as_deref();
                     let saved_thumbnail_display = self.saved_thumbnail_display_name();
@@ -2243,7 +2234,7 @@ impl ViewerState {
                     let thumbnail_action = &mut self.pending_thumbnail_action;
                     let open_favorite_dialog = &mut self.pending_open_favorite_dialog;
                     let open_file_detail = &mut self.pending_open_file_detail;
-                    resp.context_menu(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort, sort_action, thumbnail_hit_debug, thumbnail_target, saved_thumbnail_entry, saved_thumbnail_display.as_deref(), thumbnail_action, open_favorite_dialog, open_file_detail));
+                    resp.context_menu(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort, sort_action, thumbnail_target, saved_thumbnail_entry, saved_thumbnail_display.as_deref(), thumbnail_action, open_favorite_dialog, open_file_detail));
                 });
             } else {
                 let available = ui.available_size();
@@ -2253,11 +2244,8 @@ impl ViewerState {
                 if resp.double_clicked() { *double_clicked = true; }
                 if resp.clicked() && !resp.double_clicked() { *single_clicked = true; }
                 if resp.secondary_clicked() {
-                    if let Some(pos) = resp.interact_pointer_pos() {
-                        self.set_thumbnail_context(Some(self.spread_lo()), format!("単ページ（座標X: {:.0}, Y: {:.0}）", pos.x, pos.y));
-                    }
+                    self.set_thumbnail_context(Some(self.spread_lo()));
                 }
-                let thumbnail_hit_debug = self.thumbnail_hit_debug.as_deref();
                 let thumbnail_target = self.thumbnail_context_entry.as_ref();
                 let saved_thumbnail_entry = self.saved_thumbnail_entry.as_deref();
                 let saved_thumbnail_display = self.saved_thumbnail_display_name();
@@ -2266,7 +2254,7 @@ impl ViewerState {
                 let thumbnail_action = &mut self.pending_thumbnail_action;
                 let open_favorite_dialog = &mut self.pending_open_favorite_dialog;
                 let open_file_detail = &mut self.pending_open_file_detail;
-                resp.context_menu(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort, sort_action, thumbnail_hit_debug, thumbnail_target, saved_thumbnail_entry, saved_thumbnail_display.as_deref(), thumbnail_action, open_favorite_dialog, open_file_detail));
+                resp.context_menu(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort, sort_action, thumbnail_target, saved_thumbnail_entry, saved_thumbnail_display.as_deref(), thumbnail_action, open_favorite_dialog, open_file_detail));
             }
         } else {
             let rect = egui::Rect::from_min_size(ui.cursor().left_top(), ui.available_size());
@@ -2301,13 +2289,12 @@ impl ViewerState {
         if resp.clicked() && !resp.double_clicked() { *single_clicked = true; }
         if resp.secondary_clicked() {
             if let Some(pos) = resp.interact_pointer_pos() {
-                let (debug, index) = self.thumbnail_hit_debug_for_spread(
+                let index = self.thumbnail_target_for_spread(
                     pos, full_rect, tex_left, tex_right, left_index, right_index, monitor, angle_deg,
                 );
-                self.set_thumbnail_context(index, debug);
+                self.set_thumbnail_context(index);
             }
         }
-        let thumbnail_hit_debug = self.thumbnail_hit_debug.as_deref();
         let thumbnail_target = self.thumbnail_context_entry.as_ref();
         let saved_thumbnail_entry = self.saved_thumbnail_entry.as_deref();
         let saved_thumbnail_display = self.saved_thumbnail_display_name();
@@ -2316,7 +2303,7 @@ impl ViewerState {
         let thumbnail_action = &mut self.pending_thumbnail_action;
         let open_favorite_dialog = &mut self.pending_open_favorite_dialog;
         let open_file_detail = &mut self.pending_open_file_detail;
-        resp.context_menu(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort, sort_action, thumbnail_hit_debug, thumbnail_target, saved_thumbnail_entry, saved_thumbnail_display.as_deref(), thumbnail_action, open_favorite_dialog, open_file_detail));
+        resp.context_menu(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort, sort_action, thumbnail_target, saved_thumbnail_entry, saved_thumbnail_display.as_deref(), thumbnail_action, open_favorite_dialog, open_file_detail));
 
         if angle_deg == 0 {
             let (rect_l, rect_r) = Self::spread_rects(available, origin, tex_left, tex_right, monitor);
@@ -2328,9 +2315,9 @@ impl ViewerState {
         }
     }
 
-    /// サムネイル登録前の目視確認用ヒットテスト。片側が仮想ページなら、クリック位置に
+    /// サムネイル登録対象のヒットテスト。片側が仮想ページなら、クリック位置に
     /// 関係なく実ページ側を返す。両側が実ページのときだけ描画されたページ矩形を判定する。
-    fn thumbnail_hit_debug_for_spread(
+    fn thumbnail_target_for_spread(
         &self,
         pos: egui::Pos2,
         bounds: egui::Rect,
@@ -2340,16 +2327,14 @@ impl ViewerState {
         right_index: i32,
         monitor: Option<egui::Vec2>,
         angle_deg: i32,
-    ) -> (String, Option<i32>) {
+    ) -> Option<i32> {
         let total = self.entries.len() as i32;
         let left_real = (0..total).contains(&left_index);
         let right_real = (0..total).contains(&right_index);
-        let coords = format!("座標X: {:.0}, Y: {:.0}", pos.x, pos.y);
-
         match (left_real, right_real) {
-            (true, false) => return (format!("左ページ（{coords}・右は仮想ページ）"), Some(left_index)),
-            (false, true) => return (format!("右ページ（{coords}・左は仮想ページ）"), Some(right_index)),
-            (false, false) => return (format!("実ページなし（{coords}）"), None),
+            (true, false) => return Some(left_index),
+            (false, true) => return Some(right_index),
+            (false, false) => return None,
             (true, true) => {}
         }
 
@@ -2370,16 +2355,15 @@ impl ViewerState {
         };
 
         if hit_left {
-            (format!("左ページ（{coords}）"), Some(left_index))
+            Some(left_index)
         } else if hit_right {
-            (format!("右ページ（{coords}）"), Some(right_index))
+            Some(right_index)
         } else {
-            (format!("ページ外（{coords}）"), None)
+            None
         }
     }
 
-    fn set_thumbnail_context(&mut self, index: Option<i32>, debug: String) {
-        self.thumbnail_hit_debug = Some(debug);
+    fn set_thumbnail_context(&mut self, index: Option<i32>) {
         self.thumbnail_context_entry = index
             .filter(|i| *i >= 0)
             .and_then(|i| self.entries.get(i as usize))

@@ -902,6 +902,8 @@ pub struct ThumbRequest {
     pub db: Option<std::sync::Arc<std::sync::Mutex<redb::Database>>>,
     /// true のとき archive_path は ZIP ではなく生画像ファイル
     pub is_raw_file: bool,
+    /// Noneは従来どおり先頭画像、Someは登録済みentry_nameから生成する。
+    pub thumbnail_entry_name: Option<String>,
 }
 
 pub struct ThumbResult {
@@ -1139,6 +1141,14 @@ fn probe_cached_thumb(req: &ThumbRequest) -> Option<(image::RgbaImage, i64)> {
     let db = req.db.as_ref()?;
     let filename = req.archive_path.file_name().and_then(|n| n.to_str())?;
     let (stored_mtime, jpeg) = crate::neko_dir::read_thumb_unchecked(db, filename)?;
+    let stored_source = crate::neko_dir::read_thumb_source(db, filename);
+    let source_matches = match req.thumbnail_entry_name.as_deref() {
+        Some(expected) => stored_source.as_deref() == Some(expected),
+        None => stored_source.as_deref().map_or(true, str::is_empty),
+    };
+    if !source_matches {
+        return None;
+    }
     let t0 = std::time::Instant::now();
     let rgba = image::load_from_memory(&jpeg).ok()?.to_rgba8();
     log_perf!("[perf/thumb] db_cache={:.1}ms", t0.elapsed().as_secs_f64() * 1000.0);
@@ -1153,6 +1163,7 @@ fn generate_thumb(req: &ThumbRequest, filter: image::imageops::FilterType) -> Op
         .unwrap_or("")
         .to_owned();
     let source_mtime = crate::neko_dir::file_mtime(&req.archive_path);
+    let mut generated_source: Option<String> = None;
 
     let rgba = if req.is_raw_file {
         let buf = std::fs::read(&req.archive_path).ok()?;
@@ -1162,11 +1173,35 @@ fn generate_thumb(req: &ThumbRequest, filter: image::imageops::FilterType) -> Op
     } else {
         let t_total = std::time::Instant::now();
         let is_smb = crate::fs::dir::is_gvfs_path(&req.archive_path);
-        let img = if is_smb {
-            load_first_image_smb(req.archive_path.clone())?
-        } else {
-            crate::fs::archive::load_first_image(&req.archive_path)?
+        let load_default = || {
+            if is_smb {
+                load_first_image_smb(req.archive_path.clone())
+            } else {
+                crate::fs::archive::load_first_image(&req.archive_path)
+            }
         };
+        let registered = req.thumbnail_entry_name.as_deref().and_then(|entry_name| {
+            let mut archive = open_archive_from_disk(&req.archive_path)?;
+            match archive.load_page(
+                entry_name,
+                filter,
+                ENTRY_THUMB_RING_BUDGET_BYTES,
+                (2, 2),
+                ENTRY_THUMB_FRAME_HARD_LIMIT_BYTES,
+                Some((256, 256)),
+                true,
+            )? {
+                PageContent::Static(rgba) => Some(image::DynamicImage::ImageRgba8(rgba)),
+                PageContent::Animated(ring) => ring.with_frame(0, |f| {
+                    image::DynamicImage::ImageRgba8(f.image.clone())
+                }),
+            }
+        });
+        // 登録先がアーカイブ更新等で消えていても、グリッド自体を壊さず先頭画像へ戻す。
+        if registered.is_some() {
+            generated_source = req.thumbnail_entry_name.clone();
+        }
+        let img = registered.or_else(load_default)?;
         let t_load = t_total.elapsed();
         let t2 = std::time::Instant::now();
         let result = resize_thumbnail(img, filter);
@@ -1183,6 +1218,7 @@ fn generate_thumb(req: &ThumbRequest, filter: image::imageops::FilterType) -> Op
     if let Some(ref db) = req.db {
         if let Some(jpeg) = encode_jpeg(&rgba) {
             crate::neko_dir::write_thumb(db, &filename, source_mtime, &jpeg);
+            crate::neko_dir::write_thumb_source(db, &filename, generated_source.as_deref());
             let size = crate::neko_dir::file_size(&req.archive_path);
             crate::neko_dir::write_file_record(db, &filename, source_mtime, size);
         }
@@ -1220,6 +1256,23 @@ mod ring_integration_tests {
     const TEST_RING_MAX: usize = TEST_RING_BOUNDS.1;
     /// フェーズ5: 実際のデフォルト(100MB)と同じ値。テストフィクスチャは全て十分小さいので影響しない。
     const TEST_FRAME_HARD_LIMIT_BYTES: usize = 100 * MB;
+
+    #[test]
+    fn registered_archive_entry_generates_a_grid_thumbnail() {
+        let archive_path = PathBuf::from("test/testarchive.zip");
+        let entries = crate::fs::archive::list_images(&archive_path);
+        let selected = entries.last().expect("test archive has images").entry_name.clone();
+        let req = ThumbRequest {
+            archive_path,
+            db: None,
+            is_raw_file: false,
+            thumbnail_entry_name: Some(selected),
+        };
+        let rgba = generate_thumb(&req, image::imageops::FilterType::Triangle)
+            .expect("registered entry should generate a thumbnail");
+        assert!(rgba.width() <= 256 && rgba.height() <= 256);
+        assert!(rgba.width() > 0 && rgba.height() > 0);
+    }
 
     /// フェーズ3.6: 実物の大きいGIF(test/nouka.gif, 640x360 1316フレーム, 全展開なら約1.2GB)で
     /// リングバッファが実際に「全フレーム常駐にならず一定量に収まる」ことを確認する結合テスト。
