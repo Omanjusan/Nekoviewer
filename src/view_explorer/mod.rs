@@ -414,6 +414,8 @@ pub struct NekoviewApp {
     spread_db: Option<std::sync::Arc<std::sync::Mutex<redb::Database>>>,
     /// 現在ディレクトリ内で保存済みの見開き状態 (filename -> (mode, offset, page_index))
     spread_states: HashMap<String, (crate::types::PageMode, i32)>,
+    /// 現在ディレクトリ内で保存済みのアーカイブ内ソート条件
+    archive_sort_states: HashMap<String, (crate::types::ReaderSortKey, bool)>,
     /// 現在ディレクトリ内のお気に入り登録状態 (filename -> 所属folder_id一覧、空Vec=未整理)
     favorite_states: HashMap<String, Vec<u8>>,
     /// お気に入り一覧表示中のマーカー情報 (フルパス -> 所属folder_id一覧)。
@@ -726,6 +728,7 @@ impl NekoviewApp {
                 db
             },
             spread_states: HashMap::new(),
+            archive_sort_states: HashMap::new(),
             favorite_states: HashMap::new(),
             favorite_view_markers: HashMap::new(),
             network_unreachable_mounts: HashSet::new(),

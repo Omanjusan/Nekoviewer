@@ -693,7 +693,6 @@ impl NekoviewApp {
             Some(f) => f.to_string(),
             None => return,
         };
-
         let disable = |viewer: &mut ViewerState, spread_states: &mut HashMap<String, (PageMode, i32)>, db: &Arc<Mutex<redb::Database>>, dir: &std::path::Path, filename: &str| {
             crate::spread_state::remove_spread(db, dir, filename);
             viewer.set_saved_spread(None);
@@ -733,6 +732,10 @@ impl NekoviewApp {
             Some(f) => f.to_string(),
             None => return,
         };
+        let archive_dir = viewer.archive_path().parent()
+            .unwrap_or(&self.current_dir)
+            .to_path_buf();
+        let is_current_dir = archive_dir == self.current_dir;
 
         match action {
             crate::controller::SortSaveAction::Enable => {
@@ -740,18 +743,24 @@ impl NekoviewApp {
                 let (key, ascending) = viewer.current_sort_snapshot();
                 crate::spread_state::write_archive_sort(
                     &db,
-                    &self.current_dir,
+                    &archive_dir,
                     &filename,
                     key,
                     ascending,
                 );
                 viewer.set_saved_sort(Some((key, ascending)));
+                if is_current_dir {
+                    self.archive_sort_states.insert(filename, (key, ascending));
+                }
             }
             crate::controller::SortSaveAction::Disable => {
                 if let Some(db) = db {
-                    crate::spread_state::remove_archive_sort(&db, &self.current_dir, &filename);
+                    crate::spread_state::remove_archive_sort(&db, &archive_dir, &filename);
                 }
                 viewer.clear_saved_sort_and_restore_default();
+                if is_current_dir {
+                    self.archive_sort_states.remove(&filename);
+                }
             }
         }
     }
@@ -760,6 +769,18 @@ impl NekoviewApp {
     pub(super) fn open_viewer(&mut self, mut state: ViewerState) {
         let path = state.archive_path().clone();
         let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        let archive_dir = path.parent().unwrap_or(&self.current_dir);
+        let saved_sort = if archive_dir == self.current_dir {
+            self.archive_sort_states.get(filename).copied()
+        } else {
+            self.spread_db.as_ref().and_then(|db| {
+                crate::spread_state::read_archive_sort(db, archive_dir, filename)
+            })
+        };
+        if let Some((key, ascending)) = saved_sort {
+            state.restore_saved_sort(key, ascending);
+            state.set_saved_sort(Some((key, ascending)));
+        }
         if let Some(&(mode, offset)) = self.spread_states.get(filename) {
             let mut cfg = self.viewer_cfg.lock().unwrap();
             state.restore_saved_spread(mode, offset, &mut cfg);

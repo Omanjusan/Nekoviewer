@@ -330,12 +330,18 @@ impl NekoviewApp {
                     .into_iter()
                     .map(|(name, mode, offset)| (name, (mode, offset)))
                     .collect();
+                crate::spread_state::gc_archive_sorts(&db, &self.current_dir, &filenames);
+                self.archive_sort_states = crate::spread_state::list_dir_archive_sorts(&db, &self.current_dir)
+                    .into_iter()
+                    .map(|(name, key, ascending)| (name, (key, ascending)))
+                    .collect();
                 crate::favorites::gc_dir(&db, &self.current_dir, &filenames);
                 self.favorite_states = crate::favorites::list_dir_favorites(&db, &self.current_dir)
                     .into_iter()
                     .collect();
             } else {
                 self.spread_states.clear();
+                self.archive_sort_states.clear();
                 self.favorite_states.clear();
             }
             self.scan_state = ScanState::Done;

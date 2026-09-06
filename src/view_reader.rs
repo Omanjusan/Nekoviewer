@@ -677,6 +677,17 @@ impl ViewerState {
         (self.sort_key, self.sort_ascending)
     }
 
+    /// 保存済みソートをビューアー生成直後に適用する。
+    /// レコードがない場合は呼ばれないため、従来の初期化経路には介入しない。
+    pub fn restore_saved_sort(&mut self, key: ViewerSortKey, ascending: bool) {
+        if self.is_raw_file || self.current_sort_snapshot() == (key, ascending) {
+            return;
+        }
+        self.sort_key = key;
+        self.sort_ascending = ascending;
+        self.sort_entries();
+    }
+
     /// app側がDBの読み込み・保存結果をViewerStateへ反映する。
     pub fn set_saved_sort(&mut self, value: Option<(ViewerSortKey, bool)>) {
         self.saved_sort = value;
@@ -2542,5 +2553,46 @@ mod sort_save_state_tests {
             ViewerState::sort_setting_text(ViewerSortKey::Date, true, i18n::Lang::Chinese),
             "日期 升序"
         );
+    }
+
+    #[test]
+    fn saved_sort_is_applied_before_saved_spread_without_losing_offset() {
+        let mut viewer = viewer();
+        viewer.is_raw_file = false;
+        viewer.entries = vec![
+            ViewerEntry {
+                entry_name: "old".to_string(),
+                display_name: "old".to_string(),
+                date_key: 1,
+                original_index: 0,
+            },
+            ViewerEntry {
+                entry_name: "new".to_string(),
+                display_name: "new".to_string(),
+                date_key: 2,
+                original_index: 1,
+            },
+        ];
+
+        viewer.restore_saved_sort(ViewerSortKey::Date, false);
+        let mut cfg = ViewerConfig::default();
+        viewer.restore_saved_spread(PageMode::SpreadLeft, 1, &mut cfg);
+
+        assert_eq!(viewer.entries[0].display_name, "new");
+        assert!(matches!(viewer.current_sort_snapshot().0, ViewerSortKey::Date));
+        assert!(!viewer.current_sort_snapshot().1);
+        assert!(matches!(viewer.page_mode, PageMode::SpreadLeft));
+        assert_eq!(viewer.offset.value(), 1);
+    }
+
+    #[test]
+    fn restoring_existing_default_sort_does_not_reset_page_position() {
+        let mut viewer = viewer();
+        viewer.is_raw_file = false;
+        viewer.spread_base = 4;
+
+        viewer.restore_saved_sort(ViewerSortKey::Name, true);
+
+        assert_eq!(viewer.spread_base, 4);
     }
 }
