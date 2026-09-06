@@ -277,6 +277,9 @@ pub struct ViewerState {
     outer_pos: Option<egui::Pos2>,
     /// 左エントリリストパネルの表示状態（マウスホバーで on/off）
     entry_list_visible: bool,
+    /// 左エントリリストを最後に現在地へスクロールした spread_lo。
+    /// 非表示中は更新せず、再表示時またはページ変更時だけ現在行を中央へ寄せる。
+    entry_list_scrolled_lo: Option<i32>,
     /// フルスクリーン時ソートバーの表示状態（上端ホバーで on/off）
     fs_sort_bar_visible: bool,
     sort_key: ViewerSortKey,
@@ -476,6 +479,7 @@ impl ViewerState {
             default_slot_applied: false,
             outer_pos: None,
             entry_list_visible: false,
+            entry_list_scrolled_lo: None,
             fs_sort_bar_visible: false,
             sort_key: ViewerSortKey::Name,
             sort_ascending: true,
@@ -537,6 +541,7 @@ impl ViewerState {
             default_slot_applied: false,
             outer_pos: None,
             entry_list_visible: false,
+            entry_list_scrolled_lo: None,
             fs_sort_bar_visible: false,
             sort_key: ViewerSortKey::Name,
             sort_ascending: true,
@@ -1827,6 +1832,7 @@ impl ViewerState {
         const TRIGGER_W: f32 = 40.0;
         const HIDE_MARGIN: f32 = 20.0;
 
+        let was_visible = self.entry_list_visible;
         let screen_left = viewport_rect.min.x;
         if let Some(pos) = hover_pos {
             if !self.entry_list_visible && pos.x < screen_left + TRIGGER_W {
@@ -1845,22 +1851,61 @@ impl ViewerState {
             let is_spread = self.page_mode != PageMode::Single;
             let hi = if is_spread { lo + 1 } else { lo };
             let entries_snap = self.entries.clone();
+            let scroll_anchor = Self::entry_list_scroll_anchor(lo, entries_snap.len());
+            let should_scroll = !was_visible || self.entry_list_scrolled_lo != Some(lo);
 
             egui::Panel::left("entry_list_panel")
                 .exact_size(ENTRY_PANEL_W)
                 .frame(egui::Frame::side_top_panel(viewer_style))
                 .show(ui, |ui| {
-                    egui::ScrollArea::vertical()
+                    let output = egui::ScrollArea::vertical()
                         .auto_shrink([false, false])
                         .show(ui, |ui| {
+                            let mut anchor_rect = None;
                             for (i, entry) in entries_snap.iter().enumerate() {
-                                let i = i as i32;
-                                let is_cur = i == lo || i == hi;
-                                let _ = ui.selectable_label(is_cur, &entry.display_name);
+                                let is_cur = i as i32 == lo || i as i32 == hi;
+                                let response = ui.selectable_label(is_cur, &entry.display_name);
+                                if scroll_anchor == Some(i) {
+                                    anchor_rect = Some(response.rect);
+                                }
                             }
+                            anchor_rect
                         });
+
+                    if should_scroll && let Some(anchor_rect) = output.inner {
+                        // 現在行のコンテンツ上の位置から絶対オフセットを求める。
+                        // 0..max_offset にクランプすることで、先頭側ではマーカーが
+                        // 中央まで移動し、中盤だけ中央固定、末尾側では再び下へ移動する。
+                        let max_offset = (output.content_size.y - output.inner_rect.height()).max(0.0);
+                        let desired = Self::entry_list_follow_offset(
+                            output.state.offset.y,
+                            anchor_rect.center().y,
+                            output.inner_rect.center().y,
+                            max_offset,
+                        );
+                        let mut state = output.state;
+                        state.offset.y = desired;
+                        state.store(ctx, output.id);
+                        ctx.request_repaint();
+                        self.entry_list_scrolled_lo = Some(lo);
+                    }
                 });
         }
+    }
+
+    /// 仮想ページを含む spread_lo から、左一覧でスクロール対象にする実在行を求める。
+    fn entry_list_scroll_anchor(lo: i32, total: usize) -> Option<usize> {
+        (total > 0).then(|| lo.clamp(0, total as i32 - 1) as usize)
+    }
+
+    /// 現在行が表示領域中央に来る絶対スクロール量を、先頭・末尾でクランプする。
+    fn entry_list_follow_offset(
+        current_offset: f32,
+        marker_center: f32,
+        viewport_center: f32,
+        max_offset: f32,
+    ) -> f32 {
+        (current_offset + marker_center - viewport_center).clamp(0.0, max_offset.max(0.0))
     }
 
     /// ツールバー項目を cfg.bar_order の順に描画する（top bar / fs_sort_bar 共用）。
@@ -2448,6 +2493,51 @@ mod spread_rotation_tests {
         );
         let bounds = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(0.0, 0.0));
         assert!(ViewerState::spread_rotation_fit(local_l, local_r, bounds, 90).is_none());
+    }
+}
+
+#[cfg(test)]
+mod entry_list_scroll_tests {
+    use super::ViewerState;
+
+    #[test]
+    fn anchor_uses_current_page_in_normal_range() {
+        assert_eq!(ViewerState::entry_list_scroll_anchor(7, 20), Some(7));
+    }
+
+    #[test]
+    fn anchor_clamps_virtual_spread_pages_to_real_entries() {
+        assert_eq!(ViewerState::entry_list_scroll_anchor(-1, 20), Some(0));
+        assert_eq!(ViewerState::entry_list_scroll_anchor(20, 20), Some(19));
+    }
+
+    #[test]
+    fn anchor_is_absent_for_an_empty_archive() {
+        assert_eq!(ViewerState::entry_list_scroll_anchor(0, 0), None);
+    }
+
+    #[test]
+    fn marker_moves_from_top_until_it_reaches_the_center_stopper() {
+        assert_eq!(
+            ViewerState::entry_list_follow_offset(0.0, 80.0, 150.0, 1_000.0),
+            0.0,
+        );
+    }
+
+    #[test]
+    fn list_scrolls_once_marker_reaches_the_center_stopper() {
+        assert_eq!(
+            ViewerState::entry_list_follow_offset(120.0, 180.0, 150.0, 1_000.0),
+            150.0,
+        );
+    }
+
+    #[test]
+    fn list_stops_at_the_end_and_marker_can_move_below_center() {
+        assert_eq!(
+            ViewerState::entry_list_follow_offset(980.0, 180.0, 150.0, 1_000.0),
+            1_000.0,
+        );
     }
 }
 
