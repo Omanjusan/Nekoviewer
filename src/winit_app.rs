@@ -276,6 +276,9 @@ struct WinitApp {
     proxy: EventLoopProxy<UserEvent>,
     explorer: Option<EguiWindow>,
     viewer: Option<EguiWindow>,
+    /// 新規作成直後にOSから届く初回 Resized は、ユーザー操作によるリサイズではない。
+    /// 初回表示済みページを直後に再デコードして暗転させないため、この1回だけ通知を抑止する。
+    viewer_initial_resize_pending: bool,
     /// ステータス窓（debug ビルドでのみ生成される。release では常に `None`）。
     status: Option<EguiWindow>,
     /// OCR/翻訳子ウィンドウ（1P担当、独立OS窓）。
@@ -298,6 +301,7 @@ impl WinitApp {
             proxy,
             explorer: None,
             viewer: None,
+            viewer_initial_resize_pending: false,
             status: None,
             translate: None,
             translate_always_on_top_applied: false,
@@ -355,11 +359,13 @@ impl WinitApp {
                 window.focus_window();
             }
             self.viewer = Some(win);
+            self.viewer_initial_resize_pending = true;
             crate::log_common!("[viewer] window created");
         } else if !want && have {
             // 窓を破棄。EguiWindow を drop すると専用 Painter（サーフェス・Device・Renderer）も
             // 一緒に解放される（共有 Painter 時代の gc_viewports は不要）。
             self.viewer = None;
+            self.viewer_initial_resize_pending = false;
             crate::log_common!("[viewer] window destroyed");
         } else if want && have {
             // 既存窓のままファイル切替したとき等のフォーカス前面化要求を処理。
@@ -656,7 +662,13 @@ impl ApplicationHandler<UserEvent> for WinitApp {
                 // フェーズ6: ビューアー窓のリサイズのみ再デコードのデバウンス対象にする
                 // （エクスプローラー窓のリサイズは表示画像と無関係）。
                 if is_viewer {
-                    if let Some(app) = self.app.as_mut() {
+                    if std::mem::take(&mut self.viewer_initial_resize_pending) {
+                        crate::log_common!(
+                            "[viewer] ignored initial resize for redecode ({}x{})",
+                            size.width,
+                            size.height,
+                        );
+                    } else if let Some(app) = self.app.as_mut() {
                         app.notify_viewer_resized();
                     }
                 }
