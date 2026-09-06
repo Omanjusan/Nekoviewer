@@ -326,6 +326,11 @@ pub struct ViewerState {
     /// サムネイル登録の座標判定フェーズ用。右クリック時点の対象ページと座標を保持する。
     /// このフェーズでは永続化やサムネイル差し替えには接続しない。
     thumbnail_hit_debug: Option<String>,
+    /// 最後に右クリック座標から解決した実ページ(entry_name, display_name)。
+    thumbnail_context_entry: Option<(String, String)>,
+    /// DBから復元した登録サムネイルのentry_name。Noneはデフォルト。
+    saved_thumbnail_entry: Option<String>,
+    pending_thumbnail_action: Option<crate::controller::ThumbnailSaveAction>,
     /// 右クリックメニュー「お気に入り詳細設定」が押されたか（1フレームで消費）
     pending_open_favorite_dialog: bool,
     /// 右クリックメニュー「ファイル詳細」が押されたか（1フレームで消費）
@@ -502,6 +507,9 @@ impl ViewerState {
             pending_spread_action: None,
             pending_sort_action: None,
             thumbnail_hit_debug: None,
+            thumbnail_context_entry: None,
+            saved_thumbnail_entry: None,
+            pending_thumbnail_action: None,
             pending_open_favorite_dialog: false,
             pending_open_file_detail: false,
             file_detail_dialog: None,
@@ -565,6 +573,9 @@ impl ViewerState {
             pending_spread_action: None,
             pending_sort_action: None,
             thumbnail_hit_debug: None,
+            thumbnail_context_entry: None,
+            saved_thumbnail_entry: None,
+            pending_thumbnail_action: None,
             pending_open_favorite_dialog: false,
             pending_open_file_detail: false,
             file_detail_dialog: None,
@@ -724,6 +735,14 @@ impl ViewerState {
 
     pub fn take_sort_action(&mut self) -> Option<crate::controller::SortSaveAction> {
         self.pending_sort_action.take()
+    }
+
+    pub fn set_saved_thumbnail_entry(&mut self, entry_name: Option<String>) {
+        self.saved_thumbnail_entry = entry_name;
+    }
+
+    pub fn take_thumbnail_action(&mut self) -> Option<crate::controller::ThumbnailSaveAction> {
+        self.pending_thumbnail_action.take()
     }
 
     /// メニュー操作で立てられた保存要求を取り出す（1フレームで消費）
@@ -935,7 +954,7 @@ impl ViewerState {
         let ctx = ui.ctx().clone();
         let viewer_style = ui.style().clone();
         if !self.open || self.entries.is_empty() {
-            return ViewerOutput { nav: ViewerNav::None, close_requested: !self.open, save_slots: None, spread_save_action: None, sort_save_action: None, open_favorite_dialog: false, toggle_translate_window: false };
+            return ViewerOutput { nav: ViewerNav::None, close_requested: !self.open, save_slots: None, spread_save_action: None, sort_save_action: None, thumbnail_save_action: None, open_favorite_dialog: false, toggle_translate_window: false };
         }
 
         // ── フレーム入力を一括収集（ctx.input はこの1回のみ）────────────────
@@ -1093,11 +1112,12 @@ impl ViewerState {
 
         let spread_save_action = self.take_spread_action();
         let sort_save_action = self.take_sort_action();
+        let thumbnail_save_action = self.take_thumbnail_action();
         let open_favorite_dialog = self.take_favorite_dialog_request();
         let toggle_translate_window = self.take_translate_toggle_request();
         self.maybe_open_file_detail_dialog();
         self.draw_file_detail_dialog(&ctx);
-        ViewerOutput { nav, close_requested: close_self, save_slots, spread_save_action, sort_save_action, open_favorite_dialog, toggle_translate_window }
+        ViewerOutput { nav, close_requested: close_self, save_slots, spread_save_action, sort_save_action, thumbnail_save_action, open_favorite_dialog, toggle_translate_window }
     }
 
     /// ビューアーを開いた直後（初回フレーム）に conf 既定スロットを一度だけ適用する。
@@ -2071,6 +2091,10 @@ impl ViewerState {
         current_sort: (ViewerSortKey, bool),
         sort_action: &mut Option<crate::controller::SortSaveAction>,
         thumbnail_hit_debug: Option<&str>,
+        thumbnail_target: Option<&(String, String)>,
+        saved_thumbnail_entry: Option<&str>,
+        saved_thumbnail_display: Option<&str>,
+        thumbnail_action: &mut Option<crate::controller::ThumbnailSaveAction>,
         open_favorite_dialog: &mut bool,
         open_file_detail: &mut bool,
     ) {
@@ -2110,16 +2134,33 @@ impl ViewerState {
             String::new()
         };
         ui.label(format!("{} : {}{}", t.sort_save_new_label(), sort_text, changed_suffix));
-        let mut thumbnail_register = false;
-        ui.add_enabled(
-            false,
-            egui::Checkbox::new(&mut thumbnail_register, t.thumbnail_register_page_label()),
-        );
-        ui.label(format!(
-            "{}: {}",
+        let mut thumbnail_register = thumbnail_target.is_some_and(|(entry_name, _)| {
+            saved_thumbnail_entry == Some(entry_name.as_str())
+        });
+        ui.add_enabled_ui(thumbnail_target.is_some(), |ui| {
+            if ui.checkbox(&mut thumbnail_register, t.thumbnail_register_page_label()).changed() {
+                *thumbnail_action = if thumbnail_register {
+                    thumbnail_target.map(|(entry_name, _)| crate::controller::ThumbnailSaveAction::Enable {
+                        entry_name: entry_name.clone(),
+                    })
+                } else {
+                    Some(crate::controller::ThumbnailSaveAction::Disable)
+                };
+                ui.close();
+            }
+        });
+        let saved_display = saved_thumbnail_display
+            .map(Self::thumbnail_status_name)
+            .unwrap_or_else(|| t.thumbnail_default_label().to_string());
+        let status_response = ui.label(format!(
+            "{}: {} [{}]",
             t.thumbnail_current_label(),
+            saved_display,
             thumbnail_hit_debug.unwrap_or(t.thumbnail_debug_waiting()),
         ));
+        if let Some(full_name) = saved_thumbnail_display {
+            status_response.on_hover_text(full_name);
+        }
         ui.separator();
         if ui.button(t.favorite_detail_menu()).clicked() {
             *open_favorite_dialog = true;
@@ -2128,6 +2169,20 @@ impl ViewerState {
         if ui.button(t.file_detail_menu()).clicked() {
             *open_file_detail = true;
             ui.close();
+        }
+    }
+
+    fn thumbnail_status_name(display_name: &str) -> String {
+        let stem = std::path::Path::new(display_name)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or(display_name);
+        let chars: Vec<char> = stem.chars().collect();
+        const KEEP: usize = 16;
+        if chars.len() <= KEEP * 2 + 3 {
+            stem.to_string()
+        } else {
+            format!("{}...{}", chars[..KEEP].iter().collect::<String>(), chars[chars.len() - KEEP..].iter().collect::<String>())
         }
     }
 
@@ -2147,10 +2202,6 @@ impl ViewerState {
         let sort_toggle_on = self.sort_save_toggle_on();
         let sort_changed = self.sort_save_changed();
         let current_sort = self.current_sort_snapshot();
-        let action = &mut self.pending_spread_action;
-        let sort_action = &mut self.pending_sort_action;
-        let open_favorite_dialog = &mut self.pending_open_favorite_dialog;
-        let open_file_detail = &mut self.pending_open_file_detail;
         if let Some(tex) = tex {
             let [img_w, img_h] = tex.size();
             if zoom_actual {
@@ -2180,11 +2231,19 @@ impl ViewerState {
                     if resp.clicked() && !resp.double_clicked() { *single_clicked = true; }
                     if resp.secondary_clicked() {
                         if let Some(pos) = resp.interact_pointer_pos() {
-                            self.thumbnail_hit_debug = Some(format!("単ページ（座標X: {:.0}, Y: {:.0}）", pos.x, pos.y));
+                            self.set_thumbnail_context(Some(self.spread_lo()), format!("単ページ（座標X: {:.0}, Y: {:.0}）", pos.x, pos.y));
                         }
                     }
                     let thumbnail_hit_debug = self.thumbnail_hit_debug.as_deref();
-                    resp.context_menu(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort, sort_action, thumbnail_hit_debug, open_favorite_dialog, open_file_detail));
+                    let thumbnail_target = self.thumbnail_context_entry.as_ref();
+                    let saved_thumbnail_entry = self.saved_thumbnail_entry.as_deref();
+                    let saved_thumbnail_display = self.saved_thumbnail_display_name();
+                    let action = &mut self.pending_spread_action;
+                    let sort_action = &mut self.pending_sort_action;
+                    let thumbnail_action = &mut self.pending_thumbnail_action;
+                    let open_favorite_dialog = &mut self.pending_open_favorite_dialog;
+                    let open_file_detail = &mut self.pending_open_file_detail;
+                    resp.context_menu(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort, sort_action, thumbnail_hit_debug, thumbnail_target, saved_thumbnail_entry, saved_thumbnail_display.as_deref(), thumbnail_action, open_favorite_dialog, open_file_detail));
                 });
             } else {
                 let available = ui.available_size();
@@ -2195,11 +2254,19 @@ impl ViewerState {
                 if resp.clicked() && !resp.double_clicked() { *single_clicked = true; }
                 if resp.secondary_clicked() {
                     if let Some(pos) = resp.interact_pointer_pos() {
-                        self.thumbnail_hit_debug = Some(format!("単ページ（座標X: {:.0}, Y: {:.0}）", pos.x, pos.y));
+                        self.set_thumbnail_context(Some(self.spread_lo()), format!("単ページ（座標X: {:.0}, Y: {:.0}）", pos.x, pos.y));
                     }
                 }
                 let thumbnail_hit_debug = self.thumbnail_hit_debug.as_deref();
-                resp.context_menu(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort, sort_action, thumbnail_hit_debug, open_favorite_dialog, open_file_detail));
+                let thumbnail_target = self.thumbnail_context_entry.as_ref();
+                let saved_thumbnail_entry = self.saved_thumbnail_entry.as_deref();
+                let saved_thumbnail_display = self.saved_thumbnail_display_name();
+                let action = &mut self.pending_spread_action;
+                let sort_action = &mut self.pending_sort_action;
+                let thumbnail_action = &mut self.pending_thumbnail_action;
+                let open_favorite_dialog = &mut self.pending_open_favorite_dialog;
+                let open_file_detail = &mut self.pending_open_file_detail;
+                resp.context_menu(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort, sort_action, thumbnail_hit_debug, thumbnail_target, saved_thumbnail_entry, saved_thumbnail_display.as_deref(), thumbnail_action, open_favorite_dialog, open_file_detail));
             }
         } else {
             let rect = egui::Rect::from_min_size(ui.cursor().left_top(), ui.available_size());
@@ -2234,17 +2301,22 @@ impl ViewerState {
         if resp.clicked() && !resp.double_clicked() { *single_clicked = true; }
         if resp.secondary_clicked() {
             if let Some(pos) = resp.interact_pointer_pos() {
-                self.thumbnail_hit_debug = Some(self.thumbnail_hit_debug_for_spread(
+                let (debug, index) = self.thumbnail_hit_debug_for_spread(
                     pos, full_rect, tex_left, tex_right, left_index, right_index, monitor, angle_deg,
-                ));
+                );
+                self.set_thumbnail_context(index, debug);
             }
         }
         let thumbnail_hit_debug = self.thumbnail_hit_debug.as_deref();
+        let thumbnail_target = self.thumbnail_context_entry.as_ref();
+        let saved_thumbnail_entry = self.saved_thumbnail_entry.as_deref();
+        let saved_thumbnail_display = self.saved_thumbnail_display_name();
         let action = &mut self.pending_spread_action;
         let sort_action = &mut self.pending_sort_action;
+        let thumbnail_action = &mut self.pending_thumbnail_action;
         let open_favorite_dialog = &mut self.pending_open_favorite_dialog;
         let open_file_detail = &mut self.pending_open_file_detail;
-        resp.context_menu(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort, sort_action, thumbnail_hit_debug, open_favorite_dialog, open_file_detail));
+        resp.context_menu(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort, sort_action, thumbnail_hit_debug, thumbnail_target, saved_thumbnail_entry, saved_thumbnail_display.as_deref(), thumbnail_action, open_favorite_dialog, open_file_detail));
 
         if angle_deg == 0 {
             let (rect_l, rect_r) = Self::spread_rects(available, origin, tex_left, tex_right, monitor);
@@ -2268,16 +2340,16 @@ impl ViewerState {
         right_index: i32,
         monitor: Option<egui::Vec2>,
         angle_deg: i32,
-    ) -> String {
+    ) -> (String, Option<i32>) {
         let total = self.entries.len() as i32;
         let left_real = (0..total).contains(&left_index);
         let right_real = (0..total).contains(&right_index);
         let coords = format!("座標X: {:.0}, Y: {:.0}", pos.x, pos.y);
 
         match (left_real, right_real) {
-            (true, false) => return format!("左ページ（{coords}・右は仮想ページ）"),
-            (false, true) => return format!("右ページ（{coords}・左は仮想ページ）"),
-            (false, false) => return format!("実ページなし（{coords}）"),
+            (true, false) => return (format!("左ページ（{coords}・右は仮想ページ）"), Some(left_index)),
+            (false, true) => return (format!("右ページ（{coords}・左は仮想ページ）"), Some(right_index)),
+            (false, false) => return (format!("実ページなし（{coords}）"), None),
             (true, true) => {}
         }
 
@@ -2298,12 +2370,27 @@ impl ViewerState {
         };
 
         if hit_left {
-            format!("左ページ（{coords}）")
+            (format!("左ページ（{coords}）"), Some(left_index))
         } else if hit_right {
-            format!("右ページ（{coords}）")
+            (format!("右ページ（{coords}）"), Some(right_index))
         } else {
-            format!("ページ外（{coords}）")
+            (format!("ページ外（{coords}）"), None)
         }
+    }
+
+    fn set_thumbnail_context(&mut self, index: Option<i32>, debug: String) {
+        self.thumbnail_hit_debug = Some(debug);
+        self.thumbnail_context_entry = index
+            .filter(|i| *i >= 0)
+            .and_then(|i| self.entries.get(i as usize))
+            .map(|entry| (entry.entry_name.clone(), entry.display_name.clone()));
+    }
+
+    fn saved_thumbnail_display_name(&self) -> Option<String> {
+        let saved = self.saved_thumbnail_entry.as_deref()?;
+        self.entries.iter()
+            .find(|entry| entry.entry_name == saved)
+            .map(|entry| entry.display_name.clone())
     }
 
     fn rotated_rect_contains(
@@ -2605,6 +2692,16 @@ mod spread_rotation_tests {
             assert!(ViewerState::rotated_rect_contains(inside, center, half, angle));
             assert!(!ViewerState::rotated_rect_contains(outside, center, half, angle));
         }
+    }
+
+    #[test]
+    fn thumbnail_status_name_removes_extension_and_elides_the_middle() {
+        assert_eq!(ViewerState::thumbnail_status_name("cover.page.jpg"), "cover.page");
+        let long = "1234567890abcdefghijklmnopqrstuvwx9876543210.jpg";
+        assert_eq!(
+            ViewerState::thumbnail_status_name(long),
+            "1234567890abcdef...stuvwx9876543210"
+        );
     }
 }
 

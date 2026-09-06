@@ -20,6 +20,10 @@ pub const SPREAD_TABLE: TableDefinition<&str, (u8, i32)> = TableDefinition::new(
 pub const ARCHIVE_SORT_TABLE_V1: TableDefinition<&str, (u8, bool)> =
     TableDefinition::new("archive_sort_state_v1");
 
+/// アーカイブ単位の登録サムネイルページ。値は表示順に依存しないentry_name。
+pub const THUMBNAIL_SELECTION_TABLE_V1: TableDefinition<&str, &str> =
+    TableDefinition::new("thumbnail_selection_v1");
+
 /// root（config.rsが解決したconf置き場所）の nekoviewer_spread.redb を開く。
 /// 失敗時は None（保存機能自体を無効化）。
 pub fn open_spread_db(root: &Path) -> Option<Arc<Mutex<Database>>> {
@@ -30,9 +34,47 @@ pub fn open_spread_db(root: &Path) -> Option<Arc<Mutex<Database>>> {
         let tx = db.begin_write().ok()?;
         tx.open_table(SPREAD_TABLE).ok()?;
         tx.open_table(ARCHIVE_SORT_TABLE_V1).ok()?;
+        tx.open_table(THUMBNAIL_SELECTION_TABLE_V1).ok()?;
         tx.commit().ok()?;
     }
     Some(Arc::new(Mutex::new(db)))
+}
+
+pub fn write_thumbnail_selection(
+    db: &Arc<Mutex<Database>>,
+    dir: &Path,
+    filename: &str,
+    entry_name: &str,
+) {
+    let key = make_key(dir, filename);
+    let Ok(db) = db.lock() else { return };
+    let Ok(tx) = db.begin_write() else { return };
+    if let Ok(mut table) = tx.open_table(THUMBNAIL_SELECTION_TABLE_V1) {
+        let _ = table.insert(key.as_str(), entry_name);
+    }
+    let _ = tx.commit();
+}
+
+pub fn read_thumbnail_selection(
+    db: &Arc<Mutex<Database>>,
+    dir: &Path,
+    filename: &str,
+) -> Option<String> {
+    let key = make_key(dir, filename);
+    let db = db.lock().ok()?;
+    let tx = db.begin_read().ok()?;
+    let table = tx.open_table(THUMBNAIL_SELECTION_TABLE_V1).ok()?;
+    Some(table.get(key.as_str()).ok()??.value().to_string())
+}
+
+pub fn remove_thumbnail_selection(db: &Arc<Mutex<Database>>, dir: &Path, filename: &str) {
+    let key = make_key(dir, filename);
+    let Ok(db) = db.lock() else { return };
+    let Ok(tx) = db.begin_write() else { return };
+    if let Ok(mut table) = tx.open_table(THUMBNAIL_SELECTION_TABLE_V1) {
+        let _ = table.remove(key.as_str());
+    }
+    let _ = tx.commit();
 }
 
 fn make_key(dir: &Path, filename: &str) -> String {
@@ -257,6 +299,7 @@ mod tests {
             let tx = db.begin_write().unwrap();
             tx.open_table(SPREAD_TABLE).unwrap();
             tx.open_table(ARCHIVE_SORT_TABLE_V1).unwrap();
+            tx.open_table(THUMBNAIL_SELECTION_TABLE_V1).unwrap();
             tx.commit().unwrap();
         }
         Arc::new(Mutex::new(db))
@@ -305,6 +348,28 @@ mod tests {
 
         remove_archive_sort(&db, &dir, "a.zip");
         assert!(read_archive_sort(&db, &dir, "a.zip").is_none());
+    }
+
+    #[test]
+    fn thumbnail_selection_roundtrip_replace_and_remove() {
+        let db = temp_db();
+        let dir = dummy_dir();
+        assert!(read_thumbnail_selection(&db, &dir, "book.zip").is_none());
+
+        write_thumbnail_selection(&db, &dir, "book.zip", "pages/001.jpg");
+        assert_eq!(
+            read_thumbnail_selection(&db, &dir, "book.zip").as_deref(),
+            Some("pages/001.jpg")
+        );
+
+        write_thumbnail_selection(&db, &dir, "book.zip", "pages/cover.png");
+        assert_eq!(
+            read_thumbnail_selection(&db, &dir, "book.zip").as_deref(),
+            Some("pages/cover.png")
+        );
+
+        remove_thumbnail_selection(&db, &dir, "book.zip");
+        assert!(read_thumbnail_selection(&db, &dir, "book.zip").is_none());
     }
 
     #[test]

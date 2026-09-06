@@ -36,6 +36,13 @@ pub enum SortSaveAction {
     Disable,
 }
 
+/// 登録サムネイルページの保存メニューでのユーザー操作。
+#[derive(Clone, PartialEq)]
+pub enum ThumbnailSaveAction {
+    Enable { entry_name: String },
+    Disable,
+}
+
 /// viewer.show() の戻り値。viewer → controller への通知をまとめて返す。
 #[derive(Clone)]
 pub struct ViewerOutput {
@@ -47,6 +54,8 @@ pub struct ViewerOutput {
     pub spread_save_action: Option<SpreadSaveAction>,
     /// Some(_) のとき app 側でソート条件DBへの保存/削除を行う
     pub sort_save_action: Option<SortSaveAction>,
+    /// Some(_) のとき登録サムネイルページの保存/解除を行う。
+    pub thumbnail_save_action: Option<ThumbnailSaveAction>,
     /// true のとき app 側でお気に入り詳細設定ダイアログを開く
     pub open_favorite_dialog: bool,
     /// true のとき app 側でOCR/翻訳子ウィンドウの開閉をトグルする

@@ -517,6 +517,10 @@ impl NekoviewApp {
             self.handle_sort_save_action(action);
         }
 
+        if let Some(action) = output.thumbnail_save_action {
+            self.handle_thumbnail_save_action(action);
+        }
+
         if output.open_favorite_dialog {
             self.open_favorite_detail_dialog();
         }
@@ -767,6 +771,32 @@ impl NekoviewApp {
         }
     }
 
+    /// 登録サムネイルページの永続化だけを行う。画像キャッシュの差し替えは次フェーズで接続する。
+    fn handle_thumbnail_save_action(&mut self, action: crate::controller::ThumbnailSaveAction) {
+        let Some(db) = self.spread_db.clone() else { return };
+        let mut viewer_guard = self.viewer.lock().unwrap();
+        let Some(viewer) = viewer_guard.as_mut() else { return };
+        let archive_path = viewer.archive_path().clone();
+        let Some(filename) = archive_path.file_name().and_then(|n| n.to_str()) else { return };
+        let archive_dir = archive_path.parent().unwrap_or(&self.current_dir);
+
+        match action {
+            crate::controller::ThumbnailSaveAction::Enable { entry_name } => {
+                // UIで解決した値を盲信せず、書き込み直前にも実エントリの存在を確認する。
+                if viewer.entries().iter().any(|entry| entry.entry_name == entry_name) {
+                    crate::spread_state::write_thumbnail_selection(
+                        &db, archive_dir, filename, &entry_name,
+                    );
+                    viewer.set_saved_thumbnail_entry(Some(entry_name));
+                }
+            }
+            crate::controller::ThumbnailSaveAction::Disable => {
+                crate::spread_state::remove_thumbnail_selection(&db, archive_dir, filename);
+                viewer.set_saved_thumbnail_entry(None);
+            }
+        }
+    }
+
     /// 保存ONかつ現在値に変更がある場合だけ、現在のアーカイブの保存値を上書きする。
     /// ViewerStateを破棄・置換する直前の全経路から呼ぶ。
     pub(super) fn flush_current_sort_if_changed(&mut self) {
@@ -806,6 +836,20 @@ impl NekoviewApp {
         if let Some((key, ascending)) = saved_sort {
             state.restore_saved_sort(key, ascending);
             state.set_saved_sort(Some((key, ascending)));
+        }
+        let saved_thumbnail_entry = self.spread_db.as_ref().and_then(|db| {
+            crate::spread_state::read_thumbnail_selection(db, archive_dir, filename)
+        });
+        // アーカイブ更新で登録先が消えた場合は未登録として扱い、壊れた値も掃除する。
+        if saved_thumbnail_entry.as_ref().is_some_and(|saved| {
+            !state.entries().iter().any(|entry| &entry.entry_name == saved)
+        }) {
+            if let Some(db) = &self.spread_db {
+                crate::spread_state::remove_thumbnail_selection(db, archive_dir, filename);
+            }
+            state.set_saved_thumbnail_entry(None);
+        } else {
+            state.set_saved_thumbnail_entry(saved_thumbnail_entry);
         }
         if let Some(&(mode, offset)) = self.spread_states.get(filename) {
             let mut cfg = self.viewer_cfg.lock().unwrap();

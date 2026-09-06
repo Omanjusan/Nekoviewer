@@ -232,6 +232,14 @@ impl Lang {
         }
     }
 
+    pub fn thumbnail_default_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "デフォルト",
+            Lang::English  => "Default",
+            Lang::Chinese  => "默认",
+        }
+    }
+
     pub fn loading(self) -> &'static str {
         match self {
             Lang::Japanese => "読み込み中...",
