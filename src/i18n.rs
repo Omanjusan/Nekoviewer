@@ -208,6 +208,30 @@ impl Lang {
         }
     }
 
+    pub fn thumbnail_register_page_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "このページをサムネイルとして登録",
+            Lang::English  => "Use this page as the thumbnail",
+            Lang::Chinese  => "将此页设为缩略图",
+        }
+    }
+
+    pub fn thumbnail_current_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "現在のサムネイル",
+            Lang::English  => "Current thumbnail",
+            Lang::Chinese  => "当前缩略图",
+        }
+    }
+
+    pub fn thumbnail_debug_waiting(self) -> &'static str {
+        match self {
+            Lang::Japanese => "判定待ち",
+            Lang::English  => "waiting for hit test",
+            Lang::Chinese  => "等待点击判定",
+        }
+    }
+
     pub fn loading(self) -> &'static str {
         match self {
             Lang::Japanese => "読み込み中...",

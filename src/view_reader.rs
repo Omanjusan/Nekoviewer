@@ -323,6 +323,9 @@ pub struct ViewerState {
     pending_spread_action: Option<crate::controller::SpreadSaveAction>,
     /// ソート保存メニューでのユーザー操作要求（1フレームで消費）
     pending_sort_action: Option<crate::controller::SortSaveAction>,
+    /// サムネイル登録の座標判定フェーズ用。右クリック時点の対象ページと座標を保持する。
+    /// このフェーズでは永続化やサムネイル差し替えには接続しない。
+    thumbnail_hit_debug: Option<String>,
     /// 右クリックメニュー「お気に入り詳細設定」が押されたか（1フレームで消費）
     pending_open_favorite_dialog: bool,
     /// 右クリックメニュー「ファイル詳細」が押されたか（1フレームで消費）
@@ -498,6 +501,7 @@ impl ViewerState {
             saved_sort: None,
             pending_spread_action: None,
             pending_sort_action: None,
+            thumbnail_hit_debug: None,
             pending_open_favorite_dialog: false,
             pending_open_file_detail: false,
             file_detail_dialog: None,
@@ -560,6 +564,7 @@ impl ViewerState {
             saved_sort: None,
             pending_spread_action: None,
             pending_sort_action: None,
+            thumbnail_hit_debug: None,
             pending_open_favorite_dialog: false,
             pending_open_file_detail: false,
             file_detail_dialog: None,
@@ -1350,10 +1355,10 @@ impl ViewerState {
                         self.render_single(ui, &frame.tex_lo, frame.zoom_actual, frame.rotation_angle, &mut double_clicked, &mut single_clicked);
                     }
                     PageMode::SpreadLeft => {
-                        self.render_spread(ui, &frame.tex_lo, &frame.tex_hi, frame.monitor, frame.rotation_angle, &mut single_clicked);
+                        self.render_spread(ui, &frame.tex_lo, &frame.tex_hi, self.spread_lo(), self.spread_lo() + 1, frame.monitor, frame.rotation_angle, &mut single_clicked);
                     }
                     PageMode::SpreadRight => {
-                        self.render_spread(ui, &frame.tex_hi, &frame.tex_lo, frame.monitor, frame.rotation_angle, &mut single_clicked);
+                        self.render_spread(ui, &frame.tex_hi, &frame.tex_lo, self.spread_lo() + 1, self.spread_lo(), frame.monitor, frame.rotation_angle, &mut single_clicked);
                     }
                 }
             } else {
@@ -2065,6 +2070,7 @@ impl ViewerState {
         sort_changed: bool,
         current_sort: (ViewerSortKey, bool),
         sort_action: &mut Option<crate::controller::SortSaveAction>,
+        thumbnail_hit_debug: Option<&str>,
         open_favorite_dialog: &mut bool,
         open_file_detail: &mut bool,
     ) {
@@ -2104,6 +2110,16 @@ impl ViewerState {
             String::new()
         };
         ui.label(format!("{} : {}{}", t.sort_save_new_label(), sort_text, changed_suffix));
+        let mut thumbnail_register = false;
+        ui.add_enabled(
+            false,
+            egui::Checkbox::new(&mut thumbnail_register, t.thumbnail_register_page_label()),
+        );
+        ui.label(format!(
+            "{}: {}",
+            t.thumbnail_current_label(),
+            thumbnail_hit_debug.unwrap_or(t.thumbnail_debug_waiting()),
+        ));
         ui.separator();
         if ui.button(t.favorite_detail_menu()).clicked() {
             *open_favorite_dialog = true;
@@ -2162,7 +2178,13 @@ impl ViewerState {
                     }
                     if resp.double_clicked() { *double_clicked = true; }
                     if resp.clicked() && !resp.double_clicked() { *single_clicked = true; }
-                    resp.context_menu(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort, sort_action, open_favorite_dialog, open_file_detail));
+                    if resp.secondary_clicked() {
+                        if let Some(pos) = resp.interact_pointer_pos() {
+                            self.thumbnail_hit_debug = Some(format!("単ページ（座標X: {:.0}, Y: {:.0}）", pos.x, pos.y));
+                        }
+                    }
+                    let thumbnail_hit_debug = self.thumbnail_hit_debug.as_deref();
+                    resp.context_menu(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort, sort_action, thumbnail_hit_debug, open_favorite_dialog, open_file_detail));
                 });
             } else {
                 let available = ui.available_size();
@@ -2171,7 +2193,13 @@ impl ViewerState {
                 let resp  = ui.allocate_rect(fit, egui::Sense::click());
                 if resp.double_clicked() { *double_clicked = true; }
                 if resp.clicked() && !resp.double_clicked() { *single_clicked = true; }
-                resp.context_menu(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort, sort_action, open_favorite_dialog, open_file_detail));
+                if resp.secondary_clicked() {
+                    if let Some(pos) = resp.interact_pointer_pos() {
+                        self.thumbnail_hit_debug = Some(format!("単ページ（座標X: {:.0}, Y: {:.0}）", pos.x, pos.y));
+                    }
+                }
+                let thumbnail_hit_debug = self.thumbnail_hit_debug.as_deref();
+                resp.context_menu(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort, sort_action, thumbnail_hit_debug, open_favorite_dialog, open_file_detail));
             }
         } else {
             let rect = egui::Rect::from_min_size(ui.cursor().left_top(), ui.available_size());
@@ -2185,6 +2213,8 @@ impl ViewerState {
         ui: &mut egui::Ui,
         tex_left: &Option<egui::TextureHandle>,
         tex_right: &Option<egui::TextureHandle>,
+        left_index: i32,
+        right_index: i32,
         monitor: Option<egui::Vec2>,
         angle_deg: i32,
         single_clicked: &mut bool,
@@ -2196,17 +2226,25 @@ impl ViewerState {
         let sort_toggle_on = self.sort_save_toggle_on();
         let sort_changed = self.sort_save_changed();
         let current_sort = self.current_sort_snapshot();
-        let action = &mut self.pending_spread_action;
-        let sort_action = &mut self.pending_sort_action;
-        let open_favorite_dialog = &mut self.pending_open_favorite_dialog;
-        let open_file_detail = &mut self.pending_open_file_detail;
         let available = ui.available_size();
         let origin = ui.cursor().left_top();
 
         let full_rect = egui::Rect::from_min_size(origin, available);
         let resp = ui.allocate_rect(full_rect, egui::Sense::click());
         if resp.clicked() && !resp.double_clicked() { *single_clicked = true; }
-        resp.context_menu(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort, sort_action, open_favorite_dialog, open_file_detail));
+        if resp.secondary_clicked() {
+            if let Some(pos) = resp.interact_pointer_pos() {
+                self.thumbnail_hit_debug = Some(self.thumbnail_hit_debug_for_spread(
+                    pos, full_rect, tex_left, tex_right, left_index, right_index, monitor, angle_deg,
+                ));
+            }
+        }
+        let thumbnail_hit_debug = self.thumbnail_hit_debug.as_deref();
+        let action = &mut self.pending_spread_action;
+        let sort_action = &mut self.pending_sort_action;
+        let open_favorite_dialog = &mut self.pending_open_favorite_dialog;
+        let open_file_detail = &mut self.pending_open_file_detail;
+        resp.context_menu(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort, sort_action, thumbnail_hit_debug, open_favorite_dialog, open_file_detail));
 
         if angle_deg == 0 {
             let (rect_l, rect_r) = Self::spread_rects(available, origin, tex_left, tex_right, monitor);
@@ -2216,6 +2254,67 @@ impl ViewerState {
         } else {
             Self::paint_spread_rotated(ui.painter(), full_rect, tex_left, tex_right, angle_deg);
         }
+    }
+
+    /// サムネイル登録前の目視確認用ヒットテスト。片側が仮想ページなら、クリック位置に
+    /// 関係なく実ページ側を返す。両側が実ページのときだけ描画されたページ矩形を判定する。
+    fn thumbnail_hit_debug_for_spread(
+        &self,
+        pos: egui::Pos2,
+        bounds: egui::Rect,
+        tex_left: &Option<egui::TextureHandle>,
+        tex_right: &Option<egui::TextureHandle>,
+        left_index: i32,
+        right_index: i32,
+        monitor: Option<egui::Vec2>,
+        angle_deg: i32,
+    ) -> String {
+        let total = self.entries.len() as i32;
+        let left_real = (0..total).contains(&left_index);
+        let right_real = (0..total).contains(&right_index);
+        let coords = format!("座標X: {:.0}, Y: {:.0}", pos.x, pos.y);
+
+        match (left_real, right_real) {
+            (true, false) => return format!("左ページ（{coords}・右は仮想ページ）"),
+            (false, true) => return format!("右ページ（{coords}・左は仮想ページ）"),
+            (false, false) => return format!("実ページなし（{coords}）"),
+            (true, true) => {}
+        }
+
+        let (hit_left, hit_right) = if angle_deg == 0 {
+            let (left, right) = Self::spread_rects(
+                bounds.size(), bounds.min, tex_left, tex_right, monitor,
+            );
+            (left.contains(pos), right.contains(pos))
+        } else {
+            let (local_left, local_right) = Self::spread_local_rects(tex_left, tex_right);
+            match Self::spread_rotation_fit(local_left, local_right, bounds, angle_deg) {
+                Some((center_left, center_right, scale)) => (
+                    Self::rotated_rect_contains(pos, center_left, local_left.size() * scale / 2.0, angle_deg),
+                    Self::rotated_rect_contains(pos, center_right, local_right.size() * scale / 2.0, angle_deg),
+                ),
+                None => (false, false),
+            }
+        };
+
+        if hit_left {
+            format!("左ページ（{coords}）")
+        } else if hit_right {
+            format!("右ページ（{coords}）")
+        } else {
+            format!("ページ外（{coords}）")
+        }
+    }
+
+    fn rotated_rect_contains(
+        point: egui::Pos2,
+        center: egui::Pos2,
+        half: egui::Vec2,
+        angle_deg: i32,
+    ) -> bool {
+        let inverse = egui::emath::Rot2::from_angle(-(angle_deg as f32).to_radians());
+        let local = inverse * (point - center);
+        local.x.abs() <= half.x && local.y.abs() <= half.y
     }
 
     /// 見開き2ページのレイアウト計算（左右の Rect を返す）
@@ -2493,6 +2592,19 @@ mod spread_rotation_tests {
         );
         let bounds = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(0.0, 0.0));
         assert!(ViewerState::spread_rotation_fit(local_l, local_r, bounds, 90).is_none());
+    }
+
+    #[test]
+    fn rotated_hit_test_tracks_the_drawn_page_at_all_supported_angles() {
+        let center = egui::pos2(100.0, 100.0);
+        let half = egui::vec2(40.0, 20.0);
+        for angle in [0, 90, 180, 270] {
+            let rot = egui::emath::Rot2::from_angle((angle as f32).to_radians());
+            let inside = center + rot * egui::vec2(30.0, 10.0);
+            let outside = center + rot * egui::vec2(50.0, 10.0);
+            assert!(ViewerState::rotated_rect_contains(inside, center, half, angle));
+            assert!(!ViewerState::rotated_rect_contains(outside, center, half, angle));
+        }
     }
 }
 
