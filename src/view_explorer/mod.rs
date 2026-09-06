@@ -340,6 +340,15 @@ struct TreeAutoFocus {
     current: PathBuf,
 }
 
+/// ディレクトリ遷移を開始したUI／内部処理。
+/// ツリー内の選択は既に可視なノードを対象とするため、自動スクロールの対象外にする。
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DirectoryNavigationSource {
+    Tree,
+    ItemPane,
+    System,
+}
+
 /// リロードボタンによるツリー一括再取得の待ち状態（スレッド1本で全対象を処理）
 struct TreeReloadPending {
     rx: mpsc::Receiver<Vec<(PathBuf, Vec<PathBuf>)>>,

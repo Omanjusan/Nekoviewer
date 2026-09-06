@@ -227,7 +227,7 @@ impl NekoviewApp {
             if self.folder_pane_tab == FolderPaneTab::Search {
                 self.search_form.base_dir = Some(cur);
             } else {
-                self.navigate_to(cur);
+                self.navigate_to(cur, DirectoryNavigationSource::Tree);
             }
         }
     }
@@ -553,7 +553,7 @@ impl NekoviewApp {
                 GridEntry::Up(path) | GridEntry::Subdir(path) => {
                     self.multi_selected.clear();
                     self.select_anchor = None;
-                    self.navigate_to(path.clone());
+                    self.navigate_to(path.clone(), DirectoryNavigationSource::ItemPane);
                 }
                 GridEntry::Archive(idx) => {
                     // 複数選択中でもEnter時点のカーソル位置1件のみを開く（複数選択は維持）

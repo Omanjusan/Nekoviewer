@@ -8,9 +8,9 @@ use crate::fs::mount::{list_gvfs_smb_mounts, list_local_drives};
 use super::*;
 
 impl NekoviewApp {
-    /// 指定ディレクトリへ遷移する（ツリーパネル・サムネグリッドの↑/フォルダクリック共通処理）。
+    /// 指定ディレクトリへ遷移する。
     /// お気に入りタブ表示中ならそれを解除し、現在地・監視先を更新してスキャンを開始する。
-    pub(super) fn navigate_to(&mut self, path: PathBuf) {
+    pub(super) fn navigate_to(&mut self, path: PathBuf, source: DirectoryNavigationSource) {
         self.viewing_favorites = None;
         self.current_dir = path.clone();
         self.viewing_dir = Some(path.clone());
@@ -18,7 +18,18 @@ impl NekoviewApp {
         self.cd_summary = None;
         self.cd_summary_rx = None;
         self.start_scan();
-        self.start_tree_autofocus(path);
+        match source {
+            DirectoryNavigationSource::Tree => {
+                // ツリーで選べるノードは既に可視なので、追従・アラインさせない。
+                // 直前の別操作から残った要求も、後のフレームで発火しないよう破棄する。
+                self.tree_autofocus = None;
+                self.tree_autofocus_pending = None;
+                self.tree_autofocus_scroll_pending = false;
+            }
+            DirectoryNavigationSource::ItemPane | DirectoryNavigationSource::System => {
+                self.start_tree_autofocus(path);
+            }
+        }
         self.persist_state();
     }
 
@@ -195,7 +206,7 @@ impl NekoviewApp {
         if let Some(viewing) = self.viewing_dir.clone() {
             if !self.path_reachable(&viewing) {
                 if let Some(home) = home {
-                    self.navigate_to(home);
+                    self.navigate_to(home, DirectoryNavigationSource::System);
                 }
                 return;
             }

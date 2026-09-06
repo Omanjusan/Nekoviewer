@@ -345,7 +345,7 @@ impl NekoviewApp {
                 if self.folder_pane_tab == FolderPaneTab::Search {
                     self.search_form.base_dir = Some(path);
                 } else {
-                    self.navigate_to(path);
+                    self.navigate_to(path, DirectoryNavigationSource::Tree);
                 }
             }
         }
@@ -1025,7 +1025,7 @@ impl NekoviewApp {
         self.explorer_scroll_offset = output.state.offset.y;
         self.explorer_viewport_h = output.inner_rect.height();
         if let Some(path) = output.inner {
-            self.navigate_to(path);
+            self.navigate_to(path, DirectoryNavigationSource::ItemPane);
         }
     }
 }
