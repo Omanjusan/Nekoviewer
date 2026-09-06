@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use crate::cache::{LoadResult, EntryThumbRequest, EntryThumbResult};
+use crate::decode_jobs::DecodeJobOutcome;
 use crate::gui_config::ThumbbarPos;
 use crate::gui_config::WindowSlot;
 use crate::controller::{self, ViewerNav};
@@ -612,13 +613,27 @@ impl NekoviewApp {
                 }
                 self.pending_loads.lock().unwrap()
                     .remove(&(result.archive_path.clone(), result.index));
-                self.page_cache.lock().unwrap().insert(
-                    result.archive_path,
-                    result.index,
-                    result.content,
-                    &cur_path,
-                    cur_idx,
-                );
+                let failed_key = crate::decode_jobs::DecodeJobKey {
+                    archive_path: result.archive_path.clone(),
+                    page_index: result.index,
+                    generation: result.generation,
+                };
+                match result.outcome {
+                    DecodeJobOutcome::Ready(content) => {
+                        self.failed_loads.remove(&failed_key);
+                        self.page_cache.lock().unwrap().insert(
+                            result.archive_path,
+                            result.index,
+                            content,
+                            &cur_path,
+                            cur_idx,
+                        );
+                    }
+                    DecodeJobOutcome::Failed => {
+                        self.failed_loads.insert(failed_key);
+                    }
+                    DecodeJobOutcome::Cancelled => {}
+                }
             }
         }
         self.prefetch_pages();
@@ -845,6 +860,7 @@ impl NekoviewApp {
     pub(super) fn open_viewer(&mut self, mut state: ViewerState) {
         self.flush_current_sort_if_changed();
         let path = state.archive_path().clone();
+        self.failed_loads.retain(|key| key.archive_path != path);
         let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
         let archive_dir = path.parent().unwrap_or(&self.current_dir);
         let saved_sort = if archive_dir == self.current_dir {

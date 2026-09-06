@@ -1,5 +1,6 @@
 use crate::{log_perf};
 use crate::anim::{AnimFrame, AnimFormat, SequentialAnimDecoder, FrameRingBuffer, resolve_ring_capacity};
+use crate::decode_jobs::{DecodeJobOutcome, DecodeJobQueue};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{mpsc, Arc, Mutex};
@@ -181,7 +182,7 @@ pub enum PageContent {
 pub struct LoadResult {
     pub archive_path: PathBuf,
     pub index: usize,
-    pub content: PageContent,
+    pub outcome: DecodeJobOutcome<PageContent>,
     pub generation: u64,
 }
 
@@ -197,15 +198,12 @@ impl LoadResult {
 /// `ring_bounds` はフェーズ4のリング先読み枚数の(下限, 上限)。
 /// `frame_hard_limit_bytes` はフェーズ5: 1フレームあたりの生デコードサイズ上限。超過フレームはその場で縮小する。
 /// 返り値: (要求送信側, 結果受信側)
-pub fn spawn_worker(filter: image::imageops::FilterType, num_threads: usize, ctx: egui::Context, cache_budget_bytes: usize, ring_bounds: (usize, usize), frame_hard_limit_bytes: usize) -> (mpsc::Sender<LoadRequest>, mpsc::Receiver<LoadResult>) {
-    let (req_tx, req_rx) = mpsc::channel::<LoadRequest>();
+pub fn spawn_worker(filter: image::imageops::FilterType, num_threads: usize, ctx: egui::Context, cache_budget_bytes: usize, ring_bounds: (usize, usize), frame_hard_limit_bytes: usize) -> (DecodeJobQueue<LoadRequest>, mpsc::Receiver<LoadResult>) {
+    let job_queue = DecodeJobQueue::<LoadRequest>::new(0);
     let (res_tx, res_rx) = mpsc::channel::<LoadResult>();
 
-    // Receiver を Arc<Mutex> で包んで複数スレッドに共有する
-    let req_rx = Arc::new(Mutex::new(req_rx));
-
     for _ in 0..num_threads {
-        let req_rx = Arc::clone(&req_rx);
+        let worker_queue = job_queue.clone();
         let res_tx = res_tx.clone();
         let ctx = ctx.clone();
         std::thread::spawn(move || {
@@ -213,11 +211,16 @@ pub fn spawn_worker(filter: image::imageops::FilterType, num_threads: usize, ctx
             let mut open_archive: Option<(PathBuf, OpenArchive)> = None;
 
             loop {
-                // ロックはメッセージ取り出しのみに使用し、デコード中は解放される
-                let req = match req_rx.lock().unwrap().recv() {
-                    Ok(r) => r,
-                    Err(_) => break, // Sender が drop されたら終了
+                let scheduled = match worker_queue.wait_take() {
+                    Some(job) => job,
+                    None => break,
                 };
+                if scheduled.is_cancelled() {
+                    worker_queue.finish(scheduled.id);
+                    continue;
+                }
+                let job_id = scheduled.id;
+                let req = scheduled.payload;
 
                 let t_total = std::time::Instant::now();
                 let target_size = req.target_size;
@@ -263,16 +266,22 @@ pub fn spawn_worker(filter: image::imageops::FilterType, num_threads: usize, ctx
                     open_archive.as_mut().and_then(|(_, a)| a.load_page(&req.entry_name, filter, cache_budget_bytes, ring_bounds, frame_hard_limit_bytes, target_size, exif_enabled))
                 };
 
-                if let Some(content) = content {
+                if content.is_some() {
                     log_perf!(
                         "[perf/page] total={:.1}ms entry={}",
                         t_total.elapsed().as_secs_f64() * 1000.0,
                         req.entry_name,
                     );
+                }
+                if worker_queue.finish(job_id) {
+                    let outcome = match content {
+                        Some(content) => DecodeJobOutcome::Ready(content),
+                        None => DecodeJobOutcome::Failed,
+                    };
                     let _ = res_tx.send(LoadResult {
                         archive_path: req.archive_path,
                         index: req.index,
-                        content,
+                        outcome,
                         generation: req.generation,
                     });
                     ctx.request_repaint_after(std::time::Duration::from_millis(8));
@@ -281,7 +290,7 @@ pub fn spawn_worker(filter: image::imageops::FilterType, num_threads: usize, ctx
         });
     }
 
-    (req_tx, res_rx)
+    (job_queue, res_rx)
 }
 
 fn to_fir_alg(filter: image::imageops::FilterType) -> ResizeAlg {
@@ -1388,7 +1397,7 @@ mod ring_integration_tests {
         let static_result = LoadResult {
             archive_path: PathBuf::from("page.png"),
             index: 0,
-            content: PageContent::Static(image::RgbaImage::new(1, 1)),
+            outcome: DecodeJobOutcome::Ready(PageContent::Static(image::RgbaImage::new(1, 1))),
             generation: 8,
         };
 
@@ -1412,12 +1421,53 @@ mod ring_integration_tests {
         let animated_result = LoadResult {
             archive_path: PathBuf::from("page.gif"),
             index: 0,
-            content: animated,
+            outcome: DecodeJobOutcome::Ready(animated),
             generation: 12,
         };
 
         assert!(animated_result.belongs_to_generation(12));
         assert!(!animated_result.belongs_to_generation(11));
+    }
+
+    #[test]
+    fn page_worker_reports_decode_failure_instead_of_leaving_pending_forever() {
+        let ctx = egui::Context::default();
+        let (queue, results) = spawn_worker(
+            image::imageops::FilterType::Triangle,
+            1,
+            ctx,
+            16 * 1024 * 1024,
+            (1, 2),
+            16 * 1024 * 1024,
+        );
+        let path = PathBuf::from("definitely-missing-page.png");
+        let key = crate::decode_jobs::DecodeJobKey {
+            archive_path: path.clone(),
+            page_index: 0,
+            generation: 0,
+        };
+        assert!(queue.submit(crate::decode_jobs::DesiredDecodeJob {
+            key,
+            class: crate::decode_jobs::PagePriorityClass::Visible,
+            distance: 0,
+            payload: LoadRequest {
+                archive_path: path,
+                index: 0,
+                entry_name: String::new(),
+                is_raw_file: true,
+                file_cache_entry: None,
+                target_size: Some((800, 600)),
+                exif_enabled: true,
+                generation: 0,
+            },
+        }));
+
+        let result = results
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("失敗結果が返るはず");
+        assert!(matches!(result.outcome, DecodeJobOutcome::Failed));
+        assert_eq!(queue.pending_count(), 0);
+        queue.shutdown();
     }
 
     /// フェーズ3.6: ループ境界(終端→restart→先頭)が実際に機能することを確認する。

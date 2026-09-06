@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, mpsc};
 
 use crate::cache::{FileCache, FileCacheEntry, LoadRequest, LoadResult, PageCache, ThumbRequest, ThumbResult, EntryThumbRequest, EntryThumbResult, spawn_worker, spawn_thumb_worker, spawn_entry_thumb_worker, spawn_file_cache_worker};
+use crate::decode_jobs::{DecodeJobQueue, DesiredDecodeJob};
 use crate::config::AppConfig;
 use crate::gui_config::{SortState, ViewerConfig, WindowSlot};
 use crate::view_gui_config::{SettingsDraft, SettingsTab};
@@ -357,7 +358,7 @@ struct TreeReloadPending {
 /// 7zのFileCache展開待ちで保留したページ/サムネ要求。
 /// FileCache結果が届いた時点でこれをまとめて実際のワーカーへ送出する。
 enum DeferredArchiveRequest {
-    Page(LoadRequest),
+    Page(DesiredDecodeJob<LoadRequest>),
     Thumb(EntryThumbRequest),
 }
 
@@ -451,9 +452,12 @@ pub struct NekoviewApp {
     /// FileCache結果が届いた時点でまとめてフラッシュする（デコードワーカー側での
     /// スレッドごとの重複展開を避けるため）。
     deferred_archive_requests: HashMap<PathBuf, Vec<DeferredArchiveRequest>>,
-    req_tx: mpsc::Sender<LoadRequest>,
+    req_tx: DecodeJobQueue<LoadRequest>,
     res_rx: Arc<Mutex<mpsc::Receiver<LoadResult>>>,
     pending_loads: Arc<Mutex<HashSet<(PathBuf, usize)>>>,
+    /// デコード失敗ページ。毎フレームの無限再要求を防ぎ、世代変更・再オープン・
+    /// FileCache準備完了時には解除して再試行可能にする。
+    failed_loads: HashSet<crate::decode_jobs::DecodeJobKey>,
     scan_state: ScanState,
     tree_scan_pending: Option<TreeScanPending>,
     tree_reload_pending: Option<TreeReloadPending>,
@@ -752,6 +756,7 @@ impl NekoviewApp {
             req_tx,
             res_rx: Arc::new(Mutex::new(res_rx)),
             pending_loads: Arc::new(Mutex::new(HashSet::new())),
+            failed_loads: HashSet::new(),
             scan_state: ScanState::Idle,
             tree_scan_pending,
             tree_reload_pending: None,

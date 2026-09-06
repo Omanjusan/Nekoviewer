@@ -2,9 +2,8 @@
 //!
 //! フェーズ1では既存ワーカーへまだ接続せず、優先度、必要集合の差し替え、
 //! active/preparing の2世代管理、待機・実行中ジョブの協調キャンセルを独立して検証する。
-#![allow(dead_code)] // フェーズ2の既存デコードワーカー統合まで一時的に未使用。
-
 use std::cmp::Ordering;
+use std::collections::HashSet;
 use std::collections::{BinaryHeap, HashMap};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
@@ -68,11 +67,13 @@ pub struct DesiredDecodeJob<T> {
 pub enum DecodeJobOutcome<T> {
     Ready(T),
     Failed,
+    #[allow(dead_code)] // キュー内キャンセルは内部消費。将来の観測用契約として予約する。
     Cancelled,
 }
 
 pub struct ScheduledDecodeJob<T> {
     pub id: u64,
+    #[allow(dead_code)] // フェーズ3の世代別結果配置で使用する。
     pub key: DecodeJobKey,
     pub payload: T,
     cancelled: Arc<AtomicBool>,
@@ -139,10 +140,6 @@ struct QueueState<T> {
 }
 
 impl<T> QueueState<T> {
-    fn generation_rank(&self, generation: u64) -> Option<u8> {
-        self.generations.rank(generation)
-    }
-
     fn rebuild_heap(&mut self) {
         let generations = self.generations;
         self.heap = self
@@ -261,8 +258,76 @@ impl<T> DecodeJobQueue<T> {
         self.shared.wake.notify_all();
     }
 
+    /// 既存の必要集合を維持したまま1件を追加・更新する。
+    /// フェーズ2の既存prefetch経路と、FileCache待ち解除後の遅延投入に使用する。
+    pub fn submit(&self, desired_job: DesiredDecodeJob<T>) -> bool {
+        let mut state = self.shared.state.lock().unwrap();
+        if state.shutting_down
+            || !state.generations.accepts(desired_job.key.generation)
+            || state.has_live_running(&desired_job.key)
+        {
+            return false;
+        }
+
+        let key = desired_job.key.clone();
+        if let Some(queued) = state.queued.get_mut(&key) {
+            queued.class = desired_job.class;
+            queued.distance = desired_job.distance;
+            queued.payload = desired_job.payload;
+        } else {
+            let id = state.next_id;
+            state.next_id = state.next_id.wrapping_add(1);
+            let order = state.next_order;
+            state.next_order = state.next_order.wrapping_add(1);
+            state.queued.insert(
+                key.clone(),
+                QueuedJob {
+                    id,
+                    key,
+                    class: desired_job.class,
+                    distance: desired_job.distance,
+                    order,
+                    payload: desired_job.payload,
+                    cancelled: Arc::new(AtomicBool::new(false)),
+                },
+            );
+        }
+        state.rebuild_heap();
+        self.shared.wake.notify_one();
+        true
+    }
+
+    pub fn contains(&self, key: &DecodeJobKey) -> bool {
+        let state = self.shared.state.lock().unwrap();
+        state.queued.contains_key(key)
+            || state
+                .running
+                .values()
+                .any(|job| &job.key == key && !job.cancelled.load(AtomicOrdering::Acquire))
+    }
+
+    /// 指定集合から外れた待機ジョブを削除し、実行中ジョブには停止信号を立てる。
+    /// payloadを作り直さず、ページ移動や先読み幅縮小だけを反映するための軽量経路。
+    pub fn retain_desired_keys(&self, desired: &HashSet<DecodeJobKey>) {
+        let mut state = self.shared.state.lock().unwrap();
+        state.queued.retain(|key, job| {
+            let keep = desired.contains(key);
+            if !keep {
+                job.cancelled.store(true, AtomicOrdering::Release);
+            }
+            keep
+        });
+        for job in state.running.values() {
+            if !desired.contains(&job.key) {
+                job.cancelled.store(true, AtomicOrdering::Release);
+            }
+        }
+        state.rebuild_heap();
+    }
+
     /// 現在必要なジョブ集合で待機キューを置き換える。
     /// 対象外になった実行中ジョブは止めず、完了結果を不採用にする停止信号だけを立てる。
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn replace_desired(&self, desired: Vec<DesiredDecodeJob<T>>) {
         let mut state = self.shared.state.lock().unwrap();
         if state.shutting_down {
@@ -321,6 +386,7 @@ impl<T> DecodeJobQueue<T> {
         self.shared.wake.notify_all();
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn try_take(&self) -> Option<ScheduledDecodeJob<T>> {
         self.shared.state.lock().unwrap().pop_next()
     }
@@ -349,6 +415,7 @@ impl<T> DecodeJobQueue<T> {
             && state.generations.accepts(job.key.generation)
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn pending_count(&self) -> usize {
         let state = self.shared.state.lock().unwrap();
         let running = state
@@ -444,6 +511,15 @@ mod tests {
     }
 
     #[test]
+    fn individual_submit_keeps_existing_jobs_and_updates_priority() {
+        let queue = DecodeJobQueue::new(1);
+        assert!(queue.submit(job(1, 99, PagePriorityClass::Behind, 1)));
+        assert!(queue.submit(job(1, 101, PagePriorityClass::Ahead, 1)));
+        assert!(queue.submit(job(1, 100, PagePriorityClass::Visible, 0)));
+        assert_eq!(take_pages(&queue), vec![100, 101, 99]);
+    }
+
+    #[test]
     fn widening_and_shrinking_replace_only_the_desired_waiting_set() {
         let queue = DecodeJobQueue::new(1);
         queue.replace_desired(vec![
@@ -459,6 +535,29 @@ mod tests {
 
         queue.replace_desired(vec![job(1, 100, PagePriorityClass::Visible, 0)]);
         assert_eq!(take_pages(&queue), vec![100]);
+    }
+
+    #[test]
+    fn retaining_desired_keys_cancels_removed_waiting_and_running_jobs() {
+        let queue = DecodeJobQueue::new(1);
+        queue.replace_desired(vec![
+            job(1, 100, PagePriorityClass::Visible, 0),
+            job(1, 101, PagePriorityClass::Ahead, 1),
+            job(1, 99, PagePriorityClass::Behind, 1),
+        ]);
+        let running = queue.try_take().unwrap();
+        assert_eq!(running.key.page_index, 100);
+
+        let keep = HashSet::from([DecodeJobKey {
+            archive_path: PathBuf::from("book.zip"),
+            page_index: 101,
+            generation: 1,
+        }]);
+        queue.retain_desired_keys(&keep);
+
+        assert!(running.is_cancelled());
+        assert_eq!(take_pages(&queue), vec![101]);
+        assert!(!queue.finish(running.id));
     }
 
     #[test]

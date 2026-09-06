@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use std::sync::mpsc;
 
 use crate::cache::{FileCache, FileCacheEntry, LoadRequest, LoadResult, ThumbResult, EntryThumbRequest};
+use crate::decode_jobs::{DecodeJobKey, DecodeJobOutcome, DesiredDecodeJob, PagePriorityClass};
 use crate::fs::archive;
 use crate::view_reader::ViewerState;
 use super::*;
@@ -95,7 +96,23 @@ impl NekoviewApp {
 
     /// LoadRequestを送出する。7zがFileCacheへの展開待ちの間は、要求を保留キューへ積んで
     /// 展開完了後にまとめて送る（デコードワーカー側でのスレッドごとの重複展開を避けるため）。
-    fn dispatch_load_request(&mut self, mut req: LoadRequest) {
+    fn dispatch_load_request(
+        &mut self,
+        mut req: LoadRequest,
+        class: PagePriorityClass,
+        distance: usize,
+    ) {
+        let key = DecodeJobKey {
+            archive_path: req.archive_path.clone(),
+            page_index: req.index,
+            generation: req.generation,
+        };
+        let desired = |payload| DesiredDecodeJob {
+            key: key.clone(),
+            class,
+            distance,
+            payload,
+        };
         let entry = self.file_cache.get(&req.archive_path);
         if entry.is_none()
             && !req.is_raw_file
@@ -105,11 +122,11 @@ impl NekoviewApp {
             self.deferred_archive_requests
                 .entry(req.archive_path.clone())
                 .or_default()
-                .push(DeferredArchiveRequest::Page(req));
+                .push(DeferredArchiveRequest::Page(desired(req)));
             return;
         }
         req.file_cache_entry = entry;
-        let _ = self.req_tx.send(req);
+        let _ = self.req_tx.submit(desired(req));
     }
 
     /// 現在ビューアーに表示中のページ(見開き時は2枚)を、指定ターゲットサイズで再デコードさせる。
@@ -144,19 +161,23 @@ impl NekoviewApp {
         }
 
         let exif_enabled = self.viewer_cfg.lock().unwrap().exif_orientation_enabled;
-        for (orig_i, entry_name) in &pages {
+        for (visible_order, (orig_i, entry_name)) in pages.iter().enumerate() {
             let key = (path.clone(), *orig_i);
             self.pending_loads.lock().unwrap().insert(key);
-            self.dispatch_load_request(LoadRequest {
-                archive_path: path.clone(),
-                index: *orig_i,
-                entry_name: entry_name.clone(),
-                is_raw_file,
-                file_cache_entry: None,
-                target_size: target,
-                exif_enabled,
-                generation: self.decode_generation,
-            });
+            self.dispatch_load_request(
+                LoadRequest {
+                    archive_path: path.clone(),
+                    index: *orig_i,
+                    entry_name: entry_name.clone(),
+                    is_raw_file,
+                    file_cache_entry: None,
+                    target_size: target,
+                    exif_enabled,
+                    generation: self.decode_generation,
+                },
+                PagePriorityClass::Visible,
+                visible_order,
+            );
         }
 
         pages.len()
@@ -166,7 +187,9 @@ impl NekoviewApp {
     /// LoadResultのgeneration照合でキャッシュ投入前に破棄される。
     fn begin_new_decode_generation(&mut self) {
         self.decode_generation = self.decode_generation.wrapping_add(1);
+        self.req_tx.set_generations(self.decode_generation, None);
         self.pending_loads.lock().unwrap().clear();
+        self.failed_loads.clear();
     }
 
     /// フェーズ6: ビューアー窓のリサイズを通知する（winit_app.rs の WindowEvent::Resized から呼ぶ）。
@@ -247,6 +270,7 @@ impl NekoviewApp {
 
     /// 終了時に状態を永続化する（旧 eframe::App::on_exit 相当）。
     pub fn on_exit(&mut self) {
+        self.req_tx.shutdown();
         self.flush_current_sort_if_changed();
         self.persist_state();
     }
@@ -330,15 +354,19 @@ impl NekoviewApp {
             if let Some(entry) = entry {
                 let current = cur_viewer_path.clone().unwrap_or_else(|| path.clone());
                 self.file_cache.insert(path.clone(), entry, &current, &self.archives);
+                // ディスク直読み時の一時失敗なら、準備済みデータから再試行できる。
+                self.failed_loads.retain(|key| key.archive_path != path);
             }
             // 7zの展開待ちで保留していたページ/サムネ要求をまとめてフラッシュする。
             if let Some(deferred) = self.deferred_archive_requests.remove(&path) {
                 let file_cache_entry = self.file_cache.get(&path);
                 for d in deferred {
                     match d {
-                        DeferredArchiveRequest::Page(mut req) => {
-                            req.file_cache_entry = file_cache_entry.clone();
-                            let _ = self.req_tx.send(req);
+                        DeferredArchiveRequest::Page(mut job) => {
+                            job.payload.file_cache_entry = file_cache_entry.clone();
+                            if job.key.generation == self.decode_generation {
+                                let _ = self.req_tx.submit(job);
+                            }
                         }
                         DeferredArchiveRequest::Thumb(mut req) => {
                             req.file_cache_entry = file_cache_entry.clone();
@@ -384,13 +412,27 @@ impl NekoviewApp {
             }
             self.pending_loads.lock().unwrap()
                 .remove(&(result.archive_path.clone(), result.index));
-            self.page_cache.lock().unwrap().insert(
-                result.archive_path,
-                result.index,
-                result.content,
-                &cur_path,
-                cur_idx,
-            );
+            let failed_key = DecodeJobKey {
+                archive_path: result.archive_path.clone(),
+                page_index: result.index,
+                generation: result.generation,
+            };
+            match result.outcome {
+                DecodeJobOutcome::Ready(content) => {
+                    self.failed_loads.remove(&failed_key);
+                    self.page_cache.lock().unwrap().insert(
+                        result.archive_path,
+                        result.index,
+                        content,
+                        &cur_path,
+                        cur_idx,
+                    );
+                }
+                DecodeJobOutcome::Failed => {
+                    self.failed_loads.insert(failed_key);
+                }
+                DecodeJobOutcome::Cancelled => {}
+            }
         }
     }
 
@@ -400,35 +442,83 @@ impl NekoviewApp {
             let cur = viewer.spread_lo().max(0) as usize;
             (cur, viewer.archive_path().clone(), viewer.entries().to_vec(), viewer.is_raw_file())
         });
+        let mut desired_job_keys = HashSet::new();
+        let mut desired_pending_keys = HashSet::new();
         if let Some((cur, path, entries, is_raw_file)) = viewer_prefetch {
             let total = entries.len();
-            let cur_orig_i = entries.get(cur).map(|e| e.original_index);
+            let visible_orig = self.viewer.lock().unwrap().as_ref()
+                .map(|viewer| viewer.visible_original_indices())
+                .unwrap_or_default();
+            let visible_positions: Vec<usize> = entries.iter().enumerate()
+                .filter_map(|(i, entry)| visible_orig.contains(&entry.original_index).then_some(i))
+                .collect();
+            let visible_lo = visible_positions.iter().copied().min().unwrap_or(cur);
+            let visible_hi = visible_positions.iter().copied().max().unwrap_or(cur);
             let start = cur.saturating_sub(crate::cache::PREFETCH_BEHIND);
             let end = (cur + crate::cache::PREFETCH_AHEAD + 1).min(total);
             let exif_enabled = self.viewer_cfg.lock().unwrap().exif_orientation_enabled;
-            for i in start..end {
+            // submit直後にワーカーが起床できるため、投入順自体も優先順に揃える。
+            let ordered_indices = visible_positions.iter().copied()
+                .chain((visible_hi + 1)..end)
+                .chain((start..visible_lo).rev());
+            for i in ordered_indices {
                 let orig_i = entries[i].original_index;
                 // 予算超過(bypass)と判明済みのページは、現在表示中でない限り先読み対象から外す。
                 // bypass はキャッシュに残らないため、先読みし続けると無限に再デコードされてしまう。
-                if Some(orig_i) != cur_orig_i && self.page_cache.lock().unwrap().is_known_bypass(&path, orig_i) {
+                if !visible_orig.contains(&orig_i) && self.page_cache.lock().unwrap().is_known_bypass(&path, orig_i) {
                     continue;
                 }
                 let key = (path.clone(), orig_i);
-                if !self.page_cache.lock().unwrap().contains(&path, orig_i) && !self.pending_loads.lock().unwrap().contains(&key) {
-                    self.pending_loads.lock().unwrap().insert(key);
-                    self.dispatch_load_request(LoadRequest {
+                if !self.page_cache.lock().unwrap().contains(&path, orig_i) {
+                    let job_key = DecodeJobKey {
                         archive_path: path.clone(),
-                        index: orig_i,
-                        entry_name: entries[i].entry_name.clone(),
-                        is_raw_file,
-                        file_cache_entry: None,
-                        target_size: self.decode_target,
-                        exif_enabled,
+                        page_index: orig_i,
                         generation: self.decode_generation,
-                    });
+                    };
+                    if self.failed_loads.contains(&job_key) {
+                        continue;
+                    }
+                    desired_job_keys.insert(job_key.clone());
+                    desired_pending_keys.insert(key.clone());
+                    let (class, distance) = if visible_orig.contains(&orig_i) {
+                        (PagePriorityClass::Visible, i.saturating_sub(visible_lo))
+                    } else if i > visible_hi {
+                        (PagePriorityClass::Ahead, i - visible_hi)
+                    } else {
+                        (PagePriorityClass::Behind, visible_lo - i)
+                    };
+                    let already_pending = self.pending_loads.lock().unwrap().contains(&key);
+                    // キュー内なら再投入で優先度だけ更新する。7zのFileCache待ちで
+                    // deferred側にいる要求は重複追加しない。
+                    if !already_pending || self.req_tx.contains(&job_key) {
+                        self.pending_loads.lock().unwrap().insert(key);
+                        self.dispatch_load_request(
+                            LoadRequest {
+                                archive_path: path.clone(),
+                                index: orig_i,
+                                entry_name: entries[i].entry_name.clone(),
+                                is_raw_file,
+                                file_cache_entry: None,
+                                target_size: self.decode_target,
+                                exif_enabled,
+                                generation: self.decode_generation,
+                            },
+                            class,
+                            distance,
+                        );
+                    }
                 }
             }
         }
+        self.req_tx.retain_desired_keys(&desired_job_keys);
+        self.pending_loads.lock().unwrap().retain(|key| desired_pending_keys.contains(key));
+        for requests in self.deferred_archive_requests.values_mut() {
+            requests.retain(|request| match request {
+                DeferredArchiveRequest::Page(job) => desired_job_keys.contains(&job.key),
+                DeferredArchiveRequest::Thumb(_) => true,
+            });
+        }
+        self.deferred_archive_requests.retain(|_, requests| !requests.is_empty());
     }
 
     /// ファイルが FileCache 未登録かつ未リクエストの場合にバックグラウンド読み込みを起動する。
