@@ -345,19 +345,6 @@ impl FrameRingBuffer {
             .map(|(i, frame)| (*i, frame))
     }
 
-    /// リサイズ切替時、現在表示中の旧サイズフレームだけを残す。
-    pub fn retain_only(&mut self, index: usize) {
-        self.frames.retain(|(frame_index, _)| *frame_index == index);
-    }
-
-    /// 新しい出力フレームサイズに合わせて容量を更新する。
-    pub fn set_capacity(&mut self, capacity: usize) {
-        self.capacity = capacity.max(1);
-        while self.frames.len() > self.capacity {
-            self.frames.pop_front();
-        }
-    }
-
     pub fn capacity(&self) -> usize {
         self.capacity
     }

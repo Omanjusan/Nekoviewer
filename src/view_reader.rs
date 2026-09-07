@@ -1949,11 +1949,10 @@ impl ViewerState {
                                 ring_range,
                                 next_decode_index,
                                 capacity,
-                                resize_epoch,
                             }) = ring.diagnose_missing_frame(frame_index)
                             {
                                 crate::log_perf!(
-                                    "[diag/anim-missing-frame] archive={:?} page={} requested={} ring_range={:?} next_decode={} capacity={} instance={:?} resize_epoch={} texture=false visible=true",
+                                    "[diag/anim-missing-frame] archive={:?} page={} requested={} ring_range={:?} next_decode={} capacity={} instance={:?} texture=false visible=true",
                                     self.archive_path,
                                     orig_i,
                                     frame_index,
@@ -1961,7 +1960,6 @@ impl ViewerState {
                                     next_decode_index,
                                     capacity,
                                     instance_id,
-                                    resize_epoch,
                                 );
                                 state.missing_frame_logged = true;
                             }
