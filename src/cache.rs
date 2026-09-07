@@ -803,10 +803,9 @@ impl RingAnimation {
         }
     }
 
-    /// デコーダが到達済みの最大フレーム番号。表示側はこの値を基準に、一定幅ずつ
-    /// 次のデコード到達点を要求する。
-    pub fn decoded_through(&self) -> usize {
-        self.state.lock().unwrap().next_decode_index.saturating_sub(1)
+    /// 現在の出力サイズから決まるリング容量。表示側の先読み要求をこの範囲内に制限する。
+    pub fn ring_capacity(&self) -> usize {
+        self.state.lock().unwrap().ring.capacity()
     }
 
     fn ensure_pipeline_started(&self) {

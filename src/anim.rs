@@ -358,6 +358,10 @@ impl FrameRingBuffer {
         }
     }
 
+    pub fn capacity(&self) -> usize {
+        self.capacity
+    }
+
     #[cfg(test)]
     pub fn clear(&mut self) {
         self.frames.clear();

@@ -30,12 +30,15 @@ const THUMBBAR_ENQUEUE_WINDOW: i32 = 40;
 const FULL_UV: egui::Rect =
     egui::Rect { min: egui::pos2(0.0, 0.0), max: egui::pos2(1.0, 1.0) };
 
-fn next_anim_decode_request(decoded_through: usize, requested_through: usize) -> usize {
-    if decoded_through >= requested_through {
-        decoded_through.saturating_add(ANIM_DECODE_AHEAD_FRAMES)
-    } else {
-        requested_through
-    }
+fn next_anim_decode_request(
+    displayed_frame: usize,
+    requested_through: usize,
+    ring_capacity: usize,
+) -> usize {
+    // producerの到達位置を基準にすると、描画が止まっていても要求が自己増殖し、
+    // 厳密に待っている次フレームをリングから追い出してしまう。
+    let ahead = ANIM_DECODE_AHEAD_FRAMES.min(ring_capacity.max(1));
+    requested_through.max(displayed_frame.saturating_add(ahead))
 }
 
 fn animation_instance_changed(
@@ -1923,10 +1926,10 @@ impl ViewerState {
                     // 初期テクスチャを確保してから、可視中だけ小さな範囲を先行デコードする。
                     // リサイズが追いつかない場合はpipeline側のraw queueが中間フレームを
                     // 最新1枚へ畳み込み、表示リサイズ前に破棄する。
-                    let decoded_through = ring.decoded_through();
                     state.requested_through = next_anim_decode_request(
-                        decoded_through,
+                        state.frame_index,
                         state.requested_through,
+                        ring.ring_capacity(),
                     );
                     ring.request_frame(state.requested_through);
 
@@ -2755,21 +2758,27 @@ mod animation_schedule_tests {
     use crate::cache::AnimationInstanceId;
 
     #[test]
-    fn completed_batch_extends_from_decoder_position() {
+    fn request_window_is_anchored_to_displayed_frame() {
         assert_eq!(
-            next_anim_decode_request(9, 9),
+            next_anim_decode_request(9, 9, 32),
             9 + ANIM_DECODE_AHEAD_FRAMES,
         );
     }
 
     #[test]
-    fn in_flight_batch_keeps_existing_target() {
-        assert_eq!(next_anim_decode_request(5, 9), 9);
+    fn producer_progress_cannot_extend_a_stationary_display_window() {
+        assert_eq!(next_anim_decode_request(0, 8, 32), 8);
+        assert_eq!(next_anim_decode_request(0, 8, 32), 8);
+    }
+
+    #[test]
+    fn request_window_never_exceeds_ring_capacity() {
+        assert_eq!(next_anim_decode_request(10, 10, 4), 14);
     }
 
     #[test]
     fn decode_request_saturates_at_usize_max() {
-        assert_eq!(next_anim_decode_request(usize::MAX, usize::MAX), usize::MAX);
+        assert_eq!(next_anim_decode_request(usize::MAX, usize::MAX, 32), usize::MAX);
     }
 
     #[test]
