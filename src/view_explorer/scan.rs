@@ -38,17 +38,11 @@ impl NekoviewApp {
     /// target が tree_root 配下でない場合（別ドライブ切替直後の競合等）は何もしない。
     pub(super) fn start_tree_autofocus(&mut self, target: PathBuf) {
         self.tree_autofocus_pending = None;
-        let Ok(rel) = target.strip_prefix(&self.tree_root) else {
+        let Some(remaining) = tree_autofocus_components(&self.tree_root, &target) else {
+            // target が tree_root 配下でない（別ドライブ切替直後の競合等）→ 何もしない
             self.tree_autofocus = None;
             return;
         };
-        let remaining: std::collections::VecDeque<std::ffi::OsString> = rel
-            .components()
-            .filter_map(|c| match c {
-                std::path::Component::Normal(s) => Some(s.to_os_string()),
-                _ => None,
-            })
-            .collect();
         if remaining.is_empty() {
             // target 自体が tree_root（ルート直下を見ている）
             self.tree_cursor = Some(target);
@@ -498,4 +492,52 @@ pub(super) fn spawn_summary_worker(
         ctx.request_repaint();
     });
     rx
+}
+
+/// tree_root から target までに辿るべき子ディレクトリ名の並びを返す。
+/// - `None`  : target が tree_root 配下でない（自動追従は不能）
+/// - 空の並び: target が tree_root 自身（追従不要、その場でカーソル確定）
+/// - 非空    : 先頭から 1 階層ずつ展開していく経路
+pub(super) fn tree_autofocus_components(
+    tree_root: &std::path::Path,
+    target: &std::path::Path,
+) -> Option<std::collections::VecDeque<std::ffi::OsString>> {
+    let rel = target.strip_prefix(tree_root).ok()?;
+    Some(
+        rel.components()
+            .filter_map(|c| match c {
+                std::path::Component::Normal(s) => Some(s.to_os_string()),
+                _ => None,
+            })
+            .collect(),
+    )
+}
+
+#[cfg(test)]
+mod tree_autofocus_tests {
+    use super::tree_autofocus_components;
+    use std::path::Path;
+
+    #[test]
+    fn returns_component_chain_for_descendant() {
+        let got = tree_autofocus_components(Path::new("/mnt/photos"), Path::new("/mnt/photos/2024/summer"))
+            .expect("descendant path resolves");
+        let chain: Vec<_> = got.iter().map(|s| s.to_str().unwrap()).collect();
+        assert_eq!(chain, vec!["2024", "summer"]);
+    }
+
+    #[test]
+    fn returns_empty_chain_when_target_is_root_itself() {
+        let got = tree_autofocus_components(Path::new("/mnt/photos"), Path::new("/mnt/photos"))
+            .expect("root == target resolves");
+        assert!(got.is_empty(), "追従不要なので空の経路");
+    }
+
+    #[test]
+    fn returns_none_when_target_outside_root() {
+        assert!(
+            tree_autofocus_components(Path::new("/mnt/photos"), Path::new("/home/user/pics")).is_none(),
+            "tree_root 配下でなければ None（no-op）"
+        );
+    }
 }
