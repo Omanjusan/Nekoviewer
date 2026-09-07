@@ -362,6 +362,10 @@ impl FrameRingBuffer {
         self.capacity
     }
 
+    pub fn index_range(&self) -> Option<(usize, usize)> {
+        Some((self.frames.front()?.0, self.frames.back()?.0))
+    }
+
     #[cfg(test)]
     pub fn clear(&mut self) {
         self.frames.clear();

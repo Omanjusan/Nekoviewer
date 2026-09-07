@@ -8,7 +8,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use crate::cache::{AnimationInstanceId, PageCache, PageContent};
+use crate::cache::{AnimationFrameDiagnostic, AnimationInstanceId, PageCache, PageContent};
 use crate::gui_config::WindowSlot;
 use crate::fs::archive;
 use crate::spread_offset::SpreadOffset;
@@ -117,6 +117,8 @@ struct AnimState {
     /// 限定のため、裏に回ったアニメはこのフラグを立てて位置を凍結し、再可視化時に
     /// 基準時刻を取り直して続きから再開する（凍結中の経過時間を追走させない）。
     paused: bool,
+    /// 同じ欠落状態を毎tick出力しないための異常ログ抑止。
+    missing_frame_logged: bool,
 }
 
 /// show() の先頭で ctx.input を1回だけ呼び、フレーム全体で使い回す入力スナップショット
@@ -1866,6 +1868,7 @@ impl ViewerState {
                         requested_through: 0,
                         last_frame_at: now,
                         paused: false,
+                        missing_frame_logged: false,
                     });
                     // 凍結明け: 凍結中の経過時間を再生遅延として追走しないよう基準時刻を取り直し、
                     // 凍結位置から等速で再開する。
@@ -1873,7 +1876,27 @@ impl ViewerState {
                         state.paused = false;
                         state.last_frame_at = now;
                     }
-                    let mut needs_upload = generation_changed || !self.textures.contains_key(&orig_i);
+                    let texture_missing = !self.textures.contains_key(&orig_i);
+                    if texture_missing {
+                        if let Some(reconnect_index) = ring.reconnect_frame_index(state.frame_index) {
+                            if reconnect_index != state.frame_index {
+                                let previous_index = state.frame_index;
+                                state.frame_index = reconnect_index;
+                                state.requested_through = state.requested_through.max(reconnect_index);
+                                state.last_frame_at = now;
+                                state.missing_frame_logged = false;
+                                crate::log_perf!(
+                                    "[diag/anim-reconnect] archive={:?} page={} from={} to={} instance={:?} texture=false visible=true",
+                                    self.archive_path,
+                                    orig_i,
+                                    previous_index,
+                                    reconnect_index,
+                                    instance_id,
+                                );
+                            }
+                        }
+                    }
+                    let mut needs_upload = generation_changed || texture_missing;
                     let current_delay = ring
                         .try_with_frame(state.frame_index, |f| f.delay)
                         .unwrap_or(Duration::from_millis(100));
@@ -1919,6 +1942,28 @@ impl ViewerState {
                             );
                             if generation_changed {
                                 promoted_pages.push((orig_i, generation));
+                            }
+                            state.missing_frame_logged = false;
+                        } else if !state.missing_frame_logged {
+                            if let Some(AnimationFrameDiagnostic::Missing {
+                                ring_range,
+                                next_decode_index,
+                                capacity,
+                                resize_epoch,
+                            }) = ring.diagnose_missing_frame(frame_index)
+                            {
+                                crate::log_perf!(
+                                    "[diag/anim-missing-frame] archive={:?} page={} requested={} ring_range={:?} next_decode={} capacity={} instance={:?} resize_epoch={} texture=false visible=true",
+                                    self.archive_path,
+                                    orig_i,
+                                    frame_index,
+                                    ring_range,
+                                    next_decode_index,
+                                    capacity,
+                                    instance_id,
+                                    resize_epoch,
+                                );
+                                state.missing_frame_logged = true;
                             }
                         }
                     }

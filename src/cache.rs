@@ -497,6 +497,17 @@ struct AnimationPipelineControl {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct AnimationInstanceId(u64);
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum AnimationFrameDiagnostic {
+    Busy,
+    Missing {
+        ring_range: Option<(usize, usize)>,
+        next_decode_index: usize,
+        capacity: usize,
+        resize_epoch: u64,
+    },
+}
+
 #[cfg(test)]
 impl AnimationInstanceId {
     pub(crate) fn for_test(value: u64) -> Self {
@@ -806,6 +817,35 @@ impl RingAnimation {
     /// 現在の出力サイズから決まるリング容量。表示側の先読み要求をこの範囲内に制限する。
     pub fn ring_capacity(&self) -> usize {
         self.state.lock().unwrap().ring.capacity()
+    }
+
+    /// フレーム取得失敗時だけ使う非ブロッキング診断。単なるMutex競合と、前進済みで
+    /// 要求フレームがリングから消えている状態を区別する。
+    pub(crate) fn diagnose_missing_frame(&self, index: usize) -> Option<AnimationFrameDiagnostic> {
+        let state = match self.state.try_lock() {
+            Ok(state) => state,
+            Err(_) => return Some(AnimationFrameDiagnostic::Busy),
+        };
+        if state.ring.get(index).is_some() {
+            return None;
+        }
+        Some(AnimationFrameDiagnostic::Missing {
+            ring_range: state.ring.index_range(),
+            next_decode_index: state.next_decode_index,
+            capacity: state.ring.capacity(),
+            resize_epoch: state.resize_epoch,
+        })
+    }
+
+    /// ViewerStateを作り直した際、以前のframe_indexが既にevict済みなら、現在リング内で
+    /// 取得できる最新フレームを返す。Mutex競合時は次tickで再試行できるようNone。
+    pub(crate) fn reconnect_frame_index(&self, preferred: usize) -> Option<usize> {
+        let state = self.state.try_lock().ok()?;
+        if state.ring.get(preferred).is_some() {
+            Some(preferred)
+        } else {
+            state.ring.index_range().map(|(_, latest)| latest)
+        }
     }
 
     fn ensure_pipeline_started(&self) {
@@ -2070,6 +2110,39 @@ mod ring_integration_tests {
             Some(3),
             "前進専用decoderで再取得不能な欠番を越えて新epochへ移る",
         );
+    }
+
+    #[test]
+    fn missing_frame_diagnostic_distinguishes_evicted_frame() {
+        let bytes = encode_gif_frames_mixed(&[(10, 10), (10, 10), (10, 10)]);
+        let content = decode_ring_anim(
+            &bytes,
+            AnimFormat::Gif,
+            image::imageops::FilterType::Triangle,
+            TEST_RING_BUDGET_BYTES,
+            (2, 2),
+            TEST_FRAME_HARD_LIMIT_BYTES,
+            Some((1920, 1080)),
+            true,
+        )
+        .expect("GIFとしてデコードできるはず");
+        let PageContent::Animated(ring) = content else {
+            panic!("animation expected");
+        };
+        assert!(ring.with_frame(2, |_| ()).is_some());
+
+        assert_eq!(
+            ring.diagnose_missing_frame(0),
+            Some(AnimationFrameDiagnostic::Missing {
+                ring_range: Some((1, 2)),
+                next_decode_index: 3,
+                capacity: 2,
+                resize_epoch: 0,
+            }),
+        );
+        assert_eq!(ring.diagnose_missing_frame(2), None);
+        assert_eq!(ring.reconnect_frame_index(0), Some(2));
+        assert_eq!(ring.reconnect_frame_index(1), Some(1));
     }
 
     #[test]
