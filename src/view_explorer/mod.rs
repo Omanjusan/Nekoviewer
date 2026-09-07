@@ -850,6 +850,12 @@ impl NekoviewApp {
         };
         app.start_scan();
         app.refresh_favorite_folders();
+        // 起動フォルダをディレクトリツリー側にも同期する。ドライブルート→現在地までを
+        // 1階層ずつ逐次展開し、現在地ノードに現在地マーカー（赤反転）を点け、ツリー
+        // ビューの外にあればビューポート内へ寄せる（poll_tree_autofocus が毎フレーム
+        // 進める）。現在地が tree_root 配下でなければ start_tree_autofocus 側で no-op。
+        app.viewing_dir = Some(app.current_dir.clone());
+        app.start_tree_autofocus(app.current_dir.clone());
         // 起動時点でGVFSマウントの到達可否確認を仕込んでおく。
         // ユーザーが最初にリロードを押す頃には判定が終わっている見込みが立ち、
         // 「初回リロードでは切断先が消えない」体感を和らげる。

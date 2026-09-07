@@ -74,8 +74,7 @@ fn main() {
         let args = CliArgs::parse();
         if let Some(v) = args.cache_max_mb { cfg.cache_total_mb = Some(v.max(64)); }
 
-        let start_dir = args.start_path
-            .unwrap_or_else(|| cfg.startup_dir(&state));
+        let start_dir = cfg.resolve_start_dir(args.start_path, &state);
         log_common!("[startup] start_dir = {:?}", start_dir);
 
         (cfg, state, start_dir)

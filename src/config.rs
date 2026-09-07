@@ -338,6 +338,34 @@ impl AppConfig {
         self.conflict = None;
     }
 
+    /// 起動フォルダを最終決定する。CLI引数 > 前回フォルダ > フォールバック の優先順で
+    /// 候補を選び、その候補が隠しディレクトリ経路（`.`始まりの構成要素を含む）でありながら
+    /// 隠しフォルダ表示がオフのときは、由来（CLI引数・前回フォルダ・固定初期フォルダ）を
+    /// 問わず候補を捨て、フォールバック機構（fixed_dir → HOME → ルート）へ委ねる。
+    /// フォールバック先すら隠し経路なら fixed_dir も無視して HOME→ルートまで下がる。
+    pub fn resolve_start_dir(&self, cli_path: Option<PathBuf>, state: &AppState) -> PathBuf {
+        let candidate = match cli_path {
+            Some(p) => p,
+            None => self.startup_dir(state),
+        };
+        if state.show_hidden || !path_has_hidden_component(&candidate) {
+            return candidate;
+        }
+        let fixed = self.startup.fixed_dir.as_deref()
+            .filter(|p| !p.as_os_str().is_empty());
+        log_common!(
+            "[startup] 起動候補が隠し経路 かつ show_hidden=off → フォールバックへ: {:?}",
+            candidate
+        );
+        let fb = resolve_fallback_dir(fixed);
+        if path_has_hidden_component(&fb) {
+            log_common!("[startup] フォールバック先も隠し経路 → fixed_dir を無視して HOME/ルートへ");
+            resolve_fallback_dir(None)
+        } else {
+            fb
+        }
+    }
+
     /// 起動時の初期フォルダを解決する（CLI引数は呼び出し元で優先済みを想定）
     pub fn startup_dir(&self, state: &AppState) -> PathBuf {
         let fixed = self.startup.fixed_dir.as_deref()
@@ -669,6 +697,16 @@ fn apply_ini_updates(content: &str, updates: &[(&str, &str, String)]) -> String 
         }
     }
     out
+}
+
+/// パスの構成要素に隠しディレクトリ（`.` 始まりの通常セグメント）が含まれるか。
+/// ルート（`/`）・カレント（`.`）・親（`..`）・Windows のドライブプレフィックスは対象外。
+fn path_has_hidden_component(p: &std::path::Path) -> bool {
+    use std::path::Component;
+    p.components().any(|c| match c {
+        Component::Normal(s) => s.to_str().map_or(false, |s| s.starts_with('.')),
+        _ => false,
+    })
 }
 
 fn resolve_fallback_dir(fixed: Option<&std::path::Path>) -> PathBuf {
