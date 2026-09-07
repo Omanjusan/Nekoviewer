@@ -1,10 +1,10 @@
 use crate::{log_perf};
 use crate::anim::{AnimFrame, AnimFormat, SequentialAnimDecoder, FrameRingBuffer, resolve_ring_capacity};
 use crate::decode_jobs::{DecodeJobOutcome, DecodeJobQueue};
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::{mpsc, Arc, Condvar, Mutex};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 use fast_image_resize::images::Image as FirImage;
 use fast_image_resize::{FilterType as FirFilter, PixelType, ResizeAlg, ResizeOptions, Resizer};
@@ -23,6 +23,9 @@ const MIN_RATIO_PCT: usize = 40; // page_max に対する page_min の割合
 /// フェーズ2の見積もりゲート(fs/archive.rs)も同じ値を使い、実際のリング容量算出と整合させる。
 pub(crate) const ANIM_RING_BUDGET_PCT: usize = 25;
 const FALLBACK_TOTAL_BYTES: usize = 500 * MB; // sysinfo 失敗時フォールバック（旧30%相当）
+/// アニメのデコード済み・表示リサイズ前フレームを保持する小容量FIFO。
+/// リサイズ遅延を検出した後はFIFOを最新1枚へ畳み込む。
+const ANIM_RAW_QUEUE_CAPACITY: usize = 2;
 
 /// ビューアーの先読みウィンドウ: 現在ページの後方（戻り側）に保持する枚数。
 pub const PREFETCH_BEHIND: usize = 5;
@@ -176,7 +179,7 @@ pub fn decode_full_res_static_page(
 /// 逐次デコード+リングバッファ(`RingAnimation`)で保持する（フェーズ3/3.5）。
 pub enum PageContent {
     Static(image::RgbaImage),
-    Animated(RingAnimation),
+    Animated(Arc<RingAnimation>),
 }
 
 // ワーカースレッドからの結果
@@ -329,7 +332,7 @@ fn decode_ring_anim(buf: &[u8], format: AnimFormat, filter: image::imageops::Fil
             Some(PageContent::Static(frame.image))
         }
         RingDecodeOutcome::Animated(ring) => {
-            Some(PageContent::Animated(ring))
+            Some(PageContent::Animated(Arc::new(ring)))
         }
     }
 }
@@ -440,6 +443,13 @@ struct RingAnimState {
     /// 初期ページロードをframe1の重いリサイズで塞がないため、最初の要求時にパイプラインへ渡す。
     pending_raw: Option<RawAnimFrame>,
     resize_to: Option<(u32, u32)>,
+    resize_epoch: u64,
+    /// リサイズで旧サイズの未来フレームを捨てた直後だけ、次の新epoch完成フレームへの
+    /// 欠番ジャンプを許可する。
+    resize_transition_from: Option<usize>,
+    source_dimensions: (u32, u32),
+    ring_budget_bytes: usize,
+    ring_bounds: (usize, usize),
     filter: image::imageops::FilterType,
     /// フェーズ5: 1フレームあたりの生デコードサイズ上限（超過フレームはその場で縮小）
     frame_hard_limit_bytes: usize,
@@ -452,6 +462,20 @@ struct RawAnimFrame {
     decode_elapsed: std::time::Duration,
 }
 
+fn commit_resized_frame(
+    state: &Mutex<RingAnimState>,
+    expected_epoch: u64,
+    index: usize,
+    frame: AnimFrame,
+) -> bool {
+    let mut state = state.lock().unwrap();
+    if state.resize_epoch != expected_epoch {
+        return false;
+    }
+    state.ring.push(index, frame);
+    true
+}
+
 #[derive(Default)]
 struct AnimationPipelineCommand {
     requested_through: Option<usize>,
@@ -461,12 +485,59 @@ struct AnimationPipelineCommand {
 struct AnimationPipelineControl {
     command: Mutex<AnimationPipelineCommand>,
     wake: Condvar,
+    /// 通常は順序を守る小容量FIFO。リサイズ遅延検出後は最新1枚へ畳み込む。
+    raw_queue: Mutex<VecDeque<RawAnimFrame>>,
+    raw_wake: Condvar,
+    raw_space: Condvar,
+    drop_stale_raw: AtomicBool,
+}
+
+/// 表示世代とは独立した、RingAnimationインスタンスそのものの同一性。
+/// リサイズ世代が変わっても同じ値を維持し、本当に再生成された場合だけ変わる。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct AnimationInstanceId(u64);
+
+#[cfg(test)]
+impl AnimationInstanceId {
+    pub(crate) fn for_test(value: u64) -> Self {
+        Self(value)
+    }
+}
+
+static NEXT_ANIMATION_INSTANCE_ID: AtomicU64 = AtomicU64::new(1);
+
+fn next_animation_instance_id() -> AnimationInstanceId {
+    AnimationInstanceId(NEXT_ANIMATION_INSTANCE_ID.fetch_add(1, Ordering::Relaxed))
+}
+
+impl AnimationPipelineControl {
+    fn push_raw(&self, raw: RawAnimFrame) -> bool {
+        let mut queue = self.raw_queue.lock().unwrap();
+        loop {
+            if self.command.lock().unwrap().shutdown {
+                return false;
+            }
+            if self.drop_stale_raw.load(Ordering::Acquire) {
+                queue.clear();
+                queue.push_back(raw);
+                self.raw_wake.notify_one();
+                return true;
+            }
+            if queue.len() < ANIM_RAW_QUEUE_CAPACITY {
+                queue.push_back(raw);
+                self.raw_wake.notify_one();
+                return true;
+            }
+            queue = self.raw_space.wait(queue).unwrap();
+        }
+    }
 }
 
 /// 全フレームを一括保持せず、逐次デコード+リングバッファで保持するアニメーション。
 /// 再生は前進のみを前提とし、デコーダが終端(None)を返した時点がループ境界の合図になる。
 /// その際は `restart()` でデコーダを先頭から作り直す（この再デコードによる一瞬のフリーズは許容する）。
 pub struct RingAnimation {
+    instance_id: AnimationInstanceId,
     state: Arc<Mutex<RingAnimState>>,
     /// 初回フレーム要求時にだけ起動する、アニメ専用の常駐デコード/リサイズパイプライン。
     pipeline_started: AtomicBool,
@@ -476,10 +547,14 @@ pub struct RingAnimation {
     /// 挿入時点の実常駐（2フレーム分）で計上すると、再生でリングが容量まで育ったとき
     /// 帳簿が実態を大幅に過小評価して evict が動かなくなるため、
     /// 「育ちうる最大量」を予約方式で先取り計上する（常に 帳簿 ≥ 実常駐 を保証）。
-    reserved_bytes: usize,
+    reserved_bytes: AtomicUsize,
 }
 
 impl RingAnimation {
+    pub(crate) fn instance_id(&self) -> AnimationInstanceId {
+        self.instance_id
+    }
+
     /// `ring_budget_bytes` はこのアニメ1本に割り当てるリング予算、`ring_bounds` は(下限, 上限)の先読み枚数。
     /// `frame_hard_limit_bytes` はフェーズ5: 1フレームの生デコードサイズ上限。frame0・中間フレームの
     /// どちらも超過時はそのフレームだけ縮小して継続する（同一アニメ内で解像度が変則的なファイル対策）。
@@ -564,18 +639,28 @@ impl RingAnimation {
                 decode_elapsed: std::time::Duration::ZERO,
             }),
             resize_to,
+            resize_epoch: 0,
+            resize_transition_from: None,
+            source_dimensions: (w, h),
+            ring_budget_bytes,
+            ring_bounds,
             filter,
             frame_hard_limit_bytes,
         };
         RingDecodeOutcome::Animated(Self {
+            instance_id: next_animation_instance_id(),
             state: Arc::new(Mutex::new(state)),
             pipeline_started: AtomicBool::new(false),
             pipeline: Arc::new(AnimationPipelineControl {
                 command: Mutex::new(AnimationPipelineCommand::default()),
                 wake: Condvar::new(),
+                raw_queue: Mutex::new(VecDeque::new()),
+                raw_wake: Condvar::new(),
+                raw_space: Condvar::new(),
+                drop_stale_raw: AtomicBool::new(false),
             }),
             format,
-            reserved_bytes,
+            reserved_bytes: AtomicUsize::new(reserved_bytes),
         })
     }
 
@@ -614,7 +699,7 @@ impl RingAnimation {
         filter: image::imageops::FilterType,
         frame_hard_limit_bytes: usize,
         format: AnimFormat,
-    ) -> (usize, AnimFrame) {
+    ) -> (usize, AnimFrame, std::time::Duration) {
         let resize_started = std::time::Instant::now();
         let guarded = Self::guard_frame_size(raw.frame, frame_hard_limit_bytes, filter, raw.index);
         let resized = Self::apply_resize(guarded, resize_to, filter);
@@ -635,7 +720,7 @@ impl RingAnimation {
                 resized.delay.as_secs_f64() * 1000.0,
             );
         }
-        (raw.index, resized)
+        (raw.index, resized, resize_elapsed)
     }
 
     /// index番目のフレームが手に入るまでデコードを進め、見つかったフレームへの参照でfを呼ぶ
@@ -651,7 +736,7 @@ impl RingAnimation {
                 let resize_to = state.resize_to;
                 let filter = state.filter;
                 let frame_hard_limit_bytes = state.frame_hard_limit_bytes;
-                let (idx, resized) = Self::resize_raw_frame(
+                let (idx, resized, _) = Self::resize_raw_frame(
                     raw,
                     resize_to,
                     filter,
@@ -674,7 +759,7 @@ impl RingAnimation {
             let resize_to = state.resize_to;
             let filter = state.filter;
             let frame_hard_limit_bytes = state.frame_hard_limit_bytes;
-            let (_, resized) = Self::resize_raw_frame(
+            let (_, resized, _) = Self::resize_raw_frame(
                 RawAnimFrame { index: idx, frame: next, source_size, decode_elapsed },
                 resize_to,
                 filter,
@@ -692,6 +777,38 @@ impl RingAnimation {
         state.ring.get(index).map(f)
     }
 
+    /// UIスレッド用: 欠番を許容し、`index`より後で完成済みの最新フレーム番号を返す。
+    #[cfg(test)]
+    pub fn latest_ready_after(&self, index: usize) -> Option<usize> {
+        let state = self.state.try_lock().ok()?;
+        state.ring.latest_after(index).map(|(ready_index, _)| ready_index)
+    }
+
+    /// 通常再生では次の連番フレームを返す。実測リサイズ遅延によってdrop modeへ
+    /// 移行した後だけ、欠番を許容して完成済みの最新フレームを返す。
+    pub fn playback_ready_after(&self, index: usize) -> Option<usize> {
+        let mut state = self.state.try_lock().ok()?;
+        if state.resize_transition_from == Some(index) {
+            if let Some((ready_index, _)) = state.ring.latest_after(index) {
+                state.resize_transition_from = None;
+                return Some(ready_index);
+            }
+            return None;
+        }
+        if self.pipeline.drop_stale_raw.load(Ordering::Acquire) {
+            state.ring.latest_after(index).map(|(ready_index, _)| ready_index)
+        } else {
+            let next_index = index.saturating_add(1);
+            state.ring.get(next_index).map(|_| next_index)
+        }
+    }
+
+    /// デコーダが到達済みの最大フレーム番号。表示側はこの値を基準に、一定幅ずつ
+    /// 次のデコード到達点を要求する。
+    pub fn decoded_through(&self) -> usize {
+        self.state.lock().unwrap().next_decode_index.saturating_sub(1)
+    }
+
     fn ensure_pipeline_started(&self) {
         if self.pipeline_started.compare_exchange(
             false,
@@ -701,10 +818,6 @@ impl RingAnimation {
         ).is_err() {
             return;
         }
-
-        // rendezvous channelにして生RGBAをキューへ滞留させない。
-        // resize中1枚と、デコード完了後handoff待ちの1枚だけが同時に存在しうる。
-        let (raw_tx, raw_rx) = mpsc::sync_channel::<RawAnimFrame>(0);
 
         let decode_state = Arc::clone(&self.state);
         let decode_pipeline = Arc::clone(&self.pipeline);
@@ -775,7 +888,9 @@ impl RingAnimation {
                     if decode_pipeline.command.lock().unwrap().shutdown {
                         return;
                     }
-                    if raw_tx.send(raw).is_err() {
+                    // 通常は小容量FIFOで順序を守る。resize遅延が検出された後だけ、
+                    // 未処理フレームを最新1枚へ畳み込み、高コストなresize前に捨てる。
+                    if !decode_pipeline.push_raw(raw) {
                         return;
                     }
                 }
@@ -786,31 +901,45 @@ impl RingAnimation {
         let resize_pipeline = Arc::clone(&self.pipeline);
         let format = self.format;
         std::thread::spawn(move || {
-            while let Ok(raw) = raw_rx.recv() {
-                if resize_pipeline.command.lock().unwrap().shutdown {
-                    continue;
-                }
-                let (resize_to, filter, frame_hard_limit_bytes) = {
-                    let state = resize_state.lock().unwrap();
-                    (state.resize_to, state.filter, state.frame_hard_limit_bytes)
+            loop {
+                let raw = {
+                    let mut raw_queue = resize_pipeline.raw_queue.lock().unwrap();
+                    loop {
+                        if resize_pipeline.command.lock().unwrap().shutdown {
+                            return;
+                        }
+                        if let Some(raw) = raw_queue.pop_front() {
+                            resize_pipeline.raw_space.notify_one();
+                            break raw;
+                        }
+                        raw_queue = resize_pipeline.raw_wake.wait(raw_queue).unwrap();
+                    }
                 };
-                let (index, resized) = Self::resize_raw_frame(
+                let (resize_to, filter, frame_hard_limit_bytes, resize_epoch) = {
+                    let state = resize_state.lock().unwrap();
+                    (state.resize_to, state.filter, state.frame_hard_limit_bytes, state.resize_epoch)
+                };
+                let (index, resized, resize_elapsed) = Self::resize_raw_frame(
                     raw,
                     resize_to,
                     filter,
                     frame_hard_limit_bytes,
                     format,
                 );
+                if resize_elapsed > resized.delay {
+                    resize_pipeline.drop_stale_raw.store(true, Ordering::Release);
+                    resize_pipeline.raw_space.notify_all();
+                }
                 if resize_pipeline.command.lock().unwrap().shutdown {
                     continue;
                 }
-                resize_state.lock().unwrap().ring.push(index, resized);
+                commit_resized_frame(&resize_state, resize_epoch, index, resized);
             }
         });
     }
 
     /// `index` が未生成なら、アニメ専用の常駐パイプラインへ生成要求を送る。
-    /// 要求は単調な到達点に畳み込み、生RGBAはrendezvous channelで無制限滞留を防ぐ。
+    /// 要求は単調な到達点に畳み込み、resize遅延中だけ未処理の生RGBAを最新1枚へ畳み込む。
     /// 終端ではデコーダを巻き戻し、単調増加する表示indexへ次ループの先頭を割り当てる。
     pub fn request_frame(&self, index: usize) -> bool {
         if let Ok(state) = self.state.try_lock() {
@@ -823,6 +952,55 @@ impl RingAnimation {
         command.requested_through = Some(command.requested_through.map_or(index, |old| old.max(index)));
         self.pipeline.wake.notify_one();
         false
+    }
+
+    /// 同じアニメ担当を維持したまま表示サイズだけ切り替える。
+    /// 現在表示中の旧サイズフレームは残し、完成済み未来フレームと待機中rawを破棄する。
+    /// 既にresize中の旧epoch結果は、完了時のepoch照合で投入されない。
+    pub fn update_resize_target(
+        &self,
+        target_size: Option<(u32, u32)>,
+        current_frame_index: usize,
+    ) -> (usize, usize) {
+        let (old_reserved, new_reserved, changed) = {
+            let mut state = self.state.lock().unwrap();
+            let (w, h) = state.source_dimensions;
+            let resize_to = target_size.and_then(|(tw, th)| {
+                let (nw, nh) = crate::anim::fit_within(w, h, tw, th);
+                if (nw, nh) == (w, h) { None } else { Some((nw, nh)) }
+            });
+            let old_reserved = self.reserved_bytes.load(Ordering::Acquire);
+            if state.resize_to == resize_to {
+                (old_reserved, old_reserved, false)
+            } else {
+                state.resize_to = resize_to;
+                state.resize_epoch = state.resize_epoch.wrapping_add(1);
+                state.resize_transition_from = Some(current_frame_index);
+                state.ring.retain_only(current_frame_index);
+
+                let (out_w, out_h) = resize_to.unwrap_or((w, h));
+                let frame_bytes = (out_w as usize)
+                    .saturating_mul(out_h as usize)
+                    .saturating_mul(4);
+                let (min_frames, max_frames) = state.ring_bounds;
+                let capacity = resolve_ring_capacity(
+                    frame_bytes,
+                    state.ring_budget_bytes,
+                    min_frames,
+                    max_frames,
+                );
+                state.ring.set_capacity(capacity);
+                let new_reserved = capacity.saturating_mul(frame_bytes);
+                self.reserved_bytes.store(new_reserved, Ordering::Release);
+                (old_reserved, new_reserved, true)
+            }
+        };
+
+        if changed {
+            self.pipeline.raw_queue.lock().unwrap().clear();
+            self.pipeline.raw_space.notify_all();
+        }
+        (old_reserved, new_reserved)
     }
 
     /// ループ境界（最終フレーム→先頭）: デコーダを元データから作り直す。
@@ -850,7 +1028,7 @@ impl RingAnimation {
     /// PageCache への計上額（リング容量 × リサイズ後フレームサイズ、構築時に確定）。
     /// insert/evict の両方でこの同一値を使うことで帳簿の足し引きが対称になる。
     pub fn reserved_bytes(&self) -> usize {
-        self.reserved_bytes
+        self.reserved_bytes.load(Ordering::Acquire)
     }
 }
 
@@ -859,31 +1037,42 @@ impl Drop for RingAnimation {
         let mut command = self.pipeline.command.lock().unwrap();
         command.shutdown = true;
         self.pipeline.wake.notify_all();
+        self.pipeline.raw_wake.notify_all();
+        self.pipeline.raw_space.notify_all();
     }
 }
 
 pub struct PageCache {
+    /// 表示解像度の世代とは独立して、1ページにつき1つだけ保持するアニメ担当。
+    /// リサイズ世代が進んでも同じ RingAnimation を返し続ける。
+    animations: HashMap<(PathBuf, usize), PageContent>,
     entries: HashMap<(PathBuf, usize, u64), PageContent>,
     total_bytes: usize,
     max_bytes: usize,
     min_bytes: usize,
     /// LRU 予算を超える単一アイテムを表示のためだけに保持するスロット（1件のみ）
     bypass: Option<((PathBuf, usize, u64), PageContent)>,
+    /// 予算を単体で超えるアニメ用の、世代非依存bypassスロット。
+    animation_bypass: Option<((PathBuf, usize), PageContent)>,
     /// 一度でも予算超過(bypass)と判定された(path, index)の記憶。
     /// bypass スロットから追い出された後も先読みが再要求しないようにするためのもので、
     /// 中身は保持しない（キャッシュを汚染しない）。
     known_bypass: HashSet<(PathBuf, usize, u64)>,
+    known_animation_bypass: HashSet<(PathBuf, usize)>,
 }
 
 impl PageCache {
     pub fn new(max_bytes: usize, min_bytes: usize) -> Self {
         Self {
+            animations: HashMap::new(),
             entries: HashMap::new(),
             total_bytes: 0,
             max_bytes,
             min_bytes,
             bypass: None,
+            animation_bypass: None,
             known_bypass: HashSet::new(),
+            known_animation_bypass: HashSet::new(),
         }
     }
 
@@ -894,22 +1083,66 @@ impl PageCache {
     /// FileCache（圧縮済み/展開済みの元データ）は別層なので影響しない。
     #[cfg(test)]
     pub fn clear(&mut self) {
+        self.animations.clear();
         self.entries.clear();
         self.total_bytes = 0;
         self.bypass = None;
+        self.animation_bypass = None;
         self.known_bypass.clear();
+        self.known_animation_bypass.clear();
     }
 
     pub fn contains(&self, path: &PathBuf, index: usize, generation: u64) -> bool {
-        self.entries.contains_key(&(path.clone(), index, generation))
+        self.contains_animation(path, index)
+            || self.entries.contains_key(&(path.clone(), index, generation))
             || self.bypass.as_ref()
                 .map_or(false, |((bp, bi, bg), _)| bp == path && *bi == index && *bg == generation)
+    }
+
+    /// 表示世代に依存しないアニメ担当が、このページに既に存在するか。
+    pub fn contains_animation(&self, path: &PathBuf, index: usize) -> bool {
+        self.animations.contains_key(&(path.clone(), index))
+            || self.animation_bypass.as_ref()
+                .is_some_and(|((bp, bi), _)| bp == path && *bi == index)
+    }
+
+    /// 世代非依存のアニメ担当へ新しい表示上限を通知し、通常キャッシュに計上している
+    /// 予約額を差分更新する。bypassアニメは元からtotal_bytesの帳簿外なので差分計上しない。
+    pub fn update_animation_resize(
+        &mut self,
+        path: &PathBuf,
+        index: usize,
+        target_size: Option<(u32, u32)>,
+        current_frame_index: usize,
+    ) -> bool {
+        let key = (path.clone(), index);
+        let (ring, accounted) = if let Some(PageContent::Animated(ring)) = self.animations.get(&key) {
+            (Arc::clone(ring), true)
+        } else if let Some((_, PageContent::Animated(ring))) = self.animation_bypass.as_ref()
+            .filter(|((p, i), _)| p == path && *i == index)
+        {
+            (Arc::clone(ring), false)
+        } else {
+            return false;
+        };
+
+        let (old_reserved, new_reserved) =
+            ring.update_resize_target(target_size, current_frame_index);
+        if accounted {
+            if new_reserved >= old_reserved {
+                self.total_bytes = self.total_bytes.saturating_add(new_reserved - old_reserved);
+            } else {
+                self.total_bytes = self.total_bytes.saturating_sub(old_reserved - new_reserved);
+            }
+        }
+        true
     }
 
     /// この(path, index)が過去に予算超過(bypass)と判定されたことがあるか。
     /// 先読みウィンドウが同じページを何度もデコードし直すループを防ぐために使う。
     pub fn is_known_bypass(&self, path: &PathBuf, index: usize, generation: u64) -> bool {
-        self.known_bypass.contains(&(path.clone(), index, generation))
+        self.known_animation_bypass.contains(&(path.clone(), index))
+            || self.known_bypass.contains(&(path.clone(), index, generation))
     }
 
     /// preparingが完成済みなら優先し、未完成ならactiveへフォールバックする。
@@ -920,9 +1153,19 @@ impl PageCache {
         active: u64,
         preparing: Option<u64>,
     ) -> Option<(u64, &PageContent)> {
-        preparing
+        self.get_animation(path, index)
+            .map(|content| (preparing.unwrap_or(active), content))
+            .or_else(|| preparing
             .and_then(|generation| self.get_generation(path, index, generation).map(|c| (generation, c)))
-            .or_else(|| self.get_generation(path, index, active).map(|c| (active, c)))
+            .or_else(|| self.get_generation(path, index, active).map(|c| (active, c))))
+    }
+
+    fn get_animation(&self, path: &PathBuf, index: usize) -> Option<&PageContent> {
+        self.animations.get(&(path.clone(), index)).or_else(|| {
+            self.animation_bypass.as_ref().and_then(|((bp, bi), content)| {
+                if bp == path && *bi == index { Some(content) } else { None }
+            })
+        })
     }
 
     fn get_generation(&self, path: &PathBuf, index: usize, generation: u64) -> Option<&PageContent> {
@@ -937,6 +1180,13 @@ impl PageCache {
     /// 次の insert() で新しいデコード結果を通常どおり入れ直す前提。
     #[cfg(test)]
     pub fn remove(&mut self, path: &PathBuf, index: usize, generation: u64) {
+        if let Some(content) = self.animations.remove(&(path.clone(), index)) {
+            self.total_bytes = self.total_bytes.saturating_sub(content_bytes(&content));
+        }
+        if self.animation_bypass.as_ref().is_some_and(|((p, i), _)| p == path && *i == index) {
+            self.animation_bypass = None;
+        }
+        self.known_animation_bypass.remove(&(path.clone(), index));
         if let Some(content) = self.entries.remove(&(path.clone(), index, generation)) {
             self.total_bytes = self.total_bytes.saturating_sub(content_bytes(&content));
         }
@@ -992,6 +1242,15 @@ impl PageCache {
     /// known_bypass記憶も含む）を破棄する。ページ単位の`remove`と違い、可視ページに限らず
     /// アーカイブ全体を対象にする（先読み済みページが古いOrientationのまま残るのを防ぐため）。
     pub fn remove_all_for_path(&mut self, path: &PathBuf) {
+        let stale_animations: Vec<_> = self.animations.keys()
+            .filter(|(p, _)| p == path)
+            .cloned()
+            .collect();
+        for key in stale_animations {
+            if let Some(content) = self.animations.remove(&key) {
+                self.total_bytes = self.total_bytes.saturating_sub(content_bytes(&content));
+            }
+        }
         let stale_keys: Vec<(PathBuf, usize, u64)> = self.entries.keys()
             .filter(|(p, _, _)| p == path)
             .cloned()
@@ -1006,7 +1265,11 @@ impl PageCache {
                 self.bypass = None;
             }
         }
+        if self.animation_bypass.as_ref().is_some_and(|((p, _), _)| p == path) {
+            self.animation_bypass = None;
+        }
         self.known_bypass.retain(|(p, _, _)| p != path);
+        self.known_animation_bypass.retain(|(p, _)| p != path);
     }
 
     /// キャッシュに追加する。予算超過時は最遠エントリを evict する。
@@ -1020,6 +1283,11 @@ impl PageCache {
         current_path: &PathBuf,
         current_index: usize,
     ) {
+        if matches!(content, PageContent::Animated(_)) {
+            self.insert_animation(path, index, content, current_path, current_index);
+            return;
+        }
+
         let incoming = content_bytes(&content);
 
         // 同一世代・同一ページの再投入は置換として扱い、帳簿を二重加算しない。
@@ -1057,10 +1325,50 @@ impl PageCache {
         self.entries.insert((path, index, generation), content);
     }
 
+    fn insert_animation(
+        &mut self,
+        path: PathBuf,
+        index: usize,
+        content: PageContent,
+        current_path: &PathBuf,
+        current_index: usize,
+    ) {
+        // リサイズ世代から届いた再デコード結果より、稼働中の担当を優先する。
+        if self.contains_animation(&path, index) {
+            return;
+        }
+
+        let incoming = content_bytes(&content);
+        if incoming >= self.max_bytes {
+            eprintln!(
+                "[cache] animation bypass: {:?}[{}] {}MB > budget {}MB",
+                path, index, incoming / MB, self.max_bytes / MB,
+            );
+            self.known_animation_bypass.insert((path.clone(), index));
+            self.animation_bypass = Some(((path, index), content));
+            return;
+        }
+
+        if self.animation_bypass.as_ref().is_some_and(|((p, i), _)| {
+            p != current_path || *i != current_index
+        }) {
+            self.animation_bypass = None;
+        }
+
+        while self.total_bytes + incoming > self.max_bytes
+            && self.total_bytes > self.min_bytes
+            && (!self.entries.is_empty() || !self.animations.is_empty())
+        {
+            self.evict_furthest(current_path, current_index);
+        }
+        self.total_bytes += incoming;
+        self.animations.insert((path, index), content);
+    }
+
     /// 現在ページから最も遠いエントリを1件解放する。
     /// 別アーカイブのエントリは同アーカイブより常に遠いとみなす。
     fn evict_furthest(&mut self, current_path: &PathBuf, current_index: usize) {
-        let key = self
+        let static_key = self
             .entries
             .keys()
             .max_by_key(|(path, idx, _)| {
@@ -1070,7 +1378,26 @@ impl PageCache {
             })
             .cloned();
 
-        if let Some(key) = key {
+        let animation_key = self.animations.keys().max_by_key(|(path, idx)| {
+            let other_archive = path != current_path;
+            let dist = idx.abs_diff(current_index);
+            (other_archive, dist)
+        }).cloned();
+
+        let static_distance = static_key.as_ref().map(|(path, idx, _)| {
+            (path != current_path, idx.abs_diff(current_index))
+        });
+        let animation_distance = animation_key.as_ref().map(|(path, idx)| {
+            (path != current_path, idx.abs_diff(current_index))
+        });
+
+        if animation_distance > static_distance {
+            if let Some(key) = animation_key {
+                if let Some(content) = self.animations.remove(&key) {
+                    self.total_bytes = self.total_bytes.saturating_sub(content_bytes(&content));
+                }
+            }
+        } else if let Some(key) = static_key {
             if let Some(content) = self.entries.remove(&key) {
                 self.total_bytes = self.total_bytes.saturating_sub(content_bytes(&content));
             }
@@ -1657,6 +1984,151 @@ mod ring_integration_tests {
         assert_eq!(cache.total_bytes(), 0, "予約額と同額が引かれてゼロに戻るべき");
     }
 
+    #[test]
+    fn page_cache_keeps_one_animation_instance_across_display_generations() {
+        let bytes = encode_gif_frames_mixed(&[(10, 10), (10, 10), (10, 10)]);
+        let decode = || {
+            decode_ring_anim(
+                &bytes,
+                AnimFormat::Gif,
+                image::imageops::FilterType::Triangle,
+                TEST_RING_BUDGET_BYTES,
+                TEST_RING_BOUNDS,
+                TEST_FRAME_HARD_LIMIT_BYTES,
+                Some((1920, 1080)),
+                true,
+            )
+            .expect("GIFとしてデコードできるはず")
+        };
+        let path = PathBuf::from("animation.zip");
+        let mut cache = PageCache::new(10 * MB, 0);
+
+        cache.insert(path.clone(), 0, 10, decode(), &path, 0);
+        let first_id = match cache.get_best(&path, 0, 10, None).unwrap().1 {
+            PageContent::Animated(ring) => ring.instance_id(),
+            PageContent::Static(_) => panic!("animation expected"),
+        };
+
+        // リサイズ世代から重複結果が届いても、稼働中の担当を置換しない。
+        cache.insert(path.clone(), 0, 11, decode(), &path, 0);
+        cache.retain_generations(10, Some(11));
+        cache.remove_older_versions(&path, 0, 11);
+
+        let (generation, content) = cache.get_best(&path, 0, 10, Some(11)).unwrap();
+        assert_eq!(generation, 11, "表示側には最新表示世代として返す");
+        let PageContent::Animated(ring) = content else {
+            panic!("animation expected");
+        };
+        assert_eq!(ring.instance_id(), first_id, "RingAnimation担当は同一のまま");
+        assert!(cache.contains(&path, 0, 12), "アニメの存在判定は表示世代に依存しない");
+    }
+
+    #[test]
+    fn animation_resize_keeps_current_frame_and_jumps_to_first_new_epoch_frame() {
+        let bytes = encode_gif_frames_mixed(&[(100, 100), (100, 100), (100, 100), (100, 100)]);
+        let content = decode_ring_anim(
+            &bytes,
+            AnimFormat::Gif,
+            image::imageops::FilterType::Triangle,
+            TEST_RING_BUDGET_BYTES,
+            TEST_RING_BOUNDS,
+            TEST_FRAME_HARD_LIMIT_BYTES,
+            Some((50, 50)),
+            true,
+        )
+        .expect("GIFとしてデコードできるはず");
+        let PageContent::Animated(ring) = content else {
+            panic!("animation expected");
+        };
+
+        assert_eq!(ring.with_frame(1, |f| f.image.dimensions()), Some((50, 50)));
+        assert_eq!(ring.with_frame(2, |f| f.image.dimensions()), Some((50, 50)));
+
+        ring.update_resize_target(Some((25, 25)), 1);
+
+        assert!(
+            !commit_resized_frame(
+                &ring.state,
+                0,
+                99,
+                AnimFrame {
+                    image: image::RgbaImage::new(50, 50),
+                    delay: std::time::Duration::from_millis(40),
+                },
+            ),
+            "旧epochで処理完了したリサイズ結果はリングへ戻さない",
+        );
+
+        assert_eq!(
+            ring.try_with_frame(1, |f| f.image.dimensions()),
+            Some((50, 50)),
+            "現在表示中の旧サイズフレームは差し替え完了まで残す",
+        );
+        assert!(ring.try_with_frame(2, |_| ()).is_none(), "旧サイズの未来フレームは破棄する");
+        assert_eq!(ring.with_frame(3, |f| f.image.dimensions()), Some((25, 25)));
+        assert_eq!(
+            ring.playback_ready_after(1),
+            Some(3),
+            "前進専用decoderで再取得不能な欠番を越えて新epochへ移る",
+        );
+    }
+
+    #[test]
+    fn page_cache_resize_updates_animation_reservation_by_delta() {
+        let bytes = encode_gif_frames_mixed(&[(100, 100), (100, 100), (100, 100)]);
+        let content = decode_ring_anim(
+            &bytes,
+            AnimFormat::Gif,
+            image::imageops::FilterType::Triangle,
+            TEST_RING_BUDGET_BYTES,
+            TEST_RING_BOUNDS,
+            TEST_FRAME_HARD_LIMIT_BYTES,
+            Some((50, 50)),
+            true,
+        )
+        .expect("GIFとしてデコードできるはず");
+        let path = PathBuf::from("animation.zip");
+        let mut cache = PageCache::new(10 * MB, 0);
+        cache.insert(path.clone(), 0, 10, content, &path, 0);
+        let old_total = cache.total_bytes();
+
+        assert!(cache.update_animation_resize(&path, 0, Some((25, 25)), 0));
+        let new_reserved = match cache.get_best(&path, 0, 10, Some(11)).unwrap().1 {
+            PageContent::Animated(ring) => ring.reserved_bytes(),
+            PageContent::Static(_) => panic!("animation expected"),
+        };
+
+        assert!(new_reserved < old_total);
+        assert_eq!(cache.total_bytes(), new_reserved);
+        cache.remove_all_for_path(&path);
+        assert_eq!(cache.total_bytes(), 0, "動的変更後もevict側の減算と対称になる");
+    }
+
+    #[test]
+    fn remove_all_for_path_releases_stable_animation_instance() {
+        let bytes = encode_gif_frames_mixed(&[(10, 10), (10, 10), (10, 10)]);
+        let content = decode_ring_anim(
+            &bytes,
+            AnimFormat::Gif,
+            image::imageops::FilterType::Triangle,
+            TEST_RING_BUDGET_BYTES,
+            TEST_RING_BOUNDS,
+            TEST_FRAME_HARD_LIMIT_BYTES,
+            Some((1920, 1080)),
+            true,
+        )
+        .expect("GIFとしてデコードできるはず");
+        let path = PathBuf::from("animation.zip");
+        let mut cache = PageCache::new(10 * MB, 0);
+        cache.insert(path.clone(), 0, 10, content, &path, 0);
+
+        cache.remove_all_for_path(&path);
+
+        assert!(!cache.contains_animation(&path, 0));
+        assert!(cache.get_best(&path, 0, 10, Some(11)).is_none());
+        assert_eq!(cache.total_bytes(), 0);
+    }
+
     /// 表示解像度の世代変更では通常エントリだけでなく、予算超過bypassと
     /// 再要求抑止記録もまとめて初期化されるべき。
     #[test]
@@ -1963,7 +2435,7 @@ mod ring_integration_tests {
     }
 
     #[test]
-    fn ring_anim_pipeline_coalesces_a_requested_range() {
+    fn ring_anim_pipeline_reaches_requested_target_with_sparse_ready_frames() {
         let bytes = encode_gif_frames_mixed(&[
             (10, 10),
             (10, 10),
@@ -1986,12 +2458,95 @@ mod ring_integration_tests {
 
         assert!(!ring.request_frame(4));
         wait_for_async_frame(&ring, 4);
-        for index in 0..=4 {
-            assert!(
-                ring.try_with_frame(index, |_| ()).is_some(),
-                "requested range should contain frame {index}",
-            );
-        }
+        assert!(ring.try_with_frame(0, |_| ()).is_some());
+        assert!(ring.try_with_frame(4, |_| ()).is_some());
+        assert_eq!(ring.latest_ready_after(0), Some(4));
+    }
+
+    #[test]
+    fn animation_pipeline_raw_queue_preserves_normal_frames_then_drops_stale() {
+        let pipeline = AnimationPipelineControl {
+            command: Mutex::new(AnimationPipelineCommand::default()),
+            wake: Condvar::new(),
+            raw_queue: Mutex::new(VecDeque::new()),
+            raw_wake: Condvar::new(),
+            raw_space: Condvar::new(),
+            drop_stale_raw: AtomicBool::new(false),
+        };
+        let make_raw = |index| RawAnimFrame {
+            index,
+            frame: AnimFrame {
+                image: image::RgbaImage::new(2, 2),
+                delay: std::time::Duration::from_millis(10),
+            },
+            source_size: (2, 2),
+            decode_elapsed: std::time::Duration::ZERO,
+        };
+
+        assert!(pipeline.push_raw(make_raw(1)));
+        assert!(pipeline.push_raw(make_raw(2)));
+        assert_eq!(
+            pipeline.raw_queue.lock().unwrap().iter().map(|raw| raw.index).collect::<Vec<_>>(),
+            vec![1, 2],
+        );
+
+        pipeline.drop_stale_raw.store(true, Ordering::Release);
+        assert!(pipeline.push_raw(make_raw(4)));
+        assert_eq!(
+            pipeline.raw_queue.lock().unwrap().iter().map(|raw| raw.index).collect::<Vec<_>>(),
+            vec![4],
+        );
+    }
+
+    #[test]
+    fn animation_playback_uses_next_frame_until_drop_mode_is_enabled() {
+        let bytes = encode_gif_frames_mixed(&[(10, 10), (10, 10), (10, 10)]);
+        let content = decode_ring_anim(
+            &bytes,
+            AnimFormat::Gif,
+            image::imageops::FilterType::Triangle,
+            TEST_RING_BUDGET_BYTES,
+            TEST_RING_BOUNDS,
+            TEST_FRAME_HARD_LIMIT_BYTES,
+            Some((10, 10)),
+            true,
+        )
+        .expect("GIF should decode");
+        let PageContent::Animated(ring) = content else { panic!("expected animation") };
+
+        assert!(ring.with_frame(2, |_| ()).is_some());
+        assert_eq!(ring.playback_ready_after(0), Some(1));
+
+        ring.pipeline.drop_stale_raw.store(true, Ordering::Release);
+        assert_eq!(ring.playback_ready_after(0), Some(2));
+    }
+
+    #[test]
+    fn animation_instance_id_is_stable_for_arc_clones_and_unique_for_redecode() {
+        let bytes = encode_gif_frames_mixed(&[(10, 10), (10, 10)]);
+        let decode = || {
+            let content = decode_ring_anim(
+                &bytes,
+                AnimFormat::Gif,
+                image::imageops::FilterType::Triangle,
+                TEST_RING_BUDGET_BYTES,
+                TEST_RING_BOUNDS,
+                TEST_FRAME_HARD_LIMIT_BYTES,
+                Some((10, 10)),
+                true,
+            )
+            .expect("GIF should decode");
+            let PageContent::Animated(ring) = content else { panic!("expected animation") };
+            ring
+        };
+
+        let first = decode();
+        let shared = Arc::clone(&first);
+        let replacement = decode();
+
+        assert!(Arc::ptr_eq(&first, &shared));
+        assert_eq!(first.instance_id(), shared.instance_id());
+        assert_ne!(first.instance_id(), replacement.instance_id());
     }
 
     #[test]

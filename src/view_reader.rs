@@ -8,7 +8,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use crate::cache::{PageCache, PageContent};
+use crate::cache::{AnimationInstanceId, PageCache, PageContent};
 use crate::gui_config::WindowSlot;
 use crate::fs::archive;
 use crate::spread_offset::SpreadOffset;
@@ -17,6 +17,9 @@ use crate::toolbar::{BarGroup, ViewerBarItem};
 use crate::keymap::{Keymap, ReaderAction, MouseAction, MouseCombo};
 
 const SCROLL_THRESHOLD: f32 = 50.0;
+/// アニメ専用パイプラインへ一度に許可するデコード先行幅。
+/// UIが可視アニメをtickしている間だけ、到達のたびに次の範囲を追加する。
+const ANIM_DECODE_AHEAD_FRAMES: usize = 8;
 /// content_px の初回フレーム前プレースホルダ。draw() 冒頭で毎フレーム実測値に
 /// 上書きされるため、実際のデコードターゲットには事実上使われない。
 const CONTENT_PX_PLACEHOLDER: (u32, u32) = (1920, 1080);
@@ -26,6 +29,21 @@ const ANIM_SECS: f32 = 0.4;
 const THUMBBAR_ENQUEUE_WINDOW: i32 = 40;
 const FULL_UV: egui::Rect =
     egui::Rect { min: egui::pos2(0.0, 0.0), max: egui::pos2(1.0, 1.0) };
+
+fn next_anim_decode_request(decoded_through: usize, requested_through: usize) -> usize {
+    if decoded_through >= requested_through {
+        decoded_through.saturating_add(ANIM_DECODE_AHEAD_FRAMES)
+    } else {
+        requested_through
+    }
+}
+
+fn animation_instance_changed(
+    previous: Option<AnimationInstanceId>,
+    current: AnimationInstanceId,
+) -> bool {
+    previous.is_some_and(|previous| previous != current)
+}
 
 fn ease_out(t: f32) -> f32 {
     1.0 - (1.0 - t).powi(3)
@@ -88,7 +106,9 @@ pub(crate) fn fit_rect_contain(bounds: egui::Rect, img_size: egui::Vec2) -> egui
 
 /// GIF等アニメーション再生状態（ページごとに保持）
 struct AnimState {
+    instance_id: AnimationInstanceId,
     frame_index: usize,
+    requested_through: usize,
     last_frame_at: Instant,
     /// 非可視ページとして凍結中か。フレーム送り(UIスレッド同期デコード)は可視ページ
     /// 限定のため、裏に回ったアニメはこのフラグを立てて位置を凍結し、再可視化時に
@@ -460,6 +480,13 @@ impl ViewerState {
     /// zoom_actual時は無制限(原寸)、それ以外は直近の描画領域サイズ(物理px)を上限にする。
     pub fn current_decode_target(&self, zoom_actual: bool) -> Option<(u32, u32)> {
         if zoom_actual { None } else { Some(self.content_px) }
+    }
+
+    /// 世代非依存アニメのリサイズ切替で保持すべき、現在表示中のフレーム番号。
+    pub(crate) fn animation_frame_index(&self, original_index: usize) -> usize {
+        self.anim_states
+            .get(&original_index)
+            .map_or(0, |state| state.frame_index)
     }
 
     /// フェーズ6: 再デコード発火時に、指定ページのテクスチャ・アニメ再生状態を破棄する。
@@ -1769,11 +1796,11 @@ impl ViewerState {
             };
             let previous_generation = self.texture_generations.get(&orig_i).copied();
             let generation_changed = previous_generation != Some(generation);
-            if generation_changed {
-                self.anim_states.remove(&orig_i);
-            }
             match content {
                 PageContent::Static(img) => {
+                    if generation_changed {
+                        self.anim_states.remove(&orig_i);
+                    }
                     if generation_changed || !self.textures.contains_key(&orig_i) {
                         let color_image = egui::ColorImage::from_rgba_unmultiplied(
                             [img.width() as usize, img.height() as usize],
@@ -1790,6 +1817,14 @@ impl ViewerState {
                     }
                 }
                 PageContent::Animated(ring) => {
+                    let instance_id = ring.instance_id();
+                    let animation_instance_changed = animation_instance_changed(
+                        self.anim_states.get(&orig_i).map(|state| state.instance_id),
+                        instance_id,
+                    );
+                    if animation_instance_changed {
+                        self.anim_states.remove(&orig_i);
+                    }
                     // フェーズ3/3.5: GIF/APNG/AVIF/WebP。全フレーム常駐ではなく逐次デコード+リングバッファ。
                     // 可視ページの次フレーム生成はバックグラウンドへ要求し、UIスレッドでは
                     // 完成済みフレームだけを採用する。未完成中は現在のテクスチャを保持する。
@@ -1823,7 +1858,9 @@ impl ViewerState {
                         continue;
                     }
                     let state = self.anim_states.entry(orig_i).or_insert_with(|| AnimState {
+                        instance_id,
                         frame_index: 0,
+                        requested_through: 0,
                         last_frame_at: now,
                         paused: false,
                     });
@@ -1837,19 +1874,27 @@ impl ViewerState {
                     let current_delay = ring
                         .try_with_frame(state.frame_index, |f| f.delay)
                         .unwrap_or(Duration::from_millis(100));
-                    let next_index = state.frame_index + 1;
 
-                    // 表示期限より前から次フレームを生成しておく。生成が期限に間に合わなくても
-                    // 同期的に待たず、現在フレームをそのまま表示する。
-                    let next_ready = ring.request_frame(next_index);
-                    if now.duration_since(state.last_frame_at) >= current_delay && next_ready {
-                        state.frame_index = next_index;
-                        // 遅れを次フレームへ持ち越すと、重い素材で永久に複数枚追走するため、
-                        // 実際に表示できた時点を新しい基準時刻にする。
-                        state.last_frame_at = now;
-                        needs_upload = true;
-                        // 次の生成もすぐ開始し、表示中のdelayとバックグラウンド処理を重ねる。
-                        ring.request_frame(state.frame_index + 1);
+                    let latest_ready = ring.playback_ready_after(state.frame_index);
+                    if now.duration_since(state.last_frame_at) >= current_delay {
+                        if let Some(ready_index) = latest_ready {
+                            let previous_index = state.frame_index;
+                            state.frame_index = ready_index;
+                            if ready_index > previous_index + 1 {
+                                crate::log_perf!(
+                                    "[diag/anim-drop] archive={:?} page={} from={} to={} skipped={}",
+                                    self.archive_path,
+                                    orig_i,
+                                    previous_index,
+                                    ready_index,
+                                    ready_index - previous_index - 1,
+                                );
+                            }
+                            // 遅れを次フレームへ持ち越すと、重い素材で永久に複数枚追走するため、
+                            // 実際に表示できた時点を新しい基準時刻にする。
+                            state.last_frame_at = now;
+                            needs_upload = true;
+                        }
                     }
 
                     if needs_upload {
@@ -1875,6 +1920,16 @@ impl ViewerState {
                         }
                     }
 
+                    // 初期テクスチャを確保してから、可視中だけ小さな範囲を先行デコードする。
+                    // リサイズが追いつかない場合はpipeline側のraw queueが中間フレームを
+                    // 最新1枚へ畳み込み、表示リサイズ前に破棄する。
+                    let decoded_through = ring.decoded_through();
+                    state.requested_through = next_anim_decode_request(
+                        decoded_through,
+                        state.requested_through,
+                    );
+                    ring.request_frame(state.requested_through);
+
                     // デコード/リサイズ/アップロードに要した実時間を差し引くため、ここで時刻を取り直す
                     // (loop開始時の `now` を使うと、上記処理のコストが remaining に反映されず
                     //  次のrepaintが実処理時間分だけ遅延し、アニメ全体が一様に遅く見える)
@@ -1884,7 +1939,7 @@ impl ViewerState {
                         .try_with_frame(state.frame_index, |f| f.delay)
                         .unwrap_or(Duration::from_millis(100));
                     // 未完成フレームは短いポーリングだけ予約し、OS入力を妨げる同期waitはしない。
-                    let remaining = if ring.request_frame(state.frame_index + 1) {
+                    let remaining = if ring.playback_ready_after(state.frame_index).is_some() {
                         next_delay.saturating_sub(elapsed_after_upload)
                     } else {
                         Duration::from_millis(8)
@@ -2691,6 +2746,40 @@ impl ViewerState {
             let tl    = origin + (avail - size) / 2.0 + egui::vec2(offset_x, 0.0);
             painter.image(tex.id(), egui::Rect::from_min_size(tl, size), FULL_UV, egui::Color32::WHITE);
         }
+    }
+}
+
+#[cfg(test)]
+mod animation_schedule_tests {
+    use super::{animation_instance_changed, next_anim_decode_request, ANIM_DECODE_AHEAD_FRAMES};
+    use crate::cache::AnimationInstanceId;
+
+    #[test]
+    fn completed_batch_extends_from_decoder_position() {
+        assert_eq!(
+            next_anim_decode_request(9, 9),
+            9 + ANIM_DECODE_AHEAD_FRAMES,
+        );
+    }
+
+    #[test]
+    fn in_flight_batch_keeps_existing_target() {
+        assert_eq!(next_anim_decode_request(5, 9), 9);
+    }
+
+    #[test]
+    fn decode_request_saturates_at_usize_max() {
+        assert_eq!(next_anim_decode_request(usize::MAX, usize::MAX), usize::MAX);
+    }
+
+    #[test]
+    fn animation_state_identity_ignores_same_instance_and_rejects_replacement() {
+        let first = AnimationInstanceId::for_test(1);
+        let replacement = AnimationInstanceId::for_test(2);
+
+        assert!(!animation_instance_changed(None, first));
+        assert!(!animation_instance_changed(Some(first), first));
+        assert!(animation_instance_changed(Some(first), replacement));
     }
 }
 

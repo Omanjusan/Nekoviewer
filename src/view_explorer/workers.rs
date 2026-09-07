@@ -89,10 +89,8 @@ impl NekoviewApp {
     }
 
     /// フェーズ6-C/6-D: デバウンス発火時に、表示中ページ(見開き時は2枚)を新しいターゲットサイズで
-    /// 再デコードさせる。PageCacheから既存エントリを破棄し、新規LoadRequestを送るだけで、
-    /// 静止画・アニメーション(RingAnimation)とも decode_ring_anim/resize_for_display 側の
-    /// target_size配線に乗って統一的に再デコードされる。アニメは新規RingAnimationとして
-    /// 作られるため自然に再生位置が先頭へ戻る（フェーズ6-A決定事項どおり）。
+    /// 再デコードさせる。既存アニメは表示世代に依存しない単一インスタンスとして保持し、
+    /// ここでは作り直さない（表示サイズの更新は後続フェーズで既存pipelineへ通知する）。
     fn fire_resize_redecode(&mut self, seq: u64) {
         let zoom_actual = self.viewer_cfg.lock().unwrap().zoom_actual;
         let target = {
@@ -148,10 +146,8 @@ impl NekoviewApp {
     }
 
     /// 現在ビューアーに表示中のページ(見開き時は2枚)を、指定ターゲットサイズで再デコードさせる。
-    /// PageCacheから既存エントリを破棄し、新規LoadRequestを送るだけで、静止画・アニメーション
-    /// (RingAnimation)とも decode_ring_anim/resize_for_display 側の target_size配線に乗って
-    /// 統一的に再デコードされる（アニメは新規RingAnimationとして作られるため自然に再生位置が
-    /// 先頭へ戻る）。戻り値は再デコード対象にしたページ数（ログ用）。
+    /// 静止画だけを新世代へ再デコードする。既にRingAnimationを持つページは同一インスタンスを
+    /// 継続利用するため要求を送らない。戻り値は実際に要求したページ数（ログ用）。
     fn redecode_visible_pages(&mut self, target: Option<(u32, u32)>) -> usize {
         let (path, is_raw_file, pages) = {
             let viewer = self.viewer.lock().unwrap();
@@ -159,20 +155,37 @@ impl NekoviewApp {
             let path = v.archive_path().clone();
             let is_raw_file = v.is_raw_file();
             let entries = v.entries();
-            let pages: Vec<(usize, String)> = v
+            let pages: Vec<(usize, String, usize)> = v
                 .visible_original_indices()
                 .into_iter()
                 .filter_map(|orig_i| {
                     entries.iter()
                         .find(|e| e.original_index == orig_i)
-                        .map(|e| (orig_i, e.entry_name.clone()))
+                        .map(|e| (
+                            orig_i,
+                            e.entry_name.clone(),
+                            v.animation_frame_index(orig_i),
+                        ))
                 })
                 .collect();
             (path, is_raw_file, pages)
         };
 
+        let pages: Vec<_> = {
+            let mut cache = self.page_cache.lock().unwrap();
+            pages.into_iter()
+                .filter(|(orig_i, _, current_frame_index)| {
+                    !cache.update_animation_resize(
+                        &path,
+                        *orig_i,
+                        target,
+                        *current_frame_index,
+                    )
+                })
+                .collect()
+        };
         let exif_enabled = self.viewer_cfg.lock().unwrap().exif_orientation_enabled;
-        for (visible_order, (orig_i, entry_name)) in pages.iter().enumerate() {
+        for (visible_order, (orig_i, entry_name, _)) in pages.iter().enumerate() {
             let key = (path.clone(), *orig_i);
             self.pending_loads.lock().unwrap().insert(key);
             self.dispatch_load_request(
