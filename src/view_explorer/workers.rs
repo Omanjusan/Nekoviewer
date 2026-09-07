@@ -146,8 +146,9 @@ impl NekoviewApp {
     }
 
     /// 現在ビューアーに表示中のページ(見開き時は2枚)を、指定ターゲットサイズで再デコードさせる。
-    /// 静止画だけを新世代へ再デコードする。既にRingAnimationを持つページは同一インスタンスを
-    /// 継続利用するため要求を送らない。戻り値は実際に要求したページ数（ログ用）。
+    /// 静止画は新世代へ再デコードする。アニメは稼働中の RingAnimation を破棄し、同じく
+    /// `target_size` 付きの再デコードへ回す（別 instance_id の新しい RingAnimation として
+    /// 先頭フレームから再生し直す。再生位置は維持しない）。戻り値は要求したページ数（ログ用）。
     fn redecode_visible_pages(&mut self, target: Option<(u32, u32)>) -> usize {
         let (path, is_raw_file, pages) = {
             let viewer = self.viewer.lock().unwrap();
@@ -171,19 +172,17 @@ impl NekoviewApp {
             (path, is_raw_file, pages)
         };
 
-        let pages: Vec<_> = {
+        {
             let mut cache = self.page_cache.lock().unwrap();
-            pages.into_iter()
-                .filter(|(orig_i, _, current_frame_index)| {
-                    !cache.update_animation_resize(
-                        &path,
-                        *orig_i,
-                        target,
-                        *current_frame_index,
-                    )
-                })
-                .collect()
-        };
+            for (orig_i, _, _) in &pages {
+                // アニメページは「その場リサイズ」せず、稼働中の RingAnimation を破棄する。
+                // この直後に静止画と同じ経路で target_size 付き再デコードを投げ、別 instance_id の
+                // RingAnimation として先頭フレームから再生し直させる（insert_animation の
+                // contains_animation ガードに弾かれないよう、結果が届く前に席を空けておく）。
+                // 静止画ページに対しては no-op。
+                cache.drop_animation_for_redecode(&path, *orig_i);
+            }
+        }
         let exif_enabled = self.viewer_cfg.lock().unwrap().exif_orientation_enabled;
         for (visible_order, (orig_i, entry_name, _)) in pages.iter().enumerate() {
             let key = (path.clone(), *orig_i);

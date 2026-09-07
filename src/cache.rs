@@ -993,9 +993,13 @@ impl RingAnimation {
         false
     }
 
+    /// 【非推奨・呼び出し禁止】`PageCache::update_animation_resize` からのみ呼ばれる。
+    /// リサイズ経路は `drop_animation_for_redecode` + 通常再デコードへ移行済み。フェーズ4で撤去予定。
+    ///
     /// 同じアニメ担当を維持したまま表示サイズだけ切り替える。
     /// 現在表示中の旧サイズフレームは残し、完成済み未来フレームと待機中rawを破棄する。
     /// 既にresize中の旧epoch結果は、完了時のepoch照合で投入されない。
+    #[allow(dead_code)] // フェーズ4で update_animation_resize ごと撤去予定
     pub fn update_resize_target(
         &self,
         target_size: Option<(u32, u32)>,
@@ -1145,8 +1149,15 @@ impl PageCache {
                 .is_some_and(|((bp, bi), _)| bp == path && *bi == index)
     }
 
+    /// 【非推奨・呼び出し禁止】その場リサイズ機構。前進専用デコーダの `next_decode_index` を
+    /// 巻き戻さないまま `ring.retain_only()` でリングを切り詰めるため、再生位置より先へ
+    /// デコード要求が届かずアニメが静止画化するバグがあった。リサイズ/原寸切替/フルスクリーンは
+    /// `drop_animation_for_redecode()` + 通常再デコードへ移行済み。フェーズ4でこの関数と
+    /// `RingAnimation::update_resize_target` ごと撤去予定。
+    ///
     /// 世代非依存のアニメ担当へ新しい表示上限を通知し、通常キャッシュに計上している
     /// 予約額を差分更新する。bypassアニメは元からtotal_bytesの帳簿外なので差分計上しない。
+    #[allow(dead_code)] // フェーズ4で update_resize_target ごと撤去予定
     pub fn update_animation_resize(
         &mut self,
         path: &PathBuf,
@@ -1175,6 +1186,23 @@ impl PageCache {
             }
         }
         true
+    }
+
+    /// リサイズ/原寸切替/フルスクリーンでの再デコード時に、稼働中のアニメ担当を破棄する。
+    /// `update_animation_resize`（その場リサイズ）と違い、呼び出し元はこの直後に新しい
+    /// `target_size` で通常の `LoadRequest` を投げ、別 `instance_id` の `RingAnimation` を
+    /// 先頭フレームから作り直させる（`insert_animation` の `contains_animation` ガードに
+    /// 弾かれないよう、再デコード結果が届く前にここで席を空けておく）。
+    /// 通常キャッシュへ計上済みの予約額を `total_bytes` から戻し、bypassスロット・既知bypass
+    /// 記憶も掃除する。アニメを持たない `(path, index)` に対しては何もしない。
+    pub fn drop_animation_for_redecode(&mut self, path: &PathBuf, index: usize) {
+        if let Some(content) = self.animations.remove(&(path.clone(), index)) {
+            self.total_bytes = self.total_bytes.saturating_sub(content_bytes(&content));
+        }
+        if self.animation_bypass.as_ref().is_some_and(|((p, i), _)| p == path && *i == index) {
+            self.animation_bypass = None;
+        }
+        self.known_animation_bypass.remove(&(path.clone(), index));
     }
 
     /// この(path, index)が過去に予算超過(bypass)と判定されたことがあるか。
