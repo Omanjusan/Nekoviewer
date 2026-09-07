@@ -9,6 +9,24 @@ use crate::view_reader::ViewerState;
 use super::*;
 use super::scan::spawn_summary_worker;
 
+/// 通常表示では「可視 → 前方近順 → 後方近順」、可視アニメ中は可視ページだけを返す。
+/// アニメのフレーム処理と無関係なページ先読みを、投入前の集合構築段階で除外する。
+fn ordered_page_indices(
+    visible_positions: &[usize],
+    visible_lo: usize,
+    visible_hi: usize,
+    start: usize,
+    end: usize,
+    visible_animation_active: bool,
+) -> Vec<usize> {
+    let mut ordered = visible_positions.to_vec();
+    if !visible_animation_active {
+        ordered.extend((visible_hi + 1)..end);
+        ordered.extend((start..visible_lo).rev());
+    }
+    ordered
+}
+
 impl NekoviewApp {
     /// 毎フレーム、egui パス内で UI 描画より前に呼ぶ「常時走る処理」。
     /// （旧 eframe::App::logic 相当。winit ループ本体から各フレーム呼ぶ）
@@ -477,15 +495,38 @@ impl NekoviewApp {
         // スライディングウィンドウ: ビューア表示中に前後ページを先読み
         let viewer_prefetch = self.viewer.lock().unwrap().as_ref().map(|viewer| {
             let cur = viewer.spread_lo().max(0) as usize;
-            (cur, viewer.archive_path().clone(), viewer.entries().to_vec(), viewer.is_raw_file())
+            (
+                cur,
+                viewer.archive_path().clone(),
+                viewer.entries().to_vec(),
+                viewer.is_raw_file(),
+                viewer.visible_original_indices(),
+            )
         });
+        let visible_animation_active = viewer_prefetch.as_ref().is_some_and(
+            |(_, path, _, _, visible_orig)| {
+                let cache = self.page_cache.lock().unwrap();
+                visible_orig.iter().any(|orig_i| {
+                    matches!(
+                        cache.get_best(
+                            path,
+                            *orig_i,
+                            self.active_decode_generation,
+                            self.preparing_decode_generation,
+                        ),
+                        Some((_, crate::cache::PageContent::Animated(_)))
+                    )
+                })
+            },
+        );
+        // アニメ中は新しいAhead/Behindを開始させない。静止画またはビューアー終了時は
+        // 通常の1並列へ必ず戻し、状態の戻し忘れを作らない。
+        self.req_tx.set_max_speculative_running(if visible_animation_active { 0 } else { 1 });
+
         let mut desired_job_keys = HashSet::new();
         let mut desired_pending_keys = HashSet::new();
-        if let Some((cur, path, entries, is_raw_file)) = viewer_prefetch {
+        if let Some((cur, path, entries, is_raw_file, visible_orig)) = viewer_prefetch {
             let total = entries.len();
-            let visible_orig = self.viewer.lock().unwrap().as_ref()
-                .map(|viewer| viewer.visible_original_indices())
-                .unwrap_or_default();
             let visible_positions: Vec<usize> = entries.iter().enumerate()
                 .filter_map(|(i, entry)| visible_orig.contains(&entry.original_index).then_some(i))
                 .collect();
@@ -497,9 +538,14 @@ impl NekoviewApp {
             let requested_generation = self.preparing_decode_generation
                 .unwrap_or(self.active_decode_generation);
             // submit直後にワーカーが起床できるため、投入順自体も優先順に揃える。
-            let ordered_indices = visible_positions.iter().copied()
-                .chain((visible_hi + 1)..end)
-                .chain((start..visible_lo).rev());
+            let ordered_indices = ordered_page_indices(
+                &visible_positions,
+                visible_lo,
+                visible_hi,
+                start,
+                end,
+                visible_animation_active,
+            );
             for i in ordered_indices {
                 let orig_i = entries[i].original_index;
                 // 予算超過(bypass)と判明済みのページは、現在表示中でない限り先読み対象から外す。
@@ -568,6 +614,35 @@ impl NekoviewApp {
             let _ = self.file_cache_req_tx.send(path.clone());
             self.file_cache_pending.insert(path);
         }
+    }
+}
+
+#[cfg(test)]
+mod animation_prefetch_tests {
+    use super::ordered_page_indices;
+
+    #[test]
+    fn static_page_keeps_visible_ahead_behind_order() {
+        assert_eq!(
+            ordered_page_indices(&[5], 5, 5, 2, 9, false),
+            vec![5, 6, 7, 8, 4, 3, 2],
+        );
+    }
+
+    #[test]
+    fn visible_animation_excludes_all_nonvisible_page_prefetch() {
+        assert_eq!(
+            ordered_page_indices(&[5], 5, 5, 2, 9, true),
+            vec![5],
+        );
+    }
+
+    #[test]
+    fn spread_with_animation_keeps_both_visible_pages() {
+        assert_eq!(
+            ordered_page_indices(&[5, 6], 5, 6, 2, 10, true),
+            vec![5, 6],
+        );
     }
 }
 

@@ -462,27 +462,6 @@ impl ViewerState {
         if zoom_actual { None } else { Some(self.content_px) }
     }
 
-    /// 現在の見開きにアニメーションが含まれるか。可視アニメのフレーム生成中は
-    /// ページ先読みジョブの新規開始を止め、CPU時間を現在ページへ優先配分するために使う。
-    pub fn has_visible_animation(
-        &self,
-        page_cache: &PageCache,
-        active_generation: u64,
-        preparing_generation: Option<u64>,
-    ) -> bool {
-        self.visible_original_indices().into_iter().any(|orig_i| {
-            matches!(
-                page_cache.get_best(
-                    &self.archive_path,
-                    orig_i,
-                    active_generation,
-                    preparing_generation,
-                ),
-                Some((_, PageContent::Animated(_)))
-            )
-        })
-    }
-
     /// フェーズ6: 再デコード発火時に、指定ページのテクスチャ・アニメ再生状態を破棄する。
     /// 次の update_textures() で PageCache から作り直させる（アニメはフレーム0から再生し直す）。
     /// 項目(D): Exif Orientation ON/OFF切替時に、開いているアーカイブの全ページのテクスチャ・
