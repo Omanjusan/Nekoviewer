@@ -3,7 +3,7 @@ use crate::anim::{AnimFrame, AnimFormat, SequentialAnimDecoder, FrameRingBuffer,
 use crate::decode_jobs::{DecodeJobOutcome, DecodeJobQueue};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{mpsc, Arc, Condvar, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use fast_image_resize::images::Image as FirImage;
@@ -435,11 +435,32 @@ struct RingAnimState {
     decoder: Option<SequentialAnimDecoder>,
     ring: FrameRingBuffer,
     /// 次に decoder.next_frame() で得られるフレームに割り振るインデックス
-    next_index: usize,
+    next_decode_index: usize,
+    /// アニメ判定のために同期デコード済みだが、まだ表示解像度へ変換していないframe1。
+    /// 初期ページロードをframe1の重いリサイズで塞がないため、最初の要求時にパイプラインへ渡す。
+    pending_raw: Option<RawAnimFrame>,
     resize_to: Option<(u32, u32)>,
     filter: image::imageops::FilterType,
     /// フェーズ5: 1フレームあたりの生デコードサイズ上限（超過フレームはその場で縮小）
     frame_hard_limit_bytes: usize,
+}
+
+struct RawAnimFrame {
+    index: usize,
+    frame: AnimFrame,
+    source_size: (u32, u32),
+    decode_elapsed: std::time::Duration,
+}
+
+#[derive(Default)]
+struct AnimationPipelineCommand {
+    requested_through: Option<usize>,
+    shutdown: bool,
+}
+
+struct AnimationPipelineControl {
+    command: Mutex<AnimationPipelineCommand>,
+    wake: Condvar,
 }
 
 /// 全フレームを一括保持せず、逐次デコード+リングバッファで保持するアニメーション。
@@ -447,9 +468,9 @@ struct RingAnimState {
 /// その際は `restart()` でデコーダを先頭から作り直す（この再デコードによる一瞬のフリーズは許容する）。
 pub struct RingAnimation {
     state: Arc<Mutex<RingAnimState>>,
-    /// 可視アニメ用の次フレーム生成が走っている間だけtrue。
-    /// 1アニメにつき同時に1本までとし、ページを離れた後も走り始めた1本だけは完走させる。
-    frame_worker_running: Arc<AtomicBool>,
+    /// 初回フレーム要求時にだけ起動する、アニメ専用の常駐デコード/リサイズパイプライン。
+    pipeline_started: AtomicBool,
+    pipeline: Arc<AnimationPipelineControl>,
     format: AnimFormat,
     /// PageCache への計上額（リング容量 × リサイズ後フレームサイズ）。構築時に確定し不変。
     /// 挿入時点の実常駐（2フレーム分）で計上すると、再生でリングが容量まで育ったとき
@@ -520,8 +541,9 @@ impl RingAnimation {
         let frame0 = Self::apply_resize(frame0, resize_to, filter);
 
         let frame1 = frame1.unwrap();
+        let frame1_source_size = frame1.image.dimensions();
+        // rawキューへ長時間保持されうるため、表示リサイズは遅延してもhard limitだけは先に適用する。
         let frame1 = Self::guard_frame_size(frame1, frame_hard_limit_bytes, filter, 1);
-        let frame1 = Self::apply_resize(frame1, resize_to, filter);
 
         // 容量算出はresize後のフレームサイズ基準（実際にリングへ乗るバイト数と一致させるため）。
         let resized_frame_bytes = (frame0.image.width() as usize) * (frame0.image.height() as usize) * 4;
@@ -530,12 +552,28 @@ impl RingAnimation {
         let reserved_bytes = capacity.saturating_mul(resized_frame_bytes);
         let mut ring = FrameRingBuffer::new(capacity);
         ring.push(0, frame0);
-        ring.push(1, frame1);
 
-        let state = RingAnimState { decoder: Some(decoder), ring, next_index: 2, resize_to, filter, frame_hard_limit_bytes };
+        let state = RingAnimState {
+            decoder: Some(decoder),
+            ring,
+            next_decode_index: 2,
+            pending_raw: Some(RawAnimFrame {
+                index: 1,
+                frame: frame1,
+                source_size: frame1_source_size,
+                decode_elapsed: std::time::Duration::ZERO,
+            }),
+            resize_to,
+            filter,
+            frame_hard_limit_bytes,
+        };
         RingDecodeOutcome::Animated(Self {
             state: Arc::new(Mutex::new(state)),
-            frame_worker_running: Arc::new(AtomicBool::new(false)),
+            pipeline_started: AtomicBool::new(false),
+            pipeline: Arc::new(AnimationPipelineControl {
+                command: Mutex::new(AnimationPipelineCommand::default()),
+                wake: Condvar::new(),
+            }),
             format,
             reserved_bytes,
         })
@@ -570,6 +608,36 @@ impl RingAnimation {
         }
     }
 
+    fn resize_raw_frame(
+        raw: RawAnimFrame,
+        resize_to: Option<(u32, u32)>,
+        filter: image::imageops::FilterType,
+        frame_hard_limit_bytes: usize,
+        format: AnimFormat,
+    ) -> (usize, AnimFrame) {
+        let resize_started = std::time::Instant::now();
+        let guarded = Self::guard_frame_size(raw.frame, frame_hard_limit_bytes, filter, raw.index);
+        let resized = Self::apply_resize(guarded, resize_to, filter);
+        let resize_elapsed = resize_started.elapsed();
+        if raw.decode_elapsed >= std::time::Duration::from_millis(8)
+            || resize_elapsed >= std::time::Duration::from_millis(8)
+        {
+            log_perf!(
+                "[diag/anim-frame] format={:?} frame={} source={}x{} output={}x{} decode={:.1}ms resize={:.1}ms delay={:.1}ms worker=pipeline",
+                format,
+                raw.index,
+                raw.source_size.0,
+                raw.source_size.1,
+                resized.image.width(),
+                resized.image.height(),
+                raw.decode_elapsed.as_secs_f64() * 1000.0,
+                resize_elapsed.as_secs_f64() * 1000.0,
+                resized.delay.as_secs_f64() * 1000.0,
+            );
+        }
+        (raw.index, resized)
+    }
+
     /// index番目のフレームが手に入るまでデコードを進め、見つかったフレームへの参照でfを呼ぶ
     /// (RGBAバッファの不要なコピーを避けるため)。デコーダが終端に達し index が存在しないと
     /// わかった場合は None（呼び出し側はループ境界として扱い `restart()` を呼ぶ）。
@@ -579,36 +647,40 @@ impl RingAnimation {
             if let Some(frame) = state.ring.get(index) {
                 return Some(f(frame));
             }
-            if index < state.next_index {
+            if let Some(raw) = state.pending_raw.take() {
+                let resize_to = state.resize_to;
+                let filter = state.filter;
+                let frame_hard_limit_bytes = state.frame_hard_limit_bytes;
+                let (idx, resized) = Self::resize_raw_frame(
+                    raw,
+                    resize_to,
+                    filter,
+                    frame_hard_limit_bytes,
+                    self.format,
+                );
+                state.ring.push(idx, resized);
+                continue;
+            }
+            if index < state.next_decode_index {
                 // 前進専用のためエビクト済みフレームへは戻れない。
                 return None;
             }
             let decode_started = std::time::Instant::now();
             let next = state.decoder.as_mut()?.next_frame()?;
             let decode_elapsed = decode_started.elapsed();
-            let idx = state.next_index;
-            state.next_index += 1;
+            let idx = state.next_decode_index;
+            state.next_decode_index += 1;
             let source_size = next.image.dimensions();
-            let resize_started = std::time::Instant::now();
-            let next = Self::guard_frame_size(next, state.frame_hard_limit_bytes, state.filter, idx);
-            let resized = Self::apply_resize(next, state.resize_to, state.filter);
-            let resize_elapsed = resize_started.elapsed();
-            if decode_elapsed >= std::time::Duration::from_millis(8)
-                || resize_elapsed >= std::time::Duration::from_millis(8)
-            {
-                log_perf!(
-                    "[diag/anim-frame] format={:?} frame={} source={}x{} output={}x{} decode={:.1}ms resize={:.1}ms delay={:.1}ms",
-                    self.format,
-                    idx,
-                    source_size.0,
-                    source_size.1,
-                    resized.image.width(),
-                    resized.image.height(),
-                    decode_elapsed.as_secs_f64() * 1000.0,
-                    resize_elapsed.as_secs_f64() * 1000.0,
-                    resized.delay.as_secs_f64() * 1000.0,
-                );
-            }
+            let resize_to = state.resize_to;
+            let filter = state.filter;
+            let frame_hard_limit_bytes = state.frame_hard_limit_bytes;
+            let (_, resized) = Self::resize_raw_frame(
+                RawAnimFrame { index: idx, frame: next, source_size, decode_elapsed },
+                resize_to,
+                filter,
+                frame_hard_limit_bytes,
+                self.format,
+            );
             state.ring.push(idx, resized);
         }
     }
@@ -620,87 +692,136 @@ impl RingAnimation {
         state.ring.get(index).map(f)
     }
 
-    /// `index` が未生成なら、可視アニメ専用の短命ワーカーで次の1フレームを生成する。
-    /// デコード・リサイズ中はstateのMutexを保持しないため、UIは現在フレームを継続表示できる。
-    /// 終端ではデコーダを巻き戻し、単調増加する表示indexへ次ループの先頭を割り当てる。
-    pub fn request_frame(&self, index: usize) -> bool {
-        {
-            let state = self.state.lock().unwrap();
-            if state.ring.get(index).is_some() {
-                return true;
-            }
-            if index < state.next_index || state.decoder.is_none() {
-                return false;
-            }
-        }
-        if self.frame_worker_running.compare_exchange(
+    fn ensure_pipeline_started(&self) {
+        if self.pipeline_started.compare_exchange(
             false,
             true,
             Ordering::AcqRel,
             Ordering::Acquire,
         ).is_err() {
-            return false;
+            return;
         }
 
-        let (mut decoder, frame_index, resize_to, filter, frame_hard_limit_bytes) = {
-            let mut state = self.state.lock().unwrap();
-            if state.ring.get(index).is_some() || index < state.next_index {
-                self.frame_worker_running.store(false, Ordering::Release);
-                return true;
-            }
-            let Some(decoder) = state.decoder.take() else {
-                self.frame_worker_running.store(false, Ordering::Release);
-                return false;
-            };
-            (decoder, state.next_index, state.resize_to, state.filter, state.frame_hard_limit_bytes)
-        };
+        // rendezvous channelにして生RGBAをキューへ滞留させない。
+        // resize中1枚と、デコード完了後handoff待ちの1枚だけが同時に存在しうる。
+        let (raw_tx, raw_rx) = mpsc::sync_channel::<RawAnimFrame>(0);
 
-        let state = Arc::clone(&self.state);
-        let running = Arc::clone(&self.frame_worker_running);
+        let decode_state = Arc::clone(&self.state);
+        let decode_pipeline = Arc::clone(&self.pipeline);
+        std::thread::spawn(move || {
+            loop {
+                let requested_through = {
+                    let mut command = decode_pipeline.command.lock().unwrap();
+                    loop {
+                        if command.shutdown {
+                            return;
+                        }
+                        let next_index = {
+                            let state = decode_state.lock().unwrap();
+                            state.pending_raw.as_ref().map_or(state.next_decode_index, |raw| raw.index)
+                        };
+                        if command.requested_through.is_some_and(|target| target >= next_index) {
+                            break command.requested_through.unwrap();
+                        }
+                        command = decode_pipeline.wake.wait(command).unwrap();
+                    }
+                };
+
+                let (pending, decoder_failed) = {
+                    let mut state = decode_state.lock().unwrap();
+                    if let Some(raw) = state.pending_raw.take() {
+                        (Some(raw), false)
+                    } else if state.next_decode_index <= requested_through {
+                        let frame_index = state.next_decode_index;
+                        let Some(mut decoder) = state.decoder.take() else {
+                            continue;
+                        };
+                        drop(state);
+
+                        let decode_started = std::time::Instant::now();
+                        let mut next = decoder.next_frame();
+                        if next.is_none() && decoder.restart() {
+                            next = decoder.next_frame();
+                        }
+                        let decode_elapsed = decode_started.elapsed();
+
+                        let mut state = decode_state.lock().unwrap();
+                        state.decoder = Some(decoder);
+                        match next {
+                            Some(frame) => {
+                                state.next_decode_index = frame_index + 1;
+                                let source_size = frame.image.dimensions();
+                                (
+                                    Some(RawAnimFrame {
+                                        index: frame_index,
+                                        frame,
+                                        source_size,
+                                        decode_elapsed,
+                                    }),
+                                    false,
+                                )
+                            }
+                            None => (None, true),
+                        }
+                    } else {
+                        (None, false)
+                    }
+                };
+
+                if decoder_failed {
+                    return;
+                }
+                if let Some(raw) = pending {
+                    if decode_pipeline.command.lock().unwrap().shutdown {
+                        return;
+                    }
+                    if raw_tx.send(raw).is_err() {
+                        return;
+                    }
+                }
+            }
+        });
+
+        let resize_state = Arc::clone(&self.state);
+        let resize_pipeline = Arc::clone(&self.pipeline);
         let format = self.format;
         std::thread::spawn(move || {
-            let decode_started = std::time::Instant::now();
-            let mut next = decoder.next_frame();
-            if next.is_none() && decoder.restart() {
-                next = decoder.next_frame();
-            }
-            let decode_elapsed = decode_started.elapsed();
-
-            let resized = next.map(|next| {
-                let source_size = next.image.dimensions();
-                let resize_started = std::time::Instant::now();
-                let next = Self::guard_frame_size(next, frame_hard_limit_bytes, filter, frame_index);
-                let resized = Self::apply_resize(next, resize_to, filter);
-                let resize_elapsed = resize_started.elapsed();
-                if decode_elapsed >= std::time::Duration::from_millis(8)
-                    || resize_elapsed >= std::time::Duration::from_millis(8)
-                {
-                    log_perf!(
-                        "[diag/anim-frame] format={:?} frame={} source={}x{} output={}x{} decode={:.1}ms resize={:.1}ms delay={:.1}ms worker=background",
-                        format,
-                        frame_index,
-                        source_size.0,
-                        source_size.1,
-                        resized.image.width(),
-                        resized.image.height(),
-                        decode_elapsed.as_secs_f64() * 1000.0,
-                        resize_elapsed.as_secs_f64() * 1000.0,
-                        resized.delay.as_secs_f64() * 1000.0,
-                    );
+            while let Ok(raw) = raw_rx.recv() {
+                if resize_pipeline.command.lock().unwrap().shutdown {
+                    continue;
                 }
-                resized
-            });
-
-            let mut state = state.lock().unwrap();
-            state.decoder = Some(decoder);
-            if let Some(resized) = resized {
-                if state.next_index == frame_index {
-                    state.next_index += 1;
-                    state.ring.push(frame_index, resized);
+                let (resize_to, filter, frame_hard_limit_bytes) = {
+                    let state = resize_state.lock().unwrap();
+                    (state.resize_to, state.filter, state.frame_hard_limit_bytes)
+                };
+                let (index, resized) = Self::resize_raw_frame(
+                    raw,
+                    resize_to,
+                    filter,
+                    frame_hard_limit_bytes,
+                    format,
+                );
+                if resize_pipeline.command.lock().unwrap().shutdown {
+                    continue;
                 }
+                resize_state.lock().unwrap().ring.push(index, resized);
             }
-            running.store(false, Ordering::Release);
         });
+    }
+
+    /// `index` が未生成なら、アニメ専用の常駐パイプラインへ生成要求を送る。
+    /// 要求は単調な到達点に畳み込み、生RGBAはrendezvous channelで無制限滞留を防ぐ。
+    /// 終端ではデコーダを巻き戻し、単調増加する表示indexへ次ループの先頭を割り当てる。
+    pub fn request_frame(&self, index: usize) -> bool {
+        if let Ok(state) = self.state.try_lock() {
+            if state.ring.get(index).is_some() {
+                return true;
+            }
+        }
+        self.ensure_pipeline_started();
+        let mut command = self.pipeline.command.lock().unwrap();
+        command.requested_through = Some(command.requested_through.map_or(index, |old| old.max(index)));
+        self.pipeline.wake.notify_one();
         false
     }
 
@@ -711,7 +832,8 @@ impl RingAnimation {
         let Some(decoder) = state.decoder.as_mut() else { return false };
         if decoder.restart() {
             state.ring.clear();
-            state.next_index = 0;
+            state.next_decode_index = 0;
+            state.pending_raw = None;
             true
         } else {
             false
@@ -729,6 +851,14 @@ impl RingAnimation {
     /// insert/evict の両方でこの同一値を使うことで帳簿の足し引きが対称になる。
     pub fn reserved_bytes(&self) -> usize {
         self.reserved_bytes
+    }
+}
+
+impl Drop for RingAnimation {
+    fn drop(&mut self) {
+        let mut command = self.pipeline.command.lock().unwrap();
+        command.shutdown = true;
+        self.pipeline.wake.notify_all();
     }
 }
 
@@ -1234,9 +1364,7 @@ pub fn spawn_entry_thumb_worker(filter: image::imageops::FilterType, num_threads
                 };
 
                 let target = Some((req.edge, req.edge));
-                // RingAnimation::from_source は構築時に frame0/frame1 を両方 push するため、
-                // 容量1だと frame0 が即エビクトされ with_frame(0) が常に None になる
-                // （アニメエントリのサムネが100%失敗→毎フレーム再デコードし続ける原因だった）。
+                // サムネ用途でもframe0の保持を保証し、ビューアー用リング設定と独立させる。
                 let ring_bounds = (2, 2);
                 // アーカイブ内サムネイルはビューアーのExif ON/OFF設定(D)と独立、常時EXIF自動回転を適用する。
                 let content = if req.is_raw_file {
@@ -1807,6 +1935,63 @@ mod ring_integration_tests {
         assert!(!ring.request_frame(2), "new frame should be produced asynchronously");
         wait_for_async_frame(&ring, 2);
         assert!(ring.request_frame(2), "completed frame should report ready");
+    }
+
+    #[test]
+    fn ring_anim_defers_frame1_resize_and_pipeline_start_until_requested() {
+        let bytes = encode_gif_frames_mixed(&[(10, 10), (10, 10), (10, 10)]);
+        let content = decode_ring_anim(
+            &bytes,
+            AnimFormat::Gif,
+            image::imageops::FilterType::Triangle,
+            TEST_RING_BUDGET_BYTES,
+            TEST_RING_BOUNDS,
+            TEST_FRAME_HARD_LIMIT_BYTES,
+            Some((10, 10)),
+            true,
+        )
+        .expect("GIF should decode");
+        let PageContent::Animated(ring) = content else { panic!("expected animation") };
+
+        assert!(ring.try_with_frame(0, |_| ()).is_some());
+        assert!(ring.try_with_frame(1, |_| ()).is_none());
+        assert!(!ring.pipeline_started.load(Ordering::Acquire));
+
+        assert!(!ring.request_frame(1));
+        wait_for_async_frame(&ring, 1);
+        assert!(ring.pipeline_started.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn ring_anim_pipeline_coalesces_a_requested_range() {
+        let bytes = encode_gif_frames_mixed(&[
+            (10, 10),
+            (10, 10),
+            (10, 10),
+            (10, 10),
+            (10, 10),
+        ]);
+        let content = decode_ring_anim(
+            &bytes,
+            AnimFormat::Gif,
+            image::imageops::FilterType::Triangle,
+            TEST_RING_BUDGET_BYTES,
+            TEST_RING_BOUNDS,
+            TEST_FRAME_HARD_LIMIT_BYTES,
+            Some((10, 10)),
+            true,
+        )
+        .expect("GIF should decode");
+        let PageContent::Animated(ring) = content else { panic!("expected animation") };
+
+        assert!(!ring.request_frame(4));
+        wait_for_async_frame(&ring, 4);
+        for index in 0..=4 {
+            assert!(
+                ring.try_with_frame(index, |_| ()).is_some(),
+                "requested range should contain frame {index}",
+            );
+        }
     }
 
     #[test]
