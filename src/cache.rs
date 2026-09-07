@@ -2229,6 +2229,97 @@ mod ring_integration_tests {
         assert_eq!(cache.total_bytes(), 0);
     }
 
+    /// リサイズ/原寸切替/フルスクリーンの再デコード経路: `drop_animation_for_redecode` が
+    /// 稼働中アニメの席と予約計上を完全に解放し、直後の再デコード結果を別 `instance_id` の
+    /// 新しい `RingAnimation` として先頭から座らせ直せることを確認する
+    /// （静止画化バグの修正。`insert_animation` の `contains_animation` ガードに弾かれない）。
+    #[test]
+    fn redecode_drop_reseats_animation_from_scratch_with_new_instance() {
+        // ソースを十分大きく取り、target ごとに実際の縮小サイズ＝予約額が変わるようにする。
+        let bytes = encode_gif_frames_mixed(&[(100, 100), (100, 100), (100, 100)]);
+        let decode = |target| {
+            decode_ring_anim(
+                &bytes,
+                AnimFormat::Gif,
+                image::imageops::FilterType::Triangle,
+                TEST_RING_BUDGET_BYTES,
+                TEST_RING_BOUNDS,
+                TEST_FRAME_HARD_LIMIT_BYTES,
+                target,
+                true,
+            )
+            .expect("GIFとしてデコードできるはず")
+        };
+        let instance_of = |content: &PageContent| match content {
+            PageContent::Animated(ring) => ring.instance_id(),
+            PageContent::Static(_) => panic!("animation expected"),
+        };
+
+        let path = PathBuf::from("animation.zip");
+        let mut cache = PageCache::new(10 * MB, 0);
+
+        // アニメ未保持のページに対しては no-op（total_bytes を減算し過ぎない）。
+        cache.drop_animation_for_redecode(&path, 0);
+        assert_eq!(cache.total_bytes(), 0);
+
+        cache.insert(path.clone(), 0, 10, decode(Some((50, 50))), &path, 0);
+        let first_id = instance_of(cache.get_best(&path, 0, 10, None).unwrap().1);
+        let reserved_before = cache.total_bytes();
+        assert!(reserved_before > 0);
+        assert!(cache.contains_animation(&path, 0));
+
+        // リサイズ再デコード発火相当: 稼働中アニメを破棄。
+        cache.drop_animation_for_redecode(&path, 0);
+        assert!(!cache.contains_animation(&path, 0));
+        assert!(cache.get_best(&path, 0, 10, Some(11)).is_none());
+        assert_eq!(cache.total_bytes(), 0, "予約計上ぶんは完全に戻す");
+
+        // 新しい target_size での再デコード結果を投入 → contains_animation ガードに弾かれず着席。
+        cache.insert(path.clone(), 0, 11, decode(Some((25, 25))), &path, 0);
+        let second_id = instance_of(cache.get_best(&path, 0, 11, None).unwrap().1);
+
+        assert_ne!(first_id, second_id, "別 RingAnimation として作り直される（先頭フレームから再生）");
+        assert!(cache.total_bytes() > 0);
+        assert!(cache.total_bytes() < reserved_before, "25x25 の新予約は 50x50 より小さい");
+
+        cache.remove_all_for_path(&path);
+        assert_eq!(cache.total_bytes(), 0, "再デコード後もevict側の減算と対称");
+    }
+
+    /// bypass 扱い（単体で予算超過）のアニメも、`drop_animation_for_redecode` で
+    /// bypassスロットと既知bypass記憶ごと掃除され、再デコードをやり直せる。
+    #[test]
+    fn redecode_drop_clears_animation_bypass_slot_and_known_flag() {
+        let bytes = encode_gif_frames_mixed(&[(100, 100), (100, 100), (100, 100)]);
+        let content = decode_ring_anim(
+            &bytes,
+            AnimFormat::Gif,
+            image::imageops::FilterType::Triangle,
+            TEST_RING_BUDGET_BYTES,
+            TEST_RING_BOUNDS,
+            TEST_FRAME_HARD_LIMIT_BYTES,
+            None,
+            true,
+        )
+        .expect("GIFとしてデコードできるはず");
+
+        let path = PathBuf::from("huge-anim.zip");
+        // アニメの予約額（32枚 x 100x100x4 ≒ 1.28MB）が収まらない予算 → animation_bypass 行き。
+        let mut cache = PageCache::new(1_000_000, 0);
+        cache.insert(path.clone(), 0, 10, content, &path, 0);
+
+        assert!(cache.contains_animation(&path, 0), "bypassスロット経由でも保持中扱い");
+        assert!(cache.is_known_bypass(&path, 0, 10), "既知bypassとして記録される");
+        assert_eq!(cache.total_bytes(), 0, "bypassは帳簿外");
+
+        cache.drop_animation_for_redecode(&path, 0);
+
+        assert!(!cache.contains_animation(&path, 0));
+        assert!(!cache.is_known_bypass(&path, 0, 10), "既知bypass記憶も消す（再デコードを抑止しない）");
+        assert_eq!(cache.total_bytes(), 0);
+        assert!(cache.get_best(&path, 0, 10, Some(11)).is_none());
+    }
+
     /// 表示解像度の世代変更では通常エントリだけでなく、予算超過bypassと
     /// 再要求抑止記録もまとめて初期化されるべき。
     #[test]
