@@ -223,6 +223,21 @@ pub fn write_spread(db: &Arc<Mutex<Database>>, dir: &Path, filename: &str, mode:
     let _ = tx.commit();
 }
 
+/// 保存済みの見開き状態を返す。レコード不在・未知値は None。
+pub fn read_spread(
+    db: &Arc<Mutex<Database>>,
+    dir: &Path,
+    filename: &str,
+) -> Option<(PageMode, i32)> {
+    let key = make_key(dir, filename);
+    let db = db.lock().ok()?;
+    let tx = db.begin_read().ok()?;
+    let table = tx.open_table(SPREAD_TABLE).ok()?;
+    let value = table.get(key.as_str()).ok()??;
+    let (mode_raw, offset) = value.value();
+    Some((page_mode_from_u8(mode_raw)?, offset))
+}
+
 /// 見開き状態を削除する（保存解除）。
 pub fn remove_spread(db: &Arc<Mutex<Database>>, dir: &Path, filename: &str) {
     let key = make_key(dir, filename);
@@ -328,6 +343,28 @@ mod tests {
         ));
         assert!(reader_sort_key_from_u8(3).is_none());
         assert!(reader_sort_key_from_u8(u8::MAX).is_none());
+    }
+
+    #[test]
+    fn spread_records_are_read_by_actual_parent_directory() {
+        let db = temp_db();
+        let dir = unique_temp_path("spread_dir");
+        let other_dir = unique_temp_path("other_spread_dir");
+
+        write_spread(&db, &dir, "book.zip", PageMode::SpreadLeft, 1);
+        write_spread(&db, &other_dir, "book.zip", PageMode::SpreadRight, -1);
+
+        let first = read_spread(&db, &dir, "book.zip").unwrap();
+        assert!(matches!(first.0, PageMode::SpreadLeft));
+        assert_eq!(first.1, 1);
+
+        let other = read_spread(&db, &other_dir, "book.zip").unwrap();
+        assert!(matches!(other.0, PageMode::SpreadRight));
+        assert_eq!(other.1, -1);
+
+        remove_spread(&db, &dir, "book.zip");
+        assert!(read_spread(&db, &dir, "book.zip").is_none());
+        assert!(read_spread(&db, &other_dir, "book.zip").is_some());
     }
 
     #[test]

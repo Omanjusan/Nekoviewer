@@ -726,31 +726,41 @@ impl NekoviewApp {
             Some(f) => f.to_string(),
             None => return,
         };
-        let disable = |viewer: &mut ViewerState, spread_states: &mut HashMap<String, (PageMode, i32)>, db: &Arc<Mutex<redb::Database>>, dir: &std::path::Path, filename: &str| {
+        let archive_dir = viewer.archive_path().parent()
+            .unwrap_or(&self.current_dir)
+            .to_path_buf();
+        let is_current_dir = archive_dir == self.current_dir;
+        let disable = |viewer: &mut ViewerState, spread_states: &mut HashMap<String, (PageMode, i32)>, db: &Arc<Mutex<redb::Database>>, dir: &std::path::Path, filename: &str, update_cache: bool| {
             crate::spread_state::remove_spread(db, dir, filename);
             viewer.set_saved_spread(None);
-            spread_states.remove(filename);
+            if update_cache {
+                spread_states.remove(filename);
+            }
         };
 
         use crate::controller::SpreadSaveAction;
         match action {
             SpreadSaveAction::Enable => {
                 let (mode, offset) = viewer.current_spread_snapshot();
-                crate::spread_state::write_spread(&db, &self.current_dir, &filename, mode, offset);
+                crate::spread_state::write_spread(&db, &archive_dir, &filename, mode, offset);
                 viewer.set_saved_spread(Some((mode, offset)));
-                self.spread_states.insert(filename, (mode, offset));
+                if is_current_dir {
+                    self.spread_states.insert(filename, (mode, offset));
+                }
             }
             SpreadSaveAction::Disable => {
-                disable(viewer, &mut self.spread_states, &db, &self.current_dir, &filename);
+                disable(viewer, &mut self.spread_states, &db, &archive_dir, &filename, is_current_dir);
             }
             SpreadSaveAction::Overwrite => {
                 let (mode, offset) = viewer.current_spread_snapshot();
                 if mode == PageMode::Single {
-                    disable(viewer, &mut self.spread_states, &db, &self.current_dir, &filename);
+                    disable(viewer, &mut self.spread_states, &db, &archive_dir, &filename, is_current_dir);
                 } else {
-                    crate::spread_state::write_spread(&db, &self.current_dir, &filename, mode, offset);
+                    crate::spread_state::write_spread(&db, &archive_dir, &filename, mode, offset);
                     viewer.set_saved_spread(Some((mode, offset)));
-                    self.spread_states.insert(filename, (mode, offset));
+                    if is_current_dir {
+                        self.spread_states.insert(filename, (mode, offset));
+                    }
                 }
             }
         }
@@ -900,7 +910,14 @@ impl NekoviewApp {
         } else {
             state.set_saved_thumbnail_entry(saved_thumbnail_entry);
         }
-        if let Some(&(mode, offset)) = self.spread_states.get(filename) {
+        let saved_spread = if archive_dir == self.current_dir {
+            self.spread_states.get(filename).copied()
+        } else {
+            self.spread_db.as_ref().and_then(|db| {
+                crate::spread_state::read_spread(db, archive_dir, filename)
+            })
+        };
+        if let Some((mode, offset)) = saved_spread {
             let mut cfg = self.viewer_cfg.lock().unwrap();
             state.restore_saved_spread(mode, offset, &mut cfg);
             state.set_saved_spread(Some((mode, offset)));
