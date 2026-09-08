@@ -4,7 +4,10 @@ use std::sync::mpsc;
 use crate::fs::dir;
 use crate::neko_dir;
 
-use super::{push_search_result, NekoviewApp, SearchFormState, SearchResultEntry, TreeScanPending};
+use super::{
+    push_search_result, NekoviewApp, ScanState, SearchFormState, SearchResultEntry,
+    TreeScanPending,
+};
 use crate::i18n;
 
 /// フォーム入力をパース済みにした検索条件。バックグラウンドスレッドへそのまま渡す
@@ -192,6 +195,9 @@ impl NekoviewApp {
         self.invalid_archives.clear();
         self.thumb_failed.clear();
         self.viewing_search = Some(idx);
+        // 別タブ終了時に開始された実ディレクトリのスキャンが Loading のまま残ると、
+        // 同期構築済みの検索結果よりローディング表示が優先され続ける。
+        self.scan_state = ScanState::Done;
         self.search_selected = Some(idx);
         self.sort_archives();
         self.recompute_filter();

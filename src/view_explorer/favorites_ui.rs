@@ -40,6 +40,9 @@ impl NekoviewApp {
         self.invalid_archives.clear();
         self.thumb_failed.clear();
         self.viewing_favorites = Some(selection);
+        // 別タブ終了時に開始された実ディレクトリのスキャンが Loading のまま残ると、
+        // 同期構築済みのお気に入り一覧よりローディング表示が優先され続ける。
+        self.scan_state = ScanState::Done;
         self.sort_archives();
         self.recompute_filter();
         self.selected_archive_index = if self.archives.is_empty() { None } else { Some(0) };
