@@ -59,7 +59,16 @@ impl NekoviewApp {
             self.thumb_pending.clear();
             self.thumb_generation_blocked.clear();
             self.thumb_failed.clear();
-            self.cd_summary = None;
+            // PWD横の「保存数/総数」は消さず、削除前の値を表示したままRDBを再集計する。
+            // 結果は既存のpoll_workers経路で現在PWDとの一致を確認して差し替えられる。
+            if result.success {
+                self.cd_summary_rx = Some(super::scan::spawn_summary_worker(
+                    path,
+                    self.archive_filenames(),
+                    self.cache_db.clone(),
+                    self.egui_ctx.clone(),
+                ));
+            }
         }
     }
 
