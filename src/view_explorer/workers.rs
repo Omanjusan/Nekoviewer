@@ -352,6 +352,16 @@ impl NekoviewApp {
         let thumb_results: Vec<ThumbResult> =
             std::iter::from_fn(|| self.thumb_res_rx.try_recv().ok()).collect();
         for result in thumb_results {
+            let current_source_key = result.path.parent().and_then(|dir| {
+                let filename = result.path.file_name()?.to_str()?;
+                self.spread_db.as_ref().and_then(|db| {
+                    crate::spread_state::read_thumbnail_selection(db, dir, filename)
+                }).map(|selection| crate::cache::thumbnail_selection_cache_key(&selection))
+            });
+            // 設定変更前に投入済みだったワーカー結果は、GPU表示にもpending状態にも反映しない。
+            if result.source_key != current_source_key {
+                continue;
+            }
             self.thumb_pending.remove(&result.path);
             match result.rgba {
                 Some(rgba) => {

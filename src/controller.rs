@@ -39,7 +39,9 @@ pub enum SortSaveAction {
 /// 登録サムネイルページの保存メニューでのユーザー操作。
 #[derive(Clone, PartialEq)]
 pub enum ThumbnailSaveAction {
-    Enable { entry_name: String },
+    Enable {
+        selection: crate::spread_state::ThumbnailSelection,
+    },
     Disable,
 }
 

@@ -216,6 +216,38 @@ impl Lang {
         }
     }
 
+    pub fn thumbnail_register_left_half_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "表示画像の左側をサムネイル登録",
+            Lang::English  => "Use the left half of the displayed image",
+            Lang::Chinese  => "将显示图像的左半部分设为缩略图",
+        }
+    }
+
+    pub fn thumbnail_register_right_half_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "表示画像の右側をサムネイル登録",
+            Lang::English  => "Use the right half of the displayed image",
+            Lang::Chinese  => "将显示图像的右半部分设为缩略图",
+        }
+    }
+
+    pub fn thumbnail_left_generated_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "左側生成画像",
+            Lang::English  => "generated from left side",
+            Lang::Chinese  => "左侧生成图像",
+        }
+    }
+
+    pub fn thumbnail_right_generated_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "右側生成画像",
+            Lang::English  => "generated from right side",
+            Lang::Chinese  => "右侧生成图像",
+        }
+    }
+
     pub fn thumbnail_current_label(self) -> &'static str {
         match self {
             Lang::Japanese => "現在のサムネイル",

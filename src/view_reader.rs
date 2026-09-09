@@ -415,8 +415,8 @@ pub struct ViewerState {
     pending_sort_action: Option<crate::controller::SortSaveAction>,
     /// 最後に右クリック座標から解決した実ページ(entry_name, display_name)。
     thumbnail_context_entry: Option<(String, String)>,
-    /// DBから復元した登録サムネイルのentry_name。Noneはデフォルト。
-    saved_thumbnail_entry: Option<String>,
+    /// DBから復元した登録サムネイル。Noneはデフォルト。
+    saved_thumbnail_selection: Option<crate::spread_state::ThumbnailSelection>,
     pending_thumbnail_action: Option<crate::controller::ThumbnailSaveAction>,
     /// 右クリックメニュー「お気に入り詳細設定」が押されたか（1フレームで消費）
     pending_open_favorite_dialog: bool,
@@ -603,7 +603,7 @@ impl ViewerState {
             pending_spread_action: None,
             pending_sort_action: None,
             thumbnail_context_entry: None,
-            saved_thumbnail_entry: None,
+            saved_thumbnail_selection: None,
             pending_thumbnail_action: None,
             pending_open_favorite_dialog: false,
             pending_open_file_detail: false,
@@ -669,7 +669,7 @@ impl ViewerState {
             pending_spread_action: None,
             pending_sort_action: None,
             thumbnail_context_entry: None,
-            saved_thumbnail_entry: None,
+            saved_thumbnail_selection: None,
             pending_thumbnail_action: None,
             pending_open_favorite_dialog: false,
             pending_open_file_detail: false,
@@ -840,8 +840,11 @@ impl ViewerState {
         self.pending_sort_action.take()
     }
 
-    pub fn set_saved_thumbnail_entry(&mut self, entry_name: Option<String>) {
-        self.saved_thumbnail_entry = entry_name;
+    pub fn set_saved_thumbnail_selection(
+        &mut self,
+        selection: Option<crate::spread_state::ThumbnailSelection>,
+    ) {
+        self.saved_thumbnail_selection = selection;
     }
 
     pub fn take_thumbnail_action(&mut self) -> Option<crate::controller::ThumbnailSaveAction> {
@@ -2316,7 +2319,7 @@ impl ViewerState {
         current_sort: (ViewerSortKey, bool),
         sort_action: &mut Option<crate::controller::SortSaveAction>,
         thumbnail_target: Option<&(String, String)>,
-        saved_thumbnail_entry: Option<&str>,
+        saved_thumbnail_selection: Option<&crate::spread_state::ThumbnailSelection>,
         saved_thumbnail_display: Option<&str>,
         thumbnail_action: &mut Option<crate::controller::ThumbnailSaveAction>,
         open_favorite_dialog: &mut bool,
@@ -2358,31 +2361,77 @@ impl ViewerState {
             String::new()
         };
         ui.label(format!("{} : {}{}", t.sort_save_new_label(), sort_text, changed_suffix));
-        // チェックは「このアーカイブに登録サムネイルがある」状態を表す。
-        // 右クリックしたページとの一致判定にすると、再オープン時の表示ページが異なるだけで
-        // 未チェックに見えてしまうため、保存値の有無だけから復元する。
-        let mut thumbnail_register = saved_thumbnail_entry.is_some();
-        ui.add_enabled_ui(thumbnail_target.is_some(), |ui| {
-            if ui.checkbox(&mut thumbnail_register, t.thumbnail_register_page_label()).changed() {
-                *thumbnail_action = if thumbnail_register {
-                    thumbnail_target.map(|(entry_name, _)| crate::controller::ThumbnailSaveAction::Enable {
-                        entry_name: entry_name.clone(),
-                    })
-                } else {
-                    Some(crate::controller::ThumbnailSaveAction::Disable)
-                };
-                ui.close();
-            }
+        // 3項目は排他的なプリセット。チェック状態は右クリックしたページではなく、
+        // アーカイブに保存済みの生成方法を表す。
+        let saved_kind = saved_thumbnail_selection.map(|selection| selection.source_kind);
+        let mut add_thumbnail_choice = |
+            ui: &mut egui::Ui,
+            kind: crate::spread_state::ThumbnailSourceKind,
+            label: &str,
+        | {
+            let mut checked = saved_kind == Some(kind);
+            ui.add_enabled_ui(thumbnail_target.is_some(), |ui| {
+                if ui.checkbox(&mut checked, label).changed() {
+                    *thumbnail_action = if checked {
+                        thumbnail_target.map(|(entry_name, _)| {
+                            crate::controller::ThumbnailSaveAction::Enable {
+                                selection: crate::spread_state::ThumbnailSelection {
+                                    entry_name: entry_name.clone(),
+                                    source_kind: kind,
+                                },
+                            }
+                        })
+                    } else {
+                        Some(crate::controller::ThumbnailSaveAction::Disable)
+                    };
+                    ui.close();
+                }
+            });
+        };
+        add_thumbnail_choice(
+            ui,
+            crate::spread_state::ThumbnailSourceKind::Full,
+            t.thumbnail_register_page_label(),
+        );
+        ui.indent("thumbnail_half_presets", |ui| {
+            add_thumbnail_choice(
+                ui,
+                crate::spread_state::ThumbnailSourceKind::LeftHalf,
+                t.thumbnail_register_left_half_label(),
+            );
+            add_thumbnail_choice(
+                ui,
+                crate::spread_state::ThumbnailSourceKind::RightHalf,
+                t.thumbnail_register_right_half_label(),
+            );
         });
         let saved_display = saved_thumbnail_display
             .map(Self::thumbnail_status_name)
             .unwrap_or_else(|| t.thumbnail_default_label().to_string());
+        let saved_display = match saved_kind {
+            Some(crate::spread_state::ThumbnailSourceKind::LeftHalf) => {
+                format!("{}［{}］", saved_display, t.thumbnail_left_generated_label())
+            }
+            Some(crate::spread_state::ThumbnailSourceKind::RightHalf) => {
+                format!("{}［{}］", saved_display, t.thumbnail_right_generated_label())
+            }
+            _ => saved_display,
+        };
         let status_response = ui.label(format!(
             "{}: {}",
             t.thumbnail_current_label(),
             saved_display,
         ));
         if let Some(full_name) = saved_thumbnail_display {
+            let full_name = match saved_kind {
+                Some(crate::spread_state::ThumbnailSourceKind::LeftHalf) => {
+                    format!("{}［{}］", full_name, t.thumbnail_left_generated_label())
+                }
+                Some(crate::spread_state::ThumbnailSourceKind::RightHalf) => {
+                    format!("{}［{}］", full_name, t.thumbnail_right_generated_label())
+                }
+                _ => full_name.to_string(),
+            };
             status_response.on_hover_text(full_name);
         }
         ui.separator();
@@ -2457,14 +2506,14 @@ impl ViewerState {
                         self.set_thumbnail_context(Some(self.spread_lo()));
                     }
                     let thumbnail_target = self.thumbnail_context_entry.as_ref();
-                    let saved_thumbnail_entry = self.saved_thumbnail_entry.as_deref();
+                    let saved_thumbnail_selection = self.saved_thumbnail_selection.as_ref();
                     let saved_thumbnail_display = self.saved_thumbnail_display_name();
                     let action = &mut self.pending_spread_action;
                     let sort_action = &mut self.pending_sort_action;
                     let thumbnail_action = &mut self.pending_thumbnail_action;
                     let open_favorite_dialog = &mut self.pending_open_favorite_dialog;
                     let open_file_detail = &mut self.pending_open_file_detail;
-                    resp.context_menu(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort, sort_action, thumbnail_target, saved_thumbnail_entry, saved_thumbnail_display.as_deref(), thumbnail_action, open_favorite_dialog, open_file_detail));
+                    resp.context_menu(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort, sort_action, thumbnail_target, saved_thumbnail_selection, saved_thumbnail_display.as_deref(), thumbnail_action, open_favorite_dialog, open_file_detail));
                 });
             } else {
                 let available = ui.available_size();
@@ -2477,14 +2526,14 @@ impl ViewerState {
                     self.set_thumbnail_context(Some(self.spread_lo()));
                 }
                 let thumbnail_target = self.thumbnail_context_entry.as_ref();
-                let saved_thumbnail_entry = self.saved_thumbnail_entry.as_deref();
+                let saved_thumbnail_selection = self.saved_thumbnail_selection.as_ref();
                 let saved_thumbnail_display = self.saved_thumbnail_display_name();
                 let action = &mut self.pending_spread_action;
                 let sort_action = &mut self.pending_sort_action;
                 let thumbnail_action = &mut self.pending_thumbnail_action;
                 let open_favorite_dialog = &mut self.pending_open_favorite_dialog;
                 let open_file_detail = &mut self.pending_open_file_detail;
-                resp.context_menu(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort, sort_action, thumbnail_target, saved_thumbnail_entry, saved_thumbnail_display.as_deref(), thumbnail_action, open_favorite_dialog, open_file_detail));
+                resp.context_menu(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort, sort_action, thumbnail_target, saved_thumbnail_selection, saved_thumbnail_display.as_deref(), thumbnail_action, open_favorite_dialog, open_file_detail));
             }
         } else {
             let rect = egui::Rect::from_min_size(ui.cursor().left_top(), ui.available_size());
@@ -2526,14 +2575,14 @@ impl ViewerState {
             }
         }
         let thumbnail_target = self.thumbnail_context_entry.as_ref();
-        let saved_thumbnail_entry = self.saved_thumbnail_entry.as_deref();
+        let saved_thumbnail_selection = self.saved_thumbnail_selection.as_ref();
         let saved_thumbnail_display = self.saved_thumbnail_display_name();
         let action = &mut self.pending_spread_action;
         let sort_action = &mut self.pending_sort_action;
         let thumbnail_action = &mut self.pending_thumbnail_action;
         let open_favorite_dialog = &mut self.pending_open_favorite_dialog;
         let open_file_detail = &mut self.pending_open_file_detail;
-        resp.context_menu(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort, sort_action, thumbnail_target, saved_thumbnail_entry, saved_thumbnail_display.as_deref(), thumbnail_action, open_favorite_dialog, open_file_detail));
+        resp.context_menu(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort, sort_action, thumbnail_target, saved_thumbnail_selection, saved_thumbnail_display.as_deref(), thumbnail_action, open_favorite_dialog, open_file_detail));
 
         if angle_deg == 0 {
             let (rect_l, rect_r) = Self::spread_rects(available, origin, tex_left, tex_right, monitor);
@@ -2601,9 +2650,9 @@ impl ViewerState {
     }
 
     fn saved_thumbnail_display_name(&self) -> Option<String> {
-        let saved = self.saved_thumbnail_entry.as_deref()?;
+        let saved = &self.saved_thumbnail_selection.as_ref()?.entry_name;
         self.entries.iter()
-            .find(|entry| entry.entry_name == saved)
+            .find(|entry| &entry.entry_name == saved)
             .map(|entry| entry.display_name.clone())
     }
 

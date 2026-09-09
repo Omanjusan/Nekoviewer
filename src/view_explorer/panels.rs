@@ -880,7 +880,7 @@ impl NekoviewApp {
                                         archive_path: path.clone(),
                                         db: self.cache_db.clone(),
                                         is_raw_file: self.raw_image_files.contains(path),
-                                        thumbnail_entry_name: path.parent().and_then(|dir| {
+                                        thumbnail_selection: path.parent().and_then(|dir| {
                                             let filename = path.file_name()?.to_str()?;
                                             self.spread_db.as_ref().and_then(|db| {
                                                 crate::spread_state::read_thumbnail_selection(db, dir, filename)

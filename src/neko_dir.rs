@@ -11,6 +11,9 @@ use crate::config::AppConfig;
 pub const THUMBS_TABLE: TableDefinition<&str, (i64, &[u8])> = TableDefinition::new("thumbs");
 /// サムネイルJPEGの生成元entry_name。空文字は従来のデフォルト（先頭画像）。
 pub const THUMB_SOURCES_TABLE: TableDefinition<&str, &str> = TableDefinition::new("thumb_sources_v1");
+/// 実行中の旧ワーカーが設定変更後のJPEGを上書きしないための期待生成元。
+pub const THUMB_DESIRED_SOURCES_TABLE: TableDefinition<&str, &str> =
+    TableDefinition::new("thumb_desired_sources_v1");
 
 /// 非画像ZIPマーカーテーブル: キー=ファイル名, バリュー=source_mtime_secs: i64
 pub const INVALID_TABLE: TableDefinition<&str, i64> = TableDefinition::new("invalid");
@@ -81,6 +84,7 @@ pub fn open_cache_db(neko_dir: &Path, source_dir: &Path) -> Option<Arc<Mutex<Dat
         tx.open_table(INVALID_TABLE).ok()?;
         tx.open_table(THUMBS_TABLE).ok()?;
         tx.open_table(THUMB_SOURCES_TABLE).ok()?;
+        tx.open_table(THUMB_DESIRED_SOURCES_TABLE).ok()?;
         tx.open_table(FILES_TABLE).ok()?;
         {
             let mut source_dir_table = tx.open_table(SOURCE_DIR_TABLE).ok()?;
@@ -221,6 +225,69 @@ mod tests {
     }
 
     #[test]
+    fn remove_thumb_deletes_jpeg_and_source_only() {
+        let neko_dir = unique_test_neko_dir("remove_thumb");
+        let source_dir = PathBuf::from("/tmp/fake_source_dir_for_remove_thumb");
+        let db = open_cache_db(&neko_dir, &source_dir).expect("db should open");
+        write_thumb(&db, "book.zip", 100, b"jpeg-bytes");
+        write_thumb_source(&db, "book.zip", Some("left\0pages/cover.jpg"));
+        write_file_record(&db, "book.zip", 100, 1234);
+
+        remove_thumb(&db, "book.zip");
+
+        assert!(read_thumb_unchecked(&db, "book.zip").is_none());
+        assert!(read_thumb_source(&db, "book.zip").is_none());
+        {
+            let db = db.lock().unwrap();
+            let tx = db.begin_read().unwrap();
+            let table = tx.open_table(FILES_TABLE).unwrap();
+            assert_eq!(table.get("book.zip").unwrap().unwrap().value(), (100, 1234));
+        }
+        let _ = std::fs::remove_dir_all(&neko_dir);
+    }
+
+    #[test]
+    fn reset_thumb_rejects_late_result_from_old_source() {
+        let neko_dir = unique_test_neko_dir("thumb_source_race");
+        let source_dir = PathBuf::from("/tmp/fake_source_dir_for_thumb_source_race");
+        let db = open_cache_db(&neko_dir, &source_dir).expect("db should open");
+        write_thumb(&db, "book.zip", 100, b"old-jpeg");
+        write_thumb_source(&db, "book.zip", Some("left\0pages/cover.jpg"));
+
+        reset_thumb_for_source(&db, "book.zip", "right\0pages/cover.jpg");
+
+        assert!(read_thumb_unchecked(&db, "book.zip").is_none());
+        assert_eq!(
+            read_thumb_desired_source(&db, "book.zip").as_deref(),
+            Some("right\0pages/cover.jpg")
+        );
+        assert!(!write_generated_thumb_if_current(
+            &db,
+            "book.zip",
+            100,
+            b"late-left-jpeg",
+            "left\0pages/cover.jpg",
+        ));
+        assert!(read_thumb_unchecked(&db, "book.zip").is_none());
+        assert!(write_generated_thumb_if_current(
+            &db,
+            "book.zip",
+            100,
+            b"right-jpeg",
+            "right-v2\0pages/cover.jpg",
+        ));
+        assert_eq!(
+            read_thumb_source(&db, "book.zip").as_deref(),
+            Some("right-v2\0pages/cover.jpg")
+        );
+        assert_eq!(
+            read_thumb_desired_source(&db, "book.zip").as_deref(),
+            Some("right-v2\0pages/cover.jpg")
+        );
+        let _ = std::fs::remove_dir_all(&neko_dir);
+    }
+
+    #[test]
     fn search_files_applies_and_conditions() {
         let neko_dir = unique_test_neko_dir("search_and");
         let source_dir = PathBuf::from("/tmp/fake_source_dir_for_search_test");
@@ -296,6 +363,7 @@ pub fn read_thumb_unchecked(db: &Arc<Mutex<Database>>, filename: &str) -> Option
 
 /// サムネをDBに書き込む。source_mtime==0（stat失敗）のエントリは保存しない。
 /// 0を保存するとネットワーク回復後に実mtimeと不一致になり、恒久的に再生成が走る。
+#[cfg(test)]
 pub fn write_thumb(db: &Arc<Mutex<Database>>, filename: &str, source_mtime: i64, jpeg: &[u8]) {
     if source_mtime == 0 {
         return;
@@ -315,6 +383,7 @@ pub fn read_thumb_source(db: &Arc<Mutex<Database>>, filename: &str) -> Option<St
     Some(table.get(filename).ok()??.value().to_string())
 }
 
+#[cfg(test)]
 pub fn write_thumb_source(db: &Arc<Mutex<Database>>, filename: &str, entry_name: Option<&str>) {
     let Ok(db) = db.lock() else { return };
     let Ok(tx) = db.begin_write() else { return };
@@ -322,6 +391,88 @@ pub fn write_thumb_source(db: &Arc<Mutex<Database>>, filename: &str, entry_name:
         let _ = table.insert(filename, entry_name.unwrap_or(""));
     }
     let _ = tx.commit();
+}
+
+/// 対象アーカイブのJPEGと生成元情報だけを同一トランザクションで破棄する。
+#[cfg(test)]
+pub fn remove_thumb(db: &Arc<Mutex<Database>>, filename: &str) {
+    let Ok(db) = db.lock() else { return };
+    let Ok(tx) = db.begin_write() else { return };
+    if let Ok(mut table) = tx.open_table(THUMBS_TABLE) {
+        let _ = table.remove(filename);
+    }
+    if let Ok(mut table) = tx.open_table(THUMB_SOURCES_TABLE) {
+        let _ = table.remove(filename);
+    }
+    let _ = tx.commit();
+}
+
+/// 旧JPEGを破棄し、次に許可する生成元を同一トランザクションで切り替える。
+pub fn reset_thumb_for_source(db: &Arc<Mutex<Database>>, filename: &str, source: &str) {
+    let Ok(db) = db.lock() else { return };
+    let Ok(tx) = db.begin_write() else { return };
+    if let Ok(mut table) = tx.open_table(THUMBS_TABLE) {
+        let _ = table.remove(filename);
+    }
+    if let Ok(mut table) = tx.open_table(THUMB_SOURCES_TABLE) {
+        let _ = table.remove(filename);
+    }
+    if let Ok(mut table) = tx.open_table(THUMB_DESIRED_SOURCES_TABLE) {
+        let _ = table.insert(filename, source);
+    }
+    let _ = tx.commit();
+}
+
+#[cfg(test)]
+fn read_thumb_desired_source(db: &Arc<Mutex<Database>>, filename: &str) -> Option<String> {
+    let db = db.lock().ok()?;
+    let tx = db.begin_read().ok()?;
+    let table = tx.open_table(THUMB_DESIRED_SOURCES_TABLE).ok()?;
+    Some(table.get(filename).ok()??.value().to_string())
+}
+
+/// 現在期待されている生成元と一致する場合だけJPEGと生成元を一括保存する。
+pub fn write_generated_thumb_if_current(
+    db: &Arc<Mutex<Database>>,
+    filename: &str,
+    source_mtime: i64,
+    jpeg: &[u8],
+    source: &str,
+) -> bool {
+    if source_mtime == 0 {
+        return false;
+    }
+    let Ok(db) = db.lock() else { return false };
+    let Ok(tx) = db.begin_write() else { return false };
+    if let Ok(table) = tx.open_table(THUMB_DESIRED_SOURCES_TABLE) {
+        if table.get(filename).ok().flatten().is_some_and(|desired| {
+            !thumbnail_desired_source_matches(desired.value(), source)
+        }) {
+            return false;
+        }
+    }
+    {
+        let Ok(mut thumbs) = tx.open_table(THUMBS_TABLE) else { return false };
+        let _ = thumbs.insert(filename, (source_mtime, jpeg));
+    }
+    {
+        let Ok(mut sources) = tx.open_table(THUMB_SOURCES_TABLE) else { return false };
+        let _ = sources.insert(filename, source);
+    }
+    {
+        let Ok(mut desired) = tx.open_table(THUMB_DESIRED_SOURCES_TABLE) else { return false };
+        let _ = desired.insert(filename, source);
+    }
+    tx.commit().is_ok()
+}
+
+fn thumbnail_desired_source_matches(desired: &str, actual: &str) -> bool {
+    if desired == actual {
+        return true;
+    }
+    // 画質修正前の左右マーカーは同じ選択内容なので、新JPEGへの一度だけの更新を許可する。
+    actual.strip_prefix("left-v2\0").is_some_and(|entry| desired == format!("left\0{entry}"))
+        || actual.strip_prefix("right-v2\0").is_some_and(|entry| desired == format!("right\0{entry}"))
 }
 
 /// ファイル索引（検索用）をDBに書き込む。write_thumb と対で呼ぶ想定

@@ -1485,13 +1485,14 @@ pub struct ThumbRequest {
     pub db: Option<std::sync::Arc<std::sync::Mutex<redb::Database>>>,
     /// true のとき archive_path は ZIP ではなく生画像ファイル
     pub is_raw_file: bool,
-    /// Noneは従来どおり先頭画像、Someは登録済みentry_nameから生成する。
-    pub thumbnail_entry_name: Option<String>,
+    /// Noneは従来どおり先頭画像、Someは登録済みページと生成方法から生成する。
+    pub thumbnail_selection: Option<crate::spread_state::ThumbnailSelection>,
 }
 
 pub struct ThumbResult {
     pub path: PathBuf,
     pub rgba: Option<image::RgbaImage>,
+    pub source_key: Option<String>,
 }
 
 /// プローブレーンのスレッド数。ローカルDB読み＋JPEGデコードのみで軽いため少数で足りる。
@@ -1527,7 +1528,8 @@ fn spawn_thumb_gen_pool(
                 };
                 // 失敗（None）でも必ず返送し、呼び元が thumb_pending を解放できるようにする
                 let rgba = generate_thumb(&req, filter);
-                let _ = res_tx.send(ThumbResult { path: req.archive_path, rgba });
+                let source_key = req.thumbnail_selection.as_ref().map(thumbnail_selection_cache_key);
+                let _ = res_tx.send(ThumbResult { path: req.archive_path, rgba, source_key });
                 // ROOT を起こして poll_workers に結果を回収させる
                 ctx.request_repaint();
             }
@@ -1565,7 +1567,8 @@ pub fn spawn_thumb_worker(filter: image::imageops::FilterType, num_threads: usiz
                 match probe_cached_thumb(&req) {
                     Some((rgba, stored_mtime)) => {
                         // キャッシュヒット: statを待たずに先に表示へ回す
-                        let _ = res_tx.send(ThumbResult { path: req.archive_path.clone(), rgba: Some(rgba) });
+                        let source_key = req.thumbnail_selection.as_ref().map(thumbnail_selection_cache_key);
+                        let _ = res_tx.send(ThumbResult { path: req.archive_path.clone(), rgba: Some(rgba), source_key });
                         ctx.request_repaint();
                         // 後追い検証: statが成功してmtimeが変わっていた場合のみ再生成へ。
                         // stat失敗（ネットワーク不調）はキャッシュ表示のまま維持する。
@@ -1723,8 +1726,8 @@ fn probe_cached_thumb(req: &ThumbRequest) -> Option<(image::RgbaImage, i64)> {
     let filename = req.archive_path.file_name().and_then(|n| n.to_str())?;
     let (stored_mtime, jpeg) = crate::neko_dir::read_thumb_unchecked(db, filename)?;
     let stored_source = crate::neko_dir::read_thumb_source(db, filename);
-    let source_matches = match req.thumbnail_entry_name.as_deref() {
-        Some(expected) => stored_source.as_deref() == Some(expected),
+    let source_matches = match req.thumbnail_selection.as_ref() {
+        Some(expected) => stored_source.as_deref() == Some(thumbnail_selection_cache_key(expected).as_str()),
         None => stored_source.as_deref().map_or(true, str::is_empty),
     };
     if !source_matches {
@@ -1761,26 +1764,28 @@ fn generate_thumb(req: &ThumbRequest, filter: image::imageops::FilterType) -> Op
                 crate::fs::archive::load_first_image(&req.archive_path)
             }
         };
-        let registered = req.thumbnail_entry_name.as_deref().and_then(|entry_name| {
+        let registered = req.thumbnail_selection.as_ref().and_then(|selection| {
             let mut archive = open_archive_from_disk(&req.archive_path)?;
-            match archive.load_page(
-                entry_name,
+            let target_size = thumbnail_source_decode_target(selection.source_kind);
+            let image = match archive.load_page(
+                &selection.entry_name,
                 filter,
                 ENTRY_THUMB_RING_BUDGET_BYTES,
                 (2, 2),
                 ENTRY_THUMB_FRAME_HARD_LIMIT_BYTES,
-                Some((256, 256)),
+                Some(target_size),
                 true,
             )? {
                 PageContent::Static(rgba) => Some(image::DynamicImage::ImageRgba8(rgba)),
                 PageContent::Animated(ring) => ring.with_frame(0, |f| {
                     image::DynamicImage::ImageRgba8(f.image.clone())
                 }),
-            }
+            }?;
+            Some(crop_thumbnail_source(image, selection.source_kind))
         });
         // 登録先がアーカイブ更新等で消えていても、グリッド自体を壊さず先頭画像へ戻す。
         if registered.is_some() {
-            generated_source = req.thumbnail_entry_name.clone();
+            generated_source = req.thumbnail_selection.as_ref().map(thumbnail_selection_cache_key);
         }
         let img = registered.or_else(load_default)?;
         let t_load = t_total.elapsed();
@@ -1798,14 +1803,58 @@ fn generate_thumb(req: &ThumbRequest, filter: image::imageops::FilterType) -> Op
     // DBに保存（サムネ本体＋検索用ファイル索引）
     if let Some(ref db) = req.db {
         if let Some(jpeg) = encode_jpeg(&rgba) {
-            crate::neko_dir::write_thumb(db, &filename, source_mtime, &jpeg);
-            crate::neko_dir::write_thumb_source(db, &filename, generated_source.as_deref());
-            let size = crate::neko_dir::file_size(&req.archive_path);
-            crate::neko_dir::write_file_record(db, &filename, source_mtime, size);
+            if crate::neko_dir::write_generated_thumb_if_current(
+                db,
+                &filename,
+                source_mtime,
+                &jpeg,
+                generated_source.as_deref().unwrap_or(""),
+            ) {
+                let size = crate::neko_dir::file_size(&req.archive_path);
+                crate::neko_dir::write_file_record(db, &filename, source_mtime, size);
+            }
         }
     }
 
     Some(rgba)
+}
+
+pub(crate) fn thumbnail_selection_cache_key(selection: &crate::spread_state::ThumbnailSelection) -> String {
+    use crate::spread_state::ThumbnailSourceKind;
+    match selection.source_kind {
+        // v1キャッシュとの互換性を保ち、全体登録は従来どおりentry_nameだけを使う。
+        ThumbnailSourceKind::Full => selection.entry_name.clone(),
+        // v2は分割前デコードを512px幅へ引き上げた画質修正版。
+        ThumbnailSourceKind::LeftHalf => format!("left-v2\0{}", selection.entry_name),
+        ThumbnailSourceKind::RightHalf => format!("right-v2\0{}", selection.entry_name),
+    }
+}
+
+fn thumbnail_source_decode_target(
+    kind: crate::spread_state::ThumbnailSourceKind,
+) -> (u32, u32) {
+    use crate::spread_state::ThumbnailSourceKind;
+    match kind {
+        ThumbnailSourceKind::Full => (256, 256),
+        // 横方向に二分した後も、最終サムネイルの長辺256pxを拡大なしで確保する。
+        ThumbnailSourceKind::LeftHalf | ThumbnailSourceKind::RightHalf => (512, 256),
+    }
+}
+
+fn crop_thumbnail_source(
+    img: image::DynamicImage,
+    kind: crate::spread_state::ThumbnailSourceKind,
+) -> image::DynamicImage {
+    use crate::spread_state::ThumbnailSourceKind;
+    let width = img.width();
+    match kind {
+        ThumbnailSourceKind::Full => img,
+        ThumbnailSourceKind::LeftHalf => img.crop_imm(0, 0, (width / 2).max(1), img.height()),
+        ThumbnailSourceKind::RightHalf => {
+            let x = width / 2;
+            img.crop_imm(x, 0, (width - x).max(1), img.height())
+        }
+    }
 }
 
 fn encode_jpeg(rgba: &image::RgbaImage) -> Option<Vec<u8>> {
@@ -1839,6 +1888,54 @@ mod ring_integration_tests {
     const TEST_FRAME_HARD_LIMIT_BYTES: usize = 100 * MB;
 
     #[test]
+    fn thumbnail_source_crop_uses_exact_left_and_right_halves() {
+        let mut rgba = image::RgbaImage::new(5, 2);
+        for y in 0..2 {
+            for x in 0..5 {
+                rgba.put_pixel(x, y, image::Rgba([x as u8, 0, 0, 255]));
+            }
+        }
+        let img = image::DynamicImage::ImageRgba8(rgba);
+        let left = crop_thumbnail_source(
+            img.clone(),
+            crate::spread_state::ThumbnailSourceKind::LeftHalf,
+        ).to_rgba8();
+        let right = crop_thumbnail_source(
+            img,
+            crate::spread_state::ThumbnailSourceKind::RightHalf,
+        ).to_rgba8();
+
+        assert_eq!(left.dimensions(), (2, 2));
+        assert_eq!(right.dimensions(), (3, 2));
+        assert_eq!(left.get_pixel(0, 0)[0], 0);
+        assert_eq!(left.get_pixel(1, 0)[0], 1);
+        assert_eq!(right.get_pixel(0, 0)[0], 2);
+        assert_eq!(right.get_pixel(2, 0)[0], 4);
+    }
+
+    #[test]
+    fn thumbnail_source_keys_distinguish_full_left_and_right() {
+        use crate::spread_state::{ThumbnailSelection, ThumbnailSourceKind};
+        let selection = |source_kind| ThumbnailSelection {
+            entry_name: "pages/cover.jpg".to_string(),
+            source_kind,
+        };
+        assert_eq!(thumbnail_selection_cache_key(&selection(ThumbnailSourceKind::Full)), "pages/cover.jpg");
+        assert_ne!(
+            thumbnail_selection_cache_key(&selection(ThumbnailSourceKind::LeftHalf)),
+            thumbnail_selection_cache_key(&selection(ThumbnailSourceKind::RightHalf)),
+        );
+    }
+
+    #[test]
+    fn half_thumbnail_decodes_wide_enough_before_cropping() {
+        use crate::spread_state::ThumbnailSourceKind;
+        assert_eq!(thumbnail_source_decode_target(ThumbnailSourceKind::Full), (256, 256));
+        assert_eq!(thumbnail_source_decode_target(ThumbnailSourceKind::LeftHalf), (512, 256));
+        assert_eq!(thumbnail_source_decode_target(ThumbnailSourceKind::RightHalf), (512, 256));
+    }
+
+    #[test]
     fn registered_archive_entry_generates_a_grid_thumbnail() {
         let archive_path = PathBuf::from("test/testarchive.zip");
         let entries = crate::fs::archive::list_images(&archive_path);
@@ -1847,7 +1944,10 @@ mod ring_integration_tests {
             archive_path,
             db: None,
             is_raw_file: false,
-            thumbnail_entry_name: Some(selected),
+            thumbnail_selection: Some(crate::spread_state::ThumbnailSelection {
+                entry_name: selected,
+                source_kind: crate::spread_state::ThumbnailSourceKind::Full,
+            }),
         };
         let rgba = generate_thumb(&req, image::imageops::FilterType::Triangle)
             .expect("registered entry should generate a thumbnail");

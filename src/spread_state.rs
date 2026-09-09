@@ -26,6 +26,42 @@ pub const ARCHIVE_SORT_TABLE_V1: TableDefinition<&str, (u8, bool)> =
 pub const THUMBNAIL_SELECTION_TABLE_V1: TableDefinition<&str, &str> =
     TableDefinition::new("thumbnail_selection_v1");
 
+/// アーカイブ単位の登録サムネイル。v1のentry_nameに生成方法を追加した第2世代。
+pub const THUMBNAIL_SELECTION_TABLE_V2: TableDefinition<&str, (&str, u8)> =
+    TableDefinition::new("thumbnail_selection_v2");
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ThumbnailSourceKind {
+    Full,
+    LeftHalf,
+    RightHalf,
+}
+
+impl ThumbnailSourceKind {
+    fn as_u8(self) -> u8 {
+        match self {
+            Self::Full => 0,
+            Self::LeftHalf => 1,
+            Self::RightHalf => 2,
+        }
+    }
+
+    fn from_u8(value: u8) -> Option<Self> {
+        match value {
+            0 => Some(Self::Full),
+            1 => Some(Self::LeftHalf),
+            2 => Some(Self::RightHalf),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ThumbnailSelection {
+    pub entry_name: String,
+    pub source_kind: ThumbnailSourceKind,
+}
+
 /// サムネイル上の保存設定表示に必要な、アーカイブ単位の状態。
 #[derive(Clone, Copy, PartialEq, Default)]
 pub struct SavedArchiveSettings {
@@ -45,6 +81,7 @@ pub fn open_spread_db(root: &Path) -> Option<Arc<Mutex<Database>>> {
         tx.open_table(SPREAD_TABLE).ok()?;
         tx.open_table(ARCHIVE_SORT_TABLE_V1).ok()?;
         tx.open_table(THUMBNAIL_SELECTION_TABLE_V1).ok()?;
+        tx.open_table(THUMBNAIL_SELECTION_TABLE_V2).ok()?;
         tx.commit().ok()?;
     }
     Some(Arc::new(Mutex::new(db)))
@@ -54,13 +91,19 @@ pub fn write_thumbnail_selection(
     db: &Arc<Mutex<Database>>,
     dir: &Path,
     filename: &str,
-    entry_name: &str,
+    selection: &ThumbnailSelection,
 ) {
     let key = make_key(dir, filename);
     let Ok(db) = db.lock() else { return };
     let Ok(tx) = db.begin_write() else { return };
+    if let Ok(mut table) = tx.open_table(THUMBNAIL_SELECTION_TABLE_V2) {
+        let _ = table.insert(
+            key.as_str(),
+            (selection.entry_name.as_str(), selection.source_kind.as_u8()),
+        );
+    }
     if let Ok(mut table) = tx.open_table(THUMBNAIL_SELECTION_TABLE_V1) {
-        let _ = table.insert(key.as_str(), entry_name);
+        let _ = table.remove(key.as_str());
     }
     let _ = tx.commit();
 }
@@ -69,12 +112,24 @@ pub fn read_thumbnail_selection(
     db: &Arc<Mutex<Database>>,
     dir: &Path,
     filename: &str,
-) -> Option<String> {
+) -> Option<ThumbnailSelection> {
     let key = make_key(dir, filename);
     let db = db.lock().ok()?;
     let tx = db.begin_read().ok()?;
+    if let Ok(table) = tx.open_table(THUMBNAIL_SELECTION_TABLE_V2) {
+        if let Some(guard) = table.get(key.as_str()).ok().flatten() {
+            let (entry_name, source_kind) = guard.value();
+            return Some(ThumbnailSelection {
+                entry_name: entry_name.to_string(),
+                source_kind: ThumbnailSourceKind::from_u8(source_kind)?,
+            });
+        }
+    }
     let table = tx.open_table(THUMBNAIL_SELECTION_TABLE_V1).ok()?;
-    Some(table.get(key.as_str()).ok()??.value().to_string())
+    Some(ThumbnailSelection {
+        entry_name: table.get(key.as_str()).ok()??.value().to_string(),
+        source_kind: ThumbnailSourceKind::Full,
+    })
 }
 
 pub fn remove_thumbnail_selection(db: &Arc<Mutex<Database>>, dir: &Path, filename: &str) {
@@ -82,6 +137,9 @@ pub fn remove_thumbnail_selection(db: &Arc<Mutex<Database>>, dir: &Path, filenam
     let Ok(db) = db.lock() else { return };
     let Ok(tx) = db.begin_write() else { return };
     if let Ok(mut table) = tx.open_table(THUMBNAIL_SELECTION_TABLE_V1) {
+        let _ = table.remove(key.as_str());
+    }
+    if let Ok(mut table) = tx.open_table(THUMBNAIL_SELECTION_TABLE_V2) {
         let _ = table.remove(key.as_str());
     }
     let _ = tx.commit();
@@ -106,7 +164,8 @@ pub fn saved_settings_for_paths(
     };
     let spread_table = tx.open_table(SPREAD_TABLE).ok();
     let sort_table = tx.open_table(ARCHIVE_SORT_TABLE_V1).ok();
-    let thumbnail_table = tx.open_table(THUMBNAIL_SELECTION_TABLE_V1).ok();
+    let thumbnail_table_v1 = tx.open_table(THUMBNAIL_SELECTION_TABLE_V1).ok();
+    let thumbnail_table_v2 = tx.open_table(THUMBNAIL_SELECTION_TABLE_V2).ok();
     let mut out = HashMap::new();
 
     for path in paths {
@@ -124,7 +183,9 @@ pub fn saved_settings_for_paths(
                 .and_then(|value| reader_sort_key_from_u8(value.value().0))
                 .is_some()
         });
-        let has_custom_thumbnail = thumbnail_table.as_ref().is_some_and(|table| {
+        let has_custom_thumbnail = thumbnail_table_v2.as_ref().is_some_and(|table| {
+            table.get(key.as_str()).ok().flatten().is_some()
+        }) || thumbnail_table_v1.as_ref().is_some_and(|table| {
             table.get(key.as_str()).ok().flatten().is_some()
         });
         let settings = SavedArchiveSettings {
@@ -435,7 +496,10 @@ mod tests {
 
         write_spread(&db, &dir_a, "same.zip", PageMode::SpreadLeft, 1);
         write_archive_sort(&db, &dir_a, "same.zip", ReaderSortKey::Natural, false);
-        write_thumbnail_selection(&db, &dir_a, "same.zip", "003.jpg");
+        write_thumbnail_selection(&db, &dir_a, "same.zip", &ThumbnailSelection {
+            entry_name: "003.jpg".to_string(),
+            source_kind: ThumbnailSourceKind::Full,
+        });
         write_spread(&db, &dir_b, "same.zip", PageMode::SpreadRight, -1);
 
         let settings =
@@ -478,20 +542,56 @@ mod tests {
         let dir = dummy_dir();
         assert!(read_thumbnail_selection(&db, &dir, "book.zip").is_none());
 
-        write_thumbnail_selection(&db, &dir, "book.zip", "pages/001.jpg");
+        write_thumbnail_selection(&db, &dir, "book.zip", &ThumbnailSelection {
+            entry_name: "pages/001.jpg".to_string(),
+            source_kind: ThumbnailSourceKind::LeftHalf,
+        });
         assert_eq!(
-            read_thumbnail_selection(&db, &dir, "book.zip").as_deref(),
-            Some("pages/001.jpg")
+            read_thumbnail_selection(&db, &dir, "book.zip"),
+            Some(ThumbnailSelection {
+                entry_name: "pages/001.jpg".to_string(),
+                source_kind: ThumbnailSourceKind::LeftHalf,
+            })
         );
 
-        write_thumbnail_selection(&db, &dir, "book.zip", "pages/cover.png");
+        write_thumbnail_selection(&db, &dir, "book.zip", &ThumbnailSelection {
+            entry_name: "pages/cover.png".to_string(),
+            source_kind: ThumbnailSourceKind::RightHalf,
+        });
         assert_eq!(
-            read_thumbnail_selection(&db, &dir, "book.zip").as_deref(),
-            Some("pages/cover.png")
+            read_thumbnail_selection(&db, &dir, "book.zip"),
+            Some(ThumbnailSelection {
+                entry_name: "pages/cover.png".to_string(),
+                source_kind: ThumbnailSourceKind::RightHalf,
+            })
         );
 
         remove_thumbnail_selection(&db, &dir, "book.zip");
         assert!(read_thumbnail_selection(&db, &dir, "book.zip").is_none());
+    }
+
+    #[test]
+    fn thumbnail_selection_v1_is_read_as_full() {
+        let db = temp_db();
+        let dir = dummy_dir();
+        let key = make_key(&dir, "legacy.zip");
+        {
+            let db = db.lock().unwrap();
+            let tx = db.begin_write().unwrap();
+            {
+                let mut table = tx.open_table(THUMBNAIL_SELECTION_TABLE_V1).unwrap();
+                table.insert(key.as_str(), "pages/legacy.jpg").unwrap();
+            }
+            tx.commit().unwrap();
+        }
+
+        assert_eq!(
+            read_thumbnail_selection(&db, &dir, "legacy.zip"),
+            Some(ThumbnailSelection {
+                entry_name: "pages/legacy.jpg".to_string(),
+                source_kind: ThumbnailSourceKind::Full,
+            })
+        );
     }
 
     #[test]
