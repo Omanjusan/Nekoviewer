@@ -9,7 +9,8 @@ use crate::types::{PageMode, ReaderSortKey};
 /// キー = "{正規化済みディレクトリ}\0{ファイル名}"
 /// 値 = (page_mode: u8, spread_offset: i32)
 /// 復帰は常にファイル先頭固定。spread_offset は「先頭から見開きを組んだときの
-/// ズレ状態」(-1/0/+1) で、絶対ページ位置は保存しない。
+/// ズレ状態」で、0=先頭仮想なし、-1=先頭仮想あり。絶対ページ位置は保存しない。
+/// 旧データの +1 も読込時には -1 と同じ「先頭仮想あり」として扱う。
 pub const SPREAD_TABLE: TableDefinition<&str, (u8, i32)> = TableDefinition::new("spread_state");
 
 /// アーカイブ単位のソート条件保存テーブル（第1世代）。

@@ -760,7 +760,8 @@ impl NekoviewApp {
         use crate::controller::SpreadSaveAction;
         match action {
             SpreadSaveAction::Enable => {
-                let (mode, offset) = viewer.current_spread_snapshot();
+                let (mode, current_offset) = viewer.current_spread_snapshot();
+                let offset = crate::view_reader::normalize_saved_spread_offset(current_offset);
                 crate::spread_state::write_spread(&db, &archive_dir, &filename, mode, offset);
                 viewer.set_saved_spread(Some((mode, offset)));
                 if is_current_dir {
@@ -771,7 +772,8 @@ impl NekoviewApp {
                 disable(viewer, &mut self.spread_states, &db, &archive_dir, &filename, is_current_dir);
             }
             SpreadSaveAction::Overwrite => {
-                let (mode, offset) = viewer.current_spread_snapshot();
+                let (mode, current_offset) = viewer.current_spread_snapshot();
+                let offset = crate::view_reader::normalize_saved_spread_offset(current_offset);
                 if mode == PageMode::Single {
                     disable(viewer, &mut self.spread_states, &db, &archive_dir, &filename, is_current_dir);
                 } else {

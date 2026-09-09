@@ -30,6 +30,12 @@ const THUMBBAR_ENQUEUE_WINDOW: i32 = 40;
 const FULL_UV: egui::Rect =
     egui::Rect { min: egui::pos2(0.0, 0.0), max: egui::pos2(1.0, 1.0) };
 
+/// 実行中のオフセット方向を、ファイル先頭から復帰するための保存値へ正規化する。
+/// ±1 はどちらも同じ1ページずれを表すため、先頭実ページを欠落させない -1 に揃える。
+pub(crate) fn normalize_saved_spread_offset(offset: i32) -> i32 {
+    if offset == 0 { 0 } else { -1 }
+}
+
 fn next_anim_decode_request(
     displayed_frame: usize,
     requested_through: usize,
@@ -715,9 +721,8 @@ impl ViewerState {
         if self.is_raw_file || mode == PageMode::Single { return; }
         self.set_page_mode(mode, cfg);
         self.spread_base = 0;
-        match offset_value {
-            v if v < 0 => self.offset.force_virtual_left(),
-            v if v > 0 => { self.offset.reset(); self.offset.advance(); }
+        match normalize_saved_spread_offset(offset_value) {
+            -1 => self.offset.force_virtual_left(),
             _ => self.offset.reset(),
         }
     }
@@ -742,7 +747,11 @@ impl ViewerState {
     pub fn spread_overwrite_enabled(&self) -> bool {
         match self.saved_spread {
             None => false,
-            Some((mode, offset)) => mode != self.page_mode || offset != self.offset.value(),
+            Some((mode, offset)) => {
+                mode != self.page_mode
+                    || normalize_saved_spread_offset(offset)
+                        != normalize_saved_spread_offset(self.offset.value())
+            }
         }
     }
 
@@ -2955,6 +2964,67 @@ mod sort_save_state_tests {
         ViewerState::new_raw(PathBuf::from("test.png"), [None; 4], None)
     }
 
+    fn archive_viewer() -> ViewerState {
+        let mut viewer = viewer();
+        viewer.is_raw_file = false;
+        viewer.entries.push(ViewerEntry {
+            entry_name: "second".to_string(),
+            display_name: "second".to_string(),
+            date_key: 1,
+            original_index: 1,
+        });
+        viewer
+    }
+
+    #[test]
+    fn saved_spread_offset_normalizes_both_shift_directions_to_virtual_first() {
+        assert_eq!(normalize_saved_spread_offset(0), 0);
+        assert_eq!(normalize_saved_spread_offset(-1), -1);
+        assert_eq!(normalize_saved_spread_offset(1), -1);
+        assert_eq!(normalize_saved_spread_offset(-2), -1);
+        assert_eq!(normalize_saved_spread_offset(2), -1);
+    }
+
+    #[test]
+    fn restoring_shifted_saved_spread_always_keeps_the_first_real_page() {
+        for mode in [PageMode::SpreadLeft, PageMode::SpreadRight] {
+            for offset in [-1, 1] {
+                let mut viewer = archive_viewer();
+                let mut cfg = ViewerConfig::default();
+
+                viewer.restore_saved_spread(mode, offset, &mut cfg);
+
+                assert_eq!(viewer.spread_lo(), -1, "saved offset {offset}");
+                assert_eq!(viewer.offset.value(), -1, "saved offset {offset}");
+                assert!(viewer.page_mode == mode);
+            }
+        }
+    }
+
+    #[test]
+    fn aligned_saved_spread_starts_from_the_first_real_page() {
+        let mut viewer = archive_viewer();
+        let mut cfg = ViewerConfig::default();
+
+        viewer.restore_saved_spread(PageMode::SpreadRight, 0, &mut cfg);
+
+        assert_eq!(viewer.spread_lo(), 0);
+        assert_eq!(viewer.offset.value(), 0);
+    }
+
+    #[test]
+    fn opposite_runtime_shift_directions_are_the_same_saved_setting() {
+        let mut viewer = archive_viewer();
+        viewer.page_mode = PageMode::SpreadLeft;
+        viewer.offset.advance();
+        viewer.set_saved_spread(Some((PageMode::SpreadLeft, -1)));
+
+        assert!(!viewer.spread_overwrite_enabled());
+
+        viewer.page_mode = PageMode::SpreadRight;
+        assert!(viewer.spread_overwrite_enabled());
+    }
+
     #[test]
     fn unsaved_viewer_keeps_existing_name_ascending_default() {
         let viewer = viewer();
@@ -3071,7 +3141,8 @@ mod sort_save_state_tests {
         assert!(matches!(viewer.current_sort_snapshot().0, ViewerSortKey::Date));
         assert!(!viewer.current_sort_snapshot().1);
         assert!(matches!(viewer.page_mode, PageMode::SpreadLeft));
-        assert_eq!(viewer.offset.value(), 1);
+        assert_eq!(viewer.offset.value(), -1);
+        assert_eq!(viewer.spread_lo(), -1);
     }
 
     #[test]
