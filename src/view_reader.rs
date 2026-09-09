@@ -47,6 +47,40 @@ fn next_anim_decode_request(
     requested_through.max(displayed_frame.saturating_add(ahead))
 }
 
+/// 1ページだけずれる見開き遷移を、退場・共通・入場ページへ分解する。
+/// 共通ページを旧/新の両見開きで二重描画しないため、テクスチャではなく論理ページ番号で判定する。
+fn offset_transition_pages(from_lo: i32, to_lo: i32) -> Option<(i32, i32, i32)> {
+    if (to_lo - from_lo).abs() != 1 {
+        return None;
+    }
+    let old = [from_lo, from_lo + 1];
+    let new = [to_lo, to_lo + 1];
+    let old_only = old.into_iter().find(|page| !new.contains(page))?;
+    let shared = old.into_iter().find(|page| new.contains(page))?;
+    let new_only = new.into_iter().find(|page| !old.contains(page))?;
+    Some((old_only, shared, new_only))
+}
+
+fn visual_spread_pages(lo: i32, right_binding: bool) -> [i32; 2] {
+    if right_binding { [lo + 1, lo] } else { [lo, lo + 1] }
+}
+
+fn lerp_rect(from: egui::Rect, to: egui::Rect, t: f32) -> egui::Rect {
+    egui::Rect::from_min_max(
+        from.min + (to.min - from.min) * t,
+        from.max + (to.max - from.max) * t,
+    )
+}
+
+fn place_next_to(rect: egui::Rect, anchor: egui::Rect, on_left: bool) -> egui::Rect {
+    let center_x = if on_left {
+        anchor.left() - rect.width() / 2.0
+    } else {
+        anchor.right() + rect.width() / 2.0
+    };
+    egui::Rect::from_center_size(egui::pos2(center_x, anchor.center().y), rect.size())
+}
+
 fn animation_instance_changed(
     previous: Option<AnimationInstanceId>,
     current: AnimationInstanceId,
@@ -279,6 +313,8 @@ struct RenderFrame {
     animating:   bool,
     t:           f32,
     anim_dir_f:  f32,
+    anim_from_lo: i32,
+    current_lo:  i32,
     page_mode:   PageMode,
     zoom_actual: bool,
     monitor:     Option<egui::Vec2>,
@@ -1046,7 +1082,8 @@ impl ViewerState {
         );
 
         let total = self.entries.len();
-        let (tex_lo, tex_hi) = self.page_textures_for(self.spread_lo());
+        let current_lo = self.spread_lo();
+        let (tex_lo, tex_hi) = self.page_textures_for(current_lo);
         let (prev_tex_lo, prev_tex_hi) = if animating {
             self.page_textures_for(self.anim_from_lo)
         } else {
@@ -1160,6 +1197,8 @@ impl ViewerState {
             animating,
             t,
             anim_dir_f:  self.anim_dir as f32,
+            anim_from_lo: self.anim_from_lo,
+            current_lo,
             page_mode:   self.page_mode,
             zoom_actual: cfg.zoom_actual,
             monitor:     input.monitor_size,
@@ -1472,20 +1511,24 @@ impl ViewerState {
                         Self::paint_single_at(&painter, &frame.tex_lo,      avail, origin, off_new);
                     }
                     PageMode::SpreadLeft => {
-                        let (rl, rr) = Self::spread_rects(avail, origin, &frame.prev_tex_lo, &frame.prev_tex_hi, frame.monitor);
-                        Self::paint_page(&painter, &frame.prev_tex_lo, rl.translate(egui::vec2(off_old, 0.0)));
-                        Self::paint_page(&painter, &frame.prev_tex_hi, rr.translate(egui::vec2(off_old, 0.0)));
-                        let (rl, rr) = Self::spread_rects(avail, origin, &frame.tex_lo, &frame.tex_hi, frame.monitor);
-                        Self::paint_page(&painter, &frame.tex_lo, rl.translate(egui::vec2(off_new, 0.0)));
-                        Self::paint_page(&painter, &frame.tex_hi, rr.translate(egui::vec2(off_new, 0.0)));
+                        if !Self::paint_offset_spread(&painter, frame, avail, origin, false) {
+                            let (rl, rr) = Self::spread_rects(avail, origin, &frame.prev_tex_lo, &frame.prev_tex_hi, frame.monitor);
+                            Self::paint_page(&painter, &frame.prev_tex_lo, rl.translate(egui::vec2(off_old, 0.0)));
+                            Self::paint_page(&painter, &frame.prev_tex_hi, rr.translate(egui::vec2(off_old, 0.0)));
+                            let (rl, rr) = Self::spread_rects(avail, origin, &frame.tex_lo, &frame.tex_hi, frame.monitor);
+                            Self::paint_page(&painter, &frame.tex_lo, rl.translate(egui::vec2(off_new, 0.0)));
+                            Self::paint_page(&painter, &frame.tex_hi, rr.translate(egui::vec2(off_new, 0.0)));
+                        }
                     }
                     PageMode::SpreadRight => {
-                        let (rl, rr) = Self::spread_rects(avail, origin, &frame.prev_tex_hi, &frame.prev_tex_lo, frame.monitor);
-                        Self::paint_page(&painter, &frame.prev_tex_hi, rl.translate(egui::vec2(off_old, 0.0)));
-                        Self::paint_page(&painter, &frame.prev_tex_lo, rr.translate(egui::vec2(off_old, 0.0)));
-                        let (rl, rr) = Self::spread_rects(avail, origin, &frame.tex_hi, &frame.tex_lo, frame.monitor);
-                        Self::paint_page(&painter, &frame.tex_hi, rl.translate(egui::vec2(off_new, 0.0)));
-                        Self::paint_page(&painter, &frame.tex_lo, rr.translate(egui::vec2(off_new, 0.0)));
+                        if !Self::paint_offset_spread(&painter, frame, avail, origin, true) {
+                            let (rl, rr) = Self::spread_rects(avail, origin, &frame.prev_tex_hi, &frame.prev_tex_lo, frame.monitor);
+                            Self::paint_page(&painter, &frame.prev_tex_hi, rl.translate(egui::vec2(off_old, 0.0)));
+                            Self::paint_page(&painter, &frame.prev_tex_lo, rr.translate(egui::vec2(off_old, 0.0)));
+                            let (rl, rr) = Self::spread_rects(avail, origin, &frame.tex_hi, &frame.tex_lo, frame.monitor);
+                            Self::paint_page(&painter, &frame.tex_hi, rl.translate(egui::vec2(off_new, 0.0)));
+                            Self::paint_page(&painter, &frame.tex_lo, rr.translate(egui::vec2(off_new, 0.0)));
+                        }
                     }
                 }
             }
@@ -2575,6 +2618,80 @@ impl ViewerState {
         local.x.abs() <= half.x && local.y.abs() <= half.y
     }
 
+    /// オフセット操作（見開き基点が±1だけ変化）の3ページ連続 tween。
+    /// 旧・新見開きの共通ページを1回だけ描き、その移動量を退場/入場ページにも適用する。
+    fn paint_offset_spread(
+        painter: &egui::Painter,
+        frame: &RenderFrame,
+        available: egui::Vec2,
+        origin: egui::Pos2,
+        right_binding: bool,
+    ) -> bool {
+        let Some((old_only, shared, new_only)) =
+            offset_transition_pages(frame.anim_from_lo, frame.current_lo)
+        else {
+            return false;
+        };
+
+        let old_textures = if right_binding {
+            [&frame.prev_tex_hi, &frame.prev_tex_lo]
+        } else {
+            [&frame.prev_tex_lo, &frame.prev_tex_hi]
+        };
+        let new_textures = if right_binding {
+            [&frame.tex_hi, &frame.tex_lo]
+        } else {
+            [&frame.tex_lo, &frame.tex_hi]
+        };
+        let old_pages = visual_spread_pages(frame.anim_from_lo, right_binding);
+        let new_pages = visual_spread_pages(frame.current_lo, right_binding);
+        let (old_l, old_r) = Self::spread_rects(
+            available, origin, old_textures[0], old_textures[1], frame.monitor,
+        );
+        let (new_l, new_r) = Self::spread_rects(
+            available, origin, new_textures[0], new_textures[1], frame.monitor,
+        );
+        let old_rects = [old_l, old_r];
+        let new_rects = [new_l, new_r];
+
+        let old_slot = |page| old_pages.iter().position(|candidate| *candidate == page);
+        let new_slot = |page| new_pages.iter().position(|candidate| *candidate == page);
+        let (Some(old_only_slot), Some(shared_old_slot), Some(shared_new_slot), Some(new_only_slot)) = (
+            old_slot(old_only), old_slot(shared), new_slot(shared), new_slot(new_only),
+        ) else {
+            return false;
+        };
+
+        let shared_old_rect = old_rects[shared_old_slot];
+        let shared_new_rect = new_rects[shared_new_slot];
+        let shared_rect = lerp_rect(shared_old_rect, shared_new_rect, frame.t);
+        let transition_bounds = lerp_rect(old_l.union(old_r), new_l.union(new_r), frame.t);
+        let painter = painter.with_clip_rect(painter.clip_rect().intersect(transition_bounds));
+        let old_only_rect = place_next_to(
+            old_rects[old_only_slot], shared_rect, old_only_slot < shared_old_slot,
+        );
+        let new_only_rect = place_next_to(
+            new_rects[new_only_slot], shared_rect, new_only_slot < shared_new_slot,
+        );
+
+        Self::paint_page(
+            &painter,
+            old_textures[old_only_slot],
+            old_only_rect,
+        );
+        Self::paint_page(
+            &painter,
+            old_textures[shared_old_slot],
+            shared_rect,
+        );
+        Self::paint_page(
+            &painter,
+            new_textures[new_only_slot],
+            new_only_rect,
+        );
+        true
+    }
+
     /// 見開き2ページのレイアウト計算（左右の Rect を返す）
     fn spread_rects(
         available: egui::Vec2,
@@ -2806,6 +2923,58 @@ impl ViewerState {
             let tl    = origin + (avail - size) / 2.0 + egui::vec2(offset_x, 0.0);
             painter.image(tex.id(), egui::Rect::from_min_size(tl, size), FULL_UV, egui::Color32::WHITE);
         }
+    }
+}
+
+#[cfg(test)]
+mod offset_tween_tests {
+    use super::{lerp_rect, offset_transition_pages, place_next_to, visual_spread_pages};
+
+    #[test]
+    fn virtual_first_shift_has_one_shared_real_page() {
+        assert_eq!(offset_transition_pages(-1, 0), Some((-1, 0, 1)));
+        assert_eq!(offset_transition_pages(0, -1), Some((1, 0, -1)));
+    }
+
+    #[test]
+    fn middle_offset_shifts_have_one_shared_page() {
+        assert_eq!(offset_transition_pages(0, 1), Some((0, 1, 2)));
+        assert_eq!(offset_transition_pages(1, 0), Some((2, 1, 0)));
+    }
+
+    #[test]
+    fn ordinary_spread_navigation_does_not_use_offset_tween() {
+        assert_eq!(offset_transition_pages(0, 2), None);
+        assert_eq!(offset_transition_pages(2, 0), None);
+        assert_eq!(offset_transition_pages(0, 0), None);
+    }
+
+    #[test]
+    fn binding_direction_only_reverses_visual_page_order() {
+        assert_eq!(visual_spread_pages(-1, false), [-1, 0]);
+        assert_eq!(visual_spread_pages(0, false), [0, 1]);
+        assert_eq!(visual_spread_pages(-1, true), [0, -1]);
+        assert_eq!(visual_spread_pages(0, true), [1, 0]);
+    }
+
+    #[test]
+    fn shared_page_rect_matches_old_and_new_layout_at_endpoints() {
+        let old = egui::Rect::from_min_size(egui::pos2(50.0, 20.0), egui::vec2(100.0, 200.0));
+        let new = egui::Rect::from_min_size(egui::pos2(10.0, 30.0), egui::vec2(120.0, 180.0));
+        assert_eq!(lerp_rect(old, new, 0.0), old);
+        assert_eq!(lerp_rect(old, new, 1.0), new);
+    }
+
+    #[test]
+    fn unique_pages_stay_connected_to_the_shared_page() {
+        let shared = egui::Rect::from_min_size(egui::pos2(100.0, 20.0), egui::vec2(80.0, 160.0));
+        let unique = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(60.0, 120.0));
+        let left = place_next_to(unique, shared, true);
+        let right = place_next_to(unique, shared, false);
+        assert_eq!(left.right(), shared.left());
+        assert_eq!(right.left(), shared.right());
+        assert_eq!(left.center().y, shared.center().y);
+        assert_eq!(right.center().y, shared.center().y);
     }
 }
 
