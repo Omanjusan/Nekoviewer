@@ -69,7 +69,7 @@ fn paint_saved_setting_marker(
     ui.painter().rect_filled(
         marker_rect,
         2.0,
-        egui::Color32::from_black_alpha(210),
+        egui::Color32::from_rgba_unmultiplied(64, 64, 64, 191),
     );
     ui.painter().text(
         marker_rect.center(),
