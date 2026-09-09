@@ -19,16 +19,14 @@ impl NekoviewApp {
             FavoriteSelection::Folder(id) => crate::favorites::list_files_in_folder(&db, id),
             FavoriteSelection::None => Vec::new(),
         };
-        self.favorite_view_markers = entries
+        let paths: Vec<PathBuf> = entries
             .iter()
-            .map(|(dir, name)| {
-                let path = dir.join(name);
-                let ids = crate::favorites::get_membership(&db, dir, name).unwrap_or_default();
-                (path, ids)
-            })
+            .map(|(dir, name)| dir.join(name))
             .collect();
+        self.cross_view_favorite_markers =
+            crate::favorites::memberships_for_paths(&db, &paths);
         self.favorite_selected = selection;
-        self.archives = entries.into_iter().map(|(dir, name)| dir.join(name)).collect();
+        self.archives = paths;
         self.raw_image_files = self
             .archives
             .iter()
@@ -521,6 +519,10 @@ impl NekoviewApp {
         if let Some(selection) = self.viewing_favorites {
             self.enter_favorite_view(selection);
         } else {
+            if self.viewing_search.is_some() {
+                self.cross_view_favorite_markers =
+                    crate::favorites::memberships_for_paths(&db, &self.archives);
+            }
             // 通常のディレクトリ表示中はお気に入りスティッキーソートの
             // グループが変わりうるため並び替えを反映する
             self.sort_archives();

@@ -419,9 +419,9 @@ pub struct NekoviewApp {
     archive_sort_states: HashMap<String, (crate::types::ReaderSortKey, bool)>,
     /// 現在ディレクトリ内のお気に入り登録状態 (filename -> 所属folder_id一覧、空Vec=未整理)
     favorite_states: HashMap<String, Vec<u8>>,
-    /// お気に入り一覧表示中のマーカー情報 (フルパス -> 所属folder_id一覧)。
+    /// お気に入り・検索の横断一覧表示中のマーカー情報 (フルパス -> 所属folder_id一覧)。
     /// ディレクトリ横断のため favorite_states とは別にフルパスキーで持つ。
-    favorite_view_markers: HashMap<PathBuf, Vec<u8>>,
+    cross_view_favorite_markers: HashMap<PathBuf, Vec<u8>>,
     /// 到達不能と判定済みのネットワークマウント大元（定期ポーリングはしない）
     network_unreachable_mounts: HashSet<PathBuf>,
     /// バックグラウンドで進行中のマウント到達可否チェック
@@ -737,7 +737,7 @@ impl NekoviewApp {
             spread_states: HashMap::new(),
             archive_sort_states: HashMap::new(),
             favorite_states: HashMap::new(),
-            favorite_view_markers: HashMap::new(),
+            cross_view_favorite_markers: HashMap::new(),
             network_unreachable_mounts: HashSet::new(),
             mount_check_pending: Vec::new(),
             thumbnails: HashMap::new(),

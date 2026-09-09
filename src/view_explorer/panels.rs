@@ -858,10 +858,12 @@ impl NekoviewApp {
                             }
 
                             // お気に入りマーカー: 左上から左下に列挙（表示できる分だけ）
-                            // お気に入り一覧表示中はフルパスキー、通常のディレクトリ表示中はファイル名キーで引く。
+                            // 横断一覧表示中はフルパスキー、通常のディレクトリ表示中はファイル名キーで引く。
                             let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                            let marker_ids = if self.viewing_favorites.is_some() {
-                                self.favorite_view_markers.get(path)
+                            let marker_ids = if self.viewing_favorites.is_some()
+                                || self.viewing_search.is_some()
+                            {
+                                self.cross_view_favorite_markers.get(path)
                             } else {
                                 self.favorite_states.get(filename)
                             };
