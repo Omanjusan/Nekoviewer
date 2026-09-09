@@ -943,6 +943,7 @@ impl NekoviewApp {
                 let verified_url_matches = self.translate_conn_verified_url.as_deref()
                     == Some(self.settings_draft.translate_base_url.trim());
                 self.settings_draft.apply_to(&mut self.config, &mut self.viewer_cfg.lock().unwrap(), &mut self.translate_cfg);
+                self.refresh_thumbnail_generation_state();
                 self.translate_conn_verified = verified_url_matches;
                 self.show_hidden = self.settings_draft.show_hidden;
                 // thumb_size/thumb_filterはstateファイルに乗っていないためconfig.iniへ直接保存する。

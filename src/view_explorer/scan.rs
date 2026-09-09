@@ -261,8 +261,10 @@ impl NekoviewApp {
         self.cache_neko_dir = neko_dir::neko_dir_for(&self.current_dir, &self.config);
         self.cache_db = self.cache_neko_dir.as_deref()
             .and_then(|p| neko_dir::open_cache_db_if_exists(p, &self.current_dir));
+        self.refresh_thumbnail_generation_state();
         self.thumbnails.clear();
         self.thumb_pending.clear();
+        self.thumb_generation_blocked.clear();
         self.pending_loads.lock().unwrap().clear();
         self.selected_archive_index = None;
         self.multi_selected.clear();
@@ -303,6 +305,7 @@ impl NekoviewApp {
                 self.cache_db = self.cache_neko_dir.as_deref()
                     .and_then(|p| neko_dir::open_cache_db(p, &self.current_dir));
             }
+            self.refresh_thumbnail_generation_state();
             self.subdirs = subdirs;
             self.archives = archives.into_iter()
                 .filter(|p| {
@@ -364,6 +367,27 @@ impl NekoviewApp {
                     self.egui_ctx.clone(),
                 ));
             }
+        }
+    }
+
+    /// 現PWDの既存JPEG群とGUI設定サイズを照合し、キャッシュプローブ後の生成可否を更新する。
+    pub(crate) fn refresh_thumbnail_generation_state(&mut self) {
+        let requested_edge_changed =
+            self.thumb_generation_state.requested_edge != self.config.thumb_size;
+        self.thumb_generation_state = self.cache_db.as_ref().map_or(
+            neko_dir::ThumbnailGenerationState {
+                requested_edge: self.config.thumb_size,
+                epoch: 0,
+                allowed: true,
+            },
+            |db| neko_dir::thumbnail_generation_state(db, self.config.thumb_size),
+        );
+        if requested_edge_changed {
+            self.thumb_pending.clear();
+            self.thumb_generation_blocked.clear();
+        }
+        if self.thumb_generation_state.allowed {
+            self.thumb_generation_blocked.clear();
         }
     }
 

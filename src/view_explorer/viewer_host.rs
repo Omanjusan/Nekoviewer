@@ -883,16 +883,31 @@ impl NekoviewApp {
                 .unwrap_or_default();
             crate::neko_dir::reset_thumb_for_source(db, filename, &desired_source);
         }
+        let generation_state = cache_db.as_ref().map_or(
+            crate::neko_dir::ThumbnailGenerationState {
+                requested_edge: self.config.thumb_size,
+                epoch: 0,
+                allowed: true,
+            },
+            |db| crate::neko_dir::thumbnail_generation_state(db, self.config.thumb_size),
+        );
+        if archive_dir == self.current_dir {
+            self.thumb_generation_state = generation_state;
+        }
         // メモリ上の旧画像も対象限定で破棄し、新しい登録値で即時再生成する。
         // キュー満杯時は通常描画経路が再要求する。
         self.thumbnails.remove(&archive_path);
         self.thumb_pending.remove(&archive_path);
+        self.thumb_generation_blocked.remove(&archive_path);
         self.thumb_failed.remove(&archive_path);
         if self.thumb_req_tx.try_send(crate::cache::ThumbRequest {
             archive_path: archive_path.clone(),
             db: cache_db,
             is_raw_file: false,
             thumbnail_selection: selected_selection,
+            requested_edge: self.config.thumb_size,
+            generation_epoch: generation_state.epoch,
+            allow_generation: generation_state.allowed,
         }).is_ok() {
             self.thumb_pending.insert(archive_path);
         }

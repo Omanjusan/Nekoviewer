@@ -1487,12 +1487,21 @@ pub struct ThumbRequest {
     pub is_raw_file: bool,
     /// Noneは従来どおり先頭画像、Someは登録済みページと生成方法から生成する。
     pub thumbnail_selection: Option<crate::spread_state::ThumbnailSelection>,
+    /// GUIのグリッド表示サイズと一致させる生成長辺。
+    pub requested_edge: u32,
+    /// PWDのキャッシュ削除世代。古い要求の遅延書き戻しを拒否するために使う。
+    pub generation_epoch: u64,
+    /// falseでもDBプローブは行うが、キャッシュミスやmtime不一致からの生成は開始しない。
+    pub allow_generation: bool,
 }
 
 pub struct ThumbResult {
     pub path: PathBuf,
     pub rgba: Option<image::RgbaImage>,
     pub source_key: Option<String>,
+    pub requested_edge: u32,
+    pub generation_epoch: u64,
+    pub generation_blocked: bool,
 }
 
 /// プローブレーンのスレッド数。ローカルDB読み＋JPEGデコードのみで軽いため少数で足りる。
@@ -1529,7 +1538,14 @@ fn spawn_thumb_gen_pool(
                 // 失敗（None）でも必ず返送し、呼び元が thumb_pending を解放できるようにする
                 let rgba = generate_thumb(&req, filter);
                 let source_key = req.thumbnail_selection.as_ref().map(thumbnail_selection_cache_key);
-                let _ = res_tx.send(ThumbResult { path: req.archive_path, rgba, source_key });
+                let _ = res_tx.send(ThumbResult {
+                    path: req.archive_path,
+                    rgba,
+                    source_key,
+                    requested_edge: req.requested_edge,
+                    generation_epoch: req.generation_epoch,
+                    generation_blocked: false,
+                });
                 // ROOT を起こして poll_workers に結果を回収させる
                 ctx.request_repaint();
             }
@@ -1568,17 +1584,37 @@ pub fn spawn_thumb_worker(filter: image::imageops::FilterType, num_threads: usiz
                     Some((rgba, stored_mtime)) => {
                         // キャッシュヒット: statを待たずに先に表示へ回す
                         let source_key = req.thumbnail_selection.as_ref().map(thumbnail_selection_cache_key);
-                        let _ = res_tx.send(ThumbResult { path: req.archive_path.clone(), rgba: Some(rgba), source_key });
+                        let _ = res_tx.send(ThumbResult {
+                            path: req.archive_path.clone(),
+                            rgba: Some(rgba),
+                            source_key,
+                            requested_edge: req.requested_edge,
+                            generation_epoch: req.generation_epoch,
+                            generation_blocked: false,
+                        });
                         ctx.request_repaint();
                         // 後追い検証: statが成功してmtimeが変わっていた場合のみ再生成へ。
                         // stat失敗（ネットワーク不調）はキャッシュ表示のまま維持する。
                         let current_mtime = crate::neko_dir::file_mtime(&req.archive_path);
-                        if current_mtime != 0 && current_mtime != stored_mtime {
+                        if req.allow_generation && current_mtime != 0 && current_mtime != stored_mtime {
                             forward_thumb_gen(req, &gen_tx, &net_gen_tx);
                         }
                     }
                     None => {
-                        forward_thumb_gen(req, &gen_tx, &net_gen_tx);
+                        if req.allow_generation {
+                            forward_thumb_gen(req, &gen_tx, &net_gen_tx);
+                        } else {
+                            let source_key = req.thumbnail_selection.as_ref().map(thumbnail_selection_cache_key);
+                            let _ = res_tx.send(ThumbResult {
+                                path: req.archive_path,
+                                rgba: None,
+                                source_key,
+                                requested_edge: req.requested_edge,
+                                generation_epoch: req.generation_epoch,
+                                generation_blocked: true,
+                            });
+                            ctx.request_repaint();
+                        }
                     }
                 }
             }
@@ -1753,7 +1789,7 @@ fn generate_thumb(req: &ThumbRequest, filter: image::imageops::FilterType) -> Op
         let buf = std::fs::read(&req.archive_path).ok()?;
         // サムネイルはビューアーのExif ON/OFF設定(D)と独立、常時EXIF自動回転を適用する。
         let img = crate::fs::archive::decode_image_bytes(&buf, true)?;
-        resize_thumbnail(img, filter)
+        resize_thumbnail(img, req.requested_edge, filter)
     } else {
         let t_total = std::time::Instant::now();
         let is_smb = crate::fs::dir::is_gvfs_path(&req.archive_path);
@@ -1766,7 +1802,7 @@ fn generate_thumb(req: &ThumbRequest, filter: image::imageops::FilterType) -> Op
         };
         let registered = req.thumbnail_selection.as_ref().and_then(|selection| {
             let mut archive = open_archive_from_disk(&req.archive_path)?;
-            let target_size = thumbnail_source_decode_target(selection.source_kind);
+            let target_size = thumbnail_source_decode_target(selection.source_kind, req.requested_edge);
             let image = match archive.load_page(
                 &selection.entry_name,
                 filter,
@@ -1790,7 +1826,7 @@ fn generate_thumb(req: &ThumbRequest, filter: image::imageops::FilterType) -> Op
         let img = registered.or_else(load_default)?;
         let t_load = t_total.elapsed();
         let t2 = std::time::Instant::now();
-        let result = resize_thumbnail(img, filter);
+        let result = resize_thumbnail(img, req.requested_edge, filter);
         log_perf!(
             "[perf/thumb] load={:.1}ms resize={:.1}ms total={:.1}ms",
             t_load.as_secs_f64() * 1000.0,
@@ -1809,6 +1845,8 @@ fn generate_thumb(req: &ThumbRequest, filter: image::imageops::FilterType) -> Op
                 source_mtime,
                 &jpeg,
                 generated_source.as_deref().unwrap_or(""),
+                req.requested_edge,
+                req.generation_epoch,
             ) {
                 let size = crate::neko_dir::file_size(&req.archive_path);
                 crate::neko_dir::write_file_record(db, &filename, source_mtime, size);
@@ -1832,12 +1870,14 @@ pub(crate) fn thumbnail_selection_cache_key(selection: &crate::spread_state::Thu
 
 fn thumbnail_source_decode_target(
     kind: crate::spread_state::ThumbnailSourceKind,
+    requested_edge: u32,
 ) -> (u32, u32) {
     use crate::spread_state::ThumbnailSourceKind;
     match kind {
-        ThumbnailSourceKind::Full => (256, 256),
-        // 横方向に二分した後も、最終サムネイルの長辺256pxを拡大なしで確保する。
-        ThumbnailSourceKind::LeftHalf | ThumbnailSourceKind::RightHalf => (512, 256),
+        ThumbnailSourceKind::Full => (requested_edge, requested_edge),
+        // 横方向に二分した後も、最終サムネイルの要求長辺を拡大なしで確保する。
+        ThumbnailSourceKind::LeftHalf | ThumbnailSourceKind::RightHalf =>
+            (requested_edge.saturating_mul(2), requested_edge),
     }
 }
 
@@ -1864,12 +1904,19 @@ fn encode_jpeg(rgba: &image::RgbaImage) -> Option<Vec<u8>> {
     Some(buf.into_inner())
 }
 
-pub fn resize_thumbnail(img: image::DynamicImage, filter: image::imageops::FilterType) -> image::RgbaImage {
+pub fn resize_thumbnail(img: image::DynamicImage, requested_edge: u32, filter: image::imageops::FilterType) -> image::RgbaImage {
     let (w, h) = (img.width(), img.height());
+    let requested_edge = requested_edge.max(1);
     let (nw, nh) = if w >= h {
-        (256, (256 * h / w).max(1))
+        (
+            requested_edge,
+            ((requested_edge as u64 * h as u64 / w as u64) as u32).max(1),
+        )
     } else {
-        ((256 * w / h).max(1), 256)
+        (
+            ((requested_edge as u64 * w as u64 / h as u64) as u32).max(1),
+            requested_edge,
+        )
     };
     fir_resize(img, nw, nh, filter)
 }
@@ -1930,9 +1977,9 @@ mod ring_integration_tests {
     #[test]
     fn half_thumbnail_decodes_wide_enough_before_cropping() {
         use crate::spread_state::ThumbnailSourceKind;
-        assert_eq!(thumbnail_source_decode_target(ThumbnailSourceKind::Full), (256, 256));
-        assert_eq!(thumbnail_source_decode_target(ThumbnailSourceKind::LeftHalf), (512, 256));
-        assert_eq!(thumbnail_source_decode_target(ThumbnailSourceKind::RightHalf), (512, 256));
+        assert_eq!(thumbnail_source_decode_target(ThumbnailSourceKind::Full, 384), (384, 384));
+        assert_eq!(thumbnail_source_decode_target(ThumbnailSourceKind::LeftHalf, 384), (768, 384));
+        assert_eq!(thumbnail_source_decode_target(ThumbnailSourceKind::RightHalf, 384), (768, 384));
     }
 
     #[test]
@@ -1944,6 +1991,9 @@ mod ring_integration_tests {
             archive_path,
             db: None,
             is_raw_file: false,
+            requested_edge: 384,
+            generation_epoch: 0,
+            allow_generation: true,
             thumbnail_selection: Some(crate::spread_state::ThumbnailSelection {
                 entry_name: selected,
                 source_kind: crate::spread_state::ThumbnailSourceKind::Full,
@@ -1951,7 +2001,8 @@ mod ring_integration_tests {
         };
         let rgba = generate_thumb(&req, image::imageops::FilterType::Triangle)
             .expect("registered entry should generate a thumbnail");
-        assert!(rgba.width() <= 256 && rgba.height() <= 256);
+        assert!(rgba.width() <= 384 && rgba.height() <= 384);
+        assert_eq!(rgba.width().max(rgba.height()), 384);
         assert!(rgba.width() > 0 && rgba.height() > 0);
     }
 

@@ -432,6 +432,10 @@ pub struct NekoviewApp {
     thumb_req_tx: mpsc::SyncSender<ThumbRequest>,
     thumb_res_rx: mpsc::Receiver<ThumbResult>,
     thumb_pending: HashSet<PathBuf>,
+    /// サイズ不一致によりキャッシュミス後の生成を保留した項目。毎フレームの再プローブを防ぐ。
+    thumb_generation_blocked: HashSet<PathBuf>,
+    /// 現PWDのRDBプロファイルに基づく、サムネイル生成の許可状態と競合防止世代。
+    thumb_generation_state: crate::neko_dir::ThumbnailGenerationState,
     /// アーカイブ内サムネイルバー用（フォルダグリッドの thumb_req_tx とは別系統）
     entry_thumb_req_tx: mpsc::Sender<EntryThumbRequest>,
     entry_thumb_res_rx: mpsc::Receiver<EntryThumbResult>,
@@ -698,6 +702,7 @@ impl NekoviewApp {
         // 独立 OS 窓になり、render_status 内の request_repaint_after(1s) で自分自身を 1Hz で
         // 起こし続ける（winit ループがその予定で WaitUntil する）。
 
+        let initial_thumb_size = config.thumb_size;
         let mut app = Self {
             config,
             current_dir: start_dir,
@@ -747,6 +752,12 @@ impl NekoviewApp {
             thumb_req_tx,
             thumb_res_rx,
             thumb_pending: HashSet::new(),
+            thumb_generation_blocked: HashSet::new(),
+            thumb_generation_state: crate::neko_dir::ThumbnailGenerationState {
+                requested_edge: initial_thumb_size,
+                epoch: 0,
+                allowed: true,
+            },
             entry_thumb_req_tx,
             entry_thumb_res_rx,
             viewer: Arc::new(Mutex::new(None)),

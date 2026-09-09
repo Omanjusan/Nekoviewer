@@ -875,11 +875,17 @@ impl NekoviewApp {
                                     4.0,
                                     egui::Color32::from_gray(60),
                                 );
-                                if !self.thumb_pending.contains(path) && !self.thumb_failed.contains(path) {
+                                if !self.thumb_pending.contains(path)
+                                    && !self.thumb_failed.contains(path)
+                                    && !self.thumb_generation_blocked.contains(path)
+                                {
                                     if self.thumb_req_tx.try_send(ThumbRequest {
                                         archive_path: path.clone(),
                                         db: self.cache_db.clone(),
                                         is_raw_file: self.raw_image_files.contains(path),
+                                        requested_edge: self.config.thumb_size,
+                                        generation_epoch: self.thumb_generation_state.epoch,
+                                        allow_generation: self.thumb_generation_state.allowed,
                                         thumbnail_selection: path.parent().and_then(|dir| {
                                             let filename = path.file_name()?.to_str()?;
                                             self.spread_db.as_ref().and_then(|db| {

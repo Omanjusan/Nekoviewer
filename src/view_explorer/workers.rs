@@ -338,6 +338,9 @@ impl NekoviewApp {
     }
 
     pub(super) fn poll_workers(&mut self, ctx: &egui::Context) {
+        if self.thumb_generation_state.requested_edge != self.config.thumb_size {
+            self.refresh_thumbnail_generation_state();
+        }
         self.poll_mount_checks();
 
         // バックグラウンドスキャン結果をポーリング
@@ -352,6 +355,15 @@ impl NekoviewApp {
         let thumb_results: Vec<ThumbResult> =
             std::iter::from_fn(|| self.thumb_res_rx.try_recv().ok()).collect();
         for result in thumb_results {
+            // PWDキャッシュ削除前のワーカー結果は、DBだけでなくGPU表示にも復活させない。
+            let belongs_to_current_pwd = result.path.parent()
+                .is_some_and(|parent| parent == self.current_dir);
+            if belongs_to_current_pwd
+                && (result.generation_epoch != self.thumb_generation_state.epoch
+                    || result.requested_edge != self.thumb_generation_state.requested_edge)
+            {
+                continue;
+            }
             let current_source_key = result.path.parent().and_then(|dir| {
                 let filename = result.path.file_name()?.to_str()?;
                 self.spread_db.as_ref().and_then(|db| {
@@ -372,8 +384,12 @@ impl NekoviewApp {
                     }
                 }
                 None => {
-                    self.maybe_check_mount_after_failure(&result.path);
-                    self.thumb_failed.insert(result.path);
+                    if result.generation_blocked {
+                        self.thumb_generation_blocked.insert(result.path);
+                    } else {
+                        self.maybe_check_mount_after_failure(&result.path);
+                        self.thumb_failed.insert(result.path);
+                    }
                 }
             }
         }
