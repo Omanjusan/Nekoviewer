@@ -1503,6 +1503,52 @@ impl ViewerState {
                 let resp = ui.allocate_rect(full_rect, egui::Sense::click());
                 if resp.double_clicked() { double_clicked = true; }
                 if resp.clicked() && !resp.double_clicked() { single_clicked = true; }
+                if resp.secondary_clicked() {
+                    let target = match frame.page_mode {
+                        PageMode::Single => Some(self.spread_lo()),
+                        PageMode::SpreadLeft => resp.interact_pointer_pos().and_then(|pos| {
+                            self.thumbnail_target_for_spread(
+                                pos,
+                                full_rect,
+                                &frame.tex_lo,
+                                &frame.tex_hi,
+                                self.spread_lo(),
+                                self.spread_lo() + 1,
+                                frame.monitor,
+                                frame.rotation_angle,
+                            )
+                        }),
+                        PageMode::SpreadRight => resp.interact_pointer_pos().and_then(|pos| {
+                            self.thumbnail_target_for_spread(
+                                pos,
+                                full_rect,
+                                &frame.tex_hi,
+                                &frame.tex_lo,
+                                self.spread_lo() + 1,
+                                self.spread_lo(),
+                                frame.monitor,
+                                frame.rotation_angle,
+                            )
+                        }),
+                    };
+                    self.set_thumbnail_context(target);
+                }
+                let toggle_enabled = self.spread_save_toggle_enabled();
+                let toggle_on = self.spread_save_toggle_on();
+                let overwrite_enabled = self.spread_overwrite_enabled();
+                let sort_toggle_enabled = self.sort_save_toggle_enabled();
+                let sort_toggle_on = self.sort_save_toggle_on();
+                let sort_changed = self.sort_save_changed();
+                let current_sort = self.current_sort_snapshot();
+                let thumbnail_target = self.thumbnail_context_entry.as_ref();
+                let saved_thumbnail_selection = self.saved_thumbnail_selection.as_ref();
+                let saved_thumbnail_display = self.saved_thumbnail_display_name();
+                let action = &mut self.pending_spread_action;
+                let sort_action = &mut self.pending_sort_action;
+                let thumbnail_action = &mut self.pending_thumbnail_action;
+                let open_favorite_dialog = &mut self.pending_open_favorite_dialog;
+                let open_file_detail = &mut self.pending_open_file_detail;
+                resp.context_menu(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort, sort_action, thumbnail_target, saved_thumbnail_selection, saved_thumbnail_display.as_deref(), thumbnail_action, open_favorite_dialog, open_file_detail));
 
                 let painter = ui.painter().with_clip_rect(clip);
                 let off_old = avail.x * frame.t * (-frame.anim_dir_f);
@@ -2519,9 +2565,14 @@ impl ViewerState {
                 let available = ui.available_size();
                 let bounds = egui::Rect::from_min_size(ui.cursor().left_top(), available);
                 let fit = Self::paint_page_rotated(ui.painter(), tex, bounds, angle_deg);
-                let resp  = ui.allocate_rect(fit, egui::Sense::click());
-                if resp.double_clicked() { *double_clicked = true; }
-                if resp.clicked() && !resp.double_clicked() { *single_clicked = true; }
+                // 左クリックの対象は従来どおり画像本体に限定しつつ、画像の周囲に
+                // 余白がある場合も表示領域全体でコンテキストメニューを開けるようにする。
+                let resp  = ui.allocate_rect(bounds, egui::Sense::click());
+                let primary_on_image = resp
+                    .interact_pointer_pos()
+                    .is_some_and(|pos| fit.contains(pos));
+                if primary_on_image && resp.double_clicked() { *double_clicked = true; }
+                if primary_on_image && resp.clicked() && !resp.double_clicked() { *single_clicked = true; }
                 if resp.secondary_clicked() {
                     self.set_thumbnail_context(Some(self.spread_lo()));
                 }
@@ -2537,8 +2588,20 @@ impl ViewerState {
             }
         } else {
             let rect = egui::Rect::from_min_size(ui.cursor().left_top(), ui.available_size());
-            ui.allocate_rect(rect, egui::Sense::click());
+            let resp = ui.allocate_rect(rect, egui::Sense::click());
             ui.painter().rect_filled(rect, 0.0, egui::Color32::from_gray(40));
+            if resp.secondary_clicked() {
+                self.set_thumbnail_context(Some(self.spread_lo()));
+            }
+            let thumbnail_target = self.thumbnail_context_entry.as_ref();
+            let saved_thumbnail_selection = self.saved_thumbnail_selection.as_ref();
+            let saved_thumbnail_display = self.saved_thumbnail_display_name();
+            let action = &mut self.pending_spread_action;
+            let sort_action = &mut self.pending_sort_action;
+            let thumbnail_action = &mut self.pending_thumbnail_action;
+            let open_favorite_dialog = &mut self.pending_open_favorite_dialog;
+            let open_file_detail = &mut self.pending_open_file_detail;
+            resp.context_menu(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort, sort_action, thumbnail_target, saved_thumbnail_selection, saved_thumbnail_display.as_deref(), thumbnail_action, open_favorite_dialog, open_file_detail));
         }
     }
 
