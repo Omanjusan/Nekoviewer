@@ -231,6 +231,23 @@ pub(crate) const MENU_BAR_ORDER: [MenuBarButton; 8] = [
     MenuBarButton::StatusToggle,
 ];
 
+#[cfg(test)]
+mod menu_bar_order_tests {
+    use super::{MenuBarButton, MENU_BAR_ORDER};
+
+    #[test]
+    fn thumbnail_settings_and_status_keep_the_visual_right_end_order() {
+        assert_eq!(
+            &MENU_BAR_ORDER[5..],
+            &[
+                MenuBarButton::Thumbnails,
+                MenuBarButton::Settings,
+                MenuBarButton::StatusToggle,
+            ],
+        );
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ThumbnailDeleteMode {
     Mismatched,

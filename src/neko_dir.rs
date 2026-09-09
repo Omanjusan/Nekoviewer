@@ -386,6 +386,51 @@ mod tests {
     }
 
     #[test]
+    fn changing_size_blocks_generation_and_changing_back_restores_it() {
+        let neko_dir = unique_test_neko_dir("thumb_size_roundtrip");
+        let source_dir = PathBuf::from("/tmp/fake_source_dir_for_thumb_size_roundtrip");
+        let db = open_cache_db(&neko_dir, &source_dir).expect("db should open");
+        write_thumb(&db, "legacy.zip", 100, b"legacy-256");
+
+        let original = thumbnail_generation_state(&db, 256);
+        assert!(original.allowed, "既存レコードはレガシー256pxとして利用できる");
+        let changed = thumbnail_generation_state(&db, 384);
+        assert!(!changed.allowed, "既存256pxを残したまま384px生成を開始しない");
+        assert_ne!(changed.epoch, original.epoch, "設定変更で旧ワーカーを失効させる");
+        assert!(!write_generated_thumb_if_current(
+            &db, "late.zip", 100, b"late", "", 256, original.epoch,
+        ));
+
+        let restored = thumbnail_generation_state(&db, 256);
+        assert!(restored.allowed, "元の設定へ戻せば削除せず再利用できる");
+        assert_ne!(restored.epoch, changed.epoch);
+
+        let _ = std::fs::remove_dir_all(&neko_dir);
+    }
+
+    #[test]
+    fn generation_state_is_independent_for_each_pwd_database() {
+        let neko_dir_a = unique_test_neko_dir("thumb_pwd_a");
+        let neko_dir_b = unique_test_neko_dir("thumb_pwd_b");
+        let db_a = open_cache_db(&neko_dir_a, Path::new("/tmp/fake_thumb_pwd_a")).unwrap();
+        let db_b = open_cache_db(&neko_dir_b, Path::new("/tmp/fake_thumb_pwd_b")).unwrap();
+        write_thumb(&db_a, "legacy.zip", 100, b"legacy-256");
+
+        let state_a = thumbnail_generation_state(&db_a, 384);
+        let state_b = thumbnail_generation_state(&db_b, 384);
+        assert!(!state_a.allowed, "既存256pxを持つPWDは不一致");
+        assert!(state_b.allowed, "空の別PWDは384px生成を直ちに許可");
+
+        let deleted = delete_mismatched_thumbnails(&db_a, 384);
+        assert!(deleted.success);
+        assert!(thumbnail_generation_state(&db_a, 384).allowed);
+        assert_eq!(thumbnail_cache_stats(&db_b, 384).total, 0, "別PWDは変更しない");
+
+        let _ = std::fs::remove_dir_all(&neko_dir_a);
+        let _ = std::fs::remove_dir_all(&neko_dir_b);
+    }
+
+    #[test]
     fn search_files_applies_and_conditions() {
         let neko_dir = unique_test_neko_dir("search_and");
         let source_dir = PathBuf::from("/tmp/fake_source_dir_for_search_test");
