@@ -659,18 +659,23 @@ impl ViewerState {
     /// オフセットがずれているか（UI表示用）
     pub fn can_shift_forward(&self) -> bool {
         self.offset.can_advance()
+            && self.spread_lo() + 1 <= self.entries.len() as i32 - 1
     }
 
     pub fn can_shift_backward(&self) -> bool {
-        self.offset.can_retreat()
+        self.offset.can_retreat() && self.spread_lo() - 1 >= -1
     }
 
     pub fn shift_offset_forward(&mut self) {
-        self.offset.advance();
+        if self.can_shift_forward() {
+            self.offset.advance();
+        }
     }
 
     pub fn shift_offset_backward(&mut self) {
-        self.offset.retreat();
+        if self.can_shift_backward() {
+            self.offset.retreat();
+        }
     }
 
     /// OCR/翻訳子ウィンドウ用: 見開きを1組ぶん(step)実際に送る/戻す。
@@ -3023,6 +3028,72 @@ mod sort_save_state_tests {
 
         viewer.page_mode = PageMode::SpreadRight;
         assert!(viewer.spread_overwrite_enabled());
+    }
+
+    #[test]
+    fn backward_shift_is_blocked_when_it_would_show_two_virtual_pages() {
+        let mut viewer = archive_viewer();
+        viewer.page_mode = PageMode::SpreadLeft;
+        viewer.offset.advance();
+        viewer.spread_base = -2;
+        assert_eq!(viewer.spread_lo(), -1);
+
+        assert!(!viewer.can_shift_backward());
+        viewer.shift_offset_backward();
+
+        assert_eq!(viewer.spread_base, -2);
+        assert_eq!(viewer.offset.value(), 1);
+        assert_eq!(viewer.spread_lo(), -1);
+    }
+
+    #[test]
+    fn forward_shift_is_blocked_when_it_would_show_two_virtual_pages() {
+        let mut viewer = archive_viewer();
+        viewer.page_mode = PageMode::SpreadRight;
+        viewer.offset.retreat();
+        viewer.spread_base = 2;
+        assert_eq!(viewer.spread_lo(), 1);
+
+        assert!(!viewer.can_shift_forward());
+        viewer.shift_offset_forward();
+
+        assert_eq!(viewer.spread_base, 2);
+        assert_eq!(viewer.offset.value(), -1);
+        assert_eq!(viewer.spread_lo(), 1);
+    }
+
+    #[test]
+    fn offset_shift_remains_available_when_the_result_contains_a_real_page() {
+        let mut viewer = archive_viewer();
+        viewer.page_mode = PageMode::SpreadLeft;
+
+        assert!(viewer.can_shift_backward());
+        viewer.shift_offset_backward();
+        assert_eq!(viewer.spread_lo(), -1);
+
+        assert!(viewer.can_shift_forward());
+        viewer.shift_offset_forward();
+        assert_eq!(viewer.spread_lo(), 0);
+
+        assert!(viewer.can_shift_forward());
+        viewer.shift_offset_forward();
+        assert_eq!(viewer.spread_lo(), 1);
+    }
+
+    #[test]
+    fn single_page_archive_never_allows_a_shift_past_its_only_real_page() {
+        let mut viewer = archive_viewer();
+        viewer.entries.truncate(1);
+        viewer.page_mode = PageMode::SpreadRight;
+
+        assert!(!viewer.can_shift_forward());
+        viewer.shift_offset_forward();
+        assert_eq!(viewer.spread_lo(), 0);
+
+        assert!(viewer.can_shift_backward());
+        viewer.shift_offset_backward();
+        assert_eq!(viewer.spread_lo(), -1);
+        assert!(!viewer.can_shift_backward());
     }
 
     #[test]
