@@ -113,7 +113,8 @@ Reader ウィンドウの描画と入力処理。`ViewerState` 構造体。
 [features/favorite-files-dirs.md](features/favorite-files-dirs.md) を参照。
 
 ### spread_state.rs
-見開き状態（page_mode, spread_offset）の保存・復帰を redb で管理。
+見開き状態（page_mode, spread_offset）とアーカイブ内ソート条件の保存・復帰を redb で管理。
+ソート条件の詳細は [features/archive-sort-state.md](features/archive-sort-state.md) を参照。
 
 ### fs/
 - `dir.rs`：ディレクトリスキャン・ファイル種別判定（archive か raw image か）

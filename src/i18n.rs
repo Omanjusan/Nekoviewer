@@ -184,6 +184,54 @@ impl Lang {
         }
     }
 
+    pub fn sort_save_toggle_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "現在のソート条件を保存する",
+            Lang::English  => "Save current sort settings",
+            Lang::Chinese  => "保存当前排序条件",
+        }
+    }
+
+    pub fn sort_save_new_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "新しい保存値",
+            Lang::English  => "New saved value",
+            Lang::Chinese  => "新的保存值",
+        }
+    }
+
+    pub fn sort_save_changed_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "変更あり",
+            Lang::English  => "changed",
+            Lang::Chinese  => "有更改",
+        }
+    }
+
+    pub fn thumbnail_register_page_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "このページをサムネイルとして登録",
+            Lang::English  => "Use this page as the thumbnail",
+            Lang::Chinese  => "将此页设为缩略图",
+        }
+    }
+
+    pub fn thumbnail_current_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "現在のサムネイル",
+            Lang::English  => "Current thumbnail",
+            Lang::Chinese  => "当前缩略图",
+        }
+    }
+
+    pub fn thumbnail_default_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "デフォルト",
+            Lang::English  => "Default",
+            Lang::Chinese  => "默认",
+        }
+    }
+
     pub fn loading(self) -> &'static str {
         match self {
             Lang::Japanese => "読み込み中...",

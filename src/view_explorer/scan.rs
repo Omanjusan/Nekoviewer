@@ -8,9 +8,9 @@ use crate::fs::mount::{list_gvfs_smb_mounts, list_local_drives};
 use super::*;
 
 impl NekoviewApp {
-    /// 指定ディレクトリへ遷移する（ツリーパネル・サムネグリッドの↑/フォルダクリック共通処理）。
+    /// 指定ディレクトリへ遷移する。
     /// お気に入りタブ表示中ならそれを解除し、現在地・監視先を更新してスキャンを開始する。
-    pub(super) fn navigate_to(&mut self, path: PathBuf) {
+    pub(super) fn navigate_to(&mut self, path: PathBuf, source: DirectoryNavigationSource) {
         self.viewing_favorites = None;
         self.current_dir = path.clone();
         self.viewing_dir = Some(path.clone());
@@ -18,7 +18,18 @@ impl NekoviewApp {
         self.cd_summary = None;
         self.cd_summary_rx = None;
         self.start_scan();
-        self.start_tree_autofocus(path);
+        match source {
+            DirectoryNavigationSource::Tree => {
+                // ツリーで選べるノードは既に可視なので、追従・アラインさせない。
+                // 直前の別操作から残った要求も、後のフレームで発火しないよう破棄する。
+                self.tree_autofocus = None;
+                self.tree_autofocus_pending = None;
+                self.tree_autofocus_scroll_pending = false;
+            }
+            DirectoryNavigationSource::ItemPane | DirectoryNavigationSource::System => {
+                self.start_tree_autofocus(path);
+            }
+        }
         self.persist_state();
     }
 
@@ -27,17 +38,11 @@ impl NekoviewApp {
     /// target が tree_root 配下でない場合（別ドライブ切替直後の競合等）は何もしない。
     pub(super) fn start_tree_autofocus(&mut self, target: PathBuf) {
         self.tree_autofocus_pending = None;
-        let Ok(rel) = target.strip_prefix(&self.tree_root) else {
+        let Some(remaining) = tree_autofocus_components(&self.tree_root, &target) else {
+            // target が tree_root 配下でない（別ドライブ切替直後の競合等）→ 何もしない
             self.tree_autofocus = None;
             return;
         };
-        let remaining: std::collections::VecDeque<std::ffi::OsString> = rel
-            .components()
-            .filter_map(|c| match c {
-                std::path::Component::Normal(s) => Some(s.to_os_string()),
-                _ => None,
-            })
-            .collect();
         if remaining.is_empty() {
             // target 自体が tree_root（ルート直下を見ている）
             self.tree_cursor = Some(target);
@@ -195,7 +200,7 @@ impl NekoviewApp {
         if let Some(viewing) = self.viewing_dir.clone() {
             if !self.path_reachable(&viewing) {
                 if let Some(home) = home {
-                    self.navigate_to(home);
+                    self.navigate_to(home, DirectoryNavigationSource::System);
                 }
                 return;
             }
@@ -319,14 +324,23 @@ impl NekoviewApp {
                     .into_iter()
                     .map(|(name, mode, offset)| (name, (mode, offset)))
                     .collect();
+                crate::spread_state::gc_archive_sorts(&db, &self.current_dir, &filenames);
+                self.archive_sort_states = crate::spread_state::list_dir_archive_sorts(&db, &self.current_dir)
+                    .into_iter()
+                    .map(|(name, key, ascending)| (name, (key, ascending)))
+                    .collect();
                 crate::favorites::gc_dir(&db, &self.current_dir, &filenames);
                 self.favorite_states = crate::favorites::list_dir_favorites(&db, &self.current_dir)
                     .into_iter()
                     .collect();
             } else {
                 self.spread_states.clear();
+                self.archive_sort_states.clear();
                 self.favorite_states.clear();
             }
+            self.saved_archive_settings = self.spread_db.as_ref()
+                .map(|db| crate::spread_state::saved_settings_for_paths(db, &self.archives))
+                .unwrap_or_default();
             self.scan_state = ScanState::Done;
             self.sort_archives();
             // グリッドの統一カーソルを新しいディレクトリの先頭（↑があればそれ）へ即座に
@@ -481,4 +495,52 @@ pub(super) fn spawn_summary_worker(
         ctx.request_repaint();
     });
     rx
+}
+
+/// tree_root から target までに辿るべき子ディレクトリ名の並びを返す。
+/// - `None`  : target が tree_root 配下でない（自動追従は不能）
+/// - 空の並び: target が tree_root 自身（追従不要、その場でカーソル確定）
+/// - 非空    : 先頭から 1 階層ずつ展開していく経路
+pub(super) fn tree_autofocus_components(
+    tree_root: &std::path::Path,
+    target: &std::path::Path,
+) -> Option<std::collections::VecDeque<std::ffi::OsString>> {
+    let rel = target.strip_prefix(tree_root).ok()?;
+    Some(
+        rel.components()
+            .filter_map(|c| match c {
+                std::path::Component::Normal(s) => Some(s.to_os_string()),
+                _ => None,
+            })
+            .collect(),
+    )
+}
+
+#[cfg(test)]
+mod tree_autofocus_tests {
+    use super::tree_autofocus_components;
+    use std::path::Path;
+
+    #[test]
+    fn returns_component_chain_for_descendant() {
+        let got = tree_autofocus_components(Path::new("/mnt/photos"), Path::new("/mnt/photos/2024/summer"))
+            .expect("descendant path resolves");
+        let chain: Vec<_> = got.iter().map(|s| s.to_str().unwrap()).collect();
+        assert_eq!(chain, vec!["2024", "summer"]);
+    }
+
+    #[test]
+    fn returns_empty_chain_when_target_is_root_itself() {
+        let got = tree_autofocus_components(Path::new("/mnt/photos"), Path::new("/mnt/photos"))
+            .expect("root == target resolves");
+        assert!(got.is_empty(), "追従不要なので空の経路");
+    }
+
+    #[test]
+    fn returns_none_when_target_outside_root() {
+        assert!(
+            tree_autofocus_components(Path::new("/mnt/photos"), Path::new("/home/user/pics")).is_none(),
+            "tree_root 配下でなければ None（no-op）"
+        );
+    }
 }

@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, mpsc};
 
 use crate::cache::{FileCache, FileCacheEntry, LoadRequest, LoadResult, PageCache, ThumbRequest, ThumbResult, EntryThumbRequest, EntryThumbResult, spawn_worker, spawn_thumb_worker, spawn_entry_thumb_worker, spawn_file_cache_worker};
+use crate::decode_jobs::{DecodeJobQueue, DesiredDecodeJob};
 use crate::config::AppConfig;
 use crate::gui_config::{SortState, ViewerConfig, WindowSlot};
 use crate::view_gui_config::{SettingsDraft, SettingsTab};
@@ -340,6 +341,15 @@ struct TreeAutoFocus {
     current: PathBuf,
 }
 
+/// ディレクトリ遷移を開始したUI／内部処理。
+/// ツリー内の選択は既に可視なノードを対象とするため、自動スクロールの対象外にする。
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DirectoryNavigationSource {
+    Tree,
+    ItemPane,
+    System,
+}
+
 /// リロードボタンによるツリー一括再取得の待ち状態（スレッド1本で全対象を処理）
 struct TreeReloadPending {
     rx: mpsc::Receiver<Vec<(PathBuf, Vec<PathBuf>)>>,
@@ -348,7 +358,7 @@ struct TreeReloadPending {
 /// 7zのFileCache展開待ちで保留したページ/サムネ要求。
 /// FileCache結果が届いた時点でこれをまとめて実際のワーカーへ送出する。
 enum DeferredArchiveRequest {
-    Page(LoadRequest),
+    Page(DesiredDecodeJob<LoadRequest>),
     Thumb(EntryThumbRequest),
 }
 
@@ -405,11 +415,15 @@ pub struct NekoviewApp {
     spread_db: Option<std::sync::Arc<std::sync::Mutex<redb::Database>>>,
     /// 現在ディレクトリ内で保存済みの見開き状態 (filename -> (mode, offset, page_index))
     spread_states: HashMap<String, (crate::types::PageMode, i32)>,
+    /// 現在ディレクトリ内で保存済みのアーカイブ内ソート条件
+    archive_sort_states: HashMap<String, (crate::types::ReaderSortKey, bool)>,
     /// 現在ディレクトリ内のお気に入り登録状態 (filename -> 所属folder_id一覧、空Vec=未整理)
     favorite_states: HashMap<String, Vec<u8>>,
-    /// お気に入り一覧表示中のマーカー情報 (フルパス -> 所属folder_id一覧)。
+    /// お気に入り・検索の横断一覧表示中のマーカー情報 (フルパス -> 所属folder_id一覧)。
     /// ディレクトリ横断のため favorite_states とは別にフルパスキーで持つ。
-    favorite_view_markers: HashMap<PathBuf, Vec<u8>>,
+    cross_view_favorite_markers: HashMap<PathBuf, Vec<u8>>,
+    /// サムネイル上へ表示する保存設定状態。通常・お気に入り・検索をフルパスで共通管理する。
+    saved_archive_settings: HashMap<PathBuf, crate::spread_state::SavedArchiveSettings>,
     /// 到達不能と判定済みのネットワークマウント大元（定期ポーリングはしない）
     network_unreachable_mounts: HashSet<PathBuf>,
     /// バックグラウンドで進行中のマウント到達可否チェック
@@ -440,9 +454,12 @@ pub struct NekoviewApp {
     /// FileCache結果が届いた時点でまとめてフラッシュする（デコードワーカー側での
     /// スレッドごとの重複展開を避けるため）。
     deferred_archive_requests: HashMap<PathBuf, Vec<DeferredArchiveRequest>>,
-    req_tx: mpsc::Sender<LoadRequest>,
+    req_tx: DecodeJobQueue<LoadRequest>,
     res_rx: Arc<Mutex<mpsc::Receiver<LoadResult>>>,
     pending_loads: Arc<Mutex<HashSet<(PathBuf, usize)>>>,
+    /// デコード失敗ページ。毎フレームの無限再要求を防ぎ、世代変更・再オープン・
+    /// FileCache準備完了時には解除して再試行可能にする。
+    failed_loads: HashSet<crate::decode_jobs::DecodeJobKey>,
     scan_state: ScanState,
     tree_scan_pending: Option<TreeScanPending>,
     tree_reload_pending: Option<TreeReloadPending>,
@@ -607,8 +624,11 @@ pub struct NekoviewApp {
     /// フェーズ6: 直近の再デコードで決まった、以降のデコード要求(先読み含む)に使うターゲットサイズ。
     /// None = 無制限(原寸、zoom_actual時)。起動直後の既定値は従来の固定上限と同じ。
     decode_target: Option<(u32, u32)>,
-    /// PageCacheへ投入してよいデコード条件の現行世代。サイズ・Orientation変更のたびに進め、
-    /// 変更前から処理中だったワーカー結果を回収時に破棄する。
+    /// 画面表示のフォールバックとして採用する確定世代。
+    active_decode_generation: u64,
+    /// 最新サイズを準備中の世代。完成ページはactiveより優先表示する。
+    preparing_decode_generation: Option<u64>,
+    /// 新しい世代番号の発行元。通常はpreparing、未準備時はactiveと同じ。
     decode_generation: u64,
     /// 項目(D): viewer_cfg.exif_orientation_enabled の変化検知用（設定ダイアログ・
     /// ビューアーツールバーのチェックボックス、どちらの経路で変更されても拾えるようにする）。
@@ -717,8 +737,10 @@ impl NekoviewApp {
                 db
             },
             spread_states: HashMap::new(),
+            archive_sort_states: HashMap::new(),
             favorite_states: HashMap::new(),
-            favorite_view_markers: HashMap::new(),
+            cross_view_favorite_markers: HashMap::new(),
+            saved_archive_settings: HashMap::new(),
             network_unreachable_mounts: HashSet::new(),
             mount_check_pending: Vec::new(),
             thumbnails: HashMap::new(),
@@ -740,6 +762,7 @@ impl NekoviewApp {
             req_tx,
             res_rx: Arc::new(Mutex::new(res_rx)),
             pending_loads: Arc::new(Mutex::new(HashSet::new())),
+            failed_loads: HashSet::new(),
             scan_state: ScanState::Idle,
             tree_scan_pending,
             tree_reload_pending: None,
@@ -823,11 +846,19 @@ impl NekoviewApp {
             resize_redecode_last_seq: viewer_cfg.redecode_trigger_seq,
             resize_redecode_deadline: None,
             decode_target: Some(max_decode_target),
+            active_decode_generation: 0,
+            preparing_decode_generation: None,
             decode_generation: 0,
             exif_orientation_enabled_last_seen: viewer_cfg.exif_orientation_enabled,
         };
         app.start_scan();
         app.refresh_favorite_folders();
+        // 起動フォルダをディレクトリツリー側にも同期する。ドライブルート→現在地までを
+        // 1階層ずつ逐次展開し、現在地ノードに現在地マーカー（赤反転）を点け、ツリー
+        // ビューの外にあればビューポート内へ寄せる（poll_tree_autofocus が毎フレーム
+        // 進める）。現在地が tree_root 配下でなければ start_tree_autofocus 側で no-op。
+        app.viewing_dir = Some(app.current_dir.clone());
+        app.start_tree_autofocus(app.current_dir.clone());
         // 起動時点でGVFSマウントの到達可否確認を仕込んでおく。
         // ユーザーが最初にリロードを押す頃には判定が終わっている見込みが立ち、
         // 「初回リロードでは切断先が消えない」体感を和らげる。

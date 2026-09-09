@@ -4,7 +4,10 @@ use std::sync::mpsc;
 use crate::fs::dir;
 use crate::neko_dir;
 
-use super::{push_search_result, NekoviewApp, SearchFormState, SearchResultEntry, TreeScanPending};
+use super::{
+    push_search_result, NekoviewApp, ScanState, SearchFormState, SearchResultEntry,
+    TreeScanPending,
+};
 use crate::i18n;
 
 /// フォーム入力をパース済みにした検索条件。バックグラウンドスレッドへそのまま渡す
@@ -183,6 +186,12 @@ impl NekoviewApp {
     pub(super) fn enter_search_view(&mut self, idx: usize) {
         let Some(entry) = self.search_history.get(idx) else { return };
         self.archives = entry.hits.clone();
+        self.cross_view_favorite_markers = self.spread_db.as_ref()
+            .map(|db| crate::favorites::memberships_for_paths(db, &self.archives))
+            .unwrap_or_default();
+        self.saved_archive_settings = self.spread_db.as_ref()
+            .map(|db| crate::spread_state::saved_settings_for_paths(db, &self.archives))
+            .unwrap_or_default();
         self.raw_image_files.clear();
         // 階層概念を持ち込まない平坦一覧という契約のため、サブフォルダ一覧も明示的に空にする
         // （grid_entries/draw_archive_grid側もviewing_searchをガードしているが二重の防御）。
@@ -192,6 +201,9 @@ impl NekoviewApp {
         self.invalid_archives.clear();
         self.thumb_failed.clear();
         self.viewing_search = Some(idx);
+        // 別タブ終了時に開始された実ディレクトリのスキャンが Loading のまま残ると、
+        // 同期構築済みの検索結果よりローディング表示が優先され続ける。
+        self.scan_state = ScanState::Done;
         self.search_selected = Some(idx);
         self.sort_archives();
         self.recompute_filter();

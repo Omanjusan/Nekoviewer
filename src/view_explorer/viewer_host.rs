@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use crate::cache::{LoadResult, EntryThumbRequest, EntryThumbResult};
+use crate::decode_jobs::DecodeJobOutcome;
 use crate::gui_config::ThumbbarPos;
 use crate::gui_config::WindowSlot;
 use crate::controller::{self, ViewerNav};
@@ -11,6 +12,24 @@ use super::*;
 use super::workers::dispatch_thumb_request;
 
 impl NekoviewApp {
+    /// 1ファイル分の保存設定表示キャッシュを、書き込み後のRDB実値へ同期する。
+    fn refresh_saved_archive_settings(&mut self, archive_path: &std::path::Path) {
+        let Some(db) = self.spread_db.as_ref() else {
+            self.saved_archive_settings.remove(archive_path);
+            return;
+        };
+        let paths = [archive_path.to_path_buf()];
+        let settings = crate::spread_state::saved_settings_for_paths(db, &paths)
+            .remove(archive_path);
+        if let Some(settings) = settings {
+            self.saved_archive_settings
+                .insert(archive_path.to_path_buf(), settings);
+        } else {
+            self.saved_archive_settings.remove(archive_path);
+        }
+        self.egui_ctx.request_repaint();
+    }
+
     /// ビューアー窓が開いているか（winit_app が窓の生成/破棄判定に使う）。
     pub fn viewer_is_open(&self) -> bool {
         self.viewer.lock().unwrap().is_some()
@@ -32,6 +51,7 @@ impl NekoviewApp {
 
     /// ビューアーを閉じる（OS のクローズボタン等から winit_app が呼ぶ）。
     pub fn close_viewer(&mut self) {
+        self.flush_current_sort_if_changed();
         *self.viewer.lock().unwrap() = None;
     }
 
@@ -478,10 +498,19 @@ impl NekoviewApp {
         let translate_toggle_enabled = self.translate_conn_verified && !self.translate_cfg.translation_model.trim().is_empty();
         let output = {
             let mut viewer_guard = self.viewer.lock().unwrap();
-            let page_cache_guard = self.page_cache.lock().unwrap();
+            let mut page_cache_guard = self.page_cache.lock().unwrap();
             let mut cfg_guard = self.viewer_cfg.lock().unwrap();
             match viewer_guard.as_mut() {
-                Some(viewer) => viewer.show(ui, &*page_cache_guard, &mut *cfg_guard, &self.config.keymap, self.translate_window_open, translate_toggle_enabled),
+                Some(viewer) => viewer.show(
+                    ui,
+                    &mut *page_cache_guard,
+                    self.active_decode_generation,
+                    self.preparing_decode_generation,
+                    &mut *cfg_guard,
+                    &self.config.keymap,
+                    self.translate_window_open,
+                    translate_toggle_enabled,
+                ),
                 None => return,
             }
         };
@@ -512,6 +541,14 @@ impl NekoviewApp {
             self.handle_spread_save_action(action);
         }
 
+        if let Some(action) = output.sort_save_action {
+            self.handle_sort_save_action(action);
+        }
+
+        if let Some(action) = output.thumbnail_save_action {
+            self.handle_thumbnail_save_action(action);
+        }
+
         if output.open_favorite_dialog {
             self.open_favorite_detail_dialog();
         }
@@ -522,6 +559,7 @@ impl NekoviewApp {
 
         let had_nav = output.nav != ViewerNav::None;
         if output.close_requested {
+            self.flush_current_sort_if_changed();
             *self.viewer.lock().unwrap() = None;
             controller::request_status_update(&self.status_update_requested);
             self.egui_ctx.request_repaint();
@@ -593,7 +631,9 @@ impl NekoviewApp {
                 })
                 .unwrap_or_default();
             for result in results {
-                if !result.belongs_to_generation(self.decode_generation) {
+                if result.generation != self.active_decode_generation
+                    && Some(result.generation) != self.preparing_decode_generation
+                {
                     crate::log_common!(
                         "[page-cache] discarded stale result generation={} current={} path={:?} index={}",
                         result.generation, self.decode_generation, result.archive_path, result.index,
@@ -602,13 +642,28 @@ impl NekoviewApp {
                 }
                 self.pending_loads.lock().unwrap()
                     .remove(&(result.archive_path.clone(), result.index));
-                self.page_cache.lock().unwrap().insert(
-                    result.archive_path,
-                    result.index,
-                    result.content,
-                    &cur_path,
-                    cur_idx,
-                );
+                let failed_key = crate::decode_jobs::DecodeJobKey {
+                    archive_path: result.archive_path.clone(),
+                    page_index: result.index,
+                    generation: result.generation,
+                };
+                match result.outcome {
+                    DecodeJobOutcome::Ready(content) => {
+                        self.failed_loads.remove(&failed_key);
+                        self.page_cache.lock().unwrap().insert(
+                            result.archive_path,
+                            result.index,
+                            result.generation,
+                            content,
+                            &cur_path,
+                            cur_idx,
+                        );
+                    }
+                    DecodeJobOutcome::Failed => {
+                        self.failed_loads.insert(failed_key);
+                    }
+                    DecodeJobOutcome::Cancelled => {}
+                }
             }
         }
         self.prefetch_pages();
@@ -685,46 +740,214 @@ impl NekoviewApp {
         let Some(db) = self.spread_db.clone() else { return };
         let mut viewer_guard = self.viewer.lock().unwrap();
         let Some(viewer) = viewer_guard.as_mut() else { return };
+        let archive_path = viewer.archive_path().clone();
         let filename = match viewer.archive_path().file_name().and_then(|n| n.to_str()) {
             Some(f) => f.to_string(),
             None => return,
         };
-
-        let disable = |viewer: &mut ViewerState, spread_states: &mut HashMap<String, (PageMode, i32)>, db: &Arc<Mutex<redb::Database>>, dir: &std::path::Path, filename: &str| {
+        let archive_dir = viewer.archive_path().parent()
+            .unwrap_or(&self.current_dir)
+            .to_path_buf();
+        let is_current_dir = archive_dir == self.current_dir;
+        let disable = |viewer: &mut ViewerState, spread_states: &mut HashMap<String, (PageMode, i32)>, db: &Arc<Mutex<redb::Database>>, dir: &std::path::Path, filename: &str, update_cache: bool| {
             crate::spread_state::remove_spread(db, dir, filename);
             viewer.set_saved_spread(None);
-            spread_states.remove(filename);
+            if update_cache {
+                spread_states.remove(filename);
+            }
         };
 
         use crate::controller::SpreadSaveAction;
         match action {
             SpreadSaveAction::Enable => {
-                let (mode, offset) = viewer.current_spread_snapshot();
-                crate::spread_state::write_spread(&db, &self.current_dir, &filename, mode, offset);
+                let (mode, current_offset) = viewer.current_spread_snapshot();
+                let offset = crate::view_reader::normalize_saved_spread_offset(current_offset);
+                crate::spread_state::write_spread(&db, &archive_dir, &filename, mode, offset);
                 viewer.set_saved_spread(Some((mode, offset)));
-                self.spread_states.insert(filename, (mode, offset));
-            }
-            SpreadSaveAction::Disable => {
-                disable(viewer, &mut self.spread_states, &db, &self.current_dir, &filename);
-            }
-            SpreadSaveAction::Overwrite => {
-                let (mode, offset) = viewer.current_spread_snapshot();
-                if mode == PageMode::Single {
-                    disable(viewer, &mut self.spread_states, &db, &self.current_dir, &filename);
-                } else {
-                    crate::spread_state::write_spread(&db, &self.current_dir, &filename, mode, offset);
-                    viewer.set_saved_spread(Some((mode, offset)));
+                if is_current_dir {
                     self.spread_states.insert(filename, (mode, offset));
                 }
             }
+            SpreadSaveAction::Disable => {
+                disable(viewer, &mut self.spread_states, &db, &archive_dir, &filename, is_current_dir);
+            }
+            SpreadSaveAction::Overwrite => {
+                let (mode, current_offset) = viewer.current_spread_snapshot();
+                let offset = crate::view_reader::normalize_saved_spread_offset(current_offset);
+                if mode == PageMode::Single {
+                    disable(viewer, &mut self.spread_states, &db, &archive_dir, &filename, is_current_dir);
+                } else {
+                    crate::spread_state::write_spread(&db, &archive_dir, &filename, mode, offset);
+                    viewer.set_saved_spread(Some((mode, offset)));
+                    if is_current_dir {
+                        self.spread_states.insert(filename, (mode, offset));
+                    }
+                }
+            }
         }
+        drop(viewer_guard);
+        self.refresh_saved_archive_settings(&archive_path);
+    }
+
+    /// 右クリックメニューでのソート条件保存操作を反映する。
+    fn handle_sort_save_action(&mut self, action: crate::controller::SortSaveAction) {
+        let db = self.spread_db.clone();
+        let mut viewer_guard = self.viewer.lock().unwrap();
+        let Some(viewer) = viewer_guard.as_mut() else { return };
+        let archive_path = viewer.archive_path().clone();
+        let filename = match viewer.archive_path().file_name().and_then(|n| n.to_str()) {
+            Some(f) => f.to_string(),
+            None => return,
+        };
+        let archive_dir = viewer.archive_path().parent()
+            .unwrap_or(&self.current_dir)
+            .to_path_buf();
+        let is_current_dir = archive_dir == self.current_dir;
+
+        match action {
+            crate::controller::SortSaveAction::Enable => {
+                let Some(db) = db else { return };
+                let (key, ascending) = viewer.current_sort_snapshot();
+                crate::spread_state::write_archive_sort(
+                    &db,
+                    &archive_dir,
+                    &filename,
+                    key,
+                    ascending,
+                );
+                viewer.set_saved_sort(Some((key, ascending)));
+                if is_current_dir {
+                    self.archive_sort_states.insert(filename, (key, ascending));
+                }
+            }
+            crate::controller::SortSaveAction::Disable => {
+                if let Some(db) = db {
+                    crate::spread_state::remove_archive_sort(&db, &archive_dir, &filename);
+                }
+                viewer.clear_saved_sort();
+                if is_current_dir {
+                    self.archive_sort_states.remove(&filename);
+                }
+            }
+        }
+        drop(viewer_guard);
+        self.refresh_saved_archive_settings(&archive_path);
+    }
+
+    /// 登録サムネイルページの永続化だけを行う。画像キャッシュの差し替えは次フェーズで接続する。
+    fn handle_thumbnail_save_action(&mut self, action: crate::controller::ThumbnailSaveAction) {
+        let Some(db) = self.spread_db.clone() else { return };
+        let mut viewer_guard = self.viewer.lock().unwrap();
+        let Some(viewer) = viewer_guard.as_mut() else { return };
+        let archive_path = viewer.archive_path().clone();
+        let Some(filename) = archive_path.file_name().and_then(|n| n.to_str()) else { return };
+        let archive_dir = archive_path.parent().unwrap_or(&self.current_dir);
+
+        let mut selected_entry = None;
+        match action {
+            crate::controller::ThumbnailSaveAction::Enable { entry_name } => {
+                // UIで解決した値を盲信せず、書き込み直前にも実エントリの存在を確認する。
+                if viewer.entries().iter().any(|entry| entry.entry_name == entry_name) {
+                    crate::spread_state::write_thumbnail_selection(
+                        &db, archive_dir, filename, &entry_name,
+                    );
+                    selected_entry = Some(entry_name.clone());
+                    viewer.set_saved_thumbnail_entry(Some(entry_name));
+                }
+            }
+            crate::controller::ThumbnailSaveAction::Disable => {
+                crate::spread_state::remove_thumbnail_selection(&db, archive_dir, filename);
+                viewer.set_saved_thumbnail_entry(None);
+            }
+        }
+        let archive_dir = archive_dir.to_path_buf();
+        drop(viewer_guard);
+        self.refresh_saved_archive_settings(&archive_path);
+
+        // 現在のグリッドに属するアーカイブなら、メモリ上の旧画像を対象限定で破棄し、
+        // 新しい登録値を付けて即時再生成する。キュー満杯時は通常描画経路が再要求する。
+        if archive_dir == self.current_dir {
+            self.thumbnails.remove(&archive_path);
+            self.thumb_pending.remove(&archive_path);
+            self.thumb_failed.remove(&archive_path);
+            if self.thumb_req_tx.try_send(crate::cache::ThumbRequest {
+                archive_path: archive_path.clone(),
+                db: self.cache_db.clone(),
+                is_raw_file: false,
+                thumbnail_entry_name: selected_entry,
+            }).is_ok() {
+                self.thumb_pending.insert(archive_path);
+            }
+            self.egui_ctx.request_repaint();
+        }
+    }
+
+    /// 保存ONかつ現在値に変更がある場合だけ、現在のアーカイブの保存値を上書きする。
+    /// ViewerStateを破棄・置換する直前の全経路から呼ぶ。
+    pub(super) fn flush_current_sort_if_changed(&mut self) {
+        let Some(db) = self.spread_db.clone() else { return };
+        let mut viewer_guard = self.viewer.lock().unwrap();
+        let Some(viewer) = viewer_guard.as_mut() else { return };
+        if !viewer.sort_save_changed() {
+            return;
+        }
+        let archive_path = viewer.archive_path().clone();
+        let Some(filename) = archive_path.file_name().and_then(|n| n.to_str()).map(str::to_string) else {
+            return;
+        };
+        let archive_dir = archive_path.parent()
+            .unwrap_or(&self.current_dir)
+            .to_path_buf();
+        let (key, ascending) = viewer.current_sort_snapshot();
+        crate::spread_state::write_archive_sort(&db, &archive_dir, &filename, key, ascending);
+        viewer.set_saved_sort(Some((key, ascending)));
+        if archive_dir == self.current_dir {
+            self.archive_sort_states.insert(filename, (key, ascending));
+        }
+        drop(viewer_guard);
+        self.refresh_saved_archive_settings(&archive_path);
     }
 
     /// ビューアを開く（ページキャッシュクリア・ファイルキャッシュ投入・フォーカス要求を一括処理）
     pub(super) fn open_viewer(&mut self, mut state: ViewerState) {
+        self.flush_current_sort_if_changed();
         let path = state.archive_path().clone();
+        self.failed_loads.retain(|key| key.archive_path != path);
         let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-        if let Some(&(mode, offset)) = self.spread_states.get(filename) {
+        let archive_dir = path.parent().unwrap_or(&self.current_dir);
+        let saved_sort = if archive_dir == self.current_dir {
+            self.archive_sort_states.get(filename).copied()
+        } else {
+            self.spread_db.as_ref().and_then(|db| {
+                crate::spread_state::read_archive_sort(db, archive_dir, filename)
+            })
+        };
+        if let Some((key, ascending)) = saved_sort {
+            state.restore_saved_sort(key, ascending);
+            state.set_saved_sort(Some((key, ascending)));
+        }
+        let saved_thumbnail_entry = self.spread_db.as_ref().and_then(|db| {
+            crate::spread_state::read_thumbnail_selection(db, archive_dir, filename)
+        });
+        // アーカイブ更新で登録先が消えた場合は未登録として扱い、壊れた値も掃除する。
+        if saved_thumbnail_entry.as_ref().is_some_and(|saved| {
+            !state.entries().iter().any(|entry| &entry.entry_name == saved)
+        }) {
+            if let Some(db) = &self.spread_db {
+                crate::spread_state::remove_thumbnail_selection(db, archive_dir, filename);
+            }
+            state.set_saved_thumbnail_entry(None);
+        } else {
+            state.set_saved_thumbnail_entry(saved_thumbnail_entry);
+        }
+        let saved_spread = if archive_dir == self.current_dir {
+            self.spread_states.get(filename).copied()
+        } else {
+            self.spread_db.as_ref().and_then(|db| {
+                crate::spread_state::read_spread(db, archive_dir, filename)
+            })
+        };
+        if let Some((mode, offset)) = saved_spread {
             let mut cfg = self.viewer_cfg.lock().unwrap();
             state.restore_saved_spread(mode, offset, &mut cfg);
             state.set_saved_spread(Some((mode, offset)));

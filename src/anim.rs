@@ -38,7 +38,7 @@ fn delay_from_image(d: image::Delay) -> Duration {
 // `restart()` でデコーダを元データから作り直す（この再デコードによる一瞬のフリーズは許容する）。
 
 /// フェーズ3のリングバッファが対象にするフォーマット。WebPはフェーズ3.5で別途対応。
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AnimFormat {
     Gif,
     Apng,
@@ -337,6 +337,23 @@ impl FrameRingBuffer {
         self.frames.iter().find(|(i, _)| *i == index).map(|(_, f)| f)
     }
 
+    /// `index` より後に完成しているフレームのうち、最も新しいものを返す。
+    /// リサイズ待ちで中間フレームが破棄された場合も、表示側が欠番を飛び越えられるようにする。
+    pub fn latest_after(&self, index: usize) -> Option<(usize, &AnimFrame)> {
+        self.frames.iter().rev()
+            .find(|(i, _)| *i > index)
+            .map(|(i, frame)| (*i, frame))
+    }
+
+    pub fn capacity(&self) -> usize {
+        self.capacity
+    }
+
+    pub fn index_range(&self) -> Option<(usize, usize)> {
+        Some((self.frames.front()?.0, self.frames.back()?.0))
+    }
+
+    #[cfg(test)]
     pub fn clear(&mut self) {
         self.frames.clear();
     }
@@ -377,6 +394,18 @@ mod ring_tests {
         ring.push(1, dummy_frame());
         ring.clear();
         assert_eq!(ring.frames.len(), 0);
+    }
+
+    #[test]
+    fn ring_buffer_latest_after_allows_sparse_frame_indices() {
+        let mut ring = FrameRingBuffer::new(4);
+        ring.push(0, dummy_frame());
+        ring.push(3, dummy_frame());
+        ring.push(8, dummy_frame());
+
+        assert_eq!(ring.latest_after(0).map(|(i, _)| i), Some(8));
+        assert_eq!(ring.latest_after(3).map(|(i, _)| i), Some(8));
+        assert!(ring.latest_after(8).is_none());
     }
 
     #[test]

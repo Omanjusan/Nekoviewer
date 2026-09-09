@@ -8,7 +8,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use crate::cache::{PageCache, PageContent};
+use crate::cache::{AnimationFrameDiagnostic, AnimationInstanceId, PageCache, PageContent};
 use crate::gui_config::WindowSlot;
 use crate::fs::archive;
 use crate::spread_offset::SpreadOffset;
@@ -17,19 +17,76 @@ use crate::toolbar::{BarGroup, ViewerBarItem};
 use crate::keymap::{Keymap, ReaderAction, MouseAction, MouseCombo};
 
 const SCROLL_THRESHOLD: f32 = 50.0;
+/// アニメ専用パイプラインへ一度に許可するデコード先行幅。
+/// UIが可視アニメをtickしている間だけ、到達のたびに次の範囲を追加する。
+const ANIM_DECODE_AHEAD_FRAMES: usize = 8;
 /// content_px の初回フレーム前プレースホルダ。draw() 冒頭で毎フレーム実測値に
 /// 上書きされるため、実際のデコードターゲットには事実上使われない。
 const CONTENT_PX_PLACEHOLDER: (u32, u32) = (1920, 1080);
 const ANIM_SECS: f32 = 0.4;
-/// アニメ再生のキャッチアップ: 1tickで進める最大フレーム数。
-/// フレーム送りはUIスレッド上の同期デコード(RingAnimation::with_frame)を伴うため、
-/// 上限なしで追走するとrepaintが長時間ブロックしてUIが固まる。
-const MAX_CATCHUP_FRAMES: usize = 4;
 /// サムネイルバー: 現在ページを中心にこの枚数分だけ先取り要求する（暫定固定値）。
 /// フェーズ2で実際の可視範囲ベースに置き換え予定。
 const THUMBBAR_ENQUEUE_WINDOW: i32 = 40;
 const FULL_UV: egui::Rect =
     egui::Rect { min: egui::pos2(0.0, 0.0), max: egui::pos2(1.0, 1.0) };
+
+/// 実行中のオフセット方向を、ファイル先頭から復帰するための保存値へ正規化する。
+/// ±1 はどちらも同じ1ページずれを表すため、先頭実ページを欠落させない -1 に揃える。
+pub(crate) fn normalize_saved_spread_offset(offset: i32) -> i32 {
+    if offset == 0 { 0 } else { -1 }
+}
+
+fn next_anim_decode_request(
+    displayed_frame: usize,
+    requested_through: usize,
+    ring_capacity: usize,
+) -> usize {
+    // producerの到達位置を基準にすると、描画が止まっていても要求が自己増殖し、
+    // 厳密に待っている次フレームをリングから追い出してしまう。
+    let ahead = ANIM_DECODE_AHEAD_FRAMES.min(ring_capacity.max(1));
+    requested_through.max(displayed_frame.saturating_add(ahead))
+}
+
+/// 1ページだけずれる見開き遷移を、退場・共通・入場ページへ分解する。
+/// 共通ページを旧/新の両見開きで二重描画しないため、テクスチャではなく論理ページ番号で判定する。
+fn offset_transition_pages(from_lo: i32, to_lo: i32) -> Option<(i32, i32, i32)> {
+    if (to_lo - from_lo).abs() != 1 {
+        return None;
+    }
+    let old = [from_lo, from_lo + 1];
+    let new = [to_lo, to_lo + 1];
+    let old_only = old.into_iter().find(|page| !new.contains(page))?;
+    let shared = old.into_iter().find(|page| new.contains(page))?;
+    let new_only = new.into_iter().find(|page| !old.contains(page))?;
+    Some((old_only, shared, new_only))
+}
+
+fn visual_spread_pages(lo: i32, right_binding: bool) -> [i32; 2] {
+    if right_binding { [lo + 1, lo] } else { [lo, lo + 1] }
+}
+
+fn lerp_rect(from: egui::Rect, to: egui::Rect, t: f32) -> egui::Rect {
+    egui::Rect::from_min_max(
+        from.min + (to.min - from.min) * t,
+        from.max + (to.max - from.max) * t,
+    )
+}
+
+fn place_next_to(rect: egui::Rect, anchor: egui::Rect, on_left: bool) -> egui::Rect {
+    let center_x = if on_left {
+        anchor.left() - rect.width() / 2.0
+    } else {
+        anchor.right() + rect.width() / 2.0
+    };
+    egui::Rect::from_center_size(egui::pos2(center_x, anchor.center().y), rect.size())
+}
+
+fn animation_instance_changed(
+    previous: Option<AnimationInstanceId>,
+    current: AnimationInstanceId,
+) -> bool {
+    previous.is_some_and(|previous| previous != current)
+}
 
 fn ease_out(t: f32) -> f32 {
     1.0 - (1.0 - t).powi(3)
@@ -43,7 +100,7 @@ fn upload_ring_frame(
     ring: &crate::cache::RingAnimation,
     index: usize,
 ) -> Option<egui::TextureHandle> {
-    let (w, h, raw) = ring.with_frame(index, |f| {
+    let (w, h, raw) = ring.try_with_frame(index, |f| {
         (f.image.width(), f.image.height(), f.image.as_raw().clone())
     })?;
     let color_image = egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], &raw);
@@ -52,6 +109,31 @@ fn upload_ring_frame(
         color_image,
         egui::TextureOptions::LINEAR,
     ))
+}
+
+fn log_anim_texture_upload(
+    archive_path: &std::path::Path,
+    orig_i: usize,
+    previous_generation: Option<u64>,
+    generation: u64,
+    frame_index: usize,
+    visible: bool,
+    generation_changed: bool,
+    elapsed: Duration,
+) {
+    if generation_changed || elapsed >= Duration::from_millis(8) {
+        crate::log_perf!(
+            "[diag/anim-texture] archive={:?} page={} previous_generation={:?} generation={} frame={} visible={} reason={} upload={:.1}ms",
+            archive_path,
+            orig_i,
+            previous_generation,
+            generation,
+            frame_index,
+            visible,
+            if generation_changed { "generation-change" } else { "frame-update" },
+            elapsed.as_secs_f64() * 1000.0,
+        );
+    }
 }
 
 /// `bounds` の中に `img_size` を縦横比を保ったまま収める（contain-fit）矩形を返す。
@@ -67,12 +149,16 @@ pub(crate) fn fit_rect_contain(bounds: egui::Rect, img_size: egui::Vec2) -> egui
 
 /// GIF等アニメーション再生状態（ページごとに保持）
 struct AnimState {
+    instance_id: AnimationInstanceId,
     frame_index: usize,
+    requested_through: usize,
     last_frame_at: Instant,
     /// 非可視ページとして凍結中か。フレーム送り(UIスレッド同期デコード)は可視ページ
     /// 限定のため、裏に回ったアニメはこのフラグを立てて位置を凍結し、再可視化時に
     /// 基準時刻を取り直して続きから再開する（凍結中の経過時間を追走させない）。
     paused: bool,
+    /// 同じ欠落状態を毎tick出力しないための異常ログ抑止。
+    missing_frame_logged: bool,
 }
 
 /// show() の先頭で ctx.input を1回だけ呼び、フレーム全体で使い回す入力スナップショット
@@ -227,6 +313,8 @@ struct RenderFrame {
     animating:   bool,
     t:           f32,
     anim_dir_f:  f32,
+    anim_from_lo: i32,
+    current_lo:  i32,
     page_mode:   PageMode,
     zoom_actual: bool,
     monitor:     Option<egui::Vec2>,
@@ -254,6 +342,8 @@ pub struct ViewerState {
     /// オフセット状態。spread_lo() = spread_base + offset.value()
     offset: SpreadOffset,
     textures: HashMap<usize, egui::TextureHandle>,
+    /// 各GPUテクスチャがどのデコード世代から作られたか。
+    texture_generations: HashMap<usize, u64>,
     open: bool,
     page_mode: PageMode,
     scroll_acc: f32,
@@ -277,6 +367,9 @@ pub struct ViewerState {
     outer_pos: Option<egui::Pos2>,
     /// 左エントリリストパネルの表示状態（マウスホバーで on/off）
     entry_list_visible: bool,
+    /// 左エントリリストを最後に現在地へスクロールした spread_lo。
+    /// 非表示中は更新せず、再表示時またはページ変更時だけ現在行を中央へ寄せる。
+    entry_list_scrolled_lo: Option<i32>,
     /// フルスクリーン時ソートバーの表示状態（上端ホバーで on/off）
     fs_sort_bar_visible: bool,
     sort_key: ViewerSortKey,
@@ -314,8 +407,17 @@ pub struct ViewerState {
     thumbbar_visible_range: Option<(i32, i32)>,
     /// 保存済み見開き状態のキャッシュ（app側がopen_viewer時にセット/操作後に更新）
     saved_spread: Option<(PageMode, i32)>,
+    /// 保存済みソート条件のキャッシュ。None は保存OFFを表す。
+    saved_sort: Option<(ViewerSortKey, bool)>,
     /// 保存メニューでのユーザー操作要求（1フレームで消費してViewerOutputへ渡す）
     pending_spread_action: Option<crate::controller::SpreadSaveAction>,
+    /// ソート保存メニューでのユーザー操作要求（1フレームで消費）
+    pending_sort_action: Option<crate::controller::SortSaveAction>,
+    /// 最後に右クリック座標から解決した実ページ(entry_name, display_name)。
+    thumbnail_context_entry: Option<(String, String)>,
+    /// DBから復元した登録サムネイルのentry_name。Noneはデフォルト。
+    saved_thumbnail_entry: Option<String>,
+    pending_thumbnail_action: Option<crate::controller::ThumbnailSaveAction>,
     /// 右クリックメニュー「お気に入り詳細設定」が押されたか（1フレームで消費）
     pending_open_favorite_dialog: bool,
     /// 右クリックメニュー「ファイル詳細」が押されたか（1フレームで消費）
@@ -427,6 +529,13 @@ impl ViewerState {
         if zoom_actual { None } else { Some(self.content_px) }
     }
 
+    /// 世代非依存アニメのリサイズ切替で保持すべき、現在表示中のフレーム番号。
+    pub(crate) fn animation_frame_index(&self, original_index: usize) -> usize {
+        self.anim_states
+            .get(&original_index)
+            .map_or(0, |state| state.frame_index)
+    }
+
     /// フェーズ6: 再デコード発火時に、指定ページのテクスチャ・アニメ再生状態を破棄する。
     /// 次の update_textures() で PageCache から作り直させる（アニメはフレーム0から再生し直す）。
     /// 項目(D): Exif Orientation ON/OFF切替時に、開いているアーカイブの全ページのテクスチャ・
@@ -435,6 +544,7 @@ impl ViewerState {
     /// まま残ってしまうため、開いているアーカイブ全体を対象にする。
     pub fn invalidate_all_pages(&mut self) {
         self.textures.clear();
+        self.texture_generations.clear();
         self.anim_states.clear();
     }
 
@@ -459,6 +569,7 @@ impl ViewerState {
             spread_base: 0,
             offset: SpreadOffset::new(),
             textures: HashMap::new(),
+            texture_generations: HashMap::new(),
             open: true,
             page_mode: PageMode::Single,
             scroll_acc: 0.0,
@@ -472,6 +583,7 @@ impl ViewerState {
             default_slot_applied: false,
             outer_pos: None,
             entry_list_visible: false,
+            entry_list_scrolled_lo: None,
             fs_sort_bar_visible: false,
             sort_key: ViewerSortKey::Name,
             sort_ascending: true,
@@ -487,7 +599,12 @@ impl ViewerState {
             thumbbar_scrolled_lo: None,
             thumbbar_visible_range: None,
             saved_spread: None,
+            saved_sort: None,
             pending_spread_action: None,
+            pending_sort_action: None,
+            thumbnail_context_entry: None,
+            saved_thumbnail_entry: None,
+            pending_thumbnail_action: None,
             pending_open_favorite_dialog: false,
             pending_open_file_detail: false,
             file_detail_dialog: None,
@@ -518,6 +635,7 @@ impl ViewerState {
             spread_base: 0,
             offset: SpreadOffset::new(),
             textures: HashMap::new(),
+            texture_generations: HashMap::new(),
             open: true,
             page_mode: PageMode::Single,
             scroll_acc: 0.0,
@@ -531,6 +649,7 @@ impl ViewerState {
             default_slot_applied: false,
             outer_pos: None,
             entry_list_visible: false,
+            entry_list_scrolled_lo: None,
             fs_sort_bar_visible: false,
             sort_key: ViewerSortKey::Name,
             sort_ascending: true,
@@ -546,7 +665,12 @@ impl ViewerState {
             thumbbar_scrolled_lo: None,
             thumbbar_visible_range: None,
             saved_spread: None,
+            saved_sort: None,
             pending_spread_action: None,
+            pending_sort_action: None,
+            thumbnail_context_entry: None,
+            saved_thumbnail_entry: None,
+            pending_thumbnail_action: None,
             pending_open_favorite_dialog: false,
             pending_open_file_detail: false,
             file_detail_dialog: None,
@@ -571,18 +695,23 @@ impl ViewerState {
     /// オフセットがずれているか（UI表示用）
     pub fn can_shift_forward(&self) -> bool {
         self.offset.can_advance()
+            && self.spread_lo() + 1 <= self.entries.len() as i32 - 1
     }
 
     pub fn can_shift_backward(&self) -> bool {
-        self.offset.can_retreat()
+        self.offset.can_retreat() && self.spread_lo() - 1 >= -1
     }
 
     pub fn shift_offset_forward(&mut self) {
-        self.offset.advance();
+        if self.can_shift_forward() {
+            self.offset.advance();
+        }
     }
 
     pub fn shift_offset_backward(&mut self) {
-        self.offset.retreat();
+        if self.can_shift_backward() {
+            self.offset.retreat();
+        }
     }
 
     /// OCR/翻訳子ウィンドウ用: 見開きを1組ぶん(step)実際に送る/戻す。
@@ -633,9 +762,8 @@ impl ViewerState {
         if self.is_raw_file || mode == PageMode::Single { return; }
         self.set_page_mode(mode, cfg);
         self.spread_base = 0;
-        match offset_value {
-            v if v < 0 => self.offset.force_virtual_left(),
-            v if v > 0 => { self.offset.reset(); self.offset.advance(); }
+        match normalize_saved_spread_offset(offset_value) {
+            -1 => self.offset.force_virtual_left(),
             _ => self.offset.reset(),
         }
     }
@@ -660,8 +788,64 @@ impl ViewerState {
     pub fn spread_overwrite_enabled(&self) -> bool {
         match self.saved_spread {
             None => false,
-            Some((mode, offset)) => mode != self.page_mode || offset != self.offset.value(),
+            Some((mode, offset)) => {
+                mode != self.page_mode
+                    || normalize_saved_spread_offset(offset)
+                        != normalize_saved_spread_offset(self.offset.value())
+            }
         }
+    }
+
+    /// 現在のソート条件を保存値と同じ形式で返す。
+    pub fn current_sort_snapshot(&self) -> (ViewerSortKey, bool) {
+        (self.sort_key, self.sort_ascending)
+    }
+
+    /// 保存済みソートをビューアー生成直後に適用する。
+    /// レコードがない場合は呼ばれないため、従来の初期化経路には介入しない。
+    pub fn restore_saved_sort(&mut self, key: ViewerSortKey, ascending: bool) {
+        if self.is_raw_file || self.current_sort_snapshot() == (key, ascending) {
+            return;
+        }
+        self.sort_key = key;
+        self.sort_ascending = ascending;
+        self.sort_entries();
+    }
+
+    /// app側がDBの読み込み・保存結果をViewerStateへ反映する。
+    pub fn set_saved_sort(&mut self, value: Option<(ViewerSortKey, bool)>) {
+        self.saved_sort = value;
+    }
+
+    pub fn sort_save_toggle_on(&self) -> bool {
+        self.saved_sort.is_some()
+    }
+
+    pub fn sort_save_toggle_enabled(&self) -> bool {
+        !self.is_raw_file
+    }
+
+    /// 保存ONで、現在値が保存済み値から変わっている場合だけtrue。
+    pub fn sort_save_changed(&self) -> bool {
+        self.saved_sort
+            .is_some_and(|saved| saved != self.current_sort_snapshot())
+    }
+
+    /// 保存を解除する。現在のソート条件とページ位置は変更しない。
+    pub fn clear_saved_sort(&mut self) {
+        self.saved_sort = None;
+    }
+
+    pub fn take_sort_action(&mut self) -> Option<crate::controller::SortSaveAction> {
+        self.pending_sort_action.take()
+    }
+
+    pub fn set_saved_thumbnail_entry(&mut self, entry_name: Option<String>) {
+        self.saved_thumbnail_entry = entry_name;
+    }
+
+    pub fn take_thumbnail_action(&mut self) -> Option<crate::controller::ThumbnailSaveAction> {
+        self.pending_thumbnail_action.take()
     }
 
     /// メニュー操作で立てられた保存要求を取り出す（1フレームで消費）
@@ -862,7 +1046,9 @@ impl ViewerState {
     pub fn show(
         &mut self,
         ui: &mut egui::Ui,
-        page_cache: &PageCache,
+        page_cache: &mut PageCache,
+        active_generation: u64,
+        preparing_generation: Option<u64>,
         cfg: &mut ViewerConfig,
         keymap: &Keymap,
         translate_window_open: bool,
@@ -873,7 +1059,7 @@ impl ViewerState {
         let ctx = ui.ctx().clone();
         let viewer_style = ui.style().clone();
         if !self.open || self.entries.is_empty() {
-            return ViewerOutput { nav: ViewerNav::None, close_requested: !self.open, save_slots: None, spread_save_action: None, open_favorite_dialog: false, toggle_translate_window: false };
+            return ViewerOutput { nav: ViewerNav::None, close_requested: !self.open, save_slots: None, spread_save_action: None, sort_save_action: None, thumbnail_save_action: None, open_favorite_dialog: false, toggle_translate_window: false };
         }
 
         // ── フレーム入力を一括収集（ctx.input はこの1回のみ）────────────────
@@ -888,10 +1074,16 @@ impl ViewerState {
 
         let (animating, t) = self.update_animation(&ctx, input.dt, cfg);
 
-        self.update_textures(&ctx, page_cache);
+        self.update_textures(
+            &ctx,
+            page_cache,
+            active_generation,
+            preparing_generation,
+        );
 
         let total = self.entries.len();
-        let (tex_lo, tex_hi) = self.page_textures_for(self.spread_lo());
+        let current_lo = self.spread_lo();
+        let (tex_lo, tex_hi) = self.page_textures_for(current_lo);
         let (prev_tex_lo, prev_tex_hi) = if animating {
             self.page_textures_for(self.anim_from_lo)
         } else {
@@ -1005,6 +1197,8 @@ impl ViewerState {
             animating,
             t,
             anim_dir_f:  self.anim_dir as f32,
+            anim_from_lo: self.anim_from_lo,
+            current_lo,
             page_mode:   self.page_mode,
             zoom_actual: cfg.zoom_actual,
             monitor:     input.monitor_size,
@@ -1030,11 +1224,13 @@ impl ViewerState {
         self.tick_toast(&ctx, input.time);
 
         let spread_save_action = self.take_spread_action();
+        let sort_save_action = self.take_sort_action();
+        let thumbnail_save_action = self.take_thumbnail_action();
         let open_favorite_dialog = self.take_favorite_dialog_request();
         let toggle_translate_window = self.take_translate_toggle_request();
         self.maybe_open_file_detail_dialog();
         self.draw_file_detail_dialog(&ctx);
-        ViewerOutput { nav, close_requested: close_self, save_slots, spread_save_action, open_favorite_dialog, toggle_translate_window }
+        ViewerOutput { nav, close_requested: close_self, save_slots, spread_save_action, sort_save_action, thumbnail_save_action, open_favorite_dialog, toggle_translate_window }
     }
 
     /// ビューアーを開いた直後（初回フレーム）に conf 既定スロットを一度だけ適用する。
@@ -1292,10 +1488,10 @@ impl ViewerState {
                         self.render_single(ui, &frame.tex_lo, frame.zoom_actual, frame.rotation_angle, &mut double_clicked, &mut single_clicked);
                     }
                     PageMode::SpreadLeft => {
-                        self.render_spread(ui, &frame.tex_lo, &frame.tex_hi, frame.monitor, frame.rotation_angle, &mut single_clicked);
+                        self.render_spread(ui, &frame.tex_lo, &frame.tex_hi, self.spread_lo(), self.spread_lo() + 1, frame.monitor, frame.rotation_angle, &mut single_clicked);
                     }
                     PageMode::SpreadRight => {
-                        self.render_spread(ui, &frame.tex_hi, &frame.tex_lo, frame.monitor, frame.rotation_angle, &mut single_clicked);
+                        self.render_spread(ui, &frame.tex_hi, &frame.tex_lo, self.spread_lo() + 1, self.spread_lo(), frame.monitor, frame.rotation_angle, &mut single_clicked);
                     }
                 }
             } else {
@@ -1315,20 +1511,24 @@ impl ViewerState {
                         Self::paint_single_at(&painter, &frame.tex_lo,      avail, origin, off_new);
                     }
                     PageMode::SpreadLeft => {
-                        let (rl, rr) = Self::spread_rects(avail, origin, &frame.prev_tex_lo, &frame.prev_tex_hi, frame.monitor);
-                        Self::paint_page(&painter, &frame.prev_tex_lo, rl.translate(egui::vec2(off_old, 0.0)));
-                        Self::paint_page(&painter, &frame.prev_tex_hi, rr.translate(egui::vec2(off_old, 0.0)));
-                        let (rl, rr) = Self::spread_rects(avail, origin, &frame.tex_lo, &frame.tex_hi, frame.monitor);
-                        Self::paint_page(&painter, &frame.tex_lo, rl.translate(egui::vec2(off_new, 0.0)));
-                        Self::paint_page(&painter, &frame.tex_hi, rr.translate(egui::vec2(off_new, 0.0)));
+                        if !Self::paint_offset_spread(&painter, frame, avail, origin, false) {
+                            let (rl, rr) = Self::spread_rects(avail, origin, &frame.prev_tex_lo, &frame.prev_tex_hi, frame.monitor);
+                            Self::paint_page(&painter, &frame.prev_tex_lo, rl.translate(egui::vec2(off_old, 0.0)));
+                            Self::paint_page(&painter, &frame.prev_tex_hi, rr.translate(egui::vec2(off_old, 0.0)));
+                            let (rl, rr) = Self::spread_rects(avail, origin, &frame.tex_lo, &frame.tex_hi, frame.monitor);
+                            Self::paint_page(&painter, &frame.tex_lo, rl.translate(egui::vec2(off_new, 0.0)));
+                            Self::paint_page(&painter, &frame.tex_hi, rr.translate(egui::vec2(off_new, 0.0)));
+                        }
                     }
                     PageMode::SpreadRight => {
-                        let (rl, rr) = Self::spread_rects(avail, origin, &frame.prev_tex_hi, &frame.prev_tex_lo, frame.monitor);
-                        Self::paint_page(&painter, &frame.prev_tex_hi, rl.translate(egui::vec2(off_old, 0.0)));
-                        Self::paint_page(&painter, &frame.prev_tex_lo, rr.translate(egui::vec2(off_old, 0.0)));
-                        let (rl, rr) = Self::spread_rects(avail, origin, &frame.tex_hi, &frame.tex_lo, frame.monitor);
-                        Self::paint_page(&painter, &frame.tex_hi, rl.translate(egui::vec2(off_new, 0.0)));
-                        Self::paint_page(&painter, &frame.tex_lo, rr.translate(egui::vec2(off_new, 0.0)));
+                        if !Self::paint_offset_spread(&painter, frame, avail, origin, true) {
+                            let (rl, rr) = Self::spread_rects(avail, origin, &frame.prev_tex_hi, &frame.prev_tex_lo, frame.monitor);
+                            Self::paint_page(&painter, &frame.prev_tex_hi, rl.translate(egui::vec2(off_old, 0.0)));
+                            Self::paint_page(&painter, &frame.prev_tex_lo, rr.translate(egui::vec2(off_old, 0.0)));
+                            let (rl, rr) = Self::spread_rects(avail, origin, &frame.tex_hi, &frame.tex_lo, frame.monitor);
+                            Self::paint_page(&painter, &frame.tex_hi, rl.translate(egui::vec2(off_new, 0.0)));
+                            Self::paint_page(&painter, &frame.tex_lo, rr.translate(egui::vec2(off_new, 0.0)));
+                        }
                     }
                 }
             }
@@ -1624,7 +1824,13 @@ impl ViewerState {
 
     /// 表示ウィンドウ付近のページをキャッシュからテクスチャに変換し、
     /// ウィンドウ外のテクスチャを破棄する。GIF アニメーションのフレーム送りも担う。
-    fn update_textures(&mut self, ctx: &egui::Context, page_cache: &PageCache) {
+    fn update_textures(
+        &mut self,
+        ctx: &egui::Context,
+        page_cache: &mut PageCache,
+        active_generation: u64,
+        preparing_generation: Option<u64>,
+    ) {
         let total = self.entries.len();
         let anchor = self.spread_lo().max(0) as usize;
         let start = anchor.saturating_sub(5);
@@ -1638,11 +1844,26 @@ impl ViewerState {
         let now = Instant::now();
         let mut min_repaint_after = Duration::MAX;
 
+        let mut promoted_pages = Vec::new();
         for i in start..end {
             let orig_i = self.entries[i].original_index;
-            match page_cache.get(&self.archive_path, orig_i) {
-                Some(PageContent::Static(img)) => {
-                    if !self.textures.contains_key(&orig_i) {
+            let Some((generation, content)) = page_cache.get_best(
+                &self.archive_path,
+                orig_i,
+                active_generation,
+                preparing_generation,
+            ) else {
+                ctx.request_repaint_after(Duration::from_millis(100));
+                continue;
+            };
+            let previous_generation = self.texture_generations.get(&orig_i).copied();
+            let generation_changed = previous_generation != Some(generation);
+            match content {
+                PageContent::Static(img) => {
+                    if generation_changed {
+                        self.anim_states.remove(&orig_i);
+                    }
+                    if generation_changed || !self.textures.contains_key(&orig_i) {
                         let color_image = egui::ColorImage::from_rgba_unmultiplied(
                             [img.width() as usize, img.height() as usize],
                             img.as_raw(),
@@ -1653,31 +1874,58 @@ impl ViewerState {
                             egui::TextureOptions::LINEAR,
                         );
                         self.textures.insert(orig_i, tex);
+                        self.texture_generations.insert(orig_i, generation);
+                        promoted_pages.push((orig_i, generation));
                     }
                 }
-                Some(PageContent::Animated(ring)) => {
+                PageContent::Animated(ring) => {
+                    let instance_id = ring.instance_id();
+                    let animation_instance_changed = animation_instance_changed(
+                        self.anim_states.get(&orig_i).map(|state| state.instance_id),
+                        instance_id,
+                    );
+                    if animation_instance_changed {
+                        self.anim_states.remove(&orig_i);
+                    }
                     // フェーズ3/3.5: GIF/APNG/AVIF/WebP。全フレーム常駐ではなく逐次デコード+リングバッファ。
-                    // デコーダが終端(None)を返した時点をループ境界とみなし restart() する
-                    // (この再デコードによる一瞬のフリーズは許容する設計上の割り切り)。
+                    // 可視ページの次フレーム生成はバックグラウンドへ要求し、UIスレッドでは
+                    // 完成済みフレームだけを採用する。未完成中は現在のテクスチャを保持する。
                     if !visible_orig.contains(&orig_i) {
                         // 裏ページ: 位置を凍結（tickしない）。ページ送り時の白フラッシュ防止に、
                         // テクスチャ未保有時のみ凍結位置のフレームを1回だけアップロードする。
                         if let Some(state) = self.anim_states.get_mut(&orig_i) {
                             state.paused = true;
                         }
-                        if !self.textures.contains_key(&orig_i) {
+                        if generation_changed || !self.textures.contains_key(&orig_i) {
                             let frozen_index =
                                 self.anim_states.get(&orig_i).map_or(0, |s| s.frame_index);
+                            let upload_started = Instant::now();
                             if let Some(tex) = upload_ring_frame(ctx, orig_i, ring, frozen_index) {
+                                let upload_elapsed = upload_started.elapsed();
                                 self.textures.insert(orig_i, tex);
+                                self.texture_generations.insert(orig_i, generation);
+                                log_anim_texture_upload(
+                                    &self.archive_path,
+                                    orig_i,
+                                    previous_generation,
+                                    generation,
+                                    frozen_index,
+                                    false,
+                                    generation_changed,
+                                    upload_elapsed,
+                                );
+                                promoted_pages.push((orig_i, generation));
                             }
                         }
                         continue;
                     }
                     let state = self.anim_states.entry(orig_i).or_insert_with(|| AnimState {
+                        instance_id,
                         frame_index: 0,
+                        requested_through: 0,
                         last_frame_at: now,
                         paused: false,
+                        missing_frame_logged: false,
                     });
                     // 凍結明け: 凍結中の経過時間を再生遅延として追走しないよう基準時刻を取り直し、
                     // 凍結位置から等速で再開する。
@@ -1685,53 +1933,105 @@ impl ViewerState {
                         state.paused = false;
                         state.last_frame_at = now;
                     }
-                    let mut needs_upload = !self.textures.contains_key(&orig_i);
-                    // 遅れが1フレーム分を超えていたら複数フレーム進めて追いつく
-                    // (テクスチャアップロードは最後の1枚だけ)。スキップ分のデコードも
-                    // UIスレッドで走るため、上限 MAX_CATCHUP_FRAMES で打ち切る。
-                    let mut advanced = false;
-                    for _ in 0..MAX_CATCHUP_FRAMES {
-                        let current_delay = ring
-                            .with_frame(state.frame_index, |f| f.delay)
-                            .unwrap_or(Duration::from_millis(100));
-                        if now.duration_since(state.last_frame_at) < current_delay {
-                            break;
+                    let texture_missing = !self.textures.contains_key(&orig_i);
+                    if texture_missing {
+                        if let Some(reconnect_index) = ring.reconnect_frame_index(state.frame_index) {
+                            if reconnect_index != state.frame_index {
+                                let previous_index = state.frame_index;
+                                state.frame_index = reconnect_index;
+                                state.requested_through = state.requested_through.max(reconnect_index);
+                                state.last_frame_at = now;
+                                state.missing_frame_logged = false;
+                                crate::log_perf!(
+                                    "[diag/anim-reconnect] archive={:?} page={} from={} to={} instance={:?} texture=false visible=true",
+                                    self.archive_path,
+                                    orig_i,
+                                    previous_index,
+                                    reconnect_index,
+                                    instance_id,
+                                );
+                            }
                         }
-                        let next_index = state.frame_index + 1;
-                        if ring.with_frame(next_index, |_| ()).is_some() {
-                            state.frame_index = next_index;
-                            // 超過分(elapsed - delay)を次フレームへ繰り越して蓄積誤差を防ぐ
-                            state.last_frame_at += current_delay;
-                        } else {
-                            // ループ境界: restart()はリング全クリア+先頭からの再デコードで
-                            // コストが読めないため、境界を跨ぐ追走はせずフレーム0から仕切り直す。
-                            ring.restart();
-                            state.frame_index = 0;
-                            state.last_frame_at = now;
-                            advanced = true;
-                            break;
-                        }
-                        advanced = true;
                     }
-                    if advanced {
-                        needs_upload = true;
-                        // 上限まで進めてもまだ1フレーム分以上遅れている場合
-                        // (デコードが再生速度に追いつかない高速アニメ、最小化からの復帰直後など)は
-                        // 追走を諦めて now に切り直し「遅いなり再生」に落とす(無限追走スパイラル防止)。
-                        let current_delay = ring
-                            .with_frame(state.frame_index, |f| f.delay)
-                            .unwrap_or(Duration::from_millis(100));
-                        if now.duration_since(state.last_frame_at) >= current_delay {
+                    let mut needs_upload = generation_changed || texture_missing;
+                    let current_delay = ring
+                        .try_with_frame(state.frame_index, |f| f.delay)
+                        .unwrap_or(Duration::from_millis(100));
+
+                    let latest_ready = ring.playback_ready_after(state.frame_index);
+                    if now.duration_since(state.last_frame_at) >= current_delay {
+                        if let Some(ready_index) = latest_ready {
+                            let previous_index = state.frame_index;
+                            state.frame_index = ready_index;
+                            if ready_index > previous_index + 1 {
+                                crate::log_perf!(
+                                    "[diag/anim-drop] archive={:?} page={} from={} to={} skipped={}",
+                                    self.archive_path,
+                                    orig_i,
+                                    previous_index,
+                                    ready_index,
+                                    ready_index - previous_index - 1,
+                                );
+                            }
+                            // 遅れを次フレームへ持ち越すと、重い素材で永久に複数枚追走するため、
+                            // 実際に表示できた時点を新しい基準時刻にする。
                             state.last_frame_at = now;
+                            needs_upload = true;
                         }
                     }
 
                     if needs_upload {
                         let frame_index = state.frame_index;
+                        let upload_started = Instant::now();
                         if let Some(tex) = upload_ring_frame(ctx, orig_i, ring, frame_index) {
+                            let upload_elapsed = upload_started.elapsed();
                             self.textures.insert(orig_i, tex);
+                            self.texture_generations.insert(orig_i, generation);
+                            log_anim_texture_upload(
+                                &self.archive_path,
+                                orig_i,
+                                previous_generation,
+                                generation,
+                                frame_index,
+                                true,
+                                generation_changed,
+                                upload_elapsed,
+                            );
+                            if generation_changed {
+                                promoted_pages.push((orig_i, generation));
+                            }
+                            state.missing_frame_logged = false;
+                        } else if !state.missing_frame_logged {
+                            if let Some(AnimationFrameDiagnostic::Missing {
+                                ring_range,
+                                next_decode_index,
+                                capacity,
+                            }) = ring.diagnose_missing_frame(frame_index)
+                            {
+                                crate::log_perf!(
+                                    "[diag/anim-missing-frame] archive={:?} page={} requested={} ring_range={:?} next_decode={} capacity={} instance={:?} texture=false visible=true",
+                                    self.archive_path,
+                                    orig_i,
+                                    frame_index,
+                                    ring_range,
+                                    next_decode_index,
+                                    capacity,
+                                    instance_id,
+                                );
+                                state.missing_frame_logged = true;
+                            }
                         }
                     }
+
+                    // 初期テクスチャを確保してから、可視中だけ小さな範囲を先行デコードする。
+                    // リサイズが追いつかない場合はpipeline側のraw queueが中間フレームを
+                    // 最新1枚へ畳み込み、表示リサイズ前に破棄する。
+                    state.requested_through = next_anim_decode_request(
+                        state.frame_index,
+                        state.requested_through,
+                        ring.ring_capacity(),
+                    );
+                    ring.request_frame(state.requested_through);
 
                     // デコード/リサイズ/アップロードに要した実時間を差し引くため、ここで時刻を取り直す
                     // (loop開始時の `now` を使うと、上記処理のコストが remaining に反映されず
@@ -1739,21 +2039,29 @@ impl ViewerState {
                     let now2 = Instant::now();
                     let elapsed_after_upload = now2.duration_since(state.last_frame_at);
                     let next_delay = ring
-                        .with_frame(state.frame_index, |f| f.delay)
+                        .try_with_frame(state.frame_index, |f| f.delay)
                         .unwrap_or(Duration::from_millis(100));
-                    let remaining = next_delay.saturating_sub(elapsed_after_upload);
+                    // 未完成フレームは短いポーリングだけ予約し、OS入力を妨げる同期waitはしない。
+                    let remaining = if ring.playback_ready_after(state.frame_index).is_some() {
+                        next_delay.saturating_sub(elapsed_after_upload)
+                    } else {
+                        Duration::from_millis(8)
+                    };
                     min_repaint_after = min_repaint_after.min(remaining);
                 }
-                None => {
-                    ctx.request_repaint_after(Duration::from_millis(100));
-                }
             }
+        }
+
+        // 新GPUテクスチャの作成に成功したページだけ、旧CPU世代を後から解放する。
+        for (orig_i, generation) in promoted_pages {
+            page_cache.remove_older_versions(&self.archive_path, orig_i, generation);
         }
 
         let window_orig: HashSet<usize> = (start..end)
             .map(|i| self.entries[i].original_index)
             .collect();
         self.textures.retain(|orig_i, _| window_orig.contains(orig_i));
+        self.texture_generations.retain(|orig_i, _| window_orig.contains(orig_i));
         self.anim_states.retain(|orig_i, _| window_orig.contains(orig_i));
 
         if min_repaint_after < Duration::MAX {
@@ -1774,6 +2082,7 @@ impl ViewerState {
         const TRIGGER_W: f32 = 40.0;
         const HIDE_MARGIN: f32 = 20.0;
 
+        let was_visible = self.entry_list_visible;
         let screen_left = viewport_rect.min.x;
         if let Some(pos) = hover_pos {
             if !self.entry_list_visible && pos.x < screen_left + TRIGGER_W {
@@ -1792,22 +2101,61 @@ impl ViewerState {
             let is_spread = self.page_mode != PageMode::Single;
             let hi = if is_spread { lo + 1 } else { lo };
             let entries_snap = self.entries.clone();
+            let scroll_anchor = Self::entry_list_scroll_anchor(lo, entries_snap.len());
+            let should_scroll = !was_visible || self.entry_list_scrolled_lo != Some(lo);
 
             egui::Panel::left("entry_list_panel")
                 .exact_size(ENTRY_PANEL_W)
                 .frame(egui::Frame::side_top_panel(viewer_style))
                 .show(ui, |ui| {
-                    egui::ScrollArea::vertical()
+                    let output = egui::ScrollArea::vertical()
                         .auto_shrink([false, false])
                         .show(ui, |ui| {
+                            let mut anchor_rect = None;
                             for (i, entry) in entries_snap.iter().enumerate() {
-                                let i = i as i32;
-                                let is_cur = i == lo || i == hi;
-                                let _ = ui.selectable_label(is_cur, &entry.display_name);
+                                let is_cur = i as i32 == lo || i as i32 == hi;
+                                let response = ui.selectable_label(is_cur, &entry.display_name);
+                                if scroll_anchor == Some(i) {
+                                    anchor_rect = Some(response.rect);
+                                }
                             }
+                            anchor_rect
                         });
+
+                    if should_scroll && let Some(anchor_rect) = output.inner {
+                        // 現在行のコンテンツ上の位置から絶対オフセットを求める。
+                        // 0..max_offset にクランプすることで、先頭側ではマーカーが
+                        // 中央まで移動し、中盤だけ中央固定、末尾側では再び下へ移動する。
+                        let max_offset = (output.content_size.y - output.inner_rect.height()).max(0.0);
+                        let desired = Self::entry_list_follow_offset(
+                            output.state.offset.y,
+                            anchor_rect.center().y,
+                            output.inner_rect.center().y,
+                            max_offset,
+                        );
+                        let mut state = output.state;
+                        state.offset.y = desired;
+                        state.store(ctx, output.id);
+                        ctx.request_repaint();
+                        self.entry_list_scrolled_lo = Some(lo);
+                    }
                 });
         }
+    }
+
+    /// 仮想ページを含む spread_lo から、左一覧でスクロール対象にする実在行を求める。
+    fn entry_list_scroll_anchor(lo: i32, total: usize) -> Option<usize> {
+        (total > 0).then(|| lo.clamp(0, total as i32 - 1) as usize)
+    }
+
+    /// 現在行が表示領域中央に来る絶対スクロール量を、先頭・末尾でクランプする。
+    fn entry_list_follow_offset(
+        current_offset: f32,
+        marker_center: f32,
+        viewport_center: f32,
+        max_offset: f32,
+    ) -> f32 {
+        (current_offset + marker_center - viewport_center).clamp(0.0, max_offset.max(0.0))
     }
 
     /// ツールバー項目を cfg.bar_order の順に描画する（top bar / fs_sort_bar 共用）。
@@ -1941,13 +2289,36 @@ impl ViewerState {
         }
     }
 
-    /// 画像本体の右クリックメニュー（見開き設定の保存トグル／上書き保存）を描画する
+    fn sort_setting_text(key: ViewerSortKey, ascending: bool, t: i18n::Lang) -> String {
+        let key_label = match key {
+            ViewerSortKey::Name => t.sort_name(),
+            ViewerSortKey::Natural => t.sort_natural(),
+            ViewerSortKey::Date => t.sort_date(),
+        };
+        let order_label = if ascending { t.sort_asc() } else { t.sort_desc() };
+        format!(
+            "{} {}",
+            key_label.trim_matches(['[', ']']),
+            order_label.trim_matches(['[', ']'])
+        )
+    }
+
+    /// 画像本体の右クリックメニュー（見開き・ソート設定の保存）を描画する
     fn spread_save_context_menu(
         ui: &mut egui::Ui,
         toggle_enabled: bool,
         toggle_on_init: bool,
         overwrite_enabled: bool,
         action: &mut Option<crate::controller::SpreadSaveAction>,
+        sort_toggle_enabled: bool,
+        sort_toggle_on_init: bool,
+        sort_changed: bool,
+        current_sort: (ViewerSortKey, bool),
+        sort_action: &mut Option<crate::controller::SortSaveAction>,
+        thumbnail_target: Option<&(String, String)>,
+        saved_thumbnail_entry: Option<&str>,
+        saved_thumbnail_display: Option<&str>,
+        thumbnail_action: &mut Option<crate::controller::ThumbnailSaveAction>,
         open_favorite_dialog: &mut bool,
         open_file_detail: &mut bool,
     ) {
@@ -1969,6 +2340,51 @@ impl ViewerState {
                 ui.close();
             }
         });
+        let mut sort_toggle_on = sort_toggle_on_init;
+        ui.add_enabled_ui(sort_toggle_enabled, |ui| {
+            if ui.checkbox(&mut sort_toggle_on, t.sort_save_toggle_label()).changed() {
+                *sort_action = Some(if sort_toggle_on {
+                    crate::controller::SortSaveAction::Enable
+                } else {
+                    crate::controller::SortSaveAction::Disable
+                });
+                ui.close();
+            }
+        });
+        let sort_text = Self::sort_setting_text(current_sort.0, current_sort.1, t);
+        let changed_suffix = if sort_changed {
+            format!("（{}）", t.sort_save_changed_label())
+        } else {
+            String::new()
+        };
+        ui.label(format!("{} : {}{}", t.sort_save_new_label(), sort_text, changed_suffix));
+        // チェックは「このアーカイブに登録サムネイルがある」状態を表す。
+        // 右クリックしたページとの一致判定にすると、再オープン時の表示ページが異なるだけで
+        // 未チェックに見えてしまうため、保存値の有無だけから復元する。
+        let mut thumbnail_register = saved_thumbnail_entry.is_some();
+        ui.add_enabled_ui(thumbnail_target.is_some(), |ui| {
+            if ui.checkbox(&mut thumbnail_register, t.thumbnail_register_page_label()).changed() {
+                *thumbnail_action = if thumbnail_register {
+                    thumbnail_target.map(|(entry_name, _)| crate::controller::ThumbnailSaveAction::Enable {
+                        entry_name: entry_name.clone(),
+                    })
+                } else {
+                    Some(crate::controller::ThumbnailSaveAction::Disable)
+                };
+                ui.close();
+            }
+        });
+        let saved_display = saved_thumbnail_display
+            .map(Self::thumbnail_status_name)
+            .unwrap_or_else(|| t.thumbnail_default_label().to_string());
+        let status_response = ui.label(format!(
+            "{}: {}",
+            t.thumbnail_current_label(),
+            saved_display,
+        ));
+        if let Some(full_name) = saved_thumbnail_display {
+            status_response.on_hover_text(full_name);
+        }
         ui.separator();
         if ui.button(t.favorite_detail_menu()).clicked() {
             *open_favorite_dialog = true;
@@ -1977,6 +2393,20 @@ impl ViewerState {
         if ui.button(t.file_detail_menu()).clicked() {
             *open_file_detail = true;
             ui.close();
+        }
+    }
+
+    fn thumbnail_status_name(display_name: &str) -> String {
+        let stem = std::path::Path::new(display_name)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or(display_name);
+        let chars: Vec<char> = stem.chars().collect();
+        const KEEP: usize = 16;
+        if chars.len() <= KEEP * 2 + 3 {
+            stem.to_string()
+        } else {
+            format!("{}...{}", chars[..KEEP].iter().collect::<String>(), chars[chars.len() - KEEP..].iter().collect::<String>())
         }
     }
 
@@ -1992,9 +2422,10 @@ impl ViewerState {
         let toggle_enabled = self.spread_save_toggle_enabled();
         let toggle_on = self.spread_save_toggle_on();
         let overwrite_enabled = self.spread_overwrite_enabled();
-        let action = &mut self.pending_spread_action;
-        let open_favorite_dialog = &mut self.pending_open_favorite_dialog;
-        let open_file_detail = &mut self.pending_open_file_detail;
+        let sort_toggle_enabled = self.sort_save_toggle_enabled();
+        let sort_toggle_on = self.sort_save_toggle_on();
+        let sort_changed = self.sort_save_changed();
+        let current_sort = self.current_sort_snapshot();
         if let Some(tex) = tex {
             let [img_w, img_h] = tex.size();
             if zoom_actual {
@@ -2022,7 +2453,18 @@ impl ViewerState {
                     }
                     if resp.double_clicked() { *double_clicked = true; }
                     if resp.clicked() && !resp.double_clicked() { *single_clicked = true; }
-                    resp.context_menu(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, open_favorite_dialog, open_file_detail));
+                    if resp.secondary_clicked() {
+                        self.set_thumbnail_context(Some(self.spread_lo()));
+                    }
+                    let thumbnail_target = self.thumbnail_context_entry.as_ref();
+                    let saved_thumbnail_entry = self.saved_thumbnail_entry.as_deref();
+                    let saved_thumbnail_display = self.saved_thumbnail_display_name();
+                    let action = &mut self.pending_spread_action;
+                    let sort_action = &mut self.pending_sort_action;
+                    let thumbnail_action = &mut self.pending_thumbnail_action;
+                    let open_favorite_dialog = &mut self.pending_open_favorite_dialog;
+                    let open_file_detail = &mut self.pending_open_file_detail;
+                    resp.context_menu(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort, sort_action, thumbnail_target, saved_thumbnail_entry, saved_thumbnail_display.as_deref(), thumbnail_action, open_favorite_dialog, open_file_detail));
                 });
             } else {
                 let available = ui.available_size();
@@ -2031,7 +2473,18 @@ impl ViewerState {
                 let resp  = ui.allocate_rect(fit, egui::Sense::click());
                 if resp.double_clicked() { *double_clicked = true; }
                 if resp.clicked() && !resp.double_clicked() { *single_clicked = true; }
-                resp.context_menu(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, open_favorite_dialog, open_file_detail));
+                if resp.secondary_clicked() {
+                    self.set_thumbnail_context(Some(self.spread_lo()));
+                }
+                let thumbnail_target = self.thumbnail_context_entry.as_ref();
+                let saved_thumbnail_entry = self.saved_thumbnail_entry.as_deref();
+                let saved_thumbnail_display = self.saved_thumbnail_display_name();
+                let action = &mut self.pending_spread_action;
+                let sort_action = &mut self.pending_sort_action;
+                let thumbnail_action = &mut self.pending_thumbnail_action;
+                let open_favorite_dialog = &mut self.pending_open_favorite_dialog;
+                let open_file_detail = &mut self.pending_open_file_detail;
+                resp.context_menu(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort, sort_action, thumbnail_target, saved_thumbnail_entry, saved_thumbnail_display.as_deref(), thumbnail_action, open_favorite_dialog, open_file_detail));
             }
         } else {
             let rect = egui::Rect::from_min_size(ui.cursor().left_top(), ui.available_size());
@@ -2045,6 +2498,8 @@ impl ViewerState {
         ui: &mut egui::Ui,
         tex_left: &Option<egui::TextureHandle>,
         tex_right: &Option<egui::TextureHandle>,
+        left_index: i32,
+        right_index: i32,
         monitor: Option<egui::Vec2>,
         angle_deg: i32,
         single_clicked: &mut bool,
@@ -2052,16 +2507,33 @@ impl ViewerState {
         let toggle_enabled = self.spread_save_toggle_enabled();
         let toggle_on = self.spread_save_toggle_on();
         let overwrite_enabled = self.spread_overwrite_enabled();
-        let action = &mut self.pending_spread_action;
-        let open_favorite_dialog = &mut self.pending_open_favorite_dialog;
-        let open_file_detail = &mut self.pending_open_file_detail;
+        let sort_toggle_enabled = self.sort_save_toggle_enabled();
+        let sort_toggle_on = self.sort_save_toggle_on();
+        let sort_changed = self.sort_save_changed();
+        let current_sort = self.current_sort_snapshot();
         let available = ui.available_size();
         let origin = ui.cursor().left_top();
 
         let full_rect = egui::Rect::from_min_size(origin, available);
         let resp = ui.allocate_rect(full_rect, egui::Sense::click());
         if resp.clicked() && !resp.double_clicked() { *single_clicked = true; }
-        resp.context_menu(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, open_favorite_dialog, open_file_detail));
+        if resp.secondary_clicked() {
+            if let Some(pos) = resp.interact_pointer_pos() {
+                let index = self.thumbnail_target_for_spread(
+                    pos, full_rect, tex_left, tex_right, left_index, right_index, monitor, angle_deg,
+                );
+                self.set_thumbnail_context(index);
+            }
+        }
+        let thumbnail_target = self.thumbnail_context_entry.as_ref();
+        let saved_thumbnail_entry = self.saved_thumbnail_entry.as_deref();
+        let saved_thumbnail_display = self.saved_thumbnail_display_name();
+        let action = &mut self.pending_spread_action;
+        let sort_action = &mut self.pending_sort_action;
+        let thumbnail_action = &mut self.pending_thumbnail_action;
+        let open_favorite_dialog = &mut self.pending_open_favorite_dialog;
+        let open_file_detail = &mut self.pending_open_file_detail;
+        resp.context_menu(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort, sort_action, thumbnail_target, saved_thumbnail_entry, saved_thumbnail_display.as_deref(), thumbnail_action, open_favorite_dialog, open_file_detail));
 
         if angle_deg == 0 {
             let (rect_l, rect_r) = Self::spread_rects(available, origin, tex_left, tex_right, monitor);
@@ -2071,6 +2543,153 @@ impl ViewerState {
         } else {
             Self::paint_spread_rotated(ui.painter(), full_rect, tex_left, tex_right, angle_deg);
         }
+    }
+
+    /// サムネイル登録対象のヒットテスト。片側が仮想ページなら、クリック位置に
+    /// 関係なく実ページ側を返す。両側が実ページのときだけ描画されたページ矩形を判定する。
+    fn thumbnail_target_for_spread(
+        &self,
+        pos: egui::Pos2,
+        bounds: egui::Rect,
+        tex_left: &Option<egui::TextureHandle>,
+        tex_right: &Option<egui::TextureHandle>,
+        left_index: i32,
+        right_index: i32,
+        monitor: Option<egui::Vec2>,
+        angle_deg: i32,
+    ) -> Option<i32> {
+        let total = self.entries.len() as i32;
+        let left_real = (0..total).contains(&left_index);
+        let right_real = (0..total).contains(&right_index);
+        match (left_real, right_real) {
+            (true, false) => return Some(left_index),
+            (false, true) => return Some(right_index),
+            (false, false) => return None,
+            (true, true) => {}
+        }
+
+        let (hit_left, hit_right) = if angle_deg == 0 {
+            let (left, right) = Self::spread_rects(
+                bounds.size(), bounds.min, tex_left, tex_right, monitor,
+            );
+            (left.contains(pos), right.contains(pos))
+        } else {
+            let (local_left, local_right) = Self::spread_local_rects(tex_left, tex_right);
+            match Self::spread_rotation_fit(local_left, local_right, bounds, angle_deg) {
+                Some((center_left, center_right, scale)) => (
+                    Self::rotated_rect_contains(pos, center_left, local_left.size() * scale / 2.0, angle_deg),
+                    Self::rotated_rect_contains(pos, center_right, local_right.size() * scale / 2.0, angle_deg),
+                ),
+                None => (false, false),
+            }
+        };
+
+        if hit_left {
+            Some(left_index)
+        } else if hit_right {
+            Some(right_index)
+        } else {
+            None
+        }
+    }
+
+    fn set_thumbnail_context(&mut self, index: Option<i32>) {
+        self.thumbnail_context_entry = index
+            .filter(|i| *i >= 0)
+            .and_then(|i| self.entries.get(i as usize))
+            .map(|entry| (entry.entry_name.clone(), entry.display_name.clone()));
+    }
+
+    fn saved_thumbnail_display_name(&self) -> Option<String> {
+        let saved = self.saved_thumbnail_entry.as_deref()?;
+        self.entries.iter()
+            .find(|entry| entry.entry_name == saved)
+            .map(|entry| entry.display_name.clone())
+    }
+
+    fn rotated_rect_contains(
+        point: egui::Pos2,
+        center: egui::Pos2,
+        half: egui::Vec2,
+        angle_deg: i32,
+    ) -> bool {
+        let inverse = egui::emath::Rot2::from_angle(-(angle_deg as f32).to_radians());
+        let local = inverse * (point - center);
+        local.x.abs() <= half.x && local.y.abs() <= half.y
+    }
+
+    /// オフセット操作（見開き基点が±1だけ変化）の3ページ連続 tween。
+    /// 旧・新見開きの共通ページを1回だけ描き、その移動量を退場/入場ページにも適用する。
+    fn paint_offset_spread(
+        painter: &egui::Painter,
+        frame: &RenderFrame,
+        available: egui::Vec2,
+        origin: egui::Pos2,
+        right_binding: bool,
+    ) -> bool {
+        let Some((old_only, shared, new_only)) =
+            offset_transition_pages(frame.anim_from_lo, frame.current_lo)
+        else {
+            return false;
+        };
+
+        let old_textures = if right_binding {
+            [&frame.prev_tex_hi, &frame.prev_tex_lo]
+        } else {
+            [&frame.prev_tex_lo, &frame.prev_tex_hi]
+        };
+        let new_textures = if right_binding {
+            [&frame.tex_hi, &frame.tex_lo]
+        } else {
+            [&frame.tex_lo, &frame.tex_hi]
+        };
+        let old_pages = visual_spread_pages(frame.anim_from_lo, right_binding);
+        let new_pages = visual_spread_pages(frame.current_lo, right_binding);
+        let (old_l, old_r) = Self::spread_rects(
+            available, origin, old_textures[0], old_textures[1], frame.monitor,
+        );
+        let (new_l, new_r) = Self::spread_rects(
+            available, origin, new_textures[0], new_textures[1], frame.monitor,
+        );
+        let old_rects = [old_l, old_r];
+        let new_rects = [new_l, new_r];
+
+        let old_slot = |page| old_pages.iter().position(|candidate| *candidate == page);
+        let new_slot = |page| new_pages.iter().position(|candidate| *candidate == page);
+        let (Some(old_only_slot), Some(shared_old_slot), Some(shared_new_slot), Some(new_only_slot)) = (
+            old_slot(old_only), old_slot(shared), new_slot(shared), new_slot(new_only),
+        ) else {
+            return false;
+        };
+
+        let shared_old_rect = old_rects[shared_old_slot];
+        let shared_new_rect = new_rects[shared_new_slot];
+        let shared_rect = lerp_rect(shared_old_rect, shared_new_rect, frame.t);
+        let transition_bounds = lerp_rect(old_l.union(old_r), new_l.union(new_r), frame.t);
+        let painter = painter.with_clip_rect(painter.clip_rect().intersect(transition_bounds));
+        let old_only_rect = place_next_to(
+            old_rects[old_only_slot], shared_rect, old_only_slot < shared_old_slot,
+        );
+        let new_only_rect = place_next_to(
+            new_rects[new_only_slot], shared_rect, new_only_slot < shared_new_slot,
+        );
+
+        Self::paint_page(
+            &painter,
+            old_textures[old_only_slot],
+            old_only_rect,
+        );
+        Self::paint_page(
+            &painter,
+            old_textures[shared_old_slot],
+            shared_rect,
+        );
+        Self::paint_page(
+            &painter,
+            new_textures[new_only_slot],
+            new_only_rect,
+        );
+        true
     }
 
     /// 見開き2ページのレイアウト計算（左右の Rect を返す）
@@ -2308,6 +2927,98 @@ impl ViewerState {
 }
 
 #[cfg(test)]
+mod offset_tween_tests {
+    use super::{lerp_rect, offset_transition_pages, place_next_to, visual_spread_pages};
+
+    #[test]
+    fn virtual_first_shift_has_one_shared_real_page() {
+        assert_eq!(offset_transition_pages(-1, 0), Some((-1, 0, 1)));
+        assert_eq!(offset_transition_pages(0, -1), Some((1, 0, -1)));
+    }
+
+    #[test]
+    fn middle_offset_shifts_have_one_shared_page() {
+        assert_eq!(offset_transition_pages(0, 1), Some((0, 1, 2)));
+        assert_eq!(offset_transition_pages(1, 0), Some((2, 1, 0)));
+    }
+
+    #[test]
+    fn ordinary_spread_navigation_does_not_use_offset_tween() {
+        assert_eq!(offset_transition_pages(0, 2), None);
+        assert_eq!(offset_transition_pages(2, 0), None);
+        assert_eq!(offset_transition_pages(0, 0), None);
+    }
+
+    #[test]
+    fn binding_direction_only_reverses_visual_page_order() {
+        assert_eq!(visual_spread_pages(-1, false), [-1, 0]);
+        assert_eq!(visual_spread_pages(0, false), [0, 1]);
+        assert_eq!(visual_spread_pages(-1, true), [0, -1]);
+        assert_eq!(visual_spread_pages(0, true), [1, 0]);
+    }
+
+    #[test]
+    fn shared_page_rect_matches_old_and_new_layout_at_endpoints() {
+        let old = egui::Rect::from_min_size(egui::pos2(50.0, 20.0), egui::vec2(100.0, 200.0));
+        let new = egui::Rect::from_min_size(egui::pos2(10.0, 30.0), egui::vec2(120.0, 180.0));
+        assert_eq!(lerp_rect(old, new, 0.0), old);
+        assert_eq!(lerp_rect(old, new, 1.0), new);
+    }
+
+    #[test]
+    fn unique_pages_stay_connected_to_the_shared_page() {
+        let shared = egui::Rect::from_min_size(egui::pos2(100.0, 20.0), egui::vec2(80.0, 160.0));
+        let unique = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(60.0, 120.0));
+        let left = place_next_to(unique, shared, true);
+        let right = place_next_to(unique, shared, false);
+        assert_eq!(left.right(), shared.left());
+        assert_eq!(right.left(), shared.right());
+        assert_eq!(left.center().y, shared.center().y);
+        assert_eq!(right.center().y, shared.center().y);
+    }
+}
+
+#[cfg(test)]
+mod animation_schedule_tests {
+    use super::{animation_instance_changed, next_anim_decode_request, ANIM_DECODE_AHEAD_FRAMES};
+    use crate::cache::AnimationInstanceId;
+
+    #[test]
+    fn request_window_is_anchored_to_displayed_frame() {
+        assert_eq!(
+            next_anim_decode_request(9, 9, 32),
+            9 + ANIM_DECODE_AHEAD_FRAMES,
+        );
+    }
+
+    #[test]
+    fn producer_progress_cannot_extend_a_stationary_display_window() {
+        assert_eq!(next_anim_decode_request(0, 8, 32), 8);
+        assert_eq!(next_anim_decode_request(0, 8, 32), 8);
+    }
+
+    #[test]
+    fn request_window_never_exceeds_ring_capacity() {
+        assert_eq!(next_anim_decode_request(10, 10, 4), 14);
+    }
+
+    #[test]
+    fn decode_request_saturates_at_usize_max() {
+        assert_eq!(next_anim_decode_request(usize::MAX, usize::MAX, 32), usize::MAX);
+    }
+
+    #[test]
+    fn animation_state_identity_ignores_same_instance_and_rejects_replacement() {
+        let first = AnimationInstanceId::for_test(1);
+        let replacement = AnimationInstanceId::for_test(2);
+
+        assert!(!animation_instance_changed(None, first));
+        assert!(!animation_instance_changed(Some(first), first));
+        assert!(animation_instance_changed(Some(first), replacement));
+    }
+}
+
+#[cfg(test)]
 mod spread_rotation_tests {
     use super::*;
 
@@ -2348,5 +3059,340 @@ mod spread_rotation_tests {
         );
         let bounds = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(0.0, 0.0));
         assert!(ViewerState::spread_rotation_fit(local_l, local_r, bounds, 90).is_none());
+    }
+
+    #[test]
+    fn rotated_hit_test_tracks_the_drawn_page_at_all_supported_angles() {
+        let center = egui::pos2(100.0, 100.0);
+        let half = egui::vec2(40.0, 20.0);
+        for angle in [0, 90, 180, 270] {
+            let rot = egui::emath::Rot2::from_angle((angle as f32).to_radians());
+            let inside = center + rot * egui::vec2(30.0, 10.0);
+            let outside = center + rot * egui::vec2(50.0, 10.0);
+            assert!(ViewerState::rotated_rect_contains(inside, center, half, angle));
+            assert!(!ViewerState::rotated_rect_contains(outside, center, half, angle));
+        }
+    }
+
+    #[test]
+    fn thumbnail_status_name_removes_extension_and_elides_the_middle() {
+        assert_eq!(ViewerState::thumbnail_status_name("cover.page.jpg"), "cover.page");
+        let long = "1234567890abcdefghijklmnopqrstuvwx9876543210.jpg";
+        assert_eq!(
+            ViewerState::thumbnail_status_name(long),
+            "1234567890abcdef...stuvwx9876543210"
+        );
+    }
+}
+
+#[cfg(test)]
+mod entry_list_scroll_tests {
+    use super::ViewerState;
+
+    #[test]
+    fn anchor_uses_current_page_in_normal_range() {
+        assert_eq!(ViewerState::entry_list_scroll_anchor(7, 20), Some(7));
+    }
+
+    #[test]
+    fn anchor_clamps_virtual_spread_pages_to_real_entries() {
+        assert_eq!(ViewerState::entry_list_scroll_anchor(-1, 20), Some(0));
+        assert_eq!(ViewerState::entry_list_scroll_anchor(20, 20), Some(19));
+    }
+
+    #[test]
+    fn anchor_is_absent_for_an_empty_archive() {
+        assert_eq!(ViewerState::entry_list_scroll_anchor(0, 0), None);
+    }
+
+    #[test]
+    fn marker_moves_from_top_until_it_reaches_the_center_stopper() {
+        assert_eq!(
+            ViewerState::entry_list_follow_offset(0.0, 80.0, 150.0, 1_000.0),
+            0.0,
+        );
+    }
+
+    #[test]
+    fn list_scrolls_once_marker_reaches_the_center_stopper() {
+        assert_eq!(
+            ViewerState::entry_list_follow_offset(120.0, 180.0, 150.0, 1_000.0),
+            150.0,
+        );
+    }
+
+    #[test]
+    fn list_stops_at_the_end_and_marker_can_move_below_center() {
+        assert_eq!(
+            ViewerState::entry_list_follow_offset(980.0, 180.0, 150.0, 1_000.0),
+            1_000.0,
+        );
+    }
+}
+
+#[cfg(test)]
+mod sort_save_state_tests {
+    use super::*;
+
+    fn viewer() -> ViewerState {
+        ViewerState::new_raw(PathBuf::from("test.png"), [None; 4], None)
+    }
+
+    fn archive_viewer() -> ViewerState {
+        let mut viewer = viewer();
+        viewer.is_raw_file = false;
+        viewer.entries.push(ViewerEntry {
+            entry_name: "second".to_string(),
+            display_name: "second".to_string(),
+            date_key: 1,
+            original_index: 1,
+        });
+        viewer
+    }
+
+    #[test]
+    fn saved_spread_offset_normalizes_both_shift_directions_to_virtual_first() {
+        assert_eq!(normalize_saved_spread_offset(0), 0);
+        assert_eq!(normalize_saved_spread_offset(-1), -1);
+        assert_eq!(normalize_saved_spread_offset(1), -1);
+        assert_eq!(normalize_saved_spread_offset(-2), -1);
+        assert_eq!(normalize_saved_spread_offset(2), -1);
+    }
+
+    #[test]
+    fn restoring_shifted_saved_spread_always_keeps_the_first_real_page() {
+        for mode in [PageMode::SpreadLeft, PageMode::SpreadRight] {
+            for offset in [-1, 1] {
+                let mut viewer = archive_viewer();
+                let mut cfg = ViewerConfig::default();
+
+                viewer.restore_saved_spread(mode, offset, &mut cfg);
+
+                assert_eq!(viewer.spread_lo(), -1, "saved offset {offset}");
+                assert_eq!(viewer.offset.value(), -1, "saved offset {offset}");
+                assert!(viewer.page_mode == mode);
+            }
+        }
+    }
+
+    #[test]
+    fn aligned_saved_spread_starts_from_the_first_real_page() {
+        let mut viewer = archive_viewer();
+        let mut cfg = ViewerConfig::default();
+
+        viewer.restore_saved_spread(PageMode::SpreadRight, 0, &mut cfg);
+
+        assert_eq!(viewer.spread_lo(), 0);
+        assert_eq!(viewer.offset.value(), 0);
+    }
+
+    #[test]
+    fn opposite_runtime_shift_directions_are_the_same_saved_setting() {
+        let mut viewer = archive_viewer();
+        viewer.page_mode = PageMode::SpreadLeft;
+        viewer.offset.advance();
+        viewer.set_saved_spread(Some((PageMode::SpreadLeft, -1)));
+
+        assert!(!viewer.spread_overwrite_enabled());
+
+        viewer.page_mode = PageMode::SpreadRight;
+        assert!(viewer.spread_overwrite_enabled());
+    }
+
+    #[test]
+    fn backward_shift_is_blocked_when_it_would_show_two_virtual_pages() {
+        let mut viewer = archive_viewer();
+        viewer.page_mode = PageMode::SpreadLeft;
+        viewer.offset.advance();
+        viewer.spread_base = -2;
+        assert_eq!(viewer.spread_lo(), -1);
+
+        assert!(!viewer.can_shift_backward());
+        viewer.shift_offset_backward();
+
+        assert_eq!(viewer.spread_base, -2);
+        assert_eq!(viewer.offset.value(), 1);
+        assert_eq!(viewer.spread_lo(), -1);
+    }
+
+    #[test]
+    fn forward_shift_is_blocked_when_it_would_show_two_virtual_pages() {
+        let mut viewer = archive_viewer();
+        viewer.page_mode = PageMode::SpreadRight;
+        viewer.offset.retreat();
+        viewer.spread_base = 2;
+        assert_eq!(viewer.spread_lo(), 1);
+
+        assert!(!viewer.can_shift_forward());
+        viewer.shift_offset_forward();
+
+        assert_eq!(viewer.spread_base, 2);
+        assert_eq!(viewer.offset.value(), -1);
+        assert_eq!(viewer.spread_lo(), 1);
+    }
+
+    #[test]
+    fn offset_shift_remains_available_when_the_result_contains_a_real_page() {
+        let mut viewer = archive_viewer();
+        viewer.page_mode = PageMode::SpreadLeft;
+
+        assert!(viewer.can_shift_backward());
+        viewer.shift_offset_backward();
+        assert_eq!(viewer.spread_lo(), -1);
+
+        assert!(viewer.can_shift_forward());
+        viewer.shift_offset_forward();
+        assert_eq!(viewer.spread_lo(), 0);
+
+        assert!(viewer.can_shift_forward());
+        viewer.shift_offset_forward();
+        assert_eq!(viewer.spread_lo(), 1);
+    }
+
+    #[test]
+    fn single_page_archive_never_allows_a_shift_past_its_only_real_page() {
+        let mut viewer = archive_viewer();
+        viewer.entries.truncate(1);
+        viewer.page_mode = PageMode::SpreadRight;
+
+        assert!(!viewer.can_shift_forward());
+        viewer.shift_offset_forward();
+        assert_eq!(viewer.spread_lo(), 0);
+
+        assert!(viewer.can_shift_backward());
+        viewer.shift_offset_backward();
+        assert_eq!(viewer.spread_lo(), -1);
+        assert!(!viewer.can_shift_backward());
+    }
+
+    #[test]
+    fn unsaved_viewer_keeps_existing_name_ascending_default() {
+        let viewer = viewer();
+        let current = viewer.current_sort_snapshot();
+        assert!(matches!(current.0, ViewerSortKey::Name));
+        assert!(current.1);
+        assert!(!viewer.sort_save_toggle_on());
+        assert!(!viewer.sort_save_changed());
+    }
+
+    #[test]
+    fn saved_sort_reports_changes_to_key_or_direction() {
+        let mut viewer = viewer();
+        viewer.set_saved_sort(Some((ViewerSortKey::Name, true)));
+        assert!(viewer.sort_save_toggle_on());
+        assert!(!viewer.sort_save_changed());
+
+        viewer.sort_key = ViewerSortKey::Natural;
+        assert!(viewer.sort_save_changed());
+
+        viewer.sort_key = ViewerSortKey::Name;
+        viewer.sort_ascending = false;
+        assert!(viewer.sort_save_changed());
+
+        viewer.set_saved_sort(Some((ViewerSortKey::Name, false)));
+        assert!(!viewer.sort_save_changed());
+    }
+
+    #[test]
+    fn clearing_saved_sort_keeps_current_sort_and_page_position() {
+        let mut viewer = viewer();
+        viewer.entries = vec![
+            ViewerEntry {
+                entry_name: "b".to_string(),
+                display_name: "b".to_string(),
+                date_key: 2,
+                original_index: 0,
+            },
+            ViewerEntry {
+                entry_name: "a".to_string(),
+                display_name: "a".to_string(),
+                date_key: 1,
+                original_index: 1,
+            },
+        ];
+        viewer.sort_key = ViewerSortKey::Date;
+        viewer.sort_ascending = false;
+        viewer.saved_sort = Some((ViewerSortKey::Date, false));
+        viewer.spread_base = 4;
+
+        viewer.clear_saved_sort();
+
+        assert!(!viewer.sort_save_toggle_on());
+        let current = viewer.current_sort_snapshot();
+        assert!(matches!(current.0, ViewerSortKey::Date));
+        assert!(!current.1);
+        assert_eq!(viewer.entries[0].display_name, "b");
+        assert_eq!(viewer.entries[1].display_name, "a");
+        assert_eq!(viewer.spread_base, 4);
+    }
+
+    #[test]
+    fn clearing_already_default_sort_does_not_reset_page_position() {
+        let mut viewer = viewer();
+        viewer.saved_sort = Some((ViewerSortKey::Name, true));
+        viewer.spread_base = 4;
+
+        viewer.clear_saved_sort();
+
+        assert!(!viewer.sort_save_toggle_on());
+        assert_eq!(viewer.spread_base, 4);
+    }
+
+    #[test]
+    fn sort_setting_text_uses_unbracketed_localized_labels() {
+        assert_eq!(
+            ViewerState::sort_setting_text(ViewerSortKey::Name, true, i18n::Lang::Japanese),
+            "名前 昇順"
+        );
+        assert_eq!(
+            ViewerState::sort_setting_text(ViewerSortKey::Natural, false, i18n::Lang::English),
+            "Natural Desc"
+        );
+        assert_eq!(
+            ViewerState::sort_setting_text(ViewerSortKey::Date, true, i18n::Lang::Chinese),
+            "日期 升序"
+        );
+    }
+
+    #[test]
+    fn saved_sort_is_applied_before_saved_spread_without_losing_offset() {
+        let mut viewer = viewer();
+        viewer.is_raw_file = false;
+        viewer.entries = vec![
+            ViewerEntry {
+                entry_name: "old".to_string(),
+                display_name: "old".to_string(),
+                date_key: 1,
+                original_index: 0,
+            },
+            ViewerEntry {
+                entry_name: "new".to_string(),
+                display_name: "new".to_string(),
+                date_key: 2,
+                original_index: 1,
+            },
+        ];
+
+        viewer.restore_saved_sort(ViewerSortKey::Date, false);
+        let mut cfg = ViewerConfig::default();
+        viewer.restore_saved_spread(PageMode::SpreadLeft, 1, &mut cfg);
+
+        assert_eq!(viewer.entries[0].display_name, "new");
+        assert!(matches!(viewer.current_sort_snapshot().0, ViewerSortKey::Date));
+        assert!(!viewer.current_sort_snapshot().1);
+        assert!(matches!(viewer.page_mode, PageMode::SpreadLeft));
+        assert_eq!(viewer.offset.value(), -1);
+        assert_eq!(viewer.spread_lo(), -1);
+    }
+
+    #[test]
+    fn restoring_existing_default_sort_does_not_reset_page_position() {
+        let mut viewer = viewer();
+        viewer.is_raw_file = false;
+        viewer.spread_base = 4;
+
+        viewer.restore_saved_sort(ViewerSortKey::Name, true);
+
+        assert_eq!(viewer.spread_base, 4);
     }
 }

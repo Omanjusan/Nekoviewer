@@ -338,6 +338,21 @@ impl AppConfig {
         self.conflict = None;
     }
 
+    /// 起動フォルダを最終決定する。CLI引数 > 前回フォルダ > フォールバック の優先順で
+    /// 候補を選び、その候補が隠しディレクトリ経路（`.`始まりの構成要素を含む）でありながら
+    /// 隠しフォルダ表示がオフのときは、由来（CLI引数・前回フォルダ・固定初期フォルダ）を
+    /// 問わず候補を捨て、フォールバック機構（fixed_dir → HOME → ルート）へ委ねる。
+    /// フォールバック先すら隠し経路なら fixed_dir も無視して HOME→ルートまで下がる。
+    pub fn resolve_start_dir(&self, cli_path: Option<PathBuf>, state: &AppState) -> PathBuf {
+        let candidate = match cli_path {
+            Some(p) => p,
+            None => self.startup_dir(state),
+        };
+        let fixed = self.startup.fixed_dir.as_deref()
+            .filter(|p| !p.as_os_str().is_empty());
+        guard_hidden_start_dir(candidate, state.show_hidden, fixed)
+    }
+
     /// 起動時の初期フォルダを解決する（CLI引数は呼び出し元で優先済みを想定）
     pub fn startup_dir(&self, state: &AppState) -> PathBuf {
         let fixed = self.startup.fixed_dir.as_deref()
@@ -671,6 +686,40 @@ fn apply_ini_updates(content: &str, updates: &[(&str, &str, String)]) -> String 
     out
 }
 
+/// 起動候補フォルダに隠し経路ガードを適用する。候補が隠しディレクトリ経路でありながら
+/// 隠しフォルダ表示がオフのときは、候補を捨ててフォールバック機構（fixed → HOME → ルート）へ。
+/// フォールバック先すら隠し経路なら fixed も無視して HOME→ルートまで下がる。
+fn guard_hidden_start_dir(
+    candidate: PathBuf,
+    show_hidden: bool,
+    fixed: Option<&std::path::Path>,
+) -> PathBuf {
+    if show_hidden || !path_has_hidden_component(&candidate) {
+        return candidate;
+    }
+    log_common!(
+        "[startup] 起動候補が隠し経路 かつ show_hidden=off → フォールバックへ: {:?}",
+        candidate
+    );
+    let fb = resolve_fallback_dir(fixed);
+    if path_has_hidden_component(&fb) {
+        log_common!("[startup] フォールバック先も隠し経路 → fixed_dir を無視して HOME/ルートへ");
+        resolve_fallback_dir(None)
+    } else {
+        fb
+    }
+}
+
+/// パスの構成要素に隠しディレクトリ（`.` 始まりの通常セグメント）が含まれるか。
+/// ルート（`/`）・カレント（`.`）・親（`..`）・Windows のドライブプレフィックスは対象外。
+fn path_has_hidden_component(p: &std::path::Path) -> bool {
+    use std::path::Component;
+    p.components().any(|c| match c {
+        Component::Normal(s) => s.to_str().map_or(false, |s| s.starts_with('.')),
+        _ => false,
+    })
+}
+
 fn resolve_fallback_dir(fixed: Option<&std::path::Path>) -> PathBuf {
     if let Some(p) = fixed {
         if p.is_dir() {
@@ -961,5 +1010,61 @@ mod tests {
         assert!(is_flatpak());
         unsafe { std::env::remove_var("FLATPAK_ID"); }
         assert!(!is_flatpak());
+    }
+
+    #[test]
+    fn path_has_hidden_component_detects_dot_segments() {
+        use std::path::Path;
+        assert!(path_has_hidden_component(Path::new("/home/user/.config/app")));
+        assert!(path_has_hidden_component(Path::new(".cache/thumbs")));
+        assert!(path_has_hidden_component(Path::new("/srv/.snapshots")));
+        assert!(!path_has_hidden_component(Path::new("/home/user/Pictures")));
+        assert!(!path_has_hidden_component(Path::new("/")));
+        assert!(!path_has_hidden_component(Path::new("../sibling")));
+    }
+
+    #[test]
+    fn guard_hidden_start_dir_passes_through_when_show_hidden_on() {
+        let hidden = PathBuf::from("/home/user/.config/app");
+        assert_eq!(
+            guard_hidden_start_dir(hidden.clone(), true, None),
+            hidden,
+            "show_hidden=on なら隠し経路でもそのまま復帰する"
+        );
+    }
+
+    #[test]
+    fn guard_hidden_start_dir_passes_through_for_visible_path() {
+        let visible = PathBuf::from("/home/user/Pictures");
+        assert_eq!(
+            guard_hidden_start_dir(visible.clone(), false, None),
+            visible,
+            "隠し経路でなければ show_hidden の値に関わらずそのまま"
+        );
+    }
+
+    #[test]
+    fn guard_hidden_start_dir_falls_back_to_fixed_when_hidden_and_off() {
+        let fixed = temp_dir("guard_fixed_visible");
+        let got = guard_hidden_start_dir(
+            PathBuf::from("/home/user/.local/share/x"),
+            false,
+            Some(fixed.as_path()),
+        );
+        assert_eq!(got, fixed, "隠し経路 × show_hidden=off → fixed_dir へフォールバック");
+        let _ = std::fs::remove_dir_all(&fixed);
+    }
+
+    #[test]
+    fn guard_hidden_start_dir_ignores_hidden_fixed_and_drops_further() {
+        // 候補も fixed も隠し経路（fixed は実在しない）。最終結果には
+        // 「隠しの候補」も「隠しの fixed」も出てこず、HOME/ルートまで下がる。
+        // ※ HOME が隠し経路を含まない一般的な環境を前提にした判定。
+        let hidden_candidate = PathBuf::from("/data/.snapshots/latest");
+        let hidden_fixed = PathBuf::from("/nonexistent/.fixed");
+        let got = guard_hidden_start_dir(hidden_candidate.clone(), false, Some(hidden_fixed.as_path()));
+        assert_ne!(got, hidden_candidate);
+        assert_ne!(got, hidden_fixed);
+        assert!(!path_has_hidden_component(&got), "最終結果は隠し経路でない");
     }
 }

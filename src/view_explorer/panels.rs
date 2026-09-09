@@ -8,6 +8,78 @@ use crate::fs::dir;
 use crate::view_reader::{fit_rect_contain, ViewerState};
 use super::*;
 
+const THUMB_MARKER_TOP: f32 = 4.0;
+const THUMB_MARKER_BOTTOM_PADDING: f32 = 4.0;
+const THUMB_MARKER_LINE_H: f32 = 21.0;
+const SAVED_SETTING_MARKER_SIZE: f32 = 17.0;
+const SAVED_SETTING_MARKER_SLOT_H: f32 = 21.0;
+const SAVED_SETTING_MARKER_MARGIN: f32 = 4.0;
+
+fn favorite_marker_layout(cell_h: f32, has_error_marker: bool) -> (f32, usize) {
+    let top = THUMB_MARKER_TOP
+        + if has_error_marker {
+            THUMB_MARKER_LINE_H
+        } else {
+            0.0
+        };
+    let max_lines = ((cell_h - top - THUMB_MARKER_BOTTOM_PADDING) / THUMB_MARKER_LINE_H)
+        .floor()
+        .max(0.0) as usize;
+    (top, max_lines)
+}
+
+fn saved_setting_marker_rect(rect: egui::Rect, slot: usize) -> Option<egui::Rect> {
+    let top = rect.min.y
+        + SAVED_SETTING_MARKER_MARGIN
+        + slot as f32 * SAVED_SETTING_MARKER_SLOT_H;
+    let left = rect.max.x - SAVED_SETTING_MARKER_MARGIN - SAVED_SETTING_MARKER_SIZE;
+    if top + SAVED_SETTING_MARKER_SIZE + SAVED_SETTING_MARKER_MARGIN > rect.max.y {
+        return None;
+    }
+    Some(egui::Rect::from_min_size(
+        egui::pos2(left, top),
+        egui::vec2(SAVED_SETTING_MARKER_SIZE, SAVED_SETTING_MARKER_SIZE),
+    ))
+}
+
+fn saved_setting_marker_labels(
+    settings: crate::spread_state::SavedArchiveSettings,
+) -> [Option<&'static str>; 3] {
+    let spread = match settings.spread_mode {
+        Some(crate::types::PageMode::SpreadLeft) => Some("L"),
+        Some(crate::types::PageMode::SpreadRight) => Some("R"),
+        _ => None,
+    };
+    [
+        spread,
+        settings.has_saved_sort.then_some("S"),
+        settings.has_custom_thumbnail.then_some("T"),
+    ]
+}
+
+fn paint_saved_setting_marker(
+    ui: &egui::Ui,
+    thumbnail_rect: egui::Rect,
+    slot: usize,
+    label: &str,
+) {
+    let Some(marker_rect) = saved_setting_marker_rect(thumbnail_rect, slot) else {
+        return;
+    };
+    ui.painter().rect_filled(
+        marker_rect,
+        2.0,
+        egui::Color32::from_rgba_unmultiplied(64, 64, 64, 191),
+    );
+    ui.painter().text(
+        marker_rect.center(),
+        egui::Align2::CENTER_CENTER,
+        label,
+        egui::FontId::monospace(13.0),
+        egui::Color32::WHITE,
+    );
+}
+
 impl NekoviewApp {
     /// エクスプローラー窓の中身を描画する（旧 eframe::App::ui 相当）。
     /// 呼び出し元が CentralPanel の Ui を渡す。
@@ -345,7 +417,7 @@ impl NekoviewApp {
                 if self.folder_pane_tab == FolderPaneTab::Search {
                     self.search_form.base_dir = Some(path);
                 } else {
-                    self.navigate_to(path);
+                    self.navigate_to(path, DirectoryNavigationSource::Tree);
                 }
             }
         }
@@ -808,6 +880,12 @@ impl NekoviewApp {
                                         archive_path: path.clone(),
                                         db: self.cache_db.clone(),
                                         is_raw_file: self.raw_image_files.contains(path),
+                                        thumbnail_entry_name: path.parent().and_then(|dir| {
+                                            let filename = path.file_name()?.to_str()?;
+                                            self.spread_db.as_ref().and_then(|db| {
+                                                crate::spread_state::read_thumbnail_selection(db, dir, filename)
+                                            })
+                                        }),
                                     }).is_ok() {
                                         self.thumb_pending.insert(path.clone());
                                     }
@@ -816,7 +894,9 @@ impl NekoviewApp {
 
                             // 無効ZIP・サムネデコード失敗は左上に赤Xを描画
                             let thumb_failed = self.thumb_failed.contains(path);
-                            if self.invalid_archives.contains(path) || thumb_failed {
+                            let has_error_marker =
+                                self.invalid_archives.contains(path) || thumb_failed;
+                            if has_error_marker {
                                 let x_size = 16.0;
                                 let origin = rect.min + egui::vec2(4.0, 4.0);
                                 let end = origin + egui::vec2(x_size, x_size);
@@ -833,15 +913,19 @@ impl NekoviewApp {
                             }
 
                             // お気に入りマーカー: 左上から左下に列挙（表示できる分だけ）
-                            // お気に入り一覧表示中はフルパスキー、通常のディレクトリ表示中はファイル名キーで引く。
+                            // 横断一覧表示中はフルパスキー、通常のディレクトリ表示中はファイル名キーで引く。
                             let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                            let marker_ids = if self.viewing_favorites.is_some() {
-                                self.favorite_view_markers.get(path)
+                            let marker_ids = if self.viewing_favorites.is_some()
+                                || self.viewing_search.is_some()
+                            {
+                                self.cross_view_favorite_markers.get(path)
                             } else {
                                 self.favorite_states.get(filename)
                             };
                             if let Some(folder_ids) = marker_ids {
-                                const MARKER_LINE_H: f32 = 21.0;
+                                // 赤Xが左上を使用中なら、先頭マーカーを1段下げて重なりを避ける。
+                                let (marker_top, max_lines) =
+                                    favorite_marker_layout(cell_h, has_error_marker);
                                 let marker_font = egui::FontId::proportional(19.0);
                                 // 同グリフを右下1.5pxオフセットの半透明黒で先描きして
                                 // 小さめのドロップシャドウにする（サムネ地の明暗によらず視認確保）
@@ -862,15 +946,25 @@ impl NekoviewApp {
                                     );
                                 };
                                 if folder_ids.is_empty() {
-                                    paint_marker(rect.min + egui::vec2(4.0, 4.0), "★", default_favorite_color());
+                                    if max_lines > 0 {
+                                        paint_marker(
+                                            rect.min + egui::vec2(4.0, marker_top),
+                                            "★",
+                                            default_favorite_color(),
+                                        );
+                                    }
                                 } else {
-                                    let max_lines = ((cell_h - 8.0) / MARKER_LINE_H).floor().max(1.0) as usize;
                                     for (i, id) in folder_ids.iter().take(max_lines).enumerate() {
                                         let Some(folder) = self.favorite_folders.iter().find(|f| f.id == *id) else {
                                             continue;
                                         };
                                         paint_marker(
-                                            rect.min + egui::vec2(4.0, 4.0 + i as f32 * MARKER_LINE_H),
+                                            rect.min
+                                                + egui::vec2(
+                                                    4.0,
+                                                    marker_top
+                                                        + i as f32 * THUMB_MARKER_LINE_H,
+                                                ),
                                             &folder.marker,
                                             rgba_u32_to_color32(folder.color_rgba),
                                         );
@@ -878,12 +972,28 @@ impl NekoviewApp {
                                 }
                             }
 
-                            // ネットワークリンク切れマーカー: 右上（大元マウント単位で判定済みのもののみ）
+                            // 保存設定マーカー: 右上から L/R・S・T の固定スロットへ配置する。
+                            // 無効なスロットは詰めず、位置だけで設定種別を判別できるようにする。
+                            if let Some(settings) = self.saved_archive_settings.get(path) {
+                                for (slot, label) in saved_setting_marker_labels(*settings)
+                                    .into_iter()
+                                    .enumerate()
+                                {
+                                    if let Some(label) = label {
+                                        paint_saved_setting_marker(ui, rect, slot, label);
+                                    }
+                                }
+                            }
+
+                            // ネットワークリンク切れマーカー: 右下（大元マウント単位で判定済みのもののみ）
                             if let Some(root) = self.network_mount_root_cached(path)
                                 && self.network_unreachable_mounts.contains(&root)
                             {
                                 let mark_size = 16.0;
-                                let origin = egui::pos2(rect.max.x - mark_size - 4.0, rect.min.y + 4.0);
+                                let origin = egui::pos2(
+                                    rect.max.x - mark_size - 4.0,
+                                    rect.max.y - mark_size - 4.0,
+                                );
                                 ui.painter().text(
                                     origin,
                                     egui::Align2::LEFT_TOP,
@@ -1025,7 +1135,7 @@ impl NekoviewApp {
         self.explorer_scroll_offset = output.state.offset.y;
         self.explorer_viewport_h = output.inner_rect.height();
         if let Some(path) = output.inner {
-            self.navigate_to(path);
+            self.navigate_to(path, DirectoryNavigationSource::ItemPane);
         }
     }
 }
@@ -1167,4 +1277,90 @@ fn format_mtime(t: std::time::SystemTime) -> String {
     let m = if mp < 10 { mp + 3 } else { mp - 9 };
     let y = if m <= 2 { y + 1 } else { y };
     format!("{:04}/{:02}/{:02}", y, m, d)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn favorite_markers_start_one_line_lower_when_error_marker_is_present() {
+        assert_eq!(favorite_marker_layout(256.0, false), (4.0, 11));
+        assert_eq!(favorite_marker_layout(256.0, true), (25.0, 10));
+    }
+
+    #[test]
+    fn favorite_marker_layout_stays_within_minimum_thumbnail_height() {
+        let cell_h = 64.0;
+        let (top, max_lines) = favorite_marker_layout(cell_h, true);
+
+        assert_eq!(max_lines, 1);
+        assert!(
+            top + max_lines as f32 * THUMB_MARKER_LINE_H
+                + THUMB_MARKER_BOTTOM_PADDING
+                <= cell_h
+        );
+    }
+
+    #[test]
+    fn saved_setting_marker_slots_keep_fixed_vertical_positions() {
+        let thumbnail = egui::Rect::from_min_size(
+            egui::pos2(10.0, 20.0),
+            egui::vec2(180.0, 256.0),
+        );
+
+        let spread = saved_setting_marker_rect(thumbnail, 0).unwrap();
+        let sort = saved_setting_marker_rect(thumbnail, 1).unwrap();
+        let custom_thumbnail = saved_setting_marker_rect(thumbnail, 2).unwrap();
+
+        assert_eq!(spread.min, egui::pos2(169.0, 24.0));
+        assert_eq!(sort.min, egui::pos2(169.0, 45.0));
+        assert_eq!(custom_thumbnail.min, egui::pos2(169.0, 66.0));
+    }
+
+    #[test]
+    fn saved_setting_marker_slot_is_hidden_when_it_does_not_fit() {
+        let thumbnail = egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(64.0, 64.0),
+        );
+
+        assert!(saved_setting_marker_rect(thumbnail, 0).is_some());
+        assert!(saved_setting_marker_rect(thumbnail, 1).is_some());
+        assert!(saved_setting_marker_rect(thumbnail, 2).is_none());
+    }
+
+    #[test]
+    fn saved_setting_marker_labels_preserve_empty_slots() {
+        let assert_labels =
+            |settings: crate::spread_state::SavedArchiveSettings,
+             expected: [Option<&'static str>; 3]| {
+                assert_eq!(saved_setting_marker_labels(settings), expected);
+            };
+
+        assert_labels(
+            crate::spread_state::SavedArchiveSettings {
+                spread_mode: None,
+                has_saved_sort: true,
+                has_custom_thumbnail: false,
+            },
+            [None, Some("S"), None],
+        );
+        assert_labels(
+            crate::spread_state::SavedArchiveSettings {
+                spread_mode: Some(crate::types::PageMode::SpreadLeft),
+                has_saved_sort: false,
+                has_custom_thumbnail: true,
+            },
+            [Some("L"), None, Some("T")],
+        );
+        assert_labels(
+            crate::spread_state::SavedArchiveSettings {
+                spread_mode: Some(crate::types::PageMode::SpreadRight),
+                has_saved_sort: true,
+                has_custom_thumbnail: true,
+            },
+            [Some("R"), Some("S"), Some("T")],
+        );
+    }
 }

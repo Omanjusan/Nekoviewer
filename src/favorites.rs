@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -315,6 +316,36 @@ pub fn get_membership(db: &Arc<Mutex<Database>>, dir: &Path, filename: &str) -> 
     Some(value.value().to_vec())
 }
 
+/// 複数ディレクトリを横断する一覧の表示用に、お気に入り状態を一括取得する。
+/// お気に入りでないパスは戻り値へ含めない。
+pub fn memberships_for_paths(
+    db: &Arc<Mutex<Database>>,
+    paths: &[PathBuf],
+) -> HashMap<PathBuf, Vec<u8>> {
+    let Ok(db) = db.lock() else {
+        return HashMap::new();
+    };
+    let Ok(tx) = db.begin_read() else {
+        return HashMap::new();
+    };
+    let Ok(table) = tx.open_table(FAVORITE_MEMBERSHIP_TABLE) else {
+        return HashMap::new();
+    };
+    let mut out = HashMap::new();
+    for path in paths {
+        let Some(dir) = path.parent() else { continue };
+        let Some(filename) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        let key = make_key(dir, filename);
+        let Ok(Some(value)) = table.get(key.as_str()) else {
+            continue;
+        };
+        out.insert(path.clone(), value.value().to_vec());
+    }
+    out
+}
+
 /// ファイルの所属お気に入りフォルダIDを設定する（全置換）。空Vecなら未整理として登録。
 pub fn set_membership(db: &Arc<Mutex<Database>>, dir: &Path, filename: &str, folder_ids: &[u8]) {
     let key = make_key(dir, filename);
@@ -542,6 +573,27 @@ mod tests {
 
         remove_favorite(&db, &dir, "a.zip");
         assert_eq!(get_membership(&db, &dir, "a.zip"), None);
+    }
+
+    #[test]
+    fn memberships_for_paths_keeps_full_paths_and_omits_non_favorites() {
+        let db = temp_db();
+        let dir_a = PathBuf::from("/tmp/nekoviewer_fav_batch_a");
+        let dir_b = PathBuf::from("/tmp/nekoviewer_fav_batch_b");
+        let path_a = dir_a.join("same.zip");
+        let path_b = dir_b.join("same.zip");
+        let not_favorite = dir_a.join("plain.zip");
+
+        set_membership(&db, &dir_a, "same.zip", &[1, 2]);
+        set_membership(&db, &dir_b, "same.zip", &[]);
+
+        let memberships = memberships_for_paths(
+            &db,
+            &[path_a.clone(), path_b.clone(), not_favorite.clone()],
+        );
+        assert_eq!(memberships.get(&path_a), Some(&vec![1, 2]));
+        assert_eq!(memberships.get(&path_b), Some(&Vec::new()));
+        assert!(!memberships.contains_key(&not_favorite));
     }
 
     #[test]
