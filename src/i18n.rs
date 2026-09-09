@@ -828,6 +828,29 @@ impl Lang {
         }
     }
 
+    pub fn thumbnail_menu(self) -> &'static str { match self { Lang::Japanese => "[サムネイル]", Lang::English => "[Thumbnails]", Lang::Chinese => "[缩略图]" } }
+    pub fn thumbnail_menu_warning(self) -> &'static str { match self { Lang::Japanese => "[サムネイル ⚠]", Lang::English => "[Thumbnails ⚠]", Lang::Chinese => "[缩略图 ⚠]" } }
+    pub fn thumbnail_menu_busy(self) -> &'static str { match self { Lang::Japanese => "[サムネイル …]", Lang::English => "[Thumbnails …]", Lang::Chinese => "[缩略图 …]" } }
+    pub fn thumbnail_mismatch_tooltip(self) -> &'static str { match self { Lang::Japanese => "表示設定と異なるサイズのサムネイルがあります", Lang::English => "Some thumbnails do not match the configured display size", Lang::Chinese => "部分缩略图尺寸与显示设置不一致" } }
+    pub fn thumbnail_dialog_title(self) -> &'static str { match self { Lang::Japanese => "サムネイルキャッシュ", Lang::English => "Thumbnail cache", Lang::Chinese => "缩略图缓存" } }
+    pub fn thumbnail_dialog_target(self) -> &'static str { match self { Lang::Japanese => "対象フォルダー", Lang::English => "Target folder", Lang::Chinese => "目标文件夹" } }
+    pub fn thumbnail_dialog_requested_size(self) -> &'static str { match self { Lang::Japanese => "表示・生成予定サイズ", Lang::English => "Display and generation size", Lang::Chinese => "显示及生成尺寸" } }
+    pub fn thumbnail_dialog_saved_sizes(self) -> &'static str { match self { Lang::Japanese => "保存済みサイズ", Lang::English => "Stored sizes", Lang::Chinese => "已保存尺寸" } }
+    pub fn thumbnail_dialog_matching(self) -> &'static str { match self { Lang::Japanese => "一致", Lang::English => "Matching", Lang::Chinese => "一致" } }
+    pub fn thumbnail_dialog_mismatched(self) -> &'static str { match self { Lang::Japanese => "不一致", Lang::English => "Mismatched", Lang::Chinese => "不一致" } }
+    pub fn thumbnail_dialog_preserve_note(self) -> &'static str { match self { Lang::Japanese => "登録サムネイルなどの設定と検索索引は削除されません。", Lang::English => "Registered-thumbnail settings and the search index are preserved.", Lang::Chinese => "已注册的缩略图设置和搜索索引不会被删除。" } }
+    pub fn thumbnail_dialog_deleting(self) -> &'static str { match self { Lang::Japanese => "このフォルダーのキャッシュを削除しています…", Lang::English => "Deleting this folder's cache…", Lang::Chinese => "正在删除此文件夹的缓存…" } }
+    pub fn thumbnail_dialog_all_warning(self) -> &'static str { match self { Lang::Japanese => "現在の設定と一致するサムネイルも削除されます。通常、この操作は必要ありません。", Lang::English => "Matching thumbnails will also be deleted. This is normally unnecessary.", Lang::Chinese => "与当前设置一致的缩略图也会被删除。通常无需执行此操作。" } }
+    pub fn thumbnail_dialog_back(self) -> &'static str { match self { Lang::Japanese => "戻る", Lang::English => "Back", Lang::Chinese => "返回" } }
+    pub fn thumbnail_dialog_delete_all_confirm(self) -> &'static str { match self { Lang::Japanese => "すべて削除する", Lang::English => "Delete all", Lang::Chinese => "全部删除" } }
+    pub fn thumbnail_dialog_deleted_count(self) -> &'static str { match self { Lang::Japanese => "削除したサムネイル", Lang::English => "Deleted thumbnails", Lang::Chinese => "已删除缩略图" } }
+    pub fn thumbnail_dialog_delete_failed(self) -> &'static str { match self { Lang::Japanese => "サムネイルキャッシュを削除できませんでした。", Lang::English => "Could not delete the thumbnail cache.", Lang::Chinese => "无法删除缩略图缓存。" } }
+    pub fn thumbnail_dialog_close(self) -> &'static str { match self { Lang::Japanese => "閉じる", Lang::English => "Close", Lang::Chinese => "关闭" } }
+    pub fn thumbnail_dialog_no_mismatch(self) -> &'static str { match self { Lang::Japanese => "現在のサムネイルは設定サイズと一致しています。", Lang::English => "Current thumbnails match the configured size.", Lang::Chinese => "当前缩略图与设置尺寸一致。" } }
+    pub fn thumbnail_dialog_cancel(self) -> &'static str { match self { Lang::Japanese => "キャンセル", Lang::English => "Cancel", Lang::Chinese => "取消" } }
+    pub fn thumbnail_dialog_delete_mismatched(self) -> &'static str { match self { Lang::Japanese => "設定と異なるものを削除", Lang::English => "Delete mismatched", Lang::Chinese => "删除不一致项" } }
+    pub fn thumbnail_dialog_delete_all(self) -> &'static str { match self { Lang::Japanese => "このフォルダーをすべて削除", Lang::English => "Delete all in this folder", Lang::Chinese => "删除此文件夹中的全部缓存" } }
+
     pub fn settings_title(self) -> &'static str {
         match self {
             Lang::Japanese => "設定",
@@ -1259,9 +1282,9 @@ impl Lang {
 
     pub fn settings_thumb_size_explain(self) -> &'static str {
         match self {
-            Lang::Japanese => "グリッド表示でのサムネイル長辺サイズ（px）。",
-            Lang::English  => "Long-edge size (px) of thumbnails in grid view.",
-            Lang::Chinese  => "网格视图中缩略图长边尺寸（px）。",
+            Lang::Japanese => "グリッド表示と新規生成に使うサムネイル長辺サイズ（px）。",
+            Lang::English  => "Long-edge size (px) used for grid display and newly generated thumbnails.",
+            Lang::Chinese  => "用于网格显示和新生成缩略图的长边尺寸（px）。",
         }
     }
 

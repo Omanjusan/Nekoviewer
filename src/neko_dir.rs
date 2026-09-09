@@ -32,8 +32,18 @@ pub struct ThumbnailGenerationState {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ThumbnailDeleteResult {
+    pub success: bool,
     pub deleted: usize,
     pub epoch: u64,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ThumbnailCacheStats {
+    pub total: usize,
+    pub matching: usize,
+    pub mismatched: usize,
+    pub min_edge: Option<u32>,
+    pub max_edge: Option<u32>,
 }
 
 /// 非画像ZIPマーカーテーブル: キー=ファイル名, バリュー=source_mtime_secs: i64
@@ -338,7 +348,11 @@ mod tests {
 
         let before = thumbnail_generation_state(&db, 384);
         assert!(!before.allowed);
+        let stats = thumbnail_cache_stats(&db, 384);
+        assert_eq!((stats.total, stats.matching, stats.mismatched), (2, 1, 1));
+        assert_eq!((stats.min_edge, stats.max_edge), (Some(128), Some(384)));
         let deleted = delete_mismatched_thumbnails(&db, 384);
+        assert!(deleted.success);
         assert_eq!(deleted.deleted, 1);
         assert!(read_thumb_unchecked(&db, "old.zip").is_none());
         assert!(read_thumb_unchecked(&db, "current.zip").is_some());
@@ -359,6 +373,7 @@ mod tests {
         assert!(old.allowed);
 
         let deleted = delete_all_thumbnails(&db, 384);
+        assert!(deleted.success);
         assert!(!write_generated_thumb_if_current(
             &db, "late.zip", 100, b"late", "", 256, old.epoch,
         ));
@@ -626,6 +641,29 @@ pub fn thumbnail_generation_state(
     ThumbnailGenerationState { requested_edge, epoch, allowed }
 }
 
+pub fn thumbnail_cache_stats(
+    db: &Arc<Mutex<Database>>,
+    requested_edge: u32,
+) -> ThumbnailCacheStats {
+    let Ok(db) = db.lock() else { return ThumbnailCacheStats::default() };
+    let Ok(tx) = db.begin_read() else { return ThumbnailCacheStats::default() };
+    let Ok(thumbs) = tx.open_table(THUMBS_TABLE) else { return ThumbnailCacheStats::default() };
+    let Ok(edges) = tx.open_table(THUMB_EDGES_TABLE) else { return ThumbnailCacheStats::default() };
+    let mut stats = ThumbnailCacheStats::default();
+    if let Ok(iter) = thumbs.iter() {
+        for item in iter.flatten() {
+            let filename = item.0.value();
+            let edge = edges.get(filename).ok().flatten()
+                .map(|v| v.value()).unwrap_or(LEGACY_THUMB_EDGE);
+            stats.total += 1;
+            if edge == requested_edge { stats.matching += 1; } else { stats.mismatched += 1; }
+            stats.min_edge = Some(stats.min_edge.map_or(edge, |v| v.min(edge)));
+            stats.max_edge = Some(stats.max_edge.map_or(edge, |v| v.max(edge)));
+        }
+    }
+    stats
+}
+
 fn delete_thumbnails(db: &Arc<Mutex<Database>>, requested_edge: u32, all: bool) -> ThumbnailDeleteResult {
     let Ok(db) = db.lock() else { return ThumbnailDeleteResult::default() };
     let Ok(tx) = db.begin_write() else { return ThumbnailDeleteResult::default() };
@@ -654,7 +692,7 @@ fn delete_thumbnails(db: &Arc<Mutex<Database>>, requested_edge: u32, all: bool) 
         next
     };
     if tx.commit().is_ok() {
-        ThumbnailDeleteResult { deleted: keys.len(), epoch }
+        ThumbnailDeleteResult { success: true, deleted: keys.len(), epoch }
     } else {
         ThumbnailDeleteResult::default()
     }

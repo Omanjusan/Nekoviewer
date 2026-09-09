@@ -127,6 +127,7 @@ impl NekoviewApp {
         // 間はエクスプローラー本体のキー操作を止める。止めないと、ダイアログのキーアサイン
         // 変更キャプチャ中に裏でF2(Rename)等が同時に反応し、キャプチャ側の入力検出と競合する。
         if !self.settings_is_open()
+            && !self.thumbnail_dialog_open
             && !self.search_date_start_calendar.is_open()
             && !self.search_date_end_calendar.is_open()
         {
@@ -145,6 +146,7 @@ impl NekoviewApp {
         if self.focused_pane != FocusPane::Filter
             && self.focused_pane != FocusPane::SearchForm
             && !self.settings_is_open()
+            && !self.thumbnail_dialog_open
             && self.favorite_dialog.is_none()
             && self.favorite_detail_dialog.is_none()
         {
@@ -157,7 +159,7 @@ impl NekoviewApp {
         // 以後は誰も event_filter で握っていないためこの move_focus が無いと上下キーで
         // 次々に別ウィジェットへ渡り歩いてしまう（実測: focused_pane は SearchForm のまま
         // 動かず、egui内部のfocused widget idだけが上下キー毎に変わり続けていた）。
-        if !self.settings_is_open() {
+        if !self.settings_is_open() && !self.thumbnail_dialog_open {
             ctx.memory_mut(|mem| mem.move_focus(egui::FocusDirection::None));
         }
         // release ビルドは ROOT 内フローティングウィンドウのため ui() で描画する。
@@ -169,6 +171,7 @@ impl NekoviewApp {
         self.draw_favorite_dialog(&ctx);
         self.draw_favorite_delete_confirm_dialog(&ctx);
         self.draw_favorite_detail_dialog(&ctx);
+        self.draw_thumbnail_dialog(&ctx);
         self.draw_settings_dialog(&ctx);
         self.draw_storage_migrate_confirm_dialog(&ctx);
         self.draw_storage_delete_failed_dialog(&ctx);
@@ -181,7 +184,10 @@ impl NekoviewApp {
     /// draw_menu_barの描画とhandle_menu_bar_keysの移動対象決定の両方から参照する単一の情報源。
     /// 見開き群のビューアー移設後、残る項目はすべて常時有効。
     pub(super) fn menu_bar_items(&self) -> Vec<(MenuBarButton, bool)> {
-        MENU_BAR_ORDER.iter().map(|&b| (b, true)).collect()
+        MENU_BAR_ORDER.iter().map(|&b| {
+            let enabled = b != MenuBarButton::Thumbnails || self.thumbnail_menu_available();
+            (b, enabled)
+        }).collect()
     }
 
     /// ソートキー・昇降順の変更後に共通で行う後処理（クリック・キーボード両経路で使う）。
@@ -215,6 +221,9 @@ impl NekoviewApp {
             MenuBarButton::SortOrder => {
                 self.sort_ascending = !self.sort_ascending;
                 self.finish_sort_change();
+            }
+            MenuBarButton::Thumbnails => {
+                self.open_thumbnail_dialog();
             }
             MenuBarButton::StatusToggle => {
                 self.show_status_window = !self.show_status_window;
@@ -282,7 +291,7 @@ impl NekoviewApp {
             // ── ステータスウィンドウボタン（右端） ────────────────────────
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 // 右→左レイアウトのため最初に追加した方が最も右端（[?]が視覚上の右端）。
-                // MENU_BAR_ORDERは視覚上の左→右（…設定, [?]）なので描画順は逆になる。
+                // MENU_BAR_ORDERは視覚上の左→右（…サムネイル, 設定, [?]）なので描画順は逆になる。
                 let r_status = ui.button("[?]");
                 if is_cursor(MenuBarButton::StatusToggle) { draw_cursor_ring(ui, r_status.rect); }
                 if r_status.clicked() {
@@ -295,6 +304,25 @@ impl NekoviewApp {
                 if is_cursor(MenuBarButton::Settings) { draw_cursor_ring(ui, r_settings.rect); }
                 if r_settings.clicked() {
                     self.open_settings();
+                }
+
+                ui.separator();
+
+                let thumbnail_label = if self.thumbnail_delete_rx.is_some() {
+                    i18n::t().thumbnail_menu_busy()
+                } else if !self.thumb_generation_state.allowed {
+                    i18n::t().thumbnail_menu_warning()
+                } else {
+                    i18n::t().thumbnail_menu()
+                };
+                let enabled = self.thumbnail_menu_available();
+                let r_thumbnail = ui.add_enabled(enabled, egui::Button::new(thumbnail_label));
+                if is_cursor(MenuBarButton::Thumbnails) { draw_cursor_ring(ui, r_thumbnail.rect); }
+                if r_thumbnail.clicked() {
+                    self.open_thumbnail_dialog();
+                }
+                if !self.thumb_generation_state.allowed {
+                    r_thumbnail.on_hover_text(i18n::t().thumbnail_mismatch_tooltip());
                 }
             });
         });

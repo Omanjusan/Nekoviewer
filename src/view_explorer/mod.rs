@@ -213,21 +213,34 @@ pub(crate) enum MenuBarButton {
     SortDate,
     SortSize,
     SortOrder,
+    Thumbnails,
     StatusToggle,
     Settings,
 }
 
 /// 表示順そのもの（draw_menu_barの描画順と一致させること）。
 /// 見開き・ページモード群はビューアーツールバーへ移設した（toolbar.rs 参照）。
-pub(crate) const MENU_BAR_ORDER: [MenuBarButton; 7] = [
+pub(crate) const MENU_BAR_ORDER: [MenuBarButton; 8] = [
     MenuBarButton::Reload,
     MenuBarButton::SortName,
     MenuBarButton::SortDate,
     MenuBarButton::SortSize,
     MenuBarButton::SortOrder,
+    MenuBarButton::Thumbnails,
     MenuBarButton::Settings,
     MenuBarButton::StatusToggle,
 ];
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ThumbnailDeleteMode {
+    Mismatched,
+    All,
+}
+
+struct ThumbnailDeleteFinished {
+    success: bool,
+    deleted: usize,
+}
 
 #[derive(Clone, Copy)]
 enum FavoriteDialogMode {
@@ -436,6 +449,10 @@ pub struct NekoviewApp {
     thumb_generation_blocked: HashSet<PathBuf>,
     /// 現PWDのRDBプロファイルに基づく、サムネイル生成の許可状態と競合防止世代。
     thumb_generation_state: crate::neko_dir::ThumbnailGenerationState,
+    thumbnail_dialog_open: bool,
+    thumbnail_delete_confirm_all: bool,
+    thumbnail_delete_rx: Option<mpsc::Receiver<(PathBuf, crate::neko_dir::ThumbnailDeleteResult)>>,
+    thumbnail_delete_finished: Option<ThumbnailDeleteFinished>,
     /// アーカイブ内サムネイルバー用（フォルダグリッドの thumb_req_tx とは別系統）
     entry_thumb_req_tx: mpsc::Sender<EntryThumbRequest>,
     entry_thumb_res_rx: mpsc::Receiver<EntryThumbResult>,
@@ -645,6 +662,7 @@ mod viewer_host;
 mod input;
 mod panels;
 mod favorites_ui;
+mod thumbnail_ui;
 mod search_ui;
 mod search;
 mod status;
@@ -758,6 +776,10 @@ impl NekoviewApp {
                 epoch: 0,
                 allowed: true,
             },
+            thumbnail_dialog_open: false,
+            thumbnail_delete_confirm_all: false,
+            thumbnail_delete_rx: None,
+            thumbnail_delete_finished: None,
             entry_thumb_req_tx,
             entry_thumb_res_rx,
             viewer: Arc::new(Mutex::new(None)),

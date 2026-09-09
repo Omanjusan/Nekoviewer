@@ -477,9 +477,14 @@ impl NekoviewApp {
         // viewer.show() より後に出しても既に処理済みのウィジェットの入力は防げない
         // （同一フレーム内で先に走った側が先に入力を消費してしまう）。そのため
         // viewer.show() 自体を呼ばず、Modal だけを描いて操作を完全に止める。
-        if self.settings_is_open() {
+        if self.settings_is_open() || self.thumbnail_dialog_open {
             egui::Modal::new(egui::Id::new("viewer_settings_blocked")).show(ui.ctx(), |ui| {
-                ui.label(i18n::t().settings_viewer_blocked());
+                let label = if self.settings_is_open() {
+                    i18n::t().settings_viewer_blocked()
+                } else {
+                    i18n::t().thumbnail_dialog_title()
+                };
+                ui.label(label);
             });
             return;
         }
