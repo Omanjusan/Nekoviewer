@@ -2,6 +2,23 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.7.0] - 2026-09-09
+
+### Added
+
+- Added indicators to the upper-right corner of thumbnails showing the saved state of three settings: binding direction (`L` or `R`), sort settings (`S`), and custom archive thumbnail (`T`)
+
+### Fixed
+
+- Reduced flickering during loading and resizing
+- Added the ability to save and restore the sort order for each archive, accessible from the viewer's right-click menu
+- Added the ability to select any page as an archive's thumbnail, accessible from the viewer's right-click menu
+- Synchronized the folder tree with the folder restored at application startup
+- Fixed the favorite and thumbnail-load-failure indicators overlapping
+- Fixed combinations of virtual pages appearing at the beginning and end of an archive when adjusting the spread offset. The offset controls are now disabled when they would cause destructive page movement
+- Fixed favorites and search writing to the database in a way that could compromise data consistency
+- Fixed incorrect page transition animations when using the offset controls
+
 ## [1.6.0] - 2026-08-22
 
 ### Added
