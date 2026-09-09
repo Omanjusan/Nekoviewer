@@ -12,6 +12,24 @@ use super::*;
 use super::workers::dispatch_thumb_request;
 
 impl NekoviewApp {
+    /// 1ファイル分の保存設定表示キャッシュを、書き込み後のRDB実値へ同期する。
+    fn refresh_saved_archive_settings(&mut self, archive_path: &std::path::Path) {
+        let Some(db) = self.spread_db.as_ref() else {
+            self.saved_archive_settings.remove(archive_path);
+            return;
+        };
+        let paths = [archive_path.to_path_buf()];
+        let settings = crate::spread_state::saved_settings_for_paths(db, &paths)
+            .remove(archive_path);
+        if let Some(settings) = settings {
+            self.saved_archive_settings
+                .insert(archive_path.to_path_buf(), settings);
+        } else {
+            self.saved_archive_settings.remove(archive_path);
+        }
+        self.egui_ctx.request_repaint();
+    }
+
     /// ビューアー窓が開いているか（winit_app が窓の生成/破棄判定に使う）。
     pub fn viewer_is_open(&self) -> bool {
         self.viewer.lock().unwrap().is_some()
@@ -722,6 +740,7 @@ impl NekoviewApp {
         let Some(db) = self.spread_db.clone() else { return };
         let mut viewer_guard = self.viewer.lock().unwrap();
         let Some(viewer) = viewer_guard.as_mut() else { return };
+        let archive_path = viewer.archive_path().clone();
         let filename = match viewer.archive_path().file_name().and_then(|n| n.to_str()) {
             Some(f) => f.to_string(),
             None => return,
@@ -764,6 +783,8 @@ impl NekoviewApp {
                 }
             }
         }
+        drop(viewer_guard);
+        self.refresh_saved_archive_settings(&archive_path);
     }
 
     /// 右クリックメニューでのソート条件保存操作を反映する。
@@ -771,6 +792,7 @@ impl NekoviewApp {
         let db = self.spread_db.clone();
         let mut viewer_guard = self.viewer.lock().unwrap();
         let Some(viewer) = viewer_guard.as_mut() else { return };
+        let archive_path = viewer.archive_path().clone();
         let filename = match viewer.archive_path().file_name().and_then(|n| n.to_str()) {
             Some(f) => f.to_string(),
             None => return,
@@ -806,6 +828,8 @@ impl NekoviewApp {
                 }
             }
         }
+        drop(viewer_guard);
+        self.refresh_saved_archive_settings(&archive_path);
     }
 
     /// 登録サムネイルページの永続化だけを行う。画像キャッシュの差し替えは次フェーズで接続する。
@@ -836,6 +860,7 @@ impl NekoviewApp {
         }
         let archive_dir = archive_dir.to_path_buf();
         drop(viewer_guard);
+        self.refresh_saved_archive_settings(&archive_path);
 
         // 現在のグリッドに属するアーカイブなら、メモリ上の旧画像を対象限定で破棄し、
         // 新しい登録値を付けて即時再生成する。キュー満杯時は通常描画経路が再要求する。
@@ -864,10 +889,11 @@ impl NekoviewApp {
         if !viewer.sort_save_changed() {
             return;
         }
-        let Some(filename) = viewer.archive_path().file_name().and_then(|n| n.to_str()).map(str::to_string) else {
+        let archive_path = viewer.archive_path().clone();
+        let Some(filename) = archive_path.file_name().and_then(|n| n.to_str()).map(str::to_string) else {
             return;
         };
-        let archive_dir = viewer.archive_path().parent()
+        let archive_dir = archive_path.parent()
             .unwrap_or(&self.current_dir)
             .to_path_buf();
         let (key, ascending) = viewer.current_sort_snapshot();
@@ -876,6 +902,8 @@ impl NekoviewApp {
         if archive_dir == self.current_dir {
             self.archive_sort_states.insert(filename, (key, ascending));
         }
+        drop(viewer_guard);
+        self.refresh_saved_archive_settings(&archive_path);
     }
 
     /// ビューアを開く（ページキャッシュクリア・ファイルキャッシュ投入・フォーカス要求を一括処理）
