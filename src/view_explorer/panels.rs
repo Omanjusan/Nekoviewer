@@ -42,6 +42,21 @@ fn saved_setting_marker_rect(rect: egui::Rect, slot: usize) -> Option<egui::Rect
     ))
 }
 
+fn saved_setting_marker_labels(
+    settings: crate::spread_state::SavedArchiveSettings,
+) -> [Option<&'static str>; 3] {
+    let spread = match settings.spread_mode {
+        Some(crate::types::PageMode::SpreadLeft) => Some("L"),
+        Some(crate::types::PageMode::SpreadRight) => Some("R"),
+        _ => None,
+    };
+    [
+        spread,
+        settings.has_saved_sort.then_some("S"),
+        settings.has_custom_thumbnail.then_some("T"),
+    ]
+}
+
 fn paint_saved_setting_marker(
     ui: &egui::Ui,
     thumbnail_rect: egui::Rect,
@@ -960,20 +975,13 @@ impl NekoviewApp {
                             // 保存設定マーカー: 右上から L/R・S・T の固定スロットへ配置する。
                             // 無効なスロットは詰めず、位置だけで設定種別を判別できるようにする。
                             if let Some(settings) = self.saved_archive_settings.get(path) {
-                                match settings.spread_mode {
-                                    Some(crate::types::PageMode::SpreadLeft) => {
-                                        paint_saved_setting_marker(ui, rect, 0, "L");
+                                for (slot, label) in saved_setting_marker_labels(*settings)
+                                    .into_iter()
+                                    .enumerate()
+                                {
+                                    if let Some(label) = label {
+                                        paint_saved_setting_marker(ui, rect, slot, label);
                                     }
-                                    Some(crate::types::PageMode::SpreadRight) => {
-                                        paint_saved_setting_marker(ui, rect, 0, "R");
-                                    }
-                                    _ => {}
-                                }
-                                if settings.has_saved_sort {
-                                    paint_saved_setting_marker(ui, rect, 1, "S");
-                                }
-                                if settings.has_custom_thumbnail {
-                                    paint_saved_setting_marker(ui, rect, 2, "T");
                                 }
                             }
 
@@ -1320,5 +1328,39 @@ mod tests {
         assert!(saved_setting_marker_rect(thumbnail, 0).is_some());
         assert!(saved_setting_marker_rect(thumbnail, 1).is_some());
         assert!(saved_setting_marker_rect(thumbnail, 2).is_none());
+    }
+
+    #[test]
+    fn saved_setting_marker_labels_preserve_empty_slots() {
+        let assert_labels =
+            |settings: crate::spread_state::SavedArchiveSettings,
+             expected: [Option<&'static str>; 3]| {
+                assert_eq!(saved_setting_marker_labels(settings), expected);
+            };
+
+        assert_labels(
+            crate::spread_state::SavedArchiveSettings {
+                spread_mode: None,
+                has_saved_sort: true,
+                has_custom_thumbnail: false,
+            },
+            [None, Some("S"), None],
+        );
+        assert_labels(
+            crate::spread_state::SavedArchiveSettings {
+                spread_mode: Some(crate::types::PageMode::SpreadLeft),
+                has_saved_sort: false,
+                has_custom_thumbnail: true,
+            },
+            [Some("L"), None, Some("T")],
+        );
+        assert_labels(
+            crate::spread_state::SavedArchiveSettings {
+                spread_mode: Some(crate::types::PageMode::SpreadRight),
+                has_saved_sort: true,
+                has_custom_thumbnail: true,
+            },
+            [Some("R"), Some("S"), Some("T")],
+        );
     }
 }
