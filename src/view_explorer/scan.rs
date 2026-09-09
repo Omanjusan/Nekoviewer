@@ -338,6 +338,9 @@ impl NekoviewApp {
                 self.archive_sort_states.clear();
                 self.favorite_states.clear();
             }
+            self.saved_archive_settings = self.spread_db.as_ref()
+                .map(|db| crate::spread_state::saved_settings_for_paths(db, &self.archives))
+                .unwrap_or_default();
             self.scan_state = ScanState::Done;
             self.sort_archives();
             // グリッドの統一カーソルを新しいディレクトリの先頭（↑があればそれ）へ即座に

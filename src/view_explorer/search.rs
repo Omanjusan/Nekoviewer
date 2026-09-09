@@ -189,6 +189,9 @@ impl NekoviewApp {
         self.cross_view_favorite_markers = self.spread_db.as_ref()
             .map(|db| crate::favorites::memberships_for_paths(db, &self.archives))
             .unwrap_or_default();
+        self.saved_archive_settings = self.spread_db.as_ref()
+            .map(|db| crate::spread_state::saved_settings_for_paths(db, &self.archives))
+            .unwrap_or_default();
         self.raw_image_files.clear();
         // 階層概念を持ち込まない平坦一覧という契約のため、サブフォルダ一覧も明示的に空にする
         // （grid_entries/draw_archive_grid側もviewing_searchをガードしているが二重の防御）。

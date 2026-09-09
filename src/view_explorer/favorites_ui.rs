@@ -27,6 +27,8 @@ impl NekoviewApp {
             crate::favorites::memberships_for_paths(&db, &paths);
         self.favorite_selected = selection;
         self.archives = paths;
+        self.saved_archive_settings =
+            crate::spread_state::saved_settings_for_paths(&db, &self.archives);
         self.raw_image_files = self
             .archives
             .iter()

@@ -422,6 +422,8 @@ pub struct NekoviewApp {
     /// お気に入り・検索の横断一覧表示中のマーカー情報 (フルパス -> 所属folder_id一覧)。
     /// ディレクトリ横断のため favorite_states とは別にフルパスキーで持つ。
     cross_view_favorite_markers: HashMap<PathBuf, Vec<u8>>,
+    /// サムネイル上へ表示する保存設定状態。通常・お気に入り・検索をフルパスで共通管理する。
+    saved_archive_settings: HashMap<PathBuf, crate::spread_state::SavedArchiveSettings>,
     /// 到達不能と判定済みのネットワークマウント大元（定期ポーリングはしない）
     network_unreachable_mounts: HashSet<PathBuf>,
     /// バックグラウンドで進行中のマウント到達可否チェック
@@ -738,6 +740,7 @@ impl NekoviewApp {
             archive_sort_states: HashMap::new(),
             favorite_states: HashMap::new(),
             cross_view_favorite_markers: HashMap::new(),
+            saved_archive_settings: HashMap::new(),
             network_unreachable_mounts: HashSet::new(),
             mount_check_pending: Vec::new(),
             thumbnails: HashMap::new(),

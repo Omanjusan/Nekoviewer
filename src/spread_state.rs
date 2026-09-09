@@ -1,4 +1,5 @@
-use std::path::Path;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use redb::{Database, ReadableDatabase, TableDefinition};
@@ -23,6 +24,14 @@ pub const ARCHIVE_SORT_TABLE_V1: TableDefinition<&str, (u8, bool)> =
 /// アーカイブ単位の登録サムネイルページ。値は表示順に依存しないentry_name。
 pub const THUMBNAIL_SELECTION_TABLE_V1: TableDefinition<&str, &str> =
     TableDefinition::new("thumbnail_selection_v1");
+
+/// サムネイル上の保存設定表示に必要な、アーカイブ単位の状態。
+#[derive(Clone, Copy, PartialEq, Default)]
+pub struct SavedArchiveSettings {
+    pub spread_mode: Option<PageMode>,
+    pub has_saved_sort: bool,
+    pub has_custom_thumbnail: bool,
+}
 
 /// root（config.rsが解決したconf置き場所）の nekoviewer_spread.redb を開く。
 /// 失敗時は None（保存機能自体を無効化）。
@@ -80,6 +89,53 @@ pub fn remove_thumbnail_selection(db: &Arc<Mutex<Database>>, dir: &Path, filenam
 fn make_key(dir: &Path, filename: &str) -> String {
     let key = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
     format!("{}\0{}", key.to_string_lossy(), filename)
+}
+
+/// 複数ディレクトリを横断する一覧向けに、3種類の保存設定を一括取得する。
+/// いずれの設定もないパスは戻り値へ含めない。
+pub fn saved_settings_for_paths(
+    db: &Arc<Mutex<Database>>,
+    paths: &[PathBuf],
+) -> HashMap<PathBuf, SavedArchiveSettings> {
+    let Ok(db) = db.lock() else {
+        return HashMap::new();
+    };
+    let Ok(tx) = db.begin_read() else {
+        return HashMap::new();
+    };
+    let spread_table = tx.open_table(SPREAD_TABLE).ok();
+    let sort_table = tx.open_table(ARCHIVE_SORT_TABLE_V1).ok();
+    let thumbnail_table = tx.open_table(THUMBNAIL_SELECTION_TABLE_V1).ok();
+    let mut out = HashMap::new();
+
+    for path in paths {
+        let Some(dir) = path.parent() else { continue };
+        let Some(filename) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        let key = make_key(dir, filename);
+        let spread_mode = spread_table.as_ref().and_then(|table| {
+            let value = table.get(key.as_str()).ok()??;
+            page_mode_from_u8(value.value().0)
+        });
+        let has_saved_sort = sort_table.as_ref().is_some_and(|table| {
+            table.get(key.as_str()).ok().flatten()
+                .and_then(|value| reader_sort_key_from_u8(value.value().0))
+                .is_some()
+        });
+        let has_custom_thumbnail = thumbnail_table.as_ref().is_some_and(|table| {
+            table.get(key.as_str()).ok().flatten().is_some()
+        });
+        let settings = SavedArchiveSettings {
+            spread_mode,
+            has_saved_sort,
+            has_custom_thumbnail,
+        };
+        if settings != SavedArchiveSettings::default() {
+            out.insert(path.clone(), settings);
+        }
+    }
+    out
 }
 
 pub fn page_mode_to_u8(mode: PageMode) -> u8 {
@@ -365,6 +421,34 @@ mod tests {
         remove_spread(&db, &dir, "book.zip");
         assert!(read_spread(&db, &dir, "book.zip").is_none());
         assert!(read_spread(&db, &other_dir, "book.zip").is_some());
+    }
+
+    #[test]
+    fn saved_settings_for_paths_combines_flags_and_keeps_full_paths() {
+        let db = temp_db();
+        let dir_a = unique_temp_path("settings_dir_a");
+        let dir_b = unique_temp_path("settings_dir_b");
+        let path_a = dir_a.join("same.zip");
+        let path_b = dir_b.join("same.zip");
+        let plain = dir_a.join("plain.zip");
+
+        write_spread(&db, &dir_a, "same.zip", PageMode::SpreadLeft, 1);
+        write_archive_sort(&db, &dir_a, "same.zip", ReaderSortKey::Natural, false);
+        write_thumbnail_selection(&db, &dir_a, "same.zip", "003.jpg");
+        write_spread(&db, &dir_b, "same.zip", PageMode::SpreadRight, -1);
+
+        let settings =
+            saved_settings_for_paths(&db, &[path_a.clone(), path_b.clone(), plain.clone()]);
+        let settings_a = settings.get(&path_a).unwrap();
+        assert!(matches!(settings_a.spread_mode, Some(PageMode::SpreadLeft)));
+        assert!(settings_a.has_saved_sort);
+        assert!(settings_a.has_custom_thumbnail);
+
+        let settings_b = settings.get(&path_b).unwrap();
+        assert!(matches!(settings_b.spread_mode, Some(PageMode::SpreadRight)));
+        assert!(!settings_b.has_saved_sort);
+        assert!(!settings_b.has_custom_thumbnail);
+        assert!(!settings.contains_key(&plain));
     }
 
     #[test]
