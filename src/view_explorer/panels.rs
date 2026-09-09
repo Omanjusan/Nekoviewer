@@ -11,6 +11,9 @@ use super::*;
 const THUMB_MARKER_TOP: f32 = 4.0;
 const THUMB_MARKER_BOTTOM_PADDING: f32 = 4.0;
 const THUMB_MARKER_LINE_H: f32 = 21.0;
+const SAVED_SETTING_MARKER_SIZE: f32 = 17.0;
+const SAVED_SETTING_MARKER_SLOT_H: f32 = 21.0;
+const SAVED_SETTING_MARKER_MARGIN: f32 = 4.0;
 
 fn favorite_marker_layout(cell_h: f32, has_error_marker: bool) -> (f32, usize) {
     let top = THUMB_MARKER_TOP
@@ -23,6 +26,43 @@ fn favorite_marker_layout(cell_h: f32, has_error_marker: bool) -> (f32, usize) {
         .floor()
         .max(0.0) as usize;
     (top, max_lines)
+}
+
+fn saved_setting_marker_rect(rect: egui::Rect, slot: usize) -> Option<egui::Rect> {
+    let top = rect.min.y
+        + SAVED_SETTING_MARKER_MARGIN
+        + slot as f32 * SAVED_SETTING_MARKER_SLOT_H;
+    let left = rect.max.x - SAVED_SETTING_MARKER_MARGIN - SAVED_SETTING_MARKER_SIZE;
+    if top + SAVED_SETTING_MARKER_SIZE + SAVED_SETTING_MARKER_MARGIN > rect.max.y {
+        return None;
+    }
+    Some(egui::Rect::from_min_size(
+        egui::pos2(left, top),
+        egui::vec2(SAVED_SETTING_MARKER_SIZE, SAVED_SETTING_MARKER_SIZE),
+    ))
+}
+
+fn paint_saved_setting_marker(
+    ui: &egui::Ui,
+    thumbnail_rect: egui::Rect,
+    slot: usize,
+    label: &str,
+) {
+    let Some(marker_rect) = saved_setting_marker_rect(thumbnail_rect, slot) else {
+        return;
+    };
+    ui.painter().rect_filled(
+        marker_rect,
+        2.0,
+        egui::Color32::from_black_alpha(210),
+    );
+    ui.painter().text(
+        marker_rect.center(),
+        egui::Align2::CENTER_CENTER,
+        label,
+        egui::FontId::monospace(13.0),
+        egui::Color32::WHITE,
+    );
 }
 
 impl NekoviewApp {
@@ -917,12 +957,35 @@ impl NekoviewApp {
                                 }
                             }
 
-                            // ネットワークリンク切れマーカー: 右上（大元マウント単位で判定済みのもののみ）
+                            // 保存設定マーカー: 右上から L/R・S・T の固定スロットへ配置する。
+                            // 無効なスロットは詰めず、位置だけで設定種別を判別できるようにする。
+                            if let Some(settings) = self.saved_archive_settings.get(path) {
+                                match settings.spread_mode {
+                                    Some(crate::types::PageMode::SpreadLeft) => {
+                                        paint_saved_setting_marker(ui, rect, 0, "L");
+                                    }
+                                    Some(crate::types::PageMode::SpreadRight) => {
+                                        paint_saved_setting_marker(ui, rect, 0, "R");
+                                    }
+                                    _ => {}
+                                }
+                                if settings.has_saved_sort {
+                                    paint_saved_setting_marker(ui, rect, 1, "S");
+                                }
+                                if settings.has_custom_thumbnail {
+                                    paint_saved_setting_marker(ui, rect, 2, "T");
+                                }
+                            }
+
+                            // ネットワークリンク切れマーカー: 右下（大元マウント単位で判定済みのもののみ）
                             if let Some(root) = self.network_mount_root_cached(path)
                                 && self.network_unreachable_mounts.contains(&root)
                             {
                                 let mark_size = 16.0;
-                                let origin = egui::pos2(rect.max.x - mark_size - 4.0, rect.min.y + 4.0);
+                                let origin = egui::pos2(
+                                    rect.max.x - mark_size - 4.0,
+                                    rect.max.y - mark_size - 4.0,
+                                );
                                 ui.painter().text(
                                     origin,
                                     egui::Align2::LEFT_TOP,
@@ -1229,5 +1292,33 @@ mod tests {
                 + THUMB_MARKER_BOTTOM_PADDING
                 <= cell_h
         );
+    }
+
+    #[test]
+    fn saved_setting_marker_slots_keep_fixed_vertical_positions() {
+        let thumbnail = egui::Rect::from_min_size(
+            egui::pos2(10.0, 20.0),
+            egui::vec2(180.0, 256.0),
+        );
+
+        let spread = saved_setting_marker_rect(thumbnail, 0).unwrap();
+        let sort = saved_setting_marker_rect(thumbnail, 1).unwrap();
+        let custom_thumbnail = saved_setting_marker_rect(thumbnail, 2).unwrap();
+
+        assert_eq!(spread.min, egui::pos2(169.0, 24.0));
+        assert_eq!(sort.min, egui::pos2(169.0, 45.0));
+        assert_eq!(custom_thumbnail.min, egui::pos2(169.0, 66.0));
+    }
+
+    #[test]
+    fn saved_setting_marker_slot_is_hidden_when_it_does_not_fit() {
+        let thumbnail = egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(64.0, 64.0),
+        );
+
+        assert!(saved_setting_marker_rect(thumbnail, 0).is_some());
+        assert!(saved_setting_marker_rect(thumbnail, 1).is_some());
+        assert!(saved_setting_marker_rect(thumbnail, 2).is_none());
     }
 }
