@@ -1489,6 +1489,7 @@ pub struct ThumbRequest {
     pub thumbnail_selection: Option<crate::spread_state::ThumbnailSelection>,
     /// GUIのグリッド表示サイズと一致させる生成長辺。
     pub requested_edge: u32,
+    pub requested_filter: crate::config::ResizeFilter,
     /// PWDのキャッシュ削除世代。古い要求の遅延書き戻しを拒否するために使う。
     pub generation_epoch: u64,
     /// falseでもDBプローブは行うが、キャッシュミスやmtime不一致からの生成は開始しない。
@@ -1500,6 +1501,7 @@ pub struct ThumbResult {
     pub rgba: Option<image::RgbaImage>,
     pub source_key: Option<String>,
     pub requested_edge: u32,
+    pub requested_filter: u32,
     pub generation_epoch: u64,
     pub generation_blocked: bool,
 }
@@ -1521,7 +1523,6 @@ fn forward_thumb_gen(req: ThumbRequest, local_tx: &mpsc::Sender<ThumbRequest>, n
 fn spawn_thumb_gen_pool(
     gen_rx: Arc<Mutex<mpsc::Receiver<ThumbRequest>>>,
     num_threads: usize,
-    filter: image::imageops::FilterType,
     res_tx: mpsc::Sender<ThumbResult>,
     ctx: egui::Context,
 ) {
@@ -1536,13 +1537,14 @@ fn spawn_thumb_gen_pool(
                     Err(_) => break,
                 };
                 // 失敗（None）でも必ず返送し、呼び元が thumb_pending を解放できるようにする
-                let rgba = generate_thumb(&req, filter);
+                let rgba = generate_thumb(&req);
                 let source_key = req.thumbnail_selection.as_ref().map(thumbnail_selection_cache_key);
                 let _ = res_tx.send(ThumbResult {
                     path: req.archive_path,
                     rgba,
                     source_key,
                     requested_edge: req.requested_edge,
+                    requested_filter: req.requested_filter.thumbnail_cache_id(),
                     generation_epoch: req.generation_epoch,
                     generation_blocked: false,
                 });
@@ -1559,7 +1561,7 @@ fn spawn_thumb_gen_pool(
 /// - 生成レーン（ローカル/ネットワーク別）: 元ファイルからの生成。
 ///   ネットワーク側は並列度を THUMB_NET_GEN_THREADS に制限する。
 /// キャッシュ済みサムネが未格納分の生成待ち行列に並ばされて遅延するのを防ぐ。
-pub fn spawn_thumb_worker(filter: image::imageops::FilterType, num_threads: usize, ctx: egui::Context) -> (mpsc::SyncSender<ThumbRequest>, mpsc::Receiver<ThumbResult>) {
+pub fn spawn_thumb_worker(num_threads: usize, ctx: egui::Context) -> (mpsc::SyncSender<ThumbRequest>, mpsc::Receiver<ThumbResult>) {
     let capacity = (num_threads * 2).max(16);
     let (req_tx, probe_rx) = mpsc::sync_channel::<ThumbRequest>(capacity);
     let (res_tx, res_rx) = mpsc::channel::<ThumbResult>();
@@ -1589,6 +1591,7 @@ pub fn spawn_thumb_worker(filter: image::imageops::FilterType, num_threads: usiz
                             rgba: Some(rgba),
                             source_key,
                             requested_edge: req.requested_edge,
+                            requested_filter: req.requested_filter.thumbnail_cache_id(),
                             generation_epoch: req.generation_epoch,
                             generation_blocked: false,
                         });
@@ -1610,6 +1613,7 @@ pub fn spawn_thumb_worker(filter: image::imageops::FilterType, num_threads: usiz
                                 rgba: None,
                                 source_key,
                                 requested_edge: req.requested_edge,
+                                requested_filter: req.requested_filter.thumbnail_cache_id(),
                                 generation_epoch: req.generation_epoch,
                                 generation_blocked: true,
                             });
@@ -1624,8 +1628,8 @@ pub fn spawn_thumb_worker(filter: image::imageops::FilterType, num_threads: usiz
     drop(gen_tx);
     drop(net_gen_tx);
 
-    spawn_thumb_gen_pool(Arc::new(Mutex::new(gen_rx)), num_threads, filter, res_tx.clone(), ctx.clone());
-    spawn_thumb_gen_pool(Arc::new(Mutex::new(net_gen_rx)), THUMB_NET_GEN_THREADS, filter, res_tx, ctx);
+    spawn_thumb_gen_pool(Arc::new(Mutex::new(gen_rx)), num_threads, res_tx.clone(), ctx.clone());
+    spawn_thumb_gen_pool(Arc::new(Mutex::new(net_gen_rx)), THUMB_NET_GEN_THREADS, res_tx, ctx);
 
     (req_tx, res_rx)
 }
@@ -1776,7 +1780,8 @@ fn probe_cached_thumb(req: &ThumbRequest) -> Option<(image::RgbaImage, i64)> {
 }
 
 /// 元ファイルからサムネを生成してDBへ保存する。失敗時は None を返す（スレッドは死なない）。
-fn generate_thumb(req: &ThumbRequest, filter: image::imageops::FilterType) -> Option<image::RgbaImage> {
+fn generate_thumb(req: &ThumbRequest) -> Option<image::RgbaImage> {
+    let filter = req.requested_filter.to_image_filter();
     let filename = req.archive_path
         .file_name()
         .and_then(|n| n.to_str())
@@ -1846,6 +1851,7 @@ fn generate_thumb(req: &ThumbRequest, filter: image::imageops::FilterType) -> Op
                 &jpeg,
                 generated_source.as_deref().unwrap_or(""),
                 req.requested_edge,
+                req.requested_filter.thumbnail_cache_id(),
                 req.generation_epoch,
             ) {
                 let size = crate::neko_dir::file_size(&req.archive_path);
@@ -1992,6 +1998,7 @@ mod ring_integration_tests {
             db: None,
             is_raw_file: false,
             requested_edge: 384,
+            requested_filter: crate::config::ResizeFilter::Triangle,
             generation_epoch: 0,
             allow_generation: true,
             thumbnail_selection: Some(crate::spread_state::ThumbnailSelection {
@@ -1999,7 +2006,7 @@ mod ring_integration_tests {
                 source_kind: crate::spread_state::ThumbnailSourceKind::Full,
             }),
         };
-        let rgba = generate_thumb(&req, image::imageops::FilterType::Triangle)
+        let rgba = generate_thumb(&req)
             .expect("registered entry should generate a thumbnail");
         assert!(rgba.width() <= 384 && rgba.height() <= 384);
         assert_eq!(rgba.width().max(rgba.height()), 384);

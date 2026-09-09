@@ -212,7 +212,7 @@ pub fn migrate_storage_files(from: &std::path::Path, to: &std::path::Path) -> Ve
     delete_failed
 }
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ResizeFilter {
     Nearest,
     Triangle,
@@ -221,6 +221,16 @@ pub enum ResizeFilter {
 }
 
 impl ResizeFilter {
+    /// cache.redbへ保存する安定ID。enumの宣言順には依存させない。
+    pub const fn thumbnail_cache_id(self) -> u32 {
+        match self {
+            Self::Nearest => 1,
+            Self::Triangle => 2,
+            Self::CatmullRom => 3,
+            Self::Lanczos3 => 4,
+        }
+    }
+
     pub fn to_image_filter(self) -> image::imageops::FilterType {
         match self {
             Self::Nearest   => image::imageops::FilterType::Nearest,

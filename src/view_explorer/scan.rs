@@ -373,14 +373,20 @@ impl NekoviewApp {
     /// 現PWDの既存JPEG群とGUI設定サイズを照合し、キャッシュプローブ後の生成可否を更新する。
     pub(crate) fn refresh_thumbnail_generation_state(&mut self) {
         let requested_edge_changed =
-            self.thumb_generation_state.requested_edge != self.config.thumb_size;
+            self.thumb_generation_state.requested_edge != self.config.thumb_size
+                || self.thumb_generation_state.requested_filter != self.config.thumb_filter.thumbnail_cache_id();
         self.thumb_generation_state = self.cache_db.as_ref().map_or(
             neko_dir::ThumbnailGenerationState {
                 requested_edge: self.config.thumb_size,
+                requested_filter: self.config.thumb_filter.thumbnail_cache_id(),
                 epoch: 0,
                 allowed: true,
             },
-            |db| neko_dir::thumbnail_generation_state(db, self.config.thumb_size),
+            |db| neko_dir::thumbnail_generation_state(
+                db,
+                self.config.thumb_size,
+                self.config.thumb_filter.thumbnail_cache_id(),
+            ),
         );
         if requested_edge_changed {
             self.thumb_pending.clear();

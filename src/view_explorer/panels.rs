@@ -322,7 +322,7 @@ impl NekoviewApp {
                     self.open_thumbnail_dialog();
                 }
                 if !self.thumb_generation_state.allowed {
-                    r_thumbnail.on_hover_text(i18n::t().thumbnail_mismatch_tooltip());
+                    r_thumbnail.on_hover_text(self.thumbnail_mismatch_tooltip_text());
                 }
             });
         });
@@ -912,6 +912,7 @@ impl NekoviewApp {
                                         db: self.cache_db.clone(),
                                         is_raw_file: self.raw_image_files.contains(path),
                                         requested_edge: self.config.thumb_size,
+                                        requested_filter: self.config.thumb_filter,
                                         generation_epoch: self.thumb_generation_state.epoch,
                                         allow_generation: self.thumb_generation_state.allowed,
                                         thumbnail_selection: path.parent().and_then(|dir| {

@@ -891,10 +891,15 @@ impl NekoviewApp {
         let generation_state = cache_db.as_ref().map_or(
             crate::neko_dir::ThumbnailGenerationState {
                 requested_edge: self.config.thumb_size,
+                requested_filter: self.config.thumb_filter.thumbnail_cache_id(),
                 epoch: 0,
                 allowed: true,
             },
-            |db| crate::neko_dir::thumbnail_generation_state(db, self.config.thumb_size),
+            |db| crate::neko_dir::thumbnail_generation_state(
+                db,
+                self.config.thumb_size,
+                self.config.thumb_filter.thumbnail_cache_id(),
+            ),
         );
         if archive_dir == self.current_dir {
             self.thumb_generation_state = generation_state;
@@ -911,6 +916,7 @@ impl NekoviewApp {
             is_raw_file: false,
             thumbnail_selection: selected_selection,
             requested_edge: self.config.thumb_size,
+            requested_filter: self.config.thumb_filter,
             generation_epoch: generation_state.epoch,
             allow_generation: generation_state.allowed,
         }).is_ok() {

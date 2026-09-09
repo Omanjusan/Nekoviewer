@@ -338,7 +338,9 @@ impl NekoviewApp {
     }
 
     pub(super) fn poll_workers(&mut self, ctx: &egui::Context) {
-        if self.thumb_generation_state.requested_edge != self.config.thumb_size {
+        if self.thumb_generation_state.requested_edge != self.config.thumb_size
+            || self.thumb_generation_state.requested_filter != self.config.thumb_filter.thumbnail_cache_id()
+        {
             self.refresh_thumbnail_generation_state();
         }
         self.poll_mount_checks();
@@ -360,7 +362,8 @@ impl NekoviewApp {
                 .is_some_and(|parent| parent == self.current_dir);
             if belongs_to_current_pwd
                 && (result.generation_epoch != self.thumb_generation_state.epoch
-                    || result.requested_edge != self.thumb_generation_state.requested_edge)
+                    || result.requested_edge != self.thumb_generation_state.requested_edge
+                    || result.requested_filter != self.thumb_generation_state.requested_filter)
             {
                 continue;
             }

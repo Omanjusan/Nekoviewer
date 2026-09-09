@@ -1,6 +1,44 @@
 use super::*;
 
+fn stored_filter_summary(stats: &crate::neko_dir::ThumbnailCacheStats) -> String {
+    let mut names = Vec::new();
+    for filter in [
+        crate::config::ResizeFilter::Nearest,
+        crate::config::ResizeFilter::Triangle,
+        crate::config::ResizeFilter::CatmullRom,
+        crate::config::ResizeFilter::Lanczos3,
+    ] {
+        if stats.filter_mask & (1 << filter.thumbnail_cache_id()) != 0 {
+            names.push(crate::config::filter_to_str(filter).to_string());
+        }
+    }
+    if stats.unknown_filter > 0 {
+        names.push(i18n::t().thumbnail_dialog_filter_unknown().to_string());
+    }
+    names.join(", ")
+}
+
 impl NekoviewApp {
+    pub(super) fn thumbnail_mismatch_tooltip_text(&self) -> &'static str {
+        let Some(db) = &self.cache_db else {
+            return i18n::t().thumbnail_mismatch_tooltip();
+        };
+        let filter_id = self.config.thumb_filter.thumbnail_cache_id();
+        let stats = crate::neko_dir::thumbnail_cache_stats(db, self.config.thumb_size, filter_id);
+        if stats.unknown_filter > 0 {
+            return i18n::t().thumbnail_unknown_filter_tooltip();
+        }
+        let size_mismatch = stats.min_edge.is_some_and(|v| v != self.config.thumb_size)
+            || stats.max_edge.is_some_and(|v| v != self.config.thumb_size);
+        let filter_mismatch = stats.unknown_filter > 0
+            || stats.filter_mask != (1 << filter_id);
+        match (size_mismatch, filter_mismatch) {
+            (false, true) => i18n::t().thumbnail_filter_mismatch_tooltip(),
+            (true, false) => i18n::t().thumbnail_size_mismatch_tooltip(),
+            _ => i18n::t().thumbnail_mismatch_tooltip(),
+        }
+    }
+
     pub(super) fn thumbnail_menu_available(&self) -> bool {
         self.folder_pane_tab == FolderPaneTab::RealTree
             && self.viewing_favorites.is_none()
@@ -26,6 +64,7 @@ impl NekoviewApp {
         };
         let path = self.current_dir.clone();
         let requested_edge = self.config.thumb_size;
+        let requested_filter = self.config.thumb_filter.thumbnail_cache_id();
         let ctx = self.egui_ctx.clone();
         let (tx, rx) = mpsc::channel();
         self.thumbnail_delete_rx = Some(rx);
@@ -36,9 +75,9 @@ impl NekoviewApp {
         std::thread::spawn(move || {
             let result = match mode {
                 ThumbnailDeleteMode::Mismatched =>
-                    crate::neko_dir::delete_mismatched_thumbnails(&db, requested_edge),
+                    crate::neko_dir::delete_mismatched_thumbnails(&db, requested_edge, requested_filter),
                 ThumbnailDeleteMode::All =>
-                    crate::neko_dir::delete_all_thumbnails(&db, requested_edge),
+                    crate::neko_dir::delete_all_thumbnails(&db, requested_edge, requested_filter),
             };
             let _ = tx.send((path, result));
             ctx.request_repaint();
@@ -80,7 +119,11 @@ impl NekoviewApp {
 
         let stats = self.cache_db.as_ref().map_or(
             crate::neko_dir::ThumbnailCacheStats::default(),
-            |db| crate::neko_dir::thumbnail_cache_stats(db, self.config.thumb_size),
+            |db| crate::neko_dir::thumbnail_cache_stats(
+                db,
+                self.config.thumb_size,
+                self.config.thumb_filter.thumbnail_cache_id(),
+            ),
         );
         let busy = self.thumbnail_delete_rx.is_some();
         let mut close = false;
@@ -97,9 +140,10 @@ impl NekoviewApp {
             ui.monospace(self.current_dir.display().to_string());
             ui.add_space(8.0);
             ui.label(format!(
-                "{}: {} px",
+                "{}: {} px / {}",
                 i18n::t().thumbnail_dialog_requested_size(),
                 self.config.thumb_size,
+                crate::config::filter_to_str(self.config.thumb_filter),
             ));
             if let (Some(min), Some(max)) = (stats.min_edge, stats.max_edge) {
                 let saved = if min == max {
@@ -108,6 +152,14 @@ impl NekoviewApp {
                     format!("{min}–{max} px")
                 };
                 ui.label(format!("{}: {saved}", i18n::t().thumbnail_dialog_saved_sizes()));
+            }
+            let stored_filters = stored_filter_summary(&stats);
+            if !stored_filters.is_empty() {
+                ui.label(format!(
+                    "{}: {}",
+                    i18n::t().thumbnail_dialog_saved_filters(),
+                    stored_filters,
+                ));
             }
             ui.label(format!("{}: {}", i18n::t().thumbnail_dialog_matching(), stats.matching));
             ui.label(format!("{}: {}", i18n::t().thumbnail_dialog_mismatched(), stats.mismatched));

@@ -831,11 +831,16 @@ impl Lang {
     pub fn thumbnail_menu(self) -> &'static str { match self { Lang::Japanese => "[サムネイル]", Lang::English => "[Thumbnails]", Lang::Chinese => "[缩略图]" } }
     pub fn thumbnail_menu_warning(self) -> &'static str { match self { Lang::Japanese => "[サムネイル ⚠]", Lang::English => "[Thumbnails ⚠]", Lang::Chinese => "[缩略图 ⚠]" } }
     pub fn thumbnail_menu_busy(self) -> &'static str { match self { Lang::Japanese => "[サムネイル …]", Lang::English => "[Thumbnails …]", Lang::Chinese => "[缩略图 …]" } }
-    pub fn thumbnail_mismatch_tooltip(self) -> &'static str { match self { Lang::Japanese => "表示設定と異なるサイズのサムネイルがあります", Lang::English => "Some thumbnails do not match the configured display size", Lang::Chinese => "部分缩略图尺寸与显示设置不一致" } }
+    pub fn thumbnail_mismatch_tooltip(self) -> &'static str { match self { Lang::Japanese => "保存済みサムネイルと現在の生成設定が異なります", Lang::English => "Stored thumbnails do not match the current generation settings", Lang::Chinese => "已保存缩略图与当前生成设置不一致" } }
+    pub fn thumbnail_size_mismatch_tooltip(self) -> &'static str { match self { Lang::Japanese => "保存済みサムネイルと現在のサイズ設定が異なります", Lang::English => "Stored thumbnails do not match the current size setting", Lang::Chinese => "已保存缩略图与当前尺寸设置不一致" } }
+    pub fn thumbnail_filter_mismatch_tooltip(self) -> &'static str { match self { Lang::Japanese => "サイズは一致していますが、保存済みサムネイルは現在と異なるリサイズフィルタで生成されています", Lang::English => "Sizes match, but stored thumbnails were generated with a different resize filter", Lang::Chinese => "尺寸一致，但已保存缩略图使用了不同的缩放滤镜" } }
+    pub fn thumbnail_unknown_filter_tooltip(self) -> &'static str { match self { Lang::Japanese => "旧形式のため、保存済みサムネイルのリサイズフィルタを確認できません", Lang::English => "The resize filter used by these legacy thumbnails is unknown", Lang::Chinese => "旧格式缩略图所使用的缩放滤镜未知" } }
     pub fn thumbnail_dialog_title(self) -> &'static str { match self { Lang::Japanese => "サムネイルキャッシュ", Lang::English => "Thumbnail cache", Lang::Chinese => "缩略图缓存" } }
     pub fn thumbnail_dialog_target(self) -> &'static str { match self { Lang::Japanese => "対象フォルダー", Lang::English => "Target folder", Lang::Chinese => "目标文件夹" } }
     pub fn thumbnail_dialog_requested_size(self) -> &'static str { match self { Lang::Japanese => "表示・生成予定サイズ", Lang::English => "Display and generation size", Lang::Chinese => "显示及生成尺寸" } }
     pub fn thumbnail_dialog_saved_sizes(self) -> &'static str { match self { Lang::Japanese => "保存済みサイズ", Lang::English => "Stored sizes", Lang::Chinese => "已保存尺寸" } }
+    pub fn thumbnail_dialog_saved_filters(self) -> &'static str { match self { Lang::Japanese => "保存済みフィルタ", Lang::English => "Stored filters", Lang::Chinese => "已保存滤镜" } }
+    pub fn thumbnail_dialog_filter_unknown(self) -> &'static str { match self { Lang::Japanese => "不明（旧形式）", Lang::English => "Unknown (legacy)", Lang::Chinese => "未知（旧格式）" } }
     pub fn thumbnail_dialog_matching(self) -> &'static str { match self { Lang::Japanese => "一致", Lang::English => "Matching", Lang::Chinese => "一致" } }
     pub fn thumbnail_dialog_mismatched(self) -> &'static str { match self { Lang::Japanese => "不一致", Lang::English => "Mismatched", Lang::Chinese => "不一致" } }
     pub fn thumbnail_dialog_preserve_note(self) -> &'static str { match self { Lang::Japanese => "登録サムネイルなどの設定と検索索引は削除されません。", Lang::English => "Registered-thumbnail settings and the search index are preserved.", Lang::Chinese => "已注册的缩略图设置和搜索索引不会被删除。" } }

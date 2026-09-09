@@ -704,7 +704,7 @@ impl NekoviewApp {
         let config_conflict = config.conflict.clone();
         let settings_draft = SettingsDraft::from_current(&config, &viewer_cfg, show_hidden, &translate_cfg);
         let (req_tx, res_rx) = spawn_worker(config.viewer_filter.to_image_filter(), config.resolved_decode_threads(), ctx.clone(), cache_max, ring_bounds, frame_hard_limit_bytes);
-        let (thumb_req_tx, thumb_res_rx) = spawn_thumb_worker(config.thumb_filter.to_image_filter(), config.resolved_decode_threads(), ctx.clone());
+        let (thumb_req_tx, thumb_res_rx) = spawn_thumb_worker(config.resolved_decode_threads(), ctx.clone());
         let (entry_thumb_req_tx, entry_thumb_res_rx) = spawn_entry_thumb_worker(config.thumb_filter.to_image_filter(), config.resolved_decode_threads(), ctx.clone());
         let (file_cache_req_tx, file_cache_res_rx) = spawn_file_cache_worker(ctx.clone(), file_cache_max);
         let mut drives = list_local_drives();
@@ -738,6 +738,7 @@ impl NekoviewApp {
         // 起こし続ける（winit ループがその予定で WaitUntil する）。
 
         let initial_thumb_size = config.thumb_size;
+        let initial_thumb_filter = config.thumb_filter.thumbnail_cache_id();
         let mut app = Self {
             config,
             current_dir: start_dir,
@@ -790,6 +791,7 @@ impl NekoviewApp {
             thumb_generation_blocked: HashSet::new(),
             thumb_generation_state: crate::neko_dir::ThumbnailGenerationState {
                 requested_edge: initial_thumb_size,
+                requested_filter: initial_thumb_filter,
                 epoch: 0,
                 allowed: true,
             },
