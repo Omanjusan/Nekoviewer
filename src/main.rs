@@ -1,6 +1,7 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 mod anim;
 mod cache;
+mod card_date_format;
 mod config;
 mod controller;
 mod decode_jobs;

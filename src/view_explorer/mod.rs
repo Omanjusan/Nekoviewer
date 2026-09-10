@@ -666,6 +666,8 @@ pub struct NekoviewApp {
     pub(crate) show_hidden: bool,
     /// サムネカード下部の情報帯の表示量（メニューバーの1ボタンで循環）。
     pub(crate) card_info_mode: CardInfoMode,
+    /// 情報帯の「更新日時」行に使う日付書式。設定ダイアログのエクスプローラータブで編集。
+    pub(crate) card_date_format: crate::card_date_format::CardDateFormat,
     /// 情報帯の見た目（背景色・透過度・文字色・文字サイズ）。今は Default 固定。
     pub(crate) card_info_style: CardInfoStyle,
     /// 情報帯の行が帯幅を超えた時のホバー横スクロール状態: (対象パス, ホバー開始時刻)。
@@ -761,14 +763,13 @@ mod search;
 mod status;
 mod nav_icons;
 mod calendar_gui;
-pub(crate) mod card_date_format;
 
 #[cfg(test)]
 mod glyph_audit;
 
 
 impl NekoviewApp {
-    pub fn new(start_dir: PathBuf, config: AppConfig, viewer_slots: [Option<WindowSlot>; 4], sort_state: SortState, viewer_cfg: ViewerConfig, show_hidden: bool, card_info_mode: &str, translate_cfg: crate::translate::TranslateConfig, ctx: egui::Context) -> Self {
+    pub fn new(start_dir: PathBuf, config: AppConfig, viewer_slots: [Option<WindowSlot>; 4], sort_state: SortState, viewer_cfg: ViewerConfig, show_hidden: bool, card_info_mode: &str, card_date_format: crate::card_date_format::CardDateFormat, translate_cfg: crate::translate::TranslateConfig, ctx: egui::Context) -> Self {
         // timeのローカルオフセット取得は、Unixでは他スレッド起動前に行う必要がある。
         let local_today = calendar_gui::LocalDate::today_local();
         let (cache_max, cache_min, file_cache_max) = crate::cache::resolve_cache_budgets(config.cache_total_mb);
@@ -941,6 +942,7 @@ impl NekoviewApp {
             viewer_focus_requested: false,
             show_hidden,
             card_info_mode: CardInfoMode::from_state_str(card_info_mode),
+            card_date_format,
             card_info_style: CardInfoStyle::default(),
             card_info_hover: None,
             archive_meta_cache: HashMap::new(),
@@ -1014,6 +1016,7 @@ impl NekoviewApp {
             &*self.viewer_cfg.lock().unwrap(),
             self.show_hidden,
             self.card_info_mode.as_state_str(),
+            &self.card_date_format,
             &self.config,
             &self.translate_cfg,
         );

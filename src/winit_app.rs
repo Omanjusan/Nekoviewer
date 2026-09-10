@@ -336,6 +336,7 @@ impl WinitApp {
             state.viewer_cfg,
             state.show_hidden,
             &state.card_info_mode,
+            state.card_date_format,
             state.translate_cfg,
             win.egui_ctx.clone(),
         );

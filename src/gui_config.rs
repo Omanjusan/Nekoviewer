@@ -6,6 +6,7 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::card_date_format::CardDateFormat;
 use crate::config::{AppConfig, ResizeFilter, filter_to_str, parse_filter};
 use crate::toolbar::{BAR_ITEM_COUNT, DEFAULT_BAR_ORDER, ViewerBarItem, bar_order_to_str, parse_bar_order};
 use crate::translate::TranslateConfig;
@@ -157,6 +158,9 @@ pub struct AppState {
     /// サムネカード下部の情報帯モード: "off" / "name" / "name_date" / "name_date_size"。
     /// メニューバーの1ボタン循環トグルで切り替え、値は CardInfoMode 側で解釈する。
     pub card_info_mode: String,
+    /// サムネカード情報帯の「更新日時」表示に使う日付書式。設定ダイアログの
+    /// エクスプローラータブで編集し、state には card_date_* の6キーに分割して保存する。
+    pub card_date_format: CardDateFormat,
     /// 設定ダイアログ（共通/アニメタブ）から編集された AppConfig 上書き値。
     /// None のものは config.ini の値をそのまま使う。一度でもダイアログで変更すると
     /// この state 側の値が以後 config.ini より優先される（次回起動反映）。
@@ -181,6 +185,7 @@ impl Default for AppState {
             viewer_cfg: ViewerConfig::default(),
             show_hidden: false,
             card_info_mode: "off".to_string(),
+            card_date_format: CardDateFormat::default(),
             app_cache_total_mb: None,
             app_anim_ring_min_frames: None,
             app_anim_ring_max_frames: None,
@@ -233,6 +238,13 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
     let mut redecode_on_resize: Option<bool> = None;
     let mut show_hidden: Option<bool> = None;
     let mut card_info_mode: Option<String> = None;
+    // カード日付書式の6キー（未記載は CardDateFormat::from_state 側で各既定へフォールバック）
+    let mut card_date_mode = String::new();
+    let mut card_date_auto_style = String::new();
+    let mut card_date_order = String::new();
+    let mut card_date_sep = String::new();
+    let mut card_date_year = String::new();
+    let mut card_date_month = String::new();
     let mut resize_debounce_ms: Option<u64> = None;
     let mut app_cache_total_mb: Option<u64> = None;
     let mut app_anim_ring_min_frames: Option<usize> = None;
@@ -303,6 +315,12 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
                 "redecode_on_resize" => { redecode_on_resize = v.trim().parse().ok(); }
                 "show_hidden" => { show_hidden = v.trim().parse().ok(); }
                 "card_info_mode" => { card_info_mode = Some(v.trim().to_string()); }
+                "card_date_mode" => { card_date_mode = v.trim().to_string(); }
+                "card_date_auto_style" => { card_date_auto_style = v.trim().to_string(); }
+                "card_date_order" => { card_date_order = v.trim().to_string(); }
+                "card_date_sep" => { card_date_sep = v.trim().to_string(); }
+                "card_date_year" => { card_date_year = v.trim().to_string(); }
+                "card_date_month" => { card_date_month = v.trim().to_string(); }
                 "resize_debounce_ms" => {
                     resize_debounce_ms = v.trim().parse::<u64>().ok()
                         .filter(|n| (100..=1000).contains(n) && n % 100 == 0);
@@ -408,6 +426,14 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
         },
         show_hidden: show_hidden.unwrap_or(false),
         card_info_mode: card_info_mode.unwrap_or_else(|| "off".to_string()),
+        card_date_format: CardDateFormat::from_state(
+            &card_date_mode,
+            &card_date_auto_style,
+            &card_date_order,
+            &card_date_sep,
+            &card_date_year,
+            &card_date_month,
+        ),
         app_cache_total_mb,
         app_anim_ring_min_frames,
         app_anim_ring_max_frames,
@@ -424,7 +450,7 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn save_state(root: &Path, dir: &Path, window_size: (u32, u32), viewer_slots: &[Option<WindowSlot>; 4], sort_state: &SortState, lang: &str, viewer_cfg: &ViewerConfig, show_hidden: bool, card_info_mode: &str, app_cfg: &AppConfig, translate_cfg: &TranslateConfig) {
+pub fn save_state(root: &Path, dir: &Path, window_size: (u32, u32), viewer_slots: &[Option<WindowSlot>; 4], sort_state: &SortState, lang: &str, viewer_cfg: &ViewerConfig, show_hidden: bool, card_info_mode: &str, card_date_format: &CardDateFormat, app_cfg: &AppConfig, translate_cfg: &TranslateConfig) {
     let _ = std::fs::create_dir_all(root);
     let (path, bak, tmp) = (state_path(root), state_bak_path(root), state_tmp_path(root));
 
@@ -434,6 +460,12 @@ pub fn save_state(root: &Path, dir: &Path, window_size: (u32, u32), viewer_slots
         viewer_cfg.zoom_actual, viewer_cfg.fullscreen,
         viewer_cfg.redecode_on_resize, viewer_cfg.resize_debounce_ms, show_hidden, card_info_mode,
     );
+    // カード日付書式: 可読性優先で6キーに分割。auto_style 未指定は空文字で書く（＝言語追従）。
+    content.push_str(&format!(
+        "card_date_mode={}\ncard_date_auto_style={}\ncard_date_order={}\ncard_date_sep={}\ncard_date_year={}\ncard_date_month={}\n",
+        card_date_format.mode_str(), card_date_format.auto_style_str(), card_date_format.order_str(),
+        card_date_format.sep_str(), card_date_format.year_str(), card_date_format.month_str(),
+    ));
     content.push_str(&format!(
         "thumbbar_pos={}\nthumbbar_thumb_size={}\nthumbbar_idle_hide_ms={}\nthumbbar_overlap={}\nthumbbar_marker_r={}\nthumbbar_marker_g={}\nthumbbar_marker_b={}\nthumbbar_marker_a={}\n",
         thumbbar_pos_to_str(viewer_cfg.thumbbar_pos), viewer_cfg.thumbbar_thumb_size, viewer_cfg.thumbbar_idle_hide_ms,
@@ -491,5 +523,53 @@ mod tests {
         let config = ViewerConfig::default();
         assert!(!config.zoom_actual);
         assert!(config.redecode_on_resize);
+    }
+
+    #[test]
+    fn card_date_keys_parse_into_format() {
+        use crate::card_date_format::{AutoStyle, CardDateFormat, CardDateMode};
+
+        let root = std::env::temp_dir()
+            .join(format!("nekoviewer_state_test_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&root);
+        // save_state が書き出すのと同じ6キー名で custom 書式を復元できること。
+        std::fs::write(
+            state_path(&root),
+            "last_dir=/tmp/x\nlang=ja\n\
+             card_date_mode=custom\ncard_date_auto_style=\ncard_date_order=dmy\n\
+             card_date_sep=dot\ncard_date_year=y2\ncard_date_month=en\n",
+        )
+        .unwrap();
+
+        let parsed = parse_state_file(&state_path(&root)).expect("state file parses");
+        assert_eq!(parsed.card_date_format.mode, CardDateMode::Custom);
+        assert_eq!(parsed.card_date_format.auto_style, None);
+        assert_eq!(
+            parsed.card_date_format,
+            CardDateFormat::from_state("custom", "", "dmy", "dot", "y2", "en")
+        );
+        // 参照: auto_style を持つケースも往復する
+        assert_eq!(
+            AutoStyle::MdySlash,
+            CardDateFormat::from_state("auto", "mdy_slash", "", "", "", "")
+                .auto_style
+                .unwrap()
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn missing_card_date_keys_fall_back_to_default() {
+        // card_date_* を一切含まない旧 state 断片でも既定（自動）へ寄る。
+        let root = std::env::temp_dir()
+            .join(format!("nekoviewer_state_legacy_test_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&root);
+        std::fs::write(state_path(&root), "last_dir=/tmp/x\nlang=ja\nshow_hidden=false\n").unwrap();
+
+        let parsed = parse_state_file(&state_path(&root)).expect("legacy state parses");
+        assert_eq!(parsed.card_date_format, CardDateFormat::default());
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

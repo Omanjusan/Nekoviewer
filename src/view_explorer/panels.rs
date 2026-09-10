@@ -573,7 +573,7 @@ impl NekoviewApp {
                 .unwrap_or("");
             ui.separator();
             let mb = *size_bytes as f64 / (1024.0 * 1024.0);
-            let date_str = format_mtime(*mtime);
+            let date_str = format_mtime(*mtime, &self.card_date_format, i18n::t());
             ui.label(i18n::t().file_info(&date_str, mb, filename));
         }
 
@@ -960,7 +960,10 @@ impl NekoviewApp {
                                         .to_string(),
                                 );
                                 if n_lines >= 2 {
-                                    lines.push(meta.map(|(mt, _)| format_mtime(mt)).unwrap_or_default());
+                                    lines.push(
+                                        meta.map(|(mt, _)| format_mtime(mt, &self.card_date_format, i18n::t()))
+                                            .unwrap_or_default(),
+                                    );
                                 }
                                 if n_lines >= 3 {
                                     lines.push(meta.map(|(_, sz)| humanize_size(sz)).unwrap_or_default());
@@ -1417,7 +1420,14 @@ fn truncate_filename(path: &std::path::Path) -> String {
     }
 }
 
-fn format_mtime(t: std::time::SystemTime) -> String {
+/// SystemTime を暦日へ分解し、カード情報帯の設定書式で文字列化する。
+/// 分解は Howard Hinnant の civil-from-days アルゴリズム。時刻・ローカルオフセットは
+/// 扱わない（UTC 基準。ローカル化は別チケット）。
+fn format_mtime(
+    t: std::time::SystemTime,
+    fmt: &crate::card_date_format::CardDateFormat,
+    lang: i18n::Lang,
+) -> String {
     let secs = t.duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
     let days = (secs / 86400) as i64 + 719468;
     let era = if days >= 0 { days } else { days - 146096 } / 146097;
@@ -1429,7 +1439,7 @@ fn format_mtime(t: std::time::SystemTime) -> String {
     let d = doy - (153 * mp + 2) / 5 + 1;
     let m = if mp < 10 { mp + 3 } else { mp - 9 };
     let y = if m <= 2 { y + 1 } else { y };
-    format!("{:04}/{:02}/{:02}", y, m, d)
+    fmt.format_ymd(y, m, d, lang)
 }
 
 /// ファイルサイズを人間可読形式にする。

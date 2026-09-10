@@ -10,7 +10,8 @@
 //!   2. 自動時の書式: 例文字列4択（モード=自動のとき有効）… [AutoStyle]
 //!   3〜6. カスタム : 順序 / 区切り / 年桁 / 月表記（モード=カスタムのとき有効）
 //!
-//! TODO(batch-b): バッチBで gui_config.rs / panels.rs へ配線したらこの allow を外す。
+//! TODO(batch-c): `ALL` 定数・`preview()`・`SAMPLE_YMD` は設定ダイアログUI（バッチC）で
+//! 消費する。UI配線が済んだらこの allow を外す。
 #![allow(dead_code)]
 
 use crate::i18n::Lang;
