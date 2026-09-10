@@ -259,7 +259,7 @@ impl FrameInput {
                 viewport_rect:      i.viewport_rect(),
                 os_maximized:       vp.maximized.unwrap_or(false),
                 close_requested:    vp.close_requested(),
-                dt:                 i.unstable_dt,
+                dt:                 i.stable_dt.min(0.1),
                 time:               i.time,
             }
         })
