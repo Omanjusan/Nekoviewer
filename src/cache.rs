@@ -1490,10 +1490,8 @@ pub struct ThumbRequest {
     /// GUIのグリッド表示サイズと一致させる生成長辺。
     pub requested_edge: u32,
     pub requested_filter: crate::config::ResizeFilter,
-    /// PWDのキャッシュ削除世代。古い要求の遅延書き戻しを拒否するために使う。
-    pub generation_epoch: u64,
-    /// falseでもDBプローブは行うが、キャッシュミスやmtime不一致からの生成は開始しない。
-    pub allow_generation: bool,
+    /// probe後にファイル単位CASを取得できた場合だけSomeになる。
+    pub generation_token: Option<u64>,
 }
 
 pub struct ThumbResult {
@@ -1502,8 +1500,6 @@ pub struct ThumbResult {
     pub source_key: Option<String>,
     pub requested_edge: u32,
     pub requested_filter: u32,
-    pub generation_epoch: u64,
-    pub generation_blocked: bool,
 }
 
 /// プローブレーンのスレッド数。ローカルDB読み＋JPEGデコードのみで軽いため少数で足りる。
@@ -1517,6 +1513,34 @@ const THUMB_NET_GEN_THREADS: usize = 2;
 fn forward_thumb_gen(req: ThumbRequest, local_tx: &mpsc::Sender<ThumbRequest>, net_tx: &mpsc::Sender<ThumbRequest>) {
     let tx = if crate::fs::dir::is_gvfs_path(&req.archive_path) { net_tx } else { local_tx };
     let _ = tx.send(req);
+}
+
+fn claim_and_forward_thumb_gen(
+    mut req: ThumbRequest,
+    source_mtime: i64,
+    local_tx: &mpsc::Sender<ThumbRequest>,
+    net_tx: &mpsc::Sender<ThumbRequest>,
+) -> Result<(), ThumbRequest> {
+    if source_mtime == 0 {
+        return Err(req);
+    }
+    if let Some(db) = &req.db {
+        let Some(filename) = req.archive_path.file_name().and_then(|n| n.to_str()) else { return Err(req) };
+        let desired_source = req.thumbnail_selection.as_ref()
+            .map(thumbnail_selection_cache_key)
+            .unwrap_or_default();
+        let Some(token) = crate::neko_dir::claim_thumbnail_generation(
+            db,
+            filename,
+            source_mtime,
+            req.requested_edge,
+            req.requested_filter.thumbnail_cache_id(),
+            &desired_source,
+        ) else { return Err(req) };
+        req.generation_token = Some(token);
+    }
+    forward_thumb_gen(req, local_tx, net_tx);
+    Ok(())
 }
 
 /// 生成レーンのスレッドプールを起動する。
@@ -1538,6 +1562,15 @@ fn spawn_thumb_gen_pool(
                 };
                 // 失敗（None）でも必ず返送し、呼び元が thumb_pending を解放できるようにする
                 let rgba = generate_thumb(&req);
+                if rgba.is_none() {
+                    if let (Some(db), Some(token), Some(filename)) = (
+                        req.db.as_ref(),
+                        req.generation_token,
+                        req.archive_path.file_name().and_then(|n| n.to_str()),
+                    ) {
+                        crate::neko_dir::fail_thumbnail_generation(db, filename, token);
+                    }
+                }
                 let source_key = req.thumbnail_selection.as_ref().map(thumbnail_selection_cache_key);
                 let _ = res_tx.send(ThumbResult {
                     path: req.archive_path,
@@ -1545,8 +1578,6 @@ fn spawn_thumb_gen_pool(
                     source_key,
                     requested_edge: req.requested_edge,
                     requested_filter: req.requested_filter.thumbnail_cache_id(),
-                    generation_epoch: req.generation_epoch,
-                    generation_blocked: false,
                 });
                 // ROOT を起こして poll_workers に結果を回収させる
                 ctx.request_repaint();
@@ -1592,21 +1623,17 @@ pub fn spawn_thumb_worker(num_threads: usize, ctx: egui::Context) -> (mpsc::Sync
                             source_key,
                             requested_edge: req.requested_edge,
                             requested_filter: req.requested_filter.thumbnail_cache_id(),
-                            generation_epoch: req.generation_epoch,
-                            generation_blocked: false,
                         });
                         ctx.request_repaint();
-                        // 後追い検証: statが成功してmtimeが変わっていた場合のみ再生成へ。
+                        // 後追い検証とCAS: stale/mtime不一致なら旧画像を残したまま再生成する。
                         // stat失敗（ネットワーク不調）はキャッシュ表示のまま維持する。
                         let current_mtime = crate::neko_dir::file_mtime(&req.archive_path);
-                        if req.allow_generation && current_mtime != 0 && current_mtime != stored_mtime {
-                            forward_thumb_gen(req, &gen_tx, &net_gen_tx);
-                        }
+                        let _ = stored_mtime;
+                        let _ = claim_and_forward_thumb_gen(req, current_mtime, &gen_tx, &net_gen_tx);
                     }
                     None => {
-                        if req.allow_generation {
-                            forward_thumb_gen(req, &gen_tx, &net_gen_tx);
-                        } else {
+                        let current_mtime = crate::neko_dir::file_mtime(&req.archive_path);
+                        if let Err(req) = claim_and_forward_thumb_gen(req, current_mtime, &gen_tx, &net_gen_tx) {
                             let source_key = req.thumbnail_selection.as_ref().map(thumbnail_selection_cache_key);
                             let _ = res_tx.send(ThumbResult {
                                 path: req.archive_path,
@@ -1614,8 +1641,6 @@ pub fn spawn_thumb_worker(num_threads: usize, ctx: egui::Context) -> (mpsc::Sync
                                 source_key,
                                 requested_edge: req.requested_edge,
                                 requested_filter: req.requested_filter.thumbnail_cache_id(),
-                                generation_epoch: req.generation_epoch,
-                                generation_blocked: true,
                             });
                             ctx.request_repaint();
                         }
@@ -1765,14 +1790,6 @@ fn probe_cached_thumb(req: &ThumbRequest) -> Option<(image::RgbaImage, i64)> {
     let db = req.db.as_ref()?;
     let filename = req.archive_path.file_name().and_then(|n| n.to_str())?;
     let (stored_mtime, jpeg) = crate::neko_dir::read_thumb_unchecked(db, filename)?;
-    let stored_source = crate::neko_dir::read_thumb_source(db, filename);
-    let source_matches = match req.thumbnail_selection.as_ref() {
-        Some(expected) => stored_source.as_deref() == Some(thumbnail_selection_cache_key(expected).as_str()),
-        None => stored_source.as_deref().map_or(true, str::is_empty),
-    };
-    if !source_matches {
-        return None;
-    }
     let t0 = std::time::Instant::now();
     let rgba = image::load_from_memory(&jpeg).ok()?.to_rgba8();
     log_perf!("[perf/thumb] db_cache={:.1}ms", t0.elapsed().as_secs_f64() * 1000.0);
@@ -1843,20 +1860,22 @@ fn generate_thumb(req: &ThumbRequest) -> Option<image::RgbaImage> {
 
     // DBに保存（サムネ本体＋検索用ファイル索引）
     if let Some(ref db) = req.db {
-        if let Some(jpeg) = encode_jpeg(&rgba) {
-            if crate::neko_dir::write_generated_thumb_if_current(
-                db,
-                &filename,
-                source_mtime,
-                &jpeg,
-                generated_source.as_deref().unwrap_or(""),
-                req.requested_edge,
-                req.requested_filter.thumbnail_cache_id(),
-                req.generation_epoch,
-            ) {
-                let size = crate::neko_dir::file_size(&req.archive_path);
-                crate::neko_dir::write_file_record(db, &filename, source_mtime, size);
-            }
+        let jpeg = encode_jpeg(&rgba)?;
+        let token = req.generation_token?;
+        if crate::neko_dir::finish_thumbnail_generation(
+            db,
+            &filename,
+            source_mtime,
+            &jpeg,
+            generated_source.as_deref().unwrap_or(""),
+            req.requested_edge,
+            req.requested_filter.thumbnail_cache_id(),
+            token,
+        ) {
+            let size = crate::neko_dir::file_size(&req.archive_path);
+            crate::neko_dir::write_file_record(db, &filename, source_mtime, size);
+        } else {
+            return None;
         }
     }
 
@@ -1999,8 +2018,7 @@ mod ring_integration_tests {
             is_raw_file: false,
             requested_edge: 384,
             requested_filter: crate::config::ResizeFilter::Triangle,
-            generation_epoch: 0,
-            allow_generation: true,
+            generation_token: None,
             thumbnail_selection: Some(crate::spread_state::ThumbnailSelection {
                 entry_name: selected,
                 source_kind: crate::spread_state::ThumbnailSourceKind::Full,
@@ -2011,6 +2029,39 @@ mod ring_integration_tests {
         assert!(rgba.width() <= 384 && rgba.height() <= 384);
         assert_eq!(rgba.width().max(rgba.height()), 384);
         assert!(rgba.width() > 0 && rgba.height() > 0);
+    }
+
+    #[test]
+    fn stale_registered_thumbnail_remains_available_as_preview() {
+        use crate::spread_state::{ThumbnailSelection, ThumbnailSourceKind};
+        let neko_dir = std::env::temp_dir().join(format!(
+            "nekoviewer_stale_preview_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos(),
+        ));
+        let source_dir = neko_dir.join("source");
+        let db = crate::neko_dir::open_cache_db(&neko_dir, &source_dir).unwrap();
+        let rgba = image::RgbaImage::from_pixel(2, 2, image::Rgba([10, 20, 30, 255]));
+        let jpeg = encode_jpeg(&rgba).unwrap();
+        crate::neko_dir::write_thumb(&db, "book.zip", 100, &jpeg);
+        crate::neko_dir::write_thumb_source(&db, "book.zip", Some("left\0cover.jpg"));
+        crate::neko_dir::reset_thumb_for_source(&db, "book.zip", "right\0cover.jpg");
+
+        let req = ThumbRequest {
+            archive_path: source_dir.join("book.zip"),
+            db: Some(db),
+            is_raw_file: false,
+            thumbnail_selection: Some(ThumbnailSelection {
+                entry_name: "cover.jpg".to_string(),
+                source_kind: ThumbnailSourceKind::RightHalf,
+            }),
+            requested_edge: 256,
+            requested_filter: crate::config::ResizeFilter::Triangle,
+            generation_token: None,
+        };
+        assert!(probe_cached_thumb(&req).is_some(), "登録変更後も旧Blobを暫定表示する");
+        let _ = std::fs::remove_dir_all(&neko_dir);
     }
 
     /// フェーズ3.6: 実物の大きいGIF(test/nouka.gif, 640x360 1316フレーム, 全展開なら約1.2GB)で

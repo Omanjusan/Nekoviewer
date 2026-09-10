@@ -904,9 +904,8 @@ impl NekoviewApp {
         if archive_dir == self.current_dir {
             self.thumb_generation_state = generation_state;
         }
-        // メモリ上の旧画像も対象限定で破棄し、新しい登録値で即時再生成する。
-        // キュー満杯時は通常描画経路が再要求する。
-        self.thumbnails.remove(&archive_path);
+        // 旧画像は表示したまま、対象限定で新しい登録値を即時再生成する。
+        // 成功した結果を受信した時点でGPUテクスチャも差し替える。
         self.thumb_pending.remove(&archive_path);
         self.thumb_generation_blocked.remove(&archive_path);
         self.thumb_failed.remove(&archive_path);
@@ -917,8 +916,7 @@ impl NekoviewApp {
             thumbnail_selection: selected_selection,
             requested_edge: self.config.thumb_size,
             requested_filter: self.config.thumb_filter,
-            generation_epoch: generation_state.epoch,
-            allow_generation: generation_state.allowed,
+            generation_token: None,
         }).is_ok() {
             self.thumb_pending.insert(archive_path);
         }

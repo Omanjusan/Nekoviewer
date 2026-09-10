@@ -913,8 +913,7 @@ impl NekoviewApp {
                                         is_raw_file: self.raw_image_files.contains(path),
                                         requested_edge: self.config.thumb_size,
                                         requested_filter: self.config.thumb_filter,
-                                        generation_epoch: self.thumb_generation_state.epoch,
-                                        allow_generation: self.thumb_generation_state.allowed,
+                                        generation_token: None,
                                         thumbnail_selection: path.parent().and_then(|dir| {
                                             let filename = path.file_name()?.to_str()?;
                                             self.spread_db.as_ref().and_then(|db| {
