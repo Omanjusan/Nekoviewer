@@ -404,11 +404,11 @@ impl NekoviewApp {
 
         // cd_summary バックグラウンド計算の結果をポーリング
         if let Some(ref rx) = self.cd_summary_rx {
-            if let Ok((path, saved, total)) = rx.try_recv() {
+            if let Ok((path, current, total, replacing_old)) = rx.try_recv() {
                 // 現在の CD/LS ディレクトリに対応する結果のみ反映（古い結果を捨てる）
                 let is_current = self.viewing_dir.as_ref() == Some(&path);
                 if is_current {
-                    self.cd_summary = Some((path, saved, total));
+                    self.cd_summary = Some((path, current, total, replacing_old));
                 }
                 self.cd_summary_rx = None;
                 self.cd_summary_updated_at = Some(std::time::Instant::now());
@@ -423,7 +423,7 @@ impl NekoviewApp {
             if just_finished || elapsed >= 2.0 {
                 // archives は current_dir のものなので、サマリー対象が一致する場合のみ再計算する
                 let refresh_target = match self.cd_summary {
-                    Some((ref cd_path, _, _)) if *cd_path == self.current_dir => Some(cd_path.clone()),
+                    Some((ref cd_path, _, _, _)) if *cd_path == self.current_dir => Some(cd_path.clone()),
                     _ => None,
                 };
                 if let Some(path) = refresh_target {
@@ -431,6 +431,11 @@ impl NekoviewApp {
                         path,
                         self.archive_filenames(),
                         self.cache_db.clone(),
+                        self.config.thumb_size,
+                        self.config.thumb_filter.thumbnail_cache_id(),
+                        self.thumb_failed.iter().filter_map(|path| {
+                            path.file_name().and_then(|name| name.to_str()).map(str::to_owned)
+                        }).collect(),
                         self.egui_ctx.clone(),
                     ));
                 }

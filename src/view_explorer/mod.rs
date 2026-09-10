@@ -214,20 +214,18 @@ pub(crate) enum MenuBarButton {
     SortDate,
     SortSize,
     SortOrder,
-    Thumbnails,
     StatusToggle,
     Settings,
 }
 
 /// 表示順そのもの（draw_menu_barの描画順と一致させること）。
 /// 見開き・ページモード群はビューアーツールバーへ移設した（toolbar.rs 参照）。
-pub(crate) const MENU_BAR_ORDER: [MenuBarButton; 8] = [
+pub(crate) const MENU_BAR_ORDER: [MenuBarButton; 7] = [
     MenuBarButton::Reload,
     MenuBarButton::SortName,
     MenuBarButton::SortDate,
     MenuBarButton::SortSize,
     MenuBarButton::SortOrder,
-    MenuBarButton::Thumbnails,
     MenuBarButton::Settings,
     MenuBarButton::StatusToggle,
 ];
@@ -237,27 +235,15 @@ mod menu_bar_order_tests {
     use super::{MenuBarButton, MENU_BAR_ORDER};
 
     #[test]
-    fn thumbnail_settings_and_status_keep_the_visual_right_end_order() {
+    fn settings_and_status_keep_the_visual_right_end_order() {
         assert_eq!(
             &MENU_BAR_ORDER[5..],
             &[
-                MenuBarButton::Thumbnails,
                 MenuBarButton::Settings,
                 MenuBarButton::StatusToggle,
             ],
         );
     }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ThumbnailDeleteMode {
-    Mismatched,
-    All,
-}
-
-struct ThumbnailDeleteFinished {
-    success: bool,
-    deleted: usize,
 }
 
 #[derive(Clone, Copy)]
@@ -432,10 +418,10 @@ pub struct NekoviewApp {
     /// フェーズ2: 起動時にバイナリ横・XDG両方で有効なconfが見つかった場合の選択待ち。
     pub(crate) config_conflict: Option<crate::config::ConfigConflict>,
     viewing_dir: Option<PathBuf>,
-    /// CD/LSディレクトリのサマリーキャッシュ (path, saved_thumbs, total_archives)
-    cd_summary: Option<(PathBuf, usize, usize)>,
+    /// 現PWDのサムネイル進捗 (path, current, total, replacing_old)。
+    cd_summary: Option<(PathBuf, usize, usize, bool)>,
     /// バックグラウンドで計算中のサマリー結果受信チャンネル
-    cd_summary_rx: Option<mpsc::Receiver<(PathBuf, usize, usize)>>,
+    cd_summary_rx: Option<mpsc::Receiver<(PathBuf, usize, usize, bool)>>,
     cd_summary_updated_at: Option<std::time::Instant>,
     /// 現在ディレクトリの redb キャッシュDB（キャッシュ無効なら None）
     cache_db: Option<std::sync::Arc<std::sync::Mutex<redb::Database>>>,
@@ -471,14 +457,8 @@ pub struct NekoviewApp {
     thumb_missing_queued: HashSet<PathBuf>,
     thumb_priority_queued: HashSet<PathBuf>,
     thumb_last_user_activity: std::time::Instant,
-    /// サイズ不一致によりキャッシュミス後の生成を保留した項目。毎フレームの再プローブを防ぐ。
-    thumb_generation_blocked: HashSet<PathBuf>,
     /// 現PWDのRDBプロファイルに基づく、サムネイル生成の許可状態と競合防止世代。
     thumb_generation_state: crate::neko_dir::ThumbnailGenerationState,
-    thumbnail_dialog_open: bool,
-    thumbnail_delete_confirm_all: bool,
-    thumbnail_delete_rx: Option<mpsc::Receiver<(PathBuf, crate::neko_dir::ThumbnailDeleteResult)>>,
-    thumbnail_delete_finished: Option<ThumbnailDeleteFinished>,
     /// アーカイブ内サムネイルバー用（フォルダグリッドの thumb_req_tx とは別系統）
     entry_thumb_req_tx: mpsc::Sender<EntryThumbRequest>,
     entry_thumb_res_rx: mpsc::Receiver<EntryThumbResult>,
@@ -688,7 +668,6 @@ mod viewer_host;
 mod input;
 mod panels;
 mod favorites_ui;
-mod thumbnail_ui;
 mod search_ui;
 mod search;
 mod status;
@@ -806,17 +785,10 @@ impl NekoviewApp {
             thumb_missing_queued: HashSet::new(),
             thumb_priority_queued: HashSet::new(),
             thumb_last_user_activity: std::time::Instant::now(),
-            thumb_generation_blocked: HashSet::new(),
             thumb_generation_state: crate::neko_dir::ThumbnailGenerationState {
                 requested_edge: initial_thumb_size,
                 requested_filter: initial_thumb_filter,
-                epoch: 0,
-                allowed: true,
             },
-            thumbnail_dialog_open: false,
-            thumbnail_delete_confirm_all: false,
-            thumbnail_delete_rx: None,
-            thumbnail_delete_finished: None,
             entry_thumb_req_tx,
             entry_thumb_res_rx,
             viewer: Arc::new(Mutex::new(None)),

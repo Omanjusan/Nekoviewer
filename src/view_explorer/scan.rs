@@ -293,7 +293,6 @@ impl NekoviewApp {
         self.thumb_queued.clear();
         self.thumb_missing_queued.clear();
         self.thumb_priority_queued.clear();
-        self.thumb_generation_blocked.clear();
         self.pending_loads.lock().unwrap().clear();
         self.selected_archive_index = None;
         self.multi_selected.clear();
@@ -404,6 +403,9 @@ impl NekoviewApp {
                     self.current_dir.clone(),
                     self.archive_filenames(),
                     self.cache_db.clone(),
+                    self.config.thumb_size,
+                    self.config.thumb_filter.thumbnail_cache_id(),
+                    HashSet::new(),
                     self.egui_ctx.clone(),
                 ));
             }
@@ -419,8 +421,6 @@ impl NekoviewApp {
             neko_dir::ThumbnailGenerationState {
                 requested_edge: self.config.thumb_size,
                 requested_filter: self.config.thumb_filter.thumbnail_cache_id(),
-                epoch: 0,
-                allowed: true,
             },
             |db| neko_dir::thumbnail_generation_state(
                 db,
@@ -438,12 +438,19 @@ impl NekoviewApp {
                 );
             }
             self.thumb_pending.clear();
-            self.thumb_generation_blocked.clear();
             self.thumb_failed.clear();
             self.rebuild_thumbnail_queue();
-        }
-        if self.thumb_generation_state.allowed {
-            self.thumb_generation_blocked.clear();
+            if self.viewing_dir.as_ref() == Some(&self.current_dir) {
+                self.cd_summary_rx = Some(spawn_summary_worker(
+                    self.current_dir.clone(),
+                    self.archive_filenames(),
+                    self.cache_db.clone(),
+                    self.config.thumb_size,
+                    self.config.thumb_filter.thumbnail_cache_id(),
+                    HashSet::new(),
+                    self.egui_ctx.clone(),
+                ));
+            }
         }
     }
 
@@ -671,13 +678,22 @@ pub(super) fn spawn_summary_worker(
     path: PathBuf,
     filenames: Vec<String>,
     db: Option<std::sync::Arc<std::sync::Mutex<redb::Database>>>,
+    requested_edge: u32,
+    requested_filter: u32,
+    failed_filenames: HashSet<String>,
     ctx: egui::Context,
-) -> mpsc::Receiver<(PathBuf, usize, usize)> {
+) -> mpsc::Receiver<(PathBuf, usize, usize, bool)> {
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
         let total = filenames.len();
-        let saved = db.map(|db| neko_dir::count_cached_thumbs(&db, &filenames)).unwrap_or(0);
-        let _ = tx.send((path, saved, total));
+        let progress = db.map(|db| {
+            let progress_filenames: Vec<String> = filenames.iter()
+                .filter(|name| !failed_filenames.contains(name.as_str()))
+                .cloned()
+                .collect();
+            neko_dir::thumbnail_progress(&db, &progress_filenames, requested_edge, requested_filter)
+        }).unwrap_or_default();
+        let _ = tx.send((path, progress.current, total, progress.replacing_old));
         // ROOT を起こして poll_workers に結果を回収させる
         ctx.request_repaint();
     });

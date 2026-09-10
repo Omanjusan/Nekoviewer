@@ -22,13 +22,6 @@ pub const THUMB_FILTERS_TABLE: TableDefinition<&str, u32> = TableDefinition::new
 /// value=(status, token, generated_at, updated_at, target_edge, target_filter, target_mtime)
 pub const THUMB_STATES_TABLE: TableDefinition<&str, (u8, u64, i64, i64, u32, u32, i64)> =
     TableDefinition::new("thumb_states_v2");
-/// 旧削除UIとの移行期間だけ読み書きする互換テーブル。生成可否には使用しない。
-const THUMB_GENERATION_TABLE: TableDefinition<&str, u64> =
-    TableDefinition::new("thumb_generation_v1");
-const THUMB_GENERATION_EDGE_KEY: &str = "edge";
-const THUMB_GENERATION_FILTER_KEY: &str = "filter";
-const THUMB_GENERATION_EPOCH_KEY: &str = "epoch";
-const LEGACY_THUMB_EDGE: u32 = 256;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
@@ -65,26 +58,12 @@ pub struct ThumbnailRecordState {
 pub struct ThumbnailGenerationState {
     pub requested_edge: u32,
     pub requested_filter: u32,
-    pub epoch: u64,
-    pub allowed: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct ThumbnailDeleteResult {
-    pub success: bool,
-    pub deleted: usize,
-    pub epoch: u64,
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct ThumbnailCacheStats {
-    pub total: usize,
-    pub matching: usize,
-    pub mismatched: usize,
-    pub min_edge: Option<u32>,
-    pub max_edge: Option<u32>,
-    pub filter_mask: u8,
-    pub unknown_filter: usize,
+pub struct ThumbnailProgress {
+    pub current: usize,
+    pub replacing_old: bool,
 }
 
 /// 非画像ZIPマーカーテーブル: キー=ファイル名, バリュー=source_mtime_secs: i64
@@ -160,7 +139,6 @@ pub fn open_cache_db(neko_dir: &Path, source_dir: &Path) -> Option<Arc<Mutex<Dat
         tx.open_table(THUMB_EDGES_TABLE).ok()?;
         tx.open_table(THUMB_FILTERS_TABLE).ok()?;
         tx.open_table(THUMB_STATES_TABLE).ok()?;
-        tx.open_table(THUMB_GENERATION_TABLE).ok()?;
         tx.open_table(FILES_TABLE).ok()?;
         {
             let mut source_dir_table = tx.open_table(SOURCE_DIR_TABLE).ok()?;
@@ -448,6 +426,34 @@ mod tests {
         fail_thumbnail_generation(&db, "book.zip", token);
         assert_eq!(read_thumb_unchecked(&db, "book.zip").unwrap().1, b"old-jpeg");
         assert_eq!(read_thumbnail_state(&db, "book.zip").unwrap().status, ThumbnailStatus::Stale);
+        let _ = std::fs::remove_dir_all(&neko_dir);
+    }
+
+    #[test]
+    fn thumbnail_progress_counts_only_current_profile_and_flags_old_replacement() {
+        let neko_dir = unique_test_neko_dir("thumb_progress");
+        let db = open_cache_db(&neko_dir, Path::new("/tmp/fake_thumb_progress")).unwrap();
+        let current_token = claim_thumbnail_generation(
+            &db, "current.zip", 100, 256, TRIANGLE, "",
+        ).unwrap();
+        assert!(finish_thumbnail_generation(
+            &db, "current.zip", 100, b"current", "", 256, TRIANGLE, current_token,
+        ));
+        write_thumb(&db, "legacy.zip", 200, b"legacy");
+        enforce_schema_version(&db.lock().unwrap());
+
+        let filenames = vec![
+            "current.zip".to_string(),
+            "legacy.zip".to_string(),
+            "missing.zip".to_string(),
+        ];
+        let progress = thumbnail_progress(&db, &filenames, 256, TRIANGLE);
+        assert_eq!(progress.current, 1);
+        assert!(progress.replacing_old);
+
+        let different_profile = thumbnail_progress(&db, &filenames, 384, LANCZOS3);
+        assert_eq!(different_profile.current, 0);
+        assert!(different_profile.replacing_old);
         let _ = std::fs::remove_dir_all(&neko_dir);
     }
 
@@ -965,108 +971,43 @@ pub fn fail_thumbnail_generation(
     let _ = tx.commit();
 }
 
-/// 互換UI向けのPWD状態。生成可否はファイル単位CASへ移行したため常に許可する。
+/// 生成可否はファイル単位CASで判定するため、PWD単位では常に許可する。
 pub fn thumbnail_generation_state(
-    db: &Arc<Mutex<Database>>,
+    _db: &Arc<Mutex<Database>>,
     requested_edge: u32,
     requested_filter: u32,
 ) -> ThumbnailGenerationState {
-    let Ok(db) = db.lock() else {
-        return ThumbnailGenerationState { requested_edge, requested_filter, epoch: 0, allowed: true };
-    };
-    let Ok(tx) = db.begin_write() else {
-        return ThumbnailGenerationState { requested_edge, requested_filter, epoch: 0, allowed: true };
-    };
-    let epoch = {
-        let Ok(mut generation) = tx.open_table(THUMB_GENERATION_TABLE) else {
-            return ThumbnailGenerationState { requested_edge, requested_filter, epoch: 0, allowed: true };
-        };
-        let epoch = generation.get(THUMB_GENERATION_EPOCH_KEY).ok().flatten()
-            .map(|v| v.value()).unwrap_or(0);
-        let _ = generation.insert(THUMB_GENERATION_EDGE_KEY, requested_edge as u64);
-        let _ = generation.insert(THUMB_GENERATION_FILTER_KEY, requested_filter as u64);
-        epoch
-    };
-    let _ = tx.commit();
-    ThumbnailGenerationState { requested_edge, requested_filter, epoch, allowed: true }
+    ThumbnailGenerationState { requested_edge, requested_filter }
 }
 
-pub fn thumbnail_cache_stats(
+/// 現設定に一致した完成数と、旧JPEGを表示しながら置換中かを返す。
+/// staleは表示可能でも完成数に含めない。
+pub fn thumbnail_progress(
     db: &Arc<Mutex<Database>>,
+    filenames: &[String],
     requested_edge: u32,
     requested_filter: u32,
-) -> ThumbnailCacheStats {
-    let Ok(db) = db.lock() else { return ThumbnailCacheStats::default() };
-    let Ok(tx) = db.begin_read() else { return ThumbnailCacheStats::default() };
-    let Ok(thumbs) = tx.open_table(THUMBS_TABLE) else { return ThumbnailCacheStats::default() };
-    let Ok(edges) = tx.open_table(THUMB_EDGES_TABLE) else { return ThumbnailCacheStats::default() };
-    let Ok(filters) = tx.open_table(THUMB_FILTERS_TABLE) else { return ThumbnailCacheStats::default() };
-    let mut stats = ThumbnailCacheStats::default();
-    if let Ok(iter) = thumbs.iter() {
-        for item in iter.flatten() {
-            let filename = item.0.value();
-            let edge = edges.get(filename).ok().flatten()
-                .map(|v| v.value()).unwrap_or(LEGACY_THUMB_EDGE);
-            let filter = filters.get(filename).ok().flatten().map(|v| v.value()).unwrap_or(0);
-            stats.total += 1;
-            if edge == requested_edge && filter == requested_filter { stats.matching += 1; } else { stats.mismatched += 1; }
-            if filter == 0 {
-                stats.unknown_filter += 1;
-            } else if filter <= 7 {
-                stats.filter_mask |= 1 << filter;
-            }
-            stats.min_edge = Some(stats.min_edge.map_or(edge, |v| v.min(edge)));
-            stats.max_edge = Some(stats.max_edge.map_or(edge, |v| v.max(edge)));
+) -> ThumbnailProgress {
+    let Ok(db) = db.lock() else { return ThumbnailProgress::default() };
+    let Ok(tx) = db.begin_read() else { return ThumbnailProgress::default() };
+    let Ok(states) = tx.open_table(THUMB_STATES_TABLE) else { return ThumbnailProgress::default() };
+    let Ok(thumbs) = tx.open_table(THUMBS_TABLE) else { return ThumbnailProgress::default() };
+    let mut progress = ThumbnailProgress::default();
+    for filename in filenames {
+        let state = states.get(filename.as_str()).ok().flatten()
+            .map(|value| decode_thumbnail_state(value.value()));
+        let is_current = state.is_some_and(|state| {
+            state.status == ThumbnailStatus::Current
+                && state.target_edge == requested_edge
+                && state.target_filter == requested_filter
+        });
+        if is_current {
+            progress.current += 1;
+        } else if thumbs.get(filename.as_str()).ok().flatten().is_some() {
+            progress.replacing_old = true;
         }
     }
-    stats
-}
-
-fn delete_thumbnails(db: &Arc<Mutex<Database>>, requested_edge: u32, requested_filter: u32, all: bool) -> ThumbnailDeleteResult {
-    let Ok(db) = db.lock() else { return ThumbnailDeleteResult::default() };
-    let Ok(tx) = db.begin_write() else { return ThumbnailDeleteResult::default() };
-    let keys: Vec<String> = {
-        let Ok(thumbs) = tx.open_table(THUMBS_TABLE) else { return ThumbnailDeleteResult::default() };
-        let Ok(edges) = tx.open_table(THUMB_EDGES_TABLE) else { return ThumbnailDeleteResult::default() };
-        let Ok(filters) = tx.open_table(THUMB_FILTERS_TABLE) else { return ThumbnailDeleteResult::default() };
-        thumbs.iter().ok().into_iter().flatten().flatten().filter_map(|item| {
-            let filename = item.0.value();
-            let edge = edges.get(filename).ok().flatten()
-                .map(|v| v.value()).unwrap_or(LEGACY_THUMB_EDGE);
-            let filter = filters.get(filename).ok().flatten().map(|v| v.value()).unwrap_or(0);
-            (all || edge != requested_edge || filter != requested_filter).then(|| filename.to_owned())
-        }).collect()
-    };
-    for key in &keys {
-        if let Ok(mut table) = tx.open_table(THUMBS_TABLE) { let _ = table.remove(key.as_str()); }
-        if let Ok(mut table) = tx.open_table(THUMB_SOURCES_TABLE) { let _ = table.remove(key.as_str()); }
-        if let Ok(mut table) = tx.open_table(THUMB_DESIRED_SOURCES_TABLE) { let _ = table.remove(key.as_str()); }
-        if let Ok(mut table) = tx.open_table(THUMB_EDGES_TABLE) { let _ = table.remove(key.as_str()); }
-        if let Ok(mut table) = tx.open_table(THUMB_FILTERS_TABLE) { let _ = table.remove(key.as_str()); }
-        if let Ok(mut table) = tx.open_table(THUMB_STATES_TABLE) { let _ = table.remove(key.as_str()); }
-    }
-    let epoch = {
-        let Ok(mut generation) = tx.open_table(THUMB_GENERATION_TABLE) else { return ThumbnailDeleteResult::default() };
-        let next = generation.get(THUMB_GENERATION_EPOCH_KEY).ok().flatten()
-            .map(|v| v.value()).unwrap_or(0).wrapping_add(1);
-        let _ = generation.insert(THUMB_GENERATION_EDGE_KEY, requested_edge as u64);
-        let _ = generation.insert(THUMB_GENERATION_FILTER_KEY, requested_filter as u64);
-        let _ = generation.insert(THUMB_GENERATION_EPOCH_KEY, next);
-        next
-    };
-    if tx.commit().is_ok() {
-        ThumbnailDeleteResult { success: true, deleted: keys.len(), epoch }
-    } else {
-        ThumbnailDeleteResult::default()
-    }
-}
-
-pub fn delete_mismatched_thumbnails(db: &Arc<Mutex<Database>>, requested_edge: u32, requested_filter: u32) -> ThumbnailDeleteResult {
-    delete_thumbnails(db, requested_edge, requested_filter, false)
-}
-
-pub fn delete_all_thumbnails(db: &Arc<Mutex<Database>>, requested_edge: u32, requested_filter: u32) -> ThumbnailDeleteResult {
-    delete_thumbnails(db, requested_edge, requested_filter, true)
+    progress
 }
 
 fn thumbnail_desired_source_matches(desired: &str, actual: &str) -> bool {
@@ -1113,16 +1054,6 @@ pub fn is_invalid_and_current(db: &Arc<Mutex<Database>>, filename: &str, archive
         }
     };
     stored_mtime == file_mtime(archive_path)
-}
-
-/// キャッシュ済みサムネ件数をカウントする（ツリービュー表示用）。
-pub fn count_cached_thumbs(db: &Arc<Mutex<Database>>, filenames: &[String]) -> usize {
-    let Ok(db) = db.lock() else { return 0 };
-    let Ok(tx) = db.begin_read() else { return 0 };
-    let Ok(table) = tx.open_table(THUMBS_TABLE) else { return 0 };
-    filenames.iter().filter(|name| {
-        matches!(table.get(name.as_str()), Ok(Some(_)))
-    }).count()
 }
 
 /// ファイルのmtimeをi64（Unix秒）で返す。取得失敗時は0。

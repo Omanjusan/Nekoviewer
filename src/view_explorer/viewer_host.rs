@@ -477,14 +477,9 @@ impl NekoviewApp {
         // viewer.show() より後に出しても既に処理済みのウィジェットの入力は防げない
         // （同一フレーム内で先に走った側が先に入力を消費してしまう）。そのため
         // viewer.show() 自体を呼ばず、Modal だけを描いて操作を完全に止める。
-        if self.settings_is_open() || self.thumbnail_dialog_open {
+        if self.settings_is_open() {
             egui::Modal::new(egui::Id::new("viewer_settings_blocked")).show(ui.ctx(), |ui| {
-                let label = if self.settings_is_open() {
-                    i18n::t().settings_viewer_blocked()
-                } else {
-                    i18n::t().thumbnail_dialog_title()
-                };
-                ui.label(label);
+                ui.label(i18n::t().settings_viewer_blocked());
             });
             return;
         }
@@ -892,8 +887,6 @@ impl NekoviewApp {
             crate::neko_dir::ThumbnailGenerationState {
                 requested_edge: self.config.thumb_size,
                 requested_filter: self.config.thumb_filter.thumbnail_cache_id(),
-                epoch: 0,
-                allowed: true,
             },
             |db| crate::neko_dir::thumbnail_generation_state(
                 db,
@@ -907,7 +900,6 @@ impl NekoviewApp {
         // 旧画像は表示したまま、対象限定で新しい登録値を即時再生成する。
         // 成功した結果を受信した時点でGPUテクスチャも差し替える。
         self.thumb_pending.remove(&archive_path);
-        self.thumb_generation_blocked.remove(&archive_path);
         self.thumb_failed.remove(&archive_path);
         if self.thumb_req_tx.try_send(crate::cache::ThumbRequest {
             archive_path: archive_path.clone(),
