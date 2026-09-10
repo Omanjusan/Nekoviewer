@@ -1,8 +1,9 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, mpsc};
+use std::sync::atomic::AtomicU64;
 
-use crate::cache::{FileCache, FileCacheEntry, LoadRequest, LoadResult, PageCache, ThumbRequest, ThumbResult, EntryThumbRequest, EntryThumbResult, spawn_worker, spawn_thumb_worker, spawn_entry_thumb_worker, spawn_file_cache_worker};
+use crate::cache::{FileCache, FileCacheEntry, LoadRequest, LoadResult, PageCache, ThumbRequest, ThumbResult, ThumbResultStage, EntryThumbRequest, EntryThumbResult, spawn_worker, spawn_thumb_worker, spawn_entry_thumb_worker, spawn_file_cache_worker};
 use crate::decode_jobs::{DecodeJobQueue, DesiredDecodeJob};
 use crate::config::AppConfig;
 use crate::gui_config::{SortState, ViewerConfig, WindowSlot};
@@ -461,7 +462,15 @@ pub struct NekoviewApp {
     thumbnails: HashMap<PathBuf, egui::TextureHandle>,
     thumb_req_tx: mpsc::SyncSender<ThumbRequest>,
     thumb_res_rx: mpsc::Receiver<ThumbResult>,
+    thumb_session: Arc<AtomicU64>,
     thumb_pending: HashSet<PathBuf>,
+    thumb_display_requested: HashSet<PathBuf>,
+    thumb_queue: VecDeque<PathBuf>,
+    thumb_priority_queue: VecDeque<PathBuf>,
+    thumb_queued: HashSet<PathBuf>,
+    thumb_missing_queued: HashSet<PathBuf>,
+    thumb_priority_queued: HashSet<PathBuf>,
+    thumb_last_user_activity: std::time::Instant,
     /// サイズ不一致によりキャッシュミス後の生成を保留した項目。毎フレームの再プローブを防ぐ。
     thumb_generation_blocked: HashSet<PathBuf>,
     /// 現PWDのRDBプロファイルに基づく、サムネイル生成の許可状態と競合防止世代。
@@ -704,7 +713,8 @@ impl NekoviewApp {
         let config_conflict = config.conflict.clone();
         let settings_draft = SettingsDraft::from_current(&config, &viewer_cfg, show_hidden, &translate_cfg);
         let (req_tx, res_rx) = spawn_worker(config.viewer_filter.to_image_filter(), config.resolved_decode_threads(), ctx.clone(), cache_max, ring_bounds, frame_hard_limit_bytes);
-        let (thumb_req_tx, thumb_res_rx) = spawn_thumb_worker(config.resolved_decode_threads(), ctx.clone());
+        let (thumb_req_tx, thumb_res_rx, thumb_session) =
+            spawn_thumb_worker(config.resolved_decode_threads(), ctx.clone());
         let (entry_thumb_req_tx, entry_thumb_res_rx) = spawn_entry_thumb_worker(config.thumb_filter.to_image_filter(), config.resolved_decode_threads(), ctx.clone());
         let (file_cache_req_tx, file_cache_res_rx) = spawn_file_cache_worker(ctx.clone(), file_cache_max);
         let mut drives = list_local_drives();
@@ -787,7 +797,15 @@ impl NekoviewApp {
             thumbnails: HashMap::new(),
             thumb_req_tx,
             thumb_res_rx,
+            thumb_session,
             thumb_pending: HashSet::new(),
+            thumb_display_requested: HashSet::new(),
+            thumb_queue: VecDeque::new(),
+            thumb_priority_queue: VecDeque::new(),
+            thumb_queued: HashSet::new(),
+            thumb_missing_queued: HashSet::new(),
+            thumb_priority_queued: HashSet::new(),
+            thumb_last_user_activity: std::time::Instant::now(),
             thumb_generation_blocked: HashSet::new(),
             thumb_generation_state: crate::neko_dir::ThumbnailGenerationState {
                 requested_edge: initial_thumb_size,

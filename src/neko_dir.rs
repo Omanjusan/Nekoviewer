@@ -421,6 +421,24 @@ mod tests {
     }
 
     #[test]
+    fn settings_change_invalidates_processing_token() {
+        let neko_dir = unique_test_neko_dir("thumb_profile_invalidate");
+        let db = open_cache_db(&neko_dir, Path::new("/tmp/fake_thumb_profile_invalidate")).unwrap();
+        let old_token = claim_thumbnail_generation(
+            &db, "book.zip", 100, 256, TRIANGLE, "",
+        ).unwrap();
+        assert!(invalidate_processing_for_profile(&db, 384, LANCZOS3));
+        assert!(!finish_thumbnail_generation(
+            &db, "book.zip", 100, b"old-result", "", 256, TRIANGLE, old_token,
+        ));
+        assert_eq!(
+            read_thumbnail_state(&db, "book.zip").unwrap().status,
+            ThumbnailStatus::Missing,
+        );
+        let _ = std::fs::remove_dir_all(&neko_dir);
+    }
+
+    #[test]
     fn failed_generation_restores_stale_without_deleting_blob() {
         let neko_dir = unique_test_neko_dir("thumb_failure_restore");
         let db = open_cache_db(&neko_dir, Path::new("/tmp/fake_thumb_failure_restore")).unwrap();
@@ -482,7 +500,11 @@ mod tests {
         write_file_record(&db, "deleted.zip", 100, 10);
         enforce_schema_version(&db.lock().unwrap());
 
-        assert!(sync_thumbnail_records(&db, &["present.zip".to_string()]));
+        assert!(sync_thumbnail_records(
+            &db,
+            &["present.zip".to_string()],
+            &["present.zip".to_string()],
+        ));
         assert_eq!(
             read_thumbnail_state(&db, "present.zip").unwrap().status,
             ThumbnailStatus::Missing,
@@ -604,11 +626,17 @@ pub fn read_thumbnail_state(
 }
 
 /// 正常完了したPWD走査結果とRDBのファイル単位状態を同期する。
-/// 未登録ファイルにはmissingを作り、実体が消えたキーだけを関連テーブルから除去する。
-pub fn sync_thumbnail_records(db: &Arc<Mutex<Database>>, filenames: &[String]) -> bool {
+/// `filenames` は生成対象、`existing_filenames` は無効判定済みを含む実在ファイル。
+/// 未登録の生成対象にはmissingを作り、実体が消えたキーだけを関連テーブルから除去する。
+pub fn sync_thumbnail_records(
+    db: &Arc<Mutex<Database>>,
+    filenames: &[String],
+    existing_filenames: &[String],
+) -> bool {
     let Ok(db) = db.lock() else { return false };
     let Ok(tx) = db.begin_write() else { return false };
-    let wanted: std::collections::HashSet<&str> = filenames.iter().map(String::as_str).collect();
+    let existing: std::collections::HashSet<&str> =
+        existing_filenames.iter().map(String::as_str).collect();
     let now = unix_timestamp_secs();
     let thumb_keys: std::collections::HashSet<String> = {
         let Ok(thumbs) = tx.open_table(THUMBS_TABLE) else { return false };
@@ -616,12 +644,23 @@ pub fn sync_thumbnail_records(db: &Arc<Mutex<Database>>, filenames: &[String]) -
             .map(|item| item.0.value().to_owned())
             .collect()
     };
-    let stale_keys: Vec<String> = {
+    let mut known_keys = thumb_keys.clone();
+    {
         let Ok(states) = tx.open_table(THUMB_STATES_TABLE) else { return false };
-        states.iter().ok().into_iter().flatten().flatten()
-            .filter_map(|item| (!wanted.contains(item.0.value())).then(|| item.0.value().to_owned()))
-            .collect()
-    };
+        known_keys.extend(states.iter().ok().into_iter().flatten().flatten()
+            .map(|item| item.0.value().to_owned()));
+    }
+    if let Ok(files) = tx.open_table(FILES_TABLE) {
+        known_keys.extend(files.iter().ok().into_iter().flatten().flatten()
+            .map(|item| item.0.value().to_owned()));
+    }
+    if let Ok(invalid) = tx.open_table(INVALID_TABLE) {
+        known_keys.extend(invalid.iter().ok().into_iter().flatten().flatten()
+            .map(|item| item.0.value().to_owned()));
+    }
+    let stale_keys: Vec<String> = known_keys.into_iter()
+        .filter(|filename| !existing.contains(filename.as_str()))
+        .collect();
     {
         let Ok(mut states) = tx.open_table(THUMB_STATES_TABLE) else { return false };
         for filename in filenames {
@@ -652,6 +691,47 @@ pub fn sync_thumbnail_records(db: &Arc<Mutex<Database>>, filenames: &[String]) -
         if let Ok(mut table) = tx.open_table(THUMB_STATES_TABLE) { let _ = table.remove(key.as_str()); }
         if let Ok(mut table) = tx.open_table(FILES_TABLE) { let _ = table.remove(key.as_str()); }
         if let Ok(mut table) = tx.open_table(INVALID_TABLE) { let _ = table.remove(key.as_str()); }
+    }
+    tx.commit().is_ok()
+}
+
+/// 設定変更時、異なる生成条件でprocessing中のtokenを即時失効させる。
+pub fn invalidate_processing_for_profile(
+    db: &Arc<Mutex<Database>>,
+    requested_edge: u32,
+    requested_filter: u32,
+) -> bool {
+    let Ok(db) = db.lock() else { return false };
+    let Ok(tx) = db.begin_write() else { return false };
+    let thumb_keys: std::collections::HashSet<String> = {
+        let Ok(thumbs) = tx.open_table(THUMBS_TABLE) else { return false };
+        thumbs.iter().ok().into_iter().flatten().flatten()
+            .map(|item| item.0.value().to_owned()).collect()
+    };
+    let invalid: Vec<(String, ThumbnailRecordState)> = {
+        let Ok(states) = tx.open_table(THUMB_STATES_TABLE) else { return false };
+        states.iter().ok().into_iter().flatten().flatten().filter_map(|item| {
+            let state = decode_thumbnail_state(item.1.value());
+            (state.status == ThumbnailStatus::Processing
+                && (state.target_edge != requested_edge || state.target_filter != requested_filter))
+                .then(|| (item.0.value().to_owned(), state))
+        }).collect()
+    };
+    if let Ok(mut states) = tx.open_table(THUMB_STATES_TABLE) {
+        let now = unix_timestamp_secs();
+        for (filename, state) in invalid {
+            let status = if thumb_keys.contains(&filename) {
+                ThumbnailStatus::Stale
+            } else {
+                ThumbnailStatus::Missing
+            };
+            let _ = states.insert(filename.as_str(), encode_thumbnail_state(ThumbnailRecordState {
+                status,
+                token: state.token.wrapping_add(1),
+                updated_at: now,
+                ..state
+            }));
+        }
     }
     tx.commit().is_ok()
 }

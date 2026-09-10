@@ -357,9 +357,10 @@ impl NekoviewApp {
         let thumb_results: Vec<ThumbResult> =
             std::iter::from_fn(|| self.thumb_res_rx.try_recv().ok()).collect();
         for result in thumb_results {
-            let belongs_to_current_pwd = result.path.parent()
-                .is_some_and(|parent| parent == self.current_dir);
-            if belongs_to_current_pwd
+            if result.session_id != self.thumb_session.load(std::sync::atomic::Ordering::Acquire) {
+                continue;
+            }
+            if result.path.parent().is_some_and(|parent| parent == self.current_dir)
                 && (result.requested_edge != self.thumb_generation_state.requested_edge
                     || result.requested_filter != self.thumb_generation_state.requested_filter)
             {
@@ -375,21 +376,29 @@ impl NekoviewApp {
             if result.source_key != current_source_key {
                 continue;
             }
-            self.thumb_pending.remove(&result.path);
+            if result.stage == ThumbResultStage::Complete {
+                self.thumb_pending.remove(&result.path);
+            }
             match result.rgba {
                 Some(rgba) => {
-                    if self.archives.contains(&result.path) {
+                    if self.archives.contains(&result.path)
+                        && (self.thumb_display_requested.contains(&result.path)
+                            || self.thumbnails.contains_key(&result.path))
+                    {
                         let name = result.path.display().to_string();
                         let tex = upload_texture(ctx, &name, &rgba);
                         self.thumbnails.insert(result.path, tex);
                     }
                 }
                 None => {
-                    self.maybe_check_mount_after_failure(&result.path);
-                    self.thumb_failed.insert(result.path);
+                    if result.stage == ThumbResultStage::Complete && result.failed {
+                        self.maybe_check_mount_after_failure(&result.path);
+                        self.thumb_failed.insert(result.path);
+                    }
                 }
             }
         }
+        self.pump_thumbnail_queue(ctx);
         // pending が空になった瞬間に最終カウントを更新する
         let just_finished = was_pending && self.thumb_pending.is_empty();
 

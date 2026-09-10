@@ -917,6 +917,7 @@ impl NekoviewApp {
             requested_edge: self.config.thumb_size,
             requested_filter: self.config.thumb_filter,
             generation_token: None,
+            session_id: self.thumb_session.load(std::sync::atomic::Ordering::Acquire),
         }).is_ok() {
             self.thumb_pending.insert(archive_path);
         }

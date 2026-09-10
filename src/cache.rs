@@ -1492,6 +1492,14 @@ pub struct ThumbRequest {
     pub requested_filter: crate::config::ResizeFilter,
     /// probe後にファイル単位CASを取得できた場合だけSomeになる。
     pub generation_token: Option<u64>,
+    /// PWD移動・設定変更で待機中ジョブを失効させるセッション。
+    pub session_id: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ThumbResultStage {
+    Preview,
+    Complete,
 }
 
 pub struct ThumbResult {
@@ -1500,6 +1508,9 @@ pub struct ThumbResult {
     pub source_key: Option<String>,
     pub requested_edge: u32,
     pub requested_filter: u32,
+    pub session_id: u64,
+    pub stage: ThumbResultStage,
+    pub failed: bool,
 }
 
 /// プローブレーンのスレッド数。ローカルDB読み＋JPEGデコードのみで軽いため少数で足りる。
@@ -1549,17 +1560,29 @@ fn spawn_thumb_gen_pool(
     num_threads: usize,
     res_tx: mpsc::Sender<ThumbResult>,
     ctx: egui::Context,
+    current_session: Arc<AtomicU64>,
 ) {
     for _ in 0..num_threads {
         let gen_rx = Arc::clone(&gen_rx);
         let res_tx = res_tx.clone();
         let ctx = ctx.clone();
+        let current_session = Arc::clone(&current_session);
         std::thread::spawn(move || {
             loop {
                 let req = match gen_rx.lock().unwrap().recv() {
                     Ok(r) => r,
                     Err(_) => break,
                 };
+                if req.session_id != current_session.load(Ordering::Acquire) {
+                    if let (Some(db), Some(token), Some(filename)) = (
+                        req.db.as_ref(),
+                        req.generation_token,
+                        req.archive_path.file_name().and_then(|n| n.to_str()),
+                    ) {
+                        crate::neko_dir::fail_thumbnail_generation(db, filename, token);
+                    }
+                    continue;
+                }
                 // 失敗（None）でも必ず返送し、呼び元が thumb_pending を解放できるようにする
                 let rgba = generate_thumb(&req);
                 if rgba.is_none() {
@@ -1571,6 +1594,7 @@ fn spawn_thumb_gen_pool(
                         crate::neko_dir::fail_thumbnail_generation(db, filename, token);
                     }
                 }
+                let failed = rgba.is_none();
                 let source_key = req.thumbnail_selection.as_ref().map(thumbnail_selection_cache_key);
                 let _ = res_tx.send(ThumbResult {
                     path: req.archive_path,
@@ -1578,6 +1602,9 @@ fn spawn_thumb_gen_pool(
                     source_key,
                     requested_edge: req.requested_edge,
                     requested_filter: req.requested_filter.thumbnail_cache_id(),
+                    session_id: req.session_id,
+                    stage: ThumbResultStage::Complete,
+                    failed,
                 });
                 // ROOT を起こして poll_workers に結果を回収させる
                 ctx.request_repaint();
@@ -1592,12 +1619,20 @@ fn spawn_thumb_gen_pool(
 /// - 生成レーン（ローカル/ネットワーク別）: 元ファイルからの生成。
 ///   ネットワーク側は並列度を THUMB_NET_GEN_THREADS に制限する。
 /// キャッシュ済みサムネが未格納分の生成待ち行列に並ばされて遅延するのを防ぐ。
-pub fn spawn_thumb_worker(num_threads: usize, ctx: egui::Context) -> (mpsc::SyncSender<ThumbRequest>, mpsc::Receiver<ThumbResult>) {
+pub fn spawn_thumb_worker(
+    num_threads: usize,
+    ctx: egui::Context,
+) -> (
+    mpsc::SyncSender<ThumbRequest>,
+    mpsc::Receiver<ThumbResult>,
+    Arc<AtomicU64>,
+) {
     let capacity = (num_threads * 2).max(16);
     let (req_tx, probe_rx) = mpsc::sync_channel::<ThumbRequest>(capacity);
     let (res_tx, res_rx) = mpsc::channel::<ThumbResult>();
     let (gen_tx, gen_rx) = mpsc::channel::<ThumbRequest>();
     let (net_gen_tx, net_gen_rx) = mpsc::channel::<ThumbRequest>();
+    let current_session = Arc::new(AtomicU64::new(1));
 
     let probe_rx = Arc::new(Mutex::new(probe_rx));
 
@@ -1607,12 +1642,16 @@ pub fn spawn_thumb_worker(num_threads: usize, ctx: egui::Context) -> (mpsc::Sync
         let net_gen_tx = net_gen_tx.clone();
         let res_tx = res_tx.clone();
         let ctx = ctx.clone();
+        let current_session = Arc::clone(&current_session);
         std::thread::spawn(move || {
             loop {
                 let req = match probe_rx.lock().unwrap().recv() {
                     Ok(r) => r,
                     Err(_) => break,
                 };
+                if req.session_id != current_session.load(Ordering::Acquire) {
+                    continue;
+                }
                 match probe_cached_thumb(&req) {
                     Some((rgba, stored_mtime)) => {
                         // キャッシュヒット: statを待たずに先に表示へ回す
@@ -1623,13 +1662,29 @@ pub fn spawn_thumb_worker(num_threads: usize, ctx: egui::Context) -> (mpsc::Sync
                             source_key,
                             requested_edge: req.requested_edge,
                             requested_filter: req.requested_filter.thumbnail_cache_id(),
+                            session_id: req.session_id,
+                            stage: ThumbResultStage::Preview,
+                            failed: false,
                         });
                         ctx.request_repaint();
                         // 後追い検証とCAS: stale/mtime不一致なら旧画像を残したまま再生成する。
                         // stat失敗（ネットワーク不調）はキャッシュ表示のまま維持する。
                         let current_mtime = crate::neko_dir::file_mtime(&req.archive_path);
                         let _ = stored_mtime;
-                        let _ = claim_and_forward_thumb_gen(req, current_mtime, &gen_tx, &net_gen_tx);
+                        if let Err(req) = claim_and_forward_thumb_gen(req, current_mtime, &gen_tx, &net_gen_tx) {
+                            let source_key = req.thumbnail_selection.as_ref().map(thumbnail_selection_cache_key);
+                            let _ = res_tx.send(ThumbResult {
+                                path: req.archive_path,
+                                rgba: None,
+                                source_key,
+                                requested_edge: req.requested_edge,
+                                requested_filter: req.requested_filter.thumbnail_cache_id(),
+                                session_id: req.session_id,
+                                stage: ThumbResultStage::Complete,
+                                failed: false,
+                            });
+                            ctx.request_repaint();
+                        }
                     }
                     None => {
                         let current_mtime = crate::neko_dir::file_mtime(&req.archive_path);
@@ -1641,6 +1696,9 @@ pub fn spawn_thumb_worker(num_threads: usize, ctx: egui::Context) -> (mpsc::Sync
                                 source_key,
                                 requested_edge: req.requested_edge,
                                 requested_filter: req.requested_filter.thumbnail_cache_id(),
+                                session_id: req.session_id,
+                                stage: ThumbResultStage::Complete,
+                                failed: true,
                             });
                             ctx.request_repaint();
                         }
@@ -1653,10 +1711,16 @@ pub fn spawn_thumb_worker(num_threads: usize, ctx: egui::Context) -> (mpsc::Sync
     drop(gen_tx);
     drop(net_gen_tx);
 
-    spawn_thumb_gen_pool(Arc::new(Mutex::new(gen_rx)), num_threads, res_tx.clone(), ctx.clone());
-    spawn_thumb_gen_pool(Arc::new(Mutex::new(net_gen_rx)), THUMB_NET_GEN_THREADS, res_tx, ctx);
+    spawn_thumb_gen_pool(
+        Arc::new(Mutex::new(gen_rx)), num_threads, res_tx.clone(), ctx.clone(),
+        Arc::clone(&current_session),
+    );
+    spawn_thumb_gen_pool(
+        Arc::new(Mutex::new(net_gen_rx)), THUMB_NET_GEN_THREADS, res_tx, ctx,
+        Arc::clone(&current_session),
+    );
 
-    (req_tx, res_rx)
+    (req_tx, res_rx, current_session)
 }
 
 // ── アーカイブ内エントリ単位のサムネイルワーカー（サムネイルバー用）────────────
@@ -2019,6 +2083,7 @@ mod ring_integration_tests {
             requested_edge: 384,
             requested_filter: crate::config::ResizeFilter::Triangle,
             generation_token: None,
+            session_id: 1,
             thumbnail_selection: Some(crate::spread_state::ThumbnailSelection {
                 entry_name: selected,
                 source_kind: crate::spread_state::ThumbnailSourceKind::Full,
@@ -2059,9 +2124,55 @@ mod ring_integration_tests {
             requested_edge: 256,
             requested_filter: crate::config::ResizeFilter::Triangle,
             generation_token: None,
+            session_id: 1,
         };
         assert!(probe_cached_thumb(&req).is_some(), "登録変更後も旧Blobを暫定表示する");
         let _ = std::fs::remove_dir_all(&neko_dir);
+    }
+
+    #[test]
+    fn thumbnail_worker_reports_preview_and_terminal_completion_separately() {
+        let root = std::env::temp_dir().join(format!(
+            "nekoviewer_thumb_worker_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos(),
+        ));
+        let source_dir = root.join("source");
+        std::fs::create_dir_all(&source_dir).unwrap();
+        let image_path = source_dir.join("page.png");
+        image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+            8, 8, image::Rgba([1, 2, 3, 255]),
+        )).save(&image_path).unwrap();
+        let db = crate::neko_dir::open_cache_db(&root.join("cache"), &source_dir).unwrap();
+        let (tx, rx, _) = spawn_thumb_worker(2, egui::Context::default());
+        let request = || ThumbRequest {
+            archive_path: image_path.clone(),
+            db: Some(Arc::clone(&db)),
+            is_raw_file: true,
+            thumbnail_selection: None,
+            requested_edge: 64,
+            requested_filter: crate::config::ResizeFilter::Triangle,
+            generation_token: None,
+            session_id: 1,
+        };
+
+        tx.send(request()).unwrap();
+        let generated = rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+        assert_eq!(generated.stage, ThumbResultStage::Complete);
+        assert!(generated.rgba.is_some());
+        assert!(!generated.failed);
+
+        tx.send(request()).unwrap();
+        let preview = rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+        let complete = rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+        assert_eq!(preview.stage, ThumbResultStage::Preview);
+        assert!(preview.rgba.is_some());
+        assert_eq!(complete.stage, ThumbResultStage::Complete);
+        assert!(complete.rgba.is_none());
+        assert!(!complete.failed);
+        drop(tx);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// フェーズ3.6: 実物の大きいGIF(test/nouka.gif, 640x360 1316フレーム, 全展開なら約1.2GB)で

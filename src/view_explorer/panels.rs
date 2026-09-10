@@ -85,6 +85,9 @@ impl NekoviewApp {
     /// 呼び出し元が CentralPanel の Ui を渡す。
     pub fn ui(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
+        if ctx.input(|i| !i.events.is_empty()) {
+            self.thumb_last_user_activity = std::time::Instant::now();
+        }
         // ウィンドウサイズを毎フレーム記録
         let rect = ctx.input(|i| i.viewport_rect());
         self.window_size = (rect.width() as u32, rect.height() as u32);
@@ -880,6 +883,12 @@ impl NekoviewApp {
                         );
 
                         if ui.is_rect_visible(rect) {
+                            self.thumb_display_requested.insert(path.clone());
+                            if path.parent().is_some_and(|parent| parent == self.current_dir)
+                                && self.folder_pane_tab == FolderPaneTab::RealTree
+                            {
+                                self.prioritize_thumbnail_path(path);
+                            }
                             if let Some(tex) = self.thumbnails.get(path) {
                                 let letterbox_color = if ui.visuals().dark_mode {
                                     egui::Color32::BLACK
@@ -906,6 +915,7 @@ impl NekoviewApp {
                                 if !self.thumb_pending.contains(path)
                                     && !self.thumb_failed.contains(path)
                                     && !self.thumb_generation_blocked.contains(path)
+                                    && !self.thumb_queued.contains(path)
                                 {
                                     if self.thumb_req_tx.try_send(ThumbRequest {
                                         archive_path: path.clone(),
@@ -914,6 +924,7 @@ impl NekoviewApp {
                                         requested_edge: self.config.thumb_size,
                                         requested_filter: self.config.thumb_filter,
                                         generation_token: None,
+                                        session_id: self.thumb_session.load(std::sync::atomic::Ordering::Acquire),
                                         thumbnail_selection: path.parent().and_then(|dir| {
                                             let filename = path.file_name()?.to_str()?;
                                             self.spread_db.as_ref().and_then(|db| {

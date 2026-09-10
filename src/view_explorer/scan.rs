@@ -1,11 +1,33 @@
 use std::path::PathBuf;
 use std::sync::mpsc;
+use std::sync::atomic::Ordering;
 
 use crate::types::ExplorerSortKey;
 use crate::neko_dir;
 use crate::fs::dir;
 use crate::fs::mount::{list_gvfs_smb_mounts, list_local_drives};
 use super::*;
+
+fn thumbnail_local_limit(max_configured: usize, cores: usize, since_input: std::time::Duration) -> usize {
+    let max_local = max_configured.min(cores).max(1);
+    if since_input < std::time::Duration::from_secs(1) { max_local.min(2) } else { max_local }
+}
+
+fn take_allowed_thumbnail(
+    queue: &mut std::collections::VecDeque<PathBuf>,
+    queued: &HashSet<PathBuf>,
+    missing: &HashSet<PathBuf>,
+    only_missing: bool,
+    allow_local: bool,
+    allow_network: bool,
+) -> Option<PathBuf> {
+    let pos = queue.iter().position(|path| {
+        if !queued.contains(path) { return false; }
+        if only_missing && !missing.contains(path) { return false; }
+        if crate::fs::dir::is_gvfs_path(path) { allow_network } else { allow_local }
+    })?;
+    queue.remove(pos)
+}
 
 impl NekoviewApp {
     /// 指定ディレクトリへ遷移する。
@@ -233,6 +255,7 @@ impl NekoviewApp {
 
     /// バックグラウンドスキャンを起動する（UIをブロックしない）
     pub(super) fn start_scan(&mut self) {
+        self.thumb_session.fetch_add(1, Ordering::AcqRel);
         let rx = dir::spawn_scan(self.current_dir.clone(), {
             let c = self.egui_ctx.clone();
             move || c.request_repaint()
@@ -247,8 +270,8 @@ impl NekoviewApp {
         self.filtered_indices.clear();
         self.raw_image_files.clear();
         self.invalid_archives.clear();
-        // thumb_failed はセッション内で保持する（再入場のたびの無駄な再試行を避ける）。
-        // ネットワーク失敗分はマウント回復検知（poll_mount_checks）で解禁される。
+        // PWD再入場は明示的な再試行契機なので、同一滞在中の失敗抑制を解除する。
+        self.thumb_failed.clear();
         // リンク切れ表示中のマウント配下へ入る場合は到達可否を再確認する（回復検知の入口）
         if let Some(root) = self.network_unreachable_mounts.iter()
             .find(|r| self.current_dir.starts_with(r))
@@ -263,7 +286,13 @@ impl NekoviewApp {
             .and_then(|p| neko_dir::open_cache_db_if_exists(p, &self.current_dir));
         self.refresh_thumbnail_generation_state();
         self.thumbnails.clear();
+        self.thumb_display_requested.clear();
         self.thumb_pending.clear();
+        self.thumb_queue.clear();
+        self.thumb_priority_queue.clear();
+        self.thumb_queued.clear();
+        self.thumb_missing_queued.clear();
+        self.thumb_priority_queued.clear();
         self.thumb_generation_blocked.clear();
         self.pending_loads.lock().unwrap().clear();
         self.selected_archive_index = None;
@@ -300,6 +329,9 @@ impl NekoviewApp {
         };
 
         if let Some((subdirs, archives, raw_images)) = result {
+            let existing_filenames: Vec<String> = archives.iter().chain(raw_images.iter())
+                .filter_map(|p| p.file_name().and_then(|n| n.to_str()).map(str::to_string))
+                .collect();
             // 対象ファイルが存在するフォルダに限りDBを新規作成する
             if self.cache_db.is_none() && !(archives.is_empty() && raw_images.is_empty()) {
                 self.cache_db = self.cache_neko_dir.as_deref()
@@ -344,6 +376,14 @@ impl NekoviewApp {
             self.saved_archive_settings = self.spread_db.as_ref()
                 .map(|db| crate::spread_state::saved_settings_for_paths(db, &self.archives))
                 .unwrap_or_default();
+            if let Some(db) = &self.cache_db {
+                let _ = neko_dir::sync_thumbnail_records(
+                    db,
+                    &self.archive_filenames(),
+                    &existing_filenames,
+                );
+            }
+            self.rebuild_thumbnail_queue();
             self.scan_state = ScanState::Done;
             self.sort_archives();
             // グリッドの統一カーソルを新しいディレクトリの先頭（↑があればそれ）へ即座に
@@ -389,8 +429,18 @@ impl NekoviewApp {
             ),
         );
         if requested_edge_changed {
+            self.thumb_session.fetch_add(1, Ordering::AcqRel);
+            if let Some(db) = &self.cache_db {
+                let _ = neko_dir::invalidate_processing_for_profile(
+                    db,
+                    self.config.thumb_size,
+                    self.config.thumb_filter.thumbnail_cache_id(),
+                );
+            }
             self.thumb_pending.clear();
             self.thumb_generation_blocked.clear();
+            self.thumb_failed.clear();
+            self.rebuild_thumbnail_queue();
         }
         if self.thumb_generation_state.allowed {
             self.thumb_generation_blocked.clear();
@@ -402,6 +452,113 @@ impl NekoviewApp {
         self.archives.iter()
             .filter_map(|p| p.file_name().and_then(|n| n.to_str()).map(str::to_string))
             .collect()
+    }
+
+    pub(super) fn rebuild_thumbnail_queue(&mut self) {
+        self.thumb_queue.clear();
+        self.thumb_priority_queue.clear();
+        self.thumb_queued.clear();
+        self.thumb_missing_queued.clear();
+        self.thumb_priority_queued.clear();
+        let mut missing = Vec::new();
+        let mut remaining = Vec::new();
+        for path in &self.archives {
+            if self.thumb_failed.contains(path) {
+                continue;
+            }
+            let is_missing = path.file_name().and_then(|n| n.to_str())
+                .and_then(|name| self.cache_db.as_ref()
+                    .and_then(|db| neko_dir::read_thumbnail_state(db, name)))
+                .is_none_or(|state| state.status == neko_dir::ThumbnailStatus::Missing);
+            if is_missing {
+                self.thumb_missing_queued.insert(path.clone());
+                missing.push(path.clone());
+            } else {
+                remaining.push(path.clone());
+            }
+        }
+        for path in missing.into_iter().chain(remaining) {
+            self.thumb_queued.insert(path.clone());
+            self.thumb_queue.push_back(path);
+        }
+        if !self.thumb_queue.is_empty() {
+            self.egui_ctx.request_repaint();
+        }
+    }
+
+    pub(super) fn prioritize_thumbnail_path(&mut self, path: &PathBuf) {
+        if self.thumb_queued.contains(path) && self.thumb_priority_queued.insert(path.clone()) {
+            self.thumb_priority_queue.push_back(path.clone());
+            self.egui_ctx.request_repaint();
+        }
+    }
+
+    fn next_queued_thumbnail(&mut self, allow_local: bool, allow_network: bool) -> Option<PathBuf> {
+        take_allowed_thumbnail(
+            &mut self.thumb_priority_queue, &self.thumb_queued, &self.thumb_missing_queued,
+            true, allow_local, allow_network,
+        ).or_else(|| take_allowed_thumbnail(
+            &mut self.thumb_priority_queue, &self.thumb_queued, &self.thumb_missing_queued,
+            false, allow_local, allow_network,
+        )).or_else(|| take_allowed_thumbnail(
+            &mut self.thumb_queue, &self.thumb_queued, &self.thumb_missing_queued,
+            true, allow_local, allow_network,
+        ).or_else(|| take_allowed_thumbnail(
+            &mut self.thumb_queue, &self.thumb_queued, &self.thumb_missing_queued,
+            false, allow_local, allow_network,
+        )))
+    }
+
+    pub(super) fn pump_thumbnail_queue(&mut self, ctx: &egui::Context) {
+        if self.folder_pane_tab != FolderPaneTab::RealTree
+            || self.viewing_favorites.is_some()
+            || self.viewing_search.is_some()
+        {
+            return;
+        }
+        let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(2);
+        let since_input = self.thumb_last_user_activity.elapsed();
+        let local_limit = thumbnail_local_limit(self.config.resolved_decode_threads(), cores, since_input);
+        let mut active_local = self.thumb_pending.iter()
+            .filter(|path| !crate::fs::dir::is_gvfs_path(path)).count();
+        let mut active_network = self.thumb_pending.iter()
+            .filter(|path| crate::fs::dir::is_gvfs_path(path)).count();
+        loop {
+            let allow_local = active_local < local_limit;
+            let allow_network = active_network < 2;
+            if !allow_local && !allow_network { break; }
+            let Some(path) = self.next_queued_thumbnail(allow_local, allow_network) else { break };
+            let is_network = crate::fs::dir::is_gvfs_path(&path);
+            let selection = path.parent().and_then(|dir| {
+                let filename = path.file_name()?.to_str()?;
+                self.spread_db.as_ref().and_then(|db| {
+                    crate::spread_state::read_thumbnail_selection(db, dir, filename)
+                })
+            });
+            let request = ThumbRequest {
+                archive_path: path.clone(),
+                db: self.cache_db.clone(),
+                is_raw_file: self.raw_image_files.contains(&path),
+                thumbnail_selection: selection,
+                requested_edge: self.config.thumb_size,
+                requested_filter: self.config.thumb_filter,
+                generation_token: None,
+                session_id: self.thumb_session.load(Ordering::Acquire),
+            };
+            if self.thumb_req_tx.try_send(request).is_err() {
+                self.thumb_queue.push_front(path);
+                break;
+            }
+            self.thumb_queued.remove(&path);
+            self.thumb_missing_queued.remove(&path);
+            self.thumb_priority_queued.remove(&path);
+            self.thumb_pending.insert(path);
+            if is_network { active_network += 1; } else { active_local += 1; }
+        }
+        if !self.thumb_queued.is_empty() {
+            let delay = std::time::Duration::from_secs(1).saturating_sub(since_input);
+            ctx.request_repaint_after(delay.max(std::time::Duration::from_millis(16)));
+        }
     }
 
     /// フレームごとにツリー展開スキャン結果をポーリングして反映する
@@ -571,6 +728,40 @@ mod tree_autofocus_tests {
         assert!(
             tree_autofocus_components(Path::new("/mnt/photos"), Path::new("/home/user/pics")).is_none(),
             "tree_root 配下でなければ None（no-op）"
+        );
+    }
+}
+
+#[cfg(test)]
+mod thumbnail_queue_tests {
+    use super::{take_allowed_thumbnail, thumbnail_local_limit};
+    use std::collections::{HashSet, VecDeque};
+    use std::path::PathBuf;
+    use std::time::Duration;
+
+    #[test]
+    fn local_parallelism_stays_small_until_one_second_idle() {
+        assert_eq!(thumbnail_local_limit(8, 16, Duration::from_millis(999)), 2);
+        assert_eq!(thumbnail_local_limit(8, 16, Duration::from_secs(1)), 8);
+        assert_eq!(thumbnail_local_limit(32, 12, Duration::from_secs(2)), 12);
+        assert_eq!(thumbnail_local_limit(1, 12, Duration::ZERO), 1);
+    }
+
+    #[test]
+    fn queue_prefers_missing_and_respects_network_capacity() {
+        let local_stale = PathBuf::from("/data/stale.zip");
+        let network_missing = PathBuf::from("/run/user/1000/gvfs/share/missing.zip");
+        let local_missing = PathBuf::from("/data/missing.zip");
+        let mut queue = VecDeque::from([
+            local_stale.clone(), network_missing.clone(), local_missing.clone(),
+        ]);
+        let queued = HashSet::from([
+            local_stale.clone(), network_missing.clone(), local_missing.clone(),
+        ]);
+        let missing = HashSet::from([network_missing, local_missing.clone()]);
+        assert_eq!(
+            take_allowed_thumbnail(&mut queue, &queued, &missing, true, true, false),
+            Some(local_missing),
         );
     }
 }
