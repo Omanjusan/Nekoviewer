@@ -761,6 +761,7 @@ mod search;
 mod status;
 mod nav_icons;
 mod calendar_gui;
+pub(crate) mod card_date_format;
 
 #[cfg(test)]
 mod glyph_audit;
