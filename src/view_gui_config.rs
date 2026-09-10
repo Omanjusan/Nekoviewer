@@ -2,6 +2,9 @@
 //! 起動時設定(config.ini)は config.rs が担当し、ここは NekoviewApp に生えた
 //! [設定]ボタン以降のUI（タブ切り替え・各タブの中身・下書き→反映のフロー）のみを扱う。
 
+use crate::card_date_format::{
+    AutoStyle, CardDateFormat, CardDateMode, DateOrder, DateSep, MonthStyle, YearDigits,
+};
 use crate::config::{AppConfig, ResizeFilter, filter_to_str};
 use crate::gui_config::{ThumbbarPos, ViewerConfig};
 use crate::i18n;
@@ -12,6 +15,7 @@ use crate::view_explorer::NekoviewApp;
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SettingsTab {
     Common,
+    Explorer,
     Anim,
     Static,
     Viewer,
@@ -47,6 +51,8 @@ pub(crate) struct SettingsDraft {
     thumb_filter: ResizeFilter,
     lang: i18n::Lang,
     show_hidden: bool,
+    /// サムネカード情報帯の日付書式（エクスプローラータブで編集）。
+    card_date_format: CardDateFormat,
     ring_min: usize,
     ring_max: usize,
     thumbbar_pos: ThumbbarPos,
@@ -151,7 +157,7 @@ impl KeymapCaptureTarget {
 }
 
 impl SettingsDraft {
-    pub(crate) fn from_current(config: &AppConfig, viewer_cfg: &ViewerConfig, show_hidden: bool, translate_cfg: &TranslateConfig) -> Self {
+    pub(crate) fn from_current(config: &AppConfig, viewer_cfg: &ViewerConfig, show_hidden: bool, card_date_format: CardDateFormat, translate_cfg: &TranslateConfig) -> Self {
         let system_ram_mb = crate::cache::system_total_ram_mb();
         Self {
             redecode_on_resize: viewer_cfg.redecode_on_resize,
@@ -165,6 +171,7 @@ impl SettingsDraft {
             thumb_filter: config.thumb_filter,
             lang: i18n::t(),
             show_hidden,
+            card_date_format,
             ring_min: config.anim_ring_min_frames,
             ring_max: config.anim_ring_max_frames,
             thumbbar_pos: viewer_cfg.thumbbar_pos,
@@ -319,6 +326,153 @@ fn draw_settings_tab_common(ui: &mut egui::Ui, draft: &mut SettingsDraft) {
                 ui.selectable_value(&mut draft.lang, lang, lang.native_name());
             }
         });
+}
+
+// ── エクスプローラータブ: サムネカード情報帯の日付書式 ──────────────────────
+// 上位1コンボ（モード）＋従属コンボ群。従属側はインデントし、モードに応じて
+// add_enabled_ui(false) でグレーアウト＋操作ロックする。カスタム系の選択肢
+// ラベルは「その軸を候補値にした場合の書式プレビュー」を live に出す（i18n不要）。
+
+fn card_date_mode_label(m: CardDateMode) -> &'static str {
+    match m {
+        CardDateMode::Auto => i18n::t().settings_card_date_mode_auto(),
+        CardDateMode::Sort => i18n::t().settings_card_date_mode_sort(),
+        CardDateMode::Custom => i18n::t().settings_card_date_mode_custom(),
+    }
+}
+
+/// 折りたたみ時のコンボに出す、その軸だけの短い現在値タグ。
+fn card_date_order_tag(o: DateOrder) -> &'static str {
+    match o {
+        DateOrder::Ymd => "YMD",
+        DateOrder::Dmy => "DMY",
+        DateOrder::Mdy => "MDY",
+    }
+}
+fn card_date_sep_tag(s: DateSep) -> &'static str {
+    match s {
+        DateSep::Slash => "/",
+        DateSep::Hyphen => "-",
+        DateSep::Dot => ".",
+        DateSep::None => i18n::t().settings_card_date_sep_none(),
+    }
+}
+fn card_date_year_tag(y: YearDigits) -> &'static str {
+    match y {
+        YearDigits::Four => "2026",
+        YearDigits::Two => "26",
+    }
+}
+fn card_date_month_tag(m: MonthStyle) -> &'static str {
+    match m {
+        MonthStyle::Numeric => "01",
+        MonthStyle::EnglishAbbrev => "Jan",
+    }
+}
+
+fn draw_settings_tab_explorer(ui: &mut egui::Ui, draft: &mut SettingsDraft) {
+    let lang = i18n::t();
+    let f = &mut draft.card_date_format;
+
+    ui.label(i18n::t().settings_card_date_heading());
+    ui.add_space(4.0);
+
+    // ── コンボ1: モード（上位）──
+    ui.label(i18n::t().settings_card_date_mode_label());
+    egui::ComboBox::from_id_salt("card_date_mode")
+        .selected_text(card_date_mode_label(f.mode))
+        .show_ui(ui, |ui| {
+            for m in [CardDateMode::Auto, CardDateMode::Sort, CardDateMode::Custom] {
+                ui.selectable_value(&mut f.mode, m, card_date_mode_label(m));
+            }
+        });
+
+    // ── 従属コンボ群（インデント）──
+    ui.indent("card_date_children", |ui| {
+        // コンボ2: 自動時の書式（モード=自動のときだけ有効）
+        ui.add_enabled_ui(f.mode == CardDateMode::Auto, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(i18n::t().settings_card_date_auto_style_label());
+                // 未指定(None)は表示言語由来の既定を「選択中」として見せる。
+                let shown = f
+                    .auto_style
+                    .unwrap_or_else(|| CardDateFormat::lang_default_style(lang));
+                egui::ComboBox::from_id_salt("card_date_auto_style")
+                    .selected_text(shown.example())
+                    .show_ui(ui, |ui| {
+                        for s in AutoStyle::ALL {
+                            let selected = f.auto_style == Some(s)
+                                || (f.auto_style.is_none() && s == shown);
+                            if ui.selectable_label(selected, s.example()).clicked() {
+                                f.auto_style = Some(s);
+                            }
+                        }
+                    });
+            });
+        });
+
+        // コンボ3〜6: カスタム（モード=カスタムのときだけ有効）
+        ui.add_enabled_ui(f.mode == CardDateMode::Custom, |ui| {
+            let base = f.as_custom();
+
+            ui.horizontal(|ui| {
+                ui.label(i18n::t().settings_card_date_order_label());
+                egui::ComboBox::from_id_salt("card_date_order")
+                    .selected_text(card_date_order_tag(f.order))
+                    .show_ui(ui, |ui| {
+                        for o in DateOrder::ALL {
+                            let mut p = base;
+                            p.order = o;
+                            ui.selectable_value(&mut f.order, o, p.preview(lang));
+                        }
+                    });
+            });
+
+            ui.horizontal(|ui| {
+                ui.label(i18n::t().settings_card_date_sep_label());
+                egui::ComboBox::from_id_salt("card_date_sep")
+                    .selected_text(card_date_sep_tag(f.sep))
+                    .show_ui(ui, |ui| {
+                        for s in DateSep::ALL {
+                            let mut p = base;
+                            p.sep = s;
+                            ui.selectable_value(&mut f.sep, s, p.preview(lang));
+                        }
+                    });
+            });
+
+            ui.horizontal(|ui| {
+                ui.label(i18n::t().settings_card_date_year_label());
+                egui::ComboBox::from_id_salt("card_date_year")
+                    .selected_text(card_date_year_tag(f.year))
+                    .show_ui(ui, |ui| {
+                        for y in YearDigits::ALL {
+                            let mut p = base;
+                            p.year = y;
+                            ui.selectable_value(&mut f.year, y, p.preview(lang));
+                        }
+                    });
+            });
+
+            ui.horizontal(|ui| {
+                ui.label(i18n::t().settings_card_date_month_label());
+                egui::ComboBox::from_id_salt("card_date_month")
+                    .selected_text(card_date_month_tag(f.month))
+                    .show_ui(ui, |ui| {
+                        for m in MonthStyle::ALL {
+                            let mut p = base;
+                            p.month = m;
+                            ui.selectable_value(&mut f.month, m, p.preview(lang));
+                        }
+                    });
+            });
+        });
+    });
+
+    ui.add_space(6.0);
+    ui.separator();
+    // ライブプレビュー（現在のモード・言語で解決した実際の書式）
+    ui.label(i18n::t().settings_card_date_preview(&f.preview(lang)));
 }
 
 fn draw_settings_tab_anim(ui: &mut egui::Ui, draft: &mut SettingsDraft) {
@@ -851,7 +1005,7 @@ impl NekoviewApp {
     /// 設定ダイアログを開く。編集用の下書き(draft)を現在値から作り直す
     /// （[反映]を押すまで実際の設定には反映されない）。
     pub fn open_settings(&mut self) {
-        self.settings_draft = SettingsDraft::from_current(&self.config, &self.viewer_cfg.lock().unwrap(), self.show_hidden, &self.translate_cfg);
+        self.settings_draft = SettingsDraft::from_current(&self.config, &self.viewer_cfg.lock().unwrap(), self.show_hidden, self.card_date_format, &self.translate_cfg);
         self.translate_conn_rx = None;
         self.translate_conn_status = None;
         self.settings_open = true;
@@ -892,6 +1046,7 @@ impl NekoviewApp {
             ui.horizontal(|ui| {
                 for (tab, label) in [
                     (SettingsTab::Common, i18n::t().settings_tab_common()),
+                    (SettingsTab::Explorer, i18n::t().settings_tab_explorer()),
                     (SettingsTab::Anim, i18n::t().settings_tab_anim()),
                     (SettingsTab::Static, i18n::t().settings_tab_static()),
                     (SettingsTab::Viewer, i18n::t().settings_tab_viewer()),
@@ -906,6 +1061,7 @@ impl NekoviewApp {
 
             match self.settings_tab {
                 SettingsTab::Common => draw_settings_tab_common(ui, &mut self.settings_draft),
+                SettingsTab::Explorer => draw_settings_tab_explorer(ui, &mut self.settings_draft),
                 SettingsTab::Anim => draw_settings_tab_anim(ui, &mut self.settings_draft),
                 SettingsTab::Static => self.draw_settings_tab_static(ui),
                 SettingsTab::Viewer => draw_settings_tab_viewer(ui, &mut self.settings_draft),
@@ -946,6 +1102,8 @@ impl NekoviewApp {
                 self.refresh_thumbnail_generation_state();
                 self.translate_conn_verified = verified_url_matches;
                 self.show_hidden = self.settings_draft.show_hidden;
+                // card_date_format は AppConfig 外の state 値なので apply_to を通さず直接反映。
+                self.card_date_format = self.settings_draft.card_date_format;
                 // thumb_size/thumb_filterはstateファイルに乗っていないためconfig.iniへ直接保存する。
                 self.config.save();
                 // keymapは行数可変のため専用ファイル(keymap.ini)へ別途保存する。

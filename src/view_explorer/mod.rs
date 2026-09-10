@@ -780,7 +780,7 @@ impl NekoviewApp {
         let max_decode_target = (config.max_decode_edge, config.max_decode_edge);
         let config_root = config.config_root.clone();
         let config_conflict = config.conflict.clone();
-        let settings_draft = SettingsDraft::from_current(&config, &viewer_cfg, show_hidden, &translate_cfg);
+        let settings_draft = SettingsDraft::from_current(&config, &viewer_cfg, show_hidden, card_date_format, &translate_cfg);
         let (req_tx, res_rx) = spawn_worker(config.viewer_filter.to_image_filter(), config.resolved_decode_threads(), ctx.clone(), cache_max, ring_bounds, frame_hard_limit_bytes);
         let (thumb_req_tx, thumb_res_rx, thumb_session) =
             spawn_thumb_worker(config.resolved_decode_threads(), ctx.clone());

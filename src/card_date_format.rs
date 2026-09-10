@@ -9,16 +9,12 @@
 //!   1. モード      : 自動 / ソート基準 / カスタム   … [CardDateMode]
 //!   2. 自動時の書式: 例文字列4択（モード=自動のとき有効）… [AutoStyle]
 //!   3〜6. カスタム : 順序 / 区切り / 年桁 / 月表記（モード=カスタムのとき有効）
-//!
-//! TODO(batch-c): `ALL` 定数・`preview()`・`SAMPLE_YMD` は設定ダイアログUI（バッチC）で
-//! 消費する。UI配線が済んだらこの allow を外す。
-#![allow(dead_code)]
 
 use crate::i18n::Lang;
 
 /// コンボボックスの選択肢を例示するときの基準日（2026年1月31日）。
 /// 「31」は月になり得ないので DMY と MDY がラベルだけで区別できる。
-pub(crate) const SAMPLE_YMD: (i64, i64, i64) = (2026, 1, 31);
+const SAMPLE_YMD: (i64, i64, i64) = (2026, 1, 31);
 
 /// 英語月名（3文字固定・i18n しない）。月表記=英名 のときだけ使う。
 const EN_MONTH_ABBREV: [&str; 12] = [
@@ -96,6 +92,16 @@ impl AutoStyle {
             "dmy_slash" => Some(Self::DmySlash),
             "mdy_slash" => Some(Self::MdySlash),
             _ => None,
+        }
+    }
+
+    /// 設定ダイアログのコンボ選択肢に出す書式例（基準日 2026-01-31）。国名は出さない。
+    pub(crate) fn example(self) -> &'static str {
+        match self {
+            Self::YmdHyphen => "2026-01-31",
+            Self::YmdSlash => "2026/01/31",
+            Self::DmySlash => "31/01/2026",
+            Self::MdySlash => "01/31/2026",
         }
     }
 
@@ -384,6 +390,15 @@ impl CardDateFormat {
     pub(crate) fn preview(&self, lang: Lang) -> String {
         let (y, m, d) = SAMPLE_YMD;
         self.format_ymd(y, m, d, lang)
+    }
+
+    /// mode だけ Custom へ倒したコピー。カスタム系コンボの選択肢プレビューを
+    /// 「カスタム軸の現在値＋候補1軸」で組み立てるために使う。
+    pub(crate) fn as_custom(&self) -> Self {
+        Self {
+            mode: CardDateMode::Custom,
+            ..*self
+        }
     }
 }
 

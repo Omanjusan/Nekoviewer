@@ -1390,6 +1390,110 @@ impl Lang {
         }
     }
 
+    pub fn settings_tab_explorer(self) -> &'static str {
+        match self {
+            Lang::Japanese => "エクスプローラー",
+            Lang::English  => "Explorer",
+            Lang::Chinese  => "资源管理器",
+        }
+    }
+
+    pub fn settings_card_date_heading(self) -> &'static str {
+        match self {
+            Lang::Japanese => "サムネカードの日付表示",
+            Lang::English  => "Thumbnail card date",
+            Lang::Chinese  => "缩略图卡片的日期显示",
+        }
+    }
+
+    pub fn settings_card_date_mode_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "モード",
+            Lang::English  => "Mode",
+            Lang::Chinese  => "模式",
+        }
+    }
+
+    pub fn settings_card_date_mode_auto(self) -> &'static str {
+        match self {
+            Lang::Japanese => "自動（表示言語に従う）",
+            Lang::English  => "Auto (follow UI language)",
+            Lang::Chinese  => "自动（跟随界面语言）",
+        }
+    }
+
+    pub fn settings_card_date_mode_sort(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ソート基準（20260131）",
+            Lang::English  => "Sort-friendly (20260131)",
+            Lang::Chinese  => "排序优先（20260131）",
+        }
+    }
+
+    pub fn settings_card_date_mode_custom(self) -> &'static str {
+        match self {
+            Lang::Japanese => "カスタム",
+            Lang::English  => "Custom",
+            Lang::Chinese  => "自定义",
+        }
+    }
+
+    pub fn settings_card_date_auto_style_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "自動時の書式",
+            Lang::English  => "Auto format",
+            Lang::Chinese  => "自动模式的格式",
+        }
+    }
+
+    pub fn settings_card_date_order_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "表示順",
+            Lang::English  => "Order",
+            Lang::Chinese  => "顺序",
+        }
+    }
+
+    pub fn settings_card_date_sep_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "区切り文字",
+            Lang::English  => "Separator",
+            Lang::Chinese  => "分隔符",
+        }
+    }
+
+    pub fn settings_card_date_year_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "年の桁",
+            Lang::English  => "Year digits",
+            Lang::Chinese  => "年份位数",
+        }
+    }
+
+    pub fn settings_card_date_month_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "月の表記",
+            Lang::English  => "Month style",
+            Lang::Chinese  => "月份表示",
+        }
+    }
+
+    pub fn settings_card_date_sep_none(self) -> &'static str {
+        match self {
+            Lang::Japanese => "なし",
+            Lang::English  => "None",
+            Lang::Chinese  => "无",
+        }
+    }
+
+    pub fn settings_card_date_preview(self, example: &str) -> String {
+        match self {
+            Lang::Japanese => format!("例: {example}"),
+            Lang::English  => format!("Example: {example}"),
+            Lang::Chinese  => format!("示例：{example}"),
+        }
+    }
+
     pub fn settings_translate_experimental_note(self) -> &'static str {
         match self {
             Lang::Japanese => "実験的機能: ローカルAI(Ollama/OpenWebUI等のOpenAI互換API)を利用したOCRテキスト抽出。クラウドAPIは未対応。",
