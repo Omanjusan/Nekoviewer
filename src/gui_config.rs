@@ -154,6 +154,9 @@ pub struct AppState {
     pub viewer_cfg: ViewerConfig,
     /// 隠しファイル/フォルダを一覧に表示するか（設定ダイアログの共通タブで編集）
     pub show_hidden: bool,
+    /// サムネカード下部の情報帯モード: "off" / "name" / "name_date" / "name_date_size"。
+    /// メニューバーの1ボタン循環トグルで切り替え、値は CardInfoMode 側で解釈する。
+    pub card_info_mode: String,
     /// 設定ダイアログ（共通/アニメタブ）から編集された AppConfig 上書き値。
     /// None のものは config.ini の値をそのまま使う。一度でもダイアログで変更すると
     /// この state 側の値が以後 config.ini より優先される（次回起動反映）。
@@ -177,6 +180,7 @@ impl Default for AppState {
             lang: "ja".to_string(),
             viewer_cfg: ViewerConfig::default(),
             show_hidden: false,
+            card_info_mode: "off".to_string(),
             app_cache_total_mb: None,
             app_anim_ring_min_frames: None,
             app_anim_ring_max_frames: None,
@@ -228,6 +232,7 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
     let mut viewer_fullscreen: Option<bool> = None;
     let mut redecode_on_resize: Option<bool> = None;
     let mut show_hidden: Option<bool> = None;
+    let mut card_info_mode: Option<String> = None;
     let mut resize_debounce_ms: Option<u64> = None;
     let mut app_cache_total_mb: Option<u64> = None;
     let mut app_anim_ring_min_frames: Option<usize> = None;
@@ -297,6 +302,7 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
                 "viewer_fullscreen" => { viewer_fullscreen = v.trim().parse().ok(); }
                 "redecode_on_resize" => { redecode_on_resize = v.trim().parse().ok(); }
                 "show_hidden" => { show_hidden = v.trim().parse().ok(); }
+                "card_info_mode" => { card_info_mode = Some(v.trim().to_string()); }
                 "resize_debounce_ms" => {
                     resize_debounce_ms = v.trim().parse::<u64>().ok()
                         .filter(|n| (100..=1000).contains(n) && n % 100 == 0);
@@ -401,6 +407,7 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
             bar_order: viewer_bar_order.unwrap_or(DEFAULT_BAR_ORDER),
         },
         show_hidden: show_hidden.unwrap_or(false),
+        card_info_mode: card_info_mode.unwrap_or_else(|| "off".to_string()),
         app_cache_total_mb,
         app_anim_ring_min_frames,
         app_anim_ring_max_frames,
@@ -417,15 +424,15 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn save_state(root: &Path, dir: &Path, window_size: (u32, u32), viewer_slots: &[Option<WindowSlot>; 4], sort_state: &SortState, lang: &str, viewer_cfg: &ViewerConfig, show_hidden: bool, app_cfg: &AppConfig, translate_cfg: &TranslateConfig) {
+pub fn save_state(root: &Path, dir: &Path, window_size: (u32, u32), viewer_slots: &[Option<WindowSlot>; 4], sort_state: &SortState, lang: &str, viewer_cfg: &ViewerConfig, show_hidden: bool, card_info_mode: &str, app_cfg: &AppConfig, translate_cfg: &TranslateConfig) {
     let _ = std::fs::create_dir_all(root);
     let (path, bak, tmp) = (state_path(root), state_bak_path(root), state_tmp_path(root));
 
     let mut content = format!(
-        "last_dir={}\nwindow_width={}\nwindow_height={}\nsort_key={}\nsort_ascending={}\nlang={}\nviewer_zoom={}\nviewer_fullscreen={}\nredecode_on_resize={}\nresize_debounce_ms={}\nshow_hidden={}\n",
+        "last_dir={}\nwindow_width={}\nwindow_height={}\nsort_key={}\nsort_ascending={}\nlang={}\nviewer_zoom={}\nviewer_fullscreen={}\nredecode_on_resize={}\nresize_debounce_ms={}\nshow_hidden={}\ncard_info_mode={}\n",
         dir.to_string_lossy(), window_size.0, window_size.1, sort_state.key, sort_state.ascending, lang,
         viewer_cfg.zoom_actual, viewer_cfg.fullscreen,
-        viewer_cfg.redecode_on_resize, viewer_cfg.resize_debounce_ms, show_hidden,
+        viewer_cfg.redecode_on_resize, viewer_cfg.resize_debounce_ms, show_hidden, card_info_mode,
     );
     content.push_str(&format!(
         "thumbbar_pos={}\nthumbbar_thumb_size={}\nthumbbar_idle_hide_ms={}\nthumbbar_overlap={}\nthumbbar_marker_r={}\nthumbbar_marker_g={}\nthumbbar_marker_b={}\nthumbbar_marker_a={}\n",

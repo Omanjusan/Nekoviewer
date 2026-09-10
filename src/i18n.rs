@@ -72,6 +72,38 @@ impl Lang {
         }
     }
 
+    pub fn card_info_off(self) -> &'static str {
+        match self {
+            Lang::Japanese => "情報:OFF",
+            Lang::English  => "Info: Off",
+            Lang::Chinese  => "信息:关",
+        }
+    }
+
+    pub fn card_info_name(self) -> &'static str {
+        match self {
+            Lang::Japanese => "情報:名前",
+            Lang::English  => "Info: Name",
+            Lang::Chinese  => "信息:名称",
+        }
+    }
+
+    pub fn card_info_name_date(self) -> &'static str {
+        match self {
+            Lang::Japanese => "情報:名前+日付",
+            Lang::English  => "Info: Name+Date",
+            Lang::Chinese  => "信息:名称+日期",
+        }
+    }
+
+    pub fn card_info_name_date_size(self) -> &'static str {
+        match self {
+            Lang::Japanese => "情報:名前+日付+容量",
+            Lang::English  => "Info: Name+Date+Size",
+            Lang::Chinese  => "信息:名称+日期+大小",
+        }
+    }
+
     pub fn rotate_ccw(self) -> &'static str {
         match self {
             Lang::Japanese => "反時計回りに回転",

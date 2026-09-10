@@ -214,18 +214,20 @@ pub(crate) enum MenuBarButton {
     SortDate,
     SortSize,
     SortOrder,
+    CardInfoToggle,
     StatusToggle,
     Settings,
 }
 
 /// 表示順そのもの（draw_menu_barの描画順と一致させること）。
 /// 見開き・ページモード群はビューアーツールバーへ移設した（toolbar.rs 参照）。
-pub(crate) const MENU_BAR_ORDER: [MenuBarButton; 7] = [
+pub(crate) const MENU_BAR_ORDER: [MenuBarButton; 8] = [
     MenuBarButton::Reload,
     MenuBarButton::SortName,
     MenuBarButton::SortDate,
     MenuBarButton::SortSize,
     MenuBarButton::SortOrder,
+    MenuBarButton::CardInfoToggle,
     MenuBarButton::Settings,
     MenuBarButton::StatusToggle,
 ];
@@ -237,7 +239,7 @@ mod menu_bar_order_tests {
     #[test]
     fn settings_and_status_keep_the_visual_right_end_order() {
         assert_eq!(
-            &MENU_BAR_ORDER[5..],
+            &MENU_BAR_ORDER[6..],
             &[
                 MenuBarButton::Settings,
                 MenuBarButton::StatusToggle,
@@ -260,7 +262,6 @@ pub(crate) enum CardInfoMode {
     NameDateSize,
 }
 
-#[allow(dead_code)] // next / *_state_str は Phase 3（メニュー・永続化）で使用
 impl CardInfoMode {
     /// 押下ごとの循環順: Off → Name → NameDate → NameDateSize → Off
     pub(crate) fn next(self) -> Self {
@@ -766,7 +767,7 @@ mod glyph_audit;
 
 
 impl NekoviewApp {
-    pub fn new(start_dir: PathBuf, config: AppConfig, viewer_slots: [Option<WindowSlot>; 4], sort_state: SortState, viewer_cfg: ViewerConfig, show_hidden: bool, translate_cfg: crate::translate::TranslateConfig, ctx: egui::Context) -> Self {
+    pub fn new(start_dir: PathBuf, config: AppConfig, viewer_slots: [Option<WindowSlot>; 4], sort_state: SortState, viewer_cfg: ViewerConfig, show_hidden: bool, card_info_mode: &str, translate_cfg: crate::translate::TranslateConfig, ctx: egui::Context) -> Self {
         // timeのローカルオフセット取得は、Unixでは他スレッド起動前に行う必要がある。
         let local_today = calendar_gui::LocalDate::today_local();
         let (cache_max, cache_min, file_cache_max) = crate::cache::resolve_cache_budgets(config.cache_total_mb);
@@ -938,7 +939,7 @@ impl NekoviewApp {
             translate_ocr_queue: std::collections::VecDeque::new(),
             viewer_focus_requested: false,
             show_hidden,
-            card_info_mode: CardInfoMode::default(),
+            card_info_mode: CardInfoMode::from_state_str(card_info_mode),
             card_info_style: CardInfoStyle::default(),
             card_info_hover: None,
             archive_meta_cache: HashMap::new(),
@@ -1011,6 +1012,7 @@ impl NekoviewApp {
             i18n::lang_code(),
             &*self.viewer_cfg.lock().unwrap(),
             self.show_hidden,
+            self.card_info_mode.as_state_str(),
             &self.config,
             &self.translate_cfg,
         );

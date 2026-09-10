@@ -8,6 +8,12 @@ use crate::fs::dir;
 use crate::view_reader::{fit_rect_contain, ViewerState};
 use super::*;
 
+/// カード情報帯のホバー横スクロールを回すフレーム間隔（ms）。
+/// egui はフル再描画しかできないため、モニタのリフレッシュレート（120/144Hz等）で
+/// 回すとサムネグリッド全体の再テッセレーションで CPU を食う。約30fpsに間引く。
+/// スクロール位置は wall-clock 基準なので速度は変わらず、なめらかさだけ落ちる。
+const MARQUEE_FRAME_MS: u64 = 33;
+
 const THUMB_MARKER_TOP: f32 = 4.0;
 const THUMB_MARKER_BOTTOM_PADDING: f32 = 4.0;
 const THUMB_MARKER_LINE_H: f32 = 21.0;
@@ -219,6 +225,10 @@ impl NekoviewApp {
                 self.sort_ascending = !self.sort_ascending;
                 self.finish_sort_change();
             }
+            MenuBarButton::CardInfoToggle => {
+                self.card_info_mode = self.card_info_mode.next();
+                self.persist_state();
+            }
             MenuBarButton::StatusToggle => {
                 self.show_status_window = !self.show_status_window;
             }
@@ -280,6 +290,22 @@ impl NekoviewApp {
 
             if sort_changed {
                 self.finish_sort_change();
+            }
+
+            ui.separator();
+
+            // ── サムネカード下部情報の循環トグル（1ボタン） ──────────────
+            let info_label = match self.card_info_mode {
+                CardInfoMode::Off => i18n::t().card_info_off(),
+                CardInfoMode::Name => i18n::t().card_info_name(),
+                CardInfoMode::NameDate => i18n::t().card_info_name_date(),
+                CardInfoMode::NameDateSize => i18n::t().card_info_name_date_size(),
+            };
+            let r_info = ui.button(info_label);
+            if is_cursor(MenuBarButton::CardInfoToggle) { draw_cursor_ring(ui, r_info.rect); }
+            if r_info.clicked() {
+                self.card_info_mode = self.card_info_mode.next();
+                self.persist_state();
             }
 
             // ── ステータスウィンドウボタン（右端） ────────────────────────
@@ -1012,7 +1038,10 @@ impl NekoviewApp {
                                     );
                                 }
                                 if hovered && any_overflow {
-                                    ui.ctx().request_repaint();
+                                    // フル再描画になるため vsync 任せにせず約30fpsへ間引く
+                                    ui.ctx().request_repaint_after(
+                                        std::time::Duration::from_millis(MARQUEE_FRAME_MS),
+                                    );
                                 }
                             }
 
