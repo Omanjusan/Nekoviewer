@@ -901,6 +901,121 @@ impl NekoviewApp {
                                 }
                             }
 
+                            // ── カード下部の情報オーバーレイ帯（ファイル名 / 更新日時 / サイズ）──
+                            // 画像の上に半透明帯を重ねる。マーカー描画より前に置くことで、
+                            // マーカー（赤×・お気に入り等）は帯の上に出る（重なりは許容）。
+                            let n_lines = self.card_info_mode.line_count();
+                            if n_lines > 0 {
+                                // 可視カードぶんだけメタデータを遅延取得（失敗時は次フレーム再試行）
+                                if !self.archive_meta_cache.contains_key(path)
+                                    && let Ok(md) = std::fs::metadata(path)
+                                {
+                                    let mt = md.modified().unwrap_or(std::time::UNIX_EPOCH);
+                                    self.archive_meta_cache.insert(path.clone(), (mt, md.len()));
+                                }
+
+                                let style = self.card_info_style;
+                                let line_px = (cell_h * (style.text_size / 200.0))
+                                    .clamp(9.0, style.text_size);
+                                let row_h = line_px * 1.35;
+                                let info_h = n_lines as f32 * row_h + 4.0;
+                                let info_rect = egui::Rect::from_min_max(
+                                    egui::pos2(rect.min.x, rect.max.y - info_h),
+                                    rect.max,
+                                );
+                                ui.painter().rect_filled(info_rect, 0.0, style.band_color);
+
+                                let meta = self.archive_meta_cache.get(path).copied();
+                                let mut lines: Vec<String> = Vec::with_capacity(n_lines);
+                                lines.push(
+                                    path.file_name()
+                                        .and_then(|s| s.to_str())
+                                        .unwrap_or("")
+                                        .to_string(),
+                                );
+                                if n_lines >= 2 {
+                                    lines.push(meta.map(|(mt, _)| format_mtime(mt)).unwrap_or_default());
+                                }
+                                if n_lines >= 3 {
+                                    lines.push(meta.map(|(_, sz)| humanize_size(sz)).unwrap_or_default());
+                                }
+
+                                // ホバー横スクロール状態の更新（帯幅を超えた行だけ後でスクロールさせる）
+                                let hovered = response.hovered();
+                                if hovered {
+                                    let fresh = !matches!(
+                                        &self.card_info_hover,
+                                        Some((p, _)) if p == path
+                                    );
+                                    if fresh {
+                                        self.card_info_hover =
+                                            Some((path.clone(), std::time::Instant::now()));
+                                    }
+                                } else if matches!(&self.card_info_hover, Some((p, _)) if p == path) {
+                                    self.card_info_hover = None;
+                                }
+                                let scroll_t = if hovered {
+                                    self.card_info_hover
+                                        .as_ref()
+                                        .filter(|(p, _)| p == path)
+                                        .map(|(_, t)| t.elapsed().as_secs_f32())
+                                } else {
+                                    None
+                                };
+
+                                let font = egui::FontId::proportional(line_px);
+                                const PAD: f32 = 4.0;
+                                let avail_w = (info_rect.width() - PAD * 2.0).max(1.0);
+                                let band_painter = ui.painter_at(info_rect);
+                                let mut any_overflow = false;
+                                for (i, text) in lines.iter().enumerate() {
+                                    if text.is_empty() {
+                                        continue;
+                                    }
+                                    let galley = band_painter.layout_no_wrap(
+                                        text.clone(),
+                                        font.clone(),
+                                        style.text_color,
+                                    );
+                                    let over = galley.size().x - avail_w;
+                                    let y = info_rect.min.y + 2.0 + i as f32 * row_h;
+                                    let x_off = if over > 0.0 {
+                                        any_overflow = true;
+                                        match scroll_t {
+                                            Some(t) => {
+                                                // 両端に0.6秒ずつ静止し、その間を一定速で往復
+                                                let speed = 42.0_f32; // px/sec
+                                                let travel = (over / speed).max(0.05);
+                                                let hold = 0.6_f32;
+                                                let period = (travel + hold) * 2.0;
+                                                let ph = t % period;
+                                                let d = if ph < hold {
+                                                    0.0
+                                                } else if ph < hold + travel {
+                                                    (ph - hold) / travel
+                                                } else if ph < hold + travel + hold {
+                                                    1.0
+                                                } else {
+                                                    1.0 - (ph - hold - travel - hold) / travel
+                                                };
+                                                -over * d
+                                            }
+                                            None => 0.0,
+                                        }
+                                    } else {
+                                        0.0
+                                    };
+                                    band_painter.galley(
+                                        egui::pos2(info_rect.min.x + PAD + x_off, y),
+                                        galley,
+                                        style.text_color,
+                                    );
+                                }
+                                if hovered && any_overflow {
+                                    ui.ctx().request_repaint();
+                                }
+                            }
+
                             // 無効ZIP・サムネデコード失敗は左上に赤Xを描画
                             let thumb_failed = self.thumb_failed.contains(path);
                             let has_error_marker =
@@ -1286,6 +1401,21 @@ fn format_mtime(t: std::time::SystemTime) -> String {
     let m = if mp < 10 { mp + 3 } else { mp - 9 };
     let y = if m <= 2 { y + 1 } else { y };
     format!("{:04}/{:02}/{:02}", y, m, d)
+}
+
+/// ファイルサイズを人間可読形式にする。
+/// 1MB以上 → "12.3 MB"（小数1桁）／ 1KB以上 → "856 KB"（整数）／ それ未満 → "< 1 KB"。
+/// GB帯もMB表示（GB単位は使わない）。
+fn humanize_size(bytes: u64) -> String {
+    const KB: u64 = 1 << 10;
+    const MB: u64 = 1 << 20;
+    if bytes >= MB {
+        format!("{:.1} MB", bytes as f64 / MB as f64)
+    } else if bytes >= KB {
+        format!("{} KB", bytes / KB)
+    } else {
+        "< 1 KB".to_string()
+    }
 }
 
 #[cfg(test)]

@@ -246,6 +246,84 @@ mod menu_bar_order_tests {
     }
 }
 
+/// サムネカード下部の情報オーバーレイ帯の表示量。メニューバーの1ボタンで循環する。
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub(crate) enum CardInfoMode {
+    /// 何も表示しない
+    #[default]
+    Off,
+    /// ファイル名のみ
+    Name,
+    /// ファイル名 + 更新日時
+    NameDate,
+    /// ファイル名 + 更新日時 + サイズ
+    NameDateSize,
+}
+
+#[allow(dead_code)] // next / *_state_str は Phase 3（メニュー・永続化）で使用
+impl CardInfoMode {
+    /// 押下ごとの循環順: Off → Name → NameDate → NameDateSize → Off
+    pub(crate) fn next(self) -> Self {
+        match self {
+            Self::Off => Self::Name,
+            Self::Name => Self::NameDate,
+            Self::NameDate => Self::NameDateSize,
+            Self::NameDateSize => Self::Off,
+        }
+    }
+
+    /// 帯に描画する行数（0..=3）
+    pub(crate) fn line_count(self) -> usize {
+        match self {
+            Self::Off => 0,
+            Self::Name => 1,
+            Self::NameDate => 2,
+            Self::NameDateSize => 3,
+        }
+    }
+
+    /// nekoviewer.state への保存キー
+    pub(crate) fn as_state_str(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Name => "name",
+            Self::NameDate => "name_date",
+            Self::NameDateSize => "name_date_size",
+        }
+    }
+
+    /// nekoviewer.state からの復元（未知値は Off）
+    pub(crate) fn from_state_str(s: &str) -> Self {
+        match s {
+            "name" => Self::Name,
+            "name_date" => Self::NameDate,
+            "name_date_size" => Self::NameDateSize,
+            _ => Self::Off,
+        }
+    }
+}
+
+/// 情報帯の見た目。将来 GUI 設定から供給する想定で、今は Default 固定。
+#[derive(Clone, Copy)]
+pub(crate) struct CardInfoStyle {
+    /// 帯の背景色（透過度込み。画像の上にオーバーレイ合成される）
+    pub band_color: egui::Color32,
+    /// 文字色
+    pub text_color: egui::Color32,
+    /// 基準文字サイズ(px)。実サイズは cell_h 連動で clamp する。
+    pub text_size: f32,
+}
+
+impl Default for CardInfoStyle {
+    fn default() -> Self {
+        Self {
+            band_color: egui::Color32::from_black_alpha(150),
+            text_color: egui::Color32::from_rgb(240, 240, 240),
+            text_size: 13.0,
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 enum FavoriteDialogMode {
     Create,
@@ -585,6 +663,15 @@ pub struct NekoviewApp {
     /// ビューアウィンドウをフォーカス前面に出すフラグ
     viewer_focus_requested: bool,
     pub(crate) show_hidden: bool,
+    /// サムネカード下部の情報帯の表示量（メニューバーの1ボタンで循環）。
+    pub(crate) card_info_mode: CardInfoMode,
+    /// 情報帯の見た目（背景色・透過度・文字色・文字サイズ）。今は Default 固定。
+    pub(crate) card_info_style: CardInfoStyle,
+    /// 情報帯の行が帯幅を超えた時のホバー横スクロール状態: (対象パス, ホバー開始時刻)。
+    pub(crate) card_info_hover: Option<(PathBuf, std::time::Instant)>,
+    /// 可視カードぶんだけ遅延取得するファイルメタデータのキャッシュ: パス → (更新日時, サイズbytes)。
+    /// スキャンで archives を作り直すたびにクリアする。
+    pub(crate) archive_meta_cache: HashMap<PathBuf, (std::time::SystemTime, u64)>,
     sort_key: ExplorerSortKey,
     sort_ascending: bool,
     /// サムネグリッドの統一カーソル位置（↑/サブフォルダ/アーカイブを貫通）
@@ -851,6 +938,10 @@ impl NekoviewApp {
             translate_ocr_queue: std::collections::VecDeque::new(),
             viewer_focus_requested: false,
             show_hidden,
+            card_info_mode: CardInfoMode::default(),
+            card_info_style: CardInfoStyle::default(),
+            card_info_hover: None,
+            archive_meta_cache: HashMap::new(),
             sort_key: ExplorerSortKey::from_state_key(&sort_state.key),
             sort_ascending: sort_state.ascending,
             grid_cursor: None,

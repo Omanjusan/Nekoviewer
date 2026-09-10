@@ -349,6 +349,9 @@ impl NekoviewApp {
                 self.raw_image_files.insert(img.clone());
                 self.archives.push(img);
             }
+            // archives の顔ぶれが変わったので、カード情報帯のメタデータキャッシュを捨てる
+            // （消失・更新・別フォルダ移動の反映）。可視カードぶんは描画時に再充填される。
+            self.archive_meta_cache.clear();
             if let Some(db) = self.spread_db.clone() {
                 let filenames: Vec<String> = self.archives.iter()
                     .filter_map(|p| p.file_name().and_then(|n| n.to_str()).map(str::to_string))
