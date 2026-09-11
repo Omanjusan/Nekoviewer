@@ -1,6 +1,6 @@
 [package]
 name = "nekoviewer"
-version = "1.7.0-rc2"
+version = "1.7.0-rc3"
 edition = "2024"
 license = "MIT"
 
