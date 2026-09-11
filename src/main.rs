@@ -24,6 +24,8 @@ mod view_gui_config;
 mod view_innerlog;
 mod view_reader;
 mod view_status;
+#[cfg(windows)]
+mod win_registry;
 
 mod winit_app;
 

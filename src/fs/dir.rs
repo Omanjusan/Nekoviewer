@@ -129,6 +129,20 @@ pub(crate) fn is_archive_path(p: &Path) -> bool {
     false
 }
 
+/// 右クリックメニュー登録など「拡張子そのもの」を列挙したい場面向けの単純な
+/// （複合でない）対応アーカイブ拡張子一覧。`.tar.gz`/`.tar.zst` はWindowsが
+/// 最後のドット以降のみを拡張子とみなすため対象外（is_archive_pathの複合判定とは別枠）。
+pub(crate) fn simple_archive_extensions() -> Vec<&'static str> {
+    let mut exts = vec!["zip", "cbz"];
+    #[cfg(feature = "fmt-7z")]
+    exts.extend(["7z", "cb7"]);
+    #[cfg(feature = "fmt-tar")]
+    exts.extend(["tar", "cbt", "tgz"]);
+    #[cfg(feature = "tar-zstd")]
+    exts.push("tzst");
+    exts
+}
+
 /// ディレクトリ直下の ZIP/CBZ/7z/CB7/TAR/CBT ファイルを列挙する
 pub fn list_archives(dir: &Path) -> Vec<PathBuf> {
     let Ok(entries) = std::fs::read_dir(dir) else {

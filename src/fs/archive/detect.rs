@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-const IMAGE_EXTENSIONS: &[&str] = &["jpg", "jpeg", "png", "webp", "gif", "bmp", "avif", "tiff", "tif"];
+pub(crate) const IMAGE_EXTENSIONS: &[&str] = &["jpg", "jpeg", "png", "webp", "gif", "bmp", "avif", "tiff", "tif"];
 
 /// 生バイト列で拡張子を確認する（Shift-JIS等でもASCII拡張子は正しく判定できる）
 pub(crate) fn is_image_entry_raw(raw: &[u8]) -> bool {

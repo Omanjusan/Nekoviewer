@@ -32,6 +32,15 @@ impl Lang {
         }
     }
 
+    /// Windowsエクスプローラーの右クリックメニューに表示するNekoviewer起動項目のラベル
+    pub fn windows_context_menu_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "Nekoviewerで開く",
+            Lang::English  => "Open with Nekoviewer",
+            Lang::Chinese  => "用Nekoviewer打开",
+        }
+    }
+
     pub fn sort_date(self) -> &'static str {
         match self {
             Lang::Japanese => "[日付]",
