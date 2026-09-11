@@ -2130,11 +2130,18 @@ impl ViewerState {
         const ENTRY_PANEL_W: f32 = 180.0;
         const TRIGGER_W: f32 = 40.0;
         const HIDE_MARGIN: f32 = 20.0;
+        // 発火域を左端上部の一部に限定する。ウィンドウ高さの15%、ただし最低40pxを保証。
+        const TRIGGER_H_RATIO: f32 = 0.15;
+        const TRIGGER_H_MIN: f32 = 40.0;
 
         let was_visible = self.entry_list_visible;
         let screen_left = viewport_rect.min.x;
+        let trigger_h = (viewport_rect.height() * TRIGGER_H_RATIO).max(TRIGGER_H_MIN);
         if let Some(pos) = hover_pos {
-            if !self.entry_list_visible && pos.x < screen_left + TRIGGER_W {
+            if !self.entry_list_visible
+                && pos.x < screen_left + TRIGGER_W
+                && pos.y < viewport_rect.min.y + trigger_h
+            {
                 self.entry_list_visible = true;
                 ctx.request_repaint();
             } else if self.entry_list_visible && pos.x > screen_left + ENTRY_PANEL_W + HIDE_MARGIN {
