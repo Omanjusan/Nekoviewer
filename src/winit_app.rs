@@ -26,7 +26,7 @@
 
 use std::num::NonZeroU32;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use egui::ViewportId;
@@ -40,6 +40,25 @@ use winit::window::{Window, WindowId};
 use crate::config::AppConfig;
 use crate::gui_config::AppState;
 use crate::view_explorer::NekoviewApp;
+
+/// 実行中ウィンドウのアイコン（タイトルバー/タスクバー/Alt-Tab用）。
+/// Windows exe自体のアイコンはbuild.rsでのリソース埋め込みで別途対応済みだが、
+/// こちらは実行中窓のOS側表示に使われるもので、全プラットフォーム共通で効く。
+/// 初回呼び出し時にデコード・リサイズし、以降はキャッシュを clone するだけ。
+fn app_icon() -> Option<winit::window::Icon> {
+    static ICON: OnceLock<Option<winit::window::Icon>> = OnceLock::new();
+    ICON.get_or_init(|| {
+        const ICON_BYTES: &[u8] =
+            include_bytes!("../packaging/appimage/io.github.Omanjusan.Nekoviewer.png");
+        let img = image::load_from_memory(ICON_BYTES).ok()?;
+        let img = img
+            .resize_exact(64, 64, image::imageops::FilterType::Lanczos3)
+            .to_rgba8();
+        let (w, h) = img.dimensions();
+        winit::window::Icon::from_rgba(img.into_raw(), w, h).ok()
+    })
+    .clone()
+}
 
 /// ビューアー窓に割り当てる ViewportId（ROOT=エクスプローラーと区別する）。
 fn viewer_viewport_id() -> ViewportId {
@@ -319,7 +338,9 @@ impl WinitApp {
     fn create_explorer_window(&mut self, event_loop: &ActiveEventLoop) {
         let (start_dir, cfg, state) = self.init.take().expect("init data");
 
-        let mut attrs = Window::default_attributes().with_title("Nekoviewer");
+        let mut attrs = Window::default_attributes()
+            .with_title("Nekoviewer")
+            .with_window_icon(app_icon());
         if let Some((w, h)) = state.window_size {
             attrs = attrs.with_inner_size(winit::dpi::LogicalSize::new(w as f64, h as f64));
         }
@@ -354,7 +375,9 @@ impl WinitApp {
         if want && !have {
             // conf 既定スロットが解決できれば、その位置・サイズで生成して初回フラッシュを避ける。
             // 画面外補正は ViewerState 初回フレームの apply_default_slot が担う。
-            let mut attrs = Window::default_attributes().with_title("Nekoviewer");
+            let mut attrs = Window::default_attributes()
+                .with_title("Nekoviewer")
+                .with_window_icon(app_icon());
             if let Some(slot) = app.resolved_default_viewer_slot() {
                 attrs = attrs
                     .with_position(winit::dpi::LogicalPosition::new(slot.x as f64, slot.y as f64))
@@ -400,6 +423,7 @@ impl WinitApp {
             if want && !have {
                 let attrs = Window::default_attributes()
                     .with_title("Nekoviewer Status")
+                    .with_window_icon(app_icon())
                     .with_inner_size(winit::dpi::LogicalSize::new(300.0, 280.0));
                 let window = Arc::new(event_loop.create_window(attrs).expect("create status window"));
                 let win = make_egui_window(window, status_viewport_id(), &self.proxy);
@@ -425,6 +449,7 @@ impl WinitApp {
         if want && !have {
             let attrs = Window::default_attributes()
                 .with_title("Nekoviewer OCR/Translate")
+                .with_window_icon(app_icon())
                 .with_inner_size(winit::dpi::LogicalSize::new(480.0, 640.0));
             let window = Arc::new(event_loop.create_window(attrs).expect("create translate window"));
             let win = make_egui_window(window, translate_viewport_id(), &self.proxy);

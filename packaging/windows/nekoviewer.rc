@@ -1,0 +1,4 @@
+// Windows exe アイコン埋め込み用リソーススクリプト。
+// build.rs から embed-resource でコンパイルされ、nekoviewer.exe に
+// アイコンリソースとしてリンクされる（エクスプローラー/タスクバー/ショートカット表示用）。
+IDI_ICON1 ICON "nekoviewer.ico"
