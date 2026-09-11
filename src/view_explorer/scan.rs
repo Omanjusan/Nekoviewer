@@ -427,6 +427,35 @@ impl NekoviewApp {
                     self.egui_ctx.clone(),
                 ));
             }
+            // CLIでファイル指定起動された場合の自動オープン。初回スキャン結果でのみ試行し、
+            // 成否に関わらず一度きりで消費する（以降このディレクトリへ戻っても再発火しない）。
+            if let Some(target) = self.pending_open_target.take() {
+                self.try_open_pending_target(target);
+            }
+        }
+    }
+
+    /// 起動時オープン対象を、ダブルクリックで開くのと同じ手順で開く。
+    /// 対象がスキャン結果に見当たらない・破損等で開けない場合は何もしない
+    /// （＝現在表示中の親DIRのままに留める＝要件の「開けなければDIRに留める」を満たす）。
+    fn try_open_pending_target(&mut self, target: PathBuf) {
+        let Some(real_idx) = self.archives.iter().position(|p| p == &target) else { return; };
+        self.selected_archive_index = Some(real_idx);
+        self.selected_archive_meta = None;
+        self.grid_cursor = Some(GridEntry::Archive(real_idx));
+
+        if self.raw_image_files.contains(&target) {
+            if self.network_gate(&target) {
+                self.open_viewer(ViewerState::new_raw(target.clone(), self.viewer_slots, self.config.default_slot));
+            }
+            return;
+        }
+        if self.invalid_archives.contains(&target) { return; }
+        if !self.network_gate(&target) { return; }
+        if !self.check_memory_budget(&target) { return; }
+        match ViewerState::new(target.clone(), self.viewer_slots, self.config.default_slot) {
+            Some(state) => self.open_viewer(state),
+            None => self.mark_archive_invalid(&target),
         }
     }
 

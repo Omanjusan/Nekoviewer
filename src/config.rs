@@ -348,6 +348,29 @@ impl AppConfig {
         self.conflict = None;
     }
 
+    /// CLI引数のパスを解釈し、(起動時に開くディレクトリ, 起動後に自動で開くファイル) を返す。
+    /// - DIR指定 → (そのDIR, None)
+    /// - ファイル指定 → 親DIRにアクセス可能なら (親DIR, 対応拡張子ならそのファイル、非対応ならNone)
+    /// - 上記のいずれも成立しない（存在しない・親DIRにもアクセス不可）→ (None, None)
+    ///   （呼び出し元の resolve_start_dir が前回フォルダ→固定フォルダ→HOME のフォールバックへ委ねる）
+    pub fn resolve_cli_open_target(path: PathBuf) -> (Option<PathBuf>, Option<PathBuf>) {
+        if path.is_dir() {
+            return (Some(path), None);
+        }
+        if path.is_file() {
+            let openable = crate::fs::archive::detect::is_supported_image_file(&path)
+                || crate::fs::dir::is_archive_path(&path);
+            let parent = match path.parent() {
+                Some(p) if !p.as_os_str().is_empty() => p.to_path_buf(),
+                _ => PathBuf::from("."),
+            };
+            if parent.is_dir() {
+                return (Some(parent), if openable { Some(path) } else { None });
+            }
+        }
+        (None, None)
+    }
+
     /// 起動フォルダを最終決定する。CLI引数 > 前回フォルダ > フォールバック の優先順で
     /// 候補を選び、その候補が隠しディレクトリ経路（`.`始まりの構成要素を含む）でありながら
     /// 隠しフォルダ表示がオフのときは、由来（CLI引数・前回フォルダ・固定初期フォルダ）を

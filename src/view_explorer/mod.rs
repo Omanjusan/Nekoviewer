@@ -587,6 +587,9 @@ pub struct NekoviewApp {
     viewer_slots: [Option<WindowSlot>; 4],
     /// archives のうち生画像ファイルのセット（赤枠表示・シングルクリック開封用）
     raw_image_files: std::collections::HashSet<PathBuf>,
+    /// 起動時にCLIでファイル指定された場合の自動オープン対象。
+    /// 初回スキャン完了時（poll_scan）に一度だけ試行し、成否に関わらずNoneへ戻す。
+    pending_open_target: Option<PathBuf>,
     /// 無効確定済みZIP（画像エントリなし）のセット（現ディレクトリセッション中に保持）
     invalid_archives: std::collections::HashSet<PathBuf>,
     /// サムネイル生成に失敗したファイルのセット（DB非永続・セッション中のみ。
@@ -774,7 +777,7 @@ mod glyph_audit;
 
 
 impl NekoviewApp {
-    pub fn new(start_dir: PathBuf, config: AppConfig, viewer_slots: [Option<WindowSlot>; 4], sort_state: SortState, viewer_cfg: ViewerConfig, show_hidden: bool, card_info_mode: &str, card_date_format: crate::card_date_format::CardDateFormat, translate_cfg: crate::translate::TranslateConfig, ctx: egui::Context) -> Self {
+    pub fn new(start_dir: PathBuf, config: AppConfig, viewer_slots: [Option<WindowSlot>; 4], sort_state: SortState, viewer_cfg: ViewerConfig, show_hidden: bool, card_info_mode: &str, card_date_format: crate::card_date_format::CardDateFormat, translate_cfg: crate::translate::TranslateConfig, open_target: Option<PathBuf>, ctx: egui::Context) -> Self {
         // timeのローカルオフセット取得は、Unixでは他スレッド起動前に行う必要がある。
         let local_today = calendar_gui::LocalDate::today_local();
         let (cache_max, cache_min, file_cache_max) = crate::cache::resolve_cache_budgets(config.cache_total_mb);
@@ -911,6 +914,7 @@ impl NekoviewApp {
             window_size: (1024, 768),
             viewer_slots,
             raw_image_files: std::collections::HashSet::new(),
+            pending_open_target: open_target,
             invalid_archives: std::collections::HashSet::new(),
             thumb_failed: std::collections::HashSet::new(),
             app_toast: None,

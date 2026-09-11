@@ -290,7 +290,7 @@ fn render_window(win: &mut EguiWindow, build: impl FnMut(&mut egui::Ui)) -> Dura
 
 struct WinitApp {
     /// resumed まで初期化を遅延させるための起動データ。
-    init: Option<(PathBuf, AppConfig, AppState)>,
+    init: Option<(PathBuf, AppConfig, AppState, Option<PathBuf>)>,
     /// 再描画要求でループを起床させるためのプロキシ（各窓のコールバックへ clone して渡す）。
     proxy: EventLoopProxy<UserEvent>,
     explorer: Option<EguiWindow>,
@@ -320,10 +320,11 @@ impl WinitApp {
         start_dir: PathBuf,
         cfg: AppConfig,
         state: AppState,
+        open_target: Option<PathBuf>,
         proxy: EventLoopProxy<UserEvent>,
     ) -> Self {
         Self {
-            init: Some((start_dir, cfg, state)),
+            init: Some((start_dir, cfg, state, open_target)),
             proxy,
             explorer: None,
             viewer: None,
@@ -336,7 +337,7 @@ impl WinitApp {
     }
 
     fn create_explorer_window(&mut self, event_loop: &ActiveEventLoop) {
-        let (start_dir, cfg, state) = self.init.take().expect("init data");
+        let (start_dir, cfg, state, open_target) = self.init.take().expect("init data");
 
         let mut attrs = Window::default_attributes()
             .with_title("Nekoviewer")
@@ -359,6 +360,7 @@ impl WinitApp {
             &state.card_info_mode,
             state.card_date_format,
             state.translate_cfg,
+            open_target,
             win.egui_ctx.clone(),
         );
 
@@ -775,7 +777,7 @@ impl ApplicationHandler<UserEvent> for WinitApp {
 }
 
 /// winit イベントループを起動する（戻ってきたら終了）。
-pub fn run(start_dir: PathBuf, cfg: AppConfig, state: AppState) {
+pub fn run(start_dir: PathBuf, cfg: AppConfig, state: AppState, open_target: Option<PathBuf>) {
     let event_loop = EventLoop::<UserEvent>::with_user_event()
         .build()
         .expect("event loop");
@@ -788,7 +790,7 @@ pub fn run(start_dir: PathBuf, cfg: AppConfig, state: AppState) {
         let _ = ping_proxy.send_event(UserEvent::FocusRequested);
     });
 
-    let mut app = WinitApp::new(start_dir, cfg, state, proxy);
+    let mut app = WinitApp::new(start_dir, cfg, state, open_target, proxy);
     event_loop.run_app(&mut app).expect("run_app");
 }
 

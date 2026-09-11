@@ -75,13 +75,19 @@ fn main() {
         let args = CliArgs::parse();
         if let Some(v) = args.cache_max_mb { cfg.cache_total_mb = Some(v.max(64)); }
 
-        let start_dir = cfg.resolve_start_dir(args.start_path, &state);
-        log_common!("[startup] start_dir = {:?}", start_dir);
+        // 「賢く開く」：ファイル指定なら親DIR起動＋起動後の自動オープン対象を、DIR指定なら
+        // そのDIRをそれぞれ導出する。いずれも成立しなければ従来通りの起動フォルダ解決へ委ねる。
+        let (cli_dir, open_target) = match args.start_path {
+            Some(p) => config::AppConfig::resolve_cli_open_target(p),
+            None => (None, None),
+        };
+        let start_dir = cfg.resolve_start_dir(cli_dir, &state);
+        log_common!("[startup] start_dir = {:?}, open_target = {:?}", start_dir, open_target);
 
-        (cfg, state, start_dir)
+        (cfg, state, start_dir, open_target)
     });
 
-    let (cfg, state, start_dir) = match init_result {
+    let (cfg, state, start_dir, open_target) = match init_result {
         Ok(v) => v,
         Err(_) => {
             show_init_failure_dialog();
@@ -90,7 +96,7 @@ fn main() {
     };
 
     log_common!("[startup] starting winit event loop ...");
-    winit_app::run(start_dir, cfg, state);
+    winit_app::run(start_dir, cfg, state, open_target);
     drop(instance_guard);
 }
 
@@ -246,7 +252,10 @@ impl CliArgs {
             if let Some(rest) = arg.strip_prefix("--cache-max-mb") {
                 cache_max_mb = Self::take_value(rest, &mut it);
             } else if !arg.starts_with('-') {
-                start_path = Some(PathBuf::from(&arg));
+                // 複数の位置引数（複数ファイル/複数DIR）が来ても先頭のみを対象とし、以降は無視する。
+                if start_path.is_none() {
+                    start_path = Some(PathBuf::from(&arg));
+                }
             }
             // 未知の --xxx オプションは無視
         }

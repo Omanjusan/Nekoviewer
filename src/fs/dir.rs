@@ -103,7 +103,7 @@ pub fn name_matches(pattern_text: &str, filename: &str) -> bool {
 /// パスが対応アーカイブのファイル名サフィックスを持つか。
 /// `.tar.gz` のような二重拡張子を正しく扱うため `extension()` ではなくファイル名末尾で判定する。
 /// 7z/tar は対応 feature が有効なときのみ列挙対象に含める。
-fn is_archive_path(p: &Path) -> bool {
+pub(crate) fn is_archive_path(p: &Path) -> bool {
     let name = p
         .file_name()
         .and_then(|n| n.to_str())
