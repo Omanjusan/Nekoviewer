@@ -2122,7 +2122,7 @@ dependencies = [
 
 [[package]]
 name = "nekoviewer"
-version = "1.7.0-rc1"
+version = "1.7.0-rc2"
 dependencies = [
  "ab_glyph",
  "base64",
