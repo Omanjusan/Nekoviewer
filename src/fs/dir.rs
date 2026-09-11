@@ -132,6 +132,7 @@ pub(crate) fn is_archive_path(p: &Path) -> bool {
 /// 右クリックメニュー登録など「拡張子そのもの」を列挙したい場面向けの単純な
 /// （複合でない）対応アーカイブ拡張子一覧。`.tar.gz`/`.tar.zst` はWindowsが
 /// 最後のドット以降のみを拡張子とみなすため対象外（is_archive_pathの複合判定とは別枠）。
+#[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) fn simple_archive_extensions() -> Vec<&'static str> {
     let mut exts = vec!["zip", "cbz"];
     #[cfg(feature = "fmt-7z")]

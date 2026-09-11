@@ -597,7 +597,7 @@ pub struct NekoviewApp {
     /// 次回スキャンでの一覧除外は行わない）
     thumb_failed: std::collections::HashSet<PathBuf>,
     /// アプリレベルのトーストメッセージ（3秒で自動消去）
-    app_toast: Option<(String, std::time::Instant)>,
+    pub(crate) app_toast: Option<(String, std::time::Instant)>,
     /// フェーズ2: ページキャッシュ予算（見積もりゲートの閾値。resolve_cache_budgetsのpage_max）
     cache_budget_bytes: usize,
     /// フェーズ4: アニメリングバッファ先読み枚数の(下限, 上限)。見積もりゲートも同じ値を使う。

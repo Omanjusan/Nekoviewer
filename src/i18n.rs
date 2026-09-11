@@ -33,6 +33,7 @@ impl Lang {
     }
 
     /// Windowsエクスプローラーの右クリックメニューに表示するNekoviewer起動項目のラベル
+    #[cfg_attr(not(windows), allow(dead_code))]
     pub fn windows_context_menu_label(self) -> &'static str {
         match self {
             Lang::Japanese => "Nekoviewerで開く",
@@ -943,6 +944,87 @@ impl Lang {
             Lang::Japanese => "その他",
             Lang::English  => "Other",
             Lang::Chinese  => "其他",
+        }
+    }
+
+    #[cfg(windows)]
+    pub fn settings_tab_windows(self) -> &'static str {
+        match self {
+            Lang::Japanese => "Windows",
+            Lang::English  => "Windows",
+            Lang::Chinese  => "Windows",
+        }
+    }
+
+    #[cfg(windows)]
+    pub fn settings_windows_context_menu_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "エクスプローラーの右クリックメニュー",
+            Lang::English  => "Explorer right-click menu",
+            Lang::Chinese  => "资源管理器右键菜单",
+        }
+    }
+
+    #[cfg(windows)]
+    pub fn settings_windows_context_menu_desc(self) -> &'static str {
+        match self {
+            Lang::Japanese => "対応するファイル（画像/アーカイブ）とフォルダの右クリックメニューに「Nekoviewerで開く」を追加する。",
+            Lang::English  => "Adds \"Open with Nekoviewer\" to the right-click menu for supported files (images/archives) and folders.",
+            Lang::Chinese  => "在支持的文件（图片/压缩包）和文件夹的右键菜单中添加“用Nekoviewer打开”。",
+        }
+    }
+
+    #[cfg(windows)]
+    pub fn settings_windows_register_button(self) -> &'static str {
+        match self {
+            Lang::Japanese => "登録",
+            Lang::English  => "Register",
+            Lang::Chinese  => "注册",
+        }
+    }
+
+    #[cfg(windows)]
+    pub fn settings_windows_unregister_button(self) -> &'static str {
+        match self {
+            Lang::Japanese => "削除",
+            Lang::English  => "Remove",
+            Lang::Chinese  => "删除",
+        }
+    }
+
+    #[cfg(windows)]
+    pub fn settings_windows_status_registered(self) -> &'static str {
+        match self {
+            Lang::Japanese => "登録済み",
+            Lang::English  => "Registered",
+            Lang::Chinese  => "已注册",
+        }
+    }
+
+    #[cfg(windows)]
+    pub fn settings_windows_status_not_registered(self) -> &'static str {
+        match self {
+            Lang::Japanese => "未登録",
+            Lang::English  => "Not registered",
+            Lang::Chinese  => "未注册",
+        }
+    }
+
+    #[cfg(windows)]
+    pub fn settings_windows_register_failed(self, detail: &str) -> String {
+        match self {
+            Lang::Japanese => format!("登録に失敗: {detail}"),
+            Lang::English  => format!("Registration failed: {detail}"),
+            Lang::Chinese  => format!("注册失败: {detail}"),
+        }
+    }
+
+    #[cfg(windows)]
+    pub fn settings_windows_unregister_failed(self, detail: &str) -> String {
+        match self {
+            Lang::Japanese => format!("削除に失敗: {detail}"),
+            Lang::English  => format!("Removal failed: {detail}"),
+            Lang::Chinese  => format!("删除失败: {detail}"),
         }
     }
 

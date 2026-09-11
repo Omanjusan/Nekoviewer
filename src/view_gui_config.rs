@@ -21,6 +21,8 @@ pub(crate) enum SettingsTab {
     Viewer,
     Translate,
     Keymap,
+    #[cfg(windows)]
+    Windows,
     Other,
 }
 
@@ -1044,7 +1046,7 @@ impl NekoviewApp {
             ui.separator();
 
             ui.horizontal(|ui| {
-                for (tab, label) in [
+                let mut tabs = vec![
                     (SettingsTab::Common, i18n::t().settings_tab_common()),
                     (SettingsTab::Explorer, i18n::t().settings_tab_explorer()),
                     (SettingsTab::Anim, i18n::t().settings_tab_anim()),
@@ -1052,8 +1054,11 @@ impl NekoviewApp {
                     (SettingsTab::Viewer, i18n::t().settings_tab_viewer()),
                     (SettingsTab::Translate, i18n::t().settings_tab_translate()),
                     (SettingsTab::Keymap, "キーアサイン"),
-                    (SettingsTab::Other, i18n::t().settings_tab_other()),
-                ] {
+                ];
+                #[cfg(windows)]
+                tabs.push((SettingsTab::Windows, i18n::t().settings_tab_windows()));
+                tabs.push((SettingsTab::Other, i18n::t().settings_tab_other()));
+                for (tab, label) in tabs {
                     ui.selectable_value(&mut self.settings_tab, tab, label);
                 }
             });
@@ -1067,6 +1072,8 @@ impl NekoviewApp {
                 SettingsTab::Viewer => draw_settings_tab_viewer(ui, &mut self.settings_draft),
                 SettingsTab::Translate => self.draw_settings_tab_translate(ui, ctx),
                 SettingsTab::Keymap => draw_settings_tab_keymap(ui, &mut self.settings_draft),
+                #[cfg(windows)]
+                SettingsTab::Windows => self.draw_settings_tab_windows(ui),
                 SettingsTab::Other => self.draw_settings_tab_other(ui),
             }
 
@@ -1247,6 +1254,39 @@ impl NekoviewApp {
                 ui.add(egui::Slider::new(&mut self.settings_draft.translate_overlay_width, OVERLAY_WIDTH_FLOOR..=OVERLAY_WIDTH_CEILING).show_value(false));
                 ui.label(format!("{} px", self.settings_draft.translate_overlay_width));
             });
+        });
+    }
+
+    /// Windowsエクスプローラーの右クリックメニュー「Nekoviewerで開く」の登録/削除。
+    /// [反映]待ちの下書きにはせず、ボタンを押した瞬間にレジストリへ即時反映する
+    /// （インストーラを持たない配布形態のため、この画面が唯一の登録/削除手段）。
+    #[cfg(windows)]
+    fn draw_settings_tab_windows(&mut self, ui: &mut egui::Ui) {
+        let t = i18n::t();
+        ui.label(t.settings_windows_context_menu_label());
+        ui.label(t.settings_windows_context_menu_desc());
+        ui.add_space(8.0);
+
+        let registered = crate::win_registry::is_registered();
+        ui.horizontal(|ui| {
+            ui.label(if registered {
+                t.settings_windows_status_registered()
+            } else {
+                t.settings_windows_status_not_registered()
+            });
+        });
+        ui.add_space(4.0);
+
+        ui.horizontal(|ui| {
+            if ui.add_enabled(!registered, egui::Button::new(t.settings_windows_register_button())).clicked() {
+                if let Err(e) = crate::win_registry::register() {
+                    self.app_toast = Some((t.settings_windows_register_failed(&e), std::time::Instant::now()));
+                }
+            }
+            if ui.add_enabled(registered, egui::Button::new(t.settings_windows_unregister_button())).clicked()
+                && let Err(e) = crate::win_registry::unregister() {
+                self.app_toast = Some((t.settings_windows_unregister_failed(&e), std::time::Instant::now()));
+            }
         });
     }
 
