@@ -1522,9 +1522,10 @@ impl ViewerState {
             let avail  = ui.available_size();
             let origin = ui.cursor().left_top();
 
-            // ── 左右端ページ送りゾーン（マーカー描画はPhase4）───────────────────
+            // ── 左右端ページ送りゾーン ───────────────────────────────────────────
             let edge_ctx = ui.ctx().clone();
             self.handle_edge_turn(&edge_ctx, clip, input.hover_pos, input.primary_clicked, is_spread, step, total, input.time);
+            self.draw_edge_turn_marker(&edge_ctx, clip);
 
             if !frame.animating || frame.zoom_actual {
                 // ── 通常レンダリング ──────────────────────────────────────────
@@ -1654,6 +1655,11 @@ impl ViewerState {
                 p.galley(bg_pos + pad, tg, egui::Color32::WHITE);
             }
         });
+        // ページ送りゾーン内では原寸表示切替（ダブルクリック）を素通りさせない。
+        // シングルクリック側の副作用（サムネバー自動非表示の早送り）は害が無いため残す。
+        if self.edge_turn_hover.is_some() {
+            double_clicked = false;
+        }
         (double_clicked, single_clicked)
     }
 
@@ -2250,6 +2256,40 @@ impl ViewerState {
         } else {
             self.retreat_page(is_spread, step);
         }
+    }
+
+    /// 左右端ページ送りマーカー（◀/▶）をフェードイン(0.3秒)しながら描画する。
+    /// サムネイルバー等の上に確実に重ねるため最前面レイヤーに描画する。
+    fn draw_edge_turn_marker(&self, ctx: &egui::Context, clip: egui::Rect) {
+        let Some((left_edge, since)) = self.edge_turn_hover else { return };
+        const FADE_SEC: f32 = 0.3;
+        let elapsed = (ctx.input(|i| i.time) - since) as f32;
+        let alpha = (elapsed / FADE_SEC).clamp(0.0, 1.0);
+        if alpha <= 0.0 {
+            return;
+        }
+
+        // クリック判定ゾーンの上端回避（左のみ）とは無関係に、マーカーは左右とも
+        // パネル全高の中央に固定表示する。
+        let center_y = (clip.min.y + clip.max.y) / 2.0;
+
+        const MARKER_H: f32 = 36.0;
+        const MARKER_W: f32 = 24.0;
+        const EDGE_PAD: f32 = 16.0;
+        let tip_x  = if left_edge { clip.min.x + EDGE_PAD } else { clip.max.x - EDGE_PAD };
+        let base_x = if left_edge { tip_x + MARKER_W } else { tip_x - MARKER_W };
+        let p_tip = egui::pos2(tip_x, center_y);
+        let p_top = egui::pos2(base_x, center_y - MARKER_H / 2.0);
+        let p_bot = egui::pos2(base_x, center_y + MARKER_H / 2.0);
+
+        let a = (alpha * 255.0) as u8;
+        let fill = egui::Color32::from_white_alpha(a);
+        let shadow = egui::Color32::from_black_alpha((alpha * 150.0) as u8);
+        let off = egui::vec2(1.0, 1.0);
+
+        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("edge_turn_marker")));
+        painter.add(egui::Shape::convex_polygon(vec![p_tip + off, p_top + off, p_bot + off], shadow, egui::Stroke::NONE));
+        painter.add(egui::Shape::convex_polygon(vec![p_tip, p_top, p_bot], fill, egui::Stroke::NONE));
     }
 
     /// 左エントリリストパネル（ホバー制御 + 描画）
