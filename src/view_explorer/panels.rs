@@ -768,8 +768,16 @@ impl NekoviewApp {
                                 self.selected_archive_meta = None;
                             }
                             if response.double_clicked() {
-                                pending_navigate = Some(parent);
+                                pending_navigate = Some(parent.clone());
                             }
+                            response.context_menu(|ui| {
+                                if ui.button(i18n::t().explorer_open_folder_menu()).clicked() {
+                                    if let Some(dir) = &self.viewing_dir {
+                                        crate::translate::open_in_file_manager(dir);
+                                    }
+                                    ui.close();
+                                }
+                            });
                             cell_index += 1;
                             if cell_index % cols == 0 {
                                 ui.end_row();
@@ -853,6 +861,14 @@ impl NekoviewApp {
                             if response.double_clicked() {
                                 pending_navigate = Some(dir_path.clone());
                             }
+                            response.context_menu(|ui| {
+                                if ui.button(i18n::t().explorer_open_folder_menu()).clicked() {
+                                    if let Some(dir) = &self.viewing_dir {
+                                        crate::translate::open_in_file_manager(dir);
+                                    }
+                                    ui.close();
+                                }
+                            });
                             cell_index += 1;
                             if cell_index % cols == 0 {
                                 ui.end_row();
@@ -1271,6 +1287,14 @@ impl NekoviewApp {
                                 }
                             } else if ui.button(i18n::t().favorite_detail_menu()).clicked() {
                                 self.open_favorite_detail_dialog_for_paths(vec![path.clone()]);
+                                ui.close();
+                            }
+
+                            ui.separator();
+                            if ui.button(i18n::t().explorer_open_folder_menu()).clicked() {
+                                if let Some(dir) = &self.viewing_dir {
+                                    crate::translate::open_in_file_manager(dir);
+                                }
                                 ui.close();
                             }
                         });

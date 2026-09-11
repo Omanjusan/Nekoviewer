@@ -354,6 +354,16 @@ impl Lang {
         }
     }
 
+    /// エクスプローラー部アイテムカード右クリックメニュー「フォルダを開く」
+    /// （OS標準ファイラーで現在表示中ディレクトリを開く）
+    pub fn explorer_open_folder_menu(self) -> &'static str {
+        match self {
+            Lang::Japanese => "フォルダを開く",
+            Lang::English  => "Open Folder",
+            Lang::Chinese  => "打开文件夹",
+        }
+    }
+
     pub fn favorite_detail_common_only_note(self) -> &'static str {
         match self {
             Lang::Japanese => "※共通のお気に入り以外は省略しています",
