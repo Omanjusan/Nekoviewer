@@ -771,6 +771,7 @@ mod search;
 mod status;
 mod nav_icons;
 mod calendar_gui;
+mod open_progress;
 
 #[cfg(test)]
 mod glyph_audit;

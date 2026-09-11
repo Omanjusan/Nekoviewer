@@ -6,6 +6,7 @@ use std::path::Path;
 
 pub mod decode;
 pub mod detect;
+mod progress;
 #[cfg(feature = "fmt-7z")]
 mod sevenz;
 #[cfg(feature = "fmt-tar")]
@@ -15,6 +16,7 @@ mod zip;
 // 既存の呼び出し元が使う `crate::fs::archive::NAME` パスを維持するための再エクスポート。
 pub use decode::decode_image_bytes;
 pub use detect::{detect_format, is_7z_path, is_supported_image_file, ArchiveFormat};
+pub use progress::{ArchiveOpenProgress, ProgressCallback};
 #[cfg(feature = "fmt-7z")]
 pub use sevenz::extract_all_images_7z_path;
 #[cfg(feature = "fmt-tar")]
@@ -191,12 +193,18 @@ pub fn estimate_archive_memory(
 /// アーカイブ(ZIP/CBZ/7z/CB7/TAR/CBT)内の全画像をフラット化して返す。
 /// ディレクトリ構造を無視し、ファイル名の衝突は "stem_01.ext" 形式で回避する。
 pub fn list_images(path: &Path) -> Vec<ImageEntry> {
+    list_images_with_progress(path, &mut |_| true).unwrap_or_default()
+}
+
+/// `list_images`の進捗通知版。1エントリ処理するたびに`on_progress`を呼ぶ。
+/// `on_progress`が`false`を返した時点で打ち切り、`None`（キャンセル）を返す。
+pub fn list_images_with_progress(path: &Path, on_progress: &mut ProgressCallback) -> Option<Vec<ImageEntry>> {
     match detect::detect_format(path) {
         #[cfg(feature = "fmt-7z")]
-        ArchiveFormat::SevenZ => sevenz::list_images_7z(path),
+        ArchiveFormat::SevenZ => sevenz::list_images_7z_with_progress(path, on_progress),
         #[cfg(feature = "fmt-tar")]
-        ArchiveFormat::Tar => tar::list_images_tar(path),
-        ArchiveFormat::Zip => zip::list_images_zip(path),
+        ArchiveFormat::Tar => tar::list_images_tar_with_progress(path, on_progress),
+        ArchiveFormat::Zip => zip::list_images_zip_with_progress(path, on_progress),
     }
 }
 

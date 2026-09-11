@@ -6,17 +6,22 @@ use std::path::Path;
 
 use super::decode::decode_image;
 use super::detect::is_image_entry_raw;
-use super::{ArchiveMemoryEstimate, EntryEstimate, ImageEntry};
+use super::{ArchiveMemoryEstimate, ArchiveOpenProgress, EntryEstimate, ImageEntry, ProgressCallback};
 
-/// 7z のヘッダ(ファイル一覧・メタデータ)のみを読み、画像エントリを一覧化する。
-/// データストリームの展開は行わない。
-pub(crate) fn list_images_7z(path: &Path) -> Vec<ImageEntry> {
+/// 7z のヘッダ(ファイル一覧・メタデータ)のみを読み、画像エントリを一覧化する。進捗通知版。
+/// データストリームの展開は行わない。エントリ数はヘッダ読み込み時点(`archive.files.len()`)で
+/// 確定するため`ArchiveOpenProgress::Determinate`で件数ベースの進捗を通知できる。
+pub(crate) fn list_images_7z_with_progress(path: &Path, on_progress: &mut ProgressCallback) -> Option<Vec<ImageEntry>> {
     let Ok(archive) = sevenz_rust2::Archive::open(path) else {
-        return Vec::new();
+        return Some(Vec::new());
     };
 
+    let total = archive.files.len();
     let mut pairs: Vec<(String, String, u64)> = Vec::new();
-    for entry in &archive.files {
+    for (i, entry) in archive.files.iter().enumerate() {
+        if !on_progress(ArchiveOpenProgress::Determinate { current: i, total }) {
+            return None;
+        }
         if entry.is_directory || !entry.has_stream {
             continue;
         }
@@ -31,7 +36,7 @@ pub(crate) fn list_images_7z(path: &Path) -> Vec<ImageEntry> {
         pairs.push((entry.name.clone(), entry.name.clone(), date_key));
     }
 
-    super::finalize_entries(pairs)
+    Some(super::finalize_entries(pairs))
 }
 
 /// 7zの`NtTime`(Windows FILETIME)をZIP版と同じ形式(年月日時分秒を1桁ずつパックしたu64)に変換する。

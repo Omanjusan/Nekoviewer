@@ -8,7 +8,7 @@ use std::path::Path;
 
 use super::decode::decode_image;
 use super::detect::is_image_entry_raw;
-use super::{ArchiveMemoryEstimate, EntryEstimate, ImageEntry};
+use super::{ArchiveMemoryEstimate, ArchiveOpenProgress, EntryEstimate, ImageEntry, ProgressCallback};
 
 /// tar ファイルを開き、圧縮されていれば透過的に解凍したリーダを返す。
 /// 先頭マジックで gzip(tar.gz/tgz) / zstd(tar.zst/tzst) を判定し、raw tar はそのまま返す。
@@ -33,19 +33,24 @@ fn open_reader(path: &Path) -> Option<Box<dyn Read>> {
     Some(Box::new(file))
 }
 
-/// tar のヘッダを順に読み、画像エントリを一覧化する。
+/// tar のヘッダを順に読み、画像エントリを一覧化する。進捗通知版。
 /// tar は中央ディレクトリを持たないため全体を走査する（gzip の場合は解凍を伴う）。
-pub(crate) fn list_images_tar(path: &Path) -> Vec<ImageEntry> {
+/// 全件数を事前に確定できない（圧縮tarを二度読みするのも高コスト）ため、
+/// 常に`ArchiveOpenProgress::Indeterminate`を通知する（キャンセル判定のみ利用）。
+pub(crate) fn list_images_tar_with_progress(path: &Path, on_progress: &mut ProgressCallback) -> Option<Vec<ImageEntry>> {
     let Some(reader) = open_reader(path) else {
-        return Vec::new();
+        return Some(Vec::new());
     };
     let mut archive = tar::Archive::new(reader);
     let Ok(entries) = archive.entries() else {
-        return Vec::new();
+        return Some(Vec::new());
     };
 
     let mut pairs: Vec<(String, String, u64)> = Vec::new();
     for entry in entries {
+        if !on_progress(ArchiveOpenProgress::Indeterminate) {
+            return None;
+        }
         let Ok(entry) = entry else { continue };
         if entry.header().entry_type().is_dir() {
             continue;
@@ -59,7 +64,7 @@ pub(crate) fn list_images_tar(path: &Path) -> Vec<ImageEntry> {
         pairs.push((name.clone(), name, date_key));
     }
 
-    super::finalize_entries(pairs)
+    Some(super::finalize_entries(pairs))
 }
 
 /// 画像エントリの展開後合計サイズをtarヘッダのみから求める。
@@ -261,7 +266,7 @@ mod tests {
         let path = build_tar(&[(10, 10), (12, 12), (8, 8)], false);
         assert_eq!(super::super::detect_format(&path), super::super::ArchiveFormat::Tar);
 
-        let entries = list_images_tar(&path);
+        let entries = list_images_tar_with_progress(&path, &mut |_| true).unwrap();
         assert_eq!(entries.len(), 3, "tarの画像エントリ数が想定と異なる");
         let names: Vec<&str> = entries.iter().map(|e| e.display_name.as_str()).collect();
         let mut sorted = names.clone();
@@ -282,7 +287,7 @@ mod tests {
         let path = build_tar(&[(16, 16), (10, 10)], true);
         assert_eq!(super::super::detect_format(&path), super::super::ArchiveFormat::Tar);
 
-        let entries = list_images_tar(&path);
+        let entries = list_images_tar_with_progress(&path, &mut |_| true).unwrap();
         assert_eq!(entries.len(), 2, "tar.gzの画像エントリ数が想定と異なる");
 
         let map = extract_all_images_tar_path(&path);
@@ -298,7 +303,7 @@ mod tests {
         let path = build_tar_zst(&[(16, 16), (10, 10), (8, 8)]);
         assert_eq!(super::super::detect_format(&path), super::super::ArchiveFormat::Tar);
 
-        let entries = list_images_tar(&path);
+        let entries = list_images_tar_with_progress(&path, &mut |_| true).unwrap();
         assert_eq!(entries.len(), 3, "tar.zstの画像エントリ数が想定と異なる");
 
         let map = extract_all_images_tar_path(&path);
@@ -316,7 +321,7 @@ mod tests {
     fn tar_estimate_within_and_over_budget() {
         // 10x10 RGBA = 400byte/枚 × 3 = 1200byte。10MB予算なら収まる。
         let path = build_tar(&[(10, 10), (10, 10), (10, 10)], false);
-        let entries = list_images_tar(&path);
+        let entries = list_images_tar_with_progress(&path, &mut |_| true).unwrap();
         let check = estimate_archive_memory_tar(&path, &entries, 10 * MB, TEST_RING_BOUNDS, 1920, 100 * MB);
         assert_eq!(check.estimate, ArchiveMemoryEstimate::Ok);
         assert!(check.prepared.is_some(), "判定Okなら展開結果をFileCache流用向けに持ち帰るべき");
@@ -332,7 +337,7 @@ mod tests {
         // 画像エントリの展開後合計(PNGファイルサイズ合計)がFileCache予算を超えるなら
         // ページ判定に関係なく即OverBudget。
         let path = build_tar(&[(10, 10), (10, 10), (10, 10)], false);
-        let entries = list_images_tar(&path);
+        let entries = list_images_tar_with_progress(&path, &mut |_| true).unwrap();
         let sum = sum_image_entry_sizes_tar(&path);
         assert!(sum > 0, "メタデータから展開後合計が取れるはず");
         let check = estimate_archive_memory_tar(&path, &entries, 10 * MB, TEST_RING_BOUNDS, 1920, (sum - 1) as usize);

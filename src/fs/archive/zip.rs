@@ -5,7 +5,7 @@ use std::path::Path;
 
 use super::decode::decode_image;
 use super::detect::is_image_entry_raw;
-use super::{ArchiveMemoryEstimate, EntryEstimate, ImageEntry};
+use super::{ArchiveMemoryEstimate, ArchiveOpenProgress, EntryEstimate, ImageEntry, ProgressCallback};
 
 /// ZIPエントリのファイル名をUTF-8文字列にデコードする。
 /// UTF-8として無効な場合はShift-JISとして試みる（Windowsで作成された日本語ZIPに対応）。
@@ -17,17 +17,23 @@ fn decode_zip_name(raw: &[u8]) -> String {
     decoded.into_owned()
 }
 
-pub(crate) fn list_images_zip(path: &Path) -> Vec<ImageEntry> {
+/// アーカイブ(ZIP)内の全画像をフラット化して返す。進捗通知版。
+/// エントリ数は`archive.len()`で開始前に確定するため`ArchiveOpenProgress::Determinate`で件数ベースの進捗を通知できる。
+pub(crate) fn list_images_zip_with_progress(path: &Path, on_progress: &mut ProgressCallback) -> Option<Vec<ImageEntry>> {
     let Ok(file) = std::fs::File::open(path) else {
-        return Vec::new();
+        return Some(Vec::new());
     };
     let Ok(mut archive) = ::zip::ZipArchive::new(file) else {
-        return Vec::new();
+        return Some(Vec::new());
     };
 
+    let total = archive.len();
     // (display_name, entry_name, date_key)
     let mut pairs: Vec<(String, String, u64)> = Vec::new();
-    for i in 0..archive.len() {
+    for i in 0..total {
+        if !on_progress(ArchiveOpenProgress::Determinate { current: i, total }) {
+            return None;
+        }
         let Ok(entry) = archive.by_index(i) else { continue };
         if entry.is_dir() {
             continue;
@@ -49,7 +55,7 @@ pub(crate) fn list_images_zip(path: &Path) -> Vec<ImageEntry> {
         pairs.push((display_name, entry_name, date_key));
     }
 
-    super::finalize_entries(pairs)
+    Some(super::finalize_entries(pairs))
 }
 
 /// 開済みの ZipArchive からエントリの生バイトと表示名を返す（デコードしない）

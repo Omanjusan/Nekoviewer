@@ -558,6 +558,18 @@ impl ViewerState {
         if image_entries.is_empty() {
             return None;
         }
+        Some(Self::from_image_entries(archive_path, image_entries, slots, default_slot))
+    }
+
+    /// 一覧取得済みの`ImageEntry`から構築する。非同期（進捗通知つき）で
+    /// `archive::list_images_with_progress`を実行した結果を渡すための経路。
+    /// 呼び出し側は事前に`image_entries`が空でないことを確認しておくこと。
+    pub fn from_image_entries(
+        archive_path: PathBuf,
+        image_entries: Vec<archive::ImageEntry>,
+        slots: [Option<WindowSlot>; 4],
+        default_slot: Option<usize>,
+    ) -> Self {
         let entries: Vec<ViewerEntry> = image_entries
             .into_iter()
             .enumerate()
@@ -568,7 +580,7 @@ impl ViewerState {
                 original_index: i,
             })
             .collect();
-        Some(Self {
+        Self {
             archive_path,
             entries,
             spread_base: 0,
@@ -619,7 +631,7 @@ impl ViewerState {
             pending_toggle_translate_window: false,
             rotation: RotationState::new(),
             exif_enabled: true,
-        })
+        }
     }
 
     /// 生画像ファイル（ZIP非対応・1ファイル固定）用コンストラクタ
