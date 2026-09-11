@@ -188,6 +188,7 @@ struct FrameInput {
     // ポインタ
     hover_pos: Option<egui::Pos2>,
     middle_clicked: bool,
+    primary_clicked: bool,
     // viewport
     outer_rect: Option<egui::Rect>,
     inner_rect: Option<egui::Rect>,
@@ -253,6 +254,7 @@ impl FrameInput {
                 shift_scroll_delta: file_mouse.map(wheel_amount).unwrap_or(0.0),
                 hover_pos:          i.pointer.hover_pos(),
                 middle_clicked,
+                primary_clicked:    i.pointer.button_clicked(egui::PointerButton::Primary),
                 outer_rect:         vp.outer_rect,
                 inner_rect:         vp.inner_rect,
                 monitor_size:       vp.monitor_size,
@@ -711,6 +713,32 @@ impl ViewerState {
     pub fn shift_offset_backward(&mut self) {
         if self.can_shift_backward() {
             self.offset.retreat();
+        }
+    }
+
+    /// 次の見開き/ページへ進めるか（オフセットを保持したまま次のspread_baseが範囲内か）。
+    /// 通常のキー/ホイール送りと左右端クリック送りの両方から共有される判定。
+    fn can_advance_page(&self, step: i32, total: i32) -> bool {
+        self.spread_base + step + self.offset.value() <= total - 1
+    }
+
+    /// 前の見開き/ページへ戻れるか
+    fn can_retreat_page(&self, is_spread: bool, step: i32) -> bool {
+        let min_lo = if is_spread { -1 } else { 0 };
+        self.spread_base - step + self.offset.value() >= min_lo
+    }
+
+    /// 次の見開き/ページへ進む（不可能な場合は何もしない）
+    fn advance_page(&mut self, step: i32, total: i32) {
+        if self.can_advance_page(step, total) {
+            self.spread_base += step;
+        }
+    }
+
+    /// 前の見開き/ページへ戻る（不可能な場合は何もしない）
+    fn retreat_page(&mut self, is_spread: bool, step: i32) {
+        if self.can_retreat_page(is_spread, step) {
+            self.spread_base -= step;
         }
     }
 
@@ -1207,7 +1235,7 @@ impl ViewerState {
             monitor:     input.monitor_size,
             rotation_angle,
         };
-        let (double_clicked, single_clicked) = self.draw_central_panel(ui, &frame);
+        let (double_clicked, single_clicked) = self.draw_central_panel(ui, &frame, &input, is_spread, step, total);
 
         // メイン画像シングルクリックでサムネバーの自動非表示タイマーを早送りし、即座に隠す。
         // idle_hide_ms == 0（常時表示設定）のときは早送り対象のタイマー自体が存在しないため何もしない。
@@ -1419,13 +1447,10 @@ impl ViewerState {
         if scroll_prev { self.scroll_acc -= SCROLL_THRESHOLD; }
 
         if key_next || scroll_next {
-            let next_base = self.spread_base + step;
-            if next_base + off <= total_i - 1 { self.spread_base = next_base; }
+            self.advance_page(step, total_i);
         }
         if key_prev || scroll_prev {
-            let prev_base = self.spread_base - step;
-            let min_lo = if is_spread { -1 } else { 0 };
-            if prev_base + off >= min_lo { self.spread_base = prev_base; }
+            self.retreat_page(is_spread, step);
         }
 
         // ナビゲーション後の末尾仮想フラグ更新（オフセットシフト前に確定させる）
@@ -1476,13 +1501,24 @@ impl ViewerState {
         nav
     }
 
-    fn draw_central_panel(&mut self, ui: &mut egui::Ui, frame: &RenderFrame) -> (bool, bool) {
+    fn draw_central_panel(
+        &mut self,
+        ui: &mut egui::Ui,
+        frame: &RenderFrame,
+        input: &FrameInput,
+        is_spread: bool,
+        step: i32,
+        total: usize,
+    ) -> (bool, bool) {
         let mut double_clicked = false;
         let mut single_clicked = false;
         egui::CentralPanel::default().show(ui, |ui| {
             let clip   = ui.clip_rect();
             let avail  = ui.available_size();
             let origin = ui.cursor().left_top();
+
+            // ── 左右端ページ送りゾーン（マーカー描画はPhase3/4）────────────────
+            self.handle_edge_turn(clip, input.hover_pos, input.primary_clicked, is_spread, step, total);
 
             if !frame.animating || frame.zoom_actual {
                 // ── 通常レンダリング ──────────────────────────────────────────
@@ -2118,6 +2154,67 @@ impl ViewerState {
         }
     }
 
+    /// 上部ホバートリガー高さ（対象領域の高さの15%、ただし最低40pxを保証）。
+    /// 左エントリリストの発火域・左右端ページ送りゾーンの双方で共有する。
+    fn hover_trigger_height(area_h: f32) -> f32 {
+        const RATIO: f32 = 0.15;
+        const MIN_PX: f32 = 40.0;
+        (area_h * RATIO).max(MIN_PX)
+    }
+
+    /// 左右端クリックの進行方向。綴じ方向（page_mode）に応じて新ページが入ってくる側を
+    /// 「進む」に割り当てる（[view_reader.rs:354]のオフセット符号コメント参照）。
+    /// forward=true: 進む(spread_base増加) / false: 戻る(spread_base減少)
+    fn edge_turn_is_forward(&self, left_edge: bool) -> bool {
+        match self.page_mode {
+            // 右綴じ: 新ページは左からIN → 左端＝進む
+            PageMode::SpreadRight => left_edge,
+            // 左綴じ・単ページ: 新ページは右からIN → 右端＝進む
+            _ => !left_edge,
+        }
+    }
+
+    /// 中央パネル左右端のページ送りゾーン判定＋クリック実行。
+    /// マーカー描画は行わない（Phase3/4で追加）。ダイアログ表示中は無効化する。
+    fn handle_edge_turn(
+        &mut self,
+        clip: egui::Rect,
+        hover_pos: Option<egui::Pos2>,
+        primary_clicked: bool,
+        is_spread: bool,
+        step: i32,
+        total: usize,
+    ) {
+        const EDGE_ZONE_W: f32 = 100.0;
+
+        if self.file_detail_dialog.is_some() {
+            return;
+        }
+        let Some(pos) = hover_pos else { return };
+
+        // 左ゾーンは左エントリリストの発火域（左端上部の一部）と競合しないよう、
+        // その下端から画面下端までとする。右ゾーンは競合が無いため全高。
+        let top_avoid_h = Self::hover_trigger_height(clip.height());
+        let in_left  = pos.x < clip.min.x + EDGE_ZONE_W
+            && pos.y >= clip.min.y + top_avoid_h && pos.y <= clip.max.y;
+        let in_right = pos.x > clip.max.x - EDGE_ZONE_W
+            && pos.y >= clip.min.y && pos.y <= clip.max.y;
+
+        let left_edge = if in_left { Some(true) } else if in_right { Some(false) } else { None };
+        let Some(left_edge) = left_edge else { return };
+
+        if !primary_clicked {
+            return;
+        }
+        let total_i = total as i32;
+        let forward = self.edge_turn_is_forward(left_edge);
+        if forward {
+            self.advance_page(step, total_i);
+        } else {
+            self.retreat_page(is_spread, step);
+        }
+    }
+
     /// 左エントリリストパネル（ホバー制御 + 描画）
     fn draw_entry_list(
         &mut self,
@@ -2130,13 +2227,10 @@ impl ViewerState {
         const ENTRY_PANEL_W: f32 = 180.0;
         const TRIGGER_W: f32 = 40.0;
         const HIDE_MARGIN: f32 = 20.0;
-        // 発火域を左端上部の一部に限定する。ウィンドウ高さの15%、ただし最低40pxを保証。
-        const TRIGGER_H_RATIO: f32 = 0.15;
-        const TRIGGER_H_MIN: f32 = 40.0;
 
         let was_visible = self.entry_list_visible;
         let screen_left = viewport_rect.min.x;
-        let trigger_h = (viewport_rect.height() * TRIGGER_H_RATIO).max(TRIGGER_H_MIN);
+        let trigger_h = Self::hover_trigger_height(viewport_rect.height());
         if let Some(pos) = hover_pos {
             if !self.entry_list_visible
                 && pos.x < screen_left + TRIGGER_W
