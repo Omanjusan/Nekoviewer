@@ -369,6 +369,9 @@ pub struct ViewerState {
     outer_pos: Option<egui::Pos2>,
     /// 左エントリリストパネルの表示状態（マウスホバーで on/off）
     entry_list_visible: bool,
+    /// 左右端ページ送りマーカーのホバー状態: (左端か, ホバー開始時刻)。
+    /// フェードインのアルファ計算に使う。ゾーン外に出る/送り不可になると None に戻る。
+    edge_turn_hover: Option<(bool, f64)>,
     /// 左エントリリストを最後に現在地へスクロールした spread_lo。
     /// 非表示中は更新せず、再表示時またはページ変更時だけ現在行を中央へ寄せる。
     entry_list_scrolled_lo: Option<i32>,
@@ -585,6 +588,7 @@ impl ViewerState {
             default_slot_applied: false,
             outer_pos: None,
             entry_list_visible: false,
+            edge_turn_hover: None,
             entry_list_scrolled_lo: None,
             fs_sort_bar_visible: false,
             sort_key: ViewerSortKey::Name,
@@ -651,6 +655,7 @@ impl ViewerState {
             default_slot_applied: false,
             outer_pos: None,
             entry_list_visible: false,
+            edge_turn_hover: None,
             entry_list_scrolled_lo: None,
             fs_sort_bar_visible: false,
             sort_key: ViewerSortKey::Name,
@@ -1517,8 +1522,9 @@ impl ViewerState {
             let avail  = ui.available_size();
             let origin = ui.cursor().left_top();
 
-            // ── 左右端ページ送りゾーン（マーカー描画はPhase3/4）────────────────
-            self.handle_edge_turn(clip, input.hover_pos, input.primary_clicked, is_spread, step, total);
+            // ── 左右端ページ送りゾーン（マーカー描画はPhase4）───────────────────
+            let edge_ctx = ui.ctx().clone();
+            self.handle_edge_turn(&edge_ctx, clip, input.hover_pos, input.primary_clicked, is_spread, step, total, input.time);
 
             if !frame.animating || frame.zoom_actual {
                 // ── 通常レンダリング ──────────────────────────────────────────
@@ -2174,41 +2180,72 @@ impl ViewerState {
         }
     }
 
-    /// 中央パネル左右端のページ送りゾーン判定＋クリック実行。
-    /// マーカー描画は行わない（Phase3/4で追加）。ダイアログ表示中は無効化する。
+    /// 左右端ページ送りゾーンの半幅。
+    const EDGE_TURN_ZONE_W: f32 = 100.0;
+
+    /// マウス位置がどちらの端ゾーンにあるかを判定する（進む/戻る可否は見ない）。
+    /// 左ゾーンは左エントリリストの発火域（左端上部の一部）と競合しないよう、
+    /// その下端から画面下端までとする。右ゾーンは競合が無いため全高。
+    fn edge_turn_zone_at(clip: egui::Rect, pos: egui::Pos2) -> Option<bool> {
+        let top_avoid_h = Self::hover_trigger_height(clip.height());
+        let in_left  = pos.x < clip.min.x + Self::EDGE_TURN_ZONE_W
+            && pos.y >= clip.min.y + top_avoid_h && pos.y <= clip.max.y;
+        let in_right = pos.x > clip.max.x - Self::EDGE_TURN_ZONE_W
+            && pos.y >= clip.min.y && pos.y <= clip.max.y;
+        if in_left { Some(true) } else if in_right { Some(false) } else { None }
+    }
+
+    /// そのゾーンへ進む/戻る操作を行った場合に、破壊的にならず実際に移動できるか。
+    /// process_navigation の境界判定（can_advance_page/can_retreat_page）と同一の式を使うため、
+    /// 「進行方向のページが無い」＝「不正なペア（仮想×仮想等）を生む移動」と一致する。
+    fn edge_turn_can_move(&self, left_edge: bool, is_spread: bool, step: i32, total_i: i32) -> bool {
+        if self.edge_turn_is_forward(left_edge) {
+            self.can_advance_page(step, total_i)
+        } else {
+            self.can_retreat_page(is_spread, step)
+        }
+    }
+
+    /// 中央パネル左右端のページ送りゾーン判定＋クリック実行＋ホバーのフェード状態更新。
+    /// ダイアログ表示中は無効化する。
     fn handle_edge_turn(
         &mut self,
+        ctx: &egui::Context,
         clip: egui::Rect,
         hover_pos: Option<egui::Pos2>,
         primary_clicked: bool,
         is_spread: bool,
         step: i32,
         total: usize,
+        time: f64,
     ) {
-        const EDGE_ZONE_W: f32 = 100.0;
+        let total_i = total as i32;
 
-        if self.file_detail_dialog.is_some() {
-            return;
+        let active_side = if self.file_detail_dialog.is_some() {
+            None
+        } else {
+            hover_pos
+                .and_then(|pos| Self::edge_turn_zone_at(clip, pos))
+                .filter(|&left_edge| self.edge_turn_can_move(left_edge, is_spread, step, total_i))
+        };
+
+        // ── ホバーのフェードイン状態（0.3秒）を更新 ──────────────────────────
+        match (self.edge_turn_hover, active_side) {
+            (Some((side, _)), Some(new_side)) if side == new_side => {}
+            (_, Some(new_side)) => self.edge_turn_hover = Some((new_side, time)),
+            (Some(_), None) => self.edge_turn_hover = None,
+            (None, None) => {}
         }
-        let Some(pos) = hover_pos else { return };
+        if self.edge_turn_hover.is_some() {
+            ctx.request_repaint();
+        }
 
-        // 左ゾーンは左エントリリストの発火域（左端上部の一部）と競合しないよう、
-        // その下端から画面下端までとする。右ゾーンは競合が無いため全高。
-        let top_avoid_h = Self::hover_trigger_height(clip.height());
-        let in_left  = pos.x < clip.min.x + EDGE_ZONE_W
-            && pos.y >= clip.min.y + top_avoid_h && pos.y <= clip.max.y;
-        let in_right = pos.x > clip.max.x - EDGE_ZONE_W
-            && pos.y >= clip.min.y && pos.y <= clip.max.y;
-
-        let left_edge = if in_left { Some(true) } else if in_right { Some(false) } else { None };
-        let Some(left_edge) = left_edge else { return };
-
+        // ── クリック実行 ─────────────────────────────────────────────────────
+        let Some(left_edge) = active_side else { return };
         if !primary_clicked {
             return;
         }
-        let total_i = total as i32;
-        let forward = self.edge_turn_is_forward(left_edge);
-        if forward {
+        if self.edge_turn_is_forward(left_edge) {
             self.advance_page(step, total_i);
         } else {
             self.retreat_page(is_spread, step);
