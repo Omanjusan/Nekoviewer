@@ -864,6 +864,8 @@ impl NekoviewApp {
                     let visible: Vec<(usize, PathBuf)> = self.filtered_indices.iter()
                         .map(|&idx| (idx, self.archives[idx].clone()))
                         .collect();
+                    // バックグラウンド先読み（[[update_thumbnail_lookahead]]）に渡す可視範囲
+                    let mut visible_order_range: Option<(usize, usize)> = None;
                     for (i, (real_idx, path)) in visible.iter().enumerate() {
                         let real_idx = *real_idx;
                         let is_selected = self.selected_archive_index == Some(real_idx)
@@ -874,6 +876,10 @@ impl NekoviewApp {
                         );
 
                         if ui.is_rect_visible(rect) {
+                            visible_order_range = Some(match visible_order_range {
+                                Some((lo, hi)) => (lo.min(i), hi.max(i)),
+                                None => (i, i),
+                            });
                             self.thumb_display_requested.insert(path.clone());
                             if path.parent().is_some_and(|parent| parent == self.current_dir)
                                 && self.folder_pane_tab == FolderPaneTab::RealTree
@@ -1273,6 +1279,9 @@ impl NekoviewApp {
                         if cell_index % cols == 0 {
                             ui.end_row();
                         }
+                    }
+                    if let Some((lo, hi)) = visible_order_range {
+                        self.update_thumbnail_lookahead(&visible, lo, hi);
                     }
                     if cell_index % cols != 0 {
                         ui.end_row();

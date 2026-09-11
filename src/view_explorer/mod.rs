@@ -536,6 +536,11 @@ pub struct NekoviewApp {
     thumb_missing_queued: HashSet<PathBuf>,
     thumb_priority_queued: HashSet<PathBuf>,
     thumb_last_user_activity: std::time::Instant,
+    /// 直近フレームで確定した可視範囲（filtered_indices順のposition）。
+    /// スクロール方向の判定にのみ使う（[[update_thumbnail_lookahead]]）。
+    thumb_visible_order_range: Option<(usize, usize)>,
+    /// サムネキューを最後に作り直した（＝フォルダを開いた）時刻。並列度ウォームアップの起点。
+    thumb_queue_built_at: std::time::Instant,
     /// 現PWDのRDBプロファイルに基づく、サムネイル生成の許可状態と競合防止世代。
     thumb_generation_state: crate::neko_dir::ThumbnailGenerationState,
     /// アーカイブ内サムネイルバー用（フォルダグリッドの thumb_req_tx とは別系統）
@@ -875,6 +880,8 @@ impl NekoviewApp {
             thumb_missing_queued: HashSet::new(),
             thumb_priority_queued: HashSet::new(),
             thumb_last_user_activity: std::time::Instant::now(),
+            thumb_visible_order_range: None,
+            thumb_queue_built_at: std::time::Instant::now(),
             thumb_generation_state: crate::neko_dir::ThumbnailGenerationState {
                 requested_edge: initial_thumb_size,
                 requested_filter: initial_thumb_filter,

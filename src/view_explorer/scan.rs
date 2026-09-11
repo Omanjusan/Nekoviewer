@@ -8,9 +8,24 @@ use crate::fs::dir;
 use crate::fs::mount::{list_gvfs_smb_mounts, list_local_drives};
 use super::*;
 
-fn thumbnail_local_limit(max_configured: usize, cores: usize, since_input: std::time::Duration) -> usize {
+fn thumbnail_local_limit(
+    max_configured: usize,
+    cores: usize,
+    since_input: std::time::Duration,
+    since_folder_open: std::time::Duration,
+) -> usize {
     let max_local = max_configured.min(cores).max(1);
-    if since_input < std::time::Duration::from_secs(1) { max_local.min(2) } else { max_local }
+    let input_cap = if since_input < std::time::Duration::from_secs(1) { max_local.min(2) } else { max_local };
+    // フォルダを開いた直後は表示中デコード（可視セルの直接request）とバックグラウンド
+    // 先読みが競合しやすいので、開いてからしばらくは先読み側の並列度を絞る。
+    let warmup_cap = if since_folder_open < std::time::Duration::from_millis(300) {
+        1
+    } else if since_folder_open < std::time::Duration::from_millis(900) {
+        max_local.min(2)
+    } else {
+        max_local
+    };
+    input_cap.min(warmup_cap)
 }
 
 fn take_allowed_thumbnail(
@@ -464,41 +479,101 @@ impl NekoviewApp {
             .collect()
     }
 
+    fn is_thumb_missing(&self, path: &PathBuf) -> bool {
+        path.file_name().and_then(|n| n.to_str())
+            .and_then(|name| self.cache_db.as_ref()
+                .and_then(|db| neko_dir::read_thumbnail_state(db, name)))
+            .is_none_or(|state| state.status == neko_dir::ThumbnailStatus::Missing)
+    }
+
+    /// バックグラウンド先読みキューを作り直す（フォルダ再入場・フィルタ変更時）。
+    /// 全件を積むのではなく空にするだけ：実際の投入は毎フレーム
+    /// [[update_thumbnail_lookahead]] が可視範囲＋進行方向1画面ぶんだけ行う。
     pub(super) fn rebuild_thumbnail_queue(&mut self) {
         self.thumb_queue.clear();
         self.thumb_priority_queue.clear();
         self.thumb_queued.clear();
         self.thumb_missing_queued.clear();
         self.thumb_priority_queued.clear();
-        let mut missing = Vec::new();
-        let mut remaining = Vec::new();
-        for path in &self.archives {
-            if self.thumb_failed.contains(path) {
-                continue;
-            }
-            let is_missing = path.file_name().and_then(|n| n.to_str())
-                .and_then(|name| self.cache_db.as_ref()
-                    .and_then(|db| neko_dir::read_thumbnail_state(db, name)))
-                .is_none_or(|state| state.status == neko_dir::ThumbnailStatus::Missing);
-            if is_missing {
-                self.thumb_missing_queued.insert(path.clone());
-                missing.push(path.clone());
-            } else {
-                remaining.push(path.clone());
-            }
-        }
-        for path in missing.into_iter().chain(remaining) {
-            self.thumb_queued.insert(path.clone());
-            self.thumb_queue.push_back(path);
-        }
-        if !self.thumb_queue.is_empty() {
-            self.egui_ctx.request_repaint();
-        }
+        self.thumb_visible_order_range = None;
+        self.thumb_queue_built_at = std::time::Instant::now();
     }
 
     pub(super) fn prioritize_thumbnail_path(&mut self, path: &PathBuf) {
         if self.thumb_queued.contains(path) && self.thumb_priority_queued.insert(path.clone()) {
             self.thumb_priority_queue.push_back(path.clone());
+            self.egui_ctx.request_repaint();
+        }
+    }
+
+    /// 毎フレーム、グリッドの可視範囲（`visible`内のposition `lo..=hi`）を受け取り、
+    /// バックグラウンド先読みキューをその場所に追従させる。
+    /// 可視セル自体は描画ループが直接requestするので、ここではスクロールの
+    /// 進行方向へ1画面ぶんだけ先読みを足し、逆側にはみ出た未送信ぶんは捨てる。
+    pub(super) fn update_thumbnail_lookahead(
+        &mut self,
+        visible: &[(usize, PathBuf)],
+        lo: usize,
+        hi: usize,
+    ) {
+        if self.folder_pane_tab != FolderPaneTab::RealTree
+            || self.viewing_favorites.is_some()
+            || self.viewing_search.is_some()
+            || visible.is_empty()
+        {
+            return;
+        }
+        let screen_len = hi - lo + 1;
+        let prev = self.thumb_visible_order_range;
+        self.thumb_visible_order_range = Some((lo, hi));
+        let forward = match prev {
+            Some((prev_lo, _)) if lo > prev_lo => true,
+            Some((prev_lo, _)) if lo < prev_lo => false,
+            // 初回・スクロールなしは方向不明。先読みウィンドウは前回のまま動かさない。
+            _ => return,
+        };
+        let want_range = if forward {
+            let want_lo = hi + 1;
+            if want_lo >= visible.len() { None } else {
+                Some((want_lo, (want_lo + screen_len - 1).min(visible.len() - 1)))
+            }
+        } else if lo == 0 {
+            None
+        } else {
+            let want_hi = lo - 1;
+            Some((want_hi.saturating_sub(screen_len - 1), want_hi))
+        };
+        let Some((want_lo, want_hi)) = want_range else {
+            // これ以上先読みする方向がない（末尾/先頭）: 既存の先読みぶんを全部捨てる
+            self.thumb_queue.clear();
+            self.thumb_priority_queue.clear();
+            self.thumb_queued.clear();
+            self.thumb_missing_queued.clear();
+            self.thumb_priority_queued.clear();
+            return;
+        };
+        let desired: HashSet<&PathBuf> = visible[want_lo..=want_hi].iter().map(|(_, p)| p).collect();
+        // ウィンドウ外へ外れた未送信ぶんはキャンセルする（送信済み＝thumb_pendingは対象外）。
+        self.thumb_queue.retain(|p| desired.contains(p));
+        self.thumb_priority_queue.retain(|p| desired.contains(p));
+        self.thumb_queued.retain(|p| desired.contains(p));
+        self.thumb_missing_queued.retain(|p| desired.contains(p));
+        self.thumb_priority_queued.retain(|p| desired.contains(p));
+        for (_, path) in &visible[want_lo..=want_hi] {
+            if self.thumbnails.contains_key(path)
+                || self.thumb_pending.contains(path)
+                || self.thumb_failed.contains(path)
+                || self.thumb_queued.contains(path)
+            {
+                continue;
+            }
+            if self.is_thumb_missing(path) {
+                self.thumb_missing_queued.insert(path.clone());
+            }
+            self.thumb_queued.insert(path.clone());
+            self.thumb_queue.push_back(path.clone());
+        }
+        if !self.thumb_queue.is_empty() {
             self.egui_ctx.request_repaint();
         }
     }
@@ -528,7 +603,10 @@ impl NekoviewApp {
         }
         let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(2);
         let since_input = self.thumb_last_user_activity.elapsed();
-        let local_limit = thumbnail_local_limit(self.config.resolved_decode_threads(), cores, since_input);
+        let since_folder_open = self.thumb_queue_built_at.elapsed();
+        let local_limit = thumbnail_local_limit(
+            self.config.resolved_decode_threads(), cores, since_input, since_folder_open,
+        );
         let mut active_local = self.thumb_pending.iter()
             .filter(|path| !crate::fs::dir::is_gvfs_path(path)).count();
         let mut active_network = self.thumb_pending.iter()
@@ -760,10 +838,19 @@ mod thumbnail_queue_tests {
 
     #[test]
     fn local_parallelism_stays_small_until_one_second_idle() {
-        assert_eq!(thumbnail_local_limit(8, 16, Duration::from_millis(999)), 2);
-        assert_eq!(thumbnail_local_limit(8, 16, Duration::from_secs(1)), 8);
-        assert_eq!(thumbnail_local_limit(32, 12, Duration::from_secs(2)), 12);
-        assert_eq!(thumbnail_local_limit(1, 12, Duration::ZERO), 1);
+        let open = Duration::from_secs(10);
+        assert_eq!(thumbnail_local_limit(8, 16, Duration::from_millis(999), open), 2);
+        assert_eq!(thumbnail_local_limit(8, 16, Duration::from_secs(1), open), 8);
+        assert_eq!(thumbnail_local_limit(32, 12, Duration::from_secs(2), open), 12);
+        assert_eq!(thumbnail_local_limit(1, 12, Duration::ZERO, open), 1);
+    }
+
+    #[test]
+    fn local_parallelism_warms_up_after_folder_open() {
+        let idle_input = Duration::from_secs(5);
+        assert_eq!(thumbnail_local_limit(8, 16, idle_input, Duration::from_millis(100)), 1);
+        assert_eq!(thumbnail_local_limit(8, 16, idle_input, Duration::from_millis(500)), 2);
+        assert_eq!(thumbnail_local_limit(8, 16, idle_input, Duration::from_secs(2)), 8);
     }
 
     #[test]
