@@ -180,6 +180,10 @@ pub struct AppState {
     /// フェーズ4a: thumb_size/thumb_filterもconfig.iniではなくこちらへ移行。
     pub app_thumb_filter: Option<ResizeFilter>,
     pub app_thumb_size: Option<u32>,
+    /// フェーズ4b: decode_threads/default_slotもGUI編集可能にしこちらへ統合。
+    pub app_decode_threads: Option<usize>,
+    /// 外側Noneはキー未記載（config.ini値を使う）、内側Noneはユーザーが明示的に選んだ「なし」。
+    pub app_default_slot: Option<Option<usize>>,
     /// 翻訳機能(実験的)の接続先・オーバーレイ設定。
     pub translate_cfg: TranslateConfig,
 }
@@ -209,6 +213,8 @@ impl Default for AppState {
             app_startup_fixed_dir: None,
             app_thumb_filter: None,
             app_thumb_size: None,
+            app_decode_threads: None,
+            app_default_slot: None,
             translate_cfg: TranslateConfig::default(),
         }
     }
@@ -276,6 +282,8 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
     let mut app_startup_fixed_dir: Option<PathBuf> = None;
     let mut app_thumb_filter: Option<ResizeFilter> = None;
     let mut app_thumb_size: Option<u32> = None;
+    let mut app_decode_threads: Option<usize> = None;
+    let mut app_default_slot: Option<Option<usize>> = None;
     let mut thumbbar_pos: Option<ThumbbarPos> = None;
     let mut thumbbar_thumb_size: Option<u32> = None;
     let mut thumbbar_idle_hide_ms: Option<u64> = None;
@@ -371,6 +379,16 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
                     if !v.is_empty() { app_thumb_filter = Some(parse_filter(v)); }
                 }
                 "app_thumb_size" => { app_thumb_size = v.trim().parse().ok(); }
+                "app_decode_threads" => { app_decode_threads = v.trim().parse().ok(); }
+                "app_default_slot" => {
+                    app_default_slot = Some(match v.trim() {
+                        "5" => Some(0),
+                        "6" => Some(1),
+                        "7" => Some(2),
+                        "8" => Some(3),
+                        _   => None,
+                    });
+                }
                 "thumbbar_pos" => { thumbbar_pos = Some(parse_thumbbar_pos(v.trim())); }
                 "thumbbar_thumb_size" => { thumbbar_thumb_size = v.trim().parse().ok(); }
                 "thumbbar_idle_hide_ms" => { thumbbar_idle_hide_ms = v.trim().parse().ok(); }
@@ -484,6 +502,8 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
         app_startup_fixed_dir,
         app_thumb_filter,
         app_thumb_size,
+        app_decode_threads,
+        app_default_slot,
         translate_cfg: TranslateConfig {
             base_url: translate_base_url.unwrap_or_default(),
             translation_model: translate_translation_model.clone().or_else(|| translate_model_legacy.clone()).unwrap_or_default(),
@@ -555,6 +575,14 @@ pub fn save_state(root: &Path, dir: &Path, window_size: (u32, u32), viewer_slots
     content.push_str(&format!(
         "app_thumb_filter={}\napp_thumb_size={}\n",
         filter_to_str(app_cfg.thumb_filter), app_cfg.thumb_size,
+    ));
+    // フェーズ4b: decode_threads/default_slotもここへ統合。
+    let default_slot_str = match app_cfg.default_slot {
+        Some(0) => "5", Some(1) => "6", Some(2) => "7", Some(3) => "8", _ => "",
+    };
+    content.push_str(&format!(
+        "app_decode_threads={}\napp_default_slot={}\n",
+        app_cfg.decode_threads, default_slot_str,
     ));
     for (i, slot) in viewer_slots.iter().enumerate() {
         if let Some(s) = slot {

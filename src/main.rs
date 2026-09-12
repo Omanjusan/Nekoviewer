@@ -87,6 +87,10 @@ fn main() {
         if let Some(v) = state.app_thumb_filter { cfg.thumb_filter = v; }
         if let Some(v) = state.app_thumb_size { cfg.thumb_size = v; }
 
+        // フェーズ4b: decode_threads/default_slotも同様にstate側を優先する。
+        if let Some(v) = state.app_decode_threads { cfg.decode_threads = v; }
+        if let Some(v) = state.app_default_slot { cfg.default_slot = v; }
+
         fs::mount::log_gvfs_status();
         log_common!("[startup] gvfs check done");
 

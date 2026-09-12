@@ -38,6 +38,8 @@ const THUMB_SIZE_CEILING: u32 = 512;
 /// アニメ1フレームあたりの生デコードサイズ上限スライダーの下限・上限MB。
 const ANIM_FRAME_HARD_LIMIT_FLOOR: usize = 10;
 const ANIM_FRAME_HARD_LIMIT_CEILING: usize = 500;
+/// デコードスレッド数スライダーの上限。
+const DECODE_THREADS_CEILING: usize = 32;
 
 /// 設定ダイアログの編集用下書き。[反映]を押すまでは AppConfig/ViewerConfig 本体には
 /// 一切書き戻さない（自由にタイプ・切り替えさせるための一時バッファ）。
@@ -72,6 +74,8 @@ pub(crate) struct SettingsDraft {
     thumbbar_marker_b: u8,
     thumbbar_marker_a: u8,
     exif_orientation_enabled: bool,
+    /// ビューアーを開くときの既定スロット（0..3 = F5〜F8）。None = デフォルト無し。
+    default_slot: Option<usize>,
     translate_base_url: String,
     translate_ocr_model: String,
     translate_translation_model: String,
@@ -94,6 +98,9 @@ pub(crate) struct SettingsDraft {
     log_perf: bool,
     log_key: bool,
     log_common: bool,
+    /// ページデコードの並列スレッド数をユーザーが手動指定するか。false = 自動(論理コア数/2)。
+    decode_threads_user_set: bool,
+    decode_threads: usize,
     /// その他タブの起動時フォルダ設定。
     startup_use_last_dir: bool,
     startup_fixed_dir: String,
@@ -199,6 +206,7 @@ impl SettingsDraft {
             thumbbar_marker_b: viewer_cfg.thumbbar_marker_b,
             thumbbar_marker_a: viewer_cfg.thumbbar_marker_a,
             exif_orientation_enabled: viewer_cfg.exif_orientation_enabled,
+            default_slot: config.default_slot,
             translate_base_url: translate_cfg.base_url.clone(),
             translate_ocr_model: translate_cfg.ocr_model.clone(),
             translate_translation_model: translate_cfg.translation_model.clone(),
@@ -212,6 +220,8 @@ impl SettingsDraft {
             log_perf: crate::config::log().perf,
             log_key: crate::config::log().key,
             log_common: crate::config::log().common,
+            decode_threads_user_set: config.decode_threads != 0,
+            decode_threads: if config.decode_threads == 0 { config.resolved_decode_threads() } else { config.decode_threads },
             startup_use_last_dir: config.startup.use_last_dir,
             startup_fixed_dir: config.startup.fixed_dir.as_deref()
                 .map(|p| p.to_string_lossy().to_string()).unwrap_or_default(),
@@ -238,6 +248,7 @@ impl SettingsDraft {
         config.anim_ring_min_frames = self.ring_min;
         config.anim_ring_max_frames = self.ring_max;
         config.anim_frame_hard_limit_mb = self.anim_frame_hard_limit_mb;
+        config.decode_threads = if self.decode_threads_user_set { self.decode_threads } else { 0 };
 
         crate::config::set_log(crate::config::LogConfig {
             perf: self.log_perf,
@@ -258,6 +269,7 @@ impl SettingsDraft {
         viewer_cfg.thumbbar_marker_b = self.thumbbar_marker_b;
         viewer_cfg.thumbbar_marker_a = self.thumbbar_marker_a;
         viewer_cfg.exif_orientation_enabled = self.exif_orientation_enabled;
+        config.default_slot = self.default_slot;
 
         translate_cfg.base_url = self.translate_base_url.trim().to_string();
         translate_cfg.ocr_model = self.translate_ocr_model.trim().to_string();
@@ -542,6 +554,17 @@ fn draw_settings_tab_debug(ui: &mut egui::Ui, draft: &mut SettingsDraft) {
     ui.checkbox(&mut draft.log_perf, i18n::t().settings_debug_log_perf());
     ui.checkbox(&mut draft.log_key, i18n::t().settings_debug_log_key());
     ui.checkbox(&mut draft.log_common, i18n::t().settings_debug_log_common());
+
+    ui.separator();
+    ui.label(i18n::t().settings_decode_threads_label());
+    ui.checkbox(&mut draft.decode_threads_user_set, i18n::t().settings_decode_threads_manual_toggle());
+    ui.add_enabled_ui(draft.decode_threads_user_set, |ui| {
+        ui.horizontal(|ui| {
+            ui.add(egui::Slider::new(&mut draft.decode_threads, 1..=DECODE_THREADS_CEILING).show_value(false));
+            ui.label(draft.decode_threads.to_string());
+        });
+    });
+    ui.label(i18n::t().settings_decode_threads_explain());
 }
 
 fn draw_settings_tab_viewer(ui: &mut egui::Ui, draft: &mut SettingsDraft) {
@@ -639,6 +662,16 @@ fn draw_settings_tab_viewer(ui: &mut egui::Ui, draft: &mut SettingsDraft) {
             ui.add(egui::Slider::new(&mut draft.thumbbar_marker_a, 0..=100));
         });
     });
+
+    ui.separator();
+    ui.label(i18n::t().settings_default_slot_label());
+    ui.horizontal(|ui| {
+        ui.selectable_value(&mut draft.default_slot, None, i18n::t().settings_default_slot_none());
+        for i in 0..4 {
+            ui.selectable_value(&mut draft.default_slot, Some(i), i18n::t().slot_label(i + 5));
+        }
+    });
+    ui.label(i18n::t().settings_default_slot_explain());
 }
 
 /// キーアサインタブ: ReaderAction/ExplorerActionの現在の割り当てをセクション分けして
