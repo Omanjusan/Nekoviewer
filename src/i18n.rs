@@ -868,6 +868,33 @@ impl Lang {
         }
     }
 
+    /// アーカイブオープン中オーバーレイ: 件数が判明している場合の進捗文言。
+    pub fn archive_open_progress(self, current: usize, total: usize) -> String {
+        let percent = if total == 0 { 0 } else { (current * 100) / total };
+        match self {
+            Lang::Japanese => format!("読み込み中… {percent}% ({current}/{total})"),
+            Lang::English  => format!("Loading… {percent}% ({current}/{total})"),
+            Lang::Chinese  => format!("正在读取… {percent}% ({current}/{total})"),
+        }
+    }
+
+    /// アーカイブオープン中オーバーレイ: 件数不明（tar）の場合の進捗文言。
+    pub fn archive_open_progress_indeterminate(self) -> &'static str {
+        match self {
+            Lang::Japanese => "tarファイル読み込み中…",
+            Lang::English  => "Reading tar file…",
+            Lang::Chinese  => "正在读取tar文件…",
+        }
+    }
+
+    pub fn archive_open_cancel(self) -> &'static str {
+        match self {
+            Lang::Japanese => "キャンセル",
+            Lang::English  => "Cancel",
+            Lang::Chinese  => "取消",
+        }
+    }
+
     pub fn redecode_debounce_label(self, ms: u64) -> String {
         match self {
             Lang::Japanese => format!("[デバウンス{ms}ms]"),

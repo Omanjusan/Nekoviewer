@@ -120,9 +120,15 @@ impl NekoviewApp {
         if entries.is_empty() {
             return true; // 空/無効アーカイブの判定は既存の invalid_archives 処理に任せる
         }
+        self.check_memory_budget_for_entries(path, &entries)
+    }
+
+    /// `check_memory_budget`の本体。既に取得済みの`entries`を受け取る版で、
+    /// 非同期オープン経路（`list_images`を二重に呼ばずに済ませたい）から使う。
+    pub(super) fn check_memory_budget_for_entries(&mut self, path: &std::path::Path, entries: &[archive::ImageEntry]) -> bool {
         let check = archive::estimate_archive_memory(
             path,
-            &entries,
+            entries,
             self.cache_budget_bytes,
             self.anim_ring_bounds,
             self.config.max_decode_edge,

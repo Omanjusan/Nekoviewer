@@ -452,11 +452,9 @@ impl NekoviewApp {
         }
         if self.invalid_archives.contains(&target) { return; }
         if !self.network_gate(&target) { return; }
-        if !self.check_memory_budget(&target) { return; }
-        match ViewerState::new(target.clone(), self.viewer_slots, self.config.default_slot) {
-            Some(state) => self.open_viewer(state),
-            None => self.mark_archive_invalid(&target),
-        }
+        // メモリ見積もりゲート・ViewerState構築は非同期化済み
+        // （進捗オーバーレイ経由。完了後の後始末は poll_pending_open が行う）。
+        self.start_archive_open(target);
     }
 
     /// 現PWDの既存JPEG群とGUI設定サイズを照合し、キャッシュプローブ後の生成可否を更新する。

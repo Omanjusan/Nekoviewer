@@ -604,6 +604,10 @@ pub struct NekoviewApp {
     anim_ring_bounds: (usize, usize),
     /// フェーズ2: メモリ見積もり超過を知らせる確認ダイアログの表示状態
     memory_warning_open: bool,
+    /// エクスプローラーからのアーカイブオープン非同期処理。Some の間は
+    /// 中央オーバーレイでプログレスバー＋キャンセルボタンを表示し、
+    /// エクスプローラー側の他操作（キーボードショートカット等）を止める。
+    pending_open: Option<open_progress::PendingOpen>,
     /// 設定ダイアログの表示状態・選択中タブ・編集用下書き
     pub(crate) settings_open: bool,
     pub(crate) settings_tab: SettingsTab,
@@ -922,6 +926,7 @@ impl NekoviewApp {
             cache_budget_bytes: cache_max,
             anim_ring_bounds: ring_bounds,
             memory_warning_open: false,
+            pending_open: None,
             settings_open: false,
             settings_tab: SettingsTab::Common,
             settings_draft,

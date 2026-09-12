@@ -84,3 +84,79 @@ impl PendingOpen {
         }
     }
 }
+
+impl super::NekoviewApp {
+    /// エクスプローラーからのダブルクリック等でアーカイブオープンを非同期開始する。
+    /// 既に処理中（オーバーレイ表示中）なら何もしない。ダブルクリック等の入口側は
+    /// `pending_open.is_some()` の間ガードされる想定だが、防御的に二重起動を防ぐ。
+    pub(super) fn start_archive_open(&mut self, path: PathBuf) {
+        if self.pending_open.is_some() {
+            return;
+        }
+        self.pending_open = Some(PendingOpen::spawn(path));
+    }
+
+    /// 非同期オープンの完了を毎フレーム確認する。完了していれば
+    /// メモリ見積もりゲート→ViewerState構築→open_viewer、または
+    /// 無効アーカイブ/キャンセルの後始末を行う。
+    pub(super) fn poll_pending_open(&mut self) {
+        let result = match self.pending_open.as_mut() {
+            Some(pending) => pending.poll(),
+            None => return,
+        };
+        match result {
+            OpenPollResult::Pending => {}
+            OpenPollResult::Cancelled => {
+                self.pending_open = None;
+            }
+            OpenPollResult::Empty => {
+                let path = self.pending_open.take().expect("pending_open just polled").path;
+                self.mark_archive_invalid(&path);
+                let name = super::panels::truncate_filename(&path);
+                self.app_toast = Some((crate::i18n::t().invalid_zip(&name), std::time::Instant::now()));
+            }
+            OpenPollResult::Ready(entries) => {
+                let path = self.pending_open.take().expect("pending_open just polled").path;
+                if self.check_memory_budget_for_entries(&path, &entries) {
+                    let state = crate::view_reader::ViewerState::from_image_entries(
+                        path,
+                        entries,
+                        self.viewer_slots,
+                        self.config.default_slot,
+                    );
+                    self.open_viewer(state);
+                }
+                // OverBudgetの場合はcheck_memory_budget_for_entries内でmemory_warning_openが立つ。
+            }
+        }
+    }
+
+    /// アーカイブオープン中央オーバーレイを描画する（Phase3: 見た目は仮）。
+    /// `egui::Modal`は背後のウィジェットへのマウス入力を自動的に遮断する
+    /// （キーボードは遮断しないため、呼び出し元で別途`handle_explorer_keys`をガードする）。
+    pub(super) fn render_pending_open_overlay(&mut self, ctx: &egui::Context) {
+        let Some(pending) = self.pending_open.as_ref() else { return };
+        let progress_text = match pending.progress() {
+            crate::fs::archive::ArchiveOpenProgress::Determinate { current, total } => {
+                crate::i18n::t().archive_open_progress(current, total)
+            }
+            crate::fs::archive::ArchiveOpenProgress::Indeterminate => {
+                crate::i18n::t().archive_open_progress_indeterminate().to_string()
+            }
+        };
+        let mut cancel_clicked = false;
+        egui::Modal::new(egui::Id::new("archive_open_progress")).show(ctx, |ui| {
+            ui.label(progress_text);
+            ui.add_space(8.0);
+            if ui.button(crate::i18n::t().archive_open_cancel()).clicked() {
+                cancel_clicked = true;
+            }
+        });
+        if cancel_clicked {
+            if let Some(pending) = self.pending_open.as_mut() {
+                pending.cancel();
+            }
+        }
+        ctx.request_repaint();
+    }
+}

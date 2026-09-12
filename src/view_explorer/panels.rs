@@ -100,6 +100,7 @@ impl NekoviewApp {
 
         self.poll_workers(&ctx);
         self.prefetch_pages();
+        self.poll_pending_open();
 
         egui::Panel::top("menu_bar").show(ui, |ui| {
             self.draw_menu_bar(ui);
@@ -138,9 +139,15 @@ impl NekoviewApp {
         if !self.settings_is_open()
             && !self.search_date_start_calendar.is_open()
             && !self.search_date_end_calendar.is_open()
+            && self.pending_open.is_none()
         {
             self.handle_explorer_keys(&ctx);
         }
+
+        // アーカイブオープン中はegui::Modalで背後のマウス入力を遮断しつつ、
+        // 中央に進捗＋キャンセルボタンを表示する。他パネルの描画自体は止めない
+        // （マウス入力はModalが自動遮断、キーボードは上のガードで止めている）。
+        self.render_pending_open_overlay(&ctx);
         // egui標準のTab/矢印キーによるネイティブなウィジェットフォーカス移動
         // （Memory::focus_direction、選択ラベル/ボタンも対象になる）は、今回自前で
         // 構築したFocusPaneベースのキーボード操作と二重に動いてしまう
@@ -1253,23 +1260,10 @@ impl NekoviewApp {
                                 ));
                             } else if !self.network_gate(path) {
                                 // トースト表示・再チェックは network_gate 内で処理済み。
-                            } else if !self.check_memory_budget(path) {
-                                // ダイアログ表示フラグは check_memory_budget 内で立つ。オープンは中止する。
                             } else {
-                                match ViewerState::new(path.clone(), self.viewer_slots, self.config.default_slot) {
-                                    Some(state) => {
-                                        self.open_viewer(state);
-                                    }
-                                    None => {
-                                        let p = path.clone();
-                                        self.mark_archive_invalid(&p);
-                                        let name = truncate_filename(path);
-                                        self.app_toast = Some((
-                                            i18n::t().invalid_zip(&name),
-                                            std::time::Instant::now(),
-                                        ));
-                                    }
-                                }
+                                // メモリ見積もりゲート・ViewerState構築は非同期化済み
+                                // （進捗オーバーレイ経由。完了後の後始末は poll_pending_open が行う）。
+                                self.start_archive_open(path.clone());
                             }
                         }
 
@@ -1442,7 +1436,7 @@ pub(super) fn draw_cursor_ring(ui: &egui::Ui, rect: egui::Rect) {
     );
 }
 
-fn truncate_filename(path: &std::path::Path) -> String {
+pub(super) fn truncate_filename(path: &std::path::Path) -> String {
     let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("?");
     const MAX: usize = 24;
     if name.chars().count() <= MAX {
