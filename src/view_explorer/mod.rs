@@ -490,12 +490,6 @@ pub struct NekoviewApp {
     /// Some(_) の間、中央グリッドは実ディレクトリではなく選択中のお気に入り
     /// （フォルダ横断）一覧を表示している。
     viewing_favorites: Option<FavoriteSelection>,
-    /// フェーズ2: 設定ファイル保存先(local/xdg)切り替えの確認待ち。Some(切替先) の間だけ表示。
-    pub(crate) storage_migrate_confirm: Option<crate::config::CacheStorage>,
-    /// フェーズ2: 保存先切り替え後、旧側の削除に失敗したファイル一覧（手動削除案内用）。
-    pub(crate) storage_delete_failed: Option<Vec<std::path::PathBuf>>,
-    /// フェーズ2: 起動時にバイナリ横・XDG両方で有効なconfが見つかった場合の選択待ち。
-    pub(crate) config_conflict: Option<crate::config::ConfigConflict>,
     viewing_dir: Option<PathBuf>,
     /// 現PWDのサムネイル進捗 (path, current, total, replacing_old)。
     cd_summary: Option<(PathBuf, usize, usize, bool)>,
@@ -792,7 +786,6 @@ impl NekoviewApp {
         // fit-within(縦横比維持)なので短辺は箱の中に自動的に収まる。
         let max_decode_target = (config.max_decode_edge, config.max_decode_edge);
         let config_root = config.config_root.clone();
-        let config_conflict = config.conflict.clone();
         let settings_draft = SettingsDraft::from_current(&config, &viewer_cfg, show_hidden, card_date_format, &translate_cfg);
         let (req_tx, res_rx) = spawn_worker(config.viewer_filter.to_image_filter(), config.resolved_decode_threads(), ctx.clone(), cache_max, ring_bounds, frame_hard_limit_bytes);
         let (thumb_req_tx, thumb_res_rx, thumb_session) =
@@ -851,9 +844,6 @@ impl NekoviewApp {
             favorite_delete_confirm: None,
             favorite_detail_dialog: None,
             viewing_favorites: None,
-            storage_migrate_confirm: None,
-            storage_delete_failed: None,
-            config_conflict,
             viewing_dir: None,
             cd_summary: None,
             cd_summary_rx: None,

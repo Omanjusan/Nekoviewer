@@ -62,34 +62,15 @@ macro_rules! log_common {
     };
 }
 
-#[derive(Clone, Copy, PartialEq)]
-pub enum CacheStorage {
-    /// 実行ファイル配下の cache/ に保存（開発・確認用）
-    Local,
-    /// ~/.local/share/nekoview/cache/ に保存（本番推奨）
-    Xdg,
-}
-
 // ── 設定ファイル本体の置き場所（conf/keymap/state/spread.redb）───────────────
-// フェーズ2: 従来 [cache] storage は cache_root() のみに影響していたが、conf本体・
-// keymap.ini・nekoviewer.state・nekoviewer_spread.redb 全部の置き場所も同じ設定で
-// 統一する（AppImage対応: バイナリ横は読み取り専用squashfsマウントで機能しないため）。
-
-/// AppImage実行中かどうか（AppImage実行時に環境変数 APPIMAGE が自動で立つ）。
-/// バイナリ横（current_exe()の親）は起動毎に変わる一時マウントパスになるため、
-/// この場合は storage 設定に関わらず常に XDG を使う。
-pub fn is_appimage() -> bool {
-    std::env::var_os("APPIMAGE").is_some()
-}
+// 設定・キャッシュ・state・spread.redb は常に XDG（Windowsは%APPDATA%/%LOCALAPPDATA%）
+// 固定。以前はバイナリ横保存(Local)も選べたが、AppImage/Flatpakで機能しない・
+// 書き込み権限が環境依存という問題があったため廃止した。
 
 /// Flatpak sandbox 内で実行中かどうか。
-/// Flatpak は `/app` を読み取り専用で提供するため、実行ファイル横への保存は許可しない。
+/// Flatpak は XDG_CACHE_HOME の扱いが通常と異なる（cache_root()参照）ため判定に使う。
 pub fn is_flatpak() -> bool {
     std::env::var_os("FLATPAK_ID").is_some()
-}
-
-pub fn is_read_only_package() -> bool {
-    is_appimage() || is_flatpak()
 }
 
 /// 設定ファイル本体（conf/keymap/state/spread.redb）用の XDG ルート。
@@ -111,105 +92,24 @@ fn xdg_config_root() -> PathBuf {
     base.join("nekoview")
 }
 
-fn exe_dir() -> Option<PathBuf> {
-    std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.to_path_buf()))
-}
-
-fn now_epoch() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
-}
-
-/// unix epoch秒を "YYYY-MM-DD HH:MM:SS UTC" に変換する（依存クレード無しの自前実装、
-/// Howard Hinnant の civil_from_days アルゴリズムに基づく）。両方confが見つかった際の
-/// ダイアログ表示にのみ使う簡易フォーマットで、タイムゾーン変換等は行わない。
-pub fn format_epoch(secs: u64) -> String {
-    let days = (secs / 86400) as i64;
-    let rem = secs % 86400;
-    let (h, m, s) = (rem / 3600, (rem % 3600) / 60, rem % 60);
-
-    let z = days + 719468;
-    let era = if z >= 0 { z } else { z - 146096 } / 146097;
-    let doe = (z - era * 146097) as u64;
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
-    let y = yoe as i64 + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let mo = if mp < 10 { mp + 3 } else { mp - 9 };
-    let y = if mo <= 2 { y + 1 } else { y };
-
-    format!("{y:04}-{mo:02}-{d:02} {h:02}:{m:02}:{s:02} UTC")
-}
-
-/// バイナリ横・XDG両方に有効な conf が見つかった際の情報（起動時ダイアログ用）。
-#[derive(Clone)]
-pub struct ConfigConflict {
-    pub exe_root: PathBuf,
-    pub exe_updated_at: Option<u64>,
-    pub xdg_root: PathBuf,
-    pub xdg_updated_at: Option<u64>,
-}
-
-/// conf の置き場所を解決する。
-/// 優先順位: ①読み取り専用パッケージ内なら常にXDG ②バイナリ横に既存confがあればそれ（後方互換）
-/// ③XDGに既存confがあればそれ ④どちらにも無ければ新規はXDG（新規インストールの既定値）
-/// ⑤両方に既存confがあれば暫定でXDGを採用しつつ conflict を返す（起動後にダイアログで解消）
-fn resolve_config_root() -> (PathBuf, Option<ConfigConflict>) {
-    let xdg_root = xdg_config_root();
-
-    if is_read_only_package() {
-        return (xdg_root, None);
+/// 設定フォルダ（XDG）を解決する。書き込み権限が無い場合はここで続行できないため
+/// エラーメッセージを出して終了する（ユーザー環境の権限設定ミスを起動直後に検知させる）。
+fn resolve_config_root() -> PathBuf {
+    let root = xdg_config_root();
+    if let Err(e) = ensure_writable_dir(&root) {
+        eprintln!("[fatal] 設定フォルダに書き込めません: {} ({e})", root.display());
+        std::process::exit(1);
     }
-
-    let exe_root = exe_dir();
-    let exe_conf = exe_root.as_ref().map(|d| d.join("nekoviewer.conf"));
-    let xdg_conf = xdg_root.join("nekoviewer.conf");
-
-    let exe_exists = exe_conf.as_ref().is_some_and(|p| p.exists());
-    let xdg_exists = xdg_conf.exists();
-
-    match (exe_exists, xdg_exists) {
-        (true, true) => {
-            let exe_root = exe_root.unwrap();
-            let exe_dt = parse_ini(exe_conf.as_ref().unwrap()).updated_at;
-            let xdg_dt = parse_ini(&xdg_conf).updated_at;
-            let conflict = ConfigConflict {
-                exe_root: exe_root.clone(),
-                exe_updated_at: exe_dt,
-                xdg_root: xdg_root.clone(),
-                xdg_updated_at: xdg_dt,
-            };
-            // このセッションの暫定選択は新しい方（同着・欠損はXDG優先）。
-            let root = if exe_dt.unwrap_or(0) > xdg_dt.unwrap_or(0) { exe_root } else { xdg_root };
-            (root, Some(conflict))
-        }
-        (true, false) => (exe_root.unwrap(), None),
-        (false, _) => (xdg_root, None),
-    }
+    root
 }
 
-/// 設定ファイル一式（conf/keymap.ini/nekoviewer.state/nekoviewer_spread.redb）を
-/// from から to へコピーし、成功した分は from 側を削除する（対称性を残さない）。
-/// サムネイルキャッシュ本体（cache.redb）は対象外（再生成させる。容量・時間のコストを避ける）。
-/// 戻り値: 削除に失敗したファイルパスの一覧（空なら完全成功）。
-pub fn migrate_storage_files(from: &std::path::Path, to: &std::path::Path) -> Vec<PathBuf> {
-    let names = ["nekoviewer.conf", "keymap.ini", "nekoviewer.state", "nekoviewer_spread.redb"];
-    let mut delete_failed = Vec::new();
-
-    let _ = std::fs::create_dir_all(to);
-    for name in names {
-        let src = from.join(name);
-        if !src.exists() { continue; }
-        let dst = to.join(name);
-        if std::fs::copy(&src, &dst).is_err() { continue; }
-        if std::fs::remove_file(&src).is_err() {
-            delete_failed.push(src);
-        }
-    }
-    delete_failed
+/// dir を作成し、実際に書き込み可能か probe ファイルの作成・削除で確認する。
+fn ensure_writable_dir(dir: &std::path::Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    let probe = dir.join(".write_test");
+    std::fs::write(&probe, b"")?;
+    std::fs::remove_file(&probe)?;
+    Ok(())
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -249,7 +149,6 @@ pub struct StartupConfig {
 }
 
 pub struct AppConfig {
-    pub cache_storage: CacheStorage,
     pub thumb_filter: ResizeFilter,
     pub viewer_filter: ResizeFilter,
     /// グリッドのサムネイル長辺サイズ（px）
@@ -276,9 +175,6 @@ pub struct AppConfig {
     pub keymap: Keymap,
     /// conf/keymap.ini/state/spread.redb の置き場所（resolve_config_root() で解決済み）。
     pub config_root: PathBuf,
-    /// バイナリ横・XDG両方に有効なconfが見つかった場合の情報。Some の間はUI側で
-    /// 選択ダイアログを出す（起動直後の稀な安全網パス）。
-    pub conflict: Option<ConfigConflict>,
 }
 
 impl AppConfig {
@@ -296,14 +192,14 @@ impl AppConfig {
 
 impl AppConfig {
     pub fn load() -> Self {
-        let (root, conflict) = resolve_config_root();
+        let root = resolve_config_root();
         let conf_path = root.join("nekoviewer.conf");
 
         let parsed = if conf_path.exists() {
             parse_ini(&conf_path)
         } else {
             let _ = std::fs::create_dir_all(&root);
-            let _ = std::fs::write(&conf_path, default_ini_with_timestamp());
+            let _ = std::fs::write(&conf_path, DEFAULT_INI);
             ParsedIni::default()
         };
 
@@ -315,7 +211,6 @@ impl AppConfig {
         });
 
         AppConfig {
-            cache_storage: effective_cache_storage(parsed.storage, is_read_only_package()),
             thumb_filter: parsed.thumb_filter,
             viewer_filter: parsed.viewer_filter,
             thumb_size: parsed.thumb_size.0,
@@ -332,20 +227,7 @@ impl AppConfig {
             max_decode_edge: 1920,
             keymap: Keymap::load(&root),
             config_root: root,
-            conflict,
         }
-    }
-
-    /// 起動時ダイアログでユーザーが conflict のどちらかを選んだ後に呼ぶ。
-    /// 選んだ側の updated_at を「今」に更新して書き戻し、次回起動時に同じ質問が
-    /// 繰り返し出るのを防ぐ。選ばなかった側は削除せず残す（ユーザーが手動で消す前提）。
-    pub fn resolve_conflict(&mut self, chosen_root: PathBuf) {
-        self.config_root = chosen_root.clone();
-        let conf_path = chosen_root.join("nekoviewer.conf");
-        let parsed = parse_ini(&conf_path);
-        self.cache_storage = parsed.storage;
-        self.save();
-        self.conflict = None;
     }
 
     /// CLI引数のパスを解釈し、(起動時に開くディレクトリ, 起動後に自動で開くファイル) を返す。
@@ -433,8 +315,6 @@ impl AppConfig {
         let updates = [
             ("thumbnail", "filter", filter_to_str(self.thumb_filter).to_string()),
             ("grid", "thumb_size", self.thumb_size.to_string()),
-            ("cache", "storage", storage_to_str(self.cache_storage).to_string()),
-            ("meta", "updated_at", now_epoch().to_string()),
         ];
         let new_content = apply_ini_updates(&content, &updates);
 
@@ -449,30 +329,6 @@ impl AppConfig {
         let _ = std::fs::write(&bak, &new_content);
     }
 
-    /// 設定画面で storage(local/xdg) を切り替えたときに呼ぶ。
-    /// 新しい置き場所へ conf/keymap.ini/state/spread.redb をコピーし、成功分は旧側を削除する。
-    /// 戻り値: 削除に失敗したファイルパス一覧（空なら完全成功、UI側は手動削除を案内する）。
-    pub fn migrate_storage(&mut self, to: CacheStorage) -> Vec<PathBuf> {
-        let from_root = self.config_root.clone();
-        let to_root = match to {
-            CacheStorage::Local if is_read_only_package() => xdg_config_root(),
-            CacheStorage::Local => exe_dir().unwrap_or_else(|| from_root.clone()),
-            CacheStorage::Xdg => xdg_config_root(),
-        };
-        if to_root == from_root {
-            return Vec::new();
-        }
-
-        let delete_failed = migrate_storage_files(&from_root, &to_root);
-
-        self.config_root = to_root;
-        self.cache_storage = to;
-        self.keymap = Keymap::load(&self.config_root);
-        self.save();
-
-        delete_failed
-    }
-
     pub fn cache_root(&self) -> Option<PathBuf> {
         if is_flatpak() {
             let base = std::env::var("XDG_CACHE_HOME")
@@ -485,39 +341,23 @@ impl AppConfig {
             return Some(base.join("nekoview"));
         }
 
-        match self.cache_storage {
-            CacheStorage::Local => std::env::current_exe()
-                .ok()
-                .and_then(|p| p.parent().map(|d| d.join("cache"))),
-            CacheStorage::Xdg => {
-                #[cfg(windows)]
-                let base = std::env::var("LOCALAPPDATA")
-                    .map(PathBuf::from)
-                    .unwrap_or_else(|_| PathBuf::from("."));
-                #[cfg(not(windows))]
-                let base = std::env::var("XDG_DATA_HOME")
-                    .map(PathBuf::from)
-                    .unwrap_or_else(|_| {
-                        std::env::var("HOME")
-                            .map(|h| PathBuf::from(h).join(".local/share"))
-                            .unwrap_or_else(|_| PathBuf::from(".local/share"))
-                    });
-                Some(base.join("nekoview/cache"))
-            }
-        }
-    }
-}
-
-fn effective_cache_storage(configured: CacheStorage, is_read_only_package: bool) -> CacheStorage {
-    if is_read_only_package {
-        CacheStorage::Xdg
-    } else {
-        configured
+        #[cfg(windows)]
+        let base = std::env::var("LOCALAPPDATA")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from("."));
+        #[cfg(not(windows))]
+        let base = std::env::var("XDG_DATA_HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| {
+                std::env::var("HOME")
+                    .map(|h| PathBuf::from(h).join(".local/share"))
+                    .unwrap_or_else(|_| PathBuf::from(".local/share"))
+            });
+        Some(base.join("nekoview/cache"))
     }
 }
 
 struct ParsedIni {
-    storage: CacheStorage,
     thumb_filter: ResizeFilter,
     viewer_filter: ResizeFilter,
     thumb_size: ThumbSize,
@@ -532,15 +372,11 @@ struct ParsedIni {
     anim_ring_min_frames: UsizeDefault<4>,
     anim_ring_max_frames: UsizeDefault<32>,
     anim_frame_hard_limit_mb: UsizeDefault<100>,
-    /// [meta] updated_at（unix epoch秒）。バイナリ横・XDG両方にconfが見つかった際に
-    /// どちらが新しいか比較するために使う。無ければ None（未対応の旧フォーマット扱い）。
-    updated_at: Option<u64>,
 }
 
 impl Default for ParsedIni {
     fn default() -> Self {
         Self {
-            storage: CacheStorage::default(),
             thumb_filter: ResizeFilter::Triangle,
             viewer_filter: ResizeFilter::Lanczos3,
             thumb_size: ThumbSize::default(),
@@ -555,7 +391,6 @@ impl Default for ParsedIni {
             anim_ring_min_frames: UsizeDefault::default(),
             anim_ring_max_frames: UsizeDefault::default(),
             anim_frame_hard_limit_mb: UsizeDefault::default(),
-            updated_at: None,
         }
     }
 }
@@ -579,10 +414,6 @@ impl<const V: bool> std::ops::Deref for LogDefault<V> {
 struct ThumbSize(u32);
 impl Default for ThumbSize {
     fn default() -> Self { Self(256) }
-}
-
-impl Default for CacheStorage {
-    fn default() -> Self { Self::Local }
 }
 
 impl Default for ResizeFilter {
@@ -610,12 +441,6 @@ fn parse_ini(path: &std::path::Path) -> ParsedIni {
         if let Some((key, val)) = line.split_once('=') {
             let (k, v) = (key.trim(), val.trim());
             match (section.as_str(), k) {
-                ("cache", "storage") => {
-                    result.storage = match v {
-                        "xdg" => CacheStorage::Xdg,
-                        _ => CacheStorage::Local,
-                    };
-                }
                 ("cache", "cache_total_mb") => {
                     if let Ok(n) = v.parse::<u64>() {
                         result.cache_total_mb = Some(n.max(64));
@@ -672,9 +497,6 @@ fn parse_ini(path: &std::path::Path) -> ParsedIni {
                     if !v.is_empty() {
                         result.startup_fixed_dir = Some(PathBuf::from(v));
                     }
-                }
-                ("meta", "updated_at") => {
-                    result.updated_at = v.parse::<u64>().ok();
                 }
                 _ => {}
             }
@@ -793,13 +615,6 @@ pub(crate) fn parse_filter(s: &str) -> ResizeFilter {
     }
 }
 
-pub fn storage_to_str(s: CacheStorage) -> &'static str {
-    match s {
-        CacheStorage::Local => "local",
-        CacheStorage::Xdg   => "xdg",
-    }
-}
-
 pub fn filter_to_str(f: ResizeFilter) -> &'static str {
     match f {
         ResizeFilter::Nearest    => "nearest",
@@ -813,8 +628,7 @@ const DEFAULT_INI: &str = "\
 # ============================================================================
 #  Nekoviewer 設定ファイル (nekoviewer.conf)
 #
-#  ・[cache] storage 設定に従い、実行ファイルと同じフォルダ、または
-#    ~/.config/nekoview/ に置かれます（AppImage/Flatpakでは常に後者）。
+#  ・常に ~/.config/nekoview/ （Windowsは%APPDATA%\\nekoview）に置かれます。
 #  ・ファイルを削除すると、次回起動時にこの既定値で再生成されます。
 #  ・'#' または ';' で始まる行はコメントです。'キー = 値' 形式で記述します。
 #  ・不明なキーや不正な値は無視され、そのキーの既定値が使われます。
@@ -864,12 +678,6 @@ decode_threads = 0
 
 # ── キャッシュ ──────────────────────────────────────────────────────────────
 [cache]
-# サムネイルのディスクキャッシュ保存先。conf/keymap.ini/state/spread.redbの置き場所も
-# これに従います（AppImage/Flatpak実行時は常にxdg扱いになります）。
-#   local : 実行ファイル配下に保存（開発・確認用。AppImage/Flatpakでは機能しません）
-#   xdg   : ~/.config/nekoview/（設定）・~/.local/share/nekoview/cache/（キャッシュ）に保存（推奨）
-storage = xdg
-
 # キャッシュ合計（ページキャッシュ+ファイルキャッシュ）の最大メモリ上限（MB / 整数）。
 # 内訳はページ70% : ファイル30%に自動分配されます。既定はシステムRAMの30%。最小値は64MB。
 # 通常は既定のままで問題ありません。指定する場合は行頭の '#' を外します。
@@ -895,18 +703,7 @@ perf = false
 key = false
 # 起動・初期化など共通ログ。
 common = false
-
-# ── メタ情報（手動編集不要）─────────────────────────────────────────────────
-[meta]
-# このconfが最後に保存された日時（unix epoch秒）。バイナリ横・XDG両方にconfが
-# 見つかった場合にどちらが新しいか判定するために使います。
-updated_at = 0
 ";
-
-/// 新規作成時、DEFAULT_INI の updated_at プレースホルダを現在時刻で埋めて返す。
-fn default_ini_with_timestamp() -> String {
-    apply_ini_updates(DEFAULT_INI, &[("meta", "updated_at", now_epoch().to_string())])
-}
 
 #[cfg(test)]
 mod tests {
@@ -926,18 +723,6 @@ mod tests {
         assert!(DEFAULT_INI.contains("perf = false"));
         assert!(DEFAULT_INI.contains("key = false"));
         assert!(DEFAULT_INI.contains("common = false"));
-    }
-
-    #[test]
-    fn read_only_package_reports_xdg_as_effective_storage() {
-        assert!(matches!(
-            effective_cache_storage(CacheStorage::Local, true),
-            CacheStorage::Xdg
-        ));
-        assert!(matches!(
-            effective_cache_storage(CacheStorage::Local, false),
-            CacheStorage::Local
-        ));
     }
 
     #[test]
@@ -973,17 +758,6 @@ mod tests {
         assert!(out.contains("thumb_size = 128"));
     }
 
-    #[test]
-    fn format_epoch_known_value() {
-        // 2024-01-01 00:00:00 UTC
-        assert_eq!(format_epoch(1704067200), "2024-01-01 00:00:00 UTC");
-    }
-
-    #[test]
-    fn format_epoch_epoch_zero() {
-        assert_eq!(format_epoch(0), "1970-01-01 00:00:00 UTC");
-    }
-
     fn temp_dir(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("nekoviewer_test_{name}_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -992,49 +766,22 @@ mod tests {
     }
 
     #[test]
-    fn migrate_storage_files_copies_and_deletes_source() {
-        let from = temp_dir("migrate_from_a");
-        let to = temp_dir("migrate_to_a");
-        std::fs::write(from.join("nekoviewer.conf"), "dummy conf").unwrap();
-        std::fs::write(from.join("keymap.ini"), "dummy keymap").unwrap();
-        // state/spread.redb は存在しないケース(未使用ユーザー)も許容する
-
-        let failed = migrate_storage_files(&from, &to);
-
-        assert!(failed.is_empty(), "削除失敗が無いこと: {failed:?}");
-        assert!(to.join("nekoviewer.conf").exists(), "コピー先にconfが存在する");
-        assert!(to.join("keymap.ini").exists(), "コピー先にkeymapが存在する");
-        assert!(!from.join("nekoviewer.conf").exists(), "コピー元のconfは削除される");
-        assert!(!from.join("keymap.ini").exists(), "コピー元のkeymapは削除される");
-        assert_eq!(std::fs::read_to_string(to.join("nekoviewer.conf")).unwrap(), "dummy conf");
-
-        let _ = std::fs::remove_dir_all(&from);
-        let _ = std::fs::remove_dir_all(&to);
+    fn ensure_writable_dir_creates_and_accepts_writable_dir() {
+        let dir = temp_dir("writable_ok");
+        assert!(ensure_writable_dir(&dir).is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn migrate_storage_files_skips_absent_files_without_error() {
-        let from = temp_dir("migrate_from_b");
-        let to = temp_dir("migrate_to_b");
-        // from は空（何もコピーされないはず）
-
-        let failed = migrate_storage_files(&from, &to);
-
-        assert!(failed.is_empty());
-        assert!(!to.join("nekoviewer.conf").exists());
-
-        let _ = std::fs::remove_dir_all(&from);
-        let _ = std::fs::remove_dir_all(&to);
-    }
-
-    #[test]
-    fn is_appimage_reflects_env_var() {
-        // 他テストと並列実行されるため env::set_var の副作用リスクはあるが、
-        // このテストは自分で set→unset まで完結させるので実害は無い。
-        unsafe { std::env::set_var("APPIMAGE", "/tmp/dummy.AppImage"); }
-        assert!(is_appimage());
-        unsafe { std::env::remove_var("APPIMAGE"); }
-        assert!(!is_appimage());
+    #[cfg(unix)]
+    fn ensure_writable_dir_fails_on_read_only_parent() {
+        use std::os::unix::fs::PermissionsExt;
+        let parent = temp_dir("writable_ng_parent");
+        let dir = parent.join("child");
+        std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o500)).unwrap();
+        assert!(ensure_writable_dir(&dir).is_err());
+        std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let _ = std::fs::remove_dir_all(&parent);
     }
 
     #[test]
