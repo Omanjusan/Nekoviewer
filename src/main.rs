@@ -64,7 +64,7 @@ fn main() {
         log_common!("[startup] state loaded (window_size = {:?})", state.window_size);
         i18n::set_from_code(&state.lang);
 
-        // 設定ダイアログ（共通/アニメタブ）で編集された値は state 側が config.ini より優先される。
+        // 設定ダイアログ（共通/アニメタブ）で編集された値は state 側がハードコード既定値より優先される。
         if let Some(v) = state.app_cache_total_mb { cfg.cache_total_mb = Some(v); }
         if let Some(v) = state.app_anim_ring_min_frames { cfg.anim_ring_min_frames = v; }
         if let Some(v) = state.app_anim_ring_max_frames { cfg.anim_ring_max_frames = v; }
@@ -134,7 +134,7 @@ fn show_init_failure_dialog() {
 
     let text = to_wide(
         "初期化に失敗しました。\n\
-         nekoviewer.state, nekoviewer.conf に汚染の疑いがあるので、\n\
+         nekoviewer.state, keymap.ini に汚染の疑いがあるので、\n\
          バックアップをとってから削除して再起動することをおすすめします。",
     );
     let caption = to_wide("Nekoviewer");

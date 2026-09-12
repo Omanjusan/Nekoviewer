@@ -1,5 +1,5 @@
 //! 設定ダイアログの egui 描画部分。データの永続化(state ファイル)は gui_config.rs、
-//! 起動時設定(config.ini)は config.rs が担当し、ここは NekoviewApp に生えた
+//! 起動時のハードコード既定値は config.rs が担当し、ここは NekoviewApp に生えた
 //! [設定]ボタン以降のUI（タブ切り替え・各タブの中身・下書き→反映のフロー）のみを扱う。
 
 use crate::card_date_format::{

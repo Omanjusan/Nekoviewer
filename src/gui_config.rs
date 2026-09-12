@@ -1,5 +1,5 @@
 //! GUI設定ダイアログ・セッション状態(state ファイル)まわり。
-//! config.rs の AppConfig(config.ini, 起動時読み込み専用)とは異なり、こちらは
+//! config.rs の AppConfig(ハードコード既定値、起動時に確定)とは異なり、こちらは
 //! アプリ実行中に設定ダイアログ/ビューアー操作から書き換えられ、都度 state ファイルへ
 //! 永続化される値（ウィンドウ位置・ソート順・言語・ビューア設定・隠しファイル表示・
 //! 設定ダイアログ経由の AppConfig 上書き値）を扱う。
@@ -161,28 +161,28 @@ pub struct AppState {
     /// サムネカード情報帯の「更新日時」表示に使う日付書式。設定ダイアログの
     /// エクスプローラータブで編集し、state には card_date_* の6キーに分割して保存する。
     pub card_date_format: CardDateFormat,
-    /// 設定ダイアログ（共通/アニメタブ）から編集された AppConfig 上書き値。
-    /// None のものは config.ini の値をそのまま使う。一度でもダイアログで変更すると
-    /// この state 側の値が以後 config.ini より優先される（次回起動反映）。
+    /// 設定ダイアログから編集された AppConfig 上書き値。
+    /// None のものは config.rs のハードコード既定値をそのまま使う。一度でもダイアログで
+    /// 変更するとこの state 側の値が以後その既定値より優先される（次回起動反映）。
     pub app_cache_total_mb: Option<u64>,
     pub app_anim_ring_min_frames: Option<usize>,
     pub app_anim_ring_max_frames: Option<usize>,
     pub app_anim_frame_hard_limit_mb: Option<usize>,
     pub app_viewer_filter: Option<ResizeFilter>,
     pub app_max_decode_edge: Option<u32>,
-    /// デバッグタブで編集するログ設定。None は未設定（config.ini側の既定=false を使う）。
+    /// デバッグタブで編集するログ設定。None は未設定（ハードコード既定=false を使う）。
     pub app_log_perf: Option<bool>,
     pub app_log_key: Option<bool>,
     pub app_log_common: Option<bool>,
     /// その他タブで編集する起動時フォルダ設定。
     pub app_startup_use_last_dir: Option<bool>,
     pub app_startup_fixed_dir: Option<PathBuf>,
-    /// フェーズ4a: thumb_size/thumb_filterもconfig.iniではなくこちらへ移行。
+    /// フェーズ4a: thumb_size/thumb_filterもconfig.ini廃止に伴いこちらへ移行。
     pub app_thumb_filter: Option<ResizeFilter>,
     pub app_thumb_size: Option<u32>,
     /// フェーズ4b: decode_threads/default_slotもGUI編集可能にしこちらへ統合。
     pub app_decode_threads: Option<usize>,
-    /// 外側Noneはキー未記載（config.ini値を使う）、内側Noneはユーザーが明示的に選んだ「なし」。
+    /// 外側Noneはキー未記載（ハードコード既定値を使う）、内側Noneはユーザーが明示的に選んだ「なし」。
     pub app_default_slot: Option<Option<usize>>,
     /// 翻訳機能(実験的)の接続先・オーバーレイ設定。
     pub translate_cfg: TranslateConfig,

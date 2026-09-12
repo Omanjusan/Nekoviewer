@@ -6,9 +6,9 @@ use crate::keymap::Keymap;
 
 // ── ログ設定グローバル ─────────────────────────────────────────────────────────
 // AtomicBool を使うのは、AppConfig::load() より前（main() 冒頭）で一度 log() が
-// 呼ばれてしまってもデフォルト値で確定させず、config.ini 読み込み後に上書きできる
-// ようにするため（以前は OnceLock<LogConfig> で、一度確定すると二度と変更できず
-// [log] key=false 等が反映されないバグがあった）。
+// 呼ばれてしまってもデフォルト値で確定させず、設定ダイアログ（デバッグタブ）で
+// 変更された state 側の値を後から上書きできるようにするため（以前は
+// OnceLock<LogConfig> で、一度確定すると二度と変更できないバグがあった）。
 
 pub struct LogConfig {
     pub perf:   bool,
@@ -168,12 +168,12 @@ pub struct AppConfig {
     /// アニメーション1フレームあたりの生デコードサイズ上限（MB、フェーズ5）。空欄/不正値は既定100。
     pub anim_frame_hard_limit_mb: usize,
     /// 表示デコードの取り扱い上限（長辺px）。短辺は縦横比を保って自動的に収まる。
-    /// config.ini には持たず、既定値はここに直書き（stateファイル経由の上書きのみ）。
+    /// 既定値はここに直書き（stateファイル経由の上書きのみ）。
     pub max_decode_edge: u32,
-    /// キーアサイン設定（TODO項目J）。config.iniとは別のkeymap.iniから読み込む
+    /// キーアサイン設定（TODO項目J）。他のスカラー設定とは別のkeymap.iniから読み込む
     /// （Keymap::load/save参照）。行数が可変長で他のスカラー設定と性質が異なるため分離した。
     pub keymap: Keymap,
-    /// conf/keymap.ini/state/spread.redb の置き場所（resolve_config_root() で解決済み）。
+    /// keymap.ini/state/spread.redb の置き場所（resolve_config_root() で解決済み）。
     pub config_root: PathBuf,
 }
 
@@ -191,39 +191,26 @@ impl AppConfig {
 }
 
 impl AppConfig {
+    /// nekoviewer.conf は廃止済み。すべての既定値はここに直書きし、設定ダイアログで
+    /// 変更した値は gui_config::AppState 経由で state ファイルへ永続化される
+    /// （main() 起動シーケンスで state 側の値をこの既定値に上書き適用する）。
     pub fn load() -> Self {
         let root = resolve_config_root();
-        let conf_path = root.join("nekoviewer.conf");
-
-        let parsed = if conf_path.exists() {
-            parse_ini(&conf_path)
-        } else {
-            let _ = std::fs::create_dir_all(&root);
-            let _ = std::fs::write(&conf_path, DEFAULT_INI);
-            ParsedIni::default()
-        };
-
-        // グローバルに設定（main() 冒頭の早期ログで確定した値も、ここで確実に上書きする）
-        set_log(LogConfig {
-            perf:   parsed.log_perf,
-            key:    parsed.log_key.0,
-            common: parsed.log_common.0,
-        });
 
         AppConfig {
-            thumb_filter: parsed.thumb_filter,
-            viewer_filter: parsed.viewer_filter,
-            thumb_size: parsed.thumb_size.0,
-            decode_threads: parsed.decode_threads,
+            thumb_filter: ResizeFilter::Triangle,
+            viewer_filter: ResizeFilter::Lanczos3,
+            thumb_size: 256,
+            decode_threads: 0,
             startup: StartupConfig {
-                use_last_dir: parsed.startup_use_last_dir,
-                fixed_dir: parsed.startup_fixed_dir,
+                use_last_dir: false,
+                fixed_dir: None,
             },
-            cache_total_mb: parsed.cache_total_mb,
-            default_slot: parsed.default_slot,
-            anim_ring_min_frames: parsed.anim_ring_min_frames.0,
-            anim_ring_max_frames: parsed.anim_ring_max_frames.0,
-            anim_frame_hard_limit_mb: parsed.anim_frame_hard_limit_mb.0,
+            cache_total_mb: None,
+            default_slot: None,
+            anim_ring_min_frames: 4,
+            anim_ring_max_frames: 32,
+            anim_frame_hard_limit_mb: 100,
             max_decode_edge: 1920,
             keymap: Keymap::load(&root),
             config_root: root,
@@ -331,155 +318,6 @@ impl AppConfig {
     }
 }
 
-struct ParsedIni {
-    thumb_filter: ResizeFilter,
-    viewer_filter: ResizeFilter,
-    thumb_size: ThumbSize,
-    decode_threads: usize,
-    log_perf:   bool,
-    log_key:    LogDefault<false>,
-    log_common: LogDefault<false>,
-    startup_use_last_dir: bool,
-    startup_fixed_dir: Option<PathBuf>,
-    cache_total_mb: Option<u64>,
-    default_slot: Option<usize>,
-    anim_ring_min_frames: UsizeDefault<4>,
-    anim_ring_max_frames: UsizeDefault<32>,
-    anim_frame_hard_limit_mb: UsizeDefault<100>,
-}
-
-impl Default for ParsedIni {
-    fn default() -> Self {
-        Self {
-            thumb_filter: ResizeFilter::Triangle,
-            viewer_filter: ResizeFilter::Lanczos3,
-            thumb_size: ThumbSize::default(),
-            decode_threads: 0,
-            log_perf: false,
-            log_key: LogDefault(false),
-            log_common: LogDefault(false),
-            startup_use_last_dir: false,
-            startup_fixed_dir: None,
-            cache_total_mb: None,
-            default_slot: None,
-            anim_ring_min_frames: UsizeDefault::default(),
-            anim_ring_max_frames: UsizeDefault::default(),
-            anim_frame_hard_limit_mb: UsizeDefault::default(),
-        }
-    }
-}
-
-/// usize のデフォルト値を const ジェネリクスで指定するラッパー（空欄/不正値は既定にフォールバック）
-struct UsizeDefault<const V: usize>(usize);
-impl<const V: usize> Default for UsizeDefault<V> {
-    fn default() -> Self { Self(V) }
-}
-
-/// bool のデフォルト値を const ジェネリクスで指定するラッパー
-struct LogDefault<const V: bool>(bool);
-impl<const V: bool> Default for LogDefault<V> {
-    fn default() -> Self { Self(V) }
-}
-impl<const V: bool> std::ops::Deref for LogDefault<V> {
-    type Target = bool;
-    fn deref(&self) -> &bool { &self.0 }
-}
-
-struct ThumbSize(u32);
-impl Default for ThumbSize {
-    fn default() -> Self { Self(256) }
-}
-
-impl Default for ResizeFilter {
-    fn default() -> Self { Self::Triangle }
-}
-
-fn parse_ini(path: &std::path::Path) -> ParsedIni {
-    let content = match std::fs::read_to_string(path) {
-        Ok(c) => c,
-        Err(_) => return ParsedIni::default(),
-    };
-
-    let mut result = ParsedIni::default();
-    let mut section = String::new();
-
-    for line in content.lines() {
-        let line = line.trim();
-        if line.starts_with('#') || line.starts_with(';') || line.is_empty() {
-            continue;
-        }
-        if line.starts_with('[') && line.ends_with(']') {
-            section = line[1..line.len() - 1].to_string();
-            continue;
-        }
-        if let Some((key, val)) = line.split_once('=') {
-            let (k, v) = (key.trim(), val.trim());
-            match (section.as_str(), k) {
-                ("cache", "cache_total_mb") => {
-                    if let Ok(n) = v.parse::<u64>() {
-                        result.cache_total_mb = Some(n.max(64));
-                    }
-                }
-                ("cache", "anim_ring_min_frames") => {
-                    if let Ok(n) = v.parse::<usize>() {
-                        result.anim_ring_min_frames = UsizeDefault(n.max(1));
-                    }
-                }
-                ("cache", "anim_ring_max_frames") => {
-                    if let Ok(n) = v.parse::<usize>() {
-                        result.anim_ring_max_frames = UsizeDefault(n.max(1));
-                    }
-                }
-                ("cache", "anim_frame_hard_limit_mb") => {
-                    if let Ok(n) = v.parse::<usize>() {
-                        result.anim_frame_hard_limit_mb = UsizeDefault(n.max(1));
-                    }
-                }
-                ("thumbnail", "filter") => {
-                    result.thumb_filter = parse_filter(v);
-                }
-                ("viewer", "filter") => {
-                    result.viewer_filter = parse_filter(v);
-                }
-                ("viewer", "default_slot") => {
-                    // (a) 5〜8 のみ採用。空欄・範囲外・不正値は None（デフォルト無し）。
-                    result.default_slot = match v {
-                        "5" => Some(0),
-                        "6" => Some(1),
-                        "7" => Some(2),
-                        "8" => Some(3),
-                        _   => None,
-                    };
-                }
-                ("grid", "thumb_size") => {
-                    if let Ok(n) = v.parse::<u32>() {
-                        result.thumb_size = ThumbSize(n.max(64).min(512));
-                    }
-                }
-                ("worker", "decode_threads") => {
-                    if let Ok(n) = v.parse::<usize>() {
-                        result.decode_threads = n;
-                    }
-                }
-                ("log", "perf")   => result.log_perf   = parse_bool(v, false),
-                ("log", "key")    => result.log_key    = LogDefault(parse_bool(v, false)),
-                ("log", "common") => result.log_common = LogDefault(parse_bool(v, false)),
-                ("startup", "use_last_dir") => {
-                    result.startup_use_last_dir = parse_bool(v, false);
-                }
-                ("startup", "fixed_dir") => {
-                    if !v.is_empty() {
-                        result.startup_fixed_dir = Some(PathBuf::from(v));
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-    result
-}
-
-
 /// 起動候補フォルダに隠し経路ガードを適用する。候補が隠しディレクトリ経路でありながら
 /// 隠しフォルダ表示がオフのときは、候補を捨ててフォールバック機構（fixed → HOME → ルート）へ。
 /// フォールバック先すら隠し経路なら fixed も無視して HOME→ルートまで下がる。
@@ -537,14 +375,6 @@ fn resolve_fallback_dir(fixed: Option<&std::path::Path>) -> PathBuf {
     return PathBuf::from("/");
 }
 
-fn parse_bool(s: &str, default: bool) -> bool {
-    match s {
-        "true" | "on" | "1"  => true,
-        "false" | "off" | "0" => false,
-        _ => default,
-    }
-}
-
 pub(crate) fn parse_filter(s: &str) -> ResizeFilter {
     match s {
         "nearest"   => ResizeFilter::Nearest,
@@ -563,105 +393,19 @@ pub fn filter_to_str(f: ResizeFilter) -> &'static str {
     }
 }
 
-const DEFAULT_INI: &str = "\
-# ============================================================================
-#  Nekoviewer 設定ファイル (nekoviewer.conf)
-#
-#  ・常に ~/.config/nekoview/ （Windowsは%APPDATA%\\nekoview）に置かれます。
-#  ・ファイルを削除すると、次回起動時にこの既定値で再生成されます。
-#  ・'#' または ';' で始まる行はコメントです。'キー = 値' 形式で記述します。
-#  ・不明なキーや不正な値は無視され、そのキーの既定値が使われます。
-# ============================================================================
-
-# ── 起動 ────────────────────────────────────────────────────────────────────
-[startup]
-# 起動時に最後に開いていた場所を復元する（true / false）。
-# 最後のフォルダにアクセスできない場合（ネットワークドライブ切断など）は
-# fixed_dir にフォールバックします。
-use_last_dir = false
-
-# 起動時に開く固定フォルダ。
-# ・use_last_dir = false のときの起動フォルダ。
-# ・use_last_dir = true でフォルダにアクセスできないときのフォールバック先。
-# 空欄ならホームディレクトリ、ホームにも移動できなければルート (/) を使います。
-fixed_dir =
-
-# ── ビューアー ──────────────────────────────────────────────────────────────
-[viewer]
-# 表示時の拡大縮小フィルタ：nearest / triangle / catmullrom / lanczos3
-# lanczos3 推奨（ビューアー表示の画質を優先）。
-filter = lanczos3
-
-# ビューアーを開くときの既定の位置・サイズに使うスロット番号（5 / 6 / 7 / 8 / 空欄）。
-# F5〜F8 で保存したスロットを既定値として、ビューアーを開くたびに適用します。
-# ・空欄、または 5〜8 以外を指定した場合はデフォルト無し（OS既定位置・800x600）。
-# ・番号は正しくても該当スロットがまだ未保存の場合はデフォルト無しになります。
-# ・適用後でも F5〜F8 を押せば、その回だけ別スロットへ切り替えられます。
-default_slot =
-
-# ── サムネイル ──────────────────────────────────────────────────────────────
-[thumbnail]
-# 縮小時のフィルタ：nearest / triangle / catmullrom / lanczos3
-# triangle 推奨（256px 縮小では品質差が小さく速い）。
-filter = triangle
-
-# ── グリッド ────────────────────────────────────────────────────────────────
-[grid]
-# サムネイル長辺サイズ（px）。64〜512 の範囲で指定。幅は 1:√2 で自動計算。
-thumb_size = 256
-
-# ── ワーカー ────────────────────────────────────────────────────────────────
-[worker]
-# ページデコードの並列スレッド数。0 = 自動（論理コア数の半分）。
-decode_threads = 0
-
-# ── キャッシュ ──────────────────────────────────────────────────────────────
-[cache]
-# キャッシュ合計（ページキャッシュ+ファイルキャッシュ）の最大メモリ上限（MB / 整数）。
-# 内訳はページ70% : ファイル30%に自動分配されます。既定はシステムRAMの30%。最小値は64MB。
-# 通常は既定のままで問題ありません。指定する場合は行頭の '#' を外します。
-# cache_total_mb = 2048
-
-# アニメーション（GIF/APNG/AVIF/WebP）のリングバッファ先読み枚数の下限・上限。
-# 解像度に応じてこの範囲内で自動調整されます（大きいほど滑らかだがメモリを使う）。
-# 空欄・不正値は既定（下限4 / 上限32）にフォールバックします。
-# anim_ring_min_frames = 4
-# anim_ring_max_frames = 32
-
-# アニメーション1フレームあたりの生デコードサイズ上限（MB / 整数、リサイズ前のw*h*4基準）。
-# 同一アニメ内で解像度が異常に大きいフレームに遭遇した際、そのフレームだけ縮小して再生を継続します。
-# 一般的なアニメ解像度（4K級まで）は約34MB程度に収まるため、既定100MBで十分な余裕があります。
-# 空欄・不正値は既定（100）にフォールバックします。
-# anim_frame_hard_limit_mb = 100
-
-# ── ログ ────────────────────────────────────────────────────────────────────
-[log]
-# パフォーマンス計測ログ（ページ読み込み時間など）。
-perf = false
-# キーイベント・スクロールの入力ログ。
-key = false
-# 起動・初期化など共通ログ。
-common = false
-";
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn new_config_defaults_to_quiet_logs_and_lanczos_viewer_filter() {
-        let parsed = ParsedIni::default();
-        assert!(!parsed.log_perf);
-        assert!(!parsed.log_key.0);
-        assert!(!parsed.log_common.0);
-        assert!(matches!(parsed.thumb_filter, ResizeFilter::Triangle));
-        assert!(matches!(parsed.viewer_filter, ResizeFilter::Lanczos3));
-
-        assert!(DEFAULT_INI.contains("[viewer]\n"));
-        assert!(DEFAULT_INI.contains("filter = lanczos3"));
-        assert!(DEFAULT_INI.contains("perf = false"));
-        assert!(DEFAULT_INI.contains("key = false"));
-        assert!(DEFAULT_INI.contains("common = false"));
+    fn log_defaults_to_all_quiet_until_something_calls_set_log() {
+        // AppConfig::load() はもうログ設定に触れない（nekoviewer.conf廃止）。
+        // main()がstate側の値をset_log()で明示的に適用するまで、既定は全false。
+        let cfg = log();
+        assert!(!cfg.perf);
+        assert!(!cfg.key);
+        assert!(!cfg.common);
     }
 
     fn temp_dir(name: &str) -> PathBuf {
