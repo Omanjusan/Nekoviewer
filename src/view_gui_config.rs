@@ -89,6 +89,9 @@ pub(crate) struct SettingsDraft {
     log_perf: bool,
     log_key: bool,
     log_common: bool,
+    /// その他タブの起動時フォルダ設定。
+    startup_use_last_dir: bool,
+    startup_fixed_dir: String,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -203,6 +206,9 @@ impl SettingsDraft {
             log_perf: crate::config::log().perf,
             log_key: crate::config::log().key,
             log_common: crate::config::log().common,
+            startup_use_last_dir: config.startup.use_last_dir,
+            startup_fixed_dir: config.startup.fixed_dir.as_deref()
+                .map(|p| p.to_string_lossy().to_string()).unwrap_or_default(),
         }
     }
 
@@ -231,6 +237,10 @@ impl SettingsDraft {
             key: self.log_key,
             common: self.log_common,
         });
+
+        config.startup.use_last_dir = self.startup_use_last_dir;
+        let trimmed = self.startup_fixed_dir.trim();
+        config.startup.fixed_dir = if trimmed.is_empty() { None } else { Some(std::path::PathBuf::from(trimmed)) };
 
         viewer_cfg.thumbbar_pos = self.thumbbar_pos;
         viewer_cfg.thumbbar_thumb_size = self.thumbbar_thumb_size;
@@ -1321,5 +1331,13 @@ impl NekoviewApp {
             ui.label(i18n::t().settings_version_label());
             ui.label(env!("CARGO_PKG_VERSION"));
         });
+
+        ui.separator();
+        ui.checkbox(&mut self.settings_draft.startup_use_last_dir, i18n::t().settings_startup_use_last_dir());
+        ui.label(i18n::t().settings_startup_use_last_dir_explain());
+
+        ui.label(i18n::t().settings_startup_fixed_dir_label());
+        ui.text_edit_singleline(&mut self.settings_draft.startup_fixed_dir);
+        ui.label(i18n::t().settings_startup_fixed_dir_explain());
     }
 }

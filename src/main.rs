@@ -79,6 +79,10 @@ fn main() {
         if let Some(v) = state.app_log_common { log_cfg.common = v; }
         config::set_log(log_cfg);
 
+        // その他タブで編集された起動時フォルダ設定も同様に state 側を優先する。
+        if let Some(v) = state.app_startup_use_last_dir { cfg.startup.use_last_dir = v; }
+        if let Some(v) = state.app_startup_fixed_dir.clone() { cfg.startup.fixed_dir = Some(v); }
+
         fs::mount::log_gvfs_status();
         log_common!("[startup] gvfs check done");
 

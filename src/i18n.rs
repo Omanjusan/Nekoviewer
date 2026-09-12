@@ -1882,6 +1882,38 @@ impl Lang {
         }
     }
 
+    pub fn settings_startup_use_last_dir(self) -> &'static str {
+        match self {
+            Lang::Japanese => "アプリ終了時に居たフォルダへ復帰する",
+            Lang::English  => "Restore the folder open at exit on next launch",
+            Lang::Chinese  => "启动时恢复上次退出时所在的文件夹",
+        }
+    }
+
+    pub fn settings_startup_use_last_dir_explain(self) -> &'static str {
+        match self {
+            Lang::Japanese => "アクセスできない場合（ネットワークドライブ切断など）は下の固定フォルダへフォールバックします。",
+            Lang::English  => "Falls back to the fixed folder below if it's no longer accessible (e.g. a disconnected network drive).",
+            Lang::Chinese  => "若无法访问（如网络驱动器断开），将回退到下方的固定文件夹。",
+        }
+    }
+
+    pub fn settings_startup_fixed_dir_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "起動時に開く固定フォルダ",
+            Lang::English  => "Fixed folder to open at startup",
+            Lang::Chinese  => "启动时打开的固定文件夹",
+        }
+    }
+
+    pub fn settings_startup_fixed_dir_explain(self) -> &'static str {
+        match self {
+            Lang::Japanese => "空欄ならホームディレクトリ、ホームにも移動できなければルートを使います。",
+            Lang::English  => "Leave empty to use the home directory, or the root if that's unavailable too.",
+            Lang::Chinese  => "留空则使用主目录，若主目录也无法使用则使用根目录。",
+        }
+    }
+
     pub fn settings_viewer_blocked(self) -> &'static str {
         match self {
             Lang::Japanese => "設定変更中は操作できません",
