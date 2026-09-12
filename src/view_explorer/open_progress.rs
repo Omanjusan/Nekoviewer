@@ -25,7 +25,11 @@ pub enum OpenPollResult {
 /// エクスプローラーからダブルクリックされたアーカイブの非同期オープン処理。
 pub struct PendingOpen {
     pub path: PathBuf,
-    progress: Arc<Mutex<ArchiveOpenProgress>>,
+    /// `None`はワーカーがまだ最初の進捗コールバックを送っていない状態
+    /// （フォーマット未確定＝zip/7zなのかtarなのかもまだ分からない）を表す。
+    /// これを`ArchiveOpenProgress::Indeterminate`で代用すると、起動直後の
+    /// 数フレームやすぐ完了する小さいzip/7zでも「tar読み込み中」表示になってしまうため分離する。
+    progress: Arc<Mutex<Option<ArchiveOpenProgress>>>,
     cancel: Arc<AtomicBool>,
     result_rx: mpsc::Receiver<Option<Vec<ImageEntry>>>,
     cancelled_by_user: bool,
@@ -34,7 +38,7 @@ pub struct PendingOpen {
 impl PendingOpen {
     /// ワーカースレッドを起動し、非同期でアーカイブの一覧取得を開始する。
     pub fn spawn(path: PathBuf) -> Self {
-        let progress = Arc::new(Mutex::new(ArchiveOpenProgress::Indeterminate));
+        let progress = Arc::new(Mutex::new(None));
         let cancel = Arc::new(AtomicBool::new(false));
         let (tx, rx) = mpsc::channel();
 
@@ -43,7 +47,7 @@ impl PendingOpen {
         let worker_cancel = Arc::clone(&cancel);
         thread::spawn(move || {
             let mut on_progress = |p: ArchiveOpenProgress| -> bool {
-                *worker_progress.lock().unwrap() = p;
+                *worker_progress.lock().unwrap() = Some(p);
                 !worker_cancel.load(Ordering::Relaxed)
             };
             let result = archive::list_images_with_progress(&worker_path, &mut on_progress);
@@ -54,8 +58,9 @@ impl PendingOpen {
         Self { path, progress, cancel, result_rx: rx, cancelled_by_user: false }
     }
 
-    /// 現在の進捗を返す。
-    pub fn progress(&self) -> ArchiveOpenProgress {
+    /// 現在の進捗を返す。まだ最初のコールバックが来ていなければ`None`
+    /// （フォーマット未確定の起動直後）。
+    pub fn progress(&self) -> Option<ArchiveOpenProgress> {
         *self.progress.lock().unwrap()
     }
 
@@ -131,26 +136,48 @@ impl super::NekoviewApp {
         }
     }
 
-    /// アーカイブオープン中央オーバーレイを描画する（Phase3: 見た目は仮）。
+    /// アーカイブオープン中央オーバーレイを描画する。
     /// `egui::Modal`は背後のウィジェットへのマウス入力を自動的に遮断する
     /// （キーボードは遮断しないため、呼び出し元で別途`handle_explorer_keys`をガードする）。
+    /// `egui::Modal`はデフォルトで画面中央に表示されるため、位置指定は不要。
     pub(super) fn render_pending_open_overlay(&mut self, ctx: &egui::Context) {
         let Some(pending) = self.pending_open.as_ref() else { return };
-        let progress_text = match pending.progress() {
-            crate::fs::archive::ArchiveOpenProgress::Determinate { current, total } => {
-                crate::i18n::t().archive_open_progress(current, total)
+        let name = super::panels::truncate_filename(&pending.path);
+        let bar = match pending.progress() {
+            None => {
+                // ワーカーがまだ最初のコールバックを送っていない（フォーマット未確定）。
+                // zip/7zかtarかもまだ分からないため、tar専用文言は出さず中立な文言にする。
+                egui::ProgressBar::new(0.0)
+                    .desired_width(280.0)
+                    .animate(true)
+                    .text(crate::i18n::t().archive_open_progress_starting())
             }
-            crate::fs::archive::ArchiveOpenProgress::Indeterminate => {
-                crate::i18n::t().archive_open_progress_indeterminate().to_string()
+            Some(crate::fs::archive::ArchiveOpenProgress::Determinate { current, total }) => {
+                let fraction = if total == 0 { 0.0 } else { current as f32 / total as f32 };
+                egui::ProgressBar::new(fraction)
+                    .desired_width(280.0)
+                    .text(crate::i18n::t().archive_open_progress(current, total))
+            }
+            Some(crate::fs::archive::ArchiveOpenProgress::Indeterminate) => {
+                // 全件数が事前にわからない(tar)ため、%表示はせず不確定アニメーションのみ示す。
+                egui::ProgressBar::new(0.0)
+                    .desired_width(280.0)
+                    .animate(true)
+                    .text(crate::i18n::t().archive_open_progress_indeterminate())
             }
         };
         let mut cancel_clicked = false;
         egui::Modal::new(egui::Id::new("archive_open_progress")).show(ctx, |ui| {
-            ui.label(progress_text);
-            ui.add_space(8.0);
-            if ui.button(crate::i18n::t().archive_open_cancel()).clicked() {
-                cancel_clicked = true;
-            }
+            ui.set_width(320.0);
+            ui.vertical_centered(|ui| {
+                ui.label(egui::RichText::new(name).strong());
+                ui.add_space(10.0);
+                ui.add(bar);
+                ui.add_space(12.0);
+                if ui.button(crate::i18n::t().archive_open_cancel()).clicked() {
+                    cancel_clicked = true;
+                }
+            });
         });
         if cancel_clicked {
             if let Some(pending) = self.pending_open.as_mut() {

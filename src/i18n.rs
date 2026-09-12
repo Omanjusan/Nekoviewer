@@ -868,6 +868,15 @@ impl Lang {
         }
     }
 
+    /// アーカイブオープン中オーバーレイ: フォーマット未確定（起動直後、最初の進捗コールバック前）の文言。
+    pub fn archive_open_progress_starting(self) -> &'static str {
+        match self {
+            Lang::Japanese => "読み込み中…",
+            Lang::English  => "Loading…",
+            Lang::Chinese  => "正在读取…",
+        }
+    }
+
     /// アーカイブオープン中オーバーレイ: 件数が判明している場合の進捗文言。
     pub fn archive_open_progress(self, current: usize, total: usize) -> String {
         let percent = if total == 0 { 0 } else { (current * 100) / total };
