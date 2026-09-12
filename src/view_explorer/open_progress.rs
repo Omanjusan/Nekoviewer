@@ -1,6 +1,9 @@
 //! エクスプローラーからのアーカイブオープンを非同期化するための状態管理。
-//! `archive::list_images_with_progress`をワーカースレッドで実行し、
-//! 進捗（件数 or 不確定）をポーリング可能な形で保持する。キャンセルにも対応する。
+//! ワーカースレッドで「一覧取得(list_images_with_progress)」と「メモリ見積もり
+//! (estimate_archive_memory。7z/tarは実質全画像展開、zipもサンプル画像デコードを伴う
+//! ため軽くない)」を両方まとめて実行し、どちらの区間も進捗をポーリング可能な形で
+//! 保持する。以前は見積もりだけメインスレッドで同期実行しており、そこが無表示の
+//! まま固まって見える抜け穴になっていた。
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -8,18 +11,44 @@ use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread;
 
-use crate::fs::archive::{self, ArchiveOpenProgress, ImageEntry};
+use crate::fs::archive::{self, ArchiveMemoryCheck, ArchiveOpenProgress, ImageEntry};
+
+/// 非同期オープン中の局面。
+#[derive(Clone, Copy)]
+pub enum ArchiveOpenPhase {
+    /// アーカイブ内画像の一覧取得中。
+    Listing(ArchiveOpenProgress),
+    /// 一覧取得後のメモリ見積もり（サンプル画像デコード）中。
+    /// サンプル数が少なく件数ベースの%表示に意味が無いため状態のみ。
+    Estimating,
+}
 
 /// ポーリング結果。オープン完了までは`Pending`。
 pub enum OpenPollResult {
     /// まだ読み込み中。
     Pending,
-    /// 読み込み完了。有効な画像アーカイブだった。
-    Ready(Vec<ImageEntry>),
+    /// 読み込み・見積もり完了。有効な画像アーカイブだった。
+    Ready { entries: Vec<ImageEntry>, check: ArchiveMemoryCheck },
     /// 読み込み完了したが画像が1件も無かった（無効アーカイブ扱い）。
     Empty,
     /// ユーザーがキャンセルした。
     Cancelled,
+}
+
+/// メモリ見積もりに必要な設定値のスナップショット。ワーカースレッドへ`Copy`で渡す
+/// ため、`&self`（`NekoviewApp`）を直接キャプチャせずに済ませる。
+#[derive(Clone, Copy)]
+pub struct MemoryBudgetParams {
+    pub cache_budget_bytes: usize,
+    pub anim_ring_bounds: (usize, usize),
+    pub max_decode_edge: u32,
+    pub file_budget_bytes: usize,
+}
+
+enum WorkerOutcome {
+    Cancelled,
+    Empty,
+    Ready { entries: Vec<ImageEntry>, check: ArchiveMemoryCheck },
 }
 
 /// エクスプローラーからダブルクリックされたアーカイブの非同期オープン処理。
@@ -29,15 +58,15 @@ pub struct PendingOpen {
     /// （フォーマット未確定＝zip/7zなのかtarなのかもまだ分からない）を表す。
     /// これを`ArchiveOpenProgress::Indeterminate`で代用すると、起動直後の
     /// 数フレームやすぐ完了する小さいzip/7zでも「tar読み込み中」表示になってしまうため分離する。
-    progress: Arc<Mutex<Option<ArchiveOpenProgress>>>,
+    progress: Arc<Mutex<Option<ArchiveOpenPhase>>>,
     cancel: Arc<AtomicBool>,
-    result_rx: mpsc::Receiver<Option<Vec<ImageEntry>>>,
+    result_rx: mpsc::Receiver<WorkerOutcome>,
     cancelled_by_user: bool,
 }
 
 impl PendingOpen {
-    /// ワーカースレッドを起動し、非同期でアーカイブの一覧取得を開始する。
-    pub fn spawn(path: PathBuf) -> Self {
+    /// ワーカースレッドを起動し、非同期で一覧取得＋メモリ見積もりを開始する。
+    pub fn spawn(path: PathBuf, budget: MemoryBudgetParams) -> Self {
         let progress = Arc::new(Mutex::new(None));
         let cancel = Arc::new(AtomicBool::new(false));
         let (tx, rx) = mpsc::channel();
@@ -47,12 +76,28 @@ impl PendingOpen {
         let worker_cancel = Arc::clone(&cancel);
         thread::spawn(move || {
             let mut on_progress = |p: ArchiveOpenProgress| -> bool {
-                *worker_progress.lock().unwrap() = Some(p);
+                *worker_progress.lock().unwrap() = Some(ArchiveOpenPhase::Listing(p));
                 !worker_cancel.load(Ordering::Relaxed)
             };
-            let result = archive::list_images_with_progress(&worker_path, &mut on_progress);
+            let outcome = match archive::list_images_with_progress(&worker_path, &mut on_progress) {
+                None => WorkerOutcome::Cancelled,
+                Some(entries) if entries.is_empty() => WorkerOutcome::Empty,
+                Some(_entries) if worker_cancel.load(Ordering::Relaxed) => WorkerOutcome::Cancelled,
+                Some(entries) => {
+                    *worker_progress.lock().unwrap() = Some(ArchiveOpenPhase::Estimating);
+                    let check = archive::estimate_archive_memory(
+                        &worker_path,
+                        &entries,
+                        budget.cache_budget_bytes,
+                        budget.anim_ring_bounds,
+                        budget.max_decode_edge,
+                        budget.file_budget_bytes,
+                    );
+                    WorkerOutcome::Ready { entries, check }
+                }
+            };
             // 受信側が既に破棄されていても（キャンセル後の取りこぼし）エラーは無視する。
-            let _ = tx.send(result);
+            let _ = tx.send(outcome);
         });
 
         Self { path, progress, cancel, result_rx: rx, cancelled_by_user: false }
@@ -60,11 +105,13 @@ impl PendingOpen {
 
     /// 現在の進捗を返す。まだ最初のコールバックが来ていなければ`None`
     /// （フォーマット未確定の起動直後）。
-    pub fn progress(&self) -> Option<ArchiveOpenProgress> {
+    pub fn progress(&self) -> Option<ArchiveOpenPhase> {
         *self.progress.lock().unwrap()
     }
 
     /// ユーザーによるキャンセルを要求する。ワーカーは次の進捗チェック地点で打ち切る。
+    /// 見積もりフェーズ（サンプル画像デコード）自体は現状打ち切れず、次のチェック地点
+    /// （一覧取得中のエントリ境界、または見積もり完了後）まで待つ。
     pub fn cancel(&mut self) {
         self.cancelled_by_user = true;
         self.cancel.store(true, Ordering::Relaxed);
@@ -73,9 +120,9 @@ impl PendingOpen {
     /// 完了しているかを確認する。まだなら`Pending`を返す（毎フレーム呼んでよい）。
     pub fn poll(&mut self) -> OpenPollResult {
         match self.result_rx.try_recv() {
-            Ok(Some(entries)) if entries.is_empty() => OpenPollResult::Empty,
-            Ok(Some(entries)) => OpenPollResult::Ready(entries),
-            Ok(None) => {
+            Ok(WorkerOutcome::Empty) => OpenPollResult::Empty,
+            Ok(WorkerOutcome::Ready { entries, check }) => OpenPollResult::Ready { entries, check },
+            Ok(WorkerOutcome::Cancelled) => {
                 if self.cancelled_by_user {
                     OpenPollResult::Cancelled
                 } else {
@@ -98,11 +145,17 @@ impl super::NekoviewApp {
         if self.pending_open.is_some() {
             return;
         }
-        self.pending_open = Some(PendingOpen::spawn(path));
+        let budget = MemoryBudgetParams {
+            cache_budget_bytes: self.cache_budget_bytes,
+            anim_ring_bounds: self.anim_ring_bounds,
+            max_decode_edge: self.config.max_decode_edge,
+            file_budget_bytes: self.file_cache.max_bytes(),
+        };
+        self.pending_open = Some(PendingOpen::spawn(path, budget));
     }
 
     /// 非同期オープンの完了を毎フレーム確認する。完了していれば
-    /// メモリ見積もりゲート→ViewerState構築→open_viewer、または
+    /// メモリ見積もり結果の反映→ViewerState構築→open_viewer、または
     /// 無効アーカイブ/キャンセルの後始末を行う。
     pub(super) fn poll_pending_open(&mut self) {
         let result = match self.pending_open.as_mut() {
@@ -120,9 +173,9 @@ impl super::NekoviewApp {
                 let name = super::panels::truncate_filename(&path);
                 self.app_toast = Some((crate::i18n::t().invalid_zip(&name), std::time::Instant::now()));
             }
-            OpenPollResult::Ready(entries) => {
+            OpenPollResult::Ready { entries, check } => {
                 let path = self.pending_open.take().expect("pending_open just polled").path;
-                if self.check_memory_budget_for_entries(&path, &entries) {
+                if self.apply_memory_check(&path, check) {
                     let state = crate::view_reader::ViewerState::from_image_entries(
                         path,
                         entries,
@@ -131,7 +184,7 @@ impl super::NekoviewApp {
                     );
                     self.open_viewer(state);
                 }
-                // OverBudgetの場合はcheck_memory_budget_for_entries内でmemory_warning_openが立つ。
+                // OverBudgetの場合はapply_memory_check内でmemory_warning_openが立つ。
             }
         }
     }
@@ -143,27 +196,32 @@ impl super::NekoviewApp {
     pub(super) fn render_pending_open_overlay(&mut self, ctx: &egui::Context) {
         let Some(pending) = self.pending_open.as_ref() else { return };
         let name = super::panels::truncate_filename(&pending.path);
-        let bar = match pending.progress() {
-            None => {
-                // ワーカーがまだ最初のコールバックを送っていない（フォーマット未確定）。
-                // zip/7zかtarかもまだ分からないため、tar専用文言は出さず中立な文言にする。
-                egui::ProgressBar::new(0.0)
-                    .desired_width(280.0)
-                    .animate(true)
-                    .text(crate::i18n::t().archive_open_progress_starting())
-            }
-            Some(crate::fs::archive::ArchiveOpenProgress::Determinate { current, total }) => {
+        // `ProgressBar::animate(true)`のシマー演出は体感でほぼ気づけないほど弱いため、
+        // 件数が確定していない局面（フォーマット未確定/tar/見積もり中）は
+        // 誰の目にも「動いている」とわかる`egui::Spinner`で示す。件数が確定している
+        // 局面（zip/7zの一覧取得中）だけ実%の`ProgressBar`を使う。
+        enum Visual {
+            Bar(egui::ProgressBar),
+            Spinner(&'static str),
+        }
+        let visual = match pending.progress() {
+            None => Visual::Spinner(crate::i18n::t().archive_open_progress_starting()),
+            Some(ArchiveOpenPhase::Listing(ArchiveOpenProgress::Determinate { current, total })) => {
                 let fraction = if total == 0 { 0.0 } else { current as f32 / total as f32 };
-                egui::ProgressBar::new(fraction)
-                    .desired_width(280.0)
-                    .text(crate::i18n::t().archive_open_progress(current, total))
+                Visual::Bar(
+                    egui::ProgressBar::new(fraction)
+                        .desired_width(280.0)
+                        .text(crate::i18n::t().archive_open_progress(current, total)),
+                )
             }
-            Some(crate::fs::archive::ArchiveOpenProgress::Indeterminate) => {
-                // 全件数が事前にわからない(tar)ため、%表示はせず不確定アニメーションのみ示す。
-                egui::ProgressBar::new(0.0)
-                    .desired_width(280.0)
-                    .animate(true)
-                    .text(crate::i18n::t().archive_open_progress_indeterminate())
+            Some(ArchiveOpenPhase::Listing(ArchiveOpenProgress::Indeterminate)) => {
+                // 全件数が事前にわからない(tar)ため、%表示はせずスピナーで示す。
+                Visual::Spinner(crate::i18n::t().archive_open_progress_indeterminate())
+            }
+            Some(ArchiveOpenPhase::Estimating) => {
+                // サンプル画像デコードによる見積もり中。サンプル数が少なく%表示に意味が
+                // 無いためスピナーで示す（元の「無表示のまま固まる」問題の本体だった区間）。
+                Visual::Spinner(crate::i18n::t().archive_open_estimating())
             }
         };
         let mut cancel_clicked = false;
@@ -172,7 +230,16 @@ impl super::NekoviewApp {
             ui.vertical_centered(|ui| {
                 ui.label(egui::RichText::new(name).strong());
                 ui.add_space(10.0);
-                ui.add(bar);
+                match visual {
+                    Visual::Bar(bar) => {
+                        ui.add(bar);
+                    }
+                    Visual::Spinner(text) => {
+                        ui.add(egui::Spinner::new().size(24.0));
+                        ui.add_space(6.0);
+                        ui.label(text);
+                    }
+                }
                 ui.add_space(12.0);
                 if ui.button(crate::i18n::t().archive_open_cancel()).clicked() {
                     cancel_clicked = true;

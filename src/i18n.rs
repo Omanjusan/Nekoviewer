@@ -896,6 +896,15 @@ impl Lang {
         }
     }
 
+    /// アーカイブオープン中オーバーレイ: メモリ見積もり（サンプル画像デコード）中の文言。
+    pub fn archive_open_estimating(self) -> &'static str {
+        match self {
+            Lang::Japanese => "確認中…",
+            Lang::English  => "Checking…",
+            Lang::Chinese  => "正在检查…",
+        }
+    }
+
     pub fn archive_open_cancel(self) -> &'static str {
         match self {
             Lang::Japanese => "キャンセル",
