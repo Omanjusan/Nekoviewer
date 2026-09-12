@@ -35,6 +35,9 @@ const CACHE_TOTAL_FLOOR_MB: u64 = 64;
 /// サムネイルサイズスライダーの下限・上限px（config.rs のパース時clampと合わせる）。
 const THUMB_SIZE_FLOOR: u32 = 64;
 const THUMB_SIZE_CEILING: u32 = 512;
+/// アニメ1フレームあたりの生デコードサイズ上限スライダーの下限・上限MB。
+const ANIM_FRAME_HARD_LIMIT_FLOOR: usize = 10;
+const ANIM_FRAME_HARD_LIMIT_CEILING: usize = 500;
 
 /// 設定ダイアログの編集用下書き。[反映]を押すまでは AppConfig/ViewerConfig 本体には
 /// 一切書き戻さない（自由にタイプ・切り替えさせるための一時バッファ）。
@@ -58,6 +61,8 @@ pub(crate) struct SettingsDraft {
     card_date_format: CardDateFormat,
     ring_min: usize,
     ring_max: usize,
+    /// アニメ1フレームあたりの生デコードサイズ上限（MB）。これを超えたフレームのみ自動縮小する。
+    anim_frame_hard_limit_mb: usize,
     thumbbar_pos: ThumbbarPos,
     thumbbar_thumb_size: u32,
     thumbbar_idle_hide_ms: u64,
@@ -184,6 +189,7 @@ impl SettingsDraft {
             card_date_format,
             ring_min: config.anim_ring_min_frames,
             ring_max: config.anim_ring_max_frames,
+            anim_frame_hard_limit_mb: config.anim_frame_hard_limit_mb,
             thumbbar_pos: viewer_cfg.thumbbar_pos,
             thumbbar_thumb_size: viewer_cfg.thumbbar_thumb_size,
             thumbbar_idle_hide_ms: viewer_cfg.thumbbar_idle_hide_ms,
@@ -231,6 +237,7 @@ impl SettingsDraft {
 
         config.anim_ring_min_frames = self.ring_min;
         config.anim_ring_max_frames = self.ring_max;
+        config.anim_frame_hard_limit_mb = self.anim_frame_hard_limit_mb;
 
         crate::config::set_log(crate::config::LogConfig {
             perf: self.log_perf,
@@ -516,6 +523,15 @@ fn draw_settings_tab_anim(ui: &mut egui::Ui, draft: &mut SettingsDraft) {
         ui.label(draft.ring_max.to_string());
     });
     ui.label(i18n::t().settings_ring_bounds_explain());
+
+    ui.add_space(6.0);
+    ui.separator();
+    ui.label(i18n::t().settings_anim_frame_hard_limit_label());
+    ui.horizontal(|ui| {
+        ui.add(egui::Slider::new(&mut draft.anim_frame_hard_limit_mb, ANIM_FRAME_HARD_LIMIT_FLOOR..=ANIM_FRAME_HARD_LIMIT_CEILING).show_value(false));
+        ui.label(format!("{} MB", draft.anim_frame_hard_limit_mb));
+    });
+    ui.label(i18n::t().settings_anim_frame_hard_limit_explain());
 }
 
 /// ログ出力のON/OFF。リリース既定はすべてfalse（無出力）。有効にした場合は
@@ -1147,8 +1163,6 @@ impl NekoviewApp {
                 self.show_hidden = self.settings_draft.show_hidden;
                 // card_date_format は AppConfig 外の state 値なので apply_to を通さず直接反映。
                 self.card_date_format = self.settings_draft.card_date_format;
-                // thumb_size/thumb_filterはstateファイルに乗っていないためconfig.iniへ直接保存する。
-                self.config.save();
                 // keymapは行数可変のため専用ファイル(keymap.ini)へ別途保存する。
                 self.config.keymap.save(&self.config.config_root);
                 self.persist_state();

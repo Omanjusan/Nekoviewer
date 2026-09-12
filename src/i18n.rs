@@ -1472,6 +1472,22 @@ impl Lang {
         }
     }
 
+    pub fn settings_anim_frame_hard_limit_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "アニメ1フレームあたりの生デコードサイズ上限",
+            Lang::English  => "Per-frame raw decode size limit for animations",
+            Lang::Chinese  => "动画单帧原始解码大小上限",
+        }
+    }
+
+    pub fn settings_anim_frame_hard_limit_explain(self) -> &'static str {
+        match self {
+            Lang::Japanese => "同一アニメ内で解像度が異常に大きいフレームに遭遇した際、そのフレームだけ縮小して再生を継続する。一般的な解像度（4K級まで）は約34MBに収まるため、通常は既定のままで問題ない。",
+            Lang::English  => "If a frame in an animation has an unusually large resolution, only that frame is downscaled to keep playback going. Typical resolutions (up to 4K) fit within ~34MB, so the default is usually fine.",
+            Lang::Chinese  => "当同一动画中出现分辨率异常大的帧时，仅缩小该帧以继续播放。常见分辨率（最高4K）约占34MB，通常保持默认值即可。",
+        }
+    }
+
     pub fn settings_tab_translate(self) -> &'static str {
         match self {
             Lang::Japanese => "翻訳機能",

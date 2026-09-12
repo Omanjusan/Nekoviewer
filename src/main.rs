@@ -83,6 +83,10 @@ fn main() {
         if let Some(v) = state.app_startup_use_last_dir { cfg.startup.use_last_dir = v; }
         if let Some(v) = state.app_startup_fixed_dir.clone() { cfg.startup.fixed_dir = Some(v); }
 
+        // フェーズ4a: thumb_size/thumb_filter も config.ini直接保存を廃止しstate側優先へ。
+        if let Some(v) = state.app_thumb_filter { cfg.thumb_filter = v; }
+        if let Some(v) = state.app_thumb_size { cfg.thumb_size = v; }
+
         fs::mount::log_gvfs_status();
         log_common!("[startup] gvfs check done");
 

@@ -177,6 +177,9 @@ pub struct AppState {
     /// その他タブで編集する起動時フォルダ設定。
     pub app_startup_use_last_dir: Option<bool>,
     pub app_startup_fixed_dir: Option<PathBuf>,
+    /// フェーズ4a: thumb_size/thumb_filterもconfig.iniではなくこちらへ移行。
+    pub app_thumb_filter: Option<ResizeFilter>,
+    pub app_thumb_size: Option<u32>,
     /// 翻訳機能(実験的)の接続先・オーバーレイ設定。
     pub translate_cfg: TranslateConfig,
 }
@@ -204,6 +207,8 @@ impl Default for AppState {
             app_log_common: None,
             app_startup_use_last_dir: None,
             app_startup_fixed_dir: None,
+            app_thumb_filter: None,
+            app_thumb_size: None,
             translate_cfg: TranslateConfig::default(),
         }
     }
@@ -269,6 +274,8 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
     let mut app_log_common: Option<bool> = None;
     let mut app_startup_use_last_dir: Option<bool> = None;
     let mut app_startup_fixed_dir: Option<PathBuf> = None;
+    let mut app_thumb_filter: Option<ResizeFilter> = None;
+    let mut app_thumb_size: Option<u32> = None;
     let mut thumbbar_pos: Option<ThumbbarPos> = None;
     let mut thumbbar_thumb_size: Option<u32> = None;
     let mut thumbbar_idle_hide_ms: Option<u64> = None;
@@ -359,6 +366,11 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
                     let v = v.trim();
                     if !v.is_empty() { app_startup_fixed_dir = Some(PathBuf::from(v)); }
                 }
+                "app_thumb_filter" => {
+                    let v = v.trim();
+                    if !v.is_empty() { app_thumb_filter = Some(parse_filter(v)); }
+                }
+                "app_thumb_size" => { app_thumb_size = v.trim().parse().ok(); }
                 "thumbbar_pos" => { thumbbar_pos = Some(parse_thumbbar_pos(v.trim())); }
                 "thumbbar_thumb_size" => { thumbbar_thumb_size = v.trim().parse().ok(); }
                 "thumbbar_idle_hide_ms" => { thumbbar_idle_hide_ms = v.trim().parse().ok(); }
@@ -470,6 +482,8 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
         app_log_common,
         app_startup_use_last_dir,
         app_startup_fixed_dir,
+        app_thumb_filter,
+        app_thumb_size,
         translate_cfg: TranslateConfig {
             base_url: translate_base_url.unwrap_or_default(),
             translation_model: translate_translation_model.clone().or_else(|| translate_model_legacy.clone()).unwrap_or_default(),
@@ -536,6 +550,11 @@ pub fn save_state(root: &Path, dir: &Path, window_size: (u32, u32), viewer_slots
         "app_startup_use_last_dir={}\napp_startup_fixed_dir={}\n",
         app_cfg.startup.use_last_dir,
         app_cfg.startup.fixed_dir.as_deref().map(|p| p.to_string_lossy().to_string()).unwrap_or_default(),
+    ));
+    // フェーズ4a: thumb_size/thumb_filter（旧config.ini直接保存分）もここへ統合。
+    content.push_str(&format!(
+        "app_thumb_filter={}\napp_thumb_size={}\n",
+        filter_to_str(app_cfg.thumb_filter), app_cfg.thumb_size,
     ));
     for (i, slot) in viewer_slots.iter().enumerate() {
         if let Some(s) = slot {
