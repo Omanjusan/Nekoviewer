@@ -32,7 +32,8 @@ mod winit_app;
 use std::path::PathBuf;
 
 fn main() {
-    // config 読み込み前なのでデフォルト値（common=true）でログ出力
+    // config読み込み前はログ設定のデフォルト（common=false）が使われるため、この行自体は
+    // 実際には出力されない。設定確定後の "[startup] config loaded" 以降が実質の起点。
     log_common!("[startup] main() start");
 
     let instance_guard = match single_instance::acquire() {
@@ -56,9 +57,6 @@ fn main() {
     // 拾い、Windows ではダイアログで知らせてから終了する（Linuxは従来通り
     // 標準エラーへの panic メッセージで足りるため、そちらに任せる）。
     let init_result = std::panic::catch_unwind(|| {
-        fs::mount::log_gvfs_status();
-        log_common!("[startup] gvfs check done");
-
         let mut cfg = config::AppConfig::load();
         log_common!("[startup] config loaded");
 
@@ -73,6 +71,16 @@ fn main() {
         if let Some(v) = state.app_anim_frame_hard_limit_mb { cfg.anim_frame_hard_limit_mb = v; }
         if let Some(v) = state.app_viewer_filter { cfg.viewer_filter = v; }
         if let Some(v) = state.app_max_decode_edge { cfg.max_decode_edge = v; }
+
+        // デバッグタブで編集されたログ設定も同様に state 側を優先する。
+        let mut log_cfg = config::log();
+        if let Some(v) = state.app_log_perf { log_cfg.perf = v; }
+        if let Some(v) = state.app_log_key { log_cfg.key = v; }
+        if let Some(v) = state.app_log_common { log_cfg.common = v; }
+        config::set_log(log_cfg);
+
+        fs::mount::log_gvfs_status();
+        log_common!("[startup] gvfs check done");
 
         let args = CliArgs::parse();
         if let Some(v) = args.cache_max_mb { cfg.cache_total_mb = Some(v.max(64)); }

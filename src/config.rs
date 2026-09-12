@@ -29,7 +29,7 @@ pub fn log() -> LogConfig {
     }
 }
 
-fn set_log(cfg: LogConfig) {
+pub fn set_log(cfg: LogConfig) {
     LOG_PERF.store(cfg.perf, Ordering::Relaxed);
     LOG_KEY.store(cfg.key, Ordering::Relaxed);
     LOG_COMMON.store(cfg.common, Ordering::Relaxed);

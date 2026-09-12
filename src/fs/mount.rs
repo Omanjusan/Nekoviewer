@@ -93,7 +93,7 @@ pub fn list_gvfs_smb_mounts() -> Vec<MountEntry> {
     let read_dir = match std::fs::read_dir(&gvfs_dir) {
         Ok(r) => r,
         Err(e) => {
-            println!("[gvfs] read_dir({}) failed: {e}", gvfs_dir.display());
+            crate::log_common!("[gvfs] read_dir({}) failed: {e}", gvfs_dir.display());
             return Vec::new();
         }
     };
@@ -172,27 +172,28 @@ pub fn list_local_drives() -> Vec<MountEntry> {
     drives
 }
 
-/// 起動時に gvfs の状態をターミナルへ出力する（Unix のみ）
+/// 起動時に gvfs の状態をターミナルへ出力する（Unix のみ）。設定ダイアログのデバッグタブで
+/// 「共通ログ」を有効にした場合のみ出力される。
 #[cfg(unix)]
 pub fn log_gvfs_status() {
     let uid = current_uid();
     let gvfs_dir = PathBuf::from(format!("/run/user/{uid}/gvfs"));
-    println!("[gvfs] checking: {}", gvfs_dir.display());
+    crate::log_common!("[gvfs] checking: {}", gvfs_dir.display());
 
     match std::fs::read_dir(&gvfs_dir) {
-        Err(e) => println!("[gvfs] not accessible: {e}"),
+        Err(e) => crate::log_common!("[gvfs] not accessible: {e}"),
         Ok(entries) => {
             let names: Vec<String> = entries
                 .flatten()
                 .map(|e| e.file_name().to_string_lossy().to_string())
                 .collect();
             if names.is_empty() {
-                println!("[gvfs] directory exists but no mounts found");
+                crate::log_common!("[gvfs] directory exists but no mounts found");
             } else {
-                println!("[gvfs] found {} entries:", names.len());
+                crate::log_common!("[gvfs] found {} entries:", names.len());
                 for name in &names {
                     let tag = if name.starts_with("smb-share:") { "SMB" } else { "   " };
-                    println!("[gvfs]   [{tag}] {name}");
+                    crate::log_common!("[gvfs]   [{tag}] {name}");
                 }
             }
         }

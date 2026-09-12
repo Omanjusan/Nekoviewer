@@ -1002,6 +1002,46 @@ impl Lang {
         }
     }
 
+    pub fn settings_tab_debug(self) -> &'static str {
+        match self {
+            Lang::Japanese => "デバッグ",
+            Lang::English  => "Debug",
+            Lang::Chinese  => "调试",
+        }
+    }
+
+    pub fn settings_debug_explain(self) -> &'static str {
+        match self {
+            Lang::Japanese => "通常は全てOFFのままで問題ありません。不具合報告時など、開発者に依頼された場合のみ有効にしてください。",
+            Lang::English  => "Normally leave these all off. Enable them only when a developer asks you to, e.g. while reporting an issue.",
+            Lang::Chinese  => "通常保持全部关闭即可。仅在开发者要求时（例如报告问题时）才启用。",
+        }
+    }
+
+    pub fn settings_debug_log_perf(self) -> &'static str {
+        match self {
+            Lang::Japanese => "パフォーマンス計測ログ（ページ読み込み時間など）",
+            Lang::English  => "Performance log (page load timing, etc.)",
+            Lang::Chinese  => "性能测量日志（页面加载耗时等）",
+        }
+    }
+
+    pub fn settings_debug_log_key(self) -> &'static str {
+        match self {
+            Lang::Japanese => "キーイベント・スクロールの入力ログ",
+            Lang::English  => "Key/scroll input log",
+            Lang::Chinese  => "按键与滚动输入日志",
+        }
+    }
+
+    pub fn settings_debug_log_common(self) -> &'static str {
+        match self {
+            Lang::Japanese => "起動・初期化など共通ログ",
+            Lang::English  => "Common log (startup/initialization, etc.)",
+            Lang::Chinese  => "启动、初始化等通用日志",
+        }
+    }
+
     #[cfg(windows)]
     pub fn settings_tab_windows(self) -> &'static str {
         match self {

@@ -665,7 +665,7 @@ impl RingAnimation {
         let scale = ((hard_limit_bytes as f64) / (raw_bytes as f64)).sqrt() as f32;
         let nw = ((w as f32 * scale) as u32).max(1);
         let nh = ((h as f32 * scale) as u32).max(1);
-        eprintln!(
+        crate::log_common!(
             "[cache] anim frame {} auto-downscaled: {}x{} -> {}x{} (raw {}MB > limit {}MB)",
             index, w, h, nw, nh, raw_bytes / MB, hard_limit_bytes / MB,
         );
@@ -1243,7 +1243,7 @@ impl PageCache {
         }
 
         if incoming >= self.max_bytes {
-            eprintln!(
+            crate::log_common!(
                 "[cache] bypass: {:?}[{}] {}MB > budget {}MB",
                 path, index,
                 incoming / MB,
@@ -1286,7 +1286,7 @@ impl PageCache {
 
         let incoming = content_bytes(&content);
         if incoming >= self.max_bytes {
-            eprintln!(
+            crate::log_common!(
                 "[cache] animation bypass: {:?}[{}] {}MB > budget {}MB",
                 path, index, incoming / MB, self.max_bytes / MB,
             );
@@ -1445,7 +1445,7 @@ pub fn spawn_file_cache_worker(ctx: egui::Context, max_bytes: usize) -> (mpsc::S
     std::thread::spawn(move || {
         while let Ok(path) = req_rx.recv() {
             if crate::fs::archive::estimate_file_cache_bytes(&path) > max_bytes as u64 {
-                eprintln!(
+                crate::log_common!(
                     "[cache] file cache skip (over budget {}MB): {:?}",
                     max_bytes / MB, path,
                 );

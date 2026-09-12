@@ -170,6 +170,10 @@ pub struct AppState {
     pub app_anim_frame_hard_limit_mb: Option<usize>,
     pub app_viewer_filter: Option<ResizeFilter>,
     pub app_max_decode_edge: Option<u32>,
+    /// デバッグタブで編集するログ設定。None は未設定（config.ini側の既定=false を使う）。
+    pub app_log_perf: Option<bool>,
+    pub app_log_key: Option<bool>,
+    pub app_log_common: Option<bool>,
     /// 翻訳機能(実験的)の接続先・オーバーレイ設定。
     pub translate_cfg: TranslateConfig,
 }
@@ -192,6 +196,9 @@ impl Default for AppState {
             app_anim_frame_hard_limit_mb: None,
             app_viewer_filter: None,
             app_max_decode_edge: None,
+            app_log_perf: None,
+            app_log_key: None,
+            app_log_common: None,
             translate_cfg: TranslateConfig::default(),
         }
     }
@@ -252,6 +259,9 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
     let mut app_anim_frame_hard_limit_mb: Option<usize> = None;
     let mut app_viewer_filter: Option<ResizeFilter> = None;
     let mut app_max_decode_edge: Option<u32> = None;
+    let mut app_log_perf: Option<bool> = None;
+    let mut app_log_key: Option<bool> = None;
+    let mut app_log_common: Option<bool> = None;
     let mut thumbbar_pos: Option<ThumbbarPos> = None;
     let mut thumbbar_thumb_size: Option<u32> = None;
     let mut thumbbar_idle_hide_ms: Option<u64> = None;
@@ -334,6 +344,9 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
                     if !v.is_empty() { app_viewer_filter = Some(parse_filter(v)); }
                 }
                 "app_max_decode_edge" => { app_max_decode_edge = v.trim().parse().ok(); }
+                "app_log_perf" => { app_log_perf = v.trim().parse().ok(); }
+                "app_log_key" => { app_log_key = v.trim().parse().ok(); }
+                "app_log_common" => { app_log_common = v.trim().parse().ok(); }
                 "thumbbar_pos" => { thumbbar_pos = Some(parse_thumbbar_pos(v.trim())); }
                 "thumbbar_thumb_size" => { thumbbar_thumb_size = v.trim().parse().ok(); }
                 "thumbbar_idle_hide_ms" => { thumbbar_idle_hide_ms = v.trim().parse().ok(); }
@@ -440,6 +453,9 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
         app_anim_frame_hard_limit_mb,
         app_viewer_filter,
         app_max_decode_edge,
+        app_log_perf,
+        app_log_key,
+        app_log_common,
         translate_cfg: TranslateConfig {
             base_url: translate_base_url.unwrap_or_default(),
             translation_model: translate_translation_model.clone().or_else(|| translate_model_legacy.clone()).unwrap_or_default(),
@@ -494,6 +510,12 @@ pub fn save_state(root: &Path, dir: &Path, window_size: (u32, u32), viewer_slots
         app_cfg.anim_frame_hard_limit_mb,
         filter_to_str(app_cfg.viewer_filter),
         app_cfg.max_decode_edge,
+    ));
+    // デバッグタブが編集するログ設定。現在有効な値（グローバルなconfig::log()）をそのまま書き戻す。
+    let log_cfg = crate::config::log();
+    content.push_str(&format!(
+        "app_log_perf={}\napp_log_key={}\napp_log_common={}\n",
+        log_cfg.perf, log_cfg.key, log_cfg.common,
     ));
     for (i, slot) in viewer_slots.iter().enumerate() {
         if let Some(s) = slot {

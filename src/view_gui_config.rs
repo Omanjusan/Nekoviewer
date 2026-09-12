@@ -24,6 +24,7 @@ pub(crate) enum SettingsTab {
     #[cfg(windows)]
     Windows,
     Other,
+    Debug,
 }
 
 /// 8K UHD(7680x4320)の長辺を「取り扱い上限解像度」スライダーの上限に使う。
@@ -84,6 +85,10 @@ pub(crate) struct SettingsDraft {
     /// 直近の登録が他アクションと重複していた場合の警告文。登録自体はブロックしない
     /// （入れ替えを行うには一時的な重複を経由する必要があるため）。次の登録操作まで表示し続ける。
     keymap_last_warning: Option<String>,
+    /// デバッグタブのログ設定。デフォルトはすべてfalse（リリース既定）。
+    log_perf: bool,
+    log_key: bool,
+    log_common: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -195,6 +200,9 @@ impl SettingsDraft {
             key_capture_dialog: None,
             mouse_capture_dialog: None,
             keymap_last_warning: None,
+            log_perf: crate::config::log().perf,
+            log_key: crate::config::log().key,
+            log_common: crate::config::log().common,
         }
     }
 
@@ -217,6 +225,12 @@ impl SettingsDraft {
 
         config.anim_ring_min_frames = self.ring_min;
         config.anim_ring_max_frames = self.ring_max;
+
+        crate::config::set_log(crate::config::LogConfig {
+            perf: self.log_perf,
+            key: self.log_key,
+            common: self.log_common,
+        });
 
         viewer_cfg.thumbbar_pos = self.thumbbar_pos;
         viewer_cfg.thumbbar_thumb_size = self.thumbbar_thumb_size;
@@ -492,6 +506,16 @@ fn draw_settings_tab_anim(ui: &mut egui::Ui, draft: &mut SettingsDraft) {
         ui.label(draft.ring_max.to_string());
     });
     ui.label(i18n::t().settings_ring_bounds_explain());
+}
+
+/// ログ出力のON/OFF。リリース既定はすべてfalse（無出力）。有効にした場合は
+/// 標準エラー（perf/key/common共通）とステータス窓の内部ログ（key/commonのみ）へ出る。
+fn draw_settings_tab_debug(ui: &mut egui::Ui, draft: &mut SettingsDraft) {
+    ui.label(i18n::t().settings_debug_explain());
+    ui.separator();
+    ui.checkbox(&mut draft.log_perf, i18n::t().settings_debug_log_perf());
+    ui.checkbox(&mut draft.log_key, i18n::t().settings_debug_log_key());
+    ui.checkbox(&mut draft.log_common, i18n::t().settings_debug_log_common());
 }
 
 fn draw_settings_tab_viewer(ui: &mut egui::Ui, draft: &mut SettingsDraft) {
@@ -1058,6 +1082,7 @@ impl NekoviewApp {
                 #[cfg(windows)]
                 tabs.push((SettingsTab::Windows, i18n::t().settings_tab_windows()));
                 tabs.push((SettingsTab::Other, i18n::t().settings_tab_other()));
+                tabs.push((SettingsTab::Debug, i18n::t().settings_tab_debug()));
                 for (tab, label) in tabs {
                     ui.selectable_value(&mut self.settings_tab, tab, label);
                 }
@@ -1075,6 +1100,7 @@ impl NekoviewApp {
                 #[cfg(windows)]
                 SettingsTab::Windows => self.draw_settings_tab_windows(ui),
                 SettingsTab::Other => self.draw_settings_tab_other(ui),
+                SettingsTab::Debug => draw_settings_tab_debug(ui, &mut self.settings_draft),
             }
 
             ui.separator();
