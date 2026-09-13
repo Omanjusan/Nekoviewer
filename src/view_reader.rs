@@ -406,6 +406,11 @@ pub struct ViewerState {
     /// クリップ矩形サイズが不安定な瞬間に delta が収束せず request_repaint が
     /// 連打され続ける恐れがあるため）。
     thumbbar_scrolled_lo: Option<i32>,
+    /// 見開き原寸表示で最後にスクロール位置を初期化した spread_lo。
+    /// 見開きが実際に切り替わった最初のフレームでだけ scroll_offset を
+    /// 明示セットするための重複防止フラグ（毎フレームセットすると
+    /// ユーザーのドラッグ/ホイール操作を毎回上書きしてしまう）。
+    spread_actual_scrolled_lo: Option<i32>,
     /// フェーズ2: 直近フレームで実描画したサムネイルバーの可視インデックス範囲
     /// (原始インデックス、両端含む)。enqueue の優先範囲としても使う。
     /// None の間は仮想化描画がまだ一度も走っていない（起動直後の1フレーム分）。
@@ -615,6 +620,7 @@ impl ViewerState {
             thumb_failed: HashSet::new(),
             thumbbar_last_activity: Instant::now(),
             thumbbar_scrolled_lo: None,
+            spread_actual_scrolled_lo: None,
             thumbbar_visible_range: None,
             saved_spread: None,
             saved_sort: None,
@@ -682,6 +688,7 @@ impl ViewerState {
             thumb_failed: HashSet::new(),
             thumbbar_last_activity: Instant::now(),
             thumbbar_scrolled_lo: None,
+            spread_actual_scrolled_lo: None,
             thumbbar_visible_range: None,
             saved_spread: None,
             saved_sort: None,
@@ -1267,7 +1274,7 @@ impl ViewerState {
 
         let nav = self.process_navigation(&input, is_spread, step, total);
 
-        let close_self = self.process_misc_input(&ctx, &input, is_spread, double_clicked, cfg);
+        let close_self = self.process_misc_input(&ctx, &input, double_clicked, cfg);
 
         self.tick_toast(&ctx, input.time);
 
@@ -1546,10 +1553,10 @@ impl ViewerState {
                         self.render_single(ui, &frame.tex_lo, frame.zoom_actual, frame.rotation_angle, &mut double_clicked, &mut single_clicked);
                     }
                     PageMode::SpreadLeft => {
-                        self.render_spread(ui, &frame.tex_lo, &frame.tex_hi, self.spread_lo(), self.spread_lo() + 1, frame.monitor, frame.rotation_angle, &mut single_clicked);
+                        self.render_spread(ui, &frame.tex_lo, &frame.tex_hi, self.spread_lo(), self.spread_lo() + 1, frame.monitor, frame.rotation_angle, frame.zoom_actual, &mut double_clicked, &mut single_clicked);
                     }
                     PageMode::SpreadRight => {
-                        self.render_spread(ui, &frame.tex_hi, &frame.tex_lo, self.spread_lo() + 1, self.spread_lo(), frame.monitor, frame.rotation_angle, &mut single_clicked);
+                        self.render_spread(ui, &frame.tex_hi, &frame.tex_lo, self.spread_lo() + 1, self.spread_lo(), frame.monitor, frame.rotation_angle, frame.zoom_actual, &mut double_clicked, &mut single_clicked);
                     }
                 }
             } else {
@@ -1859,11 +1866,10 @@ impl ViewerState {
         &mut self,
         ctx: &egui::Context,
         input: &FrameInput,
-        is_spread: bool,
         double_clicked: bool,
         cfg: &mut ViewerConfig,
     ) -> bool {
-        if (input.zoom_key || double_clicked) && !is_spread {
+        if input.zoom_key || double_clicked {
             cfg.zoom_actual = !cfg.zoom_actual;
             // フェーズ6: 表示ターゲットサイズが変わるイベントとして再デコードのデバウンス対象にする
             cfg.redecode_trigger_seq += 1;
@@ -2808,6 +2814,8 @@ impl ViewerState {
         right_index: i32,
         monitor: Option<egui::Vec2>,
         angle_deg: i32,
+        zoom_actual: bool,
+        double_clicked: &mut bool,
         single_clicked: &mut bool,
     ) {
         let toggle_enabled = self.spread_save_toggle_enabled();
@@ -2817,11 +2825,23 @@ impl ViewerState {
         let sort_toggle_on = self.sort_save_toggle_on();
         let sort_changed = self.sort_save_changed();
         let current_sort = self.current_sort_snapshot();
+
+        // 原寸表示は回転(90/270度)には未対応。回転中は従来通りフィット表示にフォールバックする。
+        if zoom_actual && angle_deg == 0 {
+            self.render_spread_actual(
+                ui, tex_left, tex_right, left_index, right_index, double_clicked, single_clicked,
+                toggle_enabled, toggle_on, overwrite_enabled,
+                sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort,
+            );
+            return;
+        }
+
         let available = ui.available_size();
         let origin = ui.cursor().left_top();
 
         let full_rect = egui::Rect::from_min_size(origin, available);
         let resp = ui.allocate_rect(full_rect, egui::Sense::click());
+        if resp.double_clicked() { *double_clicked = true; }
         if resp.clicked() && !resp.double_clicked() { *single_clicked = true; }
         if resp.secondary_clicked() {
             if let Some(pos) = resp.interact_pointer_pos() {
@@ -2851,6 +2871,81 @@ impl ViewerState {
         }
     }
 
+    /// 見開き原寸表示（zoom_actual、角度0限定）。2ページをそれぞれ原寸のまま
+    /// ノド（境界線）で突き合わせ、天（上端）を揃えて描画する。高さが異なる方は
+    /// 天からその高さ分だけ描画し、残りは余白のまま。ビューポートより大きければ
+    /// ScrollArea（スクロールバー＋D&Dパン）で全域を閲覧できるようにする。
+    #[allow(clippy::too_many_arguments)]
+    fn render_spread_actual(
+        &mut self,
+        ui: &mut egui::Ui,
+        tex_left: &Option<egui::TextureHandle>,
+        tex_right: &Option<egui::TextureHandle>,
+        left_index: i32,
+        right_index: i32,
+        double_clicked: &mut bool,
+        single_clicked: &mut bool,
+        toggle_enabled: bool,
+        toggle_on: bool,
+        overwrite_enabled: bool,
+        sort_toggle_enabled: bool,
+        sort_toggle_on: bool,
+        sort_changed: bool,
+        current_sort: (ViewerSortKey, bool),
+    ) {
+        let outer_available = ui.available_size();
+        let sl = Self::spread_page_size(tex_left);
+        let sr = Self::spread_page_size(tex_right);
+        let image_size = egui::vec2(sl.x + sr.x, sl.y.max(sr.y));
+        let content_size = image_size.max(outer_available);
+
+        // 見開きが実際に切り替わった最初のフレームでだけ、進行方向に応じた
+        // 初期スクロール位置（左端上端 or 右端上端）をセットする。毎フレームセット
+        // するとユーザーのドラッグ/ホイール操作を毎回上書きしてしまうため。
+        let current_lo = self.spread_lo();
+        let mut scroll_area = egui::ScrollArea::both()
+            .scroll_source(egui::containers::scroll_area::ScrollSource::ALL);
+        if self.spread_actual_scrolled_lo != Some(current_lo) {
+            self.spread_actual_scrolled_lo = Some(current_lo);
+            let max_scroll_x = (content_size.x - outer_available.x).max(0.0);
+            // anim_dir: +1=新ページが右からIN(右へ進行) → 左端から見せる、
+            //           -1=左からIN(左へ進行) → 右端から見せる。
+            let target_x = if self.anim_dir < 0 { max_scroll_x } else { 0.0 };
+            scroll_area = scroll_area.scroll_offset(egui::vec2(target_x, 0.0));
+        }
+
+        scroll_area.show(ui, |ui| {
+            let (content_rect, resp) = ui.allocate_exact_size(content_size, egui::Sense::click());
+            let bbox = egui::Rect::from_min_size(
+                content_rect.min + (content_size - image_size) / 2.0,
+                image_size,
+            );
+            let rect_l = egui::Rect::from_min_size(bbox.min, sl);
+            let rect_r = egui::Rect::from_min_size(egui::pos2(bbox.min.x + sl.x, bbox.min.y), sr);
+            let painter = ui.painter();
+            Self::paint_page(painter, tex_left,  rect_l);
+            Self::paint_page(painter, tex_right, rect_r);
+
+            if resp.double_clicked() { *double_clicked = true; }
+            if resp.clicked() && !resp.double_clicked() { *single_clicked = true; }
+            if resp.secondary_clicked() {
+                if let Some(pos) = resp.interact_pointer_pos() {
+                    let index = self.thumbnail_target_from_rects(pos, rect_l, rect_r, left_index, right_index);
+                    self.set_thumbnail_context(index);
+                }
+            }
+            let thumbnail_target = self.thumbnail_context_entry.as_ref();
+            let saved_thumbnail_selection = self.saved_thumbnail_selection.as_ref();
+            let saved_thumbnail_display = self.saved_thumbnail_display_name();
+            let action = &mut self.pending_spread_action;
+            let sort_action = &mut self.pending_sort_action;
+            let thumbnail_action = &mut self.pending_thumbnail_action;
+            let open_favorite_dialog = &mut self.pending_open_favorite_dialog;
+            let open_file_detail = &mut self.pending_open_file_detail;
+            resp.context_menu(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort, sort_action, thumbnail_target, saved_thumbnail_selection, saved_thumbnail_display.as_deref(), thumbnail_action, open_favorite_dialog, open_file_detail));
+        });
+    }
+
     /// サムネイル登録対象のヒットテスト。片側が仮想ページなら、クリック位置に
     /// 関係なく実ページ側を返す。両側が実ページのときだけ描画されたページ矩形を判定する。
     fn thumbnail_target_for_spread(
@@ -2864,6 +2959,13 @@ impl ViewerState {
         monitor: Option<egui::Vec2>,
         angle_deg: i32,
     ) -> Option<i32> {
+        if angle_deg == 0 {
+            let (rect_l, rect_r) = Self::spread_rects(
+                bounds.size(), bounds.min, tex_left, tex_right, monitor,
+            );
+            return self.thumbnail_target_from_rects(pos, rect_l, rect_r, left_index, right_index);
+        }
+
         let total = self.entries.len() as i32;
         let left_real = (0..total).contains(&left_index);
         let right_real = (0..total).contains(&right_index);
@@ -2874,25 +2976,47 @@ impl ViewerState {
             (true, true) => {}
         }
 
-        let (hit_left, hit_right) = if angle_deg == 0 {
-            let (left, right) = Self::spread_rects(
-                bounds.size(), bounds.min, tex_left, tex_right, monitor,
-            );
-            (left.contains(pos), right.contains(pos))
-        } else {
-            let (local_left, local_right) = Self::spread_local_rects(tex_left, tex_right);
-            match Self::spread_rotation_fit(local_left, local_right, bounds, angle_deg) {
-                Some((center_left, center_right, scale)) => (
-                    Self::rotated_rect_contains(pos, center_left, local_left.size() * scale / 2.0, angle_deg),
-                    Self::rotated_rect_contains(pos, center_right, local_right.size() * scale / 2.0, angle_deg),
-                ),
-                None => (false, false),
-            }
+        let (local_left, local_right) = Self::spread_local_rects(tex_left, tex_right);
+        let (hit_left, hit_right) = match Self::spread_rotation_fit(local_left, local_right, bounds, angle_deg) {
+            Some((center_left, center_right, scale)) => (
+                Self::rotated_rect_contains(pos, center_left, local_left.size() * scale / 2.0, angle_deg),
+                Self::rotated_rect_contains(pos, center_right, local_right.size() * scale / 2.0, angle_deg),
+            ),
+            None => (false, false),
         };
 
         if hit_left {
             Some(left_index)
         } else if hit_right {
+            Some(right_index)
+        } else {
+            None
+        }
+    }
+
+    /// 見開きヒットテストの共通部分：片側が仮想ページなら無条件に実ページ側を返し、
+    /// 両側が実ページのときだけ与えられた矩形で判定する（フィット表示・原寸表示共通）。
+    fn thumbnail_target_from_rects(
+        &self,
+        pos: egui::Pos2,
+        rect_l: egui::Rect,
+        rect_r: egui::Rect,
+        left_index: i32,
+        right_index: i32,
+    ) -> Option<i32> {
+        let total = self.entries.len() as i32;
+        let left_real = (0..total).contains(&left_index);
+        let right_real = (0..total).contains(&right_index);
+        match (left_real, right_real) {
+            (true, false) => return Some(left_index),
+            (false, true) => return Some(right_index),
+            (false, false) => return None,
+            (true, true) => {}
+        }
+
+        if rect_l.contains(pos) {
+            Some(left_index)
+        } else if rect_r.contains(pos) {
             Some(right_index)
         } else {
             None
