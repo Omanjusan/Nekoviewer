@@ -210,9 +210,13 @@ impl FrameInput {
     /// それぞれの修飾キー条件が現在の入力状態と一致するかを見て、一致した方に生delta(sd.y、
     /// shift成分ありなら+sd.x)を渡す。PagePrev/PageNextは対で同じ条件を持つ想定のため、
     /// 片方から拾えれば十分（Prev側優先、無ければNext側）。
-    fn collect(ctx: &egui::Context, zoom_actual: bool, keymap: &Keymap) -> Self {
+    fn collect(ctx: &egui::Context, zoom_actual: bool, is_spread: bool, keymap: &Keymap) -> Self {
         ctx.input(|i| {
-            let sd = if zoom_actual { egui::Vec2::ZERO } else { i.smooth_scroll_delta() };
+            // 原寸表示中はホイールを画像スクロール（ScrollArea）に譲るためページ送りには
+            // 使わせないが、見開き中はページ全体がホイールでスクロールバーに吸われて
+            // ページ送りが一切効かなくなる方が使い勝手が悪いため、見開きだけは例外的に
+            // 従来通りホイールでのページ送りを優先する。
+            let sd = if zoom_actual && !is_spread { egui::Vec2::ZERO } else { i.smooth_scroll_delta() };
             let wheel_amount = |m: MouseCombo| -> f32 {
                 if !m.modifiers_match(i) { return 0.0; }
                 sd.y + if m.shift { sd.x } else { 0.0 }
@@ -1130,7 +1134,8 @@ impl ViewerState {
         }
 
         // ── フレーム入力を一括収集（ctx.input はこの1回のみ）────────────────
-        let input = FrameInput::collect(&ctx, cfg.zoom_actual, keymap);
+        let is_spread_now = self.page_mode != PageMode::Single;
+        let input = FrameInput::collect(&ctx, cfg.zoom_actual, is_spread_now, keymap);
 
         // フェーズ6: リサイズ再デコードのターゲットサイズ算出用に、現在の描画領域サイズ（物理px）を記録する。
         let screen = ctx.content_rect().size() * ctx.pixels_per_point();
@@ -2913,10 +2918,16 @@ impl ViewerState {
 
         // 見開きが実際に切り替わった最初のフレームでだけ、進行方向に応じた
         // 初期スクロール位置（左端上端 or 右端上端）をセットする。毎フレームセット
-        // するとユーザーのドラッグ/ホイール操作を毎回上書きしてしまうため。
+        // するとユーザーのドラッグ操作を毎回上書きしてしまうため。
         let current_lo = self.spread_lo();
+        // マウスホイールはページ送り専用に譲る（ここで拾うと二重に効いてしまう）。
+        // スクロールバー操作とコンテンツのD&Dパンのみ有効にする。
         let mut scroll_area = egui::ScrollArea::both()
-            .scroll_source(egui::containers::scroll_area::ScrollSource::ALL);
+            .scroll_source(egui::containers::scroll_area::ScrollSource {
+                scroll_bar: true,
+                drag: egui::containers::scroll_area::DragScroll::Always,
+                mouse_wheel: false,
+            });
         if self.spread_actual_scrolled_lo != Some(current_lo) {
             self.spread_actual_scrolled_lo = Some(current_lo);
             let max_scroll_x = (content_size.x - outer_available.x).max(0.0);
