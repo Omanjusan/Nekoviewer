@@ -804,7 +804,7 @@ impl ViewerState {
     }
 
     /// ページモードを切り替え、spread_base とオフセットを整合させる
-    pub fn set_page_mode(&mut self, mode: PageMode, cfg: &mut ViewerConfig) {
+    pub fn set_page_mode(&mut self, mode: PageMode, _cfg: &mut ViewerConfig) {
         match mode {
             PageMode::Single => {
                 self.page_mode = mode;
@@ -816,7 +816,6 @@ impl ViewerState {
                 if self.is_raw_file { return; }
                 if self.page_mode != mode {
                     self.page_mode = mode;
-                    cfg.zoom_actual = false;
                     self.spread_base = self.spread_lo().max(0) & !1;
                     self.offset.reset();
                 }
