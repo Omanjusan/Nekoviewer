@@ -210,13 +210,11 @@ impl FrameInput {
     /// それぞれの修飾キー条件が現在の入力状態と一致するかを見て、一致した方に生delta(sd.y、
     /// shift成分ありなら+sd.x)を渡す。PagePrev/PageNextは対で同じ条件を持つ想定のため、
     /// 片方から拾えれば十分（Prev側優先、無ければNext側）。
-    fn collect(ctx: &egui::Context, zoom_actual: bool, is_spread: bool, keymap: &Keymap) -> Self {
+    fn collect(ctx: &egui::Context, keymap: &Keymap) -> Self {
         ctx.input(|i| {
-            // 原寸表示中はホイールを画像スクロール（ScrollArea）に譲るためページ送りには
-            // 使わせないが、見開き中はページ全体がホイールでスクロールバーに吸われて
-            // ページ送りが一切効かなくなる方が使い勝手が悪いため、見開きだけは例外的に
-            // 従来通りホイールでのページ送りを優先する。
-            let sd = if zoom_actual && !is_spread { egui::Vec2::ZERO } else { i.smooth_scroll_delta() };
+            // 原寸表示中も含め、ホイールは常にページ送りへ渡す（原寸時の画像内スクロールは
+            // ScrollAreaのドラッグ/スクロールバー操作に譲り、ホイールとは役割を分離する）。
+            let sd = i.smooth_scroll_delta();
             let wheel_amount = |m: MouseCombo| -> f32 {
                 if !m.modifiers_match(i) { return 0.0; }
                 sd.y + if m.shift { sd.x } else { 0.0 }
@@ -1133,8 +1131,7 @@ impl ViewerState {
         }
 
         // ── フレーム入力を一括収集（ctx.input はこの1回のみ）────────────────
-        let is_spread_now = self.page_mode != PageMode::Single;
-        let input = FrameInput::collect(&ctx, cfg.zoom_actual, is_spread_now, keymap);
+        let input = FrameInput::collect(&ctx, keymap);
 
         // フェーズ6: リサイズ再デコードのターゲットサイズ算出用に、現在の描画領域サイズ（物理px）を記録する。
         let screen = ctx.content_rect().size() * ctx.pixels_per_point();
@@ -2742,8 +2739,13 @@ impl ViewerState {
                 let outer_available = ui.available_size();
                 // スクロールバー操作に加え、画像を直接D&D（フリック）してビューポート内へ
                 // 引き込む操作にも対応する（マウスでも常時有効化。標準はタッチ限定）。
+                // ホイールはページ送り専用に譲る（見開き原寸と同様、ここで拾うと二重に効く）。
                 egui::ScrollArea::both()
-                    .scroll_source(egui::containers::scroll_area::ScrollSource::ALL)
+                    .scroll_source(egui::containers::scroll_area::ScrollSource {
+                        scroll_bar: true,
+                        drag: egui::containers::scroll_area::DragScroll::Always,
+                        mouse_wheel: false,
+                    })
                     .show(ui, |ui| {
                     let img_size = egui::vec2(img_w as f32, img_h as f32);
                     let rotated_size = if angle_deg == 90 || angle_deg == 270 {
