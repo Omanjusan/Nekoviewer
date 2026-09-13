@@ -58,12 +58,17 @@ impl NekoviewApp {
         if !redecode_on {
             self.resize_redecode_last_seq = seq;
             self.resize_redecode_deadline = None;
-            // 「原寸」選択中は常にガードレール値（長辺 max_decode_edge）を使う。
+            // 「原寸」選択中は常にガードレール値（長辺 max_decode_edge、見開き中はその2倍）を使う。
             // fire_resize_redecode() 経由で decode_target が None（無制限）になったまま
             // 放置されると、一度でも「ウィンドウ追従」+ビューアー等倍ズームを使った後は
             // 「原寸」に戻してもガードレールが永続的に外れたままになるバグがあったため、
             // ここで毎フレーム復元する（実際に変化した時だけ再デコードを発火）。
-            let guardrail = Some((self.config.max_decode_edge, self.config.max_decode_edge));
+            let is_spread = {
+                let viewer = self.viewer.lock().unwrap();
+                viewer.as_ref().is_some_and(|v| v.current_spread_snapshot().0 != crate::types::PageMode::Single)
+            };
+            let edge = if is_spread { self.config.max_decode_edge.saturating_mul(2) } else { self.config.max_decode_edge };
+            let guardrail = Some((edge, edge));
             if self.decode_target != guardrail {
                 self.decode_target = guardrail;
                 self.begin_lazy_decode_generation();
@@ -93,10 +98,11 @@ impl NekoviewApp {
     /// ここでは作り直さない（表示サイズの更新は後続フェーズで既存pipelineへ通知する）。
     fn fire_resize_redecode(&mut self, seq: u64) {
         let zoom_actual = self.viewer_cfg.lock().unwrap().zoom_actual;
+        let max_decode_edge = self.config.max_decode_edge;
         let target = {
             let viewer = self.viewer.lock().unwrap();
             match viewer.as_ref() {
-                Some(v) => v.current_decode_target(zoom_actual),
+                Some(v) => v.current_decode_target(zoom_actual, max_decode_edge),
                 None => return,
             }
         };

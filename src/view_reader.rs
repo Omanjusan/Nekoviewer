@@ -534,9 +534,21 @@ impl ViewerState {
     }
 
     /// フェーズ6: リサイズ/zoom_actual切替後の再デコード先ターゲットサイズ。
-    /// zoom_actual時は無制限(原寸)、それ以外は直近の描画領域サイズ(物理px)を上限にする。
-    pub fn current_decode_target(&self, zoom_actual: bool) -> Option<(u32, u32)> {
-        if zoom_actual { None } else { Some(self.content_px) }
+    /// zoom_actual時は `max_decode_edge`（見開き中はその2倍）を長辺上限にする、
+    /// それ以外は直近の描画領域サイズ(物理px)を上限にする。
+    /// （旧実装は zoom_actual 時に None=無制限を返しており、"原寸時に許容する最大長辺幅"
+    /// 設定が「ウィンドウ追従」ON時には効かないままになる抜け穴があったため統一した）
+    pub fn current_decode_target(&self, zoom_actual: bool, max_decode_edge: u32) -> Option<(u32, u32)> {
+        if zoom_actual {
+            let edge = if self.page_mode != PageMode::Single {
+                max_decode_edge.saturating_mul(2)
+            } else {
+                max_decode_edge
+            };
+            Some((edge, edge))
+        } else {
+            Some(self.content_px)
+        }
     }
 
     /// 世代非依存アニメのリサイズ切替で保持すべき、現在表示中のフレーム番号。
