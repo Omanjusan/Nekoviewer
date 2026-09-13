@@ -2718,7 +2718,11 @@ impl ViewerState {
                 // 敷いて従来どおりの原寸表示にする。90/270度時は回転後の外接サイズで
                 // スクロール範囲を確保してから、その中心を軸に回転させる（等倍・拡縮なし）。
                 let outer_available = ui.available_size();
-                egui::ScrollArea::both().show(ui, |ui| {
+                // スクロールバー操作に加え、画像を直接D&D（フリック）してビューポート内へ
+                // 引き込む操作にも対応する（マウスでも常時有効化。標準はタッチ限定）。
+                egui::ScrollArea::both()
+                    .scroll_source(egui::containers::scroll_area::ScrollSource::ALL)
+                    .show(ui, |ui| {
                     let img_size = egui::vec2(img_w as f32, img_h as f32);
                     let rotated_size = if angle_deg == 90 || angle_deg == 270 {
                         egui::vec2(img_size.y, img_size.x)
