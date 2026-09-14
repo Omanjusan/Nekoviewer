@@ -61,4 +61,4 @@ jobs:
           VERSION="${TAG#v}"
           mv Nekoviewer-x86_64.flatpak "Nekoviewer-${VERSION}-x86_64.flatpak"
           gh release create "$TAG" nekoviewer.exe Nekoviewer-*-x86_64.flatpak Nekoviewer-*-x86_64.AppImage \
-            --notes-file release_notes.md $PRERELEASE_FLAG
+            --notes-file release_notes.md --draft $PRERELEASE_FLAG
