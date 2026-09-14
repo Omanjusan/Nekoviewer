@@ -425,6 +425,10 @@ pub struct ViewerState {
     pending_spread_action: Option<crate::controller::SpreadSaveAction>,
     /// ソート保存メニューでのユーザー操作要求（1フレームで消費）
     pending_sort_action: Option<crate::controller::SortSaveAction>,
+    /// しおり保存の有効/無効状態のキャッシュ（app側がopen_viewer時にセット/操作後に更新）
+    saved_bookmark_enabled: bool,
+    /// しおり保存メニューでのユーザー操作要求（1フレームで消費）
+    pending_bookmark_action: Option<crate::controller::BookmarkSaveAction>,
     /// 最後に右クリック座標から解決した実ページ(entry_name, display_name)。
     thumbnail_context_entry: Option<(String, String)>,
     /// DBから復元した登録サムネイル。Noneはデフォルト。
@@ -640,6 +644,8 @@ impl ViewerState {
             saved_sort: None,
             pending_spread_action: None,
             pending_sort_action: None,
+            saved_bookmark_enabled: false,
+            pending_bookmark_action: None,
             thumbnail_context_entry: None,
             saved_thumbnail_selection: None,
             pending_thumbnail_action: None,
@@ -708,6 +714,8 @@ impl ViewerState {
             saved_sort: None,
             pending_spread_action: None,
             pending_sort_action: None,
+            saved_bookmark_enabled: false,
+            pending_bookmark_action: None,
             thumbnail_context_entry: None,
             saved_thumbnail_selection: None,
             pending_thumbnail_action: None,
@@ -903,6 +911,23 @@ impl ViewerState {
 
     pub fn take_sort_action(&mut self) -> Option<crate::controller::SortSaveAction> {
         self.pending_sort_action.take()
+    }
+
+    /// app側がDBの読み込み・保存結果をViewerStateへ反映する。
+    pub fn set_saved_bookmark_enabled(&mut self, enabled: bool) {
+        self.saved_bookmark_enabled = enabled;
+    }
+
+    pub fn bookmark_save_toggle_on(&self) -> bool {
+        self.saved_bookmark_enabled
+    }
+
+    pub fn bookmark_save_toggle_enabled(&self) -> bool {
+        !self.is_raw_file
+    }
+
+    pub fn take_bookmark_action(&mut self) -> Option<crate::controller::BookmarkSaveAction> {
+        self.pending_bookmark_action.take()
     }
 
     pub fn set_saved_thumbnail_selection(
@@ -1127,7 +1152,7 @@ impl ViewerState {
         let ctx = ui.ctx().clone();
         let viewer_style = ui.style().clone();
         if !self.open || self.entries.is_empty() {
-            return ViewerOutput { nav: ViewerNav::None, close_requested: !self.open, save_slots: None, spread_save_action: None, sort_save_action: None, thumbnail_save_action: None, open_favorite_dialog: false, toggle_translate_window: false };
+            return ViewerOutput { nav: ViewerNav::None, close_requested: !self.open, save_slots: None, spread_save_action: None, sort_save_action: None, thumbnail_save_action: None, bookmark_save_action: None, open_favorite_dialog: false, toggle_translate_window: false };
         }
 
         // ── フレーム入力を一括収集（ctx.input はこの1回のみ）────────────────
@@ -1294,11 +1319,12 @@ impl ViewerState {
         let spread_save_action = self.take_spread_action();
         let sort_save_action = self.take_sort_action();
         let thumbnail_save_action = self.take_thumbnail_action();
+        let bookmark_save_action = self.take_bookmark_action();
         let open_favorite_dialog = self.take_favorite_dialog_request();
         let toggle_translate_window = self.take_translate_toggle_request();
         self.maybe_open_file_detail_dialog();
         self.draw_file_detail_dialog(&ctx);
-        ViewerOutput { nav, close_requested: close_self, save_slots, spread_save_action, sort_save_action, thumbnail_save_action, open_favorite_dialog, toggle_translate_window }
+        ViewerOutput { nav, close_requested: close_self, save_slots, spread_save_action, sort_save_action, thumbnail_save_action, bookmark_save_action, open_favorite_dialog, toggle_translate_window }
     }
 
     /// ビューアーを開いた直後（初回フレーム）に conf 既定スロットを一度だけ適用する。
@@ -1613,6 +1639,8 @@ impl ViewerState {
                 let overwrite_enabled = self.spread_overwrite_enabled();
                 let sort_toggle_enabled = self.sort_save_toggle_enabled();
                 let sort_toggle_on = self.sort_save_toggle_on();
+        let bookmark_toggle_enabled = self.bookmark_save_toggle_enabled();
+        let bookmark_toggle_on = self.bookmark_save_toggle_on();
                 let sort_changed = self.sort_save_changed();
                 let current_sort = self.current_sort_snapshot();
                 let thumbnail_target = self.thumbnail_context_entry.as_ref();
@@ -1620,10 +1648,11 @@ impl ViewerState {
                 let saved_thumbnail_display = self.saved_thumbnail_display_name();
                 let action = &mut self.pending_spread_action;
                 let sort_action = &mut self.pending_sort_action;
+                let bookmark_action = &mut self.pending_bookmark_action;
                 let thumbnail_action = &mut self.pending_thumbnail_action;
                 let open_favorite_dialog = &mut self.pending_open_favorite_dialog;
                 let open_file_detail = &mut self.pending_open_file_detail;
-                resp.context_menu(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort, sort_action, thumbnail_target, saved_thumbnail_selection, saved_thumbnail_display.as_deref(), thumbnail_action, open_favorite_dialog, open_file_detail));
+                resp.context_menu(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort, sort_action, bookmark_toggle_enabled, bookmark_toggle_on, bookmark_action, thumbnail_target, saved_thumbnail_selection, saved_thumbnail_display.as_deref(), thumbnail_action, open_favorite_dialog, open_file_detail));
 
                 let painter = ui.painter().with_clip_rect(clip);
                 let off_old = avail.x * frame.t * (-frame.anim_dir_f);
@@ -2573,6 +2602,9 @@ impl ViewerState {
         sort_changed: bool,
         current_sort: (ViewerSortKey, bool),
         sort_action: &mut Option<crate::controller::SortSaveAction>,
+        bookmark_toggle_enabled: bool,
+        bookmark_toggle_on_init: bool,
+        bookmark_action: &mut Option<crate::controller::BookmarkSaveAction>,
         thumbnail_target: Option<&(String, String)>,
         saved_thumbnail_selection: Option<&crate::spread_state::ThumbnailSelection>,
         saved_thumbnail_display: Option<&str>,
@@ -2616,6 +2648,17 @@ impl ViewerState {
             String::new()
         };
         ui.label(format!("{} : {}{}", t.sort_save_new_label(), sort_text, changed_suffix));
+        let mut bookmark_toggle_on = bookmark_toggle_on_init;
+        ui.add_enabled_ui(bookmark_toggle_enabled, |ui| {
+            if ui.checkbox(&mut bookmark_toggle_on, t.bookmark_save_toggle_label()).changed() {
+                *bookmark_action = Some(if bookmark_toggle_on {
+                    crate::controller::BookmarkSaveAction::Enable
+                } else {
+                    crate::controller::BookmarkSaveAction::Disable
+                });
+                ui.close();
+            }
+        });
         // 3項目は排他的なプリセット。チェック状態は右クリックしたページではなく、
         // アーカイブに保存済みの生成方法を表す。
         let saved_kind = saved_thumbnail_selection.map(|selection| selection.source_kind);
@@ -2728,6 +2771,8 @@ impl ViewerState {
         let overwrite_enabled = self.spread_overwrite_enabled();
         let sort_toggle_enabled = self.sort_save_toggle_enabled();
         let sort_toggle_on = self.sort_save_toggle_on();
+        let bookmark_toggle_enabled = self.bookmark_save_toggle_enabled();
+        let bookmark_toggle_on = self.bookmark_save_toggle_on();
         let sort_changed = self.sort_save_changed();
         let current_sort = self.current_sort_snapshot();
         if let Some(tex) = tex {
@@ -2774,10 +2819,11 @@ impl ViewerState {
                     let saved_thumbnail_display = self.saved_thumbnail_display_name();
                     let action = &mut self.pending_spread_action;
                     let sort_action = &mut self.pending_sort_action;
+                let bookmark_action = &mut self.pending_bookmark_action;
                     let thumbnail_action = &mut self.pending_thumbnail_action;
                     let open_favorite_dialog = &mut self.pending_open_favorite_dialog;
                     let open_file_detail = &mut self.pending_open_file_detail;
-                    resp.context_menu(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort, sort_action, thumbnail_target, saved_thumbnail_selection, saved_thumbnail_display.as_deref(), thumbnail_action, open_favorite_dialog, open_file_detail));
+                    resp.context_menu(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort, sort_action, bookmark_toggle_enabled, bookmark_toggle_on, bookmark_action, thumbnail_target, saved_thumbnail_selection, saved_thumbnail_display.as_deref(), thumbnail_action, open_favorite_dialog, open_file_detail));
                 });
             } else {
                 let available = ui.available_size();
@@ -2799,10 +2845,11 @@ impl ViewerState {
                 let saved_thumbnail_display = self.saved_thumbnail_display_name();
                 let action = &mut self.pending_spread_action;
                 let sort_action = &mut self.pending_sort_action;
+                let bookmark_action = &mut self.pending_bookmark_action;
                 let thumbnail_action = &mut self.pending_thumbnail_action;
                 let open_favorite_dialog = &mut self.pending_open_favorite_dialog;
                 let open_file_detail = &mut self.pending_open_file_detail;
-                resp.context_menu(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort, sort_action, thumbnail_target, saved_thumbnail_selection, saved_thumbnail_display.as_deref(), thumbnail_action, open_favorite_dialog, open_file_detail));
+                resp.context_menu(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort, sort_action, bookmark_toggle_enabled, bookmark_toggle_on, bookmark_action, thumbnail_target, saved_thumbnail_selection, saved_thumbnail_display.as_deref(), thumbnail_action, open_favorite_dialog, open_file_detail));
             }
         } else {
             let rect = egui::Rect::from_min_size(ui.cursor().left_top(), ui.available_size());
@@ -2816,10 +2863,11 @@ impl ViewerState {
             let saved_thumbnail_display = self.saved_thumbnail_display_name();
             let action = &mut self.pending_spread_action;
             let sort_action = &mut self.pending_sort_action;
+                let bookmark_action = &mut self.pending_bookmark_action;
             let thumbnail_action = &mut self.pending_thumbnail_action;
             let open_favorite_dialog = &mut self.pending_open_favorite_dialog;
             let open_file_detail = &mut self.pending_open_file_detail;
-            resp.context_menu(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort, sort_action, thumbnail_target, saved_thumbnail_selection, saved_thumbnail_display.as_deref(), thumbnail_action, open_favorite_dialog, open_file_detail));
+            resp.context_menu(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort, sort_action, bookmark_toggle_enabled, bookmark_toggle_on, bookmark_action, thumbnail_target, saved_thumbnail_selection, saved_thumbnail_display.as_deref(), thumbnail_action, open_favorite_dialog, open_file_detail));
         }
     }
 
@@ -2841,6 +2889,8 @@ impl ViewerState {
         let overwrite_enabled = self.spread_overwrite_enabled();
         let sort_toggle_enabled = self.sort_save_toggle_enabled();
         let sort_toggle_on = self.sort_save_toggle_on();
+        let bookmark_toggle_enabled = self.bookmark_save_toggle_enabled();
+        let bookmark_toggle_on = self.bookmark_save_toggle_on();
         let sort_changed = self.sort_save_changed();
         let current_sort = self.current_sort_snapshot();
 
@@ -2850,6 +2900,7 @@ impl ViewerState {
                 ui, tex_left, tex_right, left_index, right_index, double_clicked, single_clicked,
                 toggle_enabled, toggle_on, overwrite_enabled,
                 sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort,
+                bookmark_toggle_enabled, bookmark_toggle_on,
             );
             return;
         }
@@ -2874,10 +2925,11 @@ impl ViewerState {
         let saved_thumbnail_display = self.saved_thumbnail_display_name();
         let action = &mut self.pending_spread_action;
         let sort_action = &mut self.pending_sort_action;
+                let bookmark_action = &mut self.pending_bookmark_action;
         let thumbnail_action = &mut self.pending_thumbnail_action;
         let open_favorite_dialog = &mut self.pending_open_favorite_dialog;
         let open_file_detail = &mut self.pending_open_file_detail;
-        resp.context_menu(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort, sort_action, thumbnail_target, saved_thumbnail_selection, saved_thumbnail_display.as_deref(), thumbnail_action, open_favorite_dialog, open_file_detail));
+        resp.context_menu(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort, sort_action, bookmark_toggle_enabled, bookmark_toggle_on, bookmark_action, thumbnail_target, saved_thumbnail_selection, saved_thumbnail_display.as_deref(), thumbnail_action, open_favorite_dialog, open_file_detail));
 
         if angle_deg == 0 {
             let (rect_l, rect_r) = Self::spread_rects(available, origin, tex_left, tex_right, monitor);
@@ -2910,6 +2962,8 @@ impl ViewerState {
         sort_toggle_on: bool,
         sort_changed: bool,
         current_sort: (ViewerSortKey, bool),
+        bookmark_toggle_enabled: bool,
+        bookmark_toggle_on: bool,
     ) {
         let outer_available = ui.available_size();
         let sl = Self::spread_page_size(tex_left);
@@ -2963,10 +3017,11 @@ impl ViewerState {
             let saved_thumbnail_display = self.saved_thumbnail_display_name();
             let action = &mut self.pending_spread_action;
             let sort_action = &mut self.pending_sort_action;
+                let bookmark_action = &mut self.pending_bookmark_action;
             let thumbnail_action = &mut self.pending_thumbnail_action;
             let open_favorite_dialog = &mut self.pending_open_favorite_dialog;
             let open_file_detail = &mut self.pending_open_file_detail;
-            resp.context_menu(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort, sort_action, thumbnail_target, saved_thumbnail_selection, saved_thumbnail_display.as_deref(), thumbnail_action, open_favorite_dialog, open_file_detail));
+            resp.context_menu(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort, sort_action, bookmark_toggle_enabled, bookmark_toggle_on, bookmark_action, thumbnail_target, saved_thumbnail_selection, saved_thumbnail_display.as_deref(), thumbnail_action, open_favorite_dialog, open_file_detail));
         });
     }
 

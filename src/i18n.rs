@@ -250,6 +250,14 @@ impl Lang {
         }
     }
 
+    pub fn bookmark_save_toggle_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "しおりを保存する",
+            Lang::English  => "Save bookmark",
+            Lang::Chinese  => "保存书签",
+        }
+    }
+
     pub fn thumbnail_register_page_label(self) -> &'static str {
         match self {
             Lang::Japanese => "このページをサムネイルとして登録",

@@ -549,6 +549,10 @@ impl NekoviewApp {
             self.handle_thumbnail_save_action(action);
         }
 
+        if let Some(action) = output.bookmark_save_action {
+            self.handle_bookmark_save_action(action);
+        }
+
         if output.open_favorite_dialog {
             self.open_favorite_detail_dialog();
         }
@@ -834,6 +838,32 @@ impl NekoviewApp {
         self.refresh_saved_archive_settings(&archive_path);
     }
 
+    /// 右クリックメニューでのしおり保存トグル操作を反映する。
+    /// 位置(last_entry_name等)の保存はここでは行わない（離脱時保存フックの責務）。
+    fn handle_bookmark_save_action(&mut self, action: crate::controller::BookmarkSaveAction) {
+        let Some(db) = self.spread_db.clone() else { return };
+        let mut viewer_guard = self.viewer.lock().unwrap();
+        let Some(viewer) = viewer_guard.as_mut() else { return };
+        let archive_path = viewer.archive_path().clone();
+        let Some(filename) = archive_path.file_name().and_then(|n| n.to_str()) else { return };
+        let archive_dir = archive_path.parent()
+            .unwrap_or(&self.current_dir)
+            .to_path_buf();
+
+        match action {
+            crate::controller::BookmarkSaveAction::Enable => {
+                crate::spread_state::write_bookmark_enabled(&db, &archive_dir, filename, true);
+                viewer.set_saved_bookmark_enabled(true);
+            }
+            crate::controller::BookmarkSaveAction::Disable => {
+                crate::spread_state::remove_bookmark(&db, &archive_dir, filename);
+                viewer.set_saved_bookmark_enabled(false);
+            }
+        }
+        drop(viewer_guard);
+        self.refresh_saved_archive_settings(&archive_path);
+    }
+
     /// 登録サムネイルページの永続化だけを行う。画像キャッシュの差し替えは次フェーズで接続する。
     fn handle_thumbnail_save_action(&mut self, action: crate::controller::ThumbnailSaveAction) {
         let Some(db) = self.spread_db.clone() else { return };
@@ -960,6 +990,10 @@ impl NekoviewApp {
             state.restore_saved_sort(key, ascending);
             state.set_saved_sort(Some((key, ascending)));
         }
+        let bookmark_enabled = self.spread_db.as_ref()
+            .and_then(|db| crate::spread_state::read_bookmark(db, archive_dir, filename))
+            .is_some_and(|bookmark| bookmark.enabled);
+        state.set_saved_bookmark_enabled(bookmark_enabled);
         let saved_thumbnail_selection = self.spread_db.as_ref().and_then(|db| {
             crate::spread_state::read_thumbnail_selection(db, archive_dir, filename)
         });

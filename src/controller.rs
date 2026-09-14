@@ -36,6 +36,15 @@ pub enum SortSaveAction {
     Disable,
 }
 
+/// しおり保存メニューでのユーザー操作。
+#[derive(Clone, Copy, PartialEq)]
+pub enum BookmarkSaveAction {
+    /// 保存ON: しおり記録を開始する（位置は次回離脱時に保存）。
+    Enable,
+    /// 保存OFF: しおりレコードを削除する。
+    Disable,
+}
+
 /// 登録サムネイルページの保存メニューでのユーザー操作。
 #[derive(Clone, PartialEq)]
 pub enum ThumbnailSaveAction {
@@ -58,6 +67,8 @@ pub struct ViewerOutput {
     pub sort_save_action: Option<SortSaveAction>,
     /// Some(_) のとき登録サムネイルページの保存/解除を行う。
     pub thumbnail_save_action: Option<ThumbnailSaveAction>,
+    /// Some(_) のとき app 側でしおりの有効/無効をDBへ反映する。
+    pub bookmark_save_action: Option<BookmarkSaveAction>,
     /// true のとき app 側でお気に入り詳細設定ダイアログを開く
     pub open_favorite_dialog: bool,
     /// true のとき app 側でOCR/翻訳子ウィンドウの開閉をトグルする
