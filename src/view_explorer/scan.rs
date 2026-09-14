@@ -385,6 +385,7 @@ impl NekoviewApp {
                 self.favorite_states = crate::favorites::list_dir_favorites(&db, &self.current_dir)
                     .into_iter()
                     .collect();
+                crate::spread_state::bookmark_gc_dir(&db, &self.current_dir, &filenames);
             } else {
                 self.spread_states.clear();
                 self.archive_sort_states.clear();

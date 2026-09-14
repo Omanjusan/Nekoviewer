@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use redb::{Database, ReadableDatabase, TableDefinition};
+use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 
 use crate::types::{PageMode, ReaderSortKey};
 
@@ -29,6 +29,17 @@ pub const THUMBNAIL_SELECTION_TABLE_V1: TableDefinition<&str, &str> =
 /// アーカイブ単位の登録サムネイル。v1のentry_nameに生成方法を追加した第2世代。
 pub const THUMBNAIL_SELECTION_TABLE_V2: TableDefinition<&str, (&str, u8)> =
     TableDefinition::new("thumbnail_selection_v2");
+
+/// アーカイブ単位のしおり保存テーブル（第1世代）。
+///
+/// キーは他テーブルと同じ「正規化済みディレクトリ\0ファイル名」。
+/// 値は (bookmark_enabled, last_entry_name, updated_at, archive_mtime)。
+/// last_entry_name はページ番号ではなくファイル内の実エントリ名（ソート順に非依存）。
+/// レコード不在 or bookmark_enabled=false は「しおり保存OFF」を表す。
+/// 値形式を将来変更する場合はこの定義を変更せず、`bookmark_state_v2` のような
+/// 新しいテーブルを追加して移行すること（thumbnail_selection方式を踏襲）。
+pub const BOOKMARK_TABLE_V1: TableDefinition<&str, (bool, &str, i64, i64)> =
+    TableDefinition::new("bookmark_state_v1");
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ThumbnailSourceKind {
@@ -62,6 +73,15 @@ pub struct ThumbnailSelection {
     pub source_kind: ThumbnailSourceKind,
 }
 
+/// アーカイブ単位のしおり保存状態。
+#[derive(Clone, Debug, PartialEq)]
+pub struct BookmarkState {
+    pub enabled: bool,
+    pub last_entry_name: String,
+    pub updated_at: i64,
+    pub archive_mtime: i64,
+}
+
 /// サムネイル上の保存設定表示に必要な、アーカイブ単位の状態。
 #[derive(Clone, Copy, PartialEq, Default)]
 pub struct SavedArchiveSettings {
@@ -82,6 +102,7 @@ pub fn open_spread_db(root: &Path) -> Option<Arc<Mutex<Database>>> {
         tx.open_table(ARCHIVE_SORT_TABLE_V1).ok()?;
         tx.open_table(THUMBNAIL_SELECTION_TABLE_V1).ok()?;
         tx.open_table(THUMBNAIL_SELECTION_TABLE_V2).ok()?;
+        tx.open_table(BOOKMARK_TABLE_V1).ok()?;
         tx.commit().ok()?;
     }
     Some(Arc::new(Mutex::new(db)))
@@ -407,6 +428,146 @@ pub fn gc_dir(db: &Arc<Mutex<Database>>, dir: &Path, existing_filenames: &[Strin
     stale.len()
 }
 
+fn unix_timestamp_secs() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs().min(i64::MAX as u64) as i64)
+        .unwrap_or(0)
+}
+
+fn decode_bookmark(value: (bool, &str, i64, i64)) -> BookmarkState {
+    BookmarkState {
+        enabled: value.0,
+        last_entry_name: value.1.to_string(),
+        updated_at: value.2,
+        archive_mtime: value.3,
+    }
+}
+
+/// しおり保存の有効/無効を切り替える（右クリックメニューのトグル用）。
+/// 既存の位置情報（last_entry_name等）は変更しない。レコード不在時、
+/// enabled=trueなら空の位置情報でレコードを新規作成する（次の離脱時保存を待つ状態）。
+/// enabled=falseでレコード不在なら何もしない。
+pub fn write_bookmark_enabled(db: &Arc<Mutex<Database>>, dir: &Path, filename: &str, enabled: bool) {
+    let key = make_key(dir, filename);
+    let Ok(db) = db.lock() else { return };
+    let Ok(tx) = db.begin_write() else { return };
+    {
+        let Ok(mut table) = tx.open_table(BOOKMARK_TABLE_V1) else { return };
+        let current = table.get(key.as_str()).ok().flatten().map(|v| decode_bookmark(v.value()));
+        let next = match current {
+            Some(state) => BookmarkState { enabled, ..state },
+            None if enabled => BookmarkState {
+                enabled: true,
+                last_entry_name: String::new(),
+                updated_at: 0,
+                archive_mtime: 0,
+            },
+            None => return,
+        };
+        let _ = table.insert(
+            key.as_str(),
+            (next.enabled, next.last_entry_name.as_str(), next.updated_at, next.archive_mtime),
+        );
+    }
+    let _ = tx.commit();
+}
+
+/// 離脱時に現在の閲覧位置を保存する。bookmark_enabled=trueのレコードが既に
+/// 存在する場合のみ書き込む（呼び出し元がenabled状態を見て呼ぶ前提の保険）。
+pub fn write_bookmark_position(
+    db: &Arc<Mutex<Database>>,
+    dir: &Path,
+    filename: &str,
+    last_entry_name: &str,
+    archive_mtime: i64,
+) {
+    let key = make_key(dir, filename);
+    let Ok(db) = db.lock() else { return };
+    let Ok(tx) = db.begin_write() else { return };
+    {
+        let Ok(mut table) = tx.open_table(BOOKMARK_TABLE_V1) else { return };
+        let current = table.get(key.as_str()).ok().flatten().map(|v| decode_bookmark(v.value()));
+        let Some(state) = current.filter(|state| state.enabled) else { return };
+        let _ = table.insert(
+            key.as_str(),
+            (state.enabled, last_entry_name, unix_timestamp_secs(), archive_mtime),
+        );
+    }
+    let _ = tx.commit();
+}
+
+/// 保存済みのしおり状態を返す。レコード不在は None。
+pub fn read_bookmark(db: &Arc<Mutex<Database>>, dir: &Path, filename: &str) -> Option<BookmarkState> {
+    let key = make_key(dir, filename);
+    let db = db.lock().ok()?;
+    let tx = db.begin_read().ok()?;
+    let table = tx.open_table(BOOKMARK_TABLE_V1).ok()?;
+    let value = table.get(key.as_str()).ok()??;
+    Some(decode_bookmark(value.value()))
+}
+
+/// 復帰失敗時、位置情報だけ初期化する（enabledは維持し、次回離脱時に再記録させる）。
+pub fn clear_bookmark_position(db: &Arc<Mutex<Database>>, dir: &Path, filename: &str) {
+    let key = make_key(dir, filename);
+    let Ok(db) = db.lock() else { return };
+    let Ok(tx) = db.begin_write() else { return };
+    {
+        let Ok(mut table) = tx.open_table(BOOKMARK_TABLE_V1) else { return };
+        let current = table.get(key.as_str()).ok().flatten().map(|v| decode_bookmark(v.value()));
+        let Some(state) = current else { return };
+        let _ = table.insert(key.as_str(), (state.enabled, "", 0i64, 0i64));
+    }
+    let _ = tx.commit();
+}
+
+/// しおりレコードを完全に削除する（GC用）。
+pub fn remove_bookmark(db: &Arc<Mutex<Database>>, dir: &Path, filename: &str) {
+    let key = make_key(dir, filename);
+    let Ok(db) = db.lock() else { return };
+    let Ok(tx) = db.begin_write() else { return };
+    if let Ok(mut table) = tx.open_table(BOOKMARK_TABLE_V1) {
+        let _ = table.remove(key.as_str());
+    }
+    let _ = tx.commit();
+}
+
+/// dir 配下で保存済みのしおり一覧を返す（GC用）。戻り値: (filename, BookmarkState)
+pub fn list_dir_bookmarks(db: &Arc<Mutex<Database>>, dir: &Path) -> Vec<(String, BookmarkState)> {
+    let prefix = {
+        let key = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
+        format!("{}\0", key.to_string_lossy())
+    };
+    let Ok(db) = db.lock() else { return Vec::new() };
+    let Ok(tx) = db.begin_read() else { return Vec::new() };
+    let Ok(table) = tx.open_table(BOOKMARK_TABLE_V1) else { return Vec::new() };
+    let Ok(range) = table.range(prefix.as_str()..) else { return Vec::new() };
+    let mut out = Vec::new();
+    for entry in range {
+        let Ok((k, v)) = entry else { continue };
+        let full_key = k.value();
+        if !full_key.starts_with(&prefix) {
+            break;
+        }
+        let filename = &full_key[prefix.len()..];
+        out.push((filename.to_string(), decode_bookmark(v.value())));
+    }
+    out
+}
+
+/// dir 配下で existing_filenames に存在しないしおりレコードを削除する（GC）。削除件数を返す。
+pub fn bookmark_gc_dir(db: &Arc<Mutex<Database>>, dir: &Path, existing_filenames: &[String]) -> usize {
+    let stale: Vec<String> = list_dir_bookmarks(db, dir)
+        .into_iter()
+        .map(|(name, _)| name)
+        .filter(|name| !existing_filenames.contains(name))
+        .collect();
+    for name in &stale {
+        remove_bookmark(db, dir, name);
+    }
+    stale.len()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -433,6 +594,7 @@ mod tests {
             tx.open_table(SPREAD_TABLE).unwrap();
             tx.open_table(ARCHIVE_SORT_TABLE_V1).unwrap();
             tx.open_table(THUMBNAIL_SELECTION_TABLE_V1).unwrap();
+            tx.open_table(BOOKMARK_TABLE_V1).unwrap();
             tx.commit().unwrap();
         }
         Arc::new(Mutex::new(db))
@@ -675,5 +837,96 @@ mod tests {
         assert!(matches!(spreads[0].1, PageMode::SpreadLeft));
         assert_eq!(spreads[0].2, 1);
         assert!(list_dir_archive_sorts(&db, &root).is_empty());
+    }
+
+    #[test]
+    fn bookmark_disabled_by_default_and_enable_creates_empty_position() {
+        let db = temp_db();
+        let dir = dummy_dir();
+        assert!(read_bookmark(&db, &dir, "book.zip").is_none());
+
+        write_bookmark_enabled(&db, &dir, "book.zip", true);
+        let state = read_bookmark(&db, &dir, "book.zip").unwrap();
+        assert!(state.enabled);
+        assert_eq!(state.last_entry_name, "");
+        assert_eq!(state.updated_at, 0);
+        assert_eq!(state.archive_mtime, 0);
+    }
+
+    #[test]
+    fn bookmark_disable_without_prior_record_is_noop() {
+        let db = temp_db();
+        let dir = dummy_dir();
+        write_bookmark_enabled(&db, &dir, "book.zip", false);
+        assert!(read_bookmark(&db, &dir, "book.zip").is_none());
+    }
+
+    #[test]
+    fn bookmark_position_is_ignored_while_disabled() {
+        let db = temp_db();
+        let dir = dummy_dir();
+        // レコード自体が無い状態
+        write_bookmark_position(&db, &dir, "book.zip", "pages/010.jpg", 100);
+        assert!(read_bookmark(&db, &dir, "book.zip").is_none());
+
+        // 有効化した後に無効化した状態
+        write_bookmark_enabled(&db, &dir, "book.zip", true);
+        write_bookmark_enabled(&db, &dir, "book.zip", false);
+        write_bookmark_position(&db, &dir, "book.zip", "pages/010.jpg", 100);
+        let state = read_bookmark(&db, &dir, "book.zip").unwrap();
+        assert!(!state.enabled);
+        assert_eq!(state.last_entry_name, "", "無効中は位置を書き込まない");
+    }
+
+    #[test]
+    fn bookmark_position_roundtrip_and_clear_keeps_enabled_flag() {
+        let db = temp_db();
+        let dir = dummy_dir();
+        write_bookmark_enabled(&db, &dir, "book.zip", true);
+        write_bookmark_position(&db, &dir, "book.zip", "pages/010.jpg", 12345);
+
+        let state = read_bookmark(&db, &dir, "book.zip").unwrap();
+        assert!(state.enabled);
+        assert_eq!(state.last_entry_name, "pages/010.jpg");
+        assert_eq!(state.archive_mtime, 12345);
+        assert!(state.updated_at > 0);
+
+        clear_bookmark_position(&db, &dir, "book.zip");
+        let cleared = read_bookmark(&db, &dir, "book.zip").unwrap();
+        assert!(cleared.enabled, "clearはenabledを維持する");
+        assert_eq!(cleared.last_entry_name, "");
+        assert_eq!(cleared.updated_at, 0);
+        assert_eq!(cleared.archive_mtime, 0);
+    }
+
+    #[test]
+    fn bookmark_records_are_independent_by_actual_parent_directory() {
+        let db = temp_db();
+        let dir = unique_temp_path("bookmark_dir");
+        let other_dir = unique_temp_path("other_bookmark_dir");
+
+        write_bookmark_enabled(&db, &dir, "book.zip", true);
+        write_bookmark_position(&db, &dir, "book.zip", "pages/001.jpg", 1);
+        write_bookmark_enabled(&db, &other_dir, "book.zip", true);
+        write_bookmark_position(&db, &other_dir, "book.zip", "pages/099.jpg", 2);
+
+        assert_eq!(read_bookmark(&db, &dir, "book.zip").unwrap().last_entry_name, "pages/001.jpg");
+        assert_eq!(read_bookmark(&db, &other_dir, "book.zip").unwrap().last_entry_name, "pages/099.jpg");
+
+        remove_bookmark(&db, &dir, "book.zip");
+        assert!(read_bookmark(&db, &dir, "book.zip").is_none());
+        assert!(read_bookmark(&db, &other_dir, "book.zip").is_some());
+    }
+
+    #[test]
+    fn bookmark_gc_removes_only_missing_files() {
+        let db = temp_db();
+        let dir = dummy_dir();
+        write_bookmark_enabled(&db, &dir, "keep.zip", true);
+        write_bookmark_enabled(&db, &dir, "stale.zip", true);
+
+        assert_eq!(bookmark_gc_dir(&db, &dir, &["keep.zip".to_string()]), 1);
+        assert!(read_bookmark(&db, &dir, "keep.zip").is_some());
+        assert!(read_bookmark(&db, &dir, "stale.zip").is_none());
     }
 }
