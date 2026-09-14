@@ -266,17 +266,6 @@ impl NekoviewApp {
         }
     }
 
-    /// ビューアー右クリック「お気に入り詳細設定」ダイアログを、現在表示中ファイルの
-    /// 既存お気に入り登録状態を読み込んだ上で開く。
-    pub(super) fn open_favorite_detail_dialog(&mut self) {
-        let path = {
-            let viewer_guard = self.viewer.lock().unwrap();
-            let Some(viewer) = viewer_guard.as_ref() else { return };
-            viewer.archive_path().clone()
-        };
-        self.open_favorite_detail_dialog_for_paths(vec![path]);
-    }
-
     /// エクスプローラー部のグリッド右クリックから、単一ファイルまたは複数選択集合を
     /// 対象にお気に入り詳細設定ダイアログを開く。
     pub(super) fn open_favorite_detail_dialog_for_paths(&mut self, targets: Vec<PathBuf>) {

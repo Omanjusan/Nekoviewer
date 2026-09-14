@@ -1,11 +1,12 @@
 //! GUI設定ダイアログ・セッション状態(state ファイル)まわり。
-//! config.rs の AppConfig(config.ini, 起動時読み込み専用)とは異なり、こちらは
+//! config.rs の AppConfig(ハードコード既定値、起動時に確定)とは異なり、こちらは
 //! アプリ実行中に設定ダイアログ/ビューアー操作から書き換えられ、都度 state ファイルへ
 //! 永続化される値（ウィンドウ位置・ソート順・言語・ビューア設定・隠しファイル表示・
 //! 設定ダイアログ経由の AppConfig 上書き値）を扱う。
 
 use std::path::{Path, PathBuf};
 
+use crate::card_date_format::CardDateFormat;
 use crate::config::{AppConfig, ResizeFilter, filter_to_str, parse_filter};
 use crate::toolbar::{BAR_ITEM_COUNT, DEFAULT_BAR_ORDER, ViewerBarItem, bar_order_to_str, parse_bar_order};
 use crate::translate::TranslateConfig;
@@ -53,6 +54,69 @@ pub fn thumbbar_pos_to_str(p: ThumbbarPos) -> &'static str {
     }
 }
 
+/// スライドショー用トランジション種類（設定ダイアログのスライドショータブから選択）。
+/// 実際の描画切り替えは別フェーズで各PageMode描画パスに接続する。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum TransitionKind {
+    /// トランジション無し。即時切り替え（アニメーションをスキップする）
+    None,
+    /// 既存の見開き位置スライド（デフォルト、従来からのページ送り演出）
+    HorizontalSlide,
+    /// 旧ページ→新ページのクロスフェード
+    CrossFade,
+    /// 時計回りワイプ（境界フェザー付き）
+    ClockwiseWipe,
+}
+
+/// トランジション遷移時間(ms)の下限/上限。設定ダイアログのスライダーもこの範囲。
+pub const TRANSITION_DURATION_FLOOR_MS: u64 = 100;
+pub const TRANSITION_DURATION_CEILING_MS: u64 = 1000;
+
+pub(crate) fn parse_transition_kind(s: &str) -> TransitionKind {
+    match s {
+        "none"           => TransitionKind::None,
+        "cross_fade"     => TransitionKind::CrossFade,
+        "clockwise_wipe" => TransitionKind::ClockwiseWipe,
+        _                => TransitionKind::HorizontalSlide,
+    }
+}
+
+pub fn transition_kind_to_str(k: TransitionKind) -> &'static str {
+    match k {
+        TransitionKind::None            => "none",
+        TransitionKind::HorizontalSlide => "horizontal_slide",
+        TransitionKind::CrossFade       => "cross_fade",
+        TransitionKind::ClockwiseWipe   => "clockwise_wipe",
+    }
+}
+
+/// スライドショー送り間隔(ms)の下限/上限。設定ダイアログのスライダーもこの範囲。
+pub const SLIDESHOW_INTERVAL_FLOOR_MS: u64 = 1000;
+pub const SLIDESHOW_INTERVAL_CEILING_MS: u64 = 60000;
+
+/// スライドショー中にユーザーが手動でページ送りした場合の挙動。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SlideshowManualBehavior {
+    /// タイマーをリセットしてスライドショーを継続する
+    ResetTimer,
+    /// 手動操作の時点でスライドショーを停止する
+    Stop,
+}
+
+pub(crate) fn parse_slideshow_manual_behavior(s: &str) -> SlideshowManualBehavior {
+    match s {
+        "stop" => SlideshowManualBehavior::Stop,
+        _      => SlideshowManualBehavior::ResetTimer,
+    }
+}
+
+pub fn slideshow_manual_behavior_to_str(b: SlideshowManualBehavior) -> &'static str {
+    match b {
+        SlideshowManualBehavior::ResetTimer => "reset_timer",
+        SlideshowManualBehavior::Stop        => "stop",
+    }
+}
+
 /// ファイルをまたいで維持するビューア設定（ウィンドウを開き直しても保持）
 #[derive(Clone, Copy)]
 pub struct ViewerConfig {
@@ -97,6 +161,21 @@ pub struct ViewerConfig {
     /// ビューアーツールバーの項目並び順（全項目の順列、toolbar.rs 参照）。
     /// 永続設定。現時点で編集UIは無く実質固定（state を直接編集すれば並べ替え可能）。
     pub bar_order: [ViewerBarItem; BAR_ITEM_COUNT],
+    /// 通常時（スライドショー実行中以外）のトランジション種類。永続設定
+    /// （設定ダイアログのスライドショータブで編集）。
+    pub transition_kind: TransitionKind,
+    /// 通常時のトランジション遷移時間(ms)。永続設定。TRANSITION_DURATION_FLOOR_MS〜CEILING_MSの範囲。
+    pub transition_duration_ms: u64,
+    /// スライドショー送り間隔(ms)。永続設定。SLIDESHOW_INTERVAL_FLOOR_MS〜CEILING_MSの範囲。
+    pub slideshow_interval_ms: u64,
+    /// スライドショー中の手動ページ送り時の挙動。永続設定。
+    pub slideshow_manual_behavior: SlideshowManualBehavior,
+    /// スライドショー実行中のトランジション種類。永続設定。通常時(transition_kind)とは
+    /// 独立して選べる（例: 通常時クロスフェード／スライドショー時横スライド）。
+    pub slideshow_transition_kind: TransitionKind,
+    /// スライドショー実行中のトランジション遷移時間(ms)。永続設定。
+    /// TRANSITION_DURATION_FLOOR_MS〜CEILING_MSの範囲（通常時と同じ範囲を共用）。
+    pub slideshow_transition_duration_ms: u64,
 }
 
 impl Default for ViewerConfig {
@@ -119,6 +198,12 @@ impl Default for ViewerConfig {
             rotation_session_angle: 0,
             exif_orientation_enabled: true,
             bar_order: DEFAULT_BAR_ORDER,
+            transition_kind: TransitionKind::HorizontalSlide,
+            transition_duration_ms: 400,
+            slideshow_interval_ms: 5000,
+            slideshow_manual_behavior: SlideshowManualBehavior::ResetTimer,
+            slideshow_transition_kind: TransitionKind::HorizontalSlide,
+            slideshow_transition_duration_ms: 1000,
         }
     }
 }
@@ -154,15 +239,35 @@ pub struct AppState {
     pub viewer_cfg: ViewerConfig,
     /// 隠しファイル/フォルダを一覧に表示するか（設定ダイアログの共通タブで編集）
     pub show_hidden: bool,
-    /// 設定ダイアログ（共通/アニメタブ）から編集された AppConfig 上書き値。
-    /// None のものは config.ini の値をそのまま使う。一度でもダイアログで変更すると
-    /// この state 側の値が以後 config.ini より優先される（次回起動反映）。
+    /// サムネカード下部の情報帯モード: "off" / "name" / "name_date" / "name_date_size"。
+    /// メニューバーの1ボタン循環トグルで切り替え、値は CardInfoMode 側で解釈する。
+    pub card_info_mode: String,
+    /// サムネカード情報帯の「更新日時」表示に使う日付書式。設定ダイアログの
+    /// エクスプローラータブで編集し、state には card_date_* の6キーに分割して保存する。
+    pub card_date_format: CardDateFormat,
+    /// 設定ダイアログから編集された AppConfig 上書き値。
+    /// None のものは config.rs のハードコード既定値をそのまま使う。一度でもダイアログで
+    /// 変更するとこの state 側の値が以後その既定値より優先される（次回起動反映）。
     pub app_cache_total_mb: Option<u64>,
     pub app_anim_ring_min_frames: Option<usize>,
     pub app_anim_ring_max_frames: Option<usize>,
     pub app_anim_frame_hard_limit_mb: Option<usize>,
     pub app_viewer_filter: Option<ResizeFilter>,
     pub app_max_decode_edge: Option<u32>,
+    /// デバッグタブで編集するログ設定。None は未設定（ハードコード既定=false を使う）。
+    pub app_log_perf: Option<bool>,
+    pub app_log_key: Option<bool>,
+    pub app_log_common: Option<bool>,
+    /// その他タブで編集する起動時フォルダ設定。
+    pub app_startup_use_last_dir: Option<bool>,
+    pub app_startup_fixed_dir: Option<PathBuf>,
+    /// フェーズ4a: thumb_size/thumb_filterもconfig.ini廃止に伴いこちらへ移行。
+    pub app_thumb_filter: Option<ResizeFilter>,
+    pub app_thumb_size: Option<u32>,
+    /// フェーズ4b: decode_threads/default_slotもGUI編集可能にしこちらへ統合。
+    pub app_decode_threads: Option<usize>,
+    /// 外側Noneはキー未記載（ハードコード既定値を使う）、内側Noneはユーザーが明示的に選んだ「なし」。
+    pub app_default_slot: Option<Option<usize>>,
     /// 翻訳機能(実験的)の接続先・オーバーレイ設定。
     pub translate_cfg: TranslateConfig,
 }
@@ -177,12 +282,23 @@ impl Default for AppState {
             lang: "ja".to_string(),
             viewer_cfg: ViewerConfig::default(),
             show_hidden: false,
+            card_info_mode: "off".to_string(),
+            card_date_format: CardDateFormat::default(),
             app_cache_total_mb: None,
             app_anim_ring_min_frames: None,
             app_anim_ring_max_frames: None,
             app_anim_frame_hard_limit_mb: None,
             app_viewer_filter: None,
             app_max_decode_edge: None,
+            app_log_perf: None,
+            app_log_key: None,
+            app_log_common: None,
+            app_startup_use_last_dir: None,
+            app_startup_fixed_dir: None,
+            app_thumb_filter: None,
+            app_thumb_size: None,
+            app_decode_threads: None,
+            app_default_slot: None,
             translate_cfg: TranslateConfig::default(),
         }
     }
@@ -228,6 +344,14 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
     let mut viewer_fullscreen: Option<bool> = None;
     let mut redecode_on_resize: Option<bool> = None;
     let mut show_hidden: Option<bool> = None;
+    let mut card_info_mode: Option<String> = None;
+    // カード日付書式の6キー（未記載は CardDateFormat::from_state 側で各既定へフォールバック）
+    let mut card_date_mode = String::new();
+    let mut card_date_auto_style = String::new();
+    let mut card_date_order = String::new();
+    let mut card_date_sep = String::new();
+    let mut card_date_year = String::new();
+    let mut card_date_month = String::new();
     let mut resize_debounce_ms: Option<u64> = None;
     let mut app_cache_total_mb: Option<u64> = None;
     let mut app_anim_ring_min_frames: Option<usize> = None;
@@ -235,6 +359,15 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
     let mut app_anim_frame_hard_limit_mb: Option<usize> = None;
     let mut app_viewer_filter: Option<ResizeFilter> = None;
     let mut app_max_decode_edge: Option<u32> = None;
+    let mut app_log_perf: Option<bool> = None;
+    let mut app_log_key: Option<bool> = None;
+    let mut app_log_common: Option<bool> = None;
+    let mut app_startup_use_last_dir: Option<bool> = None;
+    let mut app_startup_fixed_dir: Option<PathBuf> = None;
+    let mut app_thumb_filter: Option<ResizeFilter> = None;
+    let mut app_thumb_size: Option<u32> = None;
+    let mut app_decode_threads: Option<usize> = None;
+    let mut app_default_slot: Option<Option<usize>> = None;
     let mut thumbbar_pos: Option<ThumbbarPos> = None;
     let mut thumbbar_thumb_size: Option<u32> = None;
     let mut thumbbar_idle_hide_ms: Option<u64> = None;
@@ -245,6 +378,12 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
     let mut thumbbar_marker_a: Option<u8> = None;
     let mut exif_orientation_enabled: Option<bool> = None;
     let mut viewer_bar_order: Option<[ViewerBarItem; BAR_ITEM_COUNT]> = None;
+    let mut transition_kind: Option<TransitionKind> = None;
+    let mut transition_duration_ms: Option<u64> = None;
+    let mut slideshow_interval_ms: Option<u64> = None;
+    let mut slideshow_manual_behavior: Option<SlideshowManualBehavior> = None;
+    let mut slideshow_transition_kind: Option<TransitionKind> = None;
+    let mut slideshow_transition_duration_ms: Option<u64> = None;
     let mut translate_base_url: Option<String> = None;
     // 旧キー(単一モデル)。新キー未設定時にocr_model/translation_modelへ後方互換で引き継ぐ。
     let mut translate_model_legacy: Option<String> = None;
@@ -297,6 +436,13 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
                 "viewer_fullscreen" => { viewer_fullscreen = v.trim().parse().ok(); }
                 "redecode_on_resize" => { redecode_on_resize = v.trim().parse().ok(); }
                 "show_hidden" => { show_hidden = v.trim().parse().ok(); }
+                "card_info_mode" => { card_info_mode = Some(v.trim().to_string()); }
+                "card_date_mode" => { card_date_mode = v.trim().to_string(); }
+                "card_date_auto_style" => { card_date_auto_style = v.trim().to_string(); }
+                "card_date_order" => { card_date_order = v.trim().to_string(); }
+                "card_date_sep" => { card_date_sep = v.trim().to_string(); }
+                "card_date_year" => { card_date_year = v.trim().to_string(); }
+                "card_date_month" => { card_date_month = v.trim().to_string(); }
                 "resize_debounce_ms" => {
                     resize_debounce_ms = v.trim().parse::<u64>().ok()
                         .filter(|n| (100..=1000).contains(n) && n % 100 == 0);
@@ -310,6 +456,29 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
                     if !v.is_empty() { app_viewer_filter = Some(parse_filter(v)); }
                 }
                 "app_max_decode_edge" => { app_max_decode_edge = v.trim().parse().ok(); }
+                "app_log_perf" => { app_log_perf = v.trim().parse().ok(); }
+                "app_log_key" => { app_log_key = v.trim().parse().ok(); }
+                "app_log_common" => { app_log_common = v.trim().parse().ok(); }
+                "app_startup_use_last_dir" => { app_startup_use_last_dir = v.trim().parse().ok(); }
+                "app_startup_fixed_dir" => {
+                    let v = v.trim();
+                    if !v.is_empty() { app_startup_fixed_dir = Some(PathBuf::from(v)); }
+                }
+                "app_thumb_filter" => {
+                    let v = v.trim();
+                    if !v.is_empty() { app_thumb_filter = Some(parse_filter(v)); }
+                }
+                "app_thumb_size" => { app_thumb_size = v.trim().parse().ok(); }
+                "app_decode_threads" => { app_decode_threads = v.trim().parse().ok(); }
+                "app_default_slot" => {
+                    app_default_slot = Some(match v.trim() {
+                        "5" => Some(0),
+                        "6" => Some(1),
+                        "7" => Some(2),
+                        "8" => Some(3),
+                        _   => None,
+                    });
+                }
                 "thumbbar_pos" => { thumbbar_pos = Some(parse_thumbbar_pos(v.trim())); }
                 "thumbbar_thumb_size" => { thumbbar_thumb_size = v.trim().parse().ok(); }
                 "thumbbar_idle_hide_ms" => { thumbbar_idle_hide_ms = v.trim().parse().ok(); }
@@ -320,6 +489,23 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
                 "thumbbar_marker_a" => { thumbbar_marker_a = v.trim().parse().ok(); }
                 "exif_orientation_enabled" => { exif_orientation_enabled = v.trim().parse().ok(); }
                 "viewer_bar_order" => { viewer_bar_order = Some(parse_bar_order(v)); }
+                "transition_kind" => { transition_kind = Some(parse_transition_kind(v.trim())); }
+                "transition_duration_ms" => {
+                    transition_duration_ms = v.trim().parse::<u64>().ok()
+                        .map(|n| n.clamp(TRANSITION_DURATION_FLOOR_MS, TRANSITION_DURATION_CEILING_MS));
+                }
+                "slideshow_interval_ms" => {
+                    slideshow_interval_ms = v.trim().parse::<u64>().ok()
+                        .map(|n| n.clamp(SLIDESHOW_INTERVAL_FLOOR_MS, SLIDESHOW_INTERVAL_CEILING_MS));
+                }
+                "slideshow_manual_behavior" => {
+                    slideshow_manual_behavior = Some(parse_slideshow_manual_behavior(v.trim()));
+                }
+                "slideshow_transition_kind" => { slideshow_transition_kind = Some(parse_transition_kind(v.trim())); }
+                "slideshow_transition_duration_ms" => {
+                    slideshow_transition_duration_ms = v.trim().parse::<u64>().ok()
+                        .map(|n| n.clamp(TRANSITION_DURATION_FLOOR_MS, TRANSITION_DURATION_CEILING_MS));
+                }
                 "translate_base_url" => {
                     let v = v.trim();
                     if !v.is_empty() { translate_base_url = Some(v.to_string()); }
@@ -399,14 +585,38 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
             rotation_session_angle: 0,
             exif_orientation_enabled: exif_orientation_enabled.unwrap_or(true),
             bar_order: viewer_bar_order.unwrap_or(DEFAULT_BAR_ORDER),
+            transition_kind: transition_kind.unwrap_or(TransitionKind::HorizontalSlide),
+            transition_duration_ms: transition_duration_ms.unwrap_or(400),
+            slideshow_interval_ms: slideshow_interval_ms.unwrap_or(5000),
+            slideshow_manual_behavior: slideshow_manual_behavior.unwrap_or(SlideshowManualBehavior::ResetTimer),
+            slideshow_transition_kind: slideshow_transition_kind.unwrap_or(TransitionKind::HorizontalSlide),
+            slideshow_transition_duration_ms: slideshow_transition_duration_ms.unwrap_or(1000),
         },
         show_hidden: show_hidden.unwrap_or(false),
+        card_info_mode: card_info_mode.unwrap_or_else(|| "off".to_string()),
+        card_date_format: CardDateFormat::from_state(
+            &card_date_mode,
+            &card_date_auto_style,
+            &card_date_order,
+            &card_date_sep,
+            &card_date_year,
+            &card_date_month,
+        ),
         app_cache_total_mb,
         app_anim_ring_min_frames,
         app_anim_ring_max_frames,
         app_anim_frame_hard_limit_mb,
         app_viewer_filter,
         app_max_decode_edge,
+        app_log_perf,
+        app_log_key,
+        app_log_common,
+        app_startup_use_last_dir,
+        app_startup_fixed_dir,
+        app_thumb_filter,
+        app_thumb_size,
+        app_decode_threads,
+        app_default_slot,
         translate_cfg: TranslateConfig {
             base_url: translate_base_url.unwrap_or_default(),
             translation_model: translate_translation_model.clone().or_else(|| translate_model_legacy.clone()).unwrap_or_default(),
@@ -417,16 +627,22 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn save_state(root: &Path, dir: &Path, window_size: (u32, u32), viewer_slots: &[Option<WindowSlot>; 4], sort_state: &SortState, lang: &str, viewer_cfg: &ViewerConfig, show_hidden: bool, app_cfg: &AppConfig, translate_cfg: &TranslateConfig) {
+pub fn save_state(root: &Path, dir: &Path, window_size: (u32, u32), viewer_slots: &[Option<WindowSlot>; 4], sort_state: &SortState, lang: &str, viewer_cfg: &ViewerConfig, show_hidden: bool, card_info_mode: &str, card_date_format: &CardDateFormat, app_cfg: &AppConfig, translate_cfg: &TranslateConfig) {
     let _ = std::fs::create_dir_all(root);
     let (path, bak, tmp) = (state_path(root), state_bak_path(root), state_tmp_path(root));
 
     let mut content = format!(
-        "last_dir={}\nwindow_width={}\nwindow_height={}\nsort_key={}\nsort_ascending={}\nlang={}\nviewer_zoom={}\nviewer_fullscreen={}\nredecode_on_resize={}\nresize_debounce_ms={}\nshow_hidden={}\n",
+        "last_dir={}\nwindow_width={}\nwindow_height={}\nsort_key={}\nsort_ascending={}\nlang={}\nviewer_zoom={}\nviewer_fullscreen={}\nredecode_on_resize={}\nresize_debounce_ms={}\nshow_hidden={}\ncard_info_mode={}\n",
         dir.to_string_lossy(), window_size.0, window_size.1, sort_state.key, sort_state.ascending, lang,
         viewer_cfg.zoom_actual, viewer_cfg.fullscreen,
-        viewer_cfg.redecode_on_resize, viewer_cfg.resize_debounce_ms, show_hidden,
+        viewer_cfg.redecode_on_resize, viewer_cfg.resize_debounce_ms, show_hidden, card_info_mode,
     );
+    // カード日付書式: 可読性優先で6キーに分割。auto_style 未指定は空文字で書く（＝言語追従）。
+    content.push_str(&format!(
+        "card_date_mode={}\ncard_date_auto_style={}\ncard_date_order={}\ncard_date_sep={}\ncard_date_year={}\ncard_date_month={}\n",
+        card_date_format.mode_str(), card_date_format.auto_style_str(), card_date_format.order_str(),
+        card_date_format.sep_str(), card_date_format.year_str(), card_date_format.month_str(),
+    ));
     content.push_str(&format!(
         "thumbbar_pos={}\nthumbbar_thumb_size={}\nthumbbar_idle_hide_ms={}\nthumbbar_overlap={}\nthumbbar_marker_r={}\nthumbbar_marker_g={}\nthumbbar_marker_b={}\nthumbbar_marker_a={}\n",
         thumbbar_pos_to_str(viewer_cfg.thumbbar_pos), viewer_cfg.thumbbar_thumb_size, viewer_cfg.thumbbar_idle_hide_ms,
@@ -442,6 +658,18 @@ pub fn save_state(root: &Path, dir: &Path, window_size: (u32, u32), viewer_slots
         bar_order_to_str(&viewer_cfg.bar_order),
     ));
     content.push_str(&format!(
+        "transition_kind={}\ntransition_duration_ms={}\n",
+        transition_kind_to_str(viewer_cfg.transition_kind), viewer_cfg.transition_duration_ms,
+    ));
+    content.push_str(&format!(
+        "slideshow_interval_ms={}\nslideshow_manual_behavior={}\n",
+        viewer_cfg.slideshow_interval_ms, slideshow_manual_behavior_to_str(viewer_cfg.slideshow_manual_behavior),
+    ));
+    content.push_str(&format!(
+        "slideshow_transition_kind={}\nslideshow_transition_duration_ms={}\n",
+        transition_kind_to_str(viewer_cfg.slideshow_transition_kind), viewer_cfg.slideshow_transition_duration_ms,
+    ));
+    content.push_str(&format!(
         "translate_base_url={}\ntranslate_ocr_model={}\ntranslate_translation_model={}\ntranslate_overlay_width={}\n",
         translate_cfg.base_url, translate_cfg.ocr_model, translate_cfg.translation_model, translate_cfg.overlay_width,
     ));
@@ -455,6 +683,31 @@ pub fn save_state(root: &Path, dir: &Path, window_size: (u32, u32), viewer_slots
         app_cfg.anim_frame_hard_limit_mb,
         filter_to_str(app_cfg.viewer_filter),
         app_cfg.max_decode_edge,
+    ));
+    // デバッグタブが編集するログ設定。現在有効な値（グローバルなconfig::log()）をそのまま書き戻す。
+    let log_cfg = crate::config::log();
+    content.push_str(&format!(
+        "app_log_perf={}\napp_log_key={}\napp_log_common={}\n",
+        log_cfg.perf, log_cfg.key, log_cfg.common,
+    ));
+    // その他タブが編集する起動時フォルダ設定。
+    content.push_str(&format!(
+        "app_startup_use_last_dir={}\napp_startup_fixed_dir={}\n",
+        app_cfg.startup.use_last_dir,
+        app_cfg.startup.fixed_dir.as_deref().map(|p| p.to_string_lossy().to_string()).unwrap_or_default(),
+    ));
+    // フェーズ4a: thumb_size/thumb_filter（旧config.ini直接保存分）もここへ統合。
+    content.push_str(&format!(
+        "app_thumb_filter={}\napp_thumb_size={}\n",
+        filter_to_str(app_cfg.thumb_filter), app_cfg.thumb_size,
+    ));
+    // フェーズ4b: decode_threads/default_slotもここへ統合。
+    let default_slot_str = match app_cfg.default_slot {
+        Some(0) => "5", Some(1) => "6", Some(2) => "7", Some(3) => "8", _ => "",
+    };
+    content.push_str(&format!(
+        "app_decode_threads={}\napp_default_slot={}\n",
+        app_cfg.decode_threads, default_slot_str,
     ));
     for (i, slot) in viewer_slots.iter().enumerate() {
         if let Some(s) = slot {
@@ -484,5 +737,53 @@ mod tests {
         let config = ViewerConfig::default();
         assert!(!config.zoom_actual);
         assert!(config.redecode_on_resize);
+    }
+
+    #[test]
+    fn card_date_keys_parse_into_format() {
+        use crate::card_date_format::{AutoStyle, CardDateFormat, CardDateMode};
+
+        let root = std::env::temp_dir()
+            .join(format!("nekoviewer_state_test_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&root);
+        // save_state が書き出すのと同じ6キー名で custom 書式を復元できること。
+        std::fs::write(
+            state_path(&root),
+            "last_dir=/tmp/x\nlang=ja\n\
+             card_date_mode=custom\ncard_date_auto_style=\ncard_date_order=dmy\n\
+             card_date_sep=dot\ncard_date_year=y2\ncard_date_month=en\n",
+        )
+        .unwrap();
+
+        let parsed = parse_state_file(&state_path(&root)).expect("state file parses");
+        assert_eq!(parsed.card_date_format.mode, CardDateMode::Custom);
+        assert_eq!(parsed.card_date_format.auto_style, None);
+        assert_eq!(
+            parsed.card_date_format,
+            CardDateFormat::from_state("custom", "", "dmy", "dot", "y2", "en")
+        );
+        // 参照: auto_style を持つケースも往復する
+        assert_eq!(
+            AutoStyle::MdySlash,
+            CardDateFormat::from_state("auto", "mdy_slash", "", "", "", "")
+                .auto_style
+                .unwrap()
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn missing_card_date_keys_fall_back_to_default() {
+        // card_date_* を一切含まない旧 state 断片でも既定（自動）へ寄る。
+        let root = std::env::temp_dir()
+            .join(format!("nekoviewer_state_legacy_test_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&root);
+        std::fs::write(state_path(&root), "last_dir=/tmp/x\nlang=ja\nshow_hidden=false\n").unwrap();
+
+        let parsed = parse_state_file(&state_path(&root)).expect("legacy state parses");
+        assert_eq!(parsed.card_date_format, CardDateFormat::default());
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

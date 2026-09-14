@@ -32,6 +32,16 @@ impl Lang {
         }
     }
 
+    /// Windowsエクスプローラーの右クリックメニューに表示するNekoviewer起動項目のラベル
+    #[cfg_attr(not(windows), allow(dead_code))]
+    pub fn windows_context_menu_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "Nekoviewerで開く",
+            Lang::English  => "Open with Nekoviewer",
+            Lang::Chinese  => "用Nekoviewer打开",
+        }
+    }
+
     pub fn sort_date(self) -> &'static str {
         match self {
             Lang::Japanese => "[日付]",
@@ -69,6 +79,38 @@ impl Lang {
             Lang::Japanese => "[降順]",
             Lang::English  => "[Desc]",
             Lang::Chinese  => "[降序]",
+        }
+    }
+
+    pub fn card_info_off(self) -> &'static str {
+        match self {
+            Lang::Japanese => "情報:OFF",
+            Lang::English  => "Info: Off",
+            Lang::Chinese  => "信息:关",
+        }
+    }
+
+    pub fn card_info_name(self) -> &'static str {
+        match self {
+            Lang::Japanese => "情報:名前",
+            Lang::English  => "Info: Name",
+            Lang::Chinese  => "信息:名称",
+        }
+    }
+
+    pub fn card_info_name_date(self) -> &'static str {
+        match self {
+            Lang::Japanese => "情報:名前+日付",
+            Lang::English  => "Info: Name+Date",
+            Lang::Chinese  => "信息:名称+日期",
+        }
+    }
+
+    pub fn card_info_name_date_size(self) -> &'static str {
+        match self {
+            Lang::Japanese => "情報:名前+日付+容量",
+            Lang::English  => "Info: Name+Date+Size",
+            Lang::Chinese  => "信息:名称+日期+大小",
         }
     }
 
@@ -208,11 +250,51 @@ impl Lang {
         }
     }
 
+    pub fn bookmark_save_toggle_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "しおりを保存する",
+            Lang::English  => "Save bookmark",
+            Lang::Chinese  => "保存书签",
+        }
+    }
+
     pub fn thumbnail_register_page_label(self) -> &'static str {
         match self {
             Lang::Japanese => "このページをサムネイルとして登録",
             Lang::English  => "Use this page as the thumbnail",
             Lang::Chinese  => "将此页设为缩略图",
+        }
+    }
+
+    pub fn thumbnail_register_left_half_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "表示画像の左側をサムネイル登録",
+            Lang::English  => "Use the left half of the displayed image",
+            Lang::Chinese  => "将显示图像的左半部分设为缩略图",
+        }
+    }
+
+    pub fn thumbnail_register_right_half_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "表示画像の右側をサムネイル登録",
+            Lang::English  => "Use the right half of the displayed image",
+            Lang::Chinese  => "将显示图像的右半部分设为缩略图",
+        }
+    }
+
+    pub fn thumbnail_left_generated_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "左側生成画像",
+            Lang::English  => "generated from left side",
+            Lang::Chinese  => "左侧生成图像",
+        }
+    }
+
+    pub fn thumbnail_right_generated_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "右側生成画像",
+            Lang::English  => "generated from right side",
+            Lang::Chinese  => "右侧生成图像",
         }
     }
 
@@ -264,6 +346,55 @@ impl Lang {
         }
     }
 
+    /// ビューアー右クリックメニュー「スライドショー」チェックボックス。
+    /// チェック済み = 実行中。文言自体は状態に関わらず固定（チェック状態で表現する）。
+    pub fn slideshow_toggle_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "スライドショー",
+            Lang::English  => "Slideshow",
+            Lang::Chinese  => "幻灯片放映",
+        }
+    }
+
+    /// ビューアー右クリックメニュー「お気に入りに追加」。ダイアログを介さず、
+    /// 現在のアーカイブ（生ファイル表示中はそのファイル自身）を未整理のお気に入りへ
+    /// 即登録するワンアクション項目。フォルダ選択等の詳細設定はエクスプローラー部の
+    /// [`favorite_detail_menu`](Self::favorite_detail_menu) に委ねる。
+    pub fn favorite_quick_add_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "お気に入りに追加",
+            Lang::English  => "Add to Favorites",
+            Lang::Chinese  => "添加到收藏",
+        }
+    }
+
+    /// favorite_quick_add_label 実行後のトースト: 未整理のお気に入りへ新規登録できた。
+    pub fn favorite_quick_add_toast_success(self) -> &'static str {
+        match self {
+            Lang::Japanese => "現在のアーカイブを未分類のお気に入りフォルダに追加しました",
+            Lang::English  => "Added the current archive to the unsorted favorites folder",
+            Lang::Chinese  => "已将当前压缩包添加到未分类收藏夹",
+        }
+    }
+
+    /// favorite_quick_add_label 実行時のトースト: 既にお気に入り登録済み（フォルダ割当済み含む）だった。
+    pub fn favorite_quick_add_toast_already(self) -> &'static str {
+        match self {
+            Lang::Japanese => "既にお気に入りフォルダに登録済みです",
+            Lang::English  => "Already registered in a favorites folder",
+            Lang::Chinese  => "已在收藏夹中登记",
+        }
+    }
+
+    /// favorite_quick_add_label 実行時のトースト: DB未接続等で登録できなかった。
+    pub fn favorite_quick_add_toast_error(self) -> &'static str {
+        match self {
+            Lang::Japanese => "お気に入り登録に失敗しました",
+            Lang::English  => "Failed to add to favorites",
+            Lang::Chinese  => "添加收藏失败",
+        }
+    }
+
     pub fn favorite_detail_menu(self) -> &'static str {
         match self {
             Lang::Japanese => "お気に入り詳細設定",
@@ -277,6 +408,16 @@ impl Lang {
             Lang::Japanese => format!("お気に入り詳細設定 ({count}件)"),
             Lang::English  => format!("Favorite Details... ({count} items)"),
             Lang::Chinese  => format!("收藏详细设置（{count} 项）"),
+        }
+    }
+
+    /// エクスプローラー部アイテムカード右クリックメニュー「フォルダを開く」
+    /// （OS標準ファイラーで現在表示中ディレクトリを開く）
+    pub fn explorer_open_folder_menu(self) -> &'static str {
+        match self {
+            Lang::Japanese => "フォルダを開く",
+            Lang::English  => "Open Folder",
+            Lang::Chinese  => "打开文件夹",
         }
     }
 
@@ -707,6 +848,22 @@ impl Lang {
         }
     }
 
+    pub fn toast_bookmark_restored(self) -> &'static str {
+        match self {
+            Lang::Japanese => "前回閉じたページから復帰します",
+            Lang::English  => "Resuming from where you last left off",
+            Lang::Chinese  => "从上次关闭的页面继续",
+        }
+    }
+
+    pub fn toast_bookmark_invalidated(self) -> &'static str {
+        match self {
+            Lang::Japanese => "しおりが無効になりました",
+            Lang::English  => "The bookmark is no longer valid",
+            Lang::Chinese  => "书签已失效",
+        }
+    }
+
     pub fn viewer_fallback(self) -> &'static str {
         match self {
             Lang::Japanese => "ビューア",
@@ -715,12 +872,33 @@ impl Lang {
         }
     }
 
-    pub fn thumb_saved(self, saved: usize, total: usize) -> String {
-        match self {
-            Lang::Japanese => format!("サムネ保存: {} / {}", saved, total),
-            Lang::English  => format!("Thumbs: {} / {}", saved, total),
-            Lang::Chinese  => format!("缩略图: {} / {}", saved, total),
+    pub fn thumbnail_status(
+        self,
+        current: usize,
+        total: usize,
+        errors: usize,
+        replacing_old: bool,
+    ) -> String {
+        let mut text = match self {
+            Lang::Japanese => format!("サムネイル {current}/{total}"),
+            Lang::English  => format!("Thumbnails {current}/{total}"),
+            Lang::Chinese  => format!("缩略图 {current}/{total}"),
+        };
+        if errors > 0 {
+            match self {
+                Lang::Japanese => text.push_str(&format!(" エラー {errors}")),
+                Lang::English  => text.push_str(&format!(" Errors {errors}")),
+                Lang::Chinese  => text.push_str(&format!(" 错误 {errors}")),
+            }
         }
+        if replacing_old {
+            text.push_str(match self {
+                Lang::Japanese => " 新形式に更新中",
+                Lang::English  => " Updating to the new format",
+                Lang::Chinese  => " 正在更新为新格式",
+            });
+        }
+        text
     }
 
     pub fn file_info(self, date_str: &str, mb: f64, filename: &str) -> String {
@@ -760,6 +938,51 @@ impl Lang {
             Lang::Japanese => "OK",
             Lang::English  => "OK",
             Lang::Chinese  => "确定",
+        }
+    }
+
+    /// アーカイブオープン中オーバーレイ: フォーマット未確定（起動直後、最初の進捗コールバック前）の文言。
+    pub fn archive_open_progress_starting(self) -> &'static str {
+        match self {
+            Lang::Japanese => "読み込み中…",
+            Lang::English  => "Loading…",
+            Lang::Chinese  => "正在读取…",
+        }
+    }
+
+    /// アーカイブオープン中オーバーレイ: 件数が判明している場合の進捗文言。
+    pub fn archive_open_progress(self, current: usize, total: usize) -> String {
+        let percent = if total == 0 { 0 } else { (current * 100) / total };
+        match self {
+            Lang::Japanese => format!("読み込み中… {percent}% ({current}/{total})"),
+            Lang::English  => format!("Loading… {percent}% ({current}/{total})"),
+            Lang::Chinese  => format!("正在读取… {percent}% ({current}/{total})"),
+        }
+    }
+
+    /// アーカイブオープン中オーバーレイ: 件数不明（tar）の場合の進捗文言。
+    pub fn archive_open_progress_indeterminate(self) -> &'static str {
+        match self {
+            Lang::Japanese => "tarファイル読み込み中…",
+            Lang::English  => "Reading tar file…",
+            Lang::Chinese  => "正在读取tar文件…",
+        }
+    }
+
+    /// アーカイブオープン中オーバーレイ: メモリ見積もり（サンプル画像デコード）中の文言。
+    pub fn archive_open_estimating(self) -> &'static str {
+        match self {
+            Lang::Japanese => "確認中…",
+            Lang::English  => "Checking…",
+            Lang::Chinese  => "正在检查…",
+        }
+    }
+
+    pub fn archive_open_cancel(self) -> &'static str {
+        match self {
+            Lang::Japanese => "キャンセル",
+            Lang::English  => "Cancel",
+            Lang::Chinese  => "取消",
         }
     }
 
@@ -852,99 +1075,148 @@ impl Lang {
         }
     }
 
-    pub fn settings_storage_label(self) -> &'static str {
+    pub fn settings_tab_debug(self) -> &'static str {
         match self {
-            Lang::Japanese => "設定ファイル・キャッシュの保存先",
-            Lang::English  => "Config & cache location",
-            Lang::Chinese  => "配置文件与缓存的保存位置",
+            Lang::Japanese => "デバッグ",
+            Lang::English  => "Debug",
+            Lang::Chinese  => "调试",
         }
     }
 
-    pub fn settings_storage_local(self) -> &'static str {
+    pub fn settings_debug_explain(self) -> &'static str {
         match self {
-            Lang::Japanese => "実行ファイルの横",
-            Lang::English  => "Next to the executable",
-            Lang::Chinese  => "可执行文件旁边",
+            Lang::Japanese => "通常は全てOFFのままで問題ありません。不具合報告時など、開発者に依頼された場合のみ有効にしてください。",
+            Lang::English  => "Normally leave these all off. Enable them only when a developer asks you to, e.g. while reporting an issue.",
+            Lang::Chinese  => "通常保持全部关闭即可。仅在开发者要求时（例如报告问题时）才启用。",
         }
     }
 
-    pub fn settings_storage_xdg(self) -> &'static str {
+    pub fn settings_debug_log_perf(self) -> &'static str {
         match self {
-            Lang::Japanese => "ユーザー設定フォルダ（推奨）",
-            Lang::English  => "User config folder (recommended)",
-            Lang::Chinese  => "用户配置文件夹（推荐）",
+            Lang::Japanese => "パフォーマンス計測ログ（ページ読み込み時間など）",
+            Lang::English  => "Performance log (page load timing, etc.)",
+            Lang::Chinese  => "性能测量日志（页面加载耗时等）",
         }
     }
 
-    pub fn settings_storage_package_note(self) -> &'static str {
+    pub fn settings_debug_log_key(self) -> &'static str {
         match self {
-            Lang::Japanese => "パッケージ版では「実行ファイルの横」を選べません（インストール領域が読み取り専用のため）",
-            Lang::English  => "\"Next to the executable\" is unavailable in packaged builds because the installation is read-only.",
-            Lang::Chinese  => "软件包版本无法选择“可执行文件旁边”，因为安装区域为只读。",
+            Lang::Japanese => "キーイベント・スクロールの入力ログ",
+            Lang::English  => "Key/scroll input log",
+            Lang::Chinese  => "按键与滚动输入日志",
         }
     }
 
-    pub fn settings_storage_confirm_title(self) -> &'static str {
+    pub fn settings_debug_log_common(self) -> &'static str {
         match self {
-            Lang::Japanese => "保存先の切り替え",
-            Lang::English  => "Switch storage location",
-            Lang::Chinese  => "切换保存位置",
+            Lang::Japanese => "起動・初期化など共通ログ",
+            Lang::English  => "Common log (startup/initialization, etc.)",
+            Lang::Chinese  => "启动、初始化等通用日志",
         }
     }
 
-    pub fn settings_storage_confirm_body(self) -> &'static str {
+    pub fn settings_decode_threads_label(self) -> &'static str {
         match self {
-            Lang::Japanese => "設定ファイル一式（config/keymap/state等）を新しい場所へコピーし、元の場所からは削除します。\nサムネイルキャッシュは対象外です（新しい場所で自動的に再生成されます）。\n続けますか？",
-            Lang::English  => "This copies your config files (config/keymap/state, etc.) to the new location and removes them from the old one.\nThe thumbnail cache is not migrated (it will simply regenerate at the new location).\nContinue?",
-            Lang::Chinese  => "将把配置文件（config/keymap/state 等）复制到新位置，并从旧位置删除。\n缩略图缓存不会迁移（会在新位置自动重新生成）。\n是否继续？",
+            Lang::Japanese => "ページデコードの並列スレッド数",
+            Lang::English  => "Parallel page-decode threads",
+            Lang::Chinese  => "页面解码并行线程数",
         }
     }
 
-    pub fn settings_storage_confirm_ok(self) -> &'static str {
+    pub fn settings_decode_threads_manual_toggle(self) -> &'static str {
         match self {
-            Lang::Japanese => "切り替える",
-            Lang::English  => "Switch",
-            Lang::Chinese  => "切换",
+            Lang::Japanese => "手動で指定する（既定は自動：論理コア数の半分）",
+            Lang::English  => "Set manually (default: automatic, half the logical cores)",
+            Lang::Chinese  => "手动指定（默认自动：逻辑核心数的一半）",
         }
     }
 
-    pub fn settings_storage_delete_failed_title(self) -> &'static str {
+    pub fn settings_decode_threads_explain(self) -> &'static str {
         match self {
-            Lang::Japanese => "一部ファイルの削除に失敗しました",
-            Lang::English  => "Could not delete some old files",
-            Lang::Chinese  => "部分文件删除失败",
+            Lang::Japanese => "通常は自動のままで問題ありません。増やすとデコードは速くなりますがCPU/メモリ負荷も増えます。",
+            Lang::English  => "Normally leave this automatic. Increasing it speeds up decoding but also raises CPU/memory load.",
+            Lang::Chinese  => "通常保持自动即可。增大数值可加快解码，但会提高CPU/内存负载。",
         }
     }
 
-    pub fn settings_storage_delete_failed_body(self) -> &'static str {
+    #[cfg(windows)]
+    pub fn settings_tab_windows(self) -> &'static str {
         match self {
-            Lang::Japanese => "新しい場所へのコピーは完了しましたが、以下のファイルは元の場所から自動削除できませんでした。お手数ですが手動で削除してください：",
-            Lang::English  => "The copy to the new location succeeded, but the following files could not be automatically removed from the old location. Please delete them manually:",
-            Lang::Chinese  => "已成功复制到新位置，但以下文件无法从旧位置自动删除，请手动删除：",
+            Lang::Japanese => "Windows",
+            Lang::English  => "Windows",
+            Lang::Chinese  => "Windows",
         }
     }
 
-    pub fn config_conflict_title(self) -> &'static str {
+    #[cfg(windows)]
+    pub fn settings_windows_context_menu_label(self) -> &'static str {
         match self {
-            Lang::Japanese => "設定ファイルが2箇所で見つかりました",
-            Lang::English  => "Config found in two locations",
-            Lang::Chinese  => "在两个位置都找到了配置文件",
+            Lang::Japanese => "エクスプローラーの右クリックメニュー",
+            Lang::English  => "Explorer right-click menu",
+            Lang::Chinese  => "资源管理器右键菜单",
         }
     }
 
-    pub fn config_conflict_body(self) -> &'static str {
+    #[cfg(windows)]
+    pub fn settings_windows_context_menu_desc(self) -> &'static str {
         match self {
-            Lang::Japanese => "実行ファイルの横とユーザー設定フォルダの両方に有効な設定ファイルがあります。使う方を選んでください。選ばなかった方は手動で削除することをおすすめします。",
-            Lang::English  => "A valid config file exists both next to the executable and in the user config folder. Please choose which one to use. We recommend manually deleting the one you don't choose.",
-            Lang::Chinese  => "在可执行文件旁边和用户配置文件夹中都存在有效的配置文件。请选择要使用的一个。建议手动删除未选择的那个。",
+            Lang::Japanese => "対応するファイル（画像/アーカイブ）とフォルダの右クリックメニューに「Nekoviewerで開く」を追加する。",
+            Lang::English  => "Adds \"Open with Nekoviewer\" to the right-click menu for supported files (images/archives) and folders.",
+            Lang::Chinese  => "在支持的文件（图片/压缩包）和文件夹的右键菜单中添加“用Nekoviewer打开”。",
         }
     }
 
-    pub fn config_conflict_unknown_date(self) -> &'static str {
+    #[cfg(windows)]
+    pub fn settings_windows_register_button(self) -> &'static str {
         match self {
-            Lang::Japanese => "更新日時不明（旧形式）",
-            Lang::English  => "Unknown date (old format)",
-            Lang::Chinese  => "更新时间未知（旧格式）",
+            Lang::Japanese => "登録",
+            Lang::English  => "Register",
+            Lang::Chinese  => "注册",
+        }
+    }
+
+    #[cfg(windows)]
+    pub fn settings_windows_unregister_button(self) -> &'static str {
+        match self {
+            Lang::Japanese => "削除",
+            Lang::English  => "Remove",
+            Lang::Chinese  => "删除",
+        }
+    }
+
+    #[cfg(windows)]
+    pub fn settings_windows_status_registered(self) -> &'static str {
+        match self {
+            Lang::Japanese => "登録済み",
+            Lang::English  => "Registered",
+            Lang::Chinese  => "已注册",
+        }
+    }
+
+    #[cfg(windows)]
+    pub fn settings_windows_status_not_registered(self) -> &'static str {
+        match self {
+            Lang::Japanese => "未登録",
+            Lang::English  => "Not registered",
+            Lang::Chinese  => "未注册",
+        }
+    }
+
+    #[cfg(windows)]
+    pub fn settings_windows_register_failed(self, detail: &str) -> String {
+        match self {
+            Lang::Japanese => format!("登録に失敗: {detail}"),
+            Lang::English  => format!("Registration failed: {detail}"),
+            Lang::Chinese  => format!("注册失败: {detail}"),
+        }
+    }
+
+    #[cfg(windows)]
+    pub fn settings_windows_unregister_failed(self, detail: &str) -> String {
+        match self {
+            Lang::Japanese => format!("削除に失敗: {detail}"),
+            Lang::English  => format!("Removal failed: {detail}"),
+            Lang::Chinese  => format!("删除失败: {detail}"),
         }
     }
 
@@ -953,6 +1225,128 @@ impl Lang {
             Lang::Japanese => "ビューアー",
             Lang::English  => "Viewer",
             Lang::Chinese  => "查看器",
+        }
+    }
+
+    pub fn settings_tab_slideshow(self) -> &'static str {
+        match self {
+            Lang::Japanese => "スライドショー",
+            Lang::English  => "Slideshow",
+            Lang::Chinese  => "幻灯片放映",
+        }
+    }
+
+    /// スライドショータブの大項目見出し。通常時とスライドショー実行中でトランジション
+    /// 設定（種類・遷移時間）を独立して選べるようセクション分けする。
+    pub fn settings_slideshow_normal_section_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "通常時のトランジション設定",
+            Lang::English  => "Normal transition settings",
+            Lang::Chinese  => "平时转场设置",
+        }
+    }
+
+    pub fn settings_slideshow_active_section_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "スライドショー時のトランジション設定",
+            Lang::English  => "Slideshow transition settings",
+            Lang::Chinese  => "幻灯片放映时转场设置",
+        }
+    }
+
+    pub fn settings_transition_none(self) -> &'static str {
+        match self {
+            Lang::Japanese => "なし（即時切り替え）",
+            Lang::English  => "None (instant)",
+            Lang::Chinese  => "无（立即切换）",
+        }
+    }
+
+    pub fn settings_transition_horizontal_slide(self) -> &'static str {
+        match self {
+            Lang::Japanese => "横スライド",
+            Lang::English  => "Horizontal slide",
+            Lang::Chinese  => "横向滑动",
+        }
+    }
+
+    pub fn settings_transition_cross_fade(self) -> &'static str {
+        match self {
+            Lang::Japanese => "クロスフェード",
+            Lang::English  => "Cross-fade",
+            Lang::Chinese  => "交叉淡化",
+        }
+    }
+
+    pub fn settings_transition_clockwise_wipe(self) -> &'static str {
+        match self {
+            Lang::Japanese => "時計回りワイプ",
+            Lang::English  => "Clockwise wipe",
+            Lang::Chinese  => "顺时针擦除",
+        }
+    }
+
+    pub fn settings_transition_duration_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "■ 遷移時間",
+            Lang::English  => "■ Transition duration",
+            Lang::Chinese  => "■ 转场时长",
+        }
+    }
+
+    pub fn settings_transition_duration_explain(self) -> &'static str {
+        match self {
+            Lang::Japanese => "トランジションが完了するまでの時間(ms)。全種類共通。",
+            Lang::English  => "Time (ms) for the transition to complete. Shared by all transition types.",
+            Lang::Chinese  => "转场完成所需的时间(ms)。所有类型共用。",
+        }
+    }
+
+    pub fn settings_slideshow_interval_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "■ スライドショー間隔",
+            Lang::English  => "■ Slideshow interval",
+            Lang::Chinese  => "■ 幻灯片间隔",
+        }
+    }
+
+    pub fn settings_slideshow_interval_explain(self) -> &'static str {
+        match self {
+            Lang::Japanese => "自動でページ送りするまでの待機時間。",
+            Lang::English  => "Time to wait before automatically turning to the next page.",
+            Lang::Chinese  => "自动翻页前的等待时间。",
+        }
+    }
+
+    pub fn settings_slideshow_manual_behavior_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "■ 手動ページ送り時の挙動",
+            Lang::English  => "■ On manual page turn",
+            Lang::Chinese  => "■ 手动翻页时的行为",
+        }
+    }
+
+    pub fn settings_slideshow_manual_behavior_explain(self) -> &'static str {
+        match self {
+            Lang::Japanese => "スライドショー中にユーザーが手動でページを送った場合の扱い。",
+            Lang::English  => "What happens when the user manually turns a page during a slideshow.",
+            Lang::Chinese  => "幻灯片放映中用户手动翻页时的处理方式。",
+        }
+    }
+
+    pub fn settings_slideshow_manual_behavior_reset(self) -> &'static str {
+        match self {
+            Lang::Japanese => "タイマーをリセットして\nスライドショーを継続させる",
+            Lang::English  => "Reset the timer and\ncontinue the slideshow",
+            Lang::Chinese  => "重置计时器\n继续幻灯片放映",
+        }
+    }
+
+    pub fn settings_slideshow_manual_behavior_stop(self) -> &'static str {
+        match self {
+            Lang::Japanese => "手動操作がされた時点で\nスライドショーを停止させる",
+            Lang::English  => "Stop the slideshow\non manual operation",
+            Lang::Chinese  => "手动操作时\n停止幻灯片放映",
         }
     }
 
@@ -1111,6 +1505,30 @@ impl Lang {
         }
     }
 
+    pub fn settings_default_slot_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ビューアーを開くときの既定の位置・サイズ",
+            Lang::English  => "Default position/size when opening the viewer",
+            Lang::Chinese  => "打开查看器时的默认位置与大小",
+        }
+    }
+
+    pub fn settings_default_slot_none(self) -> &'static str {
+        match self {
+            Lang::Japanese => "なし",
+            Lang::English  => "None",
+            Lang::Chinese  => "无",
+        }
+    }
+
+    pub fn settings_default_slot_explain(self) -> &'static str {
+        match self {
+            Lang::Japanese => "F5〜F8で保存した位置・サイズを、ビューアーを開くたびに既定として適用する。該当スロットが未保存の場合はデフォルト無しと同じ扱いになる。適用後でもF5〜F8でその回だけ別スロットへ切り替えられる。",
+            Lang::English  => "Applies the position/size saved to F5-F8 as the default every time the viewer opens. If that slot isn't saved yet, it behaves as if none were selected. You can still switch to a different slot for just that session with F5-F8.",
+            Lang::Chinese  => "每次打开查看器时，将F5~F8保存的位置与大小作为默认应用。若该槽位尚未保存，则视为未选择。应用后仍可通过F5~F8临时切换到其他槽位。",
+        }
+    }
+
     /// ダイアログ下部に1回だけ出す凡例。全項目に■が付き、[反映]後に次回起動が必要な
     /// 項目だけ■の直後に※も付く（■ ※<ラベル>）。
     pub fn settings_legend(self) -> &'static str {
@@ -1227,9 +1645,9 @@ impl Lang {
 
     pub fn settings_thumb_size_explain(self) -> &'static str {
         match self {
-            Lang::Japanese => "グリッド表示でのサムネイル長辺サイズ（px）。",
-            Lang::English  => "Long-edge size (px) of thumbnails in grid view.",
-            Lang::Chinese  => "网格视图中缩略图长边尺寸（px）。",
+            Lang::Japanese => "グリッド表示と新規生成に使うサムネイル長辺サイズ（px）。",
+            Lang::English  => "Long-edge size (px) used for grid display and newly generated thumbnails.",
+            Lang::Chinese  => "用于网格显示和新生成缩略图的长边尺寸（px）。",
         }
     }
 
@@ -1297,11 +1715,131 @@ impl Lang {
         }
     }
 
+    pub fn settings_anim_frame_hard_limit_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "アニメ1フレームあたりの生デコードサイズ上限",
+            Lang::English  => "Per-frame raw decode size limit for animations",
+            Lang::Chinese  => "动画单帧原始解码大小上限",
+        }
+    }
+
+    pub fn settings_anim_frame_hard_limit_explain(self) -> &'static str {
+        match self {
+            Lang::Japanese => "同一アニメ内で解像度が異常に大きいフレームに遭遇した際、そのフレームだけ縮小して再生を継続する。一般的な解像度（4K級まで）は約34MBに収まるため、通常は既定のままで問題ない。",
+            Lang::English  => "If a frame in an animation has an unusually large resolution, only that frame is downscaled to keep playback going. Typical resolutions (up to 4K) fit within ~34MB, so the default is usually fine.",
+            Lang::Chinese  => "当同一动画中出现分辨率异常大的帧时，仅缩小该帧以继续播放。常见分辨率（最高4K）约占34MB，通常保持默认值即可。",
+        }
+    }
+
     pub fn settings_tab_translate(self) -> &'static str {
         match self {
             Lang::Japanese => "翻訳機能",
             Lang::English  => "Translate",
             Lang::Chinese  => "翻译功能",
+        }
+    }
+
+    pub fn settings_tab_explorer(self) -> &'static str {
+        match self {
+            Lang::Japanese => "エクスプローラー",
+            Lang::English  => "Explorer",
+            Lang::Chinese  => "资源管理器",
+        }
+    }
+
+    pub fn settings_card_date_heading(self) -> &'static str {
+        match self {
+            Lang::Japanese => "サムネカードの日付表示",
+            Lang::English  => "Thumbnail card date",
+            Lang::Chinese  => "缩略图卡片的日期显示",
+        }
+    }
+
+    pub fn settings_card_date_mode_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "モード",
+            Lang::English  => "Mode",
+            Lang::Chinese  => "模式",
+        }
+    }
+
+    pub fn settings_card_date_mode_auto(self) -> &'static str {
+        match self {
+            Lang::Japanese => "自動（表示言語に従う）",
+            Lang::English  => "Auto (follow UI language)",
+            Lang::Chinese  => "自动（跟随界面语言）",
+        }
+    }
+
+    pub fn settings_card_date_mode_sort(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ソート基準（20260131）",
+            Lang::English  => "Sort-friendly (20260131)",
+            Lang::Chinese  => "排序优先（20260131）",
+        }
+    }
+
+    pub fn settings_card_date_mode_custom(self) -> &'static str {
+        match self {
+            Lang::Japanese => "カスタム",
+            Lang::English  => "Custom",
+            Lang::Chinese  => "自定义",
+        }
+    }
+
+    pub fn settings_card_date_auto_style_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "自動時の書式",
+            Lang::English  => "Auto format",
+            Lang::Chinese  => "自动模式的格式",
+        }
+    }
+
+    pub fn settings_card_date_order_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "表示順",
+            Lang::English  => "Order",
+            Lang::Chinese  => "顺序",
+        }
+    }
+
+    pub fn settings_card_date_sep_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "区切り文字",
+            Lang::English  => "Separator",
+            Lang::Chinese  => "分隔符",
+        }
+    }
+
+    pub fn settings_card_date_year_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "年の桁",
+            Lang::English  => "Year digits",
+            Lang::Chinese  => "年份位数",
+        }
+    }
+
+    pub fn settings_card_date_month_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "月の表記",
+            Lang::English  => "Month style",
+            Lang::Chinese  => "月份表示",
+        }
+    }
+
+    pub fn settings_card_date_sep_none(self) -> &'static str {
+        match self {
+            Lang::Japanese => "なし",
+            Lang::English  => "None",
+            Lang::Chinese  => "无",
+        }
+    }
+
+    pub fn settings_card_date_preview(self, example: &str) -> String {
+        match self {
+            Lang::Japanese => format!("例: {example}"),
+            Lang::English  => format!("Example: {example}"),
+            Lang::Chinese  => format!("示例：{example}"),
         }
     }
 
@@ -1603,6 +2141,38 @@ impl Lang {
         }
     }
 
+    pub fn settings_startup_use_last_dir(self) -> &'static str {
+        match self {
+            Lang::Japanese => "アプリ終了時に居たフォルダへ復帰する",
+            Lang::English  => "Restore the folder open at exit on next launch",
+            Lang::Chinese  => "启动时恢复上次退出时所在的文件夹",
+        }
+    }
+
+    pub fn settings_startup_use_last_dir_explain(self) -> &'static str {
+        match self {
+            Lang::Japanese => "アクセスできない場合（ネットワークドライブ切断など）は下の固定フォルダへフォールバックします。",
+            Lang::English  => "Falls back to the fixed folder below if it's no longer accessible (e.g. a disconnected network drive).",
+            Lang::Chinese  => "若无法访问（如网络驱动器断开），将回退到下方的固定文件夹。",
+        }
+    }
+
+    pub fn settings_startup_fixed_dir_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "起動時に開く固定フォルダ",
+            Lang::English  => "Fixed folder to open at startup",
+            Lang::Chinese  => "启动时打开的固定文件夹",
+        }
+    }
+
+    pub fn settings_startup_fixed_dir_explain(self) -> &'static str {
+        match self {
+            Lang::Japanese => "空欄ならホームディレクトリ、ホームにも移動できなければルートを使います。",
+            Lang::English  => "Leave empty to use the home directory, or the root if that's unavailable too.",
+            Lang::Chinese  => "留空则使用主目录，若主目录也无法使用则使用根目录。",
+        }
+    }
+
     pub fn settings_viewer_blocked(self) -> &'static str {
         match self {
             Lang::Japanese => "設定変更中は操作できません",
@@ -1636,5 +2206,26 @@ pub fn lang_code() -> &'static str {
         Lang::Japanese => "ja",
         Lang::English  => "en",
         Lang::Chinese  => "cn",
+    }
+}
+
+#[cfg(test)]
+mod thumbnail_status_tests {
+    use super::Lang;
+
+    #[test]
+    fn japanese_status_keeps_error_before_update_suffix() {
+        assert_eq!(
+            Lang::Japanese.thumbnail_status(77, 80, 3, true),
+            "サムネイル 77/80 エラー 3 新形式に更新中",
+        );
+    }
+
+    #[test]
+    fn normal_status_has_no_extra_suffix() {
+        assert_eq!(
+            Lang::Japanese.thumbnail_status(80, 80, 0, false),
+            "サムネイル 80/80",
+        );
     }
 }

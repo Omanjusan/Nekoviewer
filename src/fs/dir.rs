@@ -103,7 +103,7 @@ pub fn name_matches(pattern_text: &str, filename: &str) -> bool {
 /// パスが対応アーカイブのファイル名サフィックスを持つか。
 /// `.tar.gz` のような二重拡張子を正しく扱うため `extension()` ではなくファイル名末尾で判定する。
 /// 7z/tar は対応 feature が有効なときのみ列挙対象に含める。
-fn is_archive_path(p: &Path) -> bool {
+pub(crate) fn is_archive_path(p: &Path) -> bool {
     let name = p
         .file_name()
         .and_then(|n| n.to_str())
@@ -127,6 +127,21 @@ fn is_archive_path(p: &Path) -> bool {
         return true;
     }
     false
+}
+
+/// 右クリックメニュー登録など「拡張子そのもの」を列挙したい場面向けの単純な
+/// （複合でない）対応アーカイブ拡張子一覧。`.tar.gz`/`.tar.zst` はWindowsが
+/// 最後のドット以降のみを拡張子とみなすため対象外（is_archive_pathの複合判定とは別枠）。
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) fn simple_archive_extensions() -> Vec<&'static str> {
+    let mut exts = vec!["zip", "cbz"];
+    #[cfg(feature = "fmt-7z")]
+    exts.extend(["7z", "cb7"]);
+    #[cfg(feature = "fmt-tar")]
+    exts.extend(["tar", "cbt", "tgz"]);
+    #[cfg(feature = "tar-zstd")]
+    exts.push("tzst");
+    exts
 }
 
 /// ディレクトリ直下の ZIP/CBZ/7z/CB7/TAR/CBT ファイルを列挙する

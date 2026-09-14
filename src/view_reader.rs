@@ -1,4 +1,4 @@
-use crate::gui_config::{ThumbbarPos, ViewerConfig};
+use crate::gui_config::{SlideshowManualBehavior, ThumbbarPos, TransitionKind, ViewerConfig};
 use crate::controller::{ViewerNav, ViewerOutput};
 use crate::i18n;
 use crate::log_key;
@@ -23,7 +23,6 @@ const ANIM_DECODE_AHEAD_FRAMES: usize = 8;
 /// content_px の初回フレーム前プレースホルダ。draw() 冒頭で毎フレーム実測値に
 /// 上書きされるため、実際のデコードターゲットには事実上使われない。
 const CONTENT_PX_PLACEHOLDER: (u32, u32) = (1920, 1080);
-const ANIM_SECS: f32 = 0.4;
 /// サムネイルバー: 現在ページを中心にこの枚数分だけ先取り要求する（暫定固定値）。
 /// フェーズ2で実際の可視範囲ベースに置き換え予定。
 const THUMBBAR_ENQUEUE_WINDOW: i32 = 40;
@@ -188,6 +187,7 @@ struct FrameInput {
     // ポインタ
     hover_pos: Option<egui::Pos2>,
     middle_clicked: bool,
+    primary_clicked: bool,
     // viewport
     outer_rect: Option<egui::Rect>,
     inner_rect: Option<egui::Rect>,
@@ -209,9 +209,11 @@ impl FrameInput {
     /// それぞれの修飾キー条件が現在の入力状態と一致するかを見て、一致した方に生delta(sd.y、
     /// shift成分ありなら+sd.x)を渡す。PagePrev/PageNextは対で同じ条件を持つ想定のため、
     /// 片方から拾えれば十分（Prev側優先、無ければNext側）。
-    fn collect(ctx: &egui::Context, zoom_actual: bool, keymap: &Keymap) -> Self {
+    fn collect(ctx: &egui::Context, keymap: &Keymap) -> Self {
         ctx.input(|i| {
-            let sd = if zoom_actual { egui::Vec2::ZERO } else { i.smooth_scroll_delta() };
+            // 原寸表示中も含め、ホイールは常にページ送りへ渡す（原寸時の画像内スクロールは
+            // ScrollAreaのドラッグ/スクロールバー操作に譲り、ホイールとは役割を分離する）。
+            let sd = i.smooth_scroll_delta();
             let wheel_amount = |m: MouseCombo| -> f32 {
                 if !m.modifiers_match(i) { return 0.0; }
                 sd.y + if m.shift { sd.x } else { 0.0 }
@@ -253,13 +255,14 @@ impl FrameInput {
                 shift_scroll_delta: file_mouse.map(wheel_amount).unwrap_or(0.0),
                 hover_pos:          i.pointer.hover_pos(),
                 middle_clicked,
+                primary_clicked:    i.pointer.button_clicked(egui::PointerButton::Primary),
                 outer_rect:         vp.outer_rect,
                 inner_rect:         vp.inner_rect,
                 monitor_size:       vp.monitor_size,
                 viewport_rect:      i.viewport_rect(),
                 os_maximized:       vp.maximized.unwrap_or(false),
                 close_requested:    vp.close_requested(),
-                dt:                 i.unstable_dt,
+                dt:                 i.stable_dt.min(0.1),
                 time:               i.time,
             }
         })
@@ -320,6 +323,8 @@ struct RenderFrame {
     monitor:     Option<egui::Vec2>,
     /// TODO項目B: シングルページ表示に適用する手動回転角度(0/90/180/270)
     rotation_angle: i32,
+    /// スライドショー設定のトランジション種類。アニメ中の描画分岐に使う。
+    transition_kind: TransitionKind,
 }
 
 /// 右クリック「ファイル詳細」ダイアログの状態。開いた瞬間の情報をスナップショットして保持する
@@ -367,6 +372,9 @@ pub struct ViewerState {
     outer_pos: Option<egui::Pos2>,
     /// 左エントリリストパネルの表示状態（マウスホバーで on/off）
     entry_list_visible: bool,
+    /// 左右端ページ送りマーカーのホバー状態: (左端か, ホバー開始時刻)。
+    /// フェードインのアルファ計算に使う。ゾーン外に出る/送り不可になると None に戻る。
+    edge_turn_hover: Option<(bool, f64)>,
     /// 左エントリリストを最後に現在地へスクロールした spread_lo。
     /// 非表示中は更新せず、再表示時またはページ変更時だけ現在行を中央へ寄せる。
     entry_list_scrolled_lo: Option<i32>,
@@ -401,6 +409,11 @@ pub struct ViewerState {
     /// クリップ矩形サイズが不安定な瞬間に delta が収束せず request_repaint が
     /// 連打され続ける恐れがあるため）。
     thumbbar_scrolled_lo: Option<i32>,
+    /// 見開き原寸表示で最後にスクロール位置を初期化した spread_lo。
+    /// 見開きが実際に切り替わった最初のフレームでだけ scroll_offset を
+    /// 明示セットするための重複防止フラグ（毎フレームセットすると
+    /// ユーザーのドラッグ/ホイール操作を毎回上書きしてしまう）。
+    spread_actual_scrolled_lo: Option<i32>,
     /// フェーズ2: 直近フレームで実描画したサムネイルバーの可視インデックス範囲
     /// (原始インデックス、両端含む)。enqueue の優先範囲としても使う。
     /// None の間は仮想化描画がまだ一度も走っていない（起動直後の1フレーム分）。
@@ -413,15 +426,21 @@ pub struct ViewerState {
     pending_spread_action: Option<crate::controller::SpreadSaveAction>,
     /// ソート保存メニューでのユーザー操作要求（1フレームで消費）
     pending_sort_action: Option<crate::controller::SortSaveAction>,
+    /// しおり保存の有効/無効状態のキャッシュ（app側がopen_viewer時にセット/操作後に更新）
+    saved_bookmark_enabled: bool,
+    /// しおり保存メニューでのユーザー操作要求（1フレームで消費）
+    pending_bookmark_action: Option<crate::controller::BookmarkSaveAction>,
     /// 最後に右クリック座標から解決した実ページ(entry_name, display_name)。
     thumbnail_context_entry: Option<(String, String)>,
-    /// DBから復元した登録サムネイルのentry_name。Noneはデフォルト。
-    saved_thumbnail_entry: Option<String>,
+    /// DBから復元した登録サムネイル。Noneはデフォルト。
+    saved_thumbnail_selection: Option<crate::spread_state::ThumbnailSelection>,
     pending_thumbnail_action: Option<crate::controller::ThumbnailSaveAction>,
-    /// 右クリックメニュー「お気に入り詳細設定」が押されたか（1フレームで消費）
-    pending_open_favorite_dialog: bool,
+    /// 右クリックメニュー「お気に入りに追加」が押されたか（1フレームで消費）
+    pending_favorite_add: bool,
     /// 右クリックメニュー「ファイル詳細」が押されたか（1フレームで消費）
     pending_open_file_detail: bool,
+    /// 右クリックメニュー「スライドショー」チェックボックスが操作されたか（1フレームで消費）
+    pending_slideshow_toggle: bool,
     /// ファイル詳細ダイアログの状態。Some の間、draw_file_detail_dialogが表示する
     file_detail_dialog: Option<FileDetailDialogState>,
     /// OCR/翻訳子ウィンドウが現在開いているか。show()呼び出し時に外部(NekoviewApp)から
@@ -439,6 +458,13 @@ pub struct ViewerState {
     /// このフラグを実際の分岐には使わない）。
     #[allow(dead_code)]
     exif_enabled: bool,
+    /// スライドショー実行中か（非永続・実行時のみ）。
+    slideshow_active: bool,
+    /// 次に自動ページ送りするまでの基準時刻。start_slideshow/手動リセット/tick成功のたびに更新。
+    slideshow_last_advance: Instant,
+    /// tick_slideshow がページを送った直後だけ true。update_animation の変化検知で
+    /// 「今回のページ変化はスライドショー自身によるものか」を判定するためのワンショットフラグ。
+    slideshow_auto_advance_pending: bool,
 }
 
 impl ViewerState {
@@ -524,9 +550,21 @@ impl ViewerState {
     }
 
     /// フェーズ6: リサイズ/zoom_actual切替後の再デコード先ターゲットサイズ。
-    /// zoom_actual時は無制限(原寸)、それ以外は直近の描画領域サイズ(物理px)を上限にする。
-    pub fn current_decode_target(&self, zoom_actual: bool) -> Option<(u32, u32)> {
-        if zoom_actual { None } else { Some(self.content_px) }
+    /// zoom_actual時は `max_decode_edge`（見開き中はその2倍）を長辺上限にする、
+    /// それ以外は直近の描画領域サイズ(物理px)を上限にする。
+    /// （旧実装は zoom_actual 時に None=無制限を返しており、"原寸時に許容する最大長辺幅"
+    /// 設定が「ウィンドウ追従」ON時には効かないままになる抜け穴があったため統一した）
+    pub fn current_decode_target(&self, zoom_actual: bool, max_decode_edge: u32) -> Option<(u32, u32)> {
+        if zoom_actual {
+            let edge = if self.page_mode != PageMode::Single {
+                max_decode_edge.saturating_mul(2)
+            } else {
+                max_decode_edge
+            };
+            Some((edge, edge))
+        } else {
+            Some(self.content_px)
+        }
     }
 
     /// 世代非依存アニメのリサイズ切替で保持すべき、現在表示中のフレーム番号。
@@ -553,6 +591,18 @@ impl ViewerState {
         if image_entries.is_empty() {
             return None;
         }
+        Some(Self::from_image_entries(archive_path, image_entries, slots, default_slot))
+    }
+
+    /// 一覧取得済みの`ImageEntry`から構築する。非同期（進捗通知つき）で
+    /// `archive::list_images_with_progress`を実行した結果を渡すための経路。
+    /// 呼び出し側は事前に`image_entries`が空でないことを確認しておくこと。
+    pub fn from_image_entries(
+        archive_path: PathBuf,
+        image_entries: Vec<archive::ImageEntry>,
+        slots: [Option<WindowSlot>; 4],
+        default_slot: Option<usize>,
+    ) -> Self {
         let entries: Vec<ViewerEntry> = image_entries
             .into_iter()
             .enumerate()
@@ -563,7 +613,7 @@ impl ViewerState {
                 original_index: i,
             })
             .collect();
-        Some(Self {
+        Self {
             archive_path,
             entries,
             spread_base: 0,
@@ -583,6 +633,7 @@ impl ViewerState {
             default_slot_applied: false,
             outer_pos: None,
             entry_list_visible: false,
+            edge_turn_hover: None,
             entry_list_scrolled_lo: None,
             fs_sort_bar_visible: false,
             sort_key: ViewerSortKey::Name,
@@ -597,23 +648,30 @@ impl ViewerState {
             thumb_failed: HashSet::new(),
             thumbbar_last_activity: Instant::now(),
             thumbbar_scrolled_lo: None,
+            spread_actual_scrolled_lo: None,
             thumbbar_visible_range: None,
             saved_spread: None,
             saved_sort: None,
             pending_spread_action: None,
             pending_sort_action: None,
+            saved_bookmark_enabled: false,
+            pending_bookmark_action: None,
             thumbnail_context_entry: None,
-            saved_thumbnail_entry: None,
+            saved_thumbnail_selection: None,
             pending_thumbnail_action: None,
-            pending_open_favorite_dialog: false,
+            pending_favorite_add: false,
             pending_open_file_detail: false,
+            pending_slideshow_toggle: false,
             file_detail_dialog: None,
             translate_window_open: false,
             translate_toggle_enabled: false,
             pending_toggle_translate_window: false,
             rotation: RotationState::new(),
             exif_enabled: true,
-        })
+            slideshow_active: false,
+            slideshow_last_advance: Instant::now(),
+            slideshow_auto_advance_pending: false,
+        }
     }
 
     /// 生画像ファイル（ZIP非対応・1ファイル固定）用コンストラクタ
@@ -649,6 +707,7 @@ impl ViewerState {
             default_slot_applied: false,
             outer_pos: None,
             entry_list_visible: false,
+            edge_turn_hover: None,
             entry_list_scrolled_lo: None,
             fs_sort_bar_visible: false,
             sort_key: ViewerSortKey::Name,
@@ -663,22 +722,29 @@ impl ViewerState {
             thumb_failed: HashSet::new(),
             thumbbar_last_activity: Instant::now(),
             thumbbar_scrolled_lo: None,
+            spread_actual_scrolled_lo: None,
             thumbbar_visible_range: None,
             saved_spread: None,
             saved_sort: None,
             pending_spread_action: None,
             pending_sort_action: None,
+            saved_bookmark_enabled: false,
+            pending_bookmark_action: None,
             thumbnail_context_entry: None,
-            saved_thumbnail_entry: None,
+            saved_thumbnail_selection: None,
             pending_thumbnail_action: None,
-            pending_open_favorite_dialog: false,
+            pending_favorite_add: false,
             pending_open_file_detail: false,
+            pending_slideshow_toggle: false,
             file_detail_dialog: None,
             translate_window_open: false,
             translate_toggle_enabled: false,
             pending_toggle_translate_window: false,
             rotation: RotationState::new(),
             exif_enabled: true,
+            slideshow_active: false,
+            slideshow_last_advance: Instant::now(),
+            slideshow_auto_advance_pending: false,
         }
     }
 
@@ -690,6 +756,31 @@ impl ViewerState {
     /// 現在の表示基点インデックス（spread_base + offset）
     pub fn spread_lo(&self) -> i32 {
         self.spread_base + self.offset.value()
+    }
+
+    /// 現在表示中の先頭ページのentry_name（しおり保存用）。範囲外（先頭仮想ページ等）は None。
+    pub fn current_bookmark_entry_name(&self) -> Option<&str> {
+        let idx = self.spread_lo();
+        if idx < 0 {
+            return None;
+        }
+        self.entries.get(idx as usize).map(|e| e.entry_name.as_str())
+    }
+
+    /// しおり復帰：entry_nameが現在の一覧（ソート確定後）に見つかれば該当ページへ
+    /// ジャンプしてtrueを返す。見つからなければ何もせずfalseを返す
+    /// （呼び出し側でしおりデータ初期化＋失敗トーストへ）。
+    pub fn restore_bookmark_position(&mut self, entry_name: &str) -> bool {
+        let Some(idx) = self.entries.iter().position(|e| e.entry_name == entry_name) else {
+            return false;
+        };
+        self.spread_base = idx as i32;
+        self.offset.reset();
+        self.anim_active = false;
+        self.anim_progress = 1.0;
+        self.prev_spread_lo = self.spread_base;
+        self.rotation.reset();
+        true
     }
 
     /// オフセットがずれているか（UI表示用）
@@ -711,6 +802,116 @@ impl ViewerState {
     pub fn shift_offset_backward(&mut self) {
         if self.can_shift_backward() {
             self.offset.retreat();
+        }
+    }
+
+    /// 次の見開き/ページへ進めるか（オフセットを保持したまま次のspread_baseが範囲内か）。
+    /// 通常のキー/ホイール送りと左右端クリック送りの両方から共有される判定。
+    fn can_advance_page(&self, step: i32, total: i32) -> bool {
+        self.spread_base + step + self.offset.value() <= total - 1
+    }
+
+    /// 前の見開き/ページへ戻れるか
+    fn can_retreat_page(&self, is_spread: bool, step: i32) -> bool {
+        let min_lo = if is_spread { -1 } else { 0 };
+        self.spread_base - step + self.offset.value() >= min_lo
+    }
+
+    /// 次の見開き/ページへ進む（不可能な場合は何もしない）
+    fn advance_page(&mut self, step: i32, total: i32) {
+        if self.can_advance_page(step, total) {
+            self.spread_base += step;
+        }
+    }
+
+    // ── スライドショー ───────────────────────────────────────────────────────
+    // 右クリックメニュー・将来のビューアー直接操作ボタンなど複数経路から呼ばれる
+    // ことを想定し、advance_spread_step と同様にコントローラ層を介さず ViewerState に
+    // 直接 pub メソッドとして生やす（永続化を伴わないランタイム操作のため）。
+
+    /// スライドショーが実行中か
+    pub fn is_slideshow_active(&self) -> bool {
+        self.slideshow_active
+    }
+
+    /// スライドショーを開始する（タイマーを今から起算）
+    pub fn start_slideshow(&mut self) {
+        self.slideshow_active = true;
+        self.slideshow_last_advance = Instant::now();
+    }
+
+    /// スライドショーを停止する
+    pub fn stop_slideshow(&mut self) {
+        self.slideshow_active = false;
+    }
+
+    /// 実行中なら停止、停止中なら開始する
+    pub fn toggle_slideshow(&mut self) {
+        if self.slideshow_active {
+            self.stop_slideshow();
+        } else {
+            self.start_slideshow();
+        }
+    }
+
+    /// 毎フレーム呼ぶ。実行中かつ間隔が経過していたら1ページ分自動で送る。
+    /// 送れない（終端到達）場合はスライドショーを自動停止する。
+    /// 実際に送った場合は slideshow_auto_advance_pending を立て、次の
+    /// update_animation でのページ変化検知が「手動操作」と誤認しないようにする。
+    fn tick_slideshow(&mut self, ctx: &egui::Context, cfg: &ViewerConfig, total: usize) {
+        if !self.slideshow_active {
+            return;
+        }
+        let interval = Duration::from_millis(cfg.slideshow_interval_ms);
+        let elapsed = self.slideshow_last_advance.elapsed();
+        if elapsed < interval {
+            ctx.request_repaint_after(interval - elapsed);
+            return;
+        }
+        let is_spread = self.page_mode != PageMode::Single;
+        let step = if is_spread { 2i32 } else { 1i32 };
+        let total_i = total as i32;
+        if self.can_advance_page(step, total_i) {
+            self.advance_page(step, total_i);
+            self.slideshow_auto_advance_pending = true;
+            self.slideshow_last_advance = Instant::now();
+            ctx.request_repaint();
+        } else {
+            // 終端到達: 自動停止
+            self.slideshow_active = false;
+        }
+    }
+
+    /// 手動でのページ変化を検知したときの処理（update_animation から呼ばれる）。
+    /// 設定に応じてタイマーをリセットして継続するか、スライドショー自体を止める。
+    fn on_manual_page_change(&mut self, cfg: &ViewerConfig) {
+        if !self.slideshow_active {
+            return;
+        }
+        match cfg.slideshow_manual_behavior {
+            SlideshowManualBehavior::ResetTimer => {
+                self.slideshow_last_advance = Instant::now();
+            }
+            SlideshowManualBehavior::Stop => {
+                self.slideshow_active = false;
+            }
+        }
+    }
+
+    /// 現在有効なトランジション種類。スライドショー実行中は専用設定、それ以外は通常設定を使う。
+    fn effective_transition_kind(&self, cfg: &ViewerConfig) -> TransitionKind {
+        if self.slideshow_active { cfg.slideshow_transition_kind } else { cfg.transition_kind }
+    }
+
+    /// 現在有効なトランジション遷移時間(ms)。判定基準は effective_transition_kind と同じ。
+    fn effective_transition_duration_ms(&self, cfg: &ViewerConfig) -> u64 {
+        if self.slideshow_active { cfg.slideshow_transition_duration_ms } else { cfg.transition_duration_ms }
+    }
+
+    /// 前の見開き/ページへ戻る（不可能な場合は何もしない）
+    fn retreat_page(&mut self, is_spread: bool, step: i32) {
+        if self.can_retreat_page(is_spread, step) {
+            self.spread_base -= step;
         }
     }
 
@@ -736,7 +937,7 @@ impl ViewerState {
     }
 
     /// ページモードを切り替え、spread_base とオフセットを整合させる
-    pub fn set_page_mode(&mut self, mode: PageMode, cfg: &mut ViewerConfig) {
+    pub fn set_page_mode(&mut self, mode: PageMode, _cfg: &mut ViewerConfig) {
         match mode {
             PageMode::Single => {
                 self.page_mode = mode;
@@ -748,7 +949,6 @@ impl ViewerState {
                 if self.is_raw_file { return; }
                 if self.page_mode != mode {
                     self.page_mode = mode;
-                    cfg.zoom_actual = false;
                     self.spread_base = self.spread_lo().max(0) & !1;
                     self.offset.reset();
                 }
@@ -840,8 +1040,28 @@ impl ViewerState {
         self.pending_sort_action.take()
     }
 
-    pub fn set_saved_thumbnail_entry(&mut self, entry_name: Option<String>) {
-        self.saved_thumbnail_entry = entry_name;
+    /// app側がDBの読み込み・保存結果をViewerStateへ反映する。
+    pub fn set_saved_bookmark_enabled(&mut self, enabled: bool) {
+        self.saved_bookmark_enabled = enabled;
+    }
+
+    pub fn bookmark_save_toggle_on(&self) -> bool {
+        self.saved_bookmark_enabled
+    }
+
+    pub fn bookmark_save_toggle_enabled(&self) -> bool {
+        !self.is_raw_file
+    }
+
+    pub fn take_bookmark_action(&mut self) -> Option<crate::controller::BookmarkSaveAction> {
+        self.pending_bookmark_action.take()
+    }
+
+    pub fn set_saved_thumbnail_selection(
+        &mut self,
+        selection: Option<crate::spread_state::ThumbnailSelection>,
+    ) {
+        self.saved_thumbnail_selection = selection;
     }
 
     pub fn take_thumbnail_action(&mut self) -> Option<crate::controller::ThumbnailSaveAction> {
@@ -853,9 +1073,9 @@ impl ViewerState {
         self.pending_spread_action.take()
     }
 
-    /// 右クリックメニュー「お気に入り詳細設定」の要求を取り出す（1フレームで消費）
-    pub fn take_favorite_dialog_request(&mut self) -> bool {
-        std::mem::take(&mut self.pending_open_favorite_dialog)
+    /// 右クリックメニュー「お気に入りに追加」の要求を取り出す（1フレームで消費）
+    pub fn take_favorite_add_request(&mut self) -> bool {
+        std::mem::take(&mut self.pending_favorite_add)
     }
 
     /// ツールバーの翻訳トグルボタンが押された要求を取り出す（1フレームで消費）
@@ -1059,11 +1279,11 @@ impl ViewerState {
         let ctx = ui.ctx().clone();
         let viewer_style = ui.style().clone();
         if !self.open || self.entries.is_empty() {
-            return ViewerOutput { nav: ViewerNav::None, close_requested: !self.open, save_slots: None, spread_save_action: None, sort_save_action: None, thumbnail_save_action: None, open_favorite_dialog: false, toggle_translate_window: false };
+            return ViewerOutput { nav: ViewerNav::None, close_requested: !self.open, save_slots: None, spread_save_action: None, sort_save_action: None, thumbnail_save_action: None, bookmark_save_action: None, favorite_add_requested: false, toggle_translate_window: false };
         }
 
         // ── フレーム入力を一括収集（ctx.input はこの1回のみ）────────────────
-        let input = FrameInput::collect(&ctx, cfg.zoom_actual, keymap);
+        let input = FrameInput::collect(&ctx, keymap);
 
         // フェーズ6: リサイズ再デコードのターゲットサイズ算出用に、現在の描画領域サイズ（物理px）を記録する。
         let screen = ctx.content_rect().size() * ctx.pixels_per_point();
@@ -1071,6 +1291,16 @@ impl ViewerState {
 
         // 既定スロットを初回フレームで一度だけ適用（クランプ付き）。
         self.apply_default_slot(&ctx, input.monitor_size);
+
+        // 右クリックメニューのスライドショーチェックボックス操作を反映する。
+        if self.pending_slideshow_toggle {
+            self.pending_slideshow_toggle = false;
+            self.toggle_slideshow();
+        }
+
+        // スライドショーのタイマー送りは update_animation より先に行い、同一フレームで
+        // ページ変化検知（アニメ起動・手動/自動の判定）が反映されるようにする。
+        self.tick_slideshow(&ctx, cfg, self.entries.len());
 
         let (animating, t) = self.update_animation(&ctx, input.dt, cfg);
 
@@ -1203,8 +1433,9 @@ impl ViewerState {
             zoom_actual: cfg.zoom_actual,
             monitor:     input.monitor_size,
             rotation_angle,
+            transition_kind: self.effective_transition_kind(cfg),
         };
-        let (double_clicked, single_clicked) = self.draw_central_panel(ui, &frame);
+        let (double_clicked, single_clicked) = self.draw_central_panel(ui, &frame, &input, is_spread, step, total);
 
         // メイン画像シングルクリックでサムネバーの自動非表示タイマーを早送りし、即座に隠す。
         // idle_hide_ms == 0（常時表示設定）のときは早送り対象のタイマー自体が存在しないため何もしない。
@@ -1219,18 +1450,19 @@ impl ViewerState {
 
         let nav = self.process_navigation(&input, is_spread, step, total);
 
-        let close_self = self.process_misc_input(&ctx, &input, is_spread, double_clicked, cfg);
+        let close_self = self.process_misc_input(&ctx, &input, double_clicked, cfg);
 
         self.tick_toast(&ctx, input.time);
 
         let spread_save_action = self.take_spread_action();
         let sort_save_action = self.take_sort_action();
         let thumbnail_save_action = self.take_thumbnail_action();
-        let open_favorite_dialog = self.take_favorite_dialog_request();
+        let bookmark_save_action = self.take_bookmark_action();
+        let favorite_add_requested = self.take_favorite_add_request();
         let toggle_translate_window = self.take_translate_toggle_request();
         self.maybe_open_file_detail_dialog();
         self.draw_file_detail_dialog(&ctx);
-        ViewerOutput { nav, close_requested: close_self, save_slots, spread_save_action, sort_save_action, thumbnail_save_action, open_favorite_dialog, toggle_translate_window }
+        ViewerOutput { nav, close_requested: close_self, save_slots, spread_save_action, sort_save_action, thumbnail_save_action, bookmark_save_action, favorite_add_requested, toggle_translate_window }
     }
 
     /// ビューアーを開いた直後（初回フレーム）に conf 既定スロットを一度だけ適用する。
@@ -1267,18 +1499,33 @@ impl ViewerState {
                 _                     => if delta > 0 {  1 } else { -1 },
             };
             self.anim_from_lo = self.prev_spread_lo;
-            self.anim_progress = 0.0;
-            self.anim_active = true;
             self.prev_spread_lo = current_lo;
             // 表示画像が差し替わったので手動回転をリセット（角度引き継ぎトグルONの間は
             // cfg側の共有角度をそのまま使い続けるため、ここではリセットしない）
             if !cfg.rotation_carry_over {
                 self.rotation.reset();
             }
+            if self.effective_transition_kind(cfg) == TransitionKind::None {
+                // トランジション無し設定：アニメーションを起動せず即時切り替えにする
+                self.anim_progress = 1.0;
+                self.anim_active = false;
+            } else {
+                self.anim_progress = 0.0;
+                self.anim_active = true;
+            }
+
+            // スライドショー: 今回のページ変化が tick_slideshow 自身による送りでなければ
+            // 手動操作とみなす（ワンショットフラグを見て消費する）。
+            if self.slideshow_auto_advance_pending {
+                self.slideshow_auto_advance_pending = false;
+            } else {
+                self.on_manual_page_change(cfg);
+            }
         }
 
         if self.anim_active {
-            self.anim_progress = (self.anim_progress + dt / ANIM_SECS).min(1.0);
+            let transition_secs = (self.effective_transition_duration_ms(cfg) as f32 / 1000.0).max(0.001);
+            self.anim_progress = (self.anim_progress + dt / transition_secs).min(1.0);
             if self.anim_progress >= 1.0 { self.anim_active = false; }
             ctx.request_repaint();
         }
@@ -1416,13 +1663,10 @@ impl ViewerState {
         if scroll_prev { self.scroll_acc -= SCROLL_THRESHOLD; }
 
         if key_next || scroll_next {
-            let next_base = self.spread_base + step;
-            if next_base + off <= total_i - 1 { self.spread_base = next_base; }
+            self.advance_page(step, total_i);
         }
         if key_prev || scroll_prev {
-            let prev_base = self.spread_base - step;
-            let min_lo = if is_spread { -1 } else { 0 };
-            if prev_base + off >= min_lo { self.spread_base = prev_base; }
+            self.retreat_page(is_spread, step);
         }
 
         // ナビゲーション後の末尾仮想フラグ更新（オフセットシフト前に確定させる）
@@ -1473,13 +1717,26 @@ impl ViewerState {
         nav
     }
 
-    fn draw_central_panel(&mut self, ui: &mut egui::Ui, frame: &RenderFrame) -> (bool, bool) {
+    fn draw_central_panel(
+        &mut self,
+        ui: &mut egui::Ui,
+        frame: &RenderFrame,
+        input: &FrameInput,
+        is_spread: bool,
+        step: i32,
+        total: usize,
+    ) -> (bool, bool) {
         let mut double_clicked = false;
         let mut single_clicked = false;
         egui::CentralPanel::default().show(ui, |ui| {
             let clip   = ui.clip_rect();
             let avail  = ui.available_size();
             let origin = ui.cursor().left_top();
+
+            // ── 左右端ページ送りゾーン ───────────────────────────────────────────
+            let edge_ctx = ui.ctx().clone();
+            self.handle_edge_turn(&edge_ctx, clip, input.hover_pos, input.primary_clicked, is_spread, step, total, input.time);
+            self.draw_edge_turn_marker(&edge_ctx, clip);
 
             if !frame.animating || frame.zoom_actual {
                 // ── 通常レンダリング ──────────────────────────────────────────
@@ -1488,46 +1745,162 @@ impl ViewerState {
                         self.render_single(ui, &frame.tex_lo, frame.zoom_actual, frame.rotation_angle, &mut double_clicked, &mut single_clicked);
                     }
                     PageMode::SpreadLeft => {
-                        self.render_spread(ui, &frame.tex_lo, &frame.tex_hi, self.spread_lo(), self.spread_lo() + 1, frame.monitor, frame.rotation_angle, &mut single_clicked);
+                        self.render_spread(ui, &frame.tex_lo, &frame.tex_hi, self.spread_lo(), self.spread_lo() + 1, frame.monitor, frame.rotation_angle, frame.zoom_actual, &mut double_clicked, &mut single_clicked);
                     }
                     PageMode::SpreadRight => {
-                        self.render_spread(ui, &frame.tex_hi, &frame.tex_lo, self.spread_lo() + 1, self.spread_lo(), frame.monitor, frame.rotation_angle, &mut single_clicked);
+                        self.render_spread(ui, &frame.tex_hi, &frame.tex_lo, self.spread_lo() + 1, self.spread_lo(), frame.monitor, frame.rotation_angle, frame.zoom_actual, &mut double_clicked, &mut single_clicked);
                     }
                 }
             } else {
                 // ── スライドアニメーション ────────────────────────────────────
                 let full_rect = egui::Rect::from_min_size(origin, avail);
                 let resp = ui.allocate_rect(full_rect, egui::Sense::click());
-                if resp.double_clicked() { double_clicked = true; }
-                if resp.clicked() && !resp.double_clicked() { single_clicked = true; }
+                // コンテキストメニュー表示中の外側クリックはメニューを閉じる操作として
+                // 消費し、ページ送り（single/double_clicked）へは伝播させない。
+                let menu_open = resp.context_menu_opened();
+                if !menu_open {
+                    if resp.double_clicked() { double_clicked = true; }
+                    if resp.clicked() && !resp.double_clicked() { single_clicked = true; }
+                }
+                if resp.secondary_clicked() {
+                    let target = match frame.page_mode {
+                        PageMode::Single => Some(self.spread_lo()),
+                        PageMode::SpreadLeft => resp.interact_pointer_pos().and_then(|pos| {
+                            self.thumbnail_target_for_spread(
+                                pos,
+                                full_rect,
+                                &frame.tex_lo,
+                                &frame.tex_hi,
+                                self.spread_lo(),
+                                self.spread_lo() + 1,
+                                frame.monitor,
+                                frame.rotation_angle,
+                            )
+                        }),
+                        PageMode::SpreadRight => resp.interact_pointer_pos().and_then(|pos| {
+                            self.thumbnail_target_for_spread(
+                                pos,
+                                full_rect,
+                                &frame.tex_hi,
+                                &frame.tex_lo,
+                                self.spread_lo() + 1,
+                                self.spread_lo(),
+                                frame.monitor,
+                                frame.rotation_angle,
+                            )
+                        }),
+                    };
+                    self.set_thumbnail_context(target);
+                }
+                let toggle_enabled = self.spread_save_toggle_enabled();
+                let toggle_on = self.spread_save_toggle_on();
+                let overwrite_enabled = self.spread_overwrite_enabled();
+                let sort_toggle_enabled = self.sort_save_toggle_enabled();
+                let sort_toggle_on = self.sort_save_toggle_on();
+        let bookmark_toggle_enabled = self.bookmark_save_toggle_enabled();
+        let bookmark_toggle_on = self.bookmark_save_toggle_on();
+                let sort_changed = self.sort_save_changed();
+                let current_sort = self.current_sort_snapshot();
+                let thumbnail_target = self.thumbnail_context_entry.as_ref();
+                let saved_thumbnail_selection = self.saved_thumbnail_selection.as_ref();
+                let saved_thumbnail_display = self.saved_thumbnail_display_name();
+                let slideshow_active = self.is_slideshow_active();
+                let action = &mut self.pending_spread_action;
+                let sort_action = &mut self.pending_sort_action;
+                let bookmark_action = &mut self.pending_bookmark_action;
+                let thumbnail_action = &mut self.pending_thumbnail_action;
+                let favorite_add = &mut self.pending_favorite_add;
+                let open_file_detail = &mut self.pending_open_file_detail;
+                let slideshow_toggle = &mut self.pending_slideshow_toggle;
+                egui::Popup::context_menu(&resp)
+                    .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                    .show(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort, sort_action, bookmark_toggle_enabled, bookmark_toggle_on, bookmark_action, thumbnail_target, saved_thumbnail_selection, saved_thumbnail_display.as_deref(), thumbnail_action, favorite_add, open_file_detail, slideshow_active, slideshow_toggle));
 
                 let painter = ui.painter().with_clip_rect(clip);
-                let off_old = avail.x * frame.t * (-frame.anim_dir_f);
-                let off_new = avail.x * (1.0 - frame.t) * frame.anim_dir_f;
 
-                match frame.page_mode {
-                    PageMode::Single => {
-                        Self::paint_single_at(&painter, &frame.prev_tex_lo, avail, origin, off_old);
-                        Self::paint_single_at(&painter, &frame.tex_lo,      avail, origin, off_new);
-                    }
-                    PageMode::SpreadLeft => {
-                        if !Self::paint_offset_spread(&painter, frame, avail, origin, false) {
+                if frame.transition_kind == TransitionKind::CrossFade {
+                    // クロスフェード：旧・新ページをそれぞれ自然な位置に固定描画し、
+                    // 新ページ側だけアルファをtで持ち上げる（位置移動は無し）。
+                    // GPU側のアルファブレンドのみで済ませ、CPU側のピクセル合成は行わない。
+                    let new_alpha = (frame.t.clamp(0.0, 1.0) * 255.0).round() as u8;
+                    match frame.page_mode {
+                        PageMode::Single => {
+                            Self::paint_single_alpha(&painter, &frame.prev_tex_lo, avail, origin, 255);
+                            Self::paint_single_alpha(&painter, &frame.tex_lo,      avail, origin, new_alpha);
+                        }
+                        PageMode::SpreadLeft => {
                             let (rl, rr) = Self::spread_rects(avail, origin, &frame.prev_tex_lo, &frame.prev_tex_hi, frame.monitor);
-                            Self::paint_page(&painter, &frame.prev_tex_lo, rl.translate(egui::vec2(off_old, 0.0)));
-                            Self::paint_page(&painter, &frame.prev_tex_hi, rr.translate(egui::vec2(off_old, 0.0)));
+                            Self::paint_page_alpha(&painter, &frame.prev_tex_lo, rl, 255);
+                            Self::paint_page_alpha(&painter, &frame.prev_tex_hi, rr, 255);
                             let (rl, rr) = Self::spread_rects(avail, origin, &frame.tex_lo, &frame.tex_hi, frame.monitor);
-                            Self::paint_page(&painter, &frame.tex_lo, rl.translate(egui::vec2(off_new, 0.0)));
-                            Self::paint_page(&painter, &frame.tex_hi, rr.translate(egui::vec2(off_new, 0.0)));
+                            Self::paint_page_alpha(&painter, &frame.tex_lo, rl, new_alpha);
+                            Self::paint_page_alpha(&painter, &frame.tex_hi, rr, new_alpha);
+                        }
+                        PageMode::SpreadRight => {
+                            let (rl, rr) = Self::spread_rects(avail, origin, &frame.prev_tex_hi, &frame.prev_tex_lo, frame.monitor);
+                            Self::paint_page_alpha(&painter, &frame.prev_tex_hi, rl, 255);
+                            Self::paint_page_alpha(&painter, &frame.prev_tex_lo, rr, 255);
+                            let (rl, rr) = Self::spread_rects(avail, origin, &frame.tex_hi, &frame.tex_lo, frame.monitor);
+                            Self::paint_page_alpha(&painter, &frame.tex_hi, rl, new_alpha);
+                            Self::paint_page_alpha(&painter, &frame.tex_lo, rr, new_alpha);
                         }
                     }
-                    PageMode::SpreadRight => {
-                        if !Self::paint_offset_spread(&painter, frame, avail, origin, true) {
+                } else if frame.transition_kind == TransitionKind::ClockwiseWipe {
+                    // 時計回りワイプ：旧ページを不透明固定描画した上に、新ページを時計12時
+                    // 起点・時計回りの扇形で重ね描きする（境界にフェザー付き）。見開きは
+                    // 左右それぞれ独立した扇（同じt）で揃えて描く。
+                    match frame.page_mode {
+                        PageMode::Single => {
+                            Self::paint_single_alpha(&painter, &frame.prev_tex_lo, avail, origin, 255);
+                            let rect_new = Self::single_fit_rect(avail, origin, &frame.tex_lo);
+                            Self::paint_clockwise_wipe_overlay(&painter, &frame.tex_lo, rect_new, frame.t);
+                        }
+                        PageMode::SpreadLeft => {
+                            let (rl, rr) = Self::spread_rects(avail, origin, &frame.prev_tex_lo, &frame.prev_tex_hi, frame.monitor);
+                            Self::paint_page_alpha(&painter, &frame.prev_tex_lo, rl, 255);
+                            Self::paint_page_alpha(&painter, &frame.prev_tex_hi, rr, 255);
+                            let (rl, rr) = Self::spread_rects(avail, origin, &frame.tex_lo, &frame.tex_hi, frame.monitor);
+                            Self::paint_clockwise_wipe_overlay(&painter, &frame.tex_lo, rl, frame.t);
+                            Self::paint_clockwise_wipe_overlay(&painter, &frame.tex_hi, rr, frame.t);
+                        }
+                        PageMode::SpreadRight => {
                             let (rl, rr) = Self::spread_rects(avail, origin, &frame.prev_tex_hi, &frame.prev_tex_lo, frame.monitor);
-                            Self::paint_page(&painter, &frame.prev_tex_hi, rl.translate(egui::vec2(off_old, 0.0)));
-                            Self::paint_page(&painter, &frame.prev_tex_lo, rr.translate(egui::vec2(off_old, 0.0)));
+                            Self::paint_page_alpha(&painter, &frame.prev_tex_hi, rl, 255);
+                            Self::paint_page_alpha(&painter, &frame.prev_tex_lo, rr, 255);
                             let (rl, rr) = Self::spread_rects(avail, origin, &frame.tex_hi, &frame.tex_lo, frame.monitor);
-                            Self::paint_page(&painter, &frame.tex_hi, rl.translate(egui::vec2(off_new, 0.0)));
-                            Self::paint_page(&painter, &frame.tex_lo, rr.translate(egui::vec2(off_new, 0.0)));
+                            Self::paint_clockwise_wipe_overlay(&painter, &frame.tex_hi, rl, frame.t);
+                            Self::paint_clockwise_wipe_overlay(&painter, &frame.tex_lo, rr, frame.t);
+                        }
+                    }
+                } else {
+                    // 横スライド（HorizontalSlide、および将来追加分の暫定フォールバック）。
+                    let off_old = avail.x * frame.t * (-frame.anim_dir_f);
+                    let off_new = avail.x * (1.0 - frame.t) * frame.anim_dir_f;
+
+                    match frame.page_mode {
+                        PageMode::Single => {
+                            Self::paint_single_at(&painter, &frame.prev_tex_lo, avail, origin, off_old);
+                            Self::paint_single_at(&painter, &frame.tex_lo,      avail, origin, off_new);
+                        }
+                        PageMode::SpreadLeft => {
+                            if !Self::paint_offset_spread(&painter, frame, avail, origin, false) {
+                                let (rl, rr) = Self::spread_rects(avail, origin, &frame.prev_tex_lo, &frame.prev_tex_hi, frame.monitor);
+                                Self::paint_page(&painter, &frame.prev_tex_lo, rl.translate(egui::vec2(off_old, 0.0)));
+                                Self::paint_page(&painter, &frame.prev_tex_hi, rr.translate(egui::vec2(off_old, 0.0)));
+                                let (rl, rr) = Self::spread_rects(avail, origin, &frame.tex_lo, &frame.tex_hi, frame.monitor);
+                                Self::paint_page(&painter, &frame.tex_lo, rl.translate(egui::vec2(off_new, 0.0)));
+                                Self::paint_page(&painter, &frame.tex_hi, rr.translate(egui::vec2(off_new, 0.0)));
+                            }
+                        }
+                        PageMode::SpreadRight => {
+                            if !Self::paint_offset_spread(&painter, frame, avail, origin, true) {
+                                let (rl, rr) = Self::spread_rects(avail, origin, &frame.prev_tex_hi, &frame.prev_tex_lo, frame.monitor);
+                                Self::paint_page(&painter, &frame.prev_tex_hi, rl.translate(egui::vec2(off_old, 0.0)));
+                                Self::paint_page(&painter, &frame.prev_tex_lo, rr.translate(egui::vec2(off_old, 0.0)));
+                                let (rl, rr) = Self::spread_rects(avail, origin, &frame.tex_hi, &frame.tex_lo, frame.monitor);
+                                Self::paint_page(&painter, &frame.tex_hi, rl.translate(egui::vec2(off_new, 0.0)));
+                                Self::paint_page(&painter, &frame.tex_lo, rr.translate(egui::vec2(off_new, 0.0)));
+                            }
                         }
                     }
                 }
@@ -1563,6 +1936,11 @@ impl ViewerState {
                 p.galley(bg_pos + pad, tg, egui::Color32::WHITE);
             }
         });
+        // ページ送りゾーン内では原寸表示切替（ダブルクリック）を素通りさせない。
+        // シングルクリック側の副作用（サムネバー自動非表示の早送り）は害が無いため残す。
+        if self.edge_turn_hover.is_some() {
+            double_clicked = false;
+        }
         (double_clicked, single_clicked)
     }
 
@@ -1750,11 +2128,10 @@ impl ViewerState {
         &mut self,
         ctx: &egui::Context,
         input: &FrameInput,
-        is_spread: bool,
         double_clicked: bool,
         cfg: &mut ViewerConfig,
     ) -> bool {
-        if (input.zoom_key || double_clicked) && !is_spread {
+        if input.zoom_key || double_clicked {
             cfg.zoom_actual = !cfg.zoom_actual;
             // フェーズ6: 表示ターゲットサイズが変わるイベントとして再デコードのデバウンス対象にする
             cfg.redecode_trigger_seq += 1;
@@ -2069,6 +2446,132 @@ impl ViewerState {
         }
     }
 
+    /// 上部ホバートリガー高さ（対象領域の高さの15%、ただし最低40pxを保証）。
+    /// 左エントリリストの発火域・左右端ページ送りゾーンの双方で共有する。
+    fn hover_trigger_height(area_h: f32) -> f32 {
+        const RATIO: f32 = 0.15;
+        const MIN_PX: f32 = 40.0;
+        (area_h * RATIO).max(MIN_PX)
+    }
+
+    /// 左右端クリックの進行方向。綴じ方向（page_mode）に応じて新ページが入ってくる側を
+    /// 「進む」に割り当てる（[view_reader.rs:354]のオフセット符号コメント参照）。
+    /// forward=true: 進む(spread_base増加) / false: 戻る(spread_base減少)
+    fn edge_turn_is_forward(&self, left_edge: bool) -> bool {
+        match self.page_mode {
+            // 右綴じ: 新ページは左からIN → 左端＝進む
+            PageMode::SpreadRight => left_edge,
+            // 左綴じ・単ページ: 新ページは右からIN → 右端＝進む
+            _ => !left_edge,
+        }
+    }
+
+    /// 左右端ページ送りゾーンの半幅。
+    const EDGE_TURN_ZONE_W: f32 = 100.0;
+
+    /// マウス位置がどちらの端ゾーンにあるかを判定する（進む/戻る可否は見ない）。
+    /// 左ゾーンは左エントリリストの発火域（左端上部の一部）と競合しないよう、
+    /// その下端から画面下端までとする。右ゾーンは競合が無いため全高。
+    fn edge_turn_zone_at(clip: egui::Rect, pos: egui::Pos2) -> Option<bool> {
+        let top_avoid_h = Self::hover_trigger_height(clip.height());
+        let in_left  = pos.x < clip.min.x + Self::EDGE_TURN_ZONE_W
+            && pos.y >= clip.min.y + top_avoid_h && pos.y <= clip.max.y;
+        let in_right = pos.x > clip.max.x - Self::EDGE_TURN_ZONE_W
+            && pos.y >= clip.min.y && pos.y <= clip.max.y;
+        if in_left { Some(true) } else if in_right { Some(false) } else { None }
+    }
+
+    /// そのゾーンへ進む/戻る操作を行った場合に、破壊的にならず実際に移動できるか。
+    /// process_navigation の境界判定（can_advance_page/can_retreat_page）と同一の式を使うため、
+    /// 「進行方向のページが無い」＝「不正なペア（仮想×仮想等）を生む移動」と一致する。
+    fn edge_turn_can_move(&self, left_edge: bool, is_spread: bool, step: i32, total_i: i32) -> bool {
+        if self.edge_turn_is_forward(left_edge) {
+            self.can_advance_page(step, total_i)
+        } else {
+            self.can_retreat_page(is_spread, step)
+        }
+    }
+
+    /// 中央パネル左右端のページ送りゾーン判定＋クリック実行＋ホバーのフェード状態更新。
+    /// ダイアログ表示中は無効化する。
+    fn handle_edge_turn(
+        &mut self,
+        ctx: &egui::Context,
+        clip: egui::Rect,
+        hover_pos: Option<egui::Pos2>,
+        primary_clicked: bool,
+        is_spread: bool,
+        step: i32,
+        total: usize,
+        time: f64,
+    ) {
+        let total_i = total as i32;
+
+        let active_side = if self.file_detail_dialog.is_some() {
+            None
+        } else {
+            hover_pos
+                .and_then(|pos| Self::edge_turn_zone_at(clip, pos))
+                .filter(|&left_edge| self.edge_turn_can_move(left_edge, is_spread, step, total_i))
+        };
+
+        // ── ホバーのフェードイン状態（0.3秒）を更新 ──────────────────────────
+        match (self.edge_turn_hover, active_side) {
+            (Some((side, _)), Some(new_side)) if side == new_side => {}
+            (_, Some(new_side)) => self.edge_turn_hover = Some((new_side, time)),
+            (Some(_), None) => self.edge_turn_hover = None,
+            (None, None) => {}
+        }
+        if self.edge_turn_hover.is_some() {
+            ctx.request_repaint();
+        }
+
+        // ── クリック実行 ─────────────────────────────────────────────────────
+        let Some(left_edge) = active_side else { return };
+        if !primary_clicked {
+            return;
+        }
+        if self.edge_turn_is_forward(left_edge) {
+            self.advance_page(step, total_i);
+        } else {
+            self.retreat_page(is_spread, step);
+        }
+    }
+
+    /// 左右端ページ送りマーカー（◀/▶）をフェードイン(0.3秒)しながら描画する。
+    /// サムネイルバー等の上に確実に重ねるため最前面レイヤーに描画する。
+    fn draw_edge_turn_marker(&self, ctx: &egui::Context, clip: egui::Rect) {
+        let Some((left_edge, since)) = self.edge_turn_hover else { return };
+        const FADE_SEC: f32 = 0.3;
+        let elapsed = (ctx.input(|i| i.time) - since) as f32;
+        let alpha = (elapsed / FADE_SEC).clamp(0.0, 1.0);
+        if alpha <= 0.0 {
+            return;
+        }
+
+        // クリック判定ゾーンの上端回避（左のみ）とは無関係に、マーカーは左右とも
+        // パネル全高の中央に固定表示する。
+        let center_y = (clip.min.y + clip.max.y) / 2.0;
+
+        const MARKER_H: f32 = 36.0;
+        const MARKER_W: f32 = 24.0;
+        const EDGE_PAD: f32 = 16.0;
+        let tip_x  = if left_edge { clip.min.x + EDGE_PAD } else { clip.max.x - EDGE_PAD };
+        let base_x = if left_edge { tip_x + MARKER_W } else { tip_x - MARKER_W };
+        let p_tip = egui::pos2(tip_x, center_y);
+        let p_top = egui::pos2(base_x, center_y - MARKER_H / 2.0);
+        let p_bot = egui::pos2(base_x, center_y + MARKER_H / 2.0);
+
+        let a = (alpha * 255.0) as u8;
+        let fill = egui::Color32::from_white_alpha(a);
+        let shadow = egui::Color32::from_black_alpha((alpha * 150.0) as u8);
+        let off = egui::vec2(1.0, 1.0);
+
+        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("edge_turn_marker")));
+        painter.add(egui::Shape::convex_polygon(vec![p_tip + off, p_top + off, p_bot + off], shadow, egui::Stroke::NONE));
+        painter.add(egui::Shape::convex_polygon(vec![p_tip, p_top, p_bot], fill, egui::Stroke::NONE));
+    }
+
     /// 左エントリリストパネル（ホバー制御 + 描画）
     fn draw_entry_list(
         &mut self,
@@ -2084,8 +2587,12 @@ impl ViewerState {
 
         let was_visible = self.entry_list_visible;
         let screen_left = viewport_rect.min.x;
+        let trigger_h = Self::hover_trigger_height(viewport_rect.height());
         if let Some(pos) = hover_pos {
-            if !self.entry_list_visible && pos.x < screen_left + TRIGGER_W {
+            if !self.entry_list_visible
+                && pos.x < screen_left + TRIGGER_W
+                && pos.y < viewport_rect.min.y + trigger_h
+            {
                 self.entry_list_visible = true;
                 ctx.request_repaint();
             } else if self.entry_list_visible && pos.x > screen_left + ENTRY_PANEL_W + HIDE_MARGIN {
@@ -2315,12 +2822,17 @@ impl ViewerState {
         sort_changed: bool,
         current_sort: (ViewerSortKey, bool),
         sort_action: &mut Option<crate::controller::SortSaveAction>,
+        bookmark_toggle_enabled: bool,
+        bookmark_toggle_on_init: bool,
+        bookmark_action: &mut Option<crate::controller::BookmarkSaveAction>,
         thumbnail_target: Option<&(String, String)>,
-        saved_thumbnail_entry: Option<&str>,
+        saved_thumbnail_selection: Option<&crate::spread_state::ThumbnailSelection>,
         saved_thumbnail_display: Option<&str>,
         thumbnail_action: &mut Option<crate::controller::ThumbnailSaveAction>,
-        open_favorite_dialog: &mut bool,
+        favorite_add: &mut bool,
         open_file_detail: &mut bool,
+        slideshow_active: bool,
+        slideshow_toggle: &mut bool,
     ) {
         let t = i18n::t();
         let mut toggle_on = toggle_on_init;
@@ -2331,13 +2843,11 @@ impl ViewerState {
                 } else {
                     crate::controller::SpreadSaveAction::Disable
                 });
-                ui.close();
             }
         });
         ui.add_enabled_ui(overwrite_enabled, |ui| {
             if ui.button(t.spread_save_overwrite_label()).clicked() {
                 *action = Some(crate::controller::SpreadSaveAction::Overwrite);
-                ui.close();
             }
         });
         let mut sort_toggle_on = sort_toggle_on_init;
@@ -2348,7 +2858,6 @@ impl ViewerState {
                 } else {
                     crate::controller::SortSaveAction::Disable
                 });
-                ui.close();
             }
         });
         let sort_text = Self::sort_setting_text(current_sort.0, current_sort.1, t);
@@ -2358,36 +2867,97 @@ impl ViewerState {
             String::new()
         };
         ui.label(format!("{} : {}{}", t.sort_save_new_label(), sort_text, changed_suffix));
-        // チェックは「このアーカイブに登録サムネイルがある」状態を表す。
-        // 右クリックしたページとの一致判定にすると、再オープン時の表示ページが異なるだけで
-        // 未チェックに見えてしまうため、保存値の有無だけから復元する。
-        let mut thumbnail_register = saved_thumbnail_entry.is_some();
-        ui.add_enabled_ui(thumbnail_target.is_some(), |ui| {
-            if ui.checkbox(&mut thumbnail_register, t.thumbnail_register_page_label()).changed() {
-                *thumbnail_action = if thumbnail_register {
-                    thumbnail_target.map(|(entry_name, _)| crate::controller::ThumbnailSaveAction::Enable {
-                        entry_name: entry_name.clone(),
-                    })
+        let mut bookmark_toggle_on = bookmark_toggle_on_init;
+        ui.add_enabled_ui(bookmark_toggle_enabled, |ui| {
+            if ui.checkbox(&mut bookmark_toggle_on, t.bookmark_save_toggle_label()).changed() {
+                *bookmark_action = Some(if bookmark_toggle_on {
+                    crate::controller::BookmarkSaveAction::Enable
                 } else {
-                    Some(crate::controller::ThumbnailSaveAction::Disable)
-                };
-                ui.close();
+                    crate::controller::BookmarkSaveAction::Disable
+                });
             }
+        });
+        // 3項目は排他的なプリセット。チェック状態は右クリックしたページではなく、
+        // アーカイブに保存済みの生成方法を表す。
+        let saved_kind = saved_thumbnail_selection.map(|selection| selection.source_kind);
+        let mut add_thumbnail_choice = |
+            ui: &mut egui::Ui,
+            kind: crate::spread_state::ThumbnailSourceKind,
+            label: &str,
+        | {
+            let mut checked = saved_kind == Some(kind);
+            ui.add_enabled_ui(thumbnail_target.is_some(), |ui| {
+                if ui.checkbox(&mut checked, label).changed() {
+                    *thumbnail_action = if checked {
+                        thumbnail_target.map(|(entry_name, _)| {
+                            crate::controller::ThumbnailSaveAction::Enable {
+                                selection: crate::spread_state::ThumbnailSelection {
+                                    entry_name: entry_name.clone(),
+                                    source_kind: kind,
+                                },
+                            }
+                        })
+                    } else {
+                        Some(crate::controller::ThumbnailSaveAction::Disable)
+                    };
+                }
+            });
+        };
+        add_thumbnail_choice(
+            ui,
+            crate::spread_state::ThumbnailSourceKind::Full,
+            t.thumbnail_register_page_label(),
+        );
+        ui.indent("thumbnail_half_presets", |ui| {
+            add_thumbnail_choice(
+                ui,
+                crate::spread_state::ThumbnailSourceKind::LeftHalf,
+                t.thumbnail_register_left_half_label(),
+            );
+            add_thumbnail_choice(
+                ui,
+                crate::spread_state::ThumbnailSourceKind::RightHalf,
+                t.thumbnail_register_right_half_label(),
+            );
         });
         let saved_display = saved_thumbnail_display
             .map(Self::thumbnail_status_name)
             .unwrap_or_else(|| t.thumbnail_default_label().to_string());
+        let saved_display = match saved_kind {
+            Some(crate::spread_state::ThumbnailSourceKind::LeftHalf) => {
+                format!("{}［{}］", saved_display, t.thumbnail_left_generated_label())
+            }
+            Some(crate::spread_state::ThumbnailSourceKind::RightHalf) => {
+                format!("{}［{}］", saved_display, t.thumbnail_right_generated_label())
+            }
+            _ => saved_display,
+        };
         let status_response = ui.label(format!(
             "{}: {}",
             t.thumbnail_current_label(),
             saved_display,
         ));
         if let Some(full_name) = saved_thumbnail_display {
+            let full_name = match saved_kind {
+                Some(crate::spread_state::ThumbnailSourceKind::LeftHalf) => {
+                    format!("{}［{}］", full_name, t.thumbnail_left_generated_label())
+                }
+                Some(crate::spread_state::ThumbnailSourceKind::RightHalf) => {
+                    format!("{}［{}］", full_name, t.thumbnail_right_generated_label())
+                }
+                _ => full_name.to_string(),
+            };
             status_response.on_hover_text(full_name);
         }
         ui.separator();
-        if ui.button(t.favorite_detail_menu()).clicked() {
-            *open_favorite_dialog = true;
+        let mut slideshow_checked = slideshow_active;
+        if ui.checkbox(&mut slideshow_checked, t.slideshow_toggle_label()).changed() {
+            *slideshow_toggle = true;
+            ui.close();
+        }
+        ui.separator();
+        if ui.button(t.favorite_quick_add_label()).clicked() {
+            *favorite_add = true;
             ui.close();
         }
         if ui.button(t.file_detail_menu()).clicked() {
@@ -2424,6 +2994,8 @@ impl ViewerState {
         let overwrite_enabled = self.spread_overwrite_enabled();
         let sort_toggle_enabled = self.sort_save_toggle_enabled();
         let sort_toggle_on = self.sort_save_toggle_on();
+        let bookmark_toggle_enabled = self.bookmark_save_toggle_enabled();
+        let bookmark_toggle_on = self.bookmark_save_toggle_on();
         let sort_changed = self.sort_save_changed();
         let current_sort = self.current_sort_snapshot();
         if let Some(tex) = tex {
@@ -2433,7 +3005,16 @@ impl ViewerState {
                 // 敷いて従来どおりの原寸表示にする。90/270度時は回転後の外接サイズで
                 // スクロール範囲を確保してから、その中心を軸に回転させる（等倍・拡縮なし）。
                 let outer_available = ui.available_size();
-                egui::ScrollArea::both().show(ui, |ui| {
+                // スクロールバー操作に加え、画像を直接D&D（フリック）してビューポート内へ
+                // 引き込む操作にも対応する（マウスでも常時有効化。標準はタッチ限定）。
+                // ホイールはページ送り専用に譲る（見開き原寸と同様、ここで拾うと二重に効く）。
+                egui::ScrollArea::both()
+                    .scroll_source(egui::containers::scroll_area::ScrollSource {
+                        scroll_bar: true,
+                        drag: egui::containers::scroll_area::DragScroll::Always,
+                        mouse_wheel: false,
+                    })
+                    .show(ui, |ui| {
                     let img_size = egui::vec2(img_w as f32, img_h as f32);
                     let rotated_size = if angle_deg == 90 || angle_deg == 270 {
                         egui::vec2(img_size.y, img_size.x)
@@ -2451,45 +3032,83 @@ impl ViewerState {
                     } else {
                         Self::paint_texture_rotated_at(ui.painter(), tex, bbox.center(), 1.0, angle_deg);
                     }
-                    if resp.double_clicked() { *double_clicked = true; }
-                    if resp.clicked() && !resp.double_clicked() { *single_clicked = true; }
+                    let menu_open = resp.context_menu_opened();
+                    if !menu_open {
+                        if resp.double_clicked() { *double_clicked = true; }
+                        if resp.clicked() && !resp.double_clicked() { *single_clicked = true; }
+                    }
                     if resp.secondary_clicked() {
                         self.set_thumbnail_context(Some(self.spread_lo()));
                     }
                     let thumbnail_target = self.thumbnail_context_entry.as_ref();
-                    let saved_thumbnail_entry = self.saved_thumbnail_entry.as_deref();
+                    let saved_thumbnail_selection = self.saved_thumbnail_selection.as_ref();
                     let saved_thumbnail_display = self.saved_thumbnail_display_name();
+                    let slideshow_active = self.is_slideshow_active();
                     let action = &mut self.pending_spread_action;
                     let sort_action = &mut self.pending_sort_action;
+                let bookmark_action = &mut self.pending_bookmark_action;
                     let thumbnail_action = &mut self.pending_thumbnail_action;
-                    let open_favorite_dialog = &mut self.pending_open_favorite_dialog;
+                    let favorite_add = &mut self.pending_favorite_add;
                     let open_file_detail = &mut self.pending_open_file_detail;
-                    resp.context_menu(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort, sort_action, thumbnail_target, saved_thumbnail_entry, saved_thumbnail_display.as_deref(), thumbnail_action, open_favorite_dialog, open_file_detail));
+                    let slideshow_toggle = &mut self.pending_slideshow_toggle;
+                    egui::Popup::context_menu(&resp)
+                    .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                    .show(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort, sort_action, bookmark_toggle_enabled, bookmark_toggle_on, bookmark_action, thumbnail_target, saved_thumbnail_selection, saved_thumbnail_display.as_deref(), thumbnail_action, favorite_add, open_file_detail, slideshow_active, slideshow_toggle));
                 });
             } else {
                 let available = ui.available_size();
                 let bounds = egui::Rect::from_min_size(ui.cursor().left_top(), available);
                 let fit = Self::paint_page_rotated(ui.painter(), tex, bounds, angle_deg);
-                let resp  = ui.allocate_rect(fit, egui::Sense::click());
-                if resp.double_clicked() { *double_clicked = true; }
-                if resp.clicked() && !resp.double_clicked() { *single_clicked = true; }
+                // 左クリックの対象は従来どおり画像本体に限定しつつ、画像の周囲に
+                // 余白がある場合も表示領域全体でコンテキストメニューを開けるようにする。
+                let resp  = ui.allocate_rect(bounds, egui::Sense::click());
+                let primary_on_image = resp
+                    .interact_pointer_pos()
+                    .is_some_and(|pos| fit.contains(pos));
+                let menu_open = resp.context_menu_opened();
+                if !menu_open {
+                    if primary_on_image && resp.double_clicked() { *double_clicked = true; }
+                    if primary_on_image && resp.clicked() && !resp.double_clicked() { *single_clicked = true; }
+                }
                 if resp.secondary_clicked() {
                     self.set_thumbnail_context(Some(self.spread_lo()));
                 }
                 let thumbnail_target = self.thumbnail_context_entry.as_ref();
-                let saved_thumbnail_entry = self.saved_thumbnail_entry.as_deref();
+                let saved_thumbnail_selection = self.saved_thumbnail_selection.as_ref();
                 let saved_thumbnail_display = self.saved_thumbnail_display_name();
+                let slideshow_active = self.is_slideshow_active();
                 let action = &mut self.pending_spread_action;
                 let sort_action = &mut self.pending_sort_action;
+                let bookmark_action = &mut self.pending_bookmark_action;
                 let thumbnail_action = &mut self.pending_thumbnail_action;
-                let open_favorite_dialog = &mut self.pending_open_favorite_dialog;
+                let favorite_add = &mut self.pending_favorite_add;
                 let open_file_detail = &mut self.pending_open_file_detail;
-                resp.context_menu(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort, sort_action, thumbnail_target, saved_thumbnail_entry, saved_thumbnail_display.as_deref(), thumbnail_action, open_favorite_dialog, open_file_detail));
+                let slideshow_toggle = &mut self.pending_slideshow_toggle;
+                egui::Popup::context_menu(&resp)
+                    .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                    .show(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort, sort_action, bookmark_toggle_enabled, bookmark_toggle_on, bookmark_action, thumbnail_target, saved_thumbnail_selection, saved_thumbnail_display.as_deref(), thumbnail_action, favorite_add, open_file_detail, slideshow_active, slideshow_toggle));
             }
         } else {
             let rect = egui::Rect::from_min_size(ui.cursor().left_top(), ui.available_size());
-            ui.allocate_rect(rect, egui::Sense::click());
+            let resp = ui.allocate_rect(rect, egui::Sense::click());
             ui.painter().rect_filled(rect, 0.0, egui::Color32::from_gray(40));
+            if resp.secondary_clicked() {
+                self.set_thumbnail_context(Some(self.spread_lo()));
+            }
+            let thumbnail_target = self.thumbnail_context_entry.as_ref();
+            let saved_thumbnail_selection = self.saved_thumbnail_selection.as_ref();
+            let saved_thumbnail_display = self.saved_thumbnail_display_name();
+            let slideshow_active = self.is_slideshow_active();
+            let action = &mut self.pending_spread_action;
+            let sort_action = &mut self.pending_sort_action;
+                let bookmark_action = &mut self.pending_bookmark_action;
+            let thumbnail_action = &mut self.pending_thumbnail_action;
+            let favorite_add = &mut self.pending_favorite_add;
+            let open_file_detail = &mut self.pending_open_file_detail;
+            let slideshow_toggle = &mut self.pending_slideshow_toggle;
+            egui::Popup::context_menu(&resp)
+                    .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                    .show(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort, sort_action, bookmark_toggle_enabled, bookmark_toggle_on, bookmark_action, thumbnail_target, saved_thumbnail_selection, saved_thumbnail_display.as_deref(), thumbnail_action, favorite_add, open_file_detail, slideshow_active, slideshow_toggle));
         }
     }
 
@@ -2502,6 +3121,8 @@ impl ViewerState {
         right_index: i32,
         monitor: Option<egui::Vec2>,
         angle_deg: i32,
+        zoom_actual: bool,
+        double_clicked: &mut bool,
         single_clicked: &mut bool,
     ) {
         let toggle_enabled = self.spread_save_toggle_enabled();
@@ -2509,14 +3130,32 @@ impl ViewerState {
         let overwrite_enabled = self.spread_overwrite_enabled();
         let sort_toggle_enabled = self.sort_save_toggle_enabled();
         let sort_toggle_on = self.sort_save_toggle_on();
+        let bookmark_toggle_enabled = self.bookmark_save_toggle_enabled();
+        let bookmark_toggle_on = self.bookmark_save_toggle_on();
         let sort_changed = self.sort_save_changed();
         let current_sort = self.current_sort_snapshot();
+
+        // 原寸表示は回転(90/270度)には未対応。回転中は従来通りフィット表示にフォールバックする。
+        if zoom_actual && angle_deg == 0 {
+            self.render_spread_actual(
+                ui, tex_left, tex_right, left_index, right_index, double_clicked, single_clicked,
+                toggle_enabled, toggle_on, overwrite_enabled,
+                sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort,
+                bookmark_toggle_enabled, bookmark_toggle_on,
+            );
+            return;
+        }
+
         let available = ui.available_size();
         let origin = ui.cursor().left_top();
 
         let full_rect = egui::Rect::from_min_size(origin, available);
         let resp = ui.allocate_rect(full_rect, egui::Sense::click());
-        if resp.clicked() && !resp.double_clicked() { *single_clicked = true; }
+        let menu_open = resp.context_menu_opened();
+        if !menu_open {
+            if resp.double_clicked() { *double_clicked = true; }
+            if resp.clicked() && !resp.double_clicked() { *single_clicked = true; }
+        }
         if resp.secondary_clicked() {
             if let Some(pos) = resp.interact_pointer_pos() {
                 let index = self.thumbnail_target_for_spread(
@@ -2526,14 +3165,19 @@ impl ViewerState {
             }
         }
         let thumbnail_target = self.thumbnail_context_entry.as_ref();
-        let saved_thumbnail_entry = self.saved_thumbnail_entry.as_deref();
+        let saved_thumbnail_selection = self.saved_thumbnail_selection.as_ref();
         let saved_thumbnail_display = self.saved_thumbnail_display_name();
+        let slideshow_active = self.is_slideshow_active();
         let action = &mut self.pending_spread_action;
         let sort_action = &mut self.pending_sort_action;
+                let bookmark_action = &mut self.pending_bookmark_action;
         let thumbnail_action = &mut self.pending_thumbnail_action;
-        let open_favorite_dialog = &mut self.pending_open_favorite_dialog;
+        let favorite_add = &mut self.pending_favorite_add;
         let open_file_detail = &mut self.pending_open_file_detail;
-        resp.context_menu(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort, sort_action, thumbnail_target, saved_thumbnail_entry, saved_thumbnail_display.as_deref(), thumbnail_action, open_favorite_dialog, open_file_detail));
+        let slideshow_toggle = &mut self.pending_slideshow_toggle;
+        egui::Popup::context_menu(&resp)
+                    .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                    .show(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort, sort_action, bookmark_toggle_enabled, bookmark_toggle_on, bookmark_action, thumbnail_target, saved_thumbnail_selection, saved_thumbnail_display.as_deref(), thumbnail_action, favorite_add, open_file_detail, slideshow_active, slideshow_toggle));
 
         if angle_deg == 0 {
             let (rect_l, rect_r) = Self::spread_rects(available, origin, tex_left, tex_right, monitor);
@@ -2543,6 +3187,97 @@ impl ViewerState {
         } else {
             Self::paint_spread_rotated(ui.painter(), full_rect, tex_left, tex_right, angle_deg);
         }
+    }
+
+    /// 見開き原寸表示（zoom_actual、角度0限定）。2ページをそれぞれ原寸のまま
+    /// ノド（境界線）で突き合わせ、天（上端）を揃えて描画する。高さが異なる方は
+    /// 天からその高さ分だけ描画し、残りは余白のまま。ビューポートより大きければ
+    /// ScrollArea（スクロールバー＋D&Dパン）で全域を閲覧できるようにする。
+    #[allow(clippy::too_many_arguments)]
+    fn render_spread_actual(
+        &mut self,
+        ui: &mut egui::Ui,
+        tex_left: &Option<egui::TextureHandle>,
+        tex_right: &Option<egui::TextureHandle>,
+        left_index: i32,
+        right_index: i32,
+        double_clicked: &mut bool,
+        single_clicked: &mut bool,
+        toggle_enabled: bool,
+        toggle_on: bool,
+        overwrite_enabled: bool,
+        sort_toggle_enabled: bool,
+        sort_toggle_on: bool,
+        sort_changed: bool,
+        current_sort: (ViewerSortKey, bool),
+        bookmark_toggle_enabled: bool,
+        bookmark_toggle_on: bool,
+    ) {
+        let outer_available = ui.available_size();
+        let sl = Self::spread_page_size(tex_left);
+        let sr = Self::spread_page_size(tex_right);
+        let image_size = egui::vec2(sl.x + sr.x, sl.y.max(sr.y));
+        let content_size = image_size.max(outer_available);
+
+        // 見開きが実際に切り替わった最初のフレームでだけ、進行方向に応じた
+        // 初期スクロール位置（左端上端 or 右端上端）をセットする。毎フレームセット
+        // するとユーザーのドラッグ操作を毎回上書きしてしまうため。
+        let current_lo = self.spread_lo();
+        // マウスホイールはページ送り専用に譲る（ここで拾うと二重に効いてしまう）。
+        // スクロールバー操作とコンテンツのD&Dパンのみ有効にする。
+        let mut scroll_area = egui::ScrollArea::both()
+            .scroll_source(egui::containers::scroll_area::ScrollSource {
+                scroll_bar: true,
+                drag: egui::containers::scroll_area::DragScroll::Always,
+                mouse_wheel: false,
+            });
+        if self.spread_actual_scrolled_lo != Some(current_lo) {
+            self.spread_actual_scrolled_lo = Some(current_lo);
+            let max_scroll_x = (content_size.x - outer_available.x).max(0.0);
+            // anim_dir: +1=新ページが右からIN(右へ進行) → 左端から見せる、
+            //           -1=左からIN(左へ進行) → 右端から見せる。
+            let target_x = if self.anim_dir < 0 { max_scroll_x } else { 0.0 };
+            scroll_area = scroll_area.scroll_offset(egui::vec2(target_x, 0.0));
+        }
+
+        scroll_area.show(ui, |ui| {
+            let (content_rect, resp) = ui.allocate_exact_size(content_size, egui::Sense::click());
+            let bbox = egui::Rect::from_min_size(
+                content_rect.min + (content_size - image_size) / 2.0,
+                image_size,
+            );
+            let rect_l = egui::Rect::from_min_size(bbox.min, sl);
+            let rect_r = egui::Rect::from_min_size(egui::pos2(bbox.min.x + sl.x, bbox.min.y), sr);
+            let painter = ui.painter();
+            Self::paint_page(painter, tex_left,  rect_l);
+            Self::paint_page(painter, tex_right, rect_r);
+
+            let menu_open = resp.context_menu_opened();
+            if !menu_open {
+                if resp.double_clicked() { *double_clicked = true; }
+                if resp.clicked() && !resp.double_clicked() { *single_clicked = true; }
+            }
+            if resp.secondary_clicked() {
+                if let Some(pos) = resp.interact_pointer_pos() {
+                    let index = self.thumbnail_target_from_rects(pos, rect_l, rect_r, left_index, right_index);
+                    self.set_thumbnail_context(index);
+                }
+            }
+            let thumbnail_target = self.thumbnail_context_entry.as_ref();
+            let saved_thumbnail_selection = self.saved_thumbnail_selection.as_ref();
+            let saved_thumbnail_display = self.saved_thumbnail_display_name();
+            let slideshow_active = self.is_slideshow_active();
+            let action = &mut self.pending_spread_action;
+            let sort_action = &mut self.pending_sort_action;
+                let bookmark_action = &mut self.pending_bookmark_action;
+            let thumbnail_action = &mut self.pending_thumbnail_action;
+            let favorite_add = &mut self.pending_favorite_add;
+            let open_file_detail = &mut self.pending_open_file_detail;
+            let slideshow_toggle = &mut self.pending_slideshow_toggle;
+            egui::Popup::context_menu(&resp)
+                    .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                    .show(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort, sort_action, bookmark_toggle_enabled, bookmark_toggle_on, bookmark_action, thumbnail_target, saved_thumbnail_selection, saved_thumbnail_display.as_deref(), thumbnail_action, favorite_add, open_file_detail, slideshow_active, slideshow_toggle));
+        });
     }
 
     /// サムネイル登録対象のヒットテスト。片側が仮想ページなら、クリック位置に
@@ -2558,6 +3293,13 @@ impl ViewerState {
         monitor: Option<egui::Vec2>,
         angle_deg: i32,
     ) -> Option<i32> {
+        if angle_deg == 0 {
+            let (rect_l, rect_r) = Self::spread_rects(
+                bounds.size(), bounds.min, tex_left, tex_right, monitor,
+            );
+            return self.thumbnail_target_from_rects(pos, rect_l, rect_r, left_index, right_index);
+        }
+
         let total = self.entries.len() as i32;
         let left_real = (0..total).contains(&left_index);
         let right_real = (0..total).contains(&right_index);
@@ -2568,25 +3310,47 @@ impl ViewerState {
             (true, true) => {}
         }
 
-        let (hit_left, hit_right) = if angle_deg == 0 {
-            let (left, right) = Self::spread_rects(
-                bounds.size(), bounds.min, tex_left, tex_right, monitor,
-            );
-            (left.contains(pos), right.contains(pos))
-        } else {
-            let (local_left, local_right) = Self::spread_local_rects(tex_left, tex_right);
-            match Self::spread_rotation_fit(local_left, local_right, bounds, angle_deg) {
-                Some((center_left, center_right, scale)) => (
-                    Self::rotated_rect_contains(pos, center_left, local_left.size() * scale / 2.0, angle_deg),
-                    Self::rotated_rect_contains(pos, center_right, local_right.size() * scale / 2.0, angle_deg),
-                ),
-                None => (false, false),
-            }
+        let (local_left, local_right) = Self::spread_local_rects(tex_left, tex_right);
+        let (hit_left, hit_right) = match Self::spread_rotation_fit(local_left, local_right, bounds, angle_deg) {
+            Some((center_left, center_right, scale)) => (
+                Self::rotated_rect_contains(pos, center_left, local_left.size() * scale / 2.0, angle_deg),
+                Self::rotated_rect_contains(pos, center_right, local_right.size() * scale / 2.0, angle_deg),
+            ),
+            None => (false, false),
         };
 
         if hit_left {
             Some(left_index)
         } else if hit_right {
+            Some(right_index)
+        } else {
+            None
+        }
+    }
+
+    /// 見開きヒットテストの共通部分：片側が仮想ページなら無条件に実ページ側を返し、
+    /// 両側が実ページのときだけ与えられた矩形で判定する（フィット表示・原寸表示共通）。
+    fn thumbnail_target_from_rects(
+        &self,
+        pos: egui::Pos2,
+        rect_l: egui::Rect,
+        rect_r: egui::Rect,
+        left_index: i32,
+        right_index: i32,
+    ) -> Option<i32> {
+        let total = self.entries.len() as i32;
+        let left_real = (0..total).contains(&left_index);
+        let right_real = (0..total).contains(&right_index);
+        match (left_real, right_real) {
+            (true, false) => return Some(left_index),
+            (false, true) => return Some(right_index),
+            (false, false) => return None,
+            (true, true) => {}
+        }
+
+        if rect_l.contains(pos) {
+            Some(left_index)
+        } else if rect_r.contains(pos) {
             Some(right_index)
         } else {
             None
@@ -2601,9 +3365,9 @@ impl ViewerState {
     }
 
     fn saved_thumbnail_display_name(&self) -> Option<String> {
-        let saved = self.saved_thumbnail_entry.as_deref()?;
+        let saved = &self.saved_thumbnail_selection.as_ref()?.entry_name;
         self.entries.iter()
-            .find(|entry| entry.entry_name == saved)
+            .find(|entry| &entry.entry_name == saved)
             .map(|entry| entry.display_name.clone())
     }
 
@@ -2828,6 +3592,15 @@ impl ViewerState {
         }
     }
 
+    /// `paint_page`のalpha指定版（クロスフェード用）。GPU側のアルファブレンドのみで
+    /// 済ませるため、CPU側のピクセル合成は行わない。
+    fn paint_page_alpha(painter: &egui::Painter, tex: &Option<egui::TextureHandle>, rect: egui::Rect, alpha: u8) {
+        match tex {
+            Some(t) => { painter.image(t.id(), rect, FULL_UV, egui::Color32::from_rgba_unmultiplied(255, 255, 255, alpha)); }
+            None    => { painter.rect_filled(rect, 0.0, egui::Color32::from_rgba_unmultiplied(40, 40, 40, alpha)); }
+        }
+    }
+
     /// 中心点 `center`・半径(半幅半高) `half`・`angle_deg` 度で回転させた矩形の4頂点
     /// （左上→右上→右下→左下の順）を返す共通ヘルパー。
     fn rotated_quad_points(center: egui::Pos2, half: egui::Vec2, angle_deg: i32) -> [egui::Pos2; 4] {
@@ -2922,6 +3695,113 @@ impl ViewerState {
             let size  = egui::vec2(img_w as f32 * scale, img_h as f32 * scale);
             let tl    = origin + (avail - size) / 2.0 + egui::vec2(offset_x, 0.0);
             painter.image(tex.id(), egui::Rect::from_min_size(tl, size), FULL_UV, egui::Color32::WHITE);
+        }
+    }
+
+    /// 時計回りワイプの分割数（フル1周あたり）。数十頂点程度なのでキャッシュ不要、
+    /// 毎フレームその場で組み立てる。
+    const WIPE_SEGMENTS_PER_CIRCLE: usize = 48;
+    /// ワイプ境界のフェザー幅（度数を周率に変換した値）。境界のすぐ外側だけ
+    /// アルファを255→0へ滑らかに落とし、境界のギザつきを緩和する。
+    const WIPE_FEATHER_FRAC: f32 = 8.0 / 360.0;
+
+    /// 時計12時位置を起点に時計回りで進む扇の周上の点を返す（frac: 0.0=12時、0.25=3時...）。
+    fn wipe_point(center: egui::Pos2, radius: f32, frac: f32) -> egui::Pos2 {
+        let angle = frac * std::f32::consts::TAU;
+        center + egui::vec2(angle.sin(), -angle.cos()) * radius
+    }
+
+    /// 時計回りワイプの新ページ側オーバーレイを描く（旧ページは呼び出し側が先に
+    /// 不透明で描画しておくこと）。境界に数度分のアルファグラデーション(フェザー)を
+    /// 付けて滑らかに見せる。扇形メッシュ(頂点数は数十程度)を毎フレーム組み立てるだけで、
+    /// CPU側のピクセル合成やシェーダー追加は行わない。
+    fn paint_clockwise_wipe_overlay(
+        painter: &egui::Painter,
+        tex: &Option<egui::TextureHandle>,
+        rect: egui::Rect,
+        t: f32,
+    ) {
+        let Some(tex) = tex else { return };
+        if !rect.is_finite() || rect.width() < 1.0 || rect.height() < 1.0 { return; }
+        let t = t.clamp(0.0, 1.0);
+        let swept = (t + Self::WIPE_FEATHER_FRAC).min(1.0);
+        if swept <= 0.0 { return; }
+
+        let center = rect.center();
+        // 矩形の対角線半分より少し大きい半径にして、扇の外周が矩形を確実に覆うようにする
+        // （実際の表示範囲はクリップで矩形内に絞るので、はみ出し分のコストは無視できる）。
+        let radius = (rect.width().powi(2) + rect.height().powi(2)).sqrt() / 2.0 + 1.0;
+        let steps = ((Self::WIPE_SEGMENTS_PER_CIRCLE as f32 * swept).ceil() as usize).max(1);
+
+        let alpha_at = |frac: f32| -> u8 {
+            if frac <= t {
+                255
+            } else {
+                let fade = (1.0 - (frac - t) / Self::WIPE_FEATHER_FRAC).clamp(0.0, 1.0);
+                (fade * 255.0).round() as u8
+            }
+        };
+        let uv_at = |p: egui::Pos2| -> egui::Pos2 {
+            egui::pos2(
+                (p.x - rect.min.x) / rect.width(),
+                (p.y - rect.min.y) / rect.height(),
+            )
+        };
+        let vertex_at = |frac: f32| -> egui::epaint::Vertex {
+            let p = Self::wipe_point(center, radius, frac);
+            egui::epaint::Vertex {
+                pos: p,
+                uv: uv_at(p),
+                color: egui::Color32::from_rgba_unmultiplied(255, 255, 255, alpha_at(frac)),
+            }
+        };
+        let center_vertex = |frac: f32| -> egui::epaint::Vertex {
+            egui::epaint::Vertex {
+                pos: center,
+                uv: uv_at(center),
+                color: egui::Color32::from_rgba_unmultiplied(255, 255, 255, alpha_at(frac)),
+            }
+        };
+
+        let mut mesh = egui::Mesh::with_texture(tex.id());
+        for i in 0..steps {
+            let frac_a = swept * (i as f32) / (steps as f32);
+            let frac_b = swept * ((i + 1) as f32) / (steps as f32);
+            let base = mesh.vertices.len() as u32;
+            mesh.vertices.push(center_vertex(frac_a));
+            mesh.vertices.push(vertex_at(frac_a));
+            mesh.vertices.push(vertex_at(frac_b));
+            mesh.indices.extend_from_slice(&[base, base + 1, base + 2]);
+        }
+        painter.with_clip_rect(painter.clip_rect().intersect(rect)).add(mesh);
+    }
+
+    /// 単ページの「フィット表示」矩形（avail内にアスペクト比を保って収める）を返す。
+    /// クロスフェード/ワイプで旧・新それぞれ自分のテクスチャの自然な矩形を使うために使う。
+    fn single_fit_rect(avail: egui::Vec2, origin: egui::Pos2, tex: &Option<egui::TextureHandle>) -> egui::Rect {
+        let Some(tex) = tex else { return egui::Rect::NOTHING };
+        let [img_w, img_h] = tex.size();
+        if img_w == 0 || img_h == 0 { return egui::Rect::NOTHING; }
+        let scale = (avail.x / img_w as f32).min(avail.y / img_h as f32);
+        let size = egui::vec2(img_w as f32 * scale, img_h as f32 * scale);
+        let tl = origin + (avail - size) / 2.0;
+        egui::Rect::from_min_size(tl, size)
+    }
+
+    /// 単ページをoffset無し・alpha指定で描画（クロスフェード用）
+    fn paint_single_alpha(
+        painter: &egui::Painter,
+        tex: &Option<egui::TextureHandle>,
+        avail: egui::Vec2,
+        origin: egui::Pos2,
+        alpha: u8,
+    ) {
+        if let Some(tex) = tex {
+            let [img_w, img_h] = tex.size();
+            let scale = (avail.x / img_w as f32).min(avail.y / img_h as f32);
+            let size  = egui::vec2(img_w as f32 * scale, img_h as f32 * scale);
+            let tl    = origin + (avail - size) / 2.0;
+            painter.image(tex.id(), egui::Rect::from_min_size(tl, size), FULL_UV, egui::Color32::from_rgba_unmultiplied(255, 255, 255, alpha));
         }
     }
 }
@@ -3394,5 +4274,87 @@ mod sort_save_state_tests {
         viewer.restore_saved_sort(ViewerSortKey::Name, true);
 
         assert_eq!(viewer.spread_base, 4);
+    }
+}
+
+#[cfg(test)]
+mod bookmark_restore_tests {
+    use super::*;
+
+    fn viewer() -> ViewerState {
+        ViewerState::new_raw(PathBuf::from("test.png"), [None; 4], None)
+    }
+
+    fn archive_viewer() -> ViewerState {
+        let mut viewer = viewer();
+        viewer.is_raw_file = false;
+        viewer.entries = vec![
+            ViewerEntry {
+                entry_name: "first".to_string(),
+                display_name: "first".to_string(),
+                date_key: 0,
+                original_index: 0,
+            },
+            ViewerEntry {
+                entry_name: "second".to_string(),
+                display_name: "second".to_string(),
+                date_key: 1,
+                original_index: 1,
+            },
+        ];
+        viewer
+    }
+
+    #[test]
+    fn restore_bookmark_position_jumps_to_matching_entry() {
+        let mut viewer = archive_viewer();
+        viewer.spread_base = 0;
+
+        assert!(viewer.restore_bookmark_position("second"));
+
+        assert_eq!(viewer.spread_base, 1);
+        assert_eq!(viewer.offset.value(), 0);
+    }
+
+    #[test]
+    fn restore_bookmark_position_fails_without_changing_state_when_entry_missing() {
+        let mut viewer = archive_viewer();
+        viewer.spread_base = 0;
+
+        assert!(!viewer.restore_bookmark_position("missing"));
+
+        assert_eq!(viewer.spread_base, 0, "見つからない場合は現在位置を変更しない");
+    }
+
+    #[test]
+    fn current_bookmark_entry_name_reflects_spread_lo() {
+        let mut viewer = archive_viewer();
+        viewer.spread_base = 1;
+
+        assert_eq!(viewer.current_bookmark_entry_name(), Some("second"));
+    }
+
+    #[test]
+    fn current_bookmark_entry_name_is_none_for_virtual_leading_page() {
+        let mut viewer = archive_viewer();
+        viewer.spread_base = -1;
+
+        assert_eq!(viewer.current_bookmark_entry_name(), None);
+    }
+
+    /// 回帰テスト：restore_saved_spread は spread_base を問答無用で0にリセットするため、
+    /// しおり復帰は必ずその「後」に呼ぶ実装契約になっている（open_viewer側の呼び出し順）。
+    /// 順序が入れ替わって再発しないよう、ここでその契約を固定する。
+    #[test]
+    fn restore_bookmark_position_after_spread_restore_wins() {
+        let mut viewer = archive_viewer();
+        let mut cfg = ViewerConfig::default();
+
+        viewer.restore_saved_spread(PageMode::SpreadLeft, 0, &mut cfg);
+        assert_eq!(viewer.spread_base, 0, "見開き復元は先頭へリセットする");
+
+        assert!(viewer.restore_bookmark_position("second"));
+
+        assert_eq!(viewer.spread_base, 1, "しおり復帰が見開き復元を上書きして残る");
     }
 }

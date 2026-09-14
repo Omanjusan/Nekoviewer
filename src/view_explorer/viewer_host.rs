@@ -52,6 +52,7 @@ impl NekoviewApp {
     /// ビューアーを閉じる（OS のクローズボタン等から winit_app が呼ぶ）。
     pub fn close_viewer(&mut self) {
         self.flush_current_sort_if_changed();
+        self.flush_current_bookmark_if_enabled();
         *self.viewer.lock().unwrap() = None;
     }
 
@@ -549,17 +550,18 @@ impl NekoviewApp {
             self.handle_thumbnail_save_action(action);
         }
 
-        if output.open_favorite_dialog {
-            self.open_favorite_detail_dialog();
+        if let Some(action) = output.bookmark_save_action {
+            self.handle_bookmark_save_action(action);
         }
-        // 描画自体はエクスプローラー窓の ui() 側でのみ行う（memory_warning_open 等と同じ
-        // 「状態はどちらの窓のアクションからでもセットできるが、モーダル描画は単一窓に一本化する」
-        // 既存パターンに合わせる。ビューアー窓側でも呼ぶと、複数選択からの起動時にビューアー窓・
-        // エクスプローラー窓の両方でダイアログが二重に描画されてしまう）。
+
+        if output.favorite_add_requested {
+            self.handle_favorite_add_request();
+        }
 
         let had_nav = output.nav != ViewerNav::None;
         if output.close_requested {
             self.flush_current_sort_if_changed();
+            self.flush_current_bookmark_if_enabled();
             *self.viewer.lock().unwrap() = None;
             controller::request_status_update(&self.status_update_requested);
             self.egui_ctx.request_repaint();
@@ -834,6 +836,78 @@ impl NekoviewApp {
         self.refresh_saved_archive_settings(&archive_path);
     }
 
+    /// 右クリックメニューでのしおり保存トグル操作を反映する。
+    /// 位置(last_entry_name等)の保存はここでは行わない（離脱時保存フックの責務）。
+    fn handle_bookmark_save_action(&mut self, action: crate::controller::BookmarkSaveAction) {
+        let Some(db) = self.spread_db.clone() else { return };
+        let mut viewer_guard = self.viewer.lock().unwrap();
+        let Some(viewer) = viewer_guard.as_mut() else { return };
+        let archive_path = viewer.archive_path().clone();
+        let Some(filename) = archive_path.file_name().and_then(|n| n.to_str()) else { return };
+        let archive_dir = archive_path.parent()
+            .unwrap_or(&self.current_dir)
+            .to_path_buf();
+
+        match action {
+            crate::controller::BookmarkSaveAction::Enable => {
+                crate::spread_state::write_bookmark_enabled(&db, &archive_dir, filename, true);
+                viewer.set_saved_bookmark_enabled(true);
+            }
+            crate::controller::BookmarkSaveAction::Disable => {
+                crate::spread_state::remove_bookmark(&db, &archive_dir, filename);
+                viewer.set_saved_bookmark_enabled(false);
+            }
+        }
+        drop(viewer_guard);
+        self.refresh_saved_archive_settings(&archive_path);
+    }
+
+    /// 右クリックメニュー「お気に入りに追加」を処理する。フォルダ選択等は行わず、
+    /// 未整理のお気に入りへの新規登録のみを行うワンアクション。既に何らかの形で
+    /// （未整理・フォルダ割当済みいずれでも）登録済みの場合は何もしない。
+    /// フォルダ選択・詳細設定はエクスプローラー部のお気に入り詳細ダイアログに委ねる。
+    /// 結果はビューアー窓のトーストで通知する。
+    fn handle_favorite_add_request(&mut self) {
+        let t = i18n::t();
+        let mut viewer_guard = self.viewer.lock().unwrap();
+        let Some(viewer) = viewer_guard.as_mut() else { return };
+        let archive_path = viewer.archive_path().clone();
+        let Some(filename) = archive_path.file_name().and_then(|n| n.to_str()) else {
+            viewer.set_toast(t.favorite_quick_add_toast_error().to_string());
+            return;
+        };
+        let archive_dir = archive_path.parent()
+            .unwrap_or(&self.current_dir)
+            .to_path_buf();
+        let Some(db) = self.spread_db.clone() else {
+            viewer.set_toast(t.favorite_quick_add_toast_error().to_string());
+            return;
+        };
+
+        if crate::favorites::get_membership(&db, &archive_dir, filename).is_some() {
+            viewer.set_toast(t.favorite_quick_add_toast_already().to_string());
+            return;
+        }
+        crate::favorites::set_membership(&db, &archive_dir, filename, &[]);
+        viewer.set_toast(t.favorite_quick_add_toast_success().to_string());
+        drop(viewer_guard);
+
+        // commit_favorite_detail_dialog と同じ後処理（お気に入りサムネ表示・
+        // お気に入り一覧の追従・スティッキーソートの反映）をなぞる。
+        if archive_dir == self.current_dir {
+            self.favorite_states.insert(filename.to_string(), Vec::new());
+        }
+        if let Some(selection) = self.viewing_favorites {
+            self.enter_favorite_view(selection);
+        } else {
+            if self.viewing_search.is_some() {
+                self.cross_view_favorite_markers =
+                    crate::favorites::memberships_for_paths(&db, &self.archives);
+            }
+            self.sort_archives();
+        }
+    }
+
     /// 登録サムネイルページの永続化だけを行う。画像キャッシュの差し替えは次フェーズで接続する。
     fn handle_thumbnail_save_action(&mut self, action: crate::controller::ThumbnailSaveAction) {
         let Some(db) = self.spread_db.clone() else { return };
@@ -843,43 +917,77 @@ impl NekoviewApp {
         let Some(filename) = archive_path.file_name().and_then(|n| n.to_str()) else { return };
         let archive_dir = archive_path.parent().unwrap_or(&self.current_dir);
 
-        let mut selected_entry = None;
+        let mut selected_selection = None;
+        let mut changed = false;
         match action {
-            crate::controller::ThumbnailSaveAction::Enable { entry_name } => {
+            crate::controller::ThumbnailSaveAction::Enable { selection } => {
                 // UIで解決した値を盲信せず、書き込み直前にも実エントリの存在を確認する。
-                if viewer.entries().iter().any(|entry| entry.entry_name == entry_name) {
+                if viewer.entries().iter().any(|entry| entry.entry_name == selection.entry_name) {
                     crate::spread_state::write_thumbnail_selection(
-                        &db, archive_dir, filename, &entry_name,
+                        &db, archive_dir, filename, &selection,
                     );
-                    selected_entry = Some(entry_name.clone());
-                    viewer.set_saved_thumbnail_entry(Some(entry_name));
+                    selected_selection = Some(selection.clone());
+                    viewer.set_saved_thumbnail_selection(Some(selection));
+                    changed = true;
                 }
             }
             crate::controller::ThumbnailSaveAction::Disable => {
                 crate::spread_state::remove_thumbnail_selection(&db, archive_dir, filename);
-                viewer.set_saved_thumbnail_entry(None);
+                viewer.set_saved_thumbnail_selection(None);
+                changed = true;
             }
+        }
+        if !changed {
+            return;
         }
         let archive_dir = archive_dir.to_path_buf();
         drop(viewer_guard);
         self.refresh_saved_archive_settings(&archive_path);
 
-        // 現在のグリッドに属するアーカイブなら、メモリ上の旧画像を対象限定で破棄し、
-        // 新しい登録値を付けて即時再生成する。キュー満杯時は通常描画経路が再要求する。
-        if archive_dir == self.current_dir {
-            self.thumbnails.remove(&archive_path);
-            self.thumb_pending.remove(&archive_path);
-            self.thumb_failed.remove(&archive_path);
-            if self.thumb_req_tx.try_send(crate::cache::ThumbRequest {
-                archive_path: archive_path.clone(),
-                db: self.cache_db.clone(),
-                is_raw_file: false,
-                thumbnail_entry_name: selected_entry,
-            }).is_ok() {
-                self.thumb_pending.insert(archive_path);
-            }
-            self.egui_ctx.request_repaint();
+        let cache_db = if archive_dir == self.current_dir {
+            self.cache_db.clone()
+        } else {
+            crate::neko_dir::neko_dir_for(&archive_dir, &self.config).and_then(|neko_dir| {
+                crate::neko_dir::open_cache_db_if_exists(&neko_dir, &archive_dir)
+            })
+        };
+        if let Some(db) = &cache_db {
+            let desired_source = selected_selection.as_ref()
+                .map(crate::cache::thumbnail_selection_cache_key)
+                .unwrap_or_default();
+            crate::neko_dir::reset_thumb_for_source(db, filename, &desired_source);
         }
+        let generation_state = cache_db.as_ref().map_or(
+            crate::neko_dir::ThumbnailGenerationState {
+                requested_edge: self.config.thumb_size,
+                requested_filter: self.config.thumb_filter.thumbnail_cache_id(),
+            },
+            |db| crate::neko_dir::thumbnail_generation_state(
+                db,
+                self.config.thumb_size,
+                self.config.thumb_filter.thumbnail_cache_id(),
+            ),
+        );
+        if archive_dir == self.current_dir {
+            self.thumb_generation_state = generation_state;
+        }
+        // 旧画像は表示したまま、対象限定で新しい登録値を即時再生成する。
+        // 成功した結果を受信した時点でGPUテクスチャも差し替える。
+        self.thumb_pending.remove(&archive_path);
+        self.thumb_failed.remove(&archive_path);
+        if self.thumb_req_tx.try_send(crate::cache::ThumbRequest {
+            archive_path: archive_path.clone(),
+            db: cache_db,
+            is_raw_file: false,
+            thumbnail_selection: selected_selection,
+            requested_edge: self.config.thumb_size,
+            requested_filter: self.config.thumb_filter,
+            generation_token: None,
+            session_id: self.thumb_session.load(std::sync::atomic::Ordering::Acquire),
+        }).is_ok() {
+            self.thumb_pending.insert(archive_path);
+        }
+        self.egui_ctx.request_repaint();
     }
 
     /// 保存ONかつ現在値に変更がある場合だけ、現在のアーカイブの保存値を上書きする。
@@ -908,9 +1016,30 @@ impl NekoviewApp {
         self.refresh_saved_archive_settings(&archive_path);
     }
 
+    /// しおり保存ONの場合だけ、現在のアーカイブの閲覧位置を書き込む。
+    /// ViewerStateを破棄・置換する直前の全経路から呼ぶ（flush_current_sort_if_changedと対）。
+    pub(super) fn flush_current_bookmark_if_enabled(&mut self) {
+        let Some(db) = self.spread_db.clone() else { return };
+        let mut viewer_guard = self.viewer.lock().unwrap();
+        let Some(viewer) = viewer_guard.as_mut() else { return };
+        if !viewer.bookmark_save_toggle_on() {
+            return;
+        }
+        let Some(entry_name) = viewer.current_bookmark_entry_name() else { return };
+        let entry_name = entry_name.to_string();
+        let archive_path = viewer.archive_path().clone();
+        let Some(filename) = archive_path.file_name().and_then(|n| n.to_str()) else { return };
+        let archive_dir = archive_path.parent()
+            .unwrap_or(&self.current_dir)
+            .to_path_buf();
+        let archive_mtime = crate::neko_dir::file_mtime(&archive_path);
+        crate::spread_state::write_bookmark_position(&db, &archive_dir, filename, &entry_name, archive_mtime);
+    }
+
     /// ビューアを開く（ページキャッシュクリア・ファイルキャッシュ投入・フォーカス要求を一括処理）
     pub(super) fn open_viewer(&mut self, mut state: ViewerState) {
         self.flush_current_sort_if_changed();
+        self.flush_current_bookmark_if_enabled();
         let path = state.archive_path().clone();
         self.failed_loads.retain(|key| key.archive_path != path);
         let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
@@ -926,20 +1055,6 @@ impl NekoviewApp {
             state.restore_saved_sort(key, ascending);
             state.set_saved_sort(Some((key, ascending)));
         }
-        let saved_thumbnail_entry = self.spread_db.as_ref().and_then(|db| {
-            crate::spread_state::read_thumbnail_selection(db, archive_dir, filename)
-        });
-        // アーカイブ更新で登録先が消えた場合は未登録として扱い、壊れた値も掃除する。
-        if saved_thumbnail_entry.as_ref().is_some_and(|saved| {
-            !state.entries().iter().any(|entry| &entry.entry_name == saved)
-        }) {
-            if let Some(db) = &self.spread_db {
-                crate::spread_state::remove_thumbnail_selection(db, archive_dir, filename);
-            }
-            state.set_saved_thumbnail_entry(None);
-        } else {
-            state.set_saved_thumbnail_entry(saved_thumbnail_entry);
-        }
         let saved_spread = if archive_dir == self.current_dir {
             self.spread_states.get(filename).copied()
         } else {
@@ -951,6 +1066,42 @@ impl NekoviewApp {
             let mut cfg = self.viewer_cfg.lock().unwrap();
             state.restore_saved_spread(mode, offset, &mut cfg);
             state.set_saved_spread(Some((mode, offset)));
+        }
+        // しおり復帰は見開き設定復元の後で行う。restore_saved_spread は
+        // spread_base を問答無用で0にリセットするため、先に済ませておかないと
+        // しおりのジャンプ先ページが上書きされて冒頭に戻ってしまう。
+        let bookmark = self.spread_db.as_ref()
+            .and_then(|db| crate::spread_state::read_bookmark(db, archive_dir, filename));
+        state.set_saved_bookmark_enabled(bookmark.as_ref().is_some_and(|b| b.enabled));
+        // last_entry_name が空 = まだ一度も離脱時保存が走っていない（トグルONにしただけ）。
+        // この場合は復帰対象なし・失敗でもないので黙って冒頭から始める。
+        if let Some(bookmark) = bookmark.filter(|b| b.enabled && !b.last_entry_name.is_empty()) {
+            let mtime_ok = bookmark.archive_mtime == crate::neko_dir::file_mtime(&path);
+            // ソート順（保存済み or デフォルト）は直前の restore_saved_sort で確定済み。
+            // ここでの entry_name 検索は、その確定後の一覧に対して行われる。
+            let restored = mtime_ok && state.restore_bookmark_position(&bookmark.last_entry_name);
+            if restored {
+                state.set_toast(i18n::t().toast_bookmark_restored().to_string());
+            } else {
+                if let Some(db) = self.spread_db.as_ref() {
+                    crate::spread_state::clear_bookmark_position(db, archive_dir, filename);
+                }
+                state.set_toast(i18n::t().toast_bookmark_invalidated().to_string());
+            }
+        }
+        let saved_thumbnail_selection = self.spread_db.as_ref().and_then(|db| {
+            crate::spread_state::read_thumbnail_selection(db, archive_dir, filename)
+        });
+        // アーカイブ更新で登録先が消えた場合は未登録として扱い、壊れた値も掃除する。
+        if saved_thumbnail_selection.as_ref().is_some_and(|saved| {
+            !state.entries().iter().any(|entry| entry.entry_name == saved.entry_name)
+        }) {
+            if let Some(db) = &self.spread_db {
+                crate::spread_state::remove_thumbnail_selection(db, archive_dir, filename);
+            }
+            state.set_saved_thumbnail_selection(None);
+        } else {
+            state.set_saved_thumbnail_selection(saved_thumbnail_selection);
         }
         self.pending_loads.lock().unwrap().clear();
         *self.viewer.lock().unwrap() = Some(state);

@@ -128,6 +128,13 @@ impl NekoviewApp {
             self.config.max_decode_edge,
             self.file_cache.max_bytes(),
         );
+        self.apply_memory_check(path, check)
+    }
+
+    /// `check_memory_budget`のうち、既に計算済みの見積もり結果を反映する部分だけを分離したもの。
+    /// 非同期オープン経路では`archive::estimate_archive_memory`自体（重いサンプルデコードを伴う）を
+    /// ワーカースレッド側で行い、ここでは結果の反映（FileCacheへの投入・警告フラグ）だけを行う。
+    pub(super) fn apply_memory_check(&mut self, path: &std::path::Path, check: archive::ArchiveMemoryCheck) -> bool {
         match check.estimate {
             archive::ArchiveMemoryEstimate::Ok => {
                 if let Some(prepared) = check.prepared {

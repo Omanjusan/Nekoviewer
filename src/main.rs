@@ -1,6 +1,7 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 mod anim;
 mod cache;
+mod card_date_format;
 mod config;
 mod controller;
 mod decode_jobs;
@@ -23,13 +24,16 @@ mod view_gui_config;
 mod view_innerlog;
 mod view_reader;
 mod view_status;
+#[cfg(windows)]
+mod win_registry;
 
 mod winit_app;
 
 use std::path::PathBuf;
 
 fn main() {
-    // config 読み込み前なのでデフォルト値（common=true）でログ出力
+    // config読み込み前はログ設定のデフォルト（common=false）が使われるため、この行自体は
+    // 実際には出力されない。設定確定後の "[startup] config loaded" 以降が実質の起点。
     log_common!("[startup] main() start");
 
     let instance_guard = match single_instance::acquire() {
@@ -53,9 +57,6 @@ fn main() {
     // 拾い、Windows ではダイアログで知らせてから終了する（Linuxは従来通り
     // 標準エラーへの panic メッセージで足りるため、そちらに任せる）。
     let init_result = std::panic::catch_unwind(|| {
-        fs::mount::log_gvfs_status();
-        log_common!("[startup] gvfs check done");
-
         let mut cfg = config::AppConfig::load();
         log_common!("[startup] config loaded");
 
@@ -63,7 +64,7 @@ fn main() {
         log_common!("[startup] state loaded (window_size = {:?})", state.window_size);
         i18n::set_from_code(&state.lang);
 
-        // 設定ダイアログ（共通/アニメタブ）で編集された値は state 側が config.ini より優先される。
+        // 設定ダイアログ（共通/アニメタブ）で編集された値は state 側がハードコード既定値より優先される。
         if let Some(v) = state.app_cache_total_mb { cfg.cache_total_mb = Some(v); }
         if let Some(v) = state.app_anim_ring_min_frames { cfg.anim_ring_min_frames = v; }
         if let Some(v) = state.app_anim_ring_max_frames { cfg.anim_ring_max_frames = v; }
@@ -71,16 +72,44 @@ fn main() {
         if let Some(v) = state.app_viewer_filter { cfg.viewer_filter = v; }
         if let Some(v) = state.app_max_decode_edge { cfg.max_decode_edge = v; }
 
+        // デバッグタブで編集されたログ設定も同様に state 側を優先する。
+        let mut log_cfg = config::log();
+        if let Some(v) = state.app_log_perf { log_cfg.perf = v; }
+        if let Some(v) = state.app_log_key { log_cfg.key = v; }
+        if let Some(v) = state.app_log_common { log_cfg.common = v; }
+        config::set_log(log_cfg);
+
+        // その他タブで編集された起動時フォルダ設定も同様に state 側を優先する。
+        if let Some(v) = state.app_startup_use_last_dir { cfg.startup.use_last_dir = v; }
+        if let Some(v) = state.app_startup_fixed_dir.clone() { cfg.startup.fixed_dir = Some(v); }
+
+        // フェーズ4a: thumb_size/thumb_filter も config.ini直接保存を廃止しstate側優先へ。
+        if let Some(v) = state.app_thumb_filter { cfg.thumb_filter = v; }
+        if let Some(v) = state.app_thumb_size { cfg.thumb_size = v; }
+
+        // フェーズ4b: decode_threads/default_slotも同様にstate側を優先する。
+        if let Some(v) = state.app_decode_threads { cfg.decode_threads = v; }
+        if let Some(v) = state.app_default_slot { cfg.default_slot = v; }
+
+        fs::mount::log_gvfs_status();
+        log_common!("[startup] gvfs check done");
+
         let args = CliArgs::parse();
         if let Some(v) = args.cache_max_mb { cfg.cache_total_mb = Some(v.max(64)); }
 
-        let start_dir = cfg.resolve_start_dir(args.start_path, &state);
-        log_common!("[startup] start_dir = {:?}", start_dir);
+        // 「賢く開く」：ファイル指定なら親DIR起動＋起動後の自動オープン対象を、DIR指定なら
+        // そのDIRをそれぞれ導出する。いずれも成立しなければ従来通りの起動フォルダ解決へ委ねる。
+        let (cli_dir, open_target) = match args.start_path {
+            Some(p) => config::AppConfig::resolve_cli_open_target(p),
+            None => (None, None),
+        };
+        let start_dir = cfg.resolve_start_dir(cli_dir, &state);
+        log_common!("[startup] start_dir = {:?}, open_target = {:?}", start_dir, open_target);
 
-        (cfg, state, start_dir)
+        (cfg, state, start_dir, open_target)
     });
 
-    let (cfg, state, start_dir) = match init_result {
+    let (cfg, state, start_dir, open_target) = match init_result {
         Ok(v) => v,
         Err(_) => {
             show_init_failure_dialog();
@@ -89,7 +118,7 @@ fn main() {
     };
 
     log_common!("[startup] starting winit event loop ...");
-    winit_app::run(start_dir, cfg, state);
+    winit_app::run(start_dir, cfg, state, open_target);
     drop(instance_guard);
 }
 
@@ -105,7 +134,7 @@ fn show_init_failure_dialog() {
 
     let text = to_wide(
         "初期化に失敗しました。\n\
-         nekoviewer.state, nekoviewer.conf に汚染の疑いがあるので、\n\
+         nekoviewer.state, keymap.ini に汚染の疑いがあるので、\n\
          バックアップをとってから削除して再起動することをおすすめします。",
     );
     let caption = to_wide("Nekoviewer");
@@ -245,7 +274,10 @@ impl CliArgs {
             if let Some(rest) = arg.strip_prefix("--cache-max-mb") {
                 cache_max_mb = Self::take_value(rest, &mut it);
             } else if !arg.starts_with('-') {
-                start_path = Some(PathBuf::from(&arg));
+                // 複数の位置引数（複数ファイル/複数DIR）が来ても先頭のみを対象とし、以降は無視する。
+                if start_path.is_none() {
+                    start_path = Some(PathBuf::from(&arg));
+                }
             }
             // 未知の --xxx オプションは無視
         }

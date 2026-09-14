@@ -1,8 +1,9 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, mpsc};
+use std::sync::atomic::AtomicU64;
 
-use crate::cache::{FileCache, FileCacheEntry, LoadRequest, LoadResult, PageCache, ThumbRequest, ThumbResult, EntryThumbRequest, EntryThumbResult, spawn_worker, spawn_thumb_worker, spawn_entry_thumb_worker, spawn_file_cache_worker};
+use crate::cache::{FileCache, FileCacheEntry, LoadRequest, LoadResult, PageCache, ThumbRequest, ThumbResult, ThumbResultStage, EntryThumbRequest, EntryThumbResult, spawn_worker, spawn_thumb_worker, spawn_entry_thumb_worker, spawn_file_cache_worker};
 use crate::decode_jobs::{DecodeJobQueue, DesiredDecodeJob};
 use crate::config::AppConfig;
 use crate::gui_config::{SortState, ViewerConfig, WindowSlot};
@@ -213,21 +214,116 @@ pub(crate) enum MenuBarButton {
     SortDate,
     SortSize,
     SortOrder,
+    CardInfoToggle,
     StatusToggle,
     Settings,
 }
 
 /// 表示順そのもの（draw_menu_barの描画順と一致させること）。
 /// 見開き・ページモード群はビューアーツールバーへ移設した（toolbar.rs 参照）。
-pub(crate) const MENU_BAR_ORDER: [MenuBarButton; 7] = [
+pub(crate) const MENU_BAR_ORDER: [MenuBarButton; 8] = [
     MenuBarButton::Reload,
     MenuBarButton::SortName,
     MenuBarButton::SortDate,
     MenuBarButton::SortSize,
     MenuBarButton::SortOrder,
+    MenuBarButton::CardInfoToggle,
     MenuBarButton::Settings,
     MenuBarButton::StatusToggle,
 ];
+
+#[cfg(test)]
+mod menu_bar_order_tests {
+    use super::{MenuBarButton, MENU_BAR_ORDER};
+
+    #[test]
+    fn settings_and_status_keep_the_visual_right_end_order() {
+        assert_eq!(
+            &MENU_BAR_ORDER[6..],
+            &[
+                MenuBarButton::Settings,
+                MenuBarButton::StatusToggle,
+            ],
+        );
+    }
+}
+
+/// サムネカード下部の情報オーバーレイ帯の表示量。メニューバーの1ボタンで循環する。
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub(crate) enum CardInfoMode {
+    /// 何も表示しない
+    #[default]
+    Off,
+    /// ファイル名のみ
+    Name,
+    /// ファイル名 + 更新日時
+    NameDate,
+    /// ファイル名 + 更新日時 + サイズ
+    NameDateSize,
+}
+
+impl CardInfoMode {
+    /// 押下ごとの循環順: Off → Name → NameDate → NameDateSize → Off
+    pub(crate) fn next(self) -> Self {
+        match self {
+            Self::Off => Self::Name,
+            Self::Name => Self::NameDate,
+            Self::NameDate => Self::NameDateSize,
+            Self::NameDateSize => Self::Off,
+        }
+    }
+
+    /// 帯に描画する行数（0..=3）
+    pub(crate) fn line_count(self) -> usize {
+        match self {
+            Self::Off => 0,
+            Self::Name => 1,
+            Self::NameDate => 2,
+            Self::NameDateSize => 3,
+        }
+    }
+
+    /// nekoviewer.state への保存キー
+    pub(crate) fn as_state_str(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Name => "name",
+            Self::NameDate => "name_date",
+            Self::NameDateSize => "name_date_size",
+        }
+    }
+
+    /// nekoviewer.state からの復元（未知値は Off）
+    pub(crate) fn from_state_str(s: &str) -> Self {
+        match s {
+            "name" => Self::Name,
+            "name_date" => Self::NameDate,
+            "name_date_size" => Self::NameDateSize,
+            _ => Self::Off,
+        }
+    }
+}
+
+/// 情報帯の見た目。将来 GUI 設定から供給する想定で、今は Default 固定。
+#[derive(Clone, Copy)]
+pub(crate) struct CardInfoStyle {
+    /// 帯の背景色（透過度込み。画像の上にオーバーレイ合成される）
+    pub band_color: egui::Color32,
+    /// 文字色
+    pub text_color: egui::Color32,
+    /// 基準文字サイズ(px)。実サイズは cell_h 連動で clamp する。
+    pub text_size: f32,
+}
+
+impl Default for CardInfoStyle {
+    fn default() -> Self {
+        Self {
+            band_color: egui::Color32::from_black_alpha(150),
+            text_color: egui::Color32::from_rgb(240, 240, 240),
+            text_size: 13.0,
+        }
+    }
+}
 
 #[derive(Clone, Copy)]
 enum FavoriteDialogMode {
@@ -394,17 +490,11 @@ pub struct NekoviewApp {
     /// Some(_) の間、中央グリッドは実ディレクトリではなく選択中のお気に入り
     /// （フォルダ横断）一覧を表示している。
     viewing_favorites: Option<FavoriteSelection>,
-    /// フェーズ2: 設定ファイル保存先(local/xdg)切り替えの確認待ち。Some(切替先) の間だけ表示。
-    pub(crate) storage_migrate_confirm: Option<crate::config::CacheStorage>,
-    /// フェーズ2: 保存先切り替え後、旧側の削除に失敗したファイル一覧（手動削除案内用）。
-    pub(crate) storage_delete_failed: Option<Vec<std::path::PathBuf>>,
-    /// フェーズ2: 起動時にバイナリ横・XDG両方で有効なconfが見つかった場合の選択待ち。
-    pub(crate) config_conflict: Option<crate::config::ConfigConflict>,
     viewing_dir: Option<PathBuf>,
-    /// CD/LSディレクトリのサマリーキャッシュ (path, saved_thumbs, total_archives)
-    cd_summary: Option<(PathBuf, usize, usize)>,
+    /// 現PWDのサムネイル進捗 (path, current, total, replacing_old)。
+    cd_summary: Option<(PathBuf, usize, usize, bool)>,
     /// バックグラウンドで計算中のサマリー結果受信チャンネル
-    cd_summary_rx: Option<mpsc::Receiver<(PathBuf, usize, usize)>>,
+    cd_summary_rx: Option<mpsc::Receiver<(PathBuf, usize, usize, bool)>>,
     cd_summary_updated_at: Option<std::time::Instant>,
     /// 現在ディレクトリの redb キャッシュDB（キャッシュ無効なら None）
     cache_db: Option<std::sync::Arc<std::sync::Mutex<redb::Database>>>,
@@ -431,7 +521,22 @@ pub struct NekoviewApp {
     thumbnails: HashMap<PathBuf, egui::TextureHandle>,
     thumb_req_tx: mpsc::SyncSender<ThumbRequest>,
     thumb_res_rx: mpsc::Receiver<ThumbResult>,
+    thumb_session: Arc<AtomicU64>,
     thumb_pending: HashSet<PathBuf>,
+    thumb_display_requested: HashSet<PathBuf>,
+    thumb_queue: VecDeque<PathBuf>,
+    thumb_priority_queue: VecDeque<PathBuf>,
+    thumb_queued: HashSet<PathBuf>,
+    thumb_missing_queued: HashSet<PathBuf>,
+    thumb_priority_queued: HashSet<PathBuf>,
+    thumb_last_user_activity: std::time::Instant,
+    /// 直近フレームで確定した可視範囲（filtered_indices順のposition）。
+    /// スクロール方向の判定にのみ使う（[[update_thumbnail_lookahead]]）。
+    thumb_visible_order_range: Option<(usize, usize)>,
+    /// サムネキューを最後に作り直した（＝フォルダを開いた）時刻。並列度ウォームアップの起点。
+    thumb_queue_built_at: std::time::Instant,
+    /// 現PWDのRDBプロファイルに基づく、サムネイル生成の許可状態と競合防止世代。
+    thumb_generation_state: crate::neko_dir::ThumbnailGenerationState,
     /// アーカイブ内サムネイルバー用（フォルダグリッドの thumb_req_tx とは別系統）
     entry_thumb_req_tx: mpsc::Sender<EntryThumbRequest>,
     entry_thumb_res_rx: mpsc::Receiver<EntryThumbResult>,
@@ -476,6 +581,9 @@ pub struct NekoviewApp {
     viewer_slots: [Option<WindowSlot>; 4],
     /// archives のうち生画像ファイルのセット（赤枠表示・シングルクリック開封用）
     raw_image_files: std::collections::HashSet<PathBuf>,
+    /// 起動時にCLIでファイル指定された場合の自動オープン対象。
+    /// 初回スキャン完了時（poll_scan）に一度だけ試行し、成否に関わらずNoneへ戻す。
+    pending_open_target: Option<PathBuf>,
     /// 無効確定済みZIP（画像エントリなし）のセット（現ディレクトリセッション中に保持）
     invalid_archives: std::collections::HashSet<PathBuf>,
     /// サムネイル生成に失敗したファイルのセット（DB非永続・セッション中のみ。
@@ -483,13 +591,17 @@ pub struct NekoviewApp {
     /// 次回スキャンでの一覧除外は行わない）
     thumb_failed: std::collections::HashSet<PathBuf>,
     /// アプリレベルのトーストメッセージ（3秒で自動消去）
-    app_toast: Option<(String, std::time::Instant)>,
+    pub(crate) app_toast: Option<(String, std::time::Instant)>,
     /// フェーズ2: ページキャッシュ予算（見積もりゲートの閾値。resolve_cache_budgetsのpage_max）
     cache_budget_bytes: usize,
     /// フェーズ4: アニメリングバッファ先読み枚数の(下限, 上限)。見積もりゲートも同じ値を使う。
     anim_ring_bounds: (usize, usize),
     /// フェーズ2: メモリ見積もり超過を知らせる確認ダイアログの表示状態
     memory_warning_open: bool,
+    /// エクスプローラーからのアーカイブオープン非同期処理。Some の間は
+    /// 中央オーバーレイでプログレスバー＋キャンセルボタンを表示し、
+    /// エクスプローラー側の他操作（キーボードショートカット等）を止める。
+    pending_open: Option<open_progress::PendingOpen>,
     /// 設定ダイアログの表示状態・選択中タブ・編集用下書き
     pub(crate) settings_open: bool,
     pub(crate) settings_tab: SettingsTab,
@@ -558,6 +670,17 @@ pub struct NekoviewApp {
     /// ビューアウィンドウをフォーカス前面に出すフラグ
     viewer_focus_requested: bool,
     pub(crate) show_hidden: bool,
+    /// サムネカード下部の情報帯の表示量（メニューバーの1ボタンで循環）。
+    pub(crate) card_info_mode: CardInfoMode,
+    /// 情報帯の「更新日時」行に使う日付書式。設定ダイアログのエクスプローラータブで編集。
+    pub(crate) card_date_format: crate::card_date_format::CardDateFormat,
+    /// 情報帯の見た目（背景色・透過度・文字色・文字サイズ）。今は Default 固定。
+    pub(crate) card_info_style: CardInfoStyle,
+    /// 情報帯の行が帯幅を超えた時のホバー横スクロール状態: (対象パス, ホバー開始時刻)。
+    pub(crate) card_info_hover: Option<(PathBuf, std::time::Instant)>,
+    /// 可視カードぶんだけ遅延取得するファイルメタデータのキャッシュ: パス → (更新日時, サイズbytes)。
+    /// スキャンで archives を作り直すたびにクリアする。
+    pub(crate) archive_meta_cache: HashMap<PathBuf, (std::time::SystemTime, u64)>,
     sort_key: ExplorerSortKey,
     sort_ascending: bool,
     /// サムネグリッドの統一カーソル位置（↑/サブフォルダ/アーカイブを貫通）
@@ -646,13 +769,14 @@ mod search;
 mod status;
 mod nav_icons;
 mod calendar_gui;
+mod open_progress;
 
 #[cfg(test)]
 mod glyph_audit;
 
 
 impl NekoviewApp {
-    pub fn new(start_dir: PathBuf, config: AppConfig, viewer_slots: [Option<WindowSlot>; 4], sort_state: SortState, viewer_cfg: ViewerConfig, show_hidden: bool, translate_cfg: crate::translate::TranslateConfig, ctx: egui::Context) -> Self {
+    pub fn new(start_dir: PathBuf, config: AppConfig, viewer_slots: [Option<WindowSlot>; 4], sort_state: SortState, viewer_cfg: ViewerConfig, show_hidden: bool, card_info_mode: &str, card_date_format: crate::card_date_format::CardDateFormat, translate_cfg: crate::translate::TranslateConfig, open_target: Option<PathBuf>, ctx: egui::Context) -> Self {
         // timeのローカルオフセット取得は、Unixでは他スレッド起動前に行う必要がある。
         let local_today = calendar_gui::LocalDate::today_local();
         let (cache_max, cache_min, file_cache_max) = crate::cache::resolve_cache_budgets(config.cache_total_mb);
@@ -662,10 +786,10 @@ impl NekoviewApp {
         // fit-within(縦横比維持)なので短辺は箱の中に自動的に収まる。
         let max_decode_target = (config.max_decode_edge, config.max_decode_edge);
         let config_root = config.config_root.clone();
-        let config_conflict = config.conflict.clone();
-        let settings_draft = SettingsDraft::from_current(&config, &viewer_cfg, show_hidden, &translate_cfg);
+        let settings_draft = SettingsDraft::from_current(&config, &viewer_cfg, show_hidden, card_date_format, &translate_cfg);
         let (req_tx, res_rx) = spawn_worker(config.viewer_filter.to_image_filter(), config.resolved_decode_threads(), ctx.clone(), cache_max, ring_bounds, frame_hard_limit_bytes);
-        let (thumb_req_tx, thumb_res_rx) = spawn_thumb_worker(config.thumb_filter.to_image_filter(), config.resolved_decode_threads(), ctx.clone());
+        let (thumb_req_tx, thumb_res_rx, thumb_session) =
+            spawn_thumb_worker(config.resolved_decode_threads(), ctx.clone());
         let (entry_thumb_req_tx, entry_thumb_res_rx) = spawn_entry_thumb_worker(config.thumb_filter.to_image_filter(), config.resolved_decode_threads(), ctx.clone());
         let (file_cache_req_tx, file_cache_res_rx) = spawn_file_cache_worker(ctx.clone(), file_cache_max);
         let mut drives = list_local_drives();
@@ -698,6 +822,8 @@ impl NekoviewApp {
         // 独立 OS 窓になり、render_status 内の request_repaint_after(1s) で自分自身を 1Hz で
         // 起こし続ける（winit ループがその予定で WaitUntil する）。
 
+        let initial_thumb_size = config.thumb_size;
+        let initial_thumb_filter = config.thumb_filter.thumbnail_cache_id();
         let mut app = Self {
             config,
             current_dir: start_dir,
@@ -718,9 +844,6 @@ impl NekoviewApp {
             favorite_delete_confirm: None,
             favorite_detail_dialog: None,
             viewing_favorites: None,
-            storage_migrate_confirm: None,
-            storage_delete_failed: None,
-            config_conflict,
             viewing_dir: None,
             cd_summary: None,
             cd_summary_rx: None,
@@ -746,7 +869,21 @@ impl NekoviewApp {
             thumbnails: HashMap::new(),
             thumb_req_tx,
             thumb_res_rx,
+            thumb_session,
             thumb_pending: HashSet::new(),
+            thumb_display_requested: HashSet::new(),
+            thumb_queue: VecDeque::new(),
+            thumb_priority_queue: VecDeque::new(),
+            thumb_queued: HashSet::new(),
+            thumb_missing_queued: HashSet::new(),
+            thumb_priority_queued: HashSet::new(),
+            thumb_last_user_activity: std::time::Instant::now(),
+            thumb_visible_order_range: None,
+            thumb_queue_built_at: std::time::Instant::now(),
+            thumb_generation_state: crate::neko_dir::ThumbnailGenerationState {
+                requested_edge: initial_thumb_size,
+                requested_filter: initial_thumb_filter,
+            },
             entry_thumb_req_tx,
             entry_thumb_res_rx,
             viewer: Arc::new(Mutex::new(None)),
@@ -772,12 +909,14 @@ impl NekoviewApp {
             window_size: (1024, 768),
             viewer_slots,
             raw_image_files: std::collections::HashSet::new(),
+            pending_open_target: open_target,
             invalid_archives: std::collections::HashSet::new(),
             thumb_failed: std::collections::HashSet::new(),
             app_toast: None,
             cache_budget_bytes: cache_max,
             anim_ring_bounds: ring_bounds,
             memory_warning_open: false,
+            pending_open: None,
             settings_open: false,
             settings_tab: SettingsTab::Common,
             settings_draft,
@@ -809,6 +948,11 @@ impl NekoviewApp {
             translate_ocr_queue: std::collections::VecDeque::new(),
             viewer_focus_requested: false,
             show_hidden,
+            card_info_mode: CardInfoMode::from_state_str(card_info_mode),
+            card_date_format,
+            card_info_style: CardInfoStyle::default(),
+            card_info_hover: None,
+            archive_meta_cache: HashMap::new(),
             sort_key: ExplorerSortKey::from_state_key(&sort_state.key),
             sort_ascending: sort_state.ascending,
             grid_cursor: None,
@@ -878,6 +1022,8 @@ impl NekoviewApp {
             i18n::lang_code(),
             &*self.viewer_cfg.lock().unwrap(),
             self.show_hidden,
+            self.card_info_mode.as_state_str(),
+            &self.card_date_format,
             &self.config,
             &self.translate_cfg,
         );

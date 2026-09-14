@@ -58,12 +58,17 @@ impl NekoviewApp {
         if !redecode_on {
             self.resize_redecode_last_seq = seq;
             self.resize_redecode_deadline = None;
-            // 「原寸」選択中は常にガードレール値（長辺 max_decode_edge）を使う。
+            // 「原寸」選択中は常にガードレール値（長辺 max_decode_edge、見開き中はその2倍）を使う。
             // fire_resize_redecode() 経由で decode_target が None（無制限）になったまま
             // 放置されると、一度でも「ウィンドウ追従」+ビューアー等倍ズームを使った後は
             // 「原寸」に戻してもガードレールが永続的に外れたままになるバグがあったため、
             // ここで毎フレーム復元する（実際に変化した時だけ再デコードを発火）。
-            let guardrail = Some((self.config.max_decode_edge, self.config.max_decode_edge));
+            let is_spread = {
+                let viewer = self.viewer.lock().unwrap();
+                viewer.as_ref().is_some_and(|v| v.current_spread_snapshot().0 != crate::types::PageMode::Single)
+            };
+            let edge = if is_spread { self.config.max_decode_edge.saturating_mul(2) } else { self.config.max_decode_edge };
+            let guardrail = Some((edge, edge));
             if self.decode_target != guardrail {
                 self.decode_target = guardrail;
                 self.begin_lazy_decode_generation();
@@ -93,10 +98,11 @@ impl NekoviewApp {
     /// ここでは作り直さない（表示サイズの更新は後続フェーズで既存pipelineへ通知する）。
     fn fire_resize_redecode(&mut self, seq: u64) {
         let zoom_actual = self.viewer_cfg.lock().unwrap().zoom_actual;
+        let max_decode_edge = self.config.max_decode_edge;
         let target = {
             let viewer = self.viewer.lock().unwrap();
             match viewer.as_ref() {
-                Some(v) => v.current_decode_target(zoom_actual),
+                Some(v) => v.current_decode_target(zoom_actual, max_decode_edge),
                 None => return,
             }
         };
@@ -334,10 +340,16 @@ impl NekoviewApp {
     pub fn on_exit(&mut self) {
         self.req_tx.shutdown();
         self.flush_current_sort_if_changed();
+        self.flush_current_bookmark_if_enabled();
         self.persist_state();
     }
 
     pub(super) fn poll_workers(&mut self, ctx: &egui::Context) {
+        if self.thumb_generation_state.requested_edge != self.config.thumb_size
+            || self.thumb_generation_state.requested_filter != self.config.thumb_filter.thumbnail_cache_id()
+        {
+            self.refresh_thumbnail_generation_state();
+        }
         self.poll_mount_checks();
 
         // バックグラウンドスキャン結果をポーリング
@@ -352,31 +364,58 @@ impl NekoviewApp {
         let thumb_results: Vec<ThumbResult> =
             std::iter::from_fn(|| self.thumb_res_rx.try_recv().ok()).collect();
         for result in thumb_results {
-            self.thumb_pending.remove(&result.path);
+            if result.session_id != self.thumb_session.load(std::sync::atomic::Ordering::Acquire) {
+                continue;
+            }
+            if result.path.parent().is_some_and(|parent| parent == self.current_dir)
+                && (result.requested_edge != self.thumb_generation_state.requested_edge
+                    || result.requested_filter != self.thumb_generation_state.requested_filter)
+            {
+                continue;
+            }
+            let current_source_key = result.path.parent().and_then(|dir| {
+                let filename = result.path.file_name()?.to_str()?;
+                self.spread_db.as_ref().and_then(|db| {
+                    crate::spread_state::read_thumbnail_selection(db, dir, filename)
+                }).map(|selection| crate::cache::thumbnail_selection_cache_key(&selection))
+            });
+            // 設定変更前に投入済みだったワーカー結果は、GPU表示にもpending状態にも反映しない。
+            if result.source_key != current_source_key {
+                continue;
+            }
+            if result.stage == ThumbResultStage::Complete {
+                self.thumb_pending.remove(&result.path);
+            }
             match result.rgba {
                 Some(rgba) => {
-                    if self.archives.contains(&result.path) {
+                    if self.archives.contains(&result.path)
+                        && (self.thumb_display_requested.contains(&result.path)
+                            || self.thumbnails.contains_key(&result.path))
+                    {
                         let name = result.path.display().to_string();
                         let tex = upload_texture(ctx, &name, &rgba);
                         self.thumbnails.insert(result.path, tex);
                     }
                 }
                 None => {
-                    self.maybe_check_mount_after_failure(&result.path);
-                    self.thumb_failed.insert(result.path);
+                    if result.stage == ThumbResultStage::Complete && result.failed {
+                        self.maybe_check_mount_after_failure(&result.path);
+                        self.thumb_failed.insert(result.path);
+                    }
                 }
             }
         }
+        self.pump_thumbnail_queue(ctx);
         // pending が空になった瞬間に最終カウントを更新する
         let just_finished = was_pending && self.thumb_pending.is_empty();
 
         // cd_summary バックグラウンド計算の結果をポーリング
         if let Some(ref rx) = self.cd_summary_rx {
-            if let Ok((path, saved, total)) = rx.try_recv() {
+            if let Ok((path, current, total, replacing_old)) = rx.try_recv() {
                 // 現在の CD/LS ディレクトリに対応する結果のみ反映（古い結果を捨てる）
                 let is_current = self.viewing_dir.as_ref() == Some(&path);
                 if is_current {
-                    self.cd_summary = Some((path, saved, total));
+                    self.cd_summary = Some((path, current, total, replacing_old));
                 }
                 self.cd_summary_rx = None;
                 self.cd_summary_updated_at = Some(std::time::Instant::now());
@@ -391,7 +430,7 @@ impl NekoviewApp {
             if just_finished || elapsed >= 2.0 {
                 // archives は current_dir のものなので、サマリー対象が一致する場合のみ再計算する
                 let refresh_target = match self.cd_summary {
-                    Some((ref cd_path, _, _)) if *cd_path == self.current_dir => Some(cd_path.clone()),
+                    Some((ref cd_path, _, _, _)) if *cd_path == self.current_dir => Some(cd_path.clone()),
                     _ => None,
                 };
                 if let Some(path) = refresh_target {
@@ -399,6 +438,11 @@ impl NekoviewApp {
                         path,
                         self.archive_filenames(),
                         self.cache_db.clone(),
+                        self.config.thumb_size,
+                        self.config.thumb_filter.thumbnail_cache_id(),
+                        self.thumb_failed.iter().filter_map(|path| {
+                            path.file_name().and_then(|name| name.to_str()).map(str::to_owned)
+                        }).collect(),
                         self.egui_ctx.clone(),
                     ));
                 }

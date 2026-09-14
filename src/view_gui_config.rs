@@ -1,9 +1,16 @@
 //! 設定ダイアログの egui 描画部分。データの永続化(state ファイル)は gui_config.rs、
-//! 起動時設定(config.ini)は config.rs が担当し、ここは NekoviewApp に生えた
+//! 起動時のハードコード既定値は config.rs が担当し、ここは NekoviewApp に生えた
 //! [設定]ボタン以降のUI（タブ切り替え・各タブの中身・下書き→反映のフロー）のみを扱う。
 
+use crate::card_date_format::{
+    AutoStyle, CardDateFormat, CardDateMode, DateOrder, DateSep, MonthStyle, YearDigits,
+};
 use crate::config::{AppConfig, ResizeFilter, filter_to_str};
-use crate::gui_config::{ThumbbarPos, ViewerConfig};
+use crate::gui_config::{
+    SlideshowManualBehavior, ThumbbarPos, TransitionKind, ViewerConfig,
+    SLIDESHOW_INTERVAL_CEILING_MS, SLIDESHOW_INTERVAL_FLOOR_MS,
+    TRANSITION_DURATION_CEILING_MS, TRANSITION_DURATION_FLOOR_MS,
+};
 use crate::i18n;
 use crate::keymap::{Keymap, ReaderAction, ExplorerAction, KeyCombo, MouseCombo, MouseAction, mouse_action_name};
 use crate::translate::{OVERLAY_WIDTH_CEILING, OVERLAY_WIDTH_FLOOR, TranslateConfig};
@@ -12,12 +19,17 @@ use crate::view_explorer::NekoviewApp;
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SettingsTab {
     Common,
+    Explorer,
     Anim,
     Static,
     Viewer,
+    Slideshow,
     Translate,
     Keymap,
+    #[cfg(windows)]
+    Windows,
     Other,
+    Debug,
 }
 
 /// 8K UHD(7680x4320)の長辺を「取り扱い上限解像度」スライダーの上限に使う。
@@ -28,6 +40,11 @@ const CACHE_TOTAL_FLOOR_MB: u64 = 64;
 /// サムネイルサイズスライダーの下限・上限px（config.rs のパース時clampと合わせる）。
 const THUMB_SIZE_FLOOR: u32 = 64;
 const THUMB_SIZE_CEILING: u32 = 512;
+/// アニメ1フレームあたりの生デコードサイズ上限スライダーの下限・上限MB。
+const ANIM_FRAME_HARD_LIMIT_FLOOR: usize = 10;
+const ANIM_FRAME_HARD_LIMIT_CEILING: usize = 500;
+/// デコードスレッド数スライダーの上限。
+const DECODE_THREADS_CEILING: usize = 32;
 
 /// 設定ダイアログの編集用下書き。[反映]を押すまでは AppConfig/ViewerConfig 本体には
 /// 一切書き戻さない（自由にタイプ・切り替えさせるための一時バッファ）。
@@ -47,8 +64,12 @@ pub(crate) struct SettingsDraft {
     thumb_filter: ResizeFilter,
     lang: i18n::Lang,
     show_hidden: bool,
+    /// サムネカード情報帯の日付書式（エクスプローラータブで編集）。
+    card_date_format: CardDateFormat,
     ring_min: usize,
     ring_max: usize,
+    /// アニメ1フレームあたりの生デコードサイズ上限（MB）。これを超えたフレームのみ自動縮小する。
+    anim_frame_hard_limit_mb: usize,
     thumbbar_pos: ThumbbarPos,
     thumbbar_thumb_size: u32,
     thumbbar_idle_hide_ms: u64,
@@ -58,6 +79,17 @@ pub(crate) struct SettingsDraft {
     thumbbar_marker_b: u8,
     thumbbar_marker_a: u8,
     exif_orientation_enabled: bool,
+    /// ビューアーを開くときの既定スロット（0..3 = F5〜F8）。None = デフォルト無し。
+    default_slot: Option<usize>,
+    /// スライドショータブ: 通常時のトランジション種類・遷移時間(ms)。
+    transition_kind: TransitionKind,
+    transition_duration_ms: u64,
+    /// スライドショー送り間隔(ms)・手動ページ送り時の挙動。
+    slideshow_interval_ms: u64,
+    slideshow_manual_behavior: SlideshowManualBehavior,
+    /// スライドショー実行中のトランジション種類・遷移時間(ms)。通常時とは独立。
+    slideshow_transition_kind: TransitionKind,
+    slideshow_transition_duration_ms: u64,
     translate_base_url: String,
     translate_ocr_model: String,
     translate_translation_model: String,
@@ -76,6 +108,16 @@ pub(crate) struct SettingsDraft {
     /// 直近の登録が他アクションと重複していた場合の警告文。登録自体はブロックしない
     /// （入れ替えを行うには一時的な重複を経由する必要があるため）。次の登録操作まで表示し続ける。
     keymap_last_warning: Option<String>,
+    /// デバッグタブのログ設定。デフォルトはすべてfalse（リリース既定）。
+    log_perf: bool,
+    log_key: bool,
+    log_common: bool,
+    /// ページデコードの並列スレッド数をユーザーが手動指定するか。false = 自動(論理コア数/2)。
+    decode_threads_user_set: bool,
+    decode_threads: usize,
+    /// その他タブの起動時フォルダ設定。
+    startup_use_last_dir: bool,
+    startup_fixed_dir: String,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -151,7 +193,7 @@ impl KeymapCaptureTarget {
 }
 
 impl SettingsDraft {
-    pub(crate) fn from_current(config: &AppConfig, viewer_cfg: &ViewerConfig, show_hidden: bool, translate_cfg: &TranslateConfig) -> Self {
+    pub(crate) fn from_current(config: &AppConfig, viewer_cfg: &ViewerConfig, show_hidden: bool, card_date_format: CardDateFormat, translate_cfg: &TranslateConfig) -> Self {
         let system_ram_mb = crate::cache::system_total_ram_mb();
         Self {
             redecode_on_resize: viewer_cfg.redecode_on_resize,
@@ -165,8 +207,10 @@ impl SettingsDraft {
             thumb_filter: config.thumb_filter,
             lang: i18n::t(),
             show_hidden,
+            card_date_format,
             ring_min: config.anim_ring_min_frames,
             ring_max: config.anim_ring_max_frames,
+            anim_frame_hard_limit_mb: config.anim_frame_hard_limit_mb,
             thumbbar_pos: viewer_cfg.thumbbar_pos,
             thumbbar_thumb_size: viewer_cfg.thumbbar_thumb_size,
             thumbbar_idle_hide_ms: viewer_cfg.thumbbar_idle_hide_ms,
@@ -176,6 +220,13 @@ impl SettingsDraft {
             thumbbar_marker_b: viewer_cfg.thumbbar_marker_b,
             thumbbar_marker_a: viewer_cfg.thumbbar_marker_a,
             exif_orientation_enabled: viewer_cfg.exif_orientation_enabled,
+            default_slot: config.default_slot,
+            transition_kind: viewer_cfg.transition_kind,
+            transition_duration_ms: viewer_cfg.transition_duration_ms,
+            slideshow_interval_ms: viewer_cfg.slideshow_interval_ms,
+            slideshow_manual_behavior: viewer_cfg.slideshow_manual_behavior,
+            slideshow_transition_kind: viewer_cfg.slideshow_transition_kind,
+            slideshow_transition_duration_ms: viewer_cfg.slideshow_transition_duration_ms,
             translate_base_url: translate_cfg.base_url.clone(),
             translate_ocr_model: translate_cfg.ocr_model.clone(),
             translate_translation_model: translate_cfg.translation_model.clone(),
@@ -186,6 +237,14 @@ impl SettingsDraft {
             key_capture_dialog: None,
             mouse_capture_dialog: None,
             keymap_last_warning: None,
+            log_perf: crate::config::log().perf,
+            log_key: crate::config::log().key,
+            log_common: crate::config::log().common,
+            decode_threads_user_set: config.decode_threads != 0,
+            decode_threads: if config.decode_threads == 0 { config.resolved_decode_threads() } else { config.decode_threads },
+            startup_use_last_dir: config.startup.use_last_dir,
+            startup_fixed_dir: config.startup.fixed_dir.as_deref()
+                .map(|p| p.to_string_lossy().to_string()).unwrap_or_default(),
         }
     }
 
@@ -208,6 +267,18 @@ impl SettingsDraft {
 
         config.anim_ring_min_frames = self.ring_min;
         config.anim_ring_max_frames = self.ring_max;
+        config.anim_frame_hard_limit_mb = self.anim_frame_hard_limit_mb;
+        config.decode_threads = if self.decode_threads_user_set { self.decode_threads } else { 0 };
+
+        crate::config::set_log(crate::config::LogConfig {
+            perf: self.log_perf,
+            key: self.log_key,
+            common: self.log_common,
+        });
+
+        config.startup.use_last_dir = self.startup_use_last_dir;
+        let trimmed = self.startup_fixed_dir.trim();
+        config.startup.fixed_dir = if trimmed.is_empty() { None } else { Some(std::path::PathBuf::from(trimmed)) };
 
         viewer_cfg.thumbbar_pos = self.thumbbar_pos;
         viewer_cfg.thumbbar_thumb_size = self.thumbbar_thumb_size;
@@ -218,6 +289,13 @@ impl SettingsDraft {
         viewer_cfg.thumbbar_marker_b = self.thumbbar_marker_b;
         viewer_cfg.thumbbar_marker_a = self.thumbbar_marker_a;
         viewer_cfg.exif_orientation_enabled = self.exif_orientation_enabled;
+        config.default_slot = self.default_slot;
+        viewer_cfg.transition_kind = self.transition_kind;
+        viewer_cfg.transition_duration_ms = self.transition_duration_ms;
+        viewer_cfg.slideshow_interval_ms = self.slideshow_interval_ms;
+        viewer_cfg.slideshow_manual_behavior = self.slideshow_manual_behavior;
+        viewer_cfg.slideshow_transition_kind = self.slideshow_transition_kind;
+        viewer_cfg.slideshow_transition_duration_ms = self.slideshow_transition_duration_ms;
 
         translate_cfg.base_url = self.translate_base_url.trim().to_string();
         translate_cfg.ocr_model = self.translate_ocr_model.trim().to_string();
@@ -321,6 +399,153 @@ fn draw_settings_tab_common(ui: &mut egui::Ui, draft: &mut SettingsDraft) {
         });
 }
 
+// ── エクスプローラータブ: サムネカード情報帯の日付書式 ──────────────────────
+// 上位1コンボ（モード）＋従属コンボ群。従属側はインデントし、モードに応じて
+// add_enabled_ui(false) でグレーアウト＋操作ロックする。カスタム系の選択肢
+// ラベルは「その軸を候補値にした場合の書式プレビュー」を live に出す（i18n不要）。
+
+fn card_date_mode_label(m: CardDateMode) -> &'static str {
+    match m {
+        CardDateMode::Auto => i18n::t().settings_card_date_mode_auto(),
+        CardDateMode::Sort => i18n::t().settings_card_date_mode_sort(),
+        CardDateMode::Custom => i18n::t().settings_card_date_mode_custom(),
+    }
+}
+
+/// 折りたたみ時のコンボに出す、その軸だけの短い現在値タグ。
+fn card_date_order_tag(o: DateOrder) -> &'static str {
+    match o {
+        DateOrder::Ymd => "YMD",
+        DateOrder::Dmy => "DMY",
+        DateOrder::Mdy => "MDY",
+    }
+}
+fn card_date_sep_tag(s: DateSep) -> &'static str {
+    match s {
+        DateSep::Slash => "/",
+        DateSep::Hyphen => "-",
+        DateSep::Dot => ".",
+        DateSep::None => i18n::t().settings_card_date_sep_none(),
+    }
+}
+fn card_date_year_tag(y: YearDigits) -> &'static str {
+    match y {
+        YearDigits::Four => "2026",
+        YearDigits::Two => "26",
+    }
+}
+fn card_date_month_tag(m: MonthStyle) -> &'static str {
+    match m {
+        MonthStyle::Numeric => "01",
+        MonthStyle::EnglishAbbrev => "Jan",
+    }
+}
+
+fn draw_settings_tab_explorer(ui: &mut egui::Ui, draft: &mut SettingsDraft) {
+    let lang = i18n::t();
+    let f = &mut draft.card_date_format;
+
+    ui.label(i18n::t().settings_card_date_heading());
+    ui.add_space(4.0);
+
+    // ── コンボ1: モード（上位）──
+    ui.label(i18n::t().settings_card_date_mode_label());
+    egui::ComboBox::from_id_salt("card_date_mode")
+        .selected_text(card_date_mode_label(f.mode))
+        .show_ui(ui, |ui| {
+            for m in [CardDateMode::Auto, CardDateMode::Sort, CardDateMode::Custom] {
+                ui.selectable_value(&mut f.mode, m, card_date_mode_label(m));
+            }
+        });
+
+    // ── 従属コンボ群（インデント）──
+    ui.indent("card_date_children", |ui| {
+        // コンボ2: 自動時の書式（モード=自動のときだけ有効）
+        ui.add_enabled_ui(f.mode == CardDateMode::Auto, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(i18n::t().settings_card_date_auto_style_label());
+                // 未指定(None)は表示言語由来の既定を「選択中」として見せる。
+                let shown = f
+                    .auto_style
+                    .unwrap_or_else(|| CardDateFormat::lang_default_style(lang));
+                egui::ComboBox::from_id_salt("card_date_auto_style")
+                    .selected_text(shown.example())
+                    .show_ui(ui, |ui| {
+                        for s in AutoStyle::ALL {
+                            let selected = f.auto_style == Some(s)
+                                || (f.auto_style.is_none() && s == shown);
+                            if ui.selectable_label(selected, s.example()).clicked() {
+                                f.auto_style = Some(s);
+                            }
+                        }
+                    });
+            });
+        });
+
+        // コンボ3〜6: カスタム（モード=カスタムのときだけ有効）
+        ui.add_enabled_ui(f.mode == CardDateMode::Custom, |ui| {
+            let base = f.as_custom();
+
+            ui.horizontal(|ui| {
+                ui.label(i18n::t().settings_card_date_order_label());
+                egui::ComboBox::from_id_salt("card_date_order")
+                    .selected_text(card_date_order_tag(f.order))
+                    .show_ui(ui, |ui| {
+                        for o in DateOrder::ALL {
+                            let mut p = base;
+                            p.order = o;
+                            ui.selectable_value(&mut f.order, o, p.preview(lang));
+                        }
+                    });
+            });
+
+            ui.horizontal(|ui| {
+                ui.label(i18n::t().settings_card_date_sep_label());
+                egui::ComboBox::from_id_salt("card_date_sep")
+                    .selected_text(card_date_sep_tag(f.sep))
+                    .show_ui(ui, |ui| {
+                        for s in DateSep::ALL {
+                            let mut p = base;
+                            p.sep = s;
+                            ui.selectable_value(&mut f.sep, s, p.preview(lang));
+                        }
+                    });
+            });
+
+            ui.horizontal(|ui| {
+                ui.label(i18n::t().settings_card_date_year_label());
+                egui::ComboBox::from_id_salt("card_date_year")
+                    .selected_text(card_date_year_tag(f.year))
+                    .show_ui(ui, |ui| {
+                        for y in YearDigits::ALL {
+                            let mut p = base;
+                            p.year = y;
+                            ui.selectable_value(&mut f.year, y, p.preview(lang));
+                        }
+                    });
+            });
+
+            ui.horizontal(|ui| {
+                ui.label(i18n::t().settings_card_date_month_label());
+                egui::ComboBox::from_id_salt("card_date_month")
+                    .selected_text(card_date_month_tag(f.month))
+                    .show_ui(ui, |ui| {
+                        for m in MonthStyle::ALL {
+                            let mut p = base;
+                            p.month = m;
+                            ui.selectable_value(&mut f.month, m, p.preview(lang));
+                        }
+                    });
+            });
+        });
+    });
+
+    ui.add_space(6.0);
+    ui.separator();
+    // ライブプレビュー（現在のモード・言語で解決した実際の書式）
+    ui.label(i18n::t().settings_card_date_preview(&f.preview(lang)));
+}
+
 fn draw_settings_tab_anim(ui: &mut egui::Ui, draft: &mut SettingsDraft) {
     ui.label(i18n::t().settings_ring_bounds_label());
     // Slider は値域(1..=60)外を選べないため、テキスト入力よりフールプルーフ。
@@ -336,6 +561,36 @@ fn draw_settings_tab_anim(ui: &mut egui::Ui, draft: &mut SettingsDraft) {
         ui.label(draft.ring_max.to_string());
     });
     ui.label(i18n::t().settings_ring_bounds_explain());
+
+    ui.add_space(6.0);
+    ui.separator();
+    ui.label(i18n::t().settings_anim_frame_hard_limit_label());
+    ui.horizontal(|ui| {
+        ui.add(egui::Slider::new(&mut draft.anim_frame_hard_limit_mb, ANIM_FRAME_HARD_LIMIT_FLOOR..=ANIM_FRAME_HARD_LIMIT_CEILING).show_value(false));
+        ui.label(format!("{} MB", draft.anim_frame_hard_limit_mb));
+    });
+    ui.label(i18n::t().settings_anim_frame_hard_limit_explain());
+}
+
+/// ログ出力のON/OFF。リリース既定はすべてfalse（無出力）。有効にした場合は
+/// 標準エラー（perf/key/common共通）とステータス窓の内部ログ（key/commonのみ）へ出る。
+fn draw_settings_tab_debug(ui: &mut egui::Ui, draft: &mut SettingsDraft) {
+    ui.label(i18n::t().settings_debug_explain());
+    ui.separator();
+    ui.checkbox(&mut draft.log_perf, i18n::t().settings_debug_log_perf());
+    ui.checkbox(&mut draft.log_key, i18n::t().settings_debug_log_key());
+    ui.checkbox(&mut draft.log_common, i18n::t().settings_debug_log_common());
+
+    ui.separator();
+    ui.label(i18n::t().settings_decode_threads_label());
+    ui.checkbox(&mut draft.decode_threads_user_set, i18n::t().settings_decode_threads_manual_toggle());
+    ui.add_enabled_ui(draft.decode_threads_user_set, |ui| {
+        ui.horizontal(|ui| {
+            ui.add(egui::Slider::new(&mut draft.decode_threads, 1..=DECODE_THREADS_CEILING).show_value(false));
+            ui.label(draft.decode_threads.to_string());
+        });
+    });
+    ui.label(i18n::t().settings_decode_threads_explain());
 }
 
 fn draw_settings_tab_viewer(ui: &mut egui::Ui, draft: &mut SettingsDraft) {
@@ -433,6 +688,98 @@ fn draw_settings_tab_viewer(ui: &mut egui::Ui, draft: &mut SettingsDraft) {
             ui.add(egui::Slider::new(&mut draft.thumbbar_marker_a, 0..=100));
         });
     });
+
+    ui.separator();
+    ui.label(i18n::t().settings_default_slot_label());
+    ui.horizontal(|ui| {
+        ui.selectable_value(&mut draft.default_slot, None, i18n::t().settings_default_slot_none());
+        for i in 0..4 {
+            ui.selectable_value(&mut draft.default_slot, Some(i), i18n::t().slot_label(i + 5));
+        }
+    });
+    ui.label(i18n::t().settings_default_slot_explain());
+}
+
+fn draw_settings_tab_slideshow(ui: &mut egui::Ui, draft: &mut SettingsDraft) {
+    ui.label(egui::RichText::new(i18n::t().settings_slideshow_normal_section_label()).strong().size(15.0));
+
+    egui::ComboBox::from_id_salt("transition_kind")
+        .selected_text(match draft.transition_kind {
+            TransitionKind::None            => i18n::t().settings_transition_none(),
+            TransitionKind::HorizontalSlide => i18n::t().settings_transition_horizontal_slide(),
+            TransitionKind::CrossFade       => i18n::t().settings_transition_cross_fade(),
+            TransitionKind::ClockwiseWipe   => i18n::t().settings_transition_clockwise_wipe(),
+        })
+        .show_ui(ui, |ui| {
+            ui.selectable_value(&mut draft.transition_kind, TransitionKind::None, i18n::t().settings_transition_none());
+            ui.selectable_value(&mut draft.transition_kind, TransitionKind::HorizontalSlide, i18n::t().settings_transition_horizontal_slide());
+            ui.selectable_value(&mut draft.transition_kind, TransitionKind::CrossFade, i18n::t().settings_transition_cross_fade());
+            ui.selectable_value(&mut draft.transition_kind, TransitionKind::ClockwiseWipe, i18n::t().settings_transition_clockwise_wipe());
+        });
+
+    ui.label(i18n::t().settings_transition_duration_label());
+    ui.scope(|ui| {
+        ui.spacing_mut().slider_width = 260.0;
+        ui.horizontal(|ui| {
+            ui.add(egui::Slider::new(&mut draft.transition_duration_ms, TRANSITION_DURATION_FLOOR_MS..=TRANSITION_DURATION_CEILING_MS).show_value(false).step_by(50.0));
+            ui.label(format!("{} ms", draft.transition_duration_ms));
+        });
+    });
+    ui.label(i18n::t().settings_transition_duration_explain());
+    ui.add_space(6.0);
+    ui.separator();
+
+    ui.label(egui::RichText::new(i18n::t().settings_slideshow_active_section_label()).strong().size(15.0));
+
+    egui::ComboBox::from_id_salt("slideshow_transition_kind")
+        .selected_text(match draft.slideshow_transition_kind {
+            TransitionKind::None            => i18n::t().settings_transition_none(),
+            TransitionKind::HorizontalSlide => i18n::t().settings_transition_horizontal_slide(),
+            TransitionKind::CrossFade       => i18n::t().settings_transition_cross_fade(),
+            TransitionKind::ClockwiseWipe   => i18n::t().settings_transition_clockwise_wipe(),
+        })
+        .show_ui(ui, |ui| {
+            ui.selectable_value(&mut draft.slideshow_transition_kind, TransitionKind::None, i18n::t().settings_transition_none());
+            ui.selectable_value(&mut draft.slideshow_transition_kind, TransitionKind::HorizontalSlide, i18n::t().settings_transition_horizontal_slide());
+            ui.selectable_value(&mut draft.slideshow_transition_kind, TransitionKind::CrossFade, i18n::t().settings_transition_cross_fade());
+            ui.selectable_value(&mut draft.slideshow_transition_kind, TransitionKind::ClockwiseWipe, i18n::t().settings_transition_clockwise_wipe());
+        });
+
+    ui.label(i18n::t().settings_transition_duration_label());
+    ui.scope(|ui| {
+        ui.spacing_mut().slider_width = 260.0;
+        ui.horizontal(|ui| {
+            ui.add(egui::Slider::new(&mut draft.slideshow_transition_duration_ms, TRANSITION_DURATION_FLOOR_MS..=TRANSITION_DURATION_CEILING_MS).show_value(false).step_by(50.0));
+            ui.label(format!("{} ms", draft.slideshow_transition_duration_ms));
+        });
+    });
+    ui.label(i18n::t().settings_transition_duration_explain());
+    ui.add_space(6.0);
+    ui.separator();
+
+    ui.label(i18n::t().settings_slideshow_interval_label());
+    ui.scope(|ui| {
+        ui.spacing_mut().slider_width = 260.0;
+        ui.horizontal(|ui| {
+            ui.add(egui::Slider::new(&mut draft.slideshow_interval_ms, SLIDESHOW_INTERVAL_FLOOR_MS..=SLIDESHOW_INTERVAL_CEILING_MS).show_value(false).step_by(1000.0));
+            ui.label(format!("{:.0} s", draft.slideshow_interval_ms as f64 / 1000.0));
+        });
+    });
+    ui.label(i18n::t().settings_slideshow_interval_explain());
+    ui.separator();
+
+    ui.label(i18n::t().settings_slideshow_manual_behavior_label());
+    ui.radio_value(
+        &mut draft.slideshow_manual_behavior,
+        SlideshowManualBehavior::ResetTimer,
+        i18n::t().settings_slideshow_manual_behavior_reset(),
+    );
+    ui.radio_value(
+        &mut draft.slideshow_manual_behavior,
+        SlideshowManualBehavior::Stop,
+        i18n::t().settings_slideshow_manual_behavior_stop(),
+    );
+    ui.label(i18n::t().settings_slideshow_manual_behavior_explain());
 }
 
 /// キーアサインタブ: ReaderAction/ExplorerActionの現在の割り当てをセクション分けして
@@ -851,7 +1198,7 @@ impl NekoviewApp {
     /// 設定ダイアログを開く。編集用の下書き(draft)を現在値から作り直す
     /// （[反映]を押すまで実際の設定には反映されない）。
     pub fn open_settings(&mut self) {
-        self.settings_draft = SettingsDraft::from_current(&self.config, &self.viewer_cfg.lock().unwrap(), self.show_hidden, &self.translate_cfg);
+        self.settings_draft = SettingsDraft::from_current(&self.config, &self.viewer_cfg.lock().unwrap(), self.show_hidden, self.card_date_format, &self.translate_cfg);
         self.translate_conn_rx = None;
         self.translate_conn_status = None;
         self.settings_open = true;
@@ -890,15 +1237,21 @@ impl NekoviewApp {
             ui.separator();
 
             ui.horizontal(|ui| {
-                for (tab, label) in [
+                let mut tabs = vec![
                     (SettingsTab::Common, i18n::t().settings_tab_common()),
+                    (SettingsTab::Explorer, i18n::t().settings_tab_explorer()),
                     (SettingsTab::Anim, i18n::t().settings_tab_anim()),
                     (SettingsTab::Static, i18n::t().settings_tab_static()),
                     (SettingsTab::Viewer, i18n::t().settings_tab_viewer()),
+                    (SettingsTab::Slideshow, i18n::t().settings_tab_slideshow()),
                     (SettingsTab::Translate, i18n::t().settings_tab_translate()),
                     (SettingsTab::Keymap, "キーアサイン"),
-                    (SettingsTab::Other, i18n::t().settings_tab_other()),
-                ] {
+                ];
+                #[cfg(windows)]
+                tabs.push((SettingsTab::Windows, i18n::t().settings_tab_windows()));
+                tabs.push((SettingsTab::Other, i18n::t().settings_tab_other()));
+                tabs.push((SettingsTab::Debug, i18n::t().settings_tab_debug()));
+                for (tab, label) in tabs {
                     ui.selectable_value(&mut self.settings_tab, tab, label);
                 }
             });
@@ -906,12 +1259,17 @@ impl NekoviewApp {
 
             match self.settings_tab {
                 SettingsTab::Common => draw_settings_tab_common(ui, &mut self.settings_draft),
+                SettingsTab::Explorer => draw_settings_tab_explorer(ui, &mut self.settings_draft),
                 SettingsTab::Anim => draw_settings_tab_anim(ui, &mut self.settings_draft),
                 SettingsTab::Static => self.draw_settings_tab_static(ui),
                 SettingsTab::Viewer => draw_settings_tab_viewer(ui, &mut self.settings_draft),
+                SettingsTab::Slideshow => draw_settings_tab_slideshow(ui, &mut self.settings_draft),
                 SettingsTab::Translate => self.draw_settings_tab_translate(ui, ctx),
                 SettingsTab::Keymap => draw_settings_tab_keymap(ui, &mut self.settings_draft),
+                #[cfg(windows)]
+                SettingsTab::Windows => self.draw_settings_tab_windows(ui),
                 SettingsTab::Other => self.draw_settings_tab_other(ui),
+                SettingsTab::Debug => draw_settings_tab_debug(ui, &mut self.settings_draft),
             }
 
             ui.separator();
@@ -943,10 +1301,11 @@ impl NekoviewApp {
                 let verified_url_matches = self.translate_conn_verified_url.as_deref()
                     == Some(self.settings_draft.translate_base_url.trim());
                 self.settings_draft.apply_to(&mut self.config, &mut self.viewer_cfg.lock().unwrap(), &mut self.translate_cfg);
+                self.refresh_thumbnail_generation_state();
                 self.translate_conn_verified = verified_url_matches;
                 self.show_hidden = self.settings_draft.show_hidden;
-                // thumb_size/thumb_filterはstateファイルに乗っていないためconfig.iniへ直接保存する。
-                self.config.save();
+                // card_date_format は AppConfig 外の state 値なので apply_to を通さず直接反映。
+                self.card_date_format = self.settings_draft.card_date_format;
                 // keymapは行数可変のため専用ファイル(keymap.ini)へ別途保存する。
                 self.config.keymap.save(&self.config.config_root);
                 self.persist_state();
@@ -1091,6 +1450,39 @@ impl NekoviewApp {
         });
     }
 
+    /// Windowsエクスプローラーの右クリックメニュー「Nekoviewerで開く」の登録/削除。
+    /// [反映]待ちの下書きにはせず、ボタンを押した瞬間にレジストリへ即時反映する
+    /// （インストーラを持たない配布形態のため、この画面が唯一の登録/削除手段）。
+    #[cfg(windows)]
+    fn draw_settings_tab_windows(&mut self, ui: &mut egui::Ui) {
+        let t = i18n::t();
+        ui.label(t.settings_windows_context_menu_label());
+        ui.label(t.settings_windows_context_menu_desc());
+        ui.add_space(8.0);
+
+        let registered = crate::win_registry::is_registered();
+        ui.horizontal(|ui| {
+            ui.label(if registered {
+                t.settings_windows_status_registered()
+            } else {
+                t.settings_windows_status_not_registered()
+            });
+        });
+        ui.add_space(4.0);
+
+        ui.horizontal(|ui| {
+            if ui.add_enabled(!registered, egui::Button::new(t.settings_windows_register_button())).clicked() {
+                if let Err(e) = crate::win_registry::register() {
+                    self.app_toast = Some((t.settings_windows_register_failed(&e), std::time::Instant::now()));
+                }
+            }
+            if ui.add_enabled(registered, egui::Button::new(t.settings_windows_unregister_button())).clicked()
+                && let Err(e) = crate::win_registry::unregister() {
+                self.app_toast = Some((t.settings_windows_unregister_failed(&e), std::time::Instant::now()));
+            }
+        });
+    }
+
     fn draw_settings_tab_other(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             ui.label(i18n::t().settings_version_label());
@@ -1098,115 +1490,11 @@ impl NekoviewApp {
         });
 
         ui.separator();
-        self.draw_storage_section(ui);
-    }
+        ui.checkbox(&mut self.settings_draft.startup_use_last_dir, i18n::t().settings_startup_use_last_dir());
+        ui.label(i18n::t().settings_startup_use_last_dir_explain());
 
-    /// フェーズ2: 設定ファイル・キャッシュの保存先(local/xdg)切り替えUI。
-    /// 他の項目と違い[反映]待ちの下書きにはせず、選択した瞬間に確認ダイアログを出す
-    /// （移行はコピー+削除を伴う重い操作のため、他の設定と同時に暗黙適用したくない）。
-    fn draw_storage_section(&mut self, ui: &mut egui::Ui) {
-        use crate::config::CacheStorage;
-        let is_read_only_package = crate::config::is_read_only_package();
-        let current = self.config.cache_storage;
-
-        ui.label(i18n::t().settings_storage_label());
-        ui.horizontal(|ui| {
-            if ui.add_enabled(!is_read_only_package, egui::RadioButton::new(current == CacheStorage::Local, i18n::t().settings_storage_local())).clicked()
-                && current != CacheStorage::Local {
-                self.storage_migrate_confirm = Some(CacheStorage::Local);
-            }
-            if ui.radio(current == CacheStorage::Xdg, i18n::t().settings_storage_xdg()).clicked()
-                && current != CacheStorage::Xdg {
-                self.storage_migrate_confirm = Some(CacheStorage::Xdg);
-            }
-        });
-        if is_read_only_package {
-            ui.label(i18n::t().settings_storage_package_note());
-        }
-    }
-
-    /// 保存先切り替えの確認ダイアログ。OKでコピー+旧側削除を実行する。
-    pub(crate) fn draw_storage_migrate_confirm_dialog(&mut self, ctx: &egui::Context) {
-        let Some(to) = self.storage_migrate_confirm else { return };
-        let mut cancel = false;
-        let mut confirm = false;
-        egui::Window::new(i18n::t().settings_storage_confirm_title())
-            .collapsible(false)
-            .resizable(false)
-            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
-            .show(ctx, |ui| {
-                ui.label(i18n::t().settings_storage_confirm_body());
-                ui.add_space(8.0);
-                ui.horizontal(|ui| {
-                    if ui.button(i18n::t().favorite_dialog_cancel()).clicked() {
-                        cancel = true;
-                    }
-                    if ui.button(i18n::t().settings_storage_confirm_ok()).clicked() {
-                        confirm = true;
-                    }
-                });
-            });
-        if cancel {
-            self.storage_migrate_confirm = None;
-        }
-        if confirm {
-            let delete_failed = self.config.migrate_storage(to);
-            if !delete_failed.is_empty() {
-                self.storage_delete_failed = Some(delete_failed);
-            }
-            self.storage_migrate_confirm = None;
-        }
-    }
-
-    /// 保存先切り替え後、旧側ファイルの削除に失敗した場合の手動削除案内ダイアログ。
-    pub(crate) fn draw_storage_delete_failed_dialog(&mut self, ctx: &egui::Context) {
-        let Some(paths) = &self.storage_delete_failed else { return };
-        let mut ok = false;
-        egui::Window::new(i18n::t().settings_storage_delete_failed_title())
-            .collapsible(false)
-            .resizable(false)
-            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
-            .show(ctx, |ui| {
-                ui.label(i18n::t().settings_storage_delete_failed_body());
-                ui.add_space(4.0);
-                for p in paths {
-                    ui.monospace(p.to_string_lossy());
-                }
-                ui.add_space(8.0);
-                if ui.button(i18n::t().favorite_dialog_ok()).clicked() {
-                    ok = true;
-                }
-            });
-        if ok {
-            self.storage_delete_failed = None;
-        }
-    }
-
-    /// 起動時、バイナリ横・XDG両方で有効なconfが見つかった場合の選択ダイアログ
-    /// （安全網。通常フローでは storage 切替時に旧側を削除するため稀にしか出ない）。
-    pub(crate) fn draw_config_conflict_dialog(&mut self, ctx: &egui::Context) {
-        let Some(conflict) = self.config_conflict.clone() else { return };
-        let mut chosen: Option<std::path::PathBuf> = None;
-        egui::Window::new(i18n::t().config_conflict_title())
-            .collapsible(false)
-            .resizable(false)
-            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
-            .show(ctx, |ui| {
-                ui.label(i18n::t().config_conflict_body());
-                ui.add_space(8.0);
-                let fmt_date = |d: Option<u64>| d.map(crate::config::format_epoch)
-                    .unwrap_or_else(|| i18n::t().config_conflict_unknown_date().to_string());
-                if ui.button(format!("{}\n({})", conflict.exe_root.display(), fmt_date(conflict.exe_updated_at))).clicked() {
-                    chosen = Some(conflict.exe_root.clone());
-                }
-                ui.add_space(4.0);
-                if ui.button(format!("{}\n({})", conflict.xdg_root.display(), fmt_date(conflict.xdg_updated_at))).clicked() {
-                    chosen = Some(conflict.xdg_root.clone());
-                }
-            });
-        if let Some(root) = chosen {
-            self.config.resolve_conflict(root);
-            self.config_conflict = None;
-        }
+        ui.label(i18n::t().settings_startup_fixed_dir_label());
+        ui.text_edit_singleline(&mut self.settings_draft.startup_fixed_dir);
+        ui.label(i18n::t().settings_startup_fixed_dir_explain());
     }
 }

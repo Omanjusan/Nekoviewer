@@ -26,7 +26,7 @@
 
 use std::num::NonZeroU32;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use egui::ViewportId;
@@ -40,6 +40,25 @@ use winit::window::{Window, WindowId};
 use crate::config::AppConfig;
 use crate::gui_config::AppState;
 use crate::view_explorer::NekoviewApp;
+
+/// 実行中ウィンドウのアイコン（タイトルバー/タスクバー/Alt-Tab用）。
+/// Windows exe自体のアイコンはbuild.rsでのリソース埋め込みで別途対応済みだが、
+/// こちらは実行中窓のOS側表示に使われるもので、全プラットフォーム共通で効く。
+/// 初回呼び出し時にデコード・リサイズし、以降はキャッシュを clone するだけ。
+fn app_icon() -> Option<winit::window::Icon> {
+    static ICON: OnceLock<Option<winit::window::Icon>> = OnceLock::new();
+    ICON.get_or_init(|| {
+        const ICON_BYTES: &[u8] =
+            include_bytes!("../packaging/appimage/io.github.Omanjusan.Nekoviewer.png");
+        let img = image::load_from_memory(ICON_BYTES).ok()?;
+        let img = img
+            .resize_exact(64, 64, image::imageops::FilterType::Lanczos3)
+            .to_rgba8();
+        let (w, h) = img.dimensions();
+        winit::window::Icon::from_rgba(img.into_raw(), w, h).ok()
+    })
+    .clone()
+}
 
 /// ビューアー窓に割り当てる ViewportId（ROOT=エクスプローラーと区別する）。
 fn viewer_viewport_id() -> ViewportId {
@@ -271,7 +290,7 @@ fn render_window(win: &mut EguiWindow, build: impl FnMut(&mut egui::Ui)) -> Dura
 
 struct WinitApp {
     /// resumed まで初期化を遅延させるための起動データ。
-    init: Option<(PathBuf, AppConfig, AppState)>,
+    init: Option<(PathBuf, AppConfig, AppState, Option<PathBuf>)>,
     /// 再描画要求でループを起床させるためのプロキシ（各窓のコールバックへ clone して渡す）。
     proxy: EventLoopProxy<UserEvent>,
     explorer: Option<EguiWindow>,
@@ -301,10 +320,11 @@ impl WinitApp {
         start_dir: PathBuf,
         cfg: AppConfig,
         state: AppState,
+        open_target: Option<PathBuf>,
         proxy: EventLoopProxy<UserEvent>,
     ) -> Self {
         Self {
-            init: Some((start_dir, cfg, state)),
+            init: Some((start_dir, cfg, state, open_target)),
             proxy,
             explorer: None,
             viewer: None,
@@ -317,9 +337,11 @@ impl WinitApp {
     }
 
     fn create_explorer_window(&mut self, event_loop: &ActiveEventLoop) {
-        let (start_dir, cfg, state) = self.init.take().expect("init data");
+        let (start_dir, cfg, state, open_target) = self.init.take().expect("init data");
 
-        let mut attrs = Window::default_attributes().with_title("Nekoviewer");
+        let mut attrs = Window::default_attributes()
+            .with_title("Nekoviewer")
+            .with_window_icon(app_icon());
         if let Some((w, h)) = state.window_size {
             attrs = attrs.with_inner_size(winit::dpi::LogicalSize::new(w as f64, h as f64));
         }
@@ -335,7 +357,10 @@ impl WinitApp {
             state.sort_state,
             state.viewer_cfg,
             state.show_hidden,
+            &state.card_info_mode,
+            state.card_date_format,
             state.translate_cfg,
+            open_target,
             win.egui_ctx.clone(),
         );
 
@@ -352,7 +377,9 @@ impl WinitApp {
         if want && !have {
             // conf 既定スロットが解決できれば、その位置・サイズで生成して初回フラッシュを避ける。
             // 画面外補正は ViewerState 初回フレームの apply_default_slot が担う。
-            let mut attrs = Window::default_attributes().with_title("Nekoviewer");
+            let mut attrs = Window::default_attributes()
+                .with_title("Nekoviewer")
+                .with_window_icon(app_icon());
             if let Some(slot) = app.resolved_default_viewer_slot() {
                 attrs = attrs
                     .with_position(winit::dpi::LogicalPosition::new(slot.x as f64, slot.y as f64))
@@ -398,6 +425,7 @@ impl WinitApp {
             if want && !have {
                 let attrs = Window::default_attributes()
                     .with_title("Nekoviewer Status")
+                    .with_window_icon(app_icon())
                     .with_inner_size(winit::dpi::LogicalSize::new(300.0, 280.0));
                 let window = Arc::new(event_loop.create_window(attrs).expect("create status window"));
                 let win = make_egui_window(window, status_viewport_id(), &self.proxy);
@@ -423,6 +451,7 @@ impl WinitApp {
         if want && !have {
             let attrs = Window::default_attributes()
                 .with_title("Nekoviewer OCR/Translate")
+                .with_window_icon(app_icon())
                 .with_inner_size(winit::dpi::LogicalSize::new(480.0, 640.0));
             let window = Arc::new(event_loop.create_window(attrs).expect("create translate window"));
             let win = make_egui_window(window, translate_viewport_id(), &self.proxy);
@@ -748,7 +777,7 @@ impl ApplicationHandler<UserEvent> for WinitApp {
 }
 
 /// winit イベントループを起動する（戻ってきたら終了）。
-pub fn run(start_dir: PathBuf, cfg: AppConfig, state: AppState) {
+pub fn run(start_dir: PathBuf, cfg: AppConfig, state: AppState, open_target: Option<PathBuf>) {
     let event_loop = EventLoop::<UserEvent>::with_user_event()
         .build()
         .expect("event loop");
@@ -761,7 +790,7 @@ pub fn run(start_dir: PathBuf, cfg: AppConfig, state: AppState) {
         let _ = ping_proxy.send_event(UserEvent::FocusRequested);
     });
 
-    let mut app = WinitApp::new(start_dir, cfg, state, proxy);
+    let mut app = WinitApp::new(start_dir, cfg, state, open_target, proxy);
     event_loop.run_app(&mut app).expect("run_app");
 }
 

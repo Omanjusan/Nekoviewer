@@ -560,15 +560,10 @@ impl NekoviewApp {
                     if let Some(path) = self.archives.get(*idx).cloned() {
                         if self.network_gate(&path) {
                             let is_raw = self.raw_image_files.contains(&path);
-                            let state = if is_raw {
-                                Some(ViewerState::new_raw(path.clone(), self.viewer_slots, self.config.default_slot))
-                            } else if self.check_memory_budget(&path) {
-                                ViewerState::new(path.clone(), self.viewer_slots, self.config.default_slot)
+                            if is_raw {
+                                self.open_viewer(ViewerState::new_raw(path, self.viewer_slots, self.config.default_slot));
                             } else {
-                                None
-                            };
-                            if let Some(state) = state {
-                                self.open_viewer(state);
+                                self.start_archive_open(path);
                             }
                         }
                     }

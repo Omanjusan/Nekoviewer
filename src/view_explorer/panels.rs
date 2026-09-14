@@ -8,6 +8,12 @@ use crate::fs::dir;
 use crate::view_reader::{fit_rect_contain, ViewerState};
 use super::*;
 
+/// カード情報帯のホバー横スクロールを回すフレーム間隔（ms）。
+/// egui はフル再描画しかできないため、モニタのリフレッシュレート（120/144Hz等）で
+/// 回すとサムネグリッド全体の再テッセレーションで CPU を食う。約30fpsに間引く。
+/// スクロール位置は wall-clock 基準なので速度は変わらず、なめらかさだけ落ちる。
+const MARQUEE_FRAME_MS: u64 = 33;
+
 const THUMB_MARKER_TOP: f32 = 4.0;
 const THUMB_MARKER_BOTTOM_PADDING: f32 = 4.0;
 const THUMB_MARKER_LINE_H: f32 = 21.0;
@@ -44,7 +50,7 @@ fn saved_setting_marker_rect(rect: egui::Rect, slot: usize) -> Option<egui::Rect
 
 fn saved_setting_marker_labels(
     settings: crate::spread_state::SavedArchiveSettings,
-) -> [Option<&'static str>; 3] {
+) -> [Option<&'static str>; 4] {
     let spread = match settings.spread_mode {
         Some(crate::types::PageMode::SpreadLeft) => Some("L"),
         Some(crate::types::PageMode::SpreadRight) => Some("R"),
@@ -54,6 +60,7 @@ fn saved_setting_marker_labels(
         spread,
         settings.has_saved_sort.then_some("S"),
         settings.has_custom_thumbnail.then_some("T"),
+        settings.has_bookmark.then_some("B"),
     ]
 }
 
@@ -85,12 +92,16 @@ impl NekoviewApp {
     /// 呼び出し元が CentralPanel の Ui を渡す。
     pub fn ui(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
+        if ctx.input(|i| !i.events.is_empty()) {
+            self.thumb_last_user_activity = std::time::Instant::now();
+        }
         // ウィンドウサイズを毎フレーム記録
         let rect = ctx.input(|i| i.viewport_rect());
         self.window_size = (rect.width() as u32, rect.height() as u32);
 
         self.poll_workers(&ctx);
         self.prefetch_pages();
+        self.poll_pending_open();
 
         egui::Panel::top("menu_bar").show(ui, |ui| {
             self.draw_menu_bar(ui);
@@ -129,9 +140,15 @@ impl NekoviewApp {
         if !self.settings_is_open()
             && !self.search_date_start_calendar.is_open()
             && !self.search_date_end_calendar.is_open()
+            && self.pending_open.is_none()
         {
             self.handle_explorer_keys(&ctx);
         }
+
+        // アーカイブオープン中はegui::Modalで背後のマウス入力を遮断しつつ、
+        // 中央に進捗＋キャンセルボタンを表示する。他パネルの描画自体は止めない
+        // （マウス入力はModalが自動遮断、キーボードは上のガードで止めている）。
+        self.render_pending_open_overlay(&ctx);
         // egui標準のTab/矢印キーによるネイティブなウィジェットフォーカス移動
         // （Memory::focus_direction、選択ラベル/ボタンも対象になる）は、今回自前で
         // 構築したFocusPaneベースのキーボード操作と二重に動いてしまう
@@ -170,9 +187,6 @@ impl NekoviewApp {
         self.draw_favorite_delete_confirm_dialog(&ctx);
         self.draw_favorite_detail_dialog(&ctx);
         self.draw_settings_dialog(&ctx);
-        self.draw_storage_migrate_confirm_dialog(&ctx);
-        self.draw_storage_delete_failed_dialog(&ctx);
-        self.draw_config_conflict_dialog(&ctx);
         // 旧来の無条件 ctx.request_repaint() は撤去（イベント駆動化）。
         // ROOT は入力イベント・各ワーカーの起床通知・ステータス窓の1Hzハートビートで再描画される。
     }
@@ -215,6 +229,10 @@ impl NekoviewApp {
             MenuBarButton::SortOrder => {
                 self.sort_ascending = !self.sort_ascending;
                 self.finish_sort_change();
+            }
+            MenuBarButton::CardInfoToggle => {
+                self.card_info_mode = self.card_info_mode.next();
+                self.persist_state();
             }
             MenuBarButton::StatusToggle => {
                 self.show_status_window = !self.show_status_window;
@@ -279,10 +297,26 @@ impl NekoviewApp {
                 self.finish_sort_change();
             }
 
+            ui.separator();
+
+            // ── サムネカード下部情報の循環トグル（1ボタン） ──────────────
+            let info_label = match self.card_info_mode {
+                CardInfoMode::Off => i18n::t().card_info_off(),
+                CardInfoMode::Name => i18n::t().card_info_name(),
+                CardInfoMode::NameDate => i18n::t().card_info_name_date(),
+                CardInfoMode::NameDateSize => i18n::t().card_info_name_date_size(),
+            };
+            let r_info = ui.button(info_label);
+            if is_cursor(MenuBarButton::CardInfoToggle) { draw_cursor_ring(ui, r_info.rect); }
+            if r_info.clicked() {
+                self.card_info_mode = self.card_info_mode.next();
+                self.persist_state();
+            }
+
             // ── ステータスウィンドウボタン（右端） ────────────────────────
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 // 右→左レイアウトのため最初に追加した方が最も右端（[?]が視覚上の右端）。
-                // MENU_BAR_ORDERは視覚上の左→右（…設定, [?]）なので描画順は逆になる。
+                // MENU_BAR_ORDERは操作可能な項目の視覚上の左→右順。
                 let r_status = ui.button("[?]");
                 if is_cursor(MenuBarButton::StatusToggle) { draw_cursor_ring(ui, r_status.rect); }
                 if r_status.clicked() {
@@ -296,8 +330,22 @@ impl NekoviewApp {
                 if r_settings.clicked() {
                     self.open_settings();
                 }
+
+                ui.separator();
+                ui.label(self.thumbnail_status_text());
             });
         });
+    }
+
+    fn thumbnail_status_text(&self) -> String {
+        let (current, total, replacing_old) = self.cd_summary.as_ref()
+            .filter(|(path, _, _, _)| path == &self.current_dir)
+            .map(|(_, current, total, replacing_old)| (*current, *total, *replacing_old))
+            .unwrap_or((0, self.archives.len(), false));
+        let errors = self.thumb_failed.iter()
+            .filter(|path| path.parent().is_some_and(|parent| parent == self.current_dir))
+            .count();
+        i18n::t().thumbnail_status(current, total, errors, replacing_old)
     }
 
     /// 左ペインのタブを切り替える唯一の入口。folder_pane_tab の変更は必ずこの関数を通し、
@@ -522,27 +570,6 @@ impl NekoviewApp {
             }
         }
 
-        // CD/LS状態: ディレクトリのサマリーを表示
-        if let Some((cd_path, saved, total)) = &self.cd_summary
-            && !in_favorites_ui
-            && !in_search_ui
-        {
-            let dir_name = cd_path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("?");
-            ui.horizontal(|ui| {
-                ui.label(
-                    egui::RichText::new(format!("▶ {dir_name}"))
-                        .color(ui.visuals().selection.bg_fill),
-                );
-                ui.label(
-                    egui::RichText::new(i18n::t().thumb_saved(*saved, *total))
-                        .color(egui::Color32::GRAY),
-                );
-            });
-        }
-
         if let Some((mtime, size_bytes)) = &self.selected_archive_meta {
             let filename = self.selected_archive_index
                 .and_then(|idx| self.archives.get(idx))
@@ -551,7 +578,7 @@ impl NekoviewApp {
                 .unwrap_or("");
             ui.separator();
             let mb = *size_bytes as f64 / (1024.0 * 1024.0);
-            let date_str = format_mtime(*mtime);
+            let date_str = format_mtime(*mtime, &self.card_date_format, i18n::t());
             ui.label(i18n::t().file_info(&date_str, mb, filename));
         }
 
@@ -746,8 +773,16 @@ impl NekoviewApp {
                                 self.selected_archive_meta = None;
                             }
                             if response.double_clicked() {
-                                pending_navigate = Some(parent);
+                                pending_navigate = Some(parent.clone());
                             }
+                            response.context_menu(|ui| {
+                                if ui.button(i18n::t().explorer_open_folder_menu()).clicked() {
+                                    if let Some(dir) = &self.viewing_dir {
+                                        crate::translate::open_in_file_manager(dir);
+                                    }
+                                    ui.close();
+                                }
+                            });
                             cell_index += 1;
                             if cell_index % cols == 0 {
                                 ui.end_row();
@@ -831,6 +866,14 @@ impl NekoviewApp {
                             if response.double_clicked() {
                                 pending_navigate = Some(dir_path.clone());
                             }
+                            response.context_menu(|ui| {
+                                if ui.button(i18n::t().explorer_open_folder_menu()).clicked() {
+                                    if let Some(dir) = &self.viewing_dir {
+                                        crate::translate::open_in_file_manager(dir);
+                                    }
+                                    ui.close();
+                                }
+                            });
                             cell_index += 1;
                             if cell_index % cols == 0 {
                                 ui.end_row();
@@ -842,6 +885,8 @@ impl NekoviewApp {
                     let visible: Vec<(usize, PathBuf)> = self.filtered_indices.iter()
                         .map(|&idx| (idx, self.archives[idx].clone()))
                         .collect();
+                    // バックグラウンド先読み（[[update_thumbnail_lookahead]]）に渡す可視範囲
+                    let mut visible_order_range: Option<(usize, usize)> = None;
                     for (i, (real_idx, path)) in visible.iter().enumerate() {
                         let real_idx = *real_idx;
                         let is_selected = self.selected_archive_index == Some(real_idx)
@@ -852,6 +897,16 @@ impl NekoviewApp {
                         );
 
                         if ui.is_rect_visible(rect) {
+                            visible_order_range = Some(match visible_order_range {
+                                Some((lo, hi)) => (lo.min(i), hi.max(i)),
+                                None => (i, i),
+                            });
+                            self.thumb_display_requested.insert(path.clone());
+                            if path.parent().is_some_and(|parent| parent == self.current_dir)
+                                && self.folder_pane_tab == FolderPaneTab::RealTree
+                            {
+                                self.prioritize_thumbnail_path(path);
+                            }
                             if let Some(tex) = self.thumbnails.get(path) {
                                 let letterbox_color = if ui.visuals().dark_mode {
                                     egui::Color32::BLACK
@@ -875,12 +930,19 @@ impl NekoviewApp {
                                     4.0,
                                     egui::Color32::from_gray(60),
                                 );
-                                if !self.thumb_pending.contains(path) && !self.thumb_failed.contains(path) {
+                                if !self.thumb_pending.contains(path)
+                                    && !self.thumb_failed.contains(path)
+                                    && !self.thumb_queued.contains(path)
+                                {
                                     if self.thumb_req_tx.try_send(ThumbRequest {
                                         archive_path: path.clone(),
                                         db: self.cache_db.clone(),
                                         is_raw_file: self.raw_image_files.contains(path),
-                                        thumbnail_entry_name: path.parent().and_then(|dir| {
+                                        requested_edge: self.config.thumb_size,
+                                        requested_filter: self.config.thumb_filter,
+                                        generation_token: None,
+                                        session_id: self.thumb_session.load(std::sync::atomic::Ordering::Acquire),
+                                        thumbnail_selection: path.parent().and_then(|dir| {
                                             let filename = path.file_name()?.to_str()?;
                                             self.spread_db.as_ref().and_then(|db| {
                                                 crate::spread_state::read_thumbnail_selection(db, dir, filename)
@@ -889,6 +951,127 @@ impl NekoviewApp {
                                     }).is_ok() {
                                         self.thumb_pending.insert(path.clone());
                                     }
+                                }
+                            }
+
+                            // ── カード下部の情報オーバーレイ帯（ファイル名 / 更新日時 / サイズ）──
+                            // 画像の上に半透明帯を重ねる。マーカー描画より前に置くことで、
+                            // マーカー（赤×・お気に入り等）は帯の上に出る（重なりは許容）。
+                            let n_lines = self.card_info_mode.line_count();
+                            if n_lines > 0 {
+                                // 可視カードぶんだけメタデータを遅延取得（失敗時は次フレーム再試行）
+                                if !self.archive_meta_cache.contains_key(path)
+                                    && let Ok(md) = std::fs::metadata(path)
+                                {
+                                    let mt = md.modified().unwrap_or(std::time::UNIX_EPOCH);
+                                    self.archive_meta_cache.insert(path.clone(), (mt, md.len()));
+                                }
+
+                                let style = self.card_info_style;
+                                let line_px = (cell_h * (style.text_size / 200.0))
+                                    .clamp(9.0, style.text_size);
+                                let row_h = line_px * 1.35;
+                                let info_h = n_lines as f32 * row_h + 4.0;
+                                let info_rect = egui::Rect::from_min_max(
+                                    egui::pos2(rect.min.x, rect.max.y - info_h),
+                                    rect.max,
+                                );
+                                ui.painter().rect_filled(info_rect, 0.0, style.band_color);
+
+                                let meta = self.archive_meta_cache.get(path).copied();
+                                let mut lines: Vec<String> = Vec::with_capacity(n_lines);
+                                lines.push(
+                                    path.file_name()
+                                        .and_then(|s| s.to_str())
+                                        .unwrap_or("")
+                                        .to_string(),
+                                );
+                                if n_lines >= 2 {
+                                    lines.push(
+                                        meta.map(|(mt, _)| format_mtime(mt, &self.card_date_format, i18n::t()))
+                                            .unwrap_or_default(),
+                                    );
+                                }
+                                if n_lines >= 3 {
+                                    lines.push(meta.map(|(_, sz)| humanize_size(sz)).unwrap_or_default());
+                                }
+
+                                // ホバー横スクロール状態の更新（帯幅を超えた行だけ後でスクロールさせる）
+                                let hovered = response.hovered();
+                                if hovered {
+                                    let fresh = !matches!(
+                                        &self.card_info_hover,
+                                        Some((p, _)) if p == path
+                                    );
+                                    if fresh {
+                                        self.card_info_hover =
+                                            Some((path.clone(), std::time::Instant::now()));
+                                    }
+                                } else if matches!(&self.card_info_hover, Some((p, _)) if p == path) {
+                                    self.card_info_hover = None;
+                                }
+                                let scroll_t = if hovered {
+                                    self.card_info_hover
+                                        .as_ref()
+                                        .filter(|(p, _)| p == path)
+                                        .map(|(_, t)| t.elapsed().as_secs_f32())
+                                } else {
+                                    None
+                                };
+
+                                let font = egui::FontId::proportional(line_px);
+                                const PAD: f32 = 4.0;
+                                let avail_w = (info_rect.width() - PAD * 2.0).max(1.0);
+                                let band_painter = ui.painter_at(info_rect);
+                                let mut any_overflow = false;
+                                for (i, text) in lines.iter().enumerate() {
+                                    if text.is_empty() {
+                                        continue;
+                                    }
+                                    let galley = band_painter.layout_no_wrap(
+                                        text.clone(),
+                                        font.clone(),
+                                        style.text_color,
+                                    );
+                                    let over = galley.size().x - avail_w;
+                                    let y = info_rect.min.y + 2.0 + i as f32 * row_h;
+                                    let x_off = if over > 0.0 {
+                                        any_overflow = true;
+                                        match scroll_t {
+                                            Some(t) => {
+                                                // 両端に0.6秒ずつ静止し、その間を一定速で往復
+                                                let speed = 42.0_f32; // px/sec
+                                                let travel = (over / speed).max(0.05);
+                                                let hold = 0.6_f32;
+                                                let period = (travel + hold) * 2.0;
+                                                let ph = t % period;
+                                                let d = if ph < hold {
+                                                    0.0
+                                                } else if ph < hold + travel {
+                                                    (ph - hold) / travel
+                                                } else if ph < hold + travel + hold {
+                                                    1.0
+                                                } else {
+                                                    1.0 - (ph - hold - travel - hold) / travel
+                                                };
+                                                -over * d
+                                            }
+                                            None => 0.0,
+                                        }
+                                    } else {
+                                        0.0
+                                    };
+                                    band_painter.galley(
+                                        egui::pos2(info_rect.min.x + PAD + x_off, y),
+                                        galley,
+                                        style.text_color,
+                                    );
+                                }
+                                if hovered && any_overflow {
+                                    // フル再描画になるため vsync 任せにせず約30fpsへ間引く
+                                    ui.ctx().request_repaint_after(
+                                        std::time::Duration::from_millis(MARQUEE_FRAME_MS),
+                                    );
                                 }
                             }
 
@@ -1075,23 +1258,10 @@ impl NekoviewApp {
                                 ));
                             } else if !self.network_gate(path) {
                                 // トースト表示・再チェックは network_gate 内で処理済み。
-                            } else if !self.check_memory_budget(path) {
-                                // ダイアログ表示フラグは check_memory_budget 内で立つ。オープンは中止する。
                             } else {
-                                match ViewerState::new(path.clone(), self.viewer_slots, self.config.default_slot) {
-                                    Some(state) => {
-                                        self.open_viewer(state);
-                                    }
-                                    None => {
-                                        let p = path.clone();
-                                        self.mark_archive_invalid(&p);
-                                        let name = truncate_filename(path);
-                                        self.app_toast = Some((
-                                            i18n::t().invalid_zip(&name),
-                                            std::time::Instant::now(),
-                                        ));
-                                    }
-                                }
+                                // メモリ見積もりゲート・ViewerState構築は非同期化済み
+                                // （進捗オーバーレイ経由。完了後の後始末は poll_pending_open が行う）。
+                                self.start_archive_open(path.clone());
                             }
                         }
 
@@ -1111,12 +1281,23 @@ impl NekoviewApp {
                                 self.open_favorite_detail_dialog_for_paths(vec![path.clone()]);
                                 ui.close();
                             }
+
+                            ui.separator();
+                            if ui.button(i18n::t().explorer_open_folder_menu()).clicked() {
+                                if let Some(dir) = &self.viewing_dir {
+                                    crate::translate::open_in_file_manager(dir);
+                                }
+                                ui.close();
+                            }
                         });
 
                         cell_index += 1;
                         if cell_index % cols == 0 {
                             ui.end_row();
                         }
+                    }
+                    if let Some((lo, hi)) = visible_order_range {
+                        self.update_thumbnail_lookahead(&visible, lo, hi);
                     }
                     if cell_index % cols != 0 {
                         ui.end_row();
@@ -1253,7 +1434,7 @@ pub(super) fn draw_cursor_ring(ui: &egui::Ui, rect: egui::Rect) {
     );
 }
 
-fn truncate_filename(path: &std::path::Path) -> String {
+pub(super) fn truncate_filename(path: &std::path::Path) -> String {
     let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("?");
     const MAX: usize = 24;
     if name.chars().count() <= MAX {
@@ -1264,7 +1445,14 @@ fn truncate_filename(path: &std::path::Path) -> String {
     }
 }
 
-fn format_mtime(t: std::time::SystemTime) -> String {
+/// SystemTime を暦日へ分解し、カード情報帯の設定書式で文字列化する。
+/// 分解は Howard Hinnant の civil-from-days アルゴリズム。時刻・ローカルオフセットは
+/// 扱わない（UTC 基準。ローカル化は別チケット）。
+fn format_mtime(
+    t: std::time::SystemTime,
+    fmt: &crate::card_date_format::CardDateFormat,
+    lang: i18n::Lang,
+) -> String {
     let secs = t.duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
     let days = (secs / 86400) as i64 + 719468;
     let era = if days >= 0 { days } else { days - 146096 } / 146097;
@@ -1276,7 +1464,22 @@ fn format_mtime(t: std::time::SystemTime) -> String {
     let d = doy - (153 * mp + 2) / 5 + 1;
     let m = if mp < 10 { mp + 3 } else { mp - 9 };
     let y = if m <= 2 { y + 1 } else { y };
-    format!("{:04}/{:02}/{:02}", y, m, d)
+    fmt.format_ymd(y, m, d, lang)
+}
+
+/// ファイルサイズを人間可読形式にする。
+/// 1MB以上 → "12.3 MB"（小数1桁）／ 1KB以上 → "856 KB"（整数）／ それ未満 → "< 1 KB"。
+/// GB帯もMB表示（GB単位は使わない）。
+fn humanize_size(bytes: u64) -> String {
+    const KB: u64 = 1 << 10;
+    const MB: u64 = 1 << 20;
+    if bytes >= MB {
+        format!("{:.1} MB", bytes as f64 / MB as f64)
+    } else if bytes >= KB {
+        format!("{} KB", bytes / KB)
+    } else {
+        "< 1 KB".to_string()
+    }
 }
 
 #[cfg(test)]
@@ -1334,7 +1537,7 @@ mod tests {
     fn saved_setting_marker_labels_preserve_empty_slots() {
         let assert_labels =
             |settings: crate::spread_state::SavedArchiveSettings,
-             expected: [Option<&'static str>; 3]| {
+             expected: [Option<&'static str>; 4]| {
                 assert_eq!(saved_setting_marker_labels(settings), expected);
             };
 
@@ -1343,24 +1546,27 @@ mod tests {
                 spread_mode: None,
                 has_saved_sort: true,
                 has_custom_thumbnail: false,
+                has_bookmark: false,
             },
-            [None, Some("S"), None],
+            [None, Some("S"), None, None],
         );
         assert_labels(
             crate::spread_state::SavedArchiveSettings {
                 spread_mode: Some(crate::types::PageMode::SpreadLeft),
                 has_saved_sort: false,
                 has_custom_thumbnail: true,
+                has_bookmark: false,
             },
-            [Some("L"), None, Some("T")],
+            [Some("L"), None, Some("T"), None],
         );
         assert_labels(
             crate::spread_state::SavedArchiveSettings {
                 spread_mode: Some(crate::types::PageMode::SpreadRight),
                 has_saved_sort: true,
                 has_custom_thumbnail: true,
+                has_bookmark: true,
             },
-            [Some("R"), Some("S"), Some("T")],
+            [Some("R"), Some("S"), Some("T"), Some("B")],
         );
     }
 }
