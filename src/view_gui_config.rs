@@ -720,6 +720,32 @@ fn draw_settings_tab_slideshow(ui: &mut egui::Ui, draft: &mut SettingsDraft) {
         });
     });
     ui.label(i18n::t().settings_transition_duration_explain());
+    ui.add_space(6.0);
+    ui.separator();
+
+    ui.label(i18n::t().settings_slideshow_interval_label());
+    ui.scope(|ui| {
+        ui.spacing_mut().slider_width = 260.0;
+        ui.horizontal(|ui| {
+            ui.add(egui::Slider::new(&mut draft.slideshow_interval_ms, SLIDESHOW_INTERVAL_FLOOR_MS..=SLIDESHOW_INTERVAL_CEILING_MS).show_value(false).step_by(1000.0));
+            ui.label(format!("{:.0} s", draft.slideshow_interval_ms as f64 / 1000.0));
+        });
+    });
+    ui.label(i18n::t().settings_slideshow_interval_explain());
+    ui.separator();
+
+    ui.label(i18n::t().settings_slideshow_manual_behavior_label());
+    ui.radio_value(
+        &mut draft.slideshow_manual_behavior,
+        SlideshowManualBehavior::ResetTimer,
+        i18n::t().settings_slideshow_manual_behavior_reset(),
+    );
+    ui.radio_value(
+        &mut draft.slideshow_manual_behavior,
+        SlideshowManualBehavior::Stop,
+        i18n::t().settings_slideshow_manual_behavior_stop(),
+    );
+    ui.label(i18n::t().settings_slideshow_manual_behavior_explain());
 }
 
 /// キーアサインタブ: ReaderAction/ExplorerActionの現在の割り当てをセクション分けして

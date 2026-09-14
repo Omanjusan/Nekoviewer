@@ -1251,6 +1251,54 @@ impl Lang {
         }
     }
 
+    pub fn settings_slideshow_interval_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "■ スライドショー間隔",
+            Lang::English  => "■ Slideshow interval",
+            Lang::Chinese  => "■ 幻灯片间隔",
+        }
+    }
+
+    pub fn settings_slideshow_interval_explain(self) -> &'static str {
+        match self {
+            Lang::Japanese => "自動でページ送りするまでの待機時間。",
+            Lang::English  => "Time to wait before automatically turning to the next page.",
+            Lang::Chinese  => "自动翻页前的等待时间。",
+        }
+    }
+
+    pub fn settings_slideshow_manual_behavior_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "■ 手動ページ送り時の挙動",
+            Lang::English  => "■ On manual page turn",
+            Lang::Chinese  => "■ 手动翻页时的行为",
+        }
+    }
+
+    pub fn settings_slideshow_manual_behavior_explain(self) -> &'static str {
+        match self {
+            Lang::Japanese => "スライドショー中にユーザーが手動でページを送った場合の扱い。",
+            Lang::English  => "What happens when the user manually turns a page during a slideshow.",
+            Lang::Chinese  => "幻灯片放映中用户手动翻页时的处理方式。",
+        }
+    }
+
+    pub fn settings_slideshow_manual_behavior_reset(self) -> &'static str {
+        match self {
+            Lang::Japanese => "タイマーをリセットして\nスライドショーを継続させる",
+            Lang::English  => "Reset the timer and\ncontinue the slideshow",
+            Lang::Chinese  => "重置计时器\n继续幻灯片放映",
+        }
+    }
+
+    pub fn settings_slideshow_manual_behavior_stop(self) -> &'static str {
+        match self {
+            Lang::Japanese => "手動操作がされた時点で\nスライドショーを停止させる",
+            Lang::English  => "Stop the slideshow\non manual operation",
+            Lang::Chinese  => "手动操作时\n停止幻灯片放映",
+        }
+    }
+
     /// タブ内の大項目見出し。■は個々の設定項目(即時反映マーク)専用の記号なので、
     /// 見出し自体には付けず、呼び出し側で太字・大きめフォントにして区別する
     /// （settings_legend の凡例と衝突させないため）。
