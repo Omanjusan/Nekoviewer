@@ -1,4 +1,4 @@
-use crate::gui_config::{ThumbbarPos, ViewerConfig};
+use crate::gui_config::{ThumbbarPos, TransitionKind, ViewerConfig};
 use crate::controller::{ViewerNav, ViewerOutput};
 use crate::i18n;
 use crate::log_key;
@@ -23,7 +23,6 @@ const ANIM_DECODE_AHEAD_FRAMES: usize = 8;
 /// content_px の初回フレーム前プレースホルダ。draw() 冒頭で毎フレーム実測値に
 /// 上書きされるため、実際のデコードターゲットには事実上使われない。
 const CONTENT_PX_PLACEHOLDER: (u32, u32) = (1920, 1080);
-const ANIM_SECS: f32 = 0.4;
 /// サムネイルバー: 現在ページを中心にこの枚数分だけ先取り要求する（暫定固定値）。
 /// フェーズ2で実際の可視範囲ベースに置き換え予定。
 const THUMBBAR_ENQUEUE_WINDOW: i32 = 40;
@@ -1386,18 +1385,25 @@ impl ViewerState {
                 _                     => if delta > 0 {  1 } else { -1 },
             };
             self.anim_from_lo = self.prev_spread_lo;
-            self.anim_progress = 0.0;
-            self.anim_active = true;
             self.prev_spread_lo = current_lo;
             // 表示画像が差し替わったので手動回転をリセット（角度引き継ぎトグルONの間は
             // cfg側の共有角度をそのまま使い続けるため、ここではリセットしない）
             if !cfg.rotation_carry_over {
                 self.rotation.reset();
             }
+            if cfg.transition_kind == TransitionKind::None {
+                // トランジション無し設定：アニメーションを起動せず即時切り替えにする
+                self.anim_progress = 1.0;
+                self.anim_active = false;
+            } else {
+                self.anim_progress = 0.0;
+                self.anim_active = true;
+            }
         }
 
         if self.anim_active {
-            self.anim_progress = (self.anim_progress + dt / ANIM_SECS).min(1.0);
+            let transition_secs = (cfg.transition_duration_ms as f32 / 1000.0).max(0.001);
+            self.anim_progress = (self.anim_progress + dt / transition_secs).min(1.0);
             if self.anim_progress >= 1.0 { self.anim_active = false; }
             ctx.request_repaint();
         }
