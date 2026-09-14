@@ -439,6 +439,8 @@ pub struct ViewerState {
     pending_open_favorite_dialog: bool,
     /// 右クリックメニュー「ファイル詳細」が押されたか（1フレームで消費）
     pending_open_file_detail: bool,
+    /// 右クリックメニュー「スライドショー」チェックボックスが操作されたか（1フレームで消費）
+    pending_slideshow_toggle: bool,
     /// ファイル詳細ダイアログの状態。Some の間、draw_file_detail_dialogが表示する
     file_detail_dialog: Option<FileDetailDialogState>,
     /// OCR/翻訳子ウィンドウが現在開いているか。show()呼び出し時に外部(NekoviewApp)から
@@ -659,6 +661,7 @@ impl ViewerState {
             pending_thumbnail_action: None,
             pending_open_favorite_dialog: false,
             pending_open_file_detail: false,
+            pending_slideshow_toggle: false,
             file_detail_dialog: None,
             translate_window_open: false,
             translate_toggle_enabled: false,
@@ -732,6 +735,7 @@ impl ViewerState {
             pending_thumbnail_action: None,
             pending_open_favorite_dialog: false,
             pending_open_file_detail: false,
+            pending_slideshow_toggle: false,
             file_detail_dialog: None,
             translate_window_open: false,
             translate_toggle_enabled: false,
@@ -1278,6 +1282,12 @@ impl ViewerState {
         // 既定スロットを初回フレームで一度だけ適用（クランプ付き）。
         self.apply_default_slot(&ctx, input.monitor_size);
 
+        // 右クリックメニューのスライドショーチェックボックス操作を反映する。
+        if self.pending_slideshow_toggle {
+            self.pending_slideshow_toggle = false;
+            self.toggle_slideshow();
+        }
+
         // スライドショーのタイマー送りは update_animation より先に行い、同一フレームで
         // ページ変化検知（アニメ起動・手動/自動の判定）が反映されるようにする。
         self.tick_slideshow(&ctx, cfg, self.entries.len());
@@ -1779,13 +1789,15 @@ impl ViewerState {
                 let thumbnail_target = self.thumbnail_context_entry.as_ref();
                 let saved_thumbnail_selection = self.saved_thumbnail_selection.as_ref();
                 let saved_thumbnail_display = self.saved_thumbnail_display_name();
+                let slideshow_active = self.is_slideshow_active();
                 let action = &mut self.pending_spread_action;
                 let sort_action = &mut self.pending_sort_action;
                 let bookmark_action = &mut self.pending_bookmark_action;
                 let thumbnail_action = &mut self.pending_thumbnail_action;
                 let open_favorite_dialog = &mut self.pending_open_favorite_dialog;
                 let open_file_detail = &mut self.pending_open_file_detail;
-                resp.context_menu(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort, sort_action, bookmark_toggle_enabled, bookmark_toggle_on, bookmark_action, thumbnail_target, saved_thumbnail_selection, saved_thumbnail_display.as_deref(), thumbnail_action, open_favorite_dialog, open_file_detail));
+                let slideshow_toggle = &mut self.pending_slideshow_toggle;
+                resp.context_menu(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort, sort_action, bookmark_toggle_enabled, bookmark_toggle_on, bookmark_action, thumbnail_target, saved_thumbnail_selection, saved_thumbnail_display.as_deref(), thumbnail_action, open_favorite_dialog, open_file_detail, slideshow_active, slideshow_toggle));
 
                 let painter = ui.painter().with_clip_rect(clip);
 
@@ -2802,6 +2814,8 @@ impl ViewerState {
         thumbnail_action: &mut Option<crate::controller::ThumbnailSaveAction>,
         open_favorite_dialog: &mut bool,
         open_file_detail: &mut bool,
+        slideshow_active: bool,
+        slideshow_toggle: &mut bool,
     ) {
         let t = i18n::t();
         let mut toggle_on = toggle_on_init;
@@ -2924,6 +2938,12 @@ impl ViewerState {
             status_response.on_hover_text(full_name);
         }
         ui.separator();
+        let mut slideshow_checked = slideshow_active;
+        if ui.checkbox(&mut slideshow_checked, t.slideshow_toggle_label()).changed() {
+            *slideshow_toggle = true;
+            ui.close();
+        }
+        ui.separator();
         if ui.button(t.favorite_detail_menu()).clicked() {
             *open_favorite_dialog = true;
             ui.close();
@@ -3008,13 +3028,15 @@ impl ViewerState {
                     let thumbnail_target = self.thumbnail_context_entry.as_ref();
                     let saved_thumbnail_selection = self.saved_thumbnail_selection.as_ref();
                     let saved_thumbnail_display = self.saved_thumbnail_display_name();
+                    let slideshow_active = self.is_slideshow_active();
                     let action = &mut self.pending_spread_action;
                     let sort_action = &mut self.pending_sort_action;
                 let bookmark_action = &mut self.pending_bookmark_action;
                     let thumbnail_action = &mut self.pending_thumbnail_action;
                     let open_favorite_dialog = &mut self.pending_open_favorite_dialog;
                     let open_file_detail = &mut self.pending_open_file_detail;
-                    resp.context_menu(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort, sort_action, bookmark_toggle_enabled, bookmark_toggle_on, bookmark_action, thumbnail_target, saved_thumbnail_selection, saved_thumbnail_display.as_deref(), thumbnail_action, open_favorite_dialog, open_file_detail));
+                    let slideshow_toggle = &mut self.pending_slideshow_toggle;
+                    resp.context_menu(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort, sort_action, bookmark_toggle_enabled, bookmark_toggle_on, bookmark_action, thumbnail_target, saved_thumbnail_selection, saved_thumbnail_display.as_deref(), thumbnail_action, open_favorite_dialog, open_file_detail, slideshow_active, slideshow_toggle));
                 });
             } else {
                 let available = ui.available_size();
@@ -3034,13 +3056,15 @@ impl ViewerState {
                 let thumbnail_target = self.thumbnail_context_entry.as_ref();
                 let saved_thumbnail_selection = self.saved_thumbnail_selection.as_ref();
                 let saved_thumbnail_display = self.saved_thumbnail_display_name();
+                let slideshow_active = self.is_slideshow_active();
                 let action = &mut self.pending_spread_action;
                 let sort_action = &mut self.pending_sort_action;
                 let bookmark_action = &mut self.pending_bookmark_action;
                 let thumbnail_action = &mut self.pending_thumbnail_action;
                 let open_favorite_dialog = &mut self.pending_open_favorite_dialog;
                 let open_file_detail = &mut self.pending_open_file_detail;
-                resp.context_menu(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort, sort_action, bookmark_toggle_enabled, bookmark_toggle_on, bookmark_action, thumbnail_target, saved_thumbnail_selection, saved_thumbnail_display.as_deref(), thumbnail_action, open_favorite_dialog, open_file_detail));
+                let slideshow_toggle = &mut self.pending_slideshow_toggle;
+                resp.context_menu(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort, sort_action, bookmark_toggle_enabled, bookmark_toggle_on, bookmark_action, thumbnail_target, saved_thumbnail_selection, saved_thumbnail_display.as_deref(), thumbnail_action, open_favorite_dialog, open_file_detail, slideshow_active, slideshow_toggle));
             }
         } else {
             let rect = egui::Rect::from_min_size(ui.cursor().left_top(), ui.available_size());
@@ -3052,13 +3076,15 @@ impl ViewerState {
             let thumbnail_target = self.thumbnail_context_entry.as_ref();
             let saved_thumbnail_selection = self.saved_thumbnail_selection.as_ref();
             let saved_thumbnail_display = self.saved_thumbnail_display_name();
+            let slideshow_active = self.is_slideshow_active();
             let action = &mut self.pending_spread_action;
             let sort_action = &mut self.pending_sort_action;
                 let bookmark_action = &mut self.pending_bookmark_action;
             let thumbnail_action = &mut self.pending_thumbnail_action;
             let open_favorite_dialog = &mut self.pending_open_favorite_dialog;
             let open_file_detail = &mut self.pending_open_file_detail;
-            resp.context_menu(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort, sort_action, bookmark_toggle_enabled, bookmark_toggle_on, bookmark_action, thumbnail_target, saved_thumbnail_selection, saved_thumbnail_display.as_deref(), thumbnail_action, open_favorite_dialog, open_file_detail));
+            let slideshow_toggle = &mut self.pending_slideshow_toggle;
+            resp.context_menu(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort, sort_action, bookmark_toggle_enabled, bookmark_toggle_on, bookmark_action, thumbnail_target, saved_thumbnail_selection, saved_thumbnail_display.as_deref(), thumbnail_action, open_favorite_dialog, open_file_detail, slideshow_active, slideshow_toggle));
         }
     }
 
@@ -3114,13 +3140,15 @@ impl ViewerState {
         let thumbnail_target = self.thumbnail_context_entry.as_ref();
         let saved_thumbnail_selection = self.saved_thumbnail_selection.as_ref();
         let saved_thumbnail_display = self.saved_thumbnail_display_name();
+        let slideshow_active = self.is_slideshow_active();
         let action = &mut self.pending_spread_action;
         let sort_action = &mut self.pending_sort_action;
                 let bookmark_action = &mut self.pending_bookmark_action;
         let thumbnail_action = &mut self.pending_thumbnail_action;
         let open_favorite_dialog = &mut self.pending_open_favorite_dialog;
         let open_file_detail = &mut self.pending_open_file_detail;
-        resp.context_menu(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort, sort_action, bookmark_toggle_enabled, bookmark_toggle_on, bookmark_action, thumbnail_target, saved_thumbnail_selection, saved_thumbnail_display.as_deref(), thumbnail_action, open_favorite_dialog, open_file_detail));
+        let slideshow_toggle = &mut self.pending_slideshow_toggle;
+        resp.context_menu(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort, sort_action, bookmark_toggle_enabled, bookmark_toggle_on, bookmark_action, thumbnail_target, saved_thumbnail_selection, saved_thumbnail_display.as_deref(), thumbnail_action, open_favorite_dialog, open_file_detail, slideshow_active, slideshow_toggle));
 
         if angle_deg == 0 {
             let (rect_l, rect_r) = Self::spread_rects(available, origin, tex_left, tex_right, monitor);
@@ -3206,13 +3234,15 @@ impl ViewerState {
             let thumbnail_target = self.thumbnail_context_entry.as_ref();
             let saved_thumbnail_selection = self.saved_thumbnail_selection.as_ref();
             let saved_thumbnail_display = self.saved_thumbnail_display_name();
+            let slideshow_active = self.is_slideshow_active();
             let action = &mut self.pending_spread_action;
             let sort_action = &mut self.pending_sort_action;
                 let bookmark_action = &mut self.pending_bookmark_action;
             let thumbnail_action = &mut self.pending_thumbnail_action;
             let open_favorite_dialog = &mut self.pending_open_favorite_dialog;
             let open_file_detail = &mut self.pending_open_file_detail;
-            resp.context_menu(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort, sort_action, bookmark_toggle_enabled, bookmark_toggle_on, bookmark_action, thumbnail_target, saved_thumbnail_selection, saved_thumbnail_display.as_deref(), thumbnail_action, open_favorite_dialog, open_file_detail));
+            let slideshow_toggle = &mut self.pending_slideshow_toggle;
+            resp.context_menu(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort, sort_action, bookmark_toggle_enabled, bookmark_toggle_on, bookmark_action, thumbnail_target, saved_thumbnail_selection, saved_thumbnail_display.as_deref(), thumbnail_action, open_favorite_dialog, open_file_detail, slideshow_active, slideshow_toggle));
         });
     }
 

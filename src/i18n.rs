@@ -346,6 +346,16 @@ impl Lang {
         }
     }
 
+    /// ビューアー右クリックメニュー「スライドショー」チェックボックス。
+    /// チェック済み = 実行中。文言自体は状態に関わらず固定（チェック状態で表現する）。
+    pub fn slideshow_toggle_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "スライドショー",
+            Lang::English  => "Slideshow",
+            Lang::Chinese  => "幻灯片放映",
+        }
+    }
+
     pub fn favorite_detail_menu(self) -> &'static str {
         match self {
             Lang::Japanese => "お気に入り詳細設定",
