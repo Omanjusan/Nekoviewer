@@ -50,7 +50,7 @@ fn saved_setting_marker_rect(rect: egui::Rect, slot: usize) -> Option<egui::Rect
 
 fn saved_setting_marker_labels(
     settings: crate::spread_state::SavedArchiveSettings,
-) -> [Option<&'static str>; 3] {
+) -> [Option<&'static str>; 4] {
     let spread = match settings.spread_mode {
         Some(crate::types::PageMode::SpreadLeft) => Some("L"),
         Some(crate::types::PageMode::SpreadRight) => Some("R"),
@@ -60,6 +60,7 @@ fn saved_setting_marker_labels(
         spread,
         settings.has_saved_sort.then_some("S"),
         settings.has_custom_thumbnail.then_some("T"),
+        settings.has_bookmark.then_some("B"),
     ]
 }
 
@@ -1536,7 +1537,7 @@ mod tests {
     fn saved_setting_marker_labels_preserve_empty_slots() {
         let assert_labels =
             |settings: crate::spread_state::SavedArchiveSettings,
-             expected: [Option<&'static str>; 3]| {
+             expected: [Option<&'static str>; 4]| {
                 assert_eq!(saved_setting_marker_labels(settings), expected);
             };
 
@@ -1545,24 +1546,27 @@ mod tests {
                 spread_mode: None,
                 has_saved_sort: true,
                 has_custom_thumbnail: false,
+                has_bookmark: false,
             },
-            [None, Some("S"), None],
+            [None, Some("S"), None, None],
         );
         assert_labels(
             crate::spread_state::SavedArchiveSettings {
                 spread_mode: Some(crate::types::PageMode::SpreadLeft),
                 has_saved_sort: false,
                 has_custom_thumbnail: true,
+                has_bookmark: false,
             },
-            [Some("L"), None, Some("T")],
+            [Some("L"), None, Some("T"), None],
         );
         assert_labels(
             crate::spread_state::SavedArchiveSettings {
                 spread_mode: Some(crate::types::PageMode::SpreadRight),
                 has_saved_sort: true,
                 has_custom_thumbnail: true,
+                has_bookmark: true,
             },
-            [Some("R"), Some("S"), Some("T")],
+            [Some("R"), Some("S"), Some("T"), Some("B")],
         );
     }
 }

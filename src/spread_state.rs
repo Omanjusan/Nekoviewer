@@ -88,6 +88,7 @@ pub struct SavedArchiveSettings {
     pub spread_mode: Option<PageMode>,
     pub has_saved_sort: bool,
     pub has_custom_thumbnail: bool,
+    pub has_bookmark: bool,
 }
 
 /// root（config.rsが解決したconf置き場所）の nekoviewer_spread.redb を開く。
@@ -187,6 +188,7 @@ pub fn saved_settings_for_paths(
     let sort_table = tx.open_table(ARCHIVE_SORT_TABLE_V1).ok();
     let thumbnail_table_v1 = tx.open_table(THUMBNAIL_SELECTION_TABLE_V1).ok();
     let thumbnail_table_v2 = tx.open_table(THUMBNAIL_SELECTION_TABLE_V2).ok();
+    let bookmark_table = tx.open_table(BOOKMARK_TABLE_V1).ok();
     let mut out = HashMap::new();
 
     for path in paths {
@@ -209,10 +211,14 @@ pub fn saved_settings_for_paths(
         }) || thumbnail_table_v1.as_ref().is_some_and(|table| {
             table.get(key.as_str()).ok().flatten().is_some()
         });
+        let has_bookmark = bookmark_table.as_ref().is_some_and(|table| {
+            table.get(key.as_str()).ok().flatten().is_some_and(|value| decode_bookmark(value.value()).enabled)
+        });
         let settings = SavedArchiveSettings {
             spread_mode,
             has_saved_sort,
             has_custom_thumbnail,
+            has_bookmark,
         };
         if settings != SavedArchiveSettings::default() {
             out.insert(path.clone(), settings);
