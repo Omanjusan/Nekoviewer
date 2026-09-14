@@ -1179,6 +1179,70 @@ impl Lang {
         }
     }
 
+    pub fn settings_tab_slideshow(self) -> &'static str {
+        match self {
+            Lang::Japanese => "スライドショー",
+            Lang::English  => "Slideshow",
+            Lang::Chinese  => "幻灯片放映",
+        }
+    }
+
+    pub fn settings_transition_kind_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "■ トランジション種類",
+            Lang::English  => "■ Transition type",
+            Lang::Chinese  => "■ 转场类型",
+        }
+    }
+
+    pub fn settings_transition_kind_explain(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ページ送り時の切り替え演出。",
+            Lang::English  => "The transition effect used when turning pages.",
+            Lang::Chinese  => "翻页时使用的切换效果。",
+        }
+    }
+
+    pub fn settings_transition_horizontal_slide(self) -> &'static str {
+        match self {
+            Lang::Japanese => "横スライド",
+            Lang::English  => "Horizontal slide",
+            Lang::Chinese  => "横向滑动",
+        }
+    }
+
+    pub fn settings_transition_cross_fade(self) -> &'static str {
+        match self {
+            Lang::Japanese => "クロスフェード",
+            Lang::English  => "Cross-fade",
+            Lang::Chinese  => "交叉淡化",
+        }
+    }
+
+    pub fn settings_transition_clockwise_wipe(self) -> &'static str {
+        match self {
+            Lang::Japanese => "時計回りワイプ",
+            Lang::English  => "Clockwise wipe",
+            Lang::Chinese  => "顺时针擦除",
+        }
+    }
+
+    pub fn settings_transition_duration_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "■ 遷移時間",
+            Lang::English  => "■ Transition duration",
+            Lang::Chinese  => "■ 转场时长",
+        }
+    }
+
+    pub fn settings_transition_duration_explain(self) -> &'static str {
+        match self {
+            Lang::Japanese => "トランジションが完了するまでの時間(ms)。全種類共通。",
+            Lang::English  => "Time (ms) for the transition to complete. Shared by all transition types.",
+            Lang::Chinese  => "转场完成所需的时间(ms)。所有类型共用。",
+        }
+    }
+
     /// タブ内の大項目見出し。■は個々の設定項目(即時反映マーク)専用の記号なので、
     /// 見出し自体には付けず、呼び出し側で太字・大きめフォントにして区別する
     /// （settings_legend の凡例と衝突させないため）。

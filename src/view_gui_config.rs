@@ -6,7 +6,9 @@ use crate::card_date_format::{
     AutoStyle, CardDateFormat, CardDateMode, DateOrder, DateSep, MonthStyle, YearDigits,
 };
 use crate::config::{AppConfig, ResizeFilter, filter_to_str};
-use crate::gui_config::{ThumbbarPos, ViewerConfig};
+use crate::gui_config::{
+    ThumbbarPos, TransitionKind, ViewerConfig, TRANSITION_DURATION_CEILING_MS, TRANSITION_DURATION_FLOOR_MS,
+};
 use crate::i18n;
 use crate::keymap::{Keymap, ReaderAction, ExplorerAction, KeyCombo, MouseCombo, MouseAction, mouse_action_name};
 use crate::translate::{OVERLAY_WIDTH_CEILING, OVERLAY_WIDTH_FLOOR, TranslateConfig};
@@ -19,6 +21,7 @@ pub(crate) enum SettingsTab {
     Anim,
     Static,
     Viewer,
+    Slideshow,
     Translate,
     Keymap,
     #[cfg(windows)]
@@ -76,6 +79,9 @@ pub(crate) struct SettingsDraft {
     exif_orientation_enabled: bool,
     /// ビューアーを開くときの既定スロット（0..3 = F5〜F8）。None = デフォルト無し。
     default_slot: Option<usize>,
+    /// スライドショータブ: トランジション種類・遷移時間(ms)。
+    transition_kind: TransitionKind,
+    transition_duration_ms: u64,
     translate_base_url: String,
     translate_ocr_model: String,
     translate_translation_model: String,
@@ -207,6 +213,8 @@ impl SettingsDraft {
             thumbbar_marker_a: viewer_cfg.thumbbar_marker_a,
             exif_orientation_enabled: viewer_cfg.exif_orientation_enabled,
             default_slot: config.default_slot,
+            transition_kind: viewer_cfg.transition_kind,
+            transition_duration_ms: viewer_cfg.transition_duration_ms,
             translate_base_url: translate_cfg.base_url.clone(),
             translate_ocr_model: translate_cfg.ocr_model.clone(),
             translate_translation_model: translate_cfg.translation_model.clone(),
@@ -270,6 +278,8 @@ impl SettingsDraft {
         viewer_cfg.thumbbar_marker_a = self.thumbbar_marker_a;
         viewer_cfg.exif_orientation_enabled = self.exif_orientation_enabled;
         config.default_slot = self.default_slot;
+        viewer_cfg.transition_kind = self.transition_kind;
+        viewer_cfg.transition_duration_ms = self.transition_duration_ms;
 
         translate_cfg.base_url = self.translate_base_url.trim().to_string();
         translate_cfg.ocr_model = self.translate_ocr_model.trim().to_string();
@@ -672,6 +682,33 @@ fn draw_settings_tab_viewer(ui: &mut egui::Ui, draft: &mut SettingsDraft) {
         }
     });
     ui.label(i18n::t().settings_default_slot_explain());
+}
+
+fn draw_settings_tab_slideshow(ui: &mut egui::Ui, draft: &mut SettingsDraft) {
+    ui.label(i18n::t().settings_transition_kind_label());
+    egui::ComboBox::from_id_salt("transition_kind")
+        .selected_text(match draft.transition_kind {
+            TransitionKind::HorizontalSlide => i18n::t().settings_transition_horizontal_slide(),
+            TransitionKind::CrossFade       => i18n::t().settings_transition_cross_fade(),
+            TransitionKind::ClockwiseWipe   => i18n::t().settings_transition_clockwise_wipe(),
+        })
+        .show_ui(ui, |ui| {
+            ui.selectable_value(&mut draft.transition_kind, TransitionKind::HorizontalSlide, i18n::t().settings_transition_horizontal_slide());
+            ui.selectable_value(&mut draft.transition_kind, TransitionKind::CrossFade, i18n::t().settings_transition_cross_fade());
+            ui.selectable_value(&mut draft.transition_kind, TransitionKind::ClockwiseWipe, i18n::t().settings_transition_clockwise_wipe());
+        });
+    ui.label(i18n::t().settings_transition_kind_explain());
+    ui.separator();
+
+    ui.label(i18n::t().settings_transition_duration_label());
+    ui.scope(|ui| {
+        ui.spacing_mut().slider_width = 260.0;
+        ui.horizontal(|ui| {
+            ui.add(egui::Slider::new(&mut draft.transition_duration_ms, TRANSITION_DURATION_FLOOR_MS..=TRANSITION_DURATION_CEILING_MS).show_value(false).step_by(50.0));
+            ui.label(format!("{} ms", draft.transition_duration_ms));
+        });
+    });
+    ui.label(i18n::t().settings_transition_duration_explain());
 }
 
 /// キーアサインタブ: ReaderAction/ExplorerActionの現在の割り当てをセクション分けして
@@ -1135,6 +1172,7 @@ impl NekoviewApp {
                     (SettingsTab::Anim, i18n::t().settings_tab_anim()),
                     (SettingsTab::Static, i18n::t().settings_tab_static()),
                     (SettingsTab::Viewer, i18n::t().settings_tab_viewer()),
+                    (SettingsTab::Slideshow, i18n::t().settings_tab_slideshow()),
                     (SettingsTab::Translate, i18n::t().settings_tab_translate()),
                     (SettingsTab::Keymap, "キーアサイン"),
                 ];
@@ -1154,6 +1192,7 @@ impl NekoviewApp {
                 SettingsTab::Anim => draw_settings_tab_anim(ui, &mut self.settings_draft),
                 SettingsTab::Static => self.draw_settings_tab_static(ui),
                 SettingsTab::Viewer => draw_settings_tab_viewer(ui, &mut self.settings_draft),
+                SettingsTab::Slideshow => draw_settings_tab_slideshow(ui, &mut self.settings_draft),
                 SettingsTab::Translate => self.draw_settings_tab_translate(ui, ctx),
                 SettingsTab::Keymap => draw_settings_tab_keymap(ui, &mut self.settings_draft),
                 #[cfg(windows)]
