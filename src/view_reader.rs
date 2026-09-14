@@ -3995,4 +3995,20 @@ mod bookmark_restore_tests {
 
         assert_eq!(viewer.current_bookmark_entry_name(), None);
     }
+
+    /// 回帰テスト：restore_saved_spread は spread_base を問答無用で0にリセットするため、
+    /// しおり復帰は必ずその「後」に呼ぶ実装契約になっている（open_viewer側の呼び出し順）。
+    /// 順序が入れ替わって再発しないよう、ここでその契約を固定する。
+    #[test]
+    fn restore_bookmark_position_after_spread_restore_wins() {
+        let mut viewer = archive_viewer();
+        let mut cfg = ViewerConfig::default();
+
+        viewer.restore_saved_spread(PageMode::SpreadLeft, 0, &mut cfg);
+        assert_eq!(viewer.spread_base, 0, "見開き復元は先頭へリセットする");
+
+        assert!(viewer.restore_bookmark_position("second"));
+
+        assert_eq!(viewer.spread_base, 1, "しおり復帰が見開き復元を上書きして残る");
+    }
 }

@@ -1013,6 +1013,21 @@ impl NekoviewApp {
             state.restore_saved_sort(key, ascending);
             state.set_saved_sort(Some((key, ascending)));
         }
+        let saved_spread = if archive_dir == self.current_dir {
+            self.spread_states.get(filename).copied()
+        } else {
+            self.spread_db.as_ref().and_then(|db| {
+                crate::spread_state::read_spread(db, archive_dir, filename)
+            })
+        };
+        if let Some((mode, offset)) = saved_spread {
+            let mut cfg = self.viewer_cfg.lock().unwrap();
+            state.restore_saved_spread(mode, offset, &mut cfg);
+            state.set_saved_spread(Some((mode, offset)));
+        }
+        // しおり復帰は見開き設定復元の後で行う。restore_saved_spread は
+        // spread_base を問答無用で0にリセットするため、先に済ませておかないと
+        // しおりのジャンプ先ページが上書きされて冒頭に戻ってしまう。
         let bookmark = self.spread_db.as_ref()
             .and_then(|db| crate::spread_state::read_bookmark(db, archive_dir, filename));
         state.set_saved_bookmark_enabled(bookmark.as_ref().is_some_and(|b| b.enabled));
@@ -1045,18 +1060,6 @@ impl NekoviewApp {
             state.set_saved_thumbnail_selection(None);
         } else {
             state.set_saved_thumbnail_selection(saved_thumbnail_selection);
-        }
-        let saved_spread = if archive_dir == self.current_dir {
-            self.spread_states.get(filename).copied()
-        } else {
-            self.spread_db.as_ref().and_then(|db| {
-                crate::spread_state::read_spread(db, archive_dir, filename)
-            })
-        };
-        if let Some((mode, offset)) = saved_spread {
-            let mut cfg = self.viewer_cfg.lock().unwrap();
-            state.restore_saved_spread(mode, offset, &mut cfg);
-            state.set_saved_spread(Some((mode, offset)));
         }
         self.pending_loads.lock().unwrap().clear();
         *self.viewer.lock().unwrap() = Some(state);
