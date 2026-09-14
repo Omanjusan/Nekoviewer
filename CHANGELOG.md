@@ -2,6 +2,39 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.8.0] - 2026-09-14
+
+### Notes
+
+Starting with 1.8.0, settings storage is unified to the XDG location (the user folder on Windows). Note that all existing settings will be reset. Settings are not migrated automatically, so it is recommended to take a screenshot of your current settings before upgrading, for reference.
+
+### Added
+
+- Added `Register right/left half of the displayed image as thumbnail` to the thumbnail registration submenu. Registers a JPEG created in memory.
+- When at native size, the portion of the image outside the window can now be pulled into the viewport with a swipe gesture. Mouse scrolling is now dedicated to page navigation.
+- Added a spinner shown while an archive takes a long time to load.
+- Added an `Open folder` item to the item pane's right-click menu in the explorer. Opens the folder the menu was invoked on in the OS file manager. To account for OS differences, the current selection is not passed through to the file manager.
+- All settings can now be configured from the GUI settings.
+- Added a file-info toggle button to the right of the sort criteria in the explorer menu bar. Displays `filename`, `modified date`, and `file size (MB/KB)` as a band along the bottom edge of thumbnails.
+- Windows only: added an item to the Windows tab of the GUI settings for adding an OS right-click menu entry. Enabling this adds an `Open with Nekoviewer` right-click entry to Windows Explorer directories. When uninstalling, the menu entry must be removed manually via the GUI settings beforehand.
+- Added triangular markers at the left and right edges of the viewer that appear on mouse hover and allow page turning via right-click. Double-click is ignored in this area.
+- Unlocked native-size display in spread mode. Previously, spread mode always forced fit-to-window. In this mode, the native-size long-edge cap setting works at double its configured value. Page-turn animation is also skipped in this mode.
+- Added a slideshow button to the viewer window's right-click menu. Settings can be changed in the Slideshow tab. Note that reaching the end of the archive does not advance to the next file.
+- Added additional page-turn transition styles, also configurable in the Slideshow tab above.
+- Added a bookmark save/restore feature. It is only active for archives where "Enable bookmark" has been turned on from the viewer's right-click menu. When enabled, it is indicated by a `B`ookmark marker on the thumbnail. Progress is saved when leaving the archive.
+
+### Fixed
+
+- Hovering the mouse over the left side of the viewer showed the in-archive list; the reactive area in the upper-left has been narrowed.
+- Expanded the area that accepts viewer menu display input from just the displayed image to the entire viewer window.
+- Thumbnail generation was changed in 1.7 to run unattended, but this caused task congestion, so it has been rolled back to queuing based on the current viewport.
+- Fixed the native-size long-edge cap not being applied correctly.
+- Replaced the viewer's favorite-detail settings with a one-action menu that adds to the uncategorized favorites folder. This is a no-op for files already registered as a favorite, whether in a folder or uncategorized.
+
+### Known Issues
+
+- In spread mode, depending on the transition type, the transition may be applied to both pages simultaneously. This is not a bug and is left as-is, noted here for reference.
+
 ## [1.7.0] - 2026-09-09
 
 ### Added
