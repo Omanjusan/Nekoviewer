@@ -7,7 +7,9 @@ use crate::card_date_format::{
 };
 use crate::config::{AppConfig, ResizeFilter, filter_to_str};
 use crate::gui_config::{
-    ThumbbarPos, TransitionKind, ViewerConfig, TRANSITION_DURATION_CEILING_MS, TRANSITION_DURATION_FLOOR_MS,
+    SlideshowManualBehavior, ThumbbarPos, TransitionKind, ViewerConfig,
+    SLIDESHOW_INTERVAL_CEILING_MS, SLIDESHOW_INTERVAL_FLOOR_MS,
+    TRANSITION_DURATION_CEILING_MS, TRANSITION_DURATION_FLOOR_MS,
 };
 use crate::i18n;
 use crate::keymap::{Keymap, ReaderAction, ExplorerAction, KeyCombo, MouseCombo, MouseAction, mouse_action_name};
@@ -82,6 +84,9 @@ pub(crate) struct SettingsDraft {
     /// スライドショータブ: トランジション種類・遷移時間(ms)。
     transition_kind: TransitionKind,
     transition_duration_ms: u64,
+    /// スライドショー送り間隔(ms)・手動ページ送り時の挙動。
+    slideshow_interval_ms: u64,
+    slideshow_manual_behavior: SlideshowManualBehavior,
     translate_base_url: String,
     translate_ocr_model: String,
     translate_translation_model: String,
@@ -215,6 +220,8 @@ impl SettingsDraft {
             default_slot: config.default_slot,
             transition_kind: viewer_cfg.transition_kind,
             transition_duration_ms: viewer_cfg.transition_duration_ms,
+            slideshow_interval_ms: viewer_cfg.slideshow_interval_ms,
+            slideshow_manual_behavior: viewer_cfg.slideshow_manual_behavior,
             translate_base_url: translate_cfg.base_url.clone(),
             translate_ocr_model: translate_cfg.ocr_model.clone(),
             translate_translation_model: translate_cfg.translation_model.clone(),
@@ -280,6 +287,8 @@ impl SettingsDraft {
         config.default_slot = self.default_slot;
         viewer_cfg.transition_kind = self.transition_kind;
         viewer_cfg.transition_duration_ms = self.transition_duration_ms;
+        viewer_cfg.slideshow_interval_ms = self.slideshow_interval_ms;
+        viewer_cfg.slideshow_manual_behavior = self.slideshow_manual_behavior;
 
         translate_cfg.base_url = self.translate_base_url.trim().to_string();
         translate_cfg.ocr_model = self.translate_ocr_model.trim().to_string();

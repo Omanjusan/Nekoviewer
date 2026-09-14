@@ -90,6 +90,33 @@ pub fn transition_kind_to_str(k: TransitionKind) -> &'static str {
     }
 }
 
+/// スライドショー送り間隔(ms)の下限/上限。設定ダイアログのスライダーもこの範囲。
+pub const SLIDESHOW_INTERVAL_FLOOR_MS: u64 = 1000;
+pub const SLIDESHOW_INTERVAL_CEILING_MS: u64 = 60000;
+
+/// スライドショー中にユーザーが手動でページ送りした場合の挙動。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SlideshowManualBehavior {
+    /// タイマーをリセットしてスライドショーを継続する
+    ResetTimer,
+    /// 手動操作の時点でスライドショーを停止する
+    Stop,
+}
+
+pub(crate) fn parse_slideshow_manual_behavior(s: &str) -> SlideshowManualBehavior {
+    match s {
+        "stop" => SlideshowManualBehavior::Stop,
+        _      => SlideshowManualBehavior::ResetTimer,
+    }
+}
+
+pub fn slideshow_manual_behavior_to_str(b: SlideshowManualBehavior) -> &'static str {
+    match b {
+        SlideshowManualBehavior::ResetTimer => "reset_timer",
+        SlideshowManualBehavior::Stop        => "stop",
+    }
+}
+
 /// ファイルをまたいで維持するビューア設定（ウィンドウを開き直しても保持）
 #[derive(Clone, Copy)]
 pub struct ViewerConfig {
@@ -138,6 +165,10 @@ pub struct ViewerConfig {
     pub transition_kind: TransitionKind,
     /// トランジション遷移時間(ms)。永続設定。TRANSITION_DURATION_FLOOR_MS〜CEILING_MSの範囲。
     pub transition_duration_ms: u64,
+    /// スライドショー送り間隔(ms)。永続設定。SLIDESHOW_INTERVAL_FLOOR_MS〜CEILING_MSの範囲。
+    pub slideshow_interval_ms: u64,
+    /// スライドショー中の手動ページ送り時の挙動。永続設定。
+    pub slideshow_manual_behavior: SlideshowManualBehavior,
 }
 
 impl Default for ViewerConfig {
@@ -162,6 +193,8 @@ impl Default for ViewerConfig {
             bar_order: DEFAULT_BAR_ORDER,
             transition_kind: TransitionKind::HorizontalSlide,
             transition_duration_ms: 400,
+            slideshow_interval_ms: 5000,
+            slideshow_manual_behavior: SlideshowManualBehavior::ResetTimer,
         }
     }
 }
@@ -338,6 +371,8 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
     let mut viewer_bar_order: Option<[ViewerBarItem; BAR_ITEM_COUNT]> = None;
     let mut transition_kind: Option<TransitionKind> = None;
     let mut transition_duration_ms: Option<u64> = None;
+    let mut slideshow_interval_ms: Option<u64> = None;
+    let mut slideshow_manual_behavior: Option<SlideshowManualBehavior> = None;
     let mut translate_base_url: Option<String> = None;
     // 旧キー(単一モデル)。新キー未設定時にocr_model/translation_modelへ後方互換で引き継ぐ。
     let mut translate_model_legacy: Option<String> = None;
@@ -448,6 +483,13 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
                     transition_duration_ms = v.trim().parse::<u64>().ok()
                         .map(|n| n.clamp(TRANSITION_DURATION_FLOOR_MS, TRANSITION_DURATION_CEILING_MS));
                 }
+                "slideshow_interval_ms" => {
+                    slideshow_interval_ms = v.trim().parse::<u64>().ok()
+                        .map(|n| n.clamp(SLIDESHOW_INTERVAL_FLOOR_MS, SLIDESHOW_INTERVAL_CEILING_MS));
+                }
+                "slideshow_manual_behavior" => {
+                    slideshow_manual_behavior = Some(parse_slideshow_manual_behavior(v.trim()));
+                }
                 "translate_base_url" => {
                     let v = v.trim();
                     if !v.is_empty() { translate_base_url = Some(v.to_string()); }
@@ -529,6 +571,8 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
             bar_order: viewer_bar_order.unwrap_or(DEFAULT_BAR_ORDER),
             transition_kind: transition_kind.unwrap_or(TransitionKind::HorizontalSlide),
             transition_duration_ms: transition_duration_ms.unwrap_or(400),
+            slideshow_interval_ms: slideshow_interval_ms.unwrap_or(5000),
+            slideshow_manual_behavior: slideshow_manual_behavior.unwrap_or(SlideshowManualBehavior::ResetTimer),
         },
         show_hidden: show_hidden.unwrap_or(false),
         card_info_mode: card_info_mode.unwrap_or_else(|| "off".to_string()),
@@ -598,6 +642,10 @@ pub fn save_state(root: &Path, dir: &Path, window_size: (u32, u32), viewer_slots
     content.push_str(&format!(
         "transition_kind={}\ntransition_duration_ms={}\n",
         transition_kind_to_str(viewer_cfg.transition_kind), viewer_cfg.transition_duration_ms,
+    ));
+    content.push_str(&format!(
+        "slideshow_interval_ms={}\nslideshow_manual_behavior={}\n",
+        viewer_cfg.slideshow_interval_ms, slideshow_manual_behavior_to_str(viewer_cfg.slideshow_manual_behavior),
     ));
     content.push_str(&format!(
         "translate_base_url={}\ntranslate_ocr_model={}\ntranslate_translation_model={}\ntranslate_overlay_width={}\n",
