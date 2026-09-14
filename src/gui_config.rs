@@ -54,6 +54,38 @@ pub fn thumbbar_pos_to_str(p: ThumbbarPos) -> &'static str {
     }
 }
 
+/// スライドショー用トランジション種類（設定ダイアログのスライドショータブから選択）。
+/// 実際の描画切り替えは別フェーズで各PageMode描画パスに接続する。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum TransitionKind {
+    /// 既存の見開き位置スライド（デフォルト、従来からのページ送り演出）
+    HorizontalSlide,
+    /// 旧ページ→新ページのクロスフェード
+    CrossFade,
+    /// 時計回りワイプ（境界フェザー付き）
+    ClockwiseWipe,
+}
+
+/// トランジション遷移時間(ms)の下限/上限。設定ダイアログのスライダーもこの範囲。
+pub const TRANSITION_DURATION_FLOOR_MS: u64 = 100;
+pub const TRANSITION_DURATION_CEILING_MS: u64 = 1000;
+
+pub(crate) fn parse_transition_kind(s: &str) -> TransitionKind {
+    match s {
+        "cross_fade"     => TransitionKind::CrossFade,
+        "clockwise_wipe" => TransitionKind::ClockwiseWipe,
+        _                => TransitionKind::HorizontalSlide,
+    }
+}
+
+pub fn transition_kind_to_str(k: TransitionKind) -> &'static str {
+    match k {
+        TransitionKind::HorizontalSlide => "horizontal_slide",
+        TransitionKind::CrossFade       => "cross_fade",
+        TransitionKind::ClockwiseWipe   => "clockwise_wipe",
+    }
+}
+
 /// ファイルをまたいで維持するビューア設定（ウィンドウを開き直しても保持）
 #[derive(Clone, Copy)]
 pub struct ViewerConfig {
@@ -98,6 +130,10 @@ pub struct ViewerConfig {
     /// ビューアーツールバーの項目並び順（全項目の順列、toolbar.rs 参照）。
     /// 永続設定。現時点で編集UIは無く実質固定（state を直接編集すれば並べ替え可能）。
     pub bar_order: [ViewerBarItem; BAR_ITEM_COUNT],
+    /// スライドショー用トランジション種類。永続設定（設定ダイアログのスライドショータブで編集）。
+    pub transition_kind: TransitionKind,
+    /// トランジション遷移時間(ms)。永続設定。TRANSITION_DURATION_FLOOR_MS〜CEILING_MSの範囲。
+    pub transition_duration_ms: u64,
 }
 
 impl Default for ViewerConfig {
@@ -120,6 +156,8 @@ impl Default for ViewerConfig {
             rotation_session_angle: 0,
             exif_orientation_enabled: true,
             bar_order: DEFAULT_BAR_ORDER,
+            transition_kind: TransitionKind::HorizontalSlide,
+            transition_duration_ms: 400,
         }
     }
 }
@@ -294,6 +332,8 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
     let mut thumbbar_marker_a: Option<u8> = None;
     let mut exif_orientation_enabled: Option<bool> = None;
     let mut viewer_bar_order: Option<[ViewerBarItem; BAR_ITEM_COUNT]> = None;
+    let mut transition_kind: Option<TransitionKind> = None;
+    let mut transition_duration_ms: Option<u64> = None;
     let mut translate_base_url: Option<String> = None;
     // 旧キー(単一モデル)。新キー未設定時にocr_model/translation_modelへ後方互換で引き継ぐ。
     let mut translate_model_legacy: Option<String> = None;
@@ -399,6 +439,11 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
                 "thumbbar_marker_a" => { thumbbar_marker_a = v.trim().parse().ok(); }
                 "exif_orientation_enabled" => { exif_orientation_enabled = v.trim().parse().ok(); }
                 "viewer_bar_order" => { viewer_bar_order = Some(parse_bar_order(v)); }
+                "transition_kind" => { transition_kind = Some(parse_transition_kind(v.trim())); }
+                "transition_duration_ms" => {
+                    transition_duration_ms = v.trim().parse::<u64>().ok()
+                        .map(|n| n.clamp(TRANSITION_DURATION_FLOOR_MS, TRANSITION_DURATION_CEILING_MS));
+                }
                 "translate_base_url" => {
                     let v = v.trim();
                     if !v.is_empty() { translate_base_url = Some(v.to_string()); }
@@ -478,6 +523,8 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
             rotation_session_angle: 0,
             exif_orientation_enabled: exif_orientation_enabled.unwrap_or(true),
             bar_order: viewer_bar_order.unwrap_or(DEFAULT_BAR_ORDER),
+            transition_kind: transition_kind.unwrap_or(TransitionKind::HorizontalSlide),
+            transition_duration_ms: transition_duration_ms.unwrap_or(400),
         },
         show_hidden: show_hidden.unwrap_or(false),
         card_info_mode: card_info_mode.unwrap_or_else(|| "off".to_string()),
@@ -543,6 +590,10 @@ pub fn save_state(root: &Path, dir: &Path, window_size: (u32, u32), viewer_slots
     content.push_str(&format!(
         "viewer_bar_order={}\n",
         bar_order_to_str(&viewer_cfg.bar_order),
+    ));
+    content.push_str(&format!(
+        "transition_kind={}\ntransition_duration_ms={}\n",
+        transition_kind_to_str(viewer_cfg.transition_kind), viewer_cfg.transition_duration_ms,
     ));
     content.push_str(&format!(
         "translate_base_url={}\ntranslate_ocr_model={}\ntranslate_translation_model={}\ntranslate_overlay_width={}\n",
