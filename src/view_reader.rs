@@ -1,4 +1,4 @@
-use crate::gui_config::{ThumbbarPos, TransitionKind, ViewerConfig};
+use crate::gui_config::{SlideshowManualBehavior, ThumbbarPos, TransitionKind, ViewerConfig};
 use crate::controller::{ViewerNav, ViewerOutput};
 use crate::i18n;
 use crate::log_key;
@@ -456,6 +456,13 @@ pub struct ViewerState {
     /// このフラグを実際の分岐には使わない）。
     #[allow(dead_code)]
     exif_enabled: bool,
+    /// スライドショー実行中か（非永続・実行時のみ）。
+    slideshow_active: bool,
+    /// 次に自動ページ送りするまでの基準時刻。start_slideshow/手動リセット/tick成功のたびに更新。
+    slideshow_last_advance: Instant,
+    /// tick_slideshow がページを送った直後だけ true。update_animation の変化検知で
+    /// 「今回のページ変化はスライドショー自身によるものか」を判定するためのワンショットフラグ。
+    slideshow_auto_advance_pending: bool,
 }
 
 impl ViewerState {
@@ -658,6 +665,9 @@ impl ViewerState {
             pending_toggle_translate_window: false,
             rotation: RotationState::new(),
             exif_enabled: true,
+            slideshow_active: false,
+            slideshow_last_advance: Instant::now(),
+            slideshow_auto_advance_pending: false,
         }
     }
 
@@ -728,6 +738,9 @@ impl ViewerState {
             pending_toggle_translate_window: false,
             rotation: RotationState::new(),
             exif_enabled: true,
+            slideshow_active: false,
+            slideshow_last_advance: Instant::now(),
+            slideshow_auto_advance_pending: false,
         }
     }
 
@@ -804,6 +817,80 @@ impl ViewerState {
     fn advance_page(&mut self, step: i32, total: i32) {
         if self.can_advance_page(step, total) {
             self.spread_base += step;
+        }
+    }
+
+    // ── スライドショー ───────────────────────────────────────────────────────
+    // 右クリックメニュー・将来のビューアー直接操作ボタンなど複数経路から呼ばれる
+    // ことを想定し、advance_spread_step と同様にコントローラ層を介さず ViewerState に
+    // 直接 pub メソッドとして生やす（永続化を伴わないランタイム操作のため）。
+
+    /// スライドショーが実行中か
+    pub fn is_slideshow_active(&self) -> bool {
+        self.slideshow_active
+    }
+
+    /// スライドショーを開始する（タイマーを今から起算）
+    pub fn start_slideshow(&mut self) {
+        self.slideshow_active = true;
+        self.slideshow_last_advance = Instant::now();
+    }
+
+    /// スライドショーを停止する
+    pub fn stop_slideshow(&mut self) {
+        self.slideshow_active = false;
+    }
+
+    /// 実行中なら停止、停止中なら開始する
+    pub fn toggle_slideshow(&mut self) {
+        if self.slideshow_active {
+            self.stop_slideshow();
+        } else {
+            self.start_slideshow();
+        }
+    }
+
+    /// 毎フレーム呼ぶ。実行中かつ間隔が経過していたら1ページ分自動で送る。
+    /// 送れない（終端到達）場合はスライドショーを自動停止する。
+    /// 実際に送った場合は slideshow_auto_advance_pending を立て、次の
+    /// update_animation でのページ変化検知が「手動操作」と誤認しないようにする。
+    fn tick_slideshow(&mut self, ctx: &egui::Context, cfg: &ViewerConfig, total: usize) {
+        if !self.slideshow_active {
+            return;
+        }
+        let interval = Duration::from_millis(cfg.slideshow_interval_ms);
+        let elapsed = self.slideshow_last_advance.elapsed();
+        if elapsed < interval {
+            ctx.request_repaint_after(interval - elapsed);
+            return;
+        }
+        let is_spread = self.page_mode != PageMode::Single;
+        let step = if is_spread { 2i32 } else { 1i32 };
+        let total_i = total as i32;
+        if self.can_advance_page(step, total_i) {
+            self.advance_page(step, total_i);
+            self.slideshow_auto_advance_pending = true;
+            self.slideshow_last_advance = Instant::now();
+            ctx.request_repaint();
+        } else {
+            // 終端到達: 自動停止
+            self.slideshow_active = false;
+        }
+    }
+
+    /// 手動でのページ変化を検知したときの処理（update_animation から呼ばれる）。
+    /// 設定に応じてタイマーをリセットして継続するか、スライドショー自体を止める。
+    fn on_manual_page_change(&mut self, cfg: &ViewerConfig) {
+        if !self.slideshow_active {
+            return;
+        }
+        match cfg.slideshow_manual_behavior {
+            SlideshowManualBehavior::ResetTimer => {
+                self.slideshow_last_advance = Instant::now();
+            }
+            SlideshowManualBehavior::Stop => {
+                self.slideshow_active = false;
+            }
         }
     }
 
@@ -1191,6 +1278,10 @@ impl ViewerState {
         // 既定スロットを初回フレームで一度だけ適用（クランプ付き）。
         self.apply_default_slot(&ctx, input.monitor_size);
 
+        // スライドショーのタイマー送りは update_animation より先に行い、同一フレームで
+        // ページ変化検知（アニメ起動・手動/自動の判定）が反映されるようにする。
+        self.tick_slideshow(&ctx, cfg, self.entries.len());
+
         let (animating, t) = self.update_animation(&ctx, input.dt, cfg);
 
         self.update_textures(
@@ -1401,6 +1492,14 @@ impl ViewerState {
             } else {
                 self.anim_progress = 0.0;
                 self.anim_active = true;
+            }
+
+            // スライドショー: 今回のページ変化が tick_slideshow 自身による送りでなければ
+            // 手動操作とみなす（ワンショットフラグを見て消費する）。
+            if self.slideshow_auto_advance_pending {
+                self.slideshow_auto_advance_pending = false;
+            } else {
+                self.on_manual_page_change(cfg);
             }
         }
 
