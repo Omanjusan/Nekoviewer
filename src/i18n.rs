@@ -1197,6 +1197,24 @@ impl Lang {
         }
     }
 
+    /// スライドショータブの大項目見出し。通常時とスライドショー実行中でトランジション
+    /// 設定（種類・遷移時間）を独立して選べるようセクション分けする。
+    pub fn settings_slideshow_normal_section_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "通常時",
+            Lang::English  => "Normal",
+            Lang::Chinese  => "平时",
+        }
+    }
+
+    pub fn settings_slideshow_active_section_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "スライドショー有効時",
+            Lang::English  => "During slideshow",
+            Lang::Chinese  => "幻灯片放映时",
+        }
+    }
+
     pub fn settings_transition_kind_label(self) -> &'static str {
         match self {
             Lang::Japanese => "■ トランジション種類",

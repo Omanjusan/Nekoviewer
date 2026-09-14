@@ -81,12 +81,15 @@ pub(crate) struct SettingsDraft {
     exif_orientation_enabled: bool,
     /// ビューアーを開くときの既定スロット（0..3 = F5〜F8）。None = デフォルト無し。
     default_slot: Option<usize>,
-    /// スライドショータブ: トランジション種類・遷移時間(ms)。
+    /// スライドショータブ: 通常時のトランジション種類・遷移時間(ms)。
     transition_kind: TransitionKind,
     transition_duration_ms: u64,
     /// スライドショー送り間隔(ms)・手動ページ送り時の挙動。
     slideshow_interval_ms: u64,
     slideshow_manual_behavior: SlideshowManualBehavior,
+    /// スライドショー実行中のトランジション種類・遷移時間(ms)。通常時とは独立。
+    slideshow_transition_kind: TransitionKind,
+    slideshow_transition_duration_ms: u64,
     translate_base_url: String,
     translate_ocr_model: String,
     translate_translation_model: String,
@@ -222,6 +225,8 @@ impl SettingsDraft {
             transition_duration_ms: viewer_cfg.transition_duration_ms,
             slideshow_interval_ms: viewer_cfg.slideshow_interval_ms,
             slideshow_manual_behavior: viewer_cfg.slideshow_manual_behavior,
+            slideshow_transition_kind: viewer_cfg.slideshow_transition_kind,
+            slideshow_transition_duration_ms: viewer_cfg.slideshow_transition_duration_ms,
             translate_base_url: translate_cfg.base_url.clone(),
             translate_ocr_model: translate_cfg.ocr_model.clone(),
             translate_translation_model: translate_cfg.translation_model.clone(),
@@ -289,6 +294,8 @@ impl SettingsDraft {
         viewer_cfg.transition_duration_ms = self.transition_duration_ms;
         viewer_cfg.slideshow_interval_ms = self.slideshow_interval_ms;
         viewer_cfg.slideshow_manual_behavior = self.slideshow_manual_behavior;
+        viewer_cfg.slideshow_transition_kind = self.slideshow_transition_kind;
+        viewer_cfg.slideshow_transition_duration_ms = self.slideshow_transition_duration_ms;
 
         translate_cfg.base_url = self.translate_base_url.trim().to_string();
         translate_cfg.ocr_model = self.translate_ocr_model.trim().to_string();
@@ -694,6 +701,8 @@ fn draw_settings_tab_viewer(ui: &mut egui::Ui, draft: &mut SettingsDraft) {
 }
 
 fn draw_settings_tab_slideshow(ui: &mut egui::Ui, draft: &mut SettingsDraft) {
+    ui.label(egui::RichText::new(i18n::t().settings_slideshow_normal_section_label()).strong().size(15.0));
+
     ui.label(i18n::t().settings_transition_kind_label());
     egui::ComboBox::from_id_salt("transition_kind")
         .selected_text(match draft.transition_kind {
@@ -717,6 +726,37 @@ fn draw_settings_tab_slideshow(ui: &mut egui::Ui, draft: &mut SettingsDraft) {
         ui.horizontal(|ui| {
             ui.add(egui::Slider::new(&mut draft.transition_duration_ms, TRANSITION_DURATION_FLOOR_MS..=TRANSITION_DURATION_CEILING_MS).show_value(false).step_by(50.0));
             ui.label(format!("{} ms", draft.transition_duration_ms));
+        });
+    });
+    ui.label(i18n::t().settings_transition_duration_explain());
+    ui.add_space(6.0);
+    ui.separator();
+
+    ui.label(egui::RichText::new(i18n::t().settings_slideshow_active_section_label()).strong().size(15.0));
+
+    ui.label(i18n::t().settings_transition_kind_label());
+    egui::ComboBox::from_id_salt("slideshow_transition_kind")
+        .selected_text(match draft.slideshow_transition_kind {
+            TransitionKind::None            => i18n::t().settings_transition_none(),
+            TransitionKind::HorizontalSlide => i18n::t().settings_transition_horizontal_slide(),
+            TransitionKind::CrossFade       => i18n::t().settings_transition_cross_fade(),
+            TransitionKind::ClockwiseWipe   => i18n::t().settings_transition_clockwise_wipe(),
+        })
+        .show_ui(ui, |ui| {
+            ui.selectable_value(&mut draft.slideshow_transition_kind, TransitionKind::None, i18n::t().settings_transition_none());
+            ui.selectable_value(&mut draft.slideshow_transition_kind, TransitionKind::HorizontalSlide, i18n::t().settings_transition_horizontal_slide());
+            ui.selectable_value(&mut draft.slideshow_transition_kind, TransitionKind::CrossFade, i18n::t().settings_transition_cross_fade());
+            ui.selectable_value(&mut draft.slideshow_transition_kind, TransitionKind::ClockwiseWipe, i18n::t().settings_transition_clockwise_wipe());
+        });
+    ui.label(i18n::t().settings_transition_kind_explain());
+    ui.separator();
+
+    ui.label(i18n::t().settings_transition_duration_label());
+    ui.scope(|ui| {
+        ui.spacing_mut().slider_width = 260.0;
+        ui.horizontal(|ui| {
+            ui.add(egui::Slider::new(&mut draft.slideshow_transition_duration_ms, TRANSITION_DURATION_FLOOR_MS..=TRANSITION_DURATION_CEILING_MS).show_value(false).step_by(50.0));
+            ui.label(format!("{} ms", draft.slideshow_transition_duration_ms));
         });
     });
     ui.label(i18n::t().settings_transition_duration_explain());
