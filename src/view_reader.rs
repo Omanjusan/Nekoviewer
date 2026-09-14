@@ -898,6 +898,16 @@ impl ViewerState {
         }
     }
 
+    /// 現在有効なトランジション種類。スライドショー実行中は専用設定、それ以外は通常設定を使う。
+    fn effective_transition_kind(&self, cfg: &ViewerConfig) -> TransitionKind {
+        if self.slideshow_active { cfg.slideshow_transition_kind } else { cfg.transition_kind }
+    }
+
+    /// 現在有効なトランジション遷移時間(ms)。判定基準は effective_transition_kind と同じ。
+    fn effective_transition_duration_ms(&self, cfg: &ViewerConfig) -> u64 {
+        if self.slideshow_active { cfg.slideshow_transition_duration_ms } else { cfg.transition_duration_ms }
+    }
+
     /// 前の見開き/ページへ戻る（不可能な場合は何もしない）
     fn retreat_page(&mut self, is_spread: bool, step: i32) {
         if self.can_retreat_page(is_spread, step) {
@@ -1423,7 +1433,7 @@ impl ViewerState {
             zoom_actual: cfg.zoom_actual,
             monitor:     input.monitor_size,
             rotation_angle,
-            transition_kind: cfg.transition_kind,
+            transition_kind: self.effective_transition_kind(cfg),
         };
         let (double_clicked, single_clicked) = self.draw_central_panel(ui, &frame, &input, is_spread, step, total);
 
@@ -1495,7 +1505,7 @@ impl ViewerState {
             if !cfg.rotation_carry_over {
                 self.rotation.reset();
             }
-            if cfg.transition_kind == TransitionKind::None {
+            if self.effective_transition_kind(cfg) == TransitionKind::None {
                 // トランジション無し設定：アニメーションを起動せず即時切り替えにする
                 self.anim_progress = 1.0;
                 self.anim_active = false;
@@ -1514,7 +1524,7 @@ impl ViewerState {
         }
 
         if self.anim_active {
-            let transition_secs = (cfg.transition_duration_ms as f32 / 1000.0).max(0.001);
+            let transition_secs = (self.effective_transition_duration_ms(cfg) as f32 / 1000.0).max(0.001);
             self.anim_progress = (self.anim_progress + dt / transition_secs).min(1.0);
             if self.anim_progress >= 1.0 { self.anim_active = false; }
             ctx.request_repaint();
