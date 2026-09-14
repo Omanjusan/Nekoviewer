@@ -58,6 +58,8 @@ pub fn thumbbar_pos_to_str(p: ThumbbarPos) -> &'static str {
 /// 実際の描画切り替えは別フェーズで各PageMode描画パスに接続する。
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum TransitionKind {
+    /// トランジション無し。即時切り替え（アニメーションをスキップする）
+    None,
     /// 既存の見開き位置スライド（デフォルト、従来からのページ送り演出）
     HorizontalSlide,
     /// 旧ページ→新ページのクロスフェード
@@ -72,6 +74,7 @@ pub const TRANSITION_DURATION_CEILING_MS: u64 = 1000;
 
 pub(crate) fn parse_transition_kind(s: &str) -> TransitionKind {
     match s {
+        "none"           => TransitionKind::None,
         "cross_fade"     => TransitionKind::CrossFade,
         "clockwise_wipe" => TransitionKind::ClockwiseWipe,
         _                => TransitionKind::HorizontalSlide,
@@ -80,6 +83,7 @@ pub(crate) fn parse_transition_kind(s: &str) -> TransitionKind {
 
 pub fn transition_kind_to_str(k: TransitionKind) -> &'static str {
     match k {
+        TransitionKind::None            => "none",
         TransitionKind::HorizontalSlide => "horizontal_slide",
         TransitionKind::CrossFade       => "cross_fade",
         TransitionKind::ClockwiseWipe   => "clockwise_wipe",

@@ -688,11 +688,13 @@ fn draw_settings_tab_slideshow(ui: &mut egui::Ui, draft: &mut SettingsDraft) {
     ui.label(i18n::t().settings_transition_kind_label());
     egui::ComboBox::from_id_salt("transition_kind")
         .selected_text(match draft.transition_kind {
+            TransitionKind::None            => i18n::t().settings_transition_none(),
             TransitionKind::HorizontalSlide => i18n::t().settings_transition_horizontal_slide(),
             TransitionKind::CrossFade       => i18n::t().settings_transition_cross_fade(),
             TransitionKind::ClockwiseWipe   => i18n::t().settings_transition_clockwise_wipe(),
         })
         .show_ui(ui, |ui| {
+            ui.selectable_value(&mut draft.transition_kind, TransitionKind::None, i18n::t().settings_transition_none());
             ui.selectable_value(&mut draft.transition_kind, TransitionKind::HorizontalSlide, i18n::t().settings_transition_horizontal_slide());
             ui.selectable_value(&mut draft.transition_kind, TransitionKind::CrossFade, i18n::t().settings_transition_cross_fade());
             ui.selectable_value(&mut draft.transition_kind, TransitionKind::ClockwiseWipe, i18n::t().settings_transition_clockwise_wipe());

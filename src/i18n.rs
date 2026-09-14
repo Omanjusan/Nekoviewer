@@ -1203,6 +1203,14 @@ impl Lang {
         }
     }
 
+    pub fn settings_transition_none(self) -> &'static str {
+        match self {
+            Lang::Japanese => "なし（即時切り替え）",
+            Lang::English  => "None (instant)",
+            Lang::Chinese  => "无（立即切换）",
+        }
+    }
+
     pub fn settings_transition_horizontal_slide(self) -> &'static str {
         match self {
             Lang::Japanese => "横スライド",
