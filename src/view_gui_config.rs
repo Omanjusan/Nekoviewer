@@ -703,7 +703,6 @@ fn draw_settings_tab_viewer(ui: &mut egui::Ui, draft: &mut SettingsDraft) {
 fn draw_settings_tab_slideshow(ui: &mut egui::Ui, draft: &mut SettingsDraft) {
     ui.label(egui::RichText::new(i18n::t().settings_slideshow_normal_section_label()).strong().size(15.0));
 
-    ui.label(i18n::t().settings_transition_kind_label());
     egui::ComboBox::from_id_salt("transition_kind")
         .selected_text(match draft.transition_kind {
             TransitionKind::None            => i18n::t().settings_transition_none(),
@@ -717,8 +716,6 @@ fn draw_settings_tab_slideshow(ui: &mut egui::Ui, draft: &mut SettingsDraft) {
             ui.selectable_value(&mut draft.transition_kind, TransitionKind::CrossFade, i18n::t().settings_transition_cross_fade());
             ui.selectable_value(&mut draft.transition_kind, TransitionKind::ClockwiseWipe, i18n::t().settings_transition_clockwise_wipe());
         });
-    ui.label(i18n::t().settings_transition_kind_explain());
-    ui.separator();
 
     ui.label(i18n::t().settings_transition_duration_label());
     ui.scope(|ui| {
@@ -734,7 +731,6 @@ fn draw_settings_tab_slideshow(ui: &mut egui::Ui, draft: &mut SettingsDraft) {
 
     ui.label(egui::RichText::new(i18n::t().settings_slideshow_active_section_label()).strong().size(15.0));
 
-    ui.label(i18n::t().settings_transition_kind_label());
     egui::ComboBox::from_id_salt("slideshow_transition_kind")
         .selected_text(match draft.slideshow_transition_kind {
             TransitionKind::None            => i18n::t().settings_transition_none(),
@@ -748,8 +744,6 @@ fn draw_settings_tab_slideshow(ui: &mut egui::Ui, draft: &mut SettingsDraft) {
             ui.selectable_value(&mut draft.slideshow_transition_kind, TransitionKind::CrossFade, i18n::t().settings_transition_cross_fade());
             ui.selectable_value(&mut draft.slideshow_transition_kind, TransitionKind::ClockwiseWipe, i18n::t().settings_transition_clockwise_wipe());
         });
-    ui.label(i18n::t().settings_transition_kind_explain());
-    ui.separator();
 
     ui.label(i18n::t().settings_transition_duration_label());
     ui.scope(|ui| {

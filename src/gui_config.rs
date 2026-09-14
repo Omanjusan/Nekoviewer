@@ -203,7 +203,7 @@ impl Default for ViewerConfig {
             slideshow_interval_ms: 5000,
             slideshow_manual_behavior: SlideshowManualBehavior::ResetTimer,
             slideshow_transition_kind: TransitionKind::HorizontalSlide,
-            slideshow_transition_duration_ms: 400,
+            slideshow_transition_duration_ms: 1000,
         }
     }
 }
@@ -590,7 +590,7 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
             slideshow_interval_ms: slideshow_interval_ms.unwrap_or(5000),
             slideshow_manual_behavior: slideshow_manual_behavior.unwrap_or(SlideshowManualBehavior::ResetTimer),
             slideshow_transition_kind: slideshow_transition_kind.unwrap_or(TransitionKind::HorizontalSlide),
-            slideshow_transition_duration_ms: slideshow_transition_duration_ms.unwrap_or(400),
+            slideshow_transition_duration_ms: slideshow_transition_duration_ms.unwrap_or(1000),
         },
         show_hidden: show_hidden.unwrap_or(false),
         card_info_mode: card_info_mode.unwrap_or_else(|| "off".to_string()),

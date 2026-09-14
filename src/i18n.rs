@@ -1201,33 +1201,17 @@ impl Lang {
     /// 設定（種類・遷移時間）を独立して選べるようセクション分けする。
     pub fn settings_slideshow_normal_section_label(self) -> &'static str {
         match self {
-            Lang::Japanese => "通常時",
-            Lang::English  => "Normal",
-            Lang::Chinese  => "平时",
+            Lang::Japanese => "通常時のトランジション設定",
+            Lang::English  => "Normal transition settings",
+            Lang::Chinese  => "平时转场设置",
         }
     }
 
     pub fn settings_slideshow_active_section_label(self) -> &'static str {
         match self {
-            Lang::Japanese => "スライドショー有効時",
-            Lang::English  => "During slideshow",
-            Lang::Chinese  => "幻灯片放映时",
-        }
-    }
-
-    pub fn settings_transition_kind_label(self) -> &'static str {
-        match self {
-            Lang::Japanese => "■ トランジション種類",
-            Lang::English  => "■ Transition type",
-            Lang::Chinese  => "■ 转场类型",
-        }
-    }
-
-    pub fn settings_transition_kind_explain(self) -> &'static str {
-        match self {
-            Lang::Japanese => "ページ送り時の切り替え演出。",
-            Lang::English  => "The transition effect used when turning pages.",
-            Lang::Chinese  => "翻页时使用的切换效果。",
+            Lang::Japanese => "スライドショー時のトランジション設定",
+            Lang::English  => "Slideshow transition settings",
+            Lang::Chinese  => "幻灯片放映时转场设置",
         }
     }
 
