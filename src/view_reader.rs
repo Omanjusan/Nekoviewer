@@ -323,6 +323,8 @@ struct RenderFrame {
     monitor:     Option<egui::Vec2>,
     /// TODO項目B: シングルページ表示に適用する手動回転角度(0/90/180/270)
     rotation_angle: i32,
+    /// スライドショー設定のトランジション種類。アニメ中の描画分岐に使う。
+    transition_kind: TransitionKind,
 }
 
 /// 右クリック「ファイル詳細」ダイアログの状態。開いた瞬間の情報をスナップショットして保持する
@@ -1320,6 +1322,7 @@ impl ViewerState {
             zoom_actual: cfg.zoom_actual,
             monitor:     input.monitor_size,
             rotation_angle,
+            transition_kind: cfg.transition_kind,
         };
         let (double_clicked, single_clicked) = self.draw_central_panel(ui, &frame, &input, is_spread, step, total);
 
@@ -1686,32 +1689,64 @@ impl ViewerState {
                 resp.context_menu(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort, sort_action, bookmark_toggle_enabled, bookmark_toggle_on, bookmark_action, thumbnail_target, saved_thumbnail_selection, saved_thumbnail_display.as_deref(), thumbnail_action, open_favorite_dialog, open_file_detail));
 
                 let painter = ui.painter().with_clip_rect(clip);
-                let off_old = avail.x * frame.t * (-frame.anim_dir_f);
-                let off_new = avail.x * (1.0 - frame.t) * frame.anim_dir_f;
 
-                match frame.page_mode {
-                    PageMode::Single => {
-                        Self::paint_single_at(&painter, &frame.prev_tex_lo, avail, origin, off_old);
-                        Self::paint_single_at(&painter, &frame.tex_lo,      avail, origin, off_new);
-                    }
-                    PageMode::SpreadLeft => {
-                        if !Self::paint_offset_spread(&painter, frame, avail, origin, false) {
+                if frame.transition_kind == TransitionKind::CrossFade {
+                    // クロスフェード：旧・新ページをそれぞれ自然な位置に固定描画し、
+                    // 新ページ側だけアルファをtで持ち上げる（位置移動は無し）。
+                    // GPU側のアルファブレンドのみで済ませ、CPU側のピクセル合成は行わない。
+                    let new_alpha = (frame.t.clamp(0.0, 1.0) * 255.0).round() as u8;
+                    match frame.page_mode {
+                        PageMode::Single => {
+                            Self::paint_single_alpha(&painter, &frame.prev_tex_lo, avail, origin, 255);
+                            Self::paint_single_alpha(&painter, &frame.tex_lo,      avail, origin, new_alpha);
+                        }
+                        PageMode::SpreadLeft => {
                             let (rl, rr) = Self::spread_rects(avail, origin, &frame.prev_tex_lo, &frame.prev_tex_hi, frame.monitor);
-                            Self::paint_page(&painter, &frame.prev_tex_lo, rl.translate(egui::vec2(off_old, 0.0)));
-                            Self::paint_page(&painter, &frame.prev_tex_hi, rr.translate(egui::vec2(off_old, 0.0)));
+                            Self::paint_page_alpha(&painter, &frame.prev_tex_lo, rl, 255);
+                            Self::paint_page_alpha(&painter, &frame.prev_tex_hi, rr, 255);
                             let (rl, rr) = Self::spread_rects(avail, origin, &frame.tex_lo, &frame.tex_hi, frame.monitor);
-                            Self::paint_page(&painter, &frame.tex_lo, rl.translate(egui::vec2(off_new, 0.0)));
-                            Self::paint_page(&painter, &frame.tex_hi, rr.translate(egui::vec2(off_new, 0.0)));
+                            Self::paint_page_alpha(&painter, &frame.tex_lo, rl, new_alpha);
+                            Self::paint_page_alpha(&painter, &frame.tex_hi, rr, new_alpha);
+                        }
+                        PageMode::SpreadRight => {
+                            let (rl, rr) = Self::spread_rects(avail, origin, &frame.prev_tex_hi, &frame.prev_tex_lo, frame.monitor);
+                            Self::paint_page_alpha(&painter, &frame.prev_tex_hi, rl, 255);
+                            Self::paint_page_alpha(&painter, &frame.prev_tex_lo, rr, 255);
+                            let (rl, rr) = Self::spread_rects(avail, origin, &frame.tex_hi, &frame.tex_lo, frame.monitor);
+                            Self::paint_page_alpha(&painter, &frame.tex_hi, rl, new_alpha);
+                            Self::paint_page_alpha(&painter, &frame.tex_lo, rr, new_alpha);
                         }
                     }
-                    PageMode::SpreadRight => {
-                        if !Self::paint_offset_spread(&painter, frame, avail, origin, true) {
-                            let (rl, rr) = Self::spread_rects(avail, origin, &frame.prev_tex_hi, &frame.prev_tex_lo, frame.monitor);
-                            Self::paint_page(&painter, &frame.prev_tex_hi, rl.translate(egui::vec2(off_old, 0.0)));
-                            Self::paint_page(&painter, &frame.prev_tex_lo, rr.translate(egui::vec2(off_old, 0.0)));
-                            let (rl, rr) = Self::spread_rects(avail, origin, &frame.tex_hi, &frame.tex_lo, frame.monitor);
-                            Self::paint_page(&painter, &frame.tex_hi, rl.translate(egui::vec2(off_new, 0.0)));
-                            Self::paint_page(&painter, &frame.tex_lo, rr.translate(egui::vec2(off_new, 0.0)));
+                } else {
+                    // 横スライド（HorizontalSlide）。ClockwiseWipeは専用描画パスが
+                    // まだ無いため、次のフェーズまで暫定的にここへフォールバックする。
+                    let off_old = avail.x * frame.t * (-frame.anim_dir_f);
+                    let off_new = avail.x * (1.0 - frame.t) * frame.anim_dir_f;
+
+                    match frame.page_mode {
+                        PageMode::Single => {
+                            Self::paint_single_at(&painter, &frame.prev_tex_lo, avail, origin, off_old);
+                            Self::paint_single_at(&painter, &frame.tex_lo,      avail, origin, off_new);
+                        }
+                        PageMode::SpreadLeft => {
+                            if !Self::paint_offset_spread(&painter, frame, avail, origin, false) {
+                                let (rl, rr) = Self::spread_rects(avail, origin, &frame.prev_tex_lo, &frame.prev_tex_hi, frame.monitor);
+                                Self::paint_page(&painter, &frame.prev_tex_lo, rl.translate(egui::vec2(off_old, 0.0)));
+                                Self::paint_page(&painter, &frame.prev_tex_hi, rr.translate(egui::vec2(off_old, 0.0)));
+                                let (rl, rr) = Self::spread_rects(avail, origin, &frame.tex_lo, &frame.tex_hi, frame.monitor);
+                                Self::paint_page(&painter, &frame.tex_lo, rl.translate(egui::vec2(off_new, 0.0)));
+                                Self::paint_page(&painter, &frame.tex_hi, rr.translate(egui::vec2(off_new, 0.0)));
+                            }
+                        }
+                        PageMode::SpreadRight => {
+                            if !Self::paint_offset_spread(&painter, frame, avail, origin, true) {
+                                let (rl, rr) = Self::spread_rects(avail, origin, &frame.prev_tex_hi, &frame.prev_tex_lo, frame.monitor);
+                                Self::paint_page(&painter, &frame.prev_tex_hi, rl.translate(egui::vec2(off_old, 0.0)));
+                                Self::paint_page(&painter, &frame.prev_tex_lo, rr.translate(egui::vec2(off_old, 0.0)));
+                                let (rl, rr) = Self::spread_rects(avail, origin, &frame.tex_hi, &frame.tex_lo, frame.monitor);
+                                Self::paint_page(&painter, &frame.tex_hi, rl.translate(egui::vec2(off_new, 0.0)));
+                                Self::paint_page(&painter, &frame.tex_lo, rr.translate(egui::vec2(off_new, 0.0)));
+                            }
                         }
                     }
                 }
@@ -3368,6 +3403,15 @@ impl ViewerState {
         }
     }
 
+    /// `paint_page`のalpha指定版（クロスフェード用）。GPU側のアルファブレンドのみで
+    /// 済ませるため、CPU側のピクセル合成は行わない。
+    fn paint_page_alpha(painter: &egui::Painter, tex: &Option<egui::TextureHandle>, rect: egui::Rect, alpha: u8) {
+        match tex {
+            Some(t) => { painter.image(t.id(), rect, FULL_UV, egui::Color32::from_rgba_unmultiplied(255, 255, 255, alpha)); }
+            None    => { painter.rect_filled(rect, 0.0, egui::Color32::from_rgba_unmultiplied(40, 40, 40, alpha)); }
+        }
+    }
+
     /// 中心点 `center`・半径(半幅半高) `half`・`angle_deg` 度で回転させた矩形の4頂点
     /// （左上→右上→右下→左下の順）を返す共通ヘルパー。
     fn rotated_quad_points(center: egui::Pos2, half: egui::Vec2, angle_deg: i32) -> [egui::Pos2; 4] {
@@ -3462,6 +3506,23 @@ impl ViewerState {
             let size  = egui::vec2(img_w as f32 * scale, img_h as f32 * scale);
             let tl    = origin + (avail - size) / 2.0 + egui::vec2(offset_x, 0.0);
             painter.image(tex.id(), egui::Rect::from_min_size(tl, size), FULL_UV, egui::Color32::WHITE);
+        }
+    }
+
+    /// 単ページをoffset無し・alpha指定で描画（クロスフェード用）
+    fn paint_single_alpha(
+        painter: &egui::Painter,
+        tex: &Option<egui::TextureHandle>,
+        avail: egui::Vec2,
+        origin: egui::Pos2,
+        alpha: u8,
+    ) {
+        if let Some(tex) = tex {
+            let [img_w, img_h] = tex.size();
+            let scale = (avail.x / img_w as f32).min(avail.y / img_h as f32);
+            let size  = egui::vec2(img_w as f32 * scale, img_h as f32 * scale);
+            let tl    = origin + (avail - size) / 2.0;
+            painter.image(tex.id(), egui::Rect::from_min_size(tl, size), FULL_UV, egui::Color32::from_rgba_unmultiplied(255, 255, 255, alpha));
         }
     }
 }
