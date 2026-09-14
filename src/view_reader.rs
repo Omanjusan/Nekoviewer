@@ -749,6 +749,22 @@ impl ViewerState {
         self.entries.get(idx as usize).map(|e| e.entry_name.as_str())
     }
 
+    /// しおり復帰：entry_nameが現在の一覧（ソート確定後）に見つかれば該当ページへ
+    /// ジャンプしてtrueを返す。見つからなければ何もせずfalseを返す
+    /// （呼び出し側でしおりデータ初期化＋失敗トーストへ）。
+    pub fn restore_bookmark_position(&mut self, entry_name: &str) -> bool {
+        let Some(idx) = self.entries.iter().position(|e| e.entry_name == entry_name) else {
+            return false;
+        };
+        self.spread_base = idx as i32;
+        self.offset.reset();
+        self.anim_active = false;
+        self.anim_progress = 1.0;
+        self.prev_spread_lo = self.spread_base;
+        self.rotation.reset();
+        true
+    }
+
     /// オフセットがずれているか（UI表示用）
     pub fn can_shift_forward(&self) -> bool {
         self.offset.can_advance()
@@ -3912,5 +3928,71 @@ mod sort_save_state_tests {
         viewer.restore_saved_sort(ViewerSortKey::Name, true);
 
         assert_eq!(viewer.spread_base, 4);
+    }
+}
+
+#[cfg(test)]
+mod bookmark_restore_tests {
+    use super::*;
+
+    fn viewer() -> ViewerState {
+        ViewerState::new_raw(PathBuf::from("test.png"), [None; 4], None)
+    }
+
+    fn archive_viewer() -> ViewerState {
+        let mut viewer = viewer();
+        viewer.is_raw_file = false;
+        viewer.entries = vec![
+            ViewerEntry {
+                entry_name: "first".to_string(),
+                display_name: "first".to_string(),
+                date_key: 0,
+                original_index: 0,
+            },
+            ViewerEntry {
+                entry_name: "second".to_string(),
+                display_name: "second".to_string(),
+                date_key: 1,
+                original_index: 1,
+            },
+        ];
+        viewer
+    }
+
+    #[test]
+    fn restore_bookmark_position_jumps_to_matching_entry() {
+        let mut viewer = archive_viewer();
+        viewer.spread_base = 0;
+
+        assert!(viewer.restore_bookmark_position("second"));
+
+        assert_eq!(viewer.spread_base, 1);
+        assert_eq!(viewer.offset.value(), 0);
+    }
+
+    #[test]
+    fn restore_bookmark_position_fails_without_changing_state_when_entry_missing() {
+        let mut viewer = archive_viewer();
+        viewer.spread_base = 0;
+
+        assert!(!viewer.restore_bookmark_position("missing"));
+
+        assert_eq!(viewer.spread_base, 0, "見つからない場合は現在位置を変更しない");
+    }
+
+    #[test]
+    fn current_bookmark_entry_name_reflects_spread_lo() {
+        let mut viewer = archive_viewer();
+        viewer.spread_base = 1;
+
+        assert_eq!(viewer.current_bookmark_entry_name(), Some("second"));
+    }
+
+    #[test]
+    fn current_bookmark_entry_name_is_none_for_virtual_leading_page() {
+        let mut viewer = archive_viewer();
+        viewer.spread_base = -1;
+
+        assert_eq!(viewer.current_bookmark_entry_name(), None);
     }
 }

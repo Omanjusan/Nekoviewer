@@ -1013,10 +1013,25 @@ impl NekoviewApp {
             state.restore_saved_sort(key, ascending);
             state.set_saved_sort(Some((key, ascending)));
         }
-        let bookmark_enabled = self.spread_db.as_ref()
-            .and_then(|db| crate::spread_state::read_bookmark(db, archive_dir, filename))
-            .is_some_and(|bookmark| bookmark.enabled);
-        state.set_saved_bookmark_enabled(bookmark_enabled);
+        let bookmark = self.spread_db.as_ref()
+            .and_then(|db| crate::spread_state::read_bookmark(db, archive_dir, filename));
+        state.set_saved_bookmark_enabled(bookmark.as_ref().is_some_and(|b| b.enabled));
+        // last_entry_name が空 = まだ一度も離脱時保存が走っていない（トグルONにしただけ）。
+        // この場合は復帰対象なし・失敗でもないので黙って冒頭から始める。
+        if let Some(bookmark) = bookmark.filter(|b| b.enabled && !b.last_entry_name.is_empty()) {
+            let mtime_ok = bookmark.archive_mtime == crate::neko_dir::file_mtime(&path);
+            // ソート順（保存済み or デフォルト）は直前の restore_saved_sort で確定済み。
+            // ここでの entry_name 検索は、その確定後の一覧に対して行われる。
+            let restored = mtime_ok && state.restore_bookmark_position(&bookmark.last_entry_name);
+            if restored {
+                state.set_toast(i18n::t().toast_bookmark_restored().to_string());
+            } else {
+                if let Some(db) = self.spread_db.as_ref() {
+                    crate::spread_state::clear_bookmark_position(db, archive_dir, filename);
+                }
+                state.set_toast(i18n::t().toast_bookmark_invalidated().to_string());
+            }
+        }
         let saved_thumbnail_selection = self.spread_db.as_ref().and_then(|db| {
             crate::spread_state::read_thumbnail_selection(db, archive_dir, filename)
         });

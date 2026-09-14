@@ -799,6 +799,22 @@ impl Lang {
         }
     }
 
+    pub fn toast_bookmark_restored(self) -> &'static str {
+        match self {
+            Lang::Japanese => "前回閉じたページから復帰します",
+            Lang::English  => "Resuming from where you last left off",
+            Lang::Chinese  => "从上次关闭的页面继续",
+        }
+    }
+
+    pub fn toast_bookmark_invalidated(self) -> &'static str {
+        match self {
+            Lang::Japanese => "しおりが無効になりました",
+            Lang::English  => "The bookmark is no longer valid",
+            Lang::Chinese  => "书签已失效",
+        }
+    }
+
     pub fn viewer_fallback(self) -> &'static str {
         match self {
             Lang::Japanese => "ビューア",
