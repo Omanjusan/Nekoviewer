@@ -340,6 +340,7 @@ impl NekoviewApp {
     pub fn on_exit(&mut self) {
         self.req_tx.shutdown();
         self.flush_current_sort_if_changed();
+        self.flush_current_bookmark_if_enabled();
         self.persist_state();
     }
 

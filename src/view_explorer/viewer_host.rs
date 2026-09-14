@@ -52,6 +52,7 @@ impl NekoviewApp {
     /// ビューアーを閉じる（OS のクローズボタン等から winit_app が呼ぶ）。
     pub fn close_viewer(&mut self) {
         self.flush_current_sort_if_changed();
+        self.flush_current_bookmark_if_enabled();
         *self.viewer.lock().unwrap() = None;
     }
 
@@ -564,6 +565,7 @@ impl NekoviewApp {
         let had_nav = output.nav != ViewerNav::None;
         if output.close_requested {
             self.flush_current_sort_if_changed();
+            self.flush_current_bookmark_if_enabled();
             *self.viewer.lock().unwrap() = None;
             controller::request_status_update(&self.status_update_requested);
             self.egui_ctx.request_repaint();
@@ -972,9 +974,30 @@ impl NekoviewApp {
         self.refresh_saved_archive_settings(&archive_path);
     }
 
+    /// しおり保存ONの場合だけ、現在のアーカイブの閲覧位置を書き込む。
+    /// ViewerStateを破棄・置換する直前の全経路から呼ぶ（flush_current_sort_if_changedと対）。
+    pub(super) fn flush_current_bookmark_if_enabled(&mut self) {
+        let Some(db) = self.spread_db.clone() else { return };
+        let mut viewer_guard = self.viewer.lock().unwrap();
+        let Some(viewer) = viewer_guard.as_mut() else { return };
+        if !viewer.bookmark_save_toggle_on() {
+            return;
+        }
+        let Some(entry_name) = viewer.current_bookmark_entry_name() else { return };
+        let entry_name = entry_name.to_string();
+        let archive_path = viewer.archive_path().clone();
+        let Some(filename) = archive_path.file_name().and_then(|n| n.to_str()) else { return };
+        let archive_dir = archive_path.parent()
+            .unwrap_or(&self.current_dir)
+            .to_path_buf();
+        let archive_mtime = crate::neko_dir::file_mtime(&archive_path);
+        crate::spread_state::write_bookmark_position(&db, &archive_dir, filename, &entry_name, archive_mtime);
+    }
+
     /// ビューアを開く（ページキャッシュクリア・ファイルキャッシュ投入・フォーカス要求を一括処理）
     pub(super) fn open_viewer(&mut self, mut state: ViewerState) {
         self.flush_current_sort_if_changed();
+        self.flush_current_bookmark_if_enabled();
         let path = state.archive_path().clone();
         self.failed_loads.retain(|key| key.archive_path != path);
         let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("");

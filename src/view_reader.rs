@@ -740,6 +740,15 @@ impl ViewerState {
         self.spread_base + self.offset.value()
     }
 
+    /// 現在表示中の先頭ページのentry_name（しおり保存用）。範囲外（先頭仮想ページ等）は None。
+    pub fn current_bookmark_entry_name(&self) -> Option<&str> {
+        let idx = self.spread_lo();
+        if idx < 0 {
+            return None;
+        }
+        self.entries.get(idx as usize).map(|e| e.entry_name.as_str())
+    }
+
     /// オフセットがずれているか（UI表示用）
     pub fn can_shift_forward(&self) -> bool {
         self.offset.can_advance()
