@@ -554,13 +554,9 @@ impl NekoviewApp {
             self.handle_bookmark_save_action(action);
         }
 
-        if output.open_favorite_dialog {
-            self.open_favorite_detail_dialog();
+        if output.favorite_add_requested {
+            self.handle_favorite_add_request();
         }
-        // 描画自体はエクスプローラー窓の ui() 側でのみ行う（memory_warning_open 等と同じ
-        // 「状態はどちらの窓のアクションからでもセットできるが、モーダル描画は単一窓に一本化する」
-        // 既存パターンに合わせる。ビューアー窓側でも呼ぶと、複数選択からの起動時にビューアー窓・
-        // エクスプローラー窓の両方でダイアログが二重に描画されてしまう）。
 
         let had_nav = output.nav != ViewerNav::None;
         if output.close_requested {
@@ -864,6 +860,52 @@ impl NekoviewApp {
         }
         drop(viewer_guard);
         self.refresh_saved_archive_settings(&archive_path);
+    }
+
+    /// 右クリックメニュー「お気に入りに追加」を処理する。フォルダ選択等は行わず、
+    /// 未整理のお気に入りへの新規登録のみを行うワンアクション。既に何らかの形で
+    /// （未整理・フォルダ割当済みいずれでも）登録済みの場合は何もしない。
+    /// フォルダ選択・詳細設定はエクスプローラー部のお気に入り詳細ダイアログに委ねる。
+    /// 結果はビューアー窓のトーストで通知する。
+    fn handle_favorite_add_request(&mut self) {
+        let t = i18n::t();
+        let mut viewer_guard = self.viewer.lock().unwrap();
+        let Some(viewer) = viewer_guard.as_mut() else { return };
+        let archive_path = viewer.archive_path().clone();
+        let Some(filename) = archive_path.file_name().and_then(|n| n.to_str()) else {
+            viewer.set_toast(t.favorite_quick_add_toast_error().to_string());
+            return;
+        };
+        let archive_dir = archive_path.parent()
+            .unwrap_or(&self.current_dir)
+            .to_path_buf();
+        let Some(db) = self.spread_db.clone() else {
+            viewer.set_toast(t.favorite_quick_add_toast_error().to_string());
+            return;
+        };
+
+        if crate::favorites::get_membership(&db, &archive_dir, filename).is_some() {
+            viewer.set_toast(t.favorite_quick_add_toast_already().to_string());
+            return;
+        }
+        crate::favorites::set_membership(&db, &archive_dir, filename, &[]);
+        viewer.set_toast(t.favorite_quick_add_toast_success().to_string());
+        drop(viewer_guard);
+
+        // commit_favorite_detail_dialog と同じ後処理（お気に入りサムネ表示・
+        // お気に入り一覧の追従・スティッキーソートの反映）をなぞる。
+        if archive_dir == self.current_dir {
+            self.favorite_states.insert(filename.to_string(), Vec::new());
+        }
+        if let Some(selection) = self.viewing_favorites {
+            self.enter_favorite_view(selection);
+        } else {
+            if self.viewing_search.is_some() {
+                self.cross_view_favorite_markers =
+                    crate::favorites::memberships_for_paths(&db, &self.archives);
+            }
+            self.sort_archives();
+        }
     }
 
     /// 登録サムネイルページの永続化だけを行う。画像キャッシュの差し替えは次フェーズで接続する。

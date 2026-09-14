@@ -435,8 +435,8 @@ pub struct ViewerState {
     /// DBから復元した登録サムネイル。Noneはデフォルト。
     saved_thumbnail_selection: Option<crate::spread_state::ThumbnailSelection>,
     pending_thumbnail_action: Option<crate::controller::ThumbnailSaveAction>,
-    /// 右クリックメニュー「お気に入り詳細設定」が押されたか（1フレームで消費）
-    pending_open_favorite_dialog: bool,
+    /// 右クリックメニュー「お気に入りに追加」が押されたか（1フレームで消費）
+    pending_favorite_add: bool,
     /// 右クリックメニュー「ファイル詳細」が押されたか（1フレームで消費）
     pending_open_file_detail: bool,
     /// 右クリックメニュー「スライドショー」チェックボックスが操作されたか（1フレームで消費）
@@ -659,7 +659,7 @@ impl ViewerState {
             thumbnail_context_entry: None,
             saved_thumbnail_selection: None,
             pending_thumbnail_action: None,
-            pending_open_favorite_dialog: false,
+            pending_favorite_add: false,
             pending_open_file_detail: false,
             pending_slideshow_toggle: false,
             file_detail_dialog: None,
@@ -733,7 +733,7 @@ impl ViewerState {
             thumbnail_context_entry: None,
             saved_thumbnail_selection: None,
             pending_thumbnail_action: None,
-            pending_open_favorite_dialog: false,
+            pending_favorite_add: false,
             pending_open_file_detail: false,
             pending_slideshow_toggle: false,
             file_detail_dialog: None,
@@ -1073,9 +1073,9 @@ impl ViewerState {
         self.pending_spread_action.take()
     }
 
-    /// 右クリックメニュー「お気に入り詳細設定」の要求を取り出す（1フレームで消費）
-    pub fn take_favorite_dialog_request(&mut self) -> bool {
-        std::mem::take(&mut self.pending_open_favorite_dialog)
+    /// 右クリックメニュー「お気に入りに追加」の要求を取り出す（1フレームで消費）
+    pub fn take_favorite_add_request(&mut self) -> bool {
+        std::mem::take(&mut self.pending_favorite_add)
     }
 
     /// ツールバーの翻訳トグルボタンが押された要求を取り出す（1フレームで消費）
@@ -1279,7 +1279,7 @@ impl ViewerState {
         let ctx = ui.ctx().clone();
         let viewer_style = ui.style().clone();
         if !self.open || self.entries.is_empty() {
-            return ViewerOutput { nav: ViewerNav::None, close_requested: !self.open, save_slots: None, spread_save_action: None, sort_save_action: None, thumbnail_save_action: None, bookmark_save_action: None, open_favorite_dialog: false, toggle_translate_window: false };
+            return ViewerOutput { nav: ViewerNav::None, close_requested: !self.open, save_slots: None, spread_save_action: None, sort_save_action: None, thumbnail_save_action: None, bookmark_save_action: None, favorite_add_requested: false, toggle_translate_window: false };
         }
 
         // ── フレーム入力を一括収集（ctx.input はこの1回のみ）────────────────
@@ -1458,11 +1458,11 @@ impl ViewerState {
         let sort_save_action = self.take_sort_action();
         let thumbnail_save_action = self.take_thumbnail_action();
         let bookmark_save_action = self.take_bookmark_action();
-        let open_favorite_dialog = self.take_favorite_dialog_request();
+        let favorite_add_requested = self.take_favorite_add_request();
         let toggle_translate_window = self.take_translate_toggle_request();
         self.maybe_open_file_detail_dialog();
         self.draw_file_detail_dialog(&ctx);
-        ViewerOutput { nav, close_requested: close_self, save_slots, spread_save_action, sort_save_action, thumbnail_save_action, bookmark_save_action, open_favorite_dialog, toggle_translate_window }
+        ViewerOutput { nav, close_requested: close_self, save_slots, spread_save_action, sort_save_action, thumbnail_save_action, bookmark_save_action, favorite_add_requested, toggle_translate_window }
     }
 
     /// ビューアーを開いた直後（初回フレーム）に conf 既定スロットを一度だけ適用する。
@@ -1755,8 +1755,13 @@ impl ViewerState {
                 // ── スライドアニメーション ────────────────────────────────────
                 let full_rect = egui::Rect::from_min_size(origin, avail);
                 let resp = ui.allocate_rect(full_rect, egui::Sense::click());
-                if resp.double_clicked() { double_clicked = true; }
-                if resp.clicked() && !resp.double_clicked() { single_clicked = true; }
+                // コンテキストメニュー表示中の外側クリックはメニューを閉じる操作として
+                // 消費し、ページ送り（single/double_clicked）へは伝播させない。
+                let menu_open = resp.context_menu_opened();
+                if !menu_open {
+                    if resp.double_clicked() { double_clicked = true; }
+                    if resp.clicked() && !resp.double_clicked() { single_clicked = true; }
+                }
                 if resp.secondary_clicked() {
                     let target = match frame.page_mode {
                         PageMode::Single => Some(self.spread_lo()),
@@ -1804,10 +1809,12 @@ impl ViewerState {
                 let sort_action = &mut self.pending_sort_action;
                 let bookmark_action = &mut self.pending_bookmark_action;
                 let thumbnail_action = &mut self.pending_thumbnail_action;
-                let open_favorite_dialog = &mut self.pending_open_favorite_dialog;
+                let favorite_add = &mut self.pending_favorite_add;
                 let open_file_detail = &mut self.pending_open_file_detail;
                 let slideshow_toggle = &mut self.pending_slideshow_toggle;
-                resp.context_menu(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort, sort_action, bookmark_toggle_enabled, bookmark_toggle_on, bookmark_action, thumbnail_target, saved_thumbnail_selection, saved_thumbnail_display.as_deref(), thumbnail_action, open_favorite_dialog, open_file_detail, slideshow_active, slideshow_toggle));
+                egui::Popup::context_menu(&resp)
+                    .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                    .show(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort, sort_action, bookmark_toggle_enabled, bookmark_toggle_on, bookmark_action, thumbnail_target, saved_thumbnail_selection, saved_thumbnail_display.as_deref(), thumbnail_action, favorite_add, open_file_detail, slideshow_active, slideshow_toggle));
 
                 let painter = ui.painter().with_clip_rect(clip);
 
@@ -2822,7 +2829,7 @@ impl ViewerState {
         saved_thumbnail_selection: Option<&crate::spread_state::ThumbnailSelection>,
         saved_thumbnail_display: Option<&str>,
         thumbnail_action: &mut Option<crate::controller::ThumbnailSaveAction>,
-        open_favorite_dialog: &mut bool,
+        favorite_add: &mut bool,
         open_file_detail: &mut bool,
         slideshow_active: bool,
         slideshow_toggle: &mut bool,
@@ -2836,13 +2843,11 @@ impl ViewerState {
                 } else {
                     crate::controller::SpreadSaveAction::Disable
                 });
-                ui.close();
             }
         });
         ui.add_enabled_ui(overwrite_enabled, |ui| {
             if ui.button(t.spread_save_overwrite_label()).clicked() {
                 *action = Some(crate::controller::SpreadSaveAction::Overwrite);
-                ui.close();
             }
         });
         let mut sort_toggle_on = sort_toggle_on_init;
@@ -2853,7 +2858,6 @@ impl ViewerState {
                 } else {
                     crate::controller::SortSaveAction::Disable
                 });
-                ui.close();
             }
         });
         let sort_text = Self::sort_setting_text(current_sort.0, current_sort.1, t);
@@ -2871,7 +2875,6 @@ impl ViewerState {
                 } else {
                     crate::controller::BookmarkSaveAction::Disable
                 });
-                ui.close();
             }
         });
         // 3項目は排他的なプリセット。チェック状態は右クリックしたページではなく、
@@ -2897,7 +2900,6 @@ impl ViewerState {
                     } else {
                         Some(crate::controller::ThumbnailSaveAction::Disable)
                     };
-                    ui.close();
                 }
             });
         };
@@ -2954,8 +2956,8 @@ impl ViewerState {
             ui.close();
         }
         ui.separator();
-        if ui.button(t.favorite_detail_menu()).clicked() {
-            *open_favorite_dialog = true;
+        if ui.button(t.favorite_quick_add_label()).clicked() {
+            *favorite_add = true;
             ui.close();
         }
         if ui.button(t.file_detail_menu()).clicked() {
@@ -3030,8 +3032,11 @@ impl ViewerState {
                     } else {
                         Self::paint_texture_rotated_at(ui.painter(), tex, bbox.center(), 1.0, angle_deg);
                     }
-                    if resp.double_clicked() { *double_clicked = true; }
-                    if resp.clicked() && !resp.double_clicked() { *single_clicked = true; }
+                    let menu_open = resp.context_menu_opened();
+                    if !menu_open {
+                        if resp.double_clicked() { *double_clicked = true; }
+                        if resp.clicked() && !resp.double_clicked() { *single_clicked = true; }
+                    }
                     if resp.secondary_clicked() {
                         self.set_thumbnail_context(Some(self.spread_lo()));
                     }
@@ -3043,10 +3048,12 @@ impl ViewerState {
                     let sort_action = &mut self.pending_sort_action;
                 let bookmark_action = &mut self.pending_bookmark_action;
                     let thumbnail_action = &mut self.pending_thumbnail_action;
-                    let open_favorite_dialog = &mut self.pending_open_favorite_dialog;
+                    let favorite_add = &mut self.pending_favorite_add;
                     let open_file_detail = &mut self.pending_open_file_detail;
                     let slideshow_toggle = &mut self.pending_slideshow_toggle;
-                    resp.context_menu(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort, sort_action, bookmark_toggle_enabled, bookmark_toggle_on, bookmark_action, thumbnail_target, saved_thumbnail_selection, saved_thumbnail_display.as_deref(), thumbnail_action, open_favorite_dialog, open_file_detail, slideshow_active, slideshow_toggle));
+                    egui::Popup::context_menu(&resp)
+                    .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                    .show(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort, sort_action, bookmark_toggle_enabled, bookmark_toggle_on, bookmark_action, thumbnail_target, saved_thumbnail_selection, saved_thumbnail_display.as_deref(), thumbnail_action, favorite_add, open_file_detail, slideshow_active, slideshow_toggle));
                 });
             } else {
                 let available = ui.available_size();
@@ -3058,8 +3065,11 @@ impl ViewerState {
                 let primary_on_image = resp
                     .interact_pointer_pos()
                     .is_some_and(|pos| fit.contains(pos));
-                if primary_on_image && resp.double_clicked() { *double_clicked = true; }
-                if primary_on_image && resp.clicked() && !resp.double_clicked() { *single_clicked = true; }
+                let menu_open = resp.context_menu_opened();
+                if !menu_open {
+                    if primary_on_image && resp.double_clicked() { *double_clicked = true; }
+                    if primary_on_image && resp.clicked() && !resp.double_clicked() { *single_clicked = true; }
+                }
                 if resp.secondary_clicked() {
                     self.set_thumbnail_context(Some(self.spread_lo()));
                 }
@@ -3071,10 +3081,12 @@ impl ViewerState {
                 let sort_action = &mut self.pending_sort_action;
                 let bookmark_action = &mut self.pending_bookmark_action;
                 let thumbnail_action = &mut self.pending_thumbnail_action;
-                let open_favorite_dialog = &mut self.pending_open_favorite_dialog;
+                let favorite_add = &mut self.pending_favorite_add;
                 let open_file_detail = &mut self.pending_open_file_detail;
                 let slideshow_toggle = &mut self.pending_slideshow_toggle;
-                resp.context_menu(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort, sort_action, bookmark_toggle_enabled, bookmark_toggle_on, bookmark_action, thumbnail_target, saved_thumbnail_selection, saved_thumbnail_display.as_deref(), thumbnail_action, open_favorite_dialog, open_file_detail, slideshow_active, slideshow_toggle));
+                egui::Popup::context_menu(&resp)
+                    .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                    .show(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort, sort_action, bookmark_toggle_enabled, bookmark_toggle_on, bookmark_action, thumbnail_target, saved_thumbnail_selection, saved_thumbnail_display.as_deref(), thumbnail_action, favorite_add, open_file_detail, slideshow_active, slideshow_toggle));
             }
         } else {
             let rect = egui::Rect::from_min_size(ui.cursor().left_top(), ui.available_size());
@@ -3091,10 +3103,12 @@ impl ViewerState {
             let sort_action = &mut self.pending_sort_action;
                 let bookmark_action = &mut self.pending_bookmark_action;
             let thumbnail_action = &mut self.pending_thumbnail_action;
-            let open_favorite_dialog = &mut self.pending_open_favorite_dialog;
+            let favorite_add = &mut self.pending_favorite_add;
             let open_file_detail = &mut self.pending_open_file_detail;
             let slideshow_toggle = &mut self.pending_slideshow_toggle;
-            resp.context_menu(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort, sort_action, bookmark_toggle_enabled, bookmark_toggle_on, bookmark_action, thumbnail_target, saved_thumbnail_selection, saved_thumbnail_display.as_deref(), thumbnail_action, open_favorite_dialog, open_file_detail, slideshow_active, slideshow_toggle));
+            egui::Popup::context_menu(&resp)
+                    .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                    .show(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort, sort_action, bookmark_toggle_enabled, bookmark_toggle_on, bookmark_action, thumbnail_target, saved_thumbnail_selection, saved_thumbnail_display.as_deref(), thumbnail_action, favorite_add, open_file_detail, slideshow_active, slideshow_toggle));
         }
     }
 
@@ -3137,8 +3151,11 @@ impl ViewerState {
 
         let full_rect = egui::Rect::from_min_size(origin, available);
         let resp = ui.allocate_rect(full_rect, egui::Sense::click());
-        if resp.double_clicked() { *double_clicked = true; }
-        if resp.clicked() && !resp.double_clicked() { *single_clicked = true; }
+        let menu_open = resp.context_menu_opened();
+        if !menu_open {
+            if resp.double_clicked() { *double_clicked = true; }
+            if resp.clicked() && !resp.double_clicked() { *single_clicked = true; }
+        }
         if resp.secondary_clicked() {
             if let Some(pos) = resp.interact_pointer_pos() {
                 let index = self.thumbnail_target_for_spread(
@@ -3155,10 +3172,12 @@ impl ViewerState {
         let sort_action = &mut self.pending_sort_action;
                 let bookmark_action = &mut self.pending_bookmark_action;
         let thumbnail_action = &mut self.pending_thumbnail_action;
-        let open_favorite_dialog = &mut self.pending_open_favorite_dialog;
+        let favorite_add = &mut self.pending_favorite_add;
         let open_file_detail = &mut self.pending_open_file_detail;
         let slideshow_toggle = &mut self.pending_slideshow_toggle;
-        resp.context_menu(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort, sort_action, bookmark_toggle_enabled, bookmark_toggle_on, bookmark_action, thumbnail_target, saved_thumbnail_selection, saved_thumbnail_display.as_deref(), thumbnail_action, open_favorite_dialog, open_file_detail, slideshow_active, slideshow_toggle));
+        egui::Popup::context_menu(&resp)
+                    .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                    .show(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort, sort_action, bookmark_toggle_enabled, bookmark_toggle_on, bookmark_action, thumbnail_target, saved_thumbnail_selection, saved_thumbnail_display.as_deref(), thumbnail_action, favorite_add, open_file_detail, slideshow_active, slideshow_toggle));
 
         if angle_deg == 0 {
             let (rect_l, rect_r) = Self::spread_rects(available, origin, tex_left, tex_right, monitor);
@@ -3233,8 +3252,11 @@ impl ViewerState {
             Self::paint_page(painter, tex_left,  rect_l);
             Self::paint_page(painter, tex_right, rect_r);
 
-            if resp.double_clicked() { *double_clicked = true; }
-            if resp.clicked() && !resp.double_clicked() { *single_clicked = true; }
+            let menu_open = resp.context_menu_opened();
+            if !menu_open {
+                if resp.double_clicked() { *double_clicked = true; }
+                if resp.clicked() && !resp.double_clicked() { *single_clicked = true; }
+            }
             if resp.secondary_clicked() {
                 if let Some(pos) = resp.interact_pointer_pos() {
                     let index = self.thumbnail_target_from_rects(pos, rect_l, rect_r, left_index, right_index);
@@ -3249,10 +3271,12 @@ impl ViewerState {
             let sort_action = &mut self.pending_sort_action;
                 let bookmark_action = &mut self.pending_bookmark_action;
             let thumbnail_action = &mut self.pending_thumbnail_action;
-            let open_favorite_dialog = &mut self.pending_open_favorite_dialog;
+            let favorite_add = &mut self.pending_favorite_add;
             let open_file_detail = &mut self.pending_open_file_detail;
             let slideshow_toggle = &mut self.pending_slideshow_toggle;
-            resp.context_menu(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort, sort_action, bookmark_toggle_enabled, bookmark_toggle_on, bookmark_action, thumbnail_target, saved_thumbnail_selection, saved_thumbnail_display.as_deref(), thumbnail_action, open_favorite_dialog, open_file_detail, slideshow_active, slideshow_toggle));
+            egui::Popup::context_menu(&resp)
+                    .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                    .show(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort, sort_action, bookmark_toggle_enabled, bookmark_toggle_on, bookmark_action, thumbnail_target, saved_thumbnail_selection, saved_thumbnail_display.as_deref(), thumbnail_action, favorite_add, open_file_detail, slideshow_active, slideshow_toggle));
         });
     }
 

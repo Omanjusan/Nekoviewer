@@ -69,8 +69,8 @@ pub struct ViewerOutput {
     pub thumbnail_save_action: Option<ThumbnailSaveAction>,
     /// Some(_) のとき app 側でしおりの有効/無効をDBへ反映する。
     pub bookmark_save_action: Option<BookmarkSaveAction>,
-    /// true のとき app 側でお気に入り詳細設定ダイアログを開く
-    pub open_favorite_dialog: bool,
+    /// true のとき app 側で現在のアーカイブを未整理のお気に入りへ追加する
+    pub favorite_add_requested: bool,
     /// true のとき app 側でOCR/翻訳子ウィンドウの開閉をトグルする
     pub toggle_translate_window: bool,
 }

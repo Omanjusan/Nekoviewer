@@ -356,6 +356,45 @@ impl Lang {
         }
     }
 
+    /// ビューアー右クリックメニュー「お気に入りに追加」。ダイアログを介さず、
+    /// 現在のアーカイブ（生ファイル表示中はそのファイル自身）を未整理のお気に入りへ
+    /// 即登録するワンアクション項目。フォルダ選択等の詳細設定はエクスプローラー部の
+    /// [`favorite_detail_menu`](Self::favorite_detail_menu) に委ねる。
+    pub fn favorite_quick_add_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "お気に入りに追加",
+            Lang::English  => "Add to Favorites",
+            Lang::Chinese  => "添加到收藏",
+        }
+    }
+
+    /// favorite_quick_add_label 実行後のトースト: 未整理のお気に入りへ新規登録できた。
+    pub fn favorite_quick_add_toast_success(self) -> &'static str {
+        match self {
+            Lang::Japanese => "現在のアーカイブを未分類のお気に入りフォルダに追加しました",
+            Lang::English  => "Added the current archive to the unsorted favorites folder",
+            Lang::Chinese  => "已将当前压缩包添加到未分类收藏夹",
+        }
+    }
+
+    /// favorite_quick_add_label 実行時のトースト: 既にお気に入り登録済み（フォルダ割当済み含む）だった。
+    pub fn favorite_quick_add_toast_already(self) -> &'static str {
+        match self {
+            Lang::Japanese => "既にお気に入りフォルダに登録済みです",
+            Lang::English  => "Already registered in a favorites folder",
+            Lang::Chinese  => "已在收藏夹中登记",
+        }
+    }
+
+    /// favorite_quick_add_label 実行時のトースト: DB未接続等で登録できなかった。
+    pub fn favorite_quick_add_toast_error(self) -> &'static str {
+        match self {
+            Lang::Japanese => "お気に入り登録に失敗しました",
+            Lang::English  => "Failed to add to favorites",
+            Lang::Chinese  => "添加收藏失败",
+        }
+    }
+
     pub fn favorite_detail_menu(self) -> &'static str {
         match self {
             Lang::Japanese => "お気に入り詳細設定",
