@@ -123,8 +123,12 @@ pub(crate) struct SettingsDraft {
     /// その他タブの起動時フォルダ設定。
     startup_use_last_dir: bool,
     startup_fixed_dir: String,
-    /// 静止画設定タブ: 画像処理フィルター一式（処理順のD&D並べ替えは別フェーズで対応）。
+    /// 静止画設定タブ: 画像処理フィルター一式。他タブと異なり[反映]を待たず、値が変化した
+    /// 時刻から一定時間後に自動でviewer_cfgへ書き込み・永続化する（即時セーブ方式）。
     image_filter: ImageFilterSettings,
+    /// image_filterが最後に変化した時刻。draw_settings_dialogがこれを見てデバウンス発火する。
+    /// Noneは「直近の変更が既に反映済み・保留なし」。
+    image_filter_last_changed: Option<std::time::Instant>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -253,6 +257,7 @@ impl SettingsDraft {
             startup_fixed_dir: config.startup.fixed_dir.as_deref()
                 .map(|p| p.to_string_lossy().to_string()).unwrap_or_default(),
             image_filter: viewer_cfg.image_filter,
+            image_filter_last_changed: None,
         }
     }
 
@@ -1281,6 +1286,24 @@ impl NekoviewApp {
         self.settings_open = true;
     }
 
+    /// 静止画設定タブだけの即時セーブ方式: image_filterの変更から一定時間(デバウンス)
+    /// 経過したら、[反映]ボタンを待たずviewer_cfgへ直接書き込み・永続化する。
+    /// ドラッグ中の連続した値変化のたびに重い再デコードが走るのを防ぎつつ、
+    /// 操作が止まった時点でその値がそのまま確定値になる（間違えても各スライダーは
+    /// 既定値に戻せるため、ロールバックUIは持たない）。
+    fn poll_image_filter_debounce(&mut self, ctx: &egui::Context) {
+        let Some(changed_at) = self.settings_draft.image_filter_last_changed else { return };
+        let debounce = std::time::Duration::from_millis(crate::image_filter::FILTER_PREVIEW_DEBOUNCE_MS);
+        let elapsed = changed_at.elapsed();
+        if elapsed >= debounce {
+            self.viewer_cfg.lock().unwrap().image_filter = self.settings_draft.image_filter;
+            self.persist_state();
+            self.settings_draft.image_filter_last_changed = None;
+        } else {
+            ctx.request_repaint_after(debounce - elapsed);
+        }
+    }
+
     /// 設定ダイアログ本体。`egui::Modal` はこの `ctx`（エクスプローラー窓）内の入力を
     /// 自動的にブロックする。ビューアー窓側は別 Context のため、`render_viewer` 側で
     /// 同様の Modal を出して操作を止める（`settings_is_open()` 参照）。
@@ -1290,6 +1313,7 @@ impl NekoviewApp {
         if !self.settings_open {
             return;
         }
+        self.poll_image_filter_debounce(ctx);
         let mut close = false;
         let mut apply = false;
         egui::Modal::new(egui::Id::new("settings_dialog")).show(ctx, |ui| {
@@ -1395,6 +1419,16 @@ impl NekoviewApp {
     }
 
     fn draw_settings_tab_static(&mut self, ui: &mut egui::Ui) {
+        let before = self.settings_draft.image_filter;
+        self.draw_settings_tab_static_inner(ui);
+        if self.settings_draft.image_filter != before {
+            self.settings_draft.image_filter_last_changed = Some(std::time::Instant::now());
+        }
+    }
+
+    /// draw_settings_tab_static本体。即時セーブの変更検知は呼び出し元(draw_settings_tab_static)
+    /// が前後の値を比較して行うため、ここでは通常通りdraftを編集するだけでよい。
+    fn draw_settings_tab_static_inner(&mut self, ui: &mut egui::Ui) {
         let draft = &mut self.settings_draft;
 
         ui.label(i18n::t().settings_image_filter_color_section_label());
