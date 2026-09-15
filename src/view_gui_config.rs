@@ -1429,6 +1429,9 @@ impl NekoviewApp {
     /// draw_settings_tab_static本体。即時セーブの変更検知は呼び出し元(draw_settings_tab_static)
     /// が前後の値を比較して行うため、ここでは通常通りdraftを編集するだけでよい。
     fn draw_settings_tab_static_inner(&mut self, ui: &mut egui::Ui) {
+        ui.colored_label(egui::Color32::from_rgb(220, 160, 40), i18n::t().settings_image_filter_instant_save_notice());
+        ui.separator();
+
         let draft = &mut self.settings_draft;
 
         ui.label(i18n::t().settings_image_filter_color_section_label());

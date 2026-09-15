@@ -2125,6 +2125,14 @@ impl Lang {
         }
     }
 
+    pub fn settings_image_filter_instant_save_notice(self) -> &'static str {
+        match self {
+            Lang::Japanese => "このタブの変更は即時セーブされます",
+            Lang::English  => "Changes in this tab are saved instantly",
+            Lang::Chinese  => "此标签页的更改会即时保存",
+        }
+    }
+
     pub fn settings_image_filter_color_section_label(self) -> &'static str {
         match self {
             Lang::Japanese => "■ 色系統フィルター",
