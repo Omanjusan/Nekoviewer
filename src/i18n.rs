@@ -2229,6 +2229,30 @@ impl Lang {
         }
     }
 
+    pub fn settings_image_filter_order_section_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "■ 処理順",
+            Lang::English  => "■ Processing order",
+            Lang::Chinese  => "■ 处理顺序",
+        }
+    }
+
+    pub fn settings_image_filter_order_explain(self) -> &'static str {
+        match self {
+            Lang::Japanese => "カードをドラッグして並べ替える。上から順に適用される。",
+            Lang::English  => "Drag the cards to reorder. Applied from top to bottom.",
+            Lang::Chinese  => "拖动卡片调整顺序，按从上到下的顺序应用。",
+        }
+    }
+
+    pub fn settings_image_filter_stage_color_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "色系統フィルター",
+            Lang::English  => "Color filter",
+            Lang::Chinese  => "色彩滤镜",
+        }
+    }
+
     pub fn settings_version_label(self) -> &'static str {
         match self {
             Lang::Japanese => "バージョン",

@@ -14,7 +14,8 @@ use crate::gui_config::{
 use crate::i18n;
 use crate::image_filter::{
     BLC_PRESET_TEMPS_K, BLC_TEMP_CEILING_K, BLC_TEMP_FLOOR_K, BRIGHTNESS_CEILING, BRIGHTNESS_FLOOR,
-    ColorFilterMode, GAMMA_CEILING, GAMMA_FLOOR, ImageFilterSettings, SHARPNESS_CEILING, SHARPNESS_FLOOR,
+    ColorFilterMode, FILTER_STAGE_COUNT, FilterStage, GAMMA_CEILING, GAMMA_FLOOR, ImageFilterSettings,
+    SHARPNESS_CEILING, SHARPNESS_FLOOR,
 };
 use crate::keymap::{Keymap, ReaderAction, ExplorerAction, KeyCombo, MouseCombo, MouseAction, mouse_action_name};
 use crate::translate::{OVERLAY_WIDTH_CEILING, OVERLAY_WIDTH_FLOOR, TranslateConfig};
@@ -311,6 +312,73 @@ impl SettingsDraft {
         config.keymap = self.keymap.clone();
 
         viewer_cfg.image_filter = self.image_filter;
+    }
+}
+
+/// `from`位置のカードを`to`位置のカードへ割り込ませ、間の要素を1つずつ押し出す。
+/// `from == to`は無変化。ドロップ先カードの「そのカードの位置に割り込む」動作
+/// （例: [1,2,3,4]で1を3の位置へドロップ→[2,3,1,4]、3を1の位置へドロップ→[3,1,2,4]）。
+fn reorder_by_drop(order: [FilterStage; FILTER_STAGE_COUNT], from: usize, to: usize) -> [FilterStage; FILTER_STAGE_COUNT] {
+    if from == to {
+        return order;
+    }
+    let mut v: Vec<FilterStage> = order.to_vec();
+    let item = v.remove(from);
+    v.insert(to.min(v.len()), item);
+    v.try_into().unwrap_or(order)
+}
+
+fn filter_stage_label(stage: FilterStage) -> &'static str {
+    match stage {
+        FilterStage::ColorFilter => i18n::t().settings_image_filter_stage_color_label(),
+        FilterStage::Gamma       => i18n::t().settings_image_filter_gamma_label(),
+        FilterStage::Brightness  => i18n::t().settings_image_filter_brightness_label(),
+        FilterStage::Sharpness   => i18n::t().settings_image_filter_sharpness_label(),
+    }
+}
+
+/// 画像処理フィルターの処理順カードをD&Dで並べ替えるUI。デフォルト順でカードを並べておき、
+/// ドラッグしたカードをドロップ先カードの位置へ割り込ませる（egui 0.35標準のdnd_drag_source/
+/// dnd_hover_payload/dnd_release_payloadを使用）。
+fn draw_filter_order_cards(ui: &mut egui::Ui, order: &mut [FilterStage; FILTER_STAGE_COUNT]) {
+    let mut drop_target: Option<(usize, usize)> = None;
+
+    ui.vertical(|ui| {
+        for (idx, &stage) in order.iter().enumerate() {
+            let item_id = egui::Id::new("image_filter_order_card").with(idx);
+            let frame = egui::Frame::group(ui.style());
+
+            let dragging_this = ui.ctx().is_being_dragged(item_id);
+            let response = ui
+                .dnd_drag_source(item_id, idx, |ui| {
+                    frame.show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(format!("{}.", idx + 1));
+                            ui.label(filter_stage_label(stage));
+                        });
+                    });
+                })
+                .response;
+
+            if !dragging_this {
+                if let Some(dragged_idx) = response.dnd_hover_payload::<usize>() {
+                    if *dragged_idx != idx {
+                        ui.painter().hline(
+                            response.rect.x_range(),
+                            response.rect.bottom(),
+                            ui.visuals().widgets.active.bg_stroke,
+                        );
+                    }
+                }
+                if let Some(dragged_idx) = response.dnd_release_payload::<usize>() {
+                    drop_target = Some((*dragged_idx, idx));
+                }
+            }
+        }
+    });
+
+    if let Some((from, to)) = drop_target {
+        *order = reorder_by_drop(*order, from, to);
     }
 }
 
@@ -1376,6 +1444,11 @@ impl NekoviewApp {
                 ui.add(egui::Slider::new(&mut draft.image_filter.sharpness, SHARPNESS_FLOOR..=SHARPNESS_CEILING));
             });
         });
+
+        ui.separator();
+        ui.label(i18n::t().settings_image_filter_order_section_label());
+        ui.label(i18n::t().settings_image_filter_order_explain());
+        draw_filter_order_cards(ui, &mut draft.image_filter.filter_order);
     }
 
     /// 翻訳機能(実験的)タブ。ローカルAI(OpenAI互換API)のURL・モデル取得・翻訳/OCRモデル選択と、
@@ -1553,5 +1626,63 @@ impl NekoviewApp {
         ui.label(i18n::t().settings_startup_fixed_dir_label());
         ui.text_edit_singleline(&mut self.settings_draft.startup_fixed_dir);
         ui.label(i18n::t().settings_startup_fixed_dir_explain());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const ORDER: [FilterStage; FILTER_STAGE_COUNT] = [
+        FilterStage::ColorFilter,
+        FilterStage::Gamma,
+        FilterStage::Brightness,
+        FilterStage::Sharpness,
+    ];
+
+    #[test]
+    fn reorder_drop_on_next_card_swaps_adjacent() {
+        // [1,2,3,4]で1を2の位置へドロップ → [2,1,3,4]（隣接スワップ相当）
+        let result = reorder_by_drop(ORDER, 0, 1);
+        assert_eq!(result, [FilterStage::Gamma, FilterStage::ColorFilter, FilterStage::Brightness, FilterStage::Sharpness]);
+    }
+
+    #[test]
+    fn reorder_drop_forward_pushes_between_items_back() {
+        // [1,2,3,4]で1を3の位置へドロップ → [2,3,1,4]
+        let result = reorder_by_drop(ORDER, 0, 2);
+        assert_eq!(result, [FilterStage::Gamma, FilterStage::Brightness, FilterStage::ColorFilter, FilterStage::Sharpness]);
+    }
+
+    #[test]
+    fn reorder_drop_backward_pushes_between_items_forward() {
+        // [1,2,3,4]で3を1の位置へドロップ → [3,1,2,4]
+        let result = reorder_by_drop(ORDER, 2, 0);
+        assert_eq!(result, [FilterStage::Brightness, FilterStage::ColorFilter, FilterStage::Gamma, FilterStage::Sharpness]);
+    }
+
+    #[test]
+    fn reorder_drop_to_last_position() {
+        // [1,2,3,4]で1を4の位置へドロップ → [2,3,4,1]
+        let result = reorder_by_drop(ORDER, 0, 3);
+        assert_eq!(result, [FilterStage::Gamma, FilterStage::Brightness, FilterStage::Sharpness, FilterStage::ColorFilter]);
+    }
+
+    #[test]
+    fn reorder_drop_on_self_is_no_op() {
+        let result = reorder_by_drop(ORDER, 1, 1);
+        assert_eq!(result, ORDER);
+    }
+
+    #[test]
+    fn reorder_is_always_a_permutation() {
+        for from in 0..FILTER_STAGE_COUNT {
+            for to in 0..FILTER_STAGE_COUNT {
+                let result = reorder_by_drop(ORDER, from, to);
+                for stage in ORDER {
+                    assert_eq!(result.iter().filter(|&&s| s == stage).count(), 1);
+                }
+            }
+        }
     }
 }
