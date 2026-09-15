@@ -1878,7 +1878,7 @@ impl ViewerState {
             }
         });
 
-        // ── グリッド：GRID_COLS×GRID_ROWS。Phase1時点では全マス空欄固定 ─────
+        // ── グリッド：GRID_COLS×GRID_ROWS。空欄マスは右クリックでToggle型を登録する ──
         let slot = self.tool_palette.slot_size_px();
         let grid_origin = rect.min + egui::vec2(Self::TOOL_PALETTE_PAD, Self::TOOL_PALETTE_HEADER_H + Self::TOOL_PALETTE_PAD);
         for row in 0..crate::tool_palette::GRID_ROWS {
@@ -1889,15 +1889,65 @@ impl ViewerState {
                     row as f32 * (slot + Self::TOOL_PALETTE_GAP),
                 );
                 let slot_rect = egui::Rect::from_min_size(slot_min, egui::vec2(slot, slot));
-                let _slot_resp = child
+                let content = self.tool_palette.slots[idx];
+                let slot_resp = child
                     .interact(slot_rect, child.id().with(("tp_slot", idx)), egui::Sense::click())
-                    .on_hover_text("空欄（右クリックで登録）");
+                    .on_hover_text(Self::tool_palette_slot_hover_text(content));
+
+                egui::Popup::context_menu(&slot_resp)
+                    .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                    .show(|ui| Self::draw_tool_palette_slot_menu(ui, &mut self.tool_palette.slots[idx]));
+
                 child.painter().rect_stroke(
                     slot_rect,
                     4.0,
                     egui::Stroke::new(1.0, egui::Color32::from_white_alpha(60)),
                     egui::StrokeKind::Inside,
                 );
+                if let crate::tool_palette::PaletteSlotContent::Toggle(kind) = content {
+                    let def = crate::tool_palette::find_toggle_def(kind);
+                    let font_size = (slot * 0.28).clamp(8.0, 14.0);
+                    let galley = child.painter().layout_no_wrap(
+                        def.label.to_string(),
+                        egui::FontId::proportional(font_size),
+                        egui::Color32::WHITE,
+                    );
+                    let text_pos = slot_rect.center() - galley.size() / 2.0;
+                    child.painter().with_clip_rect(slot_rect).galley(text_pos, galley, egui::Color32::WHITE);
+                }
+            }
+        }
+    }
+
+    /// ツールパレットのマスにマウスを乗せたときのヒント文言。
+    fn tool_palette_slot_hover_text(content: crate::tool_palette::PaletteSlotContent) -> String {
+        use crate::tool_palette::PaletteSlotContent;
+        match content {
+            PaletteSlotContent::Empty => "空欄（右クリックで登録）".to_string(),
+            PaletteSlotContent::Toggle(kind) => {
+                format!("{}（右クリックで変更）", crate::tool_palette::find_toggle_def(kind).label)
+            }
+            PaletteSlotContent::Dialog(kind) => {
+                format!("{}（右クリックで変更）", crate::tool_palette::create_dialog(kind).title())
+            }
+        }
+    }
+
+    /// マス右クリックの登録メニュー。TOGGLE_DEFS を走査して選択肢を並べる（データ駆動）。
+    /// Dialog型の登録はPhase4で追加する。
+    fn draw_tool_palette_slot_menu(ui: &mut egui::Ui, content: &mut crate::tool_palette::PaletteSlotContent) {
+        use crate::tool_palette::PaletteSlotContent;
+        ui.set_min_width(140.0);
+        if !matches!(content, PaletteSlotContent::Empty) {
+            if ui.button("空欄に戻す").clicked() {
+                *content = PaletteSlotContent::Empty;
+            }
+            ui.separator();
+        }
+        for def in crate::tool_palette::TOGGLE_DEFS {
+            let checked = matches!(*content, PaletteSlotContent::Toggle(k) if k == def.key);
+            if ui.selectable_label(checked, def.label).clicked() {
+                *content = PaletteSlotContent::Toggle(def.key);
             }
         }
     }
