@@ -470,6 +470,9 @@ pub struct ViewerState {
     /// tick_slideshow がページを送った直後だけ true。update_animation の変化検知で
     /// 「今回のページ変化はスライドショー自身によるものか」を判定するためのワンショットフラグ。
     slideshow_auto_advance_pending: bool,
+    /// ビューアー内ツールパレット（オーバーレイ）の状態。座標・LOCK・透過度・
+    /// 可視性・マス内容。Phase5で永続化するまでは実行時のみ・再起動でリセットされる。
+    tool_palette: crate::tool_palette::PaletteState,
 }
 
 impl ViewerState {
@@ -678,6 +681,7 @@ impl ViewerState {
             slideshow_active: false,
             slideshow_last_advance: Instant::now(),
             slideshow_auto_advance_pending: false,
+            tool_palette: crate::tool_palette::PaletteState::default(),
         }
     }
 
@@ -754,6 +758,7 @@ impl ViewerState {
             slideshow_active: false,
             slideshow_last_advance: Instant::now(),
             slideshow_auto_advance_pending: false,
+            tool_palette: crate::tool_palette::PaletteState::default(),
         }
     }
 
@@ -1746,6 +1751,157 @@ impl ViewerState {
         nav
     }
 
+    // ── ツールパレット：見た目のサイズ定数（Phase1: 5x2固定グリッド） ──────
+    const TOOL_PALETTE_GAP: f32 = 4.0;
+    const TOOL_PALETTE_HEADER_H: f32 = 22.0;
+    const TOOL_PALETTE_PAD: f32 = 6.0;
+    const TOOL_PALETTE_BTN_W: f32 = 28.0;
+    /// 透過度／サイズボタンの幅。数値を表示する通常時は広め、記号1文字だけの
+    /// compact時（最小マスサイズ選択時）は他ボタンと同じ幅まで縮める。
+    const TOOL_PALETTE_WIDE_BTN_W: f32 = Self::TOOL_PALETTE_BTN_W + 12.0;
+    const TOOL_PALETTE_DRAG_MIN_W: f32 = 16.0;
+
+    /// true = 最小マスサイズ選択中。ヒントで詳細値を見られる前提で、ヘッダーの
+    /// 透過度／サイズ表示を記号1文字だけに縮め、ヘッダー最小幅をさらに削る。
+    fn tool_palette_header_compact(&self) -> bool {
+        self.tool_palette.slot_size_idx == 0
+    }
+
+    fn tool_palette_header_min_w(&self) -> f32 {
+        let mid_w = if self.tool_palette_header_compact() {
+            Self::TOOL_PALETTE_BTN_W
+        } else {
+            Self::TOOL_PALETTE_WIDE_BTN_W
+        };
+        Self::TOOL_PALETTE_BTN_W * 2.0 + mid_w * 2.0 + Self::TOOL_PALETTE_DRAG_MIN_W
+    }
+
+    fn tool_palette_grid_size(&self) -> egui::Vec2 {
+        let cols = crate::tool_palette::GRID_COLS as f32;
+        let rows = crate::tool_palette::GRID_ROWS as f32;
+        let slot = self.tool_palette.slot_size_px();
+        let grid_w = Self::TOOL_PALETTE_PAD * 2.0 + cols * slot + (cols - 1.0) * Self::TOOL_PALETTE_GAP;
+        let grid_h = Self::TOOL_PALETTE_HEADER_H + Self::TOOL_PALETTE_PAD * 2.0 + rows * slot + (rows - 1.0) * Self::TOOL_PALETTE_GAP;
+        egui::vec2(grid_w.max(self.tool_palette_header_min_w()), grid_h)
+    }
+
+    /// ツールパレット全体のスクリーン矩形（非表示なら None）。viewport 内に収まるよう
+    /// 左上座標をクランプする（ドラッグで画面外に出た場合の保険）。
+    fn tool_palette_rect(&self, viewport: egui::Rect) -> Option<egui::Rect> {
+        if !self.tool_palette.visible {
+            return None;
+        }
+        let size = self.tool_palette_grid_size();
+        let max_x = (viewport.max.x - size.x).max(viewport.min.x);
+        let max_y = (viewport.max.y - size.y).max(viewport.min.y);
+        let min_x = self.tool_palette.pos.0.clamp(viewport.min.x, max_x);
+        let min_y = self.tool_palette.pos.1.clamp(viewport.min.y, max_y);
+        Some(egui::Rect::from_min_size(egui::pos2(min_x, min_y), size))
+    }
+
+    /// ツールパレットのオーバーレイ本体を描画する。子Ui＋Painter直描き方式
+    /// （thumbbar_overlayと同じ流儀）。マスの登録内容の描画・実行はPhase2/3で追加する。
+    fn draw_tool_palette(&mut self, ui: &mut egui::Ui, rect: egui::Rect) {
+        let bg_alpha = (self.tool_palette.opacity_pct as f32 / 100.0 * 220.0).round() as u8;
+        ui.painter().rect_filled(rect, 6.0, egui::Color32::from_black_alpha(bg_alpha));
+
+        let mut child = ui.new_child(egui::UiBuilder::new().id_salt("tool_palette_child").max_rect(rect));
+
+        // ── ヘッダー帯：LOCK／透過度／サイズ／ドラッグハンドル／✕ ────────────
+        let compact = self.tool_palette_header_compact();
+        let mid_w = if compact { Self::TOOL_PALETTE_BTN_W } else { Self::TOOL_PALETTE_WIDE_BTN_W };
+        let header_rect = egui::Rect::from_min_size(rect.min, egui::vec2(rect.width(), Self::TOOL_PALETTE_HEADER_H));
+        let lock_rect = egui::Rect::from_min_size(header_rect.min, egui::vec2(Self::TOOL_PALETTE_BTN_W, Self::TOOL_PALETTE_HEADER_H));
+        let opacity_rect = egui::Rect::from_min_size(lock_rect.right_top(), egui::vec2(mid_w, Self::TOOL_PALETTE_HEADER_H));
+        let size_rect = egui::Rect::from_min_size(opacity_rect.right_top(), egui::vec2(mid_w, Self::TOOL_PALETTE_HEADER_H));
+        let close_rect = egui::Rect::from_min_size(
+            egui::pos2(header_rect.max.x - Self::TOOL_PALETTE_BTN_W, header_rect.min.y),
+            egui::vec2(Self::TOOL_PALETTE_BTN_W, Self::TOOL_PALETTE_HEADER_H),
+        );
+        let drag_min_x = size_rect.max.x;
+        let drag_max_x = close_rect.min.x;
+        if drag_max_x > drag_min_x && !self.tool_palette.locked {
+            let drag_rect = egui::Rect::from_min_max(
+                egui::pos2(drag_min_x, header_rect.min.y),
+                egui::pos2(drag_max_x, header_rect.max.y),
+            );
+            let drag_resp = child
+                .interact(drag_rect, child.id().with("tp_drag"), egui::Sense::drag())
+                .on_hover_text("ドラッグで移動");
+            if drag_resp.dragged() {
+                self.tool_palette.pos.0 += drag_resp.drag_delta().x;
+                self.tool_palette.pos.1 += drag_resp.drag_delta().y;
+            }
+        }
+
+        // システムボタン群（LOCK/透過度/サイズ/✕）自体も背景と同じ透過度に合わせる。
+        // ヘッダーにポインタが乗っている間だけ不透明に戻し、操作時に見失わないようにする。
+        let header_opacity = if child.rect_contains_pointer(header_rect) {
+            1.0
+        } else {
+            self.tool_palette.opacity_pct as f32 / 100.0
+        };
+        child.scope(|ui| {
+            ui.set_opacity(header_opacity);
+
+            let lock_resp = ui
+                .put(lock_rect, egui::Button::new(if self.tool_palette.locked { "🔒" } else { "🔓" }))
+                .on_hover_text("位置の固定ON/OFF（ONの間はドラッグ移動できない）");
+            if lock_resp.clicked() {
+                self.tool_palette.locked = !self.tool_palette.locked;
+            }
+            let opacity_label = if compact { "%".to_string() } else { format!("{}%", self.tool_palette.opacity_pct) };
+            let opacity_resp = ui
+                .put(opacity_rect, egui::Button::new(opacity_label))
+                .on_hover_text(format!("背景の透過度：{}%（クリックで10%刻みに変更）", self.tool_palette.opacity_pct));
+            if opacity_resp.clicked() {
+                let next = self.tool_palette.opacity_pct + 10;
+                self.tool_palette.opacity_pct = if next > crate::tool_palette::OPACITY_CEILING_PCT {
+                    crate::tool_palette::OPACITY_FLOOR_PCT
+                } else {
+                    next
+                };
+            }
+            let size_px = self.tool_palette.slot_size_px() as i32;
+            let size_label = if compact { "S".to_string() } else { format!("{size_px}px") };
+            let size_resp = ui
+                .put(size_rect, egui::Button::new(size_label))
+                .on_hover_text(format!("マスのサイズ：{size_px}px（クリックで段階変更）"));
+            if size_resp.clicked() {
+                self.tool_palette.cycle_slot_size();
+            }
+            let close_resp = ui
+                .put(close_rect, egui::Button::new("✕"))
+                .on_hover_text("パレットを隠す（画面上で右クリックすると再表示）");
+            if close_resp.clicked() {
+                self.tool_palette.visible = false;
+            }
+        });
+
+        // ── グリッド：GRID_COLS×GRID_ROWS。Phase1時点では全マス空欄固定 ─────
+        let slot = self.tool_palette.slot_size_px();
+        let grid_origin = rect.min + egui::vec2(Self::TOOL_PALETTE_PAD, Self::TOOL_PALETTE_HEADER_H + Self::TOOL_PALETTE_PAD);
+        for row in 0..crate::tool_palette::GRID_ROWS {
+            for col in 0..crate::tool_palette::GRID_COLS {
+                let idx = row * crate::tool_palette::GRID_COLS + col;
+                let slot_min = grid_origin + egui::vec2(
+                    col as f32 * (slot + Self::TOOL_PALETTE_GAP),
+                    row as f32 * (slot + Self::TOOL_PALETTE_GAP),
+                );
+                let slot_rect = egui::Rect::from_min_size(slot_min, egui::vec2(slot, slot));
+                let _slot_resp = child
+                    .interact(slot_rect, child.id().with(("tp_slot", idx)), egui::Sense::click())
+                    .on_hover_text("空欄（右クリックで登録）");
+                child.painter().rect_stroke(
+                    slot_rect,
+                    4.0,
+                    egui::Stroke::new(1.0, egui::Color32::from_white_alpha(60)),
+                    egui::StrokeKind::Inside,
+                );
+            }
+        }
+    }
+
     fn draw_central_panel(
         &mut self,
         ui: &mut egui::Ui,
@@ -1762,9 +1918,20 @@ impl ViewerState {
             let avail  = ui.available_size();
             let origin = ui.cursor().left_top();
 
+            // ── ツールパレット：矩形計算とクリックガード判定 ─────────────────────
+            // パレット上のクリック／ドラッグを背面（画像・ページ送りゾーン）へ伝えない
+            // ため、ポインタがパレット矩形内にある間は背面向けの入力をここで握りつぶす。
+            let viewport_rect = egui::Rect::from_min_size(origin, avail);
+            let palette_rect = self.tool_palette_rect(viewport_rect);
+            let pointer_in_palette = palette_rect
+                .zip(input.hover_pos)
+                .is_some_and(|(r, p)| r.contains(p));
+
             // ── 左右端ページ送りゾーン ───────────────────────────────────────────
             let edge_ctx = ui.ctx().clone();
-            self.handle_edge_turn(&edge_ctx, clip, input.hover_pos, input.primary_clicked, is_spread, step, total, input.time);
+            let guarded_hover = if pointer_in_palette { None } else { input.hover_pos };
+            let guarded_primary_clicked = input.primary_clicked && !pointer_in_palette;
+            self.handle_edge_turn(&edge_ctx, clip, guarded_hover, guarded_primary_clicked, is_spread, step, total, input.time);
             self.draw_edge_turn_marker(&edge_ctx, clip);
 
             if !frame.animating || frame.zoom_actual {
@@ -1937,6 +2104,12 @@ impl ViewerState {
                 }
             }
 
+            // パレット上でのクリックは画像側（ページめくり／原寸切替）へ伝えない。
+            if pointer_in_palette {
+                double_clicked = false;
+                single_clicked = false;
+            }
+
             // ── 右下ページ数オーバーレイ ──────────────────────────────────────
             let page_text = format!("{}/{}", self.spread_lo().max(0) + 1, self.entries.len());
             let font_id = egui::FontId::proportional(14.0);
@@ -1965,6 +2138,17 @@ impl ViewerState {
                 let p = ui.painter();
                 p.rect_filled(bg_rect, 6.0, egui::Color32::from_black_alpha(200));
                 p.galley(bg_pos + pad, tg, egui::Color32::WHITE);
+            }
+
+            // ── ツールパレット：最前面オーバーレイ ────────────────────────────
+            if let Some(pr) = palette_rect {
+                self.draw_tool_palette(ui, pr);
+            } else {
+                // 非表示中：画面のどこでも右クリックすれば復活する。
+                let revive_resp = ui.interact(viewport_rect, ui.id().with("tool_palette_revive"), egui::Sense::click());
+                if revive_resp.secondary_clicked() {
+                    self.tool_palette.visible = true;
+                }
             }
         });
         // ページ送りゾーン内では原寸表示切替（ダブルクリック）を素通りさせない。

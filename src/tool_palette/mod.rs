@@ -24,6 +24,13 @@ pub const SLOT_COUNT: usize = GRID_COLS * GRID_ROWS;
 pub const OPACITY_FLOOR_PCT: u8 = 10;
 pub const OPACITY_CEILING_PCT: u8 = 100;
 
+/// マス1個の一辺サイズ(px)の段階。ヘッダーのサイズボタンでこの配列を巡回する。
+/// マス内容（Phase2/3で追加するアイコン等）はビットマップの拡縮ではなく、
+/// この値をそのつど描画関数へ渡して都度描き直す前提（拡縮によるボケ・ギザギザ回避）。
+pub const SLOT_SIZE_STEPS_PX: [f32; 5] = [16.0, 24.0, 32.0, 48.0, 64.0];
+/// 既定のマスサイズ段階index（48px = 現行サイズ）。
+pub const SLOT_SIZE_DEFAULT_IDX: usize = 3;
+
 /// 1マスの内容。
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum PaletteSlotContent {
@@ -52,8 +59,22 @@ pub struct PaletteState {
     pub opacity_pct: u8,
     /// false = パレット全体を非表示（右クリックで復帰）
     pub visible: bool,
+    /// マスサイズ段階（SLOT_SIZE_STEPS_PX のindex）。ヘッダーのサイズボタンで巡回。
+    pub slot_size_idx: usize,
     /// 各マスの内容。GRID_COLS×GRID_ROWS、行優先（index = row*GRID_COLS+col）
     pub slots: [PaletteSlotContent; SLOT_COUNT],
+}
+
+impl PaletteState {
+    /// 現在のマス一辺サイズ(px)。
+    pub fn slot_size_px(&self) -> f32 {
+        SLOT_SIZE_STEPS_PX[self.slot_size_idx.min(SLOT_SIZE_STEPS_PX.len() - 1)]
+    }
+
+    /// サイズボタン押下時: 次の段階へ巡回（末尾まで行ったら先頭へ戻る）。
+    pub fn cycle_slot_size(&mut self) {
+        self.slot_size_idx = (self.slot_size_idx + 1) % SLOT_SIZE_STEPS_PX.len();
+    }
 }
 
 impl Default for PaletteState {
@@ -63,6 +84,7 @@ impl Default for PaletteState {
             locked: false,
             opacity_pct: OPACITY_CEILING_PCT,
             visible: true,
+            slot_size_idx: SLOT_SIZE_DEFAULT_IDX,
             slots: [PaletteSlotContent::Empty; SLOT_COUNT],
         }
     }
@@ -71,8 +93,8 @@ impl Default for PaletteState {
 // ── 永続化（nekoviewer_spread.redb） ────────────────────────────────
 // スキーマ定義のみここで確定させる。load/save本体・呼び出し元への配線はPhase5で行う。
 
-/// キー固定=0（単一レコード）。値=(x, y, locked, opacity_pct, visible)
-pub const PALETTE_STATE_TABLE: TableDefinition<u8, (f32, f32, bool, u8, bool)> =
+/// キー固定=0（単一レコード）。値=(x, y, locked, opacity_pct, visible, slot_size_idx)
+pub const PALETTE_STATE_TABLE: TableDefinition<u8, (f32, f32, bool, u8, bool, u8)> =
     TableDefinition::new("tool_palette_state");
 
 /// キー=スロットindex(0〜SLOT_COUNT-1)。値=内容ID文字列
