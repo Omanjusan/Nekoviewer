@@ -9,6 +9,7 @@ mod favorites;
 mod fs;
 mod gui_config;
 mod i18n;
+mod image_filter;
 mod types;
 mod keymap;
 mod model_innerlog;

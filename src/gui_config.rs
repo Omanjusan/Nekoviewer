@@ -8,6 +8,10 @@ use std::path::{Path, PathBuf};
 
 use crate::card_date_format::CardDateFormat;
 use crate::config::{AppConfig, ResizeFilter, filter_to_str, parse_filter};
+use crate::image_filter::{
+    ImageFilterSettings, color_filter_mode_to_str, filter_order_to_str, parse_color_filter_mode,
+    parse_filter_order,
+};
 use crate::toolbar::{BAR_ITEM_COUNT, DEFAULT_BAR_ORDER, ViewerBarItem, bar_order_to_str, parse_bar_order};
 use crate::translate::TranslateConfig;
 
@@ -176,6 +180,9 @@ pub struct ViewerConfig {
     /// スライドショー実行中のトランジション遷移時間(ms)。永続設定。
     /// TRANSITION_DURATION_FLOOR_MS〜CEILING_MSの範囲（通常時と同じ範囲を共用）。
     pub slideshow_transition_duration_ms: u64,
+    /// 画像処理フィルター（ブルーライトカット／セピア／モノクロ／ガンマ／ブライトネス／
+    /// シャープネス）の設定一式。永続設定。設定画面・ツールバー等の複数導線から同じ値を書き換える。
+    pub image_filter: ImageFilterSettings,
 }
 
 impl Default for ViewerConfig {
@@ -204,6 +211,7 @@ impl Default for ViewerConfig {
             slideshow_manual_behavior: SlideshowManualBehavior::ResetTimer,
             slideshow_transition_kind: TransitionKind::HorizontalSlide,
             slideshow_transition_duration_ms: 1000,
+            image_filter: ImageFilterSettings::default(),
         }
     }
 }
@@ -390,6 +398,12 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
     let mut translate_ocr_model: Option<String> = None;
     let mut translate_translation_model: Option<String> = None;
     let mut translate_overlay_width: Option<u32> = None;
+    let mut image_filter_color_mode: Option<crate::image_filter::ColorFilterMode> = None;
+    let mut image_filter_blc_temp_k: Option<u32> = None;
+    let mut image_filter_gamma: Option<f32> = None;
+    let mut image_filter_brightness: Option<f32> = None;
+    let mut image_filter_sharpness: Option<f32> = None;
+    let mut image_filter_order: Option<[crate::image_filter::FilterStage; crate::image_filter::FILTER_STAGE_COUNT]> = None;
     let mut has_kv = false;
 
     for line in content.lines() {
@@ -528,6 +542,26 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
                 }
                 // "translate_overlay_corner"は廃止済み(EXPERIMENTAL配置オプション撤去)。
                 // 旧state ファイルに残っていても単に無視される。
+                "image_filter_color_mode" => {
+                    image_filter_color_mode = Some(parse_color_filter_mode(v.trim()));
+                }
+                "image_filter_blc_temp_k" => {
+                    image_filter_blc_temp_k = v.trim().parse::<u32>().ok()
+                        .map(|n| n.clamp(crate::image_filter::BLC_TEMP_FLOOR_K, crate::image_filter::BLC_TEMP_CEILING_K));
+                }
+                "image_filter_gamma" => {
+                    image_filter_gamma = v.trim().parse::<f32>().ok()
+                        .map(|n| n.clamp(crate::image_filter::GAMMA_FLOOR, crate::image_filter::GAMMA_CEILING));
+                }
+                "image_filter_brightness" => {
+                    image_filter_brightness = v.trim().parse::<f32>().ok()
+                        .map(|n| n.clamp(crate::image_filter::BRIGHTNESS_FLOOR, crate::image_filter::BRIGHTNESS_CEILING));
+                }
+                "image_filter_sharpness" => {
+                    image_filter_sharpness = v.trim().parse::<f32>().ok()
+                        .map(|n| n.clamp(crate::image_filter::SHARPNESS_FLOOR, crate::image_filter::SHARPNESS_CEILING));
+                }
+                "image_filter_order" => { image_filter_order = Some(parse_filter_order(v)); }
                 _ => {}
             }
         }
@@ -591,6 +625,14 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
             slideshow_manual_behavior: slideshow_manual_behavior.unwrap_or(SlideshowManualBehavior::ResetTimer),
             slideshow_transition_kind: slideshow_transition_kind.unwrap_or(TransitionKind::HorizontalSlide),
             slideshow_transition_duration_ms: slideshow_transition_duration_ms.unwrap_or(1000),
+            image_filter: ImageFilterSettings {
+                color_filter_mode: image_filter_color_mode.unwrap_or(crate::image_filter::ColorFilterMode::None),
+                blc_color_temperature_k: image_filter_blc_temp_k.unwrap_or(crate::image_filter::BLC_TEMP_DEFAULT_K),
+                gamma: image_filter_gamma.unwrap_or(crate::image_filter::GAMMA_DEFAULT),
+                brightness: image_filter_brightness.unwrap_or(crate::image_filter::BRIGHTNESS_DEFAULT),
+                sharpness: image_filter_sharpness.unwrap_or(crate::image_filter::SHARPNESS_DEFAULT),
+                filter_order: image_filter_order.unwrap_or(crate::image_filter::DEFAULT_FILTER_ORDER),
+            },
         },
         show_hidden: show_hidden.unwrap_or(false),
         card_info_mode: card_info_mode.unwrap_or_else(|| "off".to_string()),
@@ -672,6 +714,15 @@ pub fn save_state(root: &Path, dir: &Path, window_size: (u32, u32), viewer_slots
     content.push_str(&format!(
         "translate_base_url={}\ntranslate_ocr_model={}\ntranslate_translation_model={}\ntranslate_overlay_width={}\n",
         translate_cfg.base_url, translate_cfg.ocr_model, translate_cfg.translation_model, translate_cfg.overlay_width,
+    ));
+    content.push_str(&format!(
+        "image_filter_color_mode={}\nimage_filter_blc_temp_k={}\nimage_filter_gamma={}\nimage_filter_brightness={}\nimage_filter_sharpness={}\nimage_filter_order={}\n",
+        color_filter_mode_to_str(viewer_cfg.image_filter.color_filter_mode),
+        viewer_cfg.image_filter.blc_color_temperature_k,
+        viewer_cfg.image_filter.gamma,
+        viewer_cfg.image_filter.brightness,
+        viewer_cfg.image_filter.sharpness,
+        filter_order_to_str(&viewer_cfg.image_filter.filter_order),
     ));
     // 設定ダイアログ（共通/アニメタブ）が編集する AppConfig 系の値。次回起動から反映されるため、
     // ここでは現在の有効値をそのまま state に書き戻すだけでよい（即時のワーカー再構築は不要）。
