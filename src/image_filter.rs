@@ -197,6 +197,14 @@ impl Default for ImageFilterSettings {
 use image::RgbaImage;
 
 /// 設定済みの処理順に従い、各フィルターステージを画像バッファへ順次適用する。
+///
+/// UI・キャッシュ層に依存しない純粋関数（`RgbaImage`と`ImageFilterSettings`のみを扱う）
+/// なので、将来の画像エクスポート機能もそのままこの関数を呼べる設計になっている。
+/// 想定パターン: デコード→(必要ならリサイズ)→`apply_image_filters`→エンコード保存、と
+/// 現在のビューアー表示パイプライン（cache.rs の spawn_worker 内呼び出し）と同じ箇所に
+/// 挟むだけでよい。呼び出し元(cache.rs)は現状「静止画のみ・アニメーション除外」の判断を
+/// 呼び出し側で行っているが、この関数自体にその制約はなく、アニメーションの1フレームに
+/// 対しても同様に呼び出せる。
 pub fn apply_image_filters(img: &mut RgbaImage, settings: &ImageFilterSettings) {
     for stage in settings.filter_order {
         match stage {
