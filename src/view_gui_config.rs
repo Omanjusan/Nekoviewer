@@ -353,6 +353,55 @@ fn stage_enabled_mut(settings: &mut ImageFilterSettings, stage: FilterStage) -> 
     }
 }
 
+/// ガンマ・ブライトネス・シャープネスの有効チェックボックス＋スライダー＋「既定値に戻す」
+/// ボタン。設定画面（画像フィルタータブ）と、ビューアー内ツールパレットのDialog型スロット
+/// （tool_palette::dialog::image_filter_dialog）の両方から呼ぶ共通実装。`ImageFilterSettings`
+/// そのものだけを受け取るため、呼び出し側の状態管理（SettingsDraft/ViewerConfig等）に依存しない。
+pub(crate) fn draw_image_filter_tone_sliders(ui: &mut egui::Ui, filter: &mut ImageFilterSettings) {
+    ui.scope(|ui| {
+        let reset_label = i18n::t().settings_image_filter_reset_button();
+
+        // 1項目を2段で描く: 1段目=[チェックボックス] 項目名 ...... [現在値]、
+        // 2段目=[====スライダー(数値非表示)====] [既定値に戻す]。横一列より幅を取らない。
+        let draw_row = |
+            ui: &mut egui::Ui,
+            enabled: &mut bool,
+            label: &str,
+            value_text: String,
+            value: &mut f32,
+            range: std::ops::RangeInclusive<f32>,
+            default: f32,
+        | {
+            ui.horizontal(|ui| {
+                ui.checkbox(enabled, "");
+                ui.label(label);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(value_text);
+                });
+            });
+            ui.horizontal(|ui| {
+                ui.add_enabled(*enabled, egui::Slider::new(value, range).show_value(false));
+                if ui.button(reset_label).clicked() {
+                    *value = default;
+                }
+            });
+        };
+
+        draw_row(
+            ui, &mut filter.gamma_enabled, i18n::t().settings_image_filter_gamma_label(),
+            format!("{:.2}", filter.gamma), &mut filter.gamma, GAMMA_FLOOR..=GAMMA_CEILING, GAMMA_DEFAULT,
+        );
+        draw_row(
+            ui, &mut filter.brightness_enabled, i18n::t().settings_image_filter_brightness_label(),
+            format!("{:.1}%", filter.brightness), &mut filter.brightness, BRIGHTNESS_FLOOR..=BRIGHTNESS_CEILING, BRIGHTNESS_DEFAULT,
+        );
+        draw_row(
+            ui, &mut filter.sharpness_enabled, i18n::t().settings_image_filter_sharpness_label(),
+            format!("{:.1}", filter.sharpness), &mut filter.sharpness, SHARPNESS_FLOOR..=SHARPNESS_CEILING, SHARPNESS_DEFAULT,
+        );
+    });
+}
+
 /// 画像処理フィルターの処理順カードをD&Dで並べ替えるUI。デフォルト順でカードを並べておき、
 /// ドラッグしたカードをドロップ先カードの位置へ割り込ませる（egui 0.35標準のdnd_drag_source/
 /// dnd_hover_payload/dnd_release_payloadを使用）。色系統フィルター以外の3ステージには
@@ -1488,35 +1537,7 @@ impl NekoviewApp {
         ui.label(i18n::t().settings_image_filter_tone_section_label());
         ui.label(i18n::t().settings_image_filter_tone_explain());
 
-        ui.scope(|ui| {
-            ui.spacing_mut().slider_width = 220.0;
-            let reset_label = i18n::t().settings_image_filter_reset_button();
-
-            ui.horizontal(|ui| {
-                ui.checkbox(&mut draft.image_filter.gamma_enabled, "");
-                ui.label(i18n::t().settings_image_filter_gamma_label());
-                ui.add_enabled(draft.image_filter.gamma_enabled, egui::Slider::new(&mut draft.image_filter.gamma, GAMMA_FLOOR..=GAMMA_CEILING));
-                if ui.button(reset_label).clicked() {
-                    draft.image_filter.gamma = GAMMA_DEFAULT;
-                }
-            });
-            ui.horizontal(|ui| {
-                ui.checkbox(&mut draft.image_filter.brightness_enabled, "");
-                ui.label(i18n::t().settings_image_filter_brightness_label());
-                ui.add_enabled(draft.image_filter.brightness_enabled, egui::Slider::new(&mut draft.image_filter.brightness, BRIGHTNESS_FLOOR..=BRIGHTNESS_CEILING).suffix("%"));
-                if ui.button(reset_label).clicked() {
-                    draft.image_filter.brightness = BRIGHTNESS_DEFAULT;
-                }
-            });
-            ui.horizontal(|ui| {
-                ui.checkbox(&mut draft.image_filter.sharpness_enabled, "");
-                ui.label(i18n::t().settings_image_filter_sharpness_label());
-                ui.add_enabled(draft.image_filter.sharpness_enabled, egui::Slider::new(&mut draft.image_filter.sharpness, SHARPNESS_FLOOR..=SHARPNESS_CEILING));
-                if ui.button(reset_label).clicked() {
-                    draft.image_filter.sharpness = SHARPNESS_DEFAULT;
-                }
-            });
-        });
+        draw_image_filter_tone_sliders(ui, &mut draft.image_filter);
 
         ui.separator();
         ui.label(i18n::t().settings_image_filter_order_section_label());

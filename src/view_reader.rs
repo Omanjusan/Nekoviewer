@@ -473,6 +473,9 @@ pub struct ViewerState {
     /// ビューアー内ツールパレット（オーバーレイ）の状態。座標・LOCK・透過度・
     /// 可視性・マス内容。Phase5で永続化するまでは実行時のみ・再起動でリセットされる。
     tool_palette: crate::tool_palette::PaletteState,
+    /// 展開中のDialog型マスのindex。Noneなら閉じている。同じマスを再クリックするか
+    /// 展開領域外をクリックすると閉じる（1個の状態のみ保持＝同時に開けるのは1マス分）。
+    tool_palette_open_dialog: Option<usize>,
 }
 
 impl ViewerState {
@@ -682,6 +685,7 @@ impl ViewerState {
             slideshow_last_advance: Instant::now(),
             slideshow_auto_advance_pending: false,
             tool_palette: crate::tool_palette::PaletteState::default(),
+            tool_palette_open_dialog: None,
         }
     }
 
@@ -759,6 +763,7 @@ impl ViewerState {
             slideshow_last_advance: Instant::now(),
             slideshow_auto_advance_pending: false,
             tool_palette: crate::tool_palette::PaletteState::default(),
+            tool_palette_open_dialog: None,
         }
     }
 
@@ -1801,7 +1806,7 @@ impl ViewerState {
 
     /// ツールパレットのオーバーレイ本体を描画する。子Ui＋Painter直描き方式
     /// （thumbbar_overlayと同じ流儀）。マスの登録内容の描画・実行はPhase2/3で追加する。
-    fn draw_tool_palette(&mut self, ui: &mut egui::Ui, rect: egui::Rect, cfg: &mut ViewerConfig) {
+    fn draw_tool_palette(&mut self, ui: &mut egui::Ui, rect: egui::Rect, viewport: egui::Rect, cfg: &mut ViewerConfig) {
         let bg_alpha = (self.tool_palette.opacity_pct as f32 / 100.0 * 220.0).round() as u8;
         ui.painter().rect_filled(rect, 6.0, egui::Color32::from_black_alpha(bg_alpha));
 
@@ -1900,10 +1905,20 @@ impl ViewerState {
 
                 // 左クリック: Toggle型は即時実行してViewerConfigへ反映する
                 // （既存のpoll_image_filter_changeが差分検知して再デコードをトリガーする）。
-                // Dialog型のミニUI展開はPhase4で対応する。
+                // Dialog型はミニUIの展開/折りたたみをトグルする（同時に開けるのは1マス分）。
                 if slot_resp.clicked() {
-                    if let crate::tool_palette::PaletteSlotContent::Toggle(kind) = content {
-                        crate::tool_palette::execute_toggle(cfg, kind);
+                    match content {
+                        crate::tool_palette::PaletteSlotContent::Toggle(kind) => {
+                            crate::tool_palette::execute_toggle(cfg, kind);
+                        }
+                        crate::tool_palette::PaletteSlotContent::Dialog(_) => {
+                            self.tool_palette_open_dialog = if self.tool_palette_open_dialog == Some(idx) {
+                                None
+                            } else {
+                                Some(idx)
+                            };
+                        }
+                        crate::tool_palette::PaletteSlotContent::Empty => {}
                     }
                 }
 
@@ -1913,19 +1928,75 @@ impl ViewerState {
                     egui::Stroke::new(1.0, egui::Color32::from_white_alpha(60)),
                     egui::StrokeKind::Inside,
                 );
-                if let crate::tool_palette::PaletteSlotContent::Toggle(kind) = content {
-                    let def = crate::tool_palette::find_toggle_def(kind);
+                let slot_label = match content {
+                    crate::tool_palette::PaletteSlotContent::Toggle(kind) => {
+                        Some(crate::tool_palette::find_toggle_def(kind).label)
+                    }
+                    crate::tool_palette::PaletteSlotContent::Dialog(kind) => {
+                        Some(crate::tool_palette::create_dialog(kind).title())
+                    }
+                    crate::tool_palette::PaletteSlotContent::Empty => None,
+                };
+                if let Some(label) = slot_label {
                     let font_size = (slot * 0.28).clamp(8.0, 14.0);
                     let galley = child.painter().layout_no_wrap(
-                        def.label.to_string(),
+                        label.to_string(),
                         egui::FontId::proportional(font_size),
                         egui::Color32::WHITE,
                     );
                     let text_pos = slot_rect.center() - galley.size() / 2.0;
                     child.painter().with_clip_rect(slot_rect).galley(text_pos, galley, egui::Color32::WHITE);
                 }
+                if self.tool_palette_open_dialog == Some(idx) {
+                    child.painter().rect_filled(slot_rect, 4.0, egui::Color32::from_white_alpha(30));
+                }
             }
         }
+
+        // ── 展開中のDialog型ミニUI：パレット本体の直下に、Dialog自身が申告したサイズで表示 ──
+        if let Some(open_idx) = self.tool_palette_open_dialog {
+            if let crate::tool_palette::PaletteSlotContent::Dialog(kind) = self.tool_palette.slots[open_idx] {
+                let dialog_rect = self.tool_palette_dialog_rect(rect, viewport, kind);
+                ui.painter().rect_filled(dialog_rect, 6.0, egui::Color32::from_black_alpha(230));
+                let mut dialog_child = ui.new_child(
+                    egui::UiBuilder::new().id_salt("tool_palette_dialog_child").max_rect(dialog_rect.shrink(Self::TOOL_PALETTE_PAD)),
+                );
+                let mut dialog = crate::tool_palette::create_dialog(kind);
+
+                const CLOSE_BTN_W: f32 = 20.0;
+                dialog_child.horizontal(|ui| {
+                    ui.label(dialog.title());
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.add_sized([CLOSE_BTN_W, CLOSE_BTN_W], egui::Button::new("✕"))
+                            .on_hover_text("閉じる")
+                            .clicked()
+                        {
+                            self.tool_palette_open_dialog = None;
+                        }
+                    });
+                });
+                dialog_child.separator();
+                // 閉じるボタンで tool_palette_open_dialog が None になった後もこのフレームの
+                // 残りは描画し続けて問題ない（次フレームで dialog_rect ごと消える）。
+                dialog.render(&mut dialog_child, cfg);
+            } else {
+                // 登録内容が右クリックメニューで変更された等でDialogでなくなった場合は自動で閉じる。
+                self.tool_palette_open_dialog = None;
+            }
+        }
+    }
+
+    /// 展開中のDialog型ミニUIの矩形。表示位置はパレット本体の直下のまま、サイズは
+    /// ツールボックス幅に引っ張られずDialog自身の preferred_size を使う。viewport内に
+    /// 収まるようクランプする（画面外へのはみ出し対策。パレット本体との重なりが起きても
+    /// 右上のXボタンでいつでも閉じられる）。
+    fn tool_palette_dialog_rect(&self, palette_rect: egui::Rect, viewport: egui::Rect, kind: crate::tool_palette::DialogKind) -> egui::Rect {
+        let size = crate::tool_palette::create_dialog(kind).preferred_size();
+        let anchor = palette_rect.left_bottom() + egui::vec2(0.0, Self::TOOL_PALETTE_GAP);
+        let max_x = (viewport.max.x - size.x).max(viewport.min.x);
+        let max_y = (viewport.max.y - size.y).max(viewport.min.y);
+        let clamped_min = egui::pos2(anchor.x.clamp(viewport.min.x, max_x), anchor.y.clamp(viewport.min.y, max_y));
+        egui::Rect::from_min_size(clamped_min, size)
     }
 
     /// ツールパレットのマスにマウスを乗せたときのヒント文言。
@@ -1942,8 +2013,8 @@ impl ViewerState {
         }
     }
 
-    /// マス右クリックの登録メニュー。TOGGLE_DEFS を走査して選択肢を並べる（データ駆動）。
-    /// Dialog型の登録はPhase4で追加する。
+    /// マス右クリックの登録メニュー。TOGGLE_DEFS / ALL_DIALOG_KINDS を走査して選択肢を
+    /// 並べる（データ駆動：新規Toggle/Dialog追加時にメニュー側の変更は不要）。
     fn draw_tool_palette_slot_menu(ui: &mut egui::Ui, content: &mut crate::tool_palette::PaletteSlotContent) {
         use crate::tool_palette::PaletteSlotContent;
         ui.set_min_width(140.0);
@@ -1957,6 +2028,14 @@ impl ViewerState {
             let checked = matches!(*content, PaletteSlotContent::Toggle(k) if k == def.key);
             if ui.selectable_label(checked, def.label).clicked() {
                 *content = PaletteSlotContent::Toggle(def.key);
+            }
+        }
+        ui.separator();
+        for kind in crate::tool_palette::ALL_DIALOG_KINDS {
+            let checked = matches!(*content, PaletteSlotContent::Dialog(k) if k == kind);
+            let title = crate::tool_palette::create_dialog(kind).title();
+            if ui.selectable_label(checked, title).clicked() {
+                *content = PaletteSlotContent::Dialog(kind);
             }
         }
     }
@@ -1983,9 +2062,18 @@ impl ViewerState {
             // ため、ポインタがパレット矩形内にある間は背面向けの入力をここで握りつぶす。
             let viewport_rect = egui::Rect::from_min_size(origin, avail);
             let palette_rect = self.tool_palette_rect(viewport_rect);
-            let pointer_in_palette = palette_rect
-                .zip(input.hover_pos)
-                .is_some_and(|(r, p)| r.contains(p));
+            let dialog_rect = self.tool_palette_open_dialog.and_then(|open_idx| {
+                let pr = palette_rect?;
+                match self.tool_palette.slots[open_idx] {
+                    crate::tool_palette::PaletteSlotContent::Dialog(kind) => {
+                        Some(self.tool_palette_dialog_rect(pr, viewport_rect, kind))
+                    }
+                    _ => None,
+                }
+            });
+            let pointer_in_palette = input.hover_pos.is_some_and(|p| {
+                palette_rect.is_some_and(|r| r.contains(p)) || dialog_rect.is_some_and(|r| r.contains(p))
+            });
 
             // ── 左右端ページ送りゾーン ───────────────────────────────────────────
             let edge_ctx = ui.ctx().clone();
@@ -2202,7 +2290,7 @@ impl ViewerState {
 
             // ── ツールパレット：最前面オーバーレイ ────────────────────────────
             if let Some(pr) = palette_rect {
-                self.draw_tool_palette(ui, pr, cfg);
+                self.draw_tool_palette(ui, pr, viewport_rect, cfg);
             } else {
                 // 非表示中：画面のどこでも右クリックすれば復活する。
                 let revive_resp = ui.interact(viewport_rect, ui.id().with("tool_palette_revive"), egui::Sense::click());

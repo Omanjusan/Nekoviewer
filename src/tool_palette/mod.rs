@@ -10,7 +10,7 @@ use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 pub mod dialog;
 pub mod toggle;
 
-pub use dialog::{create_dialog, DialogKind, PaletteDialog};
+pub use dialog::{create_dialog, DialogKind, PaletteDialog, ALL_DIALOG_KINDS};
 pub use toggle::{execute_toggle, find_toggle_def, ToggleDef, ToggleKind, TOGGLE_DEFS};
 
 /// グリッド列数（固定）。
