@@ -18,6 +18,7 @@ mod rotation;
 mod single_instance;
 mod spread_offset;
 mod spread_state;
+mod tool_palette;
 mod toolbar;
 mod translate;
 mod view_explorer;
