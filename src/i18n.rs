@@ -2253,6 +2253,14 @@ impl Lang {
         }
     }
 
+    pub fn blue_light_cut_toggle_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ブルーライトカット",
+            Lang::English  => "Blue light cut",
+            Lang::Chinese  => "蓝光过滤",
+        }
+    }
+
     pub fn settings_version_label(self) -> &'static str {
         match self {
             Lang::Japanese => "バージョン",

@@ -441,6 +441,11 @@ pub struct ViewerState {
     pending_open_file_detail: bool,
     /// 右クリックメニュー「スライドショー」チェックボックスが操作されたか（1フレームで消費）
     pending_slideshow_toggle: bool,
+    /// 右クリックメニュー「ブルーライトカット」チェックボックス表示用。show()冒頭でcfgから
+    /// 同期する（真の状態はViewerConfig.image_filter.color_filter_modeが持つ）。
+    blc_active: bool,
+    /// 右クリックメニュー「ブルーライトカット」チェックボックスが操作されたか（1フレームで消費）
+    pending_blc_toggle: bool,
     /// ファイル詳細ダイアログの状態。Some の間、draw_file_detail_dialogが表示する
     file_detail_dialog: Option<FileDetailDialogState>,
     /// OCR/翻訳子ウィンドウが現在開いているか。show()呼び出し時に外部(NekoviewApp)から
@@ -662,6 +667,8 @@ impl ViewerState {
             pending_favorite_add: false,
             pending_open_file_detail: false,
             pending_slideshow_toggle: false,
+            blc_active: false,
+            pending_blc_toggle: false,
             file_detail_dialog: None,
             translate_window_open: false,
             translate_toggle_enabled: false,
@@ -736,6 +743,8 @@ impl ViewerState {
             pending_favorite_add: false,
             pending_open_file_detail: false,
             pending_slideshow_toggle: false,
+            blc_active: false,
+            pending_blc_toggle: false,
             file_detail_dialog: None,
             translate_window_open: false,
             translate_toggle_enabled: false,
@@ -1078,6 +1087,11 @@ impl ViewerState {
         std::mem::take(&mut self.pending_favorite_add)
     }
 
+    /// 右クリックメニュー「ブルーライトカット」チェックボックス表示用の現在状態。
+    fn is_blc_active(&self) -> bool {
+        self.blc_active
+    }
+
     /// ツールバーの翻訳トグルボタンが押された要求を取り出す（1フレームで消費）
     fn take_translate_toggle_request(&mut self) -> bool {
         std::mem::take(&mut self.pending_toggle_translate_window)
@@ -1297,6 +1311,21 @@ impl ViewerState {
             self.pending_slideshow_toggle = false;
             self.toggle_slideshow();
         }
+
+        // 右クリックメニューのブルーライトカットチェックボックス操作を反映する。ON/OFFの
+        // 切り替えのみ行い、色温度の数値(cfg.image_filter.blc_color_temperature_k)には触れない
+        // （次にONへ戻したとき直前の値がそのまま復元される）。
+        if self.pending_blc_toggle {
+            self.pending_blc_toggle = false;
+            cfg.image_filter.color_filter_mode = if cfg.image_filter.color_filter_mode
+                == crate::image_filter::ColorFilterMode::BlueLightCut
+            {
+                crate::image_filter::ColorFilterMode::None
+            } else {
+                crate::image_filter::ColorFilterMode::BlueLightCut
+            };
+        }
+        self.blc_active = cfg.image_filter.color_filter_mode == crate::image_filter::ColorFilterMode::BlueLightCut;
 
         // スライドショーのタイマー送りは update_animation より先に行い、同一フレームで
         // ページ変化検知（アニメ起動・手動/自動の判定）が反映されるようにする。
@@ -1805,6 +1834,7 @@ impl ViewerState {
                 let saved_thumbnail_selection = self.saved_thumbnail_selection.as_ref();
                 let saved_thumbnail_display = self.saved_thumbnail_display_name();
                 let slideshow_active = self.is_slideshow_active();
+                let blc_active = self.is_blc_active();
                 let action = &mut self.pending_spread_action;
                 let sort_action = &mut self.pending_sort_action;
                 let bookmark_action = &mut self.pending_bookmark_action;
@@ -1812,9 +1842,10 @@ impl ViewerState {
                 let favorite_add = &mut self.pending_favorite_add;
                 let open_file_detail = &mut self.pending_open_file_detail;
                 let slideshow_toggle = &mut self.pending_slideshow_toggle;
+                let blc_toggle = &mut self.pending_blc_toggle;
                 egui::Popup::context_menu(&resp)
                     .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-                    .show(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort, sort_action, bookmark_toggle_enabled, bookmark_toggle_on, bookmark_action, thumbnail_target, saved_thumbnail_selection, saved_thumbnail_display.as_deref(), thumbnail_action, favorite_add, open_file_detail, slideshow_active, slideshow_toggle));
+                    .show(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort, sort_action, bookmark_toggle_enabled, bookmark_toggle_on, bookmark_action, thumbnail_target, saved_thumbnail_selection, saved_thumbnail_display.as_deref(), thumbnail_action, favorite_add, open_file_detail, slideshow_active, slideshow_toggle, blc_active, blc_toggle));
 
                 let painter = ui.painter().with_clip_rect(clip);
 
@@ -2833,6 +2864,8 @@ impl ViewerState {
         open_file_detail: &mut bool,
         slideshow_active: bool,
         slideshow_toggle: &mut bool,
+        blc_active: bool,
+        blc_toggle: &mut bool,
     ) {
         let t = i18n::t();
         let mut toggle_on = toggle_on_init;
@@ -2964,6 +2997,12 @@ impl ViewerState {
             *open_file_detail = true;
             ui.close();
         }
+        ui.separator();
+        let mut blc_checked = blc_active;
+        if ui.checkbox(&mut blc_checked, t.blue_light_cut_toggle_label()).changed() {
+            *blc_toggle = true;
+            ui.close();
+        }
     }
 
     fn thumbnail_status_name(display_name: &str) -> String {
@@ -3044,6 +3083,7 @@ impl ViewerState {
                     let saved_thumbnail_selection = self.saved_thumbnail_selection.as_ref();
                     let saved_thumbnail_display = self.saved_thumbnail_display_name();
                     let slideshow_active = self.is_slideshow_active();
+                    let blc_active = self.is_blc_active();
                     let action = &mut self.pending_spread_action;
                     let sort_action = &mut self.pending_sort_action;
                 let bookmark_action = &mut self.pending_bookmark_action;
@@ -3051,9 +3091,10 @@ impl ViewerState {
                     let favorite_add = &mut self.pending_favorite_add;
                     let open_file_detail = &mut self.pending_open_file_detail;
                     let slideshow_toggle = &mut self.pending_slideshow_toggle;
+                    let blc_toggle = &mut self.pending_blc_toggle;
                     egui::Popup::context_menu(&resp)
                     .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-                    .show(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort, sort_action, bookmark_toggle_enabled, bookmark_toggle_on, bookmark_action, thumbnail_target, saved_thumbnail_selection, saved_thumbnail_display.as_deref(), thumbnail_action, favorite_add, open_file_detail, slideshow_active, slideshow_toggle));
+                    .show(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort, sort_action, bookmark_toggle_enabled, bookmark_toggle_on, bookmark_action, thumbnail_target, saved_thumbnail_selection, saved_thumbnail_display.as_deref(), thumbnail_action, favorite_add, open_file_detail, slideshow_active, slideshow_toggle, blc_active, blc_toggle));
                 });
             } else {
                 let available = ui.available_size();
@@ -3077,6 +3118,7 @@ impl ViewerState {
                 let saved_thumbnail_selection = self.saved_thumbnail_selection.as_ref();
                 let saved_thumbnail_display = self.saved_thumbnail_display_name();
                 let slideshow_active = self.is_slideshow_active();
+                let blc_active = self.is_blc_active();
                 let action = &mut self.pending_spread_action;
                 let sort_action = &mut self.pending_sort_action;
                 let bookmark_action = &mut self.pending_bookmark_action;
@@ -3084,9 +3126,10 @@ impl ViewerState {
                 let favorite_add = &mut self.pending_favorite_add;
                 let open_file_detail = &mut self.pending_open_file_detail;
                 let slideshow_toggle = &mut self.pending_slideshow_toggle;
+                let blc_toggle = &mut self.pending_blc_toggle;
                 egui::Popup::context_menu(&resp)
                     .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-                    .show(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort, sort_action, bookmark_toggle_enabled, bookmark_toggle_on, bookmark_action, thumbnail_target, saved_thumbnail_selection, saved_thumbnail_display.as_deref(), thumbnail_action, favorite_add, open_file_detail, slideshow_active, slideshow_toggle));
+                    .show(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort, sort_action, bookmark_toggle_enabled, bookmark_toggle_on, bookmark_action, thumbnail_target, saved_thumbnail_selection, saved_thumbnail_display.as_deref(), thumbnail_action, favorite_add, open_file_detail, slideshow_active, slideshow_toggle, blc_active, blc_toggle));
             }
         } else {
             let rect = egui::Rect::from_min_size(ui.cursor().left_top(), ui.available_size());
@@ -3099,6 +3142,7 @@ impl ViewerState {
             let saved_thumbnail_selection = self.saved_thumbnail_selection.as_ref();
             let saved_thumbnail_display = self.saved_thumbnail_display_name();
             let slideshow_active = self.is_slideshow_active();
+            let blc_active = self.is_blc_active();
             let action = &mut self.pending_spread_action;
             let sort_action = &mut self.pending_sort_action;
                 let bookmark_action = &mut self.pending_bookmark_action;
@@ -3106,9 +3150,10 @@ impl ViewerState {
             let favorite_add = &mut self.pending_favorite_add;
             let open_file_detail = &mut self.pending_open_file_detail;
             let slideshow_toggle = &mut self.pending_slideshow_toggle;
+            let blc_toggle = &mut self.pending_blc_toggle;
             egui::Popup::context_menu(&resp)
                     .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-                    .show(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort, sort_action, bookmark_toggle_enabled, bookmark_toggle_on, bookmark_action, thumbnail_target, saved_thumbnail_selection, saved_thumbnail_display.as_deref(), thumbnail_action, favorite_add, open_file_detail, slideshow_active, slideshow_toggle));
+                    .show(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort, sort_action, bookmark_toggle_enabled, bookmark_toggle_on, bookmark_action, thumbnail_target, saved_thumbnail_selection, saved_thumbnail_display.as_deref(), thumbnail_action, favorite_add, open_file_detail, slideshow_active, slideshow_toggle, blc_active, blc_toggle));
         }
     }
 
@@ -3168,6 +3213,7 @@ impl ViewerState {
         let saved_thumbnail_selection = self.saved_thumbnail_selection.as_ref();
         let saved_thumbnail_display = self.saved_thumbnail_display_name();
         let slideshow_active = self.is_slideshow_active();
+        let blc_active = self.is_blc_active();
         let action = &mut self.pending_spread_action;
         let sort_action = &mut self.pending_sort_action;
                 let bookmark_action = &mut self.pending_bookmark_action;
@@ -3175,9 +3221,10 @@ impl ViewerState {
         let favorite_add = &mut self.pending_favorite_add;
         let open_file_detail = &mut self.pending_open_file_detail;
         let slideshow_toggle = &mut self.pending_slideshow_toggle;
+        let blc_toggle = &mut self.pending_blc_toggle;
         egui::Popup::context_menu(&resp)
                     .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-                    .show(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort, sort_action, bookmark_toggle_enabled, bookmark_toggle_on, bookmark_action, thumbnail_target, saved_thumbnail_selection, saved_thumbnail_display.as_deref(), thumbnail_action, favorite_add, open_file_detail, slideshow_active, slideshow_toggle));
+                    .show(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort, sort_action, bookmark_toggle_enabled, bookmark_toggle_on, bookmark_action, thumbnail_target, saved_thumbnail_selection, saved_thumbnail_display.as_deref(), thumbnail_action, favorite_add, open_file_detail, slideshow_active, slideshow_toggle, blc_active, blc_toggle));
 
         if angle_deg == 0 {
             let (rect_l, rect_r) = Self::spread_rects(available, origin, tex_left, tex_right, monitor);
@@ -3267,6 +3314,7 @@ impl ViewerState {
             let saved_thumbnail_selection = self.saved_thumbnail_selection.as_ref();
             let saved_thumbnail_display = self.saved_thumbnail_display_name();
             let slideshow_active = self.is_slideshow_active();
+            let blc_active = self.is_blc_active();
             let action = &mut self.pending_spread_action;
             let sort_action = &mut self.pending_sort_action;
                 let bookmark_action = &mut self.pending_bookmark_action;
@@ -3274,9 +3322,10 @@ impl ViewerState {
             let favorite_add = &mut self.pending_favorite_add;
             let open_file_detail = &mut self.pending_open_file_detail;
             let slideshow_toggle = &mut self.pending_slideshow_toggle;
+            let blc_toggle = &mut self.pending_blc_toggle;
             egui::Popup::context_menu(&resp)
                     .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-                    .show(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort, sort_action, bookmark_toggle_enabled, bookmark_toggle_on, bookmark_action, thumbnail_target, saved_thumbnail_selection, saved_thumbnail_display.as_deref(), thumbnail_action, favorite_add, open_file_detail, slideshow_active, slideshow_toggle));
+                    .show(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort, sort_action, bookmark_toggle_enabled, bookmark_toggle_on, bookmark_action, thumbnail_target, saved_thumbnail_selection, saved_thumbnail_display.as_deref(), thumbnail_action, favorite_add, open_file_detail, slideshow_active, slideshow_toggle, blc_active, blc_toggle));
         });
     }
 
