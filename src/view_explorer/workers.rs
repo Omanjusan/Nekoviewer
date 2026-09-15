@@ -51,6 +51,7 @@ impl NekoviewApp {
     /// 再描画されないため）。
     pub(super) fn poll_resize_redecode(&mut self, ctx: &egui::Context) {
         self.poll_exif_toggle();
+        self.poll_image_filter_change();
         let (redecode_on, debounce_ms, seq) = {
             let cfg = self.viewer_cfg.lock().unwrap();
             (cfg.redecode_on_resize, cfg.resize_debounce_ms, cfg.redecode_trigger_seq)
@@ -189,7 +190,10 @@ impl NekoviewApp {
                 cache.drop_animation_for_redecode(&path, *orig_i);
             }
         }
-        let exif_enabled = self.viewer_cfg.lock().unwrap().exif_orientation_enabled;
+        let (exif_enabled, image_filter) = {
+            let cfg = self.viewer_cfg.lock().unwrap();
+            (cfg.exif_orientation_enabled, cfg.image_filter)
+        };
         for (visible_order, (orig_i, entry_name, _)) in pages.iter().enumerate() {
             let key = (path.clone(), *orig_i);
             self.pending_loads.lock().unwrap().insert(key);
@@ -202,6 +206,7 @@ impl NekoviewApp {
                     file_cache_entry: None,
                     target_size: target,
                     exif_enabled,
+                    image_filter,
                     generation: self.decode_generation,
                 },
                 PagePriorityClass::Visible,
@@ -310,6 +315,29 @@ impl NekoviewApp {
             }
         }
 
+        self.page_cache.lock().unwrap().remove_all_for_path(&path);
+        self.begin_new_decode_generation();
+        if let Some(v) = self.viewer.lock().unwrap().as_mut() {
+            v.invalidate_all_pages();
+        }
+    }
+
+    /// 設定ダイアログの[反映]・ツールバー等どの経路で viewer_cfg.image_filter が変わっても
+    /// 毎フレーム拾えるように、EXIF Orientationと同じ「変化検知」方式にする。
+    fn poll_image_filter_change(&mut self) {
+        let now = self.viewer_cfg.lock().unwrap().image_filter;
+        if now != self.image_filter_last_seen {
+            self.image_filter_last_seen = now;
+            self.redecode_after_image_filter_change();
+        }
+    }
+
+    /// 画像処理フィルター設定を変更した直後に呼ぶ。EXIF Orientationトグルと同じく即時発火
+    /// （ドラッグ中のデバウンスは別フェーズでスライダー側に実装する）。開いているアーカイブの
+    /// PageCacheエントリを全破棄し、ビューアー側のテクスチャ/アニメ状態も全ページぶん破棄する
+    /// （アニメページも静止画と同じ再デコード経路に乗るため再生位置は先頭に戻る）。
+    fn redecode_after_image_filter_change(&mut self) {
+        let Some(path) = self.viewer.lock().unwrap().as_ref().map(|v| v.archive_path().clone()) else { return };
         self.page_cache.lock().unwrap().remove_all_for_path(&path);
         self.begin_new_decode_generation();
         if let Some(v) = self.viewer.lock().unwrap().as_mut() {
@@ -590,7 +618,10 @@ impl NekoviewApp {
             let visible_hi = visible_positions.iter().copied().max().unwrap_or(cur);
             let start = cur.saturating_sub(crate::cache::PREFETCH_BEHIND);
             let end = (cur + crate::cache::PREFETCH_AHEAD + 1).min(total);
-            let exif_enabled = self.viewer_cfg.lock().unwrap().exif_orientation_enabled;
+            let (exif_enabled, image_filter) = {
+                let cfg = self.viewer_cfg.lock().unwrap();
+                (cfg.exif_orientation_enabled, cfg.image_filter)
+            };
             let requested_generation = self.preparing_decode_generation
                 .unwrap_or(self.active_decode_generation);
             // submit直後にワーカーが起床できるため、投入順自体も優先順に揃える。
@@ -644,6 +675,7 @@ impl NekoviewApp {
                                 file_cache_entry: None,
                                 target_size: self.decode_target,
                                 exif_enabled,
+                                image_filter,
                                 generation: requested_generation,
                             },
                             class,

@@ -101,6 +101,9 @@ pub struct LoadRequest {
     pub target_size: Option<(u32, u32)>,
     /// 項目(D): Exif Orientation自動回転をデコード時に適用するか（ViewerConfigから都度取得）。
     pub exif_enabled: bool,
+    /// 画像処理フィルター設定（ViewerConfigから都度取得）。静止画（PageContent::Static）
+    /// にのみ適用し、アニメーション（GIF/APNG/AVIF/WebP）には適用しない。
+    pub image_filter: crate::image_filter::ImageFilterSettings,
     /// 表示解像度・Orientation等、デコード条件の世代。結果回収時に現行世代と一致しない
     /// 結果を破棄し、リサイズ前の遅い要求が新しいキャッシュを上書きするのを防ぐ。
     pub generation: u64,
@@ -222,7 +225,8 @@ pub fn spawn_worker(filter: image::imageops::FilterType, num_threads: usize, ctx
 
                 let target_size = req.target_size;
                 let exif_enabled = req.exif_enabled;
-                let content = if req.is_raw_file {
+                let image_filter = req.image_filter;
+                let mut content = if req.is_raw_file {
                     match req.file_cache_entry {
                         Some(FileCacheEntry::Raw(bytes)) => {
                             load_raw_content_from_bytes(&bytes, &req.archive_path, filter, cache_budget_bytes, ring_bounds, frame_hard_limit_bytes, target_size, exif_enabled)
@@ -262,6 +266,11 @@ pub fn spawn_worker(filter: image::imageops::FilterType, num_threads: usize, ctx
                     }
                     open_archive.as_mut().and_then(|(_, a)| a.load_page(&req.entry_name, filter, cache_budget_bytes, ring_bounds, frame_hard_limit_bytes, target_size, exif_enabled))
                 };
+
+                // 画像処理フィルターは静止画のみに適用する（アニメーションは対象外）。
+                if let Some(PageContent::Static(rgba)) = &mut content {
+                    crate::image_filter::apply_image_filters(rgba, &image_filter);
+                }
 
                 if worker_queue.finish(job_id) {
                     let outcome = match content {
@@ -2566,6 +2575,7 @@ mod ring_integration_tests {
                 file_cache_entry: None,
                 target_size: Some((800, 600)),
                 exif_enabled: true,
+                image_filter: crate::image_filter::ImageFilterSettings::default(),
                 generation: 0,
             },
         }));
@@ -2576,6 +2586,68 @@ mod ring_integration_tests {
         assert!(matches!(result.outcome, DecodeJobOutcome::Failed));
         assert_eq!(queue.pending_count(), 0);
         queue.shutdown();
+    }
+
+    /// フェーズ2: LoadRequest.image_filter が静止画デコード結果に実際に反映されることの結合テスト。
+    #[test]
+    fn page_worker_applies_image_filter_to_static_page() {
+        let root = std::env::temp_dir().join(format!(
+            "nekoviewer_filter_worker_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos(),
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let image_path = root.join("page.png");
+        image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+            4, 4, image::Rgba([200, 50, 10, 255]),
+        )).save(&image_path).unwrap();
+
+        let ctx = egui::Context::default();
+        let (queue, results) = spawn_worker(
+            image::imageops::FilterType::Triangle,
+            1,
+            ctx,
+            16 * 1024 * 1024,
+            (1, 2),
+            16 * 1024 * 1024,
+        );
+        let key = crate::decode_jobs::DecodeJobKey {
+            archive_path: image_path.clone(),
+            page_index: 0,
+            generation: 0,
+        };
+        let mut settings = crate::image_filter::ImageFilterSettings::default();
+        settings.color_filter_mode = crate::image_filter::ColorFilterMode::Grayscale;
+        assert!(queue.submit(crate::decode_jobs::DesiredDecodeJob {
+            key,
+            class: crate::decode_jobs::PagePriorityClass::Visible,
+            distance: 0,
+            payload: LoadRequest {
+                archive_path: image_path,
+                index: 0,
+                entry_name: String::new(),
+                is_raw_file: true,
+                file_cache_entry: None,
+                target_size: None,
+                exif_enabled: true,
+                image_filter: settings,
+                generation: 0,
+            },
+        }));
+
+        let result = results
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("成功結果が返るはず");
+        let DecodeJobOutcome::Ready(PageContent::Static(img)) = result.outcome else {
+            panic!("静止画としてデコード成功するはず");
+        };
+        let p = img.get_pixel(0, 0);
+        assert_eq!(p.0[0], p.0[1], "グレースケールフィルターでR=Gになるはず");
+        assert_eq!(p.0[1], p.0[2], "グレースケールフィルターでG=Bになるはず");
+
+        queue.shutdown();
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// フェーズ3.6: ループ境界(終端→restart→先頭)が実際に機能することを確認する。
