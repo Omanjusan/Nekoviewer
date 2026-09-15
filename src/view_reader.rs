@@ -1469,7 +1469,7 @@ impl ViewerState {
             rotation_angle,
             transition_kind: self.effective_transition_kind(cfg),
         };
-        let (double_clicked, single_clicked) = self.draw_central_panel(ui, &frame, &input, is_spread, step, total);
+        let (double_clicked, single_clicked) = self.draw_central_panel(ui, &frame, &input, is_spread, step, total, cfg);
 
         // メイン画像シングルクリックでサムネバーの自動非表示タイマーを早送りし、即座に隠す。
         // idle_hide_ms == 0（常時表示設定）のときは早送り対象のタイマー自体が存在しないため何もしない。
@@ -1801,7 +1801,7 @@ impl ViewerState {
 
     /// ツールパレットのオーバーレイ本体を描画する。子Ui＋Painter直描き方式
     /// （thumbbar_overlayと同じ流儀）。マスの登録内容の描画・実行はPhase2/3で追加する。
-    fn draw_tool_palette(&mut self, ui: &mut egui::Ui, rect: egui::Rect) {
+    fn draw_tool_palette(&mut self, ui: &mut egui::Ui, rect: egui::Rect, cfg: &mut ViewerConfig) {
         let bg_alpha = (self.tool_palette.opacity_pct as f32 / 100.0 * 220.0).round() as u8;
         ui.painter().rect_filled(rect, 6.0, egui::Color32::from_black_alpha(bg_alpha));
 
@@ -1898,6 +1898,15 @@ impl ViewerState {
                     .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
                     .show(|ui| Self::draw_tool_palette_slot_menu(ui, &mut self.tool_palette.slots[idx]));
 
+                // 左クリック: Toggle型は即時実行してViewerConfigへ反映する
+                // （既存のpoll_image_filter_changeが差分検知して再デコードをトリガーする）。
+                // Dialog型のミニUI展開はPhase4で対応する。
+                if slot_resp.clicked() {
+                    if let crate::tool_palette::PaletteSlotContent::Toggle(kind) = content {
+                        crate::tool_palette::execute_toggle(cfg, kind);
+                    }
+                }
+
                 child.painter().rect_stroke(
                     slot_rect,
                     4.0,
@@ -1960,6 +1969,7 @@ impl ViewerState {
         is_spread: bool,
         step: i32,
         total: usize,
+        cfg: &mut ViewerConfig,
     ) -> (bool, bool) {
         let mut double_clicked = false;
         let mut single_clicked = false;
@@ -2192,7 +2202,7 @@ impl ViewerState {
 
             // ── ツールパレット：最前面オーバーレイ ────────────────────────────
             if let Some(pr) = palette_rect {
-                self.draw_tool_palette(ui, pr);
+                self.draw_tool_palette(ui, pr, cfg);
             } else {
                 // 非表示中：画面のどこでも右クリックすれば復活する。
                 let revive_resp = ui.interact(viewport_rect, ui.id().with("tool_palette_revive"), egui::Sense::click());
