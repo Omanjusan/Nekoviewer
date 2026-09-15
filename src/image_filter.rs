@@ -159,10 +159,17 @@ pub struct ImageFilterSettings {
     pub blc_color_temperature_k: u32,
     /// ガンマ補正値
     pub gamma: f32,
+    /// ガンマステージの有効/無効。false の間は値を保持したまま処理をスキップする
+    /// （値を既定値に戻さずに一時的にOFFへ切り替えたいケース向け）。
+    pub gamma_enabled: bool,
     /// ブライトネス(%)
     pub brightness: f32,
+    /// ブライトネスステージの有効/無効（gamma_enabledと同じ位置づけ）。
+    pub brightness_enabled: bool,
     /// シャープネス強度
     pub sharpness: f32,
+    /// シャープネスステージの有効/無効（gamma_enabledと同じ位置づけ）。
+    pub sharpness_enabled: bool,
     /// 処理順（設定画面のカードD&Dで並べ替え、既定はDEFAULT_FILTER_ORDER）
     pub filter_order: [FilterStage; FILTER_STAGE_COUNT],
 }
@@ -173,8 +180,11 @@ impl Default for ImageFilterSettings {
             color_filter_mode: ColorFilterMode::None,
             blc_color_temperature_k: BLC_TEMP_DEFAULT_K,
             gamma: GAMMA_DEFAULT,
+            gamma_enabled: true,
             brightness: BRIGHTNESS_DEFAULT,
+            brightness_enabled: true,
             sharpness: SHARPNESS_DEFAULT,
+            sharpness_enabled: true,
             filter_order: DEFAULT_FILTER_ORDER,
         }
     }
@@ -195,9 +205,10 @@ pub fn apply_image_filters(img: &mut RgbaImage, settings: &ImageFilterSettings) 
                 settings.color_filter_mode,
                 settings.blc_color_temperature_k,
             ),
-            FilterStage::Gamma => apply_gamma(img, settings.gamma),
-            FilterStage::Brightness => apply_brightness(img, settings.brightness),
-            FilterStage::Sharpness => apply_sharpness(img, settings.sharpness),
+            FilterStage::Gamma if settings.gamma_enabled => apply_gamma(img, settings.gamma),
+            FilterStage::Brightness if settings.brightness_enabled => apply_brightness(img, settings.brightness),
+            FilterStage::Sharpness if settings.sharpness_enabled => apply_sharpness(img, settings.sharpness),
+            FilterStage::Gamma | FilterStage::Brightness | FilterStage::Sharpness => {}
         }
     }
 }
@@ -448,6 +459,14 @@ mod tests {
         assert_eq!(d.sharpness, SHARPNESS_DEFAULT);
     }
 
+    #[test]
+    fn default_settings_have_stages_enabled() {
+        let d = ImageFilterSettings::default();
+        assert!(d.gamma_enabled);
+        assert!(d.brightness_enabled);
+        assert!(d.sharpness_enabled);
+    }
+
     use image::Rgba;
 
     fn solid(w: u32, h: u32, rgba: [u8; 4]) -> RgbaImage {
@@ -565,5 +584,42 @@ mod tests {
         let p = img.get_pixel(0, 0);
         assert_eq!(p.0[0], p.0[1]);
         assert_eq!(p.0[1], p.0[2]);
+    }
+
+    #[test]
+    fn disabled_stage_is_skipped_even_with_non_default_value() {
+        // 値そのものは非デフォルトのままでも、enabledがfalseなら処理をスキップする
+        // （一時的にOFFにして値を保持したまま比較したいケース）。
+        let settings = ImageFilterSettings {
+            gamma: 2.0,
+            gamma_enabled: false,
+            brightness: 50.0,
+            brightness_enabled: false,
+            sharpness: 80.0,
+            sharpness_enabled: false,
+            ..ImageFilterSettings::default()
+        };
+        let before = solid(3, 3, [100, 120, 140, 255]);
+        let mut after = before.clone();
+        apply_image_filters(&mut after, &settings);
+        assert_eq!(before, after);
+    }
+
+    #[test]
+    fn re_enabling_a_stage_restores_its_effect_with_the_kept_value() {
+        let mut settings = ImageFilterSettings {
+            gamma: 2.0,
+            gamma_enabled: false,
+            ..ImageFilterSettings::default()
+        };
+        let mut disabled = solid(2, 2, [128, 128, 128, 255]);
+        apply_image_filters(&mut disabled, &settings);
+
+        settings.gamma_enabled = true;
+        let mut enabled = solid(2, 2, [128, 128, 128, 255]);
+        apply_image_filters(&mut enabled, &settings);
+
+        assert_ne!(disabled, enabled, "再度ONにすれば保持していた値(2.0)がそのまま効くはず");
+        assert!(enabled.get_pixel(0, 0).0[0] > disabled.get_pixel(0, 0).0[0]);
     }
 }

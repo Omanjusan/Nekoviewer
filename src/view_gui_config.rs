@@ -13,9 +13,9 @@ use crate::gui_config::{
 };
 use crate::i18n;
 use crate::image_filter::{
-    BLC_PRESET_TEMPS_K, BLC_TEMP_CEILING_K, BLC_TEMP_FLOOR_K, BRIGHTNESS_CEILING, BRIGHTNESS_FLOOR,
-    ColorFilterMode, FILTER_STAGE_COUNT, FilterStage, GAMMA_CEILING, GAMMA_FLOOR, ImageFilterSettings,
-    SHARPNESS_CEILING, SHARPNESS_FLOOR,
+    BLC_PRESET_TEMPS_K, BLC_TEMP_CEILING_K, BLC_TEMP_FLOOR_K, BRIGHTNESS_CEILING, BRIGHTNESS_DEFAULT,
+    BRIGHTNESS_FLOOR, ColorFilterMode, FILTER_STAGE_COUNT, FilterStage, GAMMA_CEILING, GAMMA_DEFAULT,
+    GAMMA_FLOOR, ImageFilterSettings, SHARPNESS_CEILING, SHARPNESS_DEFAULT, SHARPNESS_FLOOR,
 };
 use crate::keymap::{Keymap, ReaderAction, ExplorerAction, KeyCombo, MouseCombo, MouseAction, mouse_action_name};
 use crate::translate::{OVERLAY_WIDTH_CEILING, OVERLAY_WIDTH_FLOOR, TranslateConfig};
@@ -342,11 +342,24 @@ fn filter_stage_label(stage: FilterStage) -> &'static str {
     }
 }
 
+/// ステージに対応する有効/無効フラグへの可変参照。色系統フィルターは「なし」自体が
+/// OFFを兼ねるため対象外（Noneを返す）。
+fn stage_enabled_mut(settings: &mut ImageFilterSettings, stage: FilterStage) -> Option<&mut bool> {
+    match stage {
+        FilterStage::ColorFilter => None,
+        FilterStage::Gamma       => Some(&mut settings.gamma_enabled),
+        FilterStage::Brightness  => Some(&mut settings.brightness_enabled),
+        FilterStage::Sharpness   => Some(&mut settings.sharpness_enabled),
+    }
+}
+
 /// 画像処理フィルターの処理順カードをD&Dで並べ替えるUI。デフォルト順でカードを並べておき、
 /// ドラッグしたカードをドロップ先カードの位置へ割り込ませる（egui 0.35標準のdnd_drag_source/
-/// dnd_hover_payload/dnd_release_payloadを使用）。
-fn draw_filter_order_cards(ui: &mut egui::Ui, order: &mut [FilterStage; FILTER_STAGE_COUNT]) {
+/// dnd_hover_payload/dnd_release_payloadを使用）。色系統フィルター以外の3ステージには
+/// 有効/無効チェックボックスも合わせて表示する（値を保持したまま一時的にOFFにできる）。
+fn draw_filter_order_cards(ui: &mut egui::Ui, settings: &mut ImageFilterSettings) {
     let mut drop_target: Option<(usize, usize)> = None;
+    let order = settings.filter_order;
 
     ui.vertical(|ui| {
         for (idx, &stage) in order.iter().enumerate() {
@@ -358,6 +371,16 @@ fn draw_filter_order_cards(ui: &mut egui::Ui, order: &mut [FilterStage; FILTER_S
                 .dnd_drag_source(item_id, idx, |ui| {
                     frame.show(ui, |ui| {
                         ui.horizontal(|ui| {
+                            if stage == FilterStage::ColorFilter {
+                                // 色系統フィルターは「なし」自体がOFF、それ以外の選択がON。
+                                // 実際の変更は上部のラジオボタンで行う。checkedは毎フレーム
+                                // color_filter_modeから再計算するため、クリックしても次フレームで
+                                // 元の状態に戻る（他の3枚と見た目を揃えるためadd_enabledは使わない）。
+                                let mut checked = settings.color_filter_mode != ColorFilterMode::None;
+                                ui.checkbox(&mut checked, "");
+                            } else if let Some(enabled) = stage_enabled_mut(settings, stage) {
+                                ui.checkbox(enabled, "");
+                            }
                             ui.label(format!("{}.", idx + 1));
                             ui.label(filter_stage_label(stage));
                         });
@@ -383,7 +406,7 @@ fn draw_filter_order_cards(ui: &mut egui::Ui, order: &mut [FilterStage; FILTER_S
     });
 
     if let Some((from, to)) = drop_target {
-        *order = reorder_by_drop(*order, from, to);
+        settings.filter_order = reorder_by_drop(order, from, to);
     }
 }
 
@@ -1466,26 +1489,39 @@ impl NekoviewApp {
         ui.label(i18n::t().settings_image_filter_tone_explain());
 
         ui.scope(|ui| {
-            ui.spacing_mut().slider_width = 260.0;
+            ui.spacing_mut().slider_width = 220.0;
+            let reset_label = i18n::t().settings_image_filter_reset_button();
 
             ui.horizontal(|ui| {
+                ui.checkbox(&mut draft.image_filter.gamma_enabled, "");
                 ui.label(i18n::t().settings_image_filter_gamma_label());
-                ui.add(egui::Slider::new(&mut draft.image_filter.gamma, GAMMA_FLOOR..=GAMMA_CEILING));
+                ui.add_enabled(draft.image_filter.gamma_enabled, egui::Slider::new(&mut draft.image_filter.gamma, GAMMA_FLOOR..=GAMMA_CEILING));
+                if ui.button(reset_label).clicked() {
+                    draft.image_filter.gamma = GAMMA_DEFAULT;
+                }
             });
             ui.horizontal(|ui| {
+                ui.checkbox(&mut draft.image_filter.brightness_enabled, "");
                 ui.label(i18n::t().settings_image_filter_brightness_label());
-                ui.add(egui::Slider::new(&mut draft.image_filter.brightness, BRIGHTNESS_FLOOR..=BRIGHTNESS_CEILING).suffix("%"));
+                ui.add_enabled(draft.image_filter.brightness_enabled, egui::Slider::new(&mut draft.image_filter.brightness, BRIGHTNESS_FLOOR..=BRIGHTNESS_CEILING).suffix("%"));
+                if ui.button(reset_label).clicked() {
+                    draft.image_filter.brightness = BRIGHTNESS_DEFAULT;
+                }
             });
             ui.horizontal(|ui| {
+                ui.checkbox(&mut draft.image_filter.sharpness_enabled, "");
                 ui.label(i18n::t().settings_image_filter_sharpness_label());
-                ui.add(egui::Slider::new(&mut draft.image_filter.sharpness, SHARPNESS_FLOOR..=SHARPNESS_CEILING));
+                ui.add_enabled(draft.image_filter.sharpness_enabled, egui::Slider::new(&mut draft.image_filter.sharpness, SHARPNESS_FLOOR..=SHARPNESS_CEILING));
+                if ui.button(reset_label).clicked() {
+                    draft.image_filter.sharpness = SHARPNESS_DEFAULT;
+                }
             });
         });
 
         ui.separator();
         ui.label(i18n::t().settings_image_filter_order_section_label());
         ui.label(i18n::t().settings_image_filter_order_explain());
-        draw_filter_order_cards(ui, &mut draft.image_filter.filter_order);
+        draw_filter_order_cards(ui, &mut draft.image_filter);
     }
 
     /// 翻訳機能(実験的)タブ。ローカルAI(OpenAI互換API)のURL・モデル取得・翻訳/OCRモデル選択と、

@@ -401,8 +401,11 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
     let mut image_filter_color_mode: Option<crate::image_filter::ColorFilterMode> = None;
     let mut image_filter_blc_temp_k: Option<u32> = None;
     let mut image_filter_gamma: Option<f32> = None;
+    let mut image_filter_gamma_enabled: Option<bool> = None;
     let mut image_filter_brightness: Option<f32> = None;
+    let mut image_filter_brightness_enabled: Option<bool> = None;
     let mut image_filter_sharpness: Option<f32> = None;
+    let mut image_filter_sharpness_enabled: Option<bool> = None;
     let mut image_filter_order: Option<[crate::image_filter::FilterStage; crate::image_filter::FILTER_STAGE_COUNT]> = None;
     let mut has_kv = false;
 
@@ -562,6 +565,9 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
                         .map(|n| n.clamp(crate::image_filter::SHARPNESS_FLOOR, crate::image_filter::SHARPNESS_CEILING));
                 }
                 "image_filter_order" => { image_filter_order = Some(parse_filter_order(v)); }
+                "image_filter_gamma_enabled" => { image_filter_gamma_enabled = v.trim().parse().ok(); }
+                "image_filter_brightness_enabled" => { image_filter_brightness_enabled = v.trim().parse().ok(); }
+                "image_filter_sharpness_enabled" => { image_filter_sharpness_enabled = v.trim().parse().ok(); }
                 _ => {}
             }
         }
@@ -629,8 +635,11 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
                 color_filter_mode: image_filter_color_mode.unwrap_or(crate::image_filter::ColorFilterMode::None),
                 blc_color_temperature_k: image_filter_blc_temp_k.unwrap_or(crate::image_filter::BLC_TEMP_DEFAULT_K),
                 gamma: image_filter_gamma.unwrap_or(crate::image_filter::GAMMA_DEFAULT),
+                gamma_enabled: image_filter_gamma_enabled.unwrap_or(true),
                 brightness: image_filter_brightness.unwrap_or(crate::image_filter::BRIGHTNESS_DEFAULT),
+                brightness_enabled: image_filter_brightness_enabled.unwrap_or(true),
                 sharpness: image_filter_sharpness.unwrap_or(crate::image_filter::SHARPNESS_DEFAULT),
+                sharpness_enabled: image_filter_sharpness_enabled.unwrap_or(true),
                 filter_order: image_filter_order.unwrap_or(crate::image_filter::DEFAULT_FILTER_ORDER),
             },
         },
@@ -723,6 +732,12 @@ pub fn save_state(root: &Path, dir: &Path, window_size: (u32, u32), viewer_slots
         viewer_cfg.image_filter.brightness,
         viewer_cfg.image_filter.sharpness,
         filter_order_to_str(&viewer_cfg.image_filter.filter_order),
+    ));
+    content.push_str(&format!(
+        "image_filter_gamma_enabled={}\nimage_filter_brightness_enabled={}\nimage_filter_sharpness_enabled={}\n",
+        viewer_cfg.image_filter.gamma_enabled,
+        viewer_cfg.image_filter.brightness_enabled,
+        viewer_cfg.image_filter.sharpness_enabled,
     ));
     // 設定ダイアログ（共通/アニメタブ）が編集する AppConfig 系の値。次回起動から反映されるため、
     // ここでは現在の有効値をそのまま state に書き戻すだけでよい（即時のワーカー再構築は不要）。

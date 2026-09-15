@@ -2125,6 +2125,14 @@ impl Lang {
         }
     }
 
+    pub fn settings_image_filter_reset_button(self) -> &'static str {
+        match self {
+            Lang::Japanese => "既定値に戻す",
+            Lang::English  => "Reset",
+            Lang::Chinese  => "恢复默认",
+        }
+    }
+
     pub fn settings_image_filter_instant_save_notice(self) -> &'static str {
         match self {
             Lang::Japanese => "このタブの変更は即時セーブされます",
