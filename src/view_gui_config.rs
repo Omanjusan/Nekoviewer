@@ -12,6 +12,10 @@ use crate::gui_config::{
     TRANSITION_DURATION_CEILING_MS, TRANSITION_DURATION_FLOOR_MS,
 };
 use crate::i18n;
+use crate::image_filter::{
+    BLC_PRESET_TEMPS_K, BLC_TEMP_CEILING_K, BLC_TEMP_FLOOR_K, BRIGHTNESS_CEILING, BRIGHTNESS_FLOOR,
+    ColorFilterMode, GAMMA_CEILING, GAMMA_FLOOR, ImageFilterSettings, SHARPNESS_CEILING, SHARPNESS_FLOOR,
+};
 use crate::keymap::{Keymap, ReaderAction, ExplorerAction, KeyCombo, MouseCombo, MouseAction, mouse_action_name};
 use crate::translate::{OVERLAY_WIDTH_CEILING, OVERLAY_WIDTH_FLOOR, TranslateConfig};
 use crate::view_explorer::NekoviewApp;
@@ -118,6 +122,8 @@ pub(crate) struct SettingsDraft {
     /// その他タブの起動時フォルダ設定。
     startup_use_last_dir: bool,
     startup_fixed_dir: String,
+    /// 静止画設定タブ: 画像処理フィルター一式（処理順のD&D並べ替えは別フェーズで対応）。
+    image_filter: ImageFilterSettings,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -245,6 +251,7 @@ impl SettingsDraft {
             startup_use_last_dir: config.startup.use_last_dir,
             startup_fixed_dir: config.startup.fixed_dir.as_deref()
                 .map(|p| p.to_string_lossy().to_string()).unwrap_or_default(),
+            image_filter: viewer_cfg.image_filter,
         }
     }
 
@@ -302,6 +309,8 @@ impl SettingsDraft {
         translate_cfg.translation_model = self.translate_translation_model.trim().to_string();
         translate_cfg.overlay_width = self.translate_overlay_width;
         config.keymap = self.keymap.clone();
+
+        viewer_cfg.image_filter = self.image_filter;
     }
 }
 
@@ -1318,7 +1327,55 @@ impl NekoviewApp {
     }
 
     fn draw_settings_tab_static(&mut self, ui: &mut egui::Ui) {
-        ui.label(i18n::t().settings_static_placeholder());
+        let draft = &mut self.settings_draft;
+
+        ui.label(i18n::t().settings_image_filter_color_section_label());
+        ui.horizontal(|ui| {
+            ui.radio_value(&mut draft.image_filter.color_filter_mode, ColorFilterMode::None, i18n::t().settings_image_filter_mode_none());
+            ui.radio_value(&mut draft.image_filter.color_filter_mode, ColorFilterMode::BlueLightCut, i18n::t().settings_image_filter_mode_blue_light_cut());
+            ui.radio_value(&mut draft.image_filter.color_filter_mode, ColorFilterMode::Sepia, i18n::t().settings_image_filter_mode_sepia());
+            ui.radio_value(&mut draft.image_filter.color_filter_mode, ColorFilterMode::Grayscale, i18n::t().settings_image_filter_mode_grayscale());
+        });
+        ui.label(i18n::t().settings_image_filter_color_explain());
+
+        if draft.image_filter.color_filter_mode == ColorFilterMode::BlueLightCut {
+            ui.indent("image_filter_blc_indent", |ui| {
+                ui.label(i18n::t().settings_image_filter_blc_temp_label());
+                ui.horizontal(|ui| {
+                    for &preset in &BLC_PRESET_TEMPS_K {
+                        if ui.button(format!("{preset}K")).clicked() {
+                            draft.image_filter.blc_color_temperature_k = preset;
+                        }
+                    }
+                });
+                ui.scope(|ui| {
+                    ui.spacing_mut().slider_width = 260.0;
+                    ui.add(egui::Slider::new(&mut draft.image_filter.blc_color_temperature_k, BLC_TEMP_FLOOR_K..=BLC_TEMP_CEILING_K).suffix("K"));
+                });
+                ui.label(i18n::t().settings_image_filter_blc_temp_explain());
+            });
+        }
+
+        ui.separator();
+        ui.label(i18n::t().settings_image_filter_tone_section_label());
+        ui.label(i18n::t().settings_image_filter_tone_explain());
+
+        ui.scope(|ui| {
+            ui.spacing_mut().slider_width = 260.0;
+
+            ui.horizontal(|ui| {
+                ui.label(i18n::t().settings_image_filter_gamma_label());
+                ui.add(egui::Slider::new(&mut draft.image_filter.gamma, GAMMA_FLOOR..=GAMMA_CEILING));
+            });
+            ui.horizontal(|ui| {
+                ui.label(i18n::t().settings_image_filter_brightness_label());
+                ui.add(egui::Slider::new(&mut draft.image_filter.brightness, BRIGHTNESS_FLOOR..=BRIGHTNESS_CEILING).suffix("%"));
+            });
+            ui.horizontal(|ui| {
+                ui.label(i18n::t().settings_image_filter_sharpness_label());
+                ui.add(egui::Slider::new(&mut draft.image_filter.sharpness, SHARPNESS_FLOOR..=SHARPNESS_CEILING));
+            });
+        });
     }
 
     /// 翻訳機能(実験的)タブ。ローカルAI(OpenAI互換API)のURL・モデル取得・翻訳/OCRモデル選択と、

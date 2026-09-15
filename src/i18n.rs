@@ -2125,11 +2125,107 @@ impl Lang {
         }
     }
 
-    pub fn settings_static_placeholder(self) -> &'static str {
+    pub fn settings_image_filter_color_section_label(self) -> &'static str {
         match self {
-            Lang::Japanese => "現在、静止画専用の設定項目はありません",
-            Lang::English  => "No still-image-specific settings yet",
-            Lang::Chinese  => "目前没有静止图像专用设置项",
+            Lang::Japanese => "■ 色系統フィルター",
+            Lang::English  => "■ Color filter",
+            Lang::Chinese  => "■ 色彩滤镜",
+        }
+    }
+
+    pub fn settings_image_filter_color_explain(self) -> &'static str {
+        match self {
+            Lang::Japanese => "同時に有効化できるのは1つのみ。ビューアーの静止画表示にのみ効き、アニメーション再生やサムネイルには影響しない。",
+            Lang::English  => "Only one can be active at a time. Affects the viewer's still-image display only — not animation playback or thumbnails.",
+            Lang::Chinese  => "同一时间只能启用一种。仅影响查看器的静止图像显示，不影响动画播放或缩略图。",
+        }
+    }
+
+    pub fn settings_image_filter_mode_none(self) -> &'static str {
+        match self {
+            Lang::Japanese => "なし",
+            Lang::English  => "None",
+            Lang::Chinese  => "无",
+        }
+    }
+
+    pub fn settings_image_filter_mode_blue_light_cut(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ブルーライトカット",
+            Lang::English  => "Blue light cut",
+            Lang::Chinese  => "蓝光过滤",
+        }
+    }
+
+    pub fn settings_image_filter_mode_sepia(self) -> &'static str {
+        match self {
+            Lang::Japanese => "セピア",
+            Lang::English  => "Sepia",
+            Lang::Chinese  => "怀旧棕褐",
+        }
+    }
+
+    pub fn settings_image_filter_mode_grayscale(self) -> &'static str {
+        match self {
+            Lang::Japanese => "モノクロ",
+            Lang::English  => "Grayscale",
+            Lang::Chinese  => "黑白",
+        }
+    }
+
+    pub fn settings_image_filter_blc_temp_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "色温度",
+            Lang::English  => "Color temperature",
+            Lang::Chinese  => "色温",
+        }
+    }
+
+    pub fn settings_image_filter_blc_temp_explain(self) -> &'static str {
+        match self {
+            Lang::Japanese => "プリセットボタンとスライダーは同じ値を書き換える。最後に操作した方が有効値になる。",
+            Lang::English  => "Preset buttons and the slider write the same value — whichever you touch last takes effect.",
+            Lang::Chinese  => "预设按钮与滑块共用同一个值，以最后操作的为准。",
+        }
+    }
+
+    pub fn settings_image_filter_tone_section_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "■ トーン調整",
+            Lang::English  => "■ Tone adjustments",
+            Lang::Chinese  => "■ 色调调整",
+        }
+    }
+
+    pub fn settings_image_filter_tone_explain(self) -> &'static str {
+        match self {
+            Lang::Japanese => "色系統フィルターとは独立して、常に重ねがけできる。",
+            Lang::English  => "These stack independently of the color filter above and can always be combined.",
+            Lang::Chinese  => "与上方色彩滤镜相互独立，随时可叠加使用。",
+        }
+    }
+
+    pub fn settings_image_filter_gamma_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ガンマ",
+            Lang::English  => "Gamma",
+            Lang::Chinese  => "伽马",
+        }
+    }
+
+    pub fn settings_image_filter_brightness_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ブライトネス",
+            Lang::English  => "Brightness",
+            Lang::Chinese  => "亮度",
+        }
+    }
+
+    pub fn settings_image_filter_sharpness_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "シャープネス",
+            Lang::English  => "Sharpness",
+            Lang::Chinese  => "锐化",
         }
     }
 
