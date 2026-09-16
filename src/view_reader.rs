@@ -1977,13 +1977,18 @@ impl ViewerState {
                 };
                 if let Some(label) = slot_label {
                     let font_size = (slot * 0.28).clamp(8.0, 14.0);
+                    // ヘッダーボタンと同じ考え方：ホバー中だけ不透明に戻し、それ以外は設定透過率に従う。
+                    let label_opacity_pct = if slot_resp.hovered() { 100 } else { self.tool_palette.opacity_pct };
+                    let label_alpha = (label_opacity_pct as f32 / 100.0 * 255.0).round() as u8;
+                    let label_color = egui::Color32::from_white_alpha(label_alpha);
                     let galley = child.painter().layout_no_wrap(
                         label.to_string(),
                         egui::FontId::proportional(font_size),
-                        egui::Color32::WHITE,
+                        label_color,
                     );
-                    let text_pos = slot_rect.center() - galley.size() / 2.0;
-                    child.painter().with_clip_rect(slot_rect).galley(text_pos, galley, egui::Color32::WHITE);
+                    const LABEL_PAD: f32 = 3.0;
+                    let text_pos = slot_rect.min + egui::vec2(LABEL_PAD, LABEL_PAD);
+                    child.painter().with_clip_rect(slot_rect).galley(text_pos, galley, label_color);
                 }
                 if self.tool_palette_open_dialog == Some(idx) {
                     child.painter().rect_filled(slot_rect, 4.0, egui::Color32::from_white_alpha(30));
