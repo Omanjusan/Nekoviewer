@@ -1945,7 +1945,7 @@ impl ViewerState {
 
                 egui::Popup::context_menu(&slot_resp)
                     .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-                    .show(|ui| Self::draw_tool_palette_slot_menu(ui, &mut self.tool_palette.slots[idx]));
+                    .show(|ui| Self::draw_tool_palette_slot_menu(ui, &mut self.tool_palette.slots[idx], &mut self.tool_palette.custom_labels[idx]));
 
                 // 左クリック: Toggle型は即時実行してViewerConfigへ反映する
                 // （既存のpoll_image_filter_changeが差分検知して再デコードをトリガーする）。
@@ -2080,20 +2080,51 @@ impl ViewerState {
         }
     }
 
-    /// マス右クリックの登録メニュー。TOGGLE_DEFS / ALL_DIALOG_KINDS を走査して選択肢を
-    /// 並べる（データ駆動：新規Toggle/Dialog追加時にメニュー側の変更は不要）。
-    fn draw_tool_palette_slot_menu(ui: &mut egui::Ui, content: &mut crate::tool_palette::PaletteSlotContent) {
+    /// マス毎のカスタム名称入力欄の文字数ソフト上限（見た目のはみ出し抑制用の目安）。
+    const TOOL_PALETTE_LABEL_CHAR_LIMIT: usize = 8;
+
+    /// マス右クリックの登録メニュー。先頭に名称変更（サブメニュー内TextEdit）、続けて
+    /// TOGGLE_DEFS / ALL_DIALOG_KINDS を走査して選択肢を並べる（データ駆動：新規Toggle/Dialog
+    /// 追加時にメニュー側の変更は不要）。
+    fn draw_tool_palette_slot_menu(ui: &mut egui::Ui, content: &mut crate::tool_palette::PaletteSlotContent, custom_label: &mut Option<String>) {
         use crate::tool_palette::PaletteSlotContent;
         ui.set_min_width(140.0);
+
+        ui.menu_button("ボタン名称の変更", |ui| {
+            let draft_id = ui.id().with("tp_rename_draft");
+            let mut draft = ui.data_mut(|d| d.get_temp::<String>(draft_id))
+                .unwrap_or_else(|| custom_label.clone().unwrap_or_default());
+            ui.add(
+                egui::TextEdit::singleline(&mut draft)
+                    .char_limit(Self::TOOL_PALETTE_LABEL_CHAR_LIMIT)
+                    .hint_text("空欄で非表示"),
+            );
+            ui.data_mut(|d| d.insert_temp(draft_id, draft.clone()));
+            ui.horizontal(|ui| {
+                if ui.button("OK").clicked() {
+                    *custom_label = Some(draft);
+                    ui.data_mut(|d| d.remove_temp::<String>(draft_id));
+                    ui.close();
+                }
+                if ui.button("キャンセル").clicked() {
+                    ui.data_mut(|d| d.remove_temp::<String>(draft_id));
+                    ui.close();
+                }
+            });
+        });
+        ui.separator();
+
         if !matches!(content, PaletteSlotContent::Empty) {
             if ui.button("空欄に戻す").clicked() {
                 *content = PaletteSlotContent::Empty;
+                *custom_label = None;
             }
             ui.separator();
         }
         for def in crate::tool_palette::TOGGLE_DEFS {
             let checked = matches!(*content, PaletteSlotContent::Toggle(k) if k == def.key);
             if ui.selectable_label(checked, def.label).clicked() {
+                if !checked { *custom_label = None; }
                 *content = PaletteSlotContent::Toggle(def.key);
             }
         }
@@ -2102,6 +2133,7 @@ impl ViewerState {
             let checked = matches!(*content, PaletteSlotContent::Dialog(k) if k == kind);
             let title = crate::tool_palette::create_dialog(kind).title();
             if ui.selectable_label(checked, title).clicked() {
+                if !checked { *custom_label = None; }
                 *content = PaletteSlotContent::Dialog(kind);
             }
         }
