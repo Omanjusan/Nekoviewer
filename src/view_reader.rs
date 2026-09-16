@@ -1972,7 +1972,7 @@ impl ViewerState {
                     egui::Stroke::new(1.0, egui::Color32::from_white_alpha(60)),
                     egui::StrokeKind::Inside,
                 );
-                let slot_label = match content {
+                let default_label = match content {
                     crate::tool_palette::PaletteSlotContent::Toggle(kind) => {
                         Some(crate::tool_palette::find_toggle_def(kind).label)
                     }
@@ -1981,6 +1981,14 @@ impl ViewerState {
                     }
                     crate::tool_palette::PaletteSlotContent::Empty => None,
                 };
+                // カスタム名称: 未設定ならデフォルトラベル、空文字での確定は「何も表示しない」。
+                let slot_label: Option<String> = default_label.and_then(|default| {
+                    match &self.tool_palette.custom_labels[idx] {
+                        Some(custom) if custom.is_empty() => None,
+                        Some(custom) => Some(custom.clone()),
+                        None => Some(default.to_string()),
+                    }
+                });
                 const LABEL_PAD: f32 = 3.0;
                 // ヘッダーボタンと同じ考え方：ホバー中だけ不透明に戻し、それ以外は設定透過率に従う。
                 // 名称・ON/OFF表示の両方で共有する。
@@ -1990,7 +1998,7 @@ impl ViewerState {
                     let font_size = (slot * 0.28).clamp(8.0, 14.0);
                     let label_color = egui::Color32::from_white_alpha(label_alpha);
                     let galley = child.painter().layout_no_wrap(
-                        label.to_string(),
+                        label,
                         egui::FontId::proportional(font_size),
                         label_color,
                     );
