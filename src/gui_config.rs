@@ -123,7 +123,8 @@ pub fn slideshow_manual_behavior_to_str(b: SlideshowManualBehavior) -> &'static 
 }
 
 /// ファイルをまたいで維持するビューア設定（ウィンドウを開き直しても保持）
-#[derive(Clone, Copy)]
+/// tool_paletteがカスタム名称(String)を持つためCopyは実装できない（Cloneのみ）。
+#[derive(Clone)]
 pub struct ViewerConfig {
     /// true = 1:1等倍表示、false = ウィンドウフィット
     pub zoom_actual: bool,
@@ -419,6 +420,8 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
     let mut tool_palette_visible: Option<bool> = None;
     let mut tool_palette_slot_size_idx: Option<usize> = None;
     let mut tool_palette_slots: Option<[PaletteSlotContent; SLOT_COUNT]> = None;
+    // マス毎のカスタム名称。キー無し = None（デフォルトラベルを使う）。空文字は「明示的に空欄」。
+    let mut tool_palette_labels: [Option<String>; SLOT_COUNT] = [(); SLOT_COUNT].map(|_| None);
     let mut has_kv = false;
 
     for line in content.lines() {
@@ -601,6 +604,13 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
                     }
                     tool_palette_slots = Some(slots);
                 }
+                k if k.starts_with("tool_palette_label_") => {
+                    if let Ok(idx) = k["tool_palette_label_".len()..].parse::<usize>()
+                        && idx < SLOT_COUNT
+                    {
+                        tool_palette_labels[idx] = Some(v.trim().to_string());
+                    }
+                }
                 _ => {}
             }
         }
@@ -684,6 +694,7 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
                     visible: tool_palette_visible.unwrap_or(default.visible),
                     slot_size_idx: tool_palette_slot_size_idx.unwrap_or(default.slot_size_idx),
                     slots: tool_palette_slots.unwrap_or(default.slots),
+                    custom_labels: tool_palette_labels,
                 }
             },
         },
@@ -793,6 +804,12 @@ pub fn save_state(root: &Path, dir: &Path, window_size: (u32, u32), viewer_slots
         viewer_cfg.tool_palette.slot_size_idx,
         viewer_cfg.tool_palette.slots.iter().map(|s| slot_content_to_id(*s)).collect::<Vec<_>>().join(","),
     ));
+    // マス毎のカスタム名称。キー無し = デフォルトラベルを使う（Noneのマスは書かない）。
+    for (i, label) in viewer_cfg.tool_palette.custom_labels.iter().enumerate() {
+        if let Some(label) = label {
+            content.push_str(&format!("tool_palette_label_{i}={label}\n"));
+        }
+    }
     // 設定ダイアログ（共通/アニメタブ）が編集する AppConfig 系の値。次回起動から反映されるため、
     // ここでは現在の有効値をそのまま state に書き戻すだけでよい（即時のワーカー再構築は不要）。
     content.push_str(&format!(
@@ -934,6 +951,28 @@ mod tests {
         assert_eq!(tp.slots[0], PaletteSlotContent::Toggle(ToggleKind::BlueLightCut));
         assert_eq!(tp.slots[1], PaletteSlotContent::Dialog(DialogKind::ImageFilter));
         assert!(tp.slots[2..].iter().all(|s| *s == PaletteSlotContent::Empty));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn tool_palette_labels_roundtrip_through_state_file() {
+        let root = std::env::temp_dir()
+            .join(format!("nekoviewer_state_tool_palette_label_test_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&root);
+        std::fs::write(
+            state_path(&root),
+            "last_dir=/tmp/x\nlang=ja\n\
+             tool_palette_label_0=GC\ntool_palette_label_1=\n",
+        )
+        .unwrap();
+
+        let parsed = parse_state_file(&state_path(&root)).expect("state file parses");
+        let labels = parsed.viewer_cfg.tool_palette.custom_labels;
+        assert_eq!(labels[0].as_deref(), Some("GC"));
+        // 空文字での確定 = 「明示的に空欄」であり、キー自体はNoneと区別する。
+        assert_eq!(labels[1].as_deref(), Some(""));
+        assert!(labels[2..].iter().all(|l| l.is_none()));
 
         let _ = std::fs::remove_dir_all(&root);
     }

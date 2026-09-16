@@ -1328,7 +1328,7 @@ impl ViewerState {
         // ツールパレットの状態を初回フレームで一度だけ cfg から読み込む（起動時の復元）。
         if !self.tool_palette_initialized {
             self.tool_palette_initialized = true;
-            self.tool_palette = cfg.tool_palette;
+            self.tool_palette = cfg.tool_palette.clone();
         }
 
         // 右クリックメニューのスライドショーチェックボックス操作を反映する。
@@ -1489,7 +1489,7 @@ impl ViewerState {
             rotation_angle,
             transition_kind: self.effective_transition_kind(cfg),
         };
-        let tool_palette_before = self.tool_palette;
+        let tool_palette_before = self.tool_palette.clone();
         let (double_clicked, single_clicked) = self.draw_central_panel(ui, &frame, &input, is_spread, step, total, cfg);
         if self.tool_palette != tool_palette_before {
             self.tool_palette_last_changed = Some(Instant::now());
@@ -1533,7 +1533,7 @@ impl ViewerState {
         let debounce = Duration::from_millis(crate::tool_palette::PERSIST_DEBOUNCE_MS);
         let elapsed = changed_at.elapsed();
         if elapsed >= debounce {
-            cfg.tool_palette = self.tool_palette;
+            cfg.tool_palette = self.tool_palette.clone();
             self.tool_palette_last_changed = None;
             true
         } else {

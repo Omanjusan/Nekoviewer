@@ -43,8 +43,10 @@ pub enum PaletteSlotContent {
 /// 座標変化のたびにディスク書き込みが走るのを防ぐ（image_filterの即時セーブと同じ考え方）。
 pub const PERSIST_DEBOUNCE_MS: u64 = 500;
 
-/// ツールパレット本体の状態。ViewerConfig（Copy）に埋め込むためCopyも実装する。
-#[derive(Clone, Copy, PartialEq, Debug)]
+/// ツールパレット本体の状態。カスタム名称(String)を持つためCopyは実装できない
+/// （以前はCopyだった。ViewerConfig側もCloneのみに変更済み）。フレーム毎の変更検知は
+/// 値コピーではなくclone()で行う。
+#[derive(Clone, PartialEq, Debug)]
 pub struct PaletteState {
     /// パレット左上のスクリーン座標
     pub pos: (f32, f32),
@@ -58,6 +60,9 @@ pub struct PaletteState {
     pub slot_size_idx: usize,
     /// 各マスの内容。GRID_COLS×GRID_ROWS、行優先（index = row*GRID_COLS+col）
     pub slots: [PaletteSlotContent; SLOT_COUNT],
+    /// マス毎のカスタム表示名。Noneならデフォルトラベル（Toggle/Dialogの定義名）を使う。
+    /// 空文字での確定は「何も表示しない」を意味し、デフォルトへは戻さない。
+    pub custom_labels: [Option<String>; SLOT_COUNT],
 }
 
 impl PaletteState {
@@ -81,6 +86,7 @@ impl Default for PaletteState {
             visible: true,
             slot_size_idx: SLOT_SIZE_DEFAULT_IDX,
             slots: [PaletteSlotContent::Empty; SLOT_COUNT],
+            custom_labels: [(); SLOT_COUNT].map(|_| None),
         }
     }
 }
@@ -141,5 +147,6 @@ mod tests {
         let st = PaletteState::default();
         assert!(st.slots.iter().all(|s| *s == PaletteSlotContent::Empty));
         assert_eq!(st.slots.len(), GRID_COLS * GRID_ROWS);
+        assert!(st.custom_labels.iter().all(|l| l.is_none()));
     }
 }

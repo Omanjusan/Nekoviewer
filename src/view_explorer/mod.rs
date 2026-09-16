@@ -789,6 +789,11 @@ impl NekoviewApp {
         let max_decode_target = (config.max_decode_edge, config.max_decode_edge);
         let config_root = config.config_root.clone();
         let settings_draft = SettingsDraft::from_current(&config, &viewer_cfg, show_hidden, card_date_format, &translate_cfg);
+        // viewer_cfg は下でArc<Mutex<..>>へムーブするため、そこで必要な値は先に控えておく
+        // （config_root等、他のconfig系フィールドと同じ扱い）。
+        let redecode_trigger_seq = viewer_cfg.redecode_trigger_seq;
+        let exif_orientation_enabled = viewer_cfg.exif_orientation_enabled;
+        let image_filter_snapshot = viewer_cfg.image_filter;
         let (req_tx, res_rx) = spawn_worker(config.viewer_filter.to_image_filter(), config.resolved_decode_threads(), ctx.clone(), cache_max, ring_bounds, frame_hard_limit_bytes);
         let (thumb_req_tx, thumb_res_rx, thumb_session) =
             spawn_thumb_worker(config.resolved_decode_threads(), ctx.clone());
@@ -989,14 +994,14 @@ impl NekoviewApp {
             viewer_egui_ctx: None,
             translate_egui_ctx: None,
             translate_last_seen_parent_keys: Vec::new(),
-            resize_redecode_last_seq: viewer_cfg.redecode_trigger_seq,
+            resize_redecode_last_seq: redecode_trigger_seq,
             resize_redecode_deadline: None,
             decode_target: Some(max_decode_target),
             active_decode_generation: 0,
             preparing_decode_generation: None,
             decode_generation: 0,
-            exif_orientation_enabled_last_seen: viewer_cfg.exif_orientation_enabled,
-            image_filter_last_seen: viewer_cfg.image_filter,
+            exif_orientation_enabled_last_seen: exif_orientation_enabled,
+            image_filter_last_seen: image_filter_snapshot,
         };
         app.start_scan();
         app.refresh_favorite_folders();
