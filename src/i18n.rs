@@ -1011,11 +1011,14 @@ impl Lang {
         }
     }
 
-    pub fn tool_palette_toggle_button(self) -> &'static str {
-        match self {
-            Lang::Japanese => "ツールボックス",
-            Lang::English  => "Toolbox",
-            Lang::Chinese  => "工具箱",
+    pub fn tool_palette_toggle_button(self, on: bool) -> &'static str {
+        match (self, on) {
+            (Lang::Japanese, true)  => "ツールボックスON",
+            (Lang::Japanese, false) => "ツールボックスOFF",
+            (Lang::English, true)   => "Toolbox: ON",
+            (Lang::English, false)  => "Toolbox: OFF",
+            (Lang::Chinese, true)   => "工具箱：开",
+            (Lang::Chinese, false)  => "工具箱：关",
         }
     }
 

@@ -52,6 +52,7 @@ impl NekoviewApp {
     pub(super) fn poll_resize_redecode(&mut self, ctx: &egui::Context) {
         self.poll_exif_toggle();
         self.poll_image_filter_change();
+        self.poll_tool_palette_visible_change();
         let (redecode_on, debounce_ms, seq) = {
             let cfg = self.viewer_cfg.lock().unwrap();
             (cfg.redecode_on_resize, cfg.resize_debounce_ms, cfg.redecode_trigger_seq)
@@ -334,6 +335,20 @@ impl NekoviewApp {
         if now != self.image_filter_last_seen {
             self.image_filter_last_seen = now;
             self.redecode_after_image_filter_change();
+        }
+    }
+
+    /// エクスプローラーメニューのツールボックストグルで viewer_cfg.tool_palette.visible が
+    /// 変わっても、開きっぱなしのビューアー（ViewerStateはcfgを起動時に一度コピーして以後は
+    /// 自分の変更をcfgへ書き戻すだけの片方向同期）へライブ反映されないため、他の変化検知と
+    /// 同じ方式で毎フレーム拾ってViewerState側へ書き戻す。
+    fn poll_tool_palette_visible_change(&mut self) {
+        let now = self.viewer_cfg.lock().unwrap().tool_palette.visible;
+        if now != self.tool_palette_visible_last_seen {
+            self.tool_palette_visible_last_seen = now;
+            if let Some(v) = self.viewer.lock().unwrap().as_mut() {
+                v.sync_tool_palette_visible(now);
+            }
         }
     }
 

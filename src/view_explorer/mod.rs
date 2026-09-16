@@ -762,6 +762,9 @@ pub struct NekoviewApp {
     exif_orientation_enabled_last_seen: bool,
     /// viewer_cfg.image_filter の変化検知用（exif_orientation_enabled_last_seenと同じ方式）。
     image_filter_last_seen: crate::image_filter::ImageFilterSettings,
+    /// viewer_cfg.tool_palette.visible の変化検知用。エクスプローラーメニューのトグルで
+    /// 変更された値をビューアー側（開きっぱなしのViewerState）へライブ反映するのに使う。
+    tool_palette_visible_last_seen: bool,
 }
 
 mod scan;
@@ -798,6 +801,7 @@ impl NekoviewApp {
         let redecode_trigger_seq = viewer_cfg.redecode_trigger_seq;
         let exif_orientation_enabled = viewer_cfg.exif_orientation_enabled;
         let image_filter_snapshot = crate::image_filter::normalize_for_change_detection(viewer_cfg.image_filter);
+        let tool_palette_visible_snapshot = viewer_cfg.tool_palette.visible;
         let (req_tx, res_rx) = spawn_worker(config.viewer_filter.to_image_filter(), config.resolved_decode_threads(), ctx.clone(), cache_max, ring_bounds, frame_hard_limit_bytes);
         let (thumb_req_tx, thumb_res_rx, thumb_session) =
             spawn_thumb_worker(config.resolved_decode_threads(), ctx.clone());
@@ -1006,6 +1010,7 @@ impl NekoviewApp {
             decode_generation: 0,
             exif_orientation_enabled_last_seen: exif_orientation_enabled,
             image_filter_last_seen: image_filter_snapshot,
+            tool_palette_visible_last_seen: tool_palette_visible_snapshot,
         };
         app.start_scan();
         app.refresh_favorite_folders();

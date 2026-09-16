@@ -1545,6 +1545,13 @@ impl ViewerState {
     }
 
     /// ツールパレットの変更確定処理。image_filterのpoll_image_filter_debounceと同じ考え方で、
+    /// cfg.tool_palette.visible の外部変更（エクスプローラーメニューのトグル等）をライブ反映する。
+    /// self.tool_palette 全体ではなくvisibleのみ同期する（ドラッグ中の座標やマス内容など、
+    /// ローカルで編集中かもしれない他フィールドを巻き戻さないため）。
+    pub fn sync_tool_palette_visible(&mut self, visible: bool) {
+        self.tool_palette.visible = visible;
+    }
+
     /// self.tool_palette が最後に変化してからPERSIST_DEBOUNCE_MS経過したらcfgへ書き込む
     /// （ドラッグ中の連続した座標変化のたびにディスク書き込みが走るのを防ぐ）。
     /// 確定した瞬間だけtrueを返し、呼び出し元(app側)にpersist_state()を促す。
