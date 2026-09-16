@@ -1,11 +1,7 @@
 //! ビューアー内ツールパレット（オーバーレイ、カスタマイザブルなグリッド式ショートカット）。
 //! 固定5x2グリッド。各マスは空欄／ワンアクション型（Toggle）／ダイアログ型（Dialog）の
-//! いずれかを保持する。座標・LOCK・透過度・可視性・マス内容は nekoviewer_spread.redb へ
-//! 永続化する（favorites.rs と同様の方式。load/save本体の実装はPhase5）。
-
-use std::sync::{Arc, Mutex};
-
-use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
+//! いずれかを保持する。座標・LOCK・透過度・可視性・マス内容は ViewerConfig（gui_config.rs の
+//! state ファイル、image_filter と同じ key=value 方式）へ永続化する。
 
 pub mod dialog;
 pub mod toggle;
@@ -48,8 +44,12 @@ impl Default for PaletteSlotContent {
     }
 }
 
-/// ツールパレット本体の状態。ViewerConfigとは別に管理する。
-#[derive(Clone, Debug)]
+/// state ファイルへ確定保存するまでのデバウンス時間(ms)。ドラッグ中の連続した
+/// 座標変化のたびにディスク書き込みが走るのを防ぐ（image_filterの即時セーブと同じ考え方）。
+pub const PERSIST_DEBOUNCE_MS: u64 = 500;
+
+/// ツールパレット本体の状態。ViewerConfig（Copy）に埋め込むためCopyも実装する。
+#[derive(Clone, Copy, PartialEq, Debug)]
 pub struct PaletteState {
     /// パレット左上のスクリーン座標
     pub pos: (f32, f32),
@@ -90,29 +90,9 @@ impl Default for PaletteState {
     }
 }
 
-// ── 永続化（nekoviewer_spread.redb） ────────────────────────────────
-// スキーマ定義のみここで確定させる。load/save本体・呼び出し元への配線はPhase5で行う。
-
-/// キー固定=0（単一レコード）。値=(x, y, locked, opacity_pct, visible, slot_size_idx)
-pub const PALETTE_STATE_TABLE: TableDefinition<u8, (f32, f32, bool, u8, bool, u8)> =
-    TableDefinition::new("tool_palette_state");
-
-/// キー=スロットindex(0〜SLOT_COUNT-1)。値=内容ID文字列
-/// （"empty" / "toggle:<ToggleKind::id()>" / "dialog:<DialogKind::id()>"）。
-/// レコードが無いスロットは Empty 扱い（前方互換：知らないIDも読み捨ててEmpty扱い）。
-pub const PALETTE_SLOTS_TABLE: TableDefinition<u8, &str> =
-    TableDefinition::new("tool_palette_slots");
-
-/// 既存の spread_state 用 DB（nekoviewer_spread.redb）にツールパレット用テーブルを
-/// 追加する。テーブルが無ければ自動作成される（redb の性質上マイグレーション不要）。
-pub fn init_palette_tables(db: &Arc<Mutex<Database>>) -> Option<()> {
-    let db = db.lock().ok()?;
-    let tx = db.begin_write().ok()?;
-    tx.open_table(PALETTE_STATE_TABLE).ok()?;
-    tx.open_table(PALETTE_SLOTS_TABLE).ok()?;
-    tx.commit().ok()?;
-    Some(())
-}
+// ── 永続化（gui_config.rs の state ファイル） ───────────────────────
+// PaletteState自体はViewerConfigにそのまま埋め込む。ここではスロット内容⇔文字列の
+// 変換のみ提供する（gui_config.rsがカンマ区切りで tool_palette_slots として読み書きする）。
 
 /// スロット内容 → 永続化用ID文字列。
 pub fn slot_content_to_id(content: PaletteSlotContent) -> String {

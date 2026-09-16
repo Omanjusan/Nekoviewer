@@ -476,6 +476,11 @@ pub struct ViewerState {
     /// 展開中のDialog型マスのindex。Noneなら閉じている。同じマスを再クリックするか
     /// 展開領域外をクリックすると閉じる（1個の状態のみ保持＝同時に開けるのは1マス分）。
     tool_palette_open_dialog: Option<usize>,
+    /// 起動後の初回フレームで cfg.tool_palette から self.tool_palette を読み込んだか。
+    tool_palette_initialized: bool,
+    /// self.tool_palette が最後に変化した時刻。PERSIST_DEBOUNCE_MS 経過したら
+    /// cfg.tool_palette へ確定反映し、ViewerOutput経由でapp側にpersist_state()を促す。
+    tool_palette_last_changed: Option<Instant>,
 }
 
 impl ViewerState {
@@ -686,6 +691,8 @@ impl ViewerState {
             slideshow_auto_advance_pending: false,
             tool_palette: crate::tool_palette::PaletteState::default(),
             tool_palette_open_dialog: None,
+            tool_palette_initialized: false,
+            tool_palette_last_changed: None,
         }
     }
 
@@ -764,6 +771,8 @@ impl ViewerState {
             slideshow_auto_advance_pending: false,
             tool_palette: crate::tool_palette::PaletteState::default(),
             tool_palette_open_dialog: None,
+            tool_palette_initialized: false,
+            tool_palette_last_changed: None,
         }
     }
 
@@ -1303,7 +1312,7 @@ impl ViewerState {
         let ctx = ui.ctx().clone();
         let viewer_style = ui.style().clone();
         if !self.open || self.entries.is_empty() {
-            return ViewerOutput { nav: ViewerNav::None, close_requested: !self.open, save_slots: None, spread_save_action: None, sort_save_action: None, thumbnail_save_action: None, bookmark_save_action: None, favorite_add_requested: false, toggle_translate_window: false };
+            return ViewerOutput { nav: ViewerNav::None, close_requested: !self.open, save_slots: None, spread_save_action: None, sort_save_action: None, thumbnail_save_action: None, bookmark_save_action: None, favorite_add_requested: false, toggle_translate_window: false, tool_palette_changed: false };
         }
 
         // ── フレーム入力を一括収集（ctx.input はこの1回のみ）────────────────
@@ -1315,6 +1324,12 @@ impl ViewerState {
 
         // 既定スロットを初回フレームで一度だけ適用（クランプ付き）。
         self.apply_default_slot(&ctx, input.monitor_size);
+
+        // ツールパレットの状態を初回フレームで一度だけ cfg から読み込む（起動時の復元）。
+        if !self.tool_palette_initialized {
+            self.tool_palette_initialized = true;
+            self.tool_palette = cfg.tool_palette;
+        }
 
         // 右クリックメニューのスライドショーチェックボックス操作を反映する。
         if self.pending_slideshow_toggle {
@@ -1474,7 +1489,12 @@ impl ViewerState {
             rotation_angle,
             transition_kind: self.effective_transition_kind(cfg),
         };
+        let tool_palette_before = self.tool_palette;
         let (double_clicked, single_clicked) = self.draw_central_panel(ui, &frame, &input, is_spread, step, total, cfg);
+        if self.tool_palette != tool_palette_before {
+            self.tool_palette_last_changed = Some(Instant::now());
+        }
+        let tool_palette_changed = self.poll_tool_palette_debounce(cfg, &ctx);
 
         // メイン画像シングルクリックでサムネバーの自動非表示タイマーを早送りし、即座に隠す。
         // idle_hide_ms == 0（常時表示設定）のときは早送り対象のタイマー自体が存在しないため何もしない。
@@ -1501,7 +1521,25 @@ impl ViewerState {
         let toggle_translate_window = self.take_translate_toggle_request();
         self.maybe_open_file_detail_dialog();
         self.draw_file_detail_dialog(&ctx);
-        ViewerOutput { nav, close_requested: close_self, save_slots, spread_save_action, sort_save_action, thumbnail_save_action, bookmark_save_action, favorite_add_requested, toggle_translate_window }
+        ViewerOutput { nav, close_requested: close_self, save_slots, spread_save_action, sort_save_action, thumbnail_save_action, bookmark_save_action, favorite_add_requested, toggle_translate_window, tool_palette_changed }
+    }
+
+    /// ツールパレットの変更確定処理。image_filterのpoll_image_filter_debounceと同じ考え方で、
+    /// self.tool_palette が最後に変化してからPERSIST_DEBOUNCE_MS経過したらcfgへ書き込む
+    /// （ドラッグ中の連続した座標変化のたびにディスク書き込みが走るのを防ぐ）。
+    /// 確定した瞬間だけtrueを返し、呼び出し元(app側)にpersist_state()を促す。
+    fn poll_tool_palette_debounce(&mut self, cfg: &mut ViewerConfig, ctx: &egui::Context) -> bool {
+        let Some(changed_at) = self.tool_palette_last_changed else { return false };
+        let debounce = Duration::from_millis(crate::tool_palette::PERSIST_DEBOUNCE_MS);
+        let elapsed = changed_at.elapsed();
+        if elapsed >= debounce {
+            cfg.tool_palette = self.tool_palette;
+            self.tool_palette_last_changed = None;
+            true
+        } else {
+            ctx.request_repaint_after(debounce - elapsed);
+            false
+        }
     }
 
     /// ビューアーを開いた直後（初回フレーム）に conf 既定スロットを一度だけ適用する。

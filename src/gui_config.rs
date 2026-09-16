@@ -14,6 +14,7 @@ use crate::image_filter::{
 };
 use crate::toolbar::{BAR_ITEM_COUNT, DEFAULT_BAR_ORDER, ViewerBarItem, bar_order_to_str, parse_bar_order};
 use crate::translate::TranslateConfig;
+use crate::tool_palette::{PaletteState, PaletteSlotContent, SLOT_COUNT, slot_content_to_id, slot_content_from_id};
 
 // ── State ファイル（動的状態: 最後のディレクトリ・ウィンドウサイズ）────────────
 
@@ -183,6 +184,9 @@ pub struct ViewerConfig {
     /// 画像処理フィルター（ブルーライトカット／セピア／モノクロ／ガンマ／ブライトネス／
     /// シャープネス）の設定一式。永続設定。設定画面・ツールバー等の複数導線から同じ値を書き換える。
     pub image_filter: ImageFilterSettings,
+    /// ビューアー内ツールパレット（オーバーレイ）の座標・LOCK・透過度・マスサイズ・
+    /// 可視性・マス内容。永続設定。ViewerState側の実行時キャッシュから500msデバウンスで反映される。
+    pub tool_palette: PaletteState,
 }
 
 impl Default for ViewerConfig {
@@ -212,6 +216,7 @@ impl Default for ViewerConfig {
             slideshow_transition_kind: TransitionKind::HorizontalSlide,
             slideshow_transition_duration_ms: 1000,
             image_filter: ImageFilterSettings::default(),
+            tool_palette: PaletteState::default(),
         }
     }
 }
@@ -407,6 +412,13 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
     let mut image_filter_sharpness: Option<f32> = None;
     let mut image_filter_sharpness_enabled: Option<bool> = None;
     let mut image_filter_order: Option<[crate::image_filter::FilterStage; crate::image_filter::FILTER_STAGE_COUNT]> = None;
+    let mut tool_palette_pos_x: Option<f32> = None;
+    let mut tool_palette_pos_y: Option<f32> = None;
+    let mut tool_palette_locked: Option<bool> = None;
+    let mut tool_palette_opacity_pct: Option<u8> = None;
+    let mut tool_palette_visible: Option<bool> = None;
+    let mut tool_palette_slot_size_idx: Option<usize> = None;
+    let mut tool_palette_slots: Option<[PaletteSlotContent; SLOT_COUNT]> = None;
     let mut has_kv = false;
 
     for line in content.lines() {
@@ -568,6 +580,27 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
                 "image_filter_gamma_enabled" => { image_filter_gamma_enabled = v.trim().parse().ok(); }
                 "image_filter_brightness_enabled" => { image_filter_brightness_enabled = v.trim().parse().ok(); }
                 "image_filter_sharpness_enabled" => { image_filter_sharpness_enabled = v.trim().parse().ok(); }
+                "tool_palette_pos_x" => { tool_palette_pos_x = v.trim().parse().ok(); }
+                "tool_palette_pos_y" => { tool_palette_pos_y = v.trim().parse().ok(); }
+                "tool_palette_locked" => { tool_palette_locked = v.trim().parse().ok(); }
+                "tool_palette_opacity_pct" => {
+                    tool_palette_opacity_pct = v.trim().parse::<u8>().ok()
+                        .map(|n| n.clamp(crate::tool_palette::OPACITY_FLOOR_PCT, crate::tool_palette::OPACITY_CEILING_PCT));
+                }
+                "tool_palette_visible" => { tool_palette_visible = v.trim().parse().ok(); }
+                "tool_palette_slot_size_idx" => {
+                    tool_palette_slot_size_idx = v.trim().parse::<usize>().ok()
+                        .map(|n| n.min(crate::tool_palette::SLOT_SIZE_STEPS_PX.len() - 1));
+                }
+                "tool_palette_slots" => {
+                    // 前方互換: 未知IDはEmpty扱い、要素が足りない/多い場合はSLOT_COUNT基準で埋める/切り捨てる。
+                    let parsed: Vec<PaletteSlotContent> = v.split(',').map(slot_content_from_id).collect();
+                    let mut slots = [PaletteSlotContent::Empty; SLOT_COUNT];
+                    for (i, s) in parsed.into_iter().take(SLOT_COUNT).enumerate() {
+                        slots[i] = s;
+                    }
+                    tool_palette_slots = Some(slots);
+                }
                 _ => {}
             }
         }
@@ -641,6 +674,17 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
                 sharpness: image_filter_sharpness.unwrap_or(crate::image_filter::SHARPNESS_DEFAULT),
                 sharpness_enabled: image_filter_sharpness_enabled.unwrap_or(true),
                 filter_order: image_filter_order.unwrap_or(crate::image_filter::DEFAULT_FILTER_ORDER),
+            },
+            tool_palette: {
+                let default = PaletteState::default();
+                PaletteState {
+                    pos: (tool_palette_pos_x.unwrap_or(default.pos.0), tool_palette_pos_y.unwrap_or(default.pos.1)),
+                    locked: tool_palette_locked.unwrap_or(default.locked),
+                    opacity_pct: tool_palette_opacity_pct.unwrap_or(default.opacity_pct),
+                    visible: tool_palette_visible.unwrap_or(default.visible),
+                    slot_size_idx: tool_palette_slot_size_idx.unwrap_or(default.slot_size_idx),
+                    slots: tool_palette_slots.unwrap_or(default.slots),
+                }
             },
         },
         show_hidden: show_hidden.unwrap_or(false),
@@ -738,6 +782,16 @@ pub fn save_state(root: &Path, dir: &Path, window_size: (u32, u32), viewer_slots
         viewer_cfg.image_filter.gamma_enabled,
         viewer_cfg.image_filter.brightness_enabled,
         viewer_cfg.image_filter.sharpness_enabled,
+    ));
+    content.push_str(&format!(
+        "tool_palette_pos_x={}\ntool_palette_pos_y={}\ntool_palette_locked={}\ntool_palette_opacity_pct={}\ntool_palette_visible={}\ntool_palette_slot_size_idx={}\ntool_palette_slots={}\n",
+        viewer_cfg.tool_palette.pos.0,
+        viewer_cfg.tool_palette.pos.1,
+        viewer_cfg.tool_palette.locked,
+        viewer_cfg.tool_palette.opacity_pct,
+        viewer_cfg.tool_palette.visible,
+        viewer_cfg.tool_palette.slot_size_idx,
+        viewer_cfg.tool_palette.slots.iter().map(|s| slot_content_to_id(*s)).collect::<Vec<_>>().join(","),
     ));
     // 設定ダイアログ（共通/アニメタブ）が編集する AppConfig 系の値。次回起動から反映されるため、
     // ここでは現在の有効値をそのまま state に書き戻すだけでよい（即時のワーカー再構築は不要）。

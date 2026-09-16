@@ -538,6 +538,10 @@ impl NekoviewApp {
             self.persist_state();
         }
 
+        if output.tool_palette_changed {
+            self.persist_state();
+        }
+
         if let Some(action) = output.spread_save_action {
             self.handle_spread_save_action(action);
         }

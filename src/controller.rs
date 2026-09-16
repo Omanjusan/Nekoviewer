@@ -73,6 +73,9 @@ pub struct ViewerOutput {
     pub favorite_add_requested: bool,
     /// true のとき app 側でOCR/翻訳子ウィンドウの開閉をトグルする
     pub toggle_translate_window: bool,
+    /// true のとき app 側で persist_state() を呼ぶ（ツールパレットの座標/設定/マス内容が
+    /// デバウンス経由で viewer_cfg.tool_palette へ確定した直後の1フレームだけtrue）。
+    pub tool_palette_changed: bool,
 }
 
 // ── ステータス即時更新要求 ────────────────────────────────────────────────────
