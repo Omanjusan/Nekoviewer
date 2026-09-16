@@ -338,15 +338,16 @@ impl NekoviewApp {
     }
 
     /// 画像処理フィルター設定を変更した直後に呼ぶ。EXIF Orientationトグルと同じく即時発火
-    /// （ドラッグ中のデバウンスは別フェーズでスライダー側に実装する）。開いているアーカイブの
-    /// PageCacheエントリを全破棄し、ビューアー側のテクスチャ/アニメ状態も全ページぶん破棄する
-    /// （アニメページも静止画と同じ再デコード経路に乗るため再生位置は先頭に戻る）。
+    /// （ドラッグ中のデバウンスは別フェーズでスライダー側に実装する）。フィルターは
+    /// PageContent::Staticにしか適用されないため、開いているアーカイブの静止画エントリのみ
+    /// 破棄する。アニメページ（PageCache::animations・ViewerState::anim_states）は一切
+    /// 触らないので、見開きで片方がアニメでも再生位置は維持されたまま静止画側だけ再デコードされる。
     fn redecode_after_image_filter_change(&mut self) {
         let Some(path) = self.viewer.lock().unwrap().as_ref().map(|v| v.archive_path().clone()) else { return };
-        self.page_cache.lock().unwrap().remove_all_for_path(&path);
+        self.page_cache.lock().unwrap().remove_static_pages_for_path(&path);
         self.begin_new_decode_generation();
         if let Some(v) = self.viewer.lock().unwrap().as_mut() {
-            v.invalidate_all_pages();
+            v.invalidate_static_pages();
         }
     }
 

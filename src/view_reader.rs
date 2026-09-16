@@ -602,6 +602,17 @@ impl ViewerState {
         self.anim_states.clear();
     }
 
+    /// 画像処理フィルター変更時の再デコード用。`anim_states`に登録済み（＝アニメーションとして
+    /// 再生中）のページは textures/texture_generations も保持し、静止画ページのぶんだけを
+    /// 無効化する。`anim_states`自体は一切クリアしない（クリアするとframe_indexが失われ、
+    /// 再生位置が先頭へ戻ってしまうため）。見開きで片方が静止画・片方がアニメの場合でも、
+    /// 静止画側だけが対象になる。
+    pub fn invalidate_static_pages(&mut self) {
+        let animated_pages = &self.anim_states;
+        self.textures.retain(|orig_i, _| animated_pages.contains_key(orig_i));
+        self.texture_generations.retain(|orig_i, _| animated_pages.contains_key(orig_i));
+    }
+
     pub fn new(archive_path: PathBuf, slots: [Option<WindowSlot>; 4], default_slot: Option<usize>) -> Option<Self> {
         let image_entries = archive::list_images(&archive_path);
         if image_entries.is_empty() {

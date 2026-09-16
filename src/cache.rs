@@ -1227,6 +1227,29 @@ impl PageCache {
         self.known_animation_bypass.retain(|(p, _)| p != path);
     }
 
+    /// 画像処理フィルター変更時の再デコード用。静止画エントリ（`entries`・bypassスロット・
+    /// `known_bypass`記憶）のみ破棄し、アニメーション側（`animations`・animation_bypass・
+    /// `known_animation_bypass`）には一切触れない。フィルターは`PageContent::Static`にしか
+    /// 適用されない（cache.rsのデコードワーカー参照）ため、アニメページを巻き込んで
+    /// 再生位置をリセットする必要がない。
+    pub fn remove_static_pages_for_path(&mut self, path: &PathBuf) {
+        let stale_keys: Vec<(PathBuf, usize, u64)> = self.entries.keys()
+            .filter(|(p, _, _)| p == path)
+            .cloned()
+            .collect();
+        for key in stale_keys {
+            if let Some(content) = self.entries.remove(&key) {
+                self.total_bytes = self.total_bytes.saturating_sub(content_bytes(&content));
+            }
+        }
+        if let Some(((bp, _, _), _)) = &self.bypass {
+            if bp == path {
+                self.bypass = None;
+            }
+        }
+        self.known_bypass.retain(|(p, _, _)| p != path);
+    }
+
     /// キャッシュに追加する。予算超過時は最遠エントリを evict する。
     /// 単一アイテムが予算全体を超える場合は LRU を汚さず bypass スロットに格納する。
     pub fn insert(
@@ -2353,6 +2376,42 @@ mod ring_integration_tests {
         assert!(!cache.contains_animation(&path, 0));
         assert!(cache.get_best(&path, 0, 10, Some(11)).is_none());
         assert_eq!(cache.total_bytes(), 0);
+    }
+
+    #[test]
+    fn remove_static_pages_for_path_keeps_animation_but_drops_static() {
+        let bytes = encode_gif_frames_mixed(&[(10, 10), (10, 10), (10, 10)]);
+        let anim_content = decode_ring_anim(
+            &bytes,
+            AnimFormat::Gif,
+            image::imageops::FilterType::Triangle,
+            TEST_RING_BUDGET_BYTES,
+            TEST_RING_BOUNDS,
+            TEST_FRAME_HARD_LIMIT_BYTES,
+            Some((1920, 1080)),
+            true,
+        )
+        .expect("GIFとしてデコードできるはず");
+        let path = PathBuf::from("mixed.zip");
+        let mut cache = PageCache::new(10 * MB, 0);
+        // ページ0=アニメ、ページ1=静止画の混在アーカイブを想定。
+        cache.insert(path.clone(), 0, 10, anim_content, &path, 0);
+        cache.insert(
+            path.clone(), 1, 10,
+            PageContent::Static(image::RgbaImage::new(2, 2)),
+            &path, 0,
+        );
+
+        cache.remove_static_pages_for_path(&path);
+
+        assert!(
+            cache.contains_animation(&path, 0),
+            "アニメーションページはフィルター変更の再デコードに巻き込まれないはず"
+        );
+        assert!(
+            !cache.contains(&path, 1, 10),
+            "静止画ページは再デコード対象として破棄されるはず"
+        );
     }
 
     /// リサイズ/原寸切替/フルスクリーンの再デコード経路: `drop_animation_for_redecode` が
