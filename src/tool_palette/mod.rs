@@ -3,9 +3,11 @@
 //! いずれかを保持する。座標・LOCK・透過度・可視性・マス内容は ViewerConfig（gui_config.rs の
 //! state ファイル、image_filter と同じ key=value 方式）へ永続化する。
 
+pub mod action;
 pub mod dialog;
 pub mod toggle;
 
+pub use action::{ActionKind, ALL_ACTION_KINDS};
 pub use dialog::{create_dialog, DialogKind, ALL_DIALOG_KINDS};
 pub use toggle::{execute_toggle, find_toggle_def, ToggleKind, TOGGLE_DEFS};
 
@@ -37,6 +39,9 @@ pub enum PaletteSlotContent {
     Toggle(ToggleKind),
     /// ダイアログ型（クリックでミニUI展開）
     Dialog(DialogKind),
+    /// ワンアクション型（ページ送り/戻り。ViewerStateの状態を直接操作するため
+    /// Toggleとは異なりview_reader.rs側で実行本体を持つ）
+    Action(ActionKind),
 }
 
 /// state ファイルへ確定保存するまでのデバウンス時間(ms)。ドラッグ中の連続した
@@ -105,6 +110,7 @@ pub fn slot_content_to_id(content: PaletteSlotContent) -> String {
         PaletteSlotContent::Empty => "empty".to_string(),
         PaletteSlotContent::Toggle(k) => format!("toggle:{}", k.id()),
         PaletteSlotContent::Dialog(k) => format!("dialog:{}", k.id()),
+        PaletteSlotContent::Action(k) => format!("action:{}", k.id()),
     }
 }
 
@@ -120,6 +126,11 @@ pub fn slot_content_from_id(s: &str) -> PaletteSlotContent {
     {
         return PaletteSlotContent::Dialog(k);
     }
+    if let Some(rest) = s.strip_prefix("action:")
+        && let Some(k) = ActionKind::from_id(rest)
+    {
+        return PaletteSlotContent::Action(k);
+    }
     PaletteSlotContent::Empty
 }
 
@@ -133,6 +144,8 @@ mod tests {
             PaletteSlotContent::Empty,
             PaletteSlotContent::Toggle(ToggleKind::BlueLightCut),
             PaletteSlotContent::Dialog(DialogKind::ImageFilter),
+            PaletteSlotContent::Action(ActionKind::NextPage),
+            PaletteSlotContent::Action(ActionKind::PrevPage),
         ];
         for c in cases {
             let id = slot_content_to_id(c);

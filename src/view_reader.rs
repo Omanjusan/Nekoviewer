@@ -1895,7 +1895,7 @@ impl ViewerState {
 
     /// ツールパレットのオーバーレイ本体を描画する。子Ui＋Painter直描き方式
     /// （thumbbar_overlayと同じ流儀）。マスの登録内容の描画・実行はPhase2/3で追加する。
-    fn draw_tool_palette(&mut self, ui: &mut egui::Ui, rect: egui::Rect, viewport: egui::Rect, cfg: &mut ViewerConfig) {
+    fn draw_tool_palette(&mut self, ui: &mut egui::Ui, rect: egui::Rect, viewport: egui::Rect, is_spread: bool, step: i32, total: usize, cfg: &mut ViewerConfig) {
         let bg_alpha = (self.tool_palette.opacity_pct as f32 / 100.0 * 220.0).round() as u8;
         ui.painter().rect_filled(rect, 6.0, egui::Color32::from_black_alpha(bg_alpha));
 
@@ -2024,6 +2024,12 @@ impl ViewerState {
                                 Some(idx)
                             };
                         }
+                        crate::tool_palette::PaletteSlotContent::Action(crate::tool_palette::ActionKind::NextPage) => {
+                            self.advance_page(step, total as i32);
+                        }
+                        crate::tool_palette::PaletteSlotContent::Action(crate::tool_palette::ActionKind::PrevPage) => {
+                            self.retreat_page(is_spread, step);
+                        }
                         crate::tool_palette::PaletteSlotContent::Empty => {}
                     }
                 }
@@ -2041,6 +2047,7 @@ impl ViewerState {
                     crate::tool_palette::PaletteSlotContent::Dialog(kind) => {
                         Some(crate::tool_palette::create_dialog(kind).title())
                     }
+                    crate::tool_palette::PaletteSlotContent::Action(kind) => Some(kind.label()),
                     crate::tool_palette::PaletteSlotContent::Empty => None,
                 };
                 // カスタム名称: 未設定ならデフォルトラベル、空文字での確定は「何も表示しない」。
@@ -2083,6 +2090,18 @@ impl ViewerState {
                         slot_rect.max.y - state_galley.size().y - LABEL_PAD,
                     );
                     child.painter().with_clip_rect(slot_rect).galley(state_pos, state_galley, state_color);
+                }
+                // Action型のみ：マス中央に矢印グリフを大きく表示する。
+                if let crate::tool_palette::PaletteSlotContent::Action(kind) = content {
+                    let glyph_color = egui::Color32::from_white_alpha(label_alpha);
+                    let glyph_font_size = (slot * 0.4).clamp(12.0, 28.0);
+                    let glyph_galley = child.painter().layout_no_wrap(
+                        kind.glyph().to_string(),
+                        egui::FontId::proportional(glyph_font_size),
+                        glyph_color,
+                    );
+                    let glyph_pos = slot_rect.center() - glyph_galley.size() / 2.0;
+                    child.painter().with_clip_rect(slot_rect).galley(glyph_pos, glyph_galley, glyph_color);
                 }
                 if self.tool_palette_open_dialog == Some(idx) {
                     child.painter().rect_filled(slot_rect, 4.0, egui::Color32::from_white_alpha(30));
@@ -2147,6 +2166,9 @@ impl ViewerState {
             PaletteSlotContent::Dialog(kind) => {
                 format!("{}（右クリックで変更）", crate::tool_palette::create_dialog(kind).title())
             }
+            PaletteSlotContent::Action(kind) => {
+                format!("{}（右クリックで変更）", kind.label())
+            }
         }
     }
 
@@ -2205,6 +2227,14 @@ impl ViewerState {
             if ui.selectable_label(checked, title).clicked() {
                 if !checked { *custom_label = None; }
                 *content = PaletteSlotContent::Dialog(kind);
+            }
+        }
+        ui.separator();
+        for kind in crate::tool_palette::ALL_ACTION_KINDS {
+            let checked = matches!(*content, PaletteSlotContent::Action(k) if k == kind);
+            if ui.selectable_label(checked, kind.label()).clicked() {
+                if !checked { *custom_label = None; }
+                *content = PaletteSlotContent::Action(kind);
             }
         }
     }
@@ -2463,7 +2493,7 @@ impl ViewerState {
             // 生きているため上のtick呼び出しで検知でき、描画をスキップするだけでよい）。
             if let Some(pr) = palette_rect {
                 if !self.tool_palette_auto_hidden {
-                    self.draw_tool_palette(ui, pr, viewport_rect, cfg);
+                    self.draw_tool_palette(ui, pr, viewport_rect, is_spread, step, total, cfg);
                 }
             } else {
                 // 非表示中：画面のどこでも右クリックすれば復活する。

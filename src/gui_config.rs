@@ -930,7 +930,7 @@ mod tests {
 
     #[test]
     fn tool_palette_keys_roundtrip_through_state_file() {
-        use crate::tool_palette::{DialogKind, PaletteSlotContent, ToggleKind};
+        use crate::tool_palette::{ActionKind, DialogKind, PaletteSlotContent, ToggleKind};
 
         let root = std::env::temp_dir()
             .join(format!("nekoviewer_state_tool_palette_test_{}", std::process::id()));
@@ -941,7 +941,7 @@ mod tests {
              tool_palette_pos_x=120.5\ntool_palette_pos_y=64\n\
              tool_palette_locked=true\ntool_palette_opacity_pct=40\n\
              tool_palette_visible=false\ntool_palette_slot_size_idx=1\n\
-             tool_palette_slots=toggle:blue_light_cut,dialog:image_filter,empty,empty,empty,empty,empty,empty,empty,empty\n",
+             tool_palette_slots=toggle:blue_light_cut,dialog:image_filter,action:next_page,action:prev_page,empty,empty,empty,empty,empty,empty\n",
         )
         .unwrap();
 
@@ -954,7 +954,9 @@ mod tests {
         assert_eq!(tp.slot_size_idx, 1);
         assert_eq!(tp.slots[0], PaletteSlotContent::Toggle(ToggleKind::BlueLightCut));
         assert_eq!(tp.slots[1], PaletteSlotContent::Dialog(DialogKind::ImageFilter));
-        assert!(tp.slots[2..].iter().all(|s| *s == PaletteSlotContent::Empty));
+        assert_eq!(tp.slots[2], PaletteSlotContent::Action(ActionKind::NextPage));
+        assert_eq!(tp.slots[3], PaletteSlotContent::Action(ActionKind::PrevPage));
+        assert!(tp.slots[4..].iter().all(|s| *s == PaletteSlotContent::Empty));
         // auto_hide_locked未指定時はデフォルト(true=常時表示)にフォールバックする。
         assert!(tp.auto_hide_locked);
 
