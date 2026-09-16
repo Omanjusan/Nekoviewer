@@ -481,6 +481,11 @@ pub struct ViewerState {
     /// self.tool_palette が最後に変化した時刻。PERSIST_DEBOUNCE_MS 経過したら
     /// cfg.tool_palette へ確定反映し、ViewerOutput経由でapp側にpersist_state()を促す。
     tool_palette_last_changed: Option<Instant>,
+    /// 自動ハイドが確定する時刻（ポインタがパレット外へ出た時刻＋猶予）。
+    /// Noneはポインタがパレット内／ロック中／ダイアログ展開中でタイマー無効。
+    tool_palette_auto_hide_at: Option<f64>,
+    /// true = 自動ハイドにより現在無描画状態。ポインタがパレット矩形に戻ると解除される。
+    tool_palette_auto_hidden: bool,
 }
 
 impl ViewerState {
@@ -704,6 +709,8 @@ impl ViewerState {
             tool_palette_open_dialog: None,
             tool_palette_initialized: false,
             tool_palette_last_changed: None,
+            tool_palette_auto_hide_at: None,
+            tool_palette_auto_hidden: false,
         }
     }
 
@@ -784,6 +791,8 @@ impl ViewerState {
             tool_palette_open_dialog: None,
             tool_palette_initialized: false,
             tool_palette_last_changed: None,
+            tool_palette_auto_hide_at: None,
+            tool_palette_auto_hidden: false,
         }
     }
 
@@ -1805,6 +1814,37 @@ impl ViewerState {
         nav
     }
 
+    /// 自動ハイド：ポインタがパレット外へ出てからハイドが確定するまでの猶予(秒)。
+    const TOOL_PALETTE_AUTO_HIDE_DELAY_SEC: f64 = 0.5;
+
+    /// ツールパレットの自動ハイドを判定する。auto_hide_locked中／ポインタがパレット内
+    /// （ミニUI展開中含む）／非表示中(visible=false)はタイマーを常にリセットし、
+    /// それ以外でポインタが外れたまま TOOL_PALETTE_AUTO_HIDE_DELAY_SEC 秒経過したら
+    /// 無描画状態（auto_hidden=true）に切り替える。
+    fn tick_tool_palette_auto_hide(&mut self, ctx: &egui::Context, time: f64, pointer_in_palette: bool) {
+        if !self.tool_palette.visible
+            || self.tool_palette.auto_hide_locked
+            || pointer_in_palette
+            || self.tool_palette_open_dialog.is_some()
+        {
+            self.tool_palette_auto_hide_at = None;
+            self.tool_palette_auto_hidden = false;
+            return;
+        }
+        match self.tool_palette_auto_hide_at {
+            None => {
+                self.tool_palette_auto_hide_at = Some(time + Self::TOOL_PALETTE_AUTO_HIDE_DELAY_SEC);
+                ctx.request_repaint_after(Duration::from_secs_f64(Self::TOOL_PALETTE_AUTO_HIDE_DELAY_SEC));
+            }
+            Some(at) if time >= at => {
+                self.tool_palette_auto_hidden = true;
+            }
+            Some(at) => {
+                ctx.request_repaint_after(Duration::from_secs_f64((at - time).max(0.0)));
+            }
+        }
+    }
+
     // ── ツールパレット：見た目のサイズ定数（Phase1: 5x2固定グリッド） ──────
     const TOOL_PALETTE_GAP: f32 = 4.0;
     const TOOL_PALETTE_HEADER_H: f32 = 22.0;
@@ -1827,7 +1867,7 @@ impl ViewerState {
         } else {
             Self::TOOL_PALETTE_WIDE_BTN_W
         };
-        Self::TOOL_PALETTE_BTN_W * 2.0 + mid_w * 2.0 + Self::TOOL_PALETTE_DRAG_MIN_W
+        Self::TOOL_PALETTE_BTN_W * 3.0 + mid_w * 2.0 + Self::TOOL_PALETTE_DRAG_MIN_W
     }
 
     fn tool_palette_grid_size(&self) -> egui::Vec2 {
@@ -1867,13 +1907,14 @@ impl ViewerState {
         // 登録されるためそちらが優先され、この土台は隙間だけを握りつぶす形になる。
         child.interact(rect, child.id().with("tp_backstop"), egui::Sense::click().union(egui::Sense::drag()));
 
-        // ── ヘッダー帯：LOCK／透過度／サイズ／ドラッグハンドル／✕ ────────────
+        // ── ヘッダー帯：LOCK／透過度／自動ハイドLOCK／サイズ／ドラッグハンドル／✕ ──
         let compact = self.tool_palette_header_compact();
         let mid_w = if compact { Self::TOOL_PALETTE_BTN_W } else { Self::TOOL_PALETTE_WIDE_BTN_W };
         let header_rect = egui::Rect::from_min_size(rect.min, egui::vec2(rect.width(), Self::TOOL_PALETTE_HEADER_H));
         let lock_rect = egui::Rect::from_min_size(header_rect.min, egui::vec2(Self::TOOL_PALETTE_BTN_W, Self::TOOL_PALETTE_HEADER_H));
         let opacity_rect = egui::Rect::from_min_size(lock_rect.right_top(), egui::vec2(mid_w, Self::TOOL_PALETTE_HEADER_H));
-        let size_rect = egui::Rect::from_min_size(opacity_rect.right_top(), egui::vec2(mid_w, Self::TOOL_PALETTE_HEADER_H));
+        let auto_hide_lock_rect = egui::Rect::from_min_size(opacity_rect.right_top(), egui::vec2(Self::TOOL_PALETTE_BTN_W, Self::TOOL_PALETTE_HEADER_H));
+        let size_rect = egui::Rect::from_min_size(auto_hide_lock_rect.right_top(), egui::vec2(mid_w, Self::TOOL_PALETTE_HEADER_H));
         let close_rect = egui::Rect::from_min_size(
             egui::pos2(header_rect.max.x - Self::TOOL_PALETTE_BTN_W, header_rect.min.y),
             egui::vec2(Self::TOOL_PALETTE_BTN_W, Self::TOOL_PALETTE_HEADER_H),
@@ -1921,6 +1962,16 @@ impl ViewerState {
                 } else {
                     next
                 };
+            }
+            let auto_hide_lock_resp = ui
+                .put(auto_hide_lock_rect, egui::Button::new(if self.tool_palette.auto_hide_locked { "🔒" } else { "🔓" }))
+                .on_hover_text(if self.tool_palette.auto_hide_locked {
+                    "自動ハイドLOCK：ON（常時表示。クリックでOFFにするとポインタが外れて0.5秒後に自動的に隠れるようになる）"
+                } else {
+                    "自動ハイドLOCK：OFF（ポインタが外れて0.5秒後に自動的に隠れる。クリックでONにすると常時表示に戻る）"
+                });
+            if auto_hide_lock_resp.clicked() {
+                self.tool_palette.auto_hide_locked = !self.tool_palette.auto_hide_locked;
             }
             let size_px = self.tool_palette.slot_size_px() as i32;
             let size_label = if compact { "S".to_string() } else { format!("{size_px}px") };
@@ -2192,6 +2243,7 @@ impl ViewerState {
             let pointer_in_palette = input.hover_pos.is_some_and(|p| {
                 palette_rect.is_some_and(|r| r.contains(p)) || dialog_rect.is_some_and(|r| r.contains(p))
             });
+            self.tick_tool_palette_auto_hide(ui.ctx(), input.time, pointer_in_palette);
 
             // ── 左右端ページ送りゾーン ───────────────────────────────────────────
             let edge_ctx = ui.ctx().clone();
@@ -2407,8 +2459,12 @@ impl ViewerState {
             }
 
             // ── ツールパレット：最前面オーバーレイ ────────────────────────────
+            // auto_hidden中は完全無描画（pointer_in_paletteの当たり判定はrect自体が
+            // 生きているため上のtick呼び出しで検知でき、描画をスキップするだけでよい）。
             if let Some(pr) = palette_rect {
-                self.draw_tool_palette(ui, pr, viewport_rect, cfg);
+                if !self.tool_palette_auto_hidden {
+                    self.draw_tool_palette(ui, pr, viewport_rect, cfg);
+                }
             } else {
                 // 非表示中：画面のどこでも右クリックすれば復活する。
                 let revive_resp = ui.interact(viewport_rect, ui.id().with("tool_palette_revive"), egui::Sense::click());

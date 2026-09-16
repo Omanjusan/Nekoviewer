@@ -52,6 +52,9 @@ pub struct PaletteState {
     pub pos: (f32, f32),
     /// true = ドラッグ移動を禁止
     pub locked: bool,
+    /// true = 自動ハイドを禁止（常時 (100-透過度)% で表示し続ける）。
+    /// false = ポインタがパレット外に出て0.5秒経過すると自動的に無描画状態へ隠れる。
+    pub auto_hide_locked: bool,
     /// 背景の透過度(10〜100%)
     pub opacity_pct: u8,
     /// false = パレット全体を非表示（右クリックで復帰）
@@ -82,6 +85,7 @@ impl Default for PaletteState {
         Self {
             pos: (32.0, 32.0),
             locked: false,
+            auto_hide_locked: true,
             opacity_pct: OPACITY_CEILING_PCT,
             visible: true,
             slot_size_idx: SLOT_SIZE_DEFAULT_IDX,

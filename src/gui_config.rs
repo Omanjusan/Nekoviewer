@@ -416,6 +416,7 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
     let mut tool_palette_pos_x: Option<f32> = None;
     let mut tool_palette_pos_y: Option<f32> = None;
     let mut tool_palette_locked: Option<bool> = None;
+    let mut tool_palette_auto_hide_locked: Option<bool> = None;
     let mut tool_palette_opacity_pct: Option<u8> = None;
     let mut tool_palette_visible: Option<bool> = None;
     let mut tool_palette_slot_size_idx: Option<usize> = None;
@@ -586,6 +587,7 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
                 "tool_palette_pos_x" => { tool_palette_pos_x = v.trim().parse().ok(); }
                 "tool_palette_pos_y" => { tool_palette_pos_y = v.trim().parse().ok(); }
                 "tool_palette_locked" => { tool_palette_locked = v.trim().parse().ok(); }
+                "tool_palette_auto_hide_locked" => { tool_palette_auto_hide_locked = v.trim().parse().ok(); }
                 "tool_palette_opacity_pct" => {
                     tool_palette_opacity_pct = v.trim().parse::<u8>().ok()
                         .map(|n| n.clamp(crate::tool_palette::OPACITY_FLOOR_PCT, crate::tool_palette::OPACITY_CEILING_PCT));
@@ -690,6 +692,7 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
                 PaletteState {
                     pos: (tool_palette_pos_x.unwrap_or(default.pos.0), tool_palette_pos_y.unwrap_or(default.pos.1)),
                     locked: tool_palette_locked.unwrap_or(default.locked),
+                    auto_hide_locked: tool_palette_auto_hide_locked.unwrap_or(default.auto_hide_locked),
                     opacity_pct: tool_palette_opacity_pct.unwrap_or(default.opacity_pct),
                     visible: tool_palette_visible.unwrap_or(default.visible),
                     slot_size_idx: tool_palette_slot_size_idx.unwrap_or(default.slot_size_idx),
@@ -795,10 +798,11 @@ pub fn save_state(root: &Path, dir: &Path, window_size: (u32, u32), viewer_slots
         viewer_cfg.image_filter.sharpness_enabled,
     ));
     content.push_str(&format!(
-        "tool_palette_pos_x={}\ntool_palette_pos_y={}\ntool_palette_locked={}\ntool_palette_opacity_pct={}\ntool_palette_visible={}\ntool_palette_slot_size_idx={}\ntool_palette_slots={}\n",
+        "tool_palette_pos_x={}\ntool_palette_pos_y={}\ntool_palette_locked={}\ntool_palette_auto_hide_locked={}\ntool_palette_opacity_pct={}\ntool_palette_visible={}\ntool_palette_slot_size_idx={}\ntool_palette_slots={}\n",
         viewer_cfg.tool_palette.pos.0,
         viewer_cfg.tool_palette.pos.1,
         viewer_cfg.tool_palette.locked,
+        viewer_cfg.tool_palette.auto_hide_locked,
         viewer_cfg.tool_palette.opacity_pct,
         viewer_cfg.tool_palette.visible,
         viewer_cfg.tool_palette.slot_size_idx,
@@ -951,6 +955,25 @@ mod tests {
         assert_eq!(tp.slots[0], PaletteSlotContent::Toggle(ToggleKind::BlueLightCut));
         assert_eq!(tp.slots[1], PaletteSlotContent::Dialog(DialogKind::ImageFilter));
         assert!(tp.slots[2..].iter().all(|s| *s == PaletteSlotContent::Empty));
+        // auto_hide_locked未指定時はデフォルト(true=常時表示)にフォールバックする。
+        assert!(tp.auto_hide_locked);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn tool_palette_auto_hide_locked_roundtrips_through_state_file() {
+        let root = std::env::temp_dir()
+            .join(format!("nekoviewer_state_tool_palette_auto_hide_test_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&root);
+        std::fs::write(
+            state_path(&root),
+            "last_dir=/tmp/x\nlang=ja\ntool_palette_auto_hide_locked=false\n",
+        )
+        .unwrap();
+
+        let parsed = parse_state_file(&state_path(&root)).expect("state file parses");
+        assert!(!parsed.viewer_cfg.tool_palette.auto_hide_locked);
 
         let _ = std::fs::remove_dir_all(&root);
     }
