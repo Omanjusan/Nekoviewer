@@ -6,8 +6,8 @@
 pub mod dialog;
 pub mod toggle;
 
-pub use dialog::{create_dialog, DialogKind, PaletteDialog, ALL_DIALOG_KINDS};
-pub use toggle::{execute_toggle, find_toggle_def, ToggleDef, ToggleKind, TOGGLE_DEFS};
+pub use dialog::{create_dialog, DialogKind, ALL_DIALOG_KINDS};
+pub use toggle::{execute_toggle, find_toggle_def, ToggleKind, TOGGLE_DEFS};
 
 /// グリッド列数（固定）。
 pub const GRID_COLS: usize = 5;
@@ -21,27 +21,22 @@ pub const OPACITY_FLOOR_PCT: u8 = 10;
 pub const OPACITY_CEILING_PCT: u8 = 100;
 
 /// マス1個の一辺サイズ(px)の段階。ヘッダーのサイズボタンでこの配列を巡回する。
-/// マス内容（Phase2/3で追加するアイコン等）はビットマップの拡縮ではなく、
-/// この値をそのつど描画関数へ渡して都度描き直す前提（拡縮によるボケ・ギザギザ回避）。
+/// マス内容（Toggleラベル・Dialogアイコン等）はビットマップの拡縮ではなく、
+/// この値をそのつど描画関数へ渡して都度描き直す（拡縮によるボケ・ギザギザ回避）。
 pub const SLOT_SIZE_STEPS_PX: [f32; 5] = [16.0, 24.0, 32.0, 48.0, 64.0];
 /// 既定のマスサイズ段階index（48px = 現行サイズ）。
 pub const SLOT_SIZE_DEFAULT_IDX: usize = 3;
 
 /// 1マスの内容。
-#[derive(Clone, Copy, PartialEq, Debug)]
+#[derive(Clone, Copy, PartialEq, Debug, Default)]
 pub enum PaletteSlotContent {
     /// 未登録
+    #[default]
     Empty,
     /// ワンアクション型（即時トグル実行）
     Toggle(ToggleKind),
     /// ダイアログ型（クリックでミニUI展開）
     Dialog(DialogKind),
-}
-
-impl Default for PaletteSlotContent {
-    fn default() -> Self {
-        PaletteSlotContent::Empty
-    }
 }
 
 /// state ファイルへ確定保存するまでのデバウンス時間(ms)。ドラッグ中の連続した
@@ -105,14 +100,15 @@ pub fn slot_content_to_id(content: PaletteSlotContent) -> String {
 
 /// 永続化用ID文字列 → スロット内容。未知IDやパース失敗は Empty 扱い（前方互換）。
 pub fn slot_content_from_id(s: &str) -> PaletteSlotContent {
-    if let Some(rest) = s.strip_prefix("toggle:") {
-        if let Some(k) = ToggleKind::from_id(rest) {
-            return PaletteSlotContent::Toggle(k);
-        }
-    } else if let Some(rest) = s.strip_prefix("dialog:") {
-        if let Some(k) = DialogKind::from_id(rest) {
-            return PaletteSlotContent::Dialog(k);
-        }
+    if let Some(rest) = s.strip_prefix("toggle:")
+        && let Some(k) = ToggleKind::from_id(rest)
+    {
+        return PaletteSlotContent::Toggle(k);
+    }
+    if let Some(rest) = s.strip_prefix("dialog:")
+        && let Some(k) = DialogKind::from_id(rest)
+    {
+        return PaletteSlotContent::Dialog(k);
     }
     PaletteSlotContent::Empty
 }

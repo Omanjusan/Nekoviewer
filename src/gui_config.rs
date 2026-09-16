@@ -906,4 +906,49 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&root);
     }
+
+    #[test]
+    fn tool_palette_keys_roundtrip_through_state_file() {
+        use crate::tool_palette::{DialogKind, PaletteSlotContent, ToggleKind};
+
+        let root = std::env::temp_dir()
+            .join(format!("nekoviewer_state_tool_palette_test_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&root);
+        std::fs::write(
+            state_path(&root),
+            "last_dir=/tmp/x\nlang=ja\n\
+             tool_palette_pos_x=120.5\ntool_palette_pos_y=64\n\
+             tool_palette_locked=true\ntool_palette_opacity_pct=40\n\
+             tool_palette_visible=false\ntool_palette_slot_size_idx=1\n\
+             tool_palette_slots=toggle:blue_light_cut,dialog:image_filter,empty,empty,empty,empty,empty,empty,empty,empty\n",
+        )
+        .unwrap();
+
+        let parsed = parse_state_file(&state_path(&root)).expect("state file parses");
+        let tp = parsed.viewer_cfg.tool_palette;
+        assert_eq!(tp.pos, (120.5, 64.0));
+        assert!(tp.locked);
+        assert_eq!(tp.opacity_pct, 40);
+        assert!(!tp.visible);
+        assert_eq!(tp.slot_size_idx, 1);
+        assert_eq!(tp.slots[0], PaletteSlotContent::Toggle(ToggleKind::BlueLightCut));
+        assert_eq!(tp.slots[1], PaletteSlotContent::Dialog(DialogKind::ImageFilter));
+        assert!(tp.slots[2..].iter().all(|s| *s == PaletteSlotContent::Empty));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn missing_tool_palette_keys_fall_back_to_default() {
+        // tool_palette_* を一切含まない旧 state 断片でも既定値（全マス空欄）へ寄る。
+        let root = std::env::temp_dir()
+            .join(format!("nekoviewer_state_tool_palette_legacy_test_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&root);
+        std::fs::write(state_path(&root), "last_dir=/tmp/x\nlang=ja\n").unwrap();
+
+        let parsed = parse_state_file(&state_path(&root)).expect("legacy state parses");
+        assert_eq!(parsed.viewer_cfg.tool_palette, PaletteState::default());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }

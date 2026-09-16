@@ -45,7 +45,7 @@ pub trait PaletteDialog {
 /// DialogKind → 実装インスタンスの紐付け（ハードコード）。
 pub fn create_dialog(kind: DialogKind) -> Box<dyn PaletteDialog> {
     match kind {
-        DialogKind::ImageFilter => Box::new(image_filter_dialog::ImageFilterDialog::default()),
+        DialogKind::ImageFilter => Box::new(image_filter_dialog::ImageFilterDialog),
     }
 }
 

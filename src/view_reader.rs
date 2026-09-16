@@ -470,8 +470,8 @@ pub struct ViewerState {
     /// tick_slideshow がページを送った直後だけ true。update_animation の変化検知で
     /// 「今回のページ変化はスライドショー自身によるものか」を判定するためのワンショットフラグ。
     slideshow_auto_advance_pending: bool,
-    /// ビューアー内ツールパレット（オーバーレイ）の状態。座標・LOCK・透過度・
-    /// 可視性・マス内容。Phase5で永続化するまでは実行時のみ・再起動でリセットされる。
+    /// ビューアー内ツールパレット（オーバーレイ）の実行時状態。座標・LOCK・透過度・
+    /// 可視性・マス内容。cfg.tool_paletteとの同期はpoll_tool_palette_debounce参照。
     tool_palette: crate::tool_palette::PaletteState,
     /// 展開中のDialog型マスのindex。Noneなら閉じている。同じマスを再クリックするか
     /// 展開領域外をクリックすると閉じる（1個の状態のみ保持＝同時に開けるのは1マス分）。
