@@ -9,10 +9,12 @@ pub enum ActionKind {
     NextPage,
     /// 前の見開き/ページへ戻る
     PrevPage,
+    /// 現ファイルが配置されているフォルダをOSのファイラーで開く
+    OpenFolder,
 }
 
 /// 全ActionKind。登録メニュー（マス右クリック）はこれを走査して選択肢を出す。
-pub const ALL_ACTION_KINDS: [ActionKind; 2] = [ActionKind::NextPage, ActionKind::PrevPage];
+pub const ALL_ACTION_KINDS: [ActionKind; 3] = [ActionKind::NextPage, ActionKind::PrevPage, ActionKind::OpenFolder];
 
 impl ActionKind {
     /// 永続化用ID。一度リリースしたIDは変更しない（前方互換の要）。
@@ -20,6 +22,7 @@ impl ActionKind {
         match self {
             ActionKind::NextPage => "next_page",
             ActionKind::PrevPage => "prev_page",
+            ActionKind::OpenFolder => "open_folder",
         }
     }
 
@@ -27,6 +30,7 @@ impl ActionKind {
         Some(match s {
             "next_page" => ActionKind::NextPage,
             "prev_page" => ActionKind::PrevPage,
+            "open_folder" => ActionKind::OpenFolder,
             _ => return None,
         })
     }
@@ -36,14 +40,16 @@ impl ActionKind {
         match self {
             ActionKind::NextPage => "次のページ",
             ActionKind::PrevPage => "前のページ",
+            ActionKind::OpenFolder => "フォルダを開く",
         }
     }
 
-    /// マス上に描く矢印グリフ。
+    /// マス上に描くグリフ。
     pub fn glyph(self) -> &'static str {
         match self {
             ActionKind::NextPage => "▶",
             ActionKind::PrevPage => "◀",
+            ActionKind::OpenFolder => "📁",
         }
     }
 }
@@ -52,7 +58,7 @@ impl ActionKind {
 mod tests {
     use super::*;
 
-    const ALL_KINDS: [ActionKind; 2] = [ActionKind::NextPage, ActionKind::PrevPage];
+    const ALL_KINDS: [ActionKind; 3] = [ActionKind::NextPage, ActionKind::PrevPage, ActionKind::OpenFolder];
 
     #[test]
     fn id_roundtrip() {

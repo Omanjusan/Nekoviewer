@@ -2030,6 +2030,14 @@ impl ViewerState {
                         crate::tool_palette::PaletteSlotContent::Action(crate::tool_palette::ActionKind::PrevPage) => {
                             self.retreat_page(is_spread, step);
                         }
+                        crate::tool_palette::PaletteSlotContent::Action(crate::tool_palette::ActionKind::OpenFolder) => {
+                            let target = if self.archive_path.is_dir() {
+                                self.archive_path.clone()
+                            } else {
+                                self.archive_path.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| self.archive_path.clone())
+                            };
+                            crate::translate::open_in_file_manager(&target);
+                        }
                         crate::tool_palette::PaletteSlotContent::Empty => {}
                     }
                 }

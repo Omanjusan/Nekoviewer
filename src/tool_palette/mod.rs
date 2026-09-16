@@ -146,6 +146,7 @@ mod tests {
             PaletteSlotContent::Dialog(DialogKind::ImageFilter),
             PaletteSlotContent::Action(ActionKind::NextPage),
             PaletteSlotContent::Action(ActionKind::PrevPage),
+            PaletteSlotContent::Action(ActionKind::OpenFolder),
         ];
         for c in cases {
             let id = slot_content_to_id(c);

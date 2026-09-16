@@ -652,8 +652,8 @@ pub fn load_translate_lang_meta(neko_dir: &Path, archive_filename: &str) -> Opti
 }
 
 /// OS標準のファイラーでフォルダを開く（ベストエフォート、失敗しても無視する）。
+/// フォルダの存在は呼び出し側の責任（未存在なら開けないだけで、ここでは作成しない）。
 pub fn open_in_file_manager(path: &Path) {
-    let _ = std::fs::create_dir_all(path);
     #[cfg(windows)]
     {
         let _ = std::process::Command::new("explorer").arg(path).spawn();
