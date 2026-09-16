@@ -190,6 +190,26 @@ impl Default for ImageFilterSettings {
     }
 }
 
+/// 再デコード要否の変更検知専用の正規化。無効化されたステージの値は
+/// apply_image_filtersで実際には使われない（早期スキップされる）ため、
+/// 比較対象からも除外する＝デフォルト値とみなす。これにより「チェックOFFの
+/// ステージのスライダーだけ動かした」ケースでは差分なしとなり、再デコードが
+/// 誤発火しなくなる（チェック自体のON/OFFはenabledフィールドの差分として
+/// 正しく検知される）。
+pub fn normalize_for_change_detection(settings: ImageFilterSettings) -> ImageFilterSettings {
+    let mut s = settings;
+    if !s.gamma_enabled {
+        s.gamma = GAMMA_DEFAULT;
+    }
+    if !s.brightness_enabled {
+        s.brightness = BRIGHTNESS_DEFAULT;
+    }
+    if !s.sharpness_enabled {
+        s.sharpness = SHARPNESS_DEFAULT;
+    }
+    s
+}
+
 // ── フィルター演算コア ──────────────────────────────────────────────
 // 確定後（設定変更→再デコード時）に1回だけ画像バッファへ適用する想定。
 // no-op値（既定値）のステージは早期リターンで計算そのものをスキップする。
@@ -611,6 +631,50 @@ mod tests {
         let mut after = before.clone();
         apply_image_filters(&mut after, &settings);
         assert_eq!(before, after);
+    }
+
+    #[test]
+    fn normalize_ignores_disabled_stage_value_changes() {
+        let base = ImageFilterSettings {
+            gamma_enabled: false,
+            ..ImageFilterSettings::default()
+        };
+        let mut moved = base;
+        moved.gamma = 2.7;
+        assert_eq!(
+            normalize_for_change_detection(base),
+            normalize_for_change_detection(moved),
+            "無効ステージの値だけ変えても正規化後は差分なしのはず"
+        );
+    }
+
+    #[test]
+    fn normalize_preserves_enabled_stage_value_changes() {
+        let base = ImageFilterSettings::default();
+        let mut moved = base;
+        moved.gamma = 2.7;
+        assert_ne!(
+            normalize_for_change_detection(base),
+            normalize_for_change_detection(moved),
+            "有効ステージの値変更は正規化後も差分として残るはず"
+        );
+    }
+
+    #[test]
+    fn normalize_detects_enabled_flag_toggle() {
+        let off = ImageFilterSettings {
+            gamma_enabled: false,
+            ..ImageFilterSettings::default()
+        };
+        let on = ImageFilterSettings {
+            gamma_enabled: true,
+            ..ImageFilterSettings::default()
+        };
+        assert_ne!(
+            normalize_for_change_detection(off),
+            normalize_for_change_detection(on),
+            "有効/無効の切り替え自体は差分として検知されるはず"
+        );
     }
 
     #[test]

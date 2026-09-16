@@ -793,7 +793,7 @@ impl NekoviewApp {
         // （config_root等、他のconfig系フィールドと同じ扱い）。
         let redecode_trigger_seq = viewer_cfg.redecode_trigger_seq;
         let exif_orientation_enabled = viewer_cfg.exif_orientation_enabled;
-        let image_filter_snapshot = viewer_cfg.image_filter;
+        let image_filter_snapshot = crate::image_filter::normalize_for_change_detection(viewer_cfg.image_filter);
         let (req_tx, res_rx) = spawn_worker(config.viewer_filter.to_image_filter(), config.resolved_decode_threads(), ctx.clone(), cache_max, ring_bounds, frame_hard_limit_bytes);
         let (thumb_req_tx, thumb_res_rx, thumb_session) =
             spawn_thumb_worker(config.resolved_decode_threads(), ctx.clone());

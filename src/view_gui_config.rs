@@ -363,6 +363,9 @@ pub(crate) fn draw_image_filter_tone_sliders(ui: &mut egui::Ui, filter: &mut Ima
 
         // 1項目を2段で描く: 1段目=[チェックボックス] 項目名 ...... [現在値]、
         // 2段目=[====スライダー(数値非表示)====] [既定値に戻す]。横一列より幅を取らない。
+        // チェックOFF中もスライダー・既定値ボタンは操作可能（値は保持され、処理適用だけが
+        // スキップされる）。再デコードの誤発火はimage_filter::normalize_for_change_detection側の
+        // ガードレールで防いでいるため、ここでUI操作を制限する必要はない。
         let draw_row = |
             ui: &mut egui::Ui,
             enabled: &mut bool,
@@ -380,7 +383,7 @@ pub(crate) fn draw_image_filter_tone_sliders(ui: &mut egui::Ui, filter: &mut Ima
                 });
             });
             ui.horizontal(|ui| {
-                ui.add_enabled(*enabled, egui::Slider::new(value, range).show_value(false));
+                ui.add(egui::Slider::new(value, range).show_value(false));
                 if ui.button(reset_label).clicked() {
                     *value = default;
                 }

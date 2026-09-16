@@ -324,8 +324,13 @@ impl NekoviewApp {
 
     /// 設定ダイアログの[反映]・ツールバー等どの経路で viewer_cfg.image_filter が変わっても
     /// 毎フレーム拾えるように、EXIF Orientationと同じ「変化検知」方式にする。
+    /// 比較は`normalize_for_change_detection`を通した値で行う。無効化されたステージの
+    /// 値だけが動いても実際の描画には影響しない（apply_image_filtersがスキップする）ため、
+    /// そのケースでは再デコードを発火させないガードレールになる。
     fn poll_image_filter_change(&mut self) {
-        let now = self.viewer_cfg.lock().unwrap().image_filter;
+        let now = crate::image_filter::normalize_for_change_detection(
+            self.viewer_cfg.lock().unwrap().image_filter,
+        );
         if now != self.image_filter_last_seen {
             self.image_filter_last_seen = now;
             self.redecode_after_image_filter_change();
