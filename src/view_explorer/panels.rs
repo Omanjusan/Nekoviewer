@@ -237,6 +237,10 @@ impl NekoviewApp {
             MenuBarButton::StatusToggle => {
                 self.show_status_window = !self.show_status_window;
             }
+            MenuBarButton::ToolPaletteToggle => {
+                let mut cfg = self.viewer_cfg.lock().unwrap();
+                cfg.tool_palette.visible = !cfg.tool_palette.visible;
+            }
             MenuBarButton::Settings => {
                 self.open_settings();
             }
@@ -321,6 +325,23 @@ impl NekoviewApp {
                 if is_cursor(MenuBarButton::StatusToggle) { draw_cursor_ring(ui, r_status.rect); }
                 if r_status.clicked() {
                     self.show_status_window = !self.show_status_window;
+                }
+
+                ui.separator();
+
+                // ── ツールパレット（ビューアー内ツールボックス）表示ON/OFF ─────────
+                // ファイルを渡り歩いても同じ挙動を示す永続設定のため viewer_cfg 直結。
+                let tool_palette_visible = self.viewer_cfg.lock().unwrap().tool_palette.visible;
+                let r_tool_palette = ui.scope(|ui| {
+                    if tool_palette_visible {
+                        ui.visuals_mut().selection.bg_fill = egui::Color32::from_rgb(30, 100, 200);
+                        ui.visuals_mut().selection.stroke.color = egui::Color32::WHITE;
+                    }
+                    ui.selectable_label(tool_palette_visible, i18n::t().tool_palette_toggle_button())
+                }).inner;
+                if is_cursor(MenuBarButton::ToolPaletteToggle) { draw_cursor_ring(ui, r_tool_palette.rect); }
+                if r_tool_palette.clicked() {
+                    self.viewer_cfg.lock().unwrap().tool_palette.visible = !tool_palette_visible;
                 }
 
                 ui.separator();

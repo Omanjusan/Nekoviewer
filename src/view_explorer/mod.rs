@@ -216,18 +216,22 @@ pub(crate) enum MenuBarButton {
     SortOrder,
     CardInfoToggle,
     StatusToggle,
+    /// ビューアー内ツールパレット（マス配置ツールボックス）の表示ON/OFF。
+    /// ファイルを渡り歩いても同じ状態を保つ（viewer_cfg経由でPaletteStateへ直結）。
+    ToolPaletteToggle,
     Settings,
 }
 
 /// 表示順そのもの（draw_menu_barの描画順と一致させること）。
 /// 見開き・ページモード群はビューアーツールバーへ移設した（toolbar.rs 参照）。
-pub(crate) const MENU_BAR_ORDER: [MenuBarButton; 8] = [
+pub(crate) const MENU_BAR_ORDER: [MenuBarButton; 9] = [
     MenuBarButton::Reload,
     MenuBarButton::SortName,
     MenuBarButton::SortDate,
     MenuBarButton::SortSize,
     MenuBarButton::SortOrder,
     MenuBarButton::CardInfoToggle,
+    MenuBarButton::ToolPaletteToggle,
     MenuBarButton::Settings,
     MenuBarButton::StatusToggle,
 ];
@@ -239,7 +243,7 @@ mod menu_bar_order_tests {
     #[test]
     fn settings_and_status_keep_the_visual_right_end_order() {
         assert_eq!(
-            &MENU_BAR_ORDER[6..],
+            &MENU_BAR_ORDER[7..],
             &[
                 MenuBarButton::Settings,
                 MenuBarButton::StatusToggle,
