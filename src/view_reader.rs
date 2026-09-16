@@ -1850,6 +1850,12 @@ impl ViewerState {
 
         let mut child = ui.new_child(egui::UiBuilder::new().id_salt("tool_palette_child").max_rect(rect));
 
+        // パレット全体を覆う土台のinteract。マス間・ヘッダー余白などどの個別ウィジェットにも
+        // 拾われない隙間のクリック／右クリックが背面（画像側の全面クリック領域）へ抜けて
+        // 旧来の右クリックメニューが開いてしまうのを防ぐ。マス等の個別interactは後から
+        // 登録されるためそちらが優先され、この土台は隙間だけを握りつぶす形になる。
+        child.interact(rect, child.id().with("tp_backstop"), egui::Sense::click().union(egui::Sense::drag()));
+
         // ── ヘッダー帯：LOCK／透過度／サイズ／ドラッグハンドル／✕ ────────────
         let compact = self.tool_palette_header_compact();
         let mid_w = if compact { Self::TOOL_PALETTE_BTN_W } else { Self::TOOL_PALETTE_WIDE_BTN_W };
@@ -1975,20 +1981,38 @@ impl ViewerState {
                     }
                     crate::tool_palette::PaletteSlotContent::Empty => None,
                 };
+                const LABEL_PAD: f32 = 3.0;
+                // ヘッダーボタンと同じ考え方：ホバー中だけ不透明に戻し、それ以外は設定透過率に従う。
+                // 名称・ON/OFF表示の両方で共有する。
+                let label_opacity_pct = if slot_resp.hovered() { 100 } else { self.tool_palette.opacity_pct };
+                let label_alpha = (label_opacity_pct as f32 / 100.0 * 255.0).round() as u8;
                 if let Some(label) = slot_label {
                     let font_size = (slot * 0.28).clamp(8.0, 14.0);
-                    // ヘッダーボタンと同じ考え方：ホバー中だけ不透明に戻し、それ以外は設定透過率に従う。
-                    let label_opacity_pct = if slot_resp.hovered() { 100 } else { self.tool_palette.opacity_pct };
-                    let label_alpha = (label_opacity_pct as f32 / 100.0 * 255.0).round() as u8;
                     let label_color = egui::Color32::from_white_alpha(label_alpha);
                     let galley = child.painter().layout_no_wrap(
                         label.to_string(),
                         egui::FontId::proportional(font_size),
                         label_color,
                     );
-                    const LABEL_PAD: f32 = 3.0;
                     let text_pos = slot_rect.min + egui::vec2(LABEL_PAD, LABEL_PAD);
                     child.painter().with_clip_rect(slot_rect).galley(text_pos, galley, label_color);
+                }
+                // Toggle型のみ：名称の下側にON/OFFを色分けして明示する。
+                if let crate::tool_palette::PaletteSlotContent::Toggle(kind) = content {
+                    let on = (crate::tool_palette::find_toggle_def(kind).get)(cfg);
+                    let (r, g, b) = if on { (80, 220, 120) } else { (170, 170, 170) };
+                    let state_color = egui::Color32::from_rgba_unmultiplied(r, g, b, label_alpha);
+                    let state_font_size = (slot * 0.24).clamp(7.0, 12.0);
+                    let state_galley = child.painter().layout_no_wrap(
+                        if on { "ON".to_string() } else { "OFF".to_string() },
+                        egui::FontId::proportional(state_font_size),
+                        state_color,
+                    );
+                    let state_pos = egui::pos2(
+                        slot_rect.center().x - state_galley.size().x / 2.0,
+                        slot_rect.max.y - state_galley.size().y - LABEL_PAD,
+                    );
+                    child.painter().with_clip_rect(slot_rect).galley(state_pos, state_galley, state_color);
                 }
                 if self.tool_palette_open_dialog == Some(idx) {
                     child.painter().rect_filled(slot_rect, 4.0, egui::Color32::from_white_alpha(30));
