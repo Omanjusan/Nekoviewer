@@ -3650,17 +3650,15 @@ impl ViewerState {
             } else {
                 let available = ui.available_size();
                 let bounds = egui::Rect::from_min_size(ui.cursor().left_top(), available);
-                let fit = Self::paint_page_rotated(ui.painter(), tex, bounds, angle_deg);
-                // 左クリックの対象は従来どおり画像本体に限定しつつ、画像の周囲に
-                // 余白がある場合も表示領域全体でコンテキストメニューを開けるようにする。
+                let _fit = Self::paint_page_rotated(ui.painter(), tex, bounds, angle_deg);
+                // 見開き表示と同様、左クリック／ダブルクリックも表示領域全体（画像周囲の
+                // 余白含む）で受け付ける。画像本体への限定は原寸切替が阻害される
+                // 原因になっていたため撤去（右クリックメニューは元々全域対応済み）。
                 let resp  = ui.allocate_rect(bounds, egui::Sense::click());
-                let primary_on_image = resp
-                    .interact_pointer_pos()
-                    .is_some_and(|pos| fit.contains(pos));
                 let menu_open = resp.context_menu_opened();
                 if !menu_open {
-                    if primary_on_image && resp.double_clicked() { *double_clicked = true; }
-                    if primary_on_image && resp.clicked() && !resp.double_clicked() { *single_clicked = true; }
+                    if resp.double_clicked() { *double_clicked = true; }
+                    if resp.clicked() && !resp.double_clicked() { *single_clicked = true; }
                 }
                 if resp.secondary_clicked() {
                     self.set_thumbnail_context(Some(self.spread_lo()));
