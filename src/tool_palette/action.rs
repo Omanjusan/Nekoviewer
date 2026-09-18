@@ -11,10 +11,13 @@ pub enum ActionKind {
     PrevPage,
     /// 現ファイルが配置されているフォルダをOSのファイラーで開く
     OpenFolder,
+    /// ビューアーウィンドウのフルスクリーン⇔ウィンドウモード切替
+    ToggleFullscreen,
 }
 
 /// 全ActionKind。登録メニュー（マス右クリック）はこれを走査して選択肢を出す。
-pub const ALL_ACTION_KINDS: [ActionKind; 3] = [ActionKind::NextPage, ActionKind::PrevPage, ActionKind::OpenFolder];
+pub const ALL_ACTION_KINDS: [ActionKind; 4] =
+    [ActionKind::NextPage, ActionKind::PrevPage, ActionKind::OpenFolder, ActionKind::ToggleFullscreen];
 
 impl ActionKind {
     /// 永続化用ID。一度リリースしたIDは変更しない（前方互換の要）。
@@ -23,6 +26,7 @@ impl ActionKind {
             ActionKind::NextPage => "next_page",
             ActionKind::PrevPage => "prev_page",
             ActionKind::OpenFolder => "open_folder",
+            ActionKind::ToggleFullscreen => "toggle_fullscreen",
         }
     }
 
@@ -31,6 +35,7 @@ impl ActionKind {
             "next_page" => ActionKind::NextPage,
             "prev_page" => ActionKind::PrevPage,
             "open_folder" => ActionKind::OpenFolder,
+            "toggle_fullscreen" => ActionKind::ToggleFullscreen,
             _ => return None,
         })
     }
@@ -41,6 +46,7 @@ impl ActionKind {
             ActionKind::NextPage => "次のページ",
             ActionKind::PrevPage => "前のページ",
             ActionKind::OpenFolder => "フォルダを開く",
+            ActionKind::ToggleFullscreen => "最大化",
         }
     }
 
@@ -50,6 +56,7 @@ impl ActionKind {
             ActionKind::NextPage => "▶",
             ActionKind::PrevPage => "◀",
             ActionKind::OpenFolder => "📁",
+            ActionKind::ToggleFullscreen => "⛶",
         }
     }
 }
@@ -58,7 +65,8 @@ impl ActionKind {
 mod tests {
     use super::*;
 
-    const ALL_KINDS: [ActionKind; 3] = [ActionKind::NextPage, ActionKind::PrevPage, ActionKind::OpenFolder];
+    const ALL_KINDS: [ActionKind; 4] =
+        [ActionKind::NextPage, ActionKind::PrevPage, ActionKind::OpenFolder, ActionKind::ToggleFullscreen];
 
     #[test]
     fn id_roundtrip() {

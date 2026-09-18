@@ -2045,6 +2045,9 @@ impl ViewerState {
                             };
                             crate::translate::open_in_file_manager(&target);
                         }
+                        crate::tool_palette::PaletteSlotContent::Action(crate::tool_palette::ActionKind::ToggleFullscreen) => {
+                            Self::toggle_fullscreen(child.ctx(), cfg);
+                        }
                         crate::tool_palette::PaletteSlotContent::Empty => {}
                     }
                 }
@@ -2117,6 +2120,24 @@ impl ViewerState {
                     );
                     let glyph_pos = slot_rect.center() - glyph_galley.size() / 2.0;
                     child.painter().with_clip_rect(slot_rect).galley(glyph_pos, glyph_galley, glyph_color);
+                }
+                // Action::ToggleFullscreenのみ：Toggle型と同じ見た目で現在のフルスクリーン
+                // 状態をON/OFF色分け表示する（実体はActionだが、状態を持つ操作のため）。
+                if content == crate::tool_palette::PaletteSlotContent::Action(crate::tool_palette::ActionKind::ToggleFullscreen) {
+                    let on = cfg.fullscreen;
+                    let (r, g, b) = if on { (80, 220, 120) } else { (170, 170, 170) };
+                    let state_color = egui::Color32::from_rgba_unmultiplied(r, g, b, label_alpha);
+                    let state_font_size = (slot * 0.24).clamp(7.0, 12.0);
+                    let state_galley = child.painter().layout_no_wrap(
+                        if on { "ON".to_string() } else { "OFF".to_string() },
+                        egui::FontId::proportional(state_font_size),
+                        state_color,
+                    );
+                    let state_pos = egui::pos2(
+                        slot_rect.center().x - state_galley.size().x / 2.0,
+                        slot_rect.max.y - state_galley.size().y - LABEL_PAD,
+                    );
+                    child.painter().with_clip_rect(slot_rect).galley(state_pos, state_galley, state_color);
                 }
                 if self.tool_palette_open_dialog == Some(idx) {
                     child.painter().rect_filled(slot_rect, 4.0, egui::Color32::from_white_alpha(30));
@@ -2706,6 +2727,33 @@ impl ViewerState {
             });
     }
 
+    /// フルスクリーン⇔ウィンドウモードの切替本体。キー入力/中クリック(process_misc_input)と
+    /// ツールパレットのActionKind::ToggleFullscreenの両方から呼ばれる。
+    fn toggle_fullscreen(ctx: &egui::Context, cfg: &mut ViewerConfig) {
+        cfg.fullscreen = !cfg.fullscreen;
+        if cfg.fullscreen {
+            #[cfg(windows)]
+            ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(true));
+            #[cfg(not(windows))]
+            {
+                // 本物のFullscreenはGNOME等で専用ワークスペースに移り、他窓へ
+                // フォーカスを移すとビューアーが消えて見える上ESCも届かなくなる
+                // (実験2で確認)。Maximized(true)+Decorations(false)の擬似フルスクに戻す。
+                ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(true));
+                ctx.send_viewport_cmd(egui::ViewportCommand::Decorations(false));
+            }
+        } else {
+            #[cfg(windows)]
+            ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
+            #[cfg(not(windows))]
+            {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(false));
+                ctx.send_viewport_cmd(egui::ViewportCommand::Decorations(true));
+            }
+        }
+        log_key!("[key] fullscreen → {}", cfg.fullscreen);
+    }
+
     fn process_misc_input(
         &mut self,
         ctx: &egui::Context,
@@ -2720,28 +2768,7 @@ impl ViewerState {
         }
 
         if input.fs_key || input.middle_clicked {
-            cfg.fullscreen = !cfg.fullscreen;
-            if cfg.fullscreen {
-                #[cfg(windows)]
-                ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(true));
-                #[cfg(not(windows))]
-                {
-                    // 本物のFullscreenはGNOME等で専用ワークスペースに移り、他窓へ
-                    // フォーカスを移すとビューアーが消えて見える上ESCも届かなくなる
-                    // (実験2で確認)。Maximized(true)+Decorations(false)の擬似フルスクに戻す。
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(true));
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Decorations(false));
-                }
-            } else {
-                #[cfg(windows)]
-                ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
-                #[cfg(not(windows))]
-                {
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(false));
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Decorations(true));
-                }
-            }
-            log_key!("[key] fullscreen → {}", cfg.fullscreen);
+            Self::toggle_fullscreen(ctx, cfg);
         }
 
         if input.close_requested || input.esc {
