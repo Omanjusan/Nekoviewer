@@ -1903,6 +1903,7 @@ impl ViewerState {
     /// ツールパレットのオーバーレイ本体を描画する。子Ui＋Painter直描き方式
     /// （thumbbar_overlayと同じ流儀）。マスの登録内容の描画・実行はPhase2/3で追加する。
     fn draw_tool_palette(&mut self, ui: &mut egui::Ui, rect: egui::Rect, viewport: egui::Rect, is_spread: bool, step: i32, total: usize, cfg: &mut ViewerConfig) {
+        let lang = crate::i18n::t();
         let bg_alpha = (self.tool_palette.opacity_pct as f32 / 100.0 * 220.0).round() as u8;
         ui.painter().rect_filled(rect, 6.0, egui::Color32::from_black_alpha(bg_alpha));
 
@@ -2010,11 +2011,11 @@ impl ViewerState {
                 let content = self.tool_palette.slots[idx];
                 let slot_resp = child
                     .interact(slot_rect, child.id().with(("tp_slot", idx)), egui::Sense::click())
-                    .on_hover_text(Self::tool_palette_slot_hover_text(content));
+                    .on_hover_text(Self::tool_palette_slot_hover_text(content, lang));
 
                 egui::Popup::context_menu(&slot_resp)
                     .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-                    .show(|ui| Self::draw_tool_palette_slot_menu(ui, &mut self.tool_palette.slots[idx], &mut self.tool_palette.custom_labels[idx]));
+                    .show(|ui| Self::draw_tool_palette_slot_menu(ui, &mut self.tool_palette.slots[idx], &mut self.tool_palette.custom_labels[idx], lang));
 
                 // 左クリック: Toggle型は即時実行してViewerConfigへ反映する
                 // （既存のpoll_image_filter_changeが差分検知して再デコードをトリガーする）。
@@ -2060,12 +2061,12 @@ impl ViewerState {
                 );
                 let default_label = match content {
                     crate::tool_palette::PaletteSlotContent::Toggle(kind) => {
-                        Some(crate::tool_palette::find_toggle_def(kind).label)
+                        Some((crate::tool_palette::find_toggle_def(kind).label)(lang))
                     }
                     crate::tool_palette::PaletteSlotContent::Dialog(kind) => {
-                        Some(crate::tool_palette::create_dialog(kind).title())
+                        Some(crate::tool_palette::create_dialog(kind).title(lang))
                     }
-                    crate::tool_palette::PaletteSlotContent::Action(kind) => Some(kind.label()),
+                    crate::tool_palette::PaletteSlotContent::Action(kind) => Some(kind.label(lang)),
                     crate::tool_palette::PaletteSlotContent::Empty => None,
                 };
                 // カスタム名称: 未設定ならデフォルトラベル、空文字での確定は「何も表示しない」。
@@ -2157,7 +2158,7 @@ impl ViewerState {
 
                 const CLOSE_BTN_W: f32 = 20.0;
                 dialog_child.horizontal(|ui| {
-                    ui.label(dialog.title());
+                    ui.label(dialog.title(lang));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui.add_sized([CLOSE_BTN_W, CLOSE_BTN_W], egui::Button::new("✕"))
                             .on_hover_text("閉じる")
@@ -2192,18 +2193,18 @@ impl ViewerState {
     }
 
     /// ツールパレットのマスにマウスを乗せたときのヒント文言。
-    fn tool_palette_slot_hover_text(content: crate::tool_palette::PaletteSlotContent) -> String {
+    fn tool_palette_slot_hover_text(content: crate::tool_palette::PaletteSlotContent, lang: crate::i18n::Lang) -> String {
         use crate::tool_palette::PaletteSlotContent;
         match content {
             PaletteSlotContent::Empty => "空欄（右クリックで登録）".to_string(),
             PaletteSlotContent::Toggle(kind) => {
-                format!("{}（右クリックで変更）", crate::tool_palette::find_toggle_def(kind).label)
+                format!("{}（右クリックで変更）", (crate::tool_palette::find_toggle_def(kind).label)(lang))
             }
             PaletteSlotContent::Dialog(kind) => {
-                format!("{}（右クリックで変更）", crate::tool_palette::create_dialog(kind).title())
+                format!("{}（右クリックで変更）", crate::tool_palette::create_dialog(kind).title(lang))
             }
             PaletteSlotContent::Action(kind) => {
-                format!("{}（右クリックで変更）", kind.label())
+                format!("{}（右クリックで変更）", kind.label(lang))
             }
         }
     }
@@ -2214,7 +2215,7 @@ impl ViewerState {
     /// マス右クリックの登録メニュー。先頭に名称変更（サブメニュー内TextEdit）、続けて
     /// TOGGLE_DEFS / ALL_DIALOG_KINDS を走査して選択肢を並べる（データ駆動：新規Toggle/Dialog
     /// 追加時にメニュー側の変更は不要）。
-    fn draw_tool_palette_slot_menu(ui: &mut egui::Ui, content: &mut crate::tool_palette::PaletteSlotContent, custom_label: &mut Option<String>) {
+    fn draw_tool_palette_slot_menu(ui: &mut egui::Ui, content: &mut crate::tool_palette::PaletteSlotContent, custom_label: &mut Option<String>, lang: crate::i18n::Lang) {
         use crate::tool_palette::PaletteSlotContent;
         ui.set_min_width(140.0);
 
@@ -2251,7 +2252,7 @@ impl ViewerState {
         }
         for def in crate::tool_palette::TOGGLE_DEFS {
             let checked = matches!(*content, PaletteSlotContent::Toggle(k) if k == def.key);
-            if ui.selectable_label(checked, def.label).clicked() {
+            if ui.selectable_label(checked, (def.label)(lang)).clicked() {
                 if !checked { *custom_label = None; }
                 *content = PaletteSlotContent::Toggle(def.key);
             }
@@ -2259,7 +2260,7 @@ impl ViewerState {
         ui.separator();
         for kind in crate::tool_palette::ALL_DIALOG_KINDS {
             let checked = matches!(*content, PaletteSlotContent::Dialog(k) if k == kind);
-            let title = crate::tool_palette::create_dialog(kind).title();
+            let title = crate::tool_palette::create_dialog(kind).title(lang);
             if ui.selectable_label(checked, title).clicked() {
                 if !checked { *custom_label = None; }
                 *content = PaletteSlotContent::Dialog(kind);
@@ -2268,7 +2269,7 @@ impl ViewerState {
         ui.separator();
         for kind in crate::tool_palette::ALL_ACTION_KINDS {
             let checked = matches!(*content, PaletteSlotContent::Action(k) if k == kind);
-            if ui.selectable_label(checked, kind.label()).clicked() {
+            if ui.selectable_label(checked, kind.label(lang)).clicked() {
                 if !checked { *custom_label = None; }
                 *content = PaletteSlotContent::Action(kind);
             }

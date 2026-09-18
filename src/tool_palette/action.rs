@@ -41,12 +41,12 @@ impl ActionKind {
     }
 
     /// マス上のデフォルト表示名。
-    pub fn label(self) -> &'static str {
+    pub fn label(self, lang: crate::i18n::Lang) -> &'static str {
         match self {
-            ActionKind::NextPage => "次のページ",
-            ActionKind::PrevPage => "前のページ",
-            ActionKind::OpenFolder => "フォルダを開く",
-            ActionKind::ToggleFullscreen => "最大化",
+            ActionKind::NextPage => lang.tool_palette_action_label_next_page(),
+            ActionKind::PrevPage => lang.tool_palette_action_label_prev_page(),
+            ActionKind::OpenFolder => lang.tool_palette_action_label_open_folder(),
+            ActionKind::ToggleFullscreen => lang.tool_palette_action_label_toggle_fullscreen(),
         }
     }
 

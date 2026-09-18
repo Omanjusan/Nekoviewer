@@ -4,6 +4,7 @@
 //! 新規Toggleを追加する場合は ToggleKind に1バリアント、TOGGLE_DEFS に1エントリを足す。
 
 use crate::gui_config::ViewerConfig;
+use crate::i18n::Lang;
 use crate::image_filter::ColorFilterMode;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -44,7 +45,7 @@ impl ToggleKind {
 /// get/setアクセサを1箇所にまとめる（データ駆動）。
 pub struct ToggleDef {
     pub key: ToggleKind,
-    pub label: &'static str,
+    pub label: fn(Lang) -> &'static str,
     pub get: fn(&ViewerConfig) -> bool,
     pub set: fn(&mut ViewerConfig, bool),
 }
@@ -52,7 +53,7 @@ pub struct ToggleDef {
 pub const TOGGLE_DEFS: &[ToggleDef] = &[
     ToggleDef {
         key: ToggleKind::BlueLightCut,
-        label: "ブルーライトカット",
+        label: Lang::tool_palette_toggle_label_blue_light_cut,
         get: |cfg| cfg.image_filter.color_filter_mode == ColorFilterMode::BlueLightCut,
         set: |cfg, on| {
             cfg.image_filter.color_filter_mode =
@@ -61,19 +62,19 @@ pub const TOGGLE_DEFS: &[ToggleDef] = &[
     },
     ToggleDef {
         key: ToggleKind::GammaEnabled,
-        label: "ガンマ有効",
+        label: Lang::tool_palette_toggle_label_gamma,
         get: |cfg| cfg.image_filter.gamma_enabled,
         set: |cfg, on| cfg.image_filter.gamma_enabled = on,
     },
     ToggleDef {
         key: ToggleKind::BrightnessEnabled,
-        label: "ブライトネス有効",
+        label: Lang::tool_palette_toggle_label_brightness,
         get: |cfg| cfg.image_filter.brightness_enabled,
         set: |cfg, on| cfg.image_filter.brightness_enabled = on,
     },
     ToggleDef {
         key: ToggleKind::SharpnessEnabled,
-        label: "シャープネス有効",
+        label: Lang::tool_palette_toggle_label_sharpness,
         get: |cfg| cfg.image_filter.sharpness_enabled,
         set: |cfg, on| cfg.image_filter.sharpness_enabled = on,
     },

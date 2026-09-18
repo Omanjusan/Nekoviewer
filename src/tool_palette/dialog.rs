@@ -34,7 +34,7 @@ impl DialogKind {
 /// パレットのダイアログ型マスが描く中身。実装はDialogKindごとに専用サブモジュールへ置く。
 pub trait PaletteDialog {
     /// マス上・ダイアログタイトルに使う表示名
-    fn title(&self) -> &'static str;
+    fn title(&self, lang: crate::i18n::Lang) -> &'static str;
     /// 展開時の希望サイズ(幅, 高さ)。マス/パレット本体の幅には引っ張られず、
     /// ダイアログの中身（項目数・スライダー幅）に応じて実装側が自己申告する。
     fn preferred_size(&self) -> egui::Vec2;
@@ -59,8 +59,8 @@ mod image_filter_dialog {
     pub struct ImageFilterDialog;
 
     impl PaletteDialog for ImageFilterDialog {
-        fn title(&self) -> &'static str {
-            "画像フィルタ"
+        fn title(&self, lang: crate::i18n::Lang) -> &'static str {
+            lang.tool_palette_dialog_title_image_filter()
         }
 
         fn preferred_size(&self) -> egui::Vec2 {
@@ -88,6 +88,6 @@ mod tests {
     #[test]
     fn create_dialog_matches_title() {
         let d = create_dialog(DialogKind::ImageFilter);
-        assert_eq!(d.title(), "画像フィルタ");
+        assert_eq!(d.title(crate::i18n::Lang::Japanese), "画像フィルタ");
     }
 }
