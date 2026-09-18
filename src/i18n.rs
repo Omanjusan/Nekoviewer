@@ -2562,6 +2562,14 @@ impl Lang {
         }
     }
 
+    pub fn tool_palette_action_label_slideshow_toggle(self) -> &'static str {
+        match self {
+            Lang::Japanese => "スライドショー",
+            Lang::English  => "Slideshow",
+            Lang::Chinese  => "幻灯片放映",
+        }
+    }
+
     pub fn tool_palette_dialog_title_image_filter(self) -> &'static str {
         match self {
             Lang::Japanese => "画像フィルタ",

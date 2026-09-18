@@ -2060,6 +2060,9 @@ impl ViewerState {
                         crate::tool_palette::PaletteSlotContent::Action(crate::tool_palette::ActionKind::ToggleFullscreen) => {
                             Self::toggle_fullscreen(child.ctx(), cfg);
                         }
+                        crate::tool_palette::PaletteSlotContent::Action(crate::tool_palette::ActionKind::SlideshowToggle) => {
+                            self.toggle_slideshow();
+                        }
                         crate::tool_palette::PaletteSlotContent::Empty => {}
                     }
                 }
@@ -2122,21 +2125,38 @@ impl ViewerState {
                     child.painter().with_clip_rect(slot_rect).galley(state_pos, state_galley, state_color);
                 }
                 // Action型のみ：マス中央に矢印グリフを大きく表示する。
+                // SlideshowToggleのみ現在の再生状態に応じてグリフ自体を切り替える
+                // （再生中は□＝停止操作、停止中は▷＝再生操作を示す）。
                 if let crate::tool_palette::PaletteSlotContent::Action(kind) = content {
+                    let glyph_str = if kind == crate::tool_palette::ActionKind::SlideshowToggle {
+                        if self.is_slideshow_active() { "□" } else { "▷" }
+                    } else {
+                        kind.glyph()
+                    };
                     let glyph_color = egui::Color32::from_white_alpha(label_alpha);
                     let glyph_font_size = (slot * 0.4).clamp(12.0, 28.0);
                     let glyph_galley = child.painter().layout_no_wrap(
-                        kind.glyph().to_string(),
+                        glyph_str.to_string(),
                         egui::FontId::proportional(glyph_font_size),
                         glyph_color,
                     );
                     let glyph_pos = slot_rect.center() - glyph_galley.size() / 2.0;
                     child.painter().with_clip_rect(slot_rect).galley(glyph_pos, glyph_galley, glyph_color);
                 }
-                // Action::ToggleFullscreenのみ：Toggle型と同じ見た目で現在のフルスクリーン
-                // 状態をON/OFF色分け表示する（実体はActionだが、状態を持つ操作のため）。
-                if content == crate::tool_palette::PaletteSlotContent::Action(crate::tool_palette::ActionKind::ToggleFullscreen) {
-                    let on = cfg.fullscreen;
+                // 状態を持つAction（ToggleFullscreen/SlideshowToggle）のみ：Toggle型と同じ
+                // 見た目で現在のON/OFFを色分け表示する。SlideshowToggleは右クリックメニュー等
+                // 他導線からの起動/停止もここでViewerState側の実値を読むだけで追従する
+                // （ポーリングではなく、既存の再描画タイミングに乗るだけ）。
+                let stateful_action_on = match content {
+                    crate::tool_palette::PaletteSlotContent::Action(crate::tool_palette::ActionKind::ToggleFullscreen) => {
+                        Some(cfg.fullscreen)
+                    }
+                    crate::tool_palette::PaletteSlotContent::Action(crate::tool_palette::ActionKind::SlideshowToggle) => {
+                        Some(self.is_slideshow_active())
+                    }
+                    _ => None,
+                };
+                if let Some(on) = stateful_action_on {
                     let (r, g, b) = if on { (80, 220, 120) } else { (170, 170, 170) };
                     let state_color = egui::Color32::from_rgba_unmultiplied(r, g, b, label_alpha);
                     let state_font_size = (slot * 0.24).clamp(7.0, 12.0);
