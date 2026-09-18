@@ -1936,7 +1936,7 @@ impl ViewerState {
             );
             let drag_resp = child
                 .interact(drag_rect, child.id().with("tp_drag"), egui::Sense::drag())
-                .on_hover_text("ドラッグで移動");
+                .on_hover_text(lang.tool_palette_drag_hint());
             if drag_resp.dragged() {
                 self.tool_palette.pos.0 += drag_resp.drag_delta().x;
                 self.tool_palette.pos.1 += drag_resp.drag_delta().y;
@@ -1955,14 +1955,14 @@ impl ViewerState {
 
             let lock_resp = ui
                 .put(lock_rect, egui::Button::new(if self.tool_palette.locked { "🔒" } else { "🔓" }))
-                .on_hover_text("位置の固定ON/OFF（ONの間はドラッグ移動できない）");
+                .on_hover_text(lang.tool_palette_lock_hint());
             if lock_resp.clicked() {
                 self.tool_palette.locked = !self.tool_palette.locked;
             }
             let opacity_label = if compact { "%".to_string() } else { format!("{}%", self.tool_palette.opacity_pct) };
             let opacity_resp = ui
                 .put(opacity_rect, egui::Button::new(opacity_label))
-                .on_hover_text(format!("背景の透過度：{}%（クリックで10%刻みに変更）", self.tool_palette.opacity_pct));
+                .on_hover_text(lang.tool_palette_opacity_hint(self.tool_palette.opacity_pct));
             if opacity_resp.clicked() {
                 let next = self.tool_palette.opacity_pct + 10;
                 self.tool_palette.opacity_pct = if next > crate::tool_palette::OPACITY_CEILING_PCT {
@@ -1974,9 +1974,9 @@ impl ViewerState {
             let auto_hide_lock_resp = ui
                 .put(auto_hide_lock_rect, egui::Button::new(if self.tool_palette.auto_hide_locked { "🔒" } else { "🔓" }))
                 .on_hover_text(if self.tool_palette.auto_hide_locked {
-                    "自動ハイドLOCK：ON（常時表示。クリックでOFFにするとポインタが外れて0.5秒後に自動的に隠れるようになる）"
+                    lang.tool_palette_auto_hide_on_hint()
                 } else {
-                    "自動ハイドLOCK：OFF（ポインタが外れて0.5秒後に自動的に隠れる。クリックでONにすると常時表示に戻る）"
+                    lang.tool_palette_auto_hide_off_hint()
                 });
             if auto_hide_lock_resp.clicked() {
                 self.tool_palette.auto_hide_locked = !self.tool_palette.auto_hide_locked;
@@ -1985,13 +1985,13 @@ impl ViewerState {
             let size_label = if compact { "S".to_string() } else { format!("{size_px}px") };
             let size_resp = ui
                 .put(size_rect, egui::Button::new(size_label))
-                .on_hover_text(format!("マスのサイズ：{size_px}px（クリックで段階変更）"));
+                .on_hover_text(lang.tool_palette_size_hint(size_px));
             if size_resp.clicked() {
                 self.tool_palette.cycle_slot_size();
             }
             let close_resp = ui
                 .put(close_rect, egui::Button::new("✕"))
-                .on_hover_text("パレットを隠す（画面上で右クリックすると再表示）");
+                .on_hover_text(lang.tool_palette_close_hint());
             if close_resp.clicked() {
                 self.tool_palette.visible = false;
             }
@@ -2161,7 +2161,7 @@ impl ViewerState {
                     ui.label(dialog.title(lang));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui.add_sized([CLOSE_BTN_W, CLOSE_BTN_W], egui::Button::new("✕"))
-                            .on_hover_text("閉じる")
+                            .on_hover_text(lang.tool_palette_dialog_close())
                             .clicked()
                         {
                             self.tool_palette_open_dialog = None;
@@ -2196,15 +2196,15 @@ impl ViewerState {
     fn tool_palette_slot_hover_text(content: crate::tool_palette::PaletteSlotContent, lang: crate::i18n::Lang) -> String {
         use crate::tool_palette::PaletteSlotContent;
         match content {
-            PaletteSlotContent::Empty => "空欄（右クリックで登録）".to_string(),
+            PaletteSlotContent::Empty => lang.tool_palette_slot_empty_hint().to_string(),
             PaletteSlotContent::Toggle(kind) => {
-                format!("{}（右クリックで変更）", (crate::tool_palette::find_toggle_def(kind).label)(lang))
+                format!("{}{}", (crate::tool_palette::find_toggle_def(kind).label)(lang), lang.tool_palette_slot_change_suffix())
             }
             PaletteSlotContent::Dialog(kind) => {
-                format!("{}（右クリックで変更）", crate::tool_palette::create_dialog(kind).title(lang))
+                format!("{}{}", crate::tool_palette::create_dialog(kind).title(lang), lang.tool_palette_slot_change_suffix())
             }
             PaletteSlotContent::Action(kind) => {
-                format!("{}（右クリックで変更）", kind.label(lang))
+                format!("{}{}", kind.label(lang), lang.tool_palette_slot_change_suffix())
             }
         }
     }
@@ -2219,23 +2219,23 @@ impl ViewerState {
         use crate::tool_palette::PaletteSlotContent;
         ui.set_min_width(140.0);
 
-        ui.menu_button("ボタン名称の変更", |ui| {
+        ui.menu_button(lang.tool_palette_rename_menu_label(), |ui| {
             let draft_id = ui.id().with("tp_rename_draft");
             let mut draft = ui.data_mut(|d| d.get_temp::<String>(draft_id))
                 .unwrap_or_else(|| custom_label.clone().unwrap_or_default());
             ui.add(
                 egui::TextEdit::singleline(&mut draft)
                     .char_limit(Self::TOOL_PALETTE_LABEL_CHAR_LIMIT)
-                    .hint_text("空欄で非表示"),
+                    .hint_text(lang.tool_palette_rename_hint_text()),
             );
             ui.data_mut(|d| d.insert_temp(draft_id, draft.clone()));
             ui.horizontal(|ui| {
-                if ui.button("OK").clicked() {
+                if ui.button(lang.tool_palette_rename_ok()).clicked() {
                     *custom_label = Some(draft);
                     ui.data_mut(|d| d.remove_temp::<String>(draft_id));
                     ui.close();
                 }
-                if ui.button("キャンセル").clicked() {
+                if ui.button(lang.tool_palette_rename_cancel()).clicked() {
                     ui.data_mut(|d| d.remove_temp::<String>(draft_id));
                     ui.close();
                 }
@@ -2244,7 +2244,7 @@ impl ViewerState {
         ui.separator();
 
         if !matches!(content, PaletteSlotContent::Empty) {
-            if ui.button("空欄に戻す").clicked() {
+            if ui.button(lang.tool_palette_slot_clear_label()).clicked() {
                 *content = PaletteSlotContent::Empty;
                 *custom_label = None;
             }
