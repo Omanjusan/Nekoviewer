@@ -486,6 +486,11 @@ pub struct ViewerState {
     tool_palette_auto_hide_at: Option<f64>,
     /// true = 自動ハイドにより現在無描画状態。ポインタがパレット矩形に戻ると解除される。
     tool_palette_auto_hidden: bool,
+    /// true = マス右クリックメニューのいずれかが展開中（前フレーム時点）。
+    /// 展開中はポインタがパレット矩形の外に出ても自動ハイドタイマーを止め、
+    /// かつパレット外でのクリック（メニューを閉じるためのクリック）を
+    /// ページ送り／画像クリック／サムネ選択メニュー起動へ伝播させないためのガードに使う。
+    tool_palette_menu_open: bool,
 }
 
 impl ViewerState {
@@ -711,6 +716,7 @@ impl ViewerState {
             tool_palette_last_changed: None,
             tool_palette_auto_hide_at: None,
             tool_palette_auto_hidden: false,
+            tool_palette_menu_open: false,
         }
     }
 
@@ -793,6 +799,7 @@ impl ViewerState {
             tool_palette_last_changed: None,
             tool_palette_auto_hide_at: None,
             tool_palette_auto_hidden: false,
+            tool_palette_menu_open: false,
         }
     }
 
@@ -2000,6 +2007,7 @@ impl ViewerState {
         // ── グリッド：GRID_COLS×GRID_ROWS。空欄マスは右クリックでToggle型を登録する ──
         let slot = self.tool_palette.slot_size_px();
         let grid_origin = rect.min + egui::vec2(Self::TOOL_PALETTE_PAD, Self::TOOL_PALETTE_HEADER_H + Self::TOOL_PALETTE_PAD);
+        let mut any_menu_open = false;
         for row in 0..crate::tool_palette::GRID_ROWS {
             for col in 0..crate::tool_palette::GRID_COLS {
                 let idx = row * crate::tool_palette::GRID_COLS + col;
@@ -2013,6 +2021,9 @@ impl ViewerState {
                     .interact(slot_rect, child.id().with(("tp_slot", idx)), egui::Sense::click())
                     .on_hover_text(Self::tool_palette_slot_hover_text(content, lang));
 
+                if slot_resp.context_menu_opened() {
+                    any_menu_open = true;
+                }
                 egui::Popup::context_menu(&slot_resp)
                     .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
                     .show(|ui| Self::draw_tool_palette_slot_menu(ui, &mut self.tool_palette.slots[idx], &mut self.tool_palette.custom_labels[idx], lang));
@@ -2145,6 +2156,7 @@ impl ViewerState {
                 }
             }
         }
+        self.tool_palette_menu_open = any_menu_open;
 
         // ── 展開中のDialog型ミニUI：パレット本体の直下に、Dialog自身が申告したサイズで表示 ──
         if let Some(open_idx) = self.tool_palette_open_dialog {
@@ -2219,26 +2231,29 @@ impl ViewerState {
         use crate::tool_palette::PaletteSlotContent;
         ui.set_min_width(140.0);
 
-        ui.menu_button(lang.tool_palette_rename_menu_label(), |ui| {
-            let draft_id = ui.id().with("tp_rename_draft");
-            let mut draft = ui.data_mut(|d| d.get_temp::<String>(draft_id))
-                .unwrap_or_else(|| custom_label.clone().unwrap_or_default());
-            ui.add(
-                egui::TextEdit::singleline(&mut draft)
-                    .char_limit(Self::TOOL_PALETTE_LABEL_CHAR_LIMIT)
-                    .hint_text(lang.tool_palette_rename_hint_text()),
-            );
-            ui.data_mut(|d| d.insert_temp(draft_id, draft.clone()));
-            ui.horizontal(|ui| {
-                if ui.button(lang.tool_palette_rename_ok()).clicked() {
-                    *custom_label = Some(draft);
-                    ui.data_mut(|d| d.remove_temp::<String>(draft_id));
-                    ui.close();
-                }
-                if ui.button(lang.tool_palette_rename_cancel()).clicked() {
-                    ui.data_mut(|d| d.remove_temp::<String>(draft_id));
-                    ui.close();
-                }
+        let has_content = !matches!(content, PaletteSlotContent::Empty);
+        ui.add_enabled_ui(has_content, |ui| {
+            ui.menu_button(lang.tool_palette_rename_menu_label(), |ui| {
+                let draft_id = ui.id().with("tp_rename_draft");
+                let mut draft = ui.data_mut(|d| d.get_temp::<String>(draft_id))
+                    .unwrap_or_else(|| custom_label.clone().unwrap_or_default());
+                ui.add(
+                    egui::TextEdit::singleline(&mut draft)
+                        .char_limit(Self::TOOL_PALETTE_LABEL_CHAR_LIMIT)
+                        .hint_text(lang.tool_palette_rename_hint_text()),
+                );
+                ui.data_mut(|d| d.insert_temp(draft_id, draft.clone()));
+                ui.horizontal(|ui| {
+                    if ui.button(lang.tool_palette_rename_ok()).clicked() {
+                        *custom_label = Some(draft);
+                        ui.data_mut(|d| d.remove_temp::<String>(draft_id));
+                        ui.close();
+                    }
+                    if ui.button(lang.tool_palette_rename_cancel()).clicked() {
+                        ui.data_mut(|d| d.remove_temp::<String>(draft_id));
+                        ui.close();
+                    }
+                });
             });
         });
         ui.separator();
@@ -2307,9 +2322,11 @@ impl ViewerState {
                     _ => None,
                 }
             });
+            // マス右クリックメニュー展開中は、ポインタがパレット矩形の外に出ていても
+            // パレット内扱いにする（自動ハイドタイマー停止／ページ送り等へのクリック非伝播）。
             let pointer_in_palette = input.hover_pos.is_some_and(|p| {
                 palette_rect.is_some_and(|r| r.contains(p)) || dialog_rect.is_some_and(|r| r.contains(p))
-            });
+            }) || self.tool_palette_menu_open;
             self.tick_tool_palette_auto_hide(ui.ctx(), input.time, pointer_in_palette);
 
             // ── 左右端ページ送りゾーン ───────────────────────────────────────────
@@ -2332,18 +2349,24 @@ impl ViewerState {
                         self.render_spread(ui, &frame.tex_hi, &frame.tex_lo, self.spread_lo() + 1, self.spread_lo(), frame.monitor, frame.rotation_angle, frame.zoom_actual, &mut double_clicked, &mut single_clicked);
                     }
                 }
+                // ツールパレットのマス右クリックメニュー展開中の外側クリックは、
+                // メニューを閉じる操作として消費し画像クリックへ伝播させない。
+                if self.tool_palette_menu_open {
+                    double_clicked = false;
+                    single_clicked = false;
+                }
             } else {
                 // ── スライドアニメーション ────────────────────────────────────
                 let full_rect = egui::Rect::from_min_size(origin, avail);
                 let resp = ui.allocate_rect(full_rect, egui::Sense::click());
                 // コンテキストメニュー表示中の外側クリックはメニューを閉じる操作として
                 // 消費し、ページ送り（single/double_clicked）へは伝播させない。
-                let menu_open = resp.context_menu_opened();
+                let menu_open = resp.context_menu_opened() || self.tool_palette_menu_open;
                 if !menu_open {
                     if resp.double_clicked() { double_clicked = true; }
                     if resp.clicked() && !resp.double_clicked() { single_clicked = true; }
                 }
-                if resp.secondary_clicked() {
+                if resp.secondary_clicked() && !self.tool_palette_menu_open {
                     let target = match frame.page_mode {
                         PageMode::Single => Some(self.spread_lo()),
                         PageMode::SpreadLeft => resp.interact_pointer_pos().and_then(|pos| {
@@ -2533,6 +2556,9 @@ impl ViewerState {
                     self.draw_tool_palette(ui, pr, viewport_rect, is_spread, step, total, cfg);
                 }
             } else {
+                // パレット非表示中はマスメニューも存在し得ないため、直前まで展開中だった
+                // 状態が残っていればここで確実にクリアする（クリックガードの誤動作防止）。
+                self.tool_palette_menu_open = false;
                 // 非表示中：画面のどこでも右クリックすれば復活する。
                 let revive_resp = ui.interact(viewport_rect, ui.id().with("tool_palette_revive"), egui::Sense::click());
                 if revive_resp.secondary_clicked() {
@@ -2768,7 +2794,9 @@ impl ViewerState {
             cfg.redecode_trigger_seq += 1;
         }
 
-        if input.fs_key || input.middle_clicked {
+        // マス右クリックメニュー展開中の中クリックは、メニューを閉じる操作として
+        // 消費し、フルスクリーン切替へは伝播させない。
+        if input.fs_key || (input.middle_clicked && !self.tool_palette_menu_open) {
             Self::toggle_fullscreen(ctx, cfg);
         }
 
@@ -3650,12 +3678,12 @@ impl ViewerState {
                     } else {
                         Self::paint_texture_rotated_at(ui.painter(), tex, bbox.center(), 1.0, angle_deg);
                     }
-                    let menu_open = resp.context_menu_opened();
+                    let menu_open = resp.context_menu_opened() || self.tool_palette_menu_open;
                     if !menu_open {
                         if resp.double_clicked() { *double_clicked = true; }
                         if resp.clicked() && !resp.double_clicked() { *single_clicked = true; }
                     }
-                    if resp.secondary_clicked() {
+                    if resp.secondary_clicked() && !self.tool_palette_menu_open {
                         self.set_thumbnail_context(Some(self.spread_lo()));
                     }
                     let thumbnail_target = self.thumbnail_context_entry.as_ref();
@@ -3683,12 +3711,12 @@ impl ViewerState {
                 // 余白含む）で受け付ける。画像本体への限定は原寸切替が阻害される
                 // 原因になっていたため撤去（右クリックメニューは元々全域対応済み）。
                 let resp  = ui.allocate_rect(bounds, egui::Sense::click());
-                let menu_open = resp.context_menu_opened();
+                let menu_open = resp.context_menu_opened() || self.tool_palette_menu_open;
                 if !menu_open {
                     if resp.double_clicked() { *double_clicked = true; }
                     if resp.clicked() && !resp.double_clicked() { *single_clicked = true; }
                 }
-                if resp.secondary_clicked() {
+                if resp.secondary_clicked() && !self.tool_palette_menu_open {
                     self.set_thumbnail_context(Some(self.spread_lo()));
                 }
                 let thumbnail_target = self.thumbnail_context_entry.as_ref();
@@ -3712,7 +3740,7 @@ impl ViewerState {
             let rect = egui::Rect::from_min_size(ui.cursor().left_top(), ui.available_size());
             let resp = ui.allocate_rect(rect, egui::Sense::click());
             ui.painter().rect_filled(rect, 0.0, egui::Color32::from_gray(40));
-            if resp.secondary_clicked() {
+            if resp.secondary_clicked() && !self.tool_palette_menu_open {
                 self.set_thumbnail_context(Some(self.spread_lo()));
             }
             let thumbnail_target = self.thumbnail_context_entry.as_ref();
@@ -3773,12 +3801,12 @@ impl ViewerState {
 
         let full_rect = egui::Rect::from_min_size(origin, available);
         let resp = ui.allocate_rect(full_rect, egui::Sense::click());
-        let menu_open = resp.context_menu_opened();
+        let menu_open = resp.context_menu_opened() || self.tool_palette_menu_open;
         if !menu_open {
             if resp.double_clicked() { *double_clicked = true; }
             if resp.clicked() && !resp.double_clicked() { *single_clicked = true; }
         }
-        if resp.secondary_clicked() {
+        if resp.secondary_clicked() && !self.tool_palette_menu_open {
             if let Some(pos) = resp.interact_pointer_pos() {
                 let index = self.thumbnail_target_for_spread(
                     pos, full_rect, tex_left, tex_right, left_index, right_index, monitor, angle_deg,
@@ -3876,12 +3904,12 @@ impl ViewerState {
             Self::paint_page(painter, tex_left,  rect_l);
             Self::paint_page(painter, tex_right, rect_r);
 
-            let menu_open = resp.context_menu_opened();
+            let menu_open = resp.context_menu_opened() || self.tool_palette_menu_open;
             if !menu_open {
                 if resp.double_clicked() { *double_clicked = true; }
                 if resp.clicked() && !resp.double_clicked() { *single_clicked = true; }
             }
-            if resp.secondary_clicked() {
+            if resp.secondary_clicked() && !self.tool_palette_menu_open {
                 if let Some(pos) = resp.interact_pointer_pos() {
                     let index = self.thumbnail_target_from_rects(pos, rect_l, rect_r, left_index, right_index);
                     self.set_thumbnail_context(index);
