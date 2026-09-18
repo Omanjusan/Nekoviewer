@@ -2262,6 +2262,7 @@ impl ViewerState {
             if ui.button(lang.tool_palette_slot_clear_label()).clicked() {
                 *content = PaletteSlotContent::Empty;
                 *custom_label = None;
+                ui.close();
             }
             ui.separator();
         }
@@ -2270,6 +2271,7 @@ impl ViewerState {
             if ui.selectable_label(checked, (def.label)(lang)).clicked() {
                 if !checked { *custom_label = None; }
                 *content = PaletteSlotContent::Toggle(def.key);
+                ui.close();
             }
         }
         ui.separator();
@@ -2279,6 +2281,7 @@ impl ViewerState {
             if ui.selectable_label(checked, title).clicked() {
                 if !checked { *custom_label = None; }
                 *content = PaletteSlotContent::Dialog(kind);
+                ui.close();
             }
         }
         ui.separator();
@@ -2287,6 +2290,7 @@ impl ViewerState {
             if ui.selectable_label(checked, kind.label(lang)).clicked() {
                 if !checked { *custom_label = None; }
                 *content = PaletteSlotContent::Action(kind);
+                ui.close();
             }
         }
     }
