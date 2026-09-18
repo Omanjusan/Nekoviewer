@@ -2495,6 +2495,200 @@ impl Lang {
             Lang::Chinese  => "设置窗口打开期间无法操作",
         }
     }
+
+    // ── ツールパレット（ビューアー内オーバーレイの5x2グリッド） ──────────────
+
+    pub fn tool_palette_toggle_label_blue_light_cut(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ブルーライトカット",
+            Lang::English  => "Blue Light Cut",
+            Lang::Chinese  => "蓝光过滤",
+        }
+    }
+
+    pub fn tool_palette_toggle_label_gamma(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ガンマ有効",
+            Lang::English  => "Gamma",
+            Lang::Chinese  => "伽马校正",
+        }
+    }
+
+    pub fn tool_palette_toggle_label_brightness(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ブライトネス有効",
+            Lang::English  => "Brightness",
+            Lang::Chinese  => "亮度调整",
+        }
+    }
+
+    pub fn tool_palette_toggle_label_sharpness(self) -> &'static str {
+        match self {
+            Lang::Japanese => "シャープネス有効",
+            Lang::English  => "Sharpness",
+            Lang::Chinese  => "锐化开启",
+        }
+    }
+
+    pub fn tool_palette_action_label_next_page(self) -> &'static str {
+        match self {
+            Lang::Japanese => "次のページ",
+            Lang::English  => "Next Page",
+            Lang::Chinese  => "下一页",
+        }
+    }
+
+    pub fn tool_palette_action_label_prev_page(self) -> &'static str {
+        match self {
+            Lang::Japanese => "前のページ",
+            Lang::English  => "Prev Page",
+            Lang::Chinese  => "上一页",
+        }
+    }
+
+    pub fn tool_palette_action_label_open_folder(self) -> &'static str {
+        match self {
+            Lang::Japanese => "フォルダを開く",
+            Lang::English  => "Open Folder",
+            Lang::Chinese  => "打开文件夹",
+        }
+    }
+
+    pub fn tool_palette_action_label_toggle_fullscreen(self) -> &'static str {
+        match self {
+            Lang::Japanese => "最大化",
+            Lang::English  => "Maximize",
+            Lang::Chinese  => "最大化",
+        }
+    }
+
+    pub fn tool_palette_dialog_title_image_filter(self) -> &'static str {
+        match self {
+            Lang::Japanese => "画像フィルタ",
+            Lang::English  => "Image Filter",
+            Lang::Chinese  => "图像滤镜",
+        }
+    }
+
+    pub fn tool_palette_drag_hint(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ドラッグで移動",
+            Lang::English  => "Drag to move",
+            Lang::Chinese  => "拖动以移动",
+        }
+    }
+
+    pub fn tool_palette_lock_hint(self) -> &'static str {
+        match self {
+            Lang::Japanese => "位置の固定ON/OFF（ONの間はドラッグ移動できない）",
+            Lang::English  => "Lock position ON/OFF (dragging disabled while ON)",
+            Lang::Chinese  => "锁定位置开关（开启时无法拖动）",
+        }
+    }
+
+    pub fn tool_palette_opacity_hint(self, pct: u8) -> String {
+        match self {
+            Lang::Japanese => format!("背景の透過度：{pct}%（クリックで10%刻みに変更）"),
+            Lang::English  => format!("Background opacity: {pct}% (click to change by 10%)"),
+            Lang::Chinese  => format!("背景透明度：{pct}%（点击以10%为单位调整）"),
+        }
+    }
+
+    pub fn tool_palette_auto_hide_on_hint(self) -> &'static str {
+        match self {
+            Lang::Japanese => "自動ハイドLOCK：ON（常時表示。クリックでOFFにするとポインタが外れて0.5秒後に自動的に隠れるようになる）",
+            Lang::English  => "Auto-hide LOCK: ON (always shown. Click to turn OFF so it auto-hides 0.5s after the pointer leaves)",
+            Lang::Chinese  => "自动隐藏锁定：开启（始终显示。点击关闭后，指针移出0.5秒将自动隐藏）",
+        }
+    }
+
+    pub fn tool_palette_auto_hide_off_hint(self) -> &'static str {
+        match self {
+            Lang::Japanese => "自動ハイドLOCK：OFF（ポインタが外れて0.5秒後に自動的に隠れる。クリックでONにすると常時表示に戻る）",
+            Lang::English  => "Auto-hide LOCK: OFF (auto-hides 0.5s after the pointer leaves. Click to turn ON to always show)",
+            Lang::Chinese  => "自动隐藏锁定：关闭（指针移出0.5秒后自动隐藏。点击开启可始终显示）",
+        }
+    }
+
+    pub fn tool_palette_size_hint(self, size_px: i32) -> String {
+        match self {
+            Lang::Japanese => format!("マスのサイズ：{size_px}px（クリックで段階変更）"),
+            Lang::English  => format!("Slot size: {size_px}px (click to change)"),
+            Lang::Chinese  => format!("格子尺寸：{size_px}px（点击切换）"),
+        }
+    }
+
+    pub fn tool_palette_close_hint(self) -> &'static str {
+        match self {
+            Lang::Japanese => "パレットを隠す（画面上で右クリックすると再表示）",
+            Lang::English  => "Hide the palette (right-click the screen to show it again)",
+            Lang::Chinese  => "隐藏工具面板（在画面上右键点击可重新显示）",
+        }
+    }
+
+    pub fn tool_palette_dialog_close(self) -> &'static str {
+        match self {
+            Lang::Japanese => "閉じる",
+            Lang::English  => "Close",
+            Lang::Chinese  => "关闭",
+        }
+    }
+
+    pub fn tool_palette_slot_empty_hint(self) -> &'static str {
+        match self {
+            Lang::Japanese => "空欄（右クリックで登録）",
+            Lang::English  => "Empty (right-click to assign)",
+            Lang::Chinese  => "空（右键点击以设置）",
+        }
+    }
+
+    pub fn tool_palette_slot_change_suffix(self) -> &'static str {
+        match self {
+            Lang::Japanese => "（右クリックで変更）",
+            Lang::English  => " (right-click to change)",
+            Lang::Chinese  => "（右键点击以更改）",
+        }
+    }
+
+    pub fn tool_palette_rename_menu_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ボタン名称の変更",
+            Lang::English  => "Rename button",
+            Lang::Chinese  => "更改按钮名称",
+        }
+    }
+
+    pub fn tool_palette_rename_hint_text(self) -> &'static str {
+        match self {
+            Lang::Japanese => "空欄で非表示",
+            Lang::English  => "Leave blank to hide",
+            Lang::Chinese  => "留空以隐藏",
+        }
+    }
+
+    pub fn tool_palette_rename_ok(self) -> &'static str {
+        match self {
+            Lang::Japanese => "OK",
+            Lang::English  => "OK",
+            Lang::Chinese  => "确定",
+        }
+    }
+
+    pub fn tool_palette_rename_cancel(self) -> &'static str {
+        match self {
+            Lang::Japanese => "キャンセル",
+            Lang::English  => "Cancel",
+            Lang::Chinese  => "取消",
+        }
+    }
+
+    pub fn tool_palette_slot_clear_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "空欄に戻す",
+            Lang::English  => "Clear",
+            Lang::Chinese  => "清空",
+        }
+    }
 }
 
 static LANG: AtomicU8 = AtomicU8::new(0);
