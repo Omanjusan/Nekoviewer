@@ -528,11 +528,19 @@ impl Lang {
         }
     }
 
-    pub fn spread_offset_dialog_label(self) -> &'static str {
+    pub fn spread_offset_virtual_first_label(self) -> &'static str {
         match self {
-            Lang::Japanese => "オフセット",
-            Lang::English  => "Offset",
-            Lang::Chinese  => "偏移量",
+            Lang::Japanese => "1ページ目を単ページとして開く",
+            Lang::English  => "Open page 1 alone",
+            Lang::Chinese  => "第1页单独显示",
+        }
+    }
+
+    pub fn spread_offset_no_virtual_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "最初から見開きページとして開く",
+            Lang::English  => "Pair pages from page 1",
+            Lang::Chinese  => "从第1页开始双页显示",
         }
     }
 
@@ -542,6 +550,42 @@ impl Lang {
             Lang::Japanese => "反映",
             Lang::English  => "Apply",
             Lang::Chinese  => "应用",
+        }
+    }
+
+    /// 一括設定変更: 右クリック対象を対象外フィルタ後、0件になった時のトースト
+    pub fn bulk_setting_no_target_toast(self) -> &'static str {
+        match self {
+            Lang::Japanese => "対象となるファイルがありません",
+            Lang::English  => "No files are eligible for this setting",
+            Lang::Chinese  => "没有符合条件的文件",
+        }
+    }
+
+    /// 一括設定変更: 反映完了後、正常終了件数のトースト1行目
+    pub fn bulk_setting_success_toast(self, count: usize) -> String {
+        match self {
+            Lang::Japanese => format!("{count}件のファイルに対して設定を行いました"),
+            Lang::English  => format!("Applied the setting to {count} file(s)"),
+            Lang::Chinese  => format!("已对 {count} 个文件应用设置"),
+        }
+    }
+
+    /// 一括設定変更: 反映に失敗したファイル1件ごとのトースト行
+    pub fn bulk_setting_failure_toast(self, name: &str) -> String {
+        match self {
+            Lang::Japanese => format!("ファイル名:{name} において設定が反映できませんでした"),
+            Lang::English  => format!("Failed to apply the setting to: {name}"),
+            Lang::Chinese  => format!("无法对以下文件应用设置：{name}"),
+        }
+    }
+
+    /// 一括設定変更: 異常件数が表示上限を超えた時の集約行（11行目）
+    pub fn bulk_setting_failure_overflow_toast(self, count: usize) -> String {
+        match self {
+            Lang::Japanese => format!("他{count}件で異常終了"),
+            Lang::English  => format!("and {count} more failed"),
+            Lang::Chinese  => format!("另有 {count} 个文件失败"),
         }
     }
 

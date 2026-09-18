@@ -262,21 +262,22 @@ pub fn reader_sort_key_from_u8(v: u8) -> Option<ReaderSortKey> {
     }
 }
 
-/// アーカイブのソート条件を保存する（上書き）。
+/// アーカイブのソート条件を保存する（上書き）。戻り値は書き込み成否（一括変更のトースト集計用）。
 pub fn write_archive_sort(
     db: &Arc<Mutex<Database>>,
     dir: &Path,
     filename: &str,
     key: ReaderSortKey,
     ascending: bool,
-) {
+) -> bool {
     let db_key = make_key(dir, filename);
-    let Ok(db) = db.lock() else { return };
-    let Ok(tx) = db.begin_write() else { return };
-    if let Ok(mut table) = tx.open_table(ARCHIVE_SORT_TABLE_V1) {
-        let _ = table.insert(db_key.as_str(), (reader_sort_key_to_u8(key), ascending));
-    }
-    let _ = tx.commit();
+    let Ok(db) = db.lock() else { return false };
+    let Ok(tx) = db.begin_write() else { return false };
+    let inserted = match tx.open_table(ARCHIVE_SORT_TABLE_V1) {
+        Ok(mut table) => table.insert(db_key.as_str(), (reader_sort_key_to_u8(key), ascending)).is_ok(),
+        Err(_) => false,
+    };
+    tx.commit().is_ok() && inserted
 }
 
 /// アーカイブの保存済みソート条件を返す。レコード不在・未知値は None。
@@ -357,15 +358,16 @@ pub fn gc_archive_sorts(
     stale.len()
 }
 
-/// 見開き状態を保存する（上書き）。
-pub fn write_spread(db: &Arc<Mutex<Database>>, dir: &Path, filename: &str, mode: PageMode, offset: i32) {
+/// 見開き状態を保存する（上書き）。戻り値は書き込み成否（一括変更のトースト集計用）。
+pub fn write_spread(db: &Arc<Mutex<Database>>, dir: &Path, filename: &str, mode: PageMode, offset: i32) -> bool {
     let key = make_key(dir, filename);
-    let Ok(db) = db.lock() else { return };
-    let Ok(tx) = db.begin_write() else { return };
-    if let Ok(mut table) = tx.open_table(SPREAD_TABLE) {
-        let _ = table.insert(key.as_str(), (page_mode_to_u8(mode), offset));
-    }
-    let _ = tx.commit();
+    let Ok(db) = db.lock() else { return false };
+    let Ok(tx) = db.begin_write() else { return false };
+    let inserted = match tx.open_table(SPREAD_TABLE) {
+        Ok(mut table) => table.insert(key.as_str(), (page_mode_to_u8(mode), offset)).is_ok(),
+        Err(_) => false,
+    };
+    tx.commit().is_ok() && inserted
 }
 
 /// 保存済みの見開き状態を返す。レコード不在・未知値は None。
@@ -453,13 +455,14 @@ fn decode_bookmark(value: (bool, &str, i64, i64)) -> BookmarkState {
 /// しおり保存の有効/無効を切り替える（右クリックメニューのトグル用）。
 /// 既存の位置情報（last_entry_name等）は変更しない。レコード不在時、
 /// enabled=trueなら空の位置情報でレコードを新規作成する（次の離脱時保存を待つ状態）。
-/// enabled=falseでレコード不在なら何もしない。
-pub fn write_bookmark_enabled(db: &Arc<Mutex<Database>>, dir: &Path, filename: &str, enabled: bool) {
+/// enabled=falseでレコード不在なら何もしない（この場合も戻り値はtrue。何もしないこと自体は
+/// 失敗ではないため。一括変更のトースト集計用）。
+pub fn write_bookmark_enabled(db: &Arc<Mutex<Database>>, dir: &Path, filename: &str, enabled: bool) -> bool {
     let key = make_key(dir, filename);
-    let Ok(db) = db.lock() else { return };
-    let Ok(tx) = db.begin_write() else { return };
-    {
-        let Ok(mut table) = tx.open_table(BOOKMARK_TABLE_V1) else { return };
+    let Ok(db) = db.lock() else { return false };
+    let Ok(tx) = db.begin_write() else { return false };
+    let inserted = {
+        let Ok(mut table) = tx.open_table(BOOKMARK_TABLE_V1) else { return false };
         let current = table.get(key.as_str()).ok().flatten().map(|v| decode_bookmark(v.value()));
         let next = match current {
             Some(state) => BookmarkState { enabled, ..state },
@@ -469,14 +472,15 @@ pub fn write_bookmark_enabled(db: &Arc<Mutex<Database>>, dir: &Path, filename: &
                 updated_at: 0,
                 archive_mtime: 0,
             },
-            None => return,
+            // レコード不在でenabled=false: 何もしない（これ自体は失敗ではない）
+            None => return { drop(table); tx.commit().is_ok() },
         };
-        let _ = table.insert(
+        table.insert(
             key.as_str(),
             (next.enabled, next.last_entry_name.as_str(), next.updated_at, next.archive_mtime),
-        );
-    }
-    let _ = tx.commit();
+        ).is_ok()
+    };
+    tx.commit().is_ok() && inserted
 }
 
 /// 離脱時に現在の閲覧位置を保存する。bookmark_enabled=trueのレコードが既に

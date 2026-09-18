@@ -1292,53 +1292,70 @@ impl NekoviewApp {
 
                         // 右クリックメニュー: 複数選択中はホバー位置を無視し選択集合全体を対象にする。
                         // 未選択（単一）時はこのセルのファイル1件のみを対象にする。
+                        // ソート条件/しおり保存/見開き設定の3項目は、右クリックの瞬間に対象外
+                        // （ディレクトリ・単品生画像ファイル・無効アーカイブ）を除外した後の件数が
+                        // 0ならトーストのみ表示してメニューにその3項目を出さない（お気に入り詳細設定・
+                        // フォルダを開くは対象外の概念が無いため無条件に出す）。
+                        if response.secondary_clicked() {
+                            let raw_targets: Vec<PathBuf> = if !self.multi_selected.is_empty() {
+                                self.multi_selected.iter().filter_map(|&idx| self.archives.get(idx).cloned()).collect()
+                            } else {
+                                vec![path.clone()]
+                            };
+                            if self.filter_bulk_setting_targets(raw_targets).is_empty() {
+                                self.app_toast = Some((
+                                    i18n::t().bulk_setting_no_target_toast().to_string(),
+                                    std::time::Instant::now(),
+                                ));
+                            }
+                        }
                         response.context_menu(|ui| {
+                            let raw_targets: Vec<PathBuf> = if !self.multi_selected.is_empty() {
+                                self.multi_selected.iter().filter_map(|&idx| self.archives.get(idx).cloned()).collect()
+                            } else {
+                                vec![path.clone()]
+                            };
+                            let filtered_targets = self.filter_bulk_setting_targets(raw_targets.clone());
+
                             if !self.multi_selected.is_empty() {
                                 let count = self.multi_selected.len();
                                 if ui.button(i18n::t().favorite_detail_menu_bulk(count)).clicked() {
-                                    let targets: Vec<PathBuf> = self.multi_selected.iter()
-                                        .filter_map(|&idx| self.archives.get(idx).cloned())
-                                        .collect();
-                                    self.open_favorite_detail_dialog_for_paths(targets);
+                                    self.open_favorite_detail_dialog_for_paths(raw_targets.clone());
                                     ui.close();
                                 }
-                                if ui.button(i18n::t().sort_condition_menu_bulk(count)).clicked() {
-                                    let targets: Vec<PathBuf> = self.multi_selected.iter()
-                                        .filter_map(|&idx| self.archives.get(idx).cloned())
-                                        .collect();
-                                    self.open_sort_condition_dialog_for_paths(targets);
-                                    ui.close();
-                                }
-                                if ui.button(i18n::t().bookmark_setting_menu_bulk(count)).clicked() {
-                                    let targets: Vec<PathBuf> = self.multi_selected.iter()
-                                        .filter_map(|&idx| self.archives.get(idx).cloned())
-                                        .collect();
-                                    self.open_bookmark_setting_dialog_for_paths(targets);
-                                    ui.close();
-                                }
-                                if ui.button(i18n::t().spread_setting_menu_bulk(count)).clicked() {
-                                    let targets: Vec<PathBuf> = self.multi_selected.iter()
-                                        .filter_map(|&idx| self.archives.get(idx).cloned())
-                                        .collect();
-                                    self.open_spread_setting_dialog_for_paths(targets);
-                                    ui.close();
+                                if !filtered_targets.is_empty() {
+                                    let fcount = filtered_targets.len();
+                                    if ui.button(i18n::t().sort_condition_menu_bulk(fcount)).clicked() {
+                                        self.open_sort_condition_dialog_for_paths(filtered_targets.clone());
+                                        ui.close();
+                                    }
+                                    if ui.button(i18n::t().bookmark_setting_menu_bulk(fcount)).clicked() {
+                                        self.open_bookmark_setting_dialog_for_paths(filtered_targets.clone());
+                                        ui.close();
+                                    }
+                                    if ui.button(i18n::t().spread_setting_menu_bulk(fcount)).clicked() {
+                                        self.open_spread_setting_dialog_for_paths(filtered_targets.clone());
+                                        ui.close();
+                                    }
                                 }
                             } else {
                                 if ui.button(i18n::t().favorite_detail_menu()).clicked() {
-                                    self.open_favorite_detail_dialog_for_paths(vec![path.clone()]);
+                                    self.open_favorite_detail_dialog_for_paths(raw_targets.clone());
                                     ui.close();
                                 }
-                                if ui.button(i18n::t().sort_condition_menu()).clicked() {
-                                    self.open_sort_condition_dialog_for_paths(vec![path.clone()]);
-                                    ui.close();
-                                }
-                                if ui.button(i18n::t().bookmark_setting_menu()).clicked() {
-                                    self.open_bookmark_setting_dialog_for_paths(vec![path.clone()]);
-                                    ui.close();
-                                }
-                                if ui.button(i18n::t().spread_setting_menu()).clicked() {
-                                    self.open_spread_setting_dialog_for_paths(vec![path.clone()]);
-                                    ui.close();
+                                if !filtered_targets.is_empty() {
+                                    if ui.button(i18n::t().sort_condition_menu()).clicked() {
+                                        self.open_sort_condition_dialog_for_paths(filtered_targets.clone());
+                                        ui.close();
+                                    }
+                                    if ui.button(i18n::t().bookmark_setting_menu()).clicked() {
+                                        self.open_bookmark_setting_dialog_for_paths(filtered_targets.clone());
+                                        ui.close();
+                                    }
+                                    if ui.button(i18n::t().spread_setting_menu()).clicked() {
+                                        self.open_spread_setting_dialog_for_paths(filtered_targets.clone());
+                                        ui.close();
+                                    }
                                 }
                             }
 
