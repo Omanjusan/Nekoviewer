@@ -186,6 +186,9 @@ impl NekoviewApp {
         self.draw_favorite_dialog(&ctx);
         self.draw_favorite_delete_confirm_dialog(&ctx);
         self.draw_favorite_detail_dialog(&ctx);
+        self.draw_sort_condition_dialog(&ctx);
+        self.draw_bookmark_setting_dialog(&ctx);
+        self.draw_spread_setting_dialog(&ctx);
         self.draw_settings_dialog(&ctx);
         // 旧来の無条件 ctx.request_repaint() は撤去（イベント駆動化）。
         // ROOT は入力イベント・各ワーカーの起床通知・ステータス窓の1Hzハートビートで再描画される。
@@ -1299,9 +1302,44 @@ impl NekoviewApp {
                                     self.open_favorite_detail_dialog_for_paths(targets);
                                     ui.close();
                                 }
-                            } else if ui.button(i18n::t().favorite_detail_menu()).clicked() {
-                                self.open_favorite_detail_dialog_for_paths(vec![path.clone()]);
-                                ui.close();
+                                if ui.button(i18n::t().sort_condition_menu_bulk(count)).clicked() {
+                                    let targets: Vec<PathBuf> = self.multi_selected.iter()
+                                        .filter_map(|&idx| self.archives.get(idx).cloned())
+                                        .collect();
+                                    self.open_sort_condition_dialog_for_paths(targets);
+                                    ui.close();
+                                }
+                                if ui.button(i18n::t().bookmark_setting_menu_bulk(count)).clicked() {
+                                    let targets: Vec<PathBuf> = self.multi_selected.iter()
+                                        .filter_map(|&idx| self.archives.get(idx).cloned())
+                                        .collect();
+                                    self.open_bookmark_setting_dialog_for_paths(targets);
+                                    ui.close();
+                                }
+                                if ui.button(i18n::t().spread_setting_menu_bulk(count)).clicked() {
+                                    let targets: Vec<PathBuf> = self.multi_selected.iter()
+                                        .filter_map(|&idx| self.archives.get(idx).cloned())
+                                        .collect();
+                                    self.open_spread_setting_dialog_for_paths(targets);
+                                    ui.close();
+                                }
+                            } else {
+                                if ui.button(i18n::t().favorite_detail_menu()).clicked() {
+                                    self.open_favorite_detail_dialog_for_paths(vec![path.clone()]);
+                                    ui.close();
+                                }
+                                if ui.button(i18n::t().sort_condition_menu()).clicked() {
+                                    self.open_sort_condition_dialog_for_paths(vec![path.clone()]);
+                                    ui.close();
+                                }
+                                if ui.button(i18n::t().bookmark_setting_menu()).clicked() {
+                                    self.open_bookmark_setting_dialog_for_paths(vec![path.clone()]);
+                                    ui.close();
+                                }
+                                if ui.button(i18n::t().spread_setting_menu()).clicked() {
+                                    self.open_spread_setting_dialog_for_paths(vec![path.clone()]);
+                                    ui.close();
+                                }
                             }
 
                             ui.separator();

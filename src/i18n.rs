@@ -429,6 +429,122 @@ impl Lang {
         }
     }
 
+    /// エクスプローラー部アイテムカード右クリックメニュー「ソート条件」（単一選択時）
+    pub fn sort_condition_menu(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ソート条件...",
+            Lang::English  => "Sort Condition...",
+            Lang::Chinese  => "排序条件...",
+        }
+    }
+
+    pub fn sort_condition_menu_bulk(self, count: usize) -> String {
+        match self {
+            Lang::Japanese => format!("ソート条件... ({count}件)"),
+            Lang::English  => format!("Sort Condition... ({count} items)"),
+            Lang::Chinese  => format!("排序条件...（{count} 项）"),
+        }
+    }
+
+    pub fn sort_condition_dialog_title(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ソート条件の変更",
+            Lang::English  => "Change Sort Condition",
+            Lang::Chinese  => "更改排序条件",
+        }
+    }
+
+    /// エクスプローラー部アイテムカード右クリックメニュー「しおり保存」（単一選択時）
+    pub fn bookmark_setting_menu(self) -> &'static str {
+        match self {
+            Lang::Japanese => "しおり保存...",
+            Lang::English  => "Bookmark Setting...",
+            Lang::Chinese  => "书签设置...",
+        }
+    }
+
+    pub fn bookmark_setting_menu_bulk(self, count: usize) -> String {
+        match self {
+            Lang::Japanese => format!("しおり保存... ({count}件)"),
+            Lang::English  => format!("Bookmark Setting... ({count} items)"),
+            Lang::Chinese  => format!("书签设置...（{count} 项）"),
+        }
+    }
+
+    pub fn bookmark_setting_dialog_title(self) -> &'static str {
+        match self {
+            Lang::Japanese => "しおり保存設定の変更",
+            Lang::English  => "Change Bookmark Setting",
+            Lang::Chinese  => "更改书签设置",
+        }
+    }
+
+    /// エクスプローラー部アイテムカード右クリックメニュー「見開き設定」（単一選択時）
+    pub fn spread_setting_menu(self) -> &'static str {
+        match self {
+            Lang::Japanese => "見開き設定...",
+            Lang::English  => "Spread Setting...",
+            Lang::Chinese  => "双页设置...",
+        }
+    }
+
+    pub fn spread_setting_menu_bulk(self, count: usize) -> String {
+        match self {
+            Lang::Japanese => format!("見開き設定... ({count}件)"),
+            Lang::English  => format!("Spread Setting... ({count} items)"),
+            Lang::Chinese  => format!("双页设置...（{count} 项）"),
+        }
+    }
+
+    pub fn spread_setting_dialog_title(self) -> &'static str {
+        match self {
+            Lang::Japanese => "見開き設定の変更",
+            Lang::English  => "Change Spread Setting",
+            Lang::Chinese  => "更改双页设置",
+        }
+    }
+
+    pub fn spread_mode_single_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "単ページ",
+            Lang::English  => "Single Page",
+            Lang::Chinese  => "单页",
+        }
+    }
+
+    pub fn spread_mode_right_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "右綴じ",
+            Lang::English  => "Right Bind",
+            Lang::Chinese  => "右装订",
+        }
+    }
+
+    pub fn spread_mode_left_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "左綴じ",
+            Lang::English  => "Left Bind",
+            Lang::Chinese  => "左装订",
+        }
+    }
+
+    pub fn spread_offset_dialog_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "オフセット",
+            Lang::English  => "Offset",
+            Lang::Chinese  => "偏移量",
+        }
+    }
+
+    /// 一括設定変更ダイアログ（ソート条件/しおり保存/見開き設定）共通の反映ボタン
+    pub fn bulk_setting_apply_button(self) -> &'static str {
+        match self {
+            Lang::Japanese => "反映",
+            Lang::English  => "Apply",
+            Lang::Chinese  => "应用",
+        }
+    }
+
     pub fn file_detail_menu(self) -> &'static str {
         match self {
             Lang::Japanese => "ファイル詳細",

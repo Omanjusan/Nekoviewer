@@ -395,6 +395,32 @@ struct FavoriteDetailDialogState {
     pending_overwrite_confirm: bool,
 }
 
+/// エクスプローラー右クリック「ソート条件」一括変更ダイアログの状態。
+/// 【モック段階】DB読み書きは行わず、見た目確認のみ。初期値は常にName/昇順で開く。
+#[derive(Clone)]
+struct SortConditionDialogState {
+    targets: Vec<PathBuf>,
+    sort_key: crate::types::ReaderSortKey,
+    ascending: bool,
+}
+
+/// エクスプローラー右クリック「しおり保存」一括変更ダイアログの状態。
+/// 【モック段階】DB読み書きは行わず、見た目確認のみ。初期値は常にOFFで開く。
+#[derive(Clone)]
+struct BookmarkSettingDialogState {
+    targets: Vec<PathBuf>,
+    enabled: bool,
+}
+
+/// エクスプローラー右クリック「見開き設定」一括変更ダイアログの状態。
+/// 【モック段階】DB読み書きは行わず、見た目確認のみ。初期値は常にSingle/offset0で開く。
+#[derive(Clone)]
+struct SpreadSettingDialogState {
+    targets: Vec<PathBuf>,
+    page_mode: crate::types::PageMode,
+    offset: i32,
+}
+
 fn default_favorite_color() -> egui::Color32 {
     egui::Color32::from_rgb(255, 204, 0)
 }
@@ -491,6 +517,12 @@ pub struct NekoviewApp {
     favorite_delete_confirm: Option<u8>,
     /// ビューアー右クリック「お気に入り詳細設定」ダイアログの状態
     favorite_detail_dialog: Option<FavoriteDetailDialogState>,
+    /// エクスプローラー右クリック「ソート条件」一括変更ダイアログの状態（モック段階）
+    sort_condition_dialog: Option<SortConditionDialogState>,
+    /// エクスプローラー右クリック「しおり保存」一括変更ダイアログの状態（モック段階）
+    bookmark_setting_dialog: Option<BookmarkSettingDialogState>,
+    /// エクスプローラー右クリック「見開き設定」一括変更ダイアログの状態（モック段階）
+    spread_setting_dialog: Option<SpreadSettingDialogState>,
     /// Some(_) の間、中央グリッドは実ディレクトリではなく選択中のお気に入り
     /// （フォルダ横断）一覧を表示している。
     viewing_favorites: Option<FavoriteSelection>,
@@ -773,6 +805,7 @@ mod viewer_host;
 mod input;
 mod panels;
 mod favorites_ui;
+mod bulk_settings_ui;
 mod search_ui;
 mod search;
 mod status;
@@ -858,6 +891,9 @@ impl NekoviewApp {
             favorite_dialog: None,
             favorite_delete_confirm: None,
             favorite_detail_dialog: None,
+            sort_condition_dialog: None,
+            bookmark_setting_dialog: None,
+            spread_setting_dialog: None,
             viewing_favorites: None,
             viewing_dir: None,
             cd_summary: None,
