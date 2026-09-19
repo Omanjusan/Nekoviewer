@@ -53,10 +53,7 @@ pub(super) struct VirtualState {
     /// DBの仮想ノード（`order` 順）。仮想タブに入るたびに `refresh_virtual_nodes` で読み直す。
     nodes: Vec<TreeNode>,
     expanded: HashSet<u32>,
-    selected: Option<u32>,
     real_pane_open: bool,
-    /// アイテムカード欄の表示元。true=実ツリー選択（青枠）、false=仮想フォルダ選択（緑枠）。
-    card_from_real: bool,
     picker: Option<Picker>,
     confirm: Option<Confirm>,
     delete: Option<u32>,
@@ -68,9 +65,7 @@ impl VirtualState {
             nodes: Vec::new(),
             // 仮想ルート `/` は最初から展開しておく
             expanded: HashSet::from([ROOT]),
-            selected: None,
             real_pane_open: false,
-            card_from_real: false,
             picker: None,
             confirm: None,
             delete: None,
@@ -237,6 +232,30 @@ fn draw_tree_row(
     }
 }
 
+/// 仮想ノード `id` を表示中のグリッド先頭部分（「↑」→ 仮想の子）の純粋な組み立て。
+/// 「↑」は仮想の親（`/` では無し）、子は仮想名の名前順（`ascending` で昇降）。
+fn virtual_folder_entries(nodes: &[TreeNode], id: u32, show_hidden: bool, ascending: bool) -> Vec<GridEntry> {
+    let mut out = Vec::new();
+    if id != ROOT {
+        if let Some(n) = nodes.iter().find(|n| n.id == id) {
+            out.push(GridEntry::VirtualUp(n.parent));
+        }
+    }
+    let mut kids: Vec<&TreeNode> = children_of(nodes, id)
+        .into_iter()
+        .filter(|n| {
+            show_hidden
+                || !n.real.file_name().and_then(|s| s.to_str()).is_some_and(|s| s.starts_with('.'))
+        })
+        .collect();
+    kids.sort_by(|a, b| {
+        let cmp = a.name.cmp(&b.name);
+        if ascending { cmp } else { cmp.reverse() }
+    });
+    out.extend(kids.into_iter().map(|n| GridEntry::VirtualSubdir(n.id)));
+    out
+}
+
 fn toggle(set: &mut HashSet<u32>, id: u32) {
     if !set.remove(&id) {
         set.insert(id);
@@ -248,7 +267,7 @@ impl NekoviewApp {
     pub(super) fn card_border_color(&self) -> Option<egui::Color32> {
         match self.folder_pane_tab {
             FolderPaneTab::VirtualFolders => {
-                Some(if self.virtual_state.card_from_real { BLUE } else { GREEN })
+                Some(if self.viewing_virtual_node.is_some() { GREEN } else { BLUE })
             }
             _ => None,
         }
@@ -260,7 +279,7 @@ impl NekoviewApp {
         if self.folder_pane_tab != FolderPaneTab::VirtualFolders {
             return;
         }
-        let from_real = self.virtual_state.card_from_real;
+        let from_real = self.viewing_virtual_node.is_none();
         if from_real != real_pane {
             return;
         }
@@ -270,11 +289,6 @@ impl NekoviewApp {
 
     pub(super) fn virtual_real_pane_open(&self) -> bool {
         self.virtual_state.real_pane_open
-    }
-
-    /// 仮想タブ中に実ツリー側でナビゲートしたことをカード欄の枠色に反映する。
-    pub(super) fn mark_card_from_real(&mut self) {
-        self.virtual_state.card_from_real = true;
     }
 
     /// 実ツリー右クリック「仮想フォルダに追加する」。追加先の仮想フォルダを選ぶピッカーを開く。
@@ -299,9 +313,167 @@ impl NekoviewApp {
             .collect();
         let ids: HashSet<u32> = self.virtual_state.nodes.iter().map(|n| n.id).collect();
         self.virtual_state.expanded.retain(|id| *id == ROOT || ids.contains(id));
-        if self.virtual_state.selected.is_some_and(|id| !ids.contains(&id)) {
-            self.virtual_state.selected = None;
+        // 表示中のノードがDBから消えていたら実表示に戻す
+        if self.viewing_virtual_node.is_some_and(|id| id != ROOT && !ids.contains(&id)) {
+            self.exit_virtual_view();
         }
+    }
+
+    /// 仮想ノードを選んで中央グリッドをその表示にする（ツリークリック・フォルダカード・Enter共通）。
+    /// 既にそのノードを表示中なら何もしない（実ツリー側に移っていれば viewing_virtual_node は None なので通る）。
+    pub(super) fn select_virtual_node(&mut self, id: u32) {
+        if self.viewing_virtual_node == Some(id) {
+            return;
+        }
+        // ツリー上で見えるよう、祖先ノードを展開しておく
+        let mut cur = self.virtual_state.nodes.iter().find(|n| n.id == id).map(|n| n.parent);
+        while let Some(parent) = cur {
+            self.virtual_state.expanded.insert(parent);
+            cur = if parent == ROOT {
+                None
+            } else {
+                self.virtual_state.nodes.iter().find(|n| n.id == parent).map(|n| n.parent)
+            };
+        }
+        self.enter_virtual_node(id);
+    }
+
+    /// 仮想ノードの表示を開く（同じノードでも開き直す）。構造は仮想が正、ファイルは実パスを実スキャン。
+    fn enter_virtual_node(&mut self, id: u32) {
+        if id == ROOT {
+            // 仮想ルート `/` は実パスを持たない。最上位ノードのフォルダカードだけを出す
+            self.viewing_virtual_node = Some(ROOT);
+            self.virtual_link_broken = false;
+            self.show_empty_listing();
+            return;
+        }
+        let Some(real) = self.virtual_state.nodes.iter().find(|n| n.id == id).map(|n| n.real.clone()) else {
+            return;
+        };
+        self.viewing_virtual_node = Some(id);
+        // ネットワークマウント配下は同期I/Oを避け、確認済みの到達可否で判定する（リロードと同じ方針）
+        if self.path_reachable(&real) {
+            self.virtual_link_broken = false;
+            self.begin_dir_view(real);
+            self.persist_state();
+        } else {
+            self.virtual_link_broken = true;
+            self.show_empty_listing();
+        }
+    }
+
+    /// 仮想ノード経由の表示を終えて実ディレクトリ表示に戻す（exit_favorite_view と同じ考え方）。
+    /// current_dir はそのまま実スキャンし直す。
+    pub(super) fn exit_virtual_view(&mut self) {
+        if self.viewing_virtual_node.is_none() {
+            return;
+        }
+        self.viewing_virtual_node = None;
+        self.virtual_link_broken = false;
+        self.viewing_dir = Some(self.current_dir.clone());
+        self.start_scan();
+    }
+
+    /// リロード用。仮想ノード経由の表示中はDBから読み直して同じノードを開き直し、
+    /// そうでなければ通常どおり current_dir を実スキャンする。
+    pub(super) fn reload_virtual_or_scan(&mut self) {
+        if self.viewing_virtual_node.is_none() {
+            self.start_scan();
+            return;
+        }
+        self.refresh_virtual_nodes();
+        match self.viewing_virtual_node {
+            Some(id) => self.enter_virtual_node(id),
+            // 表示中のノードが消えていた場合は refresh 側で exit_virtual_view 済み
+            None => {}
+        }
+    }
+
+    /// 中央グリッドのヘッダ（仮想パス → 実パス）。仮想ノード経由の表示でなければ None。
+    pub(super) fn virtual_header_text(&self) -> Option<String> {
+        let id = self.viewing_virtual_node?;
+        let vpath = self.virtual_state.virtual_path(id);
+        if id == ROOT {
+            return Some(vpath);
+        }
+        let real = self.virtual_state.nodes.iter().find(|n| n.id == id)?.real.display().to_string();
+        let mut text = format!("{vpath}  →  {real}");
+        if self.virtual_link_broken {
+            text.push_str("  ");
+            text.push_str(i18n::t().virtual_link_broken_label());
+        }
+        Some(text)
+    }
+
+    /// 仮想ノード表示中のグリッド先頭部分: 「↑」（仮想の親。`/` では無し）→ 仮想の子（名前順）。
+    /// 非表示（ドット始まり）フォルダの扱いは実表示と同じ（実フォルダ名で判定）。
+    pub(super) fn virtual_folder_grid_entries(&self, id: u32) -> Vec<GridEntry> {
+        virtual_folder_entries(&self.virtual_state.nodes, id, self.show_hidden, self.sort_ascending)
+    }
+
+    /// 仮想ノード表示中の「↑」カード。ダブルクリックされたら true。
+    pub(super) fn draw_virtual_up_card(
+        &mut self,
+        ui: &mut egui::Ui,
+        cell_w: f32,
+        cell_h: f32,
+        target: u32,
+        grid_focused: bool,
+    ) -> bool {
+        let (rect, response) = ui.allocate_exact_size(egui::vec2(cell_w, cell_h), egui::Sense::click());
+        if ui.is_rect_visible(rect) {
+            ui.painter().rect_filled(rect, 4.0, ui.visuals().faint_bg_color);
+            nav_icons::draw_up_icon(ui.painter(), rect, nav_icons::NAV_ICON_COLOR);
+        }
+        self.finish_virtual_card(ui, rect, &response, GridEntry::VirtualUp(target), grid_focused)
+    }
+
+    /// 仮想ノード表示中のフォルダカード。ダブルクリックされたら true。
+    pub(super) fn draw_virtual_folder_card(
+        &mut self,
+        ui: &mut egui::Ui,
+        cell_w: f32,
+        cell_h: f32,
+        node_id: u32,
+        grid_focused: bool,
+    ) -> bool {
+        let (rect, response) = ui.allocate_exact_size(egui::vec2(cell_w, cell_h), egui::Sense::click());
+        if ui.is_rect_visible(rect) {
+            if let Some(n) = self.virtual_state.nodes.iter().find(|n| n.id == node_id).cloned() {
+                self.draw_folder_card_face(ui, rect, &response, cell_w, cell_h, &n.name, &n.real);
+            }
+        }
+        self.finish_virtual_card(ui, rect, &response, GridEntry::VirtualSubdir(node_id), grid_focused)
+    }
+
+    /// 仮想カード共通の後処理（カーソルリング・クリック選択・右クリックメニュー）。
+    fn finish_virtual_card(
+        &mut self,
+        ui: &egui::Ui,
+        rect: egui::Rect,
+        response: &egui::Response,
+        entry: GridEntry,
+        grid_focused: bool,
+    ) -> bool {
+        if grid_focused && self.grid_cursor.as_ref() == Some(&entry) {
+            super::panels::draw_cursor_ring(ui, rect);
+        }
+        if response.clicked() {
+            self.focused_pane = FocusPane::Grid;
+            self.grid_cursor = Some(entry);
+            self.selected_archive_index = None;
+            self.selected_archive_meta = None;
+        }
+        // 実パスを持たない表示（`/`・リンク切れ）では viewing_dir が None で、開く対象が無い
+        if let Some(dir) = self.viewing_dir.clone() {
+            response.context_menu(|ui| {
+                if ui.button(i18n::t().explorer_open_folder_menu()).clicked() {
+                    crate::translate::open_in_file_manager(&dir);
+                    ui.close();
+                }
+            });
+        }
+        response.double_clicked()
     }
 
     /// デバッグビルド限定の投入手段。3aの目視確認用で、3bの本登録が入ったら撤去する。
@@ -333,9 +505,10 @@ impl NekoviewApp {
             .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
             .show(ui, |ui| {
                 let m = &self.virtual_state;
-                // フォーカス中は選択ノード（未選択なら `/`）にカーソルリングを出す
-                let ring = (self.focused_pane == FocusPane::VirtualTab).then(|| m.selected.unwrap_or(ROOT));
-                draw_tree(ui, &m.nodes, Some("/"), &m.expanded, m.selected, true, ring, &mut events);
+                // 表示中のノードを選択表示にする。フォーカス中はそこ（未選択なら `/`）にカーソルリングを出す
+                let viewing = self.viewing_virtual_node;
+                let ring = (self.focused_pane == FocusPane::VirtualTab).then(|| viewing.unwrap_or(ROOT));
+                draw_tree(ui, &m.nodes, Some("/"), &m.expanded, viewing, true, ring, &mut events);
             });
         if !events.is_empty() {
             self.focused_pane = FocusPane::VirtualTab;
@@ -343,10 +516,7 @@ impl NekoviewApp {
         for ev in events {
             match ev {
                 TreeEvent::Toggle(id) => toggle(&mut self.virtual_state.expanded, id),
-                TreeEvent::Select(id) => {
-                    self.virtual_state.selected = Some(id);
-                    self.virtual_state.card_from_real = false;
-                }
+                TreeEvent::Select(id) => self.select_virtual_node(id),
                 TreeEvent::DoubleClick(_) => {}
                 TreeEvent::Register(id) => {
                     self.virtual_state.confirm = None;
@@ -545,5 +715,61 @@ impl NekoviewApp {
             self.virtual_state.delete = None;
             self.set_toast("（削除処理は未接続です。次フェーズで接続予定）");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn node(id: u32, parent: u32, name: &str, real: &str) -> TreeNode {
+        TreeNode { id, parent, name: name.to_string(), real: PathBuf::from(real) }
+    }
+
+    fn sample() -> Vec<TreeNode> {
+        vec![
+            node(1, ROOT, "a_漫画", "/m/manga"),
+            node(2, 1, "b_青年", "/m/manga/seinen"),
+            node(3, 1, "a_少年", "/m/manga/shonen"),
+            node(4, 1, "隠し", "/m/manga/.hidden"),
+            node(5, ROOT, "b_写真", "/m/photo"),
+        ]
+    }
+
+    #[test]
+    fn root_has_no_up_and_lists_top_level_by_name() {
+        let e = virtual_folder_entries(&sample(), ROOT, false, true);
+        assert_eq!(e, vec![GridEntry::VirtualSubdir(1), GridEntry::VirtualSubdir(5)]);
+    }
+
+    #[test]
+    fn node_has_up_to_virtual_parent_and_name_sorted_children() {
+        let e = virtual_folder_entries(&sample(), 1, false, true);
+        // 「↑」は仮想の親（ROOT=0）。子は仮想名の昇順、ドット始まりの実フォルダは非表示
+        assert_eq!(e, vec![GridEntry::VirtualUp(ROOT), GridEntry::VirtualSubdir(3), GridEntry::VirtualSubdir(2)]);
+    }
+
+    #[test]
+    fn descending_reverses_children_but_keeps_up_first() {
+        let e = virtual_folder_entries(&sample(), 1, false, false);
+        assert_eq!(e, vec![GridEntry::VirtualUp(ROOT), GridEntry::VirtualSubdir(2), GridEntry::VirtualSubdir(3)]);
+    }
+
+    #[test]
+    fn show_hidden_includes_dot_folders() {
+        let e = virtual_folder_entries(&sample(), 1, true, true);
+        assert_eq!(e.len(), 4);
+        assert!(e.contains(&GridEntry::VirtualSubdir(4)));
+    }
+
+    #[test]
+    fn child_up_points_to_its_own_parent_node() {
+        let e = virtual_folder_entries(&sample(), 2, false, true);
+        assert_eq!(e, vec![GridEntry::VirtualUp(1)]);
+    }
+
+    #[test]
+    fn unknown_node_yields_no_entries_except_children() {
+        assert!(virtual_folder_entries(&sample(), 99, false, true).is_empty());
     }
 }

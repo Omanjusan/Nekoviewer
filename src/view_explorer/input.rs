@@ -536,7 +536,8 @@ impl NekoviewApp {
                         self.select_single(*idx);
                     }
                 }
-                GridEntry::Up(_) | GridEntry::Subdir(_) => {
+                GridEntry::Up(_) | GridEntry::Subdir(_)
+                | GridEntry::VirtualUp(_) | GridEntry::VirtualSubdir(_) => {
                     // フォルダ系エントリに乗った間はアーカイブ選択枠・ファイル情報を消す
                     // （複数選択そのものは維持し、Enterで実際に移動した時だけ破棄する）
                     self.selected_archive_index = None;
@@ -554,6 +555,11 @@ impl NekoviewApp {
                     self.multi_selected.clear();
                     self.select_anchor = None;
                     self.navigate_to(path.clone(), DirectoryNavigationSource::ItemPane);
+                }
+                GridEntry::VirtualUp(id) | GridEntry::VirtualSubdir(id) => {
+                    self.multi_selected.clear();
+                    self.select_anchor = None;
+                    self.select_virtual_node(*id);
                 }
                 GridEntry::Archive(idx) => {
                     // 複数選択中でもEnter時点のカーソル位置1件のみを開く（複数選択は維持）

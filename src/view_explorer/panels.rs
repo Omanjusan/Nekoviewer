@@ -389,6 +389,9 @@ impl NekoviewApp {
             // 仮想タブに入る／タブを押し直すたびにDBから読み直す
             self.refresh_virtual_nodes();
         }
+        if tab != FolderPaneTab::VirtualFolders {
+            self.exit_virtual_view();
+        }
         if tab != FolderPaneTab::Favorites {
             self.exit_favorite_view();
         }
@@ -505,9 +508,6 @@ impl NekoviewApp {
             TreeAction::AddToVirtual(path) => self.open_virtual_dest_picker(path),
             TreeAction::Navigate(path) => {
                 self.focused_pane = FocusPane::TreeTab;
-                if self.folder_pane_tab == FolderPaneTab::VirtualFolders {
-                    self.mark_card_from_real();
-                }
                 self.tree_cursor = Some(path.clone());
                 // 検索タブ内のツリーは検索条件の基点ディレクトリ選択ツールであり、
                 // 実ナビゲーション（current_dir変更・実スキャン）は行わない。
@@ -546,9 +546,6 @@ impl NekoviewApp {
                     if resp.clicked() {
                         self.focused_pane = FocusPane::Drives;
                         self.drive_cursor = Some(path.clone());
-                        if self.folder_pane_tab == FolderPaneTab::VirtualFolders {
-                            self.mark_card_from_real();
-                        }
                         if self.folder_pane_tab == FolderPaneTab::Search {
                             self.set_search_base_drive(path);
                         } else {
@@ -651,7 +648,11 @@ impl NekoviewApp {
                     ui.label("");
                 }
                 _ => {
-                    ui.label(self.current_dir.display().to_string());
+                    if let Some(text) = self.virtual_header_text() {
+                        ui.label(text);
+                    } else {
+                        ui.label(self.current_dir.display().to_string());
+                    }
                 }
             }
         }
@@ -744,7 +745,8 @@ impl NekoviewApp {
                     .and_then(|p| std::fs::metadata(p).ok())
                     .map(|m| (m.modified().unwrap_or(std::time::UNIX_EPOCH), m.len()));
             }
-            GridEntry::Up(_) | GridEntry::Subdir(_) => {
+            GridEntry::Up(_) | GridEntry::Subdir(_)
+            | GridEntry::VirtualUp(_) | GridEntry::VirtualSubdir(_) => {
                 self.selected_archive_index = None;
                 self.selected_archive_meta = None;
             }
@@ -761,6 +763,10 @@ impl NekoviewApp {
         let mut out = Vec::new();
         if self.viewing_favorites.is_some() || self.viewing_search.is_some() {
             return out;
+        }
+        // 仮想ノード経由の表示: フォルダカードと「↑」は仮想ツリーが正（実サブフォルダは出さない）
+        if let Some(id) = self.viewing_virtual_node {
+            return self.virtual_folder_grid_entries(id);
         }
         // ツリー側のルート（ドライブ/ホーム/ネットワーク共有の選択に連動）を天井にする。
         // mount::up_target 単体だと「ホーム」ドライブのような疑似ルートを知らず、
@@ -808,6 +814,58 @@ impl NekoviewApp {
         out
     }
 
+    /// フォルダカードの中身（背景・フォルダアイコン・後方カットのラベル・1秒ホバーのツールチップ）。
+    /// 実サブフォルダ（Subdir）と仮想フォルダ（VirtualSubdir）で共通。`hover_key` はホバー計時の識別用。
+    pub(super) fn draw_folder_card_face(
+        &mut self,
+        ui: &mut egui::Ui,
+        rect: egui::Rect,
+        response: &egui::Response,
+        cell_w: f32,
+        cell_h: f32,
+        full_name: &str,
+        hover_key: &PathBuf,
+    ) {
+        let label_h = (cell_h * 0.16).clamp(12.0, 28.0);
+        let icon_rect = egui::Rect::from_min_size(
+            rect.min,
+            egui::vec2(cell_w, cell_h - label_h),
+        );
+        ui.painter().rect_filled(rect, 4.0, ui.visuals().faint_bg_color);
+        nav_icons::draw_folder_icon(ui.painter(), icon_rect, nav_icons::NAV_ICON_COLOR);
+
+        let font_id = egui::FontId::proportional((cell_h * 0.075).clamp(9.0, 18.0));
+        let label = nav_icons::truncate_to_width(ui, full_name, font_id.clone(), cell_w * 0.92);
+        ui.painter().text(
+            egui::pos2(rect.center().x, rect.max.y - label_h / 2.0),
+            egui::Align2::CENTER_CENTER,
+            &label,
+            font_id,
+            ui.visuals().text_color(),
+        );
+
+        // 1秒ホバー救済: 後方カットで読めなくなった分をツールチップで全表示
+        if response.hovered() {
+            let now = std::time::Instant::now();
+            let past_delay = match &self.folder_label_hover {
+                Some((p, since)) if p == hover_key => {
+                    now.duration_since(*since).as_secs_f32() >= 1.0
+                }
+                _ => {
+                    self.folder_label_hover = Some((hover_key.clone(), now));
+                    false
+                }
+            };
+            if past_delay {
+                response.show_tooltip_text(full_name);
+            } else {
+                ui.ctx().request_repaint_after(std::time::Duration::from_millis(120));
+            }
+        } else if matches!(&self.folder_label_hover, Some((p, _)) if p == hover_key) {
+            self.folder_label_hover = None;
+        }
+    }
+
     fn draw_archive_grid(&mut self, ui: &mut egui::Ui) {
         // 検索タブを開いた瞬間、まだどの検索結果も選択していない間は実ディレクトリの中身が
         // 一瞬見えてしまう（archivesは前の表示のまま残っている）。理想は切替と同時に
@@ -848,7 +906,7 @@ impl NekoviewApp {
                 .spacing([GAP, GAP])
                 .show(ui, |ui| {
                     let mut cell_index: usize = 0;
-                    let mut pending_navigate: Option<PathBuf> = None;
+                    let mut pending_navigate: Option<GridNav> = None;
                     let grid_focused = self.focused_pane == FocusPane::Grid;
 
                     // 並び順: ↑（先頭・非ソート・ルートで非表示）→ フォルダ群 → 通常のarchivesグリッド。
@@ -873,7 +931,7 @@ impl NekoviewApp {
                                 self.selected_archive_meta = None;
                             }
                             if response.double_clicked() {
-                                pending_navigate = Some(parent.clone());
+                                pending_navigate = Some(GridNav::Real(parent.clone()));
                             }
                             response.context_menu(|ui| {
                                 if ui.button(i18n::t().explorer_open_folder_menu()).clicked() {
@@ -895,48 +953,11 @@ impl NekoviewApp {
                                 egui::Sense::click(),
                             );
                             if ui.is_rect_visible(rect) {
-                                let label_h = (cell_h * 0.16).clamp(12.0, 28.0);
-                                let icon_rect = egui::Rect::from_min_size(
-                                    rect.min,
-                                    egui::vec2(cell_w, cell_h - label_h),
-                                );
-                                ui.painter().rect_filled(rect, 4.0, ui.visuals().faint_bg_color);
-                                nav_icons::draw_folder_icon(ui.painter(), icon_rect, nav_icons::NAV_ICON_COLOR);
-
                                 let full_name = dir_path.file_name()
                                     .and_then(|n| n.to_str())
                                     .unwrap_or("")
                                     .to_string();
-                                let font_id = egui::FontId::proportional((cell_h * 0.075).clamp(9.0, 18.0));
-                                let label = nav_icons::truncate_to_width(ui, &full_name, font_id.clone(), cell_w * 0.92);
-                                ui.painter().text(
-                                    egui::pos2(rect.center().x, rect.max.y - label_h / 2.0),
-                                    egui::Align2::CENTER_CENTER,
-                                    &label,
-                                    font_id,
-                                    ui.visuals().text_color(),
-                                );
-
-                                // 1秒ホバー救済: 後方カットで読めなくなった分をツールチップで全表示
-                                if response.hovered() {
-                                    let now = std::time::Instant::now();
-                                    let past_delay = match &self.folder_label_hover {
-                                        Some((p, since)) if p == dir_path => {
-                                            now.duration_since(*since).as_secs_f32() >= 1.0
-                                        }
-                                        _ => {
-                                            self.folder_label_hover = Some((dir_path.clone(), now));
-                                            false
-                                        }
-                                    };
-                                    if past_delay {
-                                        response.show_tooltip_text(&full_name);
-                                    } else {
-                                        ui.ctx().request_repaint_after(std::time::Duration::from_millis(120));
-                                    }
-                                } else if matches!(&self.folder_label_hover, Some((p, _)) if p == dir_path) {
-                                    self.folder_label_hover = None;
-                                }
+                                self.draw_folder_card_face(ui, rect, &response, cell_w, cell_h, &full_name, dir_path);
                             }
                             if grid_focused && self.grid_cursor.as_ref() == Some(&GridEntry::Subdir(dir_path.clone())) {
                                 draw_cursor_ring(ui, rect);
@@ -948,7 +969,7 @@ impl NekoviewApp {
                                 self.selected_archive_meta = None;
                             }
                             if response.double_clicked() {
-                                pending_navigate = Some(dir_path.clone());
+                                pending_navigate = Some(GridNav::Real(dir_path.clone()));
                             }
                             response.context_menu(|ui| {
                                 if ui.button(i18n::t().explorer_open_folder_menu()).clicked() {
@@ -958,6 +979,26 @@ impl NekoviewApp {
                                     ui.close();
                                 }
                             });
+                            cell_index += 1;
+                            if cell_index % cols == 0 {
+                                ui.end_row();
+                            }
+                        }
+
+                        // 仮想ノード経由の表示: 「↑」・フォルダカードは仮想ノードのid で識別する
+                        if let GridEntry::VirtualUp(target) = entry {
+                            if self.draw_virtual_up_card(ui, cell_w, cell_h, *target, grid_focused) {
+                                pending_navigate = Some(GridNav::Virtual(*target));
+                            }
+                            cell_index += 1;
+                            if cell_index % cols == 0 {
+                                ui.end_row();
+                            }
+                        }
+                        if let GridEntry::VirtualSubdir(node_id) = entry {
+                            if self.draw_virtual_folder_card(ui, cell_w, cell_h, *node_id, grid_focused) {
+                                pending_navigate = Some(GridNav::Virtual(*node_id));
+                            }
                             cell_index += 1;
                             if cell_index % cols == 0 {
                                 ui.end_row();
@@ -987,7 +1028,7 @@ impl NekoviewApp {
                             });
                             self.thumb_display_requested.insert(path.clone());
                             if path.parent().is_some_and(|parent| parent == self.current_dir)
-                                && self.folder_pane_tab == FolderPaneTab::RealTree
+                                && self.folder_pane_tab.shows_real_dir()
                             {
                                 self.prioritize_thumbnail_path(path);
                             }
@@ -1451,8 +1492,10 @@ impl NekoviewApp {
         // ユーザーの手動スクロールを読み戻してストアを更新
         self.explorer_scroll_offset = output.state.offset.y;
         self.explorer_viewport_h = output.inner_rect.height();
-        if let Some(path) = output.inner {
-            self.navigate_to(path, DirectoryNavigationSource::ItemPane);
+        match output.inner {
+            Some(GridNav::Real(path)) => self.navigate_to(path, DirectoryNavigationSource::ItemPane),
+            Some(GridNav::Virtual(id)) => self.select_virtual_node(id),
+            None => {}
         }
     }
 }

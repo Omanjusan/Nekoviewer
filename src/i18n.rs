@@ -885,6 +885,14 @@ impl Lang {
         }
     }
 
+    pub fn virtual_link_broken_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "（リンク切れ）",
+            Lang::English  => "(broken link)",
+            Lang::Chinese  => "（链接失效）",
+        }
+    }
+
     pub fn virtual_ok(self) -> &'static str {
         match self {
             Lang::Japanese => "OK",

@@ -40,6 +40,13 @@ impl ExplorerSortKey {
     }
 }
 
+/// グリッドのフォルダカード（ダブルクリック）/ Enter による移動要求。
+enum GridNav {
+    Real(PathBuf),
+    /// 仮想ノードid
+    Virtual(u32),
+}
+
 enum TreeAction {
     None,
     ToggleExpand(PathBuf),
@@ -210,10 +217,14 @@ pub(crate) struct SearchFormState {
 /// draw_archive_grid内で実際に描画される順序（↑→サブフォルダ→フィルタ後アーカイブ）と
 /// 一致させること。↑・サブフォルダ部分は folder_grid_entries() を描画側と共有している
 /// （grid_entries()参照）。
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub(crate) enum GridEntry {
     Up(PathBuf),
     Subdir(PathBuf),
+    /// 仮想フォルダ表示中の「↑」。仮想の親ノードのid（`/` は 0）
+    VirtualUp(u32),
+    /// 仮想フォルダ表示中のフォルダカード。仮想ノードのid（同一実パスの複数登録を区別する）
+    VirtualSubdir(u32),
     /// archives へのインデックス（実インデックス、filtered_indices経由ではない）
     Archive(usize),
 }
@@ -550,6 +561,12 @@ pub struct NekoviewApp {
     /// （フォルダ横断）一覧を表示している。
     viewing_favorites: Option<FavoriteSelection>,
     viewing_dir: Option<PathBuf>,
+    /// Some(id) の間、中央グリッドは仮想ノード（`/` は 0）経由の表示。ファイルはそのノードの
+    /// 実パス（current_dir）を実スキャンして出し、フォルダカードと「↑」は仮想ツリーが正になる。
+    /// navigate_to / navigate_to_drive / タブ離脱で必ず None に戻す。
+    viewing_virtual_node: Option<u32>,
+    /// viewing_virtual_node のノードの実パスが到達不能（リンク切れ）。実スキャンは行わない。
+    virtual_link_broken: bool,
     /// 現PWDのサムネイル進捗 (path, current, total, replacing_old)。
     cd_summary: Option<(PathBuf, usize, usize, bool)>,
     /// バックグラウンドで計算中のサマリー結果受信チャンネル
@@ -921,6 +938,8 @@ impl NekoviewApp {
             spread_setting_dialog: None,
             viewing_favorites: None,
             viewing_dir: None,
+            viewing_virtual_node: None,
+            virtual_link_broken: false,
             cd_summary: None,
             cd_summary_rx: None,
             cd_summary_updated_at: None,

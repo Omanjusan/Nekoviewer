@@ -48,13 +48,10 @@ impl NekoviewApp {
     /// 指定ディレクトリへ遷移する。
     /// お気に入りタブ表示中ならそれを解除し、現在地・監視先を更新してスキャンを開始する。
     pub(super) fn navigate_to(&mut self, path: PathBuf, source: DirectoryNavigationSource) {
-        self.viewing_favorites = None;
-        self.current_dir = path.clone();
-        self.viewing_dir = Some(path.clone());
-        // サマリーはスキャン完了時（poll_scan）にスキャン結果から起動する
-        self.cd_summary = None;
-        self.cd_summary_rx = None;
-        self.start_scan();
+        // 実ディレクトリへの移動は仮想ノード経由の表示を終わらせる（実表示に戻る）
+        self.viewing_virtual_node = None;
+        self.virtual_link_broken = false;
+        self.begin_dir_view(path.clone());
         match source {
             DirectoryNavigationSource::Tree => {
                 // ツリーで選べるノードは既に可視なので、追従・アラインさせない。
@@ -68,6 +65,18 @@ impl NekoviewApp {
             }
         }
         self.persist_state();
+    }
+
+    /// 中央グリッドを path の実ディレクトリ表示に切り替えてスキャンを始める
+    /// （navigate_to と仮想ノード選択の共通部分。ツリー追従や永続化は呼び出し側が行う）。
+    pub(super) fn begin_dir_view(&mut self, path: PathBuf) {
+        self.viewing_favorites = None;
+        self.current_dir = path.clone();
+        self.viewing_dir = Some(path);
+        // サマリーはスキャン完了時（poll_scan）にスキャン結果から起動する
+        self.cd_summary = None;
+        self.cd_summary_rx = None;
+        self.start_scan();
     }
 
     /// ディレクトリツリー側を現在地まで自動展開させる。root(tree_root) から target までの
@@ -162,6 +171,8 @@ impl NekoviewApp {
     /// 指定ドライブへ切り替える（ドライブ一覧のクリック・キーボードEnter共通処理）。
     /// ツリーのルート自体をそのドライブへ差し替え、展開状態をリセットする。
     pub(super) fn navigate_to_drive(&mut self, path: PathBuf) {
+        self.viewing_virtual_node = None;
+        self.virtual_link_broken = false;
         self.current_dir = path.clone();
         self.start_scan();
         self.tree_root = path.clone();
@@ -243,7 +254,9 @@ impl NekoviewApp {
             }
         }
 
-        self.start_scan();
+        // 仮想ノード経由の表示中は、DBから読み直して同じノードを開き直す
+        // （`/` やリンク切れの表示中に current_dir を実スキャンしてしまわないため）。
+        self.reload_virtual_or_scan();
 
         // ツリー: ルート + 展開済み全ノードをスレッド1本でまとめて再取得する。
         // 個別ノードの遅延展開（tree_scan_pending）が進行中でも衝突はしない
@@ -280,13 +293,7 @@ impl NekoviewApp {
             rx,
             started_at: std::time::Instant::now(),
         };
-        self.subdirs.clear();
-        self.archives.clear();
-        self.filtered_indices.clear();
-        self.raw_image_files.clear();
-        self.invalid_archives.clear();
-        // PWD再入場は明示的な再試行契機なので、同一滞在中の失敗抑制を解除する。
-        self.thumb_failed.clear();
+        self.clear_dir_listing();
         // リンク切れ表示中のマウント配下へ入る場合は到達可否を再確認する（回復検知の入口）
         if let Some(root) = self.network_unreachable_mounts.iter()
             .find(|r| self.current_dir.starts_with(r))
@@ -300,6 +307,22 @@ impl NekoviewApp {
         self.cache_db = self.cache_neko_dir.as_deref()
             .and_then(|p| neko_dir::open_cache_db_if_exists(p, &self.current_dir));
         self.refresh_thumbnail_generation_state();
+        self.reset_thumbs_and_selection();
+    }
+
+    /// 実ディレクトリの一覧（フォルダ・ファイル）を空にする。start_scan と show_empty_listing の共通部分。
+    fn clear_dir_listing(&mut self) {
+        self.subdirs.clear();
+        self.archives.clear();
+        self.filtered_indices.clear();
+        self.raw_image_files.clear();
+        self.invalid_archives.clear();
+        // PWD再入場は明示的な再試行契機なので、同一滞在中の失敗抑制を解除する。
+        self.thumb_failed.clear();
+    }
+
+    /// サムネイル生成状態・選択・スクロール位置を初期化する。start_scan と show_empty_listing の共通部分。
+    fn reset_thumbs_and_selection(&mut self) {
         self.thumbnails.clear();
         self.thumb_display_requested.clear();
         self.thumb_pending.clear();
@@ -313,6 +336,27 @@ impl NekoviewApp {
         self.multi_selected.clear();
         self.select_anchor = None;
         self.explorer_scroll_offset = 0.0;
+    }
+
+    /// 実ファイルの一覧を持たない表示（仮想ルート `/`、リンク切れノード）に切り替える。
+    /// 実スキャンとサムネ生成を止め、一覧を空にする（お気に入り横断表示の入室と同じ考え方）。
+    pub(super) fn show_empty_listing(&mut self) {
+        self.thumb_session.fetch_add(1, Ordering::AcqRel);
+        self.scan_state = ScanState::Done;
+        self.viewing_favorites = None;
+        self.viewing_dir = None;
+        self.cd_summary = None;
+        self.cd_summary_rx = None;
+        self.clear_dir_listing();
+        self.cache_db = None;
+        self.cache_neko_dir = None;
+        self.refresh_thumbnail_generation_state();
+        self.reset_thumbs_and_selection();
+        self.grid_cursor = None;
+        self.selected_archive_meta = None;
+        if let Some(first) = self.grid_entries().first().cloned() {
+            self.set_grid_cursor(first);
+        }
     }
 
     /// フレームごとにスキャン結果をポーリングして反映する
@@ -352,7 +396,8 @@ impl NekoviewApp {
                     .and_then(|p| neko_dir::open_cache_db(p, &self.current_dir));
             }
             self.refresh_thumbnail_generation_state();
-            self.subdirs = subdirs;
+            // 仮想ノード経由の表示ではフォルダカードは仮想ツリーが正（実サブフォルダは出さない）
+            self.subdirs = if self.viewing_virtual_node.is_some() { Vec::new() } else { subdirs };
             self.archives = archives.into_iter()
                 .filter(|p| {
                     let filename = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
