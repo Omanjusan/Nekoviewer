@@ -26,6 +26,7 @@ mod view_gui_config;
 mod view_innerlog;
 mod view_reader;
 mod view_status;
+mod virtual_folders;
 #[cfg(windows)]
 mod win_registry;
 

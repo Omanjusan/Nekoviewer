@@ -905,6 +905,7 @@ impl NekoviewApp {
                 let db = crate::spread_state::open_spread_db(&config_root);
                 if let Some(db) = &db {
                     crate::favorites::init_favorite_tables(db);
+                    crate::virtual_folders::init_virtual_folder_tables(db);
                     // 候補刷新で廃止した空洞・豆腐マーカーを塗り版へ一括移行
                     crate::favorites::migrate_markers(db, FAVORITE_MARKER_MIGRATION);
                 }
