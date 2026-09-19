@@ -324,7 +324,7 @@ impl NekoviewApp {
         // 必ず呼ばれる）に改めてstart_scan()されるため、ここでは単に無視すればよい。
         // folder_pane_tab とOptionフラグの二重チェック（タブ状態を唯一の一次判定にしつつ、
         // フラグの取りこぼしがあっても安全側に倒す）。
-        if self.folder_pane_tab != FolderPaneTab::RealTree
+        if !self.folder_pane_tab.shows_real_dir()
             || self.viewing_favorites.is_some()
             || self.viewing_search.is_some()
         {
@@ -544,7 +544,7 @@ impl NekoviewApp {
         lo: usize,
         hi: usize,
     ) {
-        if self.folder_pane_tab != FolderPaneTab::RealTree
+        if !self.folder_pane_tab.shows_real_dir()
             || self.viewing_favorites.is_some()
             || self.viewing_search.is_some()
             || visible.is_empty()
@@ -623,7 +623,7 @@ impl NekoviewApp {
     }
 
     pub(super) fn pump_thumbnail_queue(&mut self, ctx: &egui::Context) {
-        if self.folder_pane_tab != FolderPaneTab::RealTree
+        if !self.folder_pane_tab.shows_real_dir()
             || self.viewing_favorites.is_some()
             || self.viewing_search.is_some()
         {

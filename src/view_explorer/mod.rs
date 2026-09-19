@@ -44,6 +44,8 @@ enum TreeAction {
     None,
     ToggleExpand(PathBuf),
     Navigate(PathBuf),
+    /// 実ツリー右クリック「仮想フォルダに追加する」
+    AddToVirtual(PathBuf),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -51,6 +53,15 @@ enum FolderPaneTab {
     RealTree,
     Favorites,
     Search,
+    VirtualFolders,
+}
+
+impl FolderPaneTab {
+    /// 中央のアイテム欄が実ディレクトリ（current_dir）由来の表示になるタブか。
+    /// お気に入り/検索は横断一覧に差し替えるため対象外。
+    fn shows_real_dir(self) -> bool {
+        matches!(self, Self::RealTree | Self::VirtualFolders)
+    }
 }
 
 /// キーボード操作のフォーカス巡回順（Tab/Shift+Tabで一周する）。今どのタブ（folder_pane_tab）を
@@ -81,6 +92,8 @@ impl FocusPane {
                 FolderPaneTab::RealTree => Self::TreeTab,
                 FolderPaneTab::Favorites => Self::FavoriteTab,
                 FolderPaneTab::Search => Self::SearchForm,
+                // 3Mでは本体ペインのキー操作は未対応のためグリッドへ直行
+                FolderPaneTab::VirtualFolders => Self::Grid,
             },
             Self::TreeTab => Self::Drives,
             Self::SearchForm => Self::SearchHistory,
@@ -106,6 +119,7 @@ impl FocusPane {
             Self::FavoriteTab => Self::FolderTabBar,
             Self::Grid => match tab {
                 FolderPaneTab::Favorites => Self::FavoriteTab,
+                FolderPaneTab::VirtualFolders => Self::FolderTabBar,
                 _ => Self::Drives,
             },
             Self::Filter => Self::Grid,
@@ -498,6 +512,8 @@ pub struct NekoviewApp {
     tree_children: HashMap<PathBuf, Vec<PathBuf>>,
     /// 左ペイン: 実フォルダツリー / お気に入りペインの切替状態
     folder_pane_tab: FolderPaneTab,
+    /// 仮想フォルダタブのUIモック状態（3M。実データ未接続）
+    virtual_mock: virtual_ui::VirtualMock,
     /// キーボードフォーカスが現在どの領域にあるか（Tab/Shift+Tabで巡回）
     pub(crate) focused_pane: FocusPane,
     /// 実ツリー内のプレターゲティングカーソル（Enterで確定navigate）
@@ -805,6 +821,7 @@ mod viewer_host;
 mod input;
 mod panels;
 mod favorites_ui;
+mod virtual_ui;
 mod bulk_settings_ui;
 mod search_ui;
 mod search;
@@ -881,6 +898,7 @@ impl NekoviewApp {
             tree_expanded: HashSet::new(),
             tree_children: HashMap::new(),
             folder_pane_tab: FolderPaneTab::RealTree,
+            virtual_mock: virtual_ui::VirtualMock::new(),
             focused_pane: FocusPane::TreeTab,
             tree_cursor: None,
             drive_cursor: None,

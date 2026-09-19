@@ -377,7 +377,7 @@ impl NekoviewApp {
         if !(key_left || key_right) {
             return;
         }
-        const ORDER: [FolderPaneTab; 3] = [FolderPaneTab::Favorites, FolderPaneTab::RealTree, FolderPaneTab::Search];
+        const ORDER: [FolderPaneTab; 4] = [FolderPaneTab::Favorites, FolderPaneTab::RealTree, FolderPaneTab::Search, FolderPaneTab::VirtualFolders];
         let pos = ORDER.iter().position(|&t| t == self.folder_pane_tab).unwrap_or(1);
         let mut new_pos = pos;
         if key_left && pos > 0 {

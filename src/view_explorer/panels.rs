@@ -184,6 +184,7 @@ impl NekoviewApp {
         self.draw_toast(&ctx);
         self.draw_memory_warning_dialog(&ctx);
         self.draw_favorite_dialog(&ctx);
+        self.draw_virtual_dialogs(&ctx);
         self.draw_favorite_delete_confirm_dialog(&ctx);
         self.draw_favorite_detail_dialog(&ctx);
         self.draw_sort_condition_dialog(&ctx);
@@ -419,12 +420,22 @@ impl NekoviewApp {
                 self.search_form_focus_request = true;
             }
         });
+        // 2行目（固定）: 仮想フォルダタブ
+        ui.horizontal(|ui| {
+            let virt_resp = ui.selectable_label(self.folder_pane_tab == FolderPaneTab::VirtualFolders, "仮想フォルダ");
+            if tab_bar_focused && self.folder_pane_tab == FolderPaneTab::VirtualFolders { draw_cursor_ring(ui, virt_resp.rect); }
+            if virt_resp.clicked() {
+                self.switch_folder_tab(FolderPaneTab::VirtualFolders);
+                self.focused_pane = FocusPane::FolderTabBar;
+            }
+        });
         ui.separator();
 
         match self.folder_pane_tab {
             FolderPaneTab::RealTree => self.draw_real_tree_panel(ui),
             FolderPaneTab::Favorites => self.draw_favorites_pane(ui),
             FolderPaneTab::Search => self.draw_search_left_pane(ui),
+            FolderPaneTab::VirtualFolders => self.draw_virtual_folder_pane(ui),
         }
     }
 
@@ -455,6 +466,7 @@ impl NekoviewApp {
                     &self.tree_expanded,
                     &self.tree_children,
                     self.show_hidden,
+                    self.folder_pane_tab != FolderPaneTab::Search,
                     &mut tree_action,
                     &mut scroll_pending,
                 );
@@ -482,8 +494,12 @@ impl NekoviewApp {
                     }
                 }
             }
+            TreeAction::AddToVirtual(path) => self.open_virtual_dest_picker(path),
             TreeAction::Navigate(path) => {
                 self.focused_pane = FocusPane::TreeTab;
+                if self.folder_pane_tab == FolderPaneTab::VirtualFolders {
+                    self.mark_card_from_real();
+                }
                 self.tree_cursor = Some(path.clone());
                 // 検索タブ内のツリーは検索条件の基点ディレクトリ選択ツールであり、
                 // 実ナビゲーション（current_dir変更・実スキャン）は行わない。
@@ -522,6 +538,9 @@ impl NekoviewApp {
                     if resp.clicked() {
                         self.focused_pane = FocusPane::Drives;
                         self.drive_cursor = Some(path.clone());
+                        if self.folder_pane_tab == FolderPaneTab::VirtualFolders {
+                            self.mark_card_from_real();
+                        }
                         if self.folder_pane_tab == FolderPaneTab::Search {
                             self.set_search_base_drive(path);
                         } else {
@@ -549,6 +568,38 @@ impl NekoviewApp {
                     |ui| self.draw_real_tree_panel(ui),
                 );
                 ui.separator();
+                let remain_w = ui.available_width();
+                ui.allocate_ui_with_layout(
+                    egui::vec2(remain_w, avail_h),
+                    egui::Layout::top_down(egui::Align::Min),
+                    |ui| self.draw_central_panel_content(ui),
+                );
+            });
+            return;
+        }
+        // 仮想フォルダタブ: 左端に伸縮グリップ。展張すると実ツリー（タイトル付き）を差し込む。
+        if self.folder_pane_tab == FolderPaneTab::VirtualFolders {
+            const GRIP_PANE_WIDTH: f32 = 14.0;
+            const REAL_PANE_WIDTH: f32 = 200.0;
+            let avail_h = ui.available_height();
+            ui.horizontal(|ui| {
+                ui.allocate_ui_with_layout(
+                    egui::vec2(GRIP_PANE_WIDTH, avail_h),
+                    egui::Layout::top_down(egui::Align::Min),
+                    |ui| self.draw_virtual_grip(ui, avail_h),
+                );
+                if self.virtual_mock_real_pane_open() {
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(REAL_PANE_WIDTH, avail_h),
+                        egui::Layout::top_down(egui::Align::Min),
+                        |ui| {
+                            ui.label(egui::RichText::new("実ツリー").strong());
+                            ui.separator();
+                            self.draw_real_tree_panel(ui);
+                        },
+                    );
+                    ui.separator();
+                }
                 let remain_w = ui.available_width();
                 ui.allocate_ui_with_layout(
                     egui::vec2(remain_w, avail_h),
@@ -616,7 +667,7 @@ impl NekoviewApp {
 
             const FILTER_BAR_H: f32 = 28.0;
             let content_h = (ui.available_height() - FILTER_BAR_H).max(0.0);
-            ui.allocate_ui_with_layout(
+            let grid_out = ui.allocate_ui_with_layout(
                 egui::vec2(ui.available_width(), content_h),
                 egui::Layout::top_down(egui::Align::Min),
                 |ui| {
@@ -629,6 +680,15 @@ impl NekoviewApp {
                     }
                 },
             );
+            // 表示元の目印: 実ツリー選択=青 / 仮想フォルダ選択=緑（2px外枠）
+            if let Some(color) = self.card_border_color() {
+                ui.painter().rect_stroke(
+                    grid_out.response.rect,
+                    0.0,
+                    egui::Stroke::new(2.0, color),
+                    egui::StrokeKind::Inside,
+                );
+            }
             self.draw_filter_bar(ui);
         }
     }
@@ -1408,6 +1468,7 @@ fn show_tree_node(
     tree_expanded: &HashSet<PathBuf>,
     tree_children: &HashMap<PathBuf, Vec<PathBuf>>,
     show_hidden: bool,
+    virtual_menu: bool,
     action: &mut TreeAction,
     scroll_pending: &mut bool,
 ) {
@@ -1458,6 +1519,14 @@ fn show_tree_node(
         if r.clicked() && matches!(*action, TreeAction::None) {
             *action = TreeAction::Navigate(path.clone());
         }
+        if virtual_menu {
+            r.context_menu(|ui| {
+                if ui.button("仮想フォルダに追加する").clicked() {
+                    *action = TreeAction::AddToVirtual(path.clone());
+                    ui.close();
+                }
+            });
+        }
         // 自動追従の展開完了直後、現在地ノードが実際に描画されたこのフレームでスクロールする。
         // align=None は「はみ出ている分だけ最小スクロールで見える位置に持ってくる」動作なので、
         // 現在地が可視範囲より上ならその分だけ上へ、下ならその分だけ下へ寄る。
@@ -1490,6 +1559,7 @@ fn show_tree_node(
                     tree_expanded,
                     tree_children,
                     show_hidden,
+                    virtual_menu,
                     action,
                     scroll_pending,
                 );
