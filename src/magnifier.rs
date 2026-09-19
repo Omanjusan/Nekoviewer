@@ -2,7 +2,7 @@
 //! 倍率は「原寸比」で持つ（1.0 = 原寸デコードしたテクスチャの等倍。GUI設定の「原寸」と同じ意味）。
 //! 入力・描画・デコード連動は別フェーズ。ここは egui::Vec2 以外に依存しない。
 
-use egui::Vec2;
+use egui::{Pos2, Rect, Vec2};
 
 /// 原寸（100%）の倍率。
 pub const ACTUAL_SCALE: f32 = 1.0;
@@ -23,8 +23,24 @@ pub const DEFAULT_BAR_WIDTH_PCT: f32 = 20.0;
 const BAR_WIDTH_PCT_RANGE: (f32, f32) = (10.0, 60.0);
 const BAR_WIDTH_PCT_STEP: f32 = 0.5;
 // 以下のサイズ既定は仮置き。フェーズ4の実描画で調整する。
-const DEFAULT_BAR_BODY_HEIGHT: f32 = 24.0;
-const BAR_BODY_HEIGHT_RANGE: (f32, f32) = (8.0, 64.0);
+const DEFAULT_BAR_BODY_HEIGHT: f32 = 36.0;
+const BAR_BODY_HEIGHT_RANGE: (f32, f32) = (24.0, 96.0);
+/// バー全体の内側余白・パーツ間の隙間(px)。
+pub const BAR_PAD: f32 = 6.0;
+/// ビューポート下端からバー下端までの余白(px)。
+pub const BAR_BOTTOM_MARGIN: f32 = 24.0;
+/// バー本体の最小幅(px)。これを割るほど狭い窓では、割合よりも最小幅を優先する。
+const BAR_BODY_MIN_WIDTH: f32 = 80.0;
+/// ホバーで再表示・イベント吸収の判定に使う、バー矩形の外側への拡張(px)。
+pub const BAR_HOVER_SLOP: f32 = 8.0;
+/// スライダーの100%吸着幅(px)。ドラッグで原寸ぴったりに合わせやすくする。
+pub const BAR_ACTUAL_MAGNET_PX: f32 = 6.0;
+/// 自動ハイドで薄くなるまでのフェード時間(秒)。
+pub const BAR_FADE_SECS: f32 = 0.25;
+/// バー本体の上段（目盛りの数値・現在値ラベル）の高さ(px)。トラックはその下。
+pub const BAR_LABEL_H: f32 = 14.0;
+/// トラック両端の余白(px)。つまみが端で切れないようにする。
+const BAR_TRACK_INSET: f32 = 8.0;
 const DEFAULT_BUTTON_SIZE: Vec2 = Vec2::new(44.0, 24.0);
 const BUTTON_SIZE_RANGE: (f32, f32) = (16.0, 96.0);
 
@@ -90,6 +106,67 @@ impl BarLayout {
         self.detail_button = clamp_size(size, self.detail_button);
         self.detail_button
     }
+
+    /// ビューポートの下端中央に置くバーの各矩形を解決する。全体幅は親の割合を基準にするが、
+    /// パーツが収まる最小幅は割らない（ただしビューポート幅は超えない）。
+    /// `show_buttons` が false の間はボタンの領域を確保せず、全幅を本体に使う。
+    pub fn resolve(&self, viewport: Rect, show_buttons: bool) -> BarRects {
+        let buttons_w = if show_buttons {
+            self.step_button.x + self.detail_button.x + BAR_PAD * 2.0
+        } else {
+            0.0
+        };
+        let min_total = BAR_PAD * 2.0 + BAR_BODY_MIN_WIDTH + buttons_w;
+        let wanted = viewport.width() * self.width_pct / 100.0;
+        let total_w = wanted.max(min_total).min(viewport.width().max(0.0));
+        let buttons_h = if show_buttons { self.step_button.y.max(self.detail_button.y) } else { 0.0 };
+        let total_h = BAR_PAD * 2.0 + self.body_height.max(buttons_h);
+
+        let total = Rect::from_min_size(
+            Pos2::new(
+                viewport.center().x - total_w / 2.0,
+                viewport.bottom() - BAR_BOTTOM_MARGIN - total_h,
+            ),
+            Vec2::new(total_w, total_h),
+        );
+        let inner = total.shrink(BAR_PAD);
+        let centered = |x: f32, size: Vec2| {
+            Rect::from_min_size(Pos2::new(x, inner.center().y - size.y / 2.0), size)
+        };
+        let (step_button, detail_button, body_left) = if show_buttons {
+            let step_x = inner.left();
+            let detail_x = step_x + self.step_button.x + BAR_PAD;
+            (
+                Some(centered(step_x, self.step_button)),
+                Some(centered(detail_x, self.detail_button)),
+                detail_x + self.detail_button.x + BAR_PAD,
+            )
+        } else {
+            (None, None, inner.left())
+        };
+        let body = Rect::from_min_max(
+            Pos2::new(body_left, inner.center().y - self.body_height / 2.0),
+            Pos2::new(inner.right(), inner.center().y + self.body_height / 2.0),
+        );
+        BarRects { total, body, step_button, detail_button }
+    }
+}
+
+/// バー本体の矩形から、つまみが動くトラックの矩形を求める（上段のラベル行を除いた下段）。
+pub fn track_rect(body: Rect) -> Rect {
+    Rect::from_min_max(
+        Pos2::new(body.left() + BAR_TRACK_INSET, body.top() + BAR_LABEL_H),
+        Pos2::new(body.right() - BAR_TRACK_INSET, body.bottom()),
+    )
+}
+
+/// `BarLayout::resolve` の結果。ボタンは領域を確保していない間 None。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BarRects {
+    pub total: Rect,
+    pub body: Rect,
+    pub step_button: Option<Rect>,
+    pub detail_button: Option<Rect>,
 }
 
 fn clamp_size(size: Vec2, current: Vec2) -> Vec2 {
@@ -194,6 +271,71 @@ pub fn rescale_for_new_texture(scale: f32, old_width: f32, new_width: f32) -> f3
     } else {
         scale
     }
+}
+
+/// 倍率 → スライダー上の位置 t（0..=1）。範囲内で対数的に割り当てる。範囲が潰れているときは 0。
+pub fn scale_to_t(scale: f32, range: (f32, f32)) -> f32 {
+    let (lo, hi) = range;
+    if !(lo > 0.0 && hi > lo && scale > 0.0) {
+        return 0.0;
+    }
+    ((scale / lo).ln() / (hi / lo).ln()).clamp(0.0, 1.0)
+}
+
+/// スライダー上の位置 t（0..=1）→ 倍率。`scale_to_t` の逆変換。
+pub fn t_to_scale(t: f32, range: (f32, f32)) -> f32 {
+    let (lo, hi) = range;
+    if !(lo > 0.0 && hi > lo) {
+        return lo;
+    }
+    lo * (hi / lo).powf(t.clamp(0.0, 1.0))
+}
+
+/// トラック上の x 座標（`track` = 左端・右端）から倍率を求める。原寸(100%)の位置から
+/// `magnet_px` 以内なら 100% ぴったりへ吸着する。
+pub fn slider_scale_at(x: f32, track: (f32, f32), range: (f32, f32), magnet_px: f32) -> f32 {
+    let width = track.1 - track.0;
+    if !(width > 0.0) {
+        return range.0;
+    }
+    if range.0 < ACTUAL_SCALE && ACTUAL_SCALE < range.1 {
+        let actual_x = track.0 + scale_to_t(ACTUAL_SCALE, range) * width;
+        if (x - actual_x).abs() <= magnet_px {
+            return ACTUAL_SCALE;
+        }
+    }
+    t_to_scale((x - track.0) / width, range)
+}
+
+/// 目盛りの倍率（昇順）。簡易は原寸を基準に ×2 ごと、詳細は原寸を基準に 1ノッチ(`ratio`)ごと。
+/// 範囲の両端ちょうどの目盛りも含める。
+pub fn tick_scales(range: (f32, f32), detail: bool, ratio: f32) -> Vec<f32> {
+    let (lo, hi) = range;
+    let base = if detail { ratio } else { 2.0 };
+    if !(lo > 0.0 && hi > lo && base.is_finite() && base > 1.0) {
+        return Vec::new();
+    }
+    let eps = 1e-4;
+    let k_min = (lo.ln() / base.ln()).floor() as i32;
+    let k_max = (hi.ln() / base.ln()).ceil() as i32;
+    (k_min..=k_max)
+        .map(|k| base.powi(k))
+        .filter(|v| *v >= lo * (1.0 - eps) && *v <= hi * (1.0 + eps))
+        .collect()
+}
+
+/// 「125%」のような原寸比の表示文字列。
+pub fn format_percent(scale: f32) -> String {
+    format!("{}%", (scale * 100.0).round() as i32)
+}
+
+/// バーの不透明度（0..=1）。ホバー中・操作直後は1、`autohide_secs` を過ぎたら
+/// `BAR_FADE_SECS` かけて0へ落とす。
+pub fn bar_alpha(idle_secs: f32, autohide_secs: f32, hovered: bool) -> f32 {
+    if hovered || idle_secs <= autohide_secs {
+        return 1.0;
+    }
+    (1.0 - (idle_secs - autohide_secs) / BAR_FADE_SECS).clamp(0.0, 1.0)
 }
 
 fn axis_pad(viewport: f32, content: f32) -> f32 {
@@ -384,6 +526,132 @@ mod tests {
     }
 
     #[test]
+    fn slider_position_is_logarithmic_and_invertible() {
+        let range = (0.25, 4.0);
+        assert_eq!(scale_to_t(0.25, range), 0.0);
+        assert_eq!(scale_to_t(4.0, range), 1.0);
+        // 100% は対数の中点（0.25〜4.0 の幾何平均）。
+        assert!((scale_to_t(1.0, range) - 0.5).abs() < 1e-6);
+        for scale in [0.3, 0.8, 1.0, 2.5, 3.9] {
+            let back = t_to_scale(scale_to_t(scale, range), range);
+            assert!((back - scale).abs() < 1e-4, "{scale} -> {back}");
+        }
+        // 範囲外・不正な範囲。
+        assert_eq!(scale_to_t(10.0, range), 1.0);
+        assert_eq!(scale_to_t(1.0, (2.0, 2.0)), 0.0);
+        assert_eq!(t_to_scale(0.5, (2.0, 2.0)), 2.0);
+    }
+
+    #[test]
+    fn slider_snaps_to_actual_size_near_its_mark() {
+        let range = (0.25, 4.0);
+        let track = (100.0, 500.0); // 100% は中点 x=300
+        assert_eq!(slider_scale_at(303.0, track, range, 6.0), ACTUAL_SCALE);
+        assert_eq!(slider_scale_at(295.0, track, range, 6.0), ACTUAL_SCALE);
+        assert_ne!(slider_scale_at(320.0, track, range, 6.0), ACTUAL_SCALE);
+        // 端は範囲端、トラック外は丸め。
+        assert!((slider_scale_at(100.0, track, range, 6.0) - 0.25).abs() < 1e-5);
+        assert!((slider_scale_at(900.0, track, range, 6.0) - 4.0).abs() < 1e-4);
+        // 100%が範囲外（小さい画像）なら吸着しない。
+        let small = (1.67, 4.0);
+        assert!((slider_scale_at(100.0, track, small, 6.0) - 1.67).abs() < 1e-4);
+    }
+
+    #[test]
+    fn simple_ticks_are_powers_of_two_around_actual_size() {
+        assert_eq!(tick_scales((0.4, 4.0), false, 1.25), vec![0.5, 1.0, 2.0, 4.0]);
+        assert_eq!(tick_scales((1.67, 4.0), false, 1.25), vec![2.0, 4.0]);
+        assert!(tick_scales((2.0, 2.0), false, 1.25).is_empty());
+    }
+
+    #[test]
+    fn detail_ticks_follow_notch_ratio() {
+        let ticks = tick_scales((0.4, 4.0), true, 1.25);
+        assert!(ticks.contains(&1.0));
+        assert!(ticks.windows(2).all(|w| w[0] < w[1]));
+        assert!((ticks[ticks.len() - 1] / ticks[ticks.len() - 2] - 1.25).abs() < 1e-4);
+        assert!(ticks.iter().all(|t| *t >= 0.4 * 0.999 && *t <= 4.0 * 1.001));
+        // 不正な比率は目盛りなし。
+        assert!(tick_scales((0.4, 4.0), true, 1.0).is_empty());
+    }
+
+    #[test]
+    fn percent_text_rounds_to_integer() {
+        assert_eq!(format_percent(1.0), "100%");
+        assert_eq!(format_percent(1.256), "126%");
+        assert_eq!(format_percent(0.4166), "42%");
+    }
+
+    #[test]
+    fn bar_alpha_fades_after_idle_time() {
+        assert_eq!(bar_alpha(0.0, 2.0, false), 1.0);
+        assert_eq!(bar_alpha(2.0, 2.0, false), 1.0);
+        let mid = bar_alpha(2.0 + BAR_FADE_SECS / 2.0, 2.0, false);
+        assert!((mid - 0.5).abs() < 1e-4);
+        assert_eq!(bar_alpha(2.0 + BAR_FADE_SECS + 1.0, 2.0, false), 0.0);
+        // ホバー中は消えない。
+        assert_eq!(bar_alpha(99.0, 2.0, true), 1.0);
+    }
+
+    fn viewport() -> Rect {
+        Rect::from_min_size(Pos2::new(10.0, 20.0), Vec2::new(1920.0, 1000.0))
+    }
+
+    #[test]
+    fn bar_is_centered_at_bottom_with_default_width() {
+        let r = BarLayout::default().resolve(viewport(), false);
+        assert!((r.total.width() - 1920.0 * 0.2).abs() < 1e-3);
+        assert!((r.total.center().x - viewport().center().x).abs() < 1e-3);
+        assert!((viewport().bottom() - BAR_BOTTOM_MARGIN - r.total.bottom()).abs() < 1e-3);
+        // ボタン領域を確保しない間は、本体が全幅（内側余白を除く）。
+        assert!((r.body.width() - (r.total.width() - BAR_PAD * 2.0)).abs() < 1e-3);
+        assert!(r.step_button.is_none() && r.detail_button.is_none());
+    }
+
+    #[test]
+    fn bar_width_follows_parent_percent() {
+        let mut layout = BarLayout::default();
+        layout.set_width_pct(40.0);
+        let r = layout.resolve(viewport(), false);
+        assert!((r.total.width() - 1920.0 * 0.4).abs() < 1e-3);
+    }
+
+    #[test]
+    fn buttons_sit_left_of_body_inside_total() {
+        let r = BarLayout::default().resolve(viewport(), true);
+        let (step, detail) = (r.step_button.unwrap(), r.detail_button.unwrap());
+        for rect in [step, detail, r.body] {
+            assert!(r.total.contains_rect(rect), "{rect:?} not in {:?}", r.total);
+        }
+        assert!(step.right() <= detail.left());
+        assert!(detail.right() <= r.body.left());
+        assert!((step.center().y - r.body.center().y).abs() < 1e-3);
+        assert!(r.body.width() > 0.0);
+    }
+
+    #[test]
+    fn track_sits_below_label_row_inside_body() {
+        let r = BarLayout::default().resolve(viewport(), false);
+        let track = track_rect(r.body);
+        assert!(r.body.contains_rect(track));
+        assert!((track.top() - r.body.top() - BAR_LABEL_H).abs() < 1e-3);
+        assert!(track.width() > 0.0 && track.height() > 0.0);
+    }
+
+    #[test]
+    fn narrow_viewport_keeps_parts_usable_without_overflowing() {
+        // 割合だけだと本体が潰れる幅: 最小幅を優先する。
+        let narrow = Rect::from_min_size(Pos2::ZERO, Vec2::new(500.0, 400.0));
+        let r = BarLayout::default().resolve(narrow, true);
+        assert!(r.body.width() >= BAR_BODY_MIN_WIDTH - 1e-3);
+        assert!(r.total.width() <= narrow.width() + 1e-3);
+        // ビューポート自体が最小幅より狭い場合は、ビューポート幅までに収める。
+        let tiny = Rect::from_min_size(Pos2::ZERO, Vec2::new(120.0, 400.0));
+        let r = BarLayout::default().resolve(tiny, true);
+        assert!(r.total.width() <= tiny.width() + 1e-3);
+    }
+
+    #[test]
     fn fit_view_starts_at_origin() {
         let view = MagnifierView::fit(v(1920.0, 1000.0), v(1600.0, 2400.0));
         assert!((view.scale - 1000.0 / 2400.0).abs() < 1e-6);
@@ -421,7 +689,7 @@ mod tests {
         assert_eq!(b.set_width_pct(90.0), 60.0);
         assert_eq!(b.set_width_pct(f32::NAN), 60.0);
 
-        assert_eq!(b.set_body_height(2.0), 8.0);
+        assert_eq!(b.set_body_height(2.0), 24.0);
         assert_eq!(b.set_body_height(30.0), 30.0);
 
         // 軸ごとに丸め、非有限の軸は現在値を保つ。

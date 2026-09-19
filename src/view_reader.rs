@@ -532,6 +532,9 @@ pub struct ViewerState {
     /// `magnifier_view` に反映済みのテクスチャ寸法。原寸デコードへの差し替えで寸法が変わったとき、
     /// 画面上の見た目の大きさを保つよう倍率を換算するために使う。
     magnifier_img_size: egui::Vec2,
+    /// スライダーバーを最後に操作・ホバーした時刻（自動ハイドの起点）。None = 作り直し直後で、
+    /// 次の描画でその時刻を起点にする（モードON直後・ページ送り直後は必ず見える）。
+    magnifier_bar_active_at: Option<f64>,
     /// GPUテクスチャの1辺上限（毎フレーム ctx から取り込む）。デコード目標のクランプに使う。
     max_texture_side: usize,
 }
@@ -776,6 +779,7 @@ impl ViewerState {
             magnifier_at_fit: true,
             magnifier_offset_dirty: false,
             magnifier_img_size: egui::Vec2::ZERO,
+            magnifier_bar_active_at: None,
             max_texture_side: MAX_TEXTURE_SIDE_FALLBACK,
         }
     }
@@ -865,6 +869,7 @@ impl ViewerState {
             magnifier_at_fit: true,
             magnifier_offset_dirty: false,
             magnifier_img_size: egui::Vec2::ZERO,
+            magnifier_bar_active_at: None,
             max_texture_side: MAX_TEXTURE_SIDE_FALLBACK,
         }
     }
@@ -2429,18 +2434,34 @@ impl ViewerState {
             }) || self.tool_palette_menu_open;
             self.tick_tool_palette_auto_hide(ui.ctx(), input.time, pointer_in_palette);
 
-            // ── 虫眼鏡：ホイール拡縮（ポインタ基準）。パレット上のホイールは握りつぶす ─────
+            // ── 虫眼鏡：ホイール拡縮（ポインタ基準）とスライダーバー ────────────────────
+            // パレット上のホイールは握りつぶす。バー上のホイールは表示中心基準で拡縮する。
+            // バーはモードON中は（非表示でも）常にイベントを吸収し、ホバーで再表示される。
+            let bar_rects = frame.magnifier.then(|| cfg.magnifier.bar.resolve(viewport_rect, false));
+            let pointer_in_bar = bar_rects.zip(input.hover_pos).is_some_and(|(b, p)| {
+                b.total.expand(crate::magnifier::BAR_HOVER_SLOP).contains(p)
+            });
             if frame.magnifier {
-                let hover = if pointer_in_palette || self.file_detail_dialog.is_some() { None } else { input.hover_pos };
-                self.update_magnifier(viewport_rect, frame.tex_lo.as_ref(), hover, input.wheel_notches, &cfg.magnifier);
+                let anchor = if pointer_in_palette || self.file_detail_dialog.is_some() {
+                    None
+                } else if pointer_in_bar {
+                    Some(viewport_rect.center())
+                } else {
+                    input.hover_pos
+                };
+                self.update_magnifier(viewport_rect, frame.tex_lo.as_ref(), anchor, input.wheel_notches, &cfg.magnifier);
+                if let Some(bar) = bar_rects {
+                    self.draw_magnifier_bar(ui.ctx(), viewport_rect, frame.tex_lo.as_ref(), &bar, pointer_in_bar, input.wheel_notches != 0.0, input.time, &cfg.magnifier);
+                }
             } else {
                 self.magnifier_view = None;
+                self.magnifier_bar_active_at = None;
             }
 
             // ── 左右端ページ送りゾーン ───────────────────────────────────────────
             let edge_ctx = ui.ctx().clone();
-            let guarded_hover = if pointer_in_palette { None } else { input.hover_pos };
-            let guarded_primary_clicked = input.primary_clicked && !pointer_in_palette;
+            let guarded_hover = if pointer_in_palette || pointer_in_bar { None } else { input.hover_pos };
+            let guarded_primary_clicked = input.primary_clicked && !pointer_in_palette && !pointer_in_bar;
             self.handle_edge_turn(&edge_ctx, clip, guarded_hover, guarded_primary_clicked, is_spread, step, total, input.time);
             self.draw_edge_turn_marker(&edge_ctx, clip);
 
@@ -3737,12 +3758,13 @@ impl ViewerState {
 
     /// 虫眼鏡ビューの更新（毎フレーム、描画前）。作り直し・窓サイズ追従・ホイール拡縮を行い、
     /// scroll_offset の押し込みが必要なら `magnifier_offset_dirty` を立てる。
-    /// `hover` は None（パレット上など）ならホイールを無視する。ビューポート外も無視。
+    /// `wheel_anchor`（拡縮の基準点・画面座標）が None（パレット上など）ならホイールを無視する。
+    /// ビューポート外も無視。
     fn update_magnifier(
         &mut self,
         viewport: egui::Rect,
         tex: Option<&egui::TextureHandle>,
-        hover: Option<egui::Pos2>,
+        wheel_anchor: Option<egui::Pos2>,
         wheel_notches: f32,
         cfg: &crate::magnifier::MagnifierConfig,
     ) {
@@ -3775,12 +3797,13 @@ impl ViewerState {
             _ => {
                 self.magnifier_page = page;
                 self.magnifier_offset_dirty = true;
+                self.magnifier_bar_active_at = None;
                 MagnifierView::fit(vp, img)
             }
         };
 
         if wheel_notches != 0.0
-            && let Some(p) = hover.filter(|p| viewport.contains(*p))
+            && let Some(p) = wheel_anchor.filter(|p| viewport.contains(*p))
         {
             let next = notch_scale(view.scale, wheel_notches, DEFAULT_NOTCH_RATIO, range);
             if next != view.scale {
@@ -3792,6 +3815,116 @@ impl ViewerState {
         self.magnifier_at_fit = view.scale <= fit + 1e-4;
         self.magnifier_img_size = img;
         self.magnifier_view = Some(view);
+    }
+
+    /// 虫眼鏡のスライダーバー（下端中央・前面レイヤー）。倍率はフィット〜上限を対数で割り当て、
+    /// 目盛りは原寸(100%)基準。操作は表示中心基準の拡縮。全体を click+drag の土台で覆い、
+    /// 背面（画像のドラッグ・クリック・端ゾーン）へイベントを通さない。
+    /// 自動ハイド中は描画だけをやめ、吸収は続ける（ホバーで再表示される）。
+    #[allow(clippy::too_many_arguments)]
+    fn draw_magnifier_bar(
+        &mut self,
+        ctx: &egui::Context,
+        viewport: egui::Rect,
+        tex: Option<&egui::TextureHandle>,
+        rects: &crate::magnifier::BarRects,
+        pointer_in_bar: bool,
+        wheel_active: bool,
+        time: f64,
+        cfg: &crate::magnifier::MagnifierConfig,
+    ) {
+        use crate::magnifier::*;
+        let (Some(tex), Some(view)) = (tex, self.magnifier_view) else { return };
+        let img = tex.size_vec2();
+        let vp = viewport.size();
+        let fit = fit_scale(vp, img);
+        let range = scale_range(fit, cfg.max_scale());
+
+        if wheel_active || pointer_in_bar {
+            self.magnifier_bar_active_at = Some(time);
+        }
+        let last_active = *self.magnifier_bar_active_at.get_or_insert(time);
+        let idle = (time - last_active).max(0.0) as f32;
+        let alpha = bar_alpha(idle, cfg.autohide_secs(), pointer_in_bar);
+        if alpha > 0.0 && !pointer_in_bar {
+            let remaining = cfg.autohide_secs() - idle;
+            if remaining > 0.0 {
+                ctx.request_repaint_after(Duration::from_secs_f32(remaining + 0.02));
+            } else {
+                ctx.request_repaint(); // フェード中
+            }
+        }
+
+        let track = track_rect(rects.body);
+        let enabled = range.1 > range.0;
+        let mut pressed_x: Option<f32> = None;
+        egui::Area::new(egui::Id::new("magnifier_bar"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(rects.total.min)
+            .constrain(false)
+            .show(ctx, |ui| {
+                ui.allocate_rect(rects.total, egui::Sense::hover());
+                // 土台: バー全体（ホバー拡張ぶんを含む）のクリック・ドラッグを握りつぶす。
+                ui.interact(
+                    rects.total.expand(BAR_HOVER_SLOP),
+                    egui::Id::new("magnifier_bar_backstop"),
+                    egui::Sense::click_and_drag(),
+                );
+                let body_resp = ui.interact(rects.body, egui::Id::new("magnifier_bar_body"), egui::Sense::click_and_drag());
+                if enabled && body_resp.is_pointer_button_down_on() {
+                    pressed_x = ui.input(|i| i.pointer.interact_pos()).map(|p| p.x);
+                }
+                if alpha <= 0.0 {
+                    return;
+                }
+                let a = |base: u8| (base as f32 * alpha).round() as u8;
+                let painter = ui.painter();
+                painter.rect_filled(rects.total, 6.0, egui::Color32::from_black_alpha(a(200)));
+
+                let cy = track.center().y;
+                let x_of = |scale: f32| track.left() + scale_to_t(scale, range) * track.width();
+                painter.line_segment(
+                    [egui::pos2(track.left(), cy), egui::pos2(track.right(), cy)],
+                    egui::Stroke::new(2.0, egui::Color32::from_white_alpha(a(110))),
+                );
+                let thumb_x = x_of(view.scale);
+                let label_y = rects.body.top() + BAR_LABEL_H / 2.0;
+                let label_font = egui::FontId::proportional(10.0);
+                for tick in tick_scales(range, false, DEFAULT_NOTCH_RATIO) {
+                    let x = x_of(tick);
+                    let is_actual = (tick - ACTUAL_SCALE).abs() < 1e-3;
+                    let half = if is_actual { 6.0 } else { 3.5 };
+                    let color = if is_actual {
+                        egui::Color32::from_rgba_unmultiplied(230, 169, 79, a(230))
+                    } else {
+                        egui::Color32::from_white_alpha(a(140))
+                    };
+                    painter.line_segment([egui::pos2(x, cy - half), egui::pos2(x, cy + half)], egui::Stroke::new(1.5, color));
+                    if (x - thumb_x).abs() > 26.0 {
+                        painter.text(egui::pos2(x, label_y), egui::Align2::CENTER_CENTER, format_percent(tick), label_font.clone(), color);
+                    }
+                }
+                let radius = (track.height() / 2.0 - 1.0).clamp(3.0, 7.0);
+                painter.circle_filled(egui::pos2(thumb_x, cy), radius, egui::Color32::from_white_alpha(a(240)));
+                let value_x = thumb_x.clamp(rects.body.left() + 20.0, rects.body.right() - 20.0);
+                painter.text(
+                    egui::pos2(value_x, label_y),
+                    egui::Align2::CENTER_CENTER,
+                    format_percent(view.scale),
+                    egui::FontId::proportional(11.0),
+                    egui::Color32::from_white_alpha(a(255)),
+                );
+            });
+
+        if let Some(x) = pressed_x {
+            let target = slider_scale_at(x, (track.left(), track.right()), range, BAR_ACTUAL_MAGNET_PX);
+            if (target - view.scale).abs() > 1e-6 {
+                self.magnifier_view = Some(zoom_about(view, vp / 2.0, vp, img, target));
+                self.magnifier_offset_dirty = true;
+                self.magnifier_at_fit = target <= fit + 1e-4;
+            }
+            self.magnifier_bar_active_at = Some(time);
+        }
     }
 
     fn render_single(
