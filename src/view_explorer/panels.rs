@@ -383,7 +383,7 @@ impl NekoviewApp {
         // 検索タブへの初回入場時のみ、その時点のPWDを検索基点の初期値にする。
         // 既にユーザーがツリー/ドライブで基点を選んでいれば（Some）上書きしない。
         if tab == FolderPaneTab::Search && self.search_form.base_dir.is_none() {
-            self.search_form.base_dir = Some(self.current_dir.clone());
+            self.search_form.base_dir = Some(self.real_tab_dir().to_path_buf());
         }
         if tab == FolderPaneTab::VirtualFolders {
             // 仮想タブに入る／タブを押し直すたびにDBから読み直す

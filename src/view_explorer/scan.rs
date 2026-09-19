@@ -51,6 +51,7 @@ impl NekoviewApp {
         // 実ディレクトリへの移動は仮想ノード経由の表示を終わらせる（実表示に戻る）
         self.viewing_virtual_node = None;
         self.virtual_link_broken = false;
+        self.real_dir_stash.clear();
         self.begin_dir_view(path.clone());
         match source {
             DirectoryNavigationSource::Tree => {
@@ -173,6 +174,7 @@ impl NekoviewApp {
     pub(super) fn navigate_to_drive(&mut self, path: PathBuf) {
         self.viewing_virtual_node = None;
         self.virtual_link_broken = false;
+        self.real_dir_stash.clear();
         self.current_dir = path.clone();
         self.start_scan();
         self.tree_root = path.clone();

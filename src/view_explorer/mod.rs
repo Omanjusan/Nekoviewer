@@ -568,6 +568,9 @@ pub struct NekoviewApp {
     /// 実パス（current_dir）を実スキャンして出し、フォルダカードと「↑」は仮想ツリーが正になる。
     /// navigate_to / navigate_to_drive / タブ離脱で必ず None に戻す。
     viewing_virtual_node: Option<u32>,
+    /// 仮想ノード表示のため current_dir を実パスへ移す直前の、実ツリータブ自身の位置の退避。
+    /// last_dir の保存と実表示への復帰はこちらを使う（仮想タブに位置を引っ張られないため）。
+    real_dir_stash: real_dir_stash::RealDirStash,
     /// viewing_virtual_node のノードの実パスが到達不能（リンク切れ）。実スキャンは行わない。
     virtual_link_broken: bool,
     /// 現PWDのサムネイル進捗 (path, current, total, replacing_old)。
@@ -848,6 +851,7 @@ mod viewer_host;
 mod input;
 mod panels;
 mod favorites_ui;
+mod real_dir_stash;
 mod virtual_ui;
 mod bulk_settings_ui;
 mod search_ui;
@@ -942,6 +946,7 @@ impl NekoviewApp {
             viewing_favorites: None,
             viewing_dir: None,
             viewing_virtual_node: None,
+            real_dir_stash: real_dir_stash::RealDirStash::default(),
             virtual_link_broken: false,
             cd_summary: None,
             cd_summary_rx: None,
@@ -1115,10 +1120,15 @@ impl NekoviewApp {
 
     /// カレントディレクトリ・ウィンドウ状態・ソート順・言語・ビューア設定・設定ダイアログで
     /// 編集されうる AppConfig 値をまとめて state ファイルへ書き戻す。
+    /// 実ツリータブ自身の位置。仮想ノード表示中は、仮想側へ移る前の実位置（`last_dir` に保存する値）。
+    pub(super) fn real_tab_dir(&self) -> &std::path::Path {
+        self.real_dir_stash.effective(&self.current_dir)
+    }
+
     pub(crate) fn persist_state(&self) {
         crate::gui_config::save_state(
             &self.config.config_root,
-            &self.current_dir, self.window_size, &self.viewer_slots,
+            self.real_tab_dir(), self.window_size, &self.viewer_slots,
             &SortState { key: self.sort_key.as_state_key().to_string(), ascending: self.sort_ascending },
             i18n::lang_code(),
             &*self.viewer_cfg.lock().unwrap(),

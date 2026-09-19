@@ -434,6 +434,8 @@ impl NekoviewApp {
         // ネットワークマウント配下は同期I/Oを避け、確認済みの到達可否で判定する（リロードと同じ方針）
         if self.path_reachable(&real) {
             self.virtual_link_broken = false;
+            // current_dir が仮想ノードの実パスに移る。実ツリータブ自身の位置は退避しておく
+            self.real_dir_stash.stash_if_empty(&self.current_dir);
             self.begin_dir_view(real);
             self.persist_state();
         } else {
@@ -450,6 +452,10 @@ impl NekoviewApp {
         }
         self.viewing_virtual_node = None;
         self.virtual_link_broken = false;
+        // 仮想ノードの実パスに移っていた current_dir を、実ツリータブ自身の位置に戻す
+        if let Some(real) = self.real_dir_stash.take() {
+            self.current_dir = real;
+        }
         self.viewing_dir = Some(self.current_dir.clone());
         self.start_scan();
     }
