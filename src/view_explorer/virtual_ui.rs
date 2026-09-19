@@ -1,7 +1,7 @@
 //! 仮想フォルダタブのUI（ツリー・ピッカー・確認/削除ダイアログ）。
 //!
-//! 仮想ツリーは `virtual_folders`（DB）から読む。登録の実処理は `register` サブモジュール、
-//! 削除の確定処理は3cで接続するまで「未接続」トーストで止めている。
+//! 仮想ツリーは `virtual_folders`（DB）から読む。登録の実処理は `register`、削除は `delete`、
+//! キー操作は `keys` サブモジュール。
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -9,8 +9,10 @@ use std::sync::mpsc;
 
 use crate::fs::mount::MountEntry;
 
+mod delete;
 mod keys;
 mod register;
+use delete::DeleteTarget;
 use register::{OverlapInfo, PendingRegister};
 
 use crate::i18n;
@@ -138,7 +140,7 @@ pub(super) struct VirtualState {
     scroll_to_cursor: bool,
     picker: Option<Picker>,
     confirm: Option<Confirm>,
-    delete: Option<u32>,
+    delete: Option<DeleteTarget>,
     /// 評価・スキャン中の登録（1件ずつ）
     register_pending: Option<PendingRegister>,
 }
@@ -558,7 +560,10 @@ impl NekoviewApp {
                 }
                 TreeEvent::Delete(id) => {
                     if id != ROOT {
-                        self.virtual_state.delete = Some(id);
+                        if let Some(n) = self.virtual_state.nodes.iter().find(|n| n.id == id) {
+                            self.virtual_state.delete =
+                                Some(DeleteTarget { id, real: n.real.clone(), name: n.name.clone() });
+                        }
                     }
                 }
             }
@@ -751,7 +756,7 @@ impl NekoviewApp {
 
     /// 仮想フォルダ削除の固定ダイアログ。子孫は常に連動削除（実フォルダには触れない）。
     fn draw_virtual_delete(&mut self, ctx: &egui::Context) {
-        let Some(id) = self.virtual_state.delete else { return };
+        let Some(id) = self.virtual_state.delete.as_ref().map(|t| t.id) else { return };
         let path = self.virtual_state.virtual_path(id);
         let descendants = self.virtual_state.subtree_ids(id).len().saturating_sub(1);
         let (mut ok, mut cancel) = (false, false);
@@ -776,9 +781,9 @@ impl NekoviewApp {
         if cancel {
             self.virtual_state.delete = None;
         } else if ok {
-            // TODO(3c): remove_node に接続する。それまでは実行せずに終了する。
-            self.virtual_state.delete = None;
-            self.set_toast("（削除処理は未接続です。次フェーズで接続予定）");
+            if let Some(target) = self.virtual_state.delete.take() {
+                self.run_virtual_delete(target);
+            }
         }
     }
 }

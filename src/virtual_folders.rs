@@ -953,4 +953,74 @@ mod tests {
         assert_eq!(tree.truncated_to_depth(0).node_count(), 1);
         assert_eq!(remaining_capacity(&temp_db()), MAX_NODES);
     }
+    /// 全ノードの親が `/`（ROOT_ID）か実在するノードで、親をたどって循環しないこと。
+    fn assert_no_orphans_or_cycles(db: &Arc<Mutex<Database>>) {
+        let nodes = list_nodes(db);
+        let ids: std::collections::HashSet<u32> = nodes.iter().map(|n| n.id).collect();
+        for n in &nodes {
+            assert!(
+                n.parent_id == ROOT_ID || ids.contains(&n.parent_id),
+                "orphan: node {} has missing parent {}",
+                n.id,
+                n.parent_id
+            );
+            let (mut cur, mut steps) = (n.parent_id, 0);
+            while cur != ROOT_ID {
+                steps += 1;
+                assert!(steps <= nodes.len(), "cycle through node {}", n.id);
+                cur = nodes.iter().find(|m| m.id == cur).map_or(ROOT_ID, |m| m.parent_id);
+            }
+        }
+    }
+
+    /// 追加・移動・削除・再取込をでたらめな順で流しても、孤児ノードも循環も生まれない
+    /// （失敗する操作＝重複・循環移動・存在しないid等は、何も変えずにエラーで終わる）。
+    #[test]
+    fn random_operations_never_leave_orphans() {
+        // 操作が空振り（全部失敗）していないことの確認用: [追加, 移動, 削除, 再取込] の成功数
+        let mut ok = [0usize; 4];
+        for seed in [1u64, 2, 3, 0xDEAD_BEEF] {
+            let db = temp_db();
+            let mut state = seed;
+            let mut next = move |bound: u32| -> u32 {
+                state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                ((state >> 33) as u32) % bound.max(1)
+            };
+            for step in 0..300 {
+                let ids: Vec<u32> = list_nodes(&db).iter().map(|n| n.id).collect();
+                // 存在しないidや親も混ぜて、失敗系も通す
+                let pick = |n: &mut dyn FnMut(u32) -> u32| -> u32 {
+                    if ids.is_empty() || n(8) == 0 { 1 + n(40) } else { ids[n(ids.len() as u32) as usize] }
+                };
+                let sub = |n: &mut dyn FnMut(u32) -> u32| -> SubtreeSpec {
+                    let root = format!("/p/{}", n(6));
+                    let kids = (0..n(4))
+                        .map(|_| spec(&format!("{root}/{}", n(6)), vec![]))
+                        .collect();
+                    spec(&root, kids)
+                };
+                match next(4) {
+                    0 => {
+                        let parent = if next(3) == 0 { ROOT_ID } else { pick(&mut next) };
+                        ok[0] += add_subtree(&db, parent, &sub(&mut next)).is_ok() as usize;
+                    }
+                    1 => {
+                        let (id, parent) = (pick(&mut next), if next(3) == 0 { ROOT_ID } else { pick(&mut next) });
+                        ok[1] += move_node(&db, id, parent).is_ok() as usize;
+                    }
+                    2 => {
+                        let id = pick(&mut next);
+                        ok[2] += remove_node(&db, id).is_ok() as usize;
+                    }
+                    _ => {
+                        let id = pick(&mut next);
+                        ok[3] += merge_snapshot(&db, id, &sub(&mut next)).is_ok() as usize;
+                    }
+                }
+                assert_no_orphans_or_cycles(&db);
+                let _ = step;
+            }
+        }
+        assert!(ok.iter().all(|&n| n >= 20), "操作が十分に成功していない: {ok:?}");
+    }
 }

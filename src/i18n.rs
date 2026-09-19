@@ -1021,6 +1021,30 @@ impl Lang {
         }
     }
 
+    pub fn virtual_delete_ok(self) -> &'static str {
+        match self {
+            Lang::Japanese => "仮想フォルダを削除しました",
+            Lang::English  => "Virtual folder deleted",
+            Lang::Chinese  => "已删除虚拟文件夹",
+        }
+    }
+
+    pub fn virtual_delete_failed(self, reason: &str) -> String {
+        match self {
+            Lang::Japanese => format!("仮想フォルダの削除に失敗しました（{reason}）"),
+            Lang::English  => format!("Failed to delete the virtual folder ({reason})"),
+            Lang::Chinese  => format!("删除虚拟文件夹失败（{reason}）"),
+        }
+    }
+
+    pub fn virtual_delete_reason_changed(self) -> &'static str {
+        match self {
+            Lang::Japanese => "対象のフォルダが変更されています",
+            Lang::English  => "The target folder has changed",
+            Lang::Chinese  => "目标文件夹已发生变化",
+        }
+    }
+
     pub fn virtual_ok(self) -> &'static str {
         match self {
             Lang::Japanese => "OK",
