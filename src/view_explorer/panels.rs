@@ -506,7 +506,7 @@ impl NekoviewApp {
                 }
             }
             TreeAction::AddToVirtual(path) => self.open_virtual_dest_picker(path),
-            TreeAction::Navigate(path) => {
+            TreeAction::Navigate(path) | TreeAction::DoubleClick(path) => {
                 self.focused_pane = FocusPane::TreeTab;
                 self.tree_cursor = Some(path.clone());
                 // 検索タブ内のツリーは検索条件の基点ディレクトリ選択ツールであり、
@@ -1500,7 +1500,7 @@ impl NekoviewApp {
     }
 }
 
-fn show_tree_node(
+pub(super) fn show_tree_node(
     ui: &mut egui::Ui,
     path: &PathBuf,
     depth: usize,
@@ -1560,6 +1560,9 @@ fn show_tree_node(
         if is_cursor { draw_cursor_ring(ui, r.rect); }
         if r.clicked() && matches!(*action, TreeAction::None) {
             *action = TreeAction::Navigate(path.clone());
+        }
+        if r.double_clicked() && matches!(*action, TreeAction::None | TreeAction::Navigate(_)) {
+            *action = TreeAction::DoubleClick(path.clone());
         }
         if virtual_menu {
             r.context_menu(|ui| {

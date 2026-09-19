@@ -51,6 +51,9 @@ enum TreeAction {
     None,
     ToggleExpand(PathBuf),
     Navigate(PathBuf),
+    /// ダブルクリック（1回目のクリックで Navigate が出た後の2回目。登録ピッカーの確定に使う。
+    /// 通常のツリーでは Navigate と同じ扱い）
+    DoubleClick(PathBuf),
     /// 実ツリー右クリック「仮想フォルダに追加する」
     AddToVirtual(PathBuf),
 }

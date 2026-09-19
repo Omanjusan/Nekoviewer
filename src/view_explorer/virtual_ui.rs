@@ -4,8 +4,11 @@
 //! 「未接続」トーストで止めている。登録ピッカー内の実ツリー（ドライブコンボ付き）は
 //! 3bまでダミーデータ。
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::mpsc;
+
+use crate::fs::mount::MountEntry;
 
 use crate::i18n;
 
@@ -17,9 +20,7 @@ const BLUE: egui::Color32 = egui::Color32::from_rgb(70, 130, 230);
 /// 仮想ルート `/` を表す予約id（実データ層の `ROOT_ID` と同じ規約）。
 const ROOT: u32 = 0;
 
-const DUMMY_DRIVES: [&str; 2] = ["/mnt/data", "/mnt/nas"];
-
-/// ツリー描画用のノード（仮想ノードとピッカー内のダミー実ツリーで共用）。
+/// 仮想ツリー描画用のノード（DBの仮想ノードから作る）。
 #[derive(Clone)]
 struct TreeNode {
     id: u32,
@@ -28,19 +29,91 @@ struct TreeNode {
     real: PathBuf,
 }
 
-enum PickerKind {
+/// 登録ピッカー。OK/キャンセルは無く、ダブルクリックで確認ダイアログへ進む。
+enum Picker {
     /// 仮想ツリー上の右クリック「実フォルダ登録」から。実フォルダを選ぶ（登録先は `dest`）。
-    RealSource { dest: u32 },
-    /// 実ツリー上の右クリック「仮想フォルダに追加する」から。登録先の仮想フォルダを選ぶ。
-    VirtualDest { src: PathBuf },
+    Real { dest: u32, tree: RealTreeState },
+    /// 実ツリー上の右クリック「仮想フォルダに追加する」から。追加元 `src` の登録先の仮想フォルダを選ぶ。
+    VirtualDest { src: PathBuf, expanded: HashSet<u32>, selected: Option<u32> },
 }
 
-struct Picker {
-    kind: PickerKind,
+/// ピッカー内の実フォルダツリー。メインの実ツリーとは独立した状態（ドライブ・展開・子フォルダ）を持つ。
+/// 子フォルダは展開時に非同期で読む（`spawn_scan_subdirs`）。
+struct RealTreeState {
     drive: usize,
-    real_nodes: Vec<TreeNode>,
-    expanded: HashSet<u32>,
-    selected: Option<u32>,
+    root: PathBuf,
+    expanded: HashSet<PathBuf>,
+    children: HashMap<PathBuf, Vec<PathBuf>>,
+    loading: Vec<(PathBuf, mpsc::Receiver<Vec<PathBuf>>)>,
+    selected: Option<PathBuf>,
+}
+
+impl RealTreeState {
+    /// 初期ドライブは現在の実ツリーのルートに一致するドライブ（無ければ先頭）。ルート直下だけを展開する。
+    fn new(drives: &[MountEntry], tree_root: &Path, ctx: &egui::Context) -> Self {
+        let drive = drives.iter().position(|d| d.path == tree_root).unwrap_or(0);
+        let mut t = Self::empty(drive, Self::drive_root(drives, drive, tree_root));
+        t.request_children(t.root.clone(), ctx);
+        t
+    }
+
+    fn drive_root(drives: &[MountEntry], drive: usize, fallback: &Path) -> PathBuf {
+        drives.get(drive).map(|d| d.path.clone()).unwrap_or_else(|| fallback.to_path_buf())
+    }
+
+    fn empty(drive: usize, root: PathBuf) -> Self {
+        Self {
+            drive,
+            expanded: HashSet::from([root.clone()]),
+            root,
+            children: HashMap::new(),
+            loading: Vec::new(),
+            selected: None,
+        }
+    }
+
+    /// ドライブを切り替える。展開・子フォルダ・選択は捨てて、新しいルート直下を読み直す。
+    fn set_drive(&mut self, drives: &[MountEntry], drive: usize, ctx: &egui::Context) {
+        let root = Self::drive_root(drives, drive, &self.root);
+        *self = Self::empty(drive, root);
+        self.request_children(self.root.clone(), ctx);
+    }
+
+    /// path の子フォルダ一覧を非同期で読み始める（読み込み済み・読み込み中なら何もしない）。
+    fn request_children(&mut self, path: PathBuf, ctx: &egui::Context) {
+        if self.children.contains_key(&path) || self.loading.iter().any(|(p, _)| *p == path) {
+            return;
+        }
+        let c = ctx.clone();
+        let rx = crate::fs::dir::spawn_scan_subdirs(path.clone(), move || c.request_repaint());
+        self.loading.push((path, rx));
+    }
+
+    /// 読み込み完了した子フォルダ一覧を取り込む。
+    fn poll(&mut self) {
+        let mut i = 0;
+        while i < self.loading.len() {
+            match self.loading[i].1.try_recv() {
+                Ok(list) => {
+                    let (path, _) = self.loading.remove(i);
+                    self.children.insert(path, list);
+                }
+                Err(mpsc::TryRecvError::Empty) => i += 1,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    // 読み込みスレッドが結果を返さず終わった: 子なしとして扱う
+                    let (path, _) = self.loading.remove(i);
+                    self.children.insert(path, Vec::new());
+                }
+            }
+        }
+    }
+
+    fn toggle_expand(&mut self, path: PathBuf, ctx: &egui::Context) {
+        if !self.expanded.remove(&path) {
+            self.request_children(path.clone(), ctx);
+            self.expanded.insert(path);
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -94,36 +167,6 @@ impl VirtualState {
         }
         out
     }
-}
-
-impl Picker {
-    fn new(kind: PickerKind, expanded: HashSet<u32>) -> Self {
-        Self { kind, drive: 0, real_nodes: dummy_real_tree(0), expanded, selected: None }
-    }
-}
-
-/// ドライブごとのダミー実ツリー。`(深さ, 名前)` の先行順リストから組む。
-fn dummy_real_tree(drive: usize) -> Vec<TreeNode> {
-    let spec: &[(usize, &str)] = match drive {
-        0 => &[
-            (0, "data"), (1, "Manga"), (2, "shonen"), (2, "seinen"),
-            (1, "Photo"), (2, "2024"), (2, "2025"), (1, "Work"),
-        ],
-        _ => &[(0, "nas"), (1, "share"), (2, "album"), (1, "アクセス不可")],
-    };
-    let mut out: Vec<TreeNode> = Vec::new();
-    let mut stack: Vec<(usize, u32, PathBuf)> = Vec::new();
-    for (i, (depth, name)) in spec.iter().enumerate() {
-        stack.truncate(*depth);
-        let (parent, path) = match stack.last() {
-            Some((_, id, path)) => (*id, path.join(name)),
-            None => (ROOT, Path::new("/mnt").join(name)),
-        };
-        let id = i as u32 + 1;
-        out.push(TreeNode { id, parent, name: (*name).to_string(), real: path.clone() });
-        stack.push((*depth, id, path));
-    }
-    out
 }
 
 enum TreeEvent {
@@ -295,7 +338,7 @@ impl NekoviewApp {
     pub(super) fn open_virtual_dest_picker(&mut self, src: PathBuf) {
         let expanded = self.virtual_state.expanded.clone();
         self.virtual_state.confirm = None;
-        self.virtual_state.picker = Some(Picker::new(PickerKind::VirtualDest { src }, expanded));
+        self.virtual_state.picker = Some(Picker::VirtualDest { src, expanded, selected: None });
     }
 
     /// DBから仮想ノードを読み直す（兄弟は `order` 順）。DBが無ければ空のツリー。
@@ -520,10 +563,8 @@ impl NekoviewApp {
                 TreeEvent::DoubleClick(_) => {}
                 TreeEvent::Register(id) => {
                     self.virtual_state.confirm = None;
-                    self.virtual_state.picker = Some(Picker::new(
-                        PickerKind::RealSource { dest: id },
-                        HashSet::from([1]),
-                    ));
+                    let tree = RealTreeState::new(&self.drives, &self.tree_root, &self.egui_ctx);
+                    self.virtual_state.picker = Some(Picker::Real { dest: id, tree });
                 }
                 TreeEvent::Delete(id) => {
                     if id != ROOT {
@@ -579,15 +620,18 @@ impl NekoviewApp {
     /// ダブルクリックで確認ダイアログへ進む。右上のXで閉じる。
     fn draw_virtual_picker(&mut self, ctx: &egui::Context) {
         let Some(mut p) = self.virtual_state.picker.take() else { return };
+        if let Picker::Real { tree, .. } = &mut p {
+            tree.poll();
+        }
         let confirm_open = self.virtual_state.confirm.is_some();
-        let is_real = matches!(p.kind, PickerKind::RealSource { .. });
-        let title = if is_real {
-            i18n::t().virtual_picker_title_real()
-        } else {
-            i18n::t().virtual_picker_title_dest()
+        let title = match p {
+            Picker::Real { .. } => i18n::t().virtual_picker_title_real(),
+            Picker::VirtualDest { .. } => i18n::t().virtual_picker_title_dest(),
         };
         let mut open = true;
         let mut events = Vec::new();
+        let mut real_action = TreeAction::None;
+        let mut picked_drive = None;
         egui::Window::new(title)
             .id(egui::Id::new("virtual_picker_window"))
             .open(&mut open)
@@ -597,33 +641,42 @@ impl NekoviewApp {
             .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
             .show(ctx, |ui| {
                 ui.add_enabled_ui(!confirm_open, |ui| {
-                    if is_real {
-                        let mut picked = None;
+                    if let Picker::Real { tree, .. } = &p {
+                        let current = self.drives.get(tree.drive).map_or(String::new(), |d| d.label.clone());
                         egui::ComboBox::from_id_salt("virtual_picker_drive")
-                            .selected_text(DUMMY_DRIVES[p.drive])
+                            .selected_text(current)
                             .show_ui(ui, |ui| {
-                                for (i, label) in DUMMY_DRIVES.iter().enumerate() {
-                                    if ui.selectable_label(p.drive == i, *label).clicked() {
-                                        picked = Some(i);
+                                for (i, d) in self.drives.iter().enumerate() {
+                                    if ui.selectable_label(tree.drive == i, &d.label).clicked() {
+                                        picked_drive = Some(i);
                                     }
                                 }
                             });
-                        if let Some(i) = picked {
-                            p.drive = i;
-                            p.real_nodes = dummy_real_tree(i);
-                            p.expanded = HashSet::from([1]);
-                            p.selected = None;
-                        }
                         ui.separator();
                     }
                     egui::ScrollArea::both()
                         .id_salt("virtual_picker_scroll")
                         .auto_shrink([false, false])
-                        .show(ui, |ui| {
-                            if is_real {
-                                draw_tree(ui, &p.real_nodes, None, &p.expanded, p.selected, false, None, &mut events);
-                            } else {
-                                draw_tree(ui, &self.virtual_state.nodes, Some("/"), &p.expanded, p.selected, false, None, &mut events);
+                        .show(ui, |ui| match &p {
+                            Picker::Real { tree, .. } => {
+                                let mut scroll_pending = false;
+                                super::panels::show_tree_node(
+                                    ui,
+                                    &tree.root,
+                                    0,
+                                    &tree.selected,
+                                    &None,
+                                    false,
+                                    &tree.expanded,
+                                    &tree.children,
+                                    false,
+                                    false,
+                                    &mut real_action,
+                                    &mut scroll_pending,
+                                );
+                            }
+                            Picker::VirtualDest { expanded, selected, .. } => {
+                                draw_tree(ui, &self.virtual_state.nodes, Some("/"), expanded, *selected, false, None, &mut events);
                             }
                         });
                 });
@@ -632,21 +685,32 @@ impl NekoviewApp {
             self.virtual_state.confirm = None;
             return;
         }
-        for ev in events {
-            match ev {
-                TreeEvent::Toggle(id) => toggle(&mut p.expanded, id),
-                TreeEvent::Select(id) => p.selected = Some(id),
-                TreeEvent::DoubleClick(id) => {
-                    self.virtual_state.confirm = match &p.kind {
-                        PickerKind::RealSource { dest } => p
-                            .real_nodes
-                            .iter()
-                            .find(|n| n.id == id)
-                            .map(|n| Confirm { src: n.real.clone(), dest: *dest }),
-                        PickerKind::VirtualDest { src } => Some(Confirm { src: src.clone(), dest: id }),
-                    };
+        match &mut p {
+            Picker::Real { dest, tree } => {
+                if let Some(i) = picked_drive {
+                    tree.set_drive(&self.drives, i, ctx);
                 }
-                _ => {}
+                match real_action {
+                    TreeAction::ToggleExpand(path) => tree.toggle_expand(path, ctx),
+                    TreeAction::Navigate(path) => tree.selected = Some(path),
+                    TreeAction::DoubleClick(path) => {
+                        tree.selected = Some(path.clone());
+                        self.virtual_state.confirm = Some(Confirm { src: path, dest: *dest });
+                    }
+                    TreeAction::AddToVirtual(_) | TreeAction::None => {}
+                }
+            }
+            Picker::VirtualDest { src, expanded, selected } => {
+                for ev in events {
+                    match ev {
+                        TreeEvent::Toggle(id) => toggle(expanded, id),
+                        TreeEvent::Select(id) => *selected = Some(id),
+                        TreeEvent::DoubleClick(id) => {
+                            self.virtual_state.confirm = Some(Confirm { src: src.clone(), dest: id });
+                        }
+                        _ => {}
+                    }
+                }
             }
         }
         self.virtual_state.picker = Some(p);
