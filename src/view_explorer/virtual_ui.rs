@@ -273,15 +273,28 @@ fn toggle(set: &mut HashSet<u32>, id: u32) {
 }
 
 impl NekoviewApp {
-    /// アイテムカード欄の外枠色。実ツリー選択=青、仮想フォルダ選択=緑。他タブは枠なし。
+    /// アイテムカード欄の外枠色。仮想タブ限定: 実ツリー選択=青、仮想フォルダ選択=緑。他タブは枠なし。
     pub(super) fn card_border_color(&self) -> Option<egui::Color32> {
         match self.folder_pane_tab {
-            FolderPaneTab::RealTree => Some(BLUE),
             FolderPaneTab::VirtualFolders => {
                 Some(if self.virtual_mock.card_from_real { BLUE } else { GREEN })
             }
             _ => None,
         }
+    }
+
+    /// 仮想タブ限定で、実ツリー（real_pane=true）／仮想ツリー（false）ペインを囲う2px枠を描く。
+    /// 今のカード欄の表示元と同じ側のペインだけに付く（実=青、仮想=緑）。
+    pub(super) fn paint_pane_border(&self, ui: &egui::Ui, rect: egui::Rect, real_pane: bool) {
+        if self.folder_pane_tab != FolderPaneTab::VirtualFolders {
+            return;
+        }
+        let from_real = self.virtual_mock.card_from_real;
+        if from_real != real_pane {
+            return;
+        }
+        let color = if real_pane { BLUE } else { GREEN };
+        ui.painter().rect_stroke(rect, 0.0, egui::Stroke::new(2.0, color), egui::StrokeKind::Inside);
     }
 
     pub(super) fn virtual_mock_real_pane_open(&self) -> bool {

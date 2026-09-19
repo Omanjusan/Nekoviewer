@@ -435,7 +435,11 @@ impl NekoviewApp {
             FolderPaneTab::RealTree => self.draw_real_tree_panel(ui),
             FolderPaneTab::Favorites => self.draw_favorites_pane(ui),
             FolderPaneTab::Search => self.draw_search_left_pane(ui),
-            FolderPaneTab::VirtualFolders => self.draw_virtual_folder_pane(ui),
+            FolderPaneTab::VirtualFolders => {
+                let pane_rect = ui.available_rect_before_wrap();
+                self.draw_virtual_folder_pane(ui);
+                self.paint_pane_border(ui, pane_rect, false);
+            }
         }
     }
 
@@ -466,7 +470,7 @@ impl NekoviewApp {
                     &self.tree_expanded,
                     &self.tree_children,
                     self.show_hidden,
-                    self.folder_pane_tab != FolderPaneTab::Search,
+                    self.folder_pane_tab == FolderPaneTab::VirtualFolders,
                     &mut tree_action,
                     &mut scroll_pending,
                 );
@@ -593,9 +597,11 @@ impl NekoviewApp {
                         egui::vec2(REAL_PANE_WIDTH, avail_h),
                         egui::Layout::top_down(egui::Align::Min),
                         |ui| {
+                            let pane_rect = ui.available_rect_before_wrap();
                             ui.label(egui::RichText::new("実ツリー").strong());
                             ui.separator();
                             self.draw_real_tree_panel(ui);
+                            self.paint_pane_border(ui, pane_rect, true);
                         },
                     );
                     ui.separator();
