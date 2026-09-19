@@ -379,11 +379,13 @@ impl NekoviewApp {
     /// 個別のクリック/フォーカスハンドラ側で exit_favorite_view/exit_search_view を
     /// 書き忘れる事故を構造的に防ぐ（背後の非同期スキャンが横断表示を汚染したバグの再発防止）。
     pub(super) fn switch_folder_tab(&mut self, tab: FolderPaneTab) {
+        // 実際に別のタブへ入るときだけ、そのタブの保存位置を開く（同じタブの押し直しでは開き直さない）
+        let entering = self.folder_pane_tab != tab;
         self.folder_pane_tab = tab;
         // 検索タブへの初回入場時のみ、その時点のPWDを検索基点の初期値にする。
         // 既にユーザーがツリー/ドライブで基点を選んでいれば（Some）上書きしない。
         if tab == FolderPaneTab::Search && self.search_form.base_dir.is_none() {
-            self.search_form.base_dir = Some(self.real_tab_dir().to_path_buf());
+            self.search_form.base_dir = Some(self.default_search_dir());
         }
         if tab == FolderPaneTab::VirtualFolders {
             // 仮想タブに入る／タブを押し直すたびにDBから読み直す
@@ -397,6 +399,14 @@ impl NekoviewApp {
         }
         if tab != FolderPaneTab::Search {
             self.exit_search_view();
+        }
+        // 他タブの表示を畳んだ後で、入ったタブの保存位置（無い・外れていれば既定）を開く
+        if entering {
+            match tab {
+                FolderPaneTab::Favorites => self.restore_favorites_position(),
+                FolderPaneTab::VirtualFolders => self.restore_virtual_position(),
+                FolderPaneTab::RealTree | FolderPaneTab::Search => {}
+            }
         }
     }
 
@@ -512,7 +522,7 @@ impl NekoviewApp {
                 // 検索タブ内のツリーは検索条件の基点ディレクトリ選択ツールであり、
                 // 実ナビゲーション（current_dir変更・実スキャン）は行わない。
                 if self.folder_pane_tab == FolderPaneTab::Search {
-                    self.search_form.base_dir = Some(path);
+                    self.set_search_base_dir(path);
                 } else {
                     self.navigate_to(path, DirectoryNavigationSource::Tree);
                 }

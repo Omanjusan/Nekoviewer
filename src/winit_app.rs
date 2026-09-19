@@ -360,6 +360,7 @@ impl WinitApp {
             &state.card_info_mode,
             state.card_date_format,
             state.translate_cfg,
+            state.tab_positions,
             open_target,
             win.egui_ctx.clone(),
         );

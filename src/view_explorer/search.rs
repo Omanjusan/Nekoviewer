@@ -227,7 +227,7 @@ impl NekoviewApp {
     /// current_dir・実スキャン（start_scan）・viewing_dir・cd_summary には一切触れない
     /// （ツリー/ドライブは検索条件の基点選択ツールであり、実ナビゲーションとは切り離す）。
     pub(super) fn set_search_base_drive(&mut self, path: PathBuf) {
-        self.search_form.base_dir = Some(path.clone());
+        self.set_search_base_dir(path.clone());
         self.tree_root = path.clone();
         self.tree_expanded.clear();
         self.tree_children.clear();

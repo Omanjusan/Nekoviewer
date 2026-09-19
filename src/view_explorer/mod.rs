@@ -232,7 +232,7 @@ pub(crate) enum GridEntry {
     Archive(usize),
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum FavoriteSelection {
     None,
     /// 未整理のお気に入り（どのフォルダにも紐付かないテンポラリお気に入り群）
@@ -690,6 +690,8 @@ pub struct NekoviewApp {
     pub(crate) settings_draft: SettingsDraft,
     /// 翻訳機能(実験的)の永続設定。設定ダイアログの[反映]でのみ書き換わる。
     pub(crate) translate_cfg: crate::translate::TranslateConfig,
+    /// お気に入り・検索・仮想フォルダの各タブが最後にいた位置（stateファイルに保存・復元）。
+    pub(crate) tab_positions: crate::gui_config::TabPositions,
     /// 接続テストの進行中受信チャンネル（ダイアログを閉じたら破棄）。
     pub(crate) translate_conn_rx: Option<mpsc::Receiver<crate::translate::ConnCheckMsg>>,
     /// 直近の接続テスト結果表示用（疎通/vision結果の文字列、または失敗理由）。
@@ -852,6 +854,7 @@ mod input;
 mod panels;
 mod favorites_ui;
 mod real_dir_stash;
+mod tab_position;
 mod virtual_ui;
 mod bulk_settings_ui;
 mod search_ui;
@@ -866,7 +869,13 @@ mod glyph_audit;
 
 
 impl NekoviewApp {
-    pub fn new(start_dir: PathBuf, config: AppConfig, viewer_slots: [Option<WindowSlot>; 4], sort_state: SortState, viewer_cfg: ViewerConfig, show_hidden: bool, card_info_mode: &str, card_date_format: crate::card_date_format::CardDateFormat, translate_cfg: crate::translate::TranslateConfig, open_target: Option<PathBuf>, ctx: egui::Context) -> Self {
+    pub fn new(start_dir: PathBuf, config: AppConfig, viewer_slots: [Option<WindowSlot>; 4], sort_state: SortState, viewer_cfg: ViewerConfig, show_hidden: bool, card_info_mode: &str, card_date_format: crate::card_date_format::CardDateFormat, translate_cfg: crate::translate::TranslateConfig, tab_positions: crate::gui_config::TabPositions, open_target: Option<PathBuf>, ctx: egui::Context) -> Self {
+        // 「前回フォルダに復帰」がオフなら、他のフォルダ系タブの保存位置も復元しない（既定に戻す）
+        let tab_positions = if config.startup.use_last_dir {
+            tab_positions
+        } else {
+            crate::gui_config::TabPositions::default()
+        };
         // timeのローカルオフセット取得は、Unixでは他スレッド起動前に行う必要がある。
         let local_today = calendar_gui::LocalDate::today_local();
         let (cache_max, cache_min, file_cache_max) = crate::cache::resolve_cache_budgets(config.cache_total_mb);
@@ -1025,6 +1034,7 @@ impl NekoviewApp {
             settings_tab: SettingsTab::Common,
             settings_draft,
             translate_cfg,
+            tab_positions,
             translate_conn_rx: None,
             translate_conn_status: None,
             translate_conn_verified: false,
@@ -1137,6 +1147,7 @@ impl NekoviewApp {
             &self.card_date_format,
             &self.config,
             &self.translate_cfg,
+            &self.tab_positions,
         );
     }
 }

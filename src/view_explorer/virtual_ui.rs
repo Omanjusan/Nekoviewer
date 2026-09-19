@@ -13,6 +13,7 @@ mod broken;
 mod delete;
 mod keys;
 mod register;
+use crate::gui_config::VirtualPosition;
 use broken::BrokenCheck;
 use delete::DeleteTarget;
 use register::{OverlapInfo, PendingRegister};
@@ -332,6 +333,15 @@ fn virtual_folder_entries(nodes: &[TreeNode], id: u32, show_hidden: bool, ascend
     out
 }
 
+/// 保存された仮想ノードを、idと実パスが一致するときだけ採用する（idの再利用で別のノードを開かない）。
+/// 一致しない・未保存は `/`。
+fn resolve_virtual(saved: Option<&VirtualPosition>, nodes: &[TreeNode]) -> u32 {
+    match saved {
+        Some(p) if nodes.iter().any(|n| n.id == p.id && n.real == p.path) => p.id,
+        _ => ROOT,
+    }
+}
+
 fn toggle(set: &mut HashSet<u32>, id: u32) {
     if !set.remove(&id) {
         set.insert(id);
@@ -422,14 +432,20 @@ impl NekoviewApp {
     fn enter_virtual_node(&mut self, id: u32) {
         if id == ROOT {
             // 仮想ルート `/` は実パスを持たない。最上位ノードのフォルダカードだけを出す
+            let changed = self.remember_virtual_position(None);
             self.viewing_virtual_node = Some(ROOT);
             self.virtual_link_broken = false;
             self.show_empty_listing();
+            if changed {
+                self.persist_state();
+            }
             return;
         }
         let Some(real) = self.virtual_state.nodes.iter().find(|n| n.id == id).map(|n| n.real.clone()) else {
             return;
         };
+        // 仮想タブの最後の位置（次回の復元用）。到達できる場合は下の persist_state で一緒に書かれる
+        let changed = self.remember_virtual_position(Some(VirtualPosition { id, path: real.clone() }));
         self.viewing_virtual_node = Some(id);
         // ネットワークマウント配下は同期I/Oを避け、確認済みの到達可否で判定する（リロードと同じ方針）
         if self.path_reachable(&real) {
@@ -441,7 +457,25 @@ impl NekoviewApp {
         } else {
             self.virtual_link_broken = true;
             self.show_empty_listing();
+            if changed {
+                self.persist_state();
+            }
         }
+    }
+
+    /// 仮想タブの最後の位置を更新する（`/` は既定なので None）。変わったら true（書き込みは呼び出し側）。
+    fn remember_virtual_position(&mut self, pos: Option<VirtualPosition>) -> bool {
+        if self.tab_positions.virtual_node == pos {
+            return false;
+        }
+        self.tab_positions.virtual_node = pos;
+        true
+    }
+
+    /// 仮想タブに入ったとき: 保存されたノード（idと実パスが一致するもの。無ければ `/`）を開く。
+    pub(super) fn restore_virtual_position(&mut self) {
+        let id = resolve_virtual(self.tab_positions.virtual_node.as_ref(), &self.virtual_state.nodes);
+        self.select_virtual_node(id);
     }
 
     /// 仮想ノード経由の表示を終えて実ディレクトリ表示に戻す（exit_favorite_view と同じ考え方）。
@@ -853,6 +887,21 @@ mod tests {
             node(4, 1, "隠し", "/m/manga/.hidden"),
             node(5, ROOT, "b_写真", "/m/photo"),
         ]
+    }
+
+    fn saved(id: u32, path: &str) -> VirtualPosition {
+        VirtualPosition { id, path: PathBuf::from(path) }
+    }
+
+    #[test]
+    fn saved_virtual_node_is_restored_only_when_id_and_path_match() {
+        let nodes = sample();
+        assert_eq!(resolve_virtual(Some(&saved(2, "/m/manga/seinen")), &nodes), 2);
+        // idは同じでも実パスが違う（idが再利用された別のノード）
+        assert_eq!(resolve_virtual(Some(&saved(2, "/other")), &nodes), ROOT);
+        // ノードが消えている・未保存は `/`
+        assert_eq!(resolve_virtual(Some(&saved(99, "/m/manga")), &nodes), ROOT);
+        assert_eq!(resolve_virtual(None, &nodes), ROOT);
     }
 
     #[test]

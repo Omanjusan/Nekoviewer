@@ -226,7 +226,7 @@ impl NekoviewApp {
         }
         if key_enter {
             if self.folder_pane_tab == FolderPaneTab::Search {
-                self.search_form.base_dir = Some(cur);
+                self.set_search_base_dir(cur);
             } else {
                 self.navigate_to(cur, DirectoryNavigationSource::Tree);
             }

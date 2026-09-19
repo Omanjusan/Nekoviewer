@@ -240,6 +240,67 @@ pub struct WindowSlot {
     pub h: u32,
 }
 
+/// お気に入りタブが最後に開いていた選択。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FavoritePosition {
+    /// 未整理のお気に入り
+    Unsorted,
+    /// 定義済みお気に入りフォルダ（id）
+    Folder(u8),
+}
+
+impl FavoritePosition {
+    fn to_state_str(self) -> String {
+        match self {
+            Self::Unsorted => "unsorted".to_string(),
+            Self::Folder(id) => format!("folder:{id}"),
+        }
+    }
+
+    fn from_state_str(s: &str) -> Option<Self> {
+        match s.trim() {
+            "unsorted" => Some(Self::Unsorted),
+            v => v.strip_prefix("folder:")?.trim().parse().ok().map(Self::Folder),
+        }
+    }
+}
+
+/// 仮想フォルダタブが最後に開いていたノード。idの再利用で別のノードを復元しないよう、
+/// 保存時の実パスも一緒に持ち、復元時に照合する。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VirtualPosition {
+    pub id: u32,
+    pub path: PathBuf,
+}
+
+/// フォルダ系タブのうち、お気に入り・検索・仮想フォルダが最後にいた位置。
+/// 実ツリータブの位置は従来どおり `AppState::last_dir`。未保存（None）や、復元時に検証で外れた
+/// 場合は、各タブの既定の位置になる（お気に入り=未整理、検索=実ツリータブの現在地、仮想=`/`）。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TabPositions {
+    pub favorites: Option<FavoritePosition>,
+    /// ユーザーが選んだ検索対象フォルダ（既定のPWDは保存しない）
+    pub search_dir: Option<PathBuf>,
+    pub virtual_node: Option<VirtualPosition>,
+}
+
+impl TabPositions {
+    /// state ファイルに書く `tab_*` の行（Some のものだけ）。
+    fn state_lines(&self) -> String {
+        let mut out = String::new();
+        if let Some(f) = self.favorites {
+            out.push_str(&format!("tab_favorites={}\n", f.to_state_str()));
+        }
+        if let Some(dir) = &self.search_dir {
+            out.push_str(&format!("tab_search_dir={}\n", dir.to_string_lossy()));
+        }
+        if let Some(v) = &self.virtual_node {
+            out.push_str(&format!("tab_virtual_node={}\ntab_virtual_path={}\n", v.id, v.path.to_string_lossy()));
+        }
+        out
+    }
+}
+
 pub struct AppState {
     pub last_dir: Option<PathBuf>,
     /// (width, height) in logical pixels
@@ -284,6 +345,8 @@ pub struct AppState {
     pub app_default_slot: Option<Option<usize>>,
     /// 翻訳機能(実験的)の接続先・オーバーレイ設定。
     pub translate_cfg: TranslateConfig,
+    /// お気に入り・検索・仮想フォルダの各タブが最後にいた位置。
+    pub tab_positions: TabPositions,
 }
 
 impl Default for AppState {
@@ -314,6 +377,7 @@ impl Default for AppState {
             app_decode_threads: None,
             app_default_slot: None,
             translate_cfg: TranslateConfig::default(),
+            tab_positions: TabPositions::default(),
         }
     }
 }
@@ -346,6 +410,10 @@ pub fn load_state(root: &Path) -> AppState {
 fn parse_state_file(path: &Path) -> Option<AppState> {
     let content = std::fs::read_to_string(path).ok()?;
     let mut last_dir: Option<PathBuf> = None;
+    let mut tab_favorites: Option<FavoritePosition> = None;
+    let mut tab_search_dir: Option<PathBuf> = None;
+    let mut tab_virtual_id: Option<u32> = None;
+    let mut tab_virtual_path: Option<PathBuf> = None;
     let mut window_width: Option<u32> = None;
     let mut window_height: Option<u32> = None;
     let mut slot_x: [Option<i32>; 4] = [None; 4];
@@ -434,6 +502,16 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
                 "last_dir" => {
                     let v = v.trim();
                     if !v.is_empty() { last_dir = Some(PathBuf::from(v)); }
+                }
+                "tab_favorites" => { tab_favorites = FavoritePosition::from_state_str(v); }
+                "tab_search_dir" => {
+                    let v = v.trim();
+                    if !v.is_empty() { tab_search_dir = Some(PathBuf::from(v)); }
+                }
+                "tab_virtual_node" => { tab_virtual_id = v.trim().parse().ok(); }
+                "tab_virtual_path" => {
+                    let v = v.trim();
+                    if !v.is_empty() { tab_virtual_path = Some(PathBuf::from(v)); }
                 }
                 "window_width"  => { window_width  = v.trim().parse().ok(); }
                 "window_height" => { window_height = v.trim().parse().ok(); }
@@ -732,11 +810,20 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
             ocr_model: translate_ocr_model.or(translate_translation_model).or(translate_model_legacy).unwrap_or_default(),
             overlay_width: translate_overlay_width.unwrap_or(360),
         },
+        tab_positions: TabPositions {
+            favorites: tab_favorites,
+            search_dir: tab_search_dir,
+            // idと実パスの両方がそろっているときだけ有効（片方だけなら照合できないので破棄）
+            virtual_node: match (tab_virtual_id, tab_virtual_path) {
+                (Some(id), Some(path)) => Some(VirtualPosition { id, path }),
+                _ => None,
+            },
+        },
     })
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn save_state(root: &Path, dir: &Path, window_size: (u32, u32), viewer_slots: &[Option<WindowSlot>; 4], sort_state: &SortState, lang: &str, viewer_cfg: &ViewerConfig, show_hidden: bool, card_info_mode: &str, card_date_format: &CardDateFormat, app_cfg: &AppConfig, translate_cfg: &TranslateConfig) {
+pub fn save_state(root: &Path, dir: &Path, window_size: (u32, u32), viewer_slots: &[Option<WindowSlot>; 4], sort_state: &SortState, lang: &str, viewer_cfg: &ViewerConfig, show_hidden: bool, card_info_mode: &str, card_date_format: &CardDateFormat, app_cfg: &AppConfig, translate_cfg: &TranslateConfig, tab_positions: &TabPositions) {
     let _ = std::fs::create_dir_all(root);
     let (path, bak, tmp) = (state_path(root), state_bak_path(root), state_tmp_path(root));
 
@@ -746,6 +833,8 @@ pub fn save_state(root: &Path, dir: &Path, window_size: (u32, u32), viewer_slots
         viewer_cfg.zoom_actual, viewer_cfg.fullscreen,
         viewer_cfg.redecode_on_resize, viewer_cfg.resize_debounce_ms, show_hidden, card_info_mode,
     );
+    // フォルダ系タブ（お気に入り・検索・仮想フォルダ）の最後の位置（Some のものだけ）
+    content.push_str(&tab_positions.state_lines());
     // カード日付書式: 可読性優先で6キーに分割。auto_style 未指定は空文字で書く（＝言語追従）。
     content.push_str(&format!(
         "card_date_mode={}\ncard_date_auto_style={}\ncard_date_order={}\ncard_date_sep={}\ncard_date_year={}\ncard_date_month={}\n",
@@ -872,6 +961,83 @@ pub fn save_state(root: &Path, dir: &Path, window_size: (u32, u32), viewer_slots
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// テスト専用の一時ディレクトリに content を state として書き、パースして返す。
+    fn parse_state_text(tag: &str, content: &str) -> AppState {
+        let root = std::env::temp_dir()
+            .join(format!("nekoviewer_state_tabpos_{}_{tag}", std::process::id()));
+        let _ = std::fs::create_dir_all(&root);
+        std::fs::write(state_path(&root), content).unwrap();
+        let parsed = parse_state_file(&state_path(&root)).expect("state file parses");
+        let _ = std::fs::remove_dir_all(&root);
+        parsed
+    }
+
+    #[test]
+    fn tab_positions_roundtrip_through_state_text() {
+        let tp = TabPositions {
+            favorites: Some(FavoritePosition::Folder(3)),
+            search_dir: Some(PathBuf::from("/data/search base")),
+            virtual_node: Some(VirtualPosition { id: 12, path: PathBuf::from("/data/manga") }),
+        };
+        let parsed = parse_state_text("roundtrip", &format!("last_dir=/real\n{}", tp.state_lines()));
+        assert_eq!(parsed.tab_positions, tp);
+        // 実ツリータブの位置（last_dir）は従来どおり別キー
+        assert_eq!(parsed.last_dir, Some(PathBuf::from("/real")));
+    }
+
+    #[test]
+    fn favorites_unsorted_roundtrips() {
+        let tp = TabPositions { favorites: Some(FavoritePosition::Unsorted), ..Default::default() };
+        let parsed = parse_state_text("unsorted", &tp.state_lines());
+        assert_eq!(parsed.tab_positions.favorites, Some(FavoritePosition::Unsorted));
+    }
+
+    #[test]
+    fn state_lines_omits_unset_positions() {
+        assert_eq!(TabPositions::default().state_lines(), "");
+        let only_search = TabPositions { search_dir: Some(PathBuf::from("/s")), ..Default::default() };
+        assert_eq!(only_search.state_lines(), "tab_search_dir=/s\n");
+    }
+
+    #[test]
+    fn old_state_without_tab_keys_yields_defaults() {
+        let parsed = parse_state_text("old", "last_dir=/tmp/x\nlang=ja\n");
+        assert_eq!(parsed.tab_positions, TabPositions::default());
+    }
+
+    #[test]
+    fn malformed_tab_values_are_ignored() {
+        let parsed = parse_state_text(
+            "malformed",
+            "tab_favorites=weird\ntab_search_dir=\ntab_virtual_node=abc\ntab_virtual_path=/x\n",
+        );
+        assert_eq!(parsed.tab_positions, TabPositions::default());
+        // お気に入りフォルダidは u8（範囲外・空・不正はNone）
+        for bad in ["folder:999", "folder:", "folder:x", "Unsorted", ""] {
+            assert_eq!(FavoritePosition::from_state_str(bad), None, "{bad:?}");
+        }
+        assert_eq!(FavoritePosition::from_state_str("folder:255"), Some(FavoritePosition::Folder(255)));
+    }
+
+    #[test]
+    fn virtual_position_needs_both_id_and_path() {
+        let only_id = parse_state_text("only_id", "tab_virtual_node=5\n");
+        assert_eq!(only_id.tab_positions.virtual_node, None);
+        let only_path = parse_state_text("only_path", "tab_virtual_path=/p\n");
+        assert_eq!(only_path.tab_positions.virtual_node, None);
+    }
+
+    #[test]
+    fn tab_keys_coexist_with_unknown_keys() {
+        // 将来のキーや古いバージョンが書いたキーがあっても、tab_* は読める（未知キーは無視される）
+        let parsed = parse_state_text(
+            "unknown",
+            "future_key=1\ntab_favorites=folder:2\nanother_future=xyz\ntab_search_dir=/s\n",
+        );
+        assert_eq!(parsed.tab_positions.favorites, Some(FavoritePosition::Folder(2)));
+        assert_eq!(parsed.tab_positions.search_dir, Some(PathBuf::from("/s")));
+    }
 
     #[test]
     fn viewer_defaults_to_window_size_following() {
