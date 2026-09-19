@@ -108,8 +108,7 @@ pub(super) fn probe_and_scan(root: &Path, hard_cap: usize) -> ScanOutcome {
 }
 
 /// スキャン結果をDBに登録する。戻り値は登録したノード数。
-/// 打ち切り（`capped`）は途中までのスナップショットを黙って登録しないよう中止する
-/// （1000件超の確認ダイアログは未実装のため）。
+/// 打ち切り（`capped`）は途中までのスナップショットを黙って登録しないよう中止する。
 pub(super) fn register_outcome(
     outcome: ScanOutcome,
     db: &std::sync::Arc<std::sync::Mutex<redb::Database>>,
@@ -120,19 +119,26 @@ pub(super) fn register_outcome(
         ScanOutcome::NotDir => Err(RegisterError::NotDir),
         ScanOutcome::Unreadable => Err(RegisterError::Unreadable),
         ScanOutcome::Scanned(scan) => {
+            // 打ち切りは確認なしに登録しない（通常は呼び出し前に大量登録ダイアログへ回す）
             if scan.capped {
                 return Err(RegisterError::TooLarge);
             }
-            virtual_folders::add_subtree(db, dest, &scan.spec)
-                .map(|nodes| nodes.len())
-                .map_err(error_from_add)
+            commit_spec(db, dest, &scan.spec)
         }
     }
 }
 
+fn commit_spec(
+    db: &std::sync::Arc<std::sync::Mutex<redb::Database>>,
+    dest: u32,
+    spec: &SubtreeSpec,
+) -> Result<usize, RegisterError> {
+    virtual_folders::add_subtree(db, dest, spec)
+        .map(|nodes| nodes.len())
+        .map_err(error_from_add)
+}
+
 /// 大量取り込み（`ScanResult::needs_confirmation`）でユーザーが選ぶ取り込み方。
-// フェーズBで接続するまで未使用。
-#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum ImportChoice {
     All,
@@ -161,15 +167,12 @@ pub(super) struct ImportPlan {
 
 impl ImportPlan {
     /// 全体を走査できたうえで、残り容量を超えている（ダイアログで赤字の警告を出す）。
-    #[allow(dead_code)]
     pub fn over_limit(&self, remaining: usize) -> bool {
         !self.capped && self.total > remaining
     }
 }
 
 /// 「浅く」の予算は、確認閾値と残り容量の小さいほう。
-// フェーズBで大量取り込みダイアログに接続するまで未使用。
-#[allow(dead_code)]
 pub(super) fn plan_large_import(scan: &ScanResult, remaining: usize) -> ImportPlan {
     let total = scan.spec.node_count();
     let budget = IMPORT_CONFIRM_THRESHOLD.min(remaining);
@@ -181,7 +184,6 @@ pub(super) fn plan_large_import(scan: &ScanResult, remaining: usize) -> ImportPl
 }
 
 /// 選択に対応する登録用スナップショット。選べない選択肢なら None。
-#[allow(dead_code)]
 pub(super) fn spec_for_choice(scan: &ScanResult, plan: &ImportPlan, choice: ImportChoice) -> Option<SubtreeSpec> {
     match choice {
         ImportChoice::All => plan.all_allowed.then(|| scan.spec.clone()),
@@ -195,10 +197,19 @@ pub(super) struct PendingRegister {
     rx: mpsc::Receiver<ScanOutcome>,
 }
 
+/// 取り込み方の選択待ちの大量登録（1件ずつ。`register_pending` と同時には存在しない）。
+pub(super) struct LargeImport {
+    dest: u32,
+    scan: ScanResult,
+    plan: ImportPlan,
+    /// ダイアログを開いた時点の残り容量（赤字の警告表示用）
+    remaining: usize,
+}
+
 impl NekoviewApp {
     /// 登録の入口。既存ノードとの重複関係を調べて確認ダイアログを開く（OKで `start_virtual_register`）。
     pub(super) fn begin_register(&mut self, src: PathBuf, dest: u32) {
-        if self.virtual_state.register_pending.is_some() {
+        if self.virtual_state.register_pending.is_some() || self.virtual_state.large_import.is_some() {
             return;
         }
         let Some(db) = self.spread_db.clone() else {
@@ -212,7 +223,7 @@ impl NekoviewApp {
 
     /// 確認ダイアログのOK。到達可否を先に確かめ、以降の評価とスキャンは別スレッドで行う。
     pub(super) fn start_virtual_register(&mut self, c: Confirm) {
-        if self.virtual_state.register_pending.is_some() {
+        if self.virtual_state.register_pending.is_some() || self.virtual_state.large_import.is_some() {
             return;
         }
         // ネットワークマウント配下は確認済みの到達可否だけを見る（同期I/Oなし）
@@ -251,13 +262,79 @@ impl NekoviewApp {
             self.set_register_failed(&RegisterError::Db);
             return;
         };
-        match register_outcome(outcome, &db, dest) {
+        // 大量取り込み（1000件超・打ち切り）は、登録せずに取り込み方の選択を待つ
+        if let ScanOutcome::Scanned(scan) = &outcome {
+            if scan.needs_confirmation() {
+                let remaining = virtual_folders::remaining_capacity(&db);
+                let plan = plan_large_import(scan, remaining);
+                self.virtual_state.large_import = Some(LargeImport { dest, scan: scan.clone(), plan, remaining });
+                return;
+            }
+        }
+        let result = register_outcome(outcome, &db, dest);
+        self.finish_register(dest, result);
+    }
+
+    fn finish_register(&mut self, dest: u32, result: Result<usize, RegisterError>) {
+        match result {
             Ok(_) => {
                 self.refresh_virtual_nodes();
                 self.virtual_state.expanded.insert(dest);
                 self.set_toast(i18n::t().virtual_register_ok());
             }
             Err(e) => self.set_register_failed(&e),
+        }
+    }
+
+    /// 大量取り込みの固定ダイアログ。全部／浅く／キャンセル。選べない選択肢は無効にする。
+    pub(super) fn draw_virtual_large_import(&mut self, ctx: &egui::Context) {
+        let Some(li) = &self.virtual_state.large_import else { return };
+        let plan = li.plan.clone();
+        let remaining = li.remaining;
+        let t = i18n::t();
+        let mut choice = None;
+        let mut cancel = false;
+        egui::Window::new(t.virtual_large_title())
+            .id(egui::Id::new("virtual_large_import_window"))
+            .order(egui::Order::Foreground)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .show(ctx, |ui| {
+                ui.label(if plan.capped {
+                    t.virtual_large_body_capped(SCAN_HARD_CAP)
+                } else {
+                    t.virtual_large_body(plan.total)
+                });
+                if plan.over_limit(remaining) || plan.shallow.is_none() {
+                    ui.colored_label(ui.visuals().error_fg_color, t.virtual_large_over_limit(remaining));
+                }
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    let all = t.virtual_large_all(plan.total, plan.capped);
+                    if ui.add_enabled(plan.all_allowed, egui::Button::new(all)).clicked() {
+                        choice = Some(ImportChoice::All);
+                    }
+                    let shallow = plan.shallow.map_or_else(
+                        || t.virtual_large_shallow(0, 0),
+                        |s| t.virtual_large_shallow(s.depth, s.count),
+                    );
+                    if ui.add_enabled(plan.shallow.is_some(), egui::Button::new(shallow)).clicked() {
+                        choice = Some(ImportChoice::Shallow);
+                    }
+                    cancel = ui.button(t.favorite_dialog_cancel()).clicked();
+                });
+            });
+        if cancel {
+            self.virtual_state.large_import = None;
+        } else if let Some(choice) = choice {
+            let Some(li) = self.virtual_state.large_import.take() else { return };
+            let Some(spec) = spec_for_choice(&li.scan, &li.plan, choice) else { return };
+            let result = match self.spread_db.clone() {
+                Some(db) => commit_spec(&db, li.dest, &spec),
+                None => Err(RegisterError::Db),
+            };
+            self.finish_register(li.dest, result);
         }
     }
 
@@ -512,5 +589,15 @@ mod tests {
         assert!(spec_for_choice(&scan, &limited, ImportChoice::All).is_none());
         let none = plan_large_import(&scan, 0);
         assert!(spec_for_choice(&scan, &none, ImportChoice::Shallow).is_none());
+    }
+
+    #[test]
+    fn commit_shallow_choice_registers_only_truncated_nodes() {
+        let db = temp_db();
+        let scan = ScanResult { spec: three_level(10, 200), capped: false };
+        let plan = plan_large_import(&scan, virtual_folders::remaining_capacity(&db));
+        let spec = spec_for_choice(&scan, &plan, ImportChoice::Shallow).unwrap();
+        assert_eq!(commit_spec(&db, virtual_folders::ROOT_ID, &spec), Ok(11));
+        assert_eq!(virtual_folders::list_nodes(&db).len(), 11);
     }
 }

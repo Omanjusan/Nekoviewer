@@ -16,7 +16,7 @@ mod register;
 use crate::gui_config::VirtualPosition;
 use broken::BrokenCheck;
 use delete::DeleteTarget;
-use register::{OverlapInfo, PendingRegister};
+use register::{LargeImport, OverlapInfo, PendingRegister};
 
 use crate::i18n;
 
@@ -146,6 +146,8 @@ pub(super) struct VirtualState {
     delete: Option<DeleteTarget>,
     /// 評価・スキャン中の登録（1件ずつ）
     register_pending: Option<PendingRegister>,
+    /// 走査が終わって、取り込み方（全部／浅く）の選択待ちの大量登録
+    large_import: Option<LargeImport>,
     /// リンク切れ（実パスがフォルダとして開けない）と判定されたノードid。目印の表示に使う。
     broken: HashSet<u32>,
     broken_check: Option<BrokenCheck>,
@@ -165,6 +167,7 @@ impl VirtualState {
             confirm: None,
             delete: None,
             register_pending: None,
+            large_import: None,
             broken: HashSet::new(),
             broken_check: None,
             broken_gen: 0,
@@ -686,6 +689,7 @@ impl NekoviewApp {
         self.poll_virtual_register();
         self.draw_virtual_picker(ctx);
         self.draw_virtual_confirm(ctx);
+        self.draw_virtual_large_import(ctx);
         self.draw_virtual_delete(ctx);
     }
 

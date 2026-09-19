@@ -105,9 +105,9 @@ impl NekoviewApp {
     }
 
     pub(in crate::view_explorer) fn handle_virtual_keys(&mut self, ctx: &egui::Context) {
-        // 登録ピッカー・確認・削除ダイアログが開いている間は、背後のツリーを操作しない
+        // 登録ピッカー・確認・大量登録・削除ダイアログが開いている間は、背後のツリーを操作しない
         let vs = &self.virtual_state;
-        if vs.picker.is_some() || vs.confirm.is_some() || vs.delete.is_some() {
+        if vs.picker.is_some() || vs.confirm.is_some() || vs.large_import.is_some() || vs.delete.is_some() {
             return;
         }
         let km = &self.config.keymap;

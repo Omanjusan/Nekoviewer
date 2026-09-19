@@ -917,6 +917,58 @@ impl Lang {
         }
     }
 
+    pub fn virtual_large_title(self) -> &'static str {
+        match self {
+            Lang::Japanese => "サブフォルダが多数あります",
+            Lang::English  => "Many Subfolders Found",
+            Lang::Chinese  => "子文件夹数量众多",
+        }
+    }
+
+    pub fn virtual_large_body(self, total: usize) -> String {
+        match self {
+            Lang::Japanese => format!("サブフォルダが {total} 件あります。どのように登録しますか？"),
+            Lang::English  => format!("{total} subfolders were found. How do you want to register them?"),
+            Lang::Chinese  => format!("共有 {total} 个子文件夹。要如何登记？"),
+        }
+    }
+
+    pub fn virtual_large_body_capped(self, cap: usize) -> String {
+        match self {
+            Lang::Japanese => format!("サブフォルダが非常に多いため、{cap} 件で走査を打ち切りました。浅く登録しますか？"),
+            Lang::English  => format!("There are so many subfolders that the scan stopped at {cap}. Register a shallow copy?"),
+            Lang::Chinese  => format!("子文件夹过多，扫描在 {cap} 个处中止。是否仅登记浅层？"),
+        }
+    }
+
+    pub fn virtual_large_over_limit(self, remaining: usize) -> String {
+        match self {
+            Lang::Japanese => format!("登録できる残りは {remaining} 件です"),
+            Lang::English  => format!("Only {remaining} more can be registered"),
+            Lang::Chinese  => format!("还可登记 {remaining} 个"),
+        }
+    }
+
+    pub fn virtual_large_all(self, count: usize, capped: bool) -> String {
+        let more = if capped { "+" } else { "" };
+        match self {
+            Lang::Japanese => format!("全部（{count}{more}件）"),
+            Lang::English  => format!("All ({count}{more})"),
+            Lang::Chinese  => format!("全部（{count}{more} 个）"),
+        }
+    }
+
+    pub fn virtual_large_shallow(self, depth: usize, count: usize) -> String {
+        match (self, depth) {
+            (Lang::Japanese, 0) => format!("浅く（このフォルダのみ・{count}件）"),
+            (Lang::Japanese, d) => format!("浅く（{d}階層下まで・{count}件）"),
+            (Lang::English, 0)  => format!("Shallow (this folder only, {count})"),
+            (Lang::English, d)  => format!("Shallow (down to {d} level(s), {count})"),
+            (Lang::Chinese, 0)  => format!("浅层（仅此文件夹，{count} 个）"),
+            (Lang::Chinese, d)  => format!("浅层（向下 {d} 层，{count} 个）"),
+        }
+    }
+
     pub fn virtual_reason_unreachable(self) -> &'static str {
         match self {
             Lang::Japanese => "フォルダが見つかりません、または接続できません",
