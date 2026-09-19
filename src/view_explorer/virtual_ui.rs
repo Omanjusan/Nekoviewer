@@ -153,6 +153,8 @@ pub(super) struct VirtualState {
     rename: Option<RenameDialog>,
     /// リンク切れ（実パスがフォルダとして開けない）と判定されたノードid。目印の表示に使う。
     broken: HashSet<u32>,
+    /// 実フォルダの更新日時（フォルダカードの日付ソート用）。リンク切れ判定と同じスレッドで集める。
+    mtimes: HashMap<u32, std::time::SystemTime>,
     broken_check: Option<BrokenCheck>,
     broken_gen: u64,
 }
@@ -173,6 +175,7 @@ impl VirtualState {
             large_import: None,
             rename: None,
             broken: HashSet::new(),
+            mtimes: HashMap::new(),
             broken_check: None,
             broken_gen: 0,
         }
@@ -324,25 +327,30 @@ fn draw_tree_row(
 }
 
 /// 仮想ノード `id` を表示中のグリッド先頭部分（「↑」→ 仮想の子）の純粋な組み立て。
-/// 「↑」は仮想の親（`/` では無し）、子は仮想名の名前順（`ascending` で昇降）。
-fn virtual_folder_entries(nodes: &[TreeNode], id: u32, show_hidden: bool, ascending: bool) -> Vec<GridEntry> {
+/// 「↑」は仮想の親（`/` では無し）、子はファイルカードと同じソートキー・昇降（名前は仮想名、日付は実フォルダの更新日時）。
+fn virtual_folder_entries(
+    nodes: &[TreeNode],
+    id: u32,
+    show_hidden: bool,
+    key: crate::types::ExplorerSortKey,
+    ascending: bool,
+    mtimes: &HashMap<u32, std::time::SystemTime>,
+) -> Vec<GridEntry> {
     let mut out = Vec::new();
     if id != ROOT {
         if let Some(n) = nodes.iter().find(|n| n.id == id) {
             out.push(GridEntry::VirtualUp(n.parent));
         }
     }
-    let mut kids: Vec<&TreeNode> = children_of(nodes, id)
+    let kids: Vec<&TreeNode> = children_of(nodes, id)
         .into_iter()
         .filter(|n| {
             show_hidden
                 || !n.real.file_name().and_then(|s| s.to_str()).is_some_and(|s| s.starts_with('.'))
         })
         .collect();
-    kids.sort_by(|a, b| {
-        let cmp = a.name.cmp(&b.name);
-        if ascending { cmp } else { cmp.reverse() }
-    });
+    // ファイルカードと同じソートキー・昇降に従う（サイズは名前順、日付は実フォルダの更新日時）
+    let kids = super::folder_sort::sort_folders(kids, key, ascending, |n| (n.name.clone(), mtimes.get(&n.id).copied()));
     out.extend(kids.into_iter().map(|n| GridEntry::VirtualSubdir(n.id)));
     out
 }
@@ -548,7 +556,14 @@ impl NekoviewApp {
     /// 仮想ノード表示中のグリッド先頭部分: 「↑」（仮想の親。`/` では無し）→ 仮想の子（名前順）。
     /// 非表示（ドット始まり）フォルダの扱いは実表示と同じ（実フォルダ名で判定）。
     pub(super) fn virtual_folder_grid_entries(&self, id: u32) -> Vec<GridEntry> {
-        virtual_folder_entries(&self.virtual_state.nodes, id, self.show_hidden, self.sort_ascending)
+        virtual_folder_entries(
+            &self.virtual_state.nodes,
+            id,
+            self.show_hidden,
+            self.sort_key,
+            self.sort_ascending,
+            &self.virtual_state.mtimes,
+        )
     }
 
     /// 仮想ノード表示中の「↑」カード。ダブルクリックされたら true。
@@ -899,6 +914,7 @@ impl NekoviewApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::ExplorerSortKey;
 
     fn node(id: u32, parent: u32, name: &str, real: &str) -> TreeNode {
         TreeNode { id, parent, name: name.to_string(), real: PathBuf::from(real) }
@@ -931,38 +947,49 @@ mod tests {
 
     #[test]
     fn root_has_no_up_and_lists_top_level_by_name() {
-        let e = virtual_folder_entries(&sample(), ROOT, false, true);
+        let e = virtual_folder_entries(&sample(), ROOT, false, ExplorerSortKey::Name, true, &HashMap::new());
         assert_eq!(e, vec![GridEntry::VirtualSubdir(1), GridEntry::VirtualSubdir(5)]);
     }
 
     #[test]
     fn node_has_up_to_virtual_parent_and_name_sorted_children() {
-        let e = virtual_folder_entries(&sample(), 1, false, true);
+        let e = virtual_folder_entries(&sample(), 1, false, ExplorerSortKey::Name, true, &HashMap::new());
         // 「↑」は仮想の親（ROOT=0）。子は仮想名の昇順、ドット始まりの実フォルダは非表示
         assert_eq!(e, vec![GridEntry::VirtualUp(ROOT), GridEntry::VirtualSubdir(3), GridEntry::VirtualSubdir(2)]);
     }
 
     #[test]
     fn descending_reverses_children_but_keeps_up_first() {
-        let e = virtual_folder_entries(&sample(), 1, false, false);
+        let e = virtual_folder_entries(&sample(), 1, false, ExplorerSortKey::Name, false, &HashMap::new());
         assert_eq!(e, vec![GridEntry::VirtualUp(ROOT), GridEntry::VirtualSubdir(2), GridEntry::VirtualSubdir(3)]);
     }
 
     #[test]
+    fn date_sort_uses_real_folder_mtime_and_puts_unknown_last() {
+        use std::time::{Duration, SystemTime};
+        let at = |s: u64| SystemTime::UNIX_EPOCH + Duration::from_secs(s);
+        // ノード1の子は 2 と 3（表示名 "a"/"b" 順ではなく更新日時順になる）。3だけ日時なし（リンク切れなど）
+        let mtimes = HashMap::from([(2, at(50))]);
+        let kids = |asc| virtual_folder_entries(&sample(), 1, false, ExplorerSortKey::Date, asc, &mtimes);
+        assert_eq!(kids(true), vec![GridEntry::VirtualUp(ROOT), GridEntry::VirtualSubdir(2), GridEntry::VirtualSubdir(3)]);
+        assert_eq!(kids(false), vec![GridEntry::VirtualUp(ROOT), GridEntry::VirtualSubdir(2), GridEntry::VirtualSubdir(3)]);
+    }
+
+    #[test]
     fn show_hidden_includes_dot_folders() {
-        let e = virtual_folder_entries(&sample(), 1, true, true);
+        let e = virtual_folder_entries(&sample(), 1, true, ExplorerSortKey::Name, true, &HashMap::new());
         assert_eq!(e.len(), 4);
         assert!(e.contains(&GridEntry::VirtualSubdir(4)));
     }
 
     #[test]
     fn child_up_points_to_its_own_parent_node() {
-        let e = virtual_folder_entries(&sample(), 2, false, true);
+        let e = virtual_folder_entries(&sample(), 2, false, ExplorerSortKey::Name, true, &HashMap::new());
         assert_eq!(e, vec![GridEntry::VirtualUp(1)]);
     }
 
     #[test]
     fn unknown_node_yields_no_entries_except_children() {
-        assert!(virtual_folder_entries(&sample(), 99, false, true).is_empty());
+        assert!(virtual_folder_entries(&sample(), 99, false, ExplorerSortKey::Name, true, &HashMap::new()).is_empty());
     }
 }

@@ -1,5 +1,7 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
+use std::time::SystemTime;
 
 /// gvfs 経由の SMB パスかどうかを判定する（Unix のみ有効）
 #[cfg(unix)]
@@ -24,19 +26,45 @@ pub fn is_wayland_session() -> bool {
     }
 }
 
+/// `spawn_scan` の結果。
+pub struct DirScan {
+    pub subdirs: Vec<PathBuf>,
+    pub archives: Vec<PathBuf>,
+    pub raw_images: Vec<PathBuf>,
+    /// サブフォルダごとの更新日時（フォルダカードの日付ソート用）。
+    /// 取得しなかった（`with_mtimes` が false）・取得できなかったフォルダは含まれない。
+    pub subdir_mtimes: HashMap<PathBuf, SystemTime>,
+}
+
+/// 各フォルダの更新日時を調べる。取得できなかったフォルダは結果に含めない。
+pub fn list_mtimes(dirs: &[PathBuf]) -> HashMap<PathBuf, SystemTime> {
+    dirs.iter()
+        .filter_map(|d| Some((d.clone(), std::fs::metadata(d).ok()?.modified().ok()?)))
+        .collect()
+}
+
 /// サブディレクトリとアーカイブのフルスキャンをバックグラウンドで起動する。
 /// タイムアウトなし: 処理が完了するまで待つ（UIはブロックしない）。
 /// ユーザーが別ディレクトリに移動した時点で結果を破棄することでキャンセルに相当する。
-/// 戻り値: (サブディレクトリ, ZIPアーカイブ, 生画像ファイル)
+/// `with_mtimes` が true のときだけ、サブフォルダの更新日時もスレッド上で調べる
+/// （ネットワークマウント配下は呼び出し側が false にして、余計なI/Oを避ける）。
 /// `wake` は結果送信後に1回呼ばれる。呼び出し側で UI（ROOT）を起こすために使う。
 /// fs/ 層を egui 非依存に保つため、egui::Context ではなくコールバックを受け取る。
 pub fn spawn_scan(
     dir: PathBuf,
+    with_mtimes: bool,
     wake: impl Fn() + Send + 'static,
-) -> mpsc::Receiver<(Vec<PathBuf>, Vec<PathBuf>, Vec<PathBuf>)> {
+) -> mpsc::Receiver<DirScan> {
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
-        let _ = tx.send((list_subdirs(&dir), list_archives(&dir), list_raw_images(&dir)));
+        let subdirs = list_subdirs(&dir);
+        let subdir_mtimes = if with_mtimes { list_mtimes(&subdirs) } else { HashMap::new() };
+        let _ = tx.send(DirScan {
+            subdirs,
+            archives: list_archives(&dir),
+            raw_images: list_raw_images(&dir),
+            subdir_mtimes,
+        });
         wake();
     });
     rx

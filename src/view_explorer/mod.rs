@@ -477,7 +477,7 @@ enum ScanState {
     /// バックグラウンドでスキャン中
     Loading {
         dir: PathBuf,
-        rx: mpsc::Receiver<(Vec<PathBuf>, Vec<PathBuf>, Vec<PathBuf>)>,
+        rx: mpsc::Receiver<dir::DirScan>,
         started_at: std::time::Instant,
     },
     /// スキャン完了
@@ -527,6 +527,8 @@ pub struct NekoviewApp {
     pub(crate) config: AppConfig,
     current_dir: PathBuf,
     subdirs: Vec<PathBuf>,
+    /// `subdirs` の更新日時（フォルダカードの日付ソート用。取得できたものだけ）
+    subdir_mtimes: HashMap<PathBuf, std::time::SystemTime>,
     archives: Vec<PathBuf>,
     tree_root: PathBuf,
     tree_expanded: HashSet<PathBuf>,
@@ -848,6 +850,7 @@ pub struct NekoviewApp {
 }
 
 mod scan;
+mod folder_sort;
 mod workers;
 mod viewer_host;
 mod input;
@@ -933,6 +936,7 @@ impl NekoviewApp {
             config,
             current_dir: start_dir,
             subdirs: Vec::new(),
+            subdir_mtimes: HashMap::new(),
             archives: Vec::new(),
             tree_root,
             tree_expanded: HashSet::new(),

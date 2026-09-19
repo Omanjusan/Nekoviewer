@@ -2,18 +2,20 @@
 //!
 //! 全ノードを別スレッドで確認して、ツリー行とフォルダカードの目印に使う。ネットワークマウント配下は
 //! I/Oを行わず、確認済みの到達可否（`network_unreachable_mounts`）だけを見る（固まらないための既存方針）。
+//! 同じ確認（`metadata`）で、実フォルダの更新日時も集める（フォルダカードの日付ソート用。ネットワーク配下は取らない）。
 //! 判定は仮想タブに入るたび・登録や削除のあと・リロード時（`refresh_virtual_nodes`）に走り直す。
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
+use std::time::SystemTime;
 
 use super::*;
 
 /// 判定中の一括チェック。世代番号が古い結果は捨てる。
 pub(super) struct BrokenCheck {
     generation: u64,
-    rx: mpsc::Receiver<(u64, HashSet<u32>)>,
+    rx: mpsc::Receiver<(u64, HashSet<u32>, HashMap<u32, SystemTime>)>,
 }
 
 /// ノードを「すぐ判定できるネットワーク配下」と「スレッドで確認するローカル」に振り分ける。
@@ -39,13 +41,24 @@ pub(super) fn split_by_network(
     (broken, probe)
 }
 
-/// 対象の実パスがフォルダとして開けないノードのidを返す（スレッド上で呼ぶ）。
-pub(super) fn probe_local(targets: &[(u32, PathBuf)]) -> HashSet<u32> {
-    targets
-        .iter()
-        .filter(|(_, path)| !path.is_dir())
-        .map(|(id, _)| *id)
-        .collect()
+/// 対象の実パスがフォルダとして開けないノードのid（リンク切れ）と、開けたノードの更新日時を返す
+/// （スレッド上で呼ぶ）。更新日時が取れないフォルダは、切れてはいないが日時の表には載らない。
+pub(super) fn probe_local(targets: &[(u32, PathBuf)]) -> (HashSet<u32>, HashMap<u32, SystemTime>) {
+    let mut broken = HashSet::new();
+    let mut mtimes = HashMap::new();
+    for (id, path) in targets {
+        match std::fs::metadata(path) {
+            Ok(m) if m.is_dir() => {
+                if let Ok(t) = m.modified() {
+                    mtimes.insert(*id, t);
+                }
+            }
+            _ => {
+                broken.insert(*id);
+            }
+        }
+    }
+    (broken, mtimes)
 }
 
 impl NekoviewApp {
@@ -61,6 +74,7 @@ impl NekoviewApp {
             .collect();
         if nodes.is_empty() {
             self.virtual_state.broken.clear();
+            self.virtual_state.mtimes.clear();
             self.virtual_state.broken_check = None;
             return;
         }
@@ -72,9 +86,9 @@ impl NekoviewApp {
         let (tx, rx) = mpsc::channel();
         let ctx = self.egui_ctx.clone();
         std::thread::spawn(move || {
-            let mut broken = probe_local(&local);
+            let (mut broken, mtimes) = probe_local(&local);
             broken.extend(net_broken);
-            let _ = tx.send((generation, broken));
+            let _ = tx.send((generation, broken, mtimes));
             ctx.request_repaint();
         });
         self.virtual_state.broken_check = Some(BrokenCheck { generation, rx });
@@ -84,9 +98,10 @@ impl NekoviewApp {
     pub(super) fn poll_broken_check(&mut self) {
         let Some(check) = &self.virtual_state.broken_check else { return };
         match check.rx.try_recv() {
-            Ok((generation, broken)) => {
+            Ok((generation, broken, mtimes)) => {
                 if generation == check.generation && generation == self.virtual_state.broken_gen {
                     self.virtual_state.broken = broken;
+                    self.virtual_state.mtimes = mtimes;
                 }
                 self.virtual_state.broken_check = None;
             }
@@ -132,8 +147,10 @@ mod tests {
             (2, t.0.join("missing")),
             (3, t.0.join("file.txt")),
         ];
-        let broken = probe_local(&targets);
+        let (broken, mtimes) = probe_local(&targets);
         assert_eq!(broken, HashSet::from([2, 3]));
+        // 更新日時が載るのは開けたフォルダだけ
+        assert_eq!(mtimes.keys().copied().collect::<Vec<_>>(), vec![1]);
     }
 
     #[test]

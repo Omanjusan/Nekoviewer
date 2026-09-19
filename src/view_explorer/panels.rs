@@ -792,7 +792,7 @@ impl NekoviewApp {
         }
 
         let show_hidden = self.show_hidden;
-        let mut sorted_subdirs: Vec<PathBuf> = self.subdirs.iter()
+        let visible_subdirs: Vec<PathBuf> = self.subdirs.iter()
             .filter(|p| {
                 show_hidden || !p.file_name()
                     .and_then(|n| n.to_str())
@@ -800,12 +800,10 @@ impl NekoviewApp {
             })
             .cloned()
             .collect();
-        let ascending = self.sort_ascending;
-        sorted_subdirs.sort_by(|a, b| {
-            let na = a.file_name().and_then(|n| n.to_str()).unwrap_or("");
-            let nb = b.file_name().and_then(|n| n.to_str()).unwrap_or("");
-            let cmp = na.cmp(nb);
-            if ascending { cmp } else { cmp.reverse() }
+        // ファイルカードと同じソートキー・昇降に従う（サイズは名前順、日付は更新日時）
+        let sorted_subdirs = super::folder_sort::sort_folders(visible_subdirs, self.sort_key, self.sort_ascending, |p| {
+            let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
+            (name, self.subdir_mtimes.get(p).copied())
         });
         out.extend(sorted_subdirs.into_iter().map(GridEntry::Subdir));
         out

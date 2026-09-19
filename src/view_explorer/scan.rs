@@ -286,7 +286,9 @@ impl NekoviewApp {
     /// バックグラウンドスキャンを起動する（UIをブロックしない）
     pub(super) fn start_scan(&mut self) {
         self.thumb_session.fetch_add(1, Ordering::AcqRel);
-        let rx = dir::spawn_scan(self.current_dir.clone(), {
+        // ネットワークマウント配下ではサブフォルダの更新日時を取らない（日付ソートでは末尾になる）
+        let with_mtimes = self.network_mount_root_cached(&self.current_dir).is_none();
+        let rx = dir::spawn_scan(self.current_dir.clone(), with_mtimes, {
             let c = self.egui_ctx.clone();
             move || c.request_repaint()
         });
@@ -315,6 +317,7 @@ impl NekoviewApp {
     /// 実ディレクトリの一覧（フォルダ・ファイル）を空にする。start_scan と show_empty_listing の共通部分。
     fn clear_dir_listing(&mut self) {
         self.subdirs.clear();
+        self.subdir_mtimes.clear();
         self.archives.clear();
         self.filtered_indices.clear();
         self.raw_image_files.clear();
@@ -388,7 +391,7 @@ impl NekoviewApp {
             _ => return,
         };
 
-        if let Some((subdirs, archives, raw_images)) = result {
+        if let Some(dir::DirScan { subdirs, archives, raw_images, subdir_mtimes }) = result {
             let existing_filenames: Vec<String> = archives.iter().chain(raw_images.iter())
                 .filter_map(|p| p.file_name().and_then(|n| n.to_str()).map(str::to_string))
                 .collect();
@@ -399,7 +402,10 @@ impl NekoviewApp {
             }
             self.refresh_thumbnail_generation_state();
             // 仮想ノード経由の表示ではフォルダカードは仮想ツリーが正（実サブフォルダは出さない）
-            self.subdirs = if self.viewing_virtual_node.is_some() { Vec::new() } else { subdirs };
+            // 仮想ノード経由の表示では実サブフォルダは出さないので、更新日時も持たない
+            let show_real_subdirs = self.viewing_virtual_node.is_none();
+            self.subdirs = if show_real_subdirs { subdirs } else { Vec::new() };
+            self.subdir_mtimes = if show_real_subdirs { subdir_mtimes } else { HashMap::new() };
             self.archives = archives.into_iter()
                 .filter(|p| {
                     let filename = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
