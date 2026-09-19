@@ -186,6 +186,16 @@ pub fn notch_scale(current: f32, notches: f32, ratio: f32, range: (f32, f32)) ->
     next.clamp(range.0, range.1)
 }
 
+/// テクスチャが別解像度に差し替わったとき、画面上の大きさを保つ倍率を返す
+/// （倍率はテクスチャのピクセル基準なので、幅の比で換算する）。寸法が不正なら据え置き。
+pub fn rescale_for_new_texture(scale: f32, old_width: f32, new_width: f32) -> f32 {
+    if old_width > 0.0 && new_width > 0.0 && old_width.is_finite() && new_width.is_finite() {
+        scale * old_width / new_width
+    } else {
+        scale
+    }
+}
+
 fn axis_pad(viewport: f32, content: f32) -> f32 {
     ((viewport - content) / 2.0).max(0.0)
 }
@@ -361,6 +371,16 @@ mod tests {
         for bad in [0.0, -1.0, f32::NAN, f32::INFINITY] {
             assert_eq!(zoom_about(view, v(1.0, 1.0), v(100.0, 100.0), v(500.0, 500.0), bad), view);
         }
+    }
+
+    #[test]
+    fn rescale_keeps_on_screen_size() {
+        // 幅1200pxのテクスチャを 0.8倍で表示中 → 幅2800pxへ差し替え。表示幅は 960px のまま。
+        let scale = rescale_for_new_texture(0.8, 1200.0, 2800.0);
+        assert!((2800.0 * scale - 960.0).abs() < 1e-3);
+        // 不正な寸法は据え置き。
+        assert_eq!(rescale_for_new_texture(0.8, 0.0, 2800.0), 0.8);
+        assert_eq!(rescale_for_new_texture(0.8, 1200.0, f32::NAN), 0.8);
     }
 
     #[test]

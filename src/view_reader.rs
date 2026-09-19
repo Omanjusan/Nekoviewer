@@ -23,6 +23,15 @@ const ANIM_DECODE_AHEAD_FRAMES: usize = 8;
 /// content_px の初回フレーム前プレースホルダ。draw() 冒頭で毎フレーム実測値に
 /// 上書きされるため、実際のデコードターゲットには事実上使われない。
 const CONTENT_PX_PLACEHOLDER: (u32, u32) = (1920, 1080);
+/// 実測前のGPUテクスチャ1辺の上限（egui-wgpu の既定デバイス上限）。
+const MAX_TEXTURE_SIDE_FALLBACK: usize = 8192;
+
+/// デコード目標の1辺を、GPUテクスチャの1辺上限へ収める。
+/// 上限を超えたテクスチャはwgpuの検証エラーになるため、見開きの2倍やGUI設定の上限値
+/// （最大7680の2倍=15360）が上限を超えないよう、デコード目標の段階で切る。
+pub(crate) fn clamp_decode_edge(edge: u32, max_texture_side: usize) -> u32 {
+    edge.min(max_texture_side.min(u32::MAX as usize) as u32).max(1)
+}
 /// サムネイルバー: 現在ページを中心にこの枚数分だけ先取り要求する（暫定固定値）。
 /// フェーズ2で実際の可視範囲ベースに置き換え予定。
 const THUMBBAR_ENQUEUE_WINDOW: i32 = 40;
@@ -520,6 +529,11 @@ pub struct ViewerState {
     magnifier_at_fit: bool,
     /// このフレームで ScrollArea へ scroll_offset を押し込む必要があるか（拡縮・作り直し・追従した）。
     magnifier_offset_dirty: bool,
+    /// `magnifier_view` に反映済みのテクスチャ寸法。原寸デコードへの差し替えで寸法が変わったとき、
+    /// 画面上の見た目の大きさを保つよう倍率を換算するために使う。
+    magnifier_img_size: egui::Vec2,
+    /// GPUテクスチャの1辺上限（毎フレーム ctx から取り込む）。デコード目標のクランプに使う。
+    max_texture_side: usize,
 }
 
 impl ViewerState {
@@ -609,17 +623,28 @@ impl ViewerState {
     /// それ以外は直近の描画領域サイズ(物理px)を上限にする。
     /// （旧実装は zoom_actual 時に None=無制限を返しており、"原寸時に許容する最大長辺幅"
     /// 設定が「ウィンドウ追従」ON時には効かないままになる抜け穴があったため統一した）
-    pub fn current_decode_target(&self, zoom_actual: bool, max_decode_edge: u32) -> Option<(u32, u32)> {
+    pub fn current_decode_target(&self, zoom_actual: bool, max_decode_edge: u32, magnifier_on: bool) -> Option<(u32, u32)> {
         if zoom_actual {
-            let edge = if self.page_mode != PageMode::Single {
-                max_decode_edge.saturating_mul(2)
-            } else {
-                max_decode_edge
-            };
+            let edge = self.actual_decode_edge(max_decode_edge);
+            Some((edge, edge))
+        } else if magnifier_on && self.page_mode == PageMode::Single {
+            // 虫眼鏡（単ページ）: 見開きの2倍は掛けず、1ページを max_decode_edge までデコードする。
+            let edge = clamp_decode_edge(max_decode_edge, self.max_texture_side);
             Some((edge, edge))
         } else {
-            Some(self.content_px)
+            let (w, h) = self.content_px;
+            Some((clamp_decode_edge(w, self.max_texture_side), clamp_decode_edge(h, self.max_texture_side)))
         }
+    }
+
+    /// 「原寸」のデコード長辺上限。見開き中は2倍にし、GPUテクスチャの1辺上限で頭打ちにする。
+    pub fn actual_decode_edge(&self, max_decode_edge: u32) -> u32 {
+        let edge = if self.page_mode != PageMode::Single {
+            max_decode_edge.saturating_mul(2)
+        } else {
+            max_decode_edge
+        };
+        clamp_decode_edge(edge, self.max_texture_side)
     }
 
     /// 世代非依存アニメのリサイズ切替で保持すべき、現在表示中のフレーム番号。
@@ -750,6 +775,8 @@ impl ViewerState {
             magnifier_page: 0,
             magnifier_at_fit: true,
             magnifier_offset_dirty: false,
+            magnifier_img_size: egui::Vec2::ZERO,
+            max_texture_side: MAX_TEXTURE_SIDE_FALLBACK,
         }
     }
 
@@ -837,6 +864,8 @@ impl ViewerState {
             magnifier_page: 0,
             magnifier_at_fit: true,
             magnifier_offset_dirty: false,
+            magnifier_img_size: egui::Vec2::ZERO,
+            max_texture_side: MAX_TEXTURE_SIDE_FALLBACK,
         }
     }
 
@@ -1385,6 +1414,7 @@ impl ViewerState {
         // フェーズ6: リサイズ再デコードのターゲットサイズ算出用に、現在の描画領域サイズ（物理px）を記録する。
         let screen = ctx.content_rect().size() * ctx.pixels_per_point();
         self.content_px = (screen.x.max(1.0) as u32, screen.y.max(1.0) as u32);
+        self.max_texture_side = ctx.input(|i| i.max_texture_side);
 
         // 既定スロットを初回フレームで一度だけ適用（クランプ付き）。
         self.apply_default_slot(&ctx, input.monitor_size);
@@ -3716,7 +3746,7 @@ impl ViewerState {
         wheel_notches: f32,
         cfg: &crate::magnifier::MagnifierConfig,
     ) {
-        use crate::magnifier::{fit_scale, notch_scale, scale_range, zoom_about, clamp_offset, MagnifierView, DEFAULT_NOTCH_RATIO};
+        use crate::magnifier::{fit_scale, notch_scale, rescale_for_new_texture, scale_range, zoom_about, clamp_offset, MagnifierView, DEFAULT_NOTCH_RATIO};
         let Some(tex) = tex else {
             self.magnifier_view = None;
             return;
@@ -3728,7 +3758,12 @@ impl ViewerState {
         let page = self.spread_lo();
 
         let mut view = match self.magnifier_view {
-            Some(v) if self.magnifier_page == page => {
+            Some(mut v) if self.magnifier_page == page => {
+                // 原寸デコードへの差し替えなどでテクスチャ寸法が変わったら、画面上の大きさを
+                // 保つよう倍率を換算する（スクロール位置は画面px基準なのでそのまま）。
+                if self.magnifier_img_size != img {
+                    v.scale = rescale_for_new_texture(v.scale, self.magnifier_img_size.x, img.x);
+                }
                 // フィット表示のままなら窓サイズ変更にフィット倍率で追従する。
                 // それ以外は範囲内へ丸め、スクロール範囲も収め直す。
                 let scale = if self.magnifier_at_fit { fit } else { v.scale.clamp(range.0, range.1) };
@@ -3755,6 +3790,7 @@ impl ViewerState {
         }
 
         self.magnifier_at_fit = view.scale <= fit + 1e-4;
+        self.magnifier_img_size = img;
         self.magnifier_view = Some(view);
     }
 
@@ -5156,5 +5192,30 @@ mod bookmark_restore_tests {
         assert!(viewer.restore_bookmark_position("second"));
 
         assert_eq!(viewer.spread_base, 1, "しおり復帰が見開き復元を上書きして残る");
+    }
+}
+
+#[cfg(test)]
+mod decode_edge_tests {
+    use super::clamp_decode_edge;
+
+    #[test]
+    fn edge_within_limit_is_unchanged() {
+        assert_eq!(clamp_decode_edge(4000, 8192), 4000);
+        assert_eq!(clamp_decode_edge(8192, 8192), 8192);
+    }
+
+    #[test]
+    fn edge_over_limit_is_clamped() {
+        // 見開きの2倍・GUI設定の最大値の2倍でも、テクスチャ1辺の上限を超えない。
+        assert_eq!(clamp_decode_edge(8000 * 2, 8192), 8192);
+        assert_eq!(clamp_decode_edge(7680u32.saturating_mul(2), 8192), 8192);
+        assert_eq!(clamp_decode_edge(u32::MAX, 8192), 8192);
+    }
+
+    #[test]
+    fn edge_is_never_zero() {
+        assert_eq!(clamp_decode_edge(0, 8192), 1);
+        assert_eq!(clamp_decode_edge(100, 0), 1);
     }
 }

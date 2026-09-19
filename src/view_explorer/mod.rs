@@ -851,6 +851,8 @@ pub struct NekoviewApp {
     /// 項目(D): viewer_cfg.exif_orientation_enabled の変化検知用（設定ダイアログ・
     /// ビューアーツールバーのチェックボックス、どちらの経路で変更されても拾えるようにする）。
     exif_orientation_enabled_last_seen: bool,
+    /// viewer_cfg.magnifier_on の変化検知用（ON/OFFで即時に再デコードを発火する）。
+    magnifier_on_last_seen: bool,
     /// viewer_cfg.image_filter の変化検知用（exif_orientation_enabled_last_seenと同じ方式）。
     image_filter_last_seen: crate::image_filter::ImageFilterSettings,
     /// viewer_cfg.tool_palette.visible の変化検知用。エクスプローラーメニューのトグルで
@@ -1127,6 +1129,7 @@ impl NekoviewApp {
             preparing_decode_generation: None,
             decode_generation: 0,
             exif_orientation_enabled_last_seen: exif_orientation_enabled,
+            magnifier_on_last_seen: false,
             image_filter_last_seen: image_filter_snapshot,
             tool_palette_visible_last_seen: tool_palette_visible_snapshot,
         };
