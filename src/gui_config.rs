@@ -265,6 +265,36 @@ impl FavoritePosition {
     }
 }
 
+/// 最後に選んでいた左ペインのタブ。起動時にこのタブを開く。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SavedTab {
+    RealTree,
+    Favorites,
+    Search,
+    VirtualFolders,
+}
+
+impl SavedTab {
+    fn to_state_str(self) -> &'static str {
+        match self {
+            Self::RealTree => "real",
+            Self::Favorites => "favorites",
+            Self::Search => "search",
+            Self::VirtualFolders => "virtual",
+        }
+    }
+
+    fn from_state_str(s: &str) -> Option<Self> {
+        match s.trim() {
+            "real" => Some(Self::RealTree),
+            "favorites" => Some(Self::Favorites),
+            "search" => Some(Self::Search),
+            "virtual" => Some(Self::VirtualFolders),
+            _ => None,
+        }
+    }
+}
+
 /// 仮想フォルダタブが最後に開いていたノード。idの再利用で別のノードを復元しないよう、
 /// 保存時の実パスも一緒に持ち、復元時に照合する。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -278,6 +308,8 @@ pub struct VirtualPosition {
 /// 場合は、各タブの既定の位置になる（お気に入り=未整理、検索=実ツリータブの現在地、仮想=`/`）。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TabPositions {
+    /// 最後に選んでいたタブ（未保存=実ツリータブで起動）
+    pub active: Option<SavedTab>,
     pub favorites: Option<FavoritePosition>,
     /// ユーザーが選んだ検索対象フォルダ（既定のPWDは保存しない）
     pub search_dir: Option<PathBuf>,
@@ -288,6 +320,9 @@ impl TabPositions {
     /// state ファイルに書く `tab_*` の行（Some のものだけ）。
     fn state_lines(&self) -> String {
         let mut out = String::new();
+        if let Some(t) = self.active {
+            out.push_str(&format!("tab_active={}\n", t.to_state_str()));
+        }
         if let Some(f) = self.favorites {
             out.push_str(&format!("tab_favorites={}\n", f.to_state_str()));
         }
@@ -413,6 +448,7 @@ pub fn load_state(root: &Path) -> AppState {
 fn parse_state_file(path: &Path) -> Option<AppState> {
     let content = std::fs::read_to_string(path).ok()?;
     let mut last_dir: Option<PathBuf> = None;
+    let mut tab_active: Option<SavedTab> = None;
     let mut tab_favorites: Option<FavoritePosition> = None;
     let mut tab_search_dir: Option<PathBuf> = None;
     let mut tab_virtual_id: Option<u32> = None;
@@ -508,6 +544,7 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
                     let v = v.trim();
                     if !v.is_empty() { last_dir = Some(PathBuf::from(v)); }
                 }
+                "tab_active" => { tab_active = SavedTab::from_state_str(v); }
                 "tab_favorites" => { tab_favorites = FavoritePosition::from_state_str(v); }
                 "tab_search_dir" => {
                     let v = v.trim();
@@ -822,6 +859,7 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
             overlay_width: translate_overlay_width.unwrap_or(360),
         },
         tab_positions: TabPositions {
+            active: tab_active,
             favorites: tab_favorites,
             search_dir: tab_search_dir,
             // idと実パスの両方がそろっているときだけ有効（片方だけなら照合できないので破棄）
@@ -990,6 +1028,7 @@ mod tests {
     #[test]
     fn tab_positions_roundtrip_through_state_text() {
         let tp = TabPositions {
+            active: Some(SavedTab::VirtualFolders),
             favorites: Some(FavoritePosition::Folder(3)),
             search_dir: Some(PathBuf::from("/data/search base")),
             virtual_node: Some(VirtualPosition { id: 12, path: PathBuf::from("/data/manga") }),
@@ -1013,6 +1052,20 @@ mod tests {
         assert_eq!(parse_state_text("tree_sort_bad", "tree_sort_virtual=size:up\n").tree_sorts, Default::default());
         // 実ツリーに登録順は無い
         assert_eq!(parse_state_text("tree_sort_real_reg", "tree_sort_real=registration:asc\n").tree_sorts, Default::default());
+    }
+
+    #[test]
+    fn saved_tab_roundtrips_and_ignores_invalid_values() {
+        for t in [SavedTab::RealTree, SavedTab::Favorites, SavedTab::Search, SavedTab::VirtualFolders] {
+            let tp = TabPositions { active: Some(t), ..Default::default() };
+            assert_eq!(parse_state_text("saved_tab", &tp.state_lines()).tab_positions.active, Some(t));
+        }
+        assert_eq!(TabPositions { active: Some(SavedTab::Search), ..Default::default() }.state_lines(), "tab_active=search\n");
+        for bad in ["", "Real", "tree", "virtual_folders", "0"] {
+            assert_eq!(SavedTab::from_state_str(bad), None, "{bad:?}");
+        }
+        // 旧stateにはキーが無い＝未保存（実ツリータブで起動）
+        assert_eq!(parse_state_text("saved_tab_old", "last_dir=/x\n").tab_positions.active, None);
     }
 
     #[test]

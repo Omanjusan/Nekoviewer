@@ -4,10 +4,13 @@
 //! 復元: タブに入るたびに保存位置を開く。保存が無い・検証で外れた場合は、各タブの既定の位置にする
 //! （お気に入り=未整理、検索=実ツリータブの現在地、仮想=`/`）。実ツリータブは従来どおり `last_dir`。
 //! 「前回フォルダに復帰」設定がオフなら、起動時に保存位置を読み捨てる（`NekoviewApp::new`）。
+//!
+//! 最後に選んだタブ自体（`tab_active`）も同じ仕組みで保存し、起動時にそのタブを開く。
+//! CLI引数で起動したときは実ツリータブ固定（`main.rs` が保存値を実ツリーに上書きする）。
 
 use std::path::{Path, PathBuf};
 
-use crate::gui_config::FavoritePosition;
+use crate::gui_config::{FavoritePosition, SavedTab};
 
 use super::*;
 
@@ -34,7 +37,58 @@ pub(super) fn resolve_search_dir(
     }
 }
 
+/// 起動時に復元するタブのフォーカス位置。タブ列のクリックと同じ位置にするが、
+/// 検索は入力欄が最初からキー入力を奪わないようタブ列に置く。
+pub(super) fn startup_focus(tab: FolderPaneTab) -> FocusPane {
+    match tab {
+        FolderPaneTab::RealTree => FocusPane::TreeTab,
+        FolderPaneTab::Favorites => FocusPane::FavoriteTab,
+        FolderPaneTab::Search | FolderPaneTab::VirtualFolders => FocusPane::FolderTabBar,
+    }
+}
+
+impl From<FolderPaneTab> for SavedTab {
+    fn from(tab: FolderPaneTab) -> Self {
+        match tab {
+            FolderPaneTab::RealTree => Self::RealTree,
+            FolderPaneTab::Favorites => Self::Favorites,
+            FolderPaneTab::Search => Self::Search,
+            FolderPaneTab::VirtualFolders => Self::VirtualFolders,
+        }
+    }
+}
+
+impl From<SavedTab> for FolderPaneTab {
+    fn from(tab: SavedTab) -> Self {
+        match tab {
+            SavedTab::RealTree => Self::RealTree,
+            SavedTab::Favorites => Self::Favorites,
+            SavedTab::Search => Self::Search,
+            SavedTab::VirtualFolders => Self::VirtualFolders,
+        }
+    }
+}
+
 impl NekoviewApp {
+    /// 選んだタブを保存する（値が変わったときだけ書く）。
+    pub(super) fn remember_active_tab(&mut self, tab: FolderPaneTab) {
+        let saved = SavedTab::from(tab);
+        if self.tab_positions.active != Some(saved) {
+            self.tab_positions.active = Some(saved);
+            self.persist_state();
+        }
+    }
+
+    /// 起動時: 最後に選んでいたタブ（未保存なら実ツリー）を開く。実ツリーは初期状態のままなので何もしない。
+    pub(super) fn restore_active_tab(&mut self) {
+        let tab = self.tab_positions.active.map_or(FolderPaneTab::RealTree, FolderPaneTab::from);
+        if tab == FolderPaneTab::RealTree {
+            return;
+        }
+        self.switch_folder_tab(tab);
+        self.focused_pane = startup_focus(tab);
+    }
+
     /// お気に入りタブに入ったとき: 保存された選択（無い・消えていれば未整理）を開く。
     pub(super) fn restore_favorites_position(&mut self) {
         self.refresh_favorite_folders();
@@ -109,5 +163,20 @@ mod tests {
         // 到達できない・未保存はPWD
         assert_eq!(resolve_search_dir(Some(Path::new("/gone")), reachable, pwd), PathBuf::from("/pwd"));
         assert_eq!(resolve_search_dir(None, reachable, pwd), PathBuf::from("/pwd"));
+    }
+
+    #[test]
+    fn saved_tab_conversion_is_lossless() {
+        for t in [FolderPaneTab::RealTree, FolderPaneTab::Favorites, FolderPaneTab::Search, FolderPaneTab::VirtualFolders] {
+            assert_eq!(FolderPaneTab::from(SavedTab::from(t)), t);
+        }
+    }
+
+    #[test]
+    fn startup_focus_avoids_text_input_for_search() {
+        assert_eq!(startup_focus(FolderPaneTab::RealTree), FocusPane::TreeTab);
+        assert_eq!(startup_focus(FolderPaneTab::Favorites), FocusPane::FavoriteTab);
+        assert_eq!(startup_focus(FolderPaneTab::Search), FocusPane::FolderTabBar);
+        assert_eq!(startup_focus(FolderPaneTab::VirtualFolders), FocusPane::FolderTabBar);
     }
 }

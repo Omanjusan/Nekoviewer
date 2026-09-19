@@ -1144,6 +1144,8 @@ impl NekoviewApp {
         for mount in app.gvfs_mount_entries.clone() {
             app.spawn_mount_check_if_needed(mount.path);
         }
+        // 最後に選んでいたタブを開く（実ツリー以外のとき。起動処理が済んだ後に切り替える）
+        app.restore_active_tab();
         app
     }
 

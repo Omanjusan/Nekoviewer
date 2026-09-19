@@ -405,6 +405,7 @@ impl NekoviewApp {
         }
         // 他タブの表示を畳んだ後で、入ったタブの保存位置（無い・外れていれば既定）を開く
         if entering {
+            self.remember_active_tab(tab);
             match tab {
                 FolderPaneTab::Favorites => self.restore_favorites_position(),
                 FolderPaneTab::VirtualFolders => self.restore_virtual_position(),

@@ -65,7 +65,7 @@ fn main() {
         let mut cfg = config::AppConfig::load();
         log_common!("[startup] config loaded");
 
-        let state = gui_config::load_state(&cfg.config_root);
+        let mut state = gui_config::load_state(&cfg.config_root);
         log_common!("[startup] state loaded (window_size = {:?})", state.window_size);
         i18n::set_from_code(&state.lang);
 
@@ -104,6 +104,11 @@ fn main() {
 
         // 「賢く開く」：ファイル指定なら親DIR起動＋起動後の自動オープン対象を、DIR指定なら
         // そのDIRをそれぞれ導出する。いずれも成立しなければ従来通りの起動フォルダ解決へ委ねる。
+        // CLI引数で起動したときは実ツリータブ固定（他タブの保存位置は残す）。
+        // その回の「最後のタブ」も実ツリーとして保存される。
+        if args.start_path.is_some() {
+            state.tab_positions.active = Some(gui_config::SavedTab::RealTree);
+        }
         let (cli_dir, open_target) = match args.start_path {
             Some(p) => config::AppConfig::resolve_cli_open_target(p),
             None => (None, None),
