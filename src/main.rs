@@ -12,6 +12,9 @@ mod i18n;
 mod image_filter;
 mod types;
 mod keymap;
+// フェーズ2以降で view_reader に配線するまで未使用。
+#[allow(dead_code)]
+mod magnifier;
 mod model_innerlog;
 mod neko_dir;
 mod rotation;
