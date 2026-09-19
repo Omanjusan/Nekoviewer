@@ -1514,10 +1514,10 @@ pub(super) fn show_tree_node(
     action: &mut TreeAction,
     scroll_pending: &mut bool,
 ) {
-    if !matches!(action, TreeAction::None) {
-        return;
-    }
-
+    // 注意: アクションが確定した後も、以降の行を描くのをやめてはいけない（早期リターン禁止）。
+    // 行を描かないとそのフレームのScrollAreaの内容サイズが縮み、eguiがスクロール位置を丸め込んで、
+    // クリックした行が下端／リスト先頭へ飛んでしまう。最初のアクションを優先する扱いは、
+    // 下の各代入側の条件（`matches!(*action, TreeAction::None)`）で行う。
     let name = path
         .file_name()
         .and_then(|n| n.to_str())
@@ -1540,7 +1540,7 @@ pub(super) fn show_tree_node(
         if show_arrow {
             let arrow = if is_expanded { "▼" } else { "▶" };
             let r = ui.add(egui::Label::new(arrow).sense(egui::Sense::click()));
-            if r.clicked() {
+            if r.clicked() && matches!(*action, TreeAction::None) {
                 *action = TreeAction::ToggleExpand(path.clone());
             }
         } else {
@@ -1759,6 +1759,144 @@ mod tests {
                 has_bookmark: true,
             },
             [Some("R"), Some("S"), Some("T"), Some("B")],
+        );
+    }
+}
+
+/// 実ツリー（と登録ピッカー）でフォルダをクリックしたとき、スクロール位置が飛ばないことの回帰テスト。
+/// 以前は show_tree_node がアクション確定後の行を描かなかったため、そのフレームのScrollAreaの
+/// 内容サイズが縮み、eguiがスクロール位置を丸め込んで、クリックした行が下端／リスト先頭へ飛んでいた。
+#[cfg(test)]
+mod tree_click_scroll_tests {
+    use super::*;
+
+    const ROWS: usize = 60;
+    const VIEW_H: f32 = 240.0;
+
+    struct Sim {
+        ctx: egui::Context,
+        root: PathBuf,
+        expanded: HashSet<PathBuf>,
+        children: HashMap<PathBuf, Vec<PathBuf>>,
+        first: bool,
+        area_top: f32,
+        offset: f32,
+        action: Option<TreeAction>,
+    }
+
+    impl Sim {
+        fn new() -> Self {
+            let root = PathBuf::from("/t");
+            let kids: Vec<PathBuf> = (0..ROWS).map(|i| root.join(format!("d{i:02}"))).collect();
+            let mut children: HashMap<PathBuf, Vec<PathBuf>> = HashMap::new();
+            // 子を持たないことを明示して、行頭の▶を出さない（ラベルだけをクリック対象にする）
+            for k in &kids {
+                children.insert(k.clone(), Vec::new());
+            }
+            children.insert(root.clone(), kids);
+            Self {
+                ctx: egui::Context::default(),
+                expanded: HashSet::from([root.clone()]),
+                root,
+                children,
+                first: true,
+                area_top: 0.0,
+                offset: 0.0,
+                action: None,
+            }
+        }
+
+        fn frame(&mut self, events: Vec<egui::Event>) {
+            let mut input = egui::RawInput::default();
+            input.screen_rect = Some(egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(400.0, 600.0)));
+            input.events = events;
+            let (root, expanded, children, first) =
+                (self.root.clone(), self.expanded.clone(), self.children.clone(), self.first);
+            let (mut area_top, mut offset) = (0.0, 0.0);
+            let mut action = TreeAction::None;
+            let _ = self.ctx.run_ui(input, |ui| {
+                area_top = ui.cursor().min.y;
+                let mut area = egui::ScrollArea::both()
+                    .id_salt("folder_scroll")
+                    .max_height(VIEW_H)
+                    .auto_shrink([false, false]);
+                if first {
+                    area = area.vertical_scroll_offset(600.0);
+                }
+                let out = area.show(ui, |ui| {
+                    let mut scroll_pending = false;
+                    show_tree_node(
+                        ui,
+                        &root,
+                        0,
+                        &None,
+                        &None,
+                        false,
+                        &expanded,
+                        &children,
+                        false,
+                        false,
+                        &mut action,
+                        &mut scroll_pending,
+                    );
+                });
+                offset = out.state.offset.y;
+            });
+            self.first = false;
+            self.area_top = area_top;
+            self.offset = offset;
+            self.action = Some(action);
+        }
+
+        /// pos でクリック（移動→押下→離す）して、離したフレームのアクションを返す。
+        fn click(&mut self, pos: egui::Pos2) -> TreeAction {
+            self.frame(vec![egui::Event::PointerMoved(pos)]);
+            self.frame(vec![egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: Default::default(),
+            }]);
+            self.frame(vec![egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Default::default(),
+            }]);
+            self.action.take().unwrap_or(TreeAction::None)
+        }
+    }
+
+    /// 表示領域の中央付近の行をクリックして、選択（Navigate）が出るまで少しずつy座標をずらす。
+    fn click_middle_row(sim: &mut Sim) -> PathBuf {
+        let mid = sim.area_top + VIEW_H / 2.0;
+        for dy in (0..40).step_by(3) {
+            if let TreeAction::Navigate(p) = sim.click(egui::pos2(45.0, mid + dy as f32)) {
+                return p;
+            }
+        }
+        panic!("中央付近の行をクリックできなかった（テストの座標設定を確認）");
+    }
+
+    #[test]
+    fn clicking_a_middle_row_does_not_jump_the_scroll_position() {
+        let mut sim = Sim::new();
+        for _ in 0..4 {
+            sim.frame(vec![]);
+        }
+        let before = sim.offset;
+        assert!(before > 100.0, "前提: 下方へスクロール済み（offset={before}）");
+
+        let clicked = click_middle_row(&mut sim);
+        assert_eq!(clicked.parent(), Some(std::path::Path::new("/t")), "子フォルダが選択された: {clicked:?}");
+
+        for _ in 0..3 {
+            sim.frame(vec![]);
+        }
+        assert!(
+            (sim.offset - before).abs() < 0.5,
+            "クリックでスクロール位置が動いた: {before} → {}",
+            sim.offset
         );
     }
 }
