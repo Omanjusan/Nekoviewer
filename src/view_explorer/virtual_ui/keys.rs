@@ -105,19 +105,25 @@ impl NekoviewApp {
     }
 
     pub(in crate::view_explorer) fn handle_virtual_keys(&mut self, ctx: &egui::Context) {
-        // 登録ピッカー・確認・大量登録・削除ダイアログが開いている間は、背後のツリーを操作しない
+        // 登録ピッカー・確認・大量登録・名前変更・削除ダイアログが開いている間は、背後のツリーを操作しない
         let vs = &self.virtual_state;
-        if vs.picker.is_some() || vs.confirm.is_some() || vs.large_import.is_some() || vs.delete.is_some() {
+        if vs.picker.is_some()
+            || vs.confirm.is_some()
+            || vs.large_import.is_some()
+            || vs.rename.is_some()
+            || vs.delete.is_some()
+        {
             return;
         }
         let km = &self.config.keymap;
-        let (down, up, right, left, enter) = ctx.input(|i| {
+        let (down, up, right, left, enter, rename) = ctx.input(|i| {
             (
                 km.explorer_binding(ExplorerAction::NavDown).key_pressed(i),
                 km.explorer_binding(ExplorerAction::NavUp).key_pressed(i),
                 km.explorer_binding(ExplorerAction::NavRight).key_pressed(i),
                 km.explorer_binding(ExplorerAction::NavLeft).key_pressed(i),
                 km.explorer_binding(ExplorerAction::Confirm).key_pressed(i),
+                km.explorer_binding(ExplorerAction::Rename).key_pressed(i),
             )
         });
         for (pressed, key) in [
@@ -147,6 +153,11 @@ impl NekoviewApp {
         if enter {
             let cur = self.virtual_cursor();
             self.select_virtual_node(cur);
+        }
+        // F2: カーソル行の名前変更（右クリックメニューと同じ入口。`/` は開かない）
+        if rename {
+            let cur = self.virtual_cursor();
+            self.open_rename_dialog(cur);
         }
     }
 }

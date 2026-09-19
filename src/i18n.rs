@@ -789,6 +789,30 @@ impl Lang {
         }
     }
 
+    pub fn virtual_menu_rename(self) -> &'static str {
+        match self {
+            Lang::Japanese => "名前を変更",
+            Lang::English  => "Rename",
+            Lang::Chinese  => "重命名",
+        }
+    }
+
+    pub fn virtual_rename_title(self) -> &'static str {
+        match self {
+            Lang::Japanese => "仮想フォルダ名の変更",
+            Lang::English  => "Rename Virtual Folder",
+            Lang::Chinese  => "重命名虚拟文件夹",
+        }
+    }
+
+    pub fn virtual_rename_prompt(self) -> &'static str {
+        match self {
+            Lang::Japanese => "新しい名前（実フォルダ名は変わりません）",
+            Lang::English  => "New name (the real folder name is not changed)",
+            Lang::Chinese  => "新名称（不会更改实际文件夹名称）",
+        }
+    }
+
     pub fn virtual_menu_delete(self) -> &'static str {
         match self {
             Lang::Japanese => "仮想フォルダ削除",
@@ -1089,8 +1113,6 @@ impl Lang {
         }
     }
 
-    // リネームUI接続（フェーズB）までの暫定
-    #[allow(dead_code)]
     pub fn virtual_rename_failed(self, reason: &str) -> String {
         match self {
             Lang::Japanese => format!("仮想フォルダ名の変更に失敗しました（{reason}）"),
@@ -1099,7 +1121,6 @@ impl Lang {
         }
     }
 
-    #[allow(dead_code)]
     pub fn virtual_rename_reason_not_found(self) -> &'static str {
         match self {
             Lang::Japanese => "対象のフォルダが見つかりません",

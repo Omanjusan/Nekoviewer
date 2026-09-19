@@ -370,7 +370,7 @@ impl ExplorerAction {
         match self {
             Self::FocusNext      => "次のペインへフォーカス移動",
             Self::FocusPrev      => "前のペインへフォーカス移動",
-            Self::Rename         => "お気に入りフォルダ名変更",
+            Self::Rename         => "フォルダ名変更（お気に入り／仮想）",
             Self::SelectAll      => "全選択",
             Self::ClearSelection => "選択解除",
             Self::NavUp          => "上へ移動",

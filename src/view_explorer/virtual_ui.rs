@@ -18,6 +18,7 @@ use crate::gui_config::VirtualPosition;
 use broken::BrokenCheck;
 use delete::DeleteTarget;
 use register::{LargeImport, OverlapInfo, PendingRegister};
+use rename::RenameDialog;
 
 use crate::i18n;
 
@@ -149,6 +150,7 @@ pub(super) struct VirtualState {
     register_pending: Option<PendingRegister>,
     /// 走査が終わって、取り込み方（全部／浅く）の選択待ちの大量登録
     large_import: Option<LargeImport>,
+    rename: Option<RenameDialog>,
     /// リンク切れ（実パスがフォルダとして開けない）と判定されたノードid。目印の表示に使う。
     broken: HashSet<u32>,
     broken_check: Option<BrokenCheck>,
@@ -169,6 +171,7 @@ impl VirtualState {
             delete: None,
             register_pending: None,
             large_import: None,
+            rename: None,
             broken: HashSet::new(),
             broken_check: None,
             broken_gen: 0,
@@ -204,6 +207,7 @@ enum TreeEvent {
     Select(u32),
     DoubleClick(u32),
     Register(u32),
+    Rename(u32),
     Delete(u32),
 }
 
@@ -298,7 +302,11 @@ fn draw_tree_row(
                     out.push(TreeEvent::Register(id));
                     ui.close();
                 }
-                // ルートは削除対象外（グレーアウト）
+                // ルートは名前変更・削除の対象外（グレーアウト）
+                if ui.add_enabled(id != ROOT, egui::Button::new(i18n::t().virtual_menu_rename())).clicked() {
+                    out.push(TreeEvent::Rename(id));
+                    ui.close();
+                }
                 if ui.add_enabled(id != ROOT, egui::Button::new(i18n::t().virtual_menu_delete())).clicked() {
                     out.push(TreeEvent::Delete(id));
                     ui.close();
@@ -639,12 +647,15 @@ impl NekoviewApp {
                 TreeEvent::Toggle(id) => toggle(&mut self.virtual_state.expanded, id),
                 TreeEvent::Select(id) => self.select_virtual_node(id),
                 TreeEvent::DoubleClick(_) => {}
+                TreeEvent::Rename(id) => self.open_rename_dialog(id),
                 TreeEvent::Register(id) => {
                     self.virtual_state.confirm = None;
+                    self.virtual_state.rename = None;
                     let tree = RealTreeState::new(&self.drives, &self.tree_root, &self.egui_ctx);
                     self.virtual_state.picker = Some(Picker::Real { dest: id, tree });
                 }
                 TreeEvent::Delete(id) => {
+                    self.virtual_state.rename = None;
                     if id != ROOT {
                         if let Some(n) = self.virtual_state.nodes.iter().find(|n| n.id == id) {
                             self.virtual_state.delete =
@@ -691,6 +702,7 @@ impl NekoviewApp {
         self.draw_virtual_picker(ctx);
         self.draw_virtual_confirm(ctx);
         self.draw_virtual_large_import(ctx);
+        self.draw_virtual_rename(ctx);
         self.draw_virtual_delete(ctx);
     }
 

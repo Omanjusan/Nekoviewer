@@ -4,13 +4,11 @@
 //! 失敗は入力欄では防げないものだけ（DBエラー・対象が消えた・対象が別のノードに変わった）で、
 //! トーストで知らせる。成功時は何も出さない。
 
-// フェーズB（UI接続）までの暫定。接続後にこの行を外すこと。
-#![allow(dead_code)]
-
 use crate::i18n;
-use crate::virtual_folders::{self, VirtualFolderError};
+use crate::virtual_folders::{self, VirtualFolderError, MAX_NAME_CHARS};
 
 use super::delete::{same_node, DeleteTarget, SameNode};
+use super::*;
 
 /// ダイアログを開いた時点の対象（id・実パス・名前）。削除と同じ照合用のスナップショット。
 /// （`next_id = max+1` のため、idが再利用されて別のノードになりうる）
@@ -78,12 +76,94 @@ pub(super) fn rename_virtual_node(
     }
 }
 
+/// 名前変更ダイアログの状態。開いた時点の対象を持ち、OK時に同じノードか確かめる。
+pub(super) struct RenameDialog {
+    target: RenameTarget,
+    input: String,
+    /// 開いた直後の1フレームだけ入力欄にフォーカスを渡す
+    focus_pending: bool,
+}
+
+impl NekoviewApp {
+    /// 右クリックメニューとF2の共通の入口。`/` と、ほかのダイアログが開いている間は開かない。
+    pub(super) fn open_rename_dialog(&mut self, id: u32) {
+        let vs = &self.virtual_state;
+        let busy = vs.picker.is_some()
+            || vs.confirm.is_some()
+            || vs.large_import.is_some()
+            || vs.delete.is_some()
+            || vs.rename.is_some();
+        if id == ROOT || busy {
+            return;
+        }
+        let Some(n) = vs.nodes.iter().find(|n| n.id == id) else { return };
+        let dialog = RenameDialog {
+            target: RenameTarget { id, real: n.real.clone(), name: n.name.clone() },
+            input: n.name.clone(),
+            focus_pending: true,
+        };
+        self.virtual_state.rename = Some(dialog);
+    }
+
+    /// 名前変更の固定ダイアログ。空（前後の空白を除く）の間はOKを押せない。Enterでも確定する。
+    pub(super) fn draw_virtual_rename(&mut self, ctx: &egui::Context) {
+        let Some(d) = self.virtual_state.rename.as_mut() else { return };
+        let t = i18n::t();
+        let (mut ok, mut cancel) = (false, false);
+        egui::Window::new(t.virtual_rename_title())
+            .id(egui::Id::new("virtual_rename_window"))
+            .order(egui::Order::Foreground)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .show(ctx, |ui| {
+                ui.label(t.virtual_rename_prompt());
+                let resp = ui.add(egui::TextEdit::singleline(&mut d.input).char_limit(MAX_NAME_CHARS).desired_width(280.0));
+                if std::mem::take(&mut d.focus_pending) {
+                    resp.request_focus();
+                }
+                let valid = normalize_name(&d.input).is_some();
+                let enter = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    ok = ui.add_enabled(valid, egui::Button::new(t.virtual_ok())).clicked() || (enter && valid);
+                    cancel = ui.button(t.favorite_dialog_cancel()).clicked();
+                });
+            });
+        if cancel {
+            self.virtual_state.rename = None;
+        } else if ok {
+            // 同じフレームの後段で、確定のEnterがツリーの「開く」に届かないよう消費する
+            ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
+            if let Some(d) = self.virtual_state.rename.take() {
+                self.run_virtual_rename(d.target, &d.input);
+            }
+        }
+    }
+
+    /// OK時の処理。成功は静かに読み直すだけ。失敗はトースト（対象が変わっていたら表示が古いので読み直す）。
+    fn run_virtual_rename(&mut self, target: RenameTarget, input: &str) {
+        let result = match self.spread_db.clone() {
+            Some(db) => rename_virtual_node(&db, &target, input),
+            None => Err(RenameError::Db),
+        };
+        match result {
+            Ok(RenameOutcome::Renamed) => self.refresh_virtual_nodes(),
+            Ok(RenameOutcome::Unchanged) => {}
+            Err(e) => {
+                self.refresh_virtual_nodes();
+                self.set_toast(e.message());
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::{Path, PathBuf};
 
     use super::*;
-    use crate::virtual_folders::{VirtualNode, MAX_NAME_CHARS};
+    use crate::virtual_folders::VirtualNode;
 
     fn temp_db() -> std::sync::Arc<std::sync::Mutex<redb::Database>> {
         let mut path = std::env::temp_dir();
