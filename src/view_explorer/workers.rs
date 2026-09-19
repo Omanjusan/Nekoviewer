@@ -405,6 +405,7 @@ impl NekoviewApp {
         self.poll_scan();
         self.poll_tree_scan();
         self.poll_tree_reload();
+        self.poll_tree_mtimes();
         self.poll_tree_autofocus();
         self.poll_search();
 

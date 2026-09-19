@@ -9,6 +9,7 @@ use super::*;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum TreeSortTarget {
     Virtual,
+    Real,
 }
 
 pub(super) struct TreeSortDialog {
@@ -21,6 +22,7 @@ impl NekoviewApp {
     pub(super) fn open_tree_sort_dialog(&mut self, target: TreeSortTarget) {
         let current = match target {
             TreeSortTarget::Virtual => self.tree_sorts.virtual_tree_or_default(),
+            TreeSortTarget::Real => self.tree_sorts.real_tree_or_default(),
         };
         self.tree_sort_dialog = Some(TreeSortDialog { target, key: current.key, ascending: current.ascending });
     }
@@ -37,12 +39,18 @@ impl NekoviewApp {
             .show(ctx, |ui| {
                 ui.label(match d.target {
                     TreeSortTarget::Virtual => t.tree_sort_target_virtual(),
+                    TreeSortTarget::Real => t.tree_sort_target_real(),
                 });
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
                     let keys: &[(TreeSortKey, &str)] = match d.target {
                         TreeSortTarget::Virtual => &[
                             (TreeSortKey::Registration, t.tree_sort_registration()),
+                            (TreeSortKey::Name, t.sort_name().trim_matches(['[', ']'])),
+                            (TreeSortKey::Date, t.sort_date().trim_matches(['[', ']'])),
+                        ],
+                        // 実ツリーに「登録順」は無い
+                        TreeSortTarget::Real => &[
                             (TreeSortKey::Name, t.sort_name().trim_matches(['[', ']'])),
                             (TreeSortKey::Date, t.sort_date().trim_matches(['[', ']'])),
                         ],
@@ -82,6 +90,15 @@ impl NekoviewApp {
                 self.tree_sorts.virtual_tree = stored;
                 self.persist_state();
                 self.resort_virtual_nodes();
+            }
+            TreeSortTarget::Real => {
+                let stored = (sort != TreeSort::REAL_DEFAULT).then_some(sort);
+                if self.tree_sorts.real_tree == stored {
+                    return;
+                }
+                self.tree_sorts.real_tree = stored;
+                self.persist_state();
+                self.resort_real_tree();
             }
         }
     }

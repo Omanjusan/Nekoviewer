@@ -851,7 +851,7 @@ impl NekoviewApp {
                                     &tree.expanded,
                                     &tree.children,
                                     false,
-                                    false,
+                                    super::panels::TreeMenu::NONE,
                                     &mut real_action,
                                     &mut scroll_pending,
                                 );
@@ -878,7 +878,7 @@ impl NekoviewApp {
                         tree.selected = Some(path.clone());
                         self.begin_register(path, *dest);
                     }
-                    TreeAction::AddToVirtual(_) | TreeAction::None => {}
+                    TreeAction::AddToVirtual(_) | TreeAction::SortSetting | TreeAction::None => {}
                 }
             }
             Picker::VirtualDest { src, expanded, selected } => {

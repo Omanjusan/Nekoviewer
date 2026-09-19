@@ -418,6 +418,7 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
     let mut tab_virtual_id: Option<u32> = None;
     let mut tab_virtual_path: Option<PathBuf> = None;
     let mut tree_sort_virtual: Option<crate::tree_sort::TreeSort> = None;
+    let mut tree_sort_real: Option<crate::tree_sort::TreeSort> = None;
     let mut window_width: Option<u32> = None;
     let mut window_height: Option<u32> = None;
     let mut slot_x: [Option<i32>; 4] = [None; 4];
@@ -513,6 +514,11 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
                     if !v.is_empty() { tab_search_dir = Some(PathBuf::from(v)); }
                 }
                 "tree_sort_virtual" => { tree_sort_virtual = crate::tree_sort::TreeSort::from_state_str(v); }
+                // 実ツリーに「登録順」は無いので、それは不正値として捨てる
+                "tree_sort_real" => {
+                    tree_sort_real = crate::tree_sort::TreeSort::from_state_str(v)
+                        .filter(|s| s.key != crate::tree_sort::TreeSortKey::Registration);
+                }
                 "tab_virtual_node" => { tab_virtual_id = v.trim().parse().ok(); }
                 "tab_virtual_path" => {
                     let v = v.trim();
@@ -824,7 +830,7 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
                 _ => None,
             },
         },
-        tree_sorts: crate::tree_sort::TreeSorts { virtual_tree: tree_sort_virtual },
+        tree_sorts: crate::tree_sort::TreeSorts { virtual_tree: tree_sort_virtual, real_tree: tree_sort_real },
     })
 }
 
@@ -999,11 +1005,14 @@ mod tests {
         use crate::tree_sort::{TreeSort, TreeSortKey};
         let sorts = crate::tree_sort::TreeSorts {
             virtual_tree: Some(TreeSort { key: TreeSortKey::Date, ascending: false }),
+            real_tree: Some(TreeSort { key: TreeSortKey::Name, ascending: false }),
         };
         let parsed = parse_state_text("tree_sort", &sorts.state_lines());
         assert_eq!(parsed.tree_sorts, sorts);
         assert_eq!(parse_state_text("tree_sort_none", "last_dir=/x\n").tree_sorts, Default::default());
         assert_eq!(parse_state_text("tree_sort_bad", "tree_sort_virtual=size:up\n").tree_sorts, Default::default());
+        // 実ツリーに登録順は無い
+        assert_eq!(parse_state_text("tree_sort_real_reg", "tree_sort_real=registration:asc\n").tree_sorts, Default::default());
     }
 
     #[test]

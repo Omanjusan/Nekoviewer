@@ -813,6 +813,14 @@ impl Lang {
         }
     }
 
+    pub fn tree_sort_target_real(self) -> &'static str {
+        match self {
+            Lang::Japanese => "実ツリーの並び順",
+            Lang::English  => "Order of the real folder tree",
+            Lang::Chinese  => "实际文件夹树的排列顺序",
+        }
+    }
+
     pub fn tree_sort_registration(self) -> &'static str {
         match self {
             Lang::Japanese => "登録順",

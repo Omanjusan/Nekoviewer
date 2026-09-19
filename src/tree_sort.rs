@@ -38,6 +38,8 @@ pub struct TreeSort {
 impl TreeSort {
     /// 仮想ツリーの既定（登録順・昇順）。従来の並びと同じ。
     pub const VIRTUAL_DEFAULT: Self = Self { key: TreeSortKey::Registration, ascending: true };
+    /// 実ツリーの既定（名前・昇順）。従来の並び（パス昇順）と同じ。
+    pub const REAL_DEFAULT: Self = Self { key: TreeSortKey::Name, ascending: true };
 
     /// stateファイルの値（例: `name:desc`）。
     pub fn to_state_str(self) -> String {
@@ -59,6 +61,7 @@ impl TreeSort {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct TreeSorts {
     pub virtual_tree: Option<TreeSort>,
+    pub real_tree: Option<TreeSort>,
 }
 
 impl TreeSorts {
@@ -66,11 +69,18 @@ impl TreeSorts {
         self.virtual_tree.unwrap_or(TreeSort::VIRTUAL_DEFAULT)
     }
 
+    pub fn real_tree_or_default(&self) -> TreeSort {
+        self.real_tree.unwrap_or(TreeSort::REAL_DEFAULT)
+    }
+
     /// stateファイルに書く `tree_sort_*` の行（Some のものだけ）。
     pub fn state_lines(&self) -> String {
         let mut out = String::new();
         if let Some(s) = self.virtual_tree {
             out.push_str(&format!("tree_sort_virtual={}\n", s.to_state_str()));
+        }
+        if let Some(s) = self.real_tree {
+            out.push_str(&format!("tree_sort_real={}\n", s.to_state_str()));
         }
         out
     }
@@ -103,7 +113,10 @@ mod tests {
     fn default_is_registration_ascending_and_writes_no_line() {
         assert_eq!(TreeSorts::default().virtual_tree_or_default(), TreeSort::VIRTUAL_DEFAULT);
         assert_eq!(TreeSorts::default().state_lines(), "");
-        let s = TreeSorts { virtual_tree: Some(TreeSort { key: TreeSortKey::Date, ascending: false }) };
+        let s = TreeSorts { virtual_tree: Some(TreeSort { key: TreeSortKey::Date, ascending: false }), real_tree: None };
         assert_eq!(s.state_lines(), "tree_sort_virtual=date:desc\n");
+        assert_eq!(TreeSorts::default().real_tree_or_default(), TreeSort::REAL_DEFAULT);
+        let r = TreeSorts { virtual_tree: None, real_tree: Some(TreeSort { key: TreeSortKey::Name, ascending: false }) };
+        assert_eq!(r.state_lines(), "tree_sort_real=name:desc\n");
     }
 }

@@ -141,6 +141,7 @@ impl NekoviewApp {
             && !self.search_date_start_calendar.is_open()
             && !self.search_date_end_calendar.is_open()
             && self.pending_open.is_none()
+            && self.tree_sort_dialog.is_none()
         {
             self.handle_explorer_keys(&ctx);
         }
@@ -473,6 +474,13 @@ impl NekoviewApp {
         // 自動追従が現在地までの展開を完了した直後の1フレームだけ、対象ノードへスクロールする。
         // 消費できたら親側のフラグも下ろす（ノードがフィルタ等でまだ描画されなければ次フレームに持ち越す）。
         let mut scroll_pending = self.tree_autofocus_scroll_pending;
+        // ツリー領域の全面を先に右クリック対象にしておく。行はこの上に描かれるので行が優先され、
+        // 行のない余白への右クリックだけがここに届く（余白では「ソート条件設定」だけが有効）。
+        let tree_bg = ui.interact(
+            egui::Rect::from_min_size(ui.cursor().min, egui::vec2(ui.available_width(), top_h)),
+            ui.id().with("real_tree_bg"),
+            egui::Sense::click(),
+        );
         egui::ScrollArea::both()
             .id_salt("folder_scroll")
             .max_height(top_h)
@@ -489,13 +497,17 @@ impl NekoviewApp {
                     &self.tree_expanded,
                     &self.tree_children,
                     self.show_hidden,
-                    self.folder_pane_tab == FolderPaneTab::VirtualFolders,
+                    self.real_tree_menu(),
                     &mut tree_action,
                     &mut scroll_pending,
                 );
             });
         if !scroll_pending {
             self.tree_autofocus_scroll_pending = false;
+        }
+        let real_menu = self.real_tree_menu();
+        if real_menu.any() {
+            tree_bg.context_menu(|ui| real_tree_context_menu(ui, None, real_menu, &mut tree_action));
         }
 
         match tree_action {
@@ -518,6 +530,7 @@ impl NekoviewApp {
                 }
             }
             TreeAction::AddToVirtual(path) => self.open_virtual_dest_picker(path),
+            TreeAction::SortSetting => self.open_tree_sort_dialog(super::tree_sort_ui::TreeSortTarget::Real),
             TreeAction::Navigate(path) | TreeAction::DoubleClick(path) => {
                 self.focused_pane = FocusPane::TreeTab;
                 self.tree_cursor = Some(path.clone());
@@ -1512,6 +1525,43 @@ impl NekoviewApp {
     }
 }
 
+/// 実ツリーの右クリックメニューに出す項目。登録ピッカーなど、メニューを出さないツリーは `NONE`。
+#[derive(Clone, Copy)]
+pub(super) struct TreeMenu {
+    /// 「仮想フォルダに追加する」（仮想タブ内の実ツリーペインだけ）
+    pub add_to_virtual: bool,
+    /// 「ソート条件設定」
+    pub sort: bool,
+}
+
+impl TreeMenu {
+    pub const NONE: Self = Self { add_to_virtual: false, sort: false };
+
+    fn any(self) -> bool {
+        self.add_to_virtual || self.sort
+    }
+}
+
+/// 実ツリーの右クリックメニュー。`path` が行のパス、行の外（ツリー内の余白）は None。
+/// 行の外では、ツリー全体に効く「ソート条件設定」だけが有効で、ほかはグレーアウトする。
+fn real_tree_context_menu(ui: &mut egui::Ui, path: Option<&PathBuf>, menu: TreeMenu, action: &mut TreeAction) {
+    if menu.add_to_virtual {
+        if ui.add_enabled(path.is_some(), egui::Button::new(i18n::t().virtual_menu_add_from_real())).clicked() {
+            if let Some(p) = path {
+                *action = TreeAction::AddToVirtual(p.clone());
+            }
+            ui.close();
+        }
+        if menu.sort {
+            ui.separator();
+        }
+    }
+    if menu.sort && ui.button(i18n::t().tree_sort_menu()).clicked() {
+        *action = TreeAction::SortSetting;
+        ui.close();
+    }
+}
+
 pub(super) fn show_tree_node(
     ui: &mut egui::Ui,
     path: &PathBuf,
@@ -1522,7 +1572,7 @@ pub(super) fn show_tree_node(
     tree_expanded: &HashSet<PathBuf>,
     tree_children: &HashMap<PathBuf, Vec<PathBuf>>,
     show_hidden: bool,
-    virtual_menu: bool,
+    menu: TreeMenu,
     action: &mut TreeAction,
     scroll_pending: &mut bool,
 ) {
@@ -1576,13 +1626,8 @@ pub(super) fn show_tree_node(
         if r.double_clicked() && matches!(*action, TreeAction::None | TreeAction::Navigate(_)) {
             *action = TreeAction::DoubleClick(path.clone());
         }
-        if virtual_menu {
-            r.context_menu(|ui| {
-                if ui.button(i18n::t().virtual_menu_add_from_real()).clicked() {
-                    *action = TreeAction::AddToVirtual(path.clone());
-                    ui.close();
-                }
-            });
+        if menu.any() {
+            r.context_menu(|ui| real_tree_context_menu(ui, Some(path), menu, action));
         }
         // 自動追従の展開完了直後、現在地ノードが実際に描画されたこのフレームでスクロールする。
         // align=None は「はみ出ている分だけ最小スクロールで見える位置に持ってくる」動作なので、
@@ -1616,7 +1661,7 @@ pub(super) fn show_tree_node(
                     tree_expanded,
                     tree_children,
                     show_hidden,
-                    virtual_menu,
+                    menu,
                     action,
                     scroll_pending,
                 );
@@ -1847,7 +1892,7 @@ mod tree_click_scroll_tests {
                         &expanded,
                         &children,
                         false,
-                        false,
+                        TreeMenu::NONE,
                         &mut action,
                         &mut scroll_pending,
                     );
@@ -1910,5 +1955,13 @@ mod tree_click_scroll_tests {
             "クリックでスクロール位置が動いた: {before} → {}",
             sim.offset
         );
+    }
+}
+
+impl NekoviewApp {
+    /// 実ツリー（実ツリータブ・仮想タブ内の実ツリーペイン・検索タブ内）の右クリックメニュー。
+    /// 「仮想フォルダに追加する」は仮想タブ内だけ。「ソート条件設定」はどのタブでも出る。
+    fn real_tree_menu(&self) -> TreeMenu {
+        TreeMenu { add_to_virtual: self.folder_pane_tab == FolderPaneTab::VirtualFolders, sort: true }
     }
 }

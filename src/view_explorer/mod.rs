@@ -56,6 +56,8 @@ enum TreeAction {
     DoubleClick(PathBuf),
     /// 実ツリー右クリック「仮想フォルダに追加する」
     AddToVirtual(PathBuf),
+    /// 実ツリー右クリック「ソート条件設定」（ツリー全体の設定でパスに依存しない）
+    SortSetting,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -533,6 +535,9 @@ pub struct NekoviewApp {
     tree_root: PathBuf,
     tree_expanded: HashSet<PathBuf>,
     tree_children: HashMap<PathBuf, Vec<PathBuf>>,
+    /// 実ツリーの子フォルダの更新日時（日付順の並び条件用。別スレッドで調べる）
+    tree_mtimes: real_tree_sort::TreeMtimes,
+    tree_mtimes_rx: Option<mpsc::Receiver<Vec<(PathBuf, Option<std::time::SystemTime>)>>>,
     /// 左ペイン: 実フォルダツリー / お気に入りペインの切替状態
     folder_pane_tab: FolderPaneTab,
     /// 仮想フォルダタブのUIモック状態（3M。実データ未接続）
@@ -864,6 +869,7 @@ mod real_dir_stash;
 mod tab_position;
 mod virtual_ui;
 mod tree_sort_ui;
+mod real_tree_sort;
 mod bulk_settings_ui;
 mod search_ui;
 mod search;
@@ -946,6 +952,8 @@ impl NekoviewApp {
             tree_root,
             tree_expanded: HashSet::new(),
             tree_children: HashMap::new(),
+            tree_mtimes: HashMap::new(),
+            tree_mtimes_rx: None,
             folder_pane_tab: FolderPaneTab::RealTree,
             virtual_state: virtual_ui::VirtualState::new(),
             focused_pane: FocusPane::TreeTab,

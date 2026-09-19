@@ -111,7 +111,7 @@ impl NekoviewApp {
         if let Some(pending) = &self.tree_autofocus_pending {
             match pending.rx.try_recv() {
                 Ok(subdirs) => {
-                    self.tree_children.insert(pending.path.clone(), subdirs);
+                    self.insert_tree_children(pending.path.clone(), subdirs);
                     self.tree_autofocus_pending = None;
                 }
                 Err(_) => return, // まだロード中
@@ -180,6 +180,7 @@ impl NekoviewApp {
         self.tree_root = path.clone();
         self.tree_expanded.clear();
         self.tree_children.clear();
+        self.clear_tree_mtimes();
         self.tree_cursor = None;
         self.tree_autofocus = None;
         self.tree_autofocus_pending = None;
@@ -263,6 +264,7 @@ impl NekoviewApp {
         // ツリー: ルート + 展開済み全ノードをスレッド1本でまとめて再取得する。
         // 個別ノードの遅延展開（tree_scan_pending）が進行中でも衝突はしない
         // （どちらが後から書き込んでも tree_children の内容は同じソースから来るため実害なし）。
+        self.clear_tree_mtimes();
         let mut targets: Vec<PathBuf> = vec![self.tree_root.clone()];
         targets.extend(self.tree_expanded.iter().cloned());
         self.tree_reload_pending = Some(TreeReloadPending {
@@ -739,7 +741,7 @@ impl NekoviewApp {
         };
 
         if let Some((path, subdirs)) = result {
-            self.tree_children.insert(path.clone(), subdirs);
+            self.insert_tree_children(path.clone(), subdirs);
             // ルートの場合は展開済みにする
             if path == self.tree_root {
                 self.tree_expanded.insert(path);
@@ -754,7 +756,7 @@ impl NekoviewApp {
         let Some(ref pending) = self.tree_reload_pending else { return };
         let Ok(results) = pending.rx.try_recv() else { return };
         for (path, children) in results {
-            self.tree_children.insert(path, children);
+            self.insert_tree_children(path, children);
         }
         self.tree_reload_pending = None;
     }
