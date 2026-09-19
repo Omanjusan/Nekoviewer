@@ -893,6 +893,134 @@ impl Lang {
         }
     }
 
+    pub fn virtual_register_ok(self) -> &'static str {
+        match self {
+            Lang::Japanese => "仮想フォルダに正常に登録されました",
+            Lang::English  => "Registered to the virtual folder",
+            Lang::Chinese  => "已成功登记到虚拟文件夹",
+        }
+    }
+
+    pub fn virtual_register_progress(self) -> &'static str {
+        match self {
+            Lang::Japanese => "仮想フォルダに登録中…",
+            Lang::English  => "Registering to the virtual folder…",
+            Lang::Chinese  => "正在登记到虚拟文件夹…",
+        }
+    }
+
+    pub fn virtual_register_failed(self, reason: &str) -> String {
+        match self {
+            Lang::Japanese => format!("仮想フォルダへの登録に失敗しました（{reason}）"),
+            Lang::English  => format!("Failed to register to the virtual folder ({reason})"),
+            Lang::Chinese  => format!("登记到虚拟文件夹失败（{reason}）"),
+        }
+    }
+
+    pub fn virtual_reason_unreachable(self) -> &'static str {
+        match self {
+            Lang::Japanese => "フォルダが見つかりません、または接続できません",
+            Lang::English  => "Folder not found or unreachable",
+            Lang::Chinese  => "找不到文件夹或无法连接",
+        }
+    }
+
+    pub fn virtual_reason_not_dir(self) -> &'static str {
+        match self {
+            Lang::Japanese => "フォルダではありません",
+            Lang::English  => "Not a folder",
+            Lang::Chinese  => "不是文件夹",
+        }
+    }
+
+    pub fn virtual_reason_unreadable(self) -> &'static str {
+        match self {
+            Lang::Japanese => "フォルダを読み取れません",
+            Lang::English  => "Cannot read the folder",
+            Lang::Chinese  => "无法读取该文件夹",
+        }
+    }
+
+    pub fn virtual_reason_too_large(self) -> &'static str {
+        match self {
+            Lang::Japanese => "サブフォルダが多すぎます",
+            Lang::English  => "Too many subfolders",
+            Lang::Chinese  => "子文件夹过多",
+        }
+    }
+
+    pub fn virtual_reason_duplicate(self) -> &'static str {
+        match self {
+            Lang::Japanese => "同じ登録先に同じ実フォルダが既に登録されています",
+            Lang::English  => "The same real folder is already registered at this destination",
+            Lang::Chinese  => "该位置已登记同一实际文件夹",
+        }
+    }
+
+    pub fn virtual_reason_limit(self, max: usize) -> String {
+        match self {
+            Lang::Japanese => format!("登録できる上限（{max}件）を超えます"),
+            Lang::English  => format!("Exceeds the registration limit ({max})"),
+            Lang::Chinese  => format!("超过可登记上限（{max} 个）"),
+        }
+    }
+
+    pub fn virtual_reason_dest_missing(self) -> &'static str {
+        match self {
+            Lang::Japanese => "登録先の仮想フォルダが見つかりません",
+            Lang::English  => "Destination virtual folder not found",
+            Lang::Chinese  => "找不到目标虚拟文件夹",
+        }
+    }
+
+    pub fn virtual_reason_name_invalid(self) -> &'static str {
+        match self {
+            Lang::Japanese => "フォルダ名が長すぎる、または空です",
+            Lang::English  => "Folder name is too long or empty",
+            Lang::Chinese  => "文件夹名称过长或为空",
+        }
+    }
+
+    pub fn virtual_reason_db(self) -> &'static str {
+        match self {
+            Lang::Japanese => "データベースエラー",
+            Lang::English  => "Database error",
+            Lang::Chinese  => "数据库错误",
+        }
+    }
+
+    pub fn virtual_overlap_same_here(self) -> &'static str {
+        match self {
+            Lang::Japanese => "この登録先には同じ実フォルダが既に登録されています（登録に失敗します）",
+            Lang::English  => "This destination already has the same real folder (registration will fail)",
+            Lang::Chinese  => "该位置已登记同一实际文件夹（登记将失败）",
+        }
+    }
+
+    pub fn virtual_overlap_same(self, count: usize) -> String {
+        match self {
+            Lang::Japanese => format!("同じ実フォルダが別の場所に {count} 件登録済みです"),
+            Lang::English  => format!("The same real folder is already registered in {count} other place(s)"),
+            Lang::Chinese  => format!("同一实际文件夹已在其他 {count} 处登记"),
+        }
+    }
+
+    pub fn virtual_overlap_ancestor(self, count: usize) -> String {
+        match self {
+            Lang::Japanese => format!("登録済みフォルダ {count} 件の配下にあたります"),
+            Lang::English  => format!("It lies inside {count} registered folder(s)"),
+            Lang::Chinese  => format!("位于 {count} 个已登记文件夹之内"),
+        }
+    }
+
+    pub fn virtual_overlap_descendant(self, count: usize) -> String {
+        match self {
+            Lang::Japanese => format!("登録済みフォルダ {count} 件を含みます"),
+            Lang::English  => format!("It contains {count} registered folder(s)"),
+            Lang::Chinese  => format!("包含 {count} 个已登记文件夹"),
+        }
+    }
+
     pub fn virtual_ok(self) -> &'static str {
         match self {
             Lang::Japanese => "OK",

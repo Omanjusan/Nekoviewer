@@ -1,14 +1,16 @@
-//! 仮想フォルダタブのUI（フェーズ3a-1: ツリーはDB実データ、登録/削除の実行は未接続）。
+//! 仮想フォルダタブのUI（ツリー・ピッカー・確認/削除ダイアログ）。
 //!
-//! 仮想ツリーは `virtual_folders`（DB）から読む。登録・削除の確定処理は3b/3cで接続するまで
-//! 「未接続」トーストで止めている。登録ピッカー内の実ツリー（ドライブコンボ付き）は
-//! 3bまでダミーデータ。
+//! 仮想ツリーは `virtual_folders`（DB）から読む。登録の実処理は `register` サブモジュール、
+//! 削除の確定処理は3cで接続するまで「未接続」トーストで止めている。
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 
 use crate::fs::mount::MountEntry;
+
+mod register;
+use register::{OverlapInfo, PendingRegister};
 
 use crate::i18n;
 
@@ -120,6 +122,8 @@ impl RealTreeState {
 struct Confirm {
     src: PathBuf,
     dest: u32,
+    /// 既存ノードとの重複関係（確認ダイアログの警告表示用）
+    overlaps: OverlapInfo,
 }
 
 pub(super) struct VirtualState {
@@ -130,6 +134,8 @@ pub(super) struct VirtualState {
     picker: Option<Picker>,
     confirm: Option<Confirm>,
     delete: Option<u32>,
+    /// 評価・スキャン中の登録（1件ずつ）
+    register_pending: Option<PendingRegister>,
 }
 
 impl VirtualState {
@@ -142,6 +148,7 @@ impl VirtualState {
             picker: None,
             confirm: None,
             delete: None,
+            register_pending: None,
         }
     }
 
@@ -175,9 +182,6 @@ enum TreeEvent {
     DoubleClick(u32),
     Register(u32),
     Delete(u32),
-    /// デバッグビルド限定: 現在の実フォルダを選択ノードの下に登録する（3bで撤去）
-    #[cfg(debug_assertions)]
-    DebugSeed(u32),
 }
 
 fn children_of(nodes: &[TreeNode], parent: u32) -> Vec<&TreeNode> {
@@ -256,14 +260,6 @@ fn draw_tree_row(
                 if ui.add_enabled(id != ROOT, egui::Button::new(i18n::t().virtual_menu_delete())).clicked() {
                     out.push(TreeEvent::Delete(id));
                     ui.close();
-                }
-                #[cfg(debug_assertions)]
-                {
-                    ui.separator();
-                    if ui.button("[DEBUG] 現在の実フォルダを登録").clicked() {
-                        out.push(TreeEvent::DebugSeed(id));
-                        ui.close();
-                    }
                 }
             });
         }
@@ -519,27 +515,6 @@ impl NekoviewApp {
         response.double_clicked()
     }
 
-    /// デバッグビルド限定の投入手段。3aの目視確認用で、3bの本登録が入ったら撤去する。
-    /// `current_dir` 配下の実サブフォルダ構造を、選択ノードの下にスナップショット登録する。
-    #[cfg(debug_assertions)]
-    fn debug_seed_register(&mut self, dest: u32) {
-        let Some(db) = self.spread_db.clone() else {
-            self.set_toast("[DEBUG] DBが開けていません");
-            return;
-        };
-        let scan = crate::virtual_folder_scan::scan_subtree(
-            &self.current_dir,
-            crate::virtual_folder_scan::SCAN_HARD_CAP,
-        );
-        let msg = match crate::virtual_folders::add_subtree(&db, dest, &scan.spec) {
-            Ok(nodes) => format!("[DEBUG] {} 件を登録しました（capped={}）", nodes.len(), scan.capped),
-            Err(e) => format!("[DEBUG] 登録に失敗しました: {e:?}"),
-        };
-        self.refresh_virtual_nodes();
-        self.virtual_state.expanded.insert(dest);
-        self.set_toast(msg);
-    }
-
     pub(super) fn draw_virtual_folder_pane(&mut self, ui: &mut egui::Ui) {
         let mut events = Vec::new();
         egui::ScrollArea::both()
@@ -571,8 +546,6 @@ impl NekoviewApp {
                         self.virtual_state.delete = Some(id);
                     }
                 }
-                #[cfg(debug_assertions)]
-                TreeEvent::DebugSeed(id) => self.debug_seed_register(id),
             }
         }
     }
@@ -607,12 +580,13 @@ impl NekoviewApp {
     }
 
     pub(super) fn draw_virtual_dialogs(&mut self, ctx: &egui::Context) {
+        self.poll_virtual_register();
         self.draw_virtual_picker(ctx);
         self.draw_virtual_confirm(ctx);
         self.draw_virtual_delete(ctx);
     }
 
-    fn set_toast(&mut self, msg: impl Into<String>) {
+    pub(super) fn set_toast(&mut self, msg: impl Into<String>) {
         self.app_toast = Some((msg.into(), std::time::Instant::now()));
     }
 
@@ -695,7 +669,7 @@ impl NekoviewApp {
                     TreeAction::Navigate(path) => tree.selected = Some(path),
                     TreeAction::DoubleClick(path) => {
                         tree.selected = Some(path.clone());
-                        self.virtual_state.confirm = Some(Confirm { src: path, dest: *dest });
+                        self.begin_register(path, *dest);
                     }
                     TreeAction::AddToVirtual(_) | TreeAction::None => {}
                 }
@@ -705,9 +679,7 @@ impl NekoviewApp {
                     match ev {
                         TreeEvent::Toggle(id) => toggle(expanded, id),
                         TreeEvent::Select(id) => *selected = Some(id),
-                        TreeEvent::DoubleClick(id) => {
-                            self.virtual_state.confirm = Some(Confirm { src: src.clone(), dest: id });
-                        }
+                        TreeEvent::DoubleClick(id) => self.begin_register(src.clone(), id),
                         _ => {}
                     }
                 }
@@ -716,7 +688,7 @@ impl NekoviewApp {
         self.virtual_state.picker = Some(p);
     }
 
-    /// 登録確認の固定ダイアログ。3bで OK → 評価 → 登録 or 異常トースト に接続する。
+    /// 登録確認の固定ダイアログ。OK → 評価 → 登録 or 異常トースト（`register` サブモジュール）。
     fn draw_virtual_confirm(&mut self, ctx: &egui::Context) {
         let Some(c) = self.virtual_state.confirm.clone() else { return };
         let dest_path = self.virtual_state.virtual_path(c.dest);
@@ -732,6 +704,20 @@ impl NekoviewApp {
                 ui.add_space(6.0);
                 ui.label(i18n::t().virtual_confirm_path(&c.src.display().to_string()));
                 ui.label(i18n::t().virtual_confirm_dest(&dest_path));
+                // 重複関係の警告（拒否はしない。同じ登録先の重複だけは登録時に拒否される）
+                let o = &c.overlaps;
+                let warn = egui::Color32::from_rgb(230, 160, 40);
+                if o.same_here {
+                    ui.colored_label(ui.visuals().error_fg_color, i18n::t().virtual_overlap_same_here());
+                } else if o.same > 0 {
+                    ui.colored_label(warn, i18n::t().virtual_overlap_same(o.same));
+                }
+                if o.ancestors > 0 {
+                    ui.colored_label(warn, i18n::t().virtual_overlap_ancestor(o.ancestors));
+                }
+                if o.descendants > 0 {
+                    ui.colored_label(warn, i18n::t().virtual_overlap_descendant(o.descendants));
+                }
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
                     ok = ui.button(i18n::t().virtual_ok()).clicked();
@@ -741,10 +727,10 @@ impl NekoviewApp {
         if cancel {
             self.virtual_state.confirm = None;
         } else if ok {
-            // TODO(3b): 評価 → add_subtree に接続する。それまでは実行せずに終了する。
+            // 正常・異常どちらでも確認とピッカーは閉じる（異常時は登録キャンセル扱いでトースト）
             self.virtual_state.confirm = None;
             self.virtual_state.picker = None;
-            self.set_toast("（登録処理は未接続です。次フェーズで接続予定）");
+            self.start_virtual_register(c);
         }
     }
 
