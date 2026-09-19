@@ -298,15 +298,17 @@ fn draw_tree_row(
         }
         if menu_on {
             r.context_menu(|ui| {
-                if ui.button(i18n::t().virtual_menu_register()).clicked() {
-                    out.push(TreeEvent::Register(id));
-                    ui.close();
-                }
-                // ルートは名前変更・削除の対象外（グレーアウト）
+                // ルートは名前変更・削除の対象外（グレーアウト）。区切り線で「変更」「登録」「削除」を分ける
                 if ui.add_enabled(id != ROOT, egui::Button::new(i18n::t().virtual_menu_rename())).clicked() {
                     out.push(TreeEvent::Rename(id));
                     ui.close();
                 }
+                ui.separator();
+                if ui.button(i18n::t().virtual_menu_register()).clicked() {
+                    out.push(TreeEvent::Register(id));
+                    ui.close();
+                }
+                ui.separator();
                 if ui.add_enabled(id != ROOT, egui::Button::new(i18n::t().virtual_menu_delete())).clicked() {
                     out.push(TreeEvent::Delete(id));
                     ui.close();
@@ -387,6 +389,12 @@ impl NekoviewApp {
 
     pub(super) fn virtual_real_pane_open(&self) -> bool {
         self.virtual_state.real_pane_open
+    }
+
+    /// 仮想フォルダのテキスト入力ダイアログ（名前変更）が開いている間は、毎フレームの
+    /// ネイティブフォーカス解除を止める（解除すると入力欄がフォーカスを保てない）。
+    pub(super) fn virtual_text_input_open(&self) -> bool {
+        self.virtual_state.rename.is_some()
     }
 
     /// 実ツリー右クリック「仮想フォルダに追加する」。追加先の仮想フォルダを選ぶピッカーを開く。

@@ -164,6 +164,7 @@ impl NekoviewApp {
             && !self.settings_is_open()
             && self.favorite_dialog.is_none()
             && self.favorite_detail_dialog.is_none()
+            && !self.virtual_text_input_open()
         {
             ctx.memory_mut(|mem| mem.stop_text_input());
         }
