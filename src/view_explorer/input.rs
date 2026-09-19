@@ -38,9 +38,9 @@ impl NekoviewApp {
             return;
         }
         self.focused_pane = if shift_tab {
-            self.focused_pane.prev(self.folder_pane_tab, self.virtual_mock_real_pane_open())
+            self.focused_pane.prev(self.folder_pane_tab, self.virtual_real_pane_open())
         } else {
-            self.focused_pane.next(self.folder_pane_tab, self.virtual_mock_real_pane_open())
+            self.focused_pane.next(self.folder_pane_tab, self.virtual_real_pane_open())
         };
         if self.focused_pane == FocusPane::SearchHistory && self.search_history.is_empty() {
             self.focused_pane = if shift_tab { FocusPane::SearchForm } else { FocusPane::TreeTab };

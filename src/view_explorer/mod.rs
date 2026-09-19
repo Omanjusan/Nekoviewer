@@ -520,7 +520,7 @@ pub struct NekoviewApp {
     /// 左ペイン: 実フォルダツリー / お気に入りペインの切替状態
     folder_pane_tab: FolderPaneTab,
     /// 仮想フォルダタブのUIモック状態（3M。実データ未接続）
-    virtual_mock: virtual_ui::VirtualMock,
+    virtual_state: virtual_ui::VirtualState,
     /// キーボードフォーカスが現在どの領域にあるか（Tab/Shift+Tabで巡回）
     pub(crate) focused_pane: FocusPane,
     /// 実ツリー内のプレターゲティングカーソル（Enterで確定navigate）
@@ -905,7 +905,7 @@ impl NekoviewApp {
             tree_expanded: HashSet::new(),
             tree_children: HashMap::new(),
             folder_pane_tab: FolderPaneTab::RealTree,
-            virtual_mock: virtual_ui::VirtualMock::new(),
+            virtual_state: virtual_ui::VirtualState::new(),
             focused_pane: FocusPane::TreeTab,
             tree_cursor: None,
             drive_cursor: None,

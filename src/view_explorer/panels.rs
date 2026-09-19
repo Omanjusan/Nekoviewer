@@ -385,6 +385,10 @@ impl NekoviewApp {
         if tab == FolderPaneTab::Search && self.search_form.base_dir.is_none() {
             self.search_form.base_dir = Some(self.current_dir.clone());
         }
+        if tab == FolderPaneTab::VirtualFolders {
+            // 仮想タブに入る／タブを押し直すたびにDBから読み直す
+            self.refresh_virtual_nodes();
+        }
         if tab != FolderPaneTab::Favorites {
             self.exit_favorite_view();
         }
@@ -422,7 +426,7 @@ impl NekoviewApp {
         });
         // 2行目（固定）: 仮想フォルダタブ
         ui.horizontal(|ui| {
-            let virt_resp = ui.selectable_label(self.folder_pane_tab == FolderPaneTab::VirtualFolders, "仮想フォルダ");
+            let virt_resp = ui.selectable_label(self.folder_pane_tab == FolderPaneTab::VirtualFolders, i18n::t().folder_tab_virtual());
             if tab_bar_focused && self.folder_pane_tab == FolderPaneTab::VirtualFolders { draw_cursor_ring(ui, virt_resp.rect); }
             if virt_resp.clicked() {
                 self.switch_folder_tab(FolderPaneTab::VirtualFolders);
@@ -592,13 +596,13 @@ impl NekoviewApp {
                     egui::Layout::top_down(egui::Align::Min),
                     |ui| self.draw_virtual_grip(ui, avail_h),
                 );
-                if self.virtual_mock_real_pane_open() {
+                if self.virtual_real_pane_open() {
                     ui.allocate_ui_with_layout(
                         egui::vec2(REAL_PANE_WIDTH, avail_h),
                         egui::Layout::top_down(egui::Align::Min),
                         |ui| {
                             let pane_rect = ui.available_rect_before_wrap();
-                            ui.label(egui::RichText::new("実ツリー").strong());
+                            ui.label(egui::RichText::new(i18n::t().virtual_real_tree_title()).strong());
                             ui.separator();
                             self.draw_real_tree_panel(ui);
                             self.paint_pane_border(ui, pane_rect, true);
@@ -1516,7 +1520,7 @@ fn show_tree_node(
         }
         if virtual_menu {
             r.context_menu(|ui| {
-                if ui.button("仮想フォルダに追加する").clicked() {
+                if ui.button(i18n::t().virtual_menu_add_from_real()).clicked() {
                     *action = TreeAction::AddToVirtual(path.clone());
                     ui.close();
                 }

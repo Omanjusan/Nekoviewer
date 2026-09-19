@@ -749,6 +749,150 @@ impl Lang {
         }
     }
 
+    pub fn folder_tab_virtual(self) -> &'static str {
+        match self {
+            Lang::Japanese => "仮想フォルダ",
+            Lang::English  => "Virtual Folders",
+            Lang::Chinese  => "虚拟文件夹",
+        }
+    }
+
+    pub fn virtual_real_tree_title(self) -> &'static str {
+        match self {
+            Lang::Japanese => "実ツリー",
+            Lang::English  => "Real Tree",
+            Lang::Chinese  => "实际目录树",
+        }
+    }
+
+    pub fn virtual_grip_open(self) -> &'static str {
+        match self {
+            Lang::Japanese => "実ツリーを開く",
+            Lang::English  => "Open real tree",
+            Lang::Chinese  => "打开实际目录树",
+        }
+    }
+
+    pub fn virtual_grip_close(self) -> &'static str {
+        match self {
+            Lang::Japanese => "実ツリーを閉じる",
+            Lang::English  => "Close real tree",
+            Lang::Chinese  => "关闭实际目录树",
+        }
+    }
+
+    pub fn virtual_menu_register(self) -> &'static str {
+        match self {
+            Lang::Japanese => "実フォルダ登録",
+            Lang::English  => "Register Real Folder",
+            Lang::Chinese  => "登记实际文件夹",
+        }
+    }
+
+    pub fn virtual_menu_delete(self) -> &'static str {
+        match self {
+            Lang::Japanese => "仮想フォルダ削除",
+            Lang::English  => "Delete Virtual Folder",
+            Lang::Chinese  => "删除虚拟文件夹",
+        }
+    }
+
+    pub fn virtual_menu_add_from_real(self) -> &'static str {
+        match self {
+            Lang::Japanese => "仮想フォルダに追加する",
+            Lang::English  => "Add to Virtual Folder",
+            Lang::Chinese  => "添加到虚拟文件夹",
+        }
+    }
+
+    pub fn virtual_picker_title_real(self) -> &'static str {
+        match self {
+            Lang::Japanese => "登録したいフォルダをダブルクリックで確定",
+            Lang::English  => "Double-click the folder to register",
+            Lang::Chinese  => "双击要登记的文件夹以确认",
+        }
+    }
+
+    pub fn virtual_picker_title_dest(self) -> &'static str {
+        match self {
+            Lang::Japanese => "追加先の仮想フォルダをダブルクリックで確定",
+            Lang::English  => "Double-click the destination virtual folder",
+            Lang::Chinese  => "双击目标虚拟文件夹以确认",
+        }
+    }
+
+    pub fn virtual_confirm_title(self) -> &'static str {
+        match self {
+            Lang::Japanese => "登録の確認",
+            Lang::English  => "Confirm Registration",
+            Lang::Chinese  => "确认登记",
+        }
+    }
+
+    pub fn virtual_confirm_body(self) -> &'static str {
+        match self {
+            Lang::Japanese => "次のフォルダを仮想フォルダに登録します",
+            Lang::English  => "The following folder will be registered as a virtual folder",
+            Lang::Chinese  => "将把以下文件夹登记为虚拟文件夹",
+        }
+    }
+
+    pub fn virtual_confirm_path(self, path: &str) -> String {
+        match self {
+            Lang::Japanese => format!("登録パス: {path}"),
+            Lang::English  => format!("Path: {path}"),
+            Lang::Chinese  => format!("登记路径：{path}"),
+        }
+    }
+
+    pub fn virtual_confirm_dest(self, dest: &str) -> String {
+        match self {
+            Lang::Japanese => format!("登録先: {dest}"),
+            Lang::English  => format!("Destination: {dest}"),
+            Lang::Chinese  => format!("登记位置：{dest}"),
+        }
+    }
+
+    pub fn virtual_delete_title(self) -> &'static str {
+        match self {
+            Lang::Japanese => "仮想フォルダの削除",
+            Lang::English  => "Delete Virtual Folder",
+            Lang::Chinese  => "删除虚拟文件夹",
+        }
+    }
+
+    pub fn virtual_delete_path(self, path: &str) -> String {
+        match self {
+            Lang::Japanese => format!("削除する仮想パス: {path}"),
+            Lang::English  => format!("Virtual path to delete: {path}"),
+            Lang::Chinese  => format!("要删除的虚拟路径：{path}"),
+        }
+    }
+
+    pub fn virtual_delete_descendants(self, count: usize) -> String {
+        match self {
+            Lang::Japanese => format!("配下 {count} 件のフォルダも削除されます"),
+            Lang::English  => format!("{count} sub-folder(s) will also be deleted"),
+            Lang::Chinese  => format!("其下 {count} 个文件夹也将被删除"),
+        }
+    }
+
+    pub fn virtual_delete_real_untouched(self) -> &'static str {
+        match self {
+            Lang::Japanese => "実フォルダには影響しません",
+            Lang::English  => "Real folders are not affected",
+            Lang::Chinese  => "不会影响实际文件夹",
+        }
+    }
+
+    pub fn virtual_ok(self) -> &'static str {
+        match self {
+            Lang::Japanese => "OK",
+            Lang::English  => "OK",
+            Lang::Chinese  => "确定",
+        }
+    }
+
     pub fn search_start_button(self) -> &'static str {
         match self {
             Lang::Japanese => "検索開始",
