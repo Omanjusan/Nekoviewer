@@ -815,7 +815,8 @@ impl NekoviewApp {
     }
 
     /// フォルダカードの中身（背景・フォルダアイコン・後方カットのラベル・1秒ホバーのツールチップ）。
-    /// 実サブフォルダ（Subdir）と仮想フォルダ（VirtualSubdir）で共通。`hover_key` はホバー計時の識別用。
+    /// 実サブフォルダ（Subdir）と仮想フォルダ（VirtualSubdir）で共通。`tooltip` は1秒ホバーで出す全文
+    /// （実サブフォルダは名前、仮想フォルダは名前＋実パス）。`hover_key` はホバー計時の識別用。
     pub(super) fn draw_folder_card_face(
         &mut self,
         ui: &mut egui::Ui,
@@ -824,6 +825,7 @@ impl NekoviewApp {
         cell_w: f32,
         cell_h: f32,
         full_name: &str,
+        tooltip: &str,
         hover_key: &PathBuf,
     ) {
         let label_h = (cell_h * 0.16).clamp(12.0, 28.0);
@@ -857,7 +859,7 @@ impl NekoviewApp {
                 }
             };
             if past_delay {
-                response.show_tooltip_text(full_name);
+                response.show_tooltip_text(tooltip);
             } else {
                 ui.ctx().request_repaint_after(std::time::Duration::from_millis(120));
             }
@@ -957,7 +959,7 @@ impl NekoviewApp {
                                     .and_then(|n| n.to_str())
                                     .unwrap_or("")
                                     .to_string();
-                                self.draw_folder_card_face(ui, rect, &response, cell_w, cell_h, &full_name, dir_path);
+                                self.draw_folder_card_face(ui, rect, &response, cell_w, cell_h, &full_name, &full_name, dir_path);
                             }
                             if grid_focused && self.grid_cursor.as_ref() == Some(&GridEntry::Subdir(dir_path.clone())) {
                                 draw_cursor_ring(ui, rect);

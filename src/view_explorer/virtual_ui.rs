@@ -9,9 +9,11 @@ use std::sync::mpsc;
 
 use crate::fs::mount::MountEntry;
 
+mod broken;
 mod delete;
 mod keys;
 mod register;
+use broken::BrokenCheck;
 use delete::DeleteTarget;
 use register::{OverlapInfo, PendingRegister};
 
@@ -143,6 +145,10 @@ pub(super) struct VirtualState {
     delete: Option<DeleteTarget>,
     /// 評価・スキャン中の登録（1件ずつ）
     register_pending: Option<PendingRegister>,
+    /// リンク切れ（実パスがフォルダとして開けない）と判定されたノードid。目印の表示に使う。
+    broken: HashSet<u32>,
+    broken_check: Option<BrokenCheck>,
+    broken_gen: u64,
 }
 
 impl VirtualState {
@@ -158,6 +164,9 @@ impl VirtualState {
             confirm: None,
             delete: None,
             register_pending: None,
+            broken: HashSet::new(),
+            broken_check: None,
+            broken_gen: 0,
         }
     }
 
@@ -208,13 +217,14 @@ fn draw_tree(
     menu_on: bool,
     ring: Option<u32>,
     scroll_to_ring: bool,
+    broken: &HashSet<u32>,
     out: &mut Vec<TreeEvent>,
 ) {
     match root_label {
-        Some(label) => draw_tree_row(ui, nodes, ROOT, label, None, 0, expanded, selected, menu_on, ring, scroll_to_ring, out),
+        Some(label) => draw_tree_row(ui, nodes, ROOT, label, None, 0, expanded, selected, menu_on, ring, scroll_to_ring, broken, out),
         None => {
             for n in children_of(nodes, ROOT) {
-                draw_tree_row(ui, nodes, n.id, &n.name, Some(&n.real), 0, expanded, selected, menu_on, ring, scroll_to_ring, out);
+                draw_tree_row(ui, nodes, n.id, &n.name, Some(&n.real), 0, expanded, selected, menu_on, ring, scroll_to_ring, broken, out);
             }
         }
     }
@@ -233,6 +243,7 @@ fn draw_tree_row(
     menu_on: bool,
     ring: Option<u32>,
     scroll_to_ring: bool,
+    broken: &HashSet<u32>,
     out: &mut Vec<TreeEvent>,
 ) {
     let has_children = nodes.iter().any(|n| n.parent == id);
@@ -248,9 +259,21 @@ fn draw_tree_row(
             ui.add_space(12.0);
         }
         ui.add_space(4.0);
-        let mut r = ui.selectable_label(selected == Some(id), label);
+        // リンク切れは「⚠ 名前」と薄い色で示す
+        let is_broken = broken.contains(&id);
+        let text = if is_broken {
+            egui::RichText::new(format!("⚠ {label}")).weak()
+        } else {
+            egui::RichText::new(label)
+        };
+        let mut r = ui.selectable_label(selected == Some(id), text);
         if let Some(p) = real {
-            r = r.on_hover_text(p.display().to_string());
+            let mut tip = p.display().to_string();
+            if is_broken {
+                tip.push('\n');
+                tip.push_str(i18n::t().virtual_link_broken_label());
+            }
+            r = r.on_hover_text(tip);
         }
         if ring == Some(id) {
             super::panels::draw_cursor_ring(ui, r.rect);
@@ -280,7 +303,7 @@ fn draw_tree_row(
     });
     if is_expanded {
         for c in children_of(nodes, id) {
-            draw_tree_row(ui, nodes, c.id, &c.name, Some(&c.real), depth + 1, expanded, selected, menu_on, ring, scroll_to_ring, out);
+            draw_tree_row(ui, nodes, c.id, &c.name, Some(&c.real), depth + 1, expanded, selected, menu_on, ring, scroll_to_ring, broken, out);
         }
     }
 }
@@ -370,6 +393,8 @@ impl NekoviewApp {
         if self.viewing_virtual_node.is_some_and(|id| id != ROOT && !ids.contains(&id)) {
             self.exit_virtual_view();
         }
+        // ノードの顔ぶれが変わったので、リンク切れの判定をやり直す（別スレッド）
+        self.start_broken_check();
     }
 
     /// 仮想ノードを選んで中央グリッドをその表示にする（ツリークリック・フォルダカード・Enter共通）。
@@ -495,7 +520,24 @@ impl NekoviewApp {
         let (rect, response) = ui.allocate_exact_size(egui::vec2(cell_w, cell_h), egui::Sense::click());
         if ui.is_rect_visible(rect) {
             if let Some(n) = self.virtual_state.nodes.iter().find(|n| n.id == node_id).cloned() {
-                self.draw_folder_card_face(ui, rect, &response, cell_w, cell_h, &n.name, &n.real);
+                let is_broken = self.virtual_state.broken.contains(&node_id);
+                // 1秒ホバーのツールチップは「仮想名＋実パス（＋リンク切れ）」
+                let mut tooltip = format!("{}\n{}", n.name, n.real.display());
+                if is_broken {
+                    tooltip.push('\n');
+                    tooltip.push_str(i18n::t().virtual_link_broken_label());
+                }
+                self.draw_folder_card_face(ui, rect, &response, cell_w, cell_h, &n.name, &tooltip, &n.real);
+                if is_broken {
+                    // リンク切れの目印: 右上（下端はラベルの位置）。ネットワーク切れの右下マーカーと同じ色
+                    ui.painter().text(
+                        egui::pos2(rect.max.x - 4.0, rect.min.y + 4.0),
+                        egui::Align2::RIGHT_TOP,
+                        "⚠",
+                        egui::FontId::proportional(14.0),
+                        egui::Color32::from_rgb(220, 160, 40),
+                    );
+                }
             }
         }
         self.finish_virtual_card(ui, rect, &response, GridEntry::VirtualSubdir(node_id), grid_focused)
@@ -543,7 +585,7 @@ impl NekoviewApp {
                 // 表示中のノードを選択表示にする。フォーカス中はカーソル位置にカーソルリングを出す
                 let viewing = self.viewing_virtual_node;
                 let ring = (self.focused_pane == FocusPane::VirtualTab).then(|| self.virtual_cursor());
-                draw_tree(ui, &m.nodes, Some("/"), &m.expanded, viewing, true, ring, scroll_to_cursor, &mut events);
+                draw_tree(ui, &m.nodes, Some("/"), &m.expanded, viewing, true, ring, scroll_to_cursor, &m.broken, &mut events);
             });
         if !events.is_empty() {
             self.focused_pane = FocusPane::VirtualTab;
@@ -600,6 +642,7 @@ impl NekoviewApp {
     }
 
     pub(super) fn draw_virtual_dialogs(&mut self, ctx: &egui::Context) {
+        self.poll_broken_check();
         self.poll_virtual_register();
         self.draw_virtual_picker(ctx);
         self.draw_virtual_confirm(ctx);
@@ -670,7 +713,7 @@ impl NekoviewApp {
                                 );
                             }
                             Picker::VirtualDest { expanded, selected, .. } => {
-                                draw_tree(ui, &self.virtual_state.nodes, Some("/"), expanded, *selected, false, None, false, &mut events);
+                                draw_tree(ui, &self.virtual_state.nodes, Some("/"), expanded, *selected, false, None, false, &self.virtual_state.broken, &mut events);
                             }
                         });
                 });
