@@ -748,46 +748,58 @@ impl NekoviewApp {
         self.grid_cursor = Some(entry);
     }
 
-    /// サムネグリッドで実際に描画される「↑・サブフォルダ・アーカイブ」の並び順を
-    /// draw_archive_gridと同一ロジックで再現したもの。キーボードカーソルの移動対象になる。
-    /// draw_archive_grid側の並び替え条件を変えたら、ここも同じように変えること。
+    /// グリッド先頭の「↑」とサブフォルダカードの並び（↑ → 名前順のサブフォルダ）。
+    /// キーボード移動用の grid_entries() と描画の draw_archive_grid の共通の情報源で、
+    /// 並び替え・絞り込み条件はここだけで持つ。
+    /// お気に入り/検索結果の横断一覧は実フォルダのナビゲーション概念が無い平坦な一覧
+    /// （階層概念を持ち込まない契約）のため、「↑」・サブフォルダは一切出さない。
+    fn folder_grid_entries(&self) -> Vec<GridEntry> {
+        let mut out = Vec::new();
+        if self.viewing_favorites.is_some() || self.viewing_search.is_some() {
+            return out;
+        }
+        // ツリー側のルート（ドライブ/ホーム/ネットワーク共有の選択に連動）を天井にする。
+        // mount::up_target 単体だと「ホーム」ドライブのような疑似ルートを知らず、
+        // ホーム配下を素通りしてツリーが表示しない領域まで昇れてしまうため。
+        let up_target = if self.current_dir == self.tree_root {
+            None
+        } else {
+            crate::fs::mount::up_target(&self.current_dir)
+        };
+        if let Some(parent) = up_target {
+            out.push(GridEntry::Up(parent));
+        }
+
+        let show_hidden = self.show_hidden;
+        let mut sorted_subdirs: Vec<PathBuf> = self.subdirs.iter()
+            .filter(|p| {
+                show_hidden || !p.file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n.starts_with('.'))
+            })
+            .cloned()
+            .collect();
+        let ascending = self.sort_ascending;
+        sorted_subdirs.sort_by(|a, b| {
+            let na = a.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            let nb = b.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            let cmp = na.cmp(nb);
+            if ascending { cmp } else { cmp.reverse() }
+        });
+        out.extend(sorted_subdirs.into_iter().map(GridEntry::Subdir));
+        out
+    }
+
+    /// サムネグリッドで実際に描画される「↑・サブフォルダ・アーカイブ」の並び順。
+    /// キーボードカーソルの移動対象になる。↑・サブフォルダ部分は draw_archive_grid と
+    /// folder_grid_entries() を共有している。
     pub(super) fn grid_entries(&self) -> Vec<GridEntry> {
         // 検索タブを開いた直後、まだ検索結果を選択していない間はアイテムペインを全クリアする
         // （draw_archive_grid側の早期リターンと対にする）。
         if self.folder_pane_tab == FolderPaneTab::Search && self.viewing_search.is_none() {
             return Vec::new();
         }
-        let mut out = Vec::new();
-        // 検索結果は複数ディレクトリを横断した平坦な一覧という契約のため、お気に入り横断表示と
-        // 同様に「↑」・サブフォルダは一切出さない（階層概念を持ち込まない）。
-        if self.viewing_favorites.is_none() && self.viewing_search.is_none() {
-            let up_target = if self.current_dir == self.tree_root {
-                None
-            } else {
-                crate::fs::mount::up_target(&self.current_dir)
-            };
-            if let Some(parent) = up_target {
-                out.push(GridEntry::Up(parent));
-            }
-
-            let show_hidden = self.show_hidden;
-            let mut sorted_subdirs: Vec<PathBuf> = self.subdirs.iter()
-                .filter(|p| {
-                    show_hidden || !p.file_name()
-                        .and_then(|n| n.to_str())
-                        .is_some_and(|n| n.starts_with('.'))
-                })
-                .cloned()
-                .collect();
-            let ascending = self.sort_ascending;
-            sorted_subdirs.sort_by(|a, b| {
-                let na = a.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                let nb = b.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                let cmp = na.cmp(nb);
-                if ascending { cmp } else { cmp.reverse() }
-            });
-            out.extend(sorted_subdirs.into_iter().map(GridEntry::Subdir));
-        }
+        let mut out = self.folder_grid_entries();
         out.extend(self.filtered_indices.iter().map(|&idx| GridEntry::Archive(idx)));
         out
     }
@@ -809,6 +821,7 @@ impl NekoviewApp {
             return;
         }
 
+        let folder_entries = self.folder_grid_entries();
         let cell_h = self.config.thumb_size as f32;
         let cell_w = (cell_h / std::f32::consts::SQRT_2).round();
         const GAP: f32 = 8.0;
@@ -835,17 +848,9 @@ impl NekoviewApp {
                     let grid_focused = self.focused_pane == FocusPane::Grid;
 
                     // 並び順: ↑（先頭・非ソート・ルートで非表示）→ フォルダ群 → 通常のarchivesグリッド。
-                    // お気に入り/検索結果の横断一覧表示中は実フォルダのナビゲーション概念が無いため出さない。
-                    if self.viewing_favorites.is_none() && self.viewing_search.is_none() {
-                        // ツリー側のルート（ドライブ/ホーム/ネットワーク共有の選択に連動）を天井にする。
-                        // mount::up_target 単体だと「ホーム」ドライブのような疑似ルートを知らず、
-                        // ホーム配下を素通りしてツリーが表示しない領域まで昇れてしまうため。
-                        let up_target = if self.current_dir == self.tree_root {
-                            None
-                        } else {
-                            crate::fs::mount::up_target(&self.current_dir)
-                        };
-                        if let Some(parent) = up_target {
+                    // ↑・フォルダ群の中身と順序は folder_grid_entries()（キーボード移動と共通）が決める。
+                    for entry in &folder_entries {
+                        if let GridEntry::Up(parent) = entry {
                             let (rect, response) = ui.allocate_exact_size(
                                 egui::vec2(cell_w, cell_h),
                                 egui::Sense::click(),
@@ -880,23 +885,7 @@ impl NekoviewApp {
                             }
                         }
 
-                        let show_hidden = self.show_hidden;
-                        let mut sorted_subdirs: Vec<PathBuf> = self.subdirs.iter()
-                            .filter(|p| {
-                                show_hidden || !p.file_name()
-                                    .and_then(|n| n.to_str())
-                                    .is_some_and(|n| n.starts_with('.'))
-                            })
-                            .cloned()
-                            .collect();
-                        let ascending = self.sort_ascending;
-                        sorted_subdirs.sort_by(|a, b| {
-                            let na = a.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                            let nb = b.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                            let cmp = na.cmp(nb);
-                            if ascending { cmp } else { cmp.reverse() }
-                        });
-                        for dir_path in &sorted_subdirs {
+                        if let GridEntry::Subdir(dir_path) = entry {
                             let (rect, response) = ui.allocate_exact_size(
                                 egui::vec2(cell_w, cell_h),
                                 egui::Sense::click(),

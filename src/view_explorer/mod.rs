@@ -208,7 +208,8 @@ pub(crate) struct SearchFormState {
 
 /// サムネグリッドの「↑・サブフォルダ・アーカイブファイル」を貫通する統一カーソル位置。
 /// draw_archive_grid内で実際に描画される順序（↑→サブフォルダ→フィルタ後アーカイブ）と
-/// 一致させること（grid_entries()参照）。
+/// 一致させること。↑・サブフォルダ部分は folder_grid_entries() を描画側と共有している
+/// （grid_entries()参照）。
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) enum GridEntry {
     Up(PathBuf),
