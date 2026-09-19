@@ -8,8 +8,8 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 
 use crate::i18n;
-use crate::virtual_folder_scan::{scan_subtree, ScanResult, SCAN_HARD_CAP};
-use crate::virtual_folders::{self, VirtualFolderError, VirtualNode, MAX_NODES};
+use crate::virtual_folder_scan::{scan_subtree, ScanResult, IMPORT_CONFIRM_THRESHOLD, SCAN_HARD_CAP};
+use crate::virtual_folders::{self, SubtreeSpec, VirtualFolderError, VirtualNode, MAX_NODES};
 
 use super::*;
 
@@ -127,6 +127,65 @@ pub(super) fn register_outcome(
                 .map(|nodes| nodes.len())
                 .map_err(error_from_add)
         }
+    }
+}
+
+/// 大量取り込み（`ScanResult::needs_confirmation`）でユーザーが選ぶ取り込み方。
+// フェーズBで接続するまで未使用。
+#[allow(dead_code)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum ImportChoice {
+    All,
+    Shallow,
+}
+
+/// 「浅く」で取り込む範囲。根を深さ0として、`depth` 階層目までの `count` 件。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct ShallowPlan {
+    pub depth: usize,
+    pub count: usize,
+}
+
+/// 大量取り込みダイアログに出す選択肢の評価結果。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct ImportPlan {
+    /// スキャンできたノード総数（`capped` のときは完全に走査できた深さまで）
+    pub total: usize,
+    /// 走査を打ち切った（`total` は全体ではない）
+    pub capped: bool,
+    /// 「全部」を選べるか。打ち切りのときと、残り容量を超えるときは選べない。
+    pub all_allowed: bool,
+    /// 「浅く」の範囲。根だけでも予算に収まらなければ None（選べない）。
+    pub shallow: Option<ShallowPlan>,
+}
+
+impl ImportPlan {
+    /// 全体を走査できたうえで、残り容量を超えている（ダイアログで赤字の警告を出す）。
+    #[allow(dead_code)]
+    pub fn over_limit(&self, remaining: usize) -> bool {
+        !self.capped && self.total > remaining
+    }
+}
+
+/// 「浅く」の予算は、確認閾値と残り容量の小さいほう。
+// フェーズBで大量取り込みダイアログに接続するまで未使用。
+#[allow(dead_code)]
+pub(super) fn plan_large_import(scan: &ScanResult, remaining: usize) -> ImportPlan {
+    let total = scan.spec.node_count();
+    let budget = IMPORT_CONFIRM_THRESHOLD.min(remaining);
+    let shallow = scan.spec.deepest_depth_within(budget).map(|depth| ShallowPlan {
+        depth,
+        count: scan.spec.depth_counts().iter().take(depth + 1).sum::<usize>(),
+    });
+    ImportPlan { total, capped: scan.capped, all_allowed: !scan.capped && total <= remaining, shallow }
+}
+
+/// 選択に対応する登録用スナップショット。選べない選択肢なら None。
+#[allow(dead_code)]
+pub(super) fn spec_for_choice(scan: &ScanResult, plan: &ImportPlan, choice: ImportChoice) -> Option<SubtreeSpec> {
+    match choice {
+        ImportChoice::All => plan.all_allowed.then(|| scan.spec.clone()),
+        ImportChoice::Shallow => plan.shallow.map(|s| scan.spec.truncated_to_depth(s.depth)),
     }
 }
 
@@ -389,5 +448,69 @@ mod tests {
         assert_eq!(o.ancestors, 1);
         assert_eq!(o.descendants, 1);
         assert!(!o.same_here);
+    }
+
+    /// 根 + 子`kids`件、各子の下に孫`grand`件（深さ別 [1, kids, kids*grand]）
+    fn three_level(kids: usize, grand: usize) -> SubtreeSpec {
+        let children = (0..kids)
+            .map(|k| SubtreeSpec {
+                real_path: PathBuf::from(format!("/r/{k}")),
+                name: k.to_string(),
+                children: (0..grand).map(|g| SubtreeSpec::leaf(format!("/r/{k}/{g}"), g.to_string())).collect(),
+            })
+            .collect();
+        SubtreeSpec { real_path: PathBuf::from("/r"), name: "r".into(), children }
+    }
+
+    #[test]
+    fn plan_large_import_shallow_stops_at_threshold_depth() {
+        let scan = ScanResult { spec: three_level(10, 200), capped: false };
+        let plan = plan_large_import(&scan, MAX_NODES);
+        assert_eq!(plan.total, 2011);
+        assert!(plan.all_allowed);
+        assert!(!plan.over_limit(MAX_NODES));
+        // 深さ1まで（1+10=11件）。深さ2を足すと2011件で閾値1000を超える
+        assert_eq!(plan.shallow, Some(ShallowPlan { depth: 1, count: 11 }));
+    }
+
+    #[test]
+    fn plan_large_import_disallows_all_over_remaining_capacity() {
+        let scan = ScanResult { spec: three_level(10, 200), capped: false };
+        let plan = plan_large_import(&scan, 1500);
+        assert!(!plan.all_allowed);
+        assert!(plan.over_limit(1500));
+        assert_eq!(plan.shallow, Some(ShallowPlan { depth: 1, count: 11 }));
+    }
+
+    #[test]
+    fn plan_large_import_shallow_budget_is_capped_by_remaining() {
+        let scan = ScanResult { spec: three_level(10, 200), capped: false };
+        // 残り5件では根（1件）だけ入る
+        assert_eq!(plan_large_import(&scan, 5).shallow, Some(ShallowPlan { depth: 0, count: 1 }));
+        // 残り0件では何も入らない
+        assert_eq!(plan_large_import(&scan, 0).shallow, None);
+    }
+
+    #[test]
+    fn plan_large_import_capped_disallows_all_even_if_it_fits() {
+        let scan = ScanResult { spec: three_level(10, 5), capped: true };
+        let plan = plan_large_import(&scan, MAX_NODES);
+        assert!(!plan.all_allowed);
+        // 打ち切りは「上限超過」ではないので赤字の対象にしない
+        assert!(!plan.over_limit(MAX_NODES));
+        assert_eq!(plan.shallow, Some(ShallowPlan { depth: 2, count: 61 }));
+    }
+
+    #[test]
+    fn spec_for_choice_returns_full_or_truncated_snapshot() {
+        let scan = ScanResult { spec: three_level(10, 200), capped: false };
+        let plan = plan_large_import(&scan, MAX_NODES);
+        assert_eq!(spec_for_choice(&scan, &plan, ImportChoice::All).unwrap().node_count(), 2011);
+        assert_eq!(spec_for_choice(&scan, &plan, ImportChoice::Shallow).unwrap().node_count(), 11);
+
+        let limited = plan_large_import(&scan, 1500);
+        assert!(spec_for_choice(&scan, &limited, ImportChoice::All).is_none());
+        let none = plan_large_import(&scan, 0);
+        assert!(spec_for_choice(&scan, &none, ImportChoice::Shallow).is_none());
     }
 }
