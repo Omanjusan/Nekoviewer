@@ -1089,6 +1089,25 @@ impl Lang {
         }
     }
 
+    // リネームUI接続（フェーズB）までの暫定
+    #[allow(dead_code)]
+    pub fn virtual_rename_failed(self, reason: &str) -> String {
+        match self {
+            Lang::Japanese => format!("仮想フォルダ名の変更に失敗しました（{reason}）"),
+            Lang::English  => format!("Failed to rename the virtual folder ({reason})"),
+            Lang::Chinese  => format!("重命名虚拟文件夹失败（{reason}）"),
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn virtual_rename_reason_not_found(self) -> &'static str {
+        match self {
+            Lang::Japanese => "対象のフォルダが見つかりません",
+            Lang::English  => "The target folder was not found",
+            Lang::Chinese  => "找不到目标文件夹",
+        }
+    }
+
     pub fn virtual_delete_reason_changed(self) -> &'static str {
         match self {
             Lang::Japanese => "対象のフォルダが変更されています",

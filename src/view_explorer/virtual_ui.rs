@@ -13,6 +13,7 @@ mod broken;
 mod delete;
 mod keys;
 mod register;
+mod rename;
 use crate::gui_config::VirtualPosition;
 use broken::BrokenCheck;
 use delete::DeleteTarget;
