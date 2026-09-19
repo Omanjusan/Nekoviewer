@@ -17,6 +17,8 @@ pub enum ToggleKind {
     BrightnessEnabled,
     /// シャープネスステージの有効/無効
     SharpnessEnabled,
+    /// 虫眼鏡（ホイール拡縮）モードのON/OFF
+    Magnifier,
 }
 
 impl ToggleKind {
@@ -27,6 +29,7 @@ impl ToggleKind {
             ToggleKind::GammaEnabled => "gamma_enabled",
             ToggleKind::BrightnessEnabled => "brightness_enabled",
             ToggleKind::SharpnessEnabled => "sharpness_enabled",
+            ToggleKind::Magnifier => "magnifier",
         }
     }
 
@@ -36,6 +39,7 @@ impl ToggleKind {
             "gamma_enabled" => ToggleKind::GammaEnabled,
             "brightness_enabled" => ToggleKind::BrightnessEnabled,
             "sharpness_enabled" => ToggleKind::SharpnessEnabled,
+            "magnifier" => ToggleKind::Magnifier,
             _ => return None,
         })
     }
@@ -78,6 +82,12 @@ pub const TOGGLE_DEFS: &[ToggleDef] = &[
         get: |cfg| cfg.image_filter.sharpness_enabled,
         set: |cfg, on| cfg.image_filter.sharpness_enabled = on,
     },
+    ToggleDef {
+        key: ToggleKind::Magnifier,
+        label: Lang::tool_palette_toggle_label_magnifier,
+        get: |cfg| cfg.magnifier_on,
+        set: |cfg, on| cfg.magnifier_on = on,
+    },
 ];
 
 /// key に対応する定義を探す。TOGGLE_DEFS は全 ToggleKind を網羅している前提
@@ -100,11 +110,12 @@ pub fn execute_toggle(cfg: &mut ViewerConfig, kind: ToggleKind) {
 mod tests {
     use super::*;
 
-    const ALL_KINDS: [ToggleKind; 4] = [
+    const ALL_KINDS: [ToggleKind; 5] = [
         ToggleKind::BlueLightCut,
         ToggleKind::GammaEnabled,
         ToggleKind::BrightnessEnabled,
         ToggleKind::SharpnessEnabled,
+        ToggleKind::Magnifier,
     ];
 
     #[test]
@@ -129,6 +140,16 @@ mod tests {
         assert!(!cfg.image_filter.gamma_enabled);
         execute_toggle(&mut cfg, ToggleKind::GammaEnabled);
         assert!(cfg.image_filter.gamma_enabled);
+    }
+
+    #[test]
+    fn execute_toggle_magnifier_flips_runtime_flag() {
+        let mut cfg = ViewerConfig::default();
+        assert!(!cfg.magnifier_on);
+        execute_toggle(&mut cfg, ToggleKind::Magnifier);
+        assert!(cfg.magnifier_on);
+        execute_toggle(&mut cfg, ToggleKind::Magnifier);
+        assert!(!cfg.magnifier_on);
     }
 
     #[test]

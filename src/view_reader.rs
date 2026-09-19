@@ -184,6 +184,9 @@ struct FrameInput {
     // スクロール
     scroll_delta: f32,
     shift_scroll_delta: f32,
+    /// 虫眼鏡モード用のホイール量（ノッチ単位・正=上回し）。ページ送りと同じ修飾キー割り当てを
+    /// 使うが、スムージング前のイベントから拾う（100%スナップがノッチ単位で効くように）。
+    wheel_notches: f32,
     // ポインタ
     hover_pos: Option<egui::Pos2>,
     middle_clicked: bool,
@@ -217,6 +220,19 @@ impl FrameInput {
             let wheel_amount = |m: MouseCombo| -> f32 {
                 if !m.modifiers_match(i) { return 0.0; }
                 sd.y + if m.shift { sd.x } else { 0.0 }
+            };
+            let wheel_notches_of = |m: MouseCombo| -> f32 {
+                if !m.modifiers_match(i) { return 0.0; }
+                i.events.iter().map(|e| match e {
+                    egui::Event::MouseWheel { unit, delta, .. } => {
+                        let d = delta.y + if m.shift { delta.x } else { 0.0 };
+                        match unit {
+                            egui::MouseWheelUnit::Line | egui::MouseWheelUnit::Page => d,
+                            egui::MouseWheelUnit::Point => d / SCROLL_THRESHOLD,
+                        }
+                    }
+                    _ => 0.0,
+                }).sum()
             };
             let act = |a: ReaderAction| keymap.reader_binding(a).key_pressed(i);
             let mouse_of = |a: ReaderAction| keymap.reader_binding(a).effective_mouse();
@@ -253,6 +269,7 @@ impl FrameInput {
                 slot_apply,
                 scroll_delta:       page_mouse.map(wheel_amount).unwrap_or(0.0),
                 shift_scroll_delta: file_mouse.map(wheel_amount).unwrap_or(0.0),
+                wheel_notches:      page_mouse.map(wheel_notches_of).unwrap_or(0.0),
                 hover_pos:          i.pointer.hover_pos(),
                 middle_clicked,
                 primary_clicked:    i.pointer.button_clicked(egui::PointerButton::Primary),
@@ -320,6 +337,9 @@ struct RenderFrame {
     current_lo:  i32,
     page_mode:   PageMode,
     zoom_actual: bool,
+    /// 虫眼鏡モードが有効（ON かつ 単ページ・回転なし・テクスチャ取得済み）。
+    /// 有効な間、ホイールは拡縮に使われ、ページ送りには渡さない。
+    magnifier:   bool,
     monitor:     Option<egui::Vec2>,
     /// TODO項目B: シングルページ表示に適用する手動回転角度(0/90/180/270)
     rotation_angle: i32,
@@ -491,6 +511,15 @@ pub struct ViewerState {
     /// かつパレット外でのクリック（メニューを閉じるためのクリック）を
     /// ページ送り／画像クリック／サムネ選択メニュー起動へ伝播させないためのガードに使う。
     tool_palette_menu_open: bool,
+    /// 虫眼鏡モード（ホイール拡縮）の表示状態。モードOFF・非対応の表示（見開き・回転）・
+    /// テクスチャ未取得の間は None。
+    magnifier_view: Option<crate::magnifier::MagnifierView>,
+    /// `magnifier_view` を作った対象ページ。ページが変わったらフィット表示から作り直す。
+    magnifier_page: i32,
+    /// フィット表示のまま（窓サイズ変更にフィット倍率で追従する）か。
+    magnifier_at_fit: bool,
+    /// このフレームで ScrollArea へ scroll_offset を押し込む必要があるか（拡縮・作り直し・追従した）。
+    magnifier_offset_dirty: bool,
 }
 
 impl ViewerState {
@@ -717,6 +746,10 @@ impl ViewerState {
             tool_palette_auto_hide_at: None,
             tool_palette_auto_hidden: false,
             tool_palette_menu_open: false,
+            magnifier_view: None,
+            magnifier_page: 0,
+            magnifier_at_fit: true,
+            magnifier_offset_dirty: false,
         }
     }
 
@@ -800,6 +833,10 @@ impl ViewerState {
             tool_palette_auto_hide_at: None,
             tool_palette_auto_hidden: false,
             tool_palette_menu_open: false,
+            magnifier_view: None,
+            magnifier_page: 0,
+            magnifier_at_fit: true,
+            magnifier_offset_dirty: false,
         }
     }
 
@@ -1343,7 +1380,7 @@ impl ViewerState {
         }
 
         // ── フレーム入力を一括収集（ctx.input はこの1回のみ）────────────────
-        let input = FrameInput::collect(&ctx, keymap);
+        let mut input = FrameInput::collect(&ctx, keymap);
 
         // フェーズ6: リサイズ再デコードのターゲットサイズ算出用に、現在の描画領域サイズ（物理px）を記録する。
         let screen = ctx.content_rect().size() * ctx.pixels_per_point();
@@ -1503,6 +1540,14 @@ impl ViewerState {
         let viewport_before_central = ui.max_rect();
 
         let rotation_angle = self.manual_rotation_angle(cfg);
+        // 虫眼鏡は現状、単ページ・回転なしのみ対応（見開き・回転はフェーズ7）。
+        let magnifier_active = cfg.magnifier_on && !is_spread && rotation_angle == 0 && tex_lo.is_some();
+        if magnifier_active {
+            // ホイールはページ送りではなく拡縮へ回す。
+            input.scroll_delta = 0.0;
+        } else {
+            input.wheel_notches = 0.0;
+        }
         let frame = RenderFrame {
             tex_lo, tex_hi, prev_tex_lo, prev_tex_hi,
             animating,
@@ -1512,6 +1557,7 @@ impl ViewerState {
             current_lo,
             page_mode:   self.page_mode,
             zoom_actual: cfg.zoom_actual,
+            magnifier:   magnifier_active,
             monitor:     input.monitor_size,
             rotation_angle,
             transition_kind: self.effective_transition_kind(cfg),
@@ -2353,6 +2399,14 @@ impl ViewerState {
             }) || self.tool_palette_menu_open;
             self.tick_tool_palette_auto_hide(ui.ctx(), input.time, pointer_in_palette);
 
+            // ── 虫眼鏡：ホイール拡縮（ポインタ基準）。パレット上のホイールは握りつぶす ─────
+            if frame.magnifier {
+                let hover = if pointer_in_palette || self.file_detail_dialog.is_some() { None } else { input.hover_pos };
+                self.update_magnifier(viewport_rect, frame.tex_lo.as_ref(), hover, input.wheel_notches, &cfg.magnifier);
+            } else {
+                self.magnifier_view = None;
+            }
+
             // ── 左右端ページ送りゾーン ───────────────────────────────────────────
             let edge_ctx = ui.ctx().clone();
             let guarded_hover = if pointer_in_palette { None } else { input.hover_pos };
@@ -2360,7 +2414,7 @@ impl ViewerState {
             self.handle_edge_turn(&edge_ctx, clip, guarded_hover, guarded_primary_clicked, is_spread, step, total, input.time);
             self.draw_edge_turn_marker(&edge_ctx, clip);
 
-            if !frame.animating || frame.zoom_actual {
+            if !frame.animating || frame.zoom_actual || frame.magnifier {
                 // ── 通常レンダリング ──────────────────────────────────────────
                 match frame.page_mode {
                     PageMode::Single => {
@@ -2812,7 +2866,8 @@ impl ViewerState {
         double_clicked: bool,
         cfg: &mut ViewerConfig,
     ) -> bool {
-        if input.zoom_key || double_clicked {
+        // 虫眼鏡の有効中は原寸トグルを止める（倍率は虫眼鏡側で持つ。原寸との統合はフェーズ3）。
+        if (input.zoom_key || double_clicked) && self.magnifier_view.is_none() {
             cfg.zoom_actual = !cfg.zoom_actual;
             // フェーズ6: 表示ターゲットサイズが変わるイベントとして再デコードのデバウンス対象にする
             cfg.redecode_trigger_seq += 1;
@@ -3650,6 +3705,59 @@ impl ViewerState {
         }
     }
 
+    /// 虫眼鏡ビューの更新（毎フレーム、描画前）。作り直し・窓サイズ追従・ホイール拡縮を行い、
+    /// scroll_offset の押し込みが必要なら `magnifier_offset_dirty` を立てる。
+    /// `hover` は None（パレット上など）ならホイールを無視する。ビューポート外も無視。
+    fn update_magnifier(
+        &mut self,
+        viewport: egui::Rect,
+        tex: Option<&egui::TextureHandle>,
+        hover: Option<egui::Pos2>,
+        wheel_notches: f32,
+        cfg: &crate::magnifier::MagnifierConfig,
+    ) {
+        use crate::magnifier::{fit_scale, notch_scale, scale_range, zoom_about, clamp_offset, MagnifierView, DEFAULT_NOTCH_RATIO};
+        let Some(tex) = tex else {
+            self.magnifier_view = None;
+            return;
+        };
+        let img = tex.size_vec2();
+        let vp = viewport.size();
+        let fit = fit_scale(vp, img);
+        let range = scale_range(fit, cfg.max_scale());
+        let page = self.spread_lo();
+
+        let mut view = match self.magnifier_view {
+            Some(v) if self.magnifier_page == page => {
+                // フィット表示のままなら窓サイズ変更にフィット倍率で追従する。
+                // それ以外は範囲内へ丸め、スクロール範囲も収め直す。
+                let scale = if self.magnifier_at_fit { fit } else { v.scale.clamp(range.0, range.1) };
+                if scale != v.scale {
+                    self.magnifier_offset_dirty = true;
+                }
+                clamp_offset(MagnifierView { scale, offset: v.offset }, vp, img)
+            }
+            _ => {
+                self.magnifier_page = page;
+                self.magnifier_offset_dirty = true;
+                MagnifierView::fit(vp, img)
+            }
+        };
+
+        if wheel_notches != 0.0
+            && let Some(p) = hover.filter(|p| viewport.contains(*p))
+        {
+            let next = notch_scale(view.scale, wheel_notches, DEFAULT_NOTCH_RATIO, range);
+            if next != view.scale {
+                view = zoom_about(view, p - viewport.min, vp, img, next);
+                self.magnifier_offset_dirty = true;
+            }
+        }
+
+        self.magnifier_at_fit = view.scale <= fit + 1e-4;
+        self.magnifier_view = Some(view);
+    }
+
     fn render_single(
         &mut self,
         ui: &mut egui::Ui,
@@ -3670,7 +3778,9 @@ impl ViewerState {
         let current_sort = self.current_sort_snapshot();
         if let Some(tex) = tex {
             let [img_w, img_h] = tex.size();
-            if zoom_actual {
+            // 虫眼鏡の有効中は、原寸表示と同じスクロール描画に倍率だけ差し込む。
+            let magnifier = self.magnifier_view;
+            if zoom_actual || magnifier.is_some() {
                 // ビューポートより画像が小さい場合は中央寄せ、大きい場合はスクロール領域いっぱいに
                 // 敷いて従来どおりの原寸表示にする。90/270度時は回転後の外接サイズで
                 // スクロール範囲を確保してから、その中心を軸に回転させる（等倍・拡縮なし）。
@@ -3678,14 +3788,21 @@ impl ViewerState {
                 // スクロールバー操作に加え、画像を直接D&D（フリック）してビューポート内へ
                 // 引き込む操作にも対応する（マウスでも常時有効化。標準はタッチ限定）。
                 // ホイールはページ送り専用に譲る（見開き原寸と同様、ここで拾うと二重に効く）。
-                egui::ScrollArea::both()
+                let mut scroll_area = egui::ScrollArea::both()
                     .scroll_source(egui::containers::scroll_area::ScrollSource {
                         scroll_bar: true,
                         drag: egui::containers::scroll_area::DragScroll::Always,
                         mouse_wheel: false,
-                    })
-                    .show(ui, |ui| {
-                    let img_size = egui::vec2(img_w as f32, img_h as f32);
+                    });
+                // 拡縮・作り直しをしたフレームだけオフセットを押し込む（毎フレーム押すとドラッグを上書きする）。
+                if let Some(m) = magnifier
+                    && self.magnifier_offset_dirty
+                {
+                    scroll_area = scroll_area.scroll_offset(m.offset);
+                }
+                let scroll_out = scroll_area.show(ui, |ui| {
+                    let scale = magnifier.map_or(1.0, |m| m.scale);
+                    let img_size = egui::vec2(img_w as f32, img_h as f32) * scale;
                     let rotated_size = if angle_deg == 90 || angle_deg == 270 {
                         egui::vec2(img_size.y, img_size.x)
                     } else {
@@ -3700,7 +3817,7 @@ impl ViewerState {
                     if angle_deg == 0 {
                         ui.painter().image(tex.id(), bbox, FULL_UV, egui::Color32::WHITE);
                     } else {
-                        Self::paint_texture_rotated_at(ui.painter(), tex, bbox.center(), 1.0, angle_deg);
+                        Self::paint_texture_rotated_at(ui.painter(), tex, bbox.center(), scale, angle_deg);
                     }
                     let menu_open = resp.context_menu_opened() || self.tool_palette_menu_open;
                     if !menu_open {
@@ -3727,6 +3844,11 @@ impl ViewerState {
                     .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
                     .show(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort, sort_action, bookmark_toggle_enabled, bookmark_toggle_on, bookmark_action, thumbnail_target, saved_thumbnail_selection, saved_thumbnail_display.as_deref(), thumbnail_action, favorite_add, open_file_detail, slideshow_active, slideshow_toggle, blc_active, blc_toggle));
                 });
+                // ドラッグ・スクロールバーでの移動を虫眼鏡ビューへ取り込む。
+                if let Some(m) = self.magnifier_view.as_mut() {
+                    m.offset = scroll_out.state.offset;
+                }
+                self.magnifier_offset_dirty = false;
             } else {
                 let available = ui.available_size();
                 let bounds = egui::Rect::from_min_size(ui.cursor().left_top(), available);

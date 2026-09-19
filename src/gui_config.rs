@@ -188,6 +188,10 @@ pub struct ViewerConfig {
     /// ビューアー内ツールパレット（オーバーレイ）の座標・LOCK・透過度・マスサイズ・
     /// 可視性・マス内容。永続設定。ViewerState側の実行時キャッシュから500msデバウンスで反映される。
     pub tool_palette: PaletteState,
+    /// 虫眼鏡（ホイール拡縮）モードのON/OFF。非永続・実行時のみ（ツールパレットのマスで切替）。
+    pub magnifier_on: bool,
+    /// 虫眼鏡モードの設定値（上限倍率・バー幅など）。現状は既定値のみで永続化しない。
+    pub magnifier: crate::magnifier::MagnifierConfig,
 }
 
 impl Default for ViewerConfig {
@@ -218,6 +222,8 @@ impl Default for ViewerConfig {
             slideshow_transition_duration_ms: 1000,
             image_filter: ImageFilterSettings::default(),
             tool_palette: PaletteState::default(),
+            magnifier_on: false,
+            magnifier: crate::magnifier::MagnifierConfig::default(),
         }
     }
 }
@@ -826,6 +832,8 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
                     custom_labels: tool_palette_labels,
                 }
             },
+            magnifier_on: false,
+            magnifier: crate::magnifier::MagnifierConfig::default(),
         },
         show_hidden: show_hidden.unwrap_or(false),
         card_info_mode: card_info_mode.unwrap_or_else(|| "off".to_string()),

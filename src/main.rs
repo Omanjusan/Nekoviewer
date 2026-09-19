@@ -12,7 +12,7 @@ mod i18n;
 mod image_filter;
 mod types;
 mod keymap;
-// フェーズ2以降で view_reader に配線するまで未使用。
+// 変換関数はフェーズ2で配線済み。バー幅API・自動ハイド秒などはフェーズ4以降で配線するまで未使用。
 #[allow(dead_code)]
 mod magnifier;
 mod model_innerlog;

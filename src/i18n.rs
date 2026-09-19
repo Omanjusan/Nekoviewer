@@ -2966,6 +2966,14 @@ impl Lang {
         }
     }
 
+    pub fn tool_palette_toggle_label_magnifier(self) -> &'static str {
+        match self {
+            Lang::Japanese => "虫眼鏡",
+            Lang::English  => "Magnifier",
+            Lang::Chinese  => "放大镜",
+        }
+    }
+
     pub fn tool_palette_action_label_next_page(self) -> &'static str {
         match self {
             Lang::Japanese => "次のページ",
