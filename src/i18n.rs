@@ -789,6 +789,38 @@ impl Lang {
         }
     }
 
+    pub fn tree_sort_menu(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ソート条件設定",
+            Lang::English  => "Sort Settings",
+            Lang::Chinese  => "排序设置",
+        }
+    }
+
+    pub fn tree_sort_title(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ソート条件設定",
+            Lang::English  => "Sort Settings",
+            Lang::Chinese  => "排序设置",
+        }
+    }
+
+    pub fn tree_sort_target_virtual(self) -> &'static str {
+        match self {
+            Lang::Japanese => "仮想ツリーの並び順",
+            Lang::English  => "Order of the virtual tree",
+            Lang::Chinese  => "虚拟树的排列顺序",
+        }
+    }
+
+    pub fn tree_sort_registration(self) -> &'static str {
+        match self {
+            Lang::Japanese => "登録順",
+            Lang::English  => "Registration",
+            Lang::Chinese  => "登记顺序",
+        }
+    }
+
     pub fn virtual_menu_rename(self) -> &'static str {
         match self {
             Lang::Japanese => "名前を変更",

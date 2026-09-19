@@ -37,6 +37,8 @@ struct TreeNode {
     parent: u32,
     name: String,
     real: PathBuf,
+    /// 兄弟の中での登録順（DBの `order`）
+    order: u32,
 }
 
 /// 登録ピッカー。OK/キャンセルは無く、ダブルクリックで確認ダイアログへ進む。
@@ -212,10 +214,71 @@ enum TreeEvent {
     Register(u32),
     Rename(u32),
     Delete(u32),
+    /// ツリー全体の並び条件（ノードには依存しない）
+    SortSetting,
+}
+
+/// 並び条件で `nodes` を並べ替える。名前・日付は同じ親の兄弟どうしの相対順だけが意味を持つ。
+/// 日付は実フォルダの更新日時で、不明（リンク切れなど）は昇降どちらでも末尾。
+fn sort_tree_nodes(
+    nodes: Vec<TreeNode>,
+    sort: crate::tree_sort::TreeSort,
+    mtimes: &HashMap<u32, std::time::SystemTime>,
+) -> Vec<TreeNode> {
+    use crate::tree_sort::TreeSortKey;
+    use crate::types::ExplorerSortKey;
+    match sort.key {
+        TreeSortKey::Registration => {
+            let mut nodes = nodes;
+            nodes.sort_by_key(|n| (n.order, n.id));
+            if !sort.ascending {
+                nodes.reverse();
+            }
+            nodes
+        }
+        TreeSortKey::Name => {
+            super::folder_sort::sort_folders(nodes, ExplorerSortKey::Name, sort.ascending, |n| (n.name.clone(), None))
+        }
+        TreeSortKey::Date => super::folder_sort::sort_folders(nodes, ExplorerSortKey::Date, sort.ascending, |n| {
+            (n.name.clone(), mtimes.get(&n.id).copied())
+        }),
+    }
 }
 
 fn children_of(nodes: &[TreeNode], parent: u32) -> Vec<&TreeNode> {
     nodes.iter().filter(|n| n.parent == parent).collect()
+}
+
+/// 仮想ツリーの右クリックメニュー。`target` が行のid、行の外（ツリー内の余白）は None。
+/// 行の外では、ツリー全体に効く「ソート条件設定」だけが有効で、ほかはグレーアウトする。
+fn tree_context_menu(ui: &mut egui::Ui, target: Option<u32>, out: &mut Vec<TreeEvent>) {
+    // ルートは名前変更・削除の対象外。区切り線で「変更」「登録」「削除」「ソート」を分ける
+    let node = target.filter(|id| *id != ROOT);
+    if ui.add_enabled(node.is_some(), egui::Button::new(i18n::t().virtual_menu_rename())).clicked() {
+        if let Some(id) = node {
+            out.push(TreeEvent::Rename(id));
+        }
+        ui.close();
+    }
+    ui.separator();
+    if ui.add_enabled(target.is_some(), egui::Button::new(i18n::t().virtual_menu_register())).clicked() {
+        if let Some(id) = target {
+            out.push(TreeEvent::Register(id));
+        }
+        ui.close();
+    }
+    ui.separator();
+    if ui.add_enabled(node.is_some(), egui::Button::new(i18n::t().virtual_menu_delete())).clicked() {
+        if let Some(id) = node {
+            out.push(TreeEvent::Delete(id));
+        }
+        ui.close();
+    }
+    ui.separator();
+    if ui.button(i18n::t().tree_sort_menu()).clicked() {
+        out.push(TreeEvent::SortSetting);
+        ui.close();
+    }
 }
 
 /// ダミーツリー描画。`root_label` が Some なら仮想ルート行（id=ROOT）を先頭に描く。
@@ -300,23 +363,7 @@ fn draw_tree_row(
             out.push(TreeEvent::DoubleClick(id));
         }
         if menu_on {
-            r.context_menu(|ui| {
-                // ルートは名前変更・削除の対象外（グレーアウト）。区切り線で「変更」「登録」「削除」を分ける
-                if ui.add_enabled(id != ROOT, egui::Button::new(i18n::t().virtual_menu_rename())).clicked() {
-                    out.push(TreeEvent::Rename(id));
-                    ui.close();
-                }
-                ui.separator();
-                if ui.button(i18n::t().virtual_menu_register()).clicked() {
-                    out.push(TreeEvent::Register(id));
-                    ui.close();
-                }
-                ui.separator();
-                if ui.add_enabled(id != ROOT, egui::Button::new(i18n::t().virtual_menu_delete())).clicked() {
-                    out.push(TreeEvent::Delete(id));
-                    ui.close();
-                }
-            });
+            r.context_menu(|ui| tree_context_menu(ui, Some(id), out));
         }
     });
     if is_expanded {
@@ -423,8 +470,9 @@ impl NekoviewApp {
         list.sort_by_key(|n| n.order);
         self.virtual_state.nodes = list
             .into_iter()
-            .map(|n| TreeNode { id: n.id, parent: n.parent_id, name: n.name, real: n.real_path })
+            .map(|n| TreeNode { id: n.id, parent: n.parent_id, name: n.name, real: n.real_path, order: n.order })
             .collect();
+        self.resort_virtual_nodes();
         let ids: HashSet<u32> = self.virtual_state.nodes.iter().map(|n| n.id).collect();
         self.virtual_state.expanded.retain(|id| *id == ROOT || ids.contains(id));
         // 表示中のノードがDBから消えていたら実表示に戻す
@@ -433,6 +481,14 @@ impl NekoviewApp {
         }
         // ノードの顔ぶれが変わったので、リンク切れの判定をやり直す（別スレッド）
         self.start_broken_check();
+    }
+
+    /// 仮想ツリーの並び条件（ソート条件設定）で `nodes` を並べ直す。兄弟の並びは `nodes` の順序で決まり、
+    /// 描画・キー移動・ピッカーがそれに従う。更新日時が届いたとき・設定を変えたときにも呼ぶ。
+    pub(super) fn resort_virtual_nodes(&mut self) {
+        let sort = self.tree_sorts.virtual_tree_or_default();
+        let nodes = std::mem::take(&mut self.virtual_state.nodes);
+        self.virtual_state.nodes = sort_tree_nodes(nodes, sort, &self.virtual_state.mtimes);
     }
 
     /// 仮想ノードを選んで中央グリッドをその表示にする（ツリークリック・フォルダカード・Enter共通）。
@@ -651,6 +707,9 @@ impl NekoviewApp {
     pub(super) fn draw_virtual_folder_pane(&mut self, ui: &mut egui::Ui) {
         let mut events = Vec::new();
         let scroll_to_cursor = std::mem::take(&mut self.virtual_state.scroll_to_cursor);
+        // ツリー領域の全面を先に右クリック対象にしておく。行はこの上に描かれるので行が優先され、
+        // 行のない余白（行の右側・下側）への右クリックだけがここに届く。
+        let bg = ui.interact(ui.available_rect_before_wrap(), ui.id().with("virtual_tree_bg"), egui::Sense::click());
         egui::ScrollArea::both()
             .id_salt("virtual_tree_scroll")
             .auto_shrink([false, false])
@@ -662,6 +721,7 @@ impl NekoviewApp {
                 let ring = (self.focused_pane == FocusPane::VirtualTab).then(|| self.virtual_cursor());
                 draw_tree(ui, &m.nodes, Some("/"), &m.expanded, viewing, true, ring, scroll_to_cursor, &m.broken, &mut events);
             });
+        bg.context_menu(|ui| tree_context_menu(ui, None, &mut events));
         if !events.is_empty() {
             self.focused_pane = FocusPane::VirtualTab;
         }
@@ -671,6 +731,10 @@ impl NekoviewApp {
                 TreeEvent::Select(id) => self.select_virtual_node(id),
                 TreeEvent::DoubleClick(_) => {}
                 TreeEvent::Rename(id) => self.open_rename_dialog(id),
+                TreeEvent::SortSetting => {
+                    self.virtual_state.rename = None;
+                    self.open_tree_sort_dialog(super::tree_sort_ui::TreeSortTarget::Virtual);
+                }
                 TreeEvent::Register(id) => {
                     self.virtual_state.confirm = None;
                     self.virtual_state.rename = None;
@@ -917,7 +981,7 @@ mod tests {
     use crate::types::ExplorerSortKey;
 
     fn node(id: u32, parent: u32, name: &str, real: &str) -> TreeNode {
-        TreeNode { id, parent, name: name.to_string(), real: PathBuf::from(real) }
+        TreeNode { id, parent, name: name.to_string(), real: PathBuf::from(real), order: id }
     }
 
     fn sample() -> Vec<TreeNode> {
@@ -962,6 +1026,49 @@ mod tests {
     fn descending_reverses_children_but_keeps_up_first() {
         let e = virtual_folder_entries(&sample(), 1, false, ExplorerSortKey::Name, false, &HashMap::new());
         assert_eq!(e, vec![GridEntry::VirtualUp(ROOT), GridEntry::VirtualSubdir(2), GridEntry::VirtualSubdir(3)]);
+    }
+
+    fn ids(nodes: &[TreeNode]) -> Vec<u32> {
+        nodes.iter().map(|n| n.id).collect()
+    }
+
+    /// 兄弟（親1の子 2,3,4）だけを取り出した並び
+    fn kids_of_1(nodes: &[TreeNode]) -> Vec<u32> {
+        children_of(nodes, 1).iter().map(|n| n.id).collect()
+    }
+
+    #[test]
+    fn tree_sort_registration_follows_order_and_reverses() {
+        use crate::tree_sort::{TreeSort, TreeSortKey};
+        let mut shuffled = sample();
+        shuffled.reverse();
+        let asc = sort_tree_nodes(shuffled.clone(), TreeSort { key: TreeSortKey::Registration, ascending: true }, &HashMap::new());
+        assert_eq!(ids(&asc), vec![1, 2, 3, 4, 5]);
+        let desc = sort_tree_nodes(shuffled, TreeSort { key: TreeSortKey::Registration, ascending: false }, &HashMap::new());
+        assert_eq!(kids_of_1(&desc), vec![4, 3, 2]);
+    }
+
+    #[test]
+    fn tree_sort_name_orders_siblings_by_virtual_name() {
+        use crate::tree_sort::{TreeSort, TreeSortKey};
+        // 子 2="b_青年" 3="a_少年" 4="隠し"
+        let asc = sort_tree_nodes(sample(), TreeSort { key: TreeSortKey::Name, ascending: true }, &HashMap::new());
+        assert_eq!(kids_of_1(&asc), vec![3, 2, 4]);
+        let desc = sort_tree_nodes(sample(), TreeSort { key: TreeSortKey::Name, ascending: false }, &HashMap::new());
+        assert_eq!(kids_of_1(&desc), vec![4, 2, 3]);
+    }
+
+    #[test]
+    fn tree_sort_date_orders_by_mtime_with_unknown_last() {
+        use crate::tree_sort::{TreeSort, TreeSortKey};
+        use std::time::{Duration, SystemTime};
+        let at = |s: u64| SystemTime::UNIX_EPOCH + Duration::from_secs(s);
+        // 4は日時なし（リンク切れなど）
+        let mtimes = HashMap::from([(2, at(30)), (3, at(10))]);
+        let asc = sort_tree_nodes(sample(), TreeSort { key: TreeSortKey::Date, ascending: true }, &mtimes);
+        assert_eq!(kids_of_1(&asc), vec![3, 2, 4]);
+        let desc = sort_tree_nodes(sample(), TreeSort { key: TreeSortKey::Date, ascending: false }, &mtimes);
+        assert_eq!(kids_of_1(&desc), vec![2, 3, 4]);
     }
 
     #[test]

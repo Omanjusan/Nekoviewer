@@ -20,6 +20,7 @@ mod spread_offset;
 mod spread_state;
 mod tool_palette;
 mod toolbar;
+mod tree_sort;
 mod translate;
 mod view_explorer;
 mod view_gui_config;

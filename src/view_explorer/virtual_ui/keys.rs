@@ -107,7 +107,8 @@ impl NekoviewApp {
     pub(in crate::view_explorer) fn handle_virtual_keys(&mut self, ctx: &egui::Context) {
         // 登録ピッカー・確認・大量登録・名前変更・削除ダイアログが開いている間は、背後のツリーを操作しない
         let vs = &self.virtual_state;
-        if vs.picker.is_some()
+        if self.tree_sort_dialog.is_some()
+            || vs.picker.is_some()
             || vs.confirm.is_some()
             || vs.large_import.is_some()
             || vs.rename.is_some()
@@ -167,7 +168,7 @@ mod tests {
     use super::*;
 
     fn node(id: u32, parent: u32) -> TreeNode {
-        TreeNode { id, parent, name: format!("n{id}"), real: PathBuf::from(format!("/n{id}")) }
+        TreeNode { id, parent, name: format!("n{id}"), real: PathBuf::from(format!("/n{id}")), order: id }
     }
 
     /// /

@@ -347,6 +347,8 @@ pub struct AppState {
     pub translate_cfg: TranslateConfig,
     /// お気に入り・検索・仮想フォルダの各タブが最後にいた位置。
     pub tab_positions: TabPositions,
+    /// ツリー（仮想・実）の並び条件。位置と違い、`use_last_dir` の影響を受けない。
+    pub tree_sorts: crate::tree_sort::TreeSorts,
 }
 
 impl Default for AppState {
@@ -378,6 +380,7 @@ impl Default for AppState {
             app_default_slot: None,
             translate_cfg: TranslateConfig::default(),
             tab_positions: TabPositions::default(),
+            tree_sorts: crate::tree_sort::TreeSorts::default(),
         }
     }
 }
@@ -414,6 +417,7 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
     let mut tab_search_dir: Option<PathBuf> = None;
     let mut tab_virtual_id: Option<u32> = None;
     let mut tab_virtual_path: Option<PathBuf> = None;
+    let mut tree_sort_virtual: Option<crate::tree_sort::TreeSort> = None;
     let mut window_width: Option<u32> = None;
     let mut window_height: Option<u32> = None;
     let mut slot_x: [Option<i32>; 4] = [None; 4];
@@ -508,6 +512,7 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
                     let v = v.trim();
                     if !v.is_empty() { tab_search_dir = Some(PathBuf::from(v)); }
                 }
+                "tree_sort_virtual" => { tree_sort_virtual = crate::tree_sort::TreeSort::from_state_str(v); }
                 "tab_virtual_node" => { tab_virtual_id = v.trim().parse().ok(); }
                 "tab_virtual_path" => {
                     let v = v.trim();
@@ -819,11 +824,12 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
                 _ => None,
             },
         },
+        tree_sorts: crate::tree_sort::TreeSorts { virtual_tree: tree_sort_virtual },
     })
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn save_state(root: &Path, dir: &Path, window_size: (u32, u32), viewer_slots: &[Option<WindowSlot>; 4], sort_state: &SortState, lang: &str, viewer_cfg: &ViewerConfig, show_hidden: bool, card_info_mode: &str, card_date_format: &CardDateFormat, app_cfg: &AppConfig, translate_cfg: &TranslateConfig, tab_positions: &TabPositions) {
+pub fn save_state(root: &Path, dir: &Path, window_size: (u32, u32), viewer_slots: &[Option<WindowSlot>; 4], sort_state: &SortState, lang: &str, viewer_cfg: &ViewerConfig, show_hidden: bool, card_info_mode: &str, card_date_format: &CardDateFormat, app_cfg: &AppConfig, translate_cfg: &TranslateConfig, tab_positions: &TabPositions, tree_sorts: &crate::tree_sort::TreeSorts) {
     let _ = std::fs::create_dir_all(root);
     let (path, bak, tmp) = (state_path(root), state_bak_path(root), state_tmp_path(root));
 
@@ -835,6 +841,8 @@ pub fn save_state(root: &Path, dir: &Path, window_size: (u32, u32), viewer_slots
     );
     // フォルダ系タブ（お気に入り・検索・仮想フォルダ）の最後の位置（Some のものだけ）
     content.push_str(&tab_positions.state_lines());
+    // ツリーの並び条件（Some のものだけ）
+    content.push_str(&tree_sorts.state_lines());
     // カード日付書式: 可読性優先で6キーに分割。auto_style 未指定は空文字で書く（＝言語追従）。
     content.push_str(&format!(
         "card_date_mode={}\ncard_date_auto_style={}\ncard_date_order={}\ncard_date_sep={}\ncard_date_year={}\ncard_date_month={}\n",
@@ -984,6 +992,18 @@ mod tests {
         assert_eq!(parsed.tab_positions, tp);
         // 実ツリータブの位置（last_dir）は従来どおり別キー
         assert_eq!(parsed.last_dir, Some(PathBuf::from("/real")));
+    }
+
+    #[test]
+    fn tree_sorts_roundtrip_and_ignore_invalid_values() {
+        use crate::tree_sort::{TreeSort, TreeSortKey};
+        let sorts = crate::tree_sort::TreeSorts {
+            virtual_tree: Some(TreeSort { key: TreeSortKey::Date, ascending: false }),
+        };
+        let parsed = parse_state_text("tree_sort", &sorts.state_lines());
+        assert_eq!(parsed.tree_sorts, sorts);
+        assert_eq!(parse_state_text("tree_sort_none", "last_dir=/x\n").tree_sorts, Default::default());
+        assert_eq!(parse_state_text("tree_sort_bad", "tree_sort_virtual=size:up\n").tree_sorts, Default::default());
     }
 
     #[test]

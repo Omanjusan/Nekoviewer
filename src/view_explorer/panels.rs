@@ -186,6 +186,7 @@ impl NekoviewApp {
         self.draw_memory_warning_dialog(&ctx);
         self.draw_favorite_dialog(&ctx);
         self.draw_virtual_dialogs(&ctx);
+        self.draw_tree_sort_dialog(&ctx);
         self.draw_favorite_delete_confirm_dialog(&ctx);
         self.draw_favorite_detail_dialog(&ctx);
         self.draw_sort_condition_dialog(&ctx);

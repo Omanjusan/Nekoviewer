@@ -102,6 +102,8 @@ impl NekoviewApp {
                 if generation == check.generation && generation == self.virtual_state.broken_gen {
                     self.virtual_state.broken = broken;
                     self.virtual_state.mtimes = mtimes;
+                    // 更新日付順のツリーは、日時が届いてから並びが確定する
+                    self.resort_virtual_nodes();
                 }
                 self.virtual_state.broken_check = None;
             }

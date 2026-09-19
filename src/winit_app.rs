@@ -361,6 +361,7 @@ impl WinitApp {
             state.card_date_format,
             state.translate_cfg,
             state.tab_positions,
+            state.tree_sorts,
             open_target,
             win.egui_ctx.clone(),
         );
