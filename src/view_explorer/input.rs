@@ -88,7 +88,8 @@ impl NekoviewApp {
                     self.favorite_cursor = Some(FavoriteSelection::Unsorted);
                 }
             }
-            FocusPane::SearchForm | FocusPane::VirtualTab => {}
+            FocusPane::SearchForm => {}
+            FocusPane::VirtualTab => self.reset_virtual_cursor(),
             FocusPane::SearchHistory => {
                 let valid = self.search_selected.is_some_and(|i| i < self.search_history.len());
                 if !valid {
@@ -399,6 +400,10 @@ impl NekoviewApp {
         }
         if self.focused_pane == FocusPane::TreeTab {
             self.handle_tree_keys(ctx);
+            return;
+        }
+        if self.focused_pane == FocusPane::VirtualTab {
+            self.handle_virtual_keys(ctx);
             return;
         }
         if self.focused_pane == FocusPane::FavoriteTab {

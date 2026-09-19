@@ -9,6 +9,7 @@ use std::sync::mpsc;
 
 use crate::fs::mount::MountEntry;
 
+mod keys;
 mod register;
 use register::{OverlapInfo, PendingRegister};
 
@@ -131,6 +132,10 @@ pub(super) struct VirtualState {
     nodes: Vec<TreeNode>,
     expanded: HashSet<u32>,
     real_pane_open: bool,
+    /// キー操作用のカーソル位置（実ツリーの tree_cursor 相当。開くのは Enter のとき）
+    cursor: Option<u32>,
+    /// キー移動した直後の1フレームだけ、カーソル行が見える位置へスクロールする
+    scroll_to_cursor: bool,
     picker: Option<Picker>,
     confirm: Option<Confirm>,
     delete: Option<u32>,
@@ -145,6 +150,8 @@ impl VirtualState {
             // 仮想ルート `/` は最初から展開しておく
             expanded: HashSet::from([ROOT]),
             real_pane_open: false,
+            cursor: None,
+            scroll_to_cursor: false,
             picker: None,
             confirm: None,
             delete: None,
@@ -198,13 +205,14 @@ fn draw_tree(
     selected: Option<u32>,
     menu_on: bool,
     ring: Option<u32>,
+    scroll_to_ring: bool,
     out: &mut Vec<TreeEvent>,
 ) {
     match root_label {
-        Some(label) => draw_tree_row(ui, nodes, ROOT, label, None, 0, expanded, selected, menu_on, ring, out),
+        Some(label) => draw_tree_row(ui, nodes, ROOT, label, None, 0, expanded, selected, menu_on, ring, scroll_to_ring, out),
         None => {
             for n in children_of(nodes, ROOT) {
-                draw_tree_row(ui, nodes, n.id, &n.name, Some(&n.real), 0, expanded, selected, menu_on, ring, out);
+                draw_tree_row(ui, nodes, n.id, &n.name, Some(&n.real), 0, expanded, selected, menu_on, ring, scroll_to_ring, out);
             }
         }
     }
@@ -222,6 +230,7 @@ fn draw_tree_row(
     selected: Option<u32>,
     menu_on: bool,
     ring: Option<u32>,
+    scroll_to_ring: bool,
     out: &mut Vec<TreeEvent>,
 ) {
     let has_children = nodes.iter().any(|n| n.parent == id);
@@ -243,6 +252,9 @@ fn draw_tree_row(
         }
         if ring == Some(id) {
             super::panels::draw_cursor_ring(ui, r.rect);
+            if scroll_to_ring {
+                r.scroll_to_me(None);
+            }
         }
         if r.clicked() || r.secondary_clicked() {
             out.push(TreeEvent::Select(id));
@@ -266,7 +278,7 @@ fn draw_tree_row(
     });
     if is_expanded {
         for c in children_of(nodes, id) {
-            draw_tree_row(ui, nodes, c.id, &c.name, Some(&c.real), depth + 1, expanded, selected, menu_on, ring, out);
+            draw_tree_row(ui, nodes, c.id, &c.name, Some(&c.real), depth + 1, expanded, selected, menu_on, ring, scroll_to_ring, out);
         }
     }
 }
@@ -361,6 +373,8 @@ impl NekoviewApp {
     /// 仮想ノードを選んで中央グリッドをその表示にする（ツリークリック・フォルダカード・Enter共通）。
     /// 既にそのノードを表示中なら何もしない（実ツリー側に移っていれば viewing_virtual_node は None なので通る）。
     pub(super) fn select_virtual_node(&mut self, id: u32) {
+        // キー操作のカーソルも開いたノードに揃える
+        self.virtual_state.cursor = Some(id);
         if self.viewing_virtual_node == Some(id) {
             return;
         }
@@ -517,16 +531,17 @@ impl NekoviewApp {
 
     pub(super) fn draw_virtual_folder_pane(&mut self, ui: &mut egui::Ui) {
         let mut events = Vec::new();
+        let scroll_to_cursor = std::mem::take(&mut self.virtual_state.scroll_to_cursor);
         egui::ScrollArea::both()
             .id_salt("virtual_tree_scroll")
             .auto_shrink([false, false])
             .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
             .show(ui, |ui| {
                 let m = &self.virtual_state;
-                // 表示中のノードを選択表示にする。フォーカス中はそこ（未選択なら `/`）にカーソルリングを出す
+                // 表示中のノードを選択表示にする。フォーカス中はカーソル位置にカーソルリングを出す
                 let viewing = self.viewing_virtual_node;
-                let ring = (self.focused_pane == FocusPane::VirtualTab).then(|| viewing.unwrap_or(ROOT));
-                draw_tree(ui, &m.nodes, Some("/"), &m.expanded, viewing, true, ring, &mut events);
+                let ring = (self.focused_pane == FocusPane::VirtualTab).then(|| self.virtual_cursor());
+                draw_tree(ui, &m.nodes, Some("/"), &m.expanded, viewing, true, ring, scroll_to_cursor, &mut events);
             });
         if !events.is_empty() {
             self.focused_pane = FocusPane::VirtualTab;
@@ -650,7 +665,7 @@ impl NekoviewApp {
                                 );
                             }
                             Picker::VirtualDest { expanded, selected, .. } => {
-                                draw_tree(ui, &self.virtual_state.nodes, Some("/"), expanded, *selected, false, None, &mut events);
+                                draw_tree(ui, &self.virtual_state.nodes, Some("/"), expanded, *selected, false, None, false, &mut events);
                             }
                         });
                 });
