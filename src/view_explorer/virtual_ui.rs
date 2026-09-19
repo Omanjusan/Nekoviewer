@@ -197,13 +197,14 @@ fn draw_mock_tree(
     expanded: &HashSet<u32>,
     selected: Option<u32>,
     menu_on: bool,
+    ring: Option<u32>,
     out: &mut Vec<MockEvent>,
 ) {
     match root_label {
-        Some(label) => draw_mock_row(ui, nodes, ROOT, label, None, 0, expanded, selected, menu_on, out),
+        Some(label) => draw_mock_row(ui, nodes, ROOT, label, None, 0, expanded, selected, menu_on, ring, out),
         None => {
             for n in children_of(nodes, ROOT) {
-                draw_mock_row(ui, nodes, n.id, &n.name, Some(&n.real), 0, expanded, selected, menu_on, out);
+                draw_mock_row(ui, nodes, n.id, &n.name, Some(&n.real), 0, expanded, selected, menu_on, ring, out);
             }
         }
     }
@@ -220,6 +221,7 @@ fn draw_mock_row(
     expanded: &HashSet<u32>,
     selected: Option<u32>,
     menu_on: bool,
+    ring: Option<u32>,
     out: &mut Vec<MockEvent>,
 ) {
     let has_children = nodes.iter().any(|n| n.parent == id);
@@ -238,6 +240,9 @@ fn draw_mock_row(
         let mut r = ui.selectable_label(selected == Some(id), label);
         if let Some(p) = real {
             r = r.on_hover_text(p.display().to_string());
+        }
+        if ring == Some(id) {
+            super::panels::draw_cursor_ring(ui, r.rect);
         }
         if r.clicked() || r.secondary_clicked() {
             out.push(MockEvent::Select(id));
@@ -261,7 +266,7 @@ fn draw_mock_row(
     });
     if is_expanded {
         for c in children_of(nodes, id) {
-            draw_mock_row(ui, nodes, c.id, &c.name, Some(&c.real), depth + 1, expanded, selected, menu_on, out);
+            draw_mock_row(ui, nodes, c.id, &c.name, Some(&c.real), depth + 1, expanded, selected, menu_on, ring, out);
         }
     }
 }
@@ -321,8 +326,13 @@ impl NekoviewApp {
             .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
             .show(ui, |ui| {
                 let m = &self.virtual_mock;
-                draw_mock_tree(ui, &m.nodes, Some("/"), &m.expanded, m.selected, true, &mut events);
+                // フォーカス中は選択ノード（未選択なら `/`）にカーソルリングを出す
+                let ring = (self.focused_pane == FocusPane::VirtualTab).then(|| m.selected.unwrap_or(ROOT));
+                draw_mock_tree(ui, &m.nodes, Some("/"), &m.expanded, m.selected, true, ring, &mut events);
             });
+        if !events.is_empty() {
+            self.focused_pane = FocusPane::VirtualTab;
+        }
         for ev in events {
             match ev {
                 MockEvent::Toggle(id) => toggle(&mut self.virtual_mock.expanded, id),
@@ -369,6 +379,10 @@ impl NekoviewApp {
         );
         if resp.clicked() {
             self.virtual_mock.real_pane_open = !open;
+            // 実ツリー側にフォーカスがあるまま閉じると行き場がなくなるため仮想ツリーへ戻す
+            if open && matches!(self.focused_pane, FocusPane::TreeTab | FocusPane::Drives) {
+                self.focused_pane = FocusPane::VirtualTab;
+            }
         }
     }
 
@@ -428,9 +442,9 @@ impl NekoviewApp {
                         .auto_shrink([false, false])
                         .show(ui, |ui| {
                             if is_real {
-                                draw_mock_tree(ui, &p.real_nodes, None, &p.expanded, p.selected, false, &mut events);
+                                draw_mock_tree(ui, &p.real_nodes, None, &p.expanded, p.selected, false, None, &mut events);
                             } else {
-                                draw_mock_tree(ui, &self.virtual_mock.nodes, Some("/"), &p.expanded, p.selected, false, &mut events);
+                                draw_mock_tree(ui, &self.virtual_mock.nodes, Some("/"), &p.expanded, p.selected, false, None, &mut events);
                             }
                         });
                 });

@@ -68,6 +68,7 @@ impl FolderPaneTab {
 /// 選んでいるかで経路が変わる（本体の中身がタブごとに違うため）:
 ///   RealTree:  FolderTabBar → TreeTab(本体) → Drives → Grid → Filter → MenuBar → (戻る)
 ///   Favorites: FolderTabBar → FavoriteTab(本体) → Grid → Filter → MenuBar → (戻る)  ※Drivesなし
+///   Virtual:   FolderTabBar → VirtualTab(本体) → [実ツリーペイン展張中のみ TreeTab → Drives] → Grid → Filter → MenuBar → (戻る)
 ///   Search:    FolderTabBar → SearchForm(各項目) → SearchHistory → TreeTab → Drives → Grid → Filter → MenuBar → (戻る)
 /// FolderTabBar はタブ切替バー自体（左右キーでswitch_folder_tab、Tab/Shift+Tabでは巡回の
 /// 起点/終点として1箇所だけ現れる）。TreeTab/Drives は実ツリー選択時とSearch選択時の両方で
@@ -77,6 +78,8 @@ pub(crate) enum FocusPane {
     FolderTabBar,
     TreeTab,
     FavoriteTab,
+    /// 仮想フォルダタブの仮想ツリー本体（3M。キー操作は未対応でフォーカス巡回とリングのみ）
+    VirtualTab,
     SearchForm,
     SearchHistory,
     Drives,
@@ -86,15 +89,16 @@ pub(crate) enum FocusPane {
 }
 
 impl FocusPane {
-    fn next(self, tab: FolderPaneTab) -> Self {
+    /// `real_pane_open` は仮想フォルダタブで実ツリーペインが展張中か（他タブでは無視）。
+    fn next(self, tab: FolderPaneTab, real_pane_open: bool) -> Self {
         match self {
             Self::FolderTabBar => match tab {
                 FolderPaneTab::RealTree => Self::TreeTab,
                 FolderPaneTab::Favorites => Self::FavoriteTab,
                 FolderPaneTab::Search => Self::SearchForm,
-                // 3Mでは本体ペインのキー操作は未対応のためグリッドへ直行
-                FolderPaneTab::VirtualFolders => Self::Grid,
+                FolderPaneTab::VirtualFolders => Self::VirtualTab,
             },
+            Self::VirtualTab => if real_pane_open { Self::TreeTab } else { Self::Grid },
             Self::TreeTab => Self::Drives,
             Self::SearchForm => Self::SearchHistory,
             Self::SearchHistory => Self::TreeTab,
@@ -106,11 +110,13 @@ impl FocusPane {
         }
     }
 
-    fn prev(self, tab: FolderPaneTab) -> Self {
+    fn prev(self, tab: FolderPaneTab, real_pane_open: bool) -> Self {
         match self {
             Self::FolderTabBar => Self::MenuBar,
+            Self::VirtualTab => Self::FolderTabBar,
             Self::TreeTab => match tab {
                 FolderPaneTab::Search => Self::SearchHistory,
+                FolderPaneTab::VirtualFolders => Self::VirtualTab,
                 _ => Self::FolderTabBar,
             },
             Self::SearchForm => Self::FolderTabBar,
@@ -119,7 +125,7 @@ impl FocusPane {
             Self::FavoriteTab => Self::FolderTabBar,
             Self::Grid => match tab {
                 FolderPaneTab::Favorites => Self::FavoriteTab,
-                FolderPaneTab::VirtualFolders => Self::FolderTabBar,
+                FolderPaneTab::VirtualFolders if !real_pane_open => Self::VirtualTab,
                 _ => Self::Drives,
             },
             Self::Filter => Self::Grid,
@@ -1125,5 +1131,50 @@ mod search_result_tests {
             history.iter().map(|e| e.label.as_str()).collect::<Vec<_>>(),
             vec!["3回目", "2回目", "1回目"],
         );
+    }
+}
+
+#[cfg(test)]
+mod virtual_focus_order_tests {
+    use super::*;
+
+    fn walk(open: bool, forward: bool) -> Vec<FocusPane> {
+        let mut out = vec![FocusPane::FolderTabBar];
+        let mut cur = FocusPane::FolderTabBar;
+        loop {
+            cur = if forward {
+                cur.next(FolderPaneTab::VirtualFolders, open)
+            } else {
+                cur.prev(FolderPaneTab::VirtualFolders, open)
+            };
+            if cur == FocusPane::FolderTabBar {
+                return out;
+            }
+            out.push(cur);
+        }
+    }
+
+    #[test]
+    fn tab_order_closed_skips_real_tree() {
+        use FocusPane::*;
+        assert_eq!(walk(false, true), [FolderTabBar, VirtualTab, Grid, Filter, MenuBar]);
+    }
+
+    #[test]
+    fn tab_order_open_visits_real_tree_and_drives_after_virtual() {
+        use FocusPane::*;
+        assert_eq!(walk(true, true), [FolderTabBar, VirtualTab, TreeTab, Drives, Grid, Filter, MenuBar]);
+    }
+
+    #[test]
+    fn shift_tab_is_exact_reverse() {
+        for open in [false, true] {
+            let mut fwd = walk(open, true);
+            let mut back = walk(open, false);
+            fwd.remove(0);
+            back.remove(0);
+            back.reverse();
+            assert_eq!(fwd, back, "open={open}");
+        }
     }
 }
