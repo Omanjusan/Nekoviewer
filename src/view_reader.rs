@@ -2165,8 +2165,9 @@ impl ViewerState {
                 .interact(drag_rect, child.id().with("tp_drag"), egui::Sense::drag())
                 .on_hover_text(lang.tool_palette_drag_hint());
             if drag_resp.dragged() {
-                self.tool_palette.pos.0 += drag_resp.drag_delta().x;
-                self.tool_palette.pos.1 += drag_resp.drag_delta().y;
+                // 加算基準は生値ではなく表示中（クランプ済み）の左上。クランプ中に生値へ
+                // 移動量が蓄積して、逆方向へ動かしても長く追従しなくなるのを防ぐ。
+                self.tool_palette.pos = (rect.min.x + drag_resp.drag_delta().x, rect.min.y + drag_resp.drag_delta().y);
             }
         }
 
@@ -5812,6 +5813,8 @@ mod magnifier_flow_tests {
         last_repaint_delay: Option<std::time::Duration>,
         /// 直近のフレームで描かれた文字列（画像情報オーバーレイの検証用）。
         texts: Vec<String>,
+        /// 描画に使う画面サイズ（ウィンドウ変形の再現用に差し替えられる）。
+        screen: egui::Vec2,
     }
 
     fn collect_texts(shape: &egui::epaint::Shape, out: &mut Vec<String>) {
@@ -5852,6 +5855,7 @@ mod magnifier_flow_tests {
                 prepare: None,
                 last_repaint_delay: None,
                 texts: Vec::new(),
+                screen: SCREEN,
             }
         }
 
@@ -5878,7 +5882,7 @@ mod magnifier_flow_tests {
 
         fn run(&mut self, events: Vec<egui::Event>, modifiers: egui::Modifiers) {
             let mut raw = egui::RawInput::default();
-            raw.screen_rect = Some(egui::Rect::from_min_size(egui::Pos2::ZERO, SCREEN));
+            raw.screen_rect = Some(egui::Rect::from_min_size(egui::Pos2::ZERO, self.screen));
             raw.time = Some(self.time);
             raw.max_texture_side = Some(8192);
             raw.modifiers = modifiers;
@@ -6145,6 +6149,102 @@ mod magnifier_flow_tests {
         }
         shift_wheel_in_then_out_then_wait(&mut h);
         assert!(!h.cfg.magnifier_on, "パレットON→OFFのあとの入場が退場しない: {}", h.state());
+    }
+
+    // ── ツールパレットのドラッグ：クランプ中の座標蓄積 ─────────────────────────
+    fn palette_rect(h: &Harness) -> egui::Rect {
+        let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, h.screen);
+        h.viewer.tool_palette_rect(viewport).expect("パレットが表示されていない")
+    }
+
+    /// ヘッダーのドラッグ領域（ロック〜サイズ〜✕の間）の中央。
+    fn palette_drag_handle(h: &Harness) -> egui::Pos2 {
+        let r = palette_rect(h);
+        let mid_w = if h.viewer.tool_palette_header_compact() {
+            ViewerState::TOOL_PALETTE_BTN_W
+        } else {
+            ViewerState::TOOL_PALETTE_WIDE_BTN_W
+        };
+        let min_x = r.min.x + ViewerState::TOOL_PALETTE_BTN_W * 2.0 + mid_w * 2.0;
+        let max_x = r.max.x - ViewerState::TOOL_PALETTE_BTN_W;
+        egui::pos2((min_x + max_x) / 2.0, r.min.y + ViewerState::TOOL_PALETTE_HEADER_H / 2.0)
+    }
+
+    /// ヘッダーを掴んで (0, dy) だけポインタを動かして離す（10px刻み）。
+    fn drag_palette_header_by(h: &mut Harness, dy: f32) {
+        let start = palette_drag_handle(h);
+        let button = |pressed| egui::Event::PointerButton {
+            pos: start,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        h.frame(vec![egui::Event::PointerMoved(start)], egui::Modifiers::NONE);
+        h.frame(vec![button(true)], egui::Modifiers::NONE);
+        let steps = (dy.abs() / 10.0).ceil() as i32;
+        for i in 1..=steps {
+            let y = start.y + dy.signum() * (10.0 * i as f32).min(dy.abs());
+            h.frame(vec![egui::Event::PointerMoved(egui::pos2(start.x, y))], egui::Modifiers::NONE);
+        }
+        h.frame(vec![button(false)], egui::Modifiers::NONE);
+        h.frame(vec![], egui::Modifiers::NONE);
+    }
+
+    #[test]
+    fn palette_drag_right_after_window_shrink_follows_immediately() {
+        let mut h = Harness::with_palette_slot();
+        // 大きな画面の下端に置いた状態（生値が縮小後の範囲を大きく超える）。
+        h.viewer.tool_palette.pos = (100.0, 700.0);
+        h.frame(vec![], egui::Modifiers::NONE);
+        h.screen = egui::vec2(1000.0, 300.0);
+        h.warm_up();
+        let clamped_y = palette_rect(&h).min.y;
+        assert!(clamped_y < 300.0, "縮小後にパレットが範囲外: {clamped_y}");
+
+        drag_palette_header_by(&mut h, -100.0);
+        let after_y = palette_rect(&h).min.y;
+        assert!(
+            after_y <= clamped_y - 50.0,
+            "クランプ中の生値が蓄積され、上へ100pxドラッグしても追従しない: {clamped_y} -> {after_y} (pos={:?})",
+            h.viewer.tool_palette.pos
+        );
+    }
+
+    #[test]
+    fn palette_drag_pressed_against_edge_does_not_accumulate() {
+        let mut h = Harness::with_palette_slot();
+        let bottom_y = {
+            h.viewer.tool_palette.pos = (100.0, 10_000.0);
+            h.warm_up();
+            palette_rect(&h).min.y
+        };
+        // 下端に押し付けたままさらに下へドラッグし続ける（表示は動かない）。
+        drag_palette_header_by(&mut h, 300.0);
+        drag_palette_header_by(&mut h, 300.0);
+        assert_eq!(palette_rect(&h).min.y, bottom_y);
+        // 逆方向へ動かせば、蓄積分を消費せず即座に追従するはず。
+        drag_palette_header_by(&mut h, -100.0);
+        let after_y = palette_rect(&h).min.y;
+        assert!(
+            after_y <= bottom_y - 50.0,
+            "端に押し付けた分が蓄積され、逆方向へ動かしても追従しない: {bottom_y} -> {after_y} (pos={:?})",
+            h.viewer.tool_palette.pos
+        );
+    }
+
+    /// 案Aの性質：ドラッグしなければ、ウィンドウを元の大きさに戻すとパレットも元の位置へ戻る。
+    #[test]
+    fn palette_returns_to_original_position_when_window_restored_without_drag() {
+        let mut h = Harness::with_palette_slot();
+        h.viewer.tool_palette.pos = (100.0, 600.0);
+        h.warm_up();
+        let original = palette_rect(&h).min;
+        h.screen = egui::vec2(1000.0, 300.0);
+        h.warm_up();
+        assert_ne!(palette_rect(&h).min, original);
+        h.screen = SCREEN;
+        h.warm_up();
+        assert_eq!(palette_rect(&h).min, original);
     }
 }
 
