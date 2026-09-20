@@ -564,8 +564,6 @@ pub struct ViewerState {
     magnifier_bar_active_at: Option<f64>,
     /// ノッチ倍率／目盛りの詳細・簡易を切り替えた。次の `ViewerOutput` で保存を促して下ろす。
     magnifier_settings_dirty: bool,
-    /// 自動退場の滞留判定の起点（最小倍率に着いた、または最後に操作した時刻）。None = 対象外。
-    magnifier_min_since: Option<f64>,
     /// ページ送りで引き継ぐ倍率（フィット相対 = 倍率 ÷ フィット倍率）。次ページのテクスチャが届くまで
     /// 虫眼鏡が一時的に非アクティブになっても失われないよう、`magnifier_view` とは別に持つ。
     /// モードOFFで破棄する。
@@ -819,7 +817,6 @@ impl ViewerState {
             magnifier_ref_len: 0.0,
             magnifier_bar_active_at: None,
             magnifier_settings_dirty: false,
-            magnifier_min_since: None,
             magnifier_carry_rel: None,
             magnifier_cursor: None,
             max_texture_side: MAX_TEXTURE_SIDE_FALLBACK,
@@ -913,7 +910,6 @@ impl ViewerState {
             magnifier_ref_len: 0.0,
             magnifier_bar_active_at: None,
             magnifier_settings_dirty: false,
-            magnifier_min_since: None,
             magnifier_carry_rel: None,
             magnifier_cursor: None,
             max_texture_side: MAX_TEXTURE_SIDE_FALLBACK,
@@ -1702,7 +1698,6 @@ impl ViewerState {
             })
         {
             cfg.magnifier_on = true;
-            cfg.magnifier_entered_by_default = true;
         }
 
         let rotation_angle = self.manual_rotation_angle(cfg);
@@ -2577,7 +2572,7 @@ impl ViewerState {
             // ── 虫眼鏡：ホイール拡縮（ポインタ基準）とスライダーバー ────────────────────
             // パレット上のホイールは握りつぶす。バー上のホイールは表示中心基準で拡縮する。
             // バーはモードON中は（非表示でも）常にイベントを吸収し、ホバーで再表示される。
-            let bar_rects = frame.magnifier.then(|| cfg.magnifier.bar.resolve(viewport_rect, true, cfg.magnifier_entered_by_default));
+            let bar_rects = frame.magnifier.then(|| cfg.magnifier.bar.resolve(viewport_rect, true));
             let pointer_in_bar = bar_rects.zip(input.hover_pos).is_some_and(|(b, p)| {
                 b.total.expand(crate::magnifier::BAR_HOVER_SLOP).contains(p)
             });
@@ -2591,11 +2586,13 @@ impl ViewerState {
                 };
                 let target = self.magnifier_target(frame);
                 self.update_magnifier(viewport_rect, target, anchor, input.wheel_notches, &cfg.magnifier);
-                if let Some(bar) = bar_rects {
-                    self.draw_magnifier_bar(ui.ctx(), viewport_rect, target, &bar, pointer_in_bar, input.wheel_notches != 0.0, input.time, &mut cfg.magnifier);
+                if let Some(bar) = bar_rects
+                    && self.draw_magnifier_bar(ui.ctx(), viewport_rect, target, &bar, pointer_in_bar, input.wheel_notches != 0.0, input.time, &mut cfg.magnifier)
+                {
+                    // モード終了ボタン。次フレームで非アクティブ側の後始末（倍率の破棄など）が走る。
+                    cfg.magnifier_on = false;
+                    ui.ctx().request_repaint();
                 }
-                // 最小倍率での操作（ホイールの空振り・バーの上）は、滞留の起点を取り直す操作とみなす。
-                self.tick_magnifier_auto_exit(ui.ctx(), cfg, input.time, input.wheel_notches != 0.0 || pointer_in_bar);
                 // 次のページ送りへ引き継ぐ倍率（フィット相対）。スライダーでの操作も含めて毎フレーム更新する。
                 if let (Some(v), Some(t)) = (self.magnifier_view, target) {
                     self.magnifier_carry_rel = Some(v.scale / crate::magnifier::fit_scale(viewport_rect.size(), t.img));
@@ -2603,7 +2600,6 @@ impl ViewerState {
             } else {
                 self.magnifier_view = None;
                 self.magnifier_bar_active_at = None;
-                self.magnifier_min_since = None;
                 // テクスチャ待ちなどで一時的に非アクティブなだけなら、引き継ぎ状態は残す。
                 if !cfg.magnifier_on {
                     self.magnifier_key = None;
@@ -4067,35 +4063,6 @@ impl ViewerState {
         self.magnifier_view = Some(view);
     }
 
-    /// 既定動作で入場した虫眼鏡モードの自動退場。倍率が最小（フィット）のまま、最後の操作から
-    /// `auto_exit_dwell_secs` 止まったらモードをOFFにする。キーの状態は見ない。
-    /// パレットで明示的にONにした場合や、`auto_exit` がOFFの場合は対象外。
-    fn tick_magnifier_auto_exit(&mut self, ctx: &egui::Context, cfg: &mut ViewerConfig, time: f64, activity: bool) {
-        let eligible = cfg.magnifier_on
-            && cfg.magnifier_entered_by_default
-            && cfg.magnifier.auto_exit()
-            && self.magnifier_view.is_some();
-        let dwell = cfg.magnifier.auto_exit_dwell_secs() as f64;
-        let (since, exit) = crate::magnifier::dwell_step(
-            self.magnifier_min_since,
-            time,
-            eligible && self.magnifier_at_fit,
-            activity,
-            dwell,
-        );
-        self.magnifier_min_since = since;
-        if exit {
-            cfg.magnifier_on = false;
-            cfg.magnifier_entered_by_default = false;
-            self.magnifier_min_since = None;
-            ctx.request_repaint();
-        } else if let Some(start) = since {
-            // 入力が無くても、退場の時刻ちょうどに再描画させる。
-            let remaining = (dwell - (time - start)).max(0.0);
-            ctx.request_repaint_after(Duration::from_secs_f64(remaining + 0.02));
-        }
-    }
-
     /// 虫眼鏡カーソルの画像（画面の拡大率に合わせた大きさ）。同じ大きさの間は使い回す。
     fn magnifier_cursor_image(&mut self, pixels_per_point: f32) -> egui::CustomCursorImage {
         let size = crate::magnifier_cursor::cursor_size_for_scale(pixels_per_point);
@@ -4118,6 +4085,7 @@ impl ViewerState {
     /// 目盛りは原寸(100%)基準。操作は表示中心基準の拡縮。全体を click+drag の土台で覆い、
     /// 背面（画像のドラッグ・クリック・端ゾーン）へイベントを通さない。
     /// 自動ハイド中は描画だけをやめ、吸収は続ける（ホバーで再表示される）。
+    /// モード終了ボタンが押されたら true を返す（モードのOFFは呼び出し側が行う）。
     #[allow(clippy::too_many_arguments)]
     fn draw_magnifier_bar(
         &mut self,
@@ -4129,9 +4097,9 @@ impl ViewerState {
         wheel_active: bool,
         time: f64,
         cfg: &mut crate::magnifier::MagnifierConfig,
-    ) {
+    ) -> bool {
         use crate::magnifier::*;
-        let (Some(target), Some(view)) = (target, self.magnifier_view) else { return };
+        let (Some(target), Some(view)) = (target, self.magnifier_view) else { return false };
         let img = target.img;
         let vp = viewport.size();
         let fit = fit_scale(vp, img);
@@ -4155,10 +4123,9 @@ impl ViewerState {
         let track = track_rect(rects.body);
         let enabled = range.1 > range.0;
         let mut pressed_x: Option<f32> = None;
-        let (mut step_clicked, mut detail_clicked, mut auto_exit_clicked) = (false, false, false);
+        let (mut step_clicked, mut detail_clicked, mut exit_clicked) = (false, false, false);
         let lang = crate::i18n::t();
         let (step_label, detail_on, ratio) = (cfg.notch_step().label(), cfg.detail_ticks(), cfg.notch_ratio());
-        let auto_exit_on = cfg.auto_exit();
         egui::Area::new(egui::Id::new("magnifier_bar"))
             .order(egui::Order::Foreground)
             .fixed_pos(rects.total.min)
@@ -4184,40 +4151,34 @@ impl ViewerState {
                     ui.interact(r, egui::Id::new("magnifier_detail_btn"), egui::Sense::click())
                         .on_hover_text(lang.magnifier_detail_hint())
                 });
-                let auto_exit_resp = rects.auto_exit_button.map(|r| {
-                    ui.interact(r, egui::Id::new("magnifier_auto_exit_btn"), egui::Sense::click())
-                        .on_hover_text(lang.magnifier_auto_exit_hint())
+                let exit_resp = rects.exit_button.map(|r| {
+                    ui.interact(r, egui::Id::new("magnifier_exit_btn"), egui::Sense::click())
+                        .on_hover_text(lang.magnifier_exit_hint())
                 });
                 step_clicked = step_resp.as_ref().is_some_and(|r| r.clicked());
                 detail_clicked = detail_resp.as_ref().is_some_and(|r| r.clicked());
-                auto_exit_clicked = auto_exit_resp.as_ref().is_some_and(|r| r.clicked());
+                exit_clicked = exit_resp.as_ref().is_some_and(|r| r.clicked());
                 if alpha <= 0.0 {
                     return;
                 }
                 let a = |base: u8| (base as f32 * alpha).round() as u8;
                 let painter = ui.painter();
                 painter.rect_filled(rects.total, 6.0, egui::Color32::from_black_alpha(a(200)));
-                // `active` が false（機能がOFF）のボタンは、背景と文字を暗くして状態が分かるようにする。
-                let paint_button = |rect: Option<egui::Rect>, resp: &Option<egui::Response>, text: &str, active: bool| {
+                let paint_button = |rect: Option<egui::Rect>, resp: &Option<egui::Response>, text: &str| {
                     let (Some(rect), Some(resp)) = (rect, resp) else { return };
-                    let fill = egui::Color32::from_white_alpha(a(match (active, resp.hovered()) {
-                        (true, true) => 70,
-                        (true, false) => 35,
-                        (false, true) => 40,
-                        (false, false) => 12,
-                    }));
+                    let fill = egui::Color32::from_white_alpha(a(if resp.hovered() { 70 } else { 35 }));
                     painter.rect_filled(rect, 4.0, fill);
                     painter.text(
                         rect.center(),
                         egui::Align2::CENTER_CENTER,
                         text,
                         egui::FontId::proportional(11.0),
-                        egui::Color32::from_white_alpha(a(if active { 235 } else { 130 })),
+                        egui::Color32::from_white_alpha(a(235)),
                     );
                 };
-                paint_button(rects.step_button, &step_resp, step_label, true);
-                paint_button(rects.detail_button, &detail_resp, lang.magnifier_detail_button_label(detail_on), true);
-                paint_button(rects.auto_exit_button, &auto_exit_resp, lang.magnifier_auto_exit_button_label(auto_exit_on), auto_exit_on);
+                paint_button(rects.step_button, &step_resp, step_label);
+                paint_button(rects.detail_button, &detail_resp, lang.magnifier_detail_button_label(detail_on));
+                paint_button(rects.exit_button, &exit_resp, lang.magnifier_exit_button_label());
 
                 let cy = track.center().y;
                 let x_of = |scale: f32| track.left() + scale_to_t(scale, range) * track.width();
@@ -4265,10 +4226,8 @@ impl ViewerState {
             self.magnifier_settings_dirty = true;
             self.magnifier_bar_active_at = Some(time);
         }
-        // 自動退場は永続化しない（この回の虫眼鏡だけの切替）。保存は促さない。
-        if auto_exit_clicked {
-            cfg.toggle_auto_exit();
-            self.magnifier_bar_active_at = Some(time);
+        if exit_clicked {
+            return true;
         }
 
         if let Some(x) = pressed_x {
@@ -4280,6 +4239,7 @@ impl ViewerState {
             }
             self.magnifier_bar_active_at = Some(time);
         }
+        false
     }
 
     fn render_single(
@@ -5929,13 +5889,10 @@ mod magnifier_flow_tests {
 
         fn state(&self) -> String {
             format!(
-                "on={} by_default={} auto_exit={} view={:?} at_fit={} min_since={:?}",
+                "on={} view={:?} at_fit={}",
                 self.cfg.magnifier_on,
-                self.cfg.magnifier_entered_by_default,
-                self.cfg.magnifier.auto_exit(),
                 self.viewer.magnifier_view.map(|v| v.scale),
                 self.viewer.magnifier_at_fit,
-                self.viewer.magnifier_min_since,
             )
         }
     }
@@ -6010,58 +5967,78 @@ mod magnifier_flow_tests {
         assert!((shown - scale * 0.5).abs() < 0.006, "shown={shown} scale={scale}");
     }
 
-    fn shift_wheel_in_then_out_then_wait(h: &mut Harness) {
-        // Shift+ホイール上で入場して拡大。
+    /// Shift+ホイールで入場して拡大し、最小まで縮小する。最小に着いても、待っても退場しない。
+    fn shift_wheel_in_then_shrink_to_min(h: &mut Harness) {
         h.wheel(true, egui::Modifiers::SHIFT);
         assert!(h.cfg.magnifier_on, "入場していない: {}", h.state());
-        assert!(h.cfg.magnifier_entered_by_default, "既定動作の入場と記録されていない: {}", h.state());
         h.wheel(true, egui::Modifiers::SHIFT);
         assert!(h.viewer.magnifier_view.is_some_and(|v| !h.viewer.magnifier_at_fit && v.scale > 0.0), "拡大していない: {}", h.state());
-        // 最小まで縮小。
         for _ in 0..8 {
             h.wheel(false, egui::Modifiers::SHIFT);
         }
         assert!(h.viewer.magnifier_at_fit, "最小に着いていない: {}", h.state());
-        assert!(h.cfg.magnifier_on, "最小に着いた直後に退場している: {}", h.state());
-        // 入力なしで 1 秒強待つ。
         h.idle(0.5);
-        assert!(h.cfg.magnifier_on, "0.5秒で退場している: {}", h.state());
-        h.idle(0.7);
+        h.idle(3.0);
+        assert!(h.cfg.magnifier_on, "最小で待つと退場してしまう: {}", h.state());
+    }
+
+    /// バーのモード終了ボタンを、実際のクリック操作（ホバー→押下→離す）で押す。
+    fn click_exit_button(h: &mut Harness) {
+        let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, h.screen);
+        let center = h
+            .cfg
+            .magnifier
+            .bar
+            .resolve(viewport, true)
+            .exit_button
+            .expect("終了ボタンの領域がない")
+            .center();
+        let button = |pressed| egui::Event::PointerButton {
+            pos: center,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        h.frame(vec![egui::Event::PointerMoved(center)], egui::Modifiers::NONE);
+        h.frame(vec![button(true)], egui::Modifiers::NONE);
+        h.frame(vec![button(false)], egui::Modifiers::NONE);
+        h.frame(vec![], egui::Modifiers::NONE);
     }
 
     #[test]
-    fn shift_wheel_entry_exits_after_one_second_at_minimum() {
+    fn shift_wheel_entry_stays_until_the_exit_button_is_pressed() {
         let mut h = Harness::new();
-        shift_wheel_in_then_out_then_wait(&mut h);
-        assert!(!h.cfg.magnifier_on, "1.2秒待っても退場しない: {}", h.state());
-        assert!(!h.cfg.magnifier_entered_by_default);
+        shift_wheel_in_then_shrink_to_min(&mut h);
+        click_exit_button(&mut h);
+        assert!(!h.cfg.magnifier_on, "終了ボタンで退場しない: {}", h.state());
+        assert!(h.viewer.magnifier_view.is_none(), "退場後も倍率が残っている: {}", h.state());
+        // 退場後は、また Shift+ホイールで入場できる。
+        h.wheel(true, egui::Modifiers::SHIFT);
+        assert!(h.cfg.magnifier_on, "退場後に再入場できない: {}", h.state());
     }
 
     #[test]
-    fn a_repaint_is_requested_so_the_exit_is_evaluated_without_further_input() {
+    fn exit_button_works_at_any_zoom_not_only_at_minimum() {
         let mut h = Harness::new();
         h.wheel(true, egui::Modifiers::SHIFT);
-        for _ in 0..8 {
-            h.wheel(false, egui::Modifiers::SHIFT);
-        }
-        assert!(h.viewer.magnifier_at_fit, "{}", h.state());
-        // 入力のないフレーム。次回の再描画が、退場の時刻（約1秒後）までに予約されていること。
-        h.idle(0.05);
-        let delay = h.last_repaint_delay.expect("root viewport output");
-        assert!(delay <= std::time::Duration::from_millis(1100), "再描画が予約されていない: {delay:?} / {}", h.state());
+        h.wheel(true, egui::Modifiers::SHIFT);
+        assert!(!h.viewer.magnifier_at_fit, "拡大していない: {}", h.state());
+        click_exit_button(&mut h);
+        assert!(!h.cfg.magnifier_on, "拡大中に終了ボタンで退場しない: {}", h.state());
     }
 
     #[test]
-    fn exits_with_the_tool_palette_visible() {
+    fn exit_button_works_with_the_tool_palette_visible() {
         let mut h = Harness::new();
         h.cfg.tool_palette.visible = true;
         h.frame(vec![], egui::Modifiers::NONE);
-        shift_wheel_in_then_out_then_wait(&mut h);
+        shift_wheel_in_then_shrink_to_min(&mut h);
+        click_exit_button(&mut h);
         assert!(!h.cfg.magnifier_on, "パレット表示中に退場しない: {}", h.state());
     }
 
     #[test]
-    fn exits_even_when_the_texture_is_swapped_to_a_larger_one_meanwhile() {
+    fn exit_button_works_after_the_texture_is_swapped_to_a_larger_one() {
         let mut h = Harness::new();
         h.wheel(true, egui::Modifiers::SHIFT);
         h.wheel(true, egui::Modifiers::SHIFT);
@@ -6074,31 +6051,8 @@ mod magnifier_flow_tests {
             h.frame(vec![], egui::Modifiers::NONE);
         }
         assert!(h.cfg.magnifier_on, "入れ替えで入場が解除された: {}", h.state());
-        for _ in 0..10 {
-            h.wheel(false, egui::Modifiers::SHIFT);
-        }
-        assert!(h.viewer.magnifier_at_fit, "最小に着いていない: {}", h.state());
-        h.idle(0.5);
-        h.idle(0.7);
+        click_exit_button(&mut h);
         assert!(!h.cfg.magnifier_on, "テクスチャ入れ替え後に退場しない: {}", h.state());
-    }
-
-    #[test]
-    fn pointer_resting_on_the_bar_keeps_the_mode() {
-        // ポインタがバーの上にある間は「操作中」とみなす（設計どおり）。離れれば退場する。
-        let mut h = Harness::new();
-        h.wheel(true, egui::Modifiers::SHIFT);
-        for _ in 0..8 {
-            h.wheel(false, egui::Modifiers::SHIFT);
-        }
-        let on_bar = egui::pos2(SCREEN.x / 2.0, SCREEN.y - 24.0 - 30.0);
-        h.frame(vec![egui::Event::PointerMoved(on_bar)], egui::Modifiers::NONE);
-        h.idle(2.0);
-        assert!(h.cfg.magnifier_on, "バーの上なのに退場した: {}", h.state());
-        h.frame(vec![egui::Event::PointerMoved(egui::pos2(100.0, 100.0))], egui::Modifiers::NONE);
-        h.idle(0.5);
-        h.idle(0.7);
-        assert!(!h.cfg.magnifier_on, "バーから離れても退場しない: {}", h.state());
     }
 
     /// パレットの虫眼鏡マスを、実際のクリック操作（押下→離す）で切り替える。
@@ -6122,33 +6076,18 @@ mod magnifier_flow_tests {
     }
 
     #[test]
-    fn real_palette_clicks_on_then_off_then_shift_entry_exits() {
+    fn real_palette_clicks_toggle_the_mode_and_the_exit_button_ends_it() {
         let mut h = Harness::with_palette_slot();
         assert!(!h.cfg.magnifier_on);
         click_palette_magnifier_slot(&mut h);
-        assert!(h.cfg.magnifier_on && !h.cfg.magnifier_entered_by_default, "パレットのクリックでONにならない: {}", h.state());
+        assert!(h.cfg.magnifier_on, "パレットのクリックでONにならない: {}", h.state());
         click_palette_magnifier_slot(&mut h);
         assert!(!h.cfg.magnifier_on, "パレットのクリックでOFFにならない: {}", h.state());
-        shift_wheel_in_then_out_then_wait(&mut h);
-        assert!(!h.cfg.magnifier_on, "パレット操作のあとの入場が退場しない: {}", h.state());
-    }
-
-    #[test]
-    fn shift_wheel_entry_after_palette_on_then_off_also_exits() {
-        let mut h = Harness::new();
-        // パレットでON → 画面を描画 → OFF。
-        crate::tool_palette::execute_toggle(&mut h.cfg, crate::tool_palette::ToggleKind::Magnifier);
-        assert!(h.cfg.magnifier_on && !h.cfg.magnifier_entered_by_default);
-        for _ in 0..3 {
-            h.frame(vec![], egui::Modifiers::NONE);
-        }
-        crate::tool_palette::execute_toggle(&mut h.cfg, crate::tool_palette::ToggleKind::Magnifier);
-        assert!(!h.cfg.magnifier_on);
-        for _ in 0..3 {
-            h.frame(vec![], egui::Modifiers::NONE);
-        }
-        shift_wheel_in_then_out_then_wait(&mut h);
-        assert!(!h.cfg.magnifier_on, "パレットON→OFFのあとの入場が退場しない: {}", h.state());
+        // パレットで入場した場合も、終了ボタンで抜けられる。
+        click_palette_magnifier_slot(&mut h);
+        assert!(h.cfg.magnifier_on);
+        click_exit_button(&mut h);
+        assert!(!h.cfg.magnifier_on, "パレット入場後に終了ボタンで退場しない: {}", h.state());
     }
 
     // ── ツールパレットのドラッグ：クランプ中の座標蓄積 ─────────────────────────

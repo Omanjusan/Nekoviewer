@@ -1051,7 +1051,6 @@ impl NekoviewApp {
         {
             let mut cfg = self.viewer_cfg.lock().unwrap();
             cfg.magnifier_on = false;
-            cfg.magnifier_entered_by_default = false;
         }
         self.flush_current_sort_if_changed();
         self.flush_current_bookmark_if_enabled();

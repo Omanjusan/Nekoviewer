@@ -3079,23 +3079,20 @@ impl Lang {
         }
     }
 
-    /// 自動退場ボタンのラベル（現在の状態を表示する）。
-    pub fn magnifier_auto_exit_button_label(self, on: bool) -> &'static str {
-        match (self, on) {
-            (Lang::Japanese, true)  => "自動退場 ON",
-            (Lang::Japanese, false) => "自動退場 OFF",
-            (Lang::English,  true)  => "Auto exit ON",
-            (Lang::English,  false) => "Auto exit OFF",
-            (Lang::Chinese,  true)  => "自动退出 ON",
-            (Lang::Chinese,  false) => "自动退出 OFF",
+    /// モード終了ボタンのラベル。
+    pub fn magnifier_exit_button_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "モード終了",
+            Lang::English  => "Exit",
+            Lang::Chinese  => "退出",
         }
     }
 
-    pub fn magnifier_auto_exit_hint(self) -> &'static str {
+    pub fn magnifier_exit_hint(self) -> &'static str {
         match self {
-            Lang::Japanese => "最小倍率で止まったら虫眼鏡を自動で終了する（クリックで切替）",
-            Lang::English  => "Leave the magnifier automatically when it rests at the minimum zoom (click to toggle)",
-            Lang::Chinese  => "在最小倍率停留后自动退出放大镜（点击切换）",
+            Lang::Japanese => "虫眼鏡モードを終了する",
+            Lang::English  => "Leave the magnifier mode",
+            Lang::Chinese  => "退出放大镜模式",
         }
     }
 

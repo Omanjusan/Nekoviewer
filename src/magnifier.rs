@@ -12,12 +12,6 @@ const ACTUAL_SNAP_EPS: f32 = 1e-3;
 pub const DEFAULT_MAX_SCALE: f32 = 4.0;
 const MAX_SCALE_RANGE: (f32, f32) = (1.0, 32.0);
 
-/// 既定動作で入場した虫眼鏡モードの自動退場: 倍率が最小（フィット）のまま、最後の操作から
-/// この秒数止まったら退場する。
-pub const DEFAULT_AUTO_EXIT_DWELL_SECS: f32 = 1.0;
-const AUTO_EXIT_DWELL_RANGE: (f32, f32) = (0.3, 10.0);
-const AUTO_EXIT_DWELL_STEP: f32 = 0.1;
-
 pub const DEFAULT_AUTOHIDE_SECS: f32 = 2.0;
 const AUTOHIDE_SECS_RANGE: (f32, f32) = (0.1, 30.0);
 const AUTOHIDE_SECS_STEP: f32 = 0.1;
@@ -106,8 +100,8 @@ pub const BAR_LABEL_H: f32 = 14.0;
 /// トラック両端の余白(px)。つまみが端で切れないようにする。
 const BAR_TRACK_INSET: f32 = 8.0;
 const DEFAULT_BUTTON_SIZE: Vec2 = Vec2::new(44.0, 24.0);
-/// 自動退場ボタンは文字が長い（「自動退場 OFF」など）ので、少し広い。
-const DEFAULT_AUTO_EXIT_BUTTON_SIZE: Vec2 = Vec2::new(84.0, 24.0);
+/// モード終了ボタンは文字が長い（「モード終了」など）ので、少し広い。
+const DEFAULT_EXIT_BUTTON_SIZE: Vec2 = Vec2::new(64.0, 24.0);
 const BUTTON_SIZE_RANGE: (f32, f32) = (16.0, 96.0);
 
 fn clamp_finite(v: f32, (lo, hi): (f32, f32), current: f32) -> f32 {
@@ -126,7 +120,7 @@ pub struct BarLayout {
     body_height: f32,
     step_button: Vec2,
     detail_button: Vec2,
-    auto_exit_button: Vec2,
+    exit_button: Vec2,
 }
 
 impl Default for BarLayout {
@@ -136,7 +130,7 @@ impl Default for BarLayout {
             body_height: DEFAULT_BAR_BODY_HEIGHT,
             step_button: DEFAULT_BUTTON_SIZE,
             detail_button: DEFAULT_BUTTON_SIZE,
-            auto_exit_button: DEFAULT_AUTO_EXIT_BUTTON_SIZE,
+            exit_button: DEFAULT_EXIT_BUTTON_SIZE,
         }
     }
 }
@@ -147,7 +141,7 @@ impl BarLayout {
     pub fn body_height(&self) -> f32 { self.body_height }
     pub fn step_button_size(&self) -> Vec2 { self.step_button }
     pub fn detail_button_size(&self) -> Vec2 { self.detail_button }
-    pub fn auto_exit_button_size(&self) -> Vec2 { self.auto_exit_button }
+    pub fn exit_button_size(&self) -> Vec2 { self.exit_button }
 
     /// 範囲・刻み（0.5%）に丸めて適用し、実際に適用した値を返す。非有限値は無視する。
     pub fn set_width_pct(&mut self, pct: f32) -> f32 {
@@ -176,25 +170,22 @@ impl BarLayout {
         self.detail_button
     }
 
-    /// 子: 自動退場ボタンのサイズ(px)。軸ごとに範囲へ丸める。
-    pub fn set_auto_exit_button_size(&mut self, size: Vec2) -> Vec2 {
-        self.auto_exit_button = clamp_size(size, self.auto_exit_button);
-        self.auto_exit_button
+    /// 子: モード終了ボタンのサイズ(px)。軸ごとに範囲へ丸める。
+    pub fn set_exit_button_size(&mut self, size: Vec2) -> Vec2 {
+        self.exit_button = clamp_size(size, self.exit_button);
+        self.exit_button
     }
 
     /// ビューポートの下端中央に置くバーの各矩形を解決する。全体幅は親の割合を基準にするが、
     /// パーツが収まる最小幅は割らない（ただしビューポート幅は超えない）。
     /// `show_buttons` が false の間はボタンの領域を確保せず、全幅を本体に使う。
-    /// `show_auto_exit` は自動退場ボタン（既定動作で入場したときだけ出す）の領域を足すか。
-    pub fn resolve(&self, viewport: Rect, show_buttons: bool, show_auto_exit: bool) -> BarRects {
-        // 左から順に並べるボタン（ノッチ倍率・詳細簡易・自動退場）。
+    pub fn resolve(&self, viewport: Rect, show_buttons: bool) -> BarRects {
+        // 左から順に並べるボタン（ノッチ倍率・詳細簡易・モード終了）。
         let mut sizes = Vec::new();
         if show_buttons {
             sizes.push(self.step_button);
             sizes.push(self.detail_button);
-            if show_auto_exit {
-                sizes.push(self.auto_exit_button);
-            }
+            sizes.push(self.exit_button);
         }
         // 各ボタンの右に隙間が1つずつ（最後のボタンと本体の間を含む）。
         let buttons_w: f32 = sizes.iter().map(|s| s.x + BAR_PAD).sum();
@@ -223,13 +214,13 @@ impl BarLayout {
         });
         let step_button = button_rects.next();
         let detail_button = button_rects.next();
-        let auto_exit_button = button_rects.next();
+        let exit_button = button_rects.next();
         let body_left = x;
         let body = Rect::from_min_max(
             Pos2::new(body_left, inner.center().y - self.body_height / 2.0),
             Pos2::new(inner.right(), inner.center().y + self.body_height / 2.0),
         );
-        BarRects { total, body, step_button, detail_button, auto_exit_button }
+        BarRects { total, body, step_button, detail_button, exit_button }
     }
 }
 
@@ -248,7 +239,7 @@ pub struct BarRects {
     pub body: Rect,
     pub step_button: Option<Rect>,
     pub detail_button: Option<Rect>,
-    pub auto_exit_button: Option<Rect>,
+    pub exit_button: Option<Rect>,
 }
 
 fn clamp_size(size: Vec2, current: Vec2) -> Vec2 {
@@ -267,8 +258,6 @@ pub struct MagnifierConfig {
     autohide_secs: f32,
     notch_step: NotchStep,
     detail_ticks: bool,
-    auto_exit: bool,
-    auto_exit_dwell_secs: f32,
     pub bar: BarLayout,
 }
 
@@ -279,8 +268,6 @@ impl Default for MagnifierConfig {
             autohide_secs: DEFAULT_AUTOHIDE_SECS,
             notch_step: NotchStep::default(),
             detail_ticks: false,
-            auto_exit: true,
-            auto_exit_dwell_secs: DEFAULT_AUTO_EXIT_DWELL_SECS,
             bar: BarLayout::default(),
         }
     }
@@ -298,29 +285,6 @@ impl MagnifierConfig {
     pub fn notch_ratio(&self) -> f32 { self.notch_step.ratio() }
     /// true = 目盛りを詳細（毎ノッチ）で表示、false = 簡易（原寸基準の×2ごと）。
     pub fn detail_ticks(&self) -> bool { self.detail_ticks }
-
-    /// 既定動作（ホイールの拡縮割り当て）で入場したとき、最小倍率で止まったら自動で退場するか。
-    /// false なら退場しない（GUI設定から「自動退場を行わない」を選べるようにする受け皿）。
-    pub fn auto_exit(&self) -> bool { self.auto_exit }
-    /// 自動退場までの、最小倍率での滞留時間(秒)。
-    pub fn auto_exit_dwell_secs(&self) -> f32 { self.auto_exit_dwell_secs }
-
-    pub fn set_auto_exit(&mut self, on: bool) { self.auto_exit = on; }
-
-    /// 自動退場のON/OFFを切り替え、適用後の値を返す。
-    pub fn toggle_auto_exit(&mut self) -> bool {
-        self.auto_exit = !self.auto_exit;
-        self.auto_exit
-    }
-
-    /// 0.1秒刻みに丸める。
-    pub fn set_auto_exit_dwell_secs(&mut self, secs: f32) -> f32 {
-        if secs.is_finite() {
-            self.auto_exit_dwell_secs = round_to_step(secs, AUTO_EXIT_DWELL_STEP)
-                .clamp(AUTO_EXIT_DWELL_RANGE.0, AUTO_EXIT_DWELL_RANGE.1);
-        }
-        self.auto_exit_dwell_secs
-    }
 
     pub fn set_notch_step(&mut self, step: NotchStep) { self.notch_step = step; }
 
@@ -595,19 +559,6 @@ pub fn bar_alpha(idle_secs: f32, autohide_secs: f32, hovered: bool) -> f32 {
         return 1.0;
     }
     (1.0 - (idle_secs - autohide_secs) / BAR_FADE_SECS).clamp(0.0, 1.0)
-}
-
-/// 自動退場の滞留判定（1フレーム分）。`at_min`（最小倍率で、退場の対象）でなければ起点を捨てる。
-/// 最小に着いた時点、または最小のまま操作（`activity`）があった時点を起点にし、そこから
-/// `dwell_secs` 経過したら退場（2つ目の戻り値が true）。戻り値の1つ目は次フレームへ持ち越す起点。
-pub fn dwell_step(since: Option<f64>, now: f64, at_min: bool, activity: bool, dwell_secs: f64) -> (Option<f64>, bool) {
-    if !at_min {
-        return (None, false);
-    }
-    match since {
-        Some(start) if !activity => (Some(start), now - start >= dwell_secs),
-        _ => (Some(now), false),
-    }
 }
 
 /// ページ送りで倍率を引き継いだ、新ページの表示状態。倍率はフィット相対（`rel` × 新ページの
@@ -893,7 +844,7 @@ mod tests {
 
     #[test]
     fn bar_is_centered_at_bottom_with_default_width() {
-        let r = BarLayout::default().resolve(viewport(), false, false);
+        let r = BarLayout::default().resolve(viewport(), false);
         assert!((r.total.width() - 1920.0 * 0.2).abs() < 1e-3);
         assert!((r.total.center().x - viewport().center().x).abs() < 1e-3);
         assert!((viewport().bottom() - BAR_BOTTOM_MARGIN - r.total.bottom()).abs() < 1e-3);
@@ -906,13 +857,13 @@ mod tests {
     fn bar_width_follows_parent_percent() {
         let mut layout = BarLayout::default();
         layout.set_width_pct(40.0);
-        let r = layout.resolve(viewport(), false, false);
+        let r = layout.resolve(viewport(), false);
         assert!((r.total.width() - 1920.0 * 0.4).abs() < 1e-3);
     }
 
     #[test]
     fn buttons_sit_left_of_body_inside_total() {
-        let r = BarLayout::default().resolve(viewport(), true, false);
+        let r = BarLayout::default().resolve(viewport(), true);
         let (step, detail) = (r.step_button.unwrap(), r.detail_button.unwrap());
         for rect in [step, detail, r.body] {
             assert!(r.total.contains_rect(rect), "{rect:?} not in {:?}", r.total);
@@ -925,7 +876,7 @@ mod tests {
 
     #[test]
     fn track_sits_below_label_row_inside_body() {
-        let r = BarLayout::default().resolve(viewport(), false, false);
+        let r = BarLayout::default().resolve(viewport(), false);
         let track = track_rect(r.body);
         assert!(r.body.contains_rect(track));
         assert!((track.top() - r.body.top() - BAR_LABEL_H).abs() < 1e-3);
@@ -933,43 +884,34 @@ mod tests {
     }
 
     #[test]
-    fn auto_exit_button_is_added_after_the_other_buttons() {
+    fn exit_button_is_added_after_the_other_buttons() {
         let layout = BarLayout::default();
-        let without = layout.resolve(viewport(), true, false);
-        assert!(without.auto_exit_button.is_none());
-        let with = layout.resolve(viewport(), true, true);
-        let (step, detail, auto) = (with.step_button.unwrap(), with.detail_button.unwrap(), with.auto_exit_button.unwrap());
-        for rect in [step, detail, auto, with.body] {
+        let with = layout.resolve(viewport(), true);
+        let (step, detail, exit) = (with.step_button.unwrap(), with.detail_button.unwrap(), with.exit_button.unwrap());
+        for rect in [step, detail, exit, with.body] {
             assert!(with.total.contains_rect(rect), "{rect:?} not in {:?}", with.total);
         }
-        assert!(detail.right() <= auto.left());
-        assert!(auto.right() <= with.body.left());
-        assert!((auto.center().y - with.body.center().y).abs() < 1e-3);
+        assert!(detail.right() <= exit.left());
+        assert!(exit.right() <= with.body.left());
+        assert!((exit.center().y - with.body.center().y).abs() < 1e-3);
+        // ボタンを出さない間は、終了ボタンも出ず、全幅が本体になる。
+        let without = layout.resolve(viewport(), false);
+        assert!(without.exit_button.is_none());
         // 全体幅は割合のまま、ボタンが増えたぶんだけ本体が狭くなる。
         assert!((with.total.width() - without.total.width()).abs() < 1e-3);
         assert!(with.body.width() < without.body.width());
-        // ボタンを出さない間は、自動退場ボタンも出ない。
-        assert!(layout.resolve(viewport(), false, true).auto_exit_button.is_none());
-    }
-
-    #[test]
-    fn three_buttons_keep_body_usable_in_a_narrow_viewport() {
-        let narrow = Rect::from_min_size(Pos2::ZERO, Vec2::new(500.0, 400.0));
-        let r = BarLayout::default().resolve(narrow, true, true);
-        assert!(r.body.width() >= BAR_BODY_MIN_WIDTH - 1e-3);
-        assert!(r.total.width() <= narrow.width() + 1e-3);
     }
 
     #[test]
     fn narrow_viewport_keeps_parts_usable_without_overflowing() {
         // 割合だけだと本体が潰れる幅: 最小幅を優先する。
         let narrow = Rect::from_min_size(Pos2::ZERO, Vec2::new(500.0, 400.0));
-        let r = BarLayout::default().resolve(narrow, true, false);
+        let r = BarLayout::default().resolve(narrow, true);
         assert!(r.body.width() >= BAR_BODY_MIN_WIDTH - 1e-3);
         assert!(r.total.width() <= narrow.width() + 1e-3);
         // ビューポート自体が最小幅より狭い場合は、ビューポート幅までに収める。
         let tiny = Rect::from_min_size(Pos2::ZERO, Vec2::new(120.0, 400.0));
-        let r = BarLayout::default().resolve(tiny, true, false);
+        let r = BarLayout::default().resolve(tiny, true);
         assert!(r.total.width() <= tiny.width() + 1e-3);
     }
 
@@ -1174,45 +1116,6 @@ mod tests {
     }
 
     #[test]
-    fn auto_exit_api_defaults_on_and_toggles() {
-        let mut c = MagnifierConfig::default();
-        assert!(c.auto_exit());
-        assert_eq!(c.auto_exit_dwell_secs(), 1.0);
-        assert!(!c.toggle_auto_exit());
-        assert!(c.toggle_auto_exit());
-        c.set_auto_exit(false);
-        assert!(!c.auto_exit());
-        // 滞留時間は0.1秒刻み・範囲内へ丸め、非有限値は無視。
-        assert!((c.set_auto_exit_dwell_secs(1.26) - 1.3).abs() < 1e-5);
-        assert_eq!(c.set_auto_exit_dwell_secs(0.0), 0.3);
-        assert_eq!(c.set_auto_exit_dwell_secs(99.0), 10.0);
-        assert_eq!(c.set_auto_exit_dwell_secs(f32::NAN), 10.0);
-    }
-
-    #[test]
-    fn dwell_exits_after_idle_time_at_minimum() {
-        // 最小に着いた瞬間に起点を置き、1秒後に退場。
-        let (since, exit) = dwell_step(None, 10.0, true, false, 1.0);
-        assert_eq!((since, exit), (Some(10.0), false));
-        let (since, exit) = dwell_step(since, 10.5, true, false, 1.0);
-        assert_eq!((since, exit), (Some(10.0), false));
-        let (since, exit) = dwell_step(since, 11.0, true, false, 1.0);
-        assert_eq!((since, exit), (Some(10.0), true));
-    }
-
-    #[test]
-    fn dwell_restarts_on_activity_and_cancels_when_zoomed() {
-        // 最小での操作（縮小の空振り・バー操作）で起点を取り直す。
-        let (since, exit) = dwell_step(Some(10.0), 10.9, true, true, 1.0);
-        assert_eq!((since, exit), (Some(10.9), false));
-        let (_, exit) = dwell_step(since, 11.5, true, false, 1.0);
-        assert!(!exit);
-        // 拡大して最小を離れたら起点を捨てる（退場しない）。
-        let (since, exit) = dwell_step(Some(10.0), 20.0, false, false, 1.0);
-        assert_eq!((since, exit), (None, false));
-    }
-
-    #[test]
     fn config_step_and_detail_toggles() {
         let mut c = MagnifierConfig::default();
         assert_eq!(c.notch_ratio(), 1.25);
@@ -1256,7 +1159,7 @@ mod tests {
         assert_eq!(applied, v(96.0, 16.0));
         let applied = b.set_detail_button_size(v(f32::NAN, 30.0));
         assert_eq!(applied, v(DEFAULT_BUTTON_SIZE.x, 30.0));
-        let applied = b.set_auto_exit_button_size(v(500.0, 2.0));
+        let applied = b.set_exit_button_size(v(500.0, 2.0));
         assert_eq!(applied, v(96.0, 16.0));
     }
 }
