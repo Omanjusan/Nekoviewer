@@ -2,6 +2,26 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.9.0]
+
+### Added
+
+- Added a tool palette GUI inside the viewer window. Items can be freely added and removed from the right-click menu on the palette's buttons, and are launched with a left click. Showing or hiding the palette GUI itself is done from the explorer menu area
+- (Experimental) Added image filters: gamma, sharpness, contrast, blue-light cut, sepia, monochrome, and more
+- Added a Virtual Folders tab. Real folders can be registered as nodes, much like taking a snapshot of them, and nodes can be pseudo-deleted and renamed. This lets you build a simple favorite-folder tree centered on real paths. Up to 5000 nodes can be registered. Note that this feature registers folders, not individual files
+- Applied sort criteria to both the virtual and real folder trees. The settings are accessible from the right-click menu inside the tree
+- Persisted the selected tab position. On launch, the tab that was selected when the app last exited is restored. Launching with a path via the CLI is reproduced in the `Folder` tab
+- Added a per-archive settings dialog for spread mode, bookmark saving, and sort saving. This allows settings to be applied in bulk from a multi-file selection. Note that this dialog does not reflect the current state when it opens
+- Implemented image zoom. Zoom in and out with Shift + mouse wheel up/down. This gesture previously moved to the next/previous file from the start/end of a file, so the old behavior has been moved to Ctrl + mouse wheel. If Shift is already assigned, the search continues up to the Shift+Ctrl combination; if that is also taken, nothing is assigned and you must assign it manually. The maximum zoom is 4x. Zoom is also available from a tooltip
+- Note on zooming: Shift + mouse wheel up is the entry point into zoom mode. The exit is triggered by returning to the minimum magnification (x1.0) and waiting for one second. This is somewhat hard to discover, so accessing it from the tool palette is recommended
+- Added image info display. Shows the image resolution to the left of the page count at the bottom right of the viewer. In fit-to-window mode it shows the actual displayed size excluding letterboxing; at native size and while zoomed it shows the image's original pixel dimensions. While zoomed, a magnification such as `(x1.10)` is appended (its basis differs from the slider's magnification, so the value is off for images whose long edge exceeds the native-size decode cap). In spread mode, the dimensions of each page are shown side by side corresponding to the left and right of the screen, and the page count shows only the starting page. Pages with animation data (including single-frame ones) get an `A` after the page number (e.g. `1A/30`). It can be toggled on/off together with the page count via the `Image info` toggle in the tool palette, and the setting is persisted (on by default)
+
+### Fixed
+
+- Fixed the double-click in the viewer that switches to native size only responding when it was on the actual image. Double-click now works anywhere other than the left and right page-turn areas
+- Fixed odd top/bottom alignment when selecting a folder in the tree view
+- Raised the native-size cap to 4000px. Nothing is shown if your setting is already 4000px or higher; if it is lower than 4000px, a notice about the new default is shown at startup
+
 ## [1.8.0] - 2026-09-14
 
 ### Notes
