@@ -1504,6 +1504,7 @@ impl ViewerState {
             page_cache,
             active_generation,
             preparing_generation,
+            &cfg.texture_window,
         );
 
         let total = self.entries.len();
@@ -3068,22 +3069,50 @@ impl ViewerState {
         page_cache: &mut PageCache,
         active_generation: u64,
         preparing_generation: Option<u64>,
+        texture_window: &crate::texture_window::TextureWindowConfig,
     ) {
         let total = self.entries.len();
         let anchor = self.spread_lo().max(0) as usize;
-        let start = anchor.saturating_sub(5);
-        let end = (anchor + 10 + 1).min(total);
 
         // フレーム送り(UIスレッド同期デコード+アップロード)は可視ページに限定する。
         // 先読みウィンドウ内の裏ページまで毎tickデコードすると、アニメ主体のアーカイブで
         // UIスレッドが飽和し、可視アニメ自身のtickが追走上限に張り付いて再生全体が遅くなる。
         let visible_orig = self.visible_original_indices();
 
+        // GPUへ保持するページ窓は、1ページのVRAM使用量に応じて先読み窓より絞る（RAMの先読みは
+        // そのまま）。使用量は、表示ページのデコード結果（届いていればそちら）から見積もる。
+        let page_bytes = visible_orig
+            .iter()
+            .filter_map(|&orig_i| {
+                let cached = page_cache
+                    .get_best(&self.archive_path, orig_i, active_generation, preparing_generation)
+                    .and_then(|(_, content)| match content {
+                        PageContent::Static(img) => Some(img.width() as u64 * img.height() as u64 * 4),
+                        PageContent::Animated(_) => None,
+                    });
+                cached.or_else(|| {
+                    self.textures.get(&orig_i).map(|t| {
+                        let [w, h] = t.size();
+                        w as u64 * h as u64 * 4
+                    })
+                })
+            })
+            .max()
+            .unwrap_or(0);
+        let visible_span = visible_orig.len().max(1);
+        let pages = crate::texture_window::window_pages(page_bytes, texture_window.vram_budget_bytes(), visible_span);
+        let (start, end) = crate::texture_window::window_bounds(anchor, total, pages, visible_span);
+        // 表示中でないページのアップロードは1フレームに数枚まで（窓が動いたときのカクつき対策）。
+        let mut background_uploads = 0u32;
+        // 上限があるので、必要度の高い順（表示ページ→進行方向の先→戻り側）に上げる。
+        let mut upload_order: Vec<usize> = (start..end).collect();
+        upload_order.sort_by_key(|&i| if i >= anchor { i - anchor } else { (anchor - i) * 2 });
+
         let now = Instant::now();
         let mut min_repaint_after = Duration::MAX;
 
         let mut promoted_pages = Vec::new();
-        for i in start..end {
+        for i in upload_order {
             let orig_i = self.entries[i].original_index;
             let Some((generation, content)) = page_cache.get_best(
                 &self.archive_path,
@@ -3102,6 +3131,14 @@ impl ViewerState {
                         self.anim_states.remove(&orig_i);
                     }
                     if generation_changed || !self.textures.contains_key(&orig_i) {
+                        if !visible_orig.contains(&orig_i) {
+                            if background_uploads >= texture_window.background_uploads_per_frame() {
+                                // 残りは次のフレームで上げる。
+                                ctx.request_repaint();
+                                continue;
+                            }
+                            background_uploads += 1;
+                        }
                         let color_image = egui::ColorImage::from_rgba_unmultiplied(
                             [img.width() as usize, img.height() as usize],
                             img.as_raw(),
@@ -5914,5 +5951,127 @@ mod magnifier_flow_tests {
         }
         shift_wheel_in_then_out_then_wait(&mut h);
         assert!(!h.cfg.magnifier_on, "パレットON→OFFのあとの入場が退場しない: {}", h.state());
+    }
+}
+
+/// GPUテクスチャの保持窓（VRAM予算に応じた絞り込み）を、実際の `show()` で確かめるテスト。
+#[cfg(test)]
+mod texture_window_flow_tests {
+    use super::*;
+    use crate::cache::{PageCache, PageContent};
+
+    const SCREEN: egui::Vec2 = egui::vec2(1000.0, 800.0);
+    const PAGES: usize = 30;
+
+    struct Harness {
+        ctx: egui::Context,
+        viewer: ViewerState,
+        cache: PageCache,
+        cfg: ViewerConfig,
+        keymap: Keymap,
+        time: f64,
+    }
+
+    impl Harness {
+        /// `PAGES` ページの書庫。各ページは `page_w`×`page_h` のRGBA。
+        fn new(page_w: u32, page_h: u32) -> Self {
+            let path = PathBuf::from("book.zip");
+            let mut viewer = ViewerState::new_raw(path.clone(), [None; 4], None);
+            viewer.is_raw_file = false;
+            viewer.entries.clear();
+            let mut cache = PageCache::new(512 * 1024 * 1024, 0);
+            for i in 0..PAGES {
+                viewer.entries.push(ViewerEntry {
+                    entry_name: format!("{i}.png"),
+                    display_name: format!("{i}.png"),
+                    date_key: 0,
+                    original_index: i,
+                });
+                let img = image::RgbaImage::from_pixel(page_w, page_h, image::Rgba([180, 180, 180, 255]));
+                cache.insert(path.clone(), i, 0, PageContent::Static(img), &path, 0);
+            }
+            let mut cfg = ViewerConfig::default();
+            cfg.tool_palette.visible = false;
+            Self { ctx: egui::Context::default(), viewer, cache, cfg, keymap: Keymap::default(), time: 1.0 }
+        }
+
+        fn frames(&mut self, n: usize) {
+            for _ in 0..n {
+                self.time += 0.016;
+                let mut raw = egui::RawInput::default();
+                raw.screen_rect = Some(egui::Rect::from_min_size(egui::Pos2::ZERO, SCREEN));
+                raw.time = Some(self.time);
+                raw.max_texture_side = Some(8192);
+                let Self { ctx, viewer, cache, cfg, keymap, .. } = self;
+                let _ = ctx.run_ui(raw, |ui| {
+                    viewer.show(ui, cache, 0, None, cfg, keymap, false, false);
+                });
+            }
+        }
+
+        fn textured_pages(&self) -> std::collections::BTreeSet<usize> {
+            self.viewer.textures.keys().copied().collect()
+        }
+    }
+
+    #[test]
+    fn small_pages_keep_the_full_window() {
+        let mut h = Harness::new(100, 150);
+        h.frames(40);
+        // 先頭では、後ろに余りがないので 0..=10（11枚）。従来と同じ。
+        assert_eq!(h.textured_pages(), (0..11).collect());
+    }
+
+    #[test]
+    fn large_pages_narrow_the_window_to_the_budget() {
+        // 1000×1500 RGBA ≒ 5.7MiB。予算64MBなら 64 ÷ 5.72 ≒ 11枚。
+        let mut h = Harness::new(1000, 1500);
+        h.cfg.texture_window.set_vram_budget_mb(64);
+        h.frames(40);
+        assert_eq!(h.textured_pages(), (0..11).collect());
+    }
+
+    #[test]
+    fn window_slides_with_the_page_and_frees_the_old_textures() {
+        let mut h = Harness::new(1000, 1500);
+        h.cfg.texture_window.set_vram_budget_mb(64);
+        h.frames(40);
+        // 10ページ目へ移動 → 窓は 後ろ2・前8 の 8..19。外へ出たページのテクスチャは解放される。
+        h.viewer.spread_base = 10;
+        h.frames(40);
+        assert_eq!(h.textured_pages(), (8..19).collect());
+        // RAMのデコード結果（PageCache）は残っている。戻れば上げ直せる。
+        h.viewer.spread_base = 0;
+        h.frames(40);
+        assert_eq!(h.textured_pages(), (0..11).collect());
+    }
+
+    #[test]
+    fn background_uploads_are_limited_per_frame_but_the_visible_page_is_immediate() {
+        let mut h = Harness::new(1000, 1500);
+        h.cfg.texture_window.set_vram_budget_mb(64);
+        h.frames(1);
+        // 最初のフレーム: 表示ページ + 背景1枚まで。
+        let first = h.textured_pages();
+        assert!(first.contains(&0), "表示ページが上がっていない: {first:?}");
+        assert!(first.len() <= 2, "1フレームに上げすぎている: {first:?}");
+        // 数フレームで窓が埋まる。しかも進行方向の先（次のページ）が先に上がる。
+        h.frames(2);
+        let after = h.textured_pages();
+        assert!(after.contains(&1), "次のページが先に上がっていない: {after:?}");
+        h.frames(30);
+        assert_eq!(h.textured_pages().len(), 11);
+    }
+
+    #[test]
+    fn spread_mode_keeps_both_visible_pages_within_the_narrow_window() {
+        let mut h = Harness::new(1000, 1500);
+        h.cfg.texture_window.set_vram_budget_mb(64);
+        h.viewer.page_mode = PageMode::SpreadLeft;
+        h.viewer.spread_base = 10;
+        h.frames(40);
+        let pages = h.textured_pages();
+        assert!(pages.contains(&10) && pages.contains(&11), "{pages:?}");
+        assert!(pages.len() <= 11, "{pages:?}");
     }
 }

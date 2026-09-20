@@ -22,6 +22,7 @@ mod rotation;
 mod single_instance;
 mod spread_offset;
 mod spread_state;
+mod texture_window;
 mod tool_palette;
 mod toolbar;
 mod tree_sort;

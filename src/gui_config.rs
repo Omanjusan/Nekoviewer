@@ -195,6 +195,8 @@ pub struct ViewerConfig {
     pub magnifier_entered_by_default: bool,
     /// 虫眼鏡モードの設定値（上限倍率・バー幅など）。現状は既定値のみで永続化しない。
     pub magnifier: crate::magnifier::MagnifierConfig,
+    /// GPUテクスチャを保持するページ窓のVRAM予算など。非永続（現状は既定値のみ）。
+    pub texture_window: crate::texture_window::TextureWindowConfig,
 }
 
 impl Default for ViewerConfig {
@@ -228,6 +230,7 @@ impl Default for ViewerConfig {
             magnifier_on: false,
             magnifier_entered_by_default: false,
             magnifier: crate::magnifier::MagnifierConfig::default(),
+            texture_window: crate::texture_window::TextureWindowConfig::default(),
         }
     }
 }
@@ -854,6 +857,7 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
                 if let Some(detail) = magnifier_detail_ticks { m.set_detail_ticks(detail); }
                 m
             },
+            texture_window: crate::texture_window::TextureWindowConfig::default(),
         },
         show_hidden: show_hidden.unwrap_or(false),
         card_info_mode: card_info_mode.unwrap_or_else(|| "off".to_string()),
