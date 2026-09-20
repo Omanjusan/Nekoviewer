@@ -566,6 +566,14 @@ pub struct ViewerState {
     magnifier_settings_dirty: bool,
     /// 前フレームまでにコマモードがONだったか（ONの立ち上がり検出用。基準倍率の取り込みに使う）。
     koma_was_on: bool,
+    /// 直近のフレームの虫眼鏡の幾何（コンテンツの原寸外接サイズ, ビューポート寸法）。
+    /// コマ送りは描画の後段（process_navigation・パレット）で行うので、格子を組むためにここへ残す。
+    koma_geom: Option<(egui::Vec2, egui::Vec2)>,
+    /// コマ送り/戻しでページを跨いだ直後の到着位置。true=最終コマ（戻り）、false=先頭コマ（進み）。
+    /// 次に虫眼鏡ビューを作り直すときに一度だけ使う。
+    koma_arrive_last: bool,
+    /// コマ送りで状態を動かした（次フレームの描画で反映させるため、再描画を要求する）。
+    koma_moved: bool,
     /// ページ送りで引き継ぐ倍率（フィット相対 = 倍率 ÷ フィット倍率）。次ページのテクスチャが届くまで
     /// 虫眼鏡が一時的に非アクティブになっても失われないよう、`magnifier_view` とは別に持つ。
     /// モードOFFで破棄する。
@@ -820,6 +828,9 @@ impl ViewerState {
             magnifier_bar_active_at: None,
             magnifier_settings_dirty: false,
             koma_was_on: false,
+            koma_geom: None,
+            koma_arrive_last: false,
+            koma_moved: false,
             magnifier_carry_rel: None,
             magnifier_cursor: None,
             max_texture_side: MAX_TEXTURE_SIDE_FALLBACK,
@@ -914,6 +925,9 @@ impl ViewerState {
             magnifier_bar_active_at: None,
             magnifier_settings_dirty: false,
             koma_was_on: false,
+            koma_geom: None,
+            koma_arrive_last: false,
+            koma_moved: false,
             magnifier_carry_rel: None,
             magnifier_cursor: None,
             max_texture_side: MAX_TEXTURE_SIDE_FALLBACK,
@@ -1758,7 +1772,10 @@ impl ViewerState {
             self.draw_thumbbar_overlay(ui, cfg, cfg.thumbbar_pos, viewport_before_central);
         }
 
-        let nav = self.process_navigation(&input, is_spread, step, total);
+        let nav = self.process_navigation(&input, is_spread, step, total, frame.magnifier && cfg.koma_on);
+        if std::mem::take(&mut self.koma_moved) {
+            ctx.request_repaint();
+        }
 
         let close_self = self.process_misc_input(&ctx, &input, double_clicked, cfg);
 
@@ -1964,9 +1981,12 @@ impl ViewerState {
         is_spread: bool,
         step: i32,
         total: usize,
+        koma_on: bool,
     ) -> ViewerNav {
-        let key_next = input.key_space || input.key_down || input.shift_nav_down;
-        let key_prev = input.key_up || input.shift_nav_up;
+        // コマモード中は、ページ送りキー（Space/↓/↑）がコマ送り/戻しに置き換わる。
+        // Shift+↑↓（ファイル送り系）は従来どおり。
+        let key_next = (!koma_on && (input.key_space || input.key_down)) || input.shift_nav_down;
+        let key_prev = (!koma_on && input.key_up) || input.shift_nav_up;
         let (shift_dec, shift_inc) = match self.page_mode {
             PageMode::SpreadRight => (input.shift5, input.shift4),
             _                     => (input.shift4, input.shift5),
@@ -1997,6 +2017,14 @@ impl ViewerState {
         if scroll_next { self.scroll_acc += SCROLL_THRESHOLD; }
         if scroll_prev { self.scroll_acc -= SCROLL_THRESHOLD; }
 
+        if koma_on {
+            if input.key_space || input.key_down {
+                self.koma_step(true, is_spread, step, total_i);
+            }
+            if input.key_up {
+                self.koma_step(false, is_spread, step, total_i);
+            }
+        }
         if key_next || scroll_next {
             self.advance_page(step, total_i);
         }
@@ -2288,10 +2316,17 @@ impl ViewerState {
                         crate::tool_palette::PaletteSlotContent::Action(crate::tool_palette::ActionKind::SlideshowToggle) => {
                             self.toggle_slideshow();
                         }
-                        // コマ送り/コマ戻しの実行はフェーズ3でナビゲーションへ接続する（現状は登録のみ）。
-                        crate::tool_palette::PaletteSlotContent::Action(
-                            crate::tool_palette::ActionKind::KomaNext | crate::tool_palette::ActionKind::KomaPrev,
-                        ) => {}
+                        // コマ送り/コマ戻し。コマモードがOFFの間（拡大表示外を含む）は何もしない。
+                        crate::tool_palette::PaletteSlotContent::Action(crate::tool_palette::ActionKind::KomaNext) => {
+                            if cfg.koma_on && self.magnifier_view.is_some() {
+                                self.koma_step(true, is_spread, step, total as i32);
+                            }
+                        }
+                        crate::tool_palette::PaletteSlotContent::Action(crate::tool_palette::ActionKind::KomaPrev) => {
+                            if cfg.koma_on && self.magnifier_view.is_some() {
+                                self.koma_step(false, is_spread, step, total as i32);
+                            }
+                        }
                         crate::tool_palette::PaletteSlotContent::Empty => {}
                     }
                 }
@@ -2599,12 +2634,20 @@ impl ViewerState {
                 };
                 let target = self.magnifier_target(frame);
                 self.update_magnifier(viewport_rect, target, anchor, input.wheel_notches, &mut cfg.magnifier, cfg.koma_on);
+                let scale_before_bar = self.magnifier_view.map(|v| v.scale);
                 if let Some(bar) = bar_rects
                     && self.draw_magnifier_bar(ui.ctx(), viewport_rect, target, &bar, pointer_in_bar, input.wheel_notches != 0.0, input.time, &mut cfg.magnifier)
                 {
                     // モード終了ボタン。次フレームで非アクティブ側の後始末（倍率の破棄など）が走る。
                     cfg.magnifier_on = false;
                     ui.ctx().request_repaint();
+                }
+                // スライダーでの拡縮は、コマモード中なら基準倍率の更新になる。
+                if cfg.koma_on
+                    && let (Some(v), Some(t)) = (self.magnifier_view, target)
+                    && Some(v.scale) != scale_before_bar
+                {
+                    self.update_koma_base(&mut cfg.magnifier, v.scale, t.img.y, viewport_rect.height());
                 }
                 // 次のページ送りへ引き継ぐ倍率（フィット相対）。スライダーでの操作も含めて毎フレーム更新する。
                 if let (Some(v), Some(t)) = (self.magnifier_view, target) {
@@ -2614,6 +2657,7 @@ impl ViewerState {
                 self.magnifier_view = None;
                 self.magnifier_bar_active_at = None;
                 self.koma_was_on = false;
+                self.koma_geom = None;
                 // テクスチャ待ちなどで一時的に非アクティブなだけなら、引き継ぎ状態は残す。
                 if !cfg.magnifier_on {
                     self.magnifier_key = None;
@@ -4008,6 +4052,48 @@ impl ViewerState {
         }
     }
 
+    /// コマ送り（`forward`）/コマ戻しを1回行う。同じページ内なら次/前のコマへオフセットを移し、
+    /// ページの端を越えるなら通常のページ送り/戻しにして、到着位置（先頭/最終コマ）を予約する。
+    /// 送れない端では何も起きない。虫眼鏡の幾何がまだ無い（テクスチャ待ち）ときは通常のページ送り。
+    fn koma_step(&mut self, forward: bool, is_spread: bool, step: i32, total: i32) {
+        let grid = match (self.magnifier_view, self.koma_geom) {
+            (Some(view), Some((img, vp))) => Some((view, crate::koma::KomaGrid::new(img * view.scale, vp, self.koma_read_dir()))),
+            _ => None,
+        };
+        let movement = grid.as_ref().map(|(view, g)| if forward { g.next(view.offset) } else { g.prev(view.offset) });
+        match movement {
+            Some(crate::koma::KomaMove::To(offset)) => {
+                if let Some(v) = self.magnifier_view.as_mut() {
+                    v.offset = offset;
+                }
+                self.magnifier_offset_dirty = true;
+                self.koma_moved = true;
+            }
+            Some(crate::koma::KomaMove::PageBoundary) | None => {
+                let can = if forward { self.can_advance_page(step, total) } else { self.can_retreat_page(is_spread, step) };
+                if !can {
+                    return;
+                }
+                if forward {
+                    self.advance_page(step, total);
+                } else {
+                    self.retreat_page(is_spread, step);
+                }
+                self.koma_arrive_last = !forward;
+                self.koma_moved = true;
+            }
+        }
+    }
+
+    /// コマ送りの基準倍率（高さフィット相対）を、いまの倍率で更新する。
+    /// ユーザーが拡縮した時だけ呼ぶ（ページ跨ぎの範囲丸めで基準が動かないように）。
+    fn update_koma_base(&mut self, cfg: &mut crate::magnifier::MagnifierConfig, scale: f32, page_h: f32, viewport_h: f32) {
+        let rel = crate::koma::height_rel_from_scale(scale, page_h, viewport_h);
+        if cfg.koma_height_rel() != cfg.set_koma_height_rel(rel) {
+            self.magnifier_settings_dirty = true;
+        }
+    }
+
     /// コマ送りの行内の読み順。右綴じは右→左、左綴じ・単ページは左→右。
     fn koma_read_dir(&self) -> crate::koma::ReadDir {
         match self.page_mode {
@@ -4035,6 +4121,7 @@ impl ViewerState {
         }
         let Some(target) = target else {
             self.magnifier_view = None;
+            self.koma_geom = None;
             return;
         };
         let img = target.img;
@@ -4067,29 +4154,26 @@ impl ViewerState {
                 self.magnifier_key = Some(target.key);
                 self.magnifier_offset_dirty = true;
                 self.magnifier_bar_active_at = None;
-                match carried {
+                let arrive_last = std::mem::take(&mut self.koma_arrive_last);
+                match (koma_on.then(|| cfg.koma_height_rel()).flatten(), carried) {
+                    // コマモード: 基準倍率（高さ相対）でフレームを維持し、先頭コマ（戻りなら最終コマ）へ置く。
+                    // ページの大きさや、見開き・回転の切替後でも、同じ式でフレームの大きさを保つ。
+                    (Some(rel), _) => {
+                        let scale = crate::koma::scale_from_height_rel(rel, img.y, vp.y).clamp(range.0, range.1);
+                        let grid = crate::koma::KomaGrid::new(img * scale, vp, self.koma_read_dir());
+                        MagnifierView { scale, offset: if arrive_last { grid.last() } else { grid.first() } }
+                    }
                     // 進行方向と逆の端・上端から始める（既存の原寸見開きと同じ慣例）。
-                    Some(rel) => carried_view(rel, fit, range, vp, img, self.anim_dir < 0),
-                    None => MagnifierView::fit(vp, img),
+                    (None, Some(rel)) => carried_view(rel, fit, range, vp, img, self.anim_dir < 0),
+                    (None, None) => MagnifierView::fit(vp, img),
                 }
             }
         };
 
         // コマモードのON直後: 拡大表示中だったなら、いまの倍率を基準倍率として取り込む（保存対象）。
-        // 拡大表示に入りたてで、前回の基準倍率があるなら、その倍率で先頭コマから始める。
-        if koma_on && !self.koma_was_on {
-            let saved = cfg.koma_height_rel().filter(|_| !had_view);
-            if let Some(rel) = saved {
-                let scale = crate::koma::scale_from_height_rel(rel, img.y, vp.y).clamp(range.0, range.1);
-                let grid = crate::koma::KomaGrid::new(img * scale, vp, self.koma_read_dir());
-                view = MagnifierView { scale, offset: grid.first() };
-                self.magnifier_offset_dirty = true;
-            } else {
-                let rel = crate::koma::height_rel_from_scale(view.scale, img.y, vp.y);
-                if cfg.koma_height_rel() != cfg.set_koma_height_rel(rel) {
-                    self.magnifier_settings_dirty = true;
-                }
-            }
+        // 拡大表示に入りたてで、前回の基準倍率があるなら、上のビュー作り直しがその倍率で先頭コマへ置いている。
+        if koma_on && !self.koma_was_on && (had_view || cfg.koma_height_rel().is_none()) {
+            self.update_koma_base(cfg, view.scale, img.y, vp.y);
         }
         if koma_on {
             self.koma_was_on = true;
@@ -4102,12 +4186,16 @@ impl ViewerState {
             if next != view.scale {
                 view = zoom_about(view, p - viewport.min, vp, img, next);
                 self.magnifier_offset_dirty = true;
+                if koma_on {
+                    self.update_koma_base(cfg, view.scale, img.y, vp.y);
+                }
             }
         }
 
         self.magnifier_at_fit = (view.scale - fit).abs() <= FIT_EPS;
         self.magnifier_ref_len = target.ref_len;
         self.magnifier_view = Some(view);
+        self.koma_geom = Some((img, vp));
     }
 
     /// 虫眼鏡カーソルの画像（画面の拡大率に合わせた大きさ）。同じ大きさの間は使い回す。
@@ -6301,6 +6389,194 @@ mod magnifier_flow_tests {
         toggle_koma(&mut h); // 再ON: いまの倍率を取り込み直す
         let rel = h.cfg.magnifier.koma_height_rel().unwrap();
         assert!(rel > 1.2, "再ONで基準が更新されない: rel={rel} zoomed={zoomed}");
+    }
+
+    // ── コマモード：コマ送りとページ跨ぎ（フェーズ3） ──────────────────────────
+    impl Harness {
+        /// `count` ページの書庫（各ページ `w`×`h_px`）。ツールパレットは隠す。
+        fn with_pages(count: usize, w: u32, h_px: u32) -> Self {
+            let mut h = Self::new_unwarmed();
+            let path = PathBuf::from("book.zip");
+            h.viewer = ViewerState::new_raw(path.clone(), [None; 4], None);
+            h.viewer.is_raw_file = false;
+            h.viewer.entries.clear();
+            h.cache = PageCache::new(256 * 1024 * 1024, 0);
+            for i in 0..count {
+                h.viewer.entries.push(ViewerEntry {
+                    entry_name: format!("{i}.png"),
+                    display_name: format!("{i}.png"),
+                    date_key: 0,
+                    original_index: i,
+                });
+                let img = image::RgbaImage::from_pixel(w, h_px, image::Rgba([180, 180, 180, 255]));
+                h.cache.insert(path.clone(), i, 0, PageContent::Static(img), &path, 0);
+            }
+            h.cfg.tool_palette.visible = false;
+            h.warm_up();
+            h
+        }
+
+        /// 基準倍率（高さフィット相対）を決めてコマモードに入る。
+        fn start_koma(&mut self, base_rel: f32) {
+            self.cfg.magnifier.set_koma_height_rel(base_rel);
+            toggle_koma(self);
+            for _ in 0..3 {
+                self.frame(vec![], egui::Modifiers::NONE);
+            }
+        }
+
+        fn koma_grid(&self) -> crate::koma::KomaGrid {
+            let (img, vp) = self.viewer.koma_geom.expect("虫眼鏡の幾何がない");
+            let view = self.viewer.magnifier_view.expect("虫眼鏡ビューがない");
+            crate::koma::KomaGrid::new(img * view.scale, vp, crate::koma::ReadDir::LeftToRight)
+        }
+
+        fn offset(&self) -> egui::Vec2 {
+            self.viewer.magnifier_view.expect("虫眼鏡ビューがない").offset
+        }
+    }
+
+    fn press(h: &mut Harness, key: egui::Key) {
+        let event = |pressed| egui::Event::Key {
+            key,
+            physical_key: Some(key),
+            pressed,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        };
+        h.frame(vec![event(true)], egui::Modifiers::NONE);
+        h.frame(vec![event(false)], egui::Modifiers::NONE);
+        for _ in 0..3 {
+            h.frame(vec![], egui::Modifiers::NONE);
+        }
+    }
+
+    fn assert_offset_at(h: &Harness, expected: egui::Vec2, what: &str) {
+        let got = h.offset();
+        assert!((got - expected).abs().max_elem() < 1.5, "{what}: offset={got:?} expected={expected:?}");
+    }
+
+    /// 現在ページの全コマを、Spaceで順に辿る（先頭から最終まで）。
+    fn walk_frames_with_space(h: &mut Harness) {
+        let grid = h.koma_grid();
+        assert!(grid.len() >= 3, "テスト前提: 複数コマ（{}）", grid.len());
+        assert_offset_at(h, grid.first(), "先頭コマ");
+        for i in 1..grid.len() {
+            press(h, egui::Key::Space);
+            assert_offset_at(h, grid.position(i), &format!("{i}コマ目"));
+        }
+    }
+
+    #[test]
+    fn koma_space_walks_frames_then_turns_the_page_to_its_first_frame() {
+        let mut h = Harness::with_pages(3, 800, 1200);
+        h.start_koma(2.5);
+        assert_eq!(h.viewer.spread_lo(), 0);
+        let scale = h.viewer.magnifier_view.unwrap().scale;
+        walk_frames_with_space(&mut h);
+        assert_eq!(h.viewer.spread_lo(), 0, "最終コマまではページは変わらない");
+        // 最終コマでの「次」は通常のページ送り。新ページの先頭コマから始まり、フレームの大きさは同じ。
+        press(&mut h, egui::Key::Space);
+        assert_eq!(h.viewer.spread_lo(), 1, "最終コマでページが進まない: {}", h.state());
+        assert_offset_at(&h, h.koma_grid().first(), "次ページの先頭コマ");
+        assert!((h.viewer.magnifier_view.unwrap().scale - scale).abs() < 1e-4);
+        assert!(h.cfg.koma_on, "ページを跨いでもコマモードは続く");
+    }
+
+    #[test]
+    fn koma_up_from_the_first_frame_goes_to_the_previous_pages_last_frame() {
+        let mut h = Harness::with_pages(3, 800, 1200);
+        h.start_koma(2.5);
+        walk_frames_with_space(&mut h);
+        press(&mut h, egui::Key::Space); // 1ページ目の先頭コマ
+        assert_eq!(h.viewer.spread_lo(), 1);
+        press(&mut h, egui::Key::ArrowUp);
+        assert_eq!(h.viewer.spread_lo(), 0, "先頭コマでの戻るでページが戻らない: {}", h.state());
+        assert_offset_at(&h, h.koma_grid().last(), "前ページの最終コマ");
+        // そこから更に戻ると、1つ前のコマ。
+        let grid = h.koma_grid();
+        press(&mut h, egui::Key::ArrowUp);
+        assert_eq!(h.viewer.spread_lo(), 0);
+        assert_offset_at(&h, grid.position(grid.len() - 2), "最終の1つ前のコマ");
+    }
+
+    #[test]
+    fn koma_stops_at_the_last_frame_of_the_last_page_and_the_first_of_the_first_page() {
+        let mut h = Harness::with_pages(2, 800, 1200);
+        h.start_koma(2.5);
+        // 先頭ページの先頭コマから戻っても何も起きない。
+        let first = h.koma_grid().first();
+        press(&mut h, egui::Key::ArrowUp);
+        assert_eq!(h.viewer.spread_lo(), 0);
+        assert_offset_at(&h, first, "先頭ページの先頭コマ");
+        // 最終ページの最終コマから進んでも、そのまま。
+        walk_frames_with_space(&mut h);
+        press(&mut h, egui::Key::Space);
+        assert_eq!(h.viewer.spread_lo(), 1);
+        walk_frames_with_space(&mut h);
+        let last = h.koma_grid().last();
+        press(&mut h, egui::Key::Space);
+        assert_eq!(h.viewer.spread_lo(), 1, "最終ページの最終コマで先へ進んだ");
+        assert_offset_at(&h, last, "最終コマのまま");
+    }
+
+    #[test]
+    fn page_keys_still_turn_pages_when_the_koma_mode_is_off() {
+        let mut h = Harness::with_pages(3, 800, 1200);
+        h.cfg.magnifier_on = true;
+        h.frame(vec![], egui::Modifiers::NONE);
+        assert!(!h.cfg.koma_on);
+        press(&mut h, egui::Key::Space);
+        assert_eq!(h.viewer.spread_lo(), 1, "コマモードOFFではSpaceは従来のページ送り");
+        press(&mut h, egui::Key::ArrowUp);
+        assert_eq!(h.viewer.spread_lo(), 0);
+    }
+
+    #[test]
+    fn koma_wheel_zoom_updates_the_base_and_page_turns_keep_that_frame() {
+        let mut h = Harness::with_pages(3, 800, 1200);
+        h.start_koma(2.0);
+        h.wheel(true, egui::Modifiers::NONE);
+        h.frame(vec![], egui::Modifiers::NONE);
+        let base = h.cfg.magnifier.koma_height_rel().unwrap();
+        assert!((base - 2.0 * 1.25).abs() < 0.05, "ホイール拡大で基準が更新されない: {base}");
+        // 拡縮後のフレームの大きさが、次ページでも保たれる。
+        let scale = h.viewer.magnifier_view.unwrap().scale;
+        let last = h.koma_grid().len() - 1;
+        for _ in 0..last {
+            press(&mut h, egui::Key::Space);
+        }
+        press(&mut h, egui::Key::Space);
+        assert_eq!(h.viewer.spread_lo(), 1);
+        assert!((h.viewer.magnifier_view.unwrap().scale - scale).abs() < 1e-4);
+    }
+
+    #[test]
+    fn koma_chips_step_only_while_the_koma_mode_is_on() {
+        let mut h = Harness::with_pages(3, 800, 1200);
+        // マス内容はビューアー側のキャッシュが持つ（cfg は初回同期のみ）。
+        h.cfg.tool_palette.visible = true;
+        h.viewer.tool_palette.visible = true;
+        h.viewer.tool_palette.pos = (100.0, 100.0);
+        h.viewer.tool_palette.slots[0] = crate::tool_palette::PaletteSlotContent::Action(crate::tool_palette::ActionKind::KomaNext);
+        h.frame(vec![], egui::Modifiers::NONE);
+        // コマモードOFF（拡大表示中でも、通常表示でも）: 何も起きない。
+        click_palette_magnifier_slot(&mut h);
+        assert_eq!(h.viewer.spread_lo(), 0, "コマモードOFFでチップがページを動かした");
+        h.cfg.magnifier_on = true;
+        h.frame(vec![], egui::Modifiers::NONE);
+        let before = h.offset();
+        click_palette_magnifier_slot(&mut h);
+        assert_eq!(h.viewer.spread_lo(), 0);
+        assert_offset_at(&h, before, "コマモードOFFでチップがスクロールさせた");
+        // コマモードON: 次のコマへ。拡大表示中にONにすると現在倍率が基準になるので、一度抜けて入り直す。
+        h.cfg.magnifier_on = false;
+        h.frame(vec![], egui::Modifiers::NONE);
+        h.start_koma(2.5);
+        let grid = h.koma_grid();
+        assert!(grid.len() >= 2);
+        click_palette_magnifier_slot(&mut h);
+        assert_offset_at(&h, grid.position(1), "チップでコマ送りされない");
     }
 
     // ── ツールパレットのドラッグ：クランプ中の座標蓄積 ─────────────────────────
