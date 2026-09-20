@@ -610,7 +610,11 @@ impl NekoviewApp {
             match result.outcome {
                 DecodeJobOutcome::Ready(content) => {
                     self.failed_loads.remove(&failed_key);
-                    self.page_cache.lock().unwrap().insert(
+                    let mut cache = self.page_cache.lock().unwrap();
+                    if let Some(meta) = result.meta {
+                        cache.record_meta(&result.archive_path, result.index, meta);
+                    }
+                    cache.insert(
                         result.archive_path,
                         result.index,
                         result.generation,

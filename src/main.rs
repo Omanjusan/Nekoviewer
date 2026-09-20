@@ -10,6 +10,7 @@ mod fs;
 mod gui_config;
 mod i18n;
 mod image_filter;
+mod image_info;
 mod types;
 mod keymap;
 // 変換関数はフェーズ2で配線済み。バー幅API・自動ハイド秒などはフェーズ4以降で配線するまで未使用。
