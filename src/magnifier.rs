@@ -12,6 +12,12 @@ const ACTUAL_SNAP_EPS: f32 = 1e-3;
 pub const DEFAULT_MAX_SCALE: f32 = 4.0;
 const MAX_SCALE_RANGE: (f32, f32) = (1.0, 32.0);
 
+/// 既定動作で入場した虫眼鏡モードの自動退場: 倍率が最小（フィット）のまま、最後の操作から
+/// この秒数止まったら退場する。
+pub const DEFAULT_AUTO_EXIT_DWELL_SECS: f32 = 1.0;
+const AUTO_EXIT_DWELL_RANGE: (f32, f32) = (0.3, 10.0);
+const AUTO_EXIT_DWELL_STEP: f32 = 0.1;
+
 pub const DEFAULT_AUTOHIDE_SECS: f32 = 2.0;
 const AUTOHIDE_SECS_RANGE: (f32, f32) = (0.1, 30.0);
 const AUTOHIDE_SECS_STEP: f32 = 0.1;
@@ -243,6 +249,8 @@ pub struct MagnifierConfig {
     autohide_secs: f32,
     notch_step: NotchStep,
     detail_ticks: bool,
+    auto_exit: bool,
+    auto_exit_dwell_secs: f32,
     pub bar: BarLayout,
 }
 
@@ -253,6 +261,8 @@ impl Default for MagnifierConfig {
             autohide_secs: DEFAULT_AUTOHIDE_SECS,
             notch_step: NotchStep::default(),
             detail_ticks: false,
+            auto_exit: true,
+            auto_exit_dwell_secs: DEFAULT_AUTO_EXIT_DWELL_SECS,
             bar: BarLayout::default(),
         }
     }
@@ -270,6 +280,29 @@ impl MagnifierConfig {
     pub fn notch_ratio(&self) -> f32 { self.notch_step.ratio() }
     /// true = 目盛りを詳細（毎ノッチ）で表示、false = 簡易（原寸基準の×2ごと）。
     pub fn detail_ticks(&self) -> bool { self.detail_ticks }
+
+    /// 既定動作（ホイールの拡縮割り当て）で入場したとき、最小倍率で止まったら自動で退場するか。
+    /// false なら退場しない（GUI設定から「自動退場を行わない」を選べるようにする受け皿）。
+    pub fn auto_exit(&self) -> bool { self.auto_exit }
+    /// 自動退場までの、最小倍率での滞留時間(秒)。
+    pub fn auto_exit_dwell_secs(&self) -> f32 { self.auto_exit_dwell_secs }
+
+    pub fn set_auto_exit(&mut self, on: bool) { self.auto_exit = on; }
+
+    /// 自動退場のON/OFFを切り替え、適用後の値を返す。
+    pub fn toggle_auto_exit(&mut self) -> bool {
+        self.auto_exit = !self.auto_exit;
+        self.auto_exit
+    }
+
+    /// 0.1秒刻みに丸める。
+    pub fn set_auto_exit_dwell_secs(&mut self, secs: f32) -> f32 {
+        if secs.is_finite() {
+            self.auto_exit_dwell_secs = round_to_step(secs, AUTO_EXIT_DWELL_STEP)
+                .clamp(AUTO_EXIT_DWELL_RANGE.0, AUTO_EXIT_DWELL_RANGE.1);
+        }
+        self.auto_exit_dwell_secs
+    }
 
     pub fn set_notch_step(&mut self, step: NotchStep) { self.notch_step = step; }
 
@@ -537,6 +570,19 @@ pub fn bar_alpha(idle_secs: f32, autohide_secs: f32, hovered: bool) -> f32 {
         return 1.0;
     }
     (1.0 - (idle_secs - autohide_secs) / BAR_FADE_SECS).clamp(0.0, 1.0)
+}
+
+/// 自動退場の滞留判定（1フレーム分）。`at_min`（最小倍率で、退場の対象）でなければ起点を捨てる。
+/// 最小に着いた時点、または最小のまま操作（`activity`）があった時点を起点にし、そこから
+/// `dwell_secs` 経過したら退場（2つ目の戻り値が true）。戻り値の1つ目は次フレームへ持ち越す起点。
+pub fn dwell_step(since: Option<f64>, now: f64, at_min: bool, activity: bool, dwell_secs: f64) -> (Option<f64>, bool) {
+    if !at_min {
+        return (None, false);
+    }
+    match since {
+        Some(start) if !activity => (Some(start), now - start >= dwell_secs),
+        _ => (Some(now), false),
+    }
 }
 
 fn axis_pad(viewport: f32, content: f32) -> f32 {
@@ -994,6 +1040,45 @@ mod tests {
         assert_eq!(NotchStep::from_state_str(" 1.5 "), Some(NotchStep::X1_5));
         assert_eq!(NotchStep::from_state_str("3"), None);
         assert_eq!(NotchStep::from_state_str(""), None);
+    }
+
+    #[test]
+    fn auto_exit_api_defaults_on_and_toggles() {
+        let mut c = MagnifierConfig::default();
+        assert!(c.auto_exit());
+        assert_eq!(c.auto_exit_dwell_secs(), 1.0);
+        assert!(!c.toggle_auto_exit());
+        assert!(c.toggle_auto_exit());
+        c.set_auto_exit(false);
+        assert!(!c.auto_exit());
+        // 滞留時間は0.1秒刻み・範囲内へ丸め、非有限値は無視。
+        assert!((c.set_auto_exit_dwell_secs(1.26) - 1.3).abs() < 1e-5);
+        assert_eq!(c.set_auto_exit_dwell_secs(0.0), 0.3);
+        assert_eq!(c.set_auto_exit_dwell_secs(99.0), 10.0);
+        assert_eq!(c.set_auto_exit_dwell_secs(f32::NAN), 10.0);
+    }
+
+    #[test]
+    fn dwell_exits_after_idle_time_at_minimum() {
+        // 最小に着いた瞬間に起点を置き、1秒後に退場。
+        let (since, exit) = dwell_step(None, 10.0, true, false, 1.0);
+        assert_eq!((since, exit), (Some(10.0), false));
+        let (since, exit) = dwell_step(since, 10.5, true, false, 1.0);
+        assert_eq!((since, exit), (Some(10.0), false));
+        let (since, exit) = dwell_step(since, 11.0, true, false, 1.0);
+        assert_eq!((since, exit), (Some(10.0), true));
+    }
+
+    #[test]
+    fn dwell_restarts_on_activity_and_cancels_when_zoomed() {
+        // 最小での操作（縮小の空振り・バー操作）で起点を取り直す。
+        let (since, exit) = dwell_step(Some(10.0), 10.9, true, true, 1.0);
+        assert_eq!((since, exit), (Some(10.9), false));
+        let (_, exit) = dwell_step(since, 11.5, true, false, 1.0);
+        assert!(!exit);
+        // 拡大して最小を離れたら起点を捨てる（退場しない）。
+        let (since, exit) = dwell_step(Some(10.0), 20.0, false, false, 1.0);
+        assert_eq!((since, exit), (None, false));
     }
 
     #[test]

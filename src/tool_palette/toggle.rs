@@ -86,7 +86,11 @@ pub const TOGGLE_DEFS: &[ToggleDef] = &[
         key: ToggleKind::Magnifier,
         label: Lang::tool_palette_toggle_label_magnifier,
         get: |cfg| cfg.magnifier_on,
-        set: |cfg, on| cfg.magnifier_on = on,
+        // パレットでの明示的な切替は、既定動作での入場ではない扱い（自動退場の対象外）。
+        set: |cfg, on| {
+            cfg.magnifier_on = on;
+            cfg.magnifier_entered_by_default = false;
+        },
     },
 ];
 
@@ -140,6 +144,21 @@ mod tests {
         assert!(!cfg.image_filter.gamma_enabled);
         execute_toggle(&mut cfg, ToggleKind::GammaEnabled);
         assert!(cfg.image_filter.gamma_enabled);
+    }
+
+    #[test]
+    fn execute_toggle_magnifier_clears_the_default_entry_flag() {
+        let mut cfg = ViewerConfig::default();
+        // 既定動作で入場した状態から、パレットで切り替えると、明示操作になる。
+        cfg.magnifier_on = true;
+        cfg.magnifier_entered_by_default = true;
+        execute_toggle(&mut cfg, ToggleKind::Magnifier);
+        assert!(!cfg.magnifier_on);
+        assert!(!cfg.magnifier_entered_by_default);
+        // 明示ONにした場合も、既定動作での入場ではない。
+        execute_toggle(&mut cfg, ToggleKind::Magnifier);
+        assert!(cfg.magnifier_on);
+        assert!(!cfg.magnifier_entered_by_default);
     }
 
     #[test]

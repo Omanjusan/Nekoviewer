@@ -560,6 +560,8 @@ pub struct ViewerState {
     magnifier_bar_active_at: Option<f64>,
     /// ノッチ倍率／目盛りの詳細・簡易を切り替えた。次の `ViewerOutput` で保存を促して下ろす。
     magnifier_settings_dirty: bool,
+    /// 自動退場の滞留判定の起点（最小倍率に着いた、または最後に操作した時刻）。None = 対象外。
+    magnifier_min_since: Option<f64>,
     /// 虫眼鏡カーソルの画像キャッシュ（一辺のpxごと）。egui-winit は Arc のポインタで
     /// 同一画像を判定して再アップロードを避けるので、毎フレーム作り直さない。
     magnifier_cursor: Option<(u32, egui::CustomCursorImage)>,
@@ -809,6 +811,7 @@ impl ViewerState {
             magnifier_ref_len: 0.0,
             magnifier_bar_active_at: None,
             magnifier_settings_dirty: false,
+            magnifier_min_since: None,
             magnifier_cursor: None,
             max_texture_side: MAX_TEXTURE_SIDE_FALLBACK,
         }
@@ -901,6 +904,7 @@ impl ViewerState {
             magnifier_ref_len: 0.0,
             magnifier_bar_active_at: None,
             magnifier_settings_dirty: false,
+            magnifier_min_since: None,
             magnifier_cursor: None,
             max_texture_side: MAX_TEXTURE_SIDE_FALLBACK,
         }
@@ -1605,6 +1609,22 @@ impl ViewerState {
             self.draw_thumbbar_panel(ui, cfg, cfg.thumbbar_pos);
         }
         let viewport_before_central = ui.max_rect();
+
+        // ── 既定動作（ホイールの拡大割り当て・既定 Shift+ホイール）での虫眼鏡モード入場 ─────
+        // 拡大方向のときだけ入る（最小からの縮小では何も起きない）。画像領域の上に限り、
+        // パレットやダイアログの上では入らない。この回のホイール量は、下で拡縮にそのまま使われる。
+        if !cfg.magnifier_on
+            && input.zoom_wheel_notches > 0.0
+            && self.file_detail_dialog.is_none()
+            && !self.tool_palette_menu_open
+            && input.hover_pos.is_some_and(|p| {
+                viewport_before_central.contains(p)
+                    && !self.tool_palette_rect(viewport_before_central).is_some_and(|r| r.contains(p))
+            })
+        {
+            cfg.magnifier_on = true;
+            cfg.magnifier_entered_by_default = true;
+        }
 
         let rotation_angle = self.manual_rotation_angle(cfg);
         // 虫眼鏡: 単ページ・見開きとも回転可（見開きは2ページを1つの剛体として回す）。
@@ -2492,9 +2512,12 @@ impl ViewerState {
                 if let Some(bar) = bar_rects {
                     self.draw_magnifier_bar(ui.ctx(), viewport_rect, target, &bar, pointer_in_bar, input.wheel_notches != 0.0, input.time, &mut cfg.magnifier);
                 }
+                // 最小倍率での操作（ホイールの空振り・バーの上）は、滞留の起点を取り直す操作とみなす。
+                self.tick_magnifier_auto_exit(ui.ctx(), cfg, input.time, input.wheel_notches != 0.0 || pointer_in_bar);
             } else {
                 self.magnifier_view = None;
                 self.magnifier_bar_active_at = None;
+                self.magnifier_min_since = None;
             }
 
             // ── 虫眼鏡カーソル ─────────────────────────────────────────────────────
@@ -3884,6 +3907,35 @@ impl ViewerState {
         self.magnifier_at_fit = view.scale <= fit + 1e-4;
         self.magnifier_ref_len = target.ref_len;
         self.magnifier_view = Some(view);
+    }
+
+    /// 既定動作で入場した虫眼鏡モードの自動退場。倍率が最小（フィット）のまま、最後の操作から
+    /// `auto_exit_dwell_secs` 止まったらモードをOFFにする。キーの状態は見ない。
+    /// パレットで明示的にONにした場合や、`auto_exit` がOFFの場合は対象外。
+    fn tick_magnifier_auto_exit(&mut self, ctx: &egui::Context, cfg: &mut ViewerConfig, time: f64, activity: bool) {
+        let eligible = cfg.magnifier_on
+            && cfg.magnifier_entered_by_default
+            && cfg.magnifier.auto_exit()
+            && self.magnifier_view.is_some();
+        let dwell = cfg.magnifier.auto_exit_dwell_secs() as f64;
+        let (since, exit) = crate::magnifier::dwell_step(
+            self.magnifier_min_since,
+            time,
+            eligible && self.magnifier_at_fit,
+            activity,
+            dwell,
+        );
+        self.magnifier_min_since = since;
+        if exit {
+            cfg.magnifier_on = false;
+            cfg.magnifier_entered_by_default = false;
+            self.magnifier_min_since = None;
+            ctx.request_repaint();
+        } else if let Some(start) = since {
+            // 入力が無くても、退場の時刻ちょうどに再描画させる。
+            let remaining = (dwell - (time - start)).max(0.0);
+            ctx.request_repaint_after(Duration::from_secs_f64(remaining + 0.02));
+        }
     }
 
     /// 虫眼鏡カーソルの画像（画面の拡大率に合わせた大きさ）。同じ大きさの間は使い回す。

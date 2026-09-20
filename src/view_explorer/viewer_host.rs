@@ -1042,6 +1042,13 @@ impl NekoviewApp {
 
     /// ビューアを開く（ページキャッシュクリア・ファイルキャッシュ投入・フォーカス要求を一括処理）
     pub(super) fn open_viewer(&mut self, mut state: ViewerState) {
+        // 虫眼鏡モードは、ビューアーを閉じる・別のファイルへ移ると解除する（同一アーカイブ内の
+        // ページ送りでのみ維持）。デコード目標の巻き戻しは poll_magnifier_toggle が変化を拾って行う。
+        {
+            let mut cfg = self.viewer_cfg.lock().unwrap();
+            cfg.magnifier_on = false;
+            cfg.magnifier_entered_by_default = false;
+        }
         self.flush_current_sort_if_changed();
         self.flush_current_bookmark_if_enabled();
         let path = state.archive_path().clone();

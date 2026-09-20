@@ -190,6 +190,9 @@ pub struct ViewerConfig {
     pub tool_palette: PaletteState,
     /// 虫眼鏡（ホイール拡縮）モードのON/OFF。非永続・実行時のみ（ツールパレットのマスで切替）。
     pub magnifier_on: bool,
+    /// 虫眼鏡モードに既定動作（Shift+ホイール等）で入場したか。非永続・実行時のみ。
+    /// パレットのトグルで明示的に切り替えたら false に戻る（自動退場の対象外になる）。
+    pub magnifier_entered_by_default: bool,
     /// 虫眼鏡モードの設定値（上限倍率・バー幅など）。現状は既定値のみで永続化しない。
     pub magnifier: crate::magnifier::MagnifierConfig,
 }
@@ -223,6 +226,7 @@ impl Default for ViewerConfig {
             image_filter: ImageFilterSettings::default(),
             tool_palette: PaletteState::default(),
             magnifier_on: false,
+            magnifier_entered_by_default: false,
             magnifier: crate::magnifier::MagnifierConfig::default(),
         }
     }
@@ -842,6 +846,7 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
                 }
             },
             magnifier_on: false,
+            magnifier_entered_by_default: false,
             magnifier: {
                 // 不正値は捨てて既定値。永続化するのはノッチ倍率と目盛りの詳細/簡易だけ。
                 let mut m = crate::magnifier::MagnifierConfig::default();
