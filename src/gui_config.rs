@@ -193,6 +193,9 @@ pub struct ViewerConfig {
     pub tool_palette: PaletteState,
     /// 虫眼鏡（ホイール拡縮）モードのON/OFF。非永続・実行時のみ（ツールパレットのマスで切替）。
     pub magnifier_on: bool,
+    /// 疑似コマ送りモードのON/OFF。非永続・実行時のみ（ツールパレットのマスで切替）。
+    /// 虫眼鏡モードの上のサブモードなので、虫眼鏡がOFFの間は常にOFF。
+    pub koma_on: bool,
     /// 虫眼鏡モードの設定値（上限倍率・バー幅など）。現状は既定値のみで永続化しない。
     pub magnifier: crate::magnifier::MagnifierConfig,
     /// GPUテクスチャを保持するページ窓のVRAM予算など。非永続（現状は既定値のみ）。
@@ -229,6 +232,7 @@ impl Default for ViewerConfig {
             image_filter: ImageFilterSettings::default(),
             tool_palette: PaletteState::default(),
             magnifier_on: false,
+            koma_on: false,
             magnifier: crate::magnifier::MagnifierConfig::default(),
             texture_window: crate::texture_window::TextureWindowConfig::default(),
         }
@@ -524,6 +528,7 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
     let mut image_info_visible: Option<bool> = None;
     let mut magnifier_notch_step: Option<crate::magnifier::NotchStep> = None;
     let mut magnifier_detail_ticks: Option<bool> = None;
+    let mut magnifier_koma_height_rel: Option<f32> = None;
     let mut viewer_bar_order: Option<[ViewerBarItem; BAR_ITEM_COUNT]> = None;
     let mut transition_kind: Option<TransitionKind> = None;
     let mut transition_duration_ms: Option<u64> = None;
@@ -676,6 +681,7 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
                 "image_info_visible" => { image_info_visible = v.trim().parse().ok(); }
                 "magnifier_notch_step" => { magnifier_notch_step = crate::magnifier::NotchStep::from_state_str(v); }
                 "magnifier_detail_ticks" => { magnifier_detail_ticks = v.trim().parse().ok(); }
+                "magnifier_koma_height_rel" => { magnifier_koma_height_rel = v.trim().parse().ok(); }
                 "viewer_bar_order" => { viewer_bar_order = Some(parse_bar_order(v)); }
                 "transition_kind" => { transition_kind = Some(parse_transition_kind(v.trim())); }
                 "transition_duration_ms" => {
@@ -857,11 +863,13 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
                 }
             },
             magnifier_on: false,
+            koma_on: false,
             magnifier: {
-                // 不正値は捨てて既定値。永続化するのはノッチ倍率と目盛りの詳細/簡易だけ。
+                // 不正値は捨てて既定値。永続化するのはノッチ倍率・目盛りの詳細/簡易・コマ送りの基準倍率だけ。
                 let mut m = crate::magnifier::MagnifierConfig::default();
                 if let Some(step) = magnifier_notch_step { m.set_notch_step(step); }
                 if let Some(detail) = magnifier_detail_ticks { m.set_detail_ticks(detail); }
+                if let Some(rel) = magnifier_koma_height_rel { m.set_koma_height_rel(rel); }
                 m
             },
             texture_window: crate::texture_window::TextureWindowConfig::default(),
@@ -953,6 +961,9 @@ pub fn save_state(root: &Path, dir: &Path, window_size: (u32, u32), viewer_slots
         viewer_cfg.magnifier.notch_step().to_state_str(),
         viewer_cfg.magnifier.detail_ticks(),
     ));
+    if let Some(rel) = viewer_cfg.magnifier.koma_height_rel() {
+        content.push_str(&format!("magnifier_koma_height_rel={rel}\n"));
+    }
     content.push_str(&format!(
         "viewer_bar_order={}\n",
         bar_order_to_str(&viewer_cfg.bar_order),
@@ -1124,6 +1135,23 @@ mod tests {
         // キーなし（旧state）も既定値。
         let parsed = parse_state_text("mag_none", "lang=ja\n");
         assert_eq!(parsed.viewer_cfg.magnifier, crate::magnifier::MagnifierConfig::default());
+    }
+
+    #[test]
+    fn koma_height_rel_parses_clamps_and_falls_back() {
+        let parsed = parse_state_text("koma_ok", "magnifier_koma_height_rel=1.75\n");
+        assert_eq!(parsed.viewer_cfg.magnifier.koma_height_rel(), Some(1.75));
+
+        // 範囲外は丸め、不正値・キーなしは未設定。
+        let parsed = parse_state_text("koma_big", "magnifier_koma_height_rel=9999\n");
+        assert_eq!(parsed.viewer_cfg.magnifier.koma_height_rel(), Some(64.0));
+        let parsed = parse_state_text("koma_bad", "magnifier_koma_height_rel=abc\n");
+        assert_eq!(parsed.viewer_cfg.magnifier.koma_height_rel(), None);
+        let parsed = parse_state_text("koma_nan", "magnifier_koma_height_rel=NaN\n");
+        assert_eq!(parsed.viewer_cfg.magnifier.koma_height_rel(), None);
+        let parsed = parse_state_text("koma_none", "lang=ja\n");
+        assert_eq!(parsed.viewer_cfg.magnifier.koma_height_rel(), None);
+        assert!(!parsed.viewer_cfg.koma_on);
     }
 
     #[test]

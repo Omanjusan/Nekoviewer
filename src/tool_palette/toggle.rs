@@ -21,6 +21,8 @@ pub enum ToggleKind {
     Magnifier,
     /// 画像情報（解像度・ページ数）オーバーレイの表示ON/OFF
     ImageInfo,
+    /// 疑似コマ送りモードのON/OFF（虫眼鏡モードの上のサブモード。ONにすると虫眼鏡もONになる）
+    KomaMode,
 }
 
 impl ToggleKind {
@@ -33,6 +35,7 @@ impl ToggleKind {
             ToggleKind::SharpnessEnabled => "sharpness_enabled",
             ToggleKind::Magnifier => "magnifier",
             ToggleKind::ImageInfo => "image_info",
+            ToggleKind::KomaMode => "koma_mode",
         }
     }
 
@@ -44,6 +47,7 @@ impl ToggleKind {
             "sharpness_enabled" => ToggleKind::SharpnessEnabled,
             "magnifier" => ToggleKind::Magnifier,
             "image_info" => ToggleKind::ImageInfo,
+            "koma_mode" => ToggleKind::KomaMode,
             _ => return None,
         })
     }
@@ -98,6 +102,18 @@ pub const TOGGLE_DEFS: &[ToggleDef] = &[
         get: |cfg| cfg.image_info_visible,
         set: |cfg, on| cfg.image_info_visible = on,
     },
+    ToggleDef {
+        key: ToggleKind::KomaMode,
+        label: Lang::tool_palette_toggle_label_koma_mode,
+        get: |cfg| cfg.koma_on,
+        // コマ送りは虫眼鏡の上のサブモード。ONなら虫眼鏡も立てる（OFF側は毎フレームの整合処理が担う）。
+        set: |cfg, on| {
+            cfg.koma_on = on;
+            if on {
+                cfg.magnifier_on = true;
+            }
+        },
+    },
 ];
 
 /// key に対応する定義を探す。TOGGLE_DEFS は全 ToggleKind を網羅している前提
@@ -120,13 +136,14 @@ pub fn execute_toggle(cfg: &mut ViewerConfig, kind: ToggleKind) {
 mod tests {
     use super::*;
 
-    const ALL_KINDS: [ToggleKind; 6] = [
+    const ALL_KINDS: [ToggleKind; 7] = [
         ToggleKind::BlueLightCut,
         ToggleKind::GammaEnabled,
         ToggleKind::BrightnessEnabled,
         ToggleKind::SharpnessEnabled,
         ToggleKind::Magnifier,
         ToggleKind::ImageInfo,
+        ToggleKind::KomaMode,
     ];
 
     #[test]
@@ -161,6 +178,19 @@ mod tests {
         assert!(cfg.magnifier_on);
         execute_toggle(&mut cfg, ToggleKind::Magnifier);
         assert!(!cfg.magnifier_on);
+    }
+
+    #[test]
+    fn execute_toggle_koma_mode_turns_magnifier_on_with_it() {
+        let mut cfg = ViewerConfig::default();
+        assert!(!cfg.koma_on && !cfg.magnifier_on);
+        execute_toggle(&mut cfg, ToggleKind::KomaMode);
+        assert!(cfg.koma_on);
+        assert!(cfg.magnifier_on, "コマモードは虫眼鏡の上のサブモード");
+        // OFFは虫眼鏡を巻き込まない（拡大表示のまま、コマ送りだけ止める）。
+        execute_toggle(&mut cfg, ToggleKind::KomaMode);
+        assert!(!cfg.koma_on);
+        assert!(cfg.magnifier_on);
     }
 
     #[test]

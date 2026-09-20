@@ -15,15 +15,21 @@ pub enum ActionKind {
     ToggleFullscreen,
     /// スライドショーのON/OFF切替（右クリックメニュー等、他導線からの起動/停止状態も表示する）
     SlideshowToggle,
+    /// 疑似コマ送り: 次のコマへ進む（最終コマなら次のページ）
+    KomaNext,
+    /// 疑似コマ送り: 前のコマへ戻る（先頭コマなら前ページの最終コマ）
+    KomaPrev,
 }
 
 /// 全ActionKind。登録メニュー（マス右クリック）はこれを走査して選択肢を出す。
-pub const ALL_ACTION_KINDS: [ActionKind; 5] = [
+pub const ALL_ACTION_KINDS: [ActionKind; 7] = [
     ActionKind::NextPage,
     ActionKind::PrevPage,
     ActionKind::OpenFolder,
     ActionKind::ToggleFullscreen,
     ActionKind::SlideshowToggle,
+    ActionKind::KomaNext,
+    ActionKind::KomaPrev,
 ];
 
 impl ActionKind {
@@ -35,6 +41,8 @@ impl ActionKind {
             ActionKind::OpenFolder => "open_folder",
             ActionKind::ToggleFullscreen => "toggle_fullscreen",
             ActionKind::SlideshowToggle => "slideshow_toggle",
+            ActionKind::KomaNext => "koma_next",
+            ActionKind::KomaPrev => "koma_prev",
         }
     }
 
@@ -45,6 +53,8 @@ impl ActionKind {
             "open_folder" => ActionKind::OpenFolder,
             "toggle_fullscreen" => ActionKind::ToggleFullscreen,
             "slideshow_toggle" => ActionKind::SlideshowToggle,
+            "koma_next" => ActionKind::KomaNext,
+            "koma_prev" => ActionKind::KomaPrev,
             _ => return None,
         })
     }
@@ -57,6 +67,8 @@ impl ActionKind {
             ActionKind::OpenFolder => lang.tool_palette_action_label_open_folder(),
             ActionKind::ToggleFullscreen => lang.tool_palette_action_label_toggle_fullscreen(),
             ActionKind::SlideshowToggle => lang.tool_palette_action_label_slideshow_toggle(),
+            ActionKind::KomaNext => lang.tool_palette_action_label_koma_next(),
+            ActionKind::KomaPrev => lang.tool_palette_action_label_koma_prev(),
         }
     }
 
@@ -68,6 +80,8 @@ impl ActionKind {
             ActionKind::OpenFolder => "📁",
             ActionKind::ToggleFullscreen => "⛶",
             ActionKind::SlideshowToggle => "⏯",
+            ActionKind::KomaNext => "▶▶",
+            ActionKind::KomaPrev => "◀◀",
         }
     }
 }
@@ -76,18 +90,27 @@ impl ActionKind {
 mod tests {
     use super::*;
 
-    const ALL_KINDS: [ActionKind; 5] = [
+    const ALL_KINDS: [ActionKind; 7] = [
         ActionKind::NextPage,
         ActionKind::PrevPage,
         ActionKind::OpenFolder,
         ActionKind::ToggleFullscreen,
         ActionKind::SlideshowToggle,
+        ActionKind::KomaNext,
+        ActionKind::KomaPrev,
     ];
 
     #[test]
     fn id_roundtrip() {
         for k in ALL_KINDS {
             assert_eq!(ActionKind::from_id(k.id()), Some(k));
+        }
+    }
+
+    #[test]
+    fn all_action_kinds_lists_every_kind() {
+        for k in ALL_KINDS {
+            assert!(ALL_ACTION_KINDS.contains(&k), "missing in ALL_ACTION_KINDS: {k:?}");
         }
     }
 

@@ -2982,6 +2982,14 @@ impl Lang {
         }
     }
 
+    pub fn tool_palette_toggle_label_koma_mode(self) -> &'static str {
+        match self {
+            Lang::Japanese => "コマ送りモード",
+            Lang::English  => "Panel mode",
+            Lang::Chinese  => "分镜模式",
+        }
+    }
+
     pub fn decode_edge_prompt_title(self) -> &'static str {
         match self {
             Lang::Japanese => "既定値の更新",
@@ -3149,6 +3157,22 @@ impl Lang {
             Lang::Japanese => "スライドショー",
             Lang::English  => "Slideshow",
             Lang::Chinese  => "幻灯片放映",
+        }
+    }
+
+    pub fn tool_palette_action_label_koma_next(self) -> &'static str {
+        match self {
+            Lang::Japanese => "コマ送り",
+            Lang::English  => "Next Panel",
+            Lang::Chinese  => "下一格",
+        }
+    }
+
+    pub fn tool_palette_action_label_koma_prev(self) -> &'static str {
+        match self {
+            Lang::Japanese => "コマ戻し",
+            Lang::English  => "Prev Panel",
+            Lang::Chinese  => "上一格",
         }
     }
 

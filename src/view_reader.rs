@@ -564,6 +564,8 @@ pub struct ViewerState {
     magnifier_bar_active_at: Option<f64>,
     /// ノッチ倍率／目盛りの詳細・簡易を切り替えた。次の `ViewerOutput` で保存を促して下ろす。
     magnifier_settings_dirty: bool,
+    /// 前フレームまでにコマモードがONだったか（ONの立ち上がり検出用。基準倍率の取り込みに使う）。
+    koma_was_on: bool,
     /// ページ送りで引き継ぐ倍率（フィット相対 = 倍率 ÷ フィット倍率）。次ページのテクスチャが届くまで
     /// 虫眼鏡が一時的に非アクティブになっても失われないよう、`magnifier_view` とは別に持つ。
     /// モードOFFで破棄する。
@@ -817,6 +819,7 @@ impl ViewerState {
             magnifier_ref_len: 0.0,
             magnifier_bar_active_at: None,
             magnifier_settings_dirty: false,
+            koma_was_on: false,
             magnifier_carry_rel: None,
             magnifier_cursor: None,
             max_texture_side: MAX_TEXTURE_SIDE_FALLBACK,
@@ -910,6 +913,7 @@ impl ViewerState {
             magnifier_ref_len: 0.0,
             magnifier_bar_active_at: None,
             magnifier_settings_dirty: false,
+            koma_was_on: false,
             magnifier_carry_rel: None,
             magnifier_cursor: None,
             max_texture_side: MAX_TEXTURE_SIDE_FALLBACK,
@@ -1700,6 +1704,11 @@ impl ViewerState {
             cfg.magnifier_on = true;
         }
 
+        // コマモードは虫眼鏡の上のサブモード。虫眼鏡がOFFの間（終了ボタン・トグル・入場前）は常にOFF。
+        if !cfg.magnifier_on {
+            cfg.koma_on = false;
+        }
+
         let rotation_angle = self.manual_rotation_angle(cfg);
         // 虫眼鏡: 単ページ・見開きとも回転可（見開きは2ページを1つの剛体として回す）。
         let magnifier_active = cfg.magnifier_on
@@ -2279,6 +2288,10 @@ impl ViewerState {
                         crate::tool_palette::PaletteSlotContent::Action(crate::tool_palette::ActionKind::SlideshowToggle) => {
                             self.toggle_slideshow();
                         }
+                        // コマ送り/コマ戻しの実行はフェーズ3でナビゲーションへ接続する（現状は登録のみ）。
+                        crate::tool_palette::PaletteSlotContent::Action(
+                            crate::tool_palette::ActionKind::KomaNext | crate::tool_palette::ActionKind::KomaPrev,
+                        ) => {}
                         crate::tool_palette::PaletteSlotContent::Empty => {}
                     }
                 }
@@ -2585,7 +2598,7 @@ impl ViewerState {
                     input.hover_pos
                 };
                 let target = self.magnifier_target(frame);
-                self.update_magnifier(viewport_rect, target, anchor, input.wheel_notches, &cfg.magnifier);
+                self.update_magnifier(viewport_rect, target, anchor, input.wheel_notches, &mut cfg.magnifier, cfg.koma_on);
                 if let Some(bar) = bar_rects
                     && self.draw_magnifier_bar(ui.ctx(), viewport_rect, target, &bar, pointer_in_bar, input.wheel_notches != 0.0, input.time, &mut cfg.magnifier)
                 {
@@ -2600,6 +2613,7 @@ impl ViewerState {
             } else {
                 self.magnifier_view = None;
                 self.magnifier_bar_active_at = None;
+                self.koma_was_on = false;
                 // テクスチャ待ちなどで一時的に非アクティブなだけなら、引き継ぎ状態は残す。
                 if !cfg.magnifier_on {
                     self.magnifier_key = None;
@@ -3994,6 +4008,14 @@ impl ViewerState {
         }
     }
 
+    /// コマ送りの行内の読み順。右綴じは右→左、左綴じ・単ページは左→右。
+    fn koma_read_dir(&self) -> crate::koma::ReadDir {
+        match self.page_mode {
+            PageMode::SpreadRight => crate::koma::ReadDir::RightToLeft,
+            _ => crate::koma::ReadDir::LeftToRight,
+        }
+    }
+
     /// 虫眼鏡ビューの更新（毎フレーム、描画前）。作り直し・窓サイズ追従・ホイール拡縮を行い、
     /// scroll_offset の押し込みが必要なら `magnifier_offset_dirty` を立てる。
     /// `wheel_anchor`（拡縮の基準点・画面座標）が None（パレット上など）ならホイールを無視する。
@@ -4004,9 +4026,13 @@ impl ViewerState {
         target: Option<crate::magnifier::MagnifierTarget>,
         wheel_anchor: Option<egui::Pos2>,
         wheel_notches: f32,
-        cfg: &crate::magnifier::MagnifierConfig,
+        cfg: &mut crate::magnifier::MagnifierConfig,
+        koma_on: bool,
     ) {
         use crate::magnifier::{carried_view, fit_scale, notch_scale, rescale_for_new_texture, snap_stops, zoom_about, clamp_offset, MagnifierView, FIT_EPS};
+        if !koma_on {
+            self.koma_was_on = false;
+        }
         let Some(target) = target else {
             self.magnifier_view = None;
             return;
@@ -4016,6 +4042,7 @@ impl ViewerState {
         let fit = fit_scale(vp, img);
         let range = cfg.scale_range(fit);
 
+        let had_view = self.magnifier_view.is_some() && self.magnifier_key == Some(target.key);
         let mut view = match self.magnifier_view {
             Some(mut v) if self.magnifier_key == Some(target.key) => {
                 // 原寸デコードへの差し替えなどで解像度が変わったら、画面上の大きさを
@@ -4047,6 +4074,26 @@ impl ViewerState {
                 }
             }
         };
+
+        // コマモードのON直後: 拡大表示中だったなら、いまの倍率を基準倍率として取り込む（保存対象）。
+        // 拡大表示に入りたてで、前回の基準倍率があるなら、その倍率で先頭コマから始める。
+        if koma_on && !self.koma_was_on {
+            let saved = cfg.koma_height_rel().filter(|_| !had_view);
+            if let Some(rel) = saved {
+                let scale = crate::koma::scale_from_height_rel(rel, img.y, vp.y).clamp(range.0, range.1);
+                let grid = crate::koma::KomaGrid::new(img * scale, vp, self.koma_read_dir());
+                view = MagnifierView { scale, offset: grid.first() };
+                self.magnifier_offset_dirty = true;
+            } else {
+                let rel = crate::koma::height_rel_from_scale(view.scale, img.y, vp.y);
+                if cfg.koma_height_rel() != cfg.set_koma_height_rel(rel) {
+                    self.magnifier_settings_dirty = true;
+                }
+            }
+        }
+        if koma_on {
+            self.koma_was_on = true;
+        }
 
         if wheel_notches != 0.0
             && let Some(p) = wheel_anchor.filter(|p| viewport.contains(*p))
@@ -6173,6 +6220,87 @@ mod magnifier_flow_tests {
         assert!(h.cfg.magnifier_on);
         click_exit_button(&mut h);
         assert!(!h.cfg.magnifier_on, "パレット入場後に終了ボタンで退場しない: {}", h.state());
+    }
+
+    // ── コマモード：状態と基準倍率（フェーズ2） ────────────────────────────────
+    fn toggle_koma(h: &mut Harness) {
+        crate::tool_palette::execute_toggle(&mut h.cfg, crate::tool_palette::ToggleKind::KomaMode);
+        h.frame(vec![], egui::Modifiers::NONE);
+    }
+
+    #[test]
+    fn koma_mode_toggle_enters_the_magnifier_and_captures_fit_as_the_base() {
+        let mut h = Harness::new();
+        assert!(!h.cfg.magnifier_on);
+        toggle_koma(&mut h);
+        assert!(h.cfg.koma_on && h.cfg.magnifier_on, "コマモードと同時に虫眼鏡に入る: {}", h.state());
+        // 保存値がない入場は、フィット表示の倍率が基準。縦長ページは高さで決まるので、高さフィット相対は1.0。
+        let rel = h.cfg.magnifier.koma_height_rel().expect("基準倍率が取り込まれていない");
+        assert!((rel - 1.0).abs() < 1e-3, "rel={rel}");
+    }
+
+    #[test]
+    fn koma_mode_captures_the_current_scale_when_toggled_while_magnified() {
+        let mut h = Harness::new();
+        // ホイールでの入場は最初の1ノッチも拡大に使われるので、フィット倍率は入場だけして読む。
+        h.cfg.magnifier_on = true;
+        h.frame(vec![], egui::Modifiers::NONE);
+        let fit = h.viewer.magnifier_view.expect("虫眼鏡に入っていない").scale;
+        h.wheel(true, egui::Modifiers::NONE);
+        h.wheel(true, egui::Modifiers::NONE);
+        let zoomed = h.viewer.magnifier_view.unwrap().scale;
+        assert!(zoomed > fit * 1.2, "拡大していない: {}", h.state());
+        // 前回の基準倍率が残っていても、拡大表示中に押した場合は、いまの倍率が優先される。
+        h.cfg.magnifier.set_koma_height_rel(3.0);
+        toggle_koma(&mut h);
+        let rel = h.cfg.magnifier.koma_height_rel().unwrap();
+        assert!((rel - zoomed / fit).abs() < 1e-3, "rel={rel} zoomed/fit={}", zoomed / fit);
+        // 倍率そのものは動かさない。
+        assert!((h.viewer.magnifier_view.unwrap().scale - zoomed).abs() < 1e-4);
+    }
+
+    #[test]
+    fn koma_mode_applies_the_saved_base_when_entering_from_normal_view() {
+        let mut h = Harness::new();
+        h.cfg.magnifier.set_koma_height_rel(2.0);
+        toggle_koma(&mut h);
+        h.frame(vec![], egui::Modifiers::NONE);
+        let view = h.viewer.magnifier_view.expect("虫眼鏡に入っていない");
+        // 縦長ページのフィット倍率の2倍で始まる。保存値は上書きされない。
+        let fit = crate::magnifier::fit_scale(egui::vec2(SCREEN.x, SCREEN.y), egui::vec2(800.0, 1200.0));
+        assert!(view.scale > fit * 1.9 && view.scale < fit * 2.1, "scale={} fit={fit}", view.scale);
+        assert_eq!(h.cfg.magnifier.koma_height_rel(), Some(2.0));
+        // 先頭コマ（左綴じ・単ページ＝左上）から始まる。
+        assert!(view.offset.x.abs() < 1.0 && view.offset.y.abs() < 1.0, "offset={:?}", view.offset);
+    }
+
+    #[test]
+    fn koma_mode_turns_off_whenever_the_magnifier_is_off() {
+        let mut h = Harness::new();
+        toggle_koma(&mut h);
+        assert!(h.cfg.koma_on);
+        // 拡大表示だけをOFFにすると、コマモードも連動してOFF。
+        h.cfg.magnifier_on = false;
+        h.frame(vec![], egui::Modifiers::NONE);
+        assert!(!h.cfg.koma_on, "虫眼鏡OFFでもコマモードが残った");
+        // 再入場しても、勝手にコマモードには戻らない。
+        h.cfg.magnifier_on = true;
+        h.frame(vec![], egui::Modifiers::NONE);
+        assert!(!h.cfg.koma_on);
+    }
+
+    #[test]
+    fn koma_mode_turned_off_alone_keeps_the_magnifier_and_recaptures_on_the_next_on() {
+        let mut h = Harness::new();
+        toggle_koma(&mut h);
+        toggle_koma(&mut h); // OFF
+        assert!(!h.cfg.koma_on && h.cfg.magnifier_on, "{}", h.state());
+        h.wheel(true, egui::Modifiers::SHIFT);
+        h.wheel(true, egui::Modifiers::SHIFT);
+        let zoomed = h.viewer.magnifier_view.unwrap().scale;
+        toggle_koma(&mut h); // 再ON: いまの倍率を取り込み直す
+        let rel = h.cfg.magnifier.koma_height_rel().unwrap();
+        assert!(rel > 1.2, "再ONで基準が更新されない: rel={rel} zoomed={zoomed}");
     }
 
     // ── ツールパレットのドラッグ：クランプ中の座標蓄積 ─────────────────────────

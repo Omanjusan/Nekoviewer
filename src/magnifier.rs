@@ -15,6 +15,8 @@ const MAX_SCALE_RANGE: (f32, f32) = (1.0, 32.0);
 /// 縮小側の下限。フィット倍率に対する比（0.25 = フィット表示の25%まで縮められる）。
 pub const DEFAULT_MIN_SHRINK_RATIO: f32 = 0.25;
 const MIN_SHRINK_RATIO_RANGE: (f32, f32) = (0.05, 1.0);
+/// コマ送りの基準倍率（高さフィット相対）の許容範囲。
+const KOMA_HEIGHT_REL_RANGE: (f32, f32) = (0.05, 64.0);
 /// フィット倍率ちょうどかの判定幅。窓サイズ変更への追従（フィット表示のまま）に使う。
 pub const FIT_EPS: f32 = 1e-4;
 
@@ -257,7 +259,7 @@ fn clamp_size(size: Vec2, current: Vec2) -> Vec2 {
 
 /// 虫眼鏡モードの設定値。setter は「範囲に丸めて適用し、適用後の値を返す」。
 /// GUI設定へ昇格するときはこの setter を呼ぶだけで済む。
-/// 永続化するのは `notch_step` と `detail_ticks` の2つだけ（他は現状スコープ外）。
+/// 永続化するのは `notch_step`・`detail_ticks`・`koma_height_rel` の3つだけ（他は現状スコープ外）。
 #[derive(Clone, Debug, PartialEq)]
 pub struct MagnifierConfig {
     max_scale: f32,
@@ -265,6 +267,8 @@ pub struct MagnifierConfig {
     autohide_secs: f32,
     notch_step: NotchStep,
     detail_ticks: bool,
+    /// コマ送りの基準倍率（高さフィット相対。`koma::height_rel_from_scale`）。未設定なら None。
+    koma_height_rel: Option<f32>,
     pub bar: BarLayout,
 }
 
@@ -276,6 +280,7 @@ impl Default for MagnifierConfig {
             autohide_secs: DEFAULT_AUTOHIDE_SECS,
             notch_step: NotchStep::default(),
             detail_ticks: false,
+            koma_height_rel: None,
             bar: BarLayout::default(),
         }
     }
@@ -314,6 +319,17 @@ impl MagnifierConfig {
     pub fn toggle_detail_ticks(&mut self) -> bool {
         self.detail_ticks = !self.detail_ticks;
         self.detail_ticks
+    }
+
+    /// コマ送りの基準倍率（高さフィット相対）。未設定なら None。
+    pub fn koma_height_rel(&self) -> Option<f32> { self.koma_height_rel }
+
+    /// 範囲に丸めて設定する。有限でない値は無視して現在値を返す。
+    pub fn set_koma_height_rel(&mut self, v: f32) -> Option<f32> {
+        if v.is_finite() {
+            self.koma_height_rel = Some(v.clamp(KOMA_HEIGHT_REL_RANGE.0, KOMA_HEIGHT_REL_RANGE.1));
+        }
+        self.koma_height_rel
     }
 
     pub fn set_min_shrink_ratio(&mut self, v: f32) -> f32 {
