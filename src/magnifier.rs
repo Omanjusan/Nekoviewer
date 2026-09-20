@@ -12,6 +12,12 @@ const ACTUAL_SNAP_EPS: f32 = 1e-3;
 pub const DEFAULT_MAX_SCALE: f32 = 4.0;
 const MAX_SCALE_RANGE: (f32, f32) = (1.0, 32.0);
 
+/// 縮小側の下限。フィット倍率に対する比（0.25 = フィット表示の25%まで縮められる）。
+pub const DEFAULT_MIN_SHRINK_RATIO: f32 = 0.25;
+const MIN_SHRINK_RATIO_RANGE: (f32, f32) = (0.05, 1.0);
+/// フィット倍率ちょうどかの判定幅。窓サイズ変更への追従（フィット表示のまま）に使う。
+pub const FIT_EPS: f32 = 1e-4;
+
 pub const DEFAULT_AUTOHIDE_SECS: f32 = 2.0;
 const AUTOHIDE_SECS_RANGE: (f32, f32) = (0.1, 30.0);
 const AUTOHIDE_SECS_STEP: f32 = 0.1;
@@ -255,6 +261,7 @@ fn clamp_size(size: Vec2, current: Vec2) -> Vec2 {
 #[derive(Clone, Debug, PartialEq)]
 pub struct MagnifierConfig {
     max_scale: f32,
+    min_shrink_ratio: f32,
     autohide_secs: f32,
     notch_step: NotchStep,
     detail_ticks: bool,
@@ -265,6 +272,7 @@ impl Default for MagnifierConfig {
     fn default() -> Self {
         Self {
             max_scale: DEFAULT_MAX_SCALE,
+            min_shrink_ratio: DEFAULT_MIN_SHRINK_RATIO,
             autohide_secs: DEFAULT_AUTOHIDE_SECS,
             notch_step: NotchStep::default(),
             detail_ticks: false,
@@ -276,6 +284,12 @@ impl Default for MagnifierConfig {
 impl MagnifierConfig {
     /// 上限倍率（原寸比）。
     pub fn max_scale(&self) -> f32 { self.max_scale }
+    /// 縮小側の下限（フィット倍率に対する比）。
+    pub fn min_shrink_ratio(&self) -> f32 { self.min_shrink_ratio }
+    /// フィット倍率 `fit` に対する倍率の許容範囲。
+    pub fn scale_range(&self, fit: f32) -> (f32, f32) {
+        scale_range(fit, self.min_shrink_ratio, self.max_scale)
+    }
     /// スライダーバーの自動ハイドまでの秒数。
     pub fn autohide_secs(&self) -> f32 { self.autohide_secs }
 
@@ -300,6 +314,11 @@ impl MagnifierConfig {
     pub fn toggle_detail_ticks(&mut self) -> bool {
         self.detail_ticks = !self.detail_ticks;
         self.detail_ticks
+    }
+
+    pub fn set_min_shrink_ratio(&mut self, v: f32) -> f32 {
+        self.min_shrink_ratio = clamp_finite(v, MIN_SHRINK_RATIO_RANGE, self.min_shrink_ratio);
+        self.min_shrink_ratio
     }
 
     pub fn set_max_scale(&mut self, v: f32) -> f32 {
@@ -464,26 +483,34 @@ pub fn fit_scale(viewport: Vec2, img: Vec2) -> f32 {
     (viewport.x / img.x).min(viewport.y / img.y)
 }
 
-/// 倍率の許容範囲 (下限, 上限)。下限はフィット倍率。フィットが上限を超える小さな画像でも
-/// フィット自体は表現できるよう、上限は少なくともフィット倍率にする。
-pub fn scale_range(fit: f32, max_scale: f32) -> (f32, f32) {
-    (fit, max_scale.max(fit))
+/// 倍率の許容範囲 (下限, 上限)。下限は `フィット倍率 × min_ratio`（縮小側の余地）。
+/// フィットが上限を超える小さな画像でも、フィット自体は表現できるよう、上限は少なくとも
+/// フィット倍率にする。
+pub fn scale_range(fit: f32, min_ratio: f32, max_scale: f32) -> (f32, f32) {
+    (fit * min_ratio.clamp(MIN_SHRINK_RATIO_RANGE.0, MIN_SHRINK_RATIO_RANGE.1), max_scale.max(fit))
+}
+
+/// 拡縮の停止点（原寸とフィット）。ノッチもスライダーも、ここで一度ぴったり止まる。
+pub fn snap_stops(fit: f32) -> [f32; 2] {
+    [ACTUAL_SCALE, fit]
 }
 
 /// 現在倍率から `notches` ノッチ（正=拡大）進めた倍率を返す。1ノッチは `ratio` 倍。
-/// 原寸(100%)をまたぐ動きは一度100%ぴったりで止め、その後範囲へ丸める。
-pub fn notch_scale(current: f32, notches: f32, ratio: f32, range: (f32, f32)) -> f32 {
+/// `stops`（原寸・フィットなど）をまたぐ動きは、最初に出会う停止点ぴったりで止め、その後範囲へ丸める。
+/// 停止点ちょうどにいるときは、そこから離れる動きを止めない。
+pub fn notch_scale(current: f32, notches: f32, ratio: f32, range: (f32, f32), stops: &[f32]) -> f32 {
     let current = current.clamp(range.0, range.1);
     if !(notches.is_finite() && ratio.is_finite() && ratio > 0.0) {
         return current;
     }
-    let mut next = current * ratio.powf(notches);
-    let crosses_actual = (current < ACTUAL_SCALE && next > ACTUAL_SCALE)
-        || (current > ACTUAL_SCALE && next < ACTUAL_SCALE);
-    if crosses_actual || (next - ACTUAL_SCALE).abs() < ACTUAL_SNAP_EPS {
-        next = ACTUAL_SCALE;
-    }
-    next.clamp(range.0, range.1)
+    let next = current * ratio.powf(notches);
+    let hit = stops
+        .iter()
+        .copied()
+        .filter(|s| s.is_finite() && (current - s).abs() >= ACTUAL_SNAP_EPS)
+        .filter(|&s| (current < s && next > s) || (current > s && next < s) || (next - s).abs() < ACTUAL_SNAP_EPS)
+        .min_by(|a, b| (a - current).abs().total_cmp(&(b - current).abs()));
+    hit.unwrap_or(next).clamp(range.0, range.1)
 }
 
 /// テクスチャが別解像度に差し替わったとき、画面上の大きさを保つ倍率を返す
@@ -514,20 +541,22 @@ pub fn t_to_scale(t: f32, range: (f32, f32)) -> f32 {
     lo * (hi / lo).powf(t.clamp(0.0, 1.0))
 }
 
-/// トラック上の x 座標（`track` = 左端・右端）から倍率を求める。原寸(100%)の位置から
-/// `magnet_px` 以内なら 100% ぴったりへ吸着する。
-pub fn slider_scale_at(x: f32, track: (f32, f32), range: (f32, f32), magnet_px: f32) -> f32 {
+/// トラック上の x 座標（`track` = 左端・右端）から倍率を求める。範囲内の停止点（原寸・フィット）の
+/// 位置から `magnet_px` 以内なら、その停止点ぴったりへ吸着する（複数なら近い方）。
+pub fn slider_scale_at(x: f32, track: (f32, f32), range: (f32, f32), magnet_px: f32, stops: &[f32]) -> f32 {
     let width = track.1 - track.0;
     if !(width > 0.0) {
         return range.0;
     }
-    if range.0 < ACTUAL_SCALE && ACTUAL_SCALE < range.1 {
-        let actual_x = track.0 + scale_to_t(ACTUAL_SCALE, range) * width;
-        if (x - actual_x).abs() <= magnet_px {
-            return ACTUAL_SCALE;
-        }
-    }
-    t_to_scale((x - track.0) / width, range)
+    let snapped = stops
+        .iter()
+        .copied()
+        .filter(|s| range.0 < *s && *s < range.1)
+        .map(|s| (s, (x - (track.0 + scale_to_t(s, range) * width)).abs()))
+        .filter(|(_, dist)| *dist <= magnet_px)
+        .min_by(|a, b| a.1.total_cmp(&b.1))
+        .map(|(s, _)| s);
+    snapped.unwrap_or_else(|| t_to_scale((x - track.0) / width, range))
 }
 
 /// 目盛りの倍率（昇順）。簡易は原寸を基準に ×2 ごと、詳細は原寸を基準に 1ノッチ(`ratio`)ごと。
@@ -657,44 +686,84 @@ mod tests {
 
     #[test]
     fn scale_range_keeps_fit_representable() {
-        assert_eq!(scale_range(0.4, 4.0), (0.4, 4.0));
-        // フィットが上限を超えても、範囲が反転しない。
-        assert_eq!(scale_range(10.0, 4.0), (10.0, 10.0));
+        // 下限はフィットの min_ratio 倍、上限は max_scale。
+        assert_eq!(scale_range(0.4, 0.25, 4.0), (0.1, 4.0));
+        // 比が1ならフィットが下限（縮小なし）。
+        assert_eq!(scale_range(0.4, 1.0, 4.0), (0.4, 4.0));
+        // フィットが上限を超えても、範囲が反転しない（フィット自体は範囲内）。
+        let (lo, hi) = scale_range(10.0, 0.25, 4.0);
+        assert_eq!((lo, hi), (2.5, 10.0));
+        // 不正な比は許容範囲へ丸める。
+        assert_eq!(scale_range(1.0, 0.0, 4.0).0, MIN_SHRINK_RATIO_RANGE.0);
+        assert_eq!(scale_range(1.0, 9.0, 4.0).0, 1.0);
+    }
+
+    #[test]
+    fn config_shrink_ratio_defaults_to_a_quarter_and_clamps() {
+        let mut c = MagnifierConfig::default();
+        assert_eq!(c.min_shrink_ratio(), 0.25);
+        assert_eq!(c.scale_range(0.4), (0.1, 4.0));
+        assert_eq!(c.set_min_shrink_ratio(0.5), 0.5);
+        assert_eq!(c.set_min_shrink_ratio(0.0), 0.05);
+        assert_eq!(c.set_min_shrink_ratio(3.0), 1.0);
+        assert_eq!(c.set_min_shrink_ratio(f32::NAN), 1.0);
     }
 
     #[test]
     fn notch_steps_multiply_and_clamp() {
         let range = (0.4, 4.0);
-        assert!((notch_scale(1.25, 1.0, 1.25, range) - 1.5625).abs() < 1e-5);
-        assert!((notch_scale(1.25, -1.0, 1.25, range) - 1.0).abs() < 1e-5);
-        assert_eq!(notch_scale(3.5, 1.0, 1.25, range), 4.0);
-        assert_eq!(notch_scale(0.45, -1.0, 1.25, range), 0.4);
+        assert!((notch_scale(1.25, 1.0, 1.25, range, &[ACTUAL_SCALE]) - 1.5625).abs() < 1e-5);
+        assert!((notch_scale(1.25, -1.0, 1.25, range, &[ACTUAL_SCALE]) - 1.0).abs() < 1e-5);
+        assert_eq!(notch_scale(3.5, 1.0, 1.25, range, &[ACTUAL_SCALE]), 4.0);
+        assert_eq!(notch_scale(0.45, -1.0, 1.25, range, &[ACTUAL_SCALE]), 0.4);
         // 0ノッチは現在値（範囲内へ丸め）。
-        assert_eq!(notch_scale(2.0, 0.0, 1.25, range), 2.0);
+        assert_eq!(notch_scale(2.0, 0.0, 1.25, range, &[ACTUAL_SCALE]), 2.0);
         // 不正な入力は現在値のまま。
-        assert_eq!(notch_scale(2.0, f32::NAN, 1.25, range), 2.0);
-        assert_eq!(notch_scale(2.0, 1.0, 0.0, range), 2.0);
+        assert_eq!(notch_scale(2.0, f32::NAN, 1.25, range, &[ACTUAL_SCALE]), 2.0);
+        assert_eq!(notch_scale(2.0, 1.0, 0.0, range, &[ACTUAL_SCALE]), 2.0);
     }
 
     #[test]
     fn notch_stops_at_actual_size() {
         let range = (0.3, 4.0);
         // 拡大でまたぐ・縮小でまたぐ、どちらも100%で止まる。
-        assert_eq!(notch_scale(0.9, 1.0, 1.25, range), ACTUAL_SCALE);
-        assert_eq!(notch_scale(1.1, -1.0, 1.25, range), ACTUAL_SCALE);
+        assert_eq!(notch_scale(0.9, 1.0, 1.25, range, &[ACTUAL_SCALE]), ACTUAL_SCALE);
+        assert_eq!(notch_scale(1.1, -1.0, 1.25, range, &[ACTUAL_SCALE]), ACTUAL_SCALE);
         // 100%ちょうどからは止まらずに進む。
-        assert!((notch_scale(ACTUAL_SCALE, 1.0, 1.25, range) - 1.25).abs() < 1e-5);
-        assert!((notch_scale(ACTUAL_SCALE, -1.0, 1.25, range) - 0.8).abs() < 1e-5);
+        assert!((notch_scale(ACTUAL_SCALE, 1.0, 1.25, range, &[ACTUAL_SCALE]) - 1.25).abs() < 1e-5);
+        assert!((notch_scale(ACTUAL_SCALE, -1.0, 1.25, range, &[ACTUAL_SCALE]) - 0.8).abs() < 1e-5);
         // 丸め誤差で100%のごく近傍になった場合も100%へ揃う。
-        assert_eq!(notch_scale(1.25, -1.0, 1.25, range), ACTUAL_SCALE);
+        assert_eq!(notch_scale(1.25, -1.0, 1.25, range, &[ACTUAL_SCALE]), ACTUAL_SCALE);
+    }
+
+    #[test]
+    fn notch_stops_at_fit_going_down_and_up_then_continues_below() {
+        // フィット0.4、縮小の余地あり（下限0.1）。原寸(1.0)とフィットの2停止点。
+        let fit = 0.4;
+        let range = (0.1, 4.0);
+        let stops = [ACTUAL_SCALE, fit];
+        // フィットのすぐ上から縮小 → フィットぴったりで止まる。
+        assert_eq!(notch_scale(0.45, -1.0, 1.25, range, &stops), fit);
+        // フィットのすぐ下から拡大 → フィットぴったりで止まる。
+        assert_eq!(notch_scale(0.35, 1.0, 1.25, range, &stops), fit);
+        // フィットちょうどからは止まらずに縮小へ進む・拡大へ進む。
+        assert!((notch_scale(fit, -1.0, 1.25, range, &stops) - fit * 0.8).abs() < 1e-5);
+        assert!((notch_scale(fit, 1.0, 1.25, range, &stops) - fit * 1.25).abs() < 1e-5);
+        // 下限で止まる。
+        assert_eq!(notch_scale(0.11, -1.0, 1.25, range, &stops), 0.1);
+        // 拡大側の原寸停止も従来どおり。
+        assert_eq!(notch_scale(0.9, 1.0, 1.25, range, &stops), ACTUAL_SCALE);
+        // 2つの停止点をまたぐ大きな動きは、最初に出会う方（近い方）で止まる。
+        assert_eq!(notch_scale(0.3, 10.0, 1.25, range, &stops), fit);
+        assert_eq!(notch_scale(2.0, -10.0, 1.25, range, &stops), ACTUAL_SCALE);
     }
 
     #[test]
     fn notch_when_actual_is_out_of_range() {
         // 小さい画像: フィットが原寸を超える。100%は範囲外なので下限で止まる。
         let range = (1.67, 4.0);
-        assert_eq!(notch_scale(1.7, -2.0, 1.25, range), 1.67);
-        assert!((notch_scale(1.67, 1.0, 1.25, range) - 1.67 * 1.25).abs() < 1e-4);
+        assert_eq!(notch_scale(1.7, -2.0, 1.25, range, &[ACTUAL_SCALE]), 1.67);
+        assert!((notch_scale(1.67, 1.0, 1.25, range, &[ACTUAL_SCALE]) - 1.67 * 1.25).abs() < 1e-4);
     }
 
     #[test]
@@ -791,15 +860,33 @@ mod tests {
     fn slider_snaps_to_actual_size_near_its_mark() {
         let range = (0.25, 4.0);
         let track = (100.0, 500.0); // 100% は中点 x=300
-        assert_eq!(slider_scale_at(303.0, track, range, 6.0), ACTUAL_SCALE);
-        assert_eq!(slider_scale_at(295.0, track, range, 6.0), ACTUAL_SCALE);
-        assert_ne!(slider_scale_at(320.0, track, range, 6.0), ACTUAL_SCALE);
+        assert_eq!(slider_scale_at(303.0, track, range, 6.0, &[ACTUAL_SCALE]), ACTUAL_SCALE);
+        assert_eq!(slider_scale_at(295.0, track, range, 6.0, &[ACTUAL_SCALE]), ACTUAL_SCALE);
+        assert_ne!(slider_scale_at(320.0, track, range, 6.0, &[ACTUAL_SCALE]), ACTUAL_SCALE);
         // 端は範囲端、トラック外は丸め。
-        assert!((slider_scale_at(100.0, track, range, 6.0) - 0.25).abs() < 1e-5);
-        assert!((slider_scale_at(900.0, track, range, 6.0) - 4.0).abs() < 1e-4);
+        assert!((slider_scale_at(100.0, track, range, 6.0, &[ACTUAL_SCALE]) - 0.25).abs() < 1e-5);
+        assert!((slider_scale_at(900.0, track, range, 6.0, &[ACTUAL_SCALE]) - 4.0).abs() < 1e-4);
         // 100%が範囲外（小さい画像）なら吸着しない。
         let small = (1.67, 4.0);
-        assert!((slider_scale_at(100.0, track, small, 6.0) - 1.67).abs() < 1e-4);
+        assert!((slider_scale_at(100.0, track, small, 6.0, &[ACTUAL_SCALE]) - 1.67).abs() < 1e-4);
+    }
+
+    #[test]
+    fn slider_snaps_to_fit_as_well_as_actual() {
+        let fit = 0.5;
+        let range = (0.125, 4.0);
+        let track = (100.0, 500.0);
+        let stops = snap_stops(fit);
+        let fit_x = 100.0 + scale_to_t(fit, range) * 400.0;
+        assert_eq!(slider_scale_at(fit_x + 4.0, track, range, 6.0, &stops), fit);
+        assert_eq!(slider_scale_at(fit_x - 4.0, track, range, 6.0, &stops), fit);
+        assert_ne!(slider_scale_at(fit_x + 20.0, track, range, 6.0, &stops), fit);
+        // 原寸の吸着も残る。
+        let actual_x = 100.0 + scale_to_t(ACTUAL_SCALE, range) * 400.0;
+        assert_eq!(slider_scale_at(actual_x + 3.0, track, range, 6.0, &stops), ACTUAL_SCALE);
+        // 縮小側（フィットより左）へも動かせる。
+        assert!(slider_scale_at(fit_x - 40.0, track, range, 6.0, &stops) < fit);
+        assert!((slider_scale_at(100.0, track, range, 6.0, &stops) - 0.125).abs() < 1e-5);
     }
 
     #[test]
@@ -1074,13 +1161,13 @@ mod tests {
         let vp = v(800.0, 600.0);
         let img = v(2000.0, 3000.0);
         let fit = fit_scale(vp, img); // 0.2
-        let range = scale_range(fit, 4.0);
+        let range = scale_range(fit, 1.0, 4.0);
         let view = carried_view(2.0, fit, range, vp, img, false);
         assert!((view.scale - 2.0 * fit).abs() < 1e-6);
         // 別ページ（フィット倍率が違う）でも、同じ相対倍率になる。
         let img2 = v(1000.0, 1500.0);
         let fit2 = fit_scale(vp, img2); // 0.4
-        let view2 = carried_view(2.0, fit2, scale_range(fit2, 4.0), vp, img2, false);
+        let view2 = carried_view(2.0, fit2, scale_range(fit2, 1.0, 4.0), vp, img2, false);
         assert!((view2.scale / fit2 - 2.0).abs() < 1e-5);
     }
 
@@ -1089,7 +1176,7 @@ mod tests {
         let vp = v(800.0, 600.0);
         let img = v(2000.0, 3000.0);
         let fit = fit_scale(vp, img);
-        let range = scale_range(fit, 1.0);
+        let range = scale_range(fit, 1.0, 1.0);
         assert_eq!(carried_view(100.0, fit, range, vp, img, false).scale, 1.0);
         assert_eq!(carried_view(0.5, fit, range, vp, img, false).scale, fit);
         assert_eq!(carried_view(f32::NAN, fit, range, vp, img, false).scale, fit);
@@ -1101,7 +1188,7 @@ mod tests {
         let vp = v(800.0, 600.0);
         let img = v(2000.0, 3000.0);
         let fit = fit_scale(vp, img);
-        let range = scale_range(fit, 4.0);
+        let range = scale_range(fit, 1.0, 4.0);
         // 進行方向が右（新ページが右から入る）→ 左端から。
         let forward = carried_view(4.0, fit, range, vp, img, false);
         assert_eq!(forward.offset, Vec2::ZERO);

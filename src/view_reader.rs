@@ -1686,10 +1686,10 @@ impl ViewerState {
         let viewport_before_central = ui.max_rect();
 
         // ── 既定動作（ホイールの拡大割り当て・既定 Shift+ホイール）での虫眼鏡モード入場 ─────
-        // 拡大方向のときだけ入る（最小からの縮小では何も起きない）。画像領域の上に限り、
+        // 拡大・縮小どちらの方向でも入る（縮小はフィットより小さく縮められる）。画像領域の上に限り、
         // パレットやダイアログの上では入らない。この回のホイール量は、下で拡縮にそのまま使われる。
         if !cfg.magnifier_on
-            && input.zoom_wheel_notches > 0.0
+            && input.zoom_wheel_notches != 0.0
             && self.file_detail_dialog.is_none()
             && !self.tool_palette_menu_open
             && input.hover_pos.is_some_and(|p| {
@@ -4006,7 +4006,7 @@ impl ViewerState {
         wheel_notches: f32,
         cfg: &crate::magnifier::MagnifierConfig,
     ) {
-        use crate::magnifier::{carried_view, fit_scale, notch_scale, rescale_for_new_texture, scale_range, zoom_about, clamp_offset, MagnifierView};
+        use crate::magnifier::{carried_view, fit_scale, notch_scale, rescale_for_new_texture, snap_stops, zoom_about, clamp_offset, MagnifierView, FIT_EPS};
         let Some(target) = target else {
             self.magnifier_view = None;
             return;
@@ -4014,7 +4014,7 @@ impl ViewerState {
         let img = target.img;
         let vp = viewport.size();
         let fit = fit_scale(vp, img);
-        let range = scale_range(fit, cfg.max_scale());
+        let range = cfg.scale_range(fit);
 
         let mut view = match self.magnifier_view {
             Some(mut v) if self.magnifier_key == Some(target.key) => {
@@ -4051,14 +4051,14 @@ impl ViewerState {
         if wheel_notches != 0.0
             && let Some(p) = wheel_anchor.filter(|p| viewport.contains(*p))
         {
-            let next = notch_scale(view.scale, wheel_notches, cfg.notch_ratio(), range);
+            let next = notch_scale(view.scale, wheel_notches, cfg.notch_ratio(), range, &snap_stops(fit));
             if next != view.scale {
                 view = zoom_about(view, p - viewport.min, vp, img, next);
                 self.magnifier_offset_dirty = true;
             }
         }
 
-        self.magnifier_at_fit = view.scale <= fit + 1e-4;
+        self.magnifier_at_fit = (view.scale - fit).abs() <= FIT_EPS;
         self.magnifier_ref_len = target.ref_len;
         self.magnifier_view = Some(view);
     }
@@ -4103,7 +4103,7 @@ impl ViewerState {
         let img = target.img;
         let vp = viewport.size();
         let fit = fit_scale(vp, img);
-        let range = scale_range(fit, cfg.max_scale());
+        let range = cfg.scale_range(fit);
 
         if wheel_active || pointer_in_bar {
             self.magnifier_bar_active_at = Some(time);
@@ -4204,6 +4204,14 @@ impl ViewerState {
                         painter.text(egui::pos2(x, label_y), egui::Align2::CENTER_CENTER, format_percent(tick), label_font.clone(), color);
                     }
                 }
+                // フィット倍率（入場時倍率）の位置。原寸と重なるときは原寸の目盛りに任せる。
+                if (fit - ACTUAL_SCALE).abs() > 1e-3 {
+                    let x = x_of(fit);
+                    painter.line_segment(
+                        [egui::pos2(x, cy - 6.0), egui::pos2(x, cy + 6.0)],
+                        egui::Stroke::new(1.5, egui::Color32::from_rgba_unmultiplied(110, 190, 240, a(230))),
+                    );
+                }
                 let radius = (track.height() / 2.0 - 1.0).clamp(3.0, 7.0);
                 painter.circle_filled(egui::pos2(thumb_x, cy), radius, egui::Color32::from_white_alpha(a(240)));
                 let value_x = thumb_x.clamp(rects.body.left() + 20.0, rects.body.right() - 20.0);
@@ -4231,11 +4239,11 @@ impl ViewerState {
         }
 
         if let Some(x) = pressed_x {
-            let target = slider_scale_at(x, (track.left(), track.right()), range, BAR_ACTUAL_MAGNET_PX);
+            let target = slider_scale_at(x, (track.left(), track.right()), range, BAR_ACTUAL_MAGNET_PX, &snap_stops(fit));
             if (target - view.scale).abs() > 1e-6 {
                 self.magnifier_view = Some(zoom_about(view, vp / 2.0, vp, img, target));
                 self.magnifier_offset_dirty = true;
-                self.magnifier_at_fit = target <= fit + 1e-4;
+                self.magnifier_at_fit = (target - fit).abs() <= FIT_EPS;
             }
             self.magnifier_bar_active_at = Some(time);
         }
@@ -5967,19 +5975,27 @@ mod magnifier_flow_tests {
         assert!((shown - scale * 0.5).abs() < 0.006, "shown={shown} scale={scale}");
     }
 
-    /// Shift+ホイールで入場して拡大し、最小まで縮小する。最小に着いても、待っても退場しない。
-    fn shift_wheel_in_then_shrink_to_min(h: &mut Harness) {
+    fn view_scale(h: &Harness) -> f32 {
+        h.viewer.magnifier_view.expect("虫眼鏡ビューがない").scale
+    }
+
+    /// Shift+ホイールで入場して拡大し、縮小の下限（フィットの25%）まで縮小する。
+    /// 下限に着いても、待っても退場しない。フィット倍率を返す。
+    fn shift_wheel_in_then_shrink_to_min(h: &mut Harness) -> f32 {
         h.wheel(true, egui::Modifiers::SHIFT);
         assert!(h.cfg.magnifier_on, "入場していない: {}", h.state());
         h.wheel(true, egui::Modifiers::SHIFT);
         assert!(h.viewer.magnifier_view.is_some_and(|v| !h.viewer.magnifier_at_fit && v.scale > 0.0), "拡大していない: {}", h.state());
-        for _ in 0..8 {
+        // 2ノッチ拡大しているので、フィット倍率は 1.25^2 で割り戻せる。
+        let fit = view_scale(h) / 1.5625;
+        for _ in 0..14 {
             h.wheel(false, egui::Modifiers::SHIFT);
         }
-        assert!(h.viewer.magnifier_at_fit, "最小に着いていない: {}", h.state());
+        assert!((view_scale(h) / fit - 0.25).abs() < 1e-3, "縮小の下限に着いていない: {}", h.state());
         h.idle(0.5);
         h.idle(3.0);
-        assert!(h.cfg.magnifier_on, "最小で待つと退場してしまう: {}", h.state());
+        assert!(h.cfg.magnifier_on, "下限で待つと退場してしまう: {}", h.state());
+        fit
     }
 
     /// バーのモード終了ボタンを、実際のクリック操作（ホバー→押下→離す）で押す。
@@ -6015,6 +6031,75 @@ mod magnifier_flow_tests {
         // 退場後は、また Shift+ホイールで入場できる。
         h.wheel(true, egui::Modifiers::SHIFT);
         assert!(h.cfg.magnifier_on, "退場後に再入場できない: {}", h.state());
+    }
+
+    #[test]
+    fn wheel_down_stops_at_fit_then_continues_below_it_down_to_a_quarter() {
+        let mut h = Harness::new();
+        h.wheel(true, egui::Modifiers::SHIFT);
+        h.wheel(true, egui::Modifiers::SHIFT);
+        let fit = view_scale(&h) / 1.5625;
+        // 縮小でフィットをまたぐ動きは、フィットぴったりで一度止まる。
+        h.wheel(false, egui::Modifiers::SHIFT);
+        h.wheel(false, egui::Modifiers::SHIFT);
+        assert!(h.viewer.magnifier_at_fit, "フィットで止まらない: {}", h.state());
+        assert!((view_scale(&h) - fit).abs() < 1e-5);
+        // そこからさらに縮小できる（フィット未満。窓追従は外れる）。
+        h.wheel(false, egui::Modifiers::SHIFT);
+        assert!((view_scale(&h) / fit - 0.8).abs() < 1e-4, "{}", h.state());
+        assert!(!h.viewer.magnifier_at_fit);
+        for _ in 0..14 {
+            h.wheel(false, egui::Modifiers::SHIFT);
+        }
+        assert!((view_scale(&h) / fit - 0.25).abs() < 1e-3, "下限で止まらない: {}", h.state());
+        // 縮小側から拡大で戻ると、またフィットぴったりで止まる。
+        for _ in 0..12 {
+            h.wheel(true, egui::Modifiers::SHIFT);
+            if h.viewer.magnifier_at_fit {
+                break;
+            }
+        }
+        assert!(h.viewer.magnifier_at_fit, "拡大で戻ってもフィットで止まらない: {}", h.state());
+        assert!((view_scale(&h) - fit).abs() < 1e-5);
+    }
+
+    #[test]
+    fn wheel_down_alone_enters_the_mode_and_shrinks() {
+        let mut h = Harness::new();
+        assert!(!h.cfg.magnifier_on);
+        h.wheel(false, egui::Modifiers::SHIFT);
+        assert!(h.cfg.magnifier_on, "縮小方向のホイールで入場しない: {}", h.state());
+        assert!(!h.viewer.magnifier_at_fit, "入場時の縮小ぶんが効いていない: {}", h.state());
+        // 1ノッチ戻すとフィットぴったり。
+        h.wheel(true, egui::Modifiers::SHIFT);
+        assert!(h.viewer.magnifier_at_fit, "{}", h.state());
+    }
+
+    #[test]
+    fn window_resize_follows_at_fit_but_keeps_the_scale_below_it() {
+        let mut h = Harness::new();
+        h.wheel(true, egui::Modifiers::SHIFT);
+        h.wheel(false, egui::Modifiers::SHIFT);
+        assert!(h.viewer.magnifier_at_fit, "{}", h.state());
+        let fit_before = view_scale(&h);
+        h.screen = egui::vec2(600.0, 400.0);
+        h.warm_up();
+        // フィット表示のままなら、窓サイズにフィット倍率で追従する。
+        assert!(h.viewer.magnifier_at_fit, "{}", h.state());
+        assert!(view_scale(&h) < fit_before, "窓が小さくなったのに倍率が追従しない: {}", h.state());
+        h.screen = SCREEN;
+        h.warm_up();
+        assert!(h.viewer.magnifier_at_fit, "{}", h.state());
+        assert!((view_scale(&h) - fit_before).abs() < 1e-5, "窓を戻してもフィットに戻らない: {}", h.state());
+        // フィット未満に縮めた状態は、窓が変わっても倍率を保つ（範囲内なら）。
+        // （Harness のホイールは元の画面中央を指すので、画面を戻してから操作する。）
+        h.wheel(false, egui::Modifiers::SHIFT);
+        let below = view_scale(&h);
+        assert!(!h.viewer.magnifier_at_fit);
+        h.screen = egui::vec2(800.0, 500.0);
+        h.warm_up();
+        assert!((view_scale(&h) - below).abs() < 1e-5, "縮小中に窓を変えたら倍率が動いた: {}", h.state());
+        assert!(!h.viewer.magnifier_at_fit, "{}", h.state());
     }
 
     #[test]
