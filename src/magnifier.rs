@@ -106,6 +106,8 @@ pub const BAR_LABEL_H: f32 = 14.0;
 /// トラック両端の余白(px)。つまみが端で切れないようにする。
 const BAR_TRACK_INSET: f32 = 8.0;
 const DEFAULT_BUTTON_SIZE: Vec2 = Vec2::new(44.0, 24.0);
+/// 自動退場ボタンは文字が長い（「自動退場 OFF」など）ので、少し広い。
+const DEFAULT_AUTO_EXIT_BUTTON_SIZE: Vec2 = Vec2::new(84.0, 24.0);
 const BUTTON_SIZE_RANGE: (f32, f32) = (16.0, 96.0);
 
 fn clamp_finite(v: f32, (lo, hi): (f32, f32), current: f32) -> f32 {
@@ -124,6 +126,7 @@ pub struct BarLayout {
     body_height: f32,
     step_button: Vec2,
     detail_button: Vec2,
+    auto_exit_button: Vec2,
 }
 
 impl Default for BarLayout {
@@ -133,6 +136,7 @@ impl Default for BarLayout {
             body_height: DEFAULT_BAR_BODY_HEIGHT,
             step_button: DEFAULT_BUTTON_SIZE,
             detail_button: DEFAULT_BUTTON_SIZE,
+            auto_exit_button: DEFAULT_AUTO_EXIT_BUTTON_SIZE,
         }
     }
 }
@@ -143,6 +147,7 @@ impl BarLayout {
     pub fn body_height(&self) -> f32 { self.body_height }
     pub fn step_button_size(&self) -> Vec2 { self.step_button }
     pub fn detail_button_size(&self) -> Vec2 { self.detail_button }
+    pub fn auto_exit_button_size(&self) -> Vec2 { self.auto_exit_button }
 
     /// 範囲・刻み（0.5%）に丸めて適用し、実際に適用した値を返す。非有限値は無視する。
     pub fn set_width_pct(&mut self, pct: f32) -> f32 {
@@ -171,19 +176,32 @@ impl BarLayout {
         self.detail_button
     }
 
+    /// 子: 自動退場ボタンのサイズ(px)。軸ごとに範囲へ丸める。
+    pub fn set_auto_exit_button_size(&mut self, size: Vec2) -> Vec2 {
+        self.auto_exit_button = clamp_size(size, self.auto_exit_button);
+        self.auto_exit_button
+    }
+
     /// ビューポートの下端中央に置くバーの各矩形を解決する。全体幅は親の割合を基準にするが、
     /// パーツが収まる最小幅は割らない（ただしビューポート幅は超えない）。
     /// `show_buttons` が false の間はボタンの領域を確保せず、全幅を本体に使う。
-    pub fn resolve(&self, viewport: Rect, show_buttons: bool) -> BarRects {
-        let buttons_w = if show_buttons {
-            self.step_button.x + self.detail_button.x + BAR_PAD * 2.0
-        } else {
-            0.0
-        };
+    /// `show_auto_exit` は自動退場ボタン（既定動作で入場したときだけ出す）の領域を足すか。
+    pub fn resolve(&self, viewport: Rect, show_buttons: bool, show_auto_exit: bool) -> BarRects {
+        // 左から順に並べるボタン（ノッチ倍率・詳細簡易・自動退場）。
+        let mut sizes = Vec::new();
+        if show_buttons {
+            sizes.push(self.step_button);
+            sizes.push(self.detail_button);
+            if show_auto_exit {
+                sizes.push(self.auto_exit_button);
+            }
+        }
+        // 各ボタンの右に隙間が1つずつ（最後のボタンと本体の間を含む）。
+        let buttons_w: f32 = sizes.iter().map(|s| s.x + BAR_PAD).sum();
         let min_total = BAR_PAD * 2.0 + BAR_BODY_MIN_WIDTH + buttons_w;
         let wanted = viewport.width() * self.width_pct / 100.0;
         let total_w = wanted.max(min_total).min(viewport.width().max(0.0));
-        let buttons_h = if show_buttons { self.step_button.y.max(self.detail_button.y) } else { 0.0 };
+        let buttons_h = sizes.iter().map(|s| s.y).fold(0.0, f32::max);
         let total_h = BAR_PAD * 2.0 + self.body_height.max(buttons_h);
 
         let total = Rect::from_min_size(
@@ -197,22 +215,21 @@ impl BarLayout {
         let centered = |x: f32, size: Vec2| {
             Rect::from_min_size(Pos2::new(x, inner.center().y - size.y / 2.0), size)
         };
-        let (step_button, detail_button, body_left) = if show_buttons {
-            let step_x = inner.left();
-            let detail_x = step_x + self.step_button.x + BAR_PAD;
-            (
-                Some(centered(step_x, self.step_button)),
-                Some(centered(detail_x, self.detail_button)),
-                detail_x + self.detail_button.x + BAR_PAD,
-            )
-        } else {
-            (None, None, inner.left())
-        };
+        let mut x = inner.left();
+        let mut button_rects = sizes.iter().map(|&size| {
+            let rect = centered(x, size);
+            x += size.x + BAR_PAD;
+            rect
+        });
+        let step_button = button_rects.next();
+        let detail_button = button_rects.next();
+        let auto_exit_button = button_rects.next();
+        let body_left = x;
         let body = Rect::from_min_max(
             Pos2::new(body_left, inner.center().y - self.body_height / 2.0),
             Pos2::new(inner.right(), inner.center().y + self.body_height / 2.0),
         );
-        BarRects { total, body, step_button, detail_button }
+        BarRects { total, body, step_button, detail_button, auto_exit_button }
     }
 }
 
@@ -231,6 +248,7 @@ pub struct BarRects {
     pub body: Rect,
     pub step_button: Option<Rect>,
     pub detail_button: Option<Rect>,
+    pub auto_exit_button: Option<Rect>,
 }
 
 fn clamp_size(size: Vec2, current: Vec2) -> Vec2 {
@@ -875,7 +893,7 @@ mod tests {
 
     #[test]
     fn bar_is_centered_at_bottom_with_default_width() {
-        let r = BarLayout::default().resolve(viewport(), false);
+        let r = BarLayout::default().resolve(viewport(), false, false);
         assert!((r.total.width() - 1920.0 * 0.2).abs() < 1e-3);
         assert!((r.total.center().x - viewport().center().x).abs() < 1e-3);
         assert!((viewport().bottom() - BAR_BOTTOM_MARGIN - r.total.bottom()).abs() < 1e-3);
@@ -888,13 +906,13 @@ mod tests {
     fn bar_width_follows_parent_percent() {
         let mut layout = BarLayout::default();
         layout.set_width_pct(40.0);
-        let r = layout.resolve(viewport(), false);
+        let r = layout.resolve(viewport(), false, false);
         assert!((r.total.width() - 1920.0 * 0.4).abs() < 1e-3);
     }
 
     #[test]
     fn buttons_sit_left_of_body_inside_total() {
-        let r = BarLayout::default().resolve(viewport(), true);
+        let r = BarLayout::default().resolve(viewport(), true, false);
         let (step, detail) = (r.step_button.unwrap(), r.detail_button.unwrap());
         for rect in [step, detail, r.body] {
             assert!(r.total.contains_rect(rect), "{rect:?} not in {:?}", r.total);
@@ -907,7 +925,7 @@ mod tests {
 
     #[test]
     fn track_sits_below_label_row_inside_body() {
-        let r = BarLayout::default().resolve(viewport(), false);
+        let r = BarLayout::default().resolve(viewport(), false, false);
         let track = track_rect(r.body);
         assert!(r.body.contains_rect(track));
         assert!((track.top() - r.body.top() - BAR_LABEL_H).abs() < 1e-3);
@@ -915,15 +933,43 @@ mod tests {
     }
 
     #[test]
+    fn auto_exit_button_is_added_after_the_other_buttons() {
+        let layout = BarLayout::default();
+        let without = layout.resolve(viewport(), true, false);
+        assert!(without.auto_exit_button.is_none());
+        let with = layout.resolve(viewport(), true, true);
+        let (step, detail, auto) = (with.step_button.unwrap(), with.detail_button.unwrap(), with.auto_exit_button.unwrap());
+        for rect in [step, detail, auto, with.body] {
+            assert!(with.total.contains_rect(rect), "{rect:?} not in {:?}", with.total);
+        }
+        assert!(detail.right() <= auto.left());
+        assert!(auto.right() <= with.body.left());
+        assert!((auto.center().y - with.body.center().y).abs() < 1e-3);
+        // 全体幅は割合のまま、ボタンが増えたぶんだけ本体が狭くなる。
+        assert!((with.total.width() - without.total.width()).abs() < 1e-3);
+        assert!(with.body.width() < without.body.width());
+        // ボタンを出さない間は、自動退場ボタンも出ない。
+        assert!(layout.resolve(viewport(), false, true).auto_exit_button.is_none());
+    }
+
+    #[test]
+    fn three_buttons_keep_body_usable_in_a_narrow_viewport() {
+        let narrow = Rect::from_min_size(Pos2::ZERO, Vec2::new(500.0, 400.0));
+        let r = BarLayout::default().resolve(narrow, true, true);
+        assert!(r.body.width() >= BAR_BODY_MIN_WIDTH - 1e-3);
+        assert!(r.total.width() <= narrow.width() + 1e-3);
+    }
+
+    #[test]
     fn narrow_viewport_keeps_parts_usable_without_overflowing() {
         // 割合だけだと本体が潰れる幅: 最小幅を優先する。
         let narrow = Rect::from_min_size(Pos2::ZERO, Vec2::new(500.0, 400.0));
-        let r = BarLayout::default().resolve(narrow, true);
+        let r = BarLayout::default().resolve(narrow, true, false);
         assert!(r.body.width() >= BAR_BODY_MIN_WIDTH - 1e-3);
         assert!(r.total.width() <= narrow.width() + 1e-3);
         // ビューポート自体が最小幅より狭い場合は、ビューポート幅までに収める。
         let tiny = Rect::from_min_size(Pos2::ZERO, Vec2::new(120.0, 400.0));
-        let r = BarLayout::default().resolve(tiny, true);
+        let r = BarLayout::default().resolve(tiny, true, false);
         assert!(r.total.width() <= tiny.width() + 1e-3);
     }
 
@@ -1210,5 +1256,7 @@ mod tests {
         assert_eq!(applied, v(96.0, 16.0));
         let applied = b.set_detail_button_size(v(f32::NAN, 30.0));
         assert_eq!(applied, v(DEFAULT_BUTTON_SIZE.x, 30.0));
+        let applied = b.set_auto_exit_button_size(v(500.0, 2.0));
+        assert_eq!(applied, v(96.0, 16.0));
     }
 }
