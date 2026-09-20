@@ -186,6 +186,7 @@ impl NekoviewApp {
         self.draw_toast(&ctx);
         self.draw_memory_warning_dialog(&ctx);
         self.draw_magnifier_zoom_notice(&ctx);
+        self.draw_decode_edge_prompt(&ctx);
         self.draw_favorite_dialog(&ctx);
         self.draw_virtual_dialogs(&ctx);
         self.draw_tree_sort_dialog(&ctx);

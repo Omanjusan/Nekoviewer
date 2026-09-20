@@ -2974,6 +2974,45 @@ impl Lang {
         }
     }
 
+    pub fn decode_edge_prompt_title(self) -> &'static str {
+        match self {
+            Lang::Japanese => "既定値の更新",
+            Lang::English  => "Default value updated",
+            Lang::Chinese  => "默认值已更新",
+        }
+    }
+
+    /// 原寸時の最大長辺幅の既定値底上げの確認ダイアログの本文。`current` は保存済みの値(px)。
+    pub fn decode_edge_prompt_body(self, current: u32, new_default: u32) -> String {
+        match self {
+            Lang::Japanese => format!(
+                "既定値が更新されました。\n現在の設定値が既定値より下回るので新既定値({new_default})に更新しますか？\n\n原寸時に許容する最大長辺幅: 現在 {current} px → {new_default} px"
+            ),
+            Lang::English => format!(
+                "The default value has been updated.\nYour current setting is below the new default ({new_default}). Update it to the new default?\n\nMax long edge for original size: {current} px -> {new_default} px"
+            ),
+            Lang::Chinese => format!(
+                "默认值已更新。\n当前设置低于新的默认值（{new_default}），是否更新为新的默认值？\n\n原始尺寸下允许的最大长边：当前 {current} px → {new_default} px"
+            ),
+        }
+    }
+
+    pub fn decode_edge_prompt_yes(self) -> &'static str {
+        match self {
+            Lang::Japanese => "はい",
+            Lang::English  => "Yes",
+            Lang::Chinese  => "是",
+        }
+    }
+
+    pub fn decode_edge_prompt_no(self) -> &'static str {
+        match self {
+            Lang::Japanese => "いいえ",
+            Lang::English  => "No",
+            Lang::Chinese  => "否",
+        }
+    }
+
     pub fn magnifier_zoom_notice_title(self) -> &'static str {
         match self {
             Lang::Japanese => "キー割り当ての更新",

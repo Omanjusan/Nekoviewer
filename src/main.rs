@@ -101,6 +101,15 @@ fn main() {
         if let Some(v) = state.app_decode_threads { cfg.decode_threads = v; }
         if let Some(v) = state.app_default_slot { cfg.default_slot = v; }
         if let Some(v) = state.app_magnifier_zoom_notice_shown { cfg.magnifier_zoom_notice_shown = v; }
+        if let Some(v) = state.app_max_decode_edge_prompt_answered { cfg.max_decode_edge_prompt_answered = v; }
+
+        // 原寸時の最大長辺幅の既定値を 1920 → 4000 に上げた。保存済みの値が新既定値より低く未回答なら、
+        // 起動時に1度だけ更新するか確認する（新既定値以上の人は、確認不要として回答済みにしておく）。
+        match config::decode_edge_prompt_decision(cfg.max_decode_edge_prompt_answered, cfg.max_decode_edge) {
+            config::DecodeEdgePrompt::Ask(current) => cfg.pending_decode_edge_prompt = Some(current),
+            config::DecodeEdgePrompt::MarkAnswered => cfg.max_decode_edge_prompt_answered = true,
+            config::DecodeEdgePrompt::Nothing => {}
+        }
 
         // 虫眼鏡の拡大縮小（既定 Shift+ホイール）の割り当て。他の操作と競合していたら空いている
         // 修飾キーへ割り当て直し（keymap.ini へ保存）、結果を1度だけOKダイアログで知らせる。

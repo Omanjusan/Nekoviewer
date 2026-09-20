@@ -211,6 +211,40 @@ impl NekoviewApp {
         }
     }
 
+    /// 原寸時の最大長辺幅の既定値を底上げした（1920→4000）ことを、保存値が低い人へ1度だけ確認する。
+    /// はい: 新既定値へ更新。いいえ: 現在値のまま。どちらでも回答済みとして保存し、以後は出さない。
+    /// 起動時に他のお知らせ（キー割り当て）が出ている間は、それが閉じるまで待つ。
+    pub(super) fn draw_decode_edge_prompt(&mut self, ctx: &egui::Context) {
+        let Some(current) = self.config.pending_decode_edge_prompt else {
+            return;
+        };
+        if self.config.pending_magnifier_zoom_notice.is_some() {
+            return;
+        }
+        let lang = i18n::t();
+        let mut answer: Option<bool> = None;
+        egui::Window::new(lang.decode_edge_prompt_title())
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .show(ctx, |ui| {
+                ui.label(lang.decode_edge_prompt_body(current, crate::config::DEFAULT_MAX_DECODE_EDGE));
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button(lang.decode_edge_prompt_yes()).clicked() {
+                        answer = Some(true);
+                    }
+                    if ui.button(lang.decode_edge_prompt_no()).clicked() {
+                        answer = Some(false);
+                    }
+                });
+            });
+        if let Some(accepted) = answer {
+            self.config.answer_decode_edge_prompt(accepted);
+            self.persist_state();
+        }
+    }
+
     /// ZIPを無効確定してDBにマーカーを書き込む
     pub(super) fn mark_archive_invalid(&mut self, path: &PathBuf) {
         self.invalid_archives.insert(path.clone());
