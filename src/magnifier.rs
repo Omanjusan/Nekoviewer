@@ -377,6 +377,30 @@ pub fn spread_layout(left: Option<Vec2>, right: Option<Vec2>) -> Option<SpreadLa
     })
 }
 
+/// 見開きの1ページの置き場所。`half` は回転前のページ半サイズ(画面px)。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PagePlacement {
+    pub center: Pos2,
+    pub half: Vec2,
+}
+
+/// 見開きを1つの剛体として `angle_deg` 度回転したときの、左右ページの中心（画面座標）と半サイズ。
+/// `bbox_center` は回転後の外接矩形の中心。`scale` は原寸比（基準ページ1pxあたりの画面px）。
+/// 回転は画面座標（y下向き）で時計回り。
+pub fn spread_placements(
+    layout: &SpreadLayout,
+    scale: f32,
+    angle_deg: i32,
+    bbox_center: Pos2,
+) -> [PagePlacement; 2] {
+    let rot = egui::emath::Rot2::from_angle((angle_deg as f32).to_radians());
+    let footprint_center = layout.extent / 2.0;
+    [layout.left, layout.right].map(|rect| PagePlacement {
+        center: bbox_center + rot * ((rect.center().to_vec2() - footprint_center) * scale),
+        half: rect.size() * scale / 2.0,
+    })
+}
+
 /// 見開きの表示対象。`mode` は呼び出し側が決める見開きの向き（単ページと区別する値）。
 pub fn spread_target(
     left: Option<Vec2>,
@@ -901,6 +925,38 @@ mod tests {
         assert_eq!(t.key, t3.key);
         assert_eq!(t3.ref_len, 3000.0);
         assert!(spread_target(None, None, 0, 0, 1).is_none());
+    }
+
+    #[test]
+    fn spread_placements_without_rotation_match_the_layout() {
+        let layout = spread_layout(Some(v(1000.0, 1500.0)), Some(v(1000.0, 1500.0))).unwrap();
+        let [l, r] = spread_placements(&layout, 0.5, 0, Pos2::new(400.0, 300.0));
+        // 左ページ中心は外接中心から x=-500px（基準px）ぶん左、0.5倍で -250。
+        assert!(close(l.center.to_vec2(), v(150.0, 300.0)));
+        assert!(close(r.center.to_vec2(), v(650.0, 300.0)));
+        assert_eq!(l.half, v(250.0, 375.0));
+    }
+
+    #[test]
+    fn spread_placements_rotate_as_one_rigid_body() {
+        let layout = spread_layout(Some(v(1000.0, 1500.0)), Some(v(1000.0, 1500.0))).unwrap();
+        let c = Pos2::new(400.0, 300.0);
+        // 時計回り90度: 左ページは上、右ページは下へ回る。
+        let [l, r] = spread_placements(&layout, 1.0, 90, c);
+        assert!(close(l.center.to_vec2(), v(400.0, -200.0)), "{:?}", l.center);
+        assert!(close(r.center.to_vec2(), v(400.0, 800.0)), "{:?}", r.center);
+        // 180度: 左右が入れ替わる。
+        let [l, r] = spread_placements(&layout, 1.0, 180, c);
+        assert!(close(l.center.to_vec2(), v(900.0, 300.0)));
+        assert!(close(r.center.to_vec2(), v(-100.0, 300.0)));
+        // 270度: 左ページは下、右ページは上。
+        let [l, r] = spread_placements(&layout, 1.0, 270, c);
+        assert!(close(l.center.to_vec2(), v(400.0, 800.0)));
+        assert!(close(r.center.to_vec2(), v(400.0, -200.0)));
+        // 半サイズは回転前のまま。
+        assert_eq!(l.half, v(500.0, 750.0));
+        // 2ページの中心間距離は回転しても変わらない。
+        assert!(((l.center - r.center).length() - 1000.0).abs() < 1e-2);
     }
 
     #[test]

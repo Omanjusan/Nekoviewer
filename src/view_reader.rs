@@ -1584,10 +1584,10 @@ impl ViewerState {
         let viewport_before_central = ui.max_rect();
 
         let rotation_angle = self.manual_rotation_angle(cfg);
-        // 虫眼鏡: 単ページは回転も可。見開きは回転なしのみ（見開き＋回転はフェーズ7c）。
+        // 虫眼鏡: 単ページ・見開きとも回転可（見開きは2ページを1つの剛体として回す）。
         let magnifier_active = cfg.magnifier_on
             && if is_spread {
-                rotation_angle == 0 && (tex_lo.is_some() || tex_hi.is_some())
+                tex_lo.is_some() || tex_hi.is_some()
             } else {
                 tex_lo.is_some()
             };
@@ -4207,7 +4207,7 @@ impl ViewerState {
         // 虫眼鏡が有効な間は、同じ描画（スクロール領域）に倍率と高さ正規化の配置を差し込む。
         if self.magnifier_view.is_some() || (zoom_actual && angle_deg == 0) {
             self.render_spread_actual(
-                ui, tex_left, tex_right, left_index, right_index, double_clicked, single_clicked,
+                ui, tex_left, tex_right, left_index, right_index, angle_deg, double_clicked, single_clicked,
                 toggle_enabled, toggle_on, overwrite_enabled,
                 sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort,
                 bookmark_toggle_enabled, bookmark_toggle_on,
@@ -4273,6 +4273,7 @@ impl ViewerState {
         tex_right: &Option<egui::TextureHandle>,
         left_index: i32,
         right_index: i32,
+        angle_deg: i32,
         double_clicked: &mut bool,
         single_clicked: &mut bool,
         toggle_enabled: bool,
@@ -4295,10 +4296,12 @@ impl ViewerState {
         let magnified = magnifier.and_then(|m| {
             crate::magnifier::spread_layout(size_of(tex_left), size_of(tex_right)).map(|layout| (m, layout))
         });
+        // 回転（90/180/270）は虫眼鏡のときだけ。見開き全体を1つの剛体として回す。
+        let angle = if magnified.is_some() { angle_deg } else { 0 };
         let (image_size, local_l, local_r) = match magnified {
             Some((m, layout)) => {
                 let scaled = |r: egui::Rect| egui::Rect::from_min_size((r.min.to_vec2() * m.scale).to_pos2(), r.size() * m.scale);
-                (layout.extent * m.scale, scaled(layout.left), scaled(layout.right))
+                (crate::magnifier::rotated_extent(layout.extent, angle) * m.scale, scaled(layout.left), scaled(layout.right))
             }
             None => (
                 egui::vec2(sl.x + sr.x, sl.y.max(sr.y)),
@@ -4342,9 +4345,40 @@ impl ViewerState {
             );
             let rect_l = local_l.translate(bbox.min.to_vec2());
             let rect_r = local_r.translate(bbox.min.to_vec2());
+            // 回転時の各ページの置き場所（中心・半サイズ）。回転なしは従来どおりの矩形で描く。
+            let rotated = match magnified {
+                Some((m, layout)) if angle != 0 => {
+                    let placements = crate::magnifier::spread_placements(&layout, m.scale, angle, bbox.center());
+                    Some((placements, layout.ref_len * m.scale))
+                }
+                _ => None,
+            };
             let painter = ui.painter();
-            Self::paint_page(painter, tex_left,  rect_l);
-            Self::paint_page(painter, tex_right, rect_r);
+            match &rotated {
+                None => {
+                    Self::paint_page(painter, tex_left, rect_l);
+                    Self::paint_page(painter, tex_right, rect_r);
+                }
+                Some((placements, ref_scale)) => {
+                    for (tex, placement) in [(tex_left, placements[0]), (tex_right, placements[1])] {
+                        match tex {
+                            // ref_scale = 基準ページのテクスチャ1pxあたりの画面px。ページごとの高さ差を吸収する。
+                            Some(t) if t.size()[1] > 0 => {
+                                let page_scale = ref_scale / t.size()[1] as f32;
+                                Self::paint_texture_rotated_at(painter, t, placement.center, page_scale, angle);
+                            }
+                            _ => {
+                                let points = Self::rotated_quad_points(placement.center, placement.half, angle);
+                                painter.add(egui::Shape::convex_polygon(
+                                    points.to_vec(),
+                                    egui::Color32::from_gray(40),
+                                    egui::Stroke::NONE,
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
 
             let menu_open = resp.context_menu_opened() || self.tool_palette_menu_open;
             if !menu_open {
@@ -4353,7 +4387,14 @@ impl ViewerState {
             }
             if resp.secondary_clicked() && !self.tool_palette_menu_open {
                 if let Some(pos) = resp.interact_pointer_pos() {
-                    let index = self.thumbnail_target_from_rects(pos, rect_l, rect_r, left_index, right_index);
+                    let (hit_left, hit_right) = match &rotated {
+                        Some((placements, _)) => (
+                            Self::rotated_rect_contains(pos, placements[0].center, placements[0].half, angle),
+                            Self::rotated_rect_contains(pos, placements[1].center, placements[1].half, angle),
+                        ),
+                        None => (rect_l.contains(pos), rect_r.contains(pos)),
+                    };
+                    let index = self.thumbnail_target_from_hits(hit_left, hit_right, left_index, right_index);
                     self.set_thumbnail_context(index);
                 }
             }
@@ -4441,6 +4482,18 @@ impl ViewerState {
         left_index: i32,
         right_index: i32,
     ) -> Option<i32> {
+        self.thumbnail_target_from_hits(rect_l.contains(pos), rect_r.contains(pos), left_index, right_index)
+    }
+
+    /// `thumbnail_target_from_rects` の判定部。矩形の当たりを bool で受け取るので、回転した
+    /// ページ（矩形でない当たり判定）からも使える。
+    fn thumbnail_target_from_hits(
+        &self,
+        hit_left: bool,
+        hit_right: bool,
+        left_index: i32,
+        right_index: i32,
+    ) -> Option<i32> {
         let total = self.entries.len() as i32;
         let left_real = (0..total).contains(&left_index);
         let right_real = (0..total).contains(&right_index);
@@ -4451,9 +4504,9 @@ impl ViewerState {
             (true, true) => {}
         }
 
-        if rect_l.contains(pos) {
+        if hit_left {
             Some(left_index)
-        } else if rect_r.contains(pos) {
+        } else if hit_right {
             Some(right_index)
         } else {
             None
