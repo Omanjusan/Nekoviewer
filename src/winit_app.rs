@@ -240,7 +240,7 @@ fn make_egui_window(
 /// 1 つの窓を 1 フレーム描画し、egui が望む次回再描画までの猶予を返す。
 /// `build` は egui パス内で UI を構築するクロージャ。
 /// 描画後、egui が出した `ViewportCommand` 群を `process_viewport_commands` で winit Window へ適用する。
-fn render_window(win: &mut EguiWindow, build: impl FnMut(&mut egui::Ui)) -> Duration {
+fn render_window(win: &mut EguiWindow, event_loop: &ActiveEventLoop, build: impl FnMut(&mut egui::Ui)) -> Duration {
     let ctx = win.egui_ctx.clone();
 
     // outer/inner rect・モニタサイズ等を最新化し、raw_input に載せる（スロット保存等が参照）。
@@ -252,8 +252,9 @@ fn render_window(win: &mut EguiWindow, build: impl FnMut(&mut egui::Ui)) -> Dura
 
     let full_output = ctx.run_ui(raw_input, build);
 
+    // ビットマップのカーソル（虫眼鏡）は ActiveEventLoop が無いと黙って捨てられるため、こちらを使う。
     win.egui_state
-        .handle_platform_output(&win.window, full_output.platform_output);
+        .handle_platform_output_with_event_loop(&win.window, event_loop, full_output.platform_output);
     let clipped = ctx.tessellate(full_output.shapes, full_output.pixels_per_point);
     win.painter.paint_and_update_textures(
         win.viewport_id,
@@ -484,7 +485,7 @@ impl WinitApp {
     /// 期限が来た窓をループ本体から直接 render する。
     /// render 後は「render 開始＋最小フレーム間隔」を `not_before` に記録し、
     /// 次回予定をそれ以降にクランプする（vsync 非依存のフレームキャップ）。
-    fn render_due_windows(&mut self) {
+    fn render_due_windows(&mut self, event_loop: &ActiveEventLoop) {
         let now = Instant::now();
 
         fn finish_frame(win: &mut EguiWindow, started: Instant, delay: Duration) {
@@ -495,7 +496,7 @@ impl WinitApp {
         if self.explorer.as_ref().map_or(false, |w| w.due(now)) {
             if let (Some(win), Some(app)) = (self.explorer.as_mut(), self.app.as_mut()) {
                 let started = Instant::now();
-                let delay = render_window(win, |ui| {
+                let delay = render_window(win, event_loop, |ui| {
                     // 常時走る処理（旧 eframe::App::logic）。egui パス内で UI より前に呼ぶ。
                     let ctx = ui.ctx().clone();
                     app.logic(&ctx);
@@ -513,7 +514,7 @@ impl WinitApp {
             if let (Some(win), Some(app)) = (self.viewer.as_mut(), self.app.as_mut()) {
                 let frame_cap = win.frame_cap_interval();
                 let started = Instant::now();
-                let delay = render_window(win, |ui| {
+                let delay = render_window(win, event_loop, |ui| {
                     app.render_viewer(ui);
                 });
                 let render_elapsed = started.elapsed();
@@ -532,7 +533,7 @@ impl WinitApp {
         if self.status.as_ref().map_or(false, |w| w.due(now)) {
             if let (Some(win), Some(app)) = (self.status.as_mut(), self.app.as_mut()) {
                 let started = Instant::now();
-                let delay = render_window(win, |ui| {
+                let delay = render_window(win, event_loop, |ui| {
                     app.render_status(ui);
                 });
                 finish_frame(win, started, delay);
@@ -542,7 +543,7 @@ impl WinitApp {
         if self.translate.as_ref().map_or(false, |w| w.due(now)) {
             if let (Some(win), Some(app)) = (self.translate.as_mut(), self.app.as_mut()) {
                 let started = Instant::now();
-                let delay = render_window(win, |ui| {
+                let delay = render_window(win, event_loop, |ui| {
                     app.render_translate_window(ui);
                 });
                 finish_frame(win, started, delay);
@@ -760,7 +761,7 @@ impl ApplicationHandler<UserEvent> for WinitApp {
         self.sync_status_window(event_loop);
         self.sync_translate_window(event_loop);
         // 期限の来た窓を描画する。
-        self.render_due_windows();
+        self.render_due_windows(event_loop);
         // 描画中（ビューアーの ESC/X、ステータスの [?] トグル等）に窓が閉じられた可能性に追従する。
         self.sync_viewer_window(event_loop);
         self.sync_status_window(event_loop);

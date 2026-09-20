@@ -537,6 +537,9 @@ pub struct ViewerState {
     magnifier_bar_active_at: Option<f64>,
     /// ノッチ倍率／目盛りの詳細・簡易を切り替えた。次の `ViewerOutput` で保存を促して下ろす。
     magnifier_settings_dirty: bool,
+    /// 虫眼鏡カーソルの画像キャッシュ（一辺のpxごと）。egui-winit は Arc のポインタで
+    /// 同一画像を判定して再アップロードを避けるので、毎フレーム作り直さない。
+    magnifier_cursor: Option<(u32, egui::CustomCursorImage)>,
     /// GPUテクスチャの1辺上限（毎フレーム ctx から取り込む）。デコード目標のクランプに使う。
     max_texture_side: usize,
 }
@@ -783,6 +786,7 @@ impl ViewerState {
             magnifier_img_size: egui::Vec2::ZERO,
             magnifier_bar_active_at: None,
             magnifier_settings_dirty: false,
+            magnifier_cursor: None,
             max_texture_side: MAX_TEXTURE_SIDE_FALLBACK,
         }
     }
@@ -874,6 +878,7 @@ impl ViewerState {
             magnifier_img_size: egui::Vec2::ZERO,
             magnifier_bar_active_at: None,
             magnifier_settings_dirty: false,
+            magnifier_cursor: None,
             max_texture_side: MAX_TEXTURE_SIDE_FALLBACK,
         }
     }
@@ -2462,6 +2467,22 @@ impl ViewerState {
                 self.magnifier_bar_active_at = None;
             }
 
+            // ── 虫眼鏡カーソル ─────────────────────────────────────────────────────
+            // 画像領域の上だけ（パレット・バー・メニュー等の別レイヤー上では通常のカーソルのまま）。
+            // ビットマップは標準アイコンより優先されるため、この条件が必須。
+            // layer_id_at は Area/Window/ポップアップだけを返す（背景のパネルは None）。
+            if frame.magnifier
+                && input.hover_pos.is_some_and(|p| {
+                    viewport_rect.contains(p)
+                        && !pointer_in_palette
+                        && !pointer_in_bar
+                        && ui.ctx().layer_id_at(p).is_none_or(|layer| layer == ui.layer_id())
+                })
+            {
+                let image = self.magnifier_cursor_image(ui.ctx().pixels_per_point());
+                ui.ctx().output_mut(|o| o.cursor_image = Some(image));
+            }
+
             // ── 左右端ページ送りゾーン ───────────────────────────────────────────
             let edge_ctx = ui.ctx().clone();
             let guarded_hover = if pointer_in_palette || pointer_in_bar { None } else { input.hover_pos };
@@ -3819,6 +3840,24 @@ impl ViewerState {
         self.magnifier_at_fit = view.scale <= fit + 1e-4;
         self.magnifier_img_size = img;
         self.magnifier_view = Some(view);
+    }
+
+    /// 虫眼鏡カーソルの画像（画面の拡大率に合わせた大きさ）。同じ大きさの間は使い回す。
+    fn magnifier_cursor_image(&mut self, pixels_per_point: f32) -> egui::CustomCursorImage {
+        let size = crate::magnifier_cursor::cursor_size_for_scale(pixels_per_point);
+        if let Some((cached_size, image)) = &self.magnifier_cursor
+            && *cached_size == size
+        {
+            return image.clone();
+        }
+        let bitmap = crate::magnifier_cursor::magnifier_cursor(size);
+        let image = egui::CustomCursorImage {
+            rgba: std::sync::Arc::from(bitmap.rgba),
+            size: [size as u16, size as u16],
+            hotspot: [bitmap.hotspot.0 as u16, bitmap.hotspot.1 as u16],
+        };
+        self.magnifier_cursor = Some((size, image.clone()));
+        image
     }
 
     /// 虫眼鏡のスライダーバー（下端中央・前面レイヤー）。倍率はフィット〜上限を対数で割り当て、

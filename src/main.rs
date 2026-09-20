@@ -15,6 +15,7 @@ mod keymap;
 // 変換関数はフェーズ2で配線済み。バー幅API・自動ハイド秒などはフェーズ4以降で配線するまで未使用。
 #[allow(dead_code)]
 mod magnifier;
+mod magnifier_cursor;
 mod model_innerlog;
 mod neko_dir;
 mod rotation;
