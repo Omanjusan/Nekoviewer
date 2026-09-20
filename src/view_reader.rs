@@ -635,8 +635,8 @@ impl ViewerState {
         if zoom_actual {
             let edge = self.actual_decode_edge(max_decode_edge);
             Some((edge, edge))
-        } else if magnifier_on && self.page_mode == PageMode::Single {
-            // 虫眼鏡（単ページ）: 見開きの2倍は掛けず、1ページを max_decode_edge までデコードする。
+        } else if magnifier_on {
+            // 虫眼鏡: 単ページ・見開きとも、見開きの2倍は掛けず、1ページを max_decode_edge までデコードする。
             let edge = clamp_decode_edge(max_decode_edge, self.max_texture_side);
             Some((edge, edge))
         } else {
@@ -1584,8 +1584,13 @@ impl ViewerState {
         let viewport_before_central = ui.max_rect();
 
         let rotation_angle = self.manual_rotation_angle(cfg);
-        // 虫眼鏡は現状、単ページのみ対応（回転は可、見開きはフェーズ7b以降）。
-        let magnifier_active = cfg.magnifier_on && !is_spread && tex_lo.is_some();
+        // 虫眼鏡: 単ページは回転も可。見開きは回転なしのみ（見開き＋回転はフェーズ7c）。
+        let magnifier_active = cfg.magnifier_on
+            && if is_spread {
+                rotation_angle == 0 && (tex_lo.is_some() || tex_hi.is_some())
+            } else {
+                tex_lo.is_some()
+            };
         if magnifier_active {
             // ホイールはページ送りではなく拡縮へ回す。
             input.scroll_delta = 0.0;
@@ -3787,8 +3792,14 @@ impl ViewerState {
         if !frame.magnifier {
             return None;
         }
-        let tex = frame.tex_lo.as_ref()?;
-        Some(crate::magnifier::single_target(tex.size_vec2(), frame.rotation_angle, self.spread_lo()))
+        let size = |t: &Option<egui::TextureHandle>| t.as_ref().map(|t| t.size_vec2());
+        let lo = self.spread_lo();
+        match frame.page_mode {
+            PageMode::Single => Some(crate::magnifier::single_target(size(&frame.tex_lo)?, frame.rotation_angle, lo)),
+            // 左右は描画側（render_spread の呼び出し）と同じ並び。
+            PageMode::SpreadLeft => crate::magnifier::spread_target(size(&frame.tex_lo), size(&frame.tex_hi), frame.rotation_angle, lo, 1),
+            PageMode::SpreadRight => crate::magnifier::spread_target(size(&frame.tex_hi), size(&frame.tex_lo), frame.rotation_angle, lo, 2),
+        }
     }
 
     /// 虫眼鏡ビューの更新（毎フレーム、描画前）。作り直し・窓サイズ追従・ホイール拡縮を行い、
@@ -4193,7 +4204,8 @@ impl ViewerState {
         let current_sort = self.current_sort_snapshot();
 
         // 原寸表示は回転(90/270度)には未対応。回転中は従来通りフィット表示にフォールバックする。
-        if zoom_actual && angle_deg == 0 {
+        // 虫眼鏡が有効な間は、同じ描画（スクロール領域）に倍率と高さ正規化の配置を差し込む。
+        if self.magnifier_view.is_some() || (zoom_actual && angle_deg == 0) {
             self.render_spread_actual(
                 ui, tex_left, tex_right, left_index, right_index, double_clicked, single_clicked,
                 toggle_enabled, toggle_on, overwrite_enabled,
@@ -4248,6 +4260,7 @@ impl ViewerState {
         }
     }
 
+    /// 虫眼鏡の有効中は、原寸ではなく高さ正規化の配置を倍率で拡縮する（下の本文参照）。
     /// 見開き原寸表示（zoom_actual、角度0限定）。2ページをそれぞれ原寸のまま
     /// ノド（境界線）で突き合わせ、天（上端）を揃えて描画する。高さが異なる方は
     /// 天からその高さ分だけ描画し、残りは余白のまま。ビューポートより大きければ
@@ -4275,7 +4288,24 @@ impl ViewerState {
         let outer_available = ui.available_size();
         let sl = Self::spread_page_size(tex_left);
         let sr = Self::spread_page_size(tex_right);
-        let image_size = egui::vec2(sl.x + sr.x, sl.y.max(sr.y));
+        // 虫眼鏡: 2ページを同じ高さに揃えた配置（通常のフィットと同じ見た目）を倍率で拡縮する。
+        // 原寸: テクスチャのpxを等倍のまま天揃えで並べる。
+        let magnifier = self.magnifier_view;
+        let size_of = |t: &Option<egui::TextureHandle>| t.as_ref().map(|t| t.size_vec2());
+        let magnified = magnifier.and_then(|m| {
+            crate::magnifier::spread_layout(size_of(tex_left), size_of(tex_right)).map(|layout| (m, layout))
+        });
+        let (image_size, local_l, local_r) = match magnified {
+            Some((m, layout)) => {
+                let scaled = |r: egui::Rect| egui::Rect::from_min_size((r.min.to_vec2() * m.scale).to_pos2(), r.size() * m.scale);
+                (layout.extent * m.scale, scaled(layout.left), scaled(layout.right))
+            }
+            None => (
+                egui::vec2(sl.x + sr.x, sl.y.max(sr.y)),
+                egui::Rect::from_min_size(egui::Pos2::ZERO, sl),
+                egui::Rect::from_min_size(egui::pos2(sl.x, 0.0), sr),
+            ),
+        };
         let content_size = image_size.max(outer_available);
 
         // 見開きが実際に切り替わった最初のフレームでだけ、進行方向に応じた
@@ -4290,7 +4320,12 @@ impl ViewerState {
                 drag: egui::containers::scroll_area::DragScroll::Always,
                 mouse_wheel: false,
             });
-        if self.spread_actual_scrolled_lo != Some(current_lo) {
+        if let Some((m, _)) = magnified {
+            // 拡縮・作り直しをしたフレームだけオフセットを押し込む（毎フレーム押すとドラッグを上書きする）。
+            if self.magnifier_offset_dirty {
+                scroll_area = scroll_area.scroll_offset(m.offset);
+            }
+        } else if self.spread_actual_scrolled_lo != Some(current_lo) {
             self.spread_actual_scrolled_lo = Some(current_lo);
             let max_scroll_x = (content_size.x - outer_available.x).max(0.0);
             // anim_dir: +1=新ページが右からIN(右へ進行) → 左端から見せる、
@@ -4299,14 +4334,14 @@ impl ViewerState {
             scroll_area = scroll_area.scroll_offset(egui::vec2(target_x, 0.0));
         }
 
-        scroll_area.show(ui, |ui| {
+        let scroll_out = scroll_area.show(ui, |ui| {
             let (content_rect, resp) = ui.allocate_exact_size(content_size, egui::Sense::click());
             let bbox = egui::Rect::from_min_size(
                 content_rect.min + (content_size - image_size) / 2.0,
                 image_size,
             );
-            let rect_l = egui::Rect::from_min_size(bbox.min, sl);
-            let rect_r = egui::Rect::from_min_size(egui::pos2(bbox.min.x + sl.x, bbox.min.y), sr);
+            let rect_l = local_l.translate(bbox.min.to_vec2());
+            let rect_r = local_r.translate(bbox.min.to_vec2());
             let painter = ui.painter();
             Self::paint_page(painter, tex_left,  rect_l);
             Self::paint_page(painter, tex_right, rect_r);
@@ -4339,6 +4374,13 @@ impl ViewerState {
                     .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
                     .show(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort, sort_action, bookmark_toggle_enabled, bookmark_toggle_on, bookmark_action, thumbnail_target, saved_thumbnail_selection, saved_thumbnail_display.as_deref(), thumbnail_action, favorite_add, open_file_detail, slideshow_active, slideshow_toggle, blc_active, blc_toggle));
         });
+        // ドラッグ・スクロールバーでの移動を虫眼鏡ビューへ取り込む。
+        if magnified.is_some() {
+            if let Some(m) = self.magnifier_view.as_mut() {
+                m.offset = scroll_out.state.offset;
+            }
+            self.magnifier_offset_dirty = false;
+        }
     }
 
     /// サムネイル登録対象のヒットテスト。片側が仮想ページなら、クリック位置に

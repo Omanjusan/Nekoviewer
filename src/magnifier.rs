@@ -340,6 +340,59 @@ pub fn single_target(tex_size: Vec2, angle_deg: i32, page: i32) -> MagnifierTarg
     }
 }
 
+/// 実ページが無い側（仮想ページ・未取得）のプレースホルダの縦横比。通常の見開き表示と同じ 1:√2。
+const PLACEHOLDER_ASPECT: f32 = 1.0 / std::f32::consts::SQRT_2;
+
+/// 見開き2ページの配置（高さ正規化）。通常のフィット表示と同じ見た目で、2ページを
+/// 同じ高さに揃えて横に並べる。座標は基準ページのテクスチャpxで、左上が原点。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SpreadLayout {
+    /// 基準ページの高さ(px)。実ページのうち高いほうのテクスチャ高さ。倍率1.0（原寸）はこの
+    /// ページの等倍で、低解像側はこの高さへ拡大して並べる。
+    pub ref_len: f32,
+    pub left: Rect,
+    pub right: Rect,
+    /// 2ページ全体の外接サイズ。
+    pub extent: Vec2,
+}
+
+/// 見開きの配置を求める。`left`/`right` はテクスチャ寸法（None=仮想ページ・未取得で、
+/// プレースホルダ幅を確保する）。両方 None なら None。
+pub fn spread_layout(left: Option<Vec2>, right: Option<Vec2>) -> Option<SpreadLayout> {
+    let valid = |s: &Vec2| s.x > 0.0 && s.y > 0.0 && s.x.is_finite() && s.y.is_finite();
+    let (left, right) = (left.filter(valid), right.filter(valid));
+    let ref_len = match (left, right) {
+        (None, None) => return None,
+        (Some(l), None) => l.y,
+        (None, Some(r)) => r.y,
+        (Some(l), Some(r)) => l.y.max(r.y),
+    };
+    let width = |s: Option<Vec2>| s.map_or(PLACEHOLDER_ASPECT, |s| s.x / s.y) * ref_len;
+    let (w_l, w_r) = (width(left), width(right));
+    Some(SpreadLayout {
+        ref_len,
+        left: Rect::from_min_size(Pos2::ZERO, Vec2::new(w_l, ref_len)),
+        right: Rect::from_min_size(Pos2::new(w_l, 0.0), Vec2::new(w_r, ref_len)),
+        extent: Vec2::new(w_l + w_r, ref_len),
+    })
+}
+
+/// 見開きの表示対象。`mode` は呼び出し側が決める見開きの向き（単ページと区別する値）。
+pub fn spread_target(
+    left: Option<Vec2>,
+    right: Option<Vec2>,
+    angle_deg: i32,
+    page: i32,
+    mode: u8,
+) -> Option<MagnifierTarget> {
+    let layout = spread_layout(left, right)?;
+    Some(MagnifierTarget {
+        img: rotated_extent(layout.extent, angle_deg),
+        ref_len: layout.ref_len,
+        key: MagnifierKey { page, mode, angle: angle_deg },
+    })
+}
+
 /// 虫眼鏡の表示状態。`offset` は ScrollArea のスクロールオフセットと同じ意味
 /// （ビューポート左上のコンテンツ座標）。コンテンツがビューポートより小さい軸は
 /// 中央寄せの余白が入るので、その軸の `offset` は常に 0。
@@ -797,6 +850,57 @@ mod tests {
         assert_ne!(t.key, single_target(v(400.0, 600.0), 90, 8).key);
         // 同じ対象なら解像度が変わっても識別子は同じ（見た目維持の換算に回る）。
         assert_eq!(t.key, single_target(v(800.0, 1200.0), 90, 7).key);
+    }
+
+    #[test]
+    fn spread_layout_places_equal_pages_side_by_side() {
+        let l = spread_layout(Some(v(1000.0, 1500.0)), Some(v(1000.0, 1500.0))).unwrap();
+        assert_eq!(l.ref_len, 1500.0);
+        assert_eq!(l.left.min, Pos2::ZERO);
+        assert_eq!(l.left.size(), v(1000.0, 1500.0));
+        assert_eq!(l.right.min, Pos2::new(1000.0, 0.0));
+        assert_eq!(l.extent, v(2000.0, 1500.0));
+    }
+
+    #[test]
+    fn spread_layout_normalizes_heights_to_the_taller_page() {
+        // 右ページは低解像（高さ1000）。基準は高いほう（1500）で、右は幅750へ拡大して並べる。
+        let l = spread_layout(Some(v(1000.0, 1500.0)), Some(v(500.0, 1000.0))).unwrap();
+        assert_eq!(l.ref_len, 1500.0);
+        assert_eq!(l.left.width(), 1000.0);
+        assert_eq!(l.right.width(), 750.0);
+        assert_eq!(l.right.height(), 1500.0);
+        assert_eq!(l.right.min.x, l.left.max.x);
+        assert_eq!(l.extent, v(1750.0, 1500.0));
+    }
+
+    #[test]
+    fn spread_layout_uses_placeholder_for_missing_page() {
+        let l = spread_layout(None, Some(v(1000.0, 1500.0))).unwrap();
+        assert_eq!(l.ref_len, 1500.0);
+        assert!((l.left.width() - 1500.0 / std::f32::consts::SQRT_2).abs() < 1e-3);
+        assert_eq!(l.right.width(), 1000.0);
+        // 無効な寸法もプレースホルダ扱い。
+        let l2 = spread_layout(Some(v(0.0, 100.0)), Some(v(1000.0, 1500.0))).unwrap();
+        assert_eq!(l2.left, l.left);
+        // 両方無ければ対象なし。
+        assert!(spread_layout(None, None).is_none());
+    }
+
+    #[test]
+    fn spread_target_uses_layout_extent_and_key() {
+        let t = spread_target(Some(v(1000.0, 1500.0)), Some(v(1000.0, 1500.0)), 0, 4, 1).unwrap();
+        assert_eq!(t.img, v(2000.0, 1500.0));
+        assert_eq!(t.ref_len, 1500.0);
+        assert_eq!(t.key, MagnifierKey { page: 4, mode: 1, angle: 0 });
+        // 向き（mode）が違えば識別子が違う。
+        let t2 = spread_target(Some(v(1000.0, 1500.0)), Some(v(1000.0, 1500.0)), 0, 4, 2).unwrap();
+        assert_ne!(t.key, t2.key);
+        // 片方だけ解像度が上がっても基準長さだけが変わり、識別子は同じ（見た目維持の換算に回る）。
+        let t3 = spread_target(Some(v(2000.0, 3000.0)), Some(v(1000.0, 1500.0)), 0, 4, 1).unwrap();
+        assert_eq!(t.key, t3.key);
+        assert_eq!(t3.ref_len, 3000.0);
+        assert!(spread_target(None, None, 0, 0, 1).is_none());
     }
 
     #[test]
