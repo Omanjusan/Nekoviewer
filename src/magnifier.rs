@@ -344,6 +344,13 @@ pub struct MagnifierKey {
     pub angle: i32,
 }
 
+impl MagnifierKey {
+    /// 同じ表示形式・回転のまま、ページだけが変わったか（ページ送り。倍率を引き継ぐ対象）。
+    pub fn is_page_turn_from(self, prev: MagnifierKey) -> bool {
+        self.mode == prev.mode && self.angle == prev.angle && self.page != prev.page
+    }
+}
+
 /// 虫眼鏡の表示対象。倍率（原寸比）の基準となる外接サイズと、識別子を持つ。
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MagnifierTarget {
@@ -583,6 +590,28 @@ pub fn dwell_step(since: Option<f64>, now: f64, at_min: bool, activity: bool, dw
         Some(start) if !activity => (Some(start), now - start >= dwell_secs),
         _ => (Some(now), false),
     }
+}
+
+/// ページ送りで倍率を引き継いだ、新ページの表示状態。倍率はフィット相対（`rel` × 新ページの
+/// フィット倍率）を範囲内へ丸めたもの。解像度やページの大きさが違っても、同じ拡大感になる。
+/// 開始位置は上端揃いで、横は `start_at_right` なら右端、そうでなければ左端（進行方向と逆の端）。
+pub fn carried_view(
+    rel: f32,
+    fit: f32,
+    range: (f32, f32),
+    viewport: Vec2,
+    img: Vec2,
+    start_at_right: bool,
+) -> MagnifierView {
+    let scale = if rel.is_finite() && rel > 0.0 {
+        (rel * fit).clamp(range.0, range.1)
+    } else {
+        fit.clamp(range.0, range.1)
+    };
+    let content = img * scale;
+    let max_x = (content.x - viewport.x).max(0.0);
+    let x = if start_at_right { max_x } else { 0.0 };
+    MagnifierView { scale, offset: Vec2::new(x, 0.0) }
 }
 
 fn axis_pad(viewport: f32, content: f32) -> f32 {
@@ -1040,6 +1069,62 @@ mod tests {
         assert_eq!(NotchStep::from_state_str(" 1.5 "), Some(NotchStep::X1_5));
         assert_eq!(NotchStep::from_state_str("3"), None);
         assert_eq!(NotchStep::from_state_str(""), None);
+    }
+
+    #[test]
+    fn page_turn_is_a_page_change_with_same_layout_and_angle() {
+        let base = MagnifierKey { page: 3, mode: 1, angle: 90 };
+        assert!(MagnifierKey { page: 5, ..base }.is_page_turn_from(base));
+        assert!(!MagnifierKey { page: 3, ..base }.is_page_turn_from(base));
+        // 表示形式・回転が変わったらページ送りではない（フィットから作り直す）。
+        assert!(!MagnifierKey { page: 5, mode: 2, angle: 90 }.is_page_turn_from(base));
+        assert!(!MagnifierKey { page: 5, mode: 1, angle: 0 }.is_page_turn_from(base));
+    }
+
+    #[test]
+    fn carried_view_keeps_fit_relative_zoom() {
+        let vp = v(800.0, 600.0);
+        let img = v(2000.0, 3000.0);
+        let fit = fit_scale(vp, img); // 0.2
+        let range = scale_range(fit, 4.0);
+        let view = carried_view(2.0, fit, range, vp, img, false);
+        assert!((view.scale - 2.0 * fit).abs() < 1e-6);
+        // 別ページ（フィット倍率が違う）でも、同じ相対倍率になる。
+        let img2 = v(1000.0, 1500.0);
+        let fit2 = fit_scale(vp, img2); // 0.4
+        let view2 = carried_view(2.0, fit2, scale_range(fit2, 4.0), vp, img2, false);
+        assert!((view2.scale / fit2 - 2.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn carried_view_clamps_scale_and_handles_bad_input() {
+        let vp = v(800.0, 600.0);
+        let img = v(2000.0, 3000.0);
+        let fit = fit_scale(vp, img);
+        let range = scale_range(fit, 1.0);
+        assert_eq!(carried_view(100.0, fit, range, vp, img, false).scale, 1.0);
+        assert_eq!(carried_view(0.5, fit, range, vp, img, false).scale, fit);
+        assert_eq!(carried_view(f32::NAN, fit, range, vp, img, false).scale, fit);
+        assert_eq!(carried_view(-1.0, fit, range, vp, img, false).scale, fit);
+    }
+
+    #[test]
+    fn carried_view_starts_top_aligned_on_the_side_opposite_to_travel() {
+        let vp = v(800.0, 600.0);
+        let img = v(2000.0, 3000.0);
+        let fit = fit_scale(vp, img);
+        let range = scale_range(fit, 4.0);
+        // 進行方向が右（新ページが右から入る）→ 左端から。
+        let forward = carried_view(4.0, fit, range, vp, img, false);
+        assert_eq!(forward.offset, Vec2::ZERO);
+        // 逆方向 → 右端から（縦は常に上端）。
+        let backward = carried_view(4.0, fit, range, vp, img, true);
+        let content_w = img.x * backward.scale;
+        assert!((backward.offset.x - (content_w - vp.x)).abs() < 1e-3);
+        assert_eq!(backward.offset.y, 0.0);
+        // コンテンツがビューポートに収まる軸では、右端指定でもオフセットは 0。
+        let fit_view = carried_view(1.0, fit, range, vp, img, true);
+        assert_eq!(fit_view.offset, Vec2::ZERO);
     }
 
     #[test]

@@ -562,6 +562,10 @@ pub struct ViewerState {
     magnifier_settings_dirty: bool,
     /// 自動退場の滞留判定の起点（最小倍率に着いた、または最後に操作した時刻）。None = 対象外。
     magnifier_min_since: Option<f64>,
+    /// ページ送りで引き継ぐ倍率（フィット相対 = 倍率 ÷ フィット倍率）。次ページのテクスチャが届くまで
+    /// 虫眼鏡が一時的に非アクティブになっても失われないよう、`magnifier_view` とは別に持つ。
+    /// モードOFFで破棄する。
+    magnifier_carry_rel: Option<f32>,
     /// 虫眼鏡カーソルの画像キャッシュ（一辺のpxごと）。egui-winit は Arc のポインタで
     /// 同一画像を判定して再アップロードを避けるので、毎フレーム作り直さない。
     magnifier_cursor: Option<(u32, egui::CustomCursorImage)>,
@@ -812,6 +816,7 @@ impl ViewerState {
             magnifier_bar_active_at: None,
             magnifier_settings_dirty: false,
             magnifier_min_since: None,
+            magnifier_carry_rel: None,
             magnifier_cursor: None,
             max_texture_side: MAX_TEXTURE_SIDE_FALLBACK,
         }
@@ -905,6 +910,7 @@ impl ViewerState {
             magnifier_bar_active_at: None,
             magnifier_settings_dirty: false,
             magnifier_min_since: None,
+            magnifier_carry_rel: None,
             magnifier_cursor: None,
             max_texture_side: MAX_TEXTURE_SIDE_FALLBACK,
         }
@@ -2514,10 +2520,19 @@ impl ViewerState {
                 }
                 // 最小倍率での操作（ホイールの空振り・バーの上）は、滞留の起点を取り直す操作とみなす。
                 self.tick_magnifier_auto_exit(ui.ctx(), cfg, input.time, input.wheel_notches != 0.0 || pointer_in_bar);
+                // 次のページ送りへ引き継ぐ倍率（フィット相対）。スライダーでの操作も含めて毎フレーム更新する。
+                if let (Some(v), Some(t)) = (self.magnifier_view, target) {
+                    self.magnifier_carry_rel = Some(v.scale / crate::magnifier::fit_scale(viewport_rect.size(), t.img));
+                }
             } else {
                 self.magnifier_view = None;
                 self.magnifier_bar_active_at = None;
                 self.magnifier_min_since = None;
+                // テクスチャ待ちなどで一時的に非アクティブなだけなら、引き継ぎ状態は残す。
+                if !cfg.magnifier_on {
+                    self.magnifier_key = None;
+                    self.magnifier_carry_rel = None;
+                }
             }
 
             // ── 虫眼鏡カーソル ─────────────────────────────────────────────────────
@@ -3861,7 +3876,7 @@ impl ViewerState {
         wheel_notches: f32,
         cfg: &crate::magnifier::MagnifierConfig,
     ) {
-        use crate::magnifier::{fit_scale, notch_scale, rescale_for_new_texture, scale_range, zoom_about, clamp_offset, MagnifierView};
+        use crate::magnifier::{carried_view, fit_scale, notch_scale, rescale_for_new_texture, scale_range, zoom_about, clamp_offset, MagnifierView};
         let Some(target) = target else {
             self.magnifier_view = None;
             return;
@@ -3887,10 +3902,19 @@ impl ViewerState {
                 clamp_offset(MagnifierView { scale, offset: v.offset }, vp, img)
             }
             _ => {
+                // ページ送りなら倍率を引き継ぐ（表示形式・回転が変わったときはフィットから）。
+                let carried = match (self.magnifier_key, self.magnifier_carry_rel) {
+                    (Some(prev), Some(rel)) if target.key.is_page_turn_from(prev) => Some(rel),
+                    _ => None,
+                };
                 self.magnifier_key = Some(target.key);
                 self.magnifier_offset_dirty = true;
                 self.magnifier_bar_active_at = None;
-                MagnifierView::fit(vp, img)
+                match carried {
+                    // 進行方向と逆の端・上端から始める（既存の原寸見開きと同じ慣例）。
+                    Some(rel) => carried_view(rel, fit, range, vp, img, self.anim_dir < 0),
+                    None => MagnifierView::fit(vp, img),
+                }
             }
         };
 
