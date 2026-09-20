@@ -13,6 +13,9 @@ mod image_filter;
 mod image_info;
 mod types;
 mod keymap;
+// 疑似コマ送りの純ロジック。ナビへの配線（フェーズ3）までは未使用。
+#[allow(dead_code)]
+mod koma;
 // 変換関数はフェーズ2で配線済み。バー幅API・自動ハイド秒などはフェーズ4以降で配線するまで未使用。
 #[allow(dead_code)]
 mod magnifier;
