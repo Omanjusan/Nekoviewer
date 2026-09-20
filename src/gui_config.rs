@@ -164,6 +164,9 @@ pub struct ViewerConfig {
     /// false = デコード時のOrientation適用をスキップする（誤ったOrientationタグ対策）。
     /// 永続設定（save_state/load_state対象）。ビューアーのみに効き、サムネイルには影響しない。
     pub exif_orientation_enabled: bool,
+    /// 画像情報（解像度・ページ数）の右下オーバーレイを表示するか。既定ON。
+    /// 永続設定。ツールパレットのトグル「画像情報表示」で切り替える。
+    pub image_info_visible: bool,
     /// ビューアーツールバーの項目並び順（全項目の順列、toolbar.rs 参照）。
     /// 永続設定。現時点で編集UIは無く実質固定（state を直接編集すれば並べ替え可能）。
     pub bar_order: [ViewerBarItem; BAR_ITEM_COUNT],
@@ -218,6 +221,7 @@ impl Default for ViewerConfig {
             rotation_carry_over: false,
             rotation_session_angle: 0,
             exif_orientation_enabled: true,
+            image_info_visible: true,
             bar_order: DEFAULT_BAR_ORDER,
             transition_kind: TransitionKind::HorizontalSlide,
             transition_duration_ms: 400,
@@ -521,6 +525,7 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
     let mut thumbbar_marker_b: Option<u8> = None;
     let mut thumbbar_marker_a: Option<u8> = None;
     let mut exif_orientation_enabled: Option<bool> = None;
+    let mut image_info_visible: Option<bool> = None;
     let mut magnifier_notch_step: Option<crate::magnifier::NotchStep> = None;
     let mut magnifier_detail_ticks: Option<bool> = None;
     let mut viewer_bar_order: Option<[ViewerBarItem; BAR_ITEM_COUNT]> = None;
@@ -672,6 +677,7 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
                 "thumbbar_marker_b" => { thumbbar_marker_b = v.trim().parse().ok(); }
                 "thumbbar_marker_a" => { thumbbar_marker_a = v.trim().parse().ok(); }
                 "exif_orientation_enabled" => { exif_orientation_enabled = v.trim().parse().ok(); }
+                "image_info_visible" => { image_info_visible = v.trim().parse().ok(); }
                 "magnifier_notch_step" => { magnifier_notch_step = crate::magnifier::NotchStep::from_state_str(v); }
                 "magnifier_detail_ticks" => { magnifier_detail_ticks = v.trim().parse().ok(); }
                 "viewer_bar_order" => { viewer_bar_order = Some(parse_bar_order(v)); }
@@ -822,6 +828,7 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
             rotation_carry_over: false,
             rotation_session_angle: 0,
             exif_orientation_enabled: exif_orientation_enabled.unwrap_or(true),
+            image_info_visible: image_info_visible.unwrap_or(true),
             bar_order: viewer_bar_order.unwrap_or(DEFAULT_BAR_ORDER),
             transition_kind: transition_kind.unwrap_or(TransitionKind::HorizontalSlide),
             transition_duration_ms: transition_duration_ms.unwrap_or(400),
@@ -941,6 +948,10 @@ pub fn save_state(root: &Path, dir: &Path, window_size: (u32, u32), viewer_slots
     content.push_str(&format!(
         "exif_orientation_enabled={}\n",
         viewer_cfg.exif_orientation_enabled,
+    ));
+    content.push_str(&format!(
+        "image_info_visible={}\n",
+        viewer_cfg.image_info_visible,
     ));
     content.push_str(&format!(
         "magnifier_notch_step={}\nmagnifier_detail_ticks={}\n",
@@ -1088,6 +1099,20 @@ mod tests {
         assert_eq!(parsed.app_magnifier_zoom_notice_shown, None);
         let parsed = parse_state_text("notice_none", "lang=ja\n");
         assert_eq!(parsed.app_magnifier_zoom_notice_shown, None);
+    }
+
+    #[test]
+    fn image_info_visible_parses_and_defaults_to_on() {
+        assert!(ViewerConfig::default().image_info_visible);
+        let parsed = parse_state_text("info_off", "image_info_visible=false\n");
+        assert!(!parsed.viewer_cfg.image_info_visible);
+        let parsed = parse_state_text("info_on", "image_info_visible=true\n");
+        assert!(parsed.viewer_cfg.image_info_visible);
+        // 不正値・キーなし（旧state）は既定のON。
+        let parsed = parse_state_text("info_bad", "image_info_visible=maybe\n");
+        assert!(parsed.viewer_cfg.image_info_visible);
+        let parsed = parse_state_text("info_none", "lang=ja\n");
+        assert!(parsed.viewer_cfg.image_info_visible);
     }
 
     #[test]

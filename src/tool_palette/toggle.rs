@@ -19,6 +19,8 @@ pub enum ToggleKind {
     SharpnessEnabled,
     /// 虫眼鏡（ホイール拡縮）モードのON/OFF
     Magnifier,
+    /// 画像情報（解像度・ページ数）オーバーレイの表示ON/OFF
+    ImageInfo,
 }
 
 impl ToggleKind {
@@ -30,6 +32,7 @@ impl ToggleKind {
             ToggleKind::BrightnessEnabled => "brightness_enabled",
             ToggleKind::SharpnessEnabled => "sharpness_enabled",
             ToggleKind::Magnifier => "magnifier",
+            ToggleKind::ImageInfo => "image_info",
         }
     }
 
@@ -40,6 +43,7 @@ impl ToggleKind {
             "brightness_enabled" => ToggleKind::BrightnessEnabled,
             "sharpness_enabled" => ToggleKind::SharpnessEnabled,
             "magnifier" => ToggleKind::Magnifier,
+            "image_info" => ToggleKind::ImageInfo,
             _ => return None,
         })
     }
@@ -92,6 +96,12 @@ pub const TOGGLE_DEFS: &[ToggleDef] = &[
             cfg.magnifier_entered_by_default = false;
         },
     },
+    ToggleDef {
+        key: ToggleKind::ImageInfo,
+        label: Lang::tool_palette_toggle_label_image_info,
+        get: |cfg| cfg.image_info_visible,
+        set: |cfg, on| cfg.image_info_visible = on,
+    },
 ];
 
 /// key に対応する定義を探す。TOGGLE_DEFS は全 ToggleKind を網羅している前提
@@ -114,12 +124,13 @@ pub fn execute_toggle(cfg: &mut ViewerConfig, kind: ToggleKind) {
 mod tests {
     use super::*;
 
-    const ALL_KINDS: [ToggleKind; 5] = [
+    const ALL_KINDS: [ToggleKind; 6] = [
         ToggleKind::BlueLightCut,
         ToggleKind::GammaEnabled,
         ToggleKind::BrightnessEnabled,
         ToggleKind::SharpnessEnabled,
         ToggleKind::Magnifier,
+        ToggleKind::ImageInfo,
     ];
 
     #[test]
@@ -169,6 +180,16 @@ mod tests {
         assert!(cfg.magnifier_on);
         execute_toggle(&mut cfg, ToggleKind::Magnifier);
         assert!(!cfg.magnifier_on);
+    }
+
+    #[test]
+    fn execute_toggle_image_info_flips_visibility() {
+        let mut cfg = ViewerConfig::default();
+        assert!(cfg.image_info_visible, "既定はON");
+        execute_toggle(&mut cfg, ToggleKind::ImageInfo);
+        assert!(!cfg.image_info_visible);
+        execute_toggle(&mut cfg, ToggleKind::ImageInfo);
+        assert!(cfg.image_info_visible);
     }
 
     #[test]

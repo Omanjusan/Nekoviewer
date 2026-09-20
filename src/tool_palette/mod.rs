@@ -143,6 +143,7 @@ mod tests {
         let cases = [
             PaletteSlotContent::Empty,
             PaletteSlotContent::Toggle(ToggleKind::BlueLightCut),
+            PaletteSlotContent::Toggle(ToggleKind::ImageInfo),
             PaletteSlotContent::Dialog(DialogKind::ImageFilter),
             PaletteSlotContent::Action(ActionKind::NextPage),
             PaletteSlotContent::Action(ActionKind::PrevPage),

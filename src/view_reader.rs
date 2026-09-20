@@ -377,6 +377,10 @@ struct RenderFrame {
     rotation_angle: i32,
     /// スライドショー設定のトランジション種類。アニメ中の描画分岐に使う。
     transition_kind: TransitionKind,
+    /// 画像情報表示用: 先頭ページ（`spread_lo`）とその次ページの元寸法。範囲外・未デコードなら None。
+    page_metas: [Option<crate::cache::PageMeta>; 2],
+    /// 画像情報表示用: 表示ページがアニメ情報をもつか（ページ数の「A」）。
+    page_animated: bool,
 }
 
 /// 右クリック「ファイル詳細」ダイアログの状態。開いた瞬間の情報をスナップショットして保持する
@@ -1257,6 +1261,73 @@ impl ViewerState {
     }
 
     /// spread_lo を基に lo/hi テクスチャを返す（original_index でキャッシュ参照）
+    /// 右下オーバーレイの解像度部分の文字列。ページ毎の寸法を画面の左→右の順に並べ、
+    /// 虫眼鏡中は末尾に倍率を1つだけ添える。画面上の左右と寸法の左右は綴じ順に依らず固定で、
+    /// テクスチャの無い側（仮想ページ・未取得）は省略する。ページ数（`n/total`）は先頭ページのみ。
+    fn info_resolution_text(&self, frame: &RenderFrame, viewport_rect: egui::Rect, ppp: f32) -> String {
+        use crate::image_info::{compose_resolution_text, fitted_display_px, info_mode, join_page_texts, orig_relative_scale, rect_size_px, InfoMode};
+        let mode = info_mode(frame.magnifier, frame.zoom_actual, frame.rotation_angle);
+        let vp = viewport_rect.size();
+        let tex_px = |t: &Option<egui::TextureHandle>| t.as_ref().map(|t| { let [w, h] = t.size(); (w as u32, h as u32) });
+        let [meta_lo, meta_hi] = frame.page_metas;
+
+        // 画面の左→右に並ぶページ: (テクスチャ, 元寸法, フィット時の実描画寸法)。
+        let pages: Vec<(&Option<egui::TextureHandle>, Option<(u32, u32)>, Option<(u32, u32)>)> = match self.page_mode {
+            PageMode::Single => {
+                let fitted = frame.tex_lo.as_ref().and_then(|t| {
+                    let [w, h] = t.size();
+                    fitted_display_px(vp, egui::vec2(w as f32, h as f32), frame.rotation_angle, ppp)
+                });
+                vec![(&frame.tex_lo, meta_lo.map(|m| m.orig), fitted)]
+            }
+            PageMode::SpreadLeft | PageMode::SpreadRight => {
+                // 左右の配置は描画側（render_spread の呼び出し）と同じ。SpreadRight は次ページが左。
+                let (left, right, m_left, m_right) = if self.page_mode == PageMode::SpreadLeft {
+                    (&frame.tex_lo, &frame.tex_hi, meta_lo, meta_hi)
+                } else {
+                    (&frame.tex_hi, &frame.tex_lo, meta_hi, meta_lo)
+                };
+                let (rl, rr) = Self::spread_rects(vp, viewport_rect.min, left, right, frame.monitor);
+                let fit = |t: &Option<egui::TextureHandle>, r: egui::Rect| t.as_ref().and_then(|_| rect_size_px(r.size(), ppp));
+                vec![
+                    (left, m_left.map(|m| m.orig), fit(left, rl)),
+                    (right, m_right.map(|m| m.orig), fit(right, rr)),
+                ]
+            }
+        };
+        let parts: Vec<String> = pages
+            .iter()
+            .map(|(tex, orig, fitted)| {
+                if tex.is_none() {
+                    return String::new();
+                }
+                compose_resolution_text(mode, *fitted, *orig, tex_px(tex))
+            })
+            .collect();
+
+        // 虫眼鏡の倍率（テクスチャ基準）を元寸法基準へ換算する。基準は先頭ページ（仮想ページなら
+        // 実在する側）。対象ページの描画高さ（基準ページの高さ × 倍率）÷ そのページの元の高さ。
+        let start_orig = if self.spread_lo() >= 0 { meta_lo } else { meta_hi }.map(|m| m.orig);
+        let rel_scale = self.magnifier_view.filter(|_| mode == InfoMode::Magnifier).map(|v| {
+            orig_relative_scale(v.scale, self.magnifier_ref_len, start_orig.map_or(0.0, |o| o.1 as f32))
+        });
+        join_page_texts(&parts, rel_scale)
+    }
+
+    /// 画像情報表示用: 先頭ページ（`lo`）とその次ページの付帯情報と、ページ数の「A」用に
+    /// 表示ページ（仮想ページなら実在の先頭ページ）がアニメ情報をもつか。
+    /// 1フレームのアニメでも meta の `animated` で拾う。
+    fn info_page_meta(&self, page_cache: &PageCache, lo: i32) -> ([Option<crate::cache::PageMeta>; 2], bool) {
+        let meta_at = |i: i32| {
+            let entry = self.entries.get(usize::try_from(i).ok()?)?;
+            page_cache.page_meta(&self.archive_path, entry.original_index)
+        };
+        let animated = self.entries.get(lo.max(0) as usize).is_some_and(|e| {
+            meta_at(lo.max(0)).is_some_and(|m| m.animated) || self.anim_states.contains_key(&e.original_index)
+        });
+        ([meta_at(lo), meta_at(lo + 1)], animated)
+    }
+
     fn page_textures_for(&self, lo: i32) -> (Option<egui::TextureHandle>, Option<egui::TextureHandle>) {
         let total = self.entries.len() as i32;
         let get = |idx: i32| -> Option<egui::TextureHandle> {
@@ -1510,6 +1581,7 @@ impl ViewerState {
         let total = self.entries.len();
         let current_lo = self.spread_lo();
         let (tex_lo, tex_hi) = self.page_textures_for(current_lo);
+        let (page_metas, page_animated) = self.info_page_meta(page_cache, current_lo);
         let (prev_tex_lo, prev_tex_hi) = if animating {
             self.page_textures_for(self.anim_from_lo)
         } else {
@@ -1661,6 +1733,8 @@ impl ViewerState {
             monitor:     input.monitor_size,
             rotation_angle,
             transition_kind: self.effective_transition_kind(cfg),
+            page_metas,
+            page_animated,
         };
         let tool_palette_before = self.tool_palette.clone();
         let (double_clicked, single_clicked) = self.draw_central_panel(ui, &frame, &input, is_spread, step, total, cfg);
@@ -2742,52 +2816,38 @@ impl ViewerState {
             }
 
             // ── 右下ページ数オーバーレイ ──────────────────────────────────────
-            let page_text = format!("{}/{}", self.spread_lo().max(0) + 1, self.entries.len());
-            let font_id = egui::FontId::proportional(14.0);
-            let text_color = egui::Color32::WHITE;
-            let shadow_color = egui::Color32::from_black_alpha(180);
             let panel_rect = ui.clip_rect();
-            let painter = ui.painter();
-            let galley = painter.layout_no_wrap(page_text, font_id.clone(), text_color);
-            let text_size = galley.size();
-            let margin = egui::vec2(8.0, 6.0);
-            let text_pos = panel_rect.right_bottom() - text_size - margin;
-            painter.text(text_pos + egui::vec2(1.0, 1.0), egui::Align2::LEFT_TOP, &galley.text().to_string(), egui::FontId::proportional(14.0), shadow_color);
-            painter.galley(text_pos, galley, text_color);
+            // パレットのトグル「画像情報表示」がOFFなら、ページ数・解像度ともに描かない。
+            if cfg.image_info_visible {
+                let page_text = crate::image_info::format_page_counter(
+                    self.spread_lo().max(0) as usize + 1,
+                    self.entries.len(),
+                    frame.page_animated,
+                );
+                let font_id = egui::FontId::proportional(14.0);
+                let text_color = egui::Color32::WHITE;
+                let shadow_color = egui::Color32::from_black_alpha(180);
+                let painter = ui.painter();
+                let galley = painter.layout_no_wrap(page_text, font_id.clone(), text_color);
+                let text_size = galley.size();
+                let margin = egui::vec2(8.0, 6.0);
+                let text_pos = panel_rect.right_bottom() - text_size - margin;
+                painter.text(text_pos + egui::vec2(1.0, 1.0), egui::Align2::LEFT_TOP, &galley.text().to_string(), egui::FontId::proportional(14.0), shadow_color);
+                painter.galley(text_pos, galley, text_color);
 
-            // ── 解像度オーバーレイ（フェーズ0モック：ページ数の左隣）──────────────
-            // 原寸 = テクスチャ寸法 / 通常（ウィンドウ追従）= ウィンドウ寸法 / 虫眼鏡中 = 末尾に倍率。
-            // 数値はレイアウト確認用の暫定値（デコード縮小・見開き・回転の扱いはプランニングで詰める）。
-            {
-                let size_of = |t: &Option<egui::TextureHandle>| t.as_ref().map(|t| t.size());
-                let tex_text = || {
-                    let parts: Vec<String> = [&frame.tex_lo, &frame.tex_hi]
-                        .into_iter()
-                        .filter_map(size_of)
-                        .map(|[w, h]| format!("{w}×{h}"))
-                        .collect();
-                    if self.page_mode == PageMode::Single {
-                        parts.first().cloned().unwrap_or_default()
-                    } else {
-                        parts.join(" + ")
+                // ── 解像度オーバーレイ（ページ数の左隣）──────────────────────────────
+                // 見開きはページ毎の寸法を画面の左→右で並べる（ページ数は先頭ページのみ）。
+                // フィット=実際に描かれる画像の寸法 / 原寸=元ピクセル寸法 / 虫眼鏡=元寸法＋末尾に倍率。
+                {
+                    let info = self.info_resolution_text(frame, viewport_rect, ui.ctx().pixels_per_point());
+                    if !info.is_empty() {
+                        let painter = ui.painter();
+                        let g = painter.layout_no_wrap(info, font_id, text_color);
+                        let gap = 12.0;
+                        let pos = egui::pos2(text_pos.x - gap - g.size().x, text_pos.y);
+                        painter.text(pos + egui::vec2(1.0, 1.0), egui::Align2::LEFT_TOP, &g.text().to_string(), egui::FontId::proportional(14.0), shadow_color);
+                        painter.galley(pos, g, text_color);
                     }
-                };
-                let mut info = if frame.magnifier || frame.zoom_actual {
-                    tex_text()
-                } else {
-                    let ppp = ui.ctx().pixels_per_point();
-                    format!("{}×{}", (viewport_rect.width() * ppp).round(), (viewport_rect.height() * ppp).round())
-                };
-                if frame.magnifier && let Some(v) = self.magnifier_view {
-                    info.push_str(&format!(" (x{:.2})", v.scale));
-                }
-                if !info.is_empty() {
-                    let painter = ui.painter();
-                    let g = painter.layout_no_wrap(info, font_id, text_color);
-                    let gap = 12.0;
-                    let pos = egui::pos2(text_pos.x - gap - g.size().x, text_pos.y);
-                    painter.text(pos + egui::vec2(1.0, 1.0), egui::Align2::LEFT_TOP, &g.text().to_string(), egui::FontId::proportional(14.0), shadow_color);
-                    painter.galley(pos, g, text_color);
                 }
             }
 
@@ -5750,6 +5810,16 @@ mod magnifier_flow_tests {
         prepare: Option<u64>,
         /// 直近のフレームが要求した次回再描画までの猶予（入力が無くても退場を判定させるのに必要）。
         last_repaint_delay: Option<std::time::Duration>,
+        /// 直近のフレームで描かれた文字列（画像情報オーバーレイの検証用）。
+        texts: Vec<String>,
+    }
+
+    fn collect_texts(shape: &egui::epaint::Shape, out: &mut Vec<String>) {
+        match shape {
+            egui::epaint::Shape::Text(t) => out.push(t.galley.text().to_string()),
+            egui::epaint::Shape::Vec(v) => v.iter().for_each(|s| collect_texts(s, out)),
+            _ => {}
+        }
     }
 
     impl Harness {
@@ -5781,6 +5851,7 @@ mod magnifier_flow_tests {
                 time: 1.0,
                 prepare: None,
                 last_repaint_delay: None,
+                texts: Vec::new(),
             }
         }
 
@@ -5821,6 +5892,23 @@ mod magnifier_flow_tests {
                 .viewport_output
                 .get(&egui::ViewportId::ROOT)
                 .map(|v| v.repaint_delay);
+            self.texts.clear();
+            for clipped in &output.shapes {
+                collect_texts(&clipped.shape, &mut self.texts);
+            }
+        }
+
+        /// 描かれた文字列のうち、寸法（`w×h ...`）とページ数（`n/m`）のオーバーレイを取り出す。
+        fn overlay(&self) -> (Option<&str>, Option<&str>) {
+            let res = self.texts.iter().map(String::as_str).find(|t| t.starts_with(|c: char| c.is_ascii_digit()) && t.contains('×'));
+            let page = self.texts.iter().map(String::as_str).find(|t| {
+                t.split_once('/').is_some_and(|(a, b)| {
+                    !a.is_empty() && !b.is_empty()
+                        && a.trim_end_matches('A').chars().all(|c| c.is_ascii_digit())
+                        && b.chars().all(|c| c.is_ascii_digit())
+                })
+            });
+            (res, page)
         }
 
         fn wheel(&mut self, up: bool, modifiers: egui::Modifiers) {
@@ -5846,6 +5934,76 @@ mod magnifier_flow_tests {
                 self.viewer.magnifier_min_since,
             )
         }
+    }
+
+    fn parse_wh(text: &str) -> (u32, u32) {
+        let head = text.split_whitespace().next().unwrap();
+        let (w, h) = head.split_once('×').unwrap();
+        (w.parse().unwrap(), h.parse().unwrap())
+    }
+
+    #[test]
+    fn overlay_shows_fitted_size_and_plain_page_counter() {
+        let h = Harness::new();
+        let (res, page) = h.overlay();
+        assert_eq!(page, Some("1/1"), "texts={:?}", h.texts);
+        let (w, hh) = parse_wh(res.unwrap_or_else(|| panic!("解像度が出ていない: {:?}", h.texts)));
+        // 800×1200 の縦長をフィット → 縦横比が保たれ、レターボックスの余白は含まれない。
+        assert!((w as f32 / hh as f32 - 800.0 / 1200.0).abs() < 0.01, "{w}x{hh}");
+        assert!(w as f32 <= SCREEN.x && hh as f32 <= SCREEN.y);
+        assert!(!res.unwrap().contains("(x"), "フィットでは倍率を出さない");
+    }
+
+    #[test]
+    fn overlay_is_hidden_entirely_when_image_info_is_off() {
+        let mut h = Harness::new();
+        assert!(h.overlay().0.is_some() && h.overlay().1.is_some(), "既定はON: {:?}", h.texts);
+        h.cfg.image_info_visible = false;
+        h.frame(vec![], egui::Modifiers::NONE);
+        // 寸法もページ数も描かない。
+        assert_eq!(h.overlay(), (None, None), "texts={:?}", h.texts);
+        // 虫眼鏡中も同様。
+        h.wheel(true, egui::Modifiers::SHIFT);
+        h.wheel(true, egui::Modifiers::SHIFT);
+        assert!(h.viewer.magnifier_view.is_some());
+        assert_eq!(h.overlay(), (None, None), "texts={:?}", h.texts);
+        // パレットのトグルで戻せる。
+        crate::tool_palette::execute_toggle(&mut h.cfg, crate::tool_palette::ToggleKind::ImageInfo);
+        h.frame(vec![], egui::Modifiers::NONE);
+        assert!(h.overlay().0.is_some() && h.overlay().1.is_some(), "texts={:?}", h.texts);
+    }
+
+    #[test]
+    fn overlay_marks_animated_page_with_a() {
+        let mut h = Harness::new();
+        h.cache.record_meta(std::path::Path::new("test.png"), 0, crate::cache::PageMeta { orig: (800, 1200), animated: true });
+        h.frame(vec![], egui::Modifiers::NONE);
+        assert_eq!(h.overlay().1, Some("1A/1"), "texts={:?}", h.texts);
+    }
+
+    #[test]
+    fn overlay_actual_size_uses_original_pixels_else_texture() {
+        let mut h = Harness::new();
+        h.cfg.zoom_actual = true;
+        h.frame(vec![], egui::Modifiers::NONE);
+        assert_eq!(h.overlay().0, Some("800×1200"), "元寸法が無ければテクスチャ寸法: {:?}", h.texts);
+        h.cache.record_meta(std::path::Path::new("test.png"), 0, crate::cache::PageMeta { orig: (1600, 2400), animated: false });
+        h.frame(vec![], egui::Modifiers::NONE);
+        assert_eq!(h.overlay().0, Some("1600×2400"), "texts={:?}", h.texts);
+    }
+
+    #[test]
+    fn overlay_magnifier_shows_original_size_with_original_based_scale() {
+        let mut h = Harness::new();
+        // テクスチャ 800×1200 は元画像 1600×2400 の半分に縮小されている。
+        h.cache.record_meta(std::path::Path::new("test.png"), 0, crate::cache::PageMeta { orig: (1600, 2400), animated: false });
+        h.wheel(true, egui::Modifiers::SHIFT);
+        h.wheel(true, egui::Modifiers::SHIFT);
+        let scale = h.viewer.magnifier_view.expect("虫眼鏡が有効").scale;
+        let text = h.overlay().0.unwrap_or_else(|| panic!("解像度が出ていない: {:?}", h.texts)).to_string();
+        assert!(text.starts_with("1600×2400 (x"), "{text}");
+        let shown: f32 = text.split("(x").nth(1).unwrap().trim_end_matches(')').parse().unwrap();
+        assert!((shown - scale * 0.5).abs() < 0.006, "shown={shown} scale={scale}");
     }
 
     fn shift_wheel_in_then_out_then_wait(h: &mut Harness) {
@@ -6109,5 +6267,201 @@ mod texture_window_flow_tests {
         let pages = h.textured_pages();
         assert!(pages.contains(&10) && pages.contains(&11), "{pages:?}");
         assert!(pages.len() <= 11, "{pages:?}");
+    }
+}
+
+/// 見開き時の画像情報オーバーレイ（ページ毎の寸法を画面の左→右で並べ、ページ数は先頭ページのみ）。
+#[cfg(test)]
+mod image_info_spread_tests {
+    use super::*;
+    use crate::cache::{PageCache, PageContent, PageMeta};
+
+    const SCREEN: egui::Vec2 = egui::vec2(1000.0, 800.0);
+    const PAGES: usize = 30;
+    /// 偶数ページ・奇数ページで大きさ（縦横比）を変えて、左右の取り違えを検出できるようにする。
+    const SIZE_EVEN: (u32, u32) = (600, 900);
+    const SIZE_ODD: (u32, u32) = (500, 700);
+
+    struct Harness {
+        ctx: egui::Context,
+        viewer: ViewerState,
+        cache: PageCache,
+        cfg: ViewerConfig,
+        keymap: Keymap,
+        time: f64,
+        texts: Vec<String>,
+    }
+
+    fn collect_texts(shape: &egui::epaint::Shape, out: &mut Vec<String>) {
+        match shape {
+            egui::epaint::Shape::Text(t) => out.push(t.galley.text().to_string()),
+            egui::epaint::Shape::Vec(v) => v.iter().for_each(|s| collect_texts(s, out)),
+            _ => {}
+        }
+    }
+
+    impl Harness {
+        fn new(pages: usize, mode: PageMode) -> Self {
+            let path = PathBuf::from("book.zip");
+            let mut viewer = ViewerState::new_raw(path.clone(), [None; 4], None);
+            viewer.is_raw_file = false;
+            viewer.entries.clear();
+            viewer.page_mode = mode;
+            let mut cache = PageCache::new(512 * 1024 * 1024, 0);
+            for i in 0..pages {
+                viewer.entries.push(ViewerEntry {
+                    entry_name: format!("{i}.png"),
+                    display_name: format!("{i}.png"),
+                    date_key: 0,
+                    original_index: i,
+                });
+                let (w, h) = if i % 2 == 0 { SIZE_EVEN } else { SIZE_ODD };
+                let img = image::RgbaImage::from_pixel(w, h, image::Rgba([180, 180, 180, 255]));
+                cache.insert(path.clone(), i, 0, PageContent::Static(img), &path, 0);
+                // 元画像はテクスチャのちょうど2倍。
+                cache.record_meta(&path, i, PageMeta { orig: (w * 2, h * 2), animated: false });
+            }
+            let mut cfg = ViewerConfig::default();
+            cfg.tool_palette.visible = false;
+            let mut h = Self { ctx: egui::Context::default(), viewer, cache, cfg, keymap: Keymap::default(), time: 1.0, texts: Vec::new() };
+            h.frames(5);
+            h
+        }
+
+        fn run(&mut self, events: Vec<egui::Event>, modifiers: egui::Modifiers) {
+            self.time += 0.016;
+            let mut raw = egui::RawInput::default();
+            raw.screen_rect = Some(egui::Rect::from_min_size(egui::Pos2::ZERO, SCREEN));
+            raw.time = Some(self.time);
+            raw.max_texture_side = Some(8192);
+            raw.modifiers = modifiers;
+            raw.events = events;
+            let Self { ctx, viewer, cache, cfg, keymap, .. } = self;
+            let output = ctx.run_ui(raw, |ui| {
+                viewer.show(ui, cache, 0, None, cfg, keymap, false, false);
+            });
+            self.texts.clear();
+            for clipped in &output.shapes {
+                collect_texts(&clipped.shape, &mut self.texts);
+            }
+        }
+
+        fn frames(&mut self, n: usize) {
+            for _ in 0..n {
+                self.run(vec![], egui::Modifiers::NONE);
+            }
+        }
+
+        fn shift_wheel_up(&mut self) {
+            let center = egui::pos2(SCREEN.x / 2.0, SCREEN.y / 2.0);
+            let m = egui::Modifiers::SHIFT;
+            self.run(
+                vec![
+                    egui::Event::PointerMoved(center),
+                    egui::Event::MouseWheel { unit: egui::MouseWheelUnit::Line, delta: egui::vec2(0.0, 1.0), phase: egui::TouchPhase::Move, modifiers: m },
+                ],
+                m,
+            );
+        }
+
+        /// 寸法オーバーレイ（`×` を含む文字列）。
+        fn resolution(&self) -> String {
+            self.texts.iter().find(|t| t.starts_with(|c: char| c.is_ascii_digit()) && t.contains('×')).cloned().unwrap_or_else(|| panic!("寸法が出ていない: {:?}", self.texts))
+        }
+
+        /// ページ数オーバーレイ（`n/m` または `nA/m`）。
+        fn page_counter(&self) -> String {
+            self.texts
+                .iter()
+                .find(|t| t.split_once('/').is_some_and(|(a, b)| {
+                    !a.is_empty() && a.trim_end_matches('A').chars().all(|c| c.is_ascii_digit()) && b.chars().all(|c| c.is_ascii_digit()) && !b.is_empty()
+                }))
+                .cloned()
+                .unwrap_or_else(|| panic!("ページ数が出ていない: {:?}", self.texts))
+        }
+    }
+
+    fn dims(text: &str) -> Vec<(u32, u32)> {
+        text.split_whitespace()
+            .filter(|t| t.contains('×'))
+            .map(|t| {
+                let (w, h) = t.split_once('×').unwrap();
+                (w.parse().unwrap(), h.parse().unwrap())
+            })
+            .collect()
+    }
+
+    fn aspect((w, h): (u32, u32)) -> f32 {
+        w as f32 / h as f32
+    }
+
+    fn assert_aspect(actual: (u32, u32), expected: (u32, u32)) {
+        assert!((aspect(actual) - aspect(expected)).abs() < 0.01, "{actual:?} vs {expected:?}");
+    }
+
+    #[test]
+    fn spread_left_fit_lists_both_pages_left_to_right() {
+        let h = Harness::new(PAGES, PageMode::SpreadLeft);
+        let d = dims(&h.resolution());
+        assert_eq!(d.len(), 2, "{:?}", h.texts);
+        // 画面の左が先頭ページ（0 = SIZE_EVEN）、右が次ページ（1 = SIZE_ODD）。
+        assert_aspect(d[0], SIZE_EVEN);
+        assert_aspect(d[1], SIZE_ODD);
+        assert_eq!(h.page_counter(), "1/30", "ページ数は先頭ページだけ");
+    }
+
+    #[test]
+    fn spread_right_keeps_screen_left_right_binding() {
+        let h = Harness::new(PAGES, PageMode::SpreadRight);
+        let d = dims(&h.resolution());
+        assert_eq!(d.len(), 2, "{:?}", h.texts);
+        // 右開き: 画面の左が次ページ（1）、右が先頭ページ（0）。寸法の左右も画面に合わせる。
+        assert_aspect(d[0], SIZE_ODD);
+        assert_aspect(d[1], SIZE_EVEN);
+        assert_eq!(h.page_counter(), "1/30");
+    }
+
+    #[test]
+    fn spread_fit_sizes_share_one_height() {
+        let h = Harness::new(PAGES, PageMode::SpreadLeft);
+        let d = dims(&h.resolution());
+        // 見開きは高さを揃えて描かれる。
+        assert!((d[0].1 as i64 - d[1].1 as i64).abs() <= 1, "{d:?}");
+        assert!((d[0].0 + d[1].0) as f32 <= SCREEN.x + 1.0);
+    }
+
+    #[test]
+    fn spread_actual_lists_each_page_original_size() {
+        let mut h = Harness::new(PAGES, PageMode::SpreadLeft);
+        h.cfg.zoom_actual = true;
+        h.frames(3);
+        assert_eq!(h.resolution(), "1200×1800 1000×1400", "{:?}", h.texts);
+        assert_eq!(h.page_counter(), "1/30");
+    }
+
+    #[test]
+    fn spread_omits_the_virtual_side() {
+        // 1ページだけの書庫を見開きにすると、次ページ側は仮想ページ。実在する側だけ出す。
+        let mut h = Harness::new(1, PageMode::SpreadLeft);
+        h.cfg.zoom_actual = true;
+        h.frames(3);
+        assert_eq!(h.resolution(), "1200×1800", "{:?}", h.texts);
+        assert_eq!(h.page_counter(), "1/1");
+    }
+
+    #[test]
+    fn spread_magnifier_shows_both_sizes_and_one_scale_at_the_end() {
+        let mut h = Harness::new(PAGES, PageMode::SpreadLeft);
+        h.shift_wheel_up();
+        h.shift_wheel_up();
+        let text = h.resolution();
+        assert!(h.viewer.magnifier_view.is_some(), "虫眼鏡が有効でない: {:?}", h.texts);
+        assert_eq!(dims(&text), vec![(1200, 1800), (1000, 1400)], "{text}");
+        assert_eq!(text.matches("(x").count(), 1, "倍率は1つだけ: {text}");
+        assert!(text.ends_with(')'), "倍率は末尾: {text}");
+        // 元画像はテクスチャの2倍なので、元寸法基準の倍率は、テクスチャ基準の半分。
+        let shown: f32 = text.rsplit("(x").next().unwrap().trim_end_matches(')').parse().unwrap();
+        let scale = h.viewer.magnifier_view.unwrap().scale;
+        assert!((shown - scale * 0.5).abs() < 0.006, "shown={shown} scale={scale}");
     }
 }

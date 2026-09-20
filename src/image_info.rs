@@ -34,6 +34,28 @@ fn valid(v: Vec2) -> bool {
     v.x > 0.0 && v.y > 0.0 && v.x.is_finite() && v.y.is_finite()
 }
 
+/// 表示モードの判定。原寸表示は回転(0度以外)に未対応で、回転中はフィット表示へ
+/// フォールバックする（view_reader の render_spread と同じ規則）。虫眼鏡が最優先。
+pub fn info_mode(magnifier: bool, zoom_actual: bool, angle_deg: i32) -> InfoMode {
+    if magnifier {
+        InfoMode::Magnifier
+    } else if zoom_actual && angle_deg == 0 {
+        InfoMode::Actual
+    } else {
+        InfoMode::Fit
+    }
+}
+
+/// 描画矩形の寸法（論理px）を物理pxへ換算する。寸法が不正なら None。
+/// 見開きは実際の配置矩形（spread_rects の結果）をそのまま渡して使う。
+pub fn rect_size_px(size: Vec2, ppp: f32) -> Option<(u32, u32)> {
+    if !valid(size) || !(ppp.is_finite() && ppp > 0.0) {
+        return None;
+    }
+    let px = size * ppp;
+    Some((px.x.round() as u32, px.y.round() as u32))
+}
+
 /// フィット表示で実際に描かれる画像の寸法（物理px）。レターボックスの余白は含まない。
 /// `viewport` は画像領域(論理px)、`tex` は表示テクスチャの寸法（回転前）、`ppp` は
 /// pixels_per_point。90/270度回転は縦横を入れ替えて収める。入力が不正なら None。
@@ -44,8 +66,7 @@ pub fn fitted_display_px(viewport: Vec2, tex: Vec2, angle_deg: i32, ppp: f32) ->
         return None;
     }
     let scale = (viewport.x / ext.x).min(viewport.y / ext.y);
-    let size = ext * scale * ppp;
-    Some((size.x.round() as u32, size.y.round() as u32))
+    rect_size_px(ext * scale, ppp)
 }
 
 /// 虫眼鏡の倍率（テクスチャ基準）を、オリジナル寸法基準へ換算する。
@@ -58,27 +79,32 @@ pub fn orig_relative_scale(scale: f32, tex_len: f32, orig_len: f32) -> f32 {
     }
 }
 
-/// 解像度部分の文字列を組み立てる。出せる情報が無ければ空文字。
+/// 1ページぶんの解像度の文字列。出せる情報が無ければ空文字。
 /// - `fitted`: フィット後の実表示寸法（`InfoMode::Fit` で使う）
 /// - `orig`: オリジナルピクセル寸法。不明ならテクスチャ寸法 `tex` で代用する
-/// - `rel_scale`: オリジナル基準の倍率（`InfoMode::Magnifier` で使う）
+///   （`InfoMode::Actual` / `InfoMode::Magnifier`）
 pub fn compose_resolution_text(
     mode: InfoMode,
     fitted: Option<(u32, u32)>,
     orig: Option<(u32, u32)>,
     tex: Option<(u32, u32)>,
-    rel_scale: Option<f32>,
 ) -> String {
-    let actual = orig.or(tex);
-    match mode {
-        InfoMode::Fit => fitted.map(|(w, h)| format_resolution(w, h)).unwrap_or_default(),
-        InfoMode::Actual => actual.map(|(w, h)| format_resolution(w, h)).unwrap_or_default(),
-        InfoMode::Magnifier => match (actual, rel_scale) {
-            (Some((w, h)), Some(s)) => format!("{} {}", format_resolution(w, h), format_scale(s)),
-            (Some((w, h)), None) => format_resolution(w, h),
-            _ => String::new(),
-        },
+    let dims = match mode {
+        InfoMode::Fit => fitted,
+        InfoMode::Actual | InfoMode::Magnifier => orig.or(tex),
+    };
+    dims.map(|(w, h)| format_resolution(w, h)).unwrap_or_default()
+}
+
+/// ページ毎の解像度文字列（画面の左→右の順）を空白で連結し、末尾に倍率を1つだけ添える。
+/// 空のページは省略する。全ページが空なら倍率も出さず空文字。
+pub fn join_page_texts(parts: &[String], scale: Option<f32>) -> String {
+    let mut text = parts.iter().filter(|p| !p.is_empty()).cloned().collect::<Vec<_>>().join(" ");
+    if let Some(s) = scale.filter(|_| !text.is_empty()) {
+        text.push(' ');
+        text.push_str(&format_scale(s));
     }
+    text
 }
 
 #[cfg(test)]
@@ -130,6 +156,24 @@ mod tests {
     }
 
     #[test]
+    fn info_mode_priority() {
+        assert_eq!(info_mode(true, true, 0), InfoMode::Magnifier);
+        assert_eq!(info_mode(true, false, 90), InfoMode::Magnifier);
+        assert_eq!(info_mode(false, true, 0), InfoMode::Actual);
+        assert_eq!(info_mode(false, false, 0), InfoMode::Fit);
+        // 原寸は回転に未対応。回転中はフィットへフォールバックする。
+        assert_eq!(info_mode(false, true, 90), InfoMode::Fit);
+        assert_eq!(info_mode(false, true, 180), InfoMode::Fit);
+    }
+
+    #[test]
+    fn rect_size_converts_and_rejects() {
+        assert_eq!(rect_size_px(Vec2::new(500.4, 300.6), 2.0), Some((1001, 601)));
+        assert_eq!(rect_size_px(Vec2::new(0.0, 300.0), 1.0), None);
+        assert_eq!(rect_size_px(Vec2::new(10.0, 10.0), f32::NAN), None);
+    }
+
+    #[test]
     fn fitted_size_rejects_invalid_input() {
         let ok = Vec2::new(100.0, 100.0);
         assert_eq!(fitted_display_px(Vec2::ZERO, ok, 0, 1.0), None);
@@ -153,21 +197,39 @@ mod tests {
         let fitted = Some((1000, 500));
         let orig = Some((4000, 2000));
         let tex = Some((2000, 1000));
-        assert_eq!(compose_resolution_text(InfoMode::Fit, fitted, orig, tex, None), "1000×500");
-        assert_eq!(compose_resolution_text(InfoMode::Actual, fitted, orig, tex, None), "4000×2000");
-        assert_eq!(compose_resolution_text(InfoMode::Magnifier, fitted, orig, tex, Some(1.1)), "4000×2000 (x1.10)");
+        assert_eq!(compose_resolution_text(InfoMode::Fit, fitted, orig, tex), "1000×500");
+        assert_eq!(compose_resolution_text(InfoMode::Actual, fitted, orig, tex), "4000×2000");
+        assert_eq!(compose_resolution_text(InfoMode::Magnifier, fitted, orig, tex), "4000×2000");
     }
 
     #[test]
     fn compose_text_falls_back_to_texture_size_without_original() {
-        assert_eq!(compose_resolution_text(InfoMode::Actual, None, None, Some((2000, 1000)), None), "2000×1000");
-        assert_eq!(compose_resolution_text(InfoMode::Magnifier, None, None, Some((2000, 1000)), Some(0.5)), "2000×1000 (x0.50)");
+        assert_eq!(compose_resolution_text(InfoMode::Actual, None, None, Some((2000, 1000))), "2000×1000");
+        assert_eq!(compose_resolution_text(InfoMode::Magnifier, None, None, Some((2000, 1000))), "2000×1000");
     }
 
     #[test]
     fn compose_text_is_empty_without_data() {
-        assert_eq!(compose_resolution_text(InfoMode::Fit, None, None, None, None), "");
-        assert_eq!(compose_resolution_text(InfoMode::Actual, None, None, None, None), "");
-        assert_eq!(compose_resolution_text(InfoMode::Magnifier, None, None, None, Some(1.0)), "");
+        assert_eq!(compose_resolution_text(InfoMode::Fit, None, None, None), "");
+        assert_eq!(compose_resolution_text(InfoMode::Actual, None, None, None), "");
+        assert_eq!(compose_resolution_text(InfoMode::Magnifier, None, None, None), "");
+        // フィットでは、元寸法があっても実表示寸法が無ければ出さない。
+        assert_eq!(compose_resolution_text(InfoMode::Fit, None, Some((10, 10)), Some((10, 10))), "");
+    }
+
+    #[test]
+    fn join_puts_pages_in_order_with_one_trailing_scale() {
+        let parts = vec!["800×1200".to_string(), "700×1100".to_string()];
+        assert_eq!(join_page_texts(&parts, None), "800×1200 700×1100");
+        assert_eq!(join_page_texts(&parts, Some(1.1)), "800×1200 700×1100 (x1.10)");
+        assert_eq!(join_page_texts(&parts[..1], Some(0.5)), "800×1200 (x0.50)");
+    }
+
+    #[test]
+    fn join_skips_empty_pages_and_hides_scale_without_any() {
+        let parts = vec![String::new(), "700×1100".to_string()];
+        assert_eq!(join_page_texts(&parts, Some(2.0)), "700×1100 (x2.00)");
+        assert_eq!(join_page_texts(&[String::new(), String::new()], Some(2.0)), "");
+        assert_eq!(join_page_texts(&[], Some(2.0)), "");
     }
 }

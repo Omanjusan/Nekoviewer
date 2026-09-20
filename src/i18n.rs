@@ -2974,6 +2974,14 @@ impl Lang {
         }
     }
 
+    pub fn tool_palette_toggle_label_image_info(self) -> &'static str {
+        match self {
+            Lang::Japanese => "画像情報表示",
+            Lang::English  => "Image info",
+            Lang::Chinese  => "显示图像信息",
+        }
+    }
+
     pub fn decode_edge_prompt_title(self) -> &'static str {
         match self {
             Lang::Japanese => "既定値の更新",
