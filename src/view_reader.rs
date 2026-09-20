@@ -524,14 +524,14 @@ pub struct ViewerState {
     /// テクスチャ未取得の間は None。
     magnifier_view: Option<crate::magnifier::MagnifierView>,
     /// `magnifier_view` を作った対象ページ。ページが変わったらフィット表示から作り直す。
-    magnifier_page: i32,
+    magnifier_key: Option<crate::magnifier::MagnifierKey>,
     /// フィット表示のまま（窓サイズ変更にフィット倍率で追従する）か。
     magnifier_at_fit: bool,
     /// このフレームで ScrollArea へ scroll_offset を押し込む必要があるか（拡縮・作り直し・追従した）。
     magnifier_offset_dirty: bool,
     /// `magnifier_view` に反映済みのテクスチャ寸法。原寸デコードへの差し替えで寸法が変わったとき、
     /// 画面上の見た目の大きさを保つよう倍率を換算するために使う。
-    magnifier_img_size: egui::Vec2,
+    magnifier_ref_len: f32,
     /// スライダーバーを最後に操作・ホバーした時刻（自動ハイドの起点）。None = 作り直し直後で、
     /// 次の描画でその時刻を起点にする（モードON直後・ページ送り直後は必ず見える）。
     magnifier_bar_active_at: Option<f64>,
@@ -780,10 +780,10 @@ impl ViewerState {
             tool_palette_auto_hidden: false,
             tool_palette_menu_open: false,
             magnifier_view: None,
-            magnifier_page: 0,
+            magnifier_key: None,
             magnifier_at_fit: true,
             magnifier_offset_dirty: false,
-            magnifier_img_size: egui::Vec2::ZERO,
+            magnifier_ref_len: 0.0,
             magnifier_bar_active_at: None,
             magnifier_settings_dirty: false,
             magnifier_cursor: None,
@@ -872,10 +872,10 @@ impl ViewerState {
             tool_palette_auto_hidden: false,
             tool_palette_menu_open: false,
             magnifier_view: None,
-            magnifier_page: 0,
+            magnifier_key: None,
             magnifier_at_fit: true,
             magnifier_offset_dirty: false,
-            magnifier_img_size: egui::Vec2::ZERO,
+            magnifier_ref_len: 0.0,
             magnifier_bar_active_at: None,
             magnifier_settings_dirty: false,
             magnifier_cursor: None,
@@ -1584,8 +1584,8 @@ impl ViewerState {
         let viewport_before_central = ui.max_rect();
 
         let rotation_angle = self.manual_rotation_angle(cfg);
-        // 虫眼鏡は現状、単ページ・回転なしのみ対応（見開き・回転はフェーズ7）。
-        let magnifier_active = cfg.magnifier_on && !is_spread && rotation_angle == 0 && tex_lo.is_some();
+        // 虫眼鏡は現状、単ページのみ対応（回転は可、見開きはフェーズ7b以降）。
+        let magnifier_active = cfg.magnifier_on && !is_spread && tex_lo.is_some();
         if magnifier_active {
             // ホイールはページ送りではなく拡縮へ回す。
             input.scroll_delta = 0.0;
@@ -2458,9 +2458,10 @@ impl ViewerState {
                 } else {
                     input.hover_pos
                 };
-                self.update_magnifier(viewport_rect, frame.tex_lo.as_ref(), anchor, input.wheel_notches, &cfg.magnifier);
+                let target = self.magnifier_target(frame);
+                self.update_magnifier(viewport_rect, target, anchor, input.wheel_notches, &cfg.magnifier);
                 if let Some(bar) = bar_rects {
-                    self.draw_magnifier_bar(ui.ctx(), viewport_rect, frame.tex_lo.as_ref(), &bar, pointer_in_bar, input.wheel_notches != 0.0, input.time, &mut cfg.magnifier);
+                    self.draw_magnifier_bar(ui.ctx(), viewport_rect, target, &bar, pointer_in_bar, input.wheel_notches != 0.0, input.time, &mut cfg.magnifier);
                 }
             } else {
                 self.magnifier_view = None;
@@ -3781,6 +3782,15 @@ impl ViewerState {
         }
     }
 
+    /// 虫眼鏡の表示対象（外接サイズ・識別子）。単ページは回転後の外接サイズ。
+    fn magnifier_target(&self, frame: &RenderFrame) -> Option<crate::magnifier::MagnifierTarget> {
+        if !frame.magnifier {
+            return None;
+        }
+        let tex = frame.tex_lo.as_ref()?;
+        Some(crate::magnifier::single_target(tex.size_vec2(), frame.rotation_angle, self.spread_lo()))
+    }
+
     /// 虫眼鏡ビューの更新（毎フレーム、描画前）。作り直し・窓サイズ追従・ホイール拡縮を行い、
     /// scroll_offset の押し込みが必要なら `magnifier_offset_dirty` を立てる。
     /// `wheel_anchor`（拡縮の基準点・画面座標）が None（パレット上など）ならホイールを無視する。
@@ -3788,28 +3798,27 @@ impl ViewerState {
     fn update_magnifier(
         &mut self,
         viewport: egui::Rect,
-        tex: Option<&egui::TextureHandle>,
+        target: Option<crate::magnifier::MagnifierTarget>,
         wheel_anchor: Option<egui::Pos2>,
         wheel_notches: f32,
         cfg: &crate::magnifier::MagnifierConfig,
     ) {
         use crate::magnifier::{fit_scale, notch_scale, rescale_for_new_texture, scale_range, zoom_about, clamp_offset, MagnifierView};
-        let Some(tex) = tex else {
+        let Some(target) = target else {
             self.magnifier_view = None;
             return;
         };
-        let img = tex.size_vec2();
+        let img = target.img;
         let vp = viewport.size();
         let fit = fit_scale(vp, img);
         let range = scale_range(fit, cfg.max_scale());
-        let page = self.spread_lo();
 
         let mut view = match self.magnifier_view {
-            Some(mut v) if self.magnifier_page == page => {
-                // 原寸デコードへの差し替えなどでテクスチャ寸法が変わったら、画面上の大きさを
+            Some(mut v) if self.magnifier_key == Some(target.key) => {
+                // 原寸デコードへの差し替えなどで解像度が変わったら、画面上の大きさを
                 // 保つよう倍率を換算する（スクロール位置は画面px基準なのでそのまま）。
-                if self.magnifier_img_size != img {
-                    v.scale = rescale_for_new_texture(v.scale, self.magnifier_img_size.x, img.x);
+                if self.magnifier_ref_len != target.ref_len {
+                    v.scale = rescale_for_new_texture(v.scale, self.magnifier_ref_len, target.ref_len);
                 }
                 // フィット表示のままなら窓サイズ変更にフィット倍率で追従する。
                 // それ以外は範囲内へ丸め、スクロール範囲も収め直す。
@@ -3820,7 +3829,7 @@ impl ViewerState {
                 clamp_offset(MagnifierView { scale, offset: v.offset }, vp, img)
             }
             _ => {
-                self.magnifier_page = page;
+                self.magnifier_key = Some(target.key);
                 self.magnifier_offset_dirty = true;
                 self.magnifier_bar_active_at = None;
                 MagnifierView::fit(vp, img)
@@ -3838,7 +3847,7 @@ impl ViewerState {
         }
 
         self.magnifier_at_fit = view.scale <= fit + 1e-4;
-        self.magnifier_img_size = img;
+        self.magnifier_ref_len = target.ref_len;
         self.magnifier_view = Some(view);
     }
 
@@ -3869,7 +3878,7 @@ impl ViewerState {
         &mut self,
         ctx: &egui::Context,
         viewport: egui::Rect,
-        tex: Option<&egui::TextureHandle>,
+        target: Option<crate::magnifier::MagnifierTarget>,
         rects: &crate::magnifier::BarRects,
         pointer_in_bar: bool,
         wheel_active: bool,
@@ -3877,8 +3886,8 @@ impl ViewerState {
         cfg: &mut crate::magnifier::MagnifierConfig,
     ) {
         use crate::magnifier::*;
-        let (Some(tex), Some(view)) = (tex, self.magnifier_view) else { return };
-        let img = tex.size_vec2();
+        let (Some(target), Some(view)) = (target, self.magnifier_view) else { return };
+        let img = target.img;
         let vp = viewport.size();
         let fit = fit_scale(vp, img);
         let range = scale_range(fit, cfg.max_scale());

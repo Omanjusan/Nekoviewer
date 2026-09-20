@@ -302,6 +302,44 @@ impl MagnifierConfig {
     }
 }
 
+/// 表示対象が変わったとみなす識別子。変わったらフィット表示から作り直す。
+/// `mode` は呼び出し側が決める表示形式（0=単ページ）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MagnifierKey {
+    pub page: i32,
+    pub mode: u8,
+    pub angle: i32,
+}
+
+/// 虫眼鏡の表示対象。倍率（原寸比）の基準となる外接サイズと、識別子を持つ。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MagnifierTarget {
+    /// 倍率1.0のときの、回転後の外接サイズ(px)。
+    pub img: Vec2,
+    /// テクスチャ差し替え（解像度変更）時に画面上の大きさを保つ換算の基準長さ
+    /// （単ページ=テクスチャ高さ）。
+    pub ref_len: f32,
+    pub key: MagnifierKey,
+}
+
+/// `angle_deg` 度回転した矩形の外接サイズ。90/270度は縦横が入れ替わる。
+pub fn rotated_extent(size: Vec2, angle_deg: i32) -> Vec2 {
+    if angle_deg.rem_euclid(180) == 90 {
+        Vec2::new(size.y, size.x)
+    } else {
+        size
+    }
+}
+
+/// 単ページの表示対象。`tex_size` は回転前のテクスチャ寸法。
+pub fn single_target(tex_size: Vec2, angle_deg: i32, page: i32) -> MagnifierTarget {
+    MagnifierTarget {
+        img: rotated_extent(tex_size, angle_deg),
+        ref_len: tex_size.y,
+        key: MagnifierKey { page, mode: 0, angle: angle_deg },
+    }
+}
+
 /// 虫眼鏡の表示状態。`offset` は ScrollArea のスクロールオフセットと同じ意味
 /// （ビューポート左上のコンテンツ座標）。コンテンツがビューポートより小さい軸は
 /// 中央寄せの余白が入るので、その軸の `offset` は常に 0。
@@ -735,6 +773,30 @@ mod tests {
         let tiny = Rect::from_min_size(Pos2::ZERO, Vec2::new(120.0, 400.0));
         let r = BarLayout::default().resolve(tiny, true);
         assert!(r.total.width() <= tiny.width() + 1e-3);
+    }
+
+    #[test]
+    fn rotated_extent_swaps_only_for_quarter_turns() {
+        let size = v(400.0, 600.0);
+        assert_eq!(rotated_extent(size, 0), size);
+        assert_eq!(rotated_extent(size, 180), size);
+        assert_eq!(rotated_extent(size, 90), v(600.0, 400.0));
+        assert_eq!(rotated_extent(size, 270), v(600.0, 400.0));
+        assert_eq!(rotated_extent(size, -90), v(600.0, 400.0));
+        assert_eq!(rotated_extent(size, 450), v(600.0, 400.0));
+    }
+
+    #[test]
+    fn single_target_uses_rotated_extent_and_unrotated_height() {
+        let t = single_target(v(400.0, 600.0), 90, 7);
+        assert_eq!(t.img, v(600.0, 400.0));
+        assert_eq!(t.ref_len, 600.0);
+        assert_eq!(t.key, MagnifierKey { page: 7, mode: 0, angle: 90 });
+        // 回転・ページが変われば識別子が変わる（フィットから作り直す合図）。
+        assert_ne!(t.key, single_target(v(400.0, 600.0), 0, 7).key);
+        assert_ne!(t.key, single_target(v(400.0, 600.0), 90, 8).key);
+        // 同じ対象なら解像度が変わっても識別子は同じ（見た目維持の換算に回る）。
+        assert_eq!(t.key, single_target(v(800.0, 1200.0), 90, 7).key);
     }
 
     #[test]
