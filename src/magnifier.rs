@@ -16,8 +16,66 @@ pub const DEFAULT_AUTOHIDE_SECS: f32 = 2.0;
 const AUTOHIDE_SECS_RANGE: (f32, f32) = (0.1, 30.0);
 const AUTOHIDE_SECS_STEP: f32 = 0.1;
 
-/// 1ノッチの倍率の既定。候補の切替（×1.1 / 1.25 / 1.5 / 2）はフェーズ5で足す。
-pub const DEFAULT_NOTCH_RATIO: f32 = 1.25;
+/// 1ノッチの倍率の候補。バー横のボタンで順に巡回する。既定は ×1.25。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum NotchStep {
+    X1_1,
+    #[default]
+    X1_25,
+    X1_5,
+    X2,
+}
+
+impl NotchStep {
+    pub fn ratio(self) -> f32 {
+        match self {
+            Self::X1_1 => 1.1,
+            Self::X1_25 => 1.25,
+            Self::X1_5 => 1.5,
+            Self::X2 => 2.0,
+        }
+    }
+
+    /// 次の候補（×2 の次は ×1.1 へ戻る）。
+    pub fn next(self) -> Self {
+        match self {
+            Self::X1_1 => Self::X1_25,
+            Self::X1_25 => Self::X1_5,
+            Self::X1_5 => Self::X2,
+            Self::X2 => Self::X1_1,
+        }
+    }
+
+    /// ボタンの表示ラベル。
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::X1_1 => "×1.1",
+            Self::X1_25 => "×1.25",
+            Self::X1_5 => "×1.5",
+            Self::X2 => "×2",
+        }
+    }
+
+    /// stateファイルの値。一度リリースした値は変えない。
+    pub fn to_state_str(self) -> &'static str {
+        match self {
+            Self::X1_1 => "1.1",
+            Self::X1_25 => "1.25",
+            Self::X1_5 => "1.5",
+            Self::X2 => "2",
+        }
+    }
+
+    pub fn from_state_str(s: &str) -> Option<Self> {
+        match s.trim() {
+            "1.1" => Some(Self::X1_1),
+            "1.25" => Some(Self::X1_25),
+            "1.5" => Some(Self::X1_5),
+            "2" => Some(Self::X2),
+            _ => None,
+        }
+    }
+}
 
 pub const DEFAULT_BAR_WIDTH_PCT: f32 = 20.0;
 const BAR_WIDTH_PCT_RANGE: (f32, f32) = (10.0, 60.0);
@@ -177,11 +235,14 @@ fn clamp_size(size: Vec2, current: Vec2) -> Vec2 {
 }
 
 /// 虫眼鏡モードの設定値。setter は「範囲に丸めて適用し、適用後の値を返す」。
-/// GUI設定へ昇格するときはこの setter を呼ぶだけで済む（永続化は現状スコープ外）。
+/// GUI設定へ昇格するときはこの setter を呼ぶだけで済む。
+/// 永続化するのは `notch_step` と `detail_ticks` の2つだけ（他は現状スコープ外）。
 #[derive(Clone, Debug, PartialEq)]
 pub struct MagnifierConfig {
     max_scale: f32,
     autohide_secs: f32,
+    notch_step: NotchStep,
+    detail_ticks: bool,
     pub bar: BarLayout,
 }
 
@@ -190,6 +251,8 @@ impl Default for MagnifierConfig {
         Self {
             max_scale: DEFAULT_MAX_SCALE,
             autohide_secs: DEFAULT_AUTOHIDE_SECS,
+            notch_step: NotchStep::default(),
+            detail_ticks: false,
             bar: BarLayout::default(),
         }
     }
@@ -200,6 +263,29 @@ impl MagnifierConfig {
     pub fn max_scale(&self) -> f32 { self.max_scale }
     /// スライダーバーの自動ハイドまでの秒数。
     pub fn autohide_secs(&self) -> f32 { self.autohide_secs }
+
+    /// 1ノッチの倍率の候補。
+    pub fn notch_step(&self) -> NotchStep { self.notch_step }
+    /// 1ノッチの倍率。
+    pub fn notch_ratio(&self) -> f32 { self.notch_step.ratio() }
+    /// true = 目盛りを詳細（毎ノッチ）で表示、false = 簡易（原寸基準の×2ごと）。
+    pub fn detail_ticks(&self) -> bool { self.detail_ticks }
+
+    pub fn set_notch_step(&mut self, step: NotchStep) { self.notch_step = step; }
+
+    /// 次の候補へ進め、適用後の値を返す。
+    pub fn cycle_notch_step(&mut self) -> NotchStep {
+        self.notch_step = self.notch_step.next();
+        self.notch_step
+    }
+
+    pub fn set_detail_ticks(&mut self, detail: bool) { self.detail_ticks = detail; }
+
+    /// 詳細／簡易を切り替え、適用後の値を返す。
+    pub fn toggle_detail_ticks(&mut self) -> bool {
+        self.detail_ticks = !self.detail_ticks;
+        self.detail_ticks
+    }
 
     pub fn set_max_scale(&mut self, v: f32) -> f32 {
         self.max_scale = clamp_finite(v, MAX_SCALE_RANGE, self.max_scale);
@@ -664,6 +750,41 @@ mod tests {
         assert_eq!(c.max_scale(), 4.0);
         assert_eq!(c.autohide_secs(), 2.0);
         assert_eq!(c.bar.width_pct(), 20.0);
+    }
+
+    #[test]
+    fn notch_step_cycles_through_all_and_wraps() {
+        let mut step = NotchStep::default();
+        assert_eq!(step, NotchStep::X1_25);
+        let mut seen = Vec::new();
+        for _ in 0..4 {
+            step = step.next();
+            seen.push(step.ratio());
+        }
+        assert_eq!(seen, vec![1.5, 2.0, 1.1, 1.25]);
+    }
+
+    #[test]
+    fn notch_step_state_strings_roundtrip_and_reject_unknown() {
+        for step in [NotchStep::X1_1, NotchStep::X1_25, NotchStep::X1_5, NotchStep::X2] {
+            assert_eq!(NotchStep::from_state_str(step.to_state_str()), Some(step));
+        }
+        assert_eq!(NotchStep::from_state_str(" 1.5 "), Some(NotchStep::X1_5));
+        assert_eq!(NotchStep::from_state_str("3"), None);
+        assert_eq!(NotchStep::from_state_str(""), None);
+    }
+
+    #[test]
+    fn config_step_and_detail_toggles() {
+        let mut c = MagnifierConfig::default();
+        assert_eq!(c.notch_ratio(), 1.25);
+        assert!(!c.detail_ticks());
+        assert_eq!(c.cycle_notch_step(), NotchStep::X1_5);
+        assert_eq!(c.notch_ratio(), 1.5);
+        assert!(c.toggle_detail_ticks());
+        assert!(!c.toggle_detail_ticks());
+        c.set_notch_step(NotchStep::X1_1);
+        assert_eq!(c.notch_step(), NotchStep::X1_1);
     }
 
     #[test]

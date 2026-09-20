@@ -538,7 +538,7 @@ impl NekoviewApp {
             self.persist_state();
         }
 
-        if output.tool_palette_changed {
+        if output.tool_palette_changed || output.magnifier_settings_changed {
             self.persist_state();
         }
 

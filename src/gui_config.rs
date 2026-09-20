@@ -506,6 +506,8 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
     let mut thumbbar_marker_b: Option<u8> = None;
     let mut thumbbar_marker_a: Option<u8> = None;
     let mut exif_orientation_enabled: Option<bool> = None;
+    let mut magnifier_notch_step: Option<crate::magnifier::NotchStep> = None;
+    let mut magnifier_detail_ticks: Option<bool> = None;
     let mut viewer_bar_order: Option<[ViewerBarItem; BAR_ITEM_COUNT]> = None;
     let mut transition_kind: Option<TransitionKind> = None;
     let mut transition_duration_ms: Option<u64> = None;
@@ -653,6 +655,8 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
                 "thumbbar_marker_b" => { thumbbar_marker_b = v.trim().parse().ok(); }
                 "thumbbar_marker_a" => { thumbbar_marker_a = v.trim().parse().ok(); }
                 "exif_orientation_enabled" => { exif_orientation_enabled = v.trim().parse().ok(); }
+                "magnifier_notch_step" => { magnifier_notch_step = crate::magnifier::NotchStep::from_state_str(v); }
+                "magnifier_detail_ticks" => { magnifier_detail_ticks = v.trim().parse().ok(); }
                 "viewer_bar_order" => { viewer_bar_order = Some(parse_bar_order(v)); }
                 "transition_kind" => { transition_kind = Some(parse_transition_kind(v.trim())); }
                 "transition_duration_ms" => {
@@ -833,7 +837,13 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
                 }
             },
             magnifier_on: false,
-            magnifier: crate::magnifier::MagnifierConfig::default(),
+            magnifier: {
+                // 不正値は捨てて既定値。永続化するのはノッチ倍率と目盛りの詳細/簡易だけ。
+                let mut m = crate::magnifier::MagnifierConfig::default();
+                if let Some(step) = magnifier_notch_step { m.set_notch_step(step); }
+                if let Some(detail) = magnifier_detail_ticks { m.set_detail_ticks(detail); }
+                m
+            },
         },
         show_hidden: show_hidden.unwrap_or(false),
         card_info_mode: card_info_mode.unwrap_or_else(|| "off".to_string()),
@@ -910,6 +920,11 @@ pub fn save_state(root: &Path, dir: &Path, window_size: (u32, u32), viewer_slots
     content.push_str(&format!(
         "exif_orientation_enabled={}\n",
         viewer_cfg.exif_orientation_enabled,
+    ));
+    content.push_str(&format!(
+        "magnifier_notch_step={}\nmagnifier_detail_ticks={}\n",
+        viewer_cfg.magnifier.notch_step().to_state_str(),
+        viewer_cfg.magnifier.detail_ticks(),
     ));
     content.push_str(&format!(
         "viewer_bar_order={}\n",
@@ -1031,6 +1046,22 @@ mod tests {
         let parsed = parse_state_file(&state_path(&root)).expect("state file parses");
         let _ = std::fs::remove_dir_all(&root);
         parsed
+    }
+
+    #[test]
+    fn magnifier_keys_parse_and_fall_back_to_defaults() {
+        let parsed = parse_state_text("mag_ok", "magnifier_notch_step=1.5\nmagnifier_detail_ticks=true\n");
+        assert_eq!(parsed.viewer_cfg.magnifier.notch_step(), crate::magnifier::NotchStep::X1_5);
+        assert!(parsed.viewer_cfg.magnifier.detail_ticks());
+
+        // 不正値は捨てて既定値（×1.25・簡易）。
+        let parsed = parse_state_text("mag_bad", "magnifier_notch_step=7\nmagnifier_detail_ticks=maybe\n");
+        assert_eq!(parsed.viewer_cfg.magnifier.notch_step(), crate::magnifier::NotchStep::X1_25);
+        assert!(!parsed.viewer_cfg.magnifier.detail_ticks());
+
+        // キーなし（旧state）も既定値。
+        let parsed = parse_state_text("mag_none", "lang=ja\n");
+        assert_eq!(parsed.viewer_cfg.magnifier, crate::magnifier::MagnifierConfig::default());
     }
 
     #[test]

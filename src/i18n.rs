@@ -2974,6 +2974,34 @@ impl Lang {
         }
     }
 
+    /// 虫眼鏡バーの詳細／簡易ボタンのラベル（現在の状態を表示する）。
+    pub fn magnifier_detail_button_label(self, detail: bool) -> &'static str {
+        match (self, detail) {
+            (Lang::Japanese, true)  => "詳細",
+            (Lang::Japanese, false) => "簡易",
+            (Lang::English,  true)  => "Detail",
+            (Lang::English,  false) => "Simple",
+            (Lang::Chinese,  true)  => "详细",
+            (Lang::Chinese,  false) => "简易",
+        }
+    }
+
+    pub fn magnifier_notch_step_hint(self) -> &'static str {
+        match self {
+            Lang::Japanese => "1ノッチの倍率（クリックで切替）",
+            Lang::English  => "Zoom per wheel notch (click to change)",
+            Lang::Chinese  => "每格滚轮的缩放倍率（点击切换）",
+        }
+    }
+
+    pub fn magnifier_detail_hint(self) -> &'static str {
+        match self {
+            Lang::Japanese => "スライダーの目盛り：詳細／簡易（クリックで切替）",
+            Lang::English  => "Slider ticks: detailed / simple (click to toggle)",
+            Lang::Chinese  => "滑块刻度：详细／简易（点击切换）",
+        }
+    }
+
     pub fn tool_palette_action_label_next_page(self) -> &'static str {
         match self {
             Lang::Japanese => "次のページ",

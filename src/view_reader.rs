@@ -535,6 +535,8 @@ pub struct ViewerState {
     /// スライダーバーを最後に操作・ホバーした時刻（自動ハイドの起点）。None = 作り直し直後で、
     /// 次の描画でその時刻を起点にする（モードON直後・ページ送り直後は必ず見える）。
     magnifier_bar_active_at: Option<f64>,
+    /// ノッチ倍率／目盛りの詳細・簡易を切り替えた。次の `ViewerOutput` で保存を促して下ろす。
+    magnifier_settings_dirty: bool,
     /// GPUテクスチャの1辺上限（毎フレーム ctx から取り込む）。デコード目標のクランプに使う。
     max_texture_side: usize,
 }
@@ -780,6 +782,7 @@ impl ViewerState {
             magnifier_offset_dirty: false,
             magnifier_img_size: egui::Vec2::ZERO,
             magnifier_bar_active_at: None,
+            magnifier_settings_dirty: false,
             max_texture_side: MAX_TEXTURE_SIDE_FALLBACK,
         }
     }
@@ -870,6 +873,7 @@ impl ViewerState {
             magnifier_offset_dirty: false,
             magnifier_img_size: egui::Vec2::ZERO,
             magnifier_bar_active_at: None,
+            magnifier_settings_dirty: false,
             max_texture_side: MAX_TEXTURE_SIDE_FALLBACK,
         }
     }
@@ -1410,7 +1414,7 @@ impl ViewerState {
         let ctx = ui.ctx().clone();
         let viewer_style = ui.style().clone();
         if !self.open || self.entries.is_empty() {
-            return ViewerOutput { nav: ViewerNav::None, close_requested: !self.open, save_slots: None, spread_save_action: None, sort_save_action: None, thumbnail_save_action: None, bookmark_save_action: None, favorite_add_requested: false, toggle_translate_window: false, tool_palette_changed: false };
+            return ViewerOutput { nav: ViewerNav::None, close_requested: !self.open, save_slots: None, spread_save_action: None, sort_save_action: None, thumbnail_save_action: None, bookmark_save_action: None, favorite_add_requested: false, toggle_translate_window: false, tool_palette_changed: false, magnifier_settings_changed: false };
         }
 
         // ── フレーム入力を一括収集（ctx.input はこの1回のみ）────────────────
@@ -1629,7 +1633,7 @@ impl ViewerState {
         let toggle_translate_window = self.take_translate_toggle_request();
         self.maybe_open_file_detail_dialog();
         self.draw_file_detail_dialog(&ctx);
-        ViewerOutput { nav, close_requested: close_self, save_slots, spread_save_action, sort_save_action, thumbnail_save_action, bookmark_save_action, favorite_add_requested, toggle_translate_window, tool_palette_changed }
+        ViewerOutput { nav, close_requested: close_self, save_slots, spread_save_action, sort_save_action, thumbnail_save_action, bookmark_save_action, favorite_add_requested, toggle_translate_window, tool_palette_changed, magnifier_settings_changed: std::mem::take(&mut self.magnifier_settings_dirty) }
     }
 
     /// ツールパレットの変更確定処理。image_filterのpoll_image_filter_debounceと同じ考え方で、
@@ -2437,7 +2441,7 @@ impl ViewerState {
             // ── 虫眼鏡：ホイール拡縮（ポインタ基準）とスライダーバー ────────────────────
             // パレット上のホイールは握りつぶす。バー上のホイールは表示中心基準で拡縮する。
             // バーはモードON中は（非表示でも）常にイベントを吸収し、ホバーで再表示される。
-            let bar_rects = frame.magnifier.then(|| cfg.magnifier.bar.resolve(viewport_rect, false));
+            let bar_rects = frame.magnifier.then(|| cfg.magnifier.bar.resolve(viewport_rect, true));
             let pointer_in_bar = bar_rects.zip(input.hover_pos).is_some_and(|(b, p)| {
                 b.total.expand(crate::magnifier::BAR_HOVER_SLOP).contains(p)
             });
@@ -2451,7 +2455,7 @@ impl ViewerState {
                 };
                 self.update_magnifier(viewport_rect, frame.tex_lo.as_ref(), anchor, input.wheel_notches, &cfg.magnifier);
                 if let Some(bar) = bar_rects {
-                    self.draw_magnifier_bar(ui.ctx(), viewport_rect, frame.tex_lo.as_ref(), &bar, pointer_in_bar, input.wheel_notches != 0.0, input.time, &cfg.magnifier);
+                    self.draw_magnifier_bar(ui.ctx(), viewport_rect, frame.tex_lo.as_ref(), &bar, pointer_in_bar, input.wheel_notches != 0.0, input.time, &mut cfg.magnifier);
                 }
             } else {
                 self.magnifier_view = None;
@@ -3768,7 +3772,7 @@ impl ViewerState {
         wheel_notches: f32,
         cfg: &crate::magnifier::MagnifierConfig,
     ) {
-        use crate::magnifier::{fit_scale, notch_scale, rescale_for_new_texture, scale_range, zoom_about, clamp_offset, MagnifierView, DEFAULT_NOTCH_RATIO};
+        use crate::magnifier::{fit_scale, notch_scale, rescale_for_new_texture, scale_range, zoom_about, clamp_offset, MagnifierView};
         let Some(tex) = tex else {
             self.magnifier_view = None;
             return;
@@ -3805,7 +3809,7 @@ impl ViewerState {
         if wheel_notches != 0.0
             && let Some(p) = wheel_anchor.filter(|p| viewport.contains(*p))
         {
-            let next = notch_scale(view.scale, wheel_notches, DEFAULT_NOTCH_RATIO, range);
+            let next = notch_scale(view.scale, wheel_notches, cfg.notch_ratio(), range);
             if next != view.scale {
                 view = zoom_about(view, p - viewport.min, vp, img, next);
                 self.magnifier_offset_dirty = true;
@@ -3831,7 +3835,7 @@ impl ViewerState {
         pointer_in_bar: bool,
         wheel_active: bool,
         time: f64,
-        cfg: &crate::magnifier::MagnifierConfig,
+        cfg: &mut crate::magnifier::MagnifierConfig,
     ) {
         use crate::magnifier::*;
         let (Some(tex), Some(view)) = (tex, self.magnifier_view) else { return };
@@ -3858,6 +3862,9 @@ impl ViewerState {
         let track = track_rect(rects.body);
         let enabled = range.1 > range.0;
         let mut pressed_x: Option<f32> = None;
+        let (mut step_clicked, mut detail_clicked) = (false, false);
+        let lang = crate::i18n::t();
+        let (step_label, detail_on, ratio) = (cfg.notch_step().label(), cfg.detail_ticks(), cfg.notch_ratio());
         egui::Area::new(egui::Id::new("magnifier_bar"))
             .order(egui::Order::Foreground)
             .fixed_pos(rects.total.min)
@@ -3874,12 +3881,37 @@ impl ViewerState {
                 if enabled && body_resp.is_pointer_button_down_on() {
                     pressed_x = ui.input(|i| i.pointer.interact_pos()).map(|p| p.x);
                 }
+                // ボタン: ホバーで再表示されるので、非表示中に押されることはない。
+                let step_resp = rects.step_button.map(|r| {
+                    ui.interact(r, egui::Id::new("magnifier_step_btn"), egui::Sense::click())
+                        .on_hover_text(lang.magnifier_notch_step_hint())
+                });
+                let detail_resp = rects.detail_button.map(|r| {
+                    ui.interact(r, egui::Id::new("magnifier_detail_btn"), egui::Sense::click())
+                        .on_hover_text(lang.magnifier_detail_hint())
+                });
+                step_clicked = step_resp.as_ref().is_some_and(|r| r.clicked());
+                detail_clicked = detail_resp.as_ref().is_some_and(|r| r.clicked());
                 if alpha <= 0.0 {
                     return;
                 }
                 let a = |base: u8| (base as f32 * alpha).round() as u8;
                 let painter = ui.painter();
                 painter.rect_filled(rects.total, 6.0, egui::Color32::from_black_alpha(a(200)));
+                let paint_button = |rect: Option<egui::Rect>, resp: &Option<egui::Response>, text: &str| {
+                    let (Some(rect), Some(resp)) = (rect, resp) else { return };
+                    let fill = egui::Color32::from_white_alpha(a(if resp.hovered() { 70 } else { 35 }));
+                    painter.rect_filled(rect, 4.0, fill);
+                    painter.text(
+                        rect.center(),
+                        egui::Align2::CENTER_CENTER,
+                        text,
+                        egui::FontId::proportional(11.0),
+                        egui::Color32::from_white_alpha(a(235)),
+                    );
+                };
+                paint_button(rects.step_button, &step_resp, step_label);
+                paint_button(rects.detail_button, &detail_resp, lang.magnifier_detail_button_label(detail_on));
 
                 let cy = track.center().y;
                 let x_of = |scale: f32| track.left() + scale_to_t(scale, range) * track.width();
@@ -3890,7 +3922,7 @@ impl ViewerState {
                 let thumb_x = x_of(view.scale);
                 let label_y = rects.body.top() + BAR_LABEL_H / 2.0;
                 let label_font = egui::FontId::proportional(10.0);
-                for tick in tick_scales(range, false, DEFAULT_NOTCH_RATIO) {
+                for tick in tick_scales(range, detail_on, ratio) {
                     let x = x_of(tick);
                     let is_actual = (tick - ACTUAL_SCALE).abs() < 1e-3;
                     let half = if is_actual { 6.0 } else { 3.5 };
@@ -3900,7 +3932,8 @@ impl ViewerState {
                         egui::Color32::from_white_alpha(a(140))
                     };
                     painter.line_segment([egui::pos2(x, cy - half), egui::pos2(x, cy + half)], egui::Stroke::new(1.5, color));
-                    if (x - thumb_x).abs() > 26.0 {
+                    // 詳細は目盛りが密なので、数値は原寸(100%)だけに付ける。
+                    if (!detail_on || is_actual) && (x - thumb_x).abs() > 26.0 {
                         painter.text(egui::pos2(x, label_y), egui::Align2::CENTER_CENTER, format_percent(tick), label_font.clone(), color);
                     }
                 }
@@ -3915,6 +3948,17 @@ impl ViewerState {
                     egui::Color32::from_white_alpha(a(255)),
                 );
             });
+
+        if step_clicked {
+            cfg.cycle_notch_step();
+        }
+        if detail_clicked {
+            cfg.toggle_detail_ticks();
+        }
+        if step_clicked || detail_clicked {
+            self.magnifier_settings_dirty = true;
+            self.magnifier_bar_active_at = Some(time);
+        }
 
         if let Some(x) = pressed_x {
             let target = slider_scale_at(x, (track.left(), track.right()), range, BAR_ACTUAL_MAGNET_PX);

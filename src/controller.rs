@@ -76,6 +76,9 @@ pub struct ViewerOutput {
     /// true のとき app 側で persist_state() を呼ぶ（ツールパレットの座標/設定/マス内容が
     /// デバウンス経由で viewer_cfg.tool_palette へ確定した直後の1フレームだけtrue）。
     pub tool_palette_changed: bool,
+    /// true のとき app 側で persist_state() を呼ぶ（虫眼鏡のノッチ倍率／目盛りの詳細・簡易を
+    /// 切り替えた直後の1フレームだけtrue）。
+    pub magnifier_settings_changed: bool,
 }
 
 // ── ステータス即時更新要求 ────────────────────────────────────────────────────
