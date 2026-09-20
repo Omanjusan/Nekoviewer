@@ -155,6 +155,11 @@ pub struct AppConfig {
     pub thumb_size: u32,
     /// ページデコードの並列スレッド数（0 = 自動: 論理コア数/2）
     pub decode_threads: usize,
+    /// 虫眼鏡の拡大縮小（Shift+ホイール等）の割り当てを起動時に知らせ済みか。永続設定
+    /// （state の `app_magnifier_zoom_notice_shown`）。
+    pub magnifier_zoom_notice_shown: bool,
+    /// 起動時に知らせる割り当て結果（OKで閉じるまで Some）。非永続・実行時のみ。
+    pub pending_magnifier_zoom_notice: Option<crate::keymap::MagnifierZoomNotice>,
     pub startup: StartupConfig,
     /// このアプリが使ってよいキャッシュ合計の上限（MB、ページ+ファイル）。None = システムRAMの30%。
     /// ページ/ファイルへの内訳は cache::resolve_cache_budgets の固定比率で分配する。
@@ -202,6 +207,8 @@ impl AppConfig {
             viewer_filter: ResizeFilter::Lanczos3,
             thumb_size: 256,
             decode_threads: 0,
+            magnifier_zoom_notice_shown: false,
+            pending_magnifier_zoom_notice: None,
             startup: StartupConfig {
                 use_last_dir: false,
                 fixed_dir: None,

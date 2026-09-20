@@ -181,6 +181,36 @@ impl NekoviewApp {
         }
     }
 
+    /// 起動時に1度だけ、虫眼鏡の拡大縮小の割り当て結果を知らせるOKダイアログ。
+    /// 閉じたら「知らせ済み」をstateへ保存し、以後は出さない。
+    pub(super) fn draw_magnifier_zoom_notice(&mut self, ctx: &egui::Context) {
+        let Some(notice) = self.config.pending_magnifier_zoom_notice else {
+            return;
+        };
+        let lang = i18n::t();
+        let mut open = true;
+        let mut ok_clicked = false;
+        egui::Window::new(lang.magnifier_zoom_notice_title())
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .show(ctx, |ui| {
+                ui.label(lang.magnifier_zoom_notice_body(&notice));
+                ui.add_space(8.0);
+                ui.vertical_centered(|ui| {
+                    if ui.button(lang.memory_warning_ok()).clicked() {
+                        ok_clicked = true;
+                    }
+                });
+            });
+        if ok_clicked || !open {
+            self.config.pending_magnifier_zoom_notice = None;
+            self.config.magnifier_zoom_notice_shown = true;
+            self.persist_state();
+        }
+    }
+
     /// ZIPを無効確定してDBにマーカーを書き込む
     pub(super) fn mark_archive_invalid(&mut self, path: &PathBuf) {
         self.invalid_archives.insert(path.clone());

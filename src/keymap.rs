@@ -172,6 +172,9 @@ impl MouseCombo {
     pub const fn shift(action: MouseAction) -> Self {
         Self { action, ctrl: false, shift: true, alt: false }
     }
+    pub const fn ctrl(action: MouseAction) -> Self {
+        Self { action, ctrl: true, shift: false, alt: false }
+    }
 
     pub fn to_config_string(self) -> String {
         let mut parts = Vec::new();
@@ -218,6 +221,9 @@ pub struct ActionBinding {
 impl ActionBinding {
     const fn keyboard_only(default: KeyCombo) -> Self {
         Self { default_keyboard: Some(default), default_mouse: None, keyboard: None, mouse: None }
+    }
+    const fn mouse_only(default: MouseCombo) -> Self {
+        Self { default_keyboard: None, default_mouse: Some(default), keyboard: None, mouse: None }
     }
     const fn both(kb: KeyCombo, mouse: MouseCombo) -> Self {
         Self { default_keyboard: Some(kb), default_mouse: Some(mouse), keyboard: None, mouse: None }
@@ -286,6 +292,8 @@ define_action_enum!(ReaderAction {
     ApplySlot2          => "ApplySlot2",
     ApplySlot3          => "ApplySlot3",
     ApplySlot4          => "ApplySlot4",
+    MagnifierZoomIn     => "MagnifierZoomIn",
+    MagnifierZoomOut    => "MagnifierZoomOut",
 });
 
 impl ReaderAction {
@@ -313,6 +321,8 @@ impl ReaderAction {
             Self::ApplySlot2          => "ウィンドウスロット2適用",
             Self::ApplySlot3          => "ウィンドウスロット3適用",
             Self::ApplySlot4          => "ウィンドウスロット4適用",
+            Self::MagnifierZoomIn     => "画像の拡大（虫眼鏡）",
+            Self::MagnifierZoomOut    => "画像の縮小（虫眼鏡）",
         }
     }
 
@@ -323,8 +333,9 @@ impl ReaderAction {
             Self::PageAdvanceSpace    => ActionBinding::keyboard_only(KeyCombo::plain(Key::Space)),
             Self::FileNavPrev         => ActionBinding::keyboard_only(KeyCombo::plain(Key::ArrowLeft)),
             Self::FileNavNext         => ActionBinding::keyboard_only(KeyCombo::plain(Key::ArrowRight)),
-            Self::FileNavPrevAlt      => ActionBinding::both(KeyCombo::shift(Key::ArrowUp), MouseCombo::shift(MouseAction::WheelUp)),
-            Self::FileNavNextAlt      => ActionBinding::both(KeyCombo::shift(Key::ArrowDown), MouseCombo::shift(MouseAction::WheelDown)),
+            // マウスは Ctrl+ホイール（Shift+ホイールは虫眼鏡の拡大縮小の既定動作に譲った）。
+            Self::FileNavPrevAlt      => ActionBinding::both(KeyCombo::shift(Key::ArrowUp), MouseCombo::ctrl(MouseAction::WheelUp)),
+            Self::FileNavNextAlt      => ActionBinding::both(KeyCombo::shift(Key::ArrowDown), MouseCombo::ctrl(MouseAction::WheelDown)),
             Self::JumpFirstPage       => ActionBinding::keyboard_only(KeyCombo::plain(Key::Home)),
             Self::JumpLastPage        => ActionBinding::keyboard_only(KeyCombo::plain(Key::End)),
             Self::ToggleZoomActual    => ActionBinding::keyboard_only(KeyCombo::plain(Key::Enter)),
@@ -339,6 +350,8 @@ impl ReaderAction {
             Self::ApplySlot2          => ActionBinding::keyboard_only(KeyCombo::plain(Key::F6)),
             Self::ApplySlot3          => ActionBinding::keyboard_only(KeyCombo::plain(Key::F7)),
             Self::ApplySlot4          => ActionBinding::keyboard_only(KeyCombo::plain(Key::F8)),
+            Self::MagnifierZoomIn     => ActionBinding::mouse_only(MouseCombo::shift(MouseAction::WheelUp)),
+            Self::MagnifierZoomOut    => ActionBinding::mouse_only(MouseCombo::shift(MouseAction::WheelDown)),
         }
     }
 }
@@ -423,6 +436,36 @@ impl ExplorerAction {
     }
 }
 
+/// ホイール割り当ての修飾キーの組み合わせ（虫眼鏡の拡大縮小の割り当て先候補）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WheelModifier {
+    Shift,
+    Ctrl,
+    ShiftCtrl,
+}
+
+impl WheelModifier {
+    /// 割り当ての優先順。
+    pub const CANDIDATES: [Self; 3] = [Self::Shift, Self::Ctrl, Self::ShiftCtrl];
+
+    pub const fn combo(self, action: MouseAction) -> MouseCombo {
+        match self {
+            Self::Shift => MouseCombo::shift(action),
+            Self::Ctrl => MouseCombo::ctrl(action),
+            Self::ShiftCtrl => MouseCombo { action, ctrl: true, shift: true, alt: false },
+        }
+    }
+}
+
+/// 起動時に1度だけ知らせる、虫眼鏡の拡大縮小の割り当て結果。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MagnifierZoomNotice {
+    /// 割り当てた修飾キー。None = 候補がすべて使用中で割り当てできなかった。
+    pub assigned: Option<WheelModifier>,
+    /// 「前後のファイルへ移動（副）」の既定が Ctrl+ホイールへ変わったことを伝えるか。
+    pub file_nav_moved: bool,
+}
+
 /// キーアサイン全体。ReaderAction/ExplorerActionそれぞれの割り当てを保持する。
 #[derive(Clone)]
 pub struct Keymap {
@@ -465,6 +508,36 @@ impl Keymap {
     pub fn find_explorer_keyboard_conflict(&self, kb: KeyCombo, exclude: ExplorerAction) -> Option<ExplorerAction> {
         ExplorerAction::ALL.iter().copied()
             .find(|&a| a != exclude && self.explorer_binding(a).effective_keyboard() == Some(kb))
+    }
+
+    /// 虫眼鏡の拡大縮小（既定: Shift+ホイール）を、他のアクションと競合しない修飾キーへ割り当てる。
+    /// Shift → Ctrl → Shift+Ctrl の順に、拡大・縮小の両方が空いている最初の組み合わせを使う。
+    /// すべて埋まっていれば割り当てない（競合したままの拡大縮小は入力側で無効になる）。
+    /// 戻り値は (通知内容, 既定と異なる割り当てをしたか)。後者が true のときは keymap.ini の保存が必要。
+    pub fn register_magnifier_zoom(&mut self) -> (MagnifierZoomNotice, bool) {
+        use ReaderAction::{MagnifierZoomIn as ZoomIn, MagnifierZoomOut as ZoomOut};
+        let assigned = WheelModifier::CANDIDATES.into_iter().find(|m| {
+            self.find_reader_mouse_conflict(m.combo(MouseAction::WheelUp), ZoomIn).is_none()
+                && self.find_reader_mouse_conflict(m.combo(MouseAction::WheelDown), ZoomOut).is_none()
+        });
+        let mut changed = false;
+        if let Some(m) = assigned {
+            for (action, combo) in [
+                (ZoomIn, m.combo(MouseAction::WheelUp)),
+                (ZoomOut, m.combo(MouseAction::WheelDown)),
+            ] {
+                if self.reader_binding(action).effective_mouse() != Some(combo) {
+                    self.set_reader_mouse(action, Some(combo));
+                    changed = true;
+                }
+            }
+        }
+        // ファイル移動（副）の既定が Shift+ホイール → Ctrl+ホイールへ移ったことを伝えるか。
+        let nav = self.reader_binding(ReaderAction::FileNavPrevAlt);
+        let file_nav_moved = assigned == Some(WheelModifier::Shift)
+            && nav.mouse.is_none()
+            && nav.default_mouse == Some(MouseCombo::ctrl(MouseAction::WheelUp));
+        (MagnifierZoomNotice { assigned, file_nav_moved }, changed)
     }
 
     /// config.ini [keymap] セクションの1行 "reader.PagePrev.keyboard" = "shift+ArrowUp" を適用する。
@@ -644,6 +717,106 @@ mod tests {
         let km = Keymap::default();
         let conflict = km.find_reader_mouse_conflict(MouseCombo::plain(MouseAction::WheelUp), ReaderAction::PageModeSingle);
         assert_eq!(conflict, Some(ReaderAction::PagePrev));
+    }
+
+    #[test]
+    fn magnifier_zoom_defaults_to_shift_wheel_and_file_nav_moves_to_ctrl() {
+        let km = Keymap::default();
+        assert_eq!(
+            km.reader_binding(ReaderAction::MagnifierZoomIn).effective_mouse(),
+            Some(MouseCombo::shift(MouseAction::WheelUp))
+        );
+        assert_eq!(
+            km.reader_binding(ReaderAction::MagnifierZoomOut).effective_mouse(),
+            Some(MouseCombo::shift(MouseAction::WheelDown))
+        );
+        assert_eq!(
+            km.reader_binding(ReaderAction::FileNavPrevAlt).effective_mouse(),
+            Some(MouseCombo::ctrl(MouseAction::WheelUp))
+        );
+        // 既定どうしでは競合しない。
+        assert_eq!(
+            km.find_reader_mouse_conflict(MouseCombo::shift(MouseAction::WheelUp), ReaderAction::MagnifierZoomIn),
+            None
+        );
+        // キーボード割り当てはなし（マウス専用）。
+        assert_eq!(km.reader_binding(ReaderAction::MagnifierZoomIn).effective_keyboard(), None);
+    }
+
+    #[test]
+    fn register_magnifier_zoom_on_default_keymap_keeps_shift() {
+        let mut km = Keymap::default();
+        let (notice, changed) = km.register_magnifier_zoom();
+        assert_eq!(notice, MagnifierZoomNotice { assigned: Some(WheelModifier::Shift), file_nav_moved: true });
+        assert!(!changed, "既定のままなら keymap.ini の保存は不要");
+    }
+
+    #[test]
+    fn register_magnifier_zoom_skips_a_taken_shift_wheel() {
+        // Shift+ホイールを別の操作へ割り当てているユーザー。
+        let mut km = Keymap::default();
+        km.set_reader_mouse(ReaderAction::FileNavPrevAlt, Some(MouseCombo::shift(MouseAction::WheelUp)));
+        km.set_reader_mouse(ReaderAction::FileNavNextAlt, Some(MouseCombo::shift(MouseAction::WheelDown)));
+        let (notice, changed) = km.register_magnifier_zoom();
+        // Ctrl+ホイールは（既定を上書き済みなので）空いている。
+        assert_eq!(notice, MagnifierZoomNotice { assigned: Some(WheelModifier::Ctrl), file_nav_moved: false });
+        assert!(changed);
+        assert_eq!(
+            km.reader_binding(ReaderAction::MagnifierZoomIn).effective_mouse(),
+            Some(MouseCombo::ctrl(MouseAction::WheelUp))
+        );
+        assert_eq!(
+            km.reader_binding(ReaderAction::MagnifierZoomOut).effective_mouse(),
+            Some(MouseCombo::ctrl(MouseAction::WheelDown))
+        );
+    }
+
+    #[test]
+    fn register_magnifier_zoom_falls_through_to_shift_ctrl_then_gives_up() {
+        // Shift も Ctrl も使用中 → Shift+Ctrl。
+        let mut km = Keymap::default();
+        km.set_reader_mouse(ReaderAction::PageModeSingle, Some(MouseCombo::shift(MouseAction::WheelUp)));
+        let (notice, _) = km.register_magnifier_zoom();
+        // Ctrl+WheelUp は FileNavPrevAlt の既定が使用中。
+        assert_eq!(notice.assigned, Some(WheelModifier::ShiftCtrl));
+        assert_eq!(
+            km.reader_binding(ReaderAction::MagnifierZoomIn).effective_mouse(),
+            Some(MouseCombo { action: MouseAction::WheelUp, ctrl: true, shift: true, alt: false })
+        );
+
+        // 3つとも使用中 → 割り当てない。
+        let mut km = Keymap::default();
+        km.set_reader_mouse(ReaderAction::PageModeSingle, Some(MouseCombo::shift(MouseAction::WheelUp)));
+        km.set_reader_mouse(
+            ReaderAction::PageModeSpreadLeft,
+            Some(MouseCombo { action: MouseAction::WheelUp, ctrl: true, shift: true, alt: false }),
+        );
+        let (notice, changed) = km.register_magnifier_zoom();
+        assert_eq!(notice.assigned, None);
+        assert!(!changed);
+        // 競合したままなので、入力側はこのバインドを無効扱いにする（競合検知で判定）。
+        let zoom = km.reader_binding(ReaderAction::MagnifierZoomIn).effective_mouse().unwrap();
+        assert!(km.find_reader_mouse_conflict(zoom, ReaderAction::MagnifierZoomIn).is_some());
+    }
+
+    #[test]
+    fn magnifier_zoom_override_roundtrips_through_ini_lines() {
+        let mut km = Keymap::default();
+        km.set_reader_mouse(ReaderAction::FileNavPrevAlt, Some(MouseCombo::shift(MouseAction::WheelUp)));
+        km.set_reader_mouse(ReaderAction::FileNavNextAlt, Some(MouseCombo::shift(MouseAction::WheelDown)));
+        km.register_magnifier_zoom();
+        let lines = km.to_ini_lines();
+        assert!(lines.iter().any(|l| l == "reader.MagnifierZoomIn.mouse = ctrl+wheel_up"), "{lines:?}");
+
+        let mut reloaded = Keymap::default();
+        for line in &lines {
+            let (k, v) = line.split_once('=').unwrap();
+            reloaded.apply_ini_entry(k.trim(), v.trim());
+        }
+        assert_eq!(
+            reloaded.reader_binding(ReaderAction::MagnifierZoomOut).effective_mouse(),
+            Some(MouseCombo::ctrl(MouseAction::WheelDown))
+        );
     }
 
     #[test]

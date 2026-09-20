@@ -196,6 +196,9 @@ struct FrameInput {
     /// 虫眼鏡モード用のホイール量（ノッチ単位・正=上回し）。ページ送りと同じ修飾キー割り当てを
     /// 使うが、スムージング前のイベントから拾う（100%スナップがノッチ単位で効くように）。
     wheel_notches: f32,
+    /// 虫眼鏡の拡大縮小の割り当て（既定 Shift+ホイール）のホイール量（ノッチ単位・正=上回し）。
+    /// モードのON/OFFに関わらず拾う。
+    zoom_wheel_notches: f32,
     // ポインタ
     hover_pos: Option<egui::Pos2>,
     middle_clicked: bool,
@@ -228,25 +231,25 @@ impl FrameInput {
             let sd = i.smooth_scroll_delta();
             let wheel_amount = |m: MouseCombo| -> f32 {
                 if !m.modifiers_match(i) { return 0.0; }
+                if m.ctrl {
+                    // egui は Ctrl+ホイールを「ズーム」として扱い、スクロール量(smooth_scroll_delta)を
+                    // 0にする。Ctrl割り当てのホイールはイベントから直接、同じ単位(points)で拾う。
+                    return wheel_event_amount(i, m.shift, WHEEL_LINE_POINTS, 1.0, WHEEL_LINE_POINTS * 10.0);
+                }
                 sd.y + if m.shift { sd.x } else { 0.0 }
             };
             let wheel_notches_of = |m: MouseCombo| -> f32 {
                 if !m.modifiers_match(i) { return 0.0; }
-                i.events.iter().map(|e| match e {
-                    egui::Event::MouseWheel { unit, delta, .. } => {
-                        let d = delta.y + if m.shift { delta.x } else { 0.0 };
-                        match unit {
-                            egui::MouseWheelUnit::Line | egui::MouseWheelUnit::Page => d,
-                            egui::MouseWheelUnit::Point => d / SCROLL_THRESHOLD,
-                        }
-                    }
-                    _ => 0.0,
-                }).sum()
+                wheel_event_amount(i, m.shift, 1.0, 1.0 / SCROLL_THRESHOLD, 1.0)
             };
             let act = |a: ReaderAction| keymap.reader_binding(a).key_pressed(i);
             let mouse_of = |a: ReaderAction| keymap.reader_binding(a).effective_mouse();
             let page_mouse = mouse_of(ReaderAction::PagePrev).or_else(|| mouse_of(ReaderAction::PageNext));
             let file_mouse = mouse_of(ReaderAction::FileNavPrevAlt).or_else(|| mouse_of(ReaderAction::FileNavNextAlt));
+            // 虫眼鏡の拡大縮小（既定 Shift+ホイール）。他のアクションと割り当てが競合している間は無効
+            // （競合を解消できなかった場合に、ファイル移動などと同時に発火しないため）。
+            let zoom_mouse = [ReaderAction::MagnifierZoomIn, ReaderAction::MagnifierZoomOut].into_iter()
+                .find_map(|a| mouse_of(a).filter(|m| keymap.find_reader_mouse_conflict(*m, a).is_none()));
             let middle_clicked = mouse_of(ReaderAction::ToggleFullscreen)
                 .is_some_and(|m| m.action == MouseAction::MiddleClick && m.modifiers_match(i))
                 && i.pointer.button_clicked(egui::PointerButton::Middle);
@@ -279,6 +282,7 @@ impl FrameInput {
                 scroll_delta:       page_mouse.map(wheel_amount).unwrap_or(0.0),
                 shift_scroll_delta: file_mouse.map(wheel_amount).unwrap_or(0.0),
                 wheel_notches:      page_mouse.map(wheel_notches_of).unwrap_or(0.0),
+                zoom_wheel_notches: zoom_mouse.map(wheel_notches_of).unwrap_or(0.0),
                 hover_pos:          i.pointer.hover_pos(),
                 middle_clicked,
                 primary_clicked:    i.pointer.button_clicked(egui::PointerButton::Primary),
@@ -293,6 +297,25 @@ impl FrameInput {
             }
         })
     }
+}
+
+/// egui の既定のホイール1行あたりのポイント数（`line_scroll_speed`、ネイティブ）。
+const WHEEL_LINE_POINTS: f32 = 40.0;
+
+/// このフレームのホイールイベントの縦成分（`include_x` ならShift+ホイールの横成分も）を、
+/// 単位ごとの係数で換算して合計する。egui が Ctrl+ホイールなどで scroll_delta を空にしても拾える。
+fn wheel_event_amount(i: &egui::InputState, include_x: bool, line: f32, point: f32, page: f32) -> f32 {
+    i.events.iter().map(|e| match e {
+        egui::Event::MouseWheel { unit, delta, .. } => {
+            let d = delta.y + if include_x { delta.x } else { 0.0 };
+            d * match unit {
+                egui::MouseWheelUnit::Line => line,
+                egui::MouseWheelUnit::Point => point,
+                egui::MouseWheelUnit::Page => page,
+            }
+        }
+        _ => 0.0,
+    }).sum()
 }
 
 /// 自然数ソート比較: 数字列は数値として比較、それ以外は文字列として比較
@@ -1592,8 +1615,9 @@ impl ViewerState {
                 tex_lo.is_some()
             };
         if magnifier_active {
-            // ホイールはページ送りではなく拡縮へ回す。
+            // ホイールはページ送りではなく拡縮へ回す。専用の拡大縮小の割り当てぶんも足す。
             input.scroll_delta = 0.0;
+            input.wheel_notches += input.zoom_wheel_notches;
         } else {
             input.wheel_notches = 0.0;
         }

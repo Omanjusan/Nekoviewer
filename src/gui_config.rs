@@ -382,6 +382,8 @@ pub struct AppState {
     pub app_thumb_size: Option<u32>,
     /// フェーズ4b: decode_threads/default_slotもGUI編集可能にしこちらへ統合。
     pub app_decode_threads: Option<usize>,
+    /// 虫眼鏡の拡大縮小の割り当てを知らせ済みか（1度だけ表示するための記録）。
+    pub app_magnifier_zoom_notice_shown: Option<bool>,
     /// 外側Noneはキー未記載（ハードコード既定値を使う）、内側Noneはユーザーが明示的に選んだ「なし」。
     pub app_default_slot: Option<Option<usize>>,
     /// 翻訳機能(実験的)の接続先・オーバーレイ設定。
@@ -418,6 +420,7 @@ impl Default for AppState {
             app_thumb_filter: None,
             app_thumb_size: None,
             app_decode_threads: None,
+            app_magnifier_zoom_notice_shown: None,
             app_default_slot: None,
             translate_cfg: TranslateConfig::default(),
             tab_positions: TabPositions::default(),
@@ -496,6 +499,7 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
     let mut app_thumb_filter: Option<ResizeFilter> = None;
     let mut app_thumb_size: Option<u32> = None;
     let mut app_decode_threads: Option<usize> = None;
+    let mut app_magnifier_zoom_notice_shown: Option<bool> = None;
     let mut app_default_slot: Option<Option<usize>> = None;
     let mut thumbbar_pos: Option<ThumbbarPos> = None;
     let mut thumbbar_thumb_size: Option<u32> = None;
@@ -637,6 +641,7 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
                 }
                 "app_thumb_size" => { app_thumb_size = v.trim().parse().ok(); }
                 "app_decode_threads" => { app_decode_threads = v.trim().parse().ok(); }
+                "app_magnifier_zoom_notice_shown" => { app_magnifier_zoom_notice_shown = v.trim().parse().ok(); }
                 "app_default_slot" => {
                     app_default_slot = Some(match v.trim() {
                         "5" => Some(0),
@@ -869,6 +874,7 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
         app_thumb_filter,
         app_thumb_size,
         app_decode_threads,
+        app_magnifier_zoom_notice_shown,
         app_default_slot,
         translate_cfg: TranslateConfig {
             base_url: translate_base_url.unwrap_or_default(),
@@ -1011,8 +1017,8 @@ pub fn save_state(root: &Path, dir: &Path, window_size: (u32, u32), viewer_slots
         Some(0) => "5", Some(1) => "6", Some(2) => "7", Some(3) => "8", _ => "",
     };
     content.push_str(&format!(
-        "app_decode_threads={}\napp_default_slot={}\n",
-        app_cfg.decode_threads, default_slot_str,
+        "app_decode_threads={}\napp_default_slot={}\napp_magnifier_zoom_notice_shown={}\n",
+        app_cfg.decode_threads, default_slot_str, app_cfg.magnifier_zoom_notice_shown,
     ));
     for (i, slot) in viewer_slots.iter().enumerate() {
         if let Some(s) = slot {
@@ -1046,6 +1052,16 @@ mod tests {
         let parsed = parse_state_file(&state_path(&root)).expect("state file parses");
         let _ = std::fs::remove_dir_all(&root);
         parsed
+    }
+
+    #[test]
+    fn magnifier_zoom_notice_flag_parses_and_defaults_to_unset() {
+        let parsed = parse_state_text("notice_set", "app_magnifier_zoom_notice_shown=true\n");
+        assert_eq!(parsed.app_magnifier_zoom_notice_shown, Some(true));
+        let parsed = parse_state_text("notice_bad", "app_magnifier_zoom_notice_shown=yes\n");
+        assert_eq!(parsed.app_magnifier_zoom_notice_shown, None);
+        let parsed = parse_state_text("notice_none", "lang=ja\n");
+        assert_eq!(parsed.app_magnifier_zoom_notice_shown, None);
     }
 
     #[test]

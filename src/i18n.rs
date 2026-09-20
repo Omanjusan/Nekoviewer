@@ -2974,6 +2974,52 @@ impl Lang {
         }
     }
 
+    pub fn magnifier_zoom_notice_title(self) -> &'static str {
+        match self {
+            Lang::Japanese => "キー割り当ての更新",
+            Lang::English  => "Key assignment updated",
+            Lang::Chinese  => "按键分配已更新",
+        }
+    }
+
+    /// 虫眼鏡の拡大縮小の割り当て結果の本文（起動時のOKダイアログ）。
+    pub fn magnifier_zoom_notice_body(self, notice: &crate::keymap::MagnifierZoomNotice) -> String {
+        use crate::keymap::WheelModifier as M;
+        let name = |m: M| match m {
+            M::Shift => "SHIFT",
+            M::Ctrl => "CTRL",
+            M::ShiftCtrl => "SHIFT+CTRL",
+        };
+        let Some(assigned) = notice.assigned else {
+            return match self {
+                Lang::Japanese => "画像の拡大縮小の既定動作を割り当てられませんでした。\nSHIFT / CTRL / SHIFT+CTRL のマウスホイールがすべて他の操作に使われています。\n設定のキーアサインから割り当ててください。".to_string(),
+                Lang::English  => "Could not assign the default zoom action.\nMouse wheel with SHIFT / CTRL / SHIFT+CTRL is already used by other actions.\nPlease assign it in the key assignment settings.".to_string(),
+                Lang::Chinese  => "无法分配图像缩放的默认操作。\nSHIFT / CTRL / SHIFT+CTRL 加鼠标滚轮均已被其他操作占用。\n请在按键分配设置中进行分配。".to_string(),
+            };
+        };
+        let n = name(assigned);
+        let mut text = match self {
+            Lang::Japanese => format!("{n}+マウスホイールが画像の拡大縮小の既定動作として登録されました。"),
+            Lang::English  => format!("{n}+mouse wheel is now registered as the default action for zooming images."),
+            Lang::Chinese  => format!("{n}+鼠标滚轮已注册为图像缩放的默认操作。"),
+        };
+        if assigned != M::Shift {
+            text.push_str(match self {
+                Lang::Japanese => "\n（SHIFT+マウスホイールは既に他の操作に割り当てられていたため）",
+                Lang::English  => "\n(SHIFT+mouse wheel was already assigned to another action.)",
+                Lang::Chinese  => "\n（SHIFT+鼠标滚轮已被其他操作占用。）",
+            });
+        }
+        if notice.file_nav_moved {
+            text.push_str(match self {
+                Lang::Japanese => "\nこれまで SHIFT+マウスホイール だった「前後のファイルへ移動（副）」は CTRL+マウスホイール に変更されました。",
+                Lang::English  => "\n\"Previous/next file (secondary)\", previously on SHIFT+mouse wheel, is now on CTRL+mouse wheel.",
+                Lang::Chinese  => "\n原先的 SHIFT+鼠标滚轮“上一个/下一个文件（副）”已改为 CTRL+鼠标滚轮。",
+            });
+        }
+        text
+    }
+
     /// 虫眼鏡バーの詳細／簡易ボタンのラベル（現在の状態を表示する）。
     pub fn magnifier_detail_button_label(self, detail: bool) -> &'static str {
         match (self, detail) {

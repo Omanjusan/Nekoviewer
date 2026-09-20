@@ -99,6 +99,17 @@ fn main() {
         // フェーズ4b: decode_threads/default_slotも同様にstate側を優先する。
         if let Some(v) = state.app_decode_threads { cfg.decode_threads = v; }
         if let Some(v) = state.app_default_slot { cfg.default_slot = v; }
+        if let Some(v) = state.app_magnifier_zoom_notice_shown { cfg.magnifier_zoom_notice_shown = v; }
+
+        // 虫眼鏡の拡大縮小（既定 Shift+ホイール）の割り当て。他の操作と競合していたら空いている
+        // 修飾キーへ割り当て直し（keymap.ini へ保存）、結果を1度だけOKダイアログで知らせる。
+        if !cfg.magnifier_zoom_notice_shown {
+            let (notice, changed) = cfg.keymap.register_magnifier_zoom();
+            if changed {
+                cfg.keymap.save(&cfg.config_root);
+            }
+            cfg.pending_magnifier_zoom_notice = Some(notice);
+        }
 
         fs::mount::log_gvfs_status();
         log_common!("[startup] gvfs check done");
