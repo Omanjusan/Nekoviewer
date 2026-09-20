@@ -2748,12 +2748,48 @@ impl ViewerState {
             let shadow_color = egui::Color32::from_black_alpha(180);
             let panel_rect = ui.clip_rect();
             let painter = ui.painter();
-            let galley = painter.layout_no_wrap(page_text, font_id, text_color);
+            let galley = painter.layout_no_wrap(page_text, font_id.clone(), text_color);
             let text_size = galley.size();
             let margin = egui::vec2(8.0, 6.0);
             let text_pos = panel_rect.right_bottom() - text_size - margin;
             painter.text(text_pos + egui::vec2(1.0, 1.0), egui::Align2::LEFT_TOP, &galley.text().to_string(), egui::FontId::proportional(14.0), shadow_color);
             painter.galley(text_pos, galley, text_color);
+
+            // ── 解像度オーバーレイ（フェーズ0モック：ページ数の左隣）──────────────
+            // 原寸 = テクスチャ寸法 / 通常（ウィンドウ追従）= ウィンドウ寸法 / 虫眼鏡中 = 末尾に倍率。
+            // 数値はレイアウト確認用の暫定値（デコード縮小・見開き・回転の扱いはプランニングで詰める）。
+            {
+                let size_of = |t: &Option<egui::TextureHandle>| t.as_ref().map(|t| t.size());
+                let tex_text = || {
+                    let parts: Vec<String> = [&frame.tex_lo, &frame.tex_hi]
+                        .into_iter()
+                        .filter_map(size_of)
+                        .map(|[w, h]| format!("{w}×{h}"))
+                        .collect();
+                    if self.page_mode == PageMode::Single {
+                        parts.first().cloned().unwrap_or_default()
+                    } else {
+                        parts.join(" + ")
+                    }
+                };
+                let mut info = if frame.magnifier || frame.zoom_actual {
+                    tex_text()
+                } else {
+                    let ppp = ui.ctx().pixels_per_point();
+                    format!("{}×{}", (viewport_rect.width() * ppp).round(), (viewport_rect.height() * ppp).round())
+                };
+                if frame.magnifier && let Some(v) = self.magnifier_view {
+                    info.push_str(&format!(" (x{:.2})", v.scale));
+                }
+                if !info.is_empty() {
+                    let painter = ui.painter();
+                    let g = painter.layout_no_wrap(info, font_id, text_color);
+                    let gap = 12.0;
+                    let pos = egui::pos2(text_pos.x - gap - g.size().x, text_pos.y);
+                    painter.text(pos + egui::vec2(1.0, 1.0), egui::Align2::LEFT_TOP, &g.text().to_string(), egui::FontId::proportional(14.0), shadow_color);
+                    painter.galley(pos, g, text_color);
+                }
+            }
 
             // ── トーストオーバーレイ（下部中央）──────────────────────────────
             if let Some((msg, Some(_))) = &self.toast {
