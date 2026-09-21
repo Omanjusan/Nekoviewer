@@ -8,8 +8,9 @@
 //! - 並びはZ走査。行内は綴じ方向（右綴じ=右→左）、行末で次行の先頭側へ戻る（蛇行しない）。
 //! - 最終コマでの「次」・先頭コマでの「前」は `KomaMove::PageBoundary` を返し、
 //!   ページ送りは呼び出し側に任せる。
-//! - 軸の超過がわずか（窓の寸法に対する数％）でコマが増えるときは、縦横比を保ったまま縮小して
-//!   1コマに収められる（`plan_auto_shrink`）。
+//! - 軸の最後の1歩の増分（整数フレームを引いた端数）がわずか（窓の寸法に対する数％）で、そのために
+//!   コマが増えるときは、縦横比を保ったまま縮小して、ちょうど整数フレーム分に収められる
+//!   （`plan_auto_shrink`）。
 
 use egui::Vec2;
 
@@ -153,16 +154,25 @@ impl ShrinkPlan {
     }
 }
 
-/// 1軸の超過が「数％」に収まるとき、その軸をちょうどフレームに収める縮小率（1未満）を返す。
-/// 超過率は `(コンテンツ − フレーム) / フレーム`。`threshold` はその上限（0.10 = 10%）。
-/// 目に見えない超過（`FIT_EPS_PX` 以下＝既に1コマ）・フレームに収まる軸・不正な値は None。
+/// 1軸の「最後の1歩の増分」が数％に収まるとき、その軸をちょうど整数フレーム分にする縮小率（1未満）を返す。
+/// コンテンツが `k` フレーム＋端数 `r`（`k ≥ 1`）のとき、格子の最後のコマは直前より `r` だけ進む
+/// （端へクランプされる）。この増分 `r / フレーム` が `threshold` 以下（0.10 = 10%）なら、
+/// コンテンツを `k` フレーム分（`k × フレーム`）へ縮める。`k = 1` は、最初の1歩の増分と同じ。
+/// フレームに収まる軸・ちょうど整数フレームの軸・目に見えない端数・不正な値は None。
 fn shrink_ratio(content: f32, viewport: f32, threshold: f32) -> Option<f32> {
     if !(viewport >= MIN_FRAME_PX && content.is_finite() && threshold.is_finite() && threshold > 0.0) {
         return None;
     }
-    let overflow = content - viewport;
-    if overflow > FIT_EPS_PX && overflow / viewport <= threshold + COUNT_EPS {
-        Some(viewport / content)
+    if content - viewport <= FIT_EPS_PX {
+        return None; // 既に1コマ（収まっている）
+    }
+    // 丸め誤差で整数フレームちょうどが下の整数に落ちないよう、COUNT_EPS ぶん逃がして整数部を取る。
+    let whole = (content / viewport + COUNT_EPS).floor().max(1.0);
+    let remainder = content - whole * viewport;
+    // 端数が無視できる大きさなら、格子は余計なコマを作らない（`axis_stops` と同じ基準）。
+    let visible = if whole <= 1.0 { FIT_EPS_PX } else { COUNT_EPS * viewport };
+    if remainder > visible && remainder / viewport <= threshold + COUNT_EPS {
+        Some(whole * viewport / content)
     } else {
         None
     }
@@ -172,9 +182,11 @@ fn shrink_ratio(content: f32, viewport: f32, threshold: f32) -> Option<f32> {
 /// 基準倍率から決めた現在の倍率、`viewport` はフレーム。`x_threshold` / `y_threshold` は
 /// 軸ごとのしきい値（窓の幅/高さに対する超過の割合。None なら、その軸は査定しない）。
 ///
-/// 超過が `0 < 超過率 ≤ しきい値` の軸は、その軸がちょうどフレームに収まる倍率へ縮小する。
-/// 縮小は縦横とも同じ比率（縦横比は維持）で、X→Yの順に評価する。Xの縮小でYの超過が減った結果、
-/// Yもしきい値に収まればYも対象になる。縮小しかしないので、評価済みの軸が再び超過することはない。
+/// 軸の最後の1歩の増分（コンテンツを `k` フレーム＋端数 `r` としたときの `r / フレーム`）が
+/// `0 < r/フレーム ≤ しきい値` の軸は、その軸がちょうど `k` フレーム分になる倍率へ縮小する。
+/// 縮小は縦横とも同じ比率（縦横比は維持）で、X→Yの順に評価する。Xの縮小でYの端数が変わった結果、
+/// Yもしきい値に収まればYも対象になる。縮小しかしないので、評価済みの軸の端数が増えることはない
+/// （フレーム数は増えない）。
 /// 範囲（最小倍率など）への丸めは呼び出し側で行う。
 pub fn plan_auto_shrink(
     scale: f32,
@@ -518,6 +530,60 @@ mod tests {
         let plan = plan_auto_shrink(1.0, img, vp, Some(0.10), None);
         assert!(plan.x && !plan.y);
         assert_eq!(stops_len(img * plan.scale, vp), (1, 2));
+    }
+
+    #[test]
+    fn auto_shrink_targets_the_remainder_beyond_whole_frames() {
+        let vp = v(1000.0, 1000.0);
+        // 高さ2.05・2.16・3.10・3.16フレーム: 最終コマの新規が5〜16%のとき、整数フレーム分へ縮む。
+        for (frames, whole) in [(2.05f32, 2.0f32), (2.16, 2.0), (3.10, 3.0), (3.16, 3.0), (4.05, 4.0)] {
+            let img = v(500.0, 1000.0 * frames);
+            assert_eq!(stops_len(img, vp).1, whole as usize + 1, "前提: 縮小前は {frames} フレームで {} コマ", whole as usize + 1);
+            let plan = plan_auto_shrink(1.0, img, vp, None, Some(0.16));
+            assert!(!plan.x && plan.y, "{frames} フレームが対象外");
+            assert!((plan.scale - whole / frames).abs() < 1e-5, "{frames}: {}", plan.scale);
+            assert_eq!(stops_len(img * plan.scale, vp).1, whole as usize, "{frames}: 縮小後は {whole} コマ");
+        }
+        // しきい値を超える端数（2.17・2.30）と、ちょうど整数フレームは対象外。
+        for frames in [2.17f32, 2.30, 2.50, 3.17] {
+            assert!(!plan_auto_shrink(1.0, v(500.0, 1000.0 * frames), vp, None, Some(0.16)).applies(), "{frames}");
+        }
+        for frames in [2.0f32, 3.0, 4.0] {
+            assert!(!plan_auto_shrink(1.0, v(500.0, 1000.0 * frames), vp, None, Some(0.16)).applies(), "{frames}");
+        }
+        // Xも同じ規則（横に2.16フレーム）。
+        let plan = plan_auto_shrink(1.0, v(2160.0, 500.0), vp, Some(0.16), None);
+        assert!(plan.x && !plan.y && (plan.scale - 2.0 / 2.16).abs() < 1e-5);
+    }
+
+    #[test]
+    fn auto_shrink_matches_the_last_step_increment_for_every_page_ratio() {
+        // 定義: 格子の最後のコマが直前のコマより進む量（フレームに対する割合）が、しきい値以下なら縮小する。
+        // 1.00〜6.00フレーム・2〜30%（2%刻み）・X/Yの総当たりで、判定が定義と一致する。
+        let vp = v(1000.0, 1000.0);
+        for pct in (2..=30).step_by(2) {
+            let thr = pct as f32 / 100.0;
+            for i in 100..=600 {
+                let c = i as f32 / 100.0;
+                let gx = KomaGrid::new(v(1000.0 * c, 500.0), vp, ReadDir::LeftToRight);
+                let gy = KomaGrid::new(v(500.0, 1000.0 * c), vp, ReadDir::LeftToRight);
+                let last_step = |stops: &Vec<f32>| {
+                    let n = stops.len();
+                    (n >= 2).then(|| (stops[n - 1] - stops[n - 2]) / 1000.0)
+                };
+                let want_x = last_step(&gx.xs).is_some_and(|d| d <= thr + 1e-4);
+                let want_y = last_step(&gy.ys).is_some_and(|d| d <= thr + 1e-4);
+                let px = plan_auto_shrink(1.0, v(1000.0 * c, 500.0), vp, Some(thr), None);
+                let py = plan_auto_shrink(1.0, v(500.0, 1000.0 * c), vp, None, Some(thr));
+                assert_eq!(px.x, want_x, "X c={c} thr={pct}%");
+                assert_eq!(py.y, want_y, "Y c={c} thr={pct}%");
+                // 対象なら、縮小後の最後の1歩の増分は100%（=整数フレームぴったり）になり、コマ数は減る。
+                if want_y {
+                    assert!(py.scale < 1.0);
+                    assert!(stops_len(v(500.0, 1000.0 * c) * py.scale, vp).1 < gy.ys.len(), "Y c={c} thr={pct}%");
+                }
+            }
+        }
     }
 
     #[test]
