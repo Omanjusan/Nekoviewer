@@ -352,8 +352,9 @@ impl NekoviewApp {
                 let active = self.rating_sort.key == Some(key);
                 let r = ui.scope(|ui| {
                     if active {
+                        // 第1セット（青）と区別する。赤 = 主軸が第2セット
                         ui.visuals_mut().selection.bg_fill =
-                            egui::Color32::from_rgb(30, 100, 200);
+                            egui::Color32::from_rgb(170, 40, 40);
                         ui.visuals_mut().selection.stroke.color = egui::Color32::WHITE;
                     }
                     ui.selectable_label(active, key.label())
