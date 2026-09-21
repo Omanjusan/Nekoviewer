@@ -558,6 +558,10 @@ impl NekoviewApp {
             self.handle_bookmark_save_action(action);
         }
 
+        if let Some(action) = output.rating_save_action {
+            self.handle_rating_save_action(action);
+        }
+
         if output.favorite_add_requested {
             self.handle_favorite_add_request();
         }
@@ -870,6 +874,31 @@ impl NekoviewApp {
         self.refresh_saved_archive_settings(&archive_path);
     }
 
+    /// 評価オーバーレイでの操作をDBへ反映する。評価は絶対値で保存する（冪等）。
+    /// 未評価に戻した場合は、書込み成功後にビューアー窓のトーストで通知する。
+    fn handle_rating_save_action(&mut self, action: crate::controller::RatingSaveAction) {
+        let Some(db) = self.spread_db.clone() else { return };
+        let mut viewer_guard = self.viewer.lock().unwrap();
+        let Some(viewer) = viewer_guard.as_mut() else { return };
+        let archive_path = viewer.archive_path().clone();
+        let Some(filename) = archive_path.file_name().and_then(|n| n.to_str()) else { return };
+        let archive_dir = archive_path.parent()
+            .unwrap_or(&self.current_dir)
+            .to_path_buf();
+
+        match action {
+            crate::controller::RatingSaveAction::Set(half) => {
+                crate::spread_state::write_archive_rating(&db, &archive_dir, filename, half);
+            }
+            crate::controller::RatingSaveAction::Clear => {
+                // 既に未評価でも毎回通知する（押した結果を必ず返す）
+                if crate::spread_state::write_archive_rating(&db, &archive_dir, filename, 0) {
+                    viewer.set_toast(i18n::t().toast_rating_cleared().to_string());
+                }
+            }
+        }
+    }
+
     /// 右クリックメニュー「お気に入りに追加」を処理する。フォルダ選択等は行わず、
     /// 未整理のお気に入りへの新規登録のみを行うワンアクション。既に何らかの形で
     /// （未整理・フォルダ割当済みいずれでも）登録済みの場合は何もしない。
@@ -1102,6 +1131,15 @@ impl NekoviewApp {
                 }
                 state.set_toast(i18n::t().toast_bookmark_invalidated().to_string());
             }
+        }
+        // 訪問回数を+1し、保存済みの評価を表示に反映する（生画像ファイルは評価の対象外）。
+        // 評価はここでは書き換えない（触るまで未評価の状態を維持する）。
+        if !state.is_raw_file()
+            && let Some(db) = self.spread_db.as_ref()
+        {
+            crate::spread_state::record_archive_visit(db, archive_dir, filename);
+            let rating = crate::spread_state::read_archive_rating(db, archive_dir, filename);
+            state.set_saved_rating(rating.map_or(0, |r| r.rating_half));
         }
         let saved_thumbnail_selection = self.spread_db.as_ref().and_then(|db| {
             crate::spread_state::read_thumbnail_selection(db, archive_dir, filename)

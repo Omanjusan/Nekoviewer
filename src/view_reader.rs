@@ -491,8 +491,11 @@ pub struct ViewerState {
     shift_scroll_acc: f32,
     /// トーストメッセージ: (テキスト, 消去予定のegui時刻) None=非表示
     toast: Option<(String, Option<f64>)>,
-    /// 評価オーバーレイ（MOCK）: 半星値 0=未評価 / 1..=10。メモリ上のみで永続化しない
-    rating_mock_half: u8,
+    /// 評価オーバーレイに出す半星値 0=未評価 / 1..=10。open_viewerがDB保存値で初期化し、
+    /// ★クリックで即更新する（DBへの書込みは pending_rating_action 経由でapp側が行う）。
+    rating_half: u8,
+    /// app側へ渡す評価の保存要求（1フレームに最後の操作だけ保持）
+    pending_rating_action: Option<crate::controller::RatingSaveAction>,
     /// 評価オーバーレイをXで閉じた（このビューアを開いている間は再表示しない）
     rating_overlay_dismissed: bool,
     /// フェーズ6: 直近フレームで観測したウィンドウ描画領域サイズ（物理px）。
@@ -833,7 +836,8 @@ impl ViewerState {
             is_raw_file: false,
             shift_scroll_acc: 0.0,
             toast: None,
-            rating_mock_half: 0,
+            rating_half: 0,
+            pending_rating_action: None,
             rating_overlay_dismissed: false,
             content_px: CONTENT_PX_PLACEHOLDER,
             thumb_textures: HashMap::new(),
@@ -933,7 +937,8 @@ impl ViewerState {
             is_raw_file: true,
             shift_scroll_acc: 0.0,
             toast: None,
-            rating_mock_half: 0,
+            rating_half: 0,
+            pending_rating_action: None,
             rating_overlay_dismissed: false,
             content_px: CONTENT_PX_PLACEHOLDER,
             thumb_textures: HashMap::new(),
@@ -1300,6 +1305,34 @@ impl ViewerState {
         self.pending_bookmark_action.take()
     }
 
+    /// open_viewerがDBの保存値で評価表示を初期化する。
+    pub fn set_saved_rating(&mut self, rating_half: u8) {
+        self.rating_half = rating_half.min(crate::rating_overlay::MAX_HALF);
+    }
+
+    /// 評価オーバーレイでの操作を反映する。表示値は即時に更新し、保存はapp側へ要求する。
+    /// 値は絶対値なので、連打・押し直しでも結果は同じ（冪等）。
+    fn apply_rating_event(&mut self, event: crate::rating_overlay::RatingEvent) {
+        use crate::controller::RatingSaveAction;
+        use crate::rating_overlay::RatingEvent;
+        match event {
+            RatingEvent::None => {}
+            RatingEvent::Set(half) => {
+                self.rating_half = half.min(crate::rating_overlay::MAX_HALF);
+                self.pending_rating_action = Some(RatingSaveAction::Set(self.rating_half));
+            }
+            RatingEvent::Unset => {
+                self.rating_half = 0;
+                self.pending_rating_action = Some(RatingSaveAction::Clear);
+            }
+            RatingEvent::Close => self.rating_overlay_dismissed = true,
+        }
+    }
+
+    pub fn take_rating_action(&mut self) -> Option<crate::controller::RatingSaveAction> {
+        self.pending_rating_action.take()
+    }
+
     pub fn set_saved_thumbnail_selection(
         &mut self,
         selection: Option<crate::spread_state::ThumbnailSelection>,
@@ -1594,7 +1627,7 @@ impl ViewerState {
         let ctx = ui.ctx().clone();
         let viewer_style = ui.style().clone();
         if !self.open || self.entries.is_empty() {
-            return ViewerOutput { nav: ViewerNav::None, close_requested: !self.open, save_slots: None, spread_save_action: None, sort_save_action: None, thumbnail_save_action: None, bookmark_save_action: None, favorite_add_requested: false, toggle_translate_window: false, tool_palette_changed: false, magnifier_settings_changed: false };
+            return ViewerOutput { nav: ViewerNav::None, close_requested: !self.open, save_slots: None, spread_save_action: None, sort_save_action: None, thumbnail_save_action: None, bookmark_save_action: None, rating_save_action: None, favorite_add_requested: false, toggle_translate_window: false, tool_palette_changed: false, magnifier_settings_changed: false };
         }
 
         // ── フレーム入力を一括収集（ctx.input はこの1回のみ）────────────────
@@ -1842,11 +1875,12 @@ impl ViewerState {
         let sort_save_action = self.take_sort_action();
         let thumbnail_save_action = self.take_thumbnail_action();
         let bookmark_save_action = self.take_bookmark_action();
+        let rating_save_action = self.take_rating_action();
         let favorite_add_requested = self.take_favorite_add_request();
         let toggle_translate_window = self.take_translate_toggle_request();
         self.maybe_open_file_detail_dialog();
         self.draw_file_detail_dialog(&ctx);
-        ViewerOutput { nav, close_requested: close_self, save_slots, spread_save_action, sort_save_action, thumbnail_save_action, bookmark_save_action, favorite_add_requested, toggle_translate_window, tool_palette_changed, magnifier_settings_changed: std::mem::take(&mut self.magnifier_settings_dirty) }
+        ViewerOutput { nav, close_requested: close_self, save_slots, spread_save_action, sort_save_action, thumbnail_save_action, bookmark_save_action, rating_save_action, favorite_add_requested, toggle_translate_window, tool_palette_changed, magnifier_settings_changed: std::mem::take(&mut self.magnifier_settings_dirty) }
     }
 
     /// ツールパレットの変更確定処理。image_filterのpoll_image_filter_debounceと同じ考え方で、
@@ -3002,18 +3036,10 @@ impl ViewerState {
                 p.galley(bg_pos + pad, tg, egui::Color32::WHITE);
             }
 
-            // ── 評価オーバーレイ（最終ページ表示中。MOCK: 値はメモリ上のみ）──────────
+            // ── 評価オーバーレイ（最終ページ表示中。触らなければ何も保存しない）──────
             if let Some(band) = rating_rect {
-                match crate::rating_overlay::show(ui, band, self.rating_mock_half, i18n::t().rating_unset_button()) {
-                    crate::rating_overlay::RatingEvent::None => {}
-                    crate::rating_overlay::RatingEvent::Set(half) => self.rating_mock_half = half,
-                    crate::rating_overlay::RatingEvent::Unset => {
-                        self.rating_mock_half = 0;
-                        // 既に未評価でも毎回出す（押した結果を必ず返す）
-                        self.set_toast(i18n::t().toast_rating_cleared().to_string());
-                    }
-                    crate::rating_overlay::RatingEvent::Close => self.rating_overlay_dismissed = true,
-                }
+                let event = crate::rating_overlay::show(ui, band, self.rating_half, i18n::t().rating_unset_button());
+                self.apply_rating_event(event);
             }
 
             // ── ツールパレット：最前面オーバーレイ ────────────────────────────
@@ -6015,6 +6041,55 @@ mod bookmark_restore_tests {
         assert!(viewer.restore_bookmark_position("second"));
 
         assert_eq!(viewer.spread_base, 1, "しおり復帰が見開き復元を上書きして残る");
+    }
+
+    #[test]
+    fn rating_click_updates_value_and_requests_an_absolute_save() {
+        use crate::controller::RatingSaveAction;
+        use crate::rating_overlay::RatingEvent;
+        let mut viewer = archive_viewer();
+        viewer.set_saved_rating(7);
+        assert_eq!(viewer.rating_half, 7, "DB保存値で初期表示する");
+        assert_eq!(viewer.take_rating_action(), None, "触らなければ保存要求は出ない");
+
+        viewer.apply_rating_event(RatingEvent::Set(3));
+        assert_eq!(viewer.rating_half, 3);
+        assert_eq!(viewer.take_rating_action(), Some(RatingSaveAction::Set(3)));
+        assert_eq!(viewer.take_rating_action(), None, "要求は1回で取り出される");
+
+        // 同じ位置の連打は毎回同じ絶対値の保存要求になる
+        viewer.apply_rating_event(RatingEvent::Set(3));
+        viewer.apply_rating_event(RatingEvent::Set(3));
+        assert_eq!(viewer.take_rating_action(), Some(RatingSaveAction::Set(3)));
+    }
+
+    #[test]
+    fn rating_clear_requests_a_clear_even_when_already_unrated() {
+        use crate::controller::RatingSaveAction;
+        use crate::rating_overlay::RatingEvent;
+        let mut viewer = archive_viewer();
+        assert_eq!(viewer.rating_half, 0);
+        viewer.apply_rating_event(RatingEvent::Unset);
+        assert_eq!(viewer.rating_half, 0);
+        assert_eq!(viewer.take_rating_action(), Some(RatingSaveAction::Clear));
+    }
+
+    #[test]
+    fn rating_close_only_hides_the_overlay_and_never_requests_a_save() {
+        use crate::rating_overlay::RatingEvent;
+        let mut viewer = archive_viewer();
+        viewer.set_saved_rating(4);
+        viewer.apply_rating_event(RatingEvent::Close);
+        assert!(viewer.rating_overlay_dismissed);
+        assert_eq!(viewer.rating_half, 4, "Xでは評価値を変えない");
+        assert_eq!(viewer.take_rating_action(), None);
+    }
+
+    #[test]
+    fn saved_rating_above_max_is_clamped_for_display() {
+        let mut viewer = archive_viewer();
+        viewer.set_saved_rating(99);
+        assert_eq!(viewer.rating_half, crate::rating_overlay::MAX_HALF);
     }
 }
 
