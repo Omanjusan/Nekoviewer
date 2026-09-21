@@ -1175,7 +1175,9 @@ impl NekoviewApp {
                                 pending_navigate = Some(GridNav::Real(parent.clone()));
                             }
                             response.context_menu(|ui| {
-                                if ui.button(i18n::t().explorer_open_folder_menu()).clicked() {
+                                let r_item = ui.button(i18n::t().explorer_open_folder_menu());
+                                help_tip_auto(&r_item, &i18n::t().help_card_open_folder());
+                                if r_item.clicked() {
                                     if let Some(dir) = &self.viewing_dir {
                                         crate::translate::open_in_file_manager(dir);
                                     }
@@ -1213,7 +1215,9 @@ impl NekoviewApp {
                                 pending_navigate = Some(GridNav::Real(dir_path.clone()));
                             }
                             response.context_menu(|ui| {
-                                if ui.button(i18n::t().explorer_open_folder_menu()).clicked() {
+                                let r_item = ui.button(i18n::t().explorer_open_folder_menu());
+                                help_tip_auto(&r_item, &i18n::t().help_card_open_folder());
+                                if r_item.clicked() {
                                     if let Some(dir) = &self.viewing_dir {
                                         crate::translate::open_in_file_manager(dir);
                                     }
@@ -1712,40 +1716,56 @@ impl NekoviewApp {
 
                             if !self.multi_selected.is_empty() {
                                 let count = self.multi_selected.len();
-                                if ui.button(i18n::t().favorite_detail_menu_bulk(count)).clicked() {
+                                let r_item = ui.button(i18n::t().favorite_detail_menu_bulk(count));
+                                help_tip_auto(&r_item, &i18n::t().help_card_favorite());
+                                if r_item.clicked() {
                                     self.open_favorite_detail_dialog_for_paths(raw_targets.clone());
                                     ui.close();
                                 }
                                 if !filtered_targets.is_empty() {
                                     let fcount = filtered_targets.len();
-                                    if ui.button(i18n::t().sort_condition_menu_bulk(fcount)).clicked() {
+                                    let r_item = ui.button(i18n::t().sort_condition_menu_bulk(fcount));
+                                    help_tip_auto(&r_item, &i18n::t().help_card_sort());
+                                    if r_item.clicked() {
                                         self.open_sort_condition_dialog_for_paths(filtered_targets.clone());
                                         ui.close();
                                     }
-                                    if ui.button(i18n::t().bookmark_setting_menu_bulk(fcount)).clicked() {
+                                    let r_item = ui.button(i18n::t().bookmark_setting_menu_bulk(fcount));
+                                    help_tip_auto(&r_item, &i18n::t().help_card_bookmark());
+                                    if r_item.clicked() {
                                         self.open_bookmark_setting_dialog_for_paths(filtered_targets.clone());
                                         ui.close();
                                     }
-                                    if ui.button(i18n::t().spread_setting_menu_bulk(fcount)).clicked() {
+                                    let r_item = ui.button(i18n::t().spread_setting_menu_bulk(fcount));
+                                    help_tip_auto(&r_item, &i18n::t().help_card_spread());
+                                    if r_item.clicked() {
                                         self.open_spread_setting_dialog_for_paths(filtered_targets.clone());
                                         ui.close();
                                     }
                                 }
                             } else {
-                                if ui.button(i18n::t().favorite_detail_menu()).clicked() {
+                                let r_item = ui.button(i18n::t().favorite_detail_menu());
+                                help_tip_auto(&r_item, &i18n::t().help_card_favorite());
+                                if r_item.clicked() {
                                     self.open_favorite_detail_dialog_for_paths(raw_targets.clone());
                                     ui.close();
                                 }
                                 if !filtered_targets.is_empty() {
-                                    if ui.button(i18n::t().sort_condition_menu()).clicked() {
+                                    let r_item = ui.button(i18n::t().sort_condition_menu());
+                                    help_tip_auto(&r_item, &i18n::t().help_card_sort());
+                                    if r_item.clicked() {
                                         self.open_sort_condition_dialog_for_paths(filtered_targets.clone());
                                         ui.close();
                                     }
-                                    if ui.button(i18n::t().bookmark_setting_menu()).clicked() {
+                                    let r_item = ui.button(i18n::t().bookmark_setting_menu());
+                                    help_tip_auto(&r_item, &i18n::t().help_card_bookmark());
+                                    if r_item.clicked() {
                                         self.open_bookmark_setting_dialog_for_paths(filtered_targets.clone());
                                         ui.close();
                                     }
-                                    if ui.button(i18n::t().spread_setting_menu()).clicked() {
+                                    let r_item = ui.button(i18n::t().spread_setting_menu());
+                                    help_tip_auto(&r_item, &i18n::t().help_card_spread());
+                                    if r_item.clicked() {
                                         self.open_spread_setting_dialog_for_paths(filtered_targets.clone());
                                         ui.close();
                                     }
@@ -1753,7 +1773,9 @@ impl NekoviewApp {
                             }
 
                             ui.separator();
-                            if ui.button(i18n::t().explorer_open_folder_menu()).clicked() {
+                            let r_item = ui.button(i18n::t().explorer_open_folder_menu());
+                            help_tip_auto(&r_item, &i18n::t().help_card_open_folder());
+                            if r_item.clicked() {
                                 if let Some(dir) = &self.viewing_dir {
                                     crate::translate::open_in_file_manager(dir);
                                 }

@@ -4632,6 +4632,305 @@ impl Lang {
             },
         }
     }
+
+    pub fn help_card_open_folder(self) -> HelpDoc {
+        match self {
+            Lang::Japanese => HelpDoc {
+                title: "フォルダを開く",
+                sections: &[(
+                    "",
+                    "OS標準のファイラーで、いま表示しているフォルダを開く。\n\
+                     右クリックしたカード自体ではなく、表示中のフォルダが対象になる。",
+                )],
+            },
+            Lang::English => HelpDoc {
+                title: "Open Folder",
+                sections: &[(
+                    "",
+                    "Opens the folder currently shown in the OS file manager.\n\
+                     The target is the folder being shown, not the card you right-clicked.",
+                )],
+            },
+            Lang::Chinese => HelpDoc {
+                title: "打开文件夹",
+                sections: &[(
+                    "",
+                    "用系统文件管理器打开当前显示的文件夹。\n\
+                     对象是当前显示的文件夹，而不是右键点击的那张卡片。",
+                )],
+            },
+        }
+    }
+
+    pub fn help_card_favorite(self) -> HelpDoc {
+        match self {
+            Lang::Japanese => HelpDoc {
+                title: "お気に入り詳細設定",
+                sections: &[
+                    (
+                        "",
+                        "このファイルをお気に入りに登録・解除し、登録先のお気に入りフォルダを選ぶ。",
+                    ),
+                    (
+                        "■ 複数選択しているとき",
+                        "選択中のすべてのファイルが対象になる。ダイアログには、全員に共通するお気に入りフォルダだけが出る。",
+                    ),
+                ],
+            },
+            Lang::English => HelpDoc {
+                title: "Favorite details",
+                sections: &[
+                    (
+                        "",
+                        "Adds or removes this file from favorites and picks the favorites folders it belongs to.",
+                    ),
+                    (
+                        "■ With multiple selection",
+                        "All selected files are targeted. The dialog only shows the favorites folders shared by all of them.",
+                    ),
+                ],
+            },
+            Lang::Chinese => HelpDoc {
+                title: "收藏详细设置",
+                sections: &[
+                    (
+                        "",
+                        "将此文件加入或移出收藏，并选择其所属的收藏文件夹。",
+                    ),
+                    (
+                        "■ 多选时",
+                        "所有选中的文件都是对象。对话框中只显示所有文件共有的收藏文件夹。",
+                    ),
+                ],
+            },
+        }
+    }
+
+    pub fn help_card_sort(self) -> HelpDoc {
+        match self {
+            Lang::Japanese => HelpDoc {
+                title: "ソート条件...",
+                sections: &[
+                    (
+                        "",
+                        "このアーカイブをビューアーで開いたときの、ページの並び順を保存する。\n\
+                         キーは名前／自然数／日付、向きは昇順／降順から選ぶ。",
+                    ),
+                    (
+                        "■ 複数選択しているとき",
+                        "選択中のすべてのアーカイブに一括で適用する。\n\
+                         フォルダ、単体の画像、開けないアーカイブは対象外。",
+                    ),
+                ],
+            },
+            Lang::English => HelpDoc {
+                title: "Sort condition...",
+                sections: &[
+                    (
+                        "",
+                        "Saves the page order used when this archive is opened in the viewer.\n\
+                         Pick a key (name / natural / date) and a direction (asc / desc).",
+                    ),
+                    (
+                        "■ With multiple selection",
+                        "Applied to all selected archives at once.\n\
+                         Folders, single images and archives that cannot be opened are excluded.",
+                    ),
+                ],
+            },
+            Lang::Chinese => HelpDoc {
+                title: "排序条件...",
+                sections: &[
+                    (
+                        "",
+                        "保存在查看器中打开此压缩包时的页面排列顺序。\n\
+                         排序键可选名称/自然数/日期，方向可选升序/降序。",
+                    ),
+                    (
+                        "■ 多选时",
+                        "一次性应用到所有选中的压缩包。\n\
+                         文件夹、单张图片和无法打开的压缩包不在范围内。",
+                    ),
+                ],
+            },
+        }
+    }
+
+    pub fn help_card_bookmark(self) -> HelpDoc {
+        match self {
+            Lang::Japanese => HelpDoc {
+                title: "しおり保存...",
+                sections: &[
+                    (
+                        "",
+                        "このアーカイブで、しおりを保存するかどうかを切り替える。\n\
+                         ONだと、途中で閉じた位置を覚えておき、次に開いたときにその位置へ自動で戻る。",
+                    ),
+                    (
+                        "■ 複数選択しているとき",
+                        "選択中のすべてのアーカイブに一括で適用する。\n\
+                         フォルダ、単体の画像、開けないアーカイブは対象外。",
+                    ),
+                ],
+            },
+            Lang::English => HelpDoc {
+                title: "Save bookmark...",
+                sections: &[
+                    (
+                        "",
+                        "Switches whether a bookmark is saved for this archive.\n\
+                         When ON, the position where you closed it is remembered and restored the next time you open it.",
+                    ),
+                    (
+                        "■ With multiple selection",
+                        "Applied to all selected archives at once.\n\
+                         Folders, single images and archives that cannot be opened are excluded.",
+                    ),
+                ],
+            },
+            Lang::Chinese => HelpDoc {
+                title: "保存书签...",
+                sections: &[
+                    (
+                        "",
+                        "切换是否为此压缩包保存书签。\n\
+                         开启后会记住中途关闭时的位置，下次打开时自动回到该位置。",
+                    ),
+                    (
+                        "■ 多选时",
+                        "一次性应用到所有选中的压缩包。\n\
+                         文件夹、单张图片和无法打开的压缩包不在范围内。",
+                    ),
+                ],
+            },
+        }
+    }
+
+    pub fn help_card_spread(self) -> HelpDoc {
+        match self {
+            Lang::Japanese => HelpDoc {
+                title: "見開き設定...",
+                sections: &[
+                    (
+                        "",
+                        "このアーカイブを開くときの表示モード（単ページ／右綴じ／左綴じ）と、\n\
+                         1ページ目の扱い（単ページとして開く／最初から見開きで開く）を保存する。",
+                    ),
+                    (
+                        "■ 複数選択しているとき",
+                        "選択中のすべてのアーカイブに一括で適用する。\n\
+                         フォルダ、単体の画像、開けないアーカイブは対象外。",
+                    ),
+                ],
+            },
+            Lang::English => HelpDoc {
+                title: "Spread settings...",
+                sections: &[
+                    (
+                        "",
+                        "Saves the display mode used when opening this archive (single page / right binding / left binding)\n\
+                         and how the first page is treated (open as a single page / open as a spread from the start).",
+                    ),
+                    (
+                        "■ With multiple selection",
+                        "Applied to all selected archives at once.\n\
+                         Folders, single images and archives that cannot be opened are excluded.",
+                    ),
+                ],
+            },
+            Lang::Chinese => HelpDoc {
+                title: "跨页设置...",
+                sections: &[
+                    (
+                        "",
+                        "保存打开此压缩包时的显示模式（单页/右开本/左开本），\n\
+                         以及首页的处理方式（首页按单页打开/从一开始就按跨页打开）。",
+                    ),
+                    (
+                        "■ 多选时",
+                        "一次性应用到所有选中的压缩包。\n\
+                         文件夹、单张图片和无法打开的压缩包不在范围内。",
+                    ),
+                ],
+            },
+        }
+    }
+
+    pub fn help_fav_detail_enable(self) -> HelpDoc {
+        match self {
+            Lang::Japanese => HelpDoc {
+                title: "お気に入り登録の最終確認",
+                sections: &[(
+                    "",
+                    "ここにチェックが入っていないと、お気に入りには登録されない。",
+                )],
+            },
+            Lang::English => HelpDoc {
+                title: "Final confirmation of the favorite",
+                sections: &[(
+                    "",
+                    "Unless this is checked, the file is not registered as a favorite.",
+                )],
+            },
+            Lang::Chinese => HelpDoc {
+                title: "收藏登记的最终确认",
+                sections: &[(
+                    "",
+                    "如果没有勾选此项，就不会登记为收藏。",
+                )],
+            },
+        }
+    }
+
+    pub fn help_fav_detail_folders(self) -> HelpDoc {
+        match self {
+            Lang::Japanese => HelpDoc {
+                title: "お気に入りフォルダ設定",
+                sections: &[
+                    ("[左]", "選択可能なお気に入りフォルダの一覧。"),
+                    ("[右]", "このファイルが属しているお気に入りフォルダの一覧。"),
+                    (
+                        "■ 右側が空のとき",
+                        "右側にひとつも選択がない場合は、未整理のお気に入りとして分類される。",
+                    ),
+                    (
+                        "■ 複数のフォルダに属せる",
+                        "このお気に入りフォルダは、一度に多数のフォルダに属することができる。",
+                    ),
+                ],
+            },
+            Lang::English => HelpDoc {
+                title: "Favorites folder settings",
+                sections: &[
+                    ("[Left]", "The list of favorites folders you can choose from."),
+                    ("[Right]", "The list of favorites folders this file belongs to."),
+                    (
+                        "■ When the right side is empty",
+                        "If nothing is selected on the right, the file is classified as an unsorted favorite.",
+                    ),
+                    (
+                        "■ Can belong to several folders",
+                        "A favorite can belong to many favorites folders at once.",
+                    ),
+                ],
+            },
+            Lang::Chinese => HelpDoc {
+                title: "收藏文件夹设置",
+                sections: &[
+                    ("[左]", "可选择的收藏文件夹列表。"),
+                    ("[右]", "此文件所属的收藏文件夹列表。"),
+                    (
+                        "■ 右侧为空时",
+                        "如果右侧一项都没有选择，则归类为未整理的收藏。",
+                    ),
+                    (
+                        "■ 可同时属于多个文件夹",
+                        "一个收藏可以同时属于多个收藏文件夹。",
+                    ),
+                ],
+            },
+        }
+    }
 }
 
 static LANG: AtomicU8 = AtomicU8::new(0);

@@ -731,7 +731,9 @@ impl NekoviewApp {
         // 実パスを持たない表示（`/`・リンク切れ）では viewing_dir が None で、開く対象が無い
         if let Some(dir) = self.viewing_dir.clone() {
             response.context_menu(|ui| {
-                if ui.button(i18n::t().explorer_open_folder_menu()).clicked() {
+                let r_item = ui.button(i18n::t().explorer_open_folder_menu());
+                help_tip_auto(&r_item, &i18n::t().help_card_open_folder());
+                if r_item.clicked() {
                     crate::translate::open_in_file_manager(&dir);
                     ui.close();
                 }
