@@ -823,12 +823,26 @@ impl NekoviewApp {
     /// フィルタ文字列・ON/OFF・archives の並び替えのいずれかが変わった時に呼び、
     /// 表示・選択・キー操作の対象となる `filtered_indices` を作り直す。
     pub(super) fn recompute_filter(&mut self) {
-        if self.filter_enabled && !self.filter_text.trim().is_empty() {
+        let text_active = self.filter_enabled && !self.filter_text.trim().is_empty();
+        let rating_active = self.rating_filter.enabled;
+        if text_active || rating_active {
             let text = self.filter_text.clone();
+            // 評価は横断一覧でもキャッシュ経由で引く（未取得ぶんはここで遅延ロードされる）
+            let ratings: Vec<Option<u8>> = if rating_active {
+                let paths = self.archives.clone();
+                paths.iter().map(|p| self.archive_rating_of(p).map(|r| r.rating_half)).collect()
+            } else {
+                Vec::new()
+            };
             self.filtered_indices = self.archives.iter().enumerate()
-                .filter(|(_, p)| {
-                    let Some(name) = p.file_name().and_then(|n| n.to_str()) else { return false };
-                    dir::name_matches(&text, name)
+                .filter(|(i, p)| {
+                    if text_active {
+                        let Some(name) = p.file_name().and_then(|n| n.to_str()) else { return false };
+                        if !dir::name_matches(&text, name) {
+                            return false;
+                        }
+                    }
+                    !rating_active || self.rating_filter.matches(ratings[*i])
                 })
                 .map(|(i, _)| i)
                 .collect();

@@ -909,6 +909,8 @@ pub struct NekoviewApp {
     /// サムネフィルタ: 有効フラグ・入力文字列・絞り込み後の archives インデックス一覧
     filter_enabled: bool,
     filter_text: String,
+    /// 評価フィルタ（文字列フィルタとAND結合。チェックボックスで一括ON/OFF）
+    rating_filter: crate::rating_filter::RatingFilter,
     filtered_indices: Vec<usize>,
     /// 検索結果の履歴（新しい実行が先頭。セッション内のみ保持）
     search_history: Vec<SearchResultEntry>,
@@ -1218,6 +1220,7 @@ impl NekoviewApp {
             select_anchor: None,
             filter_enabled: true,
             filter_text: String::new(),
+            rating_filter: crate::rating_filter::RatingFilter::default(),
             filtered_indices: Vec::new(),
             search_history: Vec::new(),
             search_selected: None,

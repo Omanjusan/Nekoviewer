@@ -750,8 +750,13 @@ impl NekoviewApp {
         }
     }
 
-    /// サムネグリッド最下部の検索フィルタ行（ラベル＋チェックボックス＋テキスト入力）
+    /// サムネグリッド最下部のフィルタ行:
+    /// `filter: [☑][文字列........] │ [☑ score filter][==▾][★4.0▾]` ＋ 右端に少し空白。
+    /// 文字列フィルタと評価フィルタはそれぞれチェックボックスで一括ON/OFFし、AND結合する。
     fn draw_filter_bar(&mut self, ui: &mut egui::Ui) {
+        // 評価フィルタ群（縦線・チェック・比較・★）と右端の空白ぶん。文字列欄はこの残りを使う。
+        const RATING_GROUP_W: f32 = 290.0;
+        const RIGHT_GAP: f32 = 5.0;
         ui.separator();
         ui.horizontal(|ui| {
             ui.label(i18n::t().explorer_filter_label());
@@ -761,7 +766,7 @@ impl NekoviewApp {
                 self.filter_enabled,
                 egui::TextEdit::singleline(&mut self.filter_text)
                     .hint_text(i18n::t().explorer_filter_hint())
-                    .desired_width(ui.available_width()),
+                    .desired_width((ui.available_width() - RATING_GROUP_W).max(60.0)),
             );
             if resp.clicked() {
                 self.focused_pane = FocusPane::Filter;
@@ -775,6 +780,46 @@ impl NekoviewApp {
             if resp.changed() {
                 changed = true;
             }
+
+            // ── 評価フィルタ（縦線で文字列フィルタと区切る）──
+            ui.separator();
+            if ui.checkbox(&mut self.rating_filter.enabled, "score filter").changed() {
+                changed = true;
+            }
+            ui.add_enabled_ui(self.rating_filter.enabled, |ui| {
+                egui::ComboBox::from_id_salt("rating_filter_cmp")
+                    .width(56.0)
+                    .selected_text(self.rating_filter.cmp.label())
+                    .show_ui(ui, |ui| {
+                        for cmp in crate::rating_filter::RatingCmp::ALL {
+                            if ui
+                                .selectable_value(&mut self.rating_filter.cmp, cmp, cmp.label())
+                                .changed()
+                            {
+                                changed = true;
+                            }
+                        }
+                    });
+                egui::ComboBox::from_id_salt("rating_filter_threshold")
+                    .width(72.0)
+                    .selected_text(crate::rating_filter::star_label(self.rating_filter.threshold_half))
+                    .show_ui(ui, |ui| {
+                        for half in crate::rating_filter::THRESHOLD_CHOICES {
+                            if ui
+                                .selectable_value(
+                                    &mut self.rating_filter.threshold_half,
+                                    half,
+                                    crate::rating_filter::star_label(half),
+                                )
+                                .changed()
+                            {
+                                changed = true;
+                            }
+                        }
+                    });
+            });
+            ui.add_space(RIGHT_GAP);
+
             if changed {
                 self.recompute_filter();
             }
