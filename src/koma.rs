@@ -8,6 +8,8 @@
 //! - 並びはZ走査。行内は綴じ方向（右綴じ=右→左）、行末で次行の先頭側へ戻る（蛇行しない）。
 //! - 最終コマでの「次」・先頭コマでの「前」は `KomaMove::PageBoundary` を返し、
 //!   ページ送りは呼び出し側に任せる。
+//! - 軸の超過がわずか（窓の寸法に対する数％）でコマが増えるときは、縦横比を保ったまま縮小して
+//!   1コマに収められる（`plan_auto_shrink`）。
 
 use egui::Vec2;
 
@@ -131,6 +133,74 @@ fn nearest(stops: &[f32], v: f32) -> usize {
         }
     }
     best
+}
+
+// 自動縮小の査定はビューへ配線する（フェーズ3）まで未使用。
+/// 超過分の自動縮小の結果。
+#[allow(dead_code)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ShrinkPlan {
+    /// 縮小後の倍率。どの軸も対象でなければ、渡した倍率のまま。
+    pub scale: f32,
+    /// 横（X）の超過が対象になった（縮小でXが1コマに収まる）。
+    pub x: bool,
+    /// 縦（Y）の超過が対象になった。
+    pub y: bool,
+}
+
+#[allow(dead_code)]
+impl ShrinkPlan {
+    /// 縮小が起きるか。
+    pub fn applies(&self) -> bool {
+        self.x || self.y
+    }
+}
+
+/// 1軸の超過が「数％」に収まるとき、その軸をちょうどフレームに収める縮小率（1未満）を返す。
+/// 超過率は `(コンテンツ − フレーム) / フレーム`。`threshold` はその上限（0.10 = 10%）。
+/// 目に見えない超過（`FIT_EPS_PX` 以下＝既に1コマ）・フレームに収まる軸・不正な値は None。
+#[allow(dead_code)]
+fn shrink_ratio(content: f32, viewport: f32, threshold: f32) -> Option<f32> {
+    if !(viewport >= MIN_FRAME_PX && content.is_finite() && threshold.is_finite() && threshold > 0.0) {
+        return None;
+    }
+    let overflow = content - viewport;
+    if overflow > FIT_EPS_PX && overflow / viewport <= threshold + COUNT_EPS {
+        Some(viewport / content)
+    } else {
+        None
+    }
+}
+
+/// 超過分の自動縮小を査定する。`img` は倍率1.0での回転後の外接サイズ（原寸px）、`scale` は
+/// 基準倍率から決めた現在の倍率、`viewport` はフレーム。`x_threshold` / `y_threshold` は
+/// 軸ごとのしきい値（窓の幅/高さに対する超過の割合。None なら、その軸は査定しない）。
+///
+/// 超過が `0 < 超過率 ≤ しきい値` の軸は、その軸がちょうどフレームに収まる倍率へ縮小する。
+/// 縮小は縦横とも同じ比率（縦横比は維持）で、X→Yの順に評価する。Xの縮小でYの超過が減った結果、
+/// Yもしきい値に収まればYも対象になる。縮小しかしないので、評価済みの軸が再び超過することはない。
+/// 範囲（最小倍率など）への丸めは呼び出し側で行う。
+#[allow(dead_code)]
+pub fn plan_auto_shrink(
+    scale: f32,
+    img: Vec2,
+    viewport: Vec2,
+    x_threshold: Option<f32>,
+    y_threshold: Option<f32>,
+) -> ShrinkPlan {
+    let mut plan = ShrinkPlan { scale, x: false, y: false };
+    if !(scale > 0.0 && scale.is_finite()) {
+        return plan;
+    }
+    if let Some(r) = x_threshold.and_then(|t| shrink_ratio(img.x * plan.scale, viewport.x, t)) {
+        plan.scale *= r;
+        plan.x = true;
+    }
+    if let Some(r) = y_threshold.and_then(|t| shrink_ratio(img.y * plan.scale, viewport.y, t)) {
+        plan.scale *= r;
+        plan.y = true;
+    }
+    plan
 }
 
 /// コマ移動のアニメーション時間（秒）。移動距離に関係なく一定。
@@ -376,6 +446,124 @@ mod tests {
                 for w in stops.windows(2) {
                     assert!(w[1] - w[0] <= view + EPS, "gap between frames: {stops:?}");
                     assert!(w[1] > w[0]);
+                }
+            }
+        }
+    }
+
+    fn stops_len(content: Vec2, vp: Vec2) -> (usize, usize) {
+        let g = KomaGrid::new(content, vp, ReadDir::LeftToRight);
+        (g.xs.len(), g.ys.len())
+    }
+
+    #[test]
+    fn auto_shrink_is_a_no_op_without_thresholds_or_overflow() {
+        let (img, vp) = (v(800.0, 1200.0), v(1000.0, 1000.0));
+        // 対象なし（None）: そのまま。
+        let plan = plan_auto_shrink(1.0, img, vp, None, None);
+        assert_eq!(plan, ShrinkPlan { scale: 1.0, x: false, y: false });
+        assert!(!plan.applies());
+        // 収まる軸・ぴったりの軸・目に見えない超過（0.5px以下）は対象外。
+        let plan = plan_auto_shrink(0.8, v(1000.0, 1000.0), vp, Some(0.3), Some(0.3));
+        assert!(!plan.applies() && plan.scale == 0.8);
+        let plan = plan_auto_shrink(1.0, v(1000.4, 1000.0), vp, Some(0.3), Some(0.3));
+        assert!(!plan.applies());
+    }
+
+    #[test]
+    fn auto_shrink_fits_a_small_x_overflow_and_keeps_the_aspect_ratio() {
+        // 幅が5%超過（1050 vs 1000）。しきい値10%なら、縮小して1コマに収める。
+        let (img, vp) = (v(1050.0, 800.0), v(1000.0, 1000.0));
+        assert_eq!(stops_len(img * 1.0, vp).0, 2, "前提: 縮小前は横2コマ");
+        let plan = plan_auto_shrink(1.0, img, vp, Some(0.10), Some(0.10));
+        assert!(plan.x && !plan.y);
+        assert!((plan.scale - 1000.0 / 1050.0).abs() < 1e-6);
+        // 縮小後は、Xがちょうど収まる。縦横は同じ倍率で縮むので比が保たれる。
+        let content = img * plan.scale;
+        assert!((content.x - vp.x).abs() < 1e-3);
+        assert!((content.x / content.y - img.x / img.y).abs() < 1e-6);
+        assert_eq!(stops_len(content, vp).0, 1, "縮小後は横1コマ");
+    }
+
+    #[test]
+    fn auto_shrink_fits_a_small_y_overflow() {
+        let (img, vp) = (v(800.0, 1080.0), v(1000.0, 1000.0));
+        assert_eq!(stops_len(img * 1.0, vp).1, 2);
+        let plan = plan_auto_shrink(1.0, img, vp, Some(0.10), Some(0.10));
+        assert!(!plan.x && plan.y);
+        assert!((plan.scale - 1000.0 / 1080.0).abs() < 1e-6);
+        assert_eq!(stops_len(img * plan.scale, vp).1, 1);
+    }
+
+    #[test]
+    fn auto_shrink_threshold_is_inclusive_and_per_axis() {
+        let vp = v(1000.0, 1000.0);
+        // ちょうど10%は対象、10%を超えたら対象外。
+        assert!(plan_auto_shrink(1.0, v(1100.0, 500.0), vp, Some(0.10), None).x);
+        assert!(!plan_auto_shrink(1.0, v(1101.0, 500.0), vp, Some(0.10), None).applies());
+        // 軸ごとに別のしきい値: Xは5%超過でしきい値4%（対象外）、Yは8%超過でしきい値12%（対象）。
+        let plan = plan_auto_shrink(1.0, v(1050.0, 1080.0), vp, Some(0.04), Some(0.12));
+        assert!(!plan.x && plan.y);
+        assert!((plan.scale - 1000.0 / 1080.0).abs() < 1e-6);
+        // 片方の軸だけNone（OFF）: その軸は査定しない。
+        assert!(!plan_auto_shrink(1.0, v(1050.0, 500.0), vp, None, Some(0.3)).applies());
+        assert!(plan_auto_shrink(1.0, v(500.0, 1050.0), vp, None, Some(0.3)).y);
+    }
+
+    #[test]
+    fn auto_shrink_x_can_bring_y_within_its_threshold() {
+        // X: 10%超過（対象）。Y: 15%超過で、単独ではしきい値10%を超える。
+        // Xを縮めるとYも 1.15/1.1 = 約4.5% になり、しきい値に収まって対象になる。
+        let (img, vp) = (v(1100.0, 1150.0), v(1000.0, 1000.0));
+        let plan = plan_auto_shrink(1.0, img, vp, Some(0.10), Some(0.10));
+        assert!(plan.x && plan.y);
+        assert!((plan.scale - 1000.0 / 1150.0).abs() < 1e-5, "{}", plan.scale);
+        assert_eq!(stops_len(img * plan.scale, vp), (1, 1));
+        // Yしきい値がOFFなら、Xだけ縮小して、Yの超過は残る。
+        let plan = plan_auto_shrink(1.0, img, vp, Some(0.10), None);
+        assert!(plan.x && !plan.y);
+        assert_eq!(stops_len(img * plan.scale, vp), (1, 2));
+    }
+
+    #[test]
+    fn auto_shrink_leaves_a_large_overflow_alone() {
+        // Yが大きく超過（複数コマ）: しきい値（最大30%）を超えるので何もしない。
+        let plan = plan_auto_shrink(1.0, v(800.0, 2500.0), v(1000.0, 1000.0), Some(0.3), Some(0.3));
+        assert!(!plan.applies() && plan.scale == 1.0);
+    }
+
+    #[test]
+    fn auto_shrink_uses_the_scale_and_ignores_invalid_input() {
+        // 倍率0.5の原寸 2100×1000 → コンテンツ 1050×500。Xが5%超過。
+        let plan = plan_auto_shrink(0.5, v(2100.0, 1000.0), v(1000.0, 1000.0), Some(0.1), Some(0.1));
+        assert!(plan.x && (plan.scale - 0.5 * 1000.0 / 1050.0).abs() < 1e-6);
+        // 不正な値は何もしない。
+        let vp = v(1000.0, 1000.0);
+        for bad_scale in [0.0, -1.0, f32::NAN, f32::INFINITY] {
+            assert!(!plan_auto_shrink(bad_scale, v(1050.0, 1050.0), vp, Some(0.1), Some(0.1)).applies());
+        }
+        for bad_thr in [0.0, -0.1, f32::NAN, f32::INFINITY] {
+            assert!(!plan_auto_shrink(1.0, v(1050.0, 1050.0), vp, Some(bad_thr), Some(bad_thr)).applies());
+        }
+        assert!(!plan_auto_shrink(1.0, v(1050.0, 1050.0), v(0.0, f32::NAN), Some(0.1), Some(0.1)).applies());
+        assert!(!plan_auto_shrink(1.0, v(f32::NAN, f32::INFINITY), vp, Some(0.1), Some(0.1)).applies());
+    }
+
+    #[test]
+    fn auto_shrink_never_enlarges_and_covers_the_page_thresholds() {
+        // 2〜30%の全しきい値・超過率で、結果は必ず縮小（または不変）で、対象なら1コマに収まる。
+        let vp = v(1000.0, 800.0);
+        for pct in (2..=30).step_by(2) {
+            let thr = pct as f32 / 100.0;
+            for over in [1, 2, 5, 10, 20, 30, 31, 45] {
+                let img = v(1000.0 * (1.0 + over as f32 / 100.0), 700.0);
+                let plan = plan_auto_shrink(1.0, img, vp, Some(thr), None);
+                assert!(plan.scale <= 1.0);
+                if over <= pct {
+                    assert!(plan.x, "over={over} thr={pct}");
+                    assert_eq!(stops_len(img * plan.scale, vp).0, 1);
+                } else {
+                    assert!(!plan.x && plan.scale == 1.0, "over={over} thr={pct}");
                 }
             }
         }
