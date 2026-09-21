@@ -113,6 +113,7 @@ impl NekoviewApp {
     /// target が tree_root 配下でない場合（別ドライブ切替直後の競合等）は何もしない。
     pub(super) fn start_tree_autofocus(&mut self, target: PathBuf) {
         self.tree_autofocus_pending = None;
+        self.tree_autofocus_notify_abort = false;
         let Some(remaining) = tree_autofocus_components(&self.tree_root, &target) else {
             // target が tree_root 配下でない（別ドライブ切替直後の競合等）→ 何もしない
             self.tree_autofocus = None;
@@ -191,6 +192,10 @@ impl NekoviewApp {
                 None => {
                     // 対象パスがツリー上に存在しない（隠しディレクトリ等）→ ここまでで打ち切り
                     self.tree_autofocus = None;
+                    // 仮想タブの「実ツリーと同期」から始めた追従だけ、打ち切りをトーストで知らせる
+                    if std::mem::take(&mut self.tree_autofocus_notify_abort) {
+                        self.set_toast(i18n::t().virtual_tree_path_not_found());
+                    }
                     return;
                 }
             }
@@ -205,6 +210,17 @@ impl NekoviewApp {
         self.real_dir_stash.clear();
         self.current_dir = path.clone();
         self.start_scan();
+        self.reset_tree_root(path);
+        self.viewing_dir = None;
+        self.cd_summary = None;
+        self.cd_summary_rx = None;
+        self.persist_state();
+    }
+
+    /// 実ツリーのルートを差し替える（展開・子フォルダ・カーソル・追従は捨て、新しいルート直下を読み直す）。
+    /// 表示中のフォルダ（`current_dir` / `viewing_dir`）には触れない。ドライブ切替と、
+    /// 仮想タブの「実ツリーと同期」（表示はそのままツリーだけ別ドライブへ移す）の共通部分。
+    pub(super) fn reset_tree_root(&mut self, path: PathBuf) {
         self.tree_root = path.clone();
         self.tree_expanded.clear();
         self.tree_children.clear();
@@ -212,9 +228,6 @@ impl NekoviewApp {
         self.tree_cursor = None;
         self.tree_autofocus = None;
         self.tree_autofocus_pending = None;
-        self.viewing_dir = None;
-        self.cd_summary = None;
-        self.cd_summary_rx = None;
         self.tree_scan_pending = Some(TreeScanPending {
             path: path.clone(),
             rx: dir::spawn_scan_subdirs(path, {
@@ -222,7 +235,6 @@ impl NekoviewApp {
                 move || c.request_repaint()
             }),
         });
-        self.persist_state();
     }
 
     /// リロードボタンから呼ばれる。ドライブ一覧・現在CD位置・ツリーを再スキャンする。

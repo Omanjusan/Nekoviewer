@@ -810,6 +810,9 @@ pub struct NekoviewApp {
     tree_autofocus_pending: Option<TreeScanPending>,
     /// 自動追従が完了した直後の1フレームだけtrueにし、対象ノード描画時にスクロールを行わせる
     tree_autofocus_scroll_pending: bool,
+    /// 仮想タブの「実ツリーと同期」で始めた追従が、経路の途中で打ち切られたとき通知する
+    /// （`start_tree_autofocus` で下ろし、同期側が立てる。他の追従は通知しない）
+    tree_autofocus_notify_abort: bool,
     /// フレームごとに更新されるウィンドウサイズ（論理ピクセル）
     window_size: (u32, u32),
     /// ビューアウィンドウの位置・サイズスロット（viewer と共有して永続化）
@@ -1194,6 +1197,7 @@ impl NekoviewApp {
             tree_autofocus: None,
             tree_autofocus_pending: None,
             tree_autofocus_scroll_pending: false,
+            tree_autofocus_notify_abort: false,
             window_size: (1024, 768),
             viewer_slots,
             raw_image_files: std::collections::HashSet::new(),

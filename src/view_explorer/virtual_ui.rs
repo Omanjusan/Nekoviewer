@@ -14,6 +14,7 @@ mod delete;
 mod keys;
 mod register;
 mod rename;
+mod sync;
 use crate::gui_config::VirtualPosition;
 use broken::BrokenCheck;
 use delete::DeleteTarget;
@@ -213,6 +214,8 @@ enum TreeEvent {
     DoubleClick(u32),
     Register(u32),
     Rename(u32),
+    /// 実ツリーを、このノードの実パスまで展開して選択表示にする
+    Sync(u32),
     Delete(u32),
     /// ツリー全体の並び条件（ノードには依存しない）
     SortSetting,
@@ -251,12 +254,20 @@ fn children_of(nodes: &[TreeNode], parent: u32) -> Vec<&TreeNode> {
 
 /// 仮想ツリーの右クリックメニュー。`target` が行のid、行の外（ツリー内の余白）は None。
 /// 行の外では、ツリー全体に効く「ソート条件設定」だけが有効で、ほかはグレーアウトする。
-fn tree_context_menu(ui: &mut egui::Ui, target: Option<u32>, out: &mut Vec<TreeEvent>) {
+fn tree_context_menu(ui: &mut egui::Ui, target: Option<u32>, broken: &HashSet<u32>, out: &mut Vec<TreeEvent>) {
     // ルートは名前変更・削除の対象外。区切り線で「変更」「登録」「削除」「ソート」を分ける
     let node = target.filter(|id| *id != ROOT);
     if ui.add_enabled(node.is_some(), egui::Button::new(i18n::t().virtual_menu_rename())).clicked() {
         if let Some(id) = node {
             out.push(TreeEvent::Rename(id));
+        }
+        ui.close();
+    }
+    // 実パスへ辿れないノード（ルート・リンク切れ）は同期の対象外
+    let syncable = node.filter(|id| !broken.contains(id));
+    if ui.add_enabled(syncable.is_some(), egui::Button::new(i18n::t().virtual_menu_sync())).clicked() {
+        if let Some(id) = syncable {
+            out.push(TreeEvent::Sync(id));
         }
         ui.close();
     }
@@ -363,7 +374,7 @@ fn draw_tree_row(
             out.push(TreeEvent::DoubleClick(id));
         }
         if menu_on {
-            r.context_menu(|ui| tree_context_menu(ui, Some(id), out));
+            r.context_menu(|ui| tree_context_menu(ui, Some(id), broken, out));
         }
     });
     if is_expanded {
@@ -721,7 +732,7 @@ impl NekoviewApp {
                 let ring = (self.focused_pane == FocusPane::VirtualTab).then(|| self.virtual_cursor());
                 draw_tree(ui, &m.nodes, Some("/"), &m.expanded, viewing, true, ring, scroll_to_cursor, &m.broken, &mut events);
             });
-        bg.context_menu(|ui| tree_context_menu(ui, None, &mut events));
+        bg.context_menu(|ui| tree_context_menu(ui, None, &self.virtual_state.broken, &mut events));
         if !events.is_empty() {
             self.focused_pane = FocusPane::VirtualTab;
         }
@@ -731,6 +742,7 @@ impl NekoviewApp {
                 TreeEvent::Select(id) => self.select_virtual_node(id),
                 TreeEvent::DoubleClick(_) => {}
                 TreeEvent::Rename(id) => self.open_rename_dialog(id),
+                TreeEvent::Sync(id) => self.sync_real_tree(id),
                 TreeEvent::SortSetting => {
                     self.virtual_state.rename = None;
                     self.open_tree_sort_dialog(super::tree_sort_ui::TreeSortTarget::Virtual);

@@ -871,6 +871,54 @@ impl Lang {
         }
     }
 
+    pub fn virtual_menu_sync(self) -> &'static str {
+        match self {
+            Lang::Japanese => "実ツリーと同期",
+            Lang::English  => "Sync Real Tree View",
+            Lang::Chinese  => "同步实际目录树",
+        }
+    }
+
+    pub fn virtual_sync_drive_switched(self, drive: &str) -> String {
+        match self {
+            Lang::Japanese => format!("実ツリーを別のドライブ（{drive}）に切り替えました"),
+            Lang::English  => format!("Switched the real tree to another drive ({drive})"),
+            Lang::Chinese  => format!("已将实际目录树切换到另一个驱动器（{drive}）"),
+        }
+    }
+
+    pub fn virtual_sync_no_drive(self) -> &'static str {
+        match self {
+            Lang::Japanese => "同期できません：このフォルダを含むドライブが見つかりません",
+            Lang::English  => "Can't sync: no drive contains this folder",
+            Lang::Chinese  => "无法同步：找不到包含该文件夹的驱动器",
+        }
+    }
+
+    pub fn virtual_tree_hidden_on_path(self) -> &'static str {
+        match self {
+            Lang::Japanese => "経路に隠しフォルダがあるため、ツリー上では見えません（隠しフォルダ表示をONにすると見えます）",
+            Lang::English  => "A hidden folder on the path keeps it out of view (turn on \"show hidden folders\")",
+            Lang::Chinese  => "路径含隐藏文件夹，树中不可见（开启显示隐藏文件夹后可见）",
+        }
+    }
+
+    pub fn virtual_tree_path_not_found(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ツリー上で場所が見つからず、途中まで展開しました",
+            Lang::English  => "Path not found in the tree; expanded as far as possible",
+            Lang::Chinese  => "在树中找不到该路径，已展开到可达处",
+        }
+    }
+
+    pub fn virtual_folder_unreachable(self) -> &'static str {
+        match self {
+            Lang::Japanese => "フォルダに到達できません（リンク切れ・未接続）",
+            Lang::English  => "Folder is unreachable (broken link or disconnected)",
+            Lang::Chinese  => "无法访问该文件夹（链接失效或未连接）",
+        }
+    }
+
     pub fn tree_sort_menu(self) -> &'static str {
         match self {
             Lang::Japanese => "ソート条件設定",
