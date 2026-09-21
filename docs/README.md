@@ -23,6 +23,7 @@
 - [features/image-orientation.md](features/image-orientation.md) — Exif自動回転・手動回転・
   Exif ON/OFF設定
 - [features/archive-sort-state.md](features/archive-sort-state.md) — アーカイブ単位のソート条件保存
+- [features/koma-mode.md](features/koma-mode.md) — 疑似コマ送りモード（拡大表示の上のサブモード）
 
 ## 4. 決定記録（過去の経緯・完了済み計画）
 

@@ -4163,6 +4163,18 @@ impl ViewerState {
                 if self.magnifier_ref_len != target.ref_len {
                     v.scale = rescale_for_new_texture(v.scale, self.magnifier_ref_len, target.ref_len);
                 }
+                // コマモード: 窓の高さが変わったら、フレームがページ高さに占める割合（高さフィット相対）を保つ。
+                // 位置（画面px）も同じ比率で伸縮して、見ている場所が大きくずれないようにする。
+                if koma_on
+                    && let Some((_, prev_vp)) = self.koma_geom
+                    && prev_vp.y > 0.0
+                    && prev_vp.y != vp.y
+                {
+                    let ratio = vp.y / prev_vp.y;
+                    v.scale *= ratio;
+                    v.offset *= ratio;
+                    self.magnifier_offset_dirty = true;
+                }
                 // フィット表示のままなら窓サイズ変更にフィット倍率で追従する。
                 // それ以外は範囲内へ丸め、スクロール範囲も収め直す。
                 let scale = if self.magnifier_at_fit { fit } else { v.scale.clamp(range.0, range.1) };
@@ -6476,7 +6488,7 @@ mod magnifier_flow_tests {
         fn koma_grid(&self) -> crate::koma::KomaGrid {
             let (img, vp) = self.viewer.koma_geom.expect("虫眼鏡の幾何がない");
             let view = self.viewer.magnifier_view.expect("虫眼鏡ビューがない");
-            crate::koma::KomaGrid::new(img * view.scale, vp, crate::koma::ReadDir::LeftToRight)
+            crate::koma::KomaGrid::new(img * view.scale, vp, self.viewer.koma_read_dir())
         }
 
         fn offset(&self) -> egui::Vec2 {
@@ -6698,6 +6710,80 @@ mod magnifier_flow_tests {
         settle_koma_tween(&mut h);
         h.wheel(true, egui::Modifiers::NONE);
         assert!(h.viewer.magnifier_view.unwrap().scale > scale * 1.1, "完了後は拡縮できる");
+    }
+
+    #[test]
+    fn koma_mode_keeps_the_frame_ratio_when_the_window_height_changes() {
+        let mut h = Harness::with_pages(3, 800, 1200);
+        h.start_koma(2.0);
+        let (img, vp0) = h.viewer.koma_geom.unwrap();
+        let s0 = h.viewer.magnifier_view.unwrap().scale;
+        h.screen = egui::vec2(SCREEN.x, SCREEN.y * 0.6);
+        for _ in 0..3 {
+            h.frame(vec![], egui::Modifiers::NONE);
+        }
+        let (_, vp1) = h.viewer.koma_geom.unwrap();
+        let s1 = h.viewer.magnifier_view.unwrap().scale;
+        assert!(vp1.y < vp0.y - 50.0, "窓の高さが変わっていない: {vp0:?} -> {vp1:?}");
+        assert!(s1 < s0, "窓が縮んだのに倍率が保たれた: {s0} -> {s1}");
+        let rel0 = crate::koma::height_rel_from_scale(s0, img.y, vp0.y);
+        let rel1 = crate::koma::height_rel_from_scale(s1, img.y, vp1.y);
+        assert!((rel0 - rel1).abs() < 1e-3, "高さ相対が変わった: {rel0} -> {rel1}");
+        // 基準倍率（保存値）は窓の変化では動かない。
+        assert_eq!(h.cfg.magnifier.koma_height_rel(), Some(2.0));
+        // 変形後も、コマ送りはその窓寸法の格子で正しく進む。
+        let grid = h.koma_grid();
+        assert!(grid.len() >= 2);
+        let first = grid.first();
+        assert_offset_at(&h, first, "変形後も先頭コマ付近にいる");
+        press(&mut h, egui::Key::Space);
+        assert_offset_at(&h, grid.position(1), "変形後のコマ送り");
+    }
+
+    #[test]
+    fn koma_right_binding_starts_at_the_right_edge_and_reads_right_to_left() {
+        let mut h = Harness::with_pages(6, 800, 1200);
+        h.viewer.set_page_mode(PageMode::SpreadRight, &mut h.cfg);
+        h.frame(vec![], egui::Modifiers::NONE);
+        h.start_koma(2.0);
+        assert_eq!(h.viewer.koma_read_dir(), crate::koma::ReadDir::RightToLeft);
+        let grid = h.koma_grid();
+        assert!(grid.len() >= 4, "テスト前提: 横にも複数コマ（{}）", grid.len());
+        let first = grid.first();
+        assert!(first.x > 1.0, "右綴じの先頭コマが右端にない: {first:?}");
+        assert_offset_at(&h, first, "右綴じの先頭コマ");
+        // 次は同じ行の左隣（xが小さくなる）。
+        press(&mut h, egui::Key::Space);
+        let second = h.offset();
+        assert!(second.x < first.x - 1.0 && (second.y - first.y).abs() < 1.5, "左へ進んでいない: {first:?} -> {second:?}");
+        // 最後まで辿ると、見開きが1組（2ページ）進み、新ページも右端の先頭コマから始まる。
+        let lo_before = h.viewer.spread_lo();
+        for _ in 2..grid.len() {
+            press(&mut h, egui::Key::Space);
+        }
+        assert_eq!(h.viewer.spread_lo(), lo_before, "最終コマまではページは変わらない");
+        press(&mut h, egui::Key::Space);
+        assert_eq!(h.viewer.spread_lo(), lo_before + 2, "最終コマで見開きが進まない: {}", h.state());
+        assert!(h.cfg.koma_on);
+        assert_offset_at(&h, h.koma_grid().first(), "次の見開きの先頭コマ（右端）");
+    }
+
+    #[test]
+    fn koma_prev_chip_goes_back_across_the_page_boundary() {
+        let mut h = Harness::with_pages(3, 800, 1200);
+        h.cfg.tool_palette.visible = true;
+        h.viewer.tool_palette.visible = true;
+        h.viewer.tool_palette.pos = (100.0, 100.0);
+        h.viewer.tool_palette.slots[0] = crate::tool_palette::PaletteSlotContent::Action(crate::tool_palette::ActionKind::KomaPrev);
+        h.frame(vec![], egui::Modifiers::NONE);
+        h.start_koma(2.5);
+        walk_frames_with_space(&mut h);
+        press(&mut h, egui::Key::Space); // 1ページ目の先頭コマ
+        assert_eq!(h.viewer.spread_lo(), 1);
+        click_palette_magnifier_slot(&mut h);
+        settle_koma_tween(&mut h);
+        assert_eq!(h.viewer.spread_lo(), 0, "コマ戻しチップでページが戻らない: {}", h.state());
+        assert_offset_at(&h, h.koma_grid().last(), "前ページの最終コマ");
     }
 
     #[test]
