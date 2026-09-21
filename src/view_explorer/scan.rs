@@ -814,7 +814,7 @@ impl NekoviewApp {
     /// archives のうち評価キャッシュに無いものを、ディレクトリ単位でまとめて DB から取り込む。
     /// 横断一覧（お気に入り・検索結果）を評価で並べるとき、1件ずつ引かずに済ませる。
     /// レコード不在は None（＝未評価・未訪問）としてキャッシュする。
-    fn preload_archive_ratings(&mut self) {
+    pub(super) fn preload_archive_ratings(&mut self) {
         let Some(db) = self.spread_db.clone() else { return };
         let mut missing: HashMap<PathBuf, Vec<PathBuf>> = HashMap::new();
         for p in &self.archives {
@@ -838,10 +838,10 @@ impl NekoviewApp {
         self.recompute_filter();
     }
 
-    /// ビューアーを閉じた直後の再ソート。評価・訪問はビューア中に変わるので、スコア／訪問回数が
+    /// 評価・訪問が変わった後（ビューアーを閉じた直後など）の再ソート。スコア／訪問回数が
     /// 主軸のときだけ並びを作り直し、選択・複数選択・グリッドカーソルは同じファイルを指し直す
     /// （ビューア表示中に並べ替えると、選択枠や前後ファイル移動がずれるためここまで待つ）。
-    pub(super) fn resort_after_viewer_close(&mut self) {
+    pub(super) fn resort_keeping_selection(&mut self) {
         if !self.explorer_sort().needs_rating() {
             return;
         }
