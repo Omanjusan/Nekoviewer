@@ -1403,6 +1403,64 @@ impl Lang {
         }
     }
 
+    pub fn calendar_window_title(self) -> &'static str {
+        match self {
+            Lang::Japanese => "日付を選択",
+            Lang::English  => "Select date",
+            Lang::Chinese  => "选择日期",
+        }
+    }
+
+    /// カレンダー窓の年月見出し。`month` は 1..=12（範囲外は数字表記に落とす）。
+    pub fn calendar_year_month(self, year: i32, month: u8) -> String {
+        match self {
+            Lang::Japanese | Lang::Chinese => format!("{year}年{month}月"),
+            Lang::English => {
+                const NAMES: [&str; 12] = [
+                    "January", "February", "March", "April", "May", "June",
+                    "July", "August", "September", "October", "November", "December",
+                ];
+                match NAMES.get(usize::from(month).wrapping_sub(1)) {
+                    Some(name) => format!("{name} {year}"),
+                    None => format!("{year}-{month:02}"),
+                }
+            }
+        }
+    }
+
+    /// 日曜始まりの曜日ヘッダ7個。
+    pub fn calendar_weekdays(self) -> [&'static str; 7] {
+        match self {
+            Lang::Japanese => ["日", "月", "火", "水", "木", "金", "土"],
+            Lang::English  => ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"],
+            Lang::Chinese  => ["日", "一", "二", "三", "四", "五", "六"],
+        }
+    }
+
+    pub fn calendar_ok(self) -> &'static str {
+        match self {
+            Lang::Japanese => "決定",
+            Lang::English  => "OK",
+            Lang::Chinese  => "确定",
+        }
+    }
+
+    pub fn calendar_clear(self) -> &'static str {
+        match self {
+            Lang::Japanese => "未指定に戻す",
+            Lang::English  => "Clear",
+            Lang::Chinese  => "清除",
+        }
+    }
+
+    pub fn calendar_cancel(self) -> &'static str {
+        match self {
+            Lang::Japanese => "キャンセル",
+            Lang::English  => "Cancel",
+            Lang::Chinese  => "取消",
+        }
+    }
+
     /// 検索結果リストの1行ラベル（検索ファイル名/パターンが表示できるだけの文字数で見える）。
     pub fn search_result_label(self, pattern: &str, count: usize) -> String {
         let name = if pattern.trim().is_empty() {
@@ -4957,6 +5015,37 @@ pub fn lang_code() -> &'static str {
         Lang::Japanese => "ja",
         Lang::English  => "en",
         Lang::Chinese  => "cn",
+    }
+}
+
+#[cfg(test)]
+mod calendar_tests {
+    use super::Lang;
+
+    #[test]
+    fn year_month_follows_language() {
+        assert_eq!(Lang::Japanese.calendar_year_month(2026, 8), "2026年8月");
+        assert_eq!(Lang::Chinese.calendar_year_month(2026, 8), "2026年8月");
+        assert_eq!(Lang::English.calendar_year_month(2026, 8), "August 2026");
+    }
+
+    #[test]
+    fn english_year_month_covers_boundaries_and_falls_back_out_of_range() {
+        assert_eq!(Lang::English.calendar_year_month(2026, 1), "January 2026");
+        assert_eq!(Lang::English.calendar_year_month(2026, 12), "December 2026");
+        assert_eq!(Lang::English.calendar_year_month(2026, 0), "2026-00");
+        assert_eq!(Lang::English.calendar_year_month(2026, 13), "2026-13");
+    }
+
+    #[test]
+    fn weekdays_start_on_sunday_and_have_no_blank() {
+        for lang in [Lang::Japanese, Lang::English, Lang::Chinese] {
+            let days = lang.calendar_weekdays();
+            assert!(days.iter().all(|d| !d.is_empty()));
+        }
+        assert_eq!(Lang::Japanese.calendar_weekdays()[0], "日");
+        assert_eq!(Lang::English.calendar_weekdays()[0], "Su");
+        assert_eq!(Lang::Chinese.calendar_weekdays()[6], "六");
     }
 }
 
