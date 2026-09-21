@@ -21,7 +21,7 @@ use crate::keymap::{Keymap, ReaderAction, ExplorerAction, KeyCombo, MouseCombo, 
 use crate::translate::{OVERLAY_WIDTH_CEILING, OVERLAY_WIDTH_FLOOR, TranslateConfig};
 use crate::view_explorer::NekoviewApp;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum SettingsTab {
     Common,
     Explorer,
@@ -31,11 +31,56 @@ pub(crate) enum SettingsTab {
     Slideshow,
     Translate,
     Keymap,
+    /// コマ送り（疑似コマ送りモード）。2段目の先頭。
+    Koma,
     #[cfg(windows)]
     Windows,
     Other,
     Debug,
 }
+
+/// 設定タブの並び（段ごと）。1段目は従来の並びのまま、2段目はコマ送り・その他・デバッグ。
+fn settings_tab_rows() -> [Vec<SettingsTab>; 2] {
+    #[cfg_attr(not(windows), allow(unused_mut))]
+    let mut first = vec![
+        SettingsTab::Common,
+        SettingsTab::Explorer,
+        SettingsTab::Anim,
+        SettingsTab::Static,
+        SettingsTab::Viewer,
+        SettingsTab::Slideshow,
+        SettingsTab::Translate,
+        SettingsTab::Keymap,
+    ];
+    #[cfg(windows)]
+    first.push(SettingsTab::Windows);
+    [first, vec![SettingsTab::Koma, SettingsTab::Other, SettingsTab::Debug]]
+}
+
+fn settings_tab_label(tab: SettingsTab) -> &'static str {
+    let t = i18n::t();
+    match tab {
+        SettingsTab::Common => t.settings_tab_common(),
+        SettingsTab::Explorer => t.settings_tab_explorer(),
+        SettingsTab::Anim => t.settings_tab_anim(),
+        SettingsTab::Static => t.settings_tab_static(),
+        SettingsTab::Viewer => t.settings_tab_viewer(),
+        SettingsTab::Slideshow => t.settings_tab_slideshow(),
+        SettingsTab::Translate => t.settings_tab_translate(),
+        SettingsTab::Keymap => "キーアサイン",
+        SettingsTab::Koma => t.settings_tab_koma(),
+        #[cfg(windows)]
+        SettingsTab::Windows => t.settings_tab_windows(),
+        SettingsTab::Other => t.settings_tab_other(),
+        SettingsTab::Debug => t.settings_tab_debug(),
+    }
+}
+
+/// コマ送りタブ: 超過分の自動縮小しきい値スライダーの範囲・刻み・既定値（窓の寸法に対する％）。
+const KOMA_SHRINK_PCT_FLOOR: u32 = 2;
+const KOMA_SHRINK_PCT_CEILING: u32 = 30;
+const KOMA_SHRINK_PCT_STEP: u32 = 2;
+const KOMA_SHRINK_PCT_DEFAULT: u32 = 10;
 
 /// 8K UHD(7680x4320)の長辺を「取り扱い上限解像度」スライダーの上限に使う。
 const MAX_DECODE_EDGE_CEILING: u32 = 7680;
@@ -95,6 +140,14 @@ pub(crate) struct SettingsDraft {
     /// スライドショー実行中のトランジション種類・遷移時間(ms)。通常時とは独立。
     slideshow_transition_kind: TransitionKind,
     slideshow_transition_duration_ms: u64,
+    /// コマ送りタブ（レイアウト確認用。現状は保存・ビューへ未接続）: X/Yそれぞれの超過分の自動縮小の
+    /// 有効フラグと、しきい値（窓の幅/高さに対する超過の％）。
+    koma_shrink_x_enabled: bool,
+    koma_shrink_y_enabled: bool,
+    koma_shrink_x_pct: u32,
+    koma_shrink_y_pct: u32,
+    /// 確認ダイアログを表示しない（解除用。ダイアログ自体は未実装）。
+    koma_shrink_hide_ask: bool,
     translate_base_url: String,
     translate_ocr_model: String,
     translate_translation_model: String,
@@ -238,6 +291,11 @@ impl SettingsDraft {
             slideshow_manual_behavior: viewer_cfg.slideshow_manual_behavior,
             slideshow_transition_kind: viewer_cfg.slideshow_transition_kind,
             slideshow_transition_duration_ms: viewer_cfg.slideshow_transition_duration_ms,
+            koma_shrink_x_enabled: false,
+            koma_shrink_y_enabled: false,
+            koma_shrink_x_pct: KOMA_SHRINK_PCT_DEFAULT,
+            koma_shrink_y_pct: KOMA_SHRINK_PCT_DEFAULT,
+            koma_shrink_hide_ask: false,
             translate_base_url: translate_cfg.base_url.clone(),
             translate_ocr_model: translate_cfg.ocr_model.clone(),
             translate_translation_model: translate_cfg.translation_model.clone(),
@@ -1412,25 +1470,13 @@ impl NekoviewApp {
             ui.heading(i18n::t().settings_title());
             ui.separator();
 
-            ui.horizontal(|ui| {
-                let mut tabs = vec![
-                    (SettingsTab::Common, i18n::t().settings_tab_common()),
-                    (SettingsTab::Explorer, i18n::t().settings_tab_explorer()),
-                    (SettingsTab::Anim, i18n::t().settings_tab_anim()),
-                    (SettingsTab::Static, i18n::t().settings_tab_static()),
-                    (SettingsTab::Viewer, i18n::t().settings_tab_viewer()),
-                    (SettingsTab::Slideshow, i18n::t().settings_tab_slideshow()),
-                    (SettingsTab::Translate, i18n::t().settings_tab_translate()),
-                    (SettingsTab::Keymap, "キーアサイン"),
-                ];
-                #[cfg(windows)]
-                tabs.push((SettingsTab::Windows, i18n::t().settings_tab_windows()));
-                tabs.push((SettingsTab::Other, i18n::t().settings_tab_other()));
-                tabs.push((SettingsTab::Debug, i18n::t().settings_tab_debug()));
-                for (tab, label) in tabs {
-                    ui.selectable_value(&mut self.settings_tab, tab, label);
-                }
-            });
+            for row in settings_tab_rows() {
+                ui.horizontal(|ui| {
+                    for tab in row {
+                        ui.selectable_value(&mut self.settings_tab, tab, settings_tab_label(tab));
+                    }
+                });
+            }
             ui.separator();
 
             match self.settings_tab {
@@ -1442,6 +1488,7 @@ impl NekoviewApp {
                 SettingsTab::Slideshow => draw_settings_tab_slideshow(ui, &mut self.settings_draft),
                 SettingsTab::Translate => self.draw_settings_tab_translate(ui, ctx),
                 SettingsTab::Keymap => draw_settings_tab_keymap(ui, &mut self.settings_draft),
+                SettingsTab::Koma => draw_settings_tab_koma(ui, &mut self.settings_draft),
                 #[cfg(windows)]
                 SettingsTab::Windows => self.draw_settings_tab_windows(ui),
                 SettingsTab::Other => self.draw_settings_tab_other(ui),
@@ -1726,9 +1773,83 @@ impl NekoviewApp {
     }
 }
 
+/// コマ送りタブ。超過分の自動縮小（X/Y）と、確認ダイアログの解除チェック。
+/// 現状は draft だけを編集するレイアウト確認用で、保存やビューには接続していない。
+fn draw_settings_tab_koma(ui: &mut egui::Ui, draft: &mut SettingsDraft) {
+    let t = i18n::t();
+    ui.label(egui::RichText::new(t.settings_koma_shrink_section_label()).strong().size(15.0));
+    ui.label(t.settings_koma_shrink_explain());
+    ui.add_space(6.0);
+
+    for (enabled, pct, label, threshold_label) in [
+        (&mut draft.koma_shrink_x_enabled, &mut draft.koma_shrink_x_pct, t.settings_koma_shrink_x_label(), t.settings_koma_shrink_x_threshold_label()),
+        (&mut draft.koma_shrink_y_enabled, &mut draft.koma_shrink_y_pct, t.settings_koma_shrink_y_label(), t.settings_koma_shrink_y_threshold_label()),
+    ] {
+        ui.checkbox(enabled, label);
+        ui.add_enabled_ui(*enabled, |ui| {
+            ui.label(threshold_label);
+            ui.scope(|ui| {
+                ui.spacing_mut().slider_width = 260.0;
+                ui.horizontal(|ui| {
+                    ui.add(
+                        egui::Slider::new(pct, KOMA_SHRINK_PCT_FLOOR..=KOMA_SHRINK_PCT_CEILING)
+                            .show_value(false)
+                            .step_by(KOMA_SHRINK_PCT_STEP as f64),
+                    );
+                    ui.label(format!("{} %", *pct));
+                });
+            });
+        });
+        ui.add_space(4.0);
+    }
+    ui.separator();
+
+    ui.label(egui::RichText::new(t.settings_koma_ask_section_label()).strong().size(15.0));
+    ui.checkbox(&mut draft.koma_shrink_hide_ask, t.settings_koma_ask_hide_label());
+    ui.label(t.settings_koma_ask_hide_explain());
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn settings_tabs_are_two_rows_with_koma_leading_the_second() {
+        let [first, second] = settings_tab_rows();
+        assert_eq!(second, vec![SettingsTab::Koma, SettingsTab::Other, SettingsTab::Debug]);
+        // 1段目は従来の並び（コマ送り・その他・デバッグを含まない）。
+        assert_eq!(first[0], SettingsTab::Common);
+        assert_eq!(first[7], SettingsTab::Keymap);
+        assert!(!first.iter().any(|t| second.contains(t)));
+    }
+
+    #[test]
+    fn every_settings_tab_appears_exactly_once() {
+        let all: Vec<SettingsTab> = settings_tab_rows().into_iter().flatten().collect();
+        #[cfg_attr(not(windows), allow(unused_mut))]
+        let mut expected = vec![
+            SettingsTab::Common, SettingsTab::Explorer, SettingsTab::Anim, SettingsTab::Static,
+            SettingsTab::Viewer, SettingsTab::Slideshow, SettingsTab::Translate, SettingsTab::Keymap,
+            SettingsTab::Koma, SettingsTab::Other, SettingsTab::Debug,
+        ];
+        #[cfg(windows)]
+        expected.push(SettingsTab::Windows);
+        assert_eq!(all.len(), expected.len());
+        for tab in expected {
+            assert_eq!(all.iter().filter(|&&t| t == tab).count(), 1);
+            assert!(!settings_tab_label(tab).is_empty());
+        }
+    }
+
+    #[test]
+    fn koma_shrink_threshold_range_is_on_the_step_grid() {
+        assert_eq!(KOMA_SHRINK_PCT_FLOOR, 2);
+        assert_eq!(KOMA_SHRINK_PCT_CEILING, 30);
+        for v in [KOMA_SHRINK_PCT_FLOOR, KOMA_SHRINK_PCT_DEFAULT, KOMA_SHRINK_PCT_CEILING] {
+            assert_eq!(v % KOMA_SHRINK_PCT_STEP, 0, "{v} は刻みに乗っていない");
+            assert!((KOMA_SHRINK_PCT_FLOOR..=KOMA_SHRINK_PCT_CEILING).contains(&v));
+        }
+    }
 
     const ORDER: [FilterStage; FILTER_STAGE_COUNT] = [
         FilterStage::ColorFilter,

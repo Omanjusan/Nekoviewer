@@ -1682,6 +1682,86 @@ impl Lang {
         }
     }
 
+    pub fn settings_tab_koma(self) -> &'static str {
+        match self {
+            Lang::Japanese => "コマ送り",
+            Lang::English  => "Panels",
+            Lang::Chinese  => "分镜",
+        }
+    }
+
+    pub fn settings_koma_shrink_section_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "超過分の自動縮小",
+            Lang::English  => "Auto-shrink overflow",
+            Lang::Chinese  => "超出部分自动缩小",
+        }
+    }
+
+    pub fn settings_koma_shrink_explain(self) -> &'static str {
+        match self {
+            Lang::Japanese => "数％だけ超過してコマ送りが増えるとき、縦横比を保ったまま縮小して1コマに収めます。ページを開くたびに判定します。",
+            Lang::English  => "When a small overflow adds extra panel steps, the page is shrunk (keeping its aspect ratio) so it fits in one panel. Checked every time a page is opened.",
+            Lang::Chinese  => "当少量超出导致分镜步数增加时，保持纵横比缩小以适配为一格。每次打开页面时判定。",
+        }
+    }
+
+    pub fn settings_koma_shrink_x_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "横（X）の超過分を自動縮小する",
+            Lang::English  => "Auto-shrink horizontal (X) overflow",
+            Lang::Chinese  => "自动缩小横向（X）超出部分",
+        }
+    }
+
+    pub fn settings_koma_shrink_y_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "縦（Y）の超過分を自動縮小する",
+            Lang::English  => "Auto-shrink vertical (Y) overflow",
+            Lang::Chinese  => "自动缩小纵向（Y）超出部分",
+        }
+    }
+
+    pub fn settings_koma_shrink_x_threshold_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "しきい値（窓の幅に対する超過）",
+            Lang::English  => "Threshold (overflow relative to window width)",
+            Lang::Chinese  => "阈值（相对窗口宽度的超出）",
+        }
+    }
+
+    pub fn settings_koma_shrink_y_threshold_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "しきい値（窓の高さに対する超過）",
+            Lang::English  => "Threshold (overflow relative to window height)",
+            Lang::Chinese  => "阈值（相对窗口高度的超出）",
+        }
+    }
+
+    pub fn settings_koma_ask_section_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "確認ダイアログ",
+            Lang::English  => "Confirmation dialog",
+            Lang::Chinese  => "确认对话框",
+        }
+    }
+
+    pub fn settings_koma_ask_hide_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "「超過分を縮小しコマ送り数を最適化しますか？」を表示しない",
+            Lang::English  => "Don't show \"Shrink the overflow to optimize panel steps?\"",
+            Lang::Chinese  => "不再显示“是否缩小超出部分以优化分镜步数？”",
+        }
+    }
+
+    pub fn settings_koma_ask_hide_explain(self) -> &'static str {
+        match self {
+            Lang::Japanese => "（この確認ダイアログは今後のバージョンで動作します）",
+            Lang::English  => "(This dialog will take effect in a future version.)",
+            Lang::Chinese  => "（该确认对话框将在后续版本中生效。）",
+        }
+    }
+
     pub fn settings_tab_debug(self) -> &'static str {
         match self {
             Lang::Japanese => "デバッグ",
