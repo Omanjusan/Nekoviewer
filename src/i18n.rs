@@ -3836,6 +3836,402 @@ impl Lang {
             },
         }
     }
+
+    pub fn help_tab_favorites(self) -> HelpDoc {
+        match self {
+            Lang::Japanese => HelpDoc {
+                title: "お気に入り",
+                sections: &[("", "登録したお気に入りを閲覧・管理できるタブです。")],
+            },
+            Lang::English => HelpDoc {
+                title: "Favorites",
+                sections: &[("", "A tab to browse and manage the favorites you have registered.")],
+            },
+            Lang::Chinese => HelpDoc {
+                title: "收藏夹",
+                sections: &[("", "用于浏览和管理已登记收藏的标签页。")],
+            },
+        }
+    }
+
+    pub fn help_tab_real(self) -> HelpDoc {
+        match self {
+            Lang::Japanese => HelpDoc {
+                title: "フォルダ",
+                sections: &[("", "実ツリーに対応した、本アプリのデフォルトモードのタブです。")],
+            },
+            Lang::English => HelpDoc {
+                title: "Folders",
+                sections: &[("", "The app's default mode, matching the real folder tree.")],
+            },
+            Lang::Chinese => HelpDoc {
+                title: "文件夹",
+                sections: &[("", "对应实际目录树的标签页，是本应用的默认模式。")],
+            },
+        }
+    }
+
+    pub fn help_tab_search(self) -> HelpDoc {
+        match self {
+            Lang::Japanese => HelpDoc {
+                title: "検索",
+                sections: &[
+                    (
+                        "",
+                        "検索機能ですが万能ではありません。\n\
+                         本アプリでサムネイルが作られたファイルのみを対象に検索をかけます。",
+                    ),
+                    (
+                        "",
+                        "フォルダが確定していれば、画面下部にある文字列検索（フィルタ）を\n\
+                         利用するのも高速でおすすめです。",
+                    ),
+                ],
+            },
+            Lang::English => HelpDoc {
+                title: "Search",
+                sections: &[
+                    (
+                        "",
+                        "A search feature, but not an all-purpose one.\n\
+                         It only searches files whose thumbnails have been created by this app.",
+                    ),
+                    (
+                        "",
+                        "If you already know the folder, the text filter at the bottom of the\n\
+                         screen is also fast and recommended.",
+                    ),
+                ],
+            },
+            Lang::Chinese => HelpDoc {
+                title: "搜索",
+                sections: &[
+                    (
+                        "",
+                        "这是搜索功能，但并非万能。\n\
+                         只会搜索本应用已生成缩略图的文件。",
+                    ),
+                    (
+                        "",
+                        "如果已确定文件夹，使用屏幕下方的文本过滤同样很快，推荐使用。",
+                    ),
+                ],
+            },
+        }
+    }
+
+    pub fn help_tab_virtual(self) -> HelpDoc {
+        match self {
+            Lang::Japanese => HelpDoc {
+                title: "仮想フォルダ",
+                sections: &[
+                    (
+                        "",
+                        "お気に入りがファイル単位であれば、こちらはフォルダ単位の\n\
+                         お気に入り機能のようなものです。",
+                    ),
+                    (
+                        "",
+                        "閲覧不要なフォルダも削除（非表示にするだけ）できます。実ツリーのように、\n\
+                         アクセスしなくてよいフォルダが常時表示されない点がメリットです。",
+                    ),
+                    (
+                        "",
+                        "アーカイブを扱う親フォルダが確定している方に、特におすすめです。",
+                    ),
+                ],
+            },
+            Lang::English => HelpDoc {
+                title: "Virtual Folders",
+                sections: &[
+                    (
+                        "",
+                        "If Favorites work per file, this is something like a favorites feature\n\
+                         per folder.",
+                    ),
+                    (
+                        "",
+                        "Folders you do not need to browse can be deleted (they are only hidden).\n\
+                         Unlike the real tree, folders you never visit are not shown all the time.",
+                    ),
+                    (
+                        "",
+                        "Especially recommended if you already know the parent folders that hold your archives.",
+                    ),
+                ],
+            },
+            Lang::Chinese => HelpDoc {
+                title: "虚拟文件夹",
+                sections: &[
+                    (
+                        "",
+                        "如果说收藏夹是以文件为单位，这里就相当于以文件夹为单位的收藏功能。",
+                    ),
+                    (
+                        "",
+                        "不需要浏览的文件夹也可以删除（只是隐藏）。与实际目录树不同，\n\
+                         不必访问的文件夹不会一直显示，这是它的优点。",
+                    ),
+                    (
+                        "",
+                        "特别推荐给已确定存放压缩包的父文件夹的用户。",
+                    ),
+                ],
+            },
+        }
+    }
+
+    pub fn help_filter_text(self) -> HelpDoc {
+        match self {
+            Lang::Japanese => HelpDoc {
+                title: "文字列フィルタ",
+                sections: &[
+                    (
+                        "",
+                        "表示中のフォルダのアーカイブを、ファイル名で絞り込む。\n\
+                         チェックをONにすると有効になる。* ? [...] のワイルドカードが使える。",
+                    ),
+                ],
+            },
+            Lang::English => HelpDoc {
+                title: "Text filter",
+                sections: &[
+                    (
+                        "",
+                        "Narrows the archives of the folder being shown by file name.\n\
+                         Turn the checkbox ON to enable it. Wildcards * ? [...] are supported.",
+                    ),
+                ],
+            },
+            Lang::Chinese => HelpDoc {
+                title: "文本过滤",
+                sections: &[
+                    (
+                        "",
+                        "按文件名过滤当前显示文件夹中的压缩包。\n\
+                         勾选复选框后生效。支持 * ? [...] 通配符。",
+                    ),
+                ],
+            },
+        }
+    }
+
+    pub fn help_filter_score(self) -> HelpDoc {
+        match self {
+            Lang::Japanese => HelpDoc {
+                title: "score filter",
+                sections: &[
+                    (
+                        "",
+                        "表示中のフォルダのアーカイブを、スコア（評価）で絞り込む。\n\
+                         チェックをONにすると有効になる。比較（== / <= / >=）と★の基準値を選ぶ。",
+                    ),
+                    (
+                        "■ 未評価は対象外",
+                        "有効中は、未評価のもの・一度も開いていないものは表示されない。",
+                    ),
+                ],
+            },
+            Lang::English => HelpDoc {
+                title: "score filter",
+                sections: &[
+                    (
+                        "",
+                        "Narrows the archives of the folder being shown by score (rating).\n\
+                         Turn the checkbox ON to enable it. Pick a comparison (== / <= / >=) and a star value.",
+                    ),
+                    (
+                        "■ Unrated items are excluded",
+                        "While enabled, unrated archives and archives never opened are hidden.",
+                    ),
+                ],
+            },
+            Lang::Chinese => HelpDoc {
+                title: "score filter",
+                sections: &[
+                    (
+                        "",
+                        "按评分过滤当前显示文件夹中的压缩包。\n\
+                         勾选复选框后生效。选择比较符（== / <= / >=）和★基准值。",
+                    ),
+                    (
+                        "■ 未评分的不在范围内",
+                        "启用期间，未评分及从未打开过的压缩包不会显示。",
+                    ),
+                ],
+            },
+        }
+    }
+
+    pub fn help_search_base_dir(self) -> HelpDoc {
+        match self {
+            Lang::Japanese => HelpDoc {
+                title: "検索基底フォルダ",
+                sections: &[
+                    (
+                        "■ 先にツリーで検索対象フォルダを選択",
+                        "検索の起点になるフォルダ。この欄は直接入力できない。\n\
+                         検索の前に、ツリー（またはドライブ一覧）で検索対象のフォルダを選んでおくこと。\n\
+                         選ばないと、意図しない場所（現在のフォルダなど）が検索される。",
+                    ),
+                    (
+                        "",
+                        "「条件クリア」を押しても、この基点は消えない。",
+                    ),
+                ],
+            },
+            Lang::English => HelpDoc {
+                title: "Search base folder",
+                sections: &[
+                    (
+                        "■ Select the target folder in the tree first",
+                        "The folder the search starts from. This field cannot be typed into.\n\
+                         Before searching, pick the folder to search in the tree (or the drive list).\n\
+                         If you do not, an unintended place (such as the current folder) is searched.",
+                    ),
+                    (
+                        "",
+                        "[Clear conditions] does not clear this base folder.",
+                    ),
+                ],
+            },
+            Lang::Chinese => HelpDoc {
+                title: "搜索基准文件夹",
+                sections: &[
+                    (
+                        "■ 请先在目录树中选择搜索目标文件夹",
+                        "搜索的起点文件夹。此栏不能直接输入。\n\
+                         搜索前，请先在目录树（或驱动器列表）中选好要搜索的文件夹。\n\
+                         否则会搜索到非预期的位置（例如当前文件夹）。",
+                    ),
+                    (
+                        "",
+                        "点击“清除条件”不会清除此基准文件夹。",
+                    ),
+                ],
+            },
+        }
+    }
+
+    pub fn help_search_actions(self) -> HelpDoc {
+        match self {
+            Lang::Japanese => HelpDoc {
+                title: "検索の実行",
+                sections: &[
+                    ("[検索開始]", "入力した条件で検索を実行する。検索中は押せない。"),
+                    ("[条件クリア]", "入力した条件を空に戻す。基底フォルダは消えない。"),
+                ],
+            },
+            Lang::English => HelpDoc {
+                title: "Running a search",
+                sections: &[
+                    ("[Start search]", "Runs a search with the entered conditions. Disabled while searching."),
+                    ("[Clear conditions]", "Empties the entered conditions. The base folder is kept."),
+                ],
+            },
+            Lang::Chinese => HelpDoc {
+                title: "执行搜索",
+                sections: &[
+                    ("[开始搜索]", "按输入的条件执行搜索。搜索期间不可点击。"),
+                    ("[清除条件]", "清空输入的条件。基准文件夹不会被清除。"),
+                ],
+            },
+        }
+    }
+
+    pub fn help_search_conditions(self) -> HelpDoc {
+        match self {
+            Lang::Japanese => HelpDoc {
+                title: "検索条件",
+                sections: &[
+                    (
+                        "[ファイル名]",
+                        "* ? [...] のワイルドカードが使える。空欄なら全ファイルが対象。",
+                    ),
+                    (
+                        "[サブディレクトリを含む]",
+                        "ONにすると、基底フォルダの下の階層もすべて検索する。",
+                    ),
+                    (
+                        "[サイズ]",
+                        "MB単位で下限・上限を指定する。空欄なら制限なし。",
+                    ),
+                    (
+                        "[日付]",
+                        "更新日の範囲をカレンダーで指定する。空欄なら制限なし。",
+                    ),
+                ],
+            },
+            Lang::English => HelpDoc {
+                title: "Search conditions",
+                sections: &[
+                    (
+                        "[File name]",
+                        "Wildcards * ? [...] are supported. Leave empty to match all files.",
+                    ),
+                    (
+                        "[Include subdirectories]",
+                        "When ON, all levels below the base folder are searched too.",
+                    ),
+                    (
+                        "[Size]",
+                        "Set a lower and/or upper limit in MB. Empty means no limit.",
+                    ),
+                    (
+                        "[Date]",
+                        "Pick a modified-date range with the calendar. Empty means no limit.",
+                    ),
+                ],
+            },
+            Lang::Chinese => HelpDoc {
+                title: "搜索条件",
+                sections: &[
+                    (
+                        "[文件名]",
+                        "支持 * ? [...] 通配符。留空则匹配所有文件。",
+                    ),
+                    (
+                        "[包含子目录]",
+                        "开启后，基准文件夹下的所有层级都会被搜索。",
+                    ),
+                    (
+                        "[大小]",
+                        "以MB为单位指定下限和上限。留空则不限制。",
+                    ),
+                    (
+                        "[日期]",
+                        "用日历指定修改日期范围。留空则不限制。",
+                    ),
+                ],
+            },
+        }
+    }
+
+    pub fn help_search_history(self) -> HelpDoc {
+        match self {
+            Lang::Japanese => HelpDoc {
+                title: "検索履歴",
+                sections: &[(
+                    "",
+                    "実行した検索が新しい順に並ぶ。クリックすると、その検索結果を右側に表示する。",
+                )],
+            },
+            Lang::English => HelpDoc {
+                title: "Search history",
+                sections: &[(
+                    "",
+                    "Past searches are listed newest first. Click one to show its results on the right.",
+                )],
+            },
+            Lang::Chinese => HelpDoc {
+                title: "搜索历史",
+                sections: &[(
+                    "",
+                    "已执行的搜索按时间由新到旧排列。点击某一项，即在右侧显示该次搜索的结果。",
+                )],
+            },
+        }
+    }
 }
 
 static LANG: AtomicU8 = AtomicU8::new(0);

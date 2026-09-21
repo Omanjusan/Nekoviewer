@@ -555,21 +555,25 @@ impl NekoviewApp {
         // （タブそのものが独立したフォーカス位置。左右キーでの切替は
         // handle_folder_tab_bar_keys が担う）。
         let tab_bar_focused = self.focused_pane == FocusPane::FolderTabBar;
+        let help_on = self.help_enabled;
         ui.horizontal(|ui| {
             let fav_resp = ui.selectable_label(self.folder_pane_tab == FolderPaneTab::Favorites, i18n::t().folder_tab_favorites());
             if tab_bar_focused && self.folder_pane_tab == FolderPaneTab::Favorites { draw_cursor_ring(ui, fav_resp.rect); }
+            help_tip(&fav_resp, help_on, &i18n::t().help_tab_favorites());
             if fav_resp.clicked() {
                 self.switch_folder_tab(FolderPaneTab::Favorites);
                 self.focused_pane = FocusPane::FavoriteTab;
             }
             let real_resp = ui.selectable_label(self.folder_pane_tab == FolderPaneTab::RealTree, i18n::t().folder_tab_real());
             if tab_bar_focused && self.folder_pane_tab == FolderPaneTab::RealTree { draw_cursor_ring(ui, real_resp.rect); }
+            help_tip(&real_resp, help_on, &i18n::t().help_tab_real());
             if real_resp.clicked() {
                 self.switch_folder_tab(FolderPaneTab::RealTree);
                 self.focused_pane = FocusPane::TreeTab;
             }
             let search_resp = ui.selectable_label(self.folder_pane_tab == FolderPaneTab::Search, i18n::t().folder_tab_search());
             if tab_bar_focused && self.folder_pane_tab == FolderPaneTab::Search { draw_cursor_ring(ui, search_resp.rect); }
+            help_tip(&search_resp, help_on, &i18n::t().help_tab_search());
             if search_resp.clicked() {
                 self.switch_folder_tab(FolderPaneTab::Search);
                 self.focused_pane = FocusPane::SearchForm;
@@ -581,6 +585,7 @@ impl NekoviewApp {
         ui.horizontal(|ui| {
             let virt_resp = ui.selectable_label(self.folder_pane_tab == FolderPaneTab::VirtualFolders, i18n::t().folder_tab_virtual());
             if tab_bar_focused && self.folder_pane_tab == FolderPaneTab::VirtualFolders { draw_cursor_ring(ui, virt_resp.rect); }
+            help_tip(&virt_resp, help_on, &i18n::t().help_tab_virtual());
             if virt_resp.clicked() {
                 self.switch_folder_tab(FolderPaneTab::VirtualFolders);
                 self.focused_pane = FocusPane::FolderTabBar;
@@ -873,10 +878,16 @@ impl NekoviewApp {
         // 評価フィルタ群（縦線・チェック・比較・★）と右端の空白ぶん。文字列欄はこの残りを使う。
         const RATING_GROUP_W: f32 = 290.0;
         const RIGHT_GAP: f32 = 5.0;
+        let help_on = self.help_enabled;
+        let help_text = i18n::t().help_filter_text();
+        let help_score = i18n::t().help_filter_score();
         ui.separator();
         ui.horizontal(|ui| {
-            ui.label(i18n::t().explorer_filter_label());
-            let mut changed = ui.checkbox(&mut self.filter_enabled, "").changed();
+            let r_label = ui.label(i18n::t().explorer_filter_label());
+            help_tip(&r_label, help_on, &help_text);
+            let r_check = ui.checkbox(&mut self.filter_enabled, "");
+            help_tip(&r_check, help_on, &help_text);
+            let mut changed = r_check.changed();
             let filter_focused = self.focused_pane == FocusPane::Filter;
             let resp = ui.add_enabled(
                 self.filter_enabled,
@@ -884,6 +895,7 @@ impl NekoviewApp {
                     .hint_text(i18n::t().explorer_filter_hint())
                     .desired_width((ui.available_width() - RATING_GROUP_W).max(60.0)),
             );
+            help_tip(&resp, help_on, &help_text);
             if resp.clicked() {
                 self.focused_pane = FocusPane::Filter;
             }
@@ -899,12 +911,15 @@ impl NekoviewApp {
 
             // ── 評価フィルタ（縦線で文字列フィルタと区切る）──
             ui.separator();
-            ui.label("score filter");
-            if ui.checkbox(&mut self.rating_filter.enabled, "").changed() {
+            let r_score_label = ui.label("score filter");
+            help_tip(&r_score_label, help_on, &help_score);
+            let r_score_check = ui.checkbox(&mut self.rating_filter.enabled, "");
+            help_tip(&r_score_check, help_on, &help_score);
+            if r_score_check.changed() {
                 changed = true;
             }
             ui.add_enabled_ui(self.rating_filter.enabled, |ui| {
-                egui::ComboBox::from_id_salt("rating_filter_cmp")
+                let r_cmp = egui::ComboBox::from_id_salt("rating_filter_cmp")
                     .width(56.0)
                     .selected_text(self.rating_filter.cmp.label())
                     .show_ui(ui, |ui| {
@@ -917,7 +932,8 @@ impl NekoviewApp {
                             }
                         }
                     });
-                egui::ComboBox::from_id_salt("rating_filter_threshold")
+                help_tip(&r_cmp.response, help_on, &help_score);
+                let r_threshold = egui::ComboBox::from_id_salt("rating_filter_threshold")
                     .width(72.0)
                     .selected_text(crate::rating_filter::star_label(self.rating_filter.threshold_half))
                     .show_ui(ui, |ui| {
@@ -934,6 +950,7 @@ impl NekoviewApp {
                             }
                         }
                     });
+                help_tip(&r_threshold.response, help_on, &help_score);
             });
             ui.add_space(RIGHT_GAP);
 

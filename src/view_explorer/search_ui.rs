@@ -1,5 +1,7 @@
 use crate::i18n;
 
+use super::help::help_tip;
+
 use super::panels::draw_cursor_ring;
 use super::calendar_gui::{apply_outcome_to_form, LocalDate};
 use super::{FocusPane, NekoviewApp, SearchFormFocus, SearchFormState};
@@ -20,6 +22,8 @@ impl NekoviewApp {
 
     /// 検索結果の履歴リスト（draw_search_left_pane の下段）。
     fn draw_search_pane(&mut self, ui: &mut egui::Ui) {
+        let help_on = self.help_enabled;
+        let help_history = i18n::t().help_search_history();
         if self.search_history.is_empty() {
             ui.add_space(8.0);
             ui.weak(i18n::t().search_no_results_hint());
@@ -38,6 +42,7 @@ impl NekoviewApp {
                     let is_cursor = self.focused_pane == FocusPane::SearchHistory
                         && self.search_selected == Some(idx);
                     let resp = ui.selectable_label(self.search_selected == Some(idx), &label);
+                    help_tip(&resp, help_on, &help_history);
                     if is_cursor {
                         draw_cursor_ring(ui, resp.rect);
                     }
@@ -52,16 +57,22 @@ impl NekoviewApp {
     /// アイテムペイン左側の「検索ペイン」。最上位に検索開始/条件クリアボタン、
     /// その直下にスプリッター線、それ以下に検索条件フォームを並べる。
     pub(super) fn draw_search_condition_pane(&mut self, ui: &mut egui::Ui) {
+        let help_on = self.help_enabled;
+        let help_base = i18n::t().help_search_base_dir();
+        let help_actions = i18n::t().help_search_actions();
+        let help_cond = i18n::t().help_search_conditions();
         ui.horizontal(|ui| {
             let start_enabled = !self.search_running;
             let start = ui.add_enabled(start_enabled, egui::Button::new(i18n::t().search_start_button()));
             self.sync_search_form_response(&start, SearchFormFocus::Start, start_enabled);
+            help_tip(&start, help_on, &help_actions);
             if start.clicked() {
                 let ctx = ui.ctx().clone();
                 self.start_search(&ctx);
             }
             let clear = ui.button(i18n::t().search_clear_button());
             self.sync_search_form_response(&clear, SearchFormFocus::Clear, true);
+            help_tip(&clear, help_on, &help_actions);
             if clear.clicked() {
                 // 基点ディレクトリはツリー/ドライブで選ぶものなので、条件クリアの対象外にする。
                 let base_dir = self.search_form.base_dir.clone();
@@ -74,44 +85,59 @@ impl NekoviewApp {
             .id_salt("search_condition_scroll")
             .auto_shrink([false, false])
             .show(ui, |ui| {
-                ui.label(i18n::t().search_base_dir_label());
+                let r = ui.label(i18n::t().search_base_dir_label());
+                help_tip(&r, help_on, &help_base);
                 let mut base_dir_display = self.search_form.base_dir.as_ref()
                     .map(|p| p.display().to_string())
                     .unwrap_or_default();
-                ui.add_enabled(false, egui::TextEdit::singleline(&mut base_dir_display));
+                let r = ui.add_enabled(false, egui::TextEdit::singleline(&mut base_dir_display));
+                help_tip(&r, help_on, &help_base);
 
                 ui.add_space(4.0);
-                ui.label(i18n::t().search_name_pattern_label());
+                let r = ui.label(i18n::t().search_name_pattern_label());
+                help_tip(&r, help_on, &help_cond);
                 let r = ui.add(egui::TextEdit::singleline(&mut self.search_form.name_pattern).lock_focus(true));
                 self.sync_search_form_response(&r, SearchFormFocus::NamePattern, true);
+                help_tip(&r, help_on, &help_cond);
                 let r = ui.checkbox(&mut self.search_form.include_subdirs, i18n::t().search_include_subdirs_label());
                 self.sync_search_form_response(&r, SearchFormFocus::IncludeSubdirs, true);
+                help_tip(&r, help_on, &help_cond);
 
                 ui.add_space(4.0);
-                ui.label(i18n::t().search_size_min_label());
+                let r = ui.label(i18n::t().search_size_min_label());
+                help_tip(&r, help_on, &help_cond);
                 let r = ui.add(egui::TextEdit::singleline(&mut self.search_form.size_min_mb).lock_focus(true));
                 self.sync_search_form_response(&r, SearchFormFocus::SizeMin, true);
-                ui.label(i18n::t().search_size_max_label());
+                help_tip(&r, help_on, &help_cond);
+                let r = ui.label(i18n::t().search_size_max_label());
+                help_tip(&r, help_on, &help_cond);
                 let r = ui.add(egui::TextEdit::singleline(&mut self.search_form.size_max_mb).lock_focus(true));
                 self.sync_search_form_response(&r, SearchFormFocus::SizeMax, true);
+                help_tip(&r, help_on, &help_cond);
 
                 ui.add_space(4.0);
-                ui.label(i18n::t().search_date_after_label());
+                let r = ui.label(i18n::t().search_date_after_label());
+                help_tip(&r, help_on, &help_cond);
                 ui.horizontal(|ui| {
-                    ui.add_enabled(false, egui::TextEdit::singleline(&mut self.search_form.date_after).desired_width(110.0));
+                    let r = ui.add_enabled(false, egui::TextEdit::singleline(&mut self.search_form.date_after).desired_width(110.0));
+                    help_tip(&r, help_on, &help_cond);
                     let selected = LocalDate::parse_yyyy_mm_dd(&self.search_form.date_after);
                     let (r, outcome) = self.search_date_start_calendar.show(
                         ui, egui::Id::new("search_date_start"), selected, self.search_calendar_today);
                     self.sync_search_form_response(&r, SearchFormFocus::DateAfter, true);
+                    help_tip(&r, help_on, &help_cond);
                     apply_outcome_to_form(&mut self.search_form.date_after, outcome);
                 });
-                ui.label(i18n::t().search_date_before_label());
+                let r = ui.label(i18n::t().search_date_before_label());
+                help_tip(&r, help_on, &help_cond);
                 ui.horizontal(|ui| {
-                    ui.add_enabled(false, egui::TextEdit::singleline(&mut self.search_form.date_before).desired_width(110.0));
+                    let r = ui.add_enabled(false, egui::TextEdit::singleline(&mut self.search_form.date_before).desired_width(110.0));
+                    help_tip(&r, help_on, &help_cond);
                     let selected = LocalDate::parse_yyyy_mm_dd(&self.search_form.date_before);
                     let (r, outcome) = self.search_date_end_calendar.show(
                         ui, egui::Id::new("search_date_end"), selected, self.search_calendar_today);
                     self.sync_search_form_response(&r, SearchFormFocus::DateBefore, true);
+                    help_tip(&r, help_on, &help_cond);
                     apply_outcome_to_form(&mut self.search_form.date_before, outcome);
                 });
             });

@@ -1,5 +1,5 @@
 //! エクスプローラーのヘルプ（ツールチップ）。メニューバーの新 [?] ボタンでONにしている間だけ、
-//! 対象ウィジェットへ1秒ホバーするとタイトル枠つきの説明が出る。ON/OFFは非永続（起動時は常にOFF）。
+//! 対象ウィジェットへ0.5秒ホバーするとタイトル枠つきの説明が出る。ON/OFFは非永続（起動時は常にOFF）。
 //!
 //! egui 標準の tooltip_delay は全ツールチップ共通なので、ヘルプ専用の遅延はここで自前管理する
 //! （既存の常時ツールチップの遅延には影響しない）。
@@ -7,7 +7,7 @@
 use crate::i18n::HelpDoc;
 
 /// ホバー開始からヘルプが出るまでの秒数
-const HELP_DELAY_SECS: f64 = 1.0;
+const HELP_DELAY_SECS: f64 = 0.5;
 /// 直前にヘルプが出ていた場合、この秒数以内に隣のウィジェットへ移ったら待たずに出す
 const HELP_GRACE_SECS: f64 = 0.3;
 /// 本文の最大幅
@@ -23,7 +23,7 @@ pub(super) fn help_wait_remaining(hover_secs: f64, since_last_shown: Option<f64>
     (HELP_DELAY_SECS - hover_secs).max(0.0)
 }
 
-/// `on` のとき、`r` に1秒ホバーしたらヘルプを出す。無効状態のウィジェットでも出る。
+/// `on` のとき、`r` に0.5秒ホバーしたらヘルプを出す。無効状態のウィジェットでも出る。
 /// 同じ `r` に対して既存のツールチップ（実パス等）を別に出していても、egui が枠ごと縦に積む。
 pub(super) fn help_tip(r: &egui::Response, on: bool, doc: &HelpDoc) {
     if !on {
@@ -84,14 +84,14 @@ mod help_delay_tests {
     use super::help_wait_remaining;
 
     #[test]
-    fn waits_one_second_from_hover_start() {
-        assert_eq!(help_wait_remaining(0.0, None), 1.0);
-        assert!((help_wait_remaining(0.4, None) - 0.6).abs() < 1e-9);
+    fn waits_half_a_second_from_hover_start() {
+        assert_eq!(help_wait_remaining(0.0, None), 0.5);
+        assert!((help_wait_remaining(0.2, None) - 0.3).abs() < 1e-9);
     }
 
     #[test]
-    fn shows_once_one_second_has_elapsed() {
-        assert_eq!(help_wait_remaining(1.0, None), 0.0);
+    fn shows_once_half_a_second_has_elapsed() {
+        assert_eq!(help_wait_remaining(0.5, None), 0.0);
         assert_eq!(help_wait_remaining(5.0, None), 0.0);
     }
 
@@ -102,6 +102,6 @@ mod help_delay_tests {
 
     #[test]
     fn an_old_help_does_not_skip_the_wait() {
-        assert_eq!(help_wait_remaining(0.0, Some(2.0)), 1.0);
+        assert_eq!(help_wait_remaining(0.0, Some(2.0)), 0.5);
     }
 }
