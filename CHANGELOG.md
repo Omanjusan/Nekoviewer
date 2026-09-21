@@ -2,26 +2,34 @@
 
 All notable changes to this project will be documented in this file.
 
-## [1.9.0]
+## [1.9.0] - 2026-09-21
 
 ### Added
 
-- Added a tool palette GUI inside the viewer window. Items can be freely added and removed from the right-click menu on the palette's buttons, and are launched with a left click. Showing or hiding the palette GUI itself is done from the explorer menu area
+- (Experimental) Added a tool palette GUI inside the viewer window. Items can be freely added and removed from the right-click menu on the palette's buttons, and are launched with a left click. Showing or hiding the palette GUI itself is done from the explorer menu area
 - (Experimental) Added image filters: gamma, sharpness, contrast, blue-light cut, sepia, monochrome, and more
 - Added a Virtual Folders tab. Real folders can be registered as nodes, much like taking a snapshot of them, and nodes can be pseudo-deleted and renamed. This lets you build a simple favorite-folder tree centered on real paths. Up to 5000 nodes can be registered. Note that this feature registers folders, not individual files
-- Applied sort criteria to both the virtual and real folder trees. The settings are accessible from the right-click menu inside the tree
+- Applied sort criteria to both the virtual and real folder trees. The settings are accessible from the right-click menu inside the tree area
 - Persisted the selected tab position. On launch, the tab that was selected when the app last exited is restored. Launching with a path via the CLI is reproduced in the `Folder` tab
 - Added a per-archive settings dialog for spread mode, bookmark saving, and sort saving. This allows settings to be applied in bulk from a multi-file selection. Note that this dialog does not reflect the current state when it opens
 - Implemented image zoom. Zoom in and out with Shift + mouse wheel up/down. This gesture previously moved to the next/previous file from the start/end of a file, so the old behavior has been moved to Ctrl + mouse wheel. If Shift is already assigned, the search continues up to the Shift+Ctrl combination; if that is also taken, nothing is assigned and you must assign it manually. The maximum zoom is 4x. You can also zoom out beyond the fit-to-window state (the magnification on entry) down to 25% of it, and the mode can be entered with the wheel in the zoom-out direction too. Both the wheel and the slider stop exactly at the fit magnification and at native size (100%); the slider shows a blue tick at the fit position. Zoom is also available from a tooltip
-- Note on zooming: Shift + mouse wheel up is the entry point into zoom mode. The exit is the `Exit` button on the left of the slider bar (always shown, at any magnification). Returning to the minimum magnification no longer exits automatically. The mode can also be toggled from the tool palette
+- Note on zooming: The Shift + mouse wheel zoom action is the entry point into the feature. The exit is the `Exit` button on the left of the slider bar (always shown, at any magnification). The mode can also be entered and exited from the magnifier toggle registered in the tool palette
 - (Experimental) Added a pseudo panel-by-panel mode. Instead of analysing manga panels, it advances through the whole page in reading order with a frame (= the viewport) at a magnification you choose. Pressing `Panel mode` in the tool palette while zoomed uses that magnification as the base, which is saved and reused next time. While the mode is on, the page-turn keys (Space / Down / Up) become next/previous panel, and the `Next Panel` / `Prev Panel` palette buttons work too. A partial panel at the end is pushed to the page edge and overlaps the previous one. When the page is also wider than the frame, panels are visited in a Z pattern following the binding direction (right-to-left for right binding, left-to-right for left binding and single pages). Next on the last panel turns the page normally (to the first panel of the next page), and previous on the first panel goes to the last panel of the previous page. Moving between panels is an accelerating slide of about 180 ms, during which panel keys, wheel zoom and slider input are ignored. The base magnification is kept relative to page height (the share of the page height the frame covers), so the frame stays the same size across spreads, pages of different resolution, and window height changes. The wheel still zooms in this mode, and zooming updates the base magnification. Clicking the left/right edges still turns pages. Leaving zoom mode also leaves panel mode
 - Added image info display. Shows the image resolution to the left of the page count at the bottom right of the viewer. In fit-to-window mode it shows the actual displayed size excluding letterboxing; at native size and while zoomed it shows the image's original pixel dimensions. While zoomed, a magnification such as `(x1.10)` is appended (its basis differs from the slider's magnification, so the value is off for images whose long edge exceeds the native-size decode cap). In spread mode, the dimensions of each page are shown side by side corresponding to the left and right of the screen, and the page count shows only the starting page. Pages with animation data (including single-frame ones) get an `A` after the page number (e.g. `1A/30`). It can be toggled on/off together with the page count via the `Image info` toggle in the tool palette, and the setting is persisted (on by default)
+- Added recording of archive ratings and a rating sort criterion. Archive files only. When you reach the end of an archive, rating stars are shown as an overlay. Click the star matching your score to record it. The overlay does not close after one click, so you can correct a mistaken rating as many times as you like. If the overlay gets in the way, you can close it with the X button. To turn this feature off globally, use the ON/OFF toggle button in the explorer menu bar
+- Added a per-folder score filter for archive ratings. A new UI for filtering by score sits to the right of the text search for files in a folder
+- Added an archive visit count. The count goes up by 1 every time an archive file is opened. Sort by it to find the archives you view often
+- Added an `info2` toggle button to the menu bar that shows the score and visit count on the thumbnail strip. The toggle cycles through 4 display patterns
+- Replaced the [?] button at the right end of the menu bar with a toggle for tooltip display mode. The former status display feature has moved to [stat]. The tooltip display delay is 0.5 seconds
 
 ### Fixed
 
+- Localized (i18n) the calendar widget in the Search tab
 - Fixed the double-click in the viewer that switches to native size only responding when it was on the actual image. Double-click now works anywhere other than the left and right page-turn areas
 - Fixed odd top/bottom alignment when selecting a folder in the tree view
 - Raised the native-size cap to 4000px. Nothing is shown if your setting is already 4000px or higher; if it is lower than 4000px, a notice about the new default is shown at startup
+- Fixed misplaced coordinates when the tool palette is clamped by shrinking the window
+- Image textures are now kept within a VRAM budget window
 
 ## [1.8.0] - 2026-09-14
 
