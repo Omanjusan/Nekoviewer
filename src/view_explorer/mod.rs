@@ -254,6 +254,8 @@ pub(crate) enum MenuBarButton {
     CardInfoToggle,
     /// 評価帯（info2）の表示量の循環トグル。
     CardRatingToggle,
+    /// スコアリング（アーカイブ末尾の評価オーバーレイ）のON/OFF。viewer_cfg直結の永続設定。
+    ScoringToggle,
     StatusToggle,
     /// ビューアー内ツールパレット（マス配置ツールボックス）の表示ON/OFF。
     /// ファイルを渡り歩いても同じ状態を保つ（viewer_cfg経由でPaletteStateへ直結）。
@@ -263,7 +265,7 @@ pub(crate) enum MenuBarButton {
 
 /// 表示順そのもの（draw_menu_barの描画順と一致させること）。
 /// 見開き・ページモード群はビューアーツールバーへ移設した（toolbar.rs 参照）。
-pub(crate) const MENU_BAR_ORDER: [MenuBarButton; 10] = [
+pub(crate) const MENU_BAR_ORDER: [MenuBarButton; 11] = [
     MenuBarButton::Reload,
     MenuBarButton::SortName,
     MenuBarButton::SortDate,
@@ -271,6 +273,7 @@ pub(crate) const MENU_BAR_ORDER: [MenuBarButton; 10] = [
     MenuBarButton::SortOrder,
     MenuBarButton::CardInfoToggle,
     MenuBarButton::CardRatingToggle,
+    MenuBarButton::ScoringToggle,
     MenuBarButton::ToolPaletteToggle,
     MenuBarButton::Settings,
     MenuBarButton::StatusToggle,
@@ -283,7 +286,7 @@ mod menu_bar_order_tests {
     #[test]
     fn settings_and_status_keep_the_visual_right_end_order() {
         assert_eq!(
-            &MENU_BAR_ORDER[8..],
+            &MENU_BAR_ORDER[9..],
             &[
                 MenuBarButton::Settings,
                 MenuBarButton::StatusToggle,

@@ -2693,6 +2693,7 @@ impl ViewerState {
             let viewport_rect = egui::Rect::from_min_size(origin, avail);
             // 評価オーバーレイ（最終ページ表示中のみ）。帯の上のクリック・ホバーは背面へ伝えない。
             let rating_rect = crate::rating_overlay::overlay_visible(
+                cfg.rating_overlay_enabled,
                 self.is_raw_file,
                 self.rating_overlay_dismissed,
                 !self.can_advance_page(step, total as i32),

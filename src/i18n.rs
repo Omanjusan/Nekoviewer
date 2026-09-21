@@ -1673,6 +1673,17 @@ impl Lang {
         }
     }
 
+    pub fn scoring_toggle_button(self, on: bool) -> &'static str {
+        match (self, on) {
+            (Lang::Japanese, true)  => "スコアリングON",
+            (Lang::Japanese, false) => "スコアリングOFF",
+            (Lang::English, true)   => "Scoring: ON",
+            (Lang::English, false)  => "Scoring: OFF",
+            (Lang::Chinese, true)   => "评分：开",
+            (Lang::Chinese, false)  => "评分：关",
+        }
+    }
+
     pub fn tool_palette_toggle_button(self, on: bool) -> &'static str {
         match (self, on) {
             (Lang::Japanese, true)  => "ツールボックスON",

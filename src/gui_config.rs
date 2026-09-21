@@ -167,6 +167,10 @@ pub struct ViewerConfig {
     /// 画像情報（解像度・ページ数）の右下オーバーレイを表示するか。既定ON。
     /// 永続設定。ツールパレットのトグル「画像情報表示」で切り替える。
     pub image_info_visible: bool,
+    /// アーカイブ末尾の評価オーバーレイ（スコアリング）を出すか。既定ON。
+    /// 永続設定。エクスプローラーのメニューバーのボタンで切り替える。OFFでも訪問回数の記録・
+    /// サムネの評価帯・score filter・保存済みの評価値は変わらない。
+    pub rating_overlay_enabled: bool,
     /// ビューアーツールバーの項目並び順（全項目の順列、toolbar.rs 参照）。
     /// 永続設定。現時点で編集UIは無く実質固定（state を直接編集すれば並べ替え可能）。
     pub bar_order: [ViewerBarItem; BAR_ITEM_COUNT],
@@ -222,6 +226,7 @@ impl Default for ViewerConfig {
             rotation_session_angle: 0,
             exif_orientation_enabled: true,
             image_info_visible: true,
+            rating_overlay_enabled: true,
             bar_order: DEFAULT_BAR_ORDER,
             transition_kind: TransitionKind::HorizontalSlide,
             transition_duration_ms: 400,
@@ -531,6 +536,7 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
     let mut thumbbar_marker_a: Option<u8> = None;
     let mut exif_orientation_enabled: Option<bool> = None;
     let mut image_info_visible: Option<bool> = None;
+    let mut rating_overlay_enabled: Option<bool> = None;
     let mut magnifier_notch_step: Option<crate::magnifier::NotchStep> = None;
     let mut magnifier_detail_ticks: Option<bool> = None;
     let mut magnifier_koma_height_rel: Option<f32> = None;
@@ -690,6 +696,7 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
                 "thumbbar_marker_a" => { thumbbar_marker_a = v.trim().parse().ok(); }
                 "exif_orientation_enabled" => { exif_orientation_enabled = v.trim().parse().ok(); }
                 "image_info_visible" => { image_info_visible = v.trim().parse().ok(); }
+                "rating_overlay_enabled" => { rating_overlay_enabled = v.trim().parse().ok(); }
                 "magnifier_notch_step" => { magnifier_notch_step = crate::magnifier::NotchStep::from_state_str(v); }
                 "magnifier_detail_ticks" => { magnifier_detail_ticks = v.trim().parse().ok(); }
                 "magnifier_koma_height_rel" => { magnifier_koma_height_rel = v.trim().parse().ok(); }
@@ -847,6 +854,7 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
             rotation_session_angle: 0,
             exif_orientation_enabled: exif_orientation_enabled.unwrap_or(true),
             image_info_visible: image_info_visible.unwrap_or(true),
+            rating_overlay_enabled: rating_overlay_enabled.unwrap_or(true),
             bar_order: viewer_bar_order.unwrap_or(DEFAULT_BAR_ORDER),
             transition_kind: transition_kind.unwrap_or(TransitionKind::HorizontalSlide),
             transition_duration_ms: transition_duration_ms.unwrap_or(400),
@@ -994,6 +1002,10 @@ pub fn save_state(root: &Path, dir: &Path, window_size: (u32, u32), viewer_slots
     content.push_str(&format!(
         "image_info_visible={}\n",
         viewer_cfg.image_info_visible,
+    ));
+    content.push_str(&format!(
+        "rating_overlay_enabled={}\n",
+        viewer_cfg.rating_overlay_enabled,
     ));
     content.push_str(&magnifier_state_lines(&viewer_cfg.magnifier));
     content.push_str(&format!(
@@ -1321,6 +1333,26 @@ mod tests {
         let config = ViewerConfig::default();
         assert!(!config.zoom_actual);
         assert!(config.redecode_on_resize);
+    }
+
+    #[test]
+    fn rating_overlay_enabled_key_parses_and_defaults_to_on() {
+        let root = std::env::temp_dir()
+            .join(format!("nekoviewer_state_scoring_test_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&root);
+        std::fs::write(state_path(&root), "last_dir=/tmp/x\nlang=ja\nrating_overlay_enabled=false\n").unwrap();
+        let parsed = parse_state_file(&state_path(&root)).expect("state file parses");
+        assert!(!parsed.viewer_cfg.rating_overlay_enabled);
+
+        // 旧stateにキーがなければ ON（従来どおりオーバーレイを出す）
+        std::fs::write(state_path(&root), "last_dir=/tmp/x\nlang=ja\n").unwrap();
+        let parsed = parse_state_file(&state_path(&root)).expect("state file parses");
+        assert!(parsed.viewer_cfg.rating_overlay_enabled);
+        // 壊れた値も ON へ戻る
+        std::fs::write(state_path(&root), "last_dir=/tmp/x\nlang=ja\nrating_overlay_enabled=bogus\n").unwrap();
+        let parsed = parse_state_file(&state_path(&root)).expect("state file parses");
+        assert!(parsed.viewer_cfg.rating_overlay_enabled);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

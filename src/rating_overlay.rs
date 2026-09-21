@@ -58,9 +58,9 @@ pub enum RatingEvent {
     Close,
 }
 
-/// 評価オーバーレイを出すか。生画像ファイルは対象外、Xで閉じた後は出さない。
-pub fn overlay_visible(is_raw_file: bool, dismissed: bool, at_last_page: bool, total: usize) -> bool {
-    !is_raw_file && !dismissed && at_last_page && total > 0
+/// 評価オーバーレイを出すか。スコアリングOFF・生画像ファイルは対象外、Xで閉じた後は出さない。
+pub fn overlay_visible(enabled: bool, is_raw_file: bool, dismissed: bool, at_last_page: bool, total: usize) -> bool {
+    enabled && !is_raw_file && !dismissed && at_last_page && total > 0
 }
 
 /// 帯の矩形（ビューア中央）。ビューアが小さいときは寸法を縮める。
@@ -344,11 +344,19 @@ mod tests {
 
     #[test]
     fn overlay_shows_only_on_the_last_page_of_a_non_raw_undismissed_archive() {
-        assert!(overlay_visible(false, false, true, 10));
-        assert!(!overlay_visible(true, false, true, 10)); // 生画像は対象外
-        assert!(!overlay_visible(false, true, true, 10)); // Xで閉じた後
-        assert!(!overlay_visible(false, false, false, 10)); // 途中ページ
-        assert!(!overlay_visible(false, false, true, 0)); // 空
+        assert!(overlay_visible(true, false, false, true, 10));
+        assert!(!overlay_visible(true, true, false, true, 10)); // 生画像は対象外
+        assert!(!overlay_visible(true, false, true, true, 10)); // Xで閉じた後
+        assert!(!overlay_visible(true, false, false, false, 10)); // 途中ページ
+        assert!(!overlay_visible(true, false, false, true, 0)); // 空
+    }
+
+    #[test]
+    fn overlay_never_shows_while_scoring_is_switched_off() {
+        assert!(!overlay_visible(false, false, false, true, 10));
+        // OFFは他の条件がすべて揃っていても優先する
+        assert!(overlay_visible(true, false, false, true, 1));
+        assert!(!overlay_visible(false, false, false, true, 1));
     }
 
     #[test]
