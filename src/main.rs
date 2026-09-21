@@ -5,6 +5,9 @@ mod card_date_format;
 mod config;
 mod controller;
 mod decode_jobs;
+// フェーズ1（比較ロジックのみ）。sort_archives への配線（フェーズ2）まで未使用。
+#[allow(dead_code)]
+mod explorer_sort;
 mod favorites;
 mod fs;
 mod gui_config;
