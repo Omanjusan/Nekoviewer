@@ -900,6 +900,8 @@ pub struct NekoviewApp {
     pub(crate) archive_rating_cache: HashMap<PathBuf, Option<crate::spread_state::ArchiveRating>>,
     sort_key: ExplorerSortKey,
     sort_ascending: bool,
+    /// 第2ソートセット（スコア／訪問回数）。ON のときは第1セット（sort_key）がサブ軸になる
+    rating_sort: crate::explorer_sort::RatingSort,
     /// サムネグリッドの統一カーソル位置（↑/サブフォルダ/アーカイブを貫通）
     grid_cursor: Option<GridEntry>,
     selected_archive_index: Option<usize>,
@@ -1216,6 +1218,7 @@ impl NekoviewApp {
             archive_rating_cache: HashMap::new(),
             sort_key: ExplorerSortKey::from_state_key(&sort_state.key),
             sort_ascending: sort_state.ascending,
+            rating_sort: crate::explorer_sort::RatingSort::default(),
             grid_cursor: None,
             selected_archive_index: None,
             selected_archive_meta: None,

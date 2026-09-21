@@ -2,7 +2,6 @@ use std::path::PathBuf;
 use std::sync::mpsc;
 use std::sync::atomic::Ordering;
 
-use crate::types::ExplorerSortKey;
 use crate::neko_dir;
 use crate::fs::dir;
 use crate::fs::mount::{list_gvfs_smb_mounts, list_local_drives};
@@ -42,6 +41,29 @@ fn take_allowed_thumbnail(
         if crate::fs::dir::is_gvfs_path(path) { allow_network } else { allow_local }
     })?;
     queue.remove(pos)
+}
+
+/// `sort_archives` が比較用に集めた1件ぶんの値
+struct SortEntry {
+    path: PathBuf,
+    /// お気に入り登録済み（並びの先頭に固定する）
+    fav: bool,
+    mtime: Option<std::time::SystemTime>,
+    size: u64,
+    rating_half: u8,
+    visit_count: u32,
+}
+
+impl SortEntry {
+    fn row(&self) -> crate::explorer_sort::SortRow<'_> {
+        crate::explorer_sort::SortRow {
+            name: self.path.file_name().and_then(|n| n.to_str()).unwrap_or(""),
+            mtime: self.mtime,
+            size: self.size,
+            rating_half: self.rating_half,
+            visit_count: self.visit_count,
+        }
+    }
 }
 
 impl NekoviewApp {
@@ -774,49 +796,70 @@ impl NekoviewApp {
         self.tree_reload_pending = None;
     }
 
+    /// 現在の2セット分のソート条件
+    fn explorer_sort(&self) -> crate::explorer_sort::ExplorerSort {
+        crate::explorer_sort::ExplorerSort {
+            key: self.sort_key,
+            ascending: self.sort_ascending,
+            rating: self.rating_sort,
+        }
+    }
+
+    /// archives のうち評価キャッシュに無いものを、ディレクトリ単位でまとめて DB から取り込む。
+    /// 横断一覧（お気に入り・検索結果）を評価で並べるとき、1件ずつ引かずに済ませる。
+    /// レコード不在は None（＝未評価・未訪問）としてキャッシュする。
+    fn preload_archive_ratings(&mut self) {
+        let Some(db) = self.spread_db.clone() else { return };
+        let mut missing: HashMap<PathBuf, Vec<PathBuf>> = HashMap::new();
+        for p in &self.archives {
+            if self.archive_rating_cache.contains_key(p) { continue }
+            if let Some(dir) = p.parent() {
+                missing.entry(dir.to_path_buf()).or_default().push(p.clone());
+            }
+        }
+        for (dir, paths) in missing {
+            let ratings: HashMap<String, crate::spread_state::ArchiveRating> =
+                crate::spread_state::list_dir_archive_ratings(&db, &dir).into_iter().collect();
+            for p in paths {
+                let rating = p.file_name().and_then(|n| n.to_str()).and_then(|n| ratings.get(n).copied());
+                self.archive_rating_cache.insert(p, rating);
+            }
+        }
+    }
+
     pub(super) fn sort_archives(&mut self) {
-        let ascending = self.sort_ascending;
+        let sort = self.explorer_sort();
+        if sort.needs_rating() {
+            self.preload_archive_ratings();
+        }
         // お気に入り一覧表示中は favorite_states が実ディレクトリ用の古いデータのままで
         // 信頼できないため、スティッキー判定は通常のディレクトリ表示中のみ行う。
         let sticky_favorites = self.viewing_favorites.is_none();
-        let is_fav = |p: &PathBuf| -> bool {
-            sticky_favorites
+        // 比較中に stat・DB を引かないよう、ソートに使う値を先に集める（使わない軸は集めない）
+        let mut entries: Vec<SortEntry> = self.archives.iter().map(|p| {
+            let fav = sticky_favorites
                 && p.file_name()
                     .and_then(|n| n.to_str())
-                    .is_some_and(|name| self.favorite_states.contains_key(name))
-        };
-        match self.sort_key {
-            ExplorerSortKey::Name => {
-                self.archives.sort_by(|a, b| {
-                    let fav_cmp = is_fav(b).cmp(&is_fav(a));
-                    if fav_cmp != std::cmp::Ordering::Equal { return fav_cmp; }
-                    let na = a.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                    let nb = b.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                    let cmp = na.cmp(nb);
-                    if ascending { cmp } else { cmp.reverse() }
-                });
+                    .is_some_and(|name| self.favorite_states.contains_key(name));
+            let meta = (sort.needs_mtime() || sort.needs_size())
+                .then(|| std::fs::metadata(p).ok())
+                .flatten();
+            let rating = if sort.needs_rating() {
+                self.archive_rating_cache.get(p).copied().flatten()
+            } else {
+                None
+            };
+            SortEntry {
+                path: p.clone(),
+                fav,
+                mtime: meta.as_ref().and_then(|m| m.modified().ok()),
+                size: meta.as_ref().map_or(0, |m| m.len()),
+                rating_half: rating.map_or(0, |r| r.rating_half),
+                visit_count: rating.map_or(0, |r| r.visit_count),
             }
-            ExplorerSortKey::Date => {
-                self.archives.sort_by(|a, b| {
-                    let fav_cmp = is_fav(b).cmp(&is_fav(a));
-                    if fav_cmp != std::cmp::Ordering::Equal { return fav_cmp; }
-                    let ta = std::fs::metadata(a).and_then(|m| m.modified()).ok();
-                    let tb = std::fs::metadata(b).and_then(|m| m.modified()).ok();
-                    let cmp = ta.cmp(&tb);
-                    if ascending { cmp } else { cmp.reverse() }
-                });
-            }
-            ExplorerSortKey::Size => {
-                self.archives.sort_by(|a, b| {
-                    let fav_cmp = is_fav(b).cmp(&is_fav(a));
-                    if fav_cmp != std::cmp::Ordering::Equal { return fav_cmp; }
-                    let sa = std::fs::metadata(a).map(|m| m.len()).unwrap_or(0);
-                    let sb = std::fs::metadata(b).map(|m| m.len()).unwrap_or(0);
-                    let cmp = sa.cmp(&sb);
-                    if ascending { cmp } else { cmp.reverse() }
-                });
-            }
-        }
+        }).collect();
+        entries.sort_by(|a, b| b.fav.cmp(&a.fav).then_with(|| sort.compare(&a.row(), &b.row())));
+        self.archives = entries.into_iter().map(|e| e.path).collect();
         self.recompute_filter();
     }
 
