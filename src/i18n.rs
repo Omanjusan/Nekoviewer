@@ -114,6 +114,24 @@ impl Lang {
         }
     }
 
+    /// 評価帯の星の行: 未評価のとき星の代わりに出す文字
+    pub fn rating_unrated(self) -> &'static str {
+        match self {
+            Lang::Japanese => "未評価",
+            Lang::English  => "Unrated",
+            Lang::Chinese  => "未评价",
+        }
+    }
+
+    /// 評価帯の回数の行
+    pub fn visit_count_line(self, n: u32) -> String {
+        match self {
+            Lang::Japanese => format!("訪問回数：{n}回"),
+            Lang::English  => format!("Visits: {n}"),
+            Lang::Chinese  => format!("访问次数：{n}次"),
+        }
+    }
+
     pub fn card_rating_off(self) -> &'static str {
         match self {
             Lang::Japanese => "情報2:OFF",

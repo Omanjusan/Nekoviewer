@@ -179,7 +179,40 @@ pub fn paint_star(painter: &egui::Painter, center: Pos2, radius: f32, fill: u8) 
     ));
 }
 
-/// 評価オーバーレイの描画とクリック検出（見た目確認用MOCK。値の保存は呼び出し側）。
+/// サムネ帯用（塗った星だけを詰めて並べる）の星の間隔 / 外半径
+const COMPACT_GAP_PER_RADIUS: f32 = 0.3;
+
+/// 塗った星（全部・半分）だけを、`center` を中心に横一列へ並べた配置。空の星は含めない。
+/// 戻り値: (星の中心, 塗り量 1=半分 / 2=全部)。値0なら空。
+pub fn compact_star_layout(value_half: u8, center: Pos2, radius: f32) -> Vec<(Pos2, u8)> {
+    let n = (value_half.min(MAX_HALF) as usize).div_ceil(2);
+    if n == 0 {
+        return Vec::new();
+    }
+    let star_w = radius * STAR_WIDTH_PER_RADIUS;
+    let pitch = radius * (STAR_WIDTH_PER_RADIUS + COMPACT_GAP_PER_RADIUS);
+    let total_w = pitch * (n as f32 - 1.0) + star_w;
+    let left = center.x - total_w / 2.0;
+    (0..n)
+        .map(|i| (Pos2::new(left + star_w / 2.0 + pitch * i as f32, center.y), fill_of_star(value_half, i)))
+        .collect()
+}
+
+/// ★5個ぶんが `avail_w` に収まるよう、星の外半径を上限 `radius` から縮める。
+pub fn fit_compact_radius(radius: f32, avail_w: f32) -> f32 {
+    let five_w_per_radius =
+        (STAR_WIDTH_PER_RADIUS + COMPACT_GAP_PER_RADIUS) * (STAR_COUNT as f32 - 1.0) + STAR_WIDTH_PER_RADIUS;
+    radius.min((avail_w / five_w_per_radius).max(1.0))
+}
+
+/// 塗った星だけを中央寄せで描く（サムネ帯用）。
+pub fn paint_compact_stars(painter: &egui::Painter, value_half: u8, center: Pos2, radius: f32) {
+    for (c, fill) in compact_star_layout(value_half, center, radius) {
+        paint_star(painter, c, radius, fill);
+    }
+}
+
+/// 評価オーバーレイの描画とクリック検出（値の保存は呼び出し側）。
 /// 優先順位は X > 未評価ボタン > ★。
 pub fn show(ui: &mut egui::Ui, band: Rect, value_half: u8, unset_label: &str) -> RatingEvent {
     let painter = ui.painter().clone();
@@ -329,6 +362,38 @@ mod tests {
         assert_eq!(half_from_x(last.x + 1.0, row.left(), row.pitch(), row.star_w()), 10);
         // 並びは帯の内側に収まる
         assert!(row.rect().min.x >= band.min.x && row.rect().max.x <= band.max.x);
+    }
+
+    #[test]
+    fn compact_layout_has_only_filled_stars_and_is_centered() {
+        let center = Pos2::new(100.0, 50.0);
+        assert!(compact_star_layout(0, center, 8.0).is_empty(), "未評価は星なし");
+
+        let l = compact_star_layout(7, center, 8.0); // ★3.5 → 全3個＋半分1個
+        let fills: Vec<u8> = l.iter().map(|(_, f)| *f).collect();
+        assert_eq!(fills, vec![2, 2, 2, 1]);
+        assert!(l.iter().all(|(p, _)| p.y == 50.0));
+
+        // 左右対称に並ぶ（先頭と末尾の中心が center.x を挟んで等距離）
+        let first = l.first().unwrap().0.x;
+        let last = l.last().unwrap().0.x;
+        assert!(((first + last) / 2.0 - center.x).abs() < 0.001);
+
+        assert_eq!(compact_star_layout(10, center, 8.0).len(), 5);
+        assert_eq!(compact_star_layout(1, center, 8.0).len(), 1, "★0.5は半星1個");
+        assert_eq!(compact_star_layout(1, center, 8.0)[0].1, 1);
+    }
+
+    #[test]
+    fn compact_radius_shrinks_to_fit_narrow_cards_but_never_grows() {
+        assert_eq!(fit_compact_radius(8.0, 1000.0), 8.0);
+        let narrow = fit_compact_radius(8.0, 50.0);
+        assert!(narrow < 8.0);
+        // 5個並べても幅に収まる
+        let l = compact_star_layout(10, Pos2::new(25.0, 0.0), narrow);
+        let right_edge = l.last().unwrap().0.x + narrow * STAR_WIDTH_PER_RADIUS / 2.0;
+        let left_edge = l.first().unwrap().0.x - narrow * STAR_WIDTH_PER_RADIUS / 2.0;
+        assert!(right_edge - left_edge <= 50.0 + 0.01);
     }
 
     #[test]

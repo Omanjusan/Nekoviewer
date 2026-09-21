@@ -781,6 +781,21 @@ impl NekoviewApp {
         });
     }
 
+    /// 評価帯用の評価・訪問記録を返す。キャッシュに無ければDBから遅延取得して覚える
+    /// （お気に入り・検索結果などの横断一覧のカード用。None = レコード不在）。
+    pub(super) fn archive_rating_of(&mut self, path: &std::path::Path) -> Option<crate::spread_state::ArchiveRating> {
+        if let Some(cached) = self.archive_rating_cache.get(path) {
+            return *cached;
+        }
+        let loaded = self.spread_db.as_ref().and_then(|db| {
+            let dir = path.parent()?;
+            let name = path.file_name()?.to_str()?;
+            crate::spread_state::read_archive_rating(db, dir, name)
+        });
+        self.archive_rating_cache.insert(path.to_path_buf(), loaded);
+        loaded
+    }
+
     /// グリッドの統一カーソルを指定エントリへ移動し、アーカイブ選択状態（選択枠・
     /// ファイル情報）を追従させる。Tab着地時の初期カーソル設定などで使う。
     pub(super) fn set_grid_cursor(&mut self, entry: GridEntry) {
@@ -1128,10 +1143,14 @@ impl NekoviewApp {
                             // ── カード下部の情報オーバーレイ帯（ファイル名 / 更新日時 / サイズ）──
                             // 画像の上に半透明帯を重ねる。マーカー描画より前に置くことで、
                             // マーカー（赤×・お気に入り等）は帯の上に出る（重なりは許容）。
-                            let n_lines = self.card_info_mode.line_count();
+                            // 帯は「情報行（0..=3）＋評価行（0..=2, info2）」を上から順に積む。
+                            let info_lines = self.card_info_mode.line_count();
+                            let rating_lines = self.card_rating_mode.line_count();
+                            let n_lines = info_lines + rating_lines;
                             if n_lines > 0 {
                                 // 可視カードぶんだけメタデータを遅延取得（失敗時は次フレーム再試行）
-                                if !self.archive_meta_cache.contains_key(path)
+                                if info_lines > 0
+                                    && !self.archive_meta_cache.contains_key(path)
                                     && let Ok(md) = std::fs::metadata(path)
                                 {
                                     let mt = md.modified().unwrap_or(std::time::UNIX_EPOCH);
@@ -1150,20 +1169,22 @@ impl NekoviewApp {
                                 ui.painter().rect_filled(info_rect, 0.0, style.band_color);
 
                                 let meta = self.archive_meta_cache.get(path).copied();
-                                let mut lines: Vec<String> = Vec::with_capacity(n_lines);
-                                lines.push(
-                                    path.file_name()
-                                        .and_then(|s| s.to_str())
-                                        .unwrap_or("")
-                                        .to_string(),
-                                );
-                                if n_lines >= 2 {
+                                let mut lines: Vec<String> = Vec::with_capacity(info_lines);
+                                if info_lines >= 1 {
+                                    lines.push(
+                                        path.file_name()
+                                            .and_then(|s| s.to_str())
+                                            .unwrap_or("")
+                                            .to_string(),
+                                    );
+                                }
+                                if info_lines >= 2 {
                                     lines.push(
                                         meta.map(|(mt, _)| format_mtime(mt, &self.card_date_format, i18n::t()))
                                             .unwrap_or_default(),
                                     );
                                 }
-                                if n_lines >= 3 {
+                                if info_lines >= 3 {
                                     lines.push(meta.map(|(_, sz)| humanize_size(sz)).unwrap_or_default());
                                 }
 
@@ -1238,6 +1259,52 @@ impl NekoviewApp {
                                         style.text_color,
                                     );
                                 }
+
+                                // ── 評価行（info2）: 情報行の下に、各行を中央寄せで積む ──
+                                if rating_lines > 0 {
+                                    let is_raw = self.raw_image_files.contains(path);
+                                    let rating = self.archive_rating_of(path);
+                                    let center_x = info_rect.center().x;
+                                    let mut row = info_lines;
+                                    let row_center_y = |row: usize| {
+                                        info_rect.min.y + 2.0 + row as f32 * row_h + row_h / 2.0
+                                    };
+                                    let center_text = |row: usize, text: &str| {
+                                        band_painter.text(
+                                            egui::pos2(center_x, row_center_y(row)),
+                                            egui::Align2::CENTER_CENTER,
+                                            text,
+                                            font.clone(),
+                                            style.text_color,
+                                        );
+                                    };
+                                    if self.card_rating_mode.shows_stars() {
+                                        let half = rating.map_or(0, |r| r.rating_half);
+                                        if is_raw {
+                                            // 生画像は評価の対象外（レイアウトは揃えて「-」で無効を示す）
+                                            center_text(row, "-");
+                                        } else if half == 0 {
+                                            center_text(row, i18n::t().rating_unrated());
+                                        } else {
+                                            let radius = crate::rating_overlay::fit_compact_radius(
+                                                row_h * 0.45,
+                                                avail_w,
+                                            );
+                                            crate::rating_overlay::paint_compact_stars(
+                                                &band_painter,
+                                                half,
+                                                egui::pos2(center_x, row_center_y(row)),
+                                                radius,
+                                            );
+                                        }
+                                        row += 1;
+                                    }
+                                    if self.card_rating_mode.shows_visits() {
+                                        let visits = rating.map_or(0, |r| r.visit_count);
+                                        center_text(row, &i18n::t().visit_count_line(visits));
+                                    }
+                                }
+
                                 if hovered && any_overflow {
                                     // フル再描画になるため vsync 任せにせず約30fpsへ間引く
                                     ui.ctx().request_repaint_after(

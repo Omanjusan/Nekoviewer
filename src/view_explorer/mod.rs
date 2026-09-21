@@ -891,6 +891,10 @@ pub struct NekoviewApp {
     /// 可視カードぶんだけ遅延取得するファイルメタデータのキャッシュ: パス → (更新日時, サイズbytes)。
     /// スキャンで archives を作り直すたびにクリアする。
     pub(crate) archive_meta_cache: HashMap<PathBuf, (std::time::SystemTime, u64)>,
+    /// 評価帯（info2）用の評価・訪問キャッシュ。値の None = レコード不在（一度も開いていない）。
+    /// スキャン時に現在フォルダぶんを一括ロードし、横断一覧のカードは描画時に遅延取得する。
+    /// ビューアが評価・訪問を書いたら該当パスを即更新する。
+    pub(crate) archive_rating_cache: HashMap<PathBuf, Option<crate::spread_state::ArchiveRating>>,
     sort_key: ExplorerSortKey,
     sort_ascending: bool,
     /// サムネグリッドの統一カーソル位置（↑/サブフォルダ/アーカイブを貫通）
@@ -1204,6 +1208,7 @@ impl NekoviewApp {
             card_info_style: CardInfoStyle::default(),
             card_info_hover: None,
             archive_meta_cache: HashMap::new(),
+            archive_rating_cache: HashMap::new(),
             sort_key: ExplorerSortKey::from_state_key(&sort_state.key),
             sort_ascending: sort_state.ascending,
             grid_cursor: None,

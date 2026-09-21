@@ -30,6 +30,17 @@ impl NekoviewApp {
         self.egui_ctx.request_repaint();
     }
 
+    /// ビューアーが評価・訪問を書き換えた直後に、評価帯用キャッシュの該当パスを最新化する。
+    fn refresh_rating_cache(&mut self, archive_path: &std::path::Path) {
+        let rating = self.spread_db.as_ref().and_then(|db| {
+            let dir = archive_path.parent()?;
+            let name = archive_path.file_name()?.to_str()?;
+            crate::spread_state::read_archive_rating(db, dir, name)
+        });
+        self.archive_rating_cache.insert(archive_path.to_path_buf(), rating);
+        self.egui_ctx.request_repaint();
+    }
+
     /// ビューアー窓が開いているか（winit_app が窓の生成/破棄判定に使う）。
     pub fn viewer_is_open(&self) -> bool {
         self.viewer.lock().unwrap().is_some()
@@ -897,6 +908,8 @@ impl NekoviewApp {
                 }
             }
         }
+        drop(viewer_guard);
+        self.refresh_rating_cache(&archive_path);
     }
 
     /// 右クリックメニュー「お気に入りに追加」を処理する。フォルダ選択等は行わず、
@@ -1137,8 +1150,10 @@ impl NekoviewApp {
         // 評価はここでは書き換えない（触るまで未評価の状態を維持する）。
         if let Some(db) = self.spread_db.as_ref() {
             crate::spread_state::record_archive_visit(db, archive_dir, filename);
+            let rating = crate::spread_state::read_archive_rating(db, archive_dir, filename);
+            // サムネ帯の訪問回数を即反映する
+            self.archive_rating_cache.insert(path.clone(), rating);
             if !state.is_raw_file() {
-                let rating = crate::spread_state::read_archive_rating(db, archive_dir, filename);
                 state.set_saved_rating(rating.map_or(0, |r| r.rating_half));
             }
         }

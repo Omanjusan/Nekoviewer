@@ -422,6 +422,7 @@ impl NekoviewApp {
             // archives の顔ぶれが変わったので、カード情報帯のメタデータキャッシュを捨てる
             // （消失・更新・別フォルダ移動の反映）。可視カードぶんは描画時に再充填される。
             self.archive_meta_cache.clear();
+            self.archive_rating_cache.clear();
             if let Some(db) = self.spread_db.clone() {
                 let filenames: Vec<String> = self.archives.iter()
                     .filter_map(|p| p.file_name().and_then(|n| n.to_str()).map(str::to_string))
@@ -442,6 +443,17 @@ impl NekoviewApp {
                     .collect();
                 crate::spread_state::bookmark_gc_dir(&db, &self.current_dir, &filenames);
                 crate::spread_state::archive_rating_gc_dir(&db, &self.current_dir, &filenames);
+                // 評価帯・フィルタ用に、このフォルダの評価・訪問を一括ロード（不在は None＝NEW）
+                let ratings: std::collections::HashMap<String, crate::spread_state::ArchiveRating> =
+                    crate::spread_state::list_dir_archive_ratings(&db, &self.current_dir)
+                        .into_iter()
+                        .collect();
+                for p in &self.archives {
+                    let rating = p.file_name()
+                        .and_then(|n| n.to_str())
+                        .and_then(|n| ratings.get(n).copied());
+                    self.archive_rating_cache.insert(p.clone(), rating);
+                }
             } else {
                 self.spread_states.clear();
                 self.archive_sort_states.clear();
