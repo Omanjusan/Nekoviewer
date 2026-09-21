@@ -3155,6 +3155,24 @@ impl Lang {
         }
     }
 
+    /// 右下の画像情報で、ウィンドウ追従（フィット）表示中に解像度の先頭へ付ける短い印。
+    pub fn image_info_mode_fit(self) -> &'static str {
+        match self {
+            Lang::Japanese => "追従",
+            Lang::English  => "Fit",
+            Lang::Chinese  => "适应",
+        }
+    }
+
+    /// 右下の画像情報で、原寸表示中に解像度の先頭へ付ける短い印。
+    pub fn image_info_mode_actual(self) -> &'static str {
+        match self {
+            Lang::Japanese => "原寸",
+            Lang::English  => "1:1",
+            Lang::Chinese  => "原尺寸",
+        }
+    }
+
     pub fn tool_palette_toggle_label_koma_mode(self) -> &'static str {
         match self {
             Lang::Japanese => "コマ送りモード",

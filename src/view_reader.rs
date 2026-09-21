@@ -1423,6 +1423,17 @@ impl ViewerState {
         join_page_texts(&parts, rel_scale)
     }
 
+    /// 表示モードの印（ラベルと色）。原寸は橙で目立たせ、追従は淡い灰色。虫眼鏡は出さない
+    /// （マウスカーソルの虫眼鏡で分かるため）。
+    fn info_mode_badge(mode: crate::image_info::InfoMode) -> Option<(&'static str, egui::Color32)> {
+        use crate::image_info::InfoMode;
+        match mode {
+            InfoMode::Fit => Some((i18n::t().image_info_mode_fit(), egui::Color32::from_gray(190))),
+            InfoMode::Actual => Some((i18n::t().image_info_mode_actual(), egui::Color32::from_rgb(255, 170, 60))),
+            InfoMode::Magnifier => None,
+        }
+    }
+
     /// 画像情報表示用: 先頭ページ（`lo`）とその次ページの付帯情報と、ページ数の「A」用に
     /// 表示ページ（仮想ページなら実在の先頭ページ）がアニメ情報をもつか。
     /// 1フレームのアニメでも meta の `animated` で拾う。
@@ -3018,11 +3029,20 @@ impl ViewerState {
                     let info = self.info_resolution_text(frame, viewport_rect, ui.ctx().pixels_per_point());
                     if !info.is_empty() {
                         let painter = ui.painter();
-                        let g = painter.layout_no_wrap(info, font_id, text_color);
+                        let g = painter.layout_no_wrap(info, font_id.clone(), text_color);
                         let gap = 12.0;
                         let pos = egui::pos2(text_pos.x - gap - g.size().x, text_pos.y);
                         painter.text(pos + egui::vec2(1.0, 1.0), egui::Align2::LEFT_TOP, &g.text().to_string(), egui::FontId::proportional(14.0), shadow_color);
                         painter.galley(pos, g, text_color);
+
+                        // 表示モードの印（追従／原寸）を解像度の左隣に。虫眼鏡中は出さない。
+                        let mode = crate::image_info::info_mode(frame.magnifier, frame.zoom_actual, frame.rotation_angle);
+                        if let Some((label, color)) = Self::info_mode_badge(mode) {
+                            let bg = painter.layout_no_wrap(label.to_string(), font_id, color);
+                            let bpos = egui::pos2(pos.x - 6.0 - bg.size().x, pos.y);
+                            painter.text(bpos + egui::vec2(1.0, 1.0), egui::Align2::LEFT_TOP, label, egui::FontId::proportional(14.0), shadow_color);
+                            painter.galley(bpos, bg, color);
+                        }
                     }
                 }
             }
@@ -7632,6 +7652,46 @@ mod image_info_spread_tests {
 
     fn assert_aspect(actual: (u32, u32), expected: (u32, u32)) {
         assert!((aspect(actual) - aspect(expected)).abs() < 0.01, "{actual:?} vs {expected:?}");
+    }
+
+    #[test]
+    fn mode_badge_shows_fit_then_actual_and_hides_for_magnifier() {
+        let mut h = Harness::new(PAGES, PageMode::SpreadLeft);
+        let fit = i18n::t().image_info_mode_fit();
+        let actual = i18n::t().image_info_mode_actual();
+        assert!(h.texts.iter().any(|t| t == fit), "追従の印が出ていない: {:?}", h.texts);
+        assert!(!h.texts.iter().any(|t| t == actual), "{:?}", h.texts);
+        h.cfg.zoom_actual = true;
+        h.frames(3);
+        assert!(h.texts.iter().any(|t| t == actual), "原寸の印が出ていない: {:?}", h.texts);
+        assert!(!h.texts.iter().any(|t| t == fit), "{:?}", h.texts);
+        // 虫眼鏡中はどちらも出さない。
+        h.cfg.zoom_actual = false;
+        h.frames(2);
+        h.shift_wheel_up();
+        h.shift_wheel_up();
+        assert!(h.viewer.magnifier_view.is_some(), "虫眼鏡が有効でない: {:?}", h.texts);
+        assert!(!h.texts.iter().any(|t| t == fit || t == actual), "{:?}", h.texts);
+    }
+
+    #[test]
+    fn mode_badge_falls_back_to_fit_while_rotated() {
+        // 原寸は回転に未対応で、回転中はフィット表示へ落ちる。印もそれに合わせる。
+        let mut h = Harness::new(PAGES, PageMode::Single);
+        h.cfg.zoom_actual = true;
+        let Harness { viewer, cfg, .. } = &mut h;
+        viewer.rotate_cw(cfg);
+        h.frames(3);
+        assert_eq!(h.viewer.manual_rotation_angle(&h.cfg), 90);
+        assert!(h.texts.iter().any(|t| t == i18n::t().image_info_mode_fit()), "{:?}", h.texts);
+    }
+
+    #[test]
+    fn mode_badge_is_hidden_when_image_info_is_off() {
+        let mut h = Harness::new(PAGES, PageMode::SpreadLeft);
+        h.cfg.image_info_visible = false;
+        h.frames(2);
+        assert!(!h.texts.iter().any(|t| t == i18n::t().image_info_mode_fit() || t == i18n::t().image_info_mode_actual()), "{:?}", h.texts);
     }
 
     #[test]
