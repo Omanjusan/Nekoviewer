@@ -204,7 +204,10 @@ impl NekoviewApp {
     /// draw_menu_barの描画とhandle_menu_bar_keysの移動対象決定の両方から参照する単一の情報源。
     /// 見開き群のビューアー移設後、残る項目はすべて常時有効。
     pub(super) fn menu_bar_items(&self) -> Vec<(MenuBarButton, bool)> {
-        MENU_BAR_ORDER.iter().map(|&b| (b, true)).collect()
+        MENU_BAR_ORDER.iter().map(|&b| {
+            // 第2セットの昇降は、スコア／訪問回数が押し下げられている間だけ有効
+            (b, b != MenuBarButton::SortRatingOrder || self.rating_sort.key.is_some())
+        }).collect()
     }
 
     /// ソートキー・昇降順の変更後に共通で行う後処理（クリック・キーボード両経路で使う）。
@@ -214,6 +217,13 @@ impl NekoviewApp {
         // 無関係な項目を指す可能性があるため安全側に倒して解除する
         self.multi_selected.clear();
         self.select_anchor = None;
+    }
+
+    /// 第2ソートセットの軸ボタン。押し下げ中の軸を押すとOFF、別の軸を押すと切替。
+    fn toggle_rating_sort(&mut self, key: crate::explorer_sort::RatingSortKey) {
+        self.rating_sort.toggle(key);
+        self.finish_sort_change();
+        self.persist_state();
     }
 
     /// MenuBarキーボード操作（Enter確定）から、指定ボタンのクリック相当処理を発火する。
@@ -238,6 +248,17 @@ impl NekoviewApp {
             MenuBarButton::SortOrder => {
                 self.sort_ascending = !self.sort_ascending;
                 self.finish_sort_change();
+            }
+            MenuBarButton::SortScore => {
+                self.toggle_rating_sort(crate::explorer_sort::RatingSortKey::Score);
+            }
+            MenuBarButton::SortVisits => {
+                self.toggle_rating_sort(crate::explorer_sort::RatingSortKey::Visits);
+            }
+            MenuBarButton::SortRatingOrder => {
+                self.rating_sort.ascending = !self.rating_sort.ascending;
+                self.finish_sort_change();
+                self.persist_state();
             }
             MenuBarButton::CardInfoToggle => {
                 self.card_info_mode = self.card_info_mode.next();
@@ -318,6 +339,45 @@ impl NekoviewApp {
 
             if sort_changed {
                 self.finish_sort_change();
+            }
+
+            ui.separator();
+
+            // ── 第2ソートセット（スコア・訪問回数）。ONのときは主軸になり、上の軸がサブになる ──
+            let mut rating_changed = false;
+            for (key, btn) in [
+                (crate::explorer_sort::RatingSortKey::Score, MenuBarButton::SortScore),
+                (crate::explorer_sort::RatingSortKey::Visits, MenuBarButton::SortVisits),
+            ] {
+                let active = self.rating_sort.key == Some(key);
+                let r = ui.scope(|ui| {
+                    if active {
+                        ui.visuals_mut().selection.bg_fill =
+                            egui::Color32::from_rgb(30, 100, 200);
+                        ui.visuals_mut().selection.stroke.color = egui::Color32::WHITE;
+                    }
+                    ui.selectable_label(active, key.label())
+                }).inner;
+                if is_cursor(btn) { draw_cursor_ring(ui, r.rect); }
+                if r.clicked() {
+                    self.rating_sort.toggle(key);
+                    rating_changed = true;
+                }
+            }
+
+            ui.label(":");
+
+            let rating_order_label = if self.rating_sort.ascending { i18n::t().sort_asc() } else { i18n::t().sort_desc() };
+            let r_rating_order = ui.add_enabled(self.rating_sort.key.is_some(), egui::Button::new(rating_order_label));
+            if is_cursor(MenuBarButton::SortRatingOrder) { draw_cursor_ring(ui, r_rating_order.rect); }
+            if r_rating_order.clicked() {
+                self.rating_sort.ascending = !self.rating_sort.ascending;
+                rating_changed = true;
+            }
+
+            if rating_changed {
+                self.finish_sort_change();
+                self.persist_state();
             }
 
             ui.separator();

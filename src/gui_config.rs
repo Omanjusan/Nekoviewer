@@ -21,11 +21,13 @@ use crate::tool_palette::{PaletteState, PaletteSlotContent, SLOT_COUNT, slot_con
 pub struct SortState {
     pub key: String,
     pub ascending: bool,
+    /// 第2ソートセット（スコア／訪問回数）
+    pub rating: crate::explorer_sort::RatingSort,
 }
 
 impl Default for SortState {
     fn default() -> Self {
-        Self { key: "name".to_string(), ascending: true }
+        Self { key: "name".to_string(), ascending: true, rating: Default::default() }
     }
 }
 
@@ -495,6 +497,8 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
     let mut slot_h: [Option<u32>; 4] = [None; 4];
     let mut sort_key: Option<String> = None;
     let mut sort_ascending: Option<bool> = None;
+    let mut rating_sort_key: Option<String> = None;
+    let mut rating_sort_ascending: Option<bool> = None;
     let mut lang: Option<String> = None;
     let mut viewer_fullscreen: Option<bool> = None;
     let mut redecode_on_resize: Option<bool> = None;
@@ -631,6 +635,8 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
                     }
                 }
                 "sort_ascending" => { sort_ascending = v.trim().parse().ok(); }
+                "rating_sort_key" => { rating_sort_key = Some(v.trim().to_string()); }
+                "rating_sort_ascending" => { rating_sort_ascending = v.trim().parse().ok(); }
                 "lang" => {
                     let v = v.trim();
                     if matches!(v, "ja" | "en" | "cn") {
@@ -827,6 +833,7 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
     let sort_state = SortState {
         key: sort_key.unwrap_or_else(|| "name".to_string()),
         ascending: sort_ascending.unwrap_or(true),
+        rating: crate::explorer_sort::RatingSort::from_state(rating_sort_key.as_deref(), rating_sort_ascending),
     };
 
     Some(AppState {
@@ -974,10 +981,11 @@ pub fn save_state(root: &Path, dir: &Path, window_size: (u32, u32), viewer_slots
     let (path, bak, tmp) = (state_path(root), state_bak_path(root), state_tmp_path(root));
 
     let mut content = format!(
-        "last_dir={}\nwindow_width={}\nwindow_height={}\nsort_key={}\nsort_ascending={}\nlang={}\nviewer_zoom={}\nviewer_fullscreen={}\nredecode_on_resize={}\nresize_debounce_ms={}\nshow_hidden={}\ncard_info_mode={}\ncard_rating_mode={}\n",
+        "last_dir={}\nwindow_width={}\nwindow_height={}\nsort_key={}\nsort_ascending={}\nlang={}\nviewer_zoom={}\nviewer_fullscreen={}\nredecode_on_resize={}\nresize_debounce_ms={}\nshow_hidden={}\ncard_info_mode={}\ncard_rating_mode={}\nrating_sort_key={}\nrating_sort_ascending={}\n",
         dir.to_string_lossy(), window_size.0, window_size.1, sort_state.key, sort_state.ascending, lang,
         viewer_cfg.zoom_actual, viewer_cfg.fullscreen,
         viewer_cfg.redecode_on_resize, viewer_cfg.resize_debounce_ms, show_hidden, card_info_mode, card_rating_mode,
+        sort_state.rating.state_key(), sort_state.rating.ascending,
     );
     // フォルダ系タブ（お気に入り・検索・仮想フォルダ）の最後の位置（Some のものだけ）
     content.push_str(&tab_positions.state_lines());
@@ -1368,6 +1376,29 @@ mod tests {
         std::fs::write(state_path(&root), "last_dir=/tmp/x\nlang=ja\n").unwrap();
         let parsed = parse_state_file(&state_path(&root)).expect("state file parses");
         assert_eq!(parsed.card_rating_mode, "off");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn rating_sort_keys_round_trip_and_default_to_off_descending() {
+        use crate::explorer_sort::{RatingSort, RatingSortKey};
+
+        let root = std::env::temp_dir()
+            .join(format!("nekoviewer_state_rating_sort_test_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&root);
+        std::fs::write(state_path(&root), "last_dir=/tmp/x\nlang=ja\nrating_sort_key=visits\nrating_sort_ascending=true\n").unwrap();
+        let parsed = parse_state_file(&state_path(&root)).expect("state file parses");
+        assert_eq!(parsed.sort_state.rating, RatingSort { key: Some(RatingSortKey::Visits), ascending: true });
+
+        // 旧stateにキーがなければ OFF・降順
+        std::fs::write(state_path(&root), "last_dir=/tmp/x\nlang=ja\n").unwrap();
+        let parsed = parse_state_file(&state_path(&root)).expect("state file parses");
+        assert_eq!(parsed.sort_state.rating, RatingSort::default());
+
+        // 未知値・壊れた向きも OFF・降順
+        std::fs::write(state_path(&root), "last_dir=/tmp/x\nlang=ja\nrating_sort_key=bogus\nrating_sort_ascending=zzz\n").unwrap();
+        let parsed = parse_state_file(&state_path(&root)).expect("state file parses");
+        assert_eq!(parsed.sort_state.rating, RatingSort::default());
         let _ = std::fs::remove_dir_all(&root);
     }
 

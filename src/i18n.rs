@@ -66,6 +66,22 @@ impl Lang {
         }
     }
 
+    pub fn sort_score(self) -> &'static str {
+        match self {
+            Lang::Japanese => "[スコア]",
+            Lang::English  => "[Score]",
+            Lang::Chinese  => "[评分]",
+        }
+    }
+
+    pub fn sort_visits(self) -> &'static str {
+        match self {
+            Lang::Japanese => "[訪問回数]",
+            Lang::English  => "[Visits]",
+            Lang::Chinese  => "[访问次数]",
+        }
+    }
+
     pub fn sort_asc(self) -> &'static str {
         match self {
             Lang::Japanese => "[昇順]",

@@ -13,6 +13,16 @@ use crate::types::ExplorerSortKey;
 use crate::fs::{dir, mount::{list_gvfs_smb_mounts, list_local_drives, MountEntry}};
 use crate::view_reader::ViewerState;
 
+impl crate::explorer_sort::RatingSortKey {
+    fn label(self) -> &'static str {
+        let t = i18n::t();
+        match self {
+            Self::Score => t.sort_score(),
+            Self::Visits => t.sort_visits(),
+        }
+    }
+}
+
 impl ExplorerSortKey {
     fn label(self) -> &'static str {
         let t = i18n::t();
@@ -251,6 +261,10 @@ pub(crate) enum MenuBarButton {
     SortDate,
     SortSize,
     SortOrder,
+    /// 第2ソートセット（スコア／訪問回数）。押し下げ中をもう一度押すとOFF
+    SortScore,
+    SortVisits,
+    SortRatingOrder,
     CardInfoToggle,
     /// 評価帯（info2）の表示量の循環トグル。
     CardRatingToggle,
@@ -265,12 +279,15 @@ pub(crate) enum MenuBarButton {
 
 /// 表示順そのもの（draw_menu_barの描画順と一致させること）。
 /// 見開き・ページモード群はビューアーツールバーへ移設した（toolbar.rs 参照）。
-pub(crate) const MENU_BAR_ORDER: [MenuBarButton; 11] = [
+pub(crate) const MENU_BAR_ORDER: [MenuBarButton; 14] = [
     MenuBarButton::Reload,
     MenuBarButton::SortName,
     MenuBarButton::SortDate,
     MenuBarButton::SortSize,
     MenuBarButton::SortOrder,
+    MenuBarButton::SortScore,
+    MenuBarButton::SortVisits,
+    MenuBarButton::SortRatingOrder,
     MenuBarButton::CardInfoToggle,
     MenuBarButton::CardRatingToggle,
     MenuBarButton::ScoringToggle,
@@ -284,9 +301,22 @@ mod menu_bar_order_tests {
     use super::{MenuBarButton, MENU_BAR_ORDER};
 
     #[test]
+    fn rating_sort_set_follows_the_main_sort_set() {
+        assert_eq!(
+            &MENU_BAR_ORDER[4..8],
+            &[
+                MenuBarButton::SortOrder,
+                MenuBarButton::SortScore,
+                MenuBarButton::SortVisits,
+                MenuBarButton::SortRatingOrder,
+            ],
+        );
+    }
+
+    #[test]
     fn settings_and_status_keep_the_visual_right_end_order() {
         assert_eq!(
-            &MENU_BAR_ORDER[9..],
+            &MENU_BAR_ORDER[12..],
             &[
                 MenuBarButton::Settings,
                 MenuBarButton::StatusToggle,
@@ -1218,7 +1248,7 @@ impl NekoviewApp {
             archive_rating_cache: HashMap::new(),
             sort_key: ExplorerSortKey::from_state_key(&sort_state.key),
             sort_ascending: sort_state.ascending,
-            rating_sort: crate::explorer_sort::RatingSort::default(),
+            rating_sort: sort_state.rating,
             grid_cursor: None,
             selected_archive_index: None,
             selected_archive_meta: None,
@@ -1293,7 +1323,7 @@ impl NekoviewApp {
         crate::gui_config::save_state(
             &self.config.config_root,
             self.real_tab_dir(), self.window_size, &self.viewer_slots,
-            &SortState { key: self.sort_key.as_state_key().to_string(), ascending: self.sort_ascending },
+            &SortState { key: self.sort_key.as_state_key().to_string(), ascending: self.sort_ascending, rating: self.rating_sort },
             i18n::lang_code(),
             &*self.viewer_cfg.lock().unwrap(),
             self.show_hidden,
