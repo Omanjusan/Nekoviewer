@@ -395,6 +395,17 @@ struct FileDetailDialogState {
     left_name: Option<String>,
 }
 
+/// コマ移動のアニメーション（補間）状態。開始時刻は次のフレームの描画で確定する。
+/// 倍率か窓寸法が変わったら、オフセットの意味が変わるので打ち切る。
+#[derive(Clone, Copy, Debug)]
+struct KomaTween {
+    from: egui::Vec2,
+    to: egui::Vec2,
+    scale: f32,
+    viewport: egui::Vec2,
+    start: Option<f64>,
+}
+
 pub struct ViewerState {
     archive_path: PathBuf,
     entries: Vec<ViewerEntry>,
@@ -574,6 +585,8 @@ pub struct ViewerState {
     koma_arrive_last: bool,
     /// コマ送りで状態を動かした（次フレームの描画で反映させるため、再描画を要求する）。
     koma_moved: bool,
+    /// 進行中のコマ移動アニメーション。完了までコマ送り・手動の拡縮/ドラッグは受け付けない。
+    koma_tween: Option<KomaTween>,
     /// ページ送りで引き継ぐ倍率（フィット相対 = 倍率 ÷ フィット倍率）。次ページのテクスチャが届くまで
     /// 虫眼鏡が一時的に非アクティブになっても失われないよう、`magnifier_view` とは別に持つ。
     /// モードOFFで破棄する。
@@ -831,6 +844,7 @@ impl ViewerState {
             koma_geom: None,
             koma_arrive_last: false,
             koma_moved: false,
+            koma_tween: None,
             magnifier_carry_rel: None,
             magnifier_cursor: None,
             max_texture_side: MAX_TEXTURE_SIDE_FALLBACK,
@@ -928,6 +942,7 @@ impl ViewerState {
             koma_geom: None,
             koma_arrive_last: false,
             koma_moved: false,
+            koma_tween: None,
             magnifier_carry_rel: None,
             magnifier_cursor: None,
             max_texture_side: MAX_TEXTURE_SIDE_FALLBACK,
@@ -2633,13 +2648,19 @@ impl ViewerState {
                     input.hover_pos
                 };
                 let target = self.magnifier_target(frame);
-                self.update_magnifier(viewport_rect, target, anchor, input.wheel_notches, &mut cfg.magnifier, cfg.koma_on);
+                self.update_magnifier(viewport_rect, target, anchor, input.wheel_notches, &mut cfg.magnifier, cfg.koma_on, input.time);
                 let scale_before_bar = self.magnifier_view.map(|v| v.scale);
+                let view_before_bar = self.magnifier_view;
                 if let Some(bar) = bar_rects
                     && self.draw_magnifier_bar(ui.ctx(), viewport_rect, target, &bar, pointer_in_bar, input.wheel_notches != 0.0, input.time, &mut cfg.magnifier)
                 {
                     // モード終了ボタン。次フレームで非アクティブ側の後始末（倍率の破棄など）が走る。
                     cfg.magnifier_on = false;
+                    ui.ctx().request_repaint();
+                }
+                // コマ移動のアニメーション中は、スライダーの拡縮も完了まで受け付けない（ビューを元に戻す）。
+                if self.koma_tween.is_some() {
+                    self.magnifier_view = view_before_bar;
                     ui.ctx().request_repaint();
                 }
                 // スライダーでの拡縮は、コマモード中なら基準倍率の更新になる。
@@ -4052,10 +4073,14 @@ impl ViewerState {
         }
     }
 
-    /// コマ送り（`forward`）/コマ戻しを1回行う。同じページ内なら次/前のコマへオフセットを移し、
+    /// コマ送り（`forward`）/コマ戻しを1回行う。同じページ内なら次/前のコマへのアニメーションを始め、
     /// ページの端を越えるなら通常のページ送り/戻しにして、到着位置（先頭/最終コマ）を予約する。
     /// 送れない端では何も起きない。虫眼鏡の幾何がまだ無い（テクスチャ待ち）ときは通常のページ送り。
     fn koma_step(&mut self, forward: bool, is_spread: bool, step: i32, total: i32) {
+        // アニメーション中は、コマ送りの入力を完了まで受け付けない。
+        if self.koma_tween.is_some() {
+            return;
+        }
         let grid = match (self.magnifier_view, self.koma_geom) {
             (Some(view), Some((img, vp))) => Some((view, crate::koma::KomaGrid::new(img * view.scale, vp, self.koma_read_dir()))),
             _ => None,
@@ -4063,10 +4088,9 @@ impl ViewerState {
         let movement = grid.as_ref().map(|(view, g)| if forward { g.next(view.offset) } else { g.prev(view.offset) });
         match movement {
             Some(crate::koma::KomaMove::To(offset)) => {
-                if let Some(v) = self.magnifier_view.as_mut() {
-                    v.offset = offset;
+                if let (Some(v), Some((_, vp))) = (self.magnifier_view, self.koma_geom) {
+                    self.koma_tween = Some(KomaTween { from: v.offset, to: offset, scale: v.scale, viewport: vp, start: None });
                 }
-                self.magnifier_offset_dirty = true;
                 self.koma_moved = true;
             }
             Some(crate::koma::KomaMove::PageBoundary) | None => {
@@ -4114,6 +4138,7 @@ impl ViewerState {
         wheel_notches: f32,
         cfg: &mut crate::magnifier::MagnifierConfig,
         koma_on: bool,
+        time: f64,
     ) {
         use crate::magnifier::{carried_view, fit_scale, notch_scale, rescale_for_new_texture, snap_stops, zoom_about, clamp_offset, MagnifierView, FIT_EPS};
         if !koma_on {
@@ -4122,6 +4147,7 @@ impl ViewerState {
         let Some(target) = target else {
             self.magnifier_view = None;
             self.koma_geom = None;
+            self.koma_tween = None;
             return;
         };
         let img = target.img;
@@ -4154,6 +4180,7 @@ impl ViewerState {
                 self.magnifier_key = Some(target.key);
                 self.magnifier_offset_dirty = true;
                 self.magnifier_bar_active_at = None;
+                self.koma_tween = None;
                 let arrive_last = std::mem::take(&mut self.koma_arrive_last);
                 match (koma_on.then(|| cfg.koma_height_rel()).flatten(), carried) {
                     // コマモード: 基準倍率（高さ相対）でフレームを維持し、先頭コマ（戻りなら最終コマ）へ置く。
@@ -4170,6 +4197,26 @@ impl ViewerState {
             }
         };
 
+        // コマ移動のアニメーション。モードOFF・倍率や窓寸法の変化で打ち切り、そうでなければ進行度に応じた
+        // オフセットを毎フレーム押し込む。完了フレームで目標位置ぴったりになる。
+        if !koma_on {
+            self.koma_tween = None;
+        }
+        if let Some(tw) = self.koma_tween
+            && (tw.scale != view.scale || tw.viewport != vp)
+        {
+            self.koma_tween = None;
+        }
+        if let Some(tw) = self.koma_tween.as_mut() {
+            let start = *tw.start.get_or_insert(time);
+            let t = ((time - start) / crate::koma::TWEEN_SECS) as f32;
+            view.offset = crate::koma::lerp_offset(tw.from, tw.to, crate::koma::tween_progress(t));
+            self.magnifier_offset_dirty = true;
+            if t >= 1.0 {
+                self.koma_tween = None;
+            }
+        }
+
         // コマモードのON直後: 拡大表示中だったなら、いまの倍率を基準倍率として取り込む（保存対象）。
         // 拡大表示に入りたてで、前回の基準倍率があるなら、上のビュー作り直しがその倍率で先頭コマへ置いている。
         if koma_on && !self.koma_was_on && (had_view || cfg.koma_height_rel().is_none()) {
@@ -4180,6 +4227,7 @@ impl ViewerState {
         }
 
         if wheel_notches != 0.0
+            && self.koma_tween.is_none()
             && let Some(p) = wheel_anchor.filter(|p| viewport.contains(*p))
         {
             let next = notch_scale(view.scale, wheel_notches, cfg.notch_ratio(), range, &snap_stops(fit));
@@ -6446,9 +6494,21 @@ mod magnifier_flow_tests {
         };
         h.frame(vec![event(true)], egui::Modifiers::NONE);
         h.frame(vec![event(false)], egui::Modifiers::NONE);
+        settle_koma_tween(h);
+    }
+
+    /// コマ移動のアニメーションが終わるまで時間を進める。
+    fn settle_koma_tween(h: &mut Harness) {
         for _ in 0..3 {
             h.frame(vec![], egui::Modifiers::NONE);
         }
+        h.idle(0.3);
+        h.frame(vec![], egui::Modifiers::NONE);
+        assert!(h.viewer.koma_tween.is_none(), "アニメーションが終わらない");
+    }
+
+    fn key_event(key: egui::Key, pressed: bool) -> egui::Event {
+        egui::Event::Key { key, physical_key: Some(key), pressed, repeat: false, modifiers: egui::Modifiers::NONE }
     }
 
     fn assert_offset_at(h: &Harness, expected: egui::Vec2, what: &str) {
@@ -6576,7 +6636,81 @@ mod magnifier_flow_tests {
         let grid = h.koma_grid();
         assert!(grid.len() >= 2);
         click_palette_magnifier_slot(&mut h);
+        settle_koma_tween(&mut h);
         assert_offset_at(&h, grid.position(1), "チップでコマ送りされない");
+    }
+
+    #[test]
+    fn koma_step_slides_gradually_and_lands_exactly_on_the_next_frame() {
+        let mut h = Harness::with_pages(3, 800, 1200);
+        h.start_koma(2.5);
+        let grid = h.koma_grid();
+        let (from, to) = (grid.first(), grid.position(1));
+        h.frame(vec![key_event(egui::Key::Space, true)], egui::Modifiers::NONE);
+        h.frame(vec![key_event(egui::Key::Space, false)], egui::Modifiers::NONE);
+        // 進行中: 出発点からの移動距離が単調に増え、目標に届く前は途中の位置にいる。
+        let total = (to - from).length();
+        assert!(total > 10.0, "テスト前提: 十分な移動距離 {from:?}->{to:?}");
+        let mut moved = Vec::new();
+        for _ in 0..8 {
+            h.frame(vec![], egui::Modifiers::NONE);
+            moved.push((h.offset() - from).length());
+        }
+        assert!(moved.windows(2).all(|w| w[1] >= w[0] - 0.01), "戻っている: {moved:?}");
+        assert!(moved.iter().any(|&d| d > 1.0 && d < total - 1.0), "途中の位置がない: {moved:?} total={total}");
+        // 初速は遅く、後半のほうが1フレームあたりの移動が大きい。
+        let steps: Vec<f32> = moved.windows(2).map(|w| w[1] - w[0]).collect();
+        assert!(steps[0] < steps[3], "加速していない: {steps:?}");
+        settle_koma_tween(&mut h);
+        assert_offset_at(&h, to, "着地");
+    }
+
+    #[test]
+    fn koma_input_during_the_slide_is_ignored_until_it_finishes() {
+        let mut h = Harness::with_pages(3, 800, 1200);
+        h.start_koma(2.5);
+        let grid = h.koma_grid();
+        assert!(grid.len() >= 3);
+        // 連打: 進行中の2回目・3回目は捨てられる（キューされない）。
+        for _ in 0..3 {
+            h.frame(vec![key_event(egui::Key::Space, true)], egui::Modifiers::NONE);
+            h.frame(vec![key_event(egui::Key::Space, false)], egui::Modifiers::NONE);
+        }
+        settle_koma_tween(&mut h);
+        assert_offset_at(&h, grid.position(1), "連打は最初の1回だけ");
+        assert_eq!(h.viewer.spread_lo(), 0);
+        // 完了後は、また受け付ける。
+        press(&mut h, egui::Key::Space);
+        assert_offset_at(&h, grid.position(2), "完了後のコマ送り");
+    }
+
+    #[test]
+    fn koma_manual_zoom_is_ignored_during_the_slide_but_works_afterwards() {
+        let mut h = Harness::with_pages(3, 800, 1200);
+        h.start_koma(2.5);
+        let scale = h.viewer.magnifier_view.unwrap().scale;
+        h.frame(vec![key_event(egui::Key::Space, true)], egui::Modifiers::NONE);
+        h.frame(vec![key_event(egui::Key::Space, false)], egui::Modifiers::NONE);
+        h.frame(vec![], egui::Modifiers::NONE);
+        assert!(h.viewer.koma_tween.is_some(), "アニメーションが始まっていない");
+        h.wheel(true, egui::Modifiers::NONE);
+        assert!((h.viewer.magnifier_view.unwrap().scale - scale).abs() < 1e-5, "アニメ中にホイール拡縮が効いた");
+        settle_koma_tween(&mut h);
+        h.wheel(true, egui::Modifiers::NONE);
+        assert!(h.viewer.magnifier_view.unwrap().scale > scale * 1.1, "完了後は拡縮できる");
+    }
+
+    #[test]
+    fn koma_slide_is_dropped_when_the_mode_is_turned_off() {
+        let mut h = Harness::with_pages(3, 800, 1200);
+        h.start_koma(2.5);
+        h.frame(vec![key_event(egui::Key::Space, true)], egui::Modifiers::NONE);
+        h.frame(vec![key_event(egui::Key::Space, false)], egui::Modifiers::NONE);
+        h.frame(vec![], egui::Modifiers::NONE);
+        assert!(h.viewer.koma_tween.is_some());
+        h.cfg.koma_on = false;
+        h.frame(vec![], egui::Modifiers::NONE);
+        assert!(h.viewer.koma_tween.is_none(), "コマモードOFFでアニメが残った");
     }
 
     // ── ツールパレットのドラッグ：クランプ中の座標蓄積 ─────────────────────────

@@ -133,6 +133,33 @@ fn nearest(stops: &[f32], v: f32) -> usize {
     best
 }
 
+/// コマ移動のアニメーション時間（秒）。移動距離に関係なく一定。
+pub const TWEEN_SECS: f64 = 0.18;
+/// アニメーション終盤の減速が占める割合。残りは加速。
+const TWEEN_DECEL_RATIO: f32 = 0.25;
+
+/// コマ移動の進行度。経過割合 `t`（0..=1）に対し、二次の加速のあと終盤だけ線形に減速して、
+/// 0から1へ進む。加速と減速の境目で速度は連続し、始点・終点とも速度0になる。
+/// 有限でない `t` は完了（1.0）扱い。
+pub fn tween_progress(t: f32) -> f32 {
+    if !t.is_finite() {
+        return 1.0;
+    }
+    let t = t.clamp(0.0, 1.0);
+    let accel = 1.0 - TWEEN_DECEL_RATIO;
+    if t <= accel {
+        t * t / accel
+    } else {
+        let u = t - accel;
+        accel + 2.0 * (u - u * u / (2.0 * TWEEN_DECEL_RATIO))
+    }
+}
+
+/// `from` から `to` へ、進行度 `progress`（0..=1）で補間したオフセット。
+pub fn lerp_offset(from: Vec2, to: Vec2, progress: f32) -> Vec2 {
+    from + (to - from) * progress
+}
+
 /// 倍率を「高さフィット相対」（1.0 = ページの高さがちょうど窓の高さに収まる倍率）へ換算する。
 /// 見開きのようにフィットが幅で決まるページでも、ページ高さが同じなら同じ値になるので、
 /// ページのアスペクト比が変わっても、フレームがページ高さに占める割合を保てる。
@@ -352,6 +379,47 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn tween_progress_starts_slow_and_ends_at_the_target() {
+        assert_eq!(tween_progress(0.0), 0.0);
+        assert!((tween_progress(1.0) - 1.0).abs() < 1e-6);
+        // 初速は遅い（線形より進んでいない）。
+        assert!(tween_progress(0.2) < 0.2 * 0.5, "{}", tween_progress(0.2));
+        // 範囲外・不正値は端へ丸める。
+        assert_eq!(tween_progress(-1.0), 0.0);
+        assert_eq!(tween_progress(2.0), 1.0);
+        assert_eq!(tween_progress(f32::NAN), 1.0);
+        assert_eq!(tween_progress(f32::INFINITY), 1.0);
+    }
+
+    #[test]
+    fn tween_progress_is_monotonic_and_speed_is_continuous() {
+        let n = 1000;
+        let mut prev = tween_progress(0.0);
+        let mut speeds = Vec::new();
+        for i in 1..=n {
+            let p = tween_progress(i as f32 / n as f32);
+            assert!(p >= prev, "戻っている: i={i}");
+            speeds.push((p - prev) * n as f32);
+            prev = p;
+        }
+        // 速度は加速区間で増え、減速区間で減る。最高速は加速の終わり（75%）付近。
+        let peak = speeds.iter().cloned().enumerate().max_by(|a, b| a.1.partial_cmp(&b.1).unwrap()).unwrap();
+        assert!((peak.0 as f32 / n as f32 - 0.75).abs() < 0.01, "peak at {}", peak.0);
+        assert!(speeds.windows(2).all(|w| (w[1] - w[0]).abs() < 0.01), "速度が飛んでいる");
+        // 終点の速度はほぼ0（ピタッと止まる）、始点もほぼ0。
+        assert!(*speeds.last().unwrap() < 0.01);
+        assert!(speeds[0] < 0.01);
+    }
+
+    #[test]
+    fn lerp_offset_interpolates_both_axes() {
+        let mid = lerp_offset(v(0.0, 100.0), v(200.0, 0.0), 0.5);
+        assert!(close(mid, v(100.0, 50.0)));
+        assert!(close(lerp_offset(v(1.0, 2.0), v(3.0, 4.0), 0.0), v(1.0, 2.0)));
+        assert!(close(lerp_offset(v(1.0, 2.0), v(3.0, 4.0), 1.0), v(3.0, 4.0)));
     }
 
     #[test]
