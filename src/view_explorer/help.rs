@@ -64,6 +64,18 @@ pub(super) fn help_tip(r: &egui::Response, on: bool, doc: &HelpDoc) {
     egui::Tooltip::for_widget(r).show(|ui| draw_help_doc(ui, doc));
 }
 
+/// ヘルプON/OFFを ctx に置く。引数を持ち回りにくい描画関数（ツリー行・右クリックメニュー）が
+/// `help_tip_auto` で参照する。エクスプローラーの描画冒頭で毎フレーム同期する。
+pub(super) fn sync_help_flag(ctx: &egui::Context, on: bool) {
+    ctx.data_mut(|d| d.insert_temp(egui::Id::new("explorer_help_on"), on));
+}
+
+/// `sync_help_flag` で同期されたON/OFFに従う `help_tip`。
+pub(super) fn help_tip_auto(r: &egui::Response, doc: &HelpDoc) {
+    let on = r.ctx.data(|d| d.get_temp::<bool>(egui::Id::new("explorer_help_on"))).unwrap_or(false);
+    help_tip(r, on, doc);
+}
+
 /// タイトルを枠で囲み、その下に節（見出し＋本文）を行間を空けて並べる。
 fn draw_help_doc(ui: &mut egui::Ui, doc: &HelpDoc) {
     ui.set_max_width(HELP_MAX_WIDTH);

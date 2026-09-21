@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use crate::i18n;
 use crate::fs::archive;
 use super::*;
+use super::help::help_tip_auto;
 
 impl NekoviewApp {
     /// DBから定義済みお気に入りフォルダ一覧を読み直してキャッシュを更新する。
@@ -64,7 +65,9 @@ impl NekoviewApp {
 
     pub(super) fn draw_favorites_pane(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            if ui.button("+").clicked() {
+            let r_add = ui.button("+");
+            help_tip_auto(&r_add, &i18n::t().help_fav_add());
+            if r_add.clicked() {
                 self.favorite_dialog = Some(FavoriteDialogState {
                     mode: FavoriteDialogMode::Create,
                     name: String::new(),
@@ -106,7 +109,9 @@ impl NekoviewApp {
                         self.enter_favorite_view(FavoriteSelection::Folder(folder.id));
                     }
                     resp.context_menu(|ui| {
-                        if ui.button(i18n::t().favorite_rename_menu()).clicked() {
+                        let r_rename = ui.button(i18n::t().favorite_rename_menu());
+                        help_tip_auto(&r_rename, &i18n::t().help_fav_rename());
+                        if r_rename.clicked() {
                             self.favorite_dialog = Some(FavoriteDialogState {
                                 mode: FavoriteDialogMode::Rename(folder.id),
                                 name: folder.name.clone(),
@@ -116,7 +121,9 @@ impl NekoviewApp {
                             });
                             ui.close();
                         }
-                        if ui.button(i18n::t().favorite_delete_menu()).clicked() {
+                        let r_delete = ui.button(i18n::t().favorite_delete_menu());
+                        help_tip_auto(&r_delete, &i18n::t().help_fav_delete());
+                        if r_delete.clicked() {
                             self.favorite_delete_confirm = Some(folder.id);
                             ui.close();
                         }

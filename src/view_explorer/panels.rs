@@ -7,7 +7,7 @@ use crate::types::ExplorerSortKey;
 use crate::fs::dir;
 use crate::view_reader::{fit_rect_contain, ViewerState};
 use super::*;
-use super::help::help_tip;
+use super::help::{help_tip, help_tip_auto};
 
 /// カード情報帯のホバー横スクロールを回すフレーム間隔（ms）。
 /// egui はフル再描画しかできないため、モニタのリフレッシュレート（120/144Hz等）で
@@ -107,6 +107,7 @@ impl NekoviewApp {
         egui::Panel::top("menu_bar").show(ui, |ui| {
             self.draw_menu_bar(ui);
         });
+        super::help::sync_help_flag(&ctx, self.help_enabled);
 
         {
             let style_clone = ui.style().clone();
@@ -1813,7 +1814,9 @@ impl TreeMenu {
 /// 行の外では、ツリー全体に効く「ソート条件設定」だけが有効で、ほかはグレーアウトする。
 fn real_tree_context_menu(ui: &mut egui::Ui, path: Option<&PathBuf>, menu: TreeMenu, action: &mut TreeAction) {
     if menu.add_to_virtual {
-        if ui.add_enabled(path.is_some(), egui::Button::new(i18n::t().virtual_menu_add_from_real())).clicked() {
+        let r = ui.add_enabled(path.is_some(), egui::Button::new(i18n::t().virtual_menu_add_from_real()));
+        help_tip_auto(&r, &i18n::t().help_tree_add_to_virtual());
+        if r.clicked() {
             if let Some(p) = path {
                 *action = TreeAction::AddToVirtual(p.clone());
             }
@@ -1823,9 +1826,13 @@ fn real_tree_context_menu(ui: &mut egui::Ui, path: Option<&PathBuf>, menu: TreeM
             ui.separator();
         }
     }
-    if menu.sort && ui.button(i18n::t().tree_sort_menu()).clicked() {
-        *action = TreeAction::SortSetting;
-        ui.close();
+    if menu.sort {
+        let r = ui.button(i18n::t().tree_sort_menu());
+        help_tip_auto(&r, &i18n::t().help_tree_sort());
+        if r.clicked() {
+            *action = TreeAction::SortSetting;
+            ui.close();
+        }
     }
 }
 

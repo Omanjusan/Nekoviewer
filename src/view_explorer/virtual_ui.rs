@@ -24,6 +24,7 @@ use rename::RenameDialog;
 use crate::i18n;
 
 use super::*;
+use super::help::help_tip_auto;
 
 const GREEN: egui::Color32 = egui::Color32::from_rgb(60, 180, 90);
 const BLUE: egui::Color32 = egui::Color32::from_rgb(70, 130, 230);
@@ -259,7 +260,9 @@ fn children_of(nodes: &[TreeNode], parent: u32) -> Vec<&TreeNode> {
 fn tree_context_menu(ui: &mut egui::Ui, target: Option<u32>, broken: &HashSet<u32>, out: &mut Vec<TreeEvent>) {
     // ルートは名前変更・削除の対象外。区切り線で「変更」「登録」「削除」「ソート」を分ける
     let node = target.filter(|id| *id != ROOT);
-    if ui.add_enabled(node.is_some(), egui::Button::new(i18n::t().virtual_menu_rename())).clicked() {
+    let r = ui.add_enabled(node.is_some(), egui::Button::new(i18n::t().virtual_menu_rename()));
+    help_tip_auto(&r, &i18n::t().help_vmenu_rename());
+    if r.clicked() {
         if let Some(id) = node {
             out.push(TreeEvent::Rename(id));
         }
@@ -267,34 +270,44 @@ fn tree_context_menu(ui: &mut egui::Ui, target: Option<u32>, broken: &HashSet<u3
     }
     // 実パスへ辿れないノード（ルート・リンク切れ）は同期・フォルダタブで開くの対象外
     let syncable = node.filter(|id| !broken.contains(id));
-    if ui.add_enabled(syncable.is_some(), egui::Button::new(i18n::t().virtual_menu_sync())).clicked() {
+    let r = ui.add_enabled(syncable.is_some(), egui::Button::new(i18n::t().virtual_menu_sync()));
+    help_tip_auto(&r, &i18n::t().help_vmenu_sync());
+    if r.clicked() {
         if let Some(id) = syncable {
             out.push(TreeEvent::Sync(id));
         }
         ui.close();
     }
-    if ui.add_enabled(syncable.is_some(), egui::Button::new(i18n::t().virtual_menu_open_in_folders())).clicked() {
+    let r = ui.add_enabled(syncable.is_some(), egui::Button::new(i18n::t().virtual_menu_open_in_folders()));
+    help_tip_auto(&r, &i18n::t().help_vmenu_open_in_folders());
+    if r.clicked() {
         if let Some(id) = syncable {
             out.push(TreeEvent::OpenInFolders(id));
         }
         ui.close();
     }
     ui.separator();
-    if ui.add_enabled(target.is_some(), egui::Button::new(i18n::t().virtual_menu_register())).clicked() {
+    let r = ui.add_enabled(target.is_some(), egui::Button::new(i18n::t().virtual_menu_register()));
+    help_tip_auto(&r, &i18n::t().help_vmenu_register());
+    if r.clicked() {
         if let Some(id) = target {
             out.push(TreeEvent::Register(id));
         }
         ui.close();
     }
     ui.separator();
-    if ui.add_enabled(node.is_some(), egui::Button::new(i18n::t().virtual_menu_delete())).clicked() {
+    let r = ui.add_enabled(node.is_some(), egui::Button::new(i18n::t().virtual_menu_delete()));
+    help_tip_auto(&r, &i18n::t().help_vmenu_delete());
+    if r.clicked() {
         if let Some(id) = node {
             out.push(TreeEvent::Delete(id));
         }
         ui.close();
     }
     ui.separator();
-    if ui.button(i18n::t().tree_sort_menu()).clicked() {
+    let r = ui.button(i18n::t().tree_sort_menu());
+    help_tip_auto(&r, &i18n::t().help_tree_sort());
+    if r.clicked() {
         out.push(TreeEvent::SortSetting);
         ui.close();
     }
@@ -368,6 +381,10 @@ fn draw_tree_row(
                 tip.push_str(i18n::t().virtual_link_broken_label());
             }
             r = r.on_hover_text(tip);
+        }
+        // 実パスの枠とは別枠で、その下に積まれる（ルート行は対象外）
+        if id != ROOT {
+            help_tip_auto(&r, &i18n::t().help_virtual_node());
         }
         if ring == Some(id) {
             super::panels::draw_cursor_ring(ui, r.rect);

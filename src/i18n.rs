@@ -4232,6 +4232,406 @@ impl Lang {
             },
         }
     }
+
+    pub fn help_tree_add_to_virtual(self) -> HelpDoc {
+        match self {
+            Lang::Japanese => HelpDoc {
+                title: "仮想フォルダに追加する",
+                sections: &[(
+                    "",
+                    "選んだ実フォルダを、仮想フォルダへ登録する。\n\
+                     行き先の仮想フォルダを選ぶ画面が開く。",
+                )],
+            },
+            Lang::English => HelpDoc {
+                title: "Add to virtual folders",
+                sections: &[(
+                    "",
+                    "Registers the selected real folder into the virtual folders.\n\
+                     A screen opens to choose the destination virtual folder.",
+                )],
+            },
+            Lang::Chinese => HelpDoc {
+                title: "添加到虚拟文件夹",
+                sections: &[(
+                    "",
+                    "将所选的实际文件夹登记到虚拟文件夹。\n\
+                     会打开选择目标虚拟文件夹的界面。",
+                )],
+            },
+        }
+    }
+
+    pub fn help_tree_sort(self) -> HelpDoc {
+        match self {
+            Lang::Japanese => HelpDoc {
+                title: "ソート条件設定",
+                sections: &[(
+                    "",
+                    "このツリーの並び順を設定するダイアログを開く。\n\
+                     並びのキー（名前・日付。仮想ツリーは登録順も）と昇降順を選び、「適用」で保存される。\n\
+                     対象は右クリックしたツリー1つだけ。",
+                )],
+            },
+            Lang::English => HelpDoc {
+                title: "Sort settings",
+                sections: &[(
+                    "",
+                    "Opens a dialog to set the order of this tree.\n\
+                     Pick a key (name, date; registration order too for the virtual tree) and a direction, then Apply to save.\n\
+                     It affects only the tree you right-clicked.",
+                )],
+            },
+            Lang::Chinese => HelpDoc {
+                title: "排序条件设置",
+                sections: &[(
+                    "",
+                    "打开设置此目录树排列顺序的对话框。\n\
+                     选择排序键（名称、日期；虚拟树还有登记顺序）和升降序，点击“应用”即保存。\n\
+                     只对右键点击的那一棵树生效。",
+                )],
+            },
+        }
+    }
+
+    pub fn help_vmenu_rename(self) -> HelpDoc {
+        match self {
+            Lang::Japanese => HelpDoc {
+                title: "名前を変更",
+                sections: &[(
+                    "",
+                    "仮想フォルダの表示名を変更する（F2キーでも開ける）。\n\
+                     変わるのは仮想側の名前だけで、実フォルダの名前・場所は変わらない。\n\
+                     ルート（/）は対象外。",
+                )],
+            },
+            Lang::English => HelpDoc {
+                title: "Rename",
+                sections: &[(
+                    "",
+                    "Changes the display name of the virtual folder (F2 also opens it).\n\
+                     Only the virtual name changes; the real folder's name and location stay the same.\n\
+                     The root (/) is excluded.",
+                )],
+            },
+            Lang::Chinese => HelpDoc {
+                title: "重命名",
+                sections: &[(
+                    "",
+                    "更改虚拟文件夹的显示名称（也可按F2键）。\n\
+                     只改变虚拟侧的名称，实际文件夹的名称和位置不变。\n\
+                     根（/）不在范围内。",
+                )],
+            },
+        }
+    }
+
+    pub fn help_vmenu_sync(self) -> HelpDoc {
+        match self {
+            Lang::Japanese => HelpDoc {
+                title: "実ツリーと同期",
+                sections: &[
+                    (
+                        "",
+                        "このフォルダの実パスまで、実ツリーを展開して選択表示にする。\n\
+                         中央のカード欄の表示は変わらない。",
+                    ),
+                    (
+                        "",
+                        "実ツリーが別のドライブを表示しているときは、ツリーのルートをそのドライブへ切り替える。",
+                    ),
+                    (
+                        "■ グレーアウトする場合",
+                        "ルート（/）と、実フォルダにたどり着けないリンク切れのフォルダ。",
+                    ),
+                ],
+            },
+            Lang::English => HelpDoc {
+                title: "Sync with real tree",
+                sections: &[
+                    (
+                        "",
+                        "Expands the real tree down to this folder's real path and highlights it.\n\
+                         The cards in the center do not change.",
+                    ),
+                    (
+                        "",
+                        "If the real tree shows another drive, its root is switched to that drive.",
+                    ),
+                    (
+                        "■ Grayed out for",
+                        "The root (/) and broken-link folders whose real folder cannot be reached.",
+                    ),
+                ],
+            },
+            Lang::Chinese => HelpDoc {
+                title: "与实际目录树同步",
+                sections: &[
+                    (
+                        "",
+                        "在实际目录树中展开到此文件夹的实际路径并选中。\n\
+                         中央卡片区的显示不会改变。",
+                    ),
+                    (
+                        "",
+                        "如果实际目录树显示的是其他驱动器，会把树的根切换到该驱动器。",
+                    ),
+                    (
+                        "■ 显示为灰色的情况",
+                        "根（/）以及无法到达实际文件夹的失效链接文件夹。",
+                    ),
+                ],
+            },
+        }
+    }
+
+    pub fn help_vmenu_open_in_folders(self) -> HelpDoc {
+        match self {
+            Lang::Japanese => HelpDoc {
+                title: "フォルダタブで開く",
+                sections: &[
+                    (
+                        "",
+                        "フォルダタブへ移動し、この実フォルダを開く。中央のカード欄もその実フォルダに切り替わる。",
+                    ),
+                    (
+                        "■ 「実ツリーと同期」との違い",
+                        "同期はタブを移らず、カード欄も変えない。こちらはタブを移ってカード欄も実フォルダになる。",
+                    ),
+                    (
+                        "■ グレーアウトする場合",
+                        "ルート（/）と、実フォルダにたどり着けないリンク切れのフォルダ。",
+                    ),
+                ],
+            },
+            Lang::English => HelpDoc {
+                title: "Open in Folders tab",
+                sections: &[
+                    (
+                        "",
+                        "Moves to the Folders tab and opens this real folder. The cards in the center switch to that real folder too.",
+                    ),
+                    (
+                        "■ Difference from \"Sync with real tree\"",
+                        "Sync stays on the tab and leaves the cards alone. This one moves to the tab and shows the real folder in the cards.",
+                    ),
+                    (
+                        "■ Grayed out for",
+                        "The root (/) and broken-link folders whose real folder cannot be reached.",
+                    ),
+                ],
+            },
+            Lang::Chinese => HelpDoc {
+                title: "在文件夹标签中打开",
+                sections: &[
+                    (
+                        "",
+                        "切换到文件夹标签并打开此实际文件夹。中央卡片区也会切换为该实际文件夹。",
+                    ),
+                    (
+                        "■ 与“与实际目录树同步”的区别",
+                        "同步不切换标签，也不改变卡片区。此项会切换标签，并让卡片区显示实际文件夹。",
+                    ),
+                    (
+                        "■ 显示为灰色的情况",
+                        "根（/）以及无法到达实际文件夹的失效链接文件夹。",
+                    ),
+                ],
+            },
+        }
+    }
+
+    pub fn help_vmenu_register(self) -> HelpDoc {
+        match self {
+            Lang::Japanese => HelpDoc {
+                title: "実フォルダ登録",
+                sections: &[(
+                    "",
+                    "実フォルダを選んで、この仮想フォルダの下に登録する。\n\
+                     登録の前に確認画面が出て、内容を評価してから登録される。\n\
+                     ルート（/）の下にも登録できる。",
+                )],
+            },
+            Lang::English => HelpDoc {
+                title: "Register real folder",
+                sections: &[(
+                    "",
+                    "Pick a real folder and register it under this virtual folder.\n\
+                     A confirmation screen appears first, and the content is evaluated before registering.\n\
+                     You can register under the root (/) too.",
+                )],
+            },
+            Lang::Chinese => HelpDoc {
+                title: "登记实际文件夹",
+                sections: &[(
+                    "",
+                    "选择一个实际文件夹，登记到此虚拟文件夹之下。\n\
+                     登记前会出现确认画面，并先评估内容再登记。\n\
+                     也可以登记到根（/）之下。",
+                )],
+            },
+        }
+    }
+
+    pub fn help_vmenu_delete(self) -> HelpDoc {
+        match self {
+            Lang::Japanese => HelpDoc {
+                title: "仮想フォルダ削除",
+                sections: &[
+                    (
+                        "",
+                        "この仮想フォルダを一覧から外す（非表示にするだけ）。\n\
+                         実フォルダには一切触れない。リンク切れのフォルダも削除できる。",
+                    ),
+                    (
+                        "■ 下の階層も一緒に消える",
+                        "このフォルダの下に登録されている仮想フォルダも、すべて連動して消える。",
+                    ),
+                    (
+                        "■ グレーアウトする場合",
+                        "ルート（/）。",
+                    ),
+                ],
+            },
+            Lang::English => HelpDoc {
+                title: "Delete virtual folder",
+                sections: &[
+                    (
+                        "",
+                        "Removes this virtual folder from the list (it is only hidden).\n\
+                         The real folder is never touched. Broken-link folders can be deleted too.",
+                    ),
+                    (
+                        "■ Lower levels go with it",
+                        "All virtual folders registered under this folder are removed as well.",
+                    ),
+                    (
+                        "■ Grayed out for",
+                        "The root (/).",
+                    ),
+                ],
+            },
+            Lang::Chinese => HelpDoc {
+                title: "删除虚拟文件夹",
+                sections: &[
+                    (
+                        "",
+                        "将此虚拟文件夹从列表中移除（只是隐藏）。\n\
+                         完全不会触及实际文件夹。失效链接的文件夹也可以删除。",
+                    ),
+                    (
+                        "■ 下级一并删除",
+                        "登记在此文件夹之下的虚拟文件夹也会全部连带删除。",
+                    ),
+                    (
+                        "■ 显示为灰色的情况",
+                        "根（/）。",
+                    ),
+                ],
+            },
+        }
+    }
+
+    pub fn help_virtual_node(self) -> HelpDoc {
+        match self {
+            Lang::Japanese => HelpDoc {
+                title: "仮想フォルダ",
+                sections: &[
+                    ("[クリック]", "中央のカード欄に、このフォルダの中身を表示する。"),
+                    ("[▶ ／ ▼]", "下の階層を開閉する。"),
+                    (
+                        "[右クリック]",
+                        "名前変更・実ツリーと同期・フォルダタブで開く・実フォルダ登録・削除のメニューを出す。",
+                    ),
+                    (
+                        "[⚠ 名前]",
+                        "名前の前に⚠がついたものは、実フォルダにたどり着けないリンク切れ。",
+                    ),
+                ],
+            },
+            Lang::English => HelpDoc {
+                title: "Virtual folder",
+                sections: &[
+                    ("[Click]", "Shows the contents of this folder in the center cards."),
+                    ("[▶ / ▼]", "Expands or collapses the lower levels."),
+                    (
+                        "[Right-click]",
+                        "Opens the menu: rename, sync with real tree, open in Folders tab, register real folder, delete.",
+                    ),
+                    (
+                        "[⚠ name]",
+                        "A name prefixed with ⚠ is a broken link whose real folder cannot be reached.",
+                    ),
+                ],
+            },
+            Lang::Chinese => HelpDoc {
+                title: "虚拟文件夹",
+                sections: &[
+                    ("[单击]", "在中央卡片区显示此文件夹的内容。"),
+                    ("[▶ / ▼]", "展开或折叠下级。"),
+                    (
+                        "[右键]",
+                        "弹出菜单：重命名、与实际目录树同步、在文件夹标签中打开、登记实际文件夹、删除。",
+                    ),
+                    (
+                        "[⚠ 名称]",
+                        "名称前带⚠的是无法到达实际文件夹的失效链接。",
+                    ),
+                ],
+            },
+        }
+    }
+
+    pub fn help_fav_add(self) -> HelpDoc {
+        match self {
+            Lang::Japanese => HelpDoc {
+                title: "お気に入りフォルダの新規作成",
+                sections: &[("", "お気に入りフォルダを新しく作る。名前・マーカー・色を決める。")],
+            },
+            Lang::English => HelpDoc {
+                title: "New favorites folder",
+                sections: &[("", "Creates a new favorites folder. Set its name, marker and color.")],
+            },
+            Lang::Chinese => HelpDoc {
+                title: "新建收藏文件夹",
+                sections: &[("", "新建收藏文件夹。设定名称、标记和颜色。")],
+            },
+        }
+    }
+
+    pub fn help_fav_rename(self) -> HelpDoc {
+        match self {
+            Lang::Japanese => HelpDoc {
+                title: "リネーム (F2)",
+                sections: &[("", "お気に入りフォルダの名前を変更する。ダイアログでマーカーと色も変えられる。")],
+            },
+            Lang::English => HelpDoc {
+                title: "Rename (F2)",
+                sections: &[("", "Renames the favorites folder. The dialog also lets you change its marker and color.")],
+            },
+            Lang::Chinese => HelpDoc {
+                title: "重命名 (F2)",
+                sections: &[("", "更改收藏文件夹的名称。在对话框中还可以更改标记和颜色。")],
+            },
+        }
+    }
+
+    pub fn help_fav_delete(self) -> HelpDoc {
+        match self {
+            Lang::Japanese => HelpDoc {
+                title: "削除",
+                sections: &[("", "お気に入りフォルダを削除する（確認あり）。所属するファイルの登録も解除される。")],
+            },
+            Lang::English => HelpDoc {
+                title: "Delete",
+                sections: &[("", "Deletes the favorites folder (with confirmation). Files assigned to it are unassigned too.")],
+            },
+            Lang::Chinese => HelpDoc {
+                title: "删除",
+                sections: &[("", "删除收藏文件夹（有确认）。所属文件的收藏关系也会被解除。")],
+            },
+        }
+    }
 }
 
 static LANG: AtomicU8 = AtomicU8::new(0);
