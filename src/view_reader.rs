@@ -491,6 +491,10 @@ pub struct ViewerState {
     shift_scroll_acc: f32,
     /// トーストメッセージ: (テキスト, 消去予定のegui時刻) None=非表示
     toast: Option<(String, Option<f64>)>,
+    /// 評価オーバーレイ（MOCK）: 半星値 0=未評価 / 1..=10。メモリ上のみで永続化しない
+    rating_mock_half: u8,
+    /// 評価オーバーレイをXで閉じた（このビューアを開いている間は再表示しない）
+    rating_overlay_dismissed: bool,
     /// フェーズ6: 直近フレームで観測したウィンドウ描画領域サイズ（物理px）。
     /// リサイズ再デコードのターゲットサイズ算出に使う。
     content_px: (u32, u32),
@@ -829,6 +833,8 @@ impl ViewerState {
             is_raw_file: false,
             shift_scroll_acc: 0.0,
             toast: None,
+            rating_mock_half: 0,
+            rating_overlay_dismissed: false,
             content_px: CONTENT_PX_PLACEHOLDER,
             thumb_textures: HashMap::new(),
             thumb_pending: HashSet::new(),
@@ -927,6 +933,8 @@ impl ViewerState {
             is_raw_file: true,
             shift_scroll_acc: 0.0,
             toast: None,
+            rating_mock_half: 0,
+            rating_overlay_dismissed: false,
             content_px: CONTENT_PX_PLACEHOLDER,
             thumb_textures: HashMap::new(),
             thumb_pending: HashSet::new(),
@@ -2649,6 +2657,15 @@ impl ViewerState {
             // パレット上のクリック／ドラッグを背面（画像・ページ送りゾーン）へ伝えない
             // ため、ポインタがパレット矩形内にある間は背面向けの入力をここで握りつぶす。
             let viewport_rect = egui::Rect::from_min_size(origin, avail);
+            // 評価オーバーレイ（最終ページ表示中のみ）。帯の上のクリック・ホバーは背面へ伝えない。
+            let rating_rect = crate::rating_overlay::overlay_visible(
+                self.is_raw_file,
+                self.rating_overlay_dismissed,
+                !self.can_advance_page(step, total as i32),
+                total,
+            )
+            .then(|| crate::rating_overlay::band_rect(viewport_rect));
+            let pointer_in_rating = input.hover_pos.is_some_and(|p| rating_rect.is_some_and(|r| r.contains(p)));
             let palette_rect = self.tool_palette_rect(viewport_rect);
             let dialog_rect = self.tool_palette_open_dialog.and_then(|open_idx| {
                 let pr = palette_rect?;
@@ -2746,8 +2763,8 @@ impl ViewerState {
 
             // ── 左右端ページ送りゾーン ───────────────────────────────────────────
             let edge_ctx = ui.ctx().clone();
-            let guarded_hover = if pointer_in_palette || pointer_in_bar { None } else { input.hover_pos };
-            let guarded_primary_clicked = input.primary_clicked && !pointer_in_palette && !pointer_in_bar;
+            let guarded_hover = if pointer_in_palette || pointer_in_bar || pointer_in_rating { None } else { input.hover_pos };
+            let guarded_primary_clicked = input.primary_clicked && !pointer_in_palette && !pointer_in_bar && !pointer_in_rating;
             self.handle_edge_turn(&edge_ctx, clip, guarded_hover, guarded_primary_clicked, is_spread, step, total, input.time);
             self.draw_edge_turn_marker(&edge_ctx, clip);
 
@@ -2928,7 +2945,7 @@ impl ViewerState {
             }
 
             // パレット上でのクリックは画像側（ページめくり／原寸切替）へ伝えない。
-            if pointer_in_palette {
+            if pointer_in_palette || pointer_in_rating {
                 double_clicked = false;
                 single_clicked = false;
             }
@@ -2983,6 +3000,20 @@ impl ViewerState {
                 let p = ui.painter();
                 p.rect_filled(bg_rect, 6.0, egui::Color32::from_black_alpha(200));
                 p.galley(bg_pos + pad, tg, egui::Color32::WHITE);
+            }
+
+            // ── 評価オーバーレイ（最終ページ表示中。MOCK: 値はメモリ上のみ）──────────
+            if let Some(band) = rating_rect {
+                match crate::rating_overlay::show(ui, band, self.rating_mock_half, i18n::t().rating_unset_button()) {
+                    crate::rating_overlay::RatingEvent::None => {}
+                    crate::rating_overlay::RatingEvent::Set(half) => self.rating_mock_half = half,
+                    crate::rating_overlay::RatingEvent::Unset => {
+                        self.rating_mock_half = 0;
+                        // 既に未評価でも毎回出す（押した結果を必ず返す）
+                        self.set_toast(i18n::t().toast_rating_cleared().to_string());
+                    }
+                    crate::rating_overlay::RatingEvent::Close => self.rating_overlay_dismissed = true,
+                }
             }
 
             // ── ツールパレット：最前面オーバーレイ ────────────────────────────

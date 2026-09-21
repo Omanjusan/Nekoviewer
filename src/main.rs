@@ -20,6 +20,7 @@ mod magnifier;
 mod magnifier_cursor;
 mod model_innerlog;
 mod neko_dir;
+mod rating_overlay;
 mod rotation;
 mod single_instance;
 mod spread_offset;

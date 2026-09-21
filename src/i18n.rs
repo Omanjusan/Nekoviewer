@@ -258,6 +258,22 @@ impl Lang {
         }
     }
 
+    pub fn rating_unset_button(self) -> &'static str {
+        match self {
+            Lang::Japanese => "未評価にする",
+            Lang::English  => "Clear rating",
+            Lang::Chinese  => "设为未评价",
+        }
+    }
+
+    pub fn toast_rating_cleared(self) -> &'static str {
+        match self {
+            Lang::Japanese => "未評価として登録しなおしました",
+            Lang::English  => "Rating cleared",
+            Lang::Chinese  => "已重新登记为未评价",
+        }
+    }
+
     pub fn thumbnail_register_page_label(self) -> &'static str {
         match self {
             Lang::Japanese => "このページをサムネイルとして登録",
