@@ -3560,6 +3560,284 @@ impl Lang {
     }
 }
 
+/// エクスプローラーのヘルプ（ツールチップ）1件分。タイトルは枠で囲って表示し、
+/// 本文は（見出し, 本文）の節を行間を空けて並べる。見出しが空の節は本文のみ。
+pub struct HelpDoc {
+    pub title: &'static str,
+    pub sections: &'static [(&'static str, &'static str)],
+}
+
+impl Lang {
+    pub fn help_toggle_button(self) -> &'static str {
+        "[?]"
+    }
+
+    pub fn status_button(self) -> &'static str {
+        "[stat]"
+    }
+
+    pub fn help_reload(self) -> HelpDoc {
+        match self {
+            Lang::Japanese => HelpDoc {
+                title: "リロード",
+                sections: &[("", "リロードの実行")],
+            },
+            Lang::English => HelpDoc {
+                title: "Reload",
+                sections: &[("", "Runs a reload.")],
+            },
+            Lang::Chinese => HelpDoc {
+                title: "重新加载",
+                sections: &[("", "执行重新加载")],
+            },
+        }
+    }
+
+    pub fn help_sort_primary(self) -> HelpDoc {
+        match self {
+            Lang::Japanese => HelpDoc {
+                title: "ソート（第1）",
+                sections: &[(
+                    "",
+                    "フォルダ内のアーカイブの並び順を、名前・日付・サイズから選ぶ。\n\
+                     [昇順]／[降順]で並びの向きを切り替える。選択中の項目は青で表示される。",
+                )],
+            },
+            Lang::English => HelpDoc {
+                title: "Sort (primary)",
+                sections: &[(
+                    "",
+                    "Choose how archives in the folder are ordered: by name, date or size.\n\
+                     [Asc]/[Desc] switches the direction. The selected item is shown in blue.",
+                )],
+            },
+            Lang::Chinese => HelpDoc {
+                title: "排序（第1）",
+                sections: &[(
+                    "",
+                    "从名称、日期、大小中选择文件夹内压缩包的排列顺序。\n\
+                     [升序]/[降序]切换排列方向。选中的项目以蓝色显示。",
+                )],
+            },
+        }
+    }
+
+    pub fn help_sort_rating(self) -> HelpDoc {
+        match self {
+            Lang::Japanese => HelpDoc {
+                title: "ソート（第2：スコア・訪問回数）",
+                sections: &[
+                    (
+                        "",
+                        "スコア（評価）または訪問回数で並べ替える。ONの間はこちらが主軸になり、\n\
+                         第1ソート（名前・日付・サイズ）は同順位のときのサブ条件になる。\n\
+                         ONのとき赤く表示される。[昇順]／[降順]は第2ソートがONのときだけ使える。",
+                    ),
+                    (
+                        "■ もう一度押すとOFF",
+                        "押し下げ中（赤）のボタンをもう一度押すと第2ソートがOFFになり、\n\
+                         第1ソートだけの並びに戻る。",
+                    ),
+                ],
+            },
+            Lang::English => HelpDoc {
+                title: "Sort (secondary: score / visits)",
+                sections: &[
+                    (
+                        "",
+                        "Sorts by score (rating) or visit count. While ON it becomes the main key,\n\
+                         and the primary sort (name / date / size) only breaks ties.\n\
+                         Shown in red while ON. [Asc]/[Desc] works only while this sort is ON.",
+                    ),
+                    (
+                        "■ Press again to turn OFF",
+                        "Pressing the pressed (red) button again turns the secondary sort OFF\n\
+                         and returns to the primary sort only.",
+                    ),
+                ],
+            },
+            Lang::Chinese => HelpDoc {
+                title: "排序（第2：评分・访问次数）",
+                sections: &[
+                    (
+                        "",
+                        "按评分或访问次数排序。开启期间它是主排序键，\n\
+                         第1排序（名称・日期・大小）仅在并列时作为次要条件。\n\
+                         开启时显示为红色。[升序]/[降序]仅在第2排序开启时可用。",
+                    ),
+                    (
+                        "■ 再按一次即关闭",
+                        "再次按下已按下（红色）的按钮，第2排序即关闭，\n\
+                         恢复为仅第1排序。",
+                    ),
+                ],
+            },
+        }
+    }
+
+    pub fn help_card_info(self) -> HelpDoc {
+        match self {
+            Lang::Japanese => HelpDoc {
+                title: "サムネ情報帯",
+                sections: &[
+                    (
+                        "[情報]",
+                        "サムネイル下部の帯に出す内容を切り替える。押すたびに循環する。\n\
+                         OFF → 名前 → 名前+日付 → 名前+日付+容量",
+                    ),
+                    (
+                        "[情報2]",
+                        "評価帯の内容を切り替える。押すたびに循環する。\n\
+                         OFF → ★（スコア） → 回数（訪問回数） → ★+回数",
+                    ),
+                ],
+            },
+            Lang::English => HelpDoc {
+                title: "Thumbnail info bands",
+                sections: &[
+                    (
+                        "[Info]",
+                        "Changes what the band under each thumbnail shows. Cycles on every press.\n\
+                         OFF -> Name -> Name+Date -> Name+Date+Size",
+                    ),
+                    (
+                        "[Info2]",
+                        "Changes what the rating band shows. Cycles on every press.\n\
+                         OFF -> Stars (score) -> Visits -> Stars+Visits",
+                    ),
+                ],
+            },
+            Lang::Chinese => HelpDoc {
+                title: "缩略图信息带",
+                sections: &[
+                    (
+                        "[信息]",
+                        "切换缩略图下方信息带显示的内容，每按一次循环切换。\n\
+                         关闭 → 名称 → 名称+日期 → 名称+日期+大小",
+                    ),
+                    (
+                        "[信息2]",
+                        "切换评分带显示的内容，每按一次循环切换。\n\
+                         关闭 → ★（评分） → 次数（访问次数） → ★+次数",
+                    ),
+                ],
+            },
+        }
+    }
+
+    pub fn help_view_toggles(self) -> HelpDoc {
+        match self {
+            Lang::Japanese => HelpDoc {
+                title: "ON/OFFトグル",
+                sections: &[
+                    (
+                        "[ツールボックス]",
+                        "ビューアー内のツールパレット（マス配置のツールボックス）の表示ON/OFF。\n\
+                         ファイルを移っても状態は保たれる。",
+                    ),
+                    (
+                        "[スコアリング]",
+                        "アーカイブの末尾ページに出る評価オーバーレイ（スコア入力）のON/OFF。\n\
+                         邪魔に感じるときはOFFにする。",
+                    ),
+                ],
+            },
+            Lang::English => HelpDoc {
+                title: "ON/OFF toggles",
+                sections: &[
+                    (
+                        "[Toolbox]",
+                        "Shows or hides the tool palette (grid-layout toolbox) in the viewer.\n\
+                         The state is kept when you move between files.",
+                    ),
+                    (
+                        "[Scoring]",
+                        "Turns the rating overlay (score input) at the end of an archive ON/OFF.\n\
+                         Turn it OFF if it gets in the way.",
+                    ),
+                ],
+            },
+            Lang::Chinese => HelpDoc {
+                title: "开/关切换",
+                sections: &[
+                    (
+                        "[工具箱]",
+                        "显示/隐藏查看器内的工具面板（格子布局的工具箱）。\n\
+                         切换文件时状态保持不变。",
+                    ),
+                    (
+                        "[评分]",
+                        "开/关压缩包末尾页出现的评分浮层（评分输入）。\n\
+                         觉得碍事时可关闭。",
+                    ),
+                ],
+            },
+        }
+    }
+
+    pub fn help_thumbnail_status(self) -> HelpDoc {
+        match self {
+            Lang::Japanese => HelpDoc {
+                title: "サムネイル状況",
+                sections: &[
+                    (
+                        "サムネイル 現在数/総数",
+                        "分子は、今の設定で生成済みのサムネイル数。\n\
+                         分母は、現在のフォルダ内のアーカイブ総数。",
+                    ),
+                    (
+                        "エラー N",
+                        "サムネイルの生成に失敗した数。0件のときは表示されない。",
+                    ),
+                    (
+                        "新形式に更新中",
+                        "サムネイルの設定を変えたときや、DBが新しい形式に変わったときに表示される。\n\
+                         旧形式のサムネイルを作り直している間、分子は作り直しが済んだ分だけ増える。",
+                    ),
+                ],
+            },
+            Lang::English => HelpDoc {
+                title: "Thumbnail status",
+                sections: &[
+                    (
+                        "Thumbnails current/total",
+                        "The numerator is the number of thumbnails already generated with the current settings.\n\
+                         The denominator is the total number of archives in the current folder.",
+                    ),
+                    (
+                        "Errors N",
+                        "The number of archives whose thumbnail failed to generate. Hidden when 0.",
+                    ),
+                    (
+                        "Updating to the new format",
+                        "Shown after the thumbnail settings change, or when the DB moves to a new format.\n\
+                         While old thumbnails are being rebuilt, the numerator only counts the rebuilt ones.",
+                    ),
+                ],
+            },
+            Lang::Chinese => HelpDoc {
+                title: "缩略图状态",
+                sections: &[
+                    (
+                        "缩略图 当前数/总数",
+                        "分子是按当前设置已生成的缩略图数量。\n\
+                         分母是当前文件夹内的压缩包总数。",
+                    ),
+                    (
+                        "错误 N",
+                        "缩略图生成失败的数量。为0时不显示。",
+                    ),
+                    (
+                        "正在更新为新格式",
+                        "更改缩略图设置，或数据库升级为新格式时显示。\n\
+                         重建旧格式缩略图期间，分子只统计已重建完成的数量。",
+                    ),
+                ],
+            },
+        }
+    }
+}
+
 static LANG: AtomicU8 = AtomicU8::new(0);
 
 pub fn t() -> Lang {

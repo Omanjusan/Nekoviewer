@@ -7,6 +7,7 @@ use crate::types::ExplorerSortKey;
 use crate::fs::dir;
 use crate::view_reader::{fit_rect_contain, ViewerState};
 use super::*;
+use super::help::help_tip;
 
 /// カード情報帯のホバー横スクロールを回すフレーム間隔（ms）。
 /// egui はフル再描画しかできないため、モニタのリフレッシュレート（120/144Hz等）で
@@ -271,6 +272,9 @@ impl NekoviewApp {
             MenuBarButton::StatusToggle => {
                 self.show_status_window = !self.show_status_window;
             }
+            MenuBarButton::HelpToggle => {
+                self.help_enabled = !self.help_enabled;
+            }
             MenuBarButton::ScoringToggle => {
                 let mut cfg = self.viewer_cfg.lock().unwrap();
                 cfg.rating_overlay_enabled = !cfg.rating_overlay_enabled;
@@ -291,6 +295,13 @@ impl NekoviewApp {
         let menu_focused = self.focused_pane == FocusPane::MenuBar;
         let cursor_button = MENU_BAR_ORDER.get(self.menu_cursor).copied();
         let is_cursor = |b: MenuBarButton| menu_focused && cursor_button == Some(b);
+        let help_on = self.help_enabled;
+        let help_reload = i18n::t().help_reload();
+        let help_sort1 = i18n::t().help_sort_primary();
+        let help_sort2 = i18n::t().help_sort_rating();
+        let help_info = i18n::t().help_card_info();
+        let help_toggles = i18n::t().help_view_toggles();
+        let help_thumb = i18n::t().help_thumbnail_status();
         ui.horizontal(|ui| {
             // 隠しファイル表示トグルは設定ダイアログの「共通」タブへ移設した。
             // ページ表示モード・見開き1Pシフト群はビューアーツールバーへ移設した（toolbar.rs 参照）。
@@ -298,6 +309,7 @@ impl NekoviewApp {
             // ── リロード（ツリー・現在CD位置の再スキャン） ────────────────
             let r_reload = ui.button("⟳");
             if is_cursor(MenuBarButton::Reload) { draw_cursor_ring(ui, r_reload.rect); }
+            help_tip(&r_reload, help_on, &help_reload);
             if r_reload.clicked() {
                 self.reload_current();
             }
@@ -321,6 +333,7 @@ impl NekoviewApp {
                     ui.selectable_label(active, key.label())
                 }).inner;
                 if is_cursor(btn) { draw_cursor_ring(ui, r.rect); }
+                help_tip(&r, help_on, &help_sort1);
                 if r.clicked() {
                     self.sort_key = key;
                     sort_changed = true;
@@ -332,6 +345,7 @@ impl NekoviewApp {
             let order_label = if self.sort_ascending { i18n::t().sort_asc() } else { i18n::t().sort_desc() };
             let r_order = ui.button(order_label);
             if is_cursor(MenuBarButton::SortOrder) { draw_cursor_ring(ui, r_order.rect); }
+            help_tip(&r_order, help_on, &help_sort1);
             if r_order.clicked() {
                 self.sort_ascending = !self.sort_ascending;
                 sort_changed = true;
@@ -360,6 +374,7 @@ impl NekoviewApp {
                     ui.selectable_label(active, key.label())
                 }).inner;
                 if is_cursor(btn) { draw_cursor_ring(ui, r.rect); }
+                help_tip(&r, help_on, &help_sort2);
                 if r.clicked() {
                     self.rating_sort.toggle(key);
                     rating_changed = true;
@@ -371,6 +386,7 @@ impl NekoviewApp {
             let rating_order_label = if self.rating_sort.ascending { i18n::t().sort_asc() } else { i18n::t().sort_desc() };
             let r_rating_order = ui.add_enabled(self.rating_sort.key.is_some(), egui::Button::new(rating_order_label));
             if is_cursor(MenuBarButton::SortRatingOrder) { draw_cursor_ring(ui, r_rating_order.rect); }
+            help_tip(&r_rating_order, help_on, &help_sort2);
             if r_rating_order.clicked() {
                 self.rating_sort.ascending = !self.rating_sort.ascending;
                 rating_changed = true;
@@ -392,6 +408,7 @@ impl NekoviewApp {
             };
             let r_info = ui.button(info_label);
             if is_cursor(MenuBarButton::CardInfoToggle) { draw_cursor_ring(ui, r_info.rect); }
+            help_tip(&r_info, help_on, &help_info);
             if r_info.clicked() {
                 self.card_info_mode = self.card_info_mode.next();
                 self.persist_state();
@@ -406,6 +423,7 @@ impl NekoviewApp {
             };
             let r_rating = ui.button(rating_label);
             if is_cursor(MenuBarButton::CardRatingToggle) { draw_cursor_ring(ui, r_rating.rect); }
+            help_tip(&r_rating, help_on, &help_info);
             if r_rating.clicked() {
                 self.card_rating_mode = self.card_rating_mode.next();
                 self.persist_state();
@@ -415,7 +433,19 @@ impl NekoviewApp {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 // 右→左レイアウトのため最初に追加した方が最も右端（[?]が視覚上の右端）。
                 // MENU_BAR_ORDERは操作可能な項目の視覚上の左→右順。
-                let r_status = ui.button("[?]");
+                let r_help = ui.scope(|ui| {
+                    if help_on {
+                        ui.visuals_mut().selection.bg_fill = egui::Color32::from_rgb(30, 100, 200);
+                        ui.visuals_mut().selection.stroke.color = egui::Color32::WHITE;
+                    }
+                    ui.selectable_label(help_on, i18n::t().help_toggle_button())
+                }).inner;
+                if is_cursor(MenuBarButton::HelpToggle) { draw_cursor_ring(ui, r_help.rect); }
+                if r_help.clicked() {
+                    self.help_enabled = !self.help_enabled;
+                }
+
+                let r_status = ui.button(i18n::t().status_button());
                 if is_cursor(MenuBarButton::StatusToggle) { draw_cursor_ring(ui, r_status.rect); }
                 if r_status.clicked() {
                     self.show_status_window = !self.show_status_window;
@@ -443,6 +473,7 @@ impl NekoviewApp {
                     ui.selectable_label(tool_palette_visible, i18n::t().tool_palette_toggle_button(tool_palette_visible))
                 }).inner;
                 if is_cursor(MenuBarButton::ToolPaletteToggle) { draw_cursor_ring(ui, r_tool_palette.rect); }
+                help_tip(&r_tool_palette, help_on, &help_toggles);
                 if r_tool_palette.clicked() {
                     self.viewer_cfg.lock().unwrap().tool_palette.visible = !tool_palette_visible;
                 }
@@ -458,13 +489,15 @@ impl NekoviewApp {
                     ui.selectable_label(scoring_on, i18n::t().scoring_toggle_button(scoring_on))
                 }).inner;
                 if is_cursor(MenuBarButton::ScoringToggle) { draw_cursor_ring(ui, r_scoring.rect); }
+                help_tip(&r_scoring, help_on, &help_toggles);
                 if r_scoring.clicked() {
                     self.viewer_cfg.lock().unwrap().rating_overlay_enabled = !scoring_on;
                     self.persist_state();
                 }
 
                 ui.separator();
-                ui.label(self.thumbnail_status_text());
+                let r_thumb = ui.label(self.thumbnail_status_text());
+                help_tip(&r_thumb, help_on, &help_thumb);
             });
         });
     }

@@ -271,6 +271,8 @@ pub(crate) enum MenuBarButton {
     /// スコアリング（アーカイブ末尾の評価オーバーレイ）のON/OFF。viewer_cfg直結の永続設定。
     ScoringToggle,
     StatusToggle,
+    /// ヘルプ（ツールチップ）表示のON/OFF。非永続。メニューバーの視覚上の右端。
+    HelpToggle,
     /// ビューアー内ツールパレット（マス配置ツールボックス）の表示ON/OFF。
     /// ファイルを渡り歩いても同じ状態を保つ（viewer_cfg経由でPaletteStateへ直結）。
     ToolPaletteToggle,
@@ -279,7 +281,7 @@ pub(crate) enum MenuBarButton {
 
 /// 表示順そのもの（draw_menu_barの描画順と一致させること）。
 /// 見開き・ページモード群はビューアーツールバーへ移設した（toolbar.rs 参照）。
-pub(crate) const MENU_BAR_ORDER: [MenuBarButton; 14] = [
+pub(crate) const MENU_BAR_ORDER: [MenuBarButton; 15] = [
     MenuBarButton::Reload,
     MenuBarButton::SortName,
     MenuBarButton::SortDate,
@@ -294,6 +296,7 @@ pub(crate) const MENU_BAR_ORDER: [MenuBarButton; 14] = [
     MenuBarButton::ToolPaletteToggle,
     MenuBarButton::Settings,
     MenuBarButton::StatusToggle,
+    MenuBarButton::HelpToggle,
 ];
 
 #[cfg(test)]
@@ -314,12 +317,13 @@ mod menu_bar_order_tests {
     }
 
     #[test]
-    fn settings_and_status_keep_the_visual_right_end_order() {
+    fn settings_status_and_help_keep_the_visual_right_end_order() {
         assert_eq!(
             &MENU_BAR_ORDER[12..],
             &[
                 MenuBarButton::Settings,
                 MenuBarButton::StatusToggle,
+                MenuBarButton::HelpToggle,
             ],
         );
     }
@@ -975,8 +979,10 @@ pub struct NekoviewApp {
     explorer_viewport_h: f32,
     /// フォルダ名ラベルの1秒ホバー救済用: (対象パス, ホバー開始時刻)
     folder_label_hover: Option<(PathBuf, std::time::Instant)>,
-    /// ステータスウィンドウ表示フラグ（[?] ボタンでトグル）
+    /// ステータスウィンドウ表示フラグ（[stat] ボタンでトグル）
     show_status_window: bool,
+    /// ヘルプ（ツールチップ）表示フラグ（[?] ボタンでトグル）。永続化しない
+    help_enabled: bool,
     status_window_data: Arc<Mutex<crate::view_status::StatusData>>,
     /// ステータスデータを最後に更新した時刻（1秒間隔制御用）
     last_status_update: std::time::Instant,
@@ -1038,6 +1044,7 @@ mod status;
 mod nav_icons;
 mod calendar_gui;
 mod open_progress;
+mod help;
 
 #[cfg(test)]
 mod glyph_audit;
@@ -1279,6 +1286,7 @@ impl NekoviewApp {
             explorer_viewport_h: 0.0,
             folder_label_hover: None,
             show_status_window: false,
+            help_enabled: false,
             status_window_data: Arc::new(Mutex::new(crate::view_status::StatusData::default())),
             last_status_update: std::time::Instant::now(),
             status_update_requested: Arc::new(std::sync::atomic::AtomicBool::new(false)),
