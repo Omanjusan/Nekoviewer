@@ -5,25 +5,40 @@ mod card_date_format;
 mod config;
 mod controller;
 mod decode_jobs;
+mod explorer_sort;
 mod favorites;
 mod fs;
 mod gui_config;
 mod i18n;
+mod image_filter;
+mod image_info;
 mod types;
 mod keymap;
+mod koma;
+// 変換関数はフェーズ2で配線済み。バー幅API・自動ハイド秒などはフェーズ4以降で配線するまで未使用。
+#[allow(dead_code)]
+mod magnifier;
+mod magnifier_cursor;
 mod model_innerlog;
 mod neko_dir;
+mod rating_filter;
+mod rating_overlay;
 mod rotation;
 mod single_instance;
 mod spread_offset;
 mod spread_state;
+mod texture_window;
+mod tool_palette;
 mod toolbar;
+mod tree_sort;
 mod translate;
 mod view_explorer;
 mod view_gui_config;
 mod view_innerlog;
 mod view_reader;
 mod view_status;
+mod virtual_folder_scan;
+mod virtual_folders;
 #[cfg(windows)]
 mod win_registry;
 
@@ -60,7 +75,7 @@ fn main() {
         let mut cfg = config::AppConfig::load();
         log_common!("[startup] config loaded");
 
-        let state = gui_config::load_state(&cfg.config_root);
+        let mut state = gui_config::load_state(&cfg.config_root);
         log_common!("[startup] state loaded (window_size = {:?})", state.window_size);
         i18n::set_from_code(&state.lang);
 
@@ -90,6 +105,26 @@ fn main() {
         // フェーズ4b: decode_threads/default_slotも同様にstate側を優先する。
         if let Some(v) = state.app_decode_threads { cfg.decode_threads = v; }
         if let Some(v) = state.app_default_slot { cfg.default_slot = v; }
+        if let Some(v) = state.app_magnifier_zoom_notice_shown { cfg.magnifier_zoom_notice_shown = v; }
+        if let Some(v) = state.app_max_decode_edge_prompt_answered { cfg.max_decode_edge_prompt_answered = v; }
+
+        // 原寸時の最大長辺幅の既定値を 1920 → 4000 に上げた。保存済みの値が新既定値より低く未回答なら、
+        // 起動時に1度だけ更新するか確認する（新既定値以上の人は、確認不要として回答済みにしておく）。
+        match config::decode_edge_prompt_decision(cfg.max_decode_edge_prompt_answered, cfg.max_decode_edge) {
+            config::DecodeEdgePrompt::Ask(current) => cfg.pending_decode_edge_prompt = Some(current),
+            config::DecodeEdgePrompt::MarkAnswered => cfg.max_decode_edge_prompt_answered = true,
+            config::DecodeEdgePrompt::Nothing => {}
+        }
+
+        // 虫眼鏡の拡大縮小（既定 Shift+ホイール）の割り当て。他の操作と競合していたら空いている
+        // 修飾キーへ割り当て直し（keymap.ini へ保存）、結果を1度だけOKダイアログで知らせる。
+        if !cfg.magnifier_zoom_notice_shown {
+            let (notice, changed) = cfg.keymap.register_magnifier_zoom();
+            if changed {
+                cfg.keymap.save(&cfg.config_root);
+            }
+            cfg.pending_magnifier_zoom_notice = Some(notice);
+        }
 
         fs::mount::log_gvfs_status();
         log_common!("[startup] gvfs check done");
@@ -99,6 +134,11 @@ fn main() {
 
         // 「賢く開く」：ファイル指定なら親DIR起動＋起動後の自動オープン対象を、DIR指定なら
         // そのDIRをそれぞれ導出する。いずれも成立しなければ従来通りの起動フォルダ解決へ委ねる。
+        // CLI引数で起動したときは実ツリータブ固定（他タブの保存位置は残す）。
+        // その回の「最後のタブ」も実ツリーとして保存される。
+        if args.start_path.is_some() {
+            state.tab_positions.active = Some(gui_config::SavedTab::RealTree);
+        }
         let (cli_dir, open_target) = match args.start_path {
             Some(p) => config::AppConfig::resolve_cli_open_target(p),
             None => (None, None),

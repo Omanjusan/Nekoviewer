@@ -153,7 +153,8 @@ impl CalendarGui {
 
         let mut window_open = self.open;
         let mut outcome = CalendarOutcome::None;
-        egui::Window::new("日付を選択")
+        let lang = crate::i18n::t();
+        egui::Window::new(lang.calendar_window_title())
             .id(id.with("calendar_window"))
             .open(&mut window_open)
             .collapsible(false)
@@ -163,9 +164,9 @@ impl CalendarGui {
                     if ui.button("◀").clicked() {
                         self.model.previous_month();
                     }
-                    ui.label(format!(
-                        "{}年{}月",
-                        self.model.cursor.year, self.model.cursor.month
+                    ui.label(lang.calendar_year_month(
+                        self.model.cursor.year,
+                        self.model.cursor.month,
                     ));
                     if ui.button("▶").clicked() {
                         self.model.next_month();
@@ -175,7 +176,7 @@ impl CalendarGui {
                 egui::Grid::new(id.with("calendar_grid"))
                     .num_columns(7)
                     .show(ui, |ui| {
-                        for label in ["日", "月", "火", "水", "木", "金", "土"] {
+                        for label in lang.calendar_weekdays() {
                             ui.label(label);
                         }
                         ui.end_row();
@@ -201,13 +202,13 @@ impl CalendarGui {
                     });
 
                 ui.horizontal(|ui| {
-                    if ui.button("決定").clicked() {
+                    if ui.button(lang.calendar_ok()).clicked() {
                         outcome = self.model.confirm();
                     }
-                    if ui.button("未指定に戻す").clicked() {
+                    if ui.button(lang.calendar_clear()).clicked() {
                         outcome = self.model.clear();
                     }
-                    if ui.button("キャンセル").clicked() {
+                    if ui.button(lang.calendar_cancel()).clicked() {
                         outcome = self.model.cancel();
                     }
                 });

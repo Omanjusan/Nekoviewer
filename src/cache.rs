@@ -101,6 +101,9 @@ pub struct LoadRequest {
     pub target_size: Option<(u32, u32)>,
     /// 項目(D): Exif Orientation自動回転をデコード時に適用するか（ViewerConfigから都度取得）。
     pub exif_enabled: bool,
+    /// 画像処理フィルター設定（ViewerConfigから都度取得）。静止画（PageContent::Static）
+    /// にのみ適用し、アニメーション（GIF/APNG/AVIF/WebP）には適用しない。
+    pub image_filter: crate::image_filter::ImageFilterSettings,
     /// 表示解像度・Orientation等、デコード条件の世代。結果回収時に現行世代と一致しない
     /// 結果を破棄し、リサイズ前の遅い要求が新しいキャッシュを上書きするのを防ぐ。
     pub generation: u64,
@@ -182,11 +185,40 @@ pub enum PageContent {
     Animated(Arc<RingAnimation>),
 }
 
+/// ページの付帯情報。デコード結果（縮小後の画像）からは分からない、元ファイル側の性質。
+/// `PageContent` とは別に持つ（縮小・世代・アニメ担当の経路を変えないため）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PageMeta {
+    /// オリジナルのピクセル寸法（Exif Orientation 適用後＝見た目の向き）。
+    pub orig: (u32, u32),
+    /// アニメ情報をもつ（GIF/APNG/AVIF/WebP でアニメ構造をもつ）ページ。
+    /// 実質1フレームで静止画として扱われるものも含む。
+    pub animated: bool,
+}
+
+thread_local! {
+    /// 直近にこのスレッドで完了したデコードの `PageMeta`。ワーカーが1ジョブの前後で
+    /// `clear_last_page_meta` / `take_last_page_meta` を呼んで受け取る。デコード関数の
+    /// シグネチャ（戻り値）を変えずに元寸法を外へ出すための受け渡し口。
+    static LAST_PAGE_META: std::cell::Cell<Option<PageMeta>> = const { std::cell::Cell::new(None) };
+}
+
+fn set_last_page_meta(meta: PageMeta) {
+    LAST_PAGE_META.with(|c| c.set(Some(meta)));
+}
+
+/// 直近のデコードの `PageMeta` を取り出す（取り出すと空になる）。
+pub fn take_last_page_meta() -> Option<PageMeta> {
+    LAST_PAGE_META.with(|c| c.take())
+}
+
 // ワーカースレッドからの結果
 pub struct LoadResult {
     pub archive_path: PathBuf,
     pub index: usize,
     pub outcome: DecodeJobOutcome<PageContent>,
+    /// 元寸法・アニメ有無。デコードに失敗した場合や取得できなかった場合は None。
+    pub meta: Option<PageMeta>,
     pub generation: u64,
 }
 
@@ -222,7 +254,9 @@ pub fn spawn_worker(filter: image::imageops::FilterType, num_threads: usize, ctx
 
                 let target_size = req.target_size;
                 let exif_enabled = req.exif_enabled;
-                let content = if req.is_raw_file {
+                let image_filter = req.image_filter;
+                let _ = take_last_page_meta();
+                let mut content = if req.is_raw_file {
                     match req.file_cache_entry {
                         Some(FileCacheEntry::Raw(bytes)) => {
                             load_raw_content_from_bytes(&bytes, &req.archive_path, filter, cache_budget_bytes, ring_bounds, frame_hard_limit_bytes, target_size, exif_enabled)
@@ -263,6 +297,13 @@ pub fn spawn_worker(filter: image::imageops::FilterType, num_threads: usize, ctx
                     open_archive.as_mut().and_then(|(_, a)| a.load_page(&req.entry_name, filter, cache_budget_bytes, ring_bounds, frame_hard_limit_bytes, target_size, exif_enabled))
                 };
 
+                let meta = if content.is_some() { take_last_page_meta() } else { None };
+
+                // 画像処理フィルターは静止画のみに適用する（アニメーションは対象外）。
+                if let Some(PageContent::Static(rgba)) = &mut content {
+                    crate::image_filter::apply_image_filters(rgba, &image_filter);
+                }
+
                 if worker_queue.finish(job_id) {
                     let outcome = match content {
                         Some(content) => DecodeJobOutcome::Ready(content),
@@ -272,6 +313,7 @@ pub fn spawn_worker(filter: image::imageops::FilterType, num_threads: usize, ctx
                         archive_path: req.archive_path,
                         index: req.index,
                         outcome,
+                        meta,
                         generation: req.generation,
                     });
                     ctx.request_repaint_after(std::time::Duration::from_millis(8));
@@ -410,6 +452,7 @@ fn decode_bytes_to_content(
 /// `target` に縮小する（拡大はしない）。`target` が None のときは無制限（原寸のまま）。
 /// フェーズ6: 従来の固定上限(1920x1080)から、リサイズ再デコード対応のため呼び出し側指定に変更。
 pub fn resize_for_display(img: image::DynamicImage, filter: image::imageops::FilterType, target: Option<(u32, u32)>) -> image::RgbaImage {
+    set_last_page_meta(PageMeta { orig: (img.width(), img.height()), animated: false });
     let Some((tw, th)) = target else {
         return img.to_rgba8();
     };
@@ -590,6 +633,8 @@ impl RingAnimation {
                 img.apply_orientation(orientation);
                 frame0.image = img.into_rgba8();
             }
+            // 元寸法は向きの適用後・上限縮小（guard）の前。1フレームでもアニメ情報ありとして扱う。
+            set_last_page_meta(PageMeta { orig: (frame0.image.width(), frame0.image.height()), animated: true });
             let frame0 = Self::guard_frame_size(frame0, frame_hard_limit_bytes, filter, 0);
             let (w, h) = (frame0.image.width(), frame0.image.height());
             let resize_to = target_size.and_then(|(tw, th)| {
@@ -600,6 +645,7 @@ impl RingAnimation {
             return RingDecodeOutcome::SingleFrame(frame0);
         }
 
+        set_last_page_meta(PageMeta { orig: (frame0.image.width(), frame0.image.height()), animated: true });
         let frame0 = Self::guard_frame_size(frame0, frame_hard_limit_bytes, filter, 0);
 
         let (w, h) = (frame0.image.width(), frame0.image.height());
@@ -1020,7 +1066,13 @@ pub struct PageCache {
     /// 中身は保持しない（キャッシュを汚染しない）。
     known_bypass: HashSet<(PathBuf, usize, u64)>,
     known_animation_bypass: HashSet<(PathBuf, usize)>,
+    /// ページごとの付帯情報（元寸法・アニメ有無）。表示世代・縮小結果とは独立に、
+    /// 最後にデコードされた内容で上書きする。エビクションとは連動しない（小さいので保持）。
+    metas: HashMap<(PathBuf, usize), PageMeta>,
 }
+
+/// `PageCache::metas` の上限件数。超えたら一括で捨てる（次のデコードで再び溜まる）。
+const PAGE_META_CAP: usize = 8192;
 
 impl PageCache {
     pub fn new(max_bytes: usize, min_bytes: usize) -> Self {
@@ -1034,6 +1086,7 @@ impl PageCache {
             animation_bypass: None,
             known_bypass: HashSet::new(),
             known_animation_bypass: HashSet::new(),
+            metas: HashMap::new(),
         }
     }
 
@@ -1218,8 +1271,44 @@ impl PageCache {
         self.known_animation_bypass.retain(|(p, _)| p != path);
     }
 
+    /// 画像処理フィルター変更時の再デコード用。静止画エントリ（`entries`・bypassスロット・
+    /// `known_bypass`記憶）のみ破棄し、アニメーション側（`animations`・animation_bypass・
+    /// `known_animation_bypass`）には一切触れない。フィルターは`PageContent::Static`にしか
+    /// 適用されない（cache.rsのデコードワーカー参照）ため、アニメページを巻き込んで
+    /// 再生位置をリセットする必要がない。
+    pub fn remove_static_pages_for_path(&mut self, path: &PathBuf) {
+        let stale_keys: Vec<(PathBuf, usize, u64)> = self.entries.keys()
+            .filter(|(p, _, _)| p == path)
+            .cloned()
+            .collect();
+        for key in stale_keys {
+            if let Some(content) = self.entries.remove(&key) {
+                self.total_bytes = self.total_bytes.saturating_sub(content_bytes(&content));
+            }
+        }
+        if let Some(((bp, _, _), _)) = &self.bypass {
+            if bp == path {
+                self.bypass = None;
+            }
+        }
+        self.known_bypass.retain(|(p, _, _)| p != path);
+    }
+
     /// キャッシュに追加する。予算超過時は最遠エントリを evict する。
     /// 単一アイテムが予算全体を超える場合は LRU を汚さず bypass スロットに格納する。
+    /// デコード結果に付いてきた `PageMeta` を記録する（同じページは上書き）。
+    pub fn record_meta(&mut self, path: &std::path::Path, index: usize, meta: PageMeta) {
+        if self.metas.len() >= PAGE_META_CAP {
+            self.metas.clear();
+        }
+        self.metas.insert((path.to_path_buf(), index), meta);
+    }
+
+    /// ページの付帯情報（元寸法・アニメ有無）。まだデコードされていないページは None。
+    pub fn page_meta(&self, path: &std::path::Path, index: usize) -> Option<PageMeta> {
+        self.metas.get(&(path.to_path_buf(), index)).copied()
+    }
+
     pub fn insert(
         &mut self,
         path: PathBuf,
@@ -2346,6 +2435,42 @@ mod ring_integration_tests {
         assert_eq!(cache.total_bytes(), 0);
     }
 
+    #[test]
+    fn remove_static_pages_for_path_keeps_animation_but_drops_static() {
+        let bytes = encode_gif_frames_mixed(&[(10, 10), (10, 10), (10, 10)]);
+        let anim_content = decode_ring_anim(
+            &bytes,
+            AnimFormat::Gif,
+            image::imageops::FilterType::Triangle,
+            TEST_RING_BUDGET_BYTES,
+            TEST_RING_BOUNDS,
+            TEST_FRAME_HARD_LIMIT_BYTES,
+            Some((1920, 1080)),
+            true,
+        )
+        .expect("GIFとしてデコードできるはず");
+        let path = PathBuf::from("mixed.zip");
+        let mut cache = PageCache::new(10 * MB, 0);
+        // ページ0=アニメ、ページ1=静止画の混在アーカイブを想定。
+        cache.insert(path.clone(), 0, 10, anim_content, &path, 0);
+        cache.insert(
+            path.clone(), 1, 10,
+            PageContent::Static(image::RgbaImage::new(2, 2)),
+            &path, 0,
+        );
+
+        cache.remove_static_pages_for_path(&path);
+
+        assert!(
+            cache.contains_animation(&path, 0),
+            "アニメーションページはフィルター変更の再デコードに巻き込まれないはず"
+        );
+        assert!(
+            !cache.contains(&path, 1, 10),
+            "静止画ページは再デコード対象として破棄されるはず"
+        );
+    }
+
     /// リサイズ/原寸切替/フルスクリーンの再デコード経路: `drop_animation_for_redecode` が
     /// 稼働中アニメの席と予約計上を完全に解放し、直後の再デコード結果を別 `instance_id` の
     /// 新しい `RingAnimation` として先頭から座らせ直せることを確認する
@@ -2566,6 +2691,7 @@ mod ring_integration_tests {
                 file_cache_entry: None,
                 target_size: Some((800, 600)),
                 exif_enabled: true,
+                image_filter: crate::image_filter::ImageFilterSettings::default(),
                 generation: 0,
             },
         }));
@@ -2574,8 +2700,71 @@ mod ring_integration_tests {
             .recv_timeout(std::time::Duration::from_secs(2))
             .expect("失敗結果が返るはず");
         assert!(matches!(result.outcome, DecodeJobOutcome::Failed));
+        assert!(result.meta.is_none(), "失敗時は付帯情報を返さないはず");
         assert_eq!(queue.pending_count(), 0);
         queue.shutdown();
+    }
+
+    /// フェーズ2: LoadRequest.image_filter が静止画デコード結果に実際に反映されることの結合テスト。
+    #[test]
+    fn page_worker_applies_image_filter_to_static_page() {
+        let root = std::env::temp_dir().join(format!(
+            "nekoviewer_filter_worker_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos(),
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let image_path = root.join("page.png");
+        image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+            4, 4, image::Rgba([200, 50, 10, 255]),
+        )).save(&image_path).unwrap();
+
+        let ctx = egui::Context::default();
+        let (queue, results) = spawn_worker(
+            image::imageops::FilterType::Triangle,
+            1,
+            ctx,
+            16 * 1024 * 1024,
+            (1, 2),
+            16 * 1024 * 1024,
+        );
+        let key = crate::decode_jobs::DecodeJobKey {
+            archive_path: image_path.clone(),
+            page_index: 0,
+            generation: 0,
+        };
+        let mut settings = crate::image_filter::ImageFilterSettings::default();
+        settings.color_filter_mode = crate::image_filter::ColorFilterMode::Grayscale;
+        assert!(queue.submit(crate::decode_jobs::DesiredDecodeJob {
+            key,
+            class: crate::decode_jobs::PagePriorityClass::Visible,
+            distance: 0,
+            payload: LoadRequest {
+                archive_path: image_path,
+                index: 0,
+                entry_name: String::new(),
+                is_raw_file: true,
+                file_cache_entry: None,
+                target_size: None,
+                exif_enabled: true,
+                image_filter: settings,
+                generation: 0,
+            },
+        }));
+
+        let result = results
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("成功結果が返るはず");
+        let DecodeJobOutcome::Ready(PageContent::Static(img)) = result.outcome else {
+            panic!("静止画としてデコード成功するはず");
+        };
+        let p = img.get_pixel(0, 0);
+        assert_eq!(p.0[0], p.0[1], "グレースケールフィルターでR=Gになるはず");
+        assert_eq!(p.0[1], p.0[2], "グレースケールフィルターでG=Bになるはず");
+
+        queue.shutdown();
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// フェーズ3.6: ループ境界(終端→restart→先頭)が実際に機能することを確認する。
@@ -2916,5 +3105,149 @@ mod ring_integration_tests {
         let (w, h) = ring.with_frame(0, |f| (f.image.width(), f.image.height()))
             .expect("frame0が取得できるはず");
         assert!((w as usize) * (h as usize) * 4 <= hard_limit_bytes, "frame0も縮小されhard_limitに収まるはず: {w}x{h}");
+    }
+
+    // ── PageMeta（元寸法・アニメ有無）のヘッドレステスト ─────────────────────────
+
+    fn encode_png_bytes(w: u32, h: u32) -> Vec<u8> {
+        let img = image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(w, h, image::Rgba([10, 20, 30, 255])));
+        let mut buf = std::io::Cursor::new(Vec::new());
+        img.write_to(&mut buf, image::ImageFormat::Png).unwrap();
+        buf.into_inner()
+    }
+
+    /// JPEG に Exif Orientation（APP1）だけを差し込む。
+    fn encode_jpeg_with_orientation(w: u32, h: u32, orientation: u16) -> Vec<u8> {
+        let img = image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(w, h, image::Rgb([90, 90, 90])));
+        let mut buf = std::io::Cursor::new(Vec::new());
+        img.write_to(&mut buf, image::ImageFormat::Jpeg).unwrap();
+        let jpeg = buf.into_inner();
+        let mut app1 = Vec::new();
+        app1.extend_from_slice(b"Exif\0\0");
+        app1.extend_from_slice(b"II*\0\x08\0\0\0"); // TIFFヘッダ（リトルエンディアン、IFD0 オフセット 8）
+        app1.extend_from_slice(&[0x01, 0x00]);      // エントリ数 1
+        app1.extend_from_slice(&[0x12, 0x01, 0x03, 0x00, 0x01, 0x00, 0x00, 0x00]); // tag 0x0112, SHORT, count 1
+        app1.extend_from_slice(&orientation.to_le_bytes());
+        app1.extend_from_slice(&[0x00, 0x00]);      // 値のパディング
+        app1.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]); // 次のIFDなし
+        let mut out = vec![0xFF, 0xD8, 0xFF, 0xE1];
+        out.extend_from_slice(&((app1.len() as u16 + 2).to_be_bytes()));
+        out.extend_from_slice(&app1);
+        out.extend_from_slice(&jpeg[2..]);
+        out
+    }
+
+    fn decode_named(buf: &[u8], name: &str, target: Option<(u32, u32)>, exif: bool) -> Option<PageContent> {
+        let _ = take_last_page_meta();
+        decode_bytes_to_content(
+            buf, name, image::imageops::FilterType::Triangle,
+            TEST_RING_BUDGET_BYTES, TEST_RING_BOUNDS, TEST_FRAME_HARD_LIMIT_BYTES, target, exif,
+        )
+    }
+
+    #[test]
+    fn meta_static_reports_original_size_even_when_downscaled() {
+        let content = decode_named(&encode_png_bytes(400, 300), "a.png", Some((100, 100)), true).unwrap();
+        let PageContent::Static(img) = content else { panic!("静止画のはず") };
+        assert_eq!((img.width(), img.height()), (100, 75), "表示用に縮小されている");
+        assert_eq!(take_last_page_meta(), Some(PageMeta { orig: (400, 300), animated: false }));
+    }
+
+    #[test]
+    fn meta_static_without_target_is_full_size() {
+        decode_named(&encode_png_bytes(64, 32), "a.png", None, true).unwrap();
+        assert_eq!(take_last_page_meta(), Some(PageMeta { orig: (64, 32), animated: false }));
+    }
+
+    #[test]
+    fn meta_take_empties_the_slot() {
+        decode_named(&encode_png_bytes(8, 8), "a.png", None, true).unwrap();
+        assert!(take_last_page_meta().is_some());
+        assert!(take_last_page_meta().is_none(), "取り出したら空になるはず");
+    }
+
+    #[test]
+    fn meta_single_frame_gif_is_static_but_flagged_animated() {
+        let bytes = encode_gif_frames_mixed(&[(40, 20)]);
+        let content = decode_named(&bytes, "one.gif", Some((10, 10)), true).unwrap();
+        assert!(matches!(content, PageContent::Static(_)), "1フレームは静止画として扱われる");
+        assert_eq!(take_last_page_meta(), Some(PageMeta { orig: (40, 20), animated: true }));
+    }
+
+    #[test]
+    fn meta_multi_frame_gif_reports_original_size_and_animated() {
+        let bytes = encode_gif_frames_mixed(&[(40, 20), (40, 20), (40, 20)]);
+        let content = decode_named(&bytes, "many.gif", Some((10, 10)), true).unwrap();
+        assert!(matches!(content, PageContent::Animated(_)));
+        assert_eq!(take_last_page_meta(), Some(PageMeta { orig: (40, 20), animated: true }));
+    }
+
+    #[test]
+    fn meta_applies_exif_orientation_to_original_size() {
+        // 縦横を入れ替える向き(6 = 90度回転)。見た目の向きの寸法が元寸法になる。
+        let bytes = encode_jpeg_with_orientation(60, 40, 6);
+        decode_named(&bytes, "rot.jpg", None, true).unwrap();
+        assert_eq!(take_last_page_meta().map(|m| m.orig), Some((40, 60)));
+        // Exif無効ならファイルどおりの寸法。
+        decode_named(&bytes, "rot.jpg", None, false).unwrap();
+        assert_eq!(take_last_page_meta().map(|m| m.orig), Some((60, 40)));
+    }
+
+    #[test]
+    fn meta_is_absent_when_decode_fails() {
+        assert!(decode_named(b"not an image", "broken.png", None, true).is_none());
+        assert!(take_last_page_meta().is_none());
+    }
+
+    #[test]
+    fn page_cache_records_and_overwrites_meta() {
+        let mut cache = PageCache::new(16 * MB, 0);
+        let path = PathBuf::from("a.zip");
+        assert!(cache.page_meta(&path, 3).is_none());
+        cache.record_meta(&path, 3, PageMeta { orig: (100, 50), animated: false });
+        assert_eq!(cache.page_meta(&path, 3), Some(PageMeta { orig: (100, 50), animated: false }));
+        assert!(cache.page_meta(&path, 4).is_none());
+        assert!(cache.page_meta(&PathBuf::from("b.zip"), 3).is_none());
+        // 再デコード（Exif切替など）で上書きされる。
+        cache.record_meta(&path, 3, PageMeta { orig: (50, 100), animated: false });
+        assert_eq!(cache.page_meta(&path, 3).map(|m| m.orig), Some((50, 100)));
+    }
+
+    #[test]
+    fn page_worker_delivers_meta_with_result() {
+        let root = std::env::temp_dir().join(format!("nekoviewer_meta_worker_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let image_path = root.join("page.png");
+        std::fs::write(&image_path, encode_png_bytes(300, 200)).unwrap();
+
+        let (queue, results) = spawn_worker(
+            image::imageops::FilterType::Triangle, 1, egui::Context::default(),
+            16 * 1024 * 1024, (1, 2), 16 * 1024 * 1024,
+        );
+        let key = crate::decode_jobs::DecodeJobKey { archive_path: image_path.clone(), page_index: 0, generation: 0 };
+        assert!(queue.submit(crate::decode_jobs::DesiredDecodeJob {
+            key,
+            class: crate::decode_jobs::PagePriorityClass::Visible,
+            distance: 0,
+            payload: LoadRequest {
+                archive_path: image_path,
+                index: 0,
+                entry_name: String::new(),
+                is_raw_file: true,
+                file_cache_entry: None,
+                target_size: Some((60, 60)),
+                exif_enabled: true,
+                image_filter: crate::image_filter::ImageFilterSettings::default(),
+                generation: 0,
+            },
+        }));
+        let result = results.recv_timeout(std::time::Duration::from_secs(2)).expect("結果が返るはず");
+        let DecodeJobOutcome::Ready(PageContent::Static(img)) = result.outcome else { panic!("静止画のはず") };
+        assert_eq!((img.width(), img.height()), (60, 40));
+        assert_eq!(result.meta, Some(PageMeta { orig: (300, 200), animated: false }));
+
+        queue.shutdown();
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

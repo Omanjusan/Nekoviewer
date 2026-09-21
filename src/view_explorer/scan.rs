@@ -2,7 +2,6 @@ use std::path::PathBuf;
 use std::sync::mpsc;
 use std::sync::atomic::Ordering;
 
-use crate::types::ExplorerSortKey;
 use crate::neko_dir;
 use crate::fs::dir;
 use crate::fs::mount::{list_gvfs_smb_mounts, list_local_drives};
@@ -44,17 +43,44 @@ fn take_allowed_thumbnail(
     queue.remove(pos)
 }
 
+/// 並び替え前のインデックス → 同じパスの並び替え後のインデックス（消えたパスは含まない）
+fn index_remap(before: &[PathBuf], after: &[PathBuf]) -> HashMap<usize, usize> {
+    let new_index: HashMap<&PathBuf, usize> = after.iter().enumerate().map(|(i, p)| (p, i)).collect();
+    before.iter().enumerate().filter_map(|(i, p)| Some((i, *new_index.get(p)?))).collect()
+}
+
+/// `sort_archives` が比較用に集めた1件ぶんの値
+struct SortEntry {
+    path: PathBuf,
+    /// お気に入り登録済み（並びの先頭に固定する）
+    fav: bool,
+    mtime: Option<std::time::SystemTime>,
+    size: u64,
+    rating_half: u8,
+    visit_count: u32,
+}
+
+impl SortEntry {
+    fn row(&self) -> crate::explorer_sort::SortRow<'_> {
+        crate::explorer_sort::SortRow {
+            name: self.path.file_name().and_then(|n| n.to_str()).unwrap_or(""),
+            mtime: self.mtime,
+            size: self.size,
+            rating_half: self.rating_half,
+            visit_count: self.visit_count,
+        }
+    }
+}
+
 impl NekoviewApp {
     /// 指定ディレクトリへ遷移する。
     /// お気に入りタブ表示中ならそれを解除し、現在地・監視先を更新してスキャンを開始する。
     pub(super) fn navigate_to(&mut self, path: PathBuf, source: DirectoryNavigationSource) {
-        self.viewing_favorites = None;
-        self.current_dir = path.clone();
-        self.viewing_dir = Some(path.clone());
-        // サマリーはスキャン完了時（poll_scan）にスキャン結果から起動する
-        self.cd_summary = None;
-        self.cd_summary_rx = None;
-        self.start_scan();
+        // 実ディレクトリへの移動は仮想ノード経由の表示を終わらせる（実表示に戻る）
+        self.viewing_virtual_node = None;
+        self.virtual_link_broken = false;
+        self.real_dir_stash.clear();
+        self.begin_dir_view(path.clone());
         match source {
             DirectoryNavigationSource::Tree => {
                 // ツリーで選べるノードは既に可視なので、追従・アラインさせない。
@@ -70,11 +96,24 @@ impl NekoviewApp {
         self.persist_state();
     }
 
+    /// 中央グリッドを path の実ディレクトリ表示に切り替えてスキャンを始める
+    /// （navigate_to と仮想ノード選択の共通部分。ツリー追従や永続化は呼び出し側が行う）。
+    pub(super) fn begin_dir_view(&mut self, path: PathBuf) {
+        self.viewing_favorites = None;
+        self.current_dir = path.clone();
+        self.viewing_dir = Some(path);
+        // サマリーはスキャン完了時（poll_scan）にスキャン結果から起動する
+        self.cd_summary = None;
+        self.cd_summary_rx = None;
+        self.start_scan();
+    }
+
     /// ディレクトリツリー側を現在地まで自動展開させる。root(tree_root) から target までの
     /// path component 列を計算し、1階層ずつ逐次展開する TreeAutoFocus 状態をセットする。
     /// target が tree_root 配下でない場合（別ドライブ切替直後の競合等）は何もしない。
     pub(super) fn start_tree_autofocus(&mut self, target: PathBuf) {
         self.tree_autofocus_pending = None;
+        self.tree_autofocus_notify_abort = false;
         let Some(remaining) = tree_autofocus_components(&self.tree_root, &target) else {
             // target が tree_root 配下でない（別ドライブ切替直後の競合等）→ 何もしない
             self.tree_autofocus = None;
@@ -101,7 +140,7 @@ impl NekoviewApp {
         if let Some(pending) = &self.tree_autofocus_pending {
             match pending.rx.try_recv() {
                 Ok(subdirs) => {
-                    self.tree_children.insert(pending.path.clone(), subdirs);
+                    self.insert_tree_children(pending.path.clone(), subdirs);
                     self.tree_autofocus_pending = None;
                 }
                 Err(_) => return, // まだロード中
@@ -153,6 +192,10 @@ impl NekoviewApp {
                 None => {
                     // 対象パスがツリー上に存在しない（隠しディレクトリ等）→ ここまでで打ち切り
                     self.tree_autofocus = None;
+                    // 仮想タブの「実ツリーと同期」から始めた追従だけ、打ち切りをトーストで知らせる
+                    if std::mem::take(&mut self.tree_autofocus_notify_abort) {
+                        self.set_toast(i18n::t().virtual_tree_path_not_found());
+                    }
                     return;
                 }
             }
@@ -162,17 +205,29 @@ impl NekoviewApp {
     /// 指定ドライブへ切り替える（ドライブ一覧のクリック・キーボードEnter共通処理）。
     /// ツリーのルート自体をそのドライブへ差し替え、展開状態をリセットする。
     pub(super) fn navigate_to_drive(&mut self, path: PathBuf) {
+        self.viewing_virtual_node = None;
+        self.virtual_link_broken = false;
+        self.real_dir_stash.clear();
         self.current_dir = path.clone();
         self.start_scan();
-        self.tree_root = path.clone();
-        self.tree_expanded.clear();
-        self.tree_children.clear();
-        self.tree_cursor = None;
-        self.tree_autofocus = None;
-        self.tree_autofocus_pending = None;
+        self.reset_tree_root(path);
         self.viewing_dir = None;
         self.cd_summary = None;
         self.cd_summary_rx = None;
+        self.persist_state();
+    }
+
+    /// 実ツリーのルートを差し替える（展開・子フォルダ・カーソル・追従は捨て、新しいルート直下を読み直す）。
+    /// 表示中のフォルダ（`current_dir` / `viewing_dir`）には触れない。ドライブ切替と、
+    /// 仮想タブの「実ツリーと同期」（表示はそのままツリーだけ別ドライブへ移す）の共通部分。
+    pub(super) fn reset_tree_root(&mut self, path: PathBuf) {
+        self.tree_root = path.clone();
+        self.tree_expanded.clear();
+        self.tree_children.clear();
+        self.clear_tree_mtimes();
+        self.tree_cursor = None;
+        self.tree_autofocus = None;
+        self.tree_autofocus_pending = None;
         self.tree_scan_pending = Some(TreeScanPending {
             path: path.clone(),
             rx: dir::spawn_scan_subdirs(path, {
@@ -180,7 +235,6 @@ impl NekoviewApp {
                 move || c.request_repaint()
             }),
         });
-        self.persist_state();
     }
 
     /// リロードボタンから呼ばれる。ドライブ一覧・現在CD位置・ツリーを再スキャンする。
@@ -243,11 +297,14 @@ impl NekoviewApp {
             }
         }
 
-        self.start_scan();
+        // 仮想ノード経由の表示中は、DBから読み直して同じノードを開き直す
+        // （`/` やリンク切れの表示中に current_dir を実スキャンしてしまわないため）。
+        self.reload_virtual_or_scan();
 
         // ツリー: ルート + 展開済み全ノードをスレッド1本でまとめて再取得する。
         // 個別ノードの遅延展開（tree_scan_pending）が進行中でも衝突はしない
         // （どちらが後から書き込んでも tree_children の内容は同じソースから来るため実害なし）。
+        self.clear_tree_mtimes();
         let mut targets: Vec<PathBuf> = vec![self.tree_root.clone()];
         targets.extend(self.tree_expanded.iter().cloned());
         self.tree_reload_pending = Some(TreeReloadPending {
@@ -271,7 +328,9 @@ impl NekoviewApp {
     /// バックグラウンドスキャンを起動する（UIをブロックしない）
     pub(super) fn start_scan(&mut self) {
         self.thumb_session.fetch_add(1, Ordering::AcqRel);
-        let rx = dir::spawn_scan(self.current_dir.clone(), {
+        // ネットワークマウント配下ではサブフォルダの更新日時を取らない（日付ソートでは末尾になる）
+        let with_mtimes = self.network_mount_root_cached(&self.current_dir).is_none();
+        let rx = dir::spawn_scan(self.current_dir.clone(), with_mtimes, {
             let c = self.egui_ctx.clone();
             move || c.request_repaint()
         });
@@ -280,13 +339,7 @@ impl NekoviewApp {
             rx,
             started_at: std::time::Instant::now(),
         };
-        self.subdirs.clear();
-        self.archives.clear();
-        self.filtered_indices.clear();
-        self.raw_image_files.clear();
-        self.invalid_archives.clear();
-        // PWD再入場は明示的な再試行契機なので、同一滞在中の失敗抑制を解除する。
-        self.thumb_failed.clear();
+        self.clear_dir_listing();
         // リンク切れ表示中のマウント配下へ入る場合は到達可否を再確認する（回復検知の入口）
         if let Some(root) = self.network_unreachable_mounts.iter()
             .find(|r| self.current_dir.starts_with(r))
@@ -300,6 +353,23 @@ impl NekoviewApp {
         self.cache_db = self.cache_neko_dir.as_deref()
             .and_then(|p| neko_dir::open_cache_db_if_exists(p, &self.current_dir));
         self.refresh_thumbnail_generation_state();
+        self.reset_thumbs_and_selection();
+    }
+
+    /// 実ディレクトリの一覧（フォルダ・ファイル）を空にする。start_scan と show_empty_listing の共通部分。
+    fn clear_dir_listing(&mut self) {
+        self.subdirs.clear();
+        self.subdir_mtimes.clear();
+        self.archives.clear();
+        self.filtered_indices.clear();
+        self.raw_image_files.clear();
+        self.invalid_archives.clear();
+        // PWD再入場は明示的な再試行契機なので、同一滞在中の失敗抑制を解除する。
+        self.thumb_failed.clear();
+    }
+
+    /// サムネイル生成状態・選択・スクロール位置を初期化する。start_scan と show_empty_listing の共通部分。
+    fn reset_thumbs_and_selection(&mut self) {
         self.thumbnails.clear();
         self.thumb_display_requested.clear();
         self.thumb_pending.clear();
@@ -315,6 +385,27 @@ impl NekoviewApp {
         self.explorer_scroll_offset = 0.0;
     }
 
+    /// 実ファイルの一覧を持たない表示（仮想ルート `/`、リンク切れノード）に切り替える。
+    /// 実スキャンとサムネ生成を止め、一覧を空にする（お気に入り横断表示の入室と同じ考え方）。
+    pub(super) fn show_empty_listing(&mut self) {
+        self.thumb_session.fetch_add(1, Ordering::AcqRel);
+        self.scan_state = ScanState::Done;
+        self.viewing_favorites = None;
+        self.viewing_dir = None;
+        self.cd_summary = None;
+        self.cd_summary_rx = None;
+        self.clear_dir_listing();
+        self.cache_db = None;
+        self.cache_neko_dir = None;
+        self.refresh_thumbnail_generation_state();
+        self.reset_thumbs_and_selection();
+        self.grid_cursor = None;
+        self.selected_archive_meta = None;
+        if let Some(first) = self.grid_entries().first().cloned() {
+            self.set_grid_cursor(first);
+        }
+    }
+
     /// フレームごとにスキャン結果をポーリングして反映する
     pub(super) fn poll_scan(&mut self) {
         // お気に入り/検索結果の横断表示中はarchives/subdirsを差し替えているため、
@@ -324,7 +415,7 @@ impl NekoviewApp {
         // 必ず呼ばれる）に改めてstart_scan()されるため、ここでは単に無視すればよい。
         // folder_pane_tab とOptionフラグの二重チェック（タブ状態を唯一の一次判定にしつつ、
         // フラグの取りこぼしがあっても安全側に倒す）。
-        if self.folder_pane_tab != FolderPaneTab::RealTree
+        if !self.folder_pane_tab.shows_real_dir()
             || self.viewing_favorites.is_some()
             || self.viewing_search.is_some()
         {
@@ -342,7 +433,7 @@ impl NekoviewApp {
             _ => return,
         };
 
-        if let Some((subdirs, archives, raw_images)) = result {
+        if let Some(dir::DirScan { subdirs, archives, raw_images, subdir_mtimes }) = result {
             let existing_filenames: Vec<String> = archives.iter().chain(raw_images.iter())
                 .filter_map(|p| p.file_name().and_then(|n| n.to_str()).map(str::to_string))
                 .collect();
@@ -352,7 +443,11 @@ impl NekoviewApp {
                     .and_then(|p| neko_dir::open_cache_db(p, &self.current_dir));
             }
             self.refresh_thumbnail_generation_state();
-            self.subdirs = subdirs;
+            // 仮想ノード経由の表示ではフォルダカードは仮想ツリーが正（実サブフォルダは出さない）
+            // 仮想ノード経由の表示では実サブフォルダは出さないので、更新日時も持たない
+            let show_real_subdirs = self.viewing_virtual_node.is_none();
+            self.subdirs = if show_real_subdirs { subdirs } else { Vec::new() };
+            self.subdir_mtimes = if show_real_subdirs { subdir_mtimes } else { HashMap::new() };
             self.archives = archives.into_iter()
                 .filter(|p| {
                     let filename = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
@@ -367,6 +462,7 @@ impl NekoviewApp {
             // archives の顔ぶれが変わったので、カード情報帯のメタデータキャッシュを捨てる
             // （消失・更新・別フォルダ移動の反映）。可視カードぶんは描画時に再充填される。
             self.archive_meta_cache.clear();
+            self.archive_rating_cache.clear();
             if let Some(db) = self.spread_db.clone() {
                 let filenames: Vec<String> = self.archives.iter()
                     .filter_map(|p| p.file_name().and_then(|n| n.to_str()).map(str::to_string))
@@ -386,6 +482,18 @@ impl NekoviewApp {
                     .into_iter()
                     .collect();
                 crate::spread_state::bookmark_gc_dir(&db, &self.current_dir, &filenames);
+                crate::spread_state::archive_rating_gc_dir(&db, &self.current_dir, &filenames);
+                // 評価帯・フィルタ用に、このフォルダの評価・訪問を一括ロード（不在は None＝NEW）
+                let ratings: std::collections::HashMap<String, crate::spread_state::ArchiveRating> =
+                    crate::spread_state::list_dir_archive_ratings(&db, &self.current_dir)
+                        .into_iter()
+                        .collect();
+                for p in &self.archives {
+                    let rating = p.file_name()
+                        .and_then(|n| n.to_str())
+                        .and_then(|n| ratings.get(n).copied());
+                    self.archive_rating_cache.insert(p.clone(), rating);
+                }
             } else {
                 self.spread_states.clear();
                 self.archive_sort_states.clear();
@@ -544,7 +652,7 @@ impl NekoviewApp {
         lo: usize,
         hi: usize,
     ) {
-        if self.folder_pane_tab != FolderPaneTab::RealTree
+        if !self.folder_pane_tab.shows_real_dir()
             || self.viewing_favorites.is_some()
             || self.viewing_search.is_some()
             || visible.is_empty()
@@ -623,7 +731,7 @@ impl NekoviewApp {
     }
 
     pub(super) fn pump_thumbnail_queue(&mut self, ctx: &egui::Context) {
-        if self.folder_pane_tab != FolderPaneTab::RealTree
+        if !self.folder_pane_tab.shows_real_dir()
             || self.viewing_favorites.is_some()
             || self.viewing_search.is_some()
         {
@@ -686,7 +794,7 @@ impl NekoviewApp {
         };
 
         if let Some((path, subdirs)) = result {
-            self.tree_children.insert(path.clone(), subdirs);
+            self.insert_tree_children(path.clone(), subdirs);
             // ルートの場合は展開済みにする
             if path == self.tree_root {
                 self.tree_expanded.insert(path);
@@ -701,66 +809,128 @@ impl NekoviewApp {
         let Some(ref pending) = self.tree_reload_pending else { return };
         let Ok(results) = pending.rx.try_recv() else { return };
         for (path, children) in results {
-            self.tree_children.insert(path, children);
+            self.insert_tree_children(path, children);
         }
         self.tree_reload_pending = None;
     }
 
+    /// 現在の2セット分のソート条件
+    fn explorer_sort(&self) -> crate::explorer_sort::ExplorerSort {
+        crate::explorer_sort::ExplorerSort {
+            key: self.sort_key,
+            ascending: self.sort_ascending,
+            rating: self.rating_sort,
+        }
+    }
+
+    /// archives のうち評価キャッシュに無いものを、ディレクトリ単位でまとめて DB から取り込む。
+    /// 横断一覧（お気に入り・検索結果）を評価で並べるとき、1件ずつ引かずに済ませる。
+    /// レコード不在は None（＝未評価・未訪問）としてキャッシュする。
+    fn preload_archive_ratings(&mut self) {
+        let Some(db) = self.spread_db.clone() else { return };
+        let mut missing: HashMap<PathBuf, Vec<PathBuf>> = HashMap::new();
+        for p in &self.archives {
+            if self.archive_rating_cache.contains_key(p) { continue }
+            if let Some(dir) = p.parent() {
+                missing.entry(dir.to_path_buf()).or_default().push(p.clone());
+            }
+        }
+        for (dir, paths) in missing {
+            let ratings: HashMap<String, crate::spread_state::ArchiveRating> =
+                crate::spread_state::list_dir_archive_ratings(&db, &dir).into_iter().collect();
+            for p in paths {
+                let rating = p.file_name().and_then(|n| n.to_str()).and_then(|n| ratings.get(n).copied());
+                self.archive_rating_cache.insert(p, rating);
+            }
+        }
+    }
+
     pub(super) fn sort_archives(&mut self) {
-        let ascending = self.sort_ascending;
+        self.sort_archives_only();
+        self.recompute_filter();
+    }
+
+    /// 評価・訪問が変わった後（ビューアーを閉じた直後など）の再ソート。スコア／訪問回数が
+    /// 主軸のときだけ並びを作り直し、選択・複数選択・グリッドカーソルは同じファイルを指し直す
+    /// （ビューア表示中に並べ替えると、選択枠や前後ファイル移動がずれるためここまで待つ）。
+    pub(super) fn resort_keeping_selection(&mut self) {
+        if !self.explorer_sort().needs_rating() {
+            return;
+        }
+        let before = self.archives.clone();
+        self.sort_archives_only();
+
+        let remap = index_remap(&before, &self.archives);
+        let moved = |i: usize| remap.get(&i).copied();
+        self.selected_archive_index = self.selected_archive_index.and_then(moved);
+        self.select_anchor = self.select_anchor.and_then(moved);
+        self.multi_selected = self.multi_selected.iter().filter_map(|&i| moved(i)).collect();
+        if let Some(GridEntry::Archive(i)) = self.grid_cursor {
+            self.grid_cursor = moved(i).map(GridEntry::Archive);
+        }
+        // 選択インデックスを付け直した後にフィルタを作り直す（先にやると古いインデックスで選択が飛ぶ）
+        self.recompute_filter();
+    }
+
+    /// archives をソート条件どおりに並べ替える（フィルタの作り直しは呼び出し側）。
+    fn sort_archives_only(&mut self) {
+        let sort = self.explorer_sort();
+        if sort.needs_rating() {
+            self.preload_archive_ratings();
+        }
         // お気に入り一覧表示中は favorite_states が実ディレクトリ用の古いデータのままで
         // 信頼できないため、スティッキー判定は通常のディレクトリ表示中のみ行う。
         let sticky_favorites = self.viewing_favorites.is_none();
-        let is_fav = |p: &PathBuf| -> bool {
-            sticky_favorites
+        // 比較中に stat・DB を引かないよう、ソートに使う値を先に集める（使わない軸は集めない）
+        let mut entries: Vec<SortEntry> = self.archives.iter().map(|p| {
+            let fav = sticky_favorites
                 && p.file_name()
                     .and_then(|n| n.to_str())
-                    .is_some_and(|name| self.favorite_states.contains_key(name))
-        };
-        match self.sort_key {
-            ExplorerSortKey::Name => {
-                self.archives.sort_by(|a, b| {
-                    let fav_cmp = is_fav(b).cmp(&is_fav(a));
-                    if fav_cmp != std::cmp::Ordering::Equal { return fav_cmp; }
-                    let na = a.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                    let nb = b.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                    let cmp = na.cmp(nb);
-                    if ascending { cmp } else { cmp.reverse() }
-                });
+                    .is_some_and(|name| self.favorite_states.contains_key(name));
+            let meta = (sort.needs_mtime() || sort.needs_size())
+                .then(|| std::fs::metadata(p).ok())
+                .flatten();
+            let rating = if sort.needs_rating() {
+                self.archive_rating_cache.get(p).copied().flatten()
+            } else {
+                None
+            };
+            SortEntry {
+                path: p.clone(),
+                fav,
+                mtime: meta.as_ref().and_then(|m| m.modified().ok()),
+                size: meta.as_ref().map_or(0, |m| m.len()),
+                rating_half: rating.map_or(0, |r| r.rating_half),
+                visit_count: rating.map_or(0, |r| r.visit_count),
             }
-            ExplorerSortKey::Date => {
-                self.archives.sort_by(|a, b| {
-                    let fav_cmp = is_fav(b).cmp(&is_fav(a));
-                    if fav_cmp != std::cmp::Ordering::Equal { return fav_cmp; }
-                    let ta = std::fs::metadata(a).and_then(|m| m.modified()).ok();
-                    let tb = std::fs::metadata(b).and_then(|m| m.modified()).ok();
-                    let cmp = ta.cmp(&tb);
-                    if ascending { cmp } else { cmp.reverse() }
-                });
-            }
-            ExplorerSortKey::Size => {
-                self.archives.sort_by(|a, b| {
-                    let fav_cmp = is_fav(b).cmp(&is_fav(a));
-                    if fav_cmp != std::cmp::Ordering::Equal { return fav_cmp; }
-                    let sa = std::fs::metadata(a).map(|m| m.len()).unwrap_or(0);
-                    let sb = std::fs::metadata(b).map(|m| m.len()).unwrap_or(0);
-                    let cmp = sa.cmp(&sb);
-                    if ascending { cmp } else { cmp.reverse() }
-                });
-            }
-        }
-        self.recompute_filter();
+        }).collect();
+        entries.sort_by(|a, b| b.fav.cmp(&a.fav).then_with(|| sort.compare(&a.row(), &b.row())));
+        self.archives = entries.into_iter().map(|e| e.path).collect();
     }
 
     /// フィルタ文字列・ON/OFF・archives の並び替えのいずれかが変わった時に呼び、
     /// 表示・選択・キー操作の対象となる `filtered_indices` を作り直す。
     pub(super) fn recompute_filter(&mut self) {
-        if self.filter_enabled && !self.filter_text.trim().is_empty() {
+        let text_active = self.filter_enabled && !self.filter_text.trim().is_empty();
+        let rating_active = self.rating_filter.enabled;
+        if text_active || rating_active {
             let text = self.filter_text.clone();
+            // 評価は横断一覧でもキャッシュ経由で引く（未取得ぶんはここで遅延ロードされる）
+            let ratings: Vec<Option<u8>> = if rating_active {
+                let paths = self.archives.clone();
+                paths.iter().map(|p| self.archive_rating_of(p).map(|r| r.rating_half)).collect()
+            } else {
+                Vec::new()
+            };
             self.filtered_indices = self.archives.iter().enumerate()
-                .filter(|(_, p)| {
-                    let Some(name) = p.file_name().and_then(|n| n.to_str()) else { return false };
-                    dir::name_matches(&text, name)
+                .filter(|(i, p)| {
+                    if text_active {
+                        let Some(name) = p.file_name().and_then(|n| n.to_str()) else { return false };
+                        if !dir::name_matches(&text, name) {
+                            return false;
+                        }
+                    }
+                    !rating_active || self.rating_filter.matches(ratings[*i])
                 })
                 .map(|(i, _)| i)
                 .collect();
@@ -897,5 +1067,29 @@ mod thumbnail_queue_tests {
             take_allowed_thumbnail(&mut queue, &queued, &missing, true, true, false),
             Some(local_missing),
         );
+    }
+}
+
+#[cfg(test)]
+mod index_remap_tests {
+    use super::*;
+
+    fn paths(names: &[&str]) -> Vec<PathBuf> {
+        names.iter().map(PathBuf::from).collect()
+    }
+
+    #[test]
+    fn indices_follow_the_same_path_after_reordering() {
+        let remap = index_remap(&paths(&["a", "b", "c"]), &paths(&["c", "a", "b"]));
+        assert_eq!(remap[&0], 1);
+        assert_eq!(remap[&1], 2);
+        assert_eq!(remap[&2], 0);
+    }
+
+    #[test]
+    fn vanished_paths_are_dropped() {
+        let remap = index_remap(&paths(&["a", "b"]), &paths(&["b"]));
+        assert_eq!(remap.get(&0), None);
+        assert_eq!(remap[&1], 0);
     }
 }

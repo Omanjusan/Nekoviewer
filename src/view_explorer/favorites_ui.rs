@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use crate::i18n;
 use crate::fs::archive;
 use super::*;
+use super::help::help_tip_auto;
 
 impl NekoviewApp {
     /// DBから定義済みお気に入りフォルダ一覧を読み直してキャッシュを更新する。
@@ -40,6 +41,7 @@ impl NekoviewApp {
         self.invalid_archives.clear();
         self.thumb_failed.clear();
         self.viewing_favorites = Some(selection);
+        self.remember_favorites_position(selection);
         // 別タブ終了時に開始された実ディレクトリのスキャンが Loading のまま残ると、
         // 同期構築済みのお気に入り一覧よりローディング表示が優先され続ける。
         self.scan_state = ScanState::Done;
@@ -63,7 +65,9 @@ impl NekoviewApp {
 
     pub(super) fn draw_favorites_pane(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            if ui.button("+").clicked() {
+            let r_add = ui.button("+");
+            help_tip_auto(&r_add, &i18n::t().help_fav_add());
+            if r_add.clicked() {
                 self.favorite_dialog = Some(FavoriteDialogState {
                     mode: FavoriteDialogMode::Create,
                     name: String::new(),
@@ -105,7 +109,9 @@ impl NekoviewApp {
                         self.enter_favorite_view(FavoriteSelection::Folder(folder.id));
                     }
                     resp.context_menu(|ui| {
-                        if ui.button(i18n::t().favorite_rename_menu()).clicked() {
+                        let r_rename = ui.button(i18n::t().favorite_rename_menu());
+                        help_tip_auto(&r_rename, &i18n::t().help_fav_rename());
+                        if r_rename.clicked() {
                             self.favorite_dialog = Some(FavoriteDialogState {
                                 mode: FavoriteDialogMode::Rename(folder.id),
                                 name: folder.name.clone(),
@@ -115,7 +121,9 @@ impl NekoviewApp {
                             });
                             ui.close();
                         }
-                        if ui.button(i18n::t().favorite_delete_menu()).clicked() {
+                        let r_delete = ui.button(i18n::t().favorite_delete_menu());
+                        help_tip_auto(&r_delete, &i18n::t().help_fav_delete());
+                        if r_delete.clicked() {
                             self.favorite_delete_confirm = Some(folder.id);
                             ui.close();
                         }
@@ -326,6 +334,8 @@ impl NekoviewApp {
         let mut cancel = false;
         let mut commit = false;
         let is_bulk = dialog.targets.len() > 1;
+        let help_enable = i18n::t().help_fav_detail_enable();
+        let help_folders = i18n::t().help_fav_detail_folders();
         egui::Window::new(i18n::t().favorite_detail_dialog_title())
             .collapsible(false)
             .resizable(true)
@@ -342,15 +352,17 @@ impl NekoviewApp {
                 };
                 ui.label(label);
                 ui.add_space(4.0);
-                ui.checkbox(&mut dialog.favorite_enabled, i18n::t().favorite_detail_enable_checkbox());
+                let r_enable = ui.checkbox(&mut dialog.favorite_enabled, i18n::t().favorite_detail_enable_checkbox());
+                help_tip_auto(&r_enable, &help_enable);
                 ui.add_space(8.0);
 
                 ui.add_enabled_ui(dialog.favorite_enabled, |ui| {
                     ui.horizontal(|ui| {
                         // 左: 未登録の定義済みフォルダ一覧
                         ui.vertical(|ui| {
-                            ui.label(i18n::t().favorite_detail_available_label());
-                            egui::ScrollArea::vertical()
+                            let r_label = ui.label(i18n::t().favorite_detail_available_label());
+                            help_tip_auto(&r_label, &help_folders);
+                            let left_area = egui::ScrollArea::vertical()
                                 .id_salt("favorite_detail_left")
                                 .min_scrolled_height(160.0)
                                 .max_height(220.0)
@@ -367,18 +379,23 @@ impl NekoviewApp {
                                         }
                                     }
                                 });
+                            help_tip_auto(&ui.interact(left_area.inner_rect, ui.id().with("fav_detail_left_help"), egui::Sense::hover()), &help_folders);
                         });
 
                         ui.vertical(|ui| {
                             ui.add_space(24.0);
-                            if ui.button(">").clicked() {
+                            let r_add = ui.button(">");
+                            help_tip_auto(&r_add, &help_folders);
+                            if r_add.clicked() {
                                 for id in dialog.left_selected.drain() {
                                     if !dialog.assigned.contains(&id) {
                                         dialog.assigned.push(id);
                                     }
                                 }
                             }
-                            if ui.button("<").clicked() {
+                            let r_remove = ui.button("<");
+                            help_tip_auto(&r_remove, &help_folders);
+                            if r_remove.clicked() {
                                 let removed = dialog.right_selected.clone();
                                 dialog.assigned.retain(|id| !removed.contains(id));
                                 dialog.right_selected.clear();
@@ -387,8 +404,9 @@ impl NekoviewApp {
 
                         // 右: このファイルの登録先
                         ui.vertical(|ui| {
-                            ui.label(i18n::t().favorite_detail_assigned_label());
-                            egui::ScrollArea::vertical()
+                            let r_label = ui.label(i18n::t().favorite_detail_assigned_label());
+                            help_tip_auto(&r_label, &help_folders);
+                            let right_area = egui::ScrollArea::vertical()
                                 .id_salt("favorite_detail_right")
                                 .min_scrolled_height(160.0)
                                 .max_height(220.0)
@@ -406,6 +424,7 @@ impl NekoviewApp {
                                         }
                                     }
                                 });
+                            help_tip_auto(&ui.interact(right_area.inner_rect, ui.id().with("fav_detail_right_help"), egui::Sense::hover()), &help_folders);
                         });
                     });
                 });

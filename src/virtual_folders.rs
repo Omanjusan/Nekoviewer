@@ -1,0 +1,1026 @@
+// フェーズ3（仮想ビュー）以降で接続するまでの暫定。接続後にこの行を外すこと。
+#![allow(dead_code)]
+
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+
+use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
+
+/// 仮想ルート `/` のノードid。DBには保存しない（親idとしてのみ現れる）。
+pub const ROOT_ID: u32 = 0;
+/// 仮想ツリー全体のノード数上限。
+pub const MAX_NODES: usize = 5000;
+/// ノード表示名の文字数上限。
+pub const MAX_NAME_CHARS: usize = 200;
+
+/// 仮想フォルダのノード表（第1世代）。
+///
+/// キー = node_id（u32、1始まり。0 は仮想ルートとして予約）
+/// 値 = (parent_id, real_path, name, order)
+/// 同じ real_path を複数ノードが持ってよい（実パスはグローバルな一意キーにしない）。
+/// ただし同一 parent_id の直下では real_path の重複を許さない（DuplicateSibling）。
+/// 値形式を将来変更する場合はこの定義を変更せず、`virtual_folder_nodes_v2` のような
+/// 新しいテーブルを追加して移行すること。
+pub const VIRTUAL_FOLDER_TABLE_V1: TableDefinition<u32, (u32, &str, &str, u32)> =
+    TableDefinition::new("virtual_folder_nodes_v1");
+
+type NodeValue = (u32, &'static str, &'static str, u32);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VirtualNode {
+    pub id: u32,
+    pub parent_id: u32,
+    pub real_path: PathBuf,
+    pub name: String,
+    pub order: u32,
+}
+
+/// 登録時に取り込む実フォルダのスナップショット（フェーズ2のスキャン結果もこの形で渡す）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SubtreeSpec {
+    pub real_path: PathBuf,
+    pub name: String,
+    pub children: Vec<SubtreeSpec>,
+}
+
+impl SubtreeSpec {
+    pub fn leaf(real_path: impl Into<PathBuf>, name: impl Into<String>) -> Self {
+        Self {
+            real_path: real_path.into(),
+            name: name.into(),
+            children: Vec::new(),
+        }
+    }
+
+    /// 自分自身を含むノード総数。
+    pub fn node_count(&self) -> usize {
+        1 + self.children.iter().map(Self::node_count).sum::<usize>()
+    }
+
+    /// 深さ別のノード数。添字0が根（常に1）。
+    pub fn depth_counts(&self) -> Vec<usize> {
+        let mut counts = Vec::new();
+        let mut level: Vec<&SubtreeSpec> = vec![self];
+        while !level.is_empty() {
+            counts.push(level.len());
+            level = level.iter().flat_map(|s| s.children.iter()).collect();
+        }
+        counts
+    }
+
+    /// 根を深さ0として、`max_depth` より深いノードを切り落とした複製を返す。
+    pub fn truncated_to_depth(&self, max_depth: usize) -> SubtreeSpec {
+        SubtreeSpec {
+            real_path: self.real_path.clone(),
+            name: self.name.clone(),
+            children: if max_depth == 0 {
+                Vec::new()
+            } else {
+                self.children.iter().map(|c| c.truncated_to_depth(max_depth - 1)).collect()
+            },
+        }
+    }
+
+    /// ノード数が `budget` 以内に収まる最も深い深さ。根だけでも収まらなければ None。
+    /// 超過時の「浅く取り込む」選択肢の深さ決定に使う。
+    pub fn deepest_depth_within(&self, budget: usize) -> Option<usize> {
+        let mut total = 0;
+        let mut deepest = None;
+        for (depth, count) in self.depth_counts().into_iter().enumerate() {
+            total += count;
+            if total > budget {
+                break;
+            }
+            deepest = Some(depth);
+        }
+        deepest
+    }
+
+    fn validate(&self) -> Result<(), VirtualFolderError> {
+        validate_name(&self.name)?;
+        let mut seen = HashSet::new();
+        for child in &self.children {
+            if !seen.insert(&child.real_path) {
+                return Err(VirtualFolderError::DuplicateSibling);
+            }
+            child.validate()?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum VirtualFolderError {
+    NameEmpty,
+    NameTooLong,
+    LimitReached,
+    NotFound,
+    ParentNotFound,
+    CycleDetected,
+    /// 同じ親の直下に同じ実パスのノードが既にある。
+    DuplicateSibling,
+    Db,
+}
+
+/// 登録前警告用。候補の実パスと、ツリー内の既存ノードとの関係。
+/// 拒否ではなく確認ダイアログの材料（別々の仮想リンクとしての登録は許可されている）。
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Overlaps {
+    /// 実パスが完全一致する既存ノードのid
+    pub same: Vec<u32>,
+    /// 候補の祖先フォルダを指す既存ノードのid（候補は既にその配下に含まれる）
+    pub ancestors: Vec<u32>,
+    /// 候補の子孫フォルダを指す既存ノードのid（候補を取り込むと二重に出る）
+    pub descendants: Vec<u32>,
+}
+
+impl Overlaps {
+    pub fn is_empty(&self) -> bool {
+        self.same.is_empty() && self.ancestors.is_empty() && self.descendants.is_empty()
+    }
+}
+
+/// 既存の spread_state 用 DB にノード表を追加する。テーブルが無ければ自動作成される。
+pub fn init_virtual_folder_tables(db: &Arc<Mutex<Database>>) -> Option<()> {
+    let db = db.lock().ok()?;
+    let tx = db.begin_write().ok()?;
+    tx.open_table(VIRTUAL_FOLDER_TABLE_V1).ok()?;
+    tx.commit().ok()?;
+    Some(())
+}
+
+/// 実パスの正規化。存在しなければ親だけ正規化して繋ぎ、それも駄目ならそのまま返す
+/// （移動・削除後の旧パスをプレフィックス指定するケースを想定）。
+fn normalize_path(path: &Path) -> PathBuf {
+    if let Ok(p) = path.canonicalize() {
+        return p;
+    }
+    if let (Some(parent), Some(name)) = (path.parent(), path.file_name()) {
+        if let Ok(p) = parent.canonicalize() {
+            return p.join(name);
+        }
+    }
+    path.to_path_buf()
+}
+
+fn validate_name(name: &str) -> Result<(), VirtualFolderError> {
+    if name.is_empty() {
+        return Err(VirtualFolderError::NameEmpty);
+    }
+    if name.chars().count() > MAX_NAME_CHARS {
+        return Err(VirtualFolderError::NameTooLong);
+    }
+    Ok(())
+}
+
+fn load_nodes(table: &impl ReadableTable<u32, NodeValue>) -> Result<Vec<VirtualNode>, VirtualFolderError> {
+    let iter = table.iter().map_err(|_| VirtualFolderError::Db)?;
+    let mut out = Vec::new();
+    for entry in iter {
+        let Ok((k, v)) = entry else { continue };
+        let (parent_id, real_path, name, order) = v.value();
+        out.push(VirtualNode {
+            id: k.value(),
+            parent_id,
+            real_path: PathBuf::from(real_path),
+            name: name.to_string(),
+            order,
+        });
+    }
+    out.sort_by_key(|n| (n.parent_id, n.order, n.id));
+    Ok(out)
+}
+
+fn write_node(
+    table: &mut redb::Table<u32, NodeValue>,
+    node: &VirtualNode,
+) -> Result<(), VirtualFolderError> {
+    table
+        .insert(
+            node.id,
+            (
+                node.parent_id,
+                node.real_path.to_string_lossy().as_ref(),
+                node.name.as_str(),
+                node.order,
+            ),
+        )
+        .map_err(|_| VirtualFolderError::Db)?;
+    Ok(())
+}
+
+/// 全ノードを (parent_id, order, id) 昇順で返す。
+pub fn list_nodes(db: &Arc<Mutex<Database>>) -> Vec<VirtualNode> {
+    let Ok(db) = db.lock() else { return Vec::new() };
+    let Ok(tx) = db.begin_read() else { return Vec::new() };
+    let Ok(table) = tx.open_table(VIRTUAL_FOLDER_TABLE_V1) else {
+        return Vec::new();
+    };
+    load_nodes(&table).unwrap_or_default()
+}
+
+/// 指定親の直下の子を order 昇順で返す。ROOT_ID を渡すと `/` 直下。
+pub fn list_children(db: &Arc<Mutex<Database>>, parent_id: u32) -> Vec<VirtualNode> {
+    list_nodes(db)
+        .into_iter()
+        .filter(|n| n.parent_id == parent_id)
+        .collect()
+}
+
+pub fn get_node(db: &Arc<Mutex<Database>>, id: u32) -> Option<VirtualNode> {
+    list_nodes(db).into_iter().find(|n| n.id == id)
+}
+
+/// 実フォルダを1つ、指定親の末尾に登録する。
+pub fn add_node(
+    db: &Arc<Mutex<Database>>,
+    parent_id: u32,
+    real_path: &Path,
+    name: &str,
+) -> Result<VirtualNode, VirtualFolderError> {
+    let spec = SubtreeSpec::leaf(real_path, name);
+    add_subtree(db, parent_id, &spec).map(|mut nodes| nodes.remove(0))
+}
+
+/// スナップショット（部分木）を1トランザクションで登録する。
+/// 戻り値は先行順（先頭 = 部分木の根）。1件でも失敗したら何も登録しない。
+pub fn add_subtree(
+    db: &Arc<Mutex<Database>>,
+    parent_id: u32,
+    spec: &SubtreeSpec,
+) -> Result<Vec<VirtualNode>, VirtualFolderError> {
+    spec.validate()?;
+    let Ok(db) = db.lock() else {
+        return Err(VirtualFolderError::Db);
+    };
+    let tx = db.begin_write().map_err(|_| VirtualFolderError::Db)?;
+    let inserted;
+    {
+        let mut table = tx
+            .open_table(VIRTUAL_FOLDER_TABLE_V1)
+            .map_err(|_| VirtualFolderError::Db)?;
+        let existing = load_nodes(&table)?;
+        if existing.len() + spec.node_count() > MAX_NODES {
+            return Err(VirtualFolderError::LimitReached);
+        }
+        if parent_id != ROOT_ID && !existing.iter().any(|n| n.id == parent_id) {
+            return Err(VirtualFolderError::ParentNotFound);
+        }
+        let root_path = normalize_path(&spec.real_path);
+        if existing.iter().any(|n| n.parent_id == parent_id && n.real_path == root_path) {
+            return Err(VirtualFolderError::DuplicateSibling);
+        }
+        let mut next_id = existing
+            .iter()
+            .map(|n| n.id)
+            .max()
+            .map_or(Some(1), |m| m.checked_add(1))
+            .ok_or(VirtualFolderError::LimitReached)?;
+        let root_order = existing
+            .iter()
+            .filter(|n| n.parent_id == parent_id)
+            .map(|n| n.order + 1)
+            .max()
+            .unwrap_or(0);
+        let mut out = Vec::with_capacity(spec.node_count());
+        insert_spec(&mut table, spec, parent_id, root_order, &mut next_id, &mut out)?;
+        inserted = out;
+    }
+    tx.commit().map_err(|_| VirtualFolderError::Db)?;
+    Ok(inserted)
+}
+
+fn insert_spec(
+    table: &mut redb::Table<u32, NodeValue>,
+    spec: &SubtreeSpec,
+    parent_id: u32,
+    order: u32,
+    next_id: &mut u32,
+    out: &mut Vec<VirtualNode>,
+) -> Result<(), VirtualFolderError> {
+    let id = *next_id;
+    *next_id = next_id.checked_add(1).ok_or(VirtualFolderError::LimitReached)?;
+    let node = VirtualNode {
+        id,
+        parent_id,
+        real_path: normalize_path(&spec.real_path),
+        name: spec.name.clone(),
+        order,
+    };
+    write_node(table, &node)?;
+    out.push(node);
+    for (i, child) in spec.children.iter().enumerate() {
+        insert_spec(table, child, id, i as u32, next_id, out)?;
+    }
+    Ok(())
+}
+
+/// id と全子孫を返す（自分自身を先頭に含む）。
+fn collect_subtree_ids(nodes: &[VirtualNode], id: u32) -> Vec<u32> {
+    let mut children: HashMap<u32, Vec<u32>> = HashMap::new();
+    for n in nodes {
+        children.entry(n.parent_id).or_default().push(n.id);
+    }
+    let mut out = vec![id];
+    let mut cursor = 0;
+    while cursor < out.len() {
+        if let Some(kids) = children.get(&out[cursor]) {
+            out.extend(kids);
+        }
+        cursor += 1;
+    }
+    out
+}
+
+/// 削除確認ダイアログ用。指定ノードの子孫数（自分自身は含まない）。
+pub fn count_descendants(db: &Arc<Mutex<Database>>, id: u32) -> usize {
+    collect_subtree_ids(&list_nodes(db), id).len().saturating_sub(1)
+}
+
+/// ノードを削除する。全子孫も連動して消える。戻り値は削除した総数（自分自身を含む）。
+/// 実ファイル・実フォルダには一切触れない。
+pub fn remove_node(db: &Arc<Mutex<Database>>, id: u32) -> Result<usize, VirtualFolderError> {
+    let Ok(db) = db.lock() else {
+        return Err(VirtualFolderError::Db);
+    };
+    let tx = db.begin_write().map_err(|_| VirtualFolderError::Db)?;
+    let removed;
+    {
+        let mut table = tx
+            .open_table(VIRTUAL_FOLDER_TABLE_V1)
+            .map_err(|_| VirtualFolderError::Db)?;
+        let nodes = load_nodes(&table)?;
+        if !nodes.iter().any(|n| n.id == id) {
+            return Err(VirtualFolderError::NotFound);
+        }
+        let ids = collect_subtree_ids(&nodes, id);
+        for target in &ids {
+            table.remove(*target).map_err(|_| VirtualFolderError::Db)?;
+        }
+        removed = ids.len();
+    }
+    tx.commit().map_err(|_| VirtualFolderError::Db)?;
+    Ok(removed)
+}
+
+/// ノードを別の親の末尾へ付け替える（子孫は追従）。ROOT_ID を渡すと `/` 直下へ。
+/// 自分自身・自分の子孫を新しい親にする移動は CycleDetected。
+pub fn move_node(
+    db: &Arc<Mutex<Database>>,
+    id: u32,
+    new_parent_id: u32,
+) -> Result<(), VirtualFolderError> {
+    let Ok(db) = db.lock() else {
+        return Err(VirtualFolderError::Db);
+    };
+    let tx = db.begin_write().map_err(|_| VirtualFolderError::Db)?;
+    {
+        let mut table = tx
+            .open_table(VIRTUAL_FOLDER_TABLE_V1)
+            .map_err(|_| VirtualFolderError::Db)?;
+        let nodes = load_nodes(&table)?;
+        let Some(node) = nodes.iter().find(|n| n.id == id) else {
+            return Err(VirtualFolderError::NotFound);
+        };
+        if new_parent_id != ROOT_ID && !nodes.iter().any(|n| n.id == new_parent_id) {
+            return Err(VirtualFolderError::ParentNotFound);
+        }
+        if collect_subtree_ids(&nodes, id).contains(&new_parent_id) {
+            return Err(VirtualFolderError::CycleDetected);
+        }
+        if node.parent_id == new_parent_id {
+            return Ok(());
+        }
+        if nodes
+            .iter()
+            .any(|n| n.parent_id == new_parent_id && n.real_path == node.real_path)
+        {
+            return Err(VirtualFolderError::DuplicateSibling);
+        }
+        let new_order = nodes
+            .iter()
+            .filter(|n| n.parent_id == new_parent_id)
+            .map(|n| n.order + 1)
+            .max()
+            .unwrap_or(0);
+        let moved = VirtualNode {
+            parent_id: new_parent_id,
+            order: new_order,
+            ..node.clone()
+        };
+        write_node(&mut table, &moved)?;
+    }
+    tx.commit().map_err(|_| VirtualFolderError::Db)?;
+    Ok(())
+}
+
+/// 仮想側の表示名だけを変更する。実フォルダ名・実パスには触れない。
+/// 同名の兄弟は許可（重複判定は実パス基準）。
+pub fn rename_node(
+    db: &Arc<Mutex<Database>>,
+    id: u32,
+    new_name: &str,
+) -> Result<(), VirtualFolderError> {
+    validate_name(new_name)?;
+    let Ok(db) = db.lock() else {
+        return Err(VirtualFolderError::Db);
+    };
+    let tx = db.begin_write().map_err(|_| VirtualFolderError::Db)?;
+    {
+        let mut table = tx
+            .open_table(VIRTUAL_FOLDER_TABLE_V1)
+            .map_err(|_| VirtualFolderError::Db)?;
+        let nodes = load_nodes(&table)?;
+        let Some(node) = nodes.into_iter().find(|n| n.id == id) else {
+            return Err(VirtualFolderError::NotFound);
+        };
+        write_node(&mut table, &VirtualNode { name: new_name.to_string(), ..node })?;
+    }
+    tx.commit().map_err(|_| VirtualFolderError::Db)?;
+    Ok(())
+}
+
+/// 追加できる残りノード数。
+pub fn remaining_capacity(db: &Arc<Mutex<Database>>) -> usize {
+    MAX_NODES.saturating_sub(list_nodes(db).len())
+}
+
+/// 候補の実パスとツリー内の既存ノードの関係を調べる（登録前の警告用）。
+/// 比較はパス要素単位の前方一致。
+pub fn find_overlaps(nodes: &[VirtualNode], candidate: &Path) -> Overlaps {
+    let candidate = normalize_path(candidate);
+    let mut out = Overlaps::default();
+    for n in nodes {
+        if n.real_path == candidate {
+            out.same.push(n.id);
+        } else if candidate.starts_with(&n.real_path) {
+            out.ancestors.push(n.id);
+        } else if n.real_path.starts_with(&candidate) {
+            out.descendants.push(n.id);
+        }
+    }
+    out
+}
+
+/// 再取込の追加計画。`node_id` 直下の子と実パスで照合し、スキャン結果にあって
+/// 仮想側に無いサブフォルダを (親ノードid, 追加する部分木) として集める。
+/// 仮想側にあってスキャン結果に無いもの（実フォルダが消えた）は触らない（リンク切れとして残す）。
+fn plan_merge(
+    nodes: &[VirtualNode],
+    node_id: u32,
+    scan: &SubtreeSpec,
+    out: &mut Vec<(u32, SubtreeSpec)>,
+) {
+    let existing: HashMap<&Path, u32> = nodes
+        .iter()
+        .filter(|n| n.parent_id == node_id)
+        .map(|n| (n.real_path.as_path(), n.id))
+        .collect();
+    for child in &scan.children {
+        match existing.get(normalize_path(&child.real_path).as_path()) {
+            Some(&child_id) => plan_merge(nodes, child_id, child, out),
+            None => out.push((node_id, child.clone())),
+        }
+    }
+}
+
+/// 実フォルダから再スキャンした結果を既存ノードへ差分反映する（追加のみ）。
+/// 戻り値は追加したノード数。上限超過なら何も追加せず LimitReached。
+pub fn merge_snapshot(
+    db: &Arc<Mutex<Database>>,
+    node_id: u32,
+    scan: &SubtreeSpec,
+) -> Result<usize, VirtualFolderError> {
+    scan.validate()?;
+    let Ok(db) = db.lock() else {
+        return Err(VirtualFolderError::Db);
+    };
+    let tx = db.begin_write().map_err(|_| VirtualFolderError::Db)?;
+    let added;
+    {
+        let mut table = tx
+            .open_table(VIRTUAL_FOLDER_TABLE_V1)
+            .map_err(|_| VirtualFolderError::Db)?;
+        let nodes = load_nodes(&table)?;
+        if !nodes.iter().any(|n| n.id == node_id) {
+            return Err(VirtualFolderError::NotFound);
+        }
+        let mut plan = Vec::new();
+        plan_merge(&nodes, node_id, scan, &mut plan);
+        added = plan.iter().map(|(_, s)| s.node_count()).sum();
+        if nodes.len() + added > MAX_NODES {
+            return Err(VirtualFolderError::LimitReached);
+        }
+        let mut next_id = nodes
+            .iter()
+            .map(|n| n.id)
+            .max()
+            .map_or(Some(1), |m| m.checked_add(1))
+            .ok_or(VirtualFolderError::LimitReached)?;
+        let mut next_order: HashMap<u32, u32> = HashMap::new();
+        for (parent_id, spec) in &plan {
+            let order = next_order.entry(*parent_id).or_insert_with(|| {
+                nodes
+                    .iter()
+                    .filter(|n| n.parent_id == *parent_id)
+                    .map(|n| n.order + 1)
+                    .max()
+                    .unwrap_or(0)
+            });
+            insert_spec(&mut table, spec, *parent_id, *order, &mut next_id, &mut Vec::new())?;
+            *order += 1;
+        }
+    }
+    if added > 0 {
+        tx.commit().map_err(|_| VirtualFolderError::Db)?;
+    }
+    Ok(added)
+}
+
+/// 実フォルダが存在しない（消えた・リネームされた・未マウント）ノードか。
+pub fn is_link_broken(node: &VirtualNode) -> bool {
+    !node.real_path.is_dir()
+}
+
+/// リンク切れノードの一覧。
+pub fn list_broken(db: &Arc<Mutex<Database>>) -> Vec<VirtualNode> {
+    list_nodes(db).into_iter().filter(is_link_broken).collect()
+}
+
+/// 実パスのプレフィックスを一括で書き換える。実フォルダの移動・リネーム後に、
+/// 該当パス配下を指す全ノードを新しい実パスへ追従させる用途（将来のファイル操作
+/// トランザクションからの呼び出しを想定）。比較はパス要素単位で、`/a/b` は `/a/bc` に一致しない。
+/// 戻り値は書き換えたノード数。
+pub fn rewrite_path_prefix(
+    db: &Arc<Mutex<Database>>,
+    old_prefix: &Path,
+    new_prefix: &Path,
+) -> Result<usize, VirtualFolderError> {
+    let old_prefix = normalize_path(old_prefix);
+    let new_prefix = normalize_path(new_prefix);
+    let Ok(db) = db.lock() else {
+        return Err(VirtualFolderError::Db);
+    };
+    let tx = db.begin_write().map_err(|_| VirtualFolderError::Db)?;
+    let mut rewritten = 0;
+    {
+        let mut table = tx
+            .open_table(VIRTUAL_FOLDER_TABLE_V1)
+            .map_err(|_| VirtualFolderError::Db)?;
+        let nodes = load_nodes(&table)?;
+        for node in nodes {
+            let Ok(rest) = node.real_path.strip_prefix(&old_prefix) else {
+                continue;
+            };
+            let real_path = if rest.as_os_str().is_empty() {
+                new_prefix.clone()
+            } else {
+                new_prefix.join(rest)
+            };
+            write_node(&mut table, &VirtualNode { real_path, ..node })?;
+            rewritten += 1;
+        }
+    }
+    if rewritten > 0 {
+        tx.commit().map_err(|_| VirtualFolderError::Db)?;
+    }
+    Ok(rewritten)
+}
+
+/// 全ノードの (id → 子idリスト) を返す。ビュー構築用の補助。
+pub fn children_index(nodes: &[VirtualNode]) -> HashMap<u32, Vec<u32>> {
+    let mut map: HashMap<u32, Vec<u32>> = HashMap::new();
+    let known: HashSet<u32> = nodes.iter().map(|n| n.id).collect();
+    for n in nodes {
+        if n.parent_id == ROOT_ID || known.contains(&n.parent_id) {
+            map.entry(n.parent_id).or_default().push(n.id);
+        }
+    }
+    map
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_db() -> Arc<Mutex<Database>> {
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "nekoviewer_virtual_folders_test_{}_{}.redb",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let db = Database::create(&path).unwrap();
+        let db = Arc::new(Mutex::new(db));
+        init_virtual_folder_tables(&db).unwrap();
+        db
+    }
+
+    fn spec(path: &str, children: Vec<SubtreeSpec>) -> SubtreeSpec {
+        SubtreeSpec {
+            real_path: PathBuf::from(path),
+            name: path.rsplit('/').next().unwrap().to_string(),
+            children,
+        }
+    }
+
+    #[test]
+    fn add_node_to_root_and_list() {
+        let db = temp_db();
+        let a = add_node(&db, ROOT_ID, Path::new("/vt/a"), "a").unwrap();
+        let b = add_node(&db, ROOT_ID, Path::new("/vt/b"), "b").unwrap();
+        assert_eq!((a.id, a.order), (1, 0));
+        assert_eq!((b.id, b.order), (2, 1));
+        let names: Vec<_> = list_children(&db, ROOT_ID).into_iter().map(|n| n.name).collect();
+        assert_eq!(names, ["a", "b"]);
+    }
+
+    #[test]
+    fn add_node_rejects_missing_parent_and_bad_names() {
+        let db = temp_db();
+        assert_eq!(
+            add_node(&db, 99, Path::new("/vt/a"), "a").unwrap_err(),
+            VirtualFolderError::ParentNotFound
+        );
+        assert_eq!(
+            add_node(&db, ROOT_ID, Path::new("/vt/a"), "").unwrap_err(),
+            VirtualFolderError::NameEmpty
+        );
+        let long = "あ".repeat(MAX_NAME_CHARS + 1);
+        assert_eq!(
+            add_node(&db, ROOT_ID, Path::new("/vt/a"), &long).unwrap_err(),
+            VirtualFolderError::NameTooLong
+        );
+        assert!(list_nodes(&db).is_empty());
+    }
+
+    #[test]
+    fn duplicate_real_path_is_allowed() {
+        let db = temp_db();
+        let a1 = add_node(&db, ROOT_ID, Path::new("/vt/a"), "a").unwrap();
+        let a2 = add_node(&db, a1.id, Path::new("/vt/a"), "a").unwrap();
+        assert_ne!(a1.id, a2.id);
+        assert_eq!(a1.real_path, a2.real_path);
+    }
+
+    #[test]
+    fn add_subtree_preserves_hierarchy_in_preorder() {
+        let db = temp_db();
+        add_node(&db, ROOT_ID, Path::new("/vt/x"), "x").unwrap();
+        let tree = spec(
+            "/vt/A",
+            vec![spec("/vt/A/b", vec![spec("/vt/A/b/c", vec![])]), spec("/vt/A/d", vec![])],
+        );
+        let nodes = add_subtree(&db, ROOT_ID, &tree).unwrap();
+        let names: Vec<_> = nodes.iter().map(|n| n.name.as_str()).collect();
+        assert_eq!(names, ["A", "b", "c", "d"]);
+        // 根は既存の兄弟(x)の後ろ、子は先頭から採番
+        assert_eq!(nodes[0].order, 1);
+        assert_eq!(nodes[0].parent_id, ROOT_ID);
+        assert_eq!(nodes[1].parent_id, nodes[0].id);
+        assert_eq!(nodes[2].parent_id, nodes[1].id);
+        assert_eq!((nodes[1].order, nodes[3].order), (0, 1));
+        assert_eq!(count_descendants(&db, nodes[0].id), 3);
+    }
+
+    #[test]
+    fn add_subtree_over_limit_inserts_nothing() {
+        let db = temp_db();
+        let children = (0..MAX_NODES).map(|i| spec(&format!("/vt/A/{i}"), vec![])).collect();
+        let tree = spec("/vt/A", children);
+        assert_eq!(tree.node_count(), MAX_NODES + 1);
+        assert_eq!(
+            add_subtree(&db, ROOT_ID, &tree).unwrap_err(),
+            VirtualFolderError::LimitReached
+        );
+        assert!(list_nodes(&db).is_empty());
+    }
+
+    #[test]
+    fn remove_node_cascades_to_descendants_only() {
+        let db = temp_db();
+        let a = add_subtree(
+            &db,
+            ROOT_ID,
+            &spec("/vt/A", vec![spec("/vt/A/b", vec![spec("/vt/A/b/c", vec![])])]),
+        )
+        .unwrap();
+        let other = add_node(&db, ROOT_ID, Path::new("/vt/o"), "o").unwrap();
+        // 中間ノード b を消すと c も消え、A と o は残る
+        assert_eq!(remove_node(&db, a[1].id).unwrap(), 2);
+        let ids: Vec<_> = list_nodes(&db).into_iter().map(|n| n.id).collect();
+        assert_eq!(ids, [a[0].id, other.id]);
+        assert_eq!(remove_node(&db, a[1].id).unwrap_err(), VirtualFolderError::NotFound);
+        // 根を消すと配下すべて
+        assert_eq!(remove_node(&db, a[0].id).unwrap(), 1);
+    }
+
+    #[test]
+    fn move_node_reparents_with_descendants() {
+        let db = temp_db();
+        let a = add_subtree(&db, ROOT_ID, &spec("/vt/A", vec![spec("/vt/A/b", vec![])])).unwrap();
+        let z = add_node(&db, ROOT_ID, Path::new("/vt/z"), "z").unwrap();
+        let existing = add_node(&db, z.id, Path::new("/vt/z/e"), "e").unwrap();
+        move_node(&db, a[0].id, z.id).unwrap();
+        let moved = get_node(&db, a[0].id).unwrap();
+        assert_eq!(moved.parent_id, z.id);
+        assert_eq!(moved.order, existing.order + 1);
+        // 子孫は親idを保ったまま追従
+        assert_eq!(get_node(&db, a[1].id).unwrap().parent_id, a[0].id);
+        // ルートへ戻せる
+        move_node(&db, a[0].id, ROOT_ID).unwrap();
+        assert_eq!(get_node(&db, a[0].id).unwrap().parent_id, ROOT_ID);
+    }
+
+    #[test]
+    fn move_node_rejects_cycles_and_unknown_ids() {
+        let db = temp_db();
+        let a = add_subtree(
+            &db,
+            ROOT_ID,
+            &spec("/vt/A", vec![spec("/vt/A/b", vec![spec("/vt/A/b/c", vec![])])]),
+        )
+        .unwrap();
+        assert_eq!(move_node(&db, a[0].id, a[0].id).unwrap_err(), VirtualFolderError::CycleDetected);
+        assert_eq!(move_node(&db, a[0].id, a[2].id).unwrap_err(), VirtualFolderError::CycleDetected);
+        assert_eq!(move_node(&db, a[0].id, 99).unwrap_err(), VirtualFolderError::ParentNotFound);
+        assert_eq!(move_node(&db, 99, ROOT_ID).unwrap_err(), VirtualFolderError::NotFound);
+        // 失敗した移動は状態を変えない
+        assert_eq!(get_node(&db, a[0].id).unwrap().parent_id, ROOT_ID);
+    }
+
+    #[test]
+    fn move_node_to_same_parent_is_noop() {
+        let db = temp_db();
+        let a = add_node(&db, ROOT_ID, Path::new("/vt/a"), "a").unwrap();
+        add_node(&db, ROOT_ID, Path::new("/vt/b"), "b").unwrap();
+        move_node(&db, a.id, ROOT_ID).unwrap();
+        assert_eq!(get_node(&db, a.id).unwrap().order, 0);
+    }
+
+    #[test]
+    fn link_broken_detection() {
+        let db = temp_db();
+        let alive = add_node(&db, ROOT_ID, &std::env::temp_dir(), "tmp").unwrap();
+        let gone = add_node(&db, ROOT_ID, Path::new("/vt/definitely/missing"), "gone").unwrap();
+        assert!(!is_link_broken(&alive));
+        assert!(is_link_broken(&gone));
+        let broken: Vec<_> = list_broken(&db).into_iter().map(|n| n.id).collect();
+        assert_eq!(broken, [gone.id]);
+    }
+
+    #[test]
+    fn rewrite_path_prefix_matches_by_component() {
+        let db = temp_db();
+        let tree = spec("/vt/A", vec![spec("/vt/A/sub", vec![])]);
+        let nodes = add_subtree(&db, ROOT_ID, &tree).unwrap();
+        let ab = add_node(&db, ROOT_ID, Path::new("/vt/AB"), "AB").unwrap();
+        let changed = rewrite_path_prefix(&db, Path::new("/vt/A"), Path::new("/vt/Z")).unwrap();
+        assert_eq!(changed, 2);
+        assert_eq!(get_node(&db, nodes[0].id).unwrap().real_path, PathBuf::from("/vt/Z"));
+        assert_eq!(get_node(&db, nodes[1].id).unwrap().real_path, PathBuf::from("/vt/Z/sub"));
+        // 名前が前方一致するだけの別フォルダは対象外
+        assert_eq!(get_node(&db, ab.id).unwrap().real_path, PathBuf::from("/vt/AB"));
+        // 表示名・親子関係は変わらない
+        assert_eq!(get_node(&db, nodes[1].id).unwrap().parent_id, nodes[0].id);
+        assert_eq!(get_node(&db, nodes[0].id).unwrap().name, "A");
+    }
+
+    #[test]
+    fn rewrite_path_prefix_without_match_changes_nothing() {
+        let db = temp_db();
+        add_node(&db, ROOT_ID, Path::new("/vt/a"), "a").unwrap();
+        assert_eq!(rewrite_path_prefix(&db, Path::new("/vt/none"), Path::new("/vt/z")).unwrap(), 0);
+    }
+
+    #[test]
+    fn children_index_groups_by_parent() {
+        let db = temp_db();
+        let a = add_subtree(&db, ROOT_ID, &spec("/vt/A", vec![spec("/vt/A/b", vec![])])).unwrap();
+        let index = children_index(&list_nodes(&db));
+        assert_eq!(index[&ROOT_ID], [a[0].id]);
+        assert_eq!(index[&a[0].id], [a[1].id]);
+    }
+
+    #[test]
+    fn duplicate_real_path_under_same_parent_is_rejected() {
+        let db = temp_db();
+        let a = add_node(&db, ROOT_ID, Path::new("/vt/a"), "a").unwrap();
+        assert_eq!(
+            add_node(&db, ROOT_ID, Path::new("/vt/a"), "別名").unwrap_err(),
+            VirtualFolderError::DuplicateSibling
+        );
+        // 実パスが違えば同名でも共存できる
+        add_node(&db, ROOT_ID, Path::new("/vt/other/a"), "a").unwrap();
+        // 別の親の下なら同じ実パスを置ける（別々の仮想リンク）
+        add_node(&db, a.id, Path::new("/vt/a"), "a").unwrap();
+        assert_eq!(list_nodes(&db).len(), 3);
+    }
+
+    #[test]
+    fn subtree_spec_with_duplicate_children_is_rejected() {
+        let db = temp_db();
+        let tree = spec("/vt/A", vec![spec("/vt/A/b", vec![]), spec("/vt/A/b", vec![])]);
+        assert_eq!(
+            add_subtree(&db, ROOT_ID, &tree).unwrap_err(),
+            VirtualFolderError::DuplicateSibling
+        );
+        assert!(list_nodes(&db).is_empty());
+    }
+
+    #[test]
+    fn move_node_rejects_duplicate_real_path_in_new_parent() {
+        let db = temp_db();
+        let a = add_node(&db, ROOT_ID, Path::new("/vt/a"), "a").unwrap();
+        let x = add_node(&db, ROOT_ID, Path::new("/vt/x"), "x").unwrap();
+        let a_in_x = add_node(&db, x.id, Path::new("/vt/a"), "a").unwrap();
+        assert_eq!(move_node(&db, a.id, x.id).unwrap_err(), VirtualFolderError::DuplicateSibling);
+        assert_eq!(get_node(&db, a.id).unwrap().parent_id, ROOT_ID);
+        assert_eq!(get_node(&db, a_in_x.id).unwrap().parent_id, x.id);
+    }
+
+    #[test]
+    fn rename_node_changes_only_display_name() {
+        let db = temp_db();
+        let a = add_node(&db, ROOT_ID, Path::new("/vt/a"), "a").unwrap();
+        rename_node(&db, a.id, "本棚").unwrap();
+        let renamed = get_node(&db, a.id).unwrap();
+        assert_eq!(renamed.name, "本棚");
+        assert_eq!(renamed.real_path, a.real_path);
+        assert_eq!(rename_node(&db, a.id, "").unwrap_err(), VirtualFolderError::NameEmpty);
+        assert_eq!(rename_node(&db, 99, "x").unwrap_err(), VirtualFolderError::NotFound);
+        // 同名の兄弟は許可
+        let b = add_node(&db, ROOT_ID, Path::new("/vt/b"), "b").unwrap();
+        rename_node(&db, b.id, "本棚").unwrap();
+    }
+
+    #[test]
+    fn find_overlaps_classifies_by_component_prefix() {
+        let db = temp_db();
+        let nodes = add_subtree(&db, ROOT_ID, &spec("/vt/A", vec![spec("/vt/A/b", vec![])])).unwrap();
+        let ab = add_node(&db, ROOT_ID, Path::new("/vt/AB"), "AB").unwrap();
+        let all = list_nodes(&db);
+        // 完全一致
+        let o = find_overlaps(&all, Path::new("/vt/A/b"));
+        assert_eq!(o.same, [nodes[1].id]);
+        assert_eq!(o.ancestors, [nodes[0].id]);
+        assert!(o.descendants.is_empty());
+        // 祖先のみ（A配下の新しいフォルダ）。/vt/AB は前方一致しても別フォルダ
+        let o = find_overlaps(&all, Path::new("/vt/A/new"));
+        assert_eq!(o.ancestors, [nodes[0].id]);
+        assert!(o.same.is_empty() && !o.ancestors.contains(&ab.id));
+        // 子孫が先に登録済み
+        let o = find_overlaps(&all, Path::new("/vt"));
+        assert_eq!(o.descendants.len(), 3);
+        // 無関係
+        assert!(find_overlaps(&all, Path::new("/elsewhere/x")).is_empty());
+    }
+
+    #[test]
+    fn merge_snapshot_adds_only_missing_subfolders() {
+        let db = temp_db();
+        let base = add_subtree(
+            &db,
+            ROOT_ID,
+            &spec("/vt/A", vec![spec("/vt/A/b", vec![]), spec("/vt/A/gone", vec![])]),
+        )
+        .unwrap();
+        // 実FS側: gone が消え、b の下に c、A の下に d が増えた
+        let scan = spec(
+            "/vt/A",
+            vec![spec("/vt/A/b", vec![spec("/vt/A/b/c", vec![])]), spec("/vt/A/d", vec![spec("/vt/A/d/e", vec![])])],
+        );
+        assert_eq!(merge_snapshot(&db, base[0].id, &scan).unwrap(), 3);
+        let all = list_nodes(&db);
+        assert_eq!(all.len(), 6);
+        let by_path = |p: &str| all.iter().find(|n| n.real_path == PathBuf::from(p)).unwrap();
+        assert_eq!(by_path("/vt/A/b/c").parent_id, base[1].id);
+        assert_eq!(by_path("/vt/A/d").parent_id, base[0].id);
+        assert_eq!(by_path("/vt/A/d/e").parent_id, by_path("/vt/A/d").id);
+        // 追加分は既存の兄弟(b=0, gone=1)の後ろ。消えた gone はそのまま残る
+        assert_eq!(by_path("/vt/A/d").order, 2);
+        assert!(all.iter().any(|n| n.id == base[2].id));
+        // 2回目は差分なし
+        assert_eq!(merge_snapshot(&db, base[0].id, &scan).unwrap(), 0);
+    }
+
+    #[test]
+    fn merge_snapshot_revives_node_moved_out_of_parent() {
+        let db = temp_db();
+        let base = add_subtree(&db, ROOT_ID, &spec("/vt/A", vec![spec("/vt/A/b", vec![])])).unwrap();
+        move_node(&db, base[1].id, ROOT_ID).unwrap();
+        let scan = spec("/vt/A", vec![spec("/vt/A/b", vec![])]);
+        // 直下の子だけで照合するため、Aの下に別リンクとして復活する（仕様）
+        assert_eq!(merge_snapshot(&db, base[0].id, &scan).unwrap(), 1);
+        assert_eq!(list_nodes(&db).len(), 3);
+    }
+
+    #[test]
+    fn merge_snapshot_errors_leave_tree_unchanged() {
+        let db = temp_db();
+        let base = add_node(&db, ROOT_ID, Path::new("/vt/A"), "A").unwrap();
+        let scan = spec("/vt/A", vec![spec("/vt/A/b", vec![])]);
+        assert_eq!(merge_snapshot(&db, 99, &scan).unwrap_err(), VirtualFolderError::NotFound);
+        let children = (0..MAX_NODES).map(|i| spec(&format!("/vt/A/{i}"), vec![])).collect();
+        let big = spec("/vt/A", children);
+        assert_eq!(merge_snapshot(&db, base.id, &big).unwrap_err(), VirtualFolderError::LimitReached);
+        assert_eq!(list_nodes(&db).len(), 1);
+    }
+
+    #[test]
+    fn depth_helpers_bound_snapshot_size() {
+        let tree = spec(
+            "/vt/A",
+            vec![
+                spec("/vt/A/b", vec![spec("/vt/A/b/c", vec![spec("/vt/A/b/c/d", vec![])])]),
+                spec("/vt/A/e", vec![]),
+            ],
+        );
+        assert_eq!(tree.depth_counts(), [1, 2, 1, 1]);
+        assert_eq!(tree.deepest_depth_within(0), None);
+        assert_eq!(tree.deepest_depth_within(1), Some(0));
+        // 累計は 1, 3, 4, 5
+        assert_eq!(tree.deepest_depth_within(3), Some(1));
+        assert_eq!(tree.deepest_depth_within(4), Some(2));
+        assert_eq!(tree.deepest_depth_within(100), Some(3));
+        let shallow = tree.truncated_to_depth(1);
+        assert_eq!(shallow.node_count(), 3);
+        assert!(shallow.children.iter().all(|c| c.children.is_empty()));
+        assert_eq!(tree.truncated_to_depth(0).node_count(), 1);
+        assert_eq!(remaining_capacity(&temp_db()), MAX_NODES);
+    }
+    /// 全ノードの親が `/`（ROOT_ID）か実在するノードで、親をたどって循環しないこと。
+    fn assert_no_orphans_or_cycles(db: &Arc<Mutex<Database>>) {
+        let nodes = list_nodes(db);
+        let ids: std::collections::HashSet<u32> = nodes.iter().map(|n| n.id).collect();
+        for n in &nodes {
+            assert!(
+                n.parent_id == ROOT_ID || ids.contains(&n.parent_id),
+                "orphan: node {} has missing parent {}",
+                n.id,
+                n.parent_id
+            );
+            let (mut cur, mut steps) = (n.parent_id, 0);
+            while cur != ROOT_ID {
+                steps += 1;
+                assert!(steps <= nodes.len(), "cycle through node {}", n.id);
+                cur = nodes.iter().find(|m| m.id == cur).map_or(ROOT_ID, |m| m.parent_id);
+            }
+        }
+    }
+
+    /// 追加・移動・削除・再取込をでたらめな順で流しても、孤児ノードも循環も生まれない
+    /// （失敗する操作＝重複・循環移動・存在しないid等は、何も変えずにエラーで終わる）。
+    #[test]
+    fn random_operations_never_leave_orphans() {
+        // 操作が空振り（全部失敗）していないことの確認用: [追加, 移動, 削除, 再取込] の成功数
+        let mut ok = [0usize; 4];
+        for seed in [1u64, 2, 3, 0xDEAD_BEEF] {
+            let db = temp_db();
+            let mut state = seed;
+            let mut next = move |bound: u32| -> u32 {
+                state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                ((state >> 33) as u32) % bound.max(1)
+            };
+            for step in 0..300 {
+                let ids: Vec<u32> = list_nodes(&db).iter().map(|n| n.id).collect();
+                // 存在しないidや親も混ぜて、失敗系も通す
+                let pick = |n: &mut dyn FnMut(u32) -> u32| -> u32 {
+                    if ids.is_empty() || n(8) == 0 { 1 + n(40) } else { ids[n(ids.len() as u32) as usize] }
+                };
+                let sub = |n: &mut dyn FnMut(u32) -> u32| -> SubtreeSpec {
+                    let root = format!("/p/{}", n(6));
+                    let kids = (0..n(4))
+                        .map(|_| spec(&format!("{root}/{}", n(6)), vec![]))
+                        .collect();
+                    spec(&root, kids)
+                };
+                match next(4) {
+                    0 => {
+                        let parent = if next(3) == 0 { ROOT_ID } else { pick(&mut next) };
+                        ok[0] += add_subtree(&db, parent, &sub(&mut next)).is_ok() as usize;
+                    }
+                    1 => {
+                        let (id, parent) = (pick(&mut next), if next(3) == 0 { ROOT_ID } else { pick(&mut next) });
+                        ok[1] += move_node(&db, id, parent).is_ok() as usize;
+                    }
+                    2 => {
+                        let id = pick(&mut next);
+                        ok[2] += remove_node(&db, id).is_ok() as usize;
+                    }
+                    _ => {
+                        let id = pick(&mut next);
+                        ok[3] += merge_snapshot(&db, id, &sub(&mut next)).is_ok() as usize;
+                    }
+                }
+                assert_no_orphans_or_cycles(&db);
+                let _ = step;
+            }
+        }
+        assert!(ok.iter().all(|&n| n >= 20), "操作が十分に成功していない: {ok:?}");
+    }
+}

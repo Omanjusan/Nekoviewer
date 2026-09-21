@@ -38,9 +38,9 @@ impl NekoviewApp {
             return;
         }
         self.focused_pane = if shift_tab {
-            self.focused_pane.prev(self.folder_pane_tab)
+            self.focused_pane.prev(self.folder_pane_tab, self.virtual_real_pane_open())
         } else {
-            self.focused_pane.next(self.folder_pane_tab)
+            self.focused_pane.next(self.folder_pane_tab, self.virtual_real_pane_open())
         };
         if self.focused_pane == FocusPane::SearchHistory && self.search_history.is_empty() {
             self.focused_pane = if shift_tab { FocusPane::SearchForm } else { FocusPane::TreeTab };
@@ -89,6 +89,7 @@ impl NekoviewApp {
                 }
             }
             FocusPane::SearchForm => {}
+            FocusPane::VirtualTab => self.reset_virtual_cursor(),
             FocusPane::SearchHistory => {
                 let valid = self.search_selected.is_some_and(|i| i < self.search_history.len());
                 if !valid {
@@ -225,7 +226,7 @@ impl NekoviewApp {
         }
         if key_enter {
             if self.folder_pane_tab == FolderPaneTab::Search {
-                self.search_form.base_dir = Some(cur);
+                self.set_search_base_dir(cur);
             } else {
                 self.navigate_to(cur, DirectoryNavigationSource::Tree);
             }
@@ -377,7 +378,7 @@ impl NekoviewApp {
         if !(key_left || key_right) {
             return;
         }
-        const ORDER: [FolderPaneTab; 3] = [FolderPaneTab::Favorites, FolderPaneTab::RealTree, FolderPaneTab::Search];
+        const ORDER: [FolderPaneTab; 4] = [FolderPaneTab::Favorites, FolderPaneTab::RealTree, FolderPaneTab::Search, FolderPaneTab::VirtualFolders];
         let pos = ORDER.iter().position(|&t| t == self.folder_pane_tab).unwrap_or(1);
         let mut new_pos = pos;
         if key_left && pos > 0 {
@@ -399,6 +400,10 @@ impl NekoviewApp {
         }
         if self.focused_pane == FocusPane::TreeTab {
             self.handle_tree_keys(ctx);
+            return;
+        }
+        if self.focused_pane == FocusPane::VirtualTab {
+            self.handle_virtual_keys(ctx);
             return;
         }
         if self.focused_pane == FocusPane::FavoriteTab {
@@ -536,7 +541,8 @@ impl NekoviewApp {
                         self.select_single(*idx);
                     }
                 }
-                GridEntry::Up(_) | GridEntry::Subdir(_) => {
+                GridEntry::Up(_) | GridEntry::Subdir(_)
+                | GridEntry::VirtualUp(_) | GridEntry::VirtualSubdir(_) => {
                     // フォルダ系エントリに乗った間はアーカイブ選択枠・ファイル情報を消す
                     // （複数選択そのものは維持し、Enterで実際に移動した時だけ破棄する）
                     self.selected_archive_index = None;
@@ -554,6 +560,11 @@ impl NekoviewApp {
                     self.multi_selected.clear();
                     self.select_anchor = None;
                     self.navigate_to(path.clone(), DirectoryNavigationSource::ItemPane);
+                }
+                GridEntry::VirtualUp(id) | GridEntry::VirtualSubdir(id) => {
+                    self.multi_selected.clear();
+                    self.select_anchor = None;
+                    self.select_virtual_node(*id);
                 }
                 GridEntry::Archive(idx) => {
                     // 複数選択中でもEnter時点のカーソル位置1件のみを開く（複数選択は維持）

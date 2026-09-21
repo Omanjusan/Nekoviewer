@@ -45,6 +45,15 @@ pub enum BookmarkSaveAction {
     Disable,
 }
 
+/// 評価オーバーレイでのユーザー操作。
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum RatingSaveAction {
+    /// 評価を絶対値で保存する（半星単位 1..=10）。同じ値の再送は冪等。
+    Set(u8),
+    /// 未評価として登録しなおす（評価0を保存し、完了トーストを出す）。
+    Clear,
+}
+
 /// 登録サムネイルページの保存メニューでのユーザー操作。
 #[derive(Clone, PartialEq)]
 pub enum ThumbnailSaveAction {
@@ -69,10 +78,18 @@ pub struct ViewerOutput {
     pub thumbnail_save_action: Option<ThumbnailSaveAction>,
     /// Some(_) のとき app 側でしおりの有効/無効をDBへ反映する。
     pub bookmark_save_action: Option<BookmarkSaveAction>,
+    /// Some(_) のとき app 側で評価をDBへ保存する。
+    pub rating_save_action: Option<RatingSaveAction>,
     /// true のとき app 側で現在のアーカイブを未整理のお気に入りへ追加する
     pub favorite_add_requested: bool,
     /// true のとき app 側でOCR/翻訳子ウィンドウの開閉をトグルする
     pub toggle_translate_window: bool,
+    /// true のとき app 側で persist_state() を呼ぶ（ツールパレットの座標/設定/マス内容が
+    /// デバウンス経由で viewer_cfg.tool_palette へ確定した直後の1フレームだけtrue）。
+    pub tool_palette_changed: bool,
+    /// true のとき app 側で persist_state() を呼ぶ（虫眼鏡のノッチ倍率／目盛りの詳細・簡易を
+    /// 切り替えた直後の1フレームだけtrue）。
+    pub magnifier_settings_changed: bool,
 }
 
 // ── ステータス即時更新要求 ────────────────────────────────────────────────────

@@ -148,6 +148,47 @@ pub struct StartupConfig {
     pub fixed_dir: Option<std::path::PathBuf>,
 }
 
+/// 表示デコードの取り扱い上限（長辺px）の既定値。旧既定は1920。
+pub const DEFAULT_MAX_DECODE_EDGE: u32 = 4000;
+
+/// 既定値の底上げ（1920→4000）に伴う、起動時の確認ダイアログの要否。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DecodeEdgePrompt {
+    /// 保存済みの値が新既定値より低く、未回答。現在値を示して1度だけ確認する。
+    Ask(u32),
+    /// 確認は不要。以後も出さないよう、回答済みとして記録する。
+    MarkAnswered,
+    /// 回答済み。何もしない。
+    Nothing,
+}
+
+/// 確認ダイアログの要否を決める。回答済みでなく、保存値が新既定値より低いときだけ確認する。
+/// 新既定値以上（新規ユーザー・値を上げている人）は、そのときに回答済みにしておく。
+/// こうしておかないと、あとで自分で値を下げたときに、突然この確認が出てしまう。
+pub fn decode_edge_prompt_decision(answered: bool, current: u32) -> DecodeEdgePrompt {
+    if answered {
+        DecodeEdgePrompt::Nothing
+    } else if current < DEFAULT_MAX_DECODE_EDGE {
+        DecodeEdgePrompt::Ask(current)
+    } else {
+        DecodeEdgePrompt::MarkAnswered
+    }
+}
+
+/// 確認ダイアログへの回答（`accepted` なら新既定値へ更新）。どちらでも回答済みにして待機を解く。
+fn apply_decode_edge_answer(
+    accepted: bool,
+    max_decode_edge: &mut u32,
+    answered: &mut bool,
+    pending: &mut Option<u32>,
+) {
+    if accepted {
+        *max_decode_edge = DEFAULT_MAX_DECODE_EDGE;
+    }
+    *answered = true;
+    *pending = None;
+}
+
 pub struct AppConfig {
     pub thumb_filter: ResizeFilter,
     pub viewer_filter: ResizeFilter,
@@ -155,6 +196,11 @@ pub struct AppConfig {
     pub thumb_size: u32,
     /// ページデコードの並列スレッド数（0 = 自動: 論理コア数/2）
     pub decode_threads: usize,
+    /// 虫眼鏡の拡大縮小（Shift+ホイール等）の割り当てを起動時に知らせ済みか。永続設定
+    /// （state の `app_magnifier_zoom_notice_shown`）。
+    pub magnifier_zoom_notice_shown: bool,
+    /// 起動時に知らせる割り当て結果（OKで閉じるまで Some）。非永続・実行時のみ。
+    pub pending_magnifier_zoom_notice: Option<crate::keymap::MagnifierZoomNotice>,
     pub startup: StartupConfig,
     /// このアプリが使ってよいキャッシュ合計の上限（MB、ページ+ファイル）。None = システムRAMの30%。
     /// ページ/ファイルへの内訳は cache::resolve_cache_budgets の固定比率で分配する。
@@ -170,6 +216,11 @@ pub struct AppConfig {
     /// 表示デコードの取り扱い上限（長辺px）。短辺は縦横比を保って自動的に収まる。
     /// 既定値はここに直書き（stateファイル経由の上書きのみ）。
     pub max_decode_edge: u32,
+    /// `max_decode_edge` の既定値底上げの確認を済ませたか。永続設定
+    /// （state の `app_max_decode_edge_prompt_answered`）。
+    pub max_decode_edge_prompt_answered: bool,
+    /// 起動時に確認する保存済みの値（回答するまで Some）。非永続・実行時のみ。
+    pub pending_decode_edge_prompt: Option<u32>,
     /// キーアサイン設定（TODO項目J）。他のスカラー設定とは別のkeymap.iniから読み込む
     /// （Keymap::load/save参照）。行数が可変長で他のスカラー設定と性質が異なるため分離した。
     pub keymap: Keymap,
@@ -192,6 +243,17 @@ impl AppConfig {
 
 impl AppConfig {
     /// nekoviewer.conf は廃止済み。すべての既定値はここに直書きし、設定ダイアログで
+    /// 底上げの確認ダイアログへの回答を反映する。`accepted` なら新既定値へ更新する。
+    /// どちらでも回答済みにして、以後は出さない。
+    pub fn answer_decode_edge_prompt(&mut self, accepted: bool) {
+        apply_decode_edge_answer(
+            accepted,
+            &mut self.max_decode_edge,
+            &mut self.max_decode_edge_prompt_answered,
+            &mut self.pending_decode_edge_prompt,
+        );
+    }
+
     /// 変更した値は gui_config::AppState 経由で state ファイルへ永続化される
     /// （main() 起動シーケンスで state 側の値をこの既定値に上書き適用する）。
     pub fn load() -> Self {
@@ -202,6 +264,8 @@ impl AppConfig {
             viewer_filter: ResizeFilter::Lanczos3,
             thumb_size: 256,
             decode_threads: 0,
+            magnifier_zoom_notice_shown: false,
+            pending_magnifier_zoom_notice: None,
             startup: StartupConfig {
                 use_last_dir: false,
                 fixed_dir: None,
@@ -211,7 +275,9 @@ impl AppConfig {
             anim_ring_min_frames: 4,
             anim_ring_max_frames: 32,
             anim_frame_hard_limit_mb: 100,
-            max_decode_edge: 1920,
+            max_decode_edge: DEFAULT_MAX_DECODE_EDGE,
+            max_decode_edge_prompt_answered: false,
+            pending_decode_edge_prompt: None,
             keymap: Keymap::load(&root),
             config_root: root,
         }
@@ -397,6 +463,37 @@ pub fn filter_to_str(f: ResizeFilter) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn decode_edge_default_is_4000() {
+        assert_eq!(DEFAULT_MAX_DECODE_EDGE, 4000);
+    }
+
+    #[test]
+    fn decode_edge_prompt_asks_only_when_unanswered_and_below_the_new_default() {
+        // 旧既定(1920)や、それより低く設定している人には、1度だけ確認する。
+        assert_eq!(decode_edge_prompt_decision(false, 1920), DecodeEdgePrompt::Ask(1920));
+        assert_eq!(decode_edge_prompt_decision(false, 3999), DecodeEdgePrompt::Ask(3999));
+        assert_eq!(decode_edge_prompt_decision(false, 200), DecodeEdgePrompt::Ask(200));
+        // 新既定値以上は確認不要。回答済みとして記録する（あとで下げても確認は出ない）。
+        assert_eq!(decode_edge_prompt_decision(false, 4000), DecodeEdgePrompt::MarkAnswered);
+        assert_eq!(decode_edge_prompt_decision(false, 7680), DecodeEdgePrompt::MarkAnswered);
+        // 回答済みなら、値が低くても何もしない。
+        assert_eq!(decode_edge_prompt_decision(true, 1920), DecodeEdgePrompt::Nothing);
+        assert_eq!(decode_edge_prompt_decision(true, 4000), DecodeEdgePrompt::Nothing);
+    }
+
+    #[test]
+    fn answering_yes_updates_the_value_and_no_keeps_it() {
+        // 実際の設定フォルダに触れないよう、回答の反映部だけを直接検証する。
+        let (mut edge, mut answered, mut pending) = (1920u32, false, Some(1920u32));
+        apply_decode_edge_answer(false, &mut edge, &mut answered, &mut pending);
+        assert_eq!((edge, answered, pending), (1920, true, None));
+
+        let (mut edge, mut answered, mut pending) = (1920u32, false, Some(1920u32));
+        apply_decode_edge_answer(true, &mut edge, &mut answered, &mut pending);
+        assert_eq!((edge, answered, pending), (4000, true, None));
+    }
 
     #[test]
     fn log_defaults_to_all_quiet_until_something_calls_set_log() {

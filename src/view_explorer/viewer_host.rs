@@ -30,6 +30,17 @@ impl NekoviewApp {
         self.egui_ctx.request_repaint();
     }
 
+    /// ビューアーが評価・訪問を書き換えた直後に、評価帯用キャッシュの該当パスを最新化する。
+    fn refresh_rating_cache(&mut self, archive_path: &std::path::Path) {
+        let rating = self.spread_db.as_ref().and_then(|db| {
+            let dir = archive_path.parent()?;
+            let name = archive_path.file_name()?.to_str()?;
+            crate::spread_state::read_archive_rating(db, dir, name)
+        });
+        self.archive_rating_cache.insert(archive_path.to_path_buf(), rating);
+        self.egui_ctx.request_repaint();
+    }
+
     /// ビューアー窓が開いているか（winit_app が窓の生成/破棄判定に使う）。
     pub fn viewer_is_open(&self) -> bool {
         self.viewer.lock().unwrap().is_some()
@@ -54,6 +65,7 @@ impl NekoviewApp {
         self.flush_current_sort_if_changed();
         self.flush_current_bookmark_if_enabled();
         *self.viewer.lock().unwrap() = None;
+        self.resort_keeping_selection();
     }
 
     /// OCR/翻訳子ウィンドウが開いているか（winit_app が窓の生成/破棄判定に使う）。
@@ -538,6 +550,10 @@ impl NekoviewApp {
             self.persist_state();
         }
 
+        if output.tool_palette_changed || output.magnifier_settings_changed {
+            self.persist_state();
+        }
+
         if let Some(action) = output.spread_save_action {
             self.handle_spread_save_action(action);
         }
@@ -554,6 +570,10 @@ impl NekoviewApp {
             self.handle_bookmark_save_action(action);
         }
 
+        if let Some(action) = output.rating_save_action {
+            self.handle_rating_save_action(action);
+        }
+
         if output.favorite_add_requested {
             self.handle_favorite_add_request();
         }
@@ -563,6 +583,7 @@ impl NekoviewApp {
             self.flush_current_sort_if_changed();
             self.flush_current_bookmark_if_enabled();
             *self.viewer.lock().unwrap() = None;
+            self.resort_keeping_selection();
             controller::request_status_update(&self.status_update_requested);
             self.egui_ctx.request_repaint();
         } else if had_nav {
@@ -652,7 +673,11 @@ impl NekoviewApp {
                 match result.outcome {
                     DecodeJobOutcome::Ready(content) => {
                         self.failed_loads.remove(&failed_key);
-                        self.page_cache.lock().unwrap().insert(
+                        let mut cache = self.page_cache.lock().unwrap();
+                        if let Some(meta) = result.meta {
+                            cache.record_meta(&result.archive_path, result.index, meta);
+                        }
+                        cache.insert(
                             result.archive_path,
                             result.index,
                             result.generation,
@@ -862,6 +887,33 @@ impl NekoviewApp {
         self.refresh_saved_archive_settings(&archive_path);
     }
 
+    /// 評価オーバーレイでの操作をDBへ反映する。評価は絶対値で保存する（冪等）。
+    /// 未評価に戻した場合は、書込み成功後にビューアー窓のトーストで通知する。
+    fn handle_rating_save_action(&mut self, action: crate::controller::RatingSaveAction) {
+        let Some(db) = self.spread_db.clone() else { return };
+        let mut viewer_guard = self.viewer.lock().unwrap();
+        let Some(viewer) = viewer_guard.as_mut() else { return };
+        let archive_path = viewer.archive_path().clone();
+        let Some(filename) = archive_path.file_name().and_then(|n| n.to_str()) else { return };
+        let archive_dir = archive_path.parent()
+            .unwrap_or(&self.current_dir)
+            .to_path_buf();
+
+        match action {
+            crate::controller::RatingSaveAction::Set(half) => {
+                crate::spread_state::write_archive_rating(&db, &archive_dir, filename, half);
+            }
+            crate::controller::RatingSaveAction::Clear => {
+                // 既に未評価でも毎回通知する（押した結果を必ず返す）
+                if crate::spread_state::write_archive_rating(&db, &archive_dir, filename, 0) {
+                    viewer.set_toast(i18n::t().toast_rating_cleared().to_string());
+                }
+            }
+        }
+        drop(viewer_guard);
+        self.refresh_rating_cache(&archive_path);
+    }
+
     /// 右クリックメニュー「お気に入りに追加」を処理する。フォルダ選択等は行わず、
     /// 未整理のお気に入りへの新規登録のみを行うワンアクション。既に何らかの形で
     /// （未整理・フォルダ割当済みいずれでも）登録済みの場合は何もしない。
@@ -1038,6 +1090,12 @@ impl NekoviewApp {
 
     /// ビューアを開く（ページキャッシュクリア・ファイルキャッシュ投入・フォーカス要求を一括処理）
     pub(super) fn open_viewer(&mut self, mut state: ViewerState) {
+        // 虫眼鏡モードは、ビューアーを閉じる・別のファイルへ移ると解除する（同一アーカイブ内の
+        // ページ送りでのみ維持）。デコード目標の巻き戻しは poll_magnifier_toggle が変化を拾って行う。
+        {
+            let mut cfg = self.viewer_cfg.lock().unwrap();
+            cfg.magnifier_on = false;
+        }
         self.flush_current_sort_if_changed();
         self.flush_current_bookmark_if_enabled();
         let path = state.archive_path().clone();
@@ -1087,6 +1145,18 @@ impl NekoviewApp {
                     crate::spread_state::clear_bookmark_position(db, archive_dir, filename);
                 }
                 state.set_toast(i18n::t().toast_bookmark_invalidated().to_string());
+            }
+        }
+        // 訪問回数は生画像ファイルも含めて+1する（サムネ帯の「訪問回数」用）。
+        // 評価は生画像の対象外なので、保存値の表示反映はアーカイブだけ。
+        // 評価はここでは書き換えない（触るまで未評価の状態を維持する）。
+        if let Some(db) = self.spread_db.as_ref() {
+            crate::spread_state::record_archive_visit(db, archive_dir, filename);
+            let rating = crate::spread_state::read_archive_rating(db, archive_dir, filename);
+            // サムネ帯の訪問回数を即反映する
+            self.archive_rating_cache.insert(path.clone(), rating);
+            if !state.is_raw_file() {
+                state.set_saved_rating(rating.map_or(0, |r| r.rating_half));
             }
         }
         let saved_thumbnail_selection = self.spread_db.as_ref().and_then(|db| {

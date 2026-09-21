@@ -196,6 +196,7 @@ impl NekoviewApp {
         // 階層概念を持ち込まない平坦一覧という契約のため、サブフォルダ一覧も明示的に空にする
         // （grid_entries/draw_archive_grid側もviewing_searchをガードしているが二重の防御）。
         self.subdirs.clear();
+        self.subdir_mtimes.clear();
         // 複数ディレクトリ横断のため単一ディレクトリ前提のキャッシュDB/セッション状態は無効化する
         self.cache_db = None;
         self.invalid_archives.clear();
@@ -227,7 +228,7 @@ impl NekoviewApp {
     /// current_dir・実スキャン（start_scan）・viewing_dir・cd_summary には一切触れない
     /// （ツリー/ドライブは検索条件の基点選択ツールであり、実ナビゲーションとは切り離す）。
     pub(super) fn set_search_base_drive(&mut self, path: PathBuf) {
-        self.search_form.base_dir = Some(path.clone());
+        self.set_search_base_dir(path.clone());
         self.tree_root = path.clone();
         self.tree_expanded.clear();
         self.tree_children.clear();

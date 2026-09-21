@@ -13,6 +13,16 @@ use crate::types::ExplorerSortKey;
 use crate::fs::{dir, mount::{list_gvfs_smb_mounts, list_local_drives, MountEntry}};
 use crate::view_reader::ViewerState;
 
+impl crate::explorer_sort::RatingSortKey {
+    fn label(self) -> &'static str {
+        let t = i18n::t();
+        match self {
+            Self::Score => t.sort_score(),
+            Self::Visits => t.sort_visits(),
+        }
+    }
+}
+
 impl ExplorerSortKey {
     fn label(self) -> &'static str {
         let t = i18n::t();
@@ -40,10 +50,24 @@ impl ExplorerSortKey {
     }
 }
 
+/// グリッドのフォルダカード（ダブルクリック）/ Enter による移動要求。
+enum GridNav {
+    Real(PathBuf),
+    /// 仮想ノードid
+    Virtual(u32),
+}
+
 enum TreeAction {
     None,
     ToggleExpand(PathBuf),
     Navigate(PathBuf),
+    /// ダブルクリック（1回目のクリックで Navigate が出た後の2回目。登録ピッカーの確定に使う。
+    /// 通常のツリーでは Navigate と同じ扱い）
+    DoubleClick(PathBuf),
+    /// 実ツリー右クリック「仮想フォルダに追加する」
+    AddToVirtual(PathBuf),
+    /// 実ツリー右クリック「ソート条件設定」（ツリー全体の設定でパスに依存しない）
+    SortSetting,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -51,12 +75,22 @@ enum FolderPaneTab {
     RealTree,
     Favorites,
     Search,
+    VirtualFolders,
+}
+
+impl FolderPaneTab {
+    /// 中央のアイテム欄が実ディレクトリ（current_dir）由来の表示になるタブか。
+    /// お気に入り/検索は横断一覧に差し替えるため対象外。
+    fn shows_real_dir(self) -> bool {
+        matches!(self, Self::RealTree | Self::VirtualFolders)
+    }
 }
 
 /// キーボード操作のフォーカス巡回順（Tab/Shift+Tabで一周する）。今どのタブ（folder_pane_tab）を
 /// 選んでいるかで経路が変わる（本体の中身がタブごとに違うため）:
 ///   RealTree:  FolderTabBar → TreeTab(本体) → Drives → Grid → Filter → MenuBar → (戻る)
 ///   Favorites: FolderTabBar → FavoriteTab(本体) → Grid → Filter → MenuBar → (戻る)  ※Drivesなし
+///   Virtual:   FolderTabBar → VirtualTab(本体) → [実ツリーペイン展張中のみ TreeTab → Drives] → Grid → Filter → MenuBar → (戻る)
 ///   Search:    FolderTabBar → SearchForm(各項目) → SearchHistory → TreeTab → Drives → Grid → Filter → MenuBar → (戻る)
 /// FolderTabBar はタブ切替バー自体（左右キーでswitch_folder_tab、Tab/Shift+Tabでは巡回の
 /// 起点/終点として1箇所だけ現れる）。TreeTab/Drives は実ツリー選択時とSearch選択時の両方で
@@ -66,6 +100,8 @@ pub(crate) enum FocusPane {
     FolderTabBar,
     TreeTab,
     FavoriteTab,
+    /// 仮想フォルダタブの仮想ツリー本体（3M。キー操作は未対応でフォーカス巡回とリングのみ）
+    VirtualTab,
     SearchForm,
     SearchHistory,
     Drives,
@@ -75,13 +111,16 @@ pub(crate) enum FocusPane {
 }
 
 impl FocusPane {
-    fn next(self, tab: FolderPaneTab) -> Self {
+    /// `real_pane_open` は仮想フォルダタブで実ツリーペインが展張中か（他タブでは無視）。
+    fn next(self, tab: FolderPaneTab, real_pane_open: bool) -> Self {
         match self {
             Self::FolderTabBar => match tab {
                 FolderPaneTab::RealTree => Self::TreeTab,
                 FolderPaneTab::Favorites => Self::FavoriteTab,
                 FolderPaneTab::Search => Self::SearchForm,
+                FolderPaneTab::VirtualFolders => Self::VirtualTab,
             },
+            Self::VirtualTab => if real_pane_open { Self::TreeTab } else { Self::Grid },
             Self::TreeTab => Self::Drives,
             Self::SearchForm => Self::SearchHistory,
             Self::SearchHistory => Self::TreeTab,
@@ -93,11 +132,13 @@ impl FocusPane {
         }
     }
 
-    fn prev(self, tab: FolderPaneTab) -> Self {
+    fn prev(self, tab: FolderPaneTab, real_pane_open: bool) -> Self {
         match self {
             Self::FolderTabBar => Self::MenuBar,
+            Self::VirtualTab => Self::FolderTabBar,
             Self::TreeTab => match tab {
                 FolderPaneTab::Search => Self::SearchHistory,
+                FolderPaneTab::VirtualFolders => Self::VirtualTab,
                 _ => Self::FolderTabBar,
             },
             Self::SearchForm => Self::FolderTabBar,
@@ -106,6 +147,7 @@ impl FocusPane {
             Self::FavoriteTab => Self::FolderTabBar,
             Self::Grid => match tab {
                 FolderPaneTab::Favorites => Self::FavoriteTab,
+                FolderPaneTab::VirtualFolders if !real_pane_open => Self::VirtualTab,
                 _ => Self::Drives,
             },
             Self::Filter => Self::Grid,
@@ -188,16 +230,21 @@ pub(crate) struct SearchFormState {
 
 /// サムネグリッドの「↑・サブフォルダ・アーカイブファイル」を貫通する統一カーソル位置。
 /// draw_archive_grid内で実際に描画される順序（↑→サブフォルダ→フィルタ後アーカイブ）と
-/// 一致させること（grid_entries()参照）。
-#[derive(Clone, PartialEq, Eq)]
+/// 一致させること。↑・サブフォルダ部分は folder_grid_entries() を描画側と共有している
+/// （grid_entries()参照）。
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub(crate) enum GridEntry {
     Up(PathBuf),
     Subdir(PathBuf),
+    /// 仮想フォルダ表示中の「↑」。仮想の親ノードのid（`/` は 0）
+    VirtualUp(u32),
+    /// 仮想フォルダ表示中のフォルダカード。仮想ノードのid（同一実パスの複数登録を区別する）
+    VirtualSubdir(u32),
     /// archives へのインデックス（実インデックス、filtered_indices経由ではない）
     Archive(usize),
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum FavoriteSelection {
     None,
     /// 未整理のお気に入り（どのフォルダにも紐付かないテンポラリお気に入り群）
@@ -214,22 +261,42 @@ pub(crate) enum MenuBarButton {
     SortDate,
     SortSize,
     SortOrder,
+    /// 第2ソートセット（スコア／訪問回数）。押し下げ中をもう一度押すとOFF
+    SortScore,
+    SortVisits,
+    SortRatingOrder,
     CardInfoToggle,
+    /// 評価帯（info2）の表示量の循環トグル。
+    CardRatingToggle,
+    /// スコアリング（アーカイブ末尾の評価オーバーレイ）のON/OFF。viewer_cfg直結の永続設定。
+    ScoringToggle,
     StatusToggle,
+    /// ヘルプ（ツールチップ）表示のON/OFF。非永続。メニューバーの視覚上の右端。
+    HelpToggle,
+    /// ビューアー内ツールパレット（マス配置ツールボックス）の表示ON/OFF。
+    /// ファイルを渡り歩いても同じ状態を保つ（viewer_cfg経由でPaletteStateへ直結）。
+    ToolPaletteToggle,
     Settings,
 }
 
 /// 表示順そのもの（draw_menu_barの描画順と一致させること）。
 /// 見開き・ページモード群はビューアーツールバーへ移設した（toolbar.rs 参照）。
-pub(crate) const MENU_BAR_ORDER: [MenuBarButton; 8] = [
+pub(crate) const MENU_BAR_ORDER: [MenuBarButton; 15] = [
     MenuBarButton::Reload,
     MenuBarButton::SortName,
     MenuBarButton::SortDate,
     MenuBarButton::SortSize,
     MenuBarButton::SortOrder,
+    MenuBarButton::SortScore,
+    MenuBarButton::SortVisits,
+    MenuBarButton::SortRatingOrder,
     MenuBarButton::CardInfoToggle,
+    MenuBarButton::CardRatingToggle,
+    MenuBarButton::ScoringToggle,
+    MenuBarButton::ToolPaletteToggle,
     MenuBarButton::Settings,
     MenuBarButton::StatusToggle,
+    MenuBarButton::HelpToggle,
 ];
 
 #[cfg(test)]
@@ -237,12 +304,26 @@ mod menu_bar_order_tests {
     use super::{MenuBarButton, MENU_BAR_ORDER};
 
     #[test]
-    fn settings_and_status_keep_the_visual_right_end_order() {
+    fn rating_sort_set_follows_the_main_sort_set() {
         assert_eq!(
-            &MENU_BAR_ORDER[6..],
+            &MENU_BAR_ORDER[4..8],
+            &[
+                MenuBarButton::SortOrder,
+                MenuBarButton::SortScore,
+                MenuBarButton::SortVisits,
+                MenuBarButton::SortRatingOrder,
+            ],
+        );
+    }
+
+    #[test]
+    fn settings_status_and_help_keep_the_visual_right_end_order() {
+        assert_eq!(
+            &MENU_BAR_ORDER[12..],
             &[
                 MenuBarButton::Settings,
                 MenuBarButton::StatusToggle,
+                MenuBarButton::HelpToggle,
             ],
         );
     }
@@ -301,6 +382,116 @@ impl CardInfoMode {
             "name_date_size" => Self::NameDateSize,
             _ => Self::Off,
         }
+    }
+}
+
+/// サムネカード下段の評価帯（info2）の表示量。メニューバーの1ボタンで循環する。
+/// 情報帯（CardInfoMode）とは独立で、帯の最下段に星の行・訪問回数の行を足す。
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub(crate) enum CardRatingMode {
+    /// 何も表示しない
+    #[default]
+    Off,
+    /// 星のみ
+    Stars,
+    /// 訪問回数のみ
+    Visits,
+    /// 星 + 訪問回数
+    StarsVisits,
+}
+
+impl CardRatingMode {
+    /// 押下ごとの循環順: Off → Stars → Visits → StarsVisits → Off
+    pub(crate) fn next(self) -> Self {
+        match self {
+            Self::Off => Self::Stars,
+            Self::Stars => Self::Visits,
+            Self::Visits => Self::StarsVisits,
+            Self::StarsVisits => Self::Off,
+        }
+    }
+
+    /// 星の行を出すか
+    pub(crate) fn shows_stars(self) -> bool {
+        matches!(self, Self::Stars | Self::StarsVisits)
+    }
+
+    /// 訪問回数の行を出すか
+    pub(crate) fn shows_visits(self) -> bool {
+        matches!(self, Self::Visits | Self::StarsVisits)
+    }
+
+    /// 評価帯に描画する行数（0..=2）
+    pub(crate) fn line_count(self) -> usize {
+        self.shows_stars() as usize + self.shows_visits() as usize
+    }
+
+    /// nekoviewer.state への保存キー
+    pub(crate) fn as_state_str(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Stars => "stars",
+            Self::Visits => "visits",
+            Self::StarsVisits => "stars_visits",
+        }
+    }
+
+    /// nekoviewer.state からの復元（未知値は Off）
+    pub(crate) fn from_state_str(s: &str) -> Self {
+        match s {
+            "stars" => Self::Stars,
+            "visits" => Self::Visits,
+            "stars_visits" => Self::StarsVisits,
+            _ => Self::Off,
+        }
+    }
+}
+
+#[cfg(test)]
+mod card_rating_mode_tests {
+    use super::CardRatingMode;
+
+    #[test]
+    fn toggle_cycles_through_the_four_modes_and_returns_to_off() {
+        let mut m = CardRatingMode::Off;
+        let mut seen = Vec::new();
+        for _ in 0..4 {
+            m = m.next();
+            seen.push(m);
+        }
+        assert_eq!(
+            seen,
+            vec![
+                CardRatingMode::Stars,
+                CardRatingMode::Visits,
+                CardRatingMode::StarsVisits,
+                CardRatingMode::Off,
+            ]
+        );
+    }
+
+    #[test]
+    fn state_string_round_trips_and_unknown_falls_back_to_off() {
+        for m in [
+            CardRatingMode::Off,
+            CardRatingMode::Stars,
+            CardRatingMode::Visits,
+            CardRatingMode::StarsVisits,
+        ] {
+            assert_eq!(CardRatingMode::from_state_str(m.as_state_str()), m);
+        }
+        assert_eq!(CardRatingMode::from_state_str("bogus"), CardRatingMode::Off);
+        assert_eq!(CardRatingMode::from_state_str(""), CardRatingMode::Off);
+    }
+
+    #[test]
+    fn line_count_matches_the_visible_rows() {
+        assert_eq!(CardRatingMode::Off.line_count(), 0);
+        assert_eq!(CardRatingMode::Stars.line_count(), 1);
+        assert_eq!(CardRatingMode::Visits.line_count(), 1);
+        assert_eq!(CardRatingMode::StarsVisits.line_count(), 2);
+        assert!(CardRatingMode::StarsVisits.shows_stars() && CardRatingMode::StarsVisits.shows_visits());
+        assert!(!CardRatingMode::Visits.shows_stars() && CardRatingMode::Visits.shows_visits());
     }
 }
 
@@ -391,6 +582,32 @@ struct FavoriteDetailDialogState {
     pending_overwrite_confirm: bool,
 }
 
+/// エクスプローラー右クリック「ソート条件」一括変更ダイアログの状態。
+/// 【モック段階】DB読み書きは行わず、見た目確認のみ。初期値は常にName/昇順で開く。
+#[derive(Clone)]
+struct SortConditionDialogState {
+    targets: Vec<PathBuf>,
+    sort_key: crate::types::ReaderSortKey,
+    ascending: bool,
+}
+
+/// エクスプローラー右クリック「しおり保存」一括変更ダイアログの状態。
+/// 【モック段階】DB読み書きは行わず、見た目確認のみ。初期値は常にOFFで開く。
+#[derive(Clone)]
+struct BookmarkSettingDialogState {
+    targets: Vec<PathBuf>,
+    enabled: bool,
+}
+
+/// エクスプローラー右クリック「見開き設定」一括変更ダイアログの状態。
+/// 【モック段階】DB読み書きは行わず、見た目確認のみ。初期値は常にSingle/offset0で開く。
+#[derive(Clone)]
+struct SpreadSettingDialogState {
+    targets: Vec<PathBuf>,
+    page_mode: crate::types::PageMode,
+    offset: i32,
+}
+
 fn default_favorite_color() -> egui::Color32 {
     egui::Color32::from_rgb(255, 204, 0)
 }
@@ -412,7 +629,7 @@ enum ScanState {
     /// バックグラウンドでスキャン中
     Loading {
         dir: PathBuf,
-        rx: mpsc::Receiver<(Vec<PathBuf>, Vec<PathBuf>, Vec<PathBuf>)>,
+        rx: mpsc::Receiver<dir::DirScan>,
         started_at: std::time::Instant,
     },
     /// スキャン完了
@@ -462,12 +679,19 @@ pub struct NekoviewApp {
     pub(crate) config: AppConfig,
     current_dir: PathBuf,
     subdirs: Vec<PathBuf>,
+    /// `subdirs` の更新日時（フォルダカードの日付ソート用。取得できたものだけ）
+    subdir_mtimes: HashMap<PathBuf, std::time::SystemTime>,
     archives: Vec<PathBuf>,
     tree_root: PathBuf,
     tree_expanded: HashSet<PathBuf>,
     tree_children: HashMap<PathBuf, Vec<PathBuf>>,
+    /// 実ツリーの子フォルダの更新日時（日付順の並び条件用。別スレッドで調べる）
+    tree_mtimes: real_tree_sort::TreeMtimes,
+    tree_mtimes_rx: Option<mpsc::Receiver<Vec<(PathBuf, Option<std::time::SystemTime>)>>>,
     /// 左ペイン: 実フォルダツリー / お気に入りペインの切替状態
     folder_pane_tab: FolderPaneTab,
+    /// 仮想フォルダタブのUIモック状態（3M。実データ未接続）
+    virtual_state: virtual_ui::VirtualState,
     /// キーボードフォーカスが現在どの領域にあるか（Tab/Shift+Tabで巡回）
     pub(crate) focused_pane: FocusPane,
     /// 実ツリー内のプレターゲティングカーソル（Enterで確定navigate）
@@ -487,10 +711,25 @@ pub struct NekoviewApp {
     favorite_delete_confirm: Option<u8>,
     /// ビューアー右クリック「お気に入り詳細設定」ダイアログの状態
     favorite_detail_dialog: Option<FavoriteDetailDialogState>,
+    /// エクスプローラー右クリック「ソート条件」一括変更ダイアログの状態（モック段階）
+    sort_condition_dialog: Option<SortConditionDialogState>,
+    /// エクスプローラー右クリック「しおり保存」一括変更ダイアログの状態（モック段階）
+    bookmark_setting_dialog: Option<BookmarkSettingDialogState>,
+    /// エクスプローラー右クリック「見開き設定」一括変更ダイアログの状態（モック段階）
+    spread_setting_dialog: Option<SpreadSettingDialogState>,
     /// Some(_) の間、中央グリッドは実ディレクトリではなく選択中のお気に入り
     /// （フォルダ横断）一覧を表示している。
     viewing_favorites: Option<FavoriteSelection>,
     viewing_dir: Option<PathBuf>,
+    /// Some(id) の間、中央グリッドは仮想ノード（`/` は 0）経由の表示。ファイルはそのノードの
+    /// 実パス（current_dir）を実スキャンして出し、フォルダカードと「↑」は仮想ツリーが正になる。
+    /// navigate_to / navigate_to_drive / タブ離脱で必ず None に戻す。
+    viewing_virtual_node: Option<u32>,
+    /// 仮想ノード表示のため current_dir を実パスへ移す直前の、実ツリータブ自身の位置の退避。
+    /// last_dir の保存と実表示への復帰はこちらを使う（仮想タブに位置を引っ張られないため）。
+    real_dir_stash: real_dir_stash::RealDirStash,
+    /// viewing_virtual_node のノードの実パスが到達不能（リンク切れ）。実スキャンは行わない。
+    virtual_link_broken: bool,
     /// 現PWDのサムネイル進捗 (path, current, total, replacing_old)。
     cd_summary: Option<(PathBuf, usize, usize, bool)>,
     /// バックグラウンドで計算中のサマリー結果受信チャンネル
@@ -575,6 +814,9 @@ pub struct NekoviewApp {
     tree_autofocus_pending: Option<TreeScanPending>,
     /// 自動追従が完了した直後の1フレームだけtrueにし、対象ノード描画時にスクロールを行わせる
     tree_autofocus_scroll_pending: bool,
+    /// 仮想タブの「実ツリーと同期」で始めた追従が、経路の途中で打ち切られたとき通知する
+    /// （`start_tree_autofocus` で下ろし、同期側が立てる。他の追従は通知しない）
+    tree_autofocus_notify_abort: bool,
     /// フレームごとに更新されるウィンドウサイズ（論理ピクセル）
     window_size: (u32, u32),
     /// ビューアウィンドウの位置・サイズスロット（viewer と共有して永続化）
@@ -608,6 +850,12 @@ pub struct NekoviewApp {
     pub(crate) settings_draft: SettingsDraft,
     /// 翻訳機能(実験的)の永続設定。設定ダイアログの[反映]でのみ書き換わる。
     pub(crate) translate_cfg: crate::translate::TranslateConfig,
+    /// お気に入り・検索・仮想フォルダの各タブが最後にいた位置（stateファイルに保存・復元）。
+    pub(crate) tab_positions: crate::gui_config::TabPositions,
+    /// ツリー（仮想・実）の並び条件（stateファイルに保存・復元）。
+    pub(crate) tree_sorts: crate::tree_sort::TreeSorts,
+    /// ツリーの「ソート条件設定」ダイアログ。
+    tree_sort_dialog: Option<tree_sort_ui::TreeSortDialog>,
     /// 接続テストの進行中受信チャンネル（ダイアログを閉じたら破棄）。
     pub(crate) translate_conn_rx: Option<mpsc::Receiver<crate::translate::ConnCheckMsg>>,
     /// 直近の接続テスト結果表示用（疎通/vision結果の文字列、または失敗理由）。
@@ -672,6 +920,8 @@ pub struct NekoviewApp {
     pub(crate) show_hidden: bool,
     /// サムネカード下部の情報帯の表示量（メニューバーの1ボタンで循環）。
     pub(crate) card_info_mode: CardInfoMode,
+    /// 評価帯（info2）の表示量
+    pub(crate) card_rating_mode: CardRatingMode,
     /// 情報帯の「更新日時」行に使う日付書式。設定ダイアログのエクスプローラータブで編集。
     pub(crate) card_date_format: crate::card_date_format::CardDateFormat,
     /// 情報帯の見た目（背景色・透過度・文字色・文字サイズ）。今は Default 固定。
@@ -681,8 +931,14 @@ pub struct NekoviewApp {
     /// 可視カードぶんだけ遅延取得するファイルメタデータのキャッシュ: パス → (更新日時, サイズbytes)。
     /// スキャンで archives を作り直すたびにクリアする。
     pub(crate) archive_meta_cache: HashMap<PathBuf, (std::time::SystemTime, u64)>,
+    /// 評価帯（info2）用の評価・訪問キャッシュ。値の None = レコード不在（一度も開いていない）。
+    /// スキャン時に現在フォルダぶんを一括ロードし、横断一覧のカードは描画時に遅延取得する。
+    /// ビューアが評価・訪問を書いたら該当パスを即更新する。
+    pub(crate) archive_rating_cache: HashMap<PathBuf, Option<crate::spread_state::ArchiveRating>>,
     sort_key: ExplorerSortKey,
     sort_ascending: bool,
+    /// 第2ソートセット（スコア／訪問回数）。ON のときは第1セット（sort_key）がサブ軸になる
+    rating_sort: crate::explorer_sort::RatingSort,
     /// サムネグリッドの統一カーソル位置（↑/サブフォルダ/アーカイブを貫通）
     grid_cursor: Option<GridEntry>,
     selected_archive_index: Option<usize>,
@@ -695,6 +951,8 @@ pub struct NekoviewApp {
     /// サムネフィルタ: 有効フラグ・入力文字列・絞り込み後の archives インデックス一覧
     filter_enabled: bool,
     filter_text: String,
+    /// 評価フィルタ（文字列フィルタとAND結合。チェックボックスで一括ON/OFF）
+    rating_filter: crate::rating_filter::RatingFilter,
     filtered_indices: Vec<usize>,
     /// 検索結果の履歴（新しい実行が先頭。セッション内のみ保持）
     search_history: Vec<SearchResultEntry>,
@@ -721,8 +979,10 @@ pub struct NekoviewApp {
     explorer_viewport_h: f32,
     /// フォルダ名ラベルの1秒ホバー救済用: (対象パス, ホバー開始時刻)
     folder_label_hover: Option<(PathBuf, std::time::Instant)>,
-    /// ステータスウィンドウ表示フラグ（[?] ボタンでトグル）
+    /// ステータスウィンドウ表示フラグ（[stat] ボタンでトグル）
     show_status_window: bool,
+    /// ヘルプ（ツールチップ）表示フラグ（[?] ボタンでトグル）。永続化しない
+    help_enabled: bool,
     status_window_data: Arc<Mutex<crate::view_status::StatusData>>,
     /// ステータスデータを最後に更新した時刻（1秒間隔制御用）
     last_status_update: std::time::Instant,
@@ -756,27 +1016,48 @@ pub struct NekoviewApp {
     /// 項目(D): viewer_cfg.exif_orientation_enabled の変化検知用（設定ダイアログ・
     /// ビューアーツールバーのチェックボックス、どちらの経路で変更されても拾えるようにする）。
     exif_orientation_enabled_last_seen: bool,
+    /// viewer_cfg.magnifier_on の変化検知用（ON/OFFで即時に再デコードを発火する）。
+    magnifier_on_last_seen: bool,
+    /// viewer_cfg.image_filter の変化検知用（exif_orientation_enabled_last_seenと同じ方式）。
+    image_filter_last_seen: crate::image_filter::ImageFilterSettings,
+    /// viewer_cfg.tool_palette.visible の変化検知用。エクスプローラーメニューのトグルで
+    /// 変更された値をビューアー側（開きっぱなしのViewerState）へライブ反映するのに使う。
+    tool_palette_visible_last_seen: bool,
 }
 
 mod scan;
+mod folder_sort;
 mod workers;
 mod viewer_host;
 mod input;
 mod panels;
 mod favorites_ui;
+mod real_dir_stash;
+mod tab_position;
+mod virtual_ui;
+mod tree_sort_ui;
+mod real_tree_sort;
+mod bulk_settings_ui;
 mod search_ui;
 mod search;
 mod status;
 mod nav_icons;
 mod calendar_gui;
 mod open_progress;
+mod help;
 
 #[cfg(test)]
 mod glyph_audit;
 
 
 impl NekoviewApp {
-    pub fn new(start_dir: PathBuf, config: AppConfig, viewer_slots: [Option<WindowSlot>; 4], sort_state: SortState, viewer_cfg: ViewerConfig, show_hidden: bool, card_info_mode: &str, card_date_format: crate::card_date_format::CardDateFormat, translate_cfg: crate::translate::TranslateConfig, open_target: Option<PathBuf>, ctx: egui::Context) -> Self {
+    pub fn new(start_dir: PathBuf, config: AppConfig, viewer_slots: [Option<WindowSlot>; 4], sort_state: SortState, viewer_cfg: ViewerConfig, show_hidden: bool, card_info_mode: &str, card_rating_mode: &str, card_date_format: crate::card_date_format::CardDateFormat, translate_cfg: crate::translate::TranslateConfig, tab_positions: crate::gui_config::TabPositions, tree_sorts: crate::tree_sort::TreeSorts, open_target: Option<PathBuf>, ctx: egui::Context) -> Self {
+        // 「前回フォルダに復帰」がオフなら、他のフォルダ系タブの保存位置も復元しない（既定に戻す）
+        let tab_positions = if config.startup.use_last_dir {
+            tab_positions
+        } else {
+            crate::gui_config::TabPositions::default()
+        };
         // timeのローカルオフセット取得は、Unixでは他スレッド起動前に行う必要がある。
         let local_today = calendar_gui::LocalDate::today_local();
         let (cache_max, cache_min, file_cache_max) = crate::cache::resolve_cache_budgets(config.cache_total_mb);
@@ -787,6 +1068,12 @@ impl NekoviewApp {
         let max_decode_target = (config.max_decode_edge, config.max_decode_edge);
         let config_root = config.config_root.clone();
         let settings_draft = SettingsDraft::from_current(&config, &viewer_cfg, show_hidden, card_date_format, &translate_cfg);
+        // viewer_cfg は下でArc<Mutex<..>>へムーブするため、そこで必要な値は先に控えておく
+        // （config_root等、他のconfig系フィールドと同じ扱い）。
+        let redecode_trigger_seq = viewer_cfg.redecode_trigger_seq;
+        let exif_orientation_enabled = viewer_cfg.exif_orientation_enabled;
+        let image_filter_snapshot = crate::image_filter::normalize_for_change_detection(viewer_cfg.image_filter);
+        let tool_palette_visible_snapshot = viewer_cfg.tool_palette.visible;
         let (req_tx, res_rx) = spawn_worker(config.viewer_filter.to_image_filter(), config.resolved_decode_threads(), ctx.clone(), cache_max, ring_bounds, frame_hard_limit_bytes);
         let (thumb_req_tx, thumb_res_rx, thumb_session) =
             spawn_thumb_worker(config.resolved_decode_threads(), ctx.clone());
@@ -828,11 +1115,15 @@ impl NekoviewApp {
             config,
             current_dir: start_dir,
             subdirs: Vec::new(),
+            subdir_mtimes: HashMap::new(),
             archives: Vec::new(),
             tree_root,
             tree_expanded: HashSet::new(),
             tree_children: HashMap::new(),
+            tree_mtimes: HashMap::new(),
+            tree_mtimes_rx: None,
             folder_pane_tab: FolderPaneTab::RealTree,
+            virtual_state: virtual_ui::VirtualState::new(),
             focused_pane: FocusPane::TreeTab,
             tree_cursor: None,
             drive_cursor: None,
@@ -843,8 +1134,14 @@ impl NekoviewApp {
             favorite_dialog: None,
             favorite_delete_confirm: None,
             favorite_detail_dialog: None,
+            sort_condition_dialog: None,
+            bookmark_setting_dialog: None,
+            spread_setting_dialog: None,
             viewing_favorites: None,
             viewing_dir: None,
+            viewing_virtual_node: None,
+            real_dir_stash: real_dir_stash::RealDirStash::default(),
+            virtual_link_broken: false,
             cd_summary: None,
             cd_summary_rx: None,
             cd_summary_updated_at: None,
@@ -854,6 +1151,7 @@ impl NekoviewApp {
                 let db = crate::spread_state::open_spread_db(&config_root);
                 if let Some(db) = &db {
                     crate::favorites::init_favorite_tables(db);
+                    crate::virtual_folders::init_virtual_folder_tables(db);
                     // 候補刷新で廃止した空洞・豆腐マーカーを塗り版へ一括移行
                     crate::favorites::migrate_markers(db, FAVORITE_MARKER_MIGRATION);
                 }
@@ -906,6 +1204,7 @@ impl NekoviewApp {
             tree_autofocus: None,
             tree_autofocus_pending: None,
             tree_autofocus_scroll_pending: false,
+            tree_autofocus_notify_abort: false,
             window_size: (1024, 768),
             viewer_slots,
             raw_image_files: std::collections::HashSet::new(),
@@ -921,6 +1220,9 @@ impl NekoviewApp {
             settings_tab: SettingsTab::Common,
             settings_draft,
             translate_cfg,
+            tab_positions,
+            tree_sorts,
+            tree_sort_dialog: None,
             translate_conn_rx: None,
             translate_conn_status: None,
             translate_conn_verified: false,
@@ -949,12 +1251,15 @@ impl NekoviewApp {
             viewer_focus_requested: false,
             show_hidden,
             card_info_mode: CardInfoMode::from_state_str(card_info_mode),
+            card_rating_mode: CardRatingMode::from_state_str(card_rating_mode),
             card_date_format,
             card_info_style: CardInfoStyle::default(),
             card_info_hover: None,
             archive_meta_cache: HashMap::new(),
+            archive_rating_cache: HashMap::new(),
             sort_key: ExplorerSortKey::from_state_key(&sort_state.key),
             sort_ascending: sort_state.ascending,
+            rating_sort: sort_state.rating,
             grid_cursor: None,
             selected_archive_index: None,
             selected_archive_meta: None,
@@ -962,6 +1267,7 @@ impl NekoviewApp {
             select_anchor: None,
             filter_enabled: true,
             filter_text: String::new(),
+            rating_filter: crate::rating_filter::RatingFilter::default(),
             filtered_indices: Vec::new(),
             search_history: Vec::new(),
             search_selected: None,
@@ -980,6 +1286,7 @@ impl NekoviewApp {
             explorer_viewport_h: 0.0,
             folder_label_hover: None,
             show_status_window: false,
+            help_enabled: false,
             status_window_data: Arc::new(Mutex::new(crate::view_status::StatusData::default())),
             last_status_update: std::time::Instant::now(),
             status_update_requested: Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -987,13 +1294,16 @@ impl NekoviewApp {
             viewer_egui_ctx: None,
             translate_egui_ctx: None,
             translate_last_seen_parent_keys: Vec::new(),
-            resize_redecode_last_seq: viewer_cfg.redecode_trigger_seq,
+            resize_redecode_last_seq: redecode_trigger_seq,
             resize_redecode_deadline: None,
             decode_target: Some(max_decode_target),
             active_decode_generation: 0,
             preparing_decode_generation: None,
             decode_generation: 0,
-            exif_orientation_enabled_last_seen: viewer_cfg.exif_orientation_enabled,
+            exif_orientation_enabled_last_seen: exif_orientation_enabled,
+            magnifier_on_last_seen: false,
+            image_filter_last_seen: image_filter_snapshot,
+            tool_palette_visible_last_seen: tool_palette_visible_snapshot,
         };
         app.start_scan();
         app.refresh_favorite_folders();
@@ -1009,23 +1319,33 @@ impl NekoviewApp {
         for mount in app.gvfs_mount_entries.clone() {
             app.spawn_mount_check_if_needed(mount.path);
         }
+        // 最後に選んでいたタブを開く（実ツリー以外のとき。起動処理が済んだ後に切り替える）
+        app.restore_active_tab();
         app
     }
 
     /// カレントディレクトリ・ウィンドウ状態・ソート順・言語・ビューア設定・設定ダイアログで
     /// 編集されうる AppConfig 値をまとめて state ファイルへ書き戻す。
+    /// 実ツリータブ自身の位置。仮想ノード表示中は、仮想側へ移る前の実位置（`last_dir` に保存する値）。
+    pub(super) fn real_tab_dir(&self) -> &std::path::Path {
+        self.real_dir_stash.effective(&self.current_dir)
+    }
+
     pub(crate) fn persist_state(&self) {
         crate::gui_config::save_state(
             &self.config.config_root,
-            &self.current_dir, self.window_size, &self.viewer_slots,
-            &SortState { key: self.sort_key.as_state_key().to_string(), ascending: self.sort_ascending },
+            self.real_tab_dir(), self.window_size, &self.viewer_slots,
+            &SortState { key: self.sort_key.as_state_key().to_string(), ascending: self.sort_ascending, rating: self.rating_sort },
             i18n::lang_code(),
             &*self.viewer_cfg.lock().unwrap(),
             self.show_hidden,
             self.card_info_mode.as_state_str(),
+            self.card_rating_mode.as_state_str(),
             &self.card_date_format,
             &self.config,
             &self.translate_cfg,
+            &self.tab_positions,
+            &self.tree_sorts,
         );
     }
 }
@@ -1053,5 +1373,50 @@ mod search_result_tests {
             history.iter().map(|e| e.label.as_str()).collect::<Vec<_>>(),
             vec!["3回目", "2回目", "1回目"],
         );
+    }
+}
+
+#[cfg(test)]
+mod virtual_focus_order_tests {
+    use super::*;
+
+    fn walk(open: bool, forward: bool) -> Vec<FocusPane> {
+        let mut out = vec![FocusPane::FolderTabBar];
+        let mut cur = FocusPane::FolderTabBar;
+        loop {
+            cur = if forward {
+                cur.next(FolderPaneTab::VirtualFolders, open)
+            } else {
+                cur.prev(FolderPaneTab::VirtualFolders, open)
+            };
+            if cur == FocusPane::FolderTabBar {
+                return out;
+            }
+            out.push(cur);
+        }
+    }
+
+    #[test]
+    fn tab_order_closed_skips_real_tree() {
+        use FocusPane::*;
+        assert_eq!(walk(false, true), [FolderTabBar, VirtualTab, Grid, Filter, MenuBar]);
+    }
+
+    #[test]
+    fn tab_order_open_visits_real_tree_and_drives_after_virtual() {
+        use FocusPane::*;
+        assert_eq!(walk(true, true), [FolderTabBar, VirtualTab, TreeTab, Drives, Grid, Filter, MenuBar]);
+    }
+
+    #[test]
+    fn shift_tab_is_exact_reverse() {
+        for open in [false, true] {
+            let mut fwd = walk(open, true);
+            let mut back = walk(open, false);
+            fwd.remove(0);
+            back.remove(0);
+            back.reverse();
+            assert_eq!(fwd, back, "open={open}");
+        }
     }
 }

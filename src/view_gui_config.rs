@@ -12,11 +12,16 @@ use crate::gui_config::{
     TRANSITION_DURATION_CEILING_MS, TRANSITION_DURATION_FLOOR_MS,
 };
 use crate::i18n;
+use crate::image_filter::{
+    BLC_PRESET_TEMPS_K, BLC_TEMP_CEILING_K, BLC_TEMP_FLOOR_K, BRIGHTNESS_CEILING, BRIGHTNESS_DEFAULT,
+    BRIGHTNESS_FLOOR, ColorFilterMode, FILTER_STAGE_COUNT, FilterStage, GAMMA_CEILING, GAMMA_DEFAULT,
+    GAMMA_FLOOR, ImageFilterSettings, SHARPNESS_CEILING, SHARPNESS_DEFAULT, SHARPNESS_FLOOR,
+};
 use crate::keymap::{Keymap, ReaderAction, ExplorerAction, KeyCombo, MouseCombo, MouseAction, mouse_action_name};
 use crate::translate::{OVERLAY_WIDTH_CEILING, OVERLAY_WIDTH_FLOOR, TranslateConfig};
 use crate::view_explorer::NekoviewApp;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum SettingsTab {
     Common,
     Explorer,
@@ -26,10 +31,81 @@ pub(crate) enum SettingsTab {
     Slideshow,
     Translate,
     Keymap,
+    /// コマ送り（疑似コマ送りモード）。2段目の先頭。
+    Koma,
     #[cfg(windows)]
     Windows,
     Other,
     Debug,
+}
+
+/// 設定タブの並び（段ごと）。1段目は従来の並びのまま、2段目はコマ送り・その他・デバッグ。
+fn settings_tab_rows() -> [Vec<SettingsTab>; 2] {
+    #[cfg_attr(not(windows), allow(unused_mut))]
+    let mut first = vec![
+        SettingsTab::Common,
+        SettingsTab::Explorer,
+        SettingsTab::Anim,
+        SettingsTab::Static,
+        SettingsTab::Viewer,
+        SettingsTab::Slideshow,
+        SettingsTab::Translate,
+        SettingsTab::Keymap,
+    ];
+    #[cfg(windows)]
+    first.push(SettingsTab::Windows);
+    [first, vec![SettingsTab::Koma, SettingsTab::Other, SettingsTab::Debug]]
+}
+
+fn settings_tab_label(tab: SettingsTab) -> &'static str {
+    let t = i18n::t();
+    match tab {
+        SettingsTab::Common => t.settings_tab_common(),
+        SettingsTab::Explorer => t.settings_tab_explorer(),
+        SettingsTab::Anim => t.settings_tab_anim(),
+        SettingsTab::Static => t.settings_tab_static(),
+        SettingsTab::Viewer => t.settings_tab_viewer(),
+        SettingsTab::Slideshow => t.settings_tab_slideshow(),
+        SettingsTab::Translate => t.settings_tab_translate(),
+        SettingsTab::Keymap => "キーアサイン",
+        SettingsTab::Koma => t.settings_tab_koma(),
+        #[cfg(windows)]
+        SettingsTab::Windows => t.settings_tab_windows(),
+        SettingsTab::Other => t.settings_tab_other(),
+        SettingsTab::Debug => t.settings_tab_debug(),
+    }
+}
+
+/// コマ送りタブの編集用下書き（超過分の自動縮小）。しきい値は窓の幅(X)/高さ(Y)に対する超過の％。
+/// 範囲・刻みの丸めは `MagnifierConfig` のsetterが行う。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct KomaShrinkDraft {
+    x_enabled: bool,
+    y_enabled: bool,
+    x_pct: u32,
+    y_pct: u32,
+    /// 確認ダイアログを表示しない（解除用。ダイアログ自体は未実装）。
+    hide_ask: bool,
+}
+
+impl KomaShrinkDraft {
+    fn from_config(m: &crate::magnifier::MagnifierConfig) -> Self {
+        Self {
+            x_enabled: m.koma_shrink_x(),
+            y_enabled: m.koma_shrink_y(),
+            x_pct: m.koma_shrink_x_pct(),
+            y_pct: m.koma_shrink_y_pct(),
+            hide_ask: m.koma_shrink_hide_ask(),
+        }
+    }
+
+    fn apply_to(&self, m: &mut crate::magnifier::MagnifierConfig) {
+        m.set_koma_shrink_x(self.x_enabled);
+        m.set_koma_shrink_y(self.y_enabled);
+        m.set_koma_shrink_x_pct(self.x_pct);
+        m.set_koma_shrink_y_pct(self.y_pct);
+        m.set_koma_shrink_hide_ask(self.hide_ask);
+    }
 }
 
 /// 8K UHD(7680x4320)の長辺を「取り扱い上限解像度」スライダーの上限に使う。
@@ -90,6 +166,8 @@ pub(crate) struct SettingsDraft {
     /// スライドショー実行中のトランジション種類・遷移時間(ms)。通常時とは独立。
     slideshow_transition_kind: TransitionKind,
     slideshow_transition_duration_ms: u64,
+    /// コマ送りタブ: X/Yそれぞれの超過分の自動縮小の有効フラグ・しきい値と、確認ダイアログの解除フラグ。
+    koma_shrink: KomaShrinkDraft,
     translate_base_url: String,
     translate_ocr_model: String,
     translate_translation_model: String,
@@ -118,6 +196,12 @@ pub(crate) struct SettingsDraft {
     /// その他タブの起動時フォルダ設定。
     startup_use_last_dir: bool,
     startup_fixed_dir: String,
+    /// 静止画設定タブ: 画像処理フィルター一式。他タブと異なり[反映]を待たず、値が変化した
+    /// 時刻から一定時間後に自動でviewer_cfgへ書き込み・永続化する（即時セーブ方式）。
+    image_filter: ImageFilterSettings,
+    /// image_filterが最後に変化した時刻。draw_settings_dialogがこれを見てデバウンス発火する。
+    /// Noneは「直近の変更が既に反映済み・保留なし」。
+    image_filter_last_changed: Option<std::time::Instant>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -227,6 +311,7 @@ impl SettingsDraft {
             slideshow_manual_behavior: viewer_cfg.slideshow_manual_behavior,
             slideshow_transition_kind: viewer_cfg.slideshow_transition_kind,
             slideshow_transition_duration_ms: viewer_cfg.slideshow_transition_duration_ms,
+            koma_shrink: KomaShrinkDraft::from_config(&viewer_cfg.magnifier),
             translate_base_url: translate_cfg.base_url.clone(),
             translate_ocr_model: translate_cfg.ocr_model.clone(),
             translate_translation_model: translate_cfg.translation_model.clone(),
@@ -245,6 +330,8 @@ impl SettingsDraft {
             startup_use_last_dir: config.startup.use_last_dir,
             startup_fixed_dir: config.startup.fixed_dir.as_deref()
                 .map(|p| p.to_string_lossy().to_string()).unwrap_or_default(),
+            image_filter: viewer_cfg.image_filter,
+            image_filter_last_changed: None,
         }
     }
 
@@ -292,6 +379,7 @@ impl SettingsDraft {
         config.default_slot = self.default_slot;
         viewer_cfg.transition_kind = self.transition_kind;
         viewer_cfg.transition_duration_ms = self.transition_duration_ms;
+        self.koma_shrink.apply_to(&mut viewer_cfg.magnifier);
         viewer_cfg.slideshow_interval_ms = self.slideshow_interval_ms;
         viewer_cfg.slideshow_manual_behavior = self.slideshow_manual_behavior;
         viewer_cfg.slideshow_transition_kind = self.slideshow_transition_kind;
@@ -302,6 +390,150 @@ impl SettingsDraft {
         translate_cfg.translation_model = self.translate_translation_model.trim().to_string();
         translate_cfg.overlay_width = self.translate_overlay_width;
         config.keymap = self.keymap.clone();
+
+        viewer_cfg.image_filter = self.image_filter;
+    }
+}
+
+/// `from`位置のカードを`to`位置のカードへ割り込ませ、間の要素を1つずつ押し出す。
+/// `from == to`は無変化。ドロップ先カードの「そのカードの位置に割り込む」動作
+/// （例: [1,2,3,4]で1を3の位置へドロップ→[2,3,1,4]、3を1の位置へドロップ→[3,1,2,4]）。
+fn reorder_by_drop(order: [FilterStage; FILTER_STAGE_COUNT], from: usize, to: usize) -> [FilterStage; FILTER_STAGE_COUNT] {
+    if from == to {
+        return order;
+    }
+    let mut v: Vec<FilterStage> = order.to_vec();
+    let item = v.remove(from);
+    v.insert(to.min(v.len()), item);
+    v.try_into().unwrap_or(order)
+}
+
+fn filter_stage_label(stage: FilterStage) -> &'static str {
+    match stage {
+        FilterStage::ColorFilter => i18n::t().settings_image_filter_stage_color_label(),
+        FilterStage::Gamma       => i18n::t().settings_image_filter_gamma_label(),
+        FilterStage::Brightness  => i18n::t().settings_image_filter_brightness_label(),
+        FilterStage::Sharpness   => i18n::t().settings_image_filter_sharpness_label(),
+    }
+}
+
+/// ステージに対応する有効/無効フラグへの可変参照。色系統フィルターは「なし」自体が
+/// OFFを兼ねるため対象外（Noneを返す）。
+fn stage_enabled_mut(settings: &mut ImageFilterSettings, stage: FilterStage) -> Option<&mut bool> {
+    match stage {
+        FilterStage::ColorFilter => None,
+        FilterStage::Gamma       => Some(&mut settings.gamma_enabled),
+        FilterStage::Brightness  => Some(&mut settings.brightness_enabled),
+        FilterStage::Sharpness   => Some(&mut settings.sharpness_enabled),
+    }
+}
+
+/// ガンマ・ブライトネス・シャープネスの有効チェックボックス＋スライダー＋「既定値に戻す」
+/// ボタン。設定画面（画像フィルタータブ）と、ビューアー内ツールパレットのDialog型スロット
+/// （tool_palette::dialog::image_filter_dialog）の両方から呼ぶ共通実装。`ImageFilterSettings`
+/// そのものだけを受け取るため、呼び出し側の状態管理（SettingsDraft/ViewerConfig等）に依存しない。
+pub(crate) fn draw_image_filter_tone_sliders(ui: &mut egui::Ui, filter: &mut ImageFilterSettings) {
+    ui.scope(|ui| {
+        let reset_label = i18n::t().settings_image_filter_reset_button();
+
+        // 1項目を2段で描く: 1段目=[チェックボックス] 項目名 ...... [現在値]、
+        // 2段目=[====スライダー(数値非表示)====] [既定値に戻す]。横一列より幅を取らない。
+        // チェックOFF中もスライダー・既定値ボタンは操作可能（値は保持され、処理適用だけが
+        // スキップされる）。再デコードの誤発火はimage_filter::normalize_for_change_detection側の
+        // ガードレールで防いでいるため、ここでUI操作を制限する必要はない。
+        let draw_row = |
+            ui: &mut egui::Ui,
+            enabled: &mut bool,
+            label: &str,
+            value_text: String,
+            value: &mut f32,
+            range: std::ops::RangeInclusive<f32>,
+            default: f32,
+        | {
+            ui.horizontal(|ui| {
+                ui.checkbox(enabled, "");
+                ui.label(label);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(value_text);
+                });
+            });
+            ui.horizontal(|ui| {
+                ui.add(egui::Slider::new(value, range).show_value(false));
+                if ui.button(reset_label).clicked() {
+                    *value = default;
+                }
+            });
+        };
+
+        draw_row(
+            ui, &mut filter.gamma_enabled, i18n::t().settings_image_filter_gamma_label(),
+            format!("{:.2}", filter.gamma), &mut filter.gamma, GAMMA_FLOOR..=GAMMA_CEILING, GAMMA_DEFAULT,
+        );
+        draw_row(
+            ui, &mut filter.brightness_enabled, i18n::t().settings_image_filter_brightness_label(),
+            format!("{:.1}%", filter.brightness), &mut filter.brightness, BRIGHTNESS_FLOOR..=BRIGHTNESS_CEILING, BRIGHTNESS_DEFAULT,
+        );
+        draw_row(
+            ui, &mut filter.sharpness_enabled, i18n::t().settings_image_filter_sharpness_label(),
+            format!("{:.1}", filter.sharpness), &mut filter.sharpness, SHARPNESS_FLOOR..=SHARPNESS_CEILING, SHARPNESS_DEFAULT,
+        );
+    });
+}
+
+/// 画像処理フィルターの処理順カードをD&Dで並べ替えるUI。デフォルト順でカードを並べておき、
+/// ドラッグしたカードをドロップ先カードの位置へ割り込ませる（egui 0.35標準のdnd_drag_source/
+/// dnd_hover_payload/dnd_release_payloadを使用）。色系統フィルター以外の3ステージには
+/// 有効/無効チェックボックスも合わせて表示する（値を保持したまま一時的にOFFにできる）。
+fn draw_filter_order_cards(ui: &mut egui::Ui, settings: &mut ImageFilterSettings) {
+    let mut drop_target: Option<(usize, usize)> = None;
+    let order = settings.filter_order;
+
+    ui.vertical(|ui| {
+        for (idx, &stage) in order.iter().enumerate() {
+            let item_id = egui::Id::new("image_filter_order_card").with(idx);
+            let frame = egui::Frame::group(ui.style());
+
+            let dragging_this = ui.ctx().is_being_dragged(item_id);
+            let response = ui
+                .dnd_drag_source(item_id, idx, |ui| {
+                    frame.show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            if stage == FilterStage::ColorFilter {
+                                // 色系統フィルターは「なし」自体がOFF、それ以外の選択がON。
+                                // 実際の変更は上部のラジオボタンで行う。checkedは毎フレーム
+                                // color_filter_modeから再計算するため、クリックしても次フレームで
+                                // 元の状態に戻る（他の3枚と見た目を揃えるためadd_enabledは使わない）。
+                                let mut checked = settings.color_filter_mode != ColorFilterMode::None;
+                                ui.checkbox(&mut checked, "");
+                            } else if let Some(enabled) = stage_enabled_mut(settings, stage) {
+                                ui.checkbox(enabled, "");
+                            }
+                            ui.label(format!("{}.", idx + 1));
+                            ui.label(filter_stage_label(stage));
+                        });
+                    });
+                })
+                .response;
+
+            if !dragging_this {
+                if let Some(dragged_idx) = response.dnd_hover_payload::<usize>() {
+                    if *dragged_idx != idx {
+                        ui.painter().hline(
+                            response.rect.x_range(),
+                            response.rect.bottom(),
+                            ui.visuals().widgets.active.bg_stroke,
+                        );
+                    }
+                }
+                if let Some(dragged_idx) = response.dnd_release_payload::<usize>() {
+                    drop_target = Some((*dragged_idx, idx));
+                }
+            }
+        }
+    });
+
+    if let Some((from, to)) = drop_target {
+        settings.filter_order = reorder_by_drop(order, from, to);
     }
 }
 
@@ -1204,6 +1436,24 @@ impl NekoviewApp {
         self.settings_open = true;
     }
 
+    /// 静止画設定タブだけの即時セーブ方式: image_filterの変更から一定時間(デバウンス)
+    /// 経過したら、[反映]ボタンを待たずviewer_cfgへ直接書き込み・永続化する。
+    /// ドラッグ中の連続した値変化のたびに重い再デコードが走るのを防ぎつつ、
+    /// 操作が止まった時点でその値がそのまま確定値になる（間違えても各スライダーは
+    /// 既定値に戻せるため、ロールバックUIは持たない）。
+    fn poll_image_filter_debounce(&mut self, ctx: &egui::Context) {
+        let Some(changed_at) = self.settings_draft.image_filter_last_changed else { return };
+        let debounce = std::time::Duration::from_millis(crate::image_filter::FILTER_PREVIEW_DEBOUNCE_MS);
+        let elapsed = changed_at.elapsed();
+        if elapsed >= debounce {
+            self.viewer_cfg.lock().unwrap().image_filter = self.settings_draft.image_filter;
+            self.persist_state();
+            self.settings_draft.image_filter_last_changed = None;
+        } else {
+            ctx.request_repaint_after(debounce - elapsed);
+        }
+    }
+
     /// 設定ダイアログ本体。`egui::Modal` はこの `ctx`（エクスプローラー窓）内の入力を
     /// 自動的にブロックする。ビューアー窓側は別 Context のため、`render_viewer` 側で
     /// 同様の Modal を出して操作を止める（`settings_is_open()` 参照）。
@@ -1213,6 +1463,7 @@ impl NekoviewApp {
         if !self.settings_open {
             return;
         }
+        self.poll_image_filter_debounce(ctx);
         let mut close = false;
         let mut apply = false;
         egui::Modal::new(egui::Id::new("settings_dialog")).show(ctx, |ui| {
@@ -1236,25 +1487,13 @@ impl NekoviewApp {
             ui.heading(i18n::t().settings_title());
             ui.separator();
 
-            ui.horizontal(|ui| {
-                let mut tabs = vec![
-                    (SettingsTab::Common, i18n::t().settings_tab_common()),
-                    (SettingsTab::Explorer, i18n::t().settings_tab_explorer()),
-                    (SettingsTab::Anim, i18n::t().settings_tab_anim()),
-                    (SettingsTab::Static, i18n::t().settings_tab_static()),
-                    (SettingsTab::Viewer, i18n::t().settings_tab_viewer()),
-                    (SettingsTab::Slideshow, i18n::t().settings_tab_slideshow()),
-                    (SettingsTab::Translate, i18n::t().settings_tab_translate()),
-                    (SettingsTab::Keymap, "キーアサイン"),
-                ];
-                #[cfg(windows)]
-                tabs.push((SettingsTab::Windows, i18n::t().settings_tab_windows()));
-                tabs.push((SettingsTab::Other, i18n::t().settings_tab_other()));
-                tabs.push((SettingsTab::Debug, i18n::t().settings_tab_debug()));
-                for (tab, label) in tabs {
-                    ui.selectable_value(&mut self.settings_tab, tab, label);
-                }
-            });
+            for row in settings_tab_rows() {
+                ui.horizontal(|ui| {
+                    for tab in row {
+                        ui.selectable_value(&mut self.settings_tab, tab, settings_tab_label(tab));
+                    }
+                });
+            }
             ui.separator();
 
             match self.settings_tab {
@@ -1266,6 +1505,7 @@ impl NekoviewApp {
                 SettingsTab::Slideshow => draw_settings_tab_slideshow(ui, &mut self.settings_draft),
                 SettingsTab::Translate => self.draw_settings_tab_translate(ui, ctx),
                 SettingsTab::Keymap => draw_settings_tab_keymap(ui, &mut self.settings_draft),
+                SettingsTab::Koma => draw_settings_tab_koma(ui, &mut self.settings_draft),
                 #[cfg(windows)]
                 SettingsTab::Windows => self.draw_settings_tab_windows(ui),
                 SettingsTab::Other => self.draw_settings_tab_other(ui),
@@ -1318,7 +1558,58 @@ impl NekoviewApp {
     }
 
     fn draw_settings_tab_static(&mut self, ui: &mut egui::Ui) {
-        ui.label(i18n::t().settings_static_placeholder());
+        let before = self.settings_draft.image_filter;
+        self.draw_settings_tab_static_inner(ui);
+        if self.settings_draft.image_filter != before {
+            self.settings_draft.image_filter_last_changed = Some(std::time::Instant::now());
+        }
+    }
+
+    /// draw_settings_tab_static本体。即時セーブの変更検知は呼び出し元(draw_settings_tab_static)
+    /// が前後の値を比較して行うため、ここでは通常通りdraftを編集するだけでよい。
+    fn draw_settings_tab_static_inner(&mut self, ui: &mut egui::Ui) {
+        ui.colored_label(egui::Color32::from_rgb(220, 160, 40), i18n::t().settings_image_filter_instant_save_notice());
+        ui.separator();
+
+        let draft = &mut self.settings_draft;
+
+        ui.label(i18n::t().settings_image_filter_color_section_label());
+        ui.horizontal(|ui| {
+            ui.radio_value(&mut draft.image_filter.color_filter_mode, ColorFilterMode::None, i18n::t().settings_image_filter_mode_none());
+            ui.radio_value(&mut draft.image_filter.color_filter_mode, ColorFilterMode::BlueLightCut, i18n::t().settings_image_filter_mode_blue_light_cut());
+            ui.radio_value(&mut draft.image_filter.color_filter_mode, ColorFilterMode::Sepia, i18n::t().settings_image_filter_mode_sepia());
+            ui.radio_value(&mut draft.image_filter.color_filter_mode, ColorFilterMode::Grayscale, i18n::t().settings_image_filter_mode_grayscale());
+        });
+        ui.label(i18n::t().settings_image_filter_color_explain());
+
+        if draft.image_filter.color_filter_mode == ColorFilterMode::BlueLightCut {
+            ui.indent("image_filter_blc_indent", |ui| {
+                ui.label(i18n::t().settings_image_filter_blc_temp_label());
+                ui.horizontal(|ui| {
+                    for &preset in &BLC_PRESET_TEMPS_K {
+                        if ui.button(format!("{preset}K")).clicked() {
+                            draft.image_filter.blc_color_temperature_k = preset;
+                        }
+                    }
+                });
+                ui.scope(|ui| {
+                    ui.spacing_mut().slider_width = 260.0;
+                    ui.add(egui::Slider::new(&mut draft.image_filter.blc_color_temperature_k, BLC_TEMP_FLOOR_K..=BLC_TEMP_CEILING_K).suffix("K"));
+                });
+                ui.label(i18n::t().settings_image_filter_blc_temp_explain());
+            });
+        }
+
+        ui.separator();
+        ui.label(i18n::t().settings_image_filter_tone_section_label());
+        ui.label(i18n::t().settings_image_filter_tone_explain());
+
+        draw_image_filter_tone_sliders(ui, &mut draft.image_filter);
+
+        ui.separator();
+        ui.label(i18n::t().settings_image_filter_order_section_label());
+        ui.label(i18n::t().settings_image_filter_order_explain());
+        draw_filter_order_cards(ui, &mut draft.image_filter);
     }
 
     /// 翻訳機能(実験的)タブ。ローカルAI(OpenAI互換API)のURL・モデル取得・翻訳/OCRモデル選択と、
@@ -1496,5 +1787,165 @@ impl NekoviewApp {
         ui.label(i18n::t().settings_startup_fixed_dir_label());
         ui.text_edit_singleline(&mut self.settings_draft.startup_fixed_dir);
         ui.label(i18n::t().settings_startup_fixed_dir_explain());
+    }
+}
+
+/// コマ送りタブ。超過分の自動縮小（X/Y）と、確認ダイアログの解除チェック。
+/// 確認ダイアログの解除チェックは保存されるが、ダイアログ自体は未実装。
+fn draw_settings_tab_koma(ui: &mut egui::Ui, draft: &mut SettingsDraft) {
+    let t = i18n::t();
+    ui.label(egui::RichText::new(t.settings_koma_shrink_section_label()).strong().size(15.0));
+    ui.label(t.settings_koma_shrink_explain());
+    ui.add_space(6.0);
+
+    for (enabled, pct, label, threshold_label) in [
+        (&mut draft.koma_shrink.x_enabled, &mut draft.koma_shrink.x_pct, t.settings_koma_shrink_x_label(), t.settings_koma_shrink_x_threshold_label()),
+        (&mut draft.koma_shrink.y_enabled, &mut draft.koma_shrink.y_pct, t.settings_koma_shrink_y_label(), t.settings_koma_shrink_y_threshold_label()),
+    ] {
+        ui.checkbox(enabled, label);
+        ui.add_enabled_ui(*enabled, |ui| {
+            ui.label(threshold_label);
+            ui.scope(|ui| {
+                ui.spacing_mut().slider_width = 260.0;
+                ui.horizontal(|ui| {
+                    ui.add(
+                        egui::Slider::new(pct, crate::magnifier::KOMA_SHRINK_PCT_FLOOR..=crate::magnifier::KOMA_SHRINK_PCT_CEILING)
+                            .show_value(false)
+                            .step_by(crate::magnifier::KOMA_SHRINK_PCT_STEP as f64),
+                    );
+                    ui.label(format!("{} %", *pct));
+                });
+            });
+        });
+        ui.add_space(4.0);
+    }
+    ui.separator();
+
+    ui.label(egui::RichText::new(t.settings_koma_ask_section_label()).strong().size(15.0));
+    ui.checkbox(&mut draft.koma_shrink.hide_ask, t.settings_koma_ask_hide_label());
+    ui.label(t.settings_koma_ask_hide_explain());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn settings_tabs_are_two_rows_with_koma_leading_the_second() {
+        let [first, second] = settings_tab_rows();
+        assert_eq!(second, vec![SettingsTab::Koma, SettingsTab::Other, SettingsTab::Debug]);
+        // 1段目は従来の並び（コマ送り・その他・デバッグを含まない）。
+        assert_eq!(first[0], SettingsTab::Common);
+        assert_eq!(first[7], SettingsTab::Keymap);
+        assert!(!first.iter().any(|t| second.contains(t)));
+    }
+
+    #[test]
+    fn every_settings_tab_appears_exactly_once() {
+        let all: Vec<SettingsTab> = settings_tab_rows().into_iter().flatten().collect();
+        #[cfg_attr(not(windows), allow(unused_mut))]
+        let mut expected = vec![
+            SettingsTab::Common, SettingsTab::Explorer, SettingsTab::Anim, SettingsTab::Static,
+            SettingsTab::Viewer, SettingsTab::Slideshow, SettingsTab::Translate, SettingsTab::Keymap,
+            SettingsTab::Koma, SettingsTab::Other, SettingsTab::Debug,
+        ];
+        #[cfg(windows)]
+        expected.push(SettingsTab::Windows);
+        assert_eq!(all.len(), expected.len());
+        for tab in expected {
+            assert_eq!(all.iter().filter(|&&t| t == tab).count(), 1);
+            assert!(!settings_tab_label(tab).is_empty());
+        }
+    }
+
+    #[test]
+    fn koma_shrink_threshold_range_is_on_the_step_grid() {
+        use crate::magnifier::{DEFAULT_KOMA_SHRINK_PCT, KOMA_SHRINK_PCT_CEILING, KOMA_SHRINK_PCT_FLOOR, KOMA_SHRINK_PCT_STEP};
+        assert_eq!(KOMA_SHRINK_PCT_FLOOR, 2);
+        assert_eq!(KOMA_SHRINK_PCT_CEILING, 30);
+        for v in [KOMA_SHRINK_PCT_FLOOR, DEFAULT_KOMA_SHRINK_PCT, KOMA_SHRINK_PCT_CEILING] {
+            assert_eq!(v % KOMA_SHRINK_PCT_STEP, 0, "{v} は刻みに乗っていない");
+            assert!((KOMA_SHRINK_PCT_FLOOR..=KOMA_SHRINK_PCT_CEILING).contains(&v));
+        }
+    }
+
+    #[test]
+    fn koma_shrink_draft_reflects_the_config_and_writes_it_back() {
+        let mut cfg = crate::magnifier::MagnifierConfig::default();
+        assert_eq!(
+            KomaShrinkDraft::from_config(&cfg),
+            KomaShrinkDraft { x_enabled: false, y_enabled: false, x_pct: 10, y_pct: 10, hide_ask: false },
+        );
+        cfg.set_koma_shrink_y(true);
+        cfg.set_koma_shrink_y_pct(24);
+        cfg.set_koma_shrink_hide_ask(true);
+        let mut draft = KomaShrinkDraft::from_config(&cfg);
+        assert!(!draft.x_enabled && draft.y_enabled && draft.hide_ask);
+        assert_eq!(draft.y_pct, 24);
+        // draft の編集は、反映するまで設定へ書き戻らない。
+        draft.x_enabled = true;
+        draft.x_pct = 6;
+        assert!(!cfg.koma_shrink_x());
+        draft.apply_to(&mut cfg);
+        assert!(cfg.koma_shrink_x() && cfg.koma_shrink_y());
+        assert_eq!((cfg.koma_shrink_x_pct(), cfg.koma_shrink_y_pct()), (6, 24));
+        // 刻み外・範囲外の値は、反映時に設定側で丸められる。
+        draft.x_pct = 7;
+        draft.y_pct = 100;
+        draft.apply_to(&mut cfg);
+        assert_eq!((cfg.koma_shrink_x_pct(), cfg.koma_shrink_y_pct()), (8, 30));
+    }
+
+    const ORDER: [FilterStage; FILTER_STAGE_COUNT] = [
+        FilterStage::ColorFilter,
+        FilterStage::Gamma,
+        FilterStage::Brightness,
+        FilterStage::Sharpness,
+    ];
+
+    #[test]
+    fn reorder_drop_on_next_card_swaps_adjacent() {
+        // [1,2,3,4]で1を2の位置へドロップ → [2,1,3,4]（隣接スワップ相当）
+        let result = reorder_by_drop(ORDER, 0, 1);
+        assert_eq!(result, [FilterStage::Gamma, FilterStage::ColorFilter, FilterStage::Brightness, FilterStage::Sharpness]);
+    }
+
+    #[test]
+    fn reorder_drop_forward_pushes_between_items_back() {
+        // [1,2,3,4]で1を3の位置へドロップ → [2,3,1,4]
+        let result = reorder_by_drop(ORDER, 0, 2);
+        assert_eq!(result, [FilterStage::Gamma, FilterStage::Brightness, FilterStage::ColorFilter, FilterStage::Sharpness]);
+    }
+
+    #[test]
+    fn reorder_drop_backward_pushes_between_items_forward() {
+        // [1,2,3,4]で3を1の位置へドロップ → [3,1,2,4]
+        let result = reorder_by_drop(ORDER, 2, 0);
+        assert_eq!(result, [FilterStage::Brightness, FilterStage::ColorFilter, FilterStage::Gamma, FilterStage::Sharpness]);
+    }
+
+    #[test]
+    fn reorder_drop_to_last_position() {
+        // [1,2,3,4]で1を4の位置へドロップ → [2,3,4,1]
+        let result = reorder_by_drop(ORDER, 0, 3);
+        assert_eq!(result, [FilterStage::Gamma, FilterStage::Brightness, FilterStage::Sharpness, FilterStage::ColorFilter]);
+    }
+
+    #[test]
+    fn reorder_drop_on_self_is_no_op() {
+        let result = reorder_by_drop(ORDER, 1, 1);
+        assert_eq!(result, ORDER);
+    }
+
+    #[test]
+    fn reorder_is_always_a_permutation() {
+        for from in 0..FILTER_STAGE_COUNT {
+            for to in 0..FILTER_STAGE_COUNT {
+                let result = reorder_by_drop(ORDER, from, to);
+                for stage in ORDER {
+                    assert_eq!(result.iter().filter(|&&s| s == stage).count(), 1);
+                }
+            }
+        }
     }
 }

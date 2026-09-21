@@ -1,5 +1,4 @@
 {
   "markdownlint.ignore": [
-    "docs/*.md"
   ]
 }

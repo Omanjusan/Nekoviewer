@@ -66,6 +66,22 @@ impl Lang {
         }
     }
 
+    pub fn sort_score(self) -> &'static str {
+        match self {
+            Lang::Japanese => "[スコア]",
+            Lang::English  => "[Score]",
+            Lang::Chinese  => "[评分]",
+        }
+    }
+
+    pub fn sort_visits(self) -> &'static str {
+        match self {
+            Lang::Japanese => "[訪問回数]",
+            Lang::English  => "[Visits]",
+            Lang::Chinese  => "[访问次数]",
+        }
+    }
+
     pub fn sort_asc(self) -> &'static str {
         match self {
             Lang::Japanese => "[昇順]",
@@ -111,6 +127,56 @@ impl Lang {
             Lang::Japanese => "情報:名前+日付+容量",
             Lang::English  => "Info: Name+Date+Size",
             Lang::Chinese  => "信息:名称+日期+大小",
+        }
+    }
+
+    /// 評価帯の星の行: 未評価のとき星の代わりに出す文字
+    pub fn rating_unrated(self) -> &'static str {
+        match self {
+            Lang::Japanese => "未評価",
+            Lang::English  => "Unrated",
+            Lang::Chinese  => "未评价",
+        }
+    }
+
+    /// 評価帯の回数の行
+    pub fn visit_count_line(self, n: u32) -> String {
+        match self {
+            Lang::Japanese => format!("訪問回数：{n}回"),
+            Lang::English  => format!("Visits: {n}"),
+            Lang::Chinese  => format!("访问次数：{n}次"),
+        }
+    }
+
+    pub fn card_rating_off(self) -> &'static str {
+        match self {
+            Lang::Japanese => "情報2:OFF",
+            Lang::English  => "Info2: Off",
+            Lang::Chinese  => "信息2:关",
+        }
+    }
+
+    pub fn card_rating_stars(self) -> &'static str {
+        match self {
+            Lang::Japanese => "情報2:★",
+            Lang::English  => "Info2: ★",
+            Lang::Chinese  => "信息2:★",
+        }
+    }
+
+    pub fn card_rating_visits(self) -> &'static str {
+        match self {
+            Lang::Japanese => "情報2:回数",
+            Lang::English  => "Info2: Visits",
+            Lang::Chinese  => "信息2:次数",
+        }
+    }
+
+    pub fn card_rating_stars_visits(self) -> &'static str {
+        match self {
+            Lang::Japanese => "情報2:★+回数",
+            Lang::English  => "Info2: ★+Visits",
+            Lang::Chinese  => "信息2:★+次数",
         }
     }
 
@@ -255,6 +321,22 @@ impl Lang {
             Lang::Japanese => "しおりを保存する",
             Lang::English  => "Save bookmark",
             Lang::Chinese  => "保存书签",
+        }
+    }
+
+    pub fn rating_unset_button(self) -> &'static str {
+        match self {
+            Lang::Japanese => "未評価にする",
+            Lang::English  => "Clear rating",
+            Lang::Chinese  => "设为未评价",
+        }
+    }
+
+    pub fn toast_rating_cleared(self) -> &'static str {
+        match self {
+            Lang::Japanese => "未評価として登録しなおしました",
+            Lang::English  => "Rating cleared",
+            Lang::Chinese  => "已重新登记为未评价",
         }
     }
 
@@ -429,6 +511,166 @@ impl Lang {
         }
     }
 
+    /// エクスプローラー部アイテムカード右クリックメニュー「ソート条件」（単一選択時）
+    pub fn sort_condition_menu(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ソート条件...",
+            Lang::English  => "Sort Condition...",
+            Lang::Chinese  => "排序条件...",
+        }
+    }
+
+    pub fn sort_condition_menu_bulk(self, count: usize) -> String {
+        match self {
+            Lang::Japanese => format!("ソート条件... ({count}件)"),
+            Lang::English  => format!("Sort Condition... ({count} items)"),
+            Lang::Chinese  => format!("排序条件...（{count} 项）"),
+        }
+    }
+
+    pub fn sort_condition_dialog_title(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ソート条件の変更",
+            Lang::English  => "Change Sort Condition",
+            Lang::Chinese  => "更改排序条件",
+        }
+    }
+
+    /// エクスプローラー部アイテムカード右クリックメニュー「しおり保存」（単一選択時）
+    pub fn bookmark_setting_menu(self) -> &'static str {
+        match self {
+            Lang::Japanese => "しおり保存...",
+            Lang::English  => "Bookmark Setting...",
+            Lang::Chinese  => "书签设置...",
+        }
+    }
+
+    pub fn bookmark_setting_menu_bulk(self, count: usize) -> String {
+        match self {
+            Lang::Japanese => format!("しおり保存... ({count}件)"),
+            Lang::English  => format!("Bookmark Setting... ({count} items)"),
+            Lang::Chinese  => format!("书签设置...（{count} 项）"),
+        }
+    }
+
+    pub fn bookmark_setting_dialog_title(self) -> &'static str {
+        match self {
+            Lang::Japanese => "しおり保存設定の変更",
+            Lang::English  => "Change Bookmark Setting",
+            Lang::Chinese  => "更改书签设置",
+        }
+    }
+
+    /// エクスプローラー部アイテムカード右クリックメニュー「見開き設定」（単一選択時）
+    pub fn spread_setting_menu(self) -> &'static str {
+        match self {
+            Lang::Japanese => "見開き設定...",
+            Lang::English  => "Spread Setting...",
+            Lang::Chinese  => "双页设置...",
+        }
+    }
+
+    pub fn spread_setting_menu_bulk(self, count: usize) -> String {
+        match self {
+            Lang::Japanese => format!("見開き設定... ({count}件)"),
+            Lang::English  => format!("Spread Setting... ({count} items)"),
+            Lang::Chinese  => format!("双页设置...（{count} 项）"),
+        }
+    }
+
+    pub fn spread_setting_dialog_title(self) -> &'static str {
+        match self {
+            Lang::Japanese => "見開き設定の変更",
+            Lang::English  => "Change Spread Setting",
+            Lang::Chinese  => "更改双页设置",
+        }
+    }
+
+    pub fn spread_mode_single_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "単ページ",
+            Lang::English  => "Single Page",
+            Lang::Chinese  => "单页",
+        }
+    }
+
+    pub fn spread_mode_right_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "右綴じ",
+            Lang::English  => "Right Bind",
+            Lang::Chinese  => "右装订",
+        }
+    }
+
+    pub fn spread_mode_left_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "左綴じ",
+            Lang::English  => "Left Bind",
+            Lang::Chinese  => "左装订",
+        }
+    }
+
+    pub fn spread_offset_virtual_first_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "1ページ目を単ページとして開く",
+            Lang::English  => "Open page 1 alone",
+            Lang::Chinese  => "第1页单独显示",
+        }
+    }
+
+    pub fn spread_offset_no_virtual_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "最初から見開きページとして開く",
+            Lang::English  => "Pair pages from page 1",
+            Lang::Chinese  => "从第1页开始双页显示",
+        }
+    }
+
+    /// 一括設定変更ダイアログ（ソート条件/しおり保存/見開き設定）共通の反映ボタン
+    pub fn bulk_setting_apply_button(self) -> &'static str {
+        match self {
+            Lang::Japanese => "反映",
+            Lang::English  => "Apply",
+            Lang::Chinese  => "应用",
+        }
+    }
+
+    /// 一括設定変更: 右クリック対象を対象外フィルタ後、0件になった時のトースト
+    pub fn bulk_setting_no_target_toast(self) -> &'static str {
+        match self {
+            Lang::Japanese => "対象となるファイルがありません",
+            Lang::English  => "No files are eligible for this setting",
+            Lang::Chinese  => "没有符合条件的文件",
+        }
+    }
+
+    /// 一括設定変更: 反映完了後、正常終了件数のトースト1行目
+    pub fn bulk_setting_success_toast(self, count: usize) -> String {
+        match self {
+            Lang::Japanese => format!("{count}件のファイルに対して設定を行いました"),
+            Lang::English  => format!("Applied the setting to {count} file(s)"),
+            Lang::Chinese  => format!("已对 {count} 个文件应用设置"),
+        }
+    }
+
+    /// 一括設定変更: 反映に失敗したファイル1件ごとのトースト行
+    pub fn bulk_setting_failure_toast(self, name: &str) -> String {
+        match self {
+            Lang::Japanese => format!("ファイル名:{name} において設定が反映できませんでした"),
+            Lang::English  => format!("Failed to apply the setting to: {name}"),
+            Lang::Chinese  => format!("无法对以下文件应用设置：{name}"),
+        }
+    }
+
+    /// 一括設定変更: 異常件数が表示上限を超えた時の集約行（11行目）
+    pub fn bulk_setting_failure_overflow_toast(self, count: usize) -> String {
+        match self {
+            Lang::Japanese => format!("他{count}件で異常終了"),
+            Lang::English  => format!("and {count} more failed"),
+            Lang::Chinese  => format!("另有 {count} 个文件失败"),
+        }
+    }
+
     pub fn file_detail_menu(self) -> &'static str {
         match self {
             Lang::Japanese => "ファイル詳細",
@@ -589,6 +831,506 @@ impl Lang {
         }
     }
 
+    pub fn folder_tab_virtual(self) -> &'static str {
+        match self {
+            Lang::Japanese => "仮想フォルダ",
+            Lang::English  => "Virtual Folders",
+            Lang::Chinese  => "虚拟文件夹",
+        }
+    }
+
+    pub fn virtual_real_tree_title(self) -> &'static str {
+        match self {
+            Lang::Japanese => "実ツリー",
+            Lang::English  => "Real Tree",
+            Lang::Chinese  => "实际目录树",
+        }
+    }
+
+    pub fn virtual_grip_open(self) -> &'static str {
+        match self {
+            Lang::Japanese => "実ツリーを開く",
+            Lang::English  => "Open real tree",
+            Lang::Chinese  => "打开实际目录树",
+        }
+    }
+
+    pub fn virtual_grip_close(self) -> &'static str {
+        match self {
+            Lang::Japanese => "実ツリーを閉じる",
+            Lang::English  => "Close real tree",
+            Lang::Chinese  => "关闭实际目录树",
+        }
+    }
+
+    pub fn virtual_menu_register(self) -> &'static str {
+        match self {
+            Lang::Japanese => "実フォルダ登録",
+            Lang::English  => "Register Real Folder",
+            Lang::Chinese  => "登记实际文件夹",
+        }
+    }
+
+    pub fn virtual_menu_sync(self) -> &'static str {
+        match self {
+            Lang::Japanese => "実ツリーと同期",
+            Lang::English  => "Sync Real Tree View",
+            Lang::Chinese  => "同步实际目录树",
+        }
+    }
+
+    pub fn virtual_menu_open_in_folders(self) -> &'static str {
+        match self {
+            Lang::Japanese => "フォルダタブで開く",
+            Lang::English  => "Open in Folders Tab",
+            Lang::Chinese  => "在文件夹标签中打开",
+        }
+    }
+
+    pub fn virtual_open_no_drive(self) -> &'static str {
+        match self {
+            Lang::Japanese => "このフォルダを含むドライブが見つからないため、ツリーには表示されません",
+            Lang::English  => "No drive contains this folder, so it isn't shown in the tree",
+            Lang::Chinese  => "找不到包含该文件夹的驱动器，树中无法显示",
+        }
+    }
+
+    pub fn virtual_sync_drive_switched(self, drive: &str) -> String {
+        match self {
+            Lang::Japanese => format!("実ツリーを別のドライブ（{drive}）に切り替えました"),
+            Lang::English  => format!("Switched the real tree to another drive ({drive})"),
+            Lang::Chinese  => format!("已将实际目录树切换到另一个驱动器（{drive}）"),
+        }
+    }
+
+    pub fn virtual_sync_no_drive(self) -> &'static str {
+        match self {
+            Lang::Japanese => "同期できません：このフォルダを含むドライブが見つかりません",
+            Lang::English  => "Can't sync: no drive contains this folder",
+            Lang::Chinese  => "无法同步：找不到包含该文件夹的驱动器",
+        }
+    }
+
+    pub fn virtual_tree_hidden_on_path(self) -> &'static str {
+        match self {
+            Lang::Japanese => "経路に隠しフォルダがあるため、ツリー上では見えません（隠しフォルダ表示をONにすると見えます）",
+            Lang::English  => "A hidden folder on the path keeps it out of view (turn on \"show hidden folders\")",
+            Lang::Chinese  => "路径含隐藏文件夹，树中不可见（开启显示隐藏文件夹后可见）",
+        }
+    }
+
+    pub fn virtual_tree_path_not_found(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ツリー上で場所が見つからず、途中まで展開しました",
+            Lang::English  => "Path not found in the tree; expanded as far as possible",
+            Lang::Chinese  => "在树中找不到该路径，已展开到可达处",
+        }
+    }
+
+    pub fn virtual_folder_unreachable(self) -> &'static str {
+        match self {
+            Lang::Japanese => "フォルダに到達できません（リンク切れ・未接続）",
+            Lang::English  => "Folder is unreachable (broken link or disconnected)",
+            Lang::Chinese  => "无法访问该文件夹（链接失效或未连接）",
+        }
+    }
+
+    pub fn tree_sort_menu(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ソート条件設定",
+            Lang::English  => "Sort Settings",
+            Lang::Chinese  => "排序设置",
+        }
+    }
+
+    pub fn tree_sort_title(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ソート条件設定",
+            Lang::English  => "Sort Settings",
+            Lang::Chinese  => "排序设置",
+        }
+    }
+
+    pub fn tree_sort_target_virtual(self) -> &'static str {
+        match self {
+            Lang::Japanese => "仮想ツリーの並び順",
+            Lang::English  => "Order of the virtual tree",
+            Lang::Chinese  => "虚拟树的排列顺序",
+        }
+    }
+
+    pub fn tree_sort_target_real(self) -> &'static str {
+        match self {
+            Lang::Japanese => "実ツリーの並び順",
+            Lang::English  => "Order of the real folder tree",
+            Lang::Chinese  => "实际文件夹树的排列顺序",
+        }
+    }
+
+    pub fn tree_sort_registration(self) -> &'static str {
+        match self {
+            Lang::Japanese => "登録順",
+            Lang::English  => "Registration",
+            Lang::Chinese  => "登记顺序",
+        }
+    }
+
+    pub fn virtual_menu_rename(self) -> &'static str {
+        match self {
+            Lang::Japanese => "名前を変更",
+            Lang::English  => "Rename",
+            Lang::Chinese  => "重命名",
+        }
+    }
+
+    pub fn virtual_rename_title(self) -> &'static str {
+        match self {
+            Lang::Japanese => "仮想フォルダ名の変更",
+            Lang::English  => "Rename Virtual Folder",
+            Lang::Chinese  => "重命名虚拟文件夹",
+        }
+    }
+
+    pub fn virtual_rename_prompt(self) -> &'static str {
+        match self {
+            Lang::Japanese => "新しい名前（実フォルダ名は変わりません）",
+            Lang::English  => "New name (the real folder name is not changed)",
+            Lang::Chinese  => "新名称（不会更改实际文件夹名称）",
+        }
+    }
+
+    pub fn virtual_menu_delete(self) -> &'static str {
+        match self {
+            Lang::Japanese => "仮想フォルダ削除",
+            Lang::English  => "Delete Virtual Folder",
+            Lang::Chinese  => "删除虚拟文件夹",
+        }
+    }
+
+    pub fn virtual_menu_add_from_real(self) -> &'static str {
+        match self {
+            Lang::Japanese => "仮想フォルダに追加する",
+            Lang::English  => "Add to Virtual Folder",
+            Lang::Chinese  => "添加到虚拟文件夹",
+        }
+    }
+
+    pub fn virtual_picker_title_real(self) -> &'static str {
+        match self {
+            Lang::Japanese => "登録したいフォルダをダブルクリックで確定",
+            Lang::English  => "Double-click the folder to register",
+            Lang::Chinese  => "双击要登记的文件夹以确认",
+        }
+    }
+
+    pub fn virtual_picker_title_dest(self) -> &'static str {
+        match self {
+            Lang::Japanese => "追加先の仮想フォルダをダブルクリックで確定",
+            Lang::English  => "Double-click the destination virtual folder",
+            Lang::Chinese  => "双击目标虚拟文件夹以确认",
+        }
+    }
+
+    pub fn virtual_confirm_title(self) -> &'static str {
+        match self {
+            Lang::Japanese => "登録の確認",
+            Lang::English  => "Confirm Registration",
+            Lang::Chinese  => "确认登记",
+        }
+    }
+
+    pub fn virtual_confirm_body(self) -> &'static str {
+        match self {
+            Lang::Japanese => "次のフォルダを仮想フォルダに登録します",
+            Lang::English  => "The following folder will be registered as a virtual folder",
+            Lang::Chinese  => "将把以下文件夹登记为虚拟文件夹",
+        }
+    }
+
+    pub fn virtual_confirm_path(self, path: &str) -> String {
+        match self {
+            Lang::Japanese => format!("登録パス: {path}"),
+            Lang::English  => format!("Path: {path}"),
+            Lang::Chinese  => format!("登记路径：{path}"),
+        }
+    }
+
+    pub fn virtual_confirm_dest(self, dest: &str) -> String {
+        match self {
+            Lang::Japanese => format!("登録先: {dest}"),
+            Lang::English  => format!("Destination: {dest}"),
+            Lang::Chinese  => format!("登记位置：{dest}"),
+        }
+    }
+
+    pub fn virtual_delete_title(self) -> &'static str {
+        match self {
+            Lang::Japanese => "仮想フォルダの削除",
+            Lang::English  => "Delete Virtual Folder",
+            Lang::Chinese  => "删除虚拟文件夹",
+        }
+    }
+
+    pub fn virtual_delete_path(self, path: &str) -> String {
+        match self {
+            Lang::Japanese => format!("削除する仮想パス: {path}"),
+            Lang::English  => format!("Virtual path to delete: {path}"),
+            Lang::Chinese  => format!("要删除的虚拟路径：{path}"),
+        }
+    }
+
+    pub fn virtual_delete_descendants(self, count: usize) -> String {
+        match self {
+            Lang::Japanese => format!("配下 {count} 件のフォルダも削除されます"),
+            Lang::English  => format!("{count} sub-folder(s) will also be deleted"),
+            Lang::Chinese  => format!("其下 {count} 个文件夹也将被删除"),
+        }
+    }
+
+    pub fn virtual_delete_real_untouched(self) -> &'static str {
+        match self {
+            Lang::Japanese => "実フォルダには影響しません",
+            Lang::English  => "Real folders are not affected",
+            Lang::Chinese  => "不会影响实际文件夹",
+        }
+    }
+
+    pub fn virtual_link_broken_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "（リンク切れ）",
+            Lang::English  => "(broken link)",
+            Lang::Chinese  => "（链接失效）",
+        }
+    }
+
+    pub fn virtual_register_ok(self) -> &'static str {
+        match self {
+            Lang::Japanese => "仮想フォルダに正常に登録されました",
+            Lang::English  => "Registered to the virtual folder",
+            Lang::Chinese  => "已成功登记到虚拟文件夹",
+        }
+    }
+
+    pub fn virtual_register_progress(self) -> &'static str {
+        match self {
+            Lang::Japanese => "仮想フォルダに登録中…",
+            Lang::English  => "Registering to the virtual folder…",
+            Lang::Chinese  => "正在登记到虚拟文件夹…",
+        }
+    }
+
+    pub fn virtual_register_failed(self, reason: &str) -> String {
+        match self {
+            Lang::Japanese => format!("仮想フォルダへの登録に失敗しました（{reason}）"),
+            Lang::English  => format!("Failed to register to the virtual folder ({reason})"),
+            Lang::Chinese  => format!("登记到虚拟文件夹失败（{reason}）"),
+        }
+    }
+
+    pub fn virtual_large_title(self) -> &'static str {
+        match self {
+            Lang::Japanese => "サブフォルダが多数あります",
+            Lang::English  => "Many Subfolders Found",
+            Lang::Chinese  => "子文件夹数量众多",
+        }
+    }
+
+    pub fn virtual_large_body(self, total: usize) -> String {
+        match self {
+            Lang::Japanese => format!("サブフォルダが {total} 件あります。どのように登録しますか？"),
+            Lang::English  => format!("{total} subfolders were found. How do you want to register them?"),
+            Lang::Chinese  => format!("共有 {total} 个子文件夹。要如何登记？"),
+        }
+    }
+
+    pub fn virtual_large_body_capped(self, cap: usize) -> String {
+        match self {
+            Lang::Japanese => format!("サブフォルダが非常に多いため、{cap} 件で走査を打ち切りました。浅く登録しますか？"),
+            Lang::English  => format!("There are so many subfolders that the scan stopped at {cap}. Register a shallow copy?"),
+            Lang::Chinese  => format!("子文件夹过多，扫描在 {cap} 个处中止。是否仅登记浅层？"),
+        }
+    }
+
+    pub fn virtual_large_over_limit(self, remaining: usize) -> String {
+        match self {
+            Lang::Japanese => format!("登録できる残りは {remaining} 件です"),
+            Lang::English  => format!("Only {remaining} more can be registered"),
+            Lang::Chinese  => format!("还可登记 {remaining} 个"),
+        }
+    }
+
+    pub fn virtual_large_all(self, count: usize, capped: bool) -> String {
+        let more = if capped { "+" } else { "" };
+        match self {
+            Lang::Japanese => format!("全部（{count}{more}件）"),
+            Lang::English  => format!("All ({count}{more})"),
+            Lang::Chinese  => format!("全部（{count}{more} 个）"),
+        }
+    }
+
+    pub fn virtual_large_shallow(self, depth: usize, count: usize) -> String {
+        match (self, depth) {
+            (Lang::Japanese, 0) => format!("浅く（このフォルダのみ・{count}件）"),
+            (Lang::Japanese, d) => format!("浅く（{d}階層下まで・{count}件）"),
+            (Lang::English, 0)  => format!("Shallow (this folder only, {count})"),
+            (Lang::English, d)  => format!("Shallow (down to {d} level(s), {count})"),
+            (Lang::Chinese, 0)  => format!("浅层（仅此文件夹，{count} 个）"),
+            (Lang::Chinese, d)  => format!("浅层（向下 {d} 层，{count} 个）"),
+        }
+    }
+
+    pub fn virtual_reason_unreachable(self) -> &'static str {
+        match self {
+            Lang::Japanese => "フォルダが見つかりません、または接続できません",
+            Lang::English  => "Folder not found or unreachable",
+            Lang::Chinese  => "找不到文件夹或无法连接",
+        }
+    }
+
+    pub fn virtual_reason_not_dir(self) -> &'static str {
+        match self {
+            Lang::Japanese => "フォルダではありません",
+            Lang::English  => "Not a folder",
+            Lang::Chinese  => "不是文件夹",
+        }
+    }
+
+    pub fn virtual_reason_unreadable(self) -> &'static str {
+        match self {
+            Lang::Japanese => "フォルダを読み取れません",
+            Lang::English  => "Cannot read the folder",
+            Lang::Chinese  => "无法读取该文件夹",
+        }
+    }
+
+    pub fn virtual_reason_too_large(self) -> &'static str {
+        match self {
+            Lang::Japanese => "サブフォルダが多すぎます",
+            Lang::English  => "Too many subfolders",
+            Lang::Chinese  => "子文件夹过多",
+        }
+    }
+
+    pub fn virtual_reason_duplicate(self) -> &'static str {
+        match self {
+            Lang::Japanese => "同じ登録先に同じ実フォルダが既に登録されています",
+            Lang::English  => "The same real folder is already registered at this destination",
+            Lang::Chinese  => "该位置已登记同一实际文件夹",
+        }
+    }
+
+    pub fn virtual_reason_limit(self, max: usize) -> String {
+        match self {
+            Lang::Japanese => format!("登録できる上限（{max}件）を超えます"),
+            Lang::English  => format!("Exceeds the registration limit ({max})"),
+            Lang::Chinese  => format!("超过可登记上限（{max} 个）"),
+        }
+    }
+
+    pub fn virtual_reason_dest_missing(self) -> &'static str {
+        match self {
+            Lang::Japanese => "登録先の仮想フォルダが見つかりません",
+            Lang::English  => "Destination virtual folder not found",
+            Lang::Chinese  => "找不到目标虚拟文件夹",
+        }
+    }
+
+    pub fn virtual_reason_name_invalid(self) -> &'static str {
+        match self {
+            Lang::Japanese => "フォルダ名が長すぎる、または空です",
+            Lang::English  => "Folder name is too long or empty",
+            Lang::Chinese  => "文件夹名称过长或为空",
+        }
+    }
+
+    pub fn virtual_reason_db(self) -> &'static str {
+        match self {
+            Lang::Japanese => "データベースエラー",
+            Lang::English  => "Database error",
+            Lang::Chinese  => "数据库错误",
+        }
+    }
+
+    pub fn virtual_overlap_same_here(self) -> &'static str {
+        match self {
+            Lang::Japanese => "この登録先には同じ実フォルダが既に登録されています（登録に失敗します）",
+            Lang::English  => "This destination already has the same real folder (registration will fail)",
+            Lang::Chinese  => "该位置已登记同一实际文件夹（登记将失败）",
+        }
+    }
+
+    pub fn virtual_overlap_same(self, count: usize) -> String {
+        match self {
+            Lang::Japanese => format!("同じ実フォルダが別の場所に {count} 件登録済みです"),
+            Lang::English  => format!("The same real folder is already registered in {count} other place(s)"),
+            Lang::Chinese  => format!("同一实际文件夹已在其他 {count} 处登记"),
+        }
+    }
+
+    pub fn virtual_overlap_ancestor(self, count: usize) -> String {
+        match self {
+            Lang::Japanese => format!("登録済みフォルダ {count} 件の配下にあたります"),
+            Lang::English  => format!("It lies inside {count} registered folder(s)"),
+            Lang::Chinese  => format!("位于 {count} 个已登记文件夹之内"),
+        }
+    }
+
+    pub fn virtual_overlap_descendant(self, count: usize) -> String {
+        match self {
+            Lang::Japanese => format!("登録済みフォルダ {count} 件を含みます"),
+            Lang::English  => format!("It contains {count} registered folder(s)"),
+            Lang::Chinese  => format!("包含 {count} 个已登记文件夹"),
+        }
+    }
+
+    pub fn virtual_delete_ok(self) -> &'static str {
+        match self {
+            Lang::Japanese => "仮想フォルダを削除しました",
+            Lang::English  => "Virtual folder deleted",
+            Lang::Chinese  => "已删除虚拟文件夹",
+        }
+    }
+
+    pub fn virtual_delete_failed(self, reason: &str) -> String {
+        match self {
+            Lang::Japanese => format!("仮想フォルダの削除に失敗しました（{reason}）"),
+            Lang::English  => format!("Failed to delete the virtual folder ({reason})"),
+            Lang::Chinese  => format!("删除虚拟文件夹失败（{reason}）"),
+        }
+    }
+
+    pub fn virtual_rename_failed(self, reason: &str) -> String {
+        match self {
+            Lang::Japanese => format!("仮想フォルダ名の変更に失敗しました（{reason}）"),
+            Lang::English  => format!("Failed to rename the virtual folder ({reason})"),
+            Lang::Chinese  => format!("重命名虚拟文件夹失败（{reason}）"),
+        }
+    }
+
+    pub fn virtual_rename_reason_not_found(self) -> &'static str {
+        match self {
+            Lang::Japanese => "対象のフォルダが見つかりません",
+            Lang::English  => "The target folder was not found",
+            Lang::Chinese  => "找不到目标文件夹",
+        }
+    }
+
+    pub fn virtual_delete_reason_changed(self) -> &'static str {
+        match self {
+            Lang::Japanese => "対象のフォルダが変更されています",
+            Lang::English  => "The target folder has changed",
+            Lang::Chinese  => "目标文件夹已发生变化",
+        }
+    }
+
+    pub fn virtual_ok(self) -> &'static str {
+        match self {
+            Lang::Japanese => "OK",
+            Lang::English  => "OK",
+            Lang::Chinese  => "确定",
+        }
+    }
+
     pub fn search_start_button(self) -> &'static str {
         match self {
             Lang::Japanese => "検索開始",
@@ -658,6 +1400,64 @@ impl Lang {
             Lang::Japanese => "日付以前(YYYY-MM-DD)",
             Lang::English  => "Before (YYYY-MM-DD)",
             Lang::Chinese  => "此日期之前 (YYYY-MM-DD)",
+        }
+    }
+
+    pub fn calendar_window_title(self) -> &'static str {
+        match self {
+            Lang::Japanese => "日付を選択",
+            Lang::English  => "Select date",
+            Lang::Chinese  => "选择日期",
+        }
+    }
+
+    /// カレンダー窓の年月見出し。`month` は 1..=12（範囲外は数字表記に落とす）。
+    pub fn calendar_year_month(self, year: i32, month: u8) -> String {
+        match self {
+            Lang::Japanese | Lang::Chinese => format!("{year}年{month}月"),
+            Lang::English => {
+                const NAMES: [&str; 12] = [
+                    "January", "February", "March", "April", "May", "June",
+                    "July", "August", "September", "October", "November", "December",
+                ];
+                match NAMES.get(usize::from(month).wrapping_sub(1)) {
+                    Some(name) => format!("{name} {year}"),
+                    None => format!("{year}-{month:02}"),
+                }
+            }
+        }
+    }
+
+    /// 日曜始まりの曜日ヘッダ7個。
+    pub fn calendar_weekdays(self) -> [&'static str; 7] {
+        match self {
+            Lang::Japanese => ["日", "月", "火", "水", "木", "金", "土"],
+            Lang::English  => ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"],
+            Lang::Chinese  => ["日", "一", "二", "三", "四", "五", "六"],
+        }
+    }
+
+    pub fn calendar_ok(self) -> &'static str {
+        match self {
+            Lang::Japanese => "決定",
+            Lang::English  => "OK",
+            Lang::Chinese  => "确定",
+        }
+    }
+
+    pub fn calendar_clear(self) -> &'static str {
+        match self {
+            Lang::Japanese => "未指定に戻す",
+            Lang::English  => "Clear",
+            Lang::Chinese  => "清除",
+        }
+    }
+
+    pub fn calendar_cancel(self) -> &'static str {
+        match self {
+            Lang::Japanese => "キャンセル",
+            Lang::English  => "Cancel",
+            Lang::Chinese  => "取消",
         }
     }
 
@@ -1011,6 +1811,28 @@ impl Lang {
         }
     }
 
+    pub fn scoring_toggle_button(self, on: bool) -> &'static str {
+        match (self, on) {
+            (Lang::Japanese, true)  => "スコアリングON",
+            (Lang::Japanese, false) => "スコアリングOFF",
+            (Lang::English, true)   => "Scoring: ON",
+            (Lang::English, false)  => "Scoring: OFF",
+            (Lang::Chinese, true)   => "评分：开",
+            (Lang::Chinese, false)  => "评分：关",
+        }
+    }
+
+    pub fn tool_palette_toggle_button(self, on: bool) -> &'static str {
+        match (self, on) {
+            (Lang::Japanese, true)  => "ツールボックスON",
+            (Lang::Japanese, false) => "ツールボックスOFF",
+            (Lang::English, true)   => "Toolbox: ON",
+            (Lang::English, false)  => "Toolbox: OFF",
+            (Lang::Chinese, true)   => "工具箱：开",
+            (Lang::Chinese, false)  => "工具箱：关",
+        }
+    }
+
     pub fn settings_button(self) -> &'static str {
         match self {
             Lang::Japanese => "[設定]",
@@ -1072,6 +1894,86 @@ impl Lang {
             Lang::Japanese => "その他",
             Lang::English  => "Other",
             Lang::Chinese  => "其他",
+        }
+    }
+
+    pub fn settings_tab_koma(self) -> &'static str {
+        match self {
+            Lang::Japanese => "コマ送り",
+            Lang::English  => "Panels",
+            Lang::Chinese  => "分镜",
+        }
+    }
+
+    pub fn settings_koma_shrink_section_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "超過分の自動縮小",
+            Lang::English  => "Auto-shrink overflow",
+            Lang::Chinese  => "超出部分自动缩小",
+        }
+    }
+
+    pub fn settings_koma_shrink_explain(self) -> &'static str {
+        match self {
+            Lang::Japanese => "数％だけ超過してコマ送りが増えるとき、縦横比を保ったまま縮小して1コマに収めます。ページを開くたびに判定します。",
+            Lang::English  => "When a small overflow adds extra panel steps, the page is shrunk (keeping its aspect ratio) so it fits in one panel. Checked every time a page is opened.",
+            Lang::Chinese  => "当少量超出导致分镜步数增加时，保持纵横比缩小以适配为一格。每次打开页面时判定。",
+        }
+    }
+
+    pub fn settings_koma_shrink_x_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "横（X）の超過分を自動縮小する",
+            Lang::English  => "Auto-shrink horizontal (X) overflow",
+            Lang::Chinese  => "自动缩小横向（X）超出部分",
+        }
+    }
+
+    pub fn settings_koma_shrink_y_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "縦（Y）の超過分を自動縮小する",
+            Lang::English  => "Auto-shrink vertical (Y) overflow",
+            Lang::Chinese  => "自动缩小纵向（Y）超出部分",
+        }
+    }
+
+    pub fn settings_koma_shrink_x_threshold_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "しきい値（窓の幅に対する超過）",
+            Lang::English  => "Threshold (overflow relative to window width)",
+            Lang::Chinese  => "阈值（相对窗口宽度的超出）",
+        }
+    }
+
+    pub fn settings_koma_shrink_y_threshold_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "しきい値（窓の高さに対する超過）",
+            Lang::English  => "Threshold (overflow relative to window height)",
+            Lang::Chinese  => "阈值（相对窗口高度的超出）",
+        }
+    }
+
+    pub fn settings_koma_ask_section_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "確認ダイアログ",
+            Lang::English  => "Confirmation dialog",
+            Lang::Chinese  => "确认对话框",
+        }
+    }
+
+    pub fn settings_koma_ask_hide_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "「超過分を縮小しコマ送り数を最適化しますか？」を表示しない",
+            Lang::English  => "Don't show \"Shrink the overflow to optimize panel steps?\"",
+            Lang::Chinese  => "不再显示“是否缩小超出部分以优化分镜步数？”",
+        }
+    }
+
+    pub fn settings_koma_ask_hide_explain(self) -> &'static str {
+        match self {
+            Lang::Japanese => "（この確認ダイアログは今後のバージョンで動作します）",
+            Lang::English  => "(This dialog will take effect in a future version.)",
+            Lang::Chinese  => "（该确认对话框将在后续版本中生效。）",
         }
     }
 
@@ -2125,11 +3027,155 @@ impl Lang {
         }
     }
 
-    pub fn settings_static_placeholder(self) -> &'static str {
+    pub fn settings_image_filter_reset_button(self) -> &'static str {
         match self {
-            Lang::Japanese => "現在、静止画専用の設定項目はありません",
-            Lang::English  => "No still-image-specific settings yet",
-            Lang::Chinese  => "目前没有静止图像专用设置项",
+            Lang::Japanese => "既定値に戻す",
+            Lang::English  => "Reset",
+            Lang::Chinese  => "恢复默认",
+        }
+    }
+
+    pub fn settings_image_filter_instant_save_notice(self) -> &'static str {
+        match self {
+            Lang::Japanese => "このタブの変更は即時セーブされます",
+            Lang::English  => "Changes in this tab are saved instantly",
+            Lang::Chinese  => "此标签页的更改会即时保存",
+        }
+    }
+
+    pub fn settings_image_filter_color_section_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "■ 色系統フィルター",
+            Lang::English  => "■ Color filter",
+            Lang::Chinese  => "■ 色彩滤镜",
+        }
+    }
+
+    pub fn settings_image_filter_color_explain(self) -> &'static str {
+        match self {
+            Lang::Japanese => "同時に有効化できるのは1つのみ。ビューアーの静止画表示にのみ効き、アニメーション再生やサムネイルには影響しない。",
+            Lang::English  => "Only one can be active at a time. Affects the viewer's still-image display only — not animation playback or thumbnails.",
+            Lang::Chinese  => "同一时间只能启用一种。仅影响查看器的静止图像显示，不影响动画播放或缩略图。",
+        }
+    }
+
+    pub fn settings_image_filter_mode_none(self) -> &'static str {
+        match self {
+            Lang::Japanese => "なし",
+            Lang::English  => "None",
+            Lang::Chinese  => "无",
+        }
+    }
+
+    pub fn settings_image_filter_mode_blue_light_cut(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ブルーライトカット",
+            Lang::English  => "Blue light cut",
+            Lang::Chinese  => "蓝光过滤",
+        }
+    }
+
+    pub fn settings_image_filter_mode_sepia(self) -> &'static str {
+        match self {
+            Lang::Japanese => "セピア",
+            Lang::English  => "Sepia",
+            Lang::Chinese  => "怀旧棕褐",
+        }
+    }
+
+    pub fn settings_image_filter_mode_grayscale(self) -> &'static str {
+        match self {
+            Lang::Japanese => "モノクロ",
+            Lang::English  => "Grayscale",
+            Lang::Chinese  => "黑白",
+        }
+    }
+
+    pub fn settings_image_filter_blc_temp_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "色温度",
+            Lang::English  => "Color temperature",
+            Lang::Chinese  => "色温",
+        }
+    }
+
+    pub fn settings_image_filter_blc_temp_explain(self) -> &'static str {
+        match self {
+            Lang::Japanese => "プリセットボタンとスライダーは同じ値を書き換える。最後に操作した方が有効値になる。",
+            Lang::English  => "Preset buttons and the slider write the same value — whichever you touch last takes effect.",
+            Lang::Chinese  => "预设按钮与滑块共用同一个值，以最后操作的为准。",
+        }
+    }
+
+    pub fn settings_image_filter_tone_section_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "■ トーン調整",
+            Lang::English  => "■ Tone adjustments",
+            Lang::Chinese  => "■ 色调调整",
+        }
+    }
+
+    pub fn settings_image_filter_tone_explain(self) -> &'static str {
+        match self {
+            Lang::Japanese => "色系統フィルターとは独立して、常に重ねがけできる。",
+            Lang::English  => "These stack independently of the color filter above and can always be combined.",
+            Lang::Chinese  => "与上方色彩滤镜相互独立，随时可叠加使用。",
+        }
+    }
+
+    pub fn settings_image_filter_gamma_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ガンマ",
+            Lang::English  => "Gamma",
+            Lang::Chinese  => "伽马",
+        }
+    }
+
+    pub fn settings_image_filter_brightness_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ブライトネス",
+            Lang::English  => "Brightness",
+            Lang::Chinese  => "亮度",
+        }
+    }
+
+    pub fn settings_image_filter_sharpness_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "シャープネス",
+            Lang::English  => "Sharpness",
+            Lang::Chinese  => "锐化",
+        }
+    }
+
+    pub fn settings_image_filter_order_section_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "■ 処理順",
+            Lang::English  => "■ Processing order",
+            Lang::Chinese  => "■ 处理顺序",
+        }
+    }
+
+    pub fn settings_image_filter_order_explain(self) -> &'static str {
+        match self {
+            Lang::Japanese => "カードをドラッグして並べ替える。上から順に適用される。",
+            Lang::English  => "Drag the cards to reorder. Applied from top to bottom.",
+            Lang::Chinese  => "拖动卡片调整顺序，按从上到下的顺序应用。",
+        }
+    }
+
+    pub fn settings_image_filter_stage_color_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "色系統フィルター",
+            Lang::English  => "Color filter",
+            Lang::Chinese  => "色彩滤镜",
+        }
+    }
+
+    pub fn blue_light_cut_toggle_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ブルーライトカット",
+            Lang::English  => "Blue light cut",
+            Lang::Chinese  => "蓝光过滤",
         }
     }
 
@@ -2180,6 +3226,1769 @@ impl Lang {
             Lang::Chinese  => "设置窗口打开期间无法操作",
         }
     }
+
+    // ── ツールパレット（ビューアー内オーバーレイの5x2グリッド） ──────────────
+
+    pub fn tool_palette_toggle_label_blue_light_cut(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ブルーライトカット",
+            Lang::English  => "Blue Light Cut",
+            Lang::Chinese  => "蓝光过滤",
+        }
+    }
+
+    pub fn tool_palette_toggle_label_gamma(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ガンマ有効",
+            Lang::English  => "Gamma",
+            Lang::Chinese  => "伽马校正",
+        }
+    }
+
+    pub fn tool_palette_toggle_label_brightness(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ブライトネス有効",
+            Lang::English  => "Brightness",
+            Lang::Chinese  => "亮度调整",
+        }
+    }
+
+    pub fn tool_palette_toggle_label_sharpness(self) -> &'static str {
+        match self {
+            Lang::Japanese => "シャープネス有効",
+            Lang::English  => "Sharpness",
+            Lang::Chinese  => "锐化开启",
+        }
+    }
+
+    pub fn tool_palette_toggle_label_magnifier(self) -> &'static str {
+        match self {
+            Lang::Japanese => "虫眼鏡",
+            Lang::English  => "Magnifier",
+            Lang::Chinese  => "放大镜",
+        }
+    }
+
+    pub fn tool_palette_toggle_label_image_info(self) -> &'static str {
+        match self {
+            Lang::Japanese => "画像情報表示",
+            Lang::English  => "Image info",
+            Lang::Chinese  => "显示图像信息",
+        }
+    }
+
+    /// 右下の画像情報で、ウィンドウ追従（フィット）表示中に解像度の先頭へ付ける短い印。
+    pub fn image_info_mode_fit(self) -> &'static str {
+        match self {
+            Lang::Japanese => "追従",
+            Lang::English  => "Fit",
+            Lang::Chinese  => "适应",
+        }
+    }
+
+    /// 右下の画像情報で、原寸表示中に解像度の先頭へ付ける短い印。
+    pub fn image_info_mode_actual(self) -> &'static str {
+        match self {
+            Lang::Japanese => "原寸",
+            Lang::English  => "1:1",
+            Lang::Chinese  => "原尺寸",
+        }
+    }
+
+    pub fn tool_palette_toggle_label_koma_mode(self) -> &'static str {
+        match self {
+            Lang::Japanese => "コマ送りモード",
+            Lang::English  => "Panel mode",
+            Lang::Chinese  => "分镜模式",
+        }
+    }
+
+    pub fn decode_edge_prompt_title(self) -> &'static str {
+        match self {
+            Lang::Japanese => "既定値の更新",
+            Lang::English  => "Default value updated",
+            Lang::Chinese  => "默认值已更新",
+        }
+    }
+
+    /// 原寸時の最大長辺幅の既定値底上げの確認ダイアログの本文。`current` は保存済みの値(px)。
+    pub fn decode_edge_prompt_body(self, current: u32, new_default: u32) -> String {
+        match self {
+            Lang::Japanese => format!(
+                "既定値が更新されました。\n現在の設定値が既定値より下回るので新既定値({new_default})に更新しますか？\n\n原寸時に許容する最大長辺幅: 現在 {current} px → {new_default} px"
+            ),
+            Lang::English => format!(
+                "The default value has been updated.\nYour current setting is below the new default ({new_default}). Update it to the new default?\n\nMax long edge for original size: {current} px -> {new_default} px"
+            ),
+            Lang::Chinese => format!(
+                "默认值已更新。\n当前设置低于新的默认值（{new_default}），是否更新为新的默认值？\n\n原始尺寸下允许的最大长边：当前 {current} px → {new_default} px"
+            ),
+        }
+    }
+
+    pub fn decode_edge_prompt_yes(self) -> &'static str {
+        match self {
+            Lang::Japanese => "はい",
+            Lang::English  => "Yes",
+            Lang::Chinese  => "是",
+        }
+    }
+
+    pub fn decode_edge_prompt_no(self) -> &'static str {
+        match self {
+            Lang::Japanese => "いいえ",
+            Lang::English  => "No",
+            Lang::Chinese  => "否",
+        }
+    }
+
+    pub fn magnifier_zoom_notice_title(self) -> &'static str {
+        match self {
+            Lang::Japanese => "キー割り当ての更新",
+            Lang::English  => "Key assignment updated",
+            Lang::Chinese  => "按键分配已更新",
+        }
+    }
+
+    /// 虫眼鏡の拡大縮小の割り当て結果の本文（起動時のOKダイアログ）。
+    pub fn magnifier_zoom_notice_body(self, notice: &crate::keymap::MagnifierZoomNotice) -> String {
+        use crate::keymap::WheelModifier as M;
+        let name = |m: M| match m {
+            M::Shift => "SHIFT",
+            M::Ctrl => "CTRL",
+            M::ShiftCtrl => "SHIFT+CTRL",
+        };
+        let Some(assigned) = notice.assigned else {
+            return match self {
+                Lang::Japanese => "画像の拡大縮小の既定動作を割り当てられませんでした。\nSHIFT / CTRL / SHIFT+CTRL のマウスホイールがすべて他の操作に使われています。\n設定のキーアサインから割り当ててください。".to_string(),
+                Lang::English  => "Could not assign the default zoom action.\nMouse wheel with SHIFT / CTRL / SHIFT+CTRL is already used by other actions.\nPlease assign it in the key assignment settings.".to_string(),
+                Lang::Chinese  => "无法分配图像缩放的默认操作。\nSHIFT / CTRL / SHIFT+CTRL 加鼠标滚轮均已被其他操作占用。\n请在按键分配设置中进行分配。".to_string(),
+            };
+        };
+        let n = name(assigned);
+        let mut text = match self {
+            Lang::Japanese => format!("{n}+マウスホイールが画像の拡大縮小の既定動作として登録されました。"),
+            Lang::English  => format!("{n}+mouse wheel is now registered as the default action for zooming images."),
+            Lang::Chinese  => format!("{n}+鼠标滚轮已注册为图像缩放的默认操作。"),
+        };
+        if assigned != M::Shift {
+            text.push_str(match self {
+                Lang::Japanese => "\n（SHIFT+マウスホイールは既に他の操作に割り当てられていたため）",
+                Lang::English  => "\n(SHIFT+mouse wheel was already assigned to another action.)",
+                Lang::Chinese  => "\n（SHIFT+鼠标滚轮已被其他操作占用。）",
+            });
+        }
+        if notice.file_nav_moved {
+            text.push_str(match self {
+                Lang::Japanese => "\nこれまで SHIFT+マウスホイール だった「前後のファイルへ移動（副）」は CTRL+マウスホイール に変更されました。",
+                Lang::English  => "\n\"Previous/next file (secondary)\", previously on SHIFT+mouse wheel, is now on CTRL+mouse wheel.",
+                Lang::Chinese  => "\n原先的 SHIFT+鼠标滚轮“上一个/下一个文件（副）”已改为 CTRL+鼠标滚轮。",
+            });
+        }
+        text
+    }
+
+    /// 虫眼鏡バーの詳細／簡易ボタンのラベル（現在の状態を表示する）。
+    pub fn magnifier_detail_button_label(self, detail: bool) -> &'static str {
+        match (self, detail) {
+            (Lang::Japanese, true)  => "詳細",
+            (Lang::Japanese, false) => "簡易",
+            (Lang::English,  true)  => "Detail",
+            (Lang::English,  false) => "Simple",
+            (Lang::Chinese,  true)  => "详细",
+            (Lang::Chinese,  false) => "简易",
+        }
+    }
+
+    /// モード終了ボタンのラベル。
+    pub fn magnifier_exit_button_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "モード終了",
+            Lang::English  => "Exit",
+            Lang::Chinese  => "退出",
+        }
+    }
+
+    pub fn magnifier_exit_hint(self) -> &'static str {
+        match self {
+            Lang::Japanese => "虫眼鏡モードを終了する",
+            Lang::English  => "Leave the magnifier mode",
+            Lang::Chinese  => "退出放大镜模式",
+        }
+    }
+
+    pub fn magnifier_notch_step_hint(self) -> &'static str {
+        match self {
+            Lang::Japanese => "1ノッチの倍率（クリックで切替）",
+            Lang::English  => "Zoom per wheel notch (click to change)",
+            Lang::Chinese  => "每格滚轮的缩放倍率（点击切换）",
+        }
+    }
+
+    pub fn magnifier_detail_hint(self) -> &'static str {
+        match self {
+            Lang::Japanese => "スライダーの目盛り：詳細／簡易（クリックで切替）",
+            Lang::English  => "Slider ticks: detailed / simple (click to toggle)",
+            Lang::Chinese  => "滑块刻度：详细／简易（点击切换）",
+        }
+    }
+
+    pub fn tool_palette_action_label_next_page(self) -> &'static str {
+        match self {
+            Lang::Japanese => "次のページ",
+            Lang::English  => "Next Page",
+            Lang::Chinese  => "下一页",
+        }
+    }
+
+    pub fn tool_palette_action_label_prev_page(self) -> &'static str {
+        match self {
+            Lang::Japanese => "前のページ",
+            Lang::English  => "Prev Page",
+            Lang::Chinese  => "上一页",
+        }
+    }
+
+    pub fn tool_palette_action_label_open_folder(self) -> &'static str {
+        match self {
+            Lang::Japanese => "フォルダを開く",
+            Lang::English  => "Open Folder",
+            Lang::Chinese  => "打开文件夹",
+        }
+    }
+
+    pub fn tool_palette_action_label_toggle_fullscreen(self) -> &'static str {
+        match self {
+            Lang::Japanese => "最大化",
+            Lang::English  => "Maximize",
+            Lang::Chinese  => "最大化",
+        }
+    }
+
+    pub fn tool_palette_action_label_slideshow_toggle(self) -> &'static str {
+        match self {
+            Lang::Japanese => "スライドショー",
+            Lang::English  => "Slideshow",
+            Lang::Chinese  => "幻灯片放映",
+        }
+    }
+
+    pub fn tool_palette_action_label_koma_next(self) -> &'static str {
+        match self {
+            Lang::Japanese => "コマ送り",
+            Lang::English  => "Next Panel",
+            Lang::Chinese  => "下一格",
+        }
+    }
+
+    pub fn tool_palette_action_label_koma_prev(self) -> &'static str {
+        match self {
+            Lang::Japanese => "コマ戻し",
+            Lang::English  => "Prev Panel",
+            Lang::Chinese  => "上一格",
+        }
+    }
+
+    pub fn tool_palette_dialog_title_image_filter(self) -> &'static str {
+        match self {
+            Lang::Japanese => "画像フィルタ",
+            Lang::English  => "Image Filter",
+            Lang::Chinese  => "图像滤镜",
+        }
+    }
+
+    pub fn tool_palette_drag_hint(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ドラッグで移動",
+            Lang::English  => "Drag to move",
+            Lang::Chinese  => "拖动以移动",
+        }
+    }
+
+    pub fn tool_palette_lock_hint(self) -> &'static str {
+        match self {
+            Lang::Japanese => "位置の固定ON/OFF（ONの間はドラッグ移動できない）",
+            Lang::English  => "Lock position ON/OFF (dragging disabled while ON)",
+            Lang::Chinese  => "锁定位置开关（开启时无法拖动）",
+        }
+    }
+
+    pub fn tool_palette_opacity_hint(self, pct: u8) -> String {
+        match self {
+            Lang::Japanese => format!("背景の透過度：{pct}%（クリックで10%刻みに変更）"),
+            Lang::English  => format!("Background opacity: {pct}% (click to change by 10%)"),
+            Lang::Chinese  => format!("背景透明度：{pct}%（点击以10%为单位调整）"),
+        }
+    }
+
+    pub fn tool_palette_auto_hide_on_hint(self) -> &'static str {
+        match self {
+            Lang::Japanese => "自動ハイドLOCK：ON（常時表示。クリックでOFFにするとポインタが外れて0.5秒後に自動的に隠れるようになる）",
+            Lang::English  => "Auto-hide LOCK: ON (always shown. Click to turn OFF so it auto-hides 0.5s after the pointer leaves)",
+            Lang::Chinese  => "自动隐藏锁定：开启（始终显示。点击关闭后，指针移出0.5秒将自动隐藏）",
+        }
+    }
+
+    pub fn tool_palette_auto_hide_off_hint(self) -> &'static str {
+        match self {
+            Lang::Japanese => "自動ハイドLOCK：OFF（ポインタが外れて0.5秒後に自動的に隠れる。クリックでONにすると常時表示に戻る）",
+            Lang::English  => "Auto-hide LOCK: OFF (auto-hides 0.5s after the pointer leaves. Click to turn ON to always show)",
+            Lang::Chinese  => "自动隐藏锁定：关闭（指针移出0.5秒后自动隐藏。点击开启可始终显示）",
+        }
+    }
+
+    pub fn tool_palette_size_hint(self, size_px: i32) -> String {
+        match self {
+            Lang::Japanese => format!("マスのサイズ：{size_px}px（クリックで段階変更）"),
+            Lang::English  => format!("Slot size: {size_px}px (click to change)"),
+            Lang::Chinese  => format!("格子尺寸：{size_px}px（点击切换）"),
+        }
+    }
+
+    pub fn tool_palette_close_hint(self) -> &'static str {
+        match self {
+            Lang::Japanese => "パレットを隠す（画面上で右クリックすると再表示）",
+            Lang::English  => "Hide the palette (right-click the screen to show it again)",
+            Lang::Chinese  => "隐藏工具面板（在画面上右键点击可重新显示）",
+        }
+    }
+
+    pub fn tool_palette_dialog_close(self) -> &'static str {
+        match self {
+            Lang::Japanese => "閉じる",
+            Lang::English  => "Close",
+            Lang::Chinese  => "关闭",
+        }
+    }
+
+    pub fn tool_palette_slot_empty_hint(self) -> &'static str {
+        match self {
+            Lang::Japanese => "空欄（右クリックで登録）",
+            Lang::English  => "Empty (right-click to assign)",
+            Lang::Chinese  => "空（右键点击以设置）",
+        }
+    }
+
+    pub fn tool_palette_slot_change_suffix(self) -> &'static str {
+        match self {
+            Lang::Japanese => "（右クリックで変更）",
+            Lang::English  => " (right-click to change)",
+            Lang::Chinese  => "（右键点击以更改）",
+        }
+    }
+
+    pub fn tool_palette_rename_menu_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ボタン名称の変更",
+            Lang::English  => "Rename button",
+            Lang::Chinese  => "更改按钮名称",
+        }
+    }
+
+    pub fn tool_palette_rename_hint_text(self) -> &'static str {
+        match self {
+            Lang::Japanese => "空欄で非表示",
+            Lang::English  => "Leave blank to hide",
+            Lang::Chinese  => "留空以隐藏",
+        }
+    }
+
+    pub fn tool_palette_rename_ok(self) -> &'static str {
+        match self {
+            Lang::Japanese => "OK",
+            Lang::English  => "OK",
+            Lang::Chinese  => "确定",
+        }
+    }
+
+    pub fn tool_palette_rename_cancel(self) -> &'static str {
+        match self {
+            Lang::Japanese => "キャンセル",
+            Lang::English  => "Cancel",
+            Lang::Chinese  => "取消",
+        }
+    }
+
+    pub fn tool_palette_slot_clear_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "空欄に戻す",
+            Lang::English  => "Clear",
+            Lang::Chinese  => "清空",
+        }
+    }
+}
+
+/// エクスプローラーのヘルプ（ツールチップ）1件分。タイトルは枠で囲って表示し、
+/// 本文は（見出し, 本文）の節を行間を空けて並べる。見出しが空の節は本文のみ。
+pub struct HelpDoc {
+    pub title: &'static str,
+    pub sections: &'static [(&'static str, &'static str)],
+}
+
+impl Lang {
+    pub fn help_toggle_button(self) -> &'static str {
+        "[?]"
+    }
+
+    pub fn status_button(self) -> &'static str {
+        "[stat]"
+    }
+
+    pub fn help_reload(self) -> HelpDoc {
+        match self {
+            Lang::Japanese => HelpDoc {
+                title: "リロード",
+                sections: &[("", "リロードの実行")],
+            },
+            Lang::English => HelpDoc {
+                title: "Reload",
+                sections: &[("", "Runs a reload.")],
+            },
+            Lang::Chinese => HelpDoc {
+                title: "重新加载",
+                sections: &[("", "执行重新加载")],
+            },
+        }
+    }
+
+    pub fn help_sort_primary(self) -> HelpDoc {
+        match self {
+            Lang::Japanese => HelpDoc {
+                title: "ソート（第1）",
+                sections: &[(
+                    "",
+                    "フォルダ内のアーカイブの並び順を、名前・日付・サイズから選ぶ。\n\
+                     [昇順]／[降順]で並びの向きを切り替える。選択中の項目は青で表示される。",
+                )],
+            },
+            Lang::English => HelpDoc {
+                title: "Sort (primary)",
+                sections: &[(
+                    "",
+                    "Choose how archives in the folder are ordered: by name, date or size.\n\
+                     [Asc]/[Desc] switches the direction. The selected item is shown in blue.",
+                )],
+            },
+            Lang::Chinese => HelpDoc {
+                title: "排序（第1）",
+                sections: &[(
+                    "",
+                    "从名称、日期、大小中选择文件夹内压缩包的排列顺序。\n\
+                     [升序]/[降序]切换排列方向。选中的项目以蓝色显示。",
+                )],
+            },
+        }
+    }
+
+    pub fn help_sort_rating(self) -> HelpDoc {
+        match self {
+            Lang::Japanese => HelpDoc {
+                title: "ソート（第2：スコア・訪問回数）",
+                sections: &[
+                    (
+                        "",
+                        "スコア（評価）または訪問回数で並べ替える。ONの間はこちらが主軸になり、\n\
+                         第1ソート（名前・日付・サイズ）は同順位のときのサブ条件になる。\n\
+                         ONのとき赤く表示される。[昇順]／[降順]は第2ソートがONのときだけ使える。",
+                    ),
+                    (
+                        "■ もう一度押すとOFF",
+                        "押し下げ中（赤）のボタンをもう一度押すと第2ソートがOFFになり、\n\
+                         第1ソートだけの並びに戻る。",
+                    ),
+                ],
+            },
+            Lang::English => HelpDoc {
+                title: "Sort (secondary: score / visits)",
+                sections: &[
+                    (
+                        "",
+                        "Sorts by score (rating) or visit count. While ON it becomes the main key,\n\
+                         and the primary sort (name / date / size) only breaks ties.\n\
+                         Shown in red while ON. [Asc]/[Desc] works only while this sort is ON.",
+                    ),
+                    (
+                        "■ Press again to turn OFF",
+                        "Pressing the pressed (red) button again turns the secondary sort OFF\n\
+                         and returns to the primary sort only.",
+                    ),
+                ],
+            },
+            Lang::Chinese => HelpDoc {
+                title: "排序（第2：评分・访问次数）",
+                sections: &[
+                    (
+                        "",
+                        "按评分或访问次数排序。开启期间它是主排序键，\n\
+                         第1排序（名称・日期・大小）仅在并列时作为次要条件。\n\
+                         开启时显示为红色。[升序]/[降序]仅在第2排序开启时可用。",
+                    ),
+                    (
+                        "■ 再按一次即关闭",
+                        "再次按下已按下（红色）的按钮，第2排序即关闭，\n\
+                         恢复为仅第1排序。",
+                    ),
+                ],
+            },
+        }
+    }
+
+    pub fn help_card_info(self) -> HelpDoc {
+        match self {
+            Lang::Japanese => HelpDoc {
+                title: "サムネ情報帯",
+                sections: &[
+                    (
+                        "[情報]",
+                        "サムネイル下部の帯に出す内容を切り替える。押すたびに循環する。\n\
+                         OFF → 名前 → 名前+日付 → 名前+日付+容量",
+                    ),
+                    (
+                        "[情報2]",
+                        "評価帯の内容を切り替える。押すたびに循環する。\n\
+                         OFF → ★（スコア） → 回数（訪問回数） → ★+回数",
+                    ),
+                ],
+            },
+            Lang::English => HelpDoc {
+                title: "Thumbnail info bands",
+                sections: &[
+                    (
+                        "[Info]",
+                        "Changes what the band under each thumbnail shows. Cycles on every press.\n\
+                         OFF -> Name -> Name+Date -> Name+Date+Size",
+                    ),
+                    (
+                        "[Info2]",
+                        "Changes what the rating band shows. Cycles on every press.\n\
+                         OFF -> Stars (score) -> Visits -> Stars+Visits",
+                    ),
+                ],
+            },
+            Lang::Chinese => HelpDoc {
+                title: "缩略图信息带",
+                sections: &[
+                    (
+                        "[信息]",
+                        "切换缩略图下方信息带显示的内容，每按一次循环切换。\n\
+                         关闭 → 名称 → 名称+日期 → 名称+日期+大小",
+                    ),
+                    (
+                        "[信息2]",
+                        "切换评分带显示的内容，每按一次循环切换。\n\
+                         关闭 → ★（评分） → 次数（访问次数） → ★+次数",
+                    ),
+                ],
+            },
+        }
+    }
+
+    pub fn help_view_toggles(self) -> HelpDoc {
+        match self {
+            Lang::Japanese => HelpDoc {
+                title: "ON/OFFトグル",
+                sections: &[
+                    (
+                        "[ツールボックス]",
+                        "ビューアー内のツールパレット（マス配置のツールボックス）の表示ON/OFF。\n\
+                         ファイルを移っても状態は保たれる。",
+                    ),
+                    (
+                        "[スコアリング]",
+                        "アーカイブの末尾ページに出る評価オーバーレイ（スコア入力）のON/OFF。\n\
+                         邪魔に感じるときはOFFにする。",
+                    ),
+                ],
+            },
+            Lang::English => HelpDoc {
+                title: "ON/OFF toggles",
+                sections: &[
+                    (
+                        "[Toolbox]",
+                        "Shows or hides the tool palette (grid-layout toolbox) in the viewer.\n\
+                         The state is kept when you move between files.",
+                    ),
+                    (
+                        "[Scoring]",
+                        "Turns the rating overlay (score input) at the end of an archive ON/OFF.\n\
+                         Turn it OFF if it gets in the way.",
+                    ),
+                ],
+            },
+            Lang::Chinese => HelpDoc {
+                title: "开/关切换",
+                sections: &[
+                    (
+                        "[工具箱]",
+                        "显示/隐藏查看器内的工具面板（格子布局的工具箱）。\n\
+                         切换文件时状态保持不变。",
+                    ),
+                    (
+                        "[评分]",
+                        "开/关压缩包末尾页出现的评分浮层（评分输入）。\n\
+                         觉得碍事时可关闭。",
+                    ),
+                ],
+            },
+        }
+    }
+
+    pub fn help_thumbnail_status(self) -> HelpDoc {
+        match self {
+            Lang::Japanese => HelpDoc {
+                title: "サムネイル状況",
+                sections: &[
+                    (
+                        "サムネイル 現在数/総数",
+                        "分子は、今の設定で生成済みのサムネイル数。\n\
+                         分母は、現在のフォルダ内のアーカイブ総数。",
+                    ),
+                    (
+                        "エラー N",
+                        "サムネイルの生成に失敗した数。0件のときは表示されない。",
+                    ),
+                    (
+                        "新形式に更新中",
+                        "サムネイルの設定を変えたときや、DBが新しい形式に変わったときに表示される。\n\
+                         旧形式のサムネイルを作り直している間、分子は作り直しが済んだ分だけ増える。",
+                    ),
+                ],
+            },
+            Lang::English => HelpDoc {
+                title: "Thumbnail status",
+                sections: &[
+                    (
+                        "Thumbnails current/total",
+                        "The numerator is the number of thumbnails already generated with the current settings.\n\
+                         The denominator is the total number of archives in the current folder.",
+                    ),
+                    (
+                        "Errors N",
+                        "The number of archives whose thumbnail failed to generate. Hidden when 0.",
+                    ),
+                    (
+                        "Updating to the new format",
+                        "Shown after the thumbnail settings change, or when the DB moves to a new format.\n\
+                         While old thumbnails are being rebuilt, the numerator only counts the rebuilt ones.",
+                    ),
+                ],
+            },
+            Lang::Chinese => HelpDoc {
+                title: "缩略图状态",
+                sections: &[
+                    (
+                        "缩略图 当前数/总数",
+                        "分子是按当前设置已生成的缩略图数量。\n\
+                         分母是当前文件夹内的压缩包总数。",
+                    ),
+                    (
+                        "错误 N",
+                        "缩略图生成失败的数量。为0时不显示。",
+                    ),
+                    (
+                        "正在更新为新格式",
+                        "更改缩略图设置，或数据库升级为新格式时显示。\n\
+                         重建旧格式缩略图期间，分子只统计已重建完成的数量。",
+                    ),
+                ],
+            },
+        }
+    }
+
+    pub fn help_tab_favorites(self) -> HelpDoc {
+        match self {
+            Lang::Japanese => HelpDoc {
+                title: "お気に入り",
+                sections: &[("", "登録したお気に入りを閲覧・管理できるタブです。")],
+            },
+            Lang::English => HelpDoc {
+                title: "Favorites",
+                sections: &[("", "A tab to browse and manage the favorites you have registered.")],
+            },
+            Lang::Chinese => HelpDoc {
+                title: "收藏夹",
+                sections: &[("", "用于浏览和管理已登记收藏的标签页。")],
+            },
+        }
+    }
+
+    pub fn help_tab_real(self) -> HelpDoc {
+        match self {
+            Lang::Japanese => HelpDoc {
+                title: "フォルダ",
+                sections: &[("", "実ツリーに対応した、本アプリのデフォルトモードのタブです。")],
+            },
+            Lang::English => HelpDoc {
+                title: "Folders",
+                sections: &[("", "The app's default mode, matching the real folder tree.")],
+            },
+            Lang::Chinese => HelpDoc {
+                title: "文件夹",
+                sections: &[("", "对应实际目录树的标签页，是本应用的默认模式。")],
+            },
+        }
+    }
+
+    pub fn help_tab_search(self) -> HelpDoc {
+        match self {
+            Lang::Japanese => HelpDoc {
+                title: "検索",
+                sections: &[
+                    (
+                        "",
+                        "検索機能ですが万能ではありません。\n\
+                         本アプリでサムネイルが作られたファイルのみを対象に検索をかけます。",
+                    ),
+                    (
+                        "",
+                        "フォルダが確定していれば、画面下部にある文字列検索（フィルタ）を\n\
+                         利用するのも高速でおすすめです。",
+                    ),
+                ],
+            },
+            Lang::English => HelpDoc {
+                title: "Search",
+                sections: &[
+                    (
+                        "",
+                        "A search feature, but not an all-purpose one.\n\
+                         It only searches files whose thumbnails have been created by this app.",
+                    ),
+                    (
+                        "",
+                        "If you already know the folder, the text filter at the bottom of the\n\
+                         screen is also fast and recommended.",
+                    ),
+                ],
+            },
+            Lang::Chinese => HelpDoc {
+                title: "搜索",
+                sections: &[
+                    (
+                        "",
+                        "这是搜索功能，但并非万能。\n\
+                         只会搜索本应用已生成缩略图的文件。",
+                    ),
+                    (
+                        "",
+                        "如果已确定文件夹，使用屏幕下方的文本过滤同样很快，推荐使用。",
+                    ),
+                ],
+            },
+        }
+    }
+
+    pub fn help_tab_virtual(self) -> HelpDoc {
+        match self {
+            Lang::Japanese => HelpDoc {
+                title: "仮想フォルダ",
+                sections: &[
+                    (
+                        "",
+                        "お気に入りがファイル単位であれば、こちらはフォルダ単位の\n\
+                         お気に入り機能のようなものです。",
+                    ),
+                    (
+                        "",
+                        "閲覧不要なフォルダも削除（非表示にするだけ）できます。実ツリーのように、\n\
+                         アクセスしなくてよいフォルダが常時表示されない点がメリットです。",
+                    ),
+                    (
+                        "",
+                        "アーカイブを扱う親フォルダが確定している方に、特におすすめです。",
+                    ),
+                ],
+            },
+            Lang::English => HelpDoc {
+                title: "Virtual Folders",
+                sections: &[
+                    (
+                        "",
+                        "If Favorites work per file, this is something like a favorites feature\n\
+                         per folder.",
+                    ),
+                    (
+                        "",
+                        "Folders you do not need to browse can be deleted (they are only hidden).\n\
+                         Unlike the real tree, folders you never visit are not shown all the time.",
+                    ),
+                    (
+                        "",
+                        "Especially recommended if you already know the parent folders that hold your archives.",
+                    ),
+                ],
+            },
+            Lang::Chinese => HelpDoc {
+                title: "虚拟文件夹",
+                sections: &[
+                    (
+                        "",
+                        "如果说收藏夹是以文件为单位，这里就相当于以文件夹为单位的收藏功能。",
+                    ),
+                    (
+                        "",
+                        "不需要浏览的文件夹也可以删除（只是隐藏）。与实际目录树不同，\n\
+                         不必访问的文件夹不会一直显示，这是它的优点。",
+                    ),
+                    (
+                        "",
+                        "特别推荐给已确定存放压缩包的父文件夹的用户。",
+                    ),
+                ],
+            },
+        }
+    }
+
+    pub fn help_filter_text(self) -> HelpDoc {
+        match self {
+            Lang::Japanese => HelpDoc {
+                title: "文字列フィルタ",
+                sections: &[
+                    (
+                        "",
+                        "表示中のフォルダのアーカイブを、ファイル名で絞り込む。\n\
+                         チェックをONにすると有効になる。* ? [...] のワイルドカードが使える。",
+                    ),
+                ],
+            },
+            Lang::English => HelpDoc {
+                title: "Text filter",
+                sections: &[
+                    (
+                        "",
+                        "Narrows the archives of the folder being shown by file name.\n\
+                         Turn the checkbox ON to enable it. Wildcards * ? [...] are supported.",
+                    ),
+                ],
+            },
+            Lang::Chinese => HelpDoc {
+                title: "文本过滤",
+                sections: &[
+                    (
+                        "",
+                        "按文件名过滤当前显示文件夹中的压缩包。\n\
+                         勾选复选框后生效。支持 * ? [...] 通配符。",
+                    ),
+                ],
+            },
+        }
+    }
+
+    pub fn help_filter_score(self) -> HelpDoc {
+        match self {
+            Lang::Japanese => HelpDoc {
+                title: "score filter",
+                sections: &[
+                    (
+                        "",
+                        "表示中のフォルダのアーカイブを、スコア（評価）で絞り込む。\n\
+                         チェックをONにすると有効になる。比較（== / <= / >=）と★の基準値を選ぶ。",
+                    ),
+                    (
+                        "■ 未評価は対象外",
+                        "有効中は、未評価のもの・一度も開いていないものは表示されない。",
+                    ),
+                ],
+            },
+            Lang::English => HelpDoc {
+                title: "score filter",
+                sections: &[
+                    (
+                        "",
+                        "Narrows the archives of the folder being shown by score (rating).\n\
+                         Turn the checkbox ON to enable it. Pick a comparison (== / <= / >=) and a star value.",
+                    ),
+                    (
+                        "■ Unrated items are excluded",
+                        "While enabled, unrated archives and archives never opened are hidden.",
+                    ),
+                ],
+            },
+            Lang::Chinese => HelpDoc {
+                title: "score filter",
+                sections: &[
+                    (
+                        "",
+                        "按评分过滤当前显示文件夹中的压缩包。\n\
+                         勾选复选框后生效。选择比较符（== / <= / >=）和★基准值。",
+                    ),
+                    (
+                        "■ 未评分的不在范围内",
+                        "启用期间，未评分及从未打开过的压缩包不会显示。",
+                    ),
+                ],
+            },
+        }
+    }
+
+    pub fn help_search_base_dir(self) -> HelpDoc {
+        match self {
+            Lang::Japanese => HelpDoc {
+                title: "検索基底フォルダ",
+                sections: &[
+                    (
+                        "■ 先にツリーで検索対象フォルダを選択",
+                        "検索の起点になるフォルダ。この欄は直接入力できない。\n\
+                         検索の前に、ツリー（またはドライブ一覧）で検索対象のフォルダを選んでおくこと。\n\
+                         選ばないと、意図しない場所（現在のフォルダなど）が検索される。",
+                    ),
+                    (
+                        "",
+                        "「条件クリア」を押しても、この基点は消えない。",
+                    ),
+                ],
+            },
+            Lang::English => HelpDoc {
+                title: "Search base folder",
+                sections: &[
+                    (
+                        "■ Select the target folder in the tree first",
+                        "The folder the search starts from. This field cannot be typed into.\n\
+                         Before searching, pick the folder to search in the tree (or the drive list).\n\
+                         If you do not, an unintended place (such as the current folder) is searched.",
+                    ),
+                    (
+                        "",
+                        "[Clear conditions] does not clear this base folder.",
+                    ),
+                ],
+            },
+            Lang::Chinese => HelpDoc {
+                title: "搜索基准文件夹",
+                sections: &[
+                    (
+                        "■ 请先在目录树中选择搜索目标文件夹",
+                        "搜索的起点文件夹。此栏不能直接输入。\n\
+                         搜索前，请先在目录树（或驱动器列表）中选好要搜索的文件夹。\n\
+                         否则会搜索到非预期的位置（例如当前文件夹）。",
+                    ),
+                    (
+                        "",
+                        "点击“清除条件”不会清除此基准文件夹。",
+                    ),
+                ],
+            },
+        }
+    }
+
+    pub fn help_search_actions(self) -> HelpDoc {
+        match self {
+            Lang::Japanese => HelpDoc {
+                title: "検索の実行",
+                sections: &[
+                    ("[検索開始]", "入力した条件で検索を実行する。検索中は押せない。"),
+                    ("[条件クリア]", "入力した条件を空に戻す。基底フォルダは消えない。"),
+                ],
+            },
+            Lang::English => HelpDoc {
+                title: "Running a search",
+                sections: &[
+                    ("[Start search]", "Runs a search with the entered conditions. Disabled while searching."),
+                    ("[Clear conditions]", "Empties the entered conditions. The base folder is kept."),
+                ],
+            },
+            Lang::Chinese => HelpDoc {
+                title: "执行搜索",
+                sections: &[
+                    ("[开始搜索]", "按输入的条件执行搜索。搜索期间不可点击。"),
+                    ("[清除条件]", "清空输入的条件。基准文件夹不会被清除。"),
+                ],
+            },
+        }
+    }
+
+    pub fn help_search_conditions(self) -> HelpDoc {
+        match self {
+            Lang::Japanese => HelpDoc {
+                title: "検索条件",
+                sections: &[
+                    (
+                        "[ファイル名]",
+                        "* ? [...] のワイルドカードが使える。空欄なら全ファイルが対象。",
+                    ),
+                    (
+                        "[サブディレクトリを含む]",
+                        "ONにすると、基底フォルダの下の階層もすべて検索する。",
+                    ),
+                    (
+                        "[サイズ]",
+                        "MB単位で下限・上限を指定する。空欄なら制限なし。",
+                    ),
+                    (
+                        "[日付]",
+                        "更新日の範囲をカレンダーで指定する。空欄なら制限なし。",
+                    ),
+                ],
+            },
+            Lang::English => HelpDoc {
+                title: "Search conditions",
+                sections: &[
+                    (
+                        "[File name]",
+                        "Wildcards * ? [...] are supported. Leave empty to match all files.",
+                    ),
+                    (
+                        "[Include subdirectories]",
+                        "When ON, all levels below the base folder are searched too.",
+                    ),
+                    (
+                        "[Size]",
+                        "Set a lower and/or upper limit in MB. Empty means no limit.",
+                    ),
+                    (
+                        "[Date]",
+                        "Pick a modified-date range with the calendar. Empty means no limit.",
+                    ),
+                ],
+            },
+            Lang::Chinese => HelpDoc {
+                title: "搜索条件",
+                sections: &[
+                    (
+                        "[文件名]",
+                        "支持 * ? [...] 通配符。留空则匹配所有文件。",
+                    ),
+                    (
+                        "[包含子目录]",
+                        "开启后，基准文件夹下的所有层级都会被搜索。",
+                    ),
+                    (
+                        "[大小]",
+                        "以MB为单位指定下限和上限。留空则不限制。",
+                    ),
+                    (
+                        "[日期]",
+                        "用日历指定修改日期范围。留空则不限制。",
+                    ),
+                ],
+            },
+        }
+    }
+
+    pub fn help_search_history(self) -> HelpDoc {
+        match self {
+            Lang::Japanese => HelpDoc {
+                title: "検索履歴",
+                sections: &[(
+                    "",
+                    "実行した検索が新しい順に並ぶ。クリックすると、その検索結果を右側に表示する。",
+                )],
+            },
+            Lang::English => HelpDoc {
+                title: "Search history",
+                sections: &[(
+                    "",
+                    "Past searches are listed newest first. Click one to show its results on the right.",
+                )],
+            },
+            Lang::Chinese => HelpDoc {
+                title: "搜索历史",
+                sections: &[(
+                    "",
+                    "已执行的搜索按时间由新到旧排列。点击某一项，即在右侧显示该次搜索的结果。",
+                )],
+            },
+        }
+    }
+
+    pub fn help_tree_add_to_virtual(self) -> HelpDoc {
+        match self {
+            Lang::Japanese => HelpDoc {
+                title: "仮想フォルダに追加する",
+                sections: &[(
+                    "",
+                    "選んだ実フォルダを、仮想フォルダへ登録する。\n\
+                     行き先の仮想フォルダを選ぶ画面が開く。",
+                )],
+            },
+            Lang::English => HelpDoc {
+                title: "Add to virtual folders",
+                sections: &[(
+                    "",
+                    "Registers the selected real folder into the virtual folders.\n\
+                     A screen opens to choose the destination virtual folder.",
+                )],
+            },
+            Lang::Chinese => HelpDoc {
+                title: "添加到虚拟文件夹",
+                sections: &[(
+                    "",
+                    "将所选的实际文件夹登记到虚拟文件夹。\n\
+                     会打开选择目标虚拟文件夹的界面。",
+                )],
+            },
+        }
+    }
+
+    pub fn help_tree_sort(self) -> HelpDoc {
+        match self {
+            Lang::Japanese => HelpDoc {
+                title: "ソート条件設定",
+                sections: &[(
+                    "",
+                    "このツリーの並び順を設定するダイアログを開く。\n\
+                     並びのキー（名前・日付。仮想ツリーは登録順も）と昇降順を選び、「適用」で保存される。\n\
+                     対象は右クリックしたツリー1つだけ。",
+                )],
+            },
+            Lang::English => HelpDoc {
+                title: "Sort settings",
+                sections: &[(
+                    "",
+                    "Opens a dialog to set the order of this tree.\n\
+                     Pick a key (name, date; registration order too for the virtual tree) and a direction, then Apply to save.\n\
+                     It affects only the tree you right-clicked.",
+                )],
+            },
+            Lang::Chinese => HelpDoc {
+                title: "排序条件设置",
+                sections: &[(
+                    "",
+                    "打开设置此目录树排列顺序的对话框。\n\
+                     选择排序键（名称、日期；虚拟树还有登记顺序）和升降序，点击“应用”即保存。\n\
+                     只对右键点击的那一棵树生效。",
+                )],
+            },
+        }
+    }
+
+    pub fn help_vmenu_rename(self) -> HelpDoc {
+        match self {
+            Lang::Japanese => HelpDoc {
+                title: "名前を変更",
+                sections: &[(
+                    "",
+                    "仮想フォルダの表示名を変更する（F2キーでも開ける）。\n\
+                     変わるのは仮想側の名前だけで、実フォルダの名前・場所は変わらない。\n\
+                     ルート（/）は対象外。",
+                )],
+            },
+            Lang::English => HelpDoc {
+                title: "Rename",
+                sections: &[(
+                    "",
+                    "Changes the display name of the virtual folder (F2 also opens it).\n\
+                     Only the virtual name changes; the real folder's name and location stay the same.\n\
+                     The root (/) is excluded.",
+                )],
+            },
+            Lang::Chinese => HelpDoc {
+                title: "重命名",
+                sections: &[(
+                    "",
+                    "更改虚拟文件夹的显示名称（也可按F2键）。\n\
+                     只改变虚拟侧的名称，实际文件夹的名称和位置不变。\n\
+                     根（/）不在范围内。",
+                )],
+            },
+        }
+    }
+
+    pub fn help_vmenu_sync(self) -> HelpDoc {
+        match self {
+            Lang::Japanese => HelpDoc {
+                title: "実ツリーと同期",
+                sections: &[
+                    (
+                        "",
+                        "このフォルダの実パスまで、実ツリーを展開して選択表示にする。\n\
+                         中央のカード欄の表示は変わらない。",
+                    ),
+                    (
+                        "",
+                        "実ツリーが別のドライブを表示しているときは、ツリーのルートをそのドライブへ切り替える。",
+                    ),
+                    (
+                        "■ グレーアウトする場合",
+                        "ルート（/）と、実フォルダにたどり着けないリンク切れのフォルダ。",
+                    ),
+                ],
+            },
+            Lang::English => HelpDoc {
+                title: "Sync with real tree",
+                sections: &[
+                    (
+                        "",
+                        "Expands the real tree down to this folder's real path and highlights it.\n\
+                         The cards in the center do not change.",
+                    ),
+                    (
+                        "",
+                        "If the real tree shows another drive, its root is switched to that drive.",
+                    ),
+                    (
+                        "■ Grayed out for",
+                        "The root (/) and broken-link folders whose real folder cannot be reached.",
+                    ),
+                ],
+            },
+            Lang::Chinese => HelpDoc {
+                title: "与实际目录树同步",
+                sections: &[
+                    (
+                        "",
+                        "在实际目录树中展开到此文件夹的实际路径并选中。\n\
+                         中央卡片区的显示不会改变。",
+                    ),
+                    (
+                        "",
+                        "如果实际目录树显示的是其他驱动器，会把树的根切换到该驱动器。",
+                    ),
+                    (
+                        "■ 显示为灰色的情况",
+                        "根（/）以及无法到达实际文件夹的失效链接文件夹。",
+                    ),
+                ],
+            },
+        }
+    }
+
+    pub fn help_vmenu_open_in_folders(self) -> HelpDoc {
+        match self {
+            Lang::Japanese => HelpDoc {
+                title: "フォルダタブで開く",
+                sections: &[
+                    (
+                        "",
+                        "フォルダタブへ移動し、この実フォルダを開く。中央のカード欄もその実フォルダに切り替わる。",
+                    ),
+                    (
+                        "■ 「実ツリーと同期」との違い",
+                        "同期はタブを移らず、カード欄も変えない。こちらはタブを移ってカード欄も実フォルダになる。",
+                    ),
+                    (
+                        "■ グレーアウトする場合",
+                        "ルート（/）と、実フォルダにたどり着けないリンク切れのフォルダ。",
+                    ),
+                ],
+            },
+            Lang::English => HelpDoc {
+                title: "Open in Folders tab",
+                sections: &[
+                    (
+                        "",
+                        "Moves to the Folders tab and opens this real folder. The cards in the center switch to that real folder too.",
+                    ),
+                    (
+                        "■ Difference from \"Sync with real tree\"",
+                        "Sync stays on the tab and leaves the cards alone. This one moves to the tab and shows the real folder in the cards.",
+                    ),
+                    (
+                        "■ Grayed out for",
+                        "The root (/) and broken-link folders whose real folder cannot be reached.",
+                    ),
+                ],
+            },
+            Lang::Chinese => HelpDoc {
+                title: "在文件夹标签中打开",
+                sections: &[
+                    (
+                        "",
+                        "切换到文件夹标签并打开此实际文件夹。中央卡片区也会切换为该实际文件夹。",
+                    ),
+                    (
+                        "■ 与“与实际目录树同步”的区别",
+                        "同步不切换标签，也不改变卡片区。此项会切换标签，并让卡片区显示实际文件夹。",
+                    ),
+                    (
+                        "■ 显示为灰色的情况",
+                        "根（/）以及无法到达实际文件夹的失效链接文件夹。",
+                    ),
+                ],
+            },
+        }
+    }
+
+    pub fn help_vmenu_register(self) -> HelpDoc {
+        match self {
+            Lang::Japanese => HelpDoc {
+                title: "実フォルダ登録",
+                sections: &[(
+                    "",
+                    "実フォルダを選んで、この仮想フォルダの下に登録する。\n\
+                     登録の前に確認画面が出て、内容を評価してから登録される。\n\
+                     ルート（/）の下にも登録できる。",
+                )],
+            },
+            Lang::English => HelpDoc {
+                title: "Register real folder",
+                sections: &[(
+                    "",
+                    "Pick a real folder and register it under this virtual folder.\n\
+                     A confirmation screen appears first, and the content is evaluated before registering.\n\
+                     You can register under the root (/) too.",
+                )],
+            },
+            Lang::Chinese => HelpDoc {
+                title: "登记实际文件夹",
+                sections: &[(
+                    "",
+                    "选择一个实际文件夹，登记到此虚拟文件夹之下。\n\
+                     登记前会出现确认画面，并先评估内容再登记。\n\
+                     也可以登记到根（/）之下。",
+                )],
+            },
+        }
+    }
+
+    pub fn help_vmenu_delete(self) -> HelpDoc {
+        match self {
+            Lang::Japanese => HelpDoc {
+                title: "仮想フォルダ削除",
+                sections: &[
+                    (
+                        "",
+                        "この仮想フォルダを一覧から外す（非表示にするだけ）。\n\
+                         実フォルダには一切触れない。リンク切れのフォルダも削除できる。",
+                    ),
+                    (
+                        "■ 下の階層も一緒に消える",
+                        "このフォルダの下に登録されている仮想フォルダも、すべて連動して消える。",
+                    ),
+                    (
+                        "■ グレーアウトする場合",
+                        "ルート（/）。",
+                    ),
+                ],
+            },
+            Lang::English => HelpDoc {
+                title: "Delete virtual folder",
+                sections: &[
+                    (
+                        "",
+                        "Removes this virtual folder from the list (it is only hidden).\n\
+                         The real folder is never touched. Broken-link folders can be deleted too.",
+                    ),
+                    (
+                        "■ Lower levels go with it",
+                        "All virtual folders registered under this folder are removed as well.",
+                    ),
+                    (
+                        "■ Grayed out for",
+                        "The root (/).",
+                    ),
+                ],
+            },
+            Lang::Chinese => HelpDoc {
+                title: "删除虚拟文件夹",
+                sections: &[
+                    (
+                        "",
+                        "将此虚拟文件夹从列表中移除（只是隐藏）。\n\
+                         完全不会触及实际文件夹。失效链接的文件夹也可以删除。",
+                    ),
+                    (
+                        "■ 下级一并删除",
+                        "登记在此文件夹之下的虚拟文件夹也会全部连带删除。",
+                    ),
+                    (
+                        "■ 显示为灰色的情况",
+                        "根（/）。",
+                    ),
+                ],
+            },
+        }
+    }
+
+    pub fn help_virtual_node(self) -> HelpDoc {
+        match self {
+            Lang::Japanese => HelpDoc {
+                title: "仮想フォルダ",
+                sections: &[
+                    ("[クリック]", "中央のカード欄に、このフォルダの中身を表示する。"),
+                    ("[▶ ／ ▼]", "下の階層を開閉する。"),
+                    (
+                        "[右クリック]",
+                        "名前変更・実ツリーと同期・フォルダタブで開く・実フォルダ登録・削除のメニューを出す。",
+                    ),
+                    (
+                        "[⚠ 名前]",
+                        "名前の前に⚠がついたものは、実フォルダにたどり着けないリンク切れ。",
+                    ),
+                ],
+            },
+            Lang::English => HelpDoc {
+                title: "Virtual folder",
+                sections: &[
+                    ("[Click]", "Shows the contents of this folder in the center cards."),
+                    ("[▶ / ▼]", "Expands or collapses the lower levels."),
+                    (
+                        "[Right-click]",
+                        "Opens the menu: rename, sync with real tree, open in Folders tab, register real folder, delete.",
+                    ),
+                    (
+                        "[⚠ name]",
+                        "A name prefixed with ⚠ is a broken link whose real folder cannot be reached.",
+                    ),
+                ],
+            },
+            Lang::Chinese => HelpDoc {
+                title: "虚拟文件夹",
+                sections: &[
+                    ("[单击]", "在中央卡片区显示此文件夹的内容。"),
+                    ("[▶ / ▼]", "展开或折叠下级。"),
+                    (
+                        "[右键]",
+                        "弹出菜单：重命名、与实际目录树同步、在文件夹标签中打开、登记实际文件夹、删除。",
+                    ),
+                    (
+                        "[⚠ 名称]",
+                        "名称前带⚠的是无法到达实际文件夹的失效链接。",
+                    ),
+                ],
+            },
+        }
+    }
+
+    pub fn help_fav_add(self) -> HelpDoc {
+        match self {
+            Lang::Japanese => HelpDoc {
+                title: "お気に入りフォルダの新規作成",
+                sections: &[("", "お気に入りフォルダを新しく作る。名前・マーカー・色を決める。")],
+            },
+            Lang::English => HelpDoc {
+                title: "New favorites folder",
+                sections: &[("", "Creates a new favorites folder. Set its name, marker and color.")],
+            },
+            Lang::Chinese => HelpDoc {
+                title: "新建收藏文件夹",
+                sections: &[("", "新建收藏文件夹。设定名称、标记和颜色。")],
+            },
+        }
+    }
+
+    pub fn help_fav_rename(self) -> HelpDoc {
+        match self {
+            Lang::Japanese => HelpDoc {
+                title: "リネーム (F2)",
+                sections: &[("", "お気に入りフォルダの名前を変更する。ダイアログでマーカーと色も変えられる。")],
+            },
+            Lang::English => HelpDoc {
+                title: "Rename (F2)",
+                sections: &[("", "Renames the favorites folder. The dialog also lets you change its marker and color.")],
+            },
+            Lang::Chinese => HelpDoc {
+                title: "重命名 (F2)",
+                sections: &[("", "更改收藏文件夹的名称。在对话框中还可以更改标记和颜色。")],
+            },
+        }
+    }
+
+    pub fn help_fav_delete(self) -> HelpDoc {
+        match self {
+            Lang::Japanese => HelpDoc {
+                title: "削除",
+                sections: &[("", "お気に入りフォルダを削除する（確認あり）。所属するファイルの登録も解除される。")],
+            },
+            Lang::English => HelpDoc {
+                title: "Delete",
+                sections: &[("", "Deletes the favorites folder (with confirmation). Files assigned to it are unassigned too.")],
+            },
+            Lang::Chinese => HelpDoc {
+                title: "删除",
+                sections: &[("", "删除收藏文件夹（有确认）。所属文件的收藏关系也会被解除。")],
+            },
+        }
+    }
+
+    pub fn help_card_open_folder(self) -> HelpDoc {
+        match self {
+            Lang::Japanese => HelpDoc {
+                title: "フォルダを開く",
+                sections: &[(
+                    "",
+                    "OS標準のファイラーで、いま表示しているフォルダを開く。\n\
+                     右クリックしたカード自体ではなく、表示中のフォルダが対象になる。",
+                )],
+            },
+            Lang::English => HelpDoc {
+                title: "Open Folder",
+                sections: &[(
+                    "",
+                    "Opens the folder currently shown in the OS file manager.\n\
+                     The target is the folder being shown, not the card you right-clicked.",
+                )],
+            },
+            Lang::Chinese => HelpDoc {
+                title: "打开文件夹",
+                sections: &[(
+                    "",
+                    "用系统文件管理器打开当前显示的文件夹。\n\
+                     对象是当前显示的文件夹，而不是右键点击的那张卡片。",
+                )],
+            },
+        }
+    }
+
+    pub fn help_card_favorite(self) -> HelpDoc {
+        match self {
+            Lang::Japanese => HelpDoc {
+                title: "お気に入り詳細設定",
+                sections: &[
+                    (
+                        "",
+                        "このファイルをお気に入りに登録・解除し、登録先のお気に入りフォルダを選ぶ。",
+                    ),
+                    (
+                        "■ 複数選択しているとき",
+                        "選択中のすべてのファイルが対象になる。ダイアログには、全員に共通するお気に入りフォルダだけが出る。",
+                    ),
+                ],
+            },
+            Lang::English => HelpDoc {
+                title: "Favorite details",
+                sections: &[
+                    (
+                        "",
+                        "Adds or removes this file from favorites and picks the favorites folders it belongs to.",
+                    ),
+                    (
+                        "■ With multiple selection",
+                        "All selected files are targeted. The dialog only shows the favorites folders shared by all of them.",
+                    ),
+                ],
+            },
+            Lang::Chinese => HelpDoc {
+                title: "收藏详细设置",
+                sections: &[
+                    (
+                        "",
+                        "将此文件加入或移出收藏，并选择其所属的收藏文件夹。",
+                    ),
+                    (
+                        "■ 多选时",
+                        "所有选中的文件都是对象。对话框中只显示所有文件共有的收藏文件夹。",
+                    ),
+                ],
+            },
+        }
+    }
+
+    pub fn help_card_sort(self) -> HelpDoc {
+        match self {
+            Lang::Japanese => HelpDoc {
+                title: "ソート条件...",
+                sections: &[
+                    (
+                        "",
+                        "このアーカイブをビューアーで開いたときの、ページの並び順を保存する。\n\
+                         キーは名前／自然数／日付、向きは昇順／降順から選ぶ。",
+                    ),
+                    (
+                        "■ 複数選択しているとき",
+                        "選択中のすべてのアーカイブに一括で適用する。\n\
+                         フォルダ、単体の画像、開けないアーカイブは対象外。",
+                    ),
+                ],
+            },
+            Lang::English => HelpDoc {
+                title: "Sort condition...",
+                sections: &[
+                    (
+                        "",
+                        "Saves the page order used when this archive is opened in the viewer.\n\
+                         Pick a key (name / natural / date) and a direction (asc / desc).",
+                    ),
+                    (
+                        "■ With multiple selection",
+                        "Applied to all selected archives at once.\n\
+                         Folders, single images and archives that cannot be opened are excluded.",
+                    ),
+                ],
+            },
+            Lang::Chinese => HelpDoc {
+                title: "排序条件...",
+                sections: &[
+                    (
+                        "",
+                        "保存在查看器中打开此压缩包时的页面排列顺序。\n\
+                         排序键可选名称/自然数/日期，方向可选升序/降序。",
+                    ),
+                    (
+                        "■ 多选时",
+                        "一次性应用到所有选中的压缩包。\n\
+                         文件夹、单张图片和无法打开的压缩包不在范围内。",
+                    ),
+                ],
+            },
+        }
+    }
+
+    pub fn help_card_bookmark(self) -> HelpDoc {
+        match self {
+            Lang::Japanese => HelpDoc {
+                title: "しおり保存...",
+                sections: &[
+                    (
+                        "",
+                        "このアーカイブで、しおりを保存するかどうかを切り替える。\n\
+                         ONだと、途中で閉じた位置を覚えておき、次に開いたときにその位置へ自動で戻る。",
+                    ),
+                    (
+                        "■ 複数選択しているとき",
+                        "選択中のすべてのアーカイブに一括で適用する。\n\
+                         フォルダ、単体の画像、開けないアーカイブは対象外。",
+                    ),
+                ],
+            },
+            Lang::English => HelpDoc {
+                title: "Save bookmark...",
+                sections: &[
+                    (
+                        "",
+                        "Switches whether a bookmark is saved for this archive.\n\
+                         When ON, the position where you closed it is remembered and restored the next time you open it.",
+                    ),
+                    (
+                        "■ With multiple selection",
+                        "Applied to all selected archives at once.\n\
+                         Folders, single images and archives that cannot be opened are excluded.",
+                    ),
+                ],
+            },
+            Lang::Chinese => HelpDoc {
+                title: "保存书签...",
+                sections: &[
+                    (
+                        "",
+                        "切换是否为此压缩包保存书签。\n\
+                         开启后会记住中途关闭时的位置，下次打开时自动回到该位置。",
+                    ),
+                    (
+                        "■ 多选时",
+                        "一次性应用到所有选中的压缩包。\n\
+                         文件夹、单张图片和无法打开的压缩包不在范围内。",
+                    ),
+                ],
+            },
+        }
+    }
+
+    pub fn help_card_spread(self) -> HelpDoc {
+        match self {
+            Lang::Japanese => HelpDoc {
+                title: "見開き設定...",
+                sections: &[
+                    (
+                        "",
+                        "このアーカイブを開くときの表示モード（単ページ／右綴じ／左綴じ）と、\n\
+                         1ページ目の扱い（単ページとして開く／最初から見開きで開く）を保存する。",
+                    ),
+                    (
+                        "■ 複数選択しているとき",
+                        "選択中のすべてのアーカイブに一括で適用する。\n\
+                         フォルダ、単体の画像、開けないアーカイブは対象外。",
+                    ),
+                ],
+            },
+            Lang::English => HelpDoc {
+                title: "Spread settings...",
+                sections: &[
+                    (
+                        "",
+                        "Saves the display mode used when opening this archive (single page / right binding / left binding)\n\
+                         and how the first page is treated (open as a single page / open as a spread from the start).",
+                    ),
+                    (
+                        "■ With multiple selection",
+                        "Applied to all selected archives at once.\n\
+                         Folders, single images and archives that cannot be opened are excluded.",
+                    ),
+                ],
+            },
+            Lang::Chinese => HelpDoc {
+                title: "跨页设置...",
+                sections: &[
+                    (
+                        "",
+                        "保存打开此压缩包时的显示模式（单页/右开本/左开本），\n\
+                         以及首页的处理方式（首页按单页打开/从一开始就按跨页打开）。",
+                    ),
+                    (
+                        "■ 多选时",
+                        "一次性应用到所有选中的压缩包。\n\
+                         文件夹、单张图片和无法打开的压缩包不在范围内。",
+                    ),
+                ],
+            },
+        }
+    }
+
+    pub fn help_fav_detail_enable(self) -> HelpDoc {
+        match self {
+            Lang::Japanese => HelpDoc {
+                title: "お気に入り登録の最終確認",
+                sections: &[(
+                    "",
+                    "ここにチェックが入っていないと、お気に入りには登録されない。",
+                )],
+            },
+            Lang::English => HelpDoc {
+                title: "Final confirmation of the favorite",
+                sections: &[(
+                    "",
+                    "Unless this is checked, the file is not registered as a favorite.",
+                )],
+            },
+            Lang::Chinese => HelpDoc {
+                title: "收藏登记的最终确认",
+                sections: &[(
+                    "",
+                    "如果没有勾选此项，就不会登记为收藏。",
+                )],
+            },
+        }
+    }
+
+    pub fn help_fav_detail_folders(self) -> HelpDoc {
+        match self {
+            Lang::Japanese => HelpDoc {
+                title: "お気に入りフォルダ設定",
+                sections: &[
+                    ("[左]", "選択可能なお気に入りフォルダの一覧。"),
+                    ("[右]", "このファイルが属しているお気に入りフォルダの一覧。"),
+                    (
+                        "■ 右側が空のとき",
+                        "右側にひとつも選択がない場合は、未整理のお気に入りとして分類される。",
+                    ),
+                    (
+                        "■ 複数のフォルダに属せる",
+                        "このお気に入りフォルダは、一度に多数のフォルダに属することができる。",
+                    ),
+                ],
+            },
+            Lang::English => HelpDoc {
+                title: "Favorites folder settings",
+                sections: &[
+                    ("[Left]", "The list of favorites folders you can choose from."),
+                    ("[Right]", "The list of favorites folders this file belongs to."),
+                    (
+                        "■ When the right side is empty",
+                        "If nothing is selected on the right, the file is classified as an unsorted favorite.",
+                    ),
+                    (
+                        "■ Can belong to several folders",
+                        "A favorite can belong to many favorites folders at once.",
+                    ),
+                ],
+            },
+            Lang::Chinese => HelpDoc {
+                title: "收藏文件夹设置",
+                sections: &[
+                    ("[左]", "可选择的收藏文件夹列表。"),
+                    ("[右]", "此文件所属的收藏文件夹列表。"),
+                    (
+                        "■ 右侧为空时",
+                        "如果右侧一项都没有选择，则归类为未整理的收藏。",
+                    ),
+                    (
+                        "■ 可同时属于多个文件夹",
+                        "一个收藏可以同时属于多个收藏文件夹。",
+                    ),
+                ],
+            },
+        }
+    }
 }
 
 static LANG: AtomicU8 = AtomicU8::new(0);
@@ -2206,6 +5015,37 @@ pub fn lang_code() -> &'static str {
         Lang::Japanese => "ja",
         Lang::English  => "en",
         Lang::Chinese  => "cn",
+    }
+}
+
+#[cfg(test)]
+mod calendar_tests {
+    use super::Lang;
+
+    #[test]
+    fn year_month_follows_language() {
+        assert_eq!(Lang::Japanese.calendar_year_month(2026, 8), "2026年8月");
+        assert_eq!(Lang::Chinese.calendar_year_month(2026, 8), "2026年8月");
+        assert_eq!(Lang::English.calendar_year_month(2026, 8), "August 2026");
+    }
+
+    #[test]
+    fn english_year_month_covers_boundaries_and_falls_back_out_of_range() {
+        assert_eq!(Lang::English.calendar_year_month(2026, 1), "January 2026");
+        assert_eq!(Lang::English.calendar_year_month(2026, 12), "December 2026");
+        assert_eq!(Lang::English.calendar_year_month(2026, 0), "2026-00");
+        assert_eq!(Lang::English.calendar_year_month(2026, 13), "2026-13");
+    }
+
+    #[test]
+    fn weekdays_start_on_sunday_and_have_no_blank() {
+        for lang in [Lang::Japanese, Lang::English, Lang::Chinese] {
+            let days = lang.calendar_weekdays();
+            assert!(days.iter().all(|d| !d.is_empty()));
+        }
+        assert_eq!(Lang::Japanese.calendar_weekdays()[0], "日");
+        assert_eq!(Lang::English.calendar_weekdays()[0], "Su");
+        assert_eq!(Lang::Chinese.calendar_weekdays()[6], "六");
     }
 }
 

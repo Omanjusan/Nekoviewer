@@ -51,6 +51,9 @@ impl NekoviewApp {
     /// 再描画されないため）。
     pub(super) fn poll_resize_redecode(&mut self, ctx: &egui::Context) {
         self.poll_exif_toggle();
+        self.poll_image_filter_change();
+        self.poll_tool_palette_visible_change();
+        self.poll_magnifier_toggle();
         let (redecode_on, debounce_ms, seq) = {
             let cfg = self.viewer_cfg.lock().unwrap();
             (cfg.redecode_on_resize, cfg.resize_debounce_ms, cfg.redecode_trigger_seq)
@@ -63,11 +66,13 @@ impl NekoviewApp {
             // 放置されると、一度でも「ウィンドウ追従」+ビューアー等倍ズームを使った後は
             // 「原寸」に戻してもガードレールが永続的に外れたままになるバグがあったため、
             // ここで毎フレーム復元する（実際に変化した時だけ再デコードを発火）。
-            let is_spread = {
+            let edge = {
                 let viewer = self.viewer.lock().unwrap();
-                viewer.as_ref().is_some_and(|v| v.current_spread_snapshot().0 != crate::types::PageMode::Single)
+                match viewer.as_ref() {
+                    Some(v) => v.actual_decode_edge(self.config.max_decode_edge),
+                    None => self.config.max_decode_edge,
+                }
             };
-            let edge = if is_spread { self.config.max_decode_edge.saturating_mul(2) } else { self.config.max_decode_edge };
             let guardrail = Some((edge, edge));
             if self.decode_target != guardrail {
                 self.decode_target = guardrail;
@@ -97,12 +102,15 @@ impl NekoviewApp {
     /// 再デコードさせる。既存アニメは表示世代に依存しない単一インスタンスとして保持し、
     /// ここでは作り直さない（表示サイズの更新は後続フェーズで既存pipelineへ通知する）。
     fn fire_resize_redecode(&mut self, seq: u64) {
-        let zoom_actual = self.viewer_cfg.lock().unwrap().zoom_actual;
+        let (zoom_actual, magnifier_on) = {
+            let cfg = self.viewer_cfg.lock().unwrap();
+            (cfg.zoom_actual, cfg.magnifier_on)
+        };
         let max_decode_edge = self.config.max_decode_edge;
         let target = {
             let viewer = self.viewer.lock().unwrap();
             match viewer.as_ref() {
-                Some(v) => v.current_decode_target(zoom_actual, max_decode_edge),
+                Some(v) => v.current_decode_target(zoom_actual, max_decode_edge, magnifier_on),
                 None => return,
             }
         };
@@ -114,6 +122,24 @@ impl NekoviewApp {
             "[resize-redecode] fired (generation={}, target={:?}, pages={})",
             seq, target, pages,
         );
+    }
+
+    /// 虫眼鏡モードのON/OFFを検知したら、デバウンスせず即座に再デコードを発火する
+    /// （ONで原寸デコードへ、OFFで表示サイズのデコードへ戻す）。「原寸」設定では常に上限まで
+    /// デコード済みなので、切替に伴う再デコードは不要（毎フレームのガードレール復元に任せる）。
+    fn poll_magnifier_toggle(&mut self) {
+        let (now, redecode_on, seq) = {
+            let cfg = self.viewer_cfg.lock().unwrap();
+            (cfg.magnifier_on, cfg.redecode_on_resize, cfg.redecode_trigger_seq)
+        };
+        if now == self.magnifier_on_last_seen {
+            return;
+        }
+        self.magnifier_on_last_seen = now;
+        if redecode_on {
+            self.resize_redecode_deadline = None;
+            self.fire_resize_redecode(seq);
+        }
     }
 
     /// LoadRequestを送出する。7zがFileCacheへの展開待ちの間は、要求を保留キューへ積んで
@@ -189,7 +215,10 @@ impl NekoviewApp {
                 cache.drop_animation_for_redecode(&path, *orig_i);
             }
         }
-        let exif_enabled = self.viewer_cfg.lock().unwrap().exif_orientation_enabled;
+        let (exif_enabled, image_filter) = {
+            let cfg = self.viewer_cfg.lock().unwrap();
+            (cfg.exif_orientation_enabled, cfg.image_filter)
+        };
         for (visible_order, (orig_i, entry_name, _)) in pages.iter().enumerate() {
             let key = (path.clone(), *orig_i);
             self.pending_loads.lock().unwrap().insert(key);
@@ -202,6 +231,7 @@ impl NekoviewApp {
                     file_cache_entry: None,
                     target_size: target,
                     exif_enabled,
+                    image_filter,
                     generation: self.decode_generation,
                 },
                 PagePriorityClass::Visible,
@@ -262,7 +292,13 @@ impl NekoviewApp {
     pub fn initialize_viewer_decode_target(&mut self, physical_size: (u32, u32)) {
         let cfg = self.viewer_cfg.lock().unwrap();
         if cfg.redecode_on_resize && !cfg.zoom_actual {
-            self.decode_target = Some((physical_size.0.max(1), physical_size.1.max(1)));
+            self.decode_target = if cfg.magnifier_on {
+                // 虫眼鏡ON中に開いたビューアーは、最初から原寸デコードにする。
+                let edge = crate::view_reader::clamp_decode_edge(self.config.max_decode_edge, 8192);
+                Some((edge, edge))
+            } else {
+                Some((physical_size.0.max(1), physical_size.1.max(1)))
+            };
         }
     }
 
@@ -317,6 +353,49 @@ impl NekoviewApp {
         }
     }
 
+    /// 設定ダイアログの[反映]・ツールバー等どの経路で viewer_cfg.image_filter が変わっても
+    /// 毎フレーム拾えるように、EXIF Orientationと同じ「変化検知」方式にする。
+    /// 比較は`normalize_for_change_detection`を通した値で行う。無効化されたステージの
+    /// 値だけが動いても実際の描画には影響しない（apply_image_filtersがスキップする）ため、
+    /// そのケースでは再デコードを発火させないガードレールになる。
+    fn poll_image_filter_change(&mut self) {
+        let now = crate::image_filter::normalize_for_change_detection(
+            self.viewer_cfg.lock().unwrap().image_filter,
+        );
+        if now != self.image_filter_last_seen {
+            self.image_filter_last_seen = now;
+            self.redecode_after_image_filter_change();
+        }
+    }
+
+    /// エクスプローラーメニューのツールボックストグルで viewer_cfg.tool_palette.visible が
+    /// 変わっても、開きっぱなしのビューアー（ViewerStateはcfgを起動時に一度コピーして以後は
+    /// 自分の変更をcfgへ書き戻すだけの片方向同期）へライブ反映されないため、他の変化検知と
+    /// 同じ方式で毎フレーム拾ってViewerState側へ書き戻す。
+    fn poll_tool_palette_visible_change(&mut self) {
+        let now = self.viewer_cfg.lock().unwrap().tool_palette.visible;
+        if now != self.tool_palette_visible_last_seen {
+            self.tool_palette_visible_last_seen = now;
+            if let Some(v) = self.viewer.lock().unwrap().as_mut() {
+                v.sync_tool_palette_visible(now);
+            }
+        }
+    }
+
+    /// 画像処理フィルター設定を変更した直後に呼ぶ。EXIF Orientationトグルと同じく即時発火
+    /// （ドラッグ中のデバウンスは別フェーズでスライダー側に実装する）。フィルターは
+    /// PageContent::Staticにしか適用されないため、開いているアーカイブの静止画エントリのみ
+    /// 破棄する。アニメページ（PageCache::animations・ViewerState::anim_states）は一切
+    /// 触らないので、見開きで片方がアニメでも再生位置は維持されたまま静止画側だけ再デコードされる。
+    fn redecode_after_image_filter_change(&mut self) {
+        let Some(path) = self.viewer.lock().unwrap().as_ref().map(|v| v.archive_path().clone()) else { return };
+        self.page_cache.lock().unwrap().remove_static_pages_for_path(&path);
+        self.begin_new_decode_generation();
+        if let Some(v) = self.viewer.lock().unwrap().as_mut() {
+            v.invalidate_static_pages();
+        }
+    }
+
     /// 項目(D)ON→OFF切替の角度補正専用: 1エントリの生バイトを同期的に読む（FileCacheヒット
     /// 優先、ミス時は生画像ファイルのみディスクへフォールバック）。小さい単発読み込みのため
     /// メインスレッドで同期実行しても許容できる想定。取得できなければ補正無し(0度)として扱う。
@@ -356,6 +435,7 @@ impl NekoviewApp {
         self.poll_scan();
         self.poll_tree_scan();
         self.poll_tree_reload();
+        self.poll_tree_mtimes();
         self.poll_tree_autofocus();
         self.poll_search();
 
@@ -530,7 +610,11 @@ impl NekoviewApp {
             match result.outcome {
                 DecodeJobOutcome::Ready(content) => {
                     self.failed_loads.remove(&failed_key);
-                    self.page_cache.lock().unwrap().insert(
+                    let mut cache = self.page_cache.lock().unwrap();
+                    if let Some(meta) = result.meta {
+                        cache.record_meta(&result.archive_path, result.index, meta);
+                    }
+                    cache.insert(
                         result.archive_path,
                         result.index,
                         result.generation,
@@ -590,7 +674,10 @@ impl NekoviewApp {
             let visible_hi = visible_positions.iter().copied().max().unwrap_or(cur);
             let start = cur.saturating_sub(crate::cache::PREFETCH_BEHIND);
             let end = (cur + crate::cache::PREFETCH_AHEAD + 1).min(total);
-            let exif_enabled = self.viewer_cfg.lock().unwrap().exif_orientation_enabled;
+            let (exif_enabled, image_filter) = {
+                let cfg = self.viewer_cfg.lock().unwrap();
+                (cfg.exif_orientation_enabled, cfg.image_filter)
+            };
             let requested_generation = self.preparing_decode_generation
                 .unwrap_or(self.active_decode_generation);
             // submit直後にワーカーが起床できるため、投入順自体も優先順に揃える。
@@ -644,6 +731,7 @@ impl NekoviewApp {
                                 file_cache_entry: None,
                                 target_size: self.decode_target,
                                 exif_enabled,
+                                image_filter,
                                 generation: requested_generation,
                             },
                             class,
