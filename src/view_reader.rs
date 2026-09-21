@@ -1365,17 +1365,17 @@ impl ViewerState {
     }
 
     /// spread_lo を基に lo/hi テクスチャを返す（original_index でキャッシュ参照）
-    /// 右下オーバーレイの解像度部分の文字列。ページ毎の寸法を画面の左→右の順に並べ、
+    /// 右下オーバーレイの解像度部分の文字列。ページ毎に「表示W*H (オリジナルW*H)」を画面の左→右の順に並べ、
     /// 虫眼鏡中は末尾に倍率を1つだけ添える。画面上の左右と寸法の左右は綴じ順に依らず固定で、
     /// テクスチャの無い側（仮想ページ・未取得）は省略する。ページ数（`n/total`）は先頭ページのみ。
     fn info_resolution_text(&self, frame: &RenderFrame, viewport_rect: egui::Rect, ppp: f32) -> String {
-        use crate::image_info::{compose_resolution_text, fitted_display_px, info_mode, join_page_texts, orig_relative_scale, rect_size_px, InfoMode};
+        use crate::image_info::{compose_resolution_text, fitted_display_px, info_mode, join_page_texts, magnified_display_px, orig_relative_scale, rect_size_px, InfoMode};
         let mode = info_mode(frame.magnifier, frame.zoom_actual, frame.rotation_angle);
         let vp = viewport_rect.size();
         let tex_px = |t: &Option<egui::TextureHandle>| t.as_ref().map(|t| { let [w, h] = t.size(); (w as u32, h as u32) });
         let [meta_lo, meta_hi] = frame.page_metas;
 
-        // 画面の左→右に並ぶページ: (テクスチャ, 元寸法, フィット時の実描画寸法)。
+        // 画面の左→右に並ぶページ: (テクスチャ, オリジナル寸法, フィット時の実描画寸法)。
         let pages: Vec<(&Option<egui::TextureHandle>, Option<(u32, u32)>, Option<(u32, u32)>)> = match self.page_mode {
             PageMode::Single => {
                 let fitted = frame.tex_lo.as_ref().and_then(|t| {
@@ -1405,7 +1405,12 @@ impl ViewerState {
                 if tex.is_none() {
                     return String::new();
                 }
-                compose_resolution_text(mode, *fitted, *orig, tex_px(tex))
+                // 虫眼鏡中の描画寸法は、基準の高さ×倍率にページ毎の縦横比を掛けたもの。
+                let magnified = self
+                    .magnifier_view
+                    .filter(|_| mode == InfoMode::Magnifier)
+                    .and_then(|v| magnified_display_px(tex_px(tex)?, self.magnifier_ref_len, v.scale));
+                compose_resolution_text(mode, *fitted, magnified, *orig, tex_px(tex))
             })
             .collect();
 
@@ -3007,7 +3012,8 @@ impl ViewerState {
 
                 // ── 解像度オーバーレイ（ページ数の左隣）──────────────────────────────
                 // 見開きはページ毎の寸法を画面の左→右で並べる（ページ数は先頭ページのみ）。
-                // フィット=実際に描かれる画像の寸法 / 原寸=元ピクセル寸法 / 虫眼鏡=元寸法＋末尾に倍率。
+                // 各ページ「表示寸法 (ファイルのオリジナル寸法)」。表示寸法は フィット=実際に描かれる寸法 /
+                // 原寸=テクスチャ寸法 / 虫眼鏡=倍率を掛けた描画寸法（末尾に倍率）。
                 {
                     let info = self.info_resolution_text(frame, viewport_rect, ui.ctx().pixels_per_point());
                     if !info.is_empty() {
@@ -6229,9 +6235,9 @@ mod magnifier_flow_tests {
             }
         }
 
-        /// 描かれた文字列のうち、寸法（`w×h ...`）とページ数（`n/m`）のオーバーレイを取り出す。
+        /// 描かれた文字列のうち、寸法（`w*h (ow*oh) ...`）とページ数（`n/m`）のオーバーレイを取り出す。
         fn overlay(&self) -> (Option<&str>, Option<&str>) {
-            let res = self.texts.iter().map(String::as_str).find(|t| t.starts_with(|c: char| c.is_ascii_digit()) && t.contains('×'));
+            let res = self.texts.iter().map(String::as_str).find(|t| t.starts_with(|c: char| c.is_ascii_digit()) && t.contains('*'));
             let page = self.texts.iter().map(String::as_str).find(|t| {
                 t.split_once('/').is_some_and(|(a, b)| {
                     !a.is_empty() && !b.is_empty()
@@ -6266,7 +6272,7 @@ mod magnifier_flow_tests {
 
     fn parse_wh(text: &str) -> (u32, u32) {
         let head = text.split_whitespace().next().unwrap();
-        let (w, h) = head.split_once('×').unwrap();
+        let (w, h) = head.split_once('*').unwrap();
         (w.parse().unwrap(), h.parse().unwrap())
     }
 
@@ -6280,6 +6286,8 @@ mod magnifier_flow_tests {
         assert!((w as f32 / hh as f32 - 800.0 / 1200.0).abs() < 0.01, "{w}x{hh}");
         assert!(w as f32 <= SCREEN.x && hh as f32 <= SCREEN.y);
         assert!(!res.unwrap().contains("(x"), "フィットでは倍率を出さない");
+        // オリジナル寸法が未取得なら「(?)」。
+        assert!(res.unwrap().ends_with(" (?)"), "{res:?}");
     }
 
     #[test]
@@ -6310,18 +6318,18 @@ mod magnifier_flow_tests {
     }
 
     #[test]
-    fn overlay_actual_size_uses_original_pixels_else_texture() {
+    fn overlay_actual_size_shows_texture_size_with_original_in_parentheses() {
         let mut h = Harness::new();
         h.cfg.zoom_actual = true;
         h.frame(vec![], egui::Modifiers::NONE);
-        assert_eq!(h.overlay().0, Some("800×1200"), "元寸法が無ければテクスチャ寸法: {:?}", h.texts);
+        assert_eq!(h.overlay().0, Some("800*1200 (?)"), "元寸法が無ければ「?」: {:?}", h.texts);
         h.cache.record_meta(std::path::Path::new("test.png"), 0, crate::cache::PageMeta { orig: (1600, 2400), animated: false });
         h.frame(vec![], egui::Modifiers::NONE);
-        assert_eq!(h.overlay().0, Some("1600×2400"), "texts={:?}", h.texts);
+        assert_eq!(h.overlay().0, Some("800*1200 (1600*2400)"), "texts={:?}", h.texts);
     }
 
     #[test]
-    fn overlay_magnifier_shows_original_size_with_original_based_scale() {
+    fn overlay_magnifier_shows_magnified_size_original_size_and_original_based_scale() {
         let mut h = Harness::new();
         // テクスチャ 800×1200 は元画像 1600×2400 の半分に縮小されている。
         h.cache.record_meta(std::path::Path::new("test.png"), 0, crate::cache::PageMeta { orig: (1600, 2400), animated: false });
@@ -6329,7 +6337,10 @@ mod magnifier_flow_tests {
         h.wheel(true, egui::Modifiers::SHIFT);
         let scale = h.viewer.magnifier_view.expect("虫眼鏡が有効").scale;
         let text = h.overlay().0.unwrap_or_else(|| panic!("解像度が出ていない: {:?}", h.texts)).to_string();
-        assert!(text.starts_with("1600×2400 (x"), "{text}");
+        // 表示寸法は「基準の高さ(テクスチャ高さ1200) × 倍率」。オリジナルは括弧内で固定。
+        let want_h = (1200.0 * scale).round() as u32;
+        assert_eq!(parse_wh(&text).1, want_h, "{text}");
+        assert!(text.contains(" (1600*2400) (x"), "{text}");
         let shown: f32 = text.split("(x").nth(1).unwrap().trim_end_matches(')').parse().unwrap();
         assert!((shown - scale * 0.5).abs() < 0.006, "shown={shown} scale={scale}");
     }
@@ -7583,9 +7594,9 @@ mod image_info_spread_tests {
             );
         }
 
-        /// 寸法オーバーレイ（`×` を含む文字列）。
+        /// 寸法オーバーレイ（`*` を含む文字列）。
         fn resolution(&self) -> String {
-            self.texts.iter().find(|t| t.starts_with(|c: char| c.is_ascii_digit()) && t.contains('×')).cloned().unwrap_or_else(|| panic!("寸法が出ていない: {:?}", self.texts))
+            self.texts.iter().find(|t| t.starts_with(|c: char| c.is_ascii_digit()) && t.contains('*')).cloned().unwrap_or_else(|| panic!("寸法が出ていない: {:?}", self.texts))
         }
 
         /// ページ数オーバーレイ（`n/m` または `nA/m`）。
@@ -7600,14 +7611,19 @@ mod image_info_spread_tests {
         }
     }
 
+    fn parse_dims(token: &str) -> (u32, u32) {
+        let (w, h) = token.trim_matches(|c| c == '(' || c == ')').split_once('*').unwrap();
+        (w.parse().unwrap(), h.parse().unwrap())
+    }
+
+    /// 各ページの表示寸法（括弧の外）。
     fn dims(text: &str) -> Vec<(u32, u32)> {
-        text.split_whitespace()
-            .filter(|t| t.contains('×'))
-            .map(|t| {
-                let (w, h) = t.split_once('×').unwrap();
-                (w.parse().unwrap(), h.parse().unwrap())
-            })
-            .collect()
+        text.split_whitespace().filter(|t| t.contains('*') && !t.starts_with('(')).map(parse_dims).collect()
+    }
+
+    /// 各ページのオリジナル寸法（括弧の中）。
+    fn origs(text: &str) -> Vec<(u32, u32)> {
+        text.split_whitespace().filter(|t| t.contains('*') && t.starts_with('(')).map(parse_dims).collect()
     }
 
     fn aspect((w, h): (u32, u32)) -> f32 {
@@ -7626,6 +7642,8 @@ mod image_info_spread_tests {
         // 画面の左が先頭ページ（0 = SIZE_EVEN）、右が次ページ（1 = SIZE_ODD）。
         assert_aspect(d[0], SIZE_EVEN);
         assert_aspect(d[1], SIZE_ODD);
+        // オリジナルは画面サイズに依らず固定（テクスチャの2倍）で、表示寸法と同じ左右に並ぶ。
+        assert_eq!(origs(&h.resolution()), vec![(1200, 1800), (1000, 1400)]);
         assert_eq!(h.page_counter(), "1/30", "ページ数は先頭ページだけ");
     }
 
@@ -7637,6 +7655,7 @@ mod image_info_spread_tests {
         // 右開き: 画面の左が次ページ（1）、右が先頭ページ（0）。寸法の左右も画面に合わせる。
         assert_aspect(d[0], SIZE_ODD);
         assert_aspect(d[1], SIZE_EVEN);
+        assert_eq!(origs(&h.resolution()), vec![(1000, 1400), (1200, 1800)]);
         assert_eq!(h.page_counter(), "1/30");
     }
 
@@ -7650,11 +7669,11 @@ mod image_info_spread_tests {
     }
 
     #[test]
-    fn spread_actual_lists_each_page_original_size() {
+    fn spread_actual_lists_each_page_texture_and_original_size() {
         let mut h = Harness::new(PAGES, PageMode::SpreadLeft);
         h.cfg.zoom_actual = true;
         h.frames(3);
-        assert_eq!(h.resolution(), "1200×1800 1000×1400", "{:?}", h.texts);
+        assert_eq!(h.resolution(), "600*900 (1200*1800) 500*700 (1000*1400)", "{:?}", h.texts);
         assert_eq!(h.page_counter(), "1/30");
     }
 
@@ -7664,7 +7683,7 @@ mod image_info_spread_tests {
         let mut h = Harness::new(1, PageMode::SpreadLeft);
         h.cfg.zoom_actual = true;
         h.frames(3);
-        assert_eq!(h.resolution(), "1200×1800", "{:?}", h.texts);
+        assert_eq!(h.resolution(), "600*900 (1200*1800)", "{:?}", h.texts);
         assert_eq!(h.page_counter(), "1/1");
     }
 
@@ -7675,12 +7694,19 @@ mod image_info_spread_tests {
         h.shift_wheel_up();
         let text = h.resolution();
         assert!(h.viewer.magnifier_view.is_some(), "虫眼鏡が有効でない: {:?}", h.texts);
-        assert_eq!(dims(&text), vec![(1200, 1800), (1000, 1400)], "{text}");
+        assert_eq!(origs(&text), vec![(1200, 1800), (1000, 1400)], "{text}");
+        // 表示寸法は「基準の高さ(900) × 倍率」に、ページ毎の縦横比を掛けたもの。
+        let scale = h.viewer.magnifier_view.unwrap().scale;
+        let d = dims(&text);
+        assert_eq!(d.len(), 2, "{text}");
+        let want_h = (900.0 * scale).round() as u32;
+        assert_eq!((d[0].1, d[1].1), (want_h, want_h), "{text}");
+        assert_aspect(d[0], SIZE_EVEN);
+        assert_aspect(d[1], SIZE_ODD);
         assert_eq!(text.matches("(x").count(), 1, "倍率は1つだけ: {text}");
         assert!(text.ends_with(')'), "倍率は末尾: {text}");
         // 元画像はテクスチャの2倍なので、元寸法基準の倍率は、テクスチャ基準の半分。
         let shown: f32 = text.rsplit("(x").next().unwrap().trim_end_matches(')').parse().unwrap();
-        let scale = h.viewer.magnifier_view.unwrap().scale;
         assert!((shown - scale * 0.5).abs() < 0.006, "shown={shown} scale={scale}");
     }
 }

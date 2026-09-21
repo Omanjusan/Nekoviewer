@@ -1,4 +1,5 @@
 //! 画像情報オーバーレイ（解像度・倍率・ページ数）の表示文字列と、実表示寸法の純粋関数。
+//! 解像度は 1ページにつき「表示寸法 (ファイルのオリジナル寸法)」で出す（例: `1000*750 (4000*3000)`）。
 //! 描画・状態には触らない（読み取り専用）。接続は view_reader.rs の右下オーバーレイ側で行う。
 
 use egui::Vec2;
@@ -6,17 +7,17 @@ use egui::Vec2;
 /// 解像度の表示モード。
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum InfoMode {
-    /// ウィンドウ追従（フィット表示）。フィット後に実際に描かれる画像の寸法を出す。
+    /// ウィンドウ追従（フィット表示）。表示寸法はフィット後に実際に描かれる画像の寸法。
     Fit,
-    /// 原寸表示。画像のもつオリジナルピクセル寸法を出す。
+    /// 原寸表示。表示寸法は表示テクスチャの寸法（最大長辺の設定で縮小されていなければオリジナルと同じ）。
     Actual,
-    /// 虫眼鏡（拡縮）中。オリジナルピクセル寸法に倍率を添える。
+    /// 虫眼鏡（拡縮）中。表示寸法は倍率を掛けた実際の描画寸法で、末尾に倍率を添える。
     Magnifier,
 }
 
-/// 「1920×1080」。
+/// 「1920*1080」。
 pub fn format_resolution(w: u32, h: u32) -> String {
-    format!("{w}×{h}")
+    format!("{w}*{h}")
 }
 
 /// 「(x1.10)」。
@@ -79,21 +80,46 @@ pub fn orig_relative_scale(scale: f32, tex_len: f32, orig_len: f32) -> f32 {
     }
 }
 
-/// 1ページぶんの解像度の文字列。出せる情報が無ければ空文字。
-/// - `fitted`: フィット後の実表示寸法（`InfoMode::Fit` で使う）
-/// - `orig`: オリジナルピクセル寸法。不明ならテクスチャ寸法 `tex` で代用する
-///   （`InfoMode::Actual` / `InfoMode::Magnifier`）
+/// 虫眼鏡中の1ページの描画寸法。`ref_len` は基準の高さ（テクスチャpx。見開きは高い方）、
+/// `scale` は基準1pxあたりの画面px。見開きは高さを揃えて描くので、全ページの描画高さは
+/// `ref_len * scale`、幅はそのページの縦横比で決まる。入力が不正なら None。
+pub fn magnified_display_px(tex: (u32, u32), ref_len: f32, scale: f32) -> Option<(u32, u32)> {
+    let ok = |v: f32| v.is_finite() && v > 0.0;
+    if tex.0 == 0 || tex.1 == 0 || !ok(ref_len) || !ok(scale) {
+        return None;
+    }
+    let h = ref_len * scale;
+    let w = tex.0 as f32 / tex.1 as f32 * h;
+    Some((w.round() as u32, h.round() as u32))
+}
+
+/// 1ページぶんの解像度の文字列「表示W*H (オリジナルW*H)」。オリジナルが不明なら「(?)」。
+pub fn format_page_resolution(displayed: (u32, u32), orig: Option<(u32, u32)>) -> String {
+    let shown = format_resolution(displayed.0, displayed.1);
+    match orig {
+        Some((w, h)) => format!("{shown} ({})", format_resolution(w, h)),
+        None => format!("{shown} (?)"),
+    }
+}
+
+/// 1ページぶんの解像度の文字列。表示寸法が決まらなければ空文字（オリジナルだけは出さない）。
+/// - `fitted`: フィット後の実表示寸法（`InfoMode::Fit`）
+/// - `tex`: 表示テクスチャの寸法（`InfoMode::Actual`。原寸は1テクセル＝1画面px）
+/// - `magnified`: 倍率を掛けた実描画寸法（`InfoMode::Magnifier`）
+/// - `orig`: ファイルのオリジナルピクセル寸法。全モード共通で括弧内に出す
 pub fn compose_resolution_text(
     mode: InfoMode,
     fitted: Option<(u32, u32)>,
+    magnified: Option<(u32, u32)>,
     orig: Option<(u32, u32)>,
     tex: Option<(u32, u32)>,
 ) -> String {
-    let dims = match mode {
+    let displayed = match mode {
         InfoMode::Fit => fitted,
-        InfoMode::Actual | InfoMode::Magnifier => orig.or(tex),
+        InfoMode::Actual => tex,
+        InfoMode::Magnifier => magnified,
     };
-    dims.map(|(w, h)| format_resolution(w, h)).unwrap_or_default()
+    displayed.map(|d| format_page_resolution(d, orig)).unwrap_or_default()
 }
 
 /// ページ毎の解像度文字列（画面の左→右の順）を空白で連結し、末尾に倍率を1つだけ添える。
@@ -113,7 +139,7 @@ mod tests {
 
     #[test]
     fn resolution_and_scale_formats() {
-        assert_eq!(format_resolution(1920, 1080), "1920×1080");
+        assert_eq!(format_resolution(1920, 1080), "1920*1080");
         assert_eq!(format_scale(1.1), "(x1.10)");
         assert_eq!(format_scale(0.5), "(x0.50)");
         assert_eq!(format_scale(1.0), "(x1.00)");
@@ -195,40 +221,64 @@ mod tests {
     #[test]
     fn compose_text_per_mode() {
         let fitted = Some((1000, 500));
+        let magnified = Some((1500, 750));
         let orig = Some((4000, 2000));
         let tex = Some((2000, 1000));
-        assert_eq!(compose_resolution_text(InfoMode::Fit, fitted, orig, tex), "1000×500");
-        assert_eq!(compose_resolution_text(InfoMode::Actual, fitted, orig, tex), "4000×2000");
-        assert_eq!(compose_resolution_text(InfoMode::Magnifier, fitted, orig, tex), "4000×2000");
+        assert_eq!(compose_resolution_text(InfoMode::Fit, fitted, magnified, orig, tex), "1000*500 (4000*2000)");
+        // 原寸はテクスチャ寸法（ここでは元の半分に縮小されている）。オリジナルは括弧内。
+        assert_eq!(compose_resolution_text(InfoMode::Actual, fitted, magnified, orig, tex), "2000*1000 (4000*2000)");
+        assert_eq!(compose_resolution_text(InfoMode::Magnifier, fitted, magnified, orig, tex), "1500*750 (4000*2000)");
     }
 
     #[test]
-    fn compose_text_falls_back_to_texture_size_without_original() {
-        assert_eq!(compose_resolution_text(InfoMode::Actual, None, None, Some((2000, 1000))), "2000×1000");
-        assert_eq!(compose_resolution_text(InfoMode::Magnifier, None, None, Some((2000, 1000))), "2000×1000");
+    fn compose_text_repeats_size_when_display_equals_original() {
+        let same = Some((4000, 3000));
+        assert_eq!(compose_resolution_text(InfoMode::Actual, None, None, same, same), "4000*3000 (4000*3000)");
     }
 
     #[test]
-    fn compose_text_is_empty_without_data() {
-        assert_eq!(compose_resolution_text(InfoMode::Fit, None, None, None), "");
-        assert_eq!(compose_resolution_text(InfoMode::Actual, None, None, None), "");
-        assert_eq!(compose_resolution_text(InfoMode::Magnifier, None, None, None), "");
-        // フィットでは、元寸法があっても実表示寸法が無ければ出さない。
-        assert_eq!(compose_resolution_text(InfoMode::Fit, None, Some((10, 10)), Some((10, 10))), "");
+    fn compose_text_marks_unknown_original_with_question_mark() {
+        assert_eq!(compose_resolution_text(InfoMode::Actual, None, None, None, Some((2000, 1000))), "2000*1000 (?)");
+        assert_eq!(compose_resolution_text(InfoMode::Fit, Some((800, 600)), None, None, None), "800*600 (?)");
+    }
+
+    #[test]
+    fn compose_text_is_empty_without_displayed_size() {
+        assert_eq!(compose_resolution_text(InfoMode::Fit, None, None, None, None), "");
+        assert_eq!(compose_resolution_text(InfoMode::Actual, None, None, None, None), "");
+        assert_eq!(compose_resolution_text(InfoMode::Magnifier, None, None, None, None), "");
+        // 元寸法があっても、モードに応じた表示寸法が無ければ出さない。
+        assert_eq!(compose_resolution_text(InfoMode::Fit, None, Some((1, 1)), Some((10, 10)), Some((10, 10))), "");
+        assert_eq!(compose_resolution_text(InfoMode::Magnifier, Some((1, 1)), None, Some((10, 10)), Some((10, 10))), "");
+    }
+
+    #[test]
+    fn magnified_size_uses_reference_height_and_own_aspect() {
+        // 基準高さ900・倍率0.5 → 描画高さ450。幅はそのページの縦横比（600×900 なら 300、500×700 なら 321）。
+        assert_eq!(magnified_display_px((600, 900), 900.0, 0.5), Some((300, 450)));
+        assert_eq!(magnified_display_px((500, 700), 900.0, 0.5), Some((321, 450)));
+        assert_eq!(magnified_display_px((600, 900), 900.0, 1.0), Some((600, 900)));
+    }
+
+    #[test]
+    fn magnified_size_rejects_invalid_input() {
+        assert_eq!(magnified_display_px((0, 900), 900.0, 1.0), None);
+        assert_eq!(magnified_display_px((600, 900), 0.0, 1.0), None);
+        assert_eq!(magnified_display_px((600, 900), 900.0, f32::NAN), None);
     }
 
     #[test]
     fn join_puts_pages_in_order_with_one_trailing_scale() {
-        let parts = vec!["800×1200".to_string(), "700×1100".to_string()];
-        assert_eq!(join_page_texts(&parts, None), "800×1200 700×1100");
-        assert_eq!(join_page_texts(&parts, Some(1.1)), "800×1200 700×1100 (x1.10)");
-        assert_eq!(join_page_texts(&parts[..1], Some(0.5)), "800×1200 (x0.50)");
+        let parts = vec!["800*1200 (1600*2400)".to_string(), "700*1100 (1400*2200)".to_string()];
+        assert_eq!(join_page_texts(&parts, None), "800*1200 (1600*2400) 700*1100 (1400*2200)");
+        assert_eq!(join_page_texts(&parts, Some(1.1)), "800*1200 (1600*2400) 700*1100 (1400*2200) (x1.10)");
+        assert_eq!(join_page_texts(&parts[..1], Some(0.5)), "800*1200 (1600*2400) (x0.50)");
     }
 
     #[test]
     fn join_skips_empty_pages_and_hides_scale_without_any() {
-        let parts = vec![String::new(), "700×1100".to_string()];
-        assert_eq!(join_page_texts(&parts, Some(2.0)), "700×1100 (x2.00)");
+        let parts = vec![String::new(), "700*1100 (1400*2200)".to_string()];
+        assert_eq!(join_page_texts(&parts, Some(2.0)), "700*1100 (1400*2200) (x2.00)");
         assert_eq!(join_page_texts(&[String::new(), String::new()], Some(2.0)), "");
         assert_eq!(join_page_texts(&[], Some(2.0)), "");
     }
