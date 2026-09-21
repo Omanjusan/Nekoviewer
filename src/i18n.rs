@@ -879,6 +879,22 @@ impl Lang {
         }
     }
 
+    pub fn virtual_menu_open_in_folders(self) -> &'static str {
+        match self {
+            Lang::Japanese => "フォルダタブで開く",
+            Lang::English  => "Open in Folders Tab",
+            Lang::Chinese  => "在文件夹标签中打开",
+        }
+    }
+
+    pub fn virtual_open_no_drive(self) -> &'static str {
+        match self {
+            Lang::Japanese => "このフォルダを含むドライブが見つからないため、ツリーには表示されません",
+            Lang::English  => "No drive contains this folder, so it isn't shown in the tree",
+            Lang::Chinese  => "找不到包含该文件夹的驱动器，树中无法显示",
+        }
+    }
+
     pub fn virtual_sync_drive_switched(self, drive: &str) -> String {
         match self {
             Lang::Japanese => format!("実ツリーを別のドライブ（{drive}）に切り替えました"),

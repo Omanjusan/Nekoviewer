@@ -216,6 +216,8 @@ enum TreeEvent {
     Rename(u32),
     /// 実ツリーを、このノードの実パスまで展開して選択表示にする
     Sync(u32),
+    /// フォルダタブへ移り、このノードの実フォルダを選択済みにして開く
+    OpenInFolders(u32),
     Delete(u32),
     /// ツリー全体の並び条件（ノードには依存しない）
     SortSetting,
@@ -263,11 +265,17 @@ fn tree_context_menu(ui: &mut egui::Ui, target: Option<u32>, broken: &HashSet<u3
         }
         ui.close();
     }
-    // 実パスへ辿れないノード（ルート・リンク切れ）は同期の対象外
+    // 実パスへ辿れないノード（ルート・リンク切れ）は同期・フォルダタブで開くの対象外
     let syncable = node.filter(|id| !broken.contains(id));
     if ui.add_enabled(syncable.is_some(), egui::Button::new(i18n::t().virtual_menu_sync())).clicked() {
         if let Some(id) = syncable {
             out.push(TreeEvent::Sync(id));
+        }
+        ui.close();
+    }
+    if ui.add_enabled(syncable.is_some(), egui::Button::new(i18n::t().virtual_menu_open_in_folders())).clicked() {
+        if let Some(id) = syncable {
+            out.push(TreeEvent::OpenInFolders(id));
         }
         ui.close();
     }
@@ -743,6 +751,7 @@ impl NekoviewApp {
                 TreeEvent::DoubleClick(_) => {}
                 TreeEvent::Rename(id) => self.open_rename_dialog(id),
                 TreeEvent::Sync(id) => self.sync_real_tree(id),
+                TreeEvent::OpenInFolders(id) => self.open_in_folders_tab(id),
                 TreeEvent::SortSetting => {
                     self.virtual_state.rename = None;
                     self.open_tree_sort_dialog(super::tree_sort_ui::TreeSortTarget::Virtual);
