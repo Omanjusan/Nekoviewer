@@ -751,7 +751,7 @@ impl NekoviewApp {
     }
 
     /// サムネグリッド最下部のフィルタ行:
-    /// `filter: [☑][文字列........] │ [☑ score filter][==▾][★4.0▾]` ＋ 右端に少し空白。
+    /// `filter: [☑][文字列........] │ score filter [☑][==▾][★4.0▾]` ＋ 右端に少し空白。
     /// 文字列フィルタと評価フィルタはそれぞれチェックボックスで一括ON/OFFし、AND結合する。
     fn draw_filter_bar(&mut self, ui: &mut egui::Ui) {
         // 評価フィルタ群（縦線・チェック・比較・★）と右端の空白ぶん。文字列欄はこの残りを使う。
@@ -783,7 +783,8 @@ impl NekoviewApp {
 
             // ── 評価フィルタ（縦線で文字列フィルタと区切る）──
             ui.separator();
-            if ui.checkbox(&mut self.rating_filter.enabled, "score filter").changed() {
+            ui.label("score filter");
+            if ui.checkbox(&mut self.rating_filter.enabled, "").changed() {
                 changed = true;
             }
             ui.add_enabled_ui(self.rating_filter.enabled, |ui| {
