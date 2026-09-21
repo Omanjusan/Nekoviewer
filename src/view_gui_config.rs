@@ -76,11 +76,37 @@ fn settings_tab_label(tab: SettingsTab) -> &'static str {
     }
 }
 
-/// コマ送りタブ: 超過分の自動縮小しきい値スライダーの範囲・刻み・既定値（窓の寸法に対する％）。
-const KOMA_SHRINK_PCT_FLOOR: u32 = 2;
-const KOMA_SHRINK_PCT_CEILING: u32 = 30;
-const KOMA_SHRINK_PCT_STEP: u32 = 2;
-const KOMA_SHRINK_PCT_DEFAULT: u32 = 10;
+/// コマ送りタブの編集用下書き（超過分の自動縮小）。しきい値は窓の幅(X)/高さ(Y)に対する超過の％。
+/// 範囲・刻みの丸めは `MagnifierConfig` のsetterが行う。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct KomaShrinkDraft {
+    x_enabled: bool,
+    y_enabled: bool,
+    x_pct: u32,
+    y_pct: u32,
+    /// 確認ダイアログを表示しない（解除用。ダイアログ自体は未実装）。
+    hide_ask: bool,
+}
+
+impl KomaShrinkDraft {
+    fn from_config(m: &crate::magnifier::MagnifierConfig) -> Self {
+        Self {
+            x_enabled: m.koma_shrink_x(),
+            y_enabled: m.koma_shrink_y(),
+            x_pct: m.koma_shrink_x_pct(),
+            y_pct: m.koma_shrink_y_pct(),
+            hide_ask: m.koma_shrink_hide_ask(),
+        }
+    }
+
+    fn apply_to(&self, m: &mut crate::magnifier::MagnifierConfig) {
+        m.set_koma_shrink_x(self.x_enabled);
+        m.set_koma_shrink_y(self.y_enabled);
+        m.set_koma_shrink_x_pct(self.x_pct);
+        m.set_koma_shrink_y_pct(self.y_pct);
+        m.set_koma_shrink_hide_ask(self.hide_ask);
+    }
+}
 
 /// 8K UHD(7680x4320)の長辺を「取り扱い上限解像度」スライダーの上限に使う。
 const MAX_DECODE_EDGE_CEILING: u32 = 7680;
@@ -140,14 +166,8 @@ pub(crate) struct SettingsDraft {
     /// スライドショー実行中のトランジション種類・遷移時間(ms)。通常時とは独立。
     slideshow_transition_kind: TransitionKind,
     slideshow_transition_duration_ms: u64,
-    /// コマ送りタブ（レイアウト確認用。現状は保存・ビューへ未接続）: X/Yそれぞれの超過分の自動縮小の
-    /// 有効フラグと、しきい値（窓の幅/高さに対する超過の％）。
-    koma_shrink_x_enabled: bool,
-    koma_shrink_y_enabled: bool,
-    koma_shrink_x_pct: u32,
-    koma_shrink_y_pct: u32,
-    /// 確認ダイアログを表示しない（解除用。ダイアログ自体は未実装）。
-    koma_shrink_hide_ask: bool,
+    /// コマ送りタブ: X/Yそれぞれの超過分の自動縮小の有効フラグ・しきい値と、確認ダイアログの解除フラグ。
+    koma_shrink: KomaShrinkDraft,
     translate_base_url: String,
     translate_ocr_model: String,
     translate_translation_model: String,
@@ -291,11 +311,7 @@ impl SettingsDraft {
             slideshow_manual_behavior: viewer_cfg.slideshow_manual_behavior,
             slideshow_transition_kind: viewer_cfg.slideshow_transition_kind,
             slideshow_transition_duration_ms: viewer_cfg.slideshow_transition_duration_ms,
-            koma_shrink_x_enabled: false,
-            koma_shrink_y_enabled: false,
-            koma_shrink_x_pct: KOMA_SHRINK_PCT_DEFAULT,
-            koma_shrink_y_pct: KOMA_SHRINK_PCT_DEFAULT,
-            koma_shrink_hide_ask: false,
+            koma_shrink: KomaShrinkDraft::from_config(&viewer_cfg.magnifier),
             translate_base_url: translate_cfg.base_url.clone(),
             translate_ocr_model: translate_cfg.ocr_model.clone(),
             translate_translation_model: translate_cfg.translation_model.clone(),
@@ -363,6 +379,7 @@ impl SettingsDraft {
         config.default_slot = self.default_slot;
         viewer_cfg.transition_kind = self.transition_kind;
         viewer_cfg.transition_duration_ms = self.transition_duration_ms;
+        self.koma_shrink.apply_to(&mut viewer_cfg.magnifier);
         viewer_cfg.slideshow_interval_ms = self.slideshow_interval_ms;
         viewer_cfg.slideshow_manual_behavior = self.slideshow_manual_behavior;
         viewer_cfg.slideshow_transition_kind = self.slideshow_transition_kind;
@@ -1774,7 +1791,7 @@ impl NekoviewApp {
 }
 
 /// コマ送りタブ。超過分の自動縮小（X/Y）と、確認ダイアログの解除チェック。
-/// 現状は draft だけを編集するレイアウト確認用で、保存やビューには接続していない。
+/// 確認ダイアログの解除チェックは保存されるが、ダイアログ自体は未実装。
 fn draw_settings_tab_koma(ui: &mut egui::Ui, draft: &mut SettingsDraft) {
     let t = i18n::t();
     ui.label(egui::RichText::new(t.settings_koma_shrink_section_label()).strong().size(15.0));
@@ -1782,8 +1799,8 @@ fn draw_settings_tab_koma(ui: &mut egui::Ui, draft: &mut SettingsDraft) {
     ui.add_space(6.0);
 
     for (enabled, pct, label, threshold_label) in [
-        (&mut draft.koma_shrink_x_enabled, &mut draft.koma_shrink_x_pct, t.settings_koma_shrink_x_label(), t.settings_koma_shrink_x_threshold_label()),
-        (&mut draft.koma_shrink_y_enabled, &mut draft.koma_shrink_y_pct, t.settings_koma_shrink_y_label(), t.settings_koma_shrink_y_threshold_label()),
+        (&mut draft.koma_shrink.x_enabled, &mut draft.koma_shrink.x_pct, t.settings_koma_shrink_x_label(), t.settings_koma_shrink_x_threshold_label()),
+        (&mut draft.koma_shrink.y_enabled, &mut draft.koma_shrink.y_pct, t.settings_koma_shrink_y_label(), t.settings_koma_shrink_y_threshold_label()),
     ] {
         ui.checkbox(enabled, label);
         ui.add_enabled_ui(*enabled, |ui| {
@@ -1792,9 +1809,9 @@ fn draw_settings_tab_koma(ui: &mut egui::Ui, draft: &mut SettingsDraft) {
                 ui.spacing_mut().slider_width = 260.0;
                 ui.horizontal(|ui| {
                     ui.add(
-                        egui::Slider::new(pct, KOMA_SHRINK_PCT_FLOOR..=KOMA_SHRINK_PCT_CEILING)
+                        egui::Slider::new(pct, crate::magnifier::KOMA_SHRINK_PCT_FLOOR..=crate::magnifier::KOMA_SHRINK_PCT_CEILING)
                             .show_value(false)
-                            .step_by(KOMA_SHRINK_PCT_STEP as f64),
+                            .step_by(crate::magnifier::KOMA_SHRINK_PCT_STEP as f64),
                     );
                     ui.label(format!("{} %", *pct));
                 });
@@ -1805,7 +1822,7 @@ fn draw_settings_tab_koma(ui: &mut egui::Ui, draft: &mut SettingsDraft) {
     ui.separator();
 
     ui.label(egui::RichText::new(t.settings_koma_ask_section_label()).strong().size(15.0));
-    ui.checkbox(&mut draft.koma_shrink_hide_ask, t.settings_koma_ask_hide_label());
+    ui.checkbox(&mut draft.koma_shrink.hide_ask, t.settings_koma_ask_hide_label());
     ui.label(t.settings_koma_ask_hide_explain());
 }
 
@@ -1843,12 +1860,40 @@ mod tests {
 
     #[test]
     fn koma_shrink_threshold_range_is_on_the_step_grid() {
+        use crate::magnifier::{DEFAULT_KOMA_SHRINK_PCT, KOMA_SHRINK_PCT_CEILING, KOMA_SHRINK_PCT_FLOOR, KOMA_SHRINK_PCT_STEP};
         assert_eq!(KOMA_SHRINK_PCT_FLOOR, 2);
         assert_eq!(KOMA_SHRINK_PCT_CEILING, 30);
-        for v in [KOMA_SHRINK_PCT_FLOOR, KOMA_SHRINK_PCT_DEFAULT, KOMA_SHRINK_PCT_CEILING] {
+        for v in [KOMA_SHRINK_PCT_FLOOR, DEFAULT_KOMA_SHRINK_PCT, KOMA_SHRINK_PCT_CEILING] {
             assert_eq!(v % KOMA_SHRINK_PCT_STEP, 0, "{v} は刻みに乗っていない");
             assert!((KOMA_SHRINK_PCT_FLOOR..=KOMA_SHRINK_PCT_CEILING).contains(&v));
         }
+    }
+
+    #[test]
+    fn koma_shrink_draft_reflects_the_config_and_writes_it_back() {
+        let mut cfg = crate::magnifier::MagnifierConfig::default();
+        assert_eq!(
+            KomaShrinkDraft::from_config(&cfg),
+            KomaShrinkDraft { x_enabled: false, y_enabled: false, x_pct: 10, y_pct: 10, hide_ask: false },
+        );
+        cfg.set_koma_shrink_y(true);
+        cfg.set_koma_shrink_y_pct(24);
+        cfg.set_koma_shrink_hide_ask(true);
+        let mut draft = KomaShrinkDraft::from_config(&cfg);
+        assert!(!draft.x_enabled && draft.y_enabled && draft.hide_ask);
+        assert_eq!(draft.y_pct, 24);
+        // draft の編集は、反映するまで設定へ書き戻らない。
+        draft.x_enabled = true;
+        draft.x_pct = 6;
+        assert!(!cfg.koma_shrink_x());
+        draft.apply_to(&mut cfg);
+        assert!(cfg.koma_shrink_x() && cfg.koma_shrink_y());
+        assert_eq!((cfg.koma_shrink_x_pct(), cfg.koma_shrink_y_pct()), (6, 24));
+        // 刻み外・範囲外の値は、反映時に設定側で丸められる。
+        draft.x_pct = 7;
+        draft.y_pct = 100;
+        draft.apply_to(&mut cfg);
+        assert_eq!((cfg.koma_shrink_x_pct(), cfg.koma_shrink_y_pct()), (8, 30));
     }
 
     const ORDER: [FilterStage; FILTER_STAGE_COUNT] = [

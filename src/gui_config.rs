@@ -529,6 +529,11 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
     let mut magnifier_notch_step: Option<crate::magnifier::NotchStep> = None;
     let mut magnifier_detail_ticks: Option<bool> = None;
     let mut magnifier_koma_height_rel: Option<f32> = None;
+    let mut magnifier_koma_shrink_x: Option<bool> = None;
+    let mut magnifier_koma_shrink_y: Option<bool> = None;
+    let mut magnifier_koma_shrink_x_pct: Option<u32> = None;
+    let mut magnifier_koma_shrink_y_pct: Option<u32> = None;
+    let mut magnifier_koma_shrink_hide_ask: Option<bool> = None;
     let mut viewer_bar_order: Option<[ViewerBarItem; BAR_ITEM_COUNT]> = None;
     let mut transition_kind: Option<TransitionKind> = None;
     let mut transition_duration_ms: Option<u64> = None;
@@ -682,6 +687,11 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
                 "magnifier_notch_step" => { magnifier_notch_step = crate::magnifier::NotchStep::from_state_str(v); }
                 "magnifier_detail_ticks" => { magnifier_detail_ticks = v.trim().parse().ok(); }
                 "magnifier_koma_height_rel" => { magnifier_koma_height_rel = v.trim().parse().ok(); }
+                "magnifier_koma_shrink_x" => { magnifier_koma_shrink_x = v.trim().parse().ok(); }
+                "magnifier_koma_shrink_y" => { magnifier_koma_shrink_y = v.trim().parse().ok(); }
+                "magnifier_koma_shrink_x_pct" => { magnifier_koma_shrink_x_pct = v.trim().parse().ok(); }
+                "magnifier_koma_shrink_y_pct" => { magnifier_koma_shrink_y_pct = v.trim().parse().ok(); }
+                "magnifier_koma_shrink_hide_ask" => { magnifier_koma_shrink_hide_ask = v.trim().parse().ok(); }
                 "viewer_bar_order" => { viewer_bar_order = Some(parse_bar_order(v)); }
                 "transition_kind" => { transition_kind = Some(parse_transition_kind(v.trim())); }
                 "transition_duration_ms" => {
@@ -870,6 +880,11 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
                 if let Some(step) = magnifier_notch_step { m.set_notch_step(step); }
                 if let Some(detail) = magnifier_detail_ticks { m.set_detail_ticks(detail); }
                 if let Some(rel) = magnifier_koma_height_rel { m.set_koma_height_rel(rel); }
+                if let Some(on) = magnifier_koma_shrink_x { m.set_koma_shrink_x(on); }
+                if let Some(on) = magnifier_koma_shrink_y { m.set_koma_shrink_y(on); }
+                if let Some(pct) = magnifier_koma_shrink_x_pct { m.set_koma_shrink_x_pct(pct); }
+                if let Some(pct) = magnifier_koma_shrink_y_pct { m.set_koma_shrink_y_pct(pct); }
+                if let Some(hide) = magnifier_koma_shrink_hide_ask { m.set_koma_shrink_hide_ask(hide); }
                 m
             },
             texture_window: crate::texture_window::TextureWindowConfig::default(),
@@ -922,6 +937,23 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
 }
 
 #[allow(clippy::too_many_arguments)]
+/// 虫眼鏡・コマ送りの永続設定の state 行（`key=value\n` の連なり）。
+fn magnifier_state_lines(m: &crate::magnifier::MagnifierConfig) -> String {
+    let mut lines = format!(
+        "magnifier_notch_step={}\nmagnifier_detail_ticks={}\n",
+        m.notch_step().to_state_str(),
+        m.detail_ticks(),
+    );
+    if let Some(rel) = m.koma_height_rel() {
+        lines.push_str(&format!("magnifier_koma_height_rel={rel}\n"));
+    }
+    lines.push_str(&format!(
+        "magnifier_koma_shrink_x={}\nmagnifier_koma_shrink_y={}\nmagnifier_koma_shrink_x_pct={}\nmagnifier_koma_shrink_y_pct={}\nmagnifier_koma_shrink_hide_ask={}\n",
+        m.koma_shrink_x(), m.koma_shrink_y(), m.koma_shrink_x_pct(), m.koma_shrink_y_pct(), m.koma_shrink_hide_ask(),
+    ));
+    lines
+}
+
 pub fn save_state(root: &Path, dir: &Path, window_size: (u32, u32), viewer_slots: &[Option<WindowSlot>; 4], sort_state: &SortState, lang: &str, viewer_cfg: &ViewerConfig, show_hidden: bool, card_info_mode: &str, card_date_format: &CardDateFormat, app_cfg: &AppConfig, translate_cfg: &TranslateConfig, tab_positions: &TabPositions, tree_sorts: &crate::tree_sort::TreeSorts) {
     let _ = std::fs::create_dir_all(root);
     let (path, bak, tmp) = (state_path(root), state_bak_path(root), state_tmp_path(root));
@@ -956,14 +988,7 @@ pub fn save_state(root: &Path, dir: &Path, window_size: (u32, u32), viewer_slots
         "image_info_visible={}\n",
         viewer_cfg.image_info_visible,
     ));
-    content.push_str(&format!(
-        "magnifier_notch_step={}\nmagnifier_detail_ticks={}\n",
-        viewer_cfg.magnifier.notch_step().to_state_str(),
-        viewer_cfg.magnifier.detail_ticks(),
-    ));
-    if let Some(rel) = viewer_cfg.magnifier.koma_height_rel() {
-        content.push_str(&format!("magnifier_koma_height_rel={rel}\n"));
-    }
+    content.push_str(&magnifier_state_lines(&viewer_cfg.magnifier));
     content.push_str(&format!(
         "viewer_bar_order={}\n",
         bar_order_to_str(&viewer_cfg.bar_order),
@@ -1135,6 +1160,40 @@ mod tests {
         // キーなし（旧state）も既定値。
         let parsed = parse_state_text("mag_none", "lang=ja\n");
         assert_eq!(parsed.viewer_cfg.magnifier, crate::magnifier::MagnifierConfig::default());
+    }
+
+    #[test]
+    fn koma_shrink_settings_roundtrip_through_state_lines() {
+        let mut m = crate::magnifier::MagnifierConfig::default();
+        m.set_koma_shrink_x(true);
+        m.set_koma_shrink_x_pct(6);
+        m.set_koma_shrink_y_pct(30);
+        m.set_koma_shrink_hide_ask(true);
+        m.set_koma_height_rel(1.5);
+        let parsed = parse_state_text("koma_shrink_rt", &magnifier_state_lines(&m));
+        assert_eq!(parsed.viewer_cfg.magnifier, m);
+        assert!(parsed.viewer_cfg.magnifier.koma_shrink_x());
+        assert!(!parsed.viewer_cfg.magnifier.koma_shrink_y());
+        assert_eq!(parsed.viewer_cfg.magnifier.koma_shrink_x_pct(), 6);
+        assert_eq!(parsed.viewer_cfg.magnifier.koma_shrink_y_pct(), 30);
+        assert!(parsed.viewer_cfg.magnifier.koma_shrink_hide_ask());
+        // 既定値のままでも往復する。
+        let d = crate::magnifier::MagnifierConfig::default();
+        assert_eq!(parse_state_text("koma_shrink_rt_d", &magnifier_state_lines(&d)).viewer_cfg.magnifier, d);
+    }
+
+    #[test]
+    fn koma_shrink_keys_round_clamp_and_fall_back() {
+        let parsed = parse_state_text("shrink_round", "magnifier_koma_shrink_x_pct=7\nmagnifier_koma_shrink_y_pct=999\n");
+        assert_eq!(parsed.viewer_cfg.magnifier.koma_shrink_x_pct(), 8, "刻み(2%)へ丸める");
+        assert_eq!(parsed.viewer_cfg.magnifier.koma_shrink_y_pct(), 30, "上限へ丸める");
+        let parsed = parse_state_text("shrink_low", "magnifier_koma_shrink_x_pct=0\n");
+        assert_eq!(parsed.viewer_cfg.magnifier.koma_shrink_x_pct(), 2, "下限へ丸める");
+        // 不正値・キーなしは既定値（OFF・10%・ダイアログ表示あり）。
+        let parsed = parse_state_text("shrink_bad", "magnifier_koma_shrink_x=yes\nmagnifier_koma_shrink_y_pct=-5\nmagnifier_koma_shrink_hide_ask=1\n");
+        let m = &parsed.viewer_cfg.magnifier;
+        assert!(!m.koma_shrink_x() && !m.koma_shrink_y() && !m.koma_shrink_hide_ask());
+        assert_eq!((m.koma_shrink_x_pct(), m.koma_shrink_y_pct()), (10, 10));
     }
 
     #[test]

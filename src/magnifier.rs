@@ -17,6 +17,11 @@ pub const DEFAULT_MIN_SHRINK_RATIO: f32 = 0.25;
 const MIN_SHRINK_RATIO_RANGE: (f32, f32) = (0.05, 1.0);
 /// コマ送りの基準倍率（高さフィット相対）の許容範囲。
 const KOMA_HEIGHT_REL_RANGE: (f32, f32) = (0.05, 64.0);
+/// コマ送り: 超過分の自動縮小のしきい値（窓の寸法に対する超過の％）の範囲・刻み・既定値。
+pub const KOMA_SHRINK_PCT_FLOOR: u32 = 2;
+pub const KOMA_SHRINK_PCT_CEILING: u32 = 30;
+pub const KOMA_SHRINK_PCT_STEP: u32 = 2;
+pub const DEFAULT_KOMA_SHRINK_PCT: u32 = 10;
 /// フィット倍率ちょうどかの判定幅。窓サイズ変更への追従（フィット表示のまま）に使う。
 pub const FIT_EPS: f32 = 1e-4;
 
@@ -259,7 +264,7 @@ fn clamp_size(size: Vec2, current: Vec2) -> Vec2 {
 
 /// 虫眼鏡モードの設定値。setter は「範囲に丸めて適用し、適用後の値を返す」。
 /// GUI設定へ昇格するときはこの setter を呼ぶだけで済む。
-/// 永続化するのは `notch_step`・`detail_ticks`・`koma_height_rel` の3つだけ（他は現状スコープ外）。
+/// 永続化するのは `notch_step`・`detail_ticks`・`koma_height_rel`・コマ送りの自動縮小設定だけ（他は現状スコープ外）。
 #[derive(Clone, Debug, PartialEq)]
 pub struct MagnifierConfig {
     max_scale: f32,
@@ -269,7 +274,20 @@ pub struct MagnifierConfig {
     detail_ticks: bool,
     /// コマ送りの基準倍率（高さフィット相対。`koma::height_rel_from_scale`）。未設定なら None。
     koma_height_rel: Option<f32>,
+    /// コマ送り: 軸ごとの超過分の自動縮小の有効フラグと、しきい値（窓の幅/高さに対する超過の％。2%刻み）。
+    koma_shrink_x: bool,
+    koma_shrink_y: bool,
+    koma_shrink_x_pct: u32,
+    koma_shrink_y_pct: u32,
+    /// 自動縮小の確認ダイアログを表示しない（解除用のフラグ）。
+    koma_shrink_hide_ask: bool,
     pub bar: BarLayout,
+}
+
+/// しきい値(％)を刻みへ丸め（四捨五入）、範囲へ収める。
+fn round_shrink_pct(v: u32) -> u32 {
+    let stepped = (v.saturating_add(KOMA_SHRINK_PCT_STEP / 2) / KOMA_SHRINK_PCT_STEP) * KOMA_SHRINK_PCT_STEP;
+    stepped.clamp(KOMA_SHRINK_PCT_FLOOR, KOMA_SHRINK_PCT_CEILING)
 }
 
 impl Default for MagnifierConfig {
@@ -281,6 +299,11 @@ impl Default for MagnifierConfig {
             notch_step: NotchStep::default(),
             detail_ticks: false,
             koma_height_rel: None,
+            koma_shrink_x: false,
+            koma_shrink_y: false,
+            koma_shrink_x_pct: DEFAULT_KOMA_SHRINK_PCT,
+            koma_shrink_y_pct: DEFAULT_KOMA_SHRINK_PCT,
+            koma_shrink_hide_ask: false,
             bar: BarLayout::default(),
         }
     }
@@ -330,6 +353,33 @@ impl MagnifierConfig {
             self.koma_height_rel = Some(v.clamp(KOMA_HEIGHT_REL_RANGE.0, KOMA_HEIGHT_REL_RANGE.1));
         }
         self.koma_height_rel
+    }
+
+    /// 横（X）の超過分を自動縮小するか。
+    pub fn koma_shrink_x(&self) -> bool { self.koma_shrink_x }
+    /// 縦（Y）の超過分を自動縮小するか。
+    pub fn koma_shrink_y(&self) -> bool { self.koma_shrink_y }
+    /// Xのしきい値（窓の幅に対する超過の％）。
+    pub fn koma_shrink_x_pct(&self) -> u32 { self.koma_shrink_x_pct }
+    /// Yのしきい値（窓の高さに対する超過の％）。
+    pub fn koma_shrink_y_pct(&self) -> u32 { self.koma_shrink_y_pct }
+    /// 自動縮小の確認ダイアログを表示しないか。
+    pub fn koma_shrink_hide_ask(&self) -> bool { self.koma_shrink_hide_ask }
+
+    pub fn set_koma_shrink_x(&mut self, on: bool) { self.koma_shrink_x = on; }
+    pub fn set_koma_shrink_y(&mut self, on: bool) { self.koma_shrink_y = on; }
+    pub fn set_koma_shrink_hide_ask(&mut self, hide: bool) { self.koma_shrink_hide_ask = hide; }
+
+    /// 刻み（2%）へ丸め、2〜30%へ収めて設定し、適用後の値を返す。
+    pub fn set_koma_shrink_x_pct(&mut self, pct: u32) -> u32 {
+        self.koma_shrink_x_pct = round_shrink_pct(pct);
+        self.koma_shrink_x_pct
+    }
+
+    /// 刻み（2%）へ丸め、2〜30%へ収めて設定し、適用後の値を返す。
+    pub fn set_koma_shrink_y_pct(&mut self, pct: u32) -> u32 {
+        self.koma_shrink_y_pct = round_shrink_pct(pct);
+        self.koma_shrink_y_pct
     }
 
     pub fn set_min_shrink_ratio(&mut self, v: f32) -> f32 {
@@ -686,6 +736,39 @@ mod tests {
 
     fn close(a: Vec2, b: Vec2) -> bool {
         (a.x - b.x).abs() < EPS && (a.y - b.y).abs() < EPS
+    }
+
+    #[test]
+    fn koma_shrink_defaults_are_off_with_ten_percent() {
+        let m = MagnifierConfig::default();
+        assert!(!m.koma_shrink_x() && !m.koma_shrink_y() && !m.koma_shrink_hide_ask());
+        assert_eq!((m.koma_shrink_x_pct(), m.koma_shrink_y_pct()), (10, 10));
+    }
+
+    #[test]
+    fn koma_shrink_pct_rounds_to_the_step_and_clamps() {
+        let mut m = MagnifierConfig::default();
+        for (input, expected) in [(0, 2), (1, 2), (2, 2), (3, 4), (5, 6), (10, 10), (11, 12), (29, 30), (30, 30), (31, 30), (u32::MAX, 30)] {
+            assert_eq!(m.set_koma_shrink_x_pct(input), expected, "x: {input}");
+            assert_eq!(m.koma_shrink_x_pct(), expected);
+            assert_eq!(m.set_koma_shrink_y_pct(input), expected, "y: {input}");
+        }
+        // 刻みに乗った全値が、そのまま保たれる。
+        for pct in (KOMA_SHRINK_PCT_FLOOR..=KOMA_SHRINK_PCT_CEILING).step_by(KOMA_SHRINK_PCT_STEP as usize) {
+            assert_eq!(m.set_koma_shrink_x_pct(pct), pct);
+        }
+    }
+
+    #[test]
+    fn koma_shrink_flags_are_independent_per_axis() {
+        let mut m = MagnifierConfig::default();
+        m.set_koma_shrink_x(true);
+        assert!(m.koma_shrink_x() && !m.koma_shrink_y());
+        m.set_koma_shrink_y(true);
+        m.set_koma_shrink_x(false);
+        assert!(!m.koma_shrink_x() && m.koma_shrink_y());
+        m.set_koma_shrink_hide_ask(true);
+        assert!(m.koma_shrink_hide_ask());
     }
 
     #[test]
