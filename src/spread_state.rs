@@ -652,29 +652,6 @@ pub fn write_archive_rating(db: &Arc<Mutex<Database>>, dir: &Path, filename: &st
     tx.commit().is_ok() && ok
 }
 
-/// 評価だけを1トランザクションでまとめて書く（性能確認用フィクスチャー専用）。
-/// 各項目は `write_archive_rating` と同じ扱い（訪問回数は維持、レコード不在は訪問0で新規作成）。
-/// 書けた件数を返す。
-#[cfg(debug_assertions)]
-pub fn write_archive_ratings_bulk(db: &Arc<Mutex<Database>>, items: &[(PathBuf, u8)]) -> usize {
-    let Ok(db) = db.lock() else { return 0 };
-    let Ok(tx) = db.begin_write() else { return 0 };
-    let mut written = 0;
-    {
-        let Ok(mut table) = tx.open_table(ARCHIVE_RATING_TABLE_V1) else { return 0 };
-        for (path, rating_half) in items {
-            let (Some(dir), Some(name)) = (path.parent(), path.file_name().and_then(|n| n.to_str())) else { continue };
-            let key = make_key(dir, name);
-            let current = table.get(key.as_str()).ok().flatten().map(|v| decode_rating(v.value()));
-            let next = ArchiveRating { rating_half: (*rating_half).min(RATING_HALF_MAX), ..current.unwrap_or_default() };
-            if table.insert(key.as_str(), (next.rating_half, next.visit_count, next.last_visit_at)).is_ok() {
-                written += 1;
-            }
-        }
-    }
-    if tx.commit().is_ok() { written } else { 0 }
-}
-
 /// 評価・訪問記録を返す。レコード不在（一度も開いていない）は None。
 pub fn read_archive_rating(db: &Arc<Mutex<Database>>, dir: &Path, filename: &str) -> Option<ArchiveRating> {
     let key = make_key(dir, filename);
@@ -1166,20 +1143,6 @@ mod tests {
         assert!(write_archive_rating(&db, &dir, "book.zip", 4));
         let r = read_archive_rating(&db, &dir, "book.zip").unwrap();
         assert_eq!((r.rating_half, r.visit_count, r.last_visit_at), (4, 0, 0));
-    }
-
-    #[test]
-    fn bulk_rating_write_keeps_visits_and_creates_missing_records() {
-        let db = temp_db();
-        let dir = unique_temp_path("rating_bulk");
-        record_archive_visit(&db, &dir, "seen.zip");
-        let items = vec![(dir.join("seen.zip"), 10), (dir.join("new.zip"), 0), (dir.join("big.zip"), 200)];
-        assert_eq!(write_archive_ratings_bulk(&db, &items), 3);
-        let seen = read_archive_rating(&db, &dir, "seen.zip").unwrap();
-        assert_eq!((seen.rating_half, seen.visit_count), (10, 1));
-        let new = read_archive_rating(&db, &dir, "new.zip").unwrap();
-        assert_eq!((new.rating_half, new.visit_count), (0, 0));
-        assert_eq!(read_archive_rating(&db, &dir, "big.zip").unwrap().rating_half, RATING_HALF_MAX);
     }
 
     #[test]

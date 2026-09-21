@@ -1700,19 +1700,6 @@ impl NekoviewApp {
                                 }
                             }
 
-                            // 性能確認用（debug ビルドのみ）。表示中の全件の評価を実DBごと書き換える
-                            #[cfg(debug_assertions)]
-                            {
-                                ui.separator();
-                                ui.label("[debug] 評価フィクスチャー");
-                                for (fixture, label) in super::debug_fixture::RatingFixture::MENU {
-                                    if ui.button(label).clicked() {
-                                        self.apply_rating_fixture(fixture);
-                                        ui.close();
-                                    }
-                                }
-                            }
-
                             ui.separator();
                             if ui.button(i18n::t().explorer_open_folder_menu()).clicked() {
                                 if let Some(dir) = &self.viewing_dir {

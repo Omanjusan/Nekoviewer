@@ -814,7 +814,7 @@ impl NekoviewApp {
     /// archives のうち評価キャッシュに無いものを、ディレクトリ単位でまとめて DB から取り込む。
     /// 横断一覧（お気に入り・検索結果）を評価で並べるとき、1件ずつ引かずに済ませる。
     /// レコード不在は None（＝未評価・未訪問）としてキャッシュする。
-    pub(super) fn preload_archive_ratings(&mut self) {
+    fn preload_archive_ratings(&mut self) {
         let Some(db) = self.spread_db.clone() else { return };
         let mut missing: HashMap<PathBuf, Vec<PathBuf>> = HashMap::new();
         for p in &self.archives {

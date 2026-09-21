@@ -1018,8 +1018,6 @@ pub struct NekoviewApp {
 
 mod scan;
 mod folder_sort;
-#[cfg(debug_assertions)]
-mod debug_fixture;
 mod workers;
 mod viewer_host;
 mod input;
