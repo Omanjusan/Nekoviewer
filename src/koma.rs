@@ -135,9 +135,7 @@ fn nearest(stops: &[f32], v: f32) -> usize {
     best
 }
 
-// 自動縮小の査定はビューへ配線する（フェーズ3）まで未使用。
 /// 超過分の自動縮小の結果。
-#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ShrinkPlan {
     /// 縮小後の倍率。どの軸も対象でなければ、渡した倍率のまま。
@@ -148,7 +146,6 @@ pub struct ShrinkPlan {
     pub y: bool,
 }
 
-#[allow(dead_code)]
 impl ShrinkPlan {
     /// 縮小が起きるか。
     pub fn applies(&self) -> bool {
@@ -159,7 +156,6 @@ impl ShrinkPlan {
 /// 1軸の超過が「数％」に収まるとき、その軸をちょうどフレームに収める縮小率（1未満）を返す。
 /// 超過率は `(コンテンツ − フレーム) / フレーム`。`threshold` はその上限（0.10 = 10%）。
 /// 目に見えない超過（`FIT_EPS_PX` 以下＝既に1コマ）・フレームに収まる軸・不正な値は None。
-#[allow(dead_code)]
 fn shrink_ratio(content: f32, viewport: f32, threshold: f32) -> Option<f32> {
     if !(viewport >= MIN_FRAME_PX && content.is_finite() && threshold.is_finite() && threshold > 0.0) {
         return None;
@@ -180,7 +176,6 @@ fn shrink_ratio(content: f32, viewport: f32, threshold: f32) -> Option<f32> {
 /// 縮小は縦横とも同じ比率（縦横比は維持）で、X→Yの順に評価する。Xの縮小でYの超過が減った結果、
 /// Yもしきい値に収まればYも対象になる。縮小しかしないので、評価済みの軸が再び超過することはない。
 /// 範囲（最小倍率など）への丸めは呼び出し側で行う。
-#[allow(dead_code)]
 pub fn plan_auto_shrink(
     scale: f32,
     img: Vec2,

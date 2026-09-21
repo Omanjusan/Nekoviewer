@@ -4198,7 +4198,20 @@ impl ViewerState {
                     // コマモード: 基準倍率（高さ相対）でフレームを維持し、先頭コマ（戻りなら最終コマ）へ置く。
                     // ページの大きさや、見開き・回転の切替後でも、同じ式でフレームの大きさを保つ。
                     (Some(rel), _) => {
-                        let scale = crate::koma::scale_from_height_rel(rel, img.y, vp.y).clamp(range.0, range.1);
+                        let mut scale = crate::koma::scale_from_height_rel(rel, img.y, vp.y).clamp(range.0, range.1);
+                        // 数％の超過でコマが増えるなら、縦横比を保ったまま縮小して収める。ページを開くたび
+                        // （ビューの作り直しのたび）に、そのページの寸法で査定する。基準倍率は書き換えない。
+                        let threshold = |on: bool, pct: u32| on.then_some(pct as f32 / 100.0);
+                        let plan = crate::koma::plan_auto_shrink(
+                            scale,
+                            img,
+                            vp,
+                            threshold(cfg.koma_shrink_x(), cfg.koma_shrink_x_pct()),
+                            threshold(cfg.koma_shrink_y(), cfg.koma_shrink_y_pct()),
+                        );
+                        if plan.applies() {
+                            scale = plan.scale.clamp(range.0, range.1);
+                        }
                         let grid = crate::koma::KomaGrid::new(img * scale, vp, self.koma_read_dir());
                         MagnifierView { scale, offset: if arrive_last { grid.last() } else { grid.first() } }
                     }
@@ -6455,13 +6468,18 @@ mod magnifier_flow_tests {
     impl Harness {
         /// `count` ページの書庫（各ページ `w`×`h_px`）。ツールパレットは隠す。
         fn with_pages(count: usize, w: u32, h_px: u32) -> Self {
+            Self::with_sized_pages(&vec![(w, h_px); count])
+        }
+
+        /// ページごとに寸法（幅, 高さ）を指定した書庫。ツールパレットは隠す。
+        fn with_sized_pages(sizes: &[(u32, u32)]) -> Self {
             let mut h = Self::new_unwarmed();
             let path = PathBuf::from("book.zip");
             h.viewer = ViewerState::new_raw(path.clone(), [None; 4], None);
             h.viewer.is_raw_file = false;
             h.viewer.entries.clear();
             h.cache = PageCache::new(256 * 1024 * 1024, 0);
-            for i in 0..count {
+            for (i, &(w, h_px)) in sizes.iter().enumerate() {
                 h.viewer.entries.push(ViewerEntry {
                     entry_name: format!("{i}.png"),
                     display_name: format!("{i}.png"),
@@ -6784,6 +6802,141 @@ mod magnifier_flow_tests {
         settle_koma_tween(&mut h);
         assert_eq!(h.viewer.spread_lo(), 0, "コマ戻しチップでページが戻らない: {}", h.state());
         assert_offset_at(&h, h.koma_grid().last(), "前ページの最終コマ");
+    }
+
+    // ── コマモード：超過分の自動縮小（フェーズ3） ──────────────────────────────
+    /// 窓（ビューポート）の寸法を、いったんコマモードに入って読み取る（読み取り後は虫眼鏡ごと抜ける）。
+    fn learn_viewport(h: &mut Harness) -> egui::Vec2 {
+        h.start_koma(1.0);
+        let (_, vp) = h.viewer.koma_geom.expect("虫眼鏡の幾何がない");
+        h.cfg.magnifier_on = false;
+        h.frame(vec![], egui::Modifiers::NONE);
+        h.frame(vec![], egui::Modifiers::NONE);
+        assert!(!h.cfg.koma_on && h.viewer.magnifier_view.is_none());
+        vp
+    }
+
+    #[test]
+    fn koma_auto_shrink_fits_a_small_y_overflow_only_when_enabled() {
+        // OFF（既定）: 高さが5%超過すると、縦に2コマ。
+        let mut h = Harness::with_pages(2, 800, 1200);
+        h.start_koma(1.05);
+        assert_eq!(h.koma_grid().len(), 2, "前提: 縮小なしでは縦2コマ");
+        // ON（しきい値10%）: 縮小して高さがちょうど収まり、1コマになる。
+        let mut h = Harness::with_pages(2, 800, 1200);
+        h.cfg.magnifier.set_koma_shrink_y(true);
+        h.cfg.magnifier.set_koma_shrink_y_pct(10);
+        h.start_koma(1.05);
+        let (img, vp) = h.viewer.koma_geom.unwrap();
+        assert_eq!(h.koma_grid().len(), 1, "縮小されていない: scale={}", view_scale(&h));
+        assert!((view_scale(&h) - vp.y / img.y).abs() < 1e-4, "高さがちょうど収まる倍率ではない");
+        // 基準倍率（保存値）は書き換えない。
+        assert_eq!(h.cfg.magnifier.koma_height_rel(), Some(1.05));
+    }
+
+    #[test]
+    fn koma_auto_shrink_respects_the_threshold_and_the_axis_switch() {
+        // 12%超過: しきい値10%は対象外、12%は対象。
+        let mut h = Harness::with_pages(2, 800, 1200);
+        h.cfg.magnifier.set_koma_shrink_y(true);
+        h.cfg.magnifier.set_koma_shrink_y_pct(10);
+        h.start_koma(1.12);
+        assert_eq!(h.koma_grid().len(), 2, "しきい値を超える超過は縮小しない");
+        let mut h = Harness::with_pages(2, 800, 1200);
+        h.cfg.magnifier.set_koma_shrink_y(true);
+        h.cfg.magnifier.set_koma_shrink_y_pct(12);
+        h.start_koma(1.12);
+        assert_eq!(h.koma_grid().len(), 1, "しきい値ちょうどは縮小する");
+        // チェックOFFなら、しきい値が大きくても縮小しない（Yのチェックだけ入れても、Xは対象外）。
+        let mut h = Harness::with_pages(2, 800, 1200);
+        h.cfg.magnifier.set_koma_shrink_x(true);
+        h.cfg.magnifier.set_koma_shrink_y_pct(30);
+        h.start_koma(1.12);
+        assert_eq!(h.koma_grid().len(), 2, "Yのチェックが無いのにYが縮小された");
+    }
+
+    #[test]
+    fn koma_auto_shrink_fits_a_small_x_overflow() {
+        // 縦長ページ800×1200。基準倍率を、幅がちょうど5%超過するように決める（窓の寸法は事前に読み取る）。
+        let mut probe = Harness::with_pages(2, 800, 1200);
+        let vp = learn_viewport(&mut probe);
+        let rel = 1.05 * (1200.0 / 800.0) * (vp.x / vp.y);
+        // OFF: 横に2コマ（2コマ目は右へ動く）。
+        let mut h = Harness::with_pages(2, 800, 1200);
+        h.start_koma(rel);
+        assert!(h.koma_grid().position(1).x > 1.0, "前提: 縮小なしでは横2コマ");
+        // ON: 横は1コマに収まり、2コマ目は下へ動く。
+        let mut h = Harness::with_pages(2, 800, 1200);
+        h.cfg.magnifier.set_koma_shrink_x(true);
+        h.cfg.magnifier.set_koma_shrink_x_pct(10);
+        h.start_koma(rel);
+        let grid = h.koma_grid();
+        assert!(grid.position(1).x.abs() < 1.0 && grid.position(1).y > 1.0, "横が1コマに収まっていない");
+        // 縦横比は保たれる（縮小は一様）。基準倍率は不変。
+        assert!((view_scale(&h) - rel * vp.y / 1200.0 / 1.05).abs() < 1e-3);
+        assert_eq!(h.cfg.magnifier.koma_height_rel(), Some(rel));
+    }
+
+    #[test]
+    fn koma_auto_shrink_is_assessed_again_for_every_page() {
+        // 0ページ目は幅が5%超過（縮小対象）、1ページ目は倍の幅（大きな超過＝対象外）。
+        let mut probe = Harness::with_pages(2, 800, 1200);
+        let vp = learn_viewport(&mut probe);
+        let rel = 1.05 * (1200.0 / 800.0) * (vp.x / vp.y);
+        let base_scale = rel * vp.y / 1200.0;
+        let mut h = Harness::with_sized_pages(&[(800, 1200), (1600, 1200)]);
+        h.cfg.magnifier.set_koma_shrink_x(true);
+        h.cfg.magnifier.set_koma_shrink_x_pct(10);
+        h.start_koma(rel);
+        assert!((view_scale(&h) - base_scale / 1.05).abs() < 1e-3, "0ページ目が縮小されていない");
+        // 最後のコマまで進んで、1ページ目へ。幅が大きく超過するので、基準倍率のまま。
+        for _ in 0..20 {
+            if h.viewer.spread_lo() == 1 {
+                break;
+            }
+            press(&mut h, egui::Key::Space);
+        }
+        assert_eq!(h.viewer.spread_lo(), 1);
+        assert!((view_scale(&h) - base_scale).abs() < 1e-3, "1ページ目は縮小しない: {}", view_scale(&h));
+        // 戻ると、0ページ目はもう一度縮小される。
+        for _ in 0..20 {
+            if h.viewer.spread_lo() == 0 {
+                break;
+            }
+            press(&mut h, egui::Key::ArrowUp);
+        }
+        assert_eq!(h.viewer.spread_lo(), 0);
+        assert!((view_scale(&h) - base_scale / 1.05).abs() < 1e-3, "戻った0ページ目が縮小されていない");
+    }
+
+    #[test]
+    fn koma_auto_shrink_respects_a_zoom_the_user_already_chose() {
+        let mut h = Harness::with_pages(2, 800, 1200);
+        h.cfg.magnifier.set_koma_shrink_y(true);
+        h.cfg.magnifier.set_koma_shrink_y_pct(30);
+        // 拡大表示中に1ノッチ拡大（高さ25%超過＝しきい値内）してからコマモードに入る。
+        h.cfg.magnifier_on = true;
+        h.frame(vec![], egui::Modifiers::NONE);
+        h.wheel(true, egui::Modifiers::NONE);
+        let zoomed = view_scale(&h);
+        toggle_koma(&mut h);
+        assert!(h.cfg.koma_on);
+        assert!((view_scale(&h) - zoomed).abs() < 1e-5, "ユーザーが選んだ倍率が縮小された");
+    }
+
+    #[test]
+    fn koma_auto_shrink_is_not_reapplied_after_the_user_zooms() {
+        let mut h = Harness::with_pages(2, 800, 1200);
+        h.cfg.magnifier.set_koma_shrink_y(true);
+        h.cfg.magnifier.set_koma_shrink_y_pct(10);
+        h.start_koma(1.05);
+        let shrunk = view_scale(&h);
+        h.wheel(true, egui::Modifiers::NONE);
+        h.frame(vec![], egui::Modifiers::NONE);
+        assert!(view_scale(&h) > shrunk * 1.2, "拡縮が縮小に打ち消された: {} -> {}", shrunk, view_scale(&h));
+        // 拡縮後の倍率が、新しい基準倍率になる。
+        let base = h.cfg.magnifier.koma_height_rel().unwrap();
+        assert!(base > 1.2, "基準倍率が更新されていない: {base}");
     }
 
     #[test]
