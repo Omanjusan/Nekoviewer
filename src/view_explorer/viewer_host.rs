@@ -1132,14 +1132,15 @@ impl NekoviewApp {
                 state.set_toast(i18n::t().toast_bookmark_invalidated().to_string());
             }
         }
-        // 訪問回数を+1し、保存済みの評価を表示に反映する（生画像ファイルは評価の対象外）。
+        // 訪問回数は生画像ファイルも含めて+1する（サムネ帯の「訪問回数」用）。
+        // 評価は生画像の対象外なので、保存値の表示反映はアーカイブだけ。
         // 評価はここでは書き換えない（触るまで未評価の状態を維持する）。
-        if !state.is_raw_file()
-            && let Some(db) = self.spread_db.as_ref()
-        {
+        if let Some(db) = self.spread_db.as_ref() {
             crate::spread_state::record_archive_visit(db, archive_dir, filename);
-            let rating = crate::spread_state::read_archive_rating(db, archive_dir, filename);
-            state.set_saved_rating(rating.map_or(0, |r| r.rating_half));
+            if !state.is_raw_file() {
+                let rating = crate::spread_state::read_archive_rating(db, archive_dir, filename);
+                state.set_saved_rating(rating.map_or(0, |r| r.rating_half));
+            }
         }
         let saved_thumbnail_selection = self.spread_db.as_ref().and_then(|db| {
             crate::spread_state::read_thumbnail_selection(db, archive_dir, filename)

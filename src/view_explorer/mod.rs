@@ -252,6 +252,8 @@ pub(crate) enum MenuBarButton {
     SortSize,
     SortOrder,
     CardInfoToggle,
+    /// 評価帯（info2）の表示量の循環トグル。
+    CardRatingToggle,
     StatusToggle,
     /// ビューアー内ツールパレット（マス配置ツールボックス）の表示ON/OFF。
     /// ファイルを渡り歩いても同じ状態を保つ（viewer_cfg経由でPaletteStateへ直結）。
@@ -261,13 +263,14 @@ pub(crate) enum MenuBarButton {
 
 /// 表示順そのもの（draw_menu_barの描画順と一致させること）。
 /// 見開き・ページモード群はビューアーツールバーへ移設した（toolbar.rs 参照）。
-pub(crate) const MENU_BAR_ORDER: [MenuBarButton; 9] = [
+pub(crate) const MENU_BAR_ORDER: [MenuBarButton; 10] = [
     MenuBarButton::Reload,
     MenuBarButton::SortName,
     MenuBarButton::SortDate,
     MenuBarButton::SortSize,
     MenuBarButton::SortOrder,
     MenuBarButton::CardInfoToggle,
+    MenuBarButton::CardRatingToggle,
     MenuBarButton::ToolPaletteToggle,
     MenuBarButton::Settings,
     MenuBarButton::StatusToggle,
@@ -280,7 +283,7 @@ mod menu_bar_order_tests {
     #[test]
     fn settings_and_status_keep_the_visual_right_end_order() {
         assert_eq!(
-            &MENU_BAR_ORDER[7..],
+            &MENU_BAR_ORDER[8..],
             &[
                 MenuBarButton::Settings,
                 MenuBarButton::StatusToggle,
@@ -342,6 +345,116 @@ impl CardInfoMode {
             "name_date_size" => Self::NameDateSize,
             _ => Self::Off,
         }
+    }
+}
+
+/// サムネカード下段の評価帯（info2）の表示量。メニューバーの1ボタンで循環する。
+/// 情報帯（CardInfoMode）とは独立で、帯の最下段に星の行・訪問回数の行を足す。
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub(crate) enum CardRatingMode {
+    /// 何も表示しない
+    #[default]
+    Off,
+    /// 星のみ
+    Stars,
+    /// 訪問回数のみ
+    Visits,
+    /// 星 + 訪問回数
+    StarsVisits,
+}
+
+impl CardRatingMode {
+    /// 押下ごとの循環順: Off → Stars → Visits → StarsVisits → Off
+    pub(crate) fn next(self) -> Self {
+        match self {
+            Self::Off => Self::Stars,
+            Self::Stars => Self::Visits,
+            Self::Visits => Self::StarsVisits,
+            Self::StarsVisits => Self::Off,
+        }
+    }
+
+    /// 星の行を出すか
+    pub(crate) fn shows_stars(self) -> bool {
+        matches!(self, Self::Stars | Self::StarsVisits)
+    }
+
+    /// 訪問回数の行を出すか
+    pub(crate) fn shows_visits(self) -> bool {
+        matches!(self, Self::Visits | Self::StarsVisits)
+    }
+
+    /// 評価帯に描画する行数（0..=2）
+    pub(crate) fn line_count(self) -> usize {
+        self.shows_stars() as usize + self.shows_visits() as usize
+    }
+
+    /// nekoviewer.state への保存キー
+    pub(crate) fn as_state_str(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Stars => "stars",
+            Self::Visits => "visits",
+            Self::StarsVisits => "stars_visits",
+        }
+    }
+
+    /// nekoviewer.state からの復元（未知値は Off）
+    pub(crate) fn from_state_str(s: &str) -> Self {
+        match s {
+            "stars" => Self::Stars,
+            "visits" => Self::Visits,
+            "stars_visits" => Self::StarsVisits,
+            _ => Self::Off,
+        }
+    }
+}
+
+#[cfg(test)]
+mod card_rating_mode_tests {
+    use super::CardRatingMode;
+
+    #[test]
+    fn toggle_cycles_through_the_four_modes_and_returns_to_off() {
+        let mut m = CardRatingMode::Off;
+        let mut seen = Vec::new();
+        for _ in 0..4 {
+            m = m.next();
+            seen.push(m);
+        }
+        assert_eq!(
+            seen,
+            vec![
+                CardRatingMode::Stars,
+                CardRatingMode::Visits,
+                CardRatingMode::StarsVisits,
+                CardRatingMode::Off,
+            ]
+        );
+    }
+
+    #[test]
+    fn state_string_round_trips_and_unknown_falls_back_to_off() {
+        for m in [
+            CardRatingMode::Off,
+            CardRatingMode::Stars,
+            CardRatingMode::Visits,
+            CardRatingMode::StarsVisits,
+        ] {
+            assert_eq!(CardRatingMode::from_state_str(m.as_state_str()), m);
+        }
+        assert_eq!(CardRatingMode::from_state_str("bogus"), CardRatingMode::Off);
+        assert_eq!(CardRatingMode::from_state_str(""), CardRatingMode::Off);
+    }
+
+    #[test]
+    fn line_count_matches_the_visible_rows() {
+        assert_eq!(CardRatingMode::Off.line_count(), 0);
+        assert_eq!(CardRatingMode::Stars.line_count(), 1);
+        assert_eq!(CardRatingMode::Visits.line_count(), 1);
+        assert_eq!(CardRatingMode::StarsVisits.line_count(), 2);
+        assert!(CardRatingMode::StarsVisits.shows_stars() && CardRatingMode::StarsVisits.shows_visits());
+        assert!(!CardRatingMode::Visits.shows_stars() && CardRatingMode::Visits.shows_visits());
     }
 }
 
@@ -767,6 +880,8 @@ pub struct NekoviewApp {
     pub(crate) show_hidden: bool,
     /// サムネカード下部の情報帯の表示量（メニューバーの1ボタンで循環）。
     pub(crate) card_info_mode: CardInfoMode,
+    /// 評価帯（info2）の表示量
+    pub(crate) card_rating_mode: CardRatingMode,
     /// 情報帯の「更新日時」行に使う日付書式。設定ダイアログのエクスプローラータブで編集。
     pub(crate) card_date_format: crate::card_date_format::CardDateFormat,
     /// 情報帯の見た目（背景色・透過度・文字色・文字サイズ）。今は Default 固定。
@@ -885,7 +1000,7 @@ mod glyph_audit;
 
 
 impl NekoviewApp {
-    pub fn new(start_dir: PathBuf, config: AppConfig, viewer_slots: [Option<WindowSlot>; 4], sort_state: SortState, viewer_cfg: ViewerConfig, show_hidden: bool, card_info_mode: &str, card_date_format: crate::card_date_format::CardDateFormat, translate_cfg: crate::translate::TranslateConfig, tab_positions: crate::gui_config::TabPositions, tree_sorts: crate::tree_sort::TreeSorts, open_target: Option<PathBuf>, ctx: egui::Context) -> Self {
+    pub fn new(start_dir: PathBuf, config: AppConfig, viewer_slots: [Option<WindowSlot>; 4], sort_state: SortState, viewer_cfg: ViewerConfig, show_hidden: bool, card_info_mode: &str, card_rating_mode: &str, card_date_format: crate::card_date_format::CardDateFormat, translate_cfg: crate::translate::TranslateConfig, tab_positions: crate::gui_config::TabPositions, tree_sorts: crate::tree_sort::TreeSorts, open_target: Option<PathBuf>, ctx: egui::Context) -> Self {
         // 「前回フォルダに復帰」がオフなら、他のフォルダ系タブの保存位置も復元しない（既定に戻す）
         let tab_positions = if config.startup.use_last_dir {
             tab_positions
@@ -1084,6 +1199,7 @@ impl NekoviewApp {
             viewer_focus_requested: false,
             show_hidden,
             card_info_mode: CardInfoMode::from_state_str(card_info_mode),
+            card_rating_mode: CardRatingMode::from_state_str(card_rating_mode),
             card_date_format,
             card_info_style: CardInfoStyle::default(),
             card_info_hover: None,
@@ -1168,6 +1284,7 @@ impl NekoviewApp {
             &*self.viewer_cfg.lock().unwrap(),
             self.show_hidden,
             self.card_info_mode.as_state_str(),
+            self.card_rating_mode.as_state_str(),
             &self.card_date_format,
             &self.config,
             &self.translate_cfg,

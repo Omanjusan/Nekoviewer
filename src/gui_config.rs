@@ -369,6 +369,9 @@ pub struct AppState {
     /// サムネカード下部の情報帯モード: "off" / "name" / "name_date" / "name_date_size"。
     /// メニューバーの1ボタン循環トグルで切り替え、値は CardInfoMode 側で解釈する。
     pub card_info_mode: String,
+    /// サムネカード下段の評価帯モード（info2）: "off" / "stars" / "visits" / "stars_visits"。
+    /// メニューバーの1ボタン循環トグルで切り替え、値は CardRatingMode 側で解釈する。
+    pub card_rating_mode: String,
     /// サムネカード情報帯の「更新日時」表示に使う日付書式。設定ダイアログの
     /// エクスプローラータブで編集し、state には card_date_* の6キーに分割して保存する。
     pub card_date_format: CardDateFormat,
@@ -418,6 +421,7 @@ impl Default for AppState {
             viewer_cfg: ViewerConfig::default(),
             show_hidden: false,
             card_info_mode: "off".to_string(),
+            card_rating_mode: "off".to_string(),
             card_date_format: CardDateFormat::default(),
             app_cache_total_mb: None,
             app_anim_ring_min_frames: None,
@@ -491,6 +495,7 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
     let mut redecode_on_resize: Option<bool> = None;
     let mut show_hidden: Option<bool> = None;
     let mut card_info_mode: Option<String> = None;
+    let mut card_rating_mode: Option<String> = None;
     // カード日付書式の6キー（未記載は CardDateFormat::from_state 側で各既定へフォールバック）
     let mut card_date_mode = String::new();
     let mut card_date_auto_style = String::new();
@@ -630,6 +635,7 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
                 "redecode_on_resize" => { redecode_on_resize = v.trim().parse().ok(); }
                 "show_hidden" => { show_hidden = v.trim().parse().ok(); }
                 "card_info_mode" => { card_info_mode = Some(v.trim().to_string()); }
+                "card_rating_mode" => { card_rating_mode = Some(v.trim().to_string()); }
                 "card_date_mode" => { card_date_mode = v.trim().to_string(); }
                 "card_date_auto_style" => { card_date_auto_style = v.trim().to_string(); }
                 "card_date_order" => { card_date_order = v.trim().to_string(); }
@@ -891,6 +897,7 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
         },
         show_hidden: show_hidden.unwrap_or(false),
         card_info_mode: card_info_mode.unwrap_or_else(|| "off".to_string()),
+        card_rating_mode: card_rating_mode.unwrap_or_else(|| "off".to_string()),
         card_date_format: CardDateFormat::from_state(
             &card_date_mode,
             &card_date_auto_style,
@@ -954,15 +961,15 @@ fn magnifier_state_lines(m: &crate::magnifier::MagnifierConfig) -> String {
     lines
 }
 
-pub fn save_state(root: &Path, dir: &Path, window_size: (u32, u32), viewer_slots: &[Option<WindowSlot>; 4], sort_state: &SortState, lang: &str, viewer_cfg: &ViewerConfig, show_hidden: bool, card_info_mode: &str, card_date_format: &CardDateFormat, app_cfg: &AppConfig, translate_cfg: &TranslateConfig, tab_positions: &TabPositions, tree_sorts: &crate::tree_sort::TreeSorts) {
+pub fn save_state(root: &Path, dir: &Path, window_size: (u32, u32), viewer_slots: &[Option<WindowSlot>; 4], sort_state: &SortState, lang: &str, viewer_cfg: &ViewerConfig, show_hidden: bool, card_info_mode: &str, card_rating_mode: &str, card_date_format: &CardDateFormat, app_cfg: &AppConfig, translate_cfg: &TranslateConfig, tab_positions: &TabPositions, tree_sorts: &crate::tree_sort::TreeSorts) {
     let _ = std::fs::create_dir_all(root);
     let (path, bak, tmp) = (state_path(root), state_bak_path(root), state_tmp_path(root));
 
     let mut content = format!(
-        "last_dir={}\nwindow_width={}\nwindow_height={}\nsort_key={}\nsort_ascending={}\nlang={}\nviewer_zoom={}\nviewer_fullscreen={}\nredecode_on_resize={}\nresize_debounce_ms={}\nshow_hidden={}\ncard_info_mode={}\n",
+        "last_dir={}\nwindow_width={}\nwindow_height={}\nsort_key={}\nsort_ascending={}\nlang={}\nviewer_zoom={}\nviewer_fullscreen={}\nredecode_on_resize={}\nresize_debounce_ms={}\nshow_hidden={}\ncard_info_mode={}\ncard_rating_mode={}\n",
         dir.to_string_lossy(), window_size.0, window_size.1, sort_state.key, sort_state.ascending, lang,
         viewer_cfg.zoom_actual, viewer_cfg.fullscreen,
-        viewer_cfg.redecode_on_resize, viewer_cfg.resize_debounce_ms, show_hidden, card_info_mode,
+        viewer_cfg.redecode_on_resize, viewer_cfg.resize_debounce_ms, show_hidden, card_info_mode, card_rating_mode,
     );
     // フォルダ系タブ（お気に入り・検索・仮想フォルダ）の最後の位置（Some のものだけ）
     content.push_str(&tab_positions.state_lines());
@@ -1314,6 +1321,22 @@ mod tests {
         let config = ViewerConfig::default();
         assert!(!config.zoom_actual);
         assert!(config.redecode_on_resize);
+    }
+
+    #[test]
+    fn card_rating_mode_key_round_trips_and_defaults_to_off() {
+        let root = std::env::temp_dir()
+            .join(format!("nekoviewer_state_rating_test_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&root);
+        std::fs::write(state_path(&root), "last_dir=/tmp/x\nlang=ja\ncard_rating_mode=stars_visits\n").unwrap();
+        let parsed = parse_state_file(&state_path(&root)).expect("state file parses");
+        assert_eq!(parsed.card_rating_mode, "stars_visits");
+
+        // 旧stateにキーがなければ off
+        std::fs::write(state_path(&root), "last_dir=/tmp/x\nlang=ja\n").unwrap();
+        let parsed = parse_state_file(&state_path(&root)).expect("state file parses");
+        assert_eq!(parsed.card_rating_mode, "off");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

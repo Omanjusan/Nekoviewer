@@ -114,6 +114,38 @@ impl Lang {
         }
     }
 
+    pub fn card_rating_off(self) -> &'static str {
+        match self {
+            Lang::Japanese => "情報2:OFF",
+            Lang::English  => "Info2: Off",
+            Lang::Chinese  => "信息2:关",
+        }
+    }
+
+    pub fn card_rating_stars(self) -> &'static str {
+        match self {
+            Lang::Japanese => "情報2:★",
+            Lang::English  => "Info2: ★",
+            Lang::Chinese  => "信息2:★",
+        }
+    }
+
+    pub fn card_rating_visits(self) -> &'static str {
+        match self {
+            Lang::Japanese => "情報2:回数",
+            Lang::English  => "Info2: Visits",
+            Lang::Chinese  => "信息2:次数",
+        }
+    }
+
+    pub fn card_rating_stars_visits(self) -> &'static str {
+        match self {
+            Lang::Japanese => "情報2:★+回数",
+            Lang::English  => "Info2: ★+Visits",
+            Lang::Chinese  => "信息2:★+次数",
+        }
+    }
+
     pub fn rotate_ccw(self) -> &'static str {
         match self {
             Lang::Japanese => "反時計回りに回転",

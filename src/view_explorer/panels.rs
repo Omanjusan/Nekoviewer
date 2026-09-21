@@ -243,6 +243,10 @@ impl NekoviewApp {
                 self.card_info_mode = self.card_info_mode.next();
                 self.persist_state();
             }
+            MenuBarButton::CardRatingToggle => {
+                self.card_rating_mode = self.card_rating_mode.next();
+                self.persist_state();
+            }
             MenuBarButton::StatusToggle => {
                 self.show_status_window = !self.show_status_window;
             }
@@ -323,6 +327,20 @@ impl NekoviewApp {
             if is_cursor(MenuBarButton::CardInfoToggle) { draw_cursor_ring(ui, r_info.rect); }
             if r_info.clicked() {
                 self.card_info_mode = self.card_info_mode.next();
+                self.persist_state();
+            }
+
+            // ── 評価帯（info2）の循環トグル（1ボタン） ─────────────────────
+            let rating_label = match self.card_rating_mode {
+                CardRatingMode::Off => i18n::t().card_rating_off(),
+                CardRatingMode::Stars => i18n::t().card_rating_stars(),
+                CardRatingMode::Visits => i18n::t().card_rating_visits(),
+                CardRatingMode::StarsVisits => i18n::t().card_rating_stars_visits(),
+            };
+            let r_rating = ui.button(rating_label);
+            if is_cursor(MenuBarButton::CardRatingToggle) { draw_cursor_ring(ui, r_rating.rect); }
+            if r_rating.clicked() {
+                self.card_rating_mode = self.card_rating_mode.next();
                 self.persist_state();
             }
 

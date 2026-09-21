@@ -359,6 +359,7 @@ impl WinitApp {
             state.viewer_cfg,
             state.show_hidden,
             &state.card_info_mode,
+            &state.card_rating_mode,
             state.card_date_format,
             state.translate_cfg,
             state.tab_positions,
