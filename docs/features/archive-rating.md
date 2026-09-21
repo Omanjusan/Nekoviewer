@@ -62,6 +62,22 @@
   同じアーカイブ内のページ送りは数えないが、ビューア内のファイル移動（前後のファイルへ）は開くたびに数える
 - 記録は評価とは独立した項目。訪問だけがあって未評価のレコードが正常な状態
 
+## 評価順・訪問回数順のソート
+
+- メニューバーのソート軸は独立した2セット。`[名前][日付][サイズ] : [昇降] │ [スコア][訪問回数] : [昇降]`
+  （[explorer_sort.rs](../../src/explorer_sort.rs)）
+  - 第1セット（名前・日付・サイズ）は常に有効。従来どおりの並び
+  - 第2セット（スコア・訪問回数）は既定OFF。押し下げ中の軸をもう一度押すとOFF、もう一方を押すと切り替わる（排他）
+- 第2セットがONの間は、それが主軸になり、同順位を第1セットで並べる（例: スコア降順＋名前昇順）。
+  昇降は各セット独立。第2セットがOFFの間、その昇降ボタンはグレーアウト（キーボード移動でも飛ばす）
+- 未評価と一度も開いていないもの（レコード不在）は、スコア0・訪問回数0として並べる
+- 初期の向きは降順（高い順・多い順）。ON/OFFと向きは state（`rating_sort_key` = off/score/visits、
+  `rating_sort_ascending`）に保存する。旧stateや壊れた値はOFF・降順
+- お気に入りの先頭固定は従来どおり最優先。フォルダカードは第1セットだけで並べる（第2セットは無視）
+- 横断一覧（お気に入り・検索結果）を評価で並べるときは、評価をフォルダ単位でまとめて取り込む
+- 並び直しのタイミング: ソート操作時とスキャン時。ビューアーで評価・訪問が変わっても表示中は並べ替えず、
+  ビューアーを閉じたときに再ソートする。選択・複数選択・カーソルは同じファイルを指し直す
+
 ## 保存（DB）
 
 保存先は `nekoviewer_spread.redb`（[spread_state.rs](../../src/spread_state.rs)）。
@@ -80,7 +96,7 @@ archive_rating_v1: &str -> (u8, u32, i64)
 
 ## 将来の拡張（未実装）
 
-- 評価順・訪問回数順のソート、NEW（レコード不在）の絞り込み。データは既に持っている
+- NEW（レコード不在）の絞り込み。データは既に持っている
 - 評価フィルタ・評価帯をキーボードから操作する導線（現状、評価コンボはマウス操作のみ）
 
 ## 実装の置き場
@@ -89,10 +105,11 @@ archive_rating_v1: &str -> (u8, u32, i64)
 |---|---|
 | 星の描画・オーバーレイ・クリック→半星値 | [rating_overlay.rs](../../src/rating_overlay.rs) |
 | フィルタ条件（`RatingFilter`） | [rating_filter.rs](../../src/rating_filter.rs) |
+| ソート比較（`ExplorerSort` / `RatingSort`） | [explorer_sort.rs](../../src/explorer_sort.rs) |
 | DBテーブル・訪問/評価の読み書き | [spread_state.rs](../../src/spread_state.rs) |
 | 評価の保存要求（`RatingSaveAction`） | [controller.rs](../../src/controller.rs) |
 | ビューアの状態とオーバーレイ描画 | [view_reader.rs](../../src/view_reader.rs) |
 | 保存の反映・訪問カウント・キャッシュ更新 | [viewer_host.rs](../../src/view_explorer/viewer_host.rs) |
 | `CardRatingMode`・メニューボタン | [view_explorer/mod.rs](../../src/view_explorer/mod.rs) |
 | 帯の描画・フィルタ行 | [panels.rs](../../src/view_explorer/panels.rs) |
-| キャッシュの一括ロード・絞り込み | [scan.rs](../../src/view_explorer/scan.rs) |
+| キャッシュの一括ロード・絞り込み・ソート（`sort_archives`）・ビューアー閉じ後の再ソート | [scan.rs](../../src/view_explorer/scan.rs) |

@@ -65,6 +65,7 @@ impl NekoviewApp {
         self.flush_current_sort_if_changed();
         self.flush_current_bookmark_if_enabled();
         *self.viewer.lock().unwrap() = None;
+        self.resort_after_viewer_close();
     }
 
     /// OCR/翻訳子ウィンドウが開いているか（winit_app が窓の生成/破棄判定に使う）。
@@ -582,6 +583,7 @@ impl NekoviewApp {
             self.flush_current_sort_if_changed();
             self.flush_current_bookmark_if_enabled();
             *self.viewer.lock().unwrap() = None;
+            self.resort_after_viewer_close();
             controller::request_status_update(&self.status_update_requested);
             self.egui_ctx.request_repaint();
         } else if had_nav {

@@ -43,6 +43,12 @@ fn take_allowed_thumbnail(
     queue.remove(pos)
 }
 
+/// 並び替え前のインデックス → 同じパスの並び替え後のインデックス（消えたパスは含まない）
+fn index_remap(before: &[PathBuf], after: &[PathBuf]) -> HashMap<usize, usize> {
+    let new_index: HashMap<&PathBuf, usize> = after.iter().enumerate().map(|(i, p)| (p, i)).collect();
+    before.iter().enumerate().filter_map(|(i, p)| Some((i, *new_index.get(p)?))).collect()
+}
+
 /// `sort_archives` が比較用に集めた1件ぶんの値
 struct SortEntry {
     path: PathBuf,
@@ -828,6 +834,34 @@ impl NekoviewApp {
     }
 
     pub(super) fn sort_archives(&mut self) {
+        self.sort_archives_only();
+        self.recompute_filter();
+    }
+
+    /// ビューアーを閉じた直後の再ソート。評価・訪問はビューア中に変わるので、スコア／訪問回数が
+    /// 主軸のときだけ並びを作り直し、選択・複数選択・グリッドカーソルは同じファイルを指し直す
+    /// （ビューア表示中に並べ替えると、選択枠や前後ファイル移動がずれるためここまで待つ）。
+    pub(super) fn resort_after_viewer_close(&mut self) {
+        if !self.explorer_sort().needs_rating() {
+            return;
+        }
+        let before = self.archives.clone();
+        self.sort_archives_only();
+
+        let remap = index_remap(&before, &self.archives);
+        let moved = |i: usize| remap.get(&i).copied();
+        self.selected_archive_index = self.selected_archive_index.and_then(moved);
+        self.select_anchor = self.select_anchor.and_then(moved);
+        self.multi_selected = self.multi_selected.iter().filter_map(|&i| moved(i)).collect();
+        if let Some(GridEntry::Archive(i)) = self.grid_cursor {
+            self.grid_cursor = moved(i).map(GridEntry::Archive);
+        }
+        // 選択インデックスを付け直した後にフィルタを作り直す（先にやると古いインデックスで選択が飛ぶ）
+        self.recompute_filter();
+    }
+
+    /// archives をソート条件どおりに並べ替える（フィルタの作り直しは呼び出し側）。
+    fn sort_archives_only(&mut self) {
         let sort = self.explorer_sort();
         if sort.needs_rating() {
             self.preload_archive_ratings();
@@ -860,7 +894,6 @@ impl NekoviewApp {
         }).collect();
         entries.sort_by(|a, b| b.fav.cmp(&a.fav).then_with(|| sort.compare(&a.row(), &b.row())));
         self.archives = entries.into_iter().map(|e| e.path).collect();
-        self.recompute_filter();
     }
 
     /// フィルタ文字列・ON/OFF・archives の並び替えのいずれかが変わった時に呼び、
@@ -1022,5 +1055,29 @@ mod thumbnail_queue_tests {
             take_allowed_thumbnail(&mut queue, &queued, &missing, true, true, false),
             Some(local_missing),
         );
+    }
+}
+
+#[cfg(test)]
+mod index_remap_tests {
+    use super::*;
+
+    fn paths(names: &[&str]) -> Vec<PathBuf> {
+        names.iter().map(PathBuf::from).collect()
+    }
+
+    #[test]
+    fn indices_follow_the_same_path_after_reordering() {
+        let remap = index_remap(&paths(&["a", "b", "c"]), &paths(&["c", "a", "b"]));
+        assert_eq!(remap[&0], 1);
+        assert_eq!(remap[&1], 2);
+        assert_eq!(remap[&2], 0);
+    }
+
+    #[test]
+    fn vanished_paths_are_dropped() {
+        let remap = index_remap(&paths(&["a", "b"]), &paths(&["b"]));
+        assert_eq!(remap.get(&0), None);
+        assert_eq!(remap[&1], 0);
     }
 }
