@@ -441,6 +441,7 @@ impl NekoviewApp {
                     .into_iter()
                     .collect();
                 crate::spread_state::bookmark_gc_dir(&db, &self.current_dir, &filenames);
+                crate::spread_state::archive_rating_gc_dir(&db, &self.current_dir, &filenames);
             } else {
                 self.spread_states.clear();
                 self.archive_sort_states.clear();

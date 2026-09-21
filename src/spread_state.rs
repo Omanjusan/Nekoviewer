@@ -41,6 +41,18 @@ pub const THUMBNAIL_SELECTION_TABLE_V2: TableDefinition<&str, (&str, u8)> =
 pub const BOOKMARK_TABLE_V1: TableDefinition<&str, (bool, &str, i64, i64)> =
     TableDefinition::new("bookmark_state_v1");
 
+/// アーカイブ単位の評価・訪問記録テーブル（第1世代）。
+///
+/// キーは他テーブルと同じ「正規化済みディレクトリ\0ファイル名」。
+/// 値は (rating_half, visit_count, last_visit_at)。
+/// rating_half は半星単位（0=未評価 / 1..=10=★0.5〜★5.0）、last_visit_at は unix秒。
+/// レコード不在は「一度も開いていない（NEW）」を表し、評価と訪問回数は独立した項目
+/// （訪問だけがあって未評価のレコードが正常な状態）。
+/// 値形式を将来変更する場合はこの定義を変更せず、`archive_rating_v2` のような
+/// 新しいテーブルを追加して移行すること（thumbnail_selection方式を踏襲）。
+pub const ARCHIVE_RATING_TABLE_V1: TableDefinition<&str, (u8, u32, i64)> =
+    TableDefinition::new("archive_rating_v1");
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ThumbnailSourceKind {
     Full,
@@ -82,6 +94,17 @@ pub struct BookmarkState {
     pub archive_mtime: i64,
 }
 
+/// アーカイブ単位の評価・訪問記録。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub struct ArchiveRating {
+    /// 半星単位（0=未評価 / 1..=10）
+    pub rating_half: u8,
+    /// 開いた回数
+    pub visit_count: u32,
+    /// 最終訪問日時（unix秒。0=記録なし）
+    pub last_visit_at: i64,
+}
+
 /// サムネイル上の保存設定表示に必要な、アーカイブ単位の状態。
 #[derive(Clone, Copy, PartialEq, Default)]
 pub struct SavedArchiveSettings {
@@ -104,6 +127,7 @@ pub fn open_spread_db(root: &Path) -> Option<Arc<Mutex<Database>>> {
         tx.open_table(THUMBNAIL_SELECTION_TABLE_V1).ok()?;
         tx.open_table(THUMBNAIL_SELECTION_TABLE_V2).ok()?;
         tx.open_table(BOOKMARK_TABLE_V1).ok()?;
+        tx.open_table(ARCHIVE_RATING_TABLE_V1).ok()?;
         tx.commit().ok()?;
     }
     Some(Arc::new(Mutex::new(db)))
@@ -578,6 +602,113 @@ pub fn bookmark_gc_dir(db: &Arc<Mutex<Database>>, dir: &Path, existing_filenames
     stale.len()
 }
 
+/// 評価の半星値の上限（★5.0）。これを超える値は上限へ丸める。
+pub const RATING_HALF_MAX: u8 = 10;
+
+fn decode_rating(value: (u8, u32, i64)) -> ArchiveRating {
+    ArchiveRating {
+        rating_half: value.0.min(RATING_HALF_MAX),
+        visit_count: value.1,
+        last_visit_at: value.2,
+    }
+}
+
+/// アーカイブを開いたことを記録する（訪問回数+1・最終訪問日時を更新）。
+/// レコード不在なら未評価・1回目で新規作成し、既存の評価は変更しない。
+pub fn record_archive_visit(db: &Arc<Mutex<Database>>, dir: &Path, filename: &str) -> bool {
+    let key = make_key(dir, filename);
+    let Ok(db) = db.lock() else { return false };
+    let Ok(tx) = db.begin_write() else { return false };
+    let ok = {
+        let Ok(mut table) = tx.open_table(ARCHIVE_RATING_TABLE_V1) else { return false };
+        let current = table.get(key.as_str()).ok().flatten().map(|v| decode_rating(v.value()));
+        let next = match current {
+            Some(r) => ArchiveRating {
+                visit_count: r.visit_count.saturating_add(1),
+                last_visit_at: unix_timestamp_secs(),
+                ..r
+            },
+            None => ArchiveRating { rating_half: 0, visit_count: 1, last_visit_at: unix_timestamp_secs() },
+        };
+        table.insert(key.as_str(), (next.rating_half, next.visit_count, next.last_visit_at)).is_ok()
+    };
+    tx.commit().is_ok() && ok
+}
+
+/// 評価を絶対値で書き込む（0=未評価に戻す）。何度呼んでも同じ結果になる（冪等）。
+/// 上限超過は★5.0へ丸める。訪問回数・最終訪問日時は変更せず、レコード不在なら
+/// 訪問0回で新規作成する。
+pub fn write_archive_rating(db: &Arc<Mutex<Database>>, dir: &Path, filename: &str, rating_half: u8) -> bool {
+    let key = make_key(dir, filename);
+    let rating_half = rating_half.min(RATING_HALF_MAX);
+    let Ok(db) = db.lock() else { return false };
+    let Ok(tx) = db.begin_write() else { return false };
+    let ok = {
+        let Ok(mut table) = tx.open_table(ARCHIVE_RATING_TABLE_V1) else { return false };
+        let current = table.get(key.as_str()).ok().flatten().map(|v| decode_rating(v.value()));
+        let next = ArchiveRating { rating_half, ..current.unwrap_or_default() };
+        table.insert(key.as_str(), (next.rating_half, next.visit_count, next.last_visit_at)).is_ok()
+    };
+    tx.commit().is_ok() && ok
+}
+
+/// 評価・訪問記録を返す。レコード不在（一度も開いていない）は None。
+pub fn read_archive_rating(db: &Arc<Mutex<Database>>, dir: &Path, filename: &str) -> Option<ArchiveRating> {
+    let key = make_key(dir, filename);
+    let db = db.lock().ok()?;
+    let tx = db.begin_read().ok()?;
+    let table = tx.open_table(ARCHIVE_RATING_TABLE_V1).ok()?;
+    let value = table.get(key.as_str()).ok()??;
+    Some(decode_rating(value.value()))
+}
+
+/// 評価・訪問レコードを完全に削除する（GC用）。
+pub fn remove_archive_rating(db: &Arc<Mutex<Database>>, dir: &Path, filename: &str) {
+    let key = make_key(dir, filename);
+    let Ok(db) = db.lock() else { return };
+    let Ok(tx) = db.begin_write() else { return };
+    if let Ok(mut table) = tx.open_table(ARCHIVE_RATING_TABLE_V1) {
+        let _ = table.remove(key.as_str());
+    }
+    let _ = tx.commit();
+}
+
+/// dir 配下の評価・訪問記録を一括で返す（サムネ帯・フィルタ・GC用）。戻り値: (filename, ArchiveRating)
+pub fn list_dir_archive_ratings(db: &Arc<Mutex<Database>>, dir: &Path) -> Vec<(String, ArchiveRating)> {
+    let prefix = {
+        let key = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
+        format!("{}\0", key.to_string_lossy())
+    };
+    let Ok(db) = db.lock() else { return Vec::new() };
+    let Ok(tx) = db.begin_read() else { return Vec::new() };
+    let Ok(table) = tx.open_table(ARCHIVE_RATING_TABLE_V1) else { return Vec::new() };
+    let Ok(range) = table.range(prefix.as_str()..) else { return Vec::new() };
+    let mut out = Vec::new();
+    for entry in range {
+        let Ok((k, v)) = entry else { continue };
+        let full_key = k.value();
+        if !full_key.starts_with(&prefix) {
+            break;
+        }
+        let filename = &full_key[prefix.len()..];
+        out.push((filename.to_string(), decode_rating(v.value())));
+    }
+    out
+}
+
+/// dir 配下で existing_filenames に存在しない評価レコードを削除する（GC）。削除件数を返す。
+pub fn archive_rating_gc_dir(db: &Arc<Mutex<Database>>, dir: &Path, existing_filenames: &[String]) -> usize {
+    let stale: Vec<String> = list_dir_archive_ratings(db, dir)
+        .into_iter()
+        .map(|(name, _)| name)
+        .filter(|name| !existing_filenames.contains(name))
+        .collect();
+    for name in &stale {
+        remove_archive_rating(db, dir, name);
+    }
+    stale.len()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -605,6 +736,7 @@ mod tests {
             tx.open_table(ARCHIVE_SORT_TABLE_V1).unwrap();
             tx.open_table(THUMBNAIL_SELECTION_TABLE_V1).unwrap();
             tx.open_table(BOOKMARK_TABLE_V1).unwrap();
+            tx.open_table(ARCHIVE_RATING_TABLE_V1).unwrap();
             tx.commit().unwrap();
         }
         Arc::new(Mutex::new(db))
@@ -938,5 +1070,127 @@ mod tests {
         assert_eq!(bookmark_gc_dir(&db, &dir, &["keep.zip".to_string()]), 1);
         assert!(read_bookmark(&db, &dir, "keep.zip").is_some());
         assert!(read_bookmark(&db, &dir, "stale.zip").is_none());
+    }
+    #[test]
+    fn rating_record_is_absent_until_the_first_visit_or_rating() {
+        let db = temp_db();
+        let dir = unique_temp_path("rating_absent");
+        assert_eq!(read_archive_rating(&db, &dir, "book.zip"), None, "NEW（未訪問）はレコード不在");
+    }
+
+    #[test]
+    fn first_visit_creates_an_unrated_record_and_later_visits_count_up() {
+        let db = temp_db();
+        let dir = unique_temp_path("rating_visit");
+        assert!(record_archive_visit(&db, &dir, "book.zip"));
+        let first = read_archive_rating(&db, &dir, "book.zip").unwrap();
+        assert_eq!(first.rating_half, 0, "訪問だけでは未評価のまま");
+        assert_eq!(first.visit_count, 1);
+        assert!(first.last_visit_at > 0);
+
+        record_archive_visit(&db, &dir, "book.zip");
+        record_archive_visit(&db, &dir, "book.zip");
+        assert_eq!(read_archive_rating(&db, &dir, "book.zip").unwrap().visit_count, 3);
+    }
+
+    #[test]
+    fn visit_keeps_the_rating_and_rating_keeps_the_visit_count() {
+        let db = temp_db();
+        let dir = unique_temp_path("rating_independent");
+        record_archive_visit(&db, &dir, "book.zip");
+        record_archive_visit(&db, &dir, "book.zip");
+        assert!(write_archive_rating(&db, &dir, "book.zip", 7));
+
+        let r = read_archive_rating(&db, &dir, "book.zip").unwrap();
+        assert_eq!((r.rating_half, r.visit_count), (7, 2), "評価書込みは訪問回数に触れない");
+
+        record_archive_visit(&db, &dir, "book.zip");
+        let r = read_archive_rating(&db, &dir, "book.zip").unwrap();
+        assert_eq!((r.rating_half, r.visit_count), (7, 3), "訪問記録は評価に触れない");
+    }
+
+    #[test]
+    fn rating_write_is_idempotent_and_overwrites_by_absolute_value() {
+        let db = temp_db();
+        let dir = unique_temp_path("rating_idempotent");
+        record_archive_visit(&db, &dir, "book.zip");
+        for _ in 0..5 {
+            assert!(write_archive_rating(&db, &dir, "book.zip", 5));
+        }
+        let r = read_archive_rating(&db, &dir, "book.zip").unwrap();
+        assert_eq!((r.rating_half, r.visit_count), (5, 1), "連打しても値・訪問回数は変わらない");
+
+        write_archive_rating(&db, &dir, "book.zip", 9);
+        assert_eq!(read_archive_rating(&db, &dir, "book.zip").unwrap().rating_half, 9, "位置を変えて押し直せば上書き");
+    }
+
+    #[test]
+    fn writing_zero_resets_to_unrated_but_keeps_the_record() {
+        let db = temp_db();
+        let dir = unique_temp_path("rating_unset");
+        record_archive_visit(&db, &dir, "book.zip");
+        write_archive_rating(&db, &dir, "book.zip", 8);
+        write_archive_rating(&db, &dir, "book.zip", 0);
+        write_archive_rating(&db, &dir, "book.zip", 0); // 既に未評価でも成功する
+        let r = read_archive_rating(&db, &dir, "book.zip").unwrap();
+        assert_eq!((r.rating_half, r.visit_count), (0, 1));
+    }
+
+    #[test]
+    fn rating_write_without_prior_record_creates_it_with_zero_visits() {
+        let db = temp_db();
+        let dir = unique_temp_path("rating_no_visit");
+        assert!(write_archive_rating(&db, &dir, "book.zip", 4));
+        let r = read_archive_rating(&db, &dir, "book.zip").unwrap();
+        assert_eq!((r.rating_half, r.visit_count, r.last_visit_at), (4, 0, 0));
+    }
+
+    #[test]
+    fn rating_above_max_is_clamped_to_five_stars() {
+        let db = temp_db();
+        let dir = unique_temp_path("rating_clamp");
+        write_archive_rating(&db, &dir, "book.zip", 200);
+        assert_eq!(read_archive_rating(&db, &dir, "book.zip").unwrap().rating_half, RATING_HALF_MAX);
+    }
+
+    #[test]
+    fn rating_records_are_independent_by_actual_parent_directory() {
+        let db = temp_db();
+        let dir = unique_temp_path("rating_dir");
+        let other_dir = unique_temp_path("rating_other_dir");
+        write_archive_rating(&db, &dir, "book.zip", 3);
+        write_archive_rating(&db, &other_dir, "book.zip", 9);
+        assert_eq!(read_archive_rating(&db, &dir, "book.zip").unwrap().rating_half, 3);
+        assert_eq!(read_archive_rating(&db, &other_dir, "book.zip").unwrap().rating_half, 9);
+
+        remove_archive_rating(&db, &dir, "book.zip");
+        assert!(read_archive_rating(&db, &dir, "book.zip").is_none());
+        assert!(read_archive_rating(&db, &other_dir, "book.zip").is_some());
+    }
+
+    #[test]
+    fn list_dir_archive_ratings_returns_only_that_directory() {
+        let db = temp_db();
+        let dir = unique_temp_path("rating_list");
+        let other_dir = unique_temp_path("rating_list_other");
+        record_archive_visit(&db, &dir, "a.zip");
+        write_archive_rating(&db, &dir, "b.zip", 10);
+        write_archive_rating(&db, &other_dir, "c.zip", 2);
+
+        let mut names: Vec<String> = list_dir_archive_ratings(&db, &dir).into_iter().map(|(n, _)| n).collect();
+        names.sort();
+        assert_eq!(names, vec!["a.zip".to_string(), "b.zip".to_string()]);
+    }
+
+    #[test]
+    fn archive_rating_gc_removes_only_missing_files() {
+        let db = temp_db();
+        let dir = dummy_dir();
+        record_archive_visit(&db, &dir, "keep.zip");
+        record_archive_visit(&db, &dir, "stale.zip");
+
+        assert_eq!(archive_rating_gc_dir(&db, &dir, &["keep.zip".to_string()]), 1);
+        assert!(read_archive_rating(&db, &dir, "keep.zip").is_some());
+        assert!(read_archive_rating(&db, &dir, "stale.zip").is_none());
     }
 }
