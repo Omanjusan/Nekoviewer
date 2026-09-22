@@ -871,6 +871,12 @@ pub struct NekoviewApp {
     pub(crate) tree_sorts: crate::tree_sort::TreeSorts,
     /// ツリーの「ソート条件設定」ダイアログ。
     tree_sort_dialog: Option<tree_sort_ui::TreeSortDialog>,
+    /// タグ機能・レイアウト器: 右タグパネルの開閉状態。
+    pub(crate) tag_panel_open: bool,
+    /// タグ機能・レイアウト器: 右タグパネルの幅（開いている時、自由リサイズ対象）。
+    pub(crate) tag_panel_width: f32,
+    /// タグ機能・レイアウト器: タグパネルの編集モード展開状態（上側ツマミでさらに中央側へ拡張）。
+    pub(crate) tag_panel_edit_expanded: bool,
     /// 接続テストの進行中受信チャンネル（ダイアログを閉じたら破棄）。
     pub(crate) translate_conn_rx: Option<mpsc::Receiver<crate::translate::ConnCheckMsg>>,
     /// 直近の接続テスト結果表示用（疎通/vision結果の文字列、または失敗理由）。
@@ -1239,6 +1245,9 @@ impl NekoviewApp {
             tab_positions,
             tree_sorts,
             tree_sort_dialog: None,
+            tag_panel_open: false,
+            tag_panel_width: 280.0,
+            tag_panel_edit_expanded: false,
             translate_conn_rx: None,
             translate_conn_status: None,
             translate_conn_verified: false,

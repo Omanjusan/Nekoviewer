@@ -22,6 +22,19 @@ const SAVED_SETTING_MARKER_SIZE: f32 = 17.0;
 const SAVED_SETTING_MARKER_SLOT_H: f32 = 21.0;
 const SAVED_SETTING_MARKER_MARGIN: f32 = 4.0;
 
+/// タグ機能・レイアウト器: 右タグパネルを折りたたんだ時に残す、
+/// 展開ツマミぶんだけの幅。
+const PANEL_TAB_WIDTH: f32 = 32.0;
+/// タグパネル: D&Dリサイズ時の最小/最大幅。開閉ボタンとは独立した機構で、
+/// どれだけ幅を詰めても自動で折りたたみには切り替わらない。
+const TAG_PANEL_MIN_WIDTH: f32 = 180.0;
+const TAG_PANEL_MAX_WIDTH: f32 = 600.0;
+const TAG_PANEL_HANDLE_WIDTH: f32 = 6.0;
+/// D&Dハンドルの実際の当たり判定・見た目の高さ（縦方向中央に配置）。
+const TAG_PANEL_HANDLE_HEIGHT: f32 = 56.0;
+/// タグパネルのサムネプレビューが伸びられる縦幅の上限。
+const TAG_PANEL_PREVIEW_MAX_HEIGHT: f32 = 500.0;
+
 fn favorite_marker_layout(cell_h: f32, has_error_marker: bool) -> (f32, usize) {
     let top = THUMB_MARKER_TOP
         + if has_error_marker {
@@ -120,6 +133,36 @@ impl NekoviewApp {
                 })
                 .show(ui, |ui| {
                     self.draw_folder_panel(ui);
+                });
+        }
+
+        {
+            let style_clone = ui.style().clone();
+            let open = self.tag_panel_open;
+            egui::Panel::right("tag_panel")
+                .exact_size(if open { self.tag_panel_width } else { PANEL_TAB_WIDTH })
+                // 自前のD&Dハンドル(draw_tag_panel_resize_handle)と競合するため、
+                // egui組み込みのリサイズ機構は使わない。
+                .resizable(false)
+                .frame({
+                    let mut f = egui::Frame::side_top_panel(&style_clone);
+                    f.inner_margin.left = 0;
+                    f
+                })
+                .show(ui, |ui| {
+                    if open {
+                        ui.horizontal(|ui| {
+                            self.draw_tag_panel_resize_handle(ui);
+                            ui.vertical(|ui| {
+                                if ui.button("▶").clicked() {
+                                    self.tag_panel_open = false;
+                                }
+                                self.draw_tag_panel(ui);
+                            });
+                        });
+                    } else {
+                        self.draw_tag_panel_collapsed(ui);
+                    }
                 });
         }
 
@@ -550,6 +593,98 @@ impl NekoviewApp {
                 FolderPaneTab::RealTree | FolderPaneTab::Search => {}
             }
         }
+    }
+
+    /// タグパネル: 展開中の左端に置くD&Dリサイズハンドル。開閉ボタン（▶）とは独立した
+    /// 機構で、ここをドラッグしても格納状態には影響しない。
+    fn draw_tag_panel_resize_handle(&mut self, ui: &mut egui::Ui) {
+        // レイアウト確保用に縦幅いっぱいの領域を取っておき、実際のドラッグ判定・
+        // 見た目のグリップはその中央だけに短く配置する。
+        let total_height = ui.available_height();
+        let (full_rect, _) = ui.allocate_exact_size(
+            egui::vec2(TAG_PANEL_HANDLE_WIDTH, total_height),
+            egui::Sense::hover(),
+        );
+        let handle_height = TAG_PANEL_HANDLE_HEIGHT.min(total_height);
+        let handle_rect = egui::Rect::from_center_size(
+            full_rect.center(),
+            egui::vec2(TAG_PANEL_HANDLE_WIDTH, handle_height),
+        );
+        let response = ui.interact(
+            handle_rect,
+            ui.id().with("tag_panel_resize_handle"),
+            egui::Sense::drag(),
+        );
+        if response.dragged() {
+            self.tag_panel_width = (self.tag_panel_width - response.drag_delta().x)
+                .clamp(TAG_PANEL_MIN_WIDTH, TAG_PANEL_MAX_WIDTH);
+        }
+        if response.hovered() || response.dragged() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+        }
+        let visuals = ui.style().interact(&response);
+        ui.painter().rect_filled(handle_rect, 3.0, visuals.bg_fill);
+        let center = handle_rect.center();
+        for dy in [-6.0, 0.0, 6.0] {
+            ui.painter()
+                .circle_filled(center + egui::vec2(0.0, dy), 1.5, visuals.fg_stroke.color);
+        }
+    }
+
+    /// タグ機能・レイアウト器: 右タグパネルを閉じている時の中身（展開ツマミのみ）。
+    fn draw_tag_panel_collapsed(&mut self, ui: &mut egui::Ui) {
+        ui.vertical_centered(|ui| {
+            if ui.button("◀").clicked() {
+                self.tag_panel_open = true;
+            }
+        });
+    }
+
+    /// タグ機能・レイアウト器: 右タグパネルの中身（フェーズ1時点ではダミー表示のみ）。
+    fn draw_tag_panel(&mut self, ui: &mut egui::Ui) {
+        ui.add_space(10.0);
+        self.draw_tag_panel_preview(ui);
+        ui.add_space(4.0);
+        ui.label("タグ部（未実装）");
+        ui.separator();
+        let n = self.multi_selected.len();
+        if n > 0 {
+            ui.label(format!("選択中: {n}件"));
+        } else {
+            ui.label("選択中のファイルなし");
+        }
+    }
+
+    /// タグ機能・レイアウト器: 選択中サムネイルの拡大プレビュー。
+    /// 既存のグリッド用サムネイルキャッシュ(`self.thumbnails`)をそのまま
+    /// 幅基準で引き伸ばして表示する（フェーズA: 専用の高解像度取得はまだ無し）。
+    /// 選択が無い／サムネ未取得なら何も描画しない。
+    fn draw_tag_panel_preview(&mut self, ui: &mut egui::Ui) {
+        let Some(idx) = self.selected_archive_index else { return; };
+        let Some(path) = self.archives.get(idx).cloned() else { return; };
+        let Some(tex) = self.thumbnails.get(&path) else { return; };
+        let tex_size = tex.size_vec2();
+        if tex_size.x <= 0.0 || tex_size.y <= 0.0 {
+            return;
+        }
+        let avail_w = ui.available_width();
+        let mut scale = avail_w / tex_size.x;
+        // 縦長画像でタグ部内へ突き抜けないよう高さをキャップする。キャップにかかった
+        // 場合は横幅がパネル幅より狭くなるが、拡大はせず中央寄せのまま留める。
+        if tex_size.y * scale > TAG_PANEL_PREVIEW_MAX_HEIGHT {
+            scale = TAG_PANEL_PREVIEW_MAX_HEIGHT / tex_size.y;
+        }
+        let target_size = tex_size * scale;
+        let tex_id = tex.id();
+        ui.vertical_centered(|ui| {
+            let (rect, _) = ui.allocate_exact_size(target_size, egui::Sense::hover());
+            ui.painter().image(
+                tex_id,
+                rect,
+                egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                egui::Color32::WHITE,
+            );
+        });
     }
 
     fn draw_folder_panel(&mut self, ui: &mut egui::Ui) {
