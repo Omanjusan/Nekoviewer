@@ -621,6 +621,22 @@ struct RatingSettingDialogState {
     original_rating: Option<u8>,
 }
 
+/// タグマネージャー(フェーズTM1〜): カテゴリの仮UI状態。永続化スキーマは未確定で、
+/// タグマネージャー画面を動かすためのメモリ上ダミー状態として持つ。
+pub(crate) struct TagManagerCategoryUi {
+    pub(crate) name: String,
+    pub(crate) tiers: Vec<TagManagerTierUi>,
+}
+
+/// タグマネージャー(フェーズTM2): tier1件ぶんの仮UI状態。tierは常に末尾追加のみ
+/// （中間差し込み・並べ替えは今回のスコープ外）。
+pub(crate) struct TagManagerTierUi {
+    pub(crate) tier_no: i32,
+    /// negative境界以降のtierはtrue。スコア計算はフェーズ後日実装。
+    pub(crate) negative: bool,
+    pub(crate) elements: Vec<String>,
+}
+
 fn default_favorite_color() -> egui::Color32 {
     egui::Color32::from_rgb(255, 204, 0)
 }
@@ -901,9 +917,9 @@ pub struct NekoviewApp {
     /// タグマネージャー: CentralPanel＋右タグパネルの合成矩形（直近フレーム）。
     /// オーバーレイをこの範囲全体に重ねて表示するために使う。
     pub(crate) tag_manager_area_rect: egui::Rect,
-    /// タグマネージャー(フェーズTM1): カテゴリ名一覧。データモデルは未確定のため
-    /// 今はStringのみのダミー状態（tier/要素はTM2以降で追加）。
-    pub(crate) tag_manager_categories: Vec<String>,
+    /// タグマネージャー(フェーズTM1〜TM2): カテゴリ一覧（名前＋tierリスト）。
+    /// データモデルは未確定のためメモリ上ダミー状態。
+    pub(crate) tag_manager_categories: Vec<TagManagerCategoryUi>,
     /// タグマネージャー(フェーズTM1): 選択中カテゴリのインデックス。
     pub(crate) tag_manager_selected_category: Option<usize>,
     /// 接続テストの進行中受信チャンネル（ダイアログを閉じたら破棄）。
@@ -1295,7 +1311,17 @@ impl NekoviewApp {
             tag_attr_palette_open: false,
             tag_manager_open: false,
             tag_manager_area_rect: egui::Rect::NOTHING,
-            tag_manager_categories: ["画質", "内容"].into_iter().map(str::to_string).collect(),
+            tag_manager_categories: vec![
+                TagManagerCategoryUi {
+                    name: "画質".to_string(),
+                    tiers: vec![
+                        TagManagerTierUi { tier_no: 1, negative: false, elements: vec!["高解像度".to_string()] },
+                        TagManagerTierUi { tier_no: 2, negative: false, elements: vec!["普通の解像度".to_string()] },
+                        TagManagerTierUi { tier_no: 3, negative: true, elements: vec!["低解像度".to_string()] },
+                    ],
+                },
+                TagManagerCategoryUi { name: "内容".to_string(), tiers: Vec::new() },
+            ],
             tag_manager_selected_category: Some(0),
             translate_conn_rx: None,
             translate_conn_status: None,

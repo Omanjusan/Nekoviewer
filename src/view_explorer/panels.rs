@@ -900,31 +900,41 @@ impl NekoviewApp {
                     });
                     ui.separator();
 
-                    // フェーズTM1: 左カラム(カテゴリ一覧・追加/削除/選択)｜仕切り線｜右カラム(tier編集エリアはTM2)。
-                    ui.horizontal(|ui| {
-                        ui.allocate_ui_with_layout(
-                            egui::vec2(TAG_MANAGER_CATEGORY_COL_WIDTH, ui.available_height()),
-                            egui::Layout::top_down(egui::Align::Min),
-                            |ui| {
-                                self.draw_tag_manager_category_list(ui);
-                            },
-                        );
-                        ui.separator();
-                        ui.vertical(|ui| {
-                            match self
-                                .tag_manager_selected_category
-                                .and_then(|i| self.tag_manager_categories.get(i))
-                            {
-                                Some(name) => {
-                                    ui.label(format!("選択中カテゴリ: {name}"));
-                                    ui.label("（tier編集エリアはフェーズTM2で実装）");
-                                }
-                                None => {
-                                    ui.label("カテゴリを選択してください");
-                                }
-                            }
-                        });
-                    });
+                    // フェーズTM1/TM2: 左カラム(カテゴリ一覧)｜仕切り線｜右カラム(tier編集)。
+                    // horizontalは中身の実高さに合わせて縮むため、外枠の高さを先に確定して
+                    // 両カラムへ明示的に渡す（そうしないと右カラムのScrollAreaが左カラムの
+                    // 少ないコンテンツ高さに引っ張られて縮んでしまう）。
+                    let body_height = ui.available_height();
+                    let body_width = ui.available_width();
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(body_width, body_height),
+                        egui::Layout::left_to_right(egui::Align::Min),
+                        |ui| {
+                            ui.allocate_ui_with_layout(
+                                egui::vec2(TAG_MANAGER_CATEGORY_COL_WIDTH, body_height),
+                                egui::Layout::top_down(egui::Align::Min),
+                                |ui| {
+                                    self.draw_tag_manager_category_list(ui);
+                                },
+                            );
+                            ui.separator();
+                            let remaining_width = ui.available_width();
+                            ui.allocate_ui_with_layout(
+                                egui::vec2(remaining_width, body_height),
+                                egui::Layout::top_down(egui::Align::Min),
+                                |ui| {
+                                    let cat_idx = self.tag_manager_selected_category
+                                        .filter(|&i| i < self.tag_manager_categories.len());
+                                    match cat_idx {
+                                        Some(i) => self.draw_tag_manager_tier_list(ui, i),
+                                        None => {
+                                            ui.label("カテゴリを選択してください");
+                                        }
+                                    }
+                                },
+                            );
+                        },
+                    );
                 });
             });
     }
@@ -938,17 +948,20 @@ impl NekoviewApp {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.button("＋").clicked() {
                     let n = self.tag_manager_categories.len() + 1;
-                    self.tag_manager_categories.push(format!("新規カテゴリ{n}"));
+                    self.tag_manager_categories.push(TagManagerCategoryUi {
+                        name: format!("新規カテゴリ{n}"),
+                        tiers: Vec::new(),
+                    });
                     self.tag_manager_selected_category = Some(self.tag_manager_categories.len() - 1);
                 }
             });
         });
         ui.separator();
 
-        let categories = self.tag_manager_categories.clone();
+        let names: Vec<String> = self.tag_manager_categories.iter().map(|c| c.name.clone()).collect();
         let mut select_idx: Option<usize> = None;
         let mut delete_idx: Option<usize> = None;
-        for (i, name) in categories.iter().enumerate() {
+        for (i, name) in names.iter().enumerate() {
             let selected = self.tag_manager_selected_category == Some(i);
             ui.horizontal(|ui| {
                 if ui.selectable_label(selected, name).clicked() {
@@ -972,6 +985,81 @@ impl NekoviewApp {
                 Some(sel) if sel > i => Some(sel - 1),
                 other => other,
             };
+        }
+    }
+
+    /// タグマネージャー(フェーズTM2): 右カラムのtier一覧。tier番号順の固定表示
+    /// （並べ替え・中間差し込みは無し）。negative側は背景色で区別。最下段の
+    /// tierマスに「＋ティア追加」ボタンを持たせ、末尾に新tierを追加する。
+    /// 各tier行には要素名の一覧と「＋要素」ボタン（末尾に仮名の要素を追加）。
+    fn draw_tag_manager_tier_list(&mut self, ui: &mut egui::Ui, cat_idx: usize) {
+        let cat_name = self.tag_manager_categories[cat_idx].name.clone();
+        ui.label(format!("選択中カテゴリ: {cat_name}"));
+        ui.separator();
+
+        let tier_count = self.tag_manager_categories[cat_idx].tiers.len();
+        let mut add_element_tier: Option<usize> = None;
+        let mut add_tier = false;
+
+        // ティア・要素の描画エリアは残り高さの90%まで使ってよい（残り10%はマージン）。
+        // auto_shrinkがデフォルトtrueだと中身が少ない時にエリア自体が縮んでしまうため、
+        // 常にarea_height分の枠を確保するよう明示的にfalseにする。
+        let area_height = ui.available_height() * 0.9;
+        egui::ScrollArea::vertical()
+            .id_salt("tag_manager_tier_scroll")
+            .max_height(area_height)
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                for t_idx in 0..tier_count {
+                    let (tier_no, negative, elements) = {
+                        let tier = &self.tag_manager_categories[cat_idx].tiers[t_idx];
+                        (tier.tier_no, tier.negative, tier.elements.clone())
+                    };
+                    let bg = if negative {
+                        egui::Color32::from_rgba_unmultiplied(120, 40, 40, 60)
+                    } else {
+                        egui::Color32::from_rgba_unmultiplied(40, 90, 60, 40)
+                    };
+                    egui::Frame::default()
+                        .fill(bg)
+                        .inner_margin(6.0)
+                        .corner_radius(4.0)
+                        .show(ui, |ui| {
+                            ui.horizontal_wrapped(|ui| {
+                                let prefix = if negative {
+                                    format!("neg-tier{tier_no}")
+                                } else {
+                                    format!("tier{tier_no}")
+                                };
+                                ui.strong(prefix);
+                                for el in &elements {
+                                    ui.label(el);
+                                }
+                                if ui.small_button("＋要素").clicked() {
+                                    add_element_tier = Some(t_idx);
+                                }
+                                if t_idx == tier_count - 1 && ui.button("＋ティア追加").clicked() {
+                                    add_tier = true;
+                                }
+                            });
+                        });
+                    ui.add_space(4.0);
+                }
+                if tier_count == 0 && ui.button("＋ティア追加（最初のtier）").clicked() {
+                    add_tier = true;
+                }
+            });
+
+        if let Some(t_idx) = add_element_tier {
+            let tiers = &mut self.tag_manager_categories[cat_idx].tiers;
+            let n = tiers[t_idx].elements.len() + 1;
+            tiers[t_idx].elements.push(format!("要素{n}"));
+        }
+        if add_tier {
+            let tiers = &mut self.tag_manager_categories[cat_idx].tiers;
+            let next_no = tiers.last().map(|t| t.tier_no + 1).unwrap_or(1);
+            let negative = tiers.last().map(|t| t.negative).unwrap_or(false);
+            tiers.push(TagManagerTierUi { tier_no: next_no, negative, elements: Vec::new() });
         }
     }
 
