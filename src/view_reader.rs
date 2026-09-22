@@ -2914,8 +2914,19 @@ impl ViewerState {
                     let new_alpha = (frame.t.clamp(0.0, 1.0) * 255.0).round() as u8;
                     match frame.page_mode {
                         PageMode::Single => {
-                            Self::paint_single_alpha(&painter, &frame.prev_tex_lo, avail, origin, 255);
-                            Self::paint_single_alpha(&painter, &frame.tex_lo,      avail, origin, new_alpha);
+                            // 大→小で新ページ矩形の外にはみ出す旧ページの縁は、t=1で急に
+                            // 消えないよう 1-t でフェードアウトさせる。旧全体を薄く描いた上に、
+                            // 新矩形内だけ旧を不透明で描き直す（帯分割しないので継ぎ目が出ない）。
+                            let rect_old = Self::single_fit_rect(avail, origin, &frame.prev_tex_lo);
+                            let rect_new = Self::single_fit_rect(avail, origin, &frame.tex_lo);
+                            if rect_new.is_positive() {
+                                Self::paint_page_alpha(&painter, &frame.prev_tex_lo, rect_old, 255 - new_alpha);
+                                let inner = painter.with_clip_rect(painter.clip_rect().intersect(rect_new));
+                                Self::paint_page_alpha(&inner, &frame.prev_tex_lo, rect_old, 255);
+                            } else {
+                                Self::paint_page_alpha(&painter, &frame.prev_tex_lo, rect_old, 255);
+                            }
+                            Self::paint_page_alpha(&painter, &frame.tex_lo, rect_new, new_alpha);
                         }
                         PageMode::SpreadLeft => {
                             let (rl, rr) = Self::spread_rects(avail, origin, &frame.prev_tex_lo, &frame.prev_tex_hi, frame.monitor);
@@ -2940,8 +2951,18 @@ impl ViewerState {
                     // 左右それぞれ独立した扇（同じt）で揃えて描く。
                     match frame.page_mode {
                         PageMode::Single => {
-                            Self::paint_single_alpha(&painter, &frame.prev_tex_lo, avail, origin, 255);
+                            // 大→小で新ページ矩形の外にはみ出す旧ページの縁は、新ページと同じ
+                            // 扇（新矩形中心）で削っていく。旧の未掃引部分を描いた上に、新矩形内
+                            // だけ旧を不透明で描き直し、最後に新ページの扇を重ねる。
+                            let rect_old = Self::single_fit_rect(avail, origin, &frame.prev_tex_lo);
                             let rect_new = Self::single_fit_rect(avail, origin, &frame.tex_lo);
+                            if rect_new.is_positive() {
+                                Self::paint_clockwise_wipe_remainder(&painter, &frame.prev_tex_lo, rect_old, rect_new.center(), frame.t);
+                                let inner = painter.with_clip_rect(painter.clip_rect().intersect(rect_new));
+                                Self::paint_page_alpha(&inner, &frame.prev_tex_lo, rect_old, 255);
+                            } else {
+                                Self::paint_page_alpha(&painter, &frame.prev_tex_lo, rect_old, 255);
+                            }
                             Self::paint_clockwise_wipe_overlay(&painter, &frame.tex_lo, rect_new, frame.t);
                         }
                         PageMode::SpreadLeft => {
@@ -5307,6 +5328,7 @@ impl ViewerState {
     /// `paint_page`のalpha指定版（クロスフェード用）。GPU側のアルファブレンドのみで
     /// 済ませるため、CPU側のピクセル合成は行わない。
     fn paint_page_alpha(painter: &egui::Painter, tex: &Option<egui::TextureHandle>, rect: egui::Rect, alpha: u8) {
+        if !rect.is_positive() { return; }
         match tex {
             Some(t) => { painter.image(t.id(), rect, FULL_UV, egui::Color32::from_rgba_unmultiplied(255, 255, 255, alpha)); }
             None    => { painter.rect_filled(rect, 0.0, egui::Color32::from_rgba_unmultiplied(40, 40, 40, alpha)); }
@@ -5433,56 +5455,83 @@ impl ViewerState {
         rect: egui::Rect,
         t: f32,
     ) {
-        let Some(tex) = tex else { return };
-        if !rect.is_finite() || rect.width() < 1.0 || rect.height() < 1.0 { return; }
         let t = t.clamp(0.0, 1.0);
         let swept = (t + Self::WIPE_FEATHER_FRAC).min(1.0);
-        if swept <= 0.0 { return; }
+        Self::paint_wipe_fan(painter, tex, rect, rect.center(), 0.0, swept, |frac| Self::wipe_alpha(frac, t));
+    }
 
-        let center = rect.center();
-        // 矩形の対角線半分より少し大きい半径にして、扇の外周が矩形を確実に覆うようにする
-        // （実際の表示範囲はクリップで矩形内に絞るので、はみ出し分のコストは無視できる）。
-        let radius = (rect.width().powi(2) + rect.height().powi(2)).sqrt() / 2.0 + 1.0;
-        let steps = ((Self::WIPE_SEGMENTS_PER_CIRCLE as f32 * swept).ceil() as usize).max(1);
+    /// 時計回りワイプの旧ページ側の「まだ掃かれていない部分」を描く。新ページの扇と
+    /// 同じ中心 `center`（新ページ矩形の中心）・同じ境界で相補的なアルファにするので、
+    /// 大→小遷移で新矩形の外にはみ出す旧ページの縁が新ページと同じ扇で削れていく。
+    fn paint_clockwise_wipe_remainder(
+        painter: &egui::Painter,
+        tex: &Option<egui::TextureHandle>,
+        rect: egui::Rect,
+        center: egui::Pos2,
+        t: f32,
+    ) {
+        let t = t.clamp(0.0, 1.0);
+        if t >= 1.0 { return; }
+        Self::paint_wipe_fan(painter, tex, rect, center, t, 1.0, |frac| 255 - Self::wipe_alpha(frac, t));
+    }
 
-        let alpha_at = |frac: f32| -> u8 {
-            if frac <= t {
-                255
-            } else {
-                let fade = (1.0 - (frac - t) / Self::WIPE_FEATHER_FRAC).clamp(0.0, 1.0);
-                (fade * 255.0).round() as u8
-            }
-        };
+    /// 新ページ側の扇のアルファ：掃引済み(frac<=t)は不透明、その先フェザー幅で0へ落とす。
+    fn wipe_alpha(frac: f32, t: f32) -> u8 {
+        if frac <= t {
+            255
+        } else {
+            let fade = (1.0 - (frac - t) / Self::WIPE_FEATHER_FRAC).clamp(0.0, 1.0);
+            (fade * 255.0).round() as u8
+        }
+    }
+
+    /// `tex` を `rect` に貼った状態で、`center` を中心に周率 `from`〜`to`（0.0=12時、
+    /// 時計回り）の扇だけを描く共通処理。表示は `rect` 内にクリップする。
+    fn paint_wipe_fan(
+        painter: &egui::Painter,
+        tex: &Option<egui::TextureHandle>,
+        rect: egui::Rect,
+        center: egui::Pos2,
+        from: f32,
+        to: f32,
+        alpha_at: impl Fn(f32) -> u8,
+    ) {
+        let Some(tex) = tex else { return };
+        if !rect.is_finite() || rect.width() < 1.0 || rect.height() < 1.0 { return; }
+        let span = to - from;
+        if span <= 0.0 { return; }
+
+        // 中心から矩形の最遠の角までより少し大きい半径にして、扇の外周が矩形を確実に覆う
+        // ようにする（実際の表示範囲はクリップで矩形内に絞るので、はみ出し分のコストは無視できる）。
+        let radius = [rect.left_top(), rect.right_top(), rect.left_bottom(), rect.right_bottom()]
+            .iter()
+            .map(|corner| corner.distance(center))
+            .fold(0.0_f32, f32::max)
+            + 1.0;
+        let steps = ((Self::WIPE_SEGMENTS_PER_CIRCLE as f32 * span).ceil() as usize).max(1);
+
         let uv_at = |p: egui::Pos2| -> egui::Pos2 {
             egui::pos2(
                 (p.x - rect.min.x) / rect.width(),
                 (p.y - rect.min.y) / rect.height(),
             )
         };
-        let vertex_at = |frac: f32| -> egui::epaint::Vertex {
-            let p = Self::wipe_point(center, radius, frac);
+        let vertex = |p: egui::Pos2, frac: f32| -> egui::epaint::Vertex {
             egui::epaint::Vertex {
                 pos: p,
                 uv: uv_at(p),
                 color: egui::Color32::from_rgba_unmultiplied(255, 255, 255, alpha_at(frac)),
             }
         };
-        let center_vertex = |frac: f32| -> egui::epaint::Vertex {
-            egui::epaint::Vertex {
-                pos: center,
-                uv: uv_at(center),
-                color: egui::Color32::from_rgba_unmultiplied(255, 255, 255, alpha_at(frac)),
-            }
-        };
 
         let mut mesh = egui::Mesh::with_texture(tex.id());
         for i in 0..steps {
-            let frac_a = swept * (i as f32) / (steps as f32);
-            let frac_b = swept * ((i + 1) as f32) / (steps as f32);
+            let frac_a = from + span * (i as f32) / (steps as f32);
+            let frac_b = from + span * ((i + 1) as f32) / (steps as f32);
             let base = mesh.vertices.len() as u32;
-            mesh.vertices.push(center_vertex(frac_a));
-            mesh.vertices.push(vertex_at(frac_a));
-            mesh.vertices.push(vertex_at(frac_b));
+            mesh.vertices.push(vertex(center, frac_a));
+            mesh.vertices.push(vertex(Self::wipe_point(center, radius, frac_a), frac_a));
+            mesh.vertices.push(vertex(Self::wipe_point(center, radius, frac_b), frac_b));
             mesh.indices.extend_from_slice(&[base, base + 1, base + 2]);
         }
         painter.with_clip_rect(painter.clip_rect().intersect(rect)).add(mesh);
@@ -5498,23 +5547,6 @@ impl ViewerState {
         let size = egui::vec2(img_w as f32 * scale, img_h as f32 * scale);
         let tl = origin + (avail - size) / 2.0;
         egui::Rect::from_min_size(tl, size)
-    }
-
-    /// 単ページをoffset無し・alpha指定で描画（クロスフェード用）
-    fn paint_single_alpha(
-        painter: &egui::Painter,
-        tex: &Option<egui::TextureHandle>,
-        avail: egui::Vec2,
-        origin: egui::Pos2,
-        alpha: u8,
-    ) {
-        if let Some(tex) = tex {
-            let [img_w, img_h] = tex.size();
-            let scale = (avail.x / img_w as f32).min(avail.y / img_h as f32);
-            let size  = egui::vec2(img_w as f32 * scale, img_h as f32 * scale);
-            let tl    = origin + (avail - size) / 2.0;
-            painter.image(tex.id(), egui::Rect::from_min_size(tl, size), FULL_UV, egui::Color32::from_rgba_unmultiplied(255, 255, 255, alpha));
-        }
     }
 }
 
