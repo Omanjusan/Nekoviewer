@@ -365,26 +365,23 @@ impl NekoviewApp {
                 } else {
                     i18n::t().rating_radio_label(dialog.original_rating.unwrap_or(0))
                 };
-                ui.label(format!("{}{}", i18n::t().rating_setting_before_label(), before_value));
+                ui.add(egui::Label::new(format!("{}{}", i18n::t().rating_setting_before_label(), before_value)).wrap());
                 ui.add_space(8.0);
-                // 1行目: 未評価 + ★0.5〜★2（0..=4）
-                ui.horizontal(|ui| {
-                    for half in 0..=4u8 {
-                        let text = i18n::t().rating_radio_label(half);
-                        if ui.radio(dialog.rating_half == Some(half), text).clicked() {
-                            dialog.rating_half = Some(half);
+                // 11項目（★0.5〜★5.0+未評価）を4+4+3の3行に分ける。
+                // 2行(5+6)だと「★2.5 ★3 ★3.5 ★4 ★4.5 ★5」の6項目がmax_width(300)を
+                // 超えてはみ出し、ウィンドウが横に広がってしまう（ui.horizontalは折り返さない）。
+                // 「未評価」は文字幅が★x.xと異なり行の並びを崩すため、先頭ではなく最後尾（3行目末尾）に置く。
+                const ROWS: [&[u8]; 3] = [&[1, 2, 3, 4], &[5, 6, 7, 8], &[9, 10, 0]];
+                for row in ROWS {
+                    ui.horizontal(|ui| {
+                        for &half in row {
+                            let text = i18n::t().rating_radio_label(half);
+                            if ui.radio(dialog.rating_half == Some(half), text).clicked() {
+                                dialog.rating_half = Some(half);
+                            }
                         }
-                    }
-                });
-                // 2行目: ★2.5〜★5（5..=10）
-                ui.horizontal(|ui| {
-                    for half in 5..=10u8 {
-                        let text = i18n::t().rating_radio_label(half);
-                        if ui.radio(dialog.rating_half == Some(half), text).clicked() {
-                            dialog.rating_half = Some(half);
-                        }
-                    }
-                });
+                    });
+                }
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
                     if ui.button(i18n::t().favorite_dialog_cancel()).clicked() {
