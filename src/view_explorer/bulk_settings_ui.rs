@@ -319,13 +319,22 @@ impl NekoviewApp {
         if targets.is_empty() {
             return;
         }
-        // 単品選択時の復元（read_archive_rating接続）はフェーズ1で実装。
-        // このフェーズでは「変更前のスコア」欄も含め、単品/複数を問わずラジオはNone（未選択）で開く。
-        // original_ratingは単品選択時のみ固定モック値（未評価=0）を入れ、表示レイアウトを確認する。
-        let original_rating = if targets.len() == 1 { Some(0u8) } else { None };
+        // 単品選択時は現在のスコアを復元し、ラジオの初期チェック＆「変更前のスコア」欄の両方に使う
+        // （レコード不在＝一度も評価していないファイルも「未評価」= 0 として扱う）。
+        // 複数選択時はスコアの復元ができないため常にNone（どのラジオも未選択）で開く。
+        let original_rating = if targets.len() == 1 {
+            let half = self.spread_db.as_ref().and_then(|db| {
+                let dir = targets[0].parent()?;
+                let name = targets[0].file_name()?.to_str()?;
+                crate::spread_state::read_archive_rating(db, dir, name)
+            }).map(|r| r.rating_half).unwrap_or(0);
+            Some(half)
+        } else {
+            None
+        };
         self.rating_setting_dialog = Some(RatingSettingDialogState {
             targets,
-            rating_half: None,
+            rating_half: original_rating,
             original_rating,
         });
     }
@@ -335,6 +344,7 @@ impl NekoviewApp {
             return;
         };
         let mut cancel = false;
+        let mut apply = false;
         let is_bulk = dialog.targets.len() > 1;
         // ファイル名が長くても横に伸ばさず、固定幅の中で折り返して縦に伸ばす
         // （ラジオボタン2行のレイアウトがファイル名の長さに引きずられて崩れるのを防ぐ）。
@@ -380,14 +390,39 @@ impl NekoviewApp {
                     if ui.button(i18n::t().favorite_dialog_cancel()).clicked() {
                         cancel = true;
                     }
-                    // レイアウト確定フェーズ: OKは見た目のみ。DB書込み・クローズはフェーズ1で実装。
-                    let _ = ui.button(i18n::t().bulk_setting_apply_button());
+                    if ui.button(i18n::t().bulk_setting_apply_button()).clicked() {
+                        apply = true;
+                    }
                 });
             });
 
         if cancel {
             self.rating_setting_dialog = None;
+        } else if apply {
+            self.commit_rating_setting_dialog();
         }
+    }
+
+    /// OK押下時の反映。ラジオが未選択（`rating_half == None`）のままなら、複数選択時の
+    /// 操作ミス・未記入ガードとして何も書き込まずダイアログを閉じるだけにする。
+    fn commit_rating_setting_dialog(&mut self) {
+        let Some(dialog) = self.rating_setting_dialog.take() else { return };
+        let Some(rating_half) = dialog.rating_half else { return };
+        let Some(db) = self.spread_db.clone() else { return };
+        let mut results = Vec::with_capacity(dialog.targets.len());
+        for path in &dialog.targets {
+            let dir = path.parent();
+            let filename = path.file_name().and_then(|n| n.to_str());
+            let ok = match (dir, filename) {
+                (Some(dir), Some(filename)) => crate::spread_state::write_archive_rating(&db, dir, filename, rating_half),
+                _ => false,
+            };
+            results.push(BulkSettingResult { target: path.clone(), ok });
+        }
+        for path in &dialog.targets {
+            self.refresh_rating_cache(path);
+        }
+        self.app_toast = Some((build_bulk_setting_toast(&results), std::time::Instant::now()));
     }
 }
 
