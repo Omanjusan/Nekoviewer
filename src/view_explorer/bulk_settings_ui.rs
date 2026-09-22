@@ -310,6 +310,73 @@ impl NekoviewApp {
         self.sync_saved_archive_settings(&dialog.targets);
         self.app_toast = Some((build_bulk_setting_toast(&results), std::time::Instant::now()));
     }
+
+    // ── スコアの設定 ──────────────────────────────────────────────────────────
+    // 【レイアウト確定フェーズ】DB読み書き・OKでのクローズは未実装。見た目確認のみ。
+    // キャンセルのみダイアログクローズと紐付ける。
+
+    pub(super) fn open_rating_setting_dialog_for_paths(&mut self, targets: Vec<PathBuf>) {
+        if targets.is_empty() {
+            return;
+        }
+        // 単品選択時の復元（read_archive_rating接続）はフェーズ1で実装。
+        // このフェーズでは単品/複数を問わずNone（未選択）で開く。
+        self.rating_setting_dialog = Some(RatingSettingDialogState {
+            targets,
+            rating_half: None,
+        });
+    }
+
+    pub(super) fn draw_rating_setting_dialog(&mut self, ctx: &egui::Context) {
+        let Some(dialog) = self.rating_setting_dialog.as_mut() else {
+            return;
+        };
+        let mut cancel = false;
+        let is_bulk = dialog.targets.len() > 1;
+        egui::Window::new(i18n::t().rating_setting_dialog_title())
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .show(ctx, |ui| {
+                let label = if is_bulk {
+                    i18n::t().rating_setting_menu_bulk(dialog.targets.len())
+                } else {
+                    Self::dialog_target_label(&dialog.targets)
+                };
+                ui.label(label);
+                ui.add_space(8.0);
+                // 1行目: 未評価 + ☆0.5〜☆2（0..=4）
+                ui.horizontal(|ui| {
+                    for half in 0..=4u8 {
+                        let text = i18n::t().rating_radio_label(half);
+                        if ui.radio(dialog.rating_half == Some(half), text).clicked() {
+                            dialog.rating_half = Some(half);
+                        }
+                    }
+                });
+                // 2行目: ☆2.5〜☆5（5..=10）
+                ui.horizontal(|ui| {
+                    for half in 5..=10u8 {
+                        let text = i18n::t().rating_radio_label(half);
+                        if ui.radio(dialog.rating_half == Some(half), text).clicked() {
+                            dialog.rating_half = Some(half);
+                        }
+                    }
+                });
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button(i18n::t().favorite_dialog_cancel()).clicked() {
+                        cancel = true;
+                    }
+                    // レイアウト確定フェーズ: OKは見た目のみ。DB書込み・クローズはフェーズ1で実装。
+                    let _ = ui.button(i18n::t().bulk_setting_apply_button());
+                });
+            });
+
+        if cancel {
+            self.rating_setting_dialog = None;
+        }
+    }
 }
 
 #[cfg(test)]

@@ -626,6 +626,46 @@ impl Lang {
         }
     }
 
+    /// エクスプローラー部アイテムカード右クリックメニュー「スコアの設定」（単一選択時）
+    pub fn rating_setting_menu(self) -> &'static str {
+        match self {
+            Lang::Japanese => "スコアの設定...",
+            Lang::English  => "Score Setting...",
+            Lang::Chinese  => "评分设置...",
+        }
+    }
+
+    pub fn rating_setting_menu_bulk(self, count: usize) -> String {
+        match self {
+            Lang::Japanese => format!("スコアの設定... ({count}件)"),
+            Lang::English  => format!("Score Setting... ({count} items)"),
+            Lang::Chinese  => format!("评分设置...（{count} 项）"),
+        }
+    }
+
+    pub fn rating_setting_dialog_title(self) -> &'static str {
+        match self {
+            Lang::Japanese => "スコアの変更",
+            Lang::English  => "Change Score",
+            Lang::Chinese  => "更改评分",
+        }
+    }
+
+    /// スコア設定ダイアログのラジオボタン1個分のラベル。
+    /// `half`=0で「未評価」、1..=10で☆0.5〜☆5.0（`archive_rating`のrating_halfと同じ値域）。
+    pub fn rating_radio_label(self, half: u8) -> String {
+        if half == 0 {
+            return match self {
+                Lang::Japanese => "未評価".to_string(),
+                Lang::English  => "Unrated".to_string(),
+                Lang::Chinese  => "未评价".to_string(),
+            };
+        }
+        let whole = half / 2;
+        let num = if half % 2 == 0 { format!("{whole}") } else { format!("{whole}.5") };
+        format!("☆{num}")
+    }
+
     /// 一括設定変更ダイアログ（ソート条件/しおり保存/見開き設定）共通の反映ボタン
     pub fn bulk_setting_apply_button(self) -> &'static str {
         match self {
@@ -4907,6 +4947,59 @@ impl Lang {
                     (
                         "■ 多选时",
                         "一次性应用到所有选中的压缩包。\n\
+                         文件夹、单张图片和无法打开的压缩包不在范围内。",
+                    ),
+                ],
+            },
+        }
+    }
+
+    pub fn help_card_rating(self) -> HelpDoc {
+        match self {
+            Lang::Japanese => HelpDoc {
+                title: "スコアの設定...",
+                sections: &[
+                    (
+                        "",
+                        "このアーカイブのスコア（評価）を☆0.5〜☆5.0の範囲で手動設定する。\n\
+                         「未評価」を選ぶと評価を消す。",
+                    ),
+                    (
+                        "■ 複数選択しているとき",
+                        "スコアの復元はできないため、どのラジオボタンも選択されていない状態で開く。\n\
+                         未選択のままOKを押しても何も変更しない（誤操作防止）。\n\
+                         フォルダ、単体の画像、開けないアーカイブは対象外。",
+                    ),
+                ],
+            },
+            Lang::English => HelpDoc {
+                title: "Score setting...",
+                sections: &[
+                    (
+                        "",
+                        "Manually sets this archive's score in the ☆0.5–☆5.0 range.\n\
+                         Choosing \"Unrated\" clears the score.",
+                    ),
+                    (
+                        "■ With multiple selection",
+                        "Since the current score cannot be restored, the dialog opens with no radio button selected.\n\
+                         Pressing OK while nothing is selected changes nothing (mis-operation guard).\n\
+                         Folders, single images and archives that cannot be opened are excluded.",
+                    ),
+                ],
+            },
+            Lang::Chinese => HelpDoc {
+                title: "评分设置...",
+                sections: &[
+                    (
+                        "",
+                        "手动设置此压缩包的评分（☆0.5〜☆5.0）。\n\
+                         选择“未评价”可清除评分。",
+                    ),
+                    (
+                        "■ 多选时",
+                        "由于无法恢复原评分，对话框打开时不选中任何单选按钮。\n\
+                         未选择任何项时点击确定不会做任何更改（防误操作）。\n\
                          文件夹、单张图片和无法打开的压缩包不在范围内。",
                     ),
                 ],

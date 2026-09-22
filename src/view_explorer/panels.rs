@@ -197,6 +197,7 @@ impl NekoviewApp {
         self.draw_sort_condition_dialog(&ctx);
         self.draw_bookmark_setting_dialog(&ctx);
         self.draw_spread_setting_dialog(&ctx);
+        self.draw_rating_setting_dialog(&ctx);
         self.draw_settings_dialog(&ctx);
         // 旧来の無条件 ctx.request_repaint() は撤去（イベント駆動化）。
         // ROOT は入力イベント・各ワーカーの起床通知・ステータス窓の1Hzハートビートで再描画される。
@@ -1742,6 +1743,12 @@ impl NekoviewApp {
                                         self.open_spread_setting_dialog_for_paths(filtered_targets.clone());
                                         ui.close();
                                     }
+                                    let r_item = ui.button(i18n::t().rating_setting_menu_bulk(fcount));
+                                    help_tip_auto(&r_item, &i18n::t().help_card_rating());
+                                    if r_item.clicked() {
+                                        self.open_rating_setting_dialog_for_paths(filtered_targets.clone());
+                                        ui.close();
+                                    }
                                 }
                             } else {
                                 let r_item = ui.button(i18n::t().favorite_detail_menu());
@@ -1767,6 +1774,12 @@ impl NekoviewApp {
                                     help_tip_auto(&r_item, &i18n::t().help_card_spread());
                                     if r_item.clicked() {
                                         self.open_spread_setting_dialog_for_paths(filtered_targets.clone());
+                                        ui.close();
+                                    }
+                                    let r_item = ui.button(i18n::t().rating_setting_menu());
+                                    help_tip_auto(&r_item, &i18n::t().help_card_rating());
+                                    if r_item.clicked() {
+                                        self.open_rating_setting_dialog_for_paths(filtered_targets.clone());
                                         ui.close();
                                     }
                                 }

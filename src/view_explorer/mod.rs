@@ -608,6 +608,16 @@ struct SpreadSettingDialogState {
     offset: i32,
 }
 
+/// エクスプローラー右クリック「スコアの設定」一括変更ダイアログの状態。
+/// 【レイアウト確定フェーズ】DB読み書きは行わず、見た目確認のみ。
+/// `rating_half`: `None`=どのラジオも未選択（複数選択時の初期状態）、
+/// `Some(0)`=「未評価」選択、`Some(1..=10)`=☆0.5〜☆5.0選択（`archive_rating`の値域と一致）。
+#[derive(Clone)]
+struct RatingSettingDialogState {
+    targets: Vec<PathBuf>,
+    rating_half: Option<u8>,
+}
+
 fn default_favorite_color() -> egui::Color32 {
     egui::Color32::from_rgb(255, 204, 0)
 }
@@ -717,6 +727,8 @@ pub struct NekoviewApp {
     bookmark_setting_dialog: Option<BookmarkSettingDialogState>,
     /// エクスプローラー右クリック「見開き設定」一括変更ダイアログの状態（モック段階）
     spread_setting_dialog: Option<SpreadSettingDialogState>,
+    /// エクスプローラー右クリック「スコアの設定」一括変更ダイアログの状態（レイアウト確定フェーズ）
+    rating_setting_dialog: Option<RatingSettingDialogState>,
     /// Some(_) の間、中央グリッドは実ディレクトリではなく選択中のお気に入り
     /// （フォルダ横断）一覧を表示している。
     viewing_favorites: Option<FavoriteSelection>,
@@ -1137,6 +1149,7 @@ impl NekoviewApp {
             sort_condition_dialog: None,
             bookmark_setting_dialog: None,
             spread_setting_dialog: None,
+            rating_setting_dialog: None,
             viewing_favorites: None,
             viewing_dir: None,
             viewing_virtual_node: None,
