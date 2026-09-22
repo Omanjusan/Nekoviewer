@@ -415,6 +415,14 @@ pub struct AppState {
     pub tab_positions: TabPositions,
     /// ツリー（仮想・実）の並び条件。位置と違い、`use_last_dir` の影響を受けない。
     pub tree_sorts: crate::tree_sort::TreeSorts,
+    /// タグ機能・レイアウト器: 左ツリーパネルを折りたたんでいるか。
+    pub tree_panel_collapsed: bool,
+    /// タグ機能・レイアウト器: 右タグパネルを開いているか。
+    pub tag_panel_open: bool,
+    /// タグ機能・レイアウト器: 右タグパネルの幅（開いている時、D&Dリサイズ対象）。
+    pub tag_panel_width: f32,
+    /// タグ機能・レイアウト器: タグパネルの編集モード（上側ツマミでさらに中央側へ展開）。
+    pub tag_panel_edit_expanded: bool,
 }
 
 impl Default for AppState {
@@ -450,6 +458,10 @@ impl Default for AppState {
             translate_cfg: TranslateConfig::default(),
             tab_positions: TabPositions::default(),
             tree_sorts: crate::tree_sort::TreeSorts::default(),
+            tree_panel_collapsed: false,
+            tag_panel_open: false,
+            tag_panel_width: 280.0,
+            tag_panel_edit_expanded: false,
         }
     }
 }
@@ -955,6 +967,11 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
             },
         },
         tree_sorts: crate::tree_sort::TreeSorts { virtual_tree: tree_sort_virtual, real_tree: tree_sort_real },
+        // タグ機能・レイアウト器: フェーズ0時点では永続化未配線、既定値のみ
+        tree_panel_collapsed: false,
+        tag_panel_open: false,
+        tag_panel_width: 280.0,
+        tag_panel_edit_expanded: false,
     })
 }
 
