@@ -312,8 +312,6 @@ impl NekoviewApp {
     }
 
     // ── スコアの設定 ──────────────────────────────────────────────────────────
-    // 【レイアウト確定フェーズ】DB読み書き・OKでのクローズは未実装。見た目確認のみ。
-    // キャンセルのみダイアログクローズと紐付ける。
 
     pub(super) fn open_rating_setting_dialog_for_paths(&mut self, targets: Vec<PathBuf>) {
         if targets.is_empty() {

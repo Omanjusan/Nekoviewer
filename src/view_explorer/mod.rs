@@ -609,16 +609,15 @@ struct SpreadSettingDialogState {
 }
 
 /// エクスプローラー右クリック「スコアの設定」一括変更ダイアログの状態。
-/// 【レイアウト確定フェーズ】DB読み書きは行わず、見た目確認のみ。
-/// `rating_half`: `None`=どのラジオも未選択（複数選択時の初期状態）、
-/// `Some(0)`=「未評価」選択、`Some(1..=10)`=★0.5〜★5.0選択（`archive_rating`の値域と一致）。
+/// `rating_half`: これから書き込む値。`None`=どのラジオも未選択（複数選択時の初期状態。
+/// 未選択のままOKを押しても何も書き込まない）、`Some(0)`=「未評価」選択、
+/// `Some(1..=10)`=★0.5〜★5.0選択（`archive_rating`の値域と一致）。
 #[derive(Clone)]
 struct RatingSettingDialogState {
     targets: Vec<PathBuf>,
     rating_half: Option<u8>,
-    /// 単品選択時に開いた時点の保存済みスコア（表示専用、「変更前のスコア」欄に出す）。
-    /// 複数選択時は常にNone。【レイアウト確定フェーズ】実DB値はフェーズ1で接続するまで
-    /// 固定のモック値（未評価=0）を入れる。
+    /// 単品選択時に`read_archive_rating`で復元した、開いた時点の保存済みスコア
+    /// （表示専用、「変更前のスコア」欄に出す）。複数選択時は常にNone。
     original_rating: Option<u8>,
 }
 
