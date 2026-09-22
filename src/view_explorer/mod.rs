@@ -877,6 +877,35 @@ pub struct NekoviewApp {
     pub(crate) tag_panel_width: f32,
     /// タグ機能・レイアウト器: タグパネルの編集モード展開状態（上側ツマミでさらに中央側へ拡張）。
     pub(crate) tag_panel_edit_expanded: bool,
+    /// タグ付けレイアウト: メインタグ(排他)の固定順序リスト。ドラムUIで並べ替えは
+    /// 行わず、中央に来たものが選択扱いになる。テストデータ固定・ファイルには
+    /// 紐付けないグローバルダミー状態。
+    pub(crate) tag_main_options: Vec<String>,
+    /// タグ付けレイアウト: 現在選択中（ドラム中央）のメインタグ名。
+    pub(crate) tag_main_selected: Option<String>,
+    /// タグ付けレイアウト・ドラムUI: 現在のドラム位置（tag_main_optionsのインデックス
+    /// を単位とした連続値。例:1.5なら2番目と3番目のタグのちょうど中間）。
+    pub(crate) tag_main_drum_pos: f32,
+    /// タグ付けレイアウト・ドラムUI: スナップアニメーション中の(開始pos, 目標pos, 開始時刻)。
+    /// Noneならアニメーションしていない（アイドルまたはドラッグ中）。
+    pub(crate) tag_main_drum_anim: Option<(f32, f32, std::time::Instant)>,
+    /// タグ付けレイアウト(フェーズT0): 属性タグ(複数可)の候補一覧。パレット用データ。
+    pub(crate) tag_attr_options: Vec<String>,
+    /// タグ付けレイアウト(フェーズT0): 下部に表示中の属性タグ(選択済み)。グローバルダミー。
+    pub(crate) tag_attr_selected: Vec<String>,
+    /// タグ付けレイアウト: 属性タグ選択パレット（＋ボタンで開く、タグパネル内最下段に展開）の開閉状態。
+    pub(crate) tag_attr_palette_open: bool,
+    /// タグマネージャー(フェーズTM0): カテゴリ・tier・要素を管理する独立画面の開閉状態。
+    /// 既存のメインタグ／属性タグUIとは今回切り離して考える。
+    pub(crate) tag_manager_open: bool,
+    /// タグマネージャー: CentralPanel＋右タグパネルの合成矩形（直近フレーム）。
+    /// オーバーレイをこの範囲全体に重ねて表示するために使う。
+    pub(crate) tag_manager_area_rect: egui::Rect,
+    /// タグマネージャー(フェーズTM1): カテゴリ名一覧。データモデルは未確定のため
+    /// 今はStringのみのダミー状態（tier/要素はTM2以降で追加）。
+    pub(crate) tag_manager_categories: Vec<String>,
+    /// タグマネージャー(フェーズTM1): 選択中カテゴリのインデックス。
+    pub(crate) tag_manager_selected_category: Option<usize>,
     /// 接続テストの進行中受信チャンネル（ダイアログを閉じたら破棄）。
     pub(crate) translate_conn_rx: Option<mpsc::Receiver<crate::translate::ConnCheckMsg>>,
     /// 直近の接続テスト結果表示用（疎通/vision結果の文字列、または失敗理由）。
@@ -1248,6 +1277,26 @@ impl NekoviewApp {
             tag_panel_open: false,
             tag_panel_width: 280.0,
             tag_panel_edit_expanded: false,
+            tag_main_options: [
+                "同人誌", "画集", "漫画", "その他画像", "仮装",
+                "雑誌", "イラスト集", "写真集", "CG集", "動画",
+            ]
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+            tag_main_selected: Some("同人誌".to_string()),
+            tag_main_drum_pos: 0.0,
+            tag_main_drum_anim: None,
+            tag_attr_options: ["高解像度", "低解像度", "高評価", "アニメーション込", "大きい", "小さい"]
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+            tag_attr_selected: Vec::new(),
+            tag_attr_palette_open: false,
+            tag_manager_open: false,
+            tag_manager_area_rect: egui::Rect::NOTHING,
+            tag_manager_categories: ["画質", "内容"].into_iter().map(str::to_string).collect(),
+            tag_manager_selected_category: Some(0),
             translate_conn_rx: None,
             translate_conn_status: None,
             translate_conn_verified: false,
