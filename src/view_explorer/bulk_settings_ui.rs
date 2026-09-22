@@ -320,10 +320,13 @@ impl NekoviewApp {
             return;
         }
         // 単品選択時の復元（read_archive_rating接続）はフェーズ1で実装。
-        // このフェーズでは単品/複数を問わずNone（未選択）で開く。
+        // このフェーズでは「変更前のスコア」欄も含め、単品/複数を問わずラジオはNone（未選択）で開く。
+        // original_ratingは単品選択時のみ固定モック値（未評価=0）を入れ、表示レイアウトを確認する。
+        let original_rating = if targets.len() == 1 { Some(0u8) } else { None };
         self.rating_setting_dialog = Some(RatingSettingDialogState {
             targets,
             rating_half: None,
+            original_rating,
         });
     }
 
@@ -333,19 +336,28 @@ impl NekoviewApp {
         };
         let mut cancel = false;
         let is_bulk = dialog.targets.len() > 1;
+        // ファイル名が長くても横に伸ばさず、固定幅の中で折り返して縦に伸ばす
+        // （ラジオボタン2行のレイアウトがファイル名の長さに引きずられて崩れるのを防ぐ）。
         egui::Window::new(i18n::t().rating_setting_dialog_title())
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .max_width(300.0)
             .show(ctx, |ui| {
                 let label = if is_bulk {
                     i18n::t().rating_setting_menu_bulk(dialog.targets.len())
                 } else {
                     Self::dialog_target_label(&dialog.targets)
                 };
-                ui.label(label);
+                ui.add(egui::Label::new(label).wrap());
+                let before_value = if is_bulk {
+                    i18n::t().rating_setting_before_multi().to_string()
+                } else {
+                    i18n::t().rating_radio_label(dialog.original_rating.unwrap_or(0))
+                };
+                ui.label(format!("{}{}", i18n::t().rating_setting_before_label(), before_value));
                 ui.add_space(8.0);
-                // 1行目: 未評価 + ☆0.5〜☆2（0..=4）
+                // 1行目: 未評価 + ★0.5〜★2（0..=4）
                 ui.horizontal(|ui| {
                     for half in 0..=4u8 {
                         let text = i18n::t().rating_radio_label(half);
@@ -354,7 +366,7 @@ impl NekoviewApp {
                         }
                     }
                 });
-                // 2行目: ☆2.5〜☆5（5..=10）
+                // 2行目: ★2.5〜★5（5..=10）
                 ui.horizontal(|ui| {
                     for half in 5..=10u8 {
                         let text = i18n::t().rating_radio_label(half);

@@ -663,7 +663,25 @@ impl Lang {
         }
         let whole = half / 2;
         let num = if half % 2 == 0 { format!("{whole}") } else { format!("{whole}.5") };
-        format!("☆{num}")
+        format!("★{num}")
+    }
+
+    /// スコア設定ダイアログ「変更前のスコア：」の見出し
+    pub fn rating_setting_before_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "変更前のスコア：",
+            Lang::English  => "Current score: ",
+            Lang::Chinese  => "当前评分：",
+        }
+    }
+
+    /// スコア設定ダイアログ: 複数選択時、変更前のスコアを表示しない旨の文言
+    pub fn rating_setting_before_multi(self) -> &'static str {
+        match self {
+            Lang::Japanese => "複数選択のため表示無し",
+            Lang::English  => "Not shown (multiple selection)",
+            Lang::Chinese  => "多选时不显示",
+        }
     }
 
     /// 一括設定変更ダイアログ（ソート条件/しおり保存/見開き設定）共通の反映ボタン
@@ -4961,7 +4979,7 @@ impl Lang {
                 sections: &[
                     (
                         "",
-                        "このアーカイブのスコア（評価）を☆0.5〜☆5.0の範囲で手動設定する。\n\
+                        "このアーカイブのスコア（評価）を★0.5〜★5.0の範囲で手動設定する。\n\
                          「未評価」を選ぶと評価を消す。",
                     ),
                     (
@@ -4977,7 +4995,7 @@ impl Lang {
                 sections: &[
                     (
                         "",
-                        "Manually sets this archive's score in the ☆0.5–☆5.0 range.\n\
+                        "Manually sets this archive's score in the ★0.5–★5.0 range.\n\
                          Choosing \"Unrated\" clears the score.",
                     ),
                     (
@@ -4993,7 +5011,7 @@ impl Lang {
                 sections: &[
                     (
                         "",
-                        "手动设置此压缩包的评分（☆0.5〜☆5.0）。\n\
+                        "手动设置此压缩包的评分（★0.5〜★5.0）。\n\
                          选择“未评价”可清除评分。",
                     ),
                     (
