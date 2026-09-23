@@ -3579,6 +3579,14 @@ impl Lang {
         }
     }
 
+    pub fn fs_close_button_hint(self) -> &'static str {
+        match self {
+            Lang::Japanese => "閉じる (Esc)",
+            Lang::English  => "Close (Esc)",
+            Lang::Chinese  => "关闭 (Esc)",
+        }
+    }
+
     pub fn tool_palette_auto_hide_on_hint(self) -> &'static str {
         match self {
             Lang::Japanese => "自動ハイドLOCK：ON（常時表示。クリックでOFFにするとポインタが外れて0.5秒後に自動的に隠れるようになる）",
