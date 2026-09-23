@@ -3111,6 +3111,16 @@ impl ViewerState {
                 p.galley(bg_pos + pad, tg, egui::Color32::WHITE);
             }
 
+            // ── ツールパレット非表示中：画面のどこでも右クリックすれば復活する ────────
+            // 全面のクリック判定なので、評価帯より先に登録して下敷きにする
+            // （後から登録すると帯の★／ボタンのクリックを奪ってしまう）。
+            if palette_rect.is_none() {
+                let revive_resp = ui.interact(viewport_rect, ui.id().with("tool_palette_revive"), egui::Sense::click());
+                if revive_resp.secondary_clicked() {
+                    self.tool_palette.visible = true;
+                }
+            }
+
             // ── 評価オーバーレイ（最終ページ表示中。触らなければ何も保存しない）──────
             if let Some(band) = rating_rect {
                 let event = crate::rating_overlay::show(ui, band, self.rating_half, i18n::t().rating_unset_button());
@@ -3128,11 +3138,6 @@ impl ViewerState {
                 // パレット非表示中はマスメニューも存在し得ないため、直前まで展開中だった
                 // 状態が残っていればここで確実にクリアする（クリックガードの誤動作防止）。
                 self.tool_palette_menu_open = false;
-                // 非表示中：画面のどこでも右クリックすれば復活する。
-                let revive_resp = ui.interact(viewport_rect, ui.id().with("tool_palette_revive"), egui::Sense::click());
-                if revive_resp.secondary_clicked() {
-                    self.tool_palette.visible = true;
-                }
             }
         });
         // ページ送りゾーン内では原寸表示切替（ダブルクリック）を素通りさせない。
