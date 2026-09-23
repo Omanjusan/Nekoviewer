@@ -847,25 +847,31 @@ impl NekoviewApp {
 
             const FILTER_BAR_H: f32 = 28.0;
             let content_h = (ui.available_height() - FILTER_BAR_H).max(0.0);
+            // 表示元の目印: 実ツリー選択=青 / 仮想フォルダ選択=緑（2px外枠）
+            const BORDER_W: f32 = 2.0;
+            let border_color = self.card_border_color();
+            // 外枠がある時は中身を枠幅+1px内側へ寄せ、右端のスクロールバーが枠に潰されないようにする
+            let inset = if border_color.is_some() { BORDER_W as i8 + 1 } else { 0 };
             let grid_out = ui.allocate_ui_with_layout(
                 egui::vec2(ui.available_width(), content_h),
                 egui::Layout::top_down(egui::Align::Min),
                 |ui| {
-                    if is_loading {
-                        ui.centered_and_justified(|ui| {
-                            ui.label(i18n::t().loading());
-                        });
-                    } else {
-                        self.draw_archive_grid(ui);
-                    }
+                    egui::Frame::NONE.inner_margin(egui::Margin::same(inset)).show(ui, |ui| {
+                        if is_loading {
+                            ui.centered_and_justified(|ui| {
+                                ui.label(i18n::t().loading());
+                            });
+                        } else {
+                            self.draw_archive_grid(ui);
+                        }
+                    });
                 },
             );
-            // 表示元の目印: 実ツリー選択=青 / 仮想フォルダ選択=緑（2px外枠）
-            if let Some(color) = self.card_border_color() {
+            if let Some(color) = border_color {
                 ui.painter().rect_stroke(
                     grid_out.response.rect,
                     0.0,
-                    egui::Stroke::new(2.0, color),
+                    egui::Stroke::new(BORDER_W, color),
                     egui::StrokeKind::Inside,
                 );
             }

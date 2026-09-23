@@ -189,15 +189,21 @@ fn show_init_failure_dialog() {}
 
 /// 窓ごとの egui::Context を生成した直後に、日本語フォントとスタイルを適用する。
 /// （旧 eframe では cc.egui_ctx に対し 1 回だけ行っていたが、winit では窓ごとに Context を持つ）
-fn setup_egui_context(ctx: &egui::Context) {
+/// `wide_scrollbar`: 非ホバー時のスクロールバーを既定(2px)より太くする。リーダー窓は既定のまま。
+fn setup_egui_context(ctx: &egui::Context, wide_scrollbar: bool) {
     setup_japanese_font(ctx);
-    ctx.style_mut_of(egui::Theme::Dark, |s| {
-        s.spacing.scroll.bar_outer_margin = 0.0;
-    });
-    ctx.style_mut_of(egui::Theme::Light, |s| {
-        s.spacing.scroll.bar_outer_margin = 0.0;
-    });
+    for theme in [egui::Theme::Dark, egui::Theme::Light] {
+        ctx.style_mut_of(theme, |s| {
+            s.spacing.scroll.bar_outer_margin = 0.0;
+            if wide_scrollbar {
+                s.spacing.scroll.floating_width = WIDE_SCROLLBAR_FLOATING_WIDTH;
+            }
+        });
+    }
 }
+
+/// エクスプローラー系の窓で使う、非ホバー時のスクロールバー幅（egui既定は2px）。
+const WIDE_SCROLLBAR_FLOATING_WIDTH: f32 = 6.0;
 
 fn setup_japanese_font(ctx: &egui::Context) {
     let Some(font_data) = japanese_font_data() else { return };

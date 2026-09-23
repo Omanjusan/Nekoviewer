@@ -165,9 +165,10 @@ fn make_egui_window(
     window: Arc<Window>,
     viewport_id: ViewportId,
     proxy: &EventLoopProxy<UserEvent>,
+    wide_scrollbar: bool,
 ) -> EguiWindow {
     let egui_ctx = egui::Context::default();
-    crate::setup_egui_context(&egui_ctx);
+    crate::setup_egui_context(&egui_ctx, wide_scrollbar);
 
     // 窓ごとに独立した Painter を作る。Painter::new で wgpu Instance を用意し、
     // set_window で初回サーフェス登録時に専用の Device/Queue/Renderer を生成する。
@@ -348,7 +349,7 @@ impl WinitApp {
         }
         let window = Arc::new(event_loop.create_window(attrs).expect("create_window"));
 
-        let win = make_egui_window(window, ViewportId::ROOT, &self.proxy);
+        let win = make_egui_window(window, ViewportId::ROOT, &self.proxy, true);
 
         // ワーカー起床・テクスチャ登録に使う ctx はエクスプローラー窓の Context を渡す。
         let app = NekoviewApp::new(
@@ -394,7 +395,7 @@ impl WinitApp {
             let window = Arc::new(event_loop.create_window(attrs).expect("create viewer window"));
             let initial_size = window.inner_size();
             app.initialize_viewer_decode_target((initial_size.width, initial_size.height));
-            let win = make_egui_window(window.clone(), viewer_viewport_id(), &self.proxy);
+            let win = make_egui_window(window.clone(), viewer_viewport_id(), &self.proxy, false);
             if app.take_viewer_focus_request() {
                 window.focus_window();
             }
@@ -432,7 +433,7 @@ impl WinitApp {
                     .with_window_icon(app_icon())
                     .with_inner_size(winit::dpi::LogicalSize::new(300.0, 280.0));
                 let window = Arc::new(event_loop.create_window(attrs).expect("create status window"));
-                let win = make_egui_window(window, status_viewport_id(), &self.proxy);
+                let win = make_egui_window(window, status_viewport_id(), &self.proxy, true);
                 self.status = Some(win);
                 crate::log_common!("[status] window created");
             } else if !want && have {
@@ -458,7 +459,7 @@ impl WinitApp {
                 .with_window_icon(app_icon())
                 .with_inner_size(winit::dpi::LogicalSize::new(480.0, 640.0));
             let window = Arc::new(event_loop.create_window(attrs).expect("create translate window"));
-            let win = make_egui_window(window, translate_viewport_id(), &self.proxy);
+            let win = make_egui_window(window, translate_viewport_id(), &self.proxy, true);
             self.translate = Some(win);
             self.translate_always_on_top_applied = false;
             crate::log_common!("[translate] window created");
