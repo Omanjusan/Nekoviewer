@@ -21,7 +21,9 @@ pub enum ActionKind {
     KomaPrev,
 }
 
-/// 全ActionKind。登録メニュー（マス右クリック）はこれを走査して選択肢を出す。
+/// 全ActionKind。category.rsの網羅テストがこれを基準に「全種がどこかのカテゴリに属する」を検査する
+/// （登録メニューはcategory.rsのカテゴリ表を走査する）。
+#[cfg(test)]
 pub const ALL_ACTION_KINDS: [ActionKind; 7] = [
     ActionKind::NextPage,
     ActionKind::PrevPage,

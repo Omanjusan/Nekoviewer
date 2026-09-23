@@ -11,8 +11,9 @@ pub enum DialogKind {
     ImageFilter,
 }
 
-/// 全DialogKind。登録メニュー（マス右クリック）はこれを走査して選択肢を出す
-/// （新規Dialog追加時にメニュー側の変更が要らないようにするため）。
+/// 全DialogKind。category.rsの網羅テストがこれを基準に「全種がどこかのカテゴリに属する」を検査する
+/// （登録メニューはcategory.rsのカテゴリ表を走査する）。
+#[cfg(test)]
 pub const ALL_DIALOG_KINDS: [DialogKind; 1] = [DialogKind::ImageFilter];
 
 impl DialogKind {
