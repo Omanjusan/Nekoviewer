@@ -843,7 +843,7 @@ impl NekoviewApp {
             egui::pos2(palette_rect.right() - 28.0, palette_rect.top() + 4.0),
             egui::vec2(24.0, 24.0),
         );
-        if ui.put(close_rect, egui::Button::new("✕")).clicked() {
+        if ui.put(close_rect, crate::ui_widgets::close_x_button(close_rect.size())).clicked() {
             self.tag_attr_palette_open = false;
         }
     }
@@ -890,10 +890,11 @@ impl NekoviewApp {
                     let bg_85 = egui::Color32::from_rgba_unmultiplied(bg.r(), bg.g(), bg.b(), 217);
                     ui.painter().rect_filled(bg_rect, 0.0, bg_85);
 
+                    const TAG_MANAGER_CLOSE_BTN: f32 = 20.0;
                     ui.horizontal(|ui| {
                         ui.heading("タグ管理");
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui.button("✕").clicked() {
+                            if ui.add(crate::ui_widgets::close_x_button(egui::vec2(TAG_MANAGER_CLOSE_BTN, TAG_MANAGER_CLOSE_BTN))).clicked() {
                                 self.tag_manager_open = false;
                             }
                         });

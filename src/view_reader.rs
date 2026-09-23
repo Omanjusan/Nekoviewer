@@ -2091,22 +2091,11 @@ impl ViewerState {
         save_slots
     }
 
-    /// フルスクリーン時ソートバーのクローズボタン。✕グリフはフォントチェーンに
-    /// 収録がなく豆腐化するため、空ボタンの上に線2本で×を描く。
+    /// フルスクリーン時ソートバーのクローズボタン。
     fn draw_fs_close_button(ui: &mut egui::Ui) -> egui::Response {
         const BTN_SIZE: f32 = 22.0;
-        const MARK_HALF: f32 = 5.0;
-        const MARK_WIDTH: f32 = 1.5;
-
-        let resp = ui
-            .add_sized([BTN_SIZE, BTN_SIZE], egui::Button::new(""))
-            .on_hover_text(i18n::t().fs_close_button_hint());
-        let c = resp.rect.center();
-        let stroke = egui::Stroke::new(MARK_WIDTH, ui.style().interact(&resp).fg_stroke.color);
-        let painter = ui.painter();
-        painter.line_segment([c + egui::vec2(-MARK_HALF, -MARK_HALF), c + egui::vec2(MARK_HALF, MARK_HALF)], stroke);
-        painter.line_segment([c + egui::vec2(-MARK_HALF, MARK_HALF), c + egui::vec2(MARK_HALF, -MARK_HALF)], stroke);
-        resp
+        ui.add(crate::ui_widgets::close_x_button(egui::vec2(BTN_SIZE, BTN_SIZE)))
+            .on_hover_text(i18n::t().fs_close_button_hint())
     }
 
     fn process_navigation(
@@ -2384,7 +2373,7 @@ impl ViewerState {
                 self.tool_palette.cycle_slot_size();
             }
             let close_resp = ui
-                .put(close_rect, egui::Button::new("✕"))
+                .put(close_rect, crate::ui_widgets::close_x_button(close_rect.size()))
                 .on_hover_text(lang.tool_palette_close_hint());
             if close_resp.clicked() {
                 self.tool_palette.visible = false;
@@ -2590,7 +2579,7 @@ impl ViewerState {
                 dialog_child.horizontal(|ui| {
                     ui.label(dialog.title(lang));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.add_sized([CLOSE_BTN_W, CLOSE_BTN_W], egui::Button::new("✕"))
+                        if ui.add(crate::ui_widgets::close_x_button(egui::vec2(CLOSE_BTN_W, CLOSE_BTN_W)))
                             .on_hover_text(lang.tool_palette_dialog_close())
                             .clicked()
                         {
