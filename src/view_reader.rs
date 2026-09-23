@@ -2643,8 +2643,8 @@ impl ViewerState {
     const TOOL_PALETTE_LABEL_CHAR_LIMIT: usize = 8;
 
     /// マス右クリックの登録メニュー。先頭に名称変更（サブメニュー内TextEdit）、続けて
-    /// TOGGLE_DEFS / ALL_DIALOG_KINDS を走査して選択肢を並べる（データ駆動：新規Toggle/Dialog
-    /// 追加時にメニュー側の変更は不要）。
+    /// ALL_CATEGORIES を走査してカテゴリ→項目の1段サブメニューを並べる（データ駆動：新規種の
+    /// 追加時はtool_palette/category.rsのitemsに足すだけで、メニュー側の変更は不要）。
     fn draw_tool_palette_slot_menu(ui: &mut egui::Ui, content: &mut crate::tool_palette::PaletteSlotContent, custom_label: &mut Option<String>, lang: crate::i18n::Lang) {
         use crate::tool_palette::PaletteSlotContent;
         ui.set_min_width(140.0);
@@ -2684,32 +2684,24 @@ impl ViewerState {
             }
             ui.separator();
         }
-        for def in crate::tool_palette::TOGGLE_DEFS {
-            let checked = matches!(*content, PaletteSlotContent::Toggle(k) if k == def.key);
-            if ui.selectable_label(checked, (def.label)(lang)).clicked() {
-                if !checked { *custom_label = None; }
-                *content = PaletteSlotContent::Toggle(def.key);
-                ui.close();
-            }
-        }
-        ui.separator();
-        for kind in crate::tool_palette::ALL_DIALOG_KINDS {
-            let checked = matches!(*content, PaletteSlotContent::Dialog(k) if k == kind);
-            let title = crate::tool_palette::create_dialog(kind).title(lang);
-            if ui.selectable_label(checked, title).clicked() {
-                if !checked { *custom_label = None; }
-                *content = PaletteSlotContent::Dialog(kind);
-                ui.close();
-            }
-        }
-        ui.separator();
-        for kind in crate::tool_palette::ALL_ACTION_KINDS {
-            let checked = matches!(*content, PaletteSlotContent::Action(k) if k == kind);
-            if ui.selectable_label(checked, kind.label(lang)).clicked() {
-                if !checked { *custom_label = None; }
-                *content = PaletteSlotContent::Action(kind);
-                ui.close();
-            }
+        for category in crate::tool_palette::ALL_CATEGORIES {
+            ui.menu_button(category.label(lang), |ui| {
+                ui.set_min_width(140.0);
+                for &item in category.items() {
+                    let label = match item {
+                        PaletteSlotContent::Toggle(k) => (crate::tool_palette::find_toggle_def(k).label)(lang),
+                        PaletteSlotContent::Dialog(k) => crate::tool_palette::create_dialog(k).title(lang),
+                        PaletteSlotContent::Action(k) => k.label(lang),
+                        PaletteSlotContent::Empty => continue,
+                    };
+                    let checked = *content == item;
+                    if ui.selectable_label(checked, label).clicked() {
+                        if !checked { *custom_label = None; }
+                        *content = item;
+                        ui.close();
+                    }
+                }
+            });
         }
     }
 

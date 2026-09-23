@@ -3547,6 +3547,40 @@ impl Lang {
         }
     }
 
+    // ── ツールパレット登録メニューのカテゴリ（tool_palette/category.rs） ──
+
+    pub fn tool_palette_category_navigate(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ナビゲート",
+            Lang::English  => "Navigate",
+            Lang::Chinese  => "导航",
+        }
+    }
+
+    pub fn tool_palette_category_reading_view(self) -> &'static str {
+        match self {
+            Lang::Japanese => "読書補助（閲覧）",
+            Lang::English  => "Reading Aids (Viewing)",
+            Lang::Chinese  => "阅读辅助（浏览）",
+        }
+    }
+
+    pub fn tool_palette_category_image_quality(self) -> &'static str {
+        match self {
+            Lang::Japanese => "画質",
+            Lang::English  => "Image Quality",
+            Lang::Chinese  => "画质",
+        }
+    }
+
+    pub fn tool_palette_category_display(self) -> &'static str {
+        match self {
+            Lang::Japanese => "表示・ウィンドウ",
+            Lang::English  => "Display / Window",
+            Lang::Chinese  => "显示・窗口",
+        }
+    }
+
     pub fn tool_palette_dialog_title_image_filter(self) -> &'static str {
         match self {
             Lang::Japanese => "画像フィルタ",

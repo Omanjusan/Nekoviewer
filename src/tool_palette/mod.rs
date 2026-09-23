@@ -4,12 +4,14 @@
 //! state ファイル、image_filter と同じ key=value 方式）へ永続化する。
 
 pub mod action;
+pub mod category;
 pub mod dialog;
 pub mod toggle;
 
-pub use action::{ActionKind, ALL_ACTION_KINDS};
-pub use dialog::{create_dialog, DialogKind, ALL_DIALOG_KINDS};
-pub use toggle::{execute_toggle, find_toggle_def, ToggleKind, TOGGLE_DEFS};
+pub use action::ActionKind;
+pub use category::ALL_CATEGORIES;
+pub use dialog::{create_dialog, DialogKind};
+pub use toggle::{execute_toggle, find_toggle_def, ToggleKind};
 
 /// グリッド列数（固定）。
 pub const GRID_COLS: usize = 5;
