@@ -481,6 +481,8 @@ pub struct ViewerState {
     entry_list_scrolled_lo: Option<i32>,
     /// フルスクリーン時ソートバーの表示状態（上端ホバーで on/off）
     fs_sort_bar_visible: bool,
+    /// フルスクリーン時ソートバー右端のクローズボタンが押された（process_misc_input で消費）
+    fs_close_clicked: bool,
     sort_key: ViewerSortKey,
     sort_ascending: bool,
     /// アニメーションページの再生状態（original_index → AnimState）
@@ -830,6 +832,7 @@ impl ViewerState {
             edge_turn_hover: None,
             entry_list_scrolled_lo: None,
             fs_sort_bar_visible: false,
+            fs_close_clicked: false,
             sort_key: ViewerSortKey::Name,
             sort_ascending: true,
             anim_states: HashMap::new(),
@@ -931,6 +934,7 @@ impl ViewerState {
             edge_turn_hover: None,
             entry_list_scrolled_lo: None,
             fs_sort_bar_visible: false,
+            fs_close_clicked: false,
             sort_key: ViewerSortKey::Name,
             sort_ascending: true,
             anim_states: HashMap::new(),
@@ -2074,12 +2078,35 @@ impl ViewerState {
                     .show(ui, |ui| {
                         ui.horizontal(|ui| {
                             self.draw_bar_items(ui, cfg);
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                if Self::draw_fs_close_button(ui).clicked() {
+                                    self.fs_close_clicked = true;
+                                }
+                            });
                         });
                     });
             }
         }
 
         save_slots
+    }
+
+    /// フルスクリーン時ソートバーのクローズボタン。✕グリフはフォントチェーンに
+    /// 収録がなく豆腐化するため、空ボタンの上に線2本で×を描く。
+    fn draw_fs_close_button(ui: &mut egui::Ui) -> egui::Response {
+        const BTN_SIZE: f32 = 22.0;
+        const MARK_HALF: f32 = 5.0;
+        const MARK_WIDTH: f32 = 1.5;
+
+        let resp = ui
+            .add_sized([BTN_SIZE, BTN_SIZE], egui::Button::new(""))
+            .on_hover_text(i18n::t().fs_close_button_hint());
+        let c = resp.rect.center();
+        let stroke = egui::Stroke::new(MARK_WIDTH, ui.style().interact(&resp).fg_stroke.color);
+        let painter = ui.painter();
+        painter.line_segment([c + egui::vec2(-MARK_HALF, -MARK_HALF), c + egui::vec2(MARK_HALF, MARK_HALF)], stroke);
+        painter.line_segment([c + egui::vec2(-MARK_HALF, MARK_HALF), c + egui::vec2(MARK_HALF, -MARK_HALF)], stroke);
+        resp
     }
 
     fn process_navigation(
@@ -3343,7 +3370,8 @@ impl ViewerState {
             Self::toggle_fullscreen(ctx, cfg);
         }
 
-        if input.close_requested || input.esc {
+        let fs_close_clicked = std::mem::take(&mut self.fs_close_clicked);
+        if input.close_requested || input.esc || fs_close_clicked {
             if cfg.fullscreen {
                 #[cfg(windows)]
                 ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
