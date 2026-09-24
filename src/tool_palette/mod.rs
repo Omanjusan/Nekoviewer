@@ -6,11 +6,13 @@
 pub mod action;
 pub mod category;
 pub mod dialog;
+pub mod key_assign;
 pub mod toggle;
 
 pub use action::ActionKind;
 pub use category::ALL_CATEGORIES;
 pub use dialog::{create_dialog, DialogKind};
+pub use key_assign::{KeyAssignDialog, KeyAssignOutcome};
 pub use toggle::{execute_toggle, find_toggle_def, ToggleKind};
 
 /// グリッド列数（固定）。

@@ -3677,6 +3677,86 @@ impl Lang {
         }
     }
 
+    pub fn tool_palette_key_assign_menu_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "キー割当",
+            Lang::English  => "Assign key",
+            Lang::Chinese  => "分配按键",
+        }
+    }
+
+    pub fn tool_palette_key_assign_title(self) -> &'static str {
+        match self {
+            Lang::Japanese => "キー割当",
+            Lang::English  => "Key assignment",
+            Lang::Chinese  => "按键分配",
+        }
+    }
+
+    pub fn tool_palette_key_assign_none(self) -> &'static str {
+        match self {
+            Lang::Japanese => "割当なし",
+            Lang::English  => "Not assigned",
+            Lang::Chinese  => "未分配",
+        }
+    }
+
+    pub fn tool_palette_key_assign_prompt(self) -> &'static str {
+        match self {
+            Lang::Japanese => "割当をしたいキーを押してください",
+            Lang::English  => "Press the key you want to assign",
+            Lang::Chinese  => "请按下要分配的按键",
+        }
+    }
+
+    pub fn tool_palette_key_assign_unassign(self) -> &'static str {
+        match self {
+            Lang::Japanese => "割当解除",
+            Lang::English  => "Unassign",
+            Lang::Chinese  => "解除分配",
+        }
+    }
+
+    pub fn tool_palette_key_assign_save(self) -> &'static str {
+        match self {
+            Lang::Japanese => "保存",
+            Lang::English  => "Save",
+            Lang::Chinese  => "保存",
+        }
+    }
+
+    pub fn tool_palette_key_assign_overwrite(self) -> &'static str {
+        match self {
+            Lang::Japanese => "上書き",
+            Lang::English  => "Overwrite",
+            Lang::Chinese  => "覆盖",
+        }
+    }
+
+    pub fn tool_palette_key_assign_cancel(self) -> &'static str {
+        match self {
+            Lang::Japanese => "キャンセル",
+            Lang::English  => "Cancel",
+            Lang::Chinese  => "取消",
+        }
+    }
+
+    pub fn tool_palette_key_assign_conflict(self, name: &str) -> String {
+        match self {
+            Lang::Japanese => format!("{name}機能とキー割当が衝突しています"),
+            Lang::English  => format!("This key is already assigned to \"{name}\""),
+            Lang::Chinese  => format!("该按键与“{name}”功能冲突"),
+        }
+    }
+
+    pub fn tool_palette_key_assign_overwrite_note(self, name: &str) -> String {
+        match self {
+            Lang::Japanese => format!("この割当を優先して保存します。代わりに{name}機能の割当は削除されます"),
+            Lang::English  => format!("This assignment will take priority. The key will be removed from \"{name}\""),
+            Lang::Chinese  => format!("将优先保存此分配，“{name}”功能的按键分配将被删除"),
+        }
+    }
+
     pub fn tool_palette_rename_menu_label(self) -> &'static str {
         match self {
             Lang::Japanese => "ボタン名称の変更",

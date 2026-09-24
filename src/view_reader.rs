@@ -221,6 +221,27 @@ struct FrameInput {
 }
 
 impl FrameInput {
+    /// モーダル（キー割当ダイアログ）表示中に、背面のビューアーへ操作が抜けないよう
+    /// キー・ホイール・クリックを無効化する。
+    fn suppress_for_modal(&mut self) {
+        let Self {
+            key_left, key_right, key_up, key_down, key_space, esc, zoom_key, fs_key,
+            mode1, mode2, mode3, shift4, shift5, shift_nav_up, shift_nav_down, key_home, key_end,
+            slot_apply, palette_keys, scroll_delta, shift_scroll_delta, wheel_notches, zoom_wheel_notches,
+            middle_clicked, primary_clicked, ..
+        } = self;
+        for b in [key_left, key_right, key_up, key_down, key_space, esc, zoom_key, fs_key,
+                  mode1, mode2, mode3, shift4, shift5, shift_nav_up, shift_nav_down, key_home, key_end,
+                  middle_clicked, primary_clicked] {
+            *b = false;
+        }
+        *slot_apply = None;
+        palette_keys.clear();
+        for f in [scroll_delta, shift_scroll_delta, wheel_notches, zoom_wheel_notches] {
+            *f = 0.0;
+        }
+    }
+
     /// キー・マウス判定はキーアサイン設定(TODO項目J、[keymap.rs](../keymap.rs))経由。
     /// ホイールは「PagePrev/PageNextのマウス割り当て」「FileNavPrevAlt/NextAltのマウス割り当て」
     /// それぞれの修飾キー条件が現在の入力状態と一致するかを見て、一致した方に生delta(sd.y、
@@ -592,6 +613,10 @@ pub struct ViewerState {
     /// 展開中のDialog型マスのindex。Noneなら閉じている。同じマスを再クリックするか
     /// 展開領域外をクリックすると閉じる（1個の状態のみ保持＝同時に開けるのは1マス分）。
     tool_palette_open_dialog: Option<usize>,
+    /// マスの右クリックメニュー「キー割当」が押されたマスのindex。フレーム末尾でダイアログを開く。
+    tool_palette_key_assign_request: Option<usize>,
+    /// 表示中のキー割当ダイアログ。開いている間はビューアーのキー・ホイール・クリック操作を止める。
+    tool_palette_key_assign: Option<crate::tool_palette::KeyAssignDialog>,
     /// 起動後の初回フレームで cfg.tool_palette から self.tool_palette を読み込んだか。
     tool_palette_initialized: bool,
     /// self.tool_palette が最後に変化した時刻。PERSIST_DEBOUNCE_MS 経過したら
@@ -881,6 +906,8 @@ impl ViewerState {
             slideshow_auto_advance_pending: false,
             tool_palette: crate::tool_palette::PaletteState::default(),
             tool_palette_open_dialog: None,
+            tool_palette_key_assign_request: None,
+            tool_palette_key_assign: None,
             tool_palette_initialized: false,
             tool_palette_last_changed: None,
             tool_palette_auto_hide_at: None,
@@ -983,6 +1010,8 @@ impl ViewerState {
             slideshow_auto_advance_pending: false,
             tool_palette: crate::tool_palette::PaletteState::default(),
             tool_palette_open_dialog: None,
+            tool_palette_key_assign_request: None,
+            tool_palette_key_assign: None,
             tool_palette_initialized: false,
             tool_palette_last_changed: None,
             tool_palette_auto_hide_at: None,
@@ -1653,7 +1682,7 @@ impl ViewerState {
         let ctx = ui.ctx().clone();
         let viewer_style = ui.style().clone();
         if !self.open || self.entries.is_empty() {
-            return ViewerOutput { nav: ViewerNav::None, close_requested: !self.open, save_slots: None, spread_save_action: None, sort_save_action: None, thumbnail_save_action: None, bookmark_save_action: None, rating_save_action: None, favorite_add_requested: false, toggle_translate_window: false, tool_palette_changed: false, magnifier_settings_changed: false };
+            return ViewerOutput { nav: ViewerNav::None, close_requested: !self.open, save_slots: None, spread_save_action: None, sort_save_action: None, thumbnail_save_action: None, bookmark_save_action: None, rating_save_action: None, favorite_add_requested: false, toggle_translate_window: false, tool_palette_changed: false, magnifier_settings_changed: false, palette_key_assign: None };
         }
 
         // ── フレーム入力を一括収集（ctx.input はこの1回のみ）────────────────
@@ -1661,6 +1690,9 @@ impl ViewerState {
         // 文字入力中（マスの名称変更など）は、ツールボックスの割り当てキーを発火させない。
         if ctx.egui_wants_keyboard_input() {
             input.palette_keys.clear();
+        }
+        if self.tool_palette_key_assign.is_some() {
+            input.suppress_for_modal();
         }
 
         // フェーズ6: リサイズ再デコードのターゲットサイズ算出用に、現在の描画領域サイズ（物理px）を記録する。
@@ -1910,7 +1942,8 @@ impl ViewerState {
         let toggle_translate_window = self.take_translate_toggle_request();
         self.maybe_open_file_detail_dialog();
         self.draw_file_detail_dialog(&ctx);
-        ViewerOutput { nav, close_requested: close_self, save_slots, spread_save_action, sort_save_action, thumbnail_save_action, bookmark_save_action, rating_save_action, favorite_add_requested, toggle_translate_window, tool_palette_changed, magnifier_settings_changed: std::mem::take(&mut self.magnifier_settings_dirty) }
+        let palette_key_assign = self.draw_tool_palette_key_assign(&ctx, keymap);
+        ViewerOutput { nav, close_requested: close_self, save_slots, spread_save_action, sort_save_action, thumbnail_save_action, bookmark_save_action, rating_save_action, favorite_add_requested, toggle_translate_window, tool_palette_changed, magnifier_settings_changed: std::mem::take(&mut self.magnifier_settings_dirty), palette_key_assign }
     }
 
     /// ツールパレットの変更確定処理。image_filterのpoll_image_filter_debounceと同じ考え方で、
@@ -2423,7 +2456,11 @@ impl ViewerState {
                 }
                 egui::Popup::context_menu(&slot_resp)
                     .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-                    .show(|ui| Self::draw_tool_palette_slot_menu(ui, &mut self.tool_palette.slots[idx], &mut self.tool_palette.custom_labels[idx], lang));
+                    .show(|ui| {
+                        if Self::draw_tool_palette_slot_menu(ui, &mut self.tool_palette.slots[idx], &mut self.tool_palette.custom_labels[idx], lang) {
+                            self.tool_palette_key_assign_request = Some(idx);
+                        }
+                    });
 
                 // 左クリック: Toggle型は即時実行してViewerConfigへ反映する
                 // （既存のpoll_image_filter_changeが差分検知して再デコードをトリガーする）。
@@ -2438,16 +2475,7 @@ impl ViewerState {
                     egui::Stroke::new(1.0, egui::Color32::from_white_alpha(60)),
                     egui::StrokeKind::Inside,
                 );
-                let default_label = match content {
-                    crate::tool_palette::PaletteSlotContent::Toggle(kind) => {
-                        Some((crate::tool_palette::find_toggle_def(kind).label)(lang))
-                    }
-                    crate::tool_palette::PaletteSlotContent::Dialog(kind) => {
-                        Some(crate::tool_palette::create_dialog(kind).title(lang))
-                    }
-                    crate::tool_palette::PaletteSlotContent::Action(kind) => Some(kind.label(lang)),
-                    crate::tool_palette::PaletteSlotContent::Empty => None,
-                };
+                let default_label = Self::tool_palette_default_label(content, lang);
                 // カスタム名称: 未設定ならデフォルトラベル、空文字での確定は「何も表示しない」。
                 let slot_label: Option<String> = default_label.and_then(|default| {
                     match &self.tool_palette.custom_labels[idx] {
@@ -2665,7 +2693,9 @@ impl ViewerState {
         }
     }
 
-    fn draw_tool_palette_slot_menu(ui: &mut egui::Ui, content: &mut crate::tool_palette::PaletteSlotContent, custom_label: &mut Option<String>, lang: crate::i18n::Lang) {
+    /// 戻り値: true =「キー割当」が押された（ダイアログは呼び出し側が開く）。
+    fn draw_tool_palette_slot_menu(ui: &mut egui::Ui, content: &mut crate::tool_palette::PaletteSlotContent, custom_label: &mut Option<String>, lang: crate::i18n::Lang) -> bool {
+        let mut key_assign_requested = false;
         use crate::tool_palette::PaletteSlotContent;
         ui.set_min_width(140.0);
 
@@ -2693,6 +2723,10 @@ impl ViewerState {
                     }
                 });
             });
+            if ui.button(lang.tool_palette_key_assign_menu_label()).clicked() {
+                key_assign_requested = true;
+                ui.close();
+            }
         });
         ui.separator();
 
@@ -2722,6 +2756,59 @@ impl ViewerState {
                     }
                 }
             });
+        }
+        key_assign_requested
+    }
+
+    /// マス内容の既定の表示名（Toggle/Dialogの定義名、Actionのラベル）。空マスは None。
+    fn tool_palette_default_label(content: crate::tool_palette::PaletteSlotContent, lang: crate::i18n::Lang) -> Option<&'static str> {
+        use crate::tool_palette::PaletteSlotContent;
+        match content {
+            PaletteSlotContent::Toggle(kind) => Some((crate::tool_palette::find_toggle_def(kind).label)(lang)),
+            PaletteSlotContent::Dialog(kind) => Some(crate::tool_palette::create_dialog(kind).title(lang)),
+            PaletteSlotContent::Action(kind) => Some(kind.label(lang)),
+            PaletteSlotContent::Empty => None,
+        }
+    }
+
+    /// キー割当ダイアログ用の機能名。パレット上のマスならカスタム名（空文字は既定名に読み替え）、
+    /// 置かれていなければ既定名。
+    fn tool_palette_function_name(&self, id: &str, lang: crate::i18n::Lang) -> String {
+        let content = crate::tool_palette::slot_content_from_id(id);
+        let default = Self::tool_palette_default_label(content, lang).unwrap_or(id);
+        let custom = self.tool_palette.slots.iter()
+            .position(|&c| c != crate::tool_palette::PaletteSlotContent::Empty && c == content)
+            .and_then(|idx| self.tool_palette.custom_labels[idx].clone())
+            .filter(|l| !l.is_empty());
+        custom.unwrap_or_else(|| default.to_string())
+    }
+
+    /// キー割当ダイアログを開く要求を処理し、表示中なら1フレーム描く。
+    /// 戻り値は確定した割り当て（機能ID, 新しいキー。None = 割当解除）。
+    fn draw_tool_palette_key_assign(&mut self, ctx: &egui::Context, keymap: &Keymap) -> Option<(String, Option<crate::keymap::KeyCombo>)> {
+        use crate::tool_palette::KeyAssignOutcome;
+        let lang = crate::i18n::t();
+        if let Some(idx) = self.tool_palette_key_assign_request.take() {
+            let content = self.tool_palette.slots[idx];
+            if content != crate::tool_palette::PaletteSlotContent::Empty {
+                let id = crate::tool_palette::slot_content_to_id(content);
+                let name = self.tool_palette_function_name(&id, lang);
+                let current = keymap.palette_keyboard(&id);
+                self.tool_palette_key_assign = Some(crate::tool_palette::KeyAssignDialog::new(id, name, current));
+            }
+        }
+        let mut dialog = self.tool_palette_key_assign.take()?;
+        let outcome = crate::tool_palette::key_assign::show(ctx, &mut dialog, keymap, lang, |owner| match owner {
+            crate::keymap::ViewerKeyOwner::Reader(a) => a.display_name().to_string(),
+            crate::keymap::ViewerKeyOwner::Palette(id) => self.tool_palette_function_name(id, lang),
+        });
+        match outcome {
+            KeyAssignOutcome::Open => {
+                self.tool_palette_key_assign = Some(dialog);
+                None
+            }
+            KeyAssignOutcome::Close => None,
+            KeyAssignOutcome::Save(kb) => Some((dialog.id, kb)),
         }
     }
 
@@ -7509,6 +7596,24 @@ mod magnifier_flow_tests {
         let before = h.viewer.spread_lo();
         press_palette_key(&mut h, egui::Key::N);
         assert_eq!(h.viewer.spread_lo(), before);
+    }
+
+    #[test]
+    fn key_assign_dialog_captures_keys_instead_of_the_viewer() {
+        let mut h = Harness::with_pages(5, 800, 1200);
+        h.viewer.tool_palette.slots[3] = crate::tool_palette::PaletteSlotContent::Action(crate::tool_palette::ActionKind::NextPage);
+        h.viewer.tool_palette_key_assign_request = Some(3);
+        h.frame(vec![], egui::Modifiers::NONE);
+        assert!(h.viewer.tool_palette_key_assign.is_some(), "ダイアログが開かない");
+        let before = h.viewer.spread_lo();
+        press_palette_key(&mut h, egui::Key::ArrowDown);
+        assert_eq!(h.viewer.spread_lo(), before, "ダイアログ表示中にページが送られた");
+        let dialog = h.viewer.tool_palette_key_assign.as_ref().expect("ダイアログが閉じた");
+        assert_eq!(dialog.combo(), Some(crate::keymap::KeyCombo::plain(egui::Key::ArrowDown)));
+        // Esc では閉じず、割り当ても変わらない
+        press_palette_key(&mut h, egui::Key::Escape);
+        let dialog = h.viewer.tool_palette_key_assign.as_ref().expect("Escで閉じた");
+        assert_eq!(dialog.combo(), Some(crate::keymap::KeyCombo::plain(egui::Key::ArrowDown)));
     }
 
     #[test]
