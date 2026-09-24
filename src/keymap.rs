@@ -216,22 +216,33 @@ pub struct ActionBinding {
     pub default_mouse: Option<MouseCombo>,
     pub keyboard: Option<KeyCombo>,
     pub mouse: Option<MouseCombo>,
+    /// true = キーボード割り当てを明示的に外した（既定キーにも戻さない）。
+    /// keyboard == None だけだと「既定に戻す」と区別できないため別フラグで持つ。
+    /// ツールボックスのキー割当で既存アクションのキーを上書きしたときに立つ。
+    pub keyboard_cleared: bool,
 }
 
 impl ActionBinding {
     const fn keyboard_only(default: KeyCombo) -> Self {
-        Self { default_keyboard: Some(default), default_mouse: None, keyboard: None, mouse: None }
+        Self { default_keyboard: Some(default), default_mouse: None, keyboard: None, mouse: None, keyboard_cleared: false }
     }
     const fn mouse_only(default: MouseCombo) -> Self {
-        Self { default_keyboard: None, default_mouse: Some(default), keyboard: None, mouse: None }
+        Self { default_keyboard: None, default_mouse: Some(default), keyboard: None, mouse: None, keyboard_cleared: false }
     }
     const fn both(kb: KeyCombo, mouse: MouseCombo) -> Self {
-        Self { default_keyboard: Some(kb), default_mouse: Some(mouse), keyboard: None, mouse: None }
+        Self { default_keyboard: Some(kb), default_mouse: Some(mouse), keyboard: None, mouse: None, keyboard_cleared: false }
     }
 
     /// 現在有効なキーボード割り当て（ユーザー設定 > 既定）
     pub fn effective_keyboard(&self) -> Option<KeyCombo> {
+        if self.keyboard_cleared {
+            return None;
+        }
         self.keyboard.or(self.default_keyboard)
+    }
+    /// キーボード割り当てが既定から変更されているか（リセットボタンの有効判定用）。
+    pub fn is_keyboard_customized(&self) -> bool {
+        self.keyboard.is_some() || self.keyboard_cleared
     }
     /// 現在有効なマウス割り当て（ユーザー設定 > 既定）
     pub fn effective_mouse(&self) -> Option<MouseCombo> {
@@ -471,6 +482,16 @@ pub struct MagnifierZoomNotice {
 pub struct Keymap {
     reader: std::collections::BTreeMap<ReaderAction, ActionBinding>,
     explorer: std::collections::BTreeMap<ExplorerAction, ActionBinding>,
+    /// ツールボックス機能ID（slot_content_to_id の値）→ キー。割り当てのある機能だけ持つ。
+    palette: std::collections::BTreeMap<String, KeyCombo>,
+}
+
+/// ビューアー内のキー割り当ての持ち主。ツールボックスのキー割当ダイアログの衝突判定で使う。
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum ViewerKeyOwner {
+    Reader(ReaderAction),
+    /// ツールボックス機能（永続化ID）
+    Palette(String),
 }
 
 impl Keymap {
@@ -481,14 +502,30 @@ impl Keymap {
         self.explorer.get(&action).copied().unwrap_or_else(|| action.default_binding())
     }
 
+    /// kb = None は「既定に戻す」。割り当てを外す場合は clear_reader_keyboard を使う。
     pub fn set_reader_keyboard(&mut self, action: ReaderAction, kb: Option<KeyCombo>) {
-        self.reader.entry(action).or_insert_with(|| action.default_binding()).keyboard = kb;
+        let b = self.reader.entry(action).or_insert_with(|| action.default_binding());
+        b.keyboard = kb;
+        b.keyboard_cleared = false;
+    }
+    /// キーボード割り当てを明示的に外す（既定キーも無効にする）。
+    pub fn clear_reader_keyboard(&mut self, action: ReaderAction) {
+        let b = self.reader.entry(action).or_insert_with(|| action.default_binding());
+        b.keyboard = None;
+        b.keyboard_cleared = true;
     }
     pub fn set_reader_mouse(&mut self, action: ReaderAction, m: Option<MouseCombo>) {
         self.reader.entry(action).or_insert_with(|| action.default_binding()).mouse = m;
     }
     pub fn set_explorer_keyboard(&mut self, action: ExplorerAction, kb: Option<KeyCombo>) {
-        self.explorer.entry(action).or_insert_with(|| action.default_binding()).keyboard = kb;
+        let b = self.explorer.entry(action).or_insert_with(|| action.default_binding());
+        b.keyboard = kb;
+        b.keyboard_cleared = false;
+    }
+    pub fn clear_explorer_keyboard(&mut self, action: ExplorerAction) {
+        let b = self.explorer.entry(action).or_insert_with(|| action.default_binding());
+        b.keyboard = None;
+        b.keyboard_cleared = true;
     }
     pub fn set_explorer_mouse(&mut self, action: ExplorerAction, m: Option<MouseCombo>) {
         self.explorer.entry(action).or_insert_with(|| action.default_binding()).mouse = m;
@@ -508,6 +545,56 @@ impl Keymap {
     pub fn find_explorer_keyboard_conflict(&self, kb: KeyCombo, exclude: ExplorerAction) -> Option<ExplorerAction> {
         ExplorerAction::ALL.iter().copied()
             .find(|&a| a != exclude && self.explorer_binding(a).effective_keyboard() == Some(kb))
+    }
+
+    /// ツールボックス機能（永続化ID、例 "toggle:magnifier"）のキーボード割り当て。
+    pub fn palette_keyboard(&self, id: &str) -> Option<KeyCombo> {
+        self.palette.get(id).copied()
+    }
+    /// ツールボックス機能の割り当てを全件列挙する（キー押下判定用）。
+    pub fn palette_bindings(&self) -> impl Iterator<Item = (&str, KeyCombo)> {
+        self.palette.iter().map(|(id, &kb)| (id.as_str(), kb))
+    }
+
+    /// ビューアー内（ReaderAction＋ツールボックス機能）で kb を使っている他の割り当てを探す。
+    /// `exclude` は判定対象自身。ReaderActionを先に調べる。
+    pub fn find_viewer_keyboard_conflict(&self, kb: KeyCombo, exclude: &ViewerKeyOwner) -> Option<ViewerKeyOwner> {
+        let reader = ReaderAction::ALL.iter().copied()
+            .map(ViewerKeyOwner::Reader)
+            .find(|o| o != exclude && self.owner_keyboard(o) == Some(kb));
+        reader.or_else(|| {
+            self.palette.iter()
+                .map(|(id, &k)| (ViewerKeyOwner::Palette(id.clone()), k))
+                .find(|(o, k)| o != exclude && *k == kb)
+                .map(|(o, _)| o)
+        })
+    }
+
+    /// 割り当て元の現在有効なキーボード入力。
+    pub fn owner_keyboard(&self, owner: &ViewerKeyOwner) -> Option<KeyCombo> {
+        match owner {
+            ViewerKeyOwner::Reader(a) => self.reader_binding(*a).effective_keyboard(),
+            ViewerKeyOwner::Palette(id) => self.palette_keyboard(id),
+        }
+    }
+
+    /// ツールボックス機能 `id` のキー割り当てを確定する（None = 割当解除）。
+    /// 衝突相手がいればその割り当てを外し（上書き優先）、外した相手を返す。
+    /// 呼び出し側は事前に find_viewer_keyboard_conflict で衝突を確認し、ユーザーが
+    /// 「上書き」を選んだときだけ衝突ありのまま呼ぶこと。
+    pub fn assign_palette_keyboard(&mut self, id: &str, kb: Option<KeyCombo>) -> Option<ViewerKeyOwner> {
+        let Some(kb) = kb else {
+            self.palette.remove(id);
+            return None;
+        };
+        let conflict = self.find_viewer_keyboard_conflict(kb, &ViewerKeyOwner::Palette(id.to_string()));
+        match &conflict {
+            Some(ViewerKeyOwner::Reader(a)) => self.clear_reader_keyboard(*a),
+            Some(ViewerKeyOwner::Palette(other)) => { self.palette.remove(other); }
+            None => {}
+        }
+        self.palette.insert(id.to_string(), kb);
+        conflict
     }
 
     /// 虫眼鏡の拡大縮小（既定: Shift+ホイール）を、他のアクションと競合しない修飾キーへ割り当てる。
@@ -559,6 +646,12 @@ impl Keymap {
                     apply_slot_explorer(self, action, slot, value);
                 }
             }
+            // IDの妥当性はここでは見ない（未知IDは実行側で一致する機能が無いだけ）。
+            "palette" if slot == "keyboard" && !action_name.is_empty() => {
+                if let Some(kb) = KeyCombo::from_config_str(value) {
+                    self.palette.insert(action_name.to_string(), kb);
+                }
+            }
             _ => {}
         }
     }
@@ -571,6 +664,9 @@ impl Keymap {
         }
         for (&action, binding) in &self.explorer {
             push_binding_lines(&mut lines, "explorer", action.key_str(), binding);
+        }
+        for (id, kb) in &self.palette {
+            lines.push(format!("palette.{id}.keyboard = {}", kb.to_config_string()));
         }
         lines
     }
@@ -641,6 +737,8 @@ const KEYMAP_INI_HEADER: &str = "\
 #  ・手動編集する場合の形式:
 #      reader.<アクション名>.keyboard / .mouse = 値
 #      explorer.<アクション名>.keyboard = 値
+#      palette.<ツールボックス機能ID>.keyboard = 値   （例: palette.toggle:magnifier.keyboard = M）
+#    keyboard に none を指定すると、既定キーも含めて割り当てなしになります。
 #    キーボード値の例: ArrowUp / shift+ArrowUp / alt+Enter
 #    マウス値の例: wheel_up / shift_wheel_down / middle_click
 # ============================================================================
@@ -653,12 +751,17 @@ impl Default for Keymap {
         Self {
             reader: ReaderAction::ALL.iter().map(|&a| (a, a.default_binding())).collect(),
             explorer: ExplorerAction::ALL.iter().map(|&a| (a, a.default_binding())).collect(),
+            palette: std::collections::BTreeMap::new(),
         }
     }
 }
 
+/// keymap.ini で「割り当てなし（既定キーも無効）」を表す値。
+const KEYBOARD_NONE: &str = "none";
+
 fn apply_slot_reader(map: &mut Keymap, action: ReaderAction, slot: &str, value: &str) {
     match slot {
+        "keyboard" if value == KEYBOARD_NONE => map.clear_reader_keyboard(action),
         "keyboard" => map.set_reader_keyboard(action, KeyCombo::from_config_str(value)),
         "mouse"    => map.set_reader_mouse(action, MouseCombo::from_config_str(value)),
         _ => {}
@@ -667,6 +770,7 @@ fn apply_slot_reader(map: &mut Keymap, action: ReaderAction, slot: &str, value: 
 
 fn apply_slot_explorer(map: &mut Keymap, action: ExplorerAction, slot: &str, value: &str) {
     match slot {
+        "keyboard" if value == KEYBOARD_NONE => map.clear_explorer_keyboard(action),
         "keyboard" => map.set_explorer_keyboard(action, KeyCombo::from_config_str(value)),
         "mouse"    => map.set_explorer_mouse(action, MouseCombo::from_config_str(value)),
         _ => {}
@@ -674,7 +778,9 @@ fn apply_slot_explorer(map: &mut Keymap, action: ExplorerAction, slot: &str, val
 }
 
 fn push_binding_lines(lines: &mut Vec<String>, scope: &str, action_name: &str, binding: &ActionBinding) {
-    if let Some(kb) = binding.keyboard {
+    if binding.keyboard_cleared {
+        lines.push(format!("{scope}.{action_name}.keyboard = {KEYBOARD_NONE}"));
+    } else if let Some(kb) = binding.keyboard {
         lines.push(format!("{scope}.{action_name}.keyboard = {}", kb.to_config_string()));
     }
     if let Some(m) = binding.mouse {
@@ -883,5 +989,82 @@ mod tests {
         km.apply_ini_entry("reader.NoSuchAction.keyboard", "ArrowUp");
         km.apply_ini_entry("reader.PagePrev.unknown_slot", "ArrowUp");
         assert!(km.to_ini_lines().is_empty());
+    }
+
+    #[test]
+    fn clear_reader_keyboard_disables_default_and_roundtrips_ini() {
+        let mut km = Keymap::default();
+        km.clear_reader_keyboard(ReaderAction::JumpFirstPage);
+        assert_eq!(km.reader_binding(ReaderAction::JumpFirstPage).effective_keyboard(), None);
+        let lines = km.to_ini_lines();
+        assert!(lines.iter().any(|l| l == "reader.JumpFirstPage.keyboard = none"));
+
+        let mut km2 = Keymap::default();
+        km2.apply_ini_entry("reader.JumpFirstPage.keyboard", "none");
+        assert_eq!(km2.reader_binding(ReaderAction::JumpFirstPage).effective_keyboard(), None);
+        assert!(km2.reader_binding(ReaderAction::JumpFirstPage).is_keyboard_customized());
+    }
+
+    #[test]
+    fn set_reader_keyboard_none_restores_default_after_clear() {
+        let mut km = Keymap::default();
+        km.clear_reader_keyboard(ReaderAction::JumpFirstPage);
+        km.set_reader_keyboard(ReaderAction::JumpFirstPage, None);
+        let b = km.reader_binding(ReaderAction::JumpFirstPage);
+        assert_eq!(b.effective_keyboard(), Some(KeyCombo::plain(Key::Home)));
+        assert!(!b.is_keyboard_customized());
+    }
+
+    #[test]
+    fn palette_keyboard_roundtrips_ini() {
+        let mut km = Keymap::default();
+        let kb = KeyCombo { key: Key::M, ctrl: true, shift: false, alt: false };
+        assert_eq!(km.assign_palette_keyboard("toggle:magnifier", Some(kb)), None);
+        let lines = km.to_ini_lines();
+        assert!(lines.iter().any(|l| l == "palette.toggle:magnifier.keyboard = ctrl+M"));
+
+        let mut km2 = Keymap::default();
+        km2.apply_ini_entry("palette.toggle:magnifier.keyboard", "ctrl+M");
+        assert_eq!(km2.palette_keyboard("toggle:magnifier"), Some(kb));
+    }
+
+    #[test]
+    fn viewer_conflict_detects_reader_and_palette() {
+        let mut km = Keymap::default();
+        let me = ViewerKeyOwner::Palette("toggle:magnifier".to_string());
+        assert_eq!(
+            km.find_viewer_keyboard_conflict(KeyCombo::plain(Key::Home), &me),
+            Some(ViewerKeyOwner::Reader(ReaderAction::JumpFirstPage)),
+        );
+        km.assign_palette_keyboard("toggle:image_info", Some(KeyCombo::plain(Key::I)));
+        assert_eq!(
+            km.find_viewer_keyboard_conflict(KeyCombo::plain(Key::I), &me),
+            Some(ViewerKeyOwner::Palette("toggle:image_info".to_string())),
+        );
+        // 自分自身は衝突扱いしない
+        let other = ViewerKeyOwner::Palette("toggle:image_info".to_string());
+        assert_eq!(km.find_viewer_keyboard_conflict(KeyCombo::plain(Key::I), &other), None);
+    }
+
+    #[test]
+    fn assign_palette_keyboard_overrides_reader_binding() {
+        let mut km = Keymap::default();
+        let removed = km.assign_palette_keyboard("toggle:magnifier", Some(KeyCombo::plain(Key::Home)));
+        assert_eq!(removed, Some(ViewerKeyOwner::Reader(ReaderAction::JumpFirstPage)));
+        assert_eq!(km.reader_binding(ReaderAction::JumpFirstPage).effective_keyboard(), None);
+        assert_eq!(km.palette_keyboard("toggle:magnifier"), Some(KeyCombo::plain(Key::Home)));
+    }
+
+    #[test]
+    fn assign_palette_keyboard_overrides_other_palette_and_unassigns() {
+        let mut km = Keymap::default();
+        km.assign_palette_keyboard("toggle:image_info", Some(KeyCombo::plain(Key::I)));
+        let removed = km.assign_palette_keyboard("toggle:magnifier", Some(KeyCombo::plain(Key::I)));
+        assert_eq!(removed, Some(ViewerKeyOwner::Palette("toggle:image_info".to_string())));
+        assert_eq!(km.palette_keyboard("toggle:image_info"), None);
+
+        assert_eq!(km.assign_palette_keyboard("toggle:magnifier", None), None);
+        assert_eq!(km.palette_keyboard("toggle:magnifier"), None);
+        assert!(!km.to_ini_lines().iter().any(|l| l.starts_with("palette.")));
     }
 }

@@ -1141,12 +1141,12 @@ fn draw_settings_tab_keymap(ui: &mut egui::Ui, draft: &mut SettingsDraft) {
             let r1 = keymap_feature_cell(ui, cell_bg, KEYMAP_COL_FEATURE_W, action.display_name());
             let r2 = keymap_cell(ui, cell_bg, KEYMAP_COL_KB_W, |ui| {
                 if ui.add_sized([KEYMAP_BUTTON_W, 18.0], egui::Button::new("変更").small()).clicked() {
-                    draft.key_capture_dialog = Some(KeyCaptureDialogState::new(KeymapCaptureTarget::Reader(action), binding.keyboard.or(binding.default_keyboard)));
+                    draft.key_capture_dialog = Some(KeyCaptureDialogState::new(KeymapCaptureTarget::Reader(action), binding.effective_keyboard()));
                 }
-                if draw_reset_button(ui, binding.keyboard.is_some()) {
+                if draw_reset_button(ui, binding.is_keyboard_customized()) {
                     draft.keymap.set_reader_keyboard(action, None);
                 }
-                draw_key_combo_line(ui, binding.keyboard.or(binding.default_keyboard));
+                draw_key_combo_line(ui, binding.effective_keyboard());
             });
             let r3 = keymap_cell(ui, cell_bg, KEYMAP_COL_MOUSE_W, |ui| {
                 if ui.add_sized([KEYMAP_BUTTON_W, 18.0], egui::Button::new("変更").small()).clicked() {
@@ -1179,12 +1179,12 @@ fn draw_settings_tab_keymap(ui: &mut egui::Ui, draft: &mut SettingsDraft) {
             let r2 = keymap_cell(ui, cell_bg, KEYMAP_COL_KB_W, |ui| {
                 ui.add_enabled_ui(editable, |ui| {
                     if ui.add_sized([KEYMAP_BUTTON_W, 18.0], egui::Button::new("変更").small()).clicked() {
-                        draft.key_capture_dialog = Some(KeyCaptureDialogState::new(KeymapCaptureTarget::Explorer(action), binding.keyboard.or(binding.default_keyboard)));
+                        draft.key_capture_dialog = Some(KeyCaptureDialogState::new(KeymapCaptureTarget::Explorer(action), binding.effective_keyboard()));
                     }
-                    if draw_reset_button(ui, binding.keyboard.is_some()) {
+                    if draw_reset_button(ui, binding.is_keyboard_customized()) {
                         draft.keymap.set_explorer_keyboard(action, None);
                     }
-                    draw_key_combo_line(ui, binding.keyboard.or(binding.default_keyboard));
+                    draw_key_combo_line(ui, binding.effective_keyboard());
                 });
             });
             draw_keymap_row_borders(ui, &[r1, r2]);
