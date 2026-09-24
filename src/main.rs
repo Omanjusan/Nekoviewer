@@ -156,6 +156,8 @@ fn main() {
 
     log_common!("[startup] starting winit event loop ...");
     winit_app::run(start_dir, cfg, state, open_target);
+    // run() の戻りで WinitApp（spread.redb を含む）は破棄済み。DB を閉じてからロックを明示解放し、
+    // FUSE 待ちのスレッドでプロセスが残っても、次の起動が「既に起動中」にならないようにする。
     drop(instance_guard);
 }
 
