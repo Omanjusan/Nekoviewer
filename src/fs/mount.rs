@@ -109,12 +109,15 @@ fn parse_smb_endpoint(name: &str) -> Option<(String, Vec<u16>)> {
 }
 
 /// host の各ポート・各アドレスへ順に TCP 接続を試み、1件でも繋がれば true。
+/// 名前解決は1回だけ行う（.local の mDNS は不通時に数秒かかるため、ポートごとに解決すると
+/// その分だけ判定が遅れる）。
 #[cfg(unix)]
 fn tcp_reachable(host: &str, ports: &[u16], timeout: std::time::Duration) -> bool {
-    use std::net::{TcpStream, ToSocketAddrs};
+    use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
+    let Ok(addrs) = (host, 0).to_socket_addrs() else { return false };
+    let ips: Vec<_> = addrs.map(|a| a.ip()).collect();
     ports.iter().any(|&port| {
-        let Ok(addrs) = (host, port).to_socket_addrs() else { return false };
-        addrs.into_iter().any(|addr| TcpStream::connect_timeout(&addr, timeout).is_ok())
+        ips.iter().any(|&ip| TcpStream::connect_timeout(&SocketAddr::new(ip, port), timeout).is_ok())
     })
 }
 
