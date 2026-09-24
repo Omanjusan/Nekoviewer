@@ -6,11 +6,13 @@
 pub mod action;
 pub mod category;
 pub mod dialog;
+pub mod key_assign;
 pub mod toggle;
 
 pub use action::ActionKind;
 pub use category::ALL_CATEGORIES;
 pub use dialog::{create_dialog, DialogKind};
+pub use key_assign::{KeyAssignDialog, KeyAssignOutcome};
 pub use toggle::{execute_toggle, find_toggle_def, ToggleKind};
 
 /// グリッド列数（固定）。
@@ -99,6 +101,16 @@ impl Default for PaletteState {
             slots: [PaletteSlotContent::Empty; SLOT_COUNT],
             custom_labels: [(); SLOT_COUNT].map(|_| None),
         }
+    }
+}
+
+/// マス内容の既定の表示名（Toggle/Dialogの定義名、Actionのラベル）。空マスは None。
+pub fn default_label(content: PaletteSlotContent, lang: crate::i18n::Lang) -> Option<&'static str> {
+    match content {
+        PaletteSlotContent::Toggle(kind) => Some((find_toggle_def(kind).label)(lang)),
+        PaletteSlotContent::Dialog(kind) => Some(create_dialog(kind).title(lang)),
+        PaletteSlotContent::Action(kind) => Some(kind.label(lang)),
+        PaletteSlotContent::Empty => None,
     }
 }
 

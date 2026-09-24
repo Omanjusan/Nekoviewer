@@ -671,6 +671,13 @@ impl ApplicationHandler<UserEvent> for WinitApp {
             WindowEvent::CloseRequested => {
                 if is_explorer {
                     // エクスプローラー窓を閉じる＝アプリ終了。
+                    // 終了処理の約束: 保存などの終了処理はすべて窓が見えている間（on_exit）に済ませる。
+                    // 窓の破棄（exiting）以降に残してよいのは、FUSE（gvfs）の応答待ちで止まっている
+                    // バックグラウンドスレッドの決着だけ。FUSE の要求は kill しても gvfsd の応答まで
+                    // 終わらないため、プロセスが窓もロックも無いまま数秒残ることがある。
+                    // そうしたスレッドは spread.redb を握らないこと（再起動時に開けなくなる）。
+                    // 既知の例外: サムネ生成ワーカーはフォルダごとの cache.redb を持ったまま SMB を
+                    // 読むため、直後に再起動するとそのフォルダのサムネキャッシュが一時的に効かない（許容）。
                     if let Some(app) = self.app.as_mut() {
                         app.on_exit();
                     }

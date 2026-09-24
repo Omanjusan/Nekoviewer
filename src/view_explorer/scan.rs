@@ -4,7 +4,7 @@ use std::sync::atomic::Ordering;
 
 use crate::neko_dir;
 use crate::fs::dir;
-use crate::fs::mount::{list_gvfs_smb_mounts, list_local_drives};
+use crate::fs::mount::list_local_drives;
 use super::*;
 
 fn thumbnail_local_limit(
@@ -253,19 +253,10 @@ impl NekoviewApp {
         // 既に不通判定済みのマウントは、復活が確認できるまで一覧に出さない
         // （出してしまうと次のリロードごとに表示→非表示を繰り返すため）。
         //
-        // mount_check_pending が空でない（＝バックグラウンドの到達可否チェックが
-        // 進行中）間は list_gvfs_smb_mounts() を呼ばない。進行中チェックの read_dir と
-        // 同時にトップレベル /run/user/uid/gvfs を readdir すると gvfsd 内部で
-        // ロック競合し、メインスレッドまでブロックされることがあるため。
-        // その間は直前に取得済みの gvfs_mount_entries をそのまま使い回す。
+        // gvfs のマウント一覧はバックグラウンドで取り直し（トップレベルの readdir も FUSE 経由で
+        // 止まりうるため）、届くまでは直前に取得済みの gvfs_mount_entries を使い回す。
         let mut drives = list_local_drives();
-        if self.mount_check_pending.is_empty() {
-            let gvfs_mounts = list_gvfs_smb_mounts();
-            for mount in &gvfs_mounts {
-                self.spawn_mount_check_if_needed(mount.path.clone());
-            }
-            self.gvfs_mount_entries = gvfs_mounts;
-        }
+        self.start_gvfs_list();
         drives.extend(
             self.gvfs_mount_entries
                 .iter()

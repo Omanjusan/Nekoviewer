@@ -555,6 +555,11 @@ impl NekoviewApp {
             self.persist_state();
         }
 
+        if let Some((id, kb)) = output.palette_key_assign {
+            self.config.keymap.assign_palette_keyboard(&id, kb);
+            self.config.keymap.save(&self.config.config_root);
+        }
+
         if let Some(action) = output.spread_save_action {
             self.handle_spread_save_action(action);
         }

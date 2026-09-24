@@ -90,6 +90,9 @@ pub struct ViewerOutput {
     /// true のとき app 側で persist_state() を呼ぶ（虫眼鏡のノッチ倍率／目盛りの詳細・簡易を
     /// 切り替えた直後の1フレームだけtrue）。
     pub magnifier_settings_changed: bool,
+    /// Some((機能ID, キー)) のとき app 側でツールボックス機能のキー割当を keymap へ反映し
+    /// keymap.ini を保存する（キー None = 割当解除。衝突相手の割り当ては外れる）。
+    pub palette_key_assign: Option<(String, Option<crate::keymap::KeyCombo>)>,
 }
 
 // ── ステータス即時更新要求 ────────────────────────────────────────────────────
