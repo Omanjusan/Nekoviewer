@@ -10,7 +10,7 @@ use crate::gui_config::{SortState, ViewerConfig, WindowSlot};
 use crate::view_gui_config::{SettingsDraft, SettingsTab};
 use crate::i18n;
 use crate::types::ExplorerSortKey;
-use crate::fs::{dir, mount::{list_gvfs_smb_mounts, list_local_drives, MountEntry}};
+use crate::fs::{dir, mount::{list_local_drives, MountEntry}};
 use crate::view_reader::ViewerState;
 
 impl crate::explorer_sort::RatingSortKey {
@@ -798,12 +798,12 @@ pub struct NekoviewApp {
     /// ファイル切替後も維持するビューア設定（zoom・fullscreen 等）
     pub(crate) viewer_cfg: Arc<Mutex<ViewerConfig>>,
     drives: Vec<MountEntry>,
-    /// 既知のGVFS SMBマウント一覧（到達可否に関係なく列挙時点の全件）。
-    /// panels.rs等でパス単位の判定に使う際、毎フレーム read_dir("/run/user/uid/gvfs")
-    /// を避けるためのキャッシュ。reload_current() 側で「進行中の到達可否チェックが
-    /// 無い時だけ」readdirして更新する（進行中チェックと同時にreaddirすると
-    /// gvfsd内部でロック競合してメインスレッドがブロックされるため）。
+    /// 既知のGVFS SMBマウント一覧（到達可否に関係なく列挙時点の全件）。ドライブ一覧の組み立て用。
+    /// gvfs のトップレベル readdir は FUSE 経由で止まりうるため、起動時・reload_current() で
+    /// バックグラウンド取得を発火し、結果が届いた時点（poll_gvfs_list）で差し替える。
     gvfs_mount_entries: Vec<MountEntry>,
+    /// バックグラウンドで進行中の gvfs マウント一覧取得（同時に1件のみ）
+    gvfs_list_pending: Option<mpsc::Receiver<Vec<MountEntry>>>,
     page_cache: Arc<Mutex<PageCache>>,
     file_cache: FileCache,
     file_cache_req_tx: mpsc::Sender<std::path::PathBuf>,
@@ -1094,10 +1094,14 @@ impl NekoviewApp {
             spawn_thumb_worker(config.resolved_decode_threads(), ctx.clone());
         let (entry_thumb_req_tx, entry_thumb_res_rx) = spawn_entry_thumb_worker(config.thumb_filter.to_image_filter(), config.resolved_decode_threads(), ctx.clone());
         let (file_cache_req_tx, file_cache_res_rx) = spawn_file_cache_worker(ctx.clone(), file_cache_max);
+        // gvfs の一覧はバックグラウンド取得（起動後に poll_gvfs_list で反映）。起動フォルダが
+        // SMB 配下のときだけ、ツリールートを決めるためにパスからマウント大元を I/O なしで補う。
         let mut drives = list_local_drives();
-        let gvfs_mounts = list_gvfs_smb_mounts();
-        let gvfs_mount_entries = gvfs_mounts.clone();
-        drives.extend(gvfs_mounts);
+        let gvfs_mount_entries: Vec<MountEntry> = crate::fs::mount::network_mount_root(&start_dir)
+            .and_then(|root| crate::fs::mount::smb_mount_entry(&root))
+            .into_iter()
+            .collect();
+        drives.extend(gvfs_mount_entries.iter().cloned());
 
         // start_dir を含むドライブのパスをツリーのルートにする
         let tree_root = drives
@@ -1204,6 +1208,7 @@ impl NekoviewApp {
             viewer_cfg: Arc::new(Mutex::new(viewer_cfg)),
             drives,
             gvfs_mount_entries,
+            gvfs_list_pending: None,
             page_cache: Arc::new(Mutex::new(PageCache::new(cache_max, cache_min))),
             file_cache: FileCache::new(file_cache_max),
             file_cache_req_tx,
@@ -1329,12 +1334,10 @@ impl NekoviewApp {
         // 進める）。現在地が tree_root 配下でなければ start_tree_autofocus 側で no-op。
         app.viewing_dir = Some(app.current_dir.clone());
         app.start_tree_autofocus(app.current_dir.clone());
-        // 起動時点でGVFSマウントの到達可否確認を仕込んでおく。
-        // ユーザーが最初にリロードを押す頃には判定が終わっている見込みが立ち、
+        // 起動時点でGVFSマウント一覧の取得を仕込んでおく。結果が届くと各マウントの到達可否確認も
+        // 発火するため、ユーザーが最初にリロードを押す頃には判定が終わっている見込みが立ち、
         // 「初回リロードでは切断先が消えない」体感を和らげる。
-        for mount in app.gvfs_mount_entries.clone() {
-            app.spawn_mount_check_if_needed(mount.path);
-        }
+        app.start_gvfs_list();
         // 最後に選んでいたタブを開く（実ツリー以外のとき。起動処理が済んだ後に切り替える）
         app.restore_active_tab();
         app
