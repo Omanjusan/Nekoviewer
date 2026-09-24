@@ -17,7 +17,7 @@ use crate::image_filter::{
     BRIGHTNESS_FLOOR, ColorFilterMode, FILTER_STAGE_COUNT, FilterStage, GAMMA_CEILING, GAMMA_DEFAULT,
     GAMMA_FLOOR, ImageFilterSettings, SHARPNESS_CEILING, SHARPNESS_DEFAULT, SHARPNESS_FLOOR,
 };
-use crate::keymap::{Keymap, ReaderAction, ExplorerAction, KeyCombo, MouseCombo, MouseAction, mouse_action_name};
+use crate::keymap::{Keymap, ReaderAction, ExplorerAction, KeyCombo, MouseCombo, MouseAction, ViewerKeyOwner, mouse_action_name};
 use crate::translate::{OVERLAY_WIDTH_CEILING, OVERLAY_WIDTH_FLOOR, TranslateConfig};
 use crate::view_explorer::NekoviewApp;
 
@@ -389,7 +389,11 @@ impl SettingsDraft {
         translate_cfg.ocr_model = self.translate_ocr_model.trim().to_string();
         translate_cfg.translation_model = self.translate_translation_model.trim().to_string();
         translate_cfg.overlay_width = self.translate_overlay_width;
-        config.keymap = self.keymap.clone();
+        // ツールボックスのキー割当は設定ダイアログの管轄外。ダイアログを開いた後に
+        // ビューアー側で変更された分を巻き戻さないよう、現行値を引き継ぐ。
+        let mut keymap = self.keymap.clone();
+        keymap.copy_palette_from(&config.keymap);
+        config.keymap = keymap;
 
         viewer_cfg.image_filter = self.image_filter;
     }
@@ -1044,9 +1048,11 @@ fn draw_mod_badge(ui: &mut egui::Ui, label: &str, on: bool) {
     ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, label, egui::FontId::new(10.0, egui::FontFamily::Monospace), fg);
 }
 
-fn draw_key_combo_line(ui: &mut egui::Ui, kb: Option<KeyCombo>) {
+/// `cleared` = 既定キーも含めて明示的に外されている（ツールボックスのキー割当で上書きされた等）。
+fn draw_key_combo_line(ui: &mut egui::Ui, kb: Option<KeyCombo>, cleared: bool) {
     let (shift, ctrl, alt, key) = match kb {
         Some(k) => (k.shift, k.ctrl, k.alt, format!("{:?}", k.key)),
+        None if cleared => (false, false, false, "割り当てなし".to_string()),
         None => (false, false, false, "-".to_string()),
     };
     ui.spacing_mut().item_spacing.x = 3.0;
@@ -1146,7 +1152,7 @@ fn draw_settings_tab_keymap(ui: &mut egui::Ui, draft: &mut SettingsDraft) {
                 if draw_reset_button(ui, binding.is_keyboard_customized()) {
                     draft.keymap.set_reader_keyboard(action, None);
                 }
-                draw_key_combo_line(ui, binding.effective_keyboard());
+                draw_key_combo_line(ui, binding.effective_keyboard(), binding.keyboard_cleared);
             });
             let r3 = keymap_cell(ui, cell_bg, KEYMAP_COL_MOUSE_W, |ui| {
                 if ui.add_sized([KEYMAP_BUTTON_W, 18.0], egui::Button::new("変更").small()).clicked() {
@@ -1184,7 +1190,7 @@ fn draw_settings_tab_keymap(ui: &mut egui::Ui, draft: &mut SettingsDraft) {
                     if draw_reset_button(ui, binding.is_keyboard_customized()) {
                         draft.keymap.set_explorer_keyboard(action, None);
                     }
-                    draw_key_combo_line(ui, binding.effective_keyboard());
+                    draw_key_combo_line(ui, binding.effective_keyboard(), binding.keyboard_cleared);
                 });
             });
             draw_keymap_row_borders(ui, &[r1, r2]);
@@ -1282,8 +1288,16 @@ fn draw_key_capture_dialog(ctx: &egui::Context, draft: &mut SettingsDraft) {
     if let Some(combo) = confirm {
         let target = draft.key_capture_dialog.as_ref().unwrap().target;
         let conflict = match target {
-            KeymapCaptureTarget::Reader(a) => draft.keymap.find_reader_keyboard_conflict(combo, a).map(|c| c.display_name()),
-            KeymapCaptureTarget::Explorer(a) => draft.keymap.find_explorer_keyboard_conflict(combo, a).map(|c| c.display_name()),
+            // ビューアーはツールボックスのキー割当とも衝突し得るため、両方をまとめて調べる。
+            KeymapCaptureTarget::Reader(a) => draft.keymap.find_viewer_keyboard_conflict(combo, &ViewerKeyOwner::Reader(a)).map(|owner| match owner {
+                ViewerKeyOwner::Reader(c) => c.display_name().to_string(),
+                ViewerKeyOwner::Palette(id) => {
+                    let content = crate::tool_palette::slot_content_from_id(&id);
+                    let name = crate::tool_palette::default_label(content, crate::i18n::t()).unwrap_or(&id).to_string();
+                    format!("{name}（ツールボックス）")
+                }
+            }),
+            KeymapCaptureTarget::Explorer(a) => draft.keymap.find_explorer_keyboard_conflict(combo, a).map(|c| c.display_name().to_string()),
         };
         match target {
             KeymapCaptureTarget::Reader(a) => draft.keymap.set_reader_keyboard(a, Some(combo)),

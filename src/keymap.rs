@@ -551,6 +551,12 @@ impl Keymap {
     pub fn palette_keyboard(&self, id: &str) -> Option<KeyCombo> {
         self.palette.get(id).copied()
     }
+    /// ツールボックス機能の割り当てを other のものに置き換える。設定ダイアログはツールボックスの
+    /// 割り当てを編集しないため、ダイアログを開いている間にビューアー側で保存された割り当てを
+    /// ダイアログの保存で巻き戻さないよう、保存時に現行値を引き継ぐのに使う。
+    pub fn copy_palette_from(&mut self, other: &Keymap) {
+        self.palette = other.palette.clone();
+    }
     /// ツールボックス機能の割り当てを全件列挙する（キー押下判定用）。
     pub fn palette_bindings(&self) -> impl Iterator<Item = (&str, KeyCombo)> {
         self.palette.iter().map(|(id, &kb)| (id.as_str(), kb))
@@ -1066,5 +1072,16 @@ mod tests {
         assert_eq!(km.assign_palette_keyboard("toggle:magnifier", None), None);
         assert_eq!(km.palette_keyboard("toggle:magnifier"), None);
         assert!(!km.to_ini_lines().iter().any(|l| l.starts_with("palette.")));
+    }
+
+    #[test]
+    fn copy_palette_from_keeps_live_palette_bindings() {
+        let mut live = Keymap::default();
+        live.assign_palette_keyboard("toggle:magnifier", Some(KeyCombo::plain(Key::M)));
+        let mut draft = Keymap::default();
+        draft.set_reader_keyboard(ReaderAction::PagePrev, Some(KeyCombo::plain(Key::W)));
+        draft.copy_palette_from(&live);
+        assert_eq!(draft.palette_keyboard("toggle:magnifier"), Some(KeyCombo::plain(Key::M)));
+        assert_eq!(draft.reader_binding(ReaderAction::PagePrev).effective_keyboard(), Some(KeyCombo::plain(Key::W)));
     }
 }

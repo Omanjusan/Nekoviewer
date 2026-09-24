@@ -104,6 +104,16 @@ impl Default for PaletteState {
     }
 }
 
+/// マス内容の既定の表示名（Toggle/Dialogの定義名、Actionのラベル）。空マスは None。
+pub fn default_label(content: PaletteSlotContent, lang: crate::i18n::Lang) -> Option<&'static str> {
+    match content {
+        PaletteSlotContent::Toggle(kind) => Some((find_toggle_def(kind).label)(lang)),
+        PaletteSlotContent::Dialog(kind) => Some(create_dialog(kind).title(lang)),
+        PaletteSlotContent::Action(kind) => Some(kind.label(lang)),
+        PaletteSlotContent::Empty => None,
+    }
+}
+
 // ── 永続化（gui_config.rs の state ファイル） ───────────────────────
 // PaletteState自体はViewerConfigにそのまま埋め込む。ここではスロット内容⇔文字列の
 // 変換のみ提供する（gui_config.rsがカンマ区切りで tool_palette_slots として読み書きする）。

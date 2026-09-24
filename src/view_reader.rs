@@ -2475,7 +2475,7 @@ impl ViewerState {
                     egui::Stroke::new(1.0, egui::Color32::from_white_alpha(60)),
                     egui::StrokeKind::Inside,
                 );
-                let default_label = Self::tool_palette_default_label(content, lang);
+                let default_label = crate::tool_palette::default_label(content, lang);
                 // カスタム名称: 未設定ならデフォルトラベル、空文字での確定は「何も表示しない」。
                 let slot_label: Option<String> = default_label.and_then(|default| {
                     match &self.tool_palette.custom_labels[idx] {
@@ -2760,22 +2760,11 @@ impl ViewerState {
         key_assign_requested
     }
 
-    /// マス内容の既定の表示名（Toggle/Dialogの定義名、Actionのラベル）。空マスは None。
-    fn tool_palette_default_label(content: crate::tool_palette::PaletteSlotContent, lang: crate::i18n::Lang) -> Option<&'static str> {
-        use crate::tool_palette::PaletteSlotContent;
-        match content {
-            PaletteSlotContent::Toggle(kind) => Some((crate::tool_palette::find_toggle_def(kind).label)(lang)),
-            PaletteSlotContent::Dialog(kind) => Some(crate::tool_palette::create_dialog(kind).title(lang)),
-            PaletteSlotContent::Action(kind) => Some(kind.label(lang)),
-            PaletteSlotContent::Empty => None,
-        }
-    }
-
     /// キー割当ダイアログ用の機能名。パレット上のマスならカスタム名（空文字は既定名に読み替え）、
     /// 置かれていなければ既定名。
     fn tool_palette_function_name(&self, id: &str, lang: crate::i18n::Lang) -> String {
         let content = crate::tool_palette::slot_content_from_id(id);
-        let default = Self::tool_palette_default_label(content, lang).unwrap_or(id);
+        let default = crate::tool_palette::default_label(content, lang).unwrap_or(id);
         let custom = self.tool_palette.slots.iter()
             .position(|&c| c != crate::tool_palette::PaletteSlotContent::Empty && c == content)
             .and_then(|idx| self.tool_palette.custom_labels[idx].clone())
