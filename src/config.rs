@@ -337,9 +337,10 @@ impl AppConfig {
                 }
                 Some(last) => {
                     log_common!("[startup] last_dir: state file から読み込み成功 = {:?}", last);
-                    // ② 読み込めているか（アクセス可能か）
-                    let accessible = last.is_dir();
-                    log_common!("[startup] last_dir: アクセス確認 = {}", accessible);
+                    // ② 読み込めているか（アクセス可能か）。SMB 配下は確認せずフォールバックへ回す。
+                    let smb = is_smb_mount_path(last);
+                    let accessible = !smb && last.is_dir();
+                    log_common!("[startup] last_dir: アクセス確認 = {} (smb = {})", accessible, smb);
                     // ③ 復帰動作をしているか
                     if accessible {
                         log_common!("[startup] → last_dir に復帰: {:?}", last);
@@ -418,9 +419,21 @@ fn path_has_hidden_component(p: &std::path::Path) -> bool {
     })
 }
 
+/// 起動フォルダ候補が gvfs の SMB マウント配下か（パス構造のみで判定、I/O なし）。
+/// 起動時はメインスレッドで is_dir() するため、接続先が落ちていると FUSE 経由で gvfsd の
+/// 応答待ちになり起動が止まる。SMB 配下の候補は確認自体を行わずフォールバックへ回す。
+/// Windows のネットワークドライブは未検証のため従来どおり（常に false）。
+fn is_smb_mount_path(p: &std::path::Path) -> bool {
+    #[cfg(unix)]
+    { crate::fs::mount::network_mount_root(p).is_some() }
+    #[cfg(not(unix))]
+    { let _ = p; false }
+}
+
 fn resolve_fallback_dir(fixed: Option<&std::path::Path>) -> PathBuf {
     if let Some(p) = fixed {
-        if p.is_dir() {
+        // SMB 配下の固定フォルダは last_dir と同じく確認せずスキップし、HOME へ回す。
+        if !is_smb_mount_path(p) && p.is_dir() {
             return p.to_path_buf();
         }
     }
@@ -463,6 +476,17 @@ pub fn filter_to_str(f: ResizeFilter) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn smb_start_dir_candidates_are_skipped_without_io() {
+        let uid = unsafe { libc::getuid() };
+        let smb = PathBuf::from(format!("/run/user/{uid}/gvfs/smb-share:server=nas,share=media/comics"));
+        assert!(is_smb_mount_path(&smb));
+        assert!(!is_smb_mount_path(std::path::Path::new("/home/neko/comics")));
+        // SMB 配下の固定フォルダは採用されず、HOME（またはルート）へ回る。
+        assert_ne!(resolve_fallback_dir(Some(&smb)), smb);
+    }
 
     #[test]
     fn decode_edge_default_is_4000() {
