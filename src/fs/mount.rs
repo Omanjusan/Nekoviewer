@@ -172,46 +172,10 @@ pub fn list_local_drives() -> Vec<MountEntry> {
     drives
 }
 
-/// 起動時に gvfs の状態をターミナルへ出力する（Unix のみ）。設定ダイアログのデバッグタブで
-/// 「共通ログ」を有効にした場合のみ出力される。
-#[cfg(unix)]
-pub fn log_gvfs_status() {
-    let uid = current_uid();
-    let gvfs_dir = PathBuf::from(format!("/run/user/{uid}/gvfs"));
-    crate::log_common!("[gvfs] checking: {}", gvfs_dir.display());
-
-    match std::fs::read_dir(&gvfs_dir) {
-        Err(e) => crate::log_common!("[gvfs] not accessible: {e}"),
-        Ok(entries) => {
-            let names: Vec<String> = entries
-                .flatten()
-                .map(|e| e.file_name().to_string_lossy().to_string())
-                .collect();
-            if names.is_empty() {
-                crate::log_common!("[gvfs] directory exists but no mounts found");
-            } else {
-                crate::log_common!("[gvfs] found {} entries:", names.len());
-                for name in &names {
-                    let tag = if name.starts_with("smb-share:") { "SMB" } else { "   " };
-                    crate::log_common!("[gvfs]   [{tag}] {name}");
-                }
-            }
-        }
-    }
-}
-
-#[cfg(not(unix))]
-pub fn log_gvfs_status() {}
-
 #[cfg(unix)]
 fn current_uid() -> u32 {
-    std::process::Command::new("id")
-        .arg("-u")
-        .output()
-        .ok()
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-        .and_then(|s| s.trim().parse().ok())
-        .unwrap_or(1000)
+    // SAFETY: getuid は常に成功し、副作用もない。
+    unsafe { libc::getuid() }
 }
 
 /// "smb-share:server=mynas,share=media" → "mynas/media"

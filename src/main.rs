@@ -126,9 +126,6 @@ fn main() {
             cfg.pending_magnifier_zoom_notice = Some(notice);
         }
 
-        fs::mount::log_gvfs_status();
-        log_common!("[startup] gvfs check done");
-
         let args = CliArgs::parse();
         if let Some(v) = args.cache_max_mb { cfg.cache_total_mb = Some(v.max(64)); }
 
