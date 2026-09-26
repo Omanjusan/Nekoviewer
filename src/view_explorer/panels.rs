@@ -53,6 +53,9 @@ const TAG_ATTR_ROW_HEIGHT: f32 = 36.0;
 const TAG_ATTR_PALETTE_HEIGHT: f32 = 300.0;
 /// タグマネージャー: 左カラム（カテゴリ一覧）の幅。
 const TAG_MANAGER_CATEGORY_COL_WIDTH: f32 = 150.0;
+/// タグマネージャー: tier行の番号ラベル部分の固定幅。"neg-tier"有無で幅が
+/// ズレないよう、ポジティブ/ネガティブ問わず同じ幅のセルに揃える。
+const TAG_MANAGER_TIER_PREFIX_WIDTH: f32 = 72.0;
 
 fn favorite_marker_layout(cell_h: f32, has_error_marker: bool) -> (f32, usize) {
     let top = THUMB_MARKER_TOP
@@ -211,6 +214,7 @@ impl NekoviewApp {
             && !self.search_date_end_calendar.is_open()
             && self.pending_open.is_none()
             && self.tree_sort_dialog.is_none()
+            && !self.tag_manager_open
         {
             self.handle_explorer_keys(&ctx);
         }
@@ -235,6 +239,7 @@ impl NekoviewApp {
             && self.favorite_dialog.is_none()
             && self.favorite_detail_dialog.is_none()
             && !self.virtual_text_input_open()
+            && !self.tag_manager_open
         {
             ctx.memory_mut(|mem| mem.stop_text_input());
         }
@@ -245,7 +250,9 @@ impl NekoviewApp {
         // 以後は誰も event_filter で握っていないためこの move_focus が無いと上下キーで
         // 次々に別ウィジェットへ渡り歩いてしまう（実測: focused_pane は SearchForm のまま
         // 動かず、egui内部のfocused widget idだけが上下キー毎に変わり続けていた）。
-        if !self.settings_is_open() {
+        // タグマネージャーのインライン要素編集も同じ理由で除外する（除外しないと
+        // request_focus()した直後にこのmove_focusで即座に打ち消されてしまう）。
+        if !self.settings_is_open() && !self.tag_manager_open {
             ctx.memory_mut(|mem| mem.move_focus(egui::FocusDirection::None));
         }
         // release ビルドは ROOT 内フローティングウィンドウのため ui() で描画する。
@@ -886,9 +893,9 @@ impl NekoviewApp {
                     // 背後のサムネグリッド・タグUIへクリックを貫通させない。
                     ui.interact(bg_rect, ui.id().with("tag_manager_bg"), egui::Sense::click());
                     let bg = ui.visuals().panel_fill;
-                    // 15%透過（残り85%の濃さ）。裏のサムネ/タグUIがうっすら透けて見える。
-                    let bg_85 = egui::Color32::from_rgba_unmultiplied(bg.r(), bg.g(), bg.b(), 217);
-                    ui.painter().rect_filled(bg_rect, 0.0, bg_85);
+                    // 95%不透明。裏のサムネ/タグUIはほぼ見えない程度に抑える。
+                    let bg_95 = egui::Color32::from_rgba_unmultiplied(bg.r(), bg.g(), bg.b(), 242);
+                    ui.painter().rect_filled(bg_rect, 0.0, bg_95);
 
                     const TAG_MANAGER_CLOSE_BTN: f32 = 20.0;
                     ui.horizontal(|ui| {
@@ -949,9 +956,12 @@ impl NekoviewApp {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.button("＋").clicked() {
                     let n = self.tag_manager_categories.len() + 1;
+                    let existing: Vec<egui::Color32> =
+                        self.tag_manager_categories.iter().map(|c| c.color).collect();
                     self.tag_manager_categories.push(TagManagerCategoryUi {
                         name: format!("新規カテゴリ{n}"),
                         tiers: Vec::new(),
+                        color: pick_distinct_tag_color(&existing),
                     });
                     self.tag_manager_selected_category = Some(self.tag_manager_categories.len() - 1);
                 }
@@ -959,13 +969,19 @@ impl NekoviewApp {
         });
         ui.separator();
 
-        let names: Vec<String> = self.tag_manager_categories.iter().map(|c| c.name.clone()).collect();
+        // 要素を持つtierが1つも無いカテゴリは、ピッカー側から呼び出せない「未成立」状態。
+        let rows: Vec<(String, bool)> = self
+            .tag_manager_categories
+            .iter()
+            .map(|c| (c.name.clone(), c.tiers.iter().any(|t| t.element.is_some())))
+            .collect();
         let mut select_idx: Option<usize> = None;
         let mut delete_idx: Option<usize> = None;
-        for (i, name) in names.iter().enumerate() {
+        for (i, (name, established)) in rows.iter().enumerate() {
             let selected = self.tag_manager_selected_category == Some(i);
             ui.horizontal(|ui| {
-                if ui.selectable_label(selected, name).clicked() {
+                let label = if *established { name.clone() } else { format!("{name}（未成立）") };
+                if ui.selectable_label(selected, label).clicked() {
                     select_idx = Some(i);
                 }
                 if ui.small_button("－").clicked() {
@@ -995,12 +1011,37 @@ impl NekoviewApp {
     /// 各tier行には要素名の一覧と「＋要素」ボタン（末尾に仮名の要素を追加）。
     fn draw_tag_manager_tier_list(&mut self, ui: &mut egui::Ui, cat_idx: usize) {
         let cat_name = self.tag_manager_categories[cat_idx].name.clone();
-        ui.label(format!("選択中カテゴリ: {cat_name}"));
+        ui.horizontal(|ui| {
+            ui.label(format!("選択中カテゴリ: {cat_name}"));
+            ui.separator();
+            ui.label("カテゴリ色:");
+            let mut color = self.tag_manager_categories[cat_idx].color;
+            if ui.color_edit_button_srgba(&mut color).changed() {
+                self.tag_manager_categories[cat_idx].color = color;
+            }
+            if ui.small_button("ランダム").clicked() {
+                let existing: Vec<egui::Color32> = self
+                    .tag_manager_categories
+                    .iter()
+                    .enumerate()
+                    .filter(|&(i, _)| i != cat_idx)
+                    .map(|(_, c)| c.color)
+                    .collect();
+                self.tag_manager_categories[cat_idx].color = pick_distinct_tag_color(&existing);
+            }
+        });
         ui.separator();
 
+        let cat_color = self.tag_manager_categories[cat_idx].color;
         let tier_count = self.tag_manager_categories[cat_idx].tiers.len();
-        let mut add_element_tier: Option<usize> = None;
-        let mut add_tier = false;
+        let mut start_edit: Option<usize> = None;
+        let mut finish_edit: Option<usize> = None;
+        let mut cancel_edit: Option<usize> = None;
+        let mut remove_element_tier: Option<usize> = None;
+        let mut delete_tier: Option<usize> = None;
+        // 挿入位置(Vec::insertのindex)。tier1の前(先頭=0)にも挿入できるよう、
+        // 「このtierの直後」ではなく絶対位置で持つ。
+        let mut add_tier_at: Option<usize> = None;
 
         // ティア・要素の描画エリアは残り高さの90%まで使ってよい（残り10%はマージン）。
         // auto_shrinkがデフォルトtrueだと中身が少ない時にエリア自体が縮んでしまうため、
@@ -1011,56 +1052,187 @@ impl NekoviewApp {
             .max_height(area_height)
             .auto_shrink([false, false])
             .show(ui, |ui| {
+                // tier1の前(tier0位置)にも挿入したいが、tier行自体の＋は「このtierの後ろに
+                // 追加」の意味なので、先頭挿入専用のUIをリストの一番上に置く。
+                if ui.small_button("＋（先頭に追加）").clicked() {
+                    add_tier_at = Some(0);
+                }
                 for t_idx in 0..tier_count {
-                    let (tier_no, negative, elements) = {
+                    let (tier_no, negative, element) = {
                         let tier = &self.tag_manager_categories[cat_idx].tiers[t_idx];
-                        (tier.tier_no, tier.negative, tier.elements.clone())
+                        (tier.tier_no, tier.negative, tier.element.clone())
                     };
                     let bg = if negative {
-                        egui::Color32::from_rgba_unmultiplied(120, 40, 40, 60)
+                        egui::Color32::from_rgba_unmultiplied(150, 40, 40, 130)
                     } else {
-                        egui::Color32::from_rgba_unmultiplied(40, 90, 60, 40)
+                        egui::Color32::from_rgba_unmultiplied(40, 120, 60, 110)
                     };
                     egui::Frame::default()
                         .fill(bg)
                         .inner_margin(6.0)
                         .corner_radius(4.0)
                         .show(ui, |ui| {
-                            ui.horizontal_wrapped(|ui| {
+                            ui.horizontal(|ui| {
                                 let prefix = if negative {
                                     format!("neg-tier{tier_no}")
                                 } else {
                                     format!("tier{tier_no}")
                                 };
-                                ui.strong(prefix);
-                                for el in &elements {
-                                    ui.label(el);
+                                // neg-プレフィックス有無で幅がズレないよう、ラベル部分を
+                                // 固定幅セルにして揃える。
+                                ui.add_sized(
+                                    egui::vec2(TAG_MANAGER_TIER_PREFIX_WIDTH, ui.spacing().interact_size.y),
+                                    egui::Label::new(egui::RichText::new(prefix).strong()),
+                                );
+                                ui.separator();
+
+                                // ティアの＋／－（tier追加・削除）を左側に先に置く。
+                                if ui.small_button("＋").clicked() {
+                                    // 「このtierの直後に新tierを挿入する」。中間挿入になるため、
+                                    // 実際の再序列(tier_no振り直し)は後段でまとめて行う。
+                                    add_tier_at = Some(t_idx + 1);
                                 }
-                                if ui.small_button("＋要素").clicked() {
-                                    add_element_tier = Some(t_idx);
+                                if ui.small_button("tier削除").clicked() {
+                                    delete_tier = Some(t_idx);
                                 }
-                                if t_idx == tier_count - 1 && ui.button("＋ティア追加").clicked() {
-                                    add_tier = true;
+                                ui.separator();
+
+                                // 要素の＋／－はネームプレート化: 「－ 要素名」または「＋ (空)」を
+                                // ひとかたまりで表示する。要素名は長さが不定なので、これは常に
+                                // tier側のボタンより右（後ろ）に置く。
+                                let has_element = element.is_some();
+                                let is_editing = self.tag_manager_editing_element == Some((cat_idx, t_idx));
+                                if !is_editing {
+                                    if ui.small_button(if has_element { "－" } else { "＋" }).clicked() {
+                                        if has_element {
+                                            remove_element_tier = Some(t_idx);
+                                        } else {
+                                            start_edit = Some(t_idx);
+                                        }
+                                    }
+                                }
+                                if is_editing {
+                                    // ダイアログは使わず、その場でテキスト入力に切り替える。
+                                    // request_focus()をwidget生成"後"に呼ぶと、生成タイミングの
+                                    // ズレでフォーカスが実際には入らないことがあるため、明示的な
+                                    // idを使って生成"前"にmemory側へ直接request_focusしておく。
+                                    let text_edit_id = ui.id().with(("tag_manager_elem_edit", t_idx));
+                                    if self.tag_manager_editing_focus_pending {
+                                        ui.memory_mut(|m| m.request_focus(text_edit_id));
+                                        self.tag_manager_editing_focus_pending = false;
+                                    }
+                                    let resp = ui.add(
+                                        egui::TextEdit::singleline(&mut self.tag_manager_editing_buffer)
+                                            .id(text_edit_id),
+                                    );
+                                    // eguiはEscapeキーでフォーカスをグローバルに外す（memory側の
+                                    // 処理）ため、その時点でhas_focus()は既にfalseになっている。
+                                    // よってlost_focus()とEscape押下を組み合わせて判定する
+                                    // （egui標準のDragValueと同じパターン）。Escなら編集前の
+                                    // 状態に戻してキャンセル、それ以外(Enter押下・他クリック)は確定。
+                                    if resp.lost_focus() {
+                                        if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                                            cancel_edit = Some(t_idx);
+                                        } else {
+                                            finish_edit = Some(t_idx);
+                                        }
+                                    }
+                                } else {
+                                    match &element {
+                                        Some(el) => {
+                                            // ネームプレート: カテゴリ共通色を背景にして、
+                                            // タグピッカー側でカテゴリを見分けやすくする。
+                                            // クリックでインライン編集モードに入る。
+                                            let text_color = if 0.299 * cat_color.r() as f32
+                                                + 0.587 * cat_color.g() as f32
+                                                + 0.114 * cat_color.b() as f32
+                                                > 140.0
+                                            {
+                                                egui::Color32::BLACK
+                                            } else {
+                                                egui::Color32::WHITE
+                                            };
+                                            let plate = egui::Frame::default()
+                                                .fill(cat_color)
+                                                .inner_margin(egui::Margin::symmetric(6, 2))
+                                                .corner_radius(3.0)
+                                                .show(ui, |ui| {
+                                                    ui.colored_label(text_color, el);
+                                                });
+                                            if plate.response.interact(egui::Sense::click()).clicked() {
+                                                start_edit = Some(t_idx);
+                                            }
+                                        }
+                                        None => {
+                                            ui.weak("(空)");
+                                        }
+                                    }
                                 }
                             });
                         });
                     ui.add_space(4.0);
                 }
-                if tier_count == 0 && ui.button("＋ティア追加（最初のtier）").clicked() {
-                    add_tier = true;
-                }
             });
 
-        if let Some(t_idx) = add_element_tier {
-            let tiers = &mut self.tag_manager_categories[cat_idx].tiers;
-            let n = tiers[t_idx].elements.len() + 1;
-            tiers[t_idx].elements.push(format!("要素{n}"));
+        if let Some(t_idx) = start_edit {
+            let current = self.tag_manager_categories[cat_idx].tiers[t_idx]
+                .element
+                .clone()
+                .unwrap_or_default();
+            self.tag_manager_editing_element = Some((cat_idx, t_idx));
+            self.tag_manager_editing_buffer = current;
+            self.tag_manager_editing_focus_pending = true;
         }
-        if add_tier {
+        if let Some(t_idx) = finish_edit {
+            let text = self.tag_manager_editing_buffer.trim().to_string();
+            self.tag_manager_categories[cat_idx].tiers[t_idx].element =
+                if text.is_empty() { None } else { Some(text) };
+            self.tag_manager_editing_element = None;
+            self.tag_manager_editing_buffer.clear();
+        }
+        if cancel_edit.is_some() {
+            // elementは編集中も一切書き換えていないので、編集状態を破棄するだけで
+            // 「編集前の状態に戻る」ことになる。
+            self.tag_manager_editing_element = None;
+            self.tag_manager_editing_buffer.clear();
+        }
+        if let Some(t_idx) = remove_element_tier {
+            self.tag_manager_categories[cat_idx].tiers[t_idx].element = None;
+            if self.tag_manager_editing_element == Some((cat_idx, t_idx)) {
+                self.tag_manager_editing_element = None;
+                self.tag_manager_editing_buffer.clear();
+            }
+        }
+        if let Some(t_idx) = delete_tier {
             let tiers = &mut self.tag_manager_categories[cat_idx].tiers;
-            let next_no = tiers.last().map(|t| t.tier_no + 1).unwrap_or(1);
-            let negative = tiers.last().map(|t| t.negative).unwrap_or(false);
-            tiers.push(TagManagerTierUi { tier_no: next_no, negative, elements: Vec::new() });
+            tiers.remove(t_idx);
+            // tierは常に連番(1,2,3,...)を保つ。negativeフラグは各tierが個別に
+            // 持ったままなので、削除・再採番してもポジ/ネガの割り当ては変わらない。
+            for (i, t) in tiers.iter_mut().enumerate() {
+                t.tier_no = i as i32 + 1;
+            }
+            // tierのindex構成が変わるため、編集中状態はインデックスのズレを避けて破棄する。
+            self.tag_manager_editing_element = None;
+            self.tag_manager_editing_buffer.clear();
+        }
+        if let Some(pos) = add_tier_at {
+            let tiers = &mut self.tag_manager_categories[cat_idx].tiers;
+            let pos = pos.min(tiers.len());
+            // 挿入位置の直前(無ければ直後)のtierからnegativeフラグを引き継ぐ。
+            // これで先頭挿入・中間挿入のどちらでも、既存のポジ/ネガ配置と自然に馴染む。
+            let negative = if pos > 0 {
+                tiers[pos - 1].negative
+            } else {
+                tiers.first().map(|t| t.negative).unwrap_or(false)
+            };
+            tiers.insert(pos, TagManagerTierUi { tier_no: 0, negative, element: None });
+            // 中間挿入なので、全tierのtier_noを1から振り直す（再序列）。
+            for (i, t) in tiers.iter_mut().enumerate() {
+                t.tier_no = i as i32 + 1;
+            }
+            // 挿入でtierのindex構成が変わるため、編集中状態はズレを避けて破棄する。
+            self.tag_manager_editing_element = None;
+            self.tag_manager_editing_buffer.clear();
         }
     }
 

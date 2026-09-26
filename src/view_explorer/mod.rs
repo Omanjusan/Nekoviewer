@@ -626,6 +626,47 @@ struct RatingSettingDialogState {
 pub(crate) struct TagManagerCategoryUi {
     pub(crate) name: String,
     pub(crate) tiers: Vec<TagManagerTierUi>,
+    /// カテゴリ共通色。要素ネームプレートとカテゴリ表示の両方に使い、
+    /// タグピッカー側でカテゴリを見分けやすくする（利用箇所はTM3以降）。
+    pub(crate) color: egui::Color32,
+}
+
+/// タグマネージャー: 既存カテゴリの色と極力衝突しない色をランダム生成する。
+/// 彩度・明度は固定し、色相だけを既存色群から最も離れるように選ぶ（外部の乱数
+/// crateには依存せず、時刻ベースの簡易疑似乱数で十分）。
+pub(crate) fn pick_distinct_tag_color(existing: &[egui::Color32]) -> egui::Color32 {
+    fn hue_dist(a: f32, b: f32) -> f32 {
+        let d = (a - b).abs();
+        d.min(1.0 - d)
+    }
+    let existing_hues: Vec<f32> = existing.iter().map(|c| egui::ecolor::Hsva::from(*c).h).collect();
+    let mut seed = {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let nanos = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.subsec_nanos()).unwrap_or(0) as u64;
+        nanos.wrapping_mul(2654435761).wrapping_add(std::process::id() as u64)
+    };
+    let mut next_unit = move || -> f32 {
+        seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        ((seed >> 40) as f32) / ((1u64 << 24) as f32)
+    };
+    let mut best_h = 0.0f32;
+    let mut best_min_dist = -1.0f32;
+    for _ in 0..24 {
+        let h = next_unit();
+        if existing_hues.is_empty() {
+            best_h = h;
+            break;
+        }
+        let min_dist = existing_hues.iter().map(|&eh| hue_dist(h, eh)).fold(f32::INFINITY, f32::min);
+        if min_dist > best_min_dist {
+            best_min_dist = min_dist;
+            best_h = h;
+        }
+    }
+    // 彩度・明度も幅を持たせ、色相だけでなく見た目のバリエーションを広げる。
+    let s = 0.55 + next_unit() * 0.35; // 0.55〜0.90
+    let v = 0.70 + next_unit() * 0.25; // 0.70〜0.95
+    egui::ecolor::Hsva::new(best_h, s, v, 1.0).into()
 }
 
 /// タグマネージャー(フェーズTM2): tier1件ぶんの仮UI状態。tierは常に末尾追加のみ
@@ -634,7 +675,9 @@ pub(crate) struct TagManagerTierUi {
     pub(crate) tier_no: i32,
     /// negative境界以降のtierはtrue。スコア計算はフェーズ後日実装。
     pub(crate) negative: bool,
-    pub(crate) elements: Vec<String>,
+    /// tierが持てる要素は0個か1個のみ（カテゴリ側で複数tierにまたがって「多」になる）。
+    /// 要素が空のtierも許容する（＋を押さず編集を終えてよい）。
+    pub(crate) element: Option<String>,
 }
 
 fn default_favorite_color() -> egui::Color32 {
@@ -922,6 +965,15 @@ pub struct NekoviewApp {
     pub(crate) tag_manager_categories: Vec<TagManagerCategoryUi>,
     /// タグマネージャー(フェーズTM1): 選択中カテゴリのインデックス。
     pub(crate) tag_manager_selected_category: Option<usize>,
+    /// タグマネージャー: インライン編集中の要素(カテゴリindex, tier内index)。
+    /// ダイアログは使わず、tier行のその場でテキスト入力に切り替える。
+    pub(crate) tag_manager_editing_element: Option<(usize, usize)>,
+    /// タグマネージャー: 上記の編集中バッファ。
+    pub(crate) tag_manager_editing_buffer: String,
+    /// タグマネージャー: 編集開始した直後の1フレームだけtrueにし、その
+    /// フレームでテキスト入力にrequest_focusする（毎フレーム呼ぶとユーザーの
+    /// 手動フォーカス解除を上書きしてしまうため）。
+    pub(crate) tag_manager_editing_focus_pending: bool,
     /// 接続テストの進行中受信チャンネル（ダイアログを閉じたら破棄）。
     pub(crate) translate_conn_rx: Option<mpsc::Receiver<crate::translate::ConnCheckMsg>>,
     /// 直近の接続テスト結果表示用（疎通/vision結果の文字列、または失敗理由）。
@@ -1320,14 +1372,22 @@ impl NekoviewApp {
                 TagManagerCategoryUi {
                     name: "画質".to_string(),
                     tiers: vec![
-                        TagManagerTierUi { tier_no: 1, negative: false, elements: vec!["高解像度".to_string()] },
-                        TagManagerTierUi { tier_no: 2, negative: false, elements: vec!["普通の解像度".to_string()] },
-                        TagManagerTierUi { tier_no: 3, negative: true, elements: vec!["低解像度".to_string()] },
+                        TagManagerTierUi { tier_no: 1, negative: false, element: Some("高解像度".to_string()) },
+                        TagManagerTierUi { tier_no: 2, negative: false, element: Some("普通の解像度".to_string()) },
+                        TagManagerTierUi { tier_no: 3, negative: true, element: Some("低解像度".to_string()) },
                     ],
+                    color: egui::Color32::from_rgb(230, 140, 50),
                 },
-                TagManagerCategoryUi { name: "内容".to_string(), tiers: Vec::new() },
+                TagManagerCategoryUi {
+                    name: "内容".to_string(),
+                    tiers: Vec::new(),
+                    color: egui::Color32::from_rgb(70, 140, 220),
+                },
             ],
             tag_manager_selected_category: Some(0),
+            tag_manager_editing_element: None,
+            tag_manager_editing_buffer: String::new(),
+            tag_manager_editing_focus_pending: false,
             translate_conn_rx: None,
             translate_conn_status: None,
             translate_conn_verified: false,
