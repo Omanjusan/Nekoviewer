@@ -2832,7 +2832,7 @@ impl ViewerState {
             // 評価オーバーレイ（最終ページ表示中のみ）。帯の上のクリック・ホバーは背面へ伝えない。
             let rating_rect = crate::rating_overlay::overlay_visible(
                 cfg.rating_overlay_enabled,
-                self.is_raw_file,
+                self.is_raw_file || self.is_virtual_book,
                 self.rating_overlay_dismissed,
                 !self.can_advance_page(step, total as i32),
                 total,
@@ -3025,7 +3025,7 @@ impl ViewerState {
                 let blc_toggle = &mut self.pending_blc_toggle;
                 egui::Popup::context_menu(&resp)
                     .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-                    .show(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort, sort_action, bookmark_toggle_enabled, bookmark_toggle_on, bookmark_action, thumbnail_target, saved_thumbnail_selection, saved_thumbnail_display.as_deref(), thumbnail_action, favorite_add, open_file_detail, slideshow_active, slideshow_toggle, blc_active, blc_toggle));
+                    .show(|ui| Self::spread_save_context_menu(ui, self.is_virtual_book, toggle_enabled, toggle_on, overwrite_enabled, action, sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort, sort_action, bookmark_toggle_enabled, bookmark_toggle_on, bookmark_action, thumbnail_target, saved_thumbnail_selection, saved_thumbnail_display.as_deref(), thumbnail_action, favorite_add, open_file_detail, slideshow_active, slideshow_toggle, blc_active, blc_toggle));
 
                 let painter = ui.painter().with_clip_rect(clip);
 
@@ -4169,6 +4169,7 @@ impl ViewerState {
     /// 画像本体の右クリックメニュー（見開き・ソート設定の保存）を描画する
     fn spread_save_context_menu(
         ui: &mut egui::Ui,
+        is_virtual_book: bool,
         toggle_enabled: bool,
         toggle_on_init: bool,
         overwrite_enabled: bool,
@@ -4192,6 +4193,14 @@ impl ViewerState {
         blc_active: bool,
         blc_toggle: &mut bool,
     ) {
+        // 「フォルダ本アクセス」の仮想アーカイブでは、実体を持たない仮のフォルダに対して
+        // 各種保存系操作を行わせない（永続化しない一貫性を保つ）。
+        let toggle_enabled = toggle_enabled && !is_virtual_book;
+        let overwrite_enabled = overwrite_enabled && !is_virtual_book;
+        let sort_toggle_enabled = sort_toggle_enabled && !is_virtual_book;
+        let bookmark_toggle_enabled = bookmark_toggle_enabled && !is_virtual_book;
+        let thumbnail_target = if is_virtual_book { None } else { thumbnail_target };
+
         let t = i18n::t();
         let mut toggle_on = toggle_on_init;
         ui.add_enabled_ui(toggle_enabled, |ui| {
@@ -4314,10 +4323,12 @@ impl ViewerState {
             ui.close();
         }
         ui.separator();
-        if ui.button(t.favorite_quick_add_label()).clicked() {
-            *favorite_add = true;
-            ui.close();
-        }
+        ui.add_enabled_ui(!is_virtual_book, |ui| {
+            if ui.button(t.favorite_quick_add_label()).clicked() {
+                *favorite_add = true;
+                ui.close();
+            }
+        });
         if ui.button(t.file_detail_menu()).clicked() {
             *open_file_detail = true;
             ui.close();
@@ -4830,7 +4841,7 @@ impl ViewerState {
                     let blc_toggle = &mut self.pending_blc_toggle;
                     egui::Popup::context_menu(&resp)
                     .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-                    .show(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort, sort_action, bookmark_toggle_enabled, bookmark_toggle_on, bookmark_action, thumbnail_target, saved_thumbnail_selection, saved_thumbnail_display.as_deref(), thumbnail_action, favorite_add, open_file_detail, slideshow_active, slideshow_toggle, blc_active, blc_toggle));
+                    .show(|ui| Self::spread_save_context_menu(ui, self.is_virtual_book, toggle_enabled, toggle_on, overwrite_enabled, action, sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort, sort_action, bookmark_toggle_enabled, bookmark_toggle_on, bookmark_action, thumbnail_target, saved_thumbnail_selection, saved_thumbnail_display.as_deref(), thumbnail_action, favorite_add, open_file_detail, slideshow_active, slideshow_toggle, blc_active, blc_toggle));
                 });
                 // ドラッグ・スクロールバーでの移動を虫眼鏡ビューへ取り込む。
                 if let Some(m) = self.magnifier_view.as_mut() {
@@ -4868,7 +4879,7 @@ impl ViewerState {
                 let blc_toggle = &mut self.pending_blc_toggle;
                 egui::Popup::context_menu(&resp)
                     .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-                    .show(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort, sort_action, bookmark_toggle_enabled, bookmark_toggle_on, bookmark_action, thumbnail_target, saved_thumbnail_selection, saved_thumbnail_display.as_deref(), thumbnail_action, favorite_add, open_file_detail, slideshow_active, slideshow_toggle, blc_active, blc_toggle));
+                    .show(|ui| Self::spread_save_context_menu(ui, self.is_virtual_book, toggle_enabled, toggle_on, overwrite_enabled, action, sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort, sort_action, bookmark_toggle_enabled, bookmark_toggle_on, bookmark_action, thumbnail_target, saved_thumbnail_selection, saved_thumbnail_display.as_deref(), thumbnail_action, favorite_add, open_file_detail, slideshow_active, slideshow_toggle, blc_active, blc_toggle));
             }
         } else {
             let rect = egui::Rect::from_min_size(ui.cursor().left_top(), ui.available_size());
@@ -4892,7 +4903,7 @@ impl ViewerState {
             let blc_toggle = &mut self.pending_blc_toggle;
             egui::Popup::context_menu(&resp)
                     .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-                    .show(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort, sort_action, bookmark_toggle_enabled, bookmark_toggle_on, bookmark_action, thumbnail_target, saved_thumbnail_selection, saved_thumbnail_display.as_deref(), thumbnail_action, favorite_add, open_file_detail, slideshow_active, slideshow_toggle, blc_active, blc_toggle));
+                    .show(|ui| Self::spread_save_context_menu(ui, self.is_virtual_book, toggle_enabled, toggle_on, overwrite_enabled, action, sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort, sort_action, bookmark_toggle_enabled, bookmark_toggle_on, bookmark_action, thumbnail_target, saved_thumbnail_selection, saved_thumbnail_display.as_deref(), thumbnail_action, favorite_add, open_file_detail, slideshow_active, slideshow_toggle, blc_active, blc_toggle));
         }
     }
 
@@ -4964,7 +4975,7 @@ impl ViewerState {
         let blc_toggle = &mut self.pending_blc_toggle;
         egui::Popup::context_menu(&resp)
                     .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-                    .show(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort, sort_action, bookmark_toggle_enabled, bookmark_toggle_on, bookmark_action, thumbnail_target, saved_thumbnail_selection, saved_thumbnail_display.as_deref(), thumbnail_action, favorite_add, open_file_detail, slideshow_active, slideshow_toggle, blc_active, blc_toggle));
+                    .show(|ui| Self::spread_save_context_menu(ui, self.is_virtual_book, toggle_enabled, toggle_on, overwrite_enabled, action, sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort, sort_action, bookmark_toggle_enabled, bookmark_toggle_on, bookmark_action, thumbnail_target, saved_thumbnail_selection, saved_thumbnail_display.as_deref(), thumbnail_action, favorite_add, open_file_detail, slideshow_active, slideshow_toggle, blc_active, blc_toggle));
 
         if angle_deg == 0 {
             let (rect_l, rect_r) = Self::spread_rects(available, origin, tex_left, tex_right, monitor);
@@ -5129,7 +5140,7 @@ impl ViewerState {
             let blc_toggle = &mut self.pending_blc_toggle;
             egui::Popup::context_menu(&resp)
                     .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-                    .show(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort, sort_action, bookmark_toggle_enabled, bookmark_toggle_on, bookmark_action, thumbnail_target, saved_thumbnail_selection, saved_thumbnail_display.as_deref(), thumbnail_action, favorite_add, open_file_detail, slideshow_active, slideshow_toggle, blc_active, blc_toggle));
+                    .show(|ui| Self::spread_save_context_menu(ui, self.is_virtual_book, toggle_enabled, toggle_on, overwrite_enabled, action, sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort, sort_action, bookmark_toggle_enabled, bookmark_toggle_on, bookmark_action, thumbnail_target, saved_thumbnail_selection, saved_thumbnail_display.as_deref(), thumbnail_action, favorite_add, open_file_detail, slideshow_active, slideshow_toggle, blc_active, blc_toggle));
         });
         // ドラッグ・スクロールバーでの移動を虫眼鏡ビューへ取り込む。
         if magnified.is_some() {
