@@ -2455,9 +2455,10 @@ impl ViewerState {
                 );
                 let slot_rect = egui::Rect::from_min_size(slot_min, egui::vec2(slot, slot));
                 let content = self.tool_palette.slots[idx];
+                let custom_label = self.tool_palette.custom_labels[idx].as_deref();
                 let slot_resp = child
                     .interact(slot_rect, child.id().with(("tp_slot", idx)), egui::Sense::click())
-                    .on_hover_text(Self::tool_palette_slot_hover_text(content, lang));
+                    .on_hover_text(Self::tool_palette_slot_hover_text(content, custom_label, lang));
 
                 if slot_resp.context_menu_opened() {
                     any_menu_open = true;
@@ -2626,18 +2627,21 @@ impl ViewerState {
     }
 
     /// ツールパレットのマスにマウスを乗せたときのヒント文言。
-    fn tool_palette_slot_hover_text(content: crate::tool_palette::PaletteSlotContent, lang: crate::i18n::Lang) -> String {
+    fn tool_palette_slot_hover_text(content: crate::tool_palette::PaletteSlotContent, custom_label: Option<&str>, lang: crate::i18n::Lang) -> String {
         use crate::tool_palette::PaletteSlotContent;
         match content {
             PaletteSlotContent::Empty => lang.tool_palette_slot_empty_hint().to_string(),
             PaletteSlotContent::Toggle(kind) => {
-                format!("{}{}", (crate::tool_palette::find_toggle_def(kind).label)(lang), lang.tool_palette_slot_change_suffix())
+                let name = custom_label.unwrap_or_else(|| (crate::tool_palette::find_toggle_def(kind).label)(lang));
+                format!("{}{}", name, lang.tool_palette_slot_change_suffix())
             }
             PaletteSlotContent::Dialog(kind) => {
-                format!("{}{}", crate::tool_palette::create_dialog(kind).title(lang), lang.tool_palette_slot_change_suffix())
+                let name = custom_label.unwrap_or_else(|| crate::tool_palette::create_dialog(kind).title(lang));
+                format!("{}{}", name, lang.tool_palette_slot_change_suffix())
             }
             PaletteSlotContent::Action(kind) => {
-                format!("{}{}", kind.label(lang), lang.tool_palette_slot_change_suffix())
+                let name = custom_label.unwrap_or_else(|| kind.label(lang));
+                format!("{}{}", name, lang.tool_palette_slot_change_suffix())
             }
         }
     }
