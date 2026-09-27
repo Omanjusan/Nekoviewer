@@ -673,6 +673,10 @@ pub struct ViewerState {
     magnifier_cursor: Option<(u32, egui::CustomCursorImage)>,
     /// GPUテクスチャの1辺上限（毎フレーム ctx から取り込む）。デコード目標のクランプに使う。
     max_texture_side: usize,
+    /// ツールパレットのファイル送りボタンから要求されたナビゲーション。
+    /// draw_central_panel（パレット実行）は process_navigation より先に走るため、
+    /// 一旦ここへ保持し process_navigation の戻り値へ合流させる。
+    palette_nav_request: Option<ViewerNav>,
 }
 
 impl ViewerState {
@@ -935,6 +939,7 @@ impl ViewerState {
             magnifier_carry_rel: None,
             magnifier_cursor: None,
             max_texture_side: MAX_TEXTURE_SIDE_FALLBACK,
+            palette_nav_request: None,
         }
     }
 
@@ -1040,6 +1045,7 @@ impl ViewerState {
             magnifier_carry_rel: None,
             magnifier_cursor: None,
             max_texture_side: MAX_TEXTURE_SIDE_FALLBACK,
+            palette_nav_request: None,
         }
     }
 
@@ -2228,41 +2234,57 @@ impl ViewerState {
         }
 
         // ── Home/End: アーカイブ内先頭/末尾へ絶対ジャンプ ────────────────────
-        // 通常のページ送りを限界まで行った状態と同じ内部状態を再現する
-        // （以降の戻る/進む操作が通常ナビゲーションと同様に振る舞うように）。
         if input.key_home {
-            self.scroll_acc = 0.0;
-            self.shift_scroll_acc = 0.0;
-            self.spread_base = 0;
-            if is_spread {
-                // オフセットは維持する。ただし維持したままだと先頭実ページ(0)が
-                // 欠落してしまう場合（ShiftedOne等）だけ、仮想左側に倒して補正する。
-                if self.spread_lo() > 0 {
-                    self.offset.force_virtual_left();
-                }
-            } else {
-                self.offset.reset();
-            }
-            self.offset.update_virtual_right(is_spread && self.spread_lo() + 1 >= total_i);
+            self.jump_to_first_page(is_spread, total_i);
         }
         if input.key_end {
-            self.scroll_acc = 0.0;
-            self.shift_scroll_acc = 0.0;
-            if is_spread {
-                // オフセットは維持する。通常のページ送りを限界までやった時と同じ
-                // spread_base（offsetを保ったまま到達できる最大値）を直接計算する。
-                let off = self.offset.value();
-                let target = total_i - 1 - off;
-                let k = if target >= 0 { target / step } else { 0 };
-                self.spread_base = (k * step).max(0);
-            } else {
-                self.spread_base = (total_i - 1).max(0);
-                self.offset.reset();
-            }
-            self.offset.update_virtual_right(is_spread && self.spread_lo() + 1 >= total_i);
+            self.jump_to_last_page(is_spread, step, total_i);
+        }
+
+        // ツールパレットのファイル送りボタン（draw_central_panelで本関数より先に実行済み）の要求を合流。
+        if let Some(req) = self.palette_nav_request.take() {
+            nav = req;
         }
 
         nav
+    }
+
+    /// アーカイブ内先頭ページへ絶対ジャンプ。通常のページ送りを限界まで行った状態と
+    /// 同じ内部状態を再現する（以降の戻る/進む操作が通常ナビゲーションと同様に振る舞うように）。
+    /// キーボード（Home）とツールパレットのボタンの両方から呼ばれる。
+    fn jump_to_first_page(&mut self, is_spread: bool, total_i: i32) {
+        self.scroll_acc = 0.0;
+        self.shift_scroll_acc = 0.0;
+        self.spread_base = 0;
+        if is_spread {
+            // オフセットは維持する。ただし維持したままだと先頭実ページ(0)が
+            // 欠落してしまう場合（ShiftedOne等）だけ、仮想左側に倒して補正する。
+            if self.spread_lo() > 0 {
+                self.offset.force_virtual_left();
+            }
+        } else {
+            self.offset.reset();
+        }
+        self.offset.update_virtual_right(is_spread && self.spread_lo() + 1 >= total_i);
+    }
+
+    /// アーカイブ内末尾ページへ絶対ジャンプ。キーボード（End）とツールパレットのボタンの
+    /// 両方から呼ばれる（jump_to_first_pageの対）。
+    fn jump_to_last_page(&mut self, is_spread: bool, step: i32, total_i: i32) {
+        self.scroll_acc = 0.0;
+        self.shift_scroll_acc = 0.0;
+        if is_spread {
+            // オフセットは維持する。通常のページ送りを限界までやった時と同じ
+            // spread_base（offsetを保ったまま到達できる最大値）を直接計算する。
+            let off = self.offset.value();
+            let target = total_i - 1 - off;
+            let k = if target >= 0 { target / step } else { 0 };
+            self.spread_base = (k * step).max(0);
+        } else {
+            self.spread_base = (total_i - 1).max(0);
+            self.offset.reset();
+        }
+        self.offset.update_virtual_right(is_spread && self.spread_lo() + 1 >= total_i);
     }
 
     /// 自動ハイド：ポインタがパレット外へ出てからハイドが確定するまでの猶予(秒)。
@@ -2724,6 +2746,21 @@ impl ViewerState {
                 if cfg.koma_on && self.magnifier_view.is_some() {
                     self.koma_step(false, is_spread, step, total as i32);
                 }
+            }
+            crate::tool_palette::PaletteSlotContent::Action(crate::tool_palette::ActionKind::FileNavPrev) => {
+                self.palette_nav_request = Some(ViewerNav::PrevFile);
+            }
+            crate::tool_palette::PaletteSlotContent::Action(crate::tool_palette::ActionKind::FileNavNext) => {
+                self.palette_nav_request = Some(ViewerNav::NextFile);
+            }
+            crate::tool_palette::PaletteSlotContent::Action(crate::tool_palette::ActionKind::JumpFirstPage) => {
+                self.jump_to_first_page(is_spread, total as i32);
+            }
+            crate::tool_palette::PaletteSlotContent::Action(crate::tool_palette::ActionKind::JumpLastPage) => {
+                self.jump_to_last_page(is_spread, step, total as i32);
+            }
+            crate::tool_palette::PaletteSlotContent::Action(crate::tool_palette::ActionKind::ToggleZoomActual) => {
+                self.toggle_zoom_actual(cfg);
             }
             crate::tool_palette::PaletteSlotContent::Empty => {}
         }
@@ -3491,6 +3528,17 @@ impl ViewerState {
         log_key!("[key] fullscreen → {}", cfg.fullscreen);
     }
 
+    /// 原寸/fit表示切替。虫眼鏡の有効中は無視する（倍率は虫眼鏡側で持つ。原寸との統合はフェーズ3）。
+    /// キーボード/ダブルクリックとツールパレットのボタンの両方から呼ばれる。
+    fn toggle_zoom_actual(&mut self, cfg: &mut ViewerConfig) {
+        if self.magnifier_view.is_some() {
+            return;
+        }
+        cfg.zoom_actual = !cfg.zoom_actual;
+        // フェーズ6: 表示ターゲットサイズが変わるイベントとして再デコードのデバウンス対象にする
+        cfg.redecode_trigger_seq += 1;
+    }
+
     fn process_misc_input(
         &mut self,
         ctx: &egui::Context,
@@ -3498,11 +3546,8 @@ impl ViewerState {
         double_clicked: bool,
         cfg: &mut ViewerConfig,
     ) -> bool {
-        // 虫眼鏡の有効中は原寸トグルを止める（倍率は虫眼鏡側で持つ。原寸との統合はフェーズ3）。
-        if (input.zoom_key || double_clicked) && self.magnifier_view.is_none() {
-            cfg.zoom_actual = !cfg.zoom_actual;
-            // フェーズ6: 表示ターゲットサイズが変わるイベントとして再デコードのデバウンス対象にする
-            cfg.redecode_trigger_seq += 1;
+        if input.zoom_key || double_clicked {
+            self.toggle_zoom_actual(cfg);
         }
 
         // マス右クリックメニュー展開中の中クリックは、メニューを閉じる操作として
