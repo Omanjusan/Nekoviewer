@@ -3736,6 +3736,14 @@ impl Lang {
         }
     }
 
+    pub fn tool_palette_slot_shortcut_none(self) -> &'static str {
+        match self {
+            Lang::Japanese => "なし",
+            Lang::English  => "None",
+            Lang::Chinese  => "无",
+        }
+    }
+
     pub fn tool_palette_key_assign_menu_label(self) -> &'static str {
         match self {
             Lang::Japanese => "キー割当",

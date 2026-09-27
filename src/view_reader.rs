@@ -1915,7 +1915,7 @@ impl ViewerState {
             page_animated,
         };
         let tool_palette_before = self.tool_palette.clone();
-        let (double_clicked, single_clicked) = self.draw_central_panel(ui, &frame, &input, is_spread, step, total, cfg);
+        let (double_clicked, single_clicked) = self.draw_central_panel(ui, &frame, &input, is_spread, step, total, cfg, keymap);
         if self.tool_palette != tool_palette_before {
             self.tool_palette_last_changed = Some(Instant::now());
         }
@@ -2346,7 +2346,7 @@ impl ViewerState {
 
     /// ツールパレットのオーバーレイ本体を描画する。子Ui＋Painter直描き方式
     /// （thumbbar_overlayと同じ流儀）。マスの登録内容の描画・実行はPhase2/3で追加する。
-    fn draw_tool_palette(&mut self, ui: &mut egui::Ui, rect: egui::Rect, viewport: egui::Rect, is_spread: bool, step: i32, total: usize, cfg: &mut ViewerConfig) {
+    fn draw_tool_palette(&mut self, ui: &mut egui::Ui, rect: egui::Rect, viewport: egui::Rect, is_spread: bool, step: i32, total: usize, cfg: &mut ViewerConfig, keymap: &Keymap) {
         let lang = crate::i18n::t();
         let bg_alpha = (self.tool_palette.opacity_pct as f32 / 100.0 * 220.0).round() as u8;
         ui.painter().rect_filled(rect, 6.0, egui::Color32::from_black_alpha(bg_alpha));
@@ -2456,9 +2456,14 @@ impl ViewerState {
                 let slot_rect = egui::Rect::from_min_size(slot_min, egui::vec2(slot, slot));
                 let content = self.tool_palette.slots[idx];
                 let custom_label = self.tool_palette.custom_labels[idx].as_deref();
+                let shortcut = if content == crate::tool_palette::PaletteSlotContent::Empty {
+                    None
+                } else {
+                    keymap.palette_keyboard(&crate::tool_palette::slot_content_to_id(content))
+                };
                 let slot_resp = child
                     .interact(slot_rect, child.id().with(("tp_slot", idx)), egui::Sense::click())
-                    .on_hover_text(Self::tool_palette_slot_hover_text(content, custom_label, lang));
+                    .on_hover_text(Self::tool_palette_slot_hover_text(content, custom_label, shortcut, lang));
 
                 if slot_resp.context_menu_opened() {
                     any_menu_open = true;
@@ -2627,25 +2632,42 @@ impl ViewerState {
     }
 
     /// ツールパレットのマスにマウスを乗せたときのヒント文言。
-    // フェーズ0（モック）: ボタン名/ショートカットキーは固定値。実データ連携は後フェーズで対応。
-    fn tool_palette_slot_hover_text(content: crate::tool_palette::PaletteSlotContent, custom_label: Option<&str>, lang: crate::i18n::Lang) -> String {
+    fn tool_palette_slot_hover_text(
+        content: crate::tool_palette::PaletteSlotContent,
+        custom_label: Option<&str>,
+        shortcut: Option<crate::keymap::KeyCombo>,
+        lang: crate::i18n::Lang,
+    ) -> String {
         use crate::tool_palette::PaletteSlotContent;
-        let _ = custom_label;
         match content {
             PaletteSlotContent::Empty => lang.tool_palette_slot_empty_hint().to_string(),
-            PaletteSlotContent::Toggle(_) | PaletteSlotContent::Dialog(_) | PaletteSlotContent::Action(_) => {
-                let mock_name = "";
-                let mock_shortcut = "Ctrl + Shift + Alt + ArrowDown";
-                format!(
-                    "{}{}\n{}{}\n{}",
-                    lang.tool_palette_slot_hover_name_label(),
-                    mock_name,
-                    lang.tool_palette_slot_hover_shortcut_label(),
-                    mock_shortcut,
-                    lang.tool_palette_slot_hover_change_hint(),
-                )
+            PaletteSlotContent::Toggle(kind) => {
+                let name = custom_label.unwrap_or_else(|| (crate::tool_palette::find_toggle_def(kind).label)(lang));
+                Self::tool_palette_slot_hover_body(name, shortcut, lang)
+            }
+            PaletteSlotContent::Dialog(kind) => {
+                let name = custom_label.unwrap_or_else(|| crate::tool_palette::create_dialog(kind).title(lang));
+                Self::tool_palette_slot_hover_body(name, shortcut, lang)
+            }
+            PaletteSlotContent::Action(kind) => {
+                let name = custom_label.unwrap_or_else(|| kind.label(lang));
+                Self::tool_palette_slot_hover_body(name, shortcut, lang)
             }
         }
+    }
+
+    fn tool_palette_slot_hover_body(name: &str, shortcut: Option<crate::keymap::KeyCombo>, lang: crate::i18n::Lang) -> String {
+        let shortcut_text = shortcut
+            .map(crate::tool_palette::key_assign::combo_display)
+            .unwrap_or_else(|| lang.tool_palette_slot_shortcut_none().to_string());
+        format!(
+            "{}{}\n{}{}\n{}",
+            lang.tool_palette_slot_hover_name_label(),
+            name,
+            lang.tool_palette_slot_hover_shortcut_label(),
+            shortcut_text,
+            lang.tool_palette_slot_hover_change_hint(),
+        )
     }
 
     /// マス毎のカスタム名称入力欄の文字数ソフト上限（見た目のはみ出し抑制用の目安）。
@@ -2824,6 +2846,7 @@ impl ViewerState {
         step: i32,
         total: usize,
         cfg: &mut ViewerConfig,
+        keymap: &Keymap,
     ) -> (bool, bool) {
         let mut double_clicked = false;
         let mut single_clicked = false;
@@ -3245,7 +3268,7 @@ impl ViewerState {
             // 生きているため上のtick呼び出しで検知でき、描画をスキップするだけでよい）。
             if let Some(pr) = palette_rect {
                 if !self.tool_palette_auto_hidden {
-                    self.draw_tool_palette(ui, pr, viewport_rect, is_spread, step, total, cfg);
+                    self.draw_tool_palette(ui, pr, viewport_rect, is_spread, step, total, cfg, keymap);
                 }
             } else {
                 // パレット非表示中はマスメニューも存在し得ないため、直前まで展開中だった
