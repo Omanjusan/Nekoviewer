@@ -516,6 +516,9 @@ pub struct ViewerState {
     anim_states: HashMap<usize, AnimState>,
     /// true のとき生画像ファイルを直接表示中（見開きモード封印）
     is_raw_file: bool,
+    /// true のとき「フォルダ本アクセス」による仮想アーカイブ表示中。
+    /// 各種保存系メニュー（見開き/ソート/しおり/サムネ登録/お気に入り/評価）を無効化する。
+    is_virtual_book: bool,
     /// Shift+スクロールの蓄積値（ファイル間ナビゲーション用）
     shift_scroll_acc: f32,
     /// トーストメッセージ: (テキスト, 消去予定のegui時刻) None=非表示
@@ -818,7 +821,8 @@ impl ViewerState {
         if image_entries.is_empty() {
             return None;
         }
-        Some(Self::from_image_entries(archive_path, image_entries, slots, default_slot))
+        let is_virtual_book = archive_path.is_dir();
+        Some(Self::from_image_entries(archive_path, image_entries, slots, default_slot, is_virtual_book))
     }
 
     /// 一覧取得済みの`ImageEntry`から構築する。非同期（進捗通知つき）で
@@ -829,6 +833,7 @@ impl ViewerState {
         image_entries: Vec<archive::ImageEntry>,
         slots: [Option<WindowSlot>; 4],
         default_slot: Option<usize>,
+        is_virtual_book: bool,
     ) -> Self {
         let entries: Vec<ViewerEntry> = image_entries
             .into_iter()
@@ -868,6 +873,7 @@ impl ViewerState {
             sort_ascending: true,
             anim_states: HashMap::new(),
             is_raw_file: false,
+            is_virtual_book,
             shift_scroll_acc: 0.0,
             toast: None,
             rating_half: 0,
@@ -972,6 +978,7 @@ impl ViewerState {
             sort_ascending: true,
             anim_states: HashMap::new(),
             is_raw_file: true,
+            is_virtual_book: false,
             shift_scroll_acc: 0.0,
             toast: None,
             rating_half: 0,
