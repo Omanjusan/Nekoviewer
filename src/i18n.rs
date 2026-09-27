@@ -3712,6 +3712,30 @@ impl Lang {
         }
     }
 
+    pub fn tool_palette_slot_hover_name_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ボタン名: ",
+            Lang::English  => "Button: ",
+            Lang::Chinese  => "按钮名称: ",
+        }
+    }
+
+    pub fn tool_palette_slot_hover_shortcut_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ショートカットキー: ",
+            Lang::English  => "Shortcut key: ",
+            Lang::Chinese  => "快捷键: ",
+        }
+    }
+
+    pub fn tool_palette_slot_hover_change_hint(self) -> &'static str {
+        match self {
+            Lang::Japanese => "(ボタン箇所を右クリックで各種変更)",
+            Lang::English  => "(Right-click the button for various changes)",
+            Lang::Chinese  => "（在按钮处右键点击进行各种更改）",
+        }
+    }
+
     pub fn tool_palette_key_assign_menu_label(self) -> &'static str {
         match self {
             Lang::Japanese => "キー割当",

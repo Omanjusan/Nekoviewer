@@ -2627,21 +2627,23 @@ impl ViewerState {
     }
 
     /// ツールパレットのマスにマウスを乗せたときのヒント文言。
+    // フェーズ0（モック）: ボタン名/ショートカットキーは固定値。実データ連携は後フェーズで対応。
     fn tool_palette_slot_hover_text(content: crate::tool_palette::PaletteSlotContent, custom_label: Option<&str>, lang: crate::i18n::Lang) -> String {
         use crate::tool_palette::PaletteSlotContent;
+        let _ = custom_label;
         match content {
             PaletteSlotContent::Empty => lang.tool_palette_slot_empty_hint().to_string(),
-            PaletteSlotContent::Toggle(kind) => {
-                let name = custom_label.unwrap_or_else(|| (crate::tool_palette::find_toggle_def(kind).label)(lang));
-                format!("{}{}", name, lang.tool_palette_slot_change_suffix())
-            }
-            PaletteSlotContent::Dialog(kind) => {
-                let name = custom_label.unwrap_or_else(|| crate::tool_palette::create_dialog(kind).title(lang));
-                format!("{}{}", name, lang.tool_palette_slot_change_suffix())
-            }
-            PaletteSlotContent::Action(kind) => {
-                let name = custom_label.unwrap_or_else(|| kind.label(lang));
-                format!("{}{}", name, lang.tool_palette_slot_change_suffix())
+            PaletteSlotContent::Toggle(_) | PaletteSlotContent::Dialog(_) | PaletteSlotContent::Action(_) => {
+                let mock_name = "";
+                let mock_shortcut = "Ctrl + Shift + Alt + ArrowDown";
+                format!(
+                    "{}{}\n{}{}\n{}",
+                    lang.tool_palette_slot_hover_name_label(),
+                    mock_name,
+                    lang.tool_palette_slot_hover_shortcut_label(),
+                    mock_shortcut,
+                    lang.tool_palette_slot_hover_change_hint(),
+                )
             }
         }
     }
