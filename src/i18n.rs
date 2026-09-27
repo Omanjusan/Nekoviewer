@@ -1891,6 +1891,17 @@ impl Lang {
         }
     }
 
+    pub fn folder_book_access_toggle_button(self, on: bool) -> &'static str {
+        match (self, on) {
+            (Lang::Japanese, true)  => "フォルダ本アクセスON",
+            (Lang::Japanese, false) => "フォルダ本アクセスOFF",
+            (Lang::English, true)   => "Folder-as-Book: ON",
+            (Lang::English, false)  => "Folder-as-Book: OFF",
+            (Lang::Chinese, true)   => "文件夹当书：开",
+            (Lang::Chinese, false)  => "文件夹当书：关",
+        }
+    }
+
     pub fn settings_button(self) -> &'static str {
         match self {
             Lang::Japanese => "[設定]",

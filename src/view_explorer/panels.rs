@@ -287,6 +287,9 @@ impl NekoviewApp {
                 let mut cfg = self.viewer_cfg.lock().unwrap();
                 cfg.tool_palette.visible = !cfg.tool_palette.visible;
             }
+            MenuBarButton::FolderBookAccessToggle => {
+                self.folder_book_access_enabled = !self.folder_book_access_enabled;
+            }
             MenuBarButton::Settings => {
                 self.open_settings();
             }
@@ -478,6 +481,24 @@ impl NekoviewApp {
                 help_tip(&r_tool_palette, help_on, &help_toggles);
                 if r_tool_palette.clicked() {
                     self.viewer_cfg.lock().unwrap().tool_palette.visible = !tool_palette_visible;
+                }
+
+                // ── 「フォルダ本アクセス」トグル ────────────────────────────────
+                // ONの間、対象フォルダ（アーカイブ非混在・直下に生画像あり）に入ると、
+                // 通常の一覧表示の代わりに仮想アーカイブとしてビューアーを開く。
+                // 永続化しない（アプリ再起動のたびに毎回OFFへ戻る）。
+                let folder_book_access_on = self.folder_book_access_enabled;
+                let r_folder_book_access = ui.scope(|ui| {
+                    if folder_book_access_on {
+                        ui.visuals_mut().selection.bg_fill = egui::Color32::from_rgb(30, 100, 200);
+                        ui.visuals_mut().selection.stroke.color = egui::Color32::WHITE;
+                    }
+                    ui.selectable_label(folder_book_access_on, i18n::t().folder_book_access_toggle_button(folder_book_access_on))
+                }).inner;
+                if is_cursor(MenuBarButton::FolderBookAccessToggle) { draw_cursor_ring(ui, r_folder_book_access.rect); }
+                help_tip(&r_folder_book_access, help_on, &help_toggles);
+                if r_folder_book_access.clicked() {
+                    self.folder_book_access_enabled = !folder_book_access_on;
                 }
 
                 // ── スコアリング（末尾の評価オーバーレイ）ON/OFF ────────────────────

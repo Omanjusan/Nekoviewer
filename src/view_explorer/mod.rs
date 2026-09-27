@@ -276,12 +276,14 @@ pub(crate) enum MenuBarButton {
     /// ビューアー内ツールパレット（マス配置ツールボックス）の表示ON/OFF。
     /// ファイルを渡り歩いても同じ状態を保つ（viewer_cfg経由でPaletteStateへ直結）。
     ToolPaletteToggle,
+    /// 「フォルダ本アクセス」トグル。永続化しない（毎回OFF起動）。
+    FolderBookAccessToggle,
     Settings,
 }
 
 /// 表示順そのもの（draw_menu_barの描画順と一致させること）。
 /// 見開き・ページモード群はビューアーツールバーへ移設した（toolbar.rs 参照）。
-pub(crate) const MENU_BAR_ORDER: [MenuBarButton; 15] = [
+pub(crate) const MENU_BAR_ORDER: [MenuBarButton; 16] = [
     MenuBarButton::Reload,
     MenuBarButton::SortName,
     MenuBarButton::SortDate,
@@ -293,6 +295,7 @@ pub(crate) const MENU_BAR_ORDER: [MenuBarButton; 15] = [
     MenuBarButton::CardInfoToggle,
     MenuBarButton::CardRatingToggle,
     MenuBarButton::ScoringToggle,
+    MenuBarButton::FolderBookAccessToggle,
     MenuBarButton::ToolPaletteToggle,
     MenuBarButton::Settings,
     MenuBarButton::StatusToggle,
@@ -319,7 +322,7 @@ mod menu_bar_order_tests {
     #[test]
     fn settings_status_and_help_keep_the_visual_right_end_order() {
         assert_eq!(
-            &MENU_BAR_ORDER[12..],
+            &MENU_BAR_ORDER[13..],
             &[
                 MenuBarButton::Settings,
                 MenuBarButton::StatusToggle,
@@ -998,6 +1001,9 @@ pub struct NekoviewApp {
     show_status_window: bool,
     /// ヘルプ（ツールチップ）表示フラグ（[?] ボタンでトグル）。永続化しない
     help_enabled: bool,
+    /// 「フォルダ本アクセス」トグル。ONの間、条件を満たすフォルダに入ると
+    /// 通常の一覧表示の代わりに仮想アーカイブとしてビューアーを開く。永続化しない（毎回OFF起動）。
+    folder_book_access_enabled: bool,
     status_window_data: Arc<Mutex<crate::view_status::StatusData>>,
     /// ステータスデータを最後に更新した時刻（1秒間隔制御用）
     last_status_update: std::time::Instant,
@@ -1308,6 +1314,7 @@ impl NekoviewApp {
             folder_label_hover: None,
             show_status_window: false,
             help_enabled: false,
+            folder_book_access_enabled: false,
             status_window_data: Arc::new(Mutex::new(crate::view_status::StatusData::default())),
             last_status_update: std::time::Instant::now(),
             status_update_requested: Arc::new(std::sync::atomic::AtomicBool::new(false)),
