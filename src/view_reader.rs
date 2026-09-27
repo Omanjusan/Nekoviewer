@@ -680,6 +680,7 @@ impl ViewerState {
     pub fn archive_path(&self) -> &PathBuf { &self.archive_path }
     pub fn entries(&self) -> &[ViewerEntry] { &self.entries }
     pub fn is_raw_file(&self) -> bool { self.is_raw_file }
+    pub fn is_virtual_book(&self) -> bool { self.is_virtual_book }
 
     /// フェーズ6: 現在表示中のページ(見開き時は2枚)の original_index を返す。
     pub fn visible_original_indices(&self) -> Vec<usize> {

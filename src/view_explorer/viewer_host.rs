@@ -737,6 +737,15 @@ impl NekoviewApp {
     }
 
     fn handle_viewer_nav(&mut self, nav: ViewerNav) {
+        // 仮想アーカイブ（フォルダ本アクセス）は隣接ファイルへの遷移対象を持たない
+        // （そもそも「次のアーカイブファイル」という概念が成立しない）ため、
+        // 最終/先頭ページでのファイル間ナビゲーション要求はそこで止める。
+        if nav != ViewerNav::None {
+            let is_virtual_book = self.viewer.lock().unwrap().as_ref().is_some_and(|v| v.is_virtual_book());
+            if is_virtual_book {
+                return;
+            }
+        }
         match nav {
             ViewerNav::None => {}
             ViewerNav::PrevFile => {
