@@ -1004,6 +1004,10 @@ pub struct NekoviewApp {
     /// 「フォルダ本アクセス」トグル。ONの間、条件を満たすフォルダに入ると
     /// 通常の一覧表示の代わりに仮想アーカイブとしてビューアーを開く。永続化しない（毎回OFF起動）。
     folder_book_access_enabled: bool,
+    /// 初回警告ダイアログの表示中フラグ。非永続・実行時のみ。
+    folder_book_access_notice_open: bool,
+    /// 初回警告ダイアログ内「次回から表示しない」チェックボックスの一時状態。
+    folder_book_access_notice_dont_show_again: bool,
     status_window_data: Arc<Mutex<crate::view_status::StatusData>>,
     /// ステータスデータを最後に更新した時刻（1秒間隔制御用）
     last_status_update: std::time::Instant,
@@ -1315,6 +1319,8 @@ impl NekoviewApp {
             show_status_window: false,
             help_enabled: false,
             folder_book_access_enabled: false,
+            folder_book_access_notice_open: false,
+            folder_book_access_notice_dont_show_again: false,
             status_window_data: Arc::new(Mutex::new(crate::view_status::StatusData::default())),
             last_status_update: std::time::Instant::now(),
             status_update_requested: Arc::new(std::sync::atomic::AtomicBool::new(false)),

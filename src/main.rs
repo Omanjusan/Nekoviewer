@@ -107,6 +107,7 @@ fn main() {
         if let Some(v) = state.app_default_slot { cfg.default_slot = v; }
         if let Some(v) = state.app_magnifier_zoom_notice_shown { cfg.magnifier_zoom_notice_shown = v; }
         if let Some(v) = state.app_max_decode_edge_prompt_answered { cfg.max_decode_edge_prompt_answered = v; }
+        if let Some(v) = state.app_folder_book_access_warning_seen { cfg.folder_book_access_warning_seen = v; }
 
         // 原寸時の最大長辺幅の既定値を 1920 → 4000 に上げた。保存済みの値が新既定値より低く未回答なら、
         // 起動時に1度だけ更新するか確認する（新既定値以上の人は、確認不要として回答済みにしておく）。

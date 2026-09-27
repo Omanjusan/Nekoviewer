@@ -189,6 +189,7 @@ impl NekoviewApp {
         self.draw_memory_warning_dialog(&ctx);
         self.draw_magnifier_zoom_notice(&ctx);
         self.draw_decode_edge_prompt(&ctx);
+        self.draw_folder_book_access_notice(&ctx);
         self.draw_favorite_dialog(&ctx);
         self.draw_virtual_dialogs(&ctx);
         self.draw_tree_sort_dialog(&ctx);
@@ -288,7 +289,7 @@ impl NekoviewApp {
                 cfg.tool_palette.visible = !cfg.tool_palette.visible;
             }
             MenuBarButton::FolderBookAccessToggle => {
-                self.folder_book_access_enabled = !self.folder_book_access_enabled;
+                self.toggle_folder_book_access();
             }
             MenuBarButton::Settings => {
                 self.open_settings();
@@ -498,7 +499,7 @@ impl NekoviewApp {
                 if is_cursor(MenuBarButton::FolderBookAccessToggle) { draw_cursor_ring(ui, r_folder_book_access.rect); }
                 help_tip(&r_folder_book_access, help_on, &help_toggles);
                 if r_folder_book_access.clicked() {
-                    self.folder_book_access_enabled = !folder_book_access_on;
+                    self.toggle_folder_book_access();
                 }
 
                 // ── スコアリング（末尾の評価オーバーレイ）ON/OFF ────────────────────
