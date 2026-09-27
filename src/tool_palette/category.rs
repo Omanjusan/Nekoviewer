@@ -43,6 +43,10 @@ impl PaletteCategory {
             PaletteCategory::Navigate => &[
                 Action(ActionKind::NextPage),
                 Action(ActionKind::PrevPage),
+                Action(ActionKind::FileNavPrev),
+                Action(ActionKind::FileNavNext),
+                Action(ActionKind::JumpFirstPage),
+                Action(ActionKind::JumpLastPage),
             ],
             PaletteCategory::ReadingView => &[
                 Toggle(ToggleKind::KomaMode),
@@ -60,6 +64,7 @@ impl PaletteCategory {
             ],
             PaletteCategory::Display => &[
                 Action(ActionKind::ToggleFullscreen),
+                Action(ActionKind::ToggleZoomActual),
                 Toggle(ToggleKind::ImageInfo),
                 Action(ActionKind::OpenFolder),
             ],

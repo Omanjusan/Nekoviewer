@@ -19,12 +19,22 @@ pub enum ActionKind {
     KomaNext,
     /// 疑似コマ送り: 前のコマへ戻る（先頭コマなら前ページの最終コマ）
     KomaPrev,
+    /// 前のファイルへ移動
+    FileNavPrev,
+    /// 次のファイルへ移動
+    FileNavNext,
+    /// アーカイブ内先頭ページへジャンプ
+    JumpFirstPage,
+    /// アーカイブ内末尾ページへジャンプ
+    JumpLastPage,
+    /// 等倍/fit表示切替
+    ToggleZoomActual,
 }
 
 /// 全ActionKind。category.rsの網羅テストがこれを基準に「全種がどこかのカテゴリに属する」を検査する
 /// （登録メニューはcategory.rsのカテゴリ表を走査する）。
 #[cfg(test)]
-pub const ALL_ACTION_KINDS: [ActionKind; 7] = [
+pub const ALL_ACTION_KINDS: [ActionKind; 12] = [
     ActionKind::NextPage,
     ActionKind::PrevPage,
     ActionKind::OpenFolder,
@@ -32,6 +42,11 @@ pub const ALL_ACTION_KINDS: [ActionKind; 7] = [
     ActionKind::SlideshowToggle,
     ActionKind::KomaNext,
     ActionKind::KomaPrev,
+    ActionKind::FileNavPrev,
+    ActionKind::FileNavNext,
+    ActionKind::JumpFirstPage,
+    ActionKind::JumpLastPage,
+    ActionKind::ToggleZoomActual,
 ];
 
 impl ActionKind {
@@ -45,6 +60,11 @@ impl ActionKind {
             ActionKind::SlideshowToggle => "slideshow_toggle",
             ActionKind::KomaNext => "koma_next",
             ActionKind::KomaPrev => "koma_prev",
+            ActionKind::FileNavPrev => "file_nav_prev",
+            ActionKind::FileNavNext => "file_nav_next",
+            ActionKind::JumpFirstPage => "jump_first_page",
+            ActionKind::JumpLastPage => "jump_last_page",
+            ActionKind::ToggleZoomActual => "toggle_zoom_actual",
         }
     }
 
@@ -57,6 +77,11 @@ impl ActionKind {
             "slideshow_toggle" => ActionKind::SlideshowToggle,
             "koma_next" => ActionKind::KomaNext,
             "koma_prev" => ActionKind::KomaPrev,
+            "file_nav_prev" => ActionKind::FileNavPrev,
+            "file_nav_next" => ActionKind::FileNavNext,
+            "jump_first_page" => ActionKind::JumpFirstPage,
+            "jump_last_page" => ActionKind::JumpLastPage,
+            "toggle_zoom_actual" => ActionKind::ToggleZoomActual,
             _ => return None,
         })
     }
@@ -71,6 +96,11 @@ impl ActionKind {
             ActionKind::SlideshowToggle => lang.tool_palette_action_label_slideshow_toggle(),
             ActionKind::KomaNext => lang.tool_palette_action_label_koma_next(),
             ActionKind::KomaPrev => lang.tool_palette_action_label_koma_prev(),
+            ActionKind::FileNavPrev => lang.tool_palette_action_label_file_nav_prev(),
+            ActionKind::FileNavNext => lang.tool_palette_action_label_file_nav_next(),
+            ActionKind::JumpFirstPage => lang.tool_palette_action_label_jump_first_page(),
+            ActionKind::JumpLastPage => lang.tool_palette_action_label_jump_last_page(),
+            ActionKind::ToggleZoomActual => lang.tool_palette_action_label_toggle_zoom_actual(),
         }
     }
 
@@ -84,6 +114,11 @@ impl ActionKind {
             ActionKind::SlideshowToggle => "⏯",
             ActionKind::KomaNext => "▶▶",
             ActionKind::KomaPrev => "◀◀",
+            ActionKind::FileNavPrev => "⏮",
+            ActionKind::FileNavNext => "⏭",
+            ActionKind::JumpFirstPage => "⇤",
+            ActionKind::JumpLastPage => "⇥",
+            ActionKind::ToggleZoomActual => "🔍",
         }
     }
 }
@@ -92,7 +127,7 @@ impl ActionKind {
 mod tests {
     use super::*;
 
-    const ALL_KINDS: [ActionKind; 7] = [
+    const ALL_KINDS: [ActionKind; 12] = [
         ActionKind::NextPage,
         ActionKind::PrevPage,
         ActionKind::OpenFolder,
@@ -100,6 +135,11 @@ mod tests {
         ActionKind::SlideshowToggle,
         ActionKind::KomaNext,
         ActionKind::KomaPrev,
+        ActionKind::FileNavPrev,
+        ActionKind::FileNavNext,
+        ActionKind::JumpFirstPage,
+        ActionKind::JumpLastPage,
+        ActionKind::ToggleZoomActual,
     ];
 
     #[test]

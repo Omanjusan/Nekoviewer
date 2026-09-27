@@ -3582,6 +3582,46 @@ impl Lang {
         }
     }
 
+    pub fn tool_palette_action_label_file_nav_prev(self) -> &'static str {
+        match self {
+            Lang::Japanese => "前のファイル",
+            Lang::English  => "Prev File",
+            Lang::Chinese  => "上一个文件",
+        }
+    }
+
+    pub fn tool_palette_action_label_file_nav_next(self) -> &'static str {
+        match self {
+            Lang::Japanese => "次のファイル",
+            Lang::English  => "Next File",
+            Lang::Chinese  => "下一个文件",
+        }
+    }
+
+    pub fn tool_palette_action_label_jump_first_page(self) -> &'static str {
+        match self {
+            Lang::Japanese => "先頭ページへ",
+            Lang::English  => "Jump to First Page",
+            Lang::Chinese  => "跳到首页",
+        }
+    }
+
+    pub fn tool_palette_action_label_jump_last_page(self) -> &'static str {
+        match self {
+            Lang::Japanese => "末尾ページへ",
+            Lang::English  => "Jump to Last Page",
+            Lang::Chinese  => "跳到末页",
+        }
+    }
+
+    pub fn tool_palette_action_label_toggle_zoom_actual(self) -> &'static str {
+        match self {
+            Lang::Japanese => "等倍/fit切替",
+            Lang::English  => "Toggle Actual Size",
+            Lang::Chinese  => "切换等倍/适应",
+        }
+    }
+
     // ── ツールパレット登録メニューのカテゴリ（tool_palette/category.rs） ──
 
     pub fn tool_palette_category_navigate(self) -> &'static str {
