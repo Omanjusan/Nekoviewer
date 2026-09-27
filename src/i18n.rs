@@ -1891,6 +1891,41 @@ impl Lang {
         }
     }
 
+    pub fn folder_book_access_toggle_button(self, on: bool) -> &'static str {
+        match (self, on) {
+            (Lang::Japanese, true)  => "フォルダ本アクセスON",
+            (Lang::Japanese, false) => "フォルダ本アクセスOFF",
+            (Lang::English, true)   => "Folder-as-Book: ON",
+            (Lang::English, false)  => "Folder-as-Book: OFF",
+            (Lang::Chinese, true)   => "文件夹当书：开",
+            (Lang::Chinese, false)  => "文件夹当书：关",
+        }
+    }
+
+    pub fn folder_book_access_notice_title(self) -> &'static str {
+        match self {
+            Lang::Japanese => "フォルダ本アクセスについて",
+            Lang::English  => "About Folder-as-Book",
+            Lang::Chinese  => "关于文件夹当书",
+        }
+    }
+
+    pub fn folder_book_access_notice_body(self) -> &'static str {
+        match self {
+            Lang::Japanese => "この閲覧はあくまで仮のものです。しおり・見開き・ソート・サムネイル登録・お気に入り・評価など、本物のアーカイブで使える各種保存機能は利用できません。",
+            Lang::English  => "This is a temporary, virtual view only. Save features available for real archives — bookmarks, spread mode, sort order, thumbnail selection, favorites, and ratings — are not available here.",
+            Lang::Chinese  => "此浏览仅为临时的虚拟视图。书签、跨页模式、排序、缩略图选择、收藏、评分等仅适用于真实档案的保存功能，在此均不可用。",
+        }
+    }
+
+    pub fn folder_book_access_notice_dont_show_again(self) -> &'static str {
+        match self {
+            Lang::Japanese => "次回から表示しない",
+            Lang::English  => "Don't show this again",
+            Lang::Chinese  => "下次不再显示",
+        }
+    }
+
     pub fn settings_button(self) -> &'static str {
         match self {
             Lang::Japanese => "[設定]",

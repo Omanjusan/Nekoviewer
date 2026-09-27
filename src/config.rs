@@ -226,6 +226,10 @@ pub struct AppConfig {
     pub keymap: Keymap,
     /// keymap.ini/state/spread.redb の置き場所（resolve_config_root() で解決済み）。
     pub config_root: PathBuf,
+    /// 「フォルダ本アクセス」の初回警告（各種保存系操作を行わない旨）を
+    /// 「次回から表示しない」チェック済みで確認したか。永続設定
+    /// （state の `app_folder_book_access_warning_seen`）。
+    pub folder_book_access_warning_seen: bool,
 }
 
 impl AppConfig {
@@ -280,6 +284,7 @@ impl AppConfig {
             pending_decode_edge_prompt: None,
             keymap: Keymap::load(&root),
             config_root: root,
+            folder_book_access_warning_seen: false,
         }
     }
 

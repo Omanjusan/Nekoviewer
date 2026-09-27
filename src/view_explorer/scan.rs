@@ -425,6 +425,8 @@ impl NekoviewApp {
         };
 
         if let Some(dir::DirScan { subdirs, archives, raw_images, subdir_mtimes }) = result {
+            // 「フォルダ本アクセス」判定用（archives/raw_imagesは以降で消費されるため先に控える）。
+            let folder_book_access_eligible = archives.is_empty() && !raw_images.is_empty();
             let existing_filenames: Vec<String> = archives.iter().chain(raw_images.iter())
                 .filter_map(|p| p.file_name().and_then(|n| n.to_str()).map(str::to_string))
                 .collect();
@@ -531,6 +533,16 @@ impl NekoviewApp {
             // 成否に関わらず一度きりで消費する（以降このディレクトリへ戻っても再発火しない）。
             if let Some(target) = self.pending_open_target.take() {
                 self.try_open_pending_target(target);
+            }
+            // 「フォルダ本アクセス」: トグルON かつ アーカイブファイルを含まず生画像が
+            // 1枚以上あるフォルダなら、通常の一覧表示に加えて仮想アーカイブとして
+            // 自動的にビューアーを開く（サブフォルダの有無は判定・走査に無関係）。
+            if self.folder_book_access_enabled
+                && folder_book_access_eligible
+                && self.pending_open.is_none()
+                && self.network_gate(&self.current_dir.clone())
+            {
+                self.start_archive_open(self.current_dir.clone());
             }
         }
     }

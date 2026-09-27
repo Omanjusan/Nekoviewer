@@ -407,6 +407,8 @@ pub struct AppState {
     pub app_magnifier_zoom_notice_shown: Option<bool>,
     /// `max_decode_edge` の既定値底上げ（1920→4000）の確認を済ませたか。
     pub app_max_decode_edge_prompt_answered: Option<bool>,
+    /// 「フォルダ本アクセス」初回警告を「次回から表示しない」済みで確認したか。
+    pub app_folder_book_access_warning_seen: Option<bool>,
     /// 外側Noneはキー未記載（ハードコード既定値を使う）、内側Noneはユーザーが明示的に選んだ「なし」。
     pub app_default_slot: Option<Option<usize>>,
     /// 翻訳機能(実験的)の接続先・オーバーレイ設定。
@@ -452,6 +454,7 @@ impl Default for AppState {
             app_decode_threads: None,
             app_magnifier_zoom_notice_shown: None,
             app_max_decode_edge_prompt_answered: None,
+            app_folder_book_access_warning_seen: None,
             app_default_slot: None,
             translate_cfg: TranslateConfig::default(),
             tab_positions: TabPositions::default(),
@@ -538,6 +541,7 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
     let mut app_decode_threads: Option<usize> = None;
     let mut app_magnifier_zoom_notice_shown: Option<bool> = None;
     let mut app_max_decode_edge_prompt_answered: Option<bool> = None;
+    let mut app_folder_book_access_warning_seen: Option<bool> = None;
     let mut app_default_slot: Option<Option<usize>> = None;
     let mut thumbbar_pos: Option<ThumbbarPos> = None;
     let mut thumbbar_thumb_size: Option<u32> = None;
@@ -692,6 +696,7 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
                 "app_decode_threads" => { app_decode_threads = v.trim().parse().ok(); }
                 "app_magnifier_zoom_notice_shown" => { app_magnifier_zoom_notice_shown = v.trim().parse().ok(); }
                 "app_max_decode_edge_prompt_answered" => { app_max_decode_edge_prompt_answered = v.trim().parse().ok(); }
+                "app_folder_book_access_warning_seen" => { app_folder_book_access_warning_seen = v.trim().parse().ok(); }
                 "app_default_slot" => {
                     app_default_slot = Some(match v.trim() {
                         "5" => Some(0),
@@ -946,6 +951,7 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
         app_decode_threads,
         app_magnifier_zoom_notice_shown,
         app_max_decode_edge_prompt_answered,
+        app_folder_book_access_warning_seen,
         app_default_slot,
         translate_cfg: TranslateConfig {
             base_url: translate_base_url.unwrap_or_default(),
@@ -1114,8 +1120,8 @@ pub fn save_state(root: &Path, dir: &Path, window_size: (u32, u32), viewer_slots
         Some(0) => "5", Some(1) => "6", Some(2) => "7", Some(3) => "8", _ => "",
     };
     content.push_str(&format!(
-        "app_decode_threads={}\napp_default_slot={}\napp_magnifier_zoom_notice_shown={}\napp_max_decode_edge_prompt_answered={}\n",
-        app_cfg.decode_threads, default_slot_str, app_cfg.magnifier_zoom_notice_shown, app_cfg.max_decode_edge_prompt_answered,
+        "app_decode_threads={}\napp_default_slot={}\napp_magnifier_zoom_notice_shown={}\napp_max_decode_edge_prompt_answered={}\napp_folder_book_access_warning_seen={}\n",
+        app_cfg.decode_threads, default_slot_str, app_cfg.magnifier_zoom_notice_shown, app_cfg.max_decode_edge_prompt_answered, app_cfg.folder_book_access_warning_seen,
     ));
     for (i, slot) in viewer_slots.iter().enumerate() {
         if let Some(s) = slot {
@@ -1170,6 +1176,16 @@ mod tests {
         assert_eq!(parsed.app_magnifier_zoom_notice_shown, None);
         let parsed = parse_state_text("notice_none", "lang=ja\n");
         assert_eq!(parsed.app_magnifier_zoom_notice_shown, None);
+    }
+
+    #[test]
+    fn folder_book_access_warning_seen_flag_parses_and_defaults_to_unset() {
+        let parsed = parse_state_text("fba_set", "app_folder_book_access_warning_seen=true\n");
+        assert_eq!(parsed.app_folder_book_access_warning_seen, Some(true));
+        let parsed = parse_state_text("fba_bad", "app_folder_book_access_warning_seen=yes\n");
+        assert_eq!(parsed.app_folder_book_access_warning_seen, None);
+        let parsed = parse_state_text("fba_none", "lang=ja\n");
+        assert_eq!(parsed.app_folder_book_access_warning_seen, None);
     }
 
     #[test]
