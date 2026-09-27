@@ -1912,9 +1912,9 @@ impl Lang {
 
     pub fn folder_book_access_notice_body(self) -> &'static str {
         match self {
-            Lang::Japanese => "この閲覧はあくまで仮のものです。しおり・見開き・ソート・サムネイル登録・お気に入り・評価など、本物のアーカイブで使える各種保存機能は利用できません。",
-            Lang::English  => "This is a temporary, virtual view only. Save features available for real archives — bookmarks, spread mode, sort order, thumbnail selection, favorites, and ratings — are not available here.",
-            Lang::Chinese  => "此浏览仅为临时的虚拟视图。书签、跨页模式、排序、缩略图选择、收藏、评分等仅适用于真实档案的保存功能，在此均不可用。",
+            Lang::Japanese => "単体画像だけで構成されているフォルダにアクセスしたときアーカイブに見立てて閲覧できるモードです。単体画像+サブフォルダ構成も対象ですが単体画像+アーカイブファイルの構成はこの機能の対象外です\n\nこの閲覧はあくまで仮のものです。しおり・見開き・ソート・サムネイル登録・お気に入り・評価など、本物のアーカイブで使える各種保存機能は利用できません。",
+            Lang::English  => "This mode lets you view a folder made up only of standalone images as if it were an archive. Folders containing standalone images plus subfolders are also supported, but folders mixing standalone images with archive files are not.\n\nThis is a temporary, virtual view only. Save features available for real archives — bookmarks, spread mode, sort order, thumbnail selection, favorites, and ratings — are not available here.",
+            Lang::Chinese  => "此模式可让您像浏览档案一样查看仅由独立图片组成的文件夹。包含独立图片和子文件夹的结构也支持，但独立图片与档案文件混合的结构不在此功能范围内。\n\n此浏览仅为临时的虚拟视图。书签、跨页模式、排序、缩略图选择、收藏、评分等仅适用于真实档案的保存功能，在此均不可用。",
         }
     }
 
@@ -4004,6 +4004,11 @@ impl Lang {
                 title: "ON/OFFトグル",
                 sections: &[
                     (
+                        "[フォルダ本アクセス]",
+                        "単体画像で構成されるフォルダにアクセスしたとき、フォルダへの移動と同時にビューアーを立ち上げ、\n\
+                         1アーカイブとして閲覧できるモード。なお、実アーカイブのような各種設定は保存できない。",
+                    ),
+                    (
                         "[ツールボックス]",
                         "ビューアー内のツールパレット（マス配置のツールボックス）の表示ON/OFF。\n\
                          ファイルを移っても状態は保たれる。",
@@ -4019,6 +4024,12 @@ impl Lang {
                 title: "ON/OFF toggles",
                 sections: &[
                     (
+                        "[Folder-as-Book]",
+                        "When you navigate into a folder made up of standalone images, the viewer launches at the\n\
+                         same time and opens it as if it were a single archive. Note that, unlike a real archive,\n\
+                         its settings cannot be saved.",
+                    ),
+                    (
                         "[Toolbox]",
                         "Shows or hides the tool palette (grid-layout toolbox) in the viewer.\n\
                          The state is kept when you move between files.",
@@ -4033,6 +4044,11 @@ impl Lang {
             Lang::Chinese => HelpDoc {
                 title: "开/关切换",
                 sections: &[
+                    (
+                        "[文件夹当书]",
+                        "进入仅由独立图片组成的文件夹时，会同时启动查看器，将其作为单个档案打开浏览。\n\
+                         请注意，与真实档案不同，此模式下的各项设置无法保存。",
+                    ),
                     (
                         "[工具箱]",
                         "显示/隐藏查看器内的工具面板（格子布局的工具箱）。\n\
