@@ -38,18 +38,15 @@ const TAG_PANEL_PREVIEW_MAX_HEIGHT: f32 = 500.0;
 /// （`config.thumb_size`）とは独立した固定値。
 const TAG_PREVIEW_DECODE_EDGE: u32 = 1200;
 
-/// メインタグ・ドラムUI: 隣接タグ間の中心間隔(px)。
-const TAG_DRUM_ITEM_SPACING: f32 = 70.0;
-/// メインタグ・ドラムUI: 全体の高さ(px)。
-const TAG_DRUM_HEIGHT: f32 = 40.0;
-/// メインタグ・ドラムUI: 中央（選択中）のフォントサイズ。
-const TAG_DRUM_FONT_MAX: f32 = 17.0;
-/// メインタグ・ドラムUI: 最も外側まで離れた時のフォントサイズ。
-const TAG_DRUM_FONT_MIN: f32 = 11.0;
-/// メインタグ・ドラムUI: このタグ数ぶん離れたら最小フォントサイズに到達する減衰距離。
-const TAG_DRUM_FALLOFF: f32 = 3.0;
-/// メインタグ・ドラムUI: ドラッグ解放後、最寄りへスナップするアニメーション時間(秒)。
-const TAG_DRUM_ANIM_SECS: f32 = 0.25;
+/// メインタグ選択UI: 行の高さ。
+const TAG_MAIN_ROW_HEIGHT: f32 = 40.0;
+/// メインタグ選択UI: 選択値の文字サイズ。前後の値はこれに`TAG_MAIN_SIDE_SCALE`を掛ける。
+const TAG_MAIN_FONT_CENTER: f32 = 17.0;
+const TAG_MAIN_SIDE_SCALE: f32 = 0.6;
+/// メインタグ選択UI: 矢印1個分の幅（ヒット領域とは別に、矢印グリフの確保幅）。
+const TAG_MAIN_ARROW_W: f32 = 28.0;
+/// メインタグ選択UI: 選択値の背景の左右余白の合計。
+const TAG_MAIN_CENTER_PAD: f32 = 20.0;
 /// タグマネージャー: 左カラム（カテゴリ一覧）の幅。
 const TAG_MANAGER_CATEGORY_COL_WIDTH: f32 = 150.0;
 /// タグマネージャー: tier行の番号ラベル部分の固定幅。"neg-tier"有無で幅が
@@ -752,9 +749,15 @@ impl NekoviewApp {
 
     /// タグ機能・レイアウト器: 右タグパネルの中身。
     fn draw_tag_panel(&mut self, ui: &mut egui::Ui) {
+        // パネル内の使える幅を、何も描く前に確定させておく。eguiは中身が収まらないと
+        // 親Uiのmax_rectごと右へ拡張するため（ドラム等の固定幅要素が原因）、後から
+        // `available_width()`を取ると実際のパネル幅より広い値になり、下段の
+        // horizontal_wrapped が折り返さず見切れていた。
+        let content_w = ui.available_width();
         // フェーズTM0: 仮置きのタグマネージャー呼び出しボタン。既存のメインタグ／
         // 属性タグUIとは切り離した独立機能なので、位置・見た目は後で調整前提。
-        ui.horizontal(|ui| {
+        // 狭い幅では2つ目のボタンが見切れないよう折り返す。
+        ui.horizontal_wrapped(|ui| {
             if ui.button("🏷 タグ管理").clicked() {
                 self.tag_manager_open = true;
             }
@@ -787,7 +790,11 @@ impl NekoviewApp {
         ui.separator();
         // ネストしたhorizontal/vertical越しだと`ui.available_height()`がパネル下端まで
         // 届かないことがあるため、残り領域を矩形として明示的に切り出してから描く。
-        let attr_rect = egui::Rect::from_min_size(ui.cursor().min, ui.available_size());
+        // 幅は冒頭で確定した`content_w`を使う（上記の拡張の影響を受けないように）。
+        let attr_rect = egui::Rect::from_min_size(
+            ui.cursor().min,
+            egui::vec2(content_w, ui.available_height()),
+        );
         ui.scope_builder(egui::UiBuilder::new().max_rect(attr_rect), |ui| {
             self.draw_tag_panel_attr_tags(ui);
         });
@@ -865,13 +872,6 @@ impl NekoviewApp {
             .copied()
             .find(|id| self.tag_main_options.iter().any(|(oid, _)| oid == id))
             .or(Some(crate::tag_manager::TAG_MAIN_UNSET_ID));
-        // 実タグが見つかった場合は「未設定」が選択肢から外れた後のリストで位置を
-        // 合わせる（一度実タグへ決定したファイルは未設定へ戻れない設計）。
-        let effective = self.tag_main_effective_options();
-        if let Some(idx) = self.tag_main_selected.and_then(|id| effective.iter().position(|(oid, _)| *oid == id)) {
-            self.tag_main_drum_pos = idx as f32;
-            self.tag_main_drum_anim = None;
-        }
         self.tag_attr_selected = cleaned
             .into_iter()
             .filter(|id| !self.tag_main_options.iter().any(|(oid, _)| oid == id))
@@ -895,13 +895,14 @@ impl NekoviewApp {
         }
     }
 
-    /// タグ付けレイアウト: メインタグ(排他)のドラムUI。左端の編集トグルがONの間
-    /// だけ横ドラッグで回せる（離すと最寄りのタグへ滑らかにスナップ）。OFF時は
-    /// ドラッグを受け付けない。中央に来たタグが選択扱いになる。
+    /// タグ付けレイアウト: メインタグ(排他)の選択UI。中央に選択値（メインカテゴリ色の
+    /// 背景）を出し、編集モードONの間だけ左右に「前の値◀ 選択値 ▶次の値」の矢印と
+    /// 前後の値（縮小・薄色）を出す。矢印＋前後の値の領域全体がクリック判定で、
+    /// 中央の選択値は無反応。端では該当側の矢印ごと消す（循環しない）。閲覧モード
+    /// （編集OFF）では選択値のみ。「未設定」は最左で、一度実タグへ動くと選択肢から
+    /// 外れ二度と戻れない一方通行（`tag_main_effective_options`）。
     fn draw_tag_panel_main_tags(&mut self, ui: &mut egui::Ui) {
-        self.update_tag_main_drum_anim(ui.ctx());
-
-        // メインカテゴリ設定色。選択ハイライトはこの色で統一する（以前は青固定）。
+        // メインカテゴリ設定色。選択値の背景はこの色で統一する（以前は青固定）。
         let main_color = self
             .tag_manager_categories
             .iter()
@@ -909,7 +910,7 @@ impl NekoviewApp {
             .map(|c| c.color)
             .unwrap_or(egui::Color32::from_rgb(30, 100, 200));
 
-        // 編集モードトグルは単独行で中央寄せ表示（ドラムとは別行）。
+        // 編集モードトグルは単独行で中央寄せ表示（選択UIとは別行）。
         ui.vertical_centered(|ui| {
             let edit_on = self.tag_main_edit_toggle;
             let r_edit = ui.scope(|ui| {
@@ -928,97 +929,76 @@ impl NekoviewApp {
             }
         });
 
-        // ドラムはパネル全幅を使い、内部で中央寄せ描画する（メインカテゴリの中央寄せ）。
-        // 「未設定」仮想エントリは、まだ未設定の間だけ回転対象に含む（一度実タグへ
-        // 決定したら選択肢から外れ、二度と戻れない）。
         let options = self.tag_main_effective_options();
-        let max_idx = options.len().saturating_sub(1);
+        let idx = self
+            .tag_main_selected
+            .and_then(|id| options.iter().position(|(oid, _)| *oid == id))
+            .unwrap_or(0);
+        let Some((_, selected_name)) = options.get(idx) else { return };
+        let edit_on = self.tag_main_edit_toggle;
+
         let avail_w = ui.available_width();
-        let sense = if self.tag_main_edit_toggle { egui::Sense::drag() } else { egui::Sense::hover() };
-        let (rect, response) =
-            ui.allocate_exact_size(egui::vec2(avail_w, TAG_DRUM_HEIGHT), sense);
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(avail_w, TAG_MAIN_ROW_HEIGHT), egui::Sense::hover());
+        let cy = rect.center().y;
+        let text_color = ui.visuals().text_color();
+        let center_font = egui::FontId::proportional(TAG_MAIN_FONT_CENTER);
+        let side_font = egui::FontId::proportional(TAG_MAIN_FONT_CENTER * TAG_MAIN_SIDE_SCALE);
+        let arrow_font = egui::FontId::proportional(TAG_MAIN_FONT_CENTER);
 
-        if response.dragged() {
-            self.tag_main_drum_anim = None;
-            self.tag_main_drum_pos -= response.drag_delta().x / TAG_DRUM_ITEM_SPACING;
-            self.tag_main_drum_pos = self.tag_main_drum_pos.clamp(0.0, max_idx as f32);
-        }
-        if response.drag_stopped() {
-            let target = self.tag_main_drum_pos.round().clamp(0.0, max_idx as f32);
-            if (target - self.tag_main_drum_pos).abs() > f32::EPSILON {
-                self.tag_main_drum_anim =
-                    Some((self.tag_main_drum_pos, target, std::time::Instant::now()));
-            }
-        }
-        if self.tag_main_edit_toggle && (response.hovered() || response.dragged()) {
-            ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
-        }
+        // 幅が足りない時は前後の値→選択値の順で削る。編集ON時は左右の矢印分を常に確保。
+        let arrows_w = if edit_on { TAG_MAIN_ARROW_W * 2.0 } else { 0.0 };
+        let center_max_w = (avail_w - arrows_w - TAG_MAIN_CENTER_PAD).max(20.0);
+        let center_galley = truncated_galley(ui, selected_name, center_font, contrasting_text_color(main_color), center_max_w);
+        let center_w = (center_galley.size().x + TAG_MAIN_CENTER_PAD).min(avail_w - arrows_w).max(20.0);
+        let center_rect = egui::Rect::from_center_size(
+            egui::pos2(rect.center().x, cy),
+            egui::vec2(center_w, TAG_MAIN_ROW_HEIGHT * 0.75),
+        );
+        ui.painter().rect_filled(center_rect, 6.0, main_color);
+        ui.painter().galley(
+            egui::pos2(center_rect.center().x - center_galley.size().x / 2.0, cy - center_galley.size().y / 2.0),
+            center_galley,
+            main_color,
+        );
 
-        let center_idx = self.tag_main_drum_pos.round().clamp(0.0, max_idx as f32) as usize;
-        let new_selected = options.get(center_idx).map(|(id, _)| *id);
-        if new_selected != self.tag_main_selected {
-            let was_unset = self.tag_main_selected == Some(crate::tag_manager::TAG_MAIN_UNSET_ID);
-            self.tag_main_selected = new_selected;
-            if was_unset && new_selected != Some(crate::tag_manager::TAG_MAIN_UNSET_ID) {
-                // 「未設定」から実タグへ初めて移った瞬間、選択肢リストから未設定が
-                // 外れて縮む。縮んだ後のリストでの位置にドラムを合わせ直す。
-                let effective = self.tag_main_effective_options();
-                if let Some(idx) = new_selected.and_then(|id| effective.iter().position(|(oid, _)| *oid == id)) {
-                    self.tag_main_drum_pos = idx as f32;
-                }
-            }
+        if !edit_on {
+            return;
         }
-        // 未設定→実タグの遷移でリストが変わった可能性があるため、描画直前に取り直す。
-        let options = self.tag_main_effective_options();
-
-        let painter = ui.painter();
-        let center = rect.center();
-        let highlight_bg = main_color;
-        for (i, (_id, tag)) in options.iter().enumerate() {
-            let dist = i as f32 - self.tag_main_drum_pos;
-            let x = center.x + dist * TAG_DRUM_ITEM_SPACING;
-            if x < rect.left() - TAG_DRUM_ITEM_SPACING || x > rect.right() + TAG_DRUM_ITEM_SPACING {
-                continue;
+        // (方向, 隣の選択肢, 領域)。領域は中央矩形の外側〜パネル端まで（大きめのヒット領域）。
+        let left_region = egui::Rect::from_min_max(rect.left_top(), egui::pos2(center_rect.left(), rect.bottom()));
+        let right_region = egui::Rect::from_min_max(egui::pos2(center_rect.right(), rect.top()), rect.right_bottom());
+        let prev = idx.checked_sub(1).and_then(|i| options.get(i));
+        let next = options.get(idx + 1);
+        let mut new_selected = None;
+        for (is_left, neighbor, region) in [(true, prev, left_region), (false, next, right_region)] {
+            let Some((nid, nname)) = neighbor else { continue };
+            let resp = ui.interact(region, ui.id().with(("tag_main_step", is_left)), egui::Sense::click());
+            if resp.hovered() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
             }
-            let adist = dist.abs();
-            let t = (adist / TAG_DRUM_FALLOFF).min(1.0);
-            let font_size = TAG_DRUM_FONT_MAX + (TAG_DRUM_FONT_MIN - TAG_DRUM_FONT_MAX) * t;
-            let is_center = adist < 0.5;
-            let pos = egui::pos2(x, center.y);
-            let color = if is_center {
-                contrasting_text_color(highlight_bg)
+            let arrow_color = if resp.hovered() { text_color } else { text_color.gamma_multiply(0.7) };
+            let (arrow, arrow_x, align) = if is_left {
+                ("◀", region.right() - TAG_MAIN_ARROW_W / 2.0, egui::Align2::CENTER_CENTER)
             } else {
-                ui.visuals().text_color().gamma_multiply(1.0 - t * 0.5)
+                ("▶", region.left() + TAG_MAIN_ARROW_W / 2.0, egui::Align2::CENTER_CENTER)
             };
-            if is_center {
-                let bg_rect = egui::Rect::from_center_size(
-                    pos,
-                    egui::vec2(TAG_DRUM_ITEM_SPACING * 0.9, TAG_DRUM_HEIGHT * 0.75),
-                );
-                painter.rect_filled(bg_rect, 6.0, highlight_bg);
+            ui.painter().text(egui::pos2(arrow_x, cy), align, arrow, arrow_font.clone(), arrow_color);
+            let name_max_w = region.width() - TAG_MAIN_ARROW_W - 4.0;
+            if name_max_w > 16.0 {
+                let g = truncated_galley(ui, nname, side_font.clone(), text_color.gamma_multiply(0.55), name_max_w);
+                let x = if is_left {
+                    region.right() - TAG_MAIN_ARROW_W - g.size().x
+                } else {
+                    region.left() + TAG_MAIN_ARROW_W
+                };
+                ui.painter().galley(egui::pos2(x, cy - g.size().y / 2.0), g, text_color);
             }
-            painter.text(
-                pos,
-                egui::Align2::CENTER_CENTER,
-                tag,
-                egui::FontId::proportional(font_size),
-                color,
-            );
+            if resp.clicked() {
+                new_selected = Some(*nid);
+            }
         }
-    }
-
-    /// メインタグ・ドラムUIのスナップアニメーションを進める（ease-out）。
-    /// アニメーション中は継続的な再描画を要求する。
-    fn update_tag_main_drum_anim(&mut self, ctx: &egui::Context) {
-        let Some((from, to, start)) = self.tag_main_drum_anim else { return; };
-        let t = (start.elapsed().as_secs_f32() / TAG_DRUM_ANIM_SECS).min(1.0);
-        let eased = 1.0 - (1.0 - t) * (1.0 - t);
-        self.tag_main_drum_pos = from + (to - from) * eased;
-        if t >= 1.0 {
-            self.tag_main_drum_pos = to;
-            self.tag_main_drum_anim = None;
-        } else {
-            ctx.request_repaint();
+        if let Some(id) = new_selected {
+            self.tag_main_selected = Some(id);
         }
     }
 
@@ -1081,7 +1061,10 @@ impl NekoviewApp {
                                         ui.visuals_mut().widgets.hovered.fg_stroke.color = dimmed_fg;
                                         ui.visuals_mut().widgets.inactive.bg_stroke.color = dimmed_bg_stroke;
                                     }
-                                    ui.selectable_label(selected, elem_name)
+                                    // 1要素がパネル幅を超える場合は文字を途中で縦折り返しせず
+                                    // 省略表示にし、全文はホバーで確認できるようにする。
+                                    ui.add(egui::Button::selectable(selected, elem_name.as_str()).truncate())
+                                        .on_hover_text(elem_name)
                                 })
                                 .inner;
                             if resp.clicked() {
@@ -1142,24 +1125,14 @@ impl NekoviewApp {
     /// （裏の表示はそのまま保持）。今回は開閉の器のみで中身はまだ空。
     /// タグマネージャー: マスタ定義（カテゴリ/tier/色）を即時保存する。専用の保存
     /// タイミングは持たず、編集操作が確定するたびにこれを呼ぶ。合わせて、メインタグ
-    /// ドラム／属性タグパレットの選択肢をマスタ定義から再生成して結びつける。
+    /// メインタグ／属性タグパレットの選択肢をマスタ定義から再生成して結びつける。
     fn save_tag_manager(&mut self) {
         let (main_options, attr_options) = crate::tag_manager::derive_tag_options(&self.tag_manager_categories);
         self.tag_main_options = main_options;
+        // 選択中タグ自体が消えていれば（tier削除等）「未設定」へフォールバックする。
         let effective = self.tag_main_effective_options();
-        match self.tag_main_selected.and_then(|id| effective.iter().position(|(oid, _)| *oid == id)) {
-            // 並び順が変わっていてもドラム位置がズレないよう、選択中タグの新しい
-            // インデックスに追従させる。
-            Some(idx) => {
-                self.tag_main_drum_pos = idx as f32;
-                self.tag_main_drum_anim = None;
-            }
-            // 選択中タグ自体が消えていれば（tier削除等）「未設定」へフォールバックする。
-            None => {
-                self.tag_main_selected = Some(crate::tag_manager::TAG_MAIN_UNSET_ID);
-                self.tag_main_drum_pos = 0.0;
-                self.tag_main_drum_anim = None;
-            }
+        if !self.tag_main_selected.is_some_and(|id| effective.iter().any(|(oid, _)| *oid == id)) {
+            self.tag_main_selected = Some(crate::tag_manager::TAG_MAIN_UNSET_ID);
         }
         self.tag_attr_options = attr_options;
         self.tag_attr_selected.retain(|s| self.tag_attr_options.contains(s));
@@ -3563,4 +3536,19 @@ impl NekoviewApp {
     fn real_tree_menu(&self) -> TreeMenu {
         TreeMenu { add_to_virtual: self.folder_pane_tab == FolderPaneTab::VirtualFolders, sort: true }
     }
+}
+
+/// 1行・幅上限つきで、はみ出す分を`…`で省略したテキストレイアウトを作る。
+fn truncated_galley(
+    ui: &egui::Ui,
+    text: &str,
+    font: egui::FontId,
+    color: egui::Color32,
+    max_width: f32,
+) -> std::sync::Arc<egui::Galley> {
+    let mut job = egui::text::LayoutJob::simple_singleline(text.to_owned(), font, color);
+    job.wrap.max_width = max_width;
+    job.wrap.max_rows = 1;
+    job.wrap.break_anywhere = true;
+    ui.painter().layout_job(job)
 }

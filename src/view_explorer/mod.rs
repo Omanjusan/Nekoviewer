@@ -966,12 +966,6 @@ pub struct NekoviewApp {
     pub(crate) tag_main_options: Vec<(u64, String)>,
     /// タグ付けレイアウト: 現在選択中（ドラム中央）のメインタグのtier_id。
     pub(crate) tag_main_selected: Option<u64>,
-    /// タグ付けレイアウト・ドラムUI: 現在のドラム位置（tag_main_optionsのインデックス
-    /// を単位とした連続値。例:1.5なら2番目と3番目のタグのちょうど中間）。
-    pub(crate) tag_main_drum_pos: f32,
-    /// タグ付けレイアウト・ドラムUI: スナップアニメーション中の(開始pos, 目標pos, 開始時刻)。
-    /// Noneならアニメーションしていない（アイドルまたはドラッグ中）。
-    pub(crate) tag_main_drum_anim: Option<(f32, f32, std::time::Instant)>,
     /// タグ付けレイアウト・ドラムUI: メインタグ編集トグル。ONの間だけドラムのドラッグ
     /// （左右スワイプ相当）を許可する。既定OFF。フォーカスが外れたら（別ファイル／
     /// 別フォルダへ移動、ビューアを閉じる）自動的にOFFへ戻す。
@@ -1422,8 +1416,6 @@ impl NekoviewApp {
             tag_panel_edit_expanded: false,
             tag_main_options,
             tag_main_selected,
-            tag_main_drum_pos: 0.0,
-            tag_main_drum_anim: None,
             tag_main_edit_toggle: false,
             tag_attr_options,
             tag_attr_selected,
