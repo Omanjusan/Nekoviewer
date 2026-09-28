@@ -157,48 +157,22 @@ impl NekoviewApp {
                 });
         }
 
-        let tag_panel_resp = {
-            let style_clone = ui.style().clone();
-            let open = self.tag_panel_open;
-            egui::Panel::right("tag_panel")
-                .exact_size(if open { self.tag_panel_width } else { PANEL_TAB_WIDTH })
-                // 自前のD&Dハンドル(draw_tag_panel_resize_handle)と競合するため、
-                // egui組み込みのリサイズ機構は使わない。
-                .resizable(false)
-                .frame({
-                    let mut f = egui::Frame::side_top_panel(&style_clone);
-                    f.inner_margin.left = 0;
-                    f
-                })
-                .show(ui, |ui| {
-                    if open {
-                        // `ui.horizontal(...)`は親がTopDownレイアウトの場合、行の高さを
-                        // `interact_size.y`程度（数十px）に制約してしまい、その中でネストした
-                        // `ui.vertical(...)`側も同じ制約を引き継いでパネル下端まで伸びない
-                        // （egui 0.35のnext_frame_ignore_wrap仕様）。ここでは残り領域を
-                        // 矩形として先に切り出し、`scope_builder`で明示的に高さいっぱいの
-                        // max_rectを与えてから左右に並べる。
-                        let row_rect =
-                            egui::Rect::from_min_size(ui.cursor().min, ui.available_size());
-                        ui.scope_builder(
-                            egui::UiBuilder::new()
-                                .max_rect(row_rect)
-                                .layout(egui::Layout::left_to_right(egui::Align::Min)),
-                            |ui| {
-                                self.draw_tag_panel_resize_handle(ui);
-                                ui.vertical(|ui| {
-                                    if ui.button("▶").clicked() {
-                                        self.tag_panel_open = false;
-                                    }
-                                    self.draw_tag_panel(ui);
-                                });
-                            },
-                        );
-                    } else {
-                        self.draw_tag_panel_collapsed(ui);
-                    }
-                })
-        };
+        // タグパネルはCentralPanelの上にフローティングするオーバーレイとして描画する
+        // （egui::Panel::rightドック方式は、パネル内部のコンテンツ量でCentralPanel側の
+        // 確保幅が引きずられてズレる侵食バグの温床だったため廃止した。CentralPanelは
+        // 常にフォルダパネル分を引いた全幅を使うので、タグパネルの中身が幅計算に
+        // 影響しなくなる）。
+        //
+        // 描画順はCentralPanel（グリッド）より必ず先にする。egui内部では
+        // Areaの当たり判定用サイズ(AreaState.size、layer_id_atが参照する)は
+        // Area::show完了時にメモリへ書き込まれるため、後から呼ぶとグリッド側の
+        // 各カードのinteract()判定が「1フレーム前のタグパネル矩形」を参照してしまい、
+        // リサイズ中は境界付近の列でクリックが不安定に、幅が急変した直後は
+        // ズレが大きくなり広範囲のカードに波及する（実際に発生した不具合）。
+        // CentralPanelがまだ無い時点でも、折りたたみ済みパネル(200px)を除いた
+        // 残り矩形は`available_rect_before_wrap`で先読みできる。
+        let central_area = ui.available_rect_before_wrap();
+        self.draw_tag_panel_floating(&ctx, central_area);
 
         let central_resp = {
             let style_clone = ui.style().clone();
@@ -213,7 +187,7 @@ impl NekoviewApp {
                 })
         };
 
-        self.tag_manager_area_rect = central_resp.response.rect.union(tag_panel_resp.response.rect);
+        self.tag_manager_area_rect = central_resp.response.rect;
         if self.tag_manager_open {
             self.draw_tag_manager_overlay(&ctx);
         }
@@ -288,6 +262,76 @@ impl NekoviewApp {
         self.draw_settings_dialog(&ctx);
         // 旧来の無条件 ctx.request_repaint() は撤去（イベント駆動化）。
         // ROOT は入力イベント・各ワーカーの起床通知・ステータス窓の1Hzハートビートで再描画される。
+    }
+
+    /// タグ機能・レイアウト器: 右タグパネルを`central_area`（CentralPanelの実矩形）の
+    /// 右端に浮かせて描画する。`draw_tag_manager_overlay`と同じ
+    /// `egui::Area`（`Order::Foreground`）方式で、CentralPanel側のレイアウトには
+    /// 一切関与しない。開閉トグル(▶/◀)・D&Dリサイズハンドル・幅は従来のPanel版と同じ。
+    fn draw_tag_panel_floating(&mut self, ctx: &egui::Context, central_area: egui::Rect) {
+        let open = self.tag_panel_open;
+        let panel_w = if open { self.tag_panel_width } else { PANEL_TAB_WIDTH };
+        let panel_rect = egui::Rect::from_min_size(
+            egui::pos2(central_area.right() - panel_w, central_area.top()),
+            egui::vec2(panel_w, central_area.height()),
+        );
+        egui::Area::new(egui::Id::new("tag_panel_floating"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(panel_rect.min)
+            // Areaはデフォルトconstrain(true)で「画面右端からはみ出さないよう自動で
+            // 左へ位置をずらす」。パネル内部のコンテンツ（ドラム/タグボタン列など）が
+            // panel_rectの幅に収まらないと、egui側の「収まらない時はmin_rect/max_rectを
+            // 自動拡張する」仕様でAreaの記録サイズ(state.size)がpanel_rectより広くなり、
+            // constrainがその分だけ矩形全体を左（グリッド側）へシフトさせて当たり判定が
+            // 食い込んでいた（パネルが狭いほどシフト量が増え、最小幅で全カード選択不能に
+            // なっていた原因）。位置はfixed_posで確定させているので、はみ出す分は
+            // 右へ（画面外へ）逃がせば十分。magnifier_bar(view_reader.rs)と同じ対処。
+            .constrain(false)
+            .show(ctx, |ui| {
+                ui.scope_builder(egui::UiBuilder::new().max_rect(panel_rect), |ui| {
+                    // egui::Panelは自身の矩形へ自動でclip_rectを掛けるが、Area+scope_builderは
+                    // 掛けない。明示しないと、幅が狭い時にパネル内部のウィジェット（ドラム/
+                    // タグボタン列など）がpanel_rectをはみ出して左側（グリッド側）まで
+                    // 広がり、Foreground層の当たり判定として乗ってしまう
+                    // （タグパネルを最小幅まで詰めると全カードが選択不能になった不具合の原因）。
+                    ui.set_clip_rect(panel_rect.intersect(ui.clip_rect()));
+                    // 背後グリッドへの全面クリックブロッカーは置かない。グリッド側の列数計算
+                    // （draw_archive_grid）が常にこのパネル分の幅を除外しているので、
+                    // 下にカードが存在すること自体がない。動的にリサイズされるこの
+                    // Foreground Areaに毎フレーム矩形サイズの異なるSense::click_and_dragの
+                    // ブロッカーを乗せていたところ、当たり判定がパネルを開いた時点の幅に
+                    // 固着し、隣接列のクリックが不安定になる不具合があったため撤去した。
+                    let bg = ui.visuals().panel_fill;
+                    ui.painter().rect_filled(panel_rect, 0.0, bg);
+
+                    if open {
+                        // `ui.horizontal(...)`は親がTopDownレイアウトの場合、行の高さを
+                        // `interact_size.y`程度（数十px）に制約してしまい、その中でネストした
+                        // `ui.vertical(...)`側も同じ制約を引き継いでパネル下端まで伸びない
+                        // （egui 0.35のnext_frame_ignore_wrap仕様）。ここでは残り領域を
+                        // 矩形として先に切り出し、`scope_builder`で明示的に高さいっぱいの
+                        // max_rectを与えてから左右に並べる。
+                        let row_rect =
+                            egui::Rect::from_min_size(ui.cursor().min, ui.available_size());
+                        ui.scope_builder(
+                            egui::UiBuilder::new()
+                                .max_rect(row_rect)
+                                .layout(egui::Layout::left_to_right(egui::Align::Min)),
+                            |ui| {
+                                self.draw_tag_panel_resize_handle(ui);
+                                ui.vertical(|ui| {
+                                    if ui.button("▶").clicked() {
+                                        self.tag_panel_open = false;
+                                    }
+                                    self.draw_tag_panel(ui);
+                                });
+                            },
+                        );
+                    } else {
+                        self.draw_tag_panel_collapsed(ui);
+                    }
+                });
+            });
     }
 
     /// MenuBarの各ボタンの並び順・有効状態を計算する（MENU_BAR_ORDERに対応）。
@@ -2368,10 +2412,16 @@ impl NekoviewApp {
         let cell_h = self.config.thumb_size as f32;
         let cell_w = (cell_h / std::f32::consts::SQRT_2).round();
         const GAP: f32 = 8.0;
-        let avail_w = ui.available_width();
-        let full_cols = ((avail_w + GAP) / (cell_w + GAP)).floor() as usize;
-        let used_w = full_cols as f32 * (cell_w + GAP) - GAP;
-        let cols = if avail_w - used_w >= cell_w / 2.0 { full_cols + 1 } else { full_cols }.max(1);
+        // CentralPanelは常にフル幅を使う（タグパネルはその上に浮くフローティング
+        // オーバーレイなので、egui側のレイアウト幅には反映されない）。列数計算だけ
+        // タグパネル分の幅を自前で差し引き、パネル下に列が隠れないようにする。
+        let tag_panel_w = if self.tag_panel_open { self.tag_panel_width } else { PANEL_TAB_WIDTH };
+        let avail_w = (ui.available_width() - tag_panel_w).max(1.0);
+        // タグパネル分の余白は「はみ出しても実害のないウィンドウ端の余白」ではなく
+        // 越えてはいけない境界なので、半端な余白を切り上げて1列多く詰め込む丸め処理は
+        // 行わない（切り上げるとタグパネル領域にカードがはみ出し、クリックが
+        // 効かなくなる不具合があった）。常に切り捨て。
+        let cols = (((avail_w + GAP) / (cell_w + GAP)).floor() as usize).max(1);
         self.explorer_cols = cols;
 
         let output = egui::ScrollArea::vertical()
