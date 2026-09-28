@@ -773,6 +773,7 @@ impl NekoviewApp {
                 requested_filter: self.config.thumb_filter,
                 generation_token: None,
                 session_id: self.thumb_session.load(Ordering::Acquire),
+                is_tag_preview: false,
             };
             if self.thumb_req_tx.try_send(request).is_err() {
                 self.thumb_queue.push_front(path);

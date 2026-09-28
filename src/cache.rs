@@ -1593,6 +1593,10 @@ pub struct ThumbRequest {
     pub generation_token: Option<u64>,
     /// PWD移動・設定変更で待機中ジョブを失効させるセッション。
     pub session_id: u64,
+    /// タグパネルの高画質プレビュー用リクエストかどうか。trueの場合、
+    /// `poll_workers`側はグリッド用の(current_dir/requested_edge一致)フィルタを
+    /// 適用せず専用ハンドラへ回す。`db`は常にNone（DB永続化しない）想定。
+    pub is_tag_preview: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1610,6 +1614,7 @@ pub struct ThumbResult {
     pub session_id: u64,
     pub stage: ThumbResultStage,
     pub failed: bool,
+    pub is_tag_preview: bool,
 }
 
 /// プローブレーンのスレッド数。ローカルDB読み＋JPEGデコードのみで軽いため少数で足りる。
@@ -1696,6 +1701,7 @@ fn spawn_thumb_gen_pool(
                 let failed = rgba.is_none();
                 let source_key = req.thumbnail_selection.as_ref().map(thumbnail_selection_cache_key);
                 let _ = res_tx.send(ThumbResult {
+                    is_tag_preview: req.is_tag_preview,
                     path: req.archive_path,
                     rgba,
                     source_key,
@@ -1756,6 +1762,7 @@ pub fn spawn_thumb_worker(
                         // キャッシュヒット: statを待たずに先に表示へ回す
                         let source_key = req.thumbnail_selection.as_ref().map(thumbnail_selection_cache_key);
                         let _ = res_tx.send(ThumbResult {
+                            is_tag_preview: req.is_tag_preview,
                             path: req.archive_path.clone(),
                             rgba: Some(rgba),
                             source_key,
@@ -1773,6 +1780,7 @@ pub fn spawn_thumb_worker(
                         if let Err(req) = claim_and_forward_thumb_gen(req, current_mtime, &gen_tx, &net_gen_tx) {
                             let source_key = req.thumbnail_selection.as_ref().map(thumbnail_selection_cache_key);
                             let _ = res_tx.send(ThumbResult {
+                                is_tag_preview: req.is_tag_preview,
                                 path: req.archive_path,
                                 rgba: None,
                                 source_key,
@@ -1790,6 +1798,7 @@ pub fn spawn_thumb_worker(
                         if let Err(req) = claim_and_forward_thumb_gen(req, current_mtime, &gen_tx, &net_gen_tx) {
                             let source_key = req.thumbnail_selection.as_ref().map(thumbnail_selection_cache_key);
                             let _ = res_tx.send(ThumbResult {
+                                is_tag_preview: req.is_tag_preview,
                                 path: req.archive_path,
                                 rgba: None,
                                 source_key,
@@ -2183,6 +2192,7 @@ mod ring_integration_tests {
             requested_filter: crate::config::ResizeFilter::Triangle,
             generation_token: None,
             session_id: 1,
+            is_tag_preview: false,
             thumbnail_selection: Some(crate::spread_state::ThumbnailSelection {
                 entry_name: selected,
                 source_kind: crate::spread_state::ThumbnailSourceKind::Full,
@@ -2224,6 +2234,7 @@ mod ring_integration_tests {
             requested_filter: crate::config::ResizeFilter::Triangle,
             generation_token: None,
             session_id: 1,
+            is_tag_preview: false,
         };
         assert!(probe_cached_thumb(&req).is_some(), "登録変更後も旧Blobを暫定表示する");
         let _ = std::fs::remove_dir_all(&neko_dir);
@@ -2254,6 +2265,7 @@ mod ring_integration_tests {
             requested_filter: crate::config::ResizeFilter::Triangle,
             generation_token: None,
             session_id: 1,
+            is_tag_preview: false,
         };
 
         tx.send(request()).unwrap();

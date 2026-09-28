@@ -34,6 +34,9 @@ const TAG_PANEL_HANDLE_WIDTH: f32 = 6.0;
 const TAG_PANEL_HANDLE_HEIGHT: f32 = 56.0;
 /// タグパネルのサムネプレビューが伸びられる縦幅の上限。
 const TAG_PANEL_PREVIEW_MAX_HEIGHT: f32 = 500.0;
+/// タグパネル高画質プレビュー: 専用の生成長辺上限(px)。グリッドのサムネ設定
+/// （`config.thumb_size`）とは独立した固定値。
+const TAG_PREVIEW_DECODE_EDGE: u32 = 1200;
 
 /// メインタグ・ドラムUI: 隣接タグ間の中心間隔(px)。
 const TAG_DRUM_ITEM_SPACING: f32 = 70.0;
@@ -707,8 +710,29 @@ impl NekoviewApp {
     fn draw_tag_panel(&mut self, ui: &mut egui::Ui) {
         // フェーズTM0: 仮置きのタグマネージャー呼び出しボタン。既存のメインタグ／
         // 属性タグUIとは切り離した独立機能なので、位置・見た目は後で調整前提。
-        if ui.button("🏷 タグ管理").clicked() {
-            self.tag_manager_open = true;
+        ui.horizontal(|ui| {
+            if ui.button("🏷 タグ管理").clicked() {
+                self.tag_manager_open = true;
+            }
+            // タグパネルのプレビューを、グリッドサムネの引き伸ばし（軽量・低画質）ではなく
+            // 専用解像度で再デコードした高画質表示に切り替えるトグル。低スペックPC・
+            // 小さいモニタでは重くなりうるため既定OFF。
+            let hq = self.tag_preview_high_quality;
+            if ui.selectable_label(hq, "🖼 高画質プレビュー").clicked() {
+                self.tag_preview_high_quality = !hq;
+            }
+        });
+        if self.selected_archive_index.is_none() {
+            // 選択中のファイルが無いときは、紐付け先の無いメイン/属性タグUIを
+            // 表示しても意味が無い（宙に浮いたタグに見えてしまう）ため、
+            // 「タグ表示対象なし」を残り領域いっぱいに上下左右中央表示する。
+            let rect = egui::Rect::from_min_size(ui.cursor().min, ui.available_size());
+            ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
+                ui.centered_and_justified(|ui| {
+                    ui.weak("タグ表示対象なし");
+                });
+            });
+            return;
         }
         ui.add_space(10.0);
         self.draw_tag_panel_preview(ui);
@@ -747,7 +771,8 @@ impl NekoviewApp {
     fn draw_tag_panel_main_tags(&mut self, ui: &mut egui::Ui) {
         self.update_tag_main_drum_anim(ui.ctx());
 
-        ui.horizontal(|ui| {
+        // 編集モードトグルは単独行で中央寄せ表示（ドラムとは別行）。
+        ui.vertical_centered(|ui| {
             let edit_on = self.tag_main_edit_toggle;
             let r_edit = ui.scope(|ui| {
                 if edit_on {
@@ -764,69 +789,70 @@ impl NekoviewApp {
                     self.tag_main_edit_origin = self.tag_main_selected.clone();
                 }
             }
-
-            let max_idx = self.tag_main_options.len().saturating_sub(1);
-            let avail_w = ui.available_width();
-            let sense = if self.tag_main_edit_toggle { egui::Sense::drag() } else { egui::Sense::hover() };
-            let (rect, response) =
-                ui.allocate_exact_size(egui::vec2(avail_w, TAG_DRUM_HEIGHT), sense);
-
-            if response.dragged() {
-                self.tag_main_drum_anim = None;
-                self.tag_main_drum_pos -= response.drag_delta().x / TAG_DRUM_ITEM_SPACING;
-                self.tag_main_drum_pos = self.tag_main_drum_pos.clamp(0.0, max_idx as f32);
-            }
-            if response.drag_stopped() {
-                let target = self.tag_main_drum_pos.round().clamp(0.0, max_idx as f32);
-                if (target - self.tag_main_drum_pos).abs() > f32::EPSILON {
-                    self.tag_main_drum_anim =
-                        Some((self.tag_main_drum_pos, target, std::time::Instant::now()));
-                }
-            }
-            if self.tag_main_edit_toggle && (response.hovered() || response.dragged()) {
-                ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
-            }
-
-            let center_idx = self.tag_main_drum_pos.round().clamp(0.0, max_idx as f32) as usize;
-            if self.tag_main_options.get(center_idx).map(String::as_str) != self.tag_main_selected.as_deref() {
-                self.tag_main_selected = self.tag_main_options.get(center_idx).cloned();
-            }
-
-            let painter = ui.painter();
-            let center = rect.center();
-            let highlight_bg = ui.visuals().selection.bg_fill;
-            for (i, tag) in self.tag_main_options.iter().enumerate() {
-                let dist = i as f32 - self.tag_main_drum_pos;
-                let x = center.x + dist * TAG_DRUM_ITEM_SPACING;
-                if x < rect.left() - TAG_DRUM_ITEM_SPACING || x > rect.right() + TAG_DRUM_ITEM_SPACING {
-                    continue;
-                }
-                let adist = dist.abs();
-                let t = (adist / TAG_DRUM_FALLOFF).min(1.0);
-                let font_size = TAG_DRUM_FONT_MAX + (TAG_DRUM_FONT_MIN - TAG_DRUM_FONT_MAX) * t;
-                let is_center = adist < 0.5;
-                let pos = egui::pos2(x, center.y);
-                let color = if is_center {
-                    ui.visuals().strong_text_color()
-                } else {
-                    ui.visuals().text_color().gamma_multiply(1.0 - t * 0.5)
-                };
-                if is_center {
-                    let bg_rect = egui::Rect::from_center_size(
-                        pos,
-                        egui::vec2(TAG_DRUM_ITEM_SPACING * 0.9, TAG_DRUM_HEIGHT * 0.75),
-                    );
-                    painter.rect_filled(bg_rect, 6.0, highlight_bg);
-                }
-                painter.text(
-                    pos,
-                    egui::Align2::CENTER_CENTER,
-                    tag,
-                    egui::FontId::proportional(font_size),
-                    color,
-                );
-            }
         });
+
+        // ドラムはパネル全幅を使い、内部で中央寄せ描画する（メインカテゴリの中央寄せ）。
+        let max_idx = self.tag_main_options.len().saturating_sub(1);
+        let avail_w = ui.available_width();
+        let sense = if self.tag_main_edit_toggle { egui::Sense::drag() } else { egui::Sense::hover() };
+        let (rect, response) =
+            ui.allocate_exact_size(egui::vec2(avail_w, TAG_DRUM_HEIGHT), sense);
+
+        if response.dragged() {
+            self.tag_main_drum_anim = None;
+            self.tag_main_drum_pos -= response.drag_delta().x / TAG_DRUM_ITEM_SPACING;
+            self.tag_main_drum_pos = self.tag_main_drum_pos.clamp(0.0, max_idx as f32);
+        }
+        if response.drag_stopped() {
+            let target = self.tag_main_drum_pos.round().clamp(0.0, max_idx as f32);
+            if (target - self.tag_main_drum_pos).abs() > f32::EPSILON {
+                self.tag_main_drum_anim =
+                    Some((self.tag_main_drum_pos, target, std::time::Instant::now()));
+            }
+        }
+        if self.tag_main_edit_toggle && (response.hovered() || response.dragged()) {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+        }
+
+        let center_idx = self.tag_main_drum_pos.round().clamp(0.0, max_idx as f32) as usize;
+        if self.tag_main_options.get(center_idx).map(String::as_str) != self.tag_main_selected.as_deref() {
+            self.tag_main_selected = self.tag_main_options.get(center_idx).cloned();
+        }
+
+        let painter = ui.painter();
+        let center = rect.center();
+        let highlight_bg = ui.visuals().selection.bg_fill;
+        for (i, tag) in self.tag_main_options.iter().enumerate() {
+            let dist = i as f32 - self.tag_main_drum_pos;
+            let x = center.x + dist * TAG_DRUM_ITEM_SPACING;
+            if x < rect.left() - TAG_DRUM_ITEM_SPACING || x > rect.right() + TAG_DRUM_ITEM_SPACING {
+                continue;
+            }
+            let adist = dist.abs();
+            let t = (adist / TAG_DRUM_FALLOFF).min(1.0);
+            let font_size = TAG_DRUM_FONT_MAX + (TAG_DRUM_FONT_MIN - TAG_DRUM_FONT_MAX) * t;
+            let is_center = adist < 0.5;
+            let pos = egui::pos2(x, center.y);
+            let color = if is_center {
+                ui.visuals().strong_text_color()
+            } else {
+                ui.visuals().text_color().gamma_multiply(1.0 - t * 0.5)
+            };
+            if is_center {
+                let bg_rect = egui::Rect::from_center_size(
+                    pos,
+                    egui::vec2(TAG_DRUM_ITEM_SPACING * 0.9, TAG_DRUM_HEIGHT * 0.75),
+                );
+                painter.rect_filled(bg_rect, 6.0, highlight_bg);
+            }
+            painter.text(
+                pos,
+                egui::Align2::CENTER_CENTER,
+                tag,
+                egui::FontId::proportional(font_size),
+                color,
+            );
+        }
     }
 
     /// メインタグ・ドラムUIのスナップアニメーションを進める（ease-out）。
@@ -1473,14 +1499,33 @@ impl NekoviewApp {
     }
 
     /// タグ機能・レイアウト器: 選択中サムネイルの拡大プレビュー。
-    /// 既存のグリッド用サムネイルキャッシュ(`self.thumbnails`)をそのまま
-    /// 幅基準で引き伸ばして表示する（フェーズA: 専用の高解像度取得はまだ無し）。
-    /// 選択が無い／サムネ未取得なら何も描画しない。実際に描画した画像のrectを返す
-    /// （パレット表示中、その下部にメインタグ・属性タグ帯をオーバーラップさせるため）。
+    /// `tag_preview_high_quality`がOFFなら既存のグリッド用サムネイルキャッシュ
+    /// (`self.thumbnails`)をそのまま幅基準で引き伸ばして表示する。ONなら専用解像度
+    /// （`TAG_PREVIEW_DECODE_EDGE`）で再生成したテクスチャを使い、無ければ生成を
+    /// リクエストしつつ届くまでサムネへフォールバックする。
+    /// 選択が無い／表示できる画像が無ければ何も描画しない。実際に描画した画像のrectを
+    /// 返す（パレット表示中、その下部にメインタグ・属性タグ帯をオーバーラップさせるため）。
     fn draw_tag_panel_preview(&mut self, ui: &mut egui::Ui) -> Option<egui::Rect> {
         let idx = self.selected_archive_index?;
         let path = self.archives.get(idx).cloned()?;
-        let tex = self.thumbnails.get(&path)?;
+
+        let tex: egui::TextureHandle = if self.tag_preview_high_quality {
+            let matched = self
+                .tag_preview_texture
+                .as_ref()
+                .filter(|(p, _)| *p == path)
+                .map(|(_, t)| t.clone());
+            match matched {
+                Some(t) => t,
+                None => {
+                    self.request_tag_preview(&path);
+                    self.thumbnails.get(&path)?.clone()
+                }
+            }
+        } else {
+            self.thumbnails.get(&path)?.clone()
+        };
+
         let tex_size = tex.size_vec2();
         if tex_size.x <= 0.0 || tex_size.y <= 0.0 {
             return None;
@@ -1506,6 +1551,34 @@ impl NekoviewApp {
             drawn_rect = Some(rect);
         });
         drawn_rect
+    }
+
+    /// タグパネル高画質プレビュー: 専用解像度（`TAG_PREVIEW_DECODE_EDGE`）で1件だけ
+    /// 生成をリクエストする。`db: None`でDB永続化はしない（グリッド用キャッシュを
+    /// 汚さない）。既に同じパスでpending中／生成済みなら何もしない。
+    fn request_tag_preview(&mut self, path: &std::path::Path) {
+        if self.tag_preview_pending.as_deref() == Some(path) {
+            return;
+        }
+        let selection = path.parent().and_then(|dir| {
+            let filename = path.file_name()?.to_str()?;
+            self.spread_db.as_ref().and_then(|db| {
+                crate::spread_state::read_thumbnail_selection(db, dir, filename)
+            })
+        });
+        if self.thumb_req_tx.try_send(ThumbRequest {
+            archive_path: path.to_path_buf(),
+            db: None,
+            is_raw_file: self.raw_image_files.contains(path),
+            thumbnail_selection: selection,
+            requested_edge: TAG_PREVIEW_DECODE_EDGE,
+            requested_filter: self.config.thumb_filter,
+            generation_token: None,
+            session_id: self.thumb_session.load(std::sync::atomic::Ordering::Acquire),
+            is_tag_preview: true,
+        }).is_ok() {
+            self.tag_preview_pending = Some(path.to_path_buf());
+        }
     }
 
     fn draw_folder_panel(&mut self, ui: &mut egui::Ui) {
@@ -2275,6 +2348,7 @@ impl NekoviewApp {
                                         requested_filter: self.config.thumb_filter,
                                         generation_token: None,
                                         session_id: self.thumb_session.load(std::sync::atomic::Ordering::Acquire),
+                                        is_tag_preview: false,
                                         thumbnail_selection: path.parent().and_then(|dir| {
                                             let filename = path.file_name()?.to_str()?;
                                             self.spread_db.as_ref().and_then(|db| {

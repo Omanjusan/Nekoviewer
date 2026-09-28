@@ -987,6 +987,15 @@ pub struct NekoviewApp {
     /// 編集モードのワンクリックでここに追加/削除する。単一選択カテゴリは常に
     /// ちょうど1個を維持する（`tag_manager::enforce_single_select`で矯正）。
     pub(crate) tag_attr_selected: Vec<String>,
+    /// タグパネルのプレビューを、グリッドサムネの引き伸ばしではなく専用解像度で
+    /// 再デコードして表示するか（ON=高画質・OFF=既定＝サムネ流用）。設定として永続化する。
+    pub(crate) tag_preview_high_quality: bool,
+    /// タグパネル高画質プレビュー: 生成済みテクスチャ（対象パスとセットで持ち、
+    /// 選択中ファイルと一致する時だけ使う。不一致ならサムネへフォールバック）。
+    pub(crate) tag_preview_texture: Option<(PathBuf, egui::TextureHandle)>,
+    /// タグパネル高画質プレビュー: 生成リクエスト発行済みで結果待ちのパス
+    /// （多重リクエスト防止用）。
+    pub(crate) tag_preview_pending: Option<PathBuf>,
     /// タグマネージャー(フェーズTM0): カテゴリ・tier・要素を管理する独立画面の開閉状態。
     /// 既存のメインタグ／属性タグUIとは今回切り離して考える。
     pub(crate) tag_manager_open: bool,
@@ -1219,7 +1228,7 @@ mod glyph_audit;
 
 
 impl NekoviewApp {
-    pub fn new(start_dir: PathBuf, config: AppConfig, viewer_slots: [Option<WindowSlot>; 4], sort_state: SortState, viewer_cfg: ViewerConfig, show_hidden: bool, card_info_mode: &str, card_rating_mode: &str, card_date_format: crate::card_date_format::CardDateFormat, translate_cfg: crate::translate::TranslateConfig, tab_positions: crate::gui_config::TabPositions, tree_sorts: crate::tree_sort::TreeSorts, tag_panel_open: bool, open_target: Option<PathBuf>, ctx: egui::Context) -> Self {
+    pub fn new(start_dir: PathBuf, config: AppConfig, viewer_slots: [Option<WindowSlot>; 4], sort_state: SortState, viewer_cfg: ViewerConfig, show_hidden: bool, card_info_mode: &str, card_rating_mode: &str, card_date_format: crate::card_date_format::CardDateFormat, translate_cfg: crate::translate::TranslateConfig, tab_positions: crate::gui_config::TabPositions, tree_sorts: crate::tree_sort::TreeSorts, tag_panel_open: bool, tag_preview_high_quality: bool, open_target: Option<PathBuf>, ctx: egui::Context) -> Self {
         // 「前回フォルダに復帰」がオフなら、他のフォルダ系タブの保存位置も復元しない（既定に戻す）
         let tab_positions = if config.startup.use_last_dir {
             tab_positions
@@ -1414,6 +1423,9 @@ impl NekoviewApp {
             tag_main_edit_origin: None,
             tag_attr_options,
             tag_attr_selected,
+            tag_preview_high_quality,
+            tag_preview_texture: None,
+            tag_preview_pending: None,
             tag_manager_open: false,
             tag_manager_area_rect: egui::Rect::NOTHING,
             tag_manager_categories,
@@ -1550,6 +1562,7 @@ impl NekoviewApp {
             &self.tab_positions,
             &self.tree_sorts,
             self.tag_panel_open,
+            self.tag_preview_high_quality,
         );
     }
 }

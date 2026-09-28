@@ -423,6 +423,8 @@ pub struct AppState {
     pub tag_panel_width: f32,
     /// タグ機能・レイアウト器: タグパネルの編集モード（上側ツマミでさらに中央側へ展開）。
     pub tag_panel_edit_expanded: bool,
+    /// タグパネルのプレビューを専用解像度で高画質デコード表示するか。
+    pub tag_preview_high_quality: bool,
 }
 
 impl Default for AppState {
@@ -462,6 +464,7 @@ impl Default for AppState {
             tag_panel_open: false,
             tag_panel_width: 280.0,
             tag_panel_edit_expanded: false,
+            tag_preview_high_quality: false,
         }
     }
 }
@@ -516,6 +519,7 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
     let mut redecode_on_resize: Option<bool> = None;
     let mut show_hidden: Option<bool> = None;
     let mut tag_panel_open: Option<bool> = None;
+    let mut tag_preview_high_quality: Option<bool> = None;
     let mut card_info_mode: Option<String> = None;
     let mut card_rating_mode: Option<String> = None;
     // カード日付書式の6キー（未記載は CardDateFormat::from_state 側で各既定へフォールバック）
@@ -663,6 +667,7 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
                 "redecode_on_resize" => { redecode_on_resize = v.trim().parse().ok(); }
                 "show_hidden" => { show_hidden = v.trim().parse().ok(); }
                 "tag_panel_open" => { tag_panel_open = v.trim().parse().ok(); }
+                "tag_preview_high_quality" => { tag_preview_high_quality = v.trim().parse().ok(); }
                 "card_info_mode" => { card_info_mode = Some(v.trim().to_string()); }
                 "card_rating_mode" => { card_rating_mode = Some(v.trim().to_string()); }
                 "card_date_mode" => { card_date_mode = v.trim().to_string(); }
@@ -985,6 +990,7 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
         // タグパネルの幅・編集モード展開状態は未配線、既定値のみ
         tag_panel_width: 280.0,
         tag_panel_edit_expanded: false,
+        tag_preview_high_quality: tag_preview_high_quality.unwrap_or(false),
     })
 }
 
@@ -1007,16 +1013,16 @@ fn magnifier_state_lines(m: &crate::magnifier::MagnifierConfig) -> String {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn save_state(root: &Path, dir: &Path, window_size: (u32, u32), viewer_slots: &[Option<WindowSlot>; 4], sort_state: &SortState, lang: &str, viewer_cfg: &ViewerConfig, show_hidden: bool, card_info_mode: &str, card_rating_mode: &str, card_date_format: &CardDateFormat, app_cfg: &AppConfig, translate_cfg: &TranslateConfig, tab_positions: &TabPositions, tree_sorts: &crate::tree_sort::TreeSorts, tag_panel_open: bool) {
+pub fn save_state(root: &Path, dir: &Path, window_size: (u32, u32), viewer_slots: &[Option<WindowSlot>; 4], sort_state: &SortState, lang: &str, viewer_cfg: &ViewerConfig, show_hidden: bool, card_info_mode: &str, card_rating_mode: &str, card_date_format: &CardDateFormat, app_cfg: &AppConfig, translate_cfg: &TranslateConfig, tab_positions: &TabPositions, tree_sorts: &crate::tree_sort::TreeSorts, tag_panel_open: bool, tag_preview_high_quality: bool) {
     let _ = std::fs::create_dir_all(root);
     let (path, bak, tmp) = (state_path(root), state_bak_path(root), state_tmp_path(root));
 
     let mut content = format!(
-        "last_dir={}\nwindow_width={}\nwindow_height={}\nsort_key={}\nsort_ascending={}\nlang={}\nviewer_zoom={}\nviewer_fullscreen={}\nredecode_on_resize={}\nresize_debounce_ms={}\nshow_hidden={}\ncard_info_mode={}\ncard_rating_mode={}\nrating_sort_key={}\nrating_sort_ascending={}\ntag_panel_open={}\n",
+        "last_dir={}\nwindow_width={}\nwindow_height={}\nsort_key={}\nsort_ascending={}\nlang={}\nviewer_zoom={}\nviewer_fullscreen={}\nredecode_on_resize={}\nresize_debounce_ms={}\nshow_hidden={}\ncard_info_mode={}\ncard_rating_mode={}\nrating_sort_key={}\nrating_sort_ascending={}\ntag_panel_open={}\ntag_preview_high_quality={}\n",
         dir.to_string_lossy(), window_size.0, window_size.1, sort_state.key, sort_state.ascending, lang,
         viewer_cfg.zoom_actual, viewer_cfg.fullscreen,
         viewer_cfg.redecode_on_resize, viewer_cfg.resize_debounce_ms, show_hidden, card_info_mode, card_rating_mode,
-        sort_state.rating.state_key(), sort_state.rating.ascending, tag_panel_open,
+        sort_state.rating.state_key(), sort_state.rating.ascending, tag_panel_open, tag_preview_high_quality,
     );
     // フォルダ系タブ（お気に入り・検索・仮想フォルダ）の最後の位置（Some のものだけ）
     content.push_str(&tab_positions.state_lines());
