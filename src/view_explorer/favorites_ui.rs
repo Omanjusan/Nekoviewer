@@ -2,6 +2,7 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 
 use crate::i18n;
+use crate::confirm_dialog::{draw_confirm_dialog, ConfirmDialogSpec, ConfirmOutcome};
 use crate::fs::archive;
 use super::*;
 use super::help::help_tip_auto;
@@ -238,39 +239,37 @@ impl NekoviewApp {
             .find(|f| f.id == id)
             .map(|f| f.name.clone())
             .unwrap_or_default();
-        let mut cancel = false;
-        let mut confirm = false;
-        egui::Window::new(i18n::t().favorite_delete_confirm_title())
-            .collapsible(false)
-            .resizable(false)
-            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
-            .show(ctx, |ui| {
+        let outcome = draw_confirm_dialog(
+            ctx,
+            ConfirmDialogSpec {
+                id_salt: "favorite_delete_confirm_window",
+                title: i18n::t().favorite_delete_confirm_title(),
+                ok_label: i18n::t().favorite_delete_confirm_ok(),
+                cancel_label: i18n::t().favorite_dialog_cancel(),
+                foreground: false,
+            },
+            |ui| {
                 ui.label(i18n::t().favorite_delete_confirm_body(&name));
-                ui.add_space(8.0);
-                ui.horizontal(|ui| {
-                    if ui.button(i18n::t().favorite_dialog_cancel()).clicked() {
-                        cancel = true;
+            },
+        );
+        match outcome {
+            ConfirmOutcome::Cancel => {
+                self.favorite_delete_confirm = None;
+            }
+            ConfirmOutcome::Ok => {
+                if let Some(db) = self.spread_db.clone() {
+                    let _ = crate::favorites::delete_folder(&db, id);
+                    self.refresh_favorite_folders();
+                    for ids in self.favorite_states.values_mut() {
+                        ids.retain(|&f| f != id);
                     }
-                    if ui.button(i18n::t().favorite_delete_confirm_ok()).clicked() {
-                        confirm = true;
-                    }
-                });
-            });
-        if cancel {
-            self.favorite_delete_confirm = None;
-        }
-        if confirm {
-            if let Some(db) = self.spread_db.clone() {
-                let _ = crate::favorites::delete_folder(&db, id);
-                self.refresh_favorite_folders();
-                for ids in self.favorite_states.values_mut() {
-                    ids.retain(|&f| f != id);
                 }
+                if self.favorite_selected == FavoriteSelection::Folder(id) {
+                    self.favorite_selected = FavoriteSelection::None;
+                }
+                self.favorite_delete_confirm = None;
             }
-            if self.favorite_selected == FavoriteSelection::Folder(id) {
-                self.favorite_selected = FavoriteSelection::None;
-            }
-            self.favorite_delete_confirm = None;
+            ConfirmOutcome::None => {}
         }
     }
 
@@ -466,29 +465,29 @@ impl NekoviewApp {
     /// 上書き確認モーダル（複数選択時のみ）。確定でDB反映、キャンセルで詳細設定に戻る。
     fn draw_favorite_overwrite_confirm(&mut self, ctx: &egui::Context) {
         let Some(count) = self.favorite_detail_dialog.as_ref().map(|d| d.targets.len()) else { return };
-        let mut confirm = false;
-        let mut back = false;
-        egui::Window::new(i18n::t().favorite_overwrite_confirm_title())
-            .collapsible(false)
-            .resizable(false)
-            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
-            .show(ctx, |ui| {
+        let outcome = draw_confirm_dialog(
+            ctx,
+            ConfirmDialogSpec {
+                id_salt: "favorite_overwrite_confirm_window",
+                title: i18n::t().favorite_overwrite_confirm_title(),
+                ok_label: i18n::t().favorite_overwrite_confirm_ok(),
+                cancel_label: i18n::t().favorite_dialog_cancel(),
+                foreground: false,
+            },
+            |ui| {
                 ui.label(i18n::t().favorite_overwrite_confirm_message(count));
-                ui.add_space(8.0);
-                ui.horizontal(|ui| {
-                    if ui.button(i18n::t().favorite_dialog_cancel()).clicked() {
-                        back = true;
-                    }
-                    if ui.button(i18n::t().favorite_overwrite_confirm_ok()).clicked() {
-                        confirm = true;
-                    }
-                });
-            });
-        if back && let Some(d) = self.favorite_detail_dialog.as_mut() {
-            d.pending_overwrite_confirm = false;
-        }
-        if confirm {
-            self.commit_favorite_detail_dialog();
+            },
+        );
+        match outcome {
+            ConfirmOutcome::Cancel => {
+                if let Some(d) = self.favorite_detail_dialog.as_mut() {
+                    d.pending_overwrite_confirm = false;
+                }
+            }
+            ConfirmOutcome::Ok => {
+                self.commit_favorite_detail_dialog();
+            }
+            ConfirmOutcome::None => {}
         }
     }
 
