@@ -307,6 +307,15 @@ impl Lang {
         }
     }
 
+    /// ウィンドウスロット適用トースト用文言（F5〜F8・パレット個別ボタン・循環ボタン共通）。
+    pub fn toast_slot_applied(self, n: usize) -> String {
+        match self {
+            Lang::Japanese => format!("スロット{n}のウィンドウ位置とサイズを復元しました"),
+            Lang::English  => format!("Restored window position and size from slot {n}"),
+            Lang::Chinese  => format!("已从插槽{n}恢复窗口位置和大小"),
+        }
+    }
+
     pub fn spread_back(self) -> &'static str {
         match self {
             Lang::Japanese => "[1P戻す]",
@@ -3688,6 +3697,46 @@ impl Lang {
         }
     }
 
+    pub fn tool_palette_action_label_apply_slot1(self) -> &'static str {
+        match self {
+            Lang::Japanese => "スロット1適用",
+            Lang::English  => "Apply Slot 1",
+            Lang::Chinese  => "应用插槽1",
+        }
+    }
+
+    pub fn tool_palette_action_label_apply_slot2(self) -> &'static str {
+        match self {
+            Lang::Japanese => "スロット2適用",
+            Lang::English  => "Apply Slot 2",
+            Lang::Chinese  => "应用插槽2",
+        }
+    }
+
+    pub fn tool_palette_action_label_apply_slot3(self) -> &'static str {
+        match self {
+            Lang::Japanese => "スロット3適用",
+            Lang::English  => "Apply Slot 3",
+            Lang::Chinese  => "应用插槽3",
+        }
+    }
+
+    pub fn tool_palette_action_label_apply_slot4(self) -> &'static str {
+        match self {
+            Lang::Japanese => "スロット4適用",
+            Lang::English  => "Apply Slot 4",
+            Lang::Chinese  => "应用插槽4",
+        }
+    }
+
+    pub fn tool_palette_action_label_cycle_apply_slot(self) -> &'static str {
+        match self {
+            Lang::Japanese => "スロット適用切替",
+            Lang::English  => "Cycle Apply Slot",
+            Lang::Chinese  => "切换应用插槽",
+        }
+    }
+
     // ── ツールパレット登録メニューのカテゴリ（tool_palette/category.rs） ──
 
     pub fn tool_palette_category_navigate(self) -> &'static str {
@@ -3719,6 +3768,22 @@ impl Lang {
             Lang::Japanese => "表示・ウィンドウ",
             Lang::English  => "Display / Window",
             Lang::Chinese  => "显示・窗口",
+        }
+    }
+
+    pub fn tool_palette_category_spread_settings(self) -> &'static str {
+        match self {
+            Lang::Japanese => "見開き設定",
+            Lang::English  => "Spread Settings",
+            Lang::Chinese  => "跨页设置",
+        }
+    }
+
+    pub fn tool_palette_category_window_preset(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ウィンドウプリセット",
+            Lang::English  => "Window Preset",
+            Lang::Chinese  => "窗口预设",
         }
     }
 

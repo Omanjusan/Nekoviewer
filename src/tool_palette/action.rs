@@ -33,12 +33,22 @@ pub enum ActionKind {
     CyclePageMode,
     /// 見開きオフセットを往復循環（-1→0→+1→0→-1…、境界では往復方向を反転）
     CycleSpreadOffset,
+    /// ウィンドウスロット1の位置・サイズを復元
+    ApplySlot1,
+    /// ウィンドウスロット2の位置・サイズを復元
+    ApplySlot2,
+    /// ウィンドウスロット3の位置・サイズを復元
+    ApplySlot3,
+    /// ウィンドウスロット4の位置・サイズを復元
+    ApplySlot4,
+    /// 適用スロット番号を循環（未定義→1→2→3→4→1…）
+    CycleApplySlot,
 }
 
 /// 全ActionKind。category.rsの網羅テストがこれを基準に「全種がどこかのカテゴリに属する」を検査する
 /// （登録メニューはcategory.rsのカテゴリ表を走査する）。
 #[cfg(test)]
-pub const ALL_ACTION_KINDS: [ActionKind; 14] = [
+pub const ALL_ACTION_KINDS: [ActionKind; 19] = [
     ActionKind::NextPage,
     ActionKind::PrevPage,
     ActionKind::OpenFolder,
@@ -53,6 +63,11 @@ pub const ALL_ACTION_KINDS: [ActionKind; 14] = [
     ActionKind::ToggleZoomActual,
     ActionKind::CyclePageMode,
     ActionKind::CycleSpreadOffset,
+    ActionKind::ApplySlot1,
+    ActionKind::ApplySlot2,
+    ActionKind::ApplySlot3,
+    ActionKind::ApplySlot4,
+    ActionKind::CycleApplySlot,
 ];
 
 impl ActionKind {
@@ -73,6 +88,11 @@ impl ActionKind {
             ActionKind::ToggleZoomActual => "toggle_zoom_actual",
             ActionKind::CyclePageMode => "cycle_page_mode",
             ActionKind::CycleSpreadOffset => "cycle_spread_offset",
+            ActionKind::ApplySlot1 => "apply_slot_1",
+            ActionKind::ApplySlot2 => "apply_slot_2",
+            ActionKind::ApplySlot3 => "apply_slot_3",
+            ActionKind::ApplySlot4 => "apply_slot_4",
+            ActionKind::CycleApplySlot => "cycle_apply_slot",
         }
     }
 
@@ -92,6 +112,11 @@ impl ActionKind {
             "toggle_zoom_actual" => ActionKind::ToggleZoomActual,
             "cycle_page_mode" => ActionKind::CyclePageMode,
             "cycle_spread_offset" => ActionKind::CycleSpreadOffset,
+            "apply_slot_1" => ActionKind::ApplySlot1,
+            "apply_slot_2" => ActionKind::ApplySlot2,
+            "apply_slot_3" => ActionKind::ApplySlot3,
+            "apply_slot_4" => ActionKind::ApplySlot4,
+            "cycle_apply_slot" => ActionKind::CycleApplySlot,
             _ => return None,
         })
     }
@@ -113,6 +138,11 @@ impl ActionKind {
             ActionKind::ToggleZoomActual => lang.tool_palette_action_label_toggle_zoom_actual(),
             ActionKind::CyclePageMode => lang.tool_palette_action_label_cycle_page_mode(),
             ActionKind::CycleSpreadOffset => lang.tool_palette_action_label_cycle_spread_offset(),
+            ActionKind::ApplySlot1 => lang.tool_palette_action_label_apply_slot1(),
+            ActionKind::ApplySlot2 => lang.tool_palette_action_label_apply_slot2(),
+            ActionKind::ApplySlot3 => lang.tool_palette_action_label_apply_slot3(),
+            ActionKind::ApplySlot4 => lang.tool_palette_action_label_apply_slot4(),
+            ActionKind::CycleApplySlot => lang.tool_palette_action_label_cycle_apply_slot(),
         }
     }
 
@@ -133,6 +163,11 @@ impl ActionKind {
             ActionKind::ToggleZoomActual => "🔍",
             ActionKind::CyclePageMode => "⇄",
             ActionKind::CycleSpreadOffset => "↔",
+            ActionKind::ApplySlot1 => "①",
+            ActionKind::ApplySlot2 => "②",
+            ActionKind::ApplySlot3 => "③",
+            ActionKind::ApplySlot4 => "④",
+            ActionKind::CycleApplySlot => "⊞",
         }
     }
 }
@@ -141,7 +176,7 @@ impl ActionKind {
 mod tests {
     use super::*;
 
-    const ALL_KINDS: [ActionKind; 14] = [
+    const ALL_KINDS: [ActionKind; 19] = [
         ActionKind::NextPage,
         ActionKind::PrevPage,
         ActionKind::OpenFolder,
@@ -156,6 +191,11 @@ mod tests {
         ActionKind::ToggleZoomActual,
         ActionKind::CyclePageMode,
         ActionKind::CycleSpreadOffset,
+        ActionKind::ApplySlot1,
+        ActionKind::ApplySlot2,
+        ActionKind::ApplySlot3,
+        ActionKind::ApplySlot4,
+        ActionKind::CycleApplySlot,
     ];
 
     #[test]

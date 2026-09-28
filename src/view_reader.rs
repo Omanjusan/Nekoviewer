@@ -497,6 +497,8 @@ pub struct ViewerState {
     default_slot: Option<usize>,
     /// 既定スロットの初回フレーム適用を一度だけ行うためのフラグ
     default_slot_applied: bool,
+    /// ツールパレットのスロット循環ボタン用: 直前に適用したスロット番号（0..3）。None = 未定義
+    palette_slot_cycle_index: Option<usize>,
     /// スロット保存後に app 側へ永続化を要求するフラグ
     /// 前フレームの outer_rect 左上座標（保存用、1フレーム遅れ許容）
     outer_pos: Option<egui::Pos2>,
@@ -871,6 +873,7 @@ impl ViewerState {
             slots,
             default_slot,
             default_slot_applied: false,
+            palette_slot_cycle_index: None,
             outer_pos: None,
             entry_list_visible: false,
             edge_turn_hover: None,
@@ -978,6 +981,7 @@ impl ViewerState {
             slots,
             default_slot,
             default_slot_applied: false,
+            palette_slot_cycle_index: None,
             outer_pos: None,
             entry_list_visible: false,
             edge_turn_hover: None,
@@ -2055,17 +2059,9 @@ impl ViewerState {
         }
     }
 
-    /// ビューアーを開いた直後（初回フレーム）に conf 既定スロットを一度だけ適用する。
-    /// F5〜F8 と同じく `clamp_slot_position_inner` で画面外補正してから位置・サイズを送る。
-    fn apply_default_slot(&mut self, ctx: &egui::Context, monitor_size: Option<egui::Vec2>) {
-        if self.default_slot_applied {
-            return;
-        }
-        self.default_slot_applied = true;
-
-        let Some(slot) = crate::controller::resolve_default_slot(self.default_slot, &self.slots)
-        else { return };
-
+    /// ウィンドウ位置・サイズスロットを実際にウィンドウへ適用する共通処理。
+    /// 画面外に出ないよう `clamp_slot_position_inner` で補正してから送る。
+    fn apply_window_slot(ctx: &egui::Context, slot: WindowSlot, monitor_size: Option<egui::Vec2>) -> (i32, i32) {
         let (cx, cy) = if let Some(m) = monitor_size {
             Self::clamp_slot_position_inner(slot.x, slot.y, slot.w, slot.h, m)
         } else {
@@ -2077,7 +2073,42 @@ impl ViewerState {
         ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(
             egui::vec2(slot.w as f32, slot.h as f32),
         ));
+        (cx, cy)
+    }
+
+    /// ビューアーを開いた直後（初回フレーム）に conf 既定スロットを一度だけ適用する。
+    fn apply_default_slot(&mut self, ctx: &egui::Context, monitor_size: Option<egui::Vec2>) {
+        if self.default_slot_applied {
+            return;
+        }
+        self.default_slot_applied = true;
+
+        let Some(slot) = crate::controller::resolve_default_slot(self.default_slot, &self.slots)
+        else { return };
+
+        let (cx, cy) = Self::apply_window_slot(ctx, slot, monitor_size);
         log_key!("[slot] apply default → pos=({},{}) size={}x{}", cx, cy, slot.w, slot.h);
+    }
+
+    /// ツールパレットのスロット個別ボタン用: idx（0..3）のスロットを適用し、成功時のみトースト表示する。
+    /// 未保存のスロット（None）を押した場合は何もしない。
+    pub fn apply_window_slot_and_toast(&mut self, ctx: &egui::Context, idx: usize) {
+        let Some(slot) = self.slots[idx] else { return };
+        let monitor_size = ctx.input(|i| i.viewport().monitor_size);
+        let (cx, cy) = Self::apply_window_slot(ctx, slot, monitor_size);
+        log_key!("[slot] apply slot{} (palette) → pos=({},{}) size={}x{}", idx + 1, cx, cy, slot.w, slot.h);
+        self.set_toast(i18n::t().toast_slot_applied(idx + 1));
+    }
+
+    /// ツールパレットのスロット循環ボタン用: 未定義→1→2→3→4→1…と巡回しながら適用する。
+    /// スロット番号の巡回自体は、そのスロットが未保存（None）でも進む。
+    pub fn cycle_apply_slot_and_toast(&mut self, ctx: &egui::Context) {
+        let next = match self.palette_slot_cycle_index {
+            Some(3) | None => 0,
+            Some(i) => i + 1,
+        };
+        self.palette_slot_cycle_index = Some(next);
+        self.apply_window_slot_and_toast(ctx, next);
     }
 
     fn update_animation(&mut self, ctx: &egui::Context, dt: f32, cfg: &ViewerConfig) -> (bool, f32) {
@@ -2136,18 +2167,9 @@ impl ViewerState {
         // ── スロット適用（F5〜F8）────────────────────────────────────────────
         if let Some(idx) = input.slot_apply {
             if let Some(slot) = self.slots[idx] {
-                let (cx, cy) = if let Some(m) = input.monitor_size {
-                    Self::clamp_slot_position_inner(slot.x, slot.y, slot.w, slot.h, m)
-                } else {
-                    (slot.x, slot.y)
-                };
-                ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(
-                    egui::pos2(cx as f32, cy as f32),
-                ));
-                ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(
-                    egui::vec2(slot.w as f32, slot.h as f32),
-                ));
+                let (cx, cy) = Self::apply_window_slot(ctx, slot, input.monitor_size);
                 log_key!("[slot] apply slot{} → pos=({},{}) size={}x{}", idx + 1, cx, cy, slot.w, slot.h);
+                self.set_toast(i18n::t().toast_slot_applied(idx + 1));
             }
         }
 
@@ -2840,6 +2862,21 @@ impl ViewerState {
                 if is_spread {
                     self.cycle_spread_offset_and_toast();
                 }
+            }
+            crate::tool_palette::PaletteSlotContent::Action(crate::tool_palette::ActionKind::ApplySlot1) => {
+                self.apply_window_slot_and_toast(ctx, 0);
+            }
+            crate::tool_palette::PaletteSlotContent::Action(crate::tool_palette::ActionKind::ApplySlot2) => {
+                self.apply_window_slot_and_toast(ctx, 1);
+            }
+            crate::tool_palette::PaletteSlotContent::Action(crate::tool_palette::ActionKind::ApplySlot3) => {
+                self.apply_window_slot_and_toast(ctx, 2);
+            }
+            crate::tool_palette::PaletteSlotContent::Action(crate::tool_palette::ActionKind::ApplySlot4) => {
+                self.apply_window_slot_and_toast(ctx, 3);
+            }
+            crate::tool_palette::PaletteSlotContent::Action(crate::tool_palette::ActionKind::CycleApplySlot) => {
+                self.cycle_apply_slot_and_toast(ctx);
             }
             crate::tool_palette::PaletteSlotContent::Empty => {}
         }
@@ -6193,6 +6230,30 @@ mod sort_save_state_tests {
         assert_eq!(viewer.offset.value(), 0);
         viewer.cycle_spread_offset_and_toast();
         assert_eq!(viewer.offset.value(), -1);
+    }
+
+    #[test]
+    fn cycle_apply_slot_wraps_from_undefined_through_one_to_four_and_back() {
+        let mut viewer = archive_viewer();
+        let ctx = egui::Context::default();
+        viewer.slots = [
+            Some(WindowSlot { x: 1, y: 1, w: 100, h: 100 }),
+            Some(WindowSlot { x: 2, y: 2, w: 200, h: 200 }),
+            Some(WindowSlot { x: 3, y: 3, w: 300, h: 300 }),
+            Some(WindowSlot { x: 4, y: 4, w: 400, h: 400 }),
+        ];
+
+        assert_eq!(viewer.palette_slot_cycle_index, None);
+        viewer.cycle_apply_slot_and_toast(&ctx);
+        assert_eq!(viewer.palette_slot_cycle_index, Some(0));
+        viewer.cycle_apply_slot_and_toast(&ctx);
+        assert_eq!(viewer.palette_slot_cycle_index, Some(1));
+        viewer.cycle_apply_slot_and_toast(&ctx);
+        assert_eq!(viewer.palette_slot_cycle_index, Some(2));
+        viewer.cycle_apply_slot_and_toast(&ctx);
+        assert_eq!(viewer.palette_slot_cycle_index, Some(3));
+        viewer.cycle_apply_slot_and_toast(&ctx);
+        assert_eq!(viewer.palette_slot_cycle_index, Some(0));
     }
 
     #[test]
