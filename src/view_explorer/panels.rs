@@ -1319,9 +1319,14 @@ impl NekoviewApp {
             self.tag_manager_editing_category_name = None;
             self.tag_manager_editing_category_buffer.clear();
         }
+        // 右カラムの使える幅を、何も描く前に確定させる。eguiは折り返さない行（下の見出し行
+        // など）が収まらないと親Uiのmax_rectごと右へ広げ、以降の`available_width()`が
+        // 実際に見えている幅より大きくなって折返しが効かなくなるため。
+        let col_w = ui.available_width();
         let cat_name = self.tag_manager_categories[cat_idx].name.clone();
         let cat_is_main = self.tag_manager_categories[cat_idx].is_main;
-        ui.horizontal(|ui| {
+        // 狭い幅では折り返して、そもそも溢れないようにする。
+        ui.horizontal_wrapped(|ui| {
             ui.label("選択中カテゴリ:");
             if self.tag_manager_editing_category_name == Some(cat_idx) {
                 let text_edit_id = ui.id().with("tag_manager_cat_name_edit");
@@ -1402,7 +1407,10 @@ impl NekoviewApp {
         // 複数選択カテゴリ（メインカテゴリを除く）は、tier行の個別編集ではなく
         // フラットなバッジ一覧＋一括入力欄で要素を管理する（序列・negative区別は持たない）。
         if !cat_is_main && !self.tag_manager_categories[cat_idx].single_select {
-            self.draw_tag_manager_flat_elements(ui, cat_idx);
+            let rect = egui::Rect::from_min_size(ui.cursor().min, egui::vec2(col_w, ui.available_height()));
+            ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
+                self.draw_tag_manager_flat_elements(ui, cat_idx);
+            });
             return;
         }
 
@@ -1664,6 +1672,7 @@ impl NekoviewApp {
             .max_height(area_height)
             .auto_shrink([false, false])
             .show(ui, |ui| {
+                let full_w = ui.available_width();
                 ui.horizontal_wrapped(|ui| {
                     let elements: Vec<(usize, String)> = self.tag_manager_categories[cat_idx]
                         .tiers
@@ -1676,16 +1685,9 @@ impl NekoviewApp {
                     }
                     let text_color = contrasting_text_color(cat_color);
                     for (t_idx, name) in elements {
-                        egui::Frame::default()
-                            .fill(cat_color)
-                            .inner_margin(egui::Margin::symmetric(6, 2))
-                            .corner_radius(3.0)
-                            .show(ui, |ui| {
-                                ui.colored_label(text_color, &name);
-                                if ui.small_button("×").clicked() {
-                                    remove_tier = Some(t_idx);
-                                }
-                            });
+                        if tag_chip_removable(ui, &name, full_w, cat_color, text_color, t_idx) {
+                            remove_tier = Some(t_idx);
+                        }
                     }
                 });
             });
@@ -3560,4 +3562,37 @@ fn tag_chip(
     ui.painter().rect_filled(rect, 3.0, fill);
     ui.painter().galley(rect.min + pad, galley, text_color);
     resp.on_hover_text(text)
+}
+
+/// `tag_chip`の削除ボタン(×)付き版。文字部分と×を1個の矩形として確保するため、チップごと
+/// 折り返す。長い要素は文字側だけを`…`で省略し、×は常に右端に残す。×がクリック
+/// された（＝削除要求）時にtrueを返す。`key`はチップごとに一意なID用（要素のindex等）。
+fn tag_chip_removable(
+    ui: &mut egui::Ui,
+    text: &str,
+    full_w: f32,
+    fill: egui::Color32,
+    text_color: egui::Color32,
+    key: usize,
+) -> bool {
+    const X_W: f32 = 16.0;
+    let pad = egui::vec2(6.0, 2.0);
+    let font = egui::TextStyle::Button.resolve(ui.style());
+    let galley = truncated_galley(ui, text, font.clone(), text_color, (full_w - pad.x * 2.0 - X_W).max(8.0));
+    let size = egui::vec2(galley.size().x + pad.x * 2.0 + X_W, galley.size().y + pad.y * 2.0);
+    let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::hover());
+    ui.painter().rect_filled(rect, 3.0, fill);
+    ui.painter().galley(rect.min + pad, galley, text_color);
+    let x_rect = egui::Rect::from_min_max(egui::pos2(rect.right() - X_W - pad.x, rect.top()), rect.right_bottom());
+    let x_resp = ui.interact(x_rect, ui.id().with(("tag_chip_x", key)), egui::Sense::click());
+    let x_color = if x_resp.hovered() { text_color } else { text_color.gamma_multiply(0.6) };
+    ui.painter().text(
+        egui::pos2(rect.right() - X_W / 2.0 - pad.x / 2.0, rect.center().y),
+        egui::Align2::CENTER_CENTER,
+        "×",
+        font,
+        x_color,
+    );
+    resp.on_hover_text(text);
+    x_resp.clicked()
 }
