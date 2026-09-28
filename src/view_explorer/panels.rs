@@ -1089,16 +1089,18 @@ impl NekoviewApp {
                     if self.tag_attr_selected.is_empty() {
                         ui.weak("（選択済みタグなし）");
                     } else {
-                        for tag_id in &self.tag_attr_selected {
-                            // tier削除済みの孤立id（自己修復GC前）は表示上は単に無視する。
-                            let found = self.tag_manager_categories.iter().filter(|c| !c.is_main).find_map(|c| {
-                                c.tiers.iter().find(|t| t.id == *tag_id).and_then(|t| {
-                                    t.element.as_ref().map(|name| (name.clone(), c.color))
-                                })
-                            });
-                            let Some((name, cat_color)) = found else { continue };
-                            let text_color = contrasting_text_color(cat_color);
-                            tag_chip(ui, &name, full_w, cat_color, text_color, egui::Sense::hover(), false);
+                        // 選択した順は無視し、カテゴリ登録順→カテゴリ内の登録要素順で並べる。
+                        // tier削除済みの孤立id（自己修復GC前）は走査対象に現れないので
+                        // 表示上は自然に無視される。
+                        for cat in self.tag_manager_categories.iter().filter(|c| !c.is_main) {
+                            let text_color = contrasting_text_color(cat.color);
+                            for tier in &cat.tiers {
+                                let Some(name) = tier.element.as_ref() else { continue };
+                                if !self.tag_attr_selected.contains(&tier.id) {
+                                    continue;
+                                }
+                                tag_chip(ui, name, full_w, cat.color, text_color, egui::Sense::hover(), false);
+                            }
                         }
                     }
                 });
