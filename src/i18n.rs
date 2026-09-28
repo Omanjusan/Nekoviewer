@@ -3859,6 +3859,30 @@ impl Lang {
         }
     }
 
+    pub fn tool_palette_row_edit_lock_hint(self) -> &'static str {
+        match self {
+            Lang::Japanese => "行数編集ロックON/OFF（ONの間は下の−/＋ボタンが無効）",
+            Lang::English  => "Row-edit lock ON/OFF (the −/+ buttons below are disabled while ON)",
+            Lang::Chinese  => "行编辑锁定开关（开启时下方的−/+按钮不可用）",
+        }
+    }
+
+    pub fn tool_palette_row_add_hint(self) -> &'static str {
+        match self {
+            Lang::Japanese => "行を1つ増やす（最大5行。非表示だった行は元の内容のまま復活）",
+            Lang::English  => "Add one row (up to 5 rows; a previously hidden row comes back with its content intact)",
+            Lang::Chinese  => "增加一行（最多5行；之前隐藏的行会保留原内容恢复显示）",
+        }
+    }
+
+    pub fn tool_palette_row_remove_hint(self) -> &'static str {
+        match self {
+            Lang::Japanese => "行を1つ減らす（最小1行。内容は消さずに非表示にするだけ）",
+            Lang::English  => "Remove one row (down to 1 row; this only hides it, content is kept)",
+            Lang::Chinese  => "减少一行（最少1行；仅隐藏，内容不会被删除）",
+        }
+    }
+
     pub fn tool_palette_dialog_close(self) -> &'static str {
         match self {
             Lang::Japanese => "閉じる",

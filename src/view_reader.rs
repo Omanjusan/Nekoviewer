@@ -2419,6 +2419,9 @@ impl ViewerState {
     /// compact時（最小マスサイズ選択時）は他ボタンと同じ幅まで縮める。
     const TOOL_PALETTE_WIDE_BTN_W: f32 = Self::TOOL_PALETTE_BTN_W + 12.0;
     const TOOL_PALETTE_DRAG_MIN_W: f32 = 16.0;
+    /// 行編集ボタン列（ロック／−／＋）の幅。グリッド左側に固定で確保する。
+    const TOOL_PALETTE_ROW_BTN_W: f32 = 22.0;
+    const TOOL_PALETTE_ROW_BTN_GAP: f32 = 3.0;
 
     /// true = 最小マスサイズ選択中。ヒントで詳細値を見られる前提で、ヘッダーの
     /// 透過度／サイズ表示を記号1文字だけに縮め、ヘッダー最小幅をさらに削る。
@@ -2437,9 +2440,10 @@ impl ViewerState {
 
     fn tool_palette_grid_size(&self) -> egui::Vec2 {
         let cols = crate::tool_palette::GRID_COLS as f32;
-        let rows = crate::tool_palette::GRID_ROWS as f32;
+        let rows = self.tool_palette.visible_rows as f32;
         let slot = self.tool_palette.slot_size_px();
-        let grid_w = Self::TOOL_PALETTE_PAD * 2.0 + cols * slot + (cols - 1.0) * Self::TOOL_PALETTE_GAP;
+        let row_btn_col_w = Self::TOOL_PALETTE_ROW_BTN_W + Self::TOOL_PALETTE_ROW_BTN_GAP;
+        let grid_w = Self::TOOL_PALETTE_PAD * 2.0 + row_btn_col_w + cols * slot + (cols - 1.0) * Self::TOOL_PALETTE_GAP;
         let grid_h = Self::TOOL_PALETTE_HEADER_H + Self::TOOL_PALETTE_PAD * 2.0 + rows * slot + (rows - 1.0) * Self::TOOL_PALETTE_GAP;
         egui::vec2(grid_w.max(self.tool_palette_header_min_w()), grid_h)
     }
@@ -2556,11 +2560,48 @@ impl ViewerState {
             }
         });
 
-        // ── グリッド：GRID_COLS×GRID_ROWS。空欄マスは右クリックでToggle型を登録する ──
+        // ── 行編集ボタン列：ロック／−／＋。グリッド左側に縦置きで固定幅を確保する ──
+        let row_btn_col_w = Self::TOOL_PALETTE_ROW_BTN_W + Self::TOOL_PALETTE_ROW_BTN_GAP;
+        let grid_area_top = rect.min.y + Self::TOOL_PALETTE_HEADER_H + Self::TOOL_PALETTE_PAD;
+        let grid_area_h = (rect.height() - Self::TOOL_PALETTE_HEADER_H - Self::TOOL_PALETTE_PAD * 2.0).max(0.0);
+        let row_btn_h = ((grid_area_h - Self::TOOL_PALETTE_ROW_BTN_GAP * 2.0) / 3.0).max(12.0);
+        let row_btn_x = rect.min.x + Self::TOOL_PALETTE_PAD;
+        let row_lock_rect = egui::Rect::from_min_size(egui::pos2(row_btn_x, grid_area_top), egui::vec2(Self::TOOL_PALETTE_ROW_BTN_W, row_btn_h));
+        let row_minus_rect = egui::Rect::from_min_size(
+            egui::pos2(row_btn_x, row_lock_rect.max.y + Self::TOOL_PALETTE_ROW_BTN_GAP),
+            egui::vec2(Self::TOOL_PALETTE_ROW_BTN_W, row_btn_h),
+        );
+        let row_plus_rect = egui::Rect::from_min_size(
+            egui::pos2(row_btn_x, row_minus_rect.max.y + Self::TOOL_PALETTE_ROW_BTN_GAP),
+            egui::vec2(Self::TOOL_PALETTE_ROW_BTN_W, row_btn_h),
+        );
+        child.scope(|ui| {
+            ui.set_opacity(header_opacity);
+            let lock_resp = ui
+                .put(row_lock_rect, egui::Button::new(if self.tool_palette.row_edit_locked { "🔒" } else { "🔓" }))
+                .on_hover_text(lang.tool_palette_row_edit_lock_hint());
+            if lock_resp.clicked() {
+                self.tool_palette.row_edit_locked = !self.tool_palette.row_edit_locked;
+            }
+            ui.add_enabled_ui(self.tool_palette.can_remove_row(), |ui| {
+                let minus_resp = ui.put(row_minus_rect, egui::Button::new("−")).on_hover_text(lang.tool_palette_row_remove_hint());
+                if minus_resp.clicked() {
+                    self.tool_palette.remove_row();
+                }
+            });
+            ui.add_enabled_ui(self.tool_palette.can_add_row(), |ui| {
+                let plus_resp = ui.put(row_plus_rect, egui::Button::new("＋")).on_hover_text(lang.tool_palette_row_add_hint());
+                if plus_resp.clicked() {
+                    self.tool_palette.add_row();
+                }
+            });
+        });
+
+        // ── グリッド：GRID_COLS×visible_rows。空欄マスは右クリックでToggle型を登録する ──
         let slot = self.tool_palette.slot_size_px();
-        let grid_origin = rect.min + egui::vec2(Self::TOOL_PALETTE_PAD, Self::TOOL_PALETTE_HEADER_H + Self::TOOL_PALETTE_PAD);
+        let grid_origin = rect.min + egui::vec2(Self::TOOL_PALETTE_PAD + row_btn_col_w, Self::TOOL_PALETTE_HEADER_H + Self::TOOL_PALETTE_PAD);
         let mut any_menu_open = false;
-        for row in 0..crate::tool_palette::GRID_ROWS {
+        for row in 0..self.tool_palette.visible_rows {
             for col in 0..crate::tool_palette::GRID_COLS {
                 let idx = row * crate::tool_palette::GRID_COLS + col;
                 let slot_min = grid_origin + egui::vec2(
@@ -6951,7 +6992,10 @@ mod magnifier_flow_tests {
         let palette = h.viewer.tool_palette_rect(viewport).expect("パレットが表示されていない");
         let slot = h.viewer.tool_palette.slot_size_px();
         let center = palette.min
-            + egui::vec2(ViewerState::TOOL_PALETTE_PAD, ViewerState::TOOL_PALETTE_HEADER_H + ViewerState::TOOL_PALETTE_PAD)
+            + egui::vec2(
+                ViewerState::TOOL_PALETTE_PAD + ViewerState::TOOL_PALETTE_ROW_BTN_W + ViewerState::TOOL_PALETTE_ROW_BTN_GAP,
+                ViewerState::TOOL_PALETTE_HEADER_H + ViewerState::TOOL_PALETTE_PAD,
+            )
             + egui::vec2(slot / 2.0, slot / 2.0);
         let button = |pressed| egui::Event::PointerButton {
             pos: center,
