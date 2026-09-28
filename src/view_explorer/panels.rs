@@ -47,10 +47,6 @@ const TAG_DRUM_FONT_MIN: f32 = 11.0;
 const TAG_DRUM_FALLOFF: f32 = 3.0;
 /// メインタグ・ドラムUI: ドラッグ解放後、最寄りへスナップするアニメーション時間(秒)。
 const TAG_DRUM_ANIM_SECS: f32 = 0.25;
-/// 属性タグエリアの帯の高さ（パレット表示中、プレビューへのオーバーラップ用）。
-const TAG_ATTR_ROW_HEIGHT: f32 = 36.0;
-/// 属性タグパレット本体の高さ（パネル最下部に固定配置）。
-const TAG_ATTR_PALETTE_HEIGHT: f32 = 300.0;
 /// タグマネージャー: 左カラム（カテゴリ一覧）の幅。
 const TAG_MANAGER_CATEGORY_COL_WIDTH: f32 = 150.0;
 /// タグマネージャー: tier行の番号ラベル部分の固定幅。"neg-tier"有無で幅が
@@ -173,15 +169,28 @@ impl NekoviewApp {
                 })
                 .show(ui, |ui| {
                     if open {
-                        ui.horizontal(|ui| {
-                            self.draw_tag_panel_resize_handle(ui);
-                            ui.vertical(|ui| {
-                                if ui.button("▶").clicked() {
-                                    self.tag_panel_open = false;
-                                }
-                                self.draw_tag_panel(ui);
-                            });
-                        });
+                        // `ui.horizontal(...)`は親がTopDownレイアウトの場合、行の高さを
+                        // `interact_size.y`程度（数十px）に制約してしまい、その中でネストした
+                        // `ui.vertical(...)`側も同じ制約を引き継いでパネル下端まで伸びない
+                        // （egui 0.35のnext_frame_ignore_wrap仕様）。ここでは残り領域を
+                        // 矩形として先に切り出し、`scope_builder`で明示的に高さいっぱいの
+                        // max_rectを与えてから左右に並べる。
+                        let row_rect =
+                            egui::Rect::from_min_size(ui.cursor().min, ui.available_size());
+                        ui.scope_builder(
+                            egui::UiBuilder::new()
+                                .max_rect(row_rect)
+                                .layout(egui::Layout::left_to_right(egui::Align::Min)),
+                            |ui| {
+                                self.draw_tag_panel_resize_handle(ui);
+                                ui.vertical(|ui| {
+                                    if ui.button("▶").clicked() {
+                                        self.tag_panel_open = false;
+                                    }
+                                    self.draw_tag_panel(ui);
+                                });
+                            },
+                        );
                     } else {
                         self.draw_tag_panel_collapsed(ui);
                     }
@@ -695,24 +704,23 @@ impl NekoviewApp {
     }
 
     /// タグ機能・レイアウト器: 右タグパネルの中身。
-    /// 属性タグパレットを開いている間は、プレビュー下部にメインタグ・属性タグの帯を
-    /// 半透明(50%)でオーバーラップさせ、その下にパレット本体（固定高さ）を独立配置する。
     fn draw_tag_panel(&mut self, ui: &mut egui::Ui) {
         // フェーズTM0: 仮置きのタグマネージャー呼び出しボタン。既存のメインタグ／
         // 属性タグUIとは切り離した独立機能なので、位置・見た目は後で調整前提。
         if ui.button("🏷 タグ管理").clicked() {
             self.tag_manager_open = true;
         }
-        if self.tag_attr_palette_open {
-            self.draw_tag_panel_with_palette(ui);
-        } else {
-            ui.add_space(10.0);
-            self.draw_tag_panel_preview(ui);
-            ui.add_space(8.0);
-            self.draw_tag_panel_main_tags(ui);
-            ui.separator();
+        ui.add_space(10.0);
+        self.draw_tag_panel_preview(ui);
+        ui.add_space(8.0);
+        self.draw_tag_panel_main_tags(ui);
+        ui.separator();
+        // ネストしたhorizontal/vertical越しだと`ui.available_height()`がパネル下端まで
+        // 届かないことがあるため、残り領域を矩形として明示的に切り出してから描く。
+        let attr_rect = egui::Rect::from_min_size(ui.cursor().min, ui.available_size());
+        ui.scope_builder(egui::UiBuilder::new().max_rect(attr_rect), |ui| {
             self.draw_tag_panel_attr_tags(ui);
-        }
+        });
     }
 
     /// タグ付けレイアウト・ドラムUI: メインタグ編集トグルをOFFへ戻す。ON時点から
@@ -836,105 +844,73 @@ impl NekoviewApp {
         }
     }
 
-    /// タグ付けレイアウト: 区切り線から下の属性タグエリア。
-    /// 「＋」はタグパネル内に選択パレットを展開表示する（フェーズ変更前はCentralPanel
-    /// 全体を覆うオーバーレイだったが、大げさなためパネル内完結に変更）。
+    /// タグ付けレイアウト・編集/閲覧モード: 区切り線から下の属性タグエリア。
+    /// `tag_main_edit_toggle`（編集モードトグル、メインタグドラムと共通）がONの間は
+    /// カテゴリ別に全要素を並べてワンクリックで選択/非選択をトグルできる編集モード、
+    /// OFFの間は選択済み要素だけを並べる閲覧モードに切り替わる。
+    /// 現状はダミーデータ（`tag_attr_dummy_categories`）でのGUI確定版。実データ
+    /// （タグマネージャーのカテゴリ定義）との結線は別フェーズで行う。
     fn draw_tag_panel_attr_tags(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal_wrapped(|ui| {
-            if ui.button("＋").clicked() {
-                self.tag_attr_palette_open = true;
-            }
-            for tag in &self.tag_attr_selected {
-                ui.label(tag);
-            }
-        });
-    }
-
-    /// タグ付けレイアウト: 属性タグ選択パレット（タグパネル内・最下段）。
-    /// プレビューの場所を譲り受けて表示し、縦スクロールでタグ一覧をカバーする。
-    /// クリックで下部の属性タグエリアへ追加（既に追加済みのタグをクリックしても何もしない）。
-    fn draw_tag_panel_with_palette(&mut self, ui: &mut egui::Ui) {
-        ui.add_space(10.0);
-        let preview_rect = self.draw_tag_panel_preview(ui);
-
-        let overlay_bg = {
-            let c = ui.visuals().panel_fill;
-            egui::Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), 128)
-        };
-        let overlay_h = TAG_DRUM_HEIGHT + TAG_ATTR_ROW_HEIGHT;
-
-        match preview_rect {
-            Some(preview_rect) => {
-                // プレビュー下部にメインタグ・属性タグの帯を重ね描きし、裏の画像が
-                // 半透明(50%)で透けて見えるようにする。
-                let overlay_top = (preview_rect.bottom() - overlay_h).max(preview_rect.top());
-                let band_rect = egui::Rect::from_min_max(
-                    egui::pos2(preview_rect.left(), overlay_top),
-                    egui::pos2(preview_rect.right(), preview_rect.bottom()),
-                );
-                let main_rect = egui::Rect::from_min_size(
-                    band_rect.min,
-                    egui::vec2(band_rect.width(), TAG_DRUM_HEIGHT),
-                );
-                ui.painter().rect_filled(main_rect, 0.0, overlay_bg);
-                ui.scope_builder(egui::UiBuilder::new().max_rect(main_rect), |ui| {
-                    self.draw_tag_panel_main_tags(ui);
-                });
-
-                let attr_rect = egui::Rect::from_min_size(
-                    main_rect.left_bottom(),
-                    egui::vec2(band_rect.width(), TAG_ATTR_ROW_HEIGHT),
-                );
-                ui.painter().rect_filled(attr_rect, 0.0, overlay_bg);
-                ui.scope_builder(egui::UiBuilder::new().max_rect(attr_rect), |ui| {
-                    self.draw_tag_panel_attr_tags(ui);
-                });
-            }
-            None => {
-                // オーバーラップ対象のプレビューが無ければ通常表示にフォールバック。
-                ui.add_space(8.0);
-                self.draw_tag_panel_main_tags(ui);
-                self.draw_tag_panel_attr_tags(ui);
-            }
-        }
-
-        ui.add_space(8.0);
-        ui.separator();
-
-        // パレット本体はパネル最下部に固定高さで独立配置する。
-        let avail_w = ui.available_width();
-        let palette_h = TAG_ATTR_PALETTE_HEIGHT.min(ui.available_height());
-        let (palette_rect, _) =
-            ui.allocate_exact_size(egui::vec2(avail_w, palette_h), egui::Sense::hover());
-        self.draw_tag_attr_palette_freeform(ui, palette_rect);
-
-        let close_rect = egui::Rect::from_min_size(
-            egui::pos2(palette_rect.right() - 28.0, palette_rect.top() + 4.0),
-            egui::vec2(24.0, 24.0),
-        );
-        if ui.put(close_rect, crate::ui_widgets::close_x_button(close_rect.size())).clicked() {
-            self.tag_attr_palette_open = false;
+        if self.tag_main_edit_toggle {
+            self.draw_tag_attr_edit_mode(ui);
+        } else {
+            self.draw_tag_attr_view_mode(ui);
         }
     }
 
-    /// タグ付けレイアウト: 属性タグ選択パレット本体。縦スクロール＋
-    /// `horizontal_wrapped`によるタグの自由配置（幅は文言の長さに応じて可変、
-    /// 入りきらなければ折り返す）。クリックで下部の属性タグエリアへ追加
-    /// （既に追加済みのタグをクリックしても何もしない）。
-    fn draw_tag_attr_palette_freeform(&mut self, ui: &mut egui::Ui, rect: egui::Rect) {
-        ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
-            egui::ScrollArea::vertical()
-                .id_salt("tag_attr_palette_scroll")
-                .show(ui, |ui| {
+    /// 編集モード: カテゴリ見出し＋全要素を`horizontal_wrapped`で並べ、クリックで
+    /// 選択/非選択をトグルする。選択済みは通常輝度、非選択は文字・枠を暗転させて
+    /// 見分けやすくする。
+    fn draw_tag_attr_edit_mode(&mut self, ui: &mut egui::Ui) {
+        egui::ScrollArea::vertical()
+            .id_salt("tag_attr_edit_scroll")
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                let dimmed_fg = ui.visuals().text_color().gamma_multiply(0.4);
+                let dimmed_bg_stroke = ui.visuals().widgets.inactive.bg_stroke.color.gamma_multiply(0.4);
+                let categories = self.tag_attr_dummy_categories.clone();
+                for (cat_idx, (cat_name, elements)) in categories.iter().enumerate() {
+                    if cat_idx > 0 {
+                        ui.add_space(8.0);
+                    }
+                    ui.label(egui::RichText::new(cat_name).strong());
                     ui.horizontal_wrapped(|ui| {
-                        for tag in self.tag_attr_options.clone() {
-                            let already = self.tag_attr_selected.contains(&tag);
-                            if ui.selectable_label(already, &tag).clicked() && !already {
-                                self.tag_attr_selected.push(tag);
+                        for element in elements {
+                            let selected = self.tag_attr_dummy_selected.contains(element);
+                            let resp = ui
+                                .scope(|ui| {
+                                    if !selected {
+                                        ui.visuals_mut().widgets.inactive.fg_stroke.color = dimmed_fg;
+                                        ui.visuals_mut().widgets.hovered.fg_stroke.color = dimmed_fg;
+                                        ui.visuals_mut().widgets.inactive.bg_stroke.color = dimmed_bg_stroke;
+                                    }
+                                    ui.selectable_label(selected, element)
+                                })
+                                .inner;
+                            if resp.clicked() {
+                                if selected {
+                                    self.tag_attr_dummy_selected.retain(|s| s != element);
+                                } else {
+                                    self.tag_attr_dummy_selected.push(element.clone());
+                                }
                             }
                         }
                     });
-                });
+                }
+            });
+    }
+
+    /// 閲覧モード: 編集モードで選択済みの要素だけをフラット表示する読み取り専用表示。
+    fn draw_tag_attr_view_mode(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal_wrapped(|ui| {
+            if self.tag_attr_dummy_selected.is_empty() {
+                ui.weak("（選択済みタグなし）");
+            } else {
+                for tag in &self.tag_attr_dummy_selected {
+                    ui.label(tag);
+                }
+            }
         });
     }
 

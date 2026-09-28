@@ -1952,12 +1952,12 @@ impl Lang {
 
     pub fn tag_main_edit_toggle_button(self, on: bool) -> &'static str {
         match (self, on) {
-            (Lang::Japanese, true)  => "主タグ編集ON",
-            (Lang::Japanese, false) => "主タグ編集OFF",
-            (Lang::English, true)   => "Edit Main Tag: ON",
-            (Lang::English, false)  => "Edit Main Tag: OFF",
-            (Lang::Chinese, true)   => "主标签编辑：开",
-            (Lang::Chinese, false)  => "主标签编辑：关",
+            (Lang::Japanese, true)  => "編集モードON",
+            (Lang::Japanese, false) => "編集モードOFF",
+            (Lang::English, true)   => "Edit Mode: ON",
+            (Lang::English, false)  => "Edit Mode: OFF",
+            (Lang::Chinese, true)   => "编辑模式：开",
+            (Lang::Chinese, false)  => "编辑模式：关",
         }
     }
 

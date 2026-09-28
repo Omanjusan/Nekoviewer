@@ -689,6 +689,26 @@ pub(crate) struct TagManagerTierUi {
     pub(crate) element: Option<String>,
 }
 
+/// タグ付けレイアウト・編集/閲覧モード(GUI確定版): 属性タグエリアのダミーデータ。
+/// 実データ（タグマネージャーのカテゴリ定義）とは結線せず、編集/閲覧モードの
+/// GUI確定専用の固定値。実データ結線は別フェーズで行う。
+fn dummy_tag_attr_categories() -> Vec<(String, Vec<String>)> {
+    vec![
+        (
+            "画質".to_string(),
+            vec!["高画質".to_string(), "標準".to_string(), "要修正".to_string(), "破損".to_string()],
+        ),
+        (
+            "シリーズ".to_string(),
+            vec!["単発".to_string(), "連作".to_string(), "完結".to_string(), "連載中".to_string(), "休止中".to_string()],
+        ),
+        (
+            "状態".to_string(),
+            vec!["未整理".to_string(), "確認済み".to_string(), "要削除".to_string()],
+        ),
+    ]
+}
+
 fn default_favorite_color() -> egui::Color32 {
     egui::Color32::from_rgb(255, 204, 0)
 }
@@ -964,12 +984,20 @@ pub struct NekoviewApp {
     /// タグ付けレイアウト・ドラムUI: 上記トグルをONにした時点のtag_main_selected。
     /// OFFへ戻すタイミングでこの値と比較し、変化していれば編集確定フックを呼ぶ。
     pub(crate) tag_main_edit_origin: Option<String>,
-    /// タグ付けレイアウト(フェーズT0): 属性タグ(複数可)の候補一覧。パレット用データ。
+    /// タグ付けレイアウト(フェーズT0): 属性タグ(複数可)の候補一覧。タグマネージャーの
+    /// 実データから`save_tag_manager`で導出される（実データ結線用のブリッジ）。
+    /// 表示UI自体は編集/閲覧モード（ダミーデータ版）に差し替え済みのため、現状は
+    /// 書き込みのみで表示には使っていない（実データ結線フェーズで再接続予定）。
     pub(crate) tag_attr_options: Vec<String>,
-    /// タグ付けレイアウト(フェーズT0): 下部に表示中の属性タグ(選択済み)。グローバルダミー。
+    /// タグ付けレイアウト(フェーズT0): 実データ版・選択済み属性タグ。上記と同様、
+    /// 現状は表示に使っていない（実データ結線フェーズで再接続予定）。
     pub(crate) tag_attr_selected: Vec<String>,
-    /// タグ付けレイアウト: 属性タグ選択パレット（＋ボタンで開く、タグパネル内最下段に展開）の開閉状態。
-    pub(crate) tag_attr_palette_open: bool,
+    /// タグ付けレイアウト・編集/閲覧モード(GUI確定版): カテゴリ別ダミー要素一覧
+    /// （カテゴリ名, 要素名一覧）。実データ結線前のGUI確定用固定データ。
+    pub(crate) tag_attr_dummy_categories: Vec<(String, Vec<String>)>,
+    /// タグ付けレイアウト・編集/閲覧モード(GUI確定版): 選択済み要素名（カテゴリ横断、
+    /// 要素名で一致判定）。編集モードのワンクリックでここに追加/削除する。
+    pub(crate) tag_attr_dummy_selected: Vec<String>,
     /// タグマネージャー(フェーズTM0): カテゴリ・tier・要素を管理する独立画面の開閉状態。
     /// 既存のメインタグ／属性タグUIとは今回切り離して考える。
     pub(crate) tag_manager_open: bool,
@@ -1395,7 +1423,8 @@ impl NekoviewApp {
             tag_main_edit_origin: None,
             tag_attr_options,
             tag_attr_selected: Vec::new(),
-            tag_attr_palette_open: false,
+            tag_attr_dummy_categories: dummy_tag_attr_categories(),
+            tag_attr_dummy_selected: Vec::new(),
             tag_manager_open: false,
             tag_manager_area_rect: egui::Rect::NOTHING,
             tag_manager_categories,
