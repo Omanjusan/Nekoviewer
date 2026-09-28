@@ -785,9 +785,10 @@ impl NekoviewApp {
         if self.tag_binding_path.as_deref() == Some(path) {
             return;
         }
-        if self.tag_main_edit_toggle {
-            self.commit_tag_main_edit();
-        }
+        // 他のフォーカス離脱経路（ビューア終了・ディレクトリ移動等）と同じく、
+        // ファイル選択の切り替えも編集モードOFFのトリガーとして扱う
+        // （確定保存＋トグルOFF）。
+        self.deactivate_tag_main_edit();
         self.tag_binding_path = Some(path.to_path_buf());
         self.load_tag_binding(path);
     }
