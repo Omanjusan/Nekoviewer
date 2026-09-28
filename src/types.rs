@@ -10,6 +10,17 @@ pub enum PageMode {
     SpreadRight,
 }
 
+impl PageMode {
+    /// ツールパレットの循環ボタン用の次状態（単ページ→見開き左→見開き右→単ページ…）。
+    pub fn next(self) -> PageMode {
+        match self {
+            PageMode::Single => PageMode::SpreadLeft,
+            PageMode::SpreadLeft => PageMode::SpreadRight,
+            PageMode::SpreadRight => PageMode::Single,
+        }
+    }
+}
+
 /// reader（ZIP内）ページのソートキー
 #[derive(Clone, Copy, PartialEq)]
 pub enum ReaderSortKey {

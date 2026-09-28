@@ -3,6 +3,7 @@ mod anim;
 mod cache;
 mod card_date_format;
 mod config;
+mod confirm_dialog;
 mod controller;
 mod decode_jobs;
 mod explorer_sort;

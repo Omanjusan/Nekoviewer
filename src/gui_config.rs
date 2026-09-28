@@ -591,6 +591,8 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
     let mut tool_palette_opacity_pct: Option<u8> = None;
     let mut tool_palette_visible: Option<bool> = None;
     let mut tool_palette_slot_size_idx: Option<usize> = None;
+    let mut tool_palette_visible_rows: Option<usize> = None;
+    let mut tool_palette_row_edit_locked: Option<bool> = None;
     let mut tool_palette_slots: Option<[PaletteSlotContent; SLOT_COUNT]> = None;
     // マス毎のカスタム名称。キー無し = None（デフォルトラベルを使う）。空文字は「明示的に空欄」。
     let mut tool_palette_labels: [Option<String>; SLOT_COUNT] = [(); SLOT_COUNT].map(|_| None);
@@ -801,6 +803,11 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
                     tool_palette_slot_size_idx = v.trim().parse::<usize>().ok()
                         .map(|n| n.min(crate::tool_palette::SLOT_SIZE_STEPS_PX.len() - 1));
                 }
+                "tool_palette_visible_rows" => {
+                    tool_palette_visible_rows = v.trim().parse::<usize>().ok()
+                        .map(|n| n.clamp(crate::tool_palette::MIN_GRID_ROWS, crate::tool_palette::MAX_GRID_ROWS));
+                }
+                "tool_palette_row_edit_locked" => { tool_palette_row_edit_locked = v.trim().parse().ok(); }
                 "tool_palette_slots" => {
                     // 前方互換: 未知IDはEmpty扱い、要素が足りない/多い場合はSLOT_COUNT基準で埋める/切り捨てる。
                     let parsed: Vec<PaletteSlotContent> = v.split(',').map(slot_content_from_id).collect();
@@ -903,6 +910,8 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
                     opacity_pct: tool_palette_opacity_pct.unwrap_or(default.opacity_pct),
                     visible: tool_palette_visible.unwrap_or(default.visible),
                     slot_size_idx: tool_palette_slot_size_idx.unwrap_or(default.slot_size_idx),
+                    visible_rows: tool_palette_visible_rows.unwrap_or(default.visible_rows),
+                    row_edit_locked: tool_palette_row_edit_locked.unwrap_or(default.row_edit_locked),
                     slots: tool_palette_slots.unwrap_or(default.slots),
                     custom_labels: tool_palette_labels,
                 }
@@ -1071,7 +1080,7 @@ pub fn save_state(root: &Path, dir: &Path, window_size: (u32, u32), viewer_slots
         viewer_cfg.image_filter.sharpness_enabled,
     ));
     content.push_str(&format!(
-        "tool_palette_pos_x={}\ntool_palette_pos_y={}\ntool_palette_locked={}\ntool_palette_auto_hide_locked={}\ntool_palette_opacity_pct={}\ntool_palette_visible={}\ntool_palette_slot_size_idx={}\ntool_palette_slots={}\n",
+        "tool_palette_pos_x={}\ntool_palette_pos_y={}\ntool_palette_locked={}\ntool_palette_auto_hide_locked={}\ntool_palette_opacity_pct={}\ntool_palette_visible={}\ntool_palette_slot_size_idx={}\ntool_palette_visible_rows={}\ntool_palette_row_edit_locked={}\ntool_palette_slots={}\n",
         viewer_cfg.tool_palette.pos.0,
         viewer_cfg.tool_palette.pos.1,
         viewer_cfg.tool_palette.locked,
@@ -1079,6 +1088,8 @@ pub fn save_state(root: &Path, dir: &Path, window_size: (u32, u32), viewer_slots
         viewer_cfg.tool_palette.opacity_pct,
         viewer_cfg.tool_palette.visible,
         viewer_cfg.tool_palette.slot_size_idx,
+        viewer_cfg.tool_palette.visible_rows,
+        viewer_cfg.tool_palette.row_edit_locked,
         viewer_cfg.tool_palette.slots.iter().map(|s| slot_content_to_id(*s)).collect::<Vec<_>>().join(","),
     ));
     // マス毎のカスタム名称。キー無し = デフォルトラベルを使う（Noneのマスは書かない）。

@@ -257,6 +257,65 @@ impl Lang {
         }
     }
 
+    /// ページモード切替トースト用文言（角括弧なし）。
+    pub fn toast_page_mode_single(self) -> &'static str {
+        match self {
+            Lang::Japanese => "単ページ",
+            Lang::English  => "Single Page",
+            Lang::Chinese  => "单页",
+        }
+    }
+
+    pub fn toast_page_mode_spread_left(self) -> &'static str {
+        match self {
+            Lang::Japanese => "見開き 左綴じ",
+            Lang::English  => "Spread (Left-bound)",
+            Lang::Chinese  => "跨页（左翻）",
+        }
+    }
+
+    pub fn toast_page_mode_spread_right(self) -> &'static str {
+        match self {
+            Lang::Japanese => "見開き 右綴じ",
+            Lang::English  => "Spread (Right-bound)",
+            Lang::Chinese  => "跨页（右翻）",
+        }
+    }
+
+    /// 見開きオフセット変更トースト用文言（前後ボタン・キーボード・循環ボタン共通）。
+    pub fn toast_spread_offset_minus_one(self) -> &'static str {
+        match self {
+            Lang::Japanese => "見開きのオフセットを-1で設定しました",
+            Lang::English  => "Spread offset set to -1",
+            Lang::Chinese  => "跨页偏移已设为 -1",
+        }
+    }
+
+    pub fn toast_spread_offset_zero(self) -> &'static str {
+        match self {
+            Lang::Japanese => "見開きのオフセットなしに設定しました",
+            Lang::English  => "Spread offset cleared",
+            Lang::Chinese  => "已清除跨页偏移",
+        }
+    }
+
+    pub fn toast_spread_offset_plus_one(self) -> &'static str {
+        match self {
+            Lang::Japanese => "見開きのオフセットを+1で設定しました",
+            Lang::English  => "Spread offset set to +1",
+            Lang::Chinese  => "跨页偏移已设为 +1",
+        }
+    }
+
+    /// ウィンドウスロット適用トースト用文言（F5〜F8・パレット個別ボタン・循環ボタン共通）。
+    pub fn toast_slot_applied(self, n: usize) -> String {
+        match self {
+            Lang::Japanese => format!("スロット{n}のウィンドウ位置とサイズを復元しました"),
+            Lang::English  => format!("Restored window position and size from slot {n}"),
+            Lang::Chinese  => format!("已从插槽{n}恢复窗口位置和大小"),
+        }
+    }
+
     pub fn spread_back(self) -> &'static str {
         match self {
             Lang::Japanese => "[1P戻す]",
@@ -1912,9 +1971,9 @@ impl Lang {
 
     pub fn folder_book_access_notice_body(self) -> &'static str {
         match self {
-            Lang::Japanese => "この閲覧はあくまで仮のものです。しおり・見開き・ソート・サムネイル登録・お気に入り・評価など、本物のアーカイブで使える各種保存機能は利用できません。",
-            Lang::English  => "This is a temporary, virtual view only. Save features available for real archives — bookmarks, spread mode, sort order, thumbnail selection, favorites, and ratings — are not available here.",
-            Lang::Chinese  => "此浏览仅为临时的虚拟视图。书签、跨页模式、排序、缩略图选择、收藏、评分等仅适用于真实档案的保存功能，在此均不可用。",
+            Lang::Japanese => "単体画像だけで構成されているフォルダにアクセスしたときアーカイブに見立てて閲覧できるモードです。単体画像+サブフォルダ構成も対象ですが単体画像+アーカイブファイルの構成はこの機能の対象外です\n\nこの閲覧はあくまで仮のものです。しおり・見開き・ソート・サムネイル登録・お気に入り・評価など、本物のアーカイブで使える各種保存機能は利用できません。",
+            Lang::English  => "This mode lets you view a folder made up only of standalone images as if it were an archive. Folders containing standalone images plus subfolders are also supported, but folders mixing standalone images with archive files are not.\n\nThis is a temporary, virtual view only. Save features available for real archives — bookmarks, spread mode, sort order, thumbnail selection, favorites, and ratings — are not available here.",
+            Lang::Chinese  => "此模式可让您像浏览档案一样查看仅由独立图片组成的文件夹。包含独立图片和子文件夹的结构也支持，但独立图片与档案文件混合的结构不在此功能范围内。\n\n此浏览仅为临时的虚拟视图。书签、跨页模式、排序、缩略图选择、收藏、评分等仅适用于真实档案的保存功能，在此均不可用。",
         }
     }
 
@@ -3582,6 +3641,102 @@ impl Lang {
         }
     }
 
+    pub fn tool_palette_action_label_file_nav_prev(self) -> &'static str {
+        match self {
+            Lang::Japanese => "前のファイル",
+            Lang::English  => "Prev File",
+            Lang::Chinese  => "上一个文件",
+        }
+    }
+
+    pub fn tool_palette_action_label_file_nav_next(self) -> &'static str {
+        match self {
+            Lang::Japanese => "次のファイル",
+            Lang::English  => "Next File",
+            Lang::Chinese  => "下一个文件",
+        }
+    }
+
+    pub fn tool_palette_action_label_jump_first_page(self) -> &'static str {
+        match self {
+            Lang::Japanese => "先頭ページへ",
+            Lang::English  => "Jump to First Page",
+            Lang::Chinese  => "跳到首页",
+        }
+    }
+
+    pub fn tool_palette_action_label_jump_last_page(self) -> &'static str {
+        match self {
+            Lang::Japanese => "末尾ページへ",
+            Lang::English  => "Jump to Last Page",
+            Lang::Chinese  => "跳到末页",
+        }
+    }
+
+    pub fn tool_palette_action_label_toggle_zoom_actual(self) -> &'static str {
+        match self {
+            Lang::Japanese => "等倍/fit切替",
+            Lang::English  => "Toggle Actual Size",
+            Lang::Chinese  => "切换等倍/适应",
+        }
+    }
+
+    pub fn tool_palette_action_label_cycle_page_mode(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ページモード切替",
+            Lang::English  => "Cycle Page Mode",
+            Lang::Chinese  => "切换页面模式",
+        }
+    }
+
+    pub fn tool_palette_action_label_cycle_spread_offset(self) -> &'static str {
+        match self {
+            Lang::Japanese => "見開きオフセット切替",
+            Lang::English  => "Cycle Spread Offset",
+            Lang::Chinese  => "切换跨页偏移",
+        }
+    }
+
+    pub fn tool_palette_action_label_apply_slot1(self) -> &'static str {
+        match self {
+            Lang::Japanese => "スロット1適用",
+            Lang::English  => "Apply Slot 1",
+            Lang::Chinese  => "应用插槽1",
+        }
+    }
+
+    pub fn tool_palette_action_label_apply_slot2(self) -> &'static str {
+        match self {
+            Lang::Japanese => "スロット2適用",
+            Lang::English  => "Apply Slot 2",
+            Lang::Chinese  => "应用插槽2",
+        }
+    }
+
+    pub fn tool_palette_action_label_apply_slot3(self) -> &'static str {
+        match self {
+            Lang::Japanese => "スロット3適用",
+            Lang::English  => "Apply Slot 3",
+            Lang::Chinese  => "应用插槽3",
+        }
+    }
+
+    pub fn tool_palette_action_label_apply_slot4(self) -> &'static str {
+        match self {
+            Lang::Japanese => "スロット4適用",
+            Lang::English  => "Apply Slot 4",
+            Lang::Chinese  => "应用插槽4",
+        }
+    }
+
+    pub fn tool_palette_action_label_cycle_apply_slot(self) -> &'static str {
+        match self {
+            Lang::Japanese => "スロット適用切替",
+            Lang::English  => "Cycle Apply Slot",
+            Lang::Chinese  => "切换应用插槽",
+        }
+    }
+
     // ── ツールパレット登録メニューのカテゴリ（tool_palette/category.rs） ──
 
     pub fn tool_palette_category_navigate(self) -> &'static str {
@@ -3613,6 +3768,22 @@ impl Lang {
             Lang::Japanese => "表示・ウィンドウ",
             Lang::English  => "Display / Window",
             Lang::Chinese  => "显示・窗口",
+        }
+    }
+
+    pub fn tool_palette_category_spread_settings(self) -> &'static str {
+        match self {
+            Lang::Japanese => "見開き設定",
+            Lang::English  => "Spread Settings",
+            Lang::Chinese  => "跨页设置",
+        }
+    }
+
+    pub fn tool_palette_category_window_preset(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ウィンドウプリセット",
+            Lang::English  => "Window Preset",
+            Lang::Chinese  => "窗口预设",
         }
     }
 
@@ -3688,6 +3859,30 @@ impl Lang {
         }
     }
 
+    pub fn tool_palette_row_edit_lock_hint(self) -> &'static str {
+        match self {
+            Lang::Japanese => "行数編集ロックON/OFF（ONの間は下の−/＋ボタンが無効）",
+            Lang::English  => "Row-edit lock ON/OFF (the −/+ buttons below are disabled while ON)",
+            Lang::Chinese  => "行编辑锁定开关（开启时下方的−/+按钮不可用）",
+        }
+    }
+
+    pub fn tool_palette_row_add_hint(self) -> &'static str {
+        match self {
+            Lang::Japanese => "行を1つ増やす（最大5行。非表示だった行は元の内容のまま復活）",
+            Lang::English  => "Add one row (up to 5 rows; a previously hidden row comes back with its content intact)",
+            Lang::Chinese  => "增加一行（最多5行；之前隐藏的行会保留原内容恢复显示）",
+        }
+    }
+
+    pub fn tool_palette_row_remove_hint(self) -> &'static str {
+        match self {
+            Lang::Japanese => "行を1つ減らす（最小1行。内容は消さずに非表示にするだけ）",
+            Lang::English  => "Remove one row (down to 1 row; this only hides it, content is kept)",
+            Lang::Chinese  => "减少一行（最少1行；仅隐藏，内容不会被删除）",
+        }
+    }
+
     pub fn tool_palette_dialog_close(self) -> &'static str {
         match self {
             Lang::Japanese => "閉じる",
@@ -3709,6 +3904,38 @@ impl Lang {
             Lang::Japanese => "（右クリックで変更）",
             Lang::English  => " (right-click to change)",
             Lang::Chinese  => "（右键点击以更改）",
+        }
+    }
+
+    pub fn tool_palette_slot_hover_name_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ボタン名: ",
+            Lang::English  => "Button: ",
+            Lang::Chinese  => "按钮名称: ",
+        }
+    }
+
+    pub fn tool_palette_slot_hover_shortcut_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ショートカットキー: ",
+            Lang::English  => "Shortcut key: ",
+            Lang::Chinese  => "快捷键: ",
+        }
+    }
+
+    pub fn tool_palette_slot_hover_change_hint(self) -> &'static str {
+        match self {
+            Lang::Japanese => "(ボタン箇所を右クリックで各種変更)",
+            Lang::English  => "(Right-click the button for various changes)",
+            Lang::Chinese  => "（在按钮处右键点击进行各种更改）",
+        }
+    }
+
+    pub fn tool_palette_slot_shortcut_none(self) -> &'static str {
+        match self {
+            Lang::Japanese => "なし",
+            Lang::English  => "None",
+            Lang::Chinese  => "无",
         }
     }
 
@@ -4004,6 +4231,11 @@ impl Lang {
                 title: "ON/OFFトグル",
                 sections: &[
                     (
+                        "[フォルダ本アクセス]",
+                        "単体画像で構成されるフォルダにアクセスしたとき、フォルダへの移動と同時にビューアーを立ち上げ、\n\
+                         1アーカイブとして閲覧できるモード。なお、実アーカイブのような各種設定は保存できない。",
+                    ),
+                    (
                         "[ツールボックス]",
                         "ビューアー内のツールパレット（マス配置のツールボックス）の表示ON/OFF。\n\
                          ファイルを移っても状態は保たれる。",
@@ -4019,6 +4251,12 @@ impl Lang {
                 title: "ON/OFF toggles",
                 sections: &[
                     (
+                        "[Folder-as-Book]",
+                        "When you navigate into a folder made up of standalone images, the viewer launches at the\n\
+                         same time and opens it as if it were a single archive. Note that, unlike a real archive,\n\
+                         its settings cannot be saved.",
+                    ),
+                    (
                         "[Toolbox]",
                         "Shows or hides the tool palette (grid-layout toolbox) in the viewer.\n\
                          The state is kept when you move between files.",
@@ -4033,6 +4271,11 @@ impl Lang {
             Lang::Chinese => HelpDoc {
                 title: "开/关切换",
                 sections: &[
+                    (
+                        "[文件夹当书]",
+                        "进入仅由独立图片组成的文件夹时，会同时启动查看器，将其作为单个档案打开浏览。\n\
+                         请注意，与真实档案不同，此模式下的各项设置无法保存。",
+                    ),
                     (
                         "[工具箱]",
                         "显示/隐藏查看器内的工具面板（格子布局的工具箱）。\n\

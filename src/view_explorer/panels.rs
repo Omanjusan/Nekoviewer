@@ -558,6 +558,24 @@ impl NekoviewApp {
                     self.viewer_cfg.lock().unwrap().tool_palette.visible = !tool_palette_visible;
                 }
 
+                // ── スコアリング（末尾の評価オーバーレイ）ON/OFF ────────────────────
+                // 邪魔に感じる人向けの永続設定。RightToLeftレイアウトのため、
+                // コード順で後に置いた方が視覚上は左（フォルダ本アクセスの右隣）になる。
+                let scoring_on = self.viewer_cfg.lock().unwrap().rating_overlay_enabled;
+                let r_scoring = ui.scope(|ui| {
+                    if scoring_on {
+                        ui.visuals_mut().selection.bg_fill = egui::Color32::from_rgb(30, 100, 200);
+                        ui.visuals_mut().selection.stroke.color = egui::Color32::WHITE;
+                    }
+                    ui.selectable_label(scoring_on, i18n::t().scoring_toggle_button(scoring_on))
+                }).inner;
+                if is_cursor(MenuBarButton::ScoringToggle) { draw_cursor_ring(ui, r_scoring.rect); }
+                help_tip(&r_scoring, help_on, &help_toggles);
+                if r_scoring.clicked() {
+                    self.viewer_cfg.lock().unwrap().rating_overlay_enabled = !scoring_on;
+                    self.persist_state();
+                }
+
                 // ── 「フォルダ本アクセス」トグル ────────────────────────────────
                 // ONの間、対象フォルダ（アーカイブ非混在・直下に生画像あり）に入ると、
                 // 通常の一覧表示の代わりに仮想アーカイブとしてビューアーを開く。
@@ -574,23 +592,6 @@ impl NekoviewApp {
                 help_tip(&r_folder_book_access, help_on, &help_toggles);
                 if r_folder_book_access.clicked() {
                     self.toggle_folder_book_access();
-                }
-
-                // ── スコアリング（末尾の評価オーバーレイ）ON/OFF ────────────────────
-                // 邪魔に感じる人向けの永続設定。ツールボックスの左隣（RightToLeftなので後置き）。
-                let scoring_on = self.viewer_cfg.lock().unwrap().rating_overlay_enabled;
-                let r_scoring = ui.scope(|ui| {
-                    if scoring_on {
-                        ui.visuals_mut().selection.bg_fill = egui::Color32::from_rgb(30, 100, 200);
-                        ui.visuals_mut().selection.stroke.color = egui::Color32::WHITE;
-                    }
-                    ui.selectable_label(scoring_on, i18n::t().scoring_toggle_button(scoring_on))
-                }).inner;
-                if is_cursor(MenuBarButton::ScoringToggle) { draw_cursor_ring(ui, r_scoring.rect); }
-                help_tip(&r_scoring, help_on, &help_toggles);
-                if r_scoring.clicked() {
-                    self.viewer_cfg.lock().unwrap().rating_overlay_enabled = !scoring_on;
-                    self.persist_state();
                 }
 
                 ui.separator();

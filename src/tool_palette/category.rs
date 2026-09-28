@@ -16,14 +16,20 @@ pub enum PaletteCategory {
     ImageQuality,
     /// 表示・ウィンドウ
     Display,
+    /// 見開き設定（ページモード・見開きオフセット）
+    SpreadSettings,
+    /// ウィンドウプリセット（スロット適用）
+    WindowPreset,
 }
 
 /// メニューに並べる順。
-pub const ALL_CATEGORIES: [PaletteCategory; 4] = [
+pub const ALL_CATEGORIES: [PaletteCategory; 6] = [
     PaletteCategory::Navigate,
     PaletteCategory::ReadingView,
     PaletteCategory::ImageQuality,
     PaletteCategory::Display,
+    PaletteCategory::SpreadSettings,
+    PaletteCategory::WindowPreset,
 ];
 
 impl PaletteCategory {
@@ -33,6 +39,8 @@ impl PaletteCategory {
             PaletteCategory::ReadingView => lang.tool_palette_category_reading_view(),
             PaletteCategory::ImageQuality => lang.tool_palette_category_image_quality(),
             PaletteCategory::Display => lang.tool_palette_category_display(),
+            PaletteCategory::SpreadSettings => lang.tool_palette_category_spread_settings(),
+            PaletteCategory::WindowPreset => lang.tool_palette_category_window_preset(),
         }
     }
 
@@ -43,6 +51,10 @@ impl PaletteCategory {
             PaletteCategory::Navigate => &[
                 Action(ActionKind::NextPage),
                 Action(ActionKind::PrevPage),
+                Action(ActionKind::FileNavPrev),
+                Action(ActionKind::FileNavNext),
+                Action(ActionKind::JumpFirstPage),
+                Action(ActionKind::JumpLastPage),
             ],
             PaletteCategory::ReadingView => &[
                 Toggle(ToggleKind::KomaMode),
@@ -60,8 +72,20 @@ impl PaletteCategory {
             ],
             PaletteCategory::Display => &[
                 Action(ActionKind::ToggleFullscreen),
+                Action(ActionKind::ToggleZoomActual),
                 Toggle(ToggleKind::ImageInfo),
                 Action(ActionKind::OpenFolder),
+            ],
+            PaletteCategory::SpreadSettings => &[
+                Action(ActionKind::CyclePageMode),
+                Action(ActionKind::CycleSpreadOffset),
+            ],
+            PaletteCategory::WindowPreset => &[
+                Action(ActionKind::ApplySlot1),
+                Action(ActionKind::ApplySlot2),
+                Action(ActionKind::ApplySlot3),
+                Action(ActionKind::ApplySlot4),
+                Action(ActionKind::CycleApplySlot),
             ],
         }
     }
