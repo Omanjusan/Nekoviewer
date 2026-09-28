@@ -1028,6 +1028,9 @@ pub struct NekoviewApp {
     /// タグマネージャー: カテゴリ名編集開始直後の1フレームだけtrueにし、
     /// そのフレームでテキスト入力にrequest_focusする。
     pub(crate) tag_manager_editing_category_focus_pending: bool,
+    /// タグマネージャー: 複数選択カテゴリのフラット要素一覧における一括入力欄バッファ。
+    /// カンマ区切りで複数要素を一度に追加する（`,,`はリテラルカンマ1文字のエスケープ）。
+    pub(crate) tag_manager_bulk_input: String,
     /// 接続テストの進行中受信チャンネル（ダイアログを閉じたら破棄）。
     pub(crate) translate_conn_rx: Option<mpsc::Receiver<crate::translate::ConnCheckMsg>>,
     /// 直近の接続テスト結果表示用（疎通/vision結果の文字列、または失敗理由）。
@@ -1439,6 +1442,7 @@ impl NekoviewApp {
             tag_manager_editing_category_name: None,
             tag_manager_editing_category_buffer: String::new(),
             tag_manager_editing_category_focus_pending: false,
+            tag_manager_bulk_input: String::new(),
             translate_conn_rx: None,
             translate_conn_status: None,
             translate_conn_verified: false,

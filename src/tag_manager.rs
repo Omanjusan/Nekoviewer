@@ -166,6 +166,36 @@ pub(crate) fn enforce_single_select(categories: &[TagManagerCategoryUi], selecte
     }
 }
 
+/// 複数選択カテゴリの一括入力欄向けパーサー。`,`を区切りとして要素名に分割する。
+/// `,,`（連続カンマ）はリテラルの`,`1文字として要素名に含める（左から2個ずつ消費）。
+/// 各要素は前後の空白（全角スペース含む）をtrimし、trim後に空文字になる要素は捨てる。
+pub(crate) fn parse_bulk_elements(input: &str) -> Vec<String> {
+    let mut result = Vec::new();
+    let mut current = String::new();
+    let mut chars = input.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == ',' {
+            if chars.peek() == Some(&',') {
+                chars.next();
+                current.push(',');
+            } else {
+                let trimmed = current.trim();
+                if !trimmed.is_empty() {
+                    result.push(trimmed.to_string());
+                }
+                current.clear();
+            }
+        } else {
+            current.push(c);
+        }
+    }
+    let trimmed = current.trim();
+    if !trimmed.is_empty() {
+        result.push(trimmed.to_string());
+    }
+    result
+}
+
 /// アトミック保存（tmpに書いてからrename）。gui_config::save_stateと同じ方式。
 pub(crate) fn save(root: &Path, categories: &[TagManagerCategoryUi], next_tier_id: u64) {
     let data = SaveDataV1 {
