@@ -101,6 +101,23 @@ pub(crate) fn load(root: &Path) -> Option<(Vec<TagManagerCategoryUi>, u64)> {
     Some((categories, data.next_tier_id))
 }
 
+/// カテゴリ一覧から、メインタグドラム用の選択肢（メインカテゴリの要素、tier順）と、
+/// 属性タグパレット用の選択肢（それ以外の全カテゴリの要素をフラットに集約）を導出する。
+/// タグ管理ページでの編集が確定するたびにこれで再計算し、タグ付けUIに反映する。
+pub(crate) fn derive_tag_options(categories: &[TagManagerCategoryUi]) -> (Vec<String>, Vec<String>) {
+    let main_options = categories
+        .iter()
+        .find(|c| c.is_main)
+        .map(|c| c.tiers.iter().filter_map(|t| t.element.clone()).collect())
+        .unwrap_or_default();
+    let attr_options = categories
+        .iter()
+        .filter(|c| !c.is_main)
+        .flat_map(|c| c.tiers.iter().filter_map(|t| t.element.clone()))
+        .collect();
+    (main_options, attr_options)
+}
+
 /// アトミック保存（tmpに書いてからrename）。gui_config::save_stateと同じ方式。
 pub(crate) fn save(root: &Path, categories: &[TagManagerCategoryUi], next_tier_id: u64) {
     let data = SaveDataV1 {

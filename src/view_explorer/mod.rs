@@ -1212,6 +1212,8 @@ impl NekoviewApp {
         let config_root = config.config_root.clone();
         let (tag_manager_categories, tag_manager_next_tier_id) =
             crate::tag_manager::load(&config_root).unwrap_or_else(crate::tag_manager::default_state);
+        let (tag_main_options, tag_attr_options) = crate::tag_manager::derive_tag_options(&tag_manager_categories);
+        let tag_main_selected = tag_main_options.first().cloned();
         let settings_draft = SettingsDraft::from_current(&config, &viewer_cfg, show_hidden, card_date_format, &translate_cfg);
         // viewer_cfg は下でArc<Mutex<..>>へムーブするため、そこで必要な値は先に控えておく
         // （config_root等、他のconfig系フィールドと同じ扱い）。
@@ -1377,22 +1379,13 @@ impl NekoviewApp {
             tag_panel_open: false,
             tag_panel_width: 280.0,
             tag_panel_edit_expanded: false,
-            tag_main_options: [
-                "同人誌", "画集", "漫画", "その他画像", "仮装",
-                "雑誌", "イラスト集", "写真集", "CG集", "動画",
-            ]
-                .into_iter()
-                .map(str::to_string)
-                .collect(),
-            tag_main_selected: Some("同人誌".to_string()),
+            tag_main_options,
+            tag_main_selected,
             tag_main_drum_pos: 0.0,
             tag_main_drum_anim: None,
             tag_main_edit_toggle: false,
             tag_main_edit_origin: None,
-            tag_attr_options: ["高解像度", "低解像度", "高評価", "アニメーション込", "大きい", "小さい"]
-                .into_iter()
-                .map(str::to_string)
-                .collect(),
+            tag_attr_options,
             tag_attr_selected: Vec::new(),
             tag_attr_palette_open: false,
             tag_manager_open: false,

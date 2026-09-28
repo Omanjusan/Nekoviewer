@@ -941,6 +941,31 @@ impl NekoviewApp {
     /// タグマネージャー(フェーズTM0): カテゴリ・tier・要素を管理する独立画面。
     /// CentralPanel＋右タグパネルの合成矩形全体を覆うオーバーレイとして表示する
     /// （裏の表示はそのまま保持）。今回は開閉の器のみで中身はまだ空。
+    /// タグマネージャー: マスタ定義（カテゴリ/tier/色）を即時保存する。専用の保存
+    /// タイミングは持たず、編集操作が確定するたびにこれを呼ぶ。合わせて、メインタグ
+    /// ドラム／属性タグパレットの選択肢をマスタ定義から再生成して結びつける。
+    fn save_tag_manager(&mut self) {
+        let (main_options, attr_options) = crate::tag_manager::derive_tag_options(&self.tag_manager_categories);
+        self.tag_main_options = main_options;
+        match self.tag_main_selected.as_ref().and_then(|s| self.tag_main_options.iter().position(|o| o == s)) {
+            // 並び順が変わっていてもドラム位置がズレないよう、選択中タグの新しい
+            // インデックスに追従させる。
+            Some(idx) => {
+                self.tag_main_drum_pos = idx as f32;
+                self.tag_main_drum_anim = None;
+            }
+            // 選択中タグ自体が消えていれば先頭へフォールバック。
+            None => {
+                self.tag_main_selected = self.tag_main_options.first().cloned();
+                self.tag_main_drum_pos = 0.0;
+                self.tag_main_drum_anim = None;
+            }
+        }
+        self.tag_attr_options = attr_options;
+        self.tag_attr_selected.retain(|s| self.tag_attr_options.contains(s));
+        crate::tag_manager::save(&self.config.config_root, &self.tag_manager_categories, self.tag_manager_next_tier_id);
+    }
+
     fn draw_tag_manager_overlay(&mut self, ctx: &egui::Context) {
         let area_rect = self.tag_manager_area_rect;
         if !area_rect.is_positive() {
@@ -1027,6 +1052,7 @@ impl NekoviewApp {
                         is_main: false,
                     });
                     self.tag_manager_selected_category = Some(self.tag_manager_categories.len() - 1);
+                    self.save_tag_manager();
                 }
             });
         });
@@ -1078,6 +1104,7 @@ impl NekoviewApp {
                 &mut self.tag_manager_categories,
                 &mut self.tag_manager_next_tier_id,
             );
+            self.save_tag_manager();
         }
     }
 
@@ -1092,8 +1119,14 @@ impl NekoviewApp {
             ui.separator();
             ui.label("カテゴリ色:");
             let mut color = self.tag_manager_categories[cat_idx].color;
-            if ui.color_edit_button_srgba(&mut color).changed() {
+            let color_resp = ui.color_edit_button_srgba(&mut color);
+            if color_resp.changed() {
                 self.tag_manager_categories[cat_idx].color = color;
+            }
+            // ドラッグ中(スライダー操作)は毎フレームchanged()が発火するため、保存は
+            // ドラッグ終了／フォーカス喪失(確定)のタイミングにまとめる。
+            if color_resp.drag_stopped() || color_resp.lost_focus() {
+                self.save_tag_manager();
             }
             if ui.small_button("ランダム").clicked() {
                 let existing: Vec<egui::Color32> = self
@@ -1104,6 +1137,7 @@ impl NekoviewApp {
                     .map(|(_, c)| c.color)
                     .collect();
                 self.tag_manager_categories[cat_idx].color = pick_distinct_tag_color(&existing);
+                self.save_tag_manager();
             }
         });
         ui.separator();
@@ -1269,6 +1303,7 @@ impl NekoviewApp {
                 &mut self.tag_manager_categories,
                 &mut self.tag_manager_next_tier_id,
             );
+            self.save_tag_manager();
         }
         if cancel_edit.is_some() {
             // elementは編集中も一切書き換えていないので、編集状態を破棄するだけで
@@ -1286,6 +1321,7 @@ impl NekoviewApp {
                 &mut self.tag_manager_categories,
                 &mut self.tag_manager_next_tier_id,
             );
+            self.save_tag_manager();
         }
         if let Some(t_idx) = delete_tier {
             let tiers = &mut self.tag_manager_categories[cat_idx].tiers;
@@ -1302,6 +1338,7 @@ impl NekoviewApp {
                 &mut self.tag_manager_categories,
                 &mut self.tag_manager_next_tier_id,
             );
+            self.save_tag_manager();
         }
         if let Some(pos) = add_tier_at {
             let new_tier_id = self.tag_manager_next_tier_id;
@@ -1323,6 +1360,7 @@ impl NekoviewApp {
             // 挿入でtierのindex構成が変わるため、編集中状態はズレを避けて破棄する。
             self.tag_manager_editing_element = None;
             self.tag_manager_editing_buffer.clear();
+            self.save_tag_manager();
         }
     }
 
