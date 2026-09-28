@@ -67,6 +67,7 @@ impl PaletteCategory {
                 Action(ActionKind::ToggleZoomActual),
                 Toggle(ToggleKind::ImageInfo),
                 Action(ActionKind::OpenFolder),
+                Action(ActionKind::CyclePageMode),
             ],
         }
     }

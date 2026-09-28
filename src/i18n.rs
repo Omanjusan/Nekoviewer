@@ -257,6 +257,31 @@ impl Lang {
         }
     }
 
+    /// ページモード切替トースト用文言（角括弧なし）。
+    pub fn toast_page_mode_single(self) -> &'static str {
+        match self {
+            Lang::Japanese => "単ページ",
+            Lang::English  => "Single Page",
+            Lang::Chinese  => "单页",
+        }
+    }
+
+    pub fn toast_page_mode_spread_left(self) -> &'static str {
+        match self {
+            Lang::Japanese => "見開き 左綴じ",
+            Lang::English  => "Spread (Left-bound)",
+            Lang::Chinese  => "跨页（左翻）",
+        }
+    }
+
+    pub fn toast_page_mode_spread_right(self) -> &'static str {
+        match self {
+            Lang::Japanese => "見開き 右綴じ",
+            Lang::English  => "Spread (Right-bound)",
+            Lang::Chinese  => "跨页（右翻）",
+        }
+    }
+
     pub fn spread_back(self) -> &'static str {
         match self {
             Lang::Japanese => "[1P戻す]",
@@ -3619,6 +3644,14 @@ impl Lang {
             Lang::Japanese => "等倍/fit切替",
             Lang::English  => "Toggle Actual Size",
             Lang::Chinese  => "切换等倍/适应",
+        }
+    }
+
+    pub fn tool_palette_action_label_cycle_page_mode(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ページモード切替",
+            Lang::English  => "Cycle Page Mode",
+            Lang::Chinese  => "切换页面模式",
         }
     }
 

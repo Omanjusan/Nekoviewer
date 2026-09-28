@@ -1257,6 +1257,20 @@ impl ViewerState {
         }
     }
 
+    /// set_page_mode に加えて、切替結果をトースト表示する（オリジナル切替ボタン・
+    /// キーボードショートカット・ツールパレットの循環ボタン、全導線がここを通る）。
+    /// 生ファイル表示中の見開き封印時（set_page_mode が何もしない）はトーストも出さない。
+    pub fn set_page_mode_and_toast(&mut self, mode: PageMode, cfg: &mut ViewerConfig) {
+        if self.is_raw_file && mode != PageMode::Single { return; }
+        self.set_page_mode(mode, cfg);
+        let msg = match self.page_mode {
+            PageMode::Single => i18n::t().toast_page_mode_single(),
+            PageMode::SpreadLeft => i18n::t().toast_page_mode_spread_left(),
+            PageMode::SpreadRight => i18n::t().toast_page_mode_spread_right(),
+        };
+        self.set_toast(msg.to_string());
+    }
+
     /// 保存済み見開き状態を復元する（ビューアを開いた直後に一度だけ呼ぶ想定）。
     /// 復帰は常にファイル先頭固定で、保存されたオフセット値だけを先頭に適用する。
     pub fn restore_saved_spread(&mut self, mode: PageMode, offset_value: i32, cfg: &mut ViewerConfig) {
@@ -1833,11 +1847,11 @@ impl ViewerState {
         }
 
         // ── ページモード切り替え ──────────────────────────────────────────────
-        if mode1 { self.set_page_mode(PageMode::Single, cfg); }
+        if mode1 { self.set_page_mode_and_toast(PageMode::Single, cfg); }
         // 生ファイル表示中は見開きキーを無効化（set_page_mode 内でも封印済みだが念のため）
         if !self.is_raw_file {
-            if mode2 { self.set_page_mode(PageMode::SpreadLeft, cfg); }
-            if mode3 { self.set_page_mode(PageMode::SpreadRight, cfg); }
+            if mode2 { self.set_page_mode_and_toast(PageMode::SpreadLeft, cfg); }
+            if mode3 { self.set_page_mode_and_toast(PageMode::SpreadRight, cfg); }
         }
 
         let is_spread = self.page_mode != PageMode::Single;
@@ -2761,6 +2775,10 @@ impl ViewerState {
             }
             crate::tool_palette::PaletteSlotContent::Action(crate::tool_palette::ActionKind::ToggleZoomActual) => {
                 self.toggle_zoom_actual(cfg);
+            }
+            crate::tool_palette::PaletteSlotContent::Action(crate::tool_palette::ActionKind::CyclePageMode) => {
+                let next = self.page_mode.next();
+                self.set_page_mode_and_toast(next, cfg);
             }
             crate::tool_palette::PaletteSlotContent::Empty => {}
         }
@@ -4148,7 +4166,7 @@ impl ViewerState {
                         .on_hover_text(tip)
                         .clicked()
                     {
-                        self.set_page_mode(mode, cfg);
+                        self.set_page_mode_and_toast(mode, cfg);
                     }
                 });
             }
