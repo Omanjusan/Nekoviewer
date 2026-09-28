@@ -624,14 +624,17 @@ struct RatingSettingDialogState {
     original_rating: Option<u8>,
 }
 
-/// タグマネージャー(フェーズTM1〜): カテゴリの仮UI状態。永続化スキーマは未確定で、
-/// タグマネージャー画面を動かすためのメモリ上ダミー状態として持つ。
+/// タグマネージャー: カテゴリのUI状態（`tag_manager.rs`でJSON永続化される）。
 pub(crate) struct TagManagerCategoryUi {
     pub(crate) name: String,
     pub(crate) tiers: Vec<TagManagerTierUi>,
     /// カテゴリ共通色。要素ネームプレートとカテゴリ表示の両方に使い、
     /// タグピッカー側でカテゴリを見分けやすくする（利用箇所はTM3以降）。
     pub(crate) color: egui::Color32,
+    /// メインカテゴリ（排他選択のメインタグドラムに対応）フラグ。常にちょうど1つ
+    /// 存在し、削除不可・カテゴリ一覧の先頭に固定表示する。それ以外は属性タグ
+    /// （複数選択）に対応する一般カテゴリ。
+    pub(crate) is_main: bool,
 }
 
 /// タグマネージャー: 既存カテゴリの色と極力衝突しない色をランダム生成する。
@@ -672,9 +675,12 @@ pub(crate) fn pick_distinct_tag_color(existing: &[egui::Color32]) -> egui::Color
     egui::ecolor::Hsva::new(best_h, s, v, 1.0).into()
 }
 
-/// タグマネージャー(フェーズTM2): tier1件ぶんの仮UI状態。tierは常に末尾追加のみ
-/// （中間差し込み・並べ替えは今回のスコープ外）。
+/// タグマネージャー: tier1件ぶんのUI状態。
 pub(crate) struct TagManagerTierUi {
+    /// tier（＝要素）の不変ID。連番採番で削除しても再利用しない。要素名(`element`)は
+    /// リネーム可能だが`id`は変わらないため、将来ファイルとの紐付けをID参照で持たせても
+    /// リネームで紐付けが切れない。tier_no/negativeはあくまで表示順のインデックスとして扱う。
+    pub(crate) id: u64,
     pub(crate) tier_no: i32,
     /// negative境界以降のtierはtrue。スコア計算はフェーズ後日実装。
     pub(crate) negative: bool,
@@ -970,9 +976,11 @@ pub struct NekoviewApp {
     /// タグマネージャー: CentralPanel＋右タグパネルの合成矩形（直近フレーム）。
     /// オーバーレイをこの範囲全体に重ねて表示するために使う。
     pub(crate) tag_manager_area_rect: egui::Rect,
-    /// タグマネージャー(フェーズTM1〜TM2): カテゴリ一覧（名前＋tierリスト）。
-    /// データモデルは未確定のためメモリ上ダミー状態。
+    /// タグマネージャー: カテゴリ一覧（名前＋tierリスト）。`tag_manager.rs`経由で
+    /// 操作確定ごとにJSON永続化される。
     pub(crate) tag_manager_categories: Vec<TagManagerCategoryUi>,
+    /// タグマネージャー: 次に採番するtier(要素)ID。削除しても減らさない単調増加カウンタ。
+    pub(crate) tag_manager_next_tier_id: u64,
     /// タグマネージャー(フェーズTM1): 選択中カテゴリのインデックス。
     pub(crate) tag_manager_selected_category: Option<usize>,
     /// タグマネージャー: インライン編集中の要素(カテゴリindex, tier内index)。
@@ -1202,6 +1210,8 @@ impl NekoviewApp {
         // fit-within(縦横比維持)なので短辺は箱の中に自動的に収まる。
         let max_decode_target = (config.max_decode_edge, config.max_decode_edge);
         let config_root = config.config_root.clone();
+        let (tag_manager_categories, tag_manager_next_tier_id) =
+            crate::tag_manager::load(&config_root).unwrap_or_else(crate::tag_manager::default_state);
         let settings_draft = SettingsDraft::from_current(&config, &viewer_cfg, show_hidden, card_date_format, &translate_cfg);
         // viewer_cfg は下でArc<Mutex<..>>へムーブするため、そこで必要な値は先に控えておく
         // （config_root等、他のconfig系フィールドと同じ扱い）。
@@ -1387,22 +1397,8 @@ impl NekoviewApp {
             tag_attr_palette_open: false,
             tag_manager_open: false,
             tag_manager_area_rect: egui::Rect::NOTHING,
-            tag_manager_categories: vec![
-                TagManagerCategoryUi {
-                    name: "画質".to_string(),
-                    tiers: vec![
-                        TagManagerTierUi { tier_no: 1, negative: false, element: Some("高解像度".to_string()) },
-                        TagManagerTierUi { tier_no: 2, negative: false, element: Some("普通の解像度".to_string()) },
-                        TagManagerTierUi { tier_no: 3, negative: true, element: Some("低解像度".to_string()) },
-                    ],
-                    color: egui::Color32::from_rgb(230, 140, 50),
-                },
-                TagManagerCategoryUi {
-                    name: "内容".to_string(),
-                    tiers: Vec::new(),
-                    color: egui::Color32::from_rgb(70, 140, 220),
-                },
-            ],
+            tag_manager_categories,
+            tag_manager_next_tier_id,
             tag_manager_selected_category: Some(0),
             tag_manager_editing_element: None,
             tag_manager_editing_buffer: String::new(),

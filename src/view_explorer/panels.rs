@@ -1024,6 +1024,7 @@ impl NekoviewApp {
                         name: format!("新規カテゴリ{n}"),
                         tiers: Vec::new(),
                         color: pick_distinct_tag_color(&existing),
+                        is_main: false,
                     });
                     self.tag_manager_selected_category = Some(self.tag_manager_categories.len() - 1);
                 }
@@ -1032,21 +1033,30 @@ impl NekoviewApp {
         ui.separator();
 
         // 要素を持つtierが1つも無いカテゴリは、ピッカー側から呼び出せない「未成立」状態。
-        let rows: Vec<(String, bool)> = self
+        // メインカテゴリ（is_main）は常に先頭に固定表示され、削除不可。
+        let rows: Vec<(String, bool, bool)> = self
             .tag_manager_categories
             .iter()
-            .map(|c| (c.name.clone(), c.tiers.iter().any(|t| t.element.is_some())))
+            .map(|c| (c.name.clone(), c.tiers.iter().any(|t| t.element.is_some()), c.is_main))
             .collect();
         let mut select_idx: Option<usize> = None;
         let mut delete_idx: Option<usize> = None;
-        for (i, (name, established)) in rows.iter().enumerate() {
+        for (i, (name, established, is_main)) in rows.iter().enumerate() {
             let selected = self.tag_manager_selected_category == Some(i);
             ui.horizontal(|ui| {
-                let label = if *established { name.clone() } else { format!("{name}（未成立）") };
+                let label = if *is_main {
+                    format!("{name}（メイン）")
+                } else if *established {
+                    name.clone()
+                } else {
+                    format!("{name}（未成立）")
+                };
                 if ui.selectable_label(selected, label).clicked() {
                     select_idx = Some(i);
                 }
-                if ui.small_button("－").clicked() {
+                if *is_main {
+                    ui.add_enabled(false, egui::Button::new("－"));
+                } else if ui.small_button("－").clicked() {
                     delete_idx = Some(i);
                 }
             });
@@ -1064,6 +1074,10 @@ impl NekoviewApp {
                 Some(sel) if sel > i => Some(sel - 1),
                 other => other,
             };
+            crate::tag_manager::ensure_main_category_nonempty(
+                &mut self.tag_manager_categories,
+                &mut self.tag_manager_next_tier_id,
+            );
         }
     }
 
@@ -1251,6 +1265,10 @@ impl NekoviewApp {
                 if text.is_empty() { None } else { Some(text) };
             self.tag_manager_editing_element = None;
             self.tag_manager_editing_buffer.clear();
+            crate::tag_manager::ensure_main_category_nonempty(
+                &mut self.tag_manager_categories,
+                &mut self.tag_manager_next_tier_id,
+            );
         }
         if cancel_edit.is_some() {
             // elementは編集中も一切書き換えていないので、編集状態を破棄するだけで
@@ -1264,6 +1282,10 @@ impl NekoviewApp {
                 self.tag_manager_editing_element = None;
                 self.tag_manager_editing_buffer.clear();
             }
+            crate::tag_manager::ensure_main_category_nonempty(
+                &mut self.tag_manager_categories,
+                &mut self.tag_manager_next_tier_id,
+            );
         }
         if let Some(t_idx) = delete_tier {
             let tiers = &mut self.tag_manager_categories[cat_idx].tiers;
@@ -1276,8 +1298,14 @@ impl NekoviewApp {
             // tierのindex構成が変わるため、編集中状態はインデックスのズレを避けて破棄する。
             self.tag_manager_editing_element = None;
             self.tag_manager_editing_buffer.clear();
+            crate::tag_manager::ensure_main_category_nonempty(
+                &mut self.tag_manager_categories,
+                &mut self.tag_manager_next_tier_id,
+            );
         }
         if let Some(pos) = add_tier_at {
+            let new_tier_id = self.tag_manager_next_tier_id;
+            self.tag_manager_next_tier_id += 1;
             let tiers = &mut self.tag_manager_categories[cat_idx].tiers;
             let pos = pos.min(tiers.len());
             // 挿入位置の直前(無ければ直後)のtierからnegativeフラグを引き継ぐ。
@@ -1287,7 +1315,7 @@ impl NekoviewApp {
             } else {
                 tiers.first().map(|t| t.negative).unwrap_or(false)
             };
-            tiers.insert(pos, TagManagerTierUi { tier_no: 0, negative, element: None });
+            tiers.insert(pos, TagManagerTierUi { id: new_tier_id, tier_no: 0, negative, element: None });
             // 中間挿入なので、全tierのtier_noを1から振り直す（再序列）。
             for (i, t) in tiers.iter_mut().enumerate() {
                 t.tier_no = i as i32 + 1;
