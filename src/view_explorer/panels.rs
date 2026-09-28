@@ -1063,29 +1063,34 @@ impl NekoviewApp {
     /// 各タグは所属カテゴリの色をネームプレート背景にして、どのカテゴリの
     /// タグかひと目でわかるようにする（タグ管理画面の要素表示と同じ配色ルール）。
     fn draw_tag_attr_view_mode(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal_wrapped(|ui| {
-            if self.tag_attr_selected.is_empty() {
-                ui.weak("（選択済みタグなし）");
-            } else {
-                for tag_id in &self.tag_attr_selected {
-                    // tier削除済みの孤立id（自己修復GC前）は表示上は単に無視する。
-                    let found = self.tag_manager_categories.iter().filter(|c| !c.is_main).find_map(|c| {
-                        c.tiers.iter().find(|t| t.id == *tag_id).and_then(|t| {
-                            t.element.as_ref().map(|name| (name.clone(), c.color))
-                        })
-                    });
-                    let Some((name, cat_color)) = found else { continue };
-                    let text_color = contrasting_text_color(cat_color);
-                    egui::Frame::default()
-                        .fill(cat_color)
-                        .inner_margin(egui::Margin::symmetric(6, 2))
-                        .corner_radius(3.0)
-                        .show(ui, |ui| {
-                            ui.colored_label(text_color, &name);
-                        });
-                }
-            }
-        });
+        egui::ScrollArea::vertical()
+            .id_salt("tag_attr_view_scroll")
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    if self.tag_attr_selected.is_empty() {
+                        ui.weak("（選択済みタグなし）");
+                    } else {
+                        for tag_id in &self.tag_attr_selected {
+                            // tier削除済みの孤立id（自己修復GC前）は表示上は単に無視する。
+                            let found = self.tag_manager_categories.iter().filter(|c| !c.is_main).find_map(|c| {
+                                c.tiers.iter().find(|t| t.id == *tag_id).and_then(|t| {
+                                    t.element.as_ref().map(|name| (name.clone(), c.color))
+                                })
+                            });
+                            let Some((name, cat_color)) = found else { continue };
+                            let text_color = contrasting_text_color(cat_color);
+                            egui::Frame::default()
+                                .fill(cat_color)
+                                .inner_margin(egui::Margin::symmetric(6, 2))
+                                .corner_radius(3.0)
+                                .show(ui, |ui| {
+                                    ui.colored_label(text_color, &name);
+                                });
+                        }
+                    }
+                });
+            });
     }
 
     /// タグマネージャー(フェーズTM0): カテゴリ・tier・要素を管理する独立画面。
