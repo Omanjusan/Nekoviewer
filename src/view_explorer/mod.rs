@@ -992,6 +992,14 @@ pub struct NekoviewApp {
     /// フレームでテキスト入力にrequest_focusする（毎フレーム呼ぶとユーザーの
     /// 手動フォーカス解除を上書きしてしまうため）。
     pub(crate) tag_manager_editing_focus_pending: bool,
+    /// タグマネージャー: インライン編集中のカテゴリ名（対象カテゴリのindex）。
+    /// 選択カテゴリが切り替わったら自動的にNoneへ戻す。
+    pub(crate) tag_manager_editing_category_name: Option<usize>,
+    /// タグマネージャー: 上記の編集中バッファ。
+    pub(crate) tag_manager_editing_category_buffer: String,
+    /// タグマネージャー: カテゴリ名編集開始直後の1フレームだけtrueにし、
+    /// そのフレームでテキスト入力にrequest_focusする。
+    pub(crate) tag_manager_editing_category_focus_pending: bool,
     /// 接続テストの進行中受信チャンネル（ダイアログを閉じたら破棄）。
     pub(crate) translate_conn_rx: Option<mpsc::Receiver<crate::translate::ConnCheckMsg>>,
     /// 直近の接続テスト結果表示用（疎通/vision結果の文字列、または失敗理由）。

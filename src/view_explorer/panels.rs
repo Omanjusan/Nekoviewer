@@ -1115,7 +1115,8 @@ impl NekoviewApp {
     fn draw_tag_manager_tier_list(&mut self, ui: &mut egui::Ui, cat_idx: usize) {
         let cat_name = self.tag_manager_categories[cat_idx].name.clone();
         ui.horizontal(|ui| {
-            ui.label(format!("選択中カテゴリ: {cat_name}"));
+            ui.label("選択中カテゴリ:");
+            ui.label(egui::RichText::new(&cat_name).size(28.0).strong());
             ui.separator();
             ui.label("カテゴリ色:");
             let mut color = self.tag_manager_categories[cat_idx].color;
