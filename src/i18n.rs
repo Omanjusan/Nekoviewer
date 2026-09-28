@@ -282,6 +282,31 @@ impl Lang {
         }
     }
 
+    /// 見開きオフセット変更トースト用文言（前後ボタン・キーボード・循環ボタン共通）。
+    pub fn toast_spread_offset_minus_one(self) -> &'static str {
+        match self {
+            Lang::Japanese => "見開きのオフセットを-1で設定しました",
+            Lang::English  => "Spread offset set to -1",
+            Lang::Chinese  => "跨页偏移已设为 -1",
+        }
+    }
+
+    pub fn toast_spread_offset_zero(self) -> &'static str {
+        match self {
+            Lang::Japanese => "見開きのオフセットなしに設定しました",
+            Lang::English  => "Spread offset cleared",
+            Lang::Chinese  => "已清除跨页偏移",
+        }
+    }
+
+    pub fn toast_spread_offset_plus_one(self) -> &'static str {
+        match self {
+            Lang::Japanese => "見開きのオフセットを+1で設定しました",
+            Lang::English  => "Spread offset set to +1",
+            Lang::Chinese  => "跨页偏移已设为 +1",
+        }
+    }
+
     pub fn spread_back(self) -> &'static str {
         match self {
             Lang::Japanese => "[1P戻す]",
@@ -3652,6 +3677,14 @@ impl Lang {
             Lang::Japanese => "ページモード切替",
             Lang::English  => "Cycle Page Mode",
             Lang::Chinese  => "切换页面模式",
+        }
+    }
+
+    pub fn tool_palette_action_label_cycle_spread_offset(self) -> &'static str {
+        match self {
+            Lang::Japanese => "見開きオフセット切替",
+            Lang::English  => "Cycle Spread Offset",
+            Lang::Chinese  => "切换跨页偏移",
         }
     }
 

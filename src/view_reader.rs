@@ -474,6 +474,8 @@ pub struct ViewerState {
     spread_base: i32,
     /// オフセット状態。spread_lo() = spread_base + offset.value()
     offset: SpreadOffset,
+    /// 見開きオフセット循環ボタン（ツールパレット）用: 次に0から動くなら-方向か
+    spread_offset_cycle_negative_next: bool,
     textures: HashMap<usize, egui::TextureHandle>,
     /// 各GPUテクスチャがどのデコード世代から作られたか。
     texture_generations: HashMap<usize, u64>,
@@ -855,6 +857,7 @@ impl ViewerState {
             entries,
             spread_base: 0,
             offset: SpreadOffset::new(),
+            spread_offset_cycle_negative_next: true,
             textures: HashMap::new(),
             texture_generations: HashMap::new(),
             open: true,
@@ -961,6 +964,7 @@ impl ViewerState {
             entries,
             spread_base: 0,
             offset: SpreadOffset::new(),
+            spread_offset_cycle_negative_next: true,
             textures: HashMap::new(),
             texture_generations: HashMap::new(),
             open: true,
@@ -1104,6 +1108,58 @@ impl ViewerState {
         if self.can_shift_backward() {
             self.offset.retreat();
         }
+    }
+
+    /// 現在のオフセット値をトースト表示する（値が変わったときに呼ぶ導線側の共通ヘルパー）。
+    fn toast_spread_offset(&mut self) {
+        let msg = match self.offset.value() {
+            v if v < 0 => i18n::t().toast_spread_offset_minus_one(),
+            0 => i18n::t().toast_spread_offset_zero(),
+            _ => i18n::t().toast_spread_offset_plus_one(),
+        };
+        self.set_toast(msg.to_string());
+    }
+
+    /// shift_offset_forward に加えて、値が変化した場合のみトースト表示する。
+    /// 既存メニューボタン（+1P）・キーボード（5キー）両方の導線から呼ぶ。
+    pub fn shift_offset_forward_and_toast(&mut self) {
+        let before = self.offset.value();
+        self.shift_offset_forward();
+        if self.offset.value() != before { self.toast_spread_offset(); }
+    }
+
+    /// shift_offset_backward に加えて、値が変化した場合のみトースト表示する。
+    /// 既存メニューボタン（-1P）・キーボード（4キー）両方の導線から呼ぶ。
+    pub fn shift_offset_backward_and_toast(&mut self) {
+        let before = self.offset.value();
+        self.shift_offset_backward();
+        if self.offset.value() != before { self.toast_spread_offset(); }
+    }
+
+    /// ツールパレット循環ボタン用: -1→0→+1→0→-1…と往復する（+1から-1への直接ジャンプはしない）。
+    /// 0にいるときにどちら方向へ動くかは spread_offset_cycle_negative_next で記憶し、
+    /// 実際に動けた方向（境界でガードされ動けなかった場合は逆側を試す）に応じて次回の方向を更新する。
+    pub fn cycle_spread_offset_and_toast(&mut self) {
+        let before = self.offset.value();
+        match before {
+            0 => {
+                if self.spread_offset_cycle_negative_next {
+                    self.shift_offset_backward();
+                    if self.offset.value() == before { self.shift_offset_forward(); }
+                } else {
+                    self.shift_offset_forward();
+                    if self.offset.value() == before { self.shift_offset_backward(); }
+                }
+            }
+            v if v > 0 => self.shift_offset_backward(),
+            _ => self.shift_offset_forward(),
+        }
+        match self.offset.value() {
+            v if v < 0 => self.spread_offset_cycle_negative_next = false,
+            v if v > 0 => self.spread_offset_cycle_negative_next = true,
+            _ => {}
+        }
+        if self.offset.value() != before { self.toast_spread_offset(); }
     }
 
     /// 次の見開き/ページへ進めるか（オフセットを保持したまま次のspread_baseが範囲内か）。
@@ -2242,8 +2298,8 @@ impl ViewerState {
 
         // ── 見開き 1P シフト（4/5）──────────────────────────────────────────
         if is_spread {
-            if shift_inc { self.shift_offset_forward(); }
-            if shift_dec { self.shift_offset_backward(); }
+            if shift_inc { self.shift_offset_forward_and_toast(); }
+            if shift_dec { self.shift_offset_backward_and_toast(); }
             self.offset.update_virtual_right(self.spread_lo() + 1 >= total_i);
         }
 
@@ -2779,6 +2835,11 @@ impl ViewerState {
             crate::tool_palette::PaletteSlotContent::Action(crate::tool_palette::ActionKind::CyclePageMode) => {
                 let next = self.page_mode.next();
                 self.set_page_mode_and_toast(next, cfg);
+            }
+            crate::tool_palette::PaletteSlotContent::Action(crate::tool_palette::ActionKind::CycleSpreadOffset) => {
+                if is_spread {
+                    self.cycle_spread_offset_and_toast();
+                }
             }
             crate::tool_palette::PaletteSlotContent::Empty => {}
         }
@@ -4184,7 +4245,7 @@ impl ViewerState {
                     .on_hover_text(tip)
                     .clicked()
                 {
-                    if back { self.shift_offset_backward(); } else { self.shift_offset_forward(); }
+                    if back { self.shift_offset_backward_and_toast(); } else { self.shift_offset_forward_and_toast(); }
                 }
             }
             // ずれ状態の表示専用インジケータ。単ページ時は非表示（決定事項）。
@@ -6114,6 +6175,24 @@ mod sort_save_state_tests {
         assert!(viewer.can_shift_forward());
         viewer.shift_offset_forward();
         assert_eq!(viewer.spread_lo(), 1);
+    }
+
+    #[test]
+    fn cycle_spread_offset_bounces_minus_one_zero_plus_one_and_back() {
+        let mut viewer = archive_viewer();
+        viewer.page_mode = PageMode::SpreadLeft;
+
+        assert_eq!(viewer.offset.value(), 0);
+        viewer.cycle_spread_offset_and_toast();
+        assert_eq!(viewer.offset.value(), -1);
+        viewer.cycle_spread_offset_and_toast();
+        assert_eq!(viewer.offset.value(), 0);
+        viewer.cycle_spread_offset_and_toast();
+        assert_eq!(viewer.offset.value(), 1);
+        viewer.cycle_spread_offset_and_toast();
+        assert_eq!(viewer.offset.value(), 0);
+        viewer.cycle_spread_offset_and_toast();
+        assert_eq!(viewer.offset.value(), -1);
     }
 
     #[test]

@@ -31,12 +31,14 @@ pub enum ActionKind {
     ToggleZoomActual,
     /// ページ表示モードを循環（単ページ→見開き左→見開き右→単ページ…）
     CyclePageMode,
+    /// 見開きオフセットを往復循環（-1→0→+1→0→-1…、境界では往復方向を反転）
+    CycleSpreadOffset,
 }
 
 /// 全ActionKind。category.rsの網羅テストがこれを基準に「全種がどこかのカテゴリに属する」を検査する
 /// （登録メニューはcategory.rsのカテゴリ表を走査する）。
 #[cfg(test)]
-pub const ALL_ACTION_KINDS: [ActionKind; 13] = [
+pub const ALL_ACTION_KINDS: [ActionKind; 14] = [
     ActionKind::NextPage,
     ActionKind::PrevPage,
     ActionKind::OpenFolder,
@@ -50,6 +52,7 @@ pub const ALL_ACTION_KINDS: [ActionKind; 13] = [
     ActionKind::JumpLastPage,
     ActionKind::ToggleZoomActual,
     ActionKind::CyclePageMode,
+    ActionKind::CycleSpreadOffset,
 ];
 
 impl ActionKind {
@@ -69,6 +72,7 @@ impl ActionKind {
             ActionKind::JumpLastPage => "jump_last_page",
             ActionKind::ToggleZoomActual => "toggle_zoom_actual",
             ActionKind::CyclePageMode => "cycle_page_mode",
+            ActionKind::CycleSpreadOffset => "cycle_spread_offset",
         }
     }
 
@@ -87,6 +91,7 @@ impl ActionKind {
             "jump_last_page" => ActionKind::JumpLastPage,
             "toggle_zoom_actual" => ActionKind::ToggleZoomActual,
             "cycle_page_mode" => ActionKind::CyclePageMode,
+            "cycle_spread_offset" => ActionKind::CycleSpreadOffset,
             _ => return None,
         })
     }
@@ -107,6 +112,7 @@ impl ActionKind {
             ActionKind::JumpLastPage => lang.tool_palette_action_label_jump_last_page(),
             ActionKind::ToggleZoomActual => lang.tool_palette_action_label_toggle_zoom_actual(),
             ActionKind::CyclePageMode => lang.tool_palette_action_label_cycle_page_mode(),
+            ActionKind::CycleSpreadOffset => lang.tool_palette_action_label_cycle_spread_offset(),
         }
     }
 
@@ -126,6 +132,7 @@ impl ActionKind {
             ActionKind::JumpLastPage => "⇥",
             ActionKind::ToggleZoomActual => "🔍",
             ActionKind::CyclePageMode => "⇄",
+            ActionKind::CycleSpreadOffset => "↔",
         }
     }
 }
@@ -134,7 +141,7 @@ impl ActionKind {
 mod tests {
     use super::*;
 
-    const ALL_KINDS: [ActionKind; 13] = [
+    const ALL_KINDS: [ActionKind; 14] = [
         ActionKind::NextPage,
         ActionKind::PrevPage,
         ActionKind::OpenFolder,
@@ -148,6 +155,7 @@ mod tests {
         ActionKind::JumpLastPage,
         ActionKind::ToggleZoomActual,
         ActionKind::CyclePageMode,
+        ActionKind::CycleSpreadOffset,
     ];
 
     #[test]

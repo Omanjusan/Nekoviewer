@@ -68,6 +68,7 @@ impl PaletteCategory {
                 Toggle(ToggleKind::ImageInfo),
                 Action(ActionKind::OpenFolder),
                 Action(ActionKind::CyclePageMode),
+                Action(ActionKind::CycleSpreadOffset),
             ],
         }
     }
