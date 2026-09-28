@@ -755,7 +755,7 @@ impl NekoviewApp {
             return;
         }
         self.tag_main_edit_toggle = false;
-        if self.tag_main_edit_origin.as_deref() != self.tag_main_selected.as_deref() {
+        if self.tag_main_edit_origin != self.tag_main_selected {
             self.commit_tag_main_edit();
         }
         self.tag_main_edit_origin = None;
@@ -786,7 +786,7 @@ impl NekoviewApp {
                     self.deactivate_tag_main_edit();
                 } else {
                     self.tag_main_edit_toggle = true;
-                    self.tag_main_edit_origin = self.tag_main_selected.clone();
+                    self.tag_main_edit_origin = self.tag_main_selected;
                 }
             }
         });
@@ -815,14 +815,14 @@ impl NekoviewApp {
         }
 
         let center_idx = self.tag_main_drum_pos.round().clamp(0.0, max_idx as f32) as usize;
-        if self.tag_main_options.get(center_idx).map(String::as_str) != self.tag_main_selected.as_deref() {
-            self.tag_main_selected = self.tag_main_options.get(center_idx).cloned();
+        if self.tag_main_options.get(center_idx).map(|(id, _)| *id) != self.tag_main_selected {
+            self.tag_main_selected = self.tag_main_options.get(center_idx).map(|(id, _)| *id);
         }
 
         let painter = ui.painter();
         let center = rect.center();
         let highlight_bg = ui.visuals().selection.bg_fill;
-        for (i, tag) in self.tag_main_options.iter().enumerate() {
+        for (i, (_id, tag)) in self.tag_main_options.iter().enumerate() {
             let dist = i as f32 - self.tag_main_drum_pos;
             let x = center.x + dist * TAG_DRUM_ITEM_SPACING;
             if x < rect.left() - TAG_DRUM_ITEM_SPACING || x > rect.right() + TAG_DRUM_ITEM_SPACING {
@@ -895,7 +895,7 @@ impl NekoviewApp {
                 ui.set_width(ui.available_width());
                 let dimmed_fg = ui.visuals().text_color().gamma_multiply(0.4);
                 let dimmed_bg_stroke = ui.visuals().widgets.inactive.bg_stroke.color.gamma_multiply(0.4);
-                let categories: Vec<(String, bool, egui::Color32, Vec<String>)> = self
+                let categories: Vec<(String, bool, egui::Color32, Vec<(u64, String)>)> = self
                     .tag_manager_categories
                     .iter()
                     .filter(|c| !c.is_main)
@@ -904,10 +904,10 @@ impl NekoviewApp {
                             c.name.clone(),
                             c.single_select,
                             c.color,
-                            c.tiers.iter().filter_map(|t| t.element.clone()).collect(),
+                            c.tiers.iter().filter_map(|t| t.element.clone().map(|name| (t.id, name))).collect(),
                         )
                     })
-                    .filter(|(_, _, _, elements): &(String, bool, egui::Color32, Vec<String>)| !elements.is_empty())
+                    .filter(|(_, _, _, elements): &(String, bool, egui::Color32, Vec<(u64, String)>)| !elements.is_empty())
                     .collect();
                 for (cat_idx, (cat_name, single_select, cat_color, elements)) in categories.iter().enumerate() {
                     if cat_idx > 0 {
@@ -915,8 +915,8 @@ impl NekoviewApp {
                     }
                     ui.label(egui::RichText::new(cat_name).strong().color(*cat_color));
                     ui.horizontal_wrapped(|ui| {
-                        for element in elements {
-                            let selected = self.tag_attr_selected.contains(element);
+                        for (elem_id, elem_name) in elements {
+                            let selected = self.tag_attr_selected.contains(elem_id);
                             let resp = ui
                                 .scope(|ui| {
                                     if selected {
@@ -929,19 +929,20 @@ impl NekoviewApp {
                                         ui.visuals_mut().widgets.hovered.fg_stroke.color = dimmed_fg;
                                         ui.visuals_mut().widgets.inactive.bg_stroke.color = dimmed_bg_stroke;
                                     }
-                                    ui.selectable_label(selected, element)
+                                    ui.selectable_label(selected, elem_name)
                                 })
                                 .inner;
                             if resp.clicked() {
                                 if selected {
                                     if !*single_select {
-                                        self.tag_attr_selected.retain(|s| s != element);
+                                        self.tag_attr_selected.retain(|s| s != elem_id);
                                     }
                                 } else {
                                     if *single_select {
-                                        self.tag_attr_selected.retain(|s| !elements.contains(s));
+                                        let elem_ids: Vec<u64> = elements.iter().map(|(id, _)| *id).collect();
+                                        self.tag_attr_selected.retain(|s| !elem_ids.contains(s));
                                     }
-                                    self.tag_attr_selected.push(element.clone());
+                                    self.tag_attr_selected.push(*elem_id);
                                 }
                             }
                         }
@@ -958,28 +959,22 @@ impl NekoviewApp {
             if self.tag_attr_selected.is_empty() {
                 ui.weak("（選択済みタグなし）");
             } else {
-                for tag in &self.tag_attr_selected {
-                    let cat_color = self
-                        .tag_manager_categories
-                        .iter()
-                        .filter(|c| !c.is_main)
-                        .find(|c| c.tiers.iter().any(|t| t.element.as_deref() == Some(tag.as_str())))
-                        .map(|c| c.color);
-                    match cat_color {
-                        Some(cat_color) => {
-                            let text_color = contrasting_text_color(cat_color);
-                            egui::Frame::default()
-                                .fill(cat_color)
-                                .inner_margin(egui::Margin::symmetric(6, 2))
-                                .corner_radius(3.0)
-                                .show(ui, |ui| {
-                                    ui.colored_label(text_color, tag);
-                                });
-                        }
-                        None => {
-                            ui.label(tag);
-                        }
-                    }
+                for tag_id in &self.tag_attr_selected {
+                    // tier削除済みの孤立id（自己修復GC前）は表示上は単に無視する。
+                    let found = self.tag_manager_categories.iter().filter(|c| !c.is_main).find_map(|c| {
+                        c.tiers.iter().find(|t| t.id == *tag_id).and_then(|t| {
+                            t.element.as_ref().map(|name| (name.clone(), c.color))
+                        })
+                    });
+                    let Some((name, cat_color)) = found else { continue };
+                    let text_color = contrasting_text_color(cat_color);
+                    egui::Frame::default()
+                        .fill(cat_color)
+                        .inner_margin(egui::Margin::symmetric(6, 2))
+                        .corner_radius(3.0)
+                        .show(ui, |ui| {
+                            ui.colored_label(text_color, &name);
+                        });
                 }
             }
         });
@@ -994,7 +989,7 @@ impl NekoviewApp {
     fn save_tag_manager(&mut self) {
         let (main_options, attr_options) = crate::tag_manager::derive_tag_options(&self.tag_manager_categories);
         self.tag_main_options = main_options;
-        match self.tag_main_selected.as_ref().and_then(|s| self.tag_main_options.iter().position(|o| o == s)) {
+        match self.tag_main_selected.and_then(|id| self.tag_main_options.iter().position(|(oid, _)| *oid == id)) {
             // 並び順が変わっていてもドラム位置がズレないよう、選択中タグの新しい
             // インデックスに追従させる。
             Some(idx) => {
@@ -1003,7 +998,7 @@ impl NekoviewApp {
             }
             // 選択中タグ自体が消えていれば先頭へフォールバック。
             None => {
-                self.tag_main_selected = self.tag_main_options.first().cloned();
+                self.tag_main_selected = self.tag_main_options.first().map(|(id, _)| *id);
                 self.tag_main_drum_pos = 0.0;
                 self.tag_main_drum_anim = None;
             }

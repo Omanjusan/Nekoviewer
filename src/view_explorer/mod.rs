@@ -960,12 +960,12 @@ pub struct NekoviewApp {
     pub(crate) tag_panel_width: f32,
     /// タグ機能・レイアウト器: タグパネルの編集モード展開状態（上側ツマミでさらに中央側へ拡張）。
     pub(crate) tag_panel_edit_expanded: bool,
-    /// タグ付けレイアウト: メインタグ(排他)の固定順序リスト。ドラムUIで並べ替えは
-    /// 行わず、中央に来たものが選択扱いになる。テストデータ固定・ファイルには
-    /// 紐付けないグローバルダミー状態。
-    pub(crate) tag_main_options: Vec<String>,
-    /// タグ付けレイアウト: 現在選択中（ドラム中央）のメインタグ名。
-    pub(crate) tag_main_selected: Option<String>,
+    /// タグ付けレイアウト: メインタグ(排他)の固定順序リスト（tier_id, 要素名）。
+    /// ドラムUIで並べ替えは行わず、中央に来たものが選択扱いになる。要素名は表示用で、
+    /// 選択・紐付けの同一性判定は常にtier_id（リネームで変わらない不変ID）で行う。
+    pub(crate) tag_main_options: Vec<(u64, String)>,
+    /// タグ付けレイアウト: 現在選択中（ドラム中央）のメインタグのtier_id。
+    pub(crate) tag_main_selected: Option<u64>,
     /// タグ付けレイアウト・ドラムUI: 現在のドラム位置（tag_main_optionsのインデックス
     /// を単位とした連続値。例:1.5なら2番目と3番目のタグのちょうど中間）。
     pub(crate) tag_main_drum_pos: f32,
@@ -978,15 +978,16 @@ pub struct NekoviewApp {
     pub(crate) tag_main_edit_toggle: bool,
     /// タグ付けレイアウト・ドラムUI: 上記トグルをONにした時点のtag_main_selected。
     /// OFFへ戻すタイミングでこの値と比較し、変化していれば編集確定フックを呼ぶ。
-    pub(crate) tag_main_edit_origin: Option<String>,
-    /// タグ付けレイアウト: 属性タグ(複数可・単一選択カテゴリ含む)の候補一覧。
-    /// タグマネージャーの実データから`save_tag_manager`で導出される（要素名の
+    pub(crate) tag_main_edit_origin: Option<u64>,
+    /// タグ付けレイアウト: 属性タグ(複数可・単一選択カテゴリ含む)のtier_id一覧。
+    /// タグマネージャーの実データから`save_tag_manager`で導出される（tier_idの
     /// 妥当性チェック用。表示のカテゴリ分けは`tag_manager_categories`を直接使う）。
-    pub(crate) tag_attr_options: Vec<String>,
-    /// タグ付けレイアウト: 選択済み属性タグ（カテゴリ横断、要素名で一致判定）。
+    pub(crate) tag_attr_options: Vec<u64>,
+    /// タグ付けレイアウト: 選択済み属性タグ（カテゴリ横断、tier_idで一致判定。
+    /// リネームで紐付けが切れないよう要素名ではなく不変IDを持つ）。
     /// 編集モードのワンクリックでここに追加/削除する。単一選択カテゴリは常に
     /// ちょうど1個を維持する（`tag_manager::enforce_single_select`で矯正）。
-    pub(crate) tag_attr_selected: Vec<String>,
+    pub(crate) tag_attr_selected: Vec<u64>,
     /// タグパネルのプレビューを、グリッドサムネの引き伸ばしではなく専用解像度で
     /// 再デコードして表示するか（ON=高画質・OFF=既定＝サムネ流用）。設定として永続化する。
     pub(crate) tag_preview_high_quality: bool,
@@ -1247,8 +1248,8 @@ impl NekoviewApp {
         let (tag_manager_categories, tag_manager_next_tier_id) =
             crate::tag_manager::load(&config_root).unwrap_or_else(crate::tag_manager::default_state);
         let (tag_main_options, tag_attr_options) = crate::tag_manager::derive_tag_options(&tag_manager_categories);
-        let tag_main_selected = tag_main_options.first().cloned();
-        let mut tag_attr_selected: Vec<String> = Vec::new();
+        let tag_main_selected = tag_main_options.first().map(|(id, _)| *id);
+        let mut tag_attr_selected: Vec<u64> = Vec::new();
         crate::tag_manager::enforce_single_select(&tag_manager_categories, &mut tag_attr_selected);
         let settings_draft = SettingsDraft::from_current(&config, &viewer_cfg, show_hidden, card_date_format, &translate_cfg);
         // viewer_cfg は下でArc<Mutex<..>>へムーブするため、そこで必要な値は先に控えておく

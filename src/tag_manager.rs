@@ -108,19 +108,21 @@ pub(crate) fn load(root: &Path) -> Option<(Vec<TagManagerCategoryUi>, u64)> {
     Some((categories, data.next_tier_id))
 }
 
-/// カテゴリ一覧から、メインタグドラム用の選択肢（メインカテゴリの要素、tier順）と、
-/// 属性タグパレット用の選択肢（それ以外の全カテゴリの要素をフラットに集約）を導出する。
-/// タグ管理ページでの編集が確定するたびにこれで再計算し、タグ付けUIに反映する。
-pub(crate) fn derive_tag_options(categories: &[TagManagerCategoryUi]) -> (Vec<String>, Vec<String>) {
+/// カテゴリ一覧から、メインタグドラム用の選択肢（メインカテゴリの要素、tier_id＋
+/// 要素名、tier順）と、属性タグの妥当性チェック用tier_id一覧（それ以外の全カテゴリの
+/// 要素をフラットに集約）を導出する。タグ管理ページでの編集が確定するたびにこれで
+/// 再計算し、タグ付けUIに反映する。選択・紐付けの同一性判定はtier_id（リネームで
+/// 変わらない不変ID）で行い、要素名は表示専用。
+pub(crate) fn derive_tag_options(categories: &[TagManagerCategoryUi]) -> (Vec<(u64, String)>, Vec<u64>) {
     let main_options = categories
         .iter()
         .find(|c| c.is_main)
-        .map(|c| c.tiers.iter().filter_map(|t| t.element.clone()).collect())
+        .map(|c| c.tiers.iter().filter_map(|t| t.element.clone().map(|name| (t.id, name))).collect())
         .unwrap_or_default();
     let attr_options = categories
         .iter()
         .filter(|c| !c.is_main)
-        .flat_map(|c| c.tiers.iter().filter_map(|t| t.element.clone()))
+        .flat_map(|c| c.tiers.iter().filter(|t| t.element.is_some()).map(|t| t.id))
         .collect();
     (main_options, attr_options)
 }
@@ -131,15 +133,15 @@ pub(crate) fn derive_tag_options(categories: &[TagManagerCategoryUi]) -> (Vec<St
 /// - 単一選択カテゴリ内で選択済みが2個以上あれば最初の1個以外を外す
 /// - 単一選択カテゴリで1個も選択が無ければ、そのカテゴリの先頭要素を補充する
 ///   （要素が1つも定義されていないカテゴリは対象外）
-pub(crate) fn enforce_single_select(categories: &[TagManagerCategoryUi], selected: &mut Vec<String>) {
+pub(crate) fn enforce_single_select(categories: &[TagManagerCategoryUi], selected: &mut Vec<u64>) {
     for cat in categories.iter().filter(|c| !c.is_main && c.single_select) {
-        let elements: Vec<&String> = cat.tiers.iter().filter_map(|t| t.element.as_ref()).collect();
+        let elements: Vec<u64> = cat.tiers.iter().filter(|t| t.element.is_some()).map(|t| t.id).collect();
         if elements.is_empty() {
             continue;
         }
         let mut found = false;
         selected.retain(|s| {
-            if !elements.iter().any(|e| *e == s) {
+            if !elements.contains(s) {
                 return true;
             }
             if found {
@@ -150,7 +152,7 @@ pub(crate) fn enforce_single_select(categories: &[TagManagerCategoryUi], selecte
             }
         });
         if !found {
-            selected.push(elements[0].clone());
+            selected.push(elements[0]);
         }
     }
 }
