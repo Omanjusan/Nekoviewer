@@ -869,7 +869,7 @@ impl NekoviewApp {
                 ui.set_width(ui.available_width());
                 let dimmed_fg = ui.visuals().text_color().gamma_multiply(0.4);
                 let dimmed_bg_stroke = ui.visuals().widgets.inactive.bg_stroke.color.gamma_multiply(0.4);
-                let categories: Vec<(String, bool, Vec<String>)> = self
+                let categories: Vec<(String, bool, egui::Color32, Vec<String>)> = self
                     .tag_manager_categories
                     .iter()
                     .filter(|c| !c.is_main)
@@ -877,22 +877,28 @@ impl NekoviewApp {
                         (
                             c.name.clone(),
                             c.single_select,
+                            c.color,
                             c.tiers.iter().filter_map(|t| t.element.clone()).collect(),
                         )
                     })
-                    .filter(|(_, _, elements): &(String, bool, Vec<String>)| !elements.is_empty())
+                    .filter(|(_, _, _, elements): &(String, bool, egui::Color32, Vec<String>)| !elements.is_empty())
                     .collect();
-                for (cat_idx, (cat_name, single_select, elements)) in categories.iter().enumerate() {
+                for (cat_idx, (cat_name, single_select, cat_color, elements)) in categories.iter().enumerate() {
                     if cat_idx > 0 {
                         ui.add_space(8.0);
                     }
-                    ui.label(egui::RichText::new(cat_name).strong());
+                    ui.label(egui::RichText::new(cat_name).strong().color(*cat_color));
                     ui.horizontal_wrapped(|ui| {
                         for element in elements {
                             let selected = self.tag_attr_selected.contains(element);
                             let resp = ui
                                 .scope(|ui| {
-                                    if !selected {
+                                    if selected {
+                                        // 選択済みはカテゴリ色でハイライトし、どのカテゴリの
+                                        // タグかひと目でわかるようにする。
+                                        ui.visuals_mut().selection.bg_fill = *cat_color;
+                                        ui.visuals_mut().selection.stroke.color = contrasting_text_color(*cat_color);
+                                    } else {
                                         ui.visuals_mut().widgets.inactive.fg_stroke.color = dimmed_fg;
                                         ui.visuals_mut().widgets.hovered.fg_stroke.color = dimmed_fg;
                                         ui.visuals_mut().widgets.inactive.bg_stroke.color = dimmed_bg_stroke;
@@ -919,13 +925,35 @@ impl NekoviewApp {
     }
 
     /// 閲覧モード: 編集モードで選択済みの要素だけをフラット表示する読み取り専用表示。
+    /// 各タグは所属カテゴリの色をネームプレート背景にして、どのカテゴリの
+    /// タグかひと目でわかるようにする（タグ管理画面の要素表示と同じ配色ルール）。
     fn draw_tag_attr_view_mode(&mut self, ui: &mut egui::Ui) {
         ui.horizontal_wrapped(|ui| {
             if self.tag_attr_selected.is_empty() {
                 ui.weak("（選択済みタグなし）");
             } else {
                 for tag in &self.tag_attr_selected {
-                    ui.label(tag);
+                    let cat_color = self
+                        .tag_manager_categories
+                        .iter()
+                        .filter(|c| !c.is_main)
+                        .find(|c| c.tiers.iter().any(|t| t.element.as_deref() == Some(tag.as_str())))
+                        .map(|c| c.color);
+                    match cat_color {
+                        Some(cat_color) => {
+                            let text_color = contrasting_text_color(cat_color);
+                            egui::Frame::default()
+                                .fill(cat_color)
+                                .inner_margin(egui::Margin::symmetric(6, 2))
+                                .corner_radius(3.0)
+                                .show(ui, |ui| {
+                                    ui.colored_label(text_color, tag);
+                                });
+                        }
+                        None => {
+                            ui.label(tag);
+                        }
+                    }
                 }
             }
         });
@@ -1341,15 +1369,7 @@ impl NekoviewApp {
                                             // ネームプレート: カテゴリ共通色を背景にして、
                                             // タグピッカー側でカテゴリを見分けやすくする。
                                             // クリックでインライン編集モードに入る。
-                                            let text_color = if 0.299 * cat_color.r() as f32
-                                                + 0.587 * cat_color.g() as f32
-                                                + 0.114 * cat_color.b() as f32
-                                                > 140.0
-                                            {
-                                                egui::Color32::BLACK
-                                            } else {
-                                                egui::Color32::WHITE
-                                            };
+                                            let text_color = contrasting_text_color(cat_color);
                                             let plate = egui::Frame::default()
                                                 .fill(cat_color)
                                                 .inner_margin(egui::Margin::symmetric(6, 2))

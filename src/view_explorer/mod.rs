@@ -697,6 +697,17 @@ fn default_favorite_color() -> egui::Color32 {
     egui::Color32::from_rgb(255, 204, 0)
 }
 
+/// 背景色に対して読みやすい文字色（黒/白）を輝度から選ぶ。カテゴリ色を背景にした
+/// ネームプレート（タグ管理画面・タグ編集/閲覧モード）で共通して使う。
+pub(crate) fn contrasting_text_color(bg: egui::Color32) -> egui::Color32 {
+    let luminance = 0.299 * bg.r() as f32 + 0.587 * bg.g() as f32 + 0.114 * bg.b() as f32;
+    if luminance > 140.0 {
+        egui::Color32::BLACK
+    } else {
+        egui::Color32::WHITE
+    }
+}
+
 fn color32_to_rgba_u32(c: egui::Color32) -> u32 {
     let [r, g, b, a] = c.to_array();
     u32::from_be_bytes([r, g, b, a])
@@ -1208,7 +1219,7 @@ mod glyph_audit;
 
 
 impl NekoviewApp {
-    pub fn new(start_dir: PathBuf, config: AppConfig, viewer_slots: [Option<WindowSlot>; 4], sort_state: SortState, viewer_cfg: ViewerConfig, show_hidden: bool, card_info_mode: &str, card_rating_mode: &str, card_date_format: crate::card_date_format::CardDateFormat, translate_cfg: crate::translate::TranslateConfig, tab_positions: crate::gui_config::TabPositions, tree_sorts: crate::tree_sort::TreeSorts, open_target: Option<PathBuf>, ctx: egui::Context) -> Self {
+    pub fn new(start_dir: PathBuf, config: AppConfig, viewer_slots: [Option<WindowSlot>; 4], sort_state: SortState, viewer_cfg: ViewerConfig, show_hidden: bool, card_info_mode: &str, card_rating_mode: &str, card_date_format: crate::card_date_format::CardDateFormat, translate_cfg: crate::translate::TranslateConfig, tab_positions: crate::gui_config::TabPositions, tree_sorts: crate::tree_sort::TreeSorts, tag_panel_open: bool, open_target: Option<PathBuf>, ctx: egui::Context) -> Self {
         // 「前回フォルダに復帰」がオフなら、他のフォルダ系タブの保存位置も復元しない（既定に戻す）
         let tab_positions = if config.startup.use_last_dir {
             tab_positions
@@ -1392,7 +1403,7 @@ impl NekoviewApp {
             tab_positions,
             tree_sorts,
             tree_sort_dialog: None,
-            tag_panel_open: false,
+            tag_panel_open,
             tag_panel_width: 280.0,
             tag_panel_edit_expanded: false,
             tag_main_options,
@@ -1538,6 +1549,7 @@ impl NekoviewApp {
             &self.translate_cfg,
             &self.tab_positions,
             &self.tree_sorts,
+            self.tag_panel_open,
         );
     }
 }

@@ -365,6 +365,7 @@ impl WinitApp {
             state.translate_cfg,
             state.tab_positions,
             state.tree_sorts,
+            state.tag_panel_open,
             open_target,
             win.egui_ctx.clone(),
         );
