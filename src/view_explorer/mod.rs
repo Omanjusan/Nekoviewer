@@ -951,6 +951,13 @@ pub struct NekoviewApp {
     /// タグ付けレイアウト・ドラムUI: スナップアニメーション中の(開始pos, 目標pos, 開始時刻)。
     /// Noneならアニメーションしていない（アイドルまたはドラッグ中）。
     pub(crate) tag_main_drum_anim: Option<(f32, f32, std::time::Instant)>,
+    /// タグ付けレイアウト・ドラムUI: メインタグ編集トグル。ONの間だけドラムのドラッグ
+    /// （左右スワイプ相当）を許可する。既定OFF。フォーカスが外れたら（別ファイル／
+    /// 別フォルダへ移動、ビューアを閉じる）自動的にOFFへ戻す。
+    pub(crate) tag_main_edit_toggle: bool,
+    /// タグ付けレイアウト・ドラムUI: 上記トグルをONにした時点のtag_main_selected。
+    /// OFFへ戻すタイミングでこの値と比較し、変化していれば編集確定フックを呼ぶ。
+    pub(crate) tag_main_edit_origin: Option<String>,
     /// タグ付けレイアウト(フェーズT0): 属性タグ(複数可)の候補一覧。パレット用データ。
     pub(crate) tag_attr_options: Vec<String>,
     /// タグ付けレイアウト(フェーズT0): 下部に表示中の属性タグ(選択済み)。グローバルダミー。
@@ -1370,6 +1377,8 @@ impl NekoviewApp {
             tag_main_selected: Some("同人誌".to_string()),
             tag_main_drum_pos: 0.0,
             tag_main_drum_anim: None,
+            tag_main_edit_toggle: false,
+            tag_main_edit_origin: None,
             tag_attr_options: ["高解像度", "低解像度", "高評価", "アニメーション込", "大きい", "小さい"]
                 .into_iter()
                 .map(str::to_string)

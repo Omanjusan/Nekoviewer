@@ -63,6 +63,7 @@ impl NekoviewApp {
 
     /// ビューアーを閉じる（OS のクローズボタン等から winit_app が呼ぶ）。
     pub fn close_viewer(&mut self) {
+        self.deactivate_tag_main_edit();
         self.flush_current_sort_if_changed();
         self.flush_current_bookmark_if_enabled();
         *self.viewer.lock().unwrap() = None;
@@ -586,6 +587,7 @@ impl NekoviewApp {
 
         let had_nav = output.nav != ViewerNav::None;
         if output.close_requested {
+            self.deactivate_tag_main_edit();
             self.flush_current_sort_if_changed();
             self.flush_current_bookmark_if_enabled();
             *self.viewer.lock().unwrap() = None;
@@ -1111,6 +1113,7 @@ impl NekoviewApp {
             let mut cfg = self.viewer_cfg.lock().unwrap();
             cfg.magnifier_on = false;
         }
+        self.deactivate_tag_main_edit();
         self.flush_current_sort_if_changed();
         self.flush_current_bookmark_if_enabled();
         let path = state.archive_path().clone();

@@ -551,6 +551,7 @@ impl NekoviewApp {
 
     /// 仮想ノードの表示を開く（同じノードでも開き直す）。構造は仮想が正、ファイルは実パスを実スキャン。
     fn enter_virtual_node(&mut self, id: u32) {
+        self.deactivate_tag_main_edit();
         if id == ROOT {
             // 仮想ルート `/` は実パスを持たない。最上位ノードのフォルダカードだけを出す
             let changed = self.remember_virtual_position(None);
@@ -605,6 +606,7 @@ impl NekoviewApp {
         if self.viewing_virtual_node.is_none() {
             return;
         }
+        self.deactivate_tag_main_edit();
         self.viewing_virtual_node = None;
         self.virtual_link_broken = false;
         // 仮想ノードの実パスに移っていた current_dir を、実ツリータブ自身の位置に戻す

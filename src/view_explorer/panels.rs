@@ -715,71 +715,110 @@ impl NekoviewApp {
         }
     }
 
-    /// タグ付けレイアウト: メインタグ(排他)のドラムUI。横ドラッグで回し、離すと
-    /// 最寄りのタグへ滑らかにスナップする。中央に来たタグが選択扱いになる。
+    /// タグ付けレイアウト・ドラムUI: メインタグ編集トグルをOFFへ戻す。ON時点から
+    /// 選択タグが変化していれば編集確定として扱う。トグルボタンの手動OFF操作、
+    /// および他ファイル／他フォルダへのフォーカス離脱時の自動OFFの両方から呼ぶ。
+    pub(crate) fn deactivate_tag_main_edit(&mut self) {
+        if !self.tag_main_edit_toggle {
+            return;
+        }
+        self.tag_main_edit_toggle = false;
+        if self.tag_main_edit_origin.as_deref() != self.tag_main_selected.as_deref() {
+            self.commit_tag_main_edit();
+        }
+        self.tag_main_edit_origin = None;
+    }
+
+    /// メインタグ編集確定フック。タグの永続化先が未実装のため現状はno-op。
+    /// 将来、保存処理を実装する際の差し込み口として用意している。
+    fn commit_tag_main_edit(&mut self) {}
+
+    /// タグ付けレイアウト: メインタグ(排他)のドラムUI。左端の編集トグルがONの間
+    /// だけ横ドラッグで回せる（離すと最寄りのタグへ滑らかにスナップ）。OFF時は
+    /// ドラッグを受け付けない。中央に来たタグが選択扱いになる。
     fn draw_tag_panel_main_tags(&mut self, ui: &mut egui::Ui) {
         self.update_tag_main_drum_anim(ui.ctx());
 
-        let max_idx = self.tag_main_options.len().saturating_sub(1);
-        let avail_w = ui.available_width();
-        let (rect, response) =
-            ui.allocate_exact_size(egui::vec2(avail_w, TAG_DRUM_HEIGHT), egui::Sense::drag());
-
-        if response.dragged() {
-            self.tag_main_drum_anim = None;
-            self.tag_main_drum_pos -= response.drag_delta().x / TAG_DRUM_ITEM_SPACING;
-            self.tag_main_drum_pos = self.tag_main_drum_pos.clamp(0.0, max_idx as f32);
-        }
-        if response.drag_stopped() {
-            let target = self.tag_main_drum_pos.round().clamp(0.0, max_idx as f32);
-            if (target - self.tag_main_drum_pos).abs() > f32::EPSILON {
-                self.tag_main_drum_anim =
-                    Some((self.tag_main_drum_pos, target, std::time::Instant::now()));
+        ui.horizontal(|ui| {
+            let edit_on = self.tag_main_edit_toggle;
+            let r_edit = ui.scope(|ui| {
+                if edit_on {
+                    ui.visuals_mut().selection.bg_fill = egui::Color32::from_rgb(30, 100, 200);
+                    ui.visuals_mut().selection.stroke.color = egui::Color32::WHITE;
+                }
+                ui.selectable_label(edit_on, i18n::t().tag_main_edit_toggle_button(edit_on))
+            }).inner;
+            if r_edit.clicked() {
+                if edit_on {
+                    self.deactivate_tag_main_edit();
+                } else {
+                    self.tag_main_edit_toggle = true;
+                    self.tag_main_edit_origin = self.tag_main_selected.clone();
+                }
             }
-        }
-        if response.hovered() || response.dragged() {
-            ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
-        }
 
-        let center_idx = self.tag_main_drum_pos.round().clamp(0.0, max_idx as f32) as usize;
-        if self.tag_main_options.get(center_idx).map(String::as_str) != self.tag_main_selected.as_deref() {
-            self.tag_main_selected = self.tag_main_options.get(center_idx).cloned();
-        }
+            let max_idx = self.tag_main_options.len().saturating_sub(1);
+            let avail_w = ui.available_width();
+            let sense = if self.tag_main_edit_toggle { egui::Sense::drag() } else { egui::Sense::hover() };
+            let (rect, response) =
+                ui.allocate_exact_size(egui::vec2(avail_w, TAG_DRUM_HEIGHT), sense);
 
-        let painter = ui.painter();
-        let center = rect.center();
-        let highlight_bg = ui.visuals().selection.bg_fill;
-        for (i, tag) in self.tag_main_options.iter().enumerate() {
-            let dist = i as f32 - self.tag_main_drum_pos;
-            let x = center.x + dist * TAG_DRUM_ITEM_SPACING;
-            if x < rect.left() - TAG_DRUM_ITEM_SPACING || x > rect.right() + TAG_DRUM_ITEM_SPACING {
-                continue;
+            if response.dragged() {
+                self.tag_main_drum_anim = None;
+                self.tag_main_drum_pos -= response.drag_delta().x / TAG_DRUM_ITEM_SPACING;
+                self.tag_main_drum_pos = self.tag_main_drum_pos.clamp(0.0, max_idx as f32);
             }
-            let adist = dist.abs();
-            let t = (adist / TAG_DRUM_FALLOFF).min(1.0);
-            let font_size = TAG_DRUM_FONT_MAX + (TAG_DRUM_FONT_MIN - TAG_DRUM_FONT_MAX) * t;
-            let is_center = adist < 0.5;
-            let pos = egui::pos2(x, center.y);
-            let color = if is_center {
-                ui.visuals().strong_text_color()
-            } else {
-                ui.visuals().text_color().gamma_multiply(1.0 - t * 0.5)
-            };
-            if is_center {
-                let bg_rect = egui::Rect::from_center_size(
+            if response.drag_stopped() {
+                let target = self.tag_main_drum_pos.round().clamp(0.0, max_idx as f32);
+                if (target - self.tag_main_drum_pos).abs() > f32::EPSILON {
+                    self.tag_main_drum_anim =
+                        Some((self.tag_main_drum_pos, target, std::time::Instant::now()));
+                }
+            }
+            if self.tag_main_edit_toggle && (response.hovered() || response.dragged()) {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+            }
+
+            let center_idx = self.tag_main_drum_pos.round().clamp(0.0, max_idx as f32) as usize;
+            if self.tag_main_options.get(center_idx).map(String::as_str) != self.tag_main_selected.as_deref() {
+                self.tag_main_selected = self.tag_main_options.get(center_idx).cloned();
+            }
+
+            let painter = ui.painter();
+            let center = rect.center();
+            let highlight_bg = ui.visuals().selection.bg_fill;
+            for (i, tag) in self.tag_main_options.iter().enumerate() {
+                let dist = i as f32 - self.tag_main_drum_pos;
+                let x = center.x + dist * TAG_DRUM_ITEM_SPACING;
+                if x < rect.left() - TAG_DRUM_ITEM_SPACING || x > rect.right() + TAG_DRUM_ITEM_SPACING {
+                    continue;
+                }
+                let adist = dist.abs();
+                let t = (adist / TAG_DRUM_FALLOFF).min(1.0);
+                let font_size = TAG_DRUM_FONT_MAX + (TAG_DRUM_FONT_MIN - TAG_DRUM_FONT_MAX) * t;
+                let is_center = adist < 0.5;
+                let pos = egui::pos2(x, center.y);
+                let color = if is_center {
+                    ui.visuals().strong_text_color()
+                } else {
+                    ui.visuals().text_color().gamma_multiply(1.0 - t * 0.5)
+                };
+                if is_center {
+                    let bg_rect = egui::Rect::from_center_size(
+                        pos,
+                        egui::vec2(TAG_DRUM_ITEM_SPACING * 0.9, TAG_DRUM_HEIGHT * 0.75),
+                    );
+                    painter.rect_filled(bg_rect, 6.0, highlight_bg);
+                }
+                painter.text(
                     pos,
-                    egui::vec2(TAG_DRUM_ITEM_SPACING * 0.9, TAG_DRUM_HEIGHT * 0.75),
+                    egui::Align2::CENTER_CENTER,
+                    tag,
+                    egui::FontId::proportional(font_size),
+                    color,
                 );
-                painter.rect_filled(bg_rect, 6.0, highlight_bg);
             }
-            painter.text(
-                pos,
-                egui::Align2::CENTER_CENTER,
-                tag,
-                egui::FontId::proportional(font_size),
-                color,
-            );
-        }
+        });
     }
 
     /// メインタグ・ドラムUIのスナップアニメーションを進める（ease-out）。

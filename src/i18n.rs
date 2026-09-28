@@ -1950,6 +1950,17 @@ impl Lang {
         }
     }
 
+    pub fn tag_main_edit_toggle_button(self, on: bool) -> &'static str {
+        match (self, on) {
+            (Lang::Japanese, true)  => "主タグ編集ON",
+            (Lang::Japanese, false) => "主タグ編集OFF",
+            (Lang::English, true)   => "Edit Main Tag: ON",
+            (Lang::English, false)  => "Edit Main Tag: OFF",
+            (Lang::Chinese, true)   => "主标签编辑：开",
+            (Lang::Chinese, false)  => "主标签编辑：关",
+        }
+    }
+
     pub fn folder_book_access_toggle_button(self, on: bool) -> &'static str {
         match (self, on) {
             (Lang::Japanese, true)  => "フォルダ本アクセスON",

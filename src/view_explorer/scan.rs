@@ -99,6 +99,7 @@ impl NekoviewApp {
     /// 中央グリッドを path の実ディレクトリ表示に切り替えてスキャンを始める
     /// （navigate_to と仮想ノード選択の共通部分。ツリー追従や永続化は呼び出し側が行う）。
     pub(super) fn begin_dir_view(&mut self, path: PathBuf) {
+        self.deactivate_tag_main_edit();
         self.viewing_favorites = None;
         self.current_dir = path.clone();
         self.viewing_dir = Some(path);
@@ -205,6 +206,7 @@ impl NekoviewApp {
     /// 指定ドライブへ切り替える（ドライブ一覧のクリック・キーボードEnter共通処理）。
     /// ツリーのルート自体をそのドライブへ差し替え、展開状態をリセットする。
     pub(super) fn navigate_to_drive(&mut self, path: PathBuf) {
+        self.deactivate_tag_main_edit();
         self.viewing_virtual_node = None;
         self.virtual_link_broken = false;
         self.real_dir_stash.clear();
