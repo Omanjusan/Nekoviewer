@@ -1620,12 +1620,42 @@ impl NekoviewApp {
 
     /// タグマネージャー: 複数選択カテゴリ（メインカテゴリを除く）向けの要素編集UI。
     /// tier行のような序列・negative区別は持たず、要素をフラットなバッジ一覧として
-    /// 並べ、各バッジの×クリックで即削除する。下部の一括入力欄にカンマ区切りで
+    /// 並べ、各バッジの×クリックで即削除する。上部の一括入力欄にカンマ区切りで
     /// 複数要素名を入力しEnter確定すると、既存要素を残したまま末尾に追加する。
     fn draw_tag_manager_flat_elements(&mut self, ui: &mut egui::Ui, cat_idx: usize) {
         let cat_color = self.tag_manager_categories[cat_idx].color;
-        let mut remove_tier: Option<usize> = None;
 
+        ui.horizontal(|ui| {
+            ui.label("一括追加:");
+            let resp = ui.add(
+                egui::TextEdit::singleline(&mut self.tag_manager_bulk_input)
+                    .desired_width(f32::INFINITY)
+                    .hint_text("要素A, 要素B, 要素C（カンマ内に , を含めたい場合は ,, ）"),
+            );
+            if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                let names = crate::tag_manager::parse_bulk_elements(&self.tag_manager_bulk_input);
+                if !names.is_empty() {
+                    let tiers = &mut self.tag_manager_categories[cat_idx].tiers;
+                    let mut next_no = tiers.len() as i32 + 1;
+                    for name in names {
+                        let id = self.tag_manager_next_tier_id;
+                        self.tag_manager_next_tier_id += 1;
+                        tiers.push(TagManagerTierUi {
+                            id,
+                            tier_no: next_no,
+                            negative: false,
+                            element: Some(name),
+                        });
+                        next_no += 1;
+                    }
+                    self.tag_manager_bulk_input.clear();
+                    self.save_tag_manager();
+                }
+            }
+        });
+        ui.separator();
+
+        let mut remove_tier: Option<usize> = None;
         let area_height = ui.available_height() * 0.9;
         egui::ScrollArea::vertical()
             .id_salt("tag_manager_flat_scroll")
@@ -1640,7 +1670,7 @@ impl NekoviewApp {
                         .filter_map(|(t_idx, t)| t.element.clone().map(|name| (t_idx, name)))
                         .collect();
                     if elements.is_empty() {
-                        ui.weak("（要素なし。下の欄から追加）");
+                        ui.weak("（要素なし。上の欄から追加）");
                     }
                     let text_color = contrasting_text_color(cat_color);
                     for (t_idx, name) in elements {
@@ -1670,36 +1700,6 @@ impl NekoviewApp {
             );
             self.save_tag_manager();
         }
-
-        ui.separator();
-        ui.horizontal(|ui| {
-            ui.label("一括追加:");
-            let resp = ui.add(
-                egui::TextEdit::singleline(&mut self.tag_manager_bulk_input)
-                    .desired_width(f32::INFINITY)
-                    .hint_text("要素A, 要素B, 要素C（カンマ内に , を含めたい場合は ,, ）"),
-            );
-            if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                let names = crate::tag_manager::parse_bulk_elements(&self.tag_manager_bulk_input);
-                if !names.is_empty() {
-                    let tiers = &mut self.tag_manager_categories[cat_idx].tiers;
-                    let mut next_no = tiers.len() as i32 + 1;
-                    for name in names {
-                        let id = self.tag_manager_next_tier_id;
-                        self.tag_manager_next_tier_id += 1;
-                        tiers.push(TagManagerTierUi {
-                            id,
-                            tier_no: next_no,
-                            negative: false,
-                            element: Some(name),
-                        });
-                        next_no += 1;
-                    }
-                    self.tag_manager_bulk_input.clear();
-                    self.save_tag_manager();
-                }
-            }
-        });
     }
 
     /// タグ機能・レイアウト器: 選択中サムネイルの拡大プレビュー。
