@@ -848,8 +848,7 @@ impl NekoviewApp {
     /// `tag_main_edit_toggle`（編集モードトグル、メインタグドラムと共通）がONの間は
     /// カテゴリ別に全要素を並べてワンクリックで選択/非選択をトグルできる編集モード、
     /// OFFの間は選択済み要素だけを並べる閲覧モードに切り替わる。
-    /// 現状はダミーデータ（`tag_attr_dummy_categories`）でのGUI確定版。実データ
-    /// （タグマネージャーのカテゴリ定義）との結線は別フェーズで行う。
+    /// `tag_manager_categories`（メインカテゴリを除く）を実データとして直接参照する。
     fn draw_tag_panel_attr_tags(&mut self, ui: &mut egui::Ui) {
         if self.tag_main_edit_toggle {
             self.draw_tag_attr_edit_mode(ui);
@@ -860,7 +859,8 @@ impl NekoviewApp {
 
     /// 編集モード: カテゴリ見出し＋全要素を`horizontal_wrapped`で並べ、クリックで
     /// 選択/非選択をトグルする。選択済みは通常輝度、非選択は文字・枠を暗転させて
-    /// 見分けやすくする。
+    /// 見分けやすくする。単一選択カテゴリはクリックで同カテゴリ内の他要素を排他的に
+    /// 外し（ラジオ的挙動）、常にちょうど1個を維持する（選択中要素の再クリックは無視）。
     fn draw_tag_attr_edit_mode(&mut self, ui: &mut egui::Ui) {
         egui::ScrollArea::vertical()
             .id_salt("tag_attr_edit_scroll")
@@ -869,15 +869,27 @@ impl NekoviewApp {
                 ui.set_width(ui.available_width());
                 let dimmed_fg = ui.visuals().text_color().gamma_multiply(0.4);
                 let dimmed_bg_stroke = ui.visuals().widgets.inactive.bg_stroke.color.gamma_multiply(0.4);
-                let categories = self.tag_attr_dummy_categories.clone();
-                for (cat_idx, (cat_name, elements)) in categories.iter().enumerate() {
+                let categories: Vec<(String, bool, Vec<String>)> = self
+                    .tag_manager_categories
+                    .iter()
+                    .filter(|c| !c.is_main)
+                    .map(|c| {
+                        (
+                            c.name.clone(),
+                            c.single_select,
+                            c.tiers.iter().filter_map(|t| t.element.clone()).collect(),
+                        )
+                    })
+                    .filter(|(_, _, elements): &(String, bool, Vec<String>)| !elements.is_empty())
+                    .collect();
+                for (cat_idx, (cat_name, single_select, elements)) in categories.iter().enumerate() {
                     if cat_idx > 0 {
                         ui.add_space(8.0);
                     }
                     ui.label(egui::RichText::new(cat_name).strong());
                     ui.horizontal_wrapped(|ui| {
                         for element in elements {
-                            let selected = self.tag_attr_dummy_selected.contains(element);
+                            let selected = self.tag_attr_selected.contains(element);
                             let resp = ui
                                 .scope(|ui| {
                                     if !selected {
@@ -890,9 +902,14 @@ impl NekoviewApp {
                                 .inner;
                             if resp.clicked() {
                                 if selected {
-                                    self.tag_attr_dummy_selected.retain(|s| s != element);
+                                    if !*single_select {
+                                        self.tag_attr_selected.retain(|s| s != element);
+                                    }
                                 } else {
-                                    self.tag_attr_dummy_selected.push(element.clone());
+                                    if *single_select {
+                                        self.tag_attr_selected.retain(|s| !elements.contains(s));
+                                    }
+                                    self.tag_attr_selected.push(element.clone());
                                 }
                             }
                         }
@@ -904,10 +921,10 @@ impl NekoviewApp {
     /// 閲覧モード: 編集モードで選択済みの要素だけをフラット表示する読み取り専用表示。
     fn draw_tag_attr_view_mode(&mut self, ui: &mut egui::Ui) {
         ui.horizontal_wrapped(|ui| {
-            if self.tag_attr_dummy_selected.is_empty() {
+            if self.tag_attr_selected.is_empty() {
                 ui.weak("（選択済みタグなし）");
             } else {
-                for tag in &self.tag_attr_dummy_selected {
+                for tag in &self.tag_attr_selected {
                     ui.label(tag);
                 }
             }
@@ -939,6 +956,7 @@ impl NekoviewApp {
         }
         self.tag_attr_options = attr_options;
         self.tag_attr_selected.retain(|s| self.tag_attr_options.contains(s));
+        crate::tag_manager::enforce_single_select(&self.tag_manager_categories, &mut self.tag_attr_selected);
         crate::tag_manager::save(&self.config.config_root, &self.tag_manager_categories, self.tag_manager_next_tier_id);
     }
 
@@ -1063,6 +1081,7 @@ impl NekoviewApp {
                             tiers: Vec::new(),
                             color: pick_distinct_tag_color(&existing),
                             is_main: false,
+                            single_select: false,
                         });
                         self.tag_manager_selected_category = Some(self.tag_manager_categories.len() - 1);
                         self.save_tag_manager();
@@ -1173,6 +1192,18 @@ impl NekoviewApp {
                     self.tag_manager_editing_category_focus_pending = true;
                 }
             }
+            // 単一選択/複数選択の切替。メインカテゴリは常に単一選択固定のため操作不可
+            // （表示は選択済みのまま灰色化）。
+            ui.add_enabled_ui(!cat_is_main, |ui| {
+                let mut single = self.tag_manager_categories[cat_idx].single_select;
+                let before = single;
+                ui.radio_value(&mut single, false, "複数選択");
+                ui.radio_value(&mut single, true, "単一選択");
+                if single != before {
+                    self.tag_manager_categories[cat_idx].single_select = single;
+                    self.save_tag_manager();
+                }
+            });
             ui.separator();
             ui.label("カテゴリ色:");
             let mut color = self.tag_manager_categories[cat_idx].color;

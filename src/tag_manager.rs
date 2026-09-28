@@ -25,6 +25,10 @@ struct TierSaveData {
 struct CategorySaveData {
     name: String,
     is_main: bool,
+    /// 単一選択（排他）カテゴリかどうか。旧JSON（このフィールド追加前の保存data）には
+    /// 存在しないため、`#[serde(default)]`でfalse（複数選択）として読み込む。
+    #[serde(default)]
+    single_select: bool,
     color: (u8, u8, u8),
     tiers: Vec<TierSaveData>,
 }
@@ -55,6 +59,7 @@ pub(crate) fn default_state() -> (Vec<TagManagerCategoryUi>, u64) {
         }],
         color: crate::view_explorer::pick_distinct_tag_color(&[]),
         is_main: true,
+        single_select: true,
     }];
     (categories, 2)
 }
@@ -85,6 +90,8 @@ pub(crate) fn load(root: &Path) -> Option<(Vec<TagManagerCategoryUi>, u64)> {
         .map(|c| TagManagerCategoryUi {
             name: c.name,
             is_main: c.is_main,
+            // メインカテゴリは常に単一選択固定（保存データが壊れていても矯正する）。
+            single_select: c.is_main || c.single_select,
             color: egui::Color32::from_rgb(c.color.0, c.color.1, c.color.2),
             tiers: c
                 .tiers
@@ -118,6 +125,36 @@ pub(crate) fn derive_tag_options(categories: &[TagManagerCategoryUi]) -> (Vec<St
     (main_options, attr_options)
 }
 
+/// 単一選択カテゴリ（メインカテゴリを除く）の選択状態を常に「ちょうど1個」に矯正する。
+/// カテゴリ定義（要素追加・削除・単一/複数選択の切替）が変わるたびに呼ぶ。
+/// - 複数選択カテゴリの選択はそのまま維持する
+/// - 単一選択カテゴリ内で選択済みが2個以上あれば最初の1個以外を外す
+/// - 単一選択カテゴリで1個も選択が無ければ、そのカテゴリの先頭要素を補充する
+///   （要素が1つも定義されていないカテゴリは対象外）
+pub(crate) fn enforce_single_select(categories: &[TagManagerCategoryUi], selected: &mut Vec<String>) {
+    for cat in categories.iter().filter(|c| !c.is_main && c.single_select) {
+        let elements: Vec<&String> = cat.tiers.iter().filter_map(|t| t.element.as_ref()).collect();
+        if elements.is_empty() {
+            continue;
+        }
+        let mut found = false;
+        selected.retain(|s| {
+            if !elements.iter().any(|e| *e == s) {
+                return true;
+            }
+            if found {
+                false
+            } else {
+                found = true;
+                true
+            }
+        });
+        if !found {
+            selected.push(elements[0].clone());
+        }
+    }
+}
+
 /// アトミック保存（tmpに書いてからrename）。gui_config::save_stateと同じ方式。
 pub(crate) fn save(root: &Path, categories: &[TagManagerCategoryUi], next_tier_id: u64) {
     let data = SaveDataV1 {
@@ -129,6 +166,7 @@ pub(crate) fn save(root: &Path, categories: &[TagManagerCategoryUi], next_tier_i
                 CategorySaveData {
                     name: c.name.clone(),
                     is_main: c.is_main,
+                    single_select: c.single_select,
                     color: (r, g, b),
                     tiers: c
                         .tiers

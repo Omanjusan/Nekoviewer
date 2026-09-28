@@ -635,6 +635,10 @@ pub(crate) struct TagManagerCategoryUi {
     /// 存在し、削除不可・カテゴリ一覧の先頭に固定表示する。それ以外は属性タグ
     /// （複数選択）に対応する一般カテゴリ。
     pub(crate) is_main: bool,
+    /// カテゴリ内で要素を単一選択（排他）にするか、複数選択にするか。
+    /// `is_main`のカテゴリは常にtrue固定（メインタグドラムと同じ排他選択）。
+    /// それ以外のカテゴリはタグ管理画面のラジオボタンで切り替え可能（既定false＝複数選択）。
+    pub(crate) single_select: bool,
 }
 
 /// タグマネージャー: 既存カテゴリの色と極力衝突しない色をランダム生成する。
@@ -687,26 +691,6 @@ pub(crate) struct TagManagerTierUi {
     /// tierが持てる要素は0個か1個のみ（カテゴリ側で複数tierにまたがって「多」になる）。
     /// 要素が空のtierも許容する（＋を押さず編集を終えてよい）。
     pub(crate) element: Option<String>,
-}
-
-/// タグ付けレイアウト・編集/閲覧モード(GUI確定版): 属性タグエリアのダミーデータ。
-/// 実データ（タグマネージャーのカテゴリ定義）とは結線せず、編集/閲覧モードの
-/// GUI確定専用の固定値。実データ結線は別フェーズで行う。
-fn dummy_tag_attr_categories() -> Vec<(String, Vec<String>)> {
-    vec![
-        (
-            "画質".to_string(),
-            vec!["高画質".to_string(), "標準".to_string(), "要修正".to_string(), "破損".to_string()],
-        ),
-        (
-            "シリーズ".to_string(),
-            vec!["単発".to_string(), "連作".to_string(), "完結".to_string(), "連載中".to_string(), "休止中".to_string()],
-        ),
-        (
-            "状態".to_string(),
-            vec!["未整理".to_string(), "確認済み".to_string(), "要削除".to_string()],
-        ),
-    ]
 }
 
 fn default_favorite_color() -> egui::Color32 {
@@ -984,20 +968,14 @@ pub struct NekoviewApp {
     /// タグ付けレイアウト・ドラムUI: 上記トグルをONにした時点のtag_main_selected。
     /// OFFへ戻すタイミングでこの値と比較し、変化していれば編集確定フックを呼ぶ。
     pub(crate) tag_main_edit_origin: Option<String>,
-    /// タグ付けレイアウト(フェーズT0): 属性タグ(複数可)の候補一覧。タグマネージャーの
-    /// 実データから`save_tag_manager`で導出される（実データ結線用のブリッジ）。
-    /// 表示UI自体は編集/閲覧モード（ダミーデータ版）に差し替え済みのため、現状は
-    /// 書き込みのみで表示には使っていない（実データ結線フェーズで再接続予定）。
+    /// タグ付けレイアウト: 属性タグ(複数可・単一選択カテゴリ含む)の候補一覧。
+    /// タグマネージャーの実データから`save_tag_manager`で導出される（要素名の
+    /// 妥当性チェック用。表示のカテゴリ分けは`tag_manager_categories`を直接使う）。
     pub(crate) tag_attr_options: Vec<String>,
-    /// タグ付けレイアウト(フェーズT0): 実データ版・選択済み属性タグ。上記と同様、
-    /// 現状は表示に使っていない（実データ結線フェーズで再接続予定）。
+    /// タグ付けレイアウト: 選択済み属性タグ（カテゴリ横断、要素名で一致判定）。
+    /// 編集モードのワンクリックでここに追加/削除する。単一選択カテゴリは常に
+    /// ちょうど1個を維持する（`tag_manager::enforce_single_select`で矯正）。
     pub(crate) tag_attr_selected: Vec<String>,
-    /// タグ付けレイアウト・編集/閲覧モード(GUI確定版): カテゴリ別ダミー要素一覧
-    /// （カテゴリ名, 要素名一覧）。実データ結線前のGUI確定用固定データ。
-    pub(crate) tag_attr_dummy_categories: Vec<(String, Vec<String>)>,
-    /// タグ付けレイアウト・編集/閲覧モード(GUI確定版): 選択済み要素名（カテゴリ横断、
-    /// 要素名で一致判定）。編集モードのワンクリックでここに追加/削除する。
-    pub(crate) tag_attr_dummy_selected: Vec<String>,
     /// タグマネージャー(フェーズTM0): カテゴリ・tier・要素を管理する独立画面の開閉状態。
     /// 既存のメインタグ／属性タグUIとは今回切り離して考える。
     pub(crate) tag_manager_open: bool,
@@ -1250,6 +1228,8 @@ impl NekoviewApp {
             crate::tag_manager::load(&config_root).unwrap_or_else(crate::tag_manager::default_state);
         let (tag_main_options, tag_attr_options) = crate::tag_manager::derive_tag_options(&tag_manager_categories);
         let tag_main_selected = tag_main_options.first().cloned();
+        let mut tag_attr_selected: Vec<String> = Vec::new();
+        crate::tag_manager::enforce_single_select(&tag_manager_categories, &mut tag_attr_selected);
         let settings_draft = SettingsDraft::from_current(&config, &viewer_cfg, show_hidden, card_date_format, &translate_cfg);
         // viewer_cfg は下でArc<Mutex<..>>へムーブするため、そこで必要な値は先に控えておく
         // （config_root等、他のconfig系フィールドと同じ扱い）。
@@ -1422,9 +1402,7 @@ impl NekoviewApp {
             tag_main_edit_toggle: false,
             tag_main_edit_origin: None,
             tag_attr_options,
-            tag_attr_selected: Vec::new(),
-            tag_attr_dummy_categories: dummy_tag_attr_categories(),
-            tag_attr_dummy_selected: Vec::new(),
+            tag_attr_selected,
             tag_manager_open: false,
             tag_manager_area_rect: egui::Rect::NOTHING,
             tag_manager_categories,
