@@ -48,7 +48,9 @@ const TAG_MAIN_ARROW_W: f32 = 28.0;
 /// メインタグ選択UI: 選択値の背景の左右余白の合計。
 const TAG_MAIN_CENTER_PAD: f32 = 20.0;
 /// タグマネージャー: 左カラム（カテゴリ一覧）の幅。
-const TAG_MANAGER_CATEGORY_COL_WIDTH: f32 = 150.0;
+const TAG_MANAGER_CATEGORY_COL_WIDTH: f32 = 200.0;
+/// タグマネージャー: カテゴリリスト左端の並べ替えボタン用の縦エリア幅。
+const TAG_MANAGER_REORDER_STRIP_WIDTH: f32 = 26.0;
 /// タグマネージャー: tier行の番号ラベル部分の固定幅。"neg-tier"有無で幅が
 /// ズレないよう、ポジティブ/ネガティブ問わず同じ幅のセルに揃える。
 const TAG_MANAGER_TIER_PREFIX_WIDTH: f32 = 72.0;
@@ -1186,6 +1188,13 @@ impl NekoviewApp {
                         egui::Layout::left_to_right(egui::Align::Min),
                         |ui| {
                             ui.allocate_ui_with_layout(
+                                egui::vec2(TAG_MANAGER_REORDER_STRIP_WIDTH, body_height),
+                                egui::Layout::top_down(egui::Align::Center),
+                                |ui| {
+                                    self.draw_tag_manager_reorder_strip(ui);
+                                },
+                            );
+                            ui.allocate_ui_with_layout(
                                 egui::vec2(TAG_MANAGER_CATEGORY_COL_WIDTH, body_height),
                                 egui::Layout::top_down(egui::Align::Min),
                                 |ui| {
@@ -1212,6 +1221,64 @@ impl NekoviewApp {
                     );
                 });
             });
+    }
+
+    /// タグマネージャー: カテゴリリスト左端の縦貫通エリア。選択カテゴリの並べ替えボタンを
+    /// Y軸中央に寄せて置く（↑↑最上段/↑1つ上｜スペーサー1ボタン分｜↓1つ下/↓↓最下段）。メインカテゴリは不動で、
+    /// メイン選択中・端に居る時は該当ボタンを無効にする。
+    fn draw_tag_manager_reorder_strip(&mut self, ui: &mut egui::Ui) {
+        let sel = self.tag_manager_selected_category.filter(|&i| i < self.tag_manager_categories.len());
+        // 移動可能範囲は非メインカテゴリのみ（メインは先頭固定）。
+        let first_movable = self.tag_manager_categories.iter().position(|c| !c.is_main);
+        let last_movable = self.tag_manager_categories.iter().rposition(|c| !c.is_main);
+        let movable = sel.is_some_and(|i| !self.tag_manager_categories[i].is_main);
+        let can_up = movable && sel > first_movable;
+        let can_down = movable && sel < last_movable;
+        let btn = |ui: &mut egui::Ui, label: &str, enabled: bool| {
+            ui.add_enabled(
+                enabled,
+                egui::Button::new(egui::RichText::new(label).size(11.0))
+                    .min_size(egui::vec2(TAG_MANAGER_REORDER_STRIP_WIDTH - 4.0, BTN_H)),
+            )
+        };
+        const BTN_H: f32 = 22.0;
+        const GAP: f32 = 3.0;
+        ui.spacing_mut().item_spacing.y = GAP;
+        // 4ボタン＋中央のスペーサー(1ボタン分)をY軸中央に寄せる。
+        let group_h = BTN_H * 5.0 + GAP * 4.0;
+        ui.add_space(((ui.available_height() - group_h) / 2.0).max(0.0));
+        // 移動先index（メインは動かさないので、非メイン範囲内に収める）。
+        let mut move_to: Option<usize> = None;
+        if let (Some(i), Some(first), Some(last)) = (sel, first_movable, last_movable) {
+            if btn(ui, "↑↑", can_up).clicked() {
+                move_to = Some(first);
+            }
+            if btn(ui, "↑", can_up).clicked() {
+                move_to = Some(i - 1);
+            }
+            ui.add_space(BTN_H);
+            if btn(ui, "↓", can_down).clicked() {
+                move_to = Some(i + 1);
+            }
+            if btn(ui, "↓↓", can_down).clicked() {
+                move_to = Some(last);
+            }
+        } else {
+            btn(ui, "↑↑", false);
+            btn(ui, "↑", false);
+            ui.add_space(BTN_H);
+            btn(ui, "↓", false);
+            btn(ui, "↓↓", false);
+        }
+        if let (Some(from), Some(to)) = (sel, move_to) {
+            if from != to {
+                let cat = self.tag_manager_categories.remove(from);
+                self.tag_manager_categories.insert(to, cat);
+                // 移動したカテゴリを選択したままにする。
+                self.tag_manager_selected_category = Some(to);
+                self.save_tag_manager();
+            }
+        }
     }
 
     /// タグマネージャー(フェーズTM1): 左カラムのカテゴリ一覧。クリックで選択、
