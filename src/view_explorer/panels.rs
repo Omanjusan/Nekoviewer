@@ -857,13 +857,21 @@ impl NekoviewApp {
     fn draw_tag_panel_main_tags(&mut self, ui: &mut egui::Ui) {
         self.update_tag_main_drum_anim(ui.ctx());
 
+        // メインカテゴリ設定色。選択ハイライトはこの色で統一する（以前は青固定）。
+        let main_color = self
+            .tag_manager_categories
+            .iter()
+            .find(|c| c.is_main)
+            .map(|c| c.color)
+            .unwrap_or(egui::Color32::from_rgb(30, 100, 200));
+
         // 編集モードトグルは単独行で中央寄せ表示（ドラムとは別行）。
         ui.vertical_centered(|ui| {
             let edit_on = self.tag_main_edit_toggle;
             let r_edit = ui.scope(|ui| {
                 if edit_on {
-                    ui.visuals_mut().selection.bg_fill = egui::Color32::from_rgb(30, 100, 200);
-                    ui.visuals_mut().selection.stroke.color = egui::Color32::WHITE;
+                    ui.visuals_mut().selection.bg_fill = main_color;
+                    ui.visuals_mut().selection.stroke.color = contrasting_text_color(main_color);
                 }
                 ui.selectable_label(edit_on, i18n::t().tag_main_edit_toggle_button(edit_on))
             }).inner;
@@ -921,7 +929,7 @@ impl NekoviewApp {
 
         let painter = ui.painter();
         let center = rect.center();
-        let highlight_bg = ui.visuals().selection.bg_fill;
+        let highlight_bg = main_color;
         for (i, (_id, tag)) in options.iter().enumerate() {
             let dist = i as f32 - self.tag_main_drum_pos;
             let x = center.x + dist * TAG_DRUM_ITEM_SPACING;
@@ -934,7 +942,7 @@ impl NekoviewApp {
             let is_center = adist < 0.5;
             let pos = egui::pos2(x, center.y);
             let color = if is_center {
-                ui.visuals().strong_text_color()
+                contrasting_text_color(highlight_bg)
             } else {
                 ui.visuals().text_color().gamma_multiply(1.0 - t * 0.5)
             };
