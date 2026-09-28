@@ -1026,7 +1026,6 @@ impl NekoviewApp {
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 let dimmed_fg = ui.visuals().text_color().gamma_multiply(0.4);
-                let dimmed_bg_stroke = ui.visuals().widgets.inactive.bg_stroke.color.gamma_multiply(0.4);
                 let categories: Vec<(String, bool, egui::Color32, Vec<(u64, String)>)> = self
                     .tag_manager_categories
                     .iter()
@@ -1046,27 +1045,18 @@ impl NekoviewApp {
                         ui.add_space(8.0);
                     }
                     ui.label(egui::RichText::new(cat_name).strong().color(*cat_color));
+                    let full_w = ui.available_width();
                     ui.horizontal_wrapped(|ui| {
                         for (elem_id, elem_name) in elements {
                             let selected = self.tag_attr_selected.contains(elem_id);
-                            let resp = ui
-                                .scope(|ui| {
-                                    if selected {
-                                        // 選択済みはカテゴリ色でハイライトし、どのカテゴリの
-                                        // タグかひと目でわかるようにする。
-                                        ui.visuals_mut().selection.bg_fill = *cat_color;
-                                        ui.visuals_mut().selection.stroke.color = contrasting_text_color(*cat_color);
-                                    } else {
-                                        ui.visuals_mut().widgets.inactive.fg_stroke.color = dimmed_fg;
-                                        ui.visuals_mut().widgets.hovered.fg_stroke.color = dimmed_fg;
-                                        ui.visuals_mut().widgets.inactive.bg_stroke.color = dimmed_bg_stroke;
-                                    }
-                                    // 1要素がパネル幅を超える場合は文字を途中で縦折り返しせず
-                                    // 省略表示にし、全文はホバーで確認できるようにする。
-                                    ui.add(egui::Button::selectable(selected, elem_name.as_str()).truncate())
-                                        .on_hover_text(elem_name)
-                                })
-                                .inner;
+                            // 選択済みはカテゴリ色でハイライトし、どのカテゴリのタグか
+                            // ひと目でわかるようにする。非選択は文字を暗転させる。
+                            let (fill, text_color) = if selected {
+                                (*cat_color, contrasting_text_color(*cat_color))
+                            } else {
+                                (egui::Color32::TRANSPARENT, dimmed_fg)
+                            };
+                            let resp = tag_chip(ui, elem_name, full_w, fill, text_color, egui::Sense::click(), !selected);
                             if resp.clicked() {
                                 if selected {
                                     if !*single_select {
@@ -1094,6 +1084,7 @@ impl NekoviewApp {
             .id_salt("tag_attr_view_scroll")
             .auto_shrink([false, false])
             .show(ui, |ui| {
+                let full_w = ui.available_width();
                 ui.horizontal_wrapped(|ui| {
                     if self.tag_attr_selected.is_empty() {
                         ui.weak("（選択済みタグなし）");
@@ -1107,13 +1098,7 @@ impl NekoviewApp {
                             });
                             let Some((name, cat_color)) = found else { continue };
                             let text_color = contrasting_text_color(cat_color);
-                            egui::Frame::default()
-                                .fill(cat_color)
-                                .inner_margin(egui::Margin::symmetric(6, 2))
-                                .corner_radius(3.0)
-                                .show(ui, |ui| {
-                                    ui.colored_label(text_color, &name);
-                                });
+                            tag_chip(ui, &name, full_w, cat_color, text_color, egui::Sense::hover(), false);
                         }
                     }
                 });
@@ -3551,4 +3536,28 @@ fn truncated_galley(
     job.wrap.max_rows = 1;
     job.wrap.break_anywhere = true;
     ui.painter().layout_job(job)
+}
+
+/// タグ要素のチップ（角丸の背景＋1行テキスト）。1個で1ウィジェットとして確保するため、
+/// `horizontal_wrapped`内で収まらなければチップごと次の行へ折り返される（`Frame`+`label`や
+/// `Button::truncate`は行の残りに潰れて折り返さず見切れていた）。1チップが行全体
+/// (`full_w`)より広い場合だけ`…`で省略する。`hover_fill`がtrueなら、ホバー時に背景を出す。
+fn tag_chip(
+    ui: &mut egui::Ui,
+    text: &str,
+    full_w: f32,
+    fill: egui::Color32,
+    text_color: egui::Color32,
+    sense: egui::Sense,
+    hover_fill: bool,
+) -> egui::Response {
+    let pad = egui::vec2(6.0, 2.0);
+    let font = egui::TextStyle::Button.resolve(ui.style());
+    let galley = truncated_galley(ui, text, font, text_color, (full_w - pad.x * 2.0).max(8.0));
+    let size = galley.size() + pad * 2.0;
+    let (rect, resp) = ui.allocate_exact_size(size, sense);
+    let fill = if hover_fill && resp.hovered() { ui.visuals().widgets.hovered.weak_bg_fill } else { fill };
+    ui.painter().rect_filled(rect, 3.0, fill);
+    ui.painter().galley(rect.min + pad, galley, text_color);
+    resp.on_hover_text(text)
 }
