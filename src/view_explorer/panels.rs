@@ -986,12 +986,31 @@ impl NekoviewApp {
 
                     const TAG_MANAGER_CLOSE_BTN: f32 = 20.0;
                     ui.horizontal(|ui| {
-                        ui.heading("タグ管理");
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui.add(crate::ui_widgets::close_x_button(egui::vec2(TAG_MANAGER_CLOSE_BTN, TAG_MANAGER_CLOSE_BTN))).clicked() {
-                                self.tag_manager_open = false;
-                            }
-                        });
+                        let row_h = ui.available_height().min(28.0);
+                        let total_w = ui.available_width();
+                        // タイトルを左右中央に置くため、閉じるボタンと同じ幅の余白を
+                        // 左側にも確保する（3分割: 左マージン｜中央タイトル｜右閉じる）。
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(TAG_MANAGER_CLOSE_BTN, row_h),
+                            egui::Layout::left_to_right(egui::Align::Center),
+                            |_ui| {},
+                        );
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(total_w - TAG_MANAGER_CLOSE_BTN * 2.0, row_h),
+                            egui::Layout::top_down(egui::Align::Center),
+                            |ui| {
+                                ui.heading("タグ管理");
+                            },
+                        );
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(TAG_MANAGER_CLOSE_BTN, row_h),
+                            egui::Layout::right_to_left(egui::Align::Center),
+                            |ui| {
+                                if ui.add(crate::ui_widgets::close_x_button(egui::vec2(TAG_MANAGER_CLOSE_BTN, TAG_MANAGER_CLOSE_BTN))).clicked() {
+                                    self.tag_manager_open = false;
+                                }
+                            },
+                        );
                     });
                     ui.separator();
 
@@ -1038,23 +1057,42 @@ impl NekoviewApp {
     /// ＋で仮名の新規カテゴリを追加、－で削除する。名前編集・重複バリデーションは
     /// まだ無い（自動採番のみなので今のところ衝突しない）。
     fn draw_tag_manager_category_list(&mut self, ui: &mut egui::Ui) {
+        const ADD_BTN_W: f32 = 24.0;
         ui.horizontal(|ui| {
-            ui.label("カテゴリ");
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.button("＋").clicked() {
-                    let n = self.tag_manager_categories.len() + 1;
-                    let existing: Vec<egui::Color32> =
-                        self.tag_manager_categories.iter().map(|c| c.color).collect();
-                    self.tag_manager_categories.push(TagManagerCategoryUi {
-                        name: format!("新規カテゴリ{n}"),
-                        tiers: Vec::new(),
-                        color: pick_distinct_tag_color(&existing),
-                        is_main: false,
-                    });
-                    self.tag_manager_selected_category = Some(self.tag_manager_categories.len() - 1);
-                    self.save_tag_manager();
-                }
-            });
+            let row_h = ui.available_height().min(24.0);
+            let total_w = ui.available_width();
+            // 見出しを左右中央に置くため、＋ボタンと同じ幅の余白を左側にも確保する。
+            ui.allocate_ui_with_layout(
+                egui::vec2(ADD_BTN_W, row_h),
+                egui::Layout::left_to_right(egui::Align::Center),
+                |_ui| {},
+            );
+            ui.allocate_ui_with_layout(
+                egui::vec2((total_w - ADD_BTN_W * 2.0).max(0.0), row_h),
+                egui::Layout::top_down(egui::Align::Center),
+                |ui| {
+                    ui.label("カテゴリリスト");
+                },
+            );
+            ui.allocate_ui_with_layout(
+                egui::vec2(ADD_BTN_W, row_h),
+                egui::Layout::right_to_left(egui::Align::Center),
+                |ui| {
+                    if ui.button("＋").clicked() {
+                        let n = self.tag_manager_categories.len() + 1;
+                        let existing: Vec<egui::Color32> =
+                            self.tag_manager_categories.iter().map(|c| c.color).collect();
+                        self.tag_manager_categories.push(TagManagerCategoryUi {
+                            name: format!("新規カテゴリ{n}"),
+                            tiers: Vec::new(),
+                            color: pick_distinct_tag_color(&existing),
+                            is_main: false,
+                        });
+                        self.tag_manager_selected_category = Some(self.tag_manager_categories.len() - 1);
+                        self.save_tag_manager();
+                    }
+                },
+            );
         });
         ui.separator();
 
@@ -1113,10 +1151,52 @@ impl NekoviewApp {
     /// tierマスに「＋ティア追加」ボタンを持たせ、末尾に新tierを追加する。
     /// 各tier行には要素名の一覧と「＋要素」ボタン（末尾に仮名の要素を追加）。
     fn draw_tag_manager_tier_list(&mut self, ui: &mut egui::Ui, cat_idx: usize) {
+        // 選択カテゴリが切り替わったら、前のカテゴリの名前編集状態は自動的に破棄する。
+        if self.tag_manager_editing_category_name.is_some_and(|i| i != cat_idx) {
+            self.tag_manager_editing_category_name = None;
+            self.tag_manager_editing_category_buffer.clear();
+        }
         let cat_name = self.tag_manager_categories[cat_idx].name.clone();
+        let cat_is_main = self.tag_manager_categories[cat_idx].is_main;
         ui.horizontal(|ui| {
             ui.label("選択中カテゴリ:");
-            ui.label(egui::RichText::new(&cat_name).size(28.0).strong());
+            if self.tag_manager_editing_category_name == Some(cat_idx) {
+                let text_edit_id = ui.id().with("tag_manager_cat_name_edit");
+                if self.tag_manager_editing_category_focus_pending {
+                    ui.memory_mut(|m| m.request_focus(text_edit_id));
+                    self.tag_manager_editing_category_focus_pending = false;
+                }
+                let resp = ui.add(
+                    egui::TextEdit::singleline(&mut self.tag_manager_editing_category_buffer)
+                        .id(text_edit_id)
+                        .font(egui::FontId::proportional(28.0)),
+                );
+                if resp.lost_focus() {
+                    if !ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                        // Escape以外でのフォーカス喪失(Enter押下・他クリック)は確定を試みる。
+                        // 空文字、または他カテゴリと名前が重複する場合は変更を破棄する。
+                        let text = self.tag_manager_editing_category_buffer.trim().to_string();
+                        let is_dup = self
+                            .tag_manager_categories
+                            .iter()
+                            .enumerate()
+                            .any(|(i, c)| i != cat_idx && c.name == text);
+                        if !text.is_empty() && !is_dup {
+                            self.tag_manager_categories[cat_idx].name = text;
+                            self.save_tag_manager();
+                        }
+                    }
+                    self.tag_manager_editing_category_name = None;
+                    self.tag_manager_editing_category_buffer.clear();
+                }
+            } else {
+                ui.label(egui::RichText::new(&cat_name).size(28.0).strong());
+                if ui.add_enabled(!cat_is_main, egui::Button::new("編集")).clicked() {
+                    self.tag_manager_editing_category_name = Some(cat_idx);
+                    self.tag_manager_editing_category_buffer = cat_name.clone();
+                    self.tag_manager_editing_category_focus_pending = true;
+                }
+            }
             ui.separator();
             ui.label("カテゴリ色:");
             let mut color = self.tag_manager_categories[cat_idx].color;
