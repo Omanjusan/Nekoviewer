@@ -53,6 +53,19 @@ pub const BOOKMARK_TABLE_V1: TableDefinition<&str, (bool, &str, i64, i64)> =
 pub const ARCHIVE_RATING_TABLE_V1: TableDefinition<&str, (u8, u32, i64)> =
     TableDefinition::new("archive_rating_v1");
 
+/// アーカイブ単位のタグ紐付けテーブル（第1世代）。
+///
+/// キーは他テーブルと同じ「正規化済みディレクトリ\0ファイル名」。
+/// 値はタグマネージャーのtier_id（u64、リネームで変わらない不変ID）の集合を、
+/// 8バイトLEで連結したバイト列として持つ（`encode_tag_ids`/`decode_tag_ids`）。
+/// メイン/属性の区別はDB側では持たず、読込側が現在のカテゴリ定義と突き合わせて
+/// 振り分ける。tier削除で孤立したidの掃除は、ファイルを開いて読み込むたびに
+/// 現存tier_idだけへフィルタし直して書き戻す自己修復方式（一括GCは行わない）。
+/// 値形式を将来変更する場合はこの定義を変更せず、`archive_tags_v2` のような
+/// 新しいテーブルを追加して移行すること（thumbnail_selection方式を踏襲）。
+pub const ARCHIVE_TAGS_TABLE_V1: TableDefinition<&str, &[u8]> =
+    TableDefinition::new("archive_tags_v1");
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ThumbnailSourceKind {
     Full,
@@ -128,6 +141,7 @@ pub fn open_spread_db(root: &Path) -> Option<Arc<Mutex<Database>>> {
         tx.open_table(THUMBNAIL_SELECTION_TABLE_V2).ok()?;
         tx.open_table(BOOKMARK_TABLE_V1).ok()?;
         tx.open_table(ARCHIVE_RATING_TABLE_V1).ok()?;
+        tx.open_table(ARCHIVE_TAGS_TABLE_V1).ok()?;
         tx.commit().ok()?;
     }
     Some(Arc::new(Mutex::new(db)))
@@ -709,6 +723,51 @@ pub fn archive_rating_gc_dir(db: &Arc<Mutex<Database>>, dir: &Path, existing_fil
     stale.len()
 }
 
+/// tier_idの集合を8バイトLEで連結したバイト列へ符号化する。
+fn encode_tag_ids(ids: &[u64]) -> Vec<u8> {
+    let mut buf = Vec::with_capacity(ids.len() * 8);
+    for id in ids {
+        buf.extend_from_slice(&id.to_le_bytes());
+    }
+    buf
+}
+
+/// `encode_tag_ids`の逆変換。バイト長が8の倍数でない壊れたレコードは空扱いにする。
+fn decode_tag_ids(bytes: &[u8]) -> Vec<u64> {
+    bytes
+        .chunks_exact(8)
+        .map(|c| u64::from_le_bytes(c.try_into().unwrap()))
+        .collect()
+}
+
+/// ファイルのタグ紐付け（tier_idの集合）を丸ごと置き換える。空集合なら
+/// レコード自体を削除する（未タグ付けと「空集合を明示保存」を区別しない）。
+pub fn write_archive_tags(db: &Arc<Mutex<Database>>, dir: &Path, filename: &str, tier_ids: &[u64]) -> bool {
+    let key = make_key(dir, filename);
+    let Ok(db) = db.lock() else { return false };
+    let Ok(tx) = db.begin_write() else { return false };
+    let ok = {
+        let Ok(mut table) = tx.open_table(ARCHIVE_TAGS_TABLE_V1) else { return false };
+        if tier_ids.is_empty() {
+            table.remove(key.as_str()).is_ok()
+        } else {
+            let encoded = encode_tag_ids(tier_ids);
+            table.insert(key.as_str(), encoded.as_slice()).is_ok()
+        }
+    };
+    tx.commit().is_ok() && ok
+}
+
+/// ファイルのタグ紐付け（tier_idの集合）を返す。レコード不在は空Vec。
+pub fn read_archive_tags(db: &Arc<Mutex<Database>>, dir: &Path, filename: &str) -> Vec<u64> {
+    let key = make_key(dir, filename);
+    let Ok(db) = db.lock() else { return Vec::new() };
+    let Ok(tx) = db.begin_read() else { return Vec::new() };
+    let Ok(table) = tx.open_table(ARCHIVE_TAGS_TABLE_V1) else { return Vec::new() };
+    let Some(value) = table.get(key.as_str()).ok().flatten() else { return Vec::new() };
+    decode_tag_ids(value.value())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -737,6 +796,7 @@ mod tests {
             tx.open_table(THUMBNAIL_SELECTION_TABLE_V1).unwrap();
             tx.open_table(BOOKMARK_TABLE_V1).unwrap();
             tx.open_table(ARCHIVE_RATING_TABLE_V1).unwrap();
+            tx.open_table(ARCHIVE_TAGS_TABLE_V1).unwrap();
             tx.commit().unwrap();
         }
         Arc::new(Mutex::new(db))
@@ -1192,5 +1252,47 @@ mod tests {
         assert_eq!(archive_rating_gc_dir(&db, &dir, &["keep.zip".to_string()]), 1);
         assert!(read_archive_rating(&db, &dir, "keep.zip").is_some());
         assert!(read_archive_rating(&db, &dir, "stale.zip").is_none());
+    }
+
+    #[test]
+    fn archive_tags_round_trip() {
+        let db = temp_db();
+        let dir = unique_temp_path("tags_round_trip");
+        assert!(read_archive_tags(&db, &dir, "book.zip").is_empty());
+        assert!(write_archive_tags(&db, &dir, "book.zip", &[3, 1, 2]));
+        assert_eq!(read_archive_tags(&db, &dir, "book.zip"), vec![3, 1, 2]);
+    }
+
+    #[test]
+    fn archive_tags_write_replaces_previous_set() {
+        let db = temp_db();
+        let dir = unique_temp_path("tags_replace");
+        write_archive_tags(&db, &dir, "book.zip", &[1, 2, 3]);
+        write_archive_tags(&db, &dir, "book.zip", &[9]);
+        assert_eq!(read_archive_tags(&db, &dir, "book.zip"), vec![9]);
+    }
+
+    #[test]
+    fn archive_tags_write_empty_removes_the_record() {
+        let db = temp_db();
+        let dir = unique_temp_path("tags_empty");
+        write_archive_tags(&db, &dir, "book.zip", &[1]);
+        write_archive_tags(&db, &dir, "book.zip", &[]);
+        assert!(read_archive_tags(&db, &dir, "book.zip").is_empty());
+    }
+
+    #[test]
+    fn archive_tags_are_independent_by_directory() {
+        let db = temp_db();
+        let dir = unique_temp_path("tags_dir");
+        let other_dir = unique_temp_path("tags_other_dir");
+        write_archive_tags(&db, &dir, "book.zip", &[1]);
+        write_archive_tags(&db, &other_dir, "book.zip", &[2]);
+        assert_eq!(read_archive_tags(&db, &dir, "book.zip"), vec![1]);
+        assert_eq!(read_archive_tags(&db, &other_dir, "book.zip"), vec![2]);
+
+        write_archive_tags(&db, &dir, "book.zip", &[]);
+        assert!(read_archive_tags(&db, &dir, "book.zip").is_empty());
+        assert_eq!(read_archive_tags(&db, &other_dir, "book.zip"), vec![2]);
     }
 }

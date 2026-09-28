@@ -976,9 +976,6 @@ pub struct NekoviewApp {
     /// （左右スワイプ相当）を許可する。既定OFF。フォーカスが外れたら（別ファイル／
     /// 別フォルダへ移動、ビューアを閉じる）自動的にOFFへ戻す。
     pub(crate) tag_main_edit_toggle: bool,
-    /// タグ付けレイアウト・ドラムUI: 上記トグルをONにした時点のtag_main_selected。
-    /// OFFへ戻すタイミングでこの値と比較し、変化していれば編集確定フックを呼ぶ。
-    pub(crate) tag_main_edit_origin: Option<u64>,
     /// タグ付けレイアウト: 属性タグ(複数可・単一選択カテゴリ含む)のtier_id一覧。
     /// タグマネージャーの実データから`save_tag_manager`で導出される（tier_idの
     /// 妥当性チェック用。表示のカテゴリ分けは`tag_manager_categories`を直接使う）。
@@ -988,6 +985,10 @@ pub struct NekoviewApp {
     /// 編集モードのワンクリックでここに追加/削除する。単一選択カテゴリは常に
     /// ちょうど1個を維持する（`tag_manager::enforce_single_select`で矯正）。
     pub(crate) tag_attr_selected: Vec<u64>,
+    /// タグ付けレイアウト: `tag_main_selected`/`tag_attr_selected`が現在どのファイルの
+    /// 保存済みタグを表しているか。選択中ファイルとズレたら`sync_tag_binding`が
+    /// 検知し、旧ファイルを確定保存してから新ファイルの保存済みタグを読み込む。
+    pub(crate) tag_binding_path: Option<PathBuf>,
     /// タグパネルのプレビューを、グリッドサムネの引き伸ばしではなく専用解像度で
     /// 再デコードして表示するか（ON=高画質・OFF=既定＝サムネ流用）。設定として永続化する。
     pub(crate) tag_preview_high_quality: bool,
@@ -1421,9 +1422,9 @@ impl NekoviewApp {
             tag_main_drum_pos: 0.0,
             tag_main_drum_anim: None,
             tag_main_edit_toggle: false,
-            tag_main_edit_origin: None,
             tag_attr_options,
             tag_attr_selected,
+            tag_binding_path: None,
             tag_preview_high_quality,
             tag_preview_texture: None,
             tag_preview_pending: None,

@@ -108,17 +108,29 @@ pub(crate) fn load(root: &Path) -> Option<(Vec<TagManagerCategoryUi>, u64)> {
     Some((categories, data.next_tier_id))
 }
 
-/// カテゴリ一覧から、メインタグドラム用の選択肢（メインカテゴリの要素、tier_id＋
-/// 要素名、tier順）と、属性タグの妥当性チェック用tier_id一覧（それ以外の全カテゴリの
-/// 要素をフラットに集約）を導出する。タグ管理ページでの編集が確定するたびにこれで
-/// 再計算し、タグ付けUIに反映する。選択・紐付けの同一性判定はtier_id（リネームで
-/// 変わらない不変ID）で行い、要素名は表示専用。
+/// メインタグドラムの「未選択」を表す仮想tier_id。実tierの採番は1から始まる
+/// （`default_state`/`load`参照）ため0とは衝突しない。ファイルに保存済みのメインタグが
+/// 無い場合、ドラムはこの仮想エントリの位置から始まる。DBへはこの値を書き込まない
+/// （`commit_tag_main_edit`側で除外する）。
+pub(crate) const TAG_MAIN_UNSET_ID: u64 = 0;
+
+/// メインタグドラムの「未選択」を表す仮想エントリの表示名。
+const TAG_MAIN_UNSET_LABEL: &str = "（未設定）";
+
+/// カテゴリ一覧から、メインタグドラム用の選択肢（先頭に「未設定」の仮想エントリ、
+/// 続いてメインカテゴリの要素をtier_id＋要素名でtier順）と、属性タグの妥当性チェック用
+/// tier_id一覧（それ以外の全カテゴリの要素をフラットに集約）を導出する。タグ管理
+/// ページでの編集が確定するたびにこれで再計算し、タグ付けUIに反映する。選択・紐付けの
+/// 同一性判定はtier_id（リネームで変わらない不変ID）で行い、要素名は表示専用。
 pub(crate) fn derive_tag_options(categories: &[TagManagerCategoryUi]) -> (Vec<(u64, String)>, Vec<u64>) {
-    let main_options = categories
-        .iter()
-        .find(|c| c.is_main)
-        .map(|c| c.tiers.iter().filter_map(|t| t.element.clone().map(|name| (t.id, name))).collect())
-        .unwrap_or_default();
+    let mut main_options = vec![(TAG_MAIN_UNSET_ID, TAG_MAIN_UNSET_LABEL.to_string())];
+    main_options.extend(
+        categories
+            .iter()
+            .find(|c| c.is_main)
+            .map(|c| c.tiers.iter().filter_map(|t| t.element.clone().map(|name| (t.id, name))).collect::<Vec<_>>())
+            .unwrap_or_default(),
+    );
     let attr_options = categories
         .iter()
         .filter(|c| !c.is_main)
@@ -127,12 +139,12 @@ pub(crate) fn derive_tag_options(categories: &[TagManagerCategoryUi]) -> (Vec<(u
     (main_options, attr_options)
 }
 
-/// 単一選択カテゴリ（メインカテゴリを除く）の選択状態を常に「ちょうど1個」に矯正する。
+/// 単一選択カテゴリ（メインカテゴリを除く）の選択状態が2個以上にならないよう矯正する。
 /// カテゴリ定義（要素追加・削除・単一/複数選択の切替）が変わるたびに呼ぶ。
 /// - 複数選択カテゴリの選択はそのまま維持する
 /// - 単一選択カテゴリ内で選択済みが2個以上あれば最初の1個以外を外す
-/// - 単一選択カテゴリで1個も選択が無ければ、そのカテゴリの先頭要素を補充する
-///   （要素が1つも定義されていないカテゴリは対象外）
+/// - 選択が0個の場合は何もしない（未タグ付けファイルは「未選択」のままが正しい状態。
+///   要素を強制補充しない）
 pub(crate) fn enforce_single_select(categories: &[TagManagerCategoryUi], selected: &mut Vec<u64>) {
     for cat in categories.iter().filter(|c| !c.is_main && c.single_select) {
         let elements: Vec<u64> = cat.tiers.iter().filter(|t| t.element.is_some()).map(|t| t.id).collect();
@@ -151,9 +163,6 @@ pub(crate) fn enforce_single_select(categories: &[TagManagerCategoryUi], selecte
                 true
             }
         });
-        if !found {
-            selected.push(elements[0]);
-        }
     }
 }
 

@@ -722,7 +722,8 @@ impl NekoviewApp {
                 self.tag_preview_high_quality = !hq;
             }
         });
-        if self.selected_archive_index.is_none() {
+        let path = self.selected_archive_index.and_then(|idx| self.archives.get(idx).cloned());
+        let Some(path) = path else {
             // 選択中のファイルが無いときは、紐付け先の無いメイン/属性タグUIを
             // 表示しても意味が無い（宙に浮いたタグに見えてしまう）ため、
             // 「タグ表示対象なし」を残り領域いっぱいに上下左右中央表示する。
@@ -733,7 +734,8 @@ impl NekoviewApp {
                 });
             });
             return;
-        }
+        };
+        self.sync_tag_binding(&path);
         ui.add_space(10.0);
         self.draw_tag_panel_preview(ui);
         ui.add_space(8.0);
@@ -747,23 +749,106 @@ impl NekoviewApp {
         });
     }
 
-    /// タグ付けレイアウト・ドラムUI: メインタグ編集トグルをOFFへ戻す。ON時点から
-    /// 選択タグが変化していれば編集確定として扱う。トグルボタンの手動OFF操作、
-    /// および他ファイル／他フォルダへのフォーカス離脱時の自動OFFの両方から呼ぶ。
+    /// タグ付けレイアウト・ドラムUI: メインタグ編集トグルをOFFへ戻し、現在のタグ選択を
+    /// 確定保存する。トグルボタンの手動OFF操作、および他ファイル／他フォルダへの
+    /// フォーカス離脱時の自動OFFの両方から呼ぶ。
     pub(crate) fn deactivate_tag_main_edit(&mut self) {
         if !self.tag_main_edit_toggle {
             return;
         }
         self.tag_main_edit_toggle = false;
-        if self.tag_main_edit_origin != self.tag_main_selected {
-            self.commit_tag_main_edit();
-        }
-        self.tag_main_edit_origin = None;
+        self.commit_tag_main_edit();
     }
 
-    /// メインタグ編集確定フック。タグの永続化先が未実装のため現状はno-op。
-    /// 将来、保存処理を実装する際の差し込み口として用意している。
-    fn commit_tag_main_edit(&mut self) {}
+    /// メインタグ編集確定フック。`tag_binding_path`（現在タグ状態が紐付いている
+    /// ファイル）へ、メイン＋属性タグの選択（tier_idの集合）をまとめて保存する。
+    fn commit_tag_main_edit(&mut self) {
+        let Some(path) = self.tag_binding_path.clone() else { return };
+        let Some(db) = self.spread_db.as_ref() else { return };
+        let Some(dir) = path.parent() else { return };
+        let Some(filename) = path.file_name().and_then(|n| n.to_str()) else { return };
+        let mut ids = self.tag_attr_selected.clone();
+        // 「未設定」の仮想エントリはDBへ書かない（何も選ばれていない状態を表す）。
+        if let Some(main_id) = self.tag_main_selected {
+            if main_id != crate::tag_manager::TAG_MAIN_UNSET_ID {
+                ids.push(main_id);
+            }
+        }
+        crate::spread_state::write_archive_tags(db, dir, filename, &ids);
+    }
+
+    /// タグパネル: 選択中ファイルと`tag_main_selected`/`tag_attr_selected`の紐付けを
+    /// 同期する。選択が変わっていれば、編集モード中だった旧ファイルをまず確定保存し
+    /// （編集モード自体はONを維持し、連続タグ付け作業を妨げない）、新ファイルの
+    /// 保存済みタグを読み込む。
+    fn sync_tag_binding(&mut self, path: &std::path::Path) {
+        if self.tag_binding_path.as_deref() == Some(path) {
+            return;
+        }
+        if self.tag_main_edit_toggle {
+            self.commit_tag_main_edit();
+        }
+        self.tag_binding_path = Some(path.to_path_buf());
+        self.load_tag_binding(path);
+    }
+
+    /// `tag_binding_path`向けに保存済みタグを読み込み、main/attrへ振り分ける。
+    /// 読み込んだtier_idのうち現存しないもの（tier削除済みの孤立参照）は自己修復
+    /// 的に除去して書き戻す（1ファイル単位、ディレクトリ一括GCは行わない）。
+    fn load_tag_binding(&mut self, path: &std::path::Path) {
+        let dir = path.parent();
+        let filename = path.file_name().and_then(|n| n.to_str());
+        let loaded: Vec<u64> = match (self.spread_db.as_ref(), dir, filename) {
+            (Some(db), Some(dir), Some(filename)) => crate::spread_state::read_archive_tags(db, dir, filename),
+            _ => Vec::new(),
+        };
+
+        let valid_ids: std::collections::HashSet<u64> = self
+            .tag_manager_categories
+            .iter()
+            .flat_map(|c| c.tiers.iter().filter(|t| t.element.is_some()).map(|t| t.id))
+            .collect();
+        let cleaned: Vec<u64> = loaded.iter().copied().filter(|id| valid_ids.contains(id)).collect();
+        if cleaned.len() != loaded.len() {
+            if let (Some(db), Some(dir), Some(filename)) = (self.spread_db.as_ref(), dir, filename) {
+                crate::spread_state::write_archive_tags(db, dir, filename, &cleaned);
+            }
+        }
+
+        self.tag_main_selected = cleaned
+            .iter()
+            .copied()
+            .find(|id| self.tag_main_options.iter().any(|(oid, _)| oid == id))
+            .or(Some(crate::tag_manager::TAG_MAIN_UNSET_ID));
+        // 実タグが見つかった場合は「未設定」が選択肢から外れた後のリストで位置を
+        // 合わせる（一度実タグへ決定したファイルは未設定へ戻れない設計）。
+        let effective = self.tag_main_effective_options();
+        if let Some(idx) = self.tag_main_selected.and_then(|id| effective.iter().position(|(oid, _)| *oid == id)) {
+            self.tag_main_drum_pos = idx as f32;
+            self.tag_main_drum_anim = None;
+        }
+        self.tag_attr_selected = cleaned
+            .into_iter()
+            .filter(|id| !self.tag_main_options.iter().any(|(oid, _)| oid == id))
+            .collect();
+        crate::tag_manager::enforce_single_select(&self.tag_manager_categories, &mut self.tag_attr_selected);
+    }
+
+    /// メインタグドラムの実効選択肢。`tag_main_selected`が「未設定」仮想エントリの
+    /// 間はそのまま（仮想エントリを含む）返す。実タグへ一度でも決定していれば
+    /// 仮想エントリを除外する——一度実タグへ決定したファイルは、ドラッグでも
+    /// 「未設定」へは戻せない設計のため、ドラムの回転対象自体から外す。
+    fn tag_main_effective_options(&self) -> Vec<(u64, String)> {
+        if self.tag_main_selected == Some(crate::tag_manager::TAG_MAIN_UNSET_ID) {
+            self.tag_main_options.clone()
+        } else {
+            self.tag_main_options
+                .iter()
+                .filter(|(id, _)| *id != crate::tag_manager::TAG_MAIN_UNSET_ID)
+                .cloned()
+                .collect()
+        }
+    }
 
     /// タグ付けレイアウト: メインタグ(排他)のドラムUI。左端の編集トグルがONの間
     /// だけ横ドラッグで回せる（離すと最寄りのタグへ滑らかにスナップ）。OFF時は
@@ -786,13 +871,15 @@ impl NekoviewApp {
                     self.deactivate_tag_main_edit();
                 } else {
                     self.tag_main_edit_toggle = true;
-                    self.tag_main_edit_origin = self.tag_main_selected;
                 }
             }
         });
 
         // ドラムはパネル全幅を使い、内部で中央寄せ描画する（メインカテゴリの中央寄せ）。
-        let max_idx = self.tag_main_options.len().saturating_sub(1);
+        // 「未設定」仮想エントリは、まだ未設定の間だけ回転対象に含む（一度実タグへ
+        // 決定したら選択肢から外れ、二度と戻れない）。
+        let options = self.tag_main_effective_options();
+        let max_idx = options.len().saturating_sub(1);
         let avail_w = ui.available_width();
         let sense = if self.tag_main_edit_toggle { egui::Sense::drag() } else { egui::Sense::hover() };
         let (rect, response) =
@@ -815,14 +902,26 @@ impl NekoviewApp {
         }
 
         let center_idx = self.tag_main_drum_pos.round().clamp(0.0, max_idx as f32) as usize;
-        if self.tag_main_options.get(center_idx).map(|(id, _)| *id) != self.tag_main_selected {
-            self.tag_main_selected = self.tag_main_options.get(center_idx).map(|(id, _)| *id);
+        let new_selected = options.get(center_idx).map(|(id, _)| *id);
+        if new_selected != self.tag_main_selected {
+            let was_unset = self.tag_main_selected == Some(crate::tag_manager::TAG_MAIN_UNSET_ID);
+            self.tag_main_selected = new_selected;
+            if was_unset && new_selected != Some(crate::tag_manager::TAG_MAIN_UNSET_ID) {
+                // 「未設定」から実タグへ初めて移った瞬間、選択肢リストから未設定が
+                // 外れて縮む。縮んだ後のリストでの位置にドラムを合わせ直す。
+                let effective = self.tag_main_effective_options();
+                if let Some(idx) = new_selected.and_then(|id| effective.iter().position(|(oid, _)| *oid == id)) {
+                    self.tag_main_drum_pos = idx as f32;
+                }
+            }
         }
+        // 未設定→実タグの遷移でリストが変わった可能性があるため、描画直前に取り直す。
+        let options = self.tag_main_effective_options();
 
         let painter = ui.painter();
         let center = rect.center();
         let highlight_bg = ui.visuals().selection.bg_fill;
-        for (i, (_id, tag)) in self.tag_main_options.iter().enumerate() {
+        for (i, (_id, tag)) in options.iter().enumerate() {
             let dist = i as f32 - self.tag_main_drum_pos;
             let x = center.x + dist * TAG_DRUM_ITEM_SPACING;
             if x < rect.left() - TAG_DRUM_ITEM_SPACING || x > rect.right() + TAG_DRUM_ITEM_SPACING {
@@ -989,16 +1088,17 @@ impl NekoviewApp {
     fn save_tag_manager(&mut self) {
         let (main_options, attr_options) = crate::tag_manager::derive_tag_options(&self.tag_manager_categories);
         self.tag_main_options = main_options;
-        match self.tag_main_selected.and_then(|id| self.tag_main_options.iter().position(|(oid, _)| *oid == id)) {
+        let effective = self.tag_main_effective_options();
+        match self.tag_main_selected.and_then(|id| effective.iter().position(|(oid, _)| *oid == id)) {
             // 並び順が変わっていてもドラム位置がズレないよう、選択中タグの新しい
             // インデックスに追従させる。
             Some(idx) => {
                 self.tag_main_drum_pos = idx as f32;
                 self.tag_main_drum_anim = None;
             }
-            // 選択中タグ自体が消えていれば先頭へフォールバック。
+            // 選択中タグ自体が消えていれば（tier削除等）「未設定」へフォールバックする。
             None => {
-                self.tag_main_selected = self.tag_main_options.first().map(|(id, _)| *id);
+                self.tag_main_selected = Some(crate::tag_manager::TAG_MAIN_UNSET_ID);
                 self.tag_main_drum_pos = 0.0;
                 self.tag_main_drum_anim = None;
             }
