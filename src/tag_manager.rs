@@ -139,31 +139,31 @@ pub(crate) fn derive_tag_options(categories: &[TagManagerCategoryUi]) -> (Vec<(u
     (main_options, attr_options)
 }
 
-/// 単一選択カテゴリ（メインカテゴリを除く）の選択状態が2個以上にならないよう矯正する。
-/// カテゴリ定義（要素追加・削除・単一/複数選択の切替）が変わるたびに呼ぶ。
+/// 単一選択カテゴリ（メインカテゴリを除く）の有効な選択が2個以上にならないよう分離する。
+/// カテゴリ定義（要素追加・削除・単一/複数選択の切替）が変わるたび、およびファイルの
+/// 保存済みタグ読み込み時に呼ぶ。**データは消さない**（非破壊）:
 /// - 複数選択カテゴリの選択はそのまま維持する
-/// - 単一選択カテゴリ内で選択済みが2個以上あれば最初の1個以外を外す
-/// - 選択が0個の場合は何もしない（未タグ付けファイルは「未選択」のままが正しい状態。
-///   要素を強制補充しない）
-pub(crate) fn enforce_single_select(categories: &[TagManagerCategoryUi], selected: &mut Vec<u64>) {
+/// - 単一選択カテゴリ内で選択済みが2個以上あれば、登録順（tier順）で最も若い1個だけを
+///   `selected`に残し、他は戻り値（休眠値）として返す。呼び出し側は休眠値をDBへ保存する
+///   ときに必ず書き戻し、複数選択へ戻したときに再び有効化できるようにする
+/// - 選択が0個の場合は何もしない（未タグ付けは「未選択」のままが正しい状態）
+pub(crate) fn enforce_single_select(categories: &[TagManagerCategoryUi], selected: &mut Vec<u64>) -> Vec<u64> {
+    let mut dormant = Vec::new();
     for cat in categories.iter().filter(|c| !c.is_main && c.single_select) {
         let elements: Vec<u64> = cat.tiers.iter().filter(|t| t.element.is_some()).map(|t| t.id).collect();
-        if elements.is_empty() {
+        let Some(keep) = elements.iter().copied().find(|id| selected.contains(id)) else {
             continue;
-        }
-        let mut found = false;
+        };
         selected.retain(|s| {
-            if !elements.contains(s) {
-                return true;
-            }
-            if found {
+            if *s != keep && elements.contains(s) {
+                dormant.push(*s);
                 false
             } else {
-                found = true;
                 true
             }
         });
     }
+    dormant
 }
 
 /// 複数選択カテゴリの一括入力欄向けパーサー。`,`を区切りとして要素名に分割する。
@@ -232,5 +232,66 @@ pub(crate) fn save(root: &Path, categories: &[TagManagerCategoryUi], next_tier_i
     }
     if std::fs::rename(&tmp, &path).is_err() {
         let _ = std::fs::remove_file(&tmp);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cat(single: bool, ids: &[u64]) -> TagManagerCategoryUi {
+        TagManagerCategoryUi {
+            name: "c".into(),
+            is_main: false,
+            single_select: single,
+            color: egui::Color32::WHITE,
+            tiers: ids
+                .iter()
+                .map(|&id| TagManagerTierUi { id, tier_no: id as i32, negative: false, element: Some(format!("e{id}")) })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn single_keeps_earliest_registered_and_returns_rest_as_dormant() {
+        let cats = [cat(true, &[1, 2, 3])];
+        let mut sel = vec![3, 2];
+        let dormant = enforce_single_select(&cats, &mut sel);
+        assert_eq!(sel, vec![2]);
+        assert_eq!(dormant, vec![3]);
+    }
+
+    #[test]
+    fn multi_category_is_untouched() {
+        let cats = [cat(false, &[1, 2, 3])];
+        let mut sel = vec![3, 1];
+        assert!(enforce_single_select(&cats, &mut sel).is_empty());
+        assert_eq!(sel, vec![3, 1]);
+    }
+
+    #[test]
+    fn other_categories_and_empty_selection_are_left_alone() {
+        let cats = [cat(true, &[1, 2]), cat(false, &[10, 11])];
+        let mut sel = vec![11, 2, 10];
+        let dormant = enforce_single_select(&cats, &mut sel);
+        assert_eq!(sel, vec![11, 2, 10]);
+        assert!(dormant.is_empty());
+        let mut none = Vec::new();
+        assert!(enforce_single_select(&cats, &mut none).is_empty());
+    }
+
+    #[test]
+    fn round_trip_single_then_multi_restores_all() {
+        let mut cats = [cat(false, &[1, 2, 3])];
+        let mut sel = vec![1, 3];
+        cats[0].single_select = true;
+        let dormant = enforce_single_select(&cats, &mut sel);
+        assert_eq!(sel, vec![1]);
+        cats[0].single_select = false;
+        let mut all = sel.clone();
+        all.extend(dormant);
+        assert!(enforce_single_select(&cats, &mut all).is_empty());
+        all.sort();
+        assert_eq!(all, vec![1, 3]);
     }
 }

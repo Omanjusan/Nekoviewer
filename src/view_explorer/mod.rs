@@ -979,6 +979,10 @@ pub struct NekoviewApp {
     /// 編集モードのワンクリックでここに追加/削除する。単一選択カテゴリは常に
     /// ちょうど1個を維持する（`tag_manager::enforce_single_select`で矯正）。
     pub(crate) tag_attr_selected: Vec<u64>,
+    /// 単一選択カテゴリで有効値から外れているが、DBには残す休眠タグ（非破壊切替）。
+    /// 複数選択へ戻すと`save_tag_manager`で`tag_attr_selected`へ合流する。保存時は
+    /// `tag_attr_selected`と一緒に必ず書き戻す。単一カテゴリで別の値を明示選択したときだけ消える。
+    pub(crate) tag_attr_dormant: Vec<u64>,
     /// タグ付けレイアウト: `tag_main_selected`/`tag_attr_selected`が現在どのファイルの
     /// 保存済みタグを表しているか。選択中ファイルとズレたら`sync_tag_binding`が
     /// 検知し、旧ファイルを確定保存してから新ファイルの保存済みタグを読み込む。
@@ -1248,7 +1252,7 @@ impl NekoviewApp {
         let (tag_main_options, tag_attr_options) = crate::tag_manager::derive_tag_options(&tag_manager_categories);
         let tag_main_selected = tag_main_options.first().map(|(id, _)| *id);
         let mut tag_attr_selected: Vec<u64> = Vec::new();
-        crate::tag_manager::enforce_single_select(&tag_manager_categories, &mut tag_attr_selected);
+        let _ = crate::tag_manager::enforce_single_select(&tag_manager_categories, &mut tag_attr_selected);
         let settings_draft = SettingsDraft::from_current(&config, &viewer_cfg, show_hidden, card_date_format, &translate_cfg);
         // viewer_cfg は下でArc<Mutex<..>>へムーブするため、そこで必要な値は先に控えておく
         // （config_root等、他のconfig系フィールドと同じ扱い）。
@@ -1419,6 +1423,7 @@ impl NekoviewApp {
             tag_main_edit_toggle: false,
             tag_attr_options,
             tag_attr_selected,
+            tag_attr_dormant: Vec::new(),
             tag_binding_path: None,
             tag_preview_high_quality,
             tag_preview_texture: None,

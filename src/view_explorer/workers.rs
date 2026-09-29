@@ -418,6 +418,8 @@ impl NekoviewApp {
     /// 終了時に状態を永続化する（旧 eframe::App::on_exit 相当）。
     pub fn on_exit(&mut self) {
         self.req_tx.shutdown();
+        // 編集モードONのまま終了しても、タグ選択を確定保存する。
+        self.deactivate_tag_main_edit();
         self.flush_current_sort_if_changed();
         self.flush_current_bookmark_if_enabled();
         self.persist_state();

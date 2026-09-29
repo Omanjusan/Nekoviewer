@@ -821,6 +821,7 @@ impl NekoviewApp {
         let Some(dir) = path.parent() else { return };
         let Some(filename) = path.file_name().and_then(|n| n.to_str()) else { return };
         let mut ids = self.tag_attr_selected.clone();
+        ids.extend(self.tag_attr_dormant.iter().copied());
         // 「未設定」の仮想エントリはDBへ書かない（何も選ばれていない状態を表す）。
         if let Some(main_id) = self.tag_main_selected {
             if main_id != crate::tag_manager::TAG_MAIN_UNSET_ID {
@@ -878,7 +879,7 @@ impl NekoviewApp {
             .into_iter()
             .filter(|id| !self.tag_main_options.iter().any(|(oid, _)| oid == id))
             .collect();
-        crate::tag_manager::enforce_single_select(&self.tag_manager_categories, &mut self.tag_attr_selected);
+        self.tag_attr_dormant = crate::tag_manager::enforce_single_select(&self.tag_manager_categories, &mut self.tag_attr_selected);
     }
 
     /// メインタグドラムの実効選択肢。`tag_main_selected`が「未設定」仮想エントリの
@@ -1068,6 +1069,8 @@ impl NekoviewApp {
                                     if *single_select {
                                         let elem_ids: Vec<u64> = elements.iter().map(|(id, _)| *id).collect();
                                         self.tag_attr_selected.retain(|s| !elem_ids.contains(s));
+                                        // 明示的な置き換え。同カテゴリの休眠値もここで初めて破棄する。
+                                        self.tag_attr_dormant.retain(|s| !elem_ids.contains(s));
                                     }
                                     self.tag_attr_selected.push(*elem_id);
                                 }
@@ -1124,8 +1127,12 @@ impl NekoviewApp {
             self.tag_main_selected = Some(crate::tag_manager::TAG_MAIN_UNSET_ID);
         }
         self.tag_attr_options = attr_options;
-        self.tag_attr_selected.retain(|s| self.tag_attr_options.contains(s));
-        crate::tag_manager::enforce_single_select(&self.tag_manager_categories, &mut self.tag_attr_selected);
+        // 休眠値も含めて再分離する（単一→複数で復活、複数→単一で休眠化。DBは書き換えない）。
+        let mut all = std::mem::take(&mut self.tag_attr_selected);
+        all.append(&mut self.tag_attr_dormant);
+        all.retain(|s| self.tag_attr_options.contains(s));
+        self.tag_attr_dormant = crate::tag_manager::enforce_single_select(&self.tag_manager_categories, &mut all);
+        self.tag_attr_selected = all;
         crate::tag_manager::save(&self.config.config_root, &self.tag_manager_categories, self.tag_manager_next_tier_id);
     }
 
