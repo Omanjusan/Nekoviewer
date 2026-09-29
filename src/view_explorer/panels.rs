@@ -2460,7 +2460,14 @@ impl NekoviewApp {
         let cols = (((avail_w + GAP) / (cell_w + GAP)).floor() as usize).max(1);
         self.explorer_cols = cols;
 
-        let output = egui::ScrollArea::vertical()
+        // ScrollAreaをタグパネル分だけ右を削った矩形に閉じ込める。フル幅のままだと縦スクロール
+        // バー（ScrollAreaの右端）がFloatingのタグパネルの真下に潜って見えなくなる。
+        let scroll_rect = egui::Rect::from_min_size(
+            ui.cursor().min,
+            egui::vec2(avail_w, ui.available_height()),
+        );
+        let output = ui.scope_builder(egui::UiBuilder::new().max_rect(scroll_rect), |ui| {
+        egui::ScrollArea::vertical()
                 // アイテム上または空白を左ドラッグして一覧をスクロールできるようにする。
                 // セル側はSense::click()のままなので、短いクリックの選択/開く操作は維持される。
                 .scroll_source(egui::scroll_area::ScrollSource::ALL)
@@ -3142,7 +3149,8 @@ impl NekoviewApp {
                 ui.add_enabled(false, egui::Button::new(i18n::t().favorite_detail_menu()));
             });
             grid_response.inner
-        });
+        })
+        }).inner;
         // ユーザーの手動スクロールを読み戻してストアを更新
         self.explorer_scroll_offset = output.state.offset.y;
         self.explorer_viewport_h = output.inner_rect.height();
