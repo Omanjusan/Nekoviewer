@@ -176,11 +176,13 @@ impl super::NekoviewApp {
             OpenPollResult::Ready { entries, check } => {
                 let path = self.pending_open.take().expect("pending_open just polled").path;
                 if self.apply_memory_check(&path, check) {
+                    let is_virtual_book = path.is_dir();
                     let state = crate::view_reader::ViewerState::from_image_entries(
                         path,
                         entries,
                         self.viewer_slots,
                         self.config.default_slot,
+                        is_virtual_book,
                     );
                     self.open_viewer(state);
                 }

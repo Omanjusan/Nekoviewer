@@ -2,6 +2,39 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.10.0] - 2026-09-29
+
+### Added
+
+- (Experimental) Tag panel on the right side of the explorer. Open/closed state and width (drag to resize) are persisted. Includes a thumbnail preview of the selected file. Assigned tags cannot be used for filtering yet
+- (Experimental) Tag management overlay. Add, rename and reorder categories, per-category colors, element editing, multi-select/single-select switching, and comma-separated bulk add. Definitions are saved to `nekoviewer_tags.json`
+- Folder-as-book access. A folder containing only images can be opened as a virtual archive. Toggled from the menu bar; a warning is shown the first time it is turned on. File navigation, adding to favorites, saving spread settings, etc. are disabled for virtual books. When you access a folder that contains only standalone image files, the viewer opens automatically and the explorer also enters the folder. Entering the folder is the default behavior; since this feature also supports folders that combine standalone images with subfolders, the folder is entered at the same time so that you can reach the subfolders
+- "Set score..." dialog in the thumbnail card right-click menu. Ratings in 0.5 steps (☆0.5 to ☆5.0, or unrated) can be set for a single file or for a multiple selection
+- Key assignment dialog. Assign shortcut keys to viewer/toolbox buttons with three modifier-key toggles and a key box
+- The Key Assign tab in GUI settings now shows "Unassigned" for items whose default key was removed. Key conflict warnings are shown for viewer items
+- New toolbox actions: file navigation (previous/next), jump to first/last page, and actual-size toggle
+- New toolbox actions: spread settings (cycle page mode, cycle spread offset back and forth) and window presets (apply slot 1–4, cycle through slots). The categories in the right-click menu were also reorganized
+- Toolbox buttons now show the function name and shortcut key on hover
+- Added a close button to the auto-hide menu bar in fullscreen mode
+- Added help text for folder-as-book access
+
+### Fixed
+
+- Made the scrollbar in the thumbnail card area thicker and easier to grab
+- Fixed an awkward transition
+- Fixed the rating strip (★ / unrated / ✕) not being clickable while the toolbox is hidden
+- Fixed elements in the tag UI not wrapping
+- Removed the gvfs status log at startup and replaced the UID lookup (previously spawning an external process) with `libc::getuid()`. This removes the startup delay (only when a network location is being accessed by the app)
+- Reorganized the shutdown order when closing the explorer window
+
+### Planned
+
+- Copy feature (settings values are copied as well). Since user data other than saved settings data is treated as read-only by policy, moving files is not supported because it would involve a delete operation
+- Clipboard copy of the currently viewed image
+- Filtering by tags for the tagging feature implemented in this version
+- Jump to a specified page / thumbnail position
+- Recommendations based on tags and file names, along with the semi-automatic search that comes with them
+
 ## [1.9.0] - 2026-09-21
 
 ### Added

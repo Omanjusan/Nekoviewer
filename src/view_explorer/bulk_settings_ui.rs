@@ -310,6 +310,115 @@ impl NekoviewApp {
         self.sync_saved_archive_settings(&dialog.targets);
         self.app_toast = Some((build_bulk_setting_toast(&results), std::time::Instant::now()));
     }
+
+    // ── スコアの設定 ──────────────────────────────────────────────────────────
+
+    pub(super) fn open_rating_setting_dialog_for_paths(&mut self, targets: Vec<PathBuf>) {
+        if targets.is_empty() {
+            return;
+        }
+        // 単品選択時は現在のスコアを復元し、ラジオの初期チェック＆「変更前のスコア」欄の両方に使う
+        // （レコード不在＝一度も評価していないファイルも「未評価」= 0 として扱う）。
+        // 複数選択時はスコアの復元ができないため常にNone（どのラジオも未選択）で開く。
+        let original_rating = if targets.len() == 1 {
+            let half = self.spread_db.as_ref().and_then(|db| {
+                let dir = targets[0].parent()?;
+                let name = targets[0].file_name()?.to_str()?;
+                crate::spread_state::read_archive_rating(db, dir, name)
+            }).map(|r| r.rating_half).unwrap_or(0);
+            Some(half)
+        } else {
+            None
+        };
+        self.rating_setting_dialog = Some(RatingSettingDialogState {
+            targets,
+            rating_half: original_rating,
+            original_rating,
+        });
+    }
+
+    pub(super) fn draw_rating_setting_dialog(&mut self, ctx: &egui::Context) {
+        let Some(dialog) = self.rating_setting_dialog.as_mut() else {
+            return;
+        };
+        let mut cancel = false;
+        let mut apply = false;
+        let is_bulk = dialog.targets.len() > 1;
+        // ファイル名が長くても横に伸ばさず、固定幅の中で折り返して縦に伸ばす
+        // （ラジオボタン2行のレイアウトがファイル名の長さに引きずられて崩れるのを防ぐ）。
+        egui::Window::new(i18n::t().rating_setting_dialog_title())
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .max_width(300.0)
+            .show(ctx, |ui| {
+                let label = if is_bulk {
+                    i18n::t().rating_setting_menu_bulk(dialog.targets.len())
+                } else {
+                    Self::dialog_target_label(&dialog.targets)
+                };
+                ui.add(egui::Label::new(label).wrap());
+                let before_value = if is_bulk {
+                    i18n::t().rating_setting_before_multi().to_string()
+                } else {
+                    i18n::t().rating_radio_label(dialog.original_rating.unwrap_or(0))
+                };
+                ui.add(egui::Label::new(format!("{}{}", i18n::t().rating_setting_before_label(), before_value)).wrap());
+                ui.add_space(8.0);
+                // 11項目（★0.5〜★5.0+未評価）を4+4+3の3行に分ける。
+                // 2行(5+6)だと「★2.5 ★3 ★3.5 ★4 ★4.5 ★5」の6項目がmax_width(300)を
+                // 超えてはみ出し、ウィンドウが横に広がってしまう（ui.horizontalは折り返さない）。
+                // 「未評価」は文字幅が★x.xと異なり行の並びを崩すため、先頭ではなく最後尾（3行目末尾）に置く。
+                const ROWS: [&[u8]; 3] = [&[1, 2, 3, 4], &[5, 6, 7, 8], &[9, 10, 0]];
+                for row in ROWS {
+                    ui.horizontal(|ui| {
+                        for &half in row {
+                            let text = i18n::t().rating_radio_label(half);
+                            if ui.radio(dialog.rating_half == Some(half), text).clicked() {
+                                dialog.rating_half = Some(half);
+                            }
+                        }
+                    });
+                }
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button(i18n::t().favorite_dialog_cancel()).clicked() {
+                        cancel = true;
+                    }
+                    if ui.button(i18n::t().bulk_setting_apply_button()).clicked() {
+                        apply = true;
+                    }
+                });
+            });
+
+        if cancel {
+            self.rating_setting_dialog = None;
+        } else if apply {
+            self.commit_rating_setting_dialog();
+        }
+    }
+
+    /// OK押下時の反映。ラジオが未選択（`rating_half == None`）のままなら、複数選択時の
+    /// 操作ミス・未記入ガードとして何も書き込まずダイアログを閉じるだけにする。
+    fn commit_rating_setting_dialog(&mut self) {
+        let Some(dialog) = self.rating_setting_dialog.take() else { return };
+        let Some(rating_half) = dialog.rating_half else { return };
+        let Some(db) = self.spread_db.clone() else { return };
+        let mut results = Vec::with_capacity(dialog.targets.len());
+        for path in &dialog.targets {
+            let dir = path.parent();
+            let filename = path.file_name().and_then(|n| n.to_str());
+            let ok = match (dir, filename) {
+                (Some(dir), Some(filename)) => crate::spread_state::write_archive_rating(&db, dir, filename, rating_half),
+                _ => false,
+            };
+            results.push(BulkSettingResult { target: path.clone(), ok });
+        }
+        for path in &dialog.targets {
+            self.refresh_rating_cache(path);
+        }
+        self.app_toast = Some((build_bulk_setting_toast(&results), std::time::Instant::now()));
+    }
 }
 
 #[cfg(test)]

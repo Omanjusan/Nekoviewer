@@ -181,6 +181,56 @@ impl NekoviewApp {
         }
     }
 
+    /// 「フォルダ本アクセス」トグルのON/OFFを切り替える。ONにする瞬間、初回警告を
+    /// まだ確認していなければ（次回から表示しないチェック済みでなければ）警告ダイアログを開く。
+    pub(super) fn toggle_folder_book_access(&mut self) {
+        if self.folder_book_access_enabled {
+            self.folder_book_access_enabled = false;
+            return;
+        }
+        self.folder_book_access_enabled = true;
+        if !self.config.folder_book_access_warning_seen {
+            self.folder_book_access_notice_dont_show_again = false;
+            self.folder_book_access_notice_open = true;
+        }
+    }
+
+    /// 「フォルダ本アクセス」初回警告ダイアログ。仮想アーカイブは各種保存系操作を
+    /// 行わない旨を知らせる。「次回から表示しない」チェック済みでOKするとstateへ永続化する。
+    pub(super) fn draw_folder_book_access_notice(&mut self, ctx: &egui::Context) {
+        if !self.folder_book_access_notice_open {
+            return;
+        }
+        let lang = i18n::t();
+        let mut open = true;
+        let mut ok_clicked = false;
+        let mut dont_show_again = self.folder_book_access_notice_dont_show_again;
+        egui::Window::new(lang.folder_book_access_notice_title())
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .show(ctx, |ui| {
+                ui.label(lang.folder_book_access_notice_body());
+                ui.add_space(8.0);
+                ui.checkbox(&mut dont_show_again, lang.folder_book_access_notice_dont_show_again());
+                ui.add_space(8.0);
+                ui.vertical_centered(|ui| {
+                    if ui.button(lang.memory_warning_ok()).clicked() {
+                        ok_clicked = true;
+                    }
+                });
+            });
+        self.folder_book_access_notice_dont_show_again = dont_show_again;
+        if ok_clicked || !open {
+            self.folder_book_access_notice_open = false;
+            if dont_show_again {
+                self.config.folder_book_access_warning_seen = true;
+                self.persist_state();
+            }
+        }
+    }
+
     /// 起動時に1度だけ、虫眼鏡の拡大縮小の割り当て結果を知らせるOKダイアログ。
     /// 閉じたら「知らせ済み」をstateへ保存し、以後は出さない。
     pub(super) fn draw_magnifier_zoom_notice(&mut self, ctx: &egui::Context) {
@@ -260,6 +310,7 @@ impl NekoviewApp {
     /// リンク切れ→到達可の遷移を検知した場合、そのマウント配下のサムネ失敗記憶を
     /// 破棄してリトライを解禁する（遷移時のみ。失敗→即再試行の無限ループを避ける）。
     pub(super) fn poll_mount_checks(&mut self) {
+        self.poll_gvfs_list();
         let mut still_pending = Vec::new();
         for (root, rx) in self.mount_check_pending.drain(..) {
             match rx.try_recv() {
@@ -293,22 +344,45 @@ impl NekoviewApp {
     }
 
     /// path が既知のネットワークマウント配下にあれば、そのルートを返す。
-    /// Unix: gvfs_mount_entries キャッシュへの starts_with 判定のみで readdir は行わない
-    /// （GVFS先が不通のとき毎フレーム read_dir("/run/user/uid/gvfs") してUIが
-    /// フリーズするのを避けるため。キャッシュは起動時・reload_current() でのみ更新）。
-    /// Windows: GetDriveTypeW ベースで元々軽量なため、従来の network_mount_root を使う。
-    #[cfg(unix)]
-    pub(super) fn network_mount_root_cached(&self, path: &Path) -> Option<PathBuf> {
-        self.gvfs_mount_entries
-            .iter()
-            .map(|m| &m.path)
-            .find(|root| path.starts_with(root))
-            .cloned()
-    }
-
-    #[cfg(not(unix))]
+    /// Unix はパス構造だけで判定し（I/O なし）、Windows は GetDriveTypeW ベースでどちらも軽量なため、
+    /// 毎フレーム呼んでも UI は止まらない。
     pub(super) fn network_mount_root_cached(&self, path: &Path) -> Option<PathBuf> {
         crate::fs::mount::network_mount_root(path)
+    }
+
+    /// gvfs マウント一覧のバックグラウンド取得を発火する（進行中なら何もしない）。
+    pub(super) fn start_gvfs_list(&mut self) {
+        if self.gvfs_list_pending.is_some() {
+            return;
+        }
+        let ctx = self.egui_ctx.clone();
+        self.gvfs_list_pending = Some(crate::fs::mount::spawn_list_gvfs_smb_mounts(move || ctx.request_repaint()));
+    }
+
+    /// gvfs マウント一覧の取得結果を受け取り、ドライブ一覧の gvfs 部分を差し替えて各マウントの
+    /// 到達可否確認を発火する。不通と判定済みのマウントは、復活が確認できるまで一覧に出さない。
+    pub(super) fn poll_gvfs_list(&mut self) {
+        let Some(rx) = &self.gvfs_list_pending else { return };
+        let mounts = match rx.try_recv() {
+            Ok(mounts) => mounts,
+            Err(mpsc::TryRecvError::Empty) => return,
+            Err(mpsc::TryRecvError::Disconnected) => {
+                self.gvfs_list_pending = None;
+                return;
+            }
+        };
+        self.gvfs_list_pending = None;
+        for mount in &mounts {
+            self.spawn_mount_check_if_needed(mount.path.clone());
+        }
+        self.drives.retain(|d| crate::fs::mount::network_mount_root(&d.path).is_none());
+        self.drives.extend(
+            mounts
+                .iter()
+                .filter(|m| !self.network_unreachable_mounts.contains(&m.path))
+                .cloned(),
+        );
+        self.gvfs_mount_entries = mounts;
     }
 
     /// サムネ失敗・無効ZIP確定などの開封失敗を検知した際、それがネットワーク

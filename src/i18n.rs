@@ -257,6 +257,65 @@ impl Lang {
         }
     }
 
+    /// ページモード切替トースト用文言（角括弧なし）。
+    pub fn toast_page_mode_single(self) -> &'static str {
+        match self {
+            Lang::Japanese => "単ページ",
+            Lang::English  => "Single Page",
+            Lang::Chinese  => "单页",
+        }
+    }
+
+    pub fn toast_page_mode_spread_left(self) -> &'static str {
+        match self {
+            Lang::Japanese => "見開き 左綴じ",
+            Lang::English  => "Spread (Left-bound)",
+            Lang::Chinese  => "跨页（左翻）",
+        }
+    }
+
+    pub fn toast_page_mode_spread_right(self) -> &'static str {
+        match self {
+            Lang::Japanese => "見開き 右綴じ",
+            Lang::English  => "Spread (Right-bound)",
+            Lang::Chinese  => "跨页（右翻）",
+        }
+    }
+
+    /// 見開きオフセット変更トースト用文言（前後ボタン・キーボード・循環ボタン共通）。
+    pub fn toast_spread_offset_minus_one(self) -> &'static str {
+        match self {
+            Lang::Japanese => "見開きのオフセットを-1で設定しました",
+            Lang::English  => "Spread offset set to -1",
+            Lang::Chinese  => "跨页偏移已设为 -1",
+        }
+    }
+
+    pub fn toast_spread_offset_zero(self) -> &'static str {
+        match self {
+            Lang::Japanese => "見開きのオフセットなしに設定しました",
+            Lang::English  => "Spread offset cleared",
+            Lang::Chinese  => "已清除跨页偏移",
+        }
+    }
+
+    pub fn toast_spread_offset_plus_one(self) -> &'static str {
+        match self {
+            Lang::Japanese => "見開きのオフセットを+1で設定しました",
+            Lang::English  => "Spread offset set to +1",
+            Lang::Chinese  => "跨页偏移已设为 +1",
+        }
+    }
+
+    /// ウィンドウスロット適用トースト用文言（F5〜F8・パレット個別ボタン・循環ボタン共通）。
+    pub fn toast_slot_applied(self, n: usize) -> String {
+        match self {
+            Lang::Japanese => format!("スロット{n}のウィンドウ位置とサイズを復元しました"),
+            Lang::English  => format!("Restored window position and size from slot {n}"),
+            Lang::Chinese  => format!("已从插槽{n}恢复窗口位置和大小"),
+        }
+    }
+
     pub fn spread_back(self) -> &'static str {
         match self {
             Lang::Japanese => "[1P戻す]",
@@ -623,6 +682,64 @@ impl Lang {
             Lang::Japanese => "最初から見開きページとして開く",
             Lang::English  => "Pair pages from page 1",
             Lang::Chinese  => "从第1页开始双页显示",
+        }
+    }
+
+    /// エクスプローラー部アイテムカード右クリックメニュー「スコアの設定」（単一選択時）
+    pub fn rating_setting_menu(self) -> &'static str {
+        match self {
+            Lang::Japanese => "スコアの設定...",
+            Lang::English  => "Score Setting...",
+            Lang::Chinese  => "评分设置...",
+        }
+    }
+
+    pub fn rating_setting_menu_bulk(self, count: usize) -> String {
+        match self {
+            Lang::Japanese => format!("スコアの設定... ({count}件)"),
+            Lang::English  => format!("Score Setting... ({count} items)"),
+            Lang::Chinese  => format!("评分设置...（{count} 项）"),
+        }
+    }
+
+    pub fn rating_setting_dialog_title(self) -> &'static str {
+        match self {
+            Lang::Japanese => "スコアの変更",
+            Lang::English  => "Change Score",
+            Lang::Chinese  => "更改评分",
+        }
+    }
+
+    /// スコア設定ダイアログのラジオボタン1個分のラベル。
+    /// `half`=0で「未評価」、1..=10で☆0.5〜☆5.0（`archive_rating`のrating_halfと同じ値域）。
+    pub fn rating_radio_label(self, half: u8) -> String {
+        if half == 0 {
+            return match self {
+                Lang::Japanese => "未評価".to_string(),
+                Lang::English  => "Unrated".to_string(),
+                Lang::Chinese  => "未评价".to_string(),
+            };
+        }
+        let whole = half / 2;
+        let num = if half % 2 == 0 { format!("{whole}") } else { format!("{whole}.5") };
+        format!("★{num}")
+    }
+
+    /// スコア設定ダイアログ「変更前のスコア：」の見出し
+    pub fn rating_setting_before_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "変更前のスコア：",
+            Lang::English  => "Current score: ",
+            Lang::Chinese  => "当前评分：",
+        }
+    }
+
+    /// スコア設定ダイアログ: 複数選択時、変更前のスコアを表示しない旨の文言
+    pub fn rating_setting_before_multi(self) -> &'static str {
+        match self {
+            Lang::Japanese => "複数選択のため表示無し",
+            Lang::English  => "Not shown (multiple selection)",
+            Lang::Chinese  => "多选时不显示",
         }
     }
 
@@ -1830,6 +1947,52 @@ impl Lang {
             (Lang::English, false)  => "Toolbox: OFF",
             (Lang::Chinese, true)   => "工具箱：开",
             (Lang::Chinese, false)  => "工具箱：关",
+        }
+    }
+
+    pub fn tag_main_edit_toggle_button(self, on: bool) -> &'static str {
+        match (self, on) {
+            (Lang::Japanese, true)  => "編集モードON",
+            (Lang::Japanese, false) => "編集モードOFF",
+            (Lang::English, true)   => "Edit Mode: ON",
+            (Lang::English, false)  => "Edit Mode: OFF",
+            (Lang::Chinese, true)   => "编辑模式：开",
+            (Lang::Chinese, false)  => "编辑模式：关",
+        }
+    }
+
+    pub fn folder_book_access_toggle_button(self, on: bool) -> &'static str {
+        match (self, on) {
+            (Lang::Japanese, true)  => "フォルダ本アクセスON",
+            (Lang::Japanese, false) => "フォルダ本アクセスOFF",
+            (Lang::English, true)   => "Folder-as-Book: ON",
+            (Lang::English, false)  => "Folder-as-Book: OFF",
+            (Lang::Chinese, true)   => "文件夹当书：开",
+            (Lang::Chinese, false)  => "文件夹当书：关",
+        }
+    }
+
+    pub fn folder_book_access_notice_title(self) -> &'static str {
+        match self {
+            Lang::Japanese => "フォルダ本アクセスについて",
+            Lang::English  => "About Folder-as-Book",
+            Lang::Chinese  => "关于文件夹当书",
+        }
+    }
+
+    pub fn folder_book_access_notice_body(self) -> &'static str {
+        match self {
+            Lang::Japanese => "単体画像だけで構成されているフォルダにアクセスしたときアーカイブに見立てて閲覧できるモードです。単体画像+サブフォルダ構成も対象ですが単体画像+アーカイブファイルの構成はこの機能の対象外です\n\nこの閲覧はあくまで仮のものです。しおり・見開き・ソート・サムネイル登録・お気に入り・評価など、本物のアーカイブで使える各種保存機能は利用できません。",
+            Lang::English  => "This mode lets you view a folder made up only of standalone images as if it were an archive. Folders containing standalone images plus subfolders are also supported, but folders mixing standalone images with archive files are not.\n\nThis is a temporary, virtual view only. Save features available for real archives — bookmarks, spread mode, sort order, thumbnail selection, favorites, and ratings — are not available here.",
+            Lang::Chinese  => "此模式可让您像浏览档案一样查看仅由独立图片组成的文件夹。包含独立图片和子文件夹的结构也支持，但独立图片与档案文件混合的结构不在此功能范围内。\n\n此浏览仅为临时的虚拟视图。书签、跨页模式、排序、缩略图选择、收藏、评分等仅适用于真实档案的保存功能，在此均不可用。",
+        }
+    }
+
+    pub fn folder_book_access_notice_dont_show_again(self) -> &'static str {
+        match self {
+            Lang::Japanese => "次回から表示しない",
+            Lang::English  => "Don't show this again",
+            Lang::Chinese  => "下次不再显示",
         }
     }
 
@@ -3489,6 +3652,152 @@ impl Lang {
         }
     }
 
+    pub fn tool_palette_action_label_file_nav_prev(self) -> &'static str {
+        match self {
+            Lang::Japanese => "前のファイル",
+            Lang::English  => "Prev File",
+            Lang::Chinese  => "上一个文件",
+        }
+    }
+
+    pub fn tool_palette_action_label_file_nav_next(self) -> &'static str {
+        match self {
+            Lang::Japanese => "次のファイル",
+            Lang::English  => "Next File",
+            Lang::Chinese  => "下一个文件",
+        }
+    }
+
+    pub fn tool_palette_action_label_jump_first_page(self) -> &'static str {
+        match self {
+            Lang::Japanese => "先頭ページへ",
+            Lang::English  => "Jump to First Page",
+            Lang::Chinese  => "跳到首页",
+        }
+    }
+
+    pub fn tool_palette_action_label_jump_last_page(self) -> &'static str {
+        match self {
+            Lang::Japanese => "末尾ページへ",
+            Lang::English  => "Jump to Last Page",
+            Lang::Chinese  => "跳到末页",
+        }
+    }
+
+    pub fn tool_palette_action_label_toggle_zoom_actual(self) -> &'static str {
+        match self {
+            Lang::Japanese => "等倍/fit切替",
+            Lang::English  => "Toggle Actual Size",
+            Lang::Chinese  => "切换等倍/适应",
+        }
+    }
+
+    pub fn tool_palette_action_label_cycle_page_mode(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ページモード切替",
+            Lang::English  => "Cycle Page Mode",
+            Lang::Chinese  => "切换页面模式",
+        }
+    }
+
+    pub fn tool_palette_action_label_cycle_spread_offset(self) -> &'static str {
+        match self {
+            Lang::Japanese => "見開きオフセット切替",
+            Lang::English  => "Cycle Spread Offset",
+            Lang::Chinese  => "切换跨页偏移",
+        }
+    }
+
+    pub fn tool_palette_action_label_apply_slot1(self) -> &'static str {
+        match self {
+            Lang::Japanese => "スロット1適用",
+            Lang::English  => "Apply Slot 1",
+            Lang::Chinese  => "应用插槽1",
+        }
+    }
+
+    pub fn tool_palette_action_label_apply_slot2(self) -> &'static str {
+        match self {
+            Lang::Japanese => "スロット2適用",
+            Lang::English  => "Apply Slot 2",
+            Lang::Chinese  => "应用插槽2",
+        }
+    }
+
+    pub fn tool_palette_action_label_apply_slot3(self) -> &'static str {
+        match self {
+            Lang::Japanese => "スロット3適用",
+            Lang::English  => "Apply Slot 3",
+            Lang::Chinese  => "应用插槽3",
+        }
+    }
+
+    pub fn tool_palette_action_label_apply_slot4(self) -> &'static str {
+        match self {
+            Lang::Japanese => "スロット4適用",
+            Lang::English  => "Apply Slot 4",
+            Lang::Chinese  => "应用插槽4",
+        }
+    }
+
+    pub fn tool_palette_action_label_cycle_apply_slot(self) -> &'static str {
+        match self {
+            Lang::Japanese => "スロット適用切替",
+            Lang::English  => "Cycle Apply Slot",
+            Lang::Chinese  => "切换应用插槽",
+        }
+    }
+
+    // ── ツールパレット登録メニューのカテゴリ（tool_palette/category.rs） ──
+
+    pub fn tool_palette_category_navigate(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ナビゲート",
+            Lang::English  => "Navigate",
+            Lang::Chinese  => "导航",
+        }
+    }
+
+    pub fn tool_palette_category_reading_view(self) -> &'static str {
+        match self {
+            Lang::Japanese => "読書補助（閲覧）",
+            Lang::English  => "Reading Aids (Viewing)",
+            Lang::Chinese  => "阅读辅助（浏览）",
+        }
+    }
+
+    pub fn tool_palette_category_image_quality(self) -> &'static str {
+        match self {
+            Lang::Japanese => "画質",
+            Lang::English  => "Image Quality",
+            Lang::Chinese  => "画质",
+        }
+    }
+
+    pub fn tool_palette_category_display(self) -> &'static str {
+        match self {
+            Lang::Japanese => "表示・ウィンドウ",
+            Lang::English  => "Display / Window",
+            Lang::Chinese  => "显示・窗口",
+        }
+    }
+
+    pub fn tool_palette_category_spread_settings(self) -> &'static str {
+        match self {
+            Lang::Japanese => "見開き設定",
+            Lang::English  => "Spread Settings",
+            Lang::Chinese  => "跨页设置",
+        }
+    }
+
+    pub fn tool_palette_category_window_preset(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ウィンドウプリセット",
+            Lang::English  => "Window Preset",
+            Lang::Chinese  => "窗口预设",
+        }
+    }
+
     pub fn tool_palette_dialog_title_image_filter(self) -> &'static str {
         match self {
             Lang::Japanese => "画像フィルタ",
@@ -3518,6 +3827,14 @@ impl Lang {
             Lang::Japanese => format!("背景の透過度：{pct}%（クリックで10%刻みに変更）"),
             Lang::English  => format!("Background opacity: {pct}% (click to change by 10%)"),
             Lang::Chinese  => format!("背景透明度：{pct}%（点击以10%为单位调整）"),
+        }
+    }
+
+    pub fn fs_close_button_hint(self) -> &'static str {
+        match self {
+            Lang::Japanese => "閉じる (Esc)",
+            Lang::English  => "Close (Esc)",
+            Lang::Chinese  => "关闭 (Esc)",
         }
     }
 
@@ -3553,6 +3870,30 @@ impl Lang {
         }
     }
 
+    pub fn tool_palette_row_edit_lock_hint(self) -> &'static str {
+        match self {
+            Lang::Japanese => "行数編集ロックON/OFF（ONの間は下の−/＋ボタンが無効）",
+            Lang::English  => "Row-edit lock ON/OFF (the −/+ buttons below are disabled while ON)",
+            Lang::Chinese  => "行编辑锁定开关（开启时下方的−/+按钮不可用）",
+        }
+    }
+
+    pub fn tool_palette_row_add_hint(self) -> &'static str {
+        match self {
+            Lang::Japanese => "行を1つ増やす（最大5行。非表示だった行は元の内容のまま復活）",
+            Lang::English  => "Add one row (up to 5 rows; a previously hidden row comes back with its content intact)",
+            Lang::Chinese  => "增加一行（最多5行；之前隐藏的行会保留原内容恢复显示）",
+        }
+    }
+
+    pub fn tool_palette_row_remove_hint(self) -> &'static str {
+        match self {
+            Lang::Japanese => "行を1つ減らす（最小1行。内容は消さずに非表示にするだけ）",
+            Lang::English  => "Remove one row (down to 1 row; this only hides it, content is kept)",
+            Lang::Chinese  => "减少一行（最少1行；仅隐藏，内容不会被删除）",
+        }
+    }
+
     pub fn tool_palette_dialog_close(self) -> &'static str {
         match self {
             Lang::Japanese => "閉じる",
@@ -3574,6 +3915,118 @@ impl Lang {
             Lang::Japanese => "（右クリックで変更）",
             Lang::English  => " (right-click to change)",
             Lang::Chinese  => "（右键点击以更改）",
+        }
+    }
+
+    pub fn tool_palette_slot_hover_name_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ボタン名: ",
+            Lang::English  => "Button: ",
+            Lang::Chinese  => "按钮名称: ",
+        }
+    }
+
+    pub fn tool_palette_slot_hover_shortcut_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ショートカットキー: ",
+            Lang::English  => "Shortcut key: ",
+            Lang::Chinese  => "快捷键: ",
+        }
+    }
+
+    pub fn tool_palette_slot_hover_change_hint(self) -> &'static str {
+        match self {
+            Lang::Japanese => "(ボタン箇所を右クリックで各種変更)",
+            Lang::English  => "(Right-click the button for various changes)",
+            Lang::Chinese  => "（在按钮处右键点击进行各种更改）",
+        }
+    }
+
+    pub fn tool_palette_slot_shortcut_none(self) -> &'static str {
+        match self {
+            Lang::Japanese => "なし",
+            Lang::English  => "None",
+            Lang::Chinese  => "无",
+        }
+    }
+
+    pub fn tool_palette_key_assign_menu_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "キー割当",
+            Lang::English  => "Assign key",
+            Lang::Chinese  => "分配按键",
+        }
+    }
+
+    pub fn tool_palette_key_assign_title(self) -> &'static str {
+        match self {
+            Lang::Japanese => "キー割当",
+            Lang::English  => "Key assignment",
+            Lang::Chinese  => "按键分配",
+        }
+    }
+
+    pub fn tool_palette_key_assign_none(self) -> &'static str {
+        match self {
+            Lang::Japanese => "割当なし",
+            Lang::English  => "Not assigned",
+            Lang::Chinese  => "未分配",
+        }
+    }
+
+    pub fn tool_palette_key_assign_prompt(self) -> &'static str {
+        match self {
+            Lang::Japanese => "割当をしたいキーを押してください",
+            Lang::English  => "Press the key you want to assign",
+            Lang::Chinese  => "请按下要分配的按键",
+        }
+    }
+
+    pub fn tool_palette_key_assign_unassign(self) -> &'static str {
+        match self {
+            Lang::Japanese => "割当解除",
+            Lang::English  => "Unassign",
+            Lang::Chinese  => "解除分配",
+        }
+    }
+
+    pub fn tool_palette_key_assign_save(self) -> &'static str {
+        match self {
+            Lang::Japanese => "保存",
+            Lang::English  => "Save",
+            Lang::Chinese  => "保存",
+        }
+    }
+
+    pub fn tool_palette_key_assign_overwrite(self) -> &'static str {
+        match self {
+            Lang::Japanese => "上書き",
+            Lang::English  => "Overwrite",
+            Lang::Chinese  => "覆盖",
+        }
+    }
+
+    pub fn tool_palette_key_assign_cancel(self) -> &'static str {
+        match self {
+            Lang::Japanese => "キャンセル",
+            Lang::English  => "Cancel",
+            Lang::Chinese  => "取消",
+        }
+    }
+
+    pub fn tool_palette_key_assign_conflict(self, name: &str) -> String {
+        match self {
+            Lang::Japanese => format!("{name}機能とキー割当が衝突しています"),
+            Lang::English  => format!("This key is already assigned to \"{name}\""),
+            Lang::Chinese  => format!("该按键与“{name}”功能冲突"),
+        }
+    }
+
+    pub fn tool_palette_key_assign_overwrite_note(self, name: &str) -> String {
+        match self {
+            Lang::Japanese => format!("この割当を優先して保存します。代わりに{name}機能の割当は削除されます"),
+            Lang::English  => format!("This assignment will take priority. The key will be removed from \"{name}\""),
+            Lang::Chinese  => format!("将优先保存此分配，“{name}”功能的按键分配将被删除"),
         }
     }
 
@@ -3789,6 +4242,11 @@ impl Lang {
                 title: "ON/OFFトグル",
                 sections: &[
                     (
+                        "[フォルダ本アクセス]",
+                        "単体画像で構成されるフォルダにアクセスしたとき、フォルダへの移動と同時にビューアーを立ち上げ、\n\
+                         1アーカイブとして閲覧できるモード。なお、実アーカイブのような各種設定は保存できない。",
+                    ),
+                    (
                         "[ツールボックス]",
                         "ビューアー内のツールパレット（マス配置のツールボックス）の表示ON/OFF。\n\
                          ファイルを移っても状態は保たれる。",
@@ -3804,6 +4262,12 @@ impl Lang {
                 title: "ON/OFF toggles",
                 sections: &[
                     (
+                        "[Folder-as-Book]",
+                        "When you navigate into a folder made up of standalone images, the viewer launches at the\n\
+                         same time and opens it as if it were a single archive. Note that, unlike a real archive,\n\
+                         its settings cannot be saved.",
+                    ),
+                    (
                         "[Toolbox]",
                         "Shows or hides the tool palette (grid-layout toolbox) in the viewer.\n\
                          The state is kept when you move between files.",
@@ -3818,6 +4282,11 @@ impl Lang {
             Lang::Chinese => HelpDoc {
                 title: "开/关切换",
                 sections: &[
+                    (
+                        "[文件夹当书]",
+                        "进入仅由独立图片组成的文件夹时，会同时启动查看器，将其作为单个档案打开浏览。\n\
+                         请注意，与真实档案不同，此模式下的各项设置无法保存。",
+                    ),
                     (
                         "[工具箱]",
                         "显示/隐藏查看器内的工具面板（格子布局的工具箱）。\n\
@@ -4907,6 +5376,59 @@ impl Lang {
                     (
                         "■ 多选时",
                         "一次性应用到所有选中的压缩包。\n\
+                         文件夹、单张图片和无法打开的压缩包不在范围内。",
+                    ),
+                ],
+            },
+        }
+    }
+
+    pub fn help_card_rating(self) -> HelpDoc {
+        match self {
+            Lang::Japanese => HelpDoc {
+                title: "スコアの設定...",
+                sections: &[
+                    (
+                        "",
+                        "このアーカイブのスコア（評価）を★0.5〜★5.0の範囲で手動設定する。\n\
+                         「未評価」を選ぶと評価を消す。",
+                    ),
+                    (
+                        "■ 複数選択しているとき",
+                        "スコアの復元はできないため、どのラジオボタンも選択されていない状態で開く。\n\
+                         未選択のままOKを押しても何も変更しない（誤操作防止）。\n\
+                         フォルダ、単体の画像、開けないアーカイブは対象外。",
+                    ),
+                ],
+            },
+            Lang::English => HelpDoc {
+                title: "Score setting...",
+                sections: &[
+                    (
+                        "",
+                        "Manually sets this archive's score in the ★0.5–★5.0 range.\n\
+                         Choosing \"Unrated\" clears the score.",
+                    ),
+                    (
+                        "■ With multiple selection",
+                        "Since the current score cannot be restored, the dialog opens with no radio button selected.\n\
+                         Pressing OK while nothing is selected changes nothing (mis-operation guard).\n\
+                         Folders, single images and archives that cannot be opened are excluded.",
+                    ),
+                ],
+            },
+            Lang::Chinese => HelpDoc {
+                title: "评分设置...",
+                sections: &[
+                    (
+                        "",
+                        "手动设置此压缩包的评分（★0.5〜★5.0）。\n\
+                         选择“未评价”可清除评分。",
+                    ),
+                    (
+                        "■ 多选时",
+                        "由于无法恢复原评分，对话框打开时不选中任何单选按钮。\n\
+                         未选择任何项时点击确定不会做任何更改（防误操作）。\n\
                          文件夹、单张图片和无法打开的压缩包不在范围内。",
                     ),
                 ],

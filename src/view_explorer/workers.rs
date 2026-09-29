@@ -418,9 +418,28 @@ impl NekoviewApp {
     /// 終了時に状態を永続化する（旧 eframe::App::on_exit 相当）。
     pub fn on_exit(&mut self) {
         self.req_tx.shutdown();
+        // 編集モードONのまま終了しても、タグ選択を確定保存する。
+        self.deactivate_tag_main_edit();
         self.flush_current_sort_if_changed();
         self.flush_current_bookmark_if_enabled();
         self.persist_state();
+    }
+
+    /// タグパネル高画質プレビュー: ワーカー結果を受けてテクスチャ化する。
+    /// 受信時点で選択中ファイルと一致しなければ（選択が変わった後の古い結果）破棄する。
+    fn apply_tag_preview_result(&mut self, ctx: &egui::Context, result: ThumbResult) {
+        if self.tag_preview_pending.as_deref() == Some(result.path.as_path()) {
+            self.tag_preview_pending = None;
+        }
+        let Some(idx) = self.selected_archive_index else { return };
+        let Some(current_path) = self.archives.get(idx) else { return };
+        if *current_path != result.path {
+            return;
+        }
+        let Some(rgba) = result.rgba else { return };
+        let name = result.path.display().to_string();
+        let tex = upload_texture(ctx, &name, &rgba);
+        self.tag_preview_texture = Some((result.path, tex));
     }
 
     pub(super) fn poll_workers(&mut self, ctx: &egui::Context) {
@@ -445,6 +464,13 @@ impl NekoviewApp {
             std::iter::from_fn(|| self.thumb_res_rx.try_recv().ok()).collect();
         for result in thumb_results {
             if result.session_id != self.thumb_session.load(std::sync::atomic::Ordering::Acquire) {
+                continue;
+            }
+            if result.is_tag_preview {
+                // タグパネル高画質プレビュー専用の結果。グリッド用の
+                // current_dir/requested_edge一致フィルタは適用しない
+                // （タグパネル専用の固定解像度で送っているため一致しない）。
+                self.apply_tag_preview_result(ctx, result);
                 continue;
             }
             if result.path.parent().is_some_and(|parent| parent == self.current_dir)

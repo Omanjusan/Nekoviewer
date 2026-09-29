@@ -407,6 +407,8 @@ pub struct AppState {
     pub app_magnifier_zoom_notice_shown: Option<bool>,
     /// `max_decode_edge` の既定値底上げ（1920→4000）の確認を済ませたか。
     pub app_max_decode_edge_prompt_answered: Option<bool>,
+    /// 「フォルダ本アクセス」初回警告を「次回から表示しない」済みで確認したか。
+    pub app_folder_book_access_warning_seen: Option<bool>,
     /// 外側Noneはキー未記載（ハードコード既定値を使う）、内側Noneはユーザーが明示的に選んだ「なし」。
     pub app_default_slot: Option<Option<usize>>,
     /// 翻訳機能(実験的)の接続先・オーバーレイ設定。
@@ -415,6 +417,14 @@ pub struct AppState {
     pub tab_positions: TabPositions,
     /// ツリー（仮想・実）の並び条件。位置と違い、`use_last_dir` の影響を受けない。
     pub tree_sorts: crate::tree_sort::TreeSorts,
+    /// タグ機能・レイアウト器: 右タグパネルを開いているか。
+    pub tag_panel_open: bool,
+    /// タグ機能・レイアウト器: 右タグパネルの幅（開いている時、D&Dリサイズ対象）。
+    pub tag_panel_width: f32,
+    /// タグ機能・レイアウト器: タグパネルの編集モード（上側ツマミでさらに中央側へ展開）。
+    pub tag_panel_edit_expanded: bool,
+    /// タグパネルのプレビューを専用解像度で高画質デコード表示するか。
+    pub tag_preview_high_quality: bool,
 }
 
 impl Default for AppState {
@@ -446,10 +456,15 @@ impl Default for AppState {
             app_decode_threads: None,
             app_magnifier_zoom_notice_shown: None,
             app_max_decode_edge_prompt_answered: None,
+            app_folder_book_access_warning_seen: None,
             app_default_slot: None,
             translate_cfg: TranslateConfig::default(),
             tab_positions: TabPositions::default(),
             tree_sorts: crate::tree_sort::TreeSorts::default(),
+            tag_panel_open: false,
+            tag_panel_width: 280.0,
+            tag_panel_edit_expanded: false,
+            tag_preview_high_quality: false,
         }
     }
 }
@@ -503,6 +518,8 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
     let mut viewer_fullscreen: Option<bool> = None;
     let mut redecode_on_resize: Option<bool> = None;
     let mut show_hidden: Option<bool> = None;
+    let mut tag_panel_open: Option<bool> = None;
+    let mut tag_preview_high_quality: Option<bool> = None;
     let mut card_info_mode: Option<String> = None;
     let mut card_rating_mode: Option<String> = None;
     // カード日付書式の6キー（未記載は CardDateFormat::from_state 側で各既定へフォールバック）
@@ -529,6 +546,7 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
     let mut app_decode_threads: Option<usize> = None;
     let mut app_magnifier_zoom_notice_shown: Option<bool> = None;
     let mut app_max_decode_edge_prompt_answered: Option<bool> = None;
+    let mut app_folder_book_access_warning_seen: Option<bool> = None;
     let mut app_default_slot: Option<Option<usize>> = None;
     let mut thumbbar_pos: Option<ThumbbarPos> = None;
     let mut thumbbar_thumb_size: Option<u32> = None;
@@ -578,6 +596,8 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
     let mut tool_palette_opacity_pct: Option<u8> = None;
     let mut tool_palette_visible: Option<bool> = None;
     let mut tool_palette_slot_size_idx: Option<usize> = None;
+    let mut tool_palette_visible_rows: Option<usize> = None;
+    let mut tool_palette_row_edit_locked: Option<bool> = None;
     let mut tool_palette_slots: Option<[PaletteSlotContent; SLOT_COUNT]> = None;
     // マス毎のカスタム名称。キー無し = None（デフォルトラベルを使う）。空文字は「明示的に空欄」。
     let mut tool_palette_labels: [Option<String>; SLOT_COUNT] = [(); SLOT_COUNT].map(|_| None);
@@ -646,6 +666,8 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
                 "viewer_fullscreen" => { viewer_fullscreen = v.trim().parse().ok(); }
                 "redecode_on_resize" => { redecode_on_resize = v.trim().parse().ok(); }
                 "show_hidden" => { show_hidden = v.trim().parse().ok(); }
+                "tag_panel_open" => { tag_panel_open = v.trim().parse().ok(); }
+                "tag_preview_high_quality" => { tag_preview_high_quality = v.trim().parse().ok(); }
                 "card_info_mode" => { card_info_mode = Some(v.trim().to_string()); }
                 "card_rating_mode" => { card_rating_mode = Some(v.trim().to_string()); }
                 "card_date_mode" => { card_date_mode = v.trim().to_string(); }
@@ -683,6 +705,7 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
                 "app_decode_threads" => { app_decode_threads = v.trim().parse().ok(); }
                 "app_magnifier_zoom_notice_shown" => { app_magnifier_zoom_notice_shown = v.trim().parse().ok(); }
                 "app_max_decode_edge_prompt_answered" => { app_max_decode_edge_prompt_answered = v.trim().parse().ok(); }
+                "app_folder_book_access_warning_seen" => { app_folder_book_access_warning_seen = v.trim().parse().ok(); }
                 "app_default_slot" => {
                     app_default_slot = Some(match v.trim() {
                         "5" => Some(0),
@@ -787,6 +810,11 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
                     tool_palette_slot_size_idx = v.trim().parse::<usize>().ok()
                         .map(|n| n.min(crate::tool_palette::SLOT_SIZE_STEPS_PX.len() - 1));
                 }
+                "tool_palette_visible_rows" => {
+                    tool_palette_visible_rows = v.trim().parse::<usize>().ok()
+                        .map(|n| n.clamp(crate::tool_palette::MIN_GRID_ROWS, crate::tool_palette::MAX_GRID_ROWS));
+                }
+                "tool_palette_row_edit_locked" => { tool_palette_row_edit_locked = v.trim().parse().ok(); }
                 "tool_palette_slots" => {
                     // 前方互換: 未知IDはEmpty扱い、要素が足りない/多い場合はSLOT_COUNT基準で埋める/切り捨てる。
                     let parsed: Vec<PaletteSlotContent> = v.split(',').map(slot_content_from_id).collect();
@@ -889,6 +917,8 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
                     opacity_pct: tool_palette_opacity_pct.unwrap_or(default.opacity_pct),
                     visible: tool_palette_visible.unwrap_or(default.visible),
                     slot_size_idx: tool_palette_slot_size_idx.unwrap_or(default.slot_size_idx),
+                    visible_rows: tool_palette_visible_rows.unwrap_or(default.visible_rows),
+                    row_edit_locked: tool_palette_row_edit_locked.unwrap_or(default.row_edit_locked),
                     slots: tool_palette_slots.unwrap_or(default.slots),
                     custom_labels: tool_palette_labels,
                 }
@@ -937,6 +967,7 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
         app_decode_threads,
         app_magnifier_zoom_notice_shown,
         app_max_decode_edge_prompt_answered,
+        app_folder_book_access_warning_seen,
         app_default_slot,
         translate_cfg: TranslateConfig {
             base_url: translate_base_url.unwrap_or_default(),
@@ -955,6 +986,11 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
             },
         },
         tree_sorts: crate::tree_sort::TreeSorts { virtual_tree: tree_sort_virtual, real_tree: tree_sort_real },
+        tag_panel_open: tag_panel_open.unwrap_or(false),
+        // タグパネルの幅・編集モード展開状態は未配線、既定値のみ
+        tag_panel_width: 280.0,
+        tag_panel_edit_expanded: false,
+        tag_preview_high_quality: tag_preview_high_quality.unwrap_or(false),
     })
 }
 
@@ -976,16 +1012,17 @@ fn magnifier_state_lines(m: &crate::magnifier::MagnifierConfig) -> String {
     lines
 }
 
-pub fn save_state(root: &Path, dir: &Path, window_size: (u32, u32), viewer_slots: &[Option<WindowSlot>; 4], sort_state: &SortState, lang: &str, viewer_cfg: &ViewerConfig, show_hidden: bool, card_info_mode: &str, card_rating_mode: &str, card_date_format: &CardDateFormat, app_cfg: &AppConfig, translate_cfg: &TranslateConfig, tab_positions: &TabPositions, tree_sorts: &crate::tree_sort::TreeSorts) {
+#[allow(clippy::too_many_arguments)]
+pub fn save_state(root: &Path, dir: &Path, window_size: (u32, u32), viewer_slots: &[Option<WindowSlot>; 4], sort_state: &SortState, lang: &str, viewer_cfg: &ViewerConfig, show_hidden: bool, card_info_mode: &str, card_rating_mode: &str, card_date_format: &CardDateFormat, app_cfg: &AppConfig, translate_cfg: &TranslateConfig, tab_positions: &TabPositions, tree_sorts: &crate::tree_sort::TreeSorts, tag_panel_open: bool, tag_preview_high_quality: bool) {
     let _ = std::fs::create_dir_all(root);
     let (path, bak, tmp) = (state_path(root), state_bak_path(root), state_tmp_path(root));
 
     let mut content = format!(
-        "last_dir={}\nwindow_width={}\nwindow_height={}\nsort_key={}\nsort_ascending={}\nlang={}\nviewer_zoom={}\nviewer_fullscreen={}\nredecode_on_resize={}\nresize_debounce_ms={}\nshow_hidden={}\ncard_info_mode={}\ncard_rating_mode={}\nrating_sort_key={}\nrating_sort_ascending={}\n",
+        "last_dir={}\nwindow_width={}\nwindow_height={}\nsort_key={}\nsort_ascending={}\nlang={}\nviewer_zoom={}\nviewer_fullscreen={}\nredecode_on_resize={}\nresize_debounce_ms={}\nshow_hidden={}\ncard_info_mode={}\ncard_rating_mode={}\nrating_sort_key={}\nrating_sort_ascending={}\ntag_panel_open={}\ntag_preview_high_quality={}\n",
         dir.to_string_lossy(), window_size.0, window_size.1, sort_state.key, sort_state.ascending, lang,
         viewer_cfg.zoom_actual, viewer_cfg.fullscreen,
         viewer_cfg.redecode_on_resize, viewer_cfg.resize_debounce_ms, show_hidden, card_info_mode, card_rating_mode,
-        sort_state.rating.state_key(), sort_state.rating.ascending,
+        sort_state.rating.state_key(), sort_state.rating.ascending, tag_panel_open, tag_preview_high_quality,
     );
     // フォルダ系タブ（お気に入り・検索・仮想フォルダ）の最後の位置（Some のものだけ）
     content.push_str(&tab_positions.state_lines());
@@ -1052,7 +1089,7 @@ pub fn save_state(root: &Path, dir: &Path, window_size: (u32, u32), viewer_slots
         viewer_cfg.image_filter.sharpness_enabled,
     ));
     content.push_str(&format!(
-        "tool_palette_pos_x={}\ntool_palette_pos_y={}\ntool_palette_locked={}\ntool_palette_auto_hide_locked={}\ntool_palette_opacity_pct={}\ntool_palette_visible={}\ntool_palette_slot_size_idx={}\ntool_palette_slots={}\n",
+        "tool_palette_pos_x={}\ntool_palette_pos_y={}\ntool_palette_locked={}\ntool_palette_auto_hide_locked={}\ntool_palette_opacity_pct={}\ntool_palette_visible={}\ntool_palette_slot_size_idx={}\ntool_palette_visible_rows={}\ntool_palette_row_edit_locked={}\ntool_palette_slots={}\n",
         viewer_cfg.tool_palette.pos.0,
         viewer_cfg.tool_palette.pos.1,
         viewer_cfg.tool_palette.locked,
@@ -1060,6 +1097,8 @@ pub fn save_state(root: &Path, dir: &Path, window_size: (u32, u32), viewer_slots
         viewer_cfg.tool_palette.opacity_pct,
         viewer_cfg.tool_palette.visible,
         viewer_cfg.tool_palette.slot_size_idx,
+        viewer_cfg.tool_palette.visible_rows,
+        viewer_cfg.tool_palette.row_edit_locked,
         viewer_cfg.tool_palette.slots.iter().map(|s| slot_content_to_id(*s)).collect::<Vec<_>>().join(","),
     ));
     // マス毎のカスタム名称。キー無し = デフォルトラベルを使う（Noneのマスは書かない）。
@@ -1101,8 +1140,8 @@ pub fn save_state(root: &Path, dir: &Path, window_size: (u32, u32), viewer_slots
         Some(0) => "5", Some(1) => "6", Some(2) => "7", Some(3) => "8", _ => "",
     };
     content.push_str(&format!(
-        "app_decode_threads={}\napp_default_slot={}\napp_magnifier_zoom_notice_shown={}\napp_max_decode_edge_prompt_answered={}\n",
-        app_cfg.decode_threads, default_slot_str, app_cfg.magnifier_zoom_notice_shown, app_cfg.max_decode_edge_prompt_answered,
+        "app_decode_threads={}\napp_default_slot={}\napp_magnifier_zoom_notice_shown={}\napp_max_decode_edge_prompt_answered={}\napp_folder_book_access_warning_seen={}\n",
+        app_cfg.decode_threads, default_slot_str, app_cfg.magnifier_zoom_notice_shown, app_cfg.max_decode_edge_prompt_answered, app_cfg.folder_book_access_warning_seen,
     ));
     for (i, slot) in viewer_slots.iter().enumerate() {
         if let Some(s) = slot {
@@ -1157,6 +1196,16 @@ mod tests {
         assert_eq!(parsed.app_magnifier_zoom_notice_shown, None);
         let parsed = parse_state_text("notice_none", "lang=ja\n");
         assert_eq!(parsed.app_magnifier_zoom_notice_shown, None);
+    }
+
+    #[test]
+    fn folder_book_access_warning_seen_flag_parses_and_defaults_to_unset() {
+        let parsed = parse_state_text("fba_set", "app_folder_book_access_warning_seen=true\n");
+        assert_eq!(parsed.app_folder_book_access_warning_seen, Some(true));
+        let parsed = parse_state_text("fba_bad", "app_folder_book_access_warning_seen=yes\n");
+        assert_eq!(parsed.app_folder_book_access_warning_seen, None);
+        let parsed = parse_state_text("fba_none", "lang=ja\n");
+        assert_eq!(parsed.app_folder_book_access_warning_seen, None);
     }
 
     #[test]

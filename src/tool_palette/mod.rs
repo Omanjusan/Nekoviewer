@@ -4,19 +4,28 @@
 //! state ファイル、image_filter と同じ key=value 方式）へ永続化する。
 
 pub mod action;
+pub mod category;
 pub mod dialog;
+pub mod key_assign;
 pub mod toggle;
 
-pub use action::{ActionKind, ALL_ACTION_KINDS};
-pub use dialog::{create_dialog, DialogKind, ALL_DIALOG_KINDS};
-pub use toggle::{execute_toggle, find_toggle_def, ToggleKind, TOGGLE_DEFS};
+pub use action::ActionKind;
+pub use category::ALL_CATEGORIES;
+pub use dialog::{create_dialog, DialogKind};
+pub use key_assign::{KeyAssignDialog, KeyAssignOutcome};
+pub use toggle::{execute_toggle, find_toggle_def, ToggleKind};
 
 /// グリッド列数（固定）。
 pub const GRID_COLS: usize = 5;
-/// グリッド行数（固定）。
+/// グリッド行数の既定値（初回起動時の表示行数）。
 pub const GRID_ROWS: usize = 2;
-/// マス総数。
-pub const SLOT_COUNT: usize = GRID_COLS * GRID_ROWS;
+/// グリッド行数の上限。行の＋−ボタンで増減できる範囲は 1..=MAX_GRID_ROWS。
+pub const MAX_GRID_ROWS: usize = 5;
+/// グリッド行数の下限。
+pub const MIN_GRID_ROWS: usize = 1;
+/// マス総数。非表示行分も含めて常にこのサイズの配列を確保する
+/// （－ボタンは表示行数を減らすだけで、裏のマス内容は破棄しない）。
+pub const SLOT_COUNT: usize = GRID_COLS * MAX_GRID_ROWS;
 
 /// パレット背景の透過度下限/上限(%)。
 pub const OPACITY_FLOOR_PCT: u8 = 10;
@@ -66,7 +75,13 @@ pub struct PaletteState {
     pub visible: bool,
     /// マスサイズ段階（SLOT_SIZE_STEPS_PX のindex）。ヘッダーのサイズボタンで巡回。
     pub slot_size_idx: usize,
-    /// 各マスの内容。GRID_COLS×GRID_ROWS、行優先（index = row*GRID_COLS+col）
+    /// 現在表示している行数（MIN_GRID_ROWS..=MAX_GRID_ROWS）。ヘッダー左の行＋−ボタンで増減する。
+    pub visible_rows: usize,
+    /// true = 行＋−ボタンを無効化する（既存のドラッグ移動用ロックとは別の専用ロック）。
+    pub row_edit_locked: bool,
+    /// 各マスの内容。GRID_COLS×MAX_GRID_ROWS、行優先（index = row*GRID_COLS+col）で
+    /// 非表示行分も含めて常時確保する。－ボタンは visible_rows を減らすだけで、
+    /// 非表示になった行のマス内容はここに残り続け、＋ボタンで再度可視化されると復元される。
     pub slots: [PaletteSlotContent; SLOT_COUNT],
     /// マス毎のカスタム表示名。Noneならデフォルトラベル（Toggle/Dialogの定義名）を使う。
     /// 空文字での確定は「何も表示しない」を意味し、デフォルトへは戻さない。
@@ -83,6 +98,36 @@ impl PaletteState {
     pub fn cycle_slot_size(&mut self) {
         self.slot_size_idx = (self.slot_size_idx + 1) % SLOT_SIZE_STEPS_PX.len();
     }
+
+    /// ＋ボタンが押せるか（MAX_GRID_ROWS到達時、またはロック中はfalse）。
+    pub fn can_add_row(&self) -> bool {
+        !self.row_edit_locked && self.visible_rows < MAX_GRID_ROWS
+    }
+
+    /// −ボタンが押せるか（MIN_GRID_ROWS到達時、またはロック中はfalse）。
+    pub fn can_remove_row(&self) -> bool {
+        !self.row_edit_locked && self.visible_rows > MIN_GRID_ROWS
+    }
+
+    /// 行を1行増やす（最下段に追加、または非表示だった最下段を復元）。
+    /// 上限到達・ロック中は何もせずfalseを返す。
+    pub fn add_row(&mut self) -> bool {
+        if !self.can_add_row() {
+            return false;
+        }
+        self.visible_rows += 1;
+        true
+    }
+
+    /// 行を1行減らす（最下段を非表示にするだけで、そのマス内容は破棄しない）。
+    /// 下限到達・ロック中は何もせずfalseを返す。
+    pub fn remove_row(&mut self) -> bool {
+        if !self.can_remove_row() {
+            return false;
+        }
+        self.visible_rows -= 1;
+        true
+    }
 }
 
 impl Default for PaletteState {
@@ -94,9 +139,21 @@ impl Default for PaletteState {
             opacity_pct: OPACITY_CEILING_PCT,
             visible: true,
             slot_size_idx: SLOT_SIZE_DEFAULT_IDX,
+            visible_rows: GRID_ROWS,
+            row_edit_locked: false,
             slots: [PaletteSlotContent::Empty; SLOT_COUNT],
             custom_labels: [(); SLOT_COUNT].map(|_| None),
         }
+    }
+}
+
+/// マス内容の既定の表示名（Toggle/Dialogの定義名、Actionのラベル）。空マスは None。
+pub fn default_label(content: PaletteSlotContent, lang: crate::i18n::Lang) -> Option<&'static str> {
+    match content {
+        PaletteSlotContent::Toggle(kind) => Some((find_toggle_def(kind).label)(lang)),
+        PaletteSlotContent::Dialog(kind) => Some(create_dialog(kind).title(lang)),
+        PaletteSlotContent::Action(kind) => Some(kind.label(lang)),
+        PaletteSlotContent::Empty => None,
     }
 }
 
@@ -165,7 +222,59 @@ mod tests {
     fn palette_state_default_is_all_empty() {
         let st = PaletteState::default();
         assert!(st.slots.iter().all(|s| *s == PaletteSlotContent::Empty));
-        assert_eq!(st.slots.len(), GRID_COLS * GRID_ROWS);
+        assert_eq!(st.slots.len(), GRID_COLS * MAX_GRID_ROWS);
+        assert_eq!(st.visible_rows, GRID_ROWS);
+        assert!(!st.row_edit_locked);
         assert!(st.custom_labels.iter().all(|l| l.is_none()));
+    }
+
+    #[test]
+    fn add_row_increments_until_max_then_refuses() {
+        let mut st = PaletteState::default();
+        st.visible_rows = MAX_GRID_ROWS - 1;
+        assert!(st.can_add_row());
+        assert!(st.add_row());
+        assert_eq!(st.visible_rows, MAX_GRID_ROWS);
+        assert!(!st.can_add_row());
+        assert!(!st.add_row());
+        assert_eq!(st.visible_rows, MAX_GRID_ROWS);
+    }
+
+    #[test]
+    fn remove_row_decrements_until_min_then_refuses() {
+        let mut st = PaletteState::default();
+        st.visible_rows = MIN_GRID_ROWS + 1;
+        assert!(st.can_remove_row());
+        assert!(st.remove_row());
+        assert_eq!(st.visible_rows, MIN_GRID_ROWS);
+        assert!(!st.can_remove_row());
+        assert!(!st.remove_row());
+        assert_eq!(st.visible_rows, MIN_GRID_ROWS);
+    }
+
+    #[test]
+    fn row_edit_locked_blocks_both_add_and_remove() {
+        let mut st = PaletteState::default();
+        st.row_edit_locked = true;
+        assert!(!st.can_add_row());
+        assert!(!st.can_remove_row());
+        assert!(!st.add_row());
+        assert!(!st.remove_row());
+        assert_eq!(st.visible_rows, GRID_ROWS);
+    }
+
+    #[test]
+    fn removed_row_slot_content_survives_and_is_restored_by_add_row() {
+        let mut st = PaletteState::default();
+        st.visible_rows = 3;
+        // 3行目(row index 2)の先頭マス = idx 10
+        st.slots[10] = PaletteSlotContent::Action(ActionKind::NextPage);
+        assert!(st.remove_row());
+        assert_eq!(st.visible_rows, 2);
+        // 非表示になっただけで内容は破棄されない
+        assert_eq!(st.slots[10], PaletteSlotContent::Action(ActionKind::NextPage));
+        assert!(st.add_row());
+        assert_eq!(st.visible_rows, 3);
+        assert_eq!(st.slots[10], PaletteSlotContent::Action(ActionKind::NextPage));
     }
 }

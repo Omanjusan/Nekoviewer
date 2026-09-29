@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 
 use crate::fs::mount::MountEntry;
+use crate::confirm_dialog::{draw_confirm_dialog, ConfirmDialogSpec, ConfirmOutcome};
 
 mod broken;
 mod delete;
@@ -550,6 +551,7 @@ impl NekoviewApp {
 
     /// 仮想ノードの表示を開く（同じノードでも開き直す）。構造は仮想が正、ファイルは実パスを実スキャン。
     fn enter_virtual_node(&mut self, id: u32) {
+        self.deactivate_tag_main_edit();
         if id == ROOT {
             // 仮想ルート `/` は実パスを持たない。最上位ノードのフォルダカードだけを出す
             let changed = self.remember_virtual_position(None);
@@ -604,6 +606,7 @@ impl NekoviewApp {
         if self.viewing_virtual_node.is_none() {
             return;
         }
+        self.deactivate_tag_main_edit();
         self.viewing_virtual_node = None;
         self.virtual_link_broken = false;
         // 仮想ノードの実パスに移っていた current_dir を、実ツリータブ自身の位置に戻す
@@ -939,14 +942,16 @@ impl NekoviewApp {
     fn draw_virtual_confirm(&mut self, ctx: &egui::Context) {
         let Some(c) = self.virtual_state.confirm.clone() else { return };
         let dest_path = self.virtual_state.virtual_path(c.dest);
-        let (mut ok, mut cancel) = (false, false);
-        egui::Window::new(i18n::t().virtual_confirm_title())
-            .id(egui::Id::new("virtual_confirm_window"))
-            .order(egui::Order::Foreground)
-            .collapsible(false)
-            .resizable(false)
-            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
-            .show(ctx, |ui| {
+        let outcome = draw_confirm_dialog(
+            ctx,
+            ConfirmDialogSpec {
+                id_salt: "virtual_confirm_window",
+                title: i18n::t().virtual_confirm_title(),
+                ok_label: i18n::t().virtual_ok(),
+                cancel_label: i18n::t().favorite_dialog_cancel(),
+                foreground: true,
+            },
+            |ui| {
                 ui.label(i18n::t().virtual_confirm_body());
                 ui.add_space(6.0);
                 ui.label(i18n::t().virtual_confirm_path(&c.src.display().to_string()));
@@ -965,19 +970,19 @@ impl NekoviewApp {
                 if o.descendants > 0 {
                     ui.colored_label(warn, i18n::t().virtual_overlap_descendant(o.descendants));
                 }
-                ui.add_space(8.0);
-                ui.horizontal(|ui| {
-                    ok = ui.button(i18n::t().virtual_ok()).clicked();
-                    cancel = ui.button(i18n::t().favorite_dialog_cancel()).clicked();
-                });
-            });
-        if cancel {
-            self.virtual_state.confirm = None;
-        } else if ok {
-            // 正常・異常どちらでも確認とピッカーは閉じる（異常時は登録キャンセル扱いでトースト）
-            self.virtual_state.confirm = None;
-            self.virtual_state.picker = None;
-            self.start_virtual_register(c);
+            },
+        );
+        match outcome {
+            ConfirmOutcome::Cancel => {
+                self.virtual_state.confirm = None;
+            }
+            ConfirmOutcome::Ok => {
+                // 正常・異常どちらでも確認とピッカーは閉じる（異常時は登録キャンセル扱いでトースト）
+                self.virtual_state.confirm = None;
+                self.virtual_state.picker = None;
+                self.start_virtual_register(c);
+            }
+            ConfirmOutcome::None => {}
         }
     }
 
@@ -986,31 +991,33 @@ impl NekoviewApp {
         let Some(id) = self.virtual_state.delete.as_ref().map(|t| t.id) else { return };
         let path = self.virtual_state.virtual_path(id);
         let descendants = self.virtual_state.subtree_ids(id).len().saturating_sub(1);
-        let (mut ok, mut cancel) = (false, false);
-        egui::Window::new(i18n::t().virtual_delete_title())
-            .id(egui::Id::new("virtual_delete_window"))
-            .order(egui::Order::Foreground)
-            .collapsible(false)
-            .resizable(false)
-            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
-            .show(ctx, |ui| {
+        let outcome = draw_confirm_dialog(
+            ctx,
+            ConfirmDialogSpec {
+                id_salt: "virtual_delete_window",
+                title: i18n::t().virtual_delete_title(),
+                ok_label: i18n::t().virtual_ok(),
+                cancel_label: i18n::t().favorite_dialog_cancel(),
+                foreground: true,
+            },
+            |ui| {
                 ui.label(i18n::t().virtual_delete_path(&path));
                 if descendants > 0 {
                     ui.label(i18n::t().virtual_delete_descendants(descendants));
                 }
                 ui.label(i18n::t().virtual_delete_real_untouched());
-                ui.add_space(8.0);
-                ui.horizontal(|ui| {
-                    ok = ui.button(i18n::t().virtual_ok()).clicked();
-                    cancel = ui.button(i18n::t().favorite_dialog_cancel()).clicked();
-                });
-            });
-        if cancel {
-            self.virtual_state.delete = None;
-        } else if ok {
-            if let Some(target) = self.virtual_state.delete.take() {
-                self.run_virtual_delete(target);
+            },
+        );
+        match outcome {
+            ConfirmOutcome::Cancel => {
+                self.virtual_state.delete = None;
             }
+            ConfirmOutcome::Ok => {
+                if let Some(target) = self.virtual_state.delete.take() {
+                    self.run_virtual_delete(target);
+                }
+            }
+            ConfirmOutcome::None => {}
         }
     }
 }

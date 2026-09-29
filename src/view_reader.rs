@@ -190,6 +190,8 @@ struct FrameInput {
     key_home: bool,
     key_end: bool,
     slot_apply: Option<usize>,
+    /// このフレームで割り当てキーが押されたツールボックス機能のID（keymap の palette 割り当て）。
+    palette_keys: Vec<String>,
     // スクロール
     scroll_delta: f32,
     shift_scroll_delta: f32,
@@ -219,6 +221,27 @@ struct FrameInput {
 }
 
 impl FrameInput {
+    /// モーダル（キー割当ダイアログ）表示中に、背面のビューアーへ操作が抜けないよう
+    /// キー・ホイール・クリックを無効化する。
+    fn suppress_for_modal(&mut self) {
+        let Self {
+            key_left, key_right, key_up, key_down, key_space, esc, zoom_key, fs_key,
+            mode1, mode2, mode3, shift4, shift5, shift_nav_up, shift_nav_down, key_home, key_end,
+            slot_apply, palette_keys, scroll_delta, shift_scroll_delta, wheel_notches, zoom_wheel_notches,
+            middle_clicked, primary_clicked, ..
+        } = self;
+        for b in [key_left, key_right, key_up, key_down, key_space, esc, zoom_key, fs_key,
+                  mode1, mode2, mode3, shift4, shift5, shift_nav_up, shift_nav_down, key_home, key_end,
+                  middle_clicked, primary_clicked] {
+            *b = false;
+        }
+        *slot_apply = None;
+        palette_keys.clear();
+        for f in [scroll_delta, shift_scroll_delta, wheel_notches, zoom_wheel_notches] {
+            *f = 0.0;
+        }
+    }
+
     /// キー・マウス判定はキーアサイン設定(TODO項目J、[keymap.rs](../keymap.rs))経由。
     /// ホイールは「PagePrev/PageNextのマウス割り当て」「FileNavPrevAlt/NextAltのマウス割り当て」
     /// それぞれの修飾キー条件が現在の入力状態と一致するかを見て、一致した方に生delta(sd.y、
@@ -279,6 +302,10 @@ impl FrameInput {
                 key_home:           act(ReaderAction::JumpFirstPage),
                 key_end:            act(ReaderAction::JumpLastPage),
                 slot_apply,
+                palette_keys:       keymap.palette_bindings()
+                    .filter(|(_, kb)| kb.pressed(i))
+                    .map(|(id, _)| id.to_string())
+                    .collect(),
                 scroll_delta:       page_mouse.map(wheel_amount).unwrap_or(0.0),
                 shift_scroll_delta: file_mouse.map(wheel_amount).unwrap_or(0.0),
                 wheel_notches:      page_mouse.map(wheel_notches_of).unwrap_or(0.0),
@@ -447,6 +474,8 @@ pub struct ViewerState {
     spread_base: i32,
     /// オフセット状態。spread_lo() = spread_base + offset.value()
     offset: SpreadOffset,
+    /// 見開きオフセット循環ボタン（ツールパレット）用: 次に0から動くなら-方向か
+    spread_offset_cycle_negative_next: bool,
     textures: HashMap<usize, egui::TextureHandle>,
     /// 各GPUテクスチャがどのデコード世代から作られたか。
     texture_generations: HashMap<usize, u64>,
@@ -468,6 +497,8 @@ pub struct ViewerState {
     default_slot: Option<usize>,
     /// 既定スロットの初回フレーム適用を一度だけ行うためのフラグ
     default_slot_applied: bool,
+    /// ツールパレットのスロット循環ボタン用: 直前に適用したスロット番号（0..3）。None = 未定義
+    palette_slot_cycle_index: Option<usize>,
     /// スロット保存後に app 側へ永続化を要求するフラグ
     /// 前フレームの outer_rect 左上座標（保存用、1フレーム遅れ許容）
     outer_pos: Option<egui::Pos2>,
@@ -481,12 +512,17 @@ pub struct ViewerState {
     entry_list_scrolled_lo: Option<i32>,
     /// フルスクリーン時ソートバーの表示状態（上端ホバーで on/off）
     fs_sort_bar_visible: bool,
+    /// フルスクリーン時ソートバー右端のクローズボタンが押された（process_misc_input で消費）
+    fs_close_clicked: bool,
     sort_key: ViewerSortKey,
     sort_ascending: bool,
     /// アニメーションページの再生状態（original_index → AnimState）
     anim_states: HashMap<usize, AnimState>,
     /// true のとき生画像ファイルを直接表示中（見開きモード封印）
     is_raw_file: bool,
+    /// true のとき「フォルダ本アクセス」による仮想アーカイブ表示中。
+    /// 各種保存系メニュー（見開き/ソート/しおり/サムネ登録/お気に入り/評価）を無効化する。
+    is_virtual_book: bool,
     /// Shift+スクロールの蓄積値（ファイル間ナビゲーション用）
     shift_scroll_acc: f32,
     /// トーストメッセージ: (テキスト, 消去予定のegui時刻) None=非表示
@@ -584,6 +620,10 @@ pub struct ViewerState {
     /// 展開中のDialog型マスのindex。Noneなら閉じている。同じマスを再クリックするか
     /// 展開領域外をクリックすると閉じる（1個の状態のみ保持＝同時に開けるのは1マス分）。
     tool_palette_open_dialog: Option<usize>,
+    /// マスの右クリックメニュー「キー割当」が押されたマスのindex。フレーム末尾でダイアログを開く。
+    tool_palette_key_assign_request: Option<usize>,
+    /// 表示中のキー割当ダイアログ。開いている間はビューアーのキー・ホイール・クリック操作を止める。
+    tool_palette_key_assign: Option<crate::tool_palette::KeyAssignDialog>,
     /// 起動後の初回フレームで cfg.tool_palette から self.tool_palette を読み込んだか。
     tool_palette_initialized: bool,
     /// self.tool_palette が最後に変化した時刻。PERSIST_DEBOUNCE_MS 経過したら
@@ -637,6 +677,10 @@ pub struct ViewerState {
     magnifier_cursor: Option<(u32, egui::CustomCursorImage)>,
     /// GPUテクスチャの1辺上限（毎フレーム ctx から取り込む）。デコード目標のクランプに使う。
     max_texture_side: usize,
+    /// ツールパレットのファイル送りボタンから要求されたナビゲーション。
+    /// draw_central_panel（パレット実行）は process_navigation より先に走るため、
+    /// 一旦ここへ保持し process_navigation の戻り値へ合流させる。
+    palette_nav_request: Option<ViewerNav>,
 }
 
 impl ViewerState {
@@ -644,6 +688,7 @@ impl ViewerState {
     pub fn archive_path(&self) -> &PathBuf { &self.archive_path }
     pub fn entries(&self) -> &[ViewerEntry] { &self.entries }
     pub fn is_raw_file(&self) -> bool { self.is_raw_file }
+    pub fn is_virtual_book(&self) -> bool { self.is_virtual_book }
 
     /// フェーズ6: 現在表示中のページ(見開き時は2枚)の original_index を返す。
     pub fn visible_original_indices(&self) -> Vec<usize> {
@@ -785,7 +830,8 @@ impl ViewerState {
         if image_entries.is_empty() {
             return None;
         }
-        Some(Self::from_image_entries(archive_path, image_entries, slots, default_slot))
+        let is_virtual_book = archive_path.is_dir();
+        Some(Self::from_image_entries(archive_path, image_entries, slots, default_slot, is_virtual_book))
     }
 
     /// 一覧取得済みの`ImageEntry`から構築する。非同期（進捗通知つき）で
@@ -796,6 +842,7 @@ impl ViewerState {
         image_entries: Vec<archive::ImageEntry>,
         slots: [Option<WindowSlot>; 4],
         default_slot: Option<usize>,
+        is_virtual_book: bool,
     ) -> Self {
         let entries: Vec<ViewerEntry> = image_entries
             .into_iter()
@@ -812,6 +859,7 @@ impl ViewerState {
             entries,
             spread_base: 0,
             offset: SpreadOffset::new(),
+            spread_offset_cycle_negative_next: true,
             textures: HashMap::new(),
             texture_generations: HashMap::new(),
             open: true,
@@ -825,15 +873,18 @@ impl ViewerState {
             slots,
             default_slot,
             default_slot_applied: false,
+            palette_slot_cycle_index: None,
             outer_pos: None,
             entry_list_visible: false,
             edge_turn_hover: None,
             entry_list_scrolled_lo: None,
             fs_sort_bar_visible: false,
+            fs_close_clicked: false,
             sort_key: ViewerSortKey::Name,
             sort_ascending: true,
             anim_states: HashMap::new(),
             is_raw_file: false,
+            is_virtual_book,
             shift_scroll_acc: 0.0,
             toast: None,
             rating_half: 0,
@@ -872,6 +923,8 @@ impl ViewerState {
             slideshow_auto_advance_pending: false,
             tool_palette: crate::tool_palette::PaletteState::default(),
             tool_palette_open_dialog: None,
+            tool_palette_key_assign_request: None,
+            tool_palette_key_assign: None,
             tool_palette_initialized: false,
             tool_palette_last_changed: None,
             tool_palette_auto_hide_at: None,
@@ -892,6 +945,7 @@ impl ViewerState {
             magnifier_carry_rel: None,
             magnifier_cursor: None,
             max_texture_side: MAX_TEXTURE_SIDE_FALLBACK,
+            palette_nav_request: None,
         }
     }
 
@@ -913,6 +967,7 @@ impl ViewerState {
             entries,
             spread_base: 0,
             offset: SpreadOffset::new(),
+            spread_offset_cycle_negative_next: true,
             textures: HashMap::new(),
             texture_generations: HashMap::new(),
             open: true,
@@ -926,15 +981,18 @@ impl ViewerState {
             slots,
             default_slot,
             default_slot_applied: false,
+            palette_slot_cycle_index: None,
             outer_pos: None,
             entry_list_visible: false,
             edge_turn_hover: None,
             entry_list_scrolled_lo: None,
             fs_sort_bar_visible: false,
+            fs_close_clicked: false,
             sort_key: ViewerSortKey::Name,
             sort_ascending: true,
             anim_states: HashMap::new(),
             is_raw_file: true,
+            is_virtual_book: false,
             shift_scroll_acc: 0.0,
             toast: None,
             rating_half: 0,
@@ -973,6 +1031,8 @@ impl ViewerState {
             slideshow_auto_advance_pending: false,
             tool_palette: crate::tool_palette::PaletteState::default(),
             tool_palette_open_dialog: None,
+            tool_palette_key_assign_request: None,
+            tool_palette_key_assign: None,
             tool_palette_initialized: false,
             tool_palette_last_changed: None,
             tool_palette_auto_hide_at: None,
@@ -993,6 +1053,7 @@ impl ViewerState {
             magnifier_carry_rel: None,
             magnifier_cursor: None,
             max_texture_side: MAX_TEXTURE_SIDE_FALLBACK,
+            palette_nav_request: None,
         }
     }
 
@@ -1051,6 +1112,58 @@ impl ViewerState {
         if self.can_shift_backward() {
             self.offset.retreat();
         }
+    }
+
+    /// 現在のオフセット値をトースト表示する（値が変わったときに呼ぶ導線側の共通ヘルパー）。
+    fn toast_spread_offset(&mut self) {
+        let msg = match self.offset.value() {
+            v if v < 0 => i18n::t().toast_spread_offset_minus_one(),
+            0 => i18n::t().toast_spread_offset_zero(),
+            _ => i18n::t().toast_spread_offset_plus_one(),
+        };
+        self.set_toast(msg.to_string());
+    }
+
+    /// shift_offset_forward に加えて、値が変化した場合のみトースト表示する。
+    /// 既存メニューボタン（+1P）・キーボード（5キー）両方の導線から呼ぶ。
+    pub fn shift_offset_forward_and_toast(&mut self) {
+        let before = self.offset.value();
+        self.shift_offset_forward();
+        if self.offset.value() != before { self.toast_spread_offset(); }
+    }
+
+    /// shift_offset_backward に加えて、値が変化した場合のみトースト表示する。
+    /// 既存メニューボタン（-1P）・キーボード（4キー）両方の導線から呼ぶ。
+    pub fn shift_offset_backward_and_toast(&mut self) {
+        let before = self.offset.value();
+        self.shift_offset_backward();
+        if self.offset.value() != before { self.toast_spread_offset(); }
+    }
+
+    /// ツールパレット循環ボタン用: -1→0→+1→0→-1…と往復する（+1から-1への直接ジャンプはしない）。
+    /// 0にいるときにどちら方向へ動くかは spread_offset_cycle_negative_next で記憶し、
+    /// 実際に動けた方向（境界でガードされ動けなかった場合は逆側を試す）に応じて次回の方向を更新する。
+    pub fn cycle_spread_offset_and_toast(&mut self) {
+        let before = self.offset.value();
+        match before {
+            0 => {
+                if self.spread_offset_cycle_negative_next {
+                    self.shift_offset_backward();
+                    if self.offset.value() == before { self.shift_offset_forward(); }
+                } else {
+                    self.shift_offset_forward();
+                    if self.offset.value() == before { self.shift_offset_backward(); }
+                }
+            }
+            v if v > 0 => self.shift_offset_backward(),
+            _ => self.shift_offset_forward(),
+        }
+        match self.offset.value() {
+            v if v < 0 => self.spread_offset_cycle_negative_next = false,
+            v if v > 0 => self.spread_offset_cycle_negative_next = true,
+            _ => {}
+        }
+        if self.offset.value() != before { self.toast_spread_offset(); }
     }
 
     /// 次の見開き/ページへ進めるか（オフセットを保持したまま次のspread_baseが範囲内か）。
@@ -1202,6 +1315,20 @@ impl ViewerState {
                 }
             }
         }
+    }
+
+    /// set_page_mode に加えて、切替結果をトースト表示する（オリジナル切替ボタン・
+    /// キーボードショートカット・ツールパレットの循環ボタン、全導線がここを通る）。
+    /// 生ファイル表示中の見開き封印時（set_page_mode が何もしない）はトーストも出さない。
+    pub fn set_page_mode_and_toast(&mut self, mode: PageMode, cfg: &mut ViewerConfig) {
+        if self.is_raw_file && mode != PageMode::Single { return; }
+        self.set_page_mode(mode, cfg);
+        let msg = match self.page_mode {
+            PageMode::Single => i18n::t().toast_page_mode_single(),
+            PageMode::SpreadLeft => i18n::t().toast_page_mode_spread_left(),
+            PageMode::SpreadRight => i18n::t().toast_page_mode_spread_right(),
+        };
+        self.set_toast(msg.to_string());
     }
 
     /// 保存済み見開き状態を復元する（ビューアを開いた直後に一度だけ呼ぶ想定）。
@@ -1643,11 +1770,18 @@ impl ViewerState {
         let ctx = ui.ctx().clone();
         let viewer_style = ui.style().clone();
         if !self.open || self.entries.is_empty() {
-            return ViewerOutput { nav: ViewerNav::None, close_requested: !self.open, save_slots: None, spread_save_action: None, sort_save_action: None, thumbnail_save_action: None, bookmark_save_action: None, rating_save_action: None, favorite_add_requested: false, toggle_translate_window: false, tool_palette_changed: false, magnifier_settings_changed: false };
+            return ViewerOutput { nav: ViewerNav::None, close_requested: !self.open, save_slots: None, spread_save_action: None, sort_save_action: None, thumbnail_save_action: None, bookmark_save_action: None, rating_save_action: None, favorite_add_requested: false, toggle_translate_window: false, tool_palette_changed: false, magnifier_settings_changed: false, palette_key_assign: None };
         }
 
         // ── フレーム入力を一括収集（ctx.input はこの1回のみ）────────────────
         let mut input = FrameInput::collect(&ctx, keymap);
+        // 文字入力中（マスの名称変更など）は、ツールボックスの割り当てキーを発火させない。
+        if ctx.egui_wants_keyboard_input() {
+            input.palette_keys.clear();
+        }
+        if self.tool_palette_key_assign.is_some() {
+            input.suppress_for_modal();
+        }
 
         // フェーズ6: リサイズ再デコードのターゲットサイズ算出用に、現在の描画領域サイズ（物理px）を記録する。
         let screen = ctx.content_rect().size() * ctx.pixels_per_point();
@@ -1773,11 +1907,11 @@ impl ViewerState {
         }
 
         // ── ページモード切り替え ──────────────────────────────────────────────
-        if mode1 { self.set_page_mode(PageMode::Single, cfg); }
+        if mode1 { self.set_page_mode_and_toast(PageMode::Single, cfg); }
         // 生ファイル表示中は見開きキーを無効化（set_page_mode 内でも封印済みだが念のため）
         if !self.is_raw_file {
-            if mode2 { self.set_page_mode(PageMode::SpreadLeft, cfg); }
-            if mode3 { self.set_page_mode(PageMode::SpreadRight, cfg); }
+            if mode2 { self.set_page_mode_and_toast(PageMode::SpreadLeft, cfg); }
+            if mode3 { self.set_page_mode_and_toast(PageMode::SpreadRight, cfg); }
         }
 
         let is_spread = self.page_mode != PageMode::Single;
@@ -1861,7 +1995,7 @@ impl ViewerState {
             page_animated,
         };
         let tool_palette_before = self.tool_palette.clone();
-        let (double_clicked, single_clicked) = self.draw_central_panel(ui, &frame, &input, is_spread, step, total, cfg);
+        let (double_clicked, single_clicked) = self.draw_central_panel(ui, &frame, &input, is_spread, step, total, cfg, keymap);
         if self.tool_palette != tool_palette_before {
             self.tool_palette_last_changed = Some(Instant::now());
         }
@@ -1896,7 +2030,8 @@ impl ViewerState {
         let toggle_translate_window = self.take_translate_toggle_request();
         self.maybe_open_file_detail_dialog();
         self.draw_file_detail_dialog(&ctx);
-        ViewerOutput { nav, close_requested: close_self, save_slots, spread_save_action, sort_save_action, thumbnail_save_action, bookmark_save_action, rating_save_action, favorite_add_requested, toggle_translate_window, tool_palette_changed, magnifier_settings_changed: std::mem::take(&mut self.magnifier_settings_dirty) }
+        let palette_key_assign = self.draw_tool_palette_key_assign(&ctx, keymap);
+        ViewerOutput { nav, close_requested: close_self, save_slots, spread_save_action, sort_save_action, thumbnail_save_action, bookmark_save_action, rating_save_action, favorite_add_requested, toggle_translate_window, tool_palette_changed, magnifier_settings_changed: std::mem::take(&mut self.magnifier_settings_dirty), palette_key_assign }
     }
 
     /// ツールパレットの変更確定処理。image_filterのpoll_image_filter_debounceと同じ考え方で、
@@ -1924,17 +2059,9 @@ impl ViewerState {
         }
     }
 
-    /// ビューアーを開いた直後（初回フレーム）に conf 既定スロットを一度だけ適用する。
-    /// F5〜F8 と同じく `clamp_slot_position_inner` で画面外補正してから位置・サイズを送る。
-    fn apply_default_slot(&mut self, ctx: &egui::Context, monitor_size: Option<egui::Vec2>) {
-        if self.default_slot_applied {
-            return;
-        }
-        self.default_slot_applied = true;
-
-        let Some(slot) = crate::controller::resolve_default_slot(self.default_slot, &self.slots)
-        else { return };
-
+    /// ウィンドウ位置・サイズスロットを実際にウィンドウへ適用する共通処理。
+    /// 画面外に出ないよう `clamp_slot_position_inner` で補正してから送る。
+    fn apply_window_slot(ctx: &egui::Context, slot: WindowSlot, monitor_size: Option<egui::Vec2>) -> (i32, i32) {
         let (cx, cy) = if let Some(m) = monitor_size {
             Self::clamp_slot_position_inner(slot.x, slot.y, slot.w, slot.h, m)
         } else {
@@ -1946,7 +2073,42 @@ impl ViewerState {
         ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(
             egui::vec2(slot.w as f32, slot.h as f32),
         ));
+        (cx, cy)
+    }
+
+    /// ビューアーを開いた直後（初回フレーム）に conf 既定スロットを一度だけ適用する。
+    fn apply_default_slot(&mut self, ctx: &egui::Context, monitor_size: Option<egui::Vec2>) {
+        if self.default_slot_applied {
+            return;
+        }
+        self.default_slot_applied = true;
+
+        let Some(slot) = crate::controller::resolve_default_slot(self.default_slot, &self.slots)
+        else { return };
+
+        let (cx, cy) = Self::apply_window_slot(ctx, slot, monitor_size);
         log_key!("[slot] apply default → pos=({},{}) size={}x{}", cx, cy, slot.w, slot.h);
+    }
+
+    /// ツールパレットのスロット個別ボタン用: idx（0..3）のスロットを適用し、成功時のみトースト表示する。
+    /// 未保存のスロット（None）を押した場合は何もしない。
+    pub fn apply_window_slot_and_toast(&mut self, ctx: &egui::Context, idx: usize) {
+        let Some(slot) = self.slots[idx] else { return };
+        let monitor_size = ctx.input(|i| i.viewport().monitor_size);
+        let (cx, cy) = Self::apply_window_slot(ctx, slot, monitor_size);
+        log_key!("[slot] apply slot{} (palette) → pos=({},{}) size={}x{}", idx + 1, cx, cy, slot.w, slot.h);
+        self.set_toast(i18n::t().toast_slot_applied(idx + 1));
+    }
+
+    /// ツールパレットのスロット循環ボタン用: 未定義→1→2→3→4→1…と巡回しながら適用する。
+    /// スロット番号の巡回自体は、そのスロットが未保存（None）でも進む。
+    pub fn cycle_apply_slot_and_toast(&mut self, ctx: &egui::Context) {
+        let next = match self.palette_slot_cycle_index {
+            Some(3) | None => 0,
+            Some(i) => i + 1,
+        };
+        self.palette_slot_cycle_index = Some(next);
+        self.apply_window_slot_and_toast(ctx, next);
     }
 
     fn update_animation(&mut self, ctx: &egui::Context, dt: f32, cfg: &ViewerConfig) -> (bool, f32) {
@@ -2005,18 +2167,9 @@ impl ViewerState {
         // ── スロット適用（F5〜F8）────────────────────────────────────────────
         if let Some(idx) = input.slot_apply {
             if let Some(slot) = self.slots[idx] {
-                let (cx, cy) = if let Some(m) = input.monitor_size {
-                    Self::clamp_slot_position_inner(slot.x, slot.y, slot.w, slot.h, m)
-                } else {
-                    (slot.x, slot.y)
-                };
-                ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(
-                    egui::pos2(cx as f32, cy as f32),
-                ));
-                ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(
-                    egui::vec2(slot.w as f32, slot.h as f32),
-                ));
+                let (cx, cy) = Self::apply_window_slot(ctx, slot, input.monitor_size);
                 log_key!("[slot] apply slot{} → pos=({},{}) size={}x{}", idx + 1, cx, cy, slot.w, slot.h);
+                self.set_toast(i18n::t().toast_slot_applied(idx + 1));
             }
         }
 
@@ -2074,12 +2227,24 @@ impl ViewerState {
                     .show(ui, |ui| {
                         ui.horizontal(|ui| {
                             self.draw_bar_items(ui, cfg);
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                if Self::draw_fs_close_button(ui).clicked() {
+                                    self.fs_close_clicked = true;
+                                }
+                            });
                         });
                     });
             }
         }
 
         save_slots
+    }
+
+    /// フルスクリーン時ソートバーのクローズボタン。
+    fn draw_fs_close_button(ui: &mut egui::Ui) -> egui::Response {
+        const BTN_SIZE: f32 = 22.0;
+        ui.add(crate::ui_widgets::close_x_button(egui::vec2(BTN_SIZE, BTN_SIZE)))
+            .on_hover_text(i18n::t().fs_close_button_hint())
     }
 
     fn process_navigation(
@@ -2144,47 +2309,63 @@ impl ViewerState {
 
         // ── 見開き 1P シフト（4/5）──────────────────────────────────────────
         if is_spread {
-            if shift_inc { self.shift_offset_forward(); }
-            if shift_dec { self.shift_offset_backward(); }
+            if shift_inc { self.shift_offset_forward_and_toast(); }
+            if shift_dec { self.shift_offset_backward_and_toast(); }
             self.offset.update_virtual_right(self.spread_lo() + 1 >= total_i);
         }
 
         // ── Home/End: アーカイブ内先頭/末尾へ絶対ジャンプ ────────────────────
-        // 通常のページ送りを限界まで行った状態と同じ内部状態を再現する
-        // （以降の戻る/進む操作が通常ナビゲーションと同様に振る舞うように）。
         if input.key_home {
-            self.scroll_acc = 0.0;
-            self.shift_scroll_acc = 0.0;
-            self.spread_base = 0;
-            if is_spread {
-                // オフセットは維持する。ただし維持したままだと先頭実ページ(0)が
-                // 欠落してしまう場合（ShiftedOne等）だけ、仮想左側に倒して補正する。
-                if self.spread_lo() > 0 {
-                    self.offset.force_virtual_left();
-                }
-            } else {
-                self.offset.reset();
-            }
-            self.offset.update_virtual_right(is_spread && self.spread_lo() + 1 >= total_i);
+            self.jump_to_first_page(is_spread, total_i);
         }
         if input.key_end {
-            self.scroll_acc = 0.0;
-            self.shift_scroll_acc = 0.0;
-            if is_spread {
-                // オフセットは維持する。通常のページ送りを限界までやった時と同じ
-                // spread_base（offsetを保ったまま到達できる最大値）を直接計算する。
-                let off = self.offset.value();
-                let target = total_i - 1 - off;
-                let k = if target >= 0 { target / step } else { 0 };
-                self.spread_base = (k * step).max(0);
-            } else {
-                self.spread_base = (total_i - 1).max(0);
-                self.offset.reset();
-            }
-            self.offset.update_virtual_right(is_spread && self.spread_lo() + 1 >= total_i);
+            self.jump_to_last_page(is_spread, step, total_i);
+        }
+
+        // ツールパレットのファイル送りボタン（draw_central_panelで本関数より先に実行済み）の要求を合流。
+        if let Some(req) = self.palette_nav_request.take() {
+            nav = req;
         }
 
         nav
+    }
+
+    /// アーカイブ内先頭ページへ絶対ジャンプ。通常のページ送りを限界まで行った状態と
+    /// 同じ内部状態を再現する（以降の戻る/進む操作が通常ナビゲーションと同様に振る舞うように）。
+    /// キーボード（Home）とツールパレットのボタンの両方から呼ばれる。
+    fn jump_to_first_page(&mut self, is_spread: bool, total_i: i32) {
+        self.scroll_acc = 0.0;
+        self.shift_scroll_acc = 0.0;
+        self.spread_base = 0;
+        if is_spread {
+            // オフセットは維持する。ただし維持したままだと先頭実ページ(0)が
+            // 欠落してしまう場合（ShiftedOne等）だけ、仮想左側に倒して補正する。
+            if self.spread_lo() > 0 {
+                self.offset.force_virtual_left();
+            }
+        } else {
+            self.offset.reset();
+        }
+        self.offset.update_virtual_right(is_spread && self.spread_lo() + 1 >= total_i);
+    }
+
+    /// アーカイブ内末尾ページへ絶対ジャンプ。キーボード（End）とツールパレットのボタンの
+    /// 両方から呼ばれる（jump_to_first_pageの対）。
+    fn jump_to_last_page(&mut self, is_spread: bool, step: i32, total_i: i32) {
+        self.scroll_acc = 0.0;
+        self.shift_scroll_acc = 0.0;
+        if is_spread {
+            // オフセットは維持する。通常のページ送りを限界までやった時と同じ
+            // spread_base（offsetを保ったまま到達できる最大値）を直接計算する。
+            let off = self.offset.value();
+            let target = total_i - 1 - off;
+            let k = if target >= 0 { target / step } else { 0 };
+            self.spread_base = (k * step).max(0);
+        } else {
+            self.spread_base = (total_i - 1).max(0);
+            self.offset.reset();
+        }
+        self.offset.update_virtual_right(is_spread && self.spread_lo() + 1 >= total_i);
     }
 
     /// 自動ハイド：ポインタがパレット外へ出てからハイドが確定するまでの猶予(秒)。
@@ -2227,6 +2408,9 @@ impl ViewerState {
     /// compact時（最小マスサイズ選択時）は他ボタンと同じ幅まで縮める。
     const TOOL_PALETTE_WIDE_BTN_W: f32 = Self::TOOL_PALETTE_BTN_W + 12.0;
     const TOOL_PALETTE_DRAG_MIN_W: f32 = 16.0;
+    /// 行編集ボタン列（ロック／−／＋）の幅。グリッド左側に固定で確保する。
+    const TOOL_PALETTE_ROW_BTN_W: f32 = 22.0;
+    const TOOL_PALETTE_ROW_BTN_GAP: f32 = 3.0;
 
     /// true = 最小マスサイズ選択中。ヒントで詳細値を見られる前提で、ヘッダーの
     /// 透過度／サイズ表示を記号1文字だけに縮め、ヘッダー最小幅をさらに削る。
@@ -2245,9 +2429,10 @@ impl ViewerState {
 
     fn tool_palette_grid_size(&self) -> egui::Vec2 {
         let cols = crate::tool_palette::GRID_COLS as f32;
-        let rows = crate::tool_palette::GRID_ROWS as f32;
+        let rows = self.tool_palette.visible_rows as f32;
         let slot = self.tool_palette.slot_size_px();
-        let grid_w = Self::TOOL_PALETTE_PAD * 2.0 + cols * slot + (cols - 1.0) * Self::TOOL_PALETTE_GAP;
+        let row_btn_col_w = Self::TOOL_PALETTE_ROW_BTN_W + Self::TOOL_PALETTE_ROW_BTN_GAP;
+        let grid_w = Self::TOOL_PALETTE_PAD * 2.0 + row_btn_col_w + cols * slot + (cols - 1.0) * Self::TOOL_PALETTE_GAP;
         let grid_h = Self::TOOL_PALETTE_HEADER_H + Self::TOOL_PALETTE_PAD * 2.0 + rows * slot + (rows - 1.0) * Self::TOOL_PALETTE_GAP;
         egui::vec2(grid_w.max(self.tool_palette_header_min_w()), grid_h)
     }
@@ -2268,7 +2453,7 @@ impl ViewerState {
 
     /// ツールパレットのオーバーレイ本体を描画する。子Ui＋Painter直描き方式
     /// （thumbbar_overlayと同じ流儀）。マスの登録内容の描画・実行はPhase2/3で追加する。
-    fn draw_tool_palette(&mut self, ui: &mut egui::Ui, rect: egui::Rect, viewport: egui::Rect, is_spread: bool, step: i32, total: usize, cfg: &mut ViewerConfig) {
+    fn draw_tool_palette(&mut self, ui: &mut egui::Ui, rect: egui::Rect, viewport: egui::Rect, is_spread: bool, step: i32, total: usize, cfg: &mut ViewerConfig, keymap: &Keymap) {
         let lang = crate::i18n::t();
         let bg_alpha = (self.tool_palette.opacity_pct as f32 / 100.0 * 220.0).round() as u8;
         ui.painter().rect_filled(rect, 6.0, egui::Color32::from_black_alpha(bg_alpha));
@@ -2357,18 +2542,55 @@ impl ViewerState {
                 self.tool_palette.cycle_slot_size();
             }
             let close_resp = ui
-                .put(close_rect, egui::Button::new("✕"))
+                .put(close_rect, crate::ui_widgets::close_x_button(close_rect.size()))
                 .on_hover_text(lang.tool_palette_close_hint());
             if close_resp.clicked() {
                 self.tool_palette.visible = false;
             }
         });
 
-        // ── グリッド：GRID_COLS×GRID_ROWS。空欄マスは右クリックでToggle型を登録する ──
+        // ── 行編集ボタン列：ロック／−／＋。グリッド左側に縦置きで固定幅を確保する ──
+        let row_btn_col_w = Self::TOOL_PALETTE_ROW_BTN_W + Self::TOOL_PALETTE_ROW_BTN_GAP;
+        let grid_area_top = rect.min.y + Self::TOOL_PALETTE_HEADER_H + Self::TOOL_PALETTE_PAD;
+        let grid_area_h = (rect.height() - Self::TOOL_PALETTE_HEADER_H - Self::TOOL_PALETTE_PAD * 2.0).max(0.0);
+        let row_btn_h = ((grid_area_h - Self::TOOL_PALETTE_ROW_BTN_GAP * 2.0) / 3.0).max(12.0);
+        let row_btn_x = rect.min.x + Self::TOOL_PALETTE_PAD;
+        let row_lock_rect = egui::Rect::from_min_size(egui::pos2(row_btn_x, grid_area_top), egui::vec2(Self::TOOL_PALETTE_ROW_BTN_W, row_btn_h));
+        let row_minus_rect = egui::Rect::from_min_size(
+            egui::pos2(row_btn_x, row_lock_rect.max.y + Self::TOOL_PALETTE_ROW_BTN_GAP),
+            egui::vec2(Self::TOOL_PALETTE_ROW_BTN_W, row_btn_h),
+        );
+        let row_plus_rect = egui::Rect::from_min_size(
+            egui::pos2(row_btn_x, row_minus_rect.max.y + Self::TOOL_PALETTE_ROW_BTN_GAP),
+            egui::vec2(Self::TOOL_PALETTE_ROW_BTN_W, row_btn_h),
+        );
+        child.scope(|ui| {
+            ui.set_opacity(header_opacity);
+            let lock_resp = ui
+                .put(row_lock_rect, egui::Button::new(if self.tool_palette.row_edit_locked { "🔒" } else { "🔓" }))
+                .on_hover_text(lang.tool_palette_row_edit_lock_hint());
+            if lock_resp.clicked() {
+                self.tool_palette.row_edit_locked = !self.tool_palette.row_edit_locked;
+            }
+            ui.add_enabled_ui(self.tool_palette.can_remove_row(), |ui| {
+                let minus_resp = ui.put(row_minus_rect, egui::Button::new("−")).on_hover_text(lang.tool_palette_row_remove_hint());
+                if minus_resp.clicked() {
+                    self.tool_palette.remove_row();
+                }
+            });
+            ui.add_enabled_ui(self.tool_palette.can_add_row(), |ui| {
+                let plus_resp = ui.put(row_plus_rect, egui::Button::new("＋")).on_hover_text(lang.tool_palette_row_add_hint());
+                if plus_resp.clicked() {
+                    self.tool_palette.add_row();
+                }
+            });
+        });
+
+        // ── グリッド：GRID_COLS×visible_rows。空欄マスは右クリックでToggle型を登録する ──
         let slot = self.tool_palette.slot_size_px();
-        let grid_origin = rect.min + egui::vec2(Self::TOOL_PALETTE_PAD, Self::TOOL_PALETTE_HEADER_H + Self::TOOL_PALETTE_PAD);
+        let grid_origin = rect.min + egui::vec2(Self::TOOL_PALETTE_PAD + row_btn_col_w, Self::TOOL_PALETTE_HEADER_H + Self::TOOL_PALETTE_PAD);
         let mut any_menu_open = false;
-        for row in 0..crate::tool_palette::GRID_ROWS {
+        for row in 0..self.tool_palette.visible_rows {
             for col in 0..crate::tool_palette::GRID_COLS {
                 let idx = row * crate::tool_palette::GRID_COLS + col;
                 let slot_min = grid_origin + egui::vec2(
@@ -2377,65 +2599,32 @@ impl ViewerState {
                 );
                 let slot_rect = egui::Rect::from_min_size(slot_min, egui::vec2(slot, slot));
                 let content = self.tool_palette.slots[idx];
+                let custom_label = self.tool_palette.custom_labels[idx].as_deref();
+                let shortcut = if content == crate::tool_palette::PaletteSlotContent::Empty {
+                    None
+                } else {
+                    keymap.palette_keyboard(&crate::tool_palette::slot_content_to_id(content))
+                };
                 let slot_resp = child
                     .interact(slot_rect, child.id().with(("tp_slot", idx)), egui::Sense::click())
-                    .on_hover_text(Self::tool_palette_slot_hover_text(content, lang));
+                    .on_hover_text(Self::tool_palette_slot_hover_text(content, custom_label, shortcut, lang));
 
                 if slot_resp.context_menu_opened() {
                     any_menu_open = true;
                 }
                 egui::Popup::context_menu(&slot_resp)
                     .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-                    .show(|ui| Self::draw_tool_palette_slot_menu(ui, &mut self.tool_palette.slots[idx], &mut self.tool_palette.custom_labels[idx], lang));
+                    .show(|ui| {
+                        if Self::draw_tool_palette_slot_menu(ui, &mut self.tool_palette.slots[idx], &mut self.tool_palette.custom_labels[idx], lang) {
+                            self.tool_palette_key_assign_request = Some(idx);
+                        }
+                    });
 
                 // 左クリック: Toggle型は即時実行してViewerConfigへ反映する
                 // （既存のpoll_image_filter_changeが差分検知して再デコードをトリガーする）。
                 // Dialog型はミニUIの展開/折りたたみをトグルする（同時に開けるのは1マス分）。
                 if slot_resp.clicked() {
-                    match content {
-                        crate::tool_palette::PaletteSlotContent::Toggle(kind) => {
-                            crate::tool_palette::execute_toggle(cfg, kind);
-                        }
-                        crate::tool_palette::PaletteSlotContent::Dialog(_) => {
-                            self.tool_palette_open_dialog = if self.tool_palette_open_dialog == Some(idx) {
-                                None
-                            } else {
-                                Some(idx)
-                            };
-                        }
-                        crate::tool_palette::PaletteSlotContent::Action(crate::tool_palette::ActionKind::NextPage) => {
-                            self.advance_page(step, total as i32);
-                        }
-                        crate::tool_palette::PaletteSlotContent::Action(crate::tool_palette::ActionKind::PrevPage) => {
-                            self.retreat_page(is_spread, step);
-                        }
-                        crate::tool_palette::PaletteSlotContent::Action(crate::tool_palette::ActionKind::OpenFolder) => {
-                            let target = if self.archive_path.is_dir() {
-                                self.archive_path.clone()
-                            } else {
-                                self.archive_path.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| self.archive_path.clone())
-                            };
-                            crate::translate::open_in_file_manager(&target);
-                        }
-                        crate::tool_palette::PaletteSlotContent::Action(crate::tool_palette::ActionKind::ToggleFullscreen) => {
-                            Self::toggle_fullscreen(child.ctx(), cfg);
-                        }
-                        crate::tool_palette::PaletteSlotContent::Action(crate::tool_palette::ActionKind::SlideshowToggle) => {
-                            self.toggle_slideshow();
-                        }
-                        // コマ送り/コマ戻し。コマモードがOFFの間（拡大表示外を含む）は何もしない。
-                        crate::tool_palette::PaletteSlotContent::Action(crate::tool_palette::ActionKind::KomaNext) => {
-                            if cfg.koma_on && self.magnifier_view.is_some() {
-                                self.koma_step(true, is_spread, step, total as i32);
-                            }
-                        }
-                        crate::tool_palette::PaletteSlotContent::Action(crate::tool_palette::ActionKind::KomaPrev) => {
-                            if cfg.koma_on && self.magnifier_view.is_some() {
-                                self.koma_step(false, is_spread, step, total as i32);
-                            }
-                        }
-                        crate::tool_palette::PaletteSlotContent::Empty => {}
-                    }
+                    self.execute_tool_palette_slot(child.ctx(), idx, is_spread, step, total, cfg);
                 }
 
                 child.painter().rect_stroke(
@@ -2444,16 +2633,7 @@ impl ViewerState {
                     egui::Stroke::new(1.0, egui::Color32::from_white_alpha(60)),
                     egui::StrokeKind::Inside,
                 );
-                let default_label = match content {
-                    crate::tool_palette::PaletteSlotContent::Toggle(kind) => {
-                        Some((crate::tool_palette::find_toggle_def(kind).label)(lang))
-                    }
-                    crate::tool_palette::PaletteSlotContent::Dialog(kind) => {
-                        Some(crate::tool_palette::create_dialog(kind).title(lang))
-                    }
-                    crate::tool_palette::PaletteSlotContent::Action(kind) => Some(kind.label(lang)),
-                    crate::tool_palette::PaletteSlotContent::Empty => None,
-                };
+                let default_label = crate::tool_palette::default_label(content, lang);
                 // カスタム名称: 未設定ならデフォルトラベル、空文字での確定は「何も表示しない」。
                 let slot_label: Option<String> = default_label.and_then(|default| {
                     match &self.tool_palette.custom_labels[idx] {
@@ -2563,7 +2743,7 @@ impl ViewerState {
                 dialog_child.horizontal(|ui| {
                     ui.label(dialog.title(lang));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.add_sized([CLOSE_BTN_W, CLOSE_BTN_W], egui::Button::new("✕"))
+                        if ui.add(crate::ui_widgets::close_x_button(egui::vec2(CLOSE_BTN_W, CLOSE_BTN_W)))
                             .on_hover_text(lang.tool_palette_dialog_close())
                             .clicked()
                         {
@@ -2596,29 +2776,145 @@ impl ViewerState {
     }
 
     /// ツールパレットのマスにマウスを乗せたときのヒント文言。
-    fn tool_palette_slot_hover_text(content: crate::tool_palette::PaletteSlotContent, lang: crate::i18n::Lang) -> String {
+    fn tool_palette_slot_hover_text(
+        content: crate::tool_palette::PaletteSlotContent,
+        custom_label: Option<&str>,
+        shortcut: Option<crate::keymap::KeyCombo>,
+        lang: crate::i18n::Lang,
+    ) -> String {
         use crate::tool_palette::PaletteSlotContent;
         match content {
             PaletteSlotContent::Empty => lang.tool_palette_slot_empty_hint().to_string(),
             PaletteSlotContent::Toggle(kind) => {
-                format!("{}{}", (crate::tool_palette::find_toggle_def(kind).label)(lang), lang.tool_palette_slot_change_suffix())
+                let name = custom_label.unwrap_or_else(|| (crate::tool_palette::find_toggle_def(kind).label)(lang));
+                Self::tool_palette_slot_hover_body(name, shortcut, lang)
             }
             PaletteSlotContent::Dialog(kind) => {
-                format!("{}{}", crate::tool_palette::create_dialog(kind).title(lang), lang.tool_palette_slot_change_suffix())
+                let name = custom_label.unwrap_or_else(|| crate::tool_palette::create_dialog(kind).title(lang));
+                Self::tool_palette_slot_hover_body(name, shortcut, lang)
             }
             PaletteSlotContent::Action(kind) => {
-                format!("{}{}", kind.label(lang), lang.tool_palette_slot_change_suffix())
+                let name = custom_label.unwrap_or_else(|| kind.label(lang));
+                Self::tool_palette_slot_hover_body(name, shortcut, lang)
             }
         }
+    }
+
+    fn tool_palette_slot_hover_body(name: &str, shortcut: Option<crate::keymap::KeyCombo>, lang: crate::i18n::Lang) -> String {
+        let shortcut_text = shortcut
+            .map(crate::tool_palette::key_assign::combo_display)
+            .unwrap_or_else(|| lang.tool_palette_slot_shortcut_none().to_string());
+        format!(
+            "{}{}\n{}{}\n{}",
+            lang.tool_palette_slot_hover_name_label(),
+            name,
+            lang.tool_palette_slot_hover_shortcut_label(),
+            shortcut_text,
+            lang.tool_palette_slot_hover_change_hint(),
+        )
     }
 
     /// マス毎のカスタム名称入力欄の文字数ソフト上限（見た目のはみ出し抑制用の目安）。
     const TOOL_PALETTE_LABEL_CHAR_LIMIT: usize = 8;
 
     /// マス右クリックの登録メニュー。先頭に名称変更（サブメニュー内TextEdit）、続けて
-    /// TOGGLE_DEFS / ALL_DIALOG_KINDS を走査して選択肢を並べる（データ駆動：新規Toggle/Dialog
-    /// 追加時にメニュー側の変更は不要）。
-    fn draw_tool_palette_slot_menu(ui: &mut egui::Ui, content: &mut crate::tool_palette::PaletteSlotContent, custom_label: &mut Option<String>, lang: crate::i18n::Lang) {
+    /// ALL_CATEGORIES を走査してカテゴリ→項目の1段サブメニューを並べる（データ駆動：新規種の
+    /// 追加時はtool_palette/category.rsのitemsに足すだけで、メニュー側の変更は不要）。
+    /// ツールパレットのマス idx を実行する（左クリック・割り当てキー共通）。
+    /// Toggle型は即時実行してViewerConfigへ反映する（既存のpoll_image_filter_changeが
+    /// 差分検知して再デコードをトリガーする）。Dialog型はミニUIの展開/折りたたみをトグルする
+    /// （同時に開けるのは1マス分）。キーから開いた場合に備え、パレット非表示なら表示に戻す。
+    fn execute_tool_palette_slot(&mut self, ctx: &egui::Context, idx: usize, is_spread: bool, step: i32, total: usize, cfg: &mut ViewerConfig) {
+        let content = self.tool_palette.slots[idx];
+        match content {
+            crate::tool_palette::PaletteSlotContent::Toggle(kind) => {
+                crate::tool_palette::execute_toggle(cfg, kind);
+            }
+            crate::tool_palette::PaletteSlotContent::Dialog(_) => {
+                self.tool_palette.visible = true;
+                self.tool_palette_open_dialog = if self.tool_palette_open_dialog == Some(idx) {
+                    None
+                } else {
+                    Some(idx)
+                };
+            }
+            crate::tool_palette::PaletteSlotContent::Action(crate::tool_palette::ActionKind::NextPage) => {
+                self.advance_page(step, total as i32);
+            }
+            crate::tool_palette::PaletteSlotContent::Action(crate::tool_palette::ActionKind::PrevPage) => {
+                self.retreat_page(is_spread, step);
+            }
+            crate::tool_palette::PaletteSlotContent::Action(crate::tool_palette::ActionKind::OpenFolder) => {
+                let target = if self.archive_path.is_dir() {
+                    self.archive_path.clone()
+                } else {
+                    self.archive_path.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| self.archive_path.clone())
+                };
+                crate::translate::open_in_file_manager(&target);
+            }
+            crate::tool_palette::PaletteSlotContent::Action(crate::tool_palette::ActionKind::ToggleFullscreen) => {
+                Self::toggle_fullscreen(ctx, cfg);
+            }
+            crate::tool_palette::PaletteSlotContent::Action(crate::tool_palette::ActionKind::SlideshowToggle) => {
+                self.toggle_slideshow();
+            }
+            // コマ送り/コマ戻し。コマモードがOFFの間（拡大表示外を含む）は何もしない。
+            crate::tool_palette::PaletteSlotContent::Action(crate::tool_palette::ActionKind::KomaNext) => {
+                if cfg.koma_on && self.magnifier_view.is_some() {
+                    self.koma_step(true, is_spread, step, total as i32);
+                }
+            }
+            crate::tool_palette::PaletteSlotContent::Action(crate::tool_palette::ActionKind::KomaPrev) => {
+                if cfg.koma_on && self.magnifier_view.is_some() {
+                    self.koma_step(false, is_spread, step, total as i32);
+                }
+            }
+            crate::tool_palette::PaletteSlotContent::Action(crate::tool_palette::ActionKind::FileNavPrev) => {
+                self.palette_nav_request = Some(ViewerNav::PrevFile);
+            }
+            crate::tool_palette::PaletteSlotContent::Action(crate::tool_palette::ActionKind::FileNavNext) => {
+                self.palette_nav_request = Some(ViewerNav::NextFile);
+            }
+            crate::tool_palette::PaletteSlotContent::Action(crate::tool_palette::ActionKind::JumpFirstPage) => {
+                self.jump_to_first_page(is_spread, total as i32);
+            }
+            crate::tool_palette::PaletteSlotContent::Action(crate::tool_palette::ActionKind::JumpLastPage) => {
+                self.jump_to_last_page(is_spread, step, total as i32);
+            }
+            crate::tool_palette::PaletteSlotContent::Action(crate::tool_palette::ActionKind::ToggleZoomActual) => {
+                self.toggle_zoom_actual(cfg);
+            }
+            crate::tool_palette::PaletteSlotContent::Action(crate::tool_palette::ActionKind::CyclePageMode) => {
+                let next = self.page_mode.next();
+                self.set_page_mode_and_toast(next, cfg);
+            }
+            crate::tool_palette::PaletteSlotContent::Action(crate::tool_palette::ActionKind::CycleSpreadOffset) => {
+                if is_spread {
+                    self.cycle_spread_offset_and_toast();
+                }
+            }
+            crate::tool_palette::PaletteSlotContent::Action(crate::tool_palette::ActionKind::ApplySlot1) => {
+                self.apply_window_slot_and_toast(ctx, 0);
+            }
+            crate::tool_palette::PaletteSlotContent::Action(crate::tool_palette::ActionKind::ApplySlot2) => {
+                self.apply_window_slot_and_toast(ctx, 1);
+            }
+            crate::tool_palette::PaletteSlotContent::Action(crate::tool_palette::ActionKind::ApplySlot3) => {
+                self.apply_window_slot_and_toast(ctx, 2);
+            }
+            crate::tool_palette::PaletteSlotContent::Action(crate::tool_palette::ActionKind::ApplySlot4) => {
+                self.apply_window_slot_and_toast(ctx, 3);
+            }
+            crate::tool_palette::PaletteSlotContent::Action(crate::tool_palette::ActionKind::CycleApplySlot) => {
+                self.cycle_apply_slot_and_toast(ctx);
+            }
+            crate::tool_palette::PaletteSlotContent::Empty => {}
+        }
+    }
+
+    /// 戻り値: true =「キー割当」が押された（ダイアログは呼び出し側が開く）。
+    fn draw_tool_palette_slot_menu(ui: &mut egui::Ui, content: &mut crate::tool_palette::PaletteSlotContent, custom_label: &mut Option<String>, lang: crate::i18n::Lang) -> bool {
+        let mut key_assign_requested = false;
         use crate::tool_palette::PaletteSlotContent;
         ui.set_min_width(140.0);
 
@@ -2646,6 +2942,10 @@ impl ViewerState {
                     }
                 });
             });
+            if ui.button(lang.tool_palette_key_assign_menu_label()).clicked() {
+                key_assign_requested = true;
+                ui.close();
+            }
         });
         ui.separator();
 
@@ -2657,32 +2957,66 @@ impl ViewerState {
             }
             ui.separator();
         }
-        for def in crate::tool_palette::TOGGLE_DEFS {
-            let checked = matches!(*content, PaletteSlotContent::Toggle(k) if k == def.key);
-            if ui.selectable_label(checked, (def.label)(lang)).clicked() {
-                if !checked { *custom_label = None; }
-                *content = PaletteSlotContent::Toggle(def.key);
-                ui.close();
+        for category in crate::tool_palette::ALL_CATEGORIES {
+            ui.menu_button(category.label(lang), |ui| {
+                ui.set_min_width(140.0);
+                for &item in category.items() {
+                    let label = match item {
+                        PaletteSlotContent::Toggle(k) => (crate::tool_palette::find_toggle_def(k).label)(lang),
+                        PaletteSlotContent::Dialog(k) => crate::tool_palette::create_dialog(k).title(lang),
+                        PaletteSlotContent::Action(k) => k.label(lang),
+                        PaletteSlotContent::Empty => continue,
+                    };
+                    let checked = *content == item;
+                    if ui.selectable_label(checked, label).clicked() {
+                        if !checked { *custom_label = None; }
+                        *content = item;
+                        ui.close();
+                    }
+                }
+            });
+        }
+        key_assign_requested
+    }
+
+    /// キー割当ダイアログ用の機能名。パレット上のマスならカスタム名（空文字は既定名に読み替え）、
+    /// 置かれていなければ既定名。
+    fn tool_palette_function_name(&self, id: &str, lang: crate::i18n::Lang) -> String {
+        let content = crate::tool_palette::slot_content_from_id(id);
+        let default = crate::tool_palette::default_label(content, lang).unwrap_or(id);
+        let custom = self.tool_palette.slots.iter()
+            .position(|&c| c != crate::tool_palette::PaletteSlotContent::Empty && c == content)
+            .and_then(|idx| self.tool_palette.custom_labels[idx].clone())
+            .filter(|l| !l.is_empty());
+        custom.unwrap_or_else(|| default.to_string())
+    }
+
+    /// キー割当ダイアログを開く要求を処理し、表示中なら1フレーム描く。
+    /// 戻り値は確定した割り当て（機能ID, 新しいキー。None = 割当解除）。
+    fn draw_tool_palette_key_assign(&mut self, ctx: &egui::Context, keymap: &Keymap) -> Option<(String, Option<crate::keymap::KeyCombo>)> {
+        use crate::tool_palette::KeyAssignOutcome;
+        let lang = crate::i18n::t();
+        if let Some(idx) = self.tool_palette_key_assign_request.take() {
+            let content = self.tool_palette.slots[idx];
+            if content != crate::tool_palette::PaletteSlotContent::Empty {
+                let id = crate::tool_palette::slot_content_to_id(content);
+                let name = self.tool_palette_function_name(&id, lang);
+                let current = keymap.palette_keyboard(&id);
+                self.tool_palette_key_assign = Some(crate::tool_palette::KeyAssignDialog::new(id, name, current));
             }
         }
-        ui.separator();
-        for kind in crate::tool_palette::ALL_DIALOG_KINDS {
-            let checked = matches!(*content, PaletteSlotContent::Dialog(k) if k == kind);
-            let title = crate::tool_palette::create_dialog(kind).title(lang);
-            if ui.selectable_label(checked, title).clicked() {
-                if !checked { *custom_label = None; }
-                *content = PaletteSlotContent::Dialog(kind);
-                ui.close();
+        let mut dialog = self.tool_palette_key_assign.take()?;
+        let outcome = crate::tool_palette::key_assign::show(ctx, &mut dialog, keymap, lang, |owner| match owner {
+            crate::keymap::ViewerKeyOwner::Reader(a) => a.display_name().to_string(),
+            crate::keymap::ViewerKeyOwner::Palette(id) => self.tool_palette_function_name(id, lang),
+        });
+        match outcome {
+            KeyAssignOutcome::Open => {
+                self.tool_palette_key_assign = Some(dialog);
+                None
             }
-        }
-        ui.separator();
-        for kind in crate::tool_palette::ALL_ACTION_KINDS {
-            let checked = matches!(*content, PaletteSlotContent::Action(k) if k == kind);
-            if ui.selectable_label(checked, kind.label(lang)).clicked() {
-                if !checked { *custom_label = None; }
-                *content = PaletteSlotContent::Action(kind);
-                ui.close();
-            }
+            KeyAssignOutcome::Close => None,
+            KeyAssignOutcome::Save(kb) => Some((dialog.id, kb)),
         }
     }
 
@@ -2695,6 +3029,7 @@ impl ViewerState {
         step: i32,
         total: usize,
         cfg: &mut ViewerConfig,
+        keymap: &Keymap,
     ) -> (bool, bool) {
         let mut double_clicked = false;
         let mut single_clicked = false;
@@ -2710,7 +3045,7 @@ impl ViewerState {
             // 評価オーバーレイ（最終ページ表示中のみ）。帯の上のクリック・ホバーは背面へ伝えない。
             let rating_rect = crate::rating_overlay::overlay_visible(
                 cfg.rating_overlay_enabled,
-                self.is_raw_file,
+                self.is_raw_file || self.is_virtual_book,
                 self.rating_overlay_dismissed,
                 !self.can_advance_page(step, total as i32),
                 total,
@@ -2903,7 +3238,7 @@ impl ViewerState {
                 let blc_toggle = &mut self.pending_blc_toggle;
                 egui::Popup::context_menu(&resp)
                     .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-                    .show(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort, sort_action, bookmark_toggle_enabled, bookmark_toggle_on, bookmark_action, thumbnail_target, saved_thumbnail_selection, saved_thumbnail_display.as_deref(), thumbnail_action, favorite_add, open_file_detail, slideshow_active, slideshow_toggle, blc_active, blc_toggle));
+                    .show(|ui| Self::spread_save_context_menu(ui, self.is_virtual_book, toggle_enabled, toggle_on, overwrite_enabled, action, sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort, sort_action, bookmark_toggle_enabled, bookmark_toggle_on, bookmark_action, thumbnail_target, saved_thumbnail_selection, saved_thumbnail_display.as_deref(), thumbnail_action, favorite_add, open_file_detail, slideshow_active, slideshow_toggle, blc_active, blc_toggle));
 
                 let painter = ui.painter().with_clip_rect(clip);
 
@@ -2914,8 +3249,19 @@ impl ViewerState {
                     let new_alpha = (frame.t.clamp(0.0, 1.0) * 255.0).round() as u8;
                     match frame.page_mode {
                         PageMode::Single => {
-                            Self::paint_single_alpha(&painter, &frame.prev_tex_lo, avail, origin, 255);
-                            Self::paint_single_alpha(&painter, &frame.tex_lo,      avail, origin, new_alpha);
+                            // 大→小で新ページ矩形の外にはみ出す旧ページの縁は、t=1で急に
+                            // 消えないよう 1-t でフェードアウトさせる。旧全体を薄く描いた上に、
+                            // 新矩形内だけ旧を不透明で描き直す（帯分割しないので継ぎ目が出ない）。
+                            let rect_old = Self::single_fit_rect(avail, origin, &frame.prev_tex_lo);
+                            let rect_new = Self::single_fit_rect(avail, origin, &frame.tex_lo);
+                            if rect_new.is_positive() {
+                                Self::paint_page_alpha(&painter, &frame.prev_tex_lo, rect_old, 255 - new_alpha);
+                                let inner = painter.with_clip_rect(painter.clip_rect().intersect(rect_new));
+                                Self::paint_page_alpha(&inner, &frame.prev_tex_lo, rect_old, 255);
+                            } else {
+                                Self::paint_page_alpha(&painter, &frame.prev_tex_lo, rect_old, 255);
+                            }
+                            Self::paint_page_alpha(&painter, &frame.tex_lo, rect_new, new_alpha);
                         }
                         PageMode::SpreadLeft => {
                             let (rl, rr) = Self::spread_rects(avail, origin, &frame.prev_tex_lo, &frame.prev_tex_hi, frame.monitor);
@@ -2940,8 +3286,18 @@ impl ViewerState {
                     // 左右それぞれ独立した扇（同じt）で揃えて描く。
                     match frame.page_mode {
                         PageMode::Single => {
-                            Self::paint_single_alpha(&painter, &frame.prev_tex_lo, avail, origin, 255);
+                            // 大→小で新ページ矩形の外にはみ出す旧ページの縁は、新ページと同じ
+                            // 扇（新矩形中心）で削っていく。旧の未掃引部分を描いた上に、新矩形内
+                            // だけ旧を不透明で描き直し、最後に新ページの扇を重ねる。
+                            let rect_old = Self::single_fit_rect(avail, origin, &frame.prev_tex_lo);
                             let rect_new = Self::single_fit_rect(avail, origin, &frame.tex_lo);
+                            if rect_new.is_positive() {
+                                Self::paint_clockwise_wipe_remainder(&painter, &frame.prev_tex_lo, rect_old, rect_new.center(), frame.t);
+                                let inner = painter.with_clip_rect(painter.clip_rect().intersect(rect_new));
+                                Self::paint_page_alpha(&inner, &frame.prev_tex_lo, rect_old, 255);
+                            } else {
+                                Self::paint_page_alpha(&painter, &frame.prev_tex_lo, rect_old, 255);
+                            }
                             Self::paint_clockwise_wipe_overlay(&painter, &frame.tex_lo, rect_new, frame.t);
                         }
                         PageMode::SpreadLeft => {
@@ -3063,10 +3419,31 @@ impl ViewerState {
                 p.galley(bg_pos + pad, tg, egui::Color32::WHITE);
             }
 
+            // ── ツールパレット非表示中：画面のどこでも右クリックすれば復活する ────────
+            // 全面のクリック判定なので、評価帯より先に登録して下敷きにする
+            // （後から登録すると帯の★／ボタンのクリックを奪ってしまう）。
+            if palette_rect.is_none() {
+                let revive_resp = ui.interact(viewport_rect, ui.id().with("tool_palette_revive"), egui::Sense::click());
+                if revive_resp.secondary_clicked() {
+                    self.tool_palette.visible = true;
+                }
+            }
+
             // ── 評価オーバーレイ（最終ページ表示中。触らなければ何も保存しない）──────
             if let Some(band) = rating_rect {
                 let event = crate::rating_overlay::show(ui, band, self.rating_half, i18n::t().rating_unset_button());
                 self.apply_rating_event(event);
+            }
+
+            // ── ツールボックスの割り当てキー：パレット非表示・自動ハイド中でも効く ──────
+            for id in &input.palette_keys {
+                let found = self.tool_palette.slots.iter().position(|&c| {
+                    c != crate::tool_palette::PaletteSlotContent::Empty
+                        && crate::tool_palette::slot_content_to_id(c) == *id
+                });
+                if let Some(idx) = found {
+                    self.execute_tool_palette_slot(ui.ctx(), idx, is_spread, step, total, cfg);
+                }
             }
 
             // ── ツールパレット：最前面オーバーレイ ────────────────────────────
@@ -3074,17 +3451,12 @@ impl ViewerState {
             // 生きているため上のtick呼び出しで検知でき、描画をスキップするだけでよい）。
             if let Some(pr) = palette_rect {
                 if !self.tool_palette_auto_hidden {
-                    self.draw_tool_palette(ui, pr, viewport_rect, is_spread, step, total, cfg);
+                    self.draw_tool_palette(ui, pr, viewport_rect, is_spread, step, total, cfg, keymap);
                 }
             } else {
                 // パレット非表示中はマスメニューも存在し得ないため、直前まで展開中だった
                 // 状態が残っていればここで確実にクリアする（クリックガードの誤動作防止）。
                 self.tool_palette_menu_open = false;
-                // 非表示中：画面のどこでも右クリックすれば復活する。
-                let revive_resp = ui.interact(viewport_rect, ui.id().with("tool_palette_revive"), egui::Sense::click());
-                if revive_resp.secondary_clicked() {
-                    self.tool_palette.visible = true;
-                }
             }
         });
         // ページ送りゾーン内では原寸表示切替（ダブルクリック）を素通りさせない。
@@ -3302,6 +3674,17 @@ impl ViewerState {
         log_key!("[key] fullscreen → {}", cfg.fullscreen);
     }
 
+    /// 原寸/fit表示切替。虫眼鏡の有効中は無視する（倍率は虫眼鏡側で持つ。原寸との統合はフェーズ3）。
+    /// キーボード/ダブルクリックとツールパレットのボタンの両方から呼ばれる。
+    fn toggle_zoom_actual(&mut self, cfg: &mut ViewerConfig) {
+        if self.magnifier_view.is_some() {
+            return;
+        }
+        cfg.zoom_actual = !cfg.zoom_actual;
+        // フェーズ6: 表示ターゲットサイズが変わるイベントとして再デコードのデバウンス対象にする
+        cfg.redecode_trigger_seq += 1;
+    }
+
     fn process_misc_input(
         &mut self,
         ctx: &egui::Context,
@@ -3309,11 +3692,8 @@ impl ViewerState {
         double_clicked: bool,
         cfg: &mut ViewerConfig,
     ) -> bool {
-        // 虫眼鏡の有効中は原寸トグルを止める（倍率は虫眼鏡側で持つ。原寸との統合はフェーズ3）。
-        if (input.zoom_key || double_clicked) && self.magnifier_view.is_none() {
-            cfg.zoom_actual = !cfg.zoom_actual;
-            // フェーズ6: 表示ターゲットサイズが変わるイベントとして再デコードのデバウンス対象にする
-            cfg.redecode_trigger_seq += 1;
+        if input.zoom_key || double_clicked {
+            self.toggle_zoom_actual(cfg);
         }
 
         // マス右クリックメニュー展開中の中クリックは、メニューを閉じる操作として
@@ -3322,7 +3702,8 @@ impl ViewerState {
             Self::toggle_fullscreen(ctx, cfg);
         }
 
-        if input.close_requested || input.esc {
+        let fs_close_clicked = std::mem::take(&mut self.fs_close_clicked);
+        if input.close_requested || input.esc || fs_close_clicked {
             if cfg.fullscreen {
                 #[cfg(windows)]
                 ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
@@ -3913,7 +4294,7 @@ impl ViewerState {
                         .on_hover_text(tip)
                         .clicked()
                     {
-                        self.set_page_mode(mode, cfg);
+                        self.set_page_mode_and_toast(mode, cfg);
                     }
                 });
             }
@@ -3931,7 +4312,7 @@ impl ViewerState {
                     .on_hover_text(tip)
                     .clicked()
                 {
-                    if back { self.shift_offset_backward(); } else { self.shift_offset_forward(); }
+                    if back { self.shift_offset_backward_and_toast(); } else { self.shift_offset_forward_and_toast(); }
                 }
             }
             // ずれ状態の表示専用インジケータ。単ページ時は非表示（決定事項）。
@@ -4009,6 +4390,7 @@ impl ViewerState {
     /// 画像本体の右クリックメニュー（見開き・ソート設定の保存）を描画する
     fn spread_save_context_menu(
         ui: &mut egui::Ui,
+        is_virtual_book: bool,
         toggle_enabled: bool,
         toggle_on_init: bool,
         overwrite_enabled: bool,
@@ -4032,6 +4414,14 @@ impl ViewerState {
         blc_active: bool,
         blc_toggle: &mut bool,
     ) {
+        // 「フォルダ本アクセス」の仮想アーカイブでは、実体を持たない仮のフォルダに対して
+        // 各種保存系操作を行わせない（永続化しない一貫性を保つ）。
+        let toggle_enabled = toggle_enabled && !is_virtual_book;
+        let overwrite_enabled = overwrite_enabled && !is_virtual_book;
+        let sort_toggle_enabled = sort_toggle_enabled && !is_virtual_book;
+        let bookmark_toggle_enabled = bookmark_toggle_enabled && !is_virtual_book;
+        let thumbnail_target = if is_virtual_book { None } else { thumbnail_target };
+
         let t = i18n::t();
         let mut toggle_on = toggle_on_init;
         ui.add_enabled_ui(toggle_enabled, |ui| {
@@ -4154,10 +4544,12 @@ impl ViewerState {
             ui.close();
         }
         ui.separator();
-        if ui.button(t.favorite_quick_add_label()).clicked() {
-            *favorite_add = true;
-            ui.close();
-        }
+        ui.add_enabled_ui(!is_virtual_book, |ui| {
+            if ui.button(t.favorite_quick_add_label()).clicked() {
+                *favorite_add = true;
+                ui.close();
+            }
+        });
         if ui.button(t.file_detail_menu()).clicked() {
             *open_file_detail = true;
             ui.close();
@@ -4670,7 +5062,7 @@ impl ViewerState {
                     let blc_toggle = &mut self.pending_blc_toggle;
                     egui::Popup::context_menu(&resp)
                     .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-                    .show(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort, sort_action, bookmark_toggle_enabled, bookmark_toggle_on, bookmark_action, thumbnail_target, saved_thumbnail_selection, saved_thumbnail_display.as_deref(), thumbnail_action, favorite_add, open_file_detail, slideshow_active, slideshow_toggle, blc_active, blc_toggle));
+                    .show(|ui| Self::spread_save_context_menu(ui, self.is_virtual_book, toggle_enabled, toggle_on, overwrite_enabled, action, sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort, sort_action, bookmark_toggle_enabled, bookmark_toggle_on, bookmark_action, thumbnail_target, saved_thumbnail_selection, saved_thumbnail_display.as_deref(), thumbnail_action, favorite_add, open_file_detail, slideshow_active, slideshow_toggle, blc_active, blc_toggle));
                 });
                 // ドラッグ・スクロールバーでの移動を虫眼鏡ビューへ取り込む。
                 if let Some(m) = self.magnifier_view.as_mut() {
@@ -4708,7 +5100,7 @@ impl ViewerState {
                 let blc_toggle = &mut self.pending_blc_toggle;
                 egui::Popup::context_menu(&resp)
                     .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-                    .show(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort, sort_action, bookmark_toggle_enabled, bookmark_toggle_on, bookmark_action, thumbnail_target, saved_thumbnail_selection, saved_thumbnail_display.as_deref(), thumbnail_action, favorite_add, open_file_detail, slideshow_active, slideshow_toggle, blc_active, blc_toggle));
+                    .show(|ui| Self::spread_save_context_menu(ui, self.is_virtual_book, toggle_enabled, toggle_on, overwrite_enabled, action, sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort, sort_action, bookmark_toggle_enabled, bookmark_toggle_on, bookmark_action, thumbnail_target, saved_thumbnail_selection, saved_thumbnail_display.as_deref(), thumbnail_action, favorite_add, open_file_detail, slideshow_active, slideshow_toggle, blc_active, blc_toggle));
             }
         } else {
             let rect = egui::Rect::from_min_size(ui.cursor().left_top(), ui.available_size());
@@ -4732,7 +5124,7 @@ impl ViewerState {
             let blc_toggle = &mut self.pending_blc_toggle;
             egui::Popup::context_menu(&resp)
                     .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-                    .show(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort, sort_action, bookmark_toggle_enabled, bookmark_toggle_on, bookmark_action, thumbnail_target, saved_thumbnail_selection, saved_thumbnail_display.as_deref(), thumbnail_action, favorite_add, open_file_detail, slideshow_active, slideshow_toggle, blc_active, blc_toggle));
+                    .show(|ui| Self::spread_save_context_menu(ui, self.is_virtual_book, toggle_enabled, toggle_on, overwrite_enabled, action, sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort, sort_action, bookmark_toggle_enabled, bookmark_toggle_on, bookmark_action, thumbnail_target, saved_thumbnail_selection, saved_thumbnail_display.as_deref(), thumbnail_action, favorite_add, open_file_detail, slideshow_active, slideshow_toggle, blc_active, blc_toggle));
         }
     }
 
@@ -4804,7 +5196,7 @@ impl ViewerState {
         let blc_toggle = &mut self.pending_blc_toggle;
         egui::Popup::context_menu(&resp)
                     .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-                    .show(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort, sort_action, bookmark_toggle_enabled, bookmark_toggle_on, bookmark_action, thumbnail_target, saved_thumbnail_selection, saved_thumbnail_display.as_deref(), thumbnail_action, favorite_add, open_file_detail, slideshow_active, slideshow_toggle, blc_active, blc_toggle));
+                    .show(|ui| Self::spread_save_context_menu(ui, self.is_virtual_book, toggle_enabled, toggle_on, overwrite_enabled, action, sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort, sort_action, bookmark_toggle_enabled, bookmark_toggle_on, bookmark_action, thumbnail_target, saved_thumbnail_selection, saved_thumbnail_display.as_deref(), thumbnail_action, favorite_add, open_file_detail, slideshow_active, slideshow_toggle, blc_active, blc_toggle));
 
         if angle_deg == 0 {
             let (rect_l, rect_r) = Self::spread_rects(available, origin, tex_left, tex_right, monitor);
@@ -4969,7 +5361,7 @@ impl ViewerState {
             let blc_toggle = &mut self.pending_blc_toggle;
             egui::Popup::context_menu(&resp)
                     .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-                    .show(|ui| Self::spread_save_context_menu(ui, toggle_enabled, toggle_on, overwrite_enabled, action, sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort, sort_action, bookmark_toggle_enabled, bookmark_toggle_on, bookmark_action, thumbnail_target, saved_thumbnail_selection, saved_thumbnail_display.as_deref(), thumbnail_action, favorite_add, open_file_detail, slideshow_active, slideshow_toggle, blc_active, blc_toggle));
+                    .show(|ui| Self::spread_save_context_menu(ui, self.is_virtual_book, toggle_enabled, toggle_on, overwrite_enabled, action, sort_toggle_enabled, sort_toggle_on, sort_changed, current_sort, sort_action, bookmark_toggle_enabled, bookmark_toggle_on, bookmark_action, thumbnail_target, saved_thumbnail_selection, saved_thumbnail_display.as_deref(), thumbnail_action, favorite_add, open_file_detail, slideshow_active, slideshow_toggle, blc_active, blc_toggle));
         });
         // ドラッグ・スクロールバーでの移動を虫眼鏡ビューへ取り込む。
         if magnified.is_some() {
@@ -5307,6 +5699,7 @@ impl ViewerState {
     /// `paint_page`のalpha指定版（クロスフェード用）。GPU側のアルファブレンドのみで
     /// 済ませるため、CPU側のピクセル合成は行わない。
     fn paint_page_alpha(painter: &egui::Painter, tex: &Option<egui::TextureHandle>, rect: egui::Rect, alpha: u8) {
+        if !rect.is_positive() { return; }
         match tex {
             Some(t) => { painter.image(t.id(), rect, FULL_UV, egui::Color32::from_rgba_unmultiplied(255, 255, 255, alpha)); }
             None    => { painter.rect_filled(rect, 0.0, egui::Color32::from_rgba_unmultiplied(40, 40, 40, alpha)); }
@@ -5433,56 +5826,83 @@ impl ViewerState {
         rect: egui::Rect,
         t: f32,
     ) {
-        let Some(tex) = tex else { return };
-        if !rect.is_finite() || rect.width() < 1.0 || rect.height() < 1.0 { return; }
         let t = t.clamp(0.0, 1.0);
         let swept = (t + Self::WIPE_FEATHER_FRAC).min(1.0);
-        if swept <= 0.0 { return; }
+        Self::paint_wipe_fan(painter, tex, rect, rect.center(), 0.0, swept, |frac| Self::wipe_alpha(frac, t));
+    }
 
-        let center = rect.center();
-        // 矩形の対角線半分より少し大きい半径にして、扇の外周が矩形を確実に覆うようにする
-        // （実際の表示範囲はクリップで矩形内に絞るので、はみ出し分のコストは無視できる）。
-        let radius = (rect.width().powi(2) + rect.height().powi(2)).sqrt() / 2.0 + 1.0;
-        let steps = ((Self::WIPE_SEGMENTS_PER_CIRCLE as f32 * swept).ceil() as usize).max(1);
+    /// 時計回りワイプの旧ページ側の「まだ掃かれていない部分」を描く。新ページの扇と
+    /// 同じ中心 `center`（新ページ矩形の中心）・同じ境界で相補的なアルファにするので、
+    /// 大→小遷移で新矩形の外にはみ出す旧ページの縁が新ページと同じ扇で削れていく。
+    fn paint_clockwise_wipe_remainder(
+        painter: &egui::Painter,
+        tex: &Option<egui::TextureHandle>,
+        rect: egui::Rect,
+        center: egui::Pos2,
+        t: f32,
+    ) {
+        let t = t.clamp(0.0, 1.0);
+        if t >= 1.0 { return; }
+        Self::paint_wipe_fan(painter, tex, rect, center, t, 1.0, |frac| 255 - Self::wipe_alpha(frac, t));
+    }
 
-        let alpha_at = |frac: f32| -> u8 {
-            if frac <= t {
-                255
-            } else {
-                let fade = (1.0 - (frac - t) / Self::WIPE_FEATHER_FRAC).clamp(0.0, 1.0);
-                (fade * 255.0).round() as u8
-            }
-        };
+    /// 新ページ側の扇のアルファ：掃引済み(frac<=t)は不透明、その先フェザー幅で0へ落とす。
+    fn wipe_alpha(frac: f32, t: f32) -> u8 {
+        if frac <= t {
+            255
+        } else {
+            let fade = (1.0 - (frac - t) / Self::WIPE_FEATHER_FRAC).clamp(0.0, 1.0);
+            (fade * 255.0).round() as u8
+        }
+    }
+
+    /// `tex` を `rect` に貼った状態で、`center` を中心に周率 `from`〜`to`（0.0=12時、
+    /// 時計回り）の扇だけを描く共通処理。表示は `rect` 内にクリップする。
+    fn paint_wipe_fan(
+        painter: &egui::Painter,
+        tex: &Option<egui::TextureHandle>,
+        rect: egui::Rect,
+        center: egui::Pos2,
+        from: f32,
+        to: f32,
+        alpha_at: impl Fn(f32) -> u8,
+    ) {
+        let Some(tex) = tex else { return };
+        if !rect.is_finite() || rect.width() < 1.0 || rect.height() < 1.0 { return; }
+        let span = to - from;
+        if span <= 0.0 { return; }
+
+        // 中心から矩形の最遠の角までより少し大きい半径にして、扇の外周が矩形を確実に覆う
+        // ようにする（実際の表示範囲はクリップで矩形内に絞るので、はみ出し分のコストは無視できる）。
+        let radius = [rect.left_top(), rect.right_top(), rect.left_bottom(), rect.right_bottom()]
+            .iter()
+            .map(|corner| corner.distance(center))
+            .fold(0.0_f32, f32::max)
+            + 1.0;
+        let steps = ((Self::WIPE_SEGMENTS_PER_CIRCLE as f32 * span).ceil() as usize).max(1);
+
         let uv_at = |p: egui::Pos2| -> egui::Pos2 {
             egui::pos2(
                 (p.x - rect.min.x) / rect.width(),
                 (p.y - rect.min.y) / rect.height(),
             )
         };
-        let vertex_at = |frac: f32| -> egui::epaint::Vertex {
-            let p = Self::wipe_point(center, radius, frac);
+        let vertex = |p: egui::Pos2, frac: f32| -> egui::epaint::Vertex {
             egui::epaint::Vertex {
                 pos: p,
                 uv: uv_at(p),
                 color: egui::Color32::from_rgba_unmultiplied(255, 255, 255, alpha_at(frac)),
             }
         };
-        let center_vertex = |frac: f32| -> egui::epaint::Vertex {
-            egui::epaint::Vertex {
-                pos: center,
-                uv: uv_at(center),
-                color: egui::Color32::from_rgba_unmultiplied(255, 255, 255, alpha_at(frac)),
-            }
-        };
 
         let mut mesh = egui::Mesh::with_texture(tex.id());
         for i in 0..steps {
-            let frac_a = swept * (i as f32) / (steps as f32);
-            let frac_b = swept * ((i + 1) as f32) / (steps as f32);
+            let frac_a = from + span * (i as f32) / (steps as f32);
+            let frac_b = from + span * ((i + 1) as f32) / (steps as f32);
             let base = mesh.vertices.len() as u32;
-            mesh.vertices.push(center_vertex(frac_a));
-            mesh.vertices.push(vertex_at(frac_a));
-            mesh.vertices.push(vertex_at(frac_b));
+            mesh.vertices.push(vertex(center, frac_a));
+            mesh.vertices.push(vertex(Self::wipe_point(center, radius, frac_a), frac_a));
+            mesh.vertices.push(vertex(Self::wipe_point(center, radius, frac_b), frac_b));
             mesh.indices.extend_from_slice(&[base, base + 1, base + 2]);
         }
         painter.with_clip_rect(painter.clip_rect().intersect(rect)).add(mesh);
@@ -5498,23 +5918,6 @@ impl ViewerState {
         let size = egui::vec2(img_w as f32 * scale, img_h as f32 * scale);
         let tl = origin + (avail - size) / 2.0;
         egui::Rect::from_min_size(tl, size)
-    }
-
-    /// 単ページをoffset無し・alpha指定で描画（クロスフェード用）
-    fn paint_single_alpha(
-        painter: &egui::Painter,
-        tex: &Option<egui::TextureHandle>,
-        avail: egui::Vec2,
-        origin: egui::Pos2,
-        alpha: u8,
-    ) {
-        if let Some(tex) = tex {
-            let [img_w, img_h] = tex.size();
-            let scale = (avail.x / img_w as f32).min(avail.y / img_h as f32);
-            let size  = egui::vec2(img_w as f32 * scale, img_h as f32 * scale);
-            let tl    = origin + (avail - size) / 2.0;
-            painter.image(tex.id(), egui::Rect::from_min_size(tl, size), FULL_UV, egui::Color32::from_rgba_unmultiplied(255, 255, 255, alpha));
-        }
     }
 }
 
@@ -5839,6 +6242,48 @@ mod sort_save_state_tests {
         assert!(viewer.can_shift_forward());
         viewer.shift_offset_forward();
         assert_eq!(viewer.spread_lo(), 1);
+    }
+
+    #[test]
+    fn cycle_spread_offset_bounces_minus_one_zero_plus_one_and_back() {
+        let mut viewer = archive_viewer();
+        viewer.page_mode = PageMode::SpreadLeft;
+
+        assert_eq!(viewer.offset.value(), 0);
+        viewer.cycle_spread_offset_and_toast();
+        assert_eq!(viewer.offset.value(), -1);
+        viewer.cycle_spread_offset_and_toast();
+        assert_eq!(viewer.offset.value(), 0);
+        viewer.cycle_spread_offset_and_toast();
+        assert_eq!(viewer.offset.value(), 1);
+        viewer.cycle_spread_offset_and_toast();
+        assert_eq!(viewer.offset.value(), 0);
+        viewer.cycle_spread_offset_and_toast();
+        assert_eq!(viewer.offset.value(), -1);
+    }
+
+    #[test]
+    fn cycle_apply_slot_wraps_from_undefined_through_one_to_four_and_back() {
+        let mut viewer = archive_viewer();
+        let ctx = egui::Context::default();
+        viewer.slots = [
+            Some(WindowSlot { x: 1, y: 1, w: 100, h: 100 }),
+            Some(WindowSlot { x: 2, y: 2, w: 200, h: 200 }),
+            Some(WindowSlot { x: 3, y: 3, w: 300, h: 300 }),
+            Some(WindowSlot { x: 4, y: 4, w: 400, h: 400 }),
+        ];
+
+        assert_eq!(viewer.palette_slot_cycle_index, None);
+        viewer.cycle_apply_slot_and_toast(&ctx);
+        assert_eq!(viewer.palette_slot_cycle_index, Some(0));
+        viewer.cycle_apply_slot_and_toast(&ctx);
+        assert_eq!(viewer.palette_slot_cycle_index, Some(1));
+        viewer.cycle_apply_slot_and_toast(&ctx);
+        assert_eq!(viewer.palette_slot_cycle_index, Some(2));
+        viewer.cycle_apply_slot_and_toast(&ctx);
+        assert_eq!(viewer.palette_slot_cycle_index, Some(3));
+        viewer.cycle_apply_slot_and_toast(&ctx);
+        assert_eq!(viewer.palette_slot_cycle_index, Some(0));
     }
 
     #[test]
@@ -6536,7 +6981,10 @@ mod magnifier_flow_tests {
         let palette = h.viewer.tool_palette_rect(viewport).expect("パレットが表示されていない");
         let slot = h.viewer.tool_palette.slot_size_px();
         let center = palette.min
-            + egui::vec2(ViewerState::TOOL_PALETTE_PAD, ViewerState::TOOL_PALETTE_HEADER_H + ViewerState::TOOL_PALETTE_PAD)
+            + egui::vec2(
+                ViewerState::TOOL_PALETTE_PAD + ViewerState::TOOL_PALETTE_ROW_BTN_W + ViewerState::TOOL_PALETTE_ROW_BTN_GAP,
+                ViewerState::TOOL_PALETTE_HEADER_H + ViewerState::TOOL_PALETTE_PAD,
+            )
             + egui::vec2(slot / 2.0, slot / 2.0);
         let button = |pressed| egui::Event::PointerButton {
             pos: center,
@@ -7395,6 +7843,62 @@ mod magnifier_flow_tests {
         h.screen = SCREEN;
         h.warm_up();
         assert_eq!(palette_rect(&h).min, original);
+    }
+
+    /// ツールボックスの割り当てキーを1回押す（押下→離し）。
+    fn press_palette_key(h: &mut Harness, key: egui::Key) {
+        h.frame(vec![key_event(key, true)], egui::Modifiers::NONE);
+        h.frame(vec![key_event(key, false)], egui::Modifiers::NONE);
+    }
+
+    #[test]
+    fn palette_key_runs_slot_even_while_palette_is_hidden() {
+        let mut h = Harness::with_pages(5, 800, 1200);
+        assert!(!h.viewer.tool_palette.visible);
+        h.viewer.tool_palette.slots[3] = crate::tool_palette::PaletteSlotContent::Action(crate::tool_palette::ActionKind::NextPage);
+        h.keymap.assign_palette_keyboard("action:next_page", Some(crate::keymap::KeyCombo::plain(egui::Key::N)));
+        let before = h.viewer.spread_lo();
+        press_palette_key(&mut h, egui::Key::N);
+        assert!(h.viewer.spread_lo() > before, "割り当てキーでページが進まない: {}", h.state());
+    }
+
+    #[test]
+    fn palette_key_does_nothing_when_function_is_not_on_palette() {
+        let mut h = Harness::with_pages(5, 800, 1200);
+        h.keymap.assign_palette_keyboard("action:next_page", Some(crate::keymap::KeyCombo::plain(egui::Key::N)));
+        let before = h.viewer.spread_lo();
+        press_palette_key(&mut h, egui::Key::N);
+        assert_eq!(h.viewer.spread_lo(), before);
+    }
+
+    #[test]
+    fn key_assign_dialog_captures_keys_instead_of_the_viewer() {
+        let mut h = Harness::with_pages(5, 800, 1200);
+        h.viewer.tool_palette.slots[3] = crate::tool_palette::PaletteSlotContent::Action(crate::tool_palette::ActionKind::NextPage);
+        h.viewer.tool_palette_key_assign_request = Some(3);
+        h.frame(vec![], egui::Modifiers::NONE);
+        assert!(h.viewer.tool_palette_key_assign.is_some(), "ダイアログが開かない");
+        let before = h.viewer.spread_lo();
+        press_palette_key(&mut h, egui::Key::ArrowDown);
+        assert_eq!(h.viewer.spread_lo(), before, "ダイアログ表示中にページが送られた");
+        let dialog = h.viewer.tool_palette_key_assign.as_ref().expect("ダイアログが閉じた");
+        assert_eq!(dialog.combo(), Some(crate::keymap::KeyCombo::plain(egui::Key::ArrowDown)));
+        // Esc では閉じず、割り当ても変わらない
+        press_palette_key(&mut h, egui::Key::Escape);
+        let dialog = h.viewer.tool_palette_key_assign.as_ref().expect("Escで閉じた");
+        assert_eq!(dialog.combo(), Some(crate::keymap::KeyCombo::plain(egui::Key::ArrowDown)));
+    }
+
+    #[test]
+    fn palette_key_opens_dialog_and_shows_hidden_palette() {
+        let mut h = Harness::with_pages(5, 800, 1200);
+        h.viewer.tool_palette.slots[0] = crate::tool_palette::PaletteSlotContent::Dialog(crate::tool_palette::DialogKind::ImageFilter);
+        h.keymap.assign_palette_keyboard("dialog:image_filter", Some(crate::keymap::KeyCombo::plain(egui::Key::G)));
+        press_palette_key(&mut h, egui::Key::G);
+        assert!(h.viewer.tool_palette.visible);
+        assert_eq!(h.viewer.tool_palette_open_dialog, Some(0));
+        press_palette_key(&mut h, egui::Key::G);
+        assert_eq!(h.viewer.tool_palette_open_dialog, None, "2回目で閉じない");
     }
 }
 

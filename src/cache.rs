@@ -120,12 +120,18 @@ enum OpenArchive {
     /// 両 feature 無効時のみ未構築のデッドコードとして許容する。
     #[cfg_attr(not(any(feature = "fmt-7z", feature = "fmt-tar")), allow(dead_code))]
     Extracted(Arc<HashMap<String, Vec<u8>>>),
+    /// フォルダ（仮想アーカイブ）。状態を持たず、`entry_name`（ファイルの絶対パス文字列）を
+    /// キーに都度ファイルシステムから読む。FileCacheの対象外（`estimate_file_cache_bytes`参照）。
+    Folder,
 }
 
 /// FileCache ミス時にディスクからアーカイブを開く（zipはランダムアクセス、7z/tarは一括展開）。
 /// spawn_worker と spawn_entry_thumb_worker の FileCache ミス経路の共通処理。
 /// 通常は FileCache 側が先出しするためミスはほぼ発生しない安全弁。
 fn open_archive_from_disk(path: &std::path::Path) -> Option<OpenArchive> {
+    if path.is_dir() {
+        return Some(OpenArchive::Folder);
+    }
     match crate::fs::archive::detect_format(path) {
         #[cfg(feature = "fmt-7z")]
         crate::fs::archive::ArchiveFormat::SevenZ => {
@@ -152,6 +158,10 @@ impl OpenArchive {
             Self::Extracted(map) => {
                 let buf = map.get(entry_name)?;
                 decode_bytes_to_content(buf, entry_name, filter, cache_budget_bytes, ring_bounds, frame_hard_limit_bytes, target_size, exif_enabled)
+            }
+            Self::Folder => {
+                let buf = std::fs::read(entry_name).ok()?;
+                decode_bytes_to_content(&buf, entry_name, filter, cache_budget_bytes, ring_bounds, frame_hard_limit_bytes, target_size, exif_enabled)
             }
         }
     }
@@ -288,7 +298,7 @@ pub fn spawn_worker(filter: image::imageops::FilterType, num_threads: usize, ctx
                     // スレッドローカルに展開する安全弁で、通常はFileCache側の先出しにより
                     // ほぼ発生しない）
                     let is_same = open_archive.as_ref().map_or(false, |(p, a)| {
-                        p == &req.archive_path && matches!(a, OpenArchive::Disk(_) | OpenArchive::Extracted(_))
+                        p == &req.archive_path && matches!(a, OpenArchive::Disk(_) | OpenArchive::Extracted(_) | OpenArchive::Folder)
                     });
                     if !is_same {
                         open_archive = open_archive_from_disk(&req.archive_path)
@@ -1583,6 +1593,10 @@ pub struct ThumbRequest {
     pub generation_token: Option<u64>,
     /// PWD移動・設定変更で待機中ジョブを失効させるセッション。
     pub session_id: u64,
+    /// タグパネルの高画質プレビュー用リクエストかどうか。trueの場合、
+    /// `poll_workers`側はグリッド用の(current_dir/requested_edge一致)フィルタを
+    /// 適用せず専用ハンドラへ回す。`db`は常にNone（DB永続化しない）想定。
+    pub is_tag_preview: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1600,6 +1614,7 @@ pub struct ThumbResult {
     pub session_id: u64,
     pub stage: ThumbResultStage,
     pub failed: bool,
+    pub is_tag_preview: bool,
 }
 
 /// プローブレーンのスレッド数。ローカルDB読み＋JPEGデコードのみで軽いため少数で足りる。
@@ -1686,6 +1701,7 @@ fn spawn_thumb_gen_pool(
                 let failed = rgba.is_none();
                 let source_key = req.thumbnail_selection.as_ref().map(thumbnail_selection_cache_key);
                 let _ = res_tx.send(ThumbResult {
+                    is_tag_preview: req.is_tag_preview,
                     path: req.archive_path,
                     rgba,
                     source_key,
@@ -1746,6 +1762,7 @@ pub fn spawn_thumb_worker(
                         // キャッシュヒット: statを待たずに先に表示へ回す
                         let source_key = req.thumbnail_selection.as_ref().map(thumbnail_selection_cache_key);
                         let _ = res_tx.send(ThumbResult {
+                            is_tag_preview: req.is_tag_preview,
                             path: req.archive_path.clone(),
                             rgba: Some(rgba),
                             source_key,
@@ -1763,6 +1780,7 @@ pub fn spawn_thumb_worker(
                         if let Err(req) = claim_and_forward_thumb_gen(req, current_mtime, &gen_tx, &net_gen_tx) {
                             let source_key = req.thumbnail_selection.as_ref().map(thumbnail_selection_cache_key);
                             let _ = res_tx.send(ThumbResult {
+                                is_tag_preview: req.is_tag_preview,
                                 path: req.archive_path,
                                 rgba: None,
                                 source_key,
@@ -1780,6 +1798,7 @@ pub fn spawn_thumb_worker(
                         if let Err(req) = claim_and_forward_thumb_gen(req, current_mtime, &gen_tx, &net_gen_tx) {
                             let source_key = req.thumbnail_selection.as_ref().map(thumbnail_selection_cache_key);
                             let _ = res_tx.send(ThumbResult {
+                                is_tag_preview: req.is_tag_preview,
                                 path: req.archive_path,
                                 rgba: None,
                                 source_key,
@@ -1897,7 +1916,7 @@ pub fn spawn_entry_thumb_worker(filter: image::imageops::FilterType, num_threads
                     // スレッドローカルに展開する安全弁で、通常はFileCache側の先出しにより
                     // ほぼ発生しない）
                     let is_same = open_archive.as_ref().map_or(false, |(p, a)| {
-                        p == &req.archive_path && matches!(a, OpenArchive::Disk(_) | OpenArchive::Extracted(_))
+                        p == &req.archive_path && matches!(a, OpenArchive::Disk(_) | OpenArchive::Extracted(_) | OpenArchive::Folder)
                     });
                     if !is_same {
                         open_archive = open_archive_from_disk(&req.archive_path)
@@ -2173,6 +2192,7 @@ mod ring_integration_tests {
             requested_filter: crate::config::ResizeFilter::Triangle,
             generation_token: None,
             session_id: 1,
+            is_tag_preview: false,
             thumbnail_selection: Some(crate::spread_state::ThumbnailSelection {
                 entry_name: selected,
                 source_kind: crate::spread_state::ThumbnailSourceKind::Full,
@@ -2214,6 +2234,7 @@ mod ring_integration_tests {
             requested_filter: crate::config::ResizeFilter::Triangle,
             generation_token: None,
             session_id: 1,
+            is_tag_preview: false,
         };
         assert!(probe_cached_thumb(&req).is_some(), "登録変更後も旧Blobを暫定表示する");
         let _ = std::fs::remove_dir_all(&neko_dir);
@@ -2244,6 +2265,7 @@ mod ring_integration_tests {
             requested_filter: crate::config::ResizeFilter::Triangle,
             generation_token: None,
             session_id: 1,
+            is_tag_preview: false,
         };
 
         tx.send(request()).unwrap();

@@ -19,10 +19,36 @@ pub enum ActionKind {
     KomaNext,
     /// 疑似コマ送り: 前のコマへ戻る（先頭コマなら前ページの最終コマ）
     KomaPrev,
+    /// 前のファイルへ移動
+    FileNavPrev,
+    /// 次のファイルへ移動
+    FileNavNext,
+    /// アーカイブ内先頭ページへジャンプ
+    JumpFirstPage,
+    /// アーカイブ内末尾ページへジャンプ
+    JumpLastPage,
+    /// 等倍/fit表示切替
+    ToggleZoomActual,
+    /// ページ表示モードを循環（単ページ→見開き左→見開き右→単ページ…）
+    CyclePageMode,
+    /// 見開きオフセットを往復循環（-1→0→+1→0→-1…、境界では往復方向を反転）
+    CycleSpreadOffset,
+    /// ウィンドウスロット1の位置・サイズを復元
+    ApplySlot1,
+    /// ウィンドウスロット2の位置・サイズを復元
+    ApplySlot2,
+    /// ウィンドウスロット3の位置・サイズを復元
+    ApplySlot3,
+    /// ウィンドウスロット4の位置・サイズを復元
+    ApplySlot4,
+    /// 適用スロット番号を循環（未定義→1→2→3→4→1…）
+    CycleApplySlot,
 }
 
-/// 全ActionKind。登録メニュー（マス右クリック）はこれを走査して選択肢を出す。
-pub const ALL_ACTION_KINDS: [ActionKind; 7] = [
+/// 全ActionKind。category.rsの網羅テストがこれを基準に「全種がどこかのカテゴリに属する」を検査する
+/// （登録メニューはcategory.rsのカテゴリ表を走査する）。
+#[cfg(test)]
+pub const ALL_ACTION_KINDS: [ActionKind; 19] = [
     ActionKind::NextPage,
     ActionKind::PrevPage,
     ActionKind::OpenFolder,
@@ -30,6 +56,18 @@ pub const ALL_ACTION_KINDS: [ActionKind; 7] = [
     ActionKind::SlideshowToggle,
     ActionKind::KomaNext,
     ActionKind::KomaPrev,
+    ActionKind::FileNavPrev,
+    ActionKind::FileNavNext,
+    ActionKind::JumpFirstPage,
+    ActionKind::JumpLastPage,
+    ActionKind::ToggleZoomActual,
+    ActionKind::CyclePageMode,
+    ActionKind::CycleSpreadOffset,
+    ActionKind::ApplySlot1,
+    ActionKind::ApplySlot2,
+    ActionKind::ApplySlot3,
+    ActionKind::ApplySlot4,
+    ActionKind::CycleApplySlot,
 ];
 
 impl ActionKind {
@@ -43,6 +81,18 @@ impl ActionKind {
             ActionKind::SlideshowToggle => "slideshow_toggle",
             ActionKind::KomaNext => "koma_next",
             ActionKind::KomaPrev => "koma_prev",
+            ActionKind::FileNavPrev => "file_nav_prev",
+            ActionKind::FileNavNext => "file_nav_next",
+            ActionKind::JumpFirstPage => "jump_first_page",
+            ActionKind::JumpLastPage => "jump_last_page",
+            ActionKind::ToggleZoomActual => "toggle_zoom_actual",
+            ActionKind::CyclePageMode => "cycle_page_mode",
+            ActionKind::CycleSpreadOffset => "cycle_spread_offset",
+            ActionKind::ApplySlot1 => "apply_slot_1",
+            ActionKind::ApplySlot2 => "apply_slot_2",
+            ActionKind::ApplySlot3 => "apply_slot_3",
+            ActionKind::ApplySlot4 => "apply_slot_4",
+            ActionKind::CycleApplySlot => "cycle_apply_slot",
         }
     }
 
@@ -55,6 +105,18 @@ impl ActionKind {
             "slideshow_toggle" => ActionKind::SlideshowToggle,
             "koma_next" => ActionKind::KomaNext,
             "koma_prev" => ActionKind::KomaPrev,
+            "file_nav_prev" => ActionKind::FileNavPrev,
+            "file_nav_next" => ActionKind::FileNavNext,
+            "jump_first_page" => ActionKind::JumpFirstPage,
+            "jump_last_page" => ActionKind::JumpLastPage,
+            "toggle_zoom_actual" => ActionKind::ToggleZoomActual,
+            "cycle_page_mode" => ActionKind::CyclePageMode,
+            "cycle_spread_offset" => ActionKind::CycleSpreadOffset,
+            "apply_slot_1" => ActionKind::ApplySlot1,
+            "apply_slot_2" => ActionKind::ApplySlot2,
+            "apply_slot_3" => ActionKind::ApplySlot3,
+            "apply_slot_4" => ActionKind::ApplySlot4,
+            "cycle_apply_slot" => ActionKind::CycleApplySlot,
             _ => return None,
         })
     }
@@ -69,6 +131,18 @@ impl ActionKind {
             ActionKind::SlideshowToggle => lang.tool_palette_action_label_slideshow_toggle(),
             ActionKind::KomaNext => lang.tool_palette_action_label_koma_next(),
             ActionKind::KomaPrev => lang.tool_palette_action_label_koma_prev(),
+            ActionKind::FileNavPrev => lang.tool_palette_action_label_file_nav_prev(),
+            ActionKind::FileNavNext => lang.tool_palette_action_label_file_nav_next(),
+            ActionKind::JumpFirstPage => lang.tool_palette_action_label_jump_first_page(),
+            ActionKind::JumpLastPage => lang.tool_palette_action_label_jump_last_page(),
+            ActionKind::ToggleZoomActual => lang.tool_palette_action_label_toggle_zoom_actual(),
+            ActionKind::CyclePageMode => lang.tool_palette_action_label_cycle_page_mode(),
+            ActionKind::CycleSpreadOffset => lang.tool_palette_action_label_cycle_spread_offset(),
+            ActionKind::ApplySlot1 => lang.tool_palette_action_label_apply_slot1(),
+            ActionKind::ApplySlot2 => lang.tool_palette_action_label_apply_slot2(),
+            ActionKind::ApplySlot3 => lang.tool_palette_action_label_apply_slot3(),
+            ActionKind::ApplySlot4 => lang.tool_palette_action_label_apply_slot4(),
+            ActionKind::CycleApplySlot => lang.tool_palette_action_label_cycle_apply_slot(),
         }
     }
 
@@ -82,6 +156,18 @@ impl ActionKind {
             ActionKind::SlideshowToggle => "⏯",
             ActionKind::KomaNext => "▶▶",
             ActionKind::KomaPrev => "◀◀",
+            ActionKind::FileNavPrev => "⏮",
+            ActionKind::FileNavNext => "⏭",
+            ActionKind::JumpFirstPage => "⇤",
+            ActionKind::JumpLastPage => "⇥",
+            ActionKind::ToggleZoomActual => "🔍",
+            ActionKind::CyclePageMode => "⇄",
+            ActionKind::CycleSpreadOffset => "↔",
+            ActionKind::ApplySlot1 => "①",
+            ActionKind::ApplySlot2 => "②",
+            ActionKind::ApplySlot3 => "③",
+            ActionKind::ApplySlot4 => "④",
+            ActionKind::CycleApplySlot => "⊞",
         }
     }
 }
@@ -90,7 +176,7 @@ impl ActionKind {
 mod tests {
     use super::*;
 
-    const ALL_KINDS: [ActionKind; 7] = [
+    const ALL_KINDS: [ActionKind; 19] = [
         ActionKind::NextPage,
         ActionKind::PrevPage,
         ActionKind::OpenFolder,
@@ -98,6 +184,18 @@ mod tests {
         ActionKind::SlideshowToggle,
         ActionKind::KomaNext,
         ActionKind::KomaPrev,
+        ActionKind::FileNavPrev,
+        ActionKind::FileNavNext,
+        ActionKind::JumpFirstPage,
+        ActionKind::JumpLastPage,
+        ActionKind::ToggleZoomActual,
+        ActionKind::CyclePageMode,
+        ActionKind::CycleSpreadOffset,
+        ActionKind::ApplySlot1,
+        ActionKind::ApplySlot2,
+        ActionKind::ApplySlot3,
+        ActionKind::ApplySlot4,
+        ActionKind::CycleApplySlot,
     ];
 
     #[test]

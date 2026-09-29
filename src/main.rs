@@ -3,6 +3,7 @@ mod anim;
 mod cache;
 mod card_date_format;
 mod config;
+mod confirm_dialog;
 mod controller;
 mod decode_jobs;
 mod explorer_sort;
@@ -13,6 +14,7 @@ mod i18n;
 mod image_filter;
 mod image_info;
 mod types;
+mod ui_widgets;
 mod keymap;
 mod koma;
 // 変換関数はフェーズ2で配線済み。バー幅API・自動ハイド秒などはフェーズ4以降で配線するまで未使用。
@@ -27,6 +29,7 @@ mod rotation;
 mod single_instance;
 mod spread_offset;
 mod spread_state;
+mod tag_manager;
 mod texture_window;
 mod tool_palette;
 mod toolbar;
@@ -107,6 +110,7 @@ fn main() {
         if let Some(v) = state.app_default_slot { cfg.default_slot = v; }
         if let Some(v) = state.app_magnifier_zoom_notice_shown { cfg.magnifier_zoom_notice_shown = v; }
         if let Some(v) = state.app_max_decode_edge_prompt_answered { cfg.max_decode_edge_prompt_answered = v; }
+        if let Some(v) = state.app_folder_book_access_warning_seen { cfg.folder_book_access_warning_seen = v; }
 
         // 原寸時の最大長辺幅の既定値を 1920 → 4000 に上げた。保存済みの値が新既定値より低く未回答なら、
         // 起動時に1度だけ更新するか確認する（新既定値以上の人は、確認不要として回答済みにしておく）。
@@ -125,9 +129,6 @@ fn main() {
             }
             cfg.pending_magnifier_zoom_notice = Some(notice);
         }
-
-        fs::mount::log_gvfs_status();
-        log_common!("[startup] gvfs check done");
 
         let args = CliArgs::parse();
         if let Some(v) = args.cache_max_mb { cfg.cache_total_mb = Some(v.max(64)); }
@@ -159,6 +160,8 @@ fn main() {
 
     log_common!("[startup] starting winit event loop ...");
     winit_app::run(start_dir, cfg, state, open_target);
+    // run() の戻りで WinitApp（spread.redb を含む）は破棄済み。DB を閉じてからロックを明示解放し、
+    // FUSE 待ちのスレッドでプロセスが残っても、次の起動が「既に起動中」にならないようにする。
     drop(instance_guard);
 }
 
@@ -189,15 +192,21 @@ fn show_init_failure_dialog() {}
 
 /// 窓ごとの egui::Context を生成した直後に、日本語フォントとスタイルを適用する。
 /// （旧 eframe では cc.egui_ctx に対し 1 回だけ行っていたが、winit では窓ごとに Context を持つ）
-fn setup_egui_context(ctx: &egui::Context) {
+/// `wide_scrollbar`: 非ホバー時のスクロールバーを既定(2px)より太くする。リーダー窓は既定のまま。
+fn setup_egui_context(ctx: &egui::Context, wide_scrollbar: bool) {
     setup_japanese_font(ctx);
-    ctx.style_mut_of(egui::Theme::Dark, |s| {
-        s.spacing.scroll.bar_outer_margin = 0.0;
-    });
-    ctx.style_mut_of(egui::Theme::Light, |s| {
-        s.spacing.scroll.bar_outer_margin = 0.0;
-    });
+    for theme in [egui::Theme::Dark, egui::Theme::Light] {
+        ctx.style_mut_of(theme, |s| {
+            s.spacing.scroll.bar_outer_margin = 0.0;
+            if wide_scrollbar {
+                s.spacing.scroll.floating_width = WIDE_SCROLLBAR_FLOATING_WIDTH;
+            }
+        });
+    }
 }
+
+/// エクスプローラー系の窓で使う、非ホバー時のスクロールバー幅（egui既定は2px）。
+const WIDE_SCROLLBAR_FLOATING_WIDTH: f32 = 6.0;
 
 fn setup_japanese_font(ctx: &egui::Context) {
     let Some(font_data) = japanese_font_data() else { return };

@@ -31,7 +31,8 @@ impl NekoviewApp {
     }
 
     /// ビューアーが評価・訪問を書き換えた直後に、評価帯用キャッシュの該当パスを最新化する。
-    fn refresh_rating_cache(&mut self, archive_path: &std::path::Path) {
+    /// エクスプローラー右クリック「スコアの設定」ダイアログ（`bulk_settings_ui.rs`）からも流用する。
+    pub(super) fn refresh_rating_cache(&mut self, archive_path: &std::path::Path) {
         let rating = self.spread_db.as_ref().and_then(|db| {
             let dir = archive_path.parent()?;
             let name = archive_path.file_name()?.to_str()?;
@@ -62,6 +63,7 @@ impl NekoviewApp {
 
     /// ビューアーを閉じる（OS のクローズボタン等から winit_app が呼ぶ）。
     pub fn close_viewer(&mut self) {
+        self.deactivate_tag_main_edit();
         self.flush_current_sort_if_changed();
         self.flush_current_bookmark_if_enabled();
         *self.viewer.lock().unwrap() = None;
@@ -554,6 +556,11 @@ impl NekoviewApp {
             self.persist_state();
         }
 
+        if let Some((id, kb)) = output.palette_key_assign {
+            self.config.keymap.assign_palette_keyboard(&id, kb);
+            self.config.keymap.save(&self.config.config_root);
+        }
+
         if let Some(action) = output.spread_save_action {
             self.handle_spread_save_action(action);
         }
@@ -580,6 +587,7 @@ impl NekoviewApp {
 
         let had_nav = output.nav != ViewerNav::None;
         if output.close_requested {
+            self.deactivate_tag_main_edit();
             self.flush_current_sort_if_changed();
             self.flush_current_bookmark_if_enabled();
             *self.viewer.lock().unwrap() = None;
@@ -731,6 +739,15 @@ impl NekoviewApp {
     }
 
     fn handle_viewer_nav(&mut self, nav: ViewerNav) {
+        // 仮想アーカイブ（フォルダ本アクセス）は隣接ファイルへの遷移対象を持たない
+        // （そもそも「次のアーカイブファイル」という概念が成立しない）ため、
+        // 最終/先頭ページでのファイル間ナビゲーション要求はそこで止める。
+        if nav != ViewerNav::None {
+            let is_virtual_book = self.viewer.lock().unwrap().as_ref().is_some_and(|v| v.is_virtual_book());
+            if is_virtual_book {
+                return;
+            }
+        }
         match nav {
             ViewerNav::None => {}
             ViewerNav::PrevFile => {
@@ -1036,6 +1053,7 @@ impl NekoviewApp {
             requested_filter: self.config.thumb_filter,
             generation_token: None,
             session_id: self.thumb_session.load(std::sync::atomic::Ordering::Acquire),
+            is_tag_preview: false,
         }).is_ok() {
             self.thumb_pending.insert(archive_path);
         }
@@ -1096,6 +1114,7 @@ impl NekoviewApp {
             let mut cfg = self.viewer_cfg.lock().unwrap();
             cfg.magnifier_on = false;
         }
+        self.deactivate_tag_main_edit();
         self.flush_current_sort_if_changed();
         self.flush_current_bookmark_if_enabled();
         let path = state.archive_path().clone();

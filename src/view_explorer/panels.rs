@@ -22,6 +22,39 @@ const SAVED_SETTING_MARKER_SIZE: f32 = 17.0;
 const SAVED_SETTING_MARKER_SLOT_H: f32 = 21.0;
 const SAVED_SETTING_MARKER_MARGIN: f32 = 4.0;
 
+/// タグ機能・レイアウト器: 右タグパネルを折りたたんだ時に残す、
+/// 展開ツマミぶんだけの幅。
+const PANEL_TAB_WIDTH: f32 = 32.0;
+/// タグパネル: D&Dリサイズ時の最小/最大幅。開閉ボタンとは独立した機構で、
+/// どれだけ幅を詰めても自動で折りたたみには切り替わらない。
+const TAG_PANEL_MIN_WIDTH: f32 = 180.0;
+const TAG_PANEL_MAX_WIDTH: f32 = 600.0;
+const TAG_PANEL_HANDLE_WIDTH: f32 = 6.0;
+/// D&Dハンドルの実際の当たり判定・見た目の高さ（縦方向中央に配置）。
+const TAG_PANEL_HANDLE_HEIGHT: f32 = 56.0;
+/// タグパネルのサムネプレビューが伸びられる縦幅の上限。
+const TAG_PANEL_PREVIEW_MAX_HEIGHT: f32 = 500.0;
+/// タグパネル高画質プレビュー: 専用の生成長辺上限(px)。グリッドのサムネ設定
+/// （`config.thumb_size`）とは独立した固定値。
+const TAG_PREVIEW_DECODE_EDGE: u32 = 1200;
+
+/// メインタグ選択UI: 行の高さ。
+const TAG_MAIN_ROW_HEIGHT: f32 = 40.0;
+/// メインタグ選択UI: 選択値の文字サイズ。前後の値はこれに`TAG_MAIN_SIDE_SCALE`を掛ける。
+const TAG_MAIN_FONT_CENTER: f32 = 17.0;
+const TAG_MAIN_SIDE_SCALE: f32 = 0.6;
+/// メインタグ選択UI: 矢印1個分の幅（ヒット領域とは別に、矢印グリフの確保幅）。
+const TAG_MAIN_ARROW_W: f32 = 28.0;
+/// メインタグ選択UI: 選択値の背景の左右余白の合計。
+const TAG_MAIN_CENTER_PAD: f32 = 20.0;
+/// タグマネージャー: 左カラム（カテゴリ一覧）の幅。
+const TAG_MANAGER_CATEGORY_COL_WIDTH: f32 = 200.0;
+/// タグマネージャー: カテゴリリスト左端の並べ替えボタン用の縦エリア幅。
+const TAG_MANAGER_REORDER_STRIP_WIDTH: f32 = 26.0;
+/// タグマネージャー: tier行の番号ラベル部分の固定幅。"neg-tier"有無で幅が
+/// ズレないよう、ポジティブ/ネガティブ問わず同じ幅のセルに揃える。
+const TAG_MANAGER_TIER_PREFIX_WIDTH: f32 = 72.0;
+
 fn favorite_marker_layout(cell_h: f32, has_error_marker: bool) -> (f32, usize) {
     let top = THUMB_MARKER_TOP
         + if has_error_marker {
@@ -123,7 +156,24 @@ impl NekoviewApp {
                 });
         }
 
-        {
+        // タグパネルはCentralPanelの上にフローティングするオーバーレイとして描画する
+        // （egui::Panel::rightドック方式は、パネル内部のコンテンツ量でCentralPanel側の
+        // 確保幅が引きずられてズレる侵食バグの温床だったため廃止した。CentralPanelは
+        // 常にフォルダパネル分を引いた全幅を使うので、タグパネルの中身が幅計算に
+        // 影響しなくなる）。
+        //
+        // 描画順はCentralPanel（グリッド）より必ず先にする。egui内部では
+        // Areaの当たり判定用サイズ(AreaState.size、layer_id_atが参照する)は
+        // Area::show完了時にメモリへ書き込まれるため、後から呼ぶとグリッド側の
+        // 各カードのinteract()判定が「1フレーム前のタグパネル矩形」を参照してしまい、
+        // リサイズ中は境界付近の列でクリックが不安定に、幅が急変した直後は
+        // ズレが大きくなり広範囲のカードに波及する（実際に発生した不具合）。
+        // CentralPanelがまだ無い時点でも、折りたたみ済みパネル(200px)を除いた
+        // 残り矩形は`available_rect_before_wrap`で先読みできる。
+        let central_area = ui.available_rect_before_wrap();
+        self.draw_tag_panel_floating(&ctx, central_area);
+
+        let central_resp = {
             let style_clone = ui.style().clone();
             egui::CentralPanel::default()
                 .frame({
@@ -133,7 +183,12 @@ impl NekoviewApp {
                 })
                 .show(ui, |ui| {
                     self.draw_central_panel(ui);
-                });
+                })
+        };
+
+        self.tag_manager_area_rect = central_resp.response.rect;
+        if self.tag_manager_open {
+            self.draw_tag_manager_overlay(&ctx);
         }
 
         // 設定ダイアログ（egui::Modal）は自動でキーボード入力をブロックしないため、開いている
@@ -144,6 +199,7 @@ impl NekoviewApp {
             && !self.search_date_end_calendar.is_open()
             && self.pending_open.is_none()
             && self.tree_sort_dialog.is_none()
+            && !self.tag_manager_open
         {
             self.handle_explorer_keys(&ctx);
         }
@@ -168,6 +224,7 @@ impl NekoviewApp {
             && self.favorite_dialog.is_none()
             && self.favorite_detail_dialog.is_none()
             && !self.virtual_text_input_open()
+            && !self.tag_manager_open
         {
             ctx.memory_mut(|mem| mem.stop_text_input());
         }
@@ -178,7 +235,9 @@ impl NekoviewApp {
         // 以後は誰も event_filter で握っていないためこの move_focus が無いと上下キーで
         // 次々に別ウィジェットへ渡り歩いてしまう（実測: focused_pane は SearchForm のまま
         // 動かず、egui内部のfocused widget idだけが上下キー毎に変わり続けていた）。
-        if !self.settings_is_open() {
+        // タグマネージャーのインライン要素編集も同じ理由で除外する（除外しないと
+        // request_focus()した直後にこのmove_focusで即座に打ち消されてしまう）。
+        if !self.settings_is_open() && !self.tag_manager_open {
             ctx.memory_mut(|mem| mem.move_focus(egui::FocusDirection::None));
         }
         // release ビルドは ROOT 内フローティングウィンドウのため ui() で描画する。
@@ -189,6 +248,7 @@ impl NekoviewApp {
         self.draw_memory_warning_dialog(&ctx);
         self.draw_magnifier_zoom_notice(&ctx);
         self.draw_decode_edge_prompt(&ctx);
+        self.draw_folder_book_access_notice(&ctx);
         self.draw_favorite_dialog(&ctx);
         self.draw_virtual_dialogs(&ctx);
         self.draw_tree_sort_dialog(&ctx);
@@ -197,9 +257,80 @@ impl NekoviewApp {
         self.draw_sort_condition_dialog(&ctx);
         self.draw_bookmark_setting_dialog(&ctx);
         self.draw_spread_setting_dialog(&ctx);
+        self.draw_rating_setting_dialog(&ctx);
         self.draw_settings_dialog(&ctx);
         // 旧来の無条件 ctx.request_repaint() は撤去（イベント駆動化）。
         // ROOT は入力イベント・各ワーカーの起床通知・ステータス窓の1Hzハートビートで再描画される。
+    }
+
+    /// タグ機能・レイアウト器: 右タグパネルを`central_area`（CentralPanelの実矩形）の
+    /// 右端に浮かせて描画する。`draw_tag_manager_overlay`と同じ
+    /// `egui::Area`（`Order::Foreground`）方式で、CentralPanel側のレイアウトには
+    /// 一切関与しない。開閉トグル(▶/◀)・D&Dリサイズハンドル・幅は従来のPanel版と同じ。
+    fn draw_tag_panel_floating(&mut self, ctx: &egui::Context, central_area: egui::Rect) {
+        let open = self.tag_panel_open;
+        let panel_w = if open { self.tag_panel_width } else { PANEL_TAB_WIDTH };
+        let panel_rect = egui::Rect::from_min_size(
+            egui::pos2(central_area.right() - panel_w, central_area.top()),
+            egui::vec2(panel_w, central_area.height()),
+        );
+        egui::Area::new(egui::Id::new("tag_panel_floating"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(panel_rect.min)
+            // Areaはデフォルトconstrain(true)で「画面右端からはみ出さないよう自動で
+            // 左へ位置をずらす」。パネル内部のコンテンツ（ドラム/タグボタン列など）が
+            // panel_rectの幅に収まらないと、egui側の「収まらない時はmin_rect/max_rectを
+            // 自動拡張する」仕様でAreaの記録サイズ(state.size)がpanel_rectより広くなり、
+            // constrainがその分だけ矩形全体を左（グリッド側）へシフトさせて当たり判定が
+            // 食い込んでいた（パネルが狭いほどシフト量が増え、最小幅で全カード選択不能に
+            // なっていた原因）。位置はfixed_posで確定させているので、はみ出す分は
+            // 右へ（画面外へ）逃がせば十分。magnifier_bar(view_reader.rs)と同じ対処。
+            .constrain(false)
+            .show(ctx, |ui| {
+                ui.scope_builder(egui::UiBuilder::new().max_rect(panel_rect), |ui| {
+                    // egui::Panelは自身の矩形へ自動でclip_rectを掛けるが、Area+scope_builderは
+                    // 掛けない。明示しないと、幅が狭い時にパネル内部のウィジェット（ドラム/
+                    // タグボタン列など）がpanel_rectをはみ出して左側（グリッド側）まで
+                    // 広がり、Foreground層の当たり判定として乗ってしまう
+                    // （タグパネルを最小幅まで詰めると全カードが選択不能になった不具合の原因）。
+                    ui.set_clip_rect(panel_rect.intersect(ui.clip_rect()));
+                    // 背後グリッドへの全面クリックブロッカーは置かない。グリッド側の列数計算
+                    // （draw_archive_grid）が常にこのパネル分の幅を除外しているので、
+                    // 下にカードが存在すること自体がない。動的にリサイズされるこの
+                    // Foreground Areaに毎フレーム矩形サイズの異なるSense::click_and_dragの
+                    // ブロッカーを乗せていたところ、当たり判定がパネルを開いた時点の幅に
+                    // 固着し、隣接列のクリックが不安定になる不具合があったため撤去した。
+                    let bg = ui.visuals().panel_fill;
+                    ui.painter().rect_filled(panel_rect, 0.0, bg);
+
+                    if open {
+                        // `ui.horizontal(...)`は親がTopDownレイアウトの場合、行の高さを
+                        // `interact_size.y`程度（数十px）に制約してしまい、その中でネストした
+                        // `ui.vertical(...)`側も同じ制約を引き継いでパネル下端まで伸びない
+                        // （egui 0.35のnext_frame_ignore_wrap仕様）。ここでは残り領域を
+                        // 矩形として先に切り出し、`scope_builder`で明示的に高さいっぱいの
+                        // max_rectを与えてから左右に並べる。
+                        let row_rect =
+                            egui::Rect::from_min_size(ui.cursor().min, ui.available_size());
+                        ui.scope_builder(
+                            egui::UiBuilder::new()
+                                .max_rect(row_rect)
+                                .layout(egui::Layout::left_to_right(egui::Align::Min)),
+                            |ui| {
+                                self.draw_tag_panel_resize_handle(ui);
+                                ui.vertical(|ui| {
+                                    if ui.button("▶").clicked() {
+                                        self.tag_panel_open = false;
+                                    }
+                                    self.draw_tag_panel(ui);
+                                });
+                            },
+                        );
+                    } else {
+                        self.draw_tag_panel_collapsed(ui);
+                    }
+                });
+            });
     }
 
     /// MenuBarの各ボタンの並び順・有効状態を計算する（MENU_BAR_ORDERに対応）。
@@ -285,6 +416,9 @@ impl NekoviewApp {
             MenuBarButton::ToolPaletteToggle => {
                 let mut cfg = self.viewer_cfg.lock().unwrap();
                 cfg.tool_palette.visible = !cfg.tool_palette.visible;
+            }
+            MenuBarButton::FolderBookAccessToggle => {
+                self.toggle_folder_book_access();
             }
             MenuBarButton::Settings => {
                 self.open_settings();
@@ -480,7 +614,8 @@ impl NekoviewApp {
                 }
 
                 // ── スコアリング（末尾の評価オーバーレイ）ON/OFF ────────────────────
-                // 邪魔に感じる人向けの永続設定。ツールボックスの左隣（RightToLeftなので後置き）。
+                // 邪魔に感じる人向けの永続設定。RightToLeftレイアウトのため、
+                // コード順で後に置いた方が視覚上は左（フォルダ本アクセスの右隣）になる。
                 let scoring_on = self.viewer_cfg.lock().unwrap().rating_overlay_enabled;
                 let r_scoring = ui.scope(|ui| {
                     if scoring_on {
@@ -494,6 +629,24 @@ impl NekoviewApp {
                 if r_scoring.clicked() {
                     self.viewer_cfg.lock().unwrap().rating_overlay_enabled = !scoring_on;
                     self.persist_state();
+                }
+
+                // ── 「フォルダ本アクセス」トグル ────────────────────────────────
+                // ONの間、対象フォルダ（アーカイブ非混在・直下に生画像あり）に入ると、
+                // 通常の一覧表示の代わりに仮想アーカイブとしてビューアーを開く。
+                // 永続化しない（アプリ再起動のたびに毎回OFFへ戻る）。
+                let folder_book_access_on = self.folder_book_access_enabled;
+                let r_folder_book_access = ui.scope(|ui| {
+                    if folder_book_access_on {
+                        ui.visuals_mut().selection.bg_fill = egui::Color32::from_rgb(30, 100, 200);
+                        ui.visuals_mut().selection.stroke.color = egui::Color32::WHITE;
+                    }
+                    ui.selectable_label(folder_book_access_on, i18n::t().folder_book_access_toggle_button(folder_book_access_on))
+                }).inner;
+                if is_cursor(MenuBarButton::FolderBookAccessToggle) { draw_cursor_ring(ui, r_folder_book_access.rect); }
+                help_tip(&r_folder_book_access, help_on, &help_toggles);
+                if r_folder_book_access.clicked() {
+                    self.toggle_folder_book_access();
                 }
 
                 ui.separator();
@@ -548,6 +701,1167 @@ impl NekoviewApp {
                 FolderPaneTab::VirtualFolders => self.restore_virtual_position(),
                 FolderPaneTab::RealTree | FolderPaneTab::Search => {}
             }
+        }
+    }
+
+    /// タグパネル: 展開中の左端に置くD&Dリサイズハンドル。開閉ボタン（▶）とは独立した
+    /// 機構で、ここをドラッグしても格納状態には影響しない。
+    fn draw_tag_panel_resize_handle(&mut self, ui: &mut egui::Ui) {
+        // レイアウト確保用に縦幅いっぱいの領域を取っておき、実際のドラッグ判定・
+        // 見た目のグリップはその中央だけに短く配置する。
+        let total_height = ui.available_height();
+        let (full_rect, _) = ui.allocate_exact_size(
+            egui::vec2(TAG_PANEL_HANDLE_WIDTH, total_height),
+            egui::Sense::hover(),
+        );
+        let handle_height = TAG_PANEL_HANDLE_HEIGHT.min(total_height);
+        let handle_rect = egui::Rect::from_center_size(
+            full_rect.center(),
+            egui::vec2(TAG_PANEL_HANDLE_WIDTH, handle_height),
+        );
+        let response = ui.interact(
+            handle_rect,
+            ui.id().with("tag_panel_resize_handle"),
+            egui::Sense::drag(),
+        );
+        if response.dragged() {
+            self.tag_panel_width = (self.tag_panel_width - response.drag_delta().x)
+                .clamp(TAG_PANEL_MIN_WIDTH, TAG_PANEL_MAX_WIDTH);
+        }
+        if response.hovered() || response.dragged() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+        }
+        let visuals = ui.style().interact(&response);
+        ui.painter().rect_filled(handle_rect, 3.0, visuals.bg_fill);
+        let center = handle_rect.center();
+        for dy in [-6.0, 0.0, 6.0] {
+            ui.painter()
+                .circle_filled(center + egui::vec2(0.0, dy), 1.5, visuals.fg_stroke.color);
+        }
+    }
+
+    /// タグ機能・レイアウト器: 右タグパネルを閉じている時の中身（展開ツマミのみ）。
+    fn draw_tag_panel_collapsed(&mut self, ui: &mut egui::Ui) {
+        ui.vertical_centered(|ui| {
+            if ui.button("◀").clicked() {
+                self.tag_panel_open = true;
+            }
+        });
+    }
+
+    /// タグ機能・レイアウト器: 右タグパネルの中身。
+    fn draw_tag_panel(&mut self, ui: &mut egui::Ui) {
+        // パネル内の使える幅を、何も描く前に確定させておく。eguiは中身が収まらないと
+        // 親Uiのmax_rectごと右へ拡張するため（ドラム等の固定幅要素が原因）、後から
+        // `available_width()`を取ると実際のパネル幅より広い値になり、下段の
+        // horizontal_wrapped が折り返さず見切れていた。
+        let content_w = ui.available_width();
+        // フェーズTM0: 仮置きのタグマネージャー呼び出しボタン。既存のメインタグ／
+        // 属性タグUIとは切り離した独立機能なので、位置・見た目は後で調整前提。
+        // 狭い幅では2つ目のボタンが見切れないよう折り返す。
+        ui.horizontal_wrapped(|ui| {
+            if ui.button("🏷 タグ管理").clicked() {
+                self.tag_manager_open = true;
+            }
+            // タグパネルのプレビューを、グリッドサムネの引き伸ばし（軽量・低画質）ではなく
+            // 専用解像度で再デコードした高画質表示に切り替えるトグル。低スペックPC・
+            // 小さいモニタでは重くなりうるため既定OFF。
+            let hq = self.tag_preview_high_quality;
+            if ui.selectable_label(hq, "🖼 高画質プレビュー").clicked() {
+                self.tag_preview_high_quality = !hq;
+            }
+        });
+        let path = self.selected_archive_index.and_then(|idx| self.archives.get(idx).cloned());
+        let Some(path) = path else {
+            // 選択中のファイルが無いときは、紐付け先の無いメイン/属性タグUIを
+            // 表示しても意味が無い（宙に浮いたタグに見えてしまう）ため、
+            // 「タグ表示対象なし」を残り領域いっぱいに上下左右中央表示する。
+            let rect = egui::Rect::from_min_size(ui.cursor().min, ui.available_size());
+            ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
+                ui.centered_and_justified(|ui| {
+                    ui.weak("タグ表示対象なし");
+                });
+            });
+            return;
+        };
+        self.sync_tag_binding(&path);
+        ui.add_space(10.0);
+        self.draw_tag_panel_preview(ui);
+        ui.add_space(8.0);
+        self.draw_tag_panel_main_tags(ui);
+        ui.separator();
+        // ネストしたhorizontal/vertical越しだと`ui.available_height()`がパネル下端まで
+        // 届かないことがあるため、残り領域を矩形として明示的に切り出してから描く。
+        // 幅は冒頭で確定した`content_w`を使う（上記の拡張の影響を受けないように）。
+        let attr_rect = egui::Rect::from_min_size(
+            ui.cursor().min,
+            egui::vec2(content_w, ui.available_height()),
+        );
+        ui.scope_builder(egui::UiBuilder::new().max_rect(attr_rect), |ui| {
+            self.draw_tag_panel_attr_tags(ui);
+        });
+    }
+
+    /// タグ付けレイアウト・ドラムUI: メインタグ編集トグルをOFFへ戻し、現在のタグ選択を
+    /// 確定保存する。トグルボタンの手動OFF操作、および他ファイル／他フォルダへの
+    /// フォーカス離脱時の自動OFFの両方から呼ぶ。
+    pub(crate) fn deactivate_tag_main_edit(&mut self) {
+        if !self.tag_main_edit_toggle {
+            return;
+        }
+        self.tag_main_edit_toggle = false;
+        self.commit_tag_main_edit();
+    }
+
+    /// メインタグ編集確定フック。`tag_binding_path`（現在タグ状態が紐付いている
+    /// ファイル）へ、メイン＋属性タグの選択（tier_idの集合）をまとめて保存する。
+    fn commit_tag_main_edit(&mut self) {
+        let Some(path) = self.tag_binding_path.clone() else { return };
+        let Some(db) = self.spread_db.as_ref() else { return };
+        let Some(dir) = path.parent() else { return };
+        let Some(filename) = path.file_name().and_then(|n| n.to_str()) else { return };
+        let mut ids = self.tag_attr_selected.clone();
+        ids.extend(self.tag_attr_dormant.iter().copied());
+        // 「未設定」の仮想エントリはDBへ書かない（何も選ばれていない状態を表す）。
+        if let Some(main_id) = self.tag_main_selected {
+            if main_id != crate::tag_manager::TAG_MAIN_UNSET_ID {
+                ids.push(main_id);
+            }
+        }
+        crate::spread_state::write_archive_tags(db, dir, filename, &ids);
+    }
+
+    /// タグパネル: 選択中ファイルと`tag_main_selected`/`tag_attr_selected`の紐付けを
+    /// 同期する。選択が変わっていれば、編集モード中だった旧ファイルをまず確定保存し
+    /// （編集モード自体はONを維持し、連続タグ付け作業を妨げない）、新ファイルの
+    /// 保存済みタグを読み込む。
+    fn sync_tag_binding(&mut self, path: &std::path::Path) {
+        if self.tag_binding_path.as_deref() == Some(path) {
+            return;
+        }
+        // 他のフォーカス離脱経路（ビューア終了・ディレクトリ移動等）と同じく、
+        // ファイル選択の切り替えも編集モードOFFのトリガーとして扱う
+        // （確定保存＋トグルOFF）。
+        self.deactivate_tag_main_edit();
+        self.tag_binding_path = Some(path.to_path_buf());
+        self.load_tag_binding(path);
+    }
+
+    /// `tag_binding_path`向けに保存済みタグを読み込み、main/attrへ振り分ける。
+    /// 読み込んだtier_idのうち現存しないもの（tier削除済みの孤立参照）は自己修復
+    /// 的に除去して書き戻す（1ファイル単位、ディレクトリ一括GCは行わない）。
+    fn load_tag_binding(&mut self, path: &std::path::Path) {
+        let dir = path.parent();
+        let filename = path.file_name().and_then(|n| n.to_str());
+        let loaded: Vec<u64> = match (self.spread_db.as_ref(), dir, filename) {
+            (Some(db), Some(dir), Some(filename)) => crate::spread_state::read_archive_tags(db, dir, filename),
+            _ => Vec::new(),
+        };
+
+        let valid_ids: std::collections::HashSet<u64> = self
+            .tag_manager_categories
+            .iter()
+            .flat_map(|c| c.tiers.iter().filter(|t| t.element.is_some()).map(|t| t.id))
+            .collect();
+        let cleaned: Vec<u64> = loaded.iter().copied().filter(|id| valid_ids.contains(id)).collect();
+        if cleaned.len() != loaded.len() {
+            if let (Some(db), Some(dir), Some(filename)) = (self.spread_db.as_ref(), dir, filename) {
+                crate::spread_state::write_archive_tags(db, dir, filename, &cleaned);
+            }
+        }
+
+        self.tag_main_selected = cleaned
+            .iter()
+            .copied()
+            .find(|id| self.tag_main_options.iter().any(|(oid, _)| oid == id))
+            .or(Some(crate::tag_manager::TAG_MAIN_UNSET_ID));
+        self.tag_attr_selected = cleaned
+            .into_iter()
+            .filter(|id| !self.tag_main_options.iter().any(|(oid, _)| oid == id))
+            .collect();
+        self.tag_attr_dormant = crate::tag_manager::enforce_single_select(&self.tag_manager_categories, &mut self.tag_attr_selected);
+    }
+
+    /// メインタグドラムの実効選択肢。`tag_main_selected`が「未設定」仮想エントリの
+    /// 間はそのまま（仮想エントリを含む）返す。実タグへ一度でも決定していれば
+    /// 仮想エントリを除外する——一度実タグへ決定したファイルは、ドラッグでも
+    /// 「未設定」へは戻せない設計のため、ドラムの回転対象自体から外す。
+    fn tag_main_effective_options(&self) -> Vec<(u64, String)> {
+        if self.tag_main_selected == Some(crate::tag_manager::TAG_MAIN_UNSET_ID) {
+            self.tag_main_options.clone()
+        } else {
+            self.tag_main_options
+                .iter()
+                .filter(|(id, _)| *id != crate::tag_manager::TAG_MAIN_UNSET_ID)
+                .cloned()
+                .collect()
+        }
+    }
+
+    /// タグ付けレイアウト: メインタグ(排他)の選択UI。中央に選択値（メインカテゴリ色の
+    /// 背景）を出し、編集モードONの間だけ左右に「前の値◀ 選択値 ▶次の値」の矢印と
+    /// 前後の値（縮小・薄色）を出す。矢印＋前後の値の領域全体がクリック判定で、
+    /// 中央の選択値は無反応。端では該当側の矢印ごと消す（循環しない）。閲覧モード
+    /// （編集OFF）では選択値のみ。「未設定」は最左で、一度実タグへ動くと選択肢から
+    /// 外れ二度と戻れない一方通行（`tag_main_effective_options`）。
+    fn draw_tag_panel_main_tags(&mut self, ui: &mut egui::Ui) {
+        // メインカテゴリ設定色。選択値の背景はこの色で統一する（以前は青固定）。
+        let main_color = self
+            .tag_manager_categories
+            .iter()
+            .find(|c| c.is_main)
+            .map(|c| c.color)
+            .unwrap_or(egui::Color32::from_rgb(30, 100, 200));
+
+        // 編集モードトグルは単独行で中央寄せ表示（選択UIとは別行）。
+        ui.vertical_centered(|ui| {
+            let edit_on = self.tag_main_edit_toggle;
+            let r_edit = ui.scope(|ui| {
+                if edit_on {
+                    ui.visuals_mut().selection.bg_fill = main_color;
+                    ui.visuals_mut().selection.stroke.color = contrasting_text_color(main_color);
+                }
+                ui.selectable_label(edit_on, i18n::t().tag_main_edit_toggle_button(edit_on))
+            }).inner;
+            if r_edit.clicked() {
+                if edit_on {
+                    self.deactivate_tag_main_edit();
+                } else {
+                    self.tag_main_edit_toggle = true;
+                }
+            }
+        });
+
+        let options = self.tag_main_effective_options();
+        let idx = self
+            .tag_main_selected
+            .and_then(|id| options.iter().position(|(oid, _)| *oid == id))
+            .unwrap_or(0);
+        let Some((_, selected_name)) = options.get(idx) else { return };
+        let edit_on = self.tag_main_edit_toggle;
+
+        let avail_w = ui.available_width();
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(avail_w, TAG_MAIN_ROW_HEIGHT), egui::Sense::hover());
+        let cy = rect.center().y;
+        let text_color = ui.visuals().text_color();
+        let center_font = egui::FontId::proportional(TAG_MAIN_FONT_CENTER);
+        let side_font = egui::FontId::proportional(TAG_MAIN_FONT_CENTER * TAG_MAIN_SIDE_SCALE);
+        let arrow_font = egui::FontId::proportional(TAG_MAIN_FONT_CENTER);
+
+        // 幅が足りない時は前後の値→選択値の順で削る。編集ON時は左右の矢印分を常に確保。
+        let arrows_w = if edit_on { TAG_MAIN_ARROW_W * 2.0 } else { 0.0 };
+        let center_max_w = (avail_w - arrows_w - TAG_MAIN_CENTER_PAD).max(20.0);
+        let center_galley = truncated_galley(ui, selected_name, center_font, contrasting_text_color(main_color), center_max_w);
+        let center_w = (center_galley.size().x + TAG_MAIN_CENTER_PAD).min(avail_w - arrows_w).max(20.0);
+        let center_rect = egui::Rect::from_center_size(
+            egui::pos2(rect.center().x, cy),
+            egui::vec2(center_w, TAG_MAIN_ROW_HEIGHT * 0.75),
+        );
+        ui.painter().rect_filled(center_rect, 6.0, main_color);
+        ui.painter().galley(
+            egui::pos2(center_rect.center().x - center_galley.size().x / 2.0, cy - center_galley.size().y / 2.0),
+            center_galley,
+            main_color,
+        );
+
+        if !edit_on {
+            return;
+        }
+        // (方向, 隣の選択肢, 領域)。領域は中央矩形の外側〜パネル端まで（大きめのヒット領域）。
+        let left_region = egui::Rect::from_min_max(rect.left_top(), egui::pos2(center_rect.left(), rect.bottom()));
+        let right_region = egui::Rect::from_min_max(egui::pos2(center_rect.right(), rect.top()), rect.right_bottom());
+        let prev = idx.checked_sub(1).and_then(|i| options.get(i));
+        let next = options.get(idx + 1);
+        let mut new_selected = None;
+        for (is_left, neighbor, region) in [(true, prev, left_region), (false, next, right_region)] {
+            let Some((nid, nname)) = neighbor else { continue };
+            let resp = ui.interact(region, ui.id().with(("tag_main_step", is_left)), egui::Sense::click());
+            if resp.hovered() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+            }
+            let arrow_color = if resp.hovered() { text_color } else { text_color.gamma_multiply(0.7) };
+            let (arrow, arrow_x, align) = if is_left {
+                ("◀", region.right() - TAG_MAIN_ARROW_W / 2.0, egui::Align2::CENTER_CENTER)
+            } else {
+                ("▶", region.left() + TAG_MAIN_ARROW_W / 2.0, egui::Align2::CENTER_CENTER)
+            };
+            ui.painter().text(egui::pos2(arrow_x, cy), align, arrow, arrow_font.clone(), arrow_color);
+            let name_max_w = region.width() - TAG_MAIN_ARROW_W - 4.0;
+            if name_max_w > 16.0 {
+                let g = truncated_galley(ui, nname, side_font.clone(), text_color.gamma_multiply(0.55), name_max_w);
+                let x = if is_left {
+                    region.right() - TAG_MAIN_ARROW_W - g.size().x
+                } else {
+                    region.left() + TAG_MAIN_ARROW_W
+                };
+                ui.painter().galley(egui::pos2(x, cy - g.size().y / 2.0), g, text_color);
+            }
+            if resp.clicked() {
+                new_selected = Some(*nid);
+            }
+        }
+        if let Some(id) = new_selected {
+            self.tag_main_selected = Some(id);
+        }
+    }
+
+    /// タグ付けレイアウト・編集/閲覧モード: 区切り線から下の属性タグエリア。
+    /// `tag_main_edit_toggle`（編集モードトグル、メインタグドラムと共通）がONの間は
+    /// カテゴリ別に全要素を並べてワンクリックで選択/非選択をトグルできる編集モード、
+    /// OFFの間は選択済み要素だけを並べる閲覧モードに切り替わる。
+    /// `tag_manager_categories`（メインカテゴリを除く）を実データとして直接参照する。
+    fn draw_tag_panel_attr_tags(&mut self, ui: &mut egui::Ui) {
+        if self.tag_main_edit_toggle {
+            self.draw_tag_attr_edit_mode(ui);
+        } else {
+            self.draw_tag_attr_view_mode(ui);
+        }
+    }
+
+    /// 編集モード: カテゴリ見出し＋全要素を`horizontal_wrapped`で並べ、クリックで
+    /// 選択/非選択をトグルする。選択済みは通常輝度、非選択は文字・枠を暗転させて
+    /// 見分けやすくする。単一選択カテゴリはクリックで同カテゴリ内の他要素を排他的に
+    /// 外し（ラジオ的挙動）、常にちょうど1個を維持する（選択中要素の再クリックは無視）。
+    fn draw_tag_attr_edit_mode(&mut self, ui: &mut egui::Ui) {
+        egui::ScrollArea::vertical()
+            .id_salt("tag_attr_edit_scroll")
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                let dimmed_fg = ui.visuals().text_color().gamma_multiply(0.4);
+                let categories: Vec<(String, bool, egui::Color32, Vec<(u64, String)>)> = self
+                    .tag_manager_categories
+                    .iter()
+                    .filter(|c| !c.is_main)
+                    .map(|c| {
+                        (
+                            c.name.clone(),
+                            c.single_select,
+                            c.color,
+                            c.tiers.iter().filter_map(|t| t.element.clone().map(|name| (t.id, name))).collect(),
+                        )
+                    })
+                    .filter(|(_, _, _, elements): &(String, bool, egui::Color32, Vec<(u64, String)>)| !elements.is_empty())
+                    .collect();
+                for (cat_idx, (cat_name, single_select, cat_color, elements)) in categories.iter().enumerate() {
+                    if cat_idx > 0 {
+                        ui.add_space(8.0);
+                    }
+                    ui.label(egui::RichText::new(cat_name).strong().color(*cat_color));
+                    let full_w = ui.available_width();
+                    ui.horizontal_wrapped(|ui| {
+                        for (elem_id, elem_name) in elements {
+                            let selected = self.tag_attr_selected.contains(elem_id);
+                            // 選択済みはカテゴリ色でハイライトし、どのカテゴリのタグか
+                            // ひと目でわかるようにする。非選択は文字を暗転させる。
+                            let (fill, text_color) = if selected {
+                                (*cat_color, contrasting_text_color(*cat_color))
+                            } else {
+                                (egui::Color32::TRANSPARENT, dimmed_fg)
+                            };
+                            let resp = tag_chip(ui, elem_name, full_w, fill, text_color, egui::Sense::click(), !selected);
+                            if resp.clicked() {
+                                if selected {
+                                    if !*single_select {
+                                        self.tag_attr_selected.retain(|s| s != elem_id);
+                                    }
+                                } else {
+                                    if *single_select {
+                                        let elem_ids: Vec<u64> = elements.iter().map(|(id, _)| *id).collect();
+                                        self.tag_attr_selected.retain(|s| !elem_ids.contains(s));
+                                        // 明示的な置き換え。同カテゴリの休眠値もここで初めて破棄する。
+                                        self.tag_attr_dormant.retain(|s| !elem_ids.contains(s));
+                                    }
+                                    self.tag_attr_selected.push(*elem_id);
+                                }
+                            }
+                        }
+                    });
+                }
+            });
+    }
+
+    /// 閲覧モード: 編集モードで選択済みの要素だけをフラット表示する読み取り専用表示。
+    /// 各タグは所属カテゴリの色をネームプレート背景にして、どのカテゴリの
+    /// タグかひと目でわかるようにする（タグ管理画面の要素表示と同じ配色ルール）。
+    fn draw_tag_attr_view_mode(&mut self, ui: &mut egui::Ui) {
+        egui::ScrollArea::vertical()
+            .id_salt("tag_attr_view_scroll")
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                let full_w = ui.available_width();
+                ui.horizontal_wrapped(|ui| {
+                    if self.tag_attr_selected.is_empty() {
+                        ui.weak("（選択済みタグなし）");
+                    } else {
+                        // 選択した順は無視し、カテゴリ登録順→カテゴリ内の登録要素順で並べる。
+                        // tier削除済みの孤立id（自己修復GC前）は走査対象に現れないので
+                        // 表示上は自然に無視される。
+                        for cat in self.tag_manager_categories.iter().filter(|c| !c.is_main) {
+                            let text_color = contrasting_text_color(cat.color);
+                            for tier in &cat.tiers {
+                                let Some(name) = tier.element.as_ref() else { continue };
+                                if !self.tag_attr_selected.contains(&tier.id) {
+                                    continue;
+                                }
+                                tag_chip(ui, name, full_w, cat.color, text_color, egui::Sense::hover(), false);
+                            }
+                        }
+                    }
+                });
+            });
+    }
+
+    /// タグマネージャー(フェーズTM0): カテゴリ・tier・要素を管理する独立画面。
+    /// CentralPanel＋右タグパネルの合成矩形全体を覆うオーバーレイとして表示する
+    /// （裏の表示はそのまま保持）。今回は開閉の器のみで中身はまだ空。
+    /// タグマネージャー: マスタ定義（カテゴリ/tier/色）を即時保存する。専用の保存
+    /// タイミングは持たず、編集操作が確定するたびにこれを呼ぶ。合わせて、メインタグ
+    /// メインタグ／属性タグパレットの選択肢をマスタ定義から再生成して結びつける。
+    fn save_tag_manager(&mut self) {
+        let (main_options, attr_options) = crate::tag_manager::derive_tag_options(&self.tag_manager_categories);
+        self.tag_main_options = main_options;
+        // 選択中タグ自体が消えていれば（tier削除等）「未設定」へフォールバックする。
+        let effective = self.tag_main_effective_options();
+        if !self.tag_main_selected.is_some_and(|id| effective.iter().any(|(oid, _)| *oid == id)) {
+            self.tag_main_selected = Some(crate::tag_manager::TAG_MAIN_UNSET_ID);
+        }
+        self.tag_attr_options = attr_options;
+        // 休眠値も含めて再分離する（単一→複数で復活、複数→単一で休眠化。DBは書き換えない）。
+        let mut all = std::mem::take(&mut self.tag_attr_selected);
+        all.append(&mut self.tag_attr_dormant);
+        all.retain(|s| self.tag_attr_options.contains(s));
+        self.tag_attr_dormant = crate::tag_manager::enforce_single_select(&self.tag_manager_categories, &mut all);
+        self.tag_attr_selected = all;
+        crate::tag_manager::save(&self.config.config_root, &self.tag_manager_categories, self.tag_manager_next_tier_id);
+    }
+
+    fn draw_tag_manager_overlay(&mut self, ctx: &egui::Context) {
+        let area_rect = self.tag_manager_area_rect;
+        if !area_rect.is_positive() {
+            return;
+        }
+        egui::Area::new(egui::Id::new("tag_manager_overlay"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(area_rect.min)
+            .show(ctx, |ui| {
+                ui.scope_builder(egui::UiBuilder::new().max_rect(area_rect), |ui| {
+                    let bg_rect = ui.max_rect();
+                    // 背後のサムネグリッド・タグUIへクリックを貫通させない。
+                    ui.interact(bg_rect, ui.id().with("tag_manager_bg"), egui::Sense::click());
+                    let bg = ui.visuals().panel_fill;
+                    // 95%不透明。裏のサムネ/タグUIはほぼ見えない程度に抑える。
+                    let bg_95 = egui::Color32::from_rgba_unmultiplied(bg.r(), bg.g(), bg.b(), 242);
+                    ui.painter().rect_filled(bg_rect, 0.0, bg_95);
+
+                    const TAG_MANAGER_CLOSE_BTN: f32 = 20.0;
+                    ui.horizontal(|ui| {
+                        let row_h = ui.available_height().min(28.0);
+                        let total_w = ui.available_width();
+                        // タイトルを左右中央に置くため、閉じるボタンと同じ幅の余白を
+                        // 左側にも確保する（3分割: 左マージン｜中央タイトル｜右閉じる）。
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(TAG_MANAGER_CLOSE_BTN, row_h),
+                            egui::Layout::left_to_right(egui::Align::Center),
+                            |_ui| {},
+                        );
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(total_w - TAG_MANAGER_CLOSE_BTN * 2.0, row_h),
+                            egui::Layout::top_down(egui::Align::Center),
+                            |ui| {
+                                ui.heading("タグ管理");
+                            },
+                        );
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(TAG_MANAGER_CLOSE_BTN, row_h),
+                            egui::Layout::right_to_left(egui::Align::Center),
+                            |ui| {
+                                if ui.add(crate::ui_widgets::close_x_button(egui::vec2(TAG_MANAGER_CLOSE_BTN, TAG_MANAGER_CLOSE_BTN))).clicked() {
+                                    self.tag_manager_open = false;
+                                }
+                            },
+                        );
+                    });
+                    ui.separator();
+
+                    // フェーズTM1/TM2: 左カラム(カテゴリ一覧)｜仕切り線｜右カラム(tier編集)。
+                    // horizontalは中身の実高さに合わせて縮むため、外枠の高さを先に確定して
+                    // 両カラムへ明示的に渡す（そうしないと右カラムのScrollAreaが左カラムの
+                    // 少ないコンテンツ高さに引っ張られて縮んでしまう）。
+                    let body_height = ui.available_height();
+                    let body_width = ui.available_width();
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(body_width, body_height),
+                        egui::Layout::left_to_right(egui::Align::Min),
+                        |ui| {
+                            ui.allocate_ui_with_layout(
+                                egui::vec2(TAG_MANAGER_REORDER_STRIP_WIDTH, body_height),
+                                egui::Layout::top_down(egui::Align::Center),
+                                |ui| {
+                                    self.draw_tag_manager_reorder_strip(ui);
+                                },
+                            );
+                            ui.allocate_ui_with_layout(
+                                egui::vec2(TAG_MANAGER_CATEGORY_COL_WIDTH, body_height),
+                                egui::Layout::top_down(egui::Align::Min),
+                                |ui| {
+                                    self.draw_tag_manager_category_list(ui);
+                                },
+                            );
+                            ui.separator();
+                            let remaining_width = ui.available_width();
+                            ui.allocate_ui_with_layout(
+                                egui::vec2(remaining_width, body_height),
+                                egui::Layout::top_down(egui::Align::Min),
+                                |ui| {
+                                    let cat_idx = self.tag_manager_selected_category
+                                        .filter(|&i| i < self.tag_manager_categories.len());
+                                    match cat_idx {
+                                        Some(i) => self.draw_tag_manager_tier_list(ui, i),
+                                        None => {
+                                            ui.label("カテゴリを選択してください");
+                                        }
+                                    }
+                                },
+                            );
+                        },
+                    );
+                });
+            });
+    }
+
+    /// タグマネージャー: カテゴリリスト左端の縦貫通エリア。選択カテゴリの並べ替えボタンを
+    /// Y軸中央に寄せて置く（↑↑最上段/↑1つ上｜スペーサー1ボタン分｜↓1つ下/↓↓最下段）。メインカテゴリは不動で、
+    /// メイン選択中・端に居る時は該当ボタンを無効にする。
+    fn draw_tag_manager_reorder_strip(&mut self, ui: &mut egui::Ui) {
+        let sel = self.tag_manager_selected_category.filter(|&i| i < self.tag_manager_categories.len());
+        // 移動可能範囲は非メインカテゴリのみ（メインは先頭固定）。
+        let first_movable = self.tag_manager_categories.iter().position(|c| !c.is_main);
+        let last_movable = self.tag_manager_categories.iter().rposition(|c| !c.is_main);
+        let movable = sel.is_some_and(|i| !self.tag_manager_categories[i].is_main);
+        let can_up = movable && sel > first_movable;
+        let can_down = movable && sel < last_movable;
+        let btn = |ui: &mut egui::Ui, label: &str, enabled: bool| {
+            ui.add_enabled(
+                enabled,
+                egui::Button::new(egui::RichText::new(label).size(11.0))
+                    .min_size(egui::vec2(TAG_MANAGER_REORDER_STRIP_WIDTH - 4.0, BTN_H)),
+            )
+        };
+        const BTN_H: f32 = 22.0;
+        const GAP: f32 = 3.0;
+        ui.spacing_mut().item_spacing.y = GAP;
+        // 4ボタン＋中央のスペーサー(1ボタン分)をY軸中央に寄せる。
+        let group_h = BTN_H * 5.0 + GAP * 4.0;
+        ui.add_space(((ui.available_height() - group_h) / 2.0).max(0.0));
+        // 移動先index（メインは動かさないので、非メイン範囲内に収める）。
+        let mut move_to: Option<usize> = None;
+        if let (Some(i), Some(first), Some(last)) = (sel, first_movable, last_movable) {
+            if btn(ui, "↑↑", can_up).clicked() {
+                move_to = Some(first);
+            }
+            if btn(ui, "↑", can_up).clicked() {
+                move_to = Some(i - 1);
+            }
+            ui.add_space(BTN_H);
+            if btn(ui, "↓", can_down).clicked() {
+                move_to = Some(i + 1);
+            }
+            if btn(ui, "↓↓", can_down).clicked() {
+                move_to = Some(last);
+            }
+        } else {
+            btn(ui, "↑↑", false);
+            btn(ui, "↑", false);
+            ui.add_space(BTN_H);
+            btn(ui, "↓", false);
+            btn(ui, "↓↓", false);
+        }
+        if let (Some(from), Some(to)) = (sel, move_to) {
+            if from != to {
+                let cat = self.tag_manager_categories.remove(from);
+                self.tag_manager_categories.insert(to, cat);
+                // 移動したカテゴリを選択したままにする。
+                self.tag_manager_selected_category = Some(to);
+                self.save_tag_manager();
+            }
+        }
+    }
+
+    /// タグマネージャー(フェーズTM1): 左カラムのカテゴリ一覧。クリックで選択、
+    /// ＋で仮名の新規カテゴリを追加、－で削除する。名前編集・重複バリデーションは
+    /// まだ無い（自動採番のみなので今のところ衝突しない）。
+    fn draw_tag_manager_category_list(&mut self, ui: &mut egui::Ui) {
+        const ADD_BTN_W: f32 = 24.0;
+        ui.horizontal(|ui| {
+            let row_h = ui.available_height().min(24.0);
+            let total_w = ui.available_width();
+            // 見出しを左右中央に置くため、＋ボタンと同じ幅の余白を左側にも確保する。
+            ui.allocate_ui_with_layout(
+                egui::vec2(ADD_BTN_W, row_h),
+                egui::Layout::left_to_right(egui::Align::Center),
+                |_ui| {},
+            );
+            ui.allocate_ui_with_layout(
+                egui::vec2((total_w - ADD_BTN_W * 2.0).max(0.0), row_h),
+                egui::Layout::top_down(egui::Align::Center),
+                |ui| {
+                    ui.label("カテゴリリスト");
+                },
+            );
+            ui.allocate_ui_with_layout(
+                egui::vec2(ADD_BTN_W, row_h),
+                egui::Layout::right_to_left(egui::Align::Center),
+                |ui| {
+                    if ui.button("＋").clicked() {
+                        let n = self.tag_manager_categories.len() + 1;
+                        let existing: Vec<egui::Color32> =
+                            self.tag_manager_categories.iter().map(|c| c.color).collect();
+                        self.tag_manager_categories.push(TagManagerCategoryUi {
+                            name: format!("新規カテゴリ{n}"),
+                            tiers: Vec::new(),
+                            color: pick_distinct_tag_color(&existing),
+                            is_main: false,
+                            single_select: false,
+                        });
+                        self.tag_manager_selected_category = Some(self.tag_manager_categories.len() - 1);
+                        self.tag_manager_bulk_input.clear();
+                        self.save_tag_manager();
+                    }
+                },
+            );
+        });
+        ui.separator();
+
+        // 要素を持つtierが1つも無いカテゴリは、ピッカー側から呼び出せない「未成立」状態。
+        // メインカテゴリ（is_main）は常に先頭に固定表示され、削除不可。
+        let rows: Vec<(String, bool, bool)> = self
+            .tag_manager_categories
+            .iter()
+            .map(|c| (c.name.clone(), c.tiers.iter().any(|t| t.element.is_some()), c.is_main))
+            .collect();
+        let mut select_idx: Option<usize> = None;
+        let mut delete_idx: Option<usize> = None;
+        for (i, (name, established, is_main)) in rows.iter().enumerate() {
+            let selected = self.tag_manager_selected_category == Some(i);
+            ui.horizontal(|ui| {
+                let label = if *is_main {
+                    format!("{name}（メイン）")
+                } else if *established {
+                    name.clone()
+                } else {
+                    format!("{name}（未成立）")
+                };
+                if ui.selectable_label(selected, label).clicked() {
+                    select_idx = Some(i);
+                }
+                if *is_main {
+                    ui.add_enabled(false, egui::Button::new("－"));
+                } else if ui.small_button("－").clicked() {
+                    delete_idx = Some(i);
+                }
+            });
+        }
+        if let Some(i) = select_idx {
+            self.tag_manager_selected_category = Some(i);
+            self.tag_manager_bulk_input.clear();
+        }
+        if let Some(i) = delete_idx {
+            self.tag_manager_categories.remove(i);
+            let len = self.tag_manager_categories.len();
+            self.tag_manager_selected_category = match self.tag_manager_selected_category {
+                Some(sel) if sel == i => {
+                    if len == 0 { None } else { Some(i.min(len - 1)) }
+                }
+                Some(sel) if sel > i => Some(sel - 1),
+                other => other,
+            };
+            self.tag_manager_bulk_input.clear();
+            crate::tag_manager::ensure_main_category_nonempty(
+                &mut self.tag_manager_categories,
+                &mut self.tag_manager_next_tier_id,
+            );
+            self.save_tag_manager();
+        }
+    }
+
+    /// タグマネージャー(フェーズTM2): 右カラムのtier一覧。tier番号順の固定表示
+    /// （並べ替え・中間差し込みは無し）。negative側は背景色で区別。最下段の
+    /// tierマスに「＋ティア追加」ボタンを持たせ、末尾に新tierを追加する。
+    /// 各tier行には要素名の一覧と「＋要素」ボタン（末尾に仮名の要素を追加）。
+    fn draw_tag_manager_tier_list(&mut self, ui: &mut egui::Ui, cat_idx: usize) {
+        // 選択カテゴリが切り替わったら、前のカテゴリの名前編集状態は自動的に破棄する。
+        if self.tag_manager_editing_category_name.is_some_and(|i| i != cat_idx) {
+            self.tag_manager_editing_category_name = None;
+            self.tag_manager_editing_category_buffer.clear();
+        }
+        // 右カラムの使える幅を、何も描く前に確定させる。eguiは折り返さない行（下の見出し行
+        // など）が収まらないと親Uiのmax_rectごと右へ広げ、以降の`available_width()`が
+        // 実際に見えている幅より大きくなって折返しが効かなくなるため。
+        let col_w = ui.available_width();
+        let cat_name = self.tag_manager_categories[cat_idx].name.clone();
+        let cat_is_main = self.tag_manager_categories[cat_idx].is_main;
+        // 狭い幅では折り返して、そもそも溢れないようにする。
+        ui.horizontal_wrapped(|ui| {
+            ui.label("選択中カテゴリ:");
+            if self.tag_manager_editing_category_name == Some(cat_idx) {
+                let text_edit_id = ui.id().with("tag_manager_cat_name_edit");
+                if self.tag_manager_editing_category_focus_pending {
+                    ui.memory_mut(|m| m.request_focus(text_edit_id));
+                    self.tag_manager_editing_category_focus_pending = false;
+                }
+                let resp = ui.add(
+                    egui::TextEdit::singleline(&mut self.tag_manager_editing_category_buffer)
+                        .id(text_edit_id)
+                        .font(egui::FontId::proportional(28.0)),
+                );
+                if resp.lost_focus() {
+                    if !ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                        // Escape以外でのフォーカス喪失(Enter押下・他クリック)は確定を試みる。
+                        // 空文字、または他カテゴリと名前が重複する場合は変更を破棄する。
+                        let text = self.tag_manager_editing_category_buffer.trim().to_string();
+                        let is_dup = self
+                            .tag_manager_categories
+                            .iter()
+                            .enumerate()
+                            .any(|(i, c)| i != cat_idx && c.name == text);
+                        if !text.is_empty() && !is_dup {
+                            self.tag_manager_categories[cat_idx].name = text;
+                            self.save_tag_manager();
+                        }
+                    }
+                    self.tag_manager_editing_category_name = None;
+                    self.tag_manager_editing_category_buffer.clear();
+                }
+            } else {
+                ui.label(egui::RichText::new(&cat_name).size(28.0).strong());
+                if ui.add_enabled(!cat_is_main, egui::Button::new("編集")).clicked() {
+                    self.tag_manager_editing_category_name = Some(cat_idx);
+                    self.tag_manager_editing_category_buffer = cat_name.clone();
+                    self.tag_manager_editing_category_focus_pending = true;
+                }
+            }
+            // 単一選択/複数選択の切替。メインカテゴリは常に単一選択固定のため操作不可
+            // （表示は選択済みのまま灰色化）。
+            ui.add_enabled_ui(!cat_is_main, |ui| {
+                let mut single = self.tag_manager_categories[cat_idx].single_select;
+                let before = single;
+                ui.radio_value(&mut single, false, "複数選択");
+                ui.radio_value(&mut single, true, "単一選択");
+                if single != before {
+                    self.tag_manager_categories[cat_idx].single_select = single;
+                    self.tag_manager_bulk_input.clear();
+                    self.save_tag_manager();
+                }
+            });
+            ui.separator();
+            ui.label("カテゴリ色:");
+            let mut color = self.tag_manager_categories[cat_idx].color;
+            let color_resp = ui.color_edit_button_srgba(&mut color);
+            if color_resp.changed() {
+                self.tag_manager_categories[cat_idx].color = color;
+            }
+            // ドラッグ中(スライダー操作)は毎フレームchanged()が発火するため、保存は
+            // ドラッグ終了／フォーカス喪失(確定)のタイミングにまとめる。
+            if color_resp.drag_stopped() || color_resp.lost_focus() {
+                self.save_tag_manager();
+            }
+            if ui.small_button("ランダム").clicked() {
+                let existing: Vec<egui::Color32> = self
+                    .tag_manager_categories
+                    .iter()
+                    .enumerate()
+                    .filter(|&(i, _)| i != cat_idx)
+                    .map(|(_, c)| c.color)
+                    .collect();
+                self.tag_manager_categories[cat_idx].color = pick_distinct_tag_color(&existing);
+                self.save_tag_manager();
+            }
+        });
+        ui.separator();
+
+        // 複数選択カテゴリ（メインカテゴリを除く）は、tier行の個別編集ではなく
+        // フラットなバッジ一覧＋一括入力欄で要素を管理する（序列・negative区別は持たない）。
+        if !cat_is_main && !self.tag_manager_categories[cat_idx].single_select {
+            let rect = egui::Rect::from_min_size(ui.cursor().min, egui::vec2(col_w, ui.available_height()));
+            ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
+                self.draw_tag_manager_flat_elements(ui, cat_idx);
+            });
+            return;
+        }
+
+        let cat_color = self.tag_manager_categories[cat_idx].color;
+        let tier_count = self.tag_manager_categories[cat_idx].tiers.len();
+        let mut start_edit: Option<usize> = None;
+        let mut finish_edit: Option<usize> = None;
+        let mut cancel_edit: Option<usize> = None;
+        let mut remove_element_tier: Option<usize> = None;
+        let mut delete_tier: Option<usize> = None;
+        // 挿入位置(Vec::insertのindex)。tier1の前(先頭=0)にも挿入できるよう、
+        // 「このtierの直後」ではなく絶対位置で持つ。
+        let mut add_tier_at: Option<usize> = None;
+
+        // ティア・要素の描画エリアは残り高さの90%まで使ってよい（残り10%はマージン）。
+        // auto_shrinkがデフォルトtrueだと中身が少ない時にエリア自体が縮んでしまうため、
+        // 常にarea_height分の枠を確保するよう明示的にfalseにする。
+        let area_height = ui.available_height() * 0.9;
+        egui::ScrollArea::vertical()
+            .id_salt("tag_manager_tier_scroll")
+            .max_height(area_height)
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                // tier1の前(tier0位置)にも挿入したいが、tier行自体の＋は「このtierの後ろに
+                // 追加」の意味なので、先頭挿入専用のUIをリストの一番上に置く。
+                if ui.small_button("＋（先頭に追加）").clicked() {
+                    add_tier_at = Some(0);
+                }
+                for t_idx in 0..tier_count {
+                    let (tier_no, negative, element) = {
+                        let tier = &self.tag_manager_categories[cat_idx].tiers[t_idx];
+                        (tier.tier_no, tier.negative, tier.element.clone())
+                    };
+                    let bg = if negative {
+                        egui::Color32::from_rgba_unmultiplied(150, 40, 40, 130)
+                    } else {
+                        egui::Color32::from_rgba_unmultiplied(40, 120, 60, 110)
+                    };
+                    egui::Frame::default()
+                        .fill(bg)
+                        .inner_margin(6.0)
+                        .corner_radius(4.0)
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                let prefix = if negative {
+                                    format!("neg-tier{tier_no}")
+                                } else {
+                                    format!("tier{tier_no}")
+                                };
+                                // neg-プレフィックス有無で幅がズレないよう、ラベル部分を
+                                // 固定幅セルにして揃える。
+                                ui.add_sized(
+                                    egui::vec2(TAG_MANAGER_TIER_PREFIX_WIDTH, ui.spacing().interact_size.y),
+                                    egui::Label::new(egui::RichText::new(prefix).strong()),
+                                );
+                                ui.separator();
+
+                                // ティアの＋／－（tier追加・削除）を左側に先に置く。
+                                if ui.small_button("＋").clicked() {
+                                    // 「このtierの直後に新tierを挿入する」。中間挿入になるため、
+                                    // 実際の再序列(tier_no振り直し)は後段でまとめて行う。
+                                    add_tier_at = Some(t_idx + 1);
+                                }
+                                if ui.small_button("tier削除").clicked() {
+                                    delete_tier = Some(t_idx);
+                                }
+                                ui.separator();
+
+                                // 要素の＋／－はネームプレート化: 「－ 要素名」または「＋ (空)」を
+                                // ひとかたまりで表示する。要素名は長さが不定なので、これは常に
+                                // tier側のボタンより右（後ろ）に置く。
+                                let has_element = element.is_some();
+                                let is_editing = self.tag_manager_editing_element == Some((cat_idx, t_idx));
+                                if !is_editing {
+                                    if ui.small_button(if has_element { "－" } else { "＋" }).clicked() {
+                                        if has_element {
+                                            remove_element_tier = Some(t_idx);
+                                        } else {
+                                            start_edit = Some(t_idx);
+                                        }
+                                    }
+                                }
+                                if is_editing {
+                                    // ダイアログは使わず、その場でテキスト入力に切り替える。
+                                    // request_focus()をwidget生成"後"に呼ぶと、生成タイミングの
+                                    // ズレでフォーカスが実際には入らないことがあるため、明示的な
+                                    // idを使って生成"前"にmemory側へ直接request_focusしておく。
+                                    let text_edit_id = ui.id().with(("tag_manager_elem_edit", t_idx));
+                                    if self.tag_manager_editing_focus_pending {
+                                        ui.memory_mut(|m| m.request_focus(text_edit_id));
+                                        self.tag_manager_editing_focus_pending = false;
+                                    }
+                                    let resp = ui.add(
+                                        egui::TextEdit::singleline(&mut self.tag_manager_editing_buffer)
+                                            .id(text_edit_id),
+                                    );
+                                    // eguiはEscapeキーでフォーカスをグローバルに外す（memory側の
+                                    // 処理）ため、その時点でhas_focus()は既にfalseになっている。
+                                    // よってlost_focus()とEscape押下を組み合わせて判定する
+                                    // （egui標準のDragValueと同じパターン）。Escなら編集前の
+                                    // 状態に戻してキャンセル、それ以外(Enter押下・他クリック)は確定。
+                                    if resp.lost_focus() {
+                                        if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                                            cancel_edit = Some(t_idx);
+                                        } else {
+                                            finish_edit = Some(t_idx);
+                                        }
+                                    }
+                                } else {
+                                    match &element {
+                                        Some(el) => {
+                                            // ネームプレート: カテゴリ共通色を背景にして、
+                                            // タグピッカー側でカテゴリを見分けやすくする。
+                                            // クリックでインライン編集モードに入る。
+                                            let text_color = contrasting_text_color(cat_color);
+                                            let plate = egui::Frame::default()
+                                                .fill(cat_color)
+                                                .inner_margin(egui::Margin::symmetric(6, 2))
+                                                .corner_radius(3.0)
+                                                .show(ui, |ui| {
+                                                    ui.colored_label(text_color, el);
+                                                });
+                                            if plate.response.interact(egui::Sense::click()).clicked() {
+                                                start_edit = Some(t_idx);
+                                            }
+                                        }
+                                        None => {
+                                            ui.weak("(空)");
+                                        }
+                                    }
+                                }
+                            });
+                        });
+                    ui.add_space(4.0);
+                }
+            });
+
+        if let Some(t_idx) = start_edit {
+            let current = self.tag_manager_categories[cat_idx].tiers[t_idx]
+                .element
+                .clone()
+                .unwrap_or_default();
+            self.tag_manager_editing_element = Some((cat_idx, t_idx));
+            self.tag_manager_editing_buffer = current;
+            self.tag_manager_editing_focus_pending = true;
+        }
+        if let Some(t_idx) = finish_edit {
+            let text = self.tag_manager_editing_buffer.trim().to_string();
+            self.tag_manager_categories[cat_idx].tiers[t_idx].element =
+                if text.is_empty() { None } else { Some(text) };
+            self.tag_manager_editing_element = None;
+            self.tag_manager_editing_buffer.clear();
+            crate::tag_manager::ensure_main_category_nonempty(
+                &mut self.tag_manager_categories,
+                &mut self.tag_manager_next_tier_id,
+            );
+            self.save_tag_manager();
+        }
+        if cancel_edit.is_some() {
+            // elementは編集中も一切書き換えていないので、編集状態を破棄するだけで
+            // 「編集前の状態に戻る」ことになる。
+            self.tag_manager_editing_element = None;
+            self.tag_manager_editing_buffer.clear();
+        }
+        if let Some(t_idx) = remove_element_tier {
+            self.tag_manager_categories[cat_idx].tiers[t_idx].element = None;
+            if self.tag_manager_editing_element == Some((cat_idx, t_idx)) {
+                self.tag_manager_editing_element = None;
+                self.tag_manager_editing_buffer.clear();
+            }
+            crate::tag_manager::ensure_main_category_nonempty(
+                &mut self.tag_manager_categories,
+                &mut self.tag_manager_next_tier_id,
+            );
+            self.save_tag_manager();
+        }
+        if let Some(t_idx) = delete_tier {
+            let tiers = &mut self.tag_manager_categories[cat_idx].tiers;
+            tiers.remove(t_idx);
+            // tierは常に連番(1,2,3,...)を保つ。negativeフラグは各tierが個別に
+            // 持ったままなので、削除・再採番してもポジ/ネガの割り当ては変わらない。
+            for (i, t) in tiers.iter_mut().enumerate() {
+                t.tier_no = i as i32 + 1;
+            }
+            // tierのindex構成が変わるため、編集中状態はインデックスのズレを避けて破棄する。
+            self.tag_manager_editing_element = None;
+            self.tag_manager_editing_buffer.clear();
+            crate::tag_manager::ensure_main_category_nonempty(
+                &mut self.tag_manager_categories,
+                &mut self.tag_manager_next_tier_id,
+            );
+            self.save_tag_manager();
+        }
+        if let Some(pos) = add_tier_at {
+            let new_tier_id = self.tag_manager_next_tier_id;
+            self.tag_manager_next_tier_id += 1;
+            let tiers = &mut self.tag_manager_categories[cat_idx].tiers;
+            let pos = pos.min(tiers.len());
+            // 挿入位置の直前(無ければ直後)のtierからnegativeフラグを引き継ぐ。
+            // これで先頭挿入・中間挿入のどちらでも、既存のポジ/ネガ配置と自然に馴染む。
+            let negative = if pos > 0 {
+                tiers[pos - 1].negative
+            } else {
+                tiers.first().map(|t| t.negative).unwrap_or(false)
+            };
+            tiers.insert(pos, TagManagerTierUi { id: new_tier_id, tier_no: 0, negative, element: None });
+            // 中間挿入なので、全tierのtier_noを1から振り直す（再序列）。
+            for (i, t) in tiers.iter_mut().enumerate() {
+                t.tier_no = i as i32 + 1;
+            }
+            // 挿入でtierのindex構成が変わるため、編集中状態はズレを避けて破棄する。
+            self.tag_manager_editing_element = None;
+            self.tag_manager_editing_buffer.clear();
+            self.save_tag_manager();
+        }
+    }
+
+    /// タグマネージャー: 複数選択カテゴリ（メインカテゴリを除く）向けの要素編集UI。
+    /// tier行のような序列・negative区別は持たず、要素をフラットなバッジ一覧として
+    /// 並べ、各バッジの×クリックで即削除する。上部の一括入力欄にカンマ区切りで
+    /// 複数要素名を入力しEnter確定すると、既存要素を残したまま末尾に追加する。
+    fn draw_tag_manager_flat_elements(&mut self, ui: &mut egui::Ui, cat_idx: usize) {
+        let cat_color = self.tag_manager_categories[cat_idx].color;
+
+        ui.horizontal(|ui| {
+            ui.label("一括追加:");
+            let resp = ui.add(
+                egui::TextEdit::singleline(&mut self.tag_manager_bulk_input)
+                    .desired_width(f32::INFINITY)
+                    .hint_text("要素A, 要素B, 要素C（カンマ内に , を含めたい場合は ,, ）"),
+            );
+            if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                let names = crate::tag_manager::parse_bulk_elements(&self.tag_manager_bulk_input);
+                if !names.is_empty() {
+                    let tiers = &mut self.tag_manager_categories[cat_idx].tiers;
+                    let mut next_no = tiers.len() as i32 + 1;
+                    for name in names {
+                        let id = self.tag_manager_next_tier_id;
+                        self.tag_manager_next_tier_id += 1;
+                        tiers.push(TagManagerTierUi {
+                            id,
+                            tier_no: next_no,
+                            negative: false,
+                            element: Some(name),
+                        });
+                        next_no += 1;
+                    }
+                    self.tag_manager_bulk_input.clear();
+                    self.save_tag_manager();
+                }
+            }
+        });
+        ui.separator();
+
+        let mut remove_tier: Option<usize> = None;
+        let area_height = ui.available_height() * 0.9;
+        egui::ScrollArea::vertical()
+            .id_salt("tag_manager_flat_scroll")
+            .max_height(area_height)
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                let full_w = ui.available_width();
+                ui.horizontal_wrapped(|ui| {
+                    let elements: Vec<(usize, String)> = self.tag_manager_categories[cat_idx]
+                        .tiers
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(t_idx, t)| t.element.clone().map(|name| (t_idx, name)))
+                        .collect();
+                    if elements.is_empty() {
+                        ui.weak("（要素なし。上の欄から追加）");
+                    }
+                    let text_color = contrasting_text_color(cat_color);
+                    for (t_idx, name) in elements {
+                        if tag_chip_removable(ui, &name, full_w, cat_color, text_color, t_idx) {
+                            remove_tier = Some(t_idx);
+                        }
+                    }
+                });
+            });
+
+        if let Some(t_idx) = remove_tier {
+            self.tag_manager_categories[cat_idx].tiers.remove(t_idx);
+            let tiers = &mut self.tag_manager_categories[cat_idx].tiers;
+            for (i, t) in tiers.iter_mut().enumerate() {
+                t.tier_no = i as i32 + 1;
+            }
+            crate::tag_manager::ensure_main_category_nonempty(
+                &mut self.tag_manager_categories,
+                &mut self.tag_manager_next_tier_id,
+            );
+            self.save_tag_manager();
+        }
+    }
+
+    /// タグ機能・レイアウト器: 選択中サムネイルの拡大プレビュー。
+    /// `tag_preview_high_quality`がOFFなら既存のグリッド用サムネイルキャッシュ
+    /// (`self.thumbnails`)をそのまま幅基準で引き伸ばして表示する。ONなら専用解像度
+    /// （`TAG_PREVIEW_DECODE_EDGE`）で再生成したテクスチャを使い、無ければ生成を
+    /// リクエストしつつ届くまでサムネへフォールバックする。
+    /// 選択が無い／表示できる画像が無ければ何も描画しない。実際に描画した画像のrectを
+    /// 返す（パレット表示中、その下部にメインタグ・属性タグ帯をオーバーラップさせるため）。
+    fn draw_tag_panel_preview(&mut self, ui: &mut egui::Ui) -> Option<egui::Rect> {
+        let idx = self.selected_archive_index?;
+        let path = self.archives.get(idx).cloned()?;
+
+        let tex: egui::TextureHandle = if self.tag_preview_high_quality {
+            let matched = self
+                .tag_preview_texture
+                .as_ref()
+                .filter(|(p, _)| *p == path)
+                .map(|(_, t)| t.clone());
+            match matched {
+                Some(t) => t,
+                None => {
+                    self.request_tag_preview(&path);
+                    self.thumbnails.get(&path)?.clone()
+                }
+            }
+        } else {
+            self.thumbnails.get(&path)?.clone()
+        };
+
+        let tex_size = tex.size_vec2();
+        if tex_size.x <= 0.0 || tex_size.y <= 0.0 {
+            return None;
+        }
+        let avail_w = ui.available_width();
+        let mut scale = avail_w / tex_size.x;
+        // 縦長画像でタグ部内へ突き抜けないよう高さをキャップする。キャップにかかった
+        // 場合は横幅がパネル幅より狭くなるが、拡大はせず中央寄せのまま留める。
+        if tex_size.y * scale > TAG_PANEL_PREVIEW_MAX_HEIGHT {
+            scale = TAG_PANEL_PREVIEW_MAX_HEIGHT / tex_size.y;
+        }
+        let target_size = tex_size * scale;
+        let tex_id = tex.id();
+        let mut drawn_rect = None;
+        ui.vertical_centered(|ui| {
+            let (rect, _) = ui.allocate_exact_size(target_size, egui::Sense::hover());
+            ui.painter().image(
+                tex_id,
+                rect,
+                egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                egui::Color32::WHITE,
+            );
+            drawn_rect = Some(rect);
+        });
+        drawn_rect
+    }
+
+    /// タグパネル高画質プレビュー: 専用解像度（`TAG_PREVIEW_DECODE_EDGE`）で1件だけ
+    /// 生成をリクエストする。`db: None`でDB永続化はしない（グリッド用キャッシュを
+    /// 汚さない）。既に同じパスでpending中／生成済みなら何もしない。
+    fn request_tag_preview(&mut self, path: &std::path::Path) {
+        if self.tag_preview_pending.as_deref() == Some(path) {
+            return;
+        }
+        let selection = path.parent().and_then(|dir| {
+            let filename = path.file_name()?.to_str()?;
+            self.spread_db.as_ref().and_then(|db| {
+                crate::spread_state::read_thumbnail_selection(db, dir, filename)
+            })
+        });
+        if self.thumb_req_tx.try_send(ThumbRequest {
+            archive_path: path.to_path_buf(),
+            db: None,
+            is_raw_file: self.raw_image_files.contains(path),
+            thumbnail_selection: selection,
+            requested_edge: TAG_PREVIEW_DECODE_EDGE,
+            requested_filter: self.config.thumb_filter,
+            generation_token: None,
+            session_id: self.thumb_session.load(std::sync::atomic::Ordering::Acquire),
+            is_tag_preview: true,
+        }).is_ok() {
+            self.tag_preview_pending = Some(path.to_path_buf());
         }
     }
 
@@ -846,25 +2160,31 @@ impl NekoviewApp {
 
             const FILTER_BAR_H: f32 = 28.0;
             let content_h = (ui.available_height() - FILTER_BAR_H).max(0.0);
+            // 表示元の目印: 実ツリー選択=青 / 仮想フォルダ選択=緑（2px外枠）
+            const BORDER_W: f32 = 2.0;
+            let border_color = self.card_border_color();
+            // 外枠がある時は中身を枠幅+1px内側へ寄せ、右端のスクロールバーが枠に潰されないようにする
+            let inset = if border_color.is_some() { BORDER_W as i8 + 1 } else { 0 };
             let grid_out = ui.allocate_ui_with_layout(
                 egui::vec2(ui.available_width(), content_h),
                 egui::Layout::top_down(egui::Align::Min),
                 |ui| {
-                    if is_loading {
-                        ui.centered_and_justified(|ui| {
-                            ui.label(i18n::t().loading());
-                        });
-                    } else {
-                        self.draw_archive_grid(ui);
-                    }
+                    egui::Frame::NONE.inner_margin(egui::Margin::same(inset)).show(ui, |ui| {
+                        if is_loading {
+                            ui.centered_and_justified(|ui| {
+                                ui.label(i18n::t().loading());
+                            });
+                        } else {
+                            self.draw_archive_grid(ui);
+                        }
+                    });
                 },
             );
-            // 表示元の目印: 実ツリー選択=青 / 仮想フォルダ選択=緑（2px外枠）
-            if let Some(color) = self.card_border_color() {
+            if let Some(color) = border_color {
                 ui.painter().rect_stroke(
                     grid_out.response.rect,
                     0.0,
-                    egui::Stroke::new(2.0, color),
+                    egui::Stroke::new(BORDER_W, color),
                     egui::StrokeKind::Inside,
                 );
             }
@@ -1128,13 +2448,26 @@ impl NekoviewApp {
         let cell_h = self.config.thumb_size as f32;
         let cell_w = (cell_h / std::f32::consts::SQRT_2).round();
         const GAP: f32 = 8.0;
-        let avail_w = ui.available_width();
-        let full_cols = ((avail_w + GAP) / (cell_w + GAP)).floor() as usize;
-        let used_w = full_cols as f32 * (cell_w + GAP) - GAP;
-        let cols = if avail_w - used_w >= cell_w / 2.0 { full_cols + 1 } else { full_cols }.max(1);
+        // CentralPanelは常にフル幅を使う（タグパネルはその上に浮くフローティング
+        // オーバーレイなので、egui側のレイアウト幅には反映されない）。列数計算だけ
+        // タグパネル分の幅を自前で差し引き、パネル下に列が隠れないようにする。
+        let tag_panel_w = if self.tag_panel_open { self.tag_panel_width } else { PANEL_TAB_WIDTH };
+        let avail_w = (ui.available_width() - tag_panel_w).max(1.0);
+        // タグパネル分の余白は「はみ出しても実害のないウィンドウ端の余白」ではなく
+        // 越えてはいけない境界なので、半端な余白を切り上げて1列多く詰め込む丸め処理は
+        // 行わない（切り上げるとタグパネル領域にカードがはみ出し、クリックが
+        // 効かなくなる不具合があった）。常に切り捨て。
+        let cols = (((avail_w + GAP) / (cell_w + GAP)).floor() as usize).max(1);
         self.explorer_cols = cols;
 
-        let output = egui::ScrollArea::vertical()
+        // ScrollAreaをタグパネル分だけ右を削った矩形に閉じ込める。フル幅のままだと縦スクロール
+        // バー（ScrollAreaの右端）がFloatingのタグパネルの真下に潜って見えなくなる。
+        let scroll_rect = egui::Rect::from_min_size(
+            ui.cursor().min,
+            egui::vec2(avail_w, ui.available_height()),
+        );
+        let output = ui.scope_builder(egui::UiBuilder::new().max_rect(scroll_rect), |ui| {
+        egui::ScrollArea::vertical()
                 // アイテム上または空白を左ドラッグして一覧をスクロールできるようにする。
                 // セル側はSense::click()のままなので、短いクリックの選択/開く操作は維持される。
                 .scroll_source(egui::scroll_area::ScrollSource::ALL)
@@ -1312,6 +2645,7 @@ impl NekoviewApp {
                                         requested_filter: self.config.thumb_filter,
                                         generation_token: None,
                                         session_id: self.thumb_session.load(std::sync::atomic::Ordering::Acquire),
+                                        is_tag_preview: false,
                                         thumbnail_selection: path.parent().and_then(|dir| {
                                             let filename = path.file_name()?.to_str()?;
                                             self.spread_db.as_ref().and_then(|db| {
@@ -1742,6 +3076,12 @@ impl NekoviewApp {
                                         self.open_spread_setting_dialog_for_paths(filtered_targets.clone());
                                         ui.close();
                                     }
+                                    let r_item = ui.button(i18n::t().rating_setting_menu_bulk(fcount));
+                                    help_tip_auto(&r_item, &i18n::t().help_card_rating());
+                                    if r_item.clicked() {
+                                        self.open_rating_setting_dialog_for_paths(filtered_targets.clone());
+                                        ui.close();
+                                    }
                                 }
                             } else {
                                 let r_item = ui.button(i18n::t().favorite_detail_menu());
@@ -1767,6 +3107,12 @@ impl NekoviewApp {
                                     help_tip_auto(&r_item, &i18n::t().help_card_spread());
                                     if r_item.clicked() {
                                         self.open_spread_setting_dialog_for_paths(filtered_targets.clone());
+                                        ui.close();
+                                    }
+                                    let r_item = ui.button(i18n::t().rating_setting_menu());
+                                    help_tip_auto(&r_item, &i18n::t().help_card_rating());
+                                    if r_item.clicked() {
+                                        self.open_rating_setting_dialog_for_paths(filtered_targets.clone());
                                         ui.close();
                                     }
                                 }
@@ -1803,7 +3149,8 @@ impl NekoviewApp {
                 ui.add_enabled(false, egui::Button::new(i18n::t().favorite_detail_menu()));
             });
             grid_response.inner
-        });
+        })
+        }).inner;
         // ユーザーの手動スクロールを読み戻してストアを更新
         self.explorer_scroll_offset = output.state.offset.y;
         self.explorer_viewport_h = output.inner_rect.height();
@@ -2260,4 +3607,76 @@ impl NekoviewApp {
     fn real_tree_menu(&self) -> TreeMenu {
         TreeMenu { add_to_virtual: self.folder_pane_tab == FolderPaneTab::VirtualFolders, sort: true }
     }
+}
+
+/// 1行・幅上限つきで、はみ出す分を`…`で省略したテキストレイアウトを作る。
+fn truncated_galley(
+    ui: &egui::Ui,
+    text: &str,
+    font: egui::FontId,
+    color: egui::Color32,
+    max_width: f32,
+) -> std::sync::Arc<egui::Galley> {
+    let mut job = egui::text::LayoutJob::simple_singleline(text.to_owned(), font, color);
+    job.wrap.max_width = max_width;
+    job.wrap.max_rows = 1;
+    job.wrap.break_anywhere = true;
+    ui.painter().layout_job(job)
+}
+
+/// タグ要素のチップ（角丸の背景＋1行テキスト）。1個で1ウィジェットとして確保するため、
+/// `horizontal_wrapped`内で収まらなければチップごと次の行へ折り返される（`Frame`+`label`や
+/// `Button::truncate`は行の残りに潰れて折り返さず見切れていた）。1チップが行全体
+/// (`full_w`)より広い場合だけ`…`で省略する。`hover_fill`がtrueなら、ホバー時に背景を出す。
+fn tag_chip(
+    ui: &mut egui::Ui,
+    text: &str,
+    full_w: f32,
+    fill: egui::Color32,
+    text_color: egui::Color32,
+    sense: egui::Sense,
+    hover_fill: bool,
+) -> egui::Response {
+    let pad = egui::vec2(6.0, 2.0);
+    let font = egui::TextStyle::Button.resolve(ui.style());
+    let galley = truncated_galley(ui, text, font, text_color, (full_w - pad.x * 2.0).max(8.0));
+    let size = galley.size() + pad * 2.0;
+    let (rect, resp) = ui.allocate_exact_size(size, sense);
+    let fill = if hover_fill && resp.hovered() { ui.visuals().widgets.hovered.weak_bg_fill } else { fill };
+    ui.painter().rect_filled(rect, 3.0, fill);
+    ui.painter().galley(rect.min + pad, galley, text_color);
+    resp.on_hover_text(text)
+}
+
+/// `tag_chip`の削除ボタン(×)付き版。文字部分と×を1個の矩形として確保するため、チップごと
+/// 折り返す。長い要素は文字側だけを`…`で省略し、×は常に右端に残す。×がクリック
+/// された（＝削除要求）時にtrueを返す。`key`はチップごとに一意なID用（要素のindex等）。
+fn tag_chip_removable(
+    ui: &mut egui::Ui,
+    text: &str,
+    full_w: f32,
+    fill: egui::Color32,
+    text_color: egui::Color32,
+    key: usize,
+) -> bool {
+    const X_W: f32 = 16.0;
+    let pad = egui::vec2(6.0, 2.0);
+    let font = egui::TextStyle::Button.resolve(ui.style());
+    let galley = truncated_galley(ui, text, font.clone(), text_color, (full_w - pad.x * 2.0 - X_W).max(8.0));
+    let size = egui::vec2(galley.size().x + pad.x * 2.0 + X_W, galley.size().y + pad.y * 2.0);
+    let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::hover());
+    ui.painter().rect_filled(rect, 3.0, fill);
+    ui.painter().galley(rect.min + pad, galley, text_color);
+    let x_rect = egui::Rect::from_min_max(egui::pos2(rect.right() - X_W - pad.x, rect.top()), rect.right_bottom());
+    let x_resp = ui.interact(x_rect, ui.id().with(("tag_chip_x", key)), egui::Sense::click());
+    let x_color = if x_resp.hovered() { text_color } else { text_color.gamma_multiply(0.6) };
+    ui.painter().text(
+        egui::pos2(rect.right() - X_W / 2.0 - pad.x / 2.0, rect.center().y),
+        egui::Align2::CENTER_CENTER,
+        "×",
+        font,
+        x_color,
+    );
+    resp.on_hover_text(text);
+    x_resp.clicked()
 }

@@ -10,7 +10,7 @@ use crate::gui_config::{SortState, ViewerConfig, WindowSlot};
 use crate::view_gui_config::{SettingsDraft, SettingsTab};
 use crate::i18n;
 use crate::types::ExplorerSortKey;
-use crate::fs::{dir, mount::{list_gvfs_smb_mounts, list_local_drives, MountEntry}};
+use crate::fs::{dir, mount::{list_local_drives, MountEntry}};
 use crate::view_reader::ViewerState;
 
 impl crate::explorer_sort::RatingSortKey {
@@ -276,12 +276,14 @@ pub(crate) enum MenuBarButton {
     /// ビューアー内ツールパレット（マス配置ツールボックス）の表示ON/OFF。
     /// ファイルを渡り歩いても同じ状態を保つ（viewer_cfg経由でPaletteStateへ直結）。
     ToolPaletteToggle,
+    /// 「フォルダ本アクセス」トグル。永続化しない（毎回OFF起動）。
+    FolderBookAccessToggle,
     Settings,
 }
 
 /// 表示順そのもの（draw_menu_barの描画順と一致させること）。
 /// 見開き・ページモード群はビューアーツールバーへ移設した（toolbar.rs 参照）。
-pub(crate) const MENU_BAR_ORDER: [MenuBarButton; 15] = [
+pub(crate) const MENU_BAR_ORDER: [MenuBarButton; 16] = [
     MenuBarButton::Reload,
     MenuBarButton::SortName,
     MenuBarButton::SortDate,
@@ -292,6 +294,7 @@ pub(crate) const MENU_BAR_ORDER: [MenuBarButton; 15] = [
     MenuBarButton::SortRatingOrder,
     MenuBarButton::CardInfoToggle,
     MenuBarButton::CardRatingToggle,
+    MenuBarButton::FolderBookAccessToggle,
     MenuBarButton::ScoringToggle,
     MenuBarButton::ToolPaletteToggle,
     MenuBarButton::Settings,
@@ -319,7 +322,7 @@ mod menu_bar_order_tests {
     #[test]
     fn settings_status_and_help_keep_the_visual_right_end_order() {
         assert_eq!(
-            &MENU_BAR_ORDER[12..],
+            &MENU_BAR_ORDER[13..],
             &[
                 MenuBarButton::Settings,
                 MenuBarButton::StatusToggle,
@@ -608,8 +611,101 @@ struct SpreadSettingDialogState {
     offset: i32,
 }
 
+/// エクスプローラー右クリック「スコアの設定」一括変更ダイアログの状態。
+/// `rating_half`: これから書き込む値。`None`=どのラジオも未選択（複数選択時の初期状態。
+/// 未選択のままOKを押しても何も書き込まない）、`Some(0)`=「未評価」選択、
+/// `Some(1..=10)`=★0.5〜★5.0選択（`archive_rating`の値域と一致）。
+#[derive(Clone)]
+struct RatingSettingDialogState {
+    targets: Vec<PathBuf>,
+    rating_half: Option<u8>,
+    /// 単品選択時に`read_archive_rating`で復元した、開いた時点の保存済みスコア
+    /// （表示専用、「変更前のスコア」欄に出す）。複数選択時は常にNone。
+    original_rating: Option<u8>,
+}
+
+/// タグマネージャー: カテゴリのUI状態（`tag_manager.rs`でJSON永続化される）。
+pub(crate) struct TagManagerCategoryUi {
+    pub(crate) name: String,
+    pub(crate) tiers: Vec<TagManagerTierUi>,
+    /// カテゴリ共通色。要素ネームプレートとカテゴリ表示の両方に使い、
+    /// タグピッカー側でカテゴリを見分けやすくする（利用箇所はTM3以降）。
+    pub(crate) color: egui::Color32,
+    /// メインカテゴリ（排他選択のメインタグドラムに対応）フラグ。常にちょうど1つ
+    /// 存在し、削除不可・カテゴリ一覧の先頭に固定表示する。それ以外は属性タグ
+    /// （複数選択）に対応する一般カテゴリ。
+    pub(crate) is_main: bool,
+    /// カテゴリ内で要素を単一選択（排他）にするか、複数選択にするか。
+    /// `is_main`のカテゴリは常にtrue固定（メインタグドラムと同じ排他選択）。
+    /// それ以外のカテゴリはタグ管理画面のラジオボタンで切り替え可能（既定false＝複数選択）。
+    pub(crate) single_select: bool,
+}
+
+/// タグマネージャー: 既存カテゴリの色と極力衝突しない色をランダム生成する。
+/// 彩度・明度は固定し、色相だけを既存色群から最も離れるように選ぶ（外部の乱数
+/// crateには依存せず、時刻ベースの簡易疑似乱数で十分）。
+pub(crate) fn pick_distinct_tag_color(existing: &[egui::Color32]) -> egui::Color32 {
+    fn hue_dist(a: f32, b: f32) -> f32 {
+        let d = (a - b).abs();
+        d.min(1.0 - d)
+    }
+    let existing_hues: Vec<f32> = existing.iter().map(|c| egui::ecolor::Hsva::from(*c).h).collect();
+    let mut seed = {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let nanos = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.subsec_nanos()).unwrap_or(0) as u64;
+        nanos.wrapping_mul(2654435761).wrapping_add(std::process::id() as u64)
+    };
+    let mut next_unit = move || -> f32 {
+        seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        ((seed >> 40) as f32) / ((1u64 << 24) as f32)
+    };
+    let mut best_h = 0.0f32;
+    let mut best_min_dist = -1.0f32;
+    for _ in 0..24 {
+        let h = next_unit();
+        if existing_hues.is_empty() {
+            best_h = h;
+            break;
+        }
+        let min_dist = existing_hues.iter().map(|&eh| hue_dist(h, eh)).fold(f32::INFINITY, f32::min);
+        if min_dist > best_min_dist {
+            best_min_dist = min_dist;
+            best_h = h;
+        }
+    }
+    // 彩度・明度も幅を持たせ、色相だけでなく見た目のバリエーションを広げる。
+    let s = 0.55 + next_unit() * 0.35; // 0.55〜0.90
+    let v = 0.70 + next_unit() * 0.25; // 0.70〜0.95
+    egui::ecolor::Hsva::new(best_h, s, v, 1.0).into()
+}
+
+/// タグマネージャー: tier1件ぶんのUI状態。
+pub(crate) struct TagManagerTierUi {
+    /// tier（＝要素）の不変ID。連番採番で削除しても再利用しない。要素名(`element`)は
+    /// リネーム可能だが`id`は変わらないため、将来ファイルとの紐付けをID参照で持たせても
+    /// リネームで紐付けが切れない。tier_no/negativeはあくまで表示順のインデックスとして扱う。
+    pub(crate) id: u64,
+    pub(crate) tier_no: i32,
+    /// negative境界以降のtierはtrue。スコア計算はフェーズ後日実装。
+    pub(crate) negative: bool,
+    /// tierが持てる要素は0個か1個のみ（カテゴリ側で複数tierにまたがって「多」になる）。
+    /// 要素が空のtierも許容する（＋を押さず編集を終えてよい）。
+    pub(crate) element: Option<String>,
+}
+
 fn default_favorite_color() -> egui::Color32 {
     egui::Color32::from_rgb(255, 204, 0)
+}
+
+/// 背景色に対して読みやすい文字色（黒/白）を輝度から選ぶ。カテゴリ色を背景にした
+/// ネームプレート（タグ管理画面・タグ編集/閲覧モード）で共通して使う。
+pub(crate) fn contrasting_text_color(bg: egui::Color32) -> egui::Color32 {
+    let luminance = 0.299 * bg.r() as f32 + 0.587 * bg.g() as f32 + 0.114 * bg.b() as f32;
+    if luminance > 140.0 {
+        egui::Color32::BLACK
+    } else {
+        egui::Color32::WHITE
+    }
 }
 
 fn color32_to_rgba_u32(c: egui::Color32) -> u32 {
@@ -717,6 +813,8 @@ pub struct NekoviewApp {
     bookmark_setting_dialog: Option<BookmarkSettingDialogState>,
     /// エクスプローラー右クリック「見開き設定」一括変更ダイアログの状態（モック段階）
     spread_setting_dialog: Option<SpreadSettingDialogState>,
+    /// エクスプローラー右クリック「スコアの設定」一括変更ダイアログの状態（レイアウト確定フェーズ）
+    rating_setting_dialog: Option<RatingSettingDialogState>,
     /// Some(_) の間、中央グリッドは実ディレクトリではなく選択中のお気に入り
     /// （フォルダ横断）一覧を表示している。
     viewing_favorites: Option<FavoriteSelection>,
@@ -783,12 +881,12 @@ pub struct NekoviewApp {
     /// ファイル切替後も維持するビューア設定（zoom・fullscreen 等）
     pub(crate) viewer_cfg: Arc<Mutex<ViewerConfig>>,
     drives: Vec<MountEntry>,
-    /// 既知のGVFS SMBマウント一覧（到達可否に関係なく列挙時点の全件）。
-    /// panels.rs等でパス単位の判定に使う際、毎フレーム read_dir("/run/user/uid/gvfs")
-    /// を避けるためのキャッシュ。reload_current() 側で「進行中の到達可否チェックが
-    /// 無い時だけ」readdirして更新する（進行中チェックと同時にreaddirすると
-    /// gvfsd内部でロック競合してメインスレッドがブロックされるため）。
+    /// 既知のGVFS SMBマウント一覧（到達可否に関係なく列挙時点の全件）。ドライブ一覧の組み立て用。
+    /// gvfs のトップレベル readdir は FUSE 経由で止まりうるため、起動時・reload_current() で
+    /// バックグラウンド取得を発火し、結果が届いた時点（poll_gvfs_list）で差し替える。
     gvfs_mount_entries: Vec<MountEntry>,
+    /// バックグラウンドで進行中の gvfs マウント一覧取得（同時に1件のみ）
+    gvfs_list_pending: Option<mpsc::Receiver<Vec<MountEntry>>>,
     page_cache: Arc<Mutex<PageCache>>,
     file_cache: FileCache,
     file_cache_req_tx: mpsc::Sender<std::path::PathBuf>,
@@ -856,6 +954,81 @@ pub struct NekoviewApp {
     pub(crate) tree_sorts: crate::tree_sort::TreeSorts,
     /// ツリーの「ソート条件設定」ダイアログ。
     tree_sort_dialog: Option<tree_sort_ui::TreeSortDialog>,
+    /// タグ機能・レイアウト器: 右タグパネルの開閉状態。
+    pub(crate) tag_panel_open: bool,
+    /// タグ機能・レイアウト器: 右タグパネルの幅（開いている時、自由リサイズ対象）。
+    pub(crate) tag_panel_width: f32,
+    /// タグ機能・レイアウト器: タグパネルの編集モード展開状態（上側ツマミでさらに中央側へ拡張）。
+    pub(crate) tag_panel_edit_expanded: bool,
+    /// タグ付けレイアウト: メインタグ(排他)の固定順序リスト（tier_id, 要素名）。
+    /// ドラムUIで並べ替えは行わず、中央に来たものが選択扱いになる。要素名は表示用で、
+    /// 選択・紐付けの同一性判定は常にtier_id（リネームで変わらない不変ID）で行う。
+    pub(crate) tag_main_options: Vec<(u64, String)>,
+    /// タグ付けレイアウト: 現在選択中（ドラム中央）のメインタグのtier_id。
+    pub(crate) tag_main_selected: Option<u64>,
+    /// タグ付けレイアウト・ドラムUI: メインタグ編集トグル。ONの間だけドラムのドラッグ
+    /// （左右スワイプ相当）を許可する。既定OFF。フォーカスが外れたら（別ファイル／
+    /// 別フォルダへ移動、ビューアを閉じる）自動的にOFFへ戻す。
+    pub(crate) tag_main_edit_toggle: bool,
+    /// タグ付けレイアウト: 属性タグ(複数可・単一選択カテゴリ含む)のtier_id一覧。
+    /// タグマネージャーの実データから`save_tag_manager`で導出される（tier_idの
+    /// 妥当性チェック用。表示のカテゴリ分けは`tag_manager_categories`を直接使う）。
+    pub(crate) tag_attr_options: Vec<u64>,
+    /// タグ付けレイアウト: 選択済み属性タグ（カテゴリ横断、tier_idで一致判定。
+    /// リネームで紐付けが切れないよう要素名ではなく不変IDを持つ）。
+    /// 編集モードのワンクリックでここに追加/削除する。単一選択カテゴリは常に
+    /// ちょうど1個を維持する（`tag_manager::enforce_single_select`で矯正）。
+    pub(crate) tag_attr_selected: Vec<u64>,
+    /// 単一選択カテゴリで有効値から外れているが、DBには残す休眠タグ（非破壊切替）。
+    /// 複数選択へ戻すと`save_tag_manager`で`tag_attr_selected`へ合流する。保存時は
+    /// `tag_attr_selected`と一緒に必ず書き戻す。単一カテゴリで別の値を明示選択したときだけ消える。
+    pub(crate) tag_attr_dormant: Vec<u64>,
+    /// タグ付けレイアウト: `tag_main_selected`/`tag_attr_selected`が現在どのファイルの
+    /// 保存済みタグを表しているか。選択中ファイルとズレたら`sync_tag_binding`が
+    /// 検知し、旧ファイルを確定保存してから新ファイルの保存済みタグを読み込む。
+    pub(crate) tag_binding_path: Option<PathBuf>,
+    /// タグパネルのプレビューを、グリッドサムネの引き伸ばしではなく専用解像度で
+    /// 再デコードして表示するか（ON=高画質・OFF=既定＝サムネ流用）。設定として永続化する。
+    pub(crate) tag_preview_high_quality: bool,
+    /// タグパネル高画質プレビュー: 生成済みテクスチャ（対象パスとセットで持ち、
+    /// 選択中ファイルと一致する時だけ使う。不一致ならサムネへフォールバック）。
+    pub(crate) tag_preview_texture: Option<(PathBuf, egui::TextureHandle)>,
+    /// タグパネル高画質プレビュー: 生成リクエスト発行済みで結果待ちのパス
+    /// （多重リクエスト防止用）。
+    pub(crate) tag_preview_pending: Option<PathBuf>,
+    /// タグマネージャー(フェーズTM0): カテゴリ・tier・要素を管理する独立画面の開閉状態。
+    /// 既存のメインタグ／属性タグUIとは今回切り離して考える。
+    pub(crate) tag_manager_open: bool,
+    /// タグマネージャー: CentralPanel＋右タグパネルの合成矩形（直近フレーム）。
+    /// オーバーレイをこの範囲全体に重ねて表示するために使う。
+    pub(crate) tag_manager_area_rect: egui::Rect,
+    /// タグマネージャー: カテゴリ一覧（名前＋tierリスト）。`tag_manager.rs`経由で
+    /// 操作確定ごとにJSON永続化される。
+    pub(crate) tag_manager_categories: Vec<TagManagerCategoryUi>,
+    /// タグマネージャー: 次に採番するtier(要素)ID。削除しても減らさない単調増加カウンタ。
+    pub(crate) tag_manager_next_tier_id: u64,
+    /// タグマネージャー(フェーズTM1): 選択中カテゴリのインデックス。
+    pub(crate) tag_manager_selected_category: Option<usize>,
+    /// タグマネージャー: インライン編集中の要素(カテゴリindex, tier内index)。
+    /// ダイアログは使わず、tier行のその場でテキスト入力に切り替える。
+    pub(crate) tag_manager_editing_element: Option<(usize, usize)>,
+    /// タグマネージャー: 上記の編集中バッファ。
+    pub(crate) tag_manager_editing_buffer: String,
+    /// タグマネージャー: 編集開始した直後の1フレームだけtrueにし、その
+    /// フレームでテキスト入力にrequest_focusする（毎フレーム呼ぶとユーザーの
+    /// 手動フォーカス解除を上書きしてしまうため）。
+    pub(crate) tag_manager_editing_focus_pending: bool,
+    /// タグマネージャー: インライン編集中のカテゴリ名（対象カテゴリのindex）。
+    /// 選択カテゴリが切り替わったら自動的にNoneへ戻す。
+    pub(crate) tag_manager_editing_category_name: Option<usize>,
+    /// タグマネージャー: 上記の編集中バッファ。
+    pub(crate) tag_manager_editing_category_buffer: String,
+    /// タグマネージャー: カテゴリ名編集開始直後の1フレームだけtrueにし、
+    /// そのフレームでテキスト入力にrequest_focusする。
+    pub(crate) tag_manager_editing_category_focus_pending: bool,
+    /// タグマネージャー: 複数選択カテゴリのフラット要素一覧における一括入力欄バッファ。
+    /// カンマ区切りで複数要素を一度に追加する（`,,`はリテラルカンマ1文字のエスケープ）。
+    pub(crate) tag_manager_bulk_input: String,
     /// 接続テストの進行中受信チャンネル（ダイアログを閉じたら破棄）。
     pub(crate) translate_conn_rx: Option<mpsc::Receiver<crate::translate::ConnCheckMsg>>,
     /// 直近の接続テスト結果表示用（疎通/vision結果の文字列、または失敗理由）。
@@ -983,6 +1156,13 @@ pub struct NekoviewApp {
     show_status_window: bool,
     /// ヘルプ（ツールチップ）表示フラグ（[?] ボタンでトグル）。永続化しない
     help_enabled: bool,
+    /// 「フォルダ本アクセス」トグル。ONの間、条件を満たすフォルダに入ると
+    /// 通常の一覧表示の代わりに仮想アーカイブとしてビューアーを開く。永続化しない（毎回OFF起動）。
+    folder_book_access_enabled: bool,
+    /// 初回警告ダイアログの表示中フラグ。非永続・実行時のみ。
+    folder_book_access_notice_open: bool,
+    /// 初回警告ダイアログ内「次回から表示しない」チェックボックスの一時状態。
+    folder_book_access_notice_dont_show_again: bool,
     status_window_data: Arc<Mutex<crate::view_status::StatusData>>,
     /// ステータスデータを最後に更新した時刻（1秒間隔制御用）
     last_status_update: std::time::Instant,
@@ -1051,7 +1231,7 @@ mod glyph_audit;
 
 
 impl NekoviewApp {
-    pub fn new(start_dir: PathBuf, config: AppConfig, viewer_slots: [Option<WindowSlot>; 4], sort_state: SortState, viewer_cfg: ViewerConfig, show_hidden: bool, card_info_mode: &str, card_rating_mode: &str, card_date_format: crate::card_date_format::CardDateFormat, translate_cfg: crate::translate::TranslateConfig, tab_positions: crate::gui_config::TabPositions, tree_sorts: crate::tree_sort::TreeSorts, open_target: Option<PathBuf>, ctx: egui::Context) -> Self {
+    pub fn new(start_dir: PathBuf, config: AppConfig, viewer_slots: [Option<WindowSlot>; 4], sort_state: SortState, viewer_cfg: ViewerConfig, show_hidden: bool, card_info_mode: &str, card_rating_mode: &str, card_date_format: crate::card_date_format::CardDateFormat, translate_cfg: crate::translate::TranslateConfig, tab_positions: crate::gui_config::TabPositions, tree_sorts: crate::tree_sort::TreeSorts, tag_panel_open: bool, tag_preview_high_quality: bool, open_target: Option<PathBuf>, ctx: egui::Context) -> Self {
         // 「前回フォルダに復帰」がオフなら、他のフォルダ系タブの保存位置も復元しない（既定に戻す）
         let tab_positions = if config.startup.use_last_dir {
             tab_positions
@@ -1067,6 +1247,12 @@ impl NekoviewApp {
         // fit-within(縦横比維持)なので短辺は箱の中に自動的に収まる。
         let max_decode_target = (config.max_decode_edge, config.max_decode_edge);
         let config_root = config.config_root.clone();
+        let (tag_manager_categories, tag_manager_next_tier_id) =
+            crate::tag_manager::load(&config_root).unwrap_or_else(crate::tag_manager::default_state);
+        let (tag_main_options, tag_attr_options) = crate::tag_manager::derive_tag_options(&tag_manager_categories);
+        let tag_main_selected = tag_main_options.first().map(|(id, _)| *id);
+        let mut tag_attr_selected: Vec<u64> = Vec::new();
+        let _ = crate::tag_manager::enforce_single_select(&tag_manager_categories, &mut tag_attr_selected);
         let settings_draft = SettingsDraft::from_current(&config, &viewer_cfg, show_hidden, card_date_format, &translate_cfg);
         // viewer_cfg は下でArc<Mutex<..>>へムーブするため、そこで必要な値は先に控えておく
         // （config_root等、他のconfig系フィールドと同じ扱い）。
@@ -1079,10 +1265,14 @@ impl NekoviewApp {
             spawn_thumb_worker(config.resolved_decode_threads(), ctx.clone());
         let (entry_thumb_req_tx, entry_thumb_res_rx) = spawn_entry_thumb_worker(config.thumb_filter.to_image_filter(), config.resolved_decode_threads(), ctx.clone());
         let (file_cache_req_tx, file_cache_res_rx) = spawn_file_cache_worker(ctx.clone(), file_cache_max);
+        // gvfs の一覧はバックグラウンド取得（起動後に poll_gvfs_list で反映）。起動フォルダが
+        // SMB 配下のときだけ、ツリールートを決めるためにパスからマウント大元を I/O なしで補う。
         let mut drives = list_local_drives();
-        let gvfs_mounts = list_gvfs_smb_mounts();
-        let gvfs_mount_entries = gvfs_mounts.clone();
-        drives.extend(gvfs_mounts);
+        let gvfs_mount_entries: Vec<MountEntry> = crate::fs::mount::network_mount_root(&start_dir)
+            .and_then(|root| crate::fs::mount::smb_mount_entry(&root))
+            .into_iter()
+            .collect();
+        drives.extend(gvfs_mount_entries.iter().cloned());
 
         // start_dir を含むドライブのパスをツリーのルートにする
         let tree_root = drives
@@ -1137,6 +1327,7 @@ impl NekoviewApp {
             sort_condition_dialog: None,
             bookmark_setting_dialog: None,
             spread_setting_dialog: None,
+            rating_setting_dialog: None,
             viewing_favorites: None,
             viewing_dir: None,
             viewing_virtual_node: None,
@@ -1188,6 +1379,7 @@ impl NekoviewApp {
             viewer_cfg: Arc::new(Mutex::new(viewer_cfg)),
             drives,
             gvfs_mount_entries,
+            gvfs_list_pending: None,
             page_cache: Arc::new(Mutex::new(PageCache::new(cache_max, cache_min))),
             file_cache: FileCache::new(file_cache_max),
             file_cache_req_tx,
@@ -1223,6 +1415,31 @@ impl NekoviewApp {
             tab_positions,
             tree_sorts,
             tree_sort_dialog: None,
+            tag_panel_open,
+            tag_panel_width: 280.0,
+            tag_panel_edit_expanded: false,
+            tag_main_options,
+            tag_main_selected,
+            tag_main_edit_toggle: false,
+            tag_attr_options,
+            tag_attr_selected,
+            tag_attr_dormant: Vec::new(),
+            tag_binding_path: None,
+            tag_preview_high_quality,
+            tag_preview_texture: None,
+            tag_preview_pending: None,
+            tag_manager_open: false,
+            tag_manager_area_rect: egui::Rect::NOTHING,
+            tag_manager_categories,
+            tag_manager_next_tier_id,
+            tag_manager_selected_category: Some(0),
+            tag_manager_editing_element: None,
+            tag_manager_editing_buffer: String::new(),
+            tag_manager_editing_focus_pending: false,
+            tag_manager_editing_category_name: None,
+            tag_manager_editing_category_buffer: String::new(),
+            tag_manager_editing_category_focus_pending: false,
+            tag_manager_bulk_input: String::new(),
             translate_conn_rx: None,
             translate_conn_status: None,
             translate_conn_verified: false,
@@ -1287,6 +1504,9 @@ impl NekoviewApp {
             folder_label_hover: None,
             show_status_window: false,
             help_enabled: false,
+            folder_book_access_enabled: false,
+            folder_book_access_notice_open: false,
+            folder_book_access_notice_dont_show_again: false,
             status_window_data: Arc::new(Mutex::new(crate::view_status::StatusData::default())),
             last_status_update: std::time::Instant::now(),
             status_update_requested: Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -1313,12 +1533,10 @@ impl NekoviewApp {
         // 進める）。現在地が tree_root 配下でなければ start_tree_autofocus 側で no-op。
         app.viewing_dir = Some(app.current_dir.clone());
         app.start_tree_autofocus(app.current_dir.clone());
-        // 起動時点でGVFSマウントの到達可否確認を仕込んでおく。
-        // ユーザーが最初にリロードを押す頃には判定が終わっている見込みが立ち、
+        // 起動時点でGVFSマウント一覧の取得を仕込んでおく。結果が届くと各マウントの到達可否確認も
+        // 発火するため、ユーザーが最初にリロードを押す頃には判定が終わっている見込みが立ち、
         // 「初回リロードでは切断先が消えない」体感を和らげる。
-        for mount in app.gvfs_mount_entries.clone() {
-            app.spawn_mount_check_if_needed(mount.path);
-        }
+        app.start_gvfs_list();
         // 最後に選んでいたタブを開く（実ツリー以外のとき。起動処理が済んだ後に切り替える）
         app.restore_active_tab();
         app
@@ -1346,6 +1564,8 @@ impl NekoviewApp {
             &self.translate_cfg,
             &self.tab_positions,
             &self.tree_sorts,
+            self.tag_panel_open,
+            self.tag_preview_high_quality,
         );
     }
 }

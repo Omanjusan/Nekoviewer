@@ -6,6 +6,7 @@ use std::path::Path;
 
 pub mod decode;
 pub mod detect;
+mod folder;
 mod progress;
 #[cfg(feature = "fmt-7z")]
 mod sevenz;
@@ -140,8 +141,12 @@ impl ArchiveMemoryCheck {
 /// FileCache に載る想定サイズをメタデータのみで見積もる（展開・丸読みなし）。
 /// ZIP/生画像: ディスク上のファイルサイズ（`FileCacheEntry::Raw` で丸ごと保持されるため）。
 /// 7z/tar: 画像エントリの展開後合計（`FileCacheEntry::Extracted` で保持されるため）。
+/// フォルダ（仮想アーカイブ）: FileCacheの対象外（都度ファイルシステムから読むため0=無制限）。
 /// 取得できない場合は0（= 制限しない）。
 pub fn estimate_file_cache_bytes(path: &Path) -> u64 {
+    if path.is_dir() {
+        return 0;
+    }
     match detect::detect_format(path) {
         #[cfg(feature = "fmt-7z")]
         ArchiveFormat::SevenZ => sevenz::sum_image_entry_sizes_7z(path),
@@ -181,6 +186,9 @@ pub fn estimate_archive_memory(
     if entries.is_empty() {
         return ArchiveMemoryCheck::without_payload(ArchiveMemoryEstimate::Ok);
     }
+    if path.is_dir() {
+        return ArchiveMemoryCheck::without_payload(folder::estimate_archive_memory_folder(entries, budget_bytes, ring_bounds, max_decode_edge));
+    }
     match detect::detect_format(path) {
         #[cfg(feature = "fmt-7z")]
         ArchiveFormat::SevenZ => sevenz::estimate_archive_memory_7z(path, entries, budget_bytes, ring_bounds, max_decode_edge, file_budget_bytes),
@@ -199,6 +207,9 @@ pub fn list_images(path: &Path) -> Vec<ImageEntry> {
 /// `list_images`の進捗通知版。1エントリ処理するたびに`on_progress`を呼ぶ。
 /// `on_progress`が`false`を返した時点で打ち切り、`None`（キャンセル）を返す。
 pub fn list_images_with_progress(path: &Path, on_progress: &mut ProgressCallback) -> Option<Vec<ImageEntry>> {
+    if path.is_dir() {
+        return folder::list_images_folder_with_progress(path, on_progress);
+    }
     match detect::detect_format(path) {
         #[cfg(feature = "fmt-7z")]
         ArchiveFormat::SevenZ => sevenz::list_images_7z_with_progress(path, on_progress),
@@ -212,6 +223,9 @@ pub fn list_images_with_progress(path: &Path, on_progress: &mut ProgressCallback
 /// ZIPはまず Local File Header を先頭から順読みして試みる（ネットワーク帯域節約）。
 /// Data Descriptor フラグ等で順読み不可の場合は ZipArchive 経由にフォールバックする。
 pub fn load_first_image(path: &Path) -> Option<image::DynamicImage> {
+    if path.is_dir() {
+        return folder::load_first_image_folder(path);
+    }
     match detect::detect_format(path) {
         #[cfg(feature = "fmt-7z")]
         ArchiveFormat::SevenZ => sevenz::load_first_image_7z(path),
@@ -224,8 +238,7 @@ pub fn load_first_image(path: &Path) -> Option<image::DynamicImage> {
 }
 
 /// UNIXエポック秒を、ZIP版と同じ日付ソートキー(年月日時分秒を1桁ずつパックしたu64)に変換する。
-/// Howard Hinnant の civil_from_days アルゴリズム(days-since-epoch -> 暦日)を使う。7z/tar 共通。
-#[cfg(any(feature = "fmt-7z", feature = "fmt-tar"))]
+/// Howard Hinnant の civil_from_days アルゴリズム(days-since-epoch -> 暦日)を使う。7z/tar/フォルダ共通。
 pub(crate) fn unix_secs_to_date_key(secs: u64) -> u64 {
     let days = (secs / 86400) as i64;
     let rem = secs % 86400;
@@ -250,8 +263,8 @@ pub(crate) fn unix_secs_to_date_key(secs: u64) -> u64 {
 }
 
 /// (display_name, entry_name, date_key) のペア列から、ソート・衝突回避済みの
-/// `ImageEntry` 列を組み立てる（ZIP/7z共通処理）。
-fn finalize_entries(mut pairs: Vec<(String, String, u64)>) -> Vec<ImageEntry> {
+/// `ImageEntry` 列を組み立てる（ZIP/7z/フォルダ共通処理）。
+pub(crate) fn finalize_entries(mut pairs: Vec<(String, String, u64)>) -> Vec<ImageEntry> {
     // ファイル名優先、同名はentry_nameで安定ソート
     pairs.sort_by(|(da, ea, _), (db, eb, _)| {
         basename(da).cmp(basename(db)).then(ea.cmp(eb))

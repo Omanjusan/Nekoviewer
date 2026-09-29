@@ -4,7 +4,7 @@ use std::sync::atomic::Ordering;
 
 use crate::neko_dir;
 use crate::fs::dir;
-use crate::fs::mount::{list_gvfs_smb_mounts, list_local_drives};
+use crate::fs::mount::list_local_drives;
 use super::*;
 
 fn thumbnail_local_limit(
@@ -99,6 +99,7 @@ impl NekoviewApp {
     /// 中央グリッドを path の実ディレクトリ表示に切り替えてスキャンを始める
     /// （navigate_to と仮想ノード選択の共通部分。ツリー追従や永続化は呼び出し側が行う）。
     pub(super) fn begin_dir_view(&mut self, path: PathBuf) {
+        self.deactivate_tag_main_edit();
         self.viewing_favorites = None;
         self.current_dir = path.clone();
         self.viewing_dir = Some(path);
@@ -205,6 +206,7 @@ impl NekoviewApp {
     /// 指定ドライブへ切り替える（ドライブ一覧のクリック・キーボードEnter共通処理）。
     /// ツリーのルート自体をそのドライブへ差し替え、展開状態をリセットする。
     pub(super) fn navigate_to_drive(&mut self, path: PathBuf) {
+        self.deactivate_tag_main_edit();
         self.viewing_virtual_node = None;
         self.virtual_link_broken = false;
         self.real_dir_stash.clear();
@@ -253,19 +255,10 @@ impl NekoviewApp {
         // 既に不通判定済みのマウントは、復活が確認できるまで一覧に出さない
         // （出してしまうと次のリロードごとに表示→非表示を繰り返すため）。
         //
-        // mount_check_pending が空でない（＝バックグラウンドの到達可否チェックが
-        // 進行中）間は list_gvfs_smb_mounts() を呼ばない。進行中チェックの read_dir と
-        // 同時にトップレベル /run/user/uid/gvfs を readdir すると gvfsd 内部で
-        // ロック競合し、メインスレッドまでブロックされることがあるため。
-        // その間は直前に取得済みの gvfs_mount_entries をそのまま使い回す。
+        // gvfs のマウント一覧はバックグラウンドで取り直し（トップレベルの readdir も FUSE 経由で
+        // 止まりうるため）、届くまでは直前に取得済みの gvfs_mount_entries を使い回す。
         let mut drives = list_local_drives();
-        if self.mount_check_pending.is_empty() {
-            let gvfs_mounts = list_gvfs_smb_mounts();
-            for mount in &gvfs_mounts {
-                self.spawn_mount_check_if_needed(mount.path.clone());
-            }
-            self.gvfs_mount_entries = gvfs_mounts;
-        }
+        self.start_gvfs_list();
         drives.extend(
             self.gvfs_mount_entries
                 .iter()
@@ -434,6 +427,8 @@ impl NekoviewApp {
         };
 
         if let Some(dir::DirScan { subdirs, archives, raw_images, subdir_mtimes }) = result {
+            // 「フォルダ本アクセス」判定用（archives/raw_imagesは以降で消費されるため先に控える）。
+            let folder_book_access_eligible = archives.is_empty() && !raw_images.is_empty();
             let existing_filenames: Vec<String> = archives.iter().chain(raw_images.iter())
                 .filter_map(|p| p.file_name().and_then(|n| n.to_str()).map(str::to_string))
                 .collect();
@@ -540,6 +535,16 @@ impl NekoviewApp {
             // 成否に関わらず一度きりで消費する（以降このディレクトリへ戻っても再発火しない）。
             if let Some(target) = self.pending_open_target.take() {
                 self.try_open_pending_target(target);
+            }
+            // 「フォルダ本アクセス」: トグルON かつ アーカイブファイルを含まず生画像が
+            // 1枚以上あるフォルダなら、通常の一覧表示に加えて仮想アーカイブとして
+            // 自動的にビューアーを開く（サブフォルダの有無は判定・走査に無関係）。
+            if self.folder_book_access_enabled
+                && folder_book_access_eligible
+                && self.pending_open.is_none()
+                && self.network_gate(&self.current_dir.clone())
+            {
+                self.start_archive_open(self.current_dir.clone());
             }
         }
     }
@@ -768,6 +773,7 @@ impl NekoviewApp {
                 requested_filter: self.config.thumb_filter,
                 generation_token: None,
                 session_id: self.thumb_session.load(Ordering::Acquire),
+                is_tag_preview: false,
             };
             if self.thumb_req_tx.try_send(request).is_err() {
                 self.thumb_queue.push_front(path);
