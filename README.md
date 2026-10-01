@@ -1,6 +1,6 @@
 # Nekoviewer
 
-A single-binary desktop viewer for comfortably reading manga archives in ZIP / CBZ format.
+A single-binary desktop viewer for comfortably reading manga archives in ZIP / CBZ / TAR / 7z format.
 
 [日本語版 README](README.ja.md)
 
@@ -10,19 +10,22 @@ A single-binary desktop viewer for comfortably reading manga archives in ZIP / C
 
 - Browse folders like a bookshelf, navigate into archives, and view their images — all within a single in-app viewer window.
 - A viewer for people who collect and organize archives.
+- The author built a viewer that fits their own needs.
 - An experiment in how far AI coding can go.
 
+## Features
+
 - Linux / Windows support
-- Direct filesystem access — no external database or service required
-- Lightweight — thumbnail cache reduces redraw cost; Rust eliminates memory leaks and keeps it fast
-- No uninstaller needed — no registry writes. Delete the EXE and the `nekoview` folder in your user directory for a clean removal.
+- Direct filesystem access — no dependency on external services or servers
+- Archive scoring — when you read to the end of an archive, a rating overlay appears automatically so you can give a score from ★0.5 to ★5. Close it without doing anything and the archive stays unrated.
+- Sorting by view count, which is recorded automatically. It can be combined with the main sort keys (filename, date, file size) for compound sorting, and you can switch between view-count order and score order. For example, you can keep "highest score first" while also viewing larger files first within the same score.
 - Network share (SMB) support — cache is stored locally, so it keeps working even with unusual network paths.
-- Animated GIF, WebP, and AVIF playback — ring-buffer playback supports a wide range of file sizes, even large animations.
+- Animated GIF, WebP, and AVIF playback — handles large animation files, which is especially useful for high-resolution AI-generated animations.
 - Favorite file support — a single flag can apply to many favorite folders at once.
 - Limited search — search files that already have cached thumbnails.
 - Per-archive spread mode setting — saved automatically and restored on reopen.
 - Optional per-archive sort settings — restored on reopen and updated when leaving the viewer.
-- Focused purely on viewing, without file-manager operations such as move, delete, or copy, reducing the risk of accidental changes.
+- Focused purely on viewing, without file-manager operations such as move, delete, or copy, reducing the risk of accidental changes. (Copy support is planned.)
 - Multilingual support (ja/en/cn)
 - No ads, no telemetry
 
@@ -33,7 +36,7 @@ Demo GIF
 
 ---
 
-## Installation / Build
+## Installation
 
 ### Windows
 
@@ -41,7 +44,9 @@ Download the latest `nekoviewer.exe` from [GitHub Releases](https://github.com/O
 
 ### Linux
 
-NekoViewer is distributed as a Flatpak. Until the Flathub listing is available, download `Nekoviewer-*-x86_64.flatpak` from [GitHub Releases](https://github.com/Omanjusan/Nekoviewer/releases/latest) and install it locally:
+An AppImage and a Flatpak file are distributed on [GitHub Releases](https://github.com/Omanjusan/Nekoviewer/releases/latest) (not through Flathub or other official repositories). For the most reliable result, build from source as described in [Build](#build) below.
+
+#### Flatpak
 
 ```bash
 flatpak install --user ./Nekoviewer-*-x86_64.flatpak
@@ -50,45 +55,22 @@ flatpak run io.github.Omanjusan.Nekoviewer
 
 The Flatpak can browse home folders and mounted drives read-only. NekoViewer writes only its private settings and cache data under `~/.var/app/io.github.Omanjusan.Nekoviewer/`.
 
-Building from source requires the Rust toolchain (`cargo`) and `make`.
+#### AppImage
 
-#### First time (source build)
-
-```bash
-git clone https://github.com/Omanjusan/Nekoviewer.git
-cd Nekoviewer
-make release
-./target/release/nekoviewer
-```
-
-`make release` will guide you through installing any missing dependencies (e.g. `nasm`, `dav1d`) on first run.
-
-#### Updating
+Download `Nekoviewer-*-x86_64.AppImage` from [GitHub Releases](https://github.com/Omanjusan/Nekoviewer/releases/latest), make it executable, and run it.
 
 ```bash
-git pull
-make release
-./target/release/nekoviewer
-```
-
-Run `make help` if you're not sure what to do.
-
-#### Flatpak development build
-
-Install the official Flathub Builder and the Rust SDK extension, then run `make flatpak`:
-
-```bash
-flatpak install --user flathub org.flatpak.Builder org.freedesktop.Sdk.Extension.rust-stable//25.08
-make flatpak
+chmod +x ./Nekoviewer-*-x86_64.AppImage
+./Nekoviewer-*-x86_64.AppImage
 ```
 
 ---
 
 ## Usage
 
-### Updating on Windows
+### Note for Windows
 
-Windows SmartScreen may block the app from launching — this is not a bug. Click "More info" and then "Run anyway" to launch it. This happens on every release.
+Windows SmartScreen may show a warning. Click "More info" and then "Run anyway" to launch the app. This happens on every release.
 
 ### Launch
 
@@ -99,42 +81,16 @@ Linux: nekoviewer
 
 A [folder path] argument is accepted, but in general, running it without arguments is fine.
 
-### Controls
+### Recommended Setup
 
-Key assignment is supported; the defaults are listed below.
+- Key assignment is supported. The recommended setup is as follows:
+  1. Turn the "Toolbox" button in the explorer's menu bar ON.
+  2. Open any image or archive, then right-click a cell in the toolbox shown in the viewer window and turn each function you need into a button.
+  3. Right-click a button cell again and choose "Assign key".
 
-#### Main Window
-
-| Action | Result |
-|--------|--------|
-| Click folder | Navigate into that folder's archive list |
-| Enter / Double-click thumbnail | Open the file at the selector position in the viewer window |
-| Click sort header | Sort by filename / date / size |
-| Arrow keys / Click thumbnail | Move the item selector |
-
-The selector is shown in blue for archive files and red for standalone image files.
-
-#### Viewer Window
-
-| Key | Action |
-|-----|--------|
-| `↓` / `Space` / Scroll down | Next page |
-| `↑` / Scroll up | Previous page |
-| `SHIFT+↓` / `SHIFT+Scroll down` | Move to next file (when at last page) |
-| `SHIFT+↑` / `SHIFT+Scroll up` | Move to previous file (when at first page) |
-| `←` | Next file (jump to page 1, regardless of current page) |
-| `→` | Previous file (jump to page 1, regardless of current page) |
-| `Home` | First page |
-| `End` | Last page |
-| `1` | Single page view |
-| `2` | Spread view (left binding) |
-| `3` | Spread view (right binding) |
-| `4` | Spread offset −1 (clamped to −1–+1) |
-| `5` | Spread offset +1 (clamped to −1–+1) |
-| `F5`–`F8` | Save / restore window position and size slots (doesn't work on wayland) |
-| `Enter` / Left double-click | Toggle between original size and fit to window |
-| `Alt+Enter` / Middle mouse button | Toggle fullscreen / windowed |
-| `Esc` | Close viewer window |
+  With this setup you can, for example, use the WASD keys for next/previous page and next/previous file.
+- A viewer position & size lock is available. On a high-resolution monitor, it is recommended to keep the viewer fixed in place (not supported on Wayland).
+- The app always keeps the explorer and the viewer in a one-to-one relationship. Even if you reopen a file, as long as the viewer exists, its layout is preserved and your window arrangement on the desktop is not disturbed.
 
 ### Supported Formats
 
@@ -145,11 +101,49 @@ The selector is shown in blue for archive files and red for standalone image fil
 
 **Animated playback:** AVIF, WebP, GIF (APNG: TBD)
 
-### Config File (`nekoviewer.conf`)
+## Build
 
-Most settings have moved to the in-app GUI settings dialog. The config file is now only used for initial/advanced setup; see the settings dialog for day-to-day configuration.
+### First time (source build)
+
+Building from source requires the Rust toolchain (`cargo`) and `make`.
+
+```bash
+git clone https://github.com/Omanjusan/Nekoviewer.git
+cd Nekoviewer
+make release
+./target/release/nekoviewer
+```
+
+`make release` will guide you through installing any missing dependencies (e.g. `nasm`, `dav1d`) on first run.
+
+### Updating on Linux
+
+```bash
+git pull
+make release
+./target/release/nekoviewer
+```
+
+If you're not sure what to do, run `make help` to show the help.
+
+### For developers: Flatpak development build
+
+Most users can skip this section. Install the official Flathub Builder and the Rust SDK extension, then run `make flatpak`:
+
+```bash
+flatpak install --user flathub org.flatpak.Builder org.freedesktop.Sdk.Extension.rust-stable//25.08
+make flatpak
+```
 
 ---
+
+## Security Policy
+
+For details on malware scanning and how to report a problem, see [SECURITY.md](SECURITY.md).
+
+## Privacy Policy
+
+This app does not collect any user data. Generated thumbnails, view counts, scores, and similar data are stored only in a local database and used only within the app's own features. There is no telemetry of any kind. Only the translation feature uses network communication, to talk to a local LLM; no communication takes place unless the user enters a URL in the settings.
 
 ## AI Assistance
 
