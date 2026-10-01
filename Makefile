@@ -1,4 +1,4 @@
-.PHONY: build release flatpak appimage-build appimage setup help
+.PHONY: build release flatpak appimage-build appimage setup thirdparty help
 
 help:
 	@if echo "$$LANG" | grep -qi "ja"; then \
@@ -10,6 +10,7 @@ help:
 		echo "  appimage-build  cargo-zigbuildでglibc 2.17 ABI固定のリリースビルド"; \
 		echo "  appimage        appimage-buildの成果物からAppImageを生成"; \
 		echo "  setup           依存パッケージのセットアップのみ実行"; \
+		echo "  thirdparty      THIRDPARTYNOTICES.mdを再生成 (cargo-aboutが必要)"; \
 		echo "  help            このヘルプを表示"; \
 	else \
 		echo "Usage: make [target]"; \
@@ -20,6 +21,7 @@ help:
 		echo "  appimage-build  Release build pinned to glibc 2.17 ABI via cargo-zigbuild"; \
 		echo "  appimage        Package the appimage-build output as an AppImage"; \
 		echo "  setup           Run dependency setup only"; \
+		echo "  thirdparty      Regenerate THIRDPARTYNOTICES.md (requires cargo-about)"; \
 		echo "  help            Show this help"; \
 	fi
 
@@ -49,3 +51,17 @@ appimage: appimage-build
 
 setup:
 	@./setup.sh
+
+# サードパーティライセンス表記の再生成。依存クレートを増減したら実行する。
+# 生成に失敗したときに既存のTHIRDPARTYNOTICES.mdを壊さないよう、一時ファイル経由で置き換える。
+thirdparty:
+	@command -v cargo-about >/dev/null || { \
+		echo "エラー: cargo-about が無い。'cargo install --locked cargo-about --features cli' で導入してください" >&2; \
+		exit 1; \
+	}
+	@command -v python3 >/dev/null || { echo "エラー: python3 が必要" >&2; exit 1; }
+	@tmp=$$(mktemp) && \
+	  cargo about generate --format json -o "$$tmp" && \
+	  python3 thirdparty/build_notices.py thirdparty/native-libs.md < "$$tmp" > THIRDPARTYNOTICES.md.new && \
+	  mv THIRDPARTYNOTICES.md.new THIRDPARTYNOTICES.md; \
+	  rc=$$?; rm -f "$$tmp" THIRDPARTYNOTICES.md.new; exit $$rc

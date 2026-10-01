@@ -1,0 +1,32 @@
+name: 機能要望 / Feature request / 功能建议
+description: 機能の追加や改善を提案する / Suggest a feature or an improvement / 提出功能添加或改进的建议
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        要望ありがとうございます。翻訳を通すので言語は問いません。
+        Thank you for your suggestion. Any language is fine (reports are run through translation).
+        感谢您的建议。我们会通过翻译阅读，因此可以使用任何语言。
+
+        対応はベストエフォートで、必ず実現するとは限りません。また、本アプリは閲覧に徹する方針のため、移動・削除などのファイラー由来の機能には対応しない場合があります。
+        Requests are handled on a best-effort basis and may not be implemented. This app focuses purely on viewing, so file-manager features such as move and delete may not be supported.
+        我们会尽力处理，但不一定会实现。另外，本应用专注于浏览，因此移动、删除等文件管理器类的功能可能不会支持。
+  - type: textarea
+    id: summary
+    attributes:
+      label: 要望の内容 / What do you want / 建议内容
+    validations:
+      required: true
+  - type: textarea
+    id: motivation
+    attributes:
+      label: 必要な理由・使いたい場面 / Why do you need it / 需要的理由・使用场景
+      description: どんな場面で困っているか書いてください。 / Describe the situation where you need it. / 请写下您在什么场景下遇到困难。
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: 代わりの方法 / Alternatives / 替代方案
+      description: 現状の回避策や、検討した他の方法があれば書いてください。 / Describe any workarounds or alternatives you have considered. / 如果有目前的变通方法或考虑过的其他方法，请写下。
