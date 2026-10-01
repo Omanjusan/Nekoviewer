@@ -161,6 +161,4 @@ MIT License — 全文は [LICENSE](LICENSE) を参照してください。
 
 ## サードパーティライセンス
 
-本ソフトウェアは以下のサードパーティライブラリを使用しています。
-
-- **[redb](https://github.com/cberner/redb)** — サムネイルディスクキャッシュに使用する組み込みキーバリューデータベース。MIT OR Apache-2.0 ライセンス。
+本ソフトウェアが使用しているサードパーティライブラリ（Rustクレート、および dav1d・libavif・libwebp など静的リンクしているネイティブライブラリ）のライセンス表記は [THIRDPARTYNOTICES.md](THIRDPARTYNOTICES.md) を参照してください。

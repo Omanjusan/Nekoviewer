@@ -1,0 +1,28 @@
+# cargo-about 設定。THIRDPARTYNOTICES.md の生成用（make thirdparty）。
+# 許可するライセンスは未知のものが出るたびにここへ追加して確認する。
+accepted = [
+    "Apache-2.0",
+    "MIT",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "MPL-2.0",
+    "OFL-1.1",
+    "CC0-1.0",
+    "BSL-1.0",
+    "Ubuntu-font-1.0",    # epaint_default_fonts（eguiの同梱フォント）
+    "bzip2-1.0.6",        # libbz2-rs-sys
+    "CDLA-Permissive-2.0", # webpki-roots（TLSルート証明書データ）
+]
+
+# 配布対象（Windows exe / Linux）のビルドに入る依存だけを対象にする。
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "x86_64-pc-windows-msvc",
+]
+
+# dev-dependencies / build-dependencies は配布物に入らないため除外。
+ignore-dev-dependencies = true
+ignore-build-dependencies = true

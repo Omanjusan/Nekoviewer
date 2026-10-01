@@ -161,6 +161,4 @@ MIT License — see [LICENSE](LICENSE) for the full text.
 
 ## Third-Party Licenses
 
-This software uses the following third-party libraries:
-
-- **[redb](https://github.com/cberner/redb)** — Embedded key-value database used for thumbnail disk cache. Licensed under MIT OR Apache-2.0.
+For the licenses of the third-party libraries used by this software (Rust crates, and statically linked native libraries such as dav1d, libavif, and libwebp), see [THIRDPARTYNOTICES.md](THIRDPARTYNOTICES.md).
