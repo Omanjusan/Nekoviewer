@@ -28,7 +28,7 @@ A single-binary desktop viewer for comfortably reading manga archives in ZIP / C
 
 Demo GIF
 <p align="center">
-  <img width="600" alt="Nekoviewer demo" src="https://github.com/user-attachments/assets/e1320011-5cba-4e2c-91ec-5526d8b0f9c2" />
+  <img width="500" height="298" alt="Image" src="https://github.com/user-attachments/assets/6b986484-74ce-47cf-82d0-f5a329be600a" />
 </p>
 
 ---
