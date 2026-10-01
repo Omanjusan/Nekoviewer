@@ -137,6 +137,10 @@ make flatpak
 
 ---
 
+## Contributing
+
+Bug reports and feature requests are welcome as Issues. For the policy on pull requests and more, see [CONTRIBUTING.md](CONTRIBUTING.md).
+
 ## Security Policy
 
 For details on malware scanning and how to report a problem, see [SECURITY.md](SECURITY.md).

@@ -1,0 +1,70 @@
+name: バグ報告 / Bug report / 错误报告
+description: 不具合を報告する / Report a bug / 报告问题
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        不具合の報告ありがとうございます。翻訳を通すので言語は問いません。
+        Thank you for reporting a bug. Any language is fine (reports are run through translation).
+        感谢您报告问题。我们会通过翻译阅读，因此可以使用任何语言。
+
+        セキュリティ上の問題は「セキュリティ関連 / Security-related / 安全相关」のテンプレートを使ってください。
+        For security problems, please use the "Security-related" template.
+        安全方面的问题，请使用“安全相关”模板。
+  - type: input
+    id: version
+    attributes:
+      label: バージョン / Version / 版本
+      description: "Nekoviewerのバージョン（例: 1.10.0） / Nekoviewer version (e.g. 1.10.0) / Nekoviewer 的版本（例如：1.10.0）"
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: OS
+      options:
+        - Windows
+        - Linux
+        - その他 / Other / 其他
+    validations:
+      required: true
+  - type: dropdown
+    id: distribution
+    attributes:
+      label: 配布形態 / Distribution type / 发行形式
+      options:
+        - exe
+        - Flatpak
+        - AppImage
+        - ソースビルド / Source build / 源码构建
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: 問題の内容 / What happened / 问题内容
+      description: 起きたこと、期待していた動作を書いてください。 / Describe what happened and what you expected. / 请写下发生了什么，以及您期望的行为。
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 再現手順 / Steps to reproduce / 复现步骤
+      placeholder: |
+        1. ...
+        2. ...
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: ログ・スクリーンショット / Logs or screenshots / 日志・截图
+      description: 可能であれば添付してください。 / Attach them if possible. / 如有可能，请附上。
+  - type: checkboxes
+    id: files
+    attributes:
+      label: 添付ファイルについて / About attached files / 关于附件
+      options:
+        - label: 添付するファイルに、著作物や個人情報（写真・住所・電話番号・名前）は含まれていません。 / The attached files contain no copyrighted material or personal information (photos, addresses, phone numbers, names). / 附件中不包含受版权保护的内容或个人信息（照片、住址、电话号码、姓名）。
+          required: true

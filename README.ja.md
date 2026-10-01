@@ -137,6 +137,10 @@ make flatpak
 
 ---
 
+## コントリビューション
+
+バグ報告や機能要望はIssueで歓迎します。PRの扱いなどの方針は [CONTRIBUTING.ja.md](CONTRIBUTING.ja.md) を参照してください。
+
 ## セキュリティポリシー
 
 マルウェアスキャンの実施内容や、問題の報告方法は [SECURITY.ja.md](SECURITY.ja.md) を参照してください。
