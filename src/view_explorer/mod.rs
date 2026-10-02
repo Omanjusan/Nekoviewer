@@ -626,6 +626,7 @@ struct RatingSettingDialogState {
 
 /// タグマネージャー: カテゴリのUI状態（`tag_manager.rs`でJSON永続化される）。
 pub(crate) struct TagManagerCategoryUi {
+    /// 保存名。メインカテゴリは表示に使わない（`display_name`参照）。
     pub(crate) name: String,
     pub(crate) tiers: Vec<TagManagerTierUi>,
     /// カテゴリ共通色。要素ネームプレートとカテゴリ表示の両方に使い、
@@ -639,6 +640,17 @@ pub(crate) struct TagManagerCategoryUi {
     /// `is_main`のカテゴリは常にtrue固定（メインタグドラムと同じ排他選択）。
     /// それ以外のカテゴリはタグ管理画面のラジオボタンで切り替え可能（既定false＝複数選択）。
     pub(crate) single_select: bool,
+}
+
+impl TagManagerCategoryUi {
+    /// 表示名。メインカテゴリは保存名を無視して現在の言語の名前を返す。
+    pub(crate) fn display_name(&self) -> String {
+        if self.is_main {
+            crate::i18n::t().tag_main_category_name().to_string()
+        } else {
+            self.name.clone()
+        }
+    }
 }
 
 /// タグマネージャー: 既存カテゴリの色と極力衝突しない色をランダム生成する。

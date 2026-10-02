@@ -1961,6 +1961,219 @@ impl Lang {
         }
     }
 
+    /// メインカテゴリの表示名。保存名は使わず、表示のたびに言語別へ差し替える
+    pub fn tag_main_category_name(self) -> &'static str {
+        match self {
+            Lang::Japanese => "メイン",
+            Lang::English  => "Main",
+            Lang::Chinese  => "主",
+        }
+    }
+
+    /// メインカテゴリが空になったときに補填する要素の名前（補填時の言語で保存される）
+    pub fn tag_main_default_element_name(self) -> &'static str {
+        match self {
+            Lang::Japanese => "要素補填用アイテム",
+            Lang::English  => "Filler Item",
+            Lang::Chinese  => "补位项",
+        }
+    }
+
+    /// メインタグドラムの「未選択」仮想エントリの表示名
+    pub fn tag_main_unset_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "（未設定）",
+            Lang::English  => "(Unset)",
+            Lang::Chinese  => "（未设置）",
+        }
+    }
+
+    pub fn tag_main_default_element_toast(self) -> &'static str {
+        match self {
+            Lang::Japanese => "メインカテゴリは要素0件を許容しないため、デフォルト要素を自動追加しました",
+            Lang::English  => "The main category cannot be empty, so a default item was added automatically",
+            Lang::Chinese  => "主分类不允许没有元素，已自动添加默认元素",
+        }
+    }
+
+    pub fn tag_panel_manager_button(self) -> &'static str {
+        match self {
+            Lang::Japanese => "🏷 タグ管理",
+            Lang::English  => "🏷 Tag Manager",
+            Lang::Chinese  => "🏷 标签管理",
+        }
+    }
+
+    pub fn tag_panel_hq_preview_toggle(self) -> &'static str {
+        match self {
+            Lang::Japanese => "🖼 高画質プレビュー",
+            Lang::English  => "🖼 HQ Preview",
+            Lang::Chinese  => "🖼 高画质预览",
+        }
+    }
+
+    pub fn tag_panel_no_target(self) -> &'static str {
+        match self {
+            Lang::Japanese => "タグ表示対象なし",
+            Lang::English  => "No item to show tags for",
+            Lang::Chinese  => "无可显示标签的对象",
+        }
+    }
+
+    pub fn tag_panel_no_selected_tags(self) -> &'static str {
+        match self {
+            Lang::Japanese => "（選択済みタグなし）",
+            Lang::English  => "(No tags selected)",
+            Lang::Chinese  => "（未选择标签）",
+        }
+    }
+
+    pub fn tag_manager_title(self) -> &'static str {
+        match self {
+            Lang::Japanese => "タグ管理",
+            Lang::English  => "Tag Manager",
+            Lang::Chinese  => "标签管理",
+        }
+    }
+
+    pub fn tag_manager_select_category_prompt(self) -> &'static str {
+        match self {
+            Lang::Japanese => "カテゴリを選択してください",
+            Lang::English  => "Select a category",
+            Lang::Chinese  => "请选择分类",
+        }
+    }
+
+    pub fn tag_manager_category_list(self) -> &'static str {
+        match self {
+            Lang::Japanese => "カテゴリリスト",
+            Lang::English  => "Categories",
+            Lang::Chinese  => "分类列表",
+        }
+    }
+
+    /// 新規カテゴリ作成時の初期名（保存される）
+    pub fn tag_manager_new_category_name(self, n: usize) -> String {
+        match self {
+            Lang::Japanese => format!("新規カテゴリ{n}"),
+            Lang::English  => format!("New Category {n}"),
+            Lang::Chinese  => format!("新分类{n}"),
+        }
+    }
+
+    pub fn tag_manager_category_label_main(self, name: &str) -> String {
+        match self {
+            Lang::Japanese => format!("{name}（メイン）"),
+            Lang::English  => format!("{name} (Main)"),
+            Lang::Chinese  => format!("{name}（主）"),
+        }
+    }
+
+    /// 要素を持つtierが無く、ピッカーから呼び出せないカテゴリの表示
+    pub fn tag_manager_category_label_incomplete(self, name: &str) -> String {
+        match self {
+            Lang::Japanese => format!("{name}（未成立）"),
+            Lang::English  => format!("{name} (Incomplete)"),
+            Lang::Chinese  => format!("{name}（未完成）"),
+        }
+    }
+
+    pub fn tag_manager_selected_category_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "選択中カテゴリ:",
+            Lang::English  => "Selected category:",
+            Lang::Chinese  => "当前分类：",
+        }
+    }
+
+    pub fn tag_manager_edit_button(self) -> &'static str {
+        match self {
+            Lang::Japanese => "編集",
+            Lang::English  => "Edit",
+            Lang::Chinese  => "编辑",
+        }
+    }
+
+    pub fn tag_manager_multi_select(self) -> &'static str {
+        match self {
+            Lang::Japanese => "複数選択",
+            Lang::English  => "Multi-select",
+            Lang::Chinese  => "多选",
+        }
+    }
+
+    pub fn tag_manager_single_select(self) -> &'static str {
+        match self {
+            Lang::Japanese => "単一選択",
+            Lang::English  => "Single-select",
+            Lang::Chinese  => "单选",
+        }
+    }
+
+    pub fn tag_manager_category_color_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "カテゴリ色:",
+            Lang::English  => "Category color:",
+            Lang::Chinese  => "分类颜色：",
+        }
+    }
+
+    pub fn tag_manager_random_color(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ランダム",
+            Lang::English  => "Random",
+            Lang::Chinese  => "随机",
+        }
+    }
+
+    pub fn tag_manager_add_tier_at_top(self) -> &'static str {
+        match self {
+            Lang::Japanese => "＋（先頭に追加）",
+            Lang::English  => "＋ (Add at top)",
+            Lang::Chinese  => "＋（添加到开头）",
+        }
+    }
+
+    pub fn tag_manager_delete_tier(self) -> &'static str {
+        match self {
+            Lang::Japanese => "tier削除",
+            Lang::English  => "Delete tier",
+            Lang::Chinese  => "删除等级",
+        }
+    }
+
+    pub fn tag_manager_empty_element(self) -> &'static str {
+        match self {
+            Lang::Japanese => "(空)",
+            Lang::English  => "(empty)",
+            Lang::Chinese  => "(空)",
+        }
+    }
+
+    pub fn tag_manager_bulk_add_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "一括追加:",
+            Lang::English  => "Bulk add:",
+            Lang::Chinese  => "批量添加：",
+        }
+    }
+
+    pub fn tag_manager_bulk_add_hint(self) -> &'static str {
+        match self {
+            Lang::Japanese => "要素A, 要素B, 要素C（カンマ内に , を含めたい場合は ,, ）",
+            Lang::English  => "Item A, Item B, Item C (use ,, for a literal comma)",
+            Lang::Chinese  => "元素A, 元素B, 元素C（名称中需包含逗号时请用 ,,）",
+        }
+    }
+
+    pub fn tag_manager_no_elements_hint(self) -> &'static str {
+        match self {
+            Lang::Japanese => "（要素なし。上の欄から追加）",
+            Lang::English  => "(No items. Add from the field above)",
+            Lang::Chinese  => "（无元素。请从上方输入框添加）",
+        }
+    }
+
     pub fn folder_book_access_toggle_button(self, on: bool) -> &'static str {
         match (self, on) {
             (Lang::Japanese, true)  => "フォルダ本アクセスON",

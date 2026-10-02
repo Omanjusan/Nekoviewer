@@ -760,14 +760,14 @@ impl NekoviewApp {
         // 属性タグUIとは切り離した独立機能なので、位置・見た目は後で調整前提。
         // 狭い幅では2つ目のボタンが見切れないよう折り返す。
         ui.horizontal_wrapped(|ui| {
-            if ui.button("🏷 タグ管理").clicked() {
+            if ui.button(i18n::t().tag_panel_manager_button()).clicked() {
                 self.tag_manager_open = true;
             }
             // タグパネルのプレビューを、グリッドサムネの引き伸ばし（軽量・低画質）ではなく
             // 専用解像度で再デコードした高画質表示に切り替えるトグル。低スペックPC・
             // 小さいモニタでは重くなりうるため既定OFF。
             let hq = self.tag_preview_high_quality;
-            if ui.selectable_label(hq, "🖼 高画質プレビュー").clicked() {
+            if ui.selectable_label(hq, i18n::t().tag_panel_hq_preview_toggle()).clicked() {
                 self.tag_preview_high_quality = !hq;
             }
         });
@@ -779,7 +779,7 @@ impl NekoviewApp {
             let rect = egui::Rect::from_min_size(ui.cursor().min, ui.available_size());
             ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
                 ui.centered_and_justified(|ui| {
-                    ui.weak("タグ表示対象なし");
+                    ui.weak(i18n::t().tag_panel_no_target());
                 });
             });
             return;
@@ -1092,7 +1092,7 @@ impl NekoviewApp {
                 let full_w = ui.available_width();
                 ui.horizontal_wrapped(|ui| {
                     if self.tag_attr_selected.is_empty() {
-                        ui.weak("（選択済みタグなし）");
+                        ui.weak(i18n::t().tag_panel_no_selected_tags());
                     } else {
                         // 選択した順は無視し、カテゴリ登録順→カテゴリ内の登録要素順で並べる。
                         // tier削除済みの孤立id（自己修復GC前）は走査対象に現れないので
@@ -1118,6 +1118,16 @@ impl NekoviewApp {
     /// タグマネージャー: マスタ定義（カテゴリ/tier/色）を即時保存する。専用の保存
     /// タイミングは持たず、編集操作が確定するたびにこれを呼ぶ。合わせて、メインタグ
     /// メインタグ／属性タグパレットの選択肢をマスタ定義から再生成して結びつける。
+    /// メインカテゴリの要素0件ガード。補填が走った場合はトーストで知らせる。
+    fn ensure_tag_main_nonempty(&mut self) {
+        if crate::tag_manager::ensure_main_category_nonempty(
+            &mut self.tag_manager_categories,
+            &mut self.tag_manager_next_tier_id,
+        ) {
+            self.set_toast(i18n::t().tag_main_default_element_toast());
+        }
+    }
+
     fn save_tag_manager(&mut self) {
         let (main_options, attr_options) = crate::tag_manager::derive_tag_options(&self.tag_manager_categories);
         self.tag_main_options = main_options;
@@ -1169,7 +1179,7 @@ impl NekoviewApp {
                             egui::vec2(total_w - TAG_MANAGER_CLOSE_BTN * 2.0, row_h),
                             egui::Layout::top_down(egui::Align::Center),
                             |ui| {
-                                ui.heading("タグ管理");
+                                ui.heading(i18n::t().tag_manager_title());
                             },
                         );
                         ui.allocate_ui_with_layout(
@@ -1219,7 +1229,7 @@ impl NekoviewApp {
                                     match cat_idx {
                                         Some(i) => self.draw_tag_manager_tier_list(ui, i),
                                         None => {
-                                            ui.label("カテゴリを選択してください");
+                                            ui.label(i18n::t().tag_manager_select_category_prompt());
                                         }
                                     }
                                 },
@@ -1306,7 +1316,7 @@ impl NekoviewApp {
                 egui::vec2((total_w - ADD_BTN_W * 2.0).max(0.0), row_h),
                 egui::Layout::top_down(egui::Align::Center),
                 |ui| {
-                    ui.label("カテゴリリスト");
+                    ui.label(i18n::t().tag_manager_category_list());
                 },
             );
             ui.allocate_ui_with_layout(
@@ -1318,7 +1328,7 @@ impl NekoviewApp {
                         let existing: Vec<egui::Color32> =
                             self.tag_manager_categories.iter().map(|c| c.color).collect();
                         self.tag_manager_categories.push(TagManagerCategoryUi {
-                            name: format!("新規カテゴリ{n}"),
+                            name: i18n::t().tag_manager_new_category_name(n),
                             tiers: Vec::new(),
                             color: pick_distinct_tag_color(&existing),
                             is_main: false,
@@ -1338,7 +1348,7 @@ impl NekoviewApp {
         let rows: Vec<(String, bool, bool)> = self
             .tag_manager_categories
             .iter()
-            .map(|c| (c.name.clone(), c.tiers.iter().any(|t| t.element.is_some()), c.is_main))
+            .map(|c| (c.display_name(), c.tiers.iter().any(|t| t.element.is_some()), c.is_main))
             .collect();
         let mut select_idx: Option<usize> = None;
         let mut delete_idx: Option<usize> = None;
@@ -1346,11 +1356,11 @@ impl NekoviewApp {
             let selected = self.tag_manager_selected_category == Some(i);
             ui.horizontal(|ui| {
                 let label = if *is_main {
-                    format!("{name}（メイン）")
+                    i18n::t().tag_manager_category_label_main(name)
                 } else if *established {
                     name.clone()
                 } else {
-                    format!("{name}（未成立）")
+                    i18n::t().tag_manager_category_label_incomplete(name)
                 };
                 if ui.selectable_label(selected, label).clicked() {
                     select_idx = Some(i);
@@ -1377,10 +1387,7 @@ impl NekoviewApp {
                 other => other,
             };
             self.tag_manager_bulk_input.clear();
-            crate::tag_manager::ensure_main_category_nonempty(
-                &mut self.tag_manager_categories,
-                &mut self.tag_manager_next_tier_id,
-            );
+            self.ensure_tag_main_nonempty();
             self.save_tag_manager();
         }
     }
@@ -1399,11 +1406,11 @@ impl NekoviewApp {
         // など）が収まらないと親Uiのmax_rectごと右へ広げ、以降の`available_width()`が
         // 実際に見えている幅より大きくなって折返しが効かなくなるため。
         let col_w = ui.available_width();
-        let cat_name = self.tag_manager_categories[cat_idx].name.clone();
+        let cat_name = self.tag_manager_categories[cat_idx].display_name();
         let cat_is_main = self.tag_manager_categories[cat_idx].is_main;
         // 狭い幅では折り返して、そもそも溢れないようにする。
         ui.horizontal_wrapped(|ui| {
-            ui.label("選択中カテゴリ:");
+            ui.label(i18n::t().tag_manager_selected_category_label());
             if self.tag_manager_editing_category_name == Some(cat_idx) {
                 let text_edit_id = ui.id().with("tag_manager_cat_name_edit");
                 if self.tag_manager_editing_category_focus_pending {
@@ -1424,7 +1431,7 @@ impl NekoviewApp {
                             .tag_manager_categories
                             .iter()
                             .enumerate()
-                            .any(|(i, c)| i != cat_idx && c.name == text);
+                            .any(|(i, c)| i != cat_idx && c.display_name() == text);
                         if !text.is_empty() && !is_dup {
                             self.tag_manager_categories[cat_idx].name = text;
                             self.save_tag_manager();
@@ -1435,7 +1442,7 @@ impl NekoviewApp {
                 }
             } else {
                 ui.label(egui::RichText::new(&cat_name).size(28.0).strong());
-                if ui.add_enabled(!cat_is_main, egui::Button::new("編集")).clicked() {
+                if ui.add_enabled(!cat_is_main, egui::Button::new(i18n::t().tag_manager_edit_button())).clicked() {
                     self.tag_manager_editing_category_name = Some(cat_idx);
                     self.tag_manager_editing_category_buffer = cat_name.clone();
                     self.tag_manager_editing_category_focus_pending = true;
@@ -1446,8 +1453,8 @@ impl NekoviewApp {
             ui.add_enabled_ui(!cat_is_main, |ui| {
                 let mut single = self.tag_manager_categories[cat_idx].single_select;
                 let before = single;
-                ui.radio_value(&mut single, false, "複数選択");
-                ui.radio_value(&mut single, true, "単一選択");
+                ui.radio_value(&mut single, false, i18n::t().tag_manager_multi_select());
+                ui.radio_value(&mut single, true, i18n::t().tag_manager_single_select());
                 if single != before {
                     self.tag_manager_categories[cat_idx].single_select = single;
                     self.tag_manager_bulk_input.clear();
@@ -1455,7 +1462,7 @@ impl NekoviewApp {
                 }
             });
             ui.separator();
-            ui.label("カテゴリ色:");
+            ui.label(i18n::t().tag_manager_category_color_label());
             let mut color = self.tag_manager_categories[cat_idx].color;
             let color_resp = ui.color_edit_button_srgba(&mut color);
             if color_resp.changed() {
@@ -1466,7 +1473,7 @@ impl NekoviewApp {
             if color_resp.drag_stopped() || color_resp.lost_focus() {
                 self.save_tag_manager();
             }
-            if ui.small_button("ランダム").clicked() {
+            if ui.small_button(i18n::t().tag_manager_random_color()).clicked() {
                 let existing: Vec<egui::Color32> = self
                     .tag_manager_categories
                     .iter()
@@ -1512,7 +1519,7 @@ impl NekoviewApp {
             .show(ui, |ui| {
                 // tier1の前(tier0位置)にも挿入したいが、tier行自体の＋は「このtierの後ろに
                 // 追加」の意味なので、先頭挿入専用のUIをリストの一番上に置く。
-                if ui.small_button("＋（先頭に追加）").clicked() {
+                if ui.small_button(i18n::t().tag_manager_add_tier_at_top()).clicked() {
                     add_tier_at = Some(0);
                 }
                 for t_idx in 0..tier_count {
@@ -1550,7 +1557,7 @@ impl NekoviewApp {
                                     // 実際の再序列(tier_no振り直し)は後段でまとめて行う。
                                     add_tier_at = Some(t_idx + 1);
                                 }
-                                if ui.small_button("tier削除").clicked() {
+                                if ui.small_button(i18n::t().tag_manager_delete_tier()).clicked() {
                                     delete_tier = Some(t_idx);
                                 }
                                 ui.separator();
@@ -1614,7 +1621,7 @@ impl NekoviewApp {
                                             }
                                         }
                                         None => {
-                                            ui.weak("(空)");
+                                            ui.weak(i18n::t().tag_manager_empty_element());
                                         }
                                     }
                                 }
@@ -1639,10 +1646,7 @@ impl NekoviewApp {
                 if text.is_empty() { None } else { Some(text) };
             self.tag_manager_editing_element = None;
             self.tag_manager_editing_buffer.clear();
-            crate::tag_manager::ensure_main_category_nonempty(
-                &mut self.tag_manager_categories,
-                &mut self.tag_manager_next_tier_id,
-            );
+            self.ensure_tag_main_nonempty();
             self.save_tag_manager();
         }
         if cancel_edit.is_some() {
@@ -1657,10 +1661,7 @@ impl NekoviewApp {
                 self.tag_manager_editing_element = None;
                 self.tag_manager_editing_buffer.clear();
             }
-            crate::tag_manager::ensure_main_category_nonempty(
-                &mut self.tag_manager_categories,
-                &mut self.tag_manager_next_tier_id,
-            );
+            self.ensure_tag_main_nonempty();
             self.save_tag_manager();
         }
         if let Some(t_idx) = delete_tier {
@@ -1674,10 +1675,7 @@ impl NekoviewApp {
             // tierのindex構成が変わるため、編集中状態はインデックスのズレを避けて破棄する。
             self.tag_manager_editing_element = None;
             self.tag_manager_editing_buffer.clear();
-            crate::tag_manager::ensure_main_category_nonempty(
-                &mut self.tag_manager_categories,
-                &mut self.tag_manager_next_tier_id,
-            );
+            self.ensure_tag_main_nonempty();
             self.save_tag_manager();
         }
         if let Some(pos) = add_tier_at {
@@ -1712,11 +1710,11 @@ impl NekoviewApp {
         let cat_color = self.tag_manager_categories[cat_idx].color;
 
         ui.horizontal(|ui| {
-            ui.label("一括追加:");
+            ui.label(i18n::t().tag_manager_bulk_add_label());
             let resp = ui.add(
                 egui::TextEdit::singleline(&mut self.tag_manager_bulk_input)
                     .desired_width(f32::INFINITY)
-                    .hint_text("要素A, 要素B, 要素C（カンマ内に , を含めたい場合は ,, ）"),
+                    .hint_text(i18n::t().tag_manager_bulk_add_hint()),
             );
             if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                 let names = crate::tag_manager::parse_bulk_elements(&self.tag_manager_bulk_input);
@@ -1757,7 +1755,7 @@ impl NekoviewApp {
                         .filter_map(|(t_idx, t)| t.element.clone().map(|name| (t_idx, name)))
                         .collect();
                     if elements.is_empty() {
-                        ui.weak("（要素なし。上の欄から追加）");
+                        ui.weak(i18n::t().tag_manager_no_elements_hint());
                     }
                     let text_color = contrasting_text_color(cat_color);
                     for (t_idx, name) in elements {
@@ -1774,10 +1772,7 @@ impl NekoviewApp {
             for (i, t) in tiers.iter_mut().enumerate() {
                 t.tier_no = i as i32 + 1;
             }
-            crate::tag_manager::ensure_main_category_nonempty(
-                &mut self.tag_manager_categories,
-                &mut self.tag_manager_next_tier_id,
-            );
+            self.ensure_tag_main_nonempty();
             self.save_tag_manager();
         }
     }
