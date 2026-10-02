@@ -6,6 +6,7 @@ mod config;
 mod confirm_dialog;
 mod controller;
 mod decode_jobs;
+mod dev_db_backup;
 mod explorer_sort;
 mod favorites;
 mod fs;

@@ -147,6 +147,46 @@ pub fn open_spread_db(root: &Path) -> Option<Arc<Mutex<Database>>> {
     Some(Arc::new(Mutex::new(db)))
 }
 
+/// ID層（フィンガープリント仕様）の使用開始マーカーを置くメタテーブル。
+///
+/// `open_spread_db` では意図的に作らない（旧パス仕様DBの構造を起動だけで変えないため）。
+/// テーブル不在・キー不在はどちらも「パス仕様」を表す。ID層が最初にIDを作る時と、
+/// 開発用ツールのテスト用切替だけが `set_identity_spec(.., true)` で立てる。
+const IDENTITY_META_TABLE: TableDefinition<&str, u32> = TableDefinition::new("identity_meta_v1");
+const IDENTITY_ENABLED_KEY: &str = "identity_enabled";
+
+/// DBがFP仕様（ID層を使い始めたもの）か。テーブル・キーが無ければ false。読み取りのみ。
+pub fn is_identity_spec(db: &Arc<Mutex<Database>>) -> bool {
+    let Ok(db) = db.lock() else { return false };
+    is_identity_spec_in(&db)
+}
+
+/// ロック取得済みの `Database` に対する判定。呼び出し側がMutexを保持したまま使う用
+/// （`Mutex` は再入不可のため、`is_identity_spec` をロック中に呼ぶとデッドロックする）。
+pub fn is_identity_spec_in(db: &Database) -> bool {
+    let Ok(tx) = db.begin_read() else { return false };
+    let Ok(table) = tx.open_table(IDENTITY_META_TABLE) else { return false };
+    matches!(table.get(IDENTITY_ENABLED_KEY), Ok(Some(v)) if v.value() != 0)
+}
+
+/// FP仕様マーカーの設定/解除。成功したら true。解除はキーを消すだけでテーブルは残す。
+pub fn set_identity_spec(db: &Arc<Mutex<Database>>, enabled: bool) -> bool {
+    let Ok(db) = db.lock() else { return false };
+    let Ok(tx) = db.begin_write() else { return false };
+    {
+        let Ok(mut table) = tx.open_table(IDENTITY_META_TABLE) else { return false };
+        let ok = if enabled {
+            table.insert(IDENTITY_ENABLED_KEY, 1).is_ok()
+        } else {
+            table.remove(IDENTITY_ENABLED_KEY).is_ok()
+        };
+        if !ok {
+            return false;
+        }
+    }
+    tx.commit().is_ok()
+}
+
 pub fn write_thumbnail_selection(
     db: &Arc<Mutex<Database>>,
     dir: &Path,
