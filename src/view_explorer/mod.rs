@@ -958,6 +958,8 @@ pub struct NekoviewApp {
     pub(crate) settings_open: bool,
     pub(crate) settings_tab: SettingsTab,
     pub(crate) settings_draft: SettingsDraft,
+    /// 開発用DBツール（デバッグタブ）の状態。実リリース時に dev_db_tools.rs ごと削除する。
+    pub(crate) dev_db_ui: dev_db_tools::DevDbUiState,
     /// 翻訳機能(実験的)の永続設定。設定ダイアログの[反映]でのみ書き換わる。
     pub(crate) translate_cfg: crate::translate::TranslateConfig,
     /// お気に入り・検索・仮想フォルダの各タブが最後にいた位置（stateファイルに保存・復元）。
@@ -1237,6 +1239,7 @@ mod nav_icons;
 mod calendar_gui;
 mod open_progress;
 mod help;
+mod dev_db_tools;
 
 #[cfg(test)]
 mod glyph_audit;
@@ -1351,6 +1354,12 @@ impl NekoviewApp {
             cache_db: None,
             cache_neko_dir: None,
             spread_db: {
+                // 開発用DBツールの復元予約は、DBを開く前に適用する（実リリース時に削除）。
+                match crate::dev_db_backup::apply_pending_restore(&config_root) {
+                    Ok(true) => crate::log_common!("[dev_db] 復元予約を適用した"),
+                    Ok(false) => {}
+                    Err(e) => crate::log_common!("[dev_db] 復元予約の適用に失敗（現DBのまま起動）: {:?}", e),
+                }
                 let db = crate::spread_state::open_spread_db(&config_root);
                 if let Some(db) = &db {
                     crate::favorites::init_favorite_tables(db);
@@ -1423,6 +1432,7 @@ impl NekoviewApp {
             settings_open: false,
             settings_tab: SettingsTab::Common,
             settings_draft,
+            dev_db_ui: dev_db_tools::DevDbUiState::load(&config_root),
             translate_cfg,
             tab_positions,
             tree_sorts,

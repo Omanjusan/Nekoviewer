@@ -1523,7 +1523,10 @@ impl NekoviewApp {
                 #[cfg(windows)]
                 SettingsTab::Windows => self.draw_settings_tab_windows(ui),
                 SettingsTab::Other => self.draw_settings_tab_other(ui),
-                SettingsTab::Debug => draw_settings_tab_debug(ui, &mut self.settings_draft),
+                SettingsTab::Debug => {
+                    draw_settings_tab_debug(ui, &mut self.settings_draft);
+                    self.draw_dev_db_tools(ui);
+                }
             }
 
             ui.separator();
@@ -1545,6 +1548,7 @@ impl NekoviewApp {
         // レイヤー順で最前面（=入力を受け付ける対象）にする。
         draw_key_capture_dialog(ctx, &mut self.settings_draft);
         draw_mouse_capture_dialog(ctx, &mut self.settings_draft);
+        self.draw_dev_db_dialogs(ctx);
         if apply {
             // キャッシュ合計がシステムRAMの50%を超えている間は保存を拒否する
             // （警告は同フレーム内で既に赤文字表示済み）。

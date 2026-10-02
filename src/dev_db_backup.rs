@@ -1,5 +1,3 @@
-// フェーズ0b（デバッグタブのUI・起動フック）で接続するまでの暫定。接続後にこの行を外すこと。
-#![allow(dead_code)]
 
 //! 開発用のDBバックアップ/リストアと、移行前の自動バックアップ導線。
 //!
@@ -29,6 +27,7 @@ const PENDING_FILE_NAME: &str = "nekoviewer_spread.redb.restore-pending";
 const DEV_DIR: &str = "dev_backup";
 const BASELINE_FILE_NAME: &str = "baseline.redb";
 const FAILED_DIR: &str = "failed";
+#[allow(dead_code)] // 自動バックアップ導線は全体フェーズ末尾で製品側へ紐付ける。
 const AUTO_DIR: &str = "backup_auto";
 
 /// 世代管理の上限。ファイル数か合計サイズのどちらかを超えたら古い順に削除する。
@@ -75,6 +74,7 @@ pub fn failed_dir(root: &Path) -> PathBuf {
     root.join(DEV_DIR).join(FAILED_DIR)
 }
 
+#[allow(dead_code)] // 同上。
 pub fn auto_backup_dir(root: &Path) -> PathBuf {
     root.join(AUTO_DIR)
 }
@@ -143,6 +143,7 @@ pub fn apply_pending_restore(root: &Path) -> Result<bool, DevBackupError> {
 
 /// 移行前の自動バックアップ。後続フェーズは `Ok` のときだけ移行を進めること（失敗時は移行を止める）。
 /// FP仕様のDBでも取る（移行の途中経過を含めて戻せるようにする）。
+#[allow(dead_code)] // 同上。
 pub fn ensure_pre_migration_backup(
     db: &Arc<Mutex<Database>>,
     root: &Path,
