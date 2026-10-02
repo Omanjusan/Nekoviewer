@@ -9,6 +9,7 @@ mod decode_jobs;
 mod dev_db_backup;
 mod explorer_sort;
 mod favorites;
+mod file_identity;
 mod fs;
 mod gui_config;
 mod i18n;

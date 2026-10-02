@@ -152,8 +152,8 @@ pub fn open_spread_db(root: &Path) -> Option<Arc<Mutex<Database>>> {
 /// `open_spread_db` では意図的に作らない（旧パス仕様DBの構造を起動だけで変えないため）。
 /// テーブル不在・キー不在はどちらも「パス仕様」を表す。ID層が最初にIDを作る時と、
 /// 開発用ツールのテスト用切替だけが `set_identity_spec(.., true)` で立てる。
-const IDENTITY_META_TABLE: TableDefinition<&str, u32> = TableDefinition::new("identity_meta_v1");
-const IDENTITY_ENABLED_KEY: &str = "identity_enabled";
+pub(crate) const IDENTITY_META_TABLE: TableDefinition<&str, u32> = TableDefinition::new("identity_meta_v1");
+pub(crate) const IDENTITY_ENABLED_KEY: &str = "identity_enabled";
 
 /// DBがFP仕様（ID層を使い始めたもの）か。テーブル・キーが無ければ false。読み取りのみ。
 pub fn is_identity_spec(db: &Arc<Mutex<Database>>) -> bool {
@@ -245,7 +245,7 @@ pub fn remove_thumbnail_selection(db: &Arc<Mutex<Database>>, dir: &Path, filenam
     let _ = tx.commit();
 }
 
-fn make_key(dir: &Path, filename: &str) -> String {
+pub(crate) fn make_key(dir: &Path, filename: &str) -> String {
     let key = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
     format!("{}\0{}", key.to_string_lossy(), filename)
 }
