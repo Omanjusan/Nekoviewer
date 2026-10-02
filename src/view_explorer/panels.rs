@@ -2197,6 +2197,11 @@ impl NekoviewApp {
         let help_on = self.help_enabled;
         let help_text = i18n::t().help_filter_text();
         let help_score = i18n::t().help_filter_score();
+        // タグパネルは最下段まで覆うフローティングなので、右端のスコアフィルタが
+        // 真下に潜らないよう、この行の右端をパネル幅ぶん左へ寄せる（グリッド側の
+        // 列数計算と同じ除外幅）。削った分は文字列欄の desired_width で吸収する
+        // （Uiの最大幅を縮める方式は効かなかったため、幅を直接計算で差し引く）。
+        let tag_panel_w = if self.tag_panel_open { self.tag_panel_width } else { PANEL_TAB_WIDTH };
         ui.separator();
         ui.horizontal(|ui| {
             let r_label = ui.label(i18n::t().explorer_filter_label());
@@ -2209,7 +2214,7 @@ impl NekoviewApp {
                 self.filter_enabled,
                 egui::TextEdit::singleline(&mut self.filter_text)
                     .hint_text(i18n::t().explorer_filter_hint())
-                    .desired_width((ui.available_width() - RATING_GROUP_W).max(60.0)),
+                    .desired_width((ui.available_width() - tag_panel_w - RATING_GROUP_W).max(60.0)),
             );
             help_tip(&resp, help_on, &help_text);
             if resp.clicked() {
