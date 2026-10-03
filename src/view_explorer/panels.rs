@@ -2658,6 +2658,28 @@ impl NekoviewApp {
                                 }
                             }
 
+                            // ファイルID解決待ち（新規・移動直後）は、サムネ中央に「ファイル検証中」を重ねる。
+                            // 解決が済むと外れ、移動していれば評価等が引き継がれた表示に差し替わる。
+                            if self.identity_verifying.contains(path) {
+                                let painter = ui.painter();
+                                painter.rect_filled(rect, 4.0, egui::Color32::from_black_alpha(90));
+                                let galley = painter.layout_no_wrap(
+                                    i18n::t().card_verifying().to_owned(),
+                                    egui::FontId::proportional(13.0),
+                                    egui::Color32::WHITE,
+                                );
+                                let pill = egui::Rect::from_center_size(
+                                    rect.center(),
+                                    galley.size() + egui::vec2(16.0, 8.0),
+                                );
+                                painter.rect_filled(pill, 6.0, egui::Color32::from_black_alpha(170));
+                                painter.galley(
+                                    pill.center() - galley.size() / 2.0,
+                                    galley,
+                                    egui::Color32::WHITE,
+                                );
+                            }
+
                             // ── カード下部の情報オーバーレイ帯（ファイル名 / 更新日時 / サイズ）──
                             // 画像の上に半透明帯を重ねる。マーカー描画より前に置くことで、
                             // マーカー（赤×・お気に入り等）は帯の上に出る（重なりは許容）。

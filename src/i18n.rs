@@ -106,6 +106,15 @@ impl Lang {
         }
     }
 
+    /// サムネ中央に出す、ファイルID解決中（新規・移動直後のファイルの照合待ち）の表示。
+    pub fn card_verifying(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ファイル検証中",
+            Lang::English  => "Verifying file…",
+            Lang::Chinese  => "正在验证文件",
+        }
+    }
+
     pub fn card_info_name(self) -> &'static str {
         match self {
             Lang::Japanese => "情報:名前",

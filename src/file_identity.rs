@@ -176,7 +176,7 @@ fn file_name_of(path_key: &str) -> &str {
 }
 
 /// "dir\0filename" を実パスへ戻す。
-fn path_of_key(path_key: &str) -> PathBuf {
+pub(crate) fn path_of_key(path_key: &str) -> PathBuf {
     match path_key.split_once('\0') {
         Some((dir, name)) => Path::new(dir).join(name),
         None => PathBuf::from(path_key),

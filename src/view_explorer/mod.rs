@@ -960,6 +960,12 @@ pub struct NekoviewApp {
     pub(crate) settings_draft: SettingsDraft,
     /// ファイルID解決ワーカー（フォルダ表示時に、移動・リネームされたファイルへ評価等を引き継ぐ）。
     identity_worker: identity_worker::IdentityWorker,
+    /// ID解決が済むまで「ファイル検証中」を出すパス（新規・移動直後のファイル）。
+    pub(super) identity_verifying: HashSet<PathBuf>,
+    /// 解決で評価等が付き替わった（完了時に並び・フィルタを作り直す）。
+    identity_dirty: bool,
+    /// 旧レコードのバックフィル依頼を出したか（起動後1回）。
+    identity_backfill_started: bool,
     /// 開発用DBツール（デバッグタブ）の状態。実リリース時に dev_db_tools.rs ごと削除する。
     pub(crate) dev_db_ui: dev_db_tools::DevDbUiState,
     /// 翻訳機能(実験的)の永続設定。設定ダイアログの[反映]でのみ書き換わる。
@@ -1436,6 +1442,9 @@ impl NekoviewApp {
             settings_tab: SettingsTab::Common,
             settings_draft,
             identity_worker: identity_worker::IdentityWorker::spawn(ctx.clone()),
+            identity_verifying: HashSet::new(),
+            identity_dirty: false,
+            identity_backfill_started: false,
             dev_db_ui: dev_db_tools::DevDbUiState::load(&config_root),
             translate_cfg,
             tab_positions,

@@ -7,35 +7,39 @@
 //!
 //! DBロックはファイル1件ごとに短く握る（`file_identity::resolve_path` の3段階）。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use redb::Database;
 
 use super::NekoviewApp;
 use crate::file_identity::{self, Resolution, ResolveOutcome};
 
-/// 結果を返す単位。これだけ溜まるか、バッチが終わると `Refresh` を送る。
-const REFRESH_BATCH: usize = 50;
+/// 結果を返す単位。これだけ溜まるか、バッチが終わると `Chunk` を送る。
+const CHUNK_SIZE: usize = 50;
 /// 書き込み中で後回しにしたファイルの再試行間隔と回数。
 const RETRY_DELAY: Duration = Duration::from_secs(4);
 const MAX_RETRY_ROUNDS: usize = 3;
+/// 起動後、バックフィルを始めるまでの待ち（初回スキャンと競合させない）。
+const BACKFILL_DELAY: Duration = Duration::from_secs(5);
+/// バックフィルは、ジョブが無い間だけ、この間隔で1件ずつ進める。
+const BACKFILL_STEP: Duration = Duration::from_millis(5);
 
 pub(super) enum IdentityEvent {
-    /// 移動・統合で評価等が付き替わった可能性のあるパス。UI側で引き直す。
-    Refresh { generation: u64, paths: Vec<PathBuf> },
+    /// 処理した一部の結果。`settled` は検証が済んだパス（「検証中」表示を外す）、`refresh` は
+    /// そのうち移動・統合で評価等が付き替わった可能性のあるパス（UI側で引き直す）。
+    Chunk { generation: u64, refresh: Vec<PathBuf>, settled: Vec<PathBuf> },
     /// この世代のバッチを処理し終えた（打ち切りを除く）。
-    #[allow(dead_code)] // 解決バッチ完了時の再ソート（フェーズ2b）で使う。
     Done { generation: u64 },
 }
 
-struct Job {
-    generation: u64,
-    db: Arc<Mutex<Database>>,
-    paths: Vec<PathBuf>,
+enum Job {
+    Resolve { generation: u64, db: Arc<Mutex<Database>>, paths: Vec<PathBuf> },
+    /// ユーザーデータを持つ旧レコードを、アイドル時にFP化する。
+    Backfill { db: Arc<Mutex<Database>> },
 }
 
 pub(super) struct IdentityWorker {
@@ -62,16 +66,24 @@ impl IdentityWorker {
     pub(super) fn submit(&mut self, db: Arc<Mutex<Database>>, paths: Vec<PathBuf>) -> u64 {
         let generation = self.current.fetch_add(1, Ordering::AcqRel) + 1;
         if let Some(tx) = &self.job_tx {
-            let _ = tx.send(Job { generation, db, paths });
+            let _ = tx.send(Job::Resolve { generation, db, paths });
         }
         generation
+    }
+
+    /// 旧レコードのバックフィルを依頼する（起動後に1回）。フォルダ表示のバッチが来れば、そちらが先。
+    pub(super) fn submit_backfill(&mut self, db: Arc<Mutex<Database>>) {
+        if let Some(tx) = &self.job_tx {
+            let _ = tx.send(Job::Backfill { db });
+        }
     }
 
     pub(super) fn is_current(&self, generation: u64) -> bool {
         self.current.load(Ordering::Acquire) == generation
     }
 
-    /// 終了時に呼ぶ。処理中のバッチは次のファイルで打ち切り、以後の投入は受け付けない。
+    /// 終了時に呼ぶ。処理中のバッチは次のファイルで打ち切り、以後の投入は受け付けない
+    /// （バックフィルはジョブ送信側が閉じたことで止まる）。
     pub(super) fn shutdown(&mut self) {
         self.current.fetch_add(1, Ordering::AcqRel);
         self.job_tx = None;
@@ -84,36 +96,75 @@ fn run_worker(
     current: Arc<AtomicU64>,
     ctx: egui::Context,
 ) {
-    while let Ok(job) = job_rx.recv() {
-        let keep_going = || current.load(Ordering::Acquire) == job.generation;
-        let mut pending = job.paths;
-        let mut aborted = false;
-        for round in 0..=MAX_RETRY_ROUNDS {
-            let outcome = process_batch(
-                &job.db,
-                &pending,
-                &keep_going,
-                file_identity::now_unix(),
-                REFRESH_BATCH,
-                &mut |paths| {
-                    let _ = event_tx.send(IdentityEvent::Refresh { generation: job.generation, paths });
-                    ctx.request_repaint();
-                },
-            );
-            aborted = outcome.aborted;
-            pending = outcome.unstable;
-            if aborted || pending.is_empty() || round == MAX_RETRY_ROUNDS {
-                break;
+    let mut backfill: Option<Backfill> = None;
+    loop {
+        // バックフィル中は、短い待ちでジョブを確認しつつ1件ずつ進める（ジョブが来たら必ずそちらが先）。
+        let job = if backfill.is_some() {
+            match job_rx.recv_timeout(BACKFILL_STEP) {
+                Ok(job) => Some(job),
+                Err(mpsc::RecvTimeoutError::Timeout) => None,
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
             }
-            if !sleep_while(RETRY_DELAY, &keep_going) {
-                aborted = true;
-                break;
+        } else {
+            match job_rx.recv() {
+                Ok(job) => Some(job),
+                Err(_) => break,
+            }
+        };
+        match job {
+            Some(Job::Resolve { generation, db, paths }) => {
+                run_resolve_job(generation, &db, paths, &current, &event_tx, &ctx);
+            }
+            Some(Job::Backfill { db }) => backfill = Some(Backfill::new(db, BACKFILL_DELAY)),
+            None => {
+                if backfill.as_mut().is_some_and(|b| !b.step()) {
+                    backfill = None;
+                }
             }
         }
-        if !aborted {
-            let _ = event_tx.send(IdentityEvent::Done { generation: job.generation });
-            ctx.request_repaint();
+    }
+}
+
+fn run_resolve_job(
+    generation: u64,
+    db: &Arc<Mutex<Database>>,
+    paths: Vec<PathBuf>,
+    current: &AtomicU64,
+    event_tx: &mpsc::Sender<IdentityEvent>,
+    ctx: &egui::Context,
+) {
+    let keep_going = || current.load(Ordering::Acquire) == generation;
+    let mut pending = paths;
+    let mut aborted = false;
+    for round in 0..=MAX_RETRY_ROUNDS {
+        let outcome = process_batch(
+            db,
+            &pending,
+            &keep_going,
+            file_identity::now_unix(),
+            CHUNK_SIZE,
+            &mut |chunk| {
+                let _ = event_tx.send(IdentityEvent::Chunk {
+                    generation,
+                    refresh: chunk.refresh,
+                    settled: chunk.settled,
+                });
+                ctx.request_repaint();
+            },
+        );
+        aborted = outcome.aborted;
+        pending = outcome.unstable;
+        if aborted || pending.is_empty() || round == MAX_RETRY_ROUNDS {
+            break;
         }
+        if !sleep_while(RETRY_DELAY, &keep_going) {
+            aborted = true;
+            break;
+        }
+    }
+    if !aborted {
+        let _ = event_tx.send(IdentityEvent::Done { generation });
+        ctx.request_repaint();
     }
 }
 
@@ -129,6 +180,36 @@ fn sleep_while(total: Duration, keep_going: &dyn Fn() -> bool) -> bool {
         waited += step;
     }
     keep_going()
+}
+
+/// ユーザーデータ（評価・有効なしおり）を持つのにID記録が無い旧レコードを、1件ずつFP化する。
+/// 未訪問のフォルダのファイルも、アップグレード後すぐ移動追従の対象にするため。
+/// 存在しないパス（移動・削除済み）は救えないので何もしない。
+struct Backfill {
+    db: Arc<Mutex<Database>>,
+    not_before: Instant,
+    keys: Option<VecDeque<String>>,
+}
+
+impl Backfill {
+    fn new(db: Arc<Mutex<Database>>, delay: Duration) -> Self {
+        Self { db, not_before: Instant::now() + delay, keys: None }
+    }
+
+    /// 1件進める。まだ残りがあれば true。
+    fn step(&mut self) -> bool {
+        if Instant::now() < self.not_before {
+            return true;
+        }
+        let keys = self
+            .keys
+            .get_or_insert_with(|| crate::spread_state::legacy_data_keys_without_id(&self.db).into());
+        let Some(key) = keys.pop_front() else { return false };
+        let path = file_identity::path_of_key(&key);
+        // 書き込み中・読めないものは今回は見送る（次回起動時にまた対象になる）。
+        file_identity::resolve_file(&self.db, &key, &path, file_identity::now_unix(), false);
+        !keys.is_empty()
+    }
 }
 
 #[derive(Debug, Default)]
@@ -154,19 +235,29 @@ impl KeyMaker {
     }
 }
 
-/// パスを順に解決する。`emit` には、移動・統合で内容が付き替わったパスを `refresh_batch` 件ずつ渡す。
+/// `emit` に渡す、処理済みの一部。
+#[derive(Debug, Default)]
+pub(super) struct BatchChunk {
+    /// 検証が済んだパス（移動・統合を含む）。
+    pub settled: Vec<PathBuf>,
+    /// settled のうち、移動・統合で評価等が付き替わった可能性のあるパス。
+    pub refresh: Vec<PathBuf>,
+}
+
+/// パスを順に解決する。`emit` には、処理した結果を `chunk_size` 件ずつ渡す。
 /// `keep_going` が false になったら、次のファイルの前で打ち切る（溜まった分は先に渡す）。
+/// stat一致（`Unchanged`）と後回し（`Unstable`）は結果に含めない。
 pub(super) fn process_batch(
     db: &Arc<Mutex<Database>>,
     paths: &[PathBuf],
     keep_going: &dyn Fn() -> bool,
     now: i64,
-    refresh_batch: usize,
-    emit: &mut dyn FnMut(Vec<PathBuf>),
+    chunk_size: usize,
+    emit: &mut dyn FnMut(BatchChunk),
 ) -> BatchOutcome {
     let mut keys = KeyMaker::default();
     let mut outcome = BatchOutcome::default();
-    let mut refresh: Vec<PathBuf> = Vec::new();
+    let mut chunk = BatchChunk::default();
     for path in paths {
         if !keep_going() {
             outcome.aborted = true;
@@ -178,51 +269,84 @@ pub(super) fn process_batch(
         let key = keys.key(dir, name);
         match file_identity::resolve_file(db, &key, path, now, false) {
             ResolveOutcome::Resolved(Resolution::Moved { .. } | Resolution::Merged { .. }) => {
-                refresh.push(path.clone());
-                if refresh.len() >= refresh_batch {
-                    emit(std::mem::take(&mut refresh));
-                }
+                chunk.refresh.push(path.clone());
+                chunk.settled.push(path.clone());
             }
-            ResolveOutcome::Unstable => outcome.unstable.push(path.clone()),
+            ResolveOutcome::Resolved(_) | ResolveOutcome::Failed(_) => chunk.settled.push(path.clone()),
             // 一覧に出た後で消えた。削除はせず「未確認」にする。
             ResolveOutcome::Gone => {
                 file_identity::mark_unconfirmed(db, &key);
+                chunk.settled.push(path.clone());
             }
-            ResolveOutcome::Unchanged | ResolveOutcome::Resolved(_) | ResolveOutcome::Failed(_) => {}
+            ResolveOutcome::Unstable => outcome.unstable.push(path.clone()),
+            ResolveOutcome::Unchanged => {}
+        }
+        if chunk.settled.len() >= chunk_size {
+            emit(std::mem::take(&mut chunk));
         }
     }
-    if !refresh.is_empty() {
-        emit(refresh);
+    if !chunk.settled.is_empty() {
+        emit(chunk);
     }
     outcome
 }
 
 impl NekoviewApp {
     /// 現在のフォルダの一覧（表示順）をワーカーへ投入する。スキャンとソートが済んだ直後に呼ぶ。
+    /// ID記録も旧データも無いファイル（新規・移動直後）には、解決が済むまで「検証中」を出す。
     pub(super) fn start_identity_resolution(&mut self) {
         let Some(db) = self.spread_db.clone() else { return };
         let paths: Vec<PathBuf> = self.archives.clone();
+        self.identity_verifying = crate::spread_state::paths_without_identity_or_legacy(&db, &paths);
+        self.identity_dirty = false;
         self.identity_worker.submit(db, paths);
     }
 
-    /// ワーカーの結果を受けて、付き替わったパスの評価・設定表示を引き直す。毎フレーム呼ぶ。
+    /// ワーカーの結果を受けて、付き替わったパスの評価・設定表示を引き直し、検証中表示を外す。
+    /// 解決が全て終わった時、付き替わりがあれば一度だけ並び・フィルタを作り直す。毎フレーム呼ぶ。
     pub(super) fn poll_identity_results(&mut self) {
+        // 起動後の最初のフレームで、旧レコードのバックフィルを依頼する（ワーカー側でさらに数秒待つ）。
+        if !self.identity_backfill_started {
+            if let Some(db) = self.spread_db.clone() {
+                self.identity_worker.submit_backfill(db);
+                self.identity_backfill_started = true;
+            }
+        }
         let events: Vec<IdentityEvent> = std::iter::from_fn(|| self.identity_worker.event_rx.try_recv().ok()).collect();
         for event in events {
             match event {
-                IdentityEvent::Refresh { generation, paths } => {
+                IdentityEvent::Chunk { generation, refresh, settled } => {
                     if !self.identity_worker.is_current(generation) {
                         continue;
                     }
-                    for p in &paths {
+                    for p in &settled {
+                        self.identity_verifying.remove(p);
+                    }
+                    for p in &refresh {
                         // 表示中の一覧に残っているものだけ（スキャンで入れ替わった後は無視する）。
                         if self.archive_rating_cache.contains_key(p) {
                             self.refresh_rating_cache(p);
                             self.refresh_saved_archive_settings(p);
+                            self.identity_dirty = true;
                         }
                     }
+                    self.egui_ctx.request_repaint();
                 }
-                IdentityEvent::Done { .. } => {}
+                IdentityEvent::Done { generation } => {
+                    if !self.identity_worker.is_current(generation) {
+                        continue;
+                    }
+                    // 後回しのまま残った・失敗したものも含め、検証中表示を残さない。
+                    self.identity_verifying.clear();
+                    if std::mem::take(&mut self.identity_dirty) {
+                        // 評価順・訪問回数順なら並べ直し、そうでなくても評価フィルタは作り直す。
+                        self.resort_keeping_selection();
+                        if !self.explorer_sort().needs_rating() {
+                            self.recompute_filter();
+                        }
+                    }
+                    self.egui_ctx.request_repaint();
+                }
             }
         }
     }
@@ -274,15 +398,15 @@ mod tests {
         p
     }
 
-    fn run(db: &Arc<Mutex<Database>>, paths: &[PathBuf]) -> (BatchOutcome, Vec<Vec<PathBuf>>) {
+    fn run(db: &Arc<Mutex<Database>>, paths: &[PathBuf]) -> (BatchOutcome, Vec<BatchChunk>) {
         let mut emitted = Vec::new();
         let outcome = process_batch(
             db,
             paths,
             &|| true,
             file_identity::now_unix(),
-            REFRESH_BATCH,
-            &mut |p| emitted.push(p),
+            CHUNK_SIZE,
+            &mut |c| emitted.push(c),
         );
         (outcome, emitted)
     }
@@ -299,7 +423,9 @@ mod tests {
         let paths = vec![file(&dir, "a.zip", 3000, 1000), file(&dir, "b.zip", 4000, 1000)];
         let (outcome, emitted) = run(&db, &paths);
         assert!(!outcome.aborted && outcome.unstable.is_empty());
-        assert!(emitted.is_empty(), "新規作成だけでは引き直し不要");
+        assert!(emitted.iter().all(|c| c.refresh.is_empty()), "新規作成だけでは引き直し不要");
+        let settled: Vec<PathBuf> = emitted.iter().flat_map(|c| c.settled.clone()).collect();
+        assert_eq!(settled, paths, "検証が済んだパスとして報告される（検証中表示を外す）");
         assert!(paths.iter().all(|p| rec_of(&db, p).is_some_and(|r| r.fp.is_some())));
         // 2回目はstat一致で何も変わらない（IDも同じ）。
         let ids: Vec<u64> = paths.iter().map(|p| rec_of(&db, p).unwrap().id).collect();
@@ -322,7 +448,9 @@ mod tests {
         // 新しい場所は未解決なので、評価はまだ見えない。
         assert_eq!(read_archive_rating(&db, &d2, "renamed.zip"), None);
         let (_, emitted) = run(&db, &[p2.clone()]);
-        assert_eq!(emitted, vec![vec![p2]]);
+        assert_eq!(emitted.len(), 1);
+        assert_eq!(emitted[0].refresh, vec![p2.clone()]);
+        assert_eq!(emitted[0].settled, vec![p2]);
         assert_eq!(read_archive_rating(&db, &d2, "renamed.zip").unwrap().rating_half, 9);
     }
 
@@ -387,7 +515,7 @@ mod tests {
             moved.push(q);
         }
         let mut emitted = Vec::new();
-        process_batch(&db, &moved, &|| true, file_identity::now_unix(), 2, &mut |p| emitted.push(p.len()));
+        process_batch(&db, &moved, &|| true, file_identity::now_unix(), 2, &mut |c| emitted.push(c.refresh.len()));
         assert_eq!(emitted, vec![2, 2, 1]);
     }
 
@@ -400,13 +528,105 @@ mod tests {
         let mut worker = IdentityWorker::spawn(egui::Context::default());
         let generation = worker.submit(db.clone(), vec![p.clone()]);
         assert!(worker.is_current(generation));
-        let event = worker.event_rx.recv_timeout(Duration::from_secs(10)).expect("Done が届く");
-        assert!(matches!(event, IdentityEvent::Done { generation: g } if g == generation));
+        // 検証済みの Chunk の後に Done が届く。
+        let mut settled = Vec::new();
+        loop {
+            match worker.event_rx.recv_timeout(Duration::from_secs(10)).expect("Done が届く") {
+                IdentityEvent::Chunk { settled: s, .. } => settled.extend(s),
+                IdentityEvent::Done { generation: g } => {
+                    assert_eq!(g, generation);
+                    break;
+                }
+            }
+        }
+        assert_eq!(settled, vec![p.clone()]);
         assert!(rec_of(&db, &p).is_some());
         // 新しい投入で世代が進み、古い世代は現行でなくなる。
         let generation2 = worker.submit(db, vec![]);
         assert!(generation2 > generation && !worker.is_current(generation));
         worker.shutdown();
         assert!(!worker.is_current(generation2));
+    }
+
+    #[test]
+    fn settled_chunks_are_cut_by_chunk_size_and_exclude_unchanged() {
+        let t = TempRoot::new("settled");
+        let db = open_spread_db(&t.0).unwrap();
+        let dir = t.dir("d");
+        let paths: Vec<PathBuf> = (0..5).map(|i| file(&dir, &format!("{i}.zip"), 2000 + i, 1000)).collect();
+        let mut sizes = Vec::new();
+        process_batch(&db, &paths, &|| true, file_identity::now_unix(), 2, &mut |c| sizes.push(c.settled.len()));
+        assert_eq!(sizes, vec![2, 2, 1]);
+        // 2回目はstat一致なので、何も報告しない。
+        let mut again = 0;
+        process_batch(&db, &paths, &|| true, file_identity::now_unix(), 2, &mut |_| again += 1);
+        assert_eq!(again, 0);
+    }
+
+    #[test]
+    fn backfill_records_legacy_data_files_that_exist_and_skips_missing_ones() {
+        let t = TempRoot::new("backfill");
+        let db = open_spread_db(&t.0).unwrap();
+        let dir = t.dir("d");
+        let exists = file(&dir, "has_data.zip", 3000, 1000);
+        let _no_data = file(&dir, "plain.zip", 3000, 1000);
+        // 旧v1の評価（実在するファイルと、既に移動・削除済みのファイル）。
+        for name in ["has_data.zip", "ghost.zip"] {
+            let key = crate::spread_state::make_key(&dir, name);
+            let g = db.lock().unwrap();
+            let tx = g.begin_write().unwrap();
+            {
+                let mut tb = tx.open_table(crate::spread_state::ARCHIVE_RATING_TABLE_V1).unwrap();
+                tb.insert(key.as_str(), (6u8, 1u32, 5i64)).unwrap();
+            }
+            tx.commit().unwrap();
+        }
+        let mut bf = Backfill::new(db.clone(), Duration::ZERO);
+        while bf.step() {}
+        let rec = rec_of(&db, &exists).expect("データを持つ旧レコードはID記録される");
+        assert!(rec.fp.is_some());
+        assert!(rec_of(&db, &dir.join("plain.zip")).is_none(), "データ無しは対象外（フォルダ表示時に処理）");
+        assert!(rec_of(&db, &dir.join("ghost.zip")).is_none(), "実体が無いものは何もしない");
+        // 評価は旧v1のまま読める（IDが付いても値は変わらない）。
+        assert_eq!(read_archive_rating(&db, &dir, "has_data.zip").unwrap().rating_half, 6);
+        // 2回目の列挙では対象が残らない。
+        assert!(crate::spread_state::legacy_data_keys_without_id(&db)
+            .iter()
+            .all(|k| k.ends_with("ghost.zip")));
+    }
+
+    #[test]
+    fn backfill_waits_for_its_start_delay() {
+        let t = TempRoot::new("backfill_delay");
+        let db = open_spread_db(&t.0).unwrap();
+        let mut bf = Backfill::new(db, Duration::from_secs(3600));
+        assert!(bf.step(), "待機中は何もせず、まだ続く");
+        assert!(bf.keys.is_none(), "開始前は列挙もしない");
+    }
+
+    #[test]
+    fn verifying_set_excludes_files_with_identity_or_legacy_data() {
+        let t = TempRoot::new("verifying");
+        let db = open_spread_db(&t.0).unwrap();
+        let dir = t.dir("d");
+        let with_id = file(&dir, "id.zip", 3000, 1000);
+        let with_legacy = file(&dir, "legacy.zip", 3000, 1000);
+        let brand_new = file(&dir, "new.zip", 3000, 1000);
+        run(&db, &[with_id.clone()]);
+        {
+            let key = crate::spread_state::make_key(&dir, "legacy.zip");
+            let g = db.lock().unwrap();
+            let tx = g.begin_write().unwrap();
+            {
+                let mut tb = tx.open_table(crate::spread_state::ARCHIVE_RATING_TABLE_V1).unwrap();
+                tb.insert(key.as_str(), (3u8, 0u32, 0i64)).unwrap();
+            }
+            tx.commit().unwrap();
+        }
+        let set = crate::spread_state::paths_without_identity_or_legacy(
+            &db,
+            &[with_id, with_legacy, brand_new.clone()],
+        );
+        assert_eq!(set, std::iter::once(brand_new).collect());
     }
 }

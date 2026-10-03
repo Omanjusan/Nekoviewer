@@ -824,7 +824,7 @@ impl NekoviewApp {
     }
 
     /// 現在の2セット分のソート条件
-    fn explorer_sort(&self) -> crate::explorer_sort::ExplorerSort {
+    pub(super) fn explorer_sort(&self) -> crate::explorer_sort::ExplorerSort {
         crate::explorer_sort::ExplorerSort {
             key: self.sort_key,
             ascending: self.sort_ascending,

@@ -770,6 +770,56 @@ fn decode_rating(value: (u8, u32, i64)) -> ArchiveRating {
     }
 }
 
+/// パスにID記録も旧v1データ（評価・しおり）も無いものを返す。ID解決の完了までサムネに
+/// 「ファイル検証中」を出す対象（新規または移動・リネーム直後のファイル）。1回の読み取りで調べる。
+pub fn paths_without_identity_or_legacy(
+    db: &Arc<Mutex<Database>>,
+    paths: &[PathBuf],
+) -> std::collections::HashSet<PathBuf> {
+    let mut out = std::collections::HashSet::new();
+    let Ok(db) = db.lock() else { return out };
+    let Ok(tx) = db.begin_read() else { return out };
+    let rating_v1 = tx.open_table(ARCHIVE_RATING_TABLE_V1).ok();
+    let bookmark_v1 = tx.open_table(BOOKMARK_TABLE_V1).ok();
+    let mut prefixes: HashMap<PathBuf, String> = HashMap::new();
+    for path in paths {
+        let (Some(dir), Some(name)) = (path.parent(), path.file_name().and_then(|n| n.to_str())) else {
+            continue;
+        };
+        let prefix = prefixes.entry(dir.to_path_buf()).or_insert_with(|| {
+            let canon = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
+            format!("{}\0", canon.to_string_lossy())
+        });
+        let key = format!("{prefix}{name}");
+        let has_legacy = rating_v1.as_ref().is_some_and(|t| t.get(key.as_str()).ok().flatten().is_some())
+            || bookmark_v1.as_ref().is_some_and(|t| t.get(key.as_str()).ok().flatten().is_some());
+        if !has_legacy && crate::file_identity::lookup_tx(&tx, &key).is_none() {
+            out.insert(path.clone());
+        }
+    }
+    out
+}
+
+/// 旧v1にユーザーデータ（評価・有効なしおり）があるのに、まだID記録が無いパスキーの一覧。
+/// アイドル時のバックフィル（FP化）の対象。未訪問フォルダのファイルも移動追従の対象にするため。
+pub fn legacy_data_keys_without_id(db: &Arc<Mutex<Database>>) -> Vec<String> {
+    let Ok(db) = db.lock() else { return Vec::new() };
+    let Ok(tx) = db.begin_read() else { return Vec::new() };
+    let mut keys: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    if let Ok(t) = tx.open_table(ARCHIVE_RATING_TABLE_V1) {
+        if let Ok(iter) = t.iter() {
+            keys.extend(iter.flatten().map(|(k, _)| k.value().to_string()));
+        }
+    }
+    if let Ok(t) = tx.open_table(BOOKMARK_TABLE_V1) {
+        if let Ok(iter) = t.iter() {
+            keys.extend(iter.flatten().filter(|(_, v)| v.value().0).map(|(k, _)| k.value().to_string()));
+        }
+    }
+    keys.retain(|k| crate::file_identity::lookup_tx(&tx, k).is_none());
+    keys.into_iter().collect()
+}
+
 fn rating_get_tx(tx: &redb::ReadTransaction, owner: &Owner) -> Option<ArchiveRating> {
     if let Owner::Id(rec) = owner {
         if let Ok(t) = tx.open_table(ARCHIVE_RATING_TABLE_V2) {
