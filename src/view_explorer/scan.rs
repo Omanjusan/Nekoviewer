@@ -462,17 +462,7 @@ impl NekoviewApp {
                 // 見開き・ソート・お気に入り・評価・しおりは、フォルダから消えた行をGCしない。
                 // ファイルが移動・リネームされても旧v1行は遅延移行の橋渡しとして残し、ID化済みの
                 // データは新しいパスへ追従する（フォルダから消えたこと＝不要、とは限らない）。
-                self.spread_states = crate::spread_state::list_dir_entries(&db, &self.current_dir)
-                    .into_iter()
-                    .map(|(name, mode, offset)| (name, (mode, offset)))
-                    .collect();
-                self.archive_sort_states = crate::spread_state::list_dir_archive_sorts(&db, &self.current_dir)
-                    .into_iter()
-                    .map(|(name, key, ascending)| (name, (key, ascending)))
-                    .collect();
-                self.favorite_states = crate::favorites::list_dir_favorites(&db, &self.current_dir)
-                    .into_iter()
-                    .collect();
+                self.reload_dir_state_maps();
                 // 評価帯・フィルタ用に、このフォルダの評価・訪問を一括ロード（不在は None＝NEW）
                 let ratings: std::collections::HashMap<String, crate::spread_state::ArchiveRating> =
                     crate::spread_state::list_dir_archive_ratings(&db, &self.current_dir)
@@ -854,6 +844,28 @@ impl NekoviewApp {
         self.recompute_filter();
     }
 
+    /// 現在のフォルダの「見開き・ソート・お気に入り」の保存状態を、DBから読み直す。
+    /// スキャン時と、ID解決でファイルの設定が付き替わった時（移動・リネーム直後）に呼ぶ。
+    pub(super) fn reload_dir_state_maps(&mut self) {
+        let Some(db) = self.spread_db.clone() else {
+            self.spread_states.clear();
+            self.archive_sort_states.clear();
+            self.favorite_states.clear();
+            return;
+        };
+        self.spread_states = crate::spread_state::list_dir_entries(&db, &self.current_dir)
+            .into_iter()
+            .map(|(name, mode, offset)| (name, (mode, offset)))
+            .collect();
+        self.archive_sort_states = crate::spread_state::list_dir_archive_sorts(&db, &self.current_dir)
+            .into_iter()
+            .map(|(name, key, ascending)| (name, (key, ascending)))
+            .collect();
+        self.favorite_states = crate::favorites::list_dir_favorites(&db, &self.current_dir)
+            .into_iter()
+            .collect();
+    }
+
     /// 評価・訪問が変わった後（ビューアーを閉じた直後など）の再ソート。スコア／訪問回数が
     /// 主軸のときだけ並びを作り直し、選択・複数選択・グリッドカーソルは同じファイルを指し直す
     /// （ビューア表示中に並べ替えると、選択枠や前後ファイル移動がずれるためここまで待つ）。
@@ -861,6 +873,12 @@ impl NekoviewApp {
         if !self.explorer_sort().needs_rating() {
             return;
         }
+        self.resort_keeping_selection_always();
+    }
+
+    /// 並び順の軸に関わらず、並びとフィルタを作り直す（お気に入りの先頭固定など、評価以外の
+    /// 保存状態が変わった時用）。選択・複数選択・グリッドカーソルは同じファイルを指し直す。
+    pub(super) fn resort_keeping_selection_always(&mut self) {
         let before = self.archives.clone();
         self.sort_archives_only();
 

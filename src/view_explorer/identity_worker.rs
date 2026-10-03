@@ -378,13 +378,20 @@ impl NekoviewApp {
                     for p in &settled {
                         self.identity_verifying.remove(p);
                     }
+                    let mut reload_maps = false;
                     for p in &refresh {
                         // 表示中の一覧に残っているものだけ（スキャンで入れ替わった後は無視する）。
                         if self.archive_rating_cache.contains_key(p) {
                             self.refresh_rating_cache(p);
                             self.refresh_saved_archive_settings(p);
                             self.identity_dirty = true;
+                            reload_maps |= p.parent().is_some_and(|d| d == self.current_dir);
                         }
+                    }
+                    // 見開き・ソート・お気に入りの一覧（★の表示、ビューアーを開く時の復元に使う）も
+                    // 付き替わるので、現在のフォルダぶんを読み直す。
+                    if reload_maps && self.viewing_favorites.is_none() {
+                        self.reload_dir_state_maps();
                     }
                     self.egui_ctx.request_repaint();
                 }
@@ -396,11 +403,9 @@ impl NekoviewApp {
                     self.identity_verifying.clear();
                     self.identity_progress = None;
                     if std::mem::take(&mut self.identity_dirty) {
-                        // 評価順・訪問回数順なら並べ直し、そうでなくても評価フィルタは作り直す。
-                        self.resort_keeping_selection();
-                        if !self.explorer_sort().needs_rating() {
-                            self.recompute_filter();
-                        }
+                        // 評価以外（お気に入りの先頭固定など）の保存状態も付き替わるので、並び順の軸に
+                        // 関わらず、並びとフィルタを一度だけ作り直す。
+                        self.resort_keeping_selection_always();
                     }
                     self.egui_ctx.request_repaint();
                 }
@@ -769,5 +774,26 @@ mod tests {
         assert!(p.message().contains("5 / 5"), "{}", p.message());
         p.processed = 2;
         assert!(p.message().contains("2 / 5"));
+    }
+
+    #[test]
+    fn dir_state_lists_include_a_moved_file_after_resolution() {
+        let t = TempRoot::new("dir_lists");
+        let db = open_spread_db(&t.0).unwrap();
+        crate::favorites::init_favorite_tables(&db).unwrap();
+        let (d1, d2) = (t.dir("d1"), t.dir("d2"));
+        let p1 = file(&d1, "a.zip", 5000, 1000);
+        crate::favorites::set_membership(&db, &d1, "a.zip", &[3]);
+        assert!(crate::spread_state::write_spread(&db, &d1, "a.zip", crate::types::PageMode::SpreadLeft, 0));
+        assert!(crate::spread_state::write_archive_sort(&db, &d1, "a.zip", crate::types::ReaderSortKey::Date, true));
+        let p2 = d2.join("renamed.zip");
+        std::fs::rename(&p1, &p2).unwrap();
+        // 解決前は、移動先の一覧に出ない（読み直しても空）。
+        assert!(crate::favorites::list_dir_favorites(&db, &d2).is_empty());
+        run(&db, &[p2]);
+        // 解決後に読み直した一覧（UI側の reload_dir_state_maps と同じ読み出し）に載る。
+        assert_eq!(crate::favorites::list_dir_favorites(&db, &d2), vec![("renamed.zip".to_owned(), vec![3])]);
+        assert_eq!(crate::spread_state::list_dir_entries(&db, &d2).len(), 1);
+        assert_eq!(crate::spread_state::list_dir_archive_sorts(&db, &d2).len(), 1);
     }
 }
