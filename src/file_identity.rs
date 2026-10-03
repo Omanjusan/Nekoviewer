@@ -488,11 +488,14 @@ fn pick_orphan(
 fn decide(snapshot: Snapshot, path_key: &str, obs: &Observation, env: &ResolveEnv) -> Decision {
     match snapshot.path_rec {
         Some(rec) => {
-            let content_updated = rec.fp.is_some() && rec.fp != obs.fp;
+            // サイズがあるのにFPが無い観測は「取れなかった」（書き込み中）。既存のFPは残し、内容更新とも見なさない。
+            let fp_unknown = obs.fp.is_none() && obs.size > 0;
+            let new_fp = if fp_unknown { rec.fp } else { obs.fp };
+            let content_updated = !fp_unknown && rec.fp.is_some() && rec.fp != obs.fp;
             let mut new = rec.clone();
             new.size = obs.size;
             new.mtime = obs.mtime;
-            new.fp = obs.fp;
+            new.fp = new_fp;
             new.volume = obs.volume.clone();
             new.status = FileStatus::Confirmed;
             new.last_seen = env.now;
@@ -671,19 +674,100 @@ pub fn resolve_path(
     Err(IdentityError::Conflict)
 }
 
-/// パスキーからレコードを引く（高速経路）。ID層が未使用なら None。
-pub fn lookup(db: &Arc<Mutex<Database>>, path_key: &str) -> Option<FileRecord> {
-    let db = db.lock().ok()?;
-    let tx = db.begin_read().ok()?;
+/// 読み取りトランザクション上でパスキーからレコードを引く。ID層が未使用なら None。
+pub fn lookup_tx(tx: &redb::ReadTransaction, path_key: &str) -> Option<FileRecord> {
     let ids = tx.open_table(FILE_ID_TABLE).ok()?;
     let paths = tx.open_table(FILE_PATH_INDEX_TABLE).ok()?;
     let id = paths.get(path_key).ok()??.value();
     FileRecord::decode(ids.get(id).ok()??.value())
 }
 
+/// ロック取得済みの `Database` からパスキーを引く（`Mutex` は再入不可のため、ロック中はこちらを使う）。
+pub fn lookup_in(db: &Database, path_key: &str) -> Option<FileRecord> {
+    lookup_tx(&db.begin_read().ok()?, path_key)
+}
+
+/// パスキーからレコードを引く（高速経路）。ID層が未使用なら None。
+pub fn lookup(db: &Arc<Mutex<Database>>, path_key: &str) -> Option<FileRecord> {
+    let guard = db.lock().ok()?;
+    lookup_in(&guard, path_key)
+}
+
+/// `prefix`（"dir\0"）で始まるパスキーのレコードを全て返す。ディレクトリ単位の一括ロード用。
+pub fn dir_records_tx(tx: &redb::ReadTransaction, prefix: &str) -> Vec<FileRecord> {
+    let (Ok(ids), Ok(paths)) = (tx.open_table(FILE_ID_TABLE), tx.open_table(FILE_PATH_INDEX_TABLE)) else {
+        return Vec::new();
+    };
+    let Ok(range) = paths.range(prefix..) else { return Vec::new() };
+    let mut out = Vec::new();
+    for entry in range {
+        let Ok((k, v)) = entry else { continue };
+        if !k.value().starts_with(prefix) {
+            break;
+        }
+        if let Some(rec) = ids.get(v.value()).ok().flatten().and_then(|g| FileRecord::decode(g.value())) {
+            out.push(rec);
+        }
+    }
+    out
+}
+
+impl FileRecord {
+    /// 旧v1テーブル（パスキー）を引く候補のキー。現在のパス、ID作成時のパス、旧パス履歴の順（重複なし）。
+    /// v1行は削除しない約束なので、移動後や遅延移行前でも、これで旧データへ届く。
+    pub fn legacy_keys(&self) -> Vec<&str> {
+        let mut keys: Vec<&str> = Vec::with_capacity(2 + self.history.len());
+        for k in [self.path_key.as_str(), self.origin_key.as_str()]
+            .into_iter()
+            .chain(self.history.iter().map(String::as_str))
+        {
+            if !keys.contains(&k) {
+                keys.push(k);
+            }
+        }
+        keys
+    }
+}
+
+fn now_unix() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs().min(i64::MAX as u64) as i64)
+        .unwrap_or(0)
+}
+
+/// 同期でIDを解決してレコードを返す。ユーザー操作（評価の書き込み・ビューアーを開く等）で
+/// 未解決のファイルに対して使う。stat一致なら何も読まず、不一致なら観測→解決する。
+/// ファイルが無い／読めない場合は、既存のレコードがあればそれ、無ければ None。
+/// 書き込み中でFPが取れなければ、FPなしで記録する（後で埋める）。
+pub fn ensure_record(db: &Arc<Mutex<Database>>, dir: &Path, filename: &str) -> Option<FileRecord> {
+    let key = crate::spread_state::make_key(dir, filename);
+    let rec = lookup(db, &key);
+    let path = dir.join(filename);
+    let Some(meta) = std::fs::metadata(&path).ok().filter(|m| m.is_file()) else { return rec };
+    let (size, mtime) = (meta.len(), mtime_secs(&meta));
+    if rec.as_ref().is_some_and(|r| quick_hit(r, size, mtime)) {
+        return rec;
+    }
+    let now = now_unix();
+    let obs = match observe(&path, now) {
+        Observed::Ready(o) => o,
+        Observed::Unstable => Observation { size, mtime, volume: mount_root(&path), fp: None },
+        Observed::Gone | Observed::Unreadable(_) => return rec,
+    };
+    let has_user_data = |id: u64| crate::spread_state::id_has_user_data(db, id);
+    let env = ResolveEnv { now, probe: &probe_record, has_user_data: &has_user_data };
+    resolve_path(db, &key, &obs, &env).ok()?;
+    lookup(db, &key)
+}
+
 /// stat（サイズ・mtime）だけで同一と見なせるか。FPを読まずに済ませる判定。
+/// FP未取得（書き込み中に記録した等）のレコードは、FPを埋めるため一致扱いにしない（0バイトは除く）。
 pub fn quick_hit(rec: &FileRecord, size: u64, mtime: i64) -> bool {
-    rec.status == FileStatus::Confirmed && rec.size == size && rec.mtime == mtime
+    rec.status == FileStatus::Confirmed
+        && rec.size == size
+        && rec.mtime == mtime
+        && (rec.fp.is_some() || size == 0)
 }
 
 /// ファイルが見つからなかったIDを「未確認」にする（削除はしない）。成功したら true。
@@ -1231,5 +1315,48 @@ mod tests {
         // 競合で書き込みは起きていない。
         assert_eq!(lookup(&db, "/d2\0a.zip").unwrap().id, 1);
         assert!(lookup(&db, "/d3\0a.zip").is_none());
+    }
+
+    #[test]
+    fn unknown_fp_observation_keeps_existing_fp_and_is_not_a_content_update() {
+        let t = TempRoot::new("fp_unknown");
+        let db = new_db(&t);
+        let fake = Fake::default();
+        resolve(&db, "/d\0a.zip", &obs(100, 50, Some(1)), &fake);
+        // 書き込み中でFPが取れなかった観測（サイズはあるのにFPなし）。
+        let r = resolve(&db, "/d\0a.zip", &obs(150, 60, None), &fake);
+        assert_eq!(r, Resolution::Existing { id: 1, content_updated: false });
+        let rec = lookup(&db, "/d\0a.zip").unwrap();
+        assert_eq!((rec.size, rec.mtime, rec.fp), (150, 60, Some([1; 16])));
+        assert_eq!(fp_index_ids(&db, 1), vec![1]);
+    }
+
+    #[test]
+    fn legacy_keys_are_current_origin_then_history_without_duplicates() {
+        let mut rec = record_from_obs("/a\0x", &obs(1, 1, Some(1)), NOW);
+        assert_eq!(rec.legacy_keys(), vec!["/a\0x"]);
+        rec.path_key = "/c\0x".to_owned();
+        rec.history = vec!["/b\0x".to_owned(), "/a\0x".to_owned()];
+        assert_eq!(rec.legacy_keys(), vec!["/c\0x", "/a\0x", "/b\0x"]);
+    }
+
+    #[test]
+    fn ensure_record_creates_fp_less_record_for_fresh_file_and_fills_fp_later() {
+        let t = TempRoot::new("ensure");
+        let db = new_db(&t);
+        let p = write_file(&t.0, "a.zip", &patterned(5000));
+        // 書いた直後（mtimeが新しい）はFPを取らずに記録する。
+        let rec = ensure_record(&db, &t.0, "a.zip").unwrap();
+        assert_eq!(rec.fp, None);
+        assert_eq!(rec.size, 5000);
+        // 落ち着いた後に呼び直すとFPが埋まる（IDは同じ）。
+        set_mtime(&p, 100);
+        let rec2 = ensure_record(&db, &t.0, "a.zip").unwrap();
+        assert_eq!(rec2.id, rec.id);
+        assert!(rec2.fp.is_some());
+        // 以後はstat一致で何も読まない。
+        assert!(quick_hit(&rec2, 5000, rec2.mtime));
+        // ファイルが無ければ、記録があればそれ・無ければ None。
+        assert!(ensure_record(&db, &t.0, "none.zip").is_none());
     }
 }

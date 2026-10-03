@@ -476,8 +476,8 @@ impl NekoviewApp {
                 self.favorite_states = crate::favorites::list_dir_favorites(&db, &self.current_dir)
                     .into_iter()
                     .collect();
-                crate::spread_state::bookmark_gc_dir(&db, &self.current_dir, &filenames);
-                crate::spread_state::archive_rating_gc_dir(&db, &self.current_dir, &filenames);
+                // しおり・評価はGCしない。ファイルが移動・リネームされても旧v1行は遅延移行の橋渡しとして残し、
+                // ID化済みのデータは新しいパスへ追従する（フォルダから消えたこと＝不要、とは限らない）。
                 // 評価帯・フィルタ用に、このフォルダの評価・訪問を一括ロード（不在は None＝NEW）
                 let ratings: std::collections::HashMap<String, crate::spread_state::ArchiveRating> =
                     crate::spread_state::list_dir_archive_ratings(&db, &self.current_dir)

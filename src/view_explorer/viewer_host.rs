@@ -1153,7 +1153,15 @@ impl NekoviewApp {
         // last_entry_name が空 = まだ一度も離脱時保存が走っていない（トグルONにしただけ）。
         // この場合は復帰対象なし・失敗でもないので黙って冒頭から始める。
         if let Some(bookmark) = bookmark.filter(|b| b.enabled && !b.last_entry_name.is_empty()) {
-            let mtime_ok = bookmark.archive_mtime == crate::neko_dir::file_mtime(&path);
+            // 保存時と同じ内容か。FPが分かれば内容の一致で、不明なら更新日時の一致で判定する。
+            let file_fp = self.spread_db.as_ref()
+                .and_then(|db| crate::file_identity::ensure_record(db, archive_dir, filename))
+                .and_then(|rec| rec.fp);
+            let mtime_ok = crate::spread_state::bookmark_matches_file(
+                &bookmark,
+                file_fp,
+                crate::neko_dir::file_mtime(&path),
+            );
             // ソート順（保存済み or デフォルト）は直前の restore_saved_sort で確定済み。
             // ここでの entry_name 検索は、その確定後の一覧に対して行われる。
             let restored = mtime_ok && state.restore_bookmark_position(&bookmark.last_entry_name);

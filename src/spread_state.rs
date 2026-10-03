@@ -105,6 +105,9 @@ pub struct BookmarkState {
     pub last_entry_name: String,
     pub updated_at: i64,
     pub archive_mtime: i64,
+    /// 保存時のファイルのFP。内容が変わっていないかの判定に使う（旧v1から移した行・FP未取得は None で、
+    /// その場合は `archive_mtime` で判定する）。
+    pub archive_fp: Option<crate::file_identity::Fp>,
 }
 
 /// アーカイブ単位の評価・訪問記録。
@@ -266,7 +269,6 @@ pub fn saved_settings_for_paths(
     let sort_table = tx.open_table(ARCHIVE_SORT_TABLE_V1).ok();
     let thumbnail_table_v1 = tx.open_table(THUMBNAIL_SELECTION_TABLE_V1).ok();
     let thumbnail_table_v2 = tx.open_table(THUMBNAIL_SELECTION_TABLE_V2).ok();
-    let bookmark_table = tx.open_table(BOOKMARK_TABLE_V1).ok();
     let mut out = HashMap::new();
 
     for path in paths {
@@ -289,9 +291,7 @@ pub fn saved_settings_for_paths(
         }) || thumbnail_table_v1.as_ref().is_some_and(|table| {
             table.get(key.as_str()).ok().flatten().is_some()
         });
-        let has_bookmark = bookmark_table.as_ref().is_some_and(|table| {
-            table.get(key.as_str()).ok().flatten().is_some_and(|value| decode_bookmark(value.value()).enabled)
-        });
+        let has_bookmark = bookmark_get_tx(&tx, &owner_tx(&tx, dir, filename)).is_some_and(|b| b.enabled);
         let settings = SavedArchiveSettings {
             spread_mode,
             has_saved_sort,
@@ -521,13 +521,161 @@ fn unix_timestamp_secs() -> i64 {
         .unwrap_or(0)
 }
 
+/// アーカイブ単位のしおり保存テーブル（第2世代、キー=ファイルID）。
+/// 値は (bookmark_enabled, last_entry_name, updated_at, archive_mtime, archive_fp)。
+/// archive_fp は16バイト（未取得は空）。旧v1（パスキー）からは、書き込み時に遅延移行する。
+pub const BOOKMARK_TABLE_V2: TableDefinition<u64, (bool, &str, i64, i64, &[u8])> =
+    TableDefinition::new("bookmark_state_v2");
+
+/// アーカイブ単位の評価・訪問記録テーブル（第2世代、キー=ファイルID）。値形式はv1と同じ。
+pub const ARCHIVE_RATING_TABLE_V2: TableDefinition<u64, (u8, u32, i64)> =
+    TableDefinition::new("archive_rating_v2");
+
+/// データの持ち主。IDが解決済みならID（v2テーブル）、未解決ならパスキー（旧v1テーブル）。
+/// v1行は削除しないので、IDが解決済みでもv2に無ければ旧パスキー（`legacy_keys`）で引き直せる。
+enum Owner {
+    Id(crate::file_identity::FileRecord),
+    Path(String),
+}
+
+impl Owner {
+    fn legacy_keys(&self) -> Vec<&str> {
+        match self {
+            Self::Id(rec) => rec.legacy_keys(),
+            Self::Path(key) => vec![key.as_str()],
+        }
+    }
+}
+
+fn owner_tx(tx: &redb::ReadTransaction, dir: &Path, filename: &str) -> Owner {
+    let key = make_key(dir, filename);
+    match crate::file_identity::lookup_tx(tx, &key) {
+        Some(rec) => Owner::Id(rec),
+        None => Owner::Path(key),
+    }
+}
+
+/// そのIDにユーザーデータ（評価・訪問・しおり）があるか。ID層の「空のID」判定に使う。
+pub fn id_has_user_data(db: &Arc<Mutex<Database>>, id: u64) -> bool {
+    let Ok(db) = db.lock() else { return false };
+    let Ok(tx) = db.begin_read() else { return false };
+    let has_rating = tx
+        .open_table(ARCHIVE_RATING_TABLE_V2)
+        .ok()
+        .is_some_and(|t| t.get(id).ok().flatten().is_some());
+    has_rating
+        || tx
+            .open_table(BOOKMARK_TABLE_V2)
+            .ok()
+            .is_some_and(|t| t.get(id).ok().flatten().is_some())
+}
+
 fn decode_bookmark(value: (bool, &str, i64, i64)) -> BookmarkState {
     BookmarkState {
         enabled: value.0,
         last_entry_name: value.1.to_string(),
         updated_at: value.2,
         archive_mtime: value.3,
+        archive_fp: None,
     }
+}
+
+fn decode_bookmark_v2(value: (bool, &str, i64, i64, &[u8])) -> BookmarkState {
+    BookmarkState {
+        enabled: value.0,
+        last_entry_name: value.1.to_string(),
+        updated_at: value.2,
+        archive_mtime: value.3,
+        archive_fp: value.4.try_into().ok(),
+    }
+}
+
+fn bookmark_get_tx(tx: &redb::ReadTransaction, owner: &Owner) -> Option<BookmarkState> {
+    if let Owner::Id(rec) = owner {
+        if let Ok(t) = tx.open_table(BOOKMARK_TABLE_V2) {
+            if let Some(v) = t.get(rec.id).ok().flatten() {
+                return Some(decode_bookmark_v2(v.value()));
+            }
+        }
+    }
+    let t = tx.open_table(BOOKMARK_TABLE_V1).ok()?;
+    owner
+        .legacy_keys()
+        .into_iter()
+        .find_map(|k| t.get(k).ok().flatten().map(|v| decode_bookmark(v.value())))
+}
+
+enum BookmarkChange {
+    /// 何も書かない（これ自体は失敗ではない）。
+    Keep,
+    Set(BookmarkState),
+    Remove,
+}
+
+/// しおり行を読み→変更→書く。IDを同期で解決でき、v2に行が無ければ旧v1の行を読んで引き継ぐ。
+/// IDを解決できない（ファイルが無い等）場合は、従来どおりパスキーのv1行を直接読み書きする。
+/// `f` には現在のしおり状態と、ファイルの現在のFP（不明なら None）を渡す。
+fn bookmark_modify(
+    db: &Arc<Mutex<Database>>,
+    dir: &Path,
+    filename: &str,
+    f: impl FnOnce(Option<BookmarkState>, Option<crate::file_identity::Fp>) -> BookmarkChange,
+) -> bool {
+    let rec = crate::file_identity::ensure_record(db, dir, filename);
+    let Ok(guard) = db.lock() else { return false };
+    let Ok(tx) = guard.begin_write() else { return false };
+    let ok = match &rec {
+        Some(rec) => {
+            let Ok(mut v2) = tx.open_table(BOOKMARK_TABLE_V2) else { return false };
+            let Ok(mut v1) = tx.open_table(BOOKMARK_TABLE_V1) else { return false };
+            let current = match v2.get(rec.id).ok().flatten().map(|v| decode_bookmark_v2(v.value())) {
+                Some(s) => Some(s),
+                None => rec
+                    .legacy_keys()
+                    .into_iter()
+                    .find_map(|k| v1.get(k).ok().flatten().map(|v| decode_bookmark(v.value()))),
+            };
+            match f(current, rec.fp) {
+                BookmarkChange::Keep => true,
+                BookmarkChange::Set(s) => v2
+                    .insert(
+                        rec.id,
+                        (
+                            s.enabled,
+                            s.last_entry_name.as_str(),
+                            s.updated_at,
+                            s.archive_mtime,
+                            s.archive_fp.as_ref().map_or(&[][..], |fp| fp.as_slice()),
+                        ),
+                    )
+                    .is_ok(),
+                BookmarkChange::Remove => {
+                    // v1の行も消す（残すと、v2に無いことを理由に旧しおりが復活してしまう）。
+                    let removed = v2.remove(rec.id).is_ok();
+                    for k in rec.legacy_keys() {
+                        let _ = v1.remove(k);
+                    }
+                    removed
+                }
+            }
+        }
+        None => {
+            let key = make_key(dir, filename);
+            let Ok(mut v1) = tx.open_table(BOOKMARK_TABLE_V1) else { return false };
+            let current = v1.get(key.as_str()).ok().flatten().map(|v| decode_bookmark(v.value()));
+            match f(current, None) {
+                BookmarkChange::Keep => true,
+                BookmarkChange::Set(s) => v1
+                    .insert(
+                        key.as_str(),
+                        (s.enabled, s.last_entry_name.as_str(), s.updated_at, s.archive_mtime),
+                    )
+                    .is_ok(),
+                BookmarkChange::Remove => v1.remove(key.as_str()).is_ok(),
+            }
+        }
+    };
+    tx.commit().is_ok() && ok
 }
 
 /// しおり保存の有効/無効を切り替える（右クリックメニューのトグル用）。
@@ -536,33 +684,22 @@ fn decode_bookmark(value: (bool, &str, i64, i64)) -> BookmarkState {
 /// enabled=falseでレコード不在なら何もしない（この場合も戻り値はtrue。何もしないこと自体は
 /// 失敗ではないため。一括変更のトースト集計用）。
 pub fn write_bookmark_enabled(db: &Arc<Mutex<Database>>, dir: &Path, filename: &str, enabled: bool) -> bool {
-    let key = make_key(dir, filename);
-    let Ok(db) = db.lock() else { return false };
-    let Ok(tx) = db.begin_write() else { return false };
-    let inserted = {
-        let Ok(mut table) = tx.open_table(BOOKMARK_TABLE_V1) else { return false };
-        let current = table.get(key.as_str()).ok().flatten().map(|v| decode_bookmark(v.value()));
-        let next = match current {
-            Some(state) => BookmarkState { enabled, ..state },
-            None if enabled => BookmarkState {
-                enabled: true,
-                last_entry_name: String::new(),
-                updated_at: 0,
-                archive_mtime: 0,
-            },
-            // レコード不在でenabled=false: 何もしない（これ自体は失敗ではない）
-            None => return { drop(table); tx.commit().is_ok() },
-        };
-        table.insert(
-            key.as_str(),
-            (next.enabled, next.last_entry_name.as_str(), next.updated_at, next.archive_mtime),
-        ).is_ok()
-    };
-    tx.commit().is_ok() && inserted
+    bookmark_modify(db, dir, filename, |current, _| match current {
+        Some(state) => BookmarkChange::Set(BookmarkState { enabled, ..state }),
+        None if enabled => BookmarkChange::Set(BookmarkState {
+            enabled: true,
+            last_entry_name: String::new(),
+            updated_at: 0,
+            archive_mtime: 0,
+            archive_fp: None,
+        }),
+        None => BookmarkChange::Keep,
+    })
 }
 
 /// 離脱時に現在の閲覧位置を保存する。bookmark_enabled=trueのレコードが既に
 /// 存在する場合のみ書き込む（呼び出し元がenabled状態を見て呼ぶ前提の保険）。
+/// 保存時のファイルのFPも一緒に記録し、復帰時に内容が変わっていないかの判定に使う。
 pub fn write_bookmark_position(
     db: &Arc<Mutex<Database>>,
     dir: &Path,
@@ -570,90 +707,56 @@ pub fn write_bookmark_position(
     last_entry_name: &str,
     archive_mtime: i64,
 ) {
-    let key = make_key(dir, filename);
-    let Ok(db) = db.lock() else { return };
-    let Ok(tx) = db.begin_write() else { return };
-    {
-        let Ok(mut table) = tx.open_table(BOOKMARK_TABLE_V1) else { return };
-        let current = table.get(key.as_str()).ok().flatten().map(|v| decode_bookmark(v.value()));
-        let Some(state) = current.filter(|state| state.enabled) else { return };
-        let _ = table.insert(
-            key.as_str(),
-            (state.enabled, last_entry_name, unix_timestamp_secs(), archive_mtime),
-        );
-    }
-    let _ = tx.commit();
+    bookmark_modify(db, dir, filename, |current, fp| match current.filter(|state| state.enabled) {
+        Some(state) => BookmarkChange::Set(BookmarkState {
+            last_entry_name: last_entry_name.to_owned(),
+            updated_at: unix_timestamp_secs(),
+            archive_mtime,
+            archive_fp: fp,
+            ..state
+        }),
+        None => BookmarkChange::Keep,
+    });
 }
 
 /// 保存済みのしおり状態を返す。レコード不在は None。
 pub fn read_bookmark(db: &Arc<Mutex<Database>>, dir: &Path, filename: &str) -> Option<BookmarkState> {
-    let key = make_key(dir, filename);
     let db = db.lock().ok()?;
     let tx = db.begin_read().ok()?;
-    let table = tx.open_table(BOOKMARK_TABLE_V1).ok()?;
-    let value = table.get(key.as_str()).ok()??;
-    Some(decode_bookmark(value.value()))
+    let owner = owner_tx(&tx, dir, filename);
+    bookmark_get_tx(&tx, &owner)
 }
 
 /// 復帰失敗時、位置情報だけ初期化する（enabledは維持し、次回離脱時に再記録させる）。
 pub fn clear_bookmark_position(db: &Arc<Mutex<Database>>, dir: &Path, filename: &str) {
-    let key = make_key(dir, filename);
-    let Ok(db) = db.lock() else { return };
-    let Ok(tx) = db.begin_write() else { return };
-    {
-        let Ok(mut table) = tx.open_table(BOOKMARK_TABLE_V1) else { return };
-        let current = table.get(key.as_str()).ok().flatten().map(|v| decode_bookmark(v.value()));
-        let Some(state) = current else { return };
-        let _ = table.insert(key.as_str(), (state.enabled, "", 0i64, 0i64));
-    }
-    let _ = tx.commit();
+    bookmark_modify(db, dir, filename, |current, _| match current {
+        Some(state) => BookmarkChange::Set(BookmarkState {
+            last_entry_name: String::new(),
+            updated_at: 0,
+            archive_mtime: 0,
+            archive_fp: None,
+            ..state
+        }),
+        None => BookmarkChange::Keep,
+    });
 }
 
-/// しおりレコードを完全に削除する（GC用）。
+/// しおりレコードを完全に削除する（しおり保存OFF）。IDが解決済みなら旧v1の行も消す。
 pub fn remove_bookmark(db: &Arc<Mutex<Database>>, dir: &Path, filename: &str) {
-    let key = make_key(dir, filename);
-    let Ok(db) = db.lock() else { return };
-    let Ok(tx) = db.begin_write() else { return };
-    if let Ok(mut table) = tx.open_table(BOOKMARK_TABLE_V1) {
-        let _ = table.remove(key.as_str());
-    }
-    let _ = tx.commit();
+    bookmark_modify(db, dir, filename, |_, _| BookmarkChange::Remove);
 }
 
-/// dir 配下で保存済みのしおり一覧を返す（GC用）。戻り値: (filename, BookmarkState)
-pub fn list_dir_bookmarks(db: &Arc<Mutex<Database>>, dir: &Path) -> Vec<(String, BookmarkState)> {
-    let prefix = {
-        let key = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
-        format!("{}\0", key.to_string_lossy())
-    };
-    let Ok(db) = db.lock() else { return Vec::new() };
-    let Ok(tx) = db.begin_read() else { return Vec::new() };
-    let Ok(table) = tx.open_table(BOOKMARK_TABLE_V1) else { return Vec::new() };
-    let Ok(range) = table.range(prefix.as_str()..) else { return Vec::new() };
-    let mut out = Vec::new();
-    for entry in range {
-        let Ok((k, v)) = entry else { continue };
-        let full_key = k.value();
-        if !full_key.starts_with(&prefix) {
-            break;
-        }
-        let filename = &full_key[prefix.len()..];
-        out.push((filename.to_string(), decode_bookmark(v.value())));
+/// 保存済みのしおりが、いまのファイルに対して有効か。FPが両方分かれば内容の一致で、
+/// どちらかが不明（旧v1から移した行・FP未取得）なら更新日時の一致で判定する。
+pub fn bookmark_matches_file(
+    bookmark: &BookmarkState,
+    file_fp: Option<crate::file_identity::Fp>,
+    file_mtime: i64,
+) -> bool {
+    match (bookmark.archive_fp, file_fp) {
+        (Some(saved), Some(now)) => saved == now,
+        _ => bookmark.archive_mtime == file_mtime,
     }
-    out
-}
-
-/// dir 配下で existing_filenames に存在しないしおりレコードを削除する（GC）。削除件数を返す。
-pub fn bookmark_gc_dir(db: &Arc<Mutex<Database>>, dir: &Path, existing_filenames: &[String]) -> usize {
-    let stale: Vec<String> = list_dir_bookmarks(db, dir)
-        .into_iter()
-        .map(|(name, _)| name)
-        .filter(|name| !existing_filenames.contains(name))
-        .collect();
-    for name in &stale {
-        remove_bookmark(db, dir, name);
-    }
-    stale.len()
 }
 
 /// 評価の半星値の上限（★5.0）。これを超える値は上限へ丸める。
@@ -667,67 +770,91 @@ fn decode_rating(value: (u8, u32, i64)) -> ArchiveRating {
     }
 }
 
+fn rating_get_tx(tx: &redb::ReadTransaction, owner: &Owner) -> Option<ArchiveRating> {
+    if let Owner::Id(rec) = owner {
+        if let Ok(t) = tx.open_table(ARCHIVE_RATING_TABLE_V2) {
+            if let Some(v) = t.get(rec.id).ok().flatten() {
+                return Some(decode_rating(v.value()));
+            }
+        }
+    }
+    let t = tx.open_table(ARCHIVE_RATING_TABLE_V1).ok()?;
+    owner
+        .legacy_keys()
+        .into_iter()
+        .find_map(|k| t.get(k).ok().flatten().map(|v| decode_rating(v.value())))
+}
+
+/// 評価行を読み→変更→書く。IDを同期で解決でき、v2に行が無ければ旧v1の行を読んで引き継ぐ。
+/// IDを解決できない（ファイルが無い等）場合は、従来どおりパスキーのv1行を直接読み書きする。
+fn rating_modify(
+    db: &Arc<Mutex<Database>>,
+    dir: &Path,
+    filename: &str,
+    f: impl FnOnce(Option<ArchiveRating>) -> ArchiveRating,
+) -> bool {
+    let rec = crate::file_identity::ensure_record(db, dir, filename);
+    let Ok(guard) = db.lock() else { return false };
+    let Ok(tx) = guard.begin_write() else { return false };
+    let ok = match &rec {
+        Some(rec) => {
+            let Ok(mut v2) = tx.open_table(ARCHIVE_RATING_TABLE_V2) else { return false };
+            let Ok(v1) = tx.open_table(ARCHIVE_RATING_TABLE_V1) else { return false };
+            let current = match v2.get(rec.id).ok().flatten().map(|v| decode_rating(v.value())) {
+                Some(r) => Some(r),
+                None => rec
+                    .legacy_keys()
+                    .into_iter()
+                    .find_map(|k| v1.get(k).ok().flatten().map(|v| decode_rating(v.value()))),
+            };
+            let next = f(current);
+            v2.insert(rec.id, (next.rating_half, next.visit_count, next.last_visit_at)).is_ok()
+        }
+        None => {
+            let key = make_key(dir, filename);
+            let Ok(mut v1) = tx.open_table(ARCHIVE_RATING_TABLE_V1) else { return false };
+            let current = v1.get(key.as_str()).ok().flatten().map(|v| decode_rating(v.value()));
+            let next = f(current);
+            v1.insert(key.as_str(), (next.rating_half, next.visit_count, next.last_visit_at)).is_ok()
+        }
+    };
+    tx.commit().is_ok() && ok
+}
+
 /// アーカイブを開いたことを記録する（訪問回数+1・最終訪問日時を更新）。
 /// レコード不在なら未評価・1回目で新規作成し、既存の評価は変更しない。
 pub fn record_archive_visit(db: &Arc<Mutex<Database>>, dir: &Path, filename: &str) -> bool {
-    let key = make_key(dir, filename);
-    let Ok(db) = db.lock() else { return false };
-    let Ok(tx) = db.begin_write() else { return false };
-    let ok = {
-        let Ok(mut table) = tx.open_table(ARCHIVE_RATING_TABLE_V1) else { return false };
-        let current = table.get(key.as_str()).ok().flatten().map(|v| decode_rating(v.value()));
-        let next = match current {
-            Some(r) => ArchiveRating {
-                visit_count: r.visit_count.saturating_add(1),
-                last_visit_at: unix_timestamp_secs(),
-                ..r
-            },
-            None => ArchiveRating { rating_half: 0, visit_count: 1, last_visit_at: unix_timestamp_secs() },
-        };
-        table.insert(key.as_str(), (next.rating_half, next.visit_count, next.last_visit_at)).is_ok()
-    };
-    tx.commit().is_ok() && ok
+    rating_modify(db, dir, filename, |current| match current {
+        Some(r) => ArchiveRating {
+            visit_count: r.visit_count.saturating_add(1),
+            last_visit_at: unix_timestamp_secs(),
+            ..r
+        },
+        None => ArchiveRating { rating_half: 0, visit_count: 1, last_visit_at: unix_timestamp_secs() },
+    })
 }
 
 /// 評価を絶対値で書き込む（0=未評価に戻す）。何度呼んでも同じ結果になる（冪等）。
 /// 上限超過は★5.0へ丸める。訪問回数・最終訪問日時は変更せず、レコード不在なら
 /// 訪問0回で新規作成する。
 pub fn write_archive_rating(db: &Arc<Mutex<Database>>, dir: &Path, filename: &str, rating_half: u8) -> bool {
-    let key = make_key(dir, filename);
     let rating_half = rating_half.min(RATING_HALF_MAX);
-    let Ok(db) = db.lock() else { return false };
-    let Ok(tx) = db.begin_write() else { return false };
-    let ok = {
-        let Ok(mut table) = tx.open_table(ARCHIVE_RATING_TABLE_V1) else { return false };
-        let current = table.get(key.as_str()).ok().flatten().map(|v| decode_rating(v.value()));
-        let next = ArchiveRating { rating_half, ..current.unwrap_or_default() };
-        table.insert(key.as_str(), (next.rating_half, next.visit_count, next.last_visit_at)).is_ok()
-    };
-    tx.commit().is_ok() && ok
+    rating_modify(db, dir, filename, |current| ArchiveRating {
+        rating_half,
+        ..current.unwrap_or_default()
+    })
 }
 
 /// 評価・訪問記録を返す。レコード不在（一度も開いていない）は None。
 pub fn read_archive_rating(db: &Arc<Mutex<Database>>, dir: &Path, filename: &str) -> Option<ArchiveRating> {
-    let key = make_key(dir, filename);
     let db = db.lock().ok()?;
     let tx = db.begin_read().ok()?;
-    let table = tx.open_table(ARCHIVE_RATING_TABLE_V1).ok()?;
-    let value = table.get(key.as_str()).ok()??;
-    Some(decode_rating(value.value()))
+    let owner = owner_tx(&tx, dir, filename);
+    rating_get_tx(&tx, &owner)
 }
 
-/// 評価・訪問レコードを完全に削除する（GC用）。
-pub fn remove_archive_rating(db: &Arc<Mutex<Database>>, dir: &Path, filename: &str) {
-    let key = make_key(dir, filename);
-    let Ok(db) = db.lock() else { return };
-    let Ok(tx) = db.begin_write() else { return };
-    if let Ok(mut table) = tx.open_table(ARCHIVE_RATING_TABLE_V1) {
-        let _ = table.remove(key.as_str());
-    }
-    let _ = tx.commit();
-}
-
-/// dir 配下の評価・訪問記録を一括で返す（サムネ帯・フィルタ・GC用）。戻り値: (filename, ArchiveRating)
+/// dir 配下の評価・訪問記録を一括で返す（サムネ帯・フィルタ用）。戻り値: (filename, ArchiveRating)
+/// IDが解決済みのファイルはID経由（v2、無ければ旧v1）、未解決のファイルは旧v1のパスキーで引く。
 pub fn list_dir_archive_ratings(db: &Arc<Mutex<Database>>, dir: &Path) -> Vec<(String, ArchiveRating)> {
     let prefix = {
         let key = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
@@ -735,32 +862,31 @@ pub fn list_dir_archive_ratings(db: &Arc<Mutex<Database>>, dir: &Path) -> Vec<(S
     };
     let Ok(db) = db.lock() else { return Vec::new() };
     let Ok(tx) = db.begin_read() else { return Vec::new() };
-    let Ok(table) = tx.open_table(ARCHIVE_RATING_TABLE_V1) else { return Vec::new() };
-    let Ok(range) = table.range(prefix.as_str()..) else { return Vec::new() };
-    let mut out = Vec::new();
-    for entry in range {
-        let Ok((k, v)) = entry else { continue };
-        let full_key = k.value();
-        if !full_key.starts_with(&prefix) {
-            break;
+    let mut out: HashMap<String, ArchiveRating> = HashMap::new();
+    if let Ok(table) = tx.open_table(ARCHIVE_RATING_TABLE_V1) {
+        if let Ok(range) = table.range(prefix.as_str()..) {
+            for entry in range {
+                let Ok((k, v)) = entry else { continue };
+                let full_key = k.value();
+                if !full_key.starts_with(&prefix) {
+                    break;
+                }
+                out.insert(full_key[prefix.len()..].to_string(), decode_rating(v.value()));
+            }
         }
-        let filename = &full_key[prefix.len()..];
-        out.push((filename.to_string(), decode_rating(v.value())));
     }
-    out
-}
-
-/// dir 配下で existing_filenames に存在しない評価レコードを削除する（GC）。削除件数を返す。
-pub fn archive_rating_gc_dir(db: &Arc<Mutex<Database>>, dir: &Path, existing_filenames: &[String]) -> usize {
-    let stale: Vec<String> = list_dir_archive_ratings(db, dir)
-        .into_iter()
-        .map(|(name, _)| name)
-        .filter(|name| !existing_filenames.contains(name))
-        .collect();
-    for name in &stale {
-        remove_archive_rating(db, dir, name);
+    for rec in crate::file_identity::dir_records_tx(&tx, &prefix) {
+        let name = rec.path_key[prefix.len()..].to_string();
+        match rating_get_tx(&tx, &Owner::Id(rec)) {
+            Some(r) => {
+                out.insert(name, r);
+            }
+            None => {
+                out.remove(&name);
+            }
+        }
     }
-    stale.len()
+    out.into_iter().collect()
 }
 
 /// tier_idの集合を8バイトLEで連結したバイト列へ符号化する。
@@ -1161,17 +1287,6 @@ mod tests {
     }
 
     #[test]
-    fn bookmark_gc_removes_only_missing_files() {
-        let db = temp_db();
-        let dir = dummy_dir();
-        write_bookmark_enabled(&db, &dir, "keep.zip", true);
-        write_bookmark_enabled(&db, &dir, "stale.zip", true);
-
-        assert_eq!(bookmark_gc_dir(&db, &dir, &["keep.zip".to_string()]), 1);
-        assert!(read_bookmark(&db, &dir, "keep.zip").is_some());
-        assert!(read_bookmark(&db, &dir, "stale.zip").is_none());
-    }
-    #[test]
     fn rating_record_is_absent_until_the_first_visit_or_rating() {
         let db = temp_db();
         let dir = unique_temp_path("rating_absent");
@@ -1263,9 +1378,10 @@ mod tests {
         assert_eq!(read_archive_rating(&db, &dir, "book.zip").unwrap().rating_half, 3);
         assert_eq!(read_archive_rating(&db, &other_dir, "book.zip").unwrap().rating_half, 9);
 
-        remove_archive_rating(&db, &dir, "book.zip");
-        assert!(read_archive_rating(&db, &dir, "book.zip").is_none());
-        assert!(read_archive_rating(&db, &other_dir, "book.zip").is_some());
+        // 片方を更新しても、もう片方は影響を受けない。
+        write_archive_rating(&db, &dir, "book.zip", 4);
+        assert_eq!(read_archive_rating(&db, &dir, "book.zip").unwrap().rating_half, 4);
+        assert_eq!(read_archive_rating(&db, &other_dir, "book.zip").unwrap().rating_half, 9);
     }
 
     #[test]
@@ -1280,18 +1396,6 @@ mod tests {
         let mut names: Vec<String> = list_dir_archive_ratings(&db, &dir).into_iter().map(|(n, _)| n).collect();
         names.sort();
         assert_eq!(names, vec!["a.zip".to_string(), "b.zip".to_string()]);
-    }
-
-    #[test]
-    fn archive_rating_gc_removes_only_missing_files() {
-        let db = temp_db();
-        let dir = dummy_dir();
-        record_archive_visit(&db, &dir, "keep.zip");
-        record_archive_visit(&db, &dir, "stale.zip");
-
-        assert_eq!(archive_rating_gc_dir(&db, &dir, &["keep.zip".to_string()]), 1);
-        assert!(read_archive_rating(&db, &dir, "keep.zip").is_some());
-        assert!(read_archive_rating(&db, &dir, "stale.zip").is_none());
     }
 
     #[test]
@@ -1334,5 +1438,232 @@ mod tests {
         write_archive_tags(&db, &dir, "book.zip", &[]);
         assert!(read_archive_tags(&db, &dir, "book.zip").is_empty());
         assert_eq!(read_archive_tags(&db, &other_dir, "book.zip"), vec![2]);
+    }
+
+    // ---- ID化（評価・訪問・しおり）----
+
+    fn real_dir(tag: &str) -> PathBuf {
+        let dir = unique_temp_path(tag);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// 書き込み中と見なされないよう、mtimeを十分古くしたファイルを作る。
+    fn real_file(dir: &Path, name: &str, data: &[u8]) -> PathBuf {
+        let p = dir.join(name);
+        std::fs::write(&p, data).unwrap();
+        let f = std::fs::OpenOptions::new().write(true).open(&p).unwrap();
+        f.set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(1000)).unwrap();
+        p
+    }
+
+    fn seed_v1_rating(db: &Arc<Mutex<Database>>, dir: &Path, name: &str, v: (u8, u32, i64)) {
+        let key = make_key(dir, name);
+        let guard = db.lock().unwrap();
+        let tx = guard.begin_write().unwrap();
+        {
+            let mut t = tx.open_table(ARCHIVE_RATING_TABLE_V1).unwrap();
+            t.insert(key.as_str(), v).unwrap();
+        }
+        tx.commit().unwrap();
+    }
+
+    fn seed_v1_bookmark(db: &Arc<Mutex<Database>>, dir: &Path, name: &str, entry: &str, mtime: i64) {
+        let key = make_key(dir, name);
+        let guard = db.lock().unwrap();
+        let tx = guard.begin_write().unwrap();
+        {
+            let mut t = tx.open_table(BOOKMARK_TABLE_V1).unwrap();
+            t.insert(key.as_str(), (true, entry, 1i64, mtime)).unwrap();
+        }
+        tx.commit().unwrap();
+    }
+
+    fn v2_rating_rows(db: &Arc<Mutex<Database>>) -> usize {
+        let guard = db.lock().unwrap();
+        let tx = guard.begin_read().unwrap();
+        tx.open_table(ARCHIVE_RATING_TABLE_V2).map_or(0, |t| t.iter().unwrap().count())
+    }
+
+    fn content(n: usize) -> Vec<u8> {
+        (0..n).map(|i| (i % 251) as u8).collect()
+    }
+
+    #[test]
+    fn rating_of_real_file_is_stored_by_id_and_marks_identity_spec() {
+        let db = temp_db();
+        let dir = real_dir("id_rating");
+        real_file(&dir, "a.zip", &content(3000));
+        assert!(!is_identity_spec(&db));
+        assert!(write_archive_rating(&db, &dir, "a.zip", 7));
+        assert!(is_identity_spec(&db));
+        assert_eq!(read_archive_rating(&db, &dir, "a.zip").unwrap().rating_half, 7);
+        assert_eq!(v2_rating_rows(&db), 1);
+        // 旧v1の行は作られない（IDが解決できる限り、新しい書き込みはv2へ）。
+        let key = make_key(&dir, "a.zip");
+        let guard = db.lock().unwrap();
+        let tx = guard.begin_read().unwrap();
+        assert!(tx.open_table(ARCHIVE_RATING_TABLE_V1).unwrap().get(key.as_str()).unwrap().is_none());
+    }
+
+    #[test]
+    fn legacy_v1_rating_is_read_before_and_migrated_on_first_write() {
+        let db = temp_db();
+        let dir = real_dir("id_migrate");
+        real_file(&dir, "a.zip", &content(3000));
+        seed_v1_rating(&db, &dir, "a.zip", (6, 4, 99));
+        // IDが無いうちは、旧v1をそのまま読む（旧値の表示）。
+        assert_eq!(
+            read_archive_rating(&db, &dir, "a.zip"),
+            Some(ArchiveRating { rating_half: 6, visit_count: 4, last_visit_at: 99 })
+        );
+        // 最初の書き込みで旧値（評価6・訪問4）を引き継いでv2へ移り、訪問だけが+1される。
+        assert!(record_archive_visit(&db, &dir, "a.zip"));
+        let r = read_archive_rating(&db, &dir, "a.zip").unwrap();
+        assert_eq!((r.rating_half, r.visit_count), (6, 5));
+        assert_eq!(v2_rating_rows(&db), 1);
+    }
+
+    #[test]
+    fn rating_follows_a_moved_file_and_copy_gets_its_own_record() {
+        let db = temp_db();
+        let dir1 = real_dir("id_move_a");
+        let dir2 = real_dir("id_move_b");
+        let p1 = real_file(&dir1, "a.zip", &content(5000));
+        assert!(write_archive_rating(&db, &dir1, "a.zip", 9));
+
+        // 移動（mtime・内容はそのまま）。新しい場所は未解決なので、解決すると評価が追従する。
+        std::fs::rename(&p1, dir2.join("b.zip")).unwrap();
+        assert!(crate::file_identity::ensure_record(&db, &dir2, "b.zip").is_some());
+        assert_eq!(read_archive_rating(&db, &dir2, "b.zip").unwrap().rating_half, 9);
+        assert_eq!(read_archive_rating(&db, &dir1, "a.zip"), None);
+
+        // コピーは別ファイル扱い。評価は引き継がない。
+        std::fs::copy(dir2.join("b.zip"), dir1.join("copy.zip")).unwrap();
+        let f = std::fs::OpenOptions::new().write(true).open(dir1.join("copy.zip")).unwrap();
+        f.set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(500)).unwrap();
+        assert!(crate::file_identity::ensure_record(&db, &dir1, "copy.zip").is_some());
+        assert_eq!(read_archive_rating(&db, &dir1, "copy.zip"), None);
+        assert_eq!(read_archive_rating(&db, &dir2, "b.zip").unwrap().rating_half, 9);
+    }
+
+    #[test]
+    fn unmigrated_v1_rating_is_reachable_after_a_move_via_origin_key() {
+        let db = temp_db();
+        let dir1 = real_dir("id_bridge_a");
+        let dir2 = real_dir("id_bridge_b");
+        let p1 = real_file(&dir1, "a.zip", &content(5000));
+        seed_v1_rating(&db, &dir1, "a.zip", (8, 2, 50));
+        // IDだけを作った（評価はまだv1のまま）状態で移動する。
+        let rec = crate::file_identity::ensure_record(&db, &dir1, "a.zip").unwrap();
+        assert_eq!(v2_rating_rows(&db), 0);
+        std::fs::rename(&p1, dir2.join("b.zip")).unwrap();
+        let moved = crate::file_identity::ensure_record(&db, &dir2, "b.zip").unwrap();
+        assert_eq!(moved.id, rec.id);
+        // 旧パスキー（origin_key）経由で旧v1の行に届く。
+        assert_eq!(
+            read_archive_rating(&db, &dir2, "b.zip"),
+            Some(ArchiveRating { rating_half: 8, visit_count: 2, last_visit_at: 50 })
+        );
+    }
+
+    #[test]
+    fn list_dir_ratings_mixes_resolved_ids_and_unresolved_legacy_rows() {
+        let db = temp_db();
+        let dir = real_dir("id_list");
+        real_file(&dir, "id.zip", &content(3000));
+        real_file(&dir, "legacy.zip", &content(4000));
+        assert!(write_archive_rating(&db, &dir, "id.zip", 3));
+        seed_v1_rating(&db, &dir, "legacy.zip", (5, 1, 7));
+        let other = real_dir("id_list_other");
+        real_file(&other, "x.zip", &content(1000));
+        assert!(write_archive_rating(&db, &other, "x.zip", 9));
+
+        let mut got = list_dir_archive_ratings(&db, &dir);
+        got.sort_by(|a, b| a.0.cmp(&b.0));
+        let names: Vec<(&str, u8)> = got.iter().map(|(n, r)| (n.as_str(), r.rating_half)).collect();
+        assert_eq!(names, vec![("id.zip", 3), ("legacy.zip", 5)]);
+    }
+
+    #[test]
+    fn missing_file_falls_back_to_legacy_path_keyed_rows() {
+        // 実体が無くてIDを作れない場合は、従来どおりパスキーのv1へ書き読みする。
+        let db = temp_db();
+        let dir = real_dir("id_fallback");
+        assert!(write_archive_rating(&db, &dir, "ghost.zip", 2));
+        assert_eq!(read_archive_rating(&db, &dir, "ghost.zip").unwrap().rating_half, 2);
+        assert_eq!(v2_rating_rows(&db), 0);
+        assert!(!is_identity_spec(&db));
+    }
+
+    #[test]
+    fn id_has_user_data_turns_true_after_the_first_visit() {
+        let db = temp_db();
+        let dir = real_dir("id_has_data");
+        real_file(&dir, "a.zip", &content(3000));
+        let rec = crate::file_identity::ensure_record(&db, &dir, "a.zip").unwrap();
+        assert!(!id_has_user_data(&db, rec.id));
+        assert!(record_archive_visit(&db, &dir, "a.zip"));
+        assert!(id_has_user_data(&db, rec.id));
+    }
+
+    #[test]
+    fn bookmark_follows_a_moved_file_and_validity_uses_fp() {
+        let db = temp_db();
+        let dir1 = real_dir("id_bm_a");
+        let dir2 = real_dir("id_bm_b");
+        let p1 = real_file(&dir1, "a.zip", &content(5000));
+        assert!(write_bookmark_enabled(&db, &dir1, "a.zip", true));
+        write_bookmark_position(&db, &dir1, "a.zip", "p/010.jpg", 111);
+        let saved = read_bookmark(&db, &dir1, "a.zip").unwrap();
+        assert!(saved.archive_fp.is_some(), "保存時のFPを記録する");
+
+        std::fs::rename(&p1, dir2.join("b.zip")).unwrap();
+        let rec = crate::file_identity::ensure_record(&db, &dir2, "b.zip").unwrap();
+        let moved = read_bookmark(&db, &dir2, "b.zip").unwrap();
+        assert_eq!(moved.last_entry_name, "p/010.jpg");
+        // mtimeが違っていても、内容（FP）が同じならしおりは有効。
+        assert!(bookmark_matches_file(&moved, rec.fp, 99999));
+    }
+
+    #[test]
+    fn bookmark_matches_file_prefers_fp_and_falls_back_to_mtime() {
+        let state = |fp: Option<[u8; 16]>| BookmarkState {
+            enabled: true,
+            last_entry_name: "x".into(),
+            updated_at: 0,
+            archive_mtime: 100,
+            archive_fp: fp,
+        };
+        assert!(bookmark_matches_file(&state(Some([1; 16])), Some([1; 16]), 999));
+        assert!(!bookmark_matches_file(&state(Some([1; 16])), Some([2; 16]), 100));
+        // 片方が不明（旧v1から移した行など）なら、更新日時で判定する。
+        assert!(bookmark_matches_file(&state(None), Some([2; 16]), 100));
+        assert!(!bookmark_matches_file(&state(None), Some([2; 16]), 101));
+        assert!(bookmark_matches_file(&state(Some([1; 16])), None, 100));
+    }
+
+    #[test]
+    fn remove_bookmark_does_not_resurrect_legacy_row() {
+        let db = temp_db();
+        let dir = real_dir("id_bm_remove");
+        real_file(&dir, "a.zip", &content(3000));
+        seed_v1_bookmark(&db, &dir, "a.zip", "old/005.jpg", 7);
+        assert_eq!(read_bookmark(&db, &dir, "a.zip").unwrap().last_entry_name, "old/005.jpg");
+        remove_bookmark(&db, &dir, "a.zip");
+        assert!(read_bookmark(&db, &dir, "a.zip").is_none(), "旧v1の行が復活しない");
+    }
+
+    #[test]
+    fn legacy_bookmark_is_migrated_with_unknown_fp() {
+        let db = temp_db();
+        let dir = real_dir("id_bm_migrate");
+        real_file(&dir, "a.zip", &content(3000));
+        seed_v1_bookmark(&db, &dir, "a.zip", "old/005.jpg", 7);
+        // 位置を保存し直すと、旧しおりの有効/無効を引き継いだままFP付きのv2へ移る。
+        write_bookmark_position(&db, &dir, "a.zip", "new/009.jpg", 8);
+        let b = read_bookmark(&db, &dir, "a.zip").unwrap();
+        assert_eq!((b.enabled, b.last_entry_name.as_str()), (true, "new/009.jpg"));
+        assert!(b.archive_fp.is_some());
     }
 }
