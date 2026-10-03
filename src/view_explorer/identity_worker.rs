@@ -17,6 +17,7 @@ use redb::Database;
 
 use super::NekoviewApp;
 use crate::file_identity::{self, Resolution, ResolveOutcome};
+use crate::identity_pending::PendingKind;
 
 /// 結果を返す単位。これだけ溜まるか、バッチが終わると `Chunk` を送る。
 /// 「検証中」のサムネ生成はここで解放されるので、小さめにして待ち時間を短くする。
@@ -37,8 +38,9 @@ pub(super) enum IdentityEvent {
     /// 処理した一部の結果。`settled` は検証が済んだパス（「検証中」表示を外す）、`refresh` は
     /// そのうち移動・統合で評価等が付き替わった可能性のあるパス（UI側で引き直す）。
     Chunk { generation: u64, refresh: Vec<PathBuf>, settled: Vec<PathBuf>, processed: usize },
-    /// この世代のバッチを処理し終えた（打ち切りを除く）。
-    Done { generation: u64 },
+    /// この世代のバッチを処理し終えた（打ち切りを除く）。`pending_created` は今回新しく記録した未解決の件数
+    /// （通知トーストの対象）、`pending_count` は掃除後の未解決の総数。
+    Done { generation: u64, pending_created: usize, pending_count: usize },
 }
 
 enum Job {
@@ -153,6 +155,7 @@ fn run_resolve_job(
     let keep_going = || current.load(Ordering::Acquire) == generation;
     let mut pending = paths;
     let mut aborted = false;
+    let mut pending_created = 0;
     for round in 0..=MAX_RETRY_ROUNDS {
         let outcome = process_batch_with(
             db,
@@ -176,6 +179,7 @@ fn run_resolve_job(
             },
         );
         aborted = outcome.aborted;
+        pending_created += outcome.pending_created;
         pending = outcome.unstable;
         if aborted || pending.is_empty() || round == MAX_RETRY_ROUNDS {
             break;
@@ -186,7 +190,10 @@ fn run_resolve_job(
         }
     }
     if !aborted {
-        let _ = event_tx.send(IdentityEvent::Done { generation });
+        // 状況が変わって意味を失った未解決（対象に記録が付いた、候補が消えた等）を除いてから、件数を知らせる。
+        crate::identity_pending::prune_real(db);
+        let pending_count = crate::identity_pending::count(db);
+        let _ = event_tx.send(IdentityEvent::Done { generation, pending_created, pending_count });
         ctx.request_repaint();
     }
 }
@@ -240,6 +247,8 @@ pub(super) struct BatchOutcome {
     /// 書き込み中の疑いで後回しにしたパス。
     pub unstable: Vec<PathBuf>,
     pub aborted: bool,
+    /// この処理で新しく記録した未解決の件数（同じ (種別, 対象) の更新・変更なしは数えない）。
+    pub pending_created: usize,
 }
 
 /// ディレクトリごとに正規化したキーの接頭辞を使い回す（`make_key` は呼ぶたびに canonicalize する）。
@@ -273,15 +282,19 @@ pub(super) struct BatchChunk {
 /// `keep_going` が false になったら、次のファイルの前で打ち切る（溜まった分は先に渡す）。
 /// stat一致（`Unchanged`）と後回し（`Unstable`）は結果に含めない。
 ///
-/// `on_moved(新しいパス, 旧パスキー)` は、移動・リネームと判明したファイルごとに、検証済みとして
-/// 報告する前に呼ぶ（サムネの引っ越し等。完了前にサムネ生成が始まらないようにするため）。
+/// `on_relocated(新しいパス, 元のパスキー)` は、移動・リネーム、または複製（コピー）と判明したファイルごとに、
+/// 検証済みとして報告する前に呼ぶ（サムネの引っ越し・複製等。完了前にサムネ生成が始まらないようにするため）。
+///
+/// 複製（`Copied`）と決まった新ファイルへは、ここで元のデータ（お気に入りを除く）を複製する。
+/// 引き継ぎ元・移動元が決められない場合（`AmbiguousCopy`・`AmbiguousMove`）は、新ファイルを空のまま、
+/// 未解決として記録する（解決はユーザーが行う）。
 pub(super) fn process_batch_with(
     db: &Arc<Mutex<Database>>,
     paths: &[PathBuf],
     keep_going: &dyn Fn() -> bool,
     now: i64,
     chunk_size: usize,
-    on_moved: &dyn Fn(&Path, &str),
+    on_relocated: &dyn Fn(&Path, &str),
     emit: &mut dyn FnMut(BatchChunk),
 ) -> BatchOutcome {
     let mut keys = KeyMaker::default();
@@ -300,8 +313,25 @@ pub(super) fn process_batch_with(
         let key = keys.key(dir, name);
         match file_identity::resolve_file(db, &key, path, now, false) {
             ResolveOutcome::Resolved(Resolution::Moved { from, .. }) => {
-                on_moved(path, &from);
+                on_relocated(path, &from);
                 chunk.refresh.push(path.clone());
+                chunk.settled.push(path.clone());
+            }
+            ResolveOutcome::Resolved(Resolution::Copied { id, source }) => {
+                // 対象に既にデータが付いた等で複製できなくても、新ファイルは空のまま使える（無視してよい）。
+                let _ = crate::spread_state::clone_inheritable_data(db, source, id);
+                if let Some(src) = record_by_id(db, source) {
+                    on_relocated(path, &src.path_key);
+                }
+                chunk.refresh.push(path.clone());
+                chunk.settled.push(path.clone());
+            }
+            ResolveOutcome::Resolved(Resolution::AmbiguousCopy { id, candidates }) => {
+                note_pending(db, PendingKind::CopySource, id, &candidates, now, &mut outcome);
+                chunk.settled.push(path.clone());
+            }
+            ResolveOutcome::Resolved(Resolution::AmbiguousMove { id, candidates }) => {
+                note_pending(db, PendingKind::MoveTarget, id, &candidates, now, &mut outcome);
                 chunk.settled.push(path.clone());
             }
             ResolveOutcome::Resolved(Resolution::Merged { .. }) => {
@@ -328,6 +358,29 @@ pub(super) fn process_batch_with(
         emit(chunk);
     }
     outcome
+}
+
+fn record_by_id(db: &Arc<Mutex<Database>>, id: u64) -> Option<file_identity::FileRecord> {
+    use redb::ReadableDatabase;
+    let guard = db.lock().ok()?;
+    let tx = guard.begin_read().ok()?;
+    file_identity::record_by_id_tx(&tx, id)
+}
+
+/// 未解決を記録する。新しく作ったときだけ、通知の対象として数える。
+fn note_pending(
+    db: &Arc<Mutex<Database>>,
+    kind: PendingKind,
+    subject: u64,
+    candidates: &[u64],
+    now: i64,
+    outcome: &mut BatchOutcome,
+) {
+    if let Some(crate::identity_pending::AddOutcome::Created(_)) =
+        crate::identity_pending::add(db, kind, subject, candidates, now)
+    {
+        outcome.pending_created += 1;
+    }
 }
 
 /// フォルダ表示時のID解決の進捗。処理が `TOAST_DELAY` を過ぎても終わらない時だけ、処理中トーストを出す。
@@ -435,6 +488,7 @@ impl NekoviewApp {
         // 起動後の最初のフレームで、旧レコードのバックフィルを依頼する（ワーカー側でさらに数秒待つ）。
         if !self.identity_backfill_started {
             if let Some(db) = self.spread_db.clone() {
+                self.identity_pending_count = crate::identity_pending::count(&db);
                 self.identity_worker.submit_backfill(db);
                 self.identity_backfill_started = true;
             }
@@ -469,9 +523,14 @@ impl NekoviewApp {
                     }
                     self.egui_ctx.request_repaint();
                 }
-                IdentityEvent::Done { generation } => {
+                IdentityEvent::Done { generation, pending_created, pending_count } => {
                     if !self.identity_worker.is_current(generation) {
                         continue;
+                    }
+                    // 未解決の総数（掃除後）を反映し、新しく増えた時だけ通知する。
+                    self.identity_pending_count = pending_count;
+                    if pending_created > 0 {
+                        self.set_toast(crate::i18n::t().identity_pending_toast(pending_created));
                     }
                     // 後回しのまま残った・失敗したものも含め、検証中表示と処理中トーストを残さない。
                     self.identity_verifying.clear();
@@ -670,7 +729,7 @@ mod tests {
         loop {
             match worker.event_rx.recv_timeout(Duration::from_secs(10)).expect("Done が届く") {
                 IdentityEvent::Chunk { settled: s, .. } => settled.extend(s),
-                IdentityEvent::Done { generation: g } => {
+                IdentityEvent::Done { generation: g, .. } => {
                     assert_eq!(g, generation);
                     break;
                 }
@@ -984,9 +1043,173 @@ mod tests {
     fn wait_done(worker: &IdentityWorker, generation: u64) {
         loop {
             match worker.event_rx.recv_timeout(Duration::from_secs(10)).expect("Done が届く") {
-                IdentityEvent::Done { generation: g } if g == generation => return,
+                IdentityEvent::Done { generation: g, .. } if g == generation => return,
                 _ => {}
             }
         }
+    }
+
+    // ---- 複製・曖昧の結線（R4）----
+
+    /// 同じ内容（同じ長さ）の古いファイル。`file()` は長さで内容が決まる。
+    fn twin(dir: &Path, name: &str) -> PathBuf {
+        file(dir, name, 4000, 1000)
+    }
+
+    fn new_env(t: &TempRoot) -> Arc<Mutex<Database>> {
+        let db = open_spread_db(&t.0).unwrap();
+        crate::favorites::init_favorite_tables(&db).unwrap();
+        db
+    }
+
+    #[test]
+    fn a_copy_of_a_file_with_data_inherits_it_except_favorite_and_visits() {
+        let t = TempRoot::new("r4_copy");
+        let db = new_env(&t);
+        let (d1, d2) = (t.dir("d1"), t.dir("d2"));
+        let src = twin(&d1, "a.zip");
+        run(&db, &[src.clone()]);
+        assert!(write_archive_rating(&db, &d1, "a.zip", 8));
+        assert!(crate::spread_state::record_archive_visit(&db, &d1, "a.zip"));
+        assert!(crate::spread_state::write_archive_tags(&db, &d1, "a.zip", &[4, 2]));
+        crate::favorites::set_membership(&db, &d1, "a.zip", &[3]);
+
+        let copy = twin(&d2, "a_copy.zip");
+        let (outcome, chunks) = run(&db, &[copy.clone()]);
+
+        assert_eq!(outcome.pending_created, 0);
+        assert!(chunks.iter().any(|c| c.refresh.contains(&copy)), "データが付いたので引き直し対象");
+        let r = read_archive_rating(&db, &d2, "a_copy.zip").unwrap();
+        assert_eq!((r.rating_half, r.visit_count), (8, 0));
+        assert_eq!(crate::spread_state::read_archive_tags(&db, &d2, "a_copy.zip"), vec![4, 2]);
+        assert_eq!(crate::favorites::get_membership(&db, &d2, "a_copy.zip"), None, "お気に入りは複製しない");
+        assert_eq!(crate::favorites::get_membership(&db, &d1, "a.zip"), Some(vec![3]));
+        assert_eq!(crate::identity_pending::count(&db), 0);
+    }
+
+    #[test]
+    fn ambiguous_copy_sources_are_recorded_as_pending_and_leave_the_copy_blank() {
+        let t = TempRoot::new("r4_ambiguous_copy");
+        let db = new_env(&t);
+        let (d1, d2, d3) = (t.dir("d1"), t.dir("d2"), t.dir("d3"));
+        let a = twin(&d1, "a.zip");
+        run(&db, &[a.clone()]);
+        assert!(write_archive_rating(&db, &d1, "a.zip", 8));
+        let b = twin(&d2, "b.zip");
+        run(&db, &[b.clone()]); // aのコピーとして複製される
+        assert!(write_archive_rating(&db, &d2, "b.zip", 2)); // 後から別の評価にする → データが食い違う
+
+        let c = twin(&d3, "c.zip");
+        let (outcome, _) = run(&db, &[c.clone()]);
+        assert_eq!(outcome.pending_created, 1);
+        assert_eq!(read_archive_rating(&db, &d3, "c.zip"), None, "空のまま");
+        let list = crate::identity_pending::list(&db);
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].kind, PendingKind::CopySource);
+        assert_eq!(list[0].candidates.len(), 2);
+        // 同じファイルを再び処理しても、新しい未解決は増えない（stat一致で何もしない）。
+        let (again, _) = run(&db, &[c]);
+        assert_eq!(again.pending_created, 0);
+        assert_eq!(crate::identity_pending::count(&db), 1);
+    }
+
+    #[test]
+    fn ambiguous_move_sources_are_recorded_as_pending_without_assigning() {
+        let t = TempRoot::new("r4_ambiguous_move");
+        let db = new_env(&t);
+        let (d1, d2, d3) = (t.dir("d1"), t.dir("d2"), t.dir("d3"));
+        let a = twin(&d1, "a.zip");
+        run(&db, &[a.clone()]);
+        assert!(write_archive_rating(&db, &d1, "a.zip", 8));
+        let b = twin(&d2, "b.zip");
+        run(&db, &[b.clone()]);
+        assert!(write_archive_rating(&db, &d2, "b.zip", 2));
+        std::fs::remove_file(&a).unwrap();
+        std::fs::remove_file(&b).unwrap();
+
+        let c = twin(&d3, "c.zip");
+        let (outcome, _) = run(&db, &[c.clone()]);
+        assert_eq!(outcome.pending_created, 1);
+        let list = crate::identity_pending::list(&db);
+        assert_eq!(list[0].kind, PendingKind::MoveTarget);
+        assert_eq!(read_archive_rating(&db, &d3, "c.zip"), None, "自動割当はしない");
+        assert_eq!(read_archive_rating(&db, &d1, "a.zip").unwrap().rating_half, 8, "元の記録は無傷");
+    }
+
+    #[test]
+    fn copy_hook_is_called_with_the_source_key_before_the_copy_is_settled() {
+        let t = TempRoot::new("r4_hook");
+        let db = new_env(&t);
+        let (d1, d2) = (t.dir("d1"), t.dir("d2"));
+        let a = twin(&d1, "a.zip");
+        run(&db, &[a.clone()]);
+        assert!(write_archive_rating(&db, &d1, "a.zip", 6));
+        let copy = twin(&d2, "copy.zip");
+        let log = std::cell::RefCell::new(Vec::<String>::new());
+        process_batch_with(
+            &db,
+            &[copy.clone()],
+            &|| true,
+            file_identity::now_unix(),
+            CHUNK_SIZE,
+            &|p, from| log.borrow_mut().push(format!("hook {} {}", p.file_name().unwrap().to_string_lossy(), from.ends_with("a.zip"))),
+            &mut |c| log.borrow_mut().push(format!("settled {}", c.settled.len())),
+        );
+        assert_eq!(log.into_inner(), vec!["hook copy.zip true".to_owned(), "settled 1".to_owned()]);
+    }
+
+    #[test]
+    fn thumbnail_is_copied_to_a_copy_and_the_original_keeps_its_own() {
+        let t = TempRoot::new("r4_thumb_copy");
+        let db = new_env(&t);
+        let cache_root = t.0.join("cache");
+        let (d1, d2) = (t.dir("d1"), t.dir("d2"));
+        let a = twin(&d1, "a.zip");
+        run(&db, &[a.clone()]);
+        assert!(write_archive_rating(&db, &d1, "a.zip", 6));
+        let src_cache = cache_db_for(&cache_root, &d1);
+        crate::neko_dir::test_seed_current(&src_cache, "a.zip", 321, b"thumb", "full");
+        let copy = twin(&d2, "copy.zip");
+        process_batch_with(
+            &db,
+            &[copy.clone()],
+            &|| true,
+            file_identity::now_unix(),
+            CHUNK_SIZE,
+            &|p, from| transplant_thumbnail_for_move(&cache_root, p, from),
+            &mut |_| {},
+        );
+        let dst_cache = cache_db_for(&cache_root, &d2);
+        assert_eq!(crate::neko_dir::read_thumb_unchecked(&dst_cache, "copy.zip"), Some((321, b"thumb".to_vec())));
+        assert!(crate::neko_dir::read_thumb_unchecked(&src_cache, "a.zip").is_some());
+    }
+
+    #[test]
+    fn worker_reports_pending_counts_and_prunes_stale_records_on_done() {
+        let t = TempRoot::new("r4_worker");
+        let db = new_env(&t);
+        let (d1, d2, d3) = (t.dir("d1"), t.dir("d2"), t.dir("d3"));
+        let a = twin(&d1, "a.zip");
+        let b = twin(&d2, "b.zip");
+        let mut worker = IdentityWorker::spawn(egui::Context::default());
+        let g = worker.submit(db.clone(), vec![a, b], None);
+        wait_done(&worker, g);
+        assert!(write_archive_rating(&db, &d1, "a.zip", 8));
+        assert!(write_archive_rating(&db, &d2, "b.zip", 2));
+        // 意味を失った未解決（対象のIDが無い）を、先に1件入れておく。
+        crate::identity_pending::add(&db, PendingKind::CopySource, 987654, &[1], 1).unwrap();
+        let c = twin(&d3, "c.zip");
+        let g2 = worker.submit(db.clone(), vec![c], None);
+        let (created, count) = loop {
+            match worker.event_rx.recv_timeout(Duration::from_secs(10)).expect("Done が届く") {
+                IdentityEvent::Done { generation, pending_created, pending_count } if generation == g2 => {
+                    break (pending_created, pending_count)
+                }
+                _ => {}
+            }
+        };
+        assert_eq!(created, 1);
+        assert_eq!(count, 1, "意味を失った未解決は掃除され、実際の1件だけが残る");
+        worker.shutdown();
     }
 }

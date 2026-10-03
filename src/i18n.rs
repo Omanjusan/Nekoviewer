@@ -124,6 +124,15 @@ impl Lang {
         }
     }
 
+    /// 管理データ内の重複・曖昧で、引き継ぎ元を自動では決められなかった時の通知（件数は新しく増えた分）。
+    pub fn identity_pending_toast(self, n: usize) -> String {
+        match self {
+            Lang::Japanese => format!("管理データ内に同じ内容のファイルが複数あり、引き継ぎ元を決められませんでした（{n}件）"),
+            Lang::English  => format!("Several files with the same content exist in the managed data, so the source to inherit from could not be decided ({n})"),
+            Lang::Chinese  => format!("管理数据中存在多个内容相同的文件，无法确定继承来源（{n}件）"),
+        }
+    }
+
     pub fn card_info_name(self) -> &'static str {
         match self {
             Lang::Japanese => "情報:名前",

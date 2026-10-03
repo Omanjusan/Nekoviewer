@@ -972,6 +972,8 @@ pub struct NekoviewApp {
     identity_progress: Option<identity_worker::IdentityProgress>,
     /// 処理中トーストとして出している文言（出し入れの変化検知用）。
     identity_toast_msg: Option<String>,
+    /// 未解決（重複・曖昧）の総数。解決の完了ごとに更新する（解決UIの本実装で、ボタンの数字に使う）。
+    identity_pending_count: usize,
     /// 旧レコードのバックフィル依頼を出したか（起動後1回）。
     identity_backfill_started: bool,
     /// 開発用DBツール（デバッグタブ）の状態。実リリース時に dev_db_tools.rs ごと削除する。
@@ -1457,6 +1459,7 @@ impl NekoviewApp {
             identity_resolve_ui: Default::default(),
             identity_progress: None,
             identity_toast_msg: None,
+            identity_pending_count: 0,
             identity_backfill_started: false,
             dev_db_ui: dev_db_tools::DevDbUiState::load(&config_root),
             translate_cfg,
