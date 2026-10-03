@@ -596,6 +596,39 @@ mod tests {
     }
 
     #[test]
+    fn backfill_also_covers_files_that_only_have_spread_sort_or_thumbnail_settings() {
+        let t = TempRoot::new("backfill_settings");
+        let db = open_spread_db(&t.0).unwrap();
+        let dir = t.dir("d");
+        let spread_only = file(&dir, "spread.zip", 3000, 1000);
+        let sort_only = file(&dir, "sort.zip", 3100, 1000);
+        let plain = file(&dir, "plain.zip", 3200, 1000);
+        {
+            let g = db.lock().unwrap();
+            let tx = g.begin_write().unwrap();
+            {
+                let mut a = tx.open_table(crate::spread_state::SPREAD_TABLE).unwrap();
+                let k = crate::spread_state::make_key(&dir, "spread.zip");
+                a.insert(k.as_str(), (1u8, 0i32)).unwrap();
+                let mut b = tx.open_table(crate::spread_state::ARCHIVE_SORT_TABLE_V1).unwrap();
+                let k = crate::spread_state::make_key(&dir, "sort.zip");
+                b.insert(k.as_str(), (1u8, true)).unwrap();
+            }
+            tx.commit().unwrap();
+        }
+        let mut bf = Backfill::new(db.clone(), Duration::ZERO);
+        while bf.step() {}
+        assert!(rec_of(&db, &spread_only).is_some());
+        assert!(rec_of(&db, &sort_only).is_some());
+        assert!(rec_of(&db, &plain).is_none());
+        // 設定は旧v1のまま読める。
+        assert!(crate::spread_state::read_spread(&db, &dir, "spread.zip").is_some());
+        // 「検証中」の対象判定でも、旧データありとして除外される。
+        let set = crate::spread_state::paths_without_identity_or_legacy(&db, &[plain.clone()]);
+        assert_eq!(set, std::iter::once(plain).collect());
+    }
+
+    #[test]
     fn backfill_waits_for_its_start_delay() {
         let t = TempRoot::new("backfill_delay");
         let db = open_spread_db(&t.0).unwrap();

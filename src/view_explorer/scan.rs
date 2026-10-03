@@ -459,25 +459,20 @@ impl NekoviewApp {
             self.archive_meta_cache.clear();
             self.archive_rating_cache.clear();
             if let Some(db) = self.spread_db.clone() {
-                let filenames: Vec<String> = self.archives.iter()
-                    .filter_map(|p| p.file_name().and_then(|n| n.to_str()).map(str::to_string))
-                    .collect();
-                crate::spread_state::gc_dir(&db, &self.current_dir, &filenames);
+                // 見開き・ソート・お気に入り・評価・しおりは、フォルダから消えた行をGCしない。
+                // ファイルが移動・リネームされても旧v1行は遅延移行の橋渡しとして残し、ID化済みの
+                // データは新しいパスへ追従する（フォルダから消えたこと＝不要、とは限らない）。
                 self.spread_states = crate::spread_state::list_dir_entries(&db, &self.current_dir)
                     .into_iter()
                     .map(|(name, mode, offset)| (name, (mode, offset)))
                     .collect();
-                crate::spread_state::gc_archive_sorts(&db, &self.current_dir, &filenames);
                 self.archive_sort_states = crate::spread_state::list_dir_archive_sorts(&db, &self.current_dir)
                     .into_iter()
                     .map(|(name, key, ascending)| (name, (key, ascending)))
                     .collect();
-                crate::favorites::gc_dir(&db, &self.current_dir, &filenames);
                 self.favorite_states = crate::favorites::list_dir_favorites(&db, &self.current_dir)
                     .into_iter()
                     .collect();
-                // しおり・評価はGCしない。ファイルが移動・リネームされても旧v1行は遅延移行の橋渡しとして残し、
-                // ID化済みのデータは新しいパスへ追従する（フォルダから消えたこと＝不要、とは限らない）。
                 // 評価帯・フィルタ用に、このフォルダの評価・訪問を一括ロード（不在は None＝NEW）
                 let ratings: std::collections::HashMap<String, crate::spread_state::ArchiveRating> =
                     crate::spread_state::list_dir_archive_ratings(&db, &self.current_dir)

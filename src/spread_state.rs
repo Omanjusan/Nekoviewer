@@ -4,6 +4,7 @@ use std::sync::{Arc, Mutex};
 
 use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 
+use crate::file_settings::Slot;
 use crate::types::{PageMode, ReaderSortKey};
 
 /// キー = "{正規化済みディレクトリ}\0{ファイル名}"
@@ -190,7 +191,8 @@ pub fn set_identity_spec(db: &Arc<Mutex<Database>>, enabled: bool) -> bool {
     tx.commit().is_ok()
 }
 
-pub fn write_thumbnail_selection(
+/// 旧v1（パスキー）への直接書き込み。IDを解決できないファイル（実体が無い等）用。
+fn write_thumbnail_selection_v1(
     db: &Arc<Mutex<Database>>,
     dir: &Path,
     filename: &str,
@@ -211,31 +213,9 @@ pub fn write_thumbnail_selection(
     let _ = tx.commit();
 }
 
-pub fn read_thumbnail_selection(
-    db: &Arc<Mutex<Database>>,
-    dir: &Path,
-    filename: &str,
-) -> Option<ThumbnailSelection> {
-    let key = make_key(dir, filename);
-    let db = db.lock().ok()?;
-    let tx = db.begin_read().ok()?;
-    if let Ok(table) = tx.open_table(THUMBNAIL_SELECTION_TABLE_V2) {
-        if let Some(guard) = table.get(key.as_str()).ok().flatten() {
-            let (entry_name, source_kind) = guard.value();
-            return Some(ThumbnailSelection {
-                entry_name: entry_name.to_string(),
-                source_kind: ThumbnailSourceKind::from_u8(source_kind)?,
-            });
-        }
-    }
-    let table = tx.open_table(THUMBNAIL_SELECTION_TABLE_V1).ok()?;
-    Some(ThumbnailSelection {
-        entry_name: table.get(key.as_str()).ok()??.value().to_string(),
-        source_kind: ThumbnailSourceKind::Full,
-    })
-}
 
-pub fn remove_thumbnail_selection(db: &Arc<Mutex<Database>>, dir: &Path, filename: &str) {
+/// 旧v1（パスキー）への直接書き込み。IDを解決できないファイル（実体が無い等）用。
+fn remove_thumbnail_selection_v1(db: &Arc<Mutex<Database>>, dir: &Path, filename: &str) {
     let key = make_key(dir, filename);
     let Ok(db) = db.lock() else { return };
     let Ok(tx) = db.begin_write() else { return };
@@ -246,6 +226,130 @@ pub fn remove_thumbnail_selection(db: &Arc<Mutex<Database>>, dir: &Path, filenam
         let _ = table.remove(key.as_str());
     }
     let _ = tx.commit();
+}
+
+// ---- ファイル単位の設定（見開き・ソート・登録サムネ）。IDが解決済みなら file_settings_v2 ----
+
+fn spread_from_raw(v: (u8, i32)) -> Option<(PageMode, i32)> {
+    Some((page_mode_from_u8(v.0)?, v.1))
+}
+
+fn thumbnail_from_raw(v: (String, u8)) -> Option<ThumbnailSelection> {
+    Some(ThumbnailSelection { entry_name: v.0, source_kind: ThumbnailSourceKind::from_u8(v.1)? })
+}
+
+fn dir_prefix(dir: &Path) -> String {
+    let key = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
+    format!("{}\0", key.to_string_lossy())
+}
+
+pub fn write_thumbnail_selection(
+    db: &Arc<Mutex<Database>>,
+    dir: &Path,
+    filename: &str,
+    selection: &ThumbnailSelection,
+) {
+    let raw = (selection.entry_name.clone(), selection.source_kind.as_u8());
+    if crate::file_settings::modify(db, dir, filename, |s| s.thumb = Slot::Set(raw)).is_none() {
+        write_thumbnail_selection_v1(db, dir, filename, selection);
+    }
+}
+
+pub fn read_thumbnail_selection(
+    db: &Arc<Mutex<Database>>,
+    dir: &Path,
+    filename: &str,
+) -> Option<ThumbnailSelection> {
+    crate::file_settings::read_effective(db, dir, filename)?.thumb.and_then(thumbnail_from_raw)
+}
+
+pub fn remove_thumbnail_selection(db: &Arc<Mutex<Database>>, dir: &Path, filename: &str) {
+    if crate::file_settings::modify(db, dir, filename, |s| s.thumb = Slot::Cleared).is_none() {
+        remove_thumbnail_selection_v1(db, dir, filename);
+    }
+}
+
+/// アーカイブのソート条件を保存する（上書き）。戻り値は書き込み成否（一括変更のトースト集計用）。
+pub fn write_archive_sort(
+    db: &Arc<Mutex<Database>>,
+    dir: &Path,
+    filename: &str,
+    key: ReaderSortKey,
+    ascending: bool,
+) -> bool {
+    let raw = (reader_sort_key_to_u8(key), ascending);
+    crate::file_settings::modify(db, dir, filename, |s| s.sort = Slot::Set(raw))
+        .unwrap_or_else(|| write_archive_sort_v1(db, dir, filename, key, ascending))
+}
+
+/// アーカイブの保存済みソート条件を返す。レコード不在・未知値は None。
+pub fn read_archive_sort(
+    db: &Arc<Mutex<Database>>,
+    dir: &Path,
+    filename: &str,
+) -> Option<(ReaderSortKey, bool)> {
+    let (key_raw, ascending) = crate::file_settings::read_effective(db, dir, filename)?.sort?;
+    Some((reader_sort_key_from_u8(key_raw)?, ascending))
+}
+
+/// アーカイブのソート条件保存を解除する。
+pub fn remove_archive_sort(db: &Arc<Mutex<Database>>, dir: &Path, filename: &str) {
+    if crate::file_settings::modify(db, dir, filename, |s| s.sort = Slot::Cleared).is_none() {
+        remove_archive_sort_v1(db, dir, filename);
+    }
+}
+
+/// dir 配下の有効なソート保存値を列挙する。
+pub fn list_dir_archive_sorts(
+    db: &Arc<Mutex<Database>>,
+    dir: &Path,
+) -> Vec<(String, ReaderSortKey, bool)> {
+    let Ok(db) = db.lock() else { return Vec::new() };
+    let Ok(tx) = db.begin_read() else { return Vec::new() };
+    crate::file_settings::dir_effective_tx(&tx, &dir_prefix(dir))
+        .into_iter()
+        .filter_map(|(name, e)| {
+            let (key_raw, ascending) = e.sort?;
+            Some((name, reader_sort_key_from_u8(key_raw)?, ascending))
+        })
+        .collect()
+}
+
+/// 見開き状態を保存する（上書き）。戻り値は書き込み成否（一括変更のトースト集計用）。
+pub fn write_spread(db: &Arc<Mutex<Database>>, dir: &Path, filename: &str, mode: PageMode, offset: i32) -> bool {
+    let raw = (page_mode_to_u8(mode), offset);
+    crate::file_settings::modify(db, dir, filename, |s| s.spread = Slot::Set(raw))
+        .unwrap_or_else(|| write_spread_v1(db, dir, filename, mode, offset))
+}
+
+/// 保存済みの見開き状態を返す。レコード不在・未知値は None。
+pub fn read_spread(
+    db: &Arc<Mutex<Database>>,
+    dir: &Path,
+    filename: &str,
+) -> Option<(PageMode, i32)> {
+    crate::file_settings::read_effective(db, dir, filename)?.spread.and_then(spread_from_raw)
+}
+
+/// 見開き状態を削除する（保存解除）。
+pub fn remove_spread(db: &Arc<Mutex<Database>>, dir: &Path, filename: &str) {
+    if crate::file_settings::modify(db, dir, filename, |s| s.spread = Slot::Cleared).is_none() {
+        remove_spread_v1(db, dir, filename);
+    }
+}
+
+/// dir 配下で保存済みのファイル名一覧を返す（入場時ロード用）。
+/// 戻り値: (filename, page_mode, spread_offset)
+pub fn list_dir_entries(db: &Arc<Mutex<Database>>, dir: &Path) -> Vec<(String, PageMode, i32)> {
+    let Ok(db) = db.lock() else { return Vec::new() };
+    let Ok(tx) = db.begin_read() else { return Vec::new() };
+    crate::file_settings::dir_effective_tx(&tx, &dir_prefix(dir))
+        .into_iter()
+        .filter_map(|(name, e)| {
+            let (mode, offset) = spread_from_raw(e.spread?)?;
+            Some((name, mode, offset))
+        })
+        .collect()
 }
 
 pub(crate) fn make_key(dir: &Path, filename: &str) -> String {
@@ -265,10 +369,6 @@ pub fn saved_settings_for_paths(
     let Ok(tx) = db.begin_read() else {
         return HashMap::new();
     };
-    let spread_table = tx.open_table(SPREAD_TABLE).ok();
-    let sort_table = tx.open_table(ARCHIVE_SORT_TABLE_V1).ok();
-    let thumbnail_table_v1 = tx.open_table(THUMBNAIL_SELECTION_TABLE_V1).ok();
-    let thumbnail_table_v2 = tx.open_table(THUMBNAIL_SELECTION_TABLE_V2).ok();
     let mut out = HashMap::new();
 
     for path in paths {
@@ -276,22 +376,12 @@ pub fn saved_settings_for_paths(
         let Some(filename) = path.file_name().and_then(|name| name.to_str()) else {
             continue;
         };
-        let key = make_key(dir, filename);
-        let spread_mode = spread_table.as_ref().and_then(|table| {
-            let value = table.get(key.as_str()).ok()??;
-            page_mode_from_u8(value.value().0)
-        });
-        let has_saved_sort = sort_table.as_ref().is_some_and(|table| {
-            table.get(key.as_str()).ok().flatten()
-                .and_then(|value| reader_sort_key_from_u8(value.value().0))
-                .is_some()
-        });
-        let has_custom_thumbnail = thumbnail_table_v2.as_ref().is_some_and(|table| {
-            table.get(key.as_str()).ok().flatten().is_some()
-        }) || thumbnail_table_v1.as_ref().is_some_and(|table| {
-            table.get(key.as_str()).ok().flatten().is_some()
-        });
-        let has_bookmark = bookmark_get_tx(&tx, &owner_tx(&tx, dir, filename)).is_some_and(|b| b.enabled);
+        let owner = owner_tx(&tx, dir, filename);
+        let effective = crate::file_settings::effective_tx(&tx, &owner);
+        let spread_mode = effective.spread.and_then(|v| page_mode_from_u8(v.0));
+        let has_saved_sort = effective.sort.is_some_and(|v| reader_sort_key_from_u8(v.0).is_some());
+        let has_custom_thumbnail = effective.thumb.is_some();
+        let has_bookmark = bookmark_get_tx(&tx, &owner).is_some_and(|b| b.enabled);
         let settings = SavedArchiveSettings {
             spread_mode,
             has_saved_sort,
@@ -340,8 +430,8 @@ pub fn reader_sort_key_from_u8(v: u8) -> Option<ReaderSortKey> {
     }
 }
 
-/// アーカイブのソート条件を保存する（上書き）。戻り値は書き込み成否（一括変更のトースト集計用）。
-pub fn write_archive_sort(
+/// 旧v1（パスキー）への直接書き込み。IDを解決できないファイル（実体が無い等）用。
+fn write_archive_sort_v1(
     db: &Arc<Mutex<Database>>,
     dir: &Path,
     filename: &str,
@@ -358,23 +448,9 @@ pub fn write_archive_sort(
     tx.commit().is_ok() && inserted
 }
 
-/// アーカイブの保存済みソート条件を返す。レコード不在・未知値は None。
-pub fn read_archive_sort(
-    db: &Arc<Mutex<Database>>,
-    dir: &Path,
-    filename: &str,
-) -> Option<(ReaderSortKey, bool)> {
-    let db_key = make_key(dir, filename);
-    let db = db.lock().ok()?;
-    let tx = db.begin_read().ok()?;
-    let table = tx.open_table(ARCHIVE_SORT_TABLE_V1).ok()?;
-    let value = table.get(db_key.as_str()).ok()??;
-    let (key_raw, ascending) = value.value();
-    Some((reader_sort_key_from_u8(key_raw)?, ascending))
-}
 
-/// アーカイブのソート条件保存を解除する。
-pub fn remove_archive_sort(db: &Arc<Mutex<Database>>, dir: &Path, filename: &str) {
+/// 旧v1（パスキー）への直接書き込み。IDを解決できないファイル（実体が無い等）用。
+fn remove_archive_sort_v1(db: &Arc<Mutex<Database>>, dir: &Path, filename: &str) {
     let db_key = make_key(dir, filename);
     let Ok(db) = db.lock() else { return };
     let Ok(tx) = db.begin_write() else { return };
@@ -384,60 +460,10 @@ pub fn remove_archive_sort(db: &Arc<Mutex<Database>>, dir: &Path, filename: &str
     let _ = tx.commit();
 }
 
-/// dir 配下の有効なソート保存値を列挙する。
-pub fn list_dir_archive_sorts(
-    db: &Arc<Mutex<Database>>,
-    dir: &Path,
-) -> Vec<(String, ReaderSortKey, bool)> {
-    let prefix = {
-        let key = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
-        format!("{}\0", key.to_string_lossy())
-    };
-    let Ok(db) = db.lock() else { return Vec::new() };
-    let Ok(tx) = db.begin_read() else {
-        return Vec::new();
-    };
-    let Ok(table) = tx.open_table(ARCHIVE_SORT_TABLE_V1) else {
-        return Vec::new();
-    };
-    let Ok(range) = table.range(prefix.as_str()..) else {
-        return Vec::new();
-    };
-    let mut out = Vec::new();
-    for entry in range {
-        let Ok((k, v)) = entry else { continue };
-        let full_key = k.value();
-        if !full_key.starts_with(&prefix) {
-            break;
-        }
-        let (key_raw, ascending) = v.value();
-        let Some(sort_key) = reader_sort_key_from_u8(key_raw) else {
-            continue;
-        };
-        out.push((full_key[prefix.len()..].to_string(), sort_key, ascending));
-    }
-    out
-}
 
-/// dir 配下で存在しなくなったアーカイブのソート保存値を削除する。
-pub fn gc_archive_sorts(
-    db: &Arc<Mutex<Database>>,
-    dir: &Path,
-    existing_filenames: &[String],
-) -> usize {
-    let stale: Vec<String> = list_dir_archive_sorts(db, dir)
-        .into_iter()
-        .map(|(name, _, _)| name)
-        .filter(|name| !existing_filenames.contains(name))
-        .collect();
-    for name in &stale {
-        remove_archive_sort(db, dir, name);
-    }
-    stale.len()
-}
 
-/// 見開き状態を保存する（上書き）。戻り値は書き込み成否（一括変更のトースト集計用）。
-pub fn write_spread(db: &Arc<Mutex<Database>>, dir: &Path, filename: &str, mode: PageMode, offset: i32) -> bool {
+/// 旧v1（パスキー）への直接書き込み。IDを解決できないファイル（実体が無い等）用。
+fn write_spread_v1(db: &Arc<Mutex<Database>>, dir: &Path, filename: &str, mode: PageMode, offset: i32) -> bool {
     let key = make_key(dir, filename);
     let Ok(db) = db.lock() else { return false };
     let Ok(tx) = db.begin_write() else { return false };
@@ -448,23 +474,9 @@ pub fn write_spread(db: &Arc<Mutex<Database>>, dir: &Path, filename: &str, mode:
     tx.commit().is_ok() && inserted
 }
 
-/// 保存済みの見開き状態を返す。レコード不在・未知値は None。
-pub fn read_spread(
-    db: &Arc<Mutex<Database>>,
-    dir: &Path,
-    filename: &str,
-) -> Option<(PageMode, i32)> {
-    let key = make_key(dir, filename);
-    let db = db.lock().ok()?;
-    let tx = db.begin_read().ok()?;
-    let table = tx.open_table(SPREAD_TABLE).ok()?;
-    let value = table.get(key.as_str()).ok()??;
-    let (mode_raw, offset) = value.value();
-    Some((page_mode_from_u8(mode_raw)?, offset))
-}
 
-/// 見開き状態を削除する（保存解除）。
-pub fn remove_spread(db: &Arc<Mutex<Database>>, dir: &Path, filename: &str) {
+/// 旧v1（パスキー）への直接書き込み。IDを解決できないファイル（実体が無い等）用。
+fn remove_spread_v1(db: &Arc<Mutex<Database>>, dir: &Path, filename: &str) {
     let key = make_key(dir, filename);
     let Ok(db) = db.lock() else { return };
     let Ok(tx) = db.begin_write() else { return };
@@ -474,45 +486,7 @@ pub fn remove_spread(db: &Arc<Mutex<Database>>, dir: &Path, filename: &str) {
     let _ = tx.commit();
 }
 
-/// dir 配下で保存済みのファイル名一覧を返す（GC・入場時ロード用）。
-/// 戻り値: (filename, page_mode, spread_offset)
-pub fn list_dir_entries(db: &Arc<Mutex<Database>>, dir: &Path) -> Vec<(String, PageMode, i32)> {
-    let prefix = {
-        let key = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
-        format!("{}\0", key.to_string_lossy())
-    };
-    let Ok(db) = db.lock() else { return Vec::new() };
-    let Ok(tx) = db.begin_read() else { return Vec::new() };
-    let Ok(table) = tx.open_table(SPREAD_TABLE) else { return Vec::new() };
-    let Ok(range) = table.range(prefix.as_str()..) else { return Vec::new() };
-    let mut out = Vec::new();
-    for entry in range {
-        let Ok((k, v)) = entry else { continue };
-        let full_key = k.value();
-        if !full_key.starts_with(&prefix) {
-            break;
-        }
-        let filename = &full_key[prefix.len()..];
-        let (mode_raw, offset) = v.value();
-        if let Some(mode) = page_mode_from_u8(mode_raw) {
-            out.push((filename.to_string(), mode, offset));
-        }
-    }
-    out
-}
 
-/// dir 配下で existing_filenames に存在しないエントリを削除する（GC）。削除件数を返す。
-pub fn gc_dir(db: &Arc<Mutex<Database>>, dir: &Path, existing_filenames: &[String]) -> usize {
-    let stale: Vec<String> = list_dir_entries(db, dir)
-        .into_iter()
-        .map(|(name, _, _)| name)
-        .filter(|name| !existing_filenames.contains(name))
-        .collect();
-    for name in &stale {
-        remove_spread(db, dir, name);
-    }
-    stale.len()
-}
 
 fn unix_timestamp_secs() -> i64 {
     std::time::SystemTime::now()
@@ -533,7 +507,7 @@ pub const ARCHIVE_RATING_TABLE_V2: TableDefinition<u64, (u8, u32, i64)> =
 
 /// データの持ち主。IDが解決済みならID（v2テーブル）、未解決ならパスキー（旧v1テーブル）。
 /// v1行は削除しないので、IDが解決済みでもv2に無ければ旧パスキー（`legacy_keys`）で引き直せる。
-enum Owner {
+pub(crate) enum Owner {
     Id(crate::file_identity::FileRecord),
     Path(String),
 }
@@ -547,7 +521,7 @@ impl Owner {
     }
 }
 
-fn owner_tx(tx: &redb::ReadTransaction, dir: &Path, filename: &str) -> Owner {
+pub(crate) fn owner_tx(tx: &redb::ReadTransaction, dir: &Path, filename: &str) -> Owner {
     let key = make_key(dir, filename);
     match crate::file_identity::lookup_tx(tx, &key) {
         Some(rec) => Owner::Id(rec),
@@ -568,6 +542,7 @@ pub fn id_has_user_data(db: &Arc<Mutex<Database>>, id: u64) -> bool {
             .open_table(BOOKMARK_TABLE_V2)
             .ok()
             .is_some_and(|t| t.get(id).ok().flatten().is_some())
+        || crate::file_settings::id_has_settings(&db, id)
 }
 
 fn decode_bookmark(value: (bool, &str, i64, i64)) -> BookmarkState {
@@ -781,6 +756,10 @@ pub fn paths_without_identity_or_legacy(
     let Ok(tx) = db.begin_read() else { return out };
     let rating_v1 = tx.open_table(ARCHIVE_RATING_TABLE_V1).ok();
     let bookmark_v1 = tx.open_table(BOOKMARK_TABLE_V1).ok();
+    let spread_v1 = tx.open_table(SPREAD_TABLE).ok();
+    let sort_v1 = tx.open_table(ARCHIVE_SORT_TABLE_V1).ok();
+    let thumb_v1 = tx.open_table(THUMBNAIL_SELECTION_TABLE_V1).ok();
+    let thumb_v2 = tx.open_table(THUMBNAIL_SELECTION_TABLE_V2).ok();
     let mut prefixes: HashMap<PathBuf, String> = HashMap::new();
     for path in paths {
         let (Some(dir), Some(name)) = (path.parent(), path.file_name().and_then(|n| n.to_str())) else {
@@ -792,7 +771,11 @@ pub fn paths_without_identity_or_legacy(
         });
         let key = format!("{prefix}{name}");
         let has_legacy = rating_v1.as_ref().is_some_and(|t| t.get(key.as_str()).ok().flatten().is_some())
-            || bookmark_v1.as_ref().is_some_and(|t| t.get(key.as_str()).ok().flatten().is_some());
+            || bookmark_v1.as_ref().is_some_and(|t| t.get(key.as_str()).ok().flatten().is_some())
+            || spread_v1.as_ref().is_some_and(|t| t.get(key.as_str()).ok().flatten().is_some())
+            || sort_v1.as_ref().is_some_and(|t| t.get(key.as_str()).ok().flatten().is_some())
+            || thumb_v1.as_ref().is_some_and(|t| t.get(key.as_str()).ok().flatten().is_some())
+            || thumb_v2.as_ref().is_some_and(|t| t.get(key.as_str()).ok().flatten().is_some());
         if !has_legacy && crate::file_identity::lookup_tx(&tx, &key).is_none() {
             out.insert(path.clone());
         }
@@ -800,7 +783,7 @@ pub fn paths_without_identity_or_legacy(
     out
 }
 
-/// 旧v1にユーザーデータ（評価・有効なしおり）があるのに、まだID記録が無いパスキーの一覧。
+/// 旧v1にユーザーデータ（評価・有効なしおり・見開き・ソート・登録サムネ）があるのに、まだID記録が無いパスキーの一覧。
 /// アイドル時のバックフィル（FP化）の対象。未訪問フォルダのファイルも移動追従の対象にするため。
 pub fn legacy_data_keys_without_id(db: &Arc<Mutex<Database>>) -> Vec<String> {
     let Ok(db) = db.lock() else { return Vec::new() };
@@ -814,6 +797,27 @@ pub fn legacy_data_keys_without_id(db: &Arc<Mutex<Database>>) -> Vec<String> {
     if let Ok(t) = tx.open_table(BOOKMARK_TABLE_V1) {
         if let Ok(iter) = t.iter() {
             keys.extend(iter.flatten().filter(|(_, v)| v.value().0).map(|(k, _)| k.value().to_string()));
+        }
+    }
+    // 見開き・ソート・登録サムネの旧v1行も、ユーザーが明示的に保存したデータなので対象にする。
+    if let Ok(t) = tx.open_table(SPREAD_TABLE) {
+        if let Ok(iter) = t.iter() {
+            keys.extend(iter.flatten().map(|(k, _)| k.value().to_string()));
+        }
+    }
+    if let Ok(t) = tx.open_table(ARCHIVE_SORT_TABLE_V1) {
+        if let Ok(iter) = t.iter() {
+            keys.extend(iter.flatten().map(|(k, _)| k.value().to_string()));
+        }
+    }
+    if let Ok(t) = tx.open_table(THUMBNAIL_SELECTION_TABLE_V1) {
+        if let Ok(iter) = t.iter() {
+            keys.extend(iter.flatten().map(|(k, _)| k.value().to_string()));
+        }
+    }
+    if let Ok(t) = tx.open_table(THUMBNAIL_SELECTION_TABLE_V2) {
+        if let Ok(iter) = t.iter() {
+            keys.extend(iter.flatten().map(|(k, _)| k.value().to_string()));
         }
     }
     keys.retain(|k| crate::file_identity::lookup_tx(&tx, k).is_none());
@@ -1216,18 +1220,6 @@ mod tests {
 
         assert!(read_archive_sort(&db, &dir, "unknown.zip").is_none());
         assert!(list_dir_archive_sorts(&db, &dir).is_empty());
-    }
-
-    #[test]
-    fn archive_sort_gc_only_removes_missing_files() {
-        let db = temp_db();
-        let dir = dummy_dir();
-        write_archive_sort(&db, &dir, "keep.zip", ReaderSortKey::Name, false);
-        write_archive_sort(&db, &dir, "stale.zip", ReaderSortKey::Date, true);
-
-        assert_eq!(gc_archive_sorts(&db, &dir, &["keep.zip".to_string()]), 1);
-        assert!(read_archive_sort(&db, &dir, "keep.zip").is_some());
-        assert!(read_archive_sort(&db, &dir, "stale.zip").is_none());
     }
 
     #[test]
@@ -1715,5 +1707,188 @@ mod tests {
         let b = read_bookmark(&db, &dir, "a.zip").unwrap();
         assert_eq!((b.enabled, b.last_entry_name.as_str()), (true, "new/009.jpg"));
         assert!(b.archive_fp.is_some());
+    }
+
+    // ---- ID化（見開き・ソート・登録サムネ）----
+
+    fn selection(entry: &str, kind: ThumbnailSourceKind) -> ThumbnailSelection {
+        ThumbnailSelection { entry_name: entry.to_owned(), source_kind: kind }
+    }
+
+    fn settings_record_exists(db: &Arc<Mutex<Database>>, id: u64) -> bool {
+        let g = db.lock().unwrap();
+        let tx = g.begin_read().unwrap();
+        tx.open_table(crate::file_settings::FILE_SETTINGS_TABLE_V2)
+            .map(|t| t.get(id).unwrap().is_some())
+            .unwrap_or(false)
+    }
+
+    #[test]
+    fn file_settings_of_real_file_are_stored_by_id_not_by_path() {
+        let db = temp_db();
+        let dir = real_dir("fs_basic");
+        real_file(&dir, "a.zip", &content(3000));
+        assert!(write_spread(&db, &dir, "a.zip", PageMode::SpreadLeft, -1));
+        assert!(write_archive_sort(&db, &dir, "a.zip", ReaderSortKey::Date, true));
+        write_thumbnail_selection(&db, &dir, "a.zip", &selection("p/003.jpg", ThumbnailSourceKind::LeftHalf));
+        assert_eq!(read_spread(&db, &dir, "a.zip"), Some((PageMode::SpreadLeft, -1)));
+        assert_eq!(read_archive_sort(&db, &dir, "a.zip"), Some((ReaderSortKey::Date, true)));
+        assert_eq!(
+            read_thumbnail_selection(&db, &dir, "a.zip"),
+            Some(selection("p/003.jpg", ThumbnailSourceKind::LeftHalf))
+        );
+        let rec = crate::file_identity::ensure_record(&db, &dir, "a.zip").unwrap();
+        assert!(settings_record_exists(&db, rec.id));
+        // 旧v1（パスキー）には書かれない。
+        let key = make_key(&dir, "a.zip");
+        let g = db.lock().unwrap();
+        let tx = g.begin_read().unwrap();
+        assert!(tx.open_table(SPREAD_TABLE).unwrap().get(key.as_str()).unwrap().is_none());
+        assert!(tx.open_table(ARCHIVE_SORT_TABLE_V1).unwrap().get(key.as_str()).unwrap().is_none());
+    }
+
+    #[test]
+    fn first_write_migrates_all_legacy_settings_of_the_file_at_once() {
+        let db = temp_db();
+        let dir = real_dir("fs_migrate");
+        let p = real_file(&dir, "a.zip", &content(4000));
+        write_spread_v1(&db, &dir, "a.zip", PageMode::SpreadRight, 1);
+        write_archive_sort_v1(&db, &dir, "a.zip", ReaderSortKey::Natural, false);
+        write_thumbnail_selection_v1(&db, &dir, "a.zip", &selection("c.jpg", ThumbnailSourceKind::Full));
+        // IDが無いうちは旧v1をそのまま読む。
+        assert_eq!(read_spread(&db, &dir, "a.zip"), Some((PageMode::SpreadRight, 1)));
+        // 見開きだけを書き換えると、ソート・登録サムネも同時にv2へ引き継がれる。
+        assert!(write_spread(&db, &dir, "a.zip", PageMode::SpreadLeft, 0));
+        // 移動しても、3つとも追従する（旧v1の行へ頼らない）。
+        let dir2 = real_dir("fs_migrate_to");
+        std::fs::rename(&p, dir2.join("b.zip")).unwrap();
+        assert!(crate::file_identity::ensure_record(&db, &dir2, "b.zip").is_some());
+        assert_eq!(read_spread(&db, &dir2, "b.zip"), Some((PageMode::SpreadLeft, 0)));
+        assert_eq!(read_archive_sort(&db, &dir2, "b.zip"), Some((ReaderSortKey::Natural, false)));
+        assert_eq!(
+            read_thumbnail_selection(&db, &dir2, "b.zip"),
+            Some(selection("c.jpg", ThumbnailSourceKind::Full))
+        );
+    }
+
+    #[test]
+    fn unmigrated_legacy_settings_follow_a_move_via_origin_key() {
+        let db = temp_db();
+        let dir1 = real_dir("fs_bridge_a");
+        let dir2 = real_dir("fs_bridge_b");
+        let p = real_file(&dir1, "a.zip", &content(4000));
+        write_archive_sort_v1(&db, &dir1, "a.zip", ReaderSortKey::Name, true);
+        // IDだけ作られた（設定はまだv1のまま）状態で移動する。書き込みは一度も起きていない。
+        crate::file_identity::ensure_record(&db, &dir1, "a.zip").unwrap();
+        std::fs::rename(&p, dir2.join("b.zip")).unwrap();
+        crate::file_identity::ensure_record(&db, &dir2, "b.zip").unwrap();
+        assert_eq!(read_archive_sort(&db, &dir2, "b.zip"), Some((ReaderSortKey::Name, true)));
+    }
+
+    #[test]
+    fn cleared_setting_is_not_resurrected_from_legacy_row() {
+        let db = temp_db();
+        let dir = real_dir("fs_cleared");
+        real_file(&dir, "a.zip", &content(3000));
+        write_archive_sort_v1(&db, &dir, "a.zip", ReaderSortKey::Date, false);
+        write_spread_v1(&db, &dir, "a.zip", PageMode::SpreadLeft, 0);
+        remove_archive_sort(&db, &dir, "a.zip");
+        assert_eq!(read_archive_sort(&db, &dir, "a.zip"), None, "旧v1が残っていても復活しない");
+        assert!(list_dir_archive_sorts(&db, &dir).is_empty());
+        // 解除していない見開きは旧v1から引き継がれて残る。
+        assert_eq!(read_spread(&db, &dir, "a.zip"), Some((PageMode::SpreadLeft, 0)));
+    }
+
+    #[test]
+    fn dir_lists_mix_resolved_ids_and_unresolved_legacy_rows() {
+        let db = temp_db();
+        let dir = real_dir("fs_list");
+        real_file(&dir, "id.zip", &content(3000));
+        real_file(&dir, "legacy.zip", &content(4000));
+        assert!(write_spread(&db, &dir, "id.zip", PageMode::SpreadLeft, 0));
+        write_spread_v1(&db, &dir, "legacy.zip", PageMode::SpreadRight, 1);
+        write_archive_sort_v1(&db, &dir, "legacy.zip", ReaderSortKey::Name, true);
+
+        let mut entries = list_dir_entries(&db, &dir);
+        entries.sort_by(|a, b| a.0.cmp(&b.0));
+        assert_eq!(
+            entries,
+            vec![
+                ("id.zip".to_owned(), PageMode::SpreadLeft, 0),
+                ("legacy.zip".to_owned(), PageMode::SpreadRight, 1),
+            ]
+        );
+        assert_eq!(
+            list_dir_archive_sorts(&db, &dir),
+            vec![("legacy.zip".to_owned(), ReaderSortKey::Name, true)]
+        );
+    }
+
+    #[test]
+    fn missing_file_falls_back_to_legacy_rows_for_settings() {
+        let db = temp_db();
+        let dir = real_dir("fs_ghost");
+        assert!(write_spread(&db, &dir, "ghost.zip", PageMode::SpreadLeft, 1));
+        assert!(write_archive_sort(&db, &dir, "ghost.zip", ReaderSortKey::Date, true));
+        assert_eq!(read_spread(&db, &dir, "ghost.zip"), Some((PageMode::SpreadLeft, 1)));
+        remove_spread(&db, &dir, "ghost.zip");
+        assert_eq!(read_spread(&db, &dir, "ghost.zip"), None);
+        assert!(!is_identity_spec(&db));
+    }
+
+    #[test]
+    fn saved_settings_reflect_effective_values_of_ids_and_legacy() {
+        let db = temp_db();
+        let dir = real_dir("fs_saved");
+        let a = real_file(&dir, "a.zip", &content(3000));
+        let b = real_file(&dir, "b.zip", &content(4000));
+        assert!(write_spread(&db, &dir, "a.zip", PageMode::SpreadRight, 0));
+        write_thumbnail_selection_v1(&db, &dir, "b.zip", &selection("x.jpg", ThumbnailSourceKind::Full));
+        let got = saved_settings_for_paths(&db, &[a.clone(), b.clone()]);
+        assert_eq!(got[&a].spread_mode, Some(PageMode::SpreadRight));
+        assert!(!got[&a].has_custom_thumbnail);
+        assert!(got[&b].has_custom_thumbnail);
+        assert_eq!(got[&b].spread_mode, None);
+    }
+
+    #[test]
+    fn settings_count_as_user_data_only_while_a_value_is_set() {
+        let db = temp_db();
+        let dir = real_dir("fs_userdata");
+        real_file(&dir, "a.zip", &content(3000));
+        let rec = crate::file_identity::ensure_record(&db, &dir, "a.zip").unwrap();
+        assert!(!id_has_user_data(&db, rec.id));
+        assert!(write_spread(&db, &dir, "a.zip", PageMode::SpreadLeft, 0));
+        assert!(id_has_user_data(&db, rec.id));
+        remove_spread(&db, &dir, "a.zip");
+        assert!(!id_has_user_data(&db, rec.id), "解除済みだけなら空のIDとして扱う");
+    }
+
+    #[test]
+    fn legacy_v1_thumbnail_selection_is_read_as_full_source() {
+        let db = temp_db();
+        let dir = real_dir("fs_thumb_v1");
+        real_file(&dir, "a.zip", &content(3000));
+        // 第1世代（entry_nameのみ）の行。
+        let key = make_key(&dir, "a.zip");
+        {
+            let g = db.lock().unwrap();
+            let tx = g.begin_write().unwrap();
+            {
+                let mut t = tx.open_table(THUMBNAIL_SELECTION_TABLE_V1).unwrap();
+                t.insert(key.as_str(), "old/cover.jpg").unwrap();
+            }
+            tx.commit().unwrap();
+        }
+        assert_eq!(
+            read_thumbnail_selection(&db, &dir, "a.zip"),
+            Some(selection("old/cover.jpg", ThumbnailSourceKind::Full))
+        );
+        // 移行後（ID化済みの書き込み後）も同じ。
+        assert!(write_spread(&db, &dir, "a.zip", PageMode::SpreadLeft, 0));
+        assert_eq!(
+            read_thumbnail_selection(&db, &dir, "a.zip"),
+            Some(selection("old/cover.jpg", ThumbnailSourceKind::Full))
+        );
     }
 }

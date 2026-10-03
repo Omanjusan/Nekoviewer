@@ -10,6 +10,7 @@ mod dev_db_backup;
 mod explorer_sort;
 mod favorites;
 mod file_identity;
+mod file_settings;
 mod fs;
 mod gui_config;
 mod i18n;

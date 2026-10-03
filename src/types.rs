@@ -3,7 +3,7 @@ use crate::spread_offset::SpreadOffset;
 
 // ── 共有型定義 ──────────────────────────────────────────────────────────────
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum PageMode {
     Single,
     SpreadLeft,
@@ -22,7 +22,7 @@ impl PageMode {
 }
 
 /// reader（ZIP内）ページのソートキー
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ReaderSortKey {
     Name,
     Natural,

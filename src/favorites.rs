@@ -437,19 +437,6 @@ pub fn list_unsorted_files(db: &Arc<Mutex<Database>>) -> Vec<(PathBuf, String)> 
         .collect()
 }
 
-/// dir 配下で existing_filenames に存在しないエントリを削除する（GC）。削除件数を返す。
-pub fn gc_dir(db: &Arc<Mutex<Database>>, dir: &Path, existing_filenames: &[String]) -> usize {
-    let stale: Vec<String> = list_dir_favorites(db, dir)
-        .into_iter()
-        .map(|(name, _)| name)
-        .filter(|name| !existing_filenames.contains(name))
-        .collect();
-    for name in &stale {
-        remove_favorite(db, dir, name);
-    }
-    stale.len()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -633,17 +620,5 @@ mod tests {
             unsorted,
             vec![(dir_a.canonicalize().unwrap_or(dir_a), "unsorted.zip".to_string())]
         );
-    }
-
-    #[test]
-    fn gc_dir_removes_stale_entries() {
-        let db = temp_db();
-        let dir = dummy_dir();
-        set_membership(&db, &dir, "a.zip", &[]);
-        set_membership(&db, &dir, "b.zip", &[]);
-        let removed = gc_dir(&db, &dir, &["a.zip".to_string()]);
-        assert_eq!(removed, 1);
-        assert_eq!(get_membership(&db, &dir, "b.zip"), None);
-        assert_eq!(get_membership(&db, &dir, "a.zip"), Some(vec![]));
     }
 }
