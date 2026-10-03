@@ -788,6 +788,40 @@ pub fn lookup_in(db: &Database, path_key: &str) -> Option<FileRecord> {
     lookup_tx(&db.begin_read().ok()?, path_key)
 }
 
+/// 空のID（`blank_id`、新しく現れたファイルのID）を消し、消えているID（`orphan_id`）をそのパスへ移す。
+/// 解決UIで「この移動元から引き継ぐ」と選んだ時の操作。空であることの確認は呼び出し側が行う。
+/// 孤児のデータ（お気に入りを含む）はIDごと新しいパスへ付いて来る。旧パスは履歴に残る。
+pub fn adopt_orphan(
+    db: &Arc<Mutex<Database>>,
+    blank_id: u64,
+    orphan_id: u64,
+    now: i64,
+) -> Result<(), IdentityError> {
+    if blank_id == orphan_id {
+        return Err(IdentityError::Conflict);
+    }
+    let guard = db.lock().map_err(db_err)?;
+    let tx = guard.begin_write().map_err(db_err)?;
+    {
+        let mut t = WriteTables {
+            ids: tx.open_table(FILE_ID_TABLE).map_err(db_err)?,
+            paths: tx.open_table(FILE_PATH_INDEX_TABLE).map_err(db_err)?,
+            fps: tx.open_multimap_table(FILE_FP_INDEX_TABLE).map_err(db_err)?,
+        };
+        let blank = get_rec(&t.ids, blank_id)?.ok_or(IdentityError::Conflict)?;
+        let orphan = get_rec(&t.ids, orphan_id)?.ok_or(IdentityError::Conflict)?;
+        if let Some(f) = blank.fp {
+            t.fps.remove(f.as_slice(), blank.id).map_err(db_err)?;
+        }
+        t.ids.remove(blank.id).map_err(db_err)?;
+        // 空のIDが持っていた観測（サイズ・mtime・FP・ボリューム）を、孤児へ引き継ぐ。
+        let obs = Observation { size: blank.size, mtime: blank.mtime, volume: blank.volume.clone(), fp: blank.fp };
+        t.relocate(orphan, &blank.path_key, &obs, now)?;
+    }
+    tx.commit().map_err(db_err)?;
+    Ok(())
+}
+
 /// パスキーからレコードを引く（高速経路）。ID層が未使用なら None。
 pub fn lookup(db: &Arc<Mutex<Database>>, path_key: &str) -> Option<FileRecord> {
     let guard = db.lock().ok()?;

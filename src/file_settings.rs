@@ -325,6 +325,16 @@ pub(crate) fn modify(
     f: impl FnOnce(&mut FileSettings),
 ) -> Option<bool> {
     let rec = crate::file_identity::ensure_record(db, dir, filename)?;
+    modify_for_record(db, &rec, f)
+}
+
+/// `modify` の、解決済みのIDレコードを直接指定する版（解決UIの適用など、パスを持たない呼び出し用）。
+/// 未移行のスロットは旧v1から一括で引き継いでから `f` を適用する。成否は Some(bool)。
+pub(crate) fn modify_for_record(
+    db: &Arc<Mutex<Database>>,
+    rec: &crate::file_identity::FileRecord,
+    f: impl FnOnce(&mut FileSettings),
+) -> Option<bool> {
     let guard = db.lock().ok()?;
     let ok = (|| {
         let rtx = guard.begin_read().ok()?;

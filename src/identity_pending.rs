@@ -167,6 +167,11 @@ fn list_in(db: &Database) -> Vec<PendingRecord> {
     out
 }
 
+/// 記録を1件取得する。
+pub fn get(db: &Arc<Mutex<Database>>, id: u64) -> Option<PendingRecord> {
+    list(db).into_iter().find(|r| r.id == id)
+}
+
 /// 未解決の件数（メニューバーのボタンの数字）。
 pub fn count(db: &Arc<Mutex<Database>>) -> usize {
     list(db).len()

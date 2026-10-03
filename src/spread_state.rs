@@ -825,6 +825,85 @@ pub fn data_signature(db: &Arc<Mutex<Database>>, id: u64, with_favorite: bool) -
     (!parts.is_empty()).then(|| parts.join("\n").into_bytes())
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub enum CloneError {
+    SourceGone,
+    TargetGone,
+    /// 複製先に既にデータがある（潰さないため複製しない）。
+    TargetHasData,
+    Db,
+}
+
+/// 元のID（`from_id`）の引き継ぐデータを、新しいID（`to_id`）へ複製する（1回だけ。以後は独立）。
+/// 評価★（訪問回数・最終訪問は0）・有効なしおり（位置とFPはそのまま）・見開き・ソート・登録サムネ・タグ。
+/// **お気に入りは複製しない**。元は旧v1にしか無い値も含めて読む。複製先に既にデータがあれば何もしない。
+pub fn clone_inheritable_data(db: &Arc<Mutex<Database>>, from_id: u64, to_id: u64) -> Result<(), CloneError> {
+    if id_has_user_data(db, to_id) {
+        return Err(CloneError::TargetHasData);
+    }
+    let (rating, bookmark, effective, to_rec) = {
+        let guard = db.lock().map_err(|_| CloneError::Db)?;
+        let tx = guard.begin_read().map_err(|_| CloneError::Db)?;
+        let from = crate::file_identity::record_by_id_tx(&tx, from_id).ok_or(CloneError::SourceGone)?;
+        let to = crate::file_identity::record_by_id_tx(&tx, to_id).ok_or(CloneError::TargetGone)?;
+        let owner = Owner::Id(from.clone());
+        let rating = rating_get_tx(&tx, &owner).filter(|r| r.rating_half > 0);
+        // 内容が同じなので、しおりの有効判定（FP一致）がそのまま通る。FP未取得の旧しおりは複製先のmtimeで判定する。
+        let bookmark = bookmark_get_tx(&tx, &owner).filter(|b| b.enabled).map(|b| BookmarkState {
+            archive_mtime: to.mtime,
+            archive_fp: b.archive_fp.or(from.fp),
+            ..b
+        });
+        (rating, bookmark, crate::file_settings::effective_tx(&tx, &owner), to)
+    };
+    let tags = effective.tags.filter(|t| !t.is_empty());
+    if effective.spread.is_some() || effective.sort.is_some() || effective.thumb.is_some() || tags.is_some() {
+        let ok = crate::file_settings::modify_for_record(db, &to_rec, |s| {
+            if let Some(v) = effective.spread {
+                s.spread = Slot::Set(v);
+            }
+            if let Some(v) = effective.sort {
+                s.sort = Slot::Set(v);
+            }
+            if let Some(v) = effective.thumb {
+                s.thumb = Slot::Set(v);
+            }
+            if let Some(v) = tags {
+                s.tags = Slot::Set(v);
+            }
+        });
+        if ok != Some(true) {
+            return Err(CloneError::Db);
+        }
+    }
+    if rating.is_some() || bookmark.is_some() {
+        let guard = db.lock().map_err(|_| CloneError::Db)?;
+        let tx = guard.begin_write().map_err(|_| CloneError::Db)?;
+        {
+            if let Some(r) = rating {
+                let mut t = tx.open_table(ARCHIVE_RATING_TABLE_V2).map_err(|_| CloneError::Db)?;
+                t.insert(to_id, (r.rating_half, 0u32, 0i64)).map_err(|_| CloneError::Db)?;
+            }
+            if let Some(b) = bookmark {
+                let mut t = tx.open_table(BOOKMARK_TABLE_V2).map_err(|_| CloneError::Db)?;
+                t.insert(
+                    to_id,
+                    (
+                        b.enabled,
+                        b.last_entry_name.as_str(),
+                        b.updated_at,
+                        b.archive_mtime,
+                        b.archive_fp.as_ref().map_or(&[][..], |fp| fp.as_slice()),
+                    ),
+                )
+                .map_err(|_| CloneError::Db)?;
+            }
+        }
+        tx.commit().map_err(|_| CloneError::Db)?;
+    }
+    Ok(())
+}
+
 /// そのパスキーに、旧v1（ID化前）のデータが1つでも残っているか。
 pub fn legacy_data_exists(db: &Arc<Mutex<Database>>, key: &str) -> bool {
     let Ok(guard) = db.lock() else { return false };
