@@ -2387,6 +2387,30 @@ impl Lang {
         }
     }
 
+    pub fn settings_unconfirmed_retention_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "■ 見つからないファイルの記録を残す日数",
+            Lang::English  => "■ Days to keep records of missing files",
+            Lang::Chinese  => "■ 找不到的文件记录的保留天数",
+        }
+    }
+
+    pub fn settings_unconfirmed_retention_value(self, days: u32) -> String {
+        match self {
+            Lang::Japanese => format!("{days} 日"),
+            Lang::English  => format!("{days} days"),
+            Lang::Chinese  => format!("{days} 天"),
+        }
+    }
+
+    pub fn settings_unconfirmed_retention_explain(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ファイルが見つからなくなっても、評価・タグ・お気に入りなどの記録をこの日数だけ残します（1〜120日）。重複の解決画面の「削除まで」の日数の元です。",
+            Lang::English  => "Keeps ratings, tags, favorites, etc. of a file for this many days after it goes missing (1-120). Used for the \"Until removal\" days in the duplicate-resolution screen.",
+            Lang::Chinese  => "文件找不到后，评分、标签、收藏等记录会保留这么多天（1-120）。用于重复解决界面中的“距离删除”天数。",
+        }
+    }
+
     pub fn settings_debug_log_perf(self) -> &'static str {
         match self {
             Lang::Japanese => "パフォーマンス計測ログ（ページ読み込み時間など）",

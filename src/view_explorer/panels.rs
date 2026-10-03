@@ -245,6 +245,7 @@ impl NekoviewApp {
         #[cfg(not(debug_assertions))]
         self.draw_status_window(&ctx);
         self.draw_toast(&ctx);
+        self.draw_identity_resolve_dialogs(&ctx);
         self.draw_memory_warning_dialog(&ctx);
         self.draw_magnifier_zoom_notice(&ctx);
         self.draw_decode_edge_prompt(&ctx);
@@ -652,6 +653,13 @@ impl NekoviewApp {
                 ui.separator();
                 let r_thumb = ui.label(self.thumbnail_status_text());
                 help_tip(&r_thumb, help_on, &help_thumb);
+
+                // 重複・曖昧の解決（サムネイル n/m の左）。今はモック表示で、常に押せる。
+                ui.separator();
+                let r_resolve = ui.button(self.identity_resolve_button_label());
+                if r_resolve.clicked() {
+                    self.open_identity_resolve();
+                }
             });
         });
     }

@@ -112,6 +112,11 @@ fn ensure_writable_dir(dir: &std::path::Path) -> std::io::Result<()> {
     Ok(())
 }
 
+/// 未確認IDの保持日数の範囲と既定値。
+pub const UNCONFIRMED_RETENTION_DAYS_MIN: u32 = 1;
+pub const UNCONFIRMED_RETENTION_DAYS_MAX: u32 = 120;
+pub const UNCONFIRMED_RETENTION_DAYS_DEFAULT: u32 = 60;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ResizeFilter {
     Nearest,
@@ -194,6 +199,9 @@ pub struct AppConfig {
     pub viewer_filter: ResizeFilter,
     /// グリッドのサムネイル長辺サイズ（px）
     pub thumb_size: u32,
+    /// 「未確認」のファイルID（実体が見つからないまま）をDBに残す日数（1〜120）。
+    /// 重複の解決UIの「削除まで残り○日」の元。日数による削除自体はキャッシュ整理（別ブランチ）が行う。
+    pub unconfirmed_retention_days: u32,
     /// ページデコードの並列スレッド数（0 = 自動: 論理コア数/2）
     pub decode_threads: usize,
     /// 虫眼鏡の拡大縮小（Shift+ホイール等）の割り当てを起動時に知らせ済みか。永続設定
@@ -267,6 +275,7 @@ impl AppConfig {
             thumb_filter: ResizeFilter::Triangle,
             viewer_filter: ResizeFilter::Lanczos3,
             thumb_size: 256,
+            unconfirmed_retention_days: UNCONFIRMED_RETENTION_DAYS_DEFAULT,
             decode_threads: 0,
             magnifier_zoom_notice_shown: false,
             pending_magnifier_zoom_notice: None,

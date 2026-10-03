@@ -136,6 +136,7 @@ pub(crate) struct SettingsDraft {
     system_ram_mb: u64,
     max_decode_edge: u32,
     thumb_size: u32,
+    unconfirmed_retention_days: u32,
     viewer_filter: ResizeFilter,
     thumb_filter: ResizeFilter,
     lang: i18n::Lang,
@@ -287,6 +288,7 @@ impl SettingsDraft {
             system_ram_mb,
             max_decode_edge: config.max_decode_edge,
             thumb_size: config.thumb_size,
+            unconfirmed_retention_days: config.unconfirmed_retention_days,
             viewer_filter: config.viewer_filter,
             thumb_filter: config.thumb_filter,
             lang: i18n::t(),
@@ -348,6 +350,10 @@ impl SettingsDraft {
         config.cache_total_mb = if self.cache_total_user_set { Some(self.cache_total_mb) } else { None };
         config.max_decode_edge = self.max_decode_edge;
         config.thumb_size = self.thumb_size;
+        config.unconfirmed_retention_days = self.unconfirmed_retention_days.clamp(
+            crate::config::UNCONFIRMED_RETENTION_DAYS_MIN,
+            crate::config::UNCONFIRMED_RETENTION_DAYS_MAX,
+        );
         config.viewer_filter = self.viewer_filter;
         config.thumb_filter = self.thumb_filter;
         i18n::set(self.lang);
@@ -1805,6 +1811,21 @@ impl NekoviewApp {
         ui.label(i18n::t().settings_startup_fixed_dir_label());
         ui.text_edit_singleline(&mut self.settings_draft.startup_fixed_dir);
         ui.label(i18n::t().settings_startup_fixed_dir_explain());
+
+        // 重複の解決UIの「削除まで残り○日」の元になる、未確認IDの保持日数。
+        ui.separator();
+        ui.label(i18n::t().settings_unconfirmed_retention_label());
+        ui.horizontal(|ui| {
+            ui.add(
+                egui::Slider::new(
+                    &mut self.settings_draft.unconfirmed_retention_days,
+                    crate::config::UNCONFIRMED_RETENTION_DAYS_MIN..=crate::config::UNCONFIRMED_RETENTION_DAYS_MAX,
+                )
+                .show_value(false),
+            );
+            ui.label(i18n::t().settings_unconfirmed_retention_value(self.settings_draft.unconfirmed_retention_days));
+        });
+        ui.label(i18n::t().settings_unconfirmed_retention_explain());
     }
 }
 

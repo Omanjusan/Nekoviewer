@@ -107,6 +107,10 @@ fn main() {
         // フェーズ4a: thumb_size/thumb_filter も config.ini直接保存を廃止しstate側優先へ。
         if let Some(v) = state.app_thumb_filter { cfg.thumb_filter = v; }
         if let Some(v) = state.app_thumb_size { cfg.thumb_size = v; }
+        if let Some(v) = state.app_unconfirmed_retention_days {
+            cfg.unconfirmed_retention_days =
+                v.clamp(config::UNCONFIRMED_RETENTION_DAYS_MIN, config::UNCONFIRMED_RETENTION_DAYS_MAX);
+        }
 
         // フェーズ4b: decode_threads/default_slotも同様にstate側を優先する。
         if let Some(v) = state.app_decode_threads { cfg.decode_threads = v; }

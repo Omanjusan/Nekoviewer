@@ -966,6 +966,8 @@ pub struct NekoviewApp {
     pub(super) identity_verifying: HashSet<PathBuf>,
     /// 解決で評価等が付き替わった（完了時に並び・フィルタを作り直す）。
     identity_dirty: bool,
+    /// 重複・曖昧の解決UI（現状はレイアウトのモック。仮データ）。
+    identity_resolve_ui: identity_resolution_ui::ResolveUiState,
     /// ID解決の進捗（処理が長引いた時だけ、処理中トーストを出す）。
     identity_progress: Option<identity_worker::IdentityProgress>,
     /// 処理中トーストとして出している文言（出し入れの変化検知用）。
@@ -1255,6 +1257,7 @@ mod open_progress;
 mod help;
 mod dev_db_tools;
 mod identity_worker;
+mod identity_resolution_ui;
 
 #[cfg(test)]
 mod glyph_audit;
@@ -1451,6 +1454,7 @@ impl NekoviewApp {
             identity_worker: identity_worker::IdentityWorker::spawn(ctx.clone()),
             identity_verifying: HashSet::new(),
             identity_dirty: false,
+            identity_resolve_ui: Default::default(),
             identity_progress: None,
             identity_toast_msg: None,
             identity_backfill_started: false,
