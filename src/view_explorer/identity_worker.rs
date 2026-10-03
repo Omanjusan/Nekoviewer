@@ -456,6 +456,9 @@ impl NekoviewApp {
     /// 現在のフォルダの一覧（表示順）をワーカーへ投入する。スキャンとソートが済んだ直後に呼ぶ。
     /// ID記録も旧データも無いファイル（新規・移動直後）には、解決が済むまで「検証中」を出す。
     pub(super) fn start_identity_resolution(&mut self) {
+        if !crate::file_identity::is_enabled() {
+            return;
+        }
         let Some(db) = self.spread_db.clone() else { return };
         let paths: Vec<PathBuf> = self.archives.clone();
         self.identity_verifying = crate::spread_state::paths_without_identity_or_legacy(&db, &paths);
@@ -486,7 +489,7 @@ impl NekoviewApp {
     /// 解決が全て終わった時、付き替わりがあれば一度だけ並び・フィルタを作り直す。毎フレーム呼ぶ。
     pub(super) fn poll_identity_results(&mut self) {
         // 起動後の最初のフレームで、旧レコードのバックフィルを依頼する（ワーカー側でさらに数秒待つ）。
-        if !self.identity_backfill_started {
+        if !self.identity_backfill_started && crate::file_identity::is_enabled() {
             if let Some(db) = self.spread_db.clone() {
                 self.identity_pending_count = crate::identity_pending::count(&db);
                 self.identity_worker.submit_backfill(db);

@@ -16,6 +16,9 @@
 
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
+#[cfg(not(test))]
+use std::sync::atomic::Ordering;
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
 use redb::{
@@ -766,8 +769,42 @@ pub fn resolve_path(
     Err(IdentityError::Conflict)
 }
 
+/// ID層のスイッチ。OFF の間は、解決（`ensure_record`・`resolve_file`）をしない no-op にし、読み取り
+/// （`lookup_tx`・`dir_records_tx`）もIDが無いものとして扱う。つまり、旧パス仕様（旧v1テーブル）と
+/// 同じ動作になる。起動時の自動バックアップに失敗し、ユーザーがID層なしでの続行を選んだ時に使う。
+/// ID作成済みのDBでOFFにすると、v2の既存データが見えなくなる（呼び出し側が選ばせない）。
+#[cfg_attr(test, allow(dead_code))]
+static ENABLED: AtomicBool = AtomicBool::new(true);
+
+#[cfg(test)]
+thread_local! {
+    /// テストは並列に走るので、スイッチはスレッド単位にする（他のテストへ漏らさない）。
+    static TEST_DISABLED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+pub fn set_enabled(on: bool) {
+    #[cfg(test)]
+    TEST_DISABLED.with(|c| c.set(!on));
+    #[cfg(not(test))]
+    ENABLED.store(on, Ordering::Relaxed);
+}
+
+pub fn is_enabled() -> bool {
+    #[cfg(test)]
+    {
+        !TEST_DISABLED.with(|c| c.get())
+    }
+    #[cfg(not(test))]
+    {
+        ENABLED.load(Ordering::Relaxed)
+    }
+}
+
 /// 読み取りトランザクション上でパスキーからレコードを引く。ID層が未使用なら None。
 pub fn lookup_tx(tx: &redb::ReadTransaction, path_key: &str) -> Option<FileRecord> {
+    if !is_enabled() {
+        return None;
+    }
     let ids = tx.open_table(FILE_ID_TABLE).ok()?;
     let paths = tx.open_table(FILE_PATH_INDEX_TABLE).ok()?;
     let id = paths.get(path_key).ok()??.value();
@@ -837,6 +874,9 @@ pub fn lookup(db: &Arc<Mutex<Database>>, path_key: &str) -> Option<FileRecord> {
 
 /// `prefix`（"dir\0"）で始まるパスキーのレコードを全て返す。ディレクトリ単位の一括ロード用。
 pub fn dir_records_tx(tx: &redb::ReadTransaction, prefix: &str) -> Vec<FileRecord> {
+    if !is_enabled() {
+        return Vec::new();
+    }
     let (Ok(ids), Ok(paths)) = (tx.open_table(FILE_ID_TABLE), tx.open_table(FILE_PATH_INDEX_TABLE)) else {
         return Vec::new();
     };
@@ -908,6 +948,9 @@ pub fn resolve_file(
     now: i64,
     record_unstable_without_fp: bool,
 ) -> ResolveOutcome {
+    if !is_enabled() {
+        return ResolveOutcome::Gone;
+    }
     let meta = match std::fs::metadata(path) {
         Ok(m) if m.is_file() => m,
         Ok(_) => return ResolveOutcome::Gone,
@@ -1278,6 +1321,35 @@ mod tests {
         let guard = db.lock().unwrap();
         let tx = guard.begin_read().unwrap();
         assert!(!tx.list_tables().unwrap().any(|h| h.name().ends_with("_v1") && h.name().starts_with("file_")));
+    }
+
+    #[test]
+    fn disabled_layer_creates_no_ids_and_data_stays_on_legacy_tables() {
+        use crate::spread_state::{read_archive_rating, write_archive_rating};
+        let t = TempRoot::new("disabled");
+        let db = new_db(&t);
+        let dir = t.0.join("lib");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.zip"), b"content").unwrap();
+
+        set_enabled(false);
+        assert!(ensure_record(&db, &dir, "a.zip").is_none());
+        assert_eq!(
+            resolve_file(&db, &crate::spread_state::make_key(&dir, "a.zip"), &dir.join("a.zip"), now_unix(), true),
+            ResolveOutcome::Gone
+        );
+        // 書き込みは旧v1へ。IDも、FP仕様マーカーも作られない。
+        assert!(write_archive_rating(&db, &dir, "a.zip", 7));
+        assert_eq!(read_archive_rating(&db, &dir, "a.zip").map(|r| r.rating_half), Some(7));
+        assert!(!is_identity_spec(&db));
+        set_enabled(true);
+        assert!(lookup(&db, &crate::spread_state::make_key(&dir, "a.zip")).is_none());
+
+        // ONに戻せば通常どおりIDが作られ、旧v1の値は引き継がれる。
+        let rec = ensure_record(&db, &dir, "a.zip").unwrap();
+        assert_eq!(rec.status, FileStatus::Confirmed);
+        assert!(is_identity_spec(&db));
+        assert_eq!(read_archive_rating(&db, &dir, "a.zip").map(|r| r.rating_half), Some(7));
     }
 
     #[test]

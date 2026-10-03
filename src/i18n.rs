@@ -133,6 +133,61 @@ impl Lang {
         }
     }
 
+    // ---- 起動時の自動バックアップ失敗の確認 ----
+
+    pub fn bkfail_title(self) -> &'static str {
+        self.idres_pick(
+            "データベースのバックアップに失敗しました",
+            "Failed to back up the database",
+            "数据库备份失败",
+        )
+    }
+
+    /// FP仕様のDBでは、既に新方式で動いている旨に差し替える。
+    pub fn bkfail_body(self, identity_spec: bool) -> &'static str {
+        if identity_spec {
+            self.idres_pick(
+                "データベースの自動バックアップを作れませんでした。このデータベースは、すでにファイルの内容で管理する新方式で動いています。続行しても、データはそのまま使えます。",
+                "The automatic backup of the database could not be created. This database is already managed by file content (the new method). You can continue and keep using your data as is.",
+                "无法创建数据库的自动备份。此数据库已按文件内容管理（新方式）。继续使用不会影响现有数据。",
+            )
+        } else {
+            self.idres_pick(
+                "ファイルを内容で管理する新方式へ移行する前の、データベースのバックアップを作れませんでした。バックアップ無しで移行すると、旧バージョンへ戻したときに元の状態へ戻せなくなる可能性があります。「新方式を使わずに続行」を選ぶと、今回の起動だけ従来の方式で動かし、次回の起動でバックアップを再試行します。",
+                "A backup of the database could not be created before moving to the new method that manages files by content. Without a backup, you may not be able to restore the original state if you go back to an older version. \"Continue without the new method\" runs this session with the previous method only, and retries the backup on the next launch.",
+                "在迁移到按文件内容管理的新方式之前，无法创建数据库备份。没有备份时，回到旧版本后可能无法恢复原来的状态。选择“不使用新方式继续”将仅在本次启动使用原有方式，并在下次启动时重试备份。",
+            )
+        }
+    }
+
+    pub fn bkfail_reason_label(self) -> &'static str {
+        self.idres_pick("理由: ", "Reason: ", "原因：")
+    }
+
+    pub fn bkfail_continue(self, identity_spec: bool) -> &'static str {
+        if identity_spec {
+            self.idres_pick("続行", "Continue", "继续")
+        } else {
+            self.idres_pick(
+                "バックアップ無しで移行して続行",
+                "Migrate without a backup and continue",
+                "不备份直接迁移并继续",
+            )
+        }
+    }
+
+    pub fn bkfail_continue_without_identity(self) -> &'static str {
+        self.idres_pick(
+            "新方式を使わずに続行（今回の起動のみ）",
+            "Continue without the new method (this session only)",
+            "不使用新方式继续（仅本次启动）",
+        )
+    }
+
+    pub fn bkfail_quit(self) -> &'static str {
+        self.idres_pick("終了", "Quit", "退出")
+    }
+
     // ---- DB内の重複の解決（解決UI）----
 
     fn idres_pick(self, ja: &'static str, en: &'static str, zh: &'static str) -> &'static str {

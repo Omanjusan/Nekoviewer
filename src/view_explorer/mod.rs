@@ -976,6 +976,10 @@ pub struct NekoviewApp {
     identity_pending_count: usize,
     /// 旧レコードのバックフィル依頼を出したか（起動後1回）。
     identity_backfill_started: bool,
+    /// 起動時の自動バックアップ失敗の確認待ち（選ぶまでID層は止まっている）。
+    backup_failure: Option<backup_failure_ui::BackupFailure>,
+    /// アプリ終了の要求（確認ダイアログの「終了」）。`winit_app` が拾う。
+    exit_requested: bool,
     /// 開発用DBツール（デバッグタブ）の状態。実リリース時に dev_db_tools.rs ごと削除する。
     pub(crate) dev_db_ui: dev_db_tools::DevDbUiState,
     /// 翻訳機能(実験的)の永続設定。設定ダイアログの[反映]でのみ書き換わる。
@@ -1260,6 +1264,7 @@ mod help;
 mod dev_db_tools;
 mod identity_worker;
 mod identity_resolution_ui;
+mod backup_failure_ui;
 
 #[cfg(test)]
 mod glyph_audit;
@@ -1282,6 +1287,7 @@ impl NekoviewApp {
         // fit-within(縦横比維持)なので短辺は箱の中に自動的に収まる。
         let max_decode_target = (config.max_decode_edge, config.max_decode_edge);
         let config_root = config.config_root.clone();
+        let (spread_db, backup_failure) = backup_failure_ui::open_spread_db_with_backup(&config_root);
         let (tag_manager_categories, tag_manager_next_tier_id) =
             crate::tag_manager::load(&config_root).unwrap_or_else(crate::tag_manager::default_state);
         let (tag_main_options, tag_attr_options) = crate::tag_manager::derive_tag_options(&tag_manager_categories);
@@ -1373,31 +1379,9 @@ impl NekoviewApp {
             cd_summary_updated_at: None,
             cache_db: None,
             cache_neko_dir: None,
-            spread_db: {
-                // 開発用DBツールの復元予約は、DBを開く前に適用する（実リリース時に削除）。
-                match crate::dev_db_backup::apply_pending_restore(&config_root) {
-                    Ok(true) => crate::log_common!("[dev_db] 復元予約を適用した"),
-                    Ok(false) => {}
-                    Err(e) => crate::log_common!("[dev_db] 復元予約の適用に失敗（現DBのまま起動）: {:?}", e),
-                }
-                // FP仕様への移行前の自動バックアップ。DBを開くとロックされ、開いた直後から書き換わるため、
-                // 開く前にファイルをコピーする（1回きり）。失敗時の扱い（確認ダイアログ）は後続フェーズ。
-                match crate::dev_db_backup::ensure_pre_migration_backup(&config_root) {
-                    Ok(crate::dev_db_backup::PreMigrationBackup::Created(p)) => {
-                        crate::log_common!("[backup] 移行前の自動バックアップを作成: {}", p.display())
-                    }
-                    Ok(_) => {}
-                    Err(e) => crate::log_common!("[backup] 移行前の自動バックアップに失敗: {:?}", e),
-                }
-                let db = crate::spread_state::open_spread_db(&config_root);
-                if let Some(db) = &db {
-                    crate::favorites::init_favorite_tables(db);
-                    crate::virtual_folders::init_virtual_folder_tables(db);
-                    // 候補刷新で廃止した空洞・豆腐マーカーを塗り版へ一括移行
-                    crate::favorites::migrate_markers(db, FAVORITE_MARKER_MIGRATION);
-                }
-                db
-            },
+            spread_db,
+            backup_failure,
+            exit_requested: false,
             spread_states: HashMap::new(),
             archive_sort_states: HashMap::new(),
             favorite_states: HashMap::new(),

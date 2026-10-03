@@ -259,6 +259,7 @@ impl NekoviewApp {
         self.draw_bookmark_setting_dialog(&ctx);
         self.draw_spread_setting_dialog(&ctx);
         self.draw_rating_setting_dialog(&ctx);
+        self.draw_backup_failure_dialog(&ctx);
         self.draw_settings_dialog(&ctx);
         // 旧来の無条件 ctx.request_repaint() は撤去（イベント駆動化）。
         // ROOT は入力イベント・各ワーカーの起床通知・ステータス窓の1Hzハートビートで再描画される。
@@ -655,11 +656,14 @@ impl NekoviewApp {
                 help_tip(&r_thumb, help_on, &help_thumb);
 
                 // DB内の重複の解決（サムネイル n/m の左）。未解決が無いときはグレーで押せない。
-                ui.separator();
-                let (resolve_label, resolve_enabled) = self.identity_resolve_button();
-                let r_resolve = ui.add_enabled(resolve_enabled, egui::Button::new(resolve_label));
-                if r_resolve.clicked() {
-                    self.open_identity_resolve();
+                // ID層が止まっている間（バックアップ失敗でOFFを選んだ時など）は出さない。
+                if crate::file_identity::is_enabled() {
+                    ui.separator();
+                    let (resolve_label, resolve_enabled) = self.identity_resolve_button();
+                    let r_resolve = ui.add_enabled(resolve_enabled, egui::Button::new(resolve_label));
+                    if r_resolve.clicked() {
+                        self.open_identity_resolve();
+                    }
                 }
             });
         });
