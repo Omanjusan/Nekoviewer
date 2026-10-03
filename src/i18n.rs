@@ -2825,6 +2825,26 @@ impl Lang {
         }
     }
 
+    pub fn settings_backup_folder_label(self) -> &'static str {
+        self.idres_pick("データベースのバックアップ", "Database backup", "数据库备份")
+    }
+
+    pub fn settings_backup_folder_open(self) -> &'static str {
+        self.idres_pick("バックアップフォルダを開く", "Open backup folder", "打开备份文件夹")
+    }
+
+    pub fn settings_backup_folder_none(self) -> &'static str {
+        self.idres_pick("バックアップはまだありません", "No backup has been made yet", "尚无备份")
+    }
+
+    pub fn settings_backup_folder_explain(self) -> &'static str {
+        self.idres_pick(
+            "ファイルを内容で管理する新方式へ移行する前に、データベース（nekoviewer_spread.redb）を自動でコピーしたものが入っています。旧バージョンへ戻す場合は、アプリを閉じてから、設定フォルダの nekoviewer_spread.redb をこのコピーで置き換えてください。",
+            "Contains an automatic copy of the database (nekoviewer_spread.redb) made before moving to the new method that manages files by content. To go back to an older version, close the app and replace nekoviewer_spread.redb in the settings folder with this copy.",
+            "这里保存着迁移到按文件内容管理的新方式之前，自动复制的数据库（nekoviewer_spread.redb）。要回到旧版本时，请先关闭应用，再用此副本替换设置文件夹中的 nekoviewer_spread.redb。",
+        )
+    }
+
     pub fn settings_debug_log_perf(self) -> &'static str {
         match self {
             Lang::Japanese => "パフォーマンス計測ログ（ページ読み込み時間など）",

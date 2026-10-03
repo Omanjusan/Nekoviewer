@@ -1826,6 +1826,24 @@ impl NekoviewApp {
             ui.label(i18n::t().settings_unconfirmed_retention_value(self.settings_draft.unconfirmed_retention_days));
         });
         ui.label(i18n::t().settings_unconfirmed_retention_explain());
+
+        // 移行前の自動バックアップ（`backup_auto/`）の場所を開く。まだ無ければ押せない。
+        ui.separator();
+        ui.label(i18n::t().settings_backup_folder_label());
+        let backup_dir = crate::dev_db_backup::auto_backup_dir(&self.config.config_root);
+        let exists = backup_dir.is_dir();
+        ui.horizontal(|ui| {
+            if ui
+                .add_enabled(exists, egui::Button::new(i18n::t().settings_backup_folder_open()))
+                .clicked()
+            {
+                crate::translate::open_in_file_manager(&backup_dir);
+            }
+            if !exists {
+                ui.label(i18n::t().settings_backup_folder_none());
+            }
+        });
+        ui.label(i18n::t().settings_backup_folder_explain());
     }
 }
 

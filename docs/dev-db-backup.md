@@ -34,6 +34,9 @@ DBファイルを開かずに丸ごとコピーする（開いたDBは Windows �
 - FP仕様のDBでも（`backup_auto/` が空なら）取る。旧パス仕様のDBが保証されるわけではない。旧DBへ戻すのは
   旧版へ戻す場合の手動復元（DBファイルの差し替え）のみで、復元UIは作らない
 
+設定→その他に「バックアップフォルダを開く」がある（`backup_auto/` が無い間は押せない）。説明文に、旧版へ戻す時の
+手動復元（アプリを閉じて `nekoviewer_spread.redb` をコピーで置き換える）を書いてある。
+
 ### 失敗時の確認ダイアログ（`view_explorer/backup_failure_ui.rs`）
 
 失敗時は、ID層のスイッチ（`file_identity::set_enabled`）をOFFにして起動する。OFF の間は `ensure_record`・`resolve_file` が
