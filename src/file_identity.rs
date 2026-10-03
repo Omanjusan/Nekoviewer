@@ -788,6 +788,16 @@ pub fn lookup_in(db: &Database, path_key: &str) -> Option<FileRecord> {
     lookup_tx(&db.begin_read().ok()?, path_key)
 }
 
+/// 同じFPを持つIDレコードの一覧（FP索引で引く）。お気に入りの引き継ぎ候補の検出など。
+pub fn records_with_fp(db: &Arc<Mutex<Database>>, fp: &Fp) -> Vec<FileRecord> {
+    let Ok(guard) = db.lock() else { return Vec::new() };
+    let Ok(tx) = guard.begin_read() else { return Vec::new() };
+    let Ok(fps) = tx.open_multimap_table(FILE_FP_INDEX_TABLE) else { return Vec::new() };
+    let Ok(values) = fps.get(fp.as_slice()) else { return Vec::new() };
+    let ids: Vec<u64> = values.flatten().map(|v| v.value()).collect();
+    ids.into_iter().filter_map(|id| record_by_id_tx(&tx, id)).collect()
+}
+
 /// 空のID（`blank_id`、新しく現れたファイルのID）を消し、消えているID（`orphan_id`）をそのパスへ移す。
 /// 解決UIで「この移動元から引き継ぐ」と選んだ時の操作。空であることの確認は呼び出し側が行う。
 /// 孤児のデータ（お気に入りを含む）はIDごと新しいパスへ付いて来る。旧パスは履歴に残る。

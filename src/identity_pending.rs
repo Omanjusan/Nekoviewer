@@ -1,6 +1,3 @@
-// 本実装のR4（ワーカー結線）・R5（解決UI）で接続するまでの暫定。接続後にこの行を外すこと。
-#![allow(dead_code)]
-
 //! 「未解決」の記録層。自動では決められなかった重複・曖昧の項目を、`nekoviewer_spread.redb` に覚えておく。
 //! UI（解決ダイアログ）はこの一覧を表示し、解決したら記録を消す。解決の操作そのものはR3。
 //!
@@ -33,6 +30,13 @@ pub enum PendingKind {
 }
 
 impl PendingKind {
+    /// 表示順。
+    pub const ALL: [PendingKind; 3] = [Self::CopySource, Self::MoveTarget, Self::FavoriteHandover];
+
+    pub fn index(self) -> usize {
+        Self::ALL.iter().position(|k| *k == self).unwrap_or(0)
+    }
+
     fn from_u8(v: u8) -> Option<Self> {
         match v {
             1 => Some(Self::CopySource),
@@ -192,34 +196,6 @@ pub fn remove(db: &Arc<Mutex<Database>>, id: u64) -> bool {
     tx.commit().is_ok() && removed
 }
 
-/// 対象に紐づく記録を全て消す（対象が別の経路で解決された時）。消した件数を返す。
-pub fn remove_for_subject(db: &Arc<Mutex<Database>>, kind: PendingKind, subject: u64) -> usize {
-    let Ok(guard) = db.lock() else { return 0 };
-    if !list_in(&guard).iter().any(|r| r.kind == kind && r.subject == subject) {
-        return 0;
-    }
-    let Ok(tx) = guard.begin_write() else { return 0 };
-    let mut removed = 0;
-    {
-        let Ok(mut table) = tx.open_table(PENDING_TABLE) else { return 0 };
-        let ids: Vec<u64> = match table.iter() {
-            Ok(iter) => iter
-                .flatten()
-                .filter_map(|(_, v)| PendingRecord::decode(v.value()))
-                .filter(|r| r.kind == kind && r.subject == subject)
-                .map(|r| r.id)
-                .collect(),
-            Err(_) => return 0,
-        };
-        for id in ids {
-            if table.remove(id).ok().flatten().is_some() {
-                removed += 1;
-            }
-        }
-    }
-    if tx.commit().is_ok() { removed } else { 0 }
-}
-
 /// 掃除の判定に使う、ファイルの現況の問い合わせ。ファイルを見に行く関数は、DBロックの外で呼ばれる。
 pub struct PendingEnv<'a> {
     pub probe: &'a dyn Fn(&FileRecord) -> Presence,
@@ -338,6 +314,38 @@ pub fn prune(db: &Arc<Mutex<Database>>, env: &PendingEnv) -> PruneReport {
         return PruneReport::default();
     }
     report
+}
+
+/// 実体の無いお気に入りに、同内容の現存ファイルがあれば、「お気に入りの引き継ぎ」として記録する。
+/// 「コピーしてから元を消す」場合の取りこぼしを拾う。移動だけなら、そのファイルを開いた時に記録が自動で
+/// 追従するので、ここでは扱わない（移動先がまだ見つかっていない＝候補が無ければ記録しない）。
+/// 新しく記録した件数を返す。IDを全件走査するので、解決UIを開く時など、限られた場面で呼ぶ。
+pub fn detect_favorite_handovers(db: &Arc<Mutex<Database>>, now: i64) -> usize {
+    detect_favorite_handovers_with(db, now, &probe_record)
+}
+
+fn detect_favorite_handovers_with(
+    db: &Arc<Mutex<Database>>,
+    now: i64,
+    probe: &dyn Fn(&FileRecord) -> Presence,
+) -> usize {
+    let mut created = 0;
+    for (rec, _favorite) in crate::file_settings::favorite_records(db) {
+        // 実体が見つからない（確認できないだけのオフラインは除く）お気に入りだけが対象。
+        if probe(&rec) != Presence::Missing {
+            continue;
+        }
+        let Some(fp) = rec.fp else { continue };
+        let candidates: Vec<u64> = crate::file_identity::records_with_fp(db, &fp)
+            .into_iter()
+            .filter(|c| c.id != rec.id && probe(c) == Presence::Present)
+            .map(|c| c.id)
+            .collect();
+        if let Some(AddOutcome::Created(_)) = add(db, PendingKind::FavoriteHandover, rec.id, &candidates, now) {
+            created += 1;
+        }
+    }
+    created
 }
 
 /// 実ファイル・実DBで掃除する。
@@ -500,18 +508,6 @@ mod tests {
     }
 
     #[test]
-    fn remove_for_subject_clears_all_records_of_that_subject() {
-        let t = TempRoot::new("by_subject");
-        let db = new_db(&t);
-        add(&db, PendingKind::CopySource, 1, &[2], 1).unwrap();
-        add(&db, PendingKind::MoveTarget, 1, &[3], 1).unwrap();
-        add(&db, PendingKind::CopySource, 9, &[2], 1).unwrap();
-        assert_eq!(remove_for_subject(&db, PendingKind::CopySource, 1), 1);
-        assert_eq!(count(&db), 2);
-        assert_eq!(remove_for_subject(&db, PendingKind::CopySource, 1), 0);
-    }
-
-    #[test]
     fn prune_drops_copy_source_when_subject_is_gone_or_has_data() {
         let t = TempRoot::new("prune_copy");
         let db = new_db(&t);
@@ -622,5 +618,90 @@ mod tests {
         assert!(crate::spread_state::write_archive_rating(&db, &dir, "new.zip", 6));
         assert_eq!(prune_real(&db).removed, 1);
         assert_eq!(count(&db), 0);
+    }
+
+    // ---- お気に入りの引き継ぎ候補の検出 ----
+
+    fn set_favorite(db: &Arc<Mutex<Database>>, id: u64, folders: &[u8]) {
+        let rec = {
+            let g = db.lock().unwrap();
+            let tx = redb::ReadableDatabase::begin_read(&*g).unwrap();
+            record_by_id_tx(&tx, id).unwrap()
+        };
+        let v = folders.to_vec();
+        assert_eq!(
+            crate::file_settings::modify_for_record(db, &rec, |s| s.favorite = crate::file_settings::Slot::Set(v)),
+            Some(true)
+        );
+    }
+
+    fn detect_fake(db: &Arc<Mutex<Database>>, fake: &Fake) -> usize {
+        let probe = |r: &FileRecord| fake.presence.get(&r.id).copied().unwrap_or(Presence::Present);
+        detect_favorite_handovers_with(db, 10, &probe)
+    }
+
+    #[test]
+    fn missing_favorite_with_an_alive_twin_becomes_a_handover_candidate() {
+        let t = TempRoot::new("detect_fav");
+        let db = new_db(&t);
+        let (orphan, twin) = (make_id(&db, "/d\0old", 5), make_id(&db, "/e\0twin", 5));
+        let (lonely, other) = (make_id(&db, "/d\0lonely", 6), make_id(&db, "/d\0other", 7));
+        for id in [orphan, lonely] {
+            set_favorite(&db, id, &[2]);
+        }
+        let mut fake = Fake::default();
+        fake.presence.insert(orphan, Presence::Missing);
+        fake.presence.insert(lonely, Presence::Missing); // 同内容の現存ファイルが無い（移動かもしれない）
+        assert_eq!(detect_fake(&db, &fake), 1);
+        let listed = list(&db);
+        assert_eq!(listed.len(), 1);
+        assert_eq!((listed[0].kind, listed[0].subject, listed[0].candidates.clone()), (PendingKind::FavoriteHandover, orphan, vec![twin]));
+        // 何度呼んでも増えない。
+        assert_eq!(detect_fake(&db, &fake), 0);
+        // お気に入りでないIDや、現存するお気に入りは対象外。
+        let _ = other;
+        assert_eq!(count(&db), 1);
+    }
+
+    #[test]
+    fn offline_or_present_favorites_are_not_handover_candidates() {
+        let t = TempRoot::new("detect_fav_skip");
+        let db = new_db(&t);
+        let (a, b, twin) = (make_id(&db, "/d\0a", 5), make_id(&db, "/d\0b", 5), make_id(&db, "/e\0twin", 5));
+        set_favorite(&db, a, &[1]);
+        set_favorite(&db, b, &[1]);
+        let mut fake = Fake::default();
+        fake.presence.insert(a, Presence::Offline); // 外付けが抜けているだけかもしれない
+        fake.presence.insert(b, Presence::Present); // 実体がある
+        let _ = twin;
+        assert_eq!(detect_fake(&db, &fake), 0);
+        assert_eq!(count(&db), 0);
+        // 同内容の候補がオフラインしかない場合も記録しない。
+        fake.presence.insert(a, Presence::Missing);
+        fake.presence.insert(twin, Presence::Offline);
+        fake.presence.insert(b, Presence::Offline);
+        assert_eq!(detect_fake(&db, &fake), 0);
+    }
+
+    #[test]
+    fn records_with_fp_and_summary_helpers_read_real_data() {
+        let t = TempRoot::new("helpers");
+        let db = new_db(&t);
+        let (a, b, c) = (make_id(&db, "/d\0a", 5), make_id(&db, "/d\0b", 5), make_id(&db, "/d\0c", 6));
+        let ids: Vec<u64> = {
+            let mut v: Vec<u64> = crate::file_identity::records_with_fp(&db, &[5; 16]).iter().map(|r| r.id).collect();
+            v.sort_unstable();
+            v
+        };
+        assert_eq!(ids, vec![a, b]);
+        assert!(crate::file_identity::records_with_fp(&db, &[9; 16]).is_empty());
+        let _ = c;
+        // 要約: 評価・タグ数・お気に入り。
+        set_favorite(&db, a, &[]);
+        let rec = crate::file_identity::lookup(&db, "/d\0a").unwrap();
+        let summary = crate::spread_state::record_summary(&db, &rec);
+        assert_eq!(summary, crate::spread_state::RecordSummary { rating_half: 0, tag_count: 0, favorite: true });
+        let blank = crate::file_identity::lookup(&db, "/d\0b").unwrap();
+        assert_eq!(crate::spread_state::record_summary(&db, &blank), Default::default());
     }
 }

@@ -654,9 +654,10 @@ impl NekoviewApp {
                 let r_thumb = ui.label(self.thumbnail_status_text());
                 help_tip(&r_thumb, help_on, &help_thumb);
 
-                // 重複・曖昧の解決（サムネイル n/m の左）。今はモック表示で、常に押せる。
+                // DB内の重複の解決（サムネイル n/m の左）。未解決が無いときはグレーで押せない。
                 ui.separator();
-                let r_resolve = ui.button(self.identity_resolve_button_label());
+                let (resolve_label, resolve_enabled) = self.identity_resolve_button();
+                let r_resolve = ui.add_enabled(resolve_enabled, egui::Button::new(resolve_label));
                 if r_resolve.clicked() {
                     self.open_identity_resolve();
                 }

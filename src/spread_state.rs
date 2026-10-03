@@ -904,6 +904,29 @@ pub fn clone_inheritable_data(db: &Arc<Mutex<Database>>, from_id: u64, to_id: u6
     Ok(())
 }
 
+/// 解決UIの候補行に出す、IDの記録の要約。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct RecordSummary {
+    /// 評価（半星単位。0=未評価）。
+    pub rating_half: u8,
+    pub tag_count: usize,
+    /// お気に入りに入っているか（未整理を含む）。
+    pub favorite: bool,
+}
+
+/// IDの記録の要約（評価・タグ数・お気に入りの有無）。旧v1にしか無い値も含めて読む。
+pub fn record_summary(db: &Arc<Mutex<Database>>, rec: &crate::file_identity::FileRecord) -> RecordSummary {
+    let Ok(guard) = db.lock() else { return RecordSummary::default() };
+    let Ok(tx) = guard.begin_read() else { return RecordSummary::default() };
+    let owner = Owner::Id(rec.clone());
+    let e = crate::file_settings::effective_tx(&tx, &owner);
+    RecordSummary {
+        rating_half: rating_get_tx(&tx, &owner).map_or(0, |r| r.rating_half),
+        tag_count: e.tags.map_or(0, |t| t.len()),
+        favorite: e.favorite.is_some(),
+    }
+}
+
 /// そのパスキーに、旧v1（ID化前）のデータが1つでも残っているか。
 pub fn legacy_data_exists(db: &Arc<Mutex<Database>>, key: &str) -> bool {
     let Ok(guard) = db.lock() else { return false };

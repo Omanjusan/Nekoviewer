@@ -451,6 +451,20 @@ pub(crate) fn all_favorites_tx(tx: &ReadTransaction) -> Vec<(PathBuf, String, Ve
     out
 }
 
+/// お気に入りに入っているIDレコード（解決済みのIDのみ。旧v1の旧パスは、IDの旧キー経由で解決する）と、その所属。
+/// お気に入りの引き継ぎ候補の検出用。IDレコードを全件走査するので、頻繁に呼ぶ用途には使わない。
+pub(crate) fn favorite_records(db: &Arc<Mutex<Database>>) -> Vec<(crate::file_identity::FileRecord, Vec<u8>)> {
+    let Ok(guard) = db.lock() else { return Vec::new() };
+    let Ok(tx) = guard.begin_read() else { return Vec::new() };
+    crate::file_identity::all_records_tx(&tx)
+        .into_iter()
+        .filter_map(|rec| {
+            let favorite = effective_tx(&tx, &Owner::Id(rec.clone())).favorite?;
+            Some((rec, favorite))
+        })
+        .collect()
+}
+
 /// 全てのファイル設定から、お気に入りフォルダ `folder_id` の所属を外す（フォルダ削除用）。
 /// 旧v1の行は呼び出し側が別に直す。IDを持つファイルのv2だけを書き換える。
 pub(crate) fn remove_folder_from_settings(

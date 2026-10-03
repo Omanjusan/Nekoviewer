@@ -1,6 +1,6 @@
 use std::sync::atomic::{AtomicU8, Ordering};
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Lang {
     Japanese,
     English,
@@ -130,6 +130,356 @@ impl Lang {
             Lang::Japanese => format!("管理データ内に同じ内容のファイルが複数あり、引き継ぎ元を決められませんでした（{n}件）"),
             Lang::English  => format!("Several files with the same content exist in the managed data, so the source to inherit from could not be decided ({n})"),
             Lang::Chinese  => format!("管理数据中存在多个内容相同的文件，无法确定继承来源（{n}件）"),
+        }
+    }
+
+    // ---- DB内の重複の解決（解決UI）----
+
+    fn idres_pick(self, ja: &'static str, en: &'static str, zh: &'static str) -> &'static str {
+        match self {
+            Lang::Japanese => ja,
+            Lang::English => en,
+            Lang::Chinese => zh,
+        }
+    }
+
+    pub fn idres_button(self, n: usize) -> String {
+        match self {
+            Lang::Japanese => format!("DB内の重複の解決（{n}）"),
+            Lang::English => format!("Resolve duplicates in DB ({n})"),
+            Lang::Chinese => format!("解决数据库内的重复（{n}）"),
+        }
+    }
+
+    pub fn idres_list_title(self) -> &'static str {
+        self.idres_pick("未解決の項目", "Unresolved items", "未解决的项目")
+    }
+
+    pub fn idres_list_intro1(self) -> &'static str {
+        self.idres_pick(
+            "このアプリは、ファイルの内容で「同じファイル」かを見分け、移動や名前の変更のあとも評価・タグ・お気に入りなどを引き継いでいます。",
+            "This app recognizes the same file by its content, and carries ratings, tags, favorites, etc. over after a move or rename.",
+            "本应用通过文件内容识别“同一文件”，在移动或重命名后仍会保留评分、标签、收藏等。",
+        )
+    }
+
+    pub fn idres_list_intro2(self) -> &'static str {
+        self.idres_pick(
+            "ただし、管理データ（DB）に同じ内容のファイルが複数あると、どれがどれの続きなのかを自動では決められないことがあります。ここで、その判断をしてください。",
+            "However, when the managed data (DB) contains several files with the same content, the app sometimes cannot decide automatically which one continues which. Please decide here.",
+            "但是，当管理数据（DB）中有多个内容相同的文件时，应用有时无法自动判断哪个是哪个的延续。请在此处决定。",
+        )
+    }
+
+    pub fn idres_list_note(self) -> &'static str {
+        self.idres_pick(
+            "ストレージ全体の重複検索ではありません（管理データに記録のないファイルは対象外）。解決しなくてもアプリは使えますが、解決するまで該当ファイルは記録なしで表示されます。",
+            "This is not a duplicate search of your whole storage (files not recorded in the managed data are not covered). You can keep using the app without resolving, but the files concerned are shown without records until resolved.",
+            "这不是对整个存储的重复搜索（管理数据中没有记录的文件不在范围内）。不解决也可以继续使用，但在解决之前相关文件将显示为没有记录。",
+        )
+    }
+
+    pub fn idres_filter_label(self) -> &'static str {
+        self.idres_pick("絞り込み:", "Filter:", "筛选：")
+    }
+
+    pub fn idres_shown(self, shown: usize, total: usize) -> String {
+        match self {
+            Lang::Japanese => format!("表示 {shown} / {total} 件"),
+            Lang::English => format!("Showing {shown} / {total}"),
+            Lang::Chinese => format!("显示 {shown} / {total} 项"),
+        }
+    }
+
+    pub fn idres_col_kind(self) -> &'static str {
+        self.idres_pick("種別", "Type", "类型")
+    }
+    pub fn idres_col_target(self) -> &'static str {
+        self.idres_pick("対象ファイル", "File", "目标文件")
+    }
+    pub fn idres_col_candidates(self) -> &'static str {
+        self.idres_pick("候補", "Candidates", "候选")
+    }
+    pub fn idres_col_detected(self) -> &'static str {
+        self.idres_pick("検出日", "Detected", "检测日")
+    }
+    pub fn idres_col_until(self) -> &'static str {
+        self.idres_pick("削除まで", "Until removal", "距离删除")
+    }
+    pub fn idres_col_select(self) -> &'static str {
+        self.idres_pick("選択", "Select", "选择")
+    }
+    pub fn idres_col_path(self) -> &'static str {
+        self.idres_pick("パス", "Path", "路径")
+    }
+    pub fn idres_col_state(self) -> &'static str {
+        self.idres_pick("状態", "State", "状态")
+    }
+    pub fn idres_col_size(self) -> &'static str {
+        self.idres_pick("サイズ", "Size", "大小")
+    }
+    pub fn idres_col_mtime(self) -> &'static str {
+        self.idres_pick("更新日時", "Modified", "修改时间")
+    }
+    pub fn idres_col_rating(self) -> &'static str {
+        "★"
+    }
+    pub fn idres_col_tags(self) -> &'static str {
+        self.idres_pick("タグ", "Tags", "标签")
+    }
+    pub fn idres_col_favorite(self) -> &'static str {
+        self.idres_pick("お気に入り", "Favorite", "收藏")
+    }
+
+    pub fn idres_empty(self) -> &'static str {
+        self.idres_pick("未解決の項目はありません", "No unresolved items", "没有未解决的项目")
+    }
+
+    pub fn idres_until_note(self) -> &'static str {
+        self.idres_pick(
+            "「削除まで」: 見つからないファイルの記録が自動で削除されるまでの日数です（設定→その他で変更）。削除されると、その候補は選べなくなります。",
+            "\"Until removal\": days until the record of a missing file is deleted automatically (change in Settings > Other). Once deleted, that candidate can no longer be chosen.",
+            "“距离删除”：找不到的文件的记录被自动删除前的天数（可在 设置→其他 中更改）。删除后，该候选将无法再选择。",
+        )
+    }
+
+    pub fn idres_btn_proceed(self) -> &'static str {
+        self.idres_pick("解決へ進む", "Resolve", "前往解决")
+    }
+    pub fn idres_btn_close(self) -> &'static str {
+        self.idres_pick("閉じる", "Close", "关闭")
+    }
+    pub fn idres_btn_confirm(self) -> &'static str {
+        self.idres_pick(
+            "選択した項目を参照元として確定する",
+            "Confirm the selected item as the source",
+            "将所选项确定为参照来源",
+        )
+    }
+    pub fn idres_btn_skip(self) -> &'static str {
+        self.idres_pick("引き継がない（空のまま）", "Do not inherit (leave empty)", "不继承（保持为空）")
+    }
+    pub fn idres_btn_back(self) -> &'static str {
+        self.idres_pick("戻る", "Back", "返回")
+    }
+
+    pub fn idres_kind(self, kind: crate::identity_pending::PendingKind) -> &'static str {
+        use crate::identity_pending::PendingKind::*;
+        match kind {
+            CopySource => self.idres_pick("引き継ぎ元の選択", "Choose source to inherit from", "选择继承来源"),
+            MoveTarget => self.idres_pick("移動元の選択", "Choose origin of the move", "选择移动来源"),
+            FavoriteHandover => self.idres_pick("お気に入りの引き継ぎ", "Hand over favorite", "转移收藏"),
+        }
+    }
+
+    pub fn idres_until_none(self) -> &'static str {
+        self.idres_pick("期限なし", "No limit", "无期限")
+    }
+    pub fn idres_until_due(self) -> &'static str {
+        self.idres_pick("次回整理で削除", "Removed at next cleanup", "下次清理时删除")
+    }
+    pub fn idres_until_days(self, days: i64) -> String {
+        match self {
+            Lang::Japanese => format!("残り {days} 日"),
+            Lang::English => format!("{days} days left"),
+            Lang::Chinese => format!("剩余 {days} 天"),
+        }
+    }
+
+    pub fn idres_detail_title(self, kind: &str) -> String {
+        match self {
+            Lang::Japanese => format!("参照元の選択 ─ {kind}"),
+            Lang::English => format!("Choose source - {kind}"),
+            Lang::Chinese => format!("选择参照来源 - {kind}"),
+        }
+    }
+    pub fn idres_target_label(self) -> &'static str {
+        self.idres_pick("対象ファイル", "Target file", "目标文件")
+    }
+    pub fn idres_what_happened(self) -> &'static str {
+        self.idres_pick("何が起きたか", "What happened", "发生了什么")
+    }
+    pub fn idres_why_manual(self) -> &'static str {
+        self.idres_pick(
+            "なぜ自動では決められないか",
+            "Why it cannot be decided automatically",
+            "为何无法自动决定",
+        )
+    }
+    pub fn idres_what_to_do(self) -> &'static str {
+        self.idres_pick("していただくこと", "What you need to do", "需要您做的")
+    }
+    pub fn idres_will_confirm(self) -> &'static str {
+        self.idres_pick("確定すると", "If you confirm", "确定后")
+    }
+    pub fn idres_will_skip(self) -> &'static str {
+        self.idres_pick(
+            "「引き継がない（空のまま）」にすると",
+            "If you choose \"Do not inherit (leave empty)\"",
+            "选择“不继承（保持为空）”后",
+        )
+    }
+    pub fn idres_will_back(self) -> &'static str {
+        self.idres_pick("「戻る」と", "If you choose \"Back\"", "选择“返回”后")
+    }
+    pub fn idres_back_text(self) -> &'static str {
+        self.idres_pick(
+            "何も変えず一覧へ戻ります。保留の間、対象は記録のないまま表示されます（評価などを付ければ、そのファイルの記録になります）。",
+            "Nothing is changed and you return to the list. While on hold, the target is shown without records (if you add a rating etc., that becomes the file's own record).",
+            "不做任何更改并返回列表。保留期间，目标将显示为没有记录（若添加评分等，则成为该文件自己的记录）。",
+        )
+    }
+
+    pub fn idres_candidates_heading(self, kind: crate::identity_pending::PendingKind) -> &'static str {
+        use crate::identity_pending::PendingKind::*;
+        match kind {
+            CopySource => self.idres_pick(
+                "管理データ内の、同じ内容のファイル（参照元の候補）",
+                "Files with the same content in the managed data (candidates for the source)",
+                "管理数据内内容相同的文件（参照来源候选）",
+            ),
+            MoveTarget => self.idres_pick(
+                "管理データ内の、同じ内容の消えているファイル（移動元の候補）",
+                "Missing files with the same content in the managed data (candidates for the origin)",
+                "管理数据内内容相同且已丢失的文件（移动来源候选）",
+            ),
+            FavoriteHandover => self.idres_pick(
+                "管理データ内の、同じ内容のファイル（お気に入りの移し先の候補）",
+                "Files with the same content in the managed data (candidates to receive the favorite)",
+                "管理数据内内容相同的文件（收藏转移目标候选）",
+            ),
+        }
+    }
+
+    pub fn idres_state_present(self) -> &'static str {
+        self.idres_pick("現存", "Exists", "存在")
+    }
+    pub fn idres_state_missing(self) -> &'static str {
+        self.idres_pick("消えている", "Missing", "已丢失")
+    }
+    pub fn idres_state_offline(self) -> &'static str {
+        self.idres_pick("確認できない", "Unavailable", "无法确认")
+    }
+    pub fn idres_yes(self) -> &'static str {
+        self.idres_pick("あり", "Yes", "有")
+    }
+    pub fn idres_no(self) -> &'static str {
+        self.idres_pick("なし", "No", "无")
+    }
+
+    pub fn idres_situation(self, kind: crate::identity_pending::PendingKind, target: &str, n: usize) -> String {
+        use crate::identity_pending::PendingKind::*;
+        match (kind, self) {
+            (CopySource, Lang::Japanese) => format!("「{target}」は、管理データにすでにある {n} 個のファイルと同じ内容です。コピーされたファイルかもしれません。"),
+            (CopySource, Lang::English) => format!("\"{target}\" has the same content as {n} files already in the managed data. It may be a copy."),
+            (CopySource, Lang::Chinese) => format!("“{target}”与管理数据中已有的 {n} 个文件内容相同。它可能是复制出来的文件。"),
+            (MoveTarget, Lang::Japanese) => format!("新しく見つかった「{target}」は、管理データにある「見つからなくなった」{n} 個のファイルと同じ内容です。移動または名前の変更で現れたのかもしれません。"),
+            (MoveTarget, Lang::English) => format!("The newly found \"{target}\" has the same content as {n} files in the managed data that can no longer be found. It may have appeared through a move or rename."),
+            (MoveTarget, Lang::Chinese) => format!("新发现的“{target}”与管理数据中 {n} 个“已找不到”的文件内容相同。它可能是因移动或重命名而出现的。"),
+            (FavoriteHandover, Lang::Japanese) => format!("お気に入りに登録されていた「{target}」が見つからなくなりました。管理データには、同じ内容のファイルが別の場所に {n} 個あります。"),
+            (FavoriteHandover, Lang::English) => format!("\"{target}\", which was registered as a favorite, can no longer be found. The managed data has {n} files with the same content in other places."),
+            (FavoriteHandover, Lang::Chinese) => format!("已收藏的“{target}”找不到了。管理数据中在其他位置有 {n} 个内容相同的文件。"),
+        }
+    }
+
+    pub fn idres_reason(self, kind: crate::identity_pending::PendingKind) -> &'static str {
+        use crate::identity_pending::PendingKind::*;
+        match kind {
+            CopySource => self.idres_pick(
+                "コピー元の候補が複数あり、評価やタグなどの記録がそれぞれ違うため、どの記録を引き継ぐべきかをアプリは判断できません。誤って引き継ぐと、別のファイルの評価やタグが付いてしまいます。",
+                "There are several candidates for the copy source and their records (ratings, tags, etc.) differ, so the app cannot judge which record to inherit. Inheriting the wrong one would attach another file's rating or tags.",
+                "复制来源有多个候选，且各自的评分、标签等记录不同，应用无法判断应继承哪一个。若继承错误，会附上其他文件的评分或标签。",
+            ),
+            MoveTarget => self.idres_pick(
+                "移動元の候補が複数あり、どのファイルが移動してきたのかをアプリは判断できません。誤って選ぶと、別のファイルの記録（評価・タグ・お気に入りなど）を取り違えてしまいます。",
+                "There are several candidates for the origin, so the app cannot judge which file was moved here. Choosing wrongly would mix up another file's records (ratings, tags, favorites, etc.).",
+                "移动来源有多个候选，应用无法判断是哪个文件被移动过来。若选错，会弄混其他文件的记录（评分、标签、收藏等）。",
+            ),
+            FavoriteHandover => self.idres_pick(
+                "別の場所へ移動しただけなのか、コピーしてから元を消したのかを、アプリは区別できません。移動しただけなら、そのファイルを開いた時に記録は自動で追従します。勝手にお気に入りを移すと、別のファイルに付けてしまうおそれがあります。",
+                "The app cannot tell whether the file was simply moved elsewhere or copied and then deleted. If it was only moved, its records follow automatically when that file is opened. Moving the favorite on its own risks attaching it to a different file.",
+                "应用无法区分是仅移动到了别处，还是复制后删除了原文件。若只是移动，打开该文件时记录会自动跟随。擅自转移收藏可能会附到其他文件上。",
+            ),
+        }
+    }
+
+    pub fn idres_ask(self, kind: crate::identity_pending::PendingKind) -> &'static str {
+        use crate::identity_pending::PendingKind::*;
+        match kind {
+            CopySource => self.idres_pick(
+                "記録を引き継ぎたいファイルを、下の一覧から 1 つ選んでください。",
+                "Choose one file from the list below to inherit the records from.",
+                "请从下方列表中选择一个要继承其记录的文件。",
+            ),
+            MoveTarget => self.idres_pick(
+                "移動元だったと思うファイルを、下の一覧から 1 つ選んでください。",
+                "Choose one file from the list below that you think was the origin.",
+                "请从下方列表中选择一个您认为是移动来源的文件。",
+            ),
+            FavoriteHandover => self.idres_pick(
+                "お気に入りを移したいファイルを、下の一覧から 1 つ選んでください。",
+                "Choose one file from the list below to hand the favorite over to.",
+                "请从下方列表中选择一个要转移收藏的文件。",
+            ),
+        }
+    }
+
+    pub fn idres_on_confirm(self, kind: crate::identity_pending::PendingKind, target: &str) -> String {
+        use crate::identity_pending::PendingKind::*;
+        match (kind, self) {
+            (CopySource, Lang::Japanese) => format!("確定すると、選んだファイルの★・タグ・しおり・見開き・ソート・登録サムネが「{target}」に複製されます。以後は別々に管理され、お気に入りは複製されません。"),
+            (CopySource, Lang::English) => format!("If you confirm, the selected file's rating, tags, bookmark, spread, sort and registered thumbnail are copied to \"{target}\". From then on they are managed separately, and the favorite is not copied."),
+            (CopySource, Lang::Chinese) => format!("确定后，所选文件的评分、标签、书签、跨页、排序和已登记缩略图将复制到“{target}”。此后二者各自独立管理，收藏不会被复制。"),
+            (MoveTarget, Lang::Japanese) => format!("確定すると、選んだファイルの記録（お気に入りを含む）が「{target}」に移り、その分の「見つからないファイル」の記録が整理されます。選ばなかった候補は、保持日数が過ぎると自動で削除されます。"),
+            (MoveTarget, Lang::English) => format!("If you confirm, the selected file's records (including the favorite) move to \"{target}\" and the corresponding missing-file record is tidied up. Candidates you did not choose are deleted automatically after the retention period."),
+            (MoveTarget, Lang::Chinese) => format!("确定后，所选文件的记录（包括收藏）将转移到“{target}”，相应的“找不到的文件”记录会被整理。未选的候选将在保留期过后自动删除。"),
+            (FavoriteHandover, Lang::Japanese) => format!("確定すると、「{target}」のお気に入りが選んだファイルに移り、お気に入り一覧で実在するファイルとして表示されます。"),
+            (FavoriteHandover, Lang::English) => format!("If you confirm, the favorite of \"{target}\" moves to the selected file and shows up in the favorites list as an existing file."),
+            (FavoriteHandover, Lang::Chinese) => format!("确定后，“{target}”的收藏将转移到所选文件，并在收藏列表中作为实际存在的文件显示。"),
+        }
+    }
+
+    pub fn idres_on_skip(self, kind: crate::identity_pending::PendingKind, target: &str) -> String {
+        use crate::identity_pending::PendingKind::*;
+        match (kind, self) {
+            (CopySource, Lang::Japanese) => format!("「{target}」は、記録のない新しいファイルとして扱います。"),
+            (CopySource, Lang::English) => format!("\"{target}\" is treated as a new file without records."),
+            (CopySource, Lang::Chinese) => format!("“{target}”将作为没有记录的新文件处理。"),
+            (MoveTarget, Lang::Japanese) => format!("「{target}」は記録のない新しいファイルとして扱い、候補の記録は「見つからないファイル」のまま残ります。"),
+            (MoveTarget, Lang::English) => format!("\"{target}\" is treated as a new file without records, and the candidates' records remain as missing files."),
+            (MoveTarget, Lang::Chinese) => format!("“{target}”将作为没有记录的新文件处理，候选的记录仍保留为“找不到的文件”。"),
+            (FavoriteHandover, Lang::Japanese) => format!("お気に入りは「{target}」のまま残り（実体なしで表示）、保持日数が過ぎると自動で削除されます。"),
+            (FavoriteHandover, Lang::English) => format!("The favorite stays with \"{target}\" (shown without an actual file) and is deleted automatically after the retention period."),
+            (FavoriteHandover, Lang::Chinese) => format!("收藏仍保留在“{target}”上（显示为无实际文件），保留期过后自动删除。"),
+        }
+    }
+
+    pub fn idres_done(self, target: &str) -> String {
+        match self {
+            Lang::Japanese => format!("「{target}」の参照元を確定しました"),
+            Lang::English => format!("Confirmed the source for \"{target}\""),
+            Lang::Chinese => format!("已确定“{target}”的参照来源"),
+        }
+    }
+
+    pub fn idres_skipped(self, target: &str) -> String {
+        match self {
+            Lang::Japanese => format!("「{target}」は引き継がずに確定しました"),
+            Lang::English => format!("\"{target}\" was confirmed without inheriting"),
+            Lang::Chinese => format!("“{target}”已确定为不继承"),
+        }
+    }
+
+    /// 解決に失敗した理由。`code` は解決UI側が `ResolveError` から決める固定の識別子。
+    pub fn idres_error(self, code: &str) -> &'static str {
+        match code {
+            "not_found" => self.idres_pick("この項目は既に解決されています（一覧を更新しました）", "This item has already been resolved (the list was refreshed)", "该项目已解决（列表已刷新）"),
+            "not_candidate" => self.idres_pick("選んだ項目は候補にありません", "The selected item is not a candidate", "所选项不在候选中"),
+            "subject_gone" => self.idres_pick("対象のファイルの記録が見つかりません", "The record of the target file was not found", "找不到目标文件的记录"),
+            "source_gone" => self.idres_pick("参照元の記録が見つかりません（保持期間を過ぎて削除された可能性があります）", "The record of the source was not found (it may have been deleted after the retention period)", "找不到参照来源的记录（可能已在保留期过后被删除）"),
+            "subject_has_data" => self.idres_pick("対象に既に記録が付いているため、適用しませんでした（記録を潰さないため）", "Not applied because the target already has records (to avoid overwriting them)", "目标已有记录，因此未应用（避免覆盖记录）"),
+            "no_favorite" => self.idres_pick("移すお気に入りがありません", "There is no favorite to hand over", "没有可转移的收藏"),
+            _ => self.idres_pick("保存に失敗しました", "Failed to save", "保存失败"),
         }
     }
 

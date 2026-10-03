@@ -408,7 +408,7 @@ impl IdentityProgress {
 /// 移動・リネームされたファイルの、サムネキャッシュの行を新しい名前（新しいフォルダ）へ引っ越す。
 /// 元のDB（旧フォルダ）に生成済みのサムネがある場合だけ行い、元の行は消さない。
 /// 引っ越し先のDBは、サムネが実際にある場合にだけ開く（空のDBを作らない）。
-fn transplant_thumbnail_for_move(cache_root: &Path, new_path: &Path, from_key: &str) {
+pub(super) fn transplant_thumbnail_for_move(cache_root: &Path, new_path: &Path, from_key: &str) {
     let Some((old_dir, old_name)) = from_key.split_once('\0') else { return };
     let (Some(new_dir), Some(new_name)) = (new_path.parent(), new_path.file_name().and_then(|n| n.to_str()))
     else {
