@@ -15,7 +15,7 @@
   「キャッシュ整理」。削除したIDの記録・サムネ行・旧v1の行の扱いを合わせて決める。解決UIの「削除まで残り○日」はこの削除の予告
 - 手動紐付け画面: 自動復旧できなかった記録（バックフィルが間に合わなかった旧データ等）を、ユーザーが手で紐付ける。
   解決UI（[fingerprint-resolution-ui.md](features/fingerprint-resolution-ui.md)）の「候補から選ぶ」操作と画面を共通化できる
-- 製品版の自動バックアップ: `dev_db_backup::ensure_pre_migration_backup`（失敗時は移行を止める。5ファイルまたは合計1GBで古い順に
-  削除）を、製品側の起動処理へ紐付けて試験する。開発用のバックアップ/リストアUIは実リリース時に削除（[dev-db-backup.md](dev-db-backup.md)）
+- 製品版の自動バックアップ: `dev_db_backup::ensure_pre_migration_backup`（DBを開く前に1回きりコピー）は起動処理へ接続済み。
+  残り: 失敗時の確認ダイアログとID層の無効化、設定画面の「バックアップフォルダを開く」、試験。開発用のバックアップ/リストアUIは実リリース時に削除（[dev-db-backup.md](dev-db-backup.md)）
 - お気に入りの横断一覧（IDレコードの全件走査）が、数十万ファイル規模でどれだけかかるかの確認
 

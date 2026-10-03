@@ -8,8 +8,8 @@
 //! - 基準バックアップ: `dev_backup/baseline.redb`（1スロット）。FP仕様のDBは拒否する
 //! - リストア: 起動中のDBは差し替えず、`restore-pending` を置いて次回起動時
 //!   （`open_spread_db` の前）に適用する。適用時は現DBを `dev_backup/failed/` へ退避する
-//! - 自動バックアップ導線: `ensure_pre_migration_backup`。失敗は `Err` で返し、呼び出し側が
-//!   移行を止める。世代は5ファイルまたは合計1GBを超えたら古い順に削除する
+//! - 自動バックアップ導線: `ensure_pre_migration_backup`。DBを開く前にファイルを丸ごとコピーし
+//!   （開いたDBは Windows でロックされるため）、`backup_auto/` に1回だけ取る。失敗は `Err` で返す
 //!
 //! 実リリース時はモジュールごと `cfg(debug_assertions)` へ戻すこと（自動バックアップ導線を
 //! 製品側へ紐付ける場合はその部分だけ残す）。
@@ -27,7 +27,6 @@ const PENDING_FILE_NAME: &str = "nekoviewer_spread.redb.restore-pending";
 const DEV_DIR: &str = "dev_backup";
 const BASELINE_FILE_NAME: &str = "baseline.redb";
 const FAILED_DIR: &str = "failed";
-#[allow(dead_code)] // 自動バックアップ導線は全体フェーズ末尾で製品側へ紐付ける。
 const AUTO_DIR: &str = "backup_auto";
 
 /// 世代管理の上限。ファイル数か合計サイズのどちらかを超えたら古い順に削除する。
@@ -74,7 +73,6 @@ pub fn failed_dir(root: &Path) -> PathBuf {
     root.join(DEV_DIR).join(FAILED_DIR)
 }
 
-#[allow(dead_code)] // 同上。
 pub fn auto_backup_dir(root: &Path) -> PathBuf {
     root.join(AUTO_DIR)
 }
@@ -141,20 +139,42 @@ pub fn apply_pending_restore(root: &Path) -> Result<bool, DevBackupError> {
     Ok(true)
 }
 
-/// 移行前の自動バックアップ。後続フェーズは `Ok` のときだけ移行を進めること（失敗時は移行を止める）。
-/// FP仕様のDBでも取る（移行の途中経過を含めて戻せるようにする）。
-#[allow(dead_code)] // 同上。
-pub fn ensure_pre_migration_backup(
-    db: &Arc<Mutex<Database>>,
-    root: &Path,
-) -> Result<PathBuf, DevBackupError> {
+/// `ensure_pre_migration_backup` の結果。
+#[derive(Debug, PartialEq, Eq)]
+pub enum PreMigrationBackup {
+    /// 取った。値はバックアップのパス。
+    Created(PathBuf),
+    /// DBファイルが無い（新規インストール）ので取らなかった。
+    NoDb,
+    /// `backup_auto/` に既にバックアップがあるので取らなかった。
+    AlreadyDone,
+}
+
+/// 移行前の自動バックアップ。DBを開く前に呼ぶ（開いたDBは Windows でロックされるため、ファイルの
+/// コピーだけで済ませる）。DBファイルがあり、`backup_auto/` にバックアップが1つも無いときだけ、
+/// 日時付きでコピーする（FP仕様への移行は1回きりなので、世代管理はしない）。失敗は `Err`。
+pub fn ensure_pre_migration_backup(root: &Path) -> Result<PreMigrationBackup, DevBackupError> {
+    let db = db_path(root);
+    if !db.is_file() {
+        return Ok(PreMigrationBackup::NoDb);
+    }
     let dir = auto_backup_dir(root);
+    if has_backup(&dir) {
+        return Ok(PreMigrationBackup::AlreadyDone);
+    }
     std::fs::create_dir_all(&dir)?;
     let dest = unique_dest(&dir, "nekoviewer_spread", "redb");
-    copy_db_atomic(db, root, &dest, false)?;
-    // 世代整理の失敗でバックアップ自体は無効にしない。
-    let _ = rotate(&dir, MAX_BACKUP_FILES, MAX_BACKUP_BYTES);
-    Ok(dest)
+    copy_file_atomic(&db, &dest)?;
+    Ok(PreMigrationBackup::Created(dest))
+}
+
+/// `dir` 直下にバックアップ（`.redb`）があるか。コピー途中の一時ファイルは数えない。
+fn has_backup(dir: &Path) -> bool {
+    std::fs::read_dir(dir).is_ok_and(|rd| {
+        rd.flatten().any(|e| {
+            e.metadata().is_ok_and(|m| m.is_file()) && e.path().extension().is_some_and(|x| x == "redb")
+        })
+    })
 }
 
 /// `dir` 直下のファイルを、ファイル数か合計サイズの上限を超える間、更新日時の古い順に削除する。
@@ -468,33 +488,75 @@ mod tests {
         assert_eq!(rotate(&t.0.join("none"), 5, 50).unwrap(), 0);
     }
 
+    fn auto_backups(root: &Path) -> Vec<String> {
+        names_in(&auto_backup_dir(root))
+    }
+
     #[test]
-    fn pre_migration_backup_copies_db_and_rotates_to_five() {
+    fn pre_migration_backup_copies_legacy_db_once() {
         let t = TempRoot::new("auto");
         let db = open_spread_db(&t.0).unwrap();
         assert!(write_archive_rating(&db, Path::new("/x"), "a.zip", 5));
-        let mut last = PathBuf::new();
-        for _ in 0..7 {
-            last = ensure_pre_migration_backup(&db, &t.0).unwrap();
-        }
-        assert_eq!(names_in(&auto_backup_dir(&t.0)).len(), MAX_BACKUP_FILES);
-        assert!(last.is_file());
-        let copy = Arc::new(Mutex::new(Database::open(&last).unwrap()));
+        drop(db);
+        let PreMigrationBackup::Created(dest) = ensure_pre_migration_backup(&t.0).unwrap() else {
+            panic!("backup should be created");
+        };
+        assert_eq!(auto_backups(&t.0).len(), 1);
+        let copy = Arc::new(Mutex::new(Database::open(&dest).unwrap()));
         assert_eq!(rating_of(&copy), Some(5));
-        // FP仕様でも自動バックアップは取れる。
-        assert!(set_identity_spec(&db, true));
-        assert!(ensure_pre_migration_backup(&db, &t.0).is_ok());
+        assert!(!is_identity_spec(&copy));
+        drop(copy);
+
+        // 2回目以降は、DBが変わっても取らない（1回きり）。
+        let db = open_spread_db(&t.0).unwrap();
+        assert!(write_archive_rating(&db, Path::new("/x"), "a.zip", 9));
+        drop(db);
+        assert_eq!(ensure_pre_migration_backup(&t.0), Ok(PreMigrationBackup::AlreadyDone));
+        assert_eq!(auto_backups(&t.0).len(), 1);
+    }
+
+    #[test]
+    fn pre_migration_backup_skips_when_no_db_exists() {
+        let t = TempRoot::new("auto_nodb");
+        assert_eq!(ensure_pre_migration_backup(&t.0), Ok(PreMigrationBackup::NoDb));
+        assert!(!auto_backup_dir(&t.0).exists());
+    }
+
+    #[test]
+    fn pre_migration_backup_ignores_stray_tmp_files_and_retries() {
+        let t = TempRoot::new("auto_tmp");
+        drop(open_spread_db(&t.0).unwrap());
+        write_sized(&auto_backup_dir(&t.0), "nekoviewer_spread-x.redb.tmp", 10);
+        assert!(matches!(ensure_pre_migration_backup(&t.0), Ok(PreMigrationBackup::Created(_))));
     }
 
     #[test]
     fn pre_migration_backup_reports_failure_so_caller_can_stop_migration() {
         let t = TempRoot::new("auto_fail");
-        let db = open_spread_db(&t.0).unwrap();
+        drop(open_spread_db(&t.0).unwrap());
         // 保存先をファイルにして、ディレクトリ作成を失敗させる。
         std::fs::write(auto_backup_dir(&t.0), b"not a dir").unwrap();
-        assert!(matches!(
-            ensure_pre_migration_backup(&db, &t.0),
-            Err(DevBackupError::Io(_))
-        ));
+        assert!(matches!(ensure_pre_migration_backup(&t.0), Err(DevBackupError::Io(_))));
+        // 失敗しても元のDBは無傷。
+        assert!(open_spread_db(&t.0).is_some());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pre_migration_backup_fails_on_read_only_dir_and_leaves_no_partial_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let t = TempRoot::new("auto_ro");
+        drop(open_spread_db(&t.0).unwrap());
+        let dir = auto_backup_dir(&t.0);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let writable = std::fs::File::create(dir.join("probe")).is_ok();
+        let result = ensure_pre_migration_backup(&t.0);
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        if writable {
+            return; // root 等は権限を無視するので検証できない。
+        }
+        assert!(matches!(result, Err(DevBackupError::Io(_))));
+        assert!(auto_backups(&t.0).is_empty());
     }
 }

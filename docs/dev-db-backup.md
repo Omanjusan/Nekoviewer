@@ -22,9 +22,17 @@ UIは [view_explorer/dev_db_tools.rs](../src/view_explorer/dev_db_tools.rs)。
 
 ## 世代管理と自動バックアップ導線
 
-`failed/` と自動バックアップ（`backup_auto/`）は、**5ファイル、または合計1GBを超えたら古い順に削除**
-（最新1件は残す）。`ensure_pre_migration_backup` は移行前の自動バックアップ用の導線で、失敗は `Err` で返す
-（呼び出し側は移行を止める）。製品側への紐付けとテストは、FP管理の全体フェーズ末尾で行う。
+`failed/` は、**5ファイル、または合計1GBを超えたら古い順に削除**（最新1件は残す）。
+
+自動バックアップ（`backup_auto/`）は、FP仕様への移行前に取る**1回きり**のコピー。`ensure_pre_migration_backup(root)` が、
+`apply_pending_restore` の後・`open_spread_db` の前（`view_explorer/mod.rs` の `spread_db` 初期化）で、
+DBファイルを開かずに丸ごとコピーする（開いたDBは Windows でロックされるため）。
+
+- DBファイルが無い（新規インストール）→ 取らない
+- `backup_auto/` に `.redb` が1つでもある → 取らない（世代管理・ローテーションはしない）
+- 失敗は `Err`。確認ダイアログとID層の無効化は後続フェーズ
+- FP仕様のDBでも（`backup_auto/` が空なら）取る。旧パス仕様のDBが保証されるわけではない。旧DBへ戻すのは
+  旧版へ戻す場合の手動復元（DBファイルの差し替え）のみで、復元UIは作らない
 
 ## 実リリース時に削除するもの
 

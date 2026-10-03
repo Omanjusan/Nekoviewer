@@ -1380,6 +1380,15 @@ impl NekoviewApp {
                     Ok(false) => {}
                     Err(e) => crate::log_common!("[dev_db] 復元予約の適用に失敗（現DBのまま起動）: {:?}", e),
                 }
+                // FP仕様への移行前の自動バックアップ。DBを開くとロックされ、開いた直後から書き換わるため、
+                // 開く前にファイルをコピーする（1回きり）。失敗時の扱い（確認ダイアログ）は後続フェーズ。
+                match crate::dev_db_backup::ensure_pre_migration_backup(&config_root) {
+                    Ok(crate::dev_db_backup::PreMigrationBackup::Created(p)) => {
+                        crate::log_common!("[backup] 移行前の自動バックアップを作成: {}", p.display())
+                    }
+                    Ok(_) => {}
+                    Err(e) => crate::log_common!("[backup] 移行前の自動バックアップに失敗: {:?}", e),
+                }
                 let db = crate::spread_state::open_spread_db(&config_root);
                 if let Some(db) = &db {
                     crate::favorites::init_favorite_tables(db);
