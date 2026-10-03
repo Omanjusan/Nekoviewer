@@ -13,7 +13,7 @@ use super::workers::dispatch_thumb_request;
 
 impl NekoviewApp {
     /// 1ファイル分の保存設定表示キャッシュを、書き込み後のRDB実値へ同期する。
-    fn refresh_saved_archive_settings(&mut self, archive_path: &std::path::Path) {
+    pub(super) fn refresh_saved_archive_settings(&mut self, archive_path: &std::path::Path) {
         let Some(db) = self.spread_db.as_ref() else {
             self.saved_archive_settings.remove(archive_path);
             return;

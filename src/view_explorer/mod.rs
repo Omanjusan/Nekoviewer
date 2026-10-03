@@ -958,6 +958,8 @@ pub struct NekoviewApp {
     pub(crate) settings_open: bool,
     pub(crate) settings_tab: SettingsTab,
     pub(crate) settings_draft: SettingsDraft,
+    /// ファイルID解決ワーカー（フォルダ表示時に、移動・リネームされたファイルへ評価等を引き継ぐ）。
+    identity_worker: identity_worker::IdentityWorker,
     /// 開発用DBツール（デバッグタブ）の状態。実リリース時に dev_db_tools.rs ごと削除する。
     pub(crate) dev_db_ui: dev_db_tools::DevDbUiState,
     /// 翻訳機能(実験的)の永続設定。設定ダイアログの[反映]でのみ書き換わる。
@@ -1240,6 +1242,7 @@ mod calendar_gui;
 mod open_progress;
 mod help;
 mod dev_db_tools;
+mod identity_worker;
 
 #[cfg(test)]
 mod glyph_audit;
@@ -1432,6 +1435,7 @@ impl NekoviewApp {
             settings_open: false,
             settings_tab: SettingsTab::Common,
             settings_draft,
+            identity_worker: identity_worker::IdentityWorker::spawn(ctx.clone()),
             dev_db_ui: dev_db_tools::DevDbUiState::load(&config_root),
             translate_cfg,
             tab_positions,

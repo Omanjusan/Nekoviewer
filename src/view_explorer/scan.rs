@@ -507,6 +507,9 @@ impl NekoviewApp {
             self.rebuild_thumbnail_queue();
             self.scan_state = ScanState::Done;
             self.sort_archives();
+            // 表示順（画面上部から）にファイルIDを解決する。移動・リネームされたファイルは、
+            // 解決後に評価・しおりの表示が付き替わる（poll_identity_results）。
+            self.start_identity_resolution();
             // グリッドの統一カーソルを新しいディレクトリの先頭（↑があればそれ）へ即座に
             // 合わせる。矢印キーを押すまで何もカーソルが出ない空白期間を作らないため。
             let entries = self.grid_entries();

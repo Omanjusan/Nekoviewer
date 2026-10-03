@@ -729,11 +729,61 @@ impl FileRecord {
     }
 }
 
-fn now_unix() -> i64 {
+pub(crate) fn now_unix() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs().min(i64::MAX as u64) as i64)
         .unwrap_or(0)
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum ResolveOutcome {
+    /// statがレコードと一致した（何も読まず、何も書かなかった）。
+    Unchanged,
+    Resolved(Resolution),
+    /// 書き込み中の疑いで後回しにした（`record_unstable_without_fp` が false のとき）。
+    Unstable,
+    /// ファイルが存在しない（またはファイルでない）。
+    Gone,
+    /// 権限・DBエラー等。IDの状態は変えていない。
+    Failed(String),
+}
+
+/// 1ファイルを解決する（stat一致なら何もしない。不一致なら観測→解決）。ワーカーと同期解決の共通部。
+/// `key` は `spread_state::make_key` 形式。`record_unstable_without_fp` が true なら、書き込み中でも
+/// FPなしで記録する（ユーザー操作の同期解決用）。false なら `Unstable` を返して後回しにする。
+pub fn resolve_file(
+    db: &Arc<Mutex<Database>>,
+    key: &str,
+    path: &Path,
+    now: i64,
+    record_unstable_without_fp: bool,
+) -> ResolveOutcome {
+    let meta = match std::fs::metadata(path) {
+        Ok(m) if m.is_file() => m,
+        Ok(_) => return ResolveOutcome::Gone,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return ResolveOutcome::Gone,
+        Err(e) => return ResolveOutcome::Failed(e.to_string()),
+    };
+    let (size, mtime) = (meta.len(), mtime_secs(&meta));
+    if lookup(db, key).is_some_and(|r| quick_hit(&r, size, mtime)) {
+        return ResolveOutcome::Unchanged;
+    }
+    let obs = match observe(path, now) {
+        Observed::Ready(o) => o,
+        Observed::Unstable if record_unstable_without_fp => {
+            Observation { size, mtime, volume: mount_root(path), fp: None }
+        }
+        Observed::Unstable => return ResolveOutcome::Unstable,
+        Observed::Gone => return ResolveOutcome::Gone,
+        Observed::Unreadable(e) => return ResolveOutcome::Failed(e),
+    };
+    let has_user_data = |id: u64| crate::spread_state::id_has_user_data(db, id);
+    let env = ResolveEnv { now, probe: &probe_record, has_user_data: &has_user_data };
+    match resolve_path(db, key, &obs, &env) {
+        Ok(r) => ResolveOutcome::Resolved(r),
+        Err(e) => ResolveOutcome::Failed(format!("{e:?}")),
+    }
 }
 
 /// 同期でIDを解決してレコードを返す。ユーザー操作（評価の書き込み・ビューアーを開く等）で
@@ -742,22 +792,7 @@ fn now_unix() -> i64 {
 /// 書き込み中でFPが取れなければ、FPなしで記録する（後で埋める）。
 pub fn ensure_record(db: &Arc<Mutex<Database>>, dir: &Path, filename: &str) -> Option<FileRecord> {
     let key = crate::spread_state::make_key(dir, filename);
-    let rec = lookup(db, &key);
-    let path = dir.join(filename);
-    let Some(meta) = std::fs::metadata(&path).ok().filter(|m| m.is_file()) else { return rec };
-    let (size, mtime) = (meta.len(), mtime_secs(&meta));
-    if rec.as_ref().is_some_and(|r| quick_hit(r, size, mtime)) {
-        return rec;
-    }
-    let now = now_unix();
-    let obs = match observe(&path, now) {
-        Observed::Ready(o) => o,
-        Observed::Unstable => Observation { size, mtime, volume: mount_root(&path), fp: None },
-        Observed::Gone | Observed::Unreadable(_) => return rec,
-    };
-    let has_user_data = |id: u64| crate::spread_state::id_has_user_data(db, id);
-    let env = ResolveEnv { now, probe: &probe_record, has_user_data: &has_user_data };
-    resolve_path(db, &key, &obs, &env).ok()?;
+    resolve_file(db, &key, &dir.join(filename), now_unix(), true);
     lookup(db, &key)
 }
 

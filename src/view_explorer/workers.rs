@@ -418,6 +418,7 @@ impl NekoviewApp {
     /// 終了時に状態を永続化する（旧 eframe::App::on_exit 相当）。
     pub fn on_exit(&mut self) {
         self.req_tx.shutdown();
+        self.identity_worker.shutdown();
         // 編集モードONのまま終了しても、タグ選択を確定保存する。
         self.deactivate_tag_main_edit();
         self.flush_current_sort_if_changed();
@@ -457,6 +458,7 @@ impl NekoviewApp {
         self.poll_tree_mtimes();
         self.poll_tree_autofocus();
         self.poll_search();
+        self.poll_identity_results();
 
         // サムネイルワーカーからの結果を受信してGPUテクスチャへアップロード
         let was_pending = !self.thumb_pending.is_empty();
