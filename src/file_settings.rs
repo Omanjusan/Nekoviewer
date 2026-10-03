@@ -359,6 +359,16 @@ fn migrate<T>(slot: &mut Slot<T>, legacy: Option<T>) {
     }
 }
 
+/// 解決済みのIDレコードの現在有効な設定を読む（持ち主＝そのID）。
+pub(crate) fn read_effective_for_record(
+    db: &Arc<Mutex<Database>>,
+    rec: &crate::file_identity::FileRecord,
+) -> Option<Effective> {
+    let guard = db.lock().ok()?;
+    let tx = guard.begin_read().ok()?;
+    Some(effective_tx(&tx, &Owner::Id(rec.clone())))
+}
+
 /// 持ち主の設定を読む（読み取りトランザクションを開いて `effective_tx`）。
 pub(crate) fn read_effective(db: &Arc<Mutex<Database>>, dir: &Path, filename: &str) -> Option<Effective> {
     let guard = db.lock().ok()?;

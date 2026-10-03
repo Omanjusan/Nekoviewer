@@ -37,7 +37,7 @@ const FILE_PATH_INDEX_TABLE: TableDefinition<&str, u64> = TableDefinition::new("
 const FILE_FP_INDEX_TABLE: MultimapTableDefinition<&[u8], u64> =
     MultimapTableDefinition::new("file_fp_index_v1");
 /// 採番カウンタ。値は次に払い出すID。
-const IDENTITY_COUNTER_TABLE: TableDefinition<&str, u64> = TableDefinition::new("identity_counters_v1");
+pub(crate) const IDENTITY_COUNTER_TABLE: TableDefinition<&str, u64> = TableDefinition::new("identity_counters_v1");
 const NEXT_ID_KEY: &str = "next_id";
 
 /// 全体ハッシュにするサイズの上限。これ以下はファイル全体をハッシュする。
@@ -679,6 +679,12 @@ pub fn lookup_tx(tx: &redb::ReadTransaction, path_key: &str) -> Option<FileRecor
     let ids = tx.open_table(FILE_ID_TABLE).ok()?;
     let paths = tx.open_table(FILE_PATH_INDEX_TABLE).ok()?;
     let id = paths.get(path_key).ok()??.value();
+    FileRecord::decode(ids.get(id).ok()??.value())
+}
+
+/// IDからレコードを引く。無ければ（日数による削除などで消えた場合を含め）None。
+pub fn record_by_id_tx(tx: &redb::ReadTransaction, id: u64) -> Option<FileRecord> {
+    let ids = tx.open_table(FILE_ID_TABLE).ok()?;
     FileRecord::decode(ids.get(id).ok()??.value())
 }
 

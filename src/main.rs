@@ -14,6 +14,7 @@ mod file_settings;
 mod fs;
 mod gui_config;
 mod i18n;
+mod identity_pending;
 mod image_filter;
 mod image_info;
 mod types;
