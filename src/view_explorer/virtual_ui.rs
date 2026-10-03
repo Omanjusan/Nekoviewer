@@ -836,10 +836,6 @@ impl NekoviewApp {
         self.draw_virtual_delete(ctx);
     }
 
-    pub(super) fn set_toast(&mut self, msg: impl Into<String>) {
-        self.app_toast = Some((msg.into(), std::time::Instant::now()));
-    }
-
     /// 実フォルダ／追加先仮想フォルダの選択ダイアログ。OK/キャンセルは無く、
     /// ダブルクリックで確認ダイアログへ進む。右上のXで閉じる。
     fn draw_virtual_picker(&mut self, ctx: &egui::Context) {

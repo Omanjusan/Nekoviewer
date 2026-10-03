@@ -944,6 +944,8 @@ pub struct NekoviewApp {
     thumb_failed: std::collections::HashSet<PathBuf>,
     /// アプリレベルのトーストメッセージ（3秒で自動消去）
     pub(crate) app_toast: Option<(String, std::time::Instant)>,
+    /// 処理中の間だけ出し続けるトースト（ID解決の進捗など）。
+    pub(crate) sticky_toast: Option<String>,
     /// フェーズ2: ページキャッシュ予算（見積もりゲートの閾値。resolve_cache_budgetsのpage_max）
     cache_budget_bytes: usize,
     /// フェーズ4: アニメリングバッファ先読み枚数の(下限, 上限)。見積もりゲートも同じ値を使う。
@@ -964,6 +966,10 @@ pub struct NekoviewApp {
     pub(super) identity_verifying: HashSet<PathBuf>,
     /// 解決で評価等が付き替わった（完了時に並び・フィルタを作り直す）。
     identity_dirty: bool,
+    /// ID解決の進捗（処理が長引いた時だけ、処理中トーストを出す）。
+    identity_progress: Option<identity_worker::IdentityProgress>,
+    /// 処理中トーストとして出している文言（出し入れの変化検知用）。
+    identity_toast_msg: Option<String>,
     /// 旧レコードのバックフィル依頼を出したか（起動後1回）。
     identity_backfill_started: bool,
     /// 開発用DBツール（デバッグタブ）の状態。実リリース時に dev_db_tools.rs ごと削除する。
@@ -1434,6 +1440,7 @@ impl NekoviewApp {
             invalid_archives: std::collections::HashSet::new(),
             thumb_failed: std::collections::HashSet::new(),
             app_toast: None,
+            sticky_toast: None,
             cache_budget_bytes: cache_max,
             anim_ring_bounds: ring_bounds,
             memory_warning_open: false,
@@ -1444,6 +1451,8 @@ impl NekoviewApp {
             identity_worker: identity_worker::IdentityWorker::spawn(ctx.clone()),
             identity_verifying: HashSet::new(),
             identity_dirty: false,
+            identity_progress: None,
+            identity_toast_msg: None,
             identity_backfill_started: false,
             dev_db_ui: dev_db_tools::DevDbUiState::load(&config_root),
             translate_cfg,

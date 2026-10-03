@@ -115,6 +115,15 @@ impl Lang {
         }
     }
 
+    /// ファイルID解決（新規・移動直後のファイルの照合）が長引いた時に出す、処理中トースト。
+    pub fn identity_toast(self, done: usize, total: usize) -> String {
+        match self {
+            Lang::Japanese => format!("ファイルを検証しています… {done} / {total}"),
+            Lang::English  => format!("Verifying files… {done} / {total}"),
+            Lang::Chinese  => format!("正在验证文件… {done} / {total}"),
+        }
+    }
+
     pub fn card_info_name(self) -> &'static str {
         match self {
             Lang::Japanese => "情報:名前",

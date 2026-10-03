@@ -3030,10 +3030,7 @@ impl NekoviewApp {
                         if response.double_clicked() && !is_raw {
                             if self.invalid_archives.contains(path) {
                                 let name = truncate_filename(path);
-                                self.app_toast = Some((
-                                    i18n::t().invalid_zip(&name),
-                                    std::time::Instant::now(),
-                                ));
+                                self.set_toast(i18n::t().invalid_zip(&name));
                             } else if !self.network_gate(path) {
                                 // トースト表示・再チェックは network_gate 内で処理済み。
                             } else {
@@ -3056,10 +3053,7 @@ impl NekoviewApp {
                                 vec![path.clone()]
                             };
                             if self.filter_bulk_setting_targets(raw_targets).is_empty() {
-                                self.app_toast = Some((
-                                    i18n::t().bulk_setting_no_target_toast().to_string(),
-                                    std::time::Instant::now(),
-                                ));
+                                self.set_toast(i18n::t().bulk_setting_no_target_toast());
                             }
                         }
                         response.context_menu(|ui| {

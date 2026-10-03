@@ -1782,12 +1782,12 @@ impl NekoviewApp {
         ui.horizontal(|ui| {
             if ui.add_enabled(!registered, egui::Button::new(t.settings_windows_register_button())).clicked() {
                 if let Err(e) = crate::win_registry::register() {
-                    self.app_toast = Some((t.settings_windows_register_failed(&e), std::time::Instant::now()));
+                    self.set_toast(t.settings_windows_register_failed(&e));
                 }
             }
             if ui.add_enabled(registered, egui::Button::new(t.settings_windows_unregister_button())).clicked()
                 && let Err(e) = crate::win_registry::unregister() {
-                self.app_toast = Some((t.settings_windows_unregister_failed(&e), std::time::Instant::now()));
+                self.set_toast(t.settings_windows_unregister_failed(&e));
             }
         });
     }

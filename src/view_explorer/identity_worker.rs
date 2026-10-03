@@ -20,6 +20,10 @@ use crate::file_identity::{self, Resolution, ResolveOutcome};
 
 /// 結果を返す単位。これだけ溜まるか、バッチが終わると `Chunk` を送る。
 const CHUNK_SIZE: usize = 50;
+/// 進捗（処理済み件数）を、これだけ進むごとに通知する（検証済みが無くても送る）。
+const PROGRESS_STEP: usize = 100;
+/// 処理中トーストを出し始めるまでの待ち。これより早く終われば、トーストは出さない。
+const TOAST_DELAY: Duration = Duration::from_secs(2);
 /// 書き込み中で後回しにしたファイルの再試行間隔と回数。
 const RETRY_DELAY: Duration = Duration::from_secs(4);
 const MAX_RETRY_ROUNDS: usize = 3;
@@ -31,7 +35,7 @@ const BACKFILL_STEP: Duration = Duration::from_millis(5);
 pub(super) enum IdentityEvent {
     /// 処理した一部の結果。`settled` は検証が済んだパス（「検証中」表示を外す）、`refresh` は
     /// そのうち移動・統合で評価等が付き替わった可能性のあるパス（UI側で引き直す）。
-    Chunk { generation: u64, refresh: Vec<PathBuf>, settled: Vec<PathBuf> },
+    Chunk { generation: u64, refresh: Vec<PathBuf>, settled: Vec<PathBuf>, processed: usize },
     /// この世代のバッチを処理し終えた（打ち切りを除く）。
     Done { generation: u64 },
 }
@@ -148,6 +152,7 @@ fn run_resolve_job(
                     generation,
                     refresh: chunk.refresh,
                     settled: chunk.settled,
+                    processed: chunk.processed,
                 });
                 ctx.request_repaint();
             },
@@ -242,6 +247,8 @@ pub(super) struct BatchChunk {
     pub settled: Vec<PathBuf>,
     /// settled のうち、移動・統合で評価等が付き替わった可能性のあるパス。
     pub refresh: Vec<PathBuf>,
+    /// このバッチ（再試行の周）で、ここまでに処理したパス数（進捗表示用）。
+    pub processed: usize,
 }
 
 /// パスを順に解決する。`emit` には、処理した結果を `chunk_size` 件ずつ渡す。
@@ -258,11 +265,13 @@ pub(super) fn process_batch(
     let mut keys = KeyMaker::default();
     let mut outcome = BatchOutcome::default();
     let mut chunk = BatchChunk::default();
-    for path in paths {
+    let mut last_flushed = 0;
+    for (index, path) in paths.iter().enumerate() {
         if !keep_going() {
             outcome.aborted = true;
             break;
         }
+        chunk.processed = index + 1;
         let (Some(dir), Some(name)) = (path.parent(), path.file_name().and_then(|n| n.to_str())) else {
             continue;
         };
@@ -281,14 +290,39 @@ pub(super) fn process_batch(
             ResolveOutcome::Unstable => outcome.unstable.push(path.clone()),
             ResolveOutcome::Unchanged => {}
         }
-        if chunk.settled.len() >= chunk_size {
+        if chunk.settled.len() >= chunk_size || chunk.processed - last_flushed >= PROGRESS_STEP {
+            last_flushed = chunk.processed;
+            let processed = chunk.processed;
             emit(std::mem::take(&mut chunk));
+            chunk.processed = processed;
         }
     }
     if !chunk.settled.is_empty() {
         emit(chunk);
     }
     outcome
+}
+
+/// フォルダ表示時のID解決の進捗。処理が `TOAST_DELAY` を過ぎても終わらない時だけ、処理中トーストを出す。
+pub(super) struct IdentityProgress {
+    total: usize,
+    processed: usize,
+    started: Instant,
+}
+
+impl IdentityProgress {
+    fn new(total: usize) -> Self {
+        Self { total, processed: 0, started: Instant::now() }
+    }
+
+    /// 開始から待ち時間が過ぎたか（過ぎていれば、まだ終わっていない処理のトーストを出す）。
+    fn toast_due(&self, now: Instant) -> bool {
+        now.duration_since(self.started) >= TOAST_DELAY
+    }
+
+    fn message(&self) -> String {
+        crate::i18n::t().identity_toast(self.processed.min(self.total), self.total)
+    }
 }
 
 impl NekoviewApp {
@@ -299,7 +333,26 @@ impl NekoviewApp {
         let paths: Vec<PathBuf> = self.archives.clone();
         self.identity_verifying = crate::spread_state::paths_without_identity_or_legacy(&db, &paths);
         self.identity_dirty = false;
+        self.identity_progress = (!paths.is_empty()).then(|| IdentityProgress::new(paths.len()));
         self.identity_worker.submit(db, paths);
+    }
+
+    /// 処理中トーストを、進捗に合わせて出し入れする。待ち時間内、または完了後は出さない。
+    fn update_identity_toast(&mut self) {
+        let desired = match &self.identity_progress {
+            Some(p) if p.toast_due(Instant::now()) => Some(p.message()),
+            Some(p) => {
+                // 待ち時間が明けるフレームを確実に作る（入力が無くても再描画する）。
+                let remaining = TOAST_DELAY.saturating_sub(Instant::now().duration_since(p.started));
+                self.egui_ctx.request_repaint_after(remaining);
+                None
+            }
+            None => None,
+        };
+        if desired != self.identity_toast_msg {
+            self.set_sticky_toast(desired.clone());
+            self.identity_toast_msg = desired;
+        }
     }
 
     /// ワーカーの結果を受けて、付き替わったパスの評価・設定表示を引き直し、検証中表示を外す。
@@ -315,9 +368,12 @@ impl NekoviewApp {
         let events: Vec<IdentityEvent> = std::iter::from_fn(|| self.identity_worker.event_rx.try_recv().ok()).collect();
         for event in events {
             match event {
-                IdentityEvent::Chunk { generation, refresh, settled } => {
+                IdentityEvent::Chunk { generation, refresh, settled, processed } => {
                     if !self.identity_worker.is_current(generation) {
                         continue;
+                    }
+                    if let Some(p) = &mut self.identity_progress {
+                        p.processed = p.processed.max(processed);
                     }
                     for p in &settled {
                         self.identity_verifying.remove(p);
@@ -336,8 +392,9 @@ impl NekoviewApp {
                     if !self.identity_worker.is_current(generation) {
                         continue;
                     }
-                    // 後回しのまま残った・失敗したものも含め、検証中表示を残さない。
+                    // 後回しのまま残った・失敗したものも含め、検証中表示と処理中トーストを残さない。
                     self.identity_verifying.clear();
+                    self.identity_progress = None;
                     if std::mem::take(&mut self.identity_dirty) {
                         // 評価順・訪問回数順なら並べ直し、そうでなくても評価フィルタは作り直す。
                         self.resort_keeping_selection();
@@ -349,6 +406,7 @@ impl NekoviewApp {
                 }
             }
         }
+        self.update_identity_toast();
     }
 }
 
@@ -661,5 +719,55 @@ mod tests {
             &[with_id, with_legacy, brand_new.clone()],
         );
         assert_eq!(set, std::iter::once(brand_new).collect());
+    }
+
+    #[test]
+    fn progress_is_reported_every_step_even_when_nothing_is_settled() {
+        let t = TempRoot::new("progress");
+        let db = open_spread_db(&t.0).unwrap();
+        let dir = t.dir("d");
+        // 全てstat一致になるよう、先に記録しておく。
+        let paths: Vec<PathBuf> = (0..250).map(|i| file(&dir, &format!("{i}.zip"), 1000 + i, 1000)).collect();
+        run(&db, &paths);
+        let mut processed = Vec::new();
+        let mut settled = 0;
+        process_batch(&db, &paths, &|| true, file_identity::now_unix(), CHUNK_SIZE, &mut |c| {
+            processed.push(c.processed);
+            settled += c.settled.len();
+        });
+        // 検証済みは0件でも、100件ごとに処理済み件数が届く（最後の端数は届かなくてよい＝Doneで消える）。
+        assert_eq!(processed, vec![100, 200]);
+        assert_eq!(settled, 0);
+    }
+
+    #[test]
+    fn processed_count_accompanies_settled_chunks() {
+        let t = TempRoot::new("processed");
+        let db = open_spread_db(&t.0).unwrap();
+        let dir = t.dir("d");
+        let paths: Vec<PathBuf> = (0..5).map(|i| file(&dir, &format!("{i}.zip"), 2000 + i, 1000)).collect();
+        let mut seen = Vec::new();
+        process_batch(&db, &paths, &|| true, file_identity::now_unix(), 2, &mut |c| {
+            seen.push((c.settled.len(), c.processed));
+        });
+        assert_eq!(seen, vec![(2, 2), (2, 4), (1, 5)]);
+    }
+
+    #[test]
+    fn toast_is_due_only_after_the_initial_wait() {
+        let p = IdentityProgress::new(10);
+        assert!(!p.toast_due(Instant::now()), "待ち時間内は出さない（速く終わる処理では出ない）");
+        let later = p.started + TOAST_DELAY;
+        assert!(p.toast_due(later), "待ち時間を過ぎても終わらなければ出す");
+        assert!(!p.toast_due(p.started + TOAST_DELAY - Duration::from_millis(1)));
+    }
+
+    #[test]
+    fn toast_message_never_exceeds_total() {
+        let mut p = IdentityProgress::new(5);
+        p.processed = 9;
+        assert!(p.message().contains("5 / 5"), "{}", p.message());
+        p.processed = 2;
+        assert!(p.message().contains("2 / 5"));
     }
 }
