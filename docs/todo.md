@@ -8,3 +8,14 @@
     - display_name()のi18n化（現状ReaderAction/ExplorerActionの表示名が日本語ハードコード。i18n::t()経由の多言語対応パターンに合流させる）
     - Explorer側のマウス割り当て対応（現状キーボードのみ）
     - 「削除」ボタン（既定値に戻すのではなく、そのスロットを完全に無効化する機能）。ActionBindingの型（`Option<KeyCombo>`で未設定＝既定値）では3値目の「無効化」状態を表現できないため設計変更が必要
+
+## ファイルID管理の残件（[features/file-identity.md](features/file-identity.md)）
+
+- キャッシュ整理: 「見つからないまま保持日数（設定→その他、1〜120日・既定60）を過ぎたID」のDBからの削除と、手動の
+  「キャッシュ整理」。削除したIDの記録・サムネ行・旧v1の行の扱いを合わせて決める。解決UIの「削除まで残り○日」はこの削除の予告
+- 手動紐付け画面: 自動復旧できなかった記録（バックフィルが間に合わなかった旧データ等）を、ユーザーが手で紐付ける。
+  解決UI（[fingerprint-resolution-ui.md](features/fingerprint-resolution-ui.md)）の「候補から選ぶ」操作と画面を共通化できる
+- 製品版の自動バックアップ: `dev_db_backup::ensure_pre_migration_backup`（失敗時は移行を止める。5ファイルまたは合計1GBで古い順に
+  削除）を、製品側の起動処理へ紐付けて試験する。開発用のバックアップ/リストアUIは実リリース時に削除（[dev-db-backup.md](dev-db-backup.md)）
+- お気に入りの横断一覧（IDレコードの全件走査）が、数十万ファイル規模でどれだけかかるかの確認
+

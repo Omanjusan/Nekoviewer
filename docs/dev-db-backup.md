@@ -1,7 +1,7 @@
 # 開発用DBバックアップ/リストア
 
 FP（フィンガープリント）管理への移行を、旧パス仕様のDBへ何度でも戻して検証するための開発者向けツール。
-製品機能ではなく、実リリース時に削除する（下記）。ロジックは [dev_db_backup.rs](../src/dev_db_backup.rs)、
+製品機能ではなく、実リリース時に削除する（下記）。FP管理の全体像は [features/file-identity.md](features/file-identity.md)。ロジックは [dev_db_backup.rs](../src/dev_db_backup.rs)、
 UIは [view_explorer/dev_db_tools.rs](../src/view_explorer/dev_db_tools.rs)。
 
 ## 使い方（設定 → デバッグタブ末尾「開発用DBツール」）

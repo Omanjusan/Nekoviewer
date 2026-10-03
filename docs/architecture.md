@@ -35,7 +35,12 @@ main.rs
             ├─ config.rs / gui_config.rs  ← 起動時設定 / 実行時state永続化
             ├─ view_gui_config.rs         ← 設定ダイアログUI
             ├─ favorites.rs               ← お気に入り（redb）
-            ├─ spread_state.rs            ← 見開き状態の保存/復帰（redb）
+            ├─ spread_state.rs            ← 評価・しおり・見開き等のアクセサ（redb、ID対応）
+            ├─ file_identity.rs           ← ファイルID（FP）層: 観測・解決（移動/複製/曖昧）
+            ├─ file_settings.rs           ← ファイル単位の設定（ID キー）と旧v1からの遅延移行
+            ├─ identity_pending.rs        ← 未解決（重複・曖昧）の記録と掃除
+            ├─ identity_resolve.rs        ← 未解決の解決（複製・統合・お気に入りの付け替え）
+            ├─ dev_db_backup.rs           ← 開発用DBバックアップ/リストア（実リリースで削除）
             ├─ fs/                        ← ファイルシステム抽象（dir, archive, mount）
             ├─ anim.rs                    ← GIF/WebP/AVIF アニメーション再生（リングバッファ）
             ├─ i18n.rs                    ← 多言語対応（日本語/英語）
@@ -110,11 +115,22 @@ Reader ウィンドウの描画と入力処理。`ViewerState` 構造体。
 
 ### favorites.rs
 お気に入りフォルダ・お気に入りファイルのメンバーシップを redb で管理。仕様の詳細は
-[features/favorite-files-dirs.md](features/favorite-files-dirs.md) を参照。
+[features/favorite-files-dirs.md](features/favorite-files-dirs.md) を参照。メンバーシップは
+ファイルIDに紐づく（旧パスキーの行は遅延移行の橋渡しとして残す）。
 
 ### spread_state.rs
-見開き状態（page_mode, spread_offset）とアーカイブ内ソート条件の保存・復帰を redb で管理。
+評価・訪問・しおり・見開き状態（page_mode, spread_offset）・アーカイブ内ソート条件・登録サムネ・タグの
+保存・復帰を redb で管理するアクセサ群。引数は `(db, dir, filename)` のままで、内部でファイルIDを解決して
+`file_settings_v2` 等へ読み書きする（IDを作れないファイルは旧v1のパスキーへフォールバック）。
 ソート条件の詳細は [features/archive-sort-state.md](features/archive-sort-state.md) を参照。
+
+### file_identity.rs / file_settings.rs / identity_pending.rs / identity_resolve.rs
+ファイルID（フィンガープリント）管理の本体。設計・テーブル・解決ルールは
+[features/file-identity.md](features/file-identity.md) を参照。ワーカー・解決UIは
+`view_explorer/identity_worker.rs` / `view_explorer/identity_resolution_ui.rs`。
+
+### dev_db_backup.rs
+開発用のDBバックアップ/リストアと、移行前の自動バックアップ導線。[dev-db-backup.md](dev-db-backup.md) を参照。
 
 ### fs/
 - `dir.rs`：ディレクトリスキャン・ファイル種別判定（archive か raw image か）
@@ -133,7 +149,8 @@ GIF・アニメーションWebP・アニメーションAVIFの再生制御。全
 日本語/英語の UI 文字列を静的に定義。`i18n::t()` で取得。`state.lang` に基づいて起動時に設定。
 
 ### neko_dir.rs
-redb ベースのサムネイルディスクキャッシュ（ディレクトリ単位）の管理。
+redb ベースのサムネイルディスクキャッシュ（ディレクトリ単位）の管理。ファイルの移動・リネーム・複製時の
+サムネ行の引っ越し（`take_thumbnail_rows` / `put_thumbnail_rows`）もここ。
 
 ### spread_offset.rs
 見開き表示のオフセット（−1 〜 +1）を型で表現する小さなモジュール。

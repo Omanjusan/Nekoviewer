@@ -26,6 +26,11 @@
 - [features/koma-mode.md](features/koma-mode.md) — 疑似コマ送りモード（拡大表示の上のサブモード）
 - [features/archive-rating.md](features/archive-rating.md) — アーカイブ評価（★半星刻み）・訪問回数・
   サムネ評価帯・評価フィルタ
+- [features/file-identity.md](features/file-identity.md) — ファイルID（フィンガープリント）管理。移動・リネーム・
+  コピー後も評価・しおり・見開き・ソート・登録サムネ・タグ・お気に入り・サムネを引き継ぐ仕組み
+- [features/fingerprint-resolution-ui.md](features/fingerprint-resolution-ui.md) — 「DB内の重複の解決」画面のレイアウト・文面仕様
+- [features/file-identity-test-checklist.md](features/file-identity-test-checklist.md) — ファイルID管理の統合テスト手順書
+- [dev-db-backup.md](dev-db-backup.md) — 開発用DBバックアップ/リストア（デバッグタブ。実リリース時に削除）
 
 ## 4. 決定記録（過去の経緯・完了済み計画）
 
