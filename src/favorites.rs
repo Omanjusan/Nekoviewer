@@ -4,6 +4,8 @@ use std::sync::{Arc, Mutex};
 
 use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 
+use crate::file_settings::Slot;
+
 /// お気に入りフォルダ数の上限。
 pub const MAX_FOLDERS: usize = 200;
 /// お気に入りフォルダ名の文字数上限。
@@ -301,19 +303,42 @@ pub fn delete_folder(db: &Arc<Mutex<Database>>, id: u8) -> Result<(), FavoriteFo
                 .map_err(|_| FavoriteFolderError::Db)?;
         }
     }
+    // ID化済みのファイルの所属（file_settings_v2）からも外す。
+    crate::file_settings::remove_folder_from_settings(&tx, id).map_err(|_| FavoriteFolderError::Db)?;
     tx.commit().map_err(|_| FavoriteFolderError::Db)?;
     Ok(())
 }
 
+
+
+/// 旧v1（パスキー）への直接書き込み。IDを解決できないファイル（実体が無い等）用。
+fn set_membership_v1(db: &Arc<Mutex<Database>>, dir: &Path, filename: &str, folder_ids: &[u8]) {
+    let key = make_key(dir, filename);
+    let Ok(db) = db.lock() else { return };
+    let Ok(tx) = db.begin_write() else { return };
+    if let Ok(mut table) = tx.open_table(FAVORITE_MEMBERSHIP_TABLE) {
+        let _ = table.insert(key.as_str(), folder_ids);
+    }
+    let _ = tx.commit();
+}
+
+/// 旧v1（パスキー）への直接書き込み。IDを解決できないファイル（実体が無い等）用。
+fn remove_favorite_v1(db: &Arc<Mutex<Database>>, dir: &Path, filename: &str) {
+    let key = make_key(dir, filename);
+    let Ok(db) = db.lock() else { return };
+    let Ok(tx) = db.begin_write() else { return };
+    if let Ok(mut table) = tx.open_table(FAVORITE_MEMBERSHIP_TABLE) {
+        let _ = table.remove(key.as_str());
+    }
+    let _ = tx.commit();
+}
+
+
+
 /// ファイルの所属お気に入りフォルダID一覧を返す。None = お気に入りではない。
 /// Some(空Vec) = 未整理のお気に入り（テンポラリ・スティッキー表示）。
 pub fn get_membership(db: &Arc<Mutex<Database>>, dir: &Path, filename: &str) -> Option<Vec<u8>> {
-    let key = make_key(dir, filename);
-    let db = db.lock().ok()?;
-    let tx = db.begin_read().ok()?;
-    let table = tx.open_table(FAVORITE_MEMBERSHIP_TABLE).ok()?;
-    let value = table.get(key.as_str()).ok()??;
-    Some(value.value().to_vec())
+    crate::file_settings::read_effective(db, dir, filename)?.favorite
 }
 
 /// 複数ディレクトリを横断する一覧の表示用に、お気に入り状態を一括取得する。
@@ -328,47 +353,36 @@ pub fn memberships_for_paths(
     let Ok(tx) = db.begin_read() else {
         return HashMap::new();
     };
-    let Ok(table) = tx.open_table(FAVORITE_MEMBERSHIP_TABLE) else {
-        return HashMap::new();
-    };
     let mut out = HashMap::new();
     for path in paths {
         let Some(dir) = path.parent() else { continue };
         let Some(filename) = path.file_name().and_then(|name| name.to_str()) else {
             continue;
         };
-        let key = make_key(dir, filename);
-        let Ok(Some(value)) = table.get(key.as_str()) else {
-            continue;
-        };
-        out.insert(path.clone(), value.value().to_vec());
+        let owner = crate::spread_state::owner_tx(&tx, dir, filename);
+        if let Some(ids) = crate::file_settings::effective_tx(&tx, &owner).favorite {
+            out.insert(path.clone(), ids);
+        }
     }
     out
 }
 
 /// ファイルの所属お気に入りフォルダIDを設定する（全置換）。空Vecなら未整理として登録。
 pub fn set_membership(db: &Arc<Mutex<Database>>, dir: &Path, filename: &str, folder_ids: &[u8]) {
-    let key = make_key(dir, filename);
-    let Ok(db) = db.lock() else { return };
-    let Ok(tx) = db.begin_write() else { return };
-    if let Ok(mut table) = tx.open_table(FAVORITE_MEMBERSHIP_TABLE) {
-        let _ = table.insert(key.as_str(), folder_ids);
+    let slot = Slot::Set(folder_ids.to_vec());
+    if crate::file_settings::modify(db, dir, filename, |s| s.favorite = slot).is_none() {
+        set_membership_v1(db, dir, filename, folder_ids);
     }
-    let _ = tx.commit();
 }
 
 /// お気に入り登録を完全に解除する（未整理状態も含めて削除）。
 pub fn remove_favorite(db: &Arc<Mutex<Database>>, dir: &Path, filename: &str) {
-    let key = make_key(dir, filename);
-    let Ok(db) = db.lock() else { return };
-    let Ok(tx) = db.begin_write() else { return };
-    if let Ok(mut table) = tx.open_table(FAVORITE_MEMBERSHIP_TABLE) {
-        let _ = table.remove(key.as_str());
+    if crate::file_settings::modify(db, dir, filename, |s| s.favorite = Slot::Cleared).is_none() {
+        remove_favorite_v1(db, dir, filename);
     }
-    let _ = tx.commit();
 }
 
-/// dir 配下で登録済みのお気に入りファイル一覧を返す（GC・サムネ表示用）。
+/// dir 配下で登録済みのお気に入りファイル一覧を返す（サムネ表示用）。
 /// 戻り値: (filename, 所属folder_id一覧)
 pub fn list_dir_favorites(db: &Arc<Mutex<Database>>, dir: &Path) -> Vec<(String, Vec<u8>)> {
     let prefix = {
@@ -377,46 +391,19 @@ pub fn list_dir_favorites(db: &Arc<Mutex<Database>>, dir: &Path) -> Vec<(String,
     };
     let Ok(db) = db.lock() else { return Vec::new() };
     let Ok(tx) = db.begin_read() else { return Vec::new() };
-    let Ok(table) = tx.open_table(FAVORITE_MEMBERSHIP_TABLE) else {
-        return Vec::new();
-    };
-    let Ok(range) = table.range(prefix.as_str()..) else {
-        return Vec::new();
-    };
-    let mut out = Vec::new();
-    for entry in range {
-        let Ok((k, v)) = entry else { continue };
-        let full_key = k.value();
-        if !full_key.starts_with(&prefix) {
-            break;
-        }
-        let filename = &full_key[prefix.len()..];
-        out.push((filename.to_string(), v.value().to_vec()));
-    }
-    out
+    crate::file_settings::dir_effective_tx(&tx, &prefix)
+        .into_iter()
+        .filter_map(|(name, e)| Some((name, e.favorite?)))
+        .collect()
 }
 
-/// 全ディレクトリ横断でのお気に入りエントリ一覧（フルテーブルスキャン）。
+/// 全ディレクトリ横断でのお気に入りエントリ一覧。
 /// お気に入り一覧表示（エクスプローラー部でフォルダ/未整理を選んだ時）専用。
+/// IDが解決済みのファイルは移動後の現在のパスで返る。
 fn list_all_favorites(db: &Arc<Mutex<Database>>) -> Vec<(PathBuf, String, Vec<u8>)> {
     let Ok(db) = db.lock() else { return Vec::new() };
     let Ok(tx) = db.begin_read() else { return Vec::new() };
-    let Ok(table) = tx.open_table(FAVORITE_MEMBERSHIP_TABLE) else {
-        return Vec::new();
-    };
-    let Ok(iter) = table.iter() else { return Vec::new() };
-    let mut out = Vec::new();
-    for entry in iter {
-        let Ok((k, v)) = entry else { continue };
-        let key = k.value();
-        let Some(pos) = key.find('\0') else { continue };
-        out.push((
-            PathBuf::from(&key[..pos]),
-            key[pos + 1..].to_string(),
-            v.value().to_vec(),
-        ));
-    }
-    out
+    crate::file_settings::all_favorites_tx(&tx)
 }
 
 /// 指定お気に入りフォルダに所属するファイルを全ディレクトリ横断で列挙する。

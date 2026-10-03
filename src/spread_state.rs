@@ -760,6 +760,8 @@ pub fn paths_without_identity_or_legacy(
     let sort_v1 = tx.open_table(ARCHIVE_SORT_TABLE_V1).ok();
     let thumb_v1 = tx.open_table(THUMBNAIL_SELECTION_TABLE_V1).ok();
     let thumb_v2 = tx.open_table(THUMBNAIL_SELECTION_TABLE_V2).ok();
+    let tags_v1 = tx.open_table(ARCHIVE_TAGS_TABLE_V1).ok();
+    let favorite_v1 = tx.open_table(crate::favorites::FAVORITE_MEMBERSHIP_TABLE).ok();
     let mut prefixes: HashMap<PathBuf, String> = HashMap::new();
     for path in paths {
         let (Some(dir), Some(name)) = (path.parent(), path.file_name().and_then(|n| n.to_str())) else {
@@ -775,7 +777,9 @@ pub fn paths_without_identity_or_legacy(
             || spread_v1.as_ref().is_some_and(|t| t.get(key.as_str()).ok().flatten().is_some())
             || sort_v1.as_ref().is_some_and(|t| t.get(key.as_str()).ok().flatten().is_some())
             || thumb_v1.as_ref().is_some_and(|t| t.get(key.as_str()).ok().flatten().is_some())
-            || thumb_v2.as_ref().is_some_and(|t| t.get(key.as_str()).ok().flatten().is_some());
+            || thumb_v2.as_ref().is_some_and(|t| t.get(key.as_str()).ok().flatten().is_some())
+            || tags_v1.as_ref().is_some_and(|t| t.get(key.as_str()).ok().flatten().is_some())
+            || favorite_v1.as_ref().is_some_and(|t| t.get(key.as_str()).ok().flatten().is_some());
         if !has_legacy && crate::file_identity::lookup_tx(&tx, &key).is_none() {
             out.insert(path.clone());
         }
@@ -783,7 +787,7 @@ pub fn paths_without_identity_or_legacy(
     out
 }
 
-/// 旧v1にユーザーデータ（評価・有効なしおり・見開き・ソート・登録サムネ）があるのに、まだID記録が無いパスキーの一覧。
+/// 旧v1にユーザーデータ（評価・有効なしおり・見開き・ソート・登録サムネ・タグ・お気に入り）があるのに、まだID記録が無いパスキーの一覧。
 /// アイドル時のバックフィル（FP化）の対象。未訪問フォルダのファイルも移動追従の対象にするため。
 pub fn legacy_data_keys_without_id(db: &Arc<Mutex<Database>>) -> Vec<String> {
     let Ok(db) = db.lock() else { return Vec::new() };
@@ -816,6 +820,16 @@ pub fn legacy_data_keys_without_id(db: &Arc<Mutex<Database>>) -> Vec<String> {
         }
     }
     if let Ok(t) = tx.open_table(THUMBNAIL_SELECTION_TABLE_V2) {
+        if let Ok(iter) = t.iter() {
+            keys.extend(iter.flatten().map(|(k, _)| k.value().to_string()));
+        }
+    }
+    if let Ok(t) = tx.open_table(ARCHIVE_TAGS_TABLE_V1) {
+        if let Ok(iter) = t.iter() {
+            keys.extend(iter.flatten().map(|(k, _)| k.value().to_string()));
+        }
+    }
+    if let Ok(t) = tx.open_table(crate::favorites::FAVORITE_MEMBERSHIP_TABLE) {
         if let Ok(iter) = t.iter() {
             keys.extend(iter.flatten().map(|(k, _)| k.value().to_string()));
         }
@@ -953,7 +967,7 @@ fn encode_tag_ids(ids: &[u64]) -> Vec<u8> {
 }
 
 /// `encode_tag_ids`の逆変換。バイト長が8の倍数でない壊れたレコードは空扱いにする。
-fn decode_tag_ids(bytes: &[u8]) -> Vec<u64> {
+pub(crate) fn decode_tag_ids(bytes: &[u8]) -> Vec<u64> {
     bytes
         .chunks_exact(8)
         .map(|c| u64::from_le_bytes(c.try_into().unwrap()))
@@ -962,7 +976,15 @@ fn decode_tag_ids(bytes: &[u8]) -> Vec<u64> {
 
 /// ファイルのタグ紐付け（tier_idの集合）を丸ごと置き換える。空集合なら
 /// レコード自体を削除する（未タグ付けと「空集合を明示保存」を区別しない）。
+/// IDを解決できない（ファイルが無い等）場合は、従来どおり旧v1のパスキーへ書く。
 pub fn write_archive_tags(db: &Arc<Mutex<Database>>, dir: &Path, filename: &str, tier_ids: &[u64]) -> bool {
+    let slot = if tier_ids.is_empty() { Slot::Cleared } else { Slot::Set(tier_ids.to_vec()) };
+    crate::file_settings::modify(db, dir, filename, |s| s.tags = slot)
+        .unwrap_or_else(|| write_archive_tags_v1(db, dir, filename, tier_ids))
+}
+
+/// 旧v1（パスキー）への直接書き込み。IDを解決できないファイル（実体が無い等）用。
+fn write_archive_tags_v1(db: &Arc<Mutex<Database>>, dir: &Path, filename: &str, tier_ids: &[u64]) -> bool {
     let key = make_key(dir, filename);
     let Ok(db) = db.lock() else { return false };
     let Ok(tx) = db.begin_write() else { return false };
@@ -980,12 +1002,9 @@ pub fn write_archive_tags(db: &Arc<Mutex<Database>>, dir: &Path, filename: &str,
 
 /// ファイルのタグ紐付け（tier_idの集合）を返す。レコード不在は空Vec。
 pub fn read_archive_tags(db: &Arc<Mutex<Database>>, dir: &Path, filename: &str) -> Vec<u64> {
-    let key = make_key(dir, filename);
-    let Ok(db) = db.lock() else { return Vec::new() };
-    let Ok(tx) = db.begin_read() else { return Vec::new() };
-    let Ok(table) = tx.open_table(ARCHIVE_TAGS_TABLE_V1) else { return Vec::new() };
-    let Some(value) = table.get(key.as_str()).ok().flatten() else { return Vec::new() };
-    decode_tag_ids(value.value())
+    crate::file_settings::read_effective(db, dir, filename)
+        .and_then(|e| e.tags)
+        .unwrap_or_default()
 }
 
 #[cfg(test)]

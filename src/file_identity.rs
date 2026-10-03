@@ -712,6 +712,13 @@ pub fn dir_records_tx(tx: &redb::ReadTransaction, prefix: &str) -> Vec<FileRecor
     out
 }
 
+/// 全てのIDレコードを返す（お気に入りの横断一覧など、全件を見る用途。通常の表示経路では使わない）。
+pub fn all_records_tx(tx: &redb::ReadTransaction) -> Vec<FileRecord> {
+    let Ok(ids) = tx.open_table(FILE_ID_TABLE) else { return Vec::new() };
+    let Ok(iter) = ids.iter() else { return Vec::new() };
+    iter.flatten().filter_map(|(_, v)| FileRecord::decode(v.value())).collect()
+}
+
 impl FileRecord {
     /// 旧v1テーブル（パスキー）を引く候補のキー。現在のパス、ID作成時のパス、旧パス履歴の順（重複なし）。
     /// v1行は削除しない約束なので、移動後や遅延移行前でも、これで旧データへ届く。
