@@ -787,6 +787,61 @@ pub fn paths_without_identity_or_legacy(
     out
 }
 
+/// そのIDの「引き継ぐデータの署名」。評価★（訪問回数は含めない）・有効なしおり・見開き・ソート・登録サムネ・
+/// タグ（`with_favorite` ならお気に入りも）を正規化した文字列。引き継げるデータが無ければ None。
+/// 署名が等しい2つのIDは、どちらから引き継いでも結果が同じ。重複の曖昧さの判定に使う。
+pub fn data_signature(db: &Arc<Mutex<Database>>, id: u64, with_favorite: bool) -> Option<Vec<u8>> {
+    let guard = db.lock().ok()?;
+    let tx = guard.begin_read().ok()?;
+    let rec = crate::file_identity::record_by_id_tx(&tx, id)?;
+    let owner = Owner::Id(rec);
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(r) = rating_get_tx(&tx, &owner).filter(|r| r.rating_half > 0) {
+        parts.push(format!("rating={}", r.rating_half));
+    }
+    if let Some(b) = bookmark_get_tx(&tx, &owner).filter(|b| b.enabled) {
+        parts.push(format!("bookmark={}|{:?}", b.last_entry_name, b.archive_fp));
+    }
+    let e = crate::file_settings::effective_tx(&tx, &owner);
+    if let Some(v) = e.spread {
+        parts.push(format!("spread={v:?}"));
+    }
+    if let Some(v) = e.sort {
+        parts.push(format!("sort={v:?}"));
+    }
+    if let Some(v) = e.thumb {
+        parts.push(format!("thumb={v:?}"));
+    }
+    if let Some(mut v) = e.tags.filter(|t| !t.is_empty()) {
+        v.sort_unstable();
+        parts.push(format!("tags={v:?}"));
+    }
+    if with_favorite {
+        if let Some(mut v) = e.favorite {
+            v.sort_unstable();
+            parts.push(format!("favorite={v:?}"));
+        }
+    }
+    (!parts.is_empty()).then(|| parts.join("\n").into_bytes())
+}
+
+/// そのパスキーに、旧v1（ID化前）のデータが1つでも残っているか。
+pub fn legacy_data_exists(db: &Arc<Mutex<Database>>, key: &str) -> bool {
+    let Ok(guard) = db.lock() else { return false };
+    let Ok(tx) = guard.begin_read() else { return false };
+    tx.open_table(ARCHIVE_RATING_TABLE_V1).ok().is_some_and(|t| t.get(key).ok().flatten().is_some())
+        || tx.open_table(BOOKMARK_TABLE_V1).ok().is_some_and(|t| t.get(key).ok().flatten().is_some())
+        || tx.open_table(SPREAD_TABLE).ok().is_some_and(|t| t.get(key).ok().flatten().is_some())
+        || tx.open_table(ARCHIVE_SORT_TABLE_V1).ok().is_some_and(|t| t.get(key).ok().flatten().is_some())
+        || tx.open_table(THUMBNAIL_SELECTION_TABLE_V1).ok().is_some_and(|t| t.get(key).ok().flatten().is_some())
+        || tx.open_table(THUMBNAIL_SELECTION_TABLE_V2).ok().is_some_and(|t| t.get(key).ok().flatten().is_some())
+        || tx.open_table(ARCHIVE_TAGS_TABLE_V1).ok().is_some_and(|t| t.get(key).ok().flatten().is_some())
+        || tx
+            .open_table(crate::favorites::FAVORITE_MEMBERSHIP_TABLE)
+            .ok()
+            .is_some_and(|t| t.get(key).ok().flatten().is_some())
+}
+
 /// 旧v1にユーザーデータ（評価・有効なしおり・見開き・ソート・登録サムネ・タグ・お気に入り）があるのに、まだID記録が無いパスキーの一覧。
 /// アイドル時のバックフィル（FP化）の対象。未訪問フォルダのファイルも移動追従の対象にするため。
 pub fn legacy_data_keys_without_id(db: &Arc<Mutex<Database>>) -> Vec<String> {
@@ -1909,5 +1964,93 @@ mod tests {
             read_thumbnail_selection(&db, &dir, "a.zip"),
             Some(selection("old/cover.jpg", ThumbnailSourceKind::Full))
         );
+    }
+
+    // ---- データ署名・旧データの有無（重複の曖昧さ判定用）----
+
+    #[test]
+    fn data_signature_ignores_visits_and_equals_for_identical_data() {
+        let db = temp_db();
+        let dir = real_dir("sig_basic");
+        real_file(&dir, "a.zip", &content(3000));
+        real_file(&dir, "b.zip", &content(4000));
+        let a = crate::file_identity::ensure_record(&db, &dir, "a.zip").unwrap().id;
+        let b = crate::file_identity::ensure_record(&db, &dir, "b.zip").unwrap().id;
+        assert_eq!(data_signature(&db, a, false), None, "データなし");
+        // 訪問回数だけでは「引き継ぐデータ」にならない。
+        assert!(record_archive_visit(&db, &dir, "a.zip"));
+        assert_eq!(data_signature(&db, a, false), None);
+        // 同じ内容のデータなら署名が等しい（訪問回数・更新日時が違っても）。
+        assert!(write_archive_rating(&db, &dir, "a.zip", 8));
+        assert!(write_archive_rating(&db, &dir, "b.zip", 8));
+        assert!(record_archive_visit(&db, &dir, "b.zip"));
+        assert!(record_archive_visit(&db, &dir, "b.zip"));
+        assert!(data_signature(&db, a, false).is_some());
+        assert_eq!(data_signature(&db, a, false), data_signature(&db, b, false));
+        // 違うデータなら署名も違う。
+        assert!(write_archive_tags(&db, &dir, "b.zip", &[3, 1]));
+        assert_ne!(data_signature(&db, a, false), data_signature(&db, b, false));
+        // タグは順序に依らない。
+        assert!(write_archive_tags(&db, &dir, "a.zip", &[1, 3]));
+        assert_eq!(data_signature(&db, a, false), data_signature(&db, b, false));
+    }
+
+    #[test]
+    fn data_signature_includes_favorite_only_when_asked() {
+        let db = temp_db();
+        let dir = real_dir("sig_favorite");
+        real_file(&dir, "a.zip", &content(3000));
+        real_file(&dir, "b.zip", &content(4000));
+        let a = crate::file_identity::ensure_record(&db, &dir, "a.zip").unwrap().id;
+        let b = crate::file_identity::ensure_record(&db, &dir, "b.zip").unwrap().id;
+        assert!(write_archive_rating(&db, &dir, "a.zip", 6));
+        assert!(write_archive_rating(&db, &dir, "b.zip", 6));
+        crate::favorites::init_favorite_tables(&db).unwrap();
+        crate::favorites::set_membership(&db, &dir, "a.zip", &[2]);
+        // お気に入りを含めない署名（コピーの判定）では差が出ない。
+        assert_eq!(data_signature(&db, a, false), data_signature(&db, b, false));
+        // 含める署名（移動の判定）では差が出る。
+        assert_ne!(data_signature(&db, a, true), data_signature(&db, b, true));
+        // お気に入りだけを持つIDは、含めない署名ではデータなし。
+        real_file(&dir, "c.zip", &content(5000));
+        let c = crate::file_identity::ensure_record(&db, &dir, "c.zip").unwrap().id;
+        crate::favorites::set_membership(&db, &dir, "c.zip", &[]);
+        assert_eq!(data_signature(&db, c, false), None);
+        assert!(data_signature(&db, c, true).is_some());
+    }
+
+    #[test]
+    fn data_signature_covers_bookmark_spread_sort_and_legacy_values() {
+        let db = temp_db();
+        let dir = real_dir("sig_others");
+        real_file(&dir, "a.zip", &content(3000));
+        real_file(&dir, "legacy.zip", &content(4000));
+        write_spread_v1(&db, &dir, "legacy.zip", PageMode::SpreadLeft, 0);
+        let a = crate::file_identity::ensure_record(&db, &dir, "a.zip").unwrap().id;
+        let l = crate::file_identity::ensure_record(&db, &dir, "legacy.zip").unwrap().id;
+        // 旧v1にしか無い値（未移行）も署名に入る。
+        assert!(data_signature(&db, l, false).is_some());
+        assert!(write_bookmark_enabled(&db, &dir, "a.zip", true));
+        // しおりを有効にしただけ（位置が空）でも、有効なしおりとして数える。
+        assert!(data_signature(&db, a, false).is_some());
+        assert_eq!(data_signature(&db, 424242, false), None, "存在しないID");
+    }
+
+    #[test]
+    fn legacy_data_exists_checks_every_v1_table() {
+        let db = temp_db();
+        let dir = real_dir("legacy_exists");
+        let key = |name: &str| make_key(&dir, name);
+        assert!(!legacy_data_exists(&db, &key("none.zip")));
+        write_spread_v1(&db, &dir, "spread.zip", PageMode::SpreadLeft, 0);
+        write_archive_sort_v1(&db, &dir, "sort.zip", ReaderSortKey::Name, true);
+        write_thumbnail_selection_v1(&db, &dir, "thumb.zip", &selection("x.jpg", ThumbnailSourceKind::Full));
+        write_archive_tags_v1(&db, &dir, "tags.zip", &[1]);
+        seed_v1_rating(&db, &dir, "rating.zip", (4, 1, 0));
+        seed_v1_bookmark(&db, &dir, "bookmark.zip", "p.jpg", 1);
+        for name in ["spread.zip", "sort.zip", "thumb.zip", "tags.zip", "rating.zip", "bookmark.zip"] {
+            assert!(legacy_data_exists(&db, &key(name)), "{name}");
+        }
+        assert!(!legacy_data_exists(&db, &key("other.zip")));
     }
 }

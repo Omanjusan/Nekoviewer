@@ -381,7 +381,9 @@ mod tests {
         let obs = Observation { size: 10, mtime: 5, volume: "/".to_owned(), fp: Some([fp; 16]) };
         let probe = |_: &FileRecord| Presence::Present;
         let has = |_: u64| false;
-        let env = ResolveEnv { now: 1, probe: &probe, has_user_data: &has };
+        let sig = |_: u64, _: bool| None;
+        let legacy = |_: &str| false;
+        let env = ResolveEnv { now: 1, probe: &probe, has_user_data: &has, data_signature: &sig, has_legacy_data: &legacy };
         resolve_path(db, key, &obs, &env).unwrap();
         crate::file_identity::lookup(db, key).unwrap().id
     }

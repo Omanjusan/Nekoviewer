@@ -373,6 +373,11 @@ pub struct ResolveEnv<'a> {
     pub probe: &'a dyn Fn(&FileRecord) -> Presence,
     /// そのIDにユーザーデータ（評価・タグ・しおり等）があるか。ID化済みの各テーブルを見る。
     pub has_user_data: &'a dyn Fn(u64) -> bool,
+    /// そのIDの「引き継ぐデータの署名」。データが無ければ None。2つのIDの署名が等しければ、どちらから
+    /// 引き継いでも結果が同じ。第2引数はお気に入りを含めるか（移動は含め、コピーは含めない）。
+    pub data_signature: &'a dyn Fn(u64, bool) -> Option<Vec<u8>>,
+    /// そのパスキーに、旧v1（ID化前）のデータが既にあるか。ある新ファイルへは複製しない（潰さないため）。
+    pub has_legacy_data: &'a dyn Fn(&str) -> bool,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -384,6 +389,13 @@ pub enum Resolution {
     /// 内容更新で、空のIDが同FPの孤児IDへ統合された。`dropped` のレコードは消える。
     Merged { kept: u64, dropped: u64 },
     Created { id: u64 },
+    /// 同内容の現存ファイル `source` から複製すると決まった新ID。複製そのものは呼び出し側が行う。
+    Copied { id: u64, source: u64 },
+    /// 引き継ぎ元の候補が複数でデータが食い違う。新IDは空のまま作り、ユーザーに選んでもらう。
+    AmbiguousCopy { id: u64, candidates: Vec<u64> },
+    /// 移動元の候補が複数でデータが食い違う。割り当てを保留し、`id`（新ファイルのID）は空のまま、
+    /// ユーザーに選んでもらう。
+    AmbiguousMove { id: u64, candidates: Vec<u64> },
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -404,10 +416,25 @@ struct Snapshot {
     cands: Vec<FileRecord>,
 }
 
+/// 新しいIDの作り方。
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum CreateKind {
+    Plain,
+    Copy { source: u64 },
+    AmbiguousCopy(Vec<u64>),
+    AmbiguousMove(Vec<u64>),
+}
+
 enum Decision {
-    Update { new: FileRecord, content_updated: bool, adopt: Option<FileRecord> },
+    Update {
+        new: FileRecord,
+        content_updated: bool,
+        adopt: Option<FileRecord>,
+        /// 空のIDの統合先が決められなかった（移動元の候補が複数でデータが食い違う）。
+        ambiguous_move: Option<Vec<u64>>,
+    },
     Move { orphan: FileRecord },
-    Create,
+    Create(CreateKind),
 }
 
 fn open_ro<T>(r: Result<T, TableError>) -> Result<Option<T>, IdentityError> {
@@ -470,19 +497,69 @@ fn record_from_obs(path_key: &str, obs: &Observation, now: i64) -> FileRecord {
     }
 }
 
-/// 消えている候補から1つ選ぶ。mtime一致（移動はmtimeを保つ）> ファイル名一致 > 登録が古い順。
-fn pick_orphan(
-    cands: &[FileRecord],
-    path_key: &str,
-    obs: &Observation,
-    probe: &dyn Fn(&FileRecord) -> Presence,
-) -> Option<FileRecord> {
+/// 同順位のときの選び方。mtime一致（移動はmtimeを保つ）> ファイル名一致 > 登録が古い順。
+fn rank_orphan<'a>(cands: &[&'a FileRecord], path_key: &str, obs: &Observation) -> &'a FileRecord {
     let name = file_name_of(path_key);
     cands
         .iter()
-        .filter(|c| probe(c) == Presence::Missing)
         .min_by_key(|c| (c.mtime != obs.mtime, c.file_name() != name, c.id))
-        .cloned()
+        .copied()
+        .expect("non-empty candidates")
+}
+
+enum MovePick {
+    /// 消えている候補が無い。
+    NoCandidate,
+    One(FileRecord),
+    /// 消えている候補が複数あり、データが食い違うので決められない（ユーザーに選んでもらう）。
+    Ambiguous(Vec<u64>),
+}
+
+/// 「消えている」候補から、移動元を選ぶ。
+/// データを持つ候補が1つだけ、または全員同じデータなら、迷いがないので決める。データが食い違うなら曖昧。
+/// 誰もデータを持たなければ、どれでも変わらないので、同順位の規則（`rank_orphan`）で決める。
+fn pick_move_source(cands: &[FileRecord], path_key: &str, obs: &Observation, env: &ResolveEnv) -> MovePick {
+    let missing: Vec<&FileRecord> =
+        cands.iter().filter(|c| (env.probe)(c) == Presence::Missing).collect();
+    if missing.is_empty() {
+        return MovePick::NoCandidate;
+    }
+    let with_data: Vec<(&FileRecord, Vec<u8>)> = missing
+        .iter()
+        .filter_map(|c| (env.data_signature)(c.id, true).map(|sig| (*c, sig)))
+        .collect();
+    if with_data.is_empty() {
+        return MovePick::One(rank_orphan(&missing, path_key, obs).clone());
+    }
+    if with_data.iter().all(|(_, sig)| *sig == with_data[0].1) {
+        let recs: Vec<&FileRecord> = with_data.iter().map(|(r, _)| *r).collect();
+        return MovePick::One(rank_orphan(&recs, path_key, obs).clone());
+    }
+    let mut ids: Vec<u64> = with_data.iter().map(|(r, _)| r.id).collect();
+    ids.sort_unstable();
+    MovePick::Ambiguous(ids)
+}
+
+/// 「現存」する同内容のファイルから、引き継ぎ元（複製元）を選ぶ。
+/// 新側に旧v1データがある場合・引き継げるデータを持つ候補が無い場合・オフラインだけの場合は、複製しない。
+fn pick_copy_source(cands: &[FileRecord], path_key: &str, env: &ResolveEnv) -> CreateKind {
+    if (env.has_legacy_data)(path_key) {
+        return CreateKind::Plain;
+    }
+    let with_data: Vec<(u64, Vec<u8>)> = cands
+        .iter()
+        .filter(|c| (env.probe)(c) == Presence::Present)
+        .filter_map(|c| (env.data_signature)(c.id, false).map(|sig| (c.id, sig)))
+        .collect();
+    let Some(first) = with_data.first() else { return CreateKind::Plain };
+    if with_data.iter().all(|(_, sig)| *sig == first.1) {
+        // データが同じなら、どれから複製しても結果は同じ。登録が古い（IDが小さい）ものを元にする。
+        let source = with_data.iter().map(|(id, _)| *id).min().expect("non-empty");
+        return CreateKind::Copy { source };
+    }
+    let mut ids: Vec<u64> = with_data.iter().map(|(id, _)| *id).collect();
+    ids.sort_unstable();
+    CreateKind::AmbiguousCopy(ids)
 }
 
 fn decide(snapshot: Snapshot, path_key: &str, obs: &Observation, env: &ResolveEnv) -> Decision {
@@ -500,16 +577,26 @@ fn decide(snapshot: Snapshot, path_key: &str, obs: &Observation, env: &ResolveEn
             new.status = FileStatus::Confirmed;
             new.last_seen = env.now;
             // 内容が変わり、かつユーザーデータが空のIDは、同FPの孤児IDに統合する。
-            let adopt = if content_updated && obs.fp.is_some() && !(env.has_user_data)(rec.id) {
-                pick_orphan(&snapshot.cands, path_key, obs, env.probe)
+            // 移動元の候補が複数でデータが食い違うなら、統合せずユーザーに選んでもらう。
+            let (adopt, ambiguous_move) = if content_updated && obs.fp.is_some() && !(env.has_user_data)(rec.id) {
+                match pick_move_source(&snapshot.cands, path_key, obs, env) {
+                    MovePick::One(orphan) => (Some(orphan), None),
+                    MovePick::Ambiguous(ids) => (None, Some(ids)),
+                    MovePick::NoCandidate => (None, None),
+                }
             } else {
-                None
+                (None, None)
             };
-            Decision::Update { new, content_updated, adopt }
+            Decision::Update { new, content_updated, adopt, ambiguous_move }
         }
-        None => match pick_orphan(&snapshot.cands, path_key, obs, env.probe) {
-            Some(orphan) if obs.fp.is_some() => Decision::Move { orphan },
-            _ => Decision::Create,
+        None if obs.fp.is_none() => Decision::Create(CreateKind::Plain),
+        None => match pick_move_source(&snapshot.cands, path_key, obs, env) {
+            // 移動元が決まる（消えている候補が1つ、またはデータが同じ）なら、同じIDを引き継ぐ。
+            MovePick::One(orphan) => Decision::Move { orphan },
+            // 消えている候補が複数でデータが食い違う。割り当てを保留し、新IDは空のまま作る。
+            MovePick::Ambiguous(ids) => Decision::Create(CreateKind::AmbiguousMove(ids)),
+            // 消えている候補が無ければ、現存の同内容ファイル（コピー元）を見る。
+            MovePick::NoCandidate => Decision::Create(pick_copy_source(&snapshot.cands, path_key, env)),
         },
     }
 }
@@ -591,7 +678,7 @@ fn apply(
         // 読み取り時点の前提（このパスにはまだ誰も居ない／居る）を確認する。
         let path_owner = t.paths.get(path_key).map_err(db_err)?.map(|g| g.value());
         match decision {
-            Decision::Update { new, content_updated, adopt } => {
+            Decision::Update { new, content_updated, adopt, ambiguous_move } => {
                 if path_owner != Some(new.id) {
                     return Err(IdentityError::Conflict);
                 }
@@ -600,7 +687,10 @@ fn apply(
                     None => {
                         t.fp_index_replace(new.id, cur.fp, new.fp)?;
                         t.put(&new)?;
-                        Resolution::Existing { id: new.id, content_updated }
+                        match ambiguous_move {
+                            Some(candidates) => Resolution::AmbiguousMove { id: new.id, candidates },
+                            None => Resolution::Existing { id: new.id, content_updated },
+                        }
                     }
                     Some(orphan) => {
                         let orphan_cur = get_rec(&t.ids, orphan.id)?.ok_or(IdentityError::Conflict)?;
@@ -629,7 +719,7 @@ fn apply(
                 let moved = t.relocate(cur, path_key, obs, now)?;
                 Resolution::Moved { id: moved.id, from }
             }
-            Decision::Create => {
+            Decision::Create(kind) => {
                 if path_owner.is_some() {
                     return Err(IdentityError::Conflict);
                 }
@@ -647,7 +737,12 @@ fn apply(
                 // 最初のID作成で、このDBをFP仕様（旧パス仕様へ戻す基準にならないもの）にする。
                 let mut meta = tx.open_table(IDENTITY_META_TABLE).map_err(db_err)?;
                 meta.insert(IDENTITY_ENABLED_KEY, 1).map_err(db_err)?;
-                Resolution::Created { id }
+                match kind {
+                    CreateKind::Plain => Resolution::Created { id },
+                    CreateKind::Copy { source } => Resolution::Copied { id, source },
+                    CreateKind::AmbiguousCopy(candidates) => Resolution::AmbiguousCopy { id, candidates },
+                    CreateKind::AmbiguousMove(candidates) => Resolution::AmbiguousMove { id, candidates },
+                }
             }
         }
     };
@@ -792,7 +887,15 @@ pub fn resolve_file(
         Observed::Unreadable(e) => return ResolveOutcome::Failed(e),
     };
     let has_user_data = |id: u64| crate::spread_state::id_has_user_data(db, id);
-    let env = ResolveEnv { now, probe: &probe_record, has_user_data: &has_user_data };
+    let data_signature = |id: u64, with_favorite: bool| crate::spread_state::data_signature(db, id, with_favorite);
+    let has_legacy_data = |key: &str| crate::spread_state::legacy_data_exists(db, key);
+    let env = ResolveEnv {
+        now,
+        probe: &probe_record,
+        has_user_data: &has_user_data,
+        data_signature: &data_signature,
+        has_legacy_data: &has_legacy_data,
+    };
     match resolve_path(db, key, &obs, &env) {
         Ok(r) => ResolveOutcome::Resolved(r),
         Err(e) => ResolveOutcome::Failed(format!("{e:?}")),
@@ -876,6 +979,12 @@ mod tests {
     struct Fake {
         presence: HashMap<u64, Presence>,
         user_data: HashSet<u64>,
+        /// IDごとの「引き継ぐデータの署名」（お気に入りを含めない版）。無ければデータなし。
+        signatures: HashMap<u64, Vec<u8>>,
+        /// 署名にお気に入りを含める場合の差分（移動の判定用）。無ければ `signatures` と同じ。
+        favorite_extra: HashMap<u64, Vec<u8>>,
+        /// 旧v1データが既にあるパスキー。
+        legacy_paths: HashSet<String>,
     }
 
     impl Fake {
@@ -893,7 +1002,21 @@ mod tests {
     fn resolve(db: &Arc<Mutex<Database>>, key: &str, o: &Observation, fake: &Fake) -> Resolution {
         let probe = |r: &FileRecord| fake.presence.get(&r.id).copied().unwrap_or(Presence::Missing);
         let has = |id: u64| fake.user_data.contains(&id);
-        let env = ResolveEnv { now: NOW, probe: &probe, has_user_data: &has };
+        let sig = |id: u64, with_favorite: bool| {
+            let base = fake.signatures.get(&id).cloned();
+            match (with_favorite, fake.favorite_extra.get(&id)) {
+                (true, Some(extra)) => Some([base.unwrap_or_default(), extra.clone()].concat()),
+                _ => base,
+            }
+        };
+        let legacy = |key: &str| fake.legacy_paths.contains(key);
+        let env = ResolveEnv {
+            now: NOW,
+            probe: &probe,
+            has_user_data: &has,
+            data_signature: &sig,
+            has_legacy_data: &legacy,
+        };
         resolve_path(db, key, o, &env).unwrap()
     }
 
@@ -1359,7 +1482,7 @@ mod tests {
             Err(IdentityError::Conflict)
         );
         // 既に誰かが居るパスへの新規作成も競合。
-        assert_eq!(apply(&db, Decision::Create, "/d2\0a.zip", &o, NOW), Err(IdentityError::Conflict));
+        assert_eq!(apply(&db, Decision::Create(CreateKind::Plain), "/d2\0a.zip", &o, NOW), Err(IdentityError::Conflict));
         // 競合で書き込みは起きていない。
         assert_eq!(lookup(&db, "/d2\0a.zip").unwrap().id, 1);
         assert!(lookup(&db, "/d3\0a.zip").is_none());
@@ -1406,5 +1529,215 @@ mod tests {
         assert!(quick_hit(&rec2, 5000, rec2.mtime));
         // ファイルが無ければ、記録があればそれ・無ければ None。
         assert!(ensure_record(&db, &t.0, "none.zip").is_none());
+    }
+
+    // ---- 重複・曖昧の判定（R2）----
+
+    fn sig(tag: &str) -> Vec<u8> {
+        tag.as_bytes().to_vec()
+    }
+
+    /// 同じFP(=7)の現存ファイルを2つ（ID 1, 2）作る。
+    fn alive_twins(db: &Arc<Mutex<Database>>, fake: &mut Fake) {
+        resolve(db, "/d\0a.zip", &obs(100, 100, Some(7)), fake);
+        fake.set(1, Presence::Present);
+        resolve(db, "/d\0b.zip", &obs(100, 200, Some(7)), fake);
+        fake.set(2, Presence::Present);
+    }
+
+    #[test]
+    fn copy_of_a_single_alive_file_with_data_is_decided_as_a_copy() {
+        let t = TempRoot::new("r2_copy");
+        let db = new_db(&t);
+        let mut fake = Fake::default();
+        resolve(&db, "/d\0a.zip", &obs(100, 100, Some(7)), &fake);
+        fake.set(1, Presence::Present);
+        fake.signatures.insert(1, sig("rating4"));
+        let r = resolve(&db, "/e\0a_copy.zip", &obs(100, 300, Some(7)), &fake);
+        assert_eq!(r, Resolution::Copied { id: 2, source: 1 });
+        assert_eq!(lookup(&db, "/e\0a_copy.zip").unwrap().id, 2, "新IDは作られる（複製は呼び出し側）");
+    }
+
+    #[test]
+    fn alive_file_without_inheritable_data_is_a_plain_new_file() {
+        let t = TempRoot::new("r2_plain");
+        let db = new_db(&t);
+        let mut fake = Fake::default();
+        resolve(&db, "/d\0a.zip", &obs(100, 100, Some(7)), &fake);
+        fake.set(1, Presence::Present);
+        assert_eq!(resolve(&db, "/e\0c.zip", &obs(100, 300, Some(7)), &fake), Resolution::Created { id: 2 });
+    }
+
+    #[test]
+    fn twins_with_the_same_data_are_not_ambiguous_and_copy_from_the_oldest() {
+        let t = TempRoot::new("r2_twins_same");
+        let db = new_db(&t);
+        let mut fake = Fake::default();
+        alive_twins(&db, &mut fake);
+        fake.signatures.insert(1, sig("same"));
+        fake.signatures.insert(2, sig("same"));
+        assert_eq!(
+            resolve(&db, "/e\0c.zip", &obs(100, 300, Some(7)), &fake),
+            Resolution::Copied { id: 3, source: 1 }
+        );
+        // 片方だけがデータを持つなら、迷いがない。
+        let t = TempRoot::new("r2_twins_one");
+        let db = new_db(&t);
+        let mut fake = Fake::default();
+        alive_twins(&db, &mut fake);
+        fake.signatures.insert(2, sig("only-b"));
+        assert_eq!(
+            resolve(&db, "/e\0c.zip", &obs(100, 300, Some(7)), &fake),
+            Resolution::Copied { id: 3, source: 2 }
+        );
+    }
+
+    #[test]
+    fn twins_with_different_data_make_the_copy_source_ambiguous_and_leave_the_new_id_blank() {
+        let t = TempRoot::new("r2_twins_diff");
+        let db = new_db(&t);
+        let mut fake = Fake::default();
+        alive_twins(&db, &mut fake);
+        fake.signatures.insert(1, sig("rating4"));
+        fake.signatures.insert(2, sig("rating2"));
+        let r = resolve(&db, "/e\0c.zip", &obs(100, 300, Some(7)), &fake);
+        assert_eq!(r, Resolution::AmbiguousCopy { id: 3, candidates: vec![1, 2] });
+        assert_eq!(lookup(&db, "/e\0c.zip").unwrap().id, 3);
+    }
+
+    #[test]
+    fn legacy_data_on_the_new_path_prevents_copying() {
+        let t = TempRoot::new("r2_legacy");
+        let db = new_db(&t);
+        let mut fake = Fake::default();
+        resolve(&db, "/d\0a.zip", &obs(100, 100, Some(7)), &fake);
+        fake.set(1, Presence::Present);
+        fake.signatures.insert(1, sig("rating4"));
+        fake.legacy_paths.insert("/e\0has_own.zip".to_owned());
+        // 新側に旧データがあるなら、複製せず（潰さず）普通に作る。
+        assert_eq!(resolve(&db, "/e\0has_own.zip", &obs(100, 300, Some(7)), &fake), Resolution::Created { id: 2 });
+    }
+
+    #[test]
+    fn offline_only_candidates_are_never_copied_from() {
+        let t = TempRoot::new("r2_offline");
+        let db = new_db(&t);
+        let mut fake = Fake::default();
+        resolve(&db, "/hdd\0a.zip", &obs(100, 100, Some(7)), &fake);
+        fake.set(1, Presence::Offline);
+        fake.signatures.insert(1, sig("rating4"));
+        assert_eq!(resolve(&db, "/e\0c.zip", &obs(100, 300, Some(7)), &fake), Resolution::Created { id: 2 });
+    }
+
+    #[test]
+    fn a_single_missing_original_wins_over_alive_twins_with_data() {
+        // 消えている候補が1つなら、現存の同内容ファイルが複数あっても、移動として扱う（お気に入りも付く）。
+        let t = TempRoot::new("r2_move_wins");
+        let db = new_db(&t);
+        let mut fake = Fake::default();
+        alive_twins(&db, &mut fake);
+        fake.signatures.insert(1, sig("rating4"));
+        fake.signatures.insert(2, sig("rating2"));
+        fake.set(1, Presence::Missing);
+        let r = resolve(&db, "/e\0moved.zip", &obs(100, 100, Some(7)), &fake);
+        assert!(matches!(r, Resolution::Moved { id: 1, .. }), "{r:?}");
+    }
+
+    #[test]
+    fn several_missing_originals_with_different_data_leave_the_move_ambiguous() {
+        let t = TempRoot::new("r2_move_ambiguous");
+        let db = new_db(&t);
+        let mut fake = Fake::default();
+        alive_twins(&db, &mut fake);
+        fake.signatures.insert(1, sig("rating4"));
+        fake.signatures.insert(2, sig("rating2"));
+        fake.set(1, Presence::Missing);
+        fake.set(2, Presence::Missing);
+        let r = resolve(&db, "/n\0c.zip", &obs(100, 200, Some(7)), &fake);
+        assert_eq!(r, Resolution::AmbiguousMove { id: 3, candidates: vec![1, 2] });
+        // 自動割り当てはしない。どちらの記録も元のパスのまま。
+        assert_eq!(lookup(&db, "/d\0a.zip").unwrap().id, 1);
+        assert_eq!(lookup(&db, "/d\0b.zip").unwrap().id, 2);
+    }
+
+    #[test]
+    fn missing_originals_with_the_same_data_or_only_one_with_data_are_not_ambiguous() {
+        // 同じデータ: 同順位の規則（mtime一致 > 名前 > 古い順）で決める。
+        let t = TempRoot::new("r2_move_same");
+        let db = new_db(&t);
+        let mut fake = Fake::default();
+        alive_twins(&db, &mut fake);
+        fake.signatures.insert(1, sig("same"));
+        fake.signatures.insert(2, sig("same"));
+        fake.set(1, Presence::Missing);
+        fake.set(2, Presence::Missing);
+        let r = resolve(&db, "/n\0c.zip", &obs(100, 200, Some(7)), &fake); // mtime=200 は ID2
+        assert!(matches!(r, Resolution::Moved { id: 2, .. }), "{r:?}");
+        // 片方だけがデータを持つ: データを持つ方へ。
+        let t = TempRoot::new("r2_move_one");
+        let db = new_db(&t);
+        let mut fake = Fake::default();
+        alive_twins(&db, &mut fake);
+        fake.signatures.insert(2, sig("only-b"));
+        fake.set(1, Presence::Missing);
+        fake.set(2, Presence::Missing);
+        let r = resolve(&db, "/n\0c.zip", &obs(100, 100, Some(7)), &fake); // mtime/名前は ID1 に合うが、データは ID2
+        assert!(matches!(r, Resolution::Moved { id: 2, .. }), "{r:?}");
+    }
+
+    #[test]
+    fn favorite_differences_make_a_move_ambiguous_but_not_a_copy() {
+        // 移動の判定はお気に入りも署名に含める。コピーの判定は含めない。
+        let t = TempRoot::new("r2_fav_sig");
+        let db = new_db(&t);
+        let mut fake = Fake::default();
+        alive_twins(&db, &mut fake);
+        fake.signatures.insert(1, sig("same"));
+        fake.signatures.insert(2, sig("same"));
+        fake.favorite_extra.insert(1, sig("|fav[3]"));
+        // コピー（現存2つ）: お気に入りの差は無視するので曖昧にならない。
+        assert_eq!(
+            resolve(&db, "/e\0copy.zip", &obs(100, 300, Some(7)), &fake),
+            Resolution::Copied { id: 3, source: 1 }
+        );
+        // 移動（消えている2つ）: お気に入りの差で曖昧になる。
+        fake.set(1, Presence::Missing);
+        fake.set(2, Presence::Missing);
+        fake.set(3, Presence::Present);
+        let r = resolve(&db, "/n\0m.zip", &obs(100, 400, Some(7)), &fake);
+        assert_eq!(r, Resolution::AmbiguousMove { id: 4, candidates: vec![1, 2] });
+    }
+
+    #[test]
+    fn blank_adoption_is_skipped_and_flagged_when_orphans_are_ambiguous() {
+        let t = TempRoot::new("r2_blank_ambiguous");
+        let db = new_db(&t);
+        let mut fake = Fake::default();
+        alive_twins(&db, &mut fake);
+        fake.signatures.insert(1, sig("rating4"));
+        fake.signatures.insert(2, sig("rating2"));
+        // 空のID(3)を別FPで作ってから、内容更新でFP=7になる。候補(1,2)はどちらも消えている。
+        resolve(&db, "/n\0new.zip", &obs(60, 300, Some(9)), &fake);
+        fake.set(1, Presence::Missing);
+        fake.set(2, Presence::Missing);
+        let r = resolve(&db, "/n\0new.zip", &obs(100, 100, Some(7)), &fake);
+        assert_eq!(r, Resolution::AmbiguousMove { id: 3, candidates: vec![1, 2] });
+        // 統合されず、候補は元のまま。
+        assert_eq!(lookup(&db, "/d\0a.zip").unwrap().id, 1);
+        assert_eq!(lookup(&db, "/n\0new.zip").unwrap().id, 3);
+    }
+
+    #[test]
+    fn blank_adoption_still_merges_when_the_orphan_is_unambiguous() {
+        let t = TempRoot::new("r2_blank_unambiguous");
+        let db = new_db(&t);
+        let mut fake = Fake::default();
+        resolve(&db, "/old\0a.zip", &obs(100, 50, Some(5)), &fake);
+        fake.signatures.insert(1, sig("rating4"));
+        fake.set(1, Presence::Present);
+        resolve(&db, "/new\0a.zip", &obs(60, 60, Some(9)), &fake);
+        fake.set(1, Presence::Missing);
+        let r = resolve(&db, "/new\0a.zip", &obs(100, 50, Some(5)), &fake);
+        assert_eq!(r, Resolution::Merged { kept: 1, dropped: 2 });
     }
 }
