@@ -499,7 +499,7 @@ mod tests {
     }
 
     #[test]
-    fn successful_pwd_sync_adds_missing_and_removes_deleted_records() {
+    fn successful_pwd_sync_adds_missing_and_keeps_thumbnails_of_deleted_files() {
         let neko_dir = unique_test_neko_dir("thumb_pwd_sync");
         let db = open_cache_db(&neko_dir, Path::new("/tmp/fake_thumb_pwd_sync")).unwrap();
         write_thumb(&db, "deleted.zip", 100, b"old");
@@ -515,13 +515,101 @@ mod tests {
             read_thumbnail_state(&db, "present.zip").unwrap().status,
             ThumbnailStatus::Missing,
         );
-        assert!(read_thumbnail_state(&db, "deleted.zip").is_none());
-        assert!(read_thumb_unchecked(&db, "deleted.zip").is_none());
+        // サムネの行は残す（移動・リネームの引っ越しに使う）。検索用のファイル索引だけが消える。
+        assert!(read_thumbnail_state(&db, "deleted.zip").is_some());
+        assert!(read_thumb_unchecked(&db, "deleted.zip").is_some());
         let db_guard = db.lock().unwrap();
         let tx = db_guard.begin_read().unwrap();
         assert!(tx.open_table(FILES_TABLE).unwrap().get("deleted.zip").unwrap().is_none());
         drop(tx);
         drop(db_guard);
+        let _ = std::fs::remove_dir_all(&neko_dir);
+    }
+
+    fn seed_state(db: &Arc<Mutex<Database>>, name: &str, status: ThumbnailStatus) {
+        let g = db.lock().unwrap();
+        let tx = g.begin_write().unwrap();
+        tx.open_table(THUMB_STATES_TABLE).unwrap().insert(
+            name,
+            encode_thumbnail_state(ThumbnailRecordState {
+                status,
+                token: 1,
+                generated_at: 0,
+                updated_at: 0,
+                target_edge: 256,
+                target_filter: 3,
+                target_mtime: 0,
+            }),
+        ).unwrap();
+        tx.commit().unwrap();
+    }
+
+    #[test]
+    fn thumbnail_rows_move_to_another_name_in_the_same_db() {
+        let neko_dir = unique_test_neko_dir("transplant_same");
+        let db = open_cache_db(&neko_dir, Path::new("/tmp/fake_transplant_same")).unwrap();
+        test_seed_current(&db, "old.zip", 100, b"jpeg-bytes", "left\0cover.jpg");
+        let rows = take_thumbnail_rows(&db, "old.zip").expect("生成済みは取り出せる");
+        assert!(put_thumbnail_rows(&db, "new.zip", &rows));
+        let state = read_thumbnail_state(&db, "new.zip").unwrap();
+        assert_eq!(state.status, ThumbnailStatus::Current);
+        assert_eq!((state.target_edge, state.target_filter, state.target_mtime), (256, 3, 100));
+        assert_eq!(read_thumb_unchecked(&db, "new.zip"), Some((100, b"jpeg-bytes".to_vec())));
+        assert_eq!(read_thumb_source(&db, "new.zip").as_deref(), Some("left\0cover.jpg"));
+        // 元の行は消さない（非破壊）。
+        assert!(read_thumb_unchecked(&db, "old.zip").is_some());
+        let _ = std::fs::remove_dir_all(&neko_dir);
+    }
+
+    #[test]
+    fn thumbnail_rows_move_across_databases() {
+        let a = unique_test_neko_dir("transplant_a");
+        let b = unique_test_neko_dir("transplant_b");
+        let src = open_cache_db(&a, Path::new("/tmp/fake_transplant_a")).unwrap();
+        let dst = open_cache_db(&b, Path::new("/tmp/fake_transplant_b")).unwrap();
+        test_seed_current(&src, "x.zip", 55, b"blob", "full");
+        let rows = take_thumbnail_rows(&src, "x.zip").unwrap();
+        assert!(put_thumbnail_rows(&dst, "y.zip", &rows));
+        assert_eq!(read_thumb_unchecked(&dst, "y.zip"), Some((55, b"blob".to_vec())));
+        assert_eq!(read_thumbnail_state(&dst, "y.zip").unwrap().status, ThumbnailStatus::Current);
+        let _ = std::fs::remove_dir_all(&a);
+        let _ = std::fs::remove_dir_all(&b);
+    }
+
+    #[test]
+    fn only_generated_thumbnails_are_taken() {
+        let neko_dir = unique_test_neko_dir("transplant_take");
+        let db = open_cache_db(&neko_dir, Path::new("/tmp/fake_transplant_take")).unwrap();
+        assert!(take_thumbnail_rows(&db, "none.zip").is_none());
+        for (name, status) in [
+            ("processing.zip", ThumbnailStatus::Processing),
+            ("stale.zip", ThumbnailStatus::Stale),
+            ("missing.zip", ThumbnailStatus::Missing),
+        ] {
+            seed_state(&db, name, status);
+            assert!(take_thumbnail_rows(&db, name).is_none(), "{name}");
+        }
+        let _ = std::fs::remove_dir_all(&neko_dir);
+    }
+
+    #[test]
+    fn put_does_not_overwrite_generating_or_generated_destination() {
+        let neko_dir = unique_test_neko_dir("transplant_put");
+        let db = open_cache_db(&neko_dir, Path::new("/tmp/fake_transplant_put")).unwrap();
+        test_seed_current(&db, "src.zip", 100, b"moved", "full");
+        let rows = take_thumbnail_rows(&db, "src.zip").unwrap();
+        // 移動先で、UIが先に生成を始めている／終えている場合は触らない。
+        seed_state(&db, "busy.zip", ThumbnailStatus::Processing);
+        assert!(!put_thumbnail_rows(&db, "busy.zip", &rows));
+        test_seed_current(&db, "done.zip", 200, b"own", "full");
+        assert!(!put_thumbnail_rows(&db, "done.zip", &rows));
+        assert_eq!(read_thumb_unchecked(&db, "done.zip"), Some((200, b"own".to_vec())));
+        // 未生成（Missing）・古い（Stale）なら上書きする。スキャン時の同期で Missing が入る前提。
+        seed_state(&db, "missing.zip", ThumbnailStatus::Missing);
+        assert!(put_thumbnail_rows(&db, "missing.zip", &rows));
+        seed_state(&db, "stale.zip", ThumbnailStatus::Stale);
+        assert!(put_thumbnail_rows(&db, "stale.zip", &rows));
+        assert_eq!(read_thumb_unchecked(&db, "stale.zip"), Some((100, b"moved".to_vec())));
         let _ = std::fs::remove_dir_all(&neko_dir);
     }
 
@@ -688,18 +776,122 @@ pub fn sync_thumbnail_records(
             }
         }
     }
+    // フォルダから消えたファイルのサムネ行（サムネ本体・ソース・エッジ・フィルタ・状態）は消さない。
+    // ファイルが移動・リネームされたとき、ID解決（`transplant`）で新しい名前へ引っ越すため。
+    // 残った行の掃除は、キャッシュ整理（未確認のまま一定期間で削除）の役割。
+    // 検索用のファイル索引と非画像マーカーは、存在しないファイルを検索結果に出さないよう消す。
     for key in &stale_keys {
-        if let Ok(mut table) = tx.open_table(THUMBS_TABLE) { let _ = table.remove(key.as_str()); }
-        if let Ok(mut table) = tx.open_table(THUMB_SOURCES_TABLE) { let _ = table.remove(key.as_str()); }
-        if let Ok(mut table) = tx.open_table(THUMB_DESIRED_SOURCES_TABLE) { let _ = table.remove(key.as_str()); }
-        if let Ok(mut table) = tx.open_table(THUMB_EDGES_TABLE) { let _ = table.remove(key.as_str()); }
-        if let Ok(mut table) = tx.open_table(THUMB_FILTERS_TABLE) { let _ = table.remove(key.as_str()); }
-        if let Ok(mut table) = tx.open_table(THUMB_STATES_TABLE) { let _ = table.remove(key.as_str()); }
         if let Ok(mut table) = tx.open_table(FILES_TABLE) { let _ = table.remove(key.as_str()); }
         if let Ok(mut table) = tx.open_table(INVALID_TABLE) { let _ = table.remove(key.as_str()); }
     }
     tx.commit().is_ok()
 }
+
+/// 1ファイルぶんのサムネ関連の行。ファイルの移動・リネームで、別の名前・別フォルダのDBへ引っ越す用。
+pub struct ThumbRows {
+    mtime: i64,
+    jpeg: Vec<u8>,
+    source: Option<String>,
+    desired: Option<String>,
+    edge: Option<u32>,
+    filter: Option<u32>,
+    state: ThumbnailRecordState,
+}
+
+/// `filename` のサムネの行を取り出す。生成済み（Current）で、サムネ本体があるものだけ。
+/// 生成中・失敗・未生成のものは引っ越し対象にしない（移動先で普通に生成させる）。
+pub fn take_thumbnail_rows(db: &Arc<Mutex<Database>>, filename: &str) -> Option<ThumbRows> {
+    let db = db.lock().ok()?;
+    let tx = db.begin_read().ok()?;
+    let state = tx
+        .open_table(THUMB_STATES_TABLE)
+        .ok()?
+        .get(filename)
+        .ok()??
+        .value();
+    let state = decode_thumbnail_state(state);
+    if state.status != ThumbnailStatus::Current {
+        return None;
+    }
+    let (mtime, jpeg) = {
+        let thumbs = tx.open_table(THUMBS_TABLE).ok()?;
+        let v = thumbs.get(filename).ok()??;
+        let (mtime, jpeg) = v.value();
+        (mtime, jpeg.to_vec())
+    };
+    let source = tx.open_table(THUMB_SOURCES_TABLE).ok()
+        .and_then(|t| t.get(filename).ok().flatten().map(|v| v.value().to_string()));
+    let desired = tx.open_table(THUMB_DESIRED_SOURCES_TABLE).ok()
+        .and_then(|t| t.get(filename).ok().flatten().map(|v| v.value().to_string()));
+    let edge = tx.open_table(THUMB_EDGES_TABLE).ok()
+        .and_then(|t| t.get(filename).ok().flatten().map(|v| v.value()));
+    let filter = tx.open_table(THUMB_FILTERS_TABLE).ok()
+        .and_then(|t| t.get(filename).ok().flatten().map(|v| v.value()));
+    Some(ThumbRows { mtime, jpeg, source, desired, edge, filter, state })
+}
+
+/// 取り出したサムネの行を、`filename` の行として書き込む（生成済み＝Current で）。
+/// 移動先で既に生成中・生成済みのものは上書きしない（false）。未生成・古い（Stale）なら上書きする。
+/// サムネ本体のmtimeはそのまま持ち越すので、移動でmtimeが変わった（別FSへのコピー等）場合は、
+/// 通常のmtime突合で再生成される。
+pub fn put_thumbnail_rows(db: &Arc<Mutex<Database>>, filename: &str, rows: &ThumbRows) -> bool {
+    let Ok(db) = db.lock() else { return false };
+    let Ok(tx) = db.begin_write() else { return false };
+    let existing = tx.open_table(THUMB_STATES_TABLE).ok()
+        .and_then(|t| t.get(filename).ok().flatten().map(|v| decode_thumbnail_state(v.value())));
+    if existing.is_some_and(|s| matches!(s.status, ThumbnailStatus::Processing | ThumbnailStatus::Current)) {
+        return false;
+    }
+    let ok = (|| {
+        tx.open_table(THUMBS_TABLE).ok()?.insert(filename, (rows.mtime, rows.jpeg.as_slice())).ok()?;
+        if let Some(v) = &rows.source {
+            tx.open_table(THUMB_SOURCES_TABLE).ok()?.insert(filename, v.as_str()).ok()?;
+        }
+        if let Some(v) = &rows.desired {
+            tx.open_table(THUMB_DESIRED_SOURCES_TABLE).ok()?.insert(filename, v.as_str()).ok()?;
+        }
+        if let Some(v) = rows.edge {
+            tx.open_table(THUMB_EDGES_TABLE).ok()?.insert(filename, v).ok()?;
+        }
+        if let Some(v) = rows.filter {
+            tx.open_table(THUMB_FILTERS_TABLE).ok()?.insert(filename, v).ok()?;
+        }
+        let now = unix_timestamp_secs();
+        tx.open_table(THUMB_STATES_TABLE).ok()?.insert(
+            filename,
+            encode_thumbnail_state(ThumbnailRecordState { updated_at: now, ..rows.state }),
+        ).ok()?;
+        Some(())
+    })()
+    .is_some();
+    ok && tx.commit().is_ok()
+}
+
+#[cfg(test)]
+/// テスト用: 生成済み（Current）のサムネ行を直接書く。
+pub(crate) fn test_seed_current(db: &Arc<Mutex<Database>>, name: &str, mtime: i64, jpeg: &[u8], source: &str) {
+    let g = db.lock().unwrap();
+    let tx = g.begin_write().unwrap();
+    tx.open_table(THUMBS_TABLE).unwrap().insert(name, (mtime, jpeg)).unwrap();
+    tx.open_table(THUMB_SOURCES_TABLE).unwrap().insert(name, source).unwrap();
+    tx.open_table(THUMB_DESIRED_SOURCES_TABLE).unwrap().insert(name, source).unwrap();
+    tx.open_table(THUMB_EDGES_TABLE).unwrap().insert(name, 256u32).unwrap();
+    tx.open_table(THUMB_FILTERS_TABLE).unwrap().insert(name, 3u32).unwrap();
+    tx.open_table(THUMB_STATES_TABLE).unwrap().insert(
+        name,
+        encode_thumbnail_state(ThumbnailRecordState {
+            status: ThumbnailStatus::Current,
+            token: 7,
+            generated_at: 11,
+            updated_at: 11,
+            target_edge: 256,
+            target_filter: 3,
+            target_mtime: mtime,
+        }),
+    ).unwrap();
+    tx.commit().unwrap();
+}
+
 
 /// 設定変更時、異なる生成条件でprocessing中のtokenを即時失効させる。
 pub fn invalidate_processing_for_profile(

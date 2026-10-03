@@ -693,6 +693,8 @@ impl NekoviewApp {
                 || self.thumb_pending.contains(path)
                 || self.thumb_failed.contains(path)
                 || self.thumb_queued.contains(path)
+                // ファイルID解決待ち（検証中）は、サムネの引っ越しが済むまで先読みもしない。
+                || self.identity_verifying.contains(path)
             {
                 continue;
             }

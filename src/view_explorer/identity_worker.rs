@@ -19,7 +19,8 @@ use super::NekoviewApp;
 use crate::file_identity::{self, Resolution, ResolveOutcome};
 
 /// 結果を返す単位。これだけ溜まるか、バッチが終わると `Chunk` を送る。
-const CHUNK_SIZE: usize = 50;
+/// 「検証中」のサムネ生成はここで解放されるので、小さめにして待ち時間を短くする。
+const CHUNK_SIZE: usize = 10;
 /// 進捗（処理済み件数）を、これだけ進むごとに通知する（検証済みが無くても送る）。
 const PROGRESS_STEP: usize = 100;
 /// 処理中トーストを出し始めるまでの待ち。これより早く終われば、トーストは出さない。
@@ -41,7 +42,13 @@ pub(super) enum IdentityEvent {
 }
 
 enum Job {
-    Resolve { generation: u64, db: Arc<Mutex<Database>>, paths: Vec<PathBuf> },
+    Resolve {
+        generation: u64,
+        db: Arc<Mutex<Database>>,
+        paths: Vec<PathBuf>,
+        /// サムネキャッシュの置き場所。移動したファイルのサムネを新しい名前へ引っ越すのに使う。
+        cache_root: Option<PathBuf>,
+    },
     /// ユーザーデータを持つ旧レコードを、アイドル時にFP化する。
     Backfill { db: Arc<Mutex<Database>> },
 }
@@ -67,10 +74,15 @@ impl IdentityWorker {
 
     /// バッチを投入する。世代を進めるので、処理中の古いバッチは次のファイルで打ち切られる。
     /// 返り値は今回の世代。
-    pub(super) fn submit(&mut self, db: Arc<Mutex<Database>>, paths: Vec<PathBuf>) -> u64 {
+    pub(super) fn submit(
+        &mut self,
+        db: Arc<Mutex<Database>>,
+        paths: Vec<PathBuf>,
+        cache_root: Option<PathBuf>,
+    ) -> u64 {
         let generation = self.current.fetch_add(1, Ordering::AcqRel) + 1;
         if let Some(tx) = &self.job_tx {
-            let _ = tx.send(Job::Resolve { generation, db, paths });
+            let _ = tx.send(Job::Resolve { generation, db, paths, cache_root });
         }
         generation
     }
@@ -116,8 +128,8 @@ fn run_worker(
             }
         };
         match job {
-            Some(Job::Resolve { generation, db, paths }) => {
-                run_resolve_job(generation, &db, paths, &current, &event_tx, &ctx);
+            Some(Job::Resolve { generation, db, paths, cache_root }) => {
+                run_resolve_job(generation, &db, paths, cache_root.as_deref(), &current, &event_tx, &ctx);
             }
             Some(Job::Backfill { db }) => backfill = Some(Backfill::new(db, BACKFILL_DELAY)),
             None => {
@@ -133,6 +145,7 @@ fn run_resolve_job(
     generation: u64,
     db: &Arc<Mutex<Database>>,
     paths: Vec<PathBuf>,
+    cache_root: Option<&Path>,
     current: &AtomicU64,
     event_tx: &mpsc::Sender<IdentityEvent>,
     ctx: &egui::Context,
@@ -141,12 +154,17 @@ fn run_resolve_job(
     let mut pending = paths;
     let mut aborted = false;
     for round in 0..=MAX_RETRY_ROUNDS {
-        let outcome = process_batch(
+        let outcome = process_batch_with(
             db,
             &pending,
             &keep_going,
             file_identity::now_unix(),
             CHUNK_SIZE,
+            &|new_path, from_key| {
+                if let Some(root) = cache_root {
+                    transplant_thumbnail_for_move(root, new_path, from_key);
+                }
+            },
             &mut |chunk| {
                 let _ = event_tx.send(IdentityEvent::Chunk {
                     generation,
@@ -254,12 +272,16 @@ pub(super) struct BatchChunk {
 /// パスを順に解決する。`emit` には、処理した結果を `chunk_size` 件ずつ渡す。
 /// `keep_going` が false になったら、次のファイルの前で打ち切る（溜まった分は先に渡す）。
 /// stat一致（`Unchanged`）と後回し（`Unstable`）は結果に含めない。
-pub(super) fn process_batch(
+///
+/// `on_moved(新しいパス, 旧パスキー)` は、移動・リネームと判明したファイルごとに、検証済みとして
+/// 報告する前に呼ぶ（サムネの引っ越し等。完了前にサムネ生成が始まらないようにするため）。
+pub(super) fn process_batch_with(
     db: &Arc<Mutex<Database>>,
     paths: &[PathBuf],
     keep_going: &dyn Fn() -> bool,
     now: i64,
     chunk_size: usize,
+    on_moved: &dyn Fn(&Path, &str),
     emit: &mut dyn FnMut(BatchChunk),
 ) -> BatchOutcome {
     let mut keys = KeyMaker::default();
@@ -277,7 +299,12 @@ pub(super) fn process_batch(
         };
         let key = keys.key(dir, name);
         match file_identity::resolve_file(db, &key, path, now, false) {
-            ResolveOutcome::Resolved(Resolution::Moved { .. } | Resolution::Merged { .. }) => {
+            ResolveOutcome::Resolved(Resolution::Moved { from, .. }) => {
+                on_moved(path, &from);
+                chunk.refresh.push(path.clone());
+                chunk.settled.push(path.clone());
+            }
+            ResolveOutcome::Resolved(Resolution::Merged { .. }) => {
                 chunk.refresh.push(path.clone());
                 chunk.settled.push(path.clone());
             }
@@ -325,6 +352,53 @@ impl IdentityProgress {
     }
 }
 
+/// 移動・リネームされたファイルの、サムネキャッシュの行を新しい名前（新しいフォルダ）へ引っ越す。
+/// 元のDB（旧フォルダ）に生成済みのサムネがある場合だけ行い、元の行は消さない。
+/// 引っ越し先のDBは、サムネが実際にある場合にだけ開く（空のDBを作らない）。
+fn transplant_thumbnail_for_move(cache_root: &Path, new_path: &Path, from_key: &str) {
+    let Some((old_dir, old_name)) = from_key.split_once('\0') else { return };
+    let (Some(new_dir), Some(new_name)) = (new_path.parent(), new_path.file_name().and_then(|n| n.to_str()))
+    else {
+        return;
+    };
+    let old_dir = Path::new(old_dir);
+    let Some(src) = crate::neko_dir::open_cache_db_if_exists(
+        &crate::neko_dir::neko_dir_for_root(old_dir, cache_root),
+        old_dir,
+    ) else {
+        return;
+    };
+    let Some(rows) = crate::neko_dir::take_thumbnail_rows(&src, old_name) else { return };
+    let Some(dst) = crate::neko_dir::open_cache_db(
+        &crate::neko_dir::neko_dir_for_root(new_dir, cache_root),
+        new_dir,
+    ) else {
+        return;
+    };
+    if crate::neko_dir::put_thumbnail_rows(&dst, new_name, &rows) {
+        // 検索用のファイル索引も、移動先のファイルとして登録する（サムネ生成の完了時と同じ）。
+        crate::neko_dir::write_file_record(
+            &dst,
+            new_name,
+            crate::neko_dir::file_mtime(new_path),
+            crate::neko_dir::file_size(new_path),
+        );
+    }
+}
+
+/// 引っ越し処理なしで解決する（テスト用）。
+#[cfg(test)]
+pub(super) fn process_batch(
+    db: &Arc<Mutex<Database>>,
+    paths: &[PathBuf],
+    keep_going: &dyn Fn() -> bool,
+    now: i64,
+    chunk_size: usize,
+    emit: &mut dyn FnMut(BatchChunk),
+) -> BatchOutcome {
+    process_batch_with(db, paths, keep_going, now, chunk_size, &|_, _| {}, emit)
+}
+
 impl NekoviewApp {
     /// 現在のフォルダの一覧（表示順）をワーカーへ投入する。スキャンとソートが済んだ直後に呼ぶ。
     /// ID記録も旧データも無いファイル（新規・移動直後）には、解決が済むまで「検証中」を出す。
@@ -334,7 +408,7 @@ impl NekoviewApp {
         self.identity_verifying = crate::spread_state::paths_without_identity_or_legacy(&db, &paths);
         self.identity_dirty = false;
         self.identity_progress = (!paths.is_empty()).then(|| IdentityProgress::new(paths.len()));
-        self.identity_worker.submit(db, paths);
+        self.identity_worker.submit(db, paths, self.config.cache_root());
     }
 
     /// 処理中トーストを、進捗に合わせて出し入れする。待ち時間内、または完了後は出さない。
@@ -589,7 +663,7 @@ mod tests {
         let dir = t.dir("d");
         let p = file(&dir, "a.zip", 3000, 1000);
         let mut worker = IdentityWorker::spawn(egui::Context::default());
-        let generation = worker.submit(db.clone(), vec![p.clone()]);
+        let generation = worker.submit(db.clone(), vec![p.clone()], None);
         assert!(worker.is_current(generation));
         // 検証済みの Chunk の後に Done が届く。
         let mut settled = Vec::new();
@@ -605,7 +679,7 @@ mod tests {
         assert_eq!(settled, vec![p.clone()]);
         assert!(rec_of(&db, &p).is_some());
         // 新しい投入で世代が進み、古い世代は現行でなくなる。
-        let generation2 = worker.submit(db, vec![]);
+        let generation2 = worker.submit(db, vec![], None);
         assert!(generation2 > generation && !worker.is_current(generation));
         worker.shutdown();
         assert!(!worker.is_current(generation2));
@@ -795,5 +869,124 @@ mod tests {
         assert_eq!(crate::favorites::list_dir_favorites(&db, &d2), vec![("renamed.zip".to_owned(), vec![3])]);
         assert_eq!(crate::spread_state::list_dir_entries(&db, &d2).len(), 1);
         assert_eq!(crate::spread_state::list_dir_archive_sorts(&db, &d2).len(), 1);
+    }
+
+    // ---- サムネの引っ越し（Phase 4）----
+
+    fn cache_db_for(root: &Path, dir: &Path) -> Arc<Mutex<Database>> {
+        crate::neko_dir::open_cache_db(&crate::neko_dir::neko_dir_for_root(dir, root), dir).unwrap()
+    }
+
+    #[test]
+    fn thumbnail_follows_a_rename_within_the_same_folder() {
+        let t = TempRoot::new("thumb_same");
+        let cache_root = t.0.join("cache");
+        let dir = t.dir("d");
+        let renamed = file(&dir, "b.zip", 4000, 1000);
+        let db = cache_db_for(&cache_root, &dir);
+        crate::neko_dir::test_seed_current(&db, "a.zip", 100, b"jpeg", "full");
+        let from_key = crate::spread_state::make_key(&dir, "a.zip");
+
+        transplant_thumbnail_for_move(&cache_root, &renamed, &from_key);
+
+        assert_eq!(crate::neko_dir::read_thumb_unchecked(&db, "b.zip"), Some((100, b"jpeg".to_vec())));
+        assert_eq!(
+            crate::neko_dir::read_thumbnail_state(&db, "b.zip").unwrap().status,
+            crate::neko_dir::ThumbnailStatus::Current
+        );
+        // 検索用のファイル索引も、移動先のファイルとして載る。
+        assert!(crate::neko_dir::search_files(&db, |n| n == "b.zip", None, None, None, None).contains(&"b.zip".to_owned()));
+        // 元の行は残る（非破壊）。
+        assert!(crate::neko_dir::read_thumb_unchecked(&db, "a.zip").is_some());
+    }
+
+    #[test]
+    fn thumbnail_follows_a_move_to_another_folder() {
+        let t = TempRoot::new("thumb_cross");
+        let cache_root = t.0.join("cache");
+        let (d1, d2) = (t.dir("d1"), t.dir("d2"));
+        let moved = file(&d2, "b.zip", 4000, 1000);
+        let src = cache_db_for(&cache_root, &d1);
+        crate::neko_dir::test_seed_current(&src, "a.zip", 77, b"blob", "full");
+        let from_key = crate::spread_state::make_key(&d1, "a.zip");
+
+        transplant_thumbnail_for_move(&cache_root, &moved, &from_key);
+
+        let dst = cache_db_for(&cache_root, &d2);
+        assert_eq!(crate::neko_dir::read_thumb_unchecked(&dst, "b.zip"), Some((77, b"blob".to_vec())));
+    }
+
+    #[test]
+    fn no_cache_database_is_created_when_there_is_nothing_to_transplant() {
+        let t = TempRoot::new("thumb_none");
+        let cache_root = t.0.join("cache");
+        let (d1, d2) = (t.dir("d1"), t.dir("d2"));
+        let moved = file(&d2, "b.zip", 4000, 1000);
+        let from_key = crate::spread_state::make_key(&d1, "a.zip");
+        // 元のDBが無い／サムネが無い場合は、移動先のDB（ディレクトリ）を作らない。
+        transplant_thumbnail_for_move(&cache_root, &moved, &from_key);
+        assert!(!crate::neko_dir::neko_dir_for_root(&d2, &cache_root).exists());
+        let src = cache_db_for(&cache_root, &d1);
+        assert!(crate::neko_dir::read_thumbnail_state(&src, "a.zip").is_none());
+        transplant_thumbnail_for_move(&cache_root, &moved, &from_key);
+        assert!(!crate::neko_dir::neko_dir_for_root(&d2, &cache_root).exists());
+    }
+
+    #[test]
+    fn moved_files_are_transplanted_before_they_are_reported_as_settled() {
+        let t = TempRoot::new("thumb_order");
+        let db = open_spread_db(&t.0).unwrap();
+        let (d1, d2) = (t.dir("d1"), t.dir("d2"));
+        let p1 = file(&d1, "a.zip", 5000, 1000);
+        run(&db, &[p1.clone()]);
+        let p2 = d2.join("b.zip");
+        std::fs::rename(&p1, &p2).unwrap();
+
+        let log = std::cell::RefCell::new(Vec::<String>::new());
+        process_batch_with(
+            &db,
+            &[p2.clone()],
+            &|| true,
+            file_identity::now_unix(),
+            CHUNK_SIZE,
+            &|path, from| log.borrow_mut().push(format!("moved {} from {}", path.display(), from.contains("a.zip"))),
+            &mut |c| log.borrow_mut().push(format!("settled {}", c.settled.len())),
+        );
+        let log = log.into_inner();
+        assert_eq!(log.len(), 2, "{log:?}");
+        assert!(log[0].starts_with("moved") && log[0].ends_with("true"), "{log:?}");
+        assert_eq!(log[1], "settled 1", "引っ越しが済んでから検証済みとして報告する");
+    }
+
+    #[test]
+    fn worker_transplants_thumbnails_end_to_end() {
+        let t = TempRoot::new("thumb_e2e");
+        let db = open_spread_db(&t.0).unwrap();
+        let cache_root = t.0.join("cache");
+        let (d1, d2) = (t.dir("d1"), t.dir("d2"));
+        let p1 = file(&d1, "a.zip", 6000, 1000);
+        let mut worker = IdentityWorker::spawn(egui::Context::default());
+        // 1回目: 元の場所を記録（IDが付く）。
+        let g1 = worker.submit(db.clone(), vec![p1.clone()], Some(cache_root.clone()));
+        wait_done(&worker, g1);
+        let src = cache_db_for(&cache_root, &d1);
+        crate::neko_dir::test_seed_current(&src, "a.zip", 123, b"thumb", "full");
+        // 移動して、移動先を解決させる。
+        let p2 = d2.join("moved.zip");
+        std::fs::rename(&p1, &p2).unwrap();
+        let g2 = worker.submit(db, vec![p2], Some(cache_root.clone()));
+        wait_done(&worker, g2);
+        let dst = cache_db_for(&cache_root, &d2);
+        assert_eq!(crate::neko_dir::read_thumb_unchecked(&dst, "moved.zip"), Some((123, b"thumb".to_vec())));
+        worker.shutdown();
+    }
+
+    fn wait_done(worker: &IdentityWorker, generation: u64) {
+        loop {
+            match worker.event_rx.recv_timeout(Duration::from_secs(10)).expect("Done が届く") {
+                IdentityEvent::Done { generation: g } if g == generation => return,
+                _ => {}
+            }
+        }
     }
 }

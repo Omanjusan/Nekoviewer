@@ -2633,9 +2633,12 @@ impl NekoviewApp {
                                     4.0,
                                     egui::Color32::from_gray(60),
                                 );
+                                // ファイルID解決待ち（検証中）のファイルは、移動したファイルのサムネを
+                                // 引っ越せるよう、解決が済むまで生成を始めない。
                                 if !self.thumb_pending.contains(path)
                                     && !self.thumb_failed.contains(path)
                                     && !self.thumb_queued.contains(path)
+                                    && !self.identity_verifying.contains(path)
                                 {
                                     if self.thumb_req_tx.try_send(ThumbRequest {
                                         archive_path: path.clone(),
