@@ -85,16 +85,7 @@ impl SubtreeSpec {
     /// ノード数が `budget` 以内に収まる最も深い深さ。根だけでも収まらなければ None。
     /// 超過時の「浅く取り込む」選択肢の深さ決定に使う。
     pub fn deepest_depth_within(&self, budget: usize) -> Option<usize> {
-        let mut total = 0;
-        let mut deepest = None;
-        for (depth, count) in self.depth_counts().into_iter().enumerate() {
-            total += count;
-            if total > budget {
-                break;
-            }
-            deepest = Some(depth);
-        }
-        deepest
+        deepest_depth_within_counts(&self.depth_counts(), budget)
     }
 
     fn validate(&self) -> Result<(), VirtualFolderError> {
@@ -463,6 +454,20 @@ pub fn find_overlaps(nodes: &[VirtualNode], candidate: &Path) -> Overlaps {
     out
 }
 
+/// 深さ別ノード数 `counts`（添字が深さ）の累計が `budget` 以内に収まる最も深い深さ。
+pub fn deepest_depth_within_counts(counts: &[usize], budget: usize) -> Option<usize> {
+    let mut total = 0;
+    let mut deepest = None;
+    for (depth, count) in counts.iter().enumerate() {
+        total += count;
+        if total > budget {
+            break;
+        }
+        deepest = Some(depth);
+    }
+    deepest
+}
+
 /// 再取込の追加計画。`node_id` 直下の子と実パスで照合し、スキャン結果にあって
 /// 仮想側に無いサブフォルダを (親ノードid, 追加する部分木) として集める。
 /// 仮想側にあってスキャン結果に無いもの（実フォルダが消えた）は触らない（リンク切れとして残す）。
@@ -481,6 +486,36 @@ fn plan_merge(
         match existing.get(normalize_path(&child.real_path).as_path()) {
             Some(&child_id) => plan_merge(nodes, child_id, child, out),
             None => out.push((node_id, child.clone())),
+        }
+    }
+}
+
+/// `merge_snapshot` で追加されるノード数を、`scan` の根を深さ0とした深さ別に数える。
+/// 根（`node_id`）自身は追加されないので添字0は常に0。大量追加の確認ダイアログの材料。
+pub fn merge_depth_counts(nodes: &[VirtualNode], node_id: u32, scan: &SubtreeSpec) -> Vec<usize> {
+    let mut counts = vec![0];
+    count_merge_levels(nodes, node_id, scan, 0, &mut counts);
+    counts
+}
+
+fn count_merge_levels(nodes: &[VirtualNode], node_id: u32, scan: &SubtreeSpec, depth: usize, counts: &mut Vec<usize>) {
+    let existing: HashMap<&Path, u32> = nodes
+        .iter()
+        .filter(|n| n.parent_id == node_id)
+        .map(|n| (n.real_path.as_path(), n.id))
+        .collect();
+    for child in &scan.children {
+        match existing.get(normalize_path(&child.real_path).as_path()) {
+            Some(&child_id) => count_merge_levels(nodes, child_id, child, depth + 1, counts),
+            None => {
+                for (d, c) in child.depth_counts().into_iter().enumerate() {
+                    let at = depth + 1 + d;
+                    if counts.len() <= at {
+                        counts.resize(at + 1, 0);
+                    }
+                    counts[at] += c;
+                }
+            }
         }
     }
 }

@@ -1420,6 +1420,14 @@ impl Lang {
         }
     }
 
+    pub fn virtual_menu_register_subs(self) -> &'static str {
+        match self {
+            Lang::Japanese => "フォルダの実サブフォルダを一括登録",
+            Lang::English  => "Register Real Subfolders",
+            Lang::Chinese  => "批量登记实际子文件夹",
+        }
+    }
+
     pub fn virtual_menu_sync(self) -> &'static str {
         match self {
             Lang::Japanese => "実ツリーと同期",
@@ -1657,6 +1665,70 @@ impl Lang {
             Lang::Japanese => "仮想フォルダに正常に登録されました",
             Lang::English  => "Registered to the virtual folder",
             Lang::Chinese  => "已成功登记到虚拟文件夹",
+        }
+    }
+
+    pub fn virtual_register_subs_ok(self, added: usize) -> String {
+        match self {
+            Lang::Japanese => format!("実サブフォルダを {added} 件登録しました"),
+            Lang::English  => format!("Registered {added} real subfolder(s)"),
+            Lang::Chinese  => format!("已登记 {added} 个实际子文件夹"),
+        }
+    }
+
+    pub fn virtual_register_subs_none(self) -> &'static str {
+        match self {
+            Lang::Japanese => "登録するサブフォルダはありませんでした",
+            Lang::English  => "No subfolders to register",
+            Lang::Chinese  => "没有需要登记的子文件夹",
+        }
+    }
+
+    pub fn virtual_subs_title(self) -> &'static str {
+        match self {
+            Lang::Japanese => "実サブフォルダの一括登録",
+            Lang::English  => "Register Real Subfolders",
+            Lang::Chinese  => "批量登记实际子文件夹",
+        }
+    }
+
+    pub fn virtual_subs_body(self) -> &'static str {
+        match self {
+            Lang::Japanese => "実フォルダのサブフォルダのうち、未登録のものをこのフォルダの子として登録します",
+            Lang::English  => "Unregistered subfolders of the real folder will be registered as children of this folder",
+            Lang::Chinese  => "将把实际文件夹中尚未登记的子文件夹登记为此文件夹的子级",
+        }
+    }
+
+    pub fn virtual_subs_target(self, path: &str) -> String {
+        match self {
+            Lang::Japanese => format!("対象: {path}"),
+            Lang::English  => format!("Target: {path}"),
+            Lang::Chinese  => format!("对象：{path}"),
+        }
+    }
+
+    pub fn virtual_subs_real(self, path: &str) -> String {
+        match self {
+            Lang::Japanese => format!("実フォルダ: {path}"),
+            Lang::English  => format!("Real folder: {path}"),
+            Lang::Chinese  => format!("实际文件夹：{path}"),
+        }
+    }
+
+    pub fn virtual_subs_deep(self) -> &'static str {
+        match self {
+            Lang::Japanese => "サブフォルダの子（孫以降）も登録する",
+            Lang::English  => "Also register the children of the subfolders (grandchildren and below)",
+            Lang::Chinese  => "同时登记子文件夹的子级（孙级及更深）",
+        }
+    }
+
+    pub fn virtual_subs_note(self) -> &'static str {
+        match self {
+            Lang::Japanese => "登録済みのフォルダは変更されません",
+            Lang::English  => "Registered folders are left unchanged",
+            Lang::Chinese  => "已登记的文件夹不会被更改",
         }
     }
 
@@ -5689,6 +5761,38 @@ impl Lang {
         }
     }
 
+    pub fn help_vmenu_register_subs(self) -> HelpDoc {
+        match self {
+            Lang::Japanese => HelpDoc {
+                title: "フォルダの実サブフォルダを一括登録",
+                sections: &[(
+                    "",
+                    "このフォルダの実フォルダにあるサブフォルダを調べて、まだ登録されていないものを\n\
+                     このフォルダの子として登録する。登録済みのものはそのまま。\n\
+                     実フォルダにたどり着けないリンク切れと、ルート（/）では使えない。",
+                )],
+            },
+            Lang::English => HelpDoc {
+                title: "Register real subfolders",
+                sections: &[(
+                    "",
+                    "Looks at the subfolders in this folder's real folder and registers the ones\n\
+                     not yet registered as children of this folder. Registered ones are left as is.\n\
+                     Not available for broken links and the root (/).",
+                )],
+            },
+            Lang::Chinese => HelpDoc {
+                title: "批量登记实际子文件夹",
+                sections: &[(
+                    "",
+                    "检查此文件夹的实际文件夹中的子文件夹，把尚未登记的\n\
+                     登记为此文件夹的子级。已登记的保持不变。\n\
+                     失效链接和根（/）不可使用。",
+                )],
+            },
+        }
+    }
+
     pub fn help_vmenu_delete(self) -> HelpDoc {
         match self {
             Lang::Japanese => HelpDoc {
@@ -5757,7 +5861,7 @@ impl Lang {
                     ("[▶ ／ ▼]", "下の階層を開閉する。"),
                     (
                         "[右クリック]",
-                        "名前変更・実ツリーと同期・フォルダタブで開く・実フォルダ登録・削除のメニューを出す。",
+                        "名前変更・実ツリーと同期・フォルダタブで開く・実フォルダ登録・実サブフォルダの一括登録・削除のメニューを出す。",
                     ),
                     (
                         "[⚠ 名前]",
@@ -5772,7 +5876,7 @@ impl Lang {
                     ("[▶ / ▼]", "Expands or collapses the lower levels."),
                     (
                         "[Right-click]",
-                        "Opens the menu: rename, sync with real tree, open in Folders tab, register real folder, delete.",
+                        "Opens the menu: rename, sync with real tree, open in Folders tab, register real folder, register real subfolders, delete.",
                     ),
                     (
                         "[⚠ name]",
@@ -5787,7 +5891,7 @@ impl Lang {
                     ("[▶ / ▼]", "展开或折叠下级。"),
                     (
                         "[右键]",
-                        "弹出菜单：重命名、与实际目录树同步、在文件夹标签中打开、登记实际文件夹、删除。",
+                        "弹出菜单：重命名、与实际目录树同步、在文件夹标签中打开、登记实际文件夹、批量登记实际子文件夹、删除。",
                     ),
                     (
                         "[⚠ 名称]",

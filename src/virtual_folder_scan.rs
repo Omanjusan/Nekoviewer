@@ -43,12 +43,23 @@ fn display_name(path: &Path) -> String {
 /// - 読めないフォルダは子なしとして扱う（panic しない）。
 /// - 各階層の子は `list_subdirs` のパス順。
 pub fn scan_subtree(root: &Path, hard_cap: usize) -> ScanResult {
+    scan_subtree_limited(root, hard_cap, None)
+}
+
+/// `scan_subtree` の深さ制限版。`max_depth` は根を深さ0として、その深さのフォルダまでを拾う
+/// （`Some(1)` で直下のサブフォルダだけ）。制限で止めた分は `capped` にしない。
+pub fn scan_subtree_limited(root: &Path, hard_cap: usize, max_depth: Option<usize>) -> ScanResult {
+    let mut depth = 0;
     let mut arena = vec![Entry { path: root.to_path_buf(), name: display_name(root) }];
     let mut parents: Vec<Option<usize>> = vec![None];
     let mut level: Vec<usize> = vec![0];
     let mut capped = false;
 
     'levels: while !level.is_empty() {
+        if max_depth == Some(depth) {
+            break;
+        }
+        depth += 1;
         let mut pending: Vec<(usize, PathBuf)> = Vec::new();
         for &idx in &level {
             for child in list_subdirs(&arena[idx].path) {
@@ -140,6 +151,19 @@ mod tests {
 
     fn names(spec: &SubtreeSpec) -> Vec<&str> {
         spec.children.iter().map(|c| c.name.as_str()).collect()
+    }
+
+    #[test]
+    fn scan_limited_depth_one_lists_only_direct_children_without_capping() {
+        let t = TempTree::new(&["a/b", "c"]);
+        let r = scan_subtree_limited(&t.0, SCAN_HARD_CAP, Some(1));
+        assert!(!r.capped);
+        assert_eq!(names(&r.spec), vec!["a", "c"]);
+        assert!(r.spec.children.iter().all(|c| c.children.is_empty()));
+        // 制限なしなら孫まで入る
+        assert_eq!(scan_subtree_limited(&t.0, SCAN_HARD_CAP, None), scan_subtree(&t.0, SCAN_HARD_CAP));
+        // 深さ0は根だけ
+        assert!(scan_subtree_limited(&t.0, SCAN_HARD_CAP, Some(0)).spec.children.is_empty());
     }
 
     #[test]

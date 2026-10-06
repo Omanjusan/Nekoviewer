@@ -19,7 +19,7 @@ mod sync;
 use crate::gui_config::VirtualPosition;
 use broken::BrokenCheck;
 use delete::DeleteTarget;
-use register::{LargeImport, OverlapInfo, PendingRegister};
+use register::{LargeImport, OverlapInfo, PendingRegister, SubsConfirm};
 use rename::RenameDialog;
 
 use crate::i18n;
@@ -150,6 +150,8 @@ pub(super) struct VirtualState {
     scroll_to_cursor: bool,
     picker: Option<Picker>,
     confirm: Option<Confirm>,
+    /// 「実サブフォルダを一括登録」の確認ダイアログ
+    subs_confirm: Option<SubsConfirm>,
     delete: Option<DeleteTarget>,
     /// 評価・スキャン中の登録（1件ずつ）
     register_pending: Option<PendingRegister>,
@@ -175,6 +177,7 @@ impl VirtualState {
             scroll_to_cursor: false,
             picker: None,
             confirm: None,
+            subs_confirm: None,
             delete: None,
             register_pending: None,
             large_import: None,
@@ -215,6 +218,8 @@ enum TreeEvent {
     Select(u32),
     DoubleClick(u32),
     Register(u32),
+    /// 実サブフォルダの一括登録（未登録分を、このノードの子として足す）
+    RegisterSubs(u32),
     Rename(u32),
     /// 実ツリーを、このノードの実パスまで展開して選択表示にする
     Sync(u32),
@@ -293,6 +298,15 @@ fn tree_context_menu(ui: &mut egui::Ui, target: Option<u32>, broken: &HashSet<u3
     if r.clicked() {
         if let Some(id) = target {
             out.push(TreeEvent::Register(id));
+        }
+        ui.close();
+    }
+    // 実フォルダを持たないルートと、リンク切れは対象外
+    let r = ui.add_enabled(syncable.is_some(), egui::Button::new(i18n::t().virtual_menu_register_subs()));
+    help_tip_auto(&r, &i18n::t().help_vmenu_register_subs());
+    if r.clicked() {
+        if let Some(id) = syncable {
+            out.push(TreeEvent::RegisterSubs(id));
         }
         ui.close();
     }
@@ -784,6 +798,10 @@ impl NekoviewApp {
                     let tree = RealTreeState::new(&self.drives, &self.tree_root, &self.egui_ctx);
                     self.virtual_state.picker = Some(Picker::Real { dest: id, tree });
                 }
+                TreeEvent::RegisterSubs(id) => {
+                    self.virtual_state.rename = None;
+                    self.virtual_state.subs_confirm = Some(SubsConfirm { id, deep: false });
+                }
                 TreeEvent::Delete(id) => {
                     self.virtual_state.rename = None;
                     if id != ROOT {
@@ -831,6 +849,7 @@ impl NekoviewApp {
         self.poll_virtual_register();
         self.draw_virtual_picker(ctx);
         self.draw_virtual_confirm(ctx);
+        self.draw_virtual_register_subs(ctx);
         self.draw_virtual_large_import(ctx);
         self.draw_virtual_rename(ctx);
         self.draw_virtual_delete(ctx);
