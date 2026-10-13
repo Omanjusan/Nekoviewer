@@ -1,5 +1,5 @@
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::cache::ThumbRequest;
 use crate::i18n;
@@ -1946,6 +1946,13 @@ impl NekoviewApp {
             ui.id().with("real_tree_bg"),
             egui::Sense::click(),
         );
+        // 赤マーカーの基準: 検索タブのツリーは検索の基点を選ぶ道具なので、PWDではなく基点に付ける
+        // （PWD=viewing_dir自体は書き換えない）。
+        let marker_dir = if self.folder_pane_tab == FolderPaneTab::Search {
+            self.search_form.base_dir.clone()
+        } else {
+            self.viewing_dir.clone()
+        };
         egui::ScrollArea::both()
             .id_salt("folder_scroll")
             .max_height(top_h)
@@ -1956,7 +1963,7 @@ impl NekoviewApp {
                     ui,
                     &self.tree_root.clone(),
                     0,
-                    &self.viewing_dir,
+                    &marker_dir,
                     &self.tree_cursor,
                     self.focused_pane == FocusPane::TreeTab,
                     &self.tree_expanded,
@@ -1995,6 +2002,7 @@ impl NekoviewApp {
                 }
             }
             TreeAction::AddToVirtual(path) => self.open_virtual_dest_picker(path),
+            TreeAction::OpenInSearch(path) => self.open_in_search_tab(path),
             TreeAction::SortSetting => self.open_tree_sort_dialog(super::tree_sort_ui::TreeSortTarget::Real),
             TreeAction::Navigate(path) | TreeAction::DoubleClick(path) => {
                 self.focused_pane = FocusPane::TreeTab;
@@ -2488,6 +2496,16 @@ impl NekoviewApp {
                 .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
                 .vertical_scroll_offset(self.explorer_scroll_offset)
                 .show(ui, |ui| {
+            // 一覧領域の全面（カードの隙間・行末・グリッド下）を先に右クリック対象にしておく。
+            // カードはこの上に描かれるのでカード上の右クリックはカード側が優先され、
+            // カードの無い余白への右クリックだけがここに届く。
+            // 縦スクロールのclip_rectは横方向が親UIのままで、検索/仮想タブでは左のツリーペインまで
+            // 含んでしまいクリックを奪うため、グリッド自身の領域（scroll_rect）で切る。
+            let grid_bg = ui.interact(
+                ui.clip_rect().intersect(scroll_rect),
+                ui.id().with("archive_grid_bg"),
+                egui::Sense::click(),
+            );
             let grid_response = egui::Grid::new("archive_grid")
                 .num_columns(cols)
                 .spacing([GAP, GAP])
@@ -2529,6 +2547,9 @@ impl NekoviewApp {
                                     }
                                     ui.close();
                                 }
+                                // 「↑」の対象は親フォルダ
+                                ui.separator();
+                                this_folder_menu_items(ui, parent, &mut self.pending_open_in_search);
                             });
                             cell_index += 1;
                             if cell_index % cols == 0 {
@@ -2569,6 +2590,9 @@ impl NekoviewApp {
                                     }
                                     ui.close();
                                 }
+                                // このカード自身のフォルダが対象のメニュー
+                                ui.separator();
+                                this_folder_menu_items(ui, dir_path, &mut self.pending_open_in_search);
                             });
                             cell_index += 1;
                             if cell_index % cols == 0 {
@@ -3151,13 +3175,34 @@ impl NekoviewApp {
                             }
 
                             ui.separator();
-                            let r_item = ui.button(i18n::t().explorer_open_folder_menu());
-                            help_tip_auto(&r_item, &i18n::t().help_card_open_folder());
-                            if r_item.clicked() {
-                                if let Some(dir) = &self.viewing_dir {
-                                    crate::translate::open_in_file_manager(dir);
+                            if self.folder_pane_tab.shows_real_dir() {
+                                let r_item = ui.button(i18n::t().explorer_open_folder_menu());
+                                help_tip_auto(&r_item, &i18n::t().help_card_open_folder());
+                                if r_item.clicked() {
+                                    if let Some(dir) = &self.viewing_dir {
+                                        crate::translate::open_in_file_manager(dir);
+                                    }
+                                    ui.close();
                                 }
-                                ui.close();
+                            } else {
+                                // お気に入り/検索の横断一覧は「現在のフォルダ」を持たないので、カードごとの親フォルダを開く。
+                                // 複数選択中・ネットワークパス・親が存在しない場合はグレー（存在確認はメニューを開いている間だけ）。
+                                let parent = path.parent().filter(|d| {
+                                    self.multi_selected.is_empty()
+                                        && crate::fs::mount::network_mount_root(d).is_none()
+                                        && d.is_dir()
+                                });
+                                let r_item = ui.add_enabled(
+                                    parent.is_some(),
+                                    egui::Button::new(i18n::t().explorer_open_parent_folder_menu()),
+                                );
+                                help_tip_auto(&r_item, &i18n::t().help_open_parent_folder());
+                                if r_item.clicked() {
+                                    if let Some(dir) = parent {
+                                        crate::translate::open_in_file_manager(dir);
+                                    }
+                                    ui.close();
+                                }
                             }
                         });
 
@@ -3174,11 +3219,32 @@ impl NekoviewApp {
                     }
                     pending_navigate
                 });
-            // グリッド下の余白（サムネの無い領域）への右クリック: メニューは出すが非活性にする
-            let bg_size = egui::vec2(ui.available_width(), ui.available_height().max(40.0));
-            let (_, bg_response) = ui.allocate_exact_size(bg_size, egui::Sense::click());
-            bg_response.context_menu(|ui| {
+            // 余白（カードの無い領域）への右クリック: お気に入り詳細は対象カードが無いので非活性。
+            // 実フォルダ/仮想フォルダのタブは一覧全体が同一の viewing_dir を指すので「フォルダを開く」を
+            // 有効にする。お気に入り/検索はカードごとに実パスが違うため余白では出さない。
+            let bg_open_dir = if self.folder_pane_tab.shows_real_dir() { self.viewing_dir.clone() } else { None };
+            grid_bg.context_menu(|ui| {
                 ui.add_enabled(false, egui::Button::new(i18n::t().favorite_detail_menu()));
+                if let Some(dir) = &bg_open_dir {
+                    ui.separator();
+                    let r_item = ui.button(i18n::t().explorer_open_folder_menu());
+                    help_tip_auto(&r_item, &i18n::t().help_card_open_folder());
+                    if r_item.clicked() {
+                        crate::translate::open_in_file_manager(dir);
+                        ui.close();
+                    }
+                    // 余白は表示中のフォルダ（PWD）が対象。ネットワークパスは対象外
+                    let searchable = crate::fs::mount::network_mount_root(dir).is_none();
+                    let r_item = ui.add_enabled(
+                        searchable,
+                        egui::Button::new(i18n::t().explorer_open_in_search_menu()),
+                    );
+                    help_tip_auto(&r_item, &i18n::t().help_open_in_search());
+                    if r_item.clicked() {
+                        self.pending_open_in_search = Some(dir.clone());
+                        ui.close();
+                    }
+                }
             });
             grid_response.inner
         })
@@ -3186,6 +3252,11 @@ impl NekoviewApp {
         // ユーザーの手動スクロールを読み戻してストアを更新
         self.explorer_scroll_offset = output.state.offset.y;
         self.explorer_viewport_h = output.inner_rect.height();
+        // 一覧の右クリック「このフォルダを検索タブで開く」は、描画が終わってから消化する
+        if let Some(path) = self.pending_open_in_search.take() {
+            self.open_in_search_tab(path);
+            return;
+        }
         match output.inner {
             Some(GridNav::Real(path)) => self.navigate_to(path, DirectoryNavigationSource::ItemPane),
             Some(GridNav::Virtual(id)) => self.select_virtual_node(id),
@@ -3194,20 +3265,41 @@ impl NekoviewApp {
     }
 }
 
+/// 右クリックしたフォルダ自身を対象にするメニュー項目（「このフォルダを開く」「このフォルダを検索タブで開く」）。
+/// 表示中のフォルダ（PWD）が対象の「現在のフォルダを開く」とは別物。ネットワークパスは無効化する。
+/// 検索タブで開く要求は `pending_search` に積み、一覧の描画後に消化する。
+pub(super) fn this_folder_menu_items(ui: &mut egui::Ui, folder: &Path, pending_search: &mut Option<PathBuf>) {
+    let enabled = crate::fs::mount::network_mount_root(folder).is_none();
+    let r_item = ui.add_enabled(enabled, egui::Button::new(i18n::t().explorer_open_this_folder_menu()));
+    help_tip_auto(&r_item, &i18n::t().help_open_this_folder());
+    if r_item.clicked() {
+        crate::translate::open_in_file_manager(folder);
+        ui.close();
+    }
+    let r_item = ui.add_enabled(enabled, egui::Button::new(i18n::t().explorer_open_in_search_menu()));
+    help_tip_auto(&r_item, &i18n::t().help_open_in_search());
+    if r_item.clicked() {
+        *pending_search = Some(folder.to_path_buf());
+        ui.close();
+    }
+}
+
 /// 実ツリーの右クリックメニューに出す項目。登録ピッカーなど、メニューを出さないツリーは `NONE`。
 #[derive(Clone, Copy)]
 pub(super) struct TreeMenu {
     /// 「仮想フォルダに追加する」（仮想タブ内の実ツリーペインだけ）
     pub add_to_virtual: bool,
+    /// 「このフォルダを検索タブで開く」（実フォルダ/仮想フォルダタブのツリーだけ）
+    pub open_in_search: bool,
     /// 「ソート条件設定」
     pub sort: bool,
 }
 
 impl TreeMenu {
-    pub const NONE: Self = Self { add_to_virtual: false, sort: false };
+    pub const NONE: Self = Self { add_to_virtual: false, open_in_search: false, sort: false };
 
     fn any(self) -> bool {
-        self.add_to_virtual || self.sort
+        self.add_to_virtual || self.open_in_search || self.sort
     }
 }
 
@@ -3220,6 +3312,29 @@ fn real_tree_context_menu(ui: &mut egui::Ui, path: Option<&PathBuf>, menu: TreeM
         if r.clicked() {
             if let Some(p) = path {
                 *action = TreeAction::AddToVirtual(p.clone());
+            }
+            ui.close();
+        }
+        if menu.open_in_search || menu.sort {
+            ui.separator();
+        }
+    }
+    if menu.open_in_search {
+        // ネットワークパスは対象外（OS差が埋められないため）
+        let target = path.filter(|p| crate::fs::mount::network_mount_root(p).is_none());
+        let r = ui.add_enabled(target.is_some(), egui::Button::new(i18n::t().explorer_open_this_folder_menu()));
+        help_tip_auto(&r, &i18n::t().help_open_this_folder());
+        if r.clicked() {
+            if let Some(p) = target {
+                crate::translate::open_in_file_manager(p);
+            }
+            ui.close();
+        }
+        let r = ui.add_enabled(target.is_some(), egui::Button::new(i18n::t().explorer_open_in_search_menu()));
+        help_tip_auto(&r, &i18n::t().help_open_in_search());
+        if r.clicked() {
+            if let Some(p) = target {
+                *action = TreeAction::OpenInSearch(p.clone());
             }
             ui.close();
         }
@@ -3637,7 +3752,11 @@ impl NekoviewApp {
     /// 実ツリー（実ツリータブ・仮想タブ内の実ツリーペイン・検索タブ内）の右クリックメニュー。
     /// 「仮想フォルダに追加する」は仮想タブ内だけ。「ソート条件設定」はどのタブでも出る。
     fn real_tree_menu(&self) -> TreeMenu {
-        TreeMenu { add_to_virtual: self.folder_pane_tab == FolderPaneTab::VirtualFolders, sort: true }
+        TreeMenu {
+            add_to_virtual: self.folder_pane_tab == FolderPaneTab::VirtualFolders,
+            open_in_search: self.folder_pane_tab.shows_real_dir(),
+            sort: true,
+        }
     }
 }
 

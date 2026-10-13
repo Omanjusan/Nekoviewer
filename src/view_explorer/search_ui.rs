@@ -7,12 +7,18 @@ use super::calendar_gui::{apply_outcome_to_form, LocalDate};
 use super::{FocusPane, NekoviewApp, SearchFormFocus, SearchFormState};
 
 impl NekoviewApp {
-    /// 左ペイン「検索」タブの中身。上＝検索条件フォーム（固定高さ）、下＝検索結果履歴。
+    /// 左ペイン「検索」タブの中身。上＝検索条件フォーム、下＝検索結果履歴（ウィンドウ縦幅の20%で下寄せ固定）。
     /// [Phase A] レイアウトのモック確認用。ツリー/ドライブの基点ディレクトリ連携（Phase B）は未接続。
     pub(super) fn draw_search_left_pane(&mut self, ui: &mut egui::Ui) {
-        const CONDITION_H: f32 = 285.0;
+        // 検索結果はウィンドウ縦幅の一定比率で下寄せに固定し、残りを検索条件に回す。
+        const RESULT_H_RATIO: f32 = 0.20;
+        // 区切り線（separator）が取る分の余裕
+        const SEPARATOR_H: f32 = 8.0;
+        let total_h = ui.available_height();
+        let result_h = (ui.ctx().content_rect().height() * RESULT_H_RATIO).min(total_h * 0.5);
+        let condition_h = (total_h - result_h - SEPARATOR_H).max(0.0);
         ui.allocate_ui_with_layout(
-            egui::vec2(ui.available_width(), CONDITION_H),
+            egui::vec2(ui.available_width(), condition_h),
             egui::Layout::top_down(egui::Align::Min),
             |ui| self.draw_search_condition_pane(ui),
         );
@@ -90,7 +96,13 @@ impl NekoviewApp {
                 let mut base_dir_display = self.search_form.base_dir.as_ref()
                     .map(|p| p.display().to_string())
                     .unwrap_or_default();
-                let r = ui.add_enabled(false, egui::TextEdit::singleline(&mut base_dir_display));
+                // 長いパスは折り返して縦に伸ばす（複数行 TextEdit は内容に合わせて高さが伸びる）
+                let r = ui.add_enabled(
+                    false,
+                    egui::TextEdit::multiline(&mut base_dir_display)
+                        .desired_rows(1)
+                        .desired_width(f32::INFINITY),
+                );
                 help_tip(&r, help_on, &help_base);
 
                 ui.add_space(4.0);

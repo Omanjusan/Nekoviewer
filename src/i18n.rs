@@ -984,13 +984,41 @@ impl Lang {
         }
     }
 
-    /// エクスプローラー部アイテムカード右クリックメニュー「フォルダを開く」
-    /// （OS標準ファイラーで現在表示中ディレクトリを開く）
+    /// エクスプローラー部アイテムカード右クリックメニュー「現在のフォルダを開く」
+    /// （OS標準ファイラーで現在表示中ディレクトリ=PWDを開く）
     pub fn explorer_open_folder_menu(self) -> &'static str {
         match self {
-            Lang::Japanese => "フォルダを開く",
-            Lang::English  => "Open Folder",
-            Lang::Chinese  => "打开文件夹",
+            Lang::Japanese => "現在のフォルダを開く",
+            Lang::English  => "Open Current Folder",
+            Lang::Chinese  => "打开当前文件夹",
+        }
+    }
+
+    /// お気に入り/検索結果のファイルカード右クリック「このファイルの親フォルダを開く」
+    pub fn explorer_open_parent_folder_menu(self) -> &'static str {
+        match self {
+            Lang::Japanese => "このファイルの親フォルダを開く",
+            Lang::English  => "Open This File's Parent Folder",
+            Lang::Chinese  => "打开此文件的父文件夹",
+        }
+    }
+
+    /// フォルダカード/ツリー行の右クリック「このフォルダを開く」
+    /// （OS標準ファイラーで、右クリックしたフォルダ自身を開く）
+    pub fn explorer_open_this_folder_menu(self) -> &'static str {
+        match self {
+            Lang::Japanese => "このフォルダを開く",
+            Lang::English  => "Open This Folder",
+            Lang::Chinese  => "打开此文件夹",
+        }
+    }
+
+    /// 実フォルダ/仮想フォルダタブのフォルダ右クリック「このフォルダを検索タブで開く」
+    pub fn explorer_open_in_search_menu(self) -> &'static str {
+        match self {
+            Lang::Japanese => "このフォルダを検索タブで開く",
+            Lang::English  => "Open This Folder in Search Tab",
+            Lang::Chinese  => "在搜索标签中打开此文件夹",
         }
     }
 
@@ -5953,31 +5981,187 @@ impl Lang {
         }
     }
 
+    pub fn help_open_in_search(self) -> HelpDoc {
+        match self {
+            Lang::Japanese => HelpDoc {
+                title: "このフォルダを検索タブで開く",
+                sections: &[
+                    (
+                        "",
+                        "このフォルダを検索の基点フォルダに設定して、検索タブへ移る。\n\
+                         検索タブのツリーも、このフォルダまで展開して選択表示になる。",
+                    ),
+                    (
+                        "■ 保持されるもの",
+                        "名前・サイズ・日付などの検索条件と、検索結果の履歴はそのまま。基点フォルダだけが置き換わる。",
+                    ),
+                    (
+                        "■ グレーアウトする場合",
+                        "ネットワークパス上のフォルダ、実フォルダに辿れない仮想ノード（ルート・リンク切れ）。",
+                    ),
+                ],
+            },
+            Lang::English => HelpDoc {
+                title: "Open This Folder in Search Tab",
+                sections: &[
+                    (
+                        "",
+                        "Sets this folder as the search base folder and switches to the Search tab.\n\
+                         The Search tab's tree is also expanded to this folder and selected.",
+                    ),
+                    (
+                        "■ What is kept",
+                        "Search conditions (name, size, date, ...) and the search history stay as they are. Only the base folder is replaced.",
+                    ),
+                    (
+                        "■ When it is grayed out",
+                        "Folders on a network path, and virtual nodes without a real folder (root, broken links).",
+                    ),
+                ],
+            },
+            Lang::Chinese => HelpDoc {
+                title: "在搜索标签中打开此文件夹",
+                sections: &[
+                    (
+                        "",
+                        "将此文件夹设为搜索基点文件夹并切换到搜索标签。\n\
+                         搜索标签中的目录树也会展开到此文件夹并显示为选中状态。",
+                    ),
+                    (
+                        "■ 保留的内容",
+                        "名称、大小、日期等搜索条件和搜索历史保持不变，只替换基点文件夹。",
+                    ),
+                    (
+                        "■ 变灰的情况",
+                        "网络路径上的文件夹，以及没有实际文件夹的虚拟节点（根、链接失效）。",
+                    ),
+                ],
+            },
+        }
+    }
+
     pub fn help_card_open_folder(self) -> HelpDoc {
         match self {
             Lang::Japanese => HelpDoc {
-                title: "フォルダを開く",
+                title: "現在のフォルダを開く",
                 sections: &[(
                     "",
-                    "OS標準のファイラーで、いま表示しているフォルダを開く。\n\
-                     右クリックしたカード自体ではなく、表示中のフォルダが対象になる。",
+                    "OS標準のファイラーで、いま表示しているフォルダ（現在のフォルダ）を開く。\n\
+                     右クリックしたカード自体ではなく、表示中のフォルダが対象になる。\n\
+                     右クリックしたフォルダ自身を開くには「このフォルダを開く」を使う。",
                 )],
             },
             Lang::English => HelpDoc {
-                title: "Open Folder",
+                title: "Open Current Folder",
                 sections: &[(
                     "",
-                    "Opens the folder currently shown in the OS file manager.\n\
-                     The target is the folder being shown, not the card you right-clicked.",
+                    "Opens the folder currently shown (the current folder) in the OS file manager.\n\
+                     The target is the folder being shown, not the card you right-clicked.\n\
+                     To open the right-clicked folder itself, use \"Open This Folder\".",
                 )],
             },
             Lang::Chinese => HelpDoc {
-                title: "打开文件夹",
+                title: "打开当前文件夹",
                 sections: &[(
                     "",
-                    "用系统文件管理器打开当前显示的文件夹。\n\
-                     对象是当前显示的文件夹，而不是右键点击的那张卡片。",
+                    "用系统文件管理器打开当前显示的文件夹（当前文件夹）。\n\
+                     对象是当前显示的文件夹，而不是右键点击的那张卡片。\n\
+                     要打开右键点击的文件夹本身，请使用“打开此文件夹”。",
                 )],
+            },
+        }
+    }
+
+    pub fn help_open_parent_folder(self) -> HelpDoc {
+        match self {
+            Lang::Japanese => HelpDoc {
+                title: "このファイルの親フォルダを開く",
+                sections: &[
+                    (
+                        "",
+                        "OS標準のファイラーで、このファイルがあるフォルダ（親フォルダ）を開く。\n\
+                         お気に入り・検索結果の一覧は複数のフォルダにまたがるため、カードごとに開く先が違う。",
+                    ),
+                    (
+                        "■ グレーアウトする場合",
+                        "複数選択中、ネットワークパス上のファイル、親フォルダが存在しない場合。",
+                    ),
+                ],
+            },
+            Lang::English => HelpDoc {
+                title: "Open This File's Parent Folder",
+                sections: &[
+                    (
+                        "",
+                        "Opens the folder that contains this file (its parent folder) in the OS file manager.\n\
+                         Favorites and search results span many folders, so the target differs per card.",
+                    ),
+                    (
+                        "■ When it is grayed out",
+                        "While multiple items are selected, for files on a network path, or when the parent folder does not exist.",
+                    ),
+                ],
+            },
+            Lang::Chinese => HelpDoc {
+                title: "打开此文件的父文件夹",
+                sections: &[
+                    (
+                        "",
+                        "用系统文件管理器打开此文件所在的文件夹（父文件夹）。\n\
+                         收藏和搜索结果跨越多个文件夹，因此每张卡片打开的位置不同。",
+                    ),
+                    (
+                        "■ 变灰的情况",
+                        "多选时、位于网络路径上的文件、父文件夹不存在时。",
+                    ),
+                ],
+            },
+        }
+    }
+
+    pub fn help_open_this_folder(self) -> HelpDoc {
+        match self {
+            Lang::Japanese => HelpDoc {
+                title: "このフォルダを開く",
+                sections: &[
+                    (
+                        "",
+                        "OS標準のファイラーで、右クリックしたフォルダ自身を開く。\n\
+                         表示中のフォルダを開く「現在のフォルダを開く」とは対象が違う。",
+                    ),
+                    (
+                        "■ グレーアウトする場合",
+                        "ネットワークパス上のフォルダ、実フォルダに辿れない仮想ノード（ルート・リンク切れ）。",
+                    ),
+                ],
+            },
+            Lang::English => HelpDoc {
+                title: "Open This Folder",
+                sections: &[
+                    (
+                        "",
+                        "Opens the right-clicked folder itself in the OS file manager.\n\
+                         Unlike \"Open Current Folder\", the target is not the folder being shown.",
+                    ),
+                    (
+                        "■ When it is grayed out",
+                        "Folders on a network path, and virtual nodes without a real folder (root, broken links).",
+                    ),
+                ],
+            },
+            Lang::Chinese => HelpDoc {
+                title: "打开此文件夹",
+                sections: &[
+                    (
+                        "",
+                        "用系统文件管理器打开右键点击的文件夹本身。\n\
+                         与“打开当前文件夹”不同，对象不是当前显示的文件夹。",
+                    ),
+                    (
+                        "■ 变灰的情况",
+                        "网络路径上的文件夹，以及没有实际文件夹的虚拟节点（根、链接失效）。",
+                    ),
+                ],
             },
         }
     }

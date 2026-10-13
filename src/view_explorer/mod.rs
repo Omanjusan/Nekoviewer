@@ -66,6 +66,8 @@ enum TreeAction {
     DoubleClick(PathBuf),
     /// 実ツリー右クリック「仮想フォルダに追加する」
     AddToVirtual(PathBuf),
+    /// 実ツリー右クリック「このフォルダを検索タブで開く」
+    OpenInSearch(PathBuf),
     /// 実ツリー右クリック「ソート条件設定」（ツリー全体の設定でパスに依存しない）
     SortSetting,
 }
@@ -996,6 +998,9 @@ pub struct NekoviewApp {
     pub(crate) tag_panel_width: f32,
     /// タグ機能・レイアウト器: タグパネルの編集モード展開状態（上側ツマミでさらに中央側へ拡張）。
     pub(crate) tag_panel_edit_expanded: bool,
+    /// アイテム一覧の右クリック「このフォルダを検索タブで開く」の要求。描画の途中でタブを
+    /// 切り替えないよう、一覧の描画後に消化する（draw_archive_grid の末尾）。
+    pub(crate) pending_open_in_search: Option<PathBuf>,
     /// タグ付けレイアウト: メインタグ(排他)の固定順序リスト（tier_id, 要素名）。
     /// ドラムUIで並べ替えは行わず、中央に来たものが選択扱いになる。要素名は表示用で、
     /// 選択・紐付けの同一性判定は常にtier_id（リネームで変わらない不変ID）で行う。
@@ -1462,6 +1467,7 @@ impl NekoviewApp {
             tag_panel_open,
             tag_panel_width: 280.0,
             tag_panel_edit_expanded: false,
+            pending_open_in_search: None,
             tag_main_options,
             tag_main_selected,
             tag_main_edit_toggle: false,
