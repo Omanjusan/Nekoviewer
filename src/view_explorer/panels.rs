@@ -255,6 +255,7 @@ impl NekoviewApp {
         self.draw_tree_sort_dialog(&ctx);
         self.draw_favorite_delete_confirm_dialog(&ctx);
         self.draw_favorite_detail_dialog(&ctx);
+        self.draw_reveal_dialog(&ctx);
         self.draw_sort_condition_dialog(&ctx);
         self.draw_bookmark_setting_dialog(&ctx);
         self.draw_spread_setting_dialog(&ctx);
@@ -3174,6 +3175,8 @@ impl NekoviewApp {
                                 }
                             }
 
+                            ui.separator();
+                            self.draw_reveal_menu_item(ui, path);
                             ui.separator();
                             if self.folder_pane_tab.shows_real_dir() {
                                 let r_item = ui.button(i18n::t().explorer_open_folder_menu());

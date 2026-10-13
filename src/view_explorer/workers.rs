@@ -450,6 +450,7 @@ impl NekoviewApp {
             self.refresh_thumbnail_generation_state();
         }
         self.poll_mount_checks();
+        self.poll_reveal();
 
         // バックグラウンドスキャン結果をポーリング
         self.poll_scan();

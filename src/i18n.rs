@@ -994,6 +994,82 @@ impl Lang {
         }
     }
 
+    /// ファイルカード右クリック「選択した項目を維持したままファイラーで開く」
+    pub fn reveal_menu(self) -> &'static str {
+        match self {
+            Lang::Japanese => "選択した項目を維持したままファイラーで開く",
+            Lang::English  => "Open in File Manager with Selection Kept",
+            Lang::Chinese  => "保持选中项并在文件管理器中打开",
+        }
+    }
+
+    /// 項目の下に出す赤字（グレーアウトの理由）
+    pub fn reveal_over_limit(self, max: usize) -> String {
+        match self {
+            Lang::Japanese => format!("{max}フォルダを超えています"),
+            Lang::English  => format!("Exceeds {max} folders"),
+            Lang::Chinese  => format!("超过{max}个文件夹"),
+        }
+    }
+
+    /// 項目の下に出す黄字（ネットワークパスはリストから除いて実行する）
+    pub fn reveal_network_excluded(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ネットワーク項目は除外されます",
+            Lang::English  => "Network items will be excluded",
+            Lang::Chinese  => "网络项目将被排除",
+        }
+    }
+
+    pub fn reveal_dialog_title(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ファイラーで開く",
+            Lang::English  => "Open in File Manager",
+            Lang::Chinese  => "在文件管理器中打开",
+        }
+    }
+
+    pub fn reveal_dialog_ok(self) -> &'static str {
+        match self {
+            Lang::Japanese => "開く",
+            Lang::English  => "Open",
+            Lang::Chinese  => "打开",
+        }
+    }
+
+    pub fn reveal_choice_selection(self, count: usize) -> String {
+        match self {
+            Lang::Japanese => format!("複数選択した項目を開く（{count}件）"),
+            Lang::English  => format!("Open the selected items ({count})"),
+            Lang::Chinese  => format!("打开多选的项目（{count}个）"),
+        }
+    }
+
+    pub fn reveal_choice_hover(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ホバーした単体のファイルを開く",
+            Lang::English  => "Open only the hovered file",
+            Lang::Chinese  => "仅打开悬停的单个文件",
+        }
+    }
+
+    /// 選択を依頼できず親フォルダだけ開いたときのトースト
+    pub fn reveal_toast_folder_only(self, folders: usize) -> String {
+        match self {
+            Lang::Japanese => format!("選択状態にできなかったため、親フォルダのみ展開（{folders}フォルダ）"),
+            Lang::English  => format!("Could not select the items; opened the parent folder only ({folders})"),
+            Lang::Chinese  => format!("无法选中项目，仅打开了父文件夹（{folders}个）"),
+        }
+    }
+
+    pub fn reveal_toast_failed(self, folders: usize) -> String {
+        match self {
+            Lang::Japanese => format!("開けないフォルダがあった（{folders}フォルダ）"),
+            Lang::English  => format!("Some folders could not be opened ({folders})"),
+            Lang::Chinese  => format!("有文件夹无法打开（{folders}个）"),
+        }
+    }
+
     /// お気に入り/検索結果のファイルカード右クリック「このファイルの親フォルダを開く」
     pub fn explorer_open_parent_folder_menu(self) -> &'static str {
         match self {
@@ -6068,6 +6144,95 @@ impl Lang {
                      对象是当前显示的文件夹，而不是右键点击的那张卡片。\n\
                      要打开右键点击的文件夹本身，请使用“打开此文件夹”。",
                 )],
+            },
+        }
+    }
+
+    pub fn help_card_reveal(self) -> HelpDoc {
+        match self {
+            Lang::Japanese => HelpDoc {
+                title: "選択した項目を維持したままファイラーで開く",
+                sections: &[
+                    (
+                        "",
+                        "アプリで選択中のファイルを、OS標準のファイラーでも選択した状態にして、その親フォルダを開く。\n\
+                         このアプリは読み取り専用のため、ファイルの削除や整理はファイラー側で行う。",
+                    ),
+                    (
+                        "■ 複数選択中",
+                        "「複数選択した項目」か「ホバーした単体のファイル」かを選ぶダイアログが出る。\n\
+                         選択が複数のフォルダにまたがる場合は、フォルダごとにファイラーが開く（10フォルダまで）。",
+                    ),
+                    (
+                        "■ 選択状態にできないとき",
+                        "ファイラーが対応していない環境では、親フォルダだけを開いてトーストで知らせる。\n\
+                         Linuxの Nautilus は同一フォルダの複数選択を1つのウィンドウで再現できないため、\n\
+                         同じフォルダのファイルが2つ以上あるときは親フォルダだけを開く。\n\
+                         （Nautilus 以外のファイラーは全ファイルをそのまま渡す。挙動はファイラー次第）\n\
+                         選択が実際に反映されたかどうかは、アプリからは確認できない。",
+                    ),
+                    (
+                        "■ 除外・グレーアウト",
+                        "ネットワークパス上のファイルはリストから除外して実行する（黄字で表示）。\n\
+                         選択が10フォルダを超える場合はグレーアウトする（赤字で表示）。",
+                    ),
+                ],
+            },
+            Lang::English => HelpDoc {
+                title: "Open in File Manager with Selection Kept",
+                sections: &[
+                    (
+                        "",
+                        "Opens the parent folder in the OS file manager with the files you selected here also selected there.\n\
+                         This app is read-only, so deleting or organizing files is done in the file manager.",
+                    ),
+                    (
+                        "■ With a multi-selection",
+                        "A dialog asks whether to open the selected items or only the hovered file.\n\
+                         If the selection spans several folders, one file manager window opens per folder (up to 10).",
+                    ),
+                    (
+                        "■ When selection is not possible",
+                        "If the file manager does not support it, only the parent folder is opened and a toast tells you.\n\
+                         Nautilus on Linux cannot show several files of one folder selected in a single window,\n\
+                         so when a folder has two or more of the files, only the parent folder is opened.\n\
+                         (Other file managers receive all files as-is; behavior depends on the file manager.)\n\
+                         The app cannot verify whether the selection was actually applied.",
+                    ),
+                    (
+                        "■ Excluded / grayed out",
+                        "Files on network paths are removed from the list before opening (shown in yellow).\n\
+                         The item is grayed out when the selection spans more than 10 folders (shown in red).",
+                    ),
+                ],
+            },
+            Lang::Chinese => HelpDoc {
+                title: "保持选中项并在文件管理器中打开",
+                sections: &[
+                    (
+                        "",
+                        "在系统文件管理器中打开所在的父文件夹，并同时选中此处选中的文件。\n\
+                         本应用为只读，删除或整理文件请在文件管理器中进行。",
+                    ),
+                    (
+                        "■ 多选时",
+                        "会弹出对话框，选择打开“多选的项目”还是“悬停的单个文件”。\n\
+                         若选择跨越多个文件夹，则每个文件夹打开一个文件管理器（最多10个）。",
+                    ),
+                    (
+                        "■ 无法选中时",
+                        "文件管理器不支持时，仅打开父文件夹并以提示告知。\n\
+                         Linux 的 Nautilus 无法在一个窗口中同时选中同一文件夹的多个文件，\n\
+                         因此同一文件夹有两个以上文件时，仅打开父文件夹。\n\
+                         （其他文件管理器会收到全部文件，行为取决于文件管理器。）\n\
+                         应用无法确认选中是否真正生效。",
+                    ),
+                    (
+                        "■ 排除/置灰",
+                        "网络路径上的文件会从列表中排除后执行（黄字显示）。\n\
+                         选择超过10个文件夹时该项置灰（红字显示）。",
+                    ),
+                ],
             },
         }
     }

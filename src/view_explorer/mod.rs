@@ -1001,6 +1001,10 @@ pub struct NekoviewApp {
     /// アイテム一覧の右クリック「このフォルダを検索タブで開く」の要求。描画の途中でタブを
     /// 切り替えないよう、一覧の描画後に消化する（draw_archive_grid の末尾）。
     pub(crate) pending_open_in_search: Option<PathBuf>,
+    /// 「選択した項目を維持したままファイラーで開く」複数選択時のダイアログ状態
+    reveal_dialog: Option<reveal_ui::RevealDialogState>,
+    /// ファイラー呼び出し（別スレッド）の結果待ち
+    reveal_pending: Vec<std::sync::mpsc::Receiver<crate::fs::reveal::RevealReport>>,
     /// タグ付けレイアウト: メインタグ(排他)の固定順序リスト（tier_id, 要素名）。
     /// ドラムUIで並べ替えは行わず、中央に来たものが選択扱いになる。要素名は表示用で、
     /// 選択・紐付けの同一性判定は常にtier_id（リネームで変わらない不変ID）で行う。
@@ -1270,6 +1274,7 @@ mod dev_db_tools;
 mod identity_worker;
 mod identity_resolution_ui;
 mod backup_failure_ui;
+mod reveal_ui;
 
 #[cfg(test)]
 mod glyph_audit;
@@ -1468,6 +1473,8 @@ impl NekoviewApp {
             tag_panel_width: 280.0,
             tag_panel_edit_expanded: false,
             pending_open_in_search: None,
+            reveal_dialog: None,
+            reveal_pending: Vec::new(),
             tag_main_options,
             tag_main_selected,
             tag_main_edit_toggle: false,
