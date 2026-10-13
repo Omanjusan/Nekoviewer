@@ -30,6 +30,8 @@
   コピー後も評価・しおり・見開き・ソート・登録サムネ・タグ・お気に入り・サムネを引き継ぐ仕組み
 - [features/fingerprint-resolution-ui.md](features/fingerprint-resolution-ui.md) — 「DB内の重複の解決」画面のレイアウト・文面仕様
 - [features/file-identity-test-checklist.md](features/file-identity-test-checklist.md) — ファイルID管理の統合テスト手順書
+- [features/virtual-folder-register-subs.md](features/virtual-folder-register-subs.md) — 仮想フォルダの
+  「実サブフォルダを一括登録」（未登録分だけを子として追加。子孫まで見るかは選択）
 - [dev-db-backup.md](dev-db-backup.md) — 開発用DBバックアップ/リストア（デバッグタブ。実リリース時に削除）
 
 ## 4. 決定記録（過去の経緯・完了済み計画）
