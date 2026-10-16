@@ -17,6 +17,7 @@ mod gui_config;
 mod i18n;
 mod identity_pending;
 mod identity_relink;
+mod identity_sweep;
 mod identity_resolve;
 mod image_filter;
 mod image_info;

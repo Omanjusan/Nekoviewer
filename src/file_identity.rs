@@ -1065,7 +1065,10 @@ pub fn quick_hit(rec: &FileRecord, size: u64, mtime: i64) -> bool {
 }
 
 /// ファイルが見つからなかったIDを「未確認」にする（削除はしない）。成功したら true。
-pub fn mark_unconfirmed(db: &Arc<Mutex<Database>>, path_key: &str) -> bool {
+/// 確認済みから未確認に変わる時だけ `last_seen` を `now` にする（未確認の保持日数の起点。長く置いたまま
+/// だったファイルを消した直後に期限切れ扱いにならないように、「消えたと分かった時刻」を記録する）。
+/// 既に未確認なら `last_seen` は動かさない（呼び直しで期限が延びないように）。
+pub fn mark_unconfirmed(db: &Arc<Mutex<Database>>, path_key: &str, now: i64) -> bool {
     let Ok(db) = db.lock() else { return false };
     let Ok(tx) = db.begin_write() else { return false };
     {
@@ -1075,6 +1078,9 @@ pub fn mark_unconfirmed(db: &Arc<Mutex<Database>>, path_key: &str) -> bool {
         };
         let Some(id) = paths.get(path_key).ok().flatten().map(|g| g.value()) else { return false };
         let Some(mut rec) = get_rec(&ids, id).ok().flatten() else { return false };
+        if rec.status == FileStatus::Confirmed {
+            rec.last_seen = now;
+        }
         rec.status = FileStatus::Unconfirmed;
         if ids.insert(id, rec.encode().as_slice()).is_err() {
             return false;
@@ -1620,14 +1626,30 @@ mod tests {
     }
 
     #[test]
+    fn mark_unconfirmed_stamps_last_seen_once_when_the_file_first_goes_missing() {
+        let t = TempRoot::new("unconfirmed_stamp");
+        let db = new_db(&t);
+        let fake = Fake::default();
+        resolve(&db, "/d\0a.zip", &obs(100, 50, Some(1)), &fake);
+        let created = lookup(&db, "/d\0a.zip").unwrap().last_seen;
+        assert!(NOW + 1000 > created);
+        // 消えたと分かった時刻が起点になる（作成時刻のままだと、長く置いたファイルが即期限切れになる）。
+        assert!(mark_unconfirmed(&db, "/d\0a.zip", NOW + 1000));
+        assert_eq!(lookup(&db, "/d\0a.zip").unwrap().last_seen, NOW + 1000);
+        // 呼び直しても起点は動かない。
+        assert!(mark_unconfirmed(&db, "/d\0a.zip", NOW + 5000));
+        assert_eq!(lookup(&db, "/d\0a.zip").unwrap().last_seen, NOW + 1000);
+    }
+
+    #[test]
     fn unconfirmed_record_returns_to_confirmed_when_file_reappears() {
         let t = TempRoot::new("unconfirmed");
         let db = new_db(&t);
         let fake = Fake::default();
         let o = obs(100, 50, Some(1));
         resolve(&db, "/d\0a.zip", &o, &fake);
-        assert!(mark_unconfirmed(&db, "/d\0a.zip"));
-        assert!(!mark_unconfirmed(&db, "/d\0none.zip"));
+        assert!(mark_unconfirmed(&db, "/d\0a.zip", NOW));
+        assert!(!mark_unconfirmed(&db, "/d\0none.zip", NOW));
         let rec = lookup(&db, "/d\0a.zip").unwrap();
         assert_eq!(rec.status, FileStatus::Unconfirmed);
         assert!(!quick_hit(&rec, 100, 50));

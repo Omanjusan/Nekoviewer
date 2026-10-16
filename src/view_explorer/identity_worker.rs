@@ -341,7 +341,7 @@ pub(super) fn process_batch_with(
             ResolveOutcome::Resolved(_) | ResolveOutcome::Failed(_) => chunk.settled.push(path.clone()),
             // 一覧に出た後で消えた。削除はせず「未確認」にする。
             ResolveOutcome::Gone => {
-                file_identity::mark_unconfirmed(db, &key);
+                file_identity::mark_unconfirmed(db, &key, now);
                 chunk.settled.push(path.clone());
             }
             ResolveOutcome::Unstable => outcome.unstable.push(path.clone()),
