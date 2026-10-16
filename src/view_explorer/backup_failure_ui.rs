@@ -32,6 +32,12 @@ fn failure_reason(e: &DevBackupError) -> String {
 /// 起動時のDBの準備。保留したバックアップ失敗があれば一緒に返す。
 /// 復元予約の適用 → 自動バックアップ → DBを開く → テーブル作成 → （失敗が無ければ）マーカー移行、の順。
 pub(super) fn open_spread_db_with_backup(config_root: &Path) -> (Option<Arc<Mutex<Database>>>, Option<BackupFailure>) {
+    // 設定画面の「この世代に戻す」で予約された復元を、DBを開く前に適用する。
+    match crate::db_backup::apply_pending_restore(config_root) {
+        Ok(true) => crate::log_common!("[backup] 世代への復元予約を適用した"),
+        Ok(false) => {}
+        Err(e) => crate::log_common!("[backup] 世代への復元予約の適用に失敗（現DBのまま起動）: {:?}", e),
+    }
     // 開発用DBツールの復元予約は、DBを開く前に適用する（実リリース時に削除）。
     match dev_db_backup::apply_pending_restore(config_root) {
         Ok(true) => crate::log_common!("[dev_db] 復元予約を適用した"),

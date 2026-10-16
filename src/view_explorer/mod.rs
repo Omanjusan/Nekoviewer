@@ -825,6 +825,8 @@ pub struct NekoviewApp {
     relink_job: Option<mpsc::Receiver<crate::identity_relink::RelinkReport>>,
     /// 複数件の「お気に入り設定から外す」の確認待ちパス
     favorite_unset_confirm: Option<Vec<PathBuf>>,
+    /// 設定→データベース管理で、復元の確認待ちの世代ファイル名（`db_backup_ui.rs`）
+    db_restore_confirm: Option<String>,
     /// ビューアー右クリック「お気に入り詳細設定」ダイアログの状態
     favorite_detail_dialog: Option<FavoriteDetailDialogState>,
     /// エクスプローラー右クリック「ソート条件」一括変更ダイアログの状態（モック段階）
@@ -1282,6 +1284,7 @@ mod identity_resolution_ui;
 mod backup_failure_ui;
 mod reveal_ui;
 mod relink_ui;
+mod db_backup_ui;
 
 #[cfg(test)]
 mod glyph_audit;
@@ -1384,6 +1387,7 @@ impl NekoviewApp {
             relink_dialog: None,
             relink_job: None,
             favorite_unset_confirm: None,
+            db_restore_confirm: None,
             favorite_detail_dialog: None,
             sort_condition_dialog: None,
             bookmark_setting_dialog: None,

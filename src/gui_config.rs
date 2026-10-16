@@ -403,6 +403,8 @@ pub struct AppState {
     pub app_thumb_size: Option<u32>,
     /// 未確認IDの保持日数（1〜120）。重複の解決UIの「削除まで残り○日」の元。
     pub app_unconfirmed_retention_days: Option<u32>,
+    /// DBバックアップの世代数（1〜10）。
+    pub app_backup_generations: Option<u32>,
     /// フェーズ4b: decode_threads/default_slotもGUI編集可能にしこちらへ統合。
     pub app_decode_threads: Option<usize>,
     /// 虫眼鏡の拡大縮小の割り当てを知らせ済みか（1度だけ表示するための記録）。
@@ -456,6 +458,7 @@ impl Default for AppState {
             app_thumb_filter: None,
             app_thumb_size: None,
             app_unconfirmed_retention_days: None,
+            app_backup_generations: None,
             app_decode_threads: None,
             app_magnifier_zoom_notice_shown: None,
             app_max_decode_edge_prompt_answered: None,
@@ -547,6 +550,7 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
     let mut app_thumb_filter: Option<ResizeFilter> = None;
     let mut app_thumb_size: Option<u32> = None;
     let mut app_unconfirmed_retention_days: Option<u32> = None;
+    let mut app_backup_generations: Option<u32> = None;
     let mut app_decode_threads: Option<usize> = None;
     let mut app_magnifier_zoom_notice_shown: Option<bool> = None;
     let mut app_max_decode_edge_prompt_answered: Option<bool> = None;
@@ -707,6 +711,7 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
                 }
                 "app_thumb_size" => { app_thumb_size = v.trim().parse().ok(); }
                 "app_unconfirmed_retention_days" => { app_unconfirmed_retention_days = v.trim().parse().ok(); }
+                "app_backup_generations" => { app_backup_generations = v.trim().parse().ok(); }
                 "app_decode_threads" => { app_decode_threads = v.trim().parse().ok(); }
                 "app_magnifier_zoom_notice_shown" => { app_magnifier_zoom_notice_shown = v.trim().parse().ok(); }
                 "app_max_decode_edge_prompt_answered" => { app_max_decode_edge_prompt_answered = v.trim().parse().ok(); }
@@ -970,6 +975,7 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
         app_thumb_filter,
         app_thumb_size,
         app_unconfirmed_retention_days,
+        app_backup_generations,
         app_decode_threads,
         app_magnifier_zoom_notice_shown,
         app_max_decode_edge_prompt_answered,
@@ -1145,6 +1151,7 @@ pub fn save_state(root: &Path, dir: &Path, window_size: (u32, u32), viewer_slots
         "app_unconfirmed_retention_days={}\n",
         app_cfg.unconfirmed_retention_days,
     ));
+    content.push_str(&format!("app_backup_generations={}\n", app_cfg.backup_generations));
     // フェーズ4b: decode_threads/default_slotもここへ統合。
     let default_slot_str = match app_cfg.default_slot {
         Some(0) => "5", Some(1) => "6", Some(2) => "7", Some(3) => "8", _ => "",
@@ -1400,6 +1407,19 @@ mod tests {
         let config = ViewerConfig::default();
         assert!(!config.zoom_actual);
         assert!(config.redecode_on_resize);
+    }
+
+    #[test]
+    fn backup_generations_key_parses_and_is_optional() {
+        let parsed = parse_state_text("backup_gens", "app_backup_generations=5\n");
+        assert_eq!(parsed.app_backup_generations, Some(5));
+        let missing = parse_state_text("backup_gens_missing", "lang=ja\n");
+        assert_eq!(missing.app_backup_generations, None);
+        // 範囲外の値はそのまま読み、適用側（main.rs）で 1〜10 に収める。
+        let wild = parse_state_text("backup_gens_wild", "app_backup_generations=99\n");
+        assert_eq!(wild.app_backup_generations, Some(99));
+        assert_eq!(crate::config::BACKUP_GENERATIONS_DEFAULT, 3);
+        assert_eq!((crate::config::BACKUP_GENERATIONS_MIN, crate::config::BACKUP_GENERATIONS_MAX), (1, 10));
     }
 
     #[test]

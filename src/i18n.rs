@@ -3262,6 +3262,134 @@ impl Lang {
         }
     }
 
+    pub fn settings_backup_generations_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "■ バックアップを残す世代数",
+            Lang::English  => "■ Backup generations to keep",
+            Lang::Chinese  => "■ 备份保留的份数",
+        }
+    }
+
+    pub fn settings_backup_generations_value(self, n: u32) -> String {
+        match self {
+            Lang::Japanese => format!("{n} 世代"),
+            Lang::English  => format!("{n} generations"),
+            Lang::Chinese  => format!("{n} 份"),
+        }
+    }
+
+    pub fn settings_backup_generations_list_heading(self) -> &'static str {
+        match self {
+            Lang::Japanese => "バックアップの世代",
+            Lang::English  => "Backup generations",
+            Lang::Chinese  => "备份列表",
+        }
+    }
+
+    pub fn settings_backup_generations_none(self) -> &'static str {
+        match self {
+            Lang::Japanese => "バックアップはまだありません",
+            Lang::English  => "No backups yet",
+            Lang::Chinese  => "暂无备份",
+        }
+    }
+
+    pub fn settings_backup_generations_explain(self) -> &'static str {
+        match self {
+            Lang::Japanese => "「今すぐバックアップ」や、掃除でデータベースを書き換える直前に作られます。世代数を超えた古いものは自動で削除されます。移行前の自動バックアップは世代に数えず、削除しません。",
+            Lang::English  => "Created by \"Back up now\" and just before cleanups rewrite the database. Older ones beyond the limit are deleted automatically. The automatic pre-migration backup is not counted and is never deleted.",
+            Lang::Chinese  => "通过“立即备份”以及清理改写数据库之前创建。超出份数的旧备份会自动删除。迁移前的自动备份不计入份数，也不会被删除。",
+        }
+    }
+
+    pub fn settings_backup_now_button(self) -> &'static str {
+        match self {
+            Lang::Japanese => "今すぐバックアップ",
+            Lang::English  => "Back up now",
+            Lang::Chinese  => "立即备份",
+        }
+    }
+
+    pub fn settings_backup_done_toast(self) -> &'static str {
+        match self {
+            Lang::Japanese => "バックアップを作成しました",
+            Lang::English  => "Backup created",
+            Lang::Chinese  => "已创建备份",
+        }
+    }
+
+    pub fn settings_backup_failed_toast(self, reason: &str) -> String {
+        match self {
+            Lang::Japanese => format!("バックアップ操作に失敗しました: {reason}"),
+            Lang::English  => format!("Backup operation failed: {reason}"),
+            Lang::Chinese  => format!("备份操作失败：{reason}"),
+        }
+    }
+
+    pub fn settings_backup_restore_button(self) -> &'static str {
+        match self {
+            Lang::Japanese => "この世代に戻す",
+            Lang::English  => "Restore this",
+            Lang::Chinese  => "恢复到此备份",
+        }
+    }
+
+    pub fn settings_backup_restore_pending(self) -> &'static str {
+        match self {
+            Lang::Japanese => "復元が予約されています。アプリを再起動すると反映されます。",
+            Lang::English  => "A restore is scheduled. It takes effect when the app is restarted.",
+            Lang::Chinese  => "已预约恢复，重启应用后生效。",
+        }
+    }
+
+    pub fn settings_backup_restore_cancel(self) -> &'static str {
+        match self {
+            Lang::Japanese => "予約を取り消す",
+            Lang::English  => "Cancel the restore",
+            Lang::Chinese  => "取消预约",
+        }
+    }
+
+    pub fn settings_backup_restore_cancelled_toast(self) -> &'static str {
+        match self {
+            Lang::Japanese => "復元の予約を取り消しました",
+            Lang::English  => "Restore cancelled",
+            Lang::Chinese  => "已取消恢复预约",
+        }
+    }
+
+    pub fn settings_backup_restore_confirm_title(self) -> &'static str {
+        match self {
+            Lang::Japanese => "データベースを復元",
+            Lang::English  => "Restore database",
+            Lang::Chinese  => "恢复数据库",
+        }
+    }
+
+    pub fn settings_backup_restore_confirm_body(self, when: &str) -> String {
+        match self {
+            Lang::Japanese => format!("{when} のバックアップに戻します。アプリの再起動時に反映され、それ以降の評価・タグ・お気に入りなどの変更は失われます。復元前のデータベースは退避として保存されます。"),
+            Lang::English  => format!("The database will be restored to the backup from {when}. It takes effect when the app restarts, and changes made since then (ratings, tags, favorites, etc.) will be lost. The current database is kept as a pre-restore copy."),
+            Lang::Chinese  => format!("将恢复到 {when} 的备份。重启应用后生效，此后的评分、标签、收藏等更改将丢失。恢复前的数据库会作为备份保留。"),
+        }
+    }
+
+    pub fn settings_backup_restore_ok(self) -> &'static str {
+        match self {
+            Lang::Japanese => "復元を予約する",
+            Lang::English  => "Schedule restore",
+            Lang::Chinese  => "预约恢复",
+        }
+    }
+
+    pub fn settings_backup_restore_requested_toast(self) -> &'static str {
+        match self {
+            Lang::Japanese => "復元を予約しました。アプリを再起動すると反映されます",
+            Lang::English  => "Restore scheduled. It takes effect when the app is restarted",
+            Lang::Chinese  => "已预约恢复，重启应用后生效",
+        }
+    }
+
     pub fn settings_backup_folder_label(self) -> &'static str {
         self.idres_pick("データベースのバックアップ", "Database backup", "数据库备份")
     }

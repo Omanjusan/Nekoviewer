@@ -137,6 +137,7 @@ pub(crate) struct SettingsDraft {
     max_decode_edge: u32,
     thumb_size: u32,
     unconfirmed_retention_days: u32,
+    backup_generations: u32,
     viewer_filter: ResizeFilter,
     thumb_filter: ResizeFilter,
     lang: i18n::Lang,
@@ -289,6 +290,7 @@ impl SettingsDraft {
             max_decode_edge: config.max_decode_edge,
             thumb_size: config.thumb_size,
             unconfirmed_retention_days: config.unconfirmed_retention_days,
+            backup_generations: config.backup_generations,
             viewer_filter: config.viewer_filter,
             thumb_filter: config.thumb_filter,
             lang: i18n::t(),
@@ -354,6 +356,9 @@ impl SettingsDraft {
             crate::config::UNCONFIRMED_RETENTION_DAYS_MIN,
             crate::config::UNCONFIRMED_RETENTION_DAYS_MAX,
         );
+        config.backup_generations = self
+            .backup_generations
+            .clamp(crate::config::BACKUP_GENERATIONS_MIN, crate::config::BACKUP_GENERATIONS_MAX);
         config.viewer_filter = self.viewer_filter;
         config.thumb_filter = self.thumb_filter;
         i18n::set(self.lang);
@@ -1819,6 +1824,21 @@ impl NekoviewApp {
             ui.label(i18n::t().settings_unconfirmed_retention_value(self.settings_draft.unconfirmed_retention_days));
         });
         ui.label(i18n::t().settings_unconfirmed_retention_explain());
+
+        // DBバックアップの世代数と、手動作成・一覧・復元の予約。
+        ui.separator();
+        ui.label(i18n::t().settings_backup_generations_label());
+        ui.horizontal(|ui| {
+            ui.add(
+                egui::Slider::new(
+                    &mut self.settings_draft.backup_generations,
+                    crate::config::BACKUP_GENERATIONS_MIN..=crate::config::BACKUP_GENERATIONS_MAX,
+                )
+                .show_value(false),
+            );
+            ui.label(i18n::t().settings_backup_generations_value(self.settings_draft.backup_generations));
+        });
+        self.draw_db_backup_section(ui);
 
         // 移行前の自動バックアップ（`backup_auto/`）の場所を開く。まだ無ければ押せない。
         ui.separator();

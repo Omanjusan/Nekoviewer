@@ -115,6 +115,9 @@ fn main() {
             cfg.unconfirmed_retention_days =
                 v.clamp(config::UNCONFIRMED_RETENTION_DAYS_MIN, config::UNCONFIRMED_RETENTION_DAYS_MAX);
         }
+        if let Some(v) = state.app_backup_generations {
+            cfg.backup_generations = v.clamp(config::BACKUP_GENERATIONS_MIN, config::BACKUP_GENERATIONS_MAX);
+        }
 
         // フェーズ4b: decode_threads/default_slotも同様にstate側を優先する。
         if let Some(v) = state.app_decode_threads { cfg.decode_threads = v; }
