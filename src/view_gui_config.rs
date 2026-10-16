@@ -1518,7 +1518,10 @@ impl NekoviewApp {
 
             match self.settings_tab {
                 SettingsTab::Common => draw_settings_tab_common(ui, &mut self.settings_draft),
-                SettingsTab::Explorer => draw_settings_tab_explorer(ui, &mut self.settings_draft),
+                SettingsTab::Explorer => {
+                    draw_settings_tab_explorer(ui, &mut self.settings_draft);
+                    self.draw_settings_database_section(ui);
+                }
                 SettingsTab::Anim => draw_settings_tab_anim(ui, &mut self.settings_draft),
                 SettingsTab::Static => self.draw_settings_tab_static(ui),
                 SettingsTab::Viewer => draw_settings_tab_viewer(ui, &mut self.settings_draft),
@@ -1798,22 +1801,12 @@ impl NekoviewApp {
         });
     }
 
-    fn draw_settings_tab_other(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
-            ui.label(i18n::t().settings_version_label());
-            ui.label(env!("CARGO_PKG_VERSION"));
-        });
-
-        ui.separator();
-        ui.checkbox(&mut self.settings_draft.startup_use_last_dir, i18n::t().settings_startup_use_last_dir());
-        ui.label(i18n::t().settings_startup_use_last_dir_explain());
-
-        ui.label(i18n::t().settings_startup_fixed_dir_label());
-        ui.text_edit_singleline(&mut self.settings_draft.startup_fixed_dir);
-        ui.label(i18n::t().settings_startup_fixed_dir_explain());
-
+    /// エクスプローラータブ末尾の「データベース管理」。未確認IDの保持日数とバックアップ関連を集約する。
+    fn draw_settings_database_section(&mut self, ui: &mut egui::Ui) {
         // 重複の解決UIの「削除まで残り○日」の元になる、未確認IDの保持日数。
         ui.separator();
+        ui.label(i18n::t().settings_database_heading());
+        ui.add_space(4.0);
         ui.label(i18n::t().settings_unconfirmed_retention_label());
         ui.horizontal(|ui| {
             ui.add(
@@ -1844,6 +1837,21 @@ impl NekoviewApp {
             }
         });
         ui.label(i18n::t().settings_backup_folder_explain());
+    }
+
+    fn draw_settings_tab_other(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            ui.label(i18n::t().settings_version_label());
+            ui.label(env!("CARGO_PKG_VERSION"));
+        });
+
+        ui.separator();
+        ui.checkbox(&mut self.settings_draft.startup_use_last_dir, i18n::t().settings_startup_use_last_dir());
+        ui.label(i18n::t().settings_startup_use_last_dir_explain());
+
+        ui.label(i18n::t().settings_startup_fixed_dir_label());
+        ui.text_edit_singleline(&mut self.settings_draft.startup_fixed_dir);
+        ui.label(i18n::t().settings_startup_fixed_dir_explain());
     }
 }
 

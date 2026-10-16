@@ -3230,6 +3230,14 @@ impl Lang {
         }
     }
 
+    pub fn settings_database_heading(self) -> &'static str {
+        match self {
+            Lang::Japanese => "データベース管理",
+            Lang::English  => "Database management",
+            Lang::Chinese  => "数据库管理",
+        }
+    }
+
     pub fn settings_unconfirmed_retention_label(self) -> &'static str {
         match self {
             Lang::Japanese => "■ 見つからないファイルの記録を残す日数",
