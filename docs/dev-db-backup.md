@@ -29,12 +29,13 @@ UIは [view_explorer/dev_db_tools.rs](../src/view_explorer/dev_db_tools.rs)。
 DBファイルを開かずに丸ごとコピーする（開いたDBは Windows でロックされるため）。
 
 - DBファイルが無い（新規インストール）→ 取らない
-- `backup_auto/` に `.redb` が1つでもある → 取らない（世代管理・ローテーションはしない）
+- `backup_auto/` に移行前バックアップ（`nekoviewer_spread-*.redb`）が1つでもある → 取らない（世代管理・ローテーションはしない）。
+  世代バックアップ（`gen-*`）と復元前の退避（`before-restore-*`）は数えない
 - 失敗は `Err`。起動時に確認ダイアログを出す（下記）
-- FP仕様のDBでも（`backup_auto/` が空なら）取る。旧パス仕様のDBが保証されるわけではない。旧DBへ戻すのは
-  旧版へ戻す場合の手動復元（DBファイルの差し替え）のみで、復元UIは作らない
+- FP仕様のDBでも（移行前バックアップが無ければ）取る。旧パス仕様のDBが保証されるわけではない。旧DBへ戻すのは
+  旧版へ戻す場合の手動復元（DBファイルの差し替え）のみで、復元UIには載せない
 
-設定→その他に「バックアップフォルダを開く」がある（`backup_auto/` が無い間は押せない）。説明文に、旧版へ戻す時の
+設定→エクスプローラー→「データベース管理」に「バックアップフォルダを開く」がある（`backup_auto/` が無い間は押せない）。説明文に、旧版へ戻す時の
 手動復元（アプリを閉じて `nekoviewer_spread.redb` をコピーで置き換える）を書いてある。
 
 ### 失敗時の確認ダイアログ（`view_explorer/backup_failure_ui.rs`）
@@ -51,9 +52,17 @@ no-op、`lookup`・`dir_records_tx` が「IDなし」を返し、旧パス仕様
 
 「終了」は `exit_requested` を立て、`winit_app` がフレーム後に `on_exit()` → `event_loop.exit()` を呼ぶ。
 
+## 製品のバックアップ世代（`db_backup.rs`）
+
+同じ `backup_auto/` に、ユーザー操作・掃除前の世代バックアップ（`gen-*`）と、GUIからの復元予約（次回起動時に適用、現DBは
+`before-restore-*` へ退避）が入った。仕様は [features/file-identity.md](features/file-identity.md) 8章。
+`db_backup.rs` は、このモジュールの共通部品（`copy_db_atomic`・`copy_file_atomic`・`move_file`・`unique_dest`・
+`auto_backup_dir`・`db_path`・`MAX_BACKUP_BYTES`・`DevBackupError`）を使う。**`dev_db_backup.rs` を `cfg(debug_assertions)` へ
+戻すときは、これらを製品側に残すか `db_backup.rs` へ移すこと。**
+
 ## 実リリース時に削除するもの
 
 - 「リリースでも表示」チェックボックスと `dev_db_tools.visible` の扱い
 - `view_explorer/dev_db_tools.rs`・`NekoviewApp::dev_db_ui`・`view_gui_config.rs` の呼び出し2箇所・
   `view_explorer/mod.rs` の起動フック（`apply_pending_restore`）
-- `dev_db_backup.rs` は `cfg(debug_assertions)` へ戻す（自動バックアップ導線を製品へ紐付ける場合はその部分だけ残す）
+- `dev_db_backup.rs` は `cfg(debug_assertions)` へ戻す（自動バックアップ導線と、`db_backup.rs` が使う共通部品は残す。上記）
