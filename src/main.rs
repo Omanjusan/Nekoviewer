@@ -16,6 +16,7 @@ mod fs;
 mod gui_config;
 mod i18n;
 mod identity_pending;
+mod identity_online;
 mod identity_relink;
 mod identity_sweep;
 mod identity_resolve;

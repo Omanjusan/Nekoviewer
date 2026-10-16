@@ -8,12 +8,10 @@
 use egui::{Align, Color32, Layout, RichText};
 
 use super::NekoviewApp;
-use crate::file_identity::{path_of_key, probe_record, FileRecord, Presence};
+use crate::file_identity::{path_of_key, probe_record, FileRecord, FileStatus, Presence};
 use crate::i18n;
 use crate::identity_pending::{self as pending, PendingKind};
 use crate::identity_resolve::{self, Choice, ResolveError};
-
-const DAY: i64 = 86_400;
 
 /// ファイルの表示用の情報。
 pub(super) struct FileInfo {
@@ -29,8 +27,8 @@ pub(super) struct CandidateRow {
     rating_half: u8,
     tag_count: usize,
     favorite: bool,
-    /// 実体が見つからないファイルの、最後に確認された日時（現存は None）。
-    last_seen: Option<i64>,
+    /// 一覧で消えたと分かってから経過した、オンラインだった日数（実体がある・まだ未確認になっていない場合は None）。
+    gone_days: Option<i64>,
 }
 
 pub(super) struct ResolveItem {
@@ -38,8 +36,8 @@ pub(super) struct ResolveItem {
     kind: PendingKind,
     /// 対象（引き継ぎ元の選択・移動元の選択は新しいファイル、お気に入りの引き継ぎは実体の無いお気に入り）。
     subject: FileInfo,
-    /// 対象が実体の無いお気に入りのときの、最後に確認された日時。
-    subject_last_seen: Option<i64>,
+    /// 対象が実体の無いお気に入りのときの、消えたと分かってから経過したオンライン日数。
+    subject_gone_days: Option<i64>,
     detected_at: i64,
     candidates: Vec<CandidateRow>,
 }
@@ -116,23 +114,21 @@ fn format_rating(half: u8) -> String {
     }
 }
 
-/// 削除まで残り何日か。実体が見つからないまま保持日数を過ぎると、日数による削除の対象になる。
-/// `last_seen` が None（現存ファイル）は期限なし。
-fn days_left(last_seen: Option<i64>, retention_days: u32, now: i64) -> Option<i64> {
-    let since = last_seen?;
-    let elapsed_days = (now - since).max(0) / DAY;
-    Some(i64::from(retention_days) - elapsed_days)
+/// 削除まで残り何日か。未確認になってから、ボリュームがオンラインだった日が保持日数に達すると、
+/// 自動掃除の対象になる。`gone_days` が None（現存、またはまだ未確認になっていない）は期限なし。
+fn days_left(gone_days: Option<i64>, retention_days: u32) -> Option<i64> {
+    Some(i64::from(retention_days) - gone_days?.max(0))
 }
 
 /// 項目の「削除まで」。お気に入りの引き継ぎは、対象（実体の無いお気に入り）自身の期限。
 /// それ以外は、消えている候補のうち、最も早く削除されるものの残り日数（候補が全て現存なら期限なし）。
-fn item_days_left(item: &ResolveItem, retention_days: u32, now: i64) -> Option<i64> {
+fn item_days_left(item: &ResolveItem, retention_days: u32) -> Option<i64> {
     if item.kind == PendingKind::FavoriteHandover {
-        return days_left(item.subject_last_seen, retention_days, now);
+        return days_left(item.subject_gone_days, retention_days);
     }
     item.candidates
         .iter()
-        .filter_map(|c| days_left(c.last_seen, retention_days, now))
+        .filter_map(|c| days_left(c.gone_days, retention_days))
         .min()
 }
 
@@ -181,6 +177,12 @@ fn build_items(db: &std::sync::Arc<std::sync::Mutex<redb::Database>>) -> Vec<Res
         let tx = guard.begin_read().ok()?;
         crate::file_identity::record_by_id_tx(&tx, id)
     };
+    // 未確認になってからのオンライン日数は、一覧全体で1回だけ読む。
+    let online = crate::identity_online::OnlineDays::load(db);
+    let now = crate::file_identity::now_unix();
+    let gone_days = |rec: &FileRecord, present: bool| {
+        (rec.status == FileStatus::Unconfirmed && !present).then(|| online.since(&rec.volume, rec.last_seen, now))
+    };
     pending::list(db)
         .into_iter()
         .filter_map(|rec| {
@@ -199,14 +201,16 @@ fn build_items(db: &std::sync::Arc<std::sync::Mutex<redb::Database>>) -> Vec<Res
                         rating_half: summary.rating_half,
                         tag_count: summary.tag_count,
                         favorite: summary.favorite,
-                        last_seen: (state != Presence::Present).then_some(c.last_seen),
+                        gone_days: gone_days(&c, state == Presence::Present),
                     }
                 })
                 .collect();
             (!candidates.is_empty()).then(|| ResolveItem {
                 pending_id: rec.id,
                 kind: rec.kind,
-                subject_last_seen: (rec.kind == PendingKind::FavoriteHandover).then_some(subject.last_seen),
+                subject_gone_days: (rec.kind == PendingKind::FavoriteHandover)
+                    .then(|| gone_days(&subject, probe_record(&subject) == Presence::Present))
+                    .flatten(),
                 subject: file_info(&subject),
                 detected_at: rec.detected_at,
                 candidates,
@@ -303,7 +307,6 @@ impl NekoviewApp {
     fn draw_resolve_list_dialog(&mut self, ctx: &egui::Context) {
         let t = i18n::t();
         let retention = self.config.unconfirmed_retention_days;
-        let now = crate::file_identity::now_unix();
         let visible = self.visible_resolve_items();
         // 絞り込みで見えなくなった行の選択は外す。
         if let Some(sel) = self.identity_resolve_ui.selected {
@@ -382,7 +385,7 @@ impl NekoviewApp {
                             (widths[1], RichText::new(short_path(&item.subject.path))),
                             (widths[2], RichText::new(item.candidates.len().to_string())),
                             (widths[3], RichText::new(format_md(item.detected_at))),
-                            (widths[4], days_left_text(item_days_left(item, retention, now))),
+                            (widths[4], days_left_text(item_days_left(item, retention))),
                         ],
                     )
                     .on_hover_text(&item.subject.path);
@@ -427,7 +430,6 @@ impl NekoviewApp {
         let item_index = second.item;
         let chosen = second.chosen;
         let retention = self.config.unconfirmed_retention_days;
-        let now = crate::file_identity::now_unix();
         let Some(item) = self.identity_resolve_ui.items.get(item_index) else {
             self.identity_resolve_ui.second = None;
             return;
@@ -493,7 +495,7 @@ impl NekoviewApp {
                             (widths[5], RichText::new(format_rating(c.rating_half))),
                             (widths[6], RichText::new(c.tag_count.to_string())),
                             (widths[7], RichText::new(if c.favorite { t.idres_yes() } else { t.idres_no() })),
-                            (widths[8], days_left_text(days_left(c.last_seen, retention, now))),
+                            (widths[8], days_left_text(days_left(c.gone_days, retention))),
                         ],
                     )
                     .on_hover_text(&c.info.path);
@@ -606,15 +608,15 @@ impl NekoviewApp {
 mod tests {
     use super::*;
 
-    fn item(kind: PendingKind, subject_last_seen: Option<i64>, candidate_last_seen: &[Option<i64>]) -> ResolveItem {
+    fn item(kind: PendingKind, subject_gone_days: Option<i64>, candidate_gone_days: &[Option<i64>]) -> ResolveItem {
         let info = |p: &str| FileInfo { path: p.to_owned(), size: 1, mtime: 1 };
         ResolveItem {
             pending_id: 1,
             kind,
             subject: info("/d/new.zip"),
-            subject_last_seen,
+            subject_gone_days,
             detected_at: 0,
-            candidates: candidate_last_seen
+            candidates: candidate_gone_days
                 .iter()
                 .enumerate()
                 .map(|(i, seen)| CandidateRow {
@@ -624,7 +626,7 @@ mod tests {
                     rating_half: 0,
                     tag_count: 0,
                     favorite: false,
-                    last_seen: *seen,
+                    gone_days: *seen,
                 })
                 .collect(),
         }
@@ -632,34 +634,28 @@ mod tests {
 
     #[test]
     fn days_left_counts_down_from_retention() {
-        let now = 100 * DAY;
-        assert_eq!(days_left(None, 60, now), None, "現存ファイルは期限なし");
-        assert_eq!(days_left(Some(now), 60, now), Some(60));
-        assert_eq!(days_left(Some(now - 19 * DAY), 60, now), Some(41));
-        assert_eq!(days_left(Some(now - 60 * DAY), 60, now), Some(0));
-        assert_eq!(days_left(Some(now - 70 * DAY), 60, now), Some(-10));
-        // 未来の日時（時計ずれ）は経過0日として扱う。
-        assert_eq!(days_left(Some(now + 5 * DAY), 60, now), Some(60));
-        assert_eq!(days_left(Some(now), 120, now), Some(120));
-        assert_eq!(days_left(Some(now), 1, now), Some(1));
+        assert_eq!(days_left(None, 60), None, "現存・未確認でないものは期限なし");
+        assert_eq!(days_left(Some(0), 60), Some(60));
+        assert_eq!(days_left(Some(19), 60), Some(41));
+        assert_eq!(days_left(Some(60), 60), Some(0));
+        assert_eq!(days_left(Some(70), 60), Some(-10));
+        // 負の経過は0日として扱う。
+        assert_eq!(days_left(Some(-5), 60), Some(60));
+        assert_eq!(days_left(Some(0), 120), Some(120));
+        assert_eq!(days_left(Some(0), 1), Some(1));
     }
 
     #[test]
     fn item_days_left_uses_the_soonest_missing_candidate_or_own_deadline() {
-        let now = 100 * DAY;
         // 引き継ぎ元の選択: 候補は現存のみ＝期限なし。
         let copy = item(PendingKind::CopySource, None, &[None, None]);
-        assert_eq!(item_days_left(&copy, 60, now), None);
-        // 移動元の選択: 消えている候補のうち、最も早く期限が来るもの（最終確認が58日前）。
-        let moved = item(
-            PendingKind::MoveTarget,
-            None,
-            &[Some(now - 19 * DAY), Some(now - 50 * DAY), Some(now - 58 * DAY)],
-        );
-        assert_eq!(item_days_left(&moved, 60, now), Some(2));
+        assert_eq!(item_days_left(&copy, 60), None);
+        // 移動元の選択: 消えている候補のうち、最も早く期限が来るもの（オンライン58日経過）。
+        let moved = item(PendingKind::MoveTarget, None, &[Some(19), Some(50), Some(58)]);
+        assert_eq!(item_days_left(&moved, 60), Some(2));
         // お気に入りの引き継ぎ: 対象（実体の無いお気に入り）自身の期限。候補（現存）は関係しない。
-        let fav = item(PendingKind::FavoriteHandover, Some(now - 70 * DAY), &[None]);
-        assert_eq!(item_days_left(&fav, 60, now), Some(-10));
+        let fav = item(PendingKind::FavoriteHandover, Some(70), &[None]);
+        assert_eq!(item_days_left(&fav, 60), Some(-10));
     }
 
     #[test]

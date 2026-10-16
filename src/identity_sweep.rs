@@ -118,6 +118,48 @@ pub fn delete_expired(db: &Arc<Mutex<Database>>, list: &[Expired], is_expired: &
     delete_expired_with(db, list, is_expired, &probe_record)
 }
 
+/// 自動掃除1回の結果。
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct AutoSweepOutcome {
+    pub report: SweepReport,
+    /// ユーザーデータ付きのIDを消す前のバックアップに失敗したので、何も消さなかった。
+    pub backup_failed: bool,
+}
+
+/// 自動掃除。今日オンラインだったボリュームを記録し、「オンラインだった日数」が保持日数に達した
+/// 未確認IDを消す。ユーザーデータ付きのIDが含まれるときは、消す前に `backup` を呼び、失敗したら何も消さない。
+pub fn auto_sweep_with(
+    db: &Arc<Mutex<Database>>,
+    now: i64,
+    retention_days: u32,
+    online: &dyn Fn(&str) -> bool,
+    probe: &dyn Fn(&FileRecord) -> Presence,
+    backup: &dyn Fn() -> bool,
+) -> AutoSweepOutcome {
+    crate::identity_online::mark_online_volumes_with(db, now, online);
+    let online_days = crate::identity_online::OnlineDays::load(db);
+    let is_expired =
+        |rec: &FileRecord| online_days.since(&rec.volume, rec.last_seen, now) >= i64::from(retention_days);
+    let found = find_expired_with(db, &is_expired, probe, &|id| id_has_user_data(db, id));
+    if found.is_empty() {
+        return AutoSweepOutcome::default();
+    }
+    if found.iter().any(|e| e.has_user_data) && !backup() {
+        return AutoSweepOutcome { backup_failed: true, ..Default::default() };
+    }
+    AutoSweepOutcome { report: delete_expired_with(db, &found, &is_expired, probe), backup_failed: false }
+}
+
+/// `auto_sweep_with` の実ファイル・実ボリューム版。`backup` は世代バックアップを作る。
+pub fn auto_sweep(
+    db: &Arc<Mutex<Database>>,
+    now: i64,
+    retention_days: u32,
+    backup: &dyn Fn() -> bool,
+) -> AutoSweepOutcome {
+    auto_sweep_with(db, now, retention_days, &crate::file_identity::volume_online, &probe_record, backup)
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
@@ -271,6 +313,100 @@ mod tests {
         env.vanish("old.zip", vanished_at);
         let found = find_expired(&env.db, &|r: &FileRecord| vanished_at - r.last_seen >= 0 && r.last_seen < vanished_at - 60 * 24 * 3600);
         assert!(found.is_empty());
+    }
+
+    const D: i64 = 86_400;
+
+    /// 作成時の last_seen（実時刻）の後ろに、オンラインだった日を `online_days` 日ぶん積む。
+    fn auto(env: &Env, last_seen_day: i64, online_days: i64, retention: u32, backup_ok: bool) -> (AutoSweepOutcome, usize) {
+        let calls = std::cell::Cell::new(0usize);
+        let mut out = AutoSweepOutcome::default();
+        for i in 1..=online_days {
+            let now = (last_seen_day + i) * D + 100;
+            out = auto_sweep_with(&env.db, now, retention, &|_| true, &probe_record, &|| {
+                calls.set(calls.get() + 1);
+                backup_ok
+            });
+        }
+        (out, calls.get())
+    }
+
+    fn vanish_on_day(env: &Env, name: &str, day: i64) {
+        env.vanish(name, day * D + 50);
+    }
+
+    #[test]
+    fn auto_sweep_waits_for_enough_online_days_then_deletes_with_a_backup() {
+        let env = Env::new("auto");
+        env.file("data.zip", 1);
+        assert!(write_archive_rating(&env.db, &env.root, "data.zip", 6));
+        vanish_on_day(&env, "data.zip", 20_000);
+        // 5日目までは残る（保持日数5日 = 5日分のオンラインを重ねるまで）。
+        let (out, backups) = auto(&env, 20_000, 4, 5, true);
+        assert_eq!(out, AutoSweepOutcome::default());
+        assert_eq!(backups, 0);
+        assert!(env.exists("data.zip"));
+        // 5日目で消える。データ付きなので、消す前にバックアップが1回取られる。
+        let out = auto_sweep_with(&env.db, 20_005 * D + 100, 5, &|_| true, &probe_record, &|| true);
+        assert_eq!(out.report, SweepReport { deleted: 1, deleted_with_data: 1, skipped: 0, failed: 0 });
+        assert!(!env.exists("data.zip"));
+    }
+
+    #[test]
+    fn offline_days_do_not_count_toward_the_deadline() {
+        let env = Env::new("auto_offline");
+        env.file("a.zip", 1);
+        vanish_on_day(&env, "a.zip", 20_000);
+        // 10日経ったが、そのうちオンラインだったのは2日だけ。
+        for day in [20_001, 20_005] {
+            auto_sweep_with(&env.db, day * D + 100, 3, &|_| true, &probe_record, &|| true);
+        }
+        for day in 20_002..=20_010 {
+            if day == 20_005 {
+                continue;
+            }
+            auto_sweep_with(&env.db, day * D + 100, 3, &|_| false, &probe_record, &|| true);
+        }
+        assert!(env.exists("a.zip"), "オフラインの日が多いので消えない");
+        // オンラインの日が3日に達すると消える。
+        let out = auto_sweep_with(&env.db, 20_011 * D + 100, 3, &|_| true, &probe_record, &|| true);
+        assert_eq!(out.report.deleted, 1);
+    }
+
+    #[test]
+    fn blank_ids_are_deleted_without_a_backup() {
+        let env = Env::new("auto_blank");
+        env.file("blank.zip", 1);
+        vanish_on_day(&env, "blank.zip", 20_000);
+        let (out, backups) = auto(&env, 20_000, 2, 2, false);
+        assert_eq!(out.report.deleted, 1, "データが無ければバックアップ不要");
+        assert_eq!(out.report.deleted_with_data, 0);
+        assert_eq!(backups, 0);
+    }
+
+    #[test]
+    fn failed_backup_stops_the_sweep_and_deletes_nothing() {
+        let env = Env::new("auto_backup_fail");
+        env.file("data.zip", 1);
+        assert!(write_archive_rating(&env.db, &env.root, "data.zip", 6));
+        env.file("blank.zip", 2);
+        vanish_on_day(&env, "data.zip", 20_000);
+        vanish_on_day(&env, "blank.zip", 20_000);
+        let (out, backups) = auto(&env, 20_000, 2, 2, false);
+        assert!(out.backup_failed);
+        assert_eq!(out.report, SweepReport::default());
+        assert!(backups >= 1);
+        assert!(env.exists("data.zip") && env.exists("blank.zip"), "バックアップできない間は空のIDも消さない");
+    }
+
+    #[test]
+    fn confirmed_ids_are_never_swept_however_long_they_stay_unvisited() {
+        let env = Env::new("auto_confirmed");
+        env.file("keep.zip", 1);
+        std::fs::remove_file(env.root.join("keep.zip")).unwrap(); // 一覧で確認されていない（確認済みのまま）
+        let (out, _) = auto(&env, 0, 30, 1, true);
+        assert_eq!(out.report, SweepReport::default());
+        assert!(env.exists("keep.zip"));
     }
 
     #[test]

@@ -33,6 +33,9 @@ const MAX_RETRY_ROUNDS: usize = 3;
 const BACKFILL_DELAY: Duration = Duration::from_secs(5);
 /// バックフィルは、ジョブが無い間だけ、この間隔で1件ずつ進める。
 const BACKFILL_STEP: Duration = Duration::from_millis(5);
+/// 起動から最初の自動掃除までの待ちと、以後の間隔（ボリュームが後からつながった日も拾うため、定期的に見る）。
+pub(super) const SWEEP_FIRST_DELAY: Duration = Duration::from_secs(30);
+const SWEEP_INTERVAL: Duration = Duration::from_secs(30 * 60);
 
 pub(super) enum IdentityEvent {
     /// 処理した一部の結果。`settled` は検証が済んだパス（「検証中」表示を外す）、`refresh` は
@@ -41,6 +44,9 @@ pub(super) enum IdentityEvent {
     /// この世代のバッチを処理し終えた（打ち切りを除く）。`pending_created` は今回新しく記録した未解決の件数
     /// （通知トーストの対象）、`pending_count` は掃除後の未解決の総数。
     Done { generation: u64, pending_created: usize, pending_count: usize },
+    /// 期限切れの未確認IDの自動掃除が、何かを消した、またはバックアップに失敗して見送った。
+    /// `pending_count` は掃除後の未解決の総数。
+    Swept { deleted: usize, deleted_with_data: usize, backup_failed: bool, pending_count: usize },
 }
 
 enum Job {
@@ -53,6 +59,8 @@ enum Job {
     },
     /// ユーザーデータを持つ旧レコードを、アイドル時にFP化する。
     Backfill { db: Arc<Mutex<Database>> },
+    /// 期限切れの未確認IDの自動掃除（オンライン日数の記録を含む）。`keep` はバックアップの世代数。
+    Sweep { db: Arc<Mutex<Database>>, config_root: PathBuf, retention_days: u32, keep: usize },
 }
 
 pub(super) struct IdentityWorker {
@@ -96,6 +104,13 @@ impl IdentityWorker {
         }
     }
 
+    /// 自動掃除を依頼する。フォルダ表示のバッチが来れば、そちらが先に処理される（ジョブは順番に処理）。
+    pub(super) fn submit_sweep(&mut self, db: Arc<Mutex<Database>>, config_root: PathBuf, retention_days: u32, keep: usize) {
+        if let Some(tx) = &self.job_tx {
+            let _ = tx.send(Job::Sweep { db, config_root, retention_days, keep });
+        }
+    }
+
     pub(super) fn is_current(&self, generation: u64) -> bool {
         self.current.load(Ordering::Acquire) == generation
     }
@@ -134,6 +149,9 @@ fn run_worker(
                 run_resolve_job(generation, &db, paths, cache_root.as_deref(), &current, &event_tx, &ctx);
             }
             Some(Job::Backfill { db }) => backfill = Some(Backfill::new(db, BACKFILL_DELAY)),
+            Some(Job::Sweep { db, config_root, retention_days, keep }) => {
+                run_sweep_job(&db, &config_root, retention_days, keep, &event_tx, &ctx);
+            }
             None => {
                 if backfill.as_mut().is_some_and(|b| !b.step()) {
                     backfill = None;
@@ -141,6 +159,39 @@ fn run_worker(
             }
         }
     }
+}
+
+/// 自動掃除1回。何も起きなければ静かに終わる。ユーザーデータ付きのIDを消す前に、世代バックアップを取る。
+fn run_sweep_job(
+    db: &Arc<Mutex<Database>>,
+    config_root: &Path,
+    retention_days: u32,
+    keep: usize,
+    event_tx: &mpsc::Sender<IdentityEvent>,
+    ctx: &egui::Context,
+) {
+    let backup = || match crate::db_backup::create_generation(db, config_root, keep) {
+        Ok(g) => {
+            crate::log_common!("[sweep] 掃除前のバックアップを作成: {}", g.name);
+            true
+        }
+        Err(e) => {
+            crate::log_common!("[sweep] 掃除前のバックアップに失敗（掃除を見送る）: {:?}", e);
+            false
+        }
+    };
+    let out = crate::identity_sweep::auto_sweep(db, file_identity::now_unix(), retention_days, &backup);
+    if out.report.deleted == 0 && !out.backup_failed {
+        return;
+    }
+    crate::log_common!("[sweep] 期限切れの未確認IDを整理: {:?} backup_failed={}", out.report, out.backup_failed);
+    let _ = event_tx.send(IdentityEvent::Swept {
+        deleted: out.report.deleted,
+        deleted_with_data: out.report.deleted_with_data,
+        backup_failed: out.backup_failed,
+        pending_count: crate::identity_pending::count(db),
+    });
+    ctx.request_repaint();
 }
 
 fn run_resolve_job(
@@ -496,6 +547,18 @@ impl NekoviewApp {
                 self.identity_backfill_started = true;
             }
         }
+        // 期限切れの未確認IDの自動掃除。起動の少し後から、一定間隔で依頼する（ワーカーが順番に処理する）。
+        if crate::file_identity::is_enabled() && std::time::Instant::now() >= self.identity_sweep_due {
+            if let Some(db) = self.spread_db.clone() {
+                self.identity_worker.submit_sweep(
+                    db,
+                    self.config.config_root.clone(),
+                    self.config.unconfirmed_retention_days,
+                    self.config.backup_generations as usize,
+                );
+                self.identity_sweep_due = std::time::Instant::now() + SWEEP_INTERVAL;
+            }
+        }
         let events: Vec<IdentityEvent> = std::iter::from_fn(|| self.identity_worker.event_rx.try_recv().ok()).collect();
         for event in events {
             match event {
@@ -523,6 +586,16 @@ impl NekoviewApp {
                     // 付き替わるので、現在のフォルダぶんを読み直す。
                     if reload_maps && self.viewing_favorites.is_none() {
                         self.reload_dir_state_maps();
+                    }
+                    self.egui_ctx.request_repaint();
+                }
+                IdentityEvent::Swept { deleted, deleted_with_data, backup_failed, pending_count } => {
+                    self.identity_pending_count = pending_count;
+                    let t = crate::i18n::t();
+                    if backup_failed {
+                        self.set_toast(t.identity_sweep_backup_failed_toast());
+                    } else if deleted > 0 {
+                        self.set_toast(t.identity_sweep_done_toast(deleted, deleted_with_data));
                     }
                     self.egui_ctx.request_repaint();
                 }
@@ -736,6 +809,7 @@ mod tests {
                     assert_eq!(g, generation);
                     break;
                 }
+                IdentityEvent::Swept { .. } => {}
             }
         }
         assert_eq!(settled, vec![p.clone()]);

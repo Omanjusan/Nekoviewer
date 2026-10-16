@@ -986,6 +986,8 @@ pub struct NekoviewApp {
     identity_pending_count: usize,
     /// 旧レコードのバックフィル依頼を出したか（起動後1回）。
     identity_backfill_started: bool,
+    /// 次に期限切れの未確認IDの自動掃除を依頼する時刻
+    identity_sweep_due: std::time::Instant,
     /// 起動時の自動バックアップ失敗の確認待ち（選ぶまでID層は止まっている）。
     backup_failure: Option<backup_failure_ui::BackupFailure>,
     /// アプリ終了の要求（確認ダイアログの「終了」）。`winit_app` が拾う。
@@ -1478,6 +1480,7 @@ impl NekoviewApp {
             identity_toast_msg: None,
             identity_pending_count: 0,
             identity_backfill_started: false,
+            identity_sweep_due: std::time::Instant::now() + identity_worker::SWEEP_FIRST_DELAY,
             dev_db_ui: dev_db_tools::DevDbUiState::load(&config_root),
             translate_cfg,
             tab_positions,

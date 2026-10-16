@@ -3390,6 +3390,22 @@ impl Lang {
         }
     }
 
+    pub fn identity_sweep_done_toast(self, deleted: usize, with_data: usize) -> String {
+        match self {
+            Lang::Japanese => format!("見つからないまま期限が来たファイルの記録を {deleted} 件整理しました（うち評価・タグ等が付いていたもの {with_data} 件）"),
+            Lang::English  => format!("Cleaned up {deleted} expired records of missing files ({with_data} of them had ratings, tags, etc.)"),
+            Lang::Chinese  => format!("已清理 {deleted} 条已到期的缺失文件记录（其中 {with_data} 条带有评分、标签等）"),
+        }
+    }
+
+    pub fn identity_sweep_backup_failed_toast(self) -> &'static str {
+        match self {
+            Lang::Japanese => "データベースのバックアップに失敗したため、古い記録の整理を見送りました",
+            Lang::English  => "Skipped cleaning up old records because the database backup failed",
+            Lang::Chinese  => "由于数据库备份失败，已跳过旧记录的清理",
+        }
+    }
+
     pub fn settings_backup_folder_label(self) -> &'static str {
         self.idres_pick("データベースのバックアップ", "Database backup", "数据库备份")
     }
