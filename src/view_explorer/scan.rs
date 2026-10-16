@@ -488,6 +488,16 @@ impl NekoviewApp {
                     &self.archive_filenames(),
                     &existing_filenames,
                 );
+                // 消えたファイルのサムネ行は、そのパスを持つファイルIDが残っていない時だけ消す
+                // （IDが残る間は、移動・リネームの追従でサムネを引っ越せる）。ID層が止まっている間は何もしない。
+                if crate::file_identity::is_enabled() {
+                    if let Some(spread) = self.spread_db.clone() {
+                        let dir = self.current_dir.clone();
+                        neko_dir::purge_orphan_thumbnail_rows(db, &existing_filenames, &|name| {
+                            crate::file_identity::lookup(&spread, &crate::spread_state::make_key(&dir, name)).is_some()
+                        });
+                    }
+                }
             }
             self.rebuild_thumbnail_queue();
             self.scan_state = ScanState::Done;

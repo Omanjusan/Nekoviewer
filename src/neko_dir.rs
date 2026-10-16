@@ -526,6 +526,50 @@ mod tests {
         let _ = std::fs::remove_dir_all(&neko_dir);
     }
 
+    #[test]
+    fn purge_removes_rows_of_vanished_files_that_have_no_id_and_keeps_the_rest() {
+        let neko_dir = unique_test_neko_dir("thumb_purge");
+        let db = open_cache_db(&neko_dir, Path::new("/tmp/fake_thumb_purge")).unwrap();
+        for name in ["present.zip", "gone.zip", "tracked.zip"] {
+            test_seed_current(&db, name, 100, b"jpeg", "src");
+        }
+        let has_id = |n: &str| n == "tracked.zip";
+        let removed = purge_orphan_thumbnail_rows(&db, &["present.zip".to_string()], &has_id);
+        assert_eq!(removed, 1);
+        // 消えたファイルでIDも無いものは、全ての行が消える。
+        assert!(read_thumbnail_state(&db, "gone.zip").is_none());
+        assert!(read_thumb_unchecked(&db, "gone.zip").is_none());
+        assert!(take_thumbnail_rows(&db, "gone.zip").is_none());
+        // 実在するもの、IDが残っているもの（移動追従の余地あり）は残る。
+        assert!(read_thumbnail_state(&db, "present.zip").is_some());
+        assert!(read_thumbnail_state(&db, "tracked.zip").is_some());
+        assert!(take_thumbnail_rows(&db, "tracked.zip").is_some());
+        let _ = std::fs::remove_dir_all(&neko_dir);
+    }
+
+    #[test]
+    fn purge_does_nothing_when_the_scan_found_no_files() {
+        let neko_dir = unique_test_neko_dir("thumb_purge_empty");
+        let db = open_cache_db(&neko_dir, Path::new("/tmp/fake_thumb_purge_empty")).unwrap();
+        test_seed_current(&db, "a.zip", 100, b"jpeg", "src");
+        // 一覧が空（ドライブの瞬断などの疑い）なら、IDが無くても消さない。
+        assert_eq!(purge_orphan_thumbnail_rows(&db, &[], &|_| false), 0);
+        assert!(read_thumbnail_state(&db, "a.zip").is_some());
+        let _ = std::fs::remove_dir_all(&neko_dir);
+    }
+
+    #[test]
+    fn purge_is_idempotent_and_reports_zero_when_nothing_is_stale() {
+        let neko_dir = unique_test_neko_dir("thumb_purge_idem");
+        let db = open_cache_db(&neko_dir, Path::new("/tmp/fake_thumb_purge_idem")).unwrap();
+        test_seed_current(&db, "keep.zip", 100, b"jpeg", "src");
+        test_seed_current(&db, "gone.zip", 100, b"jpeg", "src");
+        let existing = ["keep.zip".to_string()];
+        assert_eq!(purge_orphan_thumbnail_rows(&db, &existing, &|_| false), 1);
+        assert_eq!(purge_orphan_thumbnail_rows(&db, &existing, &|_| false), 0);
+        let _ = std::fs::remove_dir_all(&neko_dir);
+    }
+
     fn seed_state(db: &Arc<Mutex<Database>>, name: &str, status: ThumbnailStatus) {
         let g = db.lock().unwrap();
         let tx = g.begin_write().unwrap();
@@ -785,6 +829,51 @@ pub fn sync_thumbnail_records(
         if let Ok(mut table) = tx.open_table(INVALID_TABLE) { let _ = table.remove(key.as_str()); }
     }
     tx.commit().is_ok()
+}
+
+/// フォルダから消えたファイルのサムネ行（サムネ本体・ソース・エッジ・フィルタ・状態）を消す。
+/// `existing_filenames` は正常完了した走査での実在ファイル、`has_id` は「その名前（このフォルダ）のパスを
+/// 持つファイルIDが残っているか」。IDが残っているものは、移動・リネームの追従（`transplant`）で新しい
+/// 名前へ引っ越す余地があるので消さない（IDが掃除された後、次にフォルダを開いた時に片付く）。
+/// 実在ファイルが0件の走査（ドライブの瞬断などの疑い）では何も消さない。消した名前の数を返す。
+pub fn purge_orphan_thumbnail_rows(
+    db: &Arc<Mutex<Database>>,
+    existing_filenames: &[String],
+    has_id: &dyn Fn(&str) -> bool,
+) -> usize {
+    if existing_filenames.is_empty() {
+        return 0;
+    }
+    let existing: std::collections::HashSet<&str> = existing_filenames.iter().map(String::as_str).collect();
+    let stale: Vec<String> = {
+        let Ok(db) = db.lock() else { return 0 };
+        let Ok(tx) = db.begin_read() else { return 0 };
+        let mut keys: std::collections::HashSet<String> = std::collections::HashSet::new();
+        if let Ok(t) = tx.open_table(THUMBS_TABLE) {
+            keys.extend(t.iter().ok().into_iter().flatten().flatten().map(|i| i.0.value().to_owned()));
+        }
+        if let Ok(t) = tx.open_table(THUMB_STATES_TABLE) {
+            keys.extend(t.iter().ok().into_iter().flatten().flatten().map(|i| i.0.value().to_owned()));
+        }
+        keys.into_iter().filter(|k| !existing.contains(k.as_str())).collect()
+    };
+    // IDの確認は、DBのロックの外で行う（IDのDBは別ファイル）。
+    let doomed: Vec<&String> = stale.iter().filter(|k| !has_id(k)).collect();
+    if doomed.is_empty() {
+        return 0;
+    }
+    let Ok(db) = db.lock() else { return 0 };
+    let Ok(tx) = db.begin_write() else { return 0 };
+    for key in &doomed {
+        let k = key.as_str();
+        if let Ok(mut t) = tx.open_table(THUMBS_TABLE) { let _ = t.remove(k); }
+        if let Ok(mut t) = tx.open_table(THUMB_SOURCES_TABLE) { let _ = t.remove(k); }
+        if let Ok(mut t) = tx.open_table(THUMB_DESIRED_SOURCES_TABLE) { let _ = t.remove(k); }
+        if let Ok(mut t) = tx.open_table(THUMB_EDGES_TABLE) { let _ = t.remove(k); }
+        if let Ok(mut t) = tx.open_table(THUMB_FILTERS_TABLE) { let _ = t.remove(k); }
+        if let Ok(mut t) = tx.open_table(THUMB_STATES_TABLE) { let _ = t.remove(k); }
+    }
+    if tx.commit().is_ok() { doomed.len() } else { 0 }
 }
 
 /// 1ファイルぶんのサムネ関連の行。ファイルの移動・リネームで、別の名前・別フォルダのDBへ引っ越す用。
