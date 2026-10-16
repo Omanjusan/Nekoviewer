@@ -255,6 +255,7 @@ impl NekoviewApp {
         self.draw_tree_sort_dialog(&ctx);
         self.draw_favorite_delete_confirm_dialog(&ctx);
         self.draw_favorite_detail_dialog(&ctx);
+        self.draw_relink_dialogs(&ctx);
         self.draw_reveal_dialog(&ctx);
         self.draw_sort_condition_dialog(&ctx);
         self.draw_bookmark_setting_dialog(&ctx);
@@ -3204,6 +3205,27 @@ impl NekoviewApp {
                                     if let Some(dir) = parent {
                                         crate::translate::open_in_file_manager(dir);
                                     }
+                                    ui.close();
+                                }
+                            }
+
+                            // お気に入りタブ: 開けなくなったお気に入りの再紐付け・整理（relink_ui.rs）
+                            if self.folder_pane_tab == FolderPaneTab::Favorites {
+                                ui.separator();
+                                let ghosts = self.relink_ghost_ids(&raw_targets);
+                                let r_item = ui.add_enabled(
+                                    !ghosts.is_empty(),
+                                    egui::Button::new(i18n::t().relink_menu()),
+                                );
+                                help_tip_auto(&r_item, &i18n::t().help_relink());
+                                if r_item.clicked() {
+                                    self.open_relink_picker(ghosts);
+                                    ui.close();
+                                }
+                                let r_item = ui.button(i18n::t().favorite_unset_menu());
+                                help_tip_auto(&r_item, &i18n::t().help_favorite_unset());
+                                if r_item.clicked() {
+                                    self.request_unset_favorites(raw_targets.clone());
                                     ui.close();
                                 }
                             }

@@ -54,18 +54,18 @@ enum Picker {
 
 /// ピッカー内の実フォルダツリー。メインの実ツリーとは独立した状態（ドライブ・展開・子フォルダ）を持つ。
 /// 子フォルダは展開時に非同期で読む（`spawn_scan_subdirs`）。
-struct RealTreeState {
-    drive: usize,
-    root: PathBuf,
-    expanded: HashSet<PathBuf>,
-    children: HashMap<PathBuf, Vec<PathBuf>>,
+pub(super) struct RealTreeState {
+    pub(super) drive: usize,
+    pub(super) root: PathBuf,
+    pub(super) expanded: HashSet<PathBuf>,
+    pub(super) children: HashMap<PathBuf, Vec<PathBuf>>,
     loading: Vec<(PathBuf, mpsc::Receiver<Vec<PathBuf>>)>,
-    selected: Option<PathBuf>,
+    pub(super) selected: Option<PathBuf>,
 }
 
 impl RealTreeState {
     /// 初期ドライブは現在の実ツリーのルートに一致するドライブ（無ければ先頭）。ルート直下だけを展開する。
-    fn new(drives: &[MountEntry], tree_root: &Path, ctx: &egui::Context) -> Self {
+    pub(super) fn new(drives: &[MountEntry], tree_root: &Path, ctx: &egui::Context) -> Self {
         let drive = drives.iter().position(|d| d.path == tree_root).unwrap_or(0);
         let mut t = Self::empty(drive, Self::drive_root(drives, drive, tree_root));
         t.request_children(t.root.clone(), ctx);
@@ -88,7 +88,7 @@ impl RealTreeState {
     }
 
     /// ドライブを切り替える。展開・子フォルダ・選択は捨てて、新しいルート直下を読み直す。
-    fn set_drive(&mut self, drives: &[MountEntry], drive: usize, ctx: &egui::Context) {
+    pub(super) fn set_drive(&mut self, drives: &[MountEntry], drive: usize, ctx: &egui::Context) {
         let root = Self::drive_root(drives, drive, &self.root);
         *self = Self::empty(drive, root);
         self.request_children(self.root.clone(), ctx);
@@ -105,7 +105,7 @@ impl RealTreeState {
     }
 
     /// 読み込み完了した子フォルダ一覧を取り込む。
-    fn poll(&mut self) {
+    pub(super) fn poll(&mut self) {
         let mut i = 0;
         while i < self.loading.len() {
             match self.loading[i].1.try_recv() {
@@ -123,7 +123,7 @@ impl RealTreeState {
         }
     }
 
-    fn toggle_expand(&mut self, path: PathBuf, ctx: &egui::Context) {
+    pub(super) fn toggle_expand(&mut self, path: PathBuf, ctx: &egui::Context) {
         if !self.expanded.remove(&path) {
             self.request_children(path.clone(), ctx);
             self.expanded.insert(path);

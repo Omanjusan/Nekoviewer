@@ -819,6 +819,12 @@ pub struct NekoviewApp {
     favorite_dialog: Option<FavoriteDialogState>,
     /// 削除確認待ちのお気に入りフォルダID
     favorite_delete_confirm: Option<u8>,
+    /// お気に入りタブ右クリック「移動先を指定して元ファイルを検索」のダイアログ状態（`relink_ui.rs`）
+    relink_dialog: Option<relink_ui::RelinkDialog>,
+    /// 再紐付けのバックグラウンド実行（結果の受け取り口）。実行中は Some
+    relink_job: Option<mpsc::Receiver<crate::identity_relink::RelinkReport>>,
+    /// 複数件の「お気に入り設定から外す」の確認待ちパス
+    favorite_unset_confirm: Option<Vec<PathBuf>>,
     /// ビューアー右クリック「お気に入り詳細設定」ダイアログの状態
     favorite_detail_dialog: Option<FavoriteDetailDialogState>,
     /// エクスプローラー右クリック「ソート条件」一括変更ダイアログの状態（モック段階）
@@ -1275,6 +1281,7 @@ mod identity_worker;
 mod identity_resolution_ui;
 mod backup_failure_ui;
 mod reveal_ui;
+mod relink_ui;
 
 #[cfg(test)]
 mod glyph_audit;
@@ -1374,6 +1381,9 @@ impl NekoviewApp {
             favorite_selected: FavoriteSelection::None,
             favorite_dialog: None,
             favorite_delete_confirm: None,
+            relink_dialog: None,
+            relink_job: None,
+            favorite_unset_confirm: None,
             favorite_detail_dialog: None,
             sort_condition_dialog: None,
             bookmark_setting_dialog: None,

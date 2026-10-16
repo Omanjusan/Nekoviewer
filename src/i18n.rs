@@ -2333,6 +2333,259 @@ impl Lang {
         }
     }
 
+    // ---- お気に入りタブ: 再紐付け・外す（relink_ui.rs） ----
+
+    pub fn relink_menu(self) -> &'static str {
+        match self {
+            Lang::Japanese => "移動先を指定して元ファイルを検索",
+            Lang::English  => "Specify Destination to Find Original",
+            Lang::Chinese  => "指定目标位置以查找原文件",
+        }
+    }
+
+    pub fn favorite_unset_menu(self) -> &'static str {
+        match self {
+            Lang::Japanese => "お気に入り設定から外す",
+            Lang::English  => "Remove from Favorites",
+            Lang::Chinese  => "从收藏中移除",
+        }
+    }
+
+    pub fn relink_picker_title(self) -> &'static str {
+        match self {
+            Lang::Japanese => "移動先のフォルダを選択",
+            Lang::English  => "Select Destination Folder",
+            Lang::Chinese  => "选择目标文件夹",
+        }
+    }
+
+    pub fn relink_picker_hint(self) -> &'static str {
+        match self {
+            Lang::Japanese => "元ファイルの移動先と思われるフォルダをダブルクリックで決定する。",
+            Lang::English  => "Double-click the folder where the original file was probably moved to.",
+            Lang::Chinese  => "双击原文件可能被移动到的文件夹以确定。",
+        }
+    }
+
+    pub fn relink_confirm_title(self) -> &'static str {
+        match self {
+            Lang::Japanese => "移動先を指定して検索",
+            Lang::English  => "Search in Destination",
+            Lang::Chinese  => "在目标位置中查找",
+        }
+    }
+
+    pub fn relink_confirm_body(self, count: usize, folder: &str) -> String {
+        match self {
+            Lang::Japanese => format!(
+                "お気に入りの{count}件について、次のフォルダの中から同じ内容のファイルを探す。\n{folder}\n\n\
+                 見つかったファイルへ、お気に入りの設定を付け替える。"
+            ),
+            Lang::English => format!(
+                "Look for files with the same content as {count} favorite item(s) in this folder:\n{folder}\n\n\
+                 Favorite settings are re-linked to the files found."
+            ),
+            Lang::Chinese => format!(
+                "在以下文件夹中查找与{count}个收藏项内容相同的文件：\n{folder}\n\n\
+                 找到后，将收藏设置转移到该文件。"
+            ),
+        }
+    }
+
+    pub fn relink_recursive_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "サブフォルダも含める（深さの制限なし）",
+            Lang::English  => "Include subfolders (no depth limit)",
+            Lang::Chinese  => "包含子文件夹（不限深度）",
+        }
+    }
+
+    pub fn relink_ok(self) -> &'static str {
+        match self {
+            Lang::Japanese => "検索する",
+            Lang::English  => "Search",
+            Lang::Chinese  => "查找",
+        }
+    }
+
+    pub fn relink_running_toast(self) -> &'static str {
+        match self {
+            Lang::Japanese => "移動先のフォルダを検索しています…",
+            Lang::English  => "Searching the destination folder…",
+            Lang::Chinese  => "正在目标文件夹中查找…",
+        }
+    }
+
+    pub fn relink_busy_toast(self) -> &'static str {
+        match self {
+            Lang::Japanese => "別の移動先検索が実行中",
+            Lang::English  => "Another destination search is running",
+            Lang::Chinese  => "另一个目标位置查找正在进行",
+        }
+    }
+
+    /// 再紐付けの結果。件数が0の項目は出さない。全て0なら「対象がなかった」旨。
+    pub fn relink_result(self, r: &crate::identity_relink::RelinkReport) -> String {
+        let items: [(usize, &str, &str, &str); 6] = [
+            (r.moved, "移動先へ付け替え", "Re-linked", "已转移"),
+            (r.merged, "お気に入りを合流", "Merged into existing", "已合并"),
+            (r.ambiguous, "候補が複数のため保留（「DB内の重複の解決」に追加）", "Ambiguous (added to duplicate resolution)", "候选不唯一而搁置（已加入重复项解决）"),
+            (r.not_found, "該当ファイルなし", "Not found", "未找到"),
+            (r.skipped, "対象外", "Skipped", "已跳过"),
+            (r.failed, "失敗", "Failed", "失败"),
+        ];
+        let parts: Vec<String> = items
+            .iter()
+            .filter(|(n, ..)| *n > 0)
+            .map(|(n, ja, en, zh)| match self {
+                Lang::Japanese => format!("{ja} {n}件"),
+                Lang::English => format!("{en}: {n}"),
+                Lang::Chinese => format!("{zh} {n}"),
+            })
+            .collect();
+        if parts.is_empty() {
+            return match self {
+                Lang::Japanese => "対象がありませんでした".to_owned(),
+                Lang::English => "Nothing to process".to_owned(),
+                Lang::Chinese => "没有可处理的项目".to_owned(),
+            };
+        }
+        let sep = if self == Lang::Japanese { " / " } else { "; " };
+        parts.join(sep)
+    }
+
+    pub fn favorite_unset_confirm_title(self) -> &'static str {
+        match self {
+            Lang::Japanese => "お気に入り設定から外す",
+            Lang::English  => "Remove from Favorites",
+            Lang::Chinese  => "从收藏中移除",
+        }
+    }
+
+    pub fn favorite_unset_confirm_body(self, count: usize) -> String {
+        match self {
+            Lang::Japanese => format!("選択した{count}件を、お気に入りから外す。\n（評価・タグなど他の設定は残る）"),
+            Lang::English => format!("Remove {count} selected item(s) from favorites.\n(Ratings, tags, and other settings are kept.)"),
+            Lang::Chinese => format!("将选中的{count}项从收藏中移除。\n（评分、标签等其他设置将保留）"),
+        }
+    }
+
+    pub fn favorite_unset_ok(self) -> &'static str {
+        match self {
+            Lang::Japanese => "外す",
+            Lang::English  => "Remove",
+            Lang::Chinese  => "移除",
+        }
+    }
+
+    pub fn favorite_unset_done_toast(self, count: usize) -> String {
+        match self {
+            Lang::Japanese => format!("お気に入りから{count}件を外した"),
+            Lang::English => format!("Removed {count} item(s) from favorites"),
+            Lang::Chinese => format!("已从收藏中移除{count}项"),
+        }
+    }
+
+    pub fn help_relink(self) -> HelpDoc {
+        match self {
+            Lang::Japanese => HelpDoc {
+                title: "移動先を指定して元ファイルを検索",
+                sections: &[
+                    (
+                        "",
+                        "ファイルが移動・リネームされて「開けない」状態になったお気に入りを、指定したフォルダの中の\n\
+                         同じ内容のファイルへ付け替える。ファイルの内容（フィンガープリント）で照合する。",
+                    ),
+                    (
+                        "■ 付け替えの結果",
+                        "移動先に設定が何も無ければ、★・タグ・お気に入りなど全ての設定が移る。\n\
+                         移動先に既に設定があるときは、移動先の設定を正としてお気に入りだけを足し、元の記録は削除される。\n\
+                         同じ内容のファイルが複数あって決められないときは、「DB内の重複の解決」に追加される。",
+                    ),
+                    (
+                        "■ グレーアウトする場合",
+                        "選択に、開けないお気に入り（ID記録のあるもの）が1件も含まれないとき。\n\
+                         複数選択で実在するファイルが混ざるときは、開けないものだけが対象になる。",
+                    ),
+                ],
+            },
+            Lang::English => HelpDoc {
+                title: "Specify Destination to Find Original",
+                sections: &[
+                    (
+                        "",
+                        "Re-links favorites whose files were moved or renamed (and can no longer be opened) to files with\n\
+                         the same content inside a folder you choose. Files are matched by content (fingerprint).",
+                    ),
+                    (
+                        "■ Result",
+                        "If the destination file has no settings, all settings (rating, tags, favorites...) move to it.\n\
+                         If it already has settings, its settings win; only the favorites are added and the old record is deleted.\n\
+                         If several files share the same content, the case is added to \"Resolve Duplicates in DB\".",
+                    ),
+                    (
+                        "■ When it is grayed out",
+                        "When none of the selected items is an unopenable favorite with an ID record.\n\
+                         With mixed selections, only the unopenable items are processed.",
+                    ),
+                ],
+            },
+            Lang::Chinese => HelpDoc {
+                title: "指定目标位置以查找原文件",
+                sections: &[
+                    (
+                        "",
+                        "将因文件被移动或重命名而无法打开的收藏，转移到所选文件夹中内容相同的文件。\n\
+                         按文件内容（指纹）进行匹配。",
+                    ),
+                    (
+                        "■ 转移结果",
+                        "目标文件没有任何设置时，评分、标签、收藏等全部设置都会转移。\n\
+                         目标文件已有设置时，以目标设置为准，仅追加收藏，并删除原记录。\n\
+                         存在多个内容相同的文件而无法确定时，会加入“解决DB内的重复项”。",
+                    ),
+                    (
+                        "■ 变灰的情况",
+                        "所选项中没有任何带有ID记录且无法打开的收藏时。\n\
+                         混合多选时，仅处理无法打开的项目。",
+                    ),
+                ],
+            },
+        }
+    }
+
+    pub fn help_favorite_unset(self) -> HelpDoc {
+        match self {
+            Lang::Japanese => HelpDoc {
+                title: "お気に入り設定から外す",
+                sections: &[(
+                    "",
+                    "選択したファイルをお気に入りから外す（所属フォルダも未整理も解除）。\n\
+                     評価・タグなど他の設定は残る。開けなくなったお気に入りの整理に使える。\n\
+                     2件以上を選んだときは、実行前に確認が出る。",
+                )],
+            },
+            Lang::English => HelpDoc {
+                title: "Remove from Favorites",
+                sections: &[(
+                    "",
+                    "Removes the selected files from favorites (folder assignments and the unsorted state).\n\
+                     Ratings, tags and other settings are kept. Useful for cleaning up favorites that can no longer be opened.\n\
+                     A confirmation appears when two or more items are selected.",
+                )],
+            },
+            Lang::Chinese => HelpDoc {
+                title: "从收藏中移除",
+                sections: &[(
+                    "",
+                    "将所选文件从收藏中移除（包括所属文件夹和未整理状态）。\n\
+                     评分、标签等其他设置将保留。可用于清理无法打开的收藏。\n\
+                     选择两项及以上时，执行前会弹出确认。",
+                )],
+            },
+        }
+    }
+
     pub fn favorite_delete_confirm_title(self) -> &'static str {
         match self {
             Lang::Japanese => "お気に入りフォルダの削除",

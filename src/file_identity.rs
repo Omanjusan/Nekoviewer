@@ -866,6 +866,39 @@ pub fn adopt_orphan(
     Ok(())
 }
 
+/// IDを完全に削除する（ID層の3テーブルと、IDキーの設定・評価・しおり・お気に入りの行）。
+/// 旧v1のお気に入り所属は、旧キー（現在のパス・作成時のパス・履歴）の行を消す。残すと、どのIDにも
+/// 結び付かないv1の行としてお気に入り一覧にゴーストが再び現れるため。他の旧v1の行（評価等）は橋渡しとして残す。
+/// 再紐付けでお気に入りを移した後の、ゴーストIDの後始末用。元に戻せない。
+pub fn delete_id(db: &Arc<Mutex<Database>>, id: u64) -> Result<(), IdentityError> {
+    let guard = db.lock().map_err(db_err)?;
+    let tx = guard.begin_write().map_err(db_err)?;
+    {
+        let mut t = WriteTables {
+            ids: tx.open_table(FILE_ID_TABLE).map_err(db_err)?,
+            paths: tx.open_table(FILE_PATH_INDEX_TABLE).map_err(db_err)?,
+            fps: tx.open_multimap_table(FILE_FP_INDEX_TABLE).map_err(db_err)?,
+        };
+        let rec = get_rec(&t.ids, id)?.ok_or(IdentityError::Conflict)?;
+        if t.paths.get(rec.path_key.as_str()).map_err(db_err)?.map(|g| g.value()) == Some(id) {
+            t.paths.remove(rec.path_key.as_str()).map_err(db_err)?;
+        }
+        if let Some(f) = rec.fp {
+            t.fps.remove(f.as_slice(), id).map_err(db_err)?;
+        }
+        t.ids.remove(id).map_err(db_err)?;
+        tx.open_table(crate::file_settings::FILE_SETTINGS_TABLE_V2).map_err(db_err)?.remove(id).map_err(db_err)?;
+        tx.open_table(crate::spread_state::ARCHIVE_RATING_TABLE_V2).map_err(db_err)?.remove(id).map_err(db_err)?;
+        tx.open_table(crate::spread_state::BOOKMARK_TABLE_V2).map_err(db_err)?.remove(id).map_err(db_err)?;
+        let mut v1 = tx.open_table(crate::favorites::FAVORITE_MEMBERSHIP_TABLE).map_err(db_err)?;
+        for key in rec.legacy_keys() {
+            v1.remove(key).map_err(db_err)?;
+        }
+    }
+    tx.commit().map_err(db_err)?;
+    Ok(())
+}
+
 /// パスキーからレコードを引く（高速経路）。ID層が未使用なら None。
 pub fn lookup(db: &Arc<Mutex<Database>>, path_key: &str) -> Option<FileRecord> {
     let guard = db.lock().ok()?;
@@ -984,6 +1017,32 @@ pub fn resolve_file(
         Ok(r) => ResolveOutcome::Resolved(r),
         Err(e) => ResolveOutcome::Failed(format!("{e:?}")),
     }
+}
+
+/// 観測済みのファイルを、指定した存在確認（`probe`）でIDに解決してレコードを返す。
+/// 再紐付けが、対象のゴーストを「移動元・複製元の候補」から外した状態で新ファイルのIDを作るために使う
+/// （解決の結果を自動で決めさせず、呼び出し側が付け替えを決める）。
+pub fn resolve_observed_with_probe(
+    db: &Arc<Mutex<Database>>,
+    key: &str,
+    obs: &Observation,
+    probe: &dyn Fn(&FileRecord) -> Presence,
+) -> Option<FileRecord> {
+    if !is_enabled() {
+        return None;
+    }
+    let has_user_data = |id: u64| crate::spread_state::id_has_user_data(db, id);
+    let data_signature = |id: u64, with_favorite: bool| crate::spread_state::data_signature(db, id, with_favorite);
+    let has_legacy_data = |key: &str| crate::spread_state::legacy_data_exists(db, key);
+    let env = ResolveEnv {
+        now: now_unix(),
+        probe,
+        has_user_data: &has_user_data,
+        data_signature: &data_signature,
+        has_legacy_data: &has_legacy_data,
+    };
+    resolve_path(db, key, obs, &env).ok()?;
+    lookup(db, key)
 }
 
 /// 同期でIDを解決してレコードを返す。ユーザー操作（評価の書き込み・ビューアーを開く等）で
