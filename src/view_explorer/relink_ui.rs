@@ -64,7 +64,7 @@ impl NekoviewApp {
     }
 
     /// お気に入りの一覧と未解決の件数を引き直す（付け替え・解除のあと）。
-    fn refresh_favorites_after_change(&mut self) {
+    pub(super) fn refresh_favorites_after_change(&mut self) {
         if let Some(db) = self.spread_db.clone() {
             self.identity_pending_count = crate::identity_pending::count(&db);
         }

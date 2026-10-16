@@ -256,6 +256,7 @@ impl NekoviewApp {
         self.draw_favorite_delete_confirm_dialog(&ctx);
         self.draw_favorite_detail_dialog(&ctx);
         self.draw_relink_dialogs(&ctx);
+        self.draw_unreachable_clean_dialogs(&ctx);
         self.draw_reveal_dialog(&ctx);
         self.draw_sort_condition_dialog(&ctx);
         self.draw_bookmark_setting_dialog(&ctx);

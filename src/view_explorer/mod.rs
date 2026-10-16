@@ -827,6 +827,8 @@ pub struct NekoviewApp {
     favorite_unset_confirm: Option<Vec<PathBuf>>,
     /// 設定→データベース管理で、復元の確認待ちの世代ファイル名（`db_backup_ui.rs`）
     db_restore_confirm: Option<String>,
+    /// 設定→データベース管理の「追えない記録の掃除」の進行状態（`unreachable_clean_ui.rs`）
+    unreachable_clean: Option<unreachable_clean_ui::UnreachableClean>,
     /// ビューアー右クリック「お気に入り詳細設定」ダイアログの状態
     favorite_detail_dialog: Option<FavoriteDetailDialogState>,
     /// エクスプローラー右クリック「ソート条件」一括変更ダイアログの状態（モック段階）
@@ -1287,6 +1289,7 @@ mod backup_failure_ui;
 mod reveal_ui;
 mod relink_ui;
 mod db_backup_ui;
+mod unreachable_clean_ui;
 
 #[cfg(test)]
 mod glyph_audit;
@@ -1390,6 +1393,7 @@ impl NekoviewApp {
             relink_job: None,
             favorite_unset_confirm: None,
             db_restore_confirm: None,
+            unreachable_clean: None,
             favorite_detail_dialog: None,
             sort_condition_dialog: None,
             bookmark_setting_dialog: None,

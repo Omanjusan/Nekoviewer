@@ -10,6 +10,7 @@
 //! - 削除は `file_identity::delete_id`（ID層・設定・評価・しおり・お気に入りの行。他の旧v1の行は残す）。
 //!   消した後に、そのIDを指す未解決の記録を `identity_pending::prune_real` で整理する。
 
+use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 
 use redb::{Database, ReadableDatabase};
@@ -158,6 +159,121 @@ pub fn auto_sweep(
     backup: &dyn Fn() -> bool,
 ) -> AutoSweepOutcome {
     auto_sweep_with(db, now, retention_days, &crate::file_identity::volume_online, &probe_record, backup)
+}
+
+// ---- 手動の「追えない記録の掃除」 ----
+
+/// 実体が見つからないIDの1件（手動掃除の候補）。保持日数や未確認かどうかは問わない。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Unreachable {
+    pub id: u64,
+    /// ボリューム（マウントルート）。ドライブ単位の選択に使う。
+    pub volume: String,
+    /// ボリュームが見えない・確認できない（オフライン）。false は「ドライブはあるのにファイルが無い」。
+    pub offline: bool,
+    /// お気に入りに入っている。
+    pub favorite: bool,
+    /// 評価・しおり・設定（タグ・お気に入りを含む）のいずれかが付いている。
+    pub has_user_data: bool,
+}
+
+/// 実体が見つからないID（現存を除く全て）を探す。何も消さない。
+pub fn scan_unreachable_with(
+    db: &Arc<Mutex<Database>>,
+    probe: &dyn Fn(&FileRecord) -> Presence,
+    is_favorite: &dyn Fn(&FileRecord) -> bool,
+    has_user_data: &dyn Fn(u64) -> bool,
+) -> Vec<Unreachable> {
+    let records = {
+        let Ok(guard) = db.lock() else { return Vec::new() };
+        let Ok(tx) = guard.begin_read() else { return Vec::new() };
+        all_records_tx(&tx)
+    };
+    // 実ファイルの確認（stat）はロックの外で行う。
+    records
+        .iter()
+        .filter_map(|rec| {
+            let presence = probe(rec);
+            (presence != Presence::Present).then(|| Unreachable {
+                id: rec.id,
+                volume: rec.volume.clone(),
+                offline: presence == Presence::Offline,
+                favorite: is_favorite(rec),
+                has_user_data: has_user_data(rec.id),
+            })
+        })
+        .collect()
+}
+
+/// `scan_unreachable_with` の実ファイル・実DB版。
+pub fn scan_unreachable(db: &Arc<Mutex<Database>>) -> Vec<Unreachable> {
+    scan_unreachable_with(
+        db,
+        &probe_record,
+        &|rec| crate::file_settings::read_effective_for_record(db, rec).is_some_and(|e| e.favorite.is_some()),
+        &|id| id_has_user_data(db, id),
+    )
+}
+
+/// 手動掃除。`ids` のうち、消す直前にも「ファイルが無い」ままのものを消す。オフラインのIDは、
+/// ボリュームが `offline_volumes` に含まれるときだけ消す（現存は消さない）。
+/// ユーザーデータ付きのIDを消すときは、先に `backup` を呼び、失敗したら何も消さない。
+pub fn clean_unreachable_with(
+    db: &Arc<Mutex<Database>>,
+    ids: &[u64],
+    offline_volumes: &HashSet<String>,
+    probe: &dyn Fn(&FileRecord) -> Presence,
+    backup: &dyn Fn() -> bool,
+) -> AutoSweepOutcome {
+    let allowed = |rec: &FileRecord| match probe(rec) {
+        Presence::Missing => true,
+        Presence::Offline => offline_volumes.contains(&rec.volume),
+        Presence::Present => false,
+    };
+    let list: Vec<Expired> = ids.iter().map(|&id| Expired { id, has_user_data: id_has_user_data(db, id) }).collect();
+    if list.iter().any(|e| e.has_user_data) && !backup() {
+        return AutoSweepOutcome { backup_failed: true, ..Default::default() };
+    }
+    // 期限は問わない（`is_expired` は常に真）。状態の確認は `allowed` で行う。
+    AutoSweepOutcome { report: delete_checked(db, &list, &allowed), backup_failed: false }
+}
+
+fn delete_checked(db: &Arc<Mutex<Database>>, list: &[Expired], allowed: &dyn Fn(&FileRecord) -> bool) -> SweepReport {
+    let mut report = SweepReport::default();
+    for item in list {
+        let rec = {
+            let Ok(guard) = db.lock() else {
+                report.failed += 1;
+                continue;
+            };
+            let Ok(tx) = guard.begin_read() else {
+                report.failed += 1;
+                continue;
+            };
+            record_by_id_tx(&tx, item.id)
+        };
+        let Some(rec) = rec else {
+            report.skipped += 1;
+            continue;
+        };
+        if !allowed(&rec) {
+            report.skipped += 1;
+            continue;
+        }
+        match delete_id(db, item.id) {
+            Ok(()) => {
+                report.deleted += 1;
+                if item.has_user_data {
+                    report.deleted_with_data += 1;
+                }
+            }
+            Err(_) => report.failed += 1,
+        }
+    }
+    if report.deleted > 0 {
+        crate::identity_pending::prune_real(db);
+    }
+    report
 }
 
 #[cfg(test)]
@@ -407,6 +523,106 @@ mod tests {
         let (out, _) = auto(&env, 0, 30, 1, true);
         assert_eq!(out.report, SweepReport::default());
         assert!(env.exists("keep.zip"));
+    }
+
+    fn id_of(env: &Env, name: &str) -> u64 {
+        lookup(&env.db, &make_key(&env.root, name)).unwrap().id
+    }
+
+    #[test]
+    fn scan_unreachable_lists_every_non_present_id_with_its_flags() {
+        let env = Env::new("scan");
+        env.file("alive.zip", 1);
+        env.file("fav.zip", 2);
+        env.file("rated.zip", 3);
+        env.file("blank.zip", 4);
+        env.file("off.zip", 5);
+        favorites::set_membership(&env.db, &env.root, "fav.zip", &[2]);
+        assert!(write_archive_rating(&env.db, &env.root, "rated.zip", 6));
+        // 一覧で確認されたもの(未確認)も、されていないもの(確認済みのまま)も、同じく対象になる。
+        env.vanish("fav.zip", 100);
+        std::fs::remove_file(env.root.join("rated.zip")).unwrap();
+        std::fs::remove_file(env.root.join("blank.zip")).unwrap();
+        let off_id = id_of(&env, "off.zip");
+        let probe = |rec: &FileRecord| if rec.id == off_id { Presence::Offline } else { probe_record(rec) };
+
+        let mut found = scan_unreachable_with(
+            &env.db,
+            &probe,
+            &|rec| crate::file_settings::read_effective_for_record(&env.db, rec).is_some_and(|e| e.favorite.is_some()),
+            &|id| id_has_user_data(&env.db, id),
+        );
+        found.sort_by_key(|u| u.id);
+        let flags: Vec<(u64, bool, bool, bool)> =
+            found.iter().map(|u| (u.id, u.offline, u.favorite, u.has_user_data)).collect();
+        let mut expected = vec![
+            (id_of(&env, "fav.zip"), false, true, true),
+            (id_of(&env, "rated.zip"), false, false, true),
+            (id_of(&env, "blank.zip"), false, false, false),
+            (off_id, true, false, false),
+        ];
+        expected.sort();
+        assert_eq!(flags, expected);
+    }
+
+    #[test]
+    fn clean_unreachable_deletes_missing_ids_immediately_and_backs_up_first() {
+        let env = Env::new("clean");
+        env.file("data.zip", 1);
+        env.file("blank.zip", 2);
+        env.file("alive.zip", 3);
+        assert!(write_archive_rating(&env.db, &env.root, "data.zip", 6));
+        std::fs::remove_file(env.root.join("data.zip")).unwrap();
+        std::fs::remove_file(env.root.join("blank.zip")).unwrap();
+        let ids = [id_of(&env, "data.zip"), id_of(&env, "blank.zip"), id_of(&env, "alive.zip")];
+        let calls = std::cell::Cell::new(0);
+        let out = clean_unreachable_with(&env.db, &ids, &HashSet::new(), &probe_record, &|| {
+            calls.set(calls.get() + 1);
+            true
+        });
+        assert_eq!(out.report, SweepReport { deleted: 2, deleted_with_data: 1, skipped: 1, failed: 0 });
+        assert_eq!(calls.get(), 1);
+        assert!(!env.exists("data.zip") && !env.exists("blank.zip"));
+        assert!(env.exists("alive.zip"), "現存は選ばれていても消さない");
+    }
+
+    #[test]
+    fn clean_unreachable_skips_offline_ids_unless_their_volume_is_chosen() {
+        let env = Env::new("clean_offline");
+        let rec = env.file("off.zip", 1);
+        let offline = |_: &FileRecord| Presence::Offline;
+        let none = clean_unreachable_with(&env.db, &[rec.id], &HashSet::new(), &offline, &|| true);
+        assert_eq!(none.report, SweepReport { skipped: 1, ..Default::default() });
+        assert!(env.exists("off.zip"));
+        let chosen: HashSet<String> = [rec.volume.clone()].into_iter().collect();
+        let some = clean_unreachable_with(&env.db, &[rec.id], &chosen, &offline, &|| true);
+        assert_eq!(some.report.deleted, 1);
+        assert!(!env.exists("off.zip"));
+    }
+
+    #[test]
+    fn clean_unreachable_stops_when_the_backup_fails() {
+        let env = Env::new("clean_backup_fail");
+        env.file("data.zip", 1);
+        env.file("blank.zip", 2);
+        assert!(write_archive_rating(&env.db, &env.root, "data.zip", 6));
+        std::fs::remove_file(env.root.join("data.zip")).unwrap();
+        std::fs::remove_file(env.root.join("blank.zip")).unwrap();
+        let ids = [id_of(&env, "data.zip"), id_of(&env, "blank.zip")];
+        let out = clean_unreachable_with(&env.db, &ids, &HashSet::new(), &probe_record, &|| false);
+        assert!(out.backup_failed);
+        assert_eq!(out.report, SweepReport::default());
+        assert!(env.exists("data.zip") && env.exists("blank.zip"));
+    }
+
+    #[test]
+    fn clean_unreachable_needs_no_backup_for_blank_ids() {
+        let env = Env::new("clean_blank");
+        env.file("blank.zip", 1);
+        std::fs::remove_file(env.root.join("blank.zip")).unwrap();
+        let out = clean_unreachable_with(&env.db, &[id_of(&env, "blank.zip")], &HashSet::new(), &probe_record, &|| false);
+        assert_eq!(out.report.deleted, 1);
+        assert!(!out.backup_failed);
     }
 
     #[test]

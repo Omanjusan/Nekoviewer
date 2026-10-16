@@ -1839,6 +1839,7 @@ impl NekoviewApp {
             ui.label(i18n::t().settings_backup_generations_value(self.settings_draft.backup_generations));
         });
         self.draw_db_backup_section(ui);
+        self.draw_unreachable_clean_section(ui);
 
         // 移行前の自動バックアップ（`backup_auto/`）の場所を開く。まだ無ければ押せない。
         ui.separator();

@@ -3406,6 +3406,110 @@ impl Lang {
         }
     }
 
+    pub fn settings_unreachable_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "■ 追えない記録の掃除",
+            Lang::English  => "■ Clean up unreachable records",
+            Lang::Chinese  => "■ 清理找不到的记录",
+        }
+    }
+
+    pub fn settings_unreachable_button(self) -> &'static str {
+        match self {
+            Lang::Japanese => "追えない記録を掃除…",
+            Lang::English  => "Clean up unreachable records…",
+            Lang::Chinese  => "清理找不到的记录…",
+        }
+    }
+
+    pub fn settings_unreachable_explain(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ファイルが見つからなくなった記録（評価・タグ・お気に入りなど）を、保持日数を待たずに今すぐ削除します。実行前に内容を確認できます。",
+            Lang::English  => "Deletes records (ratings, tags, favorites, etc.) of files that can no longer be found, right now, without waiting for the retention period. You can review them before anything is deleted.",
+            Lang::Chinese  => "不等保留天数，立即删除找不到文件的记录（评分、标签、收藏等）。删除前可先确认内容。",
+        }
+    }
+
+    pub fn unreachable_scanning_toast(self) -> &'static str {
+        match self {
+            Lang::Japanese => "記録を確認しています…",
+            Lang::English  => "Checking records…",
+            Lang::Chinese  => "正在检查记录…",
+        }
+    }
+
+    pub fn unreachable_none_toast(self) -> &'static str {
+        match self {
+            Lang::Japanese => "掃除する記録はありませんでした",
+            Lang::English  => "There were no records to clean up",
+            Lang::Chinese  => "没有需要清理的记录",
+        }
+    }
+
+    pub fn unreachable_cleaning_toast(self) -> &'static str {
+        match self {
+            Lang::Japanese => "記録を削除しています…",
+            Lang::English  => "Deleting records…",
+            Lang::Chinese  => "正在删除记录…",
+        }
+    }
+
+    pub fn unreachable_confirm_title(self) -> &'static str {
+        match self {
+            Lang::Japanese => "追えない記録の掃除",
+            Lang::English  => "Clean up unreachable records",
+            Lang::Chinese  => "清理找不到的记录",
+        }
+    }
+
+    pub fn unreachable_confirm_warning(self) -> &'static str {
+        match self {
+            Lang::Japanese => "移動しただけのファイルの記録も消えます。移動先のフォルダを一度開くと記録を引き継げるので、心当たりがあれば先に開いてください。実体のないお気に入りも消えます。評価・タグ等が付いた記録を消す前に、データベースのバックアップを自動で取ります。",
+            Lang::English  => "Records of files that were merely moved are deleted too. Opening the destination folder once carries the records over, so open it first if that applies. Favorites without a file are deleted as well. A database backup is taken automatically before records with ratings, tags, etc. are deleted.",
+            Lang::Chinese  => "仅被移动的文件的记录也会被删除。打开一次目标文件夹即可继承记录，如有此情况请先打开。没有实体文件的收藏也会被删除。删除带有评分、标签等的记录之前，会自动备份数据库。",
+        }
+    }
+
+    pub fn unreachable_offline_heading(self) -> &'static str {
+        match self {
+            Lang::Japanese => "今つながっていないドライブ（初期は対象外）",
+            Lang::English  => "Drives that are not connected now (excluded by default)",
+            Lang::Chinese  => "当前未连接的驱动器（默认不包含）",
+        }
+    }
+
+    pub fn unreachable_ok(self) -> &'static str {
+        match self {
+            Lang::Japanese => "削除する",
+            Lang::English  => "Delete",
+            Lang::Chinese  => "删除",
+        }
+    }
+
+    pub fn unreachable_confirm_body(self, total: usize, favorite: usize, with_data: usize, blank: usize) -> String {
+        match self {
+            Lang::Japanese => format!("ファイルが見つからない記録 {total} 件を削除します（元に戻せません）。\n・お気に入り: {favorite} 件\n・評価・タグ等が付いたもの: {with_data} 件\n・何も付いていないもの: {blank} 件"),
+            Lang::English  => format!("Deletes {total} records of files that can't be found (cannot be undone).\n- Favorites: {favorite}\n- With ratings, tags, etc.: {with_data}\n- With nothing attached: {blank}"),
+            Lang::Chinese  => format!("将删除 {total} 条找不到文件的记录（无法撤销）。\n・收藏：{favorite} 条\n・带有评分、标签等：{with_data} 条\n・无任何附加内容：{blank} 条"),
+        }
+    }
+
+    pub fn unreachable_offline_check(self, volume: &str, count: usize) -> String {
+        match self {
+            Lang::Japanese => format!("{volume}（{count} 件）も対象にする"),
+            Lang::English  => format!("Include {volume} ({count})"),
+            Lang::Chinese  => format!("也包含 {volume}（{count} 条）"),
+        }
+    }
+
+    pub fn unreachable_done_toast(self, deleted: usize, with_data: usize) -> String {
+        match self {
+            Lang::Japanese => format!("追えない記録を {deleted} 件削除しました（うち評価・タグ・お気に入り付き {with_data} 件）"),
+            Lang::English  => format!("Deleted {deleted} unreachable records ({with_data} of them had ratings, tags, or favorites)"),
+            Lang::Chinese  => format!("已删除 {deleted} 条找不到的记录（其中 {with_data} 条带有评分、标签或收藏）"),
+        }
+    }
+
     pub fn settings_backup_folder_label(self) -> &'static str {
         self.idres_pick("データベースのバックアップ", "Database backup", "数据库备份")
     }
