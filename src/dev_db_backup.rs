@@ -28,6 +28,8 @@ const DEV_DIR: &str = "dev_backup";
 const BASELINE_FILE_NAME: &str = "baseline.redb";
 const FAILED_DIR: &str = "failed";
 const AUTO_DIR: &str = "backup_auto";
+/// 移行前バックアップのファイル名の頭（`nekoviewer_spread-<日時>.redb`）。世代バックアップ等と区別して保護する。
+pub(crate) const PRE_MIGRATION_STEM: &str = "nekoviewer_spread";
 
 /// 世代管理の上限。ファイル数か合計サイズのどちらかを超えたら古い順に削除する。
 pub const MAX_BACKUP_FILES: usize = 5;
@@ -163,16 +165,20 @@ pub fn ensure_pre_migration_backup(root: &Path) -> Result<PreMigrationBackup, De
         return Ok(PreMigrationBackup::AlreadyDone);
     }
     std::fs::create_dir_all(&dir)?;
-    let dest = unique_dest(&dir, "nekoviewer_spread", "redb");
+    let dest = unique_dest(&dir, PRE_MIGRATION_STEM, "redb");
     copy_file_atomic(&db, &dest)?;
     Ok(PreMigrationBackup::Created(dest))
 }
 
-/// `dir` 直下にバックアップ（`.redb`）があるか。コピー途中の一時ファイルは数えない。
+/// `dir` 直下に移行前バックアップ（`nekoviewer_spread-*.redb`）があるか。コピー途中の一時ファイルと、
+/// 世代バックアップ・復元前の退避（`db_backup.rs`）は数えない。
 fn has_backup(dir: &Path) -> bool {
+    let prefix = format!("{PRE_MIGRATION_STEM}-");
     std::fs::read_dir(dir).is_ok_and(|rd| {
         rd.flatten().any(|e| {
-            e.metadata().is_ok_and(|m| m.is_file()) && e.path().extension().is_some_and(|x| x == "redb")
+            e.metadata().is_ok_and(|m| m.is_file())
+                && e.path().extension().is_some_and(|x| x == "redb")
+                && e.file_name().to_string_lossy().starts_with(&prefix)
         })
     })
 }
@@ -214,7 +220,7 @@ pub fn rotate(dir: &Path, max_files: usize, max_bytes: u64) -> io::Result<usize>
 /// Mutexを保持したままDBファイルをコピーして `dest` へ確定する（一時ファイル経由で、
 /// 失敗しても既存の `dest` を壊さない）。書き込みは全てMutex経由なので、保持中は
 /// コミット済みの整合した状態をコピーできる。
-fn copy_db_atomic(
+pub(crate) fn copy_db_atomic(
     db: &Arc<Mutex<Database>>,
     root: &Path,
     dest: &Path,
@@ -232,7 +238,7 @@ fn copy_db_atomic(
     Ok(())
 }
 
-fn copy_file_atomic(src: &Path, dest: &Path) -> io::Result<()> {
+pub(crate) fn copy_file_atomic(src: &Path, dest: &Path) -> io::Result<()> {
     let mut tmp = dest.as_os_str().to_owned();
     tmp.push(".tmp");
     let tmp = PathBuf::from(tmp);
@@ -248,7 +254,7 @@ fn copy_file_atomic(src: &Path, dest: &Path) -> io::Result<()> {
 }
 
 /// rename、別ファイルシステム等で失敗したらコピー＋削除で移す。
-fn move_file(src: &Path, dest: &Path) -> io::Result<()> {
+pub(crate) fn move_file(src: &Path, dest: &Path) -> io::Result<()> {
     if std::fs::rename(src, dest).is_ok() {
         return Ok(());
     }
@@ -257,7 +263,7 @@ fn move_file(src: &Path, dest: &Path) -> io::Result<()> {
 }
 
 /// `{stem}-{日時}.{ext}`。同名が既にあれば連番を付ける。
-fn unique_dest(dir: &Path, stem: &str, ext: &str) -> PathBuf {
+pub(crate) fn unique_dest(dir: &Path, stem: &str, ext: &str) -> PathBuf {
     let ts = timestamp_string();
     let first = dir.join(format!("{stem}-{ts}.{ext}"));
     if !first.exists() {
