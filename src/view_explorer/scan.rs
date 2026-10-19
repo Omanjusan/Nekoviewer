@@ -243,10 +243,10 @@ impl NekoviewApp {
     pub(super) fn reload_current(&mut self) {
         // お気に入り一覧表示中は実ディレクトリの概念が無く、start_scan()を呼ぶと
         // enter_favorite_view が差し替えた self.archives を実フォルダの中身で
-        // 上書きしてしまう（exit_favorite_view相当が意図せず起きる）ため何もしない。
-        if self.viewing_favorites.is_some() {
-            return;
-        }
+        // 上書きしてしまう（exit_favorite_view相当が意図せず起きる）ため、実フォルダの
+        // 再スキャン・退避移動は行わない。代わりに同じ選択で一覧を組み直し、
+        // 後からマウントされた領域の項目が thumb_failed（赤×）のまま残らないようにする。
+        let favorites_selection = self.viewing_favorites;
 
         // ドライブ一覧の再取得（同期・軽量なローカル列挙のみ、ネットワークI/Oは行わない）。
         // GVFS切断（電源off等）は gvfsd がマウントエントリを即座に消さないため、
@@ -267,6 +267,12 @@ impl NekoviewApp {
         );
         self.drives = drives;
         let home = self.drives.first().map(|d| d.path.clone());
+
+        if let Some(selection) = favorites_selection {
+            self.enter_favorite_view(selection);
+            self.reload_tree();
+            return;
+        }
 
         // ツリールート自体が消えたマウント配下だった場合、安全にホームドライブへ退避する。
         // ネットワークマウント配下は同期 exists() を使わず、バックグラウンドで確認済みの
@@ -294,9 +300,13 @@ impl NekoviewApp {
         // （`/` やリンク切れの表示中に current_dir を実スキャンしてしまわないため）。
         self.reload_virtual_or_scan();
 
-        // ツリー: ルート + 展開済み全ノードをスレッド1本でまとめて再取得する。
-        // 個別ノードの遅延展開（tree_scan_pending）が進行中でも衝突はしない
-        // （どちらが後から書き込んでも tree_children の内容は同じソースから来るため実害なし）。
+        self.reload_tree();
+    }
+
+    /// ツリー: ルート + 展開済み全ノードをスレッド1本でまとめて再取得する。
+    /// 個別ノードの遅延展開（tree_scan_pending）が進行中でも衝突はしない
+    /// （どちらが後から書き込んでも tree_children の内容は同じソースから来るため実害なし）。
+    fn reload_tree(&mut self) {
         self.clear_tree_mtimes();
         let mut targets: Vec<PathBuf> = vec![self.tree_root.clone()];
         targets.extend(self.tree_expanded.iter().cloned());
