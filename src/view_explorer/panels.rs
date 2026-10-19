@@ -2484,6 +2484,13 @@ impl NekoviewApp {
         let cols = (((avail_w + GAP) / (cell_w + GAP)).floor() as usize).max(1);
         self.explorer_cols = cols;
 
+        // 列数が変わったフレームでは、見ていた位置（選択カード、無ければ上端の行）を保つように
+        // オフセットを決め直す。ScrollAreaへ渡す前に適用する。
+        let grid_total = folder_entries.len() + self.filtered_indices.len();
+        if let Some(offset) = self.grid_anchor.begin_frame(cols, self.explorer_scroll_offset, cell_h, grid_total) {
+            self.explorer_scroll_offset = offset;
+        }
+
         // ScrollAreaをタグパネル分だけ右を削った矩形に閉じ込める。フル幅のままだと縦スクロール
         // バー（ScrollAreaの右端）がFloatingのタグパネルの真下に潜って見えなくなる。
         let scroll_rect = egui::Rect::from_min_size(
@@ -3278,6 +3285,15 @@ impl NekoviewApp {
         // ユーザーの手動スクロールを読み戻してストアを更新
         self.explorer_scroll_offset = output.state.offset.y;
         self.explorer_viewport_h = output.inner_rect.height();
+        // 選択（カーソル）カードの並び上の位置。入力側(cur_entry)と同じ優先順位
+        let cursor_entry = self.grid_cursor.clone()
+            .or_else(|| self.selected_archive_index.map(GridEntry::Archive));
+        let selected_pos = cursor_entry.and_then(|e| match e {
+            GridEntry::Archive(idx) => self.filtered_indices.iter().position(|&i| i == idx)
+                .map(|p| folder_entries.len() + p),
+            other => folder_entries.iter().position(|f| *f == other),
+        });
+        self.grid_anchor.end_frame(self.explorer_scroll_offset, self.explorer_viewport_h, cell_h, cols, grid_total, selected_pos);
         // 一覧の右クリック「このフォルダを検索タブで開く」は、描画が終わってから消化する
         if let Some(path) = self.pending_open_in_search.take() {
             self.open_in_search_tab(path);

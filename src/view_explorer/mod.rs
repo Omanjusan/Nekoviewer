@@ -1207,6 +1207,8 @@ pub struct NekoviewApp {
     explorer_cols: usize,
     explorer_scroll_offset: f32,
     explorer_viewport_h: f32,
+    /// 列数が変わった時（タグパネル開閉・リサイズ）に見ていた位置を保つための基準カード
+    grid_anchor: grid_anchor::GridScrollAnchor,
     /// フォルダ名ラベルの1秒ホバー救済用: (対象パス, ホバー開始時刻)
     folder_label_hover: Option<(PathBuf, std::time::Instant)>,
     /// ステータスウィンドウ表示フラグ（[stat] ボタンでトグル）
@@ -1290,6 +1292,7 @@ mod reveal_ui;
 mod relink_ui;
 mod db_backup_ui;
 mod unreachable_clean_ui;
+mod grid_anchor;
 
 #[cfg(test)]
 mod glyph_audit;
@@ -1579,6 +1582,7 @@ impl NekoviewApp {
             explorer_cols: 1,
             explorer_scroll_offset: 0.0,
             explorer_viewport_h: 0.0,
+            grid_anchor: Default::default(),
             folder_label_hover: None,
             show_status_window: false,
             help_enabled: false,
