@@ -1034,7 +1034,7 @@ pub struct NekoviewApp {
     /// タグ付けレイアウト: 選択済み属性タグ（カテゴリ横断、tier_idで一致判定。
     /// リネームで紐付けが切れないよう要素名ではなく不変IDを持つ）。
     /// 編集モードのワンクリックでここに追加/削除する。単一選択カテゴリは常に
-    /// ちょうど1個を維持する（`tag_manager::enforce_single_select`で矯正）。
+    /// 最大1個に保つ（再クリックで0個へ戻せる。`tag_manager::enforce_single_select`で矯正）。
     pub(crate) tag_attr_selected: Vec<u64>,
     /// 単一選択カテゴリで有効値から外れているが、DBには残す休眠タグ（非破壊切替）。
     /// 複数選択へ戻すと`save_tag_manager`で`tag_attr_selected`へ合流する。保存時は

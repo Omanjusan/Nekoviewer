@@ -1037,7 +1037,7 @@ impl NekoviewApp {
     /// 編集モード: カテゴリ見出し＋全要素を`horizontal_wrapped`で並べ、クリックで
     /// 選択/非選択をトグルする。選択済みは通常輝度、非選択は文字・枠を暗転させて
     /// 見分けやすくする。単一選択カテゴリはクリックで同カテゴリ内の他要素を排他的に
-    /// 外し（ラジオ的挙動）、常にちょうど1個を維持する（選択中要素の再クリックは無視）。
+    /// 外し（ラジオ的挙動）、最大1個を維持する（選択中要素の再クリックで全解除＝0個に戻せる）。
     fn draw_tag_attr_edit_mode(&mut self, ui: &mut egui::Ui) {
         egui::ScrollArea::vertical()
             .id_salt("tag_attr_edit_scroll")
@@ -1078,9 +1078,8 @@ impl NekoviewApp {
                             let resp = tag_chip(ui, elem_name, full_w, fill, text_color, egui::Sense::click(), !selected);
                             if resp.clicked() {
                                 if selected {
-                                    if !*single_select {
-                                        self.tag_attr_selected.retain(|s| s != elem_id);
-                                    }
+                                    // 単一選択でも再クリックで全解除できる（0個は未タグ付けの正常状態）。
+                                    self.tag_attr_selected.retain(|s| s != elem_id);
                                 } else {
                                     if *single_select {
                                         let elem_ids: Vec<u64> = elements.iter().map(|(id, _)| *id).collect();
