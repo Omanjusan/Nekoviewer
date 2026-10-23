@@ -1296,6 +1296,7 @@ mod db_backup_ui;
 mod unreachable_clean_ui;
 mod grid_anchor;
 mod view_mode;
+mod selection;
 
 #[cfg(test)]
 mod glyph_audit;

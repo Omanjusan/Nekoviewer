@@ -2490,6 +2490,276 @@ impl NekoviewApp {
         }
     }
 
+    /// アーカイブ1件のサムネを `rect` へ描く（生成済みならレターボックス付きで画像、未生成なら灰色の
+    /// プレースホルダ）。表示要求の登録・優先度付け・未生成時の生成要求もここで行う。
+    /// カード・リスト・一覧のサムネ表示で共通に使う。呼び出し側は `ui.is_rect_visible(rect)` を確認済みであること。
+    pub(super) fn paint_archive_thumbnail(&mut self, ui: &mut egui::Ui, rect: egui::Rect, path: &PathBuf) {
+        self.thumb_display_requested.insert(path.clone());
+        if path.parent().is_some_and(|parent| parent == self.current_dir)
+            && self.folder_pane_tab.shows_real_dir()
+        {
+            self.prioritize_thumbnail_path(path);
+        }
+        if let Some(tex) = self.thumbnails.get(path) {
+            let letterbox_color = if ui.visuals().dark_mode {
+                egui::Color32::BLACK
+            } else {
+                egui::Color32::WHITE
+            };
+            ui.painter().rect_filled(rect, 4.0, letterbox_color);
+            let img_rect = fit_rect_contain(rect, tex.size_vec2());
+            ui.painter().image(
+                tex.id(),
+                img_rect,
+                egui::Rect::from_min_max(
+                    egui::pos2(0.0, 0.0),
+                    egui::pos2(1.0, 1.0),
+                ),
+                egui::Color32::WHITE,
+            );
+        } else {
+            ui.painter().rect_filled(
+                rect,
+                4.0,
+                egui::Color32::from_gray(60),
+            );
+            // ファイルID解決待ち（検証中）のファイルは、移動したファイルのサムネを
+            // 引っ越せるよう、解決が済むまで生成を始めない。
+            if !self.thumb_pending.contains(path)
+                && !self.thumb_failed.contains(path)
+                && !self.thumb_queued.contains(path)
+                && !self.identity_verifying.contains(path)
+            {
+                if self.thumb_req_tx.try_send(ThumbRequest {
+                    archive_path: path.clone(),
+                    db: self.cache_db.clone(),
+                    is_raw_file: self.raw_image_files.contains(path),
+                    requested_edge: self.config.thumb_size,
+                    requested_filter: self.config.thumb_filter,
+                    generation_token: None,
+                    session_id: self.thumb_session.load(std::sync::atomic::Ordering::Acquire),
+                    is_tag_preview: false,
+                    thumbnail_selection: path.parent().and_then(|dir| {
+                        let filename = path.file_name()?.to_str()?;
+                        self.spread_db.as_ref().and_then(|db| {
+                            crate::spread_state::read_thumbnail_selection(db, dir, filename)
+                        })
+                    }),
+                }).is_ok() {
+                    self.thumb_pending.insert(path.clone());
+                }
+            }
+        }
+    }
+
+    /// 一覧に並んだアーカイブ1件の操作（クリック選択・Ctrl/Shiftの複数選択・ダブルクリックで開く・
+    /// 右クリックメニュー）。`visible[i]` が対象で、`response` はそのセルの応答。
+    /// Shiftの範囲選択は `visible` 上の位置で決める。カード・リスト・一覧で共通に使う。
+    pub(super) fn handle_archive_interaction(
+        &mut self,
+        ui: &mut egui::Ui,
+        response: &egui::Response,
+        visible: &[(usize, PathBuf)],
+        i: usize,
+    ) {
+        let (real_idx, path) = (visible[i].0, &visible[i].1);
+        let is_raw = self.raw_image_files.contains(path);
+        if response.clicked() {
+            // 選択枠は描画後に状態が変わるので、次の入力を待たず即座に描き直す。
+            ui.ctx().request_repaint();
+            self.focused_pane = FocusPane::Grid;
+            self.grid_cursor = Some(GridEntry::Archive(real_idx));
+            let modifiers = ui.input(|i| i.modifiers);
+            if modifiers.command {
+                // Ctrl(Cmd)+クリック: トグル追加/除外（規則は selection.rs）
+                super::selection::toggle(&mut self.multi_selected, &mut self.selected_archive_index, real_idx);
+                self.select_anchor = Some(real_idx);
+                self.selected_archive_meta = None;
+            } else if modifiers.shift {
+                // Shift+クリック: 起点からの範囲選択
+                let anchor = self.select_anchor.unwrap_or(real_idx);
+                let anchor_pos = visible.iter().position(|(idx, _)| *idx == anchor).unwrap_or(i);
+                let (from, to) = if anchor_pos <= i { (anchor_pos, i) } else { (i, anchor_pos) };
+                self.multi_selected = visible[from..=to].iter().map(|(idx, _)| *idx).collect();
+                self.selected_archive_index = Some(real_idx);
+                self.selected_archive_meta = None;
+            } else if is_raw && self.selected_archive_index == Some(real_idx) && self.multi_selected.is_empty() {
+                // 生ファイル: 選択済み状態のシングルクリックで開く
+                if self.network_gate(path) {
+                    self.open_viewer(ViewerState::new_raw(path.clone(), self.viewer_slots, self.config.default_slot));
+                }
+            } else {
+                self.multi_selected.clear();
+                self.select_anchor = Some(real_idx);
+                self.selected_archive_index = Some(real_idx);
+                self.selected_archive_meta = std::fs::metadata(path)
+                    .ok()
+                    .map(|m| (m.modified().unwrap_or(std::time::UNIX_EPOCH), m.len()));
+            }
+        }
+        if response.double_clicked() && !is_raw {
+            if self.invalid_archives.contains(path) {
+                let name = truncate_filename(path);
+                self.set_toast(i18n::t().invalid_zip(&name));
+            } else if !self.network_gate(path) {
+                // トースト表示・再チェックは network_gate 内で処理済み。
+            } else {
+                // メモリ見積もりゲート・ViewerState構築は非同期化済み
+                // （進捗オーバーレイ経由。完了後の後始末は poll_pending_open が行う）。
+                self.start_archive_open(path.clone());
+            }
+        }
+
+        // 右クリックメニュー: 複数選択中はホバー位置を無視し選択集合全体を対象にする。
+        // 未選択（単一）時はこのセルのファイル1件のみを対象にする。
+        // ソート条件/しおり保存/見開き設定の3項目は、右クリックの瞬間に対象外
+        // （ディレクトリ・単品生画像ファイル・無効アーカイブ）を除外した後の件数が
+        // 0ならトーストのみ表示してメニューにその3項目を出さない（お気に入り詳細設定・
+        // フォルダを開くは対象外の概念が無いため無条件に出す）。
+        if response.secondary_clicked() {
+            let raw_targets: Vec<PathBuf> = if !self.multi_selected.is_empty() {
+                self.multi_selected.iter().filter_map(|&idx| self.archives.get(idx).cloned()).collect()
+            } else {
+                vec![path.clone()]
+            };
+            if self.filter_bulk_setting_targets(raw_targets).is_empty() {
+                self.set_toast(i18n::t().bulk_setting_no_target_toast());
+            }
+        }
+        response.context_menu(|ui| {
+            let raw_targets: Vec<PathBuf> = if !self.multi_selected.is_empty() {
+                self.multi_selected.iter().filter_map(|&idx| self.archives.get(idx).cloned()).collect()
+            } else {
+                vec![path.clone()]
+            };
+            let filtered_targets = self.filter_bulk_setting_targets(raw_targets.clone());
+
+            if !self.multi_selected.is_empty() {
+                let count = self.multi_selected.len();
+                let r_item = ui.button(i18n::t().favorite_detail_menu_bulk(count));
+                help_tip_auto(&r_item, &i18n::t().help_card_favorite());
+                if r_item.clicked() {
+                    self.open_favorite_detail_dialog_for_paths(raw_targets.clone());
+                    ui.close();
+                }
+                if !filtered_targets.is_empty() {
+                    let fcount = filtered_targets.len();
+                    let r_item = ui.button(i18n::t().sort_condition_menu_bulk(fcount));
+                    help_tip_auto(&r_item, &i18n::t().help_card_sort());
+                    if r_item.clicked() {
+                        self.open_sort_condition_dialog_for_paths(filtered_targets.clone());
+                        ui.close();
+                    }
+                    let r_item = ui.button(i18n::t().bookmark_setting_menu_bulk(fcount));
+                    help_tip_auto(&r_item, &i18n::t().help_card_bookmark());
+                    if r_item.clicked() {
+                        self.open_bookmark_setting_dialog_for_paths(filtered_targets.clone());
+                        ui.close();
+                    }
+                    let r_item = ui.button(i18n::t().spread_setting_menu_bulk(fcount));
+                    help_tip_auto(&r_item, &i18n::t().help_card_spread());
+                    if r_item.clicked() {
+                        self.open_spread_setting_dialog_for_paths(filtered_targets.clone());
+                        ui.close();
+                    }
+                    let r_item = ui.button(i18n::t().rating_setting_menu_bulk(fcount));
+                    help_tip_auto(&r_item, &i18n::t().help_card_rating());
+                    if r_item.clicked() {
+                        self.open_rating_setting_dialog_for_paths(filtered_targets.clone());
+                        ui.close();
+                    }
+                }
+            } else {
+                let r_item = ui.button(i18n::t().favorite_detail_menu());
+                help_tip_auto(&r_item, &i18n::t().help_card_favorite());
+                if r_item.clicked() {
+                    self.open_favorite_detail_dialog_for_paths(raw_targets.clone());
+                    ui.close();
+                }
+                if !filtered_targets.is_empty() {
+                    let r_item = ui.button(i18n::t().sort_condition_menu());
+                    help_tip_auto(&r_item, &i18n::t().help_card_sort());
+                    if r_item.clicked() {
+                        self.open_sort_condition_dialog_for_paths(filtered_targets.clone());
+                        ui.close();
+                    }
+                    let r_item = ui.button(i18n::t().bookmark_setting_menu());
+                    help_tip_auto(&r_item, &i18n::t().help_card_bookmark());
+                    if r_item.clicked() {
+                        self.open_bookmark_setting_dialog_for_paths(filtered_targets.clone());
+                        ui.close();
+                    }
+                    let r_item = ui.button(i18n::t().spread_setting_menu());
+                    help_tip_auto(&r_item, &i18n::t().help_card_spread());
+                    if r_item.clicked() {
+                        self.open_spread_setting_dialog_for_paths(filtered_targets.clone());
+                        ui.close();
+                    }
+                    let r_item = ui.button(i18n::t().rating_setting_menu());
+                    help_tip_auto(&r_item, &i18n::t().help_card_rating());
+                    if r_item.clicked() {
+                        self.open_rating_setting_dialog_for_paths(filtered_targets.clone());
+                        ui.close();
+                    }
+                }
+            }
+
+            ui.separator();
+            self.draw_reveal_menu_item(ui, path);
+            ui.separator();
+            if self.folder_pane_tab.shows_real_dir() {
+                let r_item = ui.button(i18n::t().explorer_open_folder_menu());
+                help_tip_auto(&r_item, &i18n::t().help_card_open_folder());
+                if r_item.clicked() {
+                    if let Some(dir) = &self.viewing_dir {
+                        crate::translate::open_in_file_manager(dir);
+                    }
+                    ui.close();
+                }
+            } else {
+                // お気に入り/検索の横断一覧は「現在のフォルダ」を持たないので、カードごとの親フォルダを開く。
+                // 複数選択中・ネットワークパス・親が存在しない場合はグレー（存在確認はメニューを開いている間だけ）。
+                let parent = path.parent().filter(|d| {
+                    self.multi_selected.is_empty()
+                        && crate::fs::mount::network_mount_root(d).is_none()
+                        && d.is_dir()
+                });
+                let r_item = ui.add_enabled(
+                    parent.is_some(),
+                    egui::Button::new(i18n::t().explorer_open_parent_folder_menu()),
+                );
+                help_tip_auto(&r_item, &i18n::t().help_open_parent_folder());
+                if r_item.clicked() {
+                    if let Some(dir) = parent {
+                        crate::translate::open_in_file_manager(dir);
+                    }
+                    ui.close();
+                }
+            }
+
+            // お気に入りタブ: 開けなくなったお気に入りの再紐付け・整理（relink_ui.rs）
+            if self.folder_pane_tab == FolderPaneTab::Favorites {
+                ui.separator();
+                let ghosts = self.relink_ghost_ids(&raw_targets);
+                let r_item = ui.add_enabled(
+                    !ghosts.is_empty(),
+                    egui::Button::new(i18n::t().relink_menu()),
+                );
+                help_tip_auto(&r_item, &i18n::t().help_relink());
+                if r_item.clicked() {
+                    self.open_relink_picker(ghosts);
+                    ui.close();
+                }
+                let r_item = ui.button(i18n::t().favorite_unset_menu());
+                help_tip_auto(&r_item, &i18n::t().help_favorite_unset());
+                if r_item.clicked() {
+                    self.request_unset_favorites(raw_targets.clone());
+                    ui.close();
+                }
+            }
+        });
+    }
+
     fn draw_archive_grid(&mut self, ui: &mut egui::Ui) {
         // 検索タブを開いた瞬間、まだどの検索結果も選択していない間は実ディレクトリの中身が
         // 一瞬見えてしまう（archivesは前の表示のまま残っている）。理想は切替と同時に
@@ -2678,8 +2948,11 @@ impl NekoviewApp {
                     let mut visible_order_range: Option<(usize, usize)> = None;
                     for (i, (real_idx, path)) in visible.iter().enumerate() {
                         let real_idx = *real_idx;
-                        let is_selected = self.selected_archive_index == Some(real_idx)
-                            || self.multi_selected.contains(&real_idx);
+                        let is_selected = super::selection::is_selected(
+                            &self.multi_selected,
+                            self.selected_archive_index,
+                            real_idx,
+                        );
                         let (rect, response) = ui.allocate_exact_size(
                             egui::vec2(cell_w, cell_h),
                             egui::Sense::click(),
@@ -2690,62 +2963,7 @@ impl NekoviewApp {
                                 Some((lo, hi)) => (lo.min(i), hi.max(i)),
                                 None => (i, i),
                             });
-                            self.thumb_display_requested.insert(path.clone());
-                            if path.parent().is_some_and(|parent| parent == self.current_dir)
-                                && self.folder_pane_tab.shows_real_dir()
-                            {
-                                self.prioritize_thumbnail_path(path);
-                            }
-                            if let Some(tex) = self.thumbnails.get(path) {
-                                let letterbox_color = if ui.visuals().dark_mode {
-                                    egui::Color32::BLACK
-                                } else {
-                                    egui::Color32::WHITE
-                                };
-                                ui.painter().rect_filled(rect, 4.0, letterbox_color);
-                                let img_rect = fit_rect_contain(rect, tex.size_vec2());
-                                ui.painter().image(
-                                    tex.id(),
-                                    img_rect,
-                                    egui::Rect::from_min_max(
-                                        egui::pos2(0.0, 0.0),
-                                        egui::pos2(1.0, 1.0),
-                                    ),
-                                    egui::Color32::WHITE,
-                                );
-                            } else {
-                                ui.painter().rect_filled(
-                                    rect,
-                                    4.0,
-                                    egui::Color32::from_gray(60),
-                                );
-                                // ファイルID解決待ち（検証中）のファイルは、移動したファイルのサムネを
-                                // 引っ越せるよう、解決が済むまで生成を始めない。
-                                if !self.thumb_pending.contains(path)
-                                    && !self.thumb_failed.contains(path)
-                                    && !self.thumb_queued.contains(path)
-                                    && !self.identity_verifying.contains(path)
-                                {
-                                    if self.thumb_req_tx.try_send(ThumbRequest {
-                                        archive_path: path.clone(),
-                                        db: self.cache_db.clone(),
-                                        is_raw_file: self.raw_image_files.contains(path),
-                                        requested_edge: self.config.thumb_size,
-                                        requested_filter: self.config.thumb_filter,
-                                        generation_token: None,
-                                        session_id: self.thumb_session.load(std::sync::atomic::Ordering::Acquire),
-                                        is_tag_preview: false,
-                                        thumbnail_selection: path.parent().and_then(|dir| {
-                                            let filename = path.file_name()?.to_str()?;
-                                            self.spread_db.as_ref().and_then(|db| {
-                                                crate::spread_state::read_thumbnail_selection(db, dir, filename)
-                                            })
-                                        }),
-                                    }).is_ok() {
-                                        self.thumb_pending.insert(path.clone());
-                                    }
-                                }
-                            }
+                            self.paint_archive_thumbnail(ui, rect, path);
 
                             // ファイルID解決待ち（新規・移動直後）は、サムネ中央に「ファイル検証中」を重ねる。
                             // 解決が済むと外れ、移動していれば評価等が引き継がれた表示に差し替わる。
@@ -3073,210 +3291,7 @@ impl NekoviewApp {
                             }
                         }
 
-                        let is_raw = self.raw_image_files.contains(path);
-                        if response.clicked() {
-                            self.focused_pane = FocusPane::Grid;
-                            self.grid_cursor = Some(GridEntry::Archive(real_idx));
-                            let modifiers = ui.input(|i| i.modifiers);
-                            if modifiers.command {
-                                // Ctrl(Cmd)+クリック: トグル追加/除外
-                                if self.multi_selected.is_empty()
-                                    && let Some(prev) = self.selected_archive_index
-                                {
-                                    self.multi_selected.insert(prev);
-                                }
-                                if !self.multi_selected.insert(real_idx) {
-                                    self.multi_selected.remove(&real_idx);
-                                }
-                                self.select_anchor = Some(real_idx);
-                                self.selected_archive_index = Some(real_idx);
-                                self.selected_archive_meta = None;
-                                if self.multi_selected.len() == 1 {
-                                    self.multi_selected.clear();
-                                }
-                            } else if modifiers.shift {
-                                // Shift+クリック: 起点からの範囲選択
-                                let anchor = self.select_anchor.unwrap_or(real_idx);
-                                let anchor_pos = visible.iter().position(|(idx, _)| *idx == anchor).unwrap_or(i);
-                                let (from, to) = if anchor_pos <= i { (anchor_pos, i) } else { (i, anchor_pos) };
-                                self.multi_selected = visible[from..=to].iter().map(|(idx, _)| *idx).collect();
-                                self.selected_archive_index = Some(real_idx);
-                                self.selected_archive_meta = None;
-                            } else if is_raw && self.selected_archive_index == Some(real_idx) && self.multi_selected.is_empty() {
-                                // 生ファイル: 選択済み状態のシングルクリックで開く
-                                if self.network_gate(path) {
-                                    self.open_viewer(ViewerState::new_raw(path.clone(), self.viewer_slots, self.config.default_slot));
-                                }
-                            } else {
-                                self.multi_selected.clear();
-                                self.select_anchor = Some(real_idx);
-                                self.selected_archive_index = Some(real_idx);
-                                self.selected_archive_meta = std::fs::metadata(path)
-                                    .ok()
-                                    .map(|m| (m.modified().unwrap_or(std::time::UNIX_EPOCH), m.len()));
-                            }
-                        }
-                        if response.double_clicked() && !is_raw {
-                            if self.invalid_archives.contains(path) {
-                                let name = truncate_filename(path);
-                                self.set_toast(i18n::t().invalid_zip(&name));
-                            } else if !self.network_gate(path) {
-                                // トースト表示・再チェックは network_gate 内で処理済み。
-                            } else {
-                                // メモリ見積もりゲート・ViewerState構築は非同期化済み
-                                // （進捗オーバーレイ経由。完了後の後始末は poll_pending_open が行う）。
-                                self.start_archive_open(path.clone());
-                            }
-                        }
-
-                        // 右クリックメニュー: 複数選択中はホバー位置を無視し選択集合全体を対象にする。
-                        // 未選択（単一）時はこのセルのファイル1件のみを対象にする。
-                        // ソート条件/しおり保存/見開き設定の3項目は、右クリックの瞬間に対象外
-                        // （ディレクトリ・単品生画像ファイル・無効アーカイブ）を除外した後の件数が
-                        // 0ならトーストのみ表示してメニューにその3項目を出さない（お気に入り詳細設定・
-                        // フォルダを開くは対象外の概念が無いため無条件に出す）。
-                        if response.secondary_clicked() {
-                            let raw_targets: Vec<PathBuf> = if !self.multi_selected.is_empty() {
-                                self.multi_selected.iter().filter_map(|&idx| self.archives.get(idx).cloned()).collect()
-                            } else {
-                                vec![path.clone()]
-                            };
-                            if self.filter_bulk_setting_targets(raw_targets).is_empty() {
-                                self.set_toast(i18n::t().bulk_setting_no_target_toast());
-                            }
-                        }
-                        response.context_menu(|ui| {
-                            let raw_targets: Vec<PathBuf> = if !self.multi_selected.is_empty() {
-                                self.multi_selected.iter().filter_map(|&idx| self.archives.get(idx).cloned()).collect()
-                            } else {
-                                vec![path.clone()]
-                            };
-                            let filtered_targets = self.filter_bulk_setting_targets(raw_targets.clone());
-
-                            if !self.multi_selected.is_empty() {
-                                let count = self.multi_selected.len();
-                                let r_item = ui.button(i18n::t().favorite_detail_menu_bulk(count));
-                                help_tip_auto(&r_item, &i18n::t().help_card_favorite());
-                                if r_item.clicked() {
-                                    self.open_favorite_detail_dialog_for_paths(raw_targets.clone());
-                                    ui.close();
-                                }
-                                if !filtered_targets.is_empty() {
-                                    let fcount = filtered_targets.len();
-                                    let r_item = ui.button(i18n::t().sort_condition_menu_bulk(fcount));
-                                    help_tip_auto(&r_item, &i18n::t().help_card_sort());
-                                    if r_item.clicked() {
-                                        self.open_sort_condition_dialog_for_paths(filtered_targets.clone());
-                                        ui.close();
-                                    }
-                                    let r_item = ui.button(i18n::t().bookmark_setting_menu_bulk(fcount));
-                                    help_tip_auto(&r_item, &i18n::t().help_card_bookmark());
-                                    if r_item.clicked() {
-                                        self.open_bookmark_setting_dialog_for_paths(filtered_targets.clone());
-                                        ui.close();
-                                    }
-                                    let r_item = ui.button(i18n::t().spread_setting_menu_bulk(fcount));
-                                    help_tip_auto(&r_item, &i18n::t().help_card_spread());
-                                    if r_item.clicked() {
-                                        self.open_spread_setting_dialog_for_paths(filtered_targets.clone());
-                                        ui.close();
-                                    }
-                                    let r_item = ui.button(i18n::t().rating_setting_menu_bulk(fcount));
-                                    help_tip_auto(&r_item, &i18n::t().help_card_rating());
-                                    if r_item.clicked() {
-                                        self.open_rating_setting_dialog_for_paths(filtered_targets.clone());
-                                        ui.close();
-                                    }
-                                }
-                            } else {
-                                let r_item = ui.button(i18n::t().favorite_detail_menu());
-                                help_tip_auto(&r_item, &i18n::t().help_card_favorite());
-                                if r_item.clicked() {
-                                    self.open_favorite_detail_dialog_for_paths(raw_targets.clone());
-                                    ui.close();
-                                }
-                                if !filtered_targets.is_empty() {
-                                    let r_item = ui.button(i18n::t().sort_condition_menu());
-                                    help_tip_auto(&r_item, &i18n::t().help_card_sort());
-                                    if r_item.clicked() {
-                                        self.open_sort_condition_dialog_for_paths(filtered_targets.clone());
-                                        ui.close();
-                                    }
-                                    let r_item = ui.button(i18n::t().bookmark_setting_menu());
-                                    help_tip_auto(&r_item, &i18n::t().help_card_bookmark());
-                                    if r_item.clicked() {
-                                        self.open_bookmark_setting_dialog_for_paths(filtered_targets.clone());
-                                        ui.close();
-                                    }
-                                    let r_item = ui.button(i18n::t().spread_setting_menu());
-                                    help_tip_auto(&r_item, &i18n::t().help_card_spread());
-                                    if r_item.clicked() {
-                                        self.open_spread_setting_dialog_for_paths(filtered_targets.clone());
-                                        ui.close();
-                                    }
-                                    let r_item = ui.button(i18n::t().rating_setting_menu());
-                                    help_tip_auto(&r_item, &i18n::t().help_card_rating());
-                                    if r_item.clicked() {
-                                        self.open_rating_setting_dialog_for_paths(filtered_targets.clone());
-                                        ui.close();
-                                    }
-                                }
-                            }
-
-                            ui.separator();
-                            self.draw_reveal_menu_item(ui, path);
-                            ui.separator();
-                            if self.folder_pane_tab.shows_real_dir() {
-                                let r_item = ui.button(i18n::t().explorer_open_folder_menu());
-                                help_tip_auto(&r_item, &i18n::t().help_card_open_folder());
-                                if r_item.clicked() {
-                                    if let Some(dir) = &self.viewing_dir {
-                                        crate::translate::open_in_file_manager(dir);
-                                    }
-                                    ui.close();
-                                }
-                            } else {
-                                // お気に入り/検索の横断一覧は「現在のフォルダ」を持たないので、カードごとの親フォルダを開く。
-                                // 複数選択中・ネットワークパス・親が存在しない場合はグレー（存在確認はメニューを開いている間だけ）。
-                                let parent = path.parent().filter(|d| {
-                                    self.multi_selected.is_empty()
-                                        && crate::fs::mount::network_mount_root(d).is_none()
-                                        && d.is_dir()
-                                });
-                                let r_item = ui.add_enabled(
-                                    parent.is_some(),
-                                    egui::Button::new(i18n::t().explorer_open_parent_folder_menu()),
-                                );
-                                help_tip_auto(&r_item, &i18n::t().help_open_parent_folder());
-                                if r_item.clicked() {
-                                    if let Some(dir) = parent {
-                                        crate::translate::open_in_file_manager(dir);
-                                    }
-                                    ui.close();
-                                }
-                            }
-
-                            // お気に入りタブ: 開けなくなったお気に入りの再紐付け・整理（relink_ui.rs）
-                            if self.folder_pane_tab == FolderPaneTab::Favorites {
-                                ui.separator();
-                                let ghosts = self.relink_ghost_ids(&raw_targets);
-                                let r_item = ui.add_enabled(
-                                    !ghosts.is_empty(),
-                                    egui::Button::new(i18n::t().relink_menu()),
-                                );
-                                help_tip_auto(&r_item, &i18n::t().help_relink());
-                                if r_item.clicked() {
-                                    self.open_relink_picker(ghosts);
-                                    ui.close();
-                                }
-                                let r_item = ui.button(i18n::t().favorite_unset_menu());
-                                help_tip_auto(&r_item, &i18n::t().help_favorite_unset());
-                                if r_item.clicked() {
-                                    self.request_unset_favorites(raw_targets.clone());
-                                    ui.close();
-                                }
-                            }
-                        });
+                        self.handle_archive_interaction(ui, &response, &visible, i);
 
                         cell_index += 1;
                         if cell_index % cols == 0 {
