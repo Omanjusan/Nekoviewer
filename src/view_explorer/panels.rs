@@ -2876,6 +2876,11 @@ impl NekoviewApp {
             self.explorer_scroll_offset = offset;
         }
 
+        // リストの列見出しは、縦スクロールの外（本体の上）に固定で置く。
+        if list_mode {
+            self.draw_list_header(ui, avail_w);
+        }
+
         // ScrollAreaをタグパネル分だけ右を削った矩形に閉じ込める。フル幅のままだと縦スクロール
         // バー（ScrollAreaの右端）がFloatingのタグパネルの真下に潜って見えなくなる。
         let scroll_rect = egui::Rect::from_min_size(
@@ -2903,7 +2908,7 @@ impl NekoviewApp {
                 egui::Sense::click(),
             );
             // リスト・一覧は専用の描画で行を並べる。下のグリッドは空のまま通す（背景メニューやスクロールの後処理を共有するため）。
-            let list_nav = if list_mode { self.draw_archive_list(ui, &folder_entries, avail_w) } else { None };
+            let list_nav = if list_mode { self.draw_archive_list(ui, &folder_entries, scroll_rect) } else { None };
             let grid_response = egui::Grid::new("archive_grid")
                 .num_columns(cols)
                 .spacing([GAP, GAP])
@@ -3376,6 +3381,8 @@ impl NekoviewApp {
         }).inner;
         // ユーザーの手動スクロールを読み戻してストアを更新
         self.explorer_scroll_offset = output.state.offset.y;
+        // 固定の列見出しを同じだけ横にずらすため、リストの横スクロール量を覚える
+        self.list_scroll_x = if list_mode { output.state.offset.x } else { 0.0 };
         self.explorer_viewport_h = output.inner_rect.height();
         // 選択（カーソル）カードの並び上の位置。入力側(cur_entry)と同じ優先順位
         let cursor_entry = self.grid_cursor.clone()

@@ -14,16 +14,15 @@ use std::path::PathBuf;
 use crate::i18n;
 
 use super::panels::{draw_cursor_ring, format_mtime, humanize_size};
+use super::list_columns::ListColumns;
 use super::view_mode::{ListSize, ViewMode};
 use super::*;
 
-const DUP_COL_W: f32 = 24.0;
-const NAME_COL_W: f32 = 360.0;
-const SIZE_COL_W: f32 = 90.0;
-const MTIME_COL_W: f32 = 160.0;
-const RATING_COL_W: f32 = 120.0;
-const VISITS_COL_W: f32 = 80.0;
 const HEADER_H: f32 = 22.0;
+/// 行どうしの縦の隙間（px）。スクロール位置の計算（行ピッチ）と共有する。
+const ROW_GAP: f32 = 1.0;
+/// 見出しの列境界の、つかめる幅（px。境界線を中心に左右へ）。
+const RESIZE_GRAB_W: f32 = 8.0;
 /// 行の高さの下限。ホバー形式（文字のみ）の行の高さでもある。
 const MIN_ROW_H: f32 = 24.0;
 /// ホバー形式でフォルダのアイコンだけを置く列の幅。
@@ -60,9 +59,9 @@ fn thumb_col_width(size: ListSize, row_h: f32) -> f32 {
     }
 }
 
-/// 列の幅（重複・サムネ・名前・サイズ・更新日時・評価・訪問回数）。
-fn column_widths(thumb_w: f32) -> [f32; 7] {
-    [DUP_COL_W, thumb_w, NAME_COL_W, SIZE_COL_W, MTIME_COL_W, RATING_COL_W, VISITS_COL_W]
+/// 列の幅（重複・サムネ・名前・サイズ・更新日時・評価・訪問回数）。サムネ以外はユーザー設定。
+fn column_widths(thumb_w: f32, cols: &ListColumns) -> [f32; 7] {
+    [cols.width(0), thumb_w, cols.width(1), cols.width(2), cols.width(3), cols.width(4), cols.width(5)]
 }
 
 #[derive(Clone, Copy)]
@@ -74,6 +73,21 @@ enum Col {
     Mtime = 4,
     Rating = 5,
     Visits = 6,
+}
+
+impl Col {
+    /// 幅を変えられる列の `ListColumns` 上の番号。サムネ列は行の高さで決まるので変えられない。
+    fn resize_index(self) -> Option<usize> {
+        match self {
+            Col::Thumb => None,
+            Col::Dup => Some(0),
+            Col::Name => Some(1),
+            Col::Size => Some(2),
+            Col::Mtime => Some(3),
+            Col::Rating => Some(4),
+            Col::Visits => Some(5),
+        }
+    }
 }
 
 /// 行の矩形から、指定した列の矩形を切り出す。
@@ -95,30 +109,61 @@ fn cell_text(painter: &egui::Painter, rect: egui::Rect, text: &str, font: &egui:
     );
 }
 
+/// 縦スクロールのオフセットを、`index` 番目の行（0始まり）が画面内に収まる最小の量だけ動かす。
+/// `viewport_h` は行を並べる領域の高さ（固定の見出しは含まない）。
+pub(super) fn scroll_to_row(offset: f32, viewport_h: f32, index: usize, row_h: f32) -> f32 {
+    let top = index as f32 * (row_h + ROW_GAP);
+    let bottom = top + row_h;
+    if top < offset {
+        top
+    } else if viewport_h > 0.0 && bottom > offset + viewport_h {
+        bottom - viewport_h
+    } else {
+        offset
+    }
+}
+
+/// 列どうしの区切り線の色。
+fn grid_line_color(ui: &egui::Ui) -> egui::Color32 {
+    ui.visuals().weak_text_color().gamma_multiply(0.35)
+}
+
+/// 行の高さと列の幅（描画と、キーボードのスクロール計算で共有）。
+pub(super) struct ListMetrics {
+    pub row_h: f32,
+    widths: [f32; 7],
+    total_w: f32,
+}
+
 impl NekoviewApp {
+    /// 現在のモード・サイズ・サムネ設定・列幅から決まる、行の高さと列の幅。
+    pub(super) fn list_metrics(&self) -> ListMetrics {
+        let (size, _) = layout_for(self.view_mode.mode, self.view_mode.list_size);
+        let row_h = row_height(size, self.config.thumb_size as f32);
+        let widths = column_widths(thumb_col_width(size, row_h), &self.list_cols);
+        ListMetrics { row_h, widths, total_w: widths.iter().sum() }
+    }
+
     /// リスト表示の本体。フォルダの行 → ファイルの行の順に並べる。
     /// フォルダのダブルクリックで移動先があれば返す（開く処理は呼び出し側）。
-    /// `view_w` は表示領域の幅（行の背景を領域いっぱいに広げるため）。
+    /// `view_rect` は表示領域（行の背景を領域いっぱいに広げ、縦の区切り線をこの範囲に収めるため）。
+    /// 列見出しは固定表示のため、ここでは描かない（`draw_list_header`）。
     pub(super) fn draw_archive_list(
         &mut self,
         ui: &mut egui::Ui,
         folder_entries: &[GridEntry],
-        view_w: f32,
+        view_rect: egui::Rect,
     ) -> Option<GridNav> {
         let (size, hover_popup) = layout_for(self.view_mode.mode, self.view_mode.list_size);
-        let row_h = row_height(size, self.config.thumb_size as f32);
-        let thumb_w = thumb_col_width(size, row_h);
-        let widths = column_widths(thumb_w);
-        let total_w: f32 = widths.iter().sum();
-        let row_w = total_w.max(view_w);
+        let ListMetrics { row_h, widths, total_w } = self.list_metrics();
+        let row_w = total_w.max(view_rect.width());
+        let origin_x = ui.cursor().min.x;
         let font = egui::FontId::proportional((row_h * 0.5).clamp(11.0, 15.0));
         let grid_focused = self.focused_pane == FocusPane::Grid;
         // サムネ列を出さない形式（ホバー・一覧）。ポップアップを出すのはリストのホバーだけ。
         let text_only = size == ListSize::Hover;
         let mut nav: Option<GridNav> = None;
-        ui.spacing_mut().item_spacing.y = 1.0;
-
-        self.draw_list_header(ui, &widths, row_w);
+        ui.spacing_mut().item_spacing.y = ROW_GAP;
 
         for entry in folder_entries {
             let (rect, response) = ui.allocate_exact_size(egui::vec2(row_w, row_h), egui::Sense::click());
@@ -183,17 +228,69 @@ impl NekoviewApp {
         if let Some((lo, hi)) = visible_order_range {
             self.update_thumbnail_lookahead(&visible, lo, hi);
         }
+
+        // 列どうしの縦の区切り線を、表示領域の全高に引く（横線は引かない）。行の選択枠やホバーの上に重ねる。
+        let clip = ui.clip_rect().intersect(view_rect);
+        let painter = ui.painter().with_clip_rect(clip);
+        let stroke = egui::Stroke::new(1.0, grid_line_color(ui));
+        let mut x = origin_x;
+        for w in widths {
+            x += w;
+            painter.vline(x, clip.y_range(), stroke);
+        }
         nav
     }
 
-    fn draw_list_header(&self, ui: &mut egui::Ui, widths: &[f32; 7], row_w: f32) {
-        let (rect, _) = ui.allocate_exact_size(egui::vec2(row_w, HEADER_H), egui::Sense::hover());
+    /// 固定表示の列見出し（本体の縦スクロールの外に置く）。横スクロールは直前のフレームの量だけずらして合わせる。
+    /// 列の境界は、つかんで幅を変えられる（ダブルクリックで既定幅）。境界にホバーしたときだけカーソルと線が変わる。
+    pub(super) fn draw_list_header(&mut self, ui: &mut egui::Ui, view_w: f32) {
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(view_w, HEADER_H), egui::Sense::hover());
         if !ui.is_rect_visible(rect) {
             return;
         }
-        let t = i18n::t();
-        let painter = ui.painter();
+        let origin_x = rect.min.x - self.list_scroll_x;
+        let header_row = |total_w: f32| {
+            egui::Rect::from_min_size(egui::pos2(origin_x, rect.min.y), egui::vec2(total_w, HEADER_H))
+        };
+
+        // 境界の操作を先に処理して、この後の描画（見出しと本体の行）に今フレームの幅を反映する。
+        let m = self.list_metrics();
+        let row = header_row(m.total_w);
+        let mut changed = false;
+        let mut active_idx: Option<usize> = None;
+        for col in [Col::Dup, Col::Name, Col::Size, Col::Mtime, Col::Rating, Col::Visits] {
+            let Some(idx) = col.resize_index() else { continue };
+            let x = col_rect(row, &m.widths, col).max.x;
+            let grab = egui::Rect::from_center_size(egui::pos2(x, rect.center().y), egui::vec2(RESIZE_GRAB_W, HEADER_H))
+                .intersect(rect);
+            if grab.width() <= 0.0 {
+                continue;
+            }
+            let resp = ui.interact(grab, egui::Id::new(("list_col_resize", idx)), egui::Sense::click_and_drag());
+            if resp.hovered() || resp.dragged() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+                active_idx = Some(idx);
+            }
+            if resp.dragged() {
+                self.list_cols.set(idx, self.list_cols.width(idx) + resp.drag_delta().x);
+            }
+            if resp.double_clicked() {
+                self.list_cols.reset(idx);
+                changed = true;
+            }
+            if resp.drag_stopped() {
+                changed = true;
+            }
+        }
+        if changed {
+            self.persist_state();
+        }
+
+        let m = self.list_metrics();
+        let row = header_row(m.total_w);
+        let painter = ui.painter().with_clip_rect(rect);
         painter.rect_filled(rect, 0.0, ui.visuals().faint_bg_color);
+        let t = i18n::t();
         let font = egui::FontId::proportional(12.0);
         let color = ui.visuals().weak_text_color();
         for (col, label) in [
@@ -204,8 +301,19 @@ impl NekoviewApp {
             (Col::Rating, t.list_col_rating()),
             (Col::Visits, t.list_col_visits()),
         ] {
-            cell_text(painter, col_rect(rect, widths, col), label, &font, color);
+            cell_text(&painter, col_rect(row, &m.widths, col), label, &font, color);
         }
+        // 境界線。つかめる状態の境界（ホバー・ドラッグ中）だけ太く強調する（リサイズのマーカー）。
+        let line = grid_line_color(ui);
+        let marker = ui.visuals().strong_text_color();
+        for col in [Col::Dup, Col::Name, Col::Size, Col::Mtime, Col::Rating, Col::Visits] {
+            let x = col_rect(row, &m.widths, col).max.x;
+            let active = col.resize_index().is_some() && col.resize_index() == active_idx;
+            let stroke = if active { egui::Stroke::new(2.0, marker) } else { egui::Stroke::new(1.0, line) };
+            painter.vline(x, rect.y_range(), stroke);
+        }
+        // 見出しの下端
+        painter.hline(rect.x_range(), rect.max.y, egui::Stroke::new(1.0, line));
     }
 
     /// フォルダの行の中身（アイコン・名前・更新日時。リンク切れは名前の前に ⚠）。
@@ -378,6 +486,43 @@ mod tests {
     }
 
     #[test]
+    fn scroll_to_row_scrolls_up_to_a_row_above_the_viewport() {
+        let pitch = 50.0 + ROW_GAP;
+        // 10行目（インデックス9）の上端が見えるところまで戻る
+        assert_eq!(scroll_to_row(1000.0, 300.0, 9, 50.0), 9.0 * pitch);
+    }
+
+    #[test]
+    fn scroll_to_row_scrolls_down_to_a_row_below_the_viewport() {
+        let pitch = 50.0 + ROW_GAP;
+        // 縦300pxの窓の下に隠れた行は、下端が窓の下端に合うまで進む
+        let got = scroll_to_row(0.0, 300.0, 20, 50.0);
+        assert_eq!(got, 20.0 * pitch + 50.0 - 300.0);
+    }
+
+    #[test]
+    fn scroll_to_row_leaves_a_visible_row_alone() {
+        assert_eq!(scroll_to_row(100.0, 300.0, 4, 50.0), 100.0);
+        assert_eq!(scroll_to_row(0.0, 300.0, 0, 50.0), 0.0);
+    }
+
+    #[test]
+    fn scroll_to_row_does_not_move_when_the_viewport_is_unknown() {
+        // 初回フレームなど、領域の高さが未確定（0）の間は下方向へ動かさない
+        assert_eq!(scroll_to_row(0.0, 0.0, 20, 50.0), 0.0);
+    }
+
+    #[test]
+    fn only_the_thumbnail_column_cannot_be_resized() {
+        assert_eq!(Col::Thumb.resize_index(), None);
+        let idx: Vec<_> = [Col::Dup, Col::Name, Col::Size, Col::Mtime, Col::Rating, Col::Visits]
+            .into_iter()
+            .map(|c| c.resize_index())
+            .collect();
+        assert_eq!(idx, (0..6).map(Some).collect::<Vec<_>>());
+    }
+
+    #[test]
     fn row_height_never_goes_below_the_minimum() {
         assert_eq!(row_height(ListSize::S, 40.0), MIN_ROW_H);
         assert_eq!(row_height(ListSize::Hover, 400.0), MIN_ROW_H, "ホバー形式はサムネ設定に依らず文字のみの高さ");
@@ -391,7 +536,7 @@ mod tests {
 
     #[test]
     fn columns_tile_the_row_without_gaps_or_overlap() {
-        let widths = column_widths(40.0);
+        let widths = column_widths(40.0, &ListColumns::default());
         let row = egui::Rect::from_min_size(egui::pos2(10.0, 5.0), egui::vec2(widths.iter().sum(), 30.0));
         let cols = [Col::Dup, Col::Thumb, Col::Name, Col::Size, Col::Mtime, Col::Rating, Col::Visits];
         let mut x = row.min.x;

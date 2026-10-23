@@ -432,6 +432,8 @@ pub struct AppState {
     /// エクスプローラー中央部の表示モード（カード／リスト／一覧とリストのサイズ）。
     /// `"<mode>:<size>"`（例 `list:m`）。値は ExplorerViewMode 側で解釈する。
     pub explorer_view_mode: String,
+    /// リストの列幅（サムネ列を除く6列のカンマ区切り）。空は既定幅。値は ListColumns 側で解釈する。
+    pub explorer_list_cols: String,
 }
 
 impl Default for AppState {
@@ -475,6 +477,7 @@ impl Default for AppState {
             tag_panel_edit_expanded: false,
             tag_preview_high_quality: false,
             explorer_view_mode: "card:s".to_string(),
+            explorer_list_cols: String::new(),
         }
     }
 }
@@ -533,6 +536,7 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
     let mut card_info_mode: Option<String> = None;
     let mut card_rating_mode: Option<String> = None;
     let mut explorer_view_mode: Option<String> = None;
+    let mut explorer_list_cols: Option<String> = None;
     // カード日付書式の6キー（未記載は CardDateFormat::from_state 側で各既定へフォールバック）
     let mut card_date_mode = String::new();
     let mut card_date_auto_style = String::new();
@@ -684,6 +688,7 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
                 "card_info_mode" => { card_info_mode = Some(v.trim().to_string()); }
                 "card_rating_mode" => { card_rating_mode = Some(v.trim().to_string()); }
                 "explorer_view_mode" => { explorer_view_mode = Some(v.trim().to_string()); }
+                "explorer_list_cols" => { explorer_list_cols = Some(v.trim().to_string()); }
                 "card_date_mode" => { card_date_mode = v.trim().to_string(); }
                 "card_date_auto_style" => { card_date_auto_style = v.trim().to_string(); }
                 "card_date_order" => { card_date_order = v.trim().to_string(); }
@@ -1010,6 +1015,7 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
         tag_panel_edit_expanded: false,
         tag_preview_high_quality: tag_preview_high_quality.unwrap_or(false),
         explorer_view_mode: explorer_view_mode.unwrap_or_else(|| "card:s".to_string()),
+        explorer_list_cols: explorer_list_cols.unwrap_or_default(),
     })
 }
 
@@ -1032,7 +1038,7 @@ fn magnifier_state_lines(m: &crate::magnifier::MagnifierConfig) -> String {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn save_state(root: &Path, dir: &Path, window_size: (u32, u32), viewer_slots: &[Option<WindowSlot>; 4], sort_state: &SortState, lang: &str, viewer_cfg: &ViewerConfig, show_hidden: bool, card_info_mode: &str, card_rating_mode: &str, card_date_format: &CardDateFormat, app_cfg: &AppConfig, translate_cfg: &TranslateConfig, tab_positions: &TabPositions, tree_sorts: &crate::tree_sort::TreeSorts, tag_panel_open: bool, tag_preview_high_quality: bool, explorer_view_mode: &str) {
+pub fn save_state(root: &Path, dir: &Path, window_size: (u32, u32), viewer_slots: &[Option<WindowSlot>; 4], sort_state: &SortState, lang: &str, viewer_cfg: &ViewerConfig, show_hidden: bool, card_info_mode: &str, card_rating_mode: &str, card_date_format: &CardDateFormat, app_cfg: &AppConfig, translate_cfg: &TranslateConfig, tab_positions: &TabPositions, tree_sorts: &crate::tree_sort::TreeSorts, tag_panel_open: bool, tag_preview_high_quality: bool, explorer_view_mode: &str, explorer_list_cols: &str) {
     let _ = std::fs::create_dir_all(root);
     let (path, bak, tmp) = (state_path(root), state_bak_path(root), state_tmp_path(root));
 
@@ -1043,7 +1049,7 @@ pub fn save_state(root: &Path, dir: &Path, window_size: (u32, u32), viewer_slots
         viewer_cfg.redecode_on_resize, viewer_cfg.resize_debounce_ms, show_hidden, card_info_mode, card_rating_mode,
         sort_state.rating.state_key(), sort_state.rating.ascending, tag_panel_open, tag_preview_high_quality,
     );
-    content.push_str(&format!("explorer_view_mode={explorer_view_mode}\n"));
+    content.push_str(&format!("explorer_view_mode={explorer_view_mode}\nexplorer_list_cols={explorer_list_cols}\n"));
     // フォルダ系タブ（お気に入り・検索・仮想フォルダ）の最後の位置（Some のものだけ）
     content.push_str(&tab_positions.state_lines());
     // ツリーの並び条件（Some のものだけ）
@@ -1495,6 +1501,22 @@ mod tests {
         std::fs::write(state_path(&root), "last_dir=/tmp/x\nlang=ja\n").unwrap();
         let parsed = parse_state_file(&state_path(&root)).expect("state file parses");
         assert_eq!(parsed.explorer_view_mode, "card:s");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn explorer_list_cols_key_round_trips_and_defaults_to_empty() {
+        let root = std::env::temp_dir()
+            .join(format!("nekoviewer_state_list_cols_test_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&root);
+        std::fs::write(state_path(&root), "last_dir=/tmp/x\nlang=ja\nexplorer_list_cols=24,300,90,160,120,80\n").unwrap();
+        let parsed = parse_state_file(&state_path(&root)).expect("state file parses");
+        assert_eq!(parsed.explorer_list_cols, "24,300,90,160,120,80");
+
+        // 旧stateにキーがなければ空（= 既定幅）
+        std::fs::write(state_path(&root), "last_dir=/tmp/x\nlang=ja\n").unwrap();
+        let parsed = parse_state_file(&state_path(&root)).expect("state file parses");
+        assert_eq!(parsed.explorer_list_cols, "");
         let _ = std::fs::remove_dir_all(&root);
     }
 

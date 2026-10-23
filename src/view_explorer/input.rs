@@ -589,7 +589,18 @@ impl NekoviewApp {
                 .and_then(|path| std::fs::metadata(path).ok())
                 .map(|m| (m.modified().unwrap_or(std::time::UNIX_EPOCH), m.len()));
         }
-        if let Some(target_pos) = move_to {
+        if let Some(target_pos) = move_to
+            && self.view_mode.mode != super::view_mode::ViewMode::Card
+        {
+            // リスト・一覧: 1行1項目。行の高さ・隙間はリストの計算に合わせる（カードのピッチは使わない）。
+            let row_h = self.list_metrics().row_h;
+            self.explorer_scroll_offset = super::list_view::scroll_to_row(
+                self.explorer_scroll_offset,
+                self.explorer_viewport_h,
+                target_pos,
+                row_h,
+            );
+        } else if let Some(target_pos) = move_to {
             let row = target_pos / cols;
             let item_top = row as f32 * (cell_h + KEY_GAP);
             let item_bottom = item_top + cell_h;

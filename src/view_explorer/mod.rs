@@ -1154,6 +1154,10 @@ pub struct NekoviewApp {
     pub(crate) card_rating_mode: CardRatingMode,
     /// 中央部の表示モード（カード／リスト／一覧）。全タブ共通。
     pub(crate) view_mode: view_mode::ExplorerViewMode,
+    /// リストの列幅（サムネ列を除く6列）。全モード・全タブ共通で保存する。
+    pub(crate) list_cols: list_columns::ListColumns,
+    /// リスト本体の横スクロール量（固定の列見出しを同じだけずらすため、直前のフレームの値）。
+    list_scroll_x: f32,
     /// 情報帯の「更新日時」行に使う日付書式。設定ダイアログのエクスプローラータブで編集。
     pub(crate) card_date_format: crate::card_date_format::CardDateFormat,
     /// 情報帯の見た目（背景色・透過度・文字色・文字サイズ）。今は Default 固定。
@@ -1298,13 +1302,14 @@ mod grid_anchor;
 mod view_mode;
 mod selection;
 mod list_view;
+mod list_columns;
 
 #[cfg(test)]
 mod glyph_audit;
 
 
 impl NekoviewApp {
-    pub fn new(start_dir: PathBuf, config: AppConfig, viewer_slots: [Option<WindowSlot>; 4], sort_state: SortState, viewer_cfg: ViewerConfig, show_hidden: bool, card_info_mode: &str, card_rating_mode: &str, card_date_format: crate::card_date_format::CardDateFormat, translate_cfg: crate::translate::TranslateConfig, tab_positions: crate::gui_config::TabPositions, tree_sorts: crate::tree_sort::TreeSorts, tag_panel_open: bool, tag_preview_high_quality: bool, explorer_view_mode: &str, open_target: Option<PathBuf>, ctx: egui::Context) -> Self {
+    pub fn new(start_dir: PathBuf, config: AppConfig, viewer_slots: [Option<WindowSlot>; 4], sort_state: SortState, viewer_cfg: ViewerConfig, show_hidden: bool, card_info_mode: &str, card_rating_mode: &str, card_date_format: crate::card_date_format::CardDateFormat, translate_cfg: crate::translate::TranslateConfig, tab_positions: crate::gui_config::TabPositions, tree_sorts: crate::tree_sort::TreeSorts, tag_panel_open: bool, tag_preview_high_quality: bool, explorer_view_mode: &str, explorer_list_cols: &str, open_target: Option<PathBuf>, ctx: egui::Context) -> Self {
         // 「前回フォルダに復帰」がオフなら、他のフォルダ系タブの保存位置も復元しない（既定に戻す）
         let tab_positions = if config.startup.use_last_dir {
             tab_positions
@@ -1556,6 +1561,8 @@ impl NekoviewApp {
             card_info_mode: CardInfoMode::from_state_str(card_info_mode),
             card_rating_mode: CardRatingMode::from_state_str(card_rating_mode),
             view_mode: view_mode::ExplorerViewMode::from_state_str(explorer_view_mode),
+            list_cols: list_columns::ListColumns::from_state_str(explorer_list_cols),
+            list_scroll_x: 0.0,
             card_date_format,
             card_info_style: CardInfoStyle::default(),
             card_info_hover: None,
@@ -1655,6 +1662,7 @@ impl NekoviewApp {
             self.tag_panel_open,
             self.tag_preview_high_quality,
             &self.view_mode.as_state_str(),
+            &self.list_cols.as_state_str(),
         );
     }
 }
