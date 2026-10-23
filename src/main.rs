@@ -8,6 +8,7 @@ mod controller;
 mod decode_jobs;
 mod db_backup;
 mod dev_db_backup;
+mod duplicate_marker;
 mod explorer_sort;
 mod favorites;
 mod file_identity;

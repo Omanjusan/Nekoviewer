@@ -363,7 +363,8 @@ pub(super) fn process_batch_with(
         };
         let key = keys.key(dir, name);
         match file_identity::resolve_file(db, &key, path, now, false) {
-            ResolveOutcome::Resolved(Resolution::Moved { from, .. }) => {
+            ResolveOutcome::Resolved(Resolution::Moved { id, from }) => {
+                crate::duplicate_marker::record_moved(db, id, now);
                 on_relocated(path, &from);
                 chunk.refresh.push(path.clone());
                 chunk.settled.push(path.clone());
@@ -371,7 +372,11 @@ pub(super) fn process_batch_with(
             ResolveOutcome::Resolved(Resolution::Copied { id, source }) => {
                 // 対象に既にデータが付いた等で複製できなくても、新ファイルは空のまま使える（無視してよい）。
                 let _ = crate::spread_state::clone_inheritable_data(db, source, id);
-                if let Some(src) = record_by_id(db, source) {
+                let src = record_by_id(db, source);
+                // 更新日時が同じなら「コピーしただけ」の可能性が高い（再取得マーカーの補助表示）。
+                let mtime_match = matches!((&src, record_by_id(db, id)), (Some(s), Some(n)) if s.mtime == n.mtime);
+                crate::duplicate_marker::record_reacquired(db, id, &[source], mtime_match, now);
+                if let Some(src) = src {
                     on_relocated(path, &src.path_key);
                 }
                 chunk.refresh.push(path.clone());
@@ -1137,6 +1142,116 @@ mod tests {
         let db = open_spread_db(&t.0).unwrap();
         crate::favorites::init_favorite_tables(&db).unwrap();
         db
+    }
+
+    fn id_of(db: &Arc<Mutex<Database>>, path: &Path) -> u64 {
+        let key = KeyMaker::default().key(path.parent().unwrap(), path.file_name().unwrap().to_str().unwrap());
+        file_identity::lookup(db, &key).unwrap().id
+    }
+
+    #[test]
+    fn a_move_leaves_a_moved_marker_on_the_moved_id() {
+        let t = TempRoot::new("d1_moved");
+        let db = new_env(&t);
+        let (d1, d2) = (t.dir("d1"), t.dir("d2"));
+        let p1 = twin(&d1, "a.zip");
+        run(&db, &[p1.clone()]);
+        let id = id_of(&db, &p1);
+        assert!(crate::duplicate_marker::get(&db, id).is_none(), "初回の登録はマーカーにしない");
+
+        let p2 = d2.join("renamed.zip");
+        std::fs::rename(&p1, &p2).unwrap();
+        run(&db, &[p2.clone()]);
+
+        let m = crate::duplicate_marker::get(&db, id).unwrap();
+        assert_eq!((m.kind, m.targets.is_empty()), (crate::duplicate_marker::MarkerKind::Moved, true));
+        assert_eq!(id_of(&db, &p2), id, "IDは移動先へ付いて来る");
+    }
+
+    #[test]
+    fn a_copy_leaves_a_reacquired_marker_pointing_at_the_source() {
+        let t = TempRoot::new("d1_copy");
+        let db = new_env(&t);
+        let (d1, d2) = (t.dir("d1"), t.dir("d2"));
+        let src = twin(&d1, "a.zip");
+        run(&db, &[src.clone()]);
+        assert!(write_archive_rating(&db, &d1, "a.zip", 8)); // データがあるときだけ Copied になる
+        let copy = twin(&d2, "b.zip");
+        // 更新日時を元と同じにする（一致の判定を秒またぎで揺らさない）。
+        let src_mtime = std::fs::metadata(&src).unwrap().modified().unwrap();
+        std::fs::OpenOptions::new().write(true).open(&copy).unwrap().set_modified(src_mtime).unwrap();
+        run(&db, &[copy.clone()]);
+
+        let (src_id, copy_id) = (id_of(&db, &src), id_of(&db, &copy));
+        let m = crate::duplicate_marker::get(&db, copy_id).unwrap();
+        assert_eq!((m.kind, m.targets.clone(), m.mtime_match), (crate::duplicate_marker::MarkerKind::Reacquired, vec![src_id], true));
+        assert_eq!(crate::duplicate_marker::owners_of(&db, src_id), vec![copy_id], "元の側から逆引きできる");
+        assert!(crate::duplicate_marker::get(&db, src_id).is_none(), "元のファイル自身にはマーカーを付けない");
+    }
+
+    #[test]
+    fn a_copy_with_a_different_mtime_is_not_flagged_as_matching() {
+        let t = TempRoot::new("d1_copy_mtime");
+        let db = new_env(&t);
+        let (d1, d2) = (t.dir("d1"), t.dir("d2"));
+        let src = twin(&d1, "a.zip");
+        run(&db, &[src.clone()]);
+        assert!(write_archive_rating(&db, &d1, "a.zip", 8));
+        let copy = file(&d2, "b.zip", 4000, 5000);
+        run(&db, &[copy.clone()]);
+        assert!(!crate::duplicate_marker::get(&db, id_of(&db, &copy)).unwrap().mtime_match);
+    }
+
+    #[test]
+    fn ambiguous_resolutions_leave_no_marker() {
+        let t = TempRoot::new("d1_ambiguous");
+        let db = new_env(&t);
+        let (d1, d2, d3) = (t.dir("d1"), t.dir("d2"), t.dir("d3"));
+        let a = twin(&d1, "a.zip");
+        run(&db, &[a.clone()]);
+        assert!(write_archive_rating(&db, &d1, "a.zip", 8));
+        let b = twin(&d2, "b.zip");
+        run(&db, &[b.clone()]);
+        assert!(write_archive_rating(&db, &d2, "b.zip", 2));
+        let c = twin(&d3, "c.zip");
+        run(&db, &[c.clone()]); // 引き継ぎ元が決められない
+        assert!(crate::duplicate_marker::get(&db, id_of(&db, &c)).is_none());
+    }
+
+    #[test]
+    fn deleting_an_id_clears_its_marker_and_trims_markers_pointing_at_it() {
+        let t = TempRoot::new("d1_delete");
+        let db = new_env(&t);
+        let (d1, d2) = (t.dir("d1"), t.dir("d2"));
+        let src = twin(&d1, "a.zip");
+        run(&db, &[src.clone()]);
+        assert!(write_archive_rating(&db, &d1, "a.zip", 8));
+        let copy = twin(&d2, "b.zip");
+        run(&db, &[copy.clone()]);
+        let (src_id, copy_id) = (id_of(&db, &src), id_of(&db, &copy));
+        assert!(crate::duplicate_marker::get(&db, copy_id).is_some());
+
+        // 重複先（元）のIDが消えると、尽きた再取得マーカーも消える。
+        file_identity::delete_id(&db, src_id).unwrap();
+        assert!(crate::duplicate_marker::get(&db, copy_id).is_none());
+        assert!(crate::duplicate_marker::owners_of(&db, src_id).is_empty());
+    }
+
+    #[test]
+    fn deleting_the_marked_id_clears_its_row_and_reverse_index() {
+        let t = TempRoot::new("d1_delete_owner");
+        let db = new_env(&t);
+        let (d1, d2) = (t.dir("d1"), t.dir("d2"));
+        let src = twin(&d1, "a.zip");
+        run(&db, &[src.clone()]);
+        assert!(write_archive_rating(&db, &d1, "a.zip", 8));
+        let copy = twin(&d2, "b.zip");
+        run(&db, &[copy.clone()]);
+        let (src_id, copy_id) = (id_of(&db, &src), id_of(&db, &copy));
+
+        file_identity::delete_id(&db, copy_id).unwrap();
+        assert!(crate::duplicate_marker::get(&db, copy_id).is_none());
+        assert!(crate::duplicate_marker::owners_of(&db, src_id).is_empty());
     }
 
     #[test]

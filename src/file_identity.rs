@@ -702,6 +702,7 @@ fn apply(
                             t.fps.remove(f.as_slice(), cur.id).map_err(db_err)?;
                         }
                         t.ids.remove(cur.id).map_err(db_err)?;
+                        crate::duplicate_marker::forget_id_tx(&tx, cur.id).ok_or(IdentityError::Db)?;
                         let kept = t.relocate(orphan_cur, path_key, obs, now)?;
                         Resolution::Merged { kept: kept.id, dropped: cur.id }
                     }
@@ -858,6 +859,7 @@ pub fn adopt_orphan(
             t.fps.remove(f.as_slice(), blank.id).map_err(db_err)?;
         }
         t.ids.remove(blank.id).map_err(db_err)?;
+        crate::duplicate_marker::forget_id_tx(&tx, blank.id).ok_or(IdentityError::Db)?;
         // 空のIDが持っていた観測（サイズ・mtime・FP・ボリューム）を、孤児へ引き継ぐ。
         let obs = Observation { size: blank.size, mtime: blank.mtime, volume: blank.volume.clone(), fp: blank.fp };
         t.relocate(orphan, &blank.path_key, &obs, now)?;
@@ -895,6 +897,7 @@ pub fn delete_id(db: &Arc<Mutex<Database>>, id: u64) -> Result<(), IdentityError
             v1.remove(key).map_err(db_err)?;
         }
     }
+    crate::duplicate_marker::forget_id_tx(&tx, id).ok_or(IdentityError::Db)?;
     tx.commit().map_err(db_err)?;
     Ok(())
 }
