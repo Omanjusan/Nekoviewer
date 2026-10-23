@@ -2872,8 +2872,26 @@ impl NekoviewApp {
         // 列数が変わったフレームでは、見ていた位置（選択カード、無ければ上端の行）を保つように
         // オフセットを決め直す。ScrollAreaへ渡す前に適用する。
         let grid_total = folder_entries.len() + self.filtered_indices.len();
-        // （リスト表示は行高が違うので位置補正の対象外。U2 で対応する）
+        // 表示の形（カード↔リスト・リストのサイズ・サムネ設定）が変わったフレームでは、見ていた位置を保つ
+        // ようにオフセットを決め直す（layout_anchor.rs）。列数だけが変わる補正は下の grid_anchor が担う。
+        let geometry = if list_mode {
+            let row_h = self.list_metrics().row_h;
+            super::layout_anchor::Geometry { cols: 1, item_h: row_h, pitch: row_h + super::list_view::ROW_GAP, is_list: true }
+        } else {
+            super::layout_anchor::Geometry { cols, item_h: cell_h, pitch: cell_h + GAP, is_list: false }
+        };
+        let layout_changed = match &self.layout_snapshot {
+            Some(prev) => {
+                if let Some(offset) = super::layout_anchor::compensated_offset(prev, &geometry, grid_total) {
+                    self.explorer_scroll_offset = offset;
+                }
+                super::layout_anchor::needs_compensation(&prev.geometry, &geometry)
+            }
+            None => false,
+        };
+        // リストは grid_anchor の対象外。形が変わったフレームのカードも、上で補正済みなので二重にしない。
         if !list_mode
+            && !layout_changed
             && let Some(offset) = self.grid_anchor.begin_frame(cols, self.explorer_scroll_offset, cell_h, grid_total)
         {
             self.explorer_scroll_offset = offset;
@@ -3394,6 +3412,13 @@ impl NekoviewApp {
             GridEntry::Archive(idx) => self.filtered_indices.iter().position(|&i| i == idx)
                 .map(|p| folder_entries.len() + p),
             other => folder_entries.iter().position(|f| *f == other),
+        });
+        self.layout_snapshot = Some(super::layout_anchor::Snapshot {
+            geometry,
+            offset: self.explorer_scroll_offset,
+            viewport_h: self.explorer_viewport_h,
+            total: grid_total,
+            selected: selected_pos,
         });
         if !list_mode {
             self.grid_anchor.end_frame(self.explorer_scroll_offset, self.explorer_viewport_h, cell_h, cols, grid_total, selected_pos);

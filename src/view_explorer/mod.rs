@@ -1215,6 +1215,8 @@ pub struct NekoviewApp {
     explorer_viewport_h: f32,
     /// 列数が変わった時（タグパネル開閉・リサイズ）に見ていた位置を保つための基準カード
     grid_anchor: grid_anchor::GridScrollAnchor,
+    /// 直前のフレーム末尾のレイアウトと見え方（カード↔リスト・サイズ変更時の位置補正用）
+    layout_snapshot: Option<layout_anchor::Snapshot>,
     /// フォルダ名ラベルの1秒ホバー救済用: (対象パス, ホバー開始時刻)
     folder_label_hover: Option<(PathBuf, std::time::Instant)>,
     /// ステータスウィンドウ表示フラグ（[stat] ボタンでトグル）
@@ -1303,6 +1305,7 @@ mod view_mode;
 mod selection;
 mod list_view;
 mod list_columns;
+mod layout_anchor;
 
 #[cfg(test)]
 mod glyph_audit;
@@ -1596,6 +1599,7 @@ impl NekoviewApp {
             explorer_scroll_offset: 0.0,
             explorer_viewport_h: 0.0,
             grid_anchor: Default::default(),
+            layout_snapshot: None,
             folder_label_hover: None,
             show_status_window: false,
             help_enabled: false,

@@ -20,7 +20,7 @@ use super::*;
 
 const HEADER_H: f32 = 22.0;
 /// 行どうしの縦の隙間（px）。スクロール位置の計算（行ピッチ）と共有する。
-const ROW_GAP: f32 = 1.0;
+pub(super) const ROW_GAP: f32 = 1.0;
 /// 見出しの列境界の、つかめる幅（px。境界線を中心に左右へ）。
 const RESIZE_GRAB_W: f32 = 8.0;
 /// 行の高さの下限。ホバー形式（文字のみ）の行の高さでもある。
