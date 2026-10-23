@@ -1782,6 +1782,55 @@ impl Lang {
         }
     }
 
+    /// リスト・一覧の列見出し
+    pub fn list_col_dup(self) -> &'static str {
+        match self {
+            Lang::Japanese => "重複",
+            Lang::English  => "Dup",
+            Lang::Chinese  => "重复",
+        }
+    }
+
+    pub fn list_col_name(self) -> &'static str {
+        match self {
+            Lang::Japanese => "名前",
+            Lang::English  => "Name",
+            Lang::Chinese  => "名称",
+        }
+    }
+
+    pub fn list_col_size(self) -> &'static str {
+        match self {
+            Lang::Japanese => "サイズ",
+            Lang::English  => "Size",
+            Lang::Chinese  => "大小",
+        }
+    }
+
+    pub fn list_col_mtime(self) -> &'static str {
+        match self {
+            Lang::Japanese => "更新日時",
+            Lang::English  => "Modified",
+            Lang::Chinese  => "修改时间",
+        }
+    }
+
+    pub fn list_col_rating(self) -> &'static str {
+        match self {
+            Lang::Japanese => "評価",
+            Lang::English  => "Rating",
+            Lang::Chinese  => "评分",
+        }
+    }
+
+    pub fn list_col_visits(self) -> &'static str {
+        match self {
+            Lang::Japanese => "訪問回数",
+            Lang::English  => "Visits",
+            Lang::Chinese  => "访问次数",
+        }
+    }
+
     pub fn view_mode_text_label(self) -> &'static str {
         match self {
             Lang::Japanese => "一覧",

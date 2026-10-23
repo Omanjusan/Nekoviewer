@@ -8,6 +8,10 @@
 //! 全タブ共通で1つ。リストのサイズはカード／一覧にいる間も覚えておき、リストへ戻ったときに復元する。
 //! 保存は `nekoviewer.state` の `explorer_view_mode`（`"<mode>:<size>"`、例 `list:m`）。
 
+/// 一覧モードの有効/封印。一覧の仕様が未確定のため封印中（ボタンは残して無反応）。
+/// 仕様が固まったら true にして復活させる。描画の実装（`list_view.rs`）は残してある。
+pub(crate) const TEXT_MODE_ENABLED: bool = false;
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub(crate) enum ViewMode {
     #[default]
@@ -68,8 +72,11 @@ impl ExplorerViewMode {
         self.mode = ViewMode::Card;
     }
 
+    /// 一覧ボタンの押下。封印中（`TEXT_MODE_ENABLED` が false）は何もしない。
     pub(crate) fn select_text(&mut self) {
-        self.mode = ViewMode::Text;
+        if TEXT_MODE_ENABLED {
+            self.mode = ViewMode::Text;
+        }
     }
 
     /// リストボタンの押下。別のモードからはリストへ入り（サイズは前回のまま）、
@@ -91,13 +98,13 @@ impl ExplorerViewMode {
         format!("{mode}:{}", self.list_size.as_state_str())
     }
 
-    /// 未知・欠落は既定（カード・S）。
+    /// 未知・欠落は既定（カード・S）。一覧は封印中はカードに戻す（以前の保存値で封印中の画面に入らないように）。
     pub(crate) fn from_state_str(s: &str) -> Self {
         let (mode, size) = s.split_once(':').unwrap_or((s, ""));
         Self {
             mode: match mode {
                 "list" => ViewMode::List,
-                "text" => ViewMode::Text,
+                "text" if TEXT_MODE_ENABLED => ViewMode::Text,
                 _ => ViewMode::Card,
             },
             list_size: ListSize::from_state_str(size),
@@ -127,8 +134,8 @@ mod tests {
         assert_eq!(m, ExplorerViewMode { mode: ViewMode::List, list_size: ListSize::L });
         m.press_list();
         assert_eq!(m.list_size, ListSize::Hover, "リストにいる間の押下はサイズを循環する");
-        m.select_text();
-        assert_eq!(m.list_size, ListSize::Hover, "一覧にいる間もサイズを覚える");
+        m.select_card();
+        assert_eq!(m.list_size, ListSize::Hover, "カードにいる間もサイズを覚える");
         m.press_list();
         assert_eq!(m, ExplorerViewMode { mode: ViewMode::List, list_size: ListSize::Hover });
         m.select_card();
@@ -137,7 +144,7 @@ mod tests {
 
     #[test]
     fn state_string_round_trips_for_every_combination() {
-        for mode in [ViewMode::Card, ViewMode::List, ViewMode::Text] {
+        for mode in [ViewMode::Card, ViewMode::List] {
             for list_size in [ListSize::S, ListSize::M, ListSize::L, ListSize::Hover] {
                 let v = ExplorerViewMode { mode, list_size };
                 assert_eq!(ExplorerViewMode::from_state_str(&v.as_state_str()), v);
@@ -154,8 +161,25 @@ mod tests {
         assert_eq!(ExplorerViewMode::from_state_str("bogus:zzz"), default);
         // サイズだけ壊れていてもモードは活かす
         assert_eq!(
-            ExplorerViewMode::from_state_str("text:zzz"),
-            ExplorerViewMode { mode: ViewMode::Text, list_size: ListSize::S }
+            ExplorerViewMode::from_state_str("list:zzz"),
+            ExplorerViewMode { mode: ViewMode::List, list_size: ListSize::S }
+        );
+    }
+
+    #[test]
+    fn text_mode_is_sealed_while_its_spec_is_undecided() {
+        assert!(!TEXT_MODE_ENABLED, "封印を解くときはこのテストと一緒に仕様を確認する");
+        // 一覧ボタンは無反応
+        let mut m = ExplorerViewMode { mode: ViewMode::Card, list_size: ListSize::M };
+        m.select_text();
+        assert_eq!(m.mode, ViewMode::Card);
+        let mut m = ExplorerViewMode { mode: ViewMode::List, list_size: ListSize::L };
+        m.select_text();
+        assert_eq!(m.mode, ViewMode::List, "リストにいても切り替わらない");
+        // 以前に保存された一覧はカードへ戻す（リストのサイズは残す）
+        assert_eq!(
+            ExplorerViewMode::from_state_str("text:m"),
+            ExplorerViewMode { mode: ViewMode::Card, list_size: ListSize::M }
         );
     }
 }

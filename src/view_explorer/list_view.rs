@@ -1,0 +1,406 @@
+//! リスト表示（カードの代わりに1行1項目で並べる）。
+//!
+//! 列: 重複（枠のみ。中身は重複機能で埋める）／サムネ／名前／サイズ／更新日時／評価／訪問回数。
+//! 行の高さはサムネ設定に対する S=25% / M=40% / L=60%。「ホバー」は行を文字のみにして、
+//! サムネは行にホバーしたときのポップアップに出す。列の幅は固定で、収まらないときは横スクロールする。
+//! フォルダ（「↑」・サブフォルダ・仮想フォルダ）も同じ列の行として並べる。
+//!
+//! 一覧（文字のみ）は、リストのホバー形式からポップアップを除いたもの（サムネ列なし・最小の行高）。
+//!
+//! 選択・開く・右クリックは、カードと同じ共通関数（`handle_archive_interaction` ほか）を使う。
+
+use std::path::PathBuf;
+
+use crate::i18n;
+
+use super::panels::{draw_cursor_ring, format_mtime, humanize_size};
+use super::view_mode::{ListSize, ViewMode};
+use super::*;
+
+const DUP_COL_W: f32 = 24.0;
+const NAME_COL_W: f32 = 360.0;
+const SIZE_COL_W: f32 = 90.0;
+const MTIME_COL_W: f32 = 160.0;
+const RATING_COL_W: f32 = 120.0;
+const VISITS_COL_W: f32 = 80.0;
+const HEADER_H: f32 = 22.0;
+/// 行の高さの下限。ホバー形式（文字のみ）の行の高さでもある。
+const MIN_ROW_H: f32 = 24.0;
+/// ホバー形式でフォルダのアイコンだけを置く列の幅。
+const HOVER_ICON_COL_W: f32 = 24.0;
+const CELL_PAD: f32 = 6.0;
+/// ホバーのポップアップをポインタからずらす量。
+const POPUP_OFFSET: f32 = 18.0;
+
+/// 表示モードから、行の形式（実効のサイズ）とホバーのポップアップの有無を決める。
+/// 一覧は常に文字のみの行（= ホバー形式の見た目）で、ポップアップは出さない。
+fn layout_for(mode: ViewMode, list_size: ListSize) -> (ListSize, bool) {
+    match mode {
+        ViewMode::Text => (ListSize::Hover, false),
+        _ => (list_size, list_size == ListSize::Hover),
+    }
+}
+
+/// リスト行の高さ。`thumb_size` はサムネ設定（px）。
+pub(super) fn row_height(size: ListSize, thumb_size: f32) -> f32 {
+    let ratio = match size {
+        ListSize::S => 0.25,
+        ListSize::M => 0.40,
+        ListSize::L => 0.60,
+        ListSize::Hover => return MIN_ROW_H,
+    };
+    (thumb_size * ratio).max(MIN_ROW_H)
+}
+
+/// サムネ列の幅。ホバー形式はフォルダアイコン分だけ。
+fn thumb_col_width(size: ListSize, row_h: f32) -> f32 {
+    match size {
+        ListSize::Hover => HOVER_ICON_COL_W,
+        _ => (row_h / std::f32::consts::SQRT_2).round() + CELL_PAD,
+    }
+}
+
+/// 列の幅（重複・サムネ・名前・サイズ・更新日時・評価・訪問回数）。
+fn column_widths(thumb_w: f32) -> [f32; 7] {
+    [DUP_COL_W, thumb_w, NAME_COL_W, SIZE_COL_W, MTIME_COL_W, RATING_COL_W, VISITS_COL_W]
+}
+
+#[derive(Clone, Copy)]
+enum Col {
+    Dup = 0,
+    Thumb = 1,
+    Name = 2,
+    Size = 3,
+    Mtime = 4,
+    Rating = 5,
+    Visits = 6,
+}
+
+/// 行の矩形から、指定した列の矩形を切り出す。
+fn col_rect(row: egui::Rect, widths: &[f32; 7], col: Col) -> egui::Rect {
+    let idx = col as usize;
+    let x: f32 = widths[..idx].iter().sum();
+    egui::Rect::from_min_size(egui::pos2(row.min.x + x, row.min.y), egui::vec2(widths[idx], row.height()))
+}
+
+/// 列の矩形内へ左寄せで文字を描く（はみ出しは列で切る）。
+fn cell_text(painter: &egui::Painter, rect: egui::Rect, text: &str, font: &egui::FontId, color: egui::Color32) {
+    let clipped = painter.with_clip_rect(rect.intersect(painter.clip_rect()));
+    clipped.text(
+        egui::pos2(rect.min.x + CELL_PAD, rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        text,
+        font.clone(),
+        color,
+    );
+}
+
+impl NekoviewApp {
+    /// リスト表示の本体。フォルダの行 → ファイルの行の順に並べる。
+    /// フォルダのダブルクリックで移動先があれば返す（開く処理は呼び出し側）。
+    /// `view_w` は表示領域の幅（行の背景を領域いっぱいに広げるため）。
+    pub(super) fn draw_archive_list(
+        &mut self,
+        ui: &mut egui::Ui,
+        folder_entries: &[GridEntry],
+        view_w: f32,
+    ) -> Option<GridNav> {
+        let (size, hover_popup) = layout_for(self.view_mode.mode, self.view_mode.list_size);
+        let row_h = row_height(size, self.config.thumb_size as f32);
+        let thumb_w = thumb_col_width(size, row_h);
+        let widths = column_widths(thumb_w);
+        let total_w: f32 = widths.iter().sum();
+        let row_w = total_w.max(view_w);
+        let font = egui::FontId::proportional((row_h * 0.5).clamp(11.0, 15.0));
+        let grid_focused = self.focused_pane == FocusPane::Grid;
+        // サムネ列を出さない形式（ホバー・一覧）。ポップアップを出すのはリストのホバーだけ。
+        let text_only = size == ListSize::Hover;
+        let mut nav: Option<GridNav> = None;
+        ui.spacing_mut().item_spacing.y = 1.0;
+
+        self.draw_list_header(ui, &widths, row_w);
+
+        for entry in folder_entries {
+            let (rect, response) = ui.allocate_exact_size(egui::vec2(row_w, row_h), egui::Sense::click());
+            if ui.is_rect_visible(rect) && response.hovered() {
+                ui.painter().rect_filled(rect, 0.0, ui.visuals().faint_bg_color);
+            }
+            match entry {
+                GridEntry::Up(parent) => {
+                    self.paint_folder_row(ui, rect, &widths, &font, "..", None, false);
+                    if self.finish_real_folder_cell(ui, rect, &response, entry.clone(), parent, grid_focused) {
+                        nav = Some(GridNav::Real(parent.clone()));
+                    }
+                }
+                GridEntry::Subdir(dir) => {
+                    let name = dir.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
+                    let mtime = self.subdir_mtimes.get(dir).copied();
+                    self.paint_folder_row(ui, rect, &widths, &font, &name, mtime, false);
+                    if self.finish_real_folder_cell(ui, rect, &response, entry.clone(), dir, grid_focused) {
+                        nav = Some(GridNav::Real(dir.clone()));
+                    }
+                }
+                GridEntry::VirtualUp(target) => {
+                    self.paint_folder_row(ui, rect, &widths, &font, "..", None, false);
+                    let folder_target = self.node_folder_target(*target);
+                    if self.finish_virtual_card(ui, rect, &response, entry.clone(), folder_target, grid_focused) {
+                        nav = Some(GridNav::Virtual(*target));
+                    }
+                }
+                GridEntry::VirtualSubdir(id) => {
+                    if let Some((name, broken, mtime)) = self.virtual_row_info(*id) {
+                        self.paint_folder_row(ui, rect, &widths, &font, &name, mtime, broken);
+                    }
+                    let folder_target = self.node_folder_target(*id);
+                    if self.finish_virtual_card(ui, rect, &response, entry.clone(), folder_target, grid_focused) {
+                        nav = Some(GridNav::Virtual(*id));
+                    }
+                }
+                GridEntry::Archive(_) => {}
+            }
+        }
+
+        // フィルタ適用中は filtered_indices のみ描画対象（カードと同じ）
+        let visible: Vec<(usize, PathBuf)> =
+            self.filtered_indices.iter().map(|&idx| (idx, self.archives[idx].clone())).collect();
+        let mut visible_order_range: Option<(usize, usize)> = None;
+        for (i, (real_idx, path)) in visible.iter().enumerate() {
+            let (rect, response) = ui.allocate_exact_size(egui::vec2(row_w, row_h), egui::Sense::click());
+            if ui.is_rect_visible(rect) {
+                if !text_only {
+                    visible_order_range = Some(match visible_order_range {
+                        Some((lo, hi)) => (lo.min(i), hi.max(i)),
+                        None => (i, i),
+                    });
+                }
+                self.paint_archive_row(ui, rect, &response, &widths, &font, *real_idx, path, text_only);
+            }
+            self.handle_archive_interaction(ui, &response, &visible, i);
+            if hover_popup && response.hovered() {
+                self.show_list_hover_thumbnail(ui, path);
+            }
+        }
+        if let Some((lo, hi)) = visible_order_range {
+            self.update_thumbnail_lookahead(&visible, lo, hi);
+        }
+        nav
+    }
+
+    fn draw_list_header(&self, ui: &mut egui::Ui, widths: &[f32; 7], row_w: f32) {
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(row_w, HEADER_H), egui::Sense::hover());
+        if !ui.is_rect_visible(rect) {
+            return;
+        }
+        let t = i18n::t();
+        let painter = ui.painter();
+        painter.rect_filled(rect, 0.0, ui.visuals().faint_bg_color);
+        let font = egui::FontId::proportional(12.0);
+        let color = ui.visuals().weak_text_color();
+        for (col, label) in [
+            (Col::Dup, t.list_col_dup()),
+            (Col::Name, t.list_col_name()),
+            (Col::Size, t.list_col_size()),
+            (Col::Mtime, t.list_col_mtime()),
+            (Col::Rating, t.list_col_rating()),
+            (Col::Visits, t.list_col_visits()),
+        ] {
+            cell_text(painter, col_rect(rect, widths, col), label, &font, color);
+        }
+    }
+
+    /// フォルダの行の中身（アイコン・名前・更新日時。リンク切れは名前の前に ⚠）。
+    #[allow(clippy::too_many_arguments)]
+    fn paint_folder_row(
+        &self,
+        ui: &egui::Ui,
+        rect: egui::Rect,
+        widths: &[f32; 7],
+        font: &egui::FontId,
+        name: &str,
+        mtime: Option<std::time::SystemTime>,
+        broken: bool,
+    ) {
+        if !ui.is_rect_visible(rect) {
+            return;
+        }
+        let painter = ui.painter();
+        let color = ui.visuals().text_color();
+        let icon_col = col_rect(rect, widths, Col::Thumb);
+        let side = (icon_col.height() - 6.0).min(icon_col.width() - 4.0).max(8.0);
+        let icon_rect = egui::Rect::from_center_size(icon_col.center(), egui::vec2(side, side));
+        nav_icons::draw_folder_icon(painter, icon_rect, nav_icons::NAV_ICON_COLOR);
+        let label = if broken { format!("⚠ {name}") } else { name.to_string() };
+        cell_text(painter, col_rect(rect, widths, Col::Name), &label, font, color);
+        if let Some(t) = mtime {
+            let text = format_mtime(t, &self.card_date_format, i18n::t());
+            cell_text(painter, col_rect(rect, widths, Col::Mtime), &text, font, color);
+        }
+    }
+
+    /// ファイルの行の中身（サムネ・名前・サイズ・更新日時・評価・訪問回数と、選択枠・カーソル）。
+    #[allow(clippy::too_many_arguments)]
+    fn paint_archive_row(
+        &mut self,
+        ui: &mut egui::Ui,
+        rect: egui::Rect,
+        response: &egui::Response,
+        widths: &[f32; 7],
+        font: &egui::FontId,
+        real_idx: usize,
+        path: &PathBuf,
+        text_only: bool,
+    ) {
+        let is_selected = super::selection::is_selected(&self.multi_selected, self.selected_archive_index, real_idx);
+        let is_raw = self.raw_image_files.contains(path);
+        let text_color = ui.visuals().text_color();
+
+        if is_selected {
+            let base = if is_raw { egui::Color32::from_rgb(220, 60, 60) } else { egui::Color32::from_rgb(50, 120, 230) };
+            ui.painter().rect_filled(rect, 0.0, base.gamma_multiply(0.22));
+            ui.painter().rect_stroke(rect, 0.0, egui::Stroke::new(1.5, base), egui::StrokeKind::Inside);
+        } else if response.hovered() {
+            ui.painter().rect_filled(rect, 0.0, ui.visuals().faint_bg_color);
+        }
+
+        if !text_only {
+            let thumb_col = col_rect(rect, widths, Col::Thumb);
+            let thumb_rect = thumb_col.shrink2(egui::vec2(CELL_PAD / 2.0, 2.0));
+            self.paint_archive_thumbnail(ui, thumb_rect, path);
+            if self.identity_verifying.contains(path) {
+                ui.painter().rect_filled(thumb_rect, 4.0, egui::Color32::from_black_alpha(110));
+            }
+        }
+
+        // 可視行ぶんだけメタデータを遅延取得（失敗時は次フレーム再試行。カードと同じ）
+        if !self.archive_meta_cache.contains_key(path)
+            && let Ok(md) = std::fs::metadata(path)
+        {
+            let mt = md.modified().unwrap_or(std::time::UNIX_EPOCH);
+            self.archive_meta_cache.insert(path.clone(), (mt, md.len()));
+        }
+        let meta = self.archive_meta_cache.get(path).copied();
+
+        let painter = ui.painter();
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        cell_text(painter, col_rect(rect, widths, Col::Name), name, font, text_color);
+        if let Some((mt, sz)) = meta {
+            cell_text(painter, col_rect(rect, widths, Col::Size), &humanize_size(sz), font, text_color);
+            let when = format_mtime(mt, &self.card_date_format, i18n::t());
+            cell_text(painter, col_rect(rect, widths, Col::Mtime), &when, font, text_color);
+        }
+
+        // 評価（未評価 or ★）と訪問回数。生画像は評価の対象外（カードと同じく「-」）。
+        let rating = self.archive_rating_of(path);
+        let rating_col = col_rect(rect, widths, Col::Rating);
+        let painter = ui.painter();
+        let half = rating.map_or(0, |r| r.rating_half);
+        if is_raw {
+            cell_text(painter, rating_col, "-", font, text_color);
+        } else if half == 0 {
+            cell_text(painter, rating_col, i18n::t().rating_unrated(), font, ui.visuals().weak_text_color());
+        } else {
+            let radius = crate::rating_overlay::fit_compact_radius(
+                (rect.height() * 0.3).clamp(5.0, 9.0),
+                rating_col.width() - CELL_PAD * 2.0,
+            );
+            let center = egui::pos2(rating_col.min.x + CELL_PAD + radius * 5.5, rating_col.center().y);
+            crate::rating_overlay::paint_compact_stars(painter, half, center, radius);
+        }
+        let visits = rating.map_or(0, |r| r.visit_count);
+        cell_text(painter, col_rect(rect, widths, Col::Visits), &visits.to_string(), font, text_color);
+
+        if self.focused_pane == FocusPane::Grid && self.grid_cursor.as_ref() == Some(&GridEntry::Archive(real_idx)) {
+            draw_cursor_ring(ui, rect);
+        }
+    }
+
+    /// ホバー形式: ポインタの横にサムネのポップアップを出す（遅延なし）。画面端では反対側へ寄せる。
+    fn show_list_hover_thumbnail(&mut self, ui: &egui::Ui, path: &PathBuf) {
+        let Some(pointer) = ui.input(|i| i.pointer.hover_pos()) else { return };
+        let cell_h = self.config.thumb_size as f32;
+        let cell_w = (cell_h / std::f32::consts::SQRT_2).round();
+        // Frame の内側余白ぶんを見込んだ全体サイズ
+        let margin = ui.spacing().window_margin;
+        let total = egui::vec2(
+            cell_w + f32::from(margin.left) + f32::from(margin.right),
+            cell_h + f32::from(margin.top) + f32::from(margin.bottom),
+        );
+        let screen = ui.ctx().content_rect();
+        let mut pos = pointer + egui::vec2(POPUP_OFFSET, POPUP_OFFSET);
+        if pos.x + total.x > screen.max.x {
+            pos.x = (pointer.x - POPUP_OFFSET - total.x).max(screen.min.x);
+        }
+        if pos.y + total.y > screen.max.y {
+            pos.y = (screen.max.y - total.y).max(screen.min.y);
+        }
+        let ctx = ui.ctx().clone();
+        egui::Area::new(egui::Id::new("list_hover_thumbnail"))
+            .order(egui::Order::Tooltip)
+            .fixed_pos(pos)
+            .interactable(false)
+            .show(&ctx, |ui| {
+                egui::Frame::popup(ui.style()).show(ui, |ui| {
+                    let (rect, _) = ui.allocate_exact_size(egui::vec2(cell_w, cell_h), egui::Sense::hover());
+                    self.paint_archive_thumbnail(ui, rect, path);
+                });
+            });
+        // サムネの生成が済むまで描き直して、できた時点で出す
+        if !self.thumbnails.contains_key(path) {
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn text_mode_is_a_text_only_row_without_the_hover_popup() {
+        // 一覧: リストのサイズ設定に依らず文字のみ・ポップアップなし
+        for size in [ListSize::S, ListSize::M, ListSize::L, ListSize::Hover] {
+            assert_eq!(layout_for(ViewMode::Text, size), (ListSize::Hover, false));
+        }
+    }
+
+    #[test]
+    fn list_mode_shows_the_popup_only_in_hover_size() {
+        assert_eq!(layout_for(ViewMode::List, ListSize::M), (ListSize::M, false));
+        assert_eq!(layout_for(ViewMode::List, ListSize::Hover), (ListSize::Hover, true));
+    }
+
+    #[test]
+    fn row_height_follows_the_thumbnail_setting_by_size() {
+        // f32 の比率なので厳密一致ではなく許容誤差で比べる
+        for (size, want) in [(ListSize::S, 50.0), (ListSize::M, 80.0), (ListSize::L, 120.0)] {
+            assert!((row_height(size, 200.0) - want).abs() < 0.01, "{size:?}");
+        }
+    }
+
+    #[test]
+    fn row_height_never_goes_below_the_minimum() {
+        assert_eq!(row_height(ListSize::S, 40.0), MIN_ROW_H);
+        assert_eq!(row_height(ListSize::Hover, 400.0), MIN_ROW_H, "ホバー形式はサムネ設定に依らず文字のみの高さ");
+    }
+
+    #[test]
+    fn hover_mode_has_only_an_icon_column_for_thumbnails() {
+        assert_eq!(thumb_col_width(ListSize::Hover, 24.0), HOVER_ICON_COL_W);
+        assert!(thumb_col_width(ListSize::L, 120.0) > thumb_col_width(ListSize::S, 50.0));
+    }
+
+    #[test]
+    fn columns_tile_the_row_without_gaps_or_overlap() {
+        let widths = column_widths(40.0);
+        let row = egui::Rect::from_min_size(egui::pos2(10.0, 5.0), egui::vec2(widths.iter().sum(), 30.0));
+        let cols = [Col::Dup, Col::Thumb, Col::Name, Col::Size, Col::Mtime, Col::Rating, Col::Visits];
+        let mut x = row.min.x;
+        for c in cols {
+            let r = col_rect(row, &widths, c);
+            assert_eq!(r.min.x, x);
+            assert_eq!((r.min.y, r.height()), (row.min.y, row.height()));
+            x = r.max.x;
+        }
+        assert_eq!(x, row.max.x);
+    }
+}

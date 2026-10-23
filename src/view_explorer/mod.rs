@@ -1297,6 +1297,7 @@ mod unreachable_clean_ui;
 mod grid_anchor;
 mod view_mode;
 mod selection;
+mod list_view;
 
 #[cfg(test)]
 mod glyph_audit;

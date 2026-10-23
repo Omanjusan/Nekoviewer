@@ -751,8 +751,14 @@ impl NekoviewApp {
         self.finish_virtual_card(ui, rect, &response, GridEntry::VirtualSubdir(node_id), folder_target, grid_focused)
     }
 
+    /// 仮想ノードの行表示用の情報: (名前, リンク切れか, 実フォルダの更新日時)。リスト表示で使う。
+    pub(super) fn virtual_row_info(&self, id: u32) -> Option<(String, bool, Option<std::time::SystemTime>)> {
+        let n = self.virtual_state.nodes.iter().find(|n| n.id == id)?;
+        Some((n.name.clone(), self.virtual_state.broken.contains(&id), self.virtual_state.mtimes.get(&id).copied()))
+    }
+
     /// 仮想ノードの実フォルダ。「このフォルダ」メニューの対象で、ルートとリンク切れは None。
-    fn node_folder_target(&self, id: u32) -> Option<PathBuf> {
+    pub(super) fn node_folder_target(&self, id: u32) -> Option<PathBuf> {
         if id == ROOT || self.virtual_state.broken.contains(&id) {
             return None;
         }
@@ -760,7 +766,7 @@ impl NekoviewApp {
     }
 
     /// 仮想カード共通の後処理（カーソルリング・クリック選択・右クリックメニュー）。
-    fn finish_virtual_card(
+    pub(super) fn finish_virtual_card(
         &mut self,
         ui: &egui::Ui,
         rect: egui::Rect,
@@ -773,10 +779,12 @@ impl NekoviewApp {
             super::panels::draw_cursor_ring(ui, rect);
         }
         if response.clicked() {
+            let prev_selected = self.selected_archive_index;
             self.focused_pane = FocusPane::Grid;
             self.grid_cursor = Some(entry);
             self.selected_archive_index = None;
             self.selected_archive_meta = None;
+            self.after_folder_click(ui, prev_selected);
         }
         // 実パスを持たない表示（`/`・リンク切れ）では viewing_dir が None で、開く対象が無い
         let open_dir = self.viewing_dir.clone();

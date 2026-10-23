@@ -2121,7 +2121,7 @@ impl NekoviewApp {
 
     /// パス行左端の表示モード切替: `[カード] [▼リストS] [一覧]`。選択中のモードはハイライト。
     /// リストボタンだけ押すたびにサイズが循環する（S→M→L→ホバー）。
-    /// [U1-a] 状態の切替と保存のみ。リスト・一覧の描画は未実装で、どのモードでもカード表示のまま。
+    /// 描画は `draw_archive_grid`（カード）と `list_view.rs`（リスト・一覧）。モードは全タブ共通で保存される。
     fn draw_view_mode_buttons(&mut self, ui: &mut egui::Ui) {
         use super::view_mode::{ListSize, ViewMode};
         let t = i18n::t();
@@ -2149,7 +2149,9 @@ impl NekoviewApp {
         if ui.add(list_btn).clicked() {
             self.view_mode.press_list();
         }
-        if ui.add(egui::Button::new(t.view_mode_text_label()).selected(mode == ViewMode::Text)).clicked() {
+        // 一覧は仕様未確定のため封印中（TEXT_MODE_ENABLED）。ボタンは残し、押せない表示にしておく。
+        let text_btn = egui::Button::new(t.view_mode_text_label()).selected(mode == ViewMode::Text);
+        if ui.add_enabled(super::view_mode::TEXT_MODE_ENABLED, text_btn).clicked() {
             self.view_mode.select_text();
         }
         ui.separator();
@@ -2197,7 +2199,10 @@ impl NekoviewApp {
         }
         });
 
-        if let Some((mtime, size_bytes)) = &self.selected_archive_meta {
+        // 選択ファイルの詳細行（更新日時・サイズ・名前）。リスト・一覧は行自体が同じ情報を持つので出さない。
+        if self.view_mode.mode == super::view_mode::ViewMode::Card
+            && let Some((mtime, size_bytes)) = &self.selected_archive_meta
+        {
             let filename = self.selected_archive_index
                 .and_then(|idx| self.archives.get(idx))
                 .and_then(|p| p.file_name())
@@ -2567,6 +2572,11 @@ impl NekoviewApp {
         if response.clicked() {
             // 選択枠は描画後に状態が変わるので、次の入力を待たず即座に描き直す。
             ui.ctx().request_repaint();
+            // カーソルを動かす前に、いまフォルダ（「↑」・サブフォルダ）に乗っているかを控える（Shiftの始点用）。
+            let cursor_on_folder = matches!(
+                self.grid_cursor,
+                Some(GridEntry::Up(_) | GridEntry::Subdir(_) | GridEntry::VirtualUp(_) | GridEntry::VirtualSubdir(_))
+            );
             self.focused_pane = FocusPane::Grid;
             self.grid_cursor = Some(GridEntry::Archive(real_idx));
             let modifiers = ui.input(|i| i.modifiers);
@@ -2576,11 +2586,17 @@ impl NekoviewApp {
                 self.select_anchor = Some(real_idx);
                 self.selected_archive_meta = None;
             } else if modifiers.shift {
-                // Shift+クリック: 起点からの範囲選択
-                let anchor = self.select_anchor.unwrap_or(real_idx);
-                let anchor_pos = visible.iter().position(|(idx, _)| *idx == anchor).unwrap_or(i);
-                let (from, to) = if anchor_pos <= i { (anchor_pos, i) } else { (i, anchor_pos) };
-                self.multi_selected = visible[from..=to].iter().map(|(idx, _)| *idx).collect();
+                // Shift+クリック: 起点からの範囲選択（規則は selection.rs）。カーソルがフォルダにあるときは、
+                // 始点を最も近い有効な行（先頭のファイル）に置き換え、以後の範囲もそこを起点にする。
+                let start = super::selection::shift_start(
+                    self.select_anchor,
+                    cursor_on_folder,
+                    visible.first().map(|(idx, _)| *idx),
+                );
+                self.multi_selected = super::selection::shift_range(visible, start, i);
+                if cursor_on_folder {
+                    self.select_anchor = start;
+                }
                 self.selected_archive_index = Some(real_idx);
                 self.selected_archive_meta = None;
             } else if is_raw && self.selected_archive_index == Some(real_idx) && self.multi_selected.is_empty() {
@@ -2760,6 +2776,61 @@ impl NekoviewApp {
         });
     }
 
+    /// フォルダのクリック後の、範囲選択まわりの更新（規則は selection.rs）。実フォルダ・仮想フォルダで共通。
+    /// フォルダは複数選択の対象外。Shift+クリックなら、最も近い有効な行（先頭のファイル）をクリックしたものとして
+    /// 範囲選択する。それ以外のクリックで選択が空になったときは、古い起点を捨てる
+    /// （見えない起点から次の範囲が引かれないように）。
+    /// `prev_selected` は、フォルダ用に単一選択を消す前の `selected_archive_index`。
+    pub(super) fn after_folder_click(&mut self, ui: &egui::Ui, prev_selected: Option<usize>) {
+        if ui.input(|i| i.modifiers.shift) {
+            let live = super::selection::live_anchor(self.select_anchor, &self.multi_selected, prev_selected);
+            if let Some((multi, anchor)) = super::selection::shift_click_folder(&self.filtered_indices, live) {
+                self.multi_selected = multi;
+                self.select_anchor = Some(anchor);
+            }
+        } else if self.multi_selected.is_empty() {
+            self.select_anchor = None;
+        }
+    }
+
+    /// 実フォルダ（「↑」・サブフォルダ）のセル/行の共通の後処理（カーソルリング・クリック選択・
+    /// 右クリックメニュー）。ダブルクリックされたら true（開く処理は呼び出し側）。カードとリストで共通。
+    pub(super) fn finish_real_folder_cell(
+        &mut self,
+        ui: &egui::Ui,
+        rect: egui::Rect,
+        response: &egui::Response,
+        entry: GridEntry,
+        dir: &PathBuf,
+        grid_focused: bool,
+    ) -> bool {
+        if grid_focused && self.grid_cursor.as_ref() == Some(&entry) {
+            draw_cursor_ring(ui, rect);
+        }
+        if response.clicked() {
+            let prev_selected = self.selected_archive_index;
+            self.focused_pane = FocusPane::Grid;
+            self.grid_cursor = Some(entry);
+            self.selected_archive_index = None;
+            self.selected_archive_meta = None;
+            self.after_folder_click(ui, prev_selected);
+        }
+        response.context_menu(|ui| {
+            let r_item = ui.button(i18n::t().explorer_open_folder_menu());
+            help_tip_auto(&r_item, &i18n::t().help_card_open_folder());
+            if r_item.clicked() {
+                if let Some(dir) = &self.viewing_dir {
+                    crate::translate::open_in_file_manager(dir);
+                }
+                ui.close();
+            }
+            // このセル自身のフォルダ（「↑」は親フォルダ）が対象のメニュー
+            ui.separator();
+            this_folder_menu_items(ui, dir, &mut self.pending_open_in_search);
+        });
+        response.double_clicked()
+    }
+
     fn draw_archive_grid(&mut self, ui: &mut egui::Ui) {
         // 検索タブを開いた瞬間、まだどの検索結果も選択していない間は実ディレクトリの中身が
         // 一瞬見えてしまう（archivesは前の表示のまま残っている）。理想は切替と同時に
@@ -2790,13 +2861,18 @@ impl NekoviewApp {
         // 越えてはいけない境界なので、半端な余白を切り上げて1列多く詰め込む丸め処理は
         // 行わない（切り上げるとタグパネル領域にカードがはみ出し、クリックが
         // 効かなくなる不具合があった）。常に切り捨て。
-        let cols = (((avail_w + GAP) / (cell_w + GAP)).floor() as usize).max(1);
+        // リスト・一覧は1列（キーボードの上下移動はこの列数で動く）。
+        let list_mode = self.view_mode.mode != super::view_mode::ViewMode::Card;
+        let cols = if list_mode { 1 } else { (((avail_w + GAP) / (cell_w + GAP)).floor() as usize).max(1) };
         self.explorer_cols = cols;
 
         // 列数が変わったフレームでは、見ていた位置（選択カード、無ければ上端の行）を保つように
         // オフセットを決め直す。ScrollAreaへ渡す前に適用する。
         let grid_total = folder_entries.len() + self.filtered_indices.len();
-        if let Some(offset) = self.grid_anchor.begin_frame(cols, self.explorer_scroll_offset, cell_h, grid_total) {
+        // （リスト表示は行高が違うので位置補正の対象外。U2 で対応する）
+        if !list_mode
+            && let Some(offset) = self.grid_anchor.begin_frame(cols, self.explorer_scroll_offset, cell_h, grid_total)
+        {
             self.explorer_scroll_offset = offset;
         }
 
@@ -2807,7 +2883,8 @@ impl NekoviewApp {
             egui::vec2(avail_w, ui.available_height()),
         );
         let output = ui.scope_builder(egui::UiBuilder::new().max_rect(scroll_rect), |ui| {
-        egui::ScrollArea::vertical()
+        // リスト・一覧は列が多く横にあふれうるので縦横スクロール。カードは従来どおり縦のみ。
+        (if list_mode { egui::ScrollArea::both() } else { egui::ScrollArea::vertical() })
                 // アイテム上または空白を左ドラッグして一覧をスクロールできるようにする。
                 // セル側はSense::click()のままなので、短いクリックの選択/開く操作は維持される。
                 .scroll_source(egui::scroll_area::ScrollSource::ALL)
@@ -2825,10 +2902,15 @@ impl NekoviewApp {
                 ui.id().with("archive_grid_bg"),
                 egui::Sense::click(),
             );
+            // リスト・一覧は専用の描画で行を並べる。下のグリッドは空のまま通す（背景メニューやスクロールの後処理を共有するため）。
+            let list_nav = if list_mode { self.draw_archive_list(ui, &folder_entries, avail_w) } else { None };
             let grid_response = egui::Grid::new("archive_grid")
                 .num_columns(cols)
                 .spacing([GAP, GAP])
                 .show(ui, |ui| {
+                    if list_mode {
+                        return None;
+                    }
                     let mut cell_index: usize = 0;
                     let mut pending_navigate: Option<GridNav> = None;
                     let grid_focused = self.focused_pane == FocusPane::Grid;
@@ -2845,31 +2927,9 @@ impl NekoviewApp {
                                 ui.painter().rect_filled(rect, 4.0, ui.visuals().faint_bg_color);
                                 nav_icons::draw_up_icon(ui.painter(), rect, nav_icons::NAV_ICON_COLOR);
                             }
-                            if grid_focused && self.grid_cursor.as_ref() == Some(&GridEntry::Up(parent.clone())) {
-                                draw_cursor_ring(ui, rect);
-                            }
-                            if response.clicked() {
-                                self.focused_pane = FocusPane::Grid;
-                                self.grid_cursor = Some(GridEntry::Up(parent.clone()));
-                                self.selected_archive_index = None;
-                                self.selected_archive_meta = None;
-                            }
-                            if response.double_clicked() {
+                            if self.finish_real_folder_cell(ui, rect, &response, GridEntry::Up(parent.clone()), parent, grid_focused) {
                                 pending_navigate = Some(GridNav::Real(parent.clone()));
                             }
-                            response.context_menu(|ui| {
-                                let r_item = ui.button(i18n::t().explorer_open_folder_menu());
-                                help_tip_auto(&r_item, &i18n::t().help_card_open_folder());
-                                if r_item.clicked() {
-                                    if let Some(dir) = &self.viewing_dir {
-                                        crate::translate::open_in_file_manager(dir);
-                                    }
-                                    ui.close();
-                                }
-                                // 「↑」の対象は親フォルダ
-                                ui.separator();
-                                this_folder_menu_items(ui, parent, &mut self.pending_open_in_search);
-                            });
                             cell_index += 1;
                             if cell_index % cols == 0 {
                                 ui.end_row();
@@ -2888,31 +2948,9 @@ impl NekoviewApp {
                                     .to_string();
                                 self.draw_folder_card_face(ui, rect, &response, cell_w, cell_h, &full_name, &full_name, dir_path);
                             }
-                            if grid_focused && self.grid_cursor.as_ref() == Some(&GridEntry::Subdir(dir_path.clone())) {
-                                draw_cursor_ring(ui, rect);
-                            }
-                            if response.clicked() {
-                                self.focused_pane = FocusPane::Grid;
-                                self.grid_cursor = Some(GridEntry::Subdir(dir_path.clone()));
-                                self.selected_archive_index = None;
-                                self.selected_archive_meta = None;
-                            }
-                            if response.double_clicked() {
+                            if self.finish_real_folder_cell(ui, rect, &response, GridEntry::Subdir(dir_path.clone()), dir_path, grid_focused) {
                                 pending_navigate = Some(GridNav::Real(dir_path.clone()));
                             }
-                            response.context_menu(|ui| {
-                                let r_item = ui.button(i18n::t().explorer_open_folder_menu());
-                                help_tip_auto(&r_item, &i18n::t().help_card_open_folder());
-                                if r_item.clicked() {
-                                    if let Some(dir) = &self.viewing_dir {
-                                        crate::translate::open_in_file_manager(dir);
-                                    }
-                                    ui.close();
-                                }
-                                // このカード自身のフォルダが対象のメニュー
-                                ui.separator();
-                                this_folder_menu_items(ui, dir_path, &mut self.pending_open_in_search);
-                            });
                             cell_index += 1;
                             if cell_index % cols == 0 {
                                 ui.end_row();
@@ -3333,7 +3371,7 @@ impl NekoviewApp {
                     }
                 }
             });
-            grid_response.inner
+            list_nav.or(grid_response.inner)
         })
         }).inner;
         // ユーザーの手動スクロールを読み戻してストアを更新
@@ -3347,7 +3385,9 @@ impl NekoviewApp {
                 .map(|p| folder_entries.len() + p),
             other => folder_entries.iter().position(|f| *f == other),
         });
-        self.grid_anchor.end_frame(self.explorer_scroll_offset, self.explorer_viewport_h, cell_h, cols, grid_total, selected_pos);
+        if !list_mode {
+            self.grid_anchor.end_frame(self.explorer_scroll_offset, self.explorer_viewport_h, cell_h, cols, grid_total, selected_pos);
+        }
         // 一覧の右クリック「このフォルダを検索タブで開く」は、描画が終わってから消化する
         if let Some(path) = self.pending_open_in_search.take() {
             self.open_in_search_tab(path);
@@ -3583,7 +3623,7 @@ pub(super) fn truncate_filename(path: &std::path::Path) -> String {
 /// SystemTime を暦日へ分解し、カード情報帯の設定書式で文字列化する。
 /// 分解は Howard Hinnant の civil-from-days アルゴリズム。時刻・ローカルオフセットは
 /// 扱わない（UTC 基準。ローカル化は別チケット）。
-fn format_mtime(
+pub(super) fn format_mtime(
     t: std::time::SystemTime,
     fmt: &crate::card_date_format::CardDateFormat,
     lang: i18n::Lang,
@@ -3605,7 +3645,7 @@ fn format_mtime(
 /// ファイルサイズを人間可読形式にする。
 /// 1MB以上 → "12.3 MB"（小数1桁）／ 1KB以上 → "856 KB"（整数）／ それ未満 → "< 1 KB"。
 /// GB帯もMB表示（GB単位は使わない）。
-fn humanize_size(bytes: u64) -> String {
+pub(super) fn humanize_size(bytes: u64) -> String {
     const KB: u64 = 1 << 10;
     const MB: u64 = 1 << 20;
     if bytes >= MB {
