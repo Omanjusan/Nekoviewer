@@ -1756,6 +1756,40 @@ impl Lang {
         }
     }
 
+    /// 中央部の表示モード切替ボタン（カード／リスト／一覧）
+    pub fn view_mode_card_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "カード",
+            Lang::English  => "Cards",
+            Lang::Chinese  => "卡片",
+        }
+    }
+
+    /// リストボタン。▼ は押すたびにサイズが循環することを示す。`size` は S/M/L/ホバー。
+    pub fn view_mode_list_label(self, size: &str) -> String {
+        match self {
+            Lang::Japanese => format!("▼リスト{size}"),
+            Lang::English  => format!("▼List {size}"),
+            Lang::Chinese  => format!("▼列表{size}"),
+        }
+    }
+
+    pub fn view_mode_list_size_hover_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ホバー",
+            Lang::English  => "Hover",
+            Lang::Chinese  => "悬停",
+        }
+    }
+
+    pub fn view_mode_text_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "一覧",
+            Lang::English  => "Text",
+            Lang::Chinese  => "清单",
+        }
+    }
+
     pub fn virtual_link_broken_label(self) -> &'static str {
         match self {
             Lang::Japanese => "（リンク切れ）",

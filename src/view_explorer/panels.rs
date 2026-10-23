@@ -2119,6 +2119,42 @@ impl NekoviewApp {
         self.draw_central_panel_content(ui);
     }
 
+    /// パス行左端の表示モード切替: `[カード] [▼リストS] [一覧]`。選択中のモードはハイライト。
+    /// リストボタンだけ押すたびにサイズが循環する（S→M→L→ホバー）。
+    /// [U1-a] 状態の切替と保存のみ。リスト・一覧の描画は未実装で、どのモードでもカード表示のまま。
+    fn draw_view_mode_buttons(&mut self, ui: &mut egui::Ui) {
+        use super::view_mode::{ListSize, ViewMode};
+        let t = i18n::t();
+        let size_label = match self.view_mode.list_size {
+            ListSize::S => "S".to_string(),
+            ListSize::M => "M".to_string(),
+            ListSize::L => "L".to_string(),
+            ListSize::Hover => t.view_mode_list_size_hover_label().to_string(),
+        };
+        // リストボタンの幅は最長ラベル（ホバー）に合わせて固定し、サイズ循環でパスがずれないようにする。
+        let list_label = t.view_mode_list_label(&size_label);
+        let widest = t.view_mode_list_label(t.view_mode_list_size_hover_label());
+        let list_w = {
+            let font = egui::TextStyle::Button.resolve(ui.style());
+            let color = ui.visuals().text_color();
+            let galley = ui.painter().layout_no_wrap(widest, font, color);
+            galley.size().x + ui.spacing().button_padding.x * 2.0
+        };
+        let mode = self.view_mode.mode;
+        if ui.add(egui::Button::new(t.view_mode_card_label()).selected(mode == ViewMode::Card)).clicked() {
+            self.view_mode.select_card();
+        }
+        // add_sized は高さ0指定で独自に縦位置を決めて他のボタンとずれるため、min_size で幅だけ確保する。
+        let list_btn = egui::Button::new(list_label).min_size(egui::vec2(list_w, 0.0)).selected(mode == ViewMode::List);
+        if ui.add(list_btn).clicked() {
+            self.view_mode.press_list();
+        }
+        if ui.add(egui::Button::new(t.view_mode_text_label()).selected(mode == ViewMode::Text)).clicked() {
+            self.view_mode.select_text();
+        }
+        ui.separator();
+    }
+
     fn draw_central_panel_content(&mut self, ui: &mut egui::Ui) {
         // お気に入り/検索タブ中は実ディレクトリ由来の表示（パス・サマリー）を出さない。
         // cd_summary はワーカーが非同期で書き込むため、状態クリアではなく描画側でゲートする。
@@ -2127,6 +2163,9 @@ impl NekoviewApp {
         let in_search_ui = self.folder_pane_tab == FolderPaneTab::Search
             || self.viewing_search.is_some();
 
+        // パス行: 左端に表示モード切替、その右にパス（モード切替の分だけ右へ寄る）。
+        ui.horizontal(|ui| {
+        self.draw_view_mode_buttons(ui);
         if let Some(idx) = self.viewing_search {
             let label = self.search_history.get(idx).map(|e| e.label.clone()).unwrap_or_default();
             ui.label(label);
@@ -2156,6 +2195,7 @@ impl NekoviewApp {
                 }
             }
         }
+        });
 
         if let Some((mtime, size_bytes)) = &self.selected_archive_meta {
             let filename = self.selected_archive_index

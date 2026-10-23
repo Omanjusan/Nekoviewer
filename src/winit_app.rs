@@ -367,6 +367,7 @@ impl WinitApp {
             state.tree_sorts,
             state.tag_panel_open,
             state.tag_preview_high_quality,
+            &state.explorer_view_mode,
             open_target,
             win.egui_ctx.clone(),
         );
