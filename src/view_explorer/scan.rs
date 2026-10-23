@@ -655,20 +655,16 @@ impl NekoviewApp {
         }
     }
 
-    /// 毎フレーム、グリッドの可視範囲（`visible`内のposition `lo..=hi`）を受け取り、
+    /// 毎フレーム、グリッドの可視範囲（`filtered_indices`内のposition `lo..=hi`）を受け取り、
     /// バックグラウンド先読みキューをその場所に追従させる。
     /// 可視セル自体は描画ループが直接requestするので、ここではスクロールの
     /// 進行方向へ1画面ぶんだけ先読みを足し、逆側にはみ出た未送信ぶんは捨てる。
-    pub(super) fn update_thumbnail_lookahead(
-        &mut self,
-        visible: &[(usize, PathBuf)],
-        lo: usize,
-        hi: usize,
-    ) {
+    pub(super) fn update_thumbnail_lookahead(&mut self, lo: usize, hi: usize) {
+        let total = self.filtered_indices.len();
         if !self.folder_pane_tab.shows_real_dir()
             || self.viewing_favorites.is_some()
             || self.viewing_search.is_some()
-            || visible.is_empty()
+            || total == 0
         {
             return;
         }
@@ -683,8 +679,8 @@ impl NekoviewApp {
         };
         let want_range = if forward {
             let want_lo = hi + 1;
-            if want_lo >= visible.len() { None } else {
-                Some((want_lo, (want_lo + screen_len - 1).min(visible.len() - 1)))
+            if want_lo >= total { None } else {
+                Some((want_lo, (want_lo + screen_len - 1).min(total - 1)))
             }
         } else if lo == 0 {
             None
@@ -701,14 +697,17 @@ impl NekoviewApp {
             self.thumb_priority_queued.clear();
             return;
         };
-        let desired: HashSet<&PathBuf> = visible[want_lo..=want_hi].iter().map(|(_, p)| p).collect();
+        // 先読みの窓ぶんのパスだけを取り出す（全件は触らない）
+        let window: Vec<PathBuf> =
+            self.filtered_indices[want_lo..=want_hi].iter().map(|&i| self.archives[i].clone()).collect();
+        let desired: HashSet<&PathBuf> = window.iter().collect();
         // ウィンドウ外へ外れた未送信ぶんはキャンセルする（送信済み＝thumb_pendingは対象外）。
         self.thumb_queue.retain(|p| desired.contains(p));
         self.thumb_priority_queue.retain(|p| desired.contains(p));
         self.thumb_queued.retain(|p| desired.contains(p));
         self.thumb_missing_queued.retain(|p| desired.contains(p));
         self.thumb_priority_queued.retain(|p| desired.contains(p));
-        for (_, path) in &visible[want_lo..=want_hi] {
+        for path in &window {
             if self.thumbnails.contains_key(path)
                 || self.thumb_pending.contains(path)
                 || self.thumb_failed.contains(path)

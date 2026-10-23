@@ -122,6 +122,25 @@ fn cell_text(painter: &egui::Painter, rect: egui::Rect, text: &str, font: &egui:
     );
 }
 
+/// 行 `i` の当たり判定。行ごとの子UIの下にIDを置く。
+/// 仮想スクロールでは、スクロール量が行ピッチの整数倍のとき、前のフレームで別の行（別のID）が
+/// 占めていた矩形に今の行が来る。egui のデバッグビルドは、同じ親の下でこれが起きると
+/// 「矩形のIDが変わった」と赤い枠を出すので、行ごとに親を分けて警告の対象から外す（release では出ない警告）。
+fn row_response(ui: &mut egui::Ui, rect: egui::Rect, i: usize) -> egui::Response {
+    ui.push_id(("list_row", i), |ui| ui.interact(rect, ui.id(), egui::Sense::click())).inner
+}
+
+/// 仮想スクロール: 表示領域に掛かる行の範囲（上下に1行ずつ余裕を持たせる）。
+/// `top` は全行の先頭から表示領域の上端までの距離、`height` は表示領域の高さ、`pitch` は行の高さ＋隙間。
+pub(super) fn visible_rows(top: f32, height: f32, pitch: f32, total: usize) -> std::ops::Range<usize> {
+    if total == 0 || height <= 0.0 || pitch <= 0.0 {
+        return 0..0;
+    }
+    let first = ((top / pitch).floor().max(0.0) as usize).saturating_sub(1);
+    let last = (((top + height) / pitch).ceil().max(0.0) as usize + 1).min(total);
+    first.min(total)..last
+}
+
 /// 縦スクロールのオフセットを、`index` 番目の行（0始まり）が画面内に収まる最小の量だけ動かす。
 /// `viewport_h` は行を並べる領域の高さ（固定の見出しは含まない）。
 pub(super) fn scroll_to_row(offset: f32, viewport_h: f32, index: usize, row_h: f32) -> f32 {
@@ -178,68 +197,83 @@ impl NekoviewApp {
         let mut nav: Option<GridNav> = None;
         ui.spacing_mut().item_spacing.y = ROW_GAP;
 
-        for entry in folder_entries {
-            let (rect, response) = ui.allocate_exact_size(egui::vec2(row_w, row_h), egui::Sense::click());
-            if ui.is_rect_visible(rect) && response.hovered() {
-                ui.painter().rect_filled(rect, 0.0, ui.visuals().faint_bg_color);
-            }
-            match entry {
-                GridEntry::Up(parent) => {
-                    self.paint_folder_row(ui, rect, &widths, &font, "..", None, false);
-                    if self.finish_real_folder_cell(ui, rect, &response, entry.clone(), parent, grid_focused) {
-                        nav = Some(GridNav::Real(parent.clone()));
-                    }
-                }
-                GridEntry::Subdir(dir) => {
-                    let name = dir.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
-                    let mtime = self.subdir_mtimes.get(dir).copied();
-                    self.paint_folder_row(ui, rect, &widths, &font, &name, mtime, false);
-                    if self.finish_real_folder_cell(ui, rect, &response, entry.clone(), dir, grid_focused) {
-                        nav = Some(GridNav::Real(dir.clone()));
-                    }
-                }
-                GridEntry::VirtualUp(target) => {
-                    self.paint_folder_row(ui, rect, &widths, &font, "..", None, false);
-                    let folder_target = self.node_folder_target(*target);
-                    if self.finish_virtual_card(ui, rect, &response, entry.clone(), folder_target, grid_focused) {
-                        nav = Some(GridNav::Virtual(*target));
-                    }
-                }
-                GridEntry::VirtualSubdir(id) => {
-                    if let Some((name, broken, mtime)) = self.virtual_row_info(*id) {
-                        self.paint_folder_row(ui, rect, &widths, &font, &name, mtime, broken);
-                    }
-                    let folder_target = self.node_folder_target(*id);
-                    if self.finish_virtual_card(ui, rect, &response, entry.clone(), folder_target, grid_focused) {
-                        nav = Some(GridNav::Virtual(*id));
-                    }
-                }
-                GridEntry::Archive(_) => {}
-            }
-        }
-
-        // フィルタ適用中は filtered_indices のみ描画対象（カードと同じ）
-        let visible: Vec<(usize, PathBuf)> =
-            self.filtered_indices.iter().map(|&idx| (idx, self.archives[idx].clone())).collect();
+        // 仮想スクロール: 全行ぶんの高さを一度だけ確保し、見えている行（＋前後1行）だけを作る。
+        // 行ごとの当たり判定・パスの複製・描画は見えている行に限るので、件数が多くても重くならない。
+        let n_folders = folder_entries.len();
+        let n_files = self.filtered_indices.len();
+        let total_rows = n_folders + n_files;
+        let pitch = row_h + ROW_GAP;
+        let total_h = (total_rows as f32 * pitch - ROW_GAP).max(0.0);
+        let (content, _) = ui.allocate_exact_size(egui::vec2(row_w, total_h), egui::Sense::hover());
+        let view_clip = ui.clip_rect().intersect(view_rect);
+        let rows = visible_rows(view_clip.min.y - content.min.y, view_clip.height(), pitch, total_rows);
         let mut visible_order_range: Option<(usize, usize)> = None;
-        for (i, (real_idx, path)) in visible.iter().enumerate() {
-            let (rect, response) = ui.allocate_exact_size(egui::vec2(row_w, row_h), egui::Sense::click());
-            if ui.is_rect_visible(rect) {
-                if !text_only {
-                    visible_order_range = Some(match visible_order_range {
-                        Some((lo, hi)) => (lo.min(i), hi.max(i)),
-                        None => (i, i),
-                    });
+        for i in rows {
+            let rect = egui::Rect::from_min_size(
+                egui::pos2(content.min.x, content.min.y + i as f32 * pitch),
+                egui::vec2(row_w, row_h),
+            );
+            let response = row_response(ui, rect, i);
+            if i < n_folders {
+                let entry = &folder_entries[i];
+                if ui.is_rect_visible(rect) && response.hovered() {
+                    ui.painter().rect_filled(rect, 0.0, ui.visuals().faint_bg_color);
                 }
-                self.paint_archive_row(ui, rect, &response, &widths, &font, *real_idx, path, text_only);
-            }
-            self.handle_archive_interaction(ui, &response, &visible, i);
-            if hover_popup && response.hovered() {
-                self.show_list_hover_thumbnail(ui, path);
+                match entry {
+                    GridEntry::Up(parent) => {
+                        self.paint_folder_row(ui, rect, &widths, &font, "..", None, false);
+                        if self.finish_real_folder_cell(ui, rect, &response, entry.clone(), parent, grid_focused) {
+                            nav = Some(GridNav::Real(parent.clone()));
+                        }
+                    }
+                    GridEntry::Subdir(dir) => {
+                        let name = dir.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
+                        let mtime = self.subdir_mtimes.get(dir).copied();
+                        self.paint_folder_row(ui, rect, &widths, &font, &name, mtime, false);
+                        if self.finish_real_folder_cell(ui, rect, &response, entry.clone(), dir, grid_focused) {
+                            nav = Some(GridNav::Real(dir.clone()));
+                        }
+                    }
+                    GridEntry::VirtualUp(target) => {
+                        self.paint_folder_row(ui, rect, &widths, &font, "..", None, false);
+                        let folder_target = self.node_folder_target(*target);
+                        if self.finish_virtual_card(ui, rect, &response, entry.clone(), folder_target, grid_focused) {
+                            nav = Some(GridNav::Virtual(*target));
+                        }
+                    }
+                    GridEntry::VirtualSubdir(id) => {
+                        if let Some((name, broken, mtime)) = self.virtual_row_info(*id) {
+                            self.paint_folder_row(ui, rect, &widths, &font, &name, mtime, broken);
+                        }
+                        let folder_target = self.node_folder_target(*id);
+                        if self.finish_virtual_card(ui, rect, &response, entry.clone(), folder_target, grid_focused) {
+                            nav = Some(GridNav::Virtual(*id));
+                        }
+                    }
+                    GridEntry::Archive(_) => {}
+                }
+            } else {
+                // フィルタ適用中は filtered_indices のみ描画対象（カードと同じ）
+                let pos = i - n_folders;
+                let real_idx = self.filtered_indices[pos];
+                let path = self.archives[real_idx].clone();
+                if ui.is_rect_visible(rect) {
+                    if !text_only {
+                        visible_order_range = Some(match visible_order_range {
+                            Some((lo, hi)) => (lo.min(pos), hi.max(pos)),
+                            None => (pos, pos),
+                        });
+                    }
+                    self.paint_archive_row(ui, rect, &response, &widths, &font, real_idx, &path, text_only);
+                }
+                self.handle_archive_interaction(ui, &response, real_idx, pos);
+                if hover_popup && response.hovered() {
+                    self.show_list_hover_thumbnail(ui, &path);
+                }
             }
         }
         if let Some((lo, hi)) = visible_order_range {
-            self.update_thumbnail_lookahead(&visible, lo, hi);
+            self.update_thumbnail_lookahead(lo, hi);
         }
 
         // 列どうしの縦の区切り線を、表示領域の全高に引く（横線は引かない）。行の選択枠やホバーの上に重ねる。
@@ -544,6 +578,35 @@ mod tests {
     }
 
     #[test]
+    fn visible_rows_covers_the_viewport_with_one_row_of_margin() {
+        // 行ピッチ10、上端20・高さ50 → 行2〜6が掛かり（2..7）、前後1行の余裕で 1..8
+        assert_eq!(visible_rows(20.0, 50.0, 10.0, 100), 1..8);
+    }
+
+    #[test]
+    fn visible_rows_at_the_top_starts_from_zero() {
+        assert_eq!(visible_rows(0.0, 50.0, 10.0, 100), 0..6);
+    }
+
+    #[test]
+    fn visible_rows_never_exceeds_the_total() {
+        assert_eq!(visible_rows(950.0, 500.0, 10.0, 100), 94..100);
+        assert_eq!(visible_rows(0.0, 500.0, 10.0, 3), 0..3);
+    }
+
+    #[test]
+    fn visible_rows_is_empty_without_rows_or_viewport() {
+        assert!(visible_rows(0.0, 100.0, 10.0, 0).is_empty());
+        assert!(visible_rows(0.0, 0.0, 10.0, 50).is_empty());
+    }
+
+    #[test]
+    fn visible_rows_handles_a_viewport_above_the_content() {
+        // 領域の上端が内容の上端より上（負）でも先頭から
+        assert_eq!(visible_rows(-30.0, 100.0, 10.0, 100), 0..8);
+    }
+
+    #[test]
     fn scroll_to_row_scrolls_up_to_a_row_above_the_viewport() {
         let pitch = 50.0 + ROW_GAP;
         // 10行目（インデックス9）の上端が見えるところまで戻る
@@ -617,5 +680,62 @@ mod tests {
             x = r.max.x;
         }
         assert_eq!(x, row.max.x);
+    }
+}
+
+#[cfg(test)]
+mod egui_debug_warning_tests {
+    use super::*;
+
+    /// egui のデバッグ警告（赤い矩形）が、高速スクロールで出ないこと。
+    /// 警告は `error_fg_color` の枠として描かれる。リストの本体と同じ構造（仮想スクロール＋行の当たり判定）を
+    /// ホバーのポップアップ込みで、行ピッチの整数倍になる量を含めて動かす。
+    #[test]
+    fn fast_scrolling_does_not_trigger_the_rect_id_warning() {
+        let ctx = egui::Context::default();
+        let err = ctx.global_style().visuals.error_fg_color;
+        let (total_rows, row_h) = (5000usize, 24.0f32);
+        let pitch = row_h + ROW_GAP;
+        let mut red_rects = 0;
+        for frame in 0..120 {
+            let mut input = egui::RawInput::default();
+            input.screen_rect = Some(egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(800.0, 600.0)));
+            input.events.push(egui::Event::PointerMoved(egui::pos2(100.0, 200.0)));
+            // 7フレームごとに 50px（=行ピッチ25の2倍）。それ以外は半端な量
+            let dy = if frame % 7 == 0 { 50.0 } else { 37.0 + (frame % 7) as f32 * 91.0 };
+            input.events.push(egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                delta: egui::vec2(0.0, -dy),
+                modifiers: egui::Modifiers::NONE,
+                phase: egui::TouchPhase::Move,
+            });
+            let out = ctx.run_ui(input, |ui| {
+                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                    ui.spacing_mut().item_spacing.y = ROW_GAP;
+                    let (content, _) =
+                        ui.allocate_exact_size(egui::vec2(700.0, total_rows as f32 * pitch), egui::Sense::hover());
+                    let clip = ui.clip_rect();
+                    for i in visible_rows(clip.min.y - content.min.y, clip.height(), pitch, total_rows) {
+                        let rect = egui::Rect::from_min_size(
+                            egui::pos2(content.min.x, content.min.y + i as f32 * pitch),
+                            egui::vec2(700.0, row_h),
+                        );
+                        let _ = row_response(ui, rect, i);
+                    }
+                });
+            });
+            for clipped in &out.shapes {
+                count_red_rects(&clipped.shape, err, &mut red_rects);
+            }
+        }
+        assert_eq!(red_rects, 0, "高速スクロールでeguiのIDの警告（赤い矩形）が出ている");
+    }
+
+    fn count_red_rects(shape: &egui::epaint::Shape, err: egui::Color32, n: &mut usize) {
+        match shape {
+            egui::epaint::Shape::Rect(r) if r.stroke.color == err => *n += 1,
+            egui::epaint::Shape::Vec(v) => v.iter().for_each(|s| count_red_rects(s, err, n)),
+            _ => {}
+        }
     }
 }

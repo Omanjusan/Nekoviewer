@@ -2558,16 +2558,19 @@ impl NekoviewApp {
     }
 
     /// 一覧に並んだアーカイブ1件の操作（クリック選択・Ctrl/Shiftの複数選択・ダブルクリックで開く・
-    /// 右クリックメニュー）。`visible[i]` が対象で、`response` はそのセルの応答。
-    /// Shiftの範囲選択は `visible` 上の位置で決める。カード・リスト・一覧で共通に使う。
+    /// 右クリックメニュー）。`real_idx` が対象（`archives` のインデックス）、`i` はその `filtered_indices` 上の位置、
+    /// `response` はそのセルの応答。Shiftの範囲選択は表示順（`filtered_indices`）で決める。
+    /// 全件のパスを持たずに呼べるので、リストの仮想スクロール（見えている行だけ呼ぶ）でも使える。
+    /// カード・リスト・一覧で共通に使う。
     pub(super) fn handle_archive_interaction(
         &mut self,
         ui: &mut egui::Ui,
         response: &egui::Response,
-        visible: &[(usize, PathBuf)],
+        real_idx: usize,
         i: usize,
     ) {
-        let (real_idx, path) = (visible[i].0, &visible[i].1);
+        let path_owned = self.archives[real_idx].clone();
+        let path = &path_owned;
         let is_raw = self.raw_image_files.contains(path);
         if response.clicked() {
             // 選択枠は描画後に状態が変わるので、次の入力を待たず即座に描き直す。
@@ -2591,9 +2594,9 @@ impl NekoviewApp {
                 let start = super::selection::shift_start(
                     self.select_anchor,
                     cursor_on_folder,
-                    visible.first().map(|(idx, _)| *idx),
+                    self.filtered_indices.first().copied(),
                 );
-                self.multi_selected = super::selection::shift_range(visible, start, i);
+                self.multi_selected = super::selection::shift_range(&self.filtered_indices, start, i);
                 if cursor_on_folder {
                     self.select_anchor = start;
                 }
@@ -3334,7 +3337,7 @@ impl NekoviewApp {
                             }
                         }
 
-                        self.handle_archive_interaction(ui, &response, &visible, i);
+                        self.handle_archive_interaction(ui, &response, real_idx, i);
 
                         cell_index += 1;
                         if cell_index % cols == 0 {
@@ -3342,7 +3345,7 @@ impl NekoviewApp {
                         }
                     }
                     if let Some((lo, hi)) = visible_order_range {
-                        self.update_thumbnail_lookahead(&visible, lo, hi);
+                        self.update_thumbnail_lookahead(lo, hi);
                     }
                     if cell_index % cols != 0 {
                         ui.end_row();

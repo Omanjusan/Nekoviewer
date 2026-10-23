@@ -39,14 +39,15 @@ pub(super) fn toggle(multi: &mut HashSet<usize>, selected: &mut Option<usize>, c
     }
 }
 
-/// Shift+クリック: 起点から `clicked_pos`（`visible` 上の位置）までの範囲。
+/// Shift+クリック: 起点から `clicked_pos`（`filtered` 上の位置）までの範囲。
+/// `filtered` はフィルタ後の表示順のインデックス列。
 /// 起点が無い／表示中に無い場合は、クリックした項目だけが起点になる。
-pub(super) fn shift_range<T>(visible: &[(usize, T)], anchor: Option<usize>, clicked_pos: usize) -> HashSet<usize> {
+pub(super) fn shift_range(filtered: &[usize], anchor: Option<usize>, clicked_pos: usize) -> HashSet<usize> {
     let anchor_pos = anchor
-        .and_then(|a| visible.iter().position(|(idx, _)| *idx == a))
+        .and_then(|a| filtered.iter().position(|&idx| idx == a))
         .unwrap_or(clicked_pos);
     let (from, to) = if anchor_pos <= clicked_pos { (anchor_pos, clicked_pos) } else { (clicked_pos, anchor_pos) };
-    visible[from..=to].iter().map(|(idx, _)| *idx).collect()
+    filtered[from..=to].iter().copied().collect()
 }
 
 /// ファイル行を Shift+クリックするときの、範囲選択の起点。
@@ -84,8 +85,8 @@ mod tests {
         items.iter().copied().collect()
     }
 
-    fn rows(n: usize) -> Vec<(usize, ())> {
-        (0..n).map(|i| (i, ())).collect()
+    fn rows(n: usize) -> Vec<usize> {
+        (0..n).collect()
     }
 
     #[test]
@@ -103,7 +104,7 @@ mod tests {
     #[test]
     fn shift_range_uses_positions_in_the_filtered_view_not_raw_indices() {
         // フィルタで 10, 20, 30, 40 だけが見えている
-        let visible: Vec<(usize, ())> = [10, 20, 30, 40].iter().map(|&i| (i, ())).collect();
+        let visible = [10, 20, 30, 40];
         // 40 は表示上の4番目（位置3）。起点 20 は生のインデックスで渡し、位置に変換して使う。
         assert_eq!(shift_range(&visible, Some(20), 3), set(&[20, 30, 40]));
     }
