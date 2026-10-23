@@ -76,6 +76,19 @@ enum Col {
 }
 
 impl Col {
+    /// 見出しのクリックでソートできる列（重複・サムネは対象外）。
+    fn sort_column(self) -> Option<crate::explorer_sort::HeaderColumn> {
+        use crate::explorer_sort::HeaderColumn;
+        match self {
+            Col::Name => Some(HeaderColumn::Name),
+            Col::Size => Some(HeaderColumn::Size),
+            Col::Mtime => Some(HeaderColumn::Date),
+            Col::Rating => Some(HeaderColumn::Score),
+            Col::Visits => Some(HeaderColumn::Visits),
+            Col::Dup | Col::Thumb => None,
+        }
+    }
+
     /// 幅を変えられる列の `ListColumns` 上の番号。サムネ列は行の高さで決まるので変えられない。
     fn resize_index(self) -> Option<usize> {
         match self {
@@ -253,9 +266,27 @@ impl NekoviewApp {
             egui::Rect::from_min_size(egui::pos2(origin_x, rect.min.y), egui::vec2(total_w, HEADER_H))
         };
 
-        // 境界の操作を先に処理して、この後の描画（見出しと本体の行）に今フレームの幅を反映する。
+        // 見出しのクリックによるソート。列境界のつかみ（下）より先に登録して、境界側を手前（優先）にする。
         let m = self.list_metrics();
         let row = header_row(m.total_w);
+        let mut sort_click: Option<crate::explorer_sort::HeaderColumn> = None;
+        let mut hovered_col: Option<Col> = None;
+        for col in [Col::Name, Col::Size, Col::Mtime, Col::Rating, Col::Visits] {
+            let Some(sort_col) = col.sort_column() else { continue };
+            let cell = col_rect(row, &m.widths, col).intersect(rect);
+            if cell.width() <= 0.0 {
+                continue;
+            }
+            let resp = ui.interact(cell, egui::Id::new(("list_col_sort", col as usize)), egui::Sense::click());
+            if resp.hovered() {
+                hovered_col = Some(col);
+            }
+            if resp.clicked() {
+                sort_click = Some(sort_col);
+            }
+        }
+
+        // 境界の操作を先に処理して、この後の描画（見出しと本体の行）に今フレームの幅を反映する。
         let mut changed = false;
         let mut active_idx: Option<usize> = None;
         for col in [Col::Dup, Col::Name, Col::Size, Col::Mtime, Col::Rating, Col::Visits] {
@@ -285,14 +316,34 @@ impl NekoviewApp {
         if changed {
             self.persist_state();
         }
+        if let Some(col) = sort_click {
+            let before = crate::explorer_sort::SortSettings {
+                key: self.sort_key,
+                ascending: self.sort_ascending,
+                rating: self.rating_sort,
+            };
+            let after = crate::explorer_sort::header_click(before, col);
+            self.sort_key = after.key;
+            self.sort_ascending = after.ascending;
+            self.rating_sort = after.rating;
+            self.finish_sort_change();
+            self.persist_state();
+        }
 
         let m = self.list_metrics();
         let row = header_row(m.total_w);
         let painter = ui.painter().with_clip_rect(rect);
         painter.rect_filled(rect, 0.0, ui.visuals().faint_bg_color);
+        if let Some(col) = hovered_col.filter(|_| active_idx.is_none()) {
+            painter.rect_filled(col_rect(row, &m.widths, col), 0.0, ui.visuals().widgets.hovered.weak_bg_fill);
+        }
         let t = i18n::t();
         let font = egui::FontId::proportional(12.0);
-        let color = ui.visuals().weak_text_color();
+        let settings = crate::explorer_sort::SortSettings {
+            key: self.sort_key,
+            ascending: self.sort_ascending,
+            rating: self.rating_sort,
+        };
         for (col, label) in [
             (Col::Dup, t.list_col_dup()),
             (Col::Name, t.list_col_name()),
@@ -301,7 +352,14 @@ impl NekoviewApp {
             (Col::Rating, t.list_col_rating()),
             (Col::Visits, t.list_col_visits()),
         ] {
-            cell_text(&painter, col_rect(row, &m.widths, col), label, &font, color);
+            // 並べている列は、昇順 ▲ / 降順 ▼ を付けて強調する
+            let arrow = col.sort_column().and_then(|c| crate::explorer_sort::header_arrow(&settings, c));
+            let (text, color) = match arrow {
+                Some(true) => (format!("{label} ▲"), ui.visuals().strong_text_color()),
+                Some(false) => (format!("{label} ▼"), ui.visuals().strong_text_color()),
+                None => (label.to_string(), ui.visuals().weak_text_color()),
+            };
+            cell_text(&painter, col_rect(row, &m.widths, col), &text, &font, color);
         }
         // 境界線。つかめる状態の境界（ホバー・ドラッグ中）だけ太く強調する（リサイズのマーカー）。
         let line = grid_line_color(ui);
@@ -510,6 +568,18 @@ mod tests {
     fn scroll_to_row_does_not_move_when_the_viewport_is_unknown() {
         // 初回フレームなど、領域の高さが未確定（0）の間は下方向へ動かさない
         assert_eq!(scroll_to_row(0.0, 0.0, 20, 50.0), 0.0);
+    }
+
+    #[test]
+    fn only_name_size_mtime_rating_and_visits_are_sortable() {
+        use crate::explorer_sort::HeaderColumn as H;
+        assert_eq!(Col::Dup.sort_column(), None);
+        assert_eq!(Col::Thumb.sort_column(), None);
+        assert_eq!(Col::Name.sort_column(), Some(H::Name));
+        assert_eq!(Col::Size.sort_column(), Some(H::Size));
+        assert_eq!(Col::Mtime.sort_column(), Some(H::Date), "更新日時は日付ソート");
+        assert_eq!(Col::Rating.sort_column(), Some(H::Score));
+        assert_eq!(Col::Visits.sort_column(), Some(H::Visits));
     }
 
     #[test]

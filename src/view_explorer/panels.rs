@@ -349,7 +349,7 @@ impl NekoviewApp {
     }
 
     /// ソートキー・昇降順の変更後に共通で行う後処理（クリック・キーボード両経路で使う）。
-    fn finish_sort_change(&mut self) {
+    pub(super) fn finish_sort_change(&mut self) {
         self.sort_archives();
         // ソート変更で archives の並びが変わり、インデックスベースの複数選択が
         // 無関係な項目を指す可能性があるため安全側に倒して解除する
