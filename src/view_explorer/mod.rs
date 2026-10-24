@@ -870,6 +870,13 @@ pub struct NekoviewApp {
     archive_sort_states: HashMap<String, (crate::types::ReaderSortKey, bool)>,
     /// 現在ディレクトリ内のお気に入り登録状態 (filename -> 所属folder_id一覧、空Vec=未整理)
     favorite_states: HashMap<String, Vec<u8>>,
+    /// 現在ディレクトリ内の重複マーカー (filename -> 自身のマーカーと被参照)。通常のフォルダ表示でだけ使う
+    /// （お気に入り・検索の横断一覧では引かない）。
+    dir_markers: HashMap<String, crate::duplicate_marker::DirMarker>,
+    /// 表示領域に入った移動マーカーのファイルID。フォルダ離脱・終了時にまとめてDBへ印を書く。
+    marker_seen: HashSet<u64>,
+    /// `marker_seen` を集めているフォルダ。同じフォルダの再スキャンでは書かず、別のフォルダへ移る時に書く。
+    marker_seen_dir: Option<PathBuf>,
     /// お気に入り・検索の横断一覧表示中のマーカー情報 (フルパス -> 所属folder_id一覧)。
     /// ディレクトリ横断のため favorite_states とは別にフルパスキーで持つ。
     cross_view_favorite_markers: HashMap<PathBuf, Vec<u8>>,
@@ -1305,6 +1312,7 @@ mod view_mode;
 mod selection;
 mod list_view;
 mod list_columns;
+mod dup_marker_ui;
 mod layout_anchor;
 
 #[cfg(test)]
@@ -1431,6 +1439,9 @@ impl NekoviewApp {
             spread_states: HashMap::new(),
             archive_sort_states: HashMap::new(),
             favorite_states: HashMap::new(),
+            dir_markers: HashMap::new(),
+            marker_seen: HashSet::new(),
+            marker_seen_dir: None,
             cross_view_favorite_markers: HashMap::new(),
             saved_archive_settings: HashMap::new(),
             network_unreachable_mounts: HashSet::new(),

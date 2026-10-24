@@ -3224,6 +3224,21 @@ impl NekoviewApp {
                                 }
                             }
 
+                            // 重複マーカー: 上辺の左右中央。見えているカードの移動マーカーは「見た」印を控える。
+                            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                                if let Some(icon) = self.marker_icon(name) {
+                                    let icon_rect = super::dup_marker_ui::card_icon_rect(rect);
+                                    super::dup_marker_ui::paint_icon(ui.painter(), icon_rect, icon);
+                                    let on_icon = ui
+                                        .input(|i| i.pointer.hover_pos())
+                                        .is_some_and(|p| icon_rect.contains(p));
+                                    if on_icon {
+                                        response.clone().on_hover_text(icon.tooltip());
+                                    }
+                                }
+                                self.note_marker_seen(name);
+                            }
+
                             // 無効ZIP・サムネデコード失敗は左上に赤Xを描画
                             let thumb_failed = self.thumb_failed.contains(path);
                             let has_error_marker =

@@ -238,7 +238,7 @@ fn thumbnail_from_raw(v: (String, u8)) -> Option<ThumbnailSelection> {
     Some(ThumbnailSelection { entry_name: v.0, source_kind: ThumbnailSourceKind::from_u8(v.1)? })
 }
 
-fn dir_prefix(dir: &Path) -> String {
+pub(crate) fn dir_prefix(dir: &Path) -> String {
     let key = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
     format!("{}\0", key.to_string_lossy())
 }

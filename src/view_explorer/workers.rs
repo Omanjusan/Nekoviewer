@@ -423,6 +423,7 @@ impl NekoviewApp {
         self.deactivate_tag_main_edit();
         self.flush_current_sort_if_changed();
         self.flush_current_bookmark_if_enabled();
+        self.flush_seen_markers();
         self.persist_state();
     }
 

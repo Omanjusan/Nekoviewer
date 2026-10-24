@@ -10,6 +10,8 @@
 //! - テーブルは最初の記録で作る（旧DBの構造を起動だけで変えない）。読み取りと `forget_id_tx` は作らない
 //! - IDが消えたら（`file_identity::delete_id` など）行と索引を連動して消す。再取得は重複先が尽きたら消える
 
+use std::collections::HashMap;
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use redb::{
@@ -209,6 +211,96 @@ pub fn list(db: &Arc<Mutex<Database>>) -> Vec<MarkerRecord> {
     let mut out: Vec<MarkerRecord> = iter.flatten().filter_map(|(_, v)| MarkerRecord::decode(v.value())).collect();
     out.sort_by(|a, b| b.detected_at.cmp(&a.detected_at).then(b.id.cmp(&a.id)));
     out
+}
+
+/// フォルダ内の1ファイルぶんの表示用情報。
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DirMarker {
+    /// そのファイル自身のマーカー（移動・再取得。消去済みも含む。表示側で除く）。
+    pub own: Option<MarkerRecord>,
+    /// このファイルを重複先に持つ再取得マーカーのファイルID（昇順。消去済みは除く）。
+    /// 空でなければ、旧ファイル側の「他に重複あり」を示す。
+    pub referenced_by: Vec<u64>,
+}
+
+/// `dir` 直下のファイルのマーカーを一括で返す（キー = ファイル名）。マーカーも被参照も無いファイルは含めない。
+/// テーブルが無ければ（旧DB・マーカー未検出）、IDを引かずに空を返す。
+pub fn load_dir(db: &Arc<Mutex<Database>>, dir: &Path) -> HashMap<String, DirMarker> {
+    let mut out = HashMap::new();
+    let Ok(guard) = db.lock() else { return out };
+    let Ok(tx) = guard.begin_read() else { return out };
+    let (Ok(table), Ok(rev)) = (tx.open_table(MARKER_TABLE), tx.open_multimap_table(MARKER_TARGET_TABLE)) else {
+        return out;
+    };
+    let prefix = crate::spread_state::dir_prefix(dir);
+    for rec in crate::file_identity::dir_records_tx(&tx, &prefix) {
+        let own = table.get(rec.id).ok().flatten().and_then(|g| MarkerRecord::decode(g.value()));
+        let mut referenced_by: Vec<u64> = rev
+            .get(rec.id)
+            .map(|values| values.flatten().map(|g| g.value()).collect())
+            .unwrap_or_default();
+        referenced_by.retain(|owner| {
+            let marker = table.get(*owner).ok().flatten().and_then(|g| MarkerRecord::decode(g.value()));
+            marker.is_some_and(|m| !m.dismissed)
+        });
+        referenced_by.sort_unstable();
+        if own.is_some() || !referenced_by.is_empty() {
+            let name = rec.path_key[prefix.len()..].to_string();
+            out.insert(name, DirMarker { own, referenced_by });
+        }
+    }
+    out
+}
+
+/// `dir` 内の「表示領域に入った印が付いた移動マーカー」を消す。フォルダを開き直した時（再訪）に呼ぶ。
+/// 消した件数を返す。
+pub fn purge_seen_moved(db: &Arc<Mutex<Database>>, dir: &Path) -> usize {
+    let ids: Vec<u64> = load_dir(db, dir)
+        .into_values()
+        .filter_map(|m| m.own)
+        .filter(|r| r.kind == MarkerKind::Moved && r.in_viewport)
+        .map(|r| r.id)
+        .collect();
+    if ids.is_empty() {
+        return 0;
+    }
+    let Ok(guard) = db.lock() else { return 0 };
+    let Ok(tx) = guard.begin_write() else { return 0 };
+    let removed = ids.iter().filter(|id| forget_owner(&tx, **id) == Some(true)).count();
+    if tx.commit().is_err() {
+        return 0;
+    }
+    removed
+}
+
+/// 表示領域に入った移動マーカーに印を付ける（フォルダ離脱・終了時にまとめて呼ぶ）。印が付いた件数を返す。
+/// 移動以外（再取得は永続）と、既に印のあるもの・無いものは何もしない。
+pub fn mark_in_viewport(db: &Arc<Mutex<Database>>, ids: &[u64]) -> usize {
+    if ids.is_empty() {
+        return 0;
+    }
+    let Ok(guard) = db.lock() else { return 0 };
+    let Ok(tx) = guard.begin_write() else { return 0 };
+    let mut marked = 0;
+    {
+        // 台帳が無い（移動を一度も検出していない）DBでは、テーブルを作らずに戻る。
+        if !tx.list_tables().is_ok_and(|mut t| t.any(|h| h.name() == MARKER_TABLE.name())) {
+            return 0;
+        }
+        let Ok(mut table) = tx.open_table(MARKER_TABLE) else { return 0 };
+        for id in ids {
+            let rec = table.get(*id).ok().flatten().and_then(|g| MarkerRecord::decode(g.value()));
+            let Some(rec) = rec.filter(|r| r.kind == MarkerKind::Moved && !r.in_viewport) else { continue };
+            let flagged = MarkerRecord { in_viewport: true, ..rec };
+            if table.insert(*id, flagged.encode().as_slice()).is_ok() {
+                marked += 1;
+            }
+        }
+    }
+    if tx.commit().is_err() {
+        return 0;
+    }
+    marked
 }
 
 /// `target` を重複先に持つマーカーのファイルID（昇順）。旧ファイル側の「他に重複あり」の判定用。
@@ -446,6 +538,124 @@ mod tests {
         assert!(get(&db, 9).is_none());
         assert!(owners_of(&db, 2).is_empty());
         assert!(get(&db, 8).is_some(), "他のマーカーは残る");
+    }
+
+    /// フォルダ内の実ファイルを登録してIDを返す（FPが違うので互いに統合されない）。
+    fn register(db: &Arc<Mutex<Database>>, dir: &Path, name: &str, fill: u8) -> u64 {
+        std::fs::write(dir.join(name), vec![fill; 64]).unwrap();
+        crate::file_identity::ensure_record(db, dir, name).unwrap().id
+    }
+
+    fn set_viewport(db: &Arc<Mutex<Database>>, id: u64) {
+        let mut rec = get(db, id).unwrap();
+        rec.in_viewport = true;
+        let g = db.lock().unwrap();
+        let tx = g.begin_write().unwrap();
+        tx.open_table(MARKER_TABLE).unwrap().insert(id, rec.encode().as_slice()).unwrap();
+        tx.commit().unwrap();
+    }
+
+    #[test]
+    fn load_dir_returns_own_and_referenced_markers_by_file_name() {
+        let t = TempRoot::new("load_dir");
+        let db = new_db(&t);
+        let dir = t.0.join("d");
+        std::fs::create_dir_all(&dir).unwrap();
+        let other = t.0.join("e");
+        std::fs::create_dir_all(&other).unwrap();
+        let old = register(&db, &dir, "old.zip", 1);
+        let new = register(&db, &other, "new.zip", 2);
+        let plain = register(&db, &dir, "plain.zip", 3);
+        record_reacquired(&db, new, &[old], false, 10);
+
+        let d = load_dir(&db, &dir);
+        assert_eq!(d.keys().cloned().collect::<Vec<_>>(), vec!["old.zip".to_owned()], "{d:?}");
+        assert_eq!(d["old.zip"].referenced_by, vec![new]);
+        assert!(d["old.zip"].own.is_none());
+        let e = load_dir(&db, &other);
+        assert_eq!(e["new.zip"].own.as_ref().unwrap().kind, MarkerKind::Reacquired);
+        assert!(e["new.zip"].referenced_by.is_empty());
+        assert!(!d.contains_key("plain.zip") && plain != 0);
+    }
+
+    #[test]
+    fn load_dir_hides_references_from_dismissed_markers() {
+        let t = TempRoot::new("load_dir_dismissed");
+        let db = new_db(&t);
+        let dir = t.0.join("d");
+        std::fs::create_dir_all(&dir).unwrap();
+        let old = register(&db, &dir, "old.zip", 1);
+        let new = register(&db, &dir, "new.zip", 2);
+        record_reacquired(&db, new, &[old], false, 10);
+        {
+            let mut rec = get(&db, new).unwrap();
+            rec.dismissed = true;
+            let g = db.lock().unwrap();
+            let tx = g.begin_write().unwrap();
+            tx.open_table(MARKER_TABLE).unwrap().insert(new, rec.encode().as_slice()).unwrap();
+            tx.commit().unwrap();
+        }
+        let d = load_dir(&db, &dir);
+        assert!(!d.contains_key("old.zip"), "消去済みの再取得は旧側にも出さない");
+        assert!(d["new.zip"].own.as_ref().unwrap().dismissed, "自身の行は消去済みとして残る");
+    }
+
+    #[test]
+    fn load_dir_on_a_legacy_db_is_empty_and_creates_nothing() {
+        let t = TempRoot::new("load_dir_lazy");
+        let db = new_db(&t);
+        let dir = t.0.join("d");
+        std::fs::create_dir_all(&dir).unwrap();
+        register(&db, &dir, "a.zip", 1);
+        assert!(load_dir(&db, &dir).is_empty());
+        assert_eq!(purge_seen_moved(&db, &dir), 0);
+        let g = db.lock().unwrap();
+        let tx = g.begin_read().unwrap();
+        assert!(!tx.list_tables().unwrap().any(|h| h.name().starts_with("duplicate_marker")));
+    }
+
+    #[test]
+    fn purge_seen_moved_removes_only_flagged_moved_markers_in_that_dir() {
+        let t = TempRoot::new("purge");
+        let db = new_db(&t);
+        let dir = t.0.join("d");
+        let other = t.0.join("e");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::create_dir_all(&other).unwrap();
+        let seen = register(&db, &dir, "seen.zip", 1);
+        let unseen = register(&db, &dir, "unseen.zip", 2);
+        let re = register(&db, &dir, "re.zip", 3);
+        let elsewhere = register(&db, &other, "x.zip", 4);
+        for id in [seen, unseen, elsewhere] {
+            record_moved(&db, id, 1);
+        }
+        record_reacquired(&db, re, &[unseen], false, 1);
+        for id in [seen, re, elsewhere] {
+            set_viewport(&db, id);
+        }
+        assert_eq!(purge_seen_moved(&db, &dir), 1);
+        assert!(get(&db, seen).is_none(), "見た移動マーカーは消える");
+        assert!(get(&db, unseen).is_some(), "まだ見ていない移動マーカーは残る");
+        assert!(get(&db, re).is_some(), "再取得はVPフラグがあっても消えない");
+        assert!(get(&db, elsewhere).is_some(), "別フォルダは触らない");
+    }
+
+    #[test]
+    fn mark_in_viewport_flags_only_unflagged_moved_markers() {
+        let t = TempRoot::new("mark_vp");
+        let db = new_db(&t);
+        assert_eq!(mark_in_viewport(&db, &[1]), 0, "台帳が無ければ何もしない");
+        record_moved(&db, 1, 10);
+        record_moved(&db, 2, 10);
+        record_reacquired(&db, 3, &[1], false, 10);
+        assert_eq!(mark_in_viewport(&db, &[1, 3, 99]), 1, "再取得と未登録は対象外");
+        assert!(get(&db, 1).unwrap().in_viewport);
+        assert!(!get(&db, 2).unwrap().in_viewport);
+        assert!(!get(&db, 3).unwrap().in_viewport);
+        assert_eq!(mark_in_viewport(&db, &[1]), 0, "二重には付けない");
+        let g = db.lock().unwrap();
+        let tx = g.begin_read().unwrap();
+        assert_eq!(MarkerRecord::decode(tx.open_table(MARKER_TABLE).unwrap().get(1).unwrap().unwrap().value()).unwrap().detected_at, 10);
     }
 
     #[test]

@@ -115,6 +115,33 @@ impl Lang {
         }
     }
 
+    /// 重複マーカー（カード上辺のアイコン）のホバー説明: 移動。
+    pub fn dup_marker_moved(self) -> &'static str {
+        match self {
+            Lang::Japanese => "移動を検出しました（同じ内容のファイルが、以前の場所からここへ移っています）",
+            Lang::English  => "Move detected (a file with the same content has moved here from its previous location)",
+            Lang::Chinese  => "检测到移动（相同内容的文件已从原位置移到此处）",
+        }
+    }
+
+    /// 重複マーカーのホバー説明: 再取得（同じ内容の別のファイルが既にある）。
+    pub fn dup_marker_reacquired(self) -> &'static str {
+        match self {
+            Lang::Japanese => "同じ内容のファイルが他にもあります（簡易照合で一致）。評価などは引き継がれています",
+            Lang::English  => "Another file with the same content exists (matched by quick check). Ratings etc. were carried over",
+            Lang::Chinese  => "还有相同内容的文件（快速比对一致）。评分等信息已继承",
+        }
+    }
+
+    /// 重複マーカーのホバー説明: 旧ファイル側（このファイルと同じ内容の、新しいファイルがある）。
+    pub fn dup_marker_elsewhere(self) -> &'static str {
+        match self {
+            Lang::Japanese => "このファイルと同じ内容の別のファイルがあります（簡易照合で一致）",
+            Lang::English  => "Another file with the same content as this one exists (matched by quick check)",
+            Lang::Chinese  => "存在与此文件内容相同的其他文件（快速比对一致）",
+        }
+    }
+
     /// ファイルID解決（新規・移動直後のファイルの照合）が長引いた時に出す、処理中トースト。
     pub fn identity_toast(self, done: usize, total: usize) -> String {
         match self {

@@ -330,6 +330,7 @@ impl NekoviewApp {
 
     /// バックグラウンドスキャンを起動する（UIをブロックしない）
     pub(super) fn start_scan(&mut self) {
+        self.on_marker_dir_scan();
         self.thumb_session.fetch_add(1, Ordering::AcqRel);
         // ネットワークマウント配下ではサブフォルダの更新日時を取らない（日付ソートでは末尾になる）
         let with_mtimes = self.network_mount_root_cached(&self.current_dir).is_none();
@@ -472,6 +473,8 @@ impl NekoviewApp {
                 // 見開き・ソート・お気に入り・評価・しおりは、フォルダから消えた行をGCしない。
                 // ファイルが移動・リネームされても旧v1行は遅延移行の橋渡しとして残し、ID化済みの
                 // データは新しいパスへ追従する（フォルダから消えたこと＝不要、とは限らない）。
+                // 前回の訪問で表示領域に入った移動マーカーは、開き直した今、役目を終えて消える。
+                crate::duplicate_marker::purge_seen_moved(&db, &self.current_dir);
                 self.reload_dir_state_maps();
                 // 評価帯・フィルタ用に、このフォルダの評価・訪問を一括ロード（不在は None＝NEW）
                 let ratings: std::collections::HashMap<String, crate::spread_state::ArchiveRating> =
@@ -488,6 +491,7 @@ impl NekoviewApp {
                 self.spread_states.clear();
                 self.archive_sort_states.clear();
                 self.favorite_states.clear();
+                self.dir_markers.clear();
             }
             self.saved_archive_settings = self.spread_db.as_ref()
                 .map(|db| crate::spread_state::saved_settings_for_paths(db, &self.archives))
@@ -872,6 +876,7 @@ impl NekoviewApp {
             self.spread_states.clear();
             self.archive_sort_states.clear();
             self.favorite_states.clear();
+            self.dir_markers.clear();
             return;
         };
         self.spread_states = crate::spread_state::list_dir_entries(&db, &self.current_dir)
@@ -885,6 +890,7 @@ impl NekoviewApp {
         self.favorite_states = crate::favorites::list_dir_favorites(&db, &self.current_dir)
             .into_iter()
             .collect();
+        self.dir_markers = crate::duplicate_marker::load_dir(&db, &self.current_dir);
     }
 
     /// 評価・訪問が変わった後（ビューアーを閉じた直後など）の再ソート。スコア／訪問回数が
