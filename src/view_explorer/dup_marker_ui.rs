@@ -12,6 +12,8 @@ pub(super) enum MarkerIcon {
     Moved,
     Reacquired,
     Elsewhere,
+    /// 「正常として消した」再取得（「消去済みも」を入れた時だけ出す。グレー）。
+    Dismissed,
 }
 
 impl MarkerIcon {
@@ -22,17 +24,27 @@ impl MarkerIcon {
             Self::Moved => t.dup_marker_moved(),
             Self::Reacquired => t.dup_marker_reacquired(),
             Self::Elsewhere => t.dup_marker_elsewhere(),
+            Self::Dismissed => t.dup_marker_dismissed(),
         }
     }
 }
 
+/// 絞り込み・並びの対象になる自身のマーカーの検出日時。マーカー無し、旧ファイル側だけ（被参照）、
+/// 消去済み（`show_dismissed` でない時）は None。
+pub(super) fn active_detected_at(m: &DirMarker, show_dismissed: bool) -> Option<i64> {
+    let own = m.own.as_ref()?;
+    (!own.dismissed || show_dismissed).then_some(own.detected_at)
+}
+
 /// 出すアイコン。自身のマーカーが（消去済みでなければ）優先、無ければ被参照の薄いアイコン。
-pub(super) fn icon_for(m: &DirMarker) -> Option<MarkerIcon> {
+/// 消去済みは、`show_dismissed` のときだけグレーで出す。
+pub(super) fn icon_for(m: &DirMarker, show_dismissed: bool) -> Option<MarkerIcon> {
     match &m.own {
         Some(own) if !own.dismissed => Some(match own.kind {
             MarkerKind::Moved => MarkerIcon::Moved,
             MarkerKind::Reacquired => MarkerIcon::Reacquired,
         }),
+        Some(_) if show_dismissed => Some(MarkerIcon::Dismissed),
         _ if !m.referenced_by.is_empty() => Some(MarkerIcon::Elsewhere),
         _ => None,
     }
@@ -59,6 +71,7 @@ pub(super) fn paint_icon(painter: &egui::Painter, rect: egui::Rect, icon: Marker
         MarkerIcon::Moved => (egui::Color32::from_rgb(60, 130, 220), 255),
         MarkerIcon::Reacquired => (egui::Color32::from_rgb(235, 140, 35), 255),
         MarkerIcon::Elsewhere => (egui::Color32::from_rgb(235, 140, 35), 120),
+        MarkerIcon::Dismissed => (egui::Color32::from_rgb(140, 140, 140), 255),
     };
     let with_alpha = |c: egui::Color32, a: u8| egui::Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), a);
     let c = rect.center();
@@ -71,7 +84,7 @@ pub(super) fn paint_icon(painter: &egui::Painter, rect: egui::Rect, icon: Marker
             painter.line_segment([r, r + egui::vec2(-3.0, -3.0)], ink);
             painter.line_segment([r, r + egui::vec2(-3.0, 3.0)], ink);
         }
-        MarkerIcon::Reacquired | MarkerIcon::Elsewhere => {
+        MarkerIcon::Reacquired | MarkerIcon::Elsewhere | MarkerIcon::Dismissed => {
             let side = egui::vec2(6.0, 6.0);
             let back = egui::Rect::from_min_size(c + egui::vec2(-4.5, -4.5), side);
             let front = egui::Rect::from_min_size(c + egui::vec2(-1.5, -1.5), side);
@@ -114,12 +127,21 @@ impl super::NekoviewApp {
         self.folder_pane_tab.shows_real_dir() && self.viewing_favorites.is_none() && self.viewing_search.is_none()
     }
 
+    /// 絞り込み・並びの対象になる自身のマーカーの検出日時（unix秒）。マーカー無し、消去済み
+    /// （「消去済みも」を入れていない時）、マーカーを出さない表示は None。
+    pub(super) fn active_marker_detected_at(&self, filename: &str) -> Option<i64> {
+        if !self.marker_view_active() {
+            return None;
+        }
+        active_detected_at(self.dir_markers.get(filename)?, self.dup_show_dismissed)
+    }
+
     /// そのファイル名のアイコン。マーカーを出さない表示や、マーカーの無いファイルは None。
     pub(super) fn marker_icon(&self, filename: &str) -> Option<MarkerIcon> {
         if !self.marker_view_active() {
             return None;
         }
-        self.dir_markers.get(filename).and_then(icon_for)
+        self.dir_markers.get(filename).and_then(|m| icon_for(m, self.dup_show_dismissed))
     }
 
     /// アイコンを描き、ホバーで説明を出す。見えているファイルの移動マーカーは「見た」印を控え、
@@ -164,6 +186,8 @@ impl super::NekoviewApp {
         let (Some(icon), Some(marker)) = (self.marker_icon(name), self.dir_markers.get(name)) else { return false };
         let (ids, dismiss_id, mtime_match) = match (&marker.own, icon) {
             (Some(own), MarkerIcon::Reacquired) => (own.targets.clone(), Some(own.id), Some(own.mtime_match)),
+            // 消去済みは、重複先と照合結果だけを見せる（もう一度消すボタンは無い）。
+            (Some(own), MarkerIcon::Dismissed) => (own.targets.clone(), None, Some(own.mtime_match)),
             (_, MarkerIcon::Elsewhere) => (marker.referenced_by.clone(), None, None),
             _ => (Vec::new(), None, None),
         };
@@ -288,28 +312,52 @@ mod tests {
     fn own_marker_decides_the_icon_by_kind() {
         let moved = DirMarker { own: Some(own(MarkerKind::Moved, false)), referenced_by: vec![] };
         let re = DirMarker { own: Some(own(MarkerKind::Reacquired, false)), referenced_by: vec![] };
-        assert_eq!(icon_for(&moved), Some(MarkerIcon::Moved));
-        assert_eq!(icon_for(&re), Some(MarkerIcon::Reacquired));
+        assert_eq!(icon_for(&moved, false), Some(MarkerIcon::Moved));
+        assert_eq!(icon_for(&re, false), Some(MarkerIcon::Reacquired));
     }
 
     #[test]
     fn own_marker_wins_over_being_referenced() {
         let both = DirMarker { own: Some(own(MarkerKind::Reacquired, false)), referenced_by: vec![9] };
-        assert_eq!(icon_for(&both), Some(MarkerIcon::Reacquired));
+        assert_eq!(icon_for(&both, false), Some(MarkerIcon::Reacquired));
     }
 
     #[test]
     fn referenced_only_is_the_faint_icon() {
         let old = DirMarker { own: None, referenced_by: vec![9] };
-        assert_eq!(icon_for(&old), Some(MarkerIcon::Elsewhere));
+        assert_eq!(icon_for(&old, false), Some(MarkerIcon::Elsewhere));
     }
 
     #[test]
     fn dismissed_own_marker_shows_nothing_unless_referenced() {
         let gone = DirMarker { own: Some(own(MarkerKind::Reacquired, true)), referenced_by: vec![] };
-        assert_eq!(icon_for(&gone), None);
+        assert_eq!(icon_for(&gone, false), None);
         let gone_but_old = DirMarker { own: Some(own(MarkerKind::Reacquired, true)), referenced_by: vec![9] };
-        assert_eq!(icon_for(&gone_but_old), Some(MarkerIcon::Elsewhere));
+        assert_eq!(icon_for(&gone_but_old, false), Some(MarkerIcon::Elsewhere));
+    }
+
+    #[test]
+    fn dismissed_own_marker_shows_grey_only_when_asked() {
+        let gone = DirMarker { own: Some(own(MarkerKind::Reacquired, true)), referenced_by: vec![] };
+        assert_eq!(icon_for(&gone, true), Some(MarkerIcon::Dismissed));
+        // 消去済みでも旧ファイル側の薄いアイコンは別物（自身の消去済み表示を優先する）。
+        let gone_but_old = DirMarker { own: Some(own(MarkerKind::Reacquired, true)), referenced_by: vec![9] };
+        assert_eq!(icon_for(&gone_but_old, true), Some(MarkerIcon::Dismissed));
+    }
+
+    #[test]
+    fn active_detected_at_follows_own_marker_and_dismissal() {
+        let mut live = own(MarkerKind::Moved, false);
+        live.detected_at = 42;
+        let m = DirMarker { own: Some(live), referenced_by: vec![] };
+        assert_eq!(active_detected_at(&m, false), Some(42));
+        let mut gone = own(MarkerKind::Reacquired, true);
+        gone.detected_at = 7;
+        let d = DirMarker { own: Some(gone), referenced_by: vec![] };
+        assert_eq!(active_detected_at(&d, false), None, "消去済みは対象外");
+        assert_eq!(active_detected_at(&d, true), Some(7), "「消去済みも」を入れると対象");
+        let old = DirMarker { own: None, referenced_by: vec![9] };
+        assert_eq!(active_detected_at(&old, true), None, "旧ファイル側は絞り込み・並びの対象外");
     }
 
     #[test]

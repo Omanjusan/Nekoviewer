@@ -881,6 +881,12 @@ pub struct NekoviewApp {
     marker_icon_hits: HashMap<usize, egui::Rect>,
     /// 開いている重複マーカーのポップアップ。
     marker_popup: Option<dup_marker_ui::MarkerPopup>,
+    /// 下段フィルタ「重複あり」。自身にマーカーがあるファイルだけを出す（保存しない）。
+    dup_filter: bool,
+    /// 下段フィルタ「消去済みも」。消去済みのマーカーも、絞り込み・並び・アイコンの対象にする（保存しない）。
+    dup_show_dismissed: bool,
+    /// リスト見出し「重複」のソート。マーカー付きを検出日時の新しい順で先頭に寄せる（保存しない）。
+    dup_sort: bool,
     /// お気に入り・検索の横断一覧表示中のマーカー情報 (フルパス -> 所属folder_id一覧)。
     /// ディレクトリ横断のため favorite_states とは別にフルパスキーで持つ。
     cross_view_favorite_markers: HashMap<PathBuf, Vec<u8>>,
@@ -1448,6 +1454,9 @@ impl NekoviewApp {
             marker_seen_dir: None,
             marker_icon_hits: HashMap::new(),
             marker_popup: None,
+            dup_filter: false,
+            dup_show_dismissed: false,
+            dup_sort: false,
             cross_view_favorite_markers: HashMap::new(),
             saved_archive_settings: HashMap::new(),
             network_unreachable_mounts: HashSet::new(),

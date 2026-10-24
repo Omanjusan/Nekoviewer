@@ -305,6 +305,16 @@ impl NekoviewApp {
         let row = header_row(m.total_w);
         let mut sort_click: Option<crate::explorer_sort::HeaderColumn> = None;
         let mut hovered_col: Option<Col> = None;
+        // 重複列の見出しは、他の列と別軸のソート（マーカー付きを検出の新しい順で先頭へ）。
+        let mut dup_click = false;
+        let dup_cell = col_rect(row, &m.widths, Col::Dup).intersect(rect);
+        if dup_cell.width() > 0.0 {
+            let resp = ui.interact(dup_cell, egui::Id::new(("list_col_sort", Col::Dup as usize)), egui::Sense::click());
+            if resp.hovered() {
+                hovered_col = Some(Col::Dup);
+            }
+            dup_click = resp.clicked();
+        }
         for col in [Col::Name, Col::Size, Col::Mtime, Col::Rating, Col::Visits] {
             let Some(sort_col) = col.sort_column() else { continue };
             let cell = col_rect(row, &m.widths, col).intersect(rect);
@@ -364,6 +374,11 @@ impl NekoviewApp {
             self.persist_state();
         }
 
+        if dup_click {
+            self.dup_sort = !self.dup_sort;
+            self.finish_sort_change();
+        }
+
         let m = self.list_metrics();
         let row = header_row(m.total_w);
         let painter = ui.painter().with_clip_rect(rect);
@@ -387,7 +402,11 @@ impl NekoviewApp {
             (Col::Visits, t.list_col_visits()),
         ] {
             // 並べている列は、昇順 ▲ / 降順 ▼ を付けて強調する
-            let arrow = col.sort_column().and_then(|c| crate::explorer_sort::header_arrow(&settings, c));
+            let arrow = if matches!(col, Col::Dup) {
+                self.dup_sort.then_some(false)
+            } else {
+                col.sort_column().and_then(|c| crate::explorer_sort::header_arrow(&settings, c))
+            };
             let (text, color) = match arrow {
                 Some(true) => (format!("{label} ▲"), ui.visuals().strong_text_color()),
                 Some(false) => (format!("{label} ▼"), ui.visuals().strong_text_color()),

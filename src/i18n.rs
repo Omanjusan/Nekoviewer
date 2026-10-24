@@ -142,6 +142,60 @@ impl Lang {
         }
     }
 
+    /// 新しく重複マーカー（移動・再取得）が付いた時のトースト。
+    pub fn dup_marker_toast(self, n: usize) -> String {
+        match self {
+            Lang::Japanese => format!("同じ内容のファイルを検出しました（{n}件）。「重複」列・絞り込みで確認できます"),
+            Lang::English  => format!("Files with the same content were detected ({n}). Check them via the duplicate column or filter"),
+            Lang::Chinese  => format!("检测到内容相同的文件（{n}个）。可通过“重复”列或筛选查看"),
+        }
+    }
+
+    /// 下段フィルタ行: 重複マーカーを持つファイルだけを出すチェックボックスの名前。
+    pub fn dup_filter_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "重複あり",
+            Lang::English  => "Duplicates",
+            Lang::Chinese  => "重复",
+        }
+    }
+
+    /// 下段フィルタ行: 重複あり絞り込みの説明。
+    pub fn dup_filter_hint(self) -> &'static str {
+        match self {
+            Lang::Japanese => "移動・再取得のマーカーが付いたファイルだけを表示します",
+            Lang::English  => "Show only files that carry a moved / re-acquired marker",
+            Lang::Chinese  => "仅显示带有移动/重新获取标记的文件",
+        }
+    }
+
+    /// 下段フィルタ行: 「正常として消した」マーカーも表示するチェックボックスの名前。
+    pub fn dup_show_dismissed_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "消去済みも",
+            Lang::English  => "Incl. dismissed",
+            Lang::Chinese  => "含已清除",
+        }
+    }
+
+    /// 下段フィルタ行: 消去済みも表示の説明。
+    pub fn dup_show_dismissed_hint(self) -> &'static str {
+        match self {
+            Lang::Japanese => "「正常として消す」を押したマーカーも、グレーのアイコンで表示します",
+            Lang::English  => "Also show markers that were dismissed as normal, as grey icons",
+            Lang::Chinese  => "同时以灰色图标显示已标记为正常的标记",
+        }
+    }
+
+    /// 消去済みの再取得マーカーのホバー説明。
+    pub fn dup_marker_dismissed(self) -> &'static str {
+        match self {
+            Lang::Japanese => "正常として消した重複です（簡易照合で一致）",
+            Lang::English  => "A duplicate that was dismissed as normal (matched by quick check)",
+            Lang::Chinese  => "已标记为正常的重复（快速比对一致）",
+        }
+    }
+
     /// 重複マーカーのポップアップ: 照合の確かさ。
     pub fn dup_popup_quick_match(self) -> &'static str {
         match self {

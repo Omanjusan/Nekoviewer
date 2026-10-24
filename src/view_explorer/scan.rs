@@ -54,6 +54,8 @@ struct SortEntry {
     path: PathBuf,
     /// お気に入り登録済み（並びの先頭に固定する）
     fav: bool,
+    /// 重複ソートON時の、自身のマーカーの検出日時（新しいものを先頭へ。無ければ None で従来の並び）
+    dup: Option<i64>,
     mtime: Option<std::time::SystemTime>,
     size: u64,
     rating_half: u8,
@@ -891,6 +893,10 @@ impl NekoviewApp {
             .into_iter()
             .collect();
         self.dir_markers = crate::duplicate_marker::load_dir(&db, &self.current_dir);
+        // マーカーの顔ぶれが変わったら、重複あり絞り込みの結果も作り直す。
+        if self.dup_filter {
+            self.recompute_filter();
+        }
     }
 
     /// 評価・訪問が変わった後（ビューアーを閉じた直後など）の再ソート。スコア／訪問回数が
@@ -944,16 +950,25 @@ impl NekoviewApp {
             } else {
                 None
             };
+            let dup = if self.dup_sort {
+                p.file_name().and_then(|n| n.to_str()).and_then(|name| self.active_marker_detected_at(name))
+            } else {
+                None
+            };
             SortEntry {
                 path: p.clone(),
                 fav,
+                dup,
                 mtime: meta.as_ref().and_then(|m| m.modified().ok()),
                 size: meta.as_ref().map_or(0, |m| m.len()),
                 rating_half: rating.map_or(0, |r| r.rating_half),
                 visit_count: rating.map_or(0, |r| r.visit_count),
             }
         }).collect();
-        entries.sort_by(|a, b| b.fav.cmp(&a.fav).then_with(|| sort.compare(&a.row(), &b.row())));
+        // 重複ソートONのマーカー付きは、お気に入りの先頭固定よりさらに前（None < Some なので、新しい順に先頭へ）。
+        entries.sort_by(|a, b| {
+            b.dup.cmp(&a.dup).then(b.fav.cmp(&a.fav)).then_with(|| sort.compare(&a.row(), &b.row()))
+        });
         self.archives = entries.into_iter().map(|e| e.path).collect();
     }
 
@@ -962,7 +977,8 @@ impl NekoviewApp {
     pub(super) fn recompute_filter(&mut self) {
         let text_active = self.filter_enabled && !self.filter_text.trim().is_empty();
         let rating_active = self.rating_filter.enabled;
-        if text_active || rating_active {
+        let dup_active = self.dup_filter && self.marker_view_active();
+        if text_active || rating_active || dup_active {
             let text = self.filter_text.clone();
             // 評価は横断一覧でもキャッシュ経由で引く（未取得ぶんはここで遅延ロードされる）
             let ratings: Vec<Option<u8>> = if rating_active {
@@ -976,6 +992,15 @@ impl NekoviewApp {
                     if text_active {
                         let Some(name) = p.file_name().and_then(|n| n.to_str()) else { return false };
                         if !dir::name_matches(&text, name) {
+                            return false;
+                        }
+                    }
+                    if dup_active {
+                        let marked = p
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .is_some_and(|name| self.active_marker_detected_at(name).is_some());
+                        if !marked {
                             return false;
                         }
                     }

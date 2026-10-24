@@ -2262,6 +2262,8 @@ impl NekoviewApp {
     fn draw_filter_bar(&mut self, ui: &mut egui::Ui) {
         // 評価フィルタ群（縦線・チェック・比較・★）と右端の空白ぶん。文字列欄はこの残りを使う。
         const RATING_GROUP_W: f32 = 290.0;
+        // 重複フィルタ群（縦線・「重複あり」・「消去済みも」）のぶん。
+        const DUP_GROUP_W: f32 = 200.0;
         const RIGHT_GAP: f32 = 5.0;
         let help_on = self.help_enabled;
         let help_text = i18n::t().help_filter_text();
@@ -2283,7 +2285,7 @@ impl NekoviewApp {
                 self.filter_enabled,
                 egui::TextEdit::singleline(&mut self.filter_text)
                     .hint_text(i18n::t().explorer_filter_hint())
-                    .desired_width((ui.available_width() - tag_panel_w - RATING_GROUP_W).max(60.0)),
+                    .desired_width((ui.available_width() - tag_panel_w - RATING_GROUP_W - DUP_GROUP_W).max(60.0)),
             );
             help_tip(&resp, help_on, &help_text);
             if resp.clicked() {
@@ -2342,6 +2344,22 @@ impl NekoviewApp {
                     });
                 help_tip(&r_threshold.response, help_on, &help_score);
             });
+
+            // ── 重複フィルタ（通常のフォルダ表示でだけ働く。お気に入り・検索の横断一覧では絞り込まない）──
+            ui.separator();
+            let t = i18n::t();
+            let r_dup = ui.checkbox(&mut self.dup_filter, t.dup_filter_label()).on_hover_text(t.dup_filter_hint());
+            let r_dismissed = ui
+                .checkbox(&mut self.dup_show_dismissed, t.dup_show_dismissed_label())
+                .on_hover_text(t.dup_show_dismissed_hint());
+            if r_dup.changed() || r_dismissed.changed() {
+                // 消去済みの表示は並びにも効くので、並びごと作り直す。
+                if self.dup_sort && r_dismissed.changed() {
+                    self.finish_sort_change();
+                } else {
+                    changed = true;
+                }
+            }
             ui.add_space(RIGHT_GAP);
 
             if changed {

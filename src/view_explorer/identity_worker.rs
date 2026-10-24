@@ -42,8 +42,8 @@ pub(super) enum IdentityEvent {
     /// そのうち移動・統合で評価等が付き替わった可能性のあるパス（UI側で引き直す）。
     Chunk { generation: u64, refresh: Vec<PathBuf>, settled: Vec<PathBuf>, processed: usize },
     /// この世代のバッチを処理し終えた（打ち切りを除く）。`pending_created` は今回新しく記録した未解決の件数
-    /// （通知トーストの対象）、`pending_count` は掃除後の未解決の総数。
-    Done { generation: u64, pending_created: usize, pending_count: usize },
+    /// （通知トーストの対象）、`markers_created` は今回新しく付いた重複マーカー（移動・再取得）の件数（同じく通知の対象）、`pending_count` は掃除後の未解決の総数。
+    Done { generation: u64, pending_created: usize, markers_created: usize, pending_count: usize },
     /// 期限切れの未確認IDの自動掃除が、何かを消した、またはバックアップに失敗して見送った。
     /// `pending_count` は掃除後の未解決の総数。
     Swept { deleted: usize, deleted_with_data: usize, backup_failed: bool, pending_count: usize },
@@ -207,6 +207,7 @@ fn run_resolve_job(
     let mut pending = paths;
     let mut aborted = false;
     let mut pending_created = 0;
+    let mut markers_created = 0;
     for round in 0..=MAX_RETRY_ROUNDS {
         let outcome = process_batch_with(
             db,
@@ -231,6 +232,7 @@ fn run_resolve_job(
         );
         aborted = outcome.aborted;
         pending_created += outcome.pending_created;
+        markers_created += outcome.markers_created;
         pending = outcome.unstable;
         if aborted || pending.is_empty() || round == MAX_RETRY_ROUNDS {
             break;
@@ -244,7 +246,7 @@ fn run_resolve_job(
         // 状況が変わって意味を失った未解決（対象に記録が付いた、候補が消えた等）を除いてから、件数を知らせる。
         crate::identity_pending::prune_real(db);
         let pending_count = crate::identity_pending::count(db);
-        let _ = event_tx.send(IdentityEvent::Done { generation, pending_created, pending_count });
+        let _ = event_tx.send(IdentityEvent::Done { generation, pending_created, markers_created, pending_count });
         ctx.request_repaint();
     }
 }
@@ -300,6 +302,8 @@ pub(super) struct BatchOutcome {
     pub aborted: bool,
     /// この処理で新しく記録した未解決の件数（同じ (種別, 対象) の更新・変更なしは数えない）。
     pub pending_created: usize,
+    /// この処理で新しく付いた重複マーカー（移動・再取得）の件数。
+    pub markers_created: usize,
 }
 
 /// ディレクトリごとに正規化したキーの接頭辞を使い回す（`make_key` は呼ぶたびに canonicalize する）。
@@ -364,7 +368,9 @@ pub(super) fn process_batch_with(
         let key = keys.key(dir, name);
         match file_identity::resolve_file(db, &key, path, now, false) {
             ResolveOutcome::Resolved(Resolution::Moved { id, from }) => {
-                crate::duplicate_marker::record_moved(db, id, now);
+                if crate::duplicate_marker::record_moved(db, id, now) {
+                    outcome.markers_created += 1;
+                }
                 on_relocated(path, &from);
                 chunk.refresh.push(path.clone());
                 chunk.settled.push(path.clone());
@@ -375,7 +381,9 @@ pub(super) fn process_batch_with(
                 let src = record_by_id(db, source);
                 // 更新日時が同じなら「コピーしただけ」の可能性が高い（再取得マーカーの補助表示）。
                 let mtime_match = matches!((&src, record_by_id(db, id)), (Some(s), Some(n)) if s.mtime == n.mtime);
-                crate::duplicate_marker::record_reacquired(db, id, &[source], mtime_match, now);
+                if crate::duplicate_marker::record_reacquired(db, id, &[source], mtime_match, now) {
+                    outcome.markers_created += 1;
+                }
                 if let Some(src) = src {
                     on_relocated(path, &src.path_key);
                 }
@@ -604,14 +612,22 @@ impl NekoviewApp {
                     }
                     self.egui_ctx.request_repaint();
                 }
-                IdentityEvent::Done { generation, pending_created, pending_count } => {
+                IdentityEvent::Done { generation, pending_created, markers_created, pending_count } => {
                     if !self.identity_worker.is_current(generation) {
                         continue;
                     }
                     // 未解決の総数（掃除後）を反映し、新しく増えた時だけ通知する。
                     self.identity_pending_count = pending_count;
-                    if pending_created > 0 {
-                        self.set_toast(crate::i18n::t().identity_pending_toast(pending_created));
+                    let t = crate::i18n::t();
+                    match (pending_created > 0, markers_created > 0) {
+                        (true, true) => self.set_toast(format!(
+                            "{}\n{}",
+                            t.identity_pending_toast(pending_created),
+                            t.dup_marker_toast(markers_created)
+                        )),
+                        (true, false) => self.set_toast(t.identity_pending_toast(pending_created)),
+                        (false, true) => self.set_toast(t.dup_marker_toast(markers_created)),
+                        (false, false) => {}
                     }
                     // 後回しのまま残った・失敗したものも含め、検証中表示と処理中トーストを残さない。
                     self.identity_verifying.clear();
@@ -1161,10 +1177,11 @@ mod tests {
 
         let p2 = d2.join("renamed.zip");
         std::fs::rename(&p1, &p2).unwrap();
-        run(&db, &[p2.clone()]);
+        let (moved_outcome, _) = run(&db, &[p2.clone()]);
 
         let m = crate::duplicate_marker::get(&db, id).unwrap();
         assert_eq!((m.kind, m.targets.is_empty()), (crate::duplicate_marker::MarkerKind::Moved, true));
+        assert_eq!(moved_outcome.markers_created, 1, "新しいマーカーを数える");
         assert_eq!(id_of(&db, &p2), id, "IDは移動先へ付いて来る");
     }
 
@@ -1180,7 +1197,8 @@ mod tests {
         // 更新日時を元と同じにする（一致の判定を秒またぎで揺らさない）。
         let src_mtime = std::fs::metadata(&src).unwrap().modified().unwrap();
         std::fs::OpenOptions::new().write(true).open(&copy).unwrap().set_modified(src_mtime).unwrap();
-        run(&db, &[copy.clone()]);
+        let (copy_outcome, _) = run(&db, &[copy.clone()]);
+        assert_eq!(copy_outcome.markers_created, 1);
 
         let (src_id, copy_id) = (id_of(&db, &src), id_of(&db, &copy));
         let m = crate::duplicate_marker::get(&db, copy_id).unwrap();
@@ -1394,7 +1412,7 @@ mod tests {
         let g2 = worker.submit(db.clone(), vec![c], None);
         let (created, count) = loop {
             match worker.event_rx.recv_timeout(Duration::from_secs(10)).expect("Done が届く") {
-                IdentityEvent::Done { generation, pending_created, pending_count } if generation == g2 => {
+                IdentityEvent::Done { generation, pending_created, pending_count, .. } if generation == g2 => {
                     break (pending_created, pending_count)
                 }
                 _ => {}
