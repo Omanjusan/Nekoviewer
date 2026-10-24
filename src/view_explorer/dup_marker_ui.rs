@@ -82,6 +82,32 @@ pub(super) fn paint_icon(painter: &egui::Painter, rect: egui::Rect, icon: Marker
     }
 }
 
+/// 開いているポップアップの内容（開いた時点のDBの内容を写したもの）。
+pub(super) struct MarkerPopup {
+    icon: MarkerIcon,
+    anchor: egui::Pos2,
+    /// 「正常として消す」の対象（再取得マーカーを持つファイルのID）。押せないときは None。
+    dismiss_id: Option<u64>,
+    /// 再取得の補助表示（更新日時が重複先と同じか）。再取得以外は None。
+    mtime_match: Option<bool>,
+    /// 並べるファイルの表示名（最大 `POPUP_LIST_MAX` 件）と、並べきれなかった件数。
+    others: Vec<String>,
+    more: usize,
+}
+
+const POPUP_LIST_MAX: usize = 5;
+
+/// ファイルIDを、パスの表示名にする（DBに無いIDは飛ばす）。
+fn describe_ids(db: &std::sync::Arc<std::sync::Mutex<redb::Database>>, ids: &[u64]) -> Vec<String> {
+    use redb::ReadableDatabase;
+    let Ok(guard) = db.lock() else { return Vec::new() };
+    let Ok(tx) = guard.begin_read() else { return Vec::new() };
+    ids.iter()
+        .filter_map(|id| crate::file_identity::record_by_id_tx(&tx, *id))
+        .map(|rec| rec.path_key.replace('\0', std::path::MAIN_SEPARATOR_STR))
+        .collect()
+}
+
 impl super::NekoviewApp {
     /// 重複マーカーを出す表示か。通常のフォルダ表示だけ（お気に入り・検索の横断一覧は対象外）。
     pub(super) fn marker_view_active(&self) -> bool {
@@ -94,6 +120,117 @@ impl super::NekoviewApp {
             return None;
         }
         self.dir_markers.get(filename).and_then(icon_for)
+    }
+
+    /// アイコンを描き、ホバーで説明を出す。見えているファイルの移動マーカーは「見た」印を控え、
+    /// クリックの振り分けのため、描いた矩形を覚える。
+    pub(super) fn paint_marker_icon(
+        &mut self,
+        ui: &egui::Ui,
+        response: &egui::Response,
+        icon_rect: egui::Rect,
+        real_idx: usize,
+        name: &str,
+    ) {
+        self.note_marker_seen(name);
+        let Some(icon) = self.marker_icon(name) else {
+            self.marker_icon_hits.remove(&real_idx);
+            return;
+        };
+        paint_icon(&ui.painter().with_clip_rect(ui.clip_rect()), icon_rect, icon);
+        self.marker_icon_hits.insert(real_idx, icon_rect);
+        let on_icon = ui.input(|i| i.pointer.hover_pos()).is_some_and(|p| icon_rect.contains(p));
+        if on_icon && self.marker_popup.is_none() {
+            response.clone().on_hover_text(icon.tooltip());
+        }
+    }
+
+    /// アイコンのクリックなら、ポップアップを開いて true（選択や起動はしない）。
+    /// ダブルクリックの2回目も、起動させないよう握りつぶす。
+    pub(super) fn try_open_marker_popup(&mut self, ui: &egui::Ui, response: &egui::Response, real_idx: usize) -> bool {
+        if !(response.clicked() || response.double_clicked()) {
+            return false;
+        }
+        let Some(rect) = self.marker_icon_hits.get(&real_idx).copied() else { return false };
+        let on_icon = ui.input(|i| i.pointer.interact_pos()).is_some_and(|p| rect.contains(p));
+        if !on_icon {
+            return false;
+        }
+        if response.double_clicked() {
+            return true;
+        }
+        let Some(path) = self.archives.get(real_idx).cloned() else { return false };
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else { return false };
+        let (Some(icon), Some(marker)) = (self.marker_icon(name), self.dir_markers.get(name)) else { return false };
+        let (ids, dismiss_id, mtime_match) = match (&marker.own, icon) {
+            (Some(own), MarkerIcon::Reacquired) => (own.targets.clone(), Some(own.id), Some(own.mtime_match)),
+            (_, MarkerIcon::Elsewhere) => (marker.referenced_by.clone(), None, None),
+            _ => (Vec::new(), None, None),
+        };
+        let names = self.spread_db.as_ref().map(|db| describe_ids(db, &ids)).unwrap_or_default();
+        let more = names.len().saturating_sub(POPUP_LIST_MAX);
+        let others = names.into_iter().take(POPUP_LIST_MAX).collect();
+        self.marker_popup = Some(MarkerPopup {
+            icon,
+            anchor: egui::pos2(rect.min.x, rect.max.y + 4.0),
+            dismiss_id,
+            mtime_match,
+            others,
+            more,
+        });
+        true
+    }
+
+    /// 開いているポップアップを描く。外側の押下かEscで閉じる。
+    pub(super) fn draw_marker_popup(&mut self, ctx: &egui::Context) {
+        let Some(popup) = &self.marker_popup else { return };
+        let t = i18n::t();
+        let mut dismiss = false;
+        let area = egui::Area::new(egui::Id::new("dup_marker_popup"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(popup.anchor)
+            .show(ctx, |ui| {
+                egui::Frame::popup(ui.style()).show(ui, |ui| {
+                    ui.set_max_width(380.0);
+                    ui.label(egui::RichText::new(popup.icon.tooltip()).strong());
+                    ui.label(t.dup_popup_quick_match());
+                    match popup.mtime_match {
+                        Some(true) => ui.label(t.dup_popup_mtime_same()),
+                        Some(false) => ui.label(t.dup_popup_mtime_diff()),
+                        None => ui.label(""),
+                    };
+                    if !popup.others.is_empty() {
+                        ui.separator();
+                        ui.label(match popup.icon {
+                            MarkerIcon::Elsewhere => t.dup_popup_others_newer(),
+                            _ => t.dup_popup_others_existing(),
+                        });
+                        for line in &popup.others {
+                            ui.label(egui::RichText::new(line).small().weak());
+                        }
+                        if popup.more > 0 {
+                            ui.label(egui::RichText::new(t.dup_popup_more(popup.more)).small().weak());
+                        }
+                    }
+                    if popup.dismiss_id.is_some() {
+                        ui.separator();
+                        dismiss = ui.button(t.dup_popup_dismiss()).clicked();
+                    }
+                });
+            });
+        let pressed_outside = ctx.input(|i| i.pointer.any_pressed())
+            && ctx.input(|i| i.pointer.interact_pos()).is_some_and(|p| !area.response.rect.contains(p));
+        let escape = ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
+        let dismiss_id = popup.dismiss_id;
+        if dismiss {
+            if let (Some(id), Some(db)) = (dismiss_id, self.spread_db.clone()) {
+                crate::duplicate_marker::dismiss(&db, id);
+                self.reload_dir_state_maps();
+            }
+        }
+        if dismiss || pressed_outside || escape {
+            self.marker_popup = None;
+        }
     }
 
     /// 表示領域に入ったファイルの移動マーカーを控える（書くのはフォルダ離脱・終了時）。
@@ -121,6 +258,8 @@ impl super::NekoviewApp {
     /// フォルダのスキャン開始時。別のフォルダへ移ったなら、前のフォルダで控えた印を書く
     /// （同じフォルダの再スキャンは訪問が続いているので書かない）。
     pub(super) fn on_marker_dir_scan(&mut self) {
+        self.marker_popup = None;
+        self.marker_icon_hits.clear();
         if self.marker_seen_dir.as_deref() != Some(self.current_dir.as_path()) {
             self.flush_seen_markers();
             self.marker_seen_dir = Some(self.current_dir.clone());

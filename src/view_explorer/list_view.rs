@@ -483,6 +483,9 @@ impl NekoviewApp {
         let painter = ui.painter();
         let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
         cell_text(painter, col_rect(rect, widths, Col::Name), name, font, text_color);
+        let dup_cell = col_rect(rect, widths, Col::Dup);
+        self.paint_marker_icon(ui, response, super::dup_marker_ui::list_icon_rect(dup_cell), real_idx, name);
+        let painter = ui.painter();
         if let Some((mt, sz)) = meta {
             cell_text(painter, col_rect(rect, widths, Col::Size), &humanize_size(sz), font, text_color);
             let when = format_mtime(mt, &self.card_date_format, i18n::t());

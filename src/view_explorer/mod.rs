@@ -877,6 +877,10 @@ pub struct NekoviewApp {
     marker_seen: HashSet<u64>,
     /// `marker_seen` を集めているフォルダ。同じフォルダの再スキャンでは書かず、別のフォルダへ移る時に書く。
     marker_seen_dir: Option<PathBuf>,
+    /// 今フレームに描いたアイコンの矩形 (archives のインデックス -> 矩形)。クリックの振り分け用。
+    marker_icon_hits: HashMap<usize, egui::Rect>,
+    /// 開いている重複マーカーのポップアップ。
+    marker_popup: Option<dup_marker_ui::MarkerPopup>,
     /// お気に入り・検索の横断一覧表示中のマーカー情報 (フルパス -> 所属folder_id一覧)。
     /// ディレクトリ横断のため favorite_states とは別にフルパスキーで持つ。
     cross_view_favorite_markers: HashMap<PathBuf, Vec<u8>>,
@@ -1442,6 +1446,8 @@ impl NekoviewApp {
             dir_markers: HashMap::new(),
             marker_seen: HashSet::new(),
             marker_seen_dir: None,
+            marker_icon_hits: HashMap::new(),
+            marker_popup: None,
             cross_view_favorite_markers: HashMap::new(),
             saved_archive_settings: HashMap::new(),
             network_unreachable_mounts: HashSet::new(),

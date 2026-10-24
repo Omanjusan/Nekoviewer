@@ -142,6 +142,69 @@ impl Lang {
         }
     }
 
+    /// 重複マーカーのポップアップ: 照合の確かさ。
+    pub fn dup_popup_quick_match(self) -> &'static str {
+        match self {
+            Lang::Japanese => "簡易照合で一致（中身を全て比べたわけではありません）",
+            Lang::English  => "Matched by quick check (the whole contents were not compared)",
+            Lang::Chinese  => "快速比对一致（并未比较全部内容）",
+        }
+    }
+
+    /// 重複マーカーのポップアップ: 更新日時が同じ。
+    pub fn dup_popup_mtime_same(self) -> &'static str {
+        match self {
+            Lang::Japanese => "更新日時も同じです（コピーしただけの可能性が高い）",
+            Lang::English  => "The modified time is also the same (likely just a copy)",
+            Lang::Chinese  => "修改时间也相同（很可能只是复制）",
+        }
+    }
+
+    /// 重複マーカーのポップアップ: 更新日時が違う。
+    pub fn dup_popup_mtime_diff(self) -> &'static str {
+        match self {
+            Lang::Japanese => "更新日時は異なります",
+            Lang::English  => "The modified time differs",
+            Lang::Chinese  => "修改时间不同",
+        }
+    }
+
+    /// 重複マーカーのポップアップ: 再取得したファイルの側で、元（同じ内容の既存ファイル）を並べる見出し。
+    pub fn dup_popup_others_existing(self) -> &'static str {
+        match self {
+            Lang::Japanese => "同じ内容のファイル:",
+            Lang::English  => "Files with the same content:",
+            Lang::Chinese  => "内容相同的文件:",
+        }
+    }
+
+    /// 重複マーカーのポップアップ: 旧ファイルの側で、新しく増えたファイルを並べる見出し。
+    pub fn dup_popup_others_newer(self) -> &'static str {
+        match self {
+            Lang::Japanese => "同じ内容の新しいファイル:",
+            Lang::English  => "Newer files with the same content:",
+            Lang::Chinese  => "内容相同的较新文件:",
+        }
+    }
+
+    /// 重複マーカーのポップアップ: 並べきれなかった件数。
+    pub fn dup_popup_more(self, n: usize) -> String {
+        match self {
+            Lang::Japanese => format!("ほか{n}件"),
+            Lang::English  => format!("and {n} more"),
+            Lang::Chinese  => format!("另有{n}个"),
+        }
+    }
+
+    /// 重複マーカーのポップアップ: 「問題ない」としてマーカーを消すボタン。
+    pub fn dup_popup_dismiss(self) -> &'static str {
+        match self {
+            Lang::Japanese => "正常として消す",
+            Lang::English  => "Dismiss as normal",
+            Lang::Chinese  => "标记为正常并清除",
+        }
+    }
+
     /// ファイルID解決（新規・移動直後のファイルの照合）が長引いた時に出す、処理中トースト。
     pub fn identity_toast(self, done: usize, total: usize) -> String {
         match self {

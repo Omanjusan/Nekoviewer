@@ -258,6 +258,7 @@ impl NekoviewApp {
         self.draw_relink_dialogs(&ctx);
         self.draw_unreachable_clean_dialogs(&ctx);
         self.draw_reveal_dialog(&ctx);
+        self.draw_marker_popup(&ctx);
         self.draw_sort_condition_dialog(&ctx);
         self.draw_bookmark_setting_dialog(&ctx);
         self.draw_spread_setting_dialog(&ctx);
@@ -2569,6 +2570,10 @@ impl NekoviewApp {
         real_idx: usize,
         i: usize,
     ) {
+        // 重複マーカーのアイコンを押したときは、選択や起動ではなくポップアップを開く。
+        if self.try_open_marker_popup(ui, response, real_idx) {
+            return;
+        }
         let path_owned = self.archives[real_idx].clone();
         let path = &path_owned;
         let is_raw = self.raw_image_files.contains(path);
@@ -3226,17 +3231,8 @@ impl NekoviewApp {
 
                             // 重複マーカー: 上辺の左右中央。見えているカードの移動マーカーは「見た」印を控える。
                             if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                                if let Some(icon) = self.marker_icon(name) {
-                                    let icon_rect = super::dup_marker_ui::card_icon_rect(rect);
-                                    super::dup_marker_ui::paint_icon(ui.painter(), icon_rect, icon);
-                                    let on_icon = ui
-                                        .input(|i| i.pointer.hover_pos())
-                                        .is_some_and(|p| icon_rect.contains(p));
-                                    if on_icon {
-                                        response.clone().on_hover_text(icon.tooltip());
-                                    }
-                                }
-                                self.note_marker_seen(name);
+                                let icon_rect = super::dup_marker_ui::card_icon_rect(rect);
+                                self.paint_marker_icon(ui, &response, icon_rect, real_idx, name);
                             }
 
                             // 無効ZIP・サムネデコード失敗は左上に赤Xを描画

@@ -273,6 +273,19 @@ pub fn purge_seen_moved(db: &Arc<Mutex<Database>>, dir: &Path) -> usize {
     removed
 }
 
+/// 再取得マーカーを「正常として消す」。行は残し、消去済みにする（一覧の「消去済みも表示」で呼び戻せる）。
+/// 移動マーカー（再訪で自然に消える）と、既に消去済み・無いものは何もしない。消去済みにしたら true。
+pub fn dismiss(db: &Arc<Mutex<Database>>, id: u64) -> bool {
+    write(db, |table, _rev| {
+        let rec = table.get(id).ok()?.and_then(|g| MarkerRecord::decode(g.value()));
+        let Some(rec) = rec.filter(|r| r.kind == MarkerKind::Reacquired && !r.dismissed) else {
+            return Some(false);
+        };
+        table.insert(id, MarkerRecord { dismissed: true, ..rec }.encode().as_slice()).ok()?;
+        Some(true)
+    })
+}
+
 /// 表示領域に入った移動マーカーに印を付ける（フォルダ離脱・終了時にまとめて呼ぶ）。印が付いた件数を返す。
 /// 移動以外（再取得は永続）と、既に印のあるもの・無いものは何もしない。
 pub fn mark_in_viewport(db: &Arc<Mutex<Database>>, ids: &[u64]) -> usize {
@@ -638,6 +651,22 @@ mod tests {
         assert!(get(&db, unseen).is_some(), "まだ見ていない移動マーカーは残る");
         assert!(get(&db, re).is_some(), "再取得はVPフラグがあっても消えない");
         assert!(get(&db, elsewhere).is_some(), "別フォルダは触らない");
+    }
+
+    #[test]
+    fn dismiss_keeps_the_row_but_only_for_reacquired() {
+        let t = TempRoot::new("dismiss");
+        let db = new_db(&t);
+        record_reacquired(&db, 9, &[2], false, 1);
+        record_moved(&db, 8, 1);
+        assert!(!dismiss(&db, 8), "移動は対象外");
+        assert!(!dismiss(&db, 77), "無いものは何もしない");
+        assert!(dismiss(&db, 9));
+        assert!(!dismiss(&db, 9), "二重には消去しない");
+        let rec = get(&db, 9).unwrap();
+        assert!(rec.dismissed);
+        assert_eq!(rec.targets, vec![2], "重複先は残す（呼び戻し用）");
+        assert_eq!(owners_of(&db, 2), vec![9]);
     }
 
     #[test]
