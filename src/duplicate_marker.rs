@@ -336,6 +336,63 @@ pub fn mark_in_viewport(db: &Arc<Mutex<Database>>, ids: &[u64]) -> usize {
     marked
 }
 
+/// 1つのマーカーに持たせる重複先の上限（IDの小さい順）。同じ内容のファイルが大量にあっても、台帳が膨らまない。
+const MAX_TARGETS: usize = 16;
+
+/// `dir` 直下のファイルについて、同じ内容（FP一致）で現存する別のファイルを探し、再取得マーカーを付ける
+/// （遡及検出）。導入前に登録済みのファイルや、データの無い同内容ファイルは、解決時には記録されないため。
+/// - 同じ内容の現存ファイルが2つ以上あれば、IDの大きい方（後から登録された方）が再取得側になる
+/// - 重複先は、その持ち主よりIDの小さい現存ファイル。他のフォルダの持ち主にも付ける
+/// - 消去済みの印は消さない（ユーザーが正常と判断した後に、また警告しない）
+/// 新しく行ができた件数を返す（既存のマーカーに重複先を足しただけの場合は数えない）。
+pub fn detect_in_dir(
+    db: &Arc<Mutex<Database>>,
+    dir: &Path,
+    probe: &dyn Fn(&crate::file_identity::FileRecord) -> crate::file_identity::Presence,
+    now: i64,
+) -> usize {
+    use crate::file_identity::{FileRecord, FileStatus, Presence};
+    // 1. 読み取り: フォルダの各ファイルについて、同じFPのレコードを集める（複数あるものだけ）。
+    let prefix = crate::spread_state::dir_prefix(dir);
+    let mut groups: HashMap<crate::file_identity::Fp, Vec<FileRecord>> = HashMap::new();
+    {
+        let Ok(guard) = db.lock() else { return 0 };
+        let Ok(tx) = guard.begin_read() else { return 0 };
+        for rec in crate::file_identity::dir_records_tx(&tx, &prefix) {
+            let Some(fp) = rec.fp.filter(|_| rec.status == FileStatus::Confirmed) else { continue };
+            if groups.contains_key(&fp) {
+                continue;
+            }
+            let mut members = crate::file_identity::records_with_fp_tx(&tx, &fp);
+            // 同じパスを指す古いレコードは、別のファイルとは数えない。
+            members.sort_by_key(|m| m.id);
+            members.dedup_by(|a, b| a.path_key == b.path_key);
+            if members.len() > 1 {
+                groups.insert(fp, members);
+            }
+        }
+    }
+    // 2. ロックの外で、現存を確認する（オフライン・消失は重複と見なさない）。
+    let mut presence: HashMap<u64, Presence> = HashMap::new();
+    let mut created = 0;
+    for members in groups.into_values() {
+        let live: Vec<&FileRecord> = members
+            .iter()
+            .filter(|m| *presence.entry(m.id).or_insert_with(|| probe(m)) == Presence::Present)
+            .collect();
+        // 3. 書き込み: 2番目以降の現存ファイルを、それより小さいIDの現存ファイルの再取得として記録する。
+        for (i, owner) in live.iter().enumerate().skip(1) {
+            let targets: Vec<u64> = live[..i].iter().take(MAX_TARGETS).map(|m| m.id).collect();
+            let mtime_match = live[0].mtime == owner.mtime;
+            let existed = get(db, owner.id).is_some();
+            if record_reacquired(db, owner.id, &targets, mtime_match, now) && !existed {
+                created += 1;
+            }
+        }
+    }
+    created
+}
+
 /// `target` を重複先に持つマーカーのファイルID（昇順）。旧ファイル側の「他に重複あり」の判定用。
 #[allow(dead_code)] // 表示側（D2）で使う。
 pub fn owners_of(db: &Arc<Mutex<Database>>, target: u64) -> Vec<u64> {
@@ -577,6 +634,9 @@ mod tests {
     /// フォルダ内の実ファイルを登録してIDを返す（FPが違うので互いに統合されない）。
     fn register(db: &Arc<Mutex<Database>>, dir: &Path, name: &str, fill: u8) -> u64 {
         std::fs::write(dir.join(name), vec![fill; 64]).unwrap();
+        // 書いたばかりのファイルは書き込み中を疑ってFPを取らないので、古い更新日時にする。
+        let f = std::fs::OpenOptions::new().write(true).open(dir.join(name)).unwrap();
+        f.set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(1000)).unwrap();
         crate::file_identity::ensure_record(db, dir, name).unwrap().id
     }
 
@@ -587,6 +647,92 @@ mod tests {
         let tx = g.begin_write().unwrap();
         tx.open_table(MARKER_TABLE).unwrap().insert(id, rec.encode().as_slice()).unwrap();
         tx.commit().unwrap();
+    }
+
+    fn dirs(t: &TempRoot) -> (PathBuf, PathBuf) {
+        let (a, b) = (t.0.join("a"), t.0.join("b"));
+        std::fs::create_dir_all(&a).unwrap();
+        std::fs::create_dir_all(&b).unwrap();
+        (a, b)
+    }
+
+    fn real_probe(rec: &crate::file_identity::FileRecord) -> crate::file_identity::Presence {
+        crate::file_identity::probe_record(rec)
+    }
+
+    #[test]
+    fn detect_marks_the_later_registered_file_even_without_user_data() {
+        let t = TempRoot::new("detect_basic");
+        let db = new_db(&t);
+        let (da, dbb) = dirs(&t);
+        let old = register(&db, &da, "x.zip", 7);
+        let new = register(&db, &dbb, "y.zip", 7);
+        assert!(new > old);
+        assert!(get(&db, new).is_none(), "データが無いので解決時には記録されない");
+        assert_eq!(detect_in_dir(&db, &dbb, &real_probe, 100), 1);
+        let m = get(&db, new).unwrap();
+        assert_eq!((m.kind, m.targets.clone(), m.detected_at), (MarkerKind::Reacquired, vec![old], 100));
+        assert!(get(&db, old).is_none(), "古い方には自身のマーカーを付けない");
+        assert_eq!(owners_of(&db, old), vec![new]);
+        assert_eq!(detect_in_dir(&db, &dbb, &real_probe, 200), 0, "二度目は何も変えない");
+    }
+
+    #[test]
+    fn detect_from_the_older_files_folder_marks_the_newer_file_in_another_folder() {
+        let t = TempRoot::new("detect_other_folder");
+        let db = new_db(&t);
+        let (da, dbb) = dirs(&t);
+        let old = register(&db, &da, "x.zip", 7);
+        let new = register(&db, &dbb, "y.zip", 7);
+        assert_eq!(detect_in_dir(&db, &da, &real_probe, 1), 1);
+        assert_eq!(get(&db, new).unwrap().targets, vec![old]);
+    }
+
+    #[test]
+    fn detect_ignores_missing_duplicates_and_different_content() {
+        let t = TempRoot::new("detect_none");
+        let db = new_db(&t);
+        let (da, dbb) = dirs(&t);
+        register(&db, &da, "x.zip", 7);
+        register(&db, &dbb, "y.zip", 8);
+        assert_eq!(detect_in_dir(&db, &dbb, &real_probe, 1), 0, "中身が違う");
+        register(&db, &dbb, "z.zip", 7);
+        std::fs::remove_file(da.join("x.zip")).unwrap();
+        assert_eq!(detect_in_dir(&db, &dbb, &real_probe, 1), 0, "相手が消えている");
+        assert!(list(&db).is_empty());
+    }
+
+    #[test]
+    fn detect_chains_three_copies_and_keeps_the_dismissed_flag() {
+        let t = TempRoot::new("detect_three");
+        let db = new_db(&t);
+        let (da, dbb) = dirs(&t);
+        let a = register(&db, &da, "a.zip", 7);
+        let b = register(&db, &dbb, "b.zip", 7);
+        assert_eq!(detect_in_dir(&db, &da, &real_probe, 1), 1);
+        assert!(dismiss(&db, b));
+        let c = register(&db, &dbb, "c.zip", 7);
+        assert_eq!(detect_in_dir(&db, &dbb, &real_probe, 2), 1, "新しい行はcだけ");
+        assert_eq!(get(&db, c).unwrap().targets, vec![a, b]);
+        assert!(get(&db, b).unwrap().dismissed, "消去済みはそのまま");
+        assert_eq!(get(&db, b).unwrap().targets, vec![a]);
+    }
+
+    #[test]
+    fn detect_does_not_probe_files_with_a_unique_fingerprint() {
+        let t = TempRoot::new("detect_unique");
+        let db = new_db(&t);
+        let (da, _) = dirs(&t);
+        for (i, name) in ["a.zip", "b.zip", "c.zip"].iter().enumerate() {
+            register(&db, &da, name, i as u8 + 1);
+        }
+        let probes = std::cell::Cell::new(0);
+        let counting = |_: &crate::file_identity::FileRecord| {
+            probes.set(probes.get() + 1);
+            crate::file_identity::Presence::Present
+        };
+        assert_eq!(detect_in_dir(&db, &da, &counting, 1), 0);
+        assert_eq!(probes.get(), 0, "重複の疑いが無いファイルは存在確認もしない");
     }
 
     #[test]

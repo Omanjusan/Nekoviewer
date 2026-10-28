@@ -833,6 +833,14 @@ pub fn records_with_fp(db: &Arc<Mutex<Database>>, fp: &Fp) -> Vec<FileRecord> {
     ids.into_iter().filter_map(|id| record_by_id_tx(&tx, id)).collect()
 }
 
+/// `records_with_fp` の、読み取りトランザクションを受け取る版（既にDBロックを持っている呼び出し側用）。
+pub fn records_with_fp_tx(tx: &redb::ReadTransaction, fp: &Fp) -> Vec<FileRecord> {
+    let Ok(fps) = tx.open_multimap_table(FILE_FP_INDEX_TABLE) else { return Vec::new() };
+    let Ok(values) = fps.get(fp.as_slice()) else { return Vec::new() };
+    let ids: Vec<u64> = values.flatten().map(|v| v.value()).collect();
+    ids.into_iter().filter_map(|id| record_by_id_tx(tx, id)).collect()
+}
+
 /// 空のID（`blank_id`、新しく現れたファイルのID）を消し、消えているID（`orphan_id`）をそのパスへ移す。
 /// 解決UIで「この移動元から引き継ぐ」と選んだ時の操作。空であることの確認は呼び出し側が行う。
 /// 孤児のデータ（お気に入りを含む）はIDごと新しいパスへ付いて来る。旧パスは履歴に残る。

@@ -629,6 +629,8 @@ impl NekoviewApp {
                         (false, true) => self.set_toast(t.dup_marker_toast(markers_created)),
                         (false, false) => {}
                     }
+                    // 解決が済んだので、このフォルダの同内容ファイル（導入前から重複していたものなど）を探す。
+                    self.request_marker_detect();
                     // 後回しのまま残った・失敗したものも含め、検証中表示と処理中トーストを残さない。
                     self.identity_verifying.clear();
                     self.identity_progress = None;

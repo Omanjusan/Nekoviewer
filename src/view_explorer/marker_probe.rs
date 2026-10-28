@@ -18,12 +18,15 @@ const CHUNK: usize = 32;
 
 pub(super) enum ProbeEvent {
     Results { generation: u64, presence: Vec<(u64, Presence)> },
+    /// 遡及検出（フォルダ内の同内容ファイルへのマーカー付け）が済んだ。`created` は新しくできたマーカーの数。
+    Detected { generation: u64, created: usize },
 }
 
-struct Job {
-    generation: u64,
-    db: Arc<Mutex<Database>>,
-    ids: Vec<u64>,
+enum Job {
+    /// 重複先の存在確認。
+    Probe { generation: u64, db: Arc<Mutex<Database>>, ids: Vec<u64> },
+    /// フォルダ内のファイルについて、同じ内容（FP一致）の現存ファイルを探してマーカーを付ける。
+    Detect { generation: u64, db: Arc<Mutex<Database>>, dir: std::path::PathBuf },
 }
 
 pub(super) struct MarkerProbeWorker {
@@ -42,11 +45,25 @@ impl MarkerProbeWorker {
             .name("marker-probe".into())
             .spawn(move || {
                 while let Ok(job) = job_rx.recv() {
-                    let keep_going = || worker_current.load(Ordering::Acquire) == job.generation;
-                    probe_ids(&job.db, &job.ids, &keep_going, &file_identity::probe_record, &mut |presence| {
-                        let _ = event_tx.send(ProbeEvent::Results { generation: job.generation, presence });
-                        ctx.request_repaint();
-                    });
+                    match job {
+                        Job::Probe { generation, db, ids } => {
+                            let keep_going = || worker_current.load(Ordering::Acquire) == generation;
+                            probe_ids(&db, &ids, &keep_going, &file_identity::probe_record, &mut |presence| {
+                                let _ = event_tx.send(ProbeEvent::Results { generation, presence });
+                                ctx.request_repaint();
+                            });
+                        }
+                        Job::Detect { generation, db, dir } => {
+                            let created = crate::duplicate_marker::detect_in_dir(
+                                &db,
+                                &dir,
+                                &file_identity::probe_record,
+                                file_identity::now_unix(),
+                            );
+                            let _ = event_tx.send(ProbeEvent::Detected { generation, created });
+                            ctx.request_repaint();
+                        }
+                    }
                 }
             })
             .expect("spawn marker-probe");
@@ -62,7 +79,15 @@ impl MarkerProbeWorker {
     pub(super) fn submit(&self, db: Arc<Mutex<Database>>, ids: Vec<u64>) {
         let generation = self.current.load(Ordering::Acquire);
         if let Some(tx) = &self.job_tx {
-            let _ = tx.send(Job { generation, db, ids });
+            let _ = tx.send(Job::Probe { generation, db, ids });
+        }
+    }
+
+    /// 遡及検出を依頼する（フォルダ1つぶん）。結果は `Detected` で返る。
+    pub(super) fn submit_detect(&self, db: Arc<Mutex<Database>>, dir: std::path::PathBuf) {
+        let generation = self.current.load(Ordering::Acquire);
+        if let Some(tx) = &self.job_tx {
+            let _ = tx.send(Job::Detect { generation, db, dir });
         }
     }
 
@@ -119,16 +144,41 @@ impl super::NekoviewApp {
         }
     }
 
+    /// 表示中のフォルダで、同じ内容の別ファイルを探してマーカーを付ける（遡及検出）。
+    /// ID解決が済んだ後に呼ぶ（新しく現れたファイルにもFPが付いているので、同時に拾える）。
+    pub(super) fn request_marker_detect(&mut self) {
+        if !self.marker_view_active() {
+            return;
+        }
+        let Some(db) = self.spread_db.clone() else { return };
+        self.marker_probe.submit_detect(db, self.current_dir.clone());
+    }
+
     /// 確認結果を受け取る。表示（アイコン・絞り込み・並び）が変わりうるので、必要なら並びを作り直す。
     pub(super) fn poll_marker_probe(&mut self) {
         let mut changed = false;
-        while let Ok(ProbeEvent::Results { generation, presence }) = self.marker_probe.event_rx.try_recv() {
-            if !self.marker_probe.is_current(generation) {
-                continue;
+        let mut detected = 0;
+        while let Ok(event) = self.marker_probe.event_rx.try_recv() {
+            match event {
+                ProbeEvent::Results { generation, presence } => {
+                    if !self.marker_probe.is_current(generation) {
+                        continue;
+                    }
+                    for (id, p) in presence {
+                        changed |= self.marker_presence.insert(id, p) != Some(p);
+                    }
+                }
+                ProbeEvent::Detected { generation, created } => {
+                    if self.marker_probe.is_current(generation) {
+                        detected += created;
+                    }
+                }
             }
-            for (id, p) in presence {
-                changed |= self.marker_presence.insert(id, p) != Some(p);
-            }
+        }
+        if detected > 0 && self.marker_view_active() {
+            // 新しく付いたマーカーを表示に反映する（台帳を読み直し、重複先の確認も依頼する）。
+            self.reload_dir_state_maps();
+            self.set_toast(crate::i18n::t().dup_marker_toast(detected));
         }
         if changed {
             if self.dup_filter || self.dup_sort {
