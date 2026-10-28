@@ -893,6 +893,12 @@ pub struct NekoviewApp {
     marker_presence: HashMap<u64, crate::file_identity::Presence>,
     /// 今のフォルダの読み込みで、確認を依頼済みのID。
     marker_probe_requested: HashSet<u64>,
+    /// 完全比較のワーカー（専用スレッド）。
+    marker_compare: marker_compare::MarkerCompareWorker,
+    /// 完全比較の組ごとの状態（組 = (マーカー持ちのID, 重複先のID)）。ポップアップを閉じても、フォルダを移っても残す。
+    marker_compare_states: HashMap<marker_compare::PairKey, marker_compare::CompareState>,
+    /// 実行中の比較の、終了時トーストに出す名前。
+    marker_compare_labels: HashMap<marker_compare::PairKey, String>,
     /// お気に入り・検索の横断一覧表示中のマーカー情報 (フルパス -> 所属folder_id一覧)。
     /// ディレクトリ横断のため favorite_states とは別にフルパスキーで持つ。
     cross_view_favorite_markers: HashMap<PathBuf, Vec<u8>>,
@@ -1330,6 +1336,7 @@ mod list_view;
 mod list_columns;
 mod dup_marker_ui;
 mod marker_probe;
+mod marker_compare;
 mod layout_anchor;
 
 #[cfg(test)]
@@ -1467,6 +1474,9 @@ impl NekoviewApp {
             marker_probe: marker_probe::MarkerProbeWorker::spawn(ctx.clone()),
             marker_presence: HashMap::new(),
             marker_probe_requested: HashSet::new(),
+            marker_compare: marker_compare::MarkerCompareWorker::spawn(ctx.clone()),
+            marker_compare_states: HashMap::new(),
+            marker_compare_labels: HashMap::new(),
             cross_view_favorite_markers: HashMap::new(),
             saved_archive_settings: HashMap::new(),
             network_unreachable_mounts: HashSet::new(),

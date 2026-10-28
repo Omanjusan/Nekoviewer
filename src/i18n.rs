@@ -259,6 +259,114 @@ impl Lang {
         }
     }
 
+    /// 完全比較: 重複先の行のボタン。
+    pub fn dup_popup_compare(self) -> &'static str {
+        match self {
+            Lang::Japanese => "完全比較",
+            Lang::English  => "Full compare",
+            Lang::Chinese  => "完整比对",
+        }
+    }
+
+    /// 完全比較: 実行中の進捗。
+    pub fn dup_popup_compare_running(self, percent: u64) -> String {
+        match self {
+            Lang::Japanese => format!("比較中 {percent}%"),
+            Lang::English  => format!("Comparing {percent}%"),
+            Lang::Chinese  => format!("比对中 {percent}%"),
+        }
+    }
+
+    /// 完全比較: 実行中の比較を止めるボタン。
+    pub fn dup_popup_compare_cancel(self) -> &'static str {
+        match self {
+            Lang::Japanese => "中止",
+            Lang::English  => "Cancel",
+            Lang::Chinese  => "取消",
+        }
+    }
+
+    /// 完全比較の結果: 完全一致。
+    pub fn dup_popup_result_identical(self) -> &'static str {
+        match self {
+            Lang::Japanese => "完全一致",
+            Lang::English  => "Identical",
+            Lang::Chinese  => "完全一致",
+        }
+    }
+
+    /// 完全比較の結果: 内容が違う。
+    pub fn dup_popup_result_different(self) -> &'static str {
+        match self {
+            Lang::Japanese => "内容が異なります",
+            Lang::English  => "The contents differ",
+            Lang::Chinese  => "内容不同",
+        }
+    }
+
+    /// 完全比較の結果: 比較中にファイルが変わった。
+    pub fn dup_popup_result_changed(self) -> &'static str {
+        match self {
+            Lang::Japanese => "比較中にファイルが変わったため中断しました",
+            Lang::English  => "Stopped because a file changed during the comparison",
+            Lang::Chinese  => "比对期间文件发生变化，已中断",
+        }
+    }
+
+    /// 完全比較の結果: 読めなかった。
+    pub fn dup_popup_result_failed(self) -> &'static str {
+        match self {
+            Lang::Japanese => "読み取れませんでした",
+            Lang::English  => "Could not read the file",
+            Lang::Chinese  => "无法读取文件",
+        }
+    }
+
+    /// 完全比較: 全ての重複先と中身が一致したことを確認済み（台帳に保存した状態）。
+    pub fn dup_popup_verified(self) -> &'static str {
+        match self {
+            Lang::Japanese => "完全一致を確認済み（中身を全て比べました）",
+            Lang::English  => "Confirmed identical (the whole contents were compared)",
+            Lang::Chinese  => "已确认完全一致（已比较全部内容）",
+        }
+    }
+
+    /// 完全比較が終わった時のトースト: 完全一致。
+    pub fn dup_compare_toast_identical(self, name: &str) -> String {
+        match self {
+            Lang::Japanese => format!("完全比較: {name} は完全に一致しました"),
+            Lang::English  => format!("Full compare: {name} is identical"),
+            Lang::Chinese  => format!("完整比对：{name} 完全一致"),
+        }
+    }
+
+    /// 完全比較が終わった時のトースト: 内容が違う。
+    pub fn dup_compare_toast_different(self, name: &str) -> String {
+        match self {
+            Lang::Japanese => format!("完全比較: {name} は内容が異なります"),
+            Lang::English  => format!("Full compare: {name} differs in content"),
+            Lang::Chinese  => format!("完整比对：{name} 内容不同"),
+        }
+    }
+
+    /// 完全比較が終わった時のトースト: 比較中にファイルが変わった。
+    pub fn dup_compare_toast_changed(self, name: &str) -> String {
+        match self {
+            Lang::Japanese => format!("完全比較: {name} は比較中にファイルが変わったため中断しました"),
+            Lang::English  => format!("Full compare: stopped because {name} changed during the comparison"),
+            Lang::Chinese  => format!("完整比对：{name} 在比对期间发生变化，已中断"),
+        }
+    }
+
+    /// 完全比較が終わった時のトースト: 読めなかった。
+    pub fn dup_compare_toast_failed(self, name: &str) -> String {
+        match self {
+            Lang::Japanese => format!("完全比較: {name} を読み取れませんでした"),
+            Lang::English  => format!("Full compare: could not read {name}"),
+            Lang::Chinese  => format!("完整比对：无法读取 {name}"),
+        }
+    }
+
     /// 重複マーカーのポップアップ: 並べきれなかった件数。
     pub fn dup_popup_more(self, n: usize) -> String {
         match self {
