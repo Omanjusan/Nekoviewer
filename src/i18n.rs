@@ -241,6 +241,24 @@ impl Lang {
         }
     }
 
+    /// 重複マーカーのポップアップ: 重複先が見つからない（消えたか、移動した）場合の注記。
+    pub fn dup_popup_target_missing(self) -> &'static str {
+        match self {
+            Lang::Japanese => "（見つかりません）",
+            Lang::English  => " (not found)",
+            Lang::Chinese  => "（未找到）",
+        }
+    }
+
+    /// 重複マーカーのポップアップ: 重複先のあるドライブに接続できず、確認できない場合の注記。
+    pub fn dup_popup_target_offline(self) -> &'static str {
+        match self {
+            Lang::Japanese => "（確認できません）",
+            Lang::English  => " (cannot be checked)",
+            Lang::Chinese  => "（无法确认）",
+        }
+    }
+
     /// 重複マーカーのポップアップ: 並べきれなかった件数。
     pub fn dup_popup_more(self, n: usize) -> String {
         match self {

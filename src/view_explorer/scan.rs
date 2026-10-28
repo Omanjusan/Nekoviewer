@@ -894,6 +894,7 @@ impl NekoviewApp {
             .collect();
         self.dir_markers = crate::duplicate_marker::load_dir(&db, &self.current_dir);
         // マーカーの顔ぶれが変わったら、重複あり絞り込みの結果も作り直す。
+        self.request_marker_probe();
         if self.dup_filter {
             self.recompute_filter();
         }

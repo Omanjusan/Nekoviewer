@@ -4,8 +4,20 @@
 //! 移動 = 青い丸に右向きの矢印、再取得 = 橙の丸に重なった二重四角、
 //! 旧ファイル側（他に重複あり）= 再取得と同じ形の半透明。
 
+use std::collections::HashMap;
+
 use crate::duplicate_marker::{DirMarker, MarkerKind};
+use crate::file_identity::Presence;
 use crate::i18n;
+
+/// 確認済みの重複先ID -> 存在確認の結果。
+pub(super) type PresenceMap = HashMap<u64, Presence>;
+
+/// `ids` が空でなく、全てが「消失」と確認できている。未確認・オフライン・現存が1つでもあれば false
+/// （消えたと断定できるのは、全員が確かに消えているときだけ）。
+pub(super) fn all_gone(ids: &[u64], presence: &PresenceMap) -> bool {
+    !ids.is_empty() && ids.iter().all(|id| presence.get(id) == Some(&Presence::Missing))
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum MarkerIcon {
@@ -31,23 +43,37 @@ impl MarkerIcon {
 
 /// 絞り込み・並びの対象になる自身のマーカーの検出日時。マーカー無し、旧ファイル側だけ（被参照）、
 /// 消去済み（`show_dismissed` でない時）は None。
-pub(super) fn active_detected_at(m: &DirMarker, show_dismissed: bool) -> Option<i64> {
+/// 再取得で、重複先が全て消失と確認できているものも対象外。
+pub(super) fn active_detected_at(m: &DirMarker, show_dismissed: bool, presence: &PresenceMap) -> Option<i64> {
     let own = m.own.as_ref()?;
+    if own.kind == MarkerKind::Reacquired && all_gone(&own.targets, presence) {
+        return None;
+    }
     (!own.dismissed || show_dismissed).then_some(own.detected_at)
 }
 
 /// 出すアイコン。自身のマーカーが（消去済みでなければ）優先、無ければ被参照の薄いアイコン。
 /// 消去済みは、`show_dismissed` のときだけグレーで出す。
-pub(super) fn icon_for(m: &DirMarker, show_dismissed: bool) -> Option<MarkerIcon> {
-    match &m.own {
-        Some(own) if !own.dismissed => Some(match own.kind {
-            MarkerKind::Moved => MarkerIcon::Moved,
-            MarkerKind::Reacquired => MarkerIcon::Reacquired,
-        }),
-        Some(_) if show_dismissed => Some(MarkerIcon::Dismissed),
-        _ if !m.referenced_by.is_empty() => Some(MarkerIcon::Elsewhere),
-        _ => None,
-    }
+/// 再取得の重複先が全て消失、旧ファイル側の参照元が全て消失と確認できたものは出さない。
+pub(super) fn icon_for(m: &DirMarker, show_dismissed: bool, presence: &PresenceMap) -> Option<MarkerIcon> {
+    let own_icon = m.own.as_ref().and_then(|own| {
+        if own.kind == MarkerKind::Reacquired && all_gone(&own.targets, presence) {
+            return None;
+        }
+        if !own.dismissed {
+            Some(match own.kind {
+                MarkerKind::Moved => MarkerIcon::Moved,
+                MarkerKind::Reacquired => MarkerIcon::Reacquired,
+            })
+        } else if show_dismissed {
+            Some(MarkerIcon::Dismissed)
+        } else {
+            None
+        }
+    });
+    own_icon.or_else(|| {
+        (!m.referenced_by.is_empty() && !all_gone(&m.referenced_by, presence)).then_some(MarkerIcon::Elsewhere)
+    })
 }
 
 const ICON_SIZE: f32 = 16.0;
@@ -104,20 +130,20 @@ pub(super) struct MarkerPopup {
     /// 再取得の補助表示（更新日時が重複先と同じか）。再取得以外は None。
     mtime_match: Option<bool>,
     /// 並べるファイルの表示名（最大 `POPUP_LIST_MAX` 件）と、並べきれなかった件数。
-    others: Vec<String>,
+    others: Vec<(String, Option<Presence>)>,
     more: usize,
 }
 
 const POPUP_LIST_MAX: usize = 5;
 
 /// ファイルIDを、パスの表示名にする（DBに無いIDは飛ばす）。
-fn describe_ids(db: &std::sync::Arc<std::sync::Mutex<redb::Database>>, ids: &[u64]) -> Vec<String> {
+fn describe_ids(db: &std::sync::Arc<std::sync::Mutex<redb::Database>>, ids: &[u64]) -> Vec<(u64, String)> {
     use redb::ReadableDatabase;
     let Ok(guard) = db.lock() else { return Vec::new() };
     let Ok(tx) = guard.begin_read() else { return Vec::new() };
     ids.iter()
         .filter_map(|id| crate::file_identity::record_by_id_tx(&tx, *id))
-        .map(|rec| rec.path_key.replace('\0', std::path::MAIN_SEPARATOR_STR))
+        .map(|rec| (rec.id, rec.path_key.replace('\0', std::path::MAIN_SEPARATOR_STR)))
         .collect()
 }
 
@@ -133,7 +159,7 @@ impl super::NekoviewApp {
         if !self.marker_view_active() {
             return None;
         }
-        active_detected_at(self.dir_markers.get(filename)?, self.dup_show_dismissed)
+        active_detected_at(self.dir_markers.get(filename)?, self.dup_show_dismissed, &self.marker_presence)
     }
 
     /// そのファイル名のアイコン。マーカーを出さない表示や、マーカーの無いファイルは None。
@@ -141,7 +167,7 @@ impl super::NekoviewApp {
         if !self.marker_view_active() {
             return None;
         }
-        self.dir_markers.get(filename).and_then(|m| icon_for(m, self.dup_show_dismissed))
+        self.dir_markers.get(filename).and_then(|m| icon_for(m, self.dup_show_dismissed, &self.marker_presence))
     }
 
     /// アイコンを描き、ホバーで説明を出す。見えているファイルの移動マーカーは「見た」印を控え、
@@ -193,7 +219,11 @@ impl super::NekoviewApp {
         };
         let names = self.spread_db.as_ref().map(|db| describe_ids(db, &ids)).unwrap_or_default();
         let more = names.len().saturating_sub(POPUP_LIST_MAX);
-        let others = names.into_iter().take(POPUP_LIST_MAX).collect();
+        let others = names
+            .into_iter()
+            .take(POPUP_LIST_MAX)
+            .map(|(id, name)| (name, self.marker_presence.get(&id).copied()))
+            .collect();
         self.marker_popup = Some(MarkerPopup {
             icon,
             anchor: egui::pos2(rect.min.x, rect.max.y + 4.0),
@@ -229,8 +259,13 @@ impl super::NekoviewApp {
                             MarkerIcon::Elsewhere => t.dup_popup_others_newer(),
                             _ => t.dup_popup_others_existing(),
                         });
-                        for line in &popup.others {
-                            ui.label(egui::RichText::new(line).small().weak());
+                        for (name, presence) in &popup.others {
+                            let note = match presence {
+                                Some(Presence::Missing) => t.dup_popup_target_missing(),
+                                Some(Presence::Offline) => t.dup_popup_target_offline(),
+                                _ => "",
+                            };
+                            ui.label(egui::RichText::new(format!("{name}{note}")).small().weak());
                         }
                         if popup.more > 0 {
                             ui.label(egui::RichText::new(t.dup_popup_more(popup.more)).small().weak());
@@ -284,6 +319,10 @@ impl super::NekoviewApp {
     pub(super) fn on_marker_dir_scan(&mut self) {
         self.marker_popup = None;
         self.marker_icon_hits.clear();
+        // 重複先の存在確認は、フォルダを読み込むたびにやり直す（確認が済むまでは、いつもどおり表示する）。
+        self.marker_probe.invalidate();
+        self.marker_presence.clear();
+        self.marker_probe_requested.clear();
         if self.marker_seen_dir.as_deref() != Some(self.current_dir.as_path()) {
             self.flush_seen_markers();
             self.marker_seen_dir = Some(self.current_dir.clone());
@@ -312,37 +351,37 @@ mod tests {
     fn own_marker_decides_the_icon_by_kind() {
         let moved = DirMarker { own: Some(own(MarkerKind::Moved, false)), referenced_by: vec![] };
         let re = DirMarker { own: Some(own(MarkerKind::Reacquired, false)), referenced_by: vec![] };
-        assert_eq!(icon_for(&moved, false), Some(MarkerIcon::Moved));
-        assert_eq!(icon_for(&re, false), Some(MarkerIcon::Reacquired));
+        assert_eq!(icon_for(&moved, false, &PresenceMap::new()), Some(MarkerIcon::Moved));
+        assert_eq!(icon_for(&re, false, &PresenceMap::new()), Some(MarkerIcon::Reacquired));
     }
 
     #[test]
     fn own_marker_wins_over_being_referenced() {
         let both = DirMarker { own: Some(own(MarkerKind::Reacquired, false)), referenced_by: vec![9] };
-        assert_eq!(icon_for(&both, false), Some(MarkerIcon::Reacquired));
+        assert_eq!(icon_for(&both, false, &PresenceMap::new()), Some(MarkerIcon::Reacquired));
     }
 
     #[test]
     fn referenced_only_is_the_faint_icon() {
         let old = DirMarker { own: None, referenced_by: vec![9] };
-        assert_eq!(icon_for(&old, false), Some(MarkerIcon::Elsewhere));
+        assert_eq!(icon_for(&old, false, &PresenceMap::new()), Some(MarkerIcon::Elsewhere));
     }
 
     #[test]
     fn dismissed_own_marker_shows_nothing_unless_referenced() {
         let gone = DirMarker { own: Some(own(MarkerKind::Reacquired, true)), referenced_by: vec![] };
-        assert_eq!(icon_for(&gone, false), None);
+        assert_eq!(icon_for(&gone, false, &PresenceMap::new()), None);
         let gone_but_old = DirMarker { own: Some(own(MarkerKind::Reacquired, true)), referenced_by: vec![9] };
-        assert_eq!(icon_for(&gone_but_old, false), Some(MarkerIcon::Elsewhere));
+        assert_eq!(icon_for(&gone_but_old, false, &PresenceMap::new()), Some(MarkerIcon::Elsewhere));
     }
 
     #[test]
     fn dismissed_own_marker_shows_grey_only_when_asked() {
         let gone = DirMarker { own: Some(own(MarkerKind::Reacquired, true)), referenced_by: vec![] };
-        assert_eq!(icon_for(&gone, true), Some(MarkerIcon::Dismissed));
+        assert_eq!(icon_for(&gone, true, &PresenceMap::new()), Some(MarkerIcon::Dismissed));
         // 消去済みでも旧ファイル側の薄いアイコンは別物（自身の消去済み表示を優先する）。
         let gone_but_old = DirMarker { own: Some(own(MarkerKind::Reacquired, true)), referenced_by: vec![9] };
-        assert_eq!(icon_for(&gone_but_old, true), Some(MarkerIcon::Dismissed));
+        assert_eq!(icon_for(&gone_but_old, true, &PresenceMap::new()), Some(MarkerIcon::Dismissed));
     }
 
     #[test]
@@ -350,14 +389,68 @@ mod tests {
         let mut live = own(MarkerKind::Moved, false);
         live.detected_at = 42;
         let m = DirMarker { own: Some(live), referenced_by: vec![] };
-        assert_eq!(active_detected_at(&m, false), Some(42));
+        assert_eq!(active_detected_at(&m, false, &PresenceMap::new()), Some(42));
         let mut gone = own(MarkerKind::Reacquired, true);
         gone.detected_at = 7;
         let d = DirMarker { own: Some(gone), referenced_by: vec![] };
-        assert_eq!(active_detected_at(&d, false), None, "消去済みは対象外");
-        assert_eq!(active_detected_at(&d, true), Some(7), "「消去済みも」を入れると対象");
+        assert_eq!(active_detected_at(&d, false, &PresenceMap::new()), None, "消去済みは対象外");
+        assert_eq!(active_detected_at(&d, true, &PresenceMap::new()), Some(7), "「消去済みも」を入れると対象");
         let old = DirMarker { own: None, referenced_by: vec![9] };
-        assert_eq!(active_detected_at(&old, true), None, "旧ファイル側は絞り込み・並びの対象外");
+        assert_eq!(active_detected_at(&old, true, &PresenceMap::new()), None, "旧ファイル側は絞り込み・並びの対象外");
+    }
+
+    fn presence(pairs: &[(u64, Presence)]) -> PresenceMap {
+        pairs.iter().copied().collect()
+    }
+
+    #[test]
+    fn all_gone_needs_every_target_confirmed_missing() {
+        assert!(!all_gone(&[], &presence(&[])), "空は消えたと言えない");
+        assert!(!all_gone(&[1], &presence(&[])), "未確認は消えたと断定しない");
+        assert!(!all_gone(&[1], &presence(&[(1, Presence::Offline)])), "オフラインは断定しない");
+        assert!(!all_gone(&[1, 2], &presence(&[(1, Presence::Missing), (2, Presence::Present)])));
+        assert!(!all_gone(&[1, 2], &presence(&[(1, Presence::Missing)])), "一部が未確認");
+        assert!(all_gone(&[1, 2], &presence(&[(1, Presence::Missing), (2, Presence::Missing)])));
+    }
+
+    #[test]
+    fn reacquired_icon_hides_only_when_all_targets_are_gone() {
+        let mut rec = own(MarkerKind::Reacquired, false);
+        rec.targets = vec![1, 2];
+        let m = DirMarker { own: Some(rec), referenced_by: vec![] };
+        let part = presence(&[(1, Presence::Missing), (2, Presence::Present)]);
+        assert_eq!(icon_for(&m, false, &part), Some(MarkerIcon::Reacquired));
+        let all = presence(&[(1, Presence::Missing), (2, Presence::Missing)]);
+        assert_eq!(icon_for(&m, false, &all), None);
+        assert_eq!(icon_for(&m, true, &all), None, "消去済みも表示でも、重複先が無いなら出さない");
+        assert_eq!(active_detected_at(&m, false, &all), None, "絞り込み・並びからも外れる");
+        assert_eq!(active_detected_at(&m, false, &part), Some(0));
+    }
+
+    #[test]
+    fn moved_icon_ignores_presence() {
+        let m = DirMarker { own: Some(own(MarkerKind::Moved, false)), referenced_by: vec![] };
+        let gone = presence(&[(1, Presence::Missing)]);
+        assert_eq!(icon_for(&m, false, &gone), Some(MarkerIcon::Moved));
+        assert_eq!(active_detected_at(&m, false, &gone), Some(0));
+    }
+
+    #[test]
+    fn elsewhere_icon_hides_when_every_referrer_is_gone() {
+        let m = DirMarker { own: None, referenced_by: vec![8, 9] };
+        let one = presence(&[(8, Presence::Missing), (9, Presence::Offline)]);
+        assert_eq!(icon_for(&m, false, &one), Some(MarkerIcon::Elsewhere));
+        let all = presence(&[(8, Presence::Missing), (9, Presence::Missing)]);
+        assert_eq!(icon_for(&m, false, &all), None);
+    }
+
+    #[test]
+    fn hidden_own_marker_falls_back_to_the_referenced_icon() {
+        let mut rec = own(MarkerKind::Reacquired, false);
+        rec.targets = vec![1];
+        let m = DirMarker { own: Some(rec), referenced_by: vec![9] };
+        let gone = presence(&[(1, Presence::Missing)]);
+        assert_eq!(icon_for(&m, false, &gone), Some(MarkerIcon::Elsewhere));
     }
 
     #[test]

@@ -887,6 +887,12 @@ pub struct NekoviewApp {
     dup_show_dismissed: bool,
     /// リスト見出し「重複」のソート。マーカー付きを検出日時の新しい順で先頭に寄せる（保存しない）。
     dup_sort: bool,
+    /// 重複先の存在確認のワーカー（専用スレッド）。
+    marker_probe: marker_probe::MarkerProbeWorker,
+    /// 確認済みの重複先ID -> 現存／消失／オフライン。フォルダを読み込むたびに作り直す。
+    marker_presence: HashMap<u64, crate::file_identity::Presence>,
+    /// 今のフォルダの読み込みで、確認を依頼済みのID。
+    marker_probe_requested: HashSet<u64>,
     /// お気に入り・検索の横断一覧表示中のマーカー情報 (フルパス -> 所属folder_id一覧)。
     /// ディレクトリ横断のため favorite_states とは別にフルパスキーで持つ。
     cross_view_favorite_markers: HashMap<PathBuf, Vec<u8>>,
@@ -1323,6 +1329,7 @@ mod selection;
 mod list_view;
 mod list_columns;
 mod dup_marker_ui;
+mod marker_probe;
 mod layout_anchor;
 
 #[cfg(test)]
@@ -1457,6 +1464,9 @@ impl NekoviewApp {
             dup_filter: false,
             dup_show_dismissed: false,
             dup_sort: false,
+            marker_probe: marker_probe::MarkerProbeWorker::spawn(ctx.clone()),
+            marker_presence: HashMap::new(),
+            marker_probe_requested: HashSet::new(),
             cross_view_favorite_markers: HashMap::new(),
             saved_archive_settings: HashMap::new(),
             network_unreachable_mounts: HashSet::new(),
