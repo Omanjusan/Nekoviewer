@@ -710,6 +710,9 @@ impl NekoviewApp {
         if tab != FolderPaneTab::Search {
             self.exit_search_view();
         }
+        if entering {
+            self.exit_similar_view();
+        }
         // 他タブの表示を畳んだ後で、入ったタブの保存位置（無い・外れていれば既定）を開く
         if entering {
             self.remember_active_tab(tab);
@@ -2172,6 +2175,8 @@ impl NekoviewApp {
         if let Some(idx) = self.viewing_search {
             let label = self.search_history.get(idx).map(|e| e.label.clone()).unwrap_or_default();
             ui.label(label);
+        } else if self.viewing_similar.is_some() {
+            self.draw_similar_header(ui);
         } else {
             match self.viewing_favorites {
                 Some(FavoriteSelection::Unsorted) => {
@@ -2409,7 +2414,7 @@ impl NekoviewApp {
     /// （階層概念を持ち込まない契約）のため、「↑」・サブフォルダは一切出さない。
     fn folder_grid_entries(&self) -> Vec<GridEntry> {
         let mut out = Vec::new();
-        if self.viewing_favorites.is_some() || self.viewing_search.is_some() {
+        if self.viewing_favorites.is_some() || self.viewing_search.is_some() || self.viewing_similar.is_some() {
             return out;
         }
         // 仮想ノード経由の表示: フォルダカードと「↑」は仮想ツリーが正（実サブフォルダは出さない）
@@ -3278,6 +3283,7 @@ impl NekoviewApp {
                             let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
                             let marker_ids = if self.viewing_favorites.is_some()
                                 || self.viewing_search.is_some()
+                                || self.viewing_similar.is_some()
                             {
                                 self.cross_view_favorite_markers.get(path)
                             } else {
@@ -3362,6 +3368,13 @@ impl NekoviewApp {
                                     egui::FontId::proportional(14.0),
                                     egui::Color32::from_rgb(220, 160, 40),
                                 );
+                            }
+
+                            // 類似ファイル一覧の入口のファイルは、色を重ねて枠も付ける（他と見分けるため）
+                            if self.is_similar_entry(path) {
+                                let color = super::list_view::similar_entry_color();
+                                ui.painter().rect_filled(rect, 0.0, color.gamma_multiply(0.22));
+                                ui.painter().rect_stroke(rect, 0.0, egui::Stroke::new(3.0, color), egui::StrokeKind::Inside);
                             }
 
                             // 選択中アイテムを枠で囲む（生ファイルは赤、ZIPは青）

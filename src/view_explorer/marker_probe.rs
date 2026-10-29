@@ -20,6 +20,25 @@ pub(super) enum ProbeEvent {
     Results { generation: u64, presence: Vec<(u64, Presence)> },
     /// 遡及検出（フォルダ内の同内容ファイルへのマーカー付け）が済んだ。`created` は新しくできたマーカーの数。
     Detected { generation: u64, created: usize },
+    /// 類似ファイル一覧の収集が済んだ。`token` は一覧を開くたびに変わる番号（閉じた後の古い結果を捨てる）。
+    Group { generation: u64, token: u64, group: SimilarGroup },
+}
+
+/// 類似ファイル一覧に並べるファイル1件。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct SimilarFile {
+    pub id: u64,
+    pub path: std::path::PathBuf,
+}
+
+/// 同じ内容（FP一致）のファイルの集まり。
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(super) struct SimilarGroup {
+    /// 現存するファイル（ID昇順）。
+    pub files: Vec<SimilarFile>,
+    /// 一覧に出せないファイルの数（消失／オフライン）。
+    pub missing: usize,
+    pub offline: usize,
 }
 
 enum Job {
@@ -27,6 +46,8 @@ enum Job {
     Probe { generation: u64, db: Arc<Mutex<Database>>, ids: Vec<u64> },
     /// フォルダ内のファイルについて、同じ内容（FP一致）の現存ファイルを探してマーカーを付ける。
     Detect { generation: u64, db: Arc<Mutex<Database>>, dir: std::path::PathBuf },
+    /// 類似ファイル一覧のために、`entry_id` と同じ内容の現存ファイルを全て集める。
+    Group { generation: u64, token: u64, db: Arc<Mutex<Database>>, entry_id: u64 },
 }
 
 pub(super) struct MarkerProbeWorker {
@@ -63,6 +84,13 @@ impl MarkerProbeWorker {
                             let _ = event_tx.send(ProbeEvent::Detected { generation, created });
                             ctx.request_repaint();
                         }
+                        Job::Group { generation, token, db, entry_id } => {
+                            let keep_going = || worker_current.load(Ordering::Acquire) == generation;
+                            if let Some(group) = collect_group(&db, entry_id, &keep_going, &file_identity::probe_record) {
+                                let _ = event_tx.send(ProbeEvent::Group { generation, token, group });
+                                ctx.request_repaint();
+                            }
+                        }
                     }
                 }
             })
@@ -88,6 +116,14 @@ impl MarkerProbeWorker {
         let generation = self.current.load(Ordering::Acquire);
         if let Some(tx) = &self.job_tx {
             let _ = tx.send(Job::Detect { generation, db, dir });
+        }
+    }
+
+    /// 類似ファイル一覧の収集を依頼する。結果は `Group` で返る。
+    pub(super) fn submit_group(&self, db: Arc<Mutex<Database>>, entry_id: u64, token: u64) {
+        let generation = self.current.load(Ordering::Acquire);
+        if let Some(tx) = &self.job_tx {
+            let _ = tx.send(Job::Group { generation, token, db, entry_id });
         }
     }
 
@@ -123,6 +159,43 @@ fn probe_ids(
         let presence = chunk.iter().map(|rec| (rec.id, probe(rec))).collect();
         emit(presence);
     }
+}
+
+/// `entry_id` と同じFPのファイルを全て集め、現存するものを返す（件数の上限なし）。
+/// レコードはDBロックの中でまとめて読み、ファイルの確認はロックの外で行う。途中で世代が変われば None。
+/// 入口のIDにFPが無い（0バイト等）ときは、入口だけの組になる。
+fn collect_group(
+    db: &Arc<Mutex<Database>>,
+    entry_id: u64,
+    keep_going: &dyn Fn() -> bool,
+    probe: &dyn Fn(&FileRecord) -> Presence,
+) -> Option<SimilarGroup> {
+    let mut members: Vec<FileRecord> = {
+        let guard = db.lock().ok()?;
+        let tx = guard.begin_read().ok()?;
+        let entry = file_identity::record_by_id_tx(&tx, entry_id)?;
+        match &entry.fp {
+            Some(fp) => file_identity::records_with_fp_tx(&tx, fp),
+            None => vec![entry],
+        }
+    };
+    // 同じパスを指す古いレコードは、別のファイルとは数えない。
+    members.sort_by_key(|m| m.id);
+    members.dedup_by(|a, b| a.path_key == b.path_key);
+    let mut group = SimilarGroup::default();
+    for m in &members {
+        if !keep_going() {
+            return None;
+        }
+        match probe(m) {
+            Presence::Present => {
+                group.files.push(SimilarFile { id: m.id, path: file_identity::path_of_key(&m.path_key) })
+            }
+            Presence::Missing => group.missing += 1,
+            Presence::Offline => group.offline += 1,
+        }
+    }
+    Some(group)
 }
 
 impl super::NekoviewApp {
@@ -173,6 +246,11 @@ impl super::NekoviewApp {
                         detected += created;
                     }
                 }
+                ProbeEvent::Group { generation, token, group } => {
+                    if self.marker_probe.is_current(generation) {
+                        self.apply_similar_group(token, group);
+                    }
+                }
             }
         }
         if detected > 0 && self.marker_view_active() {
@@ -217,6 +295,9 @@ mod tests {
 
     fn register(db: &Arc<Mutex<Database>>, dir: &std::path::Path, name: &str, fill: u8) -> u64 {
         std::fs::write(dir.join(name), vec![fill; 64]).unwrap();
+        // 書いたばかりのファイルは書き込み中を疑ってFPを取らないので、古い更新日時にする。
+        let f = std::fs::OpenOptions::new().write(true).open(dir.join(name)).unwrap();
+        f.set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(1000)).unwrap();
         file_identity::ensure_record(db, dir, name).unwrap().id
     }
 
@@ -258,5 +339,48 @@ mod tests {
         };
         probe_ids(&db, &ids, &keep_going, &|_| Presence::Present, &mut |p| *sent.borrow_mut() += p.len());
         assert_eq!(sent.into_inner(), CHUNK, "世代が変わったら次の塊からは確認しない");
+    }
+
+    #[test]
+    fn group_collects_every_present_file_with_the_same_content() {
+        let t = TempRoot::new("group");
+        let db = open_spread_db(&t.0).unwrap();
+        let sub = t.0.join("sub");
+        std::fs::create_dir_all(&sub).unwrap();
+        let a = register(&db, &t.0, "a.zip", 7);
+        let b = register(&db, &sub, "b.zip", 7);
+        let c = register(&db, &t.0, "c.zip", 7);
+        let other = register(&db, &t.0, "other.zip", 9);
+        std::fs::remove_file(t.0.join("c.zip")).unwrap();
+        let group = collect_group(&db, b, &|| true, &file_identity::probe_record).unwrap();
+        let ids: Vec<u64> = group.files.iter().map(|f| f.id).collect();
+        assert_eq!(ids, vec![a, b], "現存する同内容ファイルが、ID昇順で全て並ぶ");
+        assert!(!ids.contains(&other));
+        assert_eq!((group.missing, group.offline), (1, 0), "消えた {c} は数だけ数える");
+    }
+
+    #[test]
+    fn group_has_no_size_cap() {
+        let t = TempRoot::new("nocap");
+        let db = open_spread_db(&t.0).unwrap();
+        let ids: Vec<u64> = (0..40).map(|i| register(&db, &t.0, &format!("n{i}.zip"), 5)).collect();
+        let group = collect_group(&db, ids[0], &|| true, &|_| Presence::Present).unwrap();
+        assert_eq!(group.files.len(), 40, "マーカーの重複先の上限(16)は一覧に関係しない");
+    }
+
+    #[test]
+    fn group_is_abandoned_when_the_generation_changes() {
+        let t = TempRoot::new("abandon");
+        let db = open_spread_db(&t.0).unwrap();
+        let a = register(&db, &t.0, "p.zip", 3);
+        register(&db, &t.0, "q.zip", 3);
+        assert!(collect_group(&db, a, &|| false, &|_| Presence::Present).is_none());
+    }
+
+    #[test]
+    fn group_of_an_unknown_id_is_none() {
+        let t = TempRoot::new("unknown");
+        let db = open_spread_db(&t.0).unwrap();
+        assert!(collect_group(&db, 12345, &|| true, &|_| Presence::Present).is_none());
     }
 }

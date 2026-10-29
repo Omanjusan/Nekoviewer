@@ -54,6 +54,8 @@ struct SortEntry {
     path: PathBuf,
     /// お気に入り登録済み（並びの先頭に固定する）
     fav: bool,
+    /// 類似ファイル一覧の入口のファイル（何よりも先頭に固定する）
+    pinned: bool,
     /// 重複ソートON時の、自身のマーカーの検出日時（新しいものを先頭へ。無ければ None で従来の並び）
     dup: Option<i64>,
     mtime: Option<std::time::SystemTime>,
@@ -332,6 +334,8 @@ impl NekoviewApp {
 
     /// バックグラウンドスキャンを起動する（UIをブロックしない）
     pub(super) fn start_scan(&mut self) {
+        // 実フォルダを読み込み直すなら、類似ファイル一覧は閉じる扱い（archives が置き換わるため）。
+        self.close_similar_view_state();
         self.on_marker_dir_scan();
         self.thumb_session.fetch_add(1, Ordering::AcqRel);
         // ネットワークマウント配下ではサブフォルダの更新日時を取らない（日付ソートでは末尾になる）
@@ -397,6 +401,7 @@ impl NekoviewApp {
         self.thumb_session.fetch_add(1, Ordering::AcqRel);
         self.scan_state = ScanState::Done;
         self.viewing_favorites = None;
+        self.close_similar_view_state();
         self.viewing_dir = None;
         self.cd_summary = None;
         self.cd_summary_rx = None;
@@ -424,6 +429,7 @@ impl NekoviewApp {
         if !self.folder_pane_tab.shows_real_dir()
             || self.viewing_favorites.is_some()
             || self.viewing_search.is_some()
+            || self.viewing_similar.is_some()
         {
             return;
         }
@@ -533,6 +539,8 @@ impl NekoviewApp {
             }
             self.multi_selected.clear();
             self.select_anchor = None;
+            // 類似ファイル一覧から戻ったときは、入口にしていたファイルへ選択とスクロールを合わせる。
+            self.restore_similar_return();
             // サマリーはスキャン済みリストを使い回して起動する（ネットワークの再列挙を避ける）
             if self.viewing_dir.as_ref() == Some(&self.current_dir) {
                 self.cd_summary_rx = Some(spawn_summary_worker(
@@ -670,6 +678,7 @@ impl NekoviewApp {
         if !self.folder_pane_tab.shows_real_dir()
             || self.viewing_favorites.is_some()
             || self.viewing_search.is_some()
+            || self.viewing_similar.is_some()
             || total == 0
         {
             return;
@@ -754,6 +763,7 @@ impl NekoviewApp {
         if !self.folder_pane_tab.shows_real_dir()
             || self.viewing_favorites.is_some()
             || self.viewing_search.is_some()
+            || self.viewing_similar.is_some()
         {
             return;
         }
@@ -874,6 +884,10 @@ impl NekoviewApp {
     /// 現在のフォルダの「見開き・ソート・お気に入り」の保存状態を、DBから読み直す。
     /// スキャン時と、ID解決でファイルの設定が付き替わった時（移動・リネーム直後）に呼ぶ。
     pub(super) fn reload_dir_state_maps(&mut self) {
+        // 類似ファイル一覧は複数フォルダにまたがるので、今のフォルダ前提の状態は読み直さない。
+        if self.viewing_similar.is_some() {
+            return;
+        }
         let Some(db) = self.spread_db.clone() else {
             self.spread_states.clear();
             self.archive_sort_states.clear();
@@ -936,7 +950,7 @@ impl NekoviewApp {
         }
         // お気に入り一覧表示中は favorite_states が実ディレクトリ用の古いデータのままで
         // 信頼できないため、スティッキー判定は通常のディレクトリ表示中のみ行う。
-        let sticky_favorites = self.viewing_favorites.is_none();
+        let sticky_favorites = self.viewing_favorites.is_none() && self.viewing_similar.is_none();
         // 比較中に stat・DB を引かないよう、ソートに使う値を先に集める（使わない軸は集めない）
         let mut entries: Vec<SortEntry> = self.archives.iter().map(|p| {
             let fav = sticky_favorites
@@ -958,6 +972,7 @@ impl NekoviewApp {
             };
             SortEntry {
                 path: p.clone(),
+                pinned: self.viewing_similar.as_ref().is_some_and(|v| v.entry_path == *p),
                 fav,
                 dup,
                 mtime: meta.as_ref().and_then(|m| m.modified().ok()),
@@ -968,7 +983,7 @@ impl NekoviewApp {
         }).collect();
         // 重複ソートONのマーカー付きは、お気に入りの先頭固定よりさらに前（None < Some なので、新しい順に先頭へ）。
         entries.sort_by(|a, b| {
-            b.dup.cmp(&a.dup).then(b.fav.cmp(&a.fav)).then_with(|| sort.compare(&a.row(), &b.row()))
+            b.pinned.cmp(&a.pinned).then(b.dup.cmp(&a.dup)).then(b.fav.cmp(&a.fav)).then_with(|| sort.compare(&a.row(), &b.row()))
         });
         self.archives = entries.into_iter().map(|e| e.path).collect();
     }

@@ -60,19 +60,25 @@ fn thumb_col_width(size: ListSize, row_h: f32) -> f32 {
 }
 
 /// 列の幅（重複・サムネ・名前・サイズ・更新日時・評価・訪問回数）。サムネ以外はユーザー設定。
-fn column_widths(thumb_w: f32, cols: &ListColumns) -> [f32; 7] {
-    [cols.width(0), thumb_w, cols.width(1), cols.width(2), cols.width(3), cols.width(4), cols.width(5)]
+/// `place_w` は類似ファイル一覧のときだけ出す「場所」列の幅（出さないときは 0）。
+fn column_widths(thumb_w: f32, cols: &ListColumns, place_w: f32) -> [f32; 8] {
+    [cols.width(0), thumb_w, cols.width(1), place_w, cols.width(2), cols.width(3), cols.width(4), cols.width(5)]
 }
+
+/// 類似ファイル一覧の「場所」列の幅（px。固定）。
+const PLACE_COL_W: f32 = 380.0;
 
 #[derive(Clone, Copy)]
 enum Col {
     Dup = 0,
     Thumb = 1,
     Name = 2,
-    Size = 3,
-    Mtime = 4,
-    Rating = 5,
-    Visits = 6,
+    /// 類似ファイル一覧のときだけ幅を持つ（それ以外は幅 0）。
+    Place = 3,
+    Size = 4,
+    Mtime = 5,
+    Rating = 6,
+    Visits = 7,
 }
 
 impl Col {
@@ -85,14 +91,14 @@ impl Col {
             Col::Mtime => Some(HeaderColumn::Date),
             Col::Rating => Some(HeaderColumn::Score),
             Col::Visits => Some(HeaderColumn::Visits),
-            Col::Dup | Col::Thumb => None,
+            Col::Dup | Col::Thumb | Col::Place => None,
         }
     }
 
     /// 幅を変えられる列の `ListColumns` 上の番号。サムネ列は行の高さで決まるので変えられない。
     fn resize_index(self) -> Option<usize> {
         match self {
-            Col::Thumb => None,
+            Col::Thumb | Col::Place => None,
             Col::Dup => Some(0),
             Col::Name => Some(1),
             Col::Size => Some(2),
@@ -104,10 +110,36 @@ impl Col {
 }
 
 /// 行の矩形から、指定した列の矩形を切り出す。
-fn col_rect(row: egui::Rect, widths: &[f32; 7], col: Col) -> egui::Rect {
+fn col_rect(row: egui::Rect, widths: &[f32; 8], col: Col) -> egui::Rect {
     let idx = col as usize;
     let x: f32 = widths[..idx].iter().sum();
     egui::Rect::from_min_size(egui::pos2(row.min.x + x, row.min.y), egui::vec2(widths[idx], row.height()))
+}
+
+/// 類似ファイル一覧で、入口のファイルの行・カードに敷く色。
+pub(super) fn similar_entry_color() -> egui::Color32 {
+    egui::Color32::from_rgb(235, 170, 40)
+}
+
+/// 幅 `max_w` に収まるよう、先頭を「…」で省く（パスは末尾側に区別の手がかりがあるため）。
+fn elide_head(painter: &egui::Painter, text: &str, font: &egui::FontId, max_w: f32) -> String {
+    let width = |t: &str| painter.layout_no_wrap(t.to_owned(), font.clone(), egui::Color32::WHITE).size().x;
+    if max_w <= 0.0 || width(text) <= max_w {
+        return text.to_owned();
+    }
+    let chars: Vec<char> = text.chars().collect();
+    // 先頭から `cut` 文字を省いた「…＋残り」が収まる最小の cut を二分探索する。
+    let (mut lo, mut hi) = (1usize, chars.len());
+    while lo < hi {
+        let mid = (lo + hi) / 2;
+        let candidate: String = std::iter::once('…').chain(chars[mid..].iter().copied()).collect();
+        if width(&candidate) <= max_w {
+            hi = mid;
+        } else {
+            lo = mid + 1;
+        }
+    }
+    std::iter::once('…').chain(chars[lo.min(chars.len())..].iter().copied()).collect()
 }
 
 /// 列の矩形内へ左寄せで文字を描く（はみ出しは列で切る）。
@@ -163,7 +195,7 @@ fn grid_line_color(ui: &egui::Ui) -> egui::Color32 {
 /// 行の高さと列の幅（描画と、キーボードのスクロール計算で共有）。
 pub(super) struct ListMetrics {
     pub row_h: f32,
-    widths: [f32; 7],
+    widths: [f32; 8],
     total_w: f32,
 }
 
@@ -172,7 +204,8 @@ impl NekoviewApp {
     pub(super) fn list_metrics(&self) -> ListMetrics {
         let (size, _) = layout_for(self.view_mode.mode, self.view_mode.list_size);
         let row_h = row_height(size, self.config.thumb_size as f32);
-        let widths = column_widths(thumb_col_width(size, row_h), &self.list_cols);
+        let place_w = if self.viewing_similar.is_some() { PLACE_COL_W } else { 0.0 };
+        let widths = column_widths(thumb_col_width(size, row_h), &self.list_cols, place_w);
         ListMetrics { row_h, widths, total_w: widths.iter().sum() }
     }
 
@@ -333,7 +366,7 @@ impl NekoviewApp {
         // 境界の操作を先に処理して、この後の描画（見出しと本体の行）に今フレームの幅を反映する。
         let mut changed = false;
         let mut active_idx: Option<usize> = None;
-        for col in [Col::Dup, Col::Name, Col::Size, Col::Mtime, Col::Rating, Col::Visits] {
+        for col in [Col::Dup, Col::Name, Col::Place, Col::Size, Col::Mtime, Col::Rating, Col::Visits] {
             let Some(idx) = col.resize_index() else { continue };
             let x = col_rect(row, &m.widths, col).max.x;
             let grab = egui::Rect::from_center_size(egui::pos2(x, rect.center().y), egui::vec2(RESIZE_GRAB_W, HEADER_H))
@@ -396,6 +429,7 @@ impl NekoviewApp {
         for (col, label) in [
             (Col::Dup, t.list_col_dup()),
             (Col::Name, t.list_col_name()),
+            (Col::Place, t.list_col_place()),
             (Col::Size, t.list_col_size()),
             (Col::Mtime, t.list_col_mtime()),
             (Col::Rating, t.list_col_rating()),
@@ -417,7 +451,7 @@ impl NekoviewApp {
         // 境界線。つかめる状態の境界（ホバー・ドラッグ中）だけ太く強調する（リサイズのマーカー）。
         let line = grid_line_color(ui);
         let marker = ui.visuals().strong_text_color();
-        for col in [Col::Dup, Col::Name, Col::Size, Col::Mtime, Col::Rating, Col::Visits] {
+        for col in [Col::Dup, Col::Name, Col::Place, Col::Size, Col::Mtime, Col::Rating, Col::Visits] {
             let x = col_rect(row, &m.widths, col).max.x;
             let active = col.resize_index().is_some() && col.resize_index() == active_idx;
             let stroke = if active { egui::Stroke::new(2.0, marker) } else { egui::Stroke::new(1.0, line) };
@@ -433,7 +467,7 @@ impl NekoviewApp {
         &self,
         ui: &egui::Ui,
         rect: egui::Rect,
-        widths: &[f32; 7],
+        widths: &[f32; 8],
         font: &egui::FontId,
         name: &str,
         mtime: Option<std::time::SystemTime>,
@@ -463,7 +497,7 @@ impl NekoviewApp {
         ui: &mut egui::Ui,
         rect: egui::Rect,
         response: &egui::Response,
-        widths: &[f32; 7],
+        widths: &[f32; 8],
         font: &egui::FontId,
         real_idx: usize,
         path: &PathBuf,
@@ -473,6 +507,9 @@ impl NekoviewApp {
         let is_raw = self.raw_image_files.contains(path);
         let text_color = ui.visuals().text_color();
 
+        if self.is_similar_entry(path) {
+            ui.painter().rect_filled(rect, 0.0, similar_entry_color().gamma_multiply(0.28));
+        }
         if is_selected {
             let base = if is_raw { egui::Color32::from_rgb(220, 60, 60) } else { egui::Color32::from_rgb(50, 120, 230) };
             ui.painter().rect_filled(rect, 0.0, base.gamma_multiply(0.22));
@@ -502,6 +539,16 @@ impl NekoviewApp {
         let painter = ui.painter();
         let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
         cell_text(painter, col_rect(rect, widths, Col::Name), name, font, text_color);
+        let place_cell = col_rect(rect, widths, Col::Place);
+        if place_cell.width() > 0.0 {
+            let full = path.parent().map(|d| d.display().to_string()).unwrap_or_default();
+            let shown = elide_head(ui.painter(), &full, font, place_cell.width() - CELL_PAD * 2.0);
+            cell_text(ui.painter(), place_cell, &shown, font, ui.visuals().weak_text_color());
+            let on_place = ui.input(|i| i.pointer.hover_pos()).is_some_and(|p| place_cell.contains(p));
+            if on_place {
+                response.clone().on_hover_text(&full);
+            }
+        }
         let dup_cell = col_rect(rect, widths, Col::Dup);
         self.paint_marker_icon(ui, response, super::dup_marker_ui::list_icon_rect(dup_cell), real_idx, name);
         let painter = ui.painter();
@@ -660,6 +707,7 @@ mod tests {
         use crate::explorer_sort::HeaderColumn as H;
         assert_eq!(Col::Dup.sort_column(), None);
         assert_eq!(Col::Thumb.sort_column(), None);
+        assert_eq!(Col::Place.sort_column(), None);
         assert_eq!(Col::Name.sort_column(), Some(H::Name));
         assert_eq!(Col::Size.sort_column(), Some(H::Size));
         assert_eq!(Col::Mtime.sort_column(), Some(H::Date), "更新日時は日付ソート");
@@ -670,6 +718,7 @@ mod tests {
     #[test]
     fn only_the_thumbnail_column_cannot_be_resized() {
         assert_eq!(Col::Thumb.resize_index(), None);
+        assert_eq!(Col::Place.resize_index(), None, "場所列の幅は固定");
         let idx: Vec<_> = [Col::Dup, Col::Name, Col::Size, Col::Mtime, Col::Rating, Col::Visits]
             .into_iter()
             .map(|c| c.resize_index())
@@ -690,10 +739,18 @@ mod tests {
     }
 
     #[test]
+    fn place_column_has_no_width_outside_the_similar_view() {
+        let widths = column_widths(40.0, &ListColumns::default(), 0.0);
+        assert_eq!(widths[Col::Place as usize], 0.0);
+        let with = column_widths(40.0, &ListColumns::default(), PLACE_COL_W);
+        assert_eq!(with.iter().sum::<f32>() - widths.iter().sum::<f32>(), PLACE_COL_W);
+    }
+
+    #[test]
     fn columns_tile_the_row_without_gaps_or_overlap() {
-        let widths = column_widths(40.0, &ListColumns::default());
+        let widths = column_widths(40.0, &ListColumns::default(), PLACE_COL_W);
         let row = egui::Rect::from_min_size(egui::pos2(10.0, 5.0), egui::vec2(widths.iter().sum(), 30.0));
-        let cols = [Col::Dup, Col::Thumb, Col::Name, Col::Size, Col::Mtime, Col::Rating, Col::Visits];
+        let cols = [Col::Dup, Col::Thumb, Col::Name, Col::Place, Col::Size, Col::Mtime, Col::Rating, Col::Visits];
         let mut x = row.min.x;
         for c in cols {
             let r = col_rect(row, &widths, c);

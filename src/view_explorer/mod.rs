@@ -899,6 +899,14 @@ pub struct NekoviewApp {
     marker_compare_states: HashMap<marker_compare::PairKey, marker_compare::CompareState>,
     /// 実行中の比較の、終了時トーストに出す名前。
     marker_compare_labels: HashMap<marker_compare::PairKey, String>,
+    /// 類似ファイル一覧の表示中の状態（現在のタブ内の一時ビュー）。閉じると実フォルダの表示に戻る。
+    viewing_similar: Option<similar_view::SimilarView>,
+    /// 類似ファイル一覧を開くたびに進める番号。収集結果が古い一覧のものか見分ける。
+    similar_token: u64,
+    /// 類似ファイル一覧を開く前の表示モード（閉じるときに戻す。一覧中はリスト表示にする）。
+    similar_saved_mode: Option<view_mode::ViewMode>,
+    /// 類似ファイル一覧から戻った後、再スキャンの完了時に選び直してスクロールするファイル。
+    similar_return: Option<PathBuf>,
     /// お気に入り・検索の横断一覧表示中のマーカー情報 (フルパス -> 所属folder_id一覧)。
     /// ディレクトリ横断のため favorite_states とは別にフルパスキーで持つ。
     cross_view_favorite_markers: HashMap<PathBuf, Vec<u8>>,
@@ -1337,6 +1345,7 @@ mod list_columns;
 mod dup_marker_ui;
 mod marker_probe;
 mod marker_compare;
+mod similar_view;
 mod layout_anchor;
 
 #[cfg(test)]
@@ -1477,6 +1486,10 @@ impl NekoviewApp {
             marker_compare: marker_compare::MarkerCompareWorker::spawn(ctx.clone()),
             marker_compare_states: HashMap::new(),
             marker_compare_labels: HashMap::new(),
+            viewing_similar: None,
+            similar_token: 0,
+            similar_saved_mode: None,
+            similar_return: None,
             cross_view_favorite_markers: HashMap::new(),
             saved_archive_settings: HashMap::new(),
             network_unreachable_mounts: HashSet::new(),

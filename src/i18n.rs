@@ -376,6 +376,60 @@ impl Lang {
         }
     }
 
+    /// 重複マーカーのポップアップ: 同じ内容のファイルだけを一覧で開くボタン。
+    pub fn dup_popup_open_similar(self) -> &'static str {
+        match self {
+            Lang::Japanese => "類似ファイルを一覧で見る",
+            Lang::English  => "View similar files in a list",
+            Lang::Chinese  => "在列表中查看相似文件",
+        }
+    }
+
+    /// 類似ファイル一覧: 元のフォルダ表示へ戻るボタン。
+    pub fn similar_back(self) -> &'static str {
+        match self {
+            Lang::Japanese => "← 類似ビューから戻る",
+            Lang::English  => "← Back from similar view",
+            Lang::Chinese  => "← 从相似视图返回",
+        }
+    }
+
+    /// 類似ファイル一覧: 収集中の表示。
+    pub fn similar_loading(self) -> &'static str {
+        match self {
+            Lang::Japanese => "同じ内容のファイルを集めています",
+            Lang::English  => "Collecting files with the same content",
+            Lang::Chinese  => "正在收集内容相同的文件",
+        }
+    }
+
+    /// 類似ファイル一覧: 見出し（並べた件数）。
+    pub fn similar_header(self, n: usize) -> String {
+        match self {
+            Lang::Japanese => format!("同じ内容のファイル {n}件"),
+            Lang::English  => format!("{n} files with the same content"),
+            Lang::Chinese  => format!("内容相同的文件 {n}个"),
+        }
+    }
+
+    /// 類似ファイル一覧: 消失・オフラインで並べられなかったファイルがある旨の1行。
+    pub fn similar_unlisted(self, n: usize) -> String {
+        match self {
+            Lang::Japanese => format!("確認できないファイルが別に{n}件あります"),
+            Lang::English  => format!("{n} more files cannot be checked"),
+            Lang::Chinese  => format!("另有{n}个文件无法确认"),
+        }
+    }
+
+    /// 類似ファイル一覧: 並べられるファイルが無いときの案内。
+    pub fn similar_empty(self) -> &'static str {
+        match self {
+            Lang::Japanese => "比較できる類似ファイルがありません",
+            Lang::English  => "No similar files to compare",
+            Lang::Chinese  => "没有可比较的相似文件",
+        }
+    }
+
     /// 重複マーカーのポップアップ: 「問題ない」としてマーカーを消すボタン。
     pub fn dup_popup_dismiss(self) -> &'static str {
         match self {
@@ -2090,6 +2144,14 @@ impl Lang {
             Lang::Japanese => "評価",
             Lang::English  => "Rating",
             Lang::Chinese  => "评分",
+        }
+    }
+
+    pub fn list_col_place(self) -> &'static str {
+        match self {
+            Lang::Japanese => "場所",
+            Lang::English  => "Location",
+            Lang::Chinese  => "位置",
         }
     }
 

@@ -172,7 +172,9 @@ fn describe_ids(
 impl super::NekoviewApp {
     /// 重複マーカーを出す表示か。通常のフォルダ表示だけ（お気に入り・検索の横断一覧は対象外）。
     pub(super) fn marker_view_active(&self) -> bool {
-        self.folder_pane_tab.shows_real_dir() && self.viewing_favorites.is_none() && self.viewing_search.is_none()
+        self.folder_pane_tab.shows_real_dir() && self.viewing_favorites.is_none()
+            && self.viewing_search.is_none()
+            && self.viewing_similar.is_none()
     }
 
     /// 絞り込み・並びの対象になる自身のマーカーの検出日時（unix秒）。マーカー無し、消去済み
@@ -272,6 +274,7 @@ impl super::NekoviewApp {
         let Some(popup) = &self.marker_popup else { return };
         let t = i18n::t();
         let mut dismiss = false;
+        let mut open_similar = false;
         let mut start: Option<(PairKey, std::path::PathBuf, std::path::PathBuf, String)> = None;
         let mut cancel: Option<PairKey> = None;
         let verified = self
@@ -356,8 +359,11 @@ impl super::NekoviewApp {
                             ui.label(egui::RichText::new(t.dup_popup_more(popup.more)).small().weak());
                         }
                     }
+                    ui.separator();
+                    if popup.icon != MarkerIcon::Moved && popup.self_id.is_some() {
+                        open_similar = ui.button(t.dup_popup_open_similar()).clicked();
+                    }
                     if popup.dismiss_id.is_some() {
-                        ui.separator();
                         dismiss = ui.button(t.dup_popup_dismiss()).clicked();
                     }
                 });
@@ -366,6 +372,7 @@ impl super::NekoviewApp {
             && ctx.input(|i| i.pointer.interact_pos()).is_some_and(|p| !area.response.rect.contains(p));
         let escape = ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
         let dismiss_id = popup.dismiss_id;
+        let similar_entry = popup.self_id.map(|id| (popup.self_path.clone(), id));
         if let Some((key, a, b, label)) = start {
             self.start_marker_compare(key, a, b, label);
         }
@@ -378,8 +385,13 @@ impl super::NekoviewApp {
                 self.reload_dir_state_maps();
             }
         }
-        if dismiss || pressed_outside || escape {
+        if dismiss || open_similar || pressed_outside || escape {
             self.marker_popup = None;
+        }
+        if open_similar {
+            if let Some((path, id)) = similar_entry {
+                self.enter_similar_view(path, id);
+            }
         }
     }
 

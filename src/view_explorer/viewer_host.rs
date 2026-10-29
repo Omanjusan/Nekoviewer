@@ -969,7 +969,7 @@ impl NekoviewApp {
         if let Some(selection) = self.viewing_favorites {
             self.enter_favorite_view(selection);
         } else {
-            if self.viewing_search.is_some() {
+            if self.viewing_search.is_some() || self.viewing_similar.is_some() {
                 self.cross_view_favorite_markers =
                     crate::favorites::memberships_for_paths(&db, &self.archives);
             }

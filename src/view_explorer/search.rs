@@ -202,6 +202,7 @@ impl NekoviewApp {
         self.invalid_archives.clear();
         self.thumb_failed.clear();
         self.viewing_search = Some(idx);
+        self.close_similar_view_state();
         // 別タブ終了時に開始された実ディレクトリのスキャンが Loading のまま残ると、
         // 同期構築済みの検索結果よりローディング表示が優先され続ける。
         self.scan_state = ScanState::Done;
