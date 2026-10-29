@@ -2141,20 +2141,12 @@ impl Lang {
         }
     }
 
-    /// リストボタン。▼ は押すたびにサイズが循環することを示す。`size` は S/M/L/ホバー。
+    /// リストボタン。▼ は押すたびにサイズが循環することを示す。`size` は S/M/L、サムネ無しは空文字。
     pub fn view_mode_list_label(self, size: &str) -> String {
         match self {
             Lang::Japanese => format!("▼リスト{size}"),
             Lang::English  => format!("▼List {size}"),
             Lang::Chinese  => format!("▼列表{size}"),
-        }
-    }
-
-    pub fn view_mode_list_size_hover_label(self) -> &'static str {
-        match self {
-            Lang::Japanese => "ホバー",
-            Lang::English  => "Hover",
-            Lang::Chinese  => "悬停",
         }
     }
 

@@ -2146,25 +2146,28 @@ impl NekoviewApp {
     }
 
     /// パス行左端の表示モード切替: `[カード] [▼リストS] [x]ホバー時サムネ表示`。選択中のモードはハイライト。
-    /// リストボタンだけ押すたびにサイズが循環する（S→M→L→ホバー）。
+    /// リストボタンだけ押すたびにサイズが循環する（S→M→L→サムネ無し）。
     /// 描画は `draw_archive_grid`（カード）と `list_view.rs`（リスト・一覧）。モードは全タブ共通で保存される。
     fn draw_view_mode_buttons(&mut self, ui: &mut egui::Ui) {
         use super::view_mode::{ListSize, ViewMode};
         let t = i18n::t();
-        let size_label = match self.view_mode.list_size {
-            ListSize::S => "S".to_string(),
-            ListSize::M => "M".to_string(),
-            ListSize::L => "L".to_string(),
-            ListSize::Hover => t.view_mode_list_size_hover_label().to_string(),
+        // サムネ無しはサイズ表記なしの「▼リスト」。
+        let size_label = |size: ListSize| match size {
+            ListSize::S => "S",
+            ListSize::M => "M",
+            ListSize::L => "L",
+            ListSize::NoThumb => "",
         };
-        // リストボタンの幅は最長ラベル（ホバー）に合わせて固定し、サイズ循環でパスがずれないようにする。
-        let list_label = t.view_mode_list_label(&size_label);
-        let widest = t.view_mode_list_label(t.view_mode_list_size_hover_label());
+        let list_label = t.view_mode_list_label(size_label(self.view_mode.list_size));
+        // リストボタンの幅は全ラベルの最長に合わせて固定し、サイズ循環でパスがずれないようにする。
         let list_w = {
             let font = egui::TextStyle::Button.resolve(ui.style());
             let color = ui.visuals().text_color();
-            let galley = ui.painter().layout_no_wrap(widest, font, color);
-            galley.size().x + ui.spacing().button_padding.x * 2.0
+            let widest = [ListSize::S, ListSize::M, ListSize::L, ListSize::NoThumb]
+                .into_iter()
+                .map(|size| ui.painter().layout_no_wrap(t.view_mode_list_label(size_label(size)), font.clone(), color).size().x)
+                .fold(0.0_f32, f32::max);
+            widest + ui.spacing().button_padding.x * 2.0
         };
         let mode = self.view_mode.mode;
         if ui.add(egui::Button::new(t.view_mode_card_label()).selected(mode == ViewMode::Card)).clicked() {
@@ -2178,7 +2181,7 @@ impl NekoviewApp {
         // ホバー時サムネ表示。カードにはポップアップが無いので、カード中は押せない表示にする（値は保持）。
         ui.add_enabled(
             mode != ViewMode::Card,
-            egui::Checkbox::new(&mut self.hover_popup_mock, t.view_mode_hover_popup_label()),
+            egui::Checkbox::new(&mut self.view_mode.hover_popup, t.view_mode_hover_popup_label()),
         );
         ui.separator();
     }

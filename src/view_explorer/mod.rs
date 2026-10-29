@@ -1211,8 +1211,6 @@ pub struct NekoviewApp {
     pub(crate) card_rating_mode: CardRatingMode,
     /// 中央部の表示モード（カード／リスト／一覧）。全タブ共通。
     pub(crate) view_mode: view_mode::ExplorerViewMode,
-    /// 「ホバー時サムネ表示」チェックボックス（モック段階: 見た目だけで、ポップアップ・保存には未接続）。
-    pub(crate) hover_popup_mock: bool,
     /// リストの列幅（サムネ列を除く6列）。全モード・全タブ共通で保存する。
     pub(crate) list_cols: list_columns::ListColumns,
     /// リスト本体の横スクロール量（固定の列見出しを同じだけずらすため、直前のフレームの値）。
@@ -1657,7 +1655,6 @@ impl NekoviewApp {
             card_info_mode: CardInfoMode::from_state_str(card_info_mode),
             card_rating_mode: CardRatingMode::from_state_str(card_rating_mode),
             view_mode: view_mode::ExplorerViewMode::from_state_str(explorer_view_mode),
-            hover_popup_mock: false,
             list_cols: list_columns::ListColumns::from_state_str(explorer_list_cols),
             list_scroll_x: 0.0,
             card_date_format,

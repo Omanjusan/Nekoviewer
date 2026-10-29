@@ -35,8 +35,8 @@ const POPUP_OFFSET: f32 = 18.0;
 /// 一覧は常に文字のみの行（= ホバー形式の見た目）で、ポップアップは出さない。
 fn layout_for(mode: ViewMode, list_size: ListSize) -> (ListSize, bool) {
     match mode {
-        ViewMode::Text => (ListSize::Hover, false),
-        _ => (list_size, list_size == ListSize::Hover),
+        ViewMode::Text => (ListSize::NoThumb, false),
+        _ => (list_size, list_size == ListSize::NoThumb),
     }
 }
 
@@ -46,7 +46,7 @@ pub(super) fn row_height(size: ListSize, thumb_size: f32) -> f32 {
         ListSize::S => 0.25,
         ListSize::M => 0.40,
         ListSize::L => 0.60,
-        ListSize::Hover => return MIN_ROW_H,
+        ListSize::NoThumb => return MIN_ROW_H,
     };
     (thumb_size * ratio).max(MIN_ROW_H)
 }
@@ -54,7 +54,7 @@ pub(super) fn row_height(size: ListSize, thumb_size: f32) -> f32 {
 /// サムネ列の幅。ホバー形式はフォルダアイコン分だけ。
 fn thumb_col_width(size: ListSize, row_h: f32) -> f32 {
     match size {
-        ListSize::Hover => HOVER_ICON_COL_W,
+        ListSize::NoThumb => HOVER_ICON_COL_W,
         _ => (row_h / std::f32::consts::SQRT_2).round() + CELL_PAD,
     }
 }
@@ -242,7 +242,7 @@ impl NekoviewApp {
         let font = egui::FontId::proportional((row_h * 0.5).clamp(11.0, 15.0));
         let grid_focused = self.focused_pane == FocusPane::Grid;
         // サムネ列を出さない形式（ホバー・一覧）。ポップアップを出すのはリストのホバーだけ。
-        let text_only = size == ListSize::Hover;
+        let text_only = size == ListSize::NoThumb;
         let mut nav: Option<GridNav> = None;
         ui.spacing_mut().item_spacing.y = ROW_GAP;
 
@@ -660,15 +660,15 @@ mod tests {
     #[test]
     fn text_mode_is_a_text_only_row_without_the_hover_popup() {
         // 一覧: リストのサイズ設定に依らず文字のみ・ポップアップなし
-        for size in [ListSize::S, ListSize::M, ListSize::L, ListSize::Hover] {
-            assert_eq!(layout_for(ViewMode::Text, size), (ListSize::Hover, false));
+        for size in [ListSize::S, ListSize::M, ListSize::L, ListSize::NoThumb] {
+            assert_eq!(layout_for(ViewMode::Text, size), (ListSize::NoThumb, false));
         }
     }
 
     #[test]
     fn list_mode_shows_the_popup_only_in_hover_size() {
         assert_eq!(layout_for(ViewMode::List, ListSize::M), (ListSize::M, false));
-        assert_eq!(layout_for(ViewMode::List, ListSize::Hover), (ListSize::Hover, true));
+        assert_eq!(layout_for(ViewMode::List, ListSize::NoThumb), (ListSize::NoThumb, true));
     }
 
     #[test]
@@ -762,12 +762,12 @@ mod tests {
     #[test]
     fn row_height_never_goes_below_the_minimum() {
         assert_eq!(row_height(ListSize::S, 40.0), MIN_ROW_H);
-        assert_eq!(row_height(ListSize::Hover, 400.0), MIN_ROW_H, "ホバー形式はサムネ設定に依らず文字のみの高さ");
+        assert_eq!(row_height(ListSize::NoThumb, 400.0), MIN_ROW_H, "ホバー形式はサムネ設定に依らず文字のみの高さ");
     }
 
     #[test]
     fn hover_mode_has_only_an_icon_column_for_thumbnails() {
-        assert_eq!(thumb_col_width(ListSize::Hover, 24.0), HOVER_ICON_COL_W);
+        assert_eq!(thumb_col_width(ListSize::NoThumb, 24.0), HOVER_ICON_COL_W);
         assert!(thumb_col_width(ListSize::L, 120.0) > thumb_col_width(ListSize::S, 50.0));
     }
 
