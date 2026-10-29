@@ -203,6 +203,16 @@ fn stored_tx(tx: &ReadTransaction, id: u64) -> Option<FileSettings> {
     FileSettings::decode(t.get(id).ok().flatten()?.value())
 }
 
+/// IDの現在有効なタグ（tier_idの集合）だけを返す。`effective_tx` の tags と同じ解決規則
+/// （未移行のときだけ旧v1を引く）で、他のスロットは読まない。タグ検索の全件走査用。
+pub(crate) fn effective_tags_tx(tx: &ReadTransaction, rec: &crate::file_identity::FileRecord) -> Option<Vec<u64>> {
+    let stored = stored_tx(tx, rec.id).unwrap_or_default();
+    let legacy = matches!(stored.tags, Slot::Unmigrated)
+        .then(|| legacy_tags(tx, &rec.legacy_keys()))
+        .flatten();
+    resolve(stored.tags, legacy)
+}
+
 /// 持ち主の現在有効な設定。IDが解決済みならv2（未移行のスロットは旧パスキーで補う）、
 /// 未解決ならパスキーの旧v1。
 pub(crate) fn effective_tx(tx: &ReadTransaction, owner: &Owner) -> Effective {

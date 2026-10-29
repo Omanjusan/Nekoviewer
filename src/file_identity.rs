@@ -945,6 +945,20 @@ pub fn all_records_tx(tx: &redb::ReadTransaction) -> Vec<FileRecord> {
     iter.flatten().filter_map(|(_, v)| FileRecord::decode(v.value())).collect()
 }
 
+/// IDレコードをID昇順に1件ずつ渡す。`f` が false を返したら打ち切る（キャンセル用）。
+/// `all_records_tx` と違い全件をメモリに載せないので、大量件数のバックグラウンド走査向け。
+pub(crate) fn for_each_record_tx(tx: &redb::ReadTransaction, mut f: impl FnMut(FileRecord) -> bool) {
+    let Ok(ids) = tx.open_table(FILE_ID_TABLE) else { return };
+    let Ok(iter) = ids.iter() else { return };
+    for (_, v) in iter.flatten() {
+        if let Some(rec) = FileRecord::decode(v.value()) {
+            if !f(rec) {
+                return;
+            }
+        }
+    }
+}
+
 impl FileRecord {
     /// 旧v1テーブル（パスキー）を引く候補のキー。現在のパス、ID作成時のパス、旧パス履歴の順（重複なし）。
     /// v1行は削除しない約束なので、移動後や遅延移行前でも、これで旧データへ届く。
