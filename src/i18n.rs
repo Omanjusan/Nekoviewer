@@ -1826,6 +1826,15 @@ impl Lang {
         }
     }
 
+    /// タグ検索タブ左ペイン: 単一選択カテゴリの「S」マークのホバー説明
+    pub fn tag_search_single_hint(self) -> &'static str {
+        match self {
+            Lang::Japanese => "単一選択のカテゴリです。同時に1つだけ有効にできます。",
+            Lang::English  => "Single-select category. Only one tag can be enabled at a time.",
+            Lang::Chinese  => "单选类别。同一时间只能启用一个标签。",
+        }
+    }
+
     /// タグ検索タブ中央: 有効タグが1つも無いときのガイド
     pub fn tag_search_center_guide(self) -> &'static str {
         match self {
@@ -1835,13 +1844,28 @@ impl Lang {
         }
     }
 
-    /// タグ検索タブ中央（モック）: 有効タグの個数表示
-    pub fn tag_search_center_mock(self, enabled: usize) -> String {
-        match self {
-            Lang::Japanese => format!("（モック）有効なタグ: {enabled}個。検索はまだ接続されていません。"),
-            Lang::English  => format!("(Mock) Enabled tags: {enabled}. Search is not connected yet."),
-            Lang::Chinese  => format!("（模型）已启用标签：{enabled}个。搜索尚未连接。"),
+    /// タグ検索タブ中央の見出し: ヒット件数。走査中はその旨、確認できないファイルがあれば件数を添える。
+    pub fn tag_search_header(self, hits: usize, running: bool, unconfirmed: usize) -> String {
+        let mut s = match self {
+            Lang::Japanese => format!("{hits}件"),
+            Lang::English  => format!("{hits} files"),
+            Lang::Chinese  => format!("{hits}个文件"),
+        };
+        if running {
+            s.push_str(match self {
+                Lang::Japanese => "（検索中…）",
+                Lang::English  => " (searching…)",
+                Lang::Chinese  => "（搜索中…）",
+            });
         }
+        if unconfirmed > 0 {
+            s.push_str(&match self {
+                Lang::Japanese => format!("　確認できないファイルが別に{unconfirmed}件あります"),
+                Lang::English  => format!("  {unconfirmed} more files could not be confirmed"),
+                Lang::Chinese  => format!("  另有{unconfirmed}个文件无法确认"),
+            });
+        }
+        s
     }
 
     pub fn virtual_real_tree_title(self) -> &'static str {

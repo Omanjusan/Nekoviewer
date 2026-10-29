@@ -70,8 +70,11 @@ pub struct TagHit {
 #[derive(Debug)]
 pub enum TagScanMsg {
     Hits(Vec<TagHit>),
-    /// 走査完了（打ち切りでは送られない）。`scanned` は調べたレコード数。
-    Done { scanned: usize },
+    /// 走査完了（打ち切りでは送られない）。`scanned` は調べたレコード数（現状はテストでのみ参照）。
+    Done {
+        #[allow(dead_code)]
+        scanned: usize,
+    },
 }
 
 /// 実行中の走査。捨てると（Drop）走査スレッドは次のレコードで打ち切る。

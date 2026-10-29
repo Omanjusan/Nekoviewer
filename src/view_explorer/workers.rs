@@ -462,6 +462,7 @@ impl NekoviewApp {
         self.poll_tree_mtimes();
         self.poll_tree_autofocus();
         self.poll_search();
+        self.poll_tag_search();
         self.poll_identity_results();
         self.poll_marker_probe();
         self.poll_marker_compare();

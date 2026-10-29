@@ -334,6 +334,11 @@ impl NekoviewApp {
 
     /// バックグラウンドスキャンを起動する（UIをブロックしない）
     pub(super) fn start_scan(&mut self) {
+        // タグ検索タブの中央は走査結果で埋める。実フォルダの読み込みで上書きしない
+        // （タブを出るときは、折りたたんだ後に改めて呼ばれる）。
+        if self.folder_pane_tab == FolderPaneTab::TagSearch {
+            return;
+        }
         // 実フォルダを読み込み直すなら、類似ファイル一覧は閉じる扱い（archives が置き換わるため）。
         self.close_similar_view_state();
         self.on_marker_dir_scan();
@@ -884,8 +889,8 @@ impl NekoviewApp {
     /// 現在のフォルダの「見開き・ソート・お気に入り」の保存状態を、DBから読み直す。
     /// スキャン時と、ID解決でファイルの設定が付き替わった時（移動・リネーム直後）に呼ぶ。
     pub(super) fn reload_dir_state_maps(&mut self) {
-        // 類似ファイル一覧は複数フォルダにまたがるので、今のフォルダ前提の状態は読み直さない。
-        if self.viewing_similar.is_some() {
+        // 類似ファイル一覧・タグ検索は複数フォルダにまたがるので、今のフォルダ前提の状態は読み直さない。
+        if self.viewing_similar.is_some() || self.folder_pane_tab == FolderPaneTab::TagSearch {
             return;
         }
         let Some(db) = self.spread_db.clone() else {
@@ -950,7 +955,9 @@ impl NekoviewApp {
         }
         // お気に入り一覧表示中は favorite_states が実ディレクトリ用の古いデータのままで
         // 信頼できないため、スティッキー判定は通常のディレクトリ表示中のみ行う。
-        let sticky_favorites = self.viewing_favorites.is_none() && self.viewing_similar.is_none();
+        let sticky_favorites = self.viewing_favorites.is_none()
+            && self.viewing_similar.is_none()
+            && self.folder_pane_tab != FolderPaneTab::TagSearch;
         // 比較中に stat・DB を引かないよう、ソートに使う値を先に集める（使わない軸は集めない）
         let mut entries: Vec<SortEntry> = self.archives.iter().map(|p| {
             let fav = sticky_favorites

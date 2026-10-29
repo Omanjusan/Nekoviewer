@@ -715,6 +715,9 @@ impl NekoviewApp {
         if tab != FolderPaneTab::Search {
             self.exit_search_view();
         }
+        if tab != FolderPaneTab::TagSearch {
+            self.exit_tag_search_view();
+        }
         if entering {
             self.exit_similar_view();
         }
@@ -724,7 +727,8 @@ impl NekoviewApp {
             match tab {
                 FolderPaneTab::Favorites => self.restore_favorites_position(),
                 FolderPaneTab::VirtualFolders => self.restore_virtual_position(),
-                FolderPaneTab::RealTree | FolderPaneTab::Search | FolderPaneTab::TagSearch => {}
+                FolderPaneTab::TagSearch => self.enter_tag_search_view(),
+                FolderPaneTab::RealTree | FolderPaneTab::Search => {}
             }
         }
     }
@@ -2074,8 +2078,8 @@ impl NekoviewApp {
     }
 
     fn draw_central_panel(&mut self, ui: &mut egui::Ui) {
-        // タグ検索タブ: 結果の一覧は未接続のモック。中央は仮表示のみ出す。
-        if self.folder_pane_tab == FolderPaneTab::TagSearch {
+        // タグ検索タブ: 有効タグが無い間はガイドだけ出す。1つ以上あれば通常の一覧表示。
+        if self.folder_pane_tab == FolderPaneTab::TagSearch && self.tag_search_enabled.is_empty() {
             self.draw_tag_search_central(ui);
             return;
         }
@@ -2197,6 +2201,8 @@ impl NekoviewApp {
             ui.label(label);
         } else if self.viewing_similar.is_some() {
             self.draw_similar_header(ui);
+        } else if self.folder_pane_tab == FolderPaneTab::TagSearch {
+            ui.label(self.tag_search_header());
         } else {
             match self.viewing_favorites {
                 Some(FavoriteSelection::Unsorted) => {
@@ -2434,7 +2440,11 @@ impl NekoviewApp {
     /// （階層概念を持ち込まない契約）のため、「↑」・サブフォルダは一切出さない。
     fn folder_grid_entries(&self) -> Vec<GridEntry> {
         let mut out = Vec::new();
-        if self.viewing_favorites.is_some() || self.viewing_search.is_some() || self.viewing_similar.is_some() {
+        if self.viewing_favorites.is_some()
+            || self.viewing_search.is_some()
+            || self.viewing_similar.is_some()
+            || self.folder_pane_tab == FolderPaneTab::TagSearch
+        {
             return out;
         }
         // 仮想ノード経由の表示: フォルダカードと「↑」は仮想ツリーが正（実サブフォルダは出さない）
@@ -3308,6 +3318,7 @@ impl NekoviewApp {
                             let marker_ids = if self.viewing_favorites.is_some()
                                 || self.viewing_search.is_some()
                                 || self.viewing_similar.is_some()
+                                || self.folder_pane_tab == FolderPaneTab::TagSearch
                             {
                                 self.cross_view_favorite_markers.get(path)
                             } else {

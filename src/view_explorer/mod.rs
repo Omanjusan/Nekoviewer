@@ -1113,6 +1113,14 @@ pub struct NekoviewApp {
     /// タグ検索タブ（モック）: 有効化中のタグ(tier_id)。`TAG_MAIN_UNSET_ID`はメイン未設定の疑似タグ。
     /// セッション中のみ保持し、永続化はしない。
     pub(crate) tag_search_enabled: std::collections::HashSet<u64>,
+    /// タグ検索タブ: 中央の `archives` をタグ検索の結果で差し替え中か（タブを出るときに実フォルダへ戻す判定）。
+    tag_search_view_open: bool,
+    /// タグ検索タブ: 実行中の走査（捨てると打ち切る）。
+    tag_search_scan: Option<crate::tag_search::TagScan>,
+    /// タグ検索タブ: 走査が完了前か（見出しの「走査中」表示用）。
+    tag_search_running: bool,
+    /// タグ検索タブ: 一覧から外した「確認できないファイル」の数。
+    tag_search_unconfirmed: usize,
     /// タグマネージャー(フェーズTM1): 選択中カテゴリのインデックス。
     pub(crate) tag_manager_selected_category: Option<usize>,
     /// タグマネージャー: インライン編集中の要素(カテゴリindex, tier内index)。
@@ -1602,6 +1610,10 @@ impl NekoviewApp {
             tag_preview_pending: None,
             tag_manager_open: false,
             tag_search_enabled: std::collections::HashSet::new(),
+            tag_search_view_open: false,
+            tag_search_scan: None,
+            tag_search_running: false,
+            tag_search_unconfirmed: 0,
             tag_manager_area_rect: egui::Rect::NOTHING,
             tag_manager_categories,
             tag_manager_next_tier_id,
