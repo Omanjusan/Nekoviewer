@@ -215,6 +215,10 @@ impl super::NekoviewApp {
     /// アイコンのクリックなら、ポップアップを開いて true（選択や起動はしない）。
     /// ダブルクリックの2回目も、起動させないよう握りつぶす。
     pub(super) fn try_open_marker_popup(&mut self, ui: &egui::Ui, response: &egui::Response, real_idx: usize) -> bool {
+        // 類似ファイル一覧では、この矩形は基準の目印（マーカーのアイコンは出さない）。
+        if self.viewing_similar.is_some() {
+            return self.try_click_similar_base(response, real_idx);
+        }
         if !(response.clicked() || response.double_clicked()) {
             return false;
         }

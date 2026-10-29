@@ -423,7 +423,7 @@ impl NekoviewApp {
             self.persist_state();
         }
 
-        if dup_click {
+        if dup_click && self.viewing_similar.is_none() {
             self.dup_sort = !self.dup_sort;
             self.finish_sort_change();
         }
@@ -443,7 +443,7 @@ impl NekoviewApp {
             rating: self.rating_sort,
         };
         for (col, label) in [
-            (Col::Dup, t.list_col_dup()),
+            (Col::Dup, if self.viewing_similar.is_some() { t.list_col_base() } else { t.list_col_dup() }),
             (Col::Name, t.list_col_name()),
             (Col::Place, t.list_col_place()),
             (Col::Compare, t.list_col_compare()),
@@ -454,7 +454,7 @@ impl NekoviewApp {
         ] {
             // 並べている列は、昇順 ▲ / 降順 ▼ を付けて強調する
             let arrow = if matches!(col, Col::Dup) {
-                self.dup_sort.then_some(false)
+                (self.dup_sort && self.viewing_similar.is_none()).then_some(false)
             } else {
                 col.sort_column().and_then(|c| crate::explorer_sort::header_arrow(&settings, c))
             };
@@ -573,7 +573,11 @@ impl NekoviewApp {
             cell_text(ui.painter(), compare_cell, &text, font, color);
         }
         let dup_cell = col_rect(rect, widths, Col::Dup);
-        self.paint_marker_icon(ui, response, super::dup_marker_ui::list_icon_rect(dup_cell), real_idx, name);
+        if self.viewing_similar.is_some() {
+            self.paint_similar_base_mark(ui, response, super::dup_marker_ui::list_icon_rect(dup_cell), real_idx, path);
+        } else {
+            self.paint_marker_icon(ui, response, super::dup_marker_ui::list_icon_rect(dup_cell), real_idx, name);
+        }
         let painter = ui.painter();
         if let Some((mt, sz)) = meta {
             cell_text(painter, col_rect(rect, widths, Col::Size), &humanize_size(sz), font, text_color);

@@ -3257,7 +3257,11 @@ impl NekoviewApp {
                             // 重複マーカー: 上辺の左右中央。見えているカードの移動マーカーは「見た」印を控える。
                             if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
                                 let icon_rect = super::dup_marker_ui::card_icon_rect(rect);
-                                self.paint_marker_icon(ui, &response, icon_rect, real_idx, name);
+                                if self.viewing_similar.is_some() {
+                                    self.paint_similar_base_mark(ui, &response, icon_rect, real_idx, path);
+                                } else {
+                                    self.paint_marker_icon(ui, &response, icon_rect, real_idx, name);
+                                }
                             }
 
                             // 無効ZIP・サムネデコード失敗は左上に赤Xを描画
@@ -3385,7 +3389,7 @@ impl NekoviewApp {
                                 let font = egui::FontId::proportional(12.0);
                                 let galley = ui.painter().layout_no_wrap(text, font, egui::Color32::WHITE);
                                 let pill = egui::Rect::from_center_size(
-                                    egui::pos2(rect.center().x, rect.min.y + 4.0 + 9.0),
+                                    egui::pos2(rect.center().x, rect.min.y + 4.0 + 16.0 + 4.0 + 9.0),
                                     galley.size() + egui::vec2(12.0, 4.0),
                                 );
                                 ui.painter().rect_filled(pill, 8.0, color);

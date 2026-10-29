@@ -17,8 +17,11 @@ use super::*;
 pub(super) struct SimilarView {
     /// 入口にしたファイル。
     pub entry_path: PathBuf,
-    /// 並べているファイル（ID昇順。先頭が最古 = 完全比較の基準）。
+    /// 並べているファイル（ID昇順）。
     pub files: Vec<SimilarFile>,
+    /// 完全比較の基準のファイルID。ユーザーが付け替えるまでは最古のID（`files` の先頭）。
+    /// 一覧に無いIDのときは、最古のIDとして扱う。
+    pub base_id: Option<u64>,
     /// 収集の結果待ち。
     pub loading: bool,
     /// 一覧に出せなかったファイルの数（消失／オフライン）。
@@ -31,6 +34,14 @@ pub(super) struct SimilarView {
 /// 告知バーの高さ（px）と背景色（青と水色の中間）。
 const BANNER_H: f32 = 22.0;
 const BANNER_COLOR: egui::Color32 = egui::Color32::from_rgb(40, 150, 215);
+
+/// 基準のファイル。既定（`base_id` が無い・一覧に無い）は最古のID。比べる相手が無い（2件未満）ときは None。
+fn base_of(files: &[SimilarFile], base_id: Option<u64>) -> Option<&SimilarFile> {
+    if files.len() < 2 {
+        return None;
+    }
+    base_id.and_then(|id| files.iter().find(|f| f.id == id)).or_else(|| files.first())
+}
 
 /// カードの行どうしの隙間（キー移動のスクロール計算と同じ値）。
 const CARD_ROW_GAP: f32 = 8.0;
@@ -61,6 +72,7 @@ impl NekoviewApp {
         self.viewing_similar = Some(SimilarView {
             entry_path,
             files: Vec::new(),
+            base_id: None,
             loading: true,
             missing: 0,
             offline: 0,
@@ -120,6 +132,10 @@ impl NekoviewApp {
         view.offline = group.offline;
         let entry = view.entry_path.clone();
         view.files = group.files.clone();
+        // 付け替えた基準が一覧から消えていたら、最古のIDに戻す。
+        if view.base_id.is_some_and(|id| !view.files.iter().any(|f| f.id == id)) {
+            view.base_id = None;
+        }
         let paths: Vec<PathBuf> = group.files.into_iter().map(|f| f.path).collect();
         self.prune_stale_compare_results();
         self.show_similar_paths(paths);
@@ -145,10 +161,76 @@ impl NekoviewApp {
         );
     }
 
-    /// 完全比較の基準（最古のID）のファイル。比べる相手が無ければ None。
+    /// 完全比較の基準のファイル（既定は最古のID）。比べる相手が無ければ None。
     fn compare_base(&self) -> Option<&SimilarFile> {
         let view = self.viewing_similar.as_ref()?;
-        (view.files.len() >= 2).then(|| &view.files[0])
+        base_of(&view.files, view.base_id)
+    }
+
+    /// そのファイルが基準か。
+    pub(super) fn is_similar_base(&self, path: &std::path::Path) -> bool {
+        self.compare_base().is_some_and(|b| b.path == path)
+    }
+
+    /// 基準を付け替える。実行中・順番待ちの比較は全て取り消す（結果は「その基準との組」として残る）。
+    pub(super) fn set_similar_base(&mut self, id: u64) {
+        let Some(view) = &self.viewing_similar else { return };
+        let current = base_of(&view.files, view.base_id).map(|f| f.id);
+        if current == Some(id) || !view.files.iter().any(|f| f.id == id) {
+            return;
+        }
+        self.cancel_all_marker_compares();
+        if let Some(view) = self.viewing_similar.as_mut() {
+            view.base_id = Some(id);
+        }
+    }
+
+    /// 基準の目印（ラジオ）を描き、押されたら基準を付け替える。ホバーで説明を出す。
+    /// 矩形は `marker_icon_hits` に登録する（類似ビューではマーカーのアイコンを出さないので、同じ仕組みで押下を振り分ける）。
+    pub(super) fn paint_similar_base_mark(
+        &mut self,
+        ui: &egui::Ui,
+        response: &egui::Response,
+        rect: egui::Rect,
+        real_idx: usize,
+        path: &std::path::Path,
+    ) {
+        if self.compare_base().is_none() {
+            self.marker_icon_hits.remove(&real_idx);
+            return;
+        }
+        let is_base = self.is_similar_base(path);
+        let painter = ui.painter().with_clip_rect(ui.clip_rect());
+        let ring = egui::Stroke::new(1.5, if is_base { BANNER_COLOR } else { ui.visuals().weak_text_color() });
+        painter.circle_stroke(rect.center(), 6.5, ring);
+        if is_base {
+            painter.circle_filled(rect.center(), 3.5, BANNER_COLOR);
+        }
+        self.marker_icon_hits.insert(real_idx, rect);
+        let on_mark = ui.input(|i| i.pointer.hover_pos()).is_some_and(|p| rect.contains(p));
+        if on_mark {
+            let t = i18n::t();
+            response.clone().on_hover_text(if is_base { t.similar_base_tip_current() } else { t.similar_base_tip_set() });
+        }
+    }
+
+    /// 基準の目印の押下なら、基準を付け替えて true（選択や起動はしない。ダブルクリックの2回目も握りつぶす）。
+    pub(super) fn try_click_similar_base(&mut self, response: &egui::Response, real_idx: usize) -> bool {
+        if !(response.clicked() || response.double_clicked()) {
+            return false;
+        }
+        let Some(rect) = self.marker_icon_hits.get(&real_idx).copied() else { return false };
+        let on_mark = response.ctx.input(|i| i.pointer.interact_pos()).is_some_and(|p| rect.contains(p));
+        if !on_mark {
+            return false;
+        }
+        if response.clicked()
+            && let Some(path) = self.archives.get(real_idx)
+            && let Some(id) = self.viewing_similar.as_ref().and_then(|v| v.files.iter().find(|f| f.path == *path)).map(|f| f.id)
+        {
+            self.set_similar_base(id);
+        }
+        true
     }
 
     /// 一覧のファイルのサイズ・更新日時が、結果を得た時から変わった組の結果を捨てる。
@@ -175,7 +257,7 @@ impl NekoviewApp {
     pub(super) fn start_similar_compare_all(&mut self) {
         let Some(view) = &self.viewing_similar else { return };
         let Some(base) = self.compare_base().cloned() else { return };
-        let others: Vec<SimilarFile> = view.files[1..].to_vec();
+        let others: Vec<SimilarFile> = view.files.iter().filter(|f| f.id != base.id).cloned().collect();
         for other in others {
             let key = (base.id, other.id);
             if matches!(
@@ -192,7 +274,7 @@ impl NekoviewApp {
     fn all_pairs_settled(&self) -> bool {
         let Some(base) = self.compare_base() else { return true };
         let Some(view) = &self.viewing_similar else { return true };
-        view.files[1..].iter().all(|f| {
+        view.files.iter().filter(|f| f.id != base.id).all(|f| {
             matches!(
                 self.marker_compare_states.get(&(base.id, f.id)),
                 Some(CompareState::Done(CompareOutcome::Identical | CompareOutcome::Different))
@@ -207,7 +289,7 @@ impl NekoviewApp {
         let id = view.files.iter().find(|f| f.path == path)?.id;
         let t = i18n::t();
         if id == base.id {
-            let started = view.files[1..].iter().any(|f| self.marker_compare_states.contains_key(&(base.id, f.id)));
+            let started = view.files.iter().any(|f| self.marker_compare_states.contains_key(&(base.id, f.id)));
             return started.then(|| (t.similar_badge_base().to_owned(), egui::Color32::from_rgb(120, 130, 150)));
         }
         Some(match self.marker_compare_states.get(&(base.id, id))? {
@@ -319,5 +401,28 @@ mod tests {
     #[test]
     fn unknown_viewport_aligns_the_item_to_the_top() {
         assert_eq!(centered_offset(4, 50.0, 40.0, 0.0), 200.0);
+    }
+
+    fn file(id: u64) -> SimilarFile {
+        SimilarFile { id, path: PathBuf::from(format!("/x/{id}")), stat: None }
+    }
+
+    #[test]
+    fn base_defaults_to_the_oldest_id() {
+        let files = [file(3), file(5), file(9)];
+        assert_eq!(base_of(&files, None).map(|f| f.id), Some(3));
+    }
+
+    #[test]
+    fn chosen_base_wins_and_a_missing_one_falls_back() {
+        let files = [file(3), file(5), file(9)];
+        assert_eq!(base_of(&files, Some(9)).map(|f| f.id), Some(9));
+        assert_eq!(base_of(&files, Some(77)).map(|f| f.id), Some(3), "一覧に無い基準は最古のIDに戻る");
+    }
+
+    #[test]
+    fn no_base_without_a_partner_to_compare() {
+        assert!(base_of(&[file(3)], None).is_none());
+        assert!(base_of(&[], Some(3)).is_none());
     }
 }

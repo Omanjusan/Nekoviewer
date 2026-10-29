@@ -368,6 +368,31 @@ impl Lang {
         }
     }
 
+    /// 類似ファイル一覧: 重複列の代わりになる、基準の列の見出し。
+    pub fn list_col_base(self) -> &'static str {
+        match self {
+            Lang::Japanese => "基準",
+            Lang::English  => "Base",
+            Lang::Chinese  => "基准",
+        }
+    }
+
+    pub fn similar_base_tip_set(self) -> &'static str {
+        match self {
+            Lang::Japanese => "このファイルを完全比較の基準にする",
+            Lang::English  => "Use this file as the base for full comparison",
+            Lang::Chinese  => "将此文件作为完整比较的基准",
+        }
+    }
+
+    pub fn similar_base_tip_current(self) -> &'static str {
+        match self {
+            Lang::Japanese => "完全比較の基準",
+            Lang::English  => "Base for full comparison",
+            Lang::Chinese  => "完整比较的基准",
+        }
+    }
+
     pub fn list_col_compare(self) -> &'static str {
         match self {
             Lang::Japanese => "完全比較",
