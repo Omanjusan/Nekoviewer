@@ -10,7 +10,6 @@ use crate::duplicate_marker::{DirMarker, MarkerKind};
 use crate::file_identity::Presence;
 use crate::i18n;
 
-use super::marker_compare::{CompareOutcome, CompareState, PairKey};
 
 /// 確認済みの重複先ID -> 存在確認の結果。
 pub(super) type PresenceMap = HashMap<u64, Presence>;
@@ -125,10 +124,8 @@ pub(super) fn paint_icon(painter: &egui::Painter, rect: egui::Rect, icon: Marker
 
 /// ポップアップに並べる相手のファイル1件。
 struct PopupRow {
-    id: u64,
     /// 表示名（パスキーのセパレータを置換したもの）。
     name: String,
-    path: std::path::PathBuf,
     presence: Option<Presence>,
 }
 
@@ -136,8 +133,6 @@ struct PopupRow {
 pub(super) struct MarkerPopup {
     icon: MarkerIcon,
     anchor: egui::Pos2,
-    /// このカード（行）のファイル名。「完全一致を確認済み」の表示を、読み直した最新の台帳から引くのに使う。
-    file_name: String,
     /// このファイルのID・パス（完全比較の片方）。IDが引けなければ比較できない。
     self_id: Option<u64>,
     self_path: std::path::PathBuf,
@@ -246,7 +241,7 @@ impl super::NekoviewApp {
         let others = described
             .into_iter()
             .take(POPUP_LIST_MAX)
-            .map(|(id, path, name)| PopupRow { id, name, path, presence: self.marker_presence.get(&id).copied() })
+            .map(|(id, _path, name)| PopupRow { name, presence: self.marker_presence.get(&id).copied() })
             .collect();
         let self_id = self
             .spread_db
@@ -257,7 +252,6 @@ impl super::NekoviewApp {
         self.marker_popup = Some(MarkerPopup {
             icon,
             anchor: egui::pos2(rect.min.x, rect.max.y + 4.0),
-            file_name: name.to_owned(),
             self_id,
             self_path: path.clone(),
             dismiss_id,
@@ -269,19 +263,11 @@ impl super::NekoviewApp {
     }
 
     /// 開いているポップアップを描く。外側の押下かEscで閉じる。
-    /// 完全比較は、ポップアップを閉じても裏で続く（状態は `marker_compare_states` が持つ）。
     pub(super) fn draw_marker_popup(&mut self, ctx: &egui::Context) {
         let Some(popup) = &self.marker_popup else { return };
         let t = i18n::t();
         let mut dismiss = false;
         let mut open_similar = false;
-        let mut start: Option<(PairKey, std::path::PathBuf, std::path::PathBuf, String)> = None;
-        let mut cancel: Option<PairKey> = None;
-        let verified = self
-            .dir_markers
-            .get(&popup.file_name)
-            .and_then(|m| m.own.as_ref())
-            .is_some_and(|o| o.verified);
         let area = egui::Area::new(egui::Id::new("dup_marker_popup"))
             .order(egui::Order::Foreground)
             .fixed_pos(popup.anchor)
@@ -289,7 +275,7 @@ impl super::NekoviewApp {
                 egui::Frame::popup(ui.style()).show(ui, |ui| {
                     ui.set_max_width(380.0);
                     ui.label(egui::RichText::new(popup.icon.tooltip()).strong());
-                    ui.label(if verified { t.dup_popup_verified() } else { t.dup_popup_quick_match() });
+                    ui.label(t.dup_popup_quick_match());
                     match popup.mtime_match {
                         Some(true) => ui.label(t.dup_popup_mtime_same()),
                         Some(false) => ui.label(t.dup_popup_mtime_diff()),
@@ -308,52 +294,6 @@ impl super::NekoviewApp {
                                 _ => "",
                             };
                             ui.label(egui::RichText::new(format!("{}{note}", row.name)).small().weak());
-                            let Some(self_id) = popup.self_id else { continue };
-                            // マーカーを持つ側 = 組の先頭。旧ファイル側のポップアップでは、並べた相手の側が持ち主。
-                            let key = if popup.icon == MarkerIcon::Elsewhere { (row.id, self_id) } else { (self_id, row.id) };
-                            let comparable = !matches!(row.presence, Some(Presence::Missing | Presence::Offline));
-                            ui.horizontal(|ui| {
-                                ui.add_space(12.0);
-                                match self.marker_compare_states.get(&key) {
-                                    Some(CompareState::Running { done, total, .. }) => {
-                                        let pct = if *total == 0 { 0 } else { done * 100 / total };
-                                        ui.label(t.dup_popup_compare_running(pct));
-                                        if ui.small_button(t.dup_popup_compare_cancel()).clicked() {
-                                            cancel = Some(key);
-                                        }
-                                    }
-                                    state => {
-                                        let rerun = match state {
-                                            Some(CompareState::Done(o)) => {
-                                                ui.label(match o {
-                                                    CompareOutcome::Identical => t.dup_popup_result_identical(),
-                                                    CompareOutcome::Different => t.dup_popup_result_different(),
-                                                    CompareOutcome::Changed => t.dup_popup_result_changed(),
-                                                    CompareOutcome::Failed | CompareOutcome::Cancelled => {
-                                                        t.dup_popup_result_failed()
-                                                    }
-                                                });
-                                                *o != CompareOutcome::Identical
-                                            }
-                                            _ => true,
-                                        };
-                                        // 完全一致は結果の表示だけ（もう一度比べる必要がない）。
-                                        if rerun {
-                                            let button = ui.add_enabled(
-                                                comparable,
-                                                egui::Button::new(t.dup_popup_compare()).small(),
-                                            );
-                                            if button.clicked() {
-                                                let label = row.path.file_name().map_or_else(
-                                                    || row.name.clone(),
-                                                    |n| n.to_string_lossy().into_owned(),
-                                                );
-                                                start = Some((key, popup.self_path.clone(), row.path.clone(), label));
-                                            }
-                                        }
-                                    }
-                                }
-                            });
                         }
                         if popup.more > 0 {
                             ui.label(egui::RichText::new(t.dup_popup_more(popup.more)).small().weak());
@@ -373,12 +313,6 @@ impl super::NekoviewApp {
         let escape = ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
         let dismiss_id = popup.dismiss_id;
         let similar_entry = popup.self_id.map(|id| (popup.self_path.clone(), id));
-        if let Some((key, a, b, label)) = start {
-            self.start_marker_compare(key, a, b, label);
-        }
-        if let Some(key) = cancel {
-            self.cancel_marker_compare(key);
-        }
         if dismiss {
             if let (Some(id), Some(db)) = (dismiss_id, self.spread_db.clone()) {
                 crate::duplicate_marker::dismiss(&db, id);
@@ -446,7 +380,6 @@ mod tests {
             in_viewport: false,
             dismissed,
             mtime_match: false,
-            verified: false,
             detected_at: 0,
         }
     }

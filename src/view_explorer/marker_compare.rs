@@ -6,7 +6,6 @@
 //! - キャンセルは、ジョブごとのフラグで次の塊の前に止まる
 //! - 専用スレッドで1件ずつ処理する（大きなファイルを比べている間に、存在確認のスレッドを止めない）
 
-use std::collections::HashMap;
 use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -100,13 +99,13 @@ pub(super) enum CompareState {
 }
 
 /// 重複先の確認を省くかの判定に使う、2つのファイルの「いまの姿」。
-#[derive(PartialEq, Eq)]
-struct Stat {
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub(super) struct Stat {
     size: u64,
     mtime: Option<SystemTime>,
 }
 
-fn stat(path: &Path) -> Option<Stat> {
+pub(super) fn stat(path: &Path) -> Option<Stat> {
     let md = std::fs::metadata(path).ok()?;
     md.is_file().then(|| Stat { size: md.len(), mtime: md.modified().ok() })
 }
@@ -171,36 +170,48 @@ fn read_full(r: &mut impl Read, buf: &mut [u8]) -> std::io::Result<usize> {
     Ok(filled)
 }
 
+/// 比較結果が今も有効か（比べた時のサイズ・更新日時から変わっていないか）。
+pub(super) fn stamps_valid(stamped: &(Stat, Stat), a_now: Option<&Stat>, b_now: Option<&Stat>) -> bool {
+    a_now == Some(&stamped.0) && b_now == Some(&stamped.1)
+}
+
+/// 結果を保持する値か（一致・相違だけ。変化・読取不可は、もう一度比べたいので保持しない扱い）。
+fn is_settled(outcome: CompareOutcome) -> bool {
+    matches!(outcome, CompareOutcome::Identical | CompareOutcome::Different)
+}
+
 impl super::NekoviewApp {
-    /// 完全比較を始める。同じ組が実行中なら何もしない。`label` は終了時のトーストに出す名前。
-    pub(super) fn start_marker_compare(&mut self, key: PairKey, a: PathBuf, b: PathBuf, label: String) {
+    /// 組 `key` の完全比較を依頼する（順番待ちを含む。実行は専用スレッドで1組ずつ）。
+    pub(super) fn start_marker_compare(&mut self, key: PairKey, a: PathBuf, b: PathBuf) {
         if matches!(self.marker_compare_states.get(&key), Some(CompareState::Running { .. })) {
             return;
         }
         let cancel = Arc::new(AtomicBool::new(false));
         self.marker_compare_states.insert(key, CompareState::Running { done: 0, total: 0, cancel: Arc::clone(&cancel) });
-        self.marker_compare_labels.insert(key, label);
+        self.marker_compare_stamps.remove(&key);
+        self.marker_compare_jobs.insert(key, (a.clone(), b.clone()));
         self.marker_compare.submit(key, a, b, cancel);
     }
 
-    /// 実行中（または順番待ち）の比較を止める。止まったら状態ごと消えて、またボタンから始められる。
-    pub(super) fn cancel_marker_compare(&mut self, key: PairKey) {
-        if let Some(CompareState::Running { cancel, .. }) = self.marker_compare_states.get(&key) {
-            cancel.store(true, Ordering::Release);
-        }
-    }
-
-    /// 終了時。実行中の比較を全て止める。
-    pub(super) fn shutdown_marker_compare(&mut self) {
+    /// 実行中・順番待ちの比較を全て止める（順番待ちのものは、始まる前に取り消される）。
+    pub(super) fn cancel_all_marker_compares(&mut self) {
         for state in self.marker_compare_states.values() {
             if let CompareState::Running { cancel, .. } = state {
                 cancel.store(true, Ordering::Release);
             }
         }
+    }
+
+    /// 実行中・順番待ちの比較の数。
+    pub(super) fn running_marker_compares(&self) -> usize {
+        self.marker_compare_states.values().filter(|s| matches!(s, CompareState::Running { .. })).count()
+    }
+
+    pub(super) fn shutdown_marker_compare(&mut self) {
+        self.cancel_all_marker_compares();
         self.marker_compare.shutdown();
     }
 
-    /// 比較の進捗・結果を受け取る。完全一致で、全ての重複先と一致が揃ったら台帳に「確認済み」を残す。
     pub(super) fn poll_marker_compare(&mut self) {
         let mut touched = false;
         while let Ok(event) = self.marker_compare.event_rx.try_recv() {
@@ -220,52 +231,23 @@ impl super::NekoviewApp {
     }
 
     fn finish_marker_compare(&mut self, key: PairKey, outcome: CompareOutcome) {
-        let label = self.marker_compare_labels.remove(&key).unwrap_or_default();
+        let paths = self.marker_compare_jobs.remove(&key);
         if outcome == CompareOutcome::Cancelled {
             self.marker_compare_states.remove(&key);
             return;
         }
         self.marker_compare_states.insert(key, CompareState::Done(outcome));
-        let t = crate::i18n::t();
-        let msg = match outcome {
-            CompareOutcome::Identical => t.dup_compare_toast_identical(&label),
-            CompareOutcome::Different => t.dup_compare_toast_different(&label),
-            CompareOutcome::Changed => t.dup_compare_toast_changed(&label),
-            CompareOutcome::Failed | CompareOutcome::Cancelled => t.dup_compare_toast_failed(&label),
-        };
-        self.set_toast(msg);
-        if outcome == CompareOutcome::Identical {
-            self.mark_verified_if_complete(key.0);
-        }
-    }
-
-    /// 持ち主のマーカーの全ての重複先と完全一致が揃っていれば、「確認済み」を台帳に残して表示を読み直す。
-    fn mark_verified_if_complete(&mut self, owner: u64) {
-        let Some(db) = self.spread_db.clone() else { return };
-        let Some(rec) = crate::duplicate_marker::get(&db, owner) else { return };
-        if all_targets_identical(owner, &rec.targets, &self.marker_presence, &self.marker_compare_states)
-            && crate::duplicate_marker::set_verified(&db, owner)
+        if is_settled(outcome)
+            && let Some((a, b)) = paths
+            && let (Some(sa), Some(sb)) = (stat(&a), stat(&b))
         {
-            self.reload_dir_state_maps();
+            self.marker_compare_stamps.insert(key, (sa, sb));
+        }
+        // 全ての比較が終わったら、1回だけ知らせる（一覧を閉じていても結果が分かるように）。
+        if self.running_marker_compares() == 0 {
+            self.set_toast(crate::i18n::t().similar_compare_done_toast());
         }
     }
-}
-
-/// 「全ての重複先と一致を確認できたか」。消えたと確認できた重複先は比べようがないので数えない。
-/// 比べる対象が1つも残らない、未確認のオフライン・未比較が1つでもあれば false。
-pub(super) fn all_targets_identical(
-    owner: u64,
-    targets: &[u64],
-    presence: &super::dup_marker_ui::PresenceMap,
-    states: &HashMap<PairKey, CompareState>,
-) -> bool {
-    let required: Vec<u64> = targets
-        .iter()
-        .copied()
-        .filter(|t| presence.get(t) != Some(&crate::file_identity::Presence::Missing))
-        .collect();
-    !required.is_empty()
-        && required.iter().all(|t| matches!(states.get(&(owner, *t)), Some(CompareState::Done(CompareOutcome::Identical))))
 }
 
 #[cfg(test)]
@@ -396,20 +378,19 @@ mod tests {
     }
 
     #[test]
-    fn all_targets_identical_needs_every_live_target_done() {
-        let ok = |t: u64| ((9, t), CompareState::Done(CompareOutcome::Identical));
-        let presence = |pairs: &[(u64, Presence)]| pairs.iter().copied().collect();
-        let states: HashMap<_, _> = [ok(1), ok(2)].into_iter().collect();
-        assert!(all_targets_identical(9, &[1, 2], &presence(&[]), &states));
-        assert!(!all_targets_identical(9, &[1, 2, 3], &presence(&[]), &states), "未比較の重複先がある");
-        assert!(all_targets_identical(9, &[1, 2, 3], &presence(&[(3, Presence::Missing)]), &states), "消失は数えない");
-        assert!(!all_targets_identical(9, &[1, 2, 3], &presence(&[(3, Presence::Offline)]), &states), "オフラインは数える");
-        assert!(!all_targets_identical(9, &[3], &presence(&[(3, Presence::Missing)]), &states), "比べる対象が無い");
-        let mut diff = states.clone();
-        diff.insert((9, 2), CompareState::Done(CompareOutcome::Different));
-        assert!(!all_targets_identical(9, &[1, 2], &presence(&[]), &diff));
-        let mut running = states;
-        running.insert((9, 2), CompareState::Running { done: 0, total: 0, cancel: Arc::new(AtomicBool::new(false)) });
-        assert!(!all_targets_identical(9, &[1, 2], &presence(&[]), &running));
+    fn stamps_are_valid_only_while_both_files_are_unchanged() {
+        let st = |size: u64| Stat { size, mtime: None };
+        let stamped = (st(10), st(20));
+        assert!(stamps_valid(&stamped, Some(&st(10)), Some(&st(20))));
+        assert!(!stamps_valid(&stamped, Some(&st(11)), Some(&st(20))), "片方のサイズが変わった");
+        assert!(!stamps_valid(&stamped, Some(&st(10)), None), "消えた");
+    }
+
+    #[test]
+    fn only_identical_and_different_are_kept() {
+        assert!(is_settled(CompareOutcome::Identical));
+        assert!(is_settled(CompareOutcome::Different));
+        assert!(!is_settled(CompareOutcome::Changed));
+        assert!(!is_settled(CompareOutcome::Failed));
     }
 }

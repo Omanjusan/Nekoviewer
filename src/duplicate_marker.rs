@@ -56,16 +56,14 @@ pub struct MarkerRecord {
     pub dismissed: bool,
     /// 重複先と更新日時が一致していた（再取得の補助表示）。
     pub mtime_match: bool,
-    /// 全ての重複先と、中身を全て比べて一致を確認済み（完全比較）。重複先が増えたら外れる。
-    pub verified: bool,
     /// 検出日時（unix秒）。
     pub detected_at: i64,
 }
 
 impl MarkerRecord {
     fn encode(&self) -> Vec<u8> {
-        let flags = u8::from(self.in_viewport) | u8::from(self.dismissed) << 1 | u8::from(self.mtime_match) << 2
-            | u8::from(self.verified) << 3;
+        // bit3 は旧版が「完全一致を確認済み」に使っていた。今は使わず、読むときも無視する。
+        let flags = u8::from(self.in_viewport) | u8::from(self.dismissed) << 1 | u8::from(self.mtime_match) << 2;
         let mut b = vec![RECORD_VERSION, self.kind as u8, flags];
         b.extend(self.id.to_le_bytes());
         b.extend(self.detected_at.to_le_bytes());
@@ -94,7 +92,6 @@ impl MarkerRecord {
             in_viewport: flags & 1 != 0,
             dismissed: flags & 2 != 0,
             mtime_match: flags & 4 != 0,
-            verified: flags & 8 != 0,
             detected_at,
         })
     }
@@ -122,7 +119,6 @@ pub fn record_moved(db: &Arc<Mutex<Database>>, id: u64, now: i64) -> bool {
             in_viewport: false,
             dismissed: false,
             mtime_match: false,
-            verified: false,
             detected_at: now,
         };
         table.insert(id, rec.encode().as_slice()).ok()?;
@@ -151,9 +147,7 @@ pub fn record_reacquired(
                 merged.extend(&targets);
                 merged.sort_unstable();
                 merged.dedup();
-                // 重複先が増えたら、増えた分は比べていないので確認済みは外す。
-                let verified = old.verified && merged == old.targets;
-                let next = MarkerRecord { targets: merged, mtime_match, verified, ..old.clone() };
+                let next = MarkerRecord { targets: merged, mtime_match, ..old.clone() };
                 if next == old {
                     return Some(false);
                 }
@@ -167,8 +161,7 @@ pub fn record_reacquired(
                 in_viewport: false,
                 dismissed: false,
                 mtime_match,
-                verified: false,
-                detected_at: now,
+                    detected_at: now,
             },
         };
         for t in &rec.targets {
@@ -290,18 +283,6 @@ pub fn dismiss(db: &Arc<Mutex<Database>>, id: u64) -> bool {
             return Some(false);
         };
         table.insert(id, MarkerRecord { dismissed: true, ..rec }.encode().as_slice()).ok()?;
-        Some(true)
-    })
-}
-
-/// 再取得マーカーを「完全一致を確認済み」にする（全ての重複先と中身が一致した時）。立てたら true。
-pub fn set_verified(db: &Arc<Mutex<Database>>, id: u64) -> bool {
-    write(db, |table, _rev| {
-        let rec = table.get(id).ok()?.and_then(|g| MarkerRecord::decode(g.value()));
-        let Some(rec) = rec.filter(|r| r.kind == MarkerKind::Reacquired && !r.verified) else {
-            return Some(false);
-        };
-        table.insert(id, MarkerRecord { verified: true, ..rec }.encode().as_slice()).ok()?;
         Some(true)
     })
 }
@@ -502,7 +483,6 @@ mod tests {
             in_viewport: true,
             dismissed: false,
             mtime_match: true,
-            verified: true,
             detected_at: -5,
         };
         assert_eq!(MarkerRecord::decode(&rec.encode()), Some(rec.clone()));
@@ -821,22 +801,19 @@ mod tests {
     }
 
     #[test]
-    fn set_verified_applies_to_reacquired_and_resets_when_targets_grow() {
-        let t = TempRoot::new("verified");
-        let db = new_db(&t);
-        record_reacquired(&db, 9, &[2], false, 1);
-        record_moved(&db, 8, 1);
-        assert!(!set_verified(&db, 8), "移動は対象外");
-        assert!(!set_verified(&db, 77), "無いものは何もしない");
-        assert!(set_verified(&db, 9));
-        assert!(!set_verified(&db, 9), "二重には立てない");
-        assert!(get(&db, 9).unwrap().verified);
-        // 同じ重複先を記録し直しても外れない。
-        record_reacquired(&db, 9, &[2], false, 5);
-        assert!(get(&db, 9).unwrap().verified);
-        // 重複先が増えたら、増えた分は未比較なので外れる。
-        assert!(record_reacquired(&db, 9, &[3], false, 6));
-        assert!(!get(&db, 9).unwrap().verified);
+    fn legacy_verified_bit_is_ignored_when_reading() {
+        let rec = MarkerRecord {
+            id: 7,
+            kind: MarkerKind::Reacquired,
+            targets: vec![1],
+            in_viewport: false,
+            dismissed: false,
+            mtime_match: false,
+            detected_at: 3,
+        };
+        let mut bytes = rec.encode();
+        bytes[2] |= 8;
+        assert_eq!(MarkerRecord::decode(&bytes), Some(rec), "旧版が立てた bit3 は無視して読める");
     }
 
     #[test]

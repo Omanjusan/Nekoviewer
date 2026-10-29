@@ -3379,6 +3379,19 @@ impl NekoviewApp {
                                 ui.painter().rect_stroke(rect, 0.0, egui::Stroke::new(3.0, color), egui::StrokeKind::Inside);
                             }
 
+                            // 類似ファイル一覧: 完全比較の結果バッジを、カード上辺の中央に置く
+                            // （この一覧では重複マーカーのアイコンを出さないので、同じ場所が空く）
+                            if let Some((text, color)) = self.compare_badge(path) {
+                                let font = egui::FontId::proportional(12.0);
+                                let galley = ui.painter().layout_no_wrap(text, font, egui::Color32::WHITE);
+                                let pill = egui::Rect::from_center_size(
+                                    egui::pos2(rect.center().x, rect.min.y + 4.0 + 9.0),
+                                    galley.size() + egui::vec2(12.0, 4.0),
+                                );
+                                ui.painter().rect_filled(pill, 8.0, color);
+                                ui.painter().galley(pill.center() - galley.size() / 2.0, galley, egui::Color32::WHITE);
+                            }
+
                             // 選択中アイテムを枠で囲む（生ファイルは赤、ZIPは青）
                             if is_selected {
                                 let is_raw = self.raw_image_files.contains(path);

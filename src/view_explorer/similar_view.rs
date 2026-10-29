@@ -9,14 +9,16 @@
 
 use std::path::PathBuf;
 
-use super::marker_probe::SimilarGroup;
+use super::marker_compare::{CompareOutcome, CompareState, PairKey};
+use super::marker_probe::{SimilarFile, SimilarGroup};
 use super::*;
 
 /// 開いている類似ファイル一覧。
 pub(super) struct SimilarView {
     /// 入口にしたファイル。
     pub entry_path: PathBuf,
-    pub entry_id: u64,
+    /// 並べているファイル（ID昇順。先頭が最古 = 完全比較の基準）。
+    pub files: Vec<SimilarFile>,
     /// 収集の結果待ち。
     pub loading: bool,
     /// 一覧に出せなかったファイルの数（消失／オフライン）。
@@ -58,7 +60,7 @@ impl NekoviewApp {
         self.view_mode.mode = view_mode::ViewMode::List;
         self.viewing_similar = Some(SimilarView {
             entry_path,
-            entry_id,
+            files: Vec::new(),
             loading: true,
             missing: 0,
             offline: 0,
@@ -117,7 +119,9 @@ impl NekoviewApp {
         view.missing = group.missing;
         view.offline = group.offline;
         let entry = view.entry_path.clone();
+        view.files = group.files.clone();
         let paths: Vec<PathBuf> = group.files.into_iter().map(|f| f.path).collect();
+        self.prune_stale_compare_results();
         self.show_similar_paths(paths);
         // 入口のファイルを選んでおく（無ければ先頭）。
         if let Some(pos) = self.archives.iter().position(|p| *p == entry) {
@@ -141,6 +145,91 @@ impl NekoviewApp {
         );
     }
 
+    /// 完全比較の基準（最古のID）のファイル。比べる相手が無ければ None。
+    fn compare_base(&self) -> Option<&SimilarFile> {
+        let view = self.viewing_similar.as_ref()?;
+        (view.files.len() >= 2).then(|| &view.files[0])
+    }
+
+    /// 一覧のファイルのサイズ・更新日時が、結果を得た時から変わった組の結果を捨てる。
+    fn prune_stale_compare_results(&mut self) {
+        let Some(view) = &self.viewing_similar else { return };
+        let stat_of = |id: u64| view.files.iter().find(|f| f.id == id).map(|f| f.stat.as_ref());
+        let stale: Vec<PairKey> = self
+            .marker_compare_stamps
+            .iter()
+            .filter(|(key, stamped)| match (stat_of(key.0), stat_of(key.1)) {
+                (Some(a), Some(b)) => !super::marker_compare::stamps_valid(stamped, a, b),
+                // 一覧に居ない組は、この一覧とは関係ない（そのまま残す）。
+                _ => false,
+            })
+            .map(|(key, _)| *key)
+            .collect();
+        for key in stale {
+            self.marker_compare_stamps.remove(&key);
+            self.marker_compare_states.remove(&key);
+        }
+    }
+
+    /// 基準と他の全てのファイルを、1組ずつ順に完全比較する。結果のある組（一致・相違）は飛ばす。
+    pub(super) fn start_similar_compare_all(&mut self) {
+        let Some(view) = &self.viewing_similar else { return };
+        let Some(base) = self.compare_base().cloned() else { return };
+        let others: Vec<SimilarFile> = view.files[1..].to_vec();
+        for other in others {
+            let key = (base.id, other.id);
+            if matches!(
+                self.marker_compare_states.get(&key),
+                Some(CompareState::Running { .. } | CompareState::Done(CompareOutcome::Identical | CompareOutcome::Different))
+            ) {
+                continue;
+            }
+            self.start_marker_compare(key, base.path.clone(), other.path);
+        }
+    }
+
+    /// 全ての組に結果があるか（一括比較を押す意味が無いか）。
+    fn all_pairs_settled(&self) -> bool {
+        let Some(base) = self.compare_base() else { return true };
+        let Some(view) = &self.viewing_similar else { return true };
+        view.files[1..].iter().all(|f| {
+            matches!(
+                self.marker_compare_states.get(&(base.id, f.id)),
+                Some(CompareState::Done(CompareOutcome::Identical | CompareOutcome::Different))
+            )
+        })
+    }
+
+    /// そのファイルの完全比較の結果バッジ（文言と色）。基準の行は、比較が始まっていれば「基準」。
+    pub(super) fn compare_badge(&self, path: &std::path::Path) -> Option<(String, egui::Color32)> {
+        let base = self.compare_base()?;
+        let view = self.viewing_similar.as_ref()?;
+        let id = view.files.iter().find(|f| f.path == path)?.id;
+        let t = i18n::t();
+        if id == base.id {
+            let started = view.files[1..].iter().any(|f| self.marker_compare_states.contains_key(&(base.id, f.id)));
+            return started.then(|| (t.similar_badge_base().to_owned(), egui::Color32::from_rgb(120, 130, 150)));
+        }
+        Some(match self.marker_compare_states.get(&(base.id, id))? {
+            CompareState::Running { done, total, .. } => {
+                let pct = if *total == 0 { 0 } else { done * 100 / total };
+                (t.similar_badge_running(pct), egui::Color32::from_rgb(60, 130, 220))
+            }
+            CompareState::Done(CompareOutcome::Identical) => {
+                (t.similar_badge_identical().to_owned(), egui::Color32::from_rgb(40, 160, 90))
+            }
+            CompareState::Done(CompareOutcome::Different) => {
+                (t.similar_badge_different().to_owned(), egui::Color32::from_rgb(215, 70, 60))
+            }
+            CompareState::Done(CompareOutcome::Changed) => {
+                (t.similar_badge_changed().to_owned(), egui::Color32::from_rgb(210, 150, 30))
+            }
+            CompareState::Done(CompareOutcome::Failed | CompareOutcome::Cancelled) => {
+                (t.similar_badge_failed().to_owned(), egui::Color32::from_rgb(130, 130, 130))
+            }
+        })
+    }
+
     /// パス行に出す、戻るボタンと見出し。
     pub(super) fn draw_similar_header(&mut self, ui: &mut egui::Ui) {
         let t = i18n::t();
@@ -162,6 +251,19 @@ impl NekoviewApp {
         ui.label(header);
         if unlisted > 0 {
             ui.label(egui::RichText::new(t.similar_unlisted(unlisted)).weak());
+        }
+        ui.separator();
+        let running = self.running_marker_compares();
+        if running > 0 {
+            ui.label(t.similar_compare_running(running));
+            if ui.button(t.similar_compare_cancel_all()).clicked() {
+                self.cancel_all_marker_compares();
+            }
+        } else {
+            let enabled = self.compare_base().is_some() && !self.all_pairs_settled();
+            if ui.add_enabled(enabled, egui::Button::new(t.similar_compare_all())).clicked() {
+                self.start_similar_compare_all();
+            }
         }
     }
 

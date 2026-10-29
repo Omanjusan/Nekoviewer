@@ -29,6 +29,8 @@ pub(super) enum ProbeEvent {
 pub(super) struct SimilarFile {
     pub id: u64,
     pub path: std::path::PathBuf,
+    /// 集めた時点のサイズ・更新日時（完全比較の結果が今も有効かの判定に使う）。
+    pub stat: Option<super::marker_compare::Stat>,
 }
 
 /// 同じ内容（FP一致）のファイルの集まり。
@@ -189,7 +191,9 @@ fn collect_group(
         }
         match probe(m) {
             Presence::Present => {
-                group.files.push(SimilarFile { id: m.id, path: file_identity::path_of_key(&m.path_key) })
+                let path = file_identity::path_of_key(&m.path_key);
+                let stat = super::marker_compare::stat(&path);
+                group.files.push(SimilarFile { id: m.id, path, stat });
             }
             Presence::Missing => group.missing += 1,
             Presence::Offline => group.offline += 1,

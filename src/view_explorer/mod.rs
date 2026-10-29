@@ -897,8 +897,10 @@ pub struct NekoviewApp {
     marker_compare: marker_compare::MarkerCompareWorker,
     /// 完全比較の組ごとの状態（組 = (マーカー持ちのID, 重複先のID)）。ポップアップを閉じても、フォルダを移っても残す。
     marker_compare_states: HashMap<marker_compare::PairKey, marker_compare::CompareState>,
-    /// 実行中の比較の、終了時トーストに出す名前。
-    marker_compare_labels: HashMap<marker_compare::PairKey, String>,
+    /// 依頼中の比較の、比べるパス（終了時に、比べた時点のサイズ・更新日時を控えるのに使う）。
+    marker_compare_jobs: HashMap<marker_compare::PairKey, (PathBuf, PathBuf)>,
+    /// 一致・相違が出た組の、比べた時点のサイズ・更新日時。今と違えば結果は捨てる。
+    marker_compare_stamps: HashMap<marker_compare::PairKey, (marker_compare::Stat, marker_compare::Stat)>,
     /// 類似ファイル一覧の表示中の状態（現在のタブ内の一時ビュー）。閉じると実フォルダの表示に戻る。
     viewing_similar: Option<similar_view::SimilarView>,
     /// 類似ファイル一覧を開くたびに進める番号。収集結果が古い一覧のものか見分ける。
@@ -1485,7 +1487,8 @@ impl NekoviewApp {
             marker_probe_requested: HashSet::new(),
             marker_compare: marker_compare::MarkerCompareWorker::spawn(ctx.clone()),
             marker_compare_states: HashMap::new(),
-            marker_compare_labels: HashMap::new(),
+            marker_compare_jobs: HashMap::new(),
+            marker_compare_stamps: HashMap::new(),
             viewing_similar: None,
             similar_token: 0,
             similar_saved_mode: None,
