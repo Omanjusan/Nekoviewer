@@ -465,6 +465,7 @@ impl NekoviewApp {
         self.poll_identity_results();
         self.poll_marker_probe();
         self.poll_marker_compare();
+        self.poll_similar_focus();
 
         // サムネイルワーカーからの結果を受信してGPUテクスチャへアップロード
         let was_pending = !self.thumb_pending.is_empty();

@@ -907,6 +907,8 @@ pub struct NekoviewApp {
     similar_token: u64,
     /// 類似ファイル一覧を開く前の表示モード（閉じるときに戻す。一覧中はリスト表示にする）。
     similar_saved_mode: Option<view_mode::ViewMode>,
+    /// 前フレームでウィンドウにフォーカスがあったか（復帰の検出用）。
+    similar_was_focused: bool,
     /// 類似ファイル一覧から戻った後、再スキャンの完了時に選び直してスクロールするファイル。
     similar_return: Option<PathBuf>,
     /// お気に入り・検索の横断一覧表示中のマーカー情報 (フルパス -> 所属folder_id一覧)。
@@ -1492,6 +1494,7 @@ impl NekoviewApp {
             viewing_similar: None,
             similar_token: 0,
             similar_saved_mode: None,
+            similar_was_focused: true,
             similar_return: None,
             cross_view_favorite_markers: HashMap::new(),
             saved_archive_settings: HashMap::new(),

@@ -527,6 +527,7 @@ impl NekoviewApp {
         if self.is_similar_entry(path) {
             ui.painter().rect_filled(rect, 0.0, similar_entry_color().gamma_multiply(0.28));
         }
+        let gone = self.is_similar_gone(path);
         if is_selected {
             let base = if is_raw { egui::Color32::from_rgb(220, 60, 60) } else { egui::Color32::from_rgb(50, 120, 230) };
             ui.painter().rect_filled(rect, 0.0, base.gamma_multiply(0.22));
@@ -604,6 +605,11 @@ impl NekoviewApp {
         }
         let visits = rating.map_or(0, |r| r.visit_count);
         cell_text(painter, col_rect(rect, widths, Col::Visits), &visits.to_string(), font, text_color);
+
+        if gone {
+            // 確認の結果、もう無いファイル。薄くして、更新で一覧から外れることを待つ。
+            ui.painter().rect_filled(rect, 0.0, ui.visuals().panel_fill.gamma_multiply(0.6));
+        }
 
         if self.focused_pane == FocusPane::Grid && self.grid_cursor.as_ref() == Some(&GridEntry::Archive(real_idx)) {
             draw_cursor_ring(ui, rect);

@@ -17,6 +17,8 @@ use super::*;
 pub(super) struct SimilarView {
     /// 入口にしたファイル。
     pub entry_path: PathBuf,
+    /// 入口にしたファイルのID（一覧の作り直しで、同じ組を引き直すのに使う）。
+    pub entry_id: u64,
     /// 並べているファイル（ID昇順）。
     pub files: Vec<SimilarFile>,
     /// 完全比較の基準のファイルID。ユーザーが付け替えるまでは最古のID（`files` の先頭）。
@@ -71,6 +73,7 @@ impl NekoviewApp {
         self.view_mode.mode = view_mode::ViewMode::List;
         self.viewing_similar = Some(SimilarView {
             entry_path,
+            entry_id,
             files: Vec::new(),
             base_id: None,
             loading: true,
@@ -131,6 +134,8 @@ impl NekoviewApp {
         view.missing = group.missing;
         view.offline = group.offline;
         let entry = view.entry_path.clone();
+        let previous = self.selected_archive_index.and_then(|i| self.archives.get(i)).cloned();
+        let Some(view) = self.viewing_similar.as_mut() else { return };
         view.files = group.files.clone();
         // 付け替えた基準が一覧から消えていたら、最古のIDに戻す。
         if view.base_id.is_some_and(|id| !view.files.iter().any(|f| f.id == id)) {
@@ -139,8 +144,9 @@ impl NekoviewApp {
         let paths: Vec<PathBuf> = group.files.into_iter().map(|f| f.path).collect();
         self.prune_stale_compare_results();
         self.show_similar_paths(paths);
-        // 入口のファイルを選んでおく（無ければ先頭）。
-        if let Some(pos) = self.archives.iter().position(|p| *p == entry) {
+        // 更新のときは直前に選んでいたファイル、初回は入口のファイルを選んでおく（無ければ先頭）。
+        let keep = previous.filter(|p| self.archives.contains(p)).unwrap_or(entry);
+        if let Some(pos) = self.archives.iter().position(|p| *p == keep) {
             self.selected_archive_index = Some(pos);
         }
     }
@@ -159,6 +165,53 @@ impl NekoviewApp {
             egui::FontId::proportional(14.0),
             egui::Color32::WHITE,
         );
+    }
+
+    /// 一覧を作り直す（外部でファイルを消した・書き換えた後）。消えたファイルは外れ、結果の古い組は捨てられる。
+    pub(super) fn refresh_similar_view(&mut self) {
+        let Some(db) = self.spread_db.clone() else { return };
+        let Some(view) = self.viewing_similar.as_mut() else { return };
+        self.similar_token += 1;
+        view.token = self.similar_token;
+        let (entry_id, token) = (view.entry_id, view.token);
+        self.marker_probe.submit_group(db, entry_id, token);
+    }
+
+    /// この組の再取得マーカー（一覧のファイルが持つもの）を全て正常として消し、一覧を閉じて元のフォルダへ戻る。
+    pub(super) fn dismiss_similar_markers(&mut self) {
+        let Some(db) = self.spread_db.clone() else { return };
+        let Some(view) = &self.viewing_similar else { return };
+        let dismissed = view.files.iter().filter(|f| crate::duplicate_marker::dismiss(&db, f.id)).count();
+        let t = i18n::t();
+        if dismissed == 0 {
+            self.set_toast(t.similar_nothing_to_dismiss_toast());
+            return;
+        }
+        self.set_toast(t.similar_dismissed_toast(dismissed));
+        self.exit_similar_view();
+    }
+
+    /// ウィンドウにフォーカスが戻ったとき、一覧のファイルがまだ在るかを確認に出す（結果は `marker_presence`。
+    /// 消えていた行は薄く表示する。一覧からの除外は「更新」）。
+    pub(super) fn poll_similar_focus(&mut self) {
+        let focused = self.egui_ctx.input(|i| i.viewport().focused).unwrap_or(true);
+        let regained = focused && !self.similar_was_focused;
+        self.similar_was_focused = focused;
+        if !regained {
+            return;
+        }
+        let (Some(db), Some(view)) = (self.spread_db.clone(), &self.viewing_similar) else { return };
+        let ids: Vec<u64> = view.files.iter().map(|f| f.id).collect();
+        self.marker_probe.submit(db, ids);
+    }
+
+    /// 確認の結果、消えていると分かったファイルか（行・カードを薄く表示する）。
+    pub(super) fn is_similar_gone(&self, path: &std::path::Path) -> bool {
+        let Some(view) = &self.viewing_similar else { return false };
+        view.files
+            .iter()
+            .find(|f| f.path == path)
+            .is_some_and(|f| self.marker_presence.get(&f.id) == Some(&crate::file_identity::Presence::Missing))
     }
 
     /// 完全比較の基準のファイル（既定は最古のID）。比べる相手が無ければ None。
@@ -346,6 +399,14 @@ impl NekoviewApp {
             if ui.add_enabled(enabled, egui::Button::new(t.similar_compare_all())).clicked() {
                 self.start_similar_compare_all();
             }
+        }
+        ui.separator();
+        if ui.button(t.similar_refresh()).clicked() {
+            self.refresh_similar_view();
+        }
+        let can_dismiss = self.compare_base().is_some();
+        if ui.add_enabled(can_dismiss, egui::Button::new(t.similar_dismiss_all())).clicked() {
+            self.dismiss_similar_markers();
         }
     }
 

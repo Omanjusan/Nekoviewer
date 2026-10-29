@@ -369,6 +369,38 @@ impl Lang {
     }
 
     /// 類似ファイル一覧: 重複列の代わりになる、基準の列の見出し。
+    pub fn similar_refresh(self) -> &'static str {
+        match self {
+            Lang::Japanese => "更新",
+            Lang::English  => "Refresh",
+            Lang::Chinese  => "刷新",
+        }
+    }
+
+    pub fn similar_dismiss_all(self) -> &'static str {
+        match self {
+            Lang::Japanese => "この組を正常として消す",
+            Lang::English  => "Dismiss this group as normal",
+            Lang::Chinese  => "将这组标记为正常并清除",
+        }
+    }
+
+    pub fn similar_dismissed_toast(self, n: usize) -> String {
+        match self {
+            Lang::Japanese => format!("{n}件のマーカーを正常として消しました"),
+            Lang::English  => format!("Dismissed {n} markers as normal"),
+            Lang::Chinese  => format!("已将{n}个标记清除为正常"),
+        }
+    }
+
+    pub fn similar_nothing_to_dismiss_toast(self) -> &'static str {
+        match self {
+            Lang::Japanese => "この組には、消すマーカーがありません",
+            Lang::English  => "This group has no markers to dismiss",
+            Lang::Chinese  => "这组没有可清除的标记",
+        }
+    }
+
     pub fn list_col_base(self) -> &'static str {
         match self {
             Lang::Japanese => "基準",

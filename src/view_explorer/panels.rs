@@ -3396,6 +3396,11 @@ impl NekoviewApp {
                                 ui.painter().galley(pill.center() - galley.size() / 2.0, galley, egui::Color32::WHITE);
                             }
 
+                            // 確認の結果もう無いファイル（類似ファイル一覧）は薄くする
+                            if self.is_similar_gone(path) {
+                                ui.painter().rect_filled(rect, 0.0, ui.visuals().panel_fill.gamma_multiply(0.6));
+                            }
+
                             // 選択中アイテムを枠で囲む（生ファイルは赤、ZIPは青）
                             if is_selected {
                                 let is_raw = self.raw_image_files.contains(path);
