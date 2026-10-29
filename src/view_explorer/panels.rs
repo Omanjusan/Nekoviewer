@@ -2626,6 +2626,10 @@ impl NekoviewApp {
         real_idx: usize,
         i: usize,
     ) {
+        // リストの「ファイラー」ボタンを押したときは、選択や起動ではなくファイラーで開く。
+        if self.try_click_reveal(ui, response, real_idx) {
+            return;
+        }
         // 重複マーカーのアイコンを押したときは、選択や起動ではなくポップアップを開く。
         if self.try_open_marker_popup(ui, response, real_idx) {
             return;

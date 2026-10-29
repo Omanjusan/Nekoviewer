@@ -2159,6 +2159,23 @@ impl Lang {
         }
     }
 
+    pub fn list_col_reveal(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ファイラー",
+            Lang::English  => "Files",
+            Lang::Chinese  => "文件管理器",
+        }
+    }
+
+    /// 「ファイラー」列のボタンのツールチップ
+    pub fn list_reveal_tip(self) -> &'static str {
+        match self {
+            Lang::Japanese => "このファイルを選択した状態でファイラーで開く",
+            Lang::English  => "Open in the file manager with this file selected",
+            Lang::Chinese  => "在文件管理器中打开并选中此文件",
+        }
+    }
+
     pub fn list_col_name(self) -> &'static str {
         match self {
             Lang::Japanese => "名前",

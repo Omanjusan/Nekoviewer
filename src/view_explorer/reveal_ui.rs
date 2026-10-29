@@ -83,6 +83,30 @@ impl NekoviewApp {
         }
     }
 
+    /// リストの「ファイラー」ボタンの押下なら、そのファイル単体をファイラーで開いて true（選択や起動はしない）。
+    /// ダブルクリックの2回目も、起動させないよう握りつぶす。ネットワークパスは開けないのでトーストで知らせる。
+    pub(super) fn try_click_reveal(&mut self, ui: &egui::Ui, response: &egui::Response, real_idx: usize) -> bool {
+        // 当たり判定はリスト描画のたびに作り直す。カードに切り替えた直後の古い矩形は拾わない。
+        if self.view_mode.mode == super::view_mode::ViewMode::Card || !(response.clicked() || response.double_clicked()) {
+            return false;
+        }
+        let Some(rect) = self.reveal_icon_hits.get(&real_idx).copied() else { return false };
+        let on_icon = ui.input(|i| i.pointer.interact_pos()).is_some_and(|p| rect.contains(p));
+        if !on_icon {
+            return false;
+        }
+        if response.clicked()
+            && let Some(path) = self.archives.get(real_idx).cloned()
+        {
+            if is_network(&path) {
+                self.set_toast(i18n::t().reveal_network_excluded());
+            } else {
+                self.start_reveal(ui.ctx(), vec![path]);
+            }
+        }
+        true
+    }
+
     /// 「どちらを開くか」ダイアログ。OKで別スレッドのファイラー呼び出しを始める。
     pub(super) fn draw_reveal_dialog(&mut self, ctx: &egui::Context) {
         let Some(state) = self.reveal_dialog.as_mut() else { return };

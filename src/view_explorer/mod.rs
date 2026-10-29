@@ -884,6 +884,8 @@ pub struct NekoviewApp {
     marker_seen_dir: Option<PathBuf>,
     /// 今フレームに描いたアイコンの矩形 (archives のインデックス -> 矩形)。クリックの振り分け用。
     marker_icon_hits: HashMap<usize, egui::Rect>,
+    /// リストの「ファイラー」ボタンの矩形（行番号 → 矩形）。毎フレーム `draw_archive_list` の頭で作り直す。
+    reveal_icon_hits: HashMap<usize, egui::Rect>,
     /// 開いている重複マーカーのポップアップ。
     marker_popup: Option<dup_marker_ui::MarkerPopup>,
     /// 下段フィルタ「重複あり」。自身にマーカーがあるファイルだけを出す（保存しない）。
@@ -1501,6 +1503,7 @@ impl NekoviewApp {
             marker_seen: HashSet::new(),
             marker_seen_dir: None,
             marker_icon_hits: HashMap::new(),
+            reveal_icon_hits: HashMap::new(),
             marker_popup: None,
             dup_filter: false,
             dup_show_dismissed: false,

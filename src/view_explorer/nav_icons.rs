@@ -64,6 +64,34 @@ pub fn draw_folder_icon(painter: &Painter, rect: Rect, color: Color32) {
     painter.rect_filled(front_tab, 1.0 * scale, color);
 }
 
+/// 書類アイコン（P2案：縦長の白い紙・折れ角を塗る・横線3本で文字を表す）。
+/// 紙は背景に依らず白で固定し、輪郭と横線の色だけ `hovered` で NAV_ICON_COLOR に切り替える。
+/// 24x24の設計座標を rect へ均一スケールで写像する。形はすべて凸（紙の五角形・折れ角の三角形）。
+pub fn draw_document_icon(painter: &Painter, rect: Rect, hovered: bool) {
+    let scale = rect.width().min(rect.height()) / 24.0;
+    let center = rect.center();
+    let tf = |x: f32, y: f32| center + (pos2(x, y) - pos2(12.0, 12.0)) * scale;
+    let (outline, text_line) = if hovered {
+        (NAV_ICON_COLOR, NAV_ICON_COLOR)
+    } else {
+        (Color32::from_rgb(86, 96, 112), Color32::from_rgb(125, 134, 150))
+    };
+    let stroke_w = (1.5 * scale).max(1.0);
+    let outline_stroke = Stroke::new(stroke_w, outline);
+
+    // 紙：左上から時計回り。右上の角を折れ角で落とした五角形。
+    let paper = vec![tf(5.0, 2.0), tf(14.0, 2.0), tf(19.0, 7.0), tf(19.0, 22.0), tf(5.0, 22.0)];
+    painter.add(Shape::convex_polygon(paper, Color32::WHITE, outline_stroke));
+    // 折れ角：薄いグレーの三角形
+    let fold = vec![tf(14.0, 2.0), tf(19.0, 7.0), tf(14.0, 7.0)];
+    painter.add(Shape::convex_polygon(fold, Color32::from_rgb(213, 217, 224), outline_stroke));
+    // 文字を表す横線
+    let line_stroke = Stroke::new(stroke_w, text_line);
+    painter.line_segment([tf(8.0, 11.0), tf(16.0, 11.0)], line_stroke);
+    painter.line_segment([tf(8.0, 14.0), tf(16.0, 14.0)], line_stroke);
+    painter.line_segment([tf(8.0, 17.0), tf(13.0, 17.0)], line_stroke);
+}
+
 /// text を font_id で計測し、max_width に収まらなければ末尾を "…" 付きでカットする。
 /// egui の実測フォントメトリクスを使うため、フォント・文字種によらず正確に収まる。
 pub fn truncate_to_width(ui: &egui::Ui, text: &str, font_id: egui::FontId, max_width: f32) -> String {
