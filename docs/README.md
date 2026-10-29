@@ -32,6 +32,7 @@
 - [features/file-identity-test-checklist.md](features/file-identity-test-checklist.md) — ファイルID管理の統合テスト手順書
 - [features/explorer-view-modes.md](features/explorer-view-modes.md) — エクスプローラーの表示モード（カード／リスト）と選択の規則、手動テスト手順
 - [features/duplicate-marker.md](features/duplicate-marker.md) — 重複マーカー（同じ内容のファイルの警告）と類似ファイル一覧・完全比較、手動テスト手順
+- [features/tag-search.md](features/tag-search.md) — タグ検索タブ（フォルダ横断のタグ絞り込み、単一選択カテゴリ、左ペイン幅の可変）と手動テスト手順
 - [features/virtual-folder-register-subs.md](features/virtual-folder-register-subs.md) — 仮想フォルダの
   「実サブフォルダを一括登録」（未登録分だけを子として追加。子孫まで見るかは選択）
 - [features/reveal-in-file-manager.md](features/reveal-in-file-manager.md) — 選択した項目を維持したままファイラーで開く（Windows COM / Linux FileManager1、Nautilusの制限）
