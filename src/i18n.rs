@@ -118,27 +118,27 @@ impl Lang {
     /// 重複マーカー（カード上辺のアイコン）のホバー説明: 移動。
     pub fn dup_marker_moved(self) -> &'static str {
         match self {
-            Lang::Japanese => "移動を検出しました（同じ内容のファイルが、以前の場所からここへ移っています）",
-            Lang::English  => "Move detected (a file with the same content has moved here from its previous location)",
-            Lang::Chinese  => "检测到移动（相同内容的文件已从原位置移到此处）",
+            Lang::Japanese => "同じ内容のファイルが、以前の場所からここへ移っています",
+            Lang::English  => "A file with the same content has moved here from its previous location",
+            Lang::Chinese  => "相同内容的文件已从原位置移到此处",
         }
     }
 
     /// 重複マーカーのホバー説明: 再取得（同じ内容の別のファイルが既にある）。
     pub fn dup_marker_reacquired(self) -> &'static str {
         match self {
-            Lang::Japanese => "同じ内容のファイルが他にもあります（簡易照合で一致）。評価などは引き継がれています",
-            Lang::English  => "Another file with the same content exists (matched by quick check). Ratings etc. were carried over",
-            Lang::Chinese  => "还有相同内容的文件（快速比对一致）。评分等信息已继承",
+            Lang::Japanese => "同じ内容のファイルが他にもあります。簡易照合で一致していて、評価などは引き継がれています",
+            Lang::English  => "Another file with the same content exists. It matched in a quick check, and ratings etc. were carried over",
+            Lang::Chinese  => "还有相同内容的文件。快速比对一致，评分等信息已继承",
         }
     }
 
     /// 重複マーカーのホバー説明: 旧ファイル側（このファイルと同じ内容の、新しいファイルがある）。
     pub fn dup_marker_elsewhere(self) -> &'static str {
         match self {
-            Lang::Japanese => "このファイルと同じ内容の別のファイルがあります（簡易照合で一致）",
-            Lang::English  => "Another file with the same content as this one exists (matched by quick check)",
-            Lang::Chinese  => "存在与此文件内容相同的其他文件（快速比对一致）",
+            Lang::Japanese => "このファイルと同じ内容の別のファイルがあります。簡易照合で一致しています",
+            Lang::English  => "Another file with the same content as this one exists. It matched in a quick check",
+            Lang::Chinese  => "存在与此文件内容相同的其他文件。快速比对一致",
         }
     }
 
@@ -154,9 +154,9 @@ impl Lang {
     /// 新しく重複マーカー（移動・再取得）が付いた時のトースト。
     pub fn dup_marker_toast(self, n: usize) -> String {
         match self {
-            Lang::Japanese => format!("同じ内容のファイルを検出しました（{n}件）。「重複」列・絞り込みで確認できます"),
-            Lang::English  => format!("Files with the same content were detected ({n}). Check them via the duplicate column or filter"),
-            Lang::Chinese  => format!("检测到内容相同的文件（{n}个）。可通过“重复”列或筛选查看"),
+            Lang::Japanese => format!("同じ内容のファイルを{n}件検出しました。「重複」列・絞り込みで確認できます"),
+            Lang::English  => format!("Detected {n} files with the same content. Check them via the duplicate column or filter"),
+            Lang::Chinese  => format!("检测到{n}个内容相同的文件。可通过“重复”列或筛选查看"),
         }
     }
 
@@ -199,18 +199,18 @@ impl Lang {
     /// 消去済みの再取得マーカーのホバー説明。
     pub fn dup_marker_dismissed(self) -> &'static str {
         match self {
-            Lang::Japanese => "正常として消した重複です（簡易照合で一致）",
-            Lang::English  => "A duplicate that was dismissed as normal (matched by quick check)",
-            Lang::Chinese  => "已标记为正常的重复（快速比对一致）",
+            Lang::Japanese => "正常として消した重複です。簡易照合で一致していました",
+            Lang::English  => "A duplicate that was dismissed as normal. It matched in a quick check",
+            Lang::Chinese  => "已标记为正常的重复。快速比对一致",
         }
     }
 
     /// 重複マーカーのポップアップ: 照合の確かさ。
     pub fn dup_popup_quick_match(self) -> &'static str {
         match self {
-            Lang::Japanese => "簡易照合で一致（中身を全て比べたわけではありません）",
-            Lang::English  => "Matched by quick check (the whole contents were not compared)",
-            Lang::Chinese  => "快速比对一致（并未比较全部内容）",
+            Lang::Japanese => "簡易照合で一致しています。中身は全て比べていません",
+            Lang::English  => "Matched in a quick check. The whole contents have not been compared",
+            Lang::Chinese  => "快速比对一致。尚未比较全部内容",
         }
     }
 
