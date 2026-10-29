@@ -1,11 +1,11 @@
 //! リスト表示（カードの代わりに1行1項目で並べる）。
 //!
 //! 列: 重複（枠のみ。中身は重複機能で埋める）／サムネ／名前／サイズ／更新日時／評価／訪問回数。
-//! 行の高さはサムネ設定に対する S=25% / M=40% / L=60%。「ホバー」は行を文字のみにして、
-//! サムネは行にホバーしたときのポップアップに出す。列の幅は固定で、収まらないときは横スクロールする。
+//! 行の高さはサムネ設定に対する S=25% / M=40% / L=60%。「サムネ無し」は行を文字のみにする。
+//! 行にホバーしたときのサムネのポップアップは、サイズとは独立のチェックボックスで出す。列の幅は固定で、収まらないときは横スクロールする。
 //! フォルダ（「↑」・サブフォルダ・仮想フォルダ）も同じ列の行として並べる。
 //!
-//! 一覧（文字のみ）は、リストのホバー形式からポップアップを除いたもの（サムネ列なし・最小の行高）。
+//! 一覧（文字のみ）は、リストのサムネ無しからポップアップを除いたもの（サムネ列なし・最小の行高）。
 //!
 //! 選択・開く・右クリックは、カードと同じ共通関数（`handle_archive_interaction` ほか）を使う。
 
@@ -32,11 +32,12 @@ const CELL_PAD: f32 = 6.0;
 const POPUP_OFFSET: f32 = 18.0;
 
 /// 表示モードから、行の形式（実効のサイズ）とホバーのポップアップの有無を決める。
-/// 一覧は常に文字のみの行（= ホバー形式の見た目）で、ポップアップは出さない。
-fn layout_for(mode: ViewMode, list_size: ListSize) -> (ListSize, bool) {
+/// ポップアップはサイズ（S/M/L/サムネ無し）に依らず、チェックボックス（`hover_popup`）で決まる。
+/// 一覧は常に文字のみの行（= サムネ無しの見た目）で、ポップアップは出さない。
+fn layout_for(mode: ViewMode, list_size: ListSize, hover_popup: bool) -> (ListSize, bool) {
     match mode {
         ViewMode::Text => (ListSize::NoThumb, false),
-        _ => (list_size, list_size == ListSize::NoThumb),
+        _ => (list_size, hover_popup),
     }
 }
 
@@ -217,7 +218,7 @@ pub(super) struct ListMetrics {
 impl NekoviewApp {
     /// 現在のモード・サイズ・サムネ設定・列幅から決まる、行の高さと列の幅。
     pub(super) fn list_metrics(&self) -> ListMetrics {
-        let (size, _) = layout_for(self.view_mode.mode, self.view_mode.list_size);
+        let (size, _) = layout_for(self.view_mode.mode, self.view_mode.list_size, self.view_mode.hover_popup);
         let row_h = row_height(size, self.config.thumb_size as f32);
         let place_w = if self.viewing_similar.is_some() { PLACE_COL_W } else { 0.0 };
         let compare_w = if self.viewing_similar.is_some() { COMPARE_COL_W } else { 0.0 };
@@ -235,13 +236,13 @@ impl NekoviewApp {
         folder_entries: &[GridEntry],
         view_rect: egui::Rect,
     ) -> Option<GridNav> {
-        let (size, hover_popup) = layout_for(self.view_mode.mode, self.view_mode.list_size);
+        let (size, hover_popup) = layout_for(self.view_mode.mode, self.view_mode.list_size, self.view_mode.hover_popup);
         let ListMetrics { row_h, widths, total_w } = self.list_metrics();
         let row_w = total_w.max(view_rect.width());
         let origin_x = ui.cursor().min.x;
         let font = egui::FontId::proportional((row_h * 0.5).clamp(11.0, 15.0));
         let grid_focused = self.focused_pane == FocusPane::Grid;
-        // サムネ列を出さない形式（ホバー・一覧）。ポップアップを出すのはリストのホバーだけ。
+        // サムネ列を出さない形式（サムネ無し・一覧）。ポップアップの有無はサイズとは独立。
         let text_only = size == ListSize::NoThumb;
         let mut nav: Option<GridNav> = None;
         ui.spacing_mut().item_spacing.y = ROW_GAP;
@@ -661,14 +662,18 @@ mod tests {
     fn text_mode_is_a_text_only_row_without_the_hover_popup() {
         // 一覧: リストのサイズ設定に依らず文字のみ・ポップアップなし
         for size in [ListSize::S, ListSize::M, ListSize::L, ListSize::NoThumb] {
-            assert_eq!(layout_for(ViewMode::Text, size), (ListSize::NoThumb, false));
+            for popup in [false, true] {
+                assert_eq!(layout_for(ViewMode::Text, size, popup), (ListSize::NoThumb, false));
+            }
         }
     }
 
     #[test]
-    fn list_mode_shows_the_popup_only_in_hover_size() {
-        assert_eq!(layout_for(ViewMode::List, ListSize::M), (ListSize::M, false));
-        assert_eq!(layout_for(ViewMode::List, ListSize::NoThumb), (ListSize::NoThumb, true));
+    fn list_mode_popup_follows_the_checkbox_for_every_size() {
+        for size in [ListSize::S, ListSize::M, ListSize::L, ListSize::NoThumb] {
+            assert_eq!(layout_for(ViewMode::List, size, false), (size, false));
+            assert_eq!(layout_for(ViewMode::List, size, true), (size, true));
+        }
     }
 
     #[test]
