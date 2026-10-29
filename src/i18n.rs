@@ -2215,6 +2215,16 @@ impl Lang {
         }
     }
 
+    /// リストのホバーポップアップ（サムネ）の ON/OFF チェックボックス
+    pub fn view_mode_hover_popup_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ホバー時サムネ表示",
+            Lang::English  => "Thumbnail on hover",
+            Lang::Chinese  => "悬停时显示缩略图",
+        }
+    }
+
+    #[allow(dead_code)] // 一覧ボタンはUIから外した。封印中のコードと一緒に残す
     pub fn view_mode_text_label(self) -> &'static str {
         match self {
             Lang::Japanese => "一覧",

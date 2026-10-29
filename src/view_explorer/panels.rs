@@ -2145,7 +2145,7 @@ impl NekoviewApp {
         self.draw_central_panel_content(ui);
     }
 
-    /// パス行左端の表示モード切替: `[カード] [▼リストS] [一覧]`。選択中のモードはハイライト。
+    /// パス行左端の表示モード切替: `[カード] [▼リストS] [x]ホバー時サムネ表示`。選択中のモードはハイライト。
     /// リストボタンだけ押すたびにサイズが循環する（S→M→L→ホバー）。
     /// 描画は `draw_archive_grid`（カード）と `list_view.rs`（リスト・一覧）。モードは全タブ共通で保存される。
     fn draw_view_mode_buttons(&mut self, ui: &mut egui::Ui) {
@@ -2175,11 +2175,11 @@ impl NekoviewApp {
         if ui.add(list_btn).clicked() {
             self.view_mode.press_list();
         }
-        // 一覧は仕様未確定のため封印中（TEXT_MODE_ENABLED）。ボタンは残し、押せない表示にしておく。
-        let text_btn = egui::Button::new(t.view_mode_text_label()).selected(mode == ViewMode::Text);
-        if ui.add_enabled(super::view_mode::TEXT_MODE_ENABLED, text_btn).clicked() {
-            self.view_mode.select_text();
-        }
+        // ホバー時サムネ表示。カードにはポップアップが無いので、カード中は押せない表示にする（値は保持）。
+        ui.add_enabled(
+            mode != ViewMode::Card,
+            egui::Checkbox::new(&mut self.hover_popup_mock, t.view_mode_hover_popup_label()),
+        );
         ui.separator();
     }
 

@@ -73,6 +73,7 @@ impl ExplorerViewMode {
     }
 
     /// 一覧ボタンの押下。封印中（`TEXT_MODE_ENABLED` が false）は何もしない。
+    #[allow(dead_code)] // 一覧ボタンはUIから外した。封印中のコードと一緒に残す
     pub(crate) fn select_text(&mut self) {
         if TEXT_MODE_ENABLED {
             self.mode = ViewMode::Text;
