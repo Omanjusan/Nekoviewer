@@ -122,46 +122,10 @@ pub(super) fn paint_icon(painter: &egui::Painter, rect: egui::Rect, icon: Marker
     }
 }
 
-/// ポップアップに並べる相手のファイル1件。
-struct PopupRow {
-    /// 表示名（パスキーのセパレータを置換したもの）。
-    name: String,
-    presence: Option<Presence>,
-}
-
-/// 開いているポップアップの内容（開いた時点のDBの内容を写したもの）。
+/// 開いているポップアップ。移動マーカーの説明だけを出す（ほかの種類のアイコンは、押すと類似ファイル一覧を直接開く）。
 pub(super) struct MarkerPopup {
     icon: MarkerIcon,
     anchor: egui::Pos2,
-    /// このファイルのID・パス（完全比較の片方）。IDが引けなければ比較できない。
-    self_id: Option<u64>,
-    self_path: std::path::PathBuf,
-    /// 「正常として消す」の対象（再取得マーカーを持つファイルのID）。押せないときは None。
-    dismiss_id: Option<u64>,
-    /// 再取得の補助表示（更新日時が重複先と同じか）。再取得以外は None。
-    mtime_match: Option<bool>,
-    /// 並べる相手（最大 `POPUP_LIST_MAX` 件）と、並べきれなかった件数。
-    others: Vec<PopupRow>,
-    more: usize,
-}
-
-const POPUP_LIST_MAX: usize = 5;
-
-/// ファイルIDを、(ID, パス) にする（DBに無いIDは飛ばす）。
-fn describe_ids(
-    db: &std::sync::Arc<std::sync::Mutex<redb::Database>>,
-    ids: &[u64],
-) -> Vec<(u64, std::path::PathBuf, String)> {
-    use redb::ReadableDatabase;
-    let Ok(guard) = db.lock() else { return Vec::new() };
-    let Ok(tx) = guard.begin_read() else { return Vec::new() };
-    ids.iter()
-        .filter_map(|id| crate::file_identity::record_by_id_tx(&tx, *id))
-        .map(|rec| {
-            let name = rec.path_key.replace('\0', std::path::MAIN_SEPARATOR_STR);
-            (rec.id, crate::file_identity::path_of_key(&rec.path_key), name)
-        })
-        .collect()
 }
 
 impl super::NekoviewApp {
@@ -208,7 +172,12 @@ impl super::NekoviewApp {
         self.marker_icon_hits.insert(real_idx, icon_rect);
         let on_icon = ui.input(|i| i.pointer.hover_pos()).is_some_and(|p| icon_rect.contains(p));
         if on_icon && self.marker_popup.is_none() {
-            response.clone().on_hover_text(icon.tooltip());
+            let tip = if icon == MarkerIcon::Moved {
+                icon.tooltip().to_owned()
+            } else {
+                format!("{}\n{}", icon.tooltip(), i18n::t().dup_marker_click_hint())
+            };
+            response.clone().on_hover_text(tip);
         }
     }
 
@@ -232,37 +201,22 @@ impl super::NekoviewApp {
         }
         let Some(path) = self.archives.get(real_idx).cloned() else { return false };
         let Some(name) = path.file_name().and_then(|n| n.to_str()) else { return false };
-        let (Some(icon), Some(marker)) = (self.marker_icon(name), self.dir_markers.get(name)) else { return false };
-        let (ids, dismiss_id, mtime_match) = match (&marker.own, icon) {
-            (Some(own), MarkerIcon::Reacquired) => (own.targets.clone(), Some(own.id), Some(own.mtime_match)),
-            // 消去済みは、重複先と照合結果だけを見せる（もう一度消すボタンは無い）。
-            (Some(own), MarkerIcon::Dismissed) => (own.targets.clone(), None, Some(own.mtime_match)),
-            (_, MarkerIcon::Elsewhere) => (marker.referenced_by.clone(), None, None),
-            _ => (Vec::new(), None, None),
-        };
-        let described = self.spread_db.as_ref().map(|db| describe_ids(db, &ids)).unwrap_or_default();
-        let more = described.len().saturating_sub(POPUP_LIST_MAX);
-        let others = described
-            .into_iter()
-            .take(POPUP_LIST_MAX)
-            .map(|(id, _path, name)| PopupRow { name, presence: self.marker_presence.get(&id).copied() })
-            .collect();
-        let self_id = self
+        let Some(icon) = self.marker_icon(name) else { return false };
+        // 移動マーカーは旧ファイルが無く、一覧にならない。説明のポップアップだけを出す。
+        if icon == MarkerIcon::Moved {
+            self.marker_popup = Some(MarkerPopup { icon, anchor: egui::pos2(rect.min.x, rect.max.y + 4.0) });
+            return true;
+        }
+        // それ以外は、同じ内容のファイルだけを並べた類似ファイル一覧を直接開く。
+        let entry_id = self
             .spread_db
             .as_ref()
             .zip(path.parent())
             .and_then(|(db, dir)| crate::file_identity::lookup(db, &crate::spread_state::make_key(dir, name)))
             .map(|rec| rec.id);
-        self.marker_popup = Some(MarkerPopup {
-            icon,
-            anchor: egui::pos2(rect.min.x, rect.max.y + 4.0),
-            self_id,
-            self_path: path.clone(),
-            dismiss_id,
-            mtime_match,
-            others,
-            more,
-        });
+        if let Some(id) = entry_id {
+            self.enter_similar_view(path, id);
+        }
         true
     }
 
@@ -270,8 +224,6 @@ impl super::NekoviewApp {
     pub(super) fn draw_marker_popup(&mut self, ctx: &egui::Context) {
         let Some(popup) = &self.marker_popup else { return };
         let t = i18n::t();
-        let mut dismiss = false;
-        let mut open_similar = false;
         let area = egui::Area::new(egui::Id::new("dup_marker_popup"))
             .order(egui::Order::Foreground)
             .fixed_pos(popup.anchor)
@@ -280,56 +232,13 @@ impl super::NekoviewApp {
                     ui.set_max_width(380.0);
                     ui.label(egui::RichText::new(popup.icon.tooltip()).strong());
                     ui.label(t.dup_popup_quick_match());
-                    match popup.mtime_match {
-                        Some(true) => ui.label(t.dup_popup_mtime_same()),
-                        Some(false) => ui.label(t.dup_popup_mtime_diff()),
-                        None => ui.label(""),
-                    };
-                    if !popup.others.is_empty() {
-                        ui.separator();
-                        ui.label(match popup.icon {
-                            MarkerIcon::Elsewhere => t.dup_popup_others_newer(),
-                            _ => t.dup_popup_others_existing(),
-                        });
-                        for row in &popup.others {
-                            let note = match row.presence {
-                                Some(Presence::Missing) => t.dup_popup_target_missing(),
-                                Some(Presence::Offline) => t.dup_popup_target_offline(),
-                                _ => "",
-                            };
-                            ui.label(egui::RichText::new(format!("{}{note}", row.name)).small().weak());
-                        }
-                        if popup.more > 0 {
-                            ui.label(egui::RichText::new(t.dup_popup_more(popup.more)).small().weak());
-                        }
-                    }
-                    ui.separator();
-                    if popup.icon != MarkerIcon::Moved && popup.self_id.is_some() {
-                        open_similar = ui.button(t.dup_popup_open_similar()).clicked();
-                    }
-                    if popup.dismiss_id.is_some() {
-                        dismiss = ui.button(t.dup_popup_dismiss()).clicked();
-                    }
                 });
             });
         let pressed_outside = ctx.input(|i| i.pointer.any_pressed())
             && ctx.input(|i| i.pointer.interact_pos()).is_some_and(|p| !area.response.rect.contains(p));
         let escape = ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
-        let dismiss_id = popup.dismiss_id;
-        let similar_entry = popup.self_id.map(|id| (popup.self_path.clone(), id));
-        if dismiss {
-            if let (Some(id), Some(db)) = (dismiss_id, self.spread_db.clone()) {
-                crate::duplicate_marker::dismiss(&db, id);
-                self.reload_dir_state_maps();
-            }
-        }
-        if dismiss || open_similar || pressed_outside || escape {
+        if pressed_outside || escape {
             self.marker_popup = None;
-        }
-        if open_similar {
-            if let Some((path, id)) = similar_entry {
-                self.enter_similar_view(path, id);
-            }
         }
     }
 

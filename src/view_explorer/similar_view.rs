@@ -9,6 +9,8 @@
 
 use std::path::PathBuf;
 
+use crate::file_identity::Presence;
+
 use super::marker_compare::{CompareOutcome, CompareState, PairKey};
 use super::marker_probe::{SimilarFile, SimilarGroup};
 use super::*;
@@ -27,8 +29,7 @@ pub(super) struct SimilarView {
     /// 収集の結果待ち。
     pub loading: bool,
     /// 一覧に出せなかったファイルの数（消失／オフライン）。
-    pub missing: usize,
-    pub offline: usize,
+    pub unlisted: Vec<(PathBuf, Presence)>,
     /// 収集依頼の番号（`NekoviewApp::similar_token`）。
     token: u64,
 }
@@ -77,8 +78,7 @@ impl NekoviewApp {
             files: Vec::new(),
             base_id: None,
             loading: true,
-            missing: 0,
-            offline: 0,
+            unlisted: Vec::new(),
             token,
         });
         self.show_similar_paths(Vec::new());
@@ -131,8 +131,7 @@ impl NekoviewApp {
     pub(super) fn apply_similar_group(&mut self, token: u64, group: SimilarGroup) {
         let Some(view) = self.viewing_similar.as_mut().filter(|v| v.token == token) else { return };
         view.loading = false;
-        view.missing = group.missing;
-        view.offline = group.offline;
+        view.unlisted = group.unlisted;
         let entry = view.entry_path.clone();
         let previous = self.selected_archive_index.and_then(|i| self.archives.get(i)).cloned();
         let Some(view) = self.viewing_similar.as_mut() else { return };
@@ -377,7 +376,7 @@ impl NekoviewApp {
             ui.label(t.similar_loading());
             return;
         }
-        let unlisted = view.missing + view.offline;
+        let unlisted = view.unlisted.len();
         let header = if self.archives.len() < 2 {
             t.similar_empty().to_owned()
         } else {
@@ -385,7 +384,19 @@ impl NekoviewApp {
         };
         ui.label(header);
         if unlisted > 0 {
-            ui.label(egui::RichText::new(t.similar_unlisted(unlisted)).weak());
+            let tip: String = view
+                .unlisted
+                .iter()
+                .map(|(path, presence)| {
+                    let state = match presence {
+                        Presence::Offline => t.similar_unlisted_offline(),
+                        _ => t.similar_unlisted_missing(),
+                    };
+                    format!("{}  {state}", path.display())
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            ui.label(egui::RichText::new(t.similar_unlisted(unlisted)).weak()).on_hover_text(tip);
         }
         ui.separator();
         let running = self.running_marker_compares();

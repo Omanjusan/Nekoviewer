@@ -39,8 +39,7 @@ pub(super) struct SimilarGroup {
     /// 現存するファイル（ID昇順）。
     pub files: Vec<SimilarFile>,
     /// 一覧に出せないファイルの数（消失／オフライン）。
-    pub missing: usize,
-    pub offline: usize,
+    pub unlisted: Vec<(std::path::PathBuf, Presence)>,
 }
 
 enum Job {
@@ -195,8 +194,9 @@ fn collect_group(
                 let stat = super::marker_compare::stat(&path);
                 group.files.push(SimilarFile { id: m.id, path, stat });
             }
-            Presence::Missing => group.missing += 1,
-            Presence::Offline => group.offline += 1,
+            absent @ (Presence::Missing | Presence::Offline) => {
+                group.unlisted.push((file_identity::path_of_key(&m.path_key), absent));
+            }
         }
     }
     Some(group)
@@ -360,7 +360,9 @@ mod tests {
         let ids: Vec<u64> = group.files.iter().map(|f| f.id).collect();
         assert_eq!(ids, vec![a, b], "現存する同内容ファイルが、ID昇順で全て並ぶ");
         assert!(!ids.contains(&other));
-        assert_eq!((group.missing, group.offline), (1, 0), "消えた {c} は数だけ数える");
+        assert_eq!(group.unlisted.len(), 1, "消えた {c} は一覧に出さず、別枠で控える");
+        assert_eq!(group.unlisted[0].1, Presence::Missing);
+        assert!(group.unlisted[0].0.ends_with("c.zip"), "名前も控えるので、ホバーで見せられる");
     }
 
     #[test]

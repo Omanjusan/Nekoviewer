@@ -142,6 +142,15 @@ impl Lang {
         }
     }
 
+    /// 重複マーカーのホバー説明に添える、クリックでできること（移動以外）。
+    pub fn dup_marker_click_hint(self) -> &'static str {
+        match self {
+            Lang::Japanese => "クリックすると、同じ内容のファイルだけを一覧で見られます",
+            Lang::English  => "Click to view only the files with the same content in a list",
+            Lang::Chinese  => "点击可在列表中只查看内容相同的文件",
+        }
+    }
+
     /// 新しく重複マーカー（移動・再取得）が付いた時のトースト。
     pub fn dup_marker_toast(self, n: usize) -> String {
         match self {
@@ -202,78 +211,6 @@ impl Lang {
             Lang::Japanese => "簡易照合で一致（中身を全て比べたわけではありません）",
             Lang::English  => "Matched by quick check (the whole contents were not compared)",
             Lang::Chinese  => "快速比对一致（并未比较全部内容）",
-        }
-    }
-
-    /// 重複マーカーのポップアップ: 更新日時が同じ。
-    pub fn dup_popup_mtime_same(self) -> &'static str {
-        match self {
-            Lang::Japanese => "更新日時も同じです（コピーしただけの可能性が高い）",
-            Lang::English  => "The modified time is also the same (likely just a copy)",
-            Lang::Chinese  => "修改时间也相同（很可能只是复制）",
-        }
-    }
-
-    /// 重複マーカーのポップアップ: 更新日時が違う。
-    pub fn dup_popup_mtime_diff(self) -> &'static str {
-        match self {
-            Lang::Japanese => "更新日時は異なります",
-            Lang::English  => "The modified time differs",
-            Lang::Chinese  => "修改时间不同",
-        }
-    }
-
-    /// 重複マーカーのポップアップ: 再取得したファイルの側で、元（同じ内容の既存ファイル）を並べる見出し。
-    pub fn dup_popup_others_existing(self) -> &'static str {
-        match self {
-            Lang::Japanese => "同じ内容のファイル:",
-            Lang::English  => "Files with the same content:",
-            Lang::Chinese  => "内容相同的文件:",
-        }
-    }
-
-    /// 重複マーカーのポップアップ: 旧ファイルの側で、新しく増えたファイルを並べる見出し。
-    pub fn dup_popup_others_newer(self) -> &'static str {
-        match self {
-            Lang::Japanese => "同じ内容の新しいファイル:",
-            Lang::English  => "Newer files with the same content:",
-            Lang::Chinese  => "内容相同的较新文件:",
-        }
-    }
-
-    /// 重複マーカーのポップアップ: 重複先が見つからない（消えたか、移動した）場合の注記。
-    pub fn dup_popup_target_missing(self) -> &'static str {
-        match self {
-            Lang::Japanese => "（見つかりません）",
-            Lang::English  => " (not found)",
-            Lang::Chinese  => "（未找到）",
-        }
-    }
-
-    /// 重複マーカーのポップアップ: 重複先のあるドライブに接続できず、確認できない場合の注記。
-    pub fn dup_popup_target_offline(self) -> &'static str {
-        match self {
-            Lang::Japanese => "（確認できません）",
-            Lang::English  => " (cannot be checked)",
-            Lang::Chinese  => "（无法确认）",
-        }
-    }
-
-    /// 重複マーカーのポップアップ: 並べきれなかった件数。
-    pub fn dup_popup_more(self, n: usize) -> String {
-        match self {
-            Lang::Japanese => format!("ほか{n}件"),
-            Lang::English  => format!("and {n} more"),
-            Lang::Chinese  => format!("另有{n}个"),
-        }
-    }
-
-    /// 重複マーカーのポップアップ: 同じ内容のファイルだけを一覧で開くボタン。
-    pub fn dup_popup_open_similar(self) -> &'static str {
-        match self {
-            Lang::Japanese => "類似ファイルを一覧で見る",
-            Lang::English  => "View similar files in a list",
-            Lang::Chinese  => "在列表中查看相似文件",
         }
     }
 
@@ -469,21 +406,29 @@ impl Lang {
         }
     }
 
+    /// 類似ファイル一覧: 並べられないファイルの状態（ホバーの一覧に添える）。
+    pub fn similar_unlisted_offline(self) -> &'static str {
+        match self {
+            Lang::Japanese => "オフライン",
+            Lang::English  => "Offline",
+            Lang::Chinese  => "离线",
+        }
+    }
+
+    pub fn similar_unlisted_missing(self) -> &'static str {
+        match self {
+            Lang::Japanese => "見つからない",
+            Lang::English  => "Not found",
+            Lang::Chinese  => "找不到",
+        }
+    }
+
     /// 類似ファイル一覧: 並べられるファイルが無いときの案内。
     pub fn similar_empty(self) -> &'static str {
         match self {
             Lang::Japanese => "比較できる類似ファイルがありません",
             Lang::English  => "No similar files to compare",
             Lang::Chinese  => "没有可比较的相似文件",
-        }
-    }
-
-    /// 重複マーカーのポップアップ: 「問題ない」としてマーカーを消すボタン。
-    pub fn dup_popup_dismiss(self) -> &'static str {
-        match self {
-            Lang::Japanese => "正常として消す",
-            Lang::English  => "Dismiss as normal",
-            Lang::Chinese  => "标记为正常并清除",
         }
     }
 
