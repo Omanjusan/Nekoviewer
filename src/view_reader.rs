@@ -4190,6 +4190,8 @@ impl ViewerState {
 
             egui::Panel::left("entry_list_panel")
                 .exact_size(ENTRY_PANEL_W)
+                // 固定幅なのにリサイズカーソルだけ出る不具合の防止（既定resizable=true）
+                .resizable(false)
                 .frame(egui::Frame::side_top_panel(viewer_style))
                 .show(ui, |ui| {
                     let output = egui::ScrollArea::vertical()

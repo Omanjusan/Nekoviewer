@@ -296,6 +296,7 @@ pub enum SavedTab {
     Favorites,
     Search,
     VirtualFolders,
+    TagSearch,
 }
 
 impl SavedTab {
@@ -305,6 +306,7 @@ impl SavedTab {
             Self::Favorites => "favorites",
             Self::Search => "search",
             Self::VirtualFolders => "virtual",
+            Self::TagSearch => "tag_search",
         }
     }
 
@@ -314,6 +316,7 @@ impl SavedTab {
             "favorites" => Some(Self::Favorites),
             "search" => Some(Self::Search),
             "virtual" => Some(Self::VirtualFolders),
+            "tag_search" => Some(Self::TagSearch),
             _ => None,
         }
     }
@@ -338,6 +341,8 @@ pub struct TabPositions {
     /// ユーザーが選んだ検索対象フォルダ（既定のPWDは保存しない）
     pub search_dir: Option<PathBuf>,
     pub virtual_node: Option<VirtualPosition>,
+    /// タグ検索タブの左ペイン幅(px)。位置ではなくレイアウトなので `use_last_dir` の影響を受けない。
+    pub tag_search_left_width: Option<u32>,
 }
 
 impl TabPositions {
@@ -355,6 +360,9 @@ impl TabPositions {
         }
         if let Some(v) = &self.virtual_node {
             out.push_str(&format!("tab_virtual_node={}\ntab_virtual_path={}\n", v.id, v.path.to_string_lossy()));
+        }
+        if let Some(w) = self.tag_search_left_width {
+            out.push_str(&format!("tab_tag_search_width={w}\n"));
         }
         out
     }
@@ -515,6 +523,7 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
     let mut tab_search_dir: Option<PathBuf> = None;
     let mut tab_virtual_id: Option<u32> = None;
     let mut tab_virtual_path: Option<PathBuf> = None;
+    let mut tab_tag_search_width: Option<u32> = None;
     let mut tree_sort_virtual: Option<crate::tree_sort::TreeSort> = None;
     let mut tree_sort_real: Option<crate::tree_sort::TreeSort> = None;
     let mut window_width: Option<u32> = None;
@@ -642,6 +651,7 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
                     tree_sort_real = crate::tree_sort::TreeSort::from_state_str(v)
                         .filter(|s| s.key != crate::tree_sort::TreeSortKey::Registration);
                 }
+                "tab_tag_search_width" => { tab_tag_search_width = v.trim().parse().ok(); }
                 "tab_virtual_node" => { tab_virtual_id = v.trim().parse().ok(); }
                 "tab_virtual_path" => {
                     let v = v.trim();
@@ -1007,6 +1017,7 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
                 (Some(id), Some(path)) => Some(VirtualPosition { id, path }),
                 _ => None,
             },
+            tag_search_left_width: tab_tag_search_width,
         },
         tree_sorts: crate::tree_sort::TreeSorts { virtual_tree: tree_sort_virtual, real_tree: tree_sort_real },
         tag_panel_open: tag_panel_open.unwrap_or(false),
@@ -1321,12 +1332,22 @@ mod tests {
     }
 
     #[test]
+    fn tag_search_left_width_roundtrips_and_bad_value_is_dropped() {
+        let tp = TabPositions { tag_search_left_width: Some(333), ..Default::default() };
+        assert_eq!(tp.state_lines(), "tab_tag_search_width=333\n");
+        assert_eq!(parse_state_text("w_ok", &tp.state_lines()).tab_positions.tag_search_left_width, Some(333));
+        assert_eq!(parse_state_text("w_bad", "tab_tag_search_width=abc\n").tab_positions.tag_search_left_width, None);
+        assert_eq!(parse_state_text("w_none", "last_dir=/x\n").tab_positions.tag_search_left_width, None);
+    }
+
+    #[test]
     fn tab_positions_roundtrip_through_state_text() {
         let tp = TabPositions {
             active: Some(SavedTab::VirtualFolders),
             favorites: Some(FavoritePosition::Folder(3)),
             search_dir: Some(PathBuf::from("/data/search base")),
             virtual_node: Some(VirtualPosition { id: 12, path: PathBuf::from("/data/manga") }),
+            tag_search_left_width: Some(320),
         };
         let parsed = parse_state_text("roundtrip", &format!("last_dir=/real\n{}", tp.state_lines()));
         assert_eq!(parsed.tab_positions, tp);
@@ -1351,7 +1372,7 @@ mod tests {
 
     #[test]
     fn saved_tab_roundtrips_and_ignores_invalid_values() {
-        for t in [SavedTab::RealTree, SavedTab::Favorites, SavedTab::Search, SavedTab::VirtualFolders] {
+        for t in [SavedTab::RealTree, SavedTab::Favorites, SavedTab::Search, SavedTab::VirtualFolders, SavedTab::TagSearch] {
             let tp = TabPositions { active: Some(t), ..Default::default() };
             assert_eq!(parse_state_text("saved_tab", &tp.state_lines()).tab_positions.active, Some(t));
         }

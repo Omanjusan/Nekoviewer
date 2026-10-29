@@ -1809,6 +1809,41 @@ impl Lang {
         }
     }
 
+    pub fn folder_tab_tag_search(self) -> &'static str {
+        match self {
+            Lang::Japanese => "タグ検索",
+            Lang::English  => "Tag Search",
+            Lang::Chinese  => "标签搜索",
+        }
+    }
+
+    /// タグ検索タブ左ペイン上部の操作ヒント
+    pub fn tag_search_left_hint(self) -> &'static str {
+        match self {
+            Lang::Japanese => "タグをクリックで有効／無効。有効にしたタグを全て持つファイルを探します。",
+            Lang::English  => "Click a tag to enable or disable it. Finds files that have every enabled tag.",
+            Lang::Chinese  => "点击标签以启用或禁用。查找同时具有所有已启用标签的文件。",
+        }
+    }
+
+    /// タグ検索タブ中央: 有効タグが1つも無いときのガイド
+    pub fn tag_search_center_guide(self) -> &'static str {
+        match self {
+            Lang::Japanese => "左のタグを選ぶと、該当するファイルがここに表示されます。",
+            Lang::English  => "Pick tags on the left and the matching files will appear here.",
+            Lang::Chinese  => "在左侧选择标签后，匹配的文件会显示在这里。",
+        }
+    }
+
+    /// タグ検索タブ中央（モック）: 有効タグの個数表示
+    pub fn tag_search_center_mock(self, enabled: usize) -> String {
+        match self {
+            Lang::Japanese => format!("（モック）有効なタグ: {enabled}個。検索はまだ接続されていません。"),
+            Lang::English  => format!("(Mock) Enabled tags: {enabled}. Search is not connected yet."),
+            Lang::Chinese  => format!("（模型）已启用标签：{enabled}个。搜索尚未连接。"),
+        }
+    }
+
     pub fn virtual_real_tree_title(self) -> &'static str {
         match self {
             Lang::Japanese => "実ツリー",
@@ -6223,6 +6258,41 @@ impl Lang {
                     (
                         "",
                         "如果已确定文件夹，使用屏幕下方的文本过滤同样很快，推荐使用。",
+                    ),
+                ],
+            },
+        }
+    }
+
+    pub fn help_tab_tag_search(self) -> HelpDoc {
+        match self {
+            Lang::Japanese => HelpDoc {
+                title: "タグ検索",
+                sections: &[
+                    (
+                        "",
+                        "付けたタグから、フォルダをまたいでファイルを探します。\n\
+                         タグを有効にするたびに、全ての有効タグを持つファイルへ絞り込みます。",
+                    ),
+                ],
+            },
+            Lang::English => HelpDoc {
+                title: "Tag Search",
+                sections: &[
+                    (
+                        "",
+                        "Finds files across folders by their tags.\n\
+                         Each time you enable a tag, the list narrows to files that have every enabled tag.",
+                    ),
+                ],
+            },
+            Lang::Chinese => HelpDoc {
+                title: "标签搜索",
+                sections: &[
+                    (
+                        "",
+                        "根据已添加的标签跨文件夹查找文件。\n\
+                         每启用一个标签，列表就会收窄为同时具有所有已启用标签的文件。",
                     ),
                 ],
             },

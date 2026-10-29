@@ -43,7 +43,7 @@ pub(super) fn startup_focus(tab: FolderPaneTab) -> FocusPane {
     match tab {
         FolderPaneTab::RealTree => FocusPane::TreeTab,
         FolderPaneTab::Favorites => FocusPane::FavoriteTab,
-        FolderPaneTab::Search | FolderPaneTab::VirtualFolders => FocusPane::FolderTabBar,
+        FolderPaneTab::Search | FolderPaneTab::VirtualFolders | FolderPaneTab::TagSearch => FocusPane::FolderTabBar,
     }
 }
 
@@ -54,6 +54,7 @@ impl From<FolderPaneTab> for SavedTab {
             FolderPaneTab::Favorites => Self::Favorites,
             FolderPaneTab::Search => Self::Search,
             FolderPaneTab::VirtualFolders => Self::VirtualFolders,
+            FolderPaneTab::TagSearch => Self::TagSearch,
         }
     }
 }
@@ -65,6 +66,7 @@ impl From<SavedTab> for FolderPaneTab {
             SavedTab::Favorites => Self::Favorites,
             SavedTab::Search => Self::Search,
             SavedTab::VirtualFolders => Self::VirtualFolders,
+            SavedTab::TagSearch => Self::TagSearch,
         }
     }
 }
@@ -167,7 +169,7 @@ mod tests {
 
     #[test]
     fn saved_tab_conversion_is_lossless() {
-        for t in [FolderPaneTab::RealTree, FolderPaneTab::Favorites, FolderPaneTab::Search, FolderPaneTab::VirtualFolders] {
+        for t in [FolderPaneTab::RealTree, FolderPaneTab::Favorites, FolderPaneTab::Search, FolderPaneTab::VirtualFolders, FolderPaneTab::TagSearch] {
             assert_eq!(FolderPaneTab::from(SavedTab::from(t)), t);
         }
     }
@@ -178,5 +180,6 @@ mod tests {
         assert_eq!(startup_focus(FolderPaneTab::Favorites), FocusPane::FavoriteTab);
         assert_eq!(startup_focus(FolderPaneTab::Search), FocusPane::FolderTabBar);
         assert_eq!(startup_focus(FolderPaneTab::VirtualFolders), FocusPane::FolderTabBar);
+        assert_eq!(startup_focus(FolderPaneTab::TagSearch), FocusPane::FolderTabBar);
     }
 }

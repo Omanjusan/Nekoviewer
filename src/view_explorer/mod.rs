@@ -78,6 +78,8 @@ enum FolderPaneTab {
     Favorites,
     Search,
     VirtualFolders,
+    /// タグ検索（ツリーなし、左ペインはタグ一覧。中身は現状モックで検索には未接続）
+    TagSearch,
 }
 
 impl FolderPaneTab {
@@ -121,6 +123,8 @@ impl FocusPane {
                 FolderPaneTab::Favorites => Self::FavoriteTab,
                 FolderPaneTab::Search => Self::SearchForm,
                 FolderPaneTab::VirtualFolders => Self::VirtualTab,
+                // 左ペインのタグ一覧はキー操作未対応（モック）。巡回は本体を飛ばしてGridへ
+                FolderPaneTab::TagSearch => Self::Grid,
             },
             Self::VirtualTab => if real_pane_open { Self::TreeTab } else { Self::Grid },
             Self::TreeTab => Self::Drives,
@@ -150,6 +154,7 @@ impl FocusPane {
             Self::Grid => match tab {
                 FolderPaneTab::Favorites => Self::FavoriteTab,
                 FolderPaneTab::VirtualFolders if !real_pane_open => Self::VirtualTab,
+                FolderPaneTab::TagSearch => Self::FolderTabBar,
                 _ => Self::Drives,
             },
             Self::Filter => Self::Grid,
@@ -1105,6 +1110,9 @@ pub struct NekoviewApp {
     pub(crate) tag_manager_categories: Vec<TagManagerCategoryUi>,
     /// タグマネージャー: 次に採番するtier(要素)ID。削除しても減らさない単調増加カウンタ。
     pub(crate) tag_manager_next_tier_id: u64,
+    /// タグ検索タブ（モック）: 有効化中のタグ(tier_id)。`TAG_MAIN_UNSET_ID`はメイン未設定の疑似タグ。
+    /// セッション中のみ保持し、永続化はしない。
+    pub(crate) tag_search_enabled: std::collections::HashSet<u64>,
     /// タグマネージャー(フェーズTM1): 選択中カテゴリのインデックス。
     pub(crate) tag_manager_selected_category: Option<usize>,
     /// タグマネージャー: インライン編集中の要素(カテゴリindex, tier内index)。
@@ -1323,6 +1331,7 @@ mod favorites_ui;
 mod real_dir_stash;
 mod tab_position;
 mod virtual_ui;
+mod tag_search_ui;
 mod tree_sort_ui;
 mod real_tree_sort;
 mod bulk_settings_ui;
@@ -1362,7 +1371,11 @@ impl NekoviewApp {
         let tab_positions = if config.startup.use_last_dir {
             tab_positions
         } else {
-            crate::gui_config::TabPositions::default()
+            // 左ペイン幅はレイアウト設定なので、位置を捨てても残す
+            crate::gui_config::TabPositions {
+                tag_search_left_width: tab_positions.tag_search_left_width,
+                ..Default::default()
+            }
         };
         // timeのローカルオフセット取得は、Unixでは他スレッド起動前に行う必要がある。
         let local_today = calendar_gui::LocalDate::today_local();
@@ -1588,6 +1601,7 @@ impl NekoviewApp {
             tag_preview_texture: None,
             tag_preview_pending: None,
             tag_manager_open: false,
+            tag_search_enabled: std::collections::HashSet::new(),
             tag_manager_area_rect: egui::Rect::NOTHING,
             tag_manager_categories,
             tag_manager_next_tier_id,

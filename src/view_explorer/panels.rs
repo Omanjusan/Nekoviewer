@@ -145,7 +145,11 @@ impl NekoviewApp {
         {
             let style_clone = ui.style().clone();
             egui::Panel::left("folder_panel")
-                .exact_size(200.0)
+                .exact_size(self.folder_panel_width())
+                // exact_sizeは幅を固定するだけで、resizableが既定trueのままだと境界線の
+                // ホバーでリサイズカーソルが出るのに実際には動かせない。幅の変更は
+                // タグ検索タブの中央グリップ（自前ドラッグ）だけが担う。
+                .resizable(false)
                 .frame({
                     let mut f = egui::Frame::side_top_panel(&style_clone);
                     f.inner_margin.right = 0;
@@ -275,7 +279,8 @@ impl NekoviewApp {
     /// 一切関与しない。開閉トグル(▶/◀)・D&Dリサイズハンドル・幅は従来のPanel版と同じ。
     fn draw_tag_panel_floating(&mut self, ctx: &egui::Context, central_area: egui::Rect) {
         let open = self.tag_panel_open;
-        let panel_w = if open { self.tag_panel_width } else { PANEL_TAB_WIDTH };
+        // 左ペイン幅（タグ検索タブ）を優先するため、足りないときは右パネル側を狭める。
+        let panel_w = (if open { self.tag_panel_width } else { PANEL_TAB_WIDTH }).min(central_area.width());
         let panel_rect = egui::Rect::from_min_size(
             egui::pos2(central_area.right() - panel_w, central_area.top()),
             egui::vec2(panel_w, central_area.height()),
@@ -719,7 +724,7 @@ impl NekoviewApp {
             match tab {
                 FolderPaneTab::Favorites => self.restore_favorites_position(),
                 FolderPaneTab::VirtualFolders => self.restore_virtual_position(),
-                FolderPaneTab::RealTree | FolderPaneTab::Search => {}
+                FolderPaneTab::RealTree | FolderPaneTab::Search | FolderPaneTab::TagSearch => {}
             }
         }
     }
@@ -1919,6 +1924,13 @@ impl NekoviewApp {
                 self.switch_folder_tab(FolderPaneTab::VirtualFolders);
                 self.focused_pane = FocusPane::FolderTabBar;
             }
+            let tag_search_resp = ui.selectable_label(self.folder_pane_tab == FolderPaneTab::TagSearch, i18n::t().folder_tab_tag_search());
+            if tab_bar_focused && self.folder_pane_tab == FolderPaneTab::TagSearch { draw_cursor_ring(ui, tag_search_resp.rect); }
+            help_tip(&tag_search_resp, help_on, &i18n::t().help_tab_tag_search());
+            if tag_search_resp.clicked() {
+                self.switch_folder_tab(FolderPaneTab::TagSearch);
+                self.focused_pane = FocusPane::FolderTabBar;
+            }
         });
         ui.separator();
 
@@ -1931,6 +1943,7 @@ impl NekoviewApp {
                 self.draw_virtual_folder_pane(ui);
                 self.paint_pane_border(ui, pane_rect, false);
             }
+            FolderPaneTab::TagSearch => self.draw_tag_search_left_pane(ui),
         }
     }
 
@@ -2061,6 +2074,11 @@ impl NekoviewApp {
     }
 
     fn draw_central_panel(&mut self, ui: &mut egui::Ui) {
+        // タグ検索タブ: 結果の一覧は未接続のモック。中央は仮表示のみ出す。
+        if self.folder_pane_tab == FolderPaneTab::TagSearch {
+            self.draw_tag_search_central(ui);
+            return;
+        }
         // 検索タブ選択中のみアイテムペインを縦割りにする（左: ツリー+ドライブ固定幅、右: 従来の中身）。
         // [Phase A] レイアウトのモック確認用: ツリー/ドライブは実ツリーと表示・状態を共有しており、
         // クリック時の動作もまだ実ナビゲーションのまま（検索基点への分離はPhase Bで対応）。
@@ -4016,7 +4034,7 @@ fn truncated_galley(
 /// `horizontal_wrapped`内で収まらなければチップごと次の行へ折り返される（`Frame`+`label`や
 /// `Button::truncate`は行の残りに潰れて折り返さず見切れていた）。1チップが行全体
 /// (`full_w`)より広い場合だけ`…`で省略する。`hover_fill`がtrueなら、ホバー時に背景を出す。
-fn tag_chip(
+pub(super) fn tag_chip(
     ui: &mut egui::Ui,
     text: &str,
     full_w: f32,
