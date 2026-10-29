@@ -385,6 +385,15 @@ impl Lang {
         }
     }
 
+    /// 類似ファイル一覧: 中央ペイン最上部の告知バーの文言。
+    pub fn similar_banner(self) -> &'static str {
+        match self {
+            Lang::Japanese => "類似ファイルビュー",
+            Lang::English  => "Similar Files View",
+            Lang::Chinese  => "相似文件视图",
+        }
+    }
+
     /// 類似ファイル一覧: 元のフォルダ表示へ戻るボタン。
     pub fn similar_back(self) -> &'static str {
         match self {

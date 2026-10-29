@@ -2169,6 +2169,8 @@ impl NekoviewApp {
         let in_search_ui = self.folder_pane_tab == FolderPaneTab::Search
             || self.viewing_search.is_some();
 
+        self.draw_similar_banner(ui);
+
         // パス行: 左端に表示モード切替、その右にパス（モード切替の分だけ右へ寄る）。
         ui.horizontal(|ui| {
         self.draw_view_mode_buttons(ui);

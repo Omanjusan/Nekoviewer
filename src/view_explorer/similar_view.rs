@@ -26,6 +26,10 @@ pub(super) struct SimilarView {
     token: u64,
 }
 
+/// 告知バーの高さ（px）と背景色（青と水色の中間）。
+const BANNER_H: f32 = 22.0;
+const BANNER_COLOR: egui::Color32 = egui::Color32::from_rgb(40, 150, 215);
+
 /// カードの行どうしの隙間（キー移動のスクロール計算と同じ値）。
 const CARD_ROW_GAP: f32 = 8.0;
 
@@ -119,6 +123,22 @@ impl NekoviewApp {
         if let Some(pos) = self.archives.iter().position(|p| *p == entry) {
             self.selected_archive_index = Some(pos);
         }
+    }
+
+    /// 類似ファイル一覧であることを示す告知バー（中央ペインの最上部。カードとリストで共通）。
+    pub(super) fn draw_similar_banner(&self, ui: &mut egui::Ui) {
+        if self.viewing_similar.is_none() {
+            return;
+        }
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), BANNER_H), egui::Sense::hover());
+        ui.painter().rect_filled(rect, 0.0, BANNER_COLOR);
+        ui.painter().text(
+            rect.center(),
+            egui::Align2::CENTER_CENTER,
+            i18n::t().similar_banner(),
+            egui::FontId::proportional(14.0),
+            egui::Color32::WHITE,
+        );
     }
 
     /// パス行に出す、戻るボタンと見出し。
