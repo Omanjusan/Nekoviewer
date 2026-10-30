@@ -251,30 +251,9 @@ impl super::NekoviewApp {
         paint_similar_icon(&ui.painter().with_clip_rect(ui.clip_rect()), icon_rect);
         self.sim_icon_hits.insert(real_idx, (icon_rect, info));
         let on_icon = ui.input(|i| i.pointer.hover_pos()).is_some_and(|p| icon_rect.contains(p));
-        if on_icon && self.sim_popup.is_none() && self.marker_popup.is_none() {
-            response.clone().on_hover_text(i18n::t().sim_marker_tooltip(info.0, info.1));
-        }
-    }
-
-    /// 【モック】「？」の説明ポップアップ。外側クリックかEscで閉じる。
-    pub(super) fn draw_sim_popup(&mut self, ctx: &egui::Context) {
-        let Some((anchor, (pct, count))) = self.sim_popup else { return };
-        let t = i18n::t();
-        let area = egui::Area::new(egui::Id::new("sim_mock_popup"))
-            .order(egui::Order::Foreground)
-            .fixed_pos(anchor)
-            .show(ctx, |ui| {
-                egui::Frame::popup(ui.style()).show(ui, |ui| {
-                    ui.set_max_width(380.0);
-                    ui.label(egui::RichText::new(t.sim_marker_tooltip(pct, count)).strong());
-                    ui.label(t.sim_mock_popup_note());
-                });
-            });
-        let pressed_outside = ctx.input(|i| i.pointer.any_pressed())
-            && ctx.input(|i| i.pointer.interact_pos()).is_some_and(|p| !area.response.rect.contains(p));
-        let escape = ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
-        if pressed_outside || escape {
-            self.sim_popup = None;
+        if on_icon && self.marker_popup.is_none() {
+            let t = i18n::t();
+            response.clone().on_hover_text(format!("{}\n{}", t.sim_marker_tooltip(info.0, info.1), t.sim_marker_click_hint()));
         }
     }
 
@@ -288,12 +267,17 @@ impl super::NekoviewApp {
         if !(response.clicked() || response.double_clicked()) {
             return false;
         }
-        // 【モック】「？」のクリック。
-        if let Some((rect, info)) = self.sim_icon_hits.get(&real_idx).copied()
+        // 「？」のクリック: 似ている画像ビューを開く。ダブルクリックの2回目は握りつぶす。
+        if let Some((rect, _)) = self.sim_icon_hits.get(&real_idx).copied()
             && ui.input(|i| i.pointer.interact_pos()).is_some_and(|p| rect.contains(p))
         {
-            if response.clicked() {
-                self.sim_popup = Some((egui::pos2(rect.min.x, rect.max.y + 4.0), info));
+            if response.clicked()
+                && let Some(path) = self.archives.get(real_idx).cloned()
+                && let Some(entry_id) = self.spread_db.as_ref().zip(path.parent()).zip(path.file_name().and_then(|n| n.to_str())).and_then(
+                    |((db, dir), name)| crate::file_identity::lookup(db, &crate::spread_state::make_key(dir, name)),
+                ).map(|rec| rec.id)
+            {
+                self.enter_look_alike_view(path, entry_id);
             }
             return true;
         }
@@ -375,7 +359,6 @@ impl super::NekoviewApp {
     pub(super) fn on_marker_dir_scan(&mut self) {
         self.marker_popup = None;
         self.marker_icon_hits.clear();
-        self.sim_popup = None;
         self.sim_icon_hits.clear();
         self.sim_matches.clear();
         // 重複先の存在確認は、フォルダを読み込むたびにやり直す（確認が済むまでは、いつもどおり表示する）。

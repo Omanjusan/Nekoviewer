@@ -452,11 +452,11 @@ impl NekoviewApp {
             rating: self.rating_sort,
         };
         for (col, label) in [
-            (Col::Dup, if self.viewing_similar.is_some() { t.list_col_base() } else { t.list_col_dup() }),
+            (Col::Dup, if self.is_look_alike_view() { "" } else if self.viewing_similar.is_some() { t.list_col_base() } else { t.list_col_dup() }),
             (Col::Reveal, t.list_col_reveal()),
             (Col::Name, t.list_col_name()),
             (Col::Place, t.list_col_place()),
-            (Col::Compare, t.list_col_compare()),
+            (Col::Compare, if self.is_look_alike_view() { t.list_col_similarity() } else { t.list_col_compare() }),
             (Col::Size, t.list_col_size()),
             (Col::Mtime, t.list_col_mtime()),
             (Col::Rating, t.list_col_rating()),

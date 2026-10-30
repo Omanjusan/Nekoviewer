@@ -32,11 +32,18 @@ pub(super) struct SimilarView {
     pub unlisted: Vec<(PathBuf, Presence)>,
     /// 収集依頼の番号（`NekoviewApp::similar_token`）。
     token: u64,
+    /// 似ている画像ビュー（サムネの類似）か。false は同じ内容（FP一致）の一覧。
+    /// 似ている画像ビューには基準も完全比較も無く、「完全比較」列は入口との類似度になる。
+    pub look_alike: bool,
+    /// 似ている画像ビューの、ファイルID → 入口との類似度(%)。入口は100。
+    pub pcts: std::collections::HashMap<u64, u8>,
 }
 
 /// 告知バーの高さ（px）と背景色（青と水色の中間）。
 const BANNER_H: f32 = 22.0;
 const BANNER_COLOR: egui::Color32 = egui::Color32::from_rgb(40, 150, 215);
+/// 似ている画像ビューの告知バーの色（「？」アイコンと同じ紫）。
+const LOOK_ALIKE_BANNER_COLOR: egui::Color32 = egui::Color32::from_rgb(140, 95, 215);
 
 /// 基準のファイル。既定（`base_id` が無い・一覧に無い）は最古のID。比べる相手が無い（2件未満）ときは None。
 fn base_of(files: &[SimilarFile], base_id: Option<u64>) -> Option<&SimilarFile> {
@@ -80,9 +87,101 @@ impl NekoviewApp {
             loading: true,
             unlisted: Vec::new(),
             token,
+            look_alike: false,
+            pcts: std::collections::HashMap::new(),
         });
         self.show_similar_paths(Vec::new());
         self.marker_probe.submit_group(db, entry_id, token);
+    }
+
+    /// 似ている画像ビューか。
+    pub(super) fn is_look_alike_view(&self) -> bool {
+        self.viewing_similar.as_ref().is_some_and(|v| v.look_alike)
+    }
+
+    /// 似ている画像ビューに並べるファイル（入口を含む）と、入口との類似度。
+    /// 照合結果（`sim_matches`）のうち、いまのしきい値を満たす相手。相手のパスはIDのレコードから引く。
+    fn look_alike_files(
+        &self,
+        entry_path: &std::path::Path,
+        entry_id: u64,
+    ) -> Option<(Vec<SimilarFile>, std::collections::HashMap<u64, u8>)> {
+        use redb::ReadableDatabase;
+        let db = self.spread_db.as_ref()?;
+        let name = entry_path.file_name()?.to_str()?;
+        let mut files = vec![SimilarFile { id: entry_id, path: entry_path.to_path_buf(), stat: None }];
+        let mut pcts = std::collections::HashMap::from([(entry_id, 100_u8)]);
+        let Some(matches) = self.sim_matches.get(name) else { return Some((files, pcts)) };
+        let guard = db.lock().ok()?;
+        let tx = guard.begin_read().ok()?;
+        for m in matches.iter().take_while(|m| m.pct() >= self.sim_threshold_pct) {
+            let Some(rec) = crate::file_identity::record_by_id_tx(&tx, m.other) else { continue };
+            files.push(SimilarFile { id: m.other, path: crate::file_identity::path_of_key(&rec.path_key), stat: None });
+            pcts.insert(m.other, m.pct());
+        }
+        Some((files, pcts))
+    }
+
+    /// 似ている画像ビューを開く。`entry_path` は入口のファイル（「？」を押したファイル）、`entry_id` はそのファイルID。
+    /// 照合は済んでいるので、収集の待ちは無い。
+    pub(super) fn enter_look_alike_view(&mut self, entry_path: PathBuf, entry_id: u64) {
+        let Some((files, pcts)) = self.look_alike_files(&entry_path, entry_id) else { return };
+        self.marker_popup = None;
+        self.similar_token += 1;
+        let token = self.similar_token;
+        if self.similar_saved_mode.is_none() {
+            self.similar_saved_mode = Some(self.view_mode.mode);
+        }
+        self.view_mode.mode = view_mode::ViewMode::List;
+        let paths: Vec<PathBuf> = files.iter().map(|f| f.path.clone()).collect();
+        self.viewing_similar = Some(SimilarView {
+            entry_path: entry_path.clone(),
+            entry_id,
+            files,
+            base_id: None,
+            loading: false,
+            unlisted: Vec::new(),
+            token,
+            look_alike: true,
+            pcts,
+        });
+        self.show_similar_paths(paths);
+        if let Some(pos) = self.archives.iter().position(|p| *p == entry_path) {
+            self.selected_archive_index = Some(pos);
+        }
+    }
+
+    /// 似ている画像ビューの並びを、いまの照合結果としきい値で作り直す（「更新」とコンボボックスの変更）。
+    /// 似ている画像ビューでなければ何もしない。
+    pub(super) fn rebuild_look_alike(&mut self) {
+        let Some(view) = self.viewing_similar.as_ref().filter(|v| v.look_alike) else { return };
+        let (entry_path, entry_id) = (view.entry_path.clone(), view.entry_id);
+        let Some((files, pcts)) = self.look_alike_files(&entry_path, entry_id) else { return };
+        let previous = self.selected_archive_index.and_then(|i| self.archives.get(i)).cloned();
+        let paths: Vec<PathBuf> = files.iter().map(|f| f.path.clone()).collect();
+        if let Some(view) = self.viewing_similar.as_mut() {
+            view.files = files;
+            view.pcts = pcts;
+        }
+        self.show_similar_paths(paths);
+        let keep = previous.filter(|p| self.archives.contains(p)).unwrap_or(entry_path);
+        if let Some(pos) = self.archives.iter().position(|p| *p == keep) {
+            self.selected_archive_index = Some(pos);
+        }
+    }
+
+    /// 入口と、一覧に並んでいる全ての相手を「別物」として消し（ペアで記録）、元のフォルダへ戻る。
+    pub(super) fn dismiss_look_alike_pairs(&mut self) {
+        let Some(db) = self.spread_db.clone() else { return };
+        let Some(view) = self.viewing_similar.as_ref().filter(|v| v.look_alike) else { return };
+        let entry_id = view.entry_id;
+        let dismissed = view
+            .files
+            .iter()
+            .filter(|f| f.id != entry_id && crate::thumb_hash_store::dismiss_pair(&db, entry_id, f.id))
+            .count();
+        self.set_toast(i18n::t().sim_dismissed_toast(dismissed));
+        self.exit_similar_view();
     }
 
     /// 類似ファイル一覧を閉じ、入口にしたフォルダの表示に戻す。開いていなければ何もしない。
@@ -156,11 +255,12 @@ impl NekoviewApp {
             return;
         }
         let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), BANNER_H), egui::Sense::hover());
-        ui.painter().rect_filled(rect, 0.0, BANNER_COLOR);
+        let look_alike = self.is_look_alike_view();
+        ui.painter().rect_filled(rect, 0.0, if look_alike { LOOK_ALIKE_BANNER_COLOR } else { BANNER_COLOR });
         ui.painter().text(
             rect.center(),
             egui::Align2::CENTER_CENTER,
-            i18n::t().similar_banner(),
+            if look_alike { i18n::t().sim_banner() } else { i18n::t().similar_banner() },
             egui::FontId::proportional(14.0),
             egui::Color32::WHITE,
         );
@@ -168,6 +268,10 @@ impl NekoviewApp {
 
     /// 一覧を作り直す（外部でファイルを消した・書き換えた後）。消えたファイルは外れ、結果の古い組は捨てられる。
     pub(super) fn refresh_similar_view(&mut self) {
+        if self.is_look_alike_view() {
+            self.rebuild_look_alike();
+            return;
+        }
         let Some(db) = self.spread_db.clone() else { return };
         let Some(view) = self.viewing_similar.as_mut() else { return };
         self.similar_token += 1;
@@ -215,7 +319,7 @@ impl NekoviewApp {
 
     /// 完全比較の基準のファイル（既定は最古のID）。比べる相手が無ければ None。
     fn compare_base(&self) -> Option<&SimilarFile> {
-        let view = self.viewing_similar.as_ref()?;
+        let view = self.viewing_similar.as_ref().filter(|v| !v.look_alike)?;
         base_of(&view.files, view.base_id)
     }
 
@@ -336,6 +440,13 @@ impl NekoviewApp {
 
     /// そのファイルの完全比較の結果バッジ（文言と色）。基準の行は、比較が始まっていれば「基準」。
     pub(super) fn compare_badge(&self, path: &std::path::Path) -> Option<(String, egui::Color32)> {
+        if self.is_look_alike_view() {
+            // 似ている画像ビュー: 入口との類似度。入口の行は空欄。
+            let view = self.viewing_similar.as_ref()?;
+            let id = view.files.iter().find(|f| f.path == path)?.id;
+            let pct = *view.pcts.get(&id).filter(|_| id != view.entry_id)?;
+            return Some((format!("{pct}%"), egui::Color32::from_rgb(140, 95, 215)));
+        }
         let base = self.compare_base()?;
         let view = self.viewing_similar.as_ref()?;
         let id = view.files.iter().find(|f| f.path == path)?.id;
@@ -372,6 +483,18 @@ impl NekoviewApp {
             return;
         }
         let Some(view) = &self.viewing_similar else { return };
+        if view.look_alike {
+            let others = self.archives.len().saturating_sub(1);
+            ui.label(if others == 0 { t.sim_view_empty().to_owned() } else { t.sim_view_header(others) });
+            ui.separator();
+            if ui.button(t.similar_refresh()).clicked() {
+                self.rebuild_look_alike();
+            }
+            if ui.add_enabled(others > 0, egui::Button::new(t.similar_dismiss_all())).clicked() {
+                self.dismiss_look_alike_pairs();
+            }
+            return;
+        }
         if view.loading {
             ui.label(t.similar_loading());
             return;

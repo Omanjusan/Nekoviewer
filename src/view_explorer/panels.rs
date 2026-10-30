@@ -263,7 +263,6 @@ impl NekoviewApp {
         self.draw_unreachable_clean_dialogs(&ctx);
         self.draw_reveal_dialog(&ctx);
         self.draw_marker_popup(&ctx);
-        self.draw_sim_popup(&ctx);
         self.draw_sort_condition_dialog(&ctx);
         self.draw_bookmark_setting_dialog(&ctx);
         self.draw_spread_setting_dialog(&ctx);
@@ -2197,7 +2196,7 @@ impl NekoviewApp {
             });
         r_sim.response.on_hover_text(t.sim_threshold_hint());
         if self.sim_threshold_pct != before {
-            self.sim_popup = None;
+            self.rebuild_look_alike();
             self.recompute_filter();
         }
         ui.separator();

@@ -241,12 +241,57 @@ impl Lang {
         }
     }
 
-    /// 「？」マーカーをクリックしたときのモック表示。
-    pub fn sim_mock_popup_note(self) -> &'static str {
+    /// 「？」マーカーのホバー説明に添える、クリックでできること。
+    pub fn sim_marker_click_hint(self) -> &'static str {
         match self {
-            Lang::Japanese => "（モック）ここに「似ている画像ビュー」が開きます",
-            Lang::English  => "(Mock) The look-alike image view will open here",
-            Lang::Chinese  => "（模型）此处将打开“相似图片视图”",
+            Lang::Japanese => "クリックすると、似ているファイルだけを一覧で見られます",
+            Lang::English  => "Click to view only the look-alike files in a list",
+            Lang::Chinese  => "点击可在列表中只查看相似的文件",
+        }
+    }
+
+    /// 似ている画像ビューの告知バー。
+    pub fn sim_banner(self) -> &'static str {
+        match self {
+            Lang::Japanese => "似ている画像ビュー",
+            Lang::English  => "Look-alike Images View",
+            Lang::Chinese  => "相似图片视图",
+        }
+    }
+
+    /// 似ている画像ビューの見出し（入口を除いた件数）。
+    pub fn sim_view_header(self, n: usize) -> String {
+        match self {
+            Lang::Japanese => format!("サムネが似ているファイル {n}件"),
+            Lang::English  => format!("{n} file(s) with look-alike thumbnails"),
+            Lang::Chinese  => format!("缩略图相似的文件 {n}个"),
+        }
+    }
+
+    /// 似ている画像ビューで、しきい値を満たす相手が無いとき。
+    pub fn sim_view_empty(self) -> &'static str {
+        match self {
+            Lang::Japanese => "似ているファイルはありません（しきい値を下げると増えることがあります）",
+            Lang::English  => "No look-alike files (a lower threshold may find more)",
+            Lang::Chinese  => "没有相似的文件（降低阈值可能会找到更多）",
+        }
+    }
+
+    /// 似ている画像ビューの列見出し: 入口との類似度。
+    pub fn list_col_similarity(self) -> &'static str {
+        match self {
+            Lang::Japanese => "類似度",
+            Lang::English  => "Similarity",
+            Lang::Chinese  => "相似度",
+        }
+    }
+
+    /// 「この組を正常として消す」を押した後のトースト（別物と判断した組の数）。
+    pub fn sim_dismissed_toast(self, n: usize) -> String {
+        match self {
+            Lang::Japanese => format!("{n}組を別物として消しました。しきい値を変えても、この組には「？」を付けません"),
+            Lang::English  => format!("Dismissed {n} pair(s) as different. They will not be marked \"?\" again"),
+            Lang::Chinese  => format!("已将{n}组标记为不同。之后不再对它们标记“？”"),
         }
     }
 

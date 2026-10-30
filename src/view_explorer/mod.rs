@@ -904,8 +904,6 @@ pub struct NekoviewApp {
     sim_filter: bool,
     /// 【モック】今フレームに描いた「？」の矩形 (archives のインデックス -> (矩形, (類似度%, 相手の数)))。クリックの振り分け用。
     sim_icon_hits: HashMap<usize, (egui::Rect, (u8, usize))>,
-    /// 【モック】「？」をクリックして開いた説明（表示位置, (類似度%, 相手の数)）。
-    sim_popup: Option<(egui::Pos2, (u8, usize))>,
     /// 重複先の存在確認のワーカー（専用スレッド）。
     marker_probe: marker_probe::MarkerProbeWorker,
     /// 確認済みの重複先ID -> 現存／消失／オフライン。フォルダを読み込むたびに作り直す。
@@ -1526,7 +1524,6 @@ impl NekoviewApp {
             sim_threshold_pct: dup_marker_ui::SIM_DEFAULT_PCT,
             sim_filter: false,
             sim_icon_hits: HashMap::new(),
-            sim_popup: None,
             marker_probe: marker_probe::MarkerProbeWorker::spawn(ctx.clone()),
             marker_presence: HashMap::new(),
             marker_probe_requested: HashSet::new(),
