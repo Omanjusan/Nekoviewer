@@ -3681,14 +3681,6 @@ impl Lang {
         }
     }
 
-    pub fn slot_label(self, n: usize) -> String {
-        match self {
-            Lang::Japanese => format!("[位置F{n}]"),
-            Lang::English  => format!("[SlotF{n}]"),
-            Lang::Chinese  => format!("[位置F{n}]"),
-        }
-    }
-
     /// ビューアー上部バー右寄せの「ウィンドウ位置」メニューボタン。
     pub fn window_pos_menu_label(self) -> &'static str {
         match self {
@@ -4951,30 +4943,6 @@ impl Lang {
             Lang::Japanese => "OFFにすると、画像に埋め込まれたExif Orientationタグ（誤って付与されている場合を含む）を無視して表示する。ビューアーのみに効き、サムネイルには影響しない。",
             Lang::English  => "When off, the Exif Orientation tag embedded in images (including incorrectly-tagged ones) is ignored when displaying. Affects the viewer only, not thumbnails.",
             Lang::Chinese  => "关闭后，显示时将忽略图像内嵌的Exif Orientation标签（包括错误标签）。仅影响查看器，不影响缩略图。",
-        }
-    }
-
-    pub fn settings_default_slot_label(self) -> &'static str {
-        match self {
-            Lang::Japanese => "ビューアーを開くときの既定の位置・サイズ",
-            Lang::English  => "Default position/size when opening the viewer",
-            Lang::Chinese  => "打开查看器时的默认位置与大小",
-        }
-    }
-
-    pub fn settings_default_slot_none(self) -> &'static str {
-        match self {
-            Lang::Japanese => "なし",
-            Lang::English  => "None",
-            Lang::Chinese  => "无",
-        }
-    }
-
-    pub fn settings_default_slot_explain(self) -> &'static str {
-        match self {
-            Lang::Japanese => "F5〜F8で保存した位置・サイズを、ビューアーを開くたびに既定として適用する。該当スロットが未保存の場合はデフォルト無しと同じ扱いになる。適用後でもF5〜F8でその回だけ別スロットへ切り替えられる。",
-            Lang::English  => "Applies the position/size saved to F5-F8 as the default every time the viewer opens. If that slot isn't saved yet, it behaves as if none were selected. You can still switch to a different slot for just that session with F5-F8.",
-            Lang::Chinese  => "每次打开查看器时，将F5~F8保存的位置与大小作为默认应用。若该槽位尚未保存，则视为未选择。应用后仍可通过F5~F8临时切换到其他槽位。",
         }
     }
 

@@ -157,8 +157,6 @@ pub(crate) struct SettingsDraft {
     thumbbar_marker_b: u8,
     thumbbar_marker_a: u8,
     exif_orientation_enabled: bool,
-    /// ビューアーを開くときの既定スロット（0..3 = F5〜F8）。None = デフォルト無し。
-    default_slot: Option<usize>,
     /// スライドショータブ: 通常時のトランジション種類・遷移時間(ms)。
     transition_kind: TransitionKind,
     transition_duration_ms: u64,
@@ -308,7 +306,6 @@ impl SettingsDraft {
             thumbbar_marker_b: viewer_cfg.thumbbar_marker_b,
             thumbbar_marker_a: viewer_cfg.thumbbar_marker_a,
             exif_orientation_enabled: viewer_cfg.exif_orientation_enabled,
-            default_slot: config.default_slot,
             transition_kind: viewer_cfg.transition_kind,
             transition_duration_ms: viewer_cfg.transition_duration_ms,
             slideshow_interval_ms: viewer_cfg.slideshow_interval_ms,
@@ -387,7 +384,6 @@ impl SettingsDraft {
         viewer_cfg.thumbbar_marker_b = self.thumbbar_marker_b;
         viewer_cfg.thumbbar_marker_a = self.thumbbar_marker_a;
         viewer_cfg.exif_orientation_enabled = self.exif_orientation_enabled;
-        config.default_slot = self.default_slot;
         viewer_cfg.transition_kind = self.transition_kind;
         viewer_cfg.transition_duration_ms = self.transition_duration_ms;
         self.koma_shrink.apply_to(&mut viewer_cfg.magnifier);
@@ -935,16 +931,6 @@ fn draw_settings_tab_viewer(ui: &mut egui::Ui, draft: &mut SettingsDraft) {
             ui.add(egui::Slider::new(&mut draft.thumbbar_marker_a, 0..=100));
         });
     });
-
-    ui.separator();
-    ui.label(i18n::t().settings_default_slot_label());
-    ui.horizontal(|ui| {
-        ui.selectable_value(&mut draft.default_slot, None, i18n::t().settings_default_slot_none());
-        for i in 0..4 {
-            ui.selectable_value(&mut draft.default_slot, Some(i), i18n::t().slot_label(i + 5));
-        }
-    });
-    ui.label(i18n::t().settings_default_slot_explain());
 }
 
 fn draw_settings_tab_slideshow(ui: &mut egui::Ui, draft: &mut SettingsDraft) {

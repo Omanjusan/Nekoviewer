@@ -501,6 +501,8 @@ pub struct ViewerState {
     palette_slot_cycle_index: Option<usize>,
     /// 「ウィンドウ位置」メニューで記録済みスロットへの上書き確認待ちの番号（0..3）
     window_pos_overwrite_pending: Option<usize>,
+    /// 「開いたとき自動展開」チェックの変更を app 側へ渡すための待ち（外側 Some = 変更あり）
+    pending_default_slot_change: Option<Option<usize>>,
     /// スロット保存後に app 側へ永続化を要求するフラグ
     /// 前フレームの outer_rect 左上座標（保存用、1フレーム遅れ許容）
     outer_pos: Option<egui::Pos2>,
@@ -877,6 +879,7 @@ impl ViewerState {
             default_slot_applied: false,
             palette_slot_cycle_index: None,
             window_pos_overwrite_pending: None,
+            pending_default_slot_change: None,
             outer_pos: None,
             entry_list_visible: false,
             edge_turn_hover: None,
@@ -986,6 +989,7 @@ impl ViewerState {
             default_slot_applied: false,
             palette_slot_cycle_index: None,
             window_pos_overwrite_pending: None,
+            pending_default_slot_change: None,
             outer_pos: None,
             entry_list_visible: false,
             edge_turn_hover: None,
@@ -1774,7 +1778,7 @@ impl ViewerState {
         let ctx = ui.ctx().clone();
         let viewer_style = ui.style().clone();
         if !self.open || self.entries.is_empty() {
-            return ViewerOutput { nav: ViewerNav::None, close_requested: !self.open, save_slots: None, spread_save_action: None, sort_save_action: None, thumbnail_save_action: None, bookmark_save_action: None, rating_save_action: None, favorite_add_requested: false, toggle_translate_window: false, tool_palette_changed: false, magnifier_settings_changed: false, palette_key_assign: None };
+            return ViewerOutput { nav: ViewerNav::None, close_requested: !self.open, save_slots: None, default_slot_change: None, spread_save_action: None, sort_save_action: None, thumbnail_save_action: None, bookmark_save_action: None, rating_save_action: None, favorite_add_requested: false, toggle_translate_window: false, tool_palette_changed: false, magnifier_settings_changed: false, palette_key_assign: None };
         }
 
         // ── フレーム入力を一括収集（ctx.input はこの1回のみ）────────────────
@@ -2035,7 +2039,7 @@ impl ViewerState {
         self.maybe_open_file_detail_dialog();
         self.draw_file_detail_dialog(&ctx);
         let palette_key_assign = self.draw_tool_palette_key_assign(&ctx, keymap);
-        ViewerOutput { nav, close_requested: close_self, save_slots, spread_save_action, sort_save_action, thumbnail_save_action, bookmark_save_action, rating_save_action, favorite_add_requested, toggle_translate_window, tool_palette_changed, magnifier_settings_changed: std::mem::take(&mut self.magnifier_settings_dirty), palette_key_assign }
+        ViewerOutput { nav, close_requested: close_self, save_slots, default_slot_change: self.pending_default_slot_change.take(), spread_save_action, sort_save_action, thumbnail_save_action, bookmark_save_action, rating_save_action, favorite_add_requested, toggle_translate_window, tool_palette_changed, magnifier_settings_changed: std::mem::take(&mut self.magnifier_settings_dirty), palette_key_assign }
     }
 
     /// ツールパレットの変更確定処理。image_filterのpoll_image_filter_debounceと同じ考え方で、
@@ -2293,7 +2297,7 @@ impl ViewerState {
     ) {
         let t = i18n::t();
         let monitors = Self::slot_monitors(ctx, input.monitor_size);
-        egui::Grid::new("window_pos_menu_grid").num_columns(4).show(ui, |ui| {
+        egui::Grid::new("window_pos_menu_grid").num_columns(6).show(ui, |ui| {
             for i in 0..4usize {
                 let key = keymap.apply_slot_key_label(i).unwrap_or_else(|| t.window_pos_key_none().to_owned());
                 let slot = self.slots[i];
@@ -2315,6 +2319,21 @@ impl ViewerState {
                     } else {
                         self.record_window_slot(i, input, save_slots);
                     }
+                }
+                // 削除は確認なし。自動展開に指定中でもチェックは外さない（空のまま残り、展開はno-op）。
+                if ui.add_enabled(slot.is_some(), egui::Button::new(t.window_pos_delete())).clicked() {
+                    self.slots[i] = None;
+                    *save_slots = Some(self.slots);
+                    log_key!("[slot] delete slot{}", i + 1);
+                }
+                let mut auto = self.default_slot == Some(i);
+                if ui.checkbox(&mut auto, t.window_pos_auto_apply())
+                    .on_hover_text(t.window_pos_auto_apply_hint())
+                    .changed()
+                {
+                    let next = if auto { Some(i) } else { None };
+                    self.default_slot = next;
+                    self.pending_default_slot_change = Some(next);
                 }
                 ui.end_row();
             }

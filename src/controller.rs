@@ -70,6 +70,9 @@ pub struct ViewerOutput {
     pub close_requested: bool,
     /// Some(_) のとき app 側でスロットを永続化する
     pub save_slots: Option<[Option<WindowSlot>; 4]>,
+    /// Some(v) のとき app 側で「開いたとき自動展開」スロット（`AppConfig::default_slot`）を v に更新して永続化する。
+    /// v = None は自動展開なし。外側の Option が「変更あり」を表す。
+    pub default_slot_change: Option<Option<usize>>,
     /// Some(_) のとき app 側で見開き状態DBへの保存/削除を行う
     pub spread_save_action: Option<SpreadSaveAction>,
     /// Some(_) のとき app 側でソート条件DBへの保存/削除を行う

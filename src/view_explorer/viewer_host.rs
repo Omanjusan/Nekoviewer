@@ -552,6 +552,11 @@ impl NekoviewApp {
             self.persist_state();
         }
 
+        if let Some(v) = output.default_slot_change {
+            self.config.default_slot = v;
+            self.persist_state();
+        }
+
         if output.tool_palette_changed || output.magnifier_settings_changed {
             self.persist_state();
         }
