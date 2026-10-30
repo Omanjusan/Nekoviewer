@@ -49,6 +49,16 @@ fn index_remap(before: &[PathBuf], after: &[PathBuf]) -> HashMap<usize, usize> {
     before.iter().enumerate().filter_map(|(i, p)| Some((i, *new_index.get(p)?))).collect()
 }
 
+/// 下段フィルタの「重複」「サムネ類似」を通るか。ONのものどれかに当てはまれば通す（OR）。
+/// どちらもOFFなら絞り込まない。文字列・評価のフィルタとは別にANDで重ねる。
+/// `has_duplicate`・`has_similar` は、対応するフィルタがONのときだけ意味を持つ。
+pub(super) fn marker_filter_passes(dup_on: bool, sim_on: bool, has_duplicate: bool, has_similar: bool) -> bool {
+    if !dup_on && !sim_on {
+        return true;
+    }
+    (dup_on && has_duplicate) || (sim_on && has_similar)
+}
+
 /// 重複ソート（リスト見出し「重複」のクリック）の段。大きいほど先頭に寄る。
 /// 重複と類似の両方が付いたもの(3) > 重複のみ(2) > 類似（サムネ類似の「？」）のみ(1) > どちらも無い(0)。
 pub(super) fn dup_sort_tier(has_duplicate: bool, has_similar: bool) -> u8 {
@@ -1035,21 +1045,12 @@ impl NekoviewApp {
                             return false;
                         }
                     }
-                    if dup_active {
-                        let marked = p
-                            .file_name()
-                            .and_then(|n| n.to_str())
-                            .is_some_and(|name| self.active_marker_detected_at(name).is_some());
-                        if !marked {
-                            return false;
-                        }
-                    }
-                    if sim_active {
-                        let similar = p
-                            .file_name()
-                            .and_then(|n| n.to_str())
-                            .is_some_and(|name| self.sim_pct(name).is_some());
-                        if !similar {
+                    if dup_active || sim_active {
+                        let name = p.file_name().and_then(|n| n.to_str());
+                        let has_duplicate = dup_active
+                            && name.is_some_and(|n| self.active_marker_detected_at(n).is_some());
+                        let has_similar = sim_active && name.is_some_and(|n| self.sim_pct(n).is_some());
+                        if !marker_filter_passes(dup_active, sim_active, has_duplicate, has_similar) {
                             return false;
                         }
                     }
@@ -1219,7 +1220,25 @@ mod index_remap_tests {
 
 #[cfg(test)]
 mod dup_sort_tests {
-    use super::dup_sort_tier;
+    use super::{dup_sort_tier, marker_filter_passes};
+
+    #[test]
+    fn marker_filters_are_or_between_duplicate_and_similar() {
+        // どちらもOFF: 絞り込まない。
+        assert!(marker_filter_passes(false, false, false, false));
+        assert!(marker_filter_passes(false, false, true, true));
+        // 重複だけON: 従来どおり、重複が付いたものだけ。
+        assert!(marker_filter_passes(true, false, true, false));
+        assert!(!marker_filter_passes(true, false, false, true));
+        // 類似だけON: 従来どおり、類似が付いたものだけ。
+        assert!(marker_filter_passes(false, true, false, true));
+        assert!(!marker_filter_passes(false, true, true, false));
+        // 両方ON: どちらかが付いていれば通る（ANDではない）。
+        assert!(marker_filter_passes(true, true, true, false));
+        assert!(marker_filter_passes(true, true, false, true));
+        assert!(marker_filter_passes(true, true, true, true));
+        assert!(!marker_filter_passes(true, true, false, false));
+    }
 
     #[test]
     fn tiers_are_both_then_duplicate_then_similar_then_none() {

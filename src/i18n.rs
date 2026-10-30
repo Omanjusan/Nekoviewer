@@ -172,9 +172,9 @@ impl Lang {
     /// 下段フィルタ行: 「重複」絞り込みの説明。
     pub fn dup_filter_hint(self) -> &'static str {
         match self {
-            Lang::Japanese => "移動・再取得のマーカーが付いたファイルだけを表示します",
-            Lang::English  => "Show only files that carry a moved / re-acquired marker",
-            Lang::Chinese  => "仅显示带有移动/重新获取标记的文件",
+            Lang::Japanese => "移動・再取得のマーカーが付いたファイルだけを表示します（「サムネ類似」も入れると、どちらかが付いたファイルを表示）",
+            Lang::English  => "Show only files that carry a moved / re-acquired marker (with \"Thumb similar\" also on, files with either are shown)",
+            Lang::Chinese  => "仅显示带有移动/重新获取标记的文件（同时开启“缩略图相似”时，显示带有任一标记的文件）",
         }
     }
 
@@ -208,9 +208,9 @@ impl Lang {
     /// 下段フィルタ行: 「サムネ類似」絞り込みの説明。
     pub fn sim_filter_hint(self) -> &'static str {
         match self {
-            Lang::Japanese => "サムネが似ているファイル（「？」マーカー）だけを表示します",
-            Lang::English  => "Show only files with look-alike thumbnails (\"?\" marker)",
-            Lang::Chinese  => "仅显示缩略图相似的文件（“？”标记）",
+            Lang::Japanese => "サムネが似ているファイル（「？」マーカー）だけを表示します（「重複」も入れると、どちらかが付いたファイルを表示）",
+            Lang::English  => "Show only files with look-alike thumbnails (\"?\" marker) (with \"Duplicates\" also on, files with either are shown)",
+            Lang::Chinese  => "仅显示缩略图相似的文件（“？”标记）（同时开启“重复”时，显示带有任一标记的文件）",
         }
     }
 
