@@ -1032,7 +1032,7 @@ impl NekoviewApp {
                         let similar = p
                             .file_name()
                             .and_then(|n| n.to_str())
-                            .is_some_and(|name| self.sim_mock_pct(name).is_some());
+                            .is_some_and(|name| self.sim_pct(name).is_some());
                         if !similar {
                             return false;
                         }

@@ -46,6 +46,7 @@ mod texture_window;
 #[allow(dead_code)]
 mod thumb_hash;
 mod thumb_hash_store;
+mod thumb_similar;
 mod tool_palette;
 mod toolbar;
 mod tree_sort;

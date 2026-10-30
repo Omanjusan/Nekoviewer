@@ -5,16 +5,20 @@
 //! - サムネが作り直された（更新日時が違う）か、ハッシュの世代が違う行は、次の走査で計算し直す
 //! - ハッシュが作れないサムネ（のっぺり・壊れ）も「作れなかった」行として残し、毎回計算し直さない
 //! - 表は最初の保存で作る（旧DBの構造を起動だけで変えない）。読み取りと `forget_id_tx` は作らない
-//! - IDが消えたら（`file_identity::delete_id` など）行を連動して消す
+//! - 表 `thumb_similar_dismissed_v1`: 「正常として消した」似ているペア（小さいID, 大きいID）。照合から除く。
+//!   ハッシュとは別の表（ハッシュは作り直せるが、ユーザーの判断は作り直せない）
+//! - IDが消えたら（`file_identity::delete_id` など）行とペアを連動して消す
 
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-use redb::{Database, ReadableDatabase, TableDefinition, TableHandle, WriteTransaction};
+use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition, TableHandle, WriteTransaction};
 
 use crate::thumb_hash;
 
 const HASH_TABLE: TableDefinition<u64, &[u8]> = TableDefinition::new("thumb_hash_v1");
+const DISMISSED_TABLE: TableDefinition<(u64, u64), u8> = TableDefinition::new("thumb_similar_dismissed_v1");
 
 /// 1ファイルぶんの保存内容。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -62,8 +66,17 @@ pub fn get(db: &Arc<Mutex<Database>>, id: u64) -> Option<HashRow> {
     HashRow::decode(table.get(id).ok()??.value())
 }
 
+/// 全ての行（ID → 内容）。表が無ければ空。照合で、開いたことのあるフォルダ全体を相手にするために使う。
+pub fn all_rows(db: &Arc<Mutex<Database>>) -> HashMap<u64, HashRow> {
+    let Ok(guard) = db.lock() else { return HashMap::new() };
+    let Ok(tx) = guard.begin_read() else { return HashMap::new() };
+    let Ok(table) = tx.open_table(HASH_TABLE) else { return HashMap::new() };
+    let Ok(iter) = table.iter() else { return HashMap::new() };
+    iter.flatten().filter_map(|(k, v)| Some((k.value(), HashRow::decode(v.value())?))).collect()
+}
+
 /// 行をまとめて書く（1トランザクション）。成功したら true。
-fn put_all(db: &Arc<Mutex<Database>>, rows: &[(u64, HashRow)]) -> bool {
+pub(crate) fn put_all(db: &Arc<Mutex<Database>>, rows: &[(u64, HashRow)]) -> bool {
     if rows.is_empty() {
         return true;
     }
@@ -80,13 +93,52 @@ fn put_all(db: &Arc<Mutex<Database>>, rows: &[(u64, HashRow)]) -> bool {
     tx.commit().is_ok()
 }
 
-/// IDが消える時の連動（`delete_id` などの書き込みトランザクションの中で呼ぶ）。表が無ければ何もしない。Some = 成功。
-pub(crate) fn forget_id_tx(tx: &WriteTransaction, id: u64) -> Option<()> {
-    let exists = tx.list_tables().ok()?.any(|h| h.name() == HASH_TABLE.name());
-    if !exists {
-        return Some(());
+/// ペアの正規形（小さいIDが先）。
+pub fn pair(a: u64, b: u64) -> (u64, u64) {
+    (a.min(b), a.max(b))
+}
+
+/// 「正常として消した」ペアを記録する。同じIDどうし・既に記録済みでも成功扱い。成功したら true。
+#[allow(dead_code)] // 消すボタン（Phase 5）で使う。
+pub fn dismiss_pair(db: &Arc<Mutex<Database>>, a: u64, b: u64) -> bool {
+    if a == b {
+        return true;
     }
-    tx.open_table(HASH_TABLE).ok()?.remove(id).ok()?;
+    let Ok(guard) = db.lock() else { return false };
+    let Ok(tx) = guard.begin_write() else { return false };
+    {
+        let Ok(mut table) = tx.open_table(DISMISSED_TABLE) else { return false };
+        if table.insert(pair(a, b), 1).is_err() {
+            return false;
+        }
+    }
+    tx.commit().is_ok()
+}
+
+/// 消したペアの全て。表が無ければ空。
+pub fn dismissed_pairs(db: &Arc<Mutex<Database>>) -> HashSet<(u64, u64)> {
+    let Ok(guard) = db.lock() else { return HashSet::new() };
+    let Ok(tx) = guard.begin_read() else { return HashSet::new() };
+    let Ok(table) = tx.open_table(DISMISSED_TABLE) else { return HashSet::new() };
+    let Ok(iter) = table.iter() else { return HashSet::new() };
+    iter.flatten().map(|(k, _)| k.value()).collect()
+}
+
+/// IDが消える時の連動（`delete_id` などの書き込みトランザクションの中で呼ぶ）。
+/// そのIDのハッシュ行と、そのIDを含む消したペアを消す。どちらの表も、無ければ作らない。Some = 成功。
+pub(crate) fn forget_id_tx(tx: &WriteTransaction, id: u64) -> Option<()> {
+    let names: Vec<String> = tx.list_tables().ok()?.map(|h| h.name().to_owned()).collect();
+    if names.iter().any(|n| n == HASH_TABLE.name()) {
+        tx.open_table(HASH_TABLE).ok()?.remove(id).ok()?;
+    }
+    if names.iter().any(|n| n == DISMISSED_TABLE.name()) {
+        let mut table = tx.open_table(DISMISSED_TABLE).ok()?;
+        let keys: Vec<(u64, u64)> =
+            table.iter().ok()?.flatten().map(|(k, _)| k.value()).filter(|(a, b)| *a == id || *b == id).collect();
+        for key in keys {
+            table.remove(key).ok()?;
+        }
+    }
     Some(())
 }
 

@@ -117,16 +117,9 @@ pub(super) fn card_similar_rect(card: egui::Rect) -> egui::Rect {
 /// 重複列の左右スロットの外側の余白と、カードでのアイコン間の隙間。
 const SLOT_PAD: f32 = 4.0;
 
-/// 【モック】しきい値の既定値(%)と、コンボボックスの選択肢（5%刻み）。
+/// しきい値の既定値(%)と、コンボボックスの選択肢（5%刻み）。
 pub(super) const SIM_DEFAULT_PCT: u8 = 90;
 pub(super) const SIM_PCT_CHOICES: [u8; 7] = [70, 75, 80, 85, 90, 95, 100];
-
-/// 【モック】ファイル名から決まる仮の類似度(%)。約3分の1のファイルが対象で、65〜100%に散らす。
-/// 本実装では、サムネのdHashの距離から求めた値に置き換える。
-pub(super) fn mock_similar_pct(name: &str) -> Option<u8> {
-    let h = name.bytes().fold(0xcbf29ce484222325_u64, |h, b| (h ^ u64::from(b)).wrapping_mul(0x100000001b3));
-    (h % 3 == 0).then(|| 65 + ((h / 3) % 36) as u8)
-}
 
 /// 「？」（似ている画像）のアイコン。紫の丸に白い「?」。
 pub(super) fn paint_similar_icon(painter: &egui::Painter, rect: egui::Rect) {
@@ -228,15 +221,17 @@ impl super::NekoviewApp {
         }
     }
 
-    /// 【モック】そのファイル名に「？」を出すなら類似度(%)。マーカーを出さない表示や、しきい値に届かないものは None。
-    pub(super) fn sim_mock_pct(&self, filename: &str) -> Option<u8> {
+    /// そのファイル名に「？」を出すなら、いちばん近い相手との類似度(%)。
+    /// マーカーを出さない表示や、しきい値に届かないものは None。照合結果は距離順なので先頭が最も近い。
+    pub(super) fn sim_pct(&self, filename: &str) -> Option<u8> {
         if !self.marker_view_active() {
             return None;
         }
-        mock_similar_pct(filename).filter(|pct| *pct >= self.sim_threshold_pct)
+        let pct = self.sim_matches.get(filename)?.first()?.pct();
+        (pct >= self.sim_threshold_pct).then_some(pct)
     }
 
-    /// 【モック】「？」を描き、ホバーで説明を出す。クリックの振り分けのため、描いた矩形を覚える。
+    /// 「？」を描き、ホバーで説明を出す。クリックの振り分けのため、描いた矩形を覚える。
     pub(super) fn paint_similar_mock(
         &mut self,
         ui: &egui::Ui,
@@ -245,7 +240,7 @@ impl super::NekoviewApp {
         real_idx: usize,
         name: &str,
     ) {
-        let Some(pct) = self.sim_mock_pct(name) else {
+        let Some(pct) = self.sim_pct(name) else {
             self.sim_icon_hits.remove(&real_idx);
             return;
         };
@@ -378,6 +373,7 @@ impl super::NekoviewApp {
         self.marker_icon_hits.clear();
         self.sim_popup = None;
         self.sim_icon_hits.clear();
+        self.sim_matches.clear();
         // 重複先の存在確認は、フォルダを読み込むたびにやり直す（確認が済むまでは、いつもどおり表示する）。
         self.marker_probe.invalidate();
         self.thumb_hash.invalidate();

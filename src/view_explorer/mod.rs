@@ -896,6 +896,8 @@ pub struct NekoviewApp {
     dup_sort: bool,
     /// サムネのdHash計算の専用スレッド。
     thumb_hash: thumb_hash_worker::ThumbHashWorker,
+    /// 似ている画像の照合結果（ファイル名 → 距離の近い順の相手）。保存しない派生情報。
+    sim_matches: HashMap<String, Vec<crate::thumb_similar::SimilarMatch>>,
     /// 【モック】似ている画像の「？」を出す類似度(%)のしきい値。パス行のコンボボックス。まだ保存しない。
     sim_threshold_pct: u8,
     /// 【モック】下段フィルタ「似ているもの」。
@@ -1519,7 +1521,8 @@ impl NekoviewApp {
             dup_filter: false,
             dup_show_dismissed: false,
             dup_sort: false,
-            thumb_hash: thumb_hash_worker::ThumbHashWorker::spawn(),
+            thumb_hash: thumb_hash_worker::ThumbHashWorker::spawn(ctx.clone()),
+            sim_matches: HashMap::new(),
             sim_threshold_pct: dup_marker_ui::SIM_DEFAULT_PCT,
             sim_filter: false,
             sim_icon_hits: HashMap::new(),
