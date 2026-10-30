@@ -499,6 +499,8 @@ pub struct ViewerState {
     default_slot_applied: bool,
     /// ツールパレットのスロット循環ボタン用: 直前に適用したスロット番号（0..3）。None = 未定義
     palette_slot_cycle_index: Option<usize>,
+    /// 「ウィンドウ位置」メニューで記録済みスロットへの上書き確認待ちの番号（0..3）
+    window_pos_overwrite_pending: Option<usize>,
     /// スロット保存後に app 側へ永続化を要求するフラグ
     /// 前フレームの outer_rect 左上座標（保存用、1フレーム遅れ許容）
     outer_pos: Option<egui::Pos2>,
@@ -874,6 +876,7 @@ impl ViewerState {
             default_slot,
             default_slot_applied: false,
             palette_slot_cycle_index: None,
+            window_pos_overwrite_pending: None,
             outer_pos: None,
             entry_list_visible: false,
             edge_turn_hover: None,
@@ -982,6 +985,7 @@ impl ViewerState {
             default_slot,
             default_slot_applied: false,
             palette_slot_cycle_index: None,
+            window_pos_overwrite_pending: None,
             outer_pos: None,
             entry_list_visible: false,
             edge_turn_hover: None,
@@ -1922,7 +1926,7 @@ impl ViewerState {
         // 豆腐になるため。実ファイル名は右クリック「ファイル詳細」で確認できる）。
         ctx.send_viewport_cmd(egui::ViewportCommand::Title("Nekoviewer - Imageview".to_owned()));
 
-        let save_slots = self.draw_top_bar(ui, &ctx, &input, &viewer_style, cfg);
+        let save_slots = self.draw_top_bar(ui, &ctx, &input, &viewer_style, cfg, keymap);
 
         // ── 左エントリリスト ──────────────────────────────────────────────────
         self.draw_entry_list(ui, &ctx, &viewer_style, input.hover_pos, input.viewport_rect);
@@ -2161,6 +2165,7 @@ impl ViewerState {
         input: &FrameInput,
         style: &egui::Style,
         cfg: &mut ViewerConfig,
+        keymap: &Keymap,
     ) -> Option<[Option<WindowSlot>; 4]> {
         let mut save_slots = None;
 
@@ -2181,27 +2186,40 @@ impl ViewerState {
                     ui.horizontal(|ui| {
                         self.draw_bar_items(ui, cfg);
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            for i in (0..4usize).rev() {
-                                let label = i18n::t().slot_label(i + 5);
-                                let has_slot = self.slots[i].is_some();
-                                if ui.selectable_label(has_slot, &label).clicked() {
-                                    if let (Some(pos), Some(inner)) = (self.outer_pos, input.inner_rect) {
-                                        self.slots[i] = Some(WindowSlot {
-                                            x: pos.x as i32,
-                                            y: pos.y as i32,
-                                            w: inner.width() as u32,
-                                            h: inner.height() as u32,
-                                        });
-                                        save_slots = Some(self.slots);
-                                        log_key!("[slot] save slot{} → pos=({},{}) size={}x{}",
-                                            i + 1, pos.x as i32, pos.y as i32,
-                                            inner.width() as u32, inner.height() as u32);
-                                    }
-                                }
-                            }
+                            // 記録・削除は押しても閉じない（表示を更新するだけ）。展開は自分で ui.close() する。
+                            let config = egui::containers::menu::MenuConfig::new()
+                                .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside);
+                            egui::containers::menu::MenuButton::new(i18n::t().window_pos_menu_label())
+                                .config(config)
+                                .ui(ui, |ui| self.draw_window_pos_menu(ui, ctx, input, keymap, &mut save_slots));
                         });
                     });
                 });
+        }
+
+        // ── ウィンドウ位置の上書き確認 ──────────────────────────────────────
+        if let Some(idx) = self.window_pos_overwrite_pending {
+            let t = i18n::t();
+            let key = keymap.apply_slot_key_label(idx).unwrap_or_else(|| t.window_pos_key_none().to_owned());
+            let outcome = crate::confirm_dialog::draw_confirm_dialog(
+                ctx,
+                crate::confirm_dialog::ConfirmDialogSpec {
+                    id_salt: "window_pos_overwrite_confirm_window",
+                    title: t.window_pos_overwrite_title(),
+                    ok_label: t.window_pos_overwrite_ok(),
+                    cancel_label: t.favorite_dialog_cancel(),
+                    foreground: true,
+                },
+                |ui| { ui.label(t.window_pos_overwrite_body(&key)); },
+            );
+            match outcome {
+                crate::confirm_dialog::ConfirmOutcome::Ok => {
+                    self.window_pos_overwrite_pending = None;
+                    self.record_window_slot(idx, input, &mut save_slots);
+                }
+                crate::confirm_dialog::ConfirmOutcome::Cancel => self.window_pos_overwrite_pending = None,
+                crate::confirm_dialog::ConfirmOutcome::None => {}
+            }
         }
 
         // ── フルスクリーン時ソートバー（上端ホバーでポップアップ）────────────
@@ -2238,6 +2256,57 @@ impl ViewerState {
         }
 
         save_slots
+    }
+
+    /// 現在のビューアー位置・サイズをスロット idx（0..3）へ記録する。位置が未取得の間は何もしない。
+    fn record_window_slot(&mut self, idx: usize, input: &FrameInput, save_slots: &mut Option<[Option<WindowSlot>; 4]>) {
+        let (Some(pos), Some(inner)) = (self.outer_pos, input.inner_rect) else { return };
+        self.slots[idx] = Some(WindowSlot {
+            x: pos.x as i32,
+            y: pos.y as i32,
+            w: inner.width() as u32,
+            h: inner.height() as u32,
+        });
+        *save_slots = Some(self.slots);
+        log_key!("[slot] save slot{} → pos=({},{}) size={}x{}",
+            idx + 1, pos.x as i32, pos.y as i32,
+            inner.width() as u32, inner.height() as u32);
+    }
+
+    /// 「ウィンドウ位置」メニューの中身。1行=キー名・展開・記録内容・記録。
+    fn draw_window_pos_menu(
+        &mut self,
+        ui: &mut egui::Ui,
+        ctx: &egui::Context,
+        input: &FrameInput,
+        keymap: &Keymap,
+        save_slots: &mut Option<[Option<WindowSlot>; 4]>,
+    ) {
+        let t = i18n::t();
+        egui::Grid::new("window_pos_menu_grid").num_columns(4).show(ui, |ui| {
+            for i in 0..4usize {
+                let key = keymap.apply_slot_key_label(i).unwrap_or_else(|| t.window_pos_key_none().to_owned());
+                let slot = self.slots[i];
+                ui.label(key);
+                if ui.add_enabled(slot.is_some(), egui::Button::new(t.window_pos_apply())).clicked() {
+                    self.apply_window_slot_and_toast(ctx, i);
+                    ui.close();
+                }
+                match slot {
+                    // モニター番号の逆算は P3 で入れる。それまでは不明扱い。
+                    Some(s) => { ui.label(t.window_pos_entry(None, s.x, s.y, s.w, s.h)); }
+                    None => { ui.weak(t.window_pos_empty()); }
+                }
+                if ui.button(t.window_pos_record()).clicked() {
+                    if slot.is_some() {
+                        self.window_pos_overwrite_pending = Some(i);
+                    } else {
+                        self.record_window_slot(i, input, save_slots);
+                    }
+                }
+                ui.end_row();
+            }
+        });
     }
 
     /// フルスクリーン時ソートバーのクローズボタン。
