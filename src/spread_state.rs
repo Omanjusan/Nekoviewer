@@ -1070,6 +1070,40 @@ pub fn write_archive_rating(db: &Arc<Mutex<Database>>, dir: &Path, filename: &st
     })
 }
 
+/// 手動で増減できる訪問回数の上限。既にこれを超えている実績は、＋が効かなくなるだけで値は変えない。
+pub const VISIT_COUNT_MAX: u32 = 99_999;
+
+/// 評価を半星1つ分（0.5）だけ動かす。＋は★5.0（`RATING_HALF_MAX`）で止まり、－は0（未評価）で止まる。
+/// 未評価（0）からの＋は 0.5 から始まる。
+pub fn step_rating_half(current: u8, up: bool) -> u8 {
+    if up { current.saturating_add(1).min(RATING_HALF_MAX) } else { current.saturating_sub(1) }
+}
+
+/// 訪問回数を1だけ動かす。＋は `VISIT_COUNT_MAX` で止まり、－は0で止まる。
+pub fn step_visit_count(current: u32, up: bool) -> u32 {
+    if up { if current >= VISIT_COUNT_MAX { current } else { current + 1 } } else { current.saturating_sub(1) }
+}
+
+/// 評価を半星1つ分だけ増減して書く（リストの＋－）。増減は読み書きと同じトランザクションで行う。
+/// 訪問回数・最終訪問日時は変更しない。レコード不在なら訪問0回で新規作成する。
+pub fn adjust_archive_rating(db: &Arc<Mutex<Database>>, dir: &Path, filename: &str, up: bool) -> bool {
+    rating_modify(db, dir, filename, |current| {
+        let current = current.unwrap_or_default();
+        ArchiveRating { rating_half: step_rating_half(current.rating_half, up), ..current }
+    })
+}
+
+/// 訪問回数を1だけ増減して書く（リストの＋－）。0にしたときだけ最終訪問日時も「記録なし」(0)に戻し、
+/// それ以外では最終訪問日時に触らない。評価は変更しない。0でもレコードは消さない。
+pub fn adjust_archive_visit(db: &Arc<Mutex<Database>>, dir: &Path, filename: &str, up: bool) -> bool {
+    rating_modify(db, dir, filename, |current| {
+        let current = current.unwrap_or_default();
+        let visit_count = step_visit_count(current.visit_count, up);
+        let last_visit_at = if visit_count == 0 { 0 } else { current.last_visit_at };
+        ArchiveRating { visit_count, last_visit_at, ..current }
+    })
+}
+
 /// 評価・訪問記録を返す。レコード不在（一度も開いていない）は None。
 pub fn read_archive_rating(db: &Arc<Mutex<Database>>, dir: &Path, filename: &str) -> Option<ArchiveRating> {
     let db = db.lock().ok()?;
@@ -2154,5 +2188,63 @@ mod tests {
             assert!(legacy_data_exists(&db, &key(name)), "{name}");
         }
         assert!(!legacy_data_exists(&db, &key("other.zip")));
+    }
+
+    #[test]
+    fn rating_step_stops_at_both_ends() {
+        assert_eq!(step_rating_half(0, true), 1, "未評価からの＋は0.5");
+        assert_eq!(step_rating_half(9, true), 10);
+        assert_eq!(step_rating_half(RATING_HALF_MAX, true), RATING_HALF_MAX, "★5.0で止まる");
+        assert_eq!(step_rating_half(1, false), 0, "0.5から－で未評価");
+        assert_eq!(step_rating_half(0, false), 0, "未評価で止まる");
+    }
+
+    #[test]
+    fn visit_step_stops_at_zero_and_the_cap() {
+        assert_eq!(step_visit_count(0, true), 1);
+        assert_eq!(step_visit_count(VISIT_COUNT_MAX - 1, true), VISIT_COUNT_MAX);
+        assert_eq!(step_visit_count(VISIT_COUNT_MAX, true), VISIT_COUNT_MAX);
+        assert_eq!(step_visit_count(123_456, true), 123_456, "上限超えの実績は＋で変えない");
+        assert_eq!(step_visit_count(123_456, false), 123_455, "－は効く");
+        assert_eq!(step_visit_count(0, false), 0);
+    }
+
+    #[test]
+    fn adjusting_the_rating_keeps_the_visit_record() {
+        let db = temp_db();
+        let dir = unique_temp_path("rating_adjust");
+        record_archive_visit(&db, &dir, "book.zip");
+        let visited = read_archive_rating(&db, &dir, "book.zip").unwrap();
+        assert!(adjust_archive_rating(&db, &dir, "book.zip", true));
+        assert!(adjust_archive_rating(&db, &dir, "book.zip", true));
+        let r = read_archive_rating(&db, &dir, "book.zip").unwrap();
+        assert_eq!((r.rating_half, r.visit_count, r.last_visit_at), (2, 1, visited.last_visit_at));
+        adjust_archive_rating(&db, &dir, "book.zip", false);
+        adjust_archive_rating(&db, &dir, "book.zip", false);
+        adjust_archive_rating(&db, &dir, "book.zip", false);
+        assert_eq!(read_archive_rating(&db, &dir, "book.zip").unwrap().rating_half, 0, "－で未評価に戻り、それ以上は下がらない");
+    }
+
+    #[test]
+    fn adjusting_the_visit_count_keeps_the_rating_and_resets_the_time_only_at_zero() {
+        let db = temp_db();
+        let dir = unique_temp_path("visit_adjust");
+        write_archive_rating(&db, &dir, "book.zip", 7);
+        assert!(adjust_archive_visit(&db, &dir, "book.zip", true));
+        let r = read_archive_rating(&db, &dir, "book.zip").unwrap();
+        assert_eq!((r.rating_half, r.visit_count, r.last_visit_at), (7, 1, 0), "＋では最終訪問日時に触らない");
+
+        record_archive_visit(&db, &dir, "book.zip");
+        let stamped = read_archive_rating(&db, &dir, "book.zip").unwrap();
+        assert_eq!(stamped.visit_count, 2);
+        assert!(stamped.last_visit_at > 0);
+
+        adjust_archive_visit(&db, &dir, "book.zip", false);
+        let r = read_archive_rating(&db, &dir, "book.zip").unwrap();
+        assert_eq!((r.visit_count, r.last_visit_at), (1, stamped.last_visit_at), "0より上では日時を残す");
+
+        adjust_archive_visit(&db, &dir, "book.zip", false);
+        let r = read_archive_rating(&db, &dir, "book.zip").unwrap();
+        assert_eq!((r.rating_half, r.visit_count, r.last_visit_at), (7, 0, 0), "0にしたら日時も記録なし。評価とレコードは残る");
     }
 }

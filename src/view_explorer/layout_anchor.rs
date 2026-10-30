@@ -179,4 +179,32 @@ mod tests {
         let s = Snapshot { total: 0, ..snap(card(4), 0.0, None) };
         assert_eq!(pick_anchor(&s), None);
     }
+
+    /// 編集の解除（リストの全行が高くなる）で、見ていた行がずれない。
+    fn list_of(row_h: f32) -> Geometry {
+        Geometry { cols: 1, item_h: row_h, pitch: row_h + super::super::list_view::ROW_GAP, is_list: true }
+    }
+
+    #[test]
+    fn unlocking_edit_keeps_the_top_row_and_a_visible_selection_in_place() {
+        use super::super::list_view::edit_row_height;
+        let locked = list_of(24.0);
+        let unlocked = list_of(edit_row_height(24.0, true));
+        assert!(needs_compensation(&locked, &unlocked), "行の高さが変わるので補正が要る");
+
+        // 選択なし: 先頭に見えている行（40行目、見切れ 7px）が、解除後も同じ見切れ量で先頭に来る
+        let top = snap(locked, 40.0 * locked.pitch + 7.0, None);
+        let off = compensated_offset(&top, &unlocked, 100).unwrap();
+        assert_eq!(off, 40.0 * unlocked.pitch + 7.0);
+
+        // 選択あり(45行目): 画面上の高さが解除前後で同じ
+        let sel = snap(locked, 40.0 * locked.pitch, Some(45));
+        let before = 45.0 * locked.pitch - sel.offset;
+        let off = compensated_offset(&sel, &unlocked, 100).unwrap();
+        assert_eq!(45.0 * unlocked.pitch - off, before);
+
+        // ロックし直すと元に戻る
+        let back = compensated_offset(&snap(unlocked, off, Some(45)), &locked, 100).unwrap();
+        assert!((back - sel.offset).abs() < 0.001);
+    }
 }

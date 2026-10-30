@@ -82,7 +82,7 @@ fn saved_setting_marker_rect(rect: egui::Rect, slot: usize) -> Option<egui::Rect
     ))
 }
 
-fn saved_setting_marker_labels(
+pub(super) fn saved_setting_marker_labels(
     settings: crate::spread_state::SavedArchiveSettings,
 ) -> [Option<&'static str>; 4] {
     let spread = match settings.spread_mode {
@@ -2208,6 +2208,19 @@ impl NekoviewApp {
             }
             self.persist_state();
         }
+        // ★/訪問回数の編集ロック。表示が変わったら自動でロックに戻す（解除中だけ背景をオレンジにして目立たせる）。
+        self.sync_list_edit_lock();
+        let unlocked = self.list_edit_lock.is_unlocked();
+        let mut lock_btn = egui::Button::new(t.list_edit_lock_label(unlocked));
+        if unlocked {
+            lock_btn = lock_btn.fill(egui::Color32::from_rgb(235, 140, 40));
+        }
+        let lock_resp = ui
+            .add_enabled(mode == ViewMode::List, lock_btn)
+            .on_hover_text(t.list_edit_lock_hint());
+        if lock_resp.clicked() {
+            self.list_edit_lock.toggle();
+        }
         ui.separator();
     }
 
@@ -3374,16 +3387,7 @@ impl NekoviewApp {
 
                             // お気に入りマーカー: 左上から左下に列挙（表示できる分だけ）
                             // 横断一覧表示中はフルパスキー、通常のディレクトリ表示中はファイル名キーで引く。
-                            let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                            let marker_ids = if self.viewing_favorites.is_some()
-                                || self.viewing_search.is_some()
-                                || self.viewing_similar.is_some()
-                                || self.folder_pane_tab == FolderPaneTab::TagSearch
-                            {
-                                self.cross_view_favorite_markers.get(path)
-                            } else {
-                                self.favorite_states.get(filename)
-                            };
+                            let marker_ids = self.favorite_marker_ids(path);
                             if let Some(folder_ids) = marker_ids {
                                 // 赤Xが左上を使用中なら、先頭マーカーを1段下げて重なりを避ける。
                                 let (marker_top, max_lines) =

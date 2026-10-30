@@ -2494,6 +2494,94 @@ impl Lang {
         }
     }
 
+    /// 最左の「エラー」列（無効ZIP・サムネ失敗・ネットワーク切れ）の見出し
+    pub fn list_col_error(self) -> &'static str {
+        match self {
+            Lang::Japanese => "エラー",
+            Lang::English  => "Error",
+            Lang::Chinese  => "错误",
+        }
+    }
+
+    /// 「エラー」列のホバー説明
+    pub fn list_error_invalid_tip(self) -> &'static str {
+        match self {
+            Lang::Japanese => "画像が含まれない無効なZIPです",
+            Lang::English  => "Invalid archive: it contains no images",
+            Lang::Chinese  => "无效的压缩包：不包含图片",
+        }
+    }
+
+    pub fn list_error_thumb_tip(self, ext: &str) -> String {
+        match self {
+            Lang::Japanese => format!("{ext}デコード失敗"),
+            Lang::English  => format!("Failed to decode {ext}"),
+            Lang::Chinese  => format!("{ext}解码失败"),
+        }
+    }
+
+    pub fn list_error_network_tip(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ネットワークの接続先に到達できません",
+            Lang::English  => "The network location is unreachable",
+            Lang::Chinese  => "无法访问网络位置",
+        }
+    }
+
+    /// 「属性」列の保存設定マーカー（S / T / B）のホバー説明
+    pub fn list_attr_sort_tip(self) -> &'static str {
+        match self {
+            Lang::Japanese => "並び順を保存済み",
+            Lang::English  => "Sort order saved",
+            Lang::Chinese  => "已保存排序",
+        }
+    }
+
+    pub fn list_attr_thumb_tip(self) -> &'static str {
+        match self {
+            Lang::Japanese => "サムネイルを指定済み",
+            Lang::English  => "Custom thumbnail set",
+            Lang::Chinese  => "已指定缩略图",
+        }
+    }
+
+    pub fn list_attr_bookmark_tip(self) -> &'static str {
+        match self {
+            Lang::Japanese => "しおりあり",
+            Lang::English  => "Has a bookmark",
+            Lang::Chinese  => "有书签",
+        }
+    }
+
+    /// ツールバーの「★/訪問回数の編集」ロックのトグル。ラベルは今の状態を明記する。
+    pub fn list_edit_lock_label(self, unlocked: bool) -> &'static str {
+        match (self, unlocked) {
+            (Lang::Japanese, false) => "★/訪問回数の編集ロック",
+            (Lang::Japanese, true)  => "★/訪問回数の編集アンロック",
+            (Lang::English, false)  => "Rating/Visits edit: Locked",
+            (Lang::English, true)   => "Rating/Visits edit: Unlocked",
+            (Lang::Chinese, false)  => "评分/访问次数编辑：已锁定",
+            (Lang::Chinese, true)   => "评分/访问次数编辑：已解锁",
+        }
+    }
+
+    pub fn list_edit_lock_hint(self) -> &'static str {
+        match self {
+            Lang::Japanese => "押すとロックを解除して、リストの★と訪問回数を＋－で変えられます。フォルダ移動・タブ切替で自動的にロックに戻ります",
+            Lang::English  => "Unlock to change ratings and visit counts with +/- in the list. Locks again when you change folder or tab",
+            Lang::Chinese  => "解锁后可在列表中用 +/- 修改评分和访问次数。切换文件夹或标签页时自动重新锁定",
+        }
+    }
+
+    /// 最右の「属性」列（保存設定・お気に入り）の見出し
+    pub fn list_col_attr(self) -> &'static str {
+        match self {
+            Lang::Japanese => "属性",
+            Lang::English  => "Attributes",
+            Lang::Chinese  => "属性",
+        }
+    }
+
     /// リストのホバーポップアップ（サムネ）の ON/OFF チェックボックス
     pub fn view_mode_hover_popup_label(self) -> &'static str {
         match self {
