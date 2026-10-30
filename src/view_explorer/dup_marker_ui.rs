@@ -126,44 +126,85 @@ pub(super) fn sim_pct_from_state(s: &str) -> u8 {
     s.trim().parse::<u8>().ok().filter(|v| SIM_PCT_CHOICES.contains(v)).unwrap_or(SIM_DEFAULT_PCT)
 }
 
-/// 「？」（似ている画像）のアイコン。紫の丸に白い「?」。
-pub(super) fn paint_similar_icon(painter: &egui::Painter, rect: egui::Rect) {
-    painter.circle_filled(rect.center(), ICON_SIZE / 2.0, egui::Color32::from_rgb(140, 95, 215));
+/// 「消去済」のアイコンの灰色（重複の消去済と、「？」の消去済で共通）。
+pub(super) const DISMISSED_GREY: egui::Color32 = egui::Color32::from_rgb(140, 140, 140);
+
+/// 「？」（似ている画像）の丸の色。`dismissed` は、ユーザーが「正常として消した」組を示す灰色版。
+/// 重複の消去済と同じ規則で、形はそのままに色だけ `DISMISSED_GREY` にする。
+pub(super) fn similar_icon_fill(dismissed: bool) -> egui::Color32 {
+    if dismissed { DISMISSED_GREY } else { egui::Color32::from_rgb(140, 95, 215) }
+}
+
+/// 「？」（似ている画像）のアイコン。丸に白い「?」。`dismissed` なら灰色版（消去済）。
+/// 大きさは `rect` の幅に合わせて拡縮する（既定は `ICON_SIZE`）。
+pub(super) fn paint_similar_icon(painter: &egui::Painter, rect: egui::Rect, dismissed: bool) {
+    let k = rect.width() / ICON_SIZE;
+    painter.circle_filled(rect.center(), rect.width() / 2.0, similar_icon_fill(dismissed));
     painter.text(
         rect.center(),
         egui::Align2::CENTER_CENTER,
         "?",
-        egui::FontId::proportional(12.0),
+        egui::FontId::proportional(12.0 * k),
         egui::Color32::WHITE,
     );
 }
 
+/// 重複マーカーのアイコン。大きさは `rect` の幅に合わせて拡縮する（既定は `ICON_SIZE`）。
 pub(super) fn paint_icon(painter: &egui::Painter, rect: egui::Rect, icon: MarkerIcon) {
     let (base, alpha) = match icon {
         MarkerIcon::Moved => (egui::Color32::from_rgb(60, 130, 220), 255),
         MarkerIcon::Reacquired => (egui::Color32::from_rgb(235, 140, 35), 255),
         MarkerIcon::Elsewhere => (egui::Color32::from_rgb(235, 140, 35), 120),
-        MarkerIcon::Dismissed => (egui::Color32::from_rgb(140, 140, 140), 255),
+        MarkerIcon::Dismissed => (DISMISSED_GREY, 255),
     };
+    let k = rect.width() / ICON_SIZE;
+    let v = |x: f32, y: f32| egui::vec2(x * k, y * k);
     let with_alpha = |c: egui::Color32, a: u8| egui::Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), a);
     let c = rect.center();
-    painter.circle_filled(c, ICON_SIZE / 2.0, with_alpha(base, alpha));
-    let ink = egui::Stroke::new(1.5, egui::Color32::from_white_alpha(if alpha == 255 { 255 } else { 210 }));
+    painter.circle_filled(c, rect.width() / 2.0, with_alpha(base, alpha));
+    let ink = egui::Stroke::new(1.5 * k, egui::Color32::from_white_alpha(if alpha == 255 { 255 } else { 210 }));
     match icon {
         MarkerIcon::Moved => {
-            let (l, r) = (c + egui::vec2(-4.0, 0.0), c + egui::vec2(4.0, 0.0));
+            let (l, r) = (c + v(-4.0, 0.0), c + v(4.0, 0.0));
             painter.line_segment([l, r], ink);
-            painter.line_segment([r, r + egui::vec2(-3.0, -3.0)], ink);
-            painter.line_segment([r, r + egui::vec2(-3.0, 3.0)], ink);
+            painter.line_segment([r, r + v(-3.0, -3.0)], ink);
+            painter.line_segment([r, r + v(-3.0, 3.0)], ink);
         }
         MarkerIcon::Reacquired | MarkerIcon::Elsewhere | MarkerIcon::Dismissed => {
-            let side = egui::vec2(6.0, 6.0);
-            let back = egui::Rect::from_min_size(c + egui::vec2(-4.5, -4.5), side);
-            let front = egui::Rect::from_min_size(c + egui::vec2(-1.5, -1.5), side);
-            painter.rect_stroke(back, 1.0, ink, egui::StrokeKind::Inside);
-            painter.rect_filled(front, 1.0, with_alpha(base, alpha));
-            painter.rect_stroke(front, 1.0, ink, egui::StrokeKind::Inside);
+            let side = v(6.0, 6.0);
+            let back = egui::Rect::from_min_size(c + v(-4.5, -4.5), side);
+            let front = egui::Rect::from_min_size(c + v(-1.5, -1.5), side);
+            painter.rect_stroke(back, k, ink, egui::StrokeKind::Inside);
+            painter.rect_filled(front, k, with_alpha(base, alpha));
+            painter.rect_stroke(front, k, ink, egui::StrokeKind::Inside);
         }
+    }
+}
+
+/// デバッグタブの見本用: 全マーカーアイコン（名前, 描画）を、実寸と拡大で並べる。
+pub(super) fn draw_icon_sheet(ui: &mut egui::Ui) {
+    type Painter = fn(&egui::Painter, egui::Rect);
+    let samples: [(&str, Painter); 6] = [
+        ("移動", |p, r| paint_icon(p, r, MarkerIcon::Moved)),
+        ("再取得", |p, r| paint_icon(p, r, MarkerIcon::Reacquired)),
+        ("旧ファイル側", |p, r| paint_icon(p, r, MarkerIcon::Elsewhere)),
+        ("消去済(重複)", |p, r| paint_icon(p, r, MarkerIcon::Dismissed)),
+        ("？(類似)", |p, r| paint_similar_icon(p, r, false)),
+        ("？消去済(類似)", |p, r| paint_similar_icon(p, r, true)),
+    ];
+    for (scale, label) in [(1.0_f32, "実寸"), (3.0, "3倍")] {
+        ui.label(label);
+        ui.horizontal(|ui| {
+            for (name, paint) in samples {
+                ui.vertical(|ui| {
+                    let size = ICON_SIZE * scale;
+                    let (rect, _) = ui.allocate_exact_size(egui::vec2(size + 8.0, size + 8.0), egui::Sense::hover());
+                    paint(ui.painter(), egui::Rect::from_center_size(rect.center(), egui::vec2(size, size)));
+                    ui.label(egui::RichText::new(name).small());
+                });
+                ui.add_space(6.0);
+            }
+        });
     }
 }
 
@@ -263,7 +304,7 @@ impl super::NekoviewApp {
             self.sim_icon_hits.remove(&real_idx);
             return;
         };
-        paint_similar_icon(&ui.painter().with_clip_rect(ui.clip_rect()), icon_rect);
+        paint_similar_icon(&ui.painter().with_clip_rect(ui.clip_rect()), icon_rect, false);
         self.sim_icon_hits.insert(real_idx, (icon_rect, info));
         let on_icon = ui.input(|i| i.pointer.hover_pos()).is_some_and(|p| icon_rect.contains(p));
         if on_icon && self.marker_popup.is_none() {
@@ -451,6 +492,13 @@ mod tests {
         // 消去済みでも旧ファイル側の薄いアイコンは別物（自身の消去済み表示を優先する）。
         let gone_but_old = DirMarker { own: Some(own(MarkerKind::Reacquired, true)), referenced_by: vec![9] };
         assert_eq!(icon_for(&gone_but_old, true, &PresenceMap::new()), Some(MarkerIcon::Dismissed));
+    }
+
+    #[test]
+    fn dismissed_similar_icon_uses_the_same_grey_as_the_dismissed_duplicate_icon() {
+        assert_eq!(similar_icon_fill(true), DISMISSED_GREY);
+        assert_eq!(similar_icon_fill(false), egui::Color32::from_rgb(140, 95, 215), "紫は従来どおり");
+        assert_ne!(similar_icon_fill(true), similar_icon_fill(false));
     }
 
     #[test]

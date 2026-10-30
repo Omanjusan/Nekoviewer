@@ -158,6 +158,10 @@ impl NekoviewApp {
         if let Some(m) = &self.dev_db_ui.message {
             ui.label(m);
         }
+
+        ui.separator();
+        ui.label(egui::RichText::new("マーカーアイコン見本（開発用）").strong());
+        super::dup_marker_ui::draw_icon_sheet(ui);
     }
 
     fn run_dev_db_backup(&mut self) {

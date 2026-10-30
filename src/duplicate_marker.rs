@@ -203,7 +203,6 @@ pub fn get(db: &Arc<Mutex<Database>>, id: u64) -> Option<MarkerRecord> {
 }
 
 /// 全マーカー（検出日時の新しい順、同じならIDの大きい順）。テーブルが無ければ空。
-#[allow(dead_code)] // 一覧・フィルタ（D3）で使う。
 pub fn list(db: &Arc<Mutex<Database>>) -> Vec<MarkerRecord> {
     let Ok(guard) = db.lock() else { return Vec::new() };
     let Ok(tx) = guard.begin_read() else { return Vec::new() };
@@ -285,6 +284,30 @@ pub fn dismiss(db: &Arc<Mutex<Database>>, id: u64) -> bool {
         table.insert(id, MarkerRecord { dismissed: true, ..rec }.encode().as_slice()).ok()?;
         Some(true)
     })
+}
+
+/// 「正常として消した」再取得マーカーを元に戻す（消去済みの印を外す。`dismiss` の逆）。
+/// 消去済みでないもの・移動マーカー・無いものは何もしない。戻したら true。
+/// 戻した後は、重複先が残っていれば通常の再取得マーカーとして表示に復活する。
+#[allow(dead_code)] // 「消した組」の一覧画面（U4）で使う。
+pub fn undismiss(db: &Arc<Mutex<Database>>, id: u64) -> bool {
+    write(db, |table, _rev| {
+        let rec = table.get(id).ok()?.and_then(|g| MarkerRecord::decode(g.value()));
+        let Some(rec) = rec.filter(|r| r.kind == MarkerKind::Reacquired && r.dismissed) else {
+            return Some(false);
+        };
+        table.insert(id, MarkerRecord { dismissed: false, ..rec }.encode().as_slice()).ok()?;
+        Some(true)
+    })
+}
+
+/// 「正常として消した」再取得マーカーの全て（検出日時の新しい順、同じならIDの大きい順）。
+/// 「消した組」の一覧画面に使う。テーブルが無ければ空。
+#[allow(dead_code)] // 一覧画面（U4）で使う。
+pub fn list_dismissed(db: &Arc<Mutex<Database>>) -> Vec<MarkerRecord> {
+    let mut out = list(db);
+    out.retain(|r| r.kind == MarkerKind::Reacquired && r.dismissed);
+    out
 }
 
 /// 表示領域に入った移動マーカーに印を付ける（フォルダ離脱・終了時にまとめて呼ぶ）。印が付いた件数を返す。
@@ -814,6 +837,42 @@ mod tests {
         let mut bytes = rec.encode();
         bytes[2] |= 8;
         assert_eq!(MarkerRecord::decode(&bytes), Some(rec), "旧版が立てた bit3 は無視して読める");
+    }
+
+    #[test]
+    fn undismiss_reverses_dismiss_only_for_dismissed_reacquired_markers() {
+        let t = TempRoot::new("undismiss");
+        let db = new_db(&t);
+        assert!(record_reacquired(&db, 5, &[2], false, 100));
+        assert!(!undismiss(&db, 5), "消去済みでなければ何もしない");
+        assert!(dismiss(&db, 5));
+        assert!(get(&db, 5).unwrap().dismissed);
+        assert!(undismiss(&db, 5));
+        let rec = get(&db, 5).unwrap();
+        assert!(!rec.dismissed, "印が外れる");
+        assert_eq!((rec.kind, rec.targets.clone(), rec.detected_at), (MarkerKind::Reacquired, vec![2], 100), "他は変わらない");
+        assert!(!undismiss(&db, 5), "二度目は何もしない");
+        assert!(!undismiss(&db, 99), "無いIDは何もしない");
+        assert!(record_moved(&db, 7, 100));
+        assert!(!undismiss(&db, 7), "移動マーカーは対象外");
+    }
+
+    #[test]
+    fn list_dismissed_returns_only_dismissed_reacquired_markers_newest_first() {
+        let t = TempRoot::new("list_dismissed");
+        let db = new_db(&t);
+        assert!(list_dismissed(&db).is_empty());
+        assert!(record_reacquired(&db, 5, &[1], false, 100));
+        assert!(record_reacquired(&db, 6, &[1], false, 200));
+        assert!(record_reacquired(&db, 7, &[1], false, 300));
+        assert!(record_moved(&db, 8, 400));
+        assert!(dismiss(&db, 5));
+        assert!(dismiss(&db, 6));
+        let ids: Vec<u64> = list_dismissed(&db).iter().map(|r| r.id).collect();
+        assert_eq!(ids, vec![6, 5], "消去済みだけ、検出の新しい順");
+        assert!(undismiss(&db, 6));
+        let ids: Vec<u64> = list_dismissed(&db).iter().map(|r| r.id).collect();
+        assert_eq!(ids, vec![5]);
     }
 
     #[test]

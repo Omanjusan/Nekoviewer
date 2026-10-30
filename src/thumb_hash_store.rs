@@ -5,8 +5,10 @@
 //! - サムネが作り直された（更新日時が違う）か、ハッシュの世代が違う行は、次の走査で計算し直す
 //! - ハッシュが作れないサムネ（のっぺり・壊れ）も「作れなかった」行として残し、毎回計算し直さない
 //! - 表は最初の保存で作る（旧DBの構造を起動だけで変えない）。読み取りと `forget_id_tx` は作らない
-//! - 表 `thumb_similar_dismissed_v1`: 「正常として消した」似ているペア（小さいID, 大きいID）。照合から除く。
-//!   ハッシュとは別の表（ハッシュは作り直せるが、ユーザーの判断は作り直せない）
+//! - 表 `thumb_similar_dismissed_v2`: 「正常として消した」似ているペア（小さいID, 大きいID）→ 消した日時(unix秒)。照合から除く。
+//!   ハッシュとは別の表（ハッシュは作り直せるが、ユーザーの判断は作り直せない）。
+//!   旧版の表 `thumb_similar_dismissed_v1`（値は日時なしの `u8`）は、あれば読み（日時は不明として 0）、書かない。
+//!   表の値の型を変えると既存のDBで開けなくなるため、別の名前の表にした
 //! - IDが消えたら（`file_identity::delete_id` など）行とペアを連動して消す
 
 use std::collections::{HashMap, HashSet};
@@ -18,7 +20,9 @@ use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition, TableHand
 use crate::thumb_hash;
 
 const HASH_TABLE: TableDefinition<u64, &[u8]> = TableDefinition::new("thumb_hash_v1");
-const DISMISSED_TABLE: TableDefinition<(u64, u64), u8> = TableDefinition::new("thumb_similar_dismissed_v1");
+const DISMISSED_TABLE: TableDefinition<(u64, u64), i64> = TableDefinition::new("thumb_similar_dismissed_v2");
+/// 旧版（日時なし）。読み取りと削除だけに使い、書かない。
+const DISMISSED_TABLE_V1: TableDefinition<(u64, u64), u8> = TableDefinition::new("thumb_similar_dismissed_v1");
 
 /// 1ファイルぶんの保存内容。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -98,9 +102,10 @@ pub fn pair(a: u64, b: u64) -> (u64, u64) {
     (a.min(b), a.max(b))
 }
 
-/// 「正常として消した」ペアを記録する。同じIDどうし・既に記録済みでも成功扱い。成功したら true。
-#[allow(dead_code)] // 消すボタン（Phase 5）で使う。
-pub fn dismiss_pair(db: &Arc<Mutex<Database>>, a: u64, b: u64) -> bool {
+/// 「正常として消した」ペアを、消した日時 `at`（unix秒）つきで記録する。
+/// 同じIDどうしは何もせず成功。既に記録済みのペアは、日時を新しく書き直す。成功したら true。
+#[allow(dead_code)] // 消すボタン（U5）と一覧画面（U4）で使う。
+pub fn dismiss_pair(db: &Arc<Mutex<Database>>, a: u64, b: u64, at: i64) -> bool {
     if a == b {
         return true;
     }
@@ -108,20 +113,73 @@ pub fn dismiss_pair(db: &Arc<Mutex<Database>>, a: u64, b: u64) -> bool {
     let Ok(tx) = guard.begin_write() else { return false };
     {
         let Ok(mut table) = tx.open_table(DISMISSED_TABLE) else { return false };
-        if table.insert(pair(a, b), 1).is_err() {
+        if table.insert(pair(a, b), at).is_err() {
             return false;
         }
     }
     tx.commit().is_ok()
 }
 
-/// 消したペアの全て。表が無ければ空。
+/// 消したペアの全て（新旧の表の和集合）。表が無ければ空。
 pub fn dismissed_pairs(db: &Arc<Mutex<Database>>) -> HashSet<(u64, u64)> {
-    let Ok(guard) = db.lock() else { return HashSet::new() };
-    let Ok(tx) = guard.begin_read() else { return HashSet::new() };
-    let Ok(table) = tx.open_table(DISMISSED_TABLE) else { return HashSet::new() };
-    let Ok(iter) = table.iter() else { return HashSet::new() };
-    iter.flatten().map(|(k, _)| k.value()).collect()
+    list_dismissed_pairs(db).into_iter().map(|d| d.pair).collect()
+}
+
+/// 消した組1件。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DismissedPair {
+    /// (小さいID, 大きいID)。
+    pub pair: (u64, u64),
+    /// 消した日時（unix秒）。旧版の表から読んだ分は日時が分からないので 0。
+    pub at: i64,
+}
+
+/// 消したペアの全て。消した日時の新しい順（日時が不明の 0 は最後尾）、同じならIDの大きい順。
+/// 新旧の表の両方にあるペアは、新しい表（日時あり）を優先する。表が無ければ空。
+pub fn list_dismissed_pairs(db: &Arc<Mutex<Database>>) -> Vec<DismissedPair> {
+    let Ok(guard) = db.lock() else { return Vec::new() };
+    let Ok(tx) = guard.begin_read() else { return Vec::new() };
+    let mut found: HashMap<(u64, u64), i64> = HashMap::new();
+    if let Ok(table) = tx.open_table(DISMISSED_TABLE_V1)
+        && let Ok(iter) = table.iter()
+    {
+        for (k, _) in iter.flatten() {
+            found.insert(k.value(), 0);
+        }
+    }
+    if let Ok(table) = tx.open_table(DISMISSED_TABLE)
+        && let Ok(iter) = table.iter()
+    {
+        for (k, v) in iter.flatten() {
+            found.insert(k.value(), v.value());
+        }
+    }
+    let mut out: Vec<DismissedPair> = found.into_iter().map(|(pair, at)| DismissedPair { pair, at }).collect();
+    out.sort_by(|x, y| y.at.cmp(&x.at).then(y.pair.cmp(&x.pair)));
+    out
+}
+
+/// 消したペアを元に戻す（新旧どちらの表にあっても消す）。戻したら true、記録が無ければ false。
+/// 戻した組は、次の照合から、通常の「？」の相手に戻る。表が無ければ作らない。
+#[allow(dead_code)] // 一覧画面（U3以降）で使う。
+pub fn undismiss_pair(db: &Arc<Mutex<Database>>, a: u64, b: u64) -> bool {
+    let key = pair(a, b);
+    let Ok(guard) = db.lock() else { return false };
+    let Ok(tx) = guard.begin_write() else { return false };
+    let mut removed = false;
+    let names: Vec<String> = match tx.list_tables() {
+        Ok(handles) => handles.map(|h| h.name().to_owned()).collect(),
+        Err(_) => return false,
+    };
+    if names.iter().any(|n| n == DISMISSED_TABLE.name()) {
+        let Ok(mut table) = tx.open_table(DISMISSED_TABLE) else { return false };
+        removed |= table.remove(key).ok().flatten().is_some();
+    }
+    if names.iter().any(|n| n == DISMISSED_TABLE_V1.name()) {
+        let Ok(mut table) = tx.open_table(DISMISSED_TABLE_V1) else { return false };
+        removed |= table.remove(key).ok().flatten().is_some();
+    }
+    tx.commit().is_ok() && removed
 }
 
 /// IDが消える時の連動（`delete_id` などの書き込みトランザクションの中で呼ぶ）。
@@ -133,6 +191,14 @@ pub(crate) fn forget_id_tx(tx: &WriteTransaction, id: u64) -> Option<()> {
     }
     if names.iter().any(|n| n == DISMISSED_TABLE.name()) {
         let mut table = tx.open_table(DISMISSED_TABLE).ok()?;
+        let keys: Vec<(u64, u64)> =
+            table.iter().ok()?.flatten().map(|(k, _)| k.value()).filter(|(a, b)| *a == id || *b == id).collect();
+        for key in keys {
+            table.remove(key).ok()?;
+        }
+    }
+    if names.iter().any(|n| n == DISMISSED_TABLE_V1.name()) {
+        let mut table = tx.open_table(DISMISSED_TABLE_V1).ok()?;
         let keys: Vec<(u64, u64)> =
             table.iter().ok()?.flatten().map(|(k, _)| k.value()).filter(|(a, b)| *a == id || *b == id).collect();
         for key in keys {
@@ -377,5 +443,95 @@ mod tests {
         let guard = db.lock().unwrap();
         let tx = guard.begin_write().unwrap();
         assert!(!tx.list_tables().unwrap().any(|h| h.name() == HASH_TABLE.name()));
+    }
+
+    /// 旧版（日時なし）の表に、ペアを直接書く。
+    fn write_legacy_pair(db: &Arc<Mutex<Database>>, a: u64, b: u64) {
+        let guard = db.lock().unwrap();
+        let tx = guard.begin_write().unwrap();
+        tx.open_table(DISMISSED_TABLE_V1).unwrap().insert(pair(a, b), 1).unwrap();
+        tx.commit().unwrap();
+    }
+
+    fn tables(db: &Arc<Mutex<Database>>) -> Vec<String> {
+        let guard = db.lock().unwrap();
+        let tx = guard.begin_write().unwrap();
+        tx.list_tables().unwrap().map(|h| h.name().to_owned()).collect()
+    }
+
+    #[test]
+    fn dismissed_pairs_keep_their_time_and_list_newest_first() {
+        let t = TempRoot::new("dismissed_time");
+        let db = open_spread_db(&t.0).unwrap();
+        assert!(list_dismissed_pairs(&db).is_empty());
+        assert!(dismiss_pair(&db, 3, 1, 100));
+        assert!(dismiss_pair(&db, 2, 9, 300));
+        assert!(dismiss_pair(&db, 4, 5, 200));
+        assert!(dismiss_pair(&db, 7, 7, 999), "同じIDは何もしない");
+        let list = list_dismissed_pairs(&db);
+        assert_eq!(
+            list,
+            vec![
+                DismissedPair { pair: (2, 9), at: 300 },
+                DismissedPair { pair: (4, 5), at: 200 },
+                DismissedPair { pair: (1, 3), at: 100 },
+            ],
+            "ペアは小さいIDが先。新しい順"
+        );
+        assert!(dismiss_pair(&db, 1, 3, 400), "記録済みのペアは日時を書き直す");
+        assert_eq!(list_dismissed_pairs(&db)[0], DismissedPair { pair: (1, 3), at: 400 });
+        assert_eq!(list_dismissed_pairs(&db).len(), 3);
+    }
+
+    #[test]
+    fn legacy_v1_pairs_are_read_with_unknown_time_and_sort_last() {
+        let t = TempRoot::new("dismissed_legacy");
+        let db = open_spread_db(&t.0).unwrap();
+        write_legacy_pair(&db, 8, 6);
+        assert!(dismiss_pair(&db, 1, 2, 50));
+        assert_eq!(
+            list_dismissed_pairs(&db),
+            vec![DismissedPair { pair: (1, 2), at: 50 }, DismissedPair { pair: (6, 8), at: 0 }]
+        );
+        assert_eq!(dismissed_pairs(&db), HashSet::from([(1, 2), (6, 8)]), "照合は新旧の和集合で除く");
+        // 同じペアが新旧の両方にあれば、日時のある新しい表を優先する。
+        assert!(dismiss_pair(&db, 6, 8, 70));
+        assert_eq!(list_dismissed_pairs(&db)[0], DismissedPair { pair: (6, 8), at: 70 });
+        assert_eq!(list_dismissed_pairs(&db).len(), 2);
+    }
+
+    #[test]
+    fn undismiss_pair_removes_the_pair_from_both_tables() {
+        let t = TempRoot::new("undismiss_pair");
+        let db = open_spread_db(&t.0).unwrap();
+        write_legacy_pair(&db, 1, 2);
+        assert!(dismiss_pair(&db, 3, 4, 10));
+        assert!(dismiss_pair(&db, 1, 2, 20), "新旧の両方に入れる");
+        assert!(undismiss_pair(&db, 2, 1), "順序に依らない");
+        assert!(undismiss_pair(&db, 3, 4));
+        assert!(list_dismissed_pairs(&db).is_empty(), "新旧の両方から消える");
+        assert!(!undismiss_pair(&db, 1, 2), "二度目は記録が無いので false");
+    }
+
+    #[test]
+    fn undismiss_and_reads_never_create_the_dismissed_tables() {
+        let t = TempRoot::new("dismissed_no_create");
+        let db = open_spread_db(&t.0).unwrap();
+        assert!(!undismiss_pair(&db, 1, 2));
+        assert!(list_dismissed_pairs(&db).is_empty());
+        assert!(dismissed_pairs(&db).is_empty());
+        assert!(!tables(&db).iter().any(|n| n.starts_with("thumb_similar_dismissed")), "{:?}", tables(&db));
+    }
+
+    #[test]
+    fn forgetting_an_id_removes_its_pairs_from_both_tables() {
+        let t = TempRoot::new("dismissed_forget");
+        let db = open_spread_db(&t.0).unwrap();
+        let (a, b, c) = (register(&db, &t.0, "a.zip", 1), register(&db, &t.0, "b.zip", 2), register(&db, &t.0, "c.zip", 3));
+        write_legacy_pair(&db, a, b);
+        assert!(dismiss_pair(&db, a, c, 10));
+        assert!(dismiss_pair(&db, b, c, 20));
+        crate::file_identity::delete_id(&db, a).unwrap();
+        assert_eq!(list_dismissed_pairs(&db), vec![DismissedPair { pair: pair(b, c), at: 20 }]);
     }
 }

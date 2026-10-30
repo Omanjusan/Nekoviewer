@@ -423,7 +423,7 @@ mod tests {
         for id in [a, b, c] {
             set_hash(&db, id, Some(0));
         }
-        assert!(thumb_hash_store::dismiss_pair(&db, b, a), "順序に依らない");
+        assert!(thumb_hash_store::dismiss_pair(&db, b, a, 100), "順序に依らない");
         let got = run(&db, &t.0, &["a.zip", "b.zip", "c.zip"]);
         assert_eq!(got["a.zip"], vec![SimilarMatch { other: c, distance: 0 }]);
         assert_eq!(got["b.zip"], vec![SimilarMatch { other: c, distance: 0 }]);
@@ -476,8 +476,8 @@ mod tests {
             let tx = guard.begin_write().unwrap();
             assert!(!tx.list_tables().unwrap().any(|h| h.name().starts_with("thumb_")), "読みと連動削除は表を作らない");
         }
-        assert!(thumb_hash_store::dismiss_pair(&db, a, b));
-        assert!(thumb_hash_store::dismiss_pair(&db, a, b), "二重記録しても1組");
+        assert!(thumb_hash_store::dismiss_pair(&db, a, b, 100));
+        assert!(thumb_hash_store::dismiss_pair(&db, a, b, 100), "二重記録しても1組");
         assert_eq!(thumb_hash_store::dismissed_pairs(&db), HashSet::from([(a.min(b), a.max(b))]));
         file_identity::delete_id(&db, b).unwrap();
         assert!(thumb_hash_store::dismissed_pairs(&db).is_empty(), "IDが消えたらペアも消える");

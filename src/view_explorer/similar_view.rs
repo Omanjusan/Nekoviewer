@@ -178,7 +178,7 @@ impl NekoviewApp {
         let dismissed = view
             .files
             .iter()
-            .filter(|f| f.id != entry_id && crate::thumb_hash_store::dismiss_pair(&db, entry_id, f.id))
+            .filter(|f| f.id != entry_id && crate::thumb_hash_store::dismiss_pair(&db, entry_id, f.id, crate::file_identity::now_unix()))
             .count();
         self.set_toast(i18n::t().sim_dismissed_toast(dismissed));
         self.exit_similar_view();
