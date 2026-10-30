@@ -2198,6 +2198,7 @@ impl NekoviewApp {
         if self.sim_threshold_pct != before {
             self.rebuild_look_alike();
             self.recompute_filter();
+            self.persist_state();
         }
         ui.separator();
     }

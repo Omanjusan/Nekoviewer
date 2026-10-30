@@ -467,6 +467,7 @@ impl NekoviewApp {
         self.poll_identity_results();
         self.poll_marker_probe();
         self.poll_thumb_hash();
+        self.apply_pending_similar_entry();
         self.poll_marker_compare();
         self.poll_similar_focus();
 

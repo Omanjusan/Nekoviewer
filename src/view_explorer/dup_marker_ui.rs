@@ -121,6 +121,11 @@ const SLOT_PAD: f32 = 4.0;
 pub(super) const SIM_DEFAULT_PCT: u8 = 90;
 pub(super) const SIM_PCT_CHOICES: [u8; 7] = [70, 75, 80, 85, 90, 95, 100];
 
+/// 保存された文字列からしきい値(%)を読む。空・壊れた値・選択肢に無い値は既定値。
+pub(super) fn sim_pct_from_state(s: &str) -> u8 {
+    s.trim().parse::<u8>().ok().filter(|v| SIM_PCT_CHOICES.contains(v)).unwrap_or(SIM_DEFAULT_PCT)
+}
+
 /// 「？」（似ている画像）のアイコン。紫の丸に白い「?」。
 pub(super) fn paint_similar_icon(painter: &egui::Painter, rect: egui::Rect) {
     painter.circle_filled(rect.center(), ICON_SIZE / 2.0, egui::Color32::from_rgb(140, 95, 215));
@@ -160,6 +165,16 @@ pub(super) fn paint_icon(painter: &egui::Painter, rect: egui::Rect, icon: Marker
             painter.rect_stroke(front, 1.0, ink, egui::StrokeKind::Inside);
         }
     }
+}
+
+/// 類似ファイル一覧・似ている画像ビューを開く依頼。アイコンのクリックでは依頼を置くだけにし、
+/// 実際の差し替えは次のフレームの頭で行う。リストやカードは、見えている行の範囲を先に決めて順に描くので、
+/// 描画ループの途中で `archives` を差し替えると、後続の行が範囲外の添字を引いて落ちる。
+pub(super) enum SimilarEntryRequest {
+    /// 同じ内容（FP一致）の一覧。
+    SameContent { path: std::path::PathBuf, id: u64 },
+    /// 似ている画像（サムネの類似）の一覧。
+    LookAlike { path: std::path::PathBuf, id: u64 },
 }
 
 /// 開いているポップアップ。移動マーカーの説明だけを出す（ほかの種類のアイコンは、押すと類似ファイル一覧を直接開く）。
@@ -277,7 +292,8 @@ impl super::NekoviewApp {
                     |((db, dir), name)| crate::file_identity::lookup(db, &crate::spread_state::make_key(dir, name)),
                 ).map(|rec| rec.id)
             {
-                self.enter_look_alike_view(path, entry_id);
+                self.pending_similar_entry = Some(SimilarEntryRequest::LookAlike { path, id: entry_id });
+                response.ctx.request_repaint();
             }
             return true;
         }
@@ -305,9 +321,19 @@ impl super::NekoviewApp {
             .and_then(|(db, dir)| crate::file_identity::lookup(db, &crate::spread_state::make_key(dir, name)))
             .map(|rec| rec.id);
         if let Some(id) = entry_id {
-            self.enter_similar_view(path, id);
+            self.pending_similar_entry = Some(SimilarEntryRequest::SameContent { path, id });
+            response.ctx.request_repaint();
         }
         true
+    }
+
+    /// 溜まっている一覧を開く依頼を実行する。フレームの頭で呼ぶ（描画ループの途中では呼ばない）。
+    pub(super) fn apply_pending_similar_entry(&mut self) {
+        match self.pending_similar_entry.take() {
+            Some(SimilarEntryRequest::SameContent { path, id }) => self.enter_similar_view(path, id),
+            Some(SimilarEntryRequest::LookAlike { path, id }) => self.enter_look_alike_view(path, id),
+            None => {}
+        }
     }
 
     /// 開いているポップアップを描く。外側の押下かEscで閉じる。
@@ -425,6 +451,17 @@ mod tests {
         // 消去済みでも旧ファイル側の薄いアイコンは別物（自身の消去済み表示を優先する）。
         let gone_but_old = DirMarker { own: Some(own(MarkerKind::Reacquired, true)), referenced_by: vec![9] };
         assert_eq!(icon_for(&gone_but_old, true, &PresenceMap::new()), Some(MarkerIcon::Dismissed));
+    }
+
+    #[test]
+    fn sim_threshold_state_accepts_only_the_listed_choices() {
+        for pct in SIM_PCT_CHOICES {
+            assert_eq!(sim_pct_from_state(&pct.to_string()), pct);
+        }
+        assert_eq!(sim_pct_from_state(" 80 "), 80, "前後の空白は無視");
+        for bad in ["", "abc", "-5", "300", "82", "0", "69"] {
+            assert_eq!(sim_pct_from_state(bad), SIM_DEFAULT_PCT, "{bad:?}");
+        }
     }
 
     #[test]

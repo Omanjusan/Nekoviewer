@@ -896,9 +896,11 @@ pub struct NekoviewApp {
     dup_sort: bool,
     /// サムネのdHash計算の専用スレッド。
     thumb_hash: thumb_hash_worker::ThumbHashWorker,
+    /// 一覧を開く依頼（アイコンのクリックで置き、次のフレームの頭で実行する）。
+    pending_similar_entry: Option<dup_marker_ui::SimilarEntryRequest>,
     /// 似ている画像の照合結果（ファイル名 → 距離の近い順の相手）。保存しない派生情報。
     sim_matches: HashMap<String, Vec<crate::thumb_similar::SimilarMatch>>,
-    /// 【モック】似ている画像の「？」を出す類似度(%)のしきい値。パス行のコンボボックス。まだ保存しない。
+    /// 似ている画像の「？」を出す類似度(%)のしきい値。パス行のコンボボックス。`nekoviewer.state` の `explorer_sim_threshold` に保存する。
     sim_threshold_pct: u8,
     /// 【モック】下段フィルタ「似ているもの」。
     sim_filter: bool,
@@ -1387,7 +1389,7 @@ mod glyph_audit;
 
 
 impl NekoviewApp {
-    pub fn new(start_dir: PathBuf, config: AppConfig, viewer_slots: [Option<WindowSlot>; 4], sort_state: SortState, viewer_cfg: ViewerConfig, show_hidden: bool, card_info_mode: &str, card_rating_mode: &str, card_date_format: crate::card_date_format::CardDateFormat, translate_cfg: crate::translate::TranslateConfig, tab_positions: crate::gui_config::TabPositions, tree_sorts: crate::tree_sort::TreeSorts, tag_panel_open: bool, tag_preview_high_quality: bool, explorer_view_mode: &str, explorer_list_cols: &str, open_target: Option<PathBuf>, ctx: egui::Context) -> Self {
+    pub fn new(start_dir: PathBuf, config: AppConfig, viewer_slots: [Option<WindowSlot>; 4], sort_state: SortState, viewer_cfg: ViewerConfig, show_hidden: bool, card_info_mode: &str, card_rating_mode: &str, card_date_format: crate::card_date_format::CardDateFormat, translate_cfg: crate::translate::TranslateConfig, tab_positions: crate::gui_config::TabPositions, tree_sorts: crate::tree_sort::TreeSorts, tag_panel_open: bool, tag_preview_high_quality: bool, explorer_view_mode: &str, explorer_list_cols: &str, explorer_sim_threshold: &str, open_target: Option<PathBuf>, ctx: egui::Context) -> Self {
         // 「前回フォルダに復帰」がオフなら、他のフォルダ系タブの保存位置も復元しない（既定に戻す）
         let tab_positions = if config.startup.use_last_dir {
             tab_positions
@@ -1520,8 +1522,9 @@ impl NekoviewApp {
             dup_show_dismissed: false,
             dup_sort: false,
             thumb_hash: thumb_hash_worker::ThumbHashWorker::spawn(ctx.clone()),
+            pending_similar_entry: None,
             sim_matches: HashMap::new(),
-            sim_threshold_pct: dup_marker_ui::SIM_DEFAULT_PCT,
+            sim_threshold_pct: dup_marker_ui::sim_pct_from_state(explorer_sim_threshold),
             sim_filter: false,
             sim_icon_hits: HashMap::new(),
             marker_probe: marker_probe::MarkerProbeWorker::spawn(ctx.clone()),
@@ -1777,6 +1780,7 @@ impl NekoviewApp {
             self.tag_preview_high_quality,
             &self.view_mode.as_state_str(),
             &self.list_cols.as_state_str(),
+            &self.sim_threshold_pct.to_string(),
         );
     }
 }
