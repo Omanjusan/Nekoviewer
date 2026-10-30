@@ -147,7 +147,10 @@ impl super::NekoviewApp {
         if !changed {
             return;
         }
-        if self.sim_filter {
+        // 「重複」見出しの並びは類似も含むので、届くたびに並べ直す（並べ直しの中で絞り込みも作り直す）。
+        if self.dup_sort {
+            self.resort_keeping_selection_always();
+        } else if self.sim_filter {
             self.recompute_filter();
         }
         self.egui_ctx.request_repaint();

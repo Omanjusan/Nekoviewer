@@ -49,6 +49,17 @@ fn index_remap(before: &[PathBuf], after: &[PathBuf]) -> HashMap<usize, usize> {
     before.iter().enumerate().filter_map(|(i, p)| Some((i, *new_index.get(p)?))).collect()
 }
 
+/// 重複ソート（リスト見出し「重複」のクリック）の段。大きいほど先頭に寄る。
+/// 重複と類似の両方が付いたもの(3) > 重複のみ(2) > 類似（サムネ類似の「？」）のみ(1) > どちらも無い(0)。
+pub(super) fn dup_sort_tier(has_duplicate: bool, has_similar: bool) -> u8 {
+    match (has_duplicate, has_similar) {
+        (true, true) => 3,
+        (true, false) => 2,
+        (false, true) => 1,
+        (false, false) => 0,
+    }
+}
+
 /// `sort_archives` が比較用に集めた1件ぶんの値
 struct SortEntry {
     path: PathBuf,
@@ -56,8 +67,8 @@ struct SortEntry {
     fav: bool,
     /// 類似ファイル一覧の入口のファイル（何よりも先頭に固定する）
     pinned: bool,
-    /// 重複ソートON時の、自身のマーカーの検出日時（新しいものを先頭へ。無ければ None で従来の並び）
-    dup: Option<i64>,
+    /// 重複ソートON時の段（`dup_sort_tier`。大きいものを先頭へ。OFFのときは全員0で従来の並び）
+    dup_tier: u8,
     mtime: Option<std::time::SystemTime>,
     size: u64,
     rating_half: u8,
@@ -972,25 +983,30 @@ impl NekoviewApp {
             } else {
                 None
             };
-            let dup = if self.dup_sort {
-                p.file_name().and_then(|n| n.to_str()).and_then(|name| self.active_marker_detected_at(name))
+            let dup_tier = if self.dup_sort {
+                let name = p.file_name().and_then(|n| n.to_str());
+                dup_sort_tier(
+                    name.and_then(|n| self.active_marker_detected_at(n)).is_some(),
+                    name.and_then(|n| self.sim_pct(n)).is_some(),
+                )
             } else {
-                None
+                0
             };
             SortEntry {
                 path: p.clone(),
                 pinned: self.viewing_similar.as_ref().is_some_and(|v| v.entry_path == *p),
                 fav,
-                dup,
+                dup_tier,
                 mtime: meta.as_ref().and_then(|m| m.modified().ok()),
                 size: meta.as_ref().map_or(0, |m| m.len()),
                 rating_half: rating.map_or(0, |r| r.rating_half),
                 visit_count: rating.map_or(0, |r| r.visit_count),
             }
         }).collect();
-        // 重複ソートONのマーカー付きは、お気に入りの先頭固定よりさらに前（None < Some なので、新しい順に先頭へ）。
+        // 重複ソートONの段（両方 > 重複のみ > 類似のみ > なし）は、お気に入りの先頭固定よりさらに前。
+        // 段の中は、お気に入りの先頭固定と通常のソート条件に従う。
         entries.sort_by(|a, b| {
-            b.pinned.cmp(&a.pinned).then(b.dup.cmp(&a.dup)).then(b.fav.cmp(&a.fav)).then_with(|| sort.compare(&a.row(), &b.row()))
+            b.pinned.cmp(&a.pinned).then(b.dup_tier.cmp(&a.dup_tier)).then(b.fav.cmp(&a.fav)).then_with(|| sort.compare(&a.row(), &b.row()))
         });
         self.archives = entries.into_iter().map(|e| e.path).collect();
     }
@@ -1198,5 +1214,35 @@ mod index_remap_tests {
         let remap = index_remap(&paths(&["a", "b"]), &paths(&["b"]));
         assert_eq!(remap.get(&0), None);
         assert_eq!(remap[&1], 0);
+    }
+}
+
+#[cfg(test)]
+mod dup_sort_tests {
+    use super::dup_sort_tier;
+
+    #[test]
+    fn tiers_are_both_then_duplicate_then_similar_then_none() {
+        assert_eq!(dup_sort_tier(true, true), 3);
+        assert_eq!(dup_sort_tier(true, false), 2);
+        assert_eq!(dup_sort_tier(false, true), 1);
+        assert_eq!(dup_sort_tier(false, false), 0);
+    }
+
+    #[test]
+    fn sorting_by_tier_descending_keeps_the_original_order_inside_a_tier() {
+        // (名前, 重複, 類似)。名前順に並んだ入力を、段の大きい順に安定ソートする。
+        let mut files = [
+            ("a", false, false),
+            ("b", false, true),
+            ("c", true, false),
+            ("d", true, true),
+            ("e", false, false),
+            ("f", true, true),
+            ("g", false, true),
+        ];
+        files.sort_by(|x, y| dup_sort_tier(y.1, y.2).cmp(&dup_sort_tier(x.1, x.2)));
+        let names: Vec<_> = files.iter().map(|f| f.0).collect();
+        assert_eq!(names, ["d", "f", "c", "b", "g", "a", "e"]);
     }
 }

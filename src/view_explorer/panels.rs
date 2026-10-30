@@ -2197,7 +2197,12 @@ impl NekoviewApp {
         r_sim.response.on_hover_text(t.sim_threshold_hint());
         if self.sim_threshold_pct != before {
             self.rebuild_look_alike();
-            self.recompute_filter();
+            // 「重複」見出しの並びは類似も含むので、しきい値が変わったら並べ直す（絞り込みも作り直される）。
+            if self.dup_sort {
+                self.resort_keeping_selection_always();
+            } else {
+                self.recompute_filter();
+            }
             self.persist_state();
         }
         ui.separator();
