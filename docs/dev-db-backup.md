@@ -38,6 +38,12 @@ DBファイルを開かずに丸ごとコピーする（開いたDBは Windows �
 設定→エクスプローラー→「データベース管理」に「バックアップフォルダを開く」がある（`backup_auto/` が無い間は押せない）。説明文に、旧版へ戻す時の
 手動復元（アプリを閉じて `nekoviewer_spread.redb` をコピーで置き換える）を書いてある。
 
+### v1.11 の注意ダイアログとの順序
+
+旧版からの更新時は、バックアップを取った後に、移行の案内ダイアログ（`view_explorer/release_notice_ui.rs`、
+[features/file-identity.md](features/file-identity.md) 8章）を1回だけ出す。バックアップ失敗の確認ダイアログが出ている間は、
+案内を出さない（確認が済んでから出る）。
+
 ### 失敗時の確認ダイアログ（`view_explorer/backup_failure_ui.rs`）
 
 失敗時は、ID層のスイッチ（`file_identity::set_enabled`）をOFFにして起動する。OFF の間は `ensure_record`・`resolve_file` が
