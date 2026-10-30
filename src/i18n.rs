@@ -232,12 +232,12 @@ impl Lang {
         }
     }
 
-    /// 「？」マーカーのホバー説明。
-    pub fn sim_marker_tooltip(self, pct: u8) -> String {
+    /// 「？」マーカーのホバー説明。`pct` は最も近い相手との類似度、`count` はしきい値を満たす相手の数。
+    pub fn sim_marker_tooltip(self, pct: u8, count: usize) -> String {
         match self {
-            Lang::Japanese => format!("サムネが似ているファイルがあります（類似度 {pct}%）。内容が同じとは限りません"),
-            Lang::English  => format!("A file with a look-alike thumbnail exists ({pct}% similar). The content may differ"),
-            Lang::Chinese  => format!("存在缩略图相似的文件（相似度 {pct}%）。内容不一定相同"),
+            Lang::Japanese => format!("サムネが似ているファイルが{count}件あります（最も近いもので類似度 {pct}%）。内容が同じとは限りません"),
+            Lang::English  => format!("{count} file(s) with look-alike thumbnails (closest: {pct}% similar). The content may differ"),
+            Lang::Chinese  => format!("有{count}个缩略图相似的文件（最接近的相似度 {pct}%）。内容不一定相同"),
         }
     }
 

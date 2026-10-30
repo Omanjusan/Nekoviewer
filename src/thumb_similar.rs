@@ -36,6 +36,13 @@ impl SimilarMatch {
     }
 }
 
+/// 距離順の相手 `matches` のうち、類似度が `min_pct` 以上のものの (いちばん近い相手の類似度(%), 件数)。
+/// 1件も満たさなければ None。「？」のホバー説明と、出す・出さないの判定に使う。
+pub fn summarize(matches: &[SimilarMatch], min_pct: u8) -> Option<(u8, usize)> {
+    let pct = matches.first()?.pct();
+    (pct >= min_pct).then(|| (pct, matches.iter().take_while(|m| m.pct() >= min_pct).count()))
+}
+
 /// `subjects` の各ハッシュに対して、`universe` の中で距離が `max_distance` 以下のもの（自分自身を除く）。
 /// 戻り値は (対象ID, 相手ID, 距離)。総当たり。
 pub fn candidate_pairs(subjects: &[(u64, u64)], universe: &[(u64, u64)], max_distance: u32) -> Vec<(u64, u64, u8)> {
@@ -197,6 +204,19 @@ mod tests {
         let universe = [(1, 0_u64), (2, bits(19)), (3, bits(20)), (4, 0)];
         let got = candidate_pairs(&subjects, &universe, max);
         assert_eq!(got, vec![(1, 2, 19), (1, 4, 0)]);
+    }
+
+    #[test]
+    fn summarize_counts_only_partners_at_or_above_the_threshold() {
+        let m = |distance: u8| SimilarMatch { other: u64::from(distance), distance };
+        // 距離 0 / 3 / 6 / 13 / 19 は、類似度 100 / 95 / 91 / 80 / 70 %。
+        let list = [m(0), m(3), m(6), m(13), m(19)];
+        assert_eq!(summarize(&list, 100), Some((100, 1)));
+        assert_eq!(summarize(&list, 90), Some((100, 3)));
+        assert_eq!(summarize(&list, 80), Some((100, 4)));
+        assert_eq!(summarize(&list, 70), Some((100, 5)));
+        assert_eq!(summarize(&[m(3), m(6)], 100), None, "最も近い相手が届かなければ出さない");
+        assert_eq!(summarize(&[], 70), None);
     }
 
     #[test]

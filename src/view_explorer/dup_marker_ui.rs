@@ -221,14 +221,18 @@ impl super::NekoviewApp {
         }
     }
 
-    /// そのファイル名に「？」を出すなら、いちばん近い相手との類似度(%)。
+    /// そのファイル名に「？」を出すなら、(いちばん近い相手との類似度(%), しきい値を満たす相手の数)。
     /// マーカーを出さない表示や、しきい値に届かないものは None。照合結果は距離順なので先頭が最も近い。
-    pub(super) fn sim_pct(&self, filename: &str) -> Option<u8> {
+    pub(super) fn sim_summary(&self, filename: &str) -> Option<(u8, usize)> {
         if !self.marker_view_active() {
             return None;
         }
-        let pct = self.sim_matches.get(filename)?.first()?.pct();
-        (pct >= self.sim_threshold_pct).then_some(pct)
+        crate::thumb_similar::summarize(self.sim_matches.get(filename)?, self.sim_threshold_pct)
+    }
+
+    /// `sim_summary` の、類似度だけ。
+    pub(super) fn sim_pct(&self, filename: &str) -> Option<u8> {
+        self.sim_summary(filename).map(|(pct, _)| pct)
     }
 
     /// 「？」を描き、ホバーで説明を出す。クリックの振り分けのため、描いた矩形を覚える。
@@ -240,21 +244,21 @@ impl super::NekoviewApp {
         real_idx: usize,
         name: &str,
     ) {
-        let Some(pct) = self.sim_pct(name) else {
+        let Some(info) = self.sim_summary(name) else {
             self.sim_icon_hits.remove(&real_idx);
             return;
         };
         paint_similar_icon(&ui.painter().with_clip_rect(ui.clip_rect()), icon_rect);
-        self.sim_icon_hits.insert(real_idx, (icon_rect, pct));
+        self.sim_icon_hits.insert(real_idx, (icon_rect, info));
         let on_icon = ui.input(|i| i.pointer.hover_pos()).is_some_and(|p| icon_rect.contains(p));
         if on_icon && self.sim_popup.is_none() && self.marker_popup.is_none() {
-            response.clone().on_hover_text(i18n::t().sim_marker_tooltip(pct));
+            response.clone().on_hover_text(i18n::t().sim_marker_tooltip(info.0, info.1));
         }
     }
 
     /// 【モック】「？」の説明ポップアップ。外側クリックかEscで閉じる。
     pub(super) fn draw_sim_popup(&mut self, ctx: &egui::Context) {
-        let Some((anchor, pct)) = self.sim_popup else { return };
+        let Some((anchor, (pct, count))) = self.sim_popup else { return };
         let t = i18n::t();
         let area = egui::Area::new(egui::Id::new("sim_mock_popup"))
             .order(egui::Order::Foreground)
@@ -262,7 +266,7 @@ impl super::NekoviewApp {
             .show(ctx, |ui| {
                 egui::Frame::popup(ui.style()).show(ui, |ui| {
                     ui.set_max_width(380.0);
-                    ui.label(egui::RichText::new(t.sim_marker_tooltip(pct)).strong());
+                    ui.label(egui::RichText::new(t.sim_marker_tooltip(pct, count)).strong());
                     ui.label(t.sim_mock_popup_note());
                 });
             });
@@ -285,11 +289,11 @@ impl super::NekoviewApp {
             return false;
         }
         // 【モック】「？」のクリック。
-        if let Some((rect, pct)) = self.sim_icon_hits.get(&real_idx).copied()
+        if let Some((rect, info)) = self.sim_icon_hits.get(&real_idx).copied()
             && ui.input(|i| i.pointer.interact_pos()).is_some_and(|p| rect.contains(p))
         {
             if response.clicked() {
-                self.sim_popup = Some((egui::pos2(rect.min.x, rect.max.y + 4.0), pct));
+                self.sim_popup = Some((egui::pos2(rect.min.x, rect.max.y + 4.0), info));
             }
             return true;
         }
