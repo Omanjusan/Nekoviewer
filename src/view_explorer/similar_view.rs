@@ -438,22 +438,27 @@ impl NekoviewApp {
         })
     }
 
-    /// そのファイルの完全比較の結果バッジ（文言と色）。基準の行は、比較が始まっていれば「基準」。
+    /// そのファイルの完全比較の結果バッジ（文言と色）。基準の行は、比較の前から「基準」。
     pub(super) fn compare_badge(&self, path: &std::path::Path) -> Option<(String, egui::Color32)> {
         if self.is_look_alike_view() {
-            // 似ている画像ビュー: 入口との類似度。入口の行は空欄。
+            // 似ている画像ビュー: 入口との類似度。入口の行は「基準」。
             let view = self.viewing_similar.as_ref()?;
             let id = view.files.iter().find(|f| f.path == path)?.id;
-            let pct = *view.pcts.get(&id).filter(|_| id != view.entry_id)?;
-            return Some((format!("{pct}%"), egui::Color32::from_rgb(140, 95, 215)));
+            let color = egui::Color32::from_rgb(140, 95, 215);
+            // 入口の行は、計算の前から「基準」と出す（他の行の類似度の比べ先を示す）。
+            if id == view.entry_id {
+                return Some((i18n::t().similar_badge_base().to_owned(), color));
+            }
+            let pct = *view.pcts.get(&id)?;
+            return Some((format!("{pct}%"), color));
         }
         let base = self.compare_base()?;
         let view = self.viewing_similar.as_ref()?;
         let id = view.files.iter().find(|f| f.path == path)?.id;
         let t = i18n::t();
         if id == base.id {
-            let started = view.files.iter().any(|f| self.marker_compare_states.contains_key(&(base.id, f.id)));
-            return started.then(|| (t.similar_badge_base().to_owned(), egui::Color32::from_rgb(120, 130, 150)));
+            // 基準の行は、比較を始める前から「基準」と出す。基準を付け替えると、この文字も追従する。
+            return Some((t.similar_badge_base().to_owned(), egui::Color32::from_rgb(120, 130, 150)));
         }
         Some(match self.marker_compare_states.get(&(base.id, id))? {
             CompareState::Running { done, total, .. } => {
