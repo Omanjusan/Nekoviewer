@@ -380,6 +380,7 @@ impl super::NekoviewApp {
         self.sim_icon_hits.clear();
         // 重複先の存在確認は、フォルダを読み込むたびにやり直す（確認が済むまでは、いつもどおり表示する）。
         self.marker_probe.invalidate();
+        self.thumb_hash.invalidate();
         self.marker_presence.clear();
         self.marker_probe_requested.clear();
         if self.marker_seen_dir.as_deref() != Some(self.current_dir.as_path()) {

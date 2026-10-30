@@ -894,6 +894,8 @@ pub struct NekoviewApp {
     dup_show_dismissed: bool,
     /// リスト見出し「重複」のソート。マーカー付きを検出日時の新しい順で先頭に寄せる（保存しない）。
     dup_sort: bool,
+    /// サムネのdHash計算の専用スレッド。
+    thumb_hash: thumb_hash_worker::ThumbHashWorker,
     /// 【モック】似ている画像の「？」を出す類似度(%)のしきい値。パス行のコンボボックス。まだ保存しない。
     sim_threshold_pct: u8,
     /// 【モック】下段フィルタ「似ているもの」。
@@ -1377,6 +1379,7 @@ mod dup_marker_ui;
 mod marker_probe;
 mod marker_compare;
 mod similar_view;
+mod thumb_hash_worker;
 mod layout_anchor;
 
 #[cfg(test)]
@@ -1516,6 +1519,7 @@ impl NekoviewApp {
             dup_filter: false,
             dup_show_dismissed: false,
             dup_sort: false,
+            thumb_hash: thumb_hash_worker::ThumbHashWorker::spawn(),
             sim_threshold_pct: dup_marker_ui::SIM_DEFAULT_PCT,
             sim_filter: false,
             sim_icon_hits: HashMap::new(),

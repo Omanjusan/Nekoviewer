@@ -45,6 +45,7 @@ mod texture_window;
 // 「似ている画像」マーカーの特徴量。照合・保存の配線（Phase 2以降）までは使われない。
 #[allow(dead_code)]
 mod thumb_hash;
+mod thumb_hash_store;
 mod tool_palette;
 mod toolbar;
 mod tree_sort;

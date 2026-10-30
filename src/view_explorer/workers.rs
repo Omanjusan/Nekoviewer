@@ -420,6 +420,7 @@ impl NekoviewApp {
         self.req_tx.shutdown();
         self.identity_worker.shutdown();
         self.marker_probe.shutdown();
+        self.thumb_hash.shutdown();
         self.shutdown_marker_compare();
         // 編集モードONのまま終了しても、タグ選択を確定保存する。
         self.deactivate_tag_main_edit();
@@ -524,6 +525,10 @@ impl NekoviewApp {
         self.pump_thumbnail_queue(ctx);
         // pending が空になった瞬間に最終カウントを更新する
         let just_finished = was_pending && self.thumb_pending.is_empty();
+        if just_finished {
+            // 後から生成されたサムネのハッシュを拾う。
+            self.request_thumb_hash();
+        }
 
         // cd_summary バックグラウンド計算の結果をポーリング
         if let Some(ref rx) = self.cd_summary_rx {
