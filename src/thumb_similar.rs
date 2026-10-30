@@ -10,12 +10,13 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use redb::{Database, ReadableDatabase};
 
 use crate::file_identity::{self, FileRecord, Presence};
 use crate::thumb_hash::{self, HASH_VERSION};
-use crate::thumb_hash_store;
+use crate::thumb_hash_store::{self, HashRow};
 
 /// UIのしきい値の下限(%)。照合はこの類似度までを集める。
 pub const MIN_PCT: u8 = 70;
@@ -61,10 +62,40 @@ pub fn candidate_pairs(subjects: &[(u64, u64)], universe: &[(u64, u64)], max_dis
     out
 }
 
+/// 相手の現存確認の結果を、短い期限つきでメモリに持つ（依頼をまたいで使い回す）。
+/// 期限の間は、相手が消えても「現存」のままになる。最後の置き換えの時に期限が過ぎていれば直る。
+pub struct PresenceCache {
+    entries: HashMap<u64, (Instant, bool)>,
+    ttl: Duration,
+}
+
+/// 現存確認の結果を持つ期間。
+pub const PRESENCE_TTL: Duration = Duration::from_secs(30);
+
+impl PresenceCache {
+    pub fn new(ttl: Duration) -> Self {
+        Self { entries: HashMap::new(), ttl }
+    }
+
+    /// `id` の相手が現存するか。期限内の結果があればそれを返し、無ければ `check` で確認して持つ。
+    fn is_present(&mut self, id: u64, now: Instant, check: impl FnOnce() -> bool) -> bool {
+        if let Some(&(at, present)) = self.entries.get(&id)
+            && now.saturating_duration_since(at) < self.ttl
+        {
+            return present;
+        }
+        let present = check();
+        self.entries.insert(id, (now, present));
+        present
+    }
+}
+
 /// フォルダ `dir` の `names` について、似ている相手を集める。キーはファイル名。相手が無いファイルは含めない。
+/// 保存済みのハッシュと消したペアを毎回読み、現存確認の結果は持ち越さない版（テスト用。本番は `scan_dir`）。
 ///
 /// - `probe` は相手の現存確認（DBロックの外で呼ぶ）
 /// - `keep_going` が false になったら打ち切り、そこまでの結果を返す
+#[cfg(test)]
 pub fn match_dir(
     db: &Arc<Mutex<Database>>,
     dir: &Path,
@@ -73,6 +104,25 @@ pub fn match_dir(
     keep_going: &dyn Fn() -> bool,
 ) -> HashMap<String, Vec<SimilarMatch>> {
     let rows = thumb_hash_store::all_rows(db);
+    let dismissed = thumb_hash_store::dismissed_pairs(db);
+    let mut presence = PresenceCache::new(Duration::ZERO);
+    match_names(db, dir, names, &rows, &dismissed, &mut presence, Instant::now(), probe, keep_going)
+}
+
+/// `match_dir` の本体。ハッシュの表 `rows`、消したペア `dismissed`、現存確認の結果 `presence` は呼び出し側が持つ。
+/// `names` の一部（チャンク）だけを渡してもよい。相手は `rows` の全て。
+#[allow(clippy::too_many_arguments)]
+pub fn match_names(
+    db: &Arc<Mutex<Database>>,
+    dir: &Path,
+    names: &[String],
+    rows: &HashMap<u64, HashRow>,
+    dismissed: &HashSet<(u64, u64)>,
+    presence: &mut PresenceCache,
+    now: Instant,
+    probe: &dyn Fn(&FileRecord) -> Presence,
+    keep_going: &dyn Fn() -> bool,
+) -> HashMap<String, Vec<SimilarMatch>> {
     let hashed = |id: u64| rows.get(&id).filter(|r| r.version == HASH_VERSION).and_then(|r| r.hash);
     let prefix = crate::spread_state::dir_prefix(dir);
 
@@ -90,7 +140,6 @@ pub fn match_dir(
         return HashMap::new();
     }
     let universe: Vec<(u64, u64)> = rows.keys().filter_map(|&id| hashed(id).map(|h| (id, h))).collect();
-    let dismissed = thumb_hash_store::dismissed_pairs(db);
     let pairs: Vec<(u64, u64, u8)> =
         candidate_pairs(&subjects, &universe, thumb_hash::max_distance_for_pct(MIN_PCT))
             .into_iter()
@@ -108,8 +157,7 @@ pub fn match_dir(
         ids.iter().filter_map(|id| file_identity::record_by_id_tx(&tx, *id).map(|r| (*id, r))).collect()
     };
 
-    // ここからロックの外。相手の現存を確認しながら絞る（相手ごとに1回）。
-    let mut presence: HashMap<u64, bool> = HashMap::new();
+    // ここからロックの外。相手の現存を確認しながら絞る（相手ごとに1回。期限内の結果は使い回す）。
     let mut out: HashMap<String, Vec<SimilarMatch>> = HashMap::new();
     for (sid, oid, distance) in pairs {
         if !keep_going() {
@@ -123,8 +171,7 @@ pub fn match_dir(
         if subject.fp.is_some() && subject.fp == other.fp {
             continue;
         }
-        let present = *presence.entry(oid).or_insert_with(|| probe(other) == Presence::Present);
-        if !present {
+        if !presence.is_present(oid, now, || probe(other) == Presence::Present) {
             continue;
         }
         out.entry(name_of[&sid].to_owned()).or_default().push(SimilarMatch { other: oid, distance });
@@ -133,6 +180,70 @@ pub fn match_dir(
         matches.sort_by_key(|m| (m.distance, m.other));
     }
     out
+}
+
+/// 1回の走査（フォルダ1つぶん）で返すもの。
+#[derive(Debug, PartialEq, Eq)]
+pub enum ScanEvent {
+    /// 1チャンクぶんの結果。そのチャンクの名前だけを含む（相手が無い名前は含まない）。足し込んで使う。
+    Partial(HashMap<String, Vec<SimilarMatch>>),
+    /// 走査の最後に全名前をやり直した結果。これまでの結果を置き換える
+    /// （後のチャンクでハッシュができた相手との組が、前のチャンクでは取りこぼされるため）。
+    Final(HashMap<String, Vec<SimilarMatch>>),
+}
+
+/// 1チャンクの名前の数。
+pub const SCAN_CHUNK: usize = 100;
+
+/// 依頼をまたいで持つ、走査の状態。ハッシュの表は最初の走査で一度だけDBから読み、あとは書いた分を足していく。
+pub struct ScanState {
+    rows: Option<HashMap<u64, HashRow>>,
+    pub presence: PresenceCache,
+}
+
+impl ScanState {
+    pub fn new() -> Self {
+        Self { rows: None, presence: PresenceCache::new(PRESENCE_TTL) }
+    }
+}
+
+/// フォルダ `dir` の `names` を `chunk` 件ずつ、ハッシュの計算 → 照合 → `emit(Partial)` の順で処理し、
+/// 最後に全名前をやり直して `emit(Final)` する。`keep_going` が false になったら、そこで打ち切る（Final は出さない）。
+/// 結果が空のチャンクは Partial を出さない。
+#[allow(clippy::too_many_arguments)]
+pub fn scan_dir(
+    db: &Arc<Mutex<Database>>,
+    dir: &Path,
+    names: &[String],
+    chunk: usize,
+    state: &mut ScanState,
+    read_thumb: &dyn Fn(&str) -> Option<(i64, Vec<u8>)>,
+    probe: &dyn Fn(&FileRecord) -> Presence,
+    keep_going: &dyn Fn() -> bool,
+    emit: &mut dyn FnMut(ScanEvent),
+) {
+    let dismissed = thumb_hash_store::dismissed_pairs(db);
+    let rows = state.rows.get_or_insert_with(|| thumb_hash_store::all_rows(db));
+    let now = Instant::now();
+    for part in names.chunks(chunk.max(1)) {
+        if !keep_going() {
+            return;
+        }
+        let written = thumb_hash_store::hash_files(db, dir, part, read_thumb, keep_going, Some(rows));
+        rows.extend(written);
+        let matches = match_names(db, dir, part, rows, &dismissed, &mut state.presence, now, probe, keep_going);
+        if !keep_going() {
+            return;
+        }
+        if !matches.is_empty() {
+            emit(ScanEvent::Partial(matches));
+        }
+    }
+    // 最後に、全名前を現在のハッシュの表でやり直す。
+    let all = match_names(db, dir, names, rows, &dismissed, &mut state.presence, now, probe, keep_going);
+    if keep_going() {
+        emit(ScanEvent::Final(all));
+    }
 }
 
 #[cfg(test)]
@@ -370,5 +481,137 @@ mod tests {
         assert_eq!(thumb_hash_store::dismissed_pairs(&db), HashSet::from([(a.min(b), a.max(b))]));
         file_identity::delete_id(&db, b).unwrap();
         assert!(thumb_hash_store::dismissed_pairs(&db).is_empty(), "IDが消えたらペアも消える");
+    }
+
+    #[test]
+    fn presence_cache_reuses_a_fresh_answer_and_rechecks_after_the_ttl() {
+        let mut cache = PresenceCache::new(Duration::from_secs(30));
+        let t0 = Instant::now();
+        let calls = std::cell::Cell::new(0);
+        let mut ask = |cache: &mut PresenceCache, now: Instant, answer: bool| {
+            cache.is_present(7, now, || {
+                calls.set(calls.get() + 1);
+                answer
+            })
+        };
+        assert!(ask(&mut cache, t0, true));
+        assert!(ask(&mut cache, t0 + Duration::from_secs(29), false), "期限内は前の答えのまま");
+        assert_eq!(calls.get(), 1);
+        assert!(!ask(&mut cache, t0 + Duration::from_secs(31), false), "期限が過ぎたら確認し直す");
+        assert_eq!(calls.get(), 2);
+        let mut none = PresenceCache::new(Duration::ZERO);
+        none.is_present(1, t0, || true);
+        none.is_present(1, t0, || true);
+        // 期限0は常に確認する。
+        assert_eq!(none.entries.len(), 1);
+    }
+
+    /// `scan_dir` を実行して、出たイベントを集める。
+    fn scan(
+        db: &Arc<Mutex<Database>>,
+        dir: &Path,
+        list: &[&str],
+        chunk: usize,
+        state: &mut ScanState,
+        thumbs: &HashMap<String, (i64, Vec<u8>)>,
+        keep_going: &dyn Fn() -> bool,
+    ) -> Vec<ScanEvent> {
+        let mut events = Vec::new();
+        scan_dir(db, dir, &names(list), chunk, state, &|n| thumbs.get(n).cloned(), &present, keep_going, &mut |e| {
+            events.push(e)
+        });
+        events
+    }
+
+    /// 構図のあるJPEG（`seed` で模様が変わる）。
+    fn jpeg(seed: u8) -> Vec<u8> {
+        let (w, h) = (96_u32, 64_u32);
+        let raw: Vec<u8> =
+            (0..w * h).map(|i| ((i % w / 12) * 37 + (i / w / 8) * 91 + u32::from(seed) * 53) as u8).collect();
+        let mut out = Vec::new();
+        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 85)
+            .encode(&raw, w, h, image::ExtendedColorType::L8)
+            .unwrap();
+        out
+    }
+
+    #[test]
+    fn scan_emits_partials_per_chunk_then_a_final_that_equals_a_one_shot_match() {
+        let t = TempRoot::new("scan");
+        let db = open_spread_db(&t.0).unwrap();
+        let list = ["a.zip", "b.zip", "c.zip", "d.zip"];
+        let mut thumbs = HashMap::new();
+        for (i, name) in list.iter().enumerate() {
+            register(&db, &t.0, name, i as u8 + 1);
+            // 全部同じ絵 → 全員が互いに距離0。
+            thumbs.insert((*name).to_owned(), (100, jpeg(1)));
+        }
+        let mut state = ScanState::new();
+        let events = scan(&db, &t.0, &list, 2, &mut state, &thumbs, &|| true);
+        assert_eq!(events.len(), 3, "チャンク2つ + 最後の置き換え: {events:?}");
+        let ScanEvent::Partial(first) = &events[0] else { panic!("{events:?}") };
+        let ScanEvent::Partial(second) = &events[1] else { panic!("{events:?}") };
+        let ScanEvent::Final(last) = &events[2] else { panic!("{events:?}") };
+        assert_eq!(first.keys().collect::<HashSet<_>>(), HashSet::from([&"a.zip".to_owned(), &"b.zip".to_owned()]));
+        assert_eq!(second.keys().collect::<HashSet<_>>(), HashSet::from([&"c.zip".to_owned(), &"d.zip".to_owned()]));
+        // 最初のチャンクの時点では、まだ後ろのファイルのハッシュが無いので、相手は同じチャンクの1件だけ。
+        assert_eq!(first["a.zip"].len(), 1);
+        // 最後の置き換えで、全員が他の3件を相手に持つ（取りこぼしが直る）。
+        for name in list {
+            assert_eq!(last[name].len(), 3, "{name}");
+        }
+        assert_eq!(*last, match_dir(&db, &t.0, &names(&list), &present, &|| true), "一括の照合と一致する");
+    }
+
+    #[test]
+    fn a_second_scan_reuses_the_in_memory_rows_and_hashes_nothing_again() {
+        let t = TempRoot::new("rescan");
+        let db = open_spread_db(&t.0).unwrap();
+        let (a, b) = (register(&db, &t.0, "a.zip", 1), register(&db, &t.0, "b.zip", 2));
+        let thumbs = HashMap::from([("a.zip".to_owned(), (100, jpeg(1))), ("b.zip".to_owned(), (100, jpeg(1)))]);
+        let mut state = ScanState::new();
+        scan(&db, &t.0, &["a.zip", "b.zip"], 100, &mut state, &thumbs, &|| true);
+        let reads = std::cell::Cell::new(0);
+        let counting = |n: &str| {
+            reads.set(reads.get() + 1);
+            thumbs.get(n).cloned()
+        };
+        let mut events = Vec::new();
+        scan_dir(&db, &t.0, &names(&["a.zip", "b.zip"]), 100, &mut state, &counting, &present, &|| true, &mut |e| events.push(e));
+        // サムネは読む（更新日時の確認のため）が、計算済みなので行は書き直さない。
+        assert_eq!(thumb_hash_store::get(&db, a).unwrap().thumb_mtime, 100);
+        assert!(matches!(events.last(), Some(ScanEvent::Final(m)) if m["a.zip"][0].other == b));
+        assert_eq!(reads.get(), 2);
+    }
+
+    #[test]
+    fn a_cancelled_scan_emits_no_final() {
+        let t = TempRoot::new("cancel");
+        let db = open_spread_db(&t.0).unwrap();
+        for (i, n) in ["a.zip", "b.zip", "c.zip"].iter().enumerate() {
+            register(&db, &t.0, n, i as u8 + 1);
+        }
+        let thumbs: HashMap<String, (i64, Vec<u8>)> =
+            ["a.zip", "b.zip", "c.zip"].iter().map(|n| ((*n).to_owned(), (100, jpeg(1)))).collect();
+        let calls = std::cell::Cell::new(0);
+        let stop_after_first_chunk = || {
+            calls.set(calls.get() + 1);
+            calls.get() <= 3
+        };
+        let mut state = ScanState::new();
+        let events = scan(&db, &t.0, &["a.zip", "b.zip", "c.zip"], 1, &mut state, &thumbs, &stop_after_first_chunk);
+        assert!(events.iter().all(|e| matches!(e, ScanEvent::Partial(_))), "{events:?}");
+        assert!(!events.is_empty() || calls.get() > 3);
+    }
+
+    #[test]
+    fn files_without_a_thumbnail_yield_no_events_until_one_exists() {
+        let t = TempRoot::new("nothumb");
+        let db = open_spread_db(&t.0).unwrap();
+        register(&db, &t.0, "a.zip", 1);
+        register(&db, &t.0, "b.zip", 2);
+        let mut state = ScanState::new();
+        let events = scan(&db, &t.0, &["a.zip", "b.zip"], 100, &mut state, &HashMap::new(), &|| true);
+        assert_eq!(events, vec![ScanEvent::Final(HashMap::new())]);
     }
 }

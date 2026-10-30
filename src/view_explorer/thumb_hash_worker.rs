@@ -11,11 +11,13 @@ use std::sync::{mpsc, Arc, Mutex};
 
 use redb::Database;
 
-use crate::thumb_similar::SimilarMatch;
+use crate::thumb_similar::{ScanEvent, SimilarMatch};
 
 pub(super) enum ThumbHashEvent {
-    /// 照合が済んだ。キーはファイル名で、似ている相手が無いファイルは含まない。
-    Matches { generation: u64, matches: std::collections::HashMap<String, Vec<SimilarMatch>> },
+    /// 1チャンクぶんの照合結果。そのチャンクの名前だけを含む。これまでの結果へ足し込む。
+    Partial { generation: u64, matches: std::collections::HashMap<String, Vec<SimilarMatch>> },
+    /// 走査の最後に全名前をやり直した結果。これまでの結果を置き換える。
+    Final { generation: u64, matches: std::collections::HashMap<String, Vec<SimilarMatch>> },
 }
 
 struct Job {
@@ -41,34 +43,33 @@ impl ThumbHashWorker {
         std::thread::Builder::new()
             .name("thumb-hash".into())
             .spawn(move || {
+                // ハッシュの表と現存確認の結果は、依頼をまたいでメモリに持つ（フォルダを開き直すたびに読み直さない）。
+                let mut state = crate::thumb_similar::ScanState::new();
                 while let Ok(job) = job_rx.recv() {
                     // 同じフォルダの依頼が溜まっていたら、最新の1件だけ処理する（名前の一覧は後のものが新しい）。
                     let mut job = job;
                     while let Ok(next) = job_rx.try_recv() {
                         job = next;
                     }
-                    let keep_going = || worker_current.load(Ordering::Acquire) == job.generation;
-                    crate::thumb_hash_store::hash_files(
+                    let generation = job.generation;
+                    let keep_going = || worker_current.load(Ordering::Acquire) == generation;
+                    crate::thumb_similar::scan_dir(
                         &job.spread_db,
                         &job.dir,
                         &job.names,
+                        crate::thumb_similar::SCAN_CHUNK,
+                        &mut state,
                         &|name| crate::neko_dir::read_thumb_unchecked(&job.cache_db, name),
-                        &keep_going,
-                    );
-                    if !keep_going() {
-                        continue;
-                    }
-                    let matches = crate::thumb_similar::match_dir(
-                        &job.spread_db,
-                        &job.dir,
-                        &job.names,
                         &crate::file_identity::probe_record,
                         &keep_going,
+                        &mut |event| {
+                            let _ = event_tx.send(match event {
+                                ScanEvent::Partial(matches) => ThumbHashEvent::Partial { generation, matches },
+                                ScanEvent::Final(matches) => ThumbHashEvent::Final { generation, matches },
+                            });
+                            ctx.request_repaint();
+                        },
                     );
-                    if keep_going() {
-                        let _ = event_tx.send(ThumbHashEvent::Matches { generation: job.generation, matches });
-                        ctx.request_repaint();
-                    }
                 }
             })
             .expect("spawn thumb-hash");
@@ -123,20 +124,29 @@ impl super::NekoviewApp {
         }
     }
 
-    /// 照合の結果を受け取る。「？」の表示と「似ているもの」絞り込みに効くので、必要なら絞り込みを作り直す。
+    /// 照合の結果を受け取る。「？」の表示と「似ているもの」絞り込みに効くので、変わったら絞り込みを作り直す。
+    /// 途中経過（Partial）は足し込み、最後の結果（Final）は置き換える。古い世代の結果は捨てる。
     pub(super) fn poll_thumb_hash(&mut self) {
-        let mut latest = None;
+        let mut changed = false;
         while let Ok(event) = self.thumb_hash.event_rx.try_recv() {
-            let ThumbHashEvent::Matches { generation, matches } = event;
-            if self.thumb_hash.is_current(generation) {
-                latest = Some(matches);
+            match event {
+                ThumbHashEvent::Partial { generation, matches } if self.thumb_hash.is_current(generation) => {
+                    for (name, found) in matches {
+                        changed |= self.sim_matches.insert(name, found.clone()).as_ref() != Some(&found);
+                    }
+                }
+                ThumbHashEvent::Final { generation, matches } if self.thumb_hash.is_current(generation) => {
+                    if matches != self.sim_matches {
+                        self.sim_matches = matches;
+                        changed = true;
+                    }
+                }
+                _ => {}
             }
         }
-        let Some(matches) = latest else { return };
-        if matches == self.sim_matches {
+        if !changed {
             return;
         }
-        self.sim_matches = matches;
         if self.sim_filter {
             self.recompute_filter();
         }

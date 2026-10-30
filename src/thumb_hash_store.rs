@@ -146,10 +146,11 @@ pub(crate) fn forget_id_tx(tx: &WriteTransaction, id: u64) -> Option<()> {
 const WRITE_BATCH: usize = 64;
 
 /// フォルダ `dir` の `names` について、サムネのハッシュが無い・古いものを計算して保存する。
-/// 戻り値は、新しく書いた件数（「作れなかった」行を含む）。
+/// 戻り値は、新しく書いた行（ID, 内容）。「作れなかった」行を含む。
 ///
 /// - `read_thumb(ファイル名)` はサムネの (更新日時, JPEG)。サムネが無いファイルは None（生成後の走査で拾う）
 /// - ファイルIDがまだ無いものは飛ばす（ID解決が済んでから呼ぶ）
+/// - `known` は保存済みの行をメモリに持っている呼び出し側が渡す。あれば、ファイルごとにDBを引かずに「計算済みか」を判定する
 /// - `keep_going` が false になったら、次のファイルの前で打ち切る（溜まった分は書く）
 pub fn hash_files(
     db: &Arc<Mutex<Database>>,
@@ -157,31 +158,37 @@ pub fn hash_files(
     names: &[String],
     read_thumb: &dyn Fn(&str) -> Option<(i64, Vec<u8>)>,
     keep_going: &dyn Fn() -> bool,
-) -> usize {
+    known: Option<&HashMap<u64, HashRow>>,
+) -> Vec<(u64, HashRow)> {
     let prefix = crate::spread_state::dir_prefix(dir);
     let mut pending: Vec<(u64, HashRow)> = Vec::new();
-    let mut written = 0;
+    let mut written: Vec<(u64, HashRow)> = Vec::new();
+    let flush = |pending: &mut Vec<(u64, HashRow)>, written: &mut Vec<(u64, HashRow)>| {
+        if put_all(db, pending) {
+            written.append(pending);
+        }
+        pending.clear();
+    };
     for name in names {
         if !keep_going() {
             break;
         }
         let Some(rec) = crate::file_identity::lookup(db, &format!("{prefix}{name}")) else { continue };
         let Some((thumb_mtime, jpeg)) = read_thumb(name) else { continue };
-        if get(db, rec.id).is_some_and(|row| row.is_current(thumb_mtime)) {
+        let current = match known {
+            Some(rows) => rows.get(&rec.id).copied(),
+            None => get(db, rec.id),
+        };
+        if current.is_some_and(|row| row.is_current(thumb_mtime)) {
             continue;
         }
         let hash = thumb_hash::dhash_from_image_bytes(&jpeg);
         pending.push((rec.id, HashRow { version: thumb_hash::HASH_VERSION, thumb_mtime, hash }));
         if pending.len() >= WRITE_BATCH {
-            if put_all(db, &pending) {
-                written += pending.len();
-            }
-            pending.clear();
+            flush(&mut pending, &mut written);
         }
     }
-    if put_all(db, &pending) {
-        written += pending.len();
-    }
+    flush(&mut pending, &mut written);
     written
 }
 
@@ -242,7 +249,7 @@ mod tests {
 
     fn run(db: &Arc<Mutex<Database>>, dir: &Path, names: &[&str], store: &HashMap<String, (i64, Vec<u8>)>) -> usize {
         let names: Vec<String> = names.iter().map(|n| (*n).to_owned()).collect();
-        hash_files(db, dir, &names, &|n| store.get(n).cloned(), &|| true)
+        hash_files(db, dir, &names, &|n| store.get(n).cloned(), &|| true, None).len()
     }
 
     #[test]
@@ -268,6 +275,24 @@ mod tests {
         assert_eq!((row.version, row.thumb_mtime), (thumb_hash::HASH_VERSION, 100));
         assert!(row.hash.is_some());
         assert_eq!(run(&db, &t.0, &["a.zip"], &store), 0, "同じサムネは計算し直さない");
+    }
+
+    #[test]
+    fn known_rows_replace_the_per_file_db_lookup_and_the_result_lists_what_was_written() {
+        let t = TempRoot::new("known");
+        let db = open_spread_db(&t.0).unwrap();
+        let (a, b) = (register(&db, &t.0, "a.zip", 1), register(&db, &t.0, "b.zip", 2));
+        let store = thumbs(&[("a.zip", 100, jpeg(1)), ("b.zip", 100, jpeg(2))]);
+        let names = vec!["a.zip".to_owned(), "b.zip".to_owned()];
+        let read = |n: &str| store.get(n).cloned();
+        let mut known = HashMap::new();
+        let first = hash_files(&db, &t.0, &names, &read, &|| true, Some(&known));
+        assert_eq!(first.iter().map(|(id, _)| *id).collect::<Vec<_>>(), vec![a, b]);
+        known.extend(first);
+        // メモリの行だけで判定する（DBの行を消しても、知っている行は計算済みとして飛ばす）。
+        assert!(hash_files(&db, &t.0, &names, &read, &|| true, Some(&known)).is_empty());
+        // 知らない行は、DBに在っても計算し直す（呼び出し側のメモリが正）。
+        assert_eq!(hash_files(&db, &t.0, &names, &read, &|| true, Some(&HashMap::new())).len(), 2);
     }
 
     #[test]
@@ -326,8 +351,8 @@ mod tests {
         let n = hash_files(&db, &t.0, &names, &|n| store.get(n).cloned(), &|| {
             *calls.borrow_mut() += 1;
             *calls.borrow() <= 1
-        });
-        assert_eq!(n, 1);
+        }, None);
+        assert_eq!(n.len(), 1);
         assert!(get(&db, a).is_some() && get(&db, b).is_none());
     }
 
