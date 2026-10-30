@@ -85,27 +85,36 @@ impl NekoviewApp {
         );
     }
 
+    /// 自動で消える通常トースト（3秒）。エクスプローラー側のトーストは必ずこれを使う
+    /// （`app_toast` を直接組み立てない）。ビューアー窓のトーストは別Contextなので `ViewerState::set_toast`。
+    pub(crate) fn set_toast(&mut self, msg: impl Into<String>) {
+        self.app_toast = Some((msg.into(), std::time::Instant::now()));
+    }
+
+    /// 処理中の間だけ出し続けるトースト（通常トーストの上に積む）。`None` で消す。
+    /// 呼び出し側が処理の状態に合わせて毎フレーム更新する。
+    pub(crate) fn set_sticky_toast(&mut self, msg: Option<String>) {
+        self.sticky_toast = msg;
+    }
+
     pub(super) fn draw_toast(&mut self, ctx: &egui::Context) {
         // アプリレベルトースト（3秒で自動消去）
+        let mut timed: Option<String> = None;
         if let Some((ref msg, since)) = self.app_toast.clone() {
             if since.elapsed().as_secs_f32() < 3.0 {
-                egui::Area::new(egui::Id::new("app_toast"))
-                    .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -30.0))
-                    .show(ctx, |ui| {
-                        egui::Frame::popup(ui.style())
-                            .fill(egui::Color32::from_rgba_premultiplied(30, 30, 30, 230))
-                            .show(ui, |ui| {
-                                ui.label(
-                                    egui::RichText::new(msg)
-                                        .color(egui::Color32::WHITE)
-                                        .size(13.0),
-                                );
-                            });
-                    });
+                timed = Some(msg.clone());
                 ctx.request_repaint();
             } else {
                 self.app_toast = None;
             }
+        }
+        // 処理中トーストは通常トーストと重ならないよう、通常トーストがある間は一段上に積む。
+        if let Some(msg) = &self.sticky_toast {
+            let offset = if timed.is_some() { -70.0 } else { -30.0 };
+            paint_toast(ctx, "app_toast_sticky", msg, offset);
+        }
+        if let Some(msg) = timed {
+            paint_toast(ctx, "app_toast", &msg, -30.0);
         }
     }
 
@@ -404,13 +413,23 @@ impl NekoviewApp {
         };
         if self.network_unreachable_mounts.contains(&root) {
             self.spawn_mount_check_if_needed(root);
-            self.app_toast = Some((
-                i18n::t().network_checking_toast().to_string(),
-                std::time::Instant::now(),
-            ));
+            self.set_toast(i18n::t().network_checking_toast());
             false
         } else {
             true
         }
     }
+}
+
+/// 画面下中央にトーストを1つ描く。`offset_y` は下端からの距離（負の値）。
+fn paint_toast(ctx: &egui::Context, id: &'static str, msg: &str, offset_y: f32) {
+    egui::Area::new(egui::Id::new(id))
+        .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, offset_y))
+        .show(ctx, |ui| {
+            egui::Frame::popup(ui.style())
+                .fill(egui::Color32::from_rgba_premultiplied(30, 30, 30, 230))
+                .show(ui, |ui| {
+                    ui.label(egui::RichText::new(msg).color(egui::Color32::WHITE).size(13.0));
+                });
+        });
 }

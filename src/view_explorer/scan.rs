@@ -49,11 +49,36 @@ fn index_remap(before: &[PathBuf], after: &[PathBuf]) -> HashMap<usize, usize> {
     before.iter().enumerate().filter_map(|(i, p)| Some((i, *new_index.get(p)?))).collect()
 }
 
+/// 下段フィルタの「重複」「サムネ類似」を通るか。ONのものどれかに当てはまれば通す（OR）。
+/// どちらもOFFなら絞り込まない。文字列・評価のフィルタとは別にANDで重ねる。
+/// `has_duplicate`・`has_similar` は、対応するフィルタがONのときだけ意味を持つ。
+pub(super) fn marker_filter_passes(dup_on: bool, sim_on: bool, has_duplicate: bool, has_similar: bool) -> bool {
+    if !dup_on && !sim_on {
+        return true;
+    }
+    (dup_on && has_duplicate) || (sim_on && has_similar)
+}
+
+/// 重複ソート（リスト見出し「重複」のクリック）の段。大きいほど先頭に寄る。
+/// 重複と類似の両方が付いたもの(3) > 重複のみ(2) > 類似（サムネ類似の「？」）のみ(1) > どちらも無い(0)。
+pub(super) fn dup_sort_tier(has_duplicate: bool, has_similar: bool) -> u8 {
+    match (has_duplicate, has_similar) {
+        (true, true) => 3,
+        (true, false) => 2,
+        (false, true) => 1,
+        (false, false) => 0,
+    }
+}
+
 /// `sort_archives` が比較用に集めた1件ぶんの値
 struct SortEntry {
     path: PathBuf,
     /// お気に入り登録済み（並びの先頭に固定する）
     fav: bool,
+    /// 類似ファイル一覧の入口のファイル（何よりも先頭に固定する）
+    pinned: bool,
+    /// 重複ソートON時の段（`dup_sort_tier`。大きいものを先頭へ。OFFのときは全員0で従来の並び）
+    dup_tier: u8,
     mtime: Option<std::time::SystemTime>,
     size: u64,
     rating_half: u8,
@@ -243,10 +268,10 @@ impl NekoviewApp {
     pub(super) fn reload_current(&mut self) {
         // お気に入り一覧表示中は実ディレクトリの概念が無く、start_scan()を呼ぶと
         // enter_favorite_view が差し替えた self.archives を実フォルダの中身で
-        // 上書きしてしまう（exit_favorite_view相当が意図せず起きる）ため何もしない。
-        if self.viewing_favorites.is_some() {
-            return;
-        }
+        // 上書きしてしまう（exit_favorite_view相当が意図せず起きる）ため、実フォルダの
+        // 再スキャン・退避移動は行わない。代わりに同じ選択で一覧を組み直し、
+        // 後からマウントされた領域の項目が thumb_failed（赤×）のまま残らないようにする。
+        let favorites_selection = self.viewing_favorites;
 
         // ドライブ一覧の再取得（同期・軽量なローカル列挙のみ、ネットワークI/Oは行わない）。
         // GVFS切断（電源off等）は gvfsd がマウントエントリを即座に消さないため、
@@ -267,6 +292,12 @@ impl NekoviewApp {
         );
         self.drives = drives;
         let home = self.drives.first().map(|d| d.path.clone());
+
+        if let Some(selection) = favorites_selection {
+            self.enter_favorite_view(selection);
+            self.reload_tree();
+            return;
+        }
 
         // ツリールート自体が消えたマウント配下だった場合、安全にホームドライブへ退避する。
         // ネットワークマウント配下は同期 exists() を使わず、バックグラウンドで確認済みの
@@ -294,9 +325,13 @@ impl NekoviewApp {
         // （`/` やリンク切れの表示中に current_dir を実スキャンしてしまわないため）。
         self.reload_virtual_or_scan();
 
-        // ツリー: ルート + 展開済み全ノードをスレッド1本でまとめて再取得する。
-        // 個別ノードの遅延展開（tree_scan_pending）が進行中でも衝突はしない
-        // （どちらが後から書き込んでも tree_children の内容は同じソースから来るため実害なし）。
+        self.reload_tree();
+    }
+
+    /// ツリー: ルート + 展開済み全ノードをスレッド1本でまとめて再取得する。
+    /// 個別ノードの遅延展開（tree_scan_pending）が進行中でも衝突はしない
+    /// （どちらが後から書き込んでも tree_children の内容は同じソースから来るため実害なし）。
+    fn reload_tree(&mut self) {
         self.clear_tree_mtimes();
         let mut targets: Vec<PathBuf> = vec![self.tree_root.clone()];
         targets.extend(self.tree_expanded.iter().cloned());
@@ -320,6 +355,14 @@ impl NekoviewApp {
 
     /// バックグラウンドスキャンを起動する（UIをブロックしない）
     pub(super) fn start_scan(&mut self) {
+        // タグ検索タブの中央は走査結果で埋める。実フォルダの読み込みで上書きしない
+        // （タブを出るときは、折りたたんだ後に改めて呼ばれる）。
+        if self.folder_pane_tab == FolderPaneTab::TagSearch {
+            return;
+        }
+        // 実フォルダを読み込み直すなら、類似ファイル一覧は閉じる扱い（archives が置き換わるため）。
+        self.close_similar_view_state();
+        self.on_marker_dir_scan();
         self.thumb_session.fetch_add(1, Ordering::AcqRel);
         // ネットワークマウント配下ではサブフォルダの更新日時を取らない（日付ソートでは末尾になる）
         let with_mtimes = self.network_mount_root_cached(&self.current_dir).is_none();
@@ -384,6 +427,7 @@ impl NekoviewApp {
         self.thumb_session.fetch_add(1, Ordering::AcqRel);
         self.scan_state = ScanState::Done;
         self.viewing_favorites = None;
+        self.close_similar_view_state();
         self.viewing_dir = None;
         self.cd_summary = None;
         self.cd_summary_rx = None;
@@ -411,6 +455,7 @@ impl NekoviewApp {
         if !self.folder_pane_tab.shows_real_dir()
             || self.viewing_favorites.is_some()
             || self.viewing_search.is_some()
+            || self.viewing_similar.is_some()
         {
             return;
         }
@@ -459,25 +504,12 @@ impl NekoviewApp {
             self.archive_meta_cache.clear();
             self.archive_rating_cache.clear();
             if let Some(db) = self.spread_db.clone() {
-                let filenames: Vec<String> = self.archives.iter()
-                    .filter_map(|p| p.file_name().and_then(|n| n.to_str()).map(str::to_string))
-                    .collect();
-                crate::spread_state::gc_dir(&db, &self.current_dir, &filenames);
-                self.spread_states = crate::spread_state::list_dir_entries(&db, &self.current_dir)
-                    .into_iter()
-                    .map(|(name, mode, offset)| (name, (mode, offset)))
-                    .collect();
-                crate::spread_state::gc_archive_sorts(&db, &self.current_dir, &filenames);
-                self.archive_sort_states = crate::spread_state::list_dir_archive_sorts(&db, &self.current_dir)
-                    .into_iter()
-                    .map(|(name, key, ascending)| (name, (key, ascending)))
-                    .collect();
-                crate::favorites::gc_dir(&db, &self.current_dir, &filenames);
-                self.favorite_states = crate::favorites::list_dir_favorites(&db, &self.current_dir)
-                    .into_iter()
-                    .collect();
-                crate::spread_state::bookmark_gc_dir(&db, &self.current_dir, &filenames);
-                crate::spread_state::archive_rating_gc_dir(&db, &self.current_dir, &filenames);
+                // 見開き・ソート・お気に入り・評価・しおりは、フォルダから消えた行をGCしない。
+                // ファイルが移動・リネームされても旧v1行は遅延移行の橋渡しとして残し、ID化済みの
+                // データは新しいパスへ追従する（フォルダから消えたこと＝不要、とは限らない）。
+                // 前回の訪問で表示領域に入った移動マーカーは、開き直した今、役目を終えて消える。
+                crate::duplicate_marker::purge_seen_moved(&db, &self.current_dir);
+                self.reload_dir_state_maps();
                 // 評価帯・フィルタ用に、このフォルダの評価・訪問を一括ロード（不在は None＝NEW）
                 let ratings: std::collections::HashMap<String, crate::spread_state::ArchiveRating> =
                     crate::spread_state::list_dir_archive_ratings(&db, &self.current_dir)
@@ -493,6 +525,7 @@ impl NekoviewApp {
                 self.spread_states.clear();
                 self.archive_sort_states.clear();
                 self.favorite_states.clear();
+                self.dir_markers.clear();
             }
             self.saved_archive_settings = self.spread_db.as_ref()
                 .map(|db| crate::spread_state::saved_settings_for_paths(db, &self.archives))
@@ -503,10 +536,23 @@ impl NekoviewApp {
                     &self.archive_filenames(),
                     &existing_filenames,
                 );
+                // 消えたファイルのサムネ行は、そのパスを持つファイルIDが残っていない時だけ消す
+                // （IDが残る間は、移動・リネームの追従でサムネを引っ越せる）。ID層が止まっている間は何もしない。
+                if crate::file_identity::is_enabled() {
+                    if let Some(spread) = self.spread_db.clone() {
+                        let dir = self.current_dir.clone();
+                        neko_dir::purge_orphan_thumbnail_rows(db, &existing_filenames, &|name| {
+                            crate::file_identity::lookup(&spread, &crate::spread_state::make_key(&dir, name)).is_some()
+                        });
+                    }
+                }
             }
             self.rebuild_thumbnail_queue();
             self.scan_state = ScanState::Done;
             self.sort_archives();
+            // 表示順（画面上部から）にファイルIDを解決する。移動・リネームされたファイルは、
+            // 解決後に評価・しおりの表示が付き替わる（poll_identity_results）。
+            self.start_identity_resolution();
             // グリッドの統一カーソルを新しいディレクトリの先頭（↑があればそれ）へ即座に
             // 合わせる。矢印キーを押すまで何もカーソルが出ない空白期間を作らないため。
             let entries = self.grid_entries();
@@ -519,6 +565,8 @@ impl NekoviewApp {
             }
             self.multi_selected.clear();
             self.select_anchor = None;
+            // 類似ファイル一覧から戻ったときは、入口にしていたファイルへ選択とスクロールを合わせる。
+            self.restore_similar_return();
             // サマリーはスキャン済みリストを使い回して起動する（ネットワークの再列挙を避ける）
             if self.viewing_dir.as_ref() == Some(&self.current_dir) {
                 self.cd_summary_rx = Some(spawn_summary_worker(
@@ -647,20 +695,17 @@ impl NekoviewApp {
         }
     }
 
-    /// 毎フレーム、グリッドの可視範囲（`visible`内のposition `lo..=hi`）を受け取り、
+    /// 毎フレーム、グリッドの可視範囲（`filtered_indices`内のposition `lo..=hi`）を受け取り、
     /// バックグラウンド先読みキューをその場所に追従させる。
     /// 可視セル自体は描画ループが直接requestするので、ここではスクロールの
     /// 進行方向へ1画面ぶんだけ先読みを足し、逆側にはみ出た未送信ぶんは捨てる。
-    pub(super) fn update_thumbnail_lookahead(
-        &mut self,
-        visible: &[(usize, PathBuf)],
-        lo: usize,
-        hi: usize,
-    ) {
+    pub(super) fn update_thumbnail_lookahead(&mut self, lo: usize, hi: usize) {
+        let total = self.filtered_indices.len();
         if !self.folder_pane_tab.shows_real_dir()
             || self.viewing_favorites.is_some()
             || self.viewing_search.is_some()
-            || visible.is_empty()
+            || self.viewing_similar.is_some()
+            || total == 0
         {
             return;
         }
@@ -675,8 +720,8 @@ impl NekoviewApp {
         };
         let want_range = if forward {
             let want_lo = hi + 1;
-            if want_lo >= visible.len() { None } else {
-                Some((want_lo, (want_lo + screen_len - 1).min(visible.len() - 1)))
+            if want_lo >= total { None } else {
+                Some((want_lo, (want_lo + screen_len - 1).min(total - 1)))
             }
         } else if lo == 0 {
             None
@@ -693,18 +738,23 @@ impl NekoviewApp {
             self.thumb_priority_queued.clear();
             return;
         };
-        let desired: HashSet<&PathBuf> = visible[want_lo..=want_hi].iter().map(|(_, p)| p).collect();
+        // 先読みの窓ぶんのパスだけを取り出す（全件は触らない）
+        let window: Vec<PathBuf> =
+            self.filtered_indices[want_lo..=want_hi].iter().map(|&i| self.archives[i].clone()).collect();
+        let desired: HashSet<&PathBuf> = window.iter().collect();
         // ウィンドウ外へ外れた未送信ぶんはキャンセルする（送信済み＝thumb_pendingは対象外）。
         self.thumb_queue.retain(|p| desired.contains(p));
         self.thumb_priority_queue.retain(|p| desired.contains(p));
         self.thumb_queued.retain(|p| desired.contains(p));
         self.thumb_missing_queued.retain(|p| desired.contains(p));
         self.thumb_priority_queued.retain(|p| desired.contains(p));
-        for (_, path) in &visible[want_lo..=want_hi] {
+        for path in &window {
             if self.thumbnails.contains_key(path)
                 || self.thumb_pending.contains(path)
                 || self.thumb_failed.contains(path)
                 || self.thumb_queued.contains(path)
+                // ファイルID解決待ち（検証中）は、サムネの引っ越しが済むまで先読みもしない。
+                || self.identity_verifying.contains(path)
             {
                 continue;
             }
@@ -739,6 +789,7 @@ impl NekoviewApp {
         if !self.folder_pane_tab.shows_real_dir()
             || self.viewing_favorites.is_some()
             || self.viewing_search.is_some()
+            || self.viewing_similar.is_some()
         {
             return;
         }
@@ -821,7 +872,7 @@ impl NekoviewApp {
     }
 
     /// 現在の2セット分のソート条件
-    fn explorer_sort(&self) -> crate::explorer_sort::ExplorerSort {
+    pub(super) fn explorer_sort(&self) -> crate::explorer_sort::ExplorerSort {
         crate::explorer_sort::ExplorerSort {
             key: self.sort_key,
             ascending: self.sort_ascending,
@@ -856,6 +907,39 @@ impl NekoviewApp {
         self.recompute_filter();
     }
 
+    /// 現在のフォルダの「見開き・ソート・お気に入り」の保存状態を、DBから読み直す。
+    /// スキャン時と、ID解決でファイルの設定が付き替わった時（移動・リネーム直後）に呼ぶ。
+    pub(super) fn reload_dir_state_maps(&mut self) {
+        // 類似ファイル一覧・タグ検索は複数フォルダにまたがるので、今のフォルダ前提の状態は読み直さない。
+        if self.viewing_similar.is_some() || self.folder_pane_tab == FolderPaneTab::TagSearch {
+            return;
+        }
+        let Some(db) = self.spread_db.clone() else {
+            self.spread_states.clear();
+            self.archive_sort_states.clear();
+            self.favorite_states.clear();
+            self.dir_markers.clear();
+            return;
+        };
+        self.spread_states = crate::spread_state::list_dir_entries(&db, &self.current_dir)
+            .into_iter()
+            .map(|(name, mode, offset)| (name, (mode, offset)))
+            .collect();
+        self.archive_sort_states = crate::spread_state::list_dir_archive_sorts(&db, &self.current_dir)
+            .into_iter()
+            .map(|(name, key, ascending)| (name, (key, ascending)))
+            .collect();
+        self.favorite_states = crate::favorites::list_dir_favorites(&db, &self.current_dir)
+            .into_iter()
+            .collect();
+        self.dir_markers = crate::duplicate_marker::load_dir(&db, &self.current_dir);
+        // マーカーの顔ぶれが変わったら、「重複」絞り込みの結果も作り直す。
+        self.request_marker_probe();
+        if self.dup_filter {
+            self.recompute_filter();
+        }
+    }
+
     /// 評価・訪問が変わった後（ビューアーを閉じた直後など）の再ソート。スコア／訪問回数が
     /// 主軸のときだけ並びを作り直し、選択・複数選択・グリッドカーソルは同じファイルを指し直す
     /// （ビューア表示中に並べ替えると、選択枠や前後ファイル移動がずれるためここまで待つ）。
@@ -863,6 +947,12 @@ impl NekoviewApp {
         if !self.explorer_sort().needs_rating() {
             return;
         }
+        self.resort_keeping_selection_always();
+    }
+
+    /// 並び順の軸に関わらず、並びとフィルタを作り直す（お気に入りの先頭固定など、評価以外の
+    /// 保存状態が変わった時用）。選択・複数選択・グリッドカーソルは同じファイルを指し直す。
+    pub(super) fn resort_keeping_selection_always(&mut self) {
         let before = self.archives.clone();
         self.sort_archives_only();
 
@@ -886,7 +976,9 @@ impl NekoviewApp {
         }
         // お気に入り一覧表示中は favorite_states が実ディレクトリ用の古いデータのままで
         // 信頼できないため、スティッキー判定は通常のディレクトリ表示中のみ行う。
-        let sticky_favorites = self.viewing_favorites.is_none();
+        let sticky_favorites = self.viewing_favorites.is_none()
+            && self.viewing_similar.is_none()
+            && self.folder_pane_tab != FolderPaneTab::TagSearch;
         // 比較中に stat・DB を引かないよう、ソートに使う値を先に集める（使わない軸は集めない）
         let mut entries: Vec<SortEntry> = self.archives.iter().map(|p| {
             let fav = sticky_favorites
@@ -901,16 +993,31 @@ impl NekoviewApp {
             } else {
                 None
             };
+            let dup_tier = if self.dup_sort {
+                let name = p.file_name().and_then(|n| n.to_str());
+                dup_sort_tier(
+                    name.and_then(|n| self.active_marker_detected_at(n)).is_some(),
+                    name.and_then(|n| self.sim_pct(n)).is_some(),
+                )
+            } else {
+                0
+            };
             SortEntry {
                 path: p.clone(),
+                pinned: self.viewing_similar.as_ref().is_some_and(|v| v.entry_path == *p),
                 fav,
+                dup_tier,
                 mtime: meta.as_ref().and_then(|m| m.modified().ok()),
                 size: meta.as_ref().map_or(0, |m| m.len()),
                 rating_half: rating.map_or(0, |r| r.rating_half),
                 visit_count: rating.map_or(0, |r| r.visit_count),
             }
         }).collect();
-        entries.sort_by(|a, b| b.fav.cmp(&a.fav).then_with(|| sort.compare(&a.row(), &b.row())));
+        // 重複ソートONの段（両方 > 重複のみ > 類似のみ > なし）は、お気に入りの先頭固定よりさらに前。
+        // 段の中は、お気に入りの先頭固定と通常のソート条件に従う。
+        entries.sort_by(|a, b| {
+            b.pinned.cmp(&a.pinned).then(b.dup_tier.cmp(&a.dup_tier)).then(b.fav.cmp(&a.fav)).then_with(|| sort.compare(&a.row(), &b.row()))
+        });
         self.archives = entries.into_iter().map(|e| e.path).collect();
     }
 
@@ -919,7 +1026,9 @@ impl NekoviewApp {
     pub(super) fn recompute_filter(&mut self) {
         let text_active = self.filter_enabled && !self.filter_text.trim().is_empty();
         let rating_active = self.rating_filter.enabled;
-        if text_active || rating_active {
+        let dup_active = self.dup_filter && self.marker_view_active();
+        let sim_active = self.sim_filter && self.marker_view_active();
+        if text_active || rating_active || dup_active || sim_active {
             let text = self.filter_text.clone();
             // 評価は横断一覧でもキャッシュ経由で引く（未取得ぶんはここで遅延ロードされる）
             let ratings: Vec<Option<u8>> = if rating_active {
@@ -933,6 +1042,15 @@ impl NekoviewApp {
                     if text_active {
                         let Some(name) = p.file_name().and_then(|n| n.to_str()) else { return false };
                         if !dir::name_matches(&text, name) {
+                            return false;
+                        }
+                    }
+                    if dup_active || sim_active {
+                        let name = p.file_name().and_then(|n| n.to_str());
+                        let has_duplicate = dup_active
+                            && name.is_some_and(|n| self.active_marker_detected_at(n).is_some());
+                        let has_similar = sim_active && name.is_some_and(|n| self.sim_pct(n).is_some());
+                        if !marker_filter_passes(dup_active, sim_active, has_duplicate, has_similar) {
                             return false;
                         }
                     }
@@ -1097,5 +1215,53 @@ mod index_remap_tests {
         let remap = index_remap(&paths(&["a", "b"]), &paths(&["b"]));
         assert_eq!(remap.get(&0), None);
         assert_eq!(remap[&1], 0);
+    }
+}
+
+#[cfg(test)]
+mod dup_sort_tests {
+    use super::{dup_sort_tier, marker_filter_passes};
+
+    #[test]
+    fn marker_filters_are_or_between_duplicate_and_similar() {
+        // どちらもOFF: 絞り込まない。
+        assert!(marker_filter_passes(false, false, false, false));
+        assert!(marker_filter_passes(false, false, true, true));
+        // 重複だけON: 従来どおり、重複が付いたものだけ。
+        assert!(marker_filter_passes(true, false, true, false));
+        assert!(!marker_filter_passes(true, false, false, true));
+        // 類似だけON: 従来どおり、類似が付いたものだけ。
+        assert!(marker_filter_passes(false, true, false, true));
+        assert!(!marker_filter_passes(false, true, true, false));
+        // 両方ON: どちらかが付いていれば通る（ANDではない）。
+        assert!(marker_filter_passes(true, true, true, false));
+        assert!(marker_filter_passes(true, true, false, true));
+        assert!(marker_filter_passes(true, true, true, true));
+        assert!(!marker_filter_passes(true, true, false, false));
+    }
+
+    #[test]
+    fn tiers_are_both_then_duplicate_then_similar_then_none() {
+        assert_eq!(dup_sort_tier(true, true), 3);
+        assert_eq!(dup_sort_tier(true, false), 2);
+        assert_eq!(dup_sort_tier(false, true), 1);
+        assert_eq!(dup_sort_tier(false, false), 0);
+    }
+
+    #[test]
+    fn sorting_by_tier_descending_keeps_the_original_order_inside_a_tier() {
+        // (名前, 重複, 類似)。名前順に並んだ入力を、段の大きい順に安定ソートする。
+        let mut files = [
+            ("a", false, false),
+            ("b", false, true),
+            ("c", true, false),
+            ("d", true, true),
+            ("e", false, false),
+            ("f", true, true),
+            ("g", false, true),
+        ];
+        files.sort_by(|x, y| dup_sort_tier(y.1, y.2).cmp(&dup_sort_tier(x.1, x.2)));
+        let names: Vec<_> = files.iter().map(|f| f.0).collect();
+        assert_eq!(names, ["d", "f", "c", "b", "g", "a", "e"]);
     }
 }

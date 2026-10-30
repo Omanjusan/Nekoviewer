@@ -72,6 +72,75 @@ impl RatingSort {
     }
 }
 
+/// リストの列見出しでソートできる列。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum HeaderColumn {
+    Name,
+    Size,
+    Date,
+    Score,
+    Visits,
+}
+
+/// ソート設定の全体（第1セット＋第2セット）。見出しのクリックで遷移させる単位。
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct SortSettings {
+    pub key: ExplorerSortKey,
+    pub ascending: bool,
+    pub rating: RatingSort,
+}
+
+impl HeaderColumn {
+    fn main_key(self) -> Option<ExplorerSortKey> {
+        match self {
+            Self::Name => Some(ExplorerSortKey::Name),
+            Self::Size => Some(ExplorerSortKey::Size),
+            Self::Date => Some(ExplorerSortKey::Date),
+            Self::Score | Self::Visits => None,
+        }
+    }
+
+    fn rating_key(self) -> Option<RatingSortKey> {
+        match self {
+            Self::Score => Some(RatingSortKey::Score),
+            Self::Visits => Some(RatingSortKey::Visits),
+            _ => None,
+        }
+    }
+}
+
+/// 列見出しのクリックによる、ソート設定の遷移（メニューバーのボタンと同じ状態を共有する）。
+/// - 名前・サイズ・更新日時（第1セット）: 別の列ならその軸に切り替え（昇降はそのまま）、同じ列なら昇降を反転。
+/// - 評価・訪問回数（第2セット）: OFF／別の軸なら、その軸をON（降順）。同じ軸の降順なら昇順へ。昇順ならOFF。
+pub fn header_click(s: SortSettings, col: HeaderColumn) -> SortSettings {
+    let mut out = s;
+    if let Some(key) = col.main_key() {
+        if s.key == key {
+            out.ascending = !s.ascending;
+        } else {
+            out.key = key;
+        }
+    } else if let Some(rk) = col.rating_key() {
+        if s.rating.key != Some(rk) {
+            out.rating = RatingSort { key: Some(rk), ascending: false };
+        } else if !s.rating.ascending {
+            out.rating.ascending = true;
+        } else {
+            out.rating.key = None;
+        }
+    }
+    out
+}
+
+/// 列見出しに出す昇降の矢印の向き。その列で並べていなければ None、並べていれば昇順なら Some(true)。
+pub fn header_arrow(s: &SortSettings, col: HeaderColumn) -> Option<bool> {
+    if let Some(key) = col.main_key() {
+        (s.key == key).then_some(s.ascending)
+    } else {
+        col.rating_key().filter(|rk| s.rating.key == Some(*rk)).map(|_| s.rating.ascending)
+    }
+}
+
 /// 並び替え対象1件ぶんの値。使わない軸の値は 0 / None のままでよい（`ExplorerSort::needs_*` 参照）。
 #[derive(Clone, Copy, Default)]
 pub struct SortRow<'a> {
@@ -133,6 +202,65 @@ fn directed(ascending: bool, ord: Ordering) -> Ordering {
 
 #[cfg(test)]
 mod tests {
+    fn settings(key: ExplorerSortKey, ascending: bool, rating_key: Option<RatingSortKey>, rating_asc: bool) -> SortSettings {
+        SortSettings { key, ascending, rating: RatingSort { key: rating_key, ascending: rating_asc } }
+    }
+
+    #[test]
+    fn header_click_on_another_main_column_switches_the_key_and_keeps_the_direction() {
+        let s = settings(ExplorerSortKey::Name, false, None, false);
+        let out = header_click(s, HeaderColumn::Size);
+        assert_eq!((out.key, out.ascending), (ExplorerSortKey::Size, false));
+    }
+
+    #[test]
+    fn header_click_on_the_same_main_column_flips_the_direction() {
+        let s = settings(ExplorerSortKey::Date, true, None, false);
+        let out = header_click(s, HeaderColumn::Date);
+        assert_eq!((out.key, out.ascending), (ExplorerSortKey::Date, false));
+        let out = header_click(out, HeaderColumn::Date);
+        assert!(out.ascending);
+    }
+
+    #[test]
+    fn header_click_on_a_main_column_leaves_the_rating_set_alone() {
+        let s = settings(ExplorerSortKey::Name, true, Some(RatingSortKey::Score), true);
+        let out = header_click(s, HeaderColumn::Size);
+        assert_eq!(out.rating, s.rating);
+    }
+
+    #[test]
+    fn rating_column_cycles_on_descending_then_ascending_then_off() {
+        let s = settings(ExplorerSortKey::Name, true, None, true);
+        let on = header_click(s, HeaderColumn::Score);
+        assert_eq!(on.rating, RatingSort { key: Some(RatingSortKey::Score), ascending: false }, "ONは降順から");
+        let asc = header_click(on, HeaderColumn::Score);
+        assert_eq!(asc.rating, RatingSort { key: Some(RatingSortKey::Score), ascending: true });
+        let off = header_click(asc, HeaderColumn::Score);
+        assert_eq!(off.rating.key, None);
+        // 第1セットは変わらない
+        assert_eq!((off.key, off.ascending), (s.key, s.ascending));
+    }
+
+    #[test]
+    fn rating_column_switches_to_the_other_rating_axis_in_descending() {
+        let s = settings(ExplorerSortKey::Name, true, Some(RatingSortKey::Score), true);
+        let out = header_click(s, HeaderColumn::Visits);
+        assert_eq!(out.rating, RatingSort { key: Some(RatingSortKey::Visits), ascending: false });
+    }
+
+    #[test]
+    fn header_arrow_shows_only_on_the_active_columns() {
+        let s = settings(ExplorerSortKey::Size, false, Some(RatingSortKey::Visits), true);
+        assert_eq!(header_arrow(&s, HeaderColumn::Size), Some(false));
+        assert_eq!(header_arrow(&s, HeaderColumn::Name), None);
+        assert_eq!(header_arrow(&s, HeaderColumn::Date), None);
+        assert_eq!(header_arrow(&s, HeaderColumn::Visits), Some(true));
+        assert_eq!(header_arrow(&s, HeaderColumn::Score), None);
+        let off = settings(ExplorerSortKey::Name, true, None, true);
+        assert_eq!(header_arrow(&off, HeaderColumn::Score), None, "OFFの間は矢印なし");
+    }
+
     use super::*;
     use std::time::Duration;
 

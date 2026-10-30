@@ -152,7 +152,7 @@ impl NekoviewApp {
             results.push(BulkSettingResult { target: path.clone(), ok });
         }
         self.sync_saved_archive_settings(&dialog.targets);
-        self.app_toast = Some((build_bulk_setting_toast(&results), std::time::Instant::now()));
+        self.set_toast(build_bulk_setting_toast(&results));
     }
 
     // ── しおり保存 ──────────────────────────────────────────────────────────
@@ -219,7 +219,7 @@ impl NekoviewApp {
             results.push(BulkSettingResult { target: path.clone(), ok });
         }
         self.sync_saved_archive_settings(&dialog.targets);
-        self.app_toast = Some((build_bulk_setting_toast(&results), std::time::Instant::now()));
+        self.set_toast(build_bulk_setting_toast(&results));
     }
 
     // ── 見開き設定 ──────────────────────────────────────────────────────────
@@ -308,7 +308,7 @@ impl NekoviewApp {
             results.push(BulkSettingResult { target: path.clone(), ok });
         }
         self.sync_saved_archive_settings(&dialog.targets);
-        self.app_toast = Some((build_bulk_setting_toast(&results), std::time::Instant::now()));
+        self.set_toast(build_bulk_setting_toast(&results));
     }
 
     // ── スコアの設定 ──────────────────────────────────────────────────────────
@@ -417,7 +417,7 @@ impl NekoviewApp {
         for path in &dialog.targets {
             self.refresh_rating_cache(path);
         }
-        self.app_toast = Some((build_bulk_setting_toast(&results), std::time::Instant::now()));
+        self.set_toast(build_bulk_setting_toast(&results));
     }
 }
 

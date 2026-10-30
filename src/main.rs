@@ -6,11 +6,22 @@ mod config;
 mod confirm_dialog;
 mod controller;
 mod decode_jobs;
+mod db_backup;
+mod dev_db_backup;
+mod duplicate_marker;
 mod explorer_sort;
 mod favorites;
+mod file_identity;
+mod file_settings;
 mod fs;
 mod gui_config;
 mod i18n;
+mod release_notice;
+mod identity_pending;
+mod identity_online;
+mod identity_relink;
+mod identity_sweep;
+mod identity_resolve;
 mod image_filter;
 mod image_info;
 mod types;
@@ -30,7 +41,13 @@ mod single_instance;
 mod spread_offset;
 mod spread_state;
 mod tag_manager;
+mod tag_search;
 mod texture_window;
+// 「似ている画像」マーカーの特徴量。照合・保存の配線（Phase 2以降）までは使われない。
+#[allow(dead_code)]
+mod thumb_hash;
+mod thumb_hash_store;
+mod thumb_similar;
 mod tool_palette;
 mod toolbar;
 mod tree_sort;
@@ -104,6 +121,13 @@ fn main() {
         // フェーズ4a: thumb_size/thumb_filter も config.ini直接保存を廃止しstate側優先へ。
         if let Some(v) = state.app_thumb_filter { cfg.thumb_filter = v; }
         if let Some(v) = state.app_thumb_size { cfg.thumb_size = v; }
+        if let Some(v) = state.app_unconfirmed_retention_days {
+            cfg.unconfirmed_retention_days =
+                v.clamp(config::UNCONFIRMED_RETENTION_DAYS_MIN, config::UNCONFIRMED_RETENTION_DAYS_MAX);
+        }
+        if let Some(v) = state.app_backup_generations {
+            cfg.backup_generations = v.clamp(config::BACKUP_GENERATIONS_MIN, config::BACKUP_GENERATIONS_MAX);
+        }
 
         // フェーズ4b: decode_threads/default_slotも同様にstate側を優先する。
         if let Some(v) = state.app_decode_threads { cfg.decode_threads = v; }
@@ -111,6 +135,7 @@ fn main() {
         if let Some(v) = state.app_magnifier_zoom_notice_shown { cfg.magnifier_zoom_notice_shown = v; }
         if let Some(v) = state.app_max_decode_edge_prompt_answered { cfg.max_decode_edge_prompt_answered = v; }
         if let Some(v) = state.app_folder_book_access_warning_seen { cfg.folder_book_access_warning_seen = v; }
+        if let Some(v) = &state.app_last_run_version { cfg.last_run_version = v.clone(); }
 
         // 原寸時の最大長辺幅の既定値を 1920 → 4000 に上げた。保存済みの値が新既定値より低く未回答なら、
         // 起動時に1度だけ更新するか確認する（新既定値以上の人は、確認不要として回答済みにしておく）。

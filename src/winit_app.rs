@@ -367,6 +367,9 @@ impl WinitApp {
             state.tree_sorts,
             state.tag_panel_open,
             state.tag_preview_high_quality,
+            &state.explorer_view_mode,
+            &state.explorer_list_cols,
+            &state.explorer_sim_threshold,
             open_target,
             win.egui_ctx.clone(),
         );
@@ -511,6 +514,15 @@ impl WinitApp {
                         });
                 });
                 finish_frame(win, started, delay);
+            }
+            // アプリ側からの終了要求（起動時のバックアップ失敗ダイアログの「終了」）。
+            // OSのクローズと同じ終了処理（on_exit）を通す。
+            if self.app.as_mut().is_some_and(|app| app.take_exit_request()) {
+                if let Some(app) = self.app.as_mut() {
+                    app.on_exit();
+                }
+                event_loop.exit();
+                return;
             }
         }
 

@@ -66,6 +66,8 @@ enum TreeAction {
     DoubleClick(PathBuf),
     /// 実ツリー右クリック「仮想フォルダに追加する」
     AddToVirtual(PathBuf),
+    /// 実ツリー右クリック「このフォルダを検索タブで開く」
+    OpenInSearch(PathBuf),
     /// 実ツリー右クリック「ソート条件設定」（ツリー全体の設定でパスに依存しない）
     SortSetting,
 }
@@ -76,6 +78,8 @@ enum FolderPaneTab {
     Favorites,
     Search,
     VirtualFolders,
+    /// タグ検索（ツリーなし、左ペインはタグ一覧。中身は現状モックで検索には未接続）
+    TagSearch,
 }
 
 impl FolderPaneTab {
@@ -119,6 +123,8 @@ impl FocusPane {
                 FolderPaneTab::Favorites => Self::FavoriteTab,
                 FolderPaneTab::Search => Self::SearchForm,
                 FolderPaneTab::VirtualFolders => Self::VirtualTab,
+                // 左ペインのタグ一覧はキー操作未対応（モック）。巡回は本体を飛ばしてGridへ
+                FolderPaneTab::TagSearch => Self::Grid,
             },
             Self::VirtualTab => if real_pane_open { Self::TreeTab } else { Self::Grid },
             Self::TreeTab => Self::Drives,
@@ -148,6 +154,7 @@ impl FocusPane {
             Self::Grid => match tab {
                 FolderPaneTab::Favorites => Self::FavoriteTab,
                 FolderPaneTab::VirtualFolders if !real_pane_open => Self::VirtualTab,
+                FolderPaneTab::TagSearch => Self::FolderTabBar,
                 _ => Self::Drives,
             },
             Self::Filter => Self::Grid,
@@ -626,6 +633,7 @@ struct RatingSettingDialogState {
 
 /// タグマネージャー: カテゴリのUI状態（`tag_manager.rs`でJSON永続化される）。
 pub(crate) struct TagManagerCategoryUi {
+    /// 保存名。メインカテゴリは表示に使わない（`display_name`参照）。
     pub(crate) name: String,
     pub(crate) tiers: Vec<TagManagerTierUi>,
     /// カテゴリ共通色。要素ネームプレートとカテゴリ表示の両方に使い、
@@ -639,6 +647,17 @@ pub(crate) struct TagManagerCategoryUi {
     /// `is_main`のカテゴリは常にtrue固定（メインタグドラムと同じ排他選択）。
     /// それ以外のカテゴリはタグ管理画面のラジオボタンで切り替え可能（既定false＝複数選択）。
     pub(crate) single_select: bool,
+}
+
+impl TagManagerCategoryUi {
+    /// 表示名。メインカテゴリは保存名を無視して現在の言語の名前を返す。
+    pub(crate) fn display_name(&self) -> String {
+        if self.is_main {
+            crate::i18n::t().tag_main_category_name().to_string()
+        } else {
+            self.name.clone()
+        }
+    }
 }
 
 /// タグマネージャー: 既存カテゴリの色と極力衝突しない色をランダム生成する。
@@ -805,6 +824,16 @@ pub struct NekoviewApp {
     favorite_dialog: Option<FavoriteDialogState>,
     /// 削除確認待ちのお気に入りフォルダID
     favorite_delete_confirm: Option<u8>,
+    /// お気に入りタブ右クリック「移動先を指定して元ファイルを検索」のダイアログ状態（`relink_ui.rs`）
+    relink_dialog: Option<relink_ui::RelinkDialog>,
+    /// 再紐付けのバックグラウンド実行（結果の受け取り口）。実行中は Some
+    relink_job: Option<mpsc::Receiver<crate::identity_relink::RelinkReport>>,
+    /// 複数件の「お気に入り設定から外す」の確認待ちパス
+    favorite_unset_confirm: Option<Vec<PathBuf>>,
+    /// 設定→データベース管理で、復元の確認待ちの世代ファイル名（`db_backup_ui.rs`）
+    db_restore_confirm: Option<String>,
+    /// 設定→データベース管理の「追えない記録の掃除」の進行状態（`unreachable_clean_ui.rs`）
+    unreachable_clean: Option<unreachable_clean_ui::UnreachableClean>,
     /// ビューアー右クリック「お気に入り詳細設定」ダイアログの状態
     favorite_detail_dialog: Option<FavoriteDetailDialogState>,
     /// エクスプローラー右クリック「ソート条件」一括変更ダイアログの状態（モック段階）
@@ -846,6 +875,69 @@ pub struct NekoviewApp {
     archive_sort_states: HashMap<String, (crate::types::ReaderSortKey, bool)>,
     /// 現在ディレクトリ内のお気に入り登録状態 (filename -> 所属folder_id一覧、空Vec=未整理)
     favorite_states: HashMap<String, Vec<u8>>,
+    /// 現在ディレクトリ内の重複マーカー (filename -> 自身のマーカーと被参照)。通常のフォルダ表示でだけ使う
+    /// （お気に入り・検索の横断一覧では引かない）。
+    dir_markers: HashMap<String, crate::duplicate_marker::DirMarker>,
+    /// 表示領域に入った移動マーカーのファイルID。フォルダ離脱・終了時にまとめてDBへ印を書く。
+    marker_seen: HashSet<u64>,
+    /// `marker_seen` を集めているフォルダ。同じフォルダの再スキャンでは書かず、別のフォルダへ移る時に書く。
+    marker_seen_dir: Option<PathBuf>,
+    /// 今フレームに描いたアイコンの矩形 (archives のインデックス -> 矩形)。クリックの振り分け用。
+    marker_icon_hits: HashMap<usize, egui::Rect>,
+    /// リストの「ファイラー」ボタンの矩形（行番号 → 矩形）。毎フレーム `draw_archive_list` の頭で作り直す。
+    reveal_icon_hits: HashMap<usize, egui::Rect>,
+    /// 開いている重複マーカーのポップアップ。
+    marker_popup: Option<dup_marker_ui::MarkerPopup>,
+    /// 下段フィルタ「重複」。自身にマーカーがあるファイルだけを出す（保存しない）。
+    dup_filter: bool,
+    /// 下段フィルタ「消去済」。消去済みのマーカーも、絞り込み・並び・アイコンの対象にする（保存しない）。
+    dup_show_dismissed: bool,
+    /// リスト見出し「重複」のソート。マーカー付きを検出日時の新しい順で先頭に寄せる（保存しない）。
+    dup_sort: bool,
+    /// サムネのdHash計算の専用スレッド。
+    thumb_hash: thumb_hash_worker::ThumbHashWorker,
+    /// 「消した組」ウィンドウ（開いている間だけ持つ。下段フィルタ行の↩で開閉）。
+    dismissed_window: Option<dismissed_window::DismissedWindow>,
+    /// 一覧を開く依頼（アイコンのクリックで置き、次のフレームの頭で実行する）。
+    pending_similar_entry: Option<dup_marker_ui::SimilarEntryRequest>,
+    /// 似ている画像の照合結果（ファイル名 → 距離の近い順の相手）。保存しない派生情報。
+    sim_matches: HashMap<String, Vec<crate::thumb_similar::SimilarMatch>>,
+    /// 似ている画像の「？」を出す類似度(%)のしきい値。パス行のコンボボックス。`nekoviewer.state` の `explorer_sim_threshold` に保存する。
+    sim_threshold_pct: u8,
+    /// リストの「★/訪問回数の編集」のロック。起動時は必ずロック（保存しない）。
+    list_edit_lock: list_edit_lock::ListEditLock,
+    /// 今フレームに描いた＋－ボタンの当たり判定（行 → ボタン・矩形・押せるか）。描画のたびに作り直す。
+    list_edit_hits: Vec<(usize, list_edit_ui::EditBtn, egui::Rect, bool)>,
+    /// 編集で値を動かした後、まだ並び・絞り込みに反映していない。ロックし直した時点で反映する。
+    list_edit_dirty: bool,
+    /// 【モック】下段フィルタ「サムネ類似」。
+    sim_filter: bool,
+    /// 【モック】今フレームに描いた「？」の矩形 (archives のインデックス -> (矩形, 中身))。クリックの振り分け用。
+    sim_icon_hits: HashMap<usize, (egui::Rect, dup_marker_ui::SimSummary)>,
+    /// 重複先の存在確認のワーカー（専用スレッド）。
+    marker_probe: marker_probe::MarkerProbeWorker,
+    /// 確認済みの重複先ID -> 現存／消失／オフライン。フォルダを読み込むたびに作り直す。
+    marker_presence: HashMap<u64, crate::file_identity::Presence>,
+    /// 今のフォルダの読み込みで、確認を依頼済みのID。
+    marker_probe_requested: HashSet<u64>,
+    /// 完全比較のワーカー（専用スレッド）。
+    marker_compare: marker_compare::MarkerCompareWorker,
+    /// 完全比較の組ごとの状態（組 = (マーカー持ちのID, 重複先のID)）。ポップアップを閉じても、フォルダを移っても残す。
+    marker_compare_states: HashMap<marker_compare::PairKey, marker_compare::CompareState>,
+    /// 依頼中の比較の、比べるパス（終了時に、比べた時点のサイズ・更新日時を控えるのに使う）。
+    marker_compare_jobs: HashMap<marker_compare::PairKey, (PathBuf, PathBuf)>,
+    /// 一致・相違が出た組の、比べた時点のサイズ・更新日時。今と違えば結果は捨てる。
+    marker_compare_stamps: HashMap<marker_compare::PairKey, (marker_compare::Stat, marker_compare::Stat)>,
+    /// 類似ファイル一覧の表示中の状態（現在のタブ内の一時ビュー）。閉じると実フォルダの表示に戻る。
+    viewing_similar: Option<similar_view::SimilarView>,
+    /// 類似ファイル一覧を開くたびに進める番号。収集結果が古い一覧のものか見分ける。
+    similar_token: u64,
+    /// 類似ファイル一覧を開く前の表示モード（閉じるときに戻す。一覧中はリスト表示にする）。
+    similar_saved_mode: Option<view_mode::ViewMode>,
+    /// 前フレームでウィンドウにフォーカスがあったか（復帰の検出用）。
+    similar_was_focused: bool,
+    /// 類似ファイル一覧から戻った後、再スキャンの完了時に選び直してスクロールするファイル。
+    similar_return: Option<PathBuf>,
     /// お気に入り・検索の横断一覧表示中のマーカー情報 (フルパス -> 所属folder_id一覧)。
     /// ディレクトリ横断のため favorite_states とは別にフルパスキーで持つ。
     cross_view_favorite_markers: HashMap<PathBuf, Vec<u8>>,
@@ -932,6 +1024,8 @@ pub struct NekoviewApp {
     thumb_failed: std::collections::HashSet<PathBuf>,
     /// アプリレベルのトーストメッセージ（3秒で自動消去）
     pub(crate) app_toast: Option<(String, std::time::Instant)>,
+    /// 処理中の間だけ出し続けるトースト（ID解決の進捗など）。
+    pub(crate) sticky_toast: Option<String>,
     /// フェーズ2: ページキャッシュ予算（見積もりゲートの閾値。resolve_cache_budgetsのpage_max）
     cache_budget_bytes: usize,
     /// フェーズ4: アニメリングバッファ先読み枚数の(下限, 上限)。見積もりゲートも同じ値を使う。
@@ -946,6 +1040,32 @@ pub struct NekoviewApp {
     pub(crate) settings_open: bool,
     pub(crate) settings_tab: SettingsTab,
     pub(crate) settings_draft: SettingsDraft,
+    /// ファイルID解決ワーカー（フォルダ表示時に、移動・リネームされたファイルへ評価等を引き継ぐ）。
+    identity_worker: identity_worker::IdentityWorker,
+    /// ID解決が済むまで「ファイル検証中」を出すパス（新規・移動直後のファイル）。
+    pub(super) identity_verifying: HashSet<PathBuf>,
+    /// 解決で評価等が付き替わった（完了時に並び・フィルタを作り直す）。
+    identity_dirty: bool,
+    /// 重複・曖昧の解決UI（現状はレイアウトのモック。仮データ）。
+    identity_resolve_ui: identity_resolution_ui::ResolveUiState,
+    /// ID解決の進捗（処理が長引いた時だけ、処理中トーストを出す）。
+    identity_progress: Option<identity_worker::IdentityProgress>,
+    /// 処理中トーストとして出している文言（出し入れの変化検知用）。
+    identity_toast_msg: Option<String>,
+    /// 未解決（重複・曖昧）の総数。解決の完了ごとに更新する（解決UIの本実装で、ボタンの数字に使う）。
+    identity_pending_count: usize,
+    /// 旧レコードのバックフィル依頼を出したか（起動後1回）。
+    identity_backfill_started: bool,
+    /// 次に期限切れの未確認IDの自動掃除を依頼する時刻
+    identity_sweep_due: std::time::Instant,
+    /// 起動時の自動バックアップ失敗の確認待ち（選ぶまでID層は止まっている）。
+    backup_failure: Option<backup_failure_ui::BackupFailure>,
+    /// 1.11の起動時の注意ダイアログ（ファイルID管理への移行の案内）の表示待ち。バックアップ失敗の確認が済んでから出す。
+    release_notice_pending: bool,
+    /// アプリ終了の要求（確認ダイアログの「終了」）。`winit_app` が拾う。
+    exit_requested: bool,
+    /// 開発用DBツール（デバッグタブ）の状態。実リリース時に dev_db_tools.rs ごと削除する。
+    pub(crate) dev_db_ui: dev_db_tools::DevDbUiState,
     /// 翻訳機能(実験的)の永続設定。設定ダイアログの[反映]でのみ書き換わる。
     pub(crate) translate_cfg: crate::translate::TranslateConfig,
     /// お気に入り・検索・仮想フォルダの各タブが最後にいた位置（stateファイルに保存・復元）。
@@ -960,6 +1080,13 @@ pub struct NekoviewApp {
     pub(crate) tag_panel_width: f32,
     /// タグ機能・レイアウト器: タグパネルの編集モード展開状態（上側ツマミでさらに中央側へ拡張）。
     pub(crate) tag_panel_edit_expanded: bool,
+    /// アイテム一覧の右クリック「このフォルダを検索タブで開く」の要求。描画の途中でタブを
+    /// 切り替えないよう、一覧の描画後に消化する（draw_archive_grid の末尾）。
+    pub(crate) pending_open_in_search: Option<PathBuf>,
+    /// 「選択した項目を維持したままファイラーで開く」複数選択時のダイアログ状態
+    reveal_dialog: Option<reveal_ui::RevealDialogState>,
+    /// ファイラー呼び出し（別スレッド）の結果待ち
+    reveal_pending: Vec<std::sync::mpsc::Receiver<crate::fs::reveal::RevealReport>>,
     /// タグ付けレイアウト: メインタグ(排他)の固定順序リスト（tier_id, 要素名）。
     /// ドラムUIで並べ替えは行わず、中央に来たものが選択扱いになる。要素名は表示用で、
     /// 選択・紐付けの同一性判定は常にtier_id（リネームで変わらない不変ID）で行う。
@@ -977,7 +1104,7 @@ pub struct NekoviewApp {
     /// タグ付けレイアウト: 選択済み属性タグ（カテゴリ横断、tier_idで一致判定。
     /// リネームで紐付けが切れないよう要素名ではなく不変IDを持つ）。
     /// 編集モードのワンクリックでここに追加/削除する。単一選択カテゴリは常に
-    /// ちょうど1個を維持する（`tag_manager::enforce_single_select`で矯正）。
+    /// 最大1個に保つ（再クリックで0個へ戻せる。`tag_manager::enforce_single_select`で矯正）。
     pub(crate) tag_attr_selected: Vec<u64>,
     /// 単一選択カテゴリで有効値から外れているが、DBには残す休眠タグ（非破壊切替）。
     /// 複数選択へ戻すと`save_tag_manager`で`tag_attr_selected`へ合流する。保存時は
@@ -1007,6 +1134,17 @@ pub struct NekoviewApp {
     pub(crate) tag_manager_categories: Vec<TagManagerCategoryUi>,
     /// タグマネージャー: 次に採番するtier(要素)ID。削除しても減らさない単調増加カウンタ。
     pub(crate) tag_manager_next_tier_id: u64,
+    /// タグ検索タブ（モック）: 有効化中のタグ(tier_id)。`TAG_MAIN_UNSET_ID`はメイン未設定の疑似タグ。
+    /// セッション中のみ保持し、永続化はしない。
+    pub(crate) tag_search_enabled: std::collections::HashSet<u64>,
+    /// タグ検索タブ: 中央の `archives` をタグ検索の結果で差し替え中か（タブを出るときに実フォルダへ戻す判定）。
+    tag_search_view_open: bool,
+    /// タグ検索タブ: 実行中の走査（捨てると打ち切る）。
+    tag_search_scan: Option<crate::tag_search::TagScan>,
+    /// タグ検索タブ: 走査が完了前か（見出しの「走査中」表示用）。
+    tag_search_running: bool,
+    /// タグ検索タブ: 一覧から外した「確認できないファイル」の数。
+    tag_search_unconfirmed: usize,
     /// タグマネージャー(フェーズTM1): 選択中カテゴリのインデックス。
     pub(crate) tag_manager_selected_category: Option<usize>,
     /// タグマネージャー: インライン編集中の要素(カテゴリindex, tier内index)。
@@ -1095,6 +1233,12 @@ pub struct NekoviewApp {
     pub(crate) card_info_mode: CardInfoMode,
     /// 評価帯（info2）の表示量
     pub(crate) card_rating_mode: CardRatingMode,
+    /// 中央部の表示モード（カード／リスト／一覧）。全タブ共通。
+    pub(crate) view_mode: view_mode::ExplorerViewMode,
+    /// リストの列幅（サムネ列を除く6列）。全モード・全タブ共通で保存する。
+    pub(crate) list_cols: list_columns::ListColumns,
+    /// リスト本体の横スクロール量（固定の列見出しを同じだけずらすため、直前のフレームの値）。
+    list_scroll_x: f32,
     /// 情報帯の「更新日時」行に使う日付書式。設定ダイアログのエクスプローラータブで編集。
     pub(crate) card_date_format: crate::card_date_format::CardDateFormat,
     /// 情報帯の見た目（背景色・透過度・文字色・文字サイズ）。今は Default 固定。
@@ -1150,6 +1294,10 @@ pub struct NekoviewApp {
     explorer_cols: usize,
     explorer_scroll_offset: f32,
     explorer_viewport_h: f32,
+    /// 列数が変わった時（タグパネル開閉・リサイズ）に見ていた位置を保つための基準カード
+    grid_anchor: grid_anchor::GridScrollAnchor,
+    /// 直前のフレーム末尾のレイアウトと見え方（カード↔リスト・サイズ変更時の位置補正用）
+    layout_snapshot: Option<layout_anchor::Snapshot>,
     /// フォルダ名ラベルの1秒ホバー救済用: (対象パス, ホバー開始時刻)
     folder_label_hover: Option<(PathBuf, std::time::Instant)>,
     /// ステータスウィンドウ表示フラグ（[stat] ボタンでトグル）
@@ -1215,6 +1363,7 @@ mod favorites_ui;
 mod real_dir_stash;
 mod tab_position;
 mod virtual_ui;
+mod tag_search_ui;
 mod tree_sort_ui;
 mod real_tree_sort;
 mod bulk_settings_ui;
@@ -1225,18 +1374,46 @@ mod nav_icons;
 mod calendar_gui;
 mod open_progress;
 mod help;
+mod dev_db_tools;
+mod identity_worker;
+mod identity_resolution_ui;
+mod backup_failure_ui;
+mod release_notice_ui;
+mod reveal_ui;
+mod relink_ui;
+mod db_backup_ui;
+mod unreachable_clean_ui;
+mod grid_anchor;
+mod view_mode;
+mod selection;
+mod list_view;
+mod list_columns;
+mod list_attr_ui;
+mod list_edit_lock;
+mod list_edit_ui;
+mod dup_marker_ui;
+mod marker_probe;
+mod marker_compare;
+mod similar_view;
+mod dismissed_window;
+mod thumb_hash_worker;
+mod layout_anchor;
 
 #[cfg(test)]
 mod glyph_audit;
 
 
 impl NekoviewApp {
-    pub fn new(start_dir: PathBuf, config: AppConfig, viewer_slots: [Option<WindowSlot>; 4], sort_state: SortState, viewer_cfg: ViewerConfig, show_hidden: bool, card_info_mode: &str, card_rating_mode: &str, card_date_format: crate::card_date_format::CardDateFormat, translate_cfg: crate::translate::TranslateConfig, tab_positions: crate::gui_config::TabPositions, tree_sorts: crate::tree_sort::TreeSorts, tag_panel_open: bool, tag_preview_high_quality: bool, open_target: Option<PathBuf>, ctx: egui::Context) -> Self {
+    pub fn new(start_dir: PathBuf, mut config: AppConfig, viewer_slots: [Option<WindowSlot>; 4], sort_state: SortState, viewer_cfg: ViewerConfig, show_hidden: bool, card_info_mode: &str, card_rating_mode: &str, card_date_format: crate::card_date_format::CardDateFormat, translate_cfg: crate::translate::TranslateConfig, tab_positions: crate::gui_config::TabPositions, tree_sorts: crate::tree_sort::TreeSorts, tag_panel_open: bool, tag_preview_high_quality: bool, explorer_view_mode: &str, explorer_list_cols: &str, explorer_sim_threshold: &str, open_target: Option<PathBuf>, ctx: egui::Context) -> Self {
         // 「前回フォルダに復帰」がオフなら、他のフォルダ系タブの保存位置も復元しない（既定に戻す）
         let tab_positions = if config.startup.use_last_dir {
             tab_positions
         } else {
-            crate::gui_config::TabPositions::default()
+            // 左ペイン幅はレイアウト設定なので、位置を捨てても残す
+            crate::gui_config::TabPositions {
+                tag_search_left_width: tab_positions.tag_search_left_width,
+                ..Default::default()
+            }
         };
         // timeのローカルオフセット取得は、Unixでは他スレッド起動前に行う必要がある。
         let local_today = calendar_gui::LocalDate::today_local();
@@ -1247,6 +1424,16 @@ impl NekoviewApp {
         // fit-within(縦横比維持)なので短辺は箱の中に自動的に収まる。
         let max_decode_target = (config.max_decode_edge, config.max_decode_edge);
         let config_root = config.config_root.clone();
+        // DBを開くと無ければ作られるので、新規インストールの判定は開く前に行う。
+        let db_existed = crate::dev_db_backup::db_path(&config_root).exists();
+        let (spread_db, backup_failure) = backup_failure_ui::open_spread_db_with_backup(&config_root);
+        // 旧版からの更新なら注意ダイアログを出す。出さない起動では、前回起動バージョンを今のものへ更新する
+        // （出す場合は、ダイアログのOKで更新する）。
+        let current_version = env!("CARGO_PKG_VERSION");
+        let release_notice_pending = crate::release_notice::should_show(&config.last_run_version, current_version, db_existed);
+        if !release_notice_pending {
+            config.last_run_version = current_version.to_string();
+        }
         let (tag_manager_categories, tag_manager_next_tier_id) =
             crate::tag_manager::load(&config_root).unwrap_or_else(crate::tag_manager::default_state);
         let (tag_main_options, tag_attr_options) = crate::tag_manager::derive_tag_options(&tag_manager_categories);
@@ -1323,6 +1510,11 @@ impl NekoviewApp {
             favorite_selected: FavoriteSelection::None,
             favorite_dialog: None,
             favorite_delete_confirm: None,
+            relink_dialog: None,
+            relink_job: None,
+            favorite_unset_confirm: None,
+            db_restore_confirm: None,
+            unreachable_clean: None,
             favorite_detail_dialog: None,
             sort_condition_dialog: None,
             bookmark_setting_dialog: None,
@@ -1338,19 +1530,44 @@ impl NekoviewApp {
             cd_summary_updated_at: None,
             cache_db: None,
             cache_neko_dir: None,
-            spread_db: {
-                let db = crate::spread_state::open_spread_db(&config_root);
-                if let Some(db) = &db {
-                    crate::favorites::init_favorite_tables(db);
-                    crate::virtual_folders::init_virtual_folder_tables(db);
-                    // 候補刷新で廃止した空洞・豆腐マーカーを塗り版へ一括移行
-                    crate::favorites::migrate_markers(db, FAVORITE_MARKER_MIGRATION);
-                }
-                db
-            },
+            spread_db,
+            backup_failure,
+            release_notice_pending,
+            exit_requested: false,
             spread_states: HashMap::new(),
             archive_sort_states: HashMap::new(),
             favorite_states: HashMap::new(),
+            dir_markers: HashMap::new(),
+            marker_seen: HashSet::new(),
+            marker_seen_dir: None,
+            marker_icon_hits: HashMap::new(),
+            reveal_icon_hits: HashMap::new(),
+            marker_popup: None,
+            dup_filter: false,
+            dup_show_dismissed: false,
+            dup_sort: false,
+            thumb_hash: thumb_hash_worker::ThumbHashWorker::spawn(ctx.clone()),
+            dismissed_window: None,
+            pending_similar_entry: None,
+            sim_matches: HashMap::new(),
+            sim_threshold_pct: dup_marker_ui::sim_pct_from_state(explorer_sim_threshold),
+            list_edit_lock: list_edit_lock::ListEditLock::default(),
+            list_edit_hits: Vec::new(),
+            list_edit_dirty: false,
+            sim_filter: false,
+            sim_icon_hits: HashMap::new(),
+            marker_probe: marker_probe::MarkerProbeWorker::spawn(ctx.clone()),
+            marker_presence: HashMap::new(),
+            marker_probe_requested: HashSet::new(),
+            marker_compare: marker_compare::MarkerCompareWorker::spawn(ctx.clone()),
+            marker_compare_states: HashMap::new(),
+            marker_compare_jobs: HashMap::new(),
+            marker_compare_stamps: HashMap::new(),
+            viewing_similar: None,
+            similar_token: 0,
+            similar_saved_mode: None,
+            similar_was_focused: true,
+            similar_return: None,
             cross_view_favorite_markers: HashMap::new(),
             saved_archive_settings: HashMap::new(),
             network_unreachable_mounts: HashSet::new(),
@@ -1404,6 +1621,7 @@ impl NekoviewApp {
             invalid_archives: std::collections::HashSet::new(),
             thumb_failed: std::collections::HashSet::new(),
             app_toast: None,
+            sticky_toast: None,
             cache_budget_bytes: cache_max,
             anim_ring_bounds: ring_bounds,
             memory_warning_open: false,
@@ -1411,6 +1629,16 @@ impl NekoviewApp {
             settings_open: false,
             settings_tab: SettingsTab::Common,
             settings_draft,
+            identity_worker: identity_worker::IdentityWorker::spawn(ctx.clone()),
+            identity_verifying: HashSet::new(),
+            identity_dirty: false,
+            identity_resolve_ui: Default::default(),
+            identity_progress: None,
+            identity_toast_msg: None,
+            identity_pending_count: 0,
+            identity_backfill_started: false,
+            identity_sweep_due: std::time::Instant::now() + identity_worker::SWEEP_FIRST_DELAY,
+            dev_db_ui: dev_db_tools::DevDbUiState::load(&config_root),
             translate_cfg,
             tab_positions,
             tree_sorts,
@@ -1418,6 +1646,9 @@ impl NekoviewApp {
             tag_panel_open,
             tag_panel_width: 280.0,
             tag_panel_edit_expanded: false,
+            pending_open_in_search: None,
+            reveal_dialog: None,
+            reveal_pending: Vec::new(),
             tag_main_options,
             tag_main_selected,
             tag_main_edit_toggle: false,
@@ -1429,6 +1660,11 @@ impl NekoviewApp {
             tag_preview_texture: None,
             tag_preview_pending: None,
             tag_manager_open: false,
+            tag_search_enabled: std::collections::HashSet::new(),
+            tag_search_view_open: false,
+            tag_search_scan: None,
+            tag_search_running: false,
+            tag_search_unconfirmed: 0,
             tag_manager_area_rect: egui::Rect::NOTHING,
             tag_manager_categories,
             tag_manager_next_tier_id,
@@ -1469,6 +1705,9 @@ impl NekoviewApp {
             show_hidden,
             card_info_mode: CardInfoMode::from_state_str(card_info_mode),
             card_rating_mode: CardRatingMode::from_state_str(card_rating_mode),
+            view_mode: view_mode::ExplorerViewMode::from_state_str(explorer_view_mode),
+            list_cols: list_columns::ListColumns::from_state_str(explorer_list_cols),
+            list_scroll_x: 0.0,
             card_date_format,
             card_info_style: CardInfoStyle::default(),
             card_info_hover: None,
@@ -1501,6 +1740,8 @@ impl NekoviewApp {
             explorer_cols: 1,
             explorer_scroll_offset: 0.0,
             explorer_viewport_h: 0.0,
+            grid_anchor: Default::default(),
+            layout_snapshot: None,
             folder_label_hover: None,
             show_status_window: false,
             help_enabled: false,
@@ -1566,6 +1807,9 @@ impl NekoviewApp {
             &self.tree_sorts,
             self.tag_panel_open,
             self.tag_preview_high_quality,
+            &self.view_mode.as_state_str(),
+            &self.list_cols.as_state_str(),
+            &self.sim_threshold_pct.to_string(),
         );
     }
 }

@@ -10,8 +10,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::view_explorer::{TagManagerCategoryUi, TagManagerTierUi};
 
-/// メインカテゴリの要素が0個になった時に補充する仮要素名。
-const DEFAULT_ELEMENT_NAME: &str = "デフォルト値";
 
 #[derive(Serialize, Deserialize)]
 struct TierSaveData {
@@ -47,15 +45,16 @@ fn data_tmp_path(root: &Path) -> PathBuf {
     root.join("nekoviewer_tags.json.tmp")
 }
 
-/// 保存ファイルが無い（初回起動）場合の初期状態: メインカテゴリ1つ＋デフォルト値要素1つのみ。
+/// 保存ファイルが無い（初回起動）場合の初期状態: メインカテゴリ1つ＋補填用要素1つのみ。
 pub(crate) fn default_state() -> (Vec<TagManagerCategoryUi>, u64) {
     let categories = vec![TagManagerCategoryUi {
-        name: "メイン".to_string(),
+        // 保存名は表示に使わない（`TagManagerCategoryUi::display_name`が言語別へ差し替える）。
+        name: crate::i18n::t().tag_main_category_name().to_string(),
         tiers: vec![TagManagerTierUi {
             id: 1,
             tier_no: 1,
             negative: false,
-            element: Some(DEFAULT_ELEMENT_NAME.to_string()),
+            element: Some(crate::i18n::t().tag_main_default_element_name().to_string()),
         }],
         color: crate::view_explorer::pick_distinct_tag_color(&[]),
         is_main: true,
@@ -66,8 +65,9 @@ pub(crate) fn default_state() -> (Vec<TagManagerCategoryUi>, u64) {
 
 /// メインカテゴリの要素が1つも無い状態を許さないガード。削除操作の直後・保存直前に呼ぶ。
 /// メインカテゴリが存在しない場合は何もしない（呼び出し側の状態が壊れているとみなす）。
-pub(crate) fn ensure_main_category_nonempty(categories: &mut [TagManagerCategoryUi], next_tier_id: &mut u64) {
-    let Some(main) = categories.iter_mut().find(|c| c.is_main) else { return };
+/// 補填要素を追加した場合はtrueを返す（呼び出し側がトーストで知らせる）。
+pub(crate) fn ensure_main_category_nonempty(categories: &mut [TagManagerCategoryUi], next_tier_id: &mut u64) -> bool {
+    let Some(main) = categories.iter_mut().find(|c| c.is_main) else { return false };
     if main.tiers.iter().all(|t| t.element.is_none()) {
         let id = *next_tier_id;
         *next_tier_id += 1;
@@ -75,9 +75,11 @@ pub(crate) fn ensure_main_category_nonempty(categories: &mut [TagManagerCategory
             id,
             tier_no: main.tiers.len() as i32 + 1,
             negative: false,
-            element: Some(DEFAULT_ELEMENT_NAME.to_string()),
+            element: Some(crate::i18n::t().tag_main_default_element_name().to_string()),
         });
+        return true;
     }
+    false
 }
 
 /// root配下の保存ファイルを読み込む。無い・壊れている場合はNone（呼び出し側で`default_state`を使う）。
@@ -114,16 +116,13 @@ pub(crate) fn load(root: &Path) -> Option<(Vec<TagManagerCategoryUi>, u64)> {
 /// （`commit_tag_main_edit`側で除外する）。
 pub(crate) const TAG_MAIN_UNSET_ID: u64 = 0;
 
-/// メインタグドラムの「未選択」を表す仮想エントリの表示名。
-const TAG_MAIN_UNSET_LABEL: &str = "（未設定）";
-
 /// カテゴリ一覧から、メインタグドラム用の選択肢（先頭に「未設定」の仮想エントリ、
 /// 続いてメインカテゴリの要素をtier_id＋要素名でtier順）と、属性タグの妥当性チェック用
 /// tier_id一覧（それ以外の全カテゴリの要素をフラットに集約）を導出する。タグ管理
 /// ページでの編集が確定するたびにこれで再計算し、タグ付けUIに反映する。選択・紐付けの
 /// 同一性判定はtier_id（リネームで変わらない不変ID）で行い、要素名は表示専用。
 pub(crate) fn derive_tag_options(categories: &[TagManagerCategoryUi]) -> (Vec<(u64, String)>, Vec<u64>) {
-    let mut main_options = vec![(TAG_MAIN_UNSET_ID, TAG_MAIN_UNSET_LABEL.to_string())];
+    let mut main_options = vec![(TAG_MAIN_UNSET_ID, crate::i18n::t().tag_main_unset_label().to_string())];
     main_options.extend(
         categories
             .iter()

@@ -136,6 +136,8 @@ pub(crate) struct SettingsDraft {
     system_ram_mb: u64,
     max_decode_edge: u32,
     thumb_size: u32,
+    unconfirmed_retention_days: u32,
+    backup_generations: u32,
     viewer_filter: ResizeFilter,
     thumb_filter: ResizeFilter,
     lang: i18n::Lang,
@@ -287,6 +289,8 @@ impl SettingsDraft {
             system_ram_mb,
             max_decode_edge: config.max_decode_edge,
             thumb_size: config.thumb_size,
+            unconfirmed_retention_days: config.unconfirmed_retention_days,
+            backup_generations: config.backup_generations,
             viewer_filter: config.viewer_filter,
             thumb_filter: config.thumb_filter,
             lang: i18n::t(),
@@ -348,6 +352,13 @@ impl SettingsDraft {
         config.cache_total_mb = if self.cache_total_user_set { Some(self.cache_total_mb) } else { None };
         config.max_decode_edge = self.max_decode_edge;
         config.thumb_size = self.thumb_size;
+        config.unconfirmed_retention_days = self.unconfirmed_retention_days.clamp(
+            crate::config::UNCONFIRMED_RETENTION_DAYS_MIN,
+            crate::config::UNCONFIRMED_RETENTION_DAYS_MAX,
+        );
+        config.backup_generations = self
+            .backup_generations
+            .clamp(crate::config::BACKUP_GENERATIONS_MIN, crate::config::BACKUP_GENERATIONS_MAX);
         config.viewer_filter = self.viewer_filter;
         config.thumb_filter = self.thumb_filter;
         i18n::set(self.lang);
@@ -1512,7 +1523,10 @@ impl NekoviewApp {
 
             match self.settings_tab {
                 SettingsTab::Common => draw_settings_tab_common(ui, &mut self.settings_draft),
-                SettingsTab::Explorer => draw_settings_tab_explorer(ui, &mut self.settings_draft),
+                SettingsTab::Explorer => {
+                    draw_settings_tab_explorer(ui, &mut self.settings_draft);
+                    self.draw_settings_database_section(ui);
+                }
                 SettingsTab::Anim => draw_settings_tab_anim(ui, &mut self.settings_draft),
                 SettingsTab::Static => self.draw_settings_tab_static(ui),
                 SettingsTab::Viewer => draw_settings_tab_viewer(ui, &mut self.settings_draft),
@@ -1523,7 +1537,10 @@ impl NekoviewApp {
                 #[cfg(windows)]
                 SettingsTab::Windows => self.draw_settings_tab_windows(ui),
                 SettingsTab::Other => self.draw_settings_tab_other(ui),
-                SettingsTab::Debug => draw_settings_tab_debug(ui, &mut self.settings_draft),
+                SettingsTab::Debug => {
+                    draw_settings_tab_debug(ui, &mut self.settings_draft);
+                    self.draw_dev_db_tools(ui);
+                }
             }
 
             ui.separator();
@@ -1545,6 +1562,7 @@ impl NekoviewApp {
         // レイヤー順で最前面（=入力を受け付ける対象）にする。
         draw_key_capture_dialog(ctx, &mut self.settings_draft);
         draw_mouse_capture_dialog(ctx, &mut self.settings_draft);
+        self.draw_dev_db_dialogs(ctx);
         if apply {
             // キャッシュ合計がシステムRAMの50%を超えている間は保存を拒否する
             // （警告は同フレーム内で既に赤文字表示済み）。
@@ -1778,14 +1796,68 @@ impl NekoviewApp {
         ui.horizontal(|ui| {
             if ui.add_enabled(!registered, egui::Button::new(t.settings_windows_register_button())).clicked() {
                 if let Err(e) = crate::win_registry::register() {
-                    self.app_toast = Some((t.settings_windows_register_failed(&e), std::time::Instant::now()));
+                    self.set_toast(t.settings_windows_register_failed(&e));
                 }
             }
             if ui.add_enabled(registered, egui::Button::new(t.settings_windows_unregister_button())).clicked()
                 && let Err(e) = crate::win_registry::unregister() {
-                self.app_toast = Some((t.settings_windows_unregister_failed(&e), std::time::Instant::now()));
+                self.set_toast(t.settings_windows_unregister_failed(&e));
             }
         });
+    }
+
+    /// エクスプローラータブ末尾の「データベース管理」。未確認IDの保持日数とバックアップ関連を集約する。
+    fn draw_settings_database_section(&mut self, ui: &mut egui::Ui) {
+        // 重複の解決UIの「削除まで残り○日」の元になる、未確認IDの保持日数。
+        ui.separator();
+        ui.label(i18n::t().settings_database_heading());
+        ui.add_space(4.0);
+        ui.label(i18n::t().settings_unconfirmed_retention_label());
+        ui.horizontal(|ui| {
+            ui.add(
+                egui::Slider::new(
+                    &mut self.settings_draft.unconfirmed_retention_days,
+                    crate::config::UNCONFIRMED_RETENTION_DAYS_MIN..=crate::config::UNCONFIRMED_RETENTION_DAYS_MAX,
+                )
+                .show_value(false),
+            );
+            ui.label(i18n::t().settings_unconfirmed_retention_value(self.settings_draft.unconfirmed_retention_days));
+        });
+        ui.label(i18n::t().settings_unconfirmed_retention_explain());
+
+        // DBバックアップの世代数と、手動作成・一覧・復元の予約。
+        ui.separator();
+        ui.label(i18n::t().settings_backup_generations_label());
+        ui.horizontal(|ui| {
+            ui.add(
+                egui::Slider::new(
+                    &mut self.settings_draft.backup_generations,
+                    crate::config::BACKUP_GENERATIONS_MIN..=crate::config::BACKUP_GENERATIONS_MAX,
+                )
+                .show_value(false),
+            );
+            ui.label(i18n::t().settings_backup_generations_value(self.settings_draft.backup_generations));
+        });
+        self.draw_db_backup_section(ui);
+        self.draw_unreachable_clean_section(ui);
+
+        // 移行前の自動バックアップ（`backup_auto/`）の場所を開く。まだ無ければ押せない。
+        ui.separator();
+        ui.label(i18n::t().settings_backup_folder_label());
+        let backup_dir = crate::dev_db_backup::auto_backup_dir(&self.config.config_root);
+        let exists = backup_dir.is_dir();
+        ui.horizontal(|ui| {
+            if ui
+                .add_enabled(exists, egui::Button::new(i18n::t().settings_backup_folder_open()))
+                .clicked()
+            {
+                crate::translate::open_in_file_manager(&backup_dir);
+            }
+            if !exists {
+                ui.label(i18n::t().settings_backup_folder_none());
+            }
+        });
+        ui.label(i18n::t().settings_backup_folder_explain());
     }
 
     fn draw_settings_tab_other(&mut self, ui: &mut egui::Ui) {

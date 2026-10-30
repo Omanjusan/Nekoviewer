@@ -42,6 +42,7 @@ impl NekoviewApp {
         self.invalid_archives.clear();
         self.thumb_failed.clear();
         self.viewing_favorites = Some(selection);
+        self.close_similar_view_state();
         self.remember_favorites_position(selection);
         // 別タブ終了時に開始された実ディレクトリのスキャンが Loading のまま残ると、
         // 同期構築済みのお気に入り一覧よりローディング表示が優先され続ける。
@@ -528,7 +529,7 @@ impl NekoviewApp {
         if let Some(selection) = self.viewing_favorites {
             self.enter_favorite_view(selection);
         } else {
-            if self.viewing_search.is_some() {
+            if self.viewing_search.is_some() || self.viewing_similar.is_some() {
                 self.cross_view_favorite_markers =
                     crate::favorites::memberships_for_paths(&db, &self.archives);
             }

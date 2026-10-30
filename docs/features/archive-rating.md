@@ -83,16 +83,19 @@
 保存先は `nekoviewer_spread.redb`（[spread_state.rs](../../src/spread_state.rs)）。
 
 ```
-archive_rating_v1: &str -> (u8, u32, i64)
-  キー = "{正規化済みディレクトリ}\0{ファイル名}"
+archive_rating_v2: u64 -> (u8, u32, i64)      // 現行。キー = ファイルID
+archive_rating_v1: &str -> (u8, u32, i64)      // 旧。キー = "{正規化済みディレクトリ}\0{ファイル名}"
   値   = (rating_half, visit_count, last_visit_at(unix秒))
 ```
 
+ファイルID管理（[file-identity.md](file-identity.md)）により、評価はファイルの移動・リネームに追従する。
+IDが解決済みならv2、未解決・実体の無いファイルは旧v1のパスキーを読み書きする（旧v1の値は、v2への最初の書き込みで引き継ぐ）。
+
 - `record_archive_visit`（訪問+1）、`write_archive_rating`（絶対値で書込み。0で未評価、上限は10へ丸め）、
-  `read_archive_rating`、`list_dir_archive_ratings`（フォルダ単位の一括取得）、`archive_rating_gc_dir`
-- GC はディレクトリスキャン完了時（[scan.rs](../../src/view_explorer/scan.rs)）に、消えたファイルのレコードを削除する。
-  ファイルのリネーム・移動で評価は失われる（キーがファイル名のため。しおり等と同じ挙動）
-- 値形式を変える場合はこのテーブルを変更せず、`archive_rating_v2` のような新テーブルを追加して移行する
+  `read_archive_rating`、`list_dir_archive_ratings`（フォルダ単位の一括取得）
+- 消えたファイルの行を削除する GC は廃止した。移動・リネームしたファイルの評価は、解決後に新しいパスへ付き替わる
+  （旧v1の行は移行の橋渡しとして残す）。コピーは、元の評価（★のみ。訪問回数は0）を1回だけ引き継ぐ
+- 値形式を変える場合は、このテーブルを変更せず、新テーブルを追加して移行する
 
 ## 将来の拡張（未実装）
 

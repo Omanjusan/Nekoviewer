@@ -171,7 +171,7 @@ impl super::NekoviewApp {
                 let path = self.pending_open.take().expect("pending_open just polled").path;
                 self.mark_archive_invalid(&path);
                 let name = super::panels::truncate_filename(&path);
-                self.app_toast = Some((crate::i18n::t().invalid_zip(&name), std::time::Instant::now()));
+                self.set_toast(crate::i18n::t().invalid_zip(&name));
             }
             OpenPollResult::Ready { entries, check } => {
                 let path = self.pending_open.take().expect("pending_open just polled").path;

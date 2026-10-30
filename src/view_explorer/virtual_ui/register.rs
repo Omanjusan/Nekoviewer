@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 
 use crate::i18n;
-use crate::virtual_folder_scan::{scan_subtree, ScanResult, IMPORT_CONFIRM_THRESHOLD, SCAN_HARD_CAP};
+use crate::virtual_folder_scan::{scan_subtree_limited, ScanResult, IMPORT_CONFIRM_THRESHOLD, SCAN_HARD_CAP};
 use crate::virtual_folders::{self, SubtreeSpec, VirtualFolderError, VirtualNode, MAX_NODES};
 
 use super::*;
@@ -94,6 +94,11 @@ pub(super) enum ScanOutcome {
 /// `root` が存在するフォルダで読めることを確かめてから、配下の構造をスナップショットにする。
 /// ネットワーク配下でも固まらないよう、UIスレッドでは呼ばない。
 pub(super) fn probe_and_scan(root: &Path, hard_cap: usize) -> ScanOutcome {
+    probe_and_scan_limited(root, hard_cap, None)
+}
+
+/// `probe_and_scan` の深さ制限版（`max_depth` は `scan_subtree_limited` と同じ）。
+pub(super) fn probe_and_scan_limited(root: &Path, hard_cap: usize, max_depth: Option<usize>) -> ScanOutcome {
     match std::fs::metadata(root) {
         Err(_) => ScanOutcome::NotFound,
         Ok(m) if !m.is_dir() => ScanOutcome::NotDir,
@@ -101,7 +106,7 @@ pub(super) fn probe_and_scan(root: &Path, hard_cap: usize) -> ScanOutcome {
             if std::fs::read_dir(root).is_err() {
                 ScanOutcome::Unreadable
             } else {
-                ScanOutcome::Scanned(scan_subtree(root, hard_cap))
+                ScanOutcome::Scanned(scan_subtree_limited(root, hard_cap, max_depth))
             }
         }
     }
@@ -113,6 +118,7 @@ pub(super) fn register_outcome(
     outcome: ScanOutcome,
     db: &std::sync::Arc<std::sync::Mutex<redb::Database>>,
     dest: u32,
+    kind: RegisterKind,
 ) -> Result<usize, RegisterError> {
     match outcome {
         ScanOutcome::NotFound => Err(RegisterError::Unreachable),
@@ -123,7 +129,7 @@ pub(super) fn register_outcome(
             if scan.capped {
                 return Err(RegisterError::TooLarge);
             }
-            commit_spec(db, dest, &scan.spec)
+            commit_kind(db, kind, dest, &scan.spec)
         }
     }
 }
@@ -136,6 +142,39 @@ fn commit_spec(
     virtual_folders::add_subtree(db, dest, spec)
         .map(|nodes| nodes.len())
         .map_err(error_from_add)
+}
+
+/// 既存ノード `node_id` の配下へ、スナップショットのうち未登録の分だけを足す。戻り値は追加数。
+fn commit_merge(
+    db: &std::sync::Arc<std::sync::Mutex<redb::Database>>,
+    node_id: u32,
+    spec: &SubtreeSpec,
+) -> Result<usize, RegisterError> {
+    virtual_folders::merge_snapshot(db, node_id, spec).map_err(|e| match e {
+        VirtualFolderError::NotFound => RegisterError::DestMissing,
+        other => error_from_add(other),
+    })
+}
+
+/// 登録の種類。`dest` の意味が変わる。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum RegisterKind {
+    /// 実フォルダを `dest` の子として新規登録する
+    New,
+    /// `dest` 自身の実フォルダのサブフォルダのうち、未登録の分を `dest` の配下へ足す
+    Merge,
+}
+
+fn commit_kind(
+    db: &std::sync::Arc<std::sync::Mutex<redb::Database>>,
+    kind: RegisterKind,
+    dest: u32,
+    spec: &SubtreeSpec,
+) -> Result<usize, RegisterError> {
+    match kind {
+        RegisterKind::New => commit_spec(db, dest, spec),
+        RegisterKind::Merge => commit_merge(db, dest, spec),
+    }
 }
 
 /// 大量取り込み（`ScanResult::needs_confirmation`）でユーザーが選ぶ取り込み方。
@@ -174,13 +213,17 @@ impl ImportPlan {
 
 /// 「浅く」の予算は、確認閾値と残り容量の小さいほう。
 pub(super) fn plan_large_import(scan: &ScanResult, remaining: usize) -> ImportPlan {
-    let total = scan.spec.node_count();
+    plan_from_counts(&scan.spec.depth_counts(), scan.capped, remaining)
+}
+
+/// 深さ別の「登録される件数」から選択肢を評価する。追加0件の深さ（merge の根）は「浅く」に選ばせない。
+pub(super) fn plan_from_counts(counts: &[usize], capped: bool, remaining: usize) -> ImportPlan {
+    let total: usize = counts.iter().sum();
     let budget = IMPORT_CONFIRM_THRESHOLD.min(remaining);
-    let shallow = scan.spec.deepest_depth_within(budget).map(|depth| ShallowPlan {
-        depth,
-        count: scan.spec.depth_counts().iter().take(depth + 1).sum::<usize>(),
-    });
-    ImportPlan { total, capped: scan.capped, all_allowed: !scan.capped && total <= remaining, shallow }
+    let shallow = virtual_folders::deepest_depth_within_counts(counts, budget)
+        .map(|depth| ShallowPlan { depth, count: counts.iter().take(depth + 1).sum::<usize>() })
+        .filter(|s| s.count > 0);
+    ImportPlan { total, capped, all_allowed: !capped && total <= remaining, shallow }
 }
 
 /// 選択に対応する登録用スナップショット。選べない選択肢なら None。
@@ -191,15 +234,24 @@ pub(super) fn spec_for_choice(scan: &ScanResult, plan: &ImportPlan, choice: Impo
     }
 }
 
+/// 「実サブフォルダを一括登録」の確認ダイアログの状態。
+pub(super) struct SubsConfirm {
+    pub id: u32,
+    /// サブフォルダの子（孫以降）まで見るか
+    pub deep: bool,
+}
+
 /// 評価・スキャン中の登録。1件ずつしか走らせない。
 pub(super) struct PendingRegister {
     dest: u32,
+    kind: RegisterKind,
     rx: mpsc::Receiver<ScanOutcome>,
 }
 
 /// 取り込み方の選択待ちの大量登録（1件ずつ。`register_pending` と同時には存在しない）。
 pub(super) struct LargeImport {
     dest: u32,
+    kind: RegisterKind,
     scan: ScanResult,
     plan: ImportPlan,
     /// ダイアログを開いた時点の残り容量（赤字の警告表示用）
@@ -238,14 +290,43 @@ impl NekoviewApp {
             let _ = tx.send(probe_and_scan(&src, SCAN_HARD_CAP));
             ctx.request_repaint();
         });
-        self.virtual_state.register_pending = Some(PendingRegister { dest: c.dest, rx });
+        self.virtual_state.register_pending = Some(PendingRegister { dest: c.dest, kind: RegisterKind::New, rx });
+        self.set_toast(i18n::t().virtual_register_progress());
+    }
+
+    /// 仮想ノード `node_id` の実フォルダのサブフォルダを列挙し、未登録の分を `node_id` の子として登録する。
+    /// `deep` が false なら直下のサブフォルダだけ、true ならその子孫まで。評価・スキャンは別スレッド。
+    pub(super) fn start_merge_subfolders(&mut self, node_id: u32, deep: bool) {
+        if self.virtual_state.register_pending.is_some() || self.virtual_state.large_import.is_some() {
+            return;
+        }
+        let Some(real) = self.virtual_state.nodes.iter().find(|n| n.id == node_id).map(|n| n.real.clone()) else {
+            self.set_register_failed(&RegisterError::DestMissing);
+            return;
+        };
+        if node_id == ROOT {
+            self.set_register_failed(&RegisterError::DestMissing);
+            return;
+        }
+        if !self.path_reachable(&real) {
+            self.set_register_failed(&RegisterError::Unreachable);
+            return;
+        }
+        let (tx, rx) = mpsc::channel();
+        let ctx = self.egui_ctx.clone();
+        let max_depth = if deep { None } else { Some(1) };
+        std::thread::spawn(move || {
+            let _ = tx.send(probe_and_scan_limited(&real, SCAN_HARD_CAP, max_depth));
+            ctx.request_repaint();
+        });
+        self.virtual_state.register_pending = Some(PendingRegister { dest: node_id, kind: RegisterKind::Merge, rx });
         self.set_toast(i18n::t().virtual_register_progress());
     }
 
     /// 毎フレーム呼ぶ。登録中は「登録中…」を出し続け、完了したらDBに登録してトーストを出す。
     pub(super) fn poll_virtual_register(&mut self) {
         let Some(pending) = &self.virtual_state.register_pending else { return };
-        let dest = pending.dest;
+        let (dest, kind) = (pending.dest, pending.kind);
         let outcome = match pending.rx.try_recv() {
             Ok(outcome) => outcome,
             Err(mpsc::TryRecvError::Empty) => {
@@ -264,25 +345,81 @@ impl NekoviewApp {
         };
         // 大量取り込み（1000件超・打ち切り）は、登録せずに取り込み方の選択を待つ
         if let ScanOutcome::Scanned(scan) = &outcome {
-            if scan.needs_confirmation() {
-                let remaining = virtual_folders::remaining_capacity(&db);
-                let plan = plan_large_import(scan, remaining);
-                self.virtual_state.large_import = Some(LargeImport { dest, scan: scan.clone(), plan, remaining });
+            let remaining = virtual_folders::remaining_capacity(&db);
+            let (added, plan) = match kind {
+                RegisterKind::New => (scan.spec.node_count(), plan_large_import(scan, remaining)),
+                RegisterKind::Merge => {
+                    let counts =
+                        virtual_folders::merge_depth_counts(&virtual_folders::list_nodes(&db), dest, &scan.spec);
+                    (counts.iter().sum(), plan_from_counts(&counts, scan.capped, remaining))
+                }
+            };
+            if scan.capped || added > IMPORT_CONFIRM_THRESHOLD {
+                self.virtual_state.large_import =
+                    Some(LargeImport { dest, kind, scan: scan.clone(), plan, remaining });
                 return;
             }
         }
-        let result = register_outcome(outcome, &db, dest);
-        self.finish_register(dest, result);
+        let result = register_outcome(outcome, &db, dest, kind);
+        self.finish_register(dest, kind, result);
     }
 
-    fn finish_register(&mut self, dest: u32, result: Result<usize, RegisterError>) {
+    fn finish_register(&mut self, dest: u32, kind: RegisterKind, result: Result<usize, RegisterError>) {
         match result {
-            Ok(_) => {
+            Ok(added) => {
                 self.refresh_virtual_nodes();
                 self.virtual_state.expanded.insert(dest);
-                self.set_toast(i18n::t().virtual_register_ok());
+                self.set_toast(match kind {
+                    RegisterKind::New => i18n::t().virtual_register_ok().to_string(),
+                    RegisterKind::Merge if added == 0 => i18n::t().virtual_register_subs_none().to_string(),
+                    RegisterKind::Merge => i18n::t().virtual_register_subs_ok(added),
+                });
             }
             Err(e) => self.set_register_failed(&e),
+        }
+    }
+
+    /// 「実サブフォルダを一括登録」の確認ダイアログ。OKで `start_merge_subfolders`。
+    pub(super) fn draw_virtual_register_subs(&mut self, ctx: &egui::Context) {
+        let Some(s) = &self.virtual_state.subs_confirm else { return };
+        let (id, mut deep) = (s.id, s.deep);
+        let Some(real) = self.virtual_state.nodes.iter().find(|n| n.id == id).map(|n| n.real.clone()) else {
+            // 開いている間にノードが消えた
+            self.virtual_state.subs_confirm = None;
+            return;
+        };
+        let virtual_path = self.virtual_state.virtual_path(id);
+        let t = i18n::t();
+        let outcome = draw_confirm_dialog(
+            ctx,
+            ConfirmDialogSpec {
+                id_salt: "virtual_register_subs_window",
+                title: t.virtual_subs_title(),
+                ok_label: t.virtual_ok(),
+                cancel_label: t.favorite_dialog_cancel(),
+                foreground: true,
+            },
+            |ui| {
+                ui.label(t.virtual_subs_body());
+                ui.add_space(6.0);
+                ui.label(t.virtual_subs_target(&virtual_path));
+                ui.label(t.virtual_subs_real(&real.display().to_string()));
+                ui.add_space(6.0);
+                ui.checkbox(&mut deep, t.virtual_subs_deep());
+                ui.label(t.virtual_subs_note());
+            },
+        );
+        match outcome {
+            ConfirmOutcome::Cancel => self.virtual_state.subs_confirm = None,
+            ConfirmOutcome::Ok => {
+                self.virtual_state.subs_confirm = None;
+                self.start_merge_subfolders(id, deep);
+            }
+            ConfirmOutcome::None => {
+                if let Some(s) = &mut self.virtual_state.subs_confirm {
+                    s.deep = deep;
+                }
+            }
         }
     }
 
@@ -331,10 +468,10 @@ impl NekoviewApp {
             let Some(li) = self.virtual_state.large_import.take() else { return };
             let Some(spec) = spec_for_choice(&li.scan, &li.plan, choice) else { return };
             let result = match self.spread_db.clone() {
-                Some(db) => commit_spec(&db, li.dest, &spec),
+                Some(db) => commit_kind(&db, li.kind, li.dest, &spec),
                 None => Err(RegisterError::Db),
             };
-            self.finish_register(li.dest, result);
+            self.finish_register(li.dest, li.kind, result);
         }
     }
 
@@ -397,7 +534,7 @@ mod tests {
     fn register_adds_snapshot_under_dest() {
         let t = TempTree::new(&["a/b", "c"]);
         let db = temp_db();
-        let n = register_outcome(scanned(&t, 100), &db, virtual_folders::ROOT_ID).unwrap();
+        let n = register_outcome(scanned(&t, 100), &db, virtual_folders::ROOT_ID, RegisterKind::New).unwrap();
         assert_eq!(n, 4);
         assert_eq!(virtual_folders::list_nodes(&db).len(), 4);
     }
@@ -406,8 +543,8 @@ mod tests {
     fn register_same_folder_twice_under_same_dest_is_duplicate() {
         let t = TempTree::new(&["a"]);
         let db = temp_db();
-        register_outcome(scanned(&t, 100), &db, virtual_folders::ROOT_ID).unwrap();
-        let err = register_outcome(scanned(&t, 100), &db, virtual_folders::ROOT_ID).unwrap_err();
+        register_outcome(scanned(&t, 100), &db, virtual_folders::ROOT_ID, RegisterKind::New).unwrap();
+        let err = register_outcome(scanned(&t, 100), &db, virtual_folders::ROOT_ID, RegisterKind::New).unwrap_err();
         assert_eq!(err, RegisterError::Duplicate);
         // 失敗しても既存ノードはそのまま（追加も削除もされない）
         assert_eq!(virtual_folders::list_nodes(&db).len(), 2);
@@ -418,8 +555,8 @@ mod tests {
         let t = TempTree::new(&[]);
         let db = temp_db();
         let root_child = virtual_folders::add_node(&db, virtual_folders::ROOT_ID, Path::new("/x"), "x").unwrap();
-        register_outcome(scanned(&t, 100), &db, virtual_folders::ROOT_ID).unwrap();
-        register_outcome(scanned(&t, 100), &db, root_child.id).unwrap();
+        register_outcome(scanned(&t, 100), &db, virtual_folders::ROOT_ID, RegisterKind::New).unwrap();
+        register_outcome(scanned(&t, 100), &db, root_child.id, RegisterKind::New).unwrap();
         assert_eq!(virtual_folders::list_nodes(&db).len(), 3);
     }
 
@@ -427,7 +564,7 @@ mod tests {
     fn register_capped_scan_is_rejected_without_adding() {
         let t = TempTree::new(&["a", "b", "c", "d"]);
         let db = temp_db();
-        let err = register_outcome(scanned(&t, 3), &db, virtual_folders::ROOT_ID).unwrap_err();
+        let err = register_outcome(scanned(&t, 3), &db, virtual_folders::ROOT_ID, RegisterKind::New).unwrap_err();
         assert_eq!(err, RegisterError::TooLarge);
         assert!(virtual_folders::list_nodes(&db).is_empty());
     }
@@ -436,7 +573,7 @@ mod tests {
     fn register_under_missing_dest_is_rejected() {
         let t = TempTree::new(&[]);
         let db = temp_db();
-        let err = register_outcome(scanned(&t, 100), &db, 999).unwrap_err();
+        let err = register_outcome(scanned(&t, 100), &db, 999, RegisterKind::New).unwrap_err();
         assert_eq!(err, RegisterError::DestMissing);
         assert!(virtual_folders::list_nodes(&db).is_empty());
     }
@@ -444,9 +581,9 @@ mod tests {
     #[test]
     fn register_probe_failures_map_to_reasons_without_touching_db() {
         let db = temp_db();
-        assert_eq!(register_outcome(ScanOutcome::NotFound, &db, 0).unwrap_err(), RegisterError::Unreachable);
-        assert_eq!(register_outcome(ScanOutcome::NotDir, &db, 0).unwrap_err(), RegisterError::NotDir);
-        assert_eq!(register_outcome(ScanOutcome::Unreadable, &db, 0).unwrap_err(), RegisterError::Unreadable);
+        assert_eq!(register_outcome(ScanOutcome::NotFound, &db, 0, RegisterKind::New).unwrap_err(), RegisterError::Unreachable);
+        assert_eq!(register_outcome(ScanOutcome::NotDir, &db, 0, RegisterKind::New).unwrap_err(), RegisterError::NotDir);
+        assert_eq!(register_outcome(ScanOutcome::Unreadable, &db, 0, RegisterKind::New).unwrap_err(), RegisterError::Unreadable);
         assert!(virtual_folders::list_nodes(&db).is_empty());
     }
 
@@ -599,5 +736,77 @@ mod tests {
         let spec = spec_for_choice(&scan, &plan, ImportChoice::Shallow).unwrap();
         assert_eq!(commit_spec(&db, virtual_folders::ROOT_ID, &spec), Ok(11));
         assert_eq!(virtual_folders::list_nodes(&db).len(), 11);
+    }
+
+    /// 仮想ノードとして `t` を ROOT 直下に登録し、そのidを返す。
+    fn register_root_of(t: &TempTree, db: &std::sync::Arc<std::sync::Mutex<redb::Database>>) -> u32 {
+        register_outcome(scanned(t, 100), db, virtual_folders::ROOT_ID, RegisterKind::New).unwrap();
+        virtual_folders::list_nodes(db).into_iter().find(|n| n.real_path == t.0).unwrap().id
+    }
+
+    fn merge_scan(t: &TempTree, max_depth: Option<usize>) -> ScanOutcome {
+        probe_and_scan_limited(&t.0, 100, max_depth)
+    }
+
+    #[test]
+    fn merge_adds_only_unregistered_subfolders() {
+        let t = TempTree::new(&["a"]);
+        let db = temp_db();
+        let id = register_root_of(&t, &db);
+        std::fs::create_dir_all(t.0.join("b")).unwrap();
+        std::fs::create_dir_all(t.0.join("c")).unwrap();
+        let n = register_outcome(merge_scan(&t, Some(1)), &db, id, RegisterKind::Merge).unwrap();
+        assert_eq!(n, 2);
+        // 根 + a + b + c。aは重複登録されない
+        assert_eq!(virtual_folders::list_nodes(&db).len(), 4);
+        // もう一度やっても追加0件
+        assert_eq!(register_outcome(merge_scan(&t, Some(1)), &db, id, RegisterKind::Merge), Ok(0));
+    }
+
+    #[test]
+    fn merge_shallow_skips_grandchildren_and_deep_includes_them() {
+        let t = TempTree::new(&["a"]);
+        let db = temp_db();
+        let id = register_root_of(&t, &db);
+        std::fs::create_dir_all(t.0.join("a/x")).unwrap();
+        std::fs::create_dir_all(t.0.join("b/y")).unwrap();
+        // 直下のみ: bは入るが、aの下のxとbの下のyは入らない
+        assert_eq!(register_outcome(merge_scan(&t, Some(1)), &db, id, RegisterKind::Merge), Ok(1));
+        // 子孫まで: 登録済みのaの下のxと、bの下のyが入る
+        assert_eq!(register_outcome(merge_scan(&t, None), &db, id, RegisterKind::Merge), Ok(2));
+        assert_eq!(virtual_folders::list_nodes(&db).len(), 5);
+    }
+
+    #[test]
+    fn merge_depth_counts_ignore_registered_and_count_by_depth() {
+        let t = TempTree::new(&["a"]);
+        let db = temp_db();
+        let id = register_root_of(&t, &db);
+        std::fs::create_dir_all(t.0.join("a/x/z")).unwrap();
+        std::fs::create_dir_all(t.0.join("b")).unwrap();
+        let ScanOutcome::Scanned(scan) = merge_scan(&t, None) else { panic!("scanned expected") };
+        let counts = virtual_folders::merge_depth_counts(&virtual_folders::list_nodes(&db), id, &scan.spec);
+        // 深さ1: b（aは登録済み）、深さ2: a/x、深さ3: a/x/z
+        assert_eq!(counts, vec![0, 1, 1, 1]);
+    }
+
+    #[test]
+    fn merge_into_missing_node_is_dest_missing() {
+        let t = TempTree::new(&[]);
+        let db = temp_db();
+        let err = register_outcome(merge_scan(&t, Some(1)), &db, 999, RegisterKind::Merge).unwrap_err();
+        assert_eq!(err, RegisterError::DestMissing);
+    }
+
+    #[test]
+    fn plan_from_counts_merge_never_offers_zero_addition_shallow() {
+        // 直下に1500件: 閾値1000に収まる深さは根(0件)だけ。0件の「浅く」は選べない
+        let plan = plan_from_counts(&[0, 1500], false, MAX_NODES);
+        assert_eq!(plan.total, 1500);
+        assert!(plan.all_allowed);
+        assert_eq!(plan.shallow, None);
+        // 直下10件＋孫2000件: 深さ1（10件）まで
+        let plan = plan_from_counts(&[0, 10, 2000], false, MAX_NODES);
+        assert_eq!(plan.shallow, Some(ShallowPlan { depth: 1, count: 10 }));
     }
 }

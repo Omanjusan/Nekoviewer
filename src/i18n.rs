@@ -1,6 +1,6 @@
 use std::sync::atomic::{AtomicU8, Ordering};
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Lang {
     Japanese,
     English,
@@ -106,6 +106,1069 @@ impl Lang {
         }
     }
 
+    /// サムネ中央に出す、ファイルID解決中（新規・移動直後のファイルの照合待ち）の表示。
+    pub fn card_verifying(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ファイル検証中",
+            Lang::English  => "Verifying file…",
+            Lang::Chinese  => "正在验证文件",
+        }
+    }
+
+    /// 重複マーカー（カード上辺のアイコン）のホバー説明: 移動。
+    pub fn dup_marker_moved(self) -> &'static str {
+        match self {
+            Lang::Japanese => "同じ内容のファイルが、以前の場所からここへ移っています",
+            Lang::English  => "A file with the same content has moved here from its previous location",
+            Lang::Chinese  => "相同内容的文件已从原位置移到此处",
+        }
+    }
+
+    /// 重複マーカーのホバー説明: 再取得（同じ内容の別のファイルが既にある）。
+    pub fn dup_marker_reacquired(self) -> &'static str {
+        match self {
+            Lang::Japanese => "同じ内容のファイルが他にもあります。簡易照合で一致していて、評価などは引き継がれています",
+            Lang::English  => "Another file with the same content exists. It matched in a quick check, and ratings etc. were carried over",
+            Lang::Chinese  => "还有相同内容的文件。快速比对一致，评分等信息已继承",
+        }
+    }
+
+    /// 重複マーカーのホバー説明: 旧ファイル側（このファイルと同じ内容の、新しいファイルがある）。
+    pub fn dup_marker_elsewhere(self) -> &'static str {
+        match self {
+            Lang::Japanese => "このファイルと同じ内容の別のファイルがあります。簡易照合で一致しています",
+            Lang::English  => "Another file with the same content as this one exists. It matched in a quick check",
+            Lang::Chinese  => "存在与此文件内容相同的其他文件。快速比对一致",
+        }
+    }
+
+    /// 重複マーカーのホバー説明に添える、クリックでできること（移動以外）。
+    pub fn dup_marker_click_hint(self) -> &'static str {
+        match self {
+            Lang::Japanese => "クリックすると、同じ内容のファイルだけを一覧で見られます",
+            Lang::English  => "Click to view only the files with the same content in a list",
+            Lang::Chinese  => "点击可在列表中只查看内容相同的文件",
+        }
+    }
+
+    /// 新しく重複マーカー（移動・再取得）が付いた時のトースト。
+    pub fn dup_marker_toast(self, n: usize) -> String {
+        match self {
+            Lang::Japanese => format!("同じ内容のファイルを{n}件検出しました。「重複」列・絞り込みで確認できます"),
+            Lang::English  => format!("Detected {n} files with the same content. Check them via the duplicate column or filter"),
+            Lang::Chinese  => format!("检测到{n}个内容相同的文件。可通过“重复”列或筛选查看"),
+        }
+    }
+
+    /// 下段フィルタ行: 重複マーカーを持つファイルだけを出すチェックボックスの名前。
+    pub fn dup_filter_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "重複",
+            Lang::English  => "Duplicates",
+            Lang::Chinese  => "重复",
+        }
+    }
+
+    /// 下段フィルタ行: 「重複」絞り込みの説明。
+    pub fn dup_filter_hint(self) -> &'static str {
+        match self {
+            Lang::Japanese => "移動・再取得のマーカーが付いたファイルだけを表示します（「サムネ類似」も入れると、どちらかが付いたファイルを表示）",
+            Lang::English  => "Show only files that carry a moved / re-acquired marker (with \"Thumb similar\" also on, files with either are shown)",
+            Lang::Chinese  => "仅显示带有移动/重新获取标记的文件（同时开启“缩略图相似”时，显示带有任一标记的文件）",
+        }
+    }
+
+    /// 下段フィルタ行: 「正常として消した」マーカーも表示するチェックボックスの名前。
+    pub fn dup_show_dismissed_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "消去済",
+            Lang::English  => "Dismissed",
+            Lang::Chinese  => "已清除",
+        }
+    }
+
+    /// 下段フィルタ行: 「消去済」表示の説明。
+    pub fn dup_show_dismissed_hint(self) -> &'static str {
+        match self {
+            Lang::Japanese => "「正常として消す」を押したマーカーも、グレーのアイコンで表示します",
+            Lang::English  => "Also show markers that were dismissed as normal, as grey icons",
+            Lang::Chinese  => "同时以灰色图标显示已标记为正常的标记",
+        }
+    }
+
+    /// 下段フィルタ行: 「？」（似ている画像）が付いたファイルだけを出すチェックボックスの名前。
+    pub fn sim_filter_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "サムネ類似",
+            Lang::English  => "Thumb similar",
+            Lang::Chinese  => "缩略图相似",
+        }
+    }
+
+    /// 下段フィルタ行: 「サムネ類似」絞り込みの説明。
+    pub fn sim_filter_hint(self) -> &'static str {
+        match self {
+            Lang::Japanese => "サムネが似ているファイル（「？」マーカー）だけを表示します（「重複」も入れると、どちらかが付いたファイルを表示）",
+            Lang::English  => "Show only files with look-alike thumbnails (\"?\" marker) (with \"Duplicates\" also on, files with either are shown)",
+            Lang::Chinese  => "仅显示缩略图相似的文件（“？”标记）（同时开启“重复”时，显示带有任一标记的文件）",
+        }
+    }
+
+    /// パス行: 似ている画像のしきい値コンボボックスの左に置くラベル。
+    pub fn sim_threshold_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "サムネ一致閾値",
+            Lang::English  => "Thumb match",
+            Lang::Chinese  => "缩略图匹配阈值",
+        }
+    }
+
+    /// パス行: 似ている画像のしきい値(類似度%)コンボボックスの説明。
+    pub fn sim_threshold_hint(self) -> &'static str {
+        match self {
+            Lang::Japanese => "サムネの類似度がこの値以上のファイルに「？」を付けます。高いほど厳密です",
+            Lang::English  => "Mark files whose thumbnail similarity is at least this value with \"?\". Higher is stricter",
+            Lang::Chinese  => "缩略图相似度不低于此值的文件将标记“？”。越高越严格",
+        }
+    }
+
+    /// 「？」マーカーのホバー説明。`pct` は最も近い相手との類似度、`count` はしきい値を満たす相手の数。
+    pub fn sim_marker_tooltip(self, pct: u8, count: usize) -> String {
+        match self {
+            Lang::Japanese => format!("サムネが似ているファイルが{count}件あります（最も近いもので類似度 {pct}%）。内容が同じとは限りません"),
+            Lang::English  => format!("{count} file(s) with look-alike thumbnails (closest: {pct}% similar). The content may differ"),
+            Lang::Chinese  => format!("有{count}个缩略图相似的文件（最接近的相似度 {pct}%）。内容不一定相同"),
+        }
+    }
+
+    /// 「？」マーカーのホバー説明に添える、クリックでできること。
+    pub fn sim_marker_click_hint(self) -> &'static str {
+        match self {
+            Lang::Japanese => "クリックすると、似ているファイルだけを一覧で見られます",
+            Lang::English  => "Click to view only the look-alike files in a list",
+            Lang::Chinese  => "点击可在列表中只查看相似的文件",
+        }
+    }
+
+    /// 灰色の「？」（消した組だけが残っている）のホバー説明。
+    pub fn sim_marker_dismissed_tooltip(self, pct: u8, count: usize) -> String {
+        match self {
+            Lang::Japanese => format!("「正常として消した」似ているファイルが{count}件あります（最も近いもので類似度 {pct}%）"),
+            Lang::English  => format!("{count} look-alike file(s) were dismissed as normal (closest: {pct}% similar)"),
+            Lang::Chinese  => format!("有{count}个相似文件已被标记为正常（最接近的相似度 {pct}%）"),
+        }
+    }
+
+    /// 灰色の「？」のホバー説明に添える、クリックでできること。
+    pub fn sim_marker_dismissed_click_hint(self) -> &'static str {
+        match self {
+            Lang::Japanese => "クリックすると、消した組を含めて一覧で見られます。一覧で元に戻せます",
+            Lang::English  => "Click to see them in a list, including dismissed ones. You can restore them there",
+            Lang::Chinese  => "点击可在列表中查看（含已清除的组），并可在列表中恢复",
+        }
+    }
+
+    /// 似ている画像ビューの列見出し: 消した組を元に戻すボタンの列。
+    pub fn list_col_restore(self) -> &'static str {
+        match self {
+            Lang::Japanese => "戻す",
+            Lang::English  => "Restore",
+            Lang::Chinese  => "恢复",
+        }
+    }
+
+    /// 似ている画像ビューの「元に戻す」ボタンのホバー説明。
+    pub fn sim_restore_tip(self) -> &'static str {
+        match self {
+            Lang::Japanese => "この組の「正常として消す」を取り消します。次の照合から、通常の「？」の相手に戻ります",
+            Lang::English  => "Undo \"dismiss as normal\" for this pair. It becomes a normal \"?\" partner again",
+            Lang::Chinese  => "撤销此组的“清除为正常”。之后恢复为普通的“？”对象",
+        }
+    }
+
+    /// 消した組を元に戻した後のトースト。
+    pub fn sim_restored_toast(self) -> &'static str {
+        match self {
+            Lang::Japanese => "消した組を元に戻しました",
+            Lang::English  => "Restored the dismissed pair",
+            Lang::Chinese  => "已恢复该组",
+        }
+    }
+
+    /// 似ている画像ビューの「類似度」列で、消した組の行に添える文字。
+    pub fn sim_badge_dismissed(self) -> &'static str {
+        match self {
+            Lang::Japanese => "消去済",
+            Lang::English  => "Dismissed",
+            Lang::Chinese  => "已清除",
+        }
+    }
+
+    /// 「消した組」ウィンドウの題名。
+    pub fn dismissed_window_title(self) -> &'static str {
+        match self {
+            Lang::Japanese => "消した組",
+            Lang::English  => "Dismissed pairs",
+            Lang::Chinese  => "已清除的组",
+        }
+    }
+
+    /// 「消した組」ウィンドウの説明。
+    pub fn dismissed_window_explain(self) -> &'static str {
+        match self {
+            Lang::Japanese => "「正常として消す」「別物として消す」で消した組の一覧です。行の戻るボタンで取り消します。取り消した組は、次の照合から通常のマーカーに戻ります",
+            Lang::English  => "Pairs dismissed as normal / different. Use the restore button on a row to undo. Restored pairs become normal markers again from the next check",
+            Lang::Chinese  => "已清除为正常/不同的组。点击行上的恢复按钮即可撤销。撤销后，下次比对时恢复为普通标记",
+        }
+    }
+
+    /// 「消した組」ウィンドウの節見出し: 重複。
+    pub fn dismissed_window_dup_heading(self, n: usize) -> String {
+        match self {
+            Lang::Japanese => format!("重複（正常として消したマーカー）  {n}件"),
+            Lang::English  => format!("Duplicates (dismissed as normal)  {n}"),
+            Lang::Chinese  => format!("重复（已清除为正常）  {n}个"),
+        }
+    }
+
+    /// 「消した組」ウィンドウの節見出し: サムネ類似。
+    pub fn dismissed_window_sim_heading(self, n: usize) -> String {
+        match self {
+            Lang::Japanese => format!("サムネ類似（別物として消した組）  {n}件"),
+            Lang::English  => format!("Thumb similar (dismissed as different)  {n}"),
+            Lang::Chinese  => format!("缩略图相似（已清除为不同）  {n}个"),
+        }
+    }
+
+    /// 「消した組」ウィンドウ: 該当なし。
+    pub fn dismissed_window_empty(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ありません",
+            Lang::English  => "None",
+            Lang::Chinese  => "无",
+        }
+    }
+
+    /// 重複先が複数のときの「他N件」。
+    pub fn dismissed_window_others(self, n: usize) -> String {
+        match self {
+            Lang::Japanese => format!("他{n}件"),
+            Lang::English  => format!("+{n} more"),
+            Lang::Chinese  => format!("另有{n}个"),
+        }
+    }
+
+    /// 重複先のレコードが引けなかったとき。
+    pub fn dismissed_window_no_target(self) -> &'static str {
+        match self {
+            Lang::Japanese => "（重複先の記録なし）",
+            Lang::English  => "(no record of the original)",
+            Lang::Chinese  => "（无原文件记录）",
+        }
+    }
+
+    /// ファイルが未確認（実体が見つからなかった）の行に添える文字。
+    pub fn dismissed_window_unconfirmed(self) -> &'static str {
+        match self {
+            Lang::Japanese => "（ファイルが見つかりません）",
+            Lang::English  => "(file not found)",
+            Lang::Chinese  => "（找不到文件）",
+        }
+    }
+
+    /// 日時が分からない行。
+    pub fn dismissed_window_time_unknown(self) -> &'static str {
+        match self {
+            Lang::Japanese => "日時不明",
+            Lang::English  => "date unknown",
+            Lang::Chinese  => "日期未知",
+        }
+    }
+
+    /// 行ごとの「元に戻す」ボタンのホバー説明。
+    pub fn dismissed_window_restore_tip(self) -> &'static str {
+        match self {
+            Lang::Japanese => "この組の「消す」を取り消して、元に戻します",
+            Lang::English  => "Undo the dismissal of this pair",
+            Lang::Chinese  => "撤销对此组的清除",
+        }
+    }
+
+    /// 戻した後のトースト。
+    pub fn dismissed_window_restored_toast(self) -> &'static str {
+        match self {
+            Lang::Japanese => "元に戻しました",
+            Lang::English  => "Restored",
+            Lang::Chinese  => "已恢复",
+        }
+    }
+
+    /// 下段フィルタ行の右端の入口のホバー説明。
+    pub fn dismissed_window_entry_tip(self) -> &'static str {
+        match self {
+            Lang::Japanese => "「正常として消した」組の一覧を開きます。行ごとに元に戻せます",
+            Lang::English  => "Open the list of dismissed pairs. You can restore each one",
+            Lang::Chinese  => "打开已清除组的列表，可逐个恢复",
+        }
+    }
+
+    /// 似ている画像ビューの告知バー。
+    pub fn sim_banner(self) -> &'static str {
+        match self {
+            Lang::Japanese => "似ている画像ビュー",
+            Lang::English  => "Look-alike Images View",
+            Lang::Chinese  => "相似图片视图",
+        }
+    }
+
+    /// 似ている画像ビューの見出し（入口を除いた件数）。
+    pub fn sim_view_header(self, n: usize) -> String {
+        match self {
+            Lang::Japanese => format!("サムネが似ているファイル {n}件"),
+            Lang::English  => format!("{n} file(s) with look-alike thumbnails"),
+            Lang::Chinese  => format!("缩略图相似的文件 {n}个"),
+        }
+    }
+
+    /// 似ている画像ビューの見出しに添える、消した組の件数。
+    pub fn sim_view_dismissed_count(self, n: usize) -> String {
+        match self {
+            Lang::Japanese => format!("（消去済 {n}件）"),
+            Lang::English  => format!("({n} dismissed)"),
+            Lang::Chinese  => format!("（已清除 {n}个）"),
+        }
+    }
+
+    /// 似ている画像ビューで、しきい値を満たす相手が無いとき。
+    pub fn sim_view_empty(self) -> &'static str {
+        match self {
+            Lang::Japanese => "似ているファイルはありません（しきい値を下げると増えることがあります）",
+            Lang::English  => "No look-alike files (a lower threshold may find more)",
+            Lang::Chinese  => "没有相似的文件（降低阈值可能会找到更多）",
+        }
+    }
+
+    /// 似ている画像ビューの列見出し: 入口との類似度。
+    pub fn list_col_similarity(self) -> &'static str {
+        match self {
+            Lang::Japanese => "類似度",
+            Lang::English  => "Similarity",
+            Lang::Chinese  => "相似度",
+        }
+    }
+
+    /// 「この組を正常として消す」を押した後のトースト（別物と判断した組の数）。
+    pub fn sim_dismissed_toast(self, n: usize) -> String {
+        match self {
+            Lang::Japanese => format!("{n}組を別物として消しました。しきい値を変えても、この組には「？」を付けません"),
+            Lang::English  => format!("Dismissed {n} pair(s) as different. They will not be marked \"?\" again"),
+            Lang::Chinese  => format!("已将{n}组标记为不同。之后不再对它们标记“？”"),
+        }
+    }
+
+    /// 消去済みの再取得マーカーのホバー説明。
+    pub fn dup_marker_dismissed(self) -> &'static str {
+        match self {
+            Lang::Japanese => "正常として消した重複です。簡易照合で一致していました",
+            Lang::English  => "A duplicate that was dismissed as normal. It matched in a quick check",
+            Lang::Chinese  => "已标记为正常的重复。快速比对一致",
+        }
+    }
+
+    /// 重複マーカーのポップアップ: 照合の確かさ。
+    pub fn dup_popup_quick_match(self) -> &'static str {
+        match self {
+            Lang::Japanese => "簡易照合で一致しています。中身は全て比べていません",
+            Lang::English  => "Matched in a quick check. The whole contents have not been compared",
+            Lang::Chinese  => "快速比对一致。尚未比较全部内容",
+        }
+    }
+
+    /// 類似ファイル一覧: 中央ペイン最上部の告知バーの文言。
+    pub fn similar_banner(self) -> &'static str {
+        match self {
+            Lang::Japanese => "類似ファイルビュー",
+            Lang::English  => "Similar Files View",
+            Lang::Chinese  => "相似文件视图",
+        }
+    }
+
+    /// 類似ファイル一覧: 最古のファイルを基準に、全てを完全比較するボタン。
+    pub fn similar_compare_all(self) -> &'static str {
+        match self {
+            Lang::Japanese => "全て完全比較",
+            Lang::English  => "Compare all fully",
+            Lang::Chinese  => "全部完整比较",
+        }
+    }
+
+    pub fn similar_compare_cancel_all(self) -> &'static str {
+        match self {
+            Lang::Japanese => "全て中止",
+            Lang::English  => "Cancel all",
+            Lang::Chinese  => "全部中止",
+        }
+    }
+
+    /// 類似ファイル一覧: 完全比較の実行中・順番待ちの組数。
+    pub fn similar_compare_running(self, n: usize) -> String {
+        match self {
+            Lang::Japanese => format!("完全比較中 残り{n}組"),
+            Lang::English  => format!("Comparing, {n} pairs left"),
+            Lang::Chinese  => format!("正在完整比较，剩余{n}组"),
+        }
+    }
+
+    pub fn similar_compare_done_toast(self) -> &'static str {
+        match self {
+            Lang::Japanese => "完全比較が終わりました",
+            Lang::English  => "Full comparison finished",
+            Lang::Chinese  => "完整比较已完成",
+        }
+    }
+
+    pub fn similar_badge_base(self) -> &'static str {
+        match self {
+            Lang::Japanese => "基準",
+            Lang::English  => "Base",
+            Lang::Chinese  => "基准",
+        }
+    }
+
+    pub fn similar_badge_running(self, pct: u64) -> String {
+        match self {
+            Lang::Japanese => format!("比較中 {pct}%"),
+            Lang::English  => format!("Comparing {pct}%"),
+            Lang::Chinese  => format!("比较中 {pct}%"),
+        }
+    }
+
+    pub fn similar_badge_identical(self) -> &'static str {
+        match self {
+            Lang::Japanese => "完全一致",
+            Lang::English  => "Identical",
+            Lang::Chinese  => "完全一致",
+        }
+    }
+
+    pub fn similar_badge_different(self) -> &'static str {
+        match self {
+            Lang::Japanese => "内容が異なる",
+            Lang::English  => "Different",
+            Lang::Chinese  => "内容不同",
+        }
+    }
+
+    pub fn similar_badge_changed(self) -> &'static str {
+        match self {
+            Lang::Japanese => "変化で中断",
+            Lang::English  => "Changed, stopped",
+            Lang::Chinese  => "因变化而中断",
+        }
+    }
+
+    pub fn similar_badge_failed(self) -> &'static str {
+        match self {
+            Lang::Japanese => "読み取り不可",
+            Lang::English  => "Unreadable",
+            Lang::Chinese  => "无法读取",
+        }
+    }
+
+    /// 類似ファイル一覧: 重複列の代わりになる、基準の列の見出し。
+    pub fn similar_refresh(self) -> &'static str {
+        match self {
+            Lang::Japanese => "更新",
+            Lang::English  => "Refresh",
+            Lang::Chinese  => "刷新",
+        }
+    }
+
+    pub fn similar_dismiss_all(self) -> &'static str {
+        match self {
+            Lang::Japanese => "この組を正常として消す",
+            Lang::English  => "Dismiss this group as normal",
+            Lang::Chinese  => "将这组标记为正常并清除",
+        }
+    }
+
+    pub fn similar_dismissed_toast(self, n: usize) -> String {
+        match self {
+            Lang::Japanese => format!("{n}件のマーカーを正常として消しました"),
+            Lang::English  => format!("Dismissed {n} markers as normal"),
+            Lang::Chinese  => format!("已将{n}个标记清除为正常"),
+        }
+    }
+
+    pub fn similar_nothing_to_dismiss_toast(self) -> &'static str {
+        match self {
+            Lang::Japanese => "この組には、消すマーカーがありません",
+            Lang::English  => "This group has no markers to dismiss",
+            Lang::Chinese  => "这组没有可清除的标记",
+        }
+    }
+
+    pub fn list_col_base(self) -> &'static str {
+        match self {
+            Lang::Japanese => "基準",
+            Lang::English  => "Base",
+            Lang::Chinese  => "基准",
+        }
+    }
+
+    pub fn similar_base_tip_set(self) -> &'static str {
+        match self {
+            Lang::Japanese => "このファイルを完全比較の基準にする",
+            Lang::English  => "Use this file as the base for full comparison",
+            Lang::Chinese  => "将此文件作为完整比较的基准",
+        }
+    }
+
+    pub fn similar_base_tip_current(self) -> &'static str {
+        match self {
+            Lang::Japanese => "完全比較の基準",
+            Lang::English  => "Base for full comparison",
+            Lang::Chinese  => "完整比较的基准",
+        }
+    }
+
+    pub fn list_col_compare(self) -> &'static str {
+        match self {
+            Lang::Japanese => "完全比較",
+            Lang::English  => "Full compare",
+            Lang::Chinese  => "完整比较",
+        }
+    }
+
+    /// 類似ファイル一覧: 元のフォルダ表示へ戻るボタン。
+    pub fn similar_back(self) -> &'static str {
+        match self {
+            Lang::Japanese => "← 類似ビューから戻る",
+            Lang::English  => "← Back from similar view",
+            Lang::Chinese  => "← 从相似视图返回",
+        }
+    }
+
+    /// 類似ファイル一覧: 収集中の表示。
+    pub fn similar_loading(self) -> &'static str {
+        match self {
+            Lang::Japanese => "同じ内容のファイルを集めています",
+            Lang::English  => "Collecting files with the same content",
+            Lang::Chinese  => "正在收集内容相同的文件",
+        }
+    }
+
+    /// 類似ファイル一覧: 見出し（並べた件数）。
+    pub fn similar_header(self, n: usize) -> String {
+        match self {
+            Lang::Japanese => format!("同じ内容のファイル {n}件"),
+            Lang::English  => format!("{n} files with the same content"),
+            Lang::Chinese  => format!("内容相同的文件 {n}个"),
+        }
+    }
+
+    /// 類似ファイル一覧: 消失・オフラインで並べられなかったファイルがある旨の1行。
+    pub fn similar_unlisted(self, n: usize) -> String {
+        match self {
+            Lang::Japanese => format!("確認できないファイルが別に{n}件あります"),
+            Lang::English  => format!("{n} more files cannot be checked"),
+            Lang::Chinese  => format!("另有{n}个文件无法确认"),
+        }
+    }
+
+    /// 類似ファイル一覧: 並べられないファイルの状態（ホバーの一覧に添える）。
+    pub fn similar_unlisted_offline(self) -> &'static str {
+        match self {
+            Lang::Japanese => "オフライン",
+            Lang::English  => "Offline",
+            Lang::Chinese  => "离线",
+        }
+    }
+
+    pub fn similar_unlisted_missing(self) -> &'static str {
+        match self {
+            Lang::Japanese => "見つからない",
+            Lang::English  => "Not found",
+            Lang::Chinese  => "找不到",
+        }
+    }
+
+    /// 類似ファイル一覧: 並べられるファイルが無いときの案内。
+    pub fn similar_empty(self) -> &'static str {
+        match self {
+            Lang::Japanese => "比較できる類似ファイルがありません",
+            Lang::English  => "No similar files to compare",
+            Lang::Chinese  => "没有可比较的相似文件",
+        }
+    }
+
+    /// ファイルID解決（新規・移動直後のファイルの照合）が長引いた時に出す、処理中トースト。
+    pub fn identity_toast(self, done: usize, total: usize) -> String {
+        match self {
+            Lang::Japanese => format!("ファイルを検証しています… {done} / {total}"),
+            Lang::English  => format!("Verifying files… {done} / {total}"),
+            Lang::Chinese  => format!("正在验证文件… {done} / {total}"),
+        }
+    }
+
+    /// 管理データ内の重複・曖昧で、引き継ぎ元を自動では決められなかった時の通知（件数は新しく増えた分）。
+    pub fn identity_pending_toast(self, n: usize) -> String {
+        match self {
+            Lang::Japanese => format!("管理データ内に同じ内容のファイルが複数あり、引き継ぎ元を決められませんでした（{n}件）"),
+            Lang::English  => format!("Several files with the same content exist in the managed data, so the source to inherit from could not be decided ({n})"),
+            Lang::Chinese  => format!("管理数据中存在多个内容相同的文件，无法确定继承来源（{n}件）"),
+        }
+    }
+
+    // ---- 起動時の自動バックアップ失敗の確認 ----
+
+    pub fn bkfail_title(self) -> &'static str {
+        self.idres_pick(
+            "データベースのバックアップに失敗しました",
+            "Failed to back up the database",
+            "数据库备份失败",
+        )
+    }
+
+    /// FP仕様のDBでは、既に新方式で動いている旨に差し替える。
+    pub fn bkfail_body(self, identity_spec: bool) -> &'static str {
+        if identity_spec {
+            self.idres_pick(
+                "データベースの自動バックアップを作れませんでした。このデータベースは、すでにファイルの内容で管理する新方式で動いています。続行しても、データはそのまま使えます。",
+                "The automatic backup of the database could not be created. This database is already managed by file content (the new method). You can continue and keep using your data as is.",
+                "无法创建数据库的自动备份。此数据库已按文件内容管理（新方式）。继续使用不会影响现有数据。",
+            )
+        } else {
+            self.idres_pick(
+                "ファイルを内容で管理する新方式へ移行する前の、データベースのバックアップを作れませんでした。バックアップ無しで移行すると、旧バージョンへ戻したときに元の状態へ戻せなくなる可能性があります。「新方式を使わずに続行」を選ぶと、今回の起動だけ従来の方式で動かし、次回の起動でバックアップを再試行します。",
+                "A backup of the database could not be created before moving to the new method that manages files by content. Without a backup, you may not be able to restore the original state if you go back to an older version. \"Continue without the new method\" runs this session with the previous method only, and retries the backup on the next launch.",
+                "在迁移到按文件内容管理的新方式之前，无法创建数据库备份。没有备份时，回到旧版本后可能无法恢复原来的状态。选择“不使用新方式继续”将仅在本次启动使用原有方式，并在下次启动时重试备份。",
+            )
+        }
+    }
+
+    pub fn bkfail_reason_label(self) -> &'static str {
+        self.idres_pick("理由: ", "Reason: ", "原因：")
+    }
+
+    pub fn bkfail_continue(self, identity_spec: bool) -> &'static str {
+        if identity_spec {
+            self.idres_pick("続行", "Continue", "继续")
+        } else {
+            self.idres_pick(
+                "バックアップ無しで移行して続行",
+                "Migrate without a backup and continue",
+                "不备份直接迁移并继续",
+            )
+        }
+    }
+
+    pub fn bkfail_continue_without_identity(self) -> &'static str {
+        self.idres_pick(
+            "新方式を使わずに続行（今回の起動のみ）",
+            "Continue without the new method (this session only)",
+            "不使用新方式继续（仅本次启动）",
+        )
+    }
+
+    pub fn bkfail_quit(self) -> &'static str {
+        self.idres_pick("終了", "Quit", "退出")
+    }
+
+    // ---- 1.11の起動時の注意ダイアログ ----
+
+    pub fn relnotice_title(self) -> &'static str {
+        self.idres_pick(
+            "1.11 へようこそ：記録の管理方式が変わりました",
+            "Welcome to 1.11: how your records are managed has changed",
+            "欢迎使用 1.11：记录的管理方式已改变",
+        )
+    }
+
+    /// 段落は空行（\n\n）で区切る。
+    pub fn relnotice_body(self) -> &'static str {
+        self.idres_pick(
+            "ファイルを「パス」ではなく「内容」で見分ける方式に移行しました。この移行は元に戻せません。旧バージョンに戻す場合は、自動で取ったバックアップを手動で復元してください。\n\n\
+             移行は、フォルダを開いたときに順次行われます（起動の数秒後から、裏でも少しずつ進みます）。次の機能は、移行が済んだ範囲でしか正しく働きません。\n\
+             ・タグ検索：移行済みのファイルだけが対象です\n\
+             ・重複マーカー／類似画像マーカー（？）：開いたことのあるフォルダの間でだけ検出されます\n\n\
+             普段使うフォルダを一度ずつ開いてください。初回は「ファイル検証中」やサムネの計算で、いつもより時間がかかります。",
+            "Files are now recognized by their content instead of their path. This migration cannot be undone. To go back to an older version, restore the automatic backup by hand.\n\n\
+             The migration happens as you open folders (a little more runs in the background a few seconds after launch). The following features only work correctly for what has already been migrated:\n\
+             - Tag search: only migrated files are searched\n\
+             - Duplicate / similar image markers (?): detected only among folders you have opened before\n\n\
+             Please open each of your usual folders once. The first time takes longer than usual because of \"Verifying files\" and thumbnail calculations.",
+            "现在按“内容”而不是“路径”来识别文件。此迁移无法撤销。若要退回旧版本，请手动恢复自动备份。\n\n\
+             迁移会在您打开文件夹时依次进行（启动数秒后也会在后台少量进行）。以下功能只对已迁移的范围正常工作：\n\
+             ・标签搜索：仅限已迁移的文件\n\
+             ・重复标记／相似图片标记（？）：仅在您打开过的文件夹之间检测\n\n\
+             请把常用的文件夹各打开一次。首次打开会因“正在验证文件”和缩略图计算而比平时慢。",
+        )
+    }
+
+    /// バックアップの場所の案内（設定画面の「エクスプローラー」タブ内）。
+    pub fn relnotice_backup_hint(self) -> &'static str {
+        self.idres_pick(
+            "バックアップの場所：設定 → エクスプローラー → データベース管理 → バックアップフォルダを開く",
+            "Where the backup is: Settings → Explorer → Database management → Open backup folder",
+            "备份位置：设置 → 资源管理器 → 数据库管理 → 打开备份文件夹",
+        )
+    }
+
+    pub fn relnotice_ok(self) -> &'static str {
+        self.idres_pick("OK", "OK", "确定")
+    }
+
+    // ---- DB内の重複の解決（解決UI）----
+
+    fn idres_pick(self, ja: &'static str, en: &'static str, zh: &'static str) -> &'static str {
+        match self {
+            Lang::Japanese => ja,
+            Lang::English => en,
+            Lang::Chinese => zh,
+        }
+    }
+
+    pub fn idres_button(self, n: usize) -> String {
+        match self {
+            Lang::Japanese => format!("DB内の重複の解決（{n}）"),
+            Lang::English => format!("Resolve duplicates in DB ({n})"),
+            Lang::Chinese => format!("解决数据库内的重复（{n}）"),
+        }
+    }
+
+    pub fn idres_list_title(self) -> &'static str {
+        self.idres_pick("未解決の項目", "Unresolved items", "未解决的项目")
+    }
+
+    pub fn idres_list_intro1(self) -> &'static str {
+        self.idres_pick(
+            "このアプリは、ファイルの内容で「同じファイル」かを見分け、移動や名前の変更のあとも評価・タグ・お気に入りなどを引き継いでいます。",
+            "This app recognizes the same file by its content, and carries ratings, tags, favorites, etc. over after a move or rename.",
+            "本应用通过文件内容识别“同一文件”，在移动或重命名后仍会保留评分、标签、收藏等。",
+        )
+    }
+
+    pub fn idres_list_intro2(self) -> &'static str {
+        self.idres_pick(
+            "ただし、管理データ（DB）に同じ内容のファイルが複数あると、どれがどれの続きなのかを自動では決められないことがあります。ここで、その判断をしてください。",
+            "However, when the managed data (DB) contains several files with the same content, the app sometimes cannot decide automatically which one continues which. Please decide here.",
+            "但是，当管理数据（DB）中有多个内容相同的文件时，应用有时无法自动判断哪个是哪个的延续。请在此处决定。",
+        )
+    }
+
+    pub fn idres_list_note(self) -> &'static str {
+        self.idres_pick(
+            "ストレージ全体の重複検索ではありません（管理データに記録のないファイルは対象外）。解決しなくてもアプリは使えますが、解決するまで該当ファイルは記録なしで表示されます。",
+            "This is not a duplicate search of your whole storage (files not recorded in the managed data are not covered). You can keep using the app without resolving, but the files concerned are shown without records until resolved.",
+            "这不是对整个存储的重复搜索（管理数据中没有记录的文件不在范围内）。不解决也可以继续使用，但在解决之前相关文件将显示为没有记录。",
+        )
+    }
+
+    pub fn idres_filter_label(self) -> &'static str {
+        self.idres_pick("絞り込み:", "Filter:", "筛选：")
+    }
+
+    pub fn idres_shown(self, shown: usize, total: usize) -> String {
+        match self {
+            Lang::Japanese => format!("表示 {shown} / {total} 件"),
+            Lang::English => format!("Showing {shown} / {total}"),
+            Lang::Chinese => format!("显示 {shown} / {total} 项"),
+        }
+    }
+
+    pub fn idres_col_kind(self) -> &'static str {
+        self.idres_pick("種別", "Type", "类型")
+    }
+    pub fn idres_col_target(self) -> &'static str {
+        self.idres_pick("対象ファイル", "File", "目标文件")
+    }
+    pub fn idres_col_candidates(self) -> &'static str {
+        self.idres_pick("候補", "Candidates", "候选")
+    }
+    pub fn idres_col_detected(self) -> &'static str {
+        self.idres_pick("検出日", "Detected", "检测日")
+    }
+    pub fn idres_col_until(self) -> &'static str {
+        self.idres_pick("削除まで", "Until removal", "距离删除")
+    }
+    pub fn idres_col_select(self) -> &'static str {
+        self.idres_pick("選択", "Select", "选择")
+    }
+    pub fn idres_col_path(self) -> &'static str {
+        self.idres_pick("パス", "Path", "路径")
+    }
+    pub fn idres_col_state(self) -> &'static str {
+        self.idres_pick("状態", "State", "状态")
+    }
+    pub fn idres_col_size(self) -> &'static str {
+        self.idres_pick("サイズ", "Size", "大小")
+    }
+    pub fn idres_col_mtime(self) -> &'static str {
+        self.idres_pick("更新日時", "Modified", "修改时间")
+    }
+    pub fn idres_col_rating(self) -> &'static str {
+        "★"
+    }
+    pub fn idres_col_tags(self) -> &'static str {
+        self.idres_pick("タグ", "Tags", "标签")
+    }
+    pub fn idres_col_favorite(self) -> &'static str {
+        self.idres_pick("お気に入り", "Favorite", "收藏")
+    }
+
+    pub fn idres_empty(self) -> &'static str {
+        self.idres_pick("未解決の項目はありません", "No unresolved items", "没有未解决的项目")
+    }
+
+    pub fn idres_until_note(self) -> &'static str {
+        self.idres_pick(
+            "「削除まで」: 見つからないファイルの記録が自動で削除されるまでの日数です（設定→その他で変更）。削除されると、その候補は選べなくなります。",
+            "\"Until removal\": days until the record of a missing file is deleted automatically (change in Settings > Other). Once deleted, that candidate can no longer be chosen.",
+            "“距离删除”：找不到的文件的记录被自动删除前的天数（可在 设置→其他 中更改）。删除后，该候选将无法再选择。",
+        )
+    }
+
+    pub fn idres_btn_proceed(self) -> &'static str {
+        self.idres_pick("解決へ進む", "Resolve", "前往解决")
+    }
+    pub fn idres_btn_close(self) -> &'static str {
+        self.idres_pick("閉じる", "Close", "关闭")
+    }
+    pub fn idres_btn_confirm(self) -> &'static str {
+        self.idres_pick(
+            "選択した項目を参照元として確定する",
+            "Confirm the selected item as the source",
+            "将所选项确定为参照来源",
+        )
+    }
+    pub fn idres_btn_skip(self) -> &'static str {
+        self.idres_pick("引き継がない（空のまま）", "Do not inherit (leave empty)", "不继承（保持为空）")
+    }
+    pub fn idres_btn_back(self) -> &'static str {
+        self.idres_pick("戻る", "Back", "返回")
+    }
+
+    pub fn idres_kind(self, kind: crate::identity_pending::PendingKind) -> &'static str {
+        use crate::identity_pending::PendingKind::*;
+        match kind {
+            CopySource => self.idres_pick("引き継ぎ元の選択", "Choose source to inherit from", "选择继承来源"),
+            MoveTarget => self.idres_pick("移動元の選択", "Choose origin of the move", "选择移动来源"),
+            FavoriteHandover => self.idres_pick("お気に入りの引き継ぎ", "Hand over favorite", "转移收藏"),
+        }
+    }
+
+    pub fn idres_until_none(self) -> &'static str {
+        self.idres_pick("期限なし", "No limit", "无期限")
+    }
+    pub fn idres_until_due(self) -> &'static str {
+        self.idres_pick("次回整理で削除", "Removed at next cleanup", "下次清理时删除")
+    }
+    pub fn idres_until_days(self, days: i64) -> String {
+        match self {
+            Lang::Japanese => format!("残り {days} 日"),
+            Lang::English => format!("{days} days left"),
+            Lang::Chinese => format!("剩余 {days} 天"),
+        }
+    }
+
+    pub fn idres_detail_title(self, kind: &str) -> String {
+        match self {
+            Lang::Japanese => format!("参照元の選択 ─ {kind}"),
+            Lang::English => format!("Choose source - {kind}"),
+            Lang::Chinese => format!("选择参照来源 - {kind}"),
+        }
+    }
+    pub fn idres_target_label(self) -> &'static str {
+        self.idres_pick("対象ファイル", "Target file", "目标文件")
+    }
+    pub fn idres_what_happened(self) -> &'static str {
+        self.idres_pick("何が起きたか", "What happened", "发生了什么")
+    }
+    pub fn idres_why_manual(self) -> &'static str {
+        self.idres_pick(
+            "なぜ自動では決められないか",
+            "Why it cannot be decided automatically",
+            "为何无法自动决定",
+        )
+    }
+    pub fn idres_what_to_do(self) -> &'static str {
+        self.idres_pick("していただくこと", "What you need to do", "需要您做的")
+    }
+    pub fn idres_will_confirm(self) -> &'static str {
+        self.idres_pick("確定すると", "If you confirm", "确定后")
+    }
+    pub fn idres_will_skip(self) -> &'static str {
+        self.idres_pick(
+            "「引き継がない（空のまま）」にすると",
+            "If you choose \"Do not inherit (leave empty)\"",
+            "选择“不继承（保持为空）”后",
+        )
+    }
+    pub fn idres_will_back(self) -> &'static str {
+        self.idres_pick("「戻る」と", "If you choose \"Back\"", "选择“返回”后")
+    }
+    pub fn idres_back_text(self) -> &'static str {
+        self.idres_pick(
+            "何も変えず一覧へ戻ります。保留の間、対象は記録のないまま表示されます（評価などを付ければ、そのファイルの記録になります）。",
+            "Nothing is changed and you return to the list. While on hold, the target is shown without records (if you add a rating etc., that becomes the file's own record).",
+            "不做任何更改并返回列表。保留期间，目标将显示为没有记录（若添加评分等，则成为该文件自己的记录）。",
+        )
+    }
+
+    pub fn idres_candidates_heading(self, kind: crate::identity_pending::PendingKind) -> &'static str {
+        use crate::identity_pending::PendingKind::*;
+        match kind {
+            CopySource => self.idres_pick(
+                "管理データ内の、同じ内容のファイル（参照元の候補）",
+                "Files with the same content in the managed data (candidates for the source)",
+                "管理数据内内容相同的文件（参照来源候选）",
+            ),
+            MoveTarget => self.idres_pick(
+                "管理データ内の、同じ内容の消えているファイル（移動元の候補）",
+                "Missing files with the same content in the managed data (candidates for the origin)",
+                "管理数据内内容相同且已丢失的文件（移动来源候选）",
+            ),
+            FavoriteHandover => self.idres_pick(
+                "管理データ内の、同じ内容のファイル（お気に入りの移し先の候補）",
+                "Files with the same content in the managed data (candidates to receive the favorite)",
+                "管理数据内内容相同的文件（收藏转移目标候选）",
+            ),
+        }
+    }
+
+    pub fn idres_state_present(self) -> &'static str {
+        self.idres_pick("現存", "Exists", "存在")
+    }
+    pub fn idres_state_missing(self) -> &'static str {
+        self.idres_pick("消えている", "Missing", "已丢失")
+    }
+    pub fn idres_state_offline(self) -> &'static str {
+        self.idres_pick("確認できない", "Unavailable", "无法确认")
+    }
+    pub fn idres_yes(self) -> &'static str {
+        self.idres_pick("あり", "Yes", "有")
+    }
+    pub fn idres_no(self) -> &'static str {
+        self.idres_pick("なし", "No", "无")
+    }
+
+    pub fn idres_situation(self, kind: crate::identity_pending::PendingKind, target: &str, n: usize) -> String {
+        use crate::identity_pending::PendingKind::*;
+        match (kind, self) {
+            (CopySource, Lang::Japanese) => format!("「{target}」は、管理データにすでにある {n} 個のファイルと同じ内容です。コピーされたファイルかもしれません。"),
+            (CopySource, Lang::English) => format!("\"{target}\" has the same content as {n} files already in the managed data. It may be a copy."),
+            (CopySource, Lang::Chinese) => format!("“{target}”与管理数据中已有的 {n} 个文件内容相同。它可能是复制出来的文件。"),
+            (MoveTarget, Lang::Japanese) => format!("新しく見つかった「{target}」は、管理データにある「見つからなくなった」{n} 個のファイルと同じ内容です。移動または名前の変更で現れたのかもしれません。"),
+            (MoveTarget, Lang::English) => format!("The newly found \"{target}\" has the same content as {n} files in the managed data that can no longer be found. It may have appeared through a move or rename."),
+            (MoveTarget, Lang::Chinese) => format!("新发现的“{target}”与管理数据中 {n} 个“已找不到”的文件内容相同。它可能是因移动或重命名而出现的。"),
+            (FavoriteHandover, Lang::Japanese) => format!("お気に入りに登録されていた「{target}」が見つからなくなりました。管理データには、同じ内容のファイルが別の場所に {n} 個あります。"),
+            (FavoriteHandover, Lang::English) => format!("\"{target}\", which was registered as a favorite, can no longer be found. The managed data has {n} files with the same content in other places."),
+            (FavoriteHandover, Lang::Chinese) => format!("已收藏的“{target}”找不到了。管理数据中在其他位置有 {n} 个内容相同的文件。"),
+        }
+    }
+
+    pub fn idres_reason(self, kind: crate::identity_pending::PendingKind) -> &'static str {
+        use crate::identity_pending::PendingKind::*;
+        match kind {
+            CopySource => self.idres_pick(
+                "コピー元の候補が複数あり、評価やタグなどの記録がそれぞれ違うため、どの記録を引き継ぐべきかをアプリは判断できません。誤って引き継ぐと、別のファイルの評価やタグが付いてしまいます。",
+                "There are several candidates for the copy source and their records (ratings, tags, etc.) differ, so the app cannot judge which record to inherit. Inheriting the wrong one would attach another file's rating or tags.",
+                "复制来源有多个候选，且各自的评分、标签等记录不同，应用无法判断应继承哪一个。若继承错误，会附上其他文件的评分或标签。",
+            ),
+            MoveTarget => self.idres_pick(
+                "移動元の候補が複数あり、どのファイルが移動してきたのかをアプリは判断できません。誤って選ぶと、別のファイルの記録（評価・タグ・お気に入りなど）を取り違えてしまいます。",
+                "There are several candidates for the origin, so the app cannot judge which file was moved here. Choosing wrongly would mix up another file's records (ratings, tags, favorites, etc.).",
+                "移动来源有多个候选，应用无法判断是哪个文件被移动过来。若选错，会弄混其他文件的记录（评分、标签、收藏等）。",
+            ),
+            FavoriteHandover => self.idres_pick(
+                "別の場所へ移動しただけなのか、コピーしてから元を消したのかを、アプリは区別できません。移動しただけなら、そのファイルを開いた時に記録は自動で追従します。勝手にお気に入りを移すと、別のファイルに付けてしまうおそれがあります。",
+                "The app cannot tell whether the file was simply moved elsewhere or copied and then deleted. If it was only moved, its records follow automatically when that file is opened. Moving the favorite on its own risks attaching it to a different file.",
+                "应用无法区分是仅移动到了别处，还是复制后删除了原文件。若只是移动，打开该文件时记录会自动跟随。擅自转移收藏可能会附到其他文件上。",
+            ),
+        }
+    }
+
+    pub fn idres_ask(self, kind: crate::identity_pending::PendingKind) -> &'static str {
+        use crate::identity_pending::PendingKind::*;
+        match kind {
+            CopySource => self.idres_pick(
+                "記録を引き継ぎたいファイルを、下の一覧から 1 つ選んでください。",
+                "Choose one file from the list below to inherit the records from.",
+                "请从下方列表中选择一个要继承其记录的文件。",
+            ),
+            MoveTarget => self.idres_pick(
+                "移動元だったと思うファイルを、下の一覧から 1 つ選んでください。",
+                "Choose one file from the list below that you think was the origin.",
+                "请从下方列表中选择一个您认为是移动来源的文件。",
+            ),
+            FavoriteHandover => self.idres_pick(
+                "お気に入りを移したいファイルを、下の一覧から 1 つ選んでください。",
+                "Choose one file from the list below to hand the favorite over to.",
+                "请从下方列表中选择一个要转移收藏的文件。",
+            ),
+        }
+    }
+
+    pub fn idres_on_confirm(self, kind: crate::identity_pending::PendingKind, target: &str) -> String {
+        use crate::identity_pending::PendingKind::*;
+        match (kind, self) {
+            (CopySource, Lang::Japanese) => format!("確定すると、選んだファイルの★・タグ・しおり・見開き・ソート・登録サムネが「{target}」に複製されます。以後は別々に管理され、お気に入りは複製されません。"),
+            (CopySource, Lang::English) => format!("If you confirm, the selected file's rating, tags, bookmark, spread, sort and registered thumbnail are copied to \"{target}\". From then on they are managed separately, and the favorite is not copied."),
+            (CopySource, Lang::Chinese) => format!("确定后，所选文件的评分、标签、书签、跨页、排序和已登记缩略图将复制到“{target}”。此后二者各自独立管理，收藏不会被复制。"),
+            (MoveTarget, Lang::Japanese) => format!("確定すると、選んだファイルの記録（お気に入りを含む）が「{target}」に移り、その分の「見つからないファイル」の記録が整理されます。選ばなかった候補は、保持日数が過ぎると自動で削除されます。"),
+            (MoveTarget, Lang::English) => format!("If you confirm, the selected file's records (including the favorite) move to \"{target}\" and the corresponding missing-file record is tidied up. Candidates you did not choose are deleted automatically after the retention period."),
+            (MoveTarget, Lang::Chinese) => format!("确定后，所选文件的记录（包括收藏）将转移到“{target}”，相应的“找不到的文件”记录会被整理。未选的候选将在保留期过后自动删除。"),
+            (FavoriteHandover, Lang::Japanese) => format!("確定すると、「{target}」のお気に入りが選んだファイルに移り、お気に入り一覧で実在するファイルとして表示されます。"),
+            (FavoriteHandover, Lang::English) => format!("If you confirm, the favorite of \"{target}\" moves to the selected file and shows up in the favorites list as an existing file."),
+            (FavoriteHandover, Lang::Chinese) => format!("确定后，“{target}”的收藏将转移到所选文件，并在收藏列表中作为实际存在的文件显示。"),
+        }
+    }
+
+    pub fn idres_on_skip(self, kind: crate::identity_pending::PendingKind, target: &str) -> String {
+        use crate::identity_pending::PendingKind::*;
+        match (kind, self) {
+            (CopySource, Lang::Japanese) => format!("「{target}」は、記録のない新しいファイルとして扱います。"),
+            (CopySource, Lang::English) => format!("\"{target}\" is treated as a new file without records."),
+            (CopySource, Lang::Chinese) => format!("“{target}”将作为没有记录的新文件处理。"),
+            (MoveTarget, Lang::Japanese) => format!("「{target}」は記録のない新しいファイルとして扱い、候補の記録は「見つからないファイル」のまま残ります。"),
+            (MoveTarget, Lang::English) => format!("\"{target}\" is treated as a new file without records, and the candidates' records remain as missing files."),
+            (MoveTarget, Lang::Chinese) => format!("“{target}”将作为没有记录的新文件处理，候选的记录仍保留为“找不到的文件”。"),
+            (FavoriteHandover, Lang::Japanese) => format!("お気に入りは「{target}」のまま残り（実体なしで表示）、保持日数が過ぎると自動で削除されます。"),
+            (FavoriteHandover, Lang::English) => format!("The favorite stays with \"{target}\" (shown without an actual file) and is deleted automatically after the retention period."),
+            (FavoriteHandover, Lang::Chinese) => format!("收藏仍保留在“{target}”上（显示为无实际文件），保留期过后自动删除。"),
+        }
+    }
+
+    pub fn idres_done(self, target: &str) -> String {
+        match self {
+            Lang::Japanese => format!("「{target}」の参照元を確定しました"),
+            Lang::English => format!("Confirmed the source for \"{target}\""),
+            Lang::Chinese => format!("已确定“{target}”的参照来源"),
+        }
+    }
+
+    pub fn idres_skipped(self, target: &str) -> String {
+        match self {
+            Lang::Japanese => format!("「{target}」は引き継がずに確定しました"),
+            Lang::English => format!("\"{target}\" was confirmed without inheriting"),
+            Lang::Chinese => format!("“{target}”已确定为不继承"),
+        }
+    }
+
+    /// 解決に失敗した理由。`code` は解決UI側が `ResolveError` から決める固定の識別子。
+    pub fn idres_error(self, code: &str) -> &'static str {
+        match code {
+            "not_found" => self.idres_pick("この項目は既に解決されています（一覧を更新しました）", "This item has already been resolved (the list was refreshed)", "该项目已解决（列表已刷新）"),
+            "not_candidate" => self.idres_pick("選んだ項目は候補にありません", "The selected item is not a candidate", "所选项不在候选中"),
+            "subject_gone" => self.idres_pick("対象のファイルの記録が見つかりません", "The record of the target file was not found", "找不到目标文件的记录"),
+            "source_gone" => self.idres_pick("参照元の記録が見つかりません（保持期間を過ぎて削除された可能性があります）", "The record of the source was not found (it may have been deleted after the retention period)", "找不到参照来源的记录（可能已在保留期过后被删除）"),
+            "subject_has_data" => self.idres_pick("対象に既に記録が付いているため、適用しませんでした（記録を潰さないため）", "Not applied because the target already has records (to avoid overwriting them)", "目标已有记录，因此未应用（避免覆盖记录）"),
+            "no_favorite" => self.idres_pick("移すお気に入りがありません", "There is no favorite to hand over", "没有可转移的收藏"),
+            _ => self.idres_pick("保存に失敗しました", "Failed to save", "保存失败"),
+        }
+    }
+
     pub fn card_info_name(self) -> &'static str {
         match self {
             Lang::Japanese => "情報:名前",
@@ -139,8 +1202,20 @@ impl Lang {
         }
     }
 
-    /// 評価帯の回数の行
+    /// 訪問回数が0（一度も開いていない、または手動で0に戻した）ときの表示。リストとカードで共通。
+    pub fn visit_unvisited(self) -> &'static str {
+        match self {
+            Lang::Japanese => "未訪問",
+            Lang::English  => "Unvisited",
+            Lang::Chinese  => "未访问",
+        }
+    }
+
+    /// カードの訪問回数の行。0回は「未訪問」だけに置き換える（評価行の「未評価」と対になる）。
     pub fn visit_count_line(self, n: u32) -> String {
+        if n == 0 {
+            return self.visit_unvisited().to_string();
+        }
         match self {
             Lang::Japanese => format!("訪問回数：{n}回"),
             Lang::English  => format!("Visits: {n}"),
@@ -552,13 +1627,117 @@ impl Lang {
         }
     }
 
-    /// エクスプローラー部アイテムカード右クリックメニュー「フォルダを開く」
-    /// （OS標準ファイラーで現在表示中ディレクトリを開く）
+    /// エクスプローラー部アイテムカード右クリックメニュー「現在のフォルダを開く」
+    /// （OS標準ファイラーで現在表示中ディレクトリ=PWDを開く）
     pub fn explorer_open_folder_menu(self) -> &'static str {
         match self {
-            Lang::Japanese => "フォルダを開く",
-            Lang::English  => "Open Folder",
-            Lang::Chinese  => "打开文件夹",
+            Lang::Japanese => "現在のフォルダを開く",
+            Lang::English  => "Open Current Folder",
+            Lang::Chinese  => "打开当前文件夹",
+        }
+    }
+
+    /// ファイルカード右クリック「選択した項目を維持したままファイラーで開く」
+    pub fn reveal_menu(self) -> &'static str {
+        match self {
+            Lang::Japanese => "選択した項目を維持したままファイラーで開く",
+            Lang::English  => "Open in File Manager with Selection Kept",
+            Lang::Chinese  => "保持选中项并在文件管理器中打开",
+        }
+    }
+
+    /// 項目の下に出す赤字（グレーアウトの理由）
+    pub fn reveal_over_limit(self, max: usize) -> String {
+        match self {
+            Lang::Japanese => format!("{max}フォルダを超えています"),
+            Lang::English  => format!("Exceeds {max} folders"),
+            Lang::Chinese  => format!("超过{max}个文件夹"),
+        }
+    }
+
+    /// 項目の下に出す黄字（ネットワークパスはリストから除いて実行する）
+    pub fn reveal_network_excluded(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ネットワーク項目は除外されます",
+            Lang::English  => "Network items will be excluded",
+            Lang::Chinese  => "网络项目将被排除",
+        }
+    }
+
+    pub fn reveal_dialog_title(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ファイラーで開く",
+            Lang::English  => "Open in File Manager",
+            Lang::Chinese  => "在文件管理器中打开",
+        }
+    }
+
+    pub fn reveal_dialog_ok(self) -> &'static str {
+        match self {
+            Lang::Japanese => "開く",
+            Lang::English  => "Open",
+            Lang::Chinese  => "打开",
+        }
+    }
+
+    pub fn reveal_choice_selection(self, count: usize) -> String {
+        match self {
+            Lang::Japanese => format!("複数選択した項目を開く（{count}件）"),
+            Lang::English  => format!("Open the selected items ({count})"),
+            Lang::Chinese  => format!("打开多选的项目（{count}个）"),
+        }
+    }
+
+    pub fn reveal_choice_hover(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ホバーした単体のファイルを開く",
+            Lang::English  => "Open only the hovered file",
+            Lang::Chinese  => "仅打开悬停的单个文件",
+        }
+    }
+
+    /// 選択を依頼できず親フォルダだけ開いたときのトースト
+    pub fn reveal_toast_folder_only(self, folders: usize) -> String {
+        match self {
+            Lang::Japanese => format!("選択状態にできなかったため、親フォルダのみ展開（{folders}フォルダ）"),
+            Lang::English  => format!("Could not select the items; opened the parent folder only ({folders})"),
+            Lang::Chinese  => format!("无法选中项目，仅打开了父文件夹（{folders}个）"),
+        }
+    }
+
+    pub fn reveal_toast_failed(self, folders: usize) -> String {
+        match self {
+            Lang::Japanese => format!("開けないフォルダがあった（{folders}フォルダ）"),
+            Lang::English  => format!("Some folders could not be opened ({folders})"),
+            Lang::Chinese  => format!("有文件夹无法打开（{folders}个）"),
+        }
+    }
+
+    /// お気に入り/検索結果のファイルカード右クリック「このファイルの親フォルダを開く」
+    pub fn explorer_open_parent_folder_menu(self) -> &'static str {
+        match self {
+            Lang::Japanese => "このファイルの親フォルダを開く",
+            Lang::English  => "Open This File's Parent Folder",
+            Lang::Chinese  => "打开此文件的父文件夹",
+        }
+    }
+
+    /// フォルダカード/ツリー行の右クリック「このフォルダを開く」
+    /// （OS標準ファイラーで、右クリックしたフォルダ自身を開く）
+    pub fn explorer_open_this_folder_menu(self) -> &'static str {
+        match self {
+            Lang::Japanese => "このフォルダを開く",
+            Lang::English  => "Open This Folder",
+            Lang::Chinese  => "打开此文件夹",
+        }
+    }
+
+    /// 実フォルダ/仮想フォルダタブのフォルダ右クリック「このフォルダを検索タブで開く」
+    pub fn explorer_open_in_search_menu(self) -> &'static str {
+        match self {
+            Lang::Japanese => "このフォルダを検索タブで開く",
+            Lang::English  => "Open This Folder in Search Tab",
+            Lang::Chinese  => "在搜索标签中打开此文件夹",
         }
     }
 
@@ -956,6 +2135,65 @@ impl Lang {
         }
     }
 
+    pub fn folder_tab_tag_search(self) -> &'static str {
+        match self {
+            Lang::Japanese => "タグ検索",
+            Lang::English  => "Tag Search",
+            Lang::Chinese  => "标签搜索",
+        }
+    }
+
+    /// タグ検索タブ左ペイン上部の操作ヒント
+    pub fn tag_search_left_hint(self) -> &'static str {
+        match self {
+            Lang::Japanese => "タグをクリックで有効／無効。有効にしたタグを全て持つファイルを探します。",
+            Lang::English  => "Click a tag to enable or disable it. Finds files that have every enabled tag.",
+            Lang::Chinese  => "点击标签以启用或禁用。查找同时具有所有已启用标签的文件。",
+        }
+    }
+
+    /// タグ検索タブ左ペイン: 単一選択カテゴリの「S」マークのホバー説明
+    pub fn tag_search_single_hint(self) -> &'static str {
+        match self {
+            Lang::Japanese => "単一選択のカテゴリです。同時に1つだけ有効にできます。",
+            Lang::English  => "Single-select category. Only one tag can be enabled at a time.",
+            Lang::Chinese  => "单选类别。同一时间只能启用一个标签。",
+        }
+    }
+
+    /// タグ検索タブ中央: 有効タグが1つも無いときのガイド
+    pub fn tag_search_center_guide(self) -> &'static str {
+        match self {
+            Lang::Japanese => "左のタグを選ぶと、該当するファイルがここに表示されます。",
+            Lang::English  => "Pick tags on the left and the matching files will appear here.",
+            Lang::Chinese  => "在左侧选择标签后，匹配的文件会显示在这里。",
+        }
+    }
+
+    /// タグ検索タブ中央の見出し: ヒット件数。走査中はその旨、確認できないファイルがあれば件数を添える。
+    pub fn tag_search_header(self, hits: usize, running: bool, unconfirmed: usize) -> String {
+        let mut s = match self {
+            Lang::Japanese => format!("{hits}件"),
+            Lang::English  => format!("{hits} files"),
+            Lang::Chinese  => format!("{hits}个文件"),
+        };
+        if running {
+            s.push_str(match self {
+                Lang::Japanese => "（検索中…）",
+                Lang::English  => " (searching…)",
+                Lang::Chinese  => "（搜索中…）",
+            });
+        }
+        if unconfirmed > 0 {
+            s.push_str(&match self {
+                Lang::Japanese => format!("　確認できないファイルが別に{unconfirmed}件あります"),
+                Lang::English  => format!("  {unconfirmed} more files could not be confirmed"),
+                Lang::Chinese  => format!("  另有{unconfirmed}个文件无法确认"),
+            });
+        }
+        s
+    }
+
     pub fn virtual_real_tree_title(self) -> &'static str {
         match self {
             Lang::Japanese => "実ツリー",
@@ -985,6 +2223,14 @@ impl Lang {
             Lang::Japanese => "実フォルダ登録",
             Lang::English  => "Register Real Folder",
             Lang::Chinese  => "登记实际文件夹",
+        }
+    }
+
+    pub fn virtual_menu_register_subs(self) -> &'static str {
+        match self {
+            Lang::Japanese => "フォルダの実サブフォルダを一括登録",
+            Lang::English  => "Register Real Subfolders",
+            Lang::Chinese  => "批量登记实际子文件夹",
         }
     }
 
@@ -1212,6 +2458,213 @@ impl Lang {
         }
     }
 
+    /// 中央部の表示モード切替ボタン（カード／リスト／一覧）
+    pub fn view_mode_card_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "カード",
+            Lang::English  => "Cards",
+            Lang::Chinese  => "卡片",
+        }
+    }
+
+    /// リストボタン。▼ は押すたびにサイズが循環することを示す。`size` は S/M/L、サムネ無しは空文字。
+    pub fn view_mode_list_label(self, size: &str) -> String {
+        match self {
+            Lang::Japanese => format!("▼リスト{size}"),
+            Lang::English  => format!("▼List {size}"),
+            Lang::Chinese  => format!("▼列表{size}"),
+        }
+    }
+
+    /// リスト・一覧の列見出し
+    pub fn list_col_dup(self) -> &'static str {
+        match self {
+            Lang::Japanese => "重複",
+            Lang::English  => "Dup",
+            Lang::Chinese  => "重复",
+        }
+    }
+
+    pub fn list_col_reveal(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ファイラー",
+            Lang::English  => "Files",
+            Lang::Chinese  => "文件管理器",
+        }
+    }
+
+    /// 「ファイラー」列のボタンのツールチップ
+    pub fn list_reveal_tip(self) -> &'static str {
+        match self {
+            Lang::Japanese => "このファイルを選択した状態でファイラーで開く",
+            Lang::English  => "Open in the file manager with this file selected",
+            Lang::Chinese  => "在文件管理器中打开并选中此文件",
+        }
+    }
+
+    pub fn list_col_name(self) -> &'static str {
+        match self {
+            Lang::Japanese => "名前",
+            Lang::English  => "Name",
+            Lang::Chinese  => "名称",
+        }
+    }
+
+    pub fn list_col_size(self) -> &'static str {
+        match self {
+            Lang::Japanese => "サイズ",
+            Lang::English  => "Size",
+            Lang::Chinese  => "大小",
+        }
+    }
+
+    pub fn list_col_mtime(self) -> &'static str {
+        match self {
+            Lang::Japanese => "更新日時",
+            Lang::English  => "Modified",
+            Lang::Chinese  => "修改时间",
+        }
+    }
+
+    pub fn list_col_rating(self) -> &'static str {
+        match self {
+            Lang::Japanese => "評価",
+            Lang::English  => "Rating",
+            Lang::Chinese  => "评分",
+        }
+    }
+
+    pub fn list_col_place(self) -> &'static str {
+        match self {
+            Lang::Japanese => "場所",
+            Lang::English  => "Location",
+            Lang::Chinese  => "位置",
+        }
+    }
+
+    pub fn list_col_visits(self) -> &'static str {
+        match self {
+            Lang::Japanese => "訪問回数",
+            Lang::English  => "Visits",
+            Lang::Chinese  => "访问次数",
+        }
+    }
+
+    /// 最左の「エラー」列（無効ZIP・サムネ失敗・ネットワーク切れ）の見出し
+    pub fn list_col_error(self) -> &'static str {
+        match self {
+            Lang::Japanese => "エラー",
+            Lang::English  => "Error",
+            Lang::Chinese  => "错误",
+        }
+    }
+
+    /// 「エラー」列のホバー説明
+    pub fn list_error_invalid_tip(self) -> &'static str {
+        match self {
+            Lang::Japanese => "画像が含まれない無効なZIPです",
+            Lang::English  => "Invalid archive: it contains no images",
+            Lang::Chinese  => "无效的压缩包：不包含图片",
+        }
+    }
+
+    pub fn list_error_thumb_tip(self, ext: &str) -> String {
+        match self {
+            Lang::Japanese => format!("{ext}デコード失敗"),
+            Lang::English  => format!("Failed to decode {ext}"),
+            Lang::Chinese  => format!("{ext}解码失败"),
+        }
+    }
+
+    pub fn list_error_network_tip(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ネットワークの接続先に到達できません",
+            Lang::English  => "The network location is unreachable",
+            Lang::Chinese  => "无法访问网络位置",
+        }
+    }
+
+    /// 「属性」列の保存設定マーカー（S / T / B）のホバー説明
+    pub fn list_attr_sort_tip(self) -> &'static str {
+        match self {
+            Lang::Japanese => "並び順を保存済み",
+            Lang::English  => "Sort order saved",
+            Lang::Chinese  => "已保存排序",
+        }
+    }
+
+    pub fn list_attr_thumb_tip(self) -> &'static str {
+        match self {
+            Lang::Japanese => "サムネイルを指定済み",
+            Lang::English  => "Custom thumbnail set",
+            Lang::Chinese  => "已指定缩略图",
+        }
+    }
+
+    pub fn list_attr_bookmark_tip(self) -> &'static str {
+        match self {
+            Lang::Japanese => "しおりあり",
+            Lang::English  => "Has a bookmark",
+            Lang::Chinese  => "有书签",
+        }
+    }
+
+    /// ツールバーの「★/訪問回数の編集」ロックのトグル。ラベルは今の状態を明記する。
+    pub fn list_edit_lock_label(self, unlocked: bool) -> &'static str {
+        match (self, unlocked) {
+            (Lang::Japanese, false) => "★/訪問回数の編集ロック",
+            (Lang::Japanese, true)  => "★/訪問回数の編集アンロック",
+            (Lang::English, false)  => "Rating/Visits edit: Locked",
+            (Lang::English, true)   => "Rating/Visits edit: Unlocked",
+            (Lang::Chinese, false)  => "评分/访问次数编辑：已锁定",
+            (Lang::Chinese, true)   => "评分/访问次数编辑：已解锁",
+        }
+    }
+
+    /// ＋－の保存に失敗したときのトースト
+    pub fn list_edit_failed(self) -> &'static str {
+        match self {
+            Lang::Japanese => "評価・訪問回数を保存できませんでした",
+            Lang::English  => "Could not save the rating or visit count",
+            Lang::Chinese  => "无法保存评分或访问次数",
+        }
+    }
+
+    pub fn list_edit_lock_hint(self) -> &'static str {
+        match self {
+            Lang::Japanese => "押すとロックを解除して、リストの★と訪問回数を＋－で変えられます。フォルダ移動・タブ切替で自動的にロックに戻ります",
+            Lang::English  => "Unlock to change ratings and visit counts with +/- in the list. Locks again when you change folder or tab",
+            Lang::Chinese  => "解锁后可在列表中用 +/- 修改评分和访问次数。切换文件夹或标签页时自动重新锁定",
+        }
+    }
+
+    /// 最右の「属性」列（保存設定・お気に入り）の見出し
+    pub fn list_col_attr(self) -> &'static str {
+        match self {
+            Lang::Japanese => "属性",
+            Lang::English  => "Attributes",
+            Lang::Chinese  => "属性",
+        }
+    }
+
+    /// リストのホバーポップアップ（サムネ）の ON/OFF チェックボックス
+    pub fn view_mode_hover_popup_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ホバー時サムネ表示",
+            Lang::English  => "Thumbnail on hover",
+            Lang::Chinese  => "悬停时显示缩略图",
+        }
+    }
+
+    #[allow(dead_code)] // 一覧ボタンはUIから外した。封印中のコードと一緒に残す
+    pub fn view_mode_text_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "一覧",
+            Lang::English  => "Text",
+            Lang::Chinese  => "清单",
+        }
+    }
+
     pub fn virtual_link_broken_label(self) -> &'static str {
         match self {
             Lang::Japanese => "（リンク切れ）",
@@ -1225,6 +2678,70 @@ impl Lang {
             Lang::Japanese => "仮想フォルダに正常に登録されました",
             Lang::English  => "Registered to the virtual folder",
             Lang::Chinese  => "已成功登记到虚拟文件夹",
+        }
+    }
+
+    pub fn virtual_register_subs_ok(self, added: usize) -> String {
+        match self {
+            Lang::Japanese => format!("実サブフォルダを {added} 件登録しました"),
+            Lang::English  => format!("Registered {added} real subfolder(s)"),
+            Lang::Chinese  => format!("已登记 {added} 个实际子文件夹"),
+        }
+    }
+
+    pub fn virtual_register_subs_none(self) -> &'static str {
+        match self {
+            Lang::Japanese => "登録するサブフォルダはありませんでした",
+            Lang::English  => "No subfolders to register",
+            Lang::Chinese  => "没有需要登记的子文件夹",
+        }
+    }
+
+    pub fn virtual_subs_title(self) -> &'static str {
+        match self {
+            Lang::Japanese => "実サブフォルダの一括登録",
+            Lang::English  => "Register Real Subfolders",
+            Lang::Chinese  => "批量登记实际子文件夹",
+        }
+    }
+
+    pub fn virtual_subs_body(self) -> &'static str {
+        match self {
+            Lang::Japanese => "実フォルダのサブフォルダのうち、未登録のものをこのフォルダの子として登録します",
+            Lang::English  => "Unregistered subfolders of the real folder will be registered as children of this folder",
+            Lang::Chinese  => "将把实际文件夹中尚未登记的子文件夹登记为此文件夹的子级",
+        }
+    }
+
+    pub fn virtual_subs_target(self, path: &str) -> String {
+        match self {
+            Lang::Japanese => format!("対象: {path}"),
+            Lang::English  => format!("Target: {path}"),
+            Lang::Chinese  => format!("对象：{path}"),
+        }
+    }
+
+    pub fn virtual_subs_real(self, path: &str) -> String {
+        match self {
+            Lang::Japanese => format!("実フォルダ: {path}"),
+            Lang::English  => format!("Real folder: {path}"),
+            Lang::Chinese  => format!("实际文件夹：{path}"),
+        }
+    }
+
+    pub fn virtual_subs_deep(self) -> &'static str {
+        match self {
+            Lang::Japanese => "サブフォルダの子（孫以降）も登録する",
+            Lang::English  => "Also register the children of the subfolders (grandchildren and below)",
+            Lang::Chinese  => "同时登记子文件夹的子级（孙级及更深）",
+        }
+    }
+
+    pub fn virtual_subs_note(self) -> &'static str {
+        match self {
+            Lang::Japanese => "登録済みのフォルダは変更されません",
+            Lang::English  => "Registered folders are left unchanged",
+            Lang::Chinese  => "已登记的文件夹不会被更改",
         }
     }
 
@@ -1725,6 +3242,259 @@ impl Lang {
         }
     }
 
+    // ---- お気に入りタブ: 再紐付け・外す（relink_ui.rs） ----
+
+    pub fn relink_menu(self) -> &'static str {
+        match self {
+            Lang::Japanese => "移動先を指定して元ファイルを検索",
+            Lang::English  => "Specify Destination to Find Original",
+            Lang::Chinese  => "指定目标位置以查找原文件",
+        }
+    }
+
+    pub fn favorite_unset_menu(self) -> &'static str {
+        match self {
+            Lang::Japanese => "お気に入り設定から外す",
+            Lang::English  => "Remove from Favorites",
+            Lang::Chinese  => "从收藏中移除",
+        }
+    }
+
+    pub fn relink_picker_title(self) -> &'static str {
+        match self {
+            Lang::Japanese => "移動先のフォルダを選択",
+            Lang::English  => "Select Destination Folder",
+            Lang::Chinese  => "选择目标文件夹",
+        }
+    }
+
+    pub fn relink_picker_hint(self) -> &'static str {
+        match self {
+            Lang::Japanese => "元ファイルの移動先と思われるフォルダをダブルクリックで決定する。",
+            Lang::English  => "Double-click the folder where the original file was probably moved to.",
+            Lang::Chinese  => "双击原文件可能被移动到的文件夹以确定。",
+        }
+    }
+
+    pub fn relink_confirm_title(self) -> &'static str {
+        match self {
+            Lang::Japanese => "移動先を指定して検索",
+            Lang::English  => "Search in Destination",
+            Lang::Chinese  => "在目标位置中查找",
+        }
+    }
+
+    pub fn relink_confirm_body(self, count: usize, folder: &str) -> String {
+        match self {
+            Lang::Japanese => format!(
+                "お気に入りの{count}件について、次のフォルダの中から同じ内容のファイルを探す。\n{folder}\n\n\
+                 見つかったファイルへ、お気に入りの設定を付け替える。"
+            ),
+            Lang::English => format!(
+                "Look for files with the same content as {count} favorite item(s) in this folder:\n{folder}\n\n\
+                 Favorite settings are re-linked to the files found."
+            ),
+            Lang::Chinese => format!(
+                "在以下文件夹中查找与{count}个收藏项内容相同的文件：\n{folder}\n\n\
+                 找到后，将收藏设置转移到该文件。"
+            ),
+        }
+    }
+
+    pub fn relink_recursive_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "サブフォルダも含める（深さの制限なし）",
+            Lang::English  => "Include subfolders (no depth limit)",
+            Lang::Chinese  => "包含子文件夹（不限深度）",
+        }
+    }
+
+    pub fn relink_ok(self) -> &'static str {
+        match self {
+            Lang::Japanese => "検索する",
+            Lang::English  => "Search",
+            Lang::Chinese  => "查找",
+        }
+    }
+
+    pub fn relink_running_toast(self) -> &'static str {
+        match self {
+            Lang::Japanese => "移動先のフォルダを検索しています…",
+            Lang::English  => "Searching the destination folder…",
+            Lang::Chinese  => "正在目标文件夹中查找…",
+        }
+    }
+
+    pub fn relink_busy_toast(self) -> &'static str {
+        match self {
+            Lang::Japanese => "別の移動先検索が実行中",
+            Lang::English  => "Another destination search is running",
+            Lang::Chinese  => "另一个目标位置查找正在进行",
+        }
+    }
+
+    /// 再紐付けの結果。件数が0の項目は出さない。全て0なら「対象がなかった」旨。
+    pub fn relink_result(self, r: &crate::identity_relink::RelinkReport) -> String {
+        let items: [(usize, &str, &str, &str); 6] = [
+            (r.moved, "移動先へ付け替え", "Re-linked", "已转移"),
+            (r.merged, "お気に入りを合流", "Merged into existing", "已合并"),
+            (r.ambiguous, "候補が複数のため保留（「DB内の重複の解決」に追加）", "Ambiguous (added to duplicate resolution)", "候选不唯一而搁置（已加入重复项解决）"),
+            (r.not_found, "該当ファイルなし", "Not found", "未找到"),
+            (r.skipped, "対象外", "Skipped", "已跳过"),
+            (r.failed, "失敗", "Failed", "失败"),
+        ];
+        let parts: Vec<String> = items
+            .iter()
+            .filter(|(n, ..)| *n > 0)
+            .map(|(n, ja, en, zh)| match self {
+                Lang::Japanese => format!("{ja} {n}件"),
+                Lang::English => format!("{en}: {n}"),
+                Lang::Chinese => format!("{zh} {n}"),
+            })
+            .collect();
+        if parts.is_empty() {
+            return match self {
+                Lang::Japanese => "対象がありませんでした".to_owned(),
+                Lang::English => "Nothing to process".to_owned(),
+                Lang::Chinese => "没有可处理的项目".to_owned(),
+            };
+        }
+        let sep = if self == Lang::Japanese { " / " } else { "; " };
+        parts.join(sep)
+    }
+
+    pub fn favorite_unset_confirm_title(self) -> &'static str {
+        match self {
+            Lang::Japanese => "お気に入り設定から外す",
+            Lang::English  => "Remove from Favorites",
+            Lang::Chinese  => "从收藏中移除",
+        }
+    }
+
+    pub fn favorite_unset_confirm_body(self, count: usize) -> String {
+        match self {
+            Lang::Japanese => format!("選択した{count}件を、お気に入りから外す。\n（評価・タグなど他の設定は残る）"),
+            Lang::English => format!("Remove {count} selected item(s) from favorites.\n(Ratings, tags, and other settings are kept.)"),
+            Lang::Chinese => format!("将选中的{count}项从收藏中移除。\n（评分、标签等其他设置将保留）"),
+        }
+    }
+
+    pub fn favorite_unset_ok(self) -> &'static str {
+        match self {
+            Lang::Japanese => "外す",
+            Lang::English  => "Remove",
+            Lang::Chinese  => "移除",
+        }
+    }
+
+    pub fn favorite_unset_done_toast(self, count: usize) -> String {
+        match self {
+            Lang::Japanese => format!("お気に入りから{count}件を外した"),
+            Lang::English => format!("Removed {count} item(s) from favorites"),
+            Lang::Chinese => format!("已从收藏中移除{count}项"),
+        }
+    }
+
+    pub fn help_relink(self) -> HelpDoc {
+        match self {
+            Lang::Japanese => HelpDoc {
+                title: "移動先を指定して元ファイルを検索",
+                sections: &[
+                    (
+                        "",
+                        "ファイルが移動・リネームされて「開けない」状態になったお気に入りを、指定したフォルダの中の\n\
+                         同じ内容のファイルへ付け替える。ファイルの内容（フィンガープリント）で照合する。",
+                    ),
+                    (
+                        "■ 付け替えの結果",
+                        "移動先に設定が何も無ければ、★・タグ・お気に入りなど全ての設定が移る。\n\
+                         移動先に既に設定があるときは、移動先の設定を正としてお気に入りだけを足し、元の記録は削除される。\n\
+                         同じ内容のファイルが複数あって決められないときは、「DB内の重複の解決」に追加される。",
+                    ),
+                    (
+                        "■ グレーアウトする場合",
+                        "選択に、開けないお気に入り（ID記録のあるもの）が1件も含まれないとき。\n\
+                         複数選択で実在するファイルが混ざるときは、開けないものだけが対象になる。",
+                    ),
+                ],
+            },
+            Lang::English => HelpDoc {
+                title: "Specify Destination to Find Original",
+                sections: &[
+                    (
+                        "",
+                        "Re-links favorites whose files were moved or renamed (and can no longer be opened) to files with\n\
+                         the same content inside a folder you choose. Files are matched by content (fingerprint).",
+                    ),
+                    (
+                        "■ Result",
+                        "If the destination file has no settings, all settings (rating, tags, favorites...) move to it.\n\
+                         If it already has settings, its settings win; only the favorites are added and the old record is deleted.\n\
+                         If several files share the same content, the case is added to \"Resolve Duplicates in DB\".",
+                    ),
+                    (
+                        "■ When it is grayed out",
+                        "When none of the selected items is an unopenable favorite with an ID record.\n\
+                         With mixed selections, only the unopenable items are processed.",
+                    ),
+                ],
+            },
+            Lang::Chinese => HelpDoc {
+                title: "指定目标位置以查找原文件",
+                sections: &[
+                    (
+                        "",
+                        "将因文件被移动或重命名而无法打开的收藏，转移到所选文件夹中内容相同的文件。\n\
+                         按文件内容（指纹）进行匹配。",
+                    ),
+                    (
+                        "■ 转移结果",
+                        "目标文件没有任何设置时，评分、标签、收藏等全部设置都会转移。\n\
+                         目标文件已有设置时，以目标设置为准，仅追加收藏，并删除原记录。\n\
+                         存在多个内容相同的文件而无法确定时，会加入“解决DB内的重复项”。",
+                    ),
+                    (
+                        "■ 变灰的情况",
+                        "所选项中没有任何带有ID记录且无法打开的收藏时。\n\
+                         混合多选时，仅处理无法打开的项目。",
+                    ),
+                ],
+            },
+        }
+    }
+
+    pub fn help_favorite_unset(self) -> HelpDoc {
+        match self {
+            Lang::Japanese => HelpDoc {
+                title: "お気に入り設定から外す",
+                sections: &[(
+                    "",
+                    "選択したファイルをお気に入りから外す（所属フォルダも未整理も解除）。\n\
+                     評価・タグなど他の設定は残る。開けなくなったお気に入りの整理に使える。\n\
+                     2件以上を選んだときは、実行前に確認が出る。",
+                )],
+            },
+            Lang::English => HelpDoc {
+                title: "Remove from Favorites",
+                sections: &[(
+                    "",
+                    "Removes the selected files from favorites (folder assignments and the unsorted state).\n\
+                     Ratings, tags and other settings are kept. Useful for cleaning up favorites that can no longer be opened.\n\
+                     A confirmation appears when two or more items are selected.",
+                )],
+            },
+            Lang::Chinese => HelpDoc {
+                title: "从收藏中移除",
+                sections: &[(
+                    "",
+                    "将所选文件从收藏中移除（包括所属文件夹和未整理状态）。\n\
+                     评分、标签等其他设置将保留。可用于清理无法打开的收藏。\n\
+                     选择两项及以上时，执行前会弹出确认。",
+                )],
+            },
+        }
+    }
+
     pub fn favorite_delete_confirm_title(self) -> &'static str {
         match self {
             Lang::Japanese => "お気に入りフォルダの削除",
@@ -1961,6 +3731,219 @@ impl Lang {
         }
     }
 
+    /// メインカテゴリの表示名。保存名は使わず、表示のたびに言語別へ差し替える
+    pub fn tag_main_category_name(self) -> &'static str {
+        match self {
+            Lang::Japanese => "メイン",
+            Lang::English  => "Main",
+            Lang::Chinese  => "主",
+        }
+    }
+
+    /// メインカテゴリが空になったときに補填する要素の名前（補填時の言語で保存される）
+    pub fn tag_main_default_element_name(self) -> &'static str {
+        match self {
+            Lang::Japanese => "要素補填用アイテム",
+            Lang::English  => "Filler Item",
+            Lang::Chinese  => "补位项",
+        }
+    }
+
+    /// メインタグドラムの「未選択」仮想エントリの表示名
+    pub fn tag_main_unset_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "（未設定）",
+            Lang::English  => "(Unset)",
+            Lang::Chinese  => "（未设置）",
+        }
+    }
+
+    pub fn tag_main_default_element_toast(self) -> &'static str {
+        match self {
+            Lang::Japanese => "メインカテゴリは要素0件を許容しないため、デフォルト要素を自動追加しました",
+            Lang::English  => "The main category cannot be empty, so a default item was added automatically",
+            Lang::Chinese  => "主分类不允许没有元素，已自动添加默认元素",
+        }
+    }
+
+    pub fn tag_panel_manager_button(self) -> &'static str {
+        match self {
+            Lang::Japanese => "🏷 タグ管理",
+            Lang::English  => "🏷 Tag Manager",
+            Lang::Chinese  => "🏷 标签管理",
+        }
+    }
+
+    pub fn tag_panel_hq_preview_toggle(self) -> &'static str {
+        match self {
+            Lang::Japanese => "🖼 高画質プレビュー",
+            Lang::English  => "🖼 HQ Preview",
+            Lang::Chinese  => "🖼 高画质预览",
+        }
+    }
+
+    pub fn tag_panel_no_target(self) -> &'static str {
+        match self {
+            Lang::Japanese => "タグ表示対象なし",
+            Lang::English  => "No item to show tags for",
+            Lang::Chinese  => "无可显示标签的对象",
+        }
+    }
+
+    pub fn tag_panel_no_selected_tags(self) -> &'static str {
+        match self {
+            Lang::Japanese => "（選択済みタグなし）",
+            Lang::English  => "(No tags selected)",
+            Lang::Chinese  => "（未选择标签）",
+        }
+    }
+
+    pub fn tag_manager_title(self) -> &'static str {
+        match self {
+            Lang::Japanese => "タグ管理",
+            Lang::English  => "Tag Manager",
+            Lang::Chinese  => "标签管理",
+        }
+    }
+
+    pub fn tag_manager_select_category_prompt(self) -> &'static str {
+        match self {
+            Lang::Japanese => "カテゴリを選択してください",
+            Lang::English  => "Select a category",
+            Lang::Chinese  => "请选择分类",
+        }
+    }
+
+    pub fn tag_manager_category_list(self) -> &'static str {
+        match self {
+            Lang::Japanese => "カテゴリリスト",
+            Lang::English  => "Categories",
+            Lang::Chinese  => "分类列表",
+        }
+    }
+
+    /// 新規カテゴリ作成時の初期名（保存される）
+    pub fn tag_manager_new_category_name(self, n: usize) -> String {
+        match self {
+            Lang::Japanese => format!("新規カテゴリ{n}"),
+            Lang::English  => format!("New Category {n}"),
+            Lang::Chinese  => format!("新分类{n}"),
+        }
+    }
+
+    pub fn tag_manager_category_label_main(self, name: &str) -> String {
+        match self {
+            Lang::Japanese => format!("{name}（メイン）"),
+            Lang::English  => format!("{name} (Main)"),
+            Lang::Chinese  => format!("{name}（主）"),
+        }
+    }
+
+    /// 要素を持つtierが無く、ピッカーから呼び出せないカテゴリの表示
+    pub fn tag_manager_category_label_incomplete(self, name: &str) -> String {
+        match self {
+            Lang::Japanese => format!("{name}（未成立）"),
+            Lang::English  => format!("{name} (Incomplete)"),
+            Lang::Chinese  => format!("{name}（未完成）"),
+        }
+    }
+
+    pub fn tag_manager_selected_category_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "選択中カテゴリ:",
+            Lang::English  => "Selected category:",
+            Lang::Chinese  => "当前分类：",
+        }
+    }
+
+    pub fn tag_manager_edit_button(self) -> &'static str {
+        match self {
+            Lang::Japanese => "編集",
+            Lang::English  => "Edit",
+            Lang::Chinese  => "编辑",
+        }
+    }
+
+    pub fn tag_manager_multi_select(self) -> &'static str {
+        match self {
+            Lang::Japanese => "複数選択",
+            Lang::English  => "Multi-select",
+            Lang::Chinese  => "多选",
+        }
+    }
+
+    pub fn tag_manager_single_select(self) -> &'static str {
+        match self {
+            Lang::Japanese => "単一選択",
+            Lang::English  => "Single-select",
+            Lang::Chinese  => "单选",
+        }
+    }
+
+    pub fn tag_manager_category_color_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "カテゴリ色:",
+            Lang::English  => "Category color:",
+            Lang::Chinese  => "分类颜色：",
+        }
+    }
+
+    pub fn tag_manager_random_color(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ランダム",
+            Lang::English  => "Random",
+            Lang::Chinese  => "随机",
+        }
+    }
+
+    pub fn tag_manager_add_tier_at_top(self) -> &'static str {
+        match self {
+            Lang::Japanese => "＋（先頭に追加）",
+            Lang::English  => "＋ (Add at top)",
+            Lang::Chinese  => "＋（添加到开头）",
+        }
+    }
+
+    pub fn tag_manager_delete_tier(self) -> &'static str {
+        match self {
+            Lang::Japanese => "tier削除",
+            Lang::English  => "Delete tier",
+            Lang::Chinese  => "删除等级",
+        }
+    }
+
+    pub fn tag_manager_empty_element(self) -> &'static str {
+        match self {
+            Lang::Japanese => "(空)",
+            Lang::English  => "(empty)",
+            Lang::Chinese  => "(空)",
+        }
+    }
+
+    pub fn tag_manager_bulk_add_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "一括追加:",
+            Lang::English  => "Bulk add:",
+            Lang::Chinese  => "批量添加：",
+        }
+    }
+
+    pub fn tag_manager_bulk_add_hint(self) -> &'static str {
+        match self {
+            Lang::Japanese => "要素A, 要素B, 要素C（カンマ内に , を含めたい場合は ,, ）",
+            Lang::English  => "Item A, Item B, Item C (use ,, for a literal comma)",
+            Lang::Chinese  => "元素A, 元素B, 元素C（名称中需包含逗号时请用 ,,）",
+        }
+    }
+
+    pub fn tag_manager_no_elements_hint(self) -> &'static str {
+        match self {
+            Lang::Japanese => "（要素なし。上の欄から追加）",
+            Lang::English  => "(No items. Add from the field above)",
+            Lang::Chinese  => "（无元素。请从上方输入框添加）",
+        }
+    }
+
     pub fn folder_book_access_toggle_button(self, on: bool) -> &'static str {
         match (self, on) {
             (Lang::Japanese, true)  => "フォルダ本アクセスON",
@@ -2154,6 +4137,306 @@ impl Lang {
             Lang::English  => "Normally leave these all off. Enable them only when a developer asks you to, e.g. while reporting an issue.",
             Lang::Chinese  => "通常保持全部关闭即可。仅在开发者要求时（例如报告问题时）才启用。",
         }
+    }
+
+    pub fn settings_database_heading(self) -> &'static str {
+        match self {
+            Lang::Japanese => "データベース管理",
+            Lang::English  => "Database management",
+            Lang::Chinese  => "数据库管理",
+        }
+    }
+
+    pub fn settings_unconfirmed_retention_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "■ 見つからないファイルの記録を残す日数",
+            Lang::English  => "■ Days to keep records of missing files",
+            Lang::Chinese  => "■ 找不到的文件记录的保留天数",
+        }
+    }
+
+    pub fn settings_unconfirmed_retention_value(self, days: u32) -> String {
+        match self {
+            Lang::Japanese => format!("{days} 日"),
+            Lang::English  => format!("{days} days"),
+            Lang::Chinese  => format!("{days} 天"),
+        }
+    }
+
+    pub fn settings_unconfirmed_retention_explain(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ファイルが見つからなくなっても、評価・タグ・お気に入りなどの記録をこの日数だけ残します（1〜120日）。重複の解決画面の「削除まで」の日数の元です。",
+            Lang::English  => "Keeps ratings, tags, favorites, etc. of a file for this many days after it goes missing (1-120). Used for the \"Until removal\" days in the duplicate-resolution screen.",
+            Lang::Chinese  => "文件找不到后，评分、标签、收藏等记录会保留这么多天（1-120）。用于重复解决界面中的“距离删除”天数。",
+        }
+    }
+
+    pub fn settings_backup_generations_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "■ バックアップを残す世代数",
+            Lang::English  => "■ Backup generations to keep",
+            Lang::Chinese  => "■ 备份保留的份数",
+        }
+    }
+
+    pub fn settings_backup_generations_value(self, n: u32) -> String {
+        match self {
+            Lang::Japanese => format!("{n} 世代"),
+            Lang::English  => format!("{n} generations"),
+            Lang::Chinese  => format!("{n} 份"),
+        }
+    }
+
+    pub fn settings_backup_generations_list_heading(self) -> &'static str {
+        match self {
+            Lang::Japanese => "バックアップの世代",
+            Lang::English  => "Backup generations",
+            Lang::Chinese  => "备份列表",
+        }
+    }
+
+    pub fn settings_backup_generations_none(self) -> &'static str {
+        match self {
+            Lang::Japanese => "バックアップはまだありません",
+            Lang::English  => "No backups yet",
+            Lang::Chinese  => "暂无备份",
+        }
+    }
+
+    pub fn settings_backup_generations_explain(self) -> &'static str {
+        match self {
+            Lang::Japanese => "「今すぐバックアップ」や、掃除でデータベースを書き換える直前に作られます。世代数を超えた古いものは自動で削除されます。移行前の自動バックアップは世代に数えず、削除しません。",
+            Lang::English  => "Created by \"Back up now\" and just before cleanups rewrite the database. Older ones beyond the limit are deleted automatically. The automatic pre-migration backup is not counted and is never deleted.",
+            Lang::Chinese  => "通过“立即备份”以及清理改写数据库之前创建。超出份数的旧备份会自动删除。迁移前的自动备份不计入份数，也不会被删除。",
+        }
+    }
+
+    pub fn settings_backup_now_button(self) -> &'static str {
+        match self {
+            Lang::Japanese => "今すぐバックアップ",
+            Lang::English  => "Back up now",
+            Lang::Chinese  => "立即备份",
+        }
+    }
+
+    pub fn settings_backup_done_toast(self) -> &'static str {
+        match self {
+            Lang::Japanese => "バックアップを作成しました",
+            Lang::English  => "Backup created",
+            Lang::Chinese  => "已创建备份",
+        }
+    }
+
+    pub fn settings_backup_failed_toast(self, reason: &str) -> String {
+        match self {
+            Lang::Japanese => format!("バックアップ操作に失敗しました: {reason}"),
+            Lang::English  => format!("Backup operation failed: {reason}"),
+            Lang::Chinese  => format!("备份操作失败：{reason}"),
+        }
+    }
+
+    pub fn settings_backup_restore_button(self) -> &'static str {
+        match self {
+            Lang::Japanese => "この世代に戻す",
+            Lang::English  => "Restore this",
+            Lang::Chinese  => "恢复到此备份",
+        }
+    }
+
+    pub fn settings_backup_restore_pending(self) -> &'static str {
+        match self {
+            Lang::Japanese => "復元が予約されています。アプリを再起動すると反映されます。",
+            Lang::English  => "A restore is scheduled. It takes effect when the app is restarted.",
+            Lang::Chinese  => "已预约恢复，重启应用后生效。",
+        }
+    }
+
+    pub fn settings_backup_restore_cancel(self) -> &'static str {
+        match self {
+            Lang::Japanese => "予約を取り消す",
+            Lang::English  => "Cancel the restore",
+            Lang::Chinese  => "取消预约",
+        }
+    }
+
+    pub fn settings_backup_restore_cancelled_toast(self) -> &'static str {
+        match self {
+            Lang::Japanese => "復元の予約を取り消しました",
+            Lang::English  => "Restore cancelled",
+            Lang::Chinese  => "已取消恢复预约",
+        }
+    }
+
+    pub fn settings_backup_restore_confirm_title(self) -> &'static str {
+        match self {
+            Lang::Japanese => "データベースを復元",
+            Lang::English  => "Restore database",
+            Lang::Chinese  => "恢复数据库",
+        }
+    }
+
+    pub fn settings_backup_restore_confirm_body(self, when: &str) -> String {
+        match self {
+            Lang::Japanese => format!("{when} のバックアップに戻します。アプリの再起動時に反映され、それ以降の評価・タグ・お気に入りなどの変更は失われます。復元前のデータベースは退避として保存されます。"),
+            Lang::English  => format!("The database will be restored to the backup from {when}. It takes effect when the app restarts, and changes made since then (ratings, tags, favorites, etc.) will be lost. The current database is kept as a pre-restore copy."),
+            Lang::Chinese  => format!("将恢复到 {when} 的备份。重启应用后生效，此后的评分、标签、收藏等更改将丢失。恢复前的数据库会作为备份保留。"),
+        }
+    }
+
+    pub fn settings_backup_restore_ok(self) -> &'static str {
+        match self {
+            Lang::Japanese => "復元を予約する",
+            Lang::English  => "Schedule restore",
+            Lang::Chinese  => "预约恢复",
+        }
+    }
+
+    pub fn settings_backup_restore_requested_toast(self) -> &'static str {
+        match self {
+            Lang::Japanese => "復元を予約しました。アプリを再起動すると反映されます",
+            Lang::English  => "Restore scheduled. It takes effect when the app is restarted",
+            Lang::Chinese  => "已预约恢复，重启应用后生效",
+        }
+    }
+
+    pub fn identity_sweep_done_toast(self, deleted: usize, with_data: usize) -> String {
+        match self {
+            Lang::Japanese => format!("見つからないまま期限が来たファイルの記録を {deleted} 件整理しました（うち評価・タグ等が付いていたもの {with_data} 件）"),
+            Lang::English  => format!("Cleaned up {deleted} expired records of missing files ({with_data} of them had ratings, tags, etc.)"),
+            Lang::Chinese  => format!("已清理 {deleted} 条已到期的缺失文件记录（其中 {with_data} 条带有评分、标签等）"),
+        }
+    }
+
+    pub fn identity_sweep_backup_failed_toast(self) -> &'static str {
+        match self {
+            Lang::Japanese => "データベースのバックアップに失敗したため、古い記録の整理を見送りました",
+            Lang::English  => "Skipped cleaning up old records because the database backup failed",
+            Lang::Chinese  => "由于数据库备份失败，已跳过旧记录的清理",
+        }
+    }
+
+    pub fn settings_unreachable_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "■ 追えない記録の掃除",
+            Lang::English  => "■ Clean up unreachable records",
+            Lang::Chinese  => "■ 清理找不到的记录",
+        }
+    }
+
+    pub fn settings_unreachable_button(self) -> &'static str {
+        match self {
+            Lang::Japanese => "追えない記録を掃除…",
+            Lang::English  => "Clean up unreachable records…",
+            Lang::Chinese  => "清理找不到的记录…",
+        }
+    }
+
+    pub fn settings_unreachable_explain(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ファイルが見つからなくなった記録（評価・タグ・お気に入りなど）を、保持日数を待たずに今すぐ削除します。実行前に内容を確認できます。",
+            Lang::English  => "Deletes records (ratings, tags, favorites, etc.) of files that can no longer be found, right now, without waiting for the retention period. You can review them before anything is deleted.",
+            Lang::Chinese  => "不等保留天数，立即删除找不到文件的记录（评分、标签、收藏等）。删除前可先确认内容。",
+        }
+    }
+
+    pub fn unreachable_scanning_toast(self) -> &'static str {
+        match self {
+            Lang::Japanese => "記録を確認しています…",
+            Lang::English  => "Checking records…",
+            Lang::Chinese  => "正在检查记录…",
+        }
+    }
+
+    pub fn unreachable_none_toast(self) -> &'static str {
+        match self {
+            Lang::Japanese => "掃除する記録はありませんでした",
+            Lang::English  => "There were no records to clean up",
+            Lang::Chinese  => "没有需要清理的记录",
+        }
+    }
+
+    pub fn unreachable_cleaning_toast(self) -> &'static str {
+        match self {
+            Lang::Japanese => "記録を削除しています…",
+            Lang::English  => "Deleting records…",
+            Lang::Chinese  => "正在删除记录…",
+        }
+    }
+
+    pub fn unreachable_confirm_title(self) -> &'static str {
+        match self {
+            Lang::Japanese => "追えない記録の掃除",
+            Lang::English  => "Clean up unreachable records",
+            Lang::Chinese  => "清理找不到的记录",
+        }
+    }
+
+    pub fn unreachable_confirm_warning(self) -> &'static str {
+        match self {
+            Lang::Japanese => "移動しただけのファイルの記録も消えます。移動先のフォルダを一度開くと記録を引き継げるので、心当たりがあれば先に開いてください。実体のないお気に入りも消えます。評価・タグ等が付いた記録を消す前に、データベースのバックアップを自動で取ります。",
+            Lang::English  => "Records of files that were merely moved are deleted too. Opening the destination folder once carries the records over, so open it first if that applies. Favorites without a file are deleted as well. A database backup is taken automatically before records with ratings, tags, etc. are deleted.",
+            Lang::Chinese  => "仅被移动的文件的记录也会被删除。打开一次目标文件夹即可继承记录，如有此情况请先打开。没有实体文件的收藏也会被删除。删除带有评分、标签等的记录之前，会自动备份数据库。",
+        }
+    }
+
+    pub fn unreachable_offline_heading(self) -> &'static str {
+        match self {
+            Lang::Japanese => "今つながっていないドライブ（初期は対象外）",
+            Lang::English  => "Drives that are not connected now (excluded by default)",
+            Lang::Chinese  => "当前未连接的驱动器（默认不包含）",
+        }
+    }
+
+    pub fn unreachable_ok(self) -> &'static str {
+        match self {
+            Lang::Japanese => "削除する",
+            Lang::English  => "Delete",
+            Lang::Chinese  => "删除",
+        }
+    }
+
+    pub fn unreachable_confirm_body(self, total: usize, favorite: usize, with_data: usize, blank: usize) -> String {
+        match self {
+            Lang::Japanese => format!("ファイルが見つからない記録 {total} 件を削除します（元に戻せません）。\n・お気に入り: {favorite} 件\n・評価・タグ等が付いたもの: {with_data} 件\n・何も付いていないもの: {blank} 件"),
+            Lang::English  => format!("Deletes {total} records of files that can't be found (cannot be undone).\n- Favorites: {favorite}\n- With ratings, tags, etc.: {with_data}\n- With nothing attached: {blank}"),
+            Lang::Chinese  => format!("将删除 {total} 条找不到文件的记录（无法撤销）。\n・收藏：{favorite} 条\n・带有评分、标签等：{with_data} 条\n・无任何附加内容：{blank} 条"),
+        }
+    }
+
+    pub fn unreachable_offline_check(self, volume: &str, count: usize) -> String {
+        match self {
+            Lang::Japanese => format!("{volume}（{count} 件）も対象にする"),
+            Lang::English  => format!("Include {volume} ({count})"),
+            Lang::Chinese  => format!("也包含 {volume}（{count} 条）"),
+        }
+    }
+
+    pub fn unreachable_done_toast(self, deleted: usize, with_data: usize) -> String {
+        match self {
+            Lang::Japanese => format!("追えない記録を {deleted} 件削除しました（うち評価・タグ・お気に入り付き {with_data} 件）"),
+            Lang::English  => format!("Deleted {deleted} unreachable records ({with_data} of them had ratings, tags, or favorites)"),
+            Lang::Chinese  => format!("已删除 {deleted} 条找不到的记录（其中 {with_data} 条带有评分、标签或收藏）"),
+        }
+    }
+
+    pub fn settings_backup_folder_label(self) -> &'static str {
+        self.idres_pick("データベースのバックアップ", "Database backup", "数据库备份")
+    }
+
+    pub fn settings_backup_folder_open(self) -> &'static str {
+        self.idres_pick("バックアップフォルダを開く", "Open backup folder", "打开备份文件夹")
+    }
+
+    pub fn settings_backup_folder_none(self) -> &'static str {
+        self.idres_pick("バックアップはまだありません", "No backup has been made yet", "尚无备份")
+    }
+
+    pub fn settings_backup_folder_explain(self) -> &'static str {
+        self.idres_pick(
+            "ファイルを内容で管理する新方式へ移行する前に、データベース（nekoviewer_spread.redb）を自動でコピーしたものが入っています。旧バージョンへ戻す場合は、アプリを閉じてから、設定フォルダの nekoviewer_spread.redb をこのコピーで置き換えてください。",
+            "Contains an automatic copy of the database (nekoviewer_spread.redb) made before moving to the new method that manages files by content. To go back to an older version, close the app and replace nekoviewer_spread.redb in the settings folder with this copy.",
+            "这里保存着迁移到按文件内容管理的新方式之前，自动复制的数据库（nekoviewer_spread.redb）。要回到旧版本时，请先关闭应用，再用此副本替换设置文件夹中的 nekoviewer_spread.redb。",
+        )
     }
 
     pub fn settings_debug_log_perf(self) -> &'static str {
@@ -4447,6 +6730,41 @@ impl Lang {
         }
     }
 
+    pub fn help_tab_tag_search(self) -> HelpDoc {
+        match self {
+            Lang::Japanese => HelpDoc {
+                title: "タグ検索",
+                sections: &[
+                    (
+                        "",
+                        "付けたタグから、フォルダをまたいでファイルを探します。\n\
+                         タグを有効にするたびに、全ての有効タグを持つファイルへ絞り込みます。",
+                    ),
+                ],
+            },
+            Lang::English => HelpDoc {
+                title: "Tag Search",
+                sections: &[
+                    (
+                        "",
+                        "Finds files across folders by their tags.\n\
+                         Each time you enable a tag, the list narrows to files that have every enabled tag.",
+                    ),
+                ],
+            },
+            Lang::Chinese => HelpDoc {
+                title: "标签搜索",
+                sections: &[
+                    (
+                        "",
+                        "根据已添加的标签跨文件夹查找文件。\n\
+                         每启用一个标签，列表就会收窄为同时具有所有已启用标签的文件。",
+                    ),
+                ],
+            },
+        }
+    }
+
     pub fn help_tab_virtual(self) -> HelpDoc {
         match self {
             Lang::Japanese => HelpDoc {
@@ -5000,6 +7318,38 @@ impl Lang {
         }
     }
 
+    pub fn help_vmenu_register_subs(self) -> HelpDoc {
+        match self {
+            Lang::Japanese => HelpDoc {
+                title: "フォルダの実サブフォルダを一括登録",
+                sections: &[(
+                    "",
+                    "このフォルダの実フォルダにあるサブフォルダを調べて、まだ登録されていないものを\n\
+                     このフォルダの子として登録する。登録済みのものはそのまま。\n\
+                     実フォルダにたどり着けないリンク切れと、ルート（/）では使えない。",
+                )],
+            },
+            Lang::English => HelpDoc {
+                title: "Register real subfolders",
+                sections: &[(
+                    "",
+                    "Looks at the subfolders in this folder's real folder and registers the ones\n\
+                     not yet registered as children of this folder. Registered ones are left as is.\n\
+                     Not available for broken links and the root (/).",
+                )],
+            },
+            Lang::Chinese => HelpDoc {
+                title: "批量登记实际子文件夹",
+                sections: &[(
+                    "",
+                    "检查此文件夹的实际文件夹中的子文件夹，把尚未登记的\n\
+                     登记为此文件夹的子级。已登记的保持不变。\n\
+                     失效链接和根（/）不可使用。",
+                )],
+            },
+        }
+    }
+
     pub fn help_vmenu_delete(self) -> HelpDoc {
         match self {
             Lang::Japanese => HelpDoc {
@@ -5068,7 +7418,7 @@ impl Lang {
                     ("[▶ ／ ▼]", "下の階層を開閉する。"),
                     (
                         "[右クリック]",
-                        "名前変更・実ツリーと同期・フォルダタブで開く・実フォルダ登録・削除のメニューを出す。",
+                        "名前変更・実ツリーと同期・フォルダタブで開く・実フォルダ登録・実サブフォルダの一括登録・削除のメニューを出す。",
                     ),
                     (
                         "[⚠ 名前]",
@@ -5083,7 +7433,7 @@ impl Lang {
                     ("[▶ / ▼]", "Expands or collapses the lower levels."),
                     (
                         "[Right-click]",
-                        "Opens the menu: rename, sync with real tree, open in Folders tab, register real folder, delete.",
+                        "Opens the menu: rename, sync with real tree, open in Folders tab, register real folder, register real subfolders, delete.",
                     ),
                     (
                         "[⚠ name]",
@@ -5098,7 +7448,7 @@ impl Lang {
                     ("[▶ / ▼]", "展开或折叠下级。"),
                     (
                         "[右键]",
-                        "弹出菜单：重命名、与实际目录树同步、在文件夹标签中打开、登记实际文件夹、删除。",
+                        "弹出菜单：重命名、与实际目录树同步、在文件夹标签中打开、登记实际文件夹、批量登记实际子文件夹、删除。",
                     ),
                     (
                         "[⚠ 名称]",
@@ -5160,31 +7510,276 @@ impl Lang {
         }
     }
 
+    pub fn help_open_in_search(self) -> HelpDoc {
+        match self {
+            Lang::Japanese => HelpDoc {
+                title: "このフォルダを検索タブで開く",
+                sections: &[
+                    (
+                        "",
+                        "このフォルダを検索の基点フォルダに設定して、検索タブへ移る。\n\
+                         検索タブのツリーも、このフォルダまで展開して選択表示になる。",
+                    ),
+                    (
+                        "■ 保持されるもの",
+                        "名前・サイズ・日付などの検索条件と、検索結果の履歴はそのまま。基点フォルダだけが置き換わる。",
+                    ),
+                    (
+                        "■ グレーアウトする場合",
+                        "ネットワークパス上のフォルダ、実フォルダに辿れない仮想ノード（ルート・リンク切れ）。",
+                    ),
+                ],
+            },
+            Lang::English => HelpDoc {
+                title: "Open This Folder in Search Tab",
+                sections: &[
+                    (
+                        "",
+                        "Sets this folder as the search base folder and switches to the Search tab.\n\
+                         The Search tab's tree is also expanded to this folder and selected.",
+                    ),
+                    (
+                        "■ What is kept",
+                        "Search conditions (name, size, date, ...) and the search history stay as they are. Only the base folder is replaced.",
+                    ),
+                    (
+                        "■ When it is grayed out",
+                        "Folders on a network path, and virtual nodes without a real folder (root, broken links).",
+                    ),
+                ],
+            },
+            Lang::Chinese => HelpDoc {
+                title: "在搜索标签中打开此文件夹",
+                sections: &[
+                    (
+                        "",
+                        "将此文件夹设为搜索基点文件夹并切换到搜索标签。\n\
+                         搜索标签中的目录树也会展开到此文件夹并显示为选中状态。",
+                    ),
+                    (
+                        "■ 保留的内容",
+                        "名称、大小、日期等搜索条件和搜索历史保持不变，只替换基点文件夹。",
+                    ),
+                    (
+                        "■ 变灰的情况",
+                        "网络路径上的文件夹，以及没有实际文件夹的虚拟节点（根、链接失效）。",
+                    ),
+                ],
+            },
+        }
+    }
+
     pub fn help_card_open_folder(self) -> HelpDoc {
         match self {
             Lang::Japanese => HelpDoc {
-                title: "フォルダを開く",
+                title: "現在のフォルダを開く",
                 sections: &[(
                     "",
-                    "OS標準のファイラーで、いま表示しているフォルダを開く。\n\
-                     右クリックしたカード自体ではなく、表示中のフォルダが対象になる。",
+                    "OS標準のファイラーで、いま表示しているフォルダ（現在のフォルダ）を開く。\n\
+                     右クリックしたカード自体ではなく、表示中のフォルダが対象になる。\n\
+                     右クリックしたフォルダ自身を開くには「このフォルダを開く」を使う。",
                 )],
             },
             Lang::English => HelpDoc {
-                title: "Open Folder",
+                title: "Open Current Folder",
                 sections: &[(
                     "",
-                    "Opens the folder currently shown in the OS file manager.\n\
-                     The target is the folder being shown, not the card you right-clicked.",
+                    "Opens the folder currently shown (the current folder) in the OS file manager.\n\
+                     The target is the folder being shown, not the card you right-clicked.\n\
+                     To open the right-clicked folder itself, use \"Open This Folder\".",
                 )],
             },
             Lang::Chinese => HelpDoc {
-                title: "打开文件夹",
+                title: "打开当前文件夹",
                 sections: &[(
                     "",
-                    "用系统文件管理器打开当前显示的文件夹。\n\
-                     对象是当前显示的文件夹，而不是右键点击的那张卡片。",
+                    "用系统文件管理器打开当前显示的文件夹（当前文件夹）。\n\
+                     对象是当前显示的文件夹，而不是右键点击的那张卡片。\n\
+                     要打开右键点击的文件夹本身，请使用“打开此文件夹”。",
                 )],
+            },
+        }
+    }
+
+    pub fn help_card_reveal(self) -> HelpDoc {
+        match self {
+            Lang::Japanese => HelpDoc {
+                title: "選択した項目を維持したままファイラーで開く",
+                sections: &[
+                    (
+                        "",
+                        "アプリで選択中のファイルを、OS標準のファイラーでも選択した状態にして、その親フォルダを開く。\n\
+                         このアプリは読み取り専用のため、ファイルの削除や整理はファイラー側で行う。",
+                    ),
+                    (
+                        "■ 複数選択中",
+                        "「複数選択した項目」か「ホバーした単体のファイル」かを選ぶダイアログが出る。\n\
+                         選択が複数のフォルダにまたがる場合は、フォルダごとにファイラーが開く（10フォルダまで）。",
+                    ),
+                    (
+                        "■ 選択状態にできないとき",
+                        "ファイラーが対応していない環境では、親フォルダだけを開いてトーストで知らせる。\n\
+                         Linuxの Nautilus は同一フォルダの複数選択を1つのウィンドウで再現できないため、\n\
+                         同じフォルダのファイルが2つ以上あるときは親フォルダだけを開く。\n\
+                         （Nautilus 以外のファイラーは全ファイルをそのまま渡す。挙動はファイラー次第）\n\
+                         選択が実際に反映されたかどうかは、アプリからは確認できない。",
+                    ),
+                    (
+                        "■ 除外・グレーアウト",
+                        "ネットワークパス上のファイルはリストから除外して実行する（黄字で表示）。\n\
+                         選択が10フォルダを超える場合はグレーアウトする（赤字で表示）。",
+                    ),
+                ],
+            },
+            Lang::English => HelpDoc {
+                title: "Open in File Manager with Selection Kept",
+                sections: &[
+                    (
+                        "",
+                        "Opens the parent folder in the OS file manager with the files you selected here also selected there.\n\
+                         This app is read-only, so deleting or organizing files is done in the file manager.",
+                    ),
+                    (
+                        "■ With a multi-selection",
+                        "A dialog asks whether to open the selected items or only the hovered file.\n\
+                         If the selection spans several folders, one file manager window opens per folder (up to 10).",
+                    ),
+                    (
+                        "■ When selection is not possible",
+                        "If the file manager does not support it, only the parent folder is opened and a toast tells you.\n\
+                         Nautilus on Linux cannot show several files of one folder selected in a single window,\n\
+                         so when a folder has two or more of the files, only the parent folder is opened.\n\
+                         (Other file managers receive all files as-is; behavior depends on the file manager.)\n\
+                         The app cannot verify whether the selection was actually applied.",
+                    ),
+                    (
+                        "■ Excluded / grayed out",
+                        "Files on network paths are removed from the list before opening (shown in yellow).\n\
+                         The item is grayed out when the selection spans more than 10 folders (shown in red).",
+                    ),
+                ],
+            },
+            Lang::Chinese => HelpDoc {
+                title: "保持选中项并在文件管理器中打开",
+                sections: &[
+                    (
+                        "",
+                        "在系统文件管理器中打开所在的父文件夹，并同时选中此处选中的文件。\n\
+                         本应用为只读，删除或整理文件请在文件管理器中进行。",
+                    ),
+                    (
+                        "■ 多选时",
+                        "会弹出对话框，选择打开“多选的项目”还是“悬停的单个文件”。\n\
+                         若选择跨越多个文件夹，则每个文件夹打开一个文件管理器（最多10个）。",
+                    ),
+                    (
+                        "■ 无法选中时",
+                        "文件管理器不支持时，仅打开父文件夹并以提示告知。\n\
+                         Linux 的 Nautilus 无法在一个窗口中同时选中同一文件夹的多个文件，\n\
+                         因此同一文件夹有两个以上文件时，仅打开父文件夹。\n\
+                         （其他文件管理器会收到全部文件，行为取决于文件管理器。）\n\
+                         应用无法确认选中是否真正生效。",
+                    ),
+                    (
+                        "■ 排除/置灰",
+                        "网络路径上的文件会从列表中排除后执行（黄字显示）。\n\
+                         选择超过10个文件夹时该项置灰（红字显示）。",
+                    ),
+                ],
+            },
+        }
+    }
+
+    pub fn help_open_parent_folder(self) -> HelpDoc {
+        match self {
+            Lang::Japanese => HelpDoc {
+                title: "このファイルの親フォルダを開く",
+                sections: &[
+                    (
+                        "",
+                        "OS標準のファイラーで、このファイルがあるフォルダ（親フォルダ）を開く。\n\
+                         お気に入り・検索結果の一覧は複数のフォルダにまたがるため、カードごとに開く先が違う。",
+                    ),
+                    (
+                        "■ グレーアウトする場合",
+                        "複数選択中、ネットワークパス上のファイル、親フォルダが存在しない場合。",
+                    ),
+                ],
+            },
+            Lang::English => HelpDoc {
+                title: "Open This File's Parent Folder",
+                sections: &[
+                    (
+                        "",
+                        "Opens the folder that contains this file (its parent folder) in the OS file manager.\n\
+                         Favorites and search results span many folders, so the target differs per card.",
+                    ),
+                    (
+                        "■ When it is grayed out",
+                        "While multiple items are selected, for files on a network path, or when the parent folder does not exist.",
+                    ),
+                ],
+            },
+            Lang::Chinese => HelpDoc {
+                title: "打开此文件的父文件夹",
+                sections: &[
+                    (
+                        "",
+                        "用系统文件管理器打开此文件所在的文件夹（父文件夹）。\n\
+                         收藏和搜索结果跨越多个文件夹，因此每张卡片打开的位置不同。",
+                    ),
+                    (
+                        "■ 变灰的情况",
+                        "多选时、位于网络路径上的文件、父文件夹不存在时。",
+                    ),
+                ],
+            },
+        }
+    }
+
+    pub fn help_open_this_folder(self) -> HelpDoc {
+        match self {
+            Lang::Japanese => HelpDoc {
+                title: "このフォルダを開く",
+                sections: &[
+                    (
+                        "",
+                        "OS標準のファイラーで、右クリックしたフォルダ自身を開く。\n\
+                         表示中のフォルダを開く「現在のフォルダを開く」とは対象が違う。",
+                    ),
+                    (
+                        "■ グレーアウトする場合",
+                        "ネットワークパス上のフォルダ、実フォルダに辿れない仮想ノード（ルート・リンク切れ）。",
+                    ),
+                ],
+            },
+            Lang::English => HelpDoc {
+                title: "Open This Folder",
+                sections: &[
+                    (
+                        "",
+                        "Opens the right-clicked folder itself in the OS file manager.\n\
+                         Unlike \"Open Current Folder\", the target is not the folder being shown.",
+                    ),
+                    (
+                        "■ When it is grayed out",
+                        "Folders on a network path, and virtual nodes without a real folder (root, broken links).",
+                    ),
+                ],
+            },
+            Lang::Chinese => HelpDoc {
+                title: "打开此文件夹",
+                sections: &[
+                    (
+                        "",
+                        "用系统文件管理器打开右键点击的文件夹本身。\n\
+                         与“打开当前文件夹”不同，对象不是当前显示的文件夹。",
+                    ),
+                    (
+                        "■ 变灰的情况",
+                        "网络路径上的文件夹，以及没有实际文件夹的虚拟节点（根、链接失效）。",
+                    ),
+                ],
             },
         }
     }
@@ -5589,5 +8184,19 @@ mod thumbnail_status_tests {
             Lang::Japanese.thumbnail_status(80, 80, 0, false),
             "サムネイル 80/80",
         );
+    }
+}
+
+#[cfg(test)]
+mod visit_line_tests {
+    use super::Lang;
+
+    #[test]
+    fn zero_visits_reads_as_unvisited_in_every_language() {
+        for lang in [Lang::Japanese, Lang::English, Lang::Chinese] {
+            assert_eq!(lang.visit_count_line(0), lang.visit_unvisited());
+            assert!(lang.visit_count_line(3).contains('3'));
+        }
+        assert_eq!(Lang::Japanese.visit_unvisited(), "未訪問");
     }
 }

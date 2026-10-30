@@ -418,10 +418,15 @@ impl NekoviewApp {
     /// 終了時に状態を永続化する（旧 eframe::App::on_exit 相当）。
     pub fn on_exit(&mut self) {
         self.req_tx.shutdown();
+        self.identity_worker.shutdown();
+        self.marker_probe.shutdown();
+        self.thumb_hash.shutdown();
+        self.shutdown_marker_compare();
         // 編集モードONのまま終了しても、タグ選択を確定保存する。
         self.deactivate_tag_main_edit();
         self.flush_current_sort_if_changed();
         self.flush_current_bookmark_if_enabled();
+        self.flush_seen_markers();
         self.persist_state();
     }
 
@@ -449,6 +454,7 @@ impl NekoviewApp {
             self.refresh_thumbnail_generation_state();
         }
         self.poll_mount_checks();
+        self.poll_reveal();
 
         // バックグラウンドスキャン結果をポーリング
         self.poll_scan();
@@ -457,6 +463,13 @@ impl NekoviewApp {
         self.poll_tree_mtimes();
         self.poll_tree_autofocus();
         self.poll_search();
+        self.poll_tag_search();
+        self.poll_identity_results();
+        self.poll_marker_probe();
+        self.poll_thumb_hash();
+        self.apply_pending_similar_entry();
+        self.poll_marker_compare();
+        self.poll_similar_focus();
 
         // サムネイルワーカーからの結果を受信してGPUテクスチャへアップロード
         let was_pending = !self.thumb_pending.is_empty();
@@ -494,7 +507,8 @@ impl NekoviewApp {
             }
             match result.rgba {
                 Some(rgba) => {
-                    if self.archives.contains(&result.path)
+                    // 「消した組」ウィンドウが開いている間は、一覧に無いファイル（別フォルダのもの）のサムネも受け取る。
+                    if (self.archives.contains(&result.path) || self.dismissed_window.is_some())
                         && (self.thumb_display_requested.contains(&result.path)
                             || self.thumbnails.contains_key(&result.path))
                     {
@@ -514,6 +528,10 @@ impl NekoviewApp {
         self.pump_thumbnail_queue(ctx);
         // pending が空になった瞬間に最終カウントを更新する
         let just_finished = was_pending && self.thumb_pending.is_empty();
+        if just_finished {
+            // 後から生成されたサムネのハッシュを拾う。
+            self.request_thumb_hash();
+        }
 
         // cd_summary バックグラウンド計算の結果をポーリング
         if let Some(ref rx) = self.cd_summary_rx {

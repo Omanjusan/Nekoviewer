@@ -1,5 +1,5 @@
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::cache::ThumbRequest;
 use crate::i18n;
@@ -82,7 +82,7 @@ fn saved_setting_marker_rect(rect: egui::Rect, slot: usize) -> Option<egui::Rect
     ))
 }
 
-fn saved_setting_marker_labels(
+pub(super) fn saved_setting_marker_labels(
     settings: crate::spread_state::SavedArchiveSettings,
 ) -> [Option<&'static str>; 4] {
     let spread = match settings.spread_mode {
@@ -145,7 +145,11 @@ impl NekoviewApp {
         {
             let style_clone = ui.style().clone();
             egui::Panel::left("folder_panel")
-                .exact_size(200.0)
+                .exact_size(self.folder_panel_width())
+                // exact_sizeは幅を固定するだけで、resizableが既定trueのままだと境界線の
+                // ホバーでリサイズカーソルが出るのに実際には動かせない。幅の変更は
+                // タグ検索タブの中央グリップ（自前ドラッグ）だけが担う。
+                .resizable(false)
                 .frame({
                     let mut f = egui::Frame::side_top_panel(&style_clone);
                     f.inner_margin.right = 0;
@@ -245,6 +249,7 @@ impl NekoviewApp {
         #[cfg(not(debug_assertions))]
         self.draw_status_window(&ctx);
         self.draw_toast(&ctx);
+        self.draw_identity_resolve_dialogs(&ctx);
         self.draw_memory_warning_dialog(&ctx);
         self.draw_magnifier_zoom_notice(&ctx);
         self.draw_decode_edge_prompt(&ctx);
@@ -254,10 +259,17 @@ impl NekoviewApp {
         self.draw_tree_sort_dialog(&ctx);
         self.draw_favorite_delete_confirm_dialog(&ctx);
         self.draw_favorite_detail_dialog(&ctx);
+        self.draw_relink_dialogs(&ctx);
+        self.draw_unreachable_clean_dialogs(&ctx);
+        self.draw_reveal_dialog(&ctx);
+        self.draw_marker_popup(&ctx);
+        self.draw_dismissed_window(&ctx);
         self.draw_sort_condition_dialog(&ctx);
         self.draw_bookmark_setting_dialog(&ctx);
         self.draw_spread_setting_dialog(&ctx);
         self.draw_rating_setting_dialog(&ctx);
+        self.draw_backup_failure_dialog(&ctx);
+        self.draw_release_notice_dialog(&ctx);
         self.draw_settings_dialog(&ctx);
         // 旧来の無条件 ctx.request_repaint() は撤去（イベント駆動化）。
         // ROOT は入力イベント・各ワーカーの起床通知・ステータス窓の1Hzハートビートで再描画される。
@@ -269,7 +281,8 @@ impl NekoviewApp {
     /// 一切関与しない。開閉トグル(▶/◀)・D&Dリサイズハンドル・幅は従来のPanel版と同じ。
     fn draw_tag_panel_floating(&mut self, ctx: &egui::Context, central_area: egui::Rect) {
         let open = self.tag_panel_open;
-        let panel_w = if open { self.tag_panel_width } else { PANEL_TAB_WIDTH };
+        // 左ペイン幅（タグ検索タブ）を優先するため、足りないときは右パネル側を狭める。
+        let panel_w = (if open { self.tag_panel_width } else { PANEL_TAB_WIDTH }).min(central_area.width());
         let panel_rect = egui::Rect::from_min_size(
             egui::pos2(central_area.right() - panel_w, central_area.top()),
             egui::vec2(panel_w, central_area.height()),
@@ -344,7 +357,7 @@ impl NekoviewApp {
     }
 
     /// ソートキー・昇降順の変更後に共通で行う後処理（クリック・キーボード両経路で使う）。
-    fn finish_sort_change(&mut self) {
+    pub(super) fn finish_sort_change(&mut self) {
         self.sort_archives();
         // ソート変更で archives の並びが変わり、インデックスベースの複数選択が
         // 無関係な項目を指す可能性があるため安全側に倒して解除する
@@ -652,6 +665,17 @@ impl NekoviewApp {
                 ui.separator();
                 let r_thumb = ui.label(self.thumbnail_status_text());
                 help_tip(&r_thumb, help_on, &help_thumb);
+
+                // DB内の重複の解決（サムネイル n/m の左）。未解決が無いときはグレーで押せない。
+                // ID層が止まっている間（バックアップ失敗でOFFを選んだ時など）は出さない。
+                if crate::file_identity::is_enabled() {
+                    ui.separator();
+                    let (resolve_label, resolve_enabled) = self.identity_resolve_button();
+                    let r_resolve = ui.add_enabled(resolve_enabled, egui::Button::new(resolve_label));
+                    if r_resolve.clicked() {
+                        self.open_identity_resolve();
+                    }
+                }
             });
         });
     }
@@ -693,12 +717,19 @@ impl NekoviewApp {
         if tab != FolderPaneTab::Search {
             self.exit_search_view();
         }
+        if tab != FolderPaneTab::TagSearch {
+            self.exit_tag_search_view();
+        }
+        if entering {
+            self.exit_similar_view();
+        }
         // 他タブの表示を畳んだ後で、入ったタブの保存位置（無い・外れていれば既定）を開く
         if entering {
             self.remember_active_tab(tab);
             match tab {
                 FolderPaneTab::Favorites => self.restore_favorites_position(),
                 FolderPaneTab::VirtualFolders => self.restore_virtual_position(),
+                FolderPaneTab::TagSearch => self.enter_tag_search_view(),
                 FolderPaneTab::RealTree | FolderPaneTab::Search => {}
             }
         }
@@ -760,14 +791,14 @@ impl NekoviewApp {
         // 属性タグUIとは切り離した独立機能なので、位置・見た目は後で調整前提。
         // 狭い幅では2つ目のボタンが見切れないよう折り返す。
         ui.horizontal_wrapped(|ui| {
-            if ui.button("🏷 タグ管理").clicked() {
+            if ui.button(i18n::t().tag_panel_manager_button()).clicked() {
                 self.tag_manager_open = true;
             }
             // タグパネルのプレビューを、グリッドサムネの引き伸ばし（軽量・低画質）ではなく
             // 専用解像度で再デコードした高画質表示に切り替えるトグル。低スペックPC・
             // 小さいモニタでは重くなりうるため既定OFF。
             let hq = self.tag_preview_high_quality;
-            if ui.selectable_label(hq, "🖼 高画質プレビュー").clicked() {
+            if ui.selectable_label(hq, i18n::t().tag_panel_hq_preview_toggle()).clicked() {
                 self.tag_preview_high_quality = !hq;
             }
         });
@@ -779,7 +810,7 @@ impl NekoviewApp {
             let rect = egui::Rect::from_min_size(ui.cursor().min, ui.available_size());
             ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
                 ui.centered_and_justified(|ui| {
-                    ui.weak("タグ表示対象なし");
+                    ui.weak(i18n::t().tag_panel_no_target());
                 });
             });
             return;
@@ -1021,7 +1052,7 @@ impl NekoviewApp {
     /// 編集モード: カテゴリ見出し＋全要素を`horizontal_wrapped`で並べ、クリックで
     /// 選択/非選択をトグルする。選択済みは通常輝度、非選択は文字・枠を暗転させて
     /// 見分けやすくする。単一選択カテゴリはクリックで同カテゴリ内の他要素を排他的に
-    /// 外し（ラジオ的挙動）、常にちょうど1個を維持する（選択中要素の再クリックは無視）。
+    /// 外し（ラジオ的挙動）、最大1個を維持する（選択中要素の再クリックで全解除＝0個に戻せる）。
     fn draw_tag_attr_edit_mode(&mut self, ui: &mut egui::Ui) {
         egui::ScrollArea::vertical()
             .id_salt("tag_attr_edit_scroll")
@@ -1062,9 +1093,8 @@ impl NekoviewApp {
                             let resp = tag_chip(ui, elem_name, full_w, fill, text_color, egui::Sense::click(), !selected);
                             if resp.clicked() {
                                 if selected {
-                                    if !*single_select {
-                                        self.tag_attr_selected.retain(|s| s != elem_id);
-                                    }
+                                    // 単一選択でも再クリックで全解除できる（0個は未タグ付けの正常状態）。
+                                    self.tag_attr_selected.retain(|s| s != elem_id);
                                 } else {
                                     if *single_select {
                                         let elem_ids: Vec<u64> = elements.iter().map(|(id, _)| *id).collect();
@@ -1092,7 +1122,7 @@ impl NekoviewApp {
                 let full_w = ui.available_width();
                 ui.horizontal_wrapped(|ui| {
                     if self.tag_attr_selected.is_empty() {
-                        ui.weak("（選択済みタグなし）");
+                        ui.weak(i18n::t().tag_panel_no_selected_tags());
                     } else {
                         // 選択した順は無視し、カテゴリ登録順→カテゴリ内の登録要素順で並べる。
                         // tier削除済みの孤立id（自己修復GC前）は走査対象に現れないので
@@ -1118,6 +1148,16 @@ impl NekoviewApp {
     /// タグマネージャー: マスタ定義（カテゴリ/tier/色）を即時保存する。専用の保存
     /// タイミングは持たず、編集操作が確定するたびにこれを呼ぶ。合わせて、メインタグ
     /// メインタグ／属性タグパレットの選択肢をマスタ定義から再生成して結びつける。
+    /// メインカテゴリの要素0件ガード。補填が走った場合はトーストで知らせる。
+    fn ensure_tag_main_nonempty(&mut self) {
+        if crate::tag_manager::ensure_main_category_nonempty(
+            &mut self.tag_manager_categories,
+            &mut self.tag_manager_next_tier_id,
+        ) {
+            self.set_toast(i18n::t().tag_main_default_element_toast());
+        }
+    }
+
     fn save_tag_manager(&mut self) {
         let (main_options, attr_options) = crate::tag_manager::derive_tag_options(&self.tag_manager_categories);
         self.tag_main_options = main_options;
@@ -1169,7 +1209,7 @@ impl NekoviewApp {
                             egui::vec2(total_w - TAG_MANAGER_CLOSE_BTN * 2.0, row_h),
                             egui::Layout::top_down(egui::Align::Center),
                             |ui| {
-                                ui.heading("タグ管理");
+                                ui.heading(i18n::t().tag_manager_title());
                             },
                         );
                         ui.allocate_ui_with_layout(
@@ -1219,7 +1259,7 @@ impl NekoviewApp {
                                     match cat_idx {
                                         Some(i) => self.draw_tag_manager_tier_list(ui, i),
                                         None => {
-                                            ui.label("カテゴリを選択してください");
+                                            ui.label(i18n::t().tag_manager_select_category_prompt());
                                         }
                                     }
                                 },
@@ -1306,7 +1346,7 @@ impl NekoviewApp {
                 egui::vec2((total_w - ADD_BTN_W * 2.0).max(0.0), row_h),
                 egui::Layout::top_down(egui::Align::Center),
                 |ui| {
-                    ui.label("カテゴリリスト");
+                    ui.label(i18n::t().tag_manager_category_list());
                 },
             );
             ui.allocate_ui_with_layout(
@@ -1318,7 +1358,7 @@ impl NekoviewApp {
                         let existing: Vec<egui::Color32> =
                             self.tag_manager_categories.iter().map(|c| c.color).collect();
                         self.tag_manager_categories.push(TagManagerCategoryUi {
-                            name: format!("新規カテゴリ{n}"),
+                            name: i18n::t().tag_manager_new_category_name(n),
                             tiers: Vec::new(),
                             color: pick_distinct_tag_color(&existing),
                             is_main: false,
@@ -1338,7 +1378,7 @@ impl NekoviewApp {
         let rows: Vec<(String, bool, bool)> = self
             .tag_manager_categories
             .iter()
-            .map(|c| (c.name.clone(), c.tiers.iter().any(|t| t.element.is_some()), c.is_main))
+            .map(|c| (c.display_name(), c.tiers.iter().any(|t| t.element.is_some()), c.is_main))
             .collect();
         let mut select_idx: Option<usize> = None;
         let mut delete_idx: Option<usize> = None;
@@ -1346,11 +1386,11 @@ impl NekoviewApp {
             let selected = self.tag_manager_selected_category == Some(i);
             ui.horizontal(|ui| {
                 let label = if *is_main {
-                    format!("{name}（メイン）")
+                    i18n::t().tag_manager_category_label_main(name)
                 } else if *established {
                     name.clone()
                 } else {
-                    format!("{name}（未成立）")
+                    i18n::t().tag_manager_category_label_incomplete(name)
                 };
                 if ui.selectable_label(selected, label).clicked() {
                     select_idx = Some(i);
@@ -1377,10 +1417,7 @@ impl NekoviewApp {
                 other => other,
             };
             self.tag_manager_bulk_input.clear();
-            crate::tag_manager::ensure_main_category_nonempty(
-                &mut self.tag_manager_categories,
-                &mut self.tag_manager_next_tier_id,
-            );
+            self.ensure_tag_main_nonempty();
             self.save_tag_manager();
         }
     }
@@ -1399,11 +1436,11 @@ impl NekoviewApp {
         // など）が収まらないと親Uiのmax_rectごと右へ広げ、以降の`available_width()`が
         // 実際に見えている幅より大きくなって折返しが効かなくなるため。
         let col_w = ui.available_width();
-        let cat_name = self.tag_manager_categories[cat_idx].name.clone();
+        let cat_name = self.tag_manager_categories[cat_idx].display_name();
         let cat_is_main = self.tag_manager_categories[cat_idx].is_main;
         // 狭い幅では折り返して、そもそも溢れないようにする。
         ui.horizontal_wrapped(|ui| {
-            ui.label("選択中カテゴリ:");
+            ui.label(i18n::t().tag_manager_selected_category_label());
             if self.tag_manager_editing_category_name == Some(cat_idx) {
                 let text_edit_id = ui.id().with("tag_manager_cat_name_edit");
                 if self.tag_manager_editing_category_focus_pending {
@@ -1424,7 +1461,7 @@ impl NekoviewApp {
                             .tag_manager_categories
                             .iter()
                             .enumerate()
-                            .any(|(i, c)| i != cat_idx && c.name == text);
+                            .any(|(i, c)| i != cat_idx && c.display_name() == text);
                         if !text.is_empty() && !is_dup {
                             self.tag_manager_categories[cat_idx].name = text;
                             self.save_tag_manager();
@@ -1435,7 +1472,7 @@ impl NekoviewApp {
                 }
             } else {
                 ui.label(egui::RichText::new(&cat_name).size(28.0).strong());
-                if ui.add_enabled(!cat_is_main, egui::Button::new("編集")).clicked() {
+                if ui.add_enabled(!cat_is_main, egui::Button::new(i18n::t().tag_manager_edit_button())).clicked() {
                     self.tag_manager_editing_category_name = Some(cat_idx);
                     self.tag_manager_editing_category_buffer = cat_name.clone();
                     self.tag_manager_editing_category_focus_pending = true;
@@ -1446,8 +1483,8 @@ impl NekoviewApp {
             ui.add_enabled_ui(!cat_is_main, |ui| {
                 let mut single = self.tag_manager_categories[cat_idx].single_select;
                 let before = single;
-                ui.radio_value(&mut single, false, "複数選択");
-                ui.radio_value(&mut single, true, "単一選択");
+                ui.radio_value(&mut single, false, i18n::t().tag_manager_multi_select());
+                ui.radio_value(&mut single, true, i18n::t().tag_manager_single_select());
                 if single != before {
                     self.tag_manager_categories[cat_idx].single_select = single;
                     self.tag_manager_bulk_input.clear();
@@ -1455,7 +1492,7 @@ impl NekoviewApp {
                 }
             });
             ui.separator();
-            ui.label("カテゴリ色:");
+            ui.label(i18n::t().tag_manager_category_color_label());
             let mut color = self.tag_manager_categories[cat_idx].color;
             let color_resp = ui.color_edit_button_srgba(&mut color);
             if color_resp.changed() {
@@ -1466,7 +1503,7 @@ impl NekoviewApp {
             if color_resp.drag_stopped() || color_resp.lost_focus() {
                 self.save_tag_manager();
             }
-            if ui.small_button("ランダム").clicked() {
+            if ui.small_button(i18n::t().tag_manager_random_color()).clicked() {
                 let existing: Vec<egui::Color32> = self
                     .tag_manager_categories
                     .iter()
@@ -1512,7 +1549,7 @@ impl NekoviewApp {
             .show(ui, |ui| {
                 // tier1の前(tier0位置)にも挿入したいが、tier行自体の＋は「このtierの後ろに
                 // 追加」の意味なので、先頭挿入専用のUIをリストの一番上に置く。
-                if ui.small_button("＋（先頭に追加）").clicked() {
+                if ui.small_button(i18n::t().tag_manager_add_tier_at_top()).clicked() {
                     add_tier_at = Some(0);
                 }
                 for t_idx in 0..tier_count {
@@ -1550,7 +1587,7 @@ impl NekoviewApp {
                                     // 実際の再序列(tier_no振り直し)は後段でまとめて行う。
                                     add_tier_at = Some(t_idx + 1);
                                 }
-                                if ui.small_button("tier削除").clicked() {
+                                if ui.small_button(i18n::t().tag_manager_delete_tier()).clicked() {
                                     delete_tier = Some(t_idx);
                                 }
                                 ui.separator();
@@ -1614,7 +1651,7 @@ impl NekoviewApp {
                                             }
                                         }
                                         None => {
-                                            ui.weak("(空)");
+                                            ui.weak(i18n::t().tag_manager_empty_element());
                                         }
                                     }
                                 }
@@ -1639,10 +1676,7 @@ impl NekoviewApp {
                 if text.is_empty() { None } else { Some(text) };
             self.tag_manager_editing_element = None;
             self.tag_manager_editing_buffer.clear();
-            crate::tag_manager::ensure_main_category_nonempty(
-                &mut self.tag_manager_categories,
-                &mut self.tag_manager_next_tier_id,
-            );
+            self.ensure_tag_main_nonempty();
             self.save_tag_manager();
         }
         if cancel_edit.is_some() {
@@ -1657,10 +1691,7 @@ impl NekoviewApp {
                 self.tag_manager_editing_element = None;
                 self.tag_manager_editing_buffer.clear();
             }
-            crate::tag_manager::ensure_main_category_nonempty(
-                &mut self.tag_manager_categories,
-                &mut self.tag_manager_next_tier_id,
-            );
+            self.ensure_tag_main_nonempty();
             self.save_tag_manager();
         }
         if let Some(t_idx) = delete_tier {
@@ -1674,10 +1705,7 @@ impl NekoviewApp {
             // tierのindex構成が変わるため、編集中状態はインデックスのズレを避けて破棄する。
             self.tag_manager_editing_element = None;
             self.tag_manager_editing_buffer.clear();
-            crate::tag_manager::ensure_main_category_nonempty(
-                &mut self.tag_manager_categories,
-                &mut self.tag_manager_next_tier_id,
-            );
+            self.ensure_tag_main_nonempty();
             self.save_tag_manager();
         }
         if let Some(pos) = add_tier_at {
@@ -1712,11 +1740,11 @@ impl NekoviewApp {
         let cat_color = self.tag_manager_categories[cat_idx].color;
 
         ui.horizontal(|ui| {
-            ui.label("一括追加:");
+            ui.label(i18n::t().tag_manager_bulk_add_label());
             let resp = ui.add(
                 egui::TextEdit::singleline(&mut self.tag_manager_bulk_input)
                     .desired_width(f32::INFINITY)
-                    .hint_text("要素A, 要素B, 要素C（カンマ内に , を含めたい場合は ,, ）"),
+                    .hint_text(i18n::t().tag_manager_bulk_add_hint()),
             );
             if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                 let names = crate::tag_manager::parse_bulk_elements(&self.tag_manager_bulk_input);
@@ -1757,7 +1785,7 @@ impl NekoviewApp {
                         .filter_map(|(t_idx, t)| t.element.clone().map(|name| (t_idx, name)))
                         .collect();
                     if elements.is_empty() {
-                        ui.weak("（要素なし。上の欄から追加）");
+                        ui.weak(i18n::t().tag_manager_no_elements_hint());
                     }
                     let text_color = contrasting_text_color(cat_color);
                     for (t_idx, name) in elements {
@@ -1774,10 +1802,7 @@ impl NekoviewApp {
             for (i, t) in tiers.iter_mut().enumerate() {
                 t.tier_no = i as i32 + 1;
             }
-            crate::tag_manager::ensure_main_category_nonempty(
-                &mut self.tag_manager_categories,
-                &mut self.tag_manager_next_tier_id,
-            );
+            self.ensure_tag_main_nonempty();
             self.save_tag_manager();
         }
     }
@@ -1905,6 +1930,13 @@ impl NekoviewApp {
                 self.switch_folder_tab(FolderPaneTab::VirtualFolders);
                 self.focused_pane = FocusPane::FolderTabBar;
             }
+            let tag_search_resp = ui.selectable_label(self.folder_pane_tab == FolderPaneTab::TagSearch, i18n::t().folder_tab_tag_search());
+            if tab_bar_focused && self.folder_pane_tab == FolderPaneTab::TagSearch { draw_cursor_ring(ui, tag_search_resp.rect); }
+            help_tip(&tag_search_resp, help_on, &i18n::t().help_tab_tag_search());
+            if tag_search_resp.clicked() {
+                self.switch_folder_tab(FolderPaneTab::TagSearch);
+                self.focused_pane = FocusPane::FolderTabBar;
+            }
         });
         ui.separator();
 
@@ -1917,6 +1949,7 @@ impl NekoviewApp {
                 self.draw_virtual_folder_pane(ui);
                 self.paint_pane_border(ui, pane_rect, false);
             }
+            FolderPaneTab::TagSearch => self.draw_tag_search_left_pane(ui),
         }
     }
 
@@ -1938,6 +1971,13 @@ impl NekoviewApp {
             ui.id().with("real_tree_bg"),
             egui::Sense::click(),
         );
+        // 赤マーカーの基準: 検索タブのツリーは検索の基点を選ぶ道具なので、PWDではなく基点に付ける
+        // （PWD=viewing_dir自体は書き換えない）。
+        let marker_dir = if self.folder_pane_tab == FolderPaneTab::Search {
+            self.search_form.base_dir.clone()
+        } else {
+            self.viewing_dir.clone()
+        };
         egui::ScrollArea::both()
             .id_salt("folder_scroll")
             .max_height(top_h)
@@ -1948,7 +1988,7 @@ impl NekoviewApp {
                     ui,
                     &self.tree_root.clone(),
                     0,
-                    &self.viewing_dir,
+                    &marker_dir,
                     &self.tree_cursor,
                     self.focused_pane == FocusPane::TreeTab,
                     &self.tree_expanded,
@@ -1987,6 +2027,7 @@ impl NekoviewApp {
                 }
             }
             TreeAction::AddToVirtual(path) => self.open_virtual_dest_picker(path),
+            TreeAction::OpenInSearch(path) => self.open_in_search_tab(path),
             TreeAction::SortSetting => self.open_tree_sort_dialog(super::tree_sort_ui::TreeSortTarget::Real),
             TreeAction::Navigate(path) | TreeAction::DoubleClick(path) => {
                 self.focused_pane = FocusPane::TreeTab;
@@ -2039,6 +2080,11 @@ impl NekoviewApp {
     }
 
     fn draw_central_panel(&mut self, ui: &mut egui::Ui) {
+        // タグ検索タブ: 有効タグが無い間はガイドだけ出す。1つ以上あれば通常の一覧表示。
+        if self.folder_pane_tab == FolderPaneTab::TagSearch && self.tag_search_enabled.is_empty() {
+            self.draw_tag_search_central(ui);
+            return;
+        }
         // 検索タブ選択中のみアイテムペインを縦割りにする（左: ツリー+ドライブ固定幅、右: 従来の中身）。
         // [Phase A] レイアウトのモック確認用: ツリー/ドライブは実ツリーと表示・状態を共有しており、
         // クリック時の動作もまだ実ナビゲーションのまま（検索基点への分離はPhase Bで対応）。
@@ -2101,6 +2147,84 @@ impl NekoviewApp {
         self.draw_central_panel_content(ui);
     }
 
+    /// パス行左端の表示モード切替: `[カード] [▼リストS] [x]ホバー時サムネ表示`。選択中のモードはハイライト。
+    /// リストボタンだけ押すたびにサイズが循環する（S→M→L→サムネ無し）。
+    /// 描画は `draw_archive_grid`（カード）と `list_view.rs`（リスト・一覧）。モードは全タブ共通で保存される。
+    fn draw_view_mode_buttons(&mut self, ui: &mut egui::Ui) {
+        use super::view_mode::{ListSize, ViewMode};
+        let t = i18n::t();
+        // サムネ無しはサイズ表記なしの「▼リスト」。
+        let size_label = |size: ListSize| match size {
+            ListSize::S => "S",
+            ListSize::M => "M",
+            ListSize::L => "L",
+            ListSize::NoThumb => "",
+        };
+        let list_label = t.view_mode_list_label(size_label(self.view_mode.list_size));
+        // リストボタンの幅は全ラベルの最長に合わせて固定し、サイズ循環でパスがずれないようにする。
+        let list_w = {
+            let font = egui::TextStyle::Button.resolve(ui.style());
+            let color = ui.visuals().text_color();
+            let widest = [ListSize::S, ListSize::M, ListSize::L, ListSize::NoThumb]
+                .into_iter()
+                .map(|size| ui.painter().layout_no_wrap(t.view_mode_list_label(size_label(size)), font.clone(), color).size().x)
+                .fold(0.0_f32, f32::max);
+            widest + ui.spacing().button_padding.x * 2.0
+        };
+        let mode = self.view_mode.mode;
+        // 「消した組」ウィンドウはリスト表示の設定（S/M/L/サムネ無し・ホバー）に従うので、開いている間はカードを選べない。
+        let card_btn = egui::Button::new(t.view_mode_card_label()).selected(mode == ViewMode::Card);
+        if ui.add_enabled(self.dismissed_window.is_none(), card_btn).clicked() {
+            self.view_mode.select_card();
+        }
+        // add_sized は高さ0指定で独自に縦位置を決めて他のボタンとずれるため、min_size で幅だけ確保する。
+        let list_btn = egui::Button::new(list_label).min_size(egui::vec2(list_w, 0.0)).selected(mode == ViewMode::List);
+        if ui.add(list_btn).clicked() {
+            self.view_mode.press_list();
+        }
+        // ホバー時サムネ表示。カードにはポップアップが無いので、カード中は押せない表示にする（値は保持）。
+        ui.add_enabled(
+            mode != ViewMode::Card,
+            egui::Checkbox::new(&mut self.view_mode.hover_popup, t.view_mode_hover_popup_label()),
+        );
+        // 【モック】似ている画像の類似度しきい値。「？」を出す下限(%)。
+        let before = self.sim_threshold_pct;
+        ui.label(t.sim_threshold_label()).on_hover_text(t.sim_threshold_hint());
+        let r_sim = egui::ComboBox::from_id_salt("sim_threshold_pct")
+            .width(52.0)
+            .selected_text(format!("{}%", self.sim_threshold_pct))
+            .show_ui(ui, |ui| {
+                for pct in super::dup_marker_ui::SIM_PCT_CHOICES {
+                    ui.selectable_value(&mut self.sim_threshold_pct, pct, format!("{pct}%"));
+                }
+            });
+        r_sim.response.on_hover_text(t.sim_threshold_hint());
+        if self.sim_threshold_pct != before {
+            self.rebuild_look_alike();
+            // 「重複」見出しの並びは類似も含むので、しきい値が変わったら並べ直す（絞り込みも作り直される）。
+            if self.dup_sort {
+                self.resort_keeping_selection_always();
+            } else {
+                self.recompute_filter();
+            }
+            self.persist_state();
+        }
+        // ★/訪問回数の編集ロック。表示が変わったら自動でロックに戻す（解除中だけ背景をオレンジにして目立たせる）。
+        self.sync_list_edit_lock();
+        let unlocked = self.list_edit_lock.is_unlocked();
+        let mut lock_btn = egui::Button::new(t.list_edit_lock_label(unlocked));
+        if unlocked {
+            lock_btn = lock_btn.fill(egui::Color32::from_rgb(235, 140, 40));
+        }
+        let lock_resp = ui
+            .add_enabled(mode == ViewMode::List, lock_btn)
+            .on_hover_text(t.list_edit_lock_hint());
+        if lock_resp.clicked() && self.list_edit_lock.toggle() {
+            self.finish_list_edit();
+        }
+        ui.separator();
+    }
+
     fn draw_central_panel_content(&mut self, ui: &mut egui::Ui) {
         // お気に入り/検索タブ中は実ディレクトリ由来の表示（パス・サマリー）を出さない。
         // cd_summary はワーカーが非同期で書き込むため、状態クリアではなく描画側でゲートする。
@@ -2109,9 +2233,18 @@ impl NekoviewApp {
         let in_search_ui = self.folder_pane_tab == FolderPaneTab::Search
             || self.viewing_search.is_some();
 
+        self.draw_similar_banner(ui);
+
+        // パス行: 左端に表示モード切替、その右にパス（モード切替の分だけ右へ寄る）。
+        ui.horizontal(|ui| {
+        self.draw_view_mode_buttons(ui);
         if let Some(idx) = self.viewing_search {
             let label = self.search_history.get(idx).map(|e| e.label.clone()).unwrap_or_default();
             ui.label(label);
+        } else if self.viewing_similar.is_some() {
+            self.draw_similar_header(ui);
+        } else if self.folder_pane_tab == FolderPaneTab::TagSearch {
+            ui.label(self.tag_search_header());
         } else {
             match self.viewing_favorites {
                 Some(FavoriteSelection::Unsorted) => {
@@ -2138,8 +2271,12 @@ impl NekoviewApp {
                 }
             }
         }
+        });
 
-        if let Some((mtime, size_bytes)) = &self.selected_archive_meta {
+        // 選択ファイルの詳細行（更新日時・サイズ・名前）。リスト・一覧は行自体が同じ情報を持つので出さない。
+        if self.view_mode.mode == super::view_mode::ViewMode::Card
+            && let Some((mtime, size_bytes)) = &self.selected_archive_meta
+        {
             let filename = self.selected_archive_index
                 .and_then(|idx| self.archives.get(idx))
                 .and_then(|p| p.file_name())
@@ -2198,10 +2335,17 @@ impl NekoviewApp {
     fn draw_filter_bar(&mut self, ui: &mut egui::Ui) {
         // 評価フィルタ群（縦線・チェック・比較・★）と右端の空白ぶん。文字列欄はこの残りを使う。
         const RATING_GROUP_W: f32 = 290.0;
+        // 重複フィルタ群（縦線・「重複」・「サムネ類似」・「消去済」・「↩」）のぶん。
+        const DUP_GROUP_W: f32 = 270.0;
         const RIGHT_GAP: f32 = 5.0;
         let help_on = self.help_enabled;
         let help_text = i18n::t().help_filter_text();
         let help_score = i18n::t().help_filter_score();
+        // タグパネルは最下段まで覆うフローティングなので、右端のスコアフィルタが
+        // 真下に潜らないよう、この行の右端をパネル幅ぶん左へ寄せる（グリッド側の
+        // 列数計算と同じ除外幅）。削った分は文字列欄の desired_width で吸収する
+        // （Uiの最大幅を縮める方式は効かなかったため、幅を直接計算で差し引く）。
+        let tag_panel_w = if self.tag_panel_open { self.tag_panel_width } else { PANEL_TAB_WIDTH };
         ui.separator();
         ui.horizontal(|ui| {
             let r_label = ui.label(i18n::t().explorer_filter_label());
@@ -2214,7 +2358,7 @@ impl NekoviewApp {
                 self.filter_enabled,
                 egui::TextEdit::singleline(&mut self.filter_text)
                     .hint_text(i18n::t().explorer_filter_hint())
-                    .desired_width((ui.available_width() - RATING_GROUP_W).max(60.0)),
+                    .desired_width((ui.available_width() - tag_panel_w - RATING_GROUP_W - DUP_GROUP_W).max(60.0)),
             );
             help_tip(&resp, help_on, &help_text);
             if resp.clicked() {
@@ -2273,6 +2417,43 @@ impl NekoviewApp {
                     });
                 help_tip(&r_threshold.response, help_on, &help_score);
             });
+
+            // ── 重複フィルタ（通常のフォルダ表示でだけ働く。お気に入り・検索の横断一覧では絞り込まない）──
+            ui.separator();
+            let t = i18n::t();
+            // 並びは「重複」「サムネ類似」「消去済」「↩（消した組の一覧）」。入口を右端に置く。
+            let r_dup = ui.checkbox(&mut self.dup_filter, t.dup_filter_label()).on_hover_text(t.dup_filter_hint());
+            let r_sim_filter =
+                ui.checkbox(&mut self.sim_filter, t.sim_filter_label()).on_hover_text(t.sim_filter_hint());
+            let r_dismissed = ui
+                .checkbox(&mut self.dup_show_dismissed, t.dup_show_dismissed_label())
+                .on_hover_text(t.dup_show_dismissed_hint());
+            if r_dismissed.changed() {
+                // 似ている画像ビューを開いている間は、消した組の行の出し入れも反映する。
+                self.rebuild_look_alike();
+            }
+            if r_dup.changed() || r_dismissed.changed() {
+                // 消去済みの表示は並びにも効くので、並びごと作り直す。
+                if self.dup_sort && r_dismissed.changed() {
+                    self.finish_sort_change();
+                } else {
+                    changed = true;
+                }
+            }
+            if r_sim_filter.changed() {
+                changed = true;
+            }
+            // 消した組の一覧ウィンドウを開閉する入口。
+            let (entry_rect, entry_resp) = ui.allocate_exact_size(egui::vec2(22.0, 22.0), egui::Sense::click());
+            let entry_hovered = entry_resp.hovered() || self.dismissed_window.is_some();
+            super::dup_marker_ui::paint_restore_icon(
+                ui.painter(),
+                egui::Rect::from_center_size(entry_rect.center(), egui::vec2(16.0, 16.0)),
+                entry_hovered,
+            );
+            if entry_resp.on_hover_text(t.dismissed_window_entry_tip()).clicked() {
+                self.toggle_dismissed_window();
+            }
             ui.add_space(RIGHT_GAP);
 
             if changed {
@@ -2322,7 +2503,11 @@ impl NekoviewApp {
     /// （階層概念を持ち込まない契約）のため、「↑」・サブフォルダは一切出さない。
     fn folder_grid_entries(&self) -> Vec<GridEntry> {
         let mut out = Vec::new();
-        if self.viewing_favorites.is_some() || self.viewing_search.is_some() {
+        if self.viewing_favorites.is_some()
+            || self.viewing_search.is_some()
+            || self.viewing_similar.is_some()
+            || self.folder_pane_tab == FolderPaneTab::TagSearch
+        {
             return out;
         }
         // 仮想ノード経由の表示: フォルダカードと「↑」は仮想ツリーが正（実サブフォルダは出さない）
@@ -2427,6 +2612,362 @@ impl NekoviewApp {
         }
     }
 
+    /// アーカイブ1件のサムネを `rect` へ描く（生成済みならレターボックス付きで画像、未生成なら灰色の
+    /// プレースホルダ）。表示要求の登録・優先度付け・未生成時の生成要求もここで行う。
+    /// カード・リスト・一覧のサムネ表示で共通に使う。呼び出し側は `ui.is_rect_visible(rect)` を確認済みであること。
+    pub(super) fn paint_archive_thumbnail(&mut self, ui: &mut egui::Ui, rect: egui::Rect, path: &PathBuf) {
+        self.thumb_display_requested.insert(path.clone());
+        if path.parent().is_some_and(|parent| parent == self.current_dir)
+            && self.folder_pane_tab.shows_real_dir()
+        {
+            self.prioritize_thumbnail_path(path);
+        }
+        if let Some(tex) = self.thumbnails.get(path) {
+            let letterbox_color = if ui.visuals().dark_mode {
+                egui::Color32::BLACK
+            } else {
+                egui::Color32::WHITE
+            };
+            ui.painter().rect_filled(rect, 4.0, letterbox_color);
+            let img_rect = fit_rect_contain(rect, tex.size_vec2());
+            ui.painter().image(
+                tex.id(),
+                img_rect,
+                egui::Rect::from_min_max(
+                    egui::pos2(0.0, 0.0),
+                    egui::pos2(1.0, 1.0),
+                ),
+                egui::Color32::WHITE,
+            );
+        } else {
+            ui.painter().rect_filled(
+                rect,
+                4.0,
+                egui::Color32::from_gray(60),
+            );
+            // ファイルID解決待ち（検証中）のファイルは、移動したファイルのサムネを
+            // 引っ越せるよう、解決が済むまで生成を始めない。
+            if !self.thumb_pending.contains(path)
+                && !self.thumb_failed.contains(path)
+                && !self.thumb_queued.contains(path)
+                && !self.identity_verifying.contains(path)
+            {
+                // キャッシュDBは表示中フォルダのもの。別フォルダのファイル（横断一覧・「消した組」ウィンドウ）に渡すと、
+                // サムネを間違ったフォルダのDBへ保存してしまうので、その場合はDBなしで生成する。
+                let same_dir_db = (self.folder_pane_tab.shows_real_dir() && path.parent() == Some(self.current_dir.as_path()))
+                    .then(|| self.cache_db.clone())
+                    .flatten();
+                if self.thumb_req_tx.try_send(ThumbRequest {
+                    archive_path: path.clone(),
+                    db: same_dir_db,
+                    is_raw_file: self.raw_image_files.contains(path),
+                    requested_edge: self.config.thumb_size,
+                    requested_filter: self.config.thumb_filter,
+                    generation_token: None,
+                    session_id: self.thumb_session.load(std::sync::atomic::Ordering::Acquire),
+                    is_tag_preview: false,
+                    thumbnail_selection: path.parent().and_then(|dir| {
+                        let filename = path.file_name()?.to_str()?;
+                        self.spread_db.as_ref().and_then(|db| {
+                            crate::spread_state::read_thumbnail_selection(db, dir, filename)
+                        })
+                    }),
+                }).is_ok() {
+                    self.thumb_pending.insert(path.clone());
+                }
+            }
+        }
+    }
+
+    /// 一覧に並んだアーカイブ1件の操作（クリック選択・Ctrl/Shiftの複数選択・ダブルクリックで開く・
+    /// 右クリックメニュー）。`real_idx` が対象（`archives` のインデックス）、`i` はその `filtered_indices` 上の位置、
+    /// `response` はそのセルの応答。Shiftの範囲選択は表示順（`filtered_indices`）で決める。
+    /// 全件のパスを持たずに呼べるので、リストの仮想スクロール（見えている行だけ呼ぶ）でも使える。
+    /// カード・リスト・一覧で共通に使う。
+    pub(super) fn handle_archive_interaction(
+        &mut self,
+        ui: &mut egui::Ui,
+        response: &egui::Response,
+        real_idx: usize,
+        i: usize,
+    ) {
+        // リストの「ファイラー」ボタンを押したときは、選択や起動ではなくファイラーで開く。
+        if self.try_click_reveal(ui, response, real_idx) {
+            return;
+        }
+        // 編集の解除中に＋－を押したときは、選択や起動ではなく値を動かす。
+        if self.try_click_edit(ui, response, real_idx) {
+            return;
+        }
+        // 重複マーカーのアイコンを押したときは、選択や起動ではなくポップアップを開く。
+        if self.try_open_marker_popup(ui, response, real_idx) {
+            return;
+        }
+        let path_owned = self.archives[real_idx].clone();
+        let path = &path_owned;
+        let is_raw = self.raw_image_files.contains(path);
+        if response.clicked() {
+            // 選択枠は描画後に状態が変わるので、次の入力を待たず即座に描き直す。
+            ui.ctx().request_repaint();
+            // カーソルを動かす前に、いまフォルダ（「↑」・サブフォルダ）に乗っているかを控える（Shiftの始点用）。
+            let cursor_on_folder = matches!(
+                self.grid_cursor,
+                Some(GridEntry::Up(_) | GridEntry::Subdir(_) | GridEntry::VirtualUp(_) | GridEntry::VirtualSubdir(_))
+            );
+            self.focused_pane = FocusPane::Grid;
+            self.grid_cursor = Some(GridEntry::Archive(real_idx));
+            let modifiers = ui.input(|i| i.modifiers);
+            if modifiers.command {
+                // Ctrl(Cmd)+クリック: トグル追加/除外（規則は selection.rs）
+                super::selection::toggle(&mut self.multi_selected, &mut self.selected_archive_index, real_idx);
+                self.select_anchor = Some(real_idx);
+                self.selected_archive_meta = None;
+            } else if modifiers.shift {
+                // Shift+クリック: 起点からの範囲選択（規則は selection.rs）。カーソルがフォルダにあるときは、
+                // 始点を最も近い有効な行（先頭のファイル）に置き換え、以後の範囲もそこを起点にする。
+                let start = super::selection::shift_start(
+                    self.select_anchor,
+                    cursor_on_folder,
+                    self.filtered_indices.first().copied(),
+                );
+                self.multi_selected = super::selection::shift_range(&self.filtered_indices, start, i);
+                if cursor_on_folder {
+                    self.select_anchor = start;
+                }
+                self.selected_archive_index = Some(real_idx);
+                self.selected_archive_meta = None;
+            } else if is_raw && self.selected_archive_index == Some(real_idx) && self.multi_selected.is_empty() {
+                // 生ファイル: 選択済み状態のシングルクリックで開く
+                if self.network_gate(path) {
+                    self.open_viewer(ViewerState::new_raw(path.clone(), self.viewer_slots, self.config.default_slot));
+                }
+            } else {
+                self.multi_selected.clear();
+                self.select_anchor = Some(real_idx);
+                self.selected_archive_index = Some(real_idx);
+                self.selected_archive_meta = std::fs::metadata(path)
+                    .ok()
+                    .map(|m| (m.modified().unwrap_or(std::time::UNIX_EPOCH), m.len()));
+            }
+        }
+        if response.double_clicked() && !is_raw {
+            if self.invalid_archives.contains(path) {
+                let name = truncate_filename(path);
+                self.set_toast(i18n::t().invalid_zip(&name));
+            } else if !self.network_gate(path) {
+                // トースト表示・再チェックは network_gate 内で処理済み。
+            } else {
+                // メモリ見積もりゲート・ViewerState構築は非同期化済み
+                // （進捗オーバーレイ経由。完了後の後始末は poll_pending_open が行う）。
+                self.start_archive_open(path.clone());
+            }
+        }
+
+        // 右クリックメニュー: 複数選択中はホバー位置を無視し選択集合全体を対象にする。
+        // 未選択（単一）時はこのセルのファイル1件のみを対象にする。
+        // ソート条件/しおり保存/見開き設定の3項目は、右クリックの瞬間に対象外
+        // （ディレクトリ・単品生画像ファイル・無効アーカイブ）を除外した後の件数が
+        // 0ならトーストのみ表示してメニューにその3項目を出さない（お気に入り詳細設定・
+        // フォルダを開くは対象外の概念が無いため無条件に出す）。
+        if response.secondary_clicked() {
+            let raw_targets: Vec<PathBuf> = if !self.multi_selected.is_empty() {
+                self.multi_selected.iter().filter_map(|&idx| self.archives.get(idx).cloned()).collect()
+            } else {
+                vec![path.clone()]
+            };
+            if self.filter_bulk_setting_targets(raw_targets).is_empty() {
+                self.set_toast(i18n::t().bulk_setting_no_target_toast());
+            }
+        }
+        response.context_menu(|ui| {
+            let raw_targets: Vec<PathBuf> = if !self.multi_selected.is_empty() {
+                self.multi_selected.iter().filter_map(|&idx| self.archives.get(idx).cloned()).collect()
+            } else {
+                vec![path.clone()]
+            };
+            let filtered_targets = self.filter_bulk_setting_targets(raw_targets.clone());
+
+            if !self.multi_selected.is_empty() {
+                let count = self.multi_selected.len();
+                let r_item = ui.button(i18n::t().favorite_detail_menu_bulk(count));
+                help_tip_auto(&r_item, &i18n::t().help_card_favorite());
+                if r_item.clicked() {
+                    self.open_favorite_detail_dialog_for_paths(raw_targets.clone());
+                    ui.close();
+                }
+                if !filtered_targets.is_empty() {
+                    let fcount = filtered_targets.len();
+                    let r_item = ui.button(i18n::t().sort_condition_menu_bulk(fcount));
+                    help_tip_auto(&r_item, &i18n::t().help_card_sort());
+                    if r_item.clicked() {
+                        self.open_sort_condition_dialog_for_paths(filtered_targets.clone());
+                        ui.close();
+                    }
+                    let r_item = ui.button(i18n::t().bookmark_setting_menu_bulk(fcount));
+                    help_tip_auto(&r_item, &i18n::t().help_card_bookmark());
+                    if r_item.clicked() {
+                        self.open_bookmark_setting_dialog_for_paths(filtered_targets.clone());
+                        ui.close();
+                    }
+                    let r_item = ui.button(i18n::t().spread_setting_menu_bulk(fcount));
+                    help_tip_auto(&r_item, &i18n::t().help_card_spread());
+                    if r_item.clicked() {
+                        self.open_spread_setting_dialog_for_paths(filtered_targets.clone());
+                        ui.close();
+                    }
+                    let r_item = ui.button(i18n::t().rating_setting_menu_bulk(fcount));
+                    help_tip_auto(&r_item, &i18n::t().help_card_rating());
+                    if r_item.clicked() {
+                        self.open_rating_setting_dialog_for_paths(filtered_targets.clone());
+                        ui.close();
+                    }
+                }
+            } else {
+                let r_item = ui.button(i18n::t().favorite_detail_menu());
+                help_tip_auto(&r_item, &i18n::t().help_card_favorite());
+                if r_item.clicked() {
+                    self.open_favorite_detail_dialog_for_paths(raw_targets.clone());
+                    ui.close();
+                }
+                if !filtered_targets.is_empty() {
+                    let r_item = ui.button(i18n::t().sort_condition_menu());
+                    help_tip_auto(&r_item, &i18n::t().help_card_sort());
+                    if r_item.clicked() {
+                        self.open_sort_condition_dialog_for_paths(filtered_targets.clone());
+                        ui.close();
+                    }
+                    let r_item = ui.button(i18n::t().bookmark_setting_menu());
+                    help_tip_auto(&r_item, &i18n::t().help_card_bookmark());
+                    if r_item.clicked() {
+                        self.open_bookmark_setting_dialog_for_paths(filtered_targets.clone());
+                        ui.close();
+                    }
+                    let r_item = ui.button(i18n::t().spread_setting_menu());
+                    help_tip_auto(&r_item, &i18n::t().help_card_spread());
+                    if r_item.clicked() {
+                        self.open_spread_setting_dialog_for_paths(filtered_targets.clone());
+                        ui.close();
+                    }
+                    let r_item = ui.button(i18n::t().rating_setting_menu());
+                    help_tip_auto(&r_item, &i18n::t().help_card_rating());
+                    if r_item.clicked() {
+                        self.open_rating_setting_dialog_for_paths(filtered_targets.clone());
+                        ui.close();
+                    }
+                }
+            }
+
+            ui.separator();
+            self.draw_reveal_menu_item(ui, path);
+            ui.separator();
+            if self.folder_pane_tab.shows_real_dir() {
+                let r_item = ui.button(i18n::t().explorer_open_folder_menu());
+                help_tip_auto(&r_item, &i18n::t().help_card_open_folder());
+                if r_item.clicked() {
+                    if let Some(dir) = &self.viewing_dir {
+                        crate::translate::open_in_file_manager(dir);
+                    }
+                    ui.close();
+                }
+            } else {
+                // お気に入り/検索の横断一覧は「現在のフォルダ」を持たないので、カードごとの親フォルダを開く。
+                // 複数選択中・ネットワークパス・親が存在しない場合はグレー（存在確認はメニューを開いている間だけ）。
+                let parent = path.parent().filter(|d| {
+                    self.multi_selected.is_empty()
+                        && crate::fs::mount::network_mount_root(d).is_none()
+                        && d.is_dir()
+                });
+                let r_item = ui.add_enabled(
+                    parent.is_some(),
+                    egui::Button::new(i18n::t().explorer_open_parent_folder_menu()),
+                );
+                help_tip_auto(&r_item, &i18n::t().help_open_parent_folder());
+                if r_item.clicked() {
+                    if let Some(dir) = parent {
+                        crate::translate::open_in_file_manager(dir);
+                    }
+                    ui.close();
+                }
+            }
+
+            // お気に入りタブ: 開けなくなったお気に入りの再紐付け・整理（relink_ui.rs）
+            if self.folder_pane_tab == FolderPaneTab::Favorites {
+                ui.separator();
+                let ghosts = self.relink_ghost_ids(&raw_targets);
+                let r_item = ui.add_enabled(
+                    !ghosts.is_empty(),
+                    egui::Button::new(i18n::t().relink_menu()),
+                );
+                help_tip_auto(&r_item, &i18n::t().help_relink());
+                if r_item.clicked() {
+                    self.open_relink_picker(ghosts);
+                    ui.close();
+                }
+                let r_item = ui.button(i18n::t().favorite_unset_menu());
+                help_tip_auto(&r_item, &i18n::t().help_favorite_unset());
+                if r_item.clicked() {
+                    self.request_unset_favorites(raw_targets.clone());
+                    ui.close();
+                }
+            }
+        });
+    }
+
+    /// フォルダのクリック後の、範囲選択まわりの更新（規則は selection.rs）。実フォルダ・仮想フォルダで共通。
+    /// フォルダは複数選択の対象外。Shift+クリックなら、最も近い有効な行（先頭のファイル）をクリックしたものとして
+    /// 範囲選択する。それ以外のクリックで選択が空になったときは、古い起点を捨てる
+    /// （見えない起点から次の範囲が引かれないように）。
+    /// `prev_selected` は、フォルダ用に単一選択を消す前の `selected_archive_index`。
+    pub(super) fn after_folder_click(&mut self, ui: &egui::Ui, prev_selected: Option<usize>) {
+        if ui.input(|i| i.modifiers.shift) {
+            let live = super::selection::live_anchor(self.select_anchor, &self.multi_selected, prev_selected);
+            if let Some((multi, anchor)) = super::selection::shift_click_folder(&self.filtered_indices, live) {
+                self.multi_selected = multi;
+                self.select_anchor = Some(anchor);
+            }
+        } else if self.multi_selected.is_empty() {
+            self.select_anchor = None;
+        }
+    }
+
+    /// 実フォルダ（「↑」・サブフォルダ）のセル/行の共通の後処理（カーソルリング・クリック選択・
+    /// 右クリックメニュー）。ダブルクリックされたら true（開く処理は呼び出し側）。カードとリストで共通。
+    pub(super) fn finish_real_folder_cell(
+        &mut self,
+        ui: &egui::Ui,
+        rect: egui::Rect,
+        response: &egui::Response,
+        entry: GridEntry,
+        dir: &PathBuf,
+        grid_focused: bool,
+    ) -> bool {
+        if grid_focused && self.grid_cursor.as_ref() == Some(&entry) {
+            draw_cursor_ring(ui, rect);
+        }
+        if response.clicked() {
+            let prev_selected = self.selected_archive_index;
+            self.focused_pane = FocusPane::Grid;
+            self.grid_cursor = Some(entry);
+            self.selected_archive_index = None;
+            self.selected_archive_meta = None;
+            self.after_folder_click(ui, prev_selected);
+        }
+        response.context_menu(|ui| {
+            let r_item = ui.button(i18n::t().explorer_open_folder_menu());
+            help_tip_auto(&r_item, &i18n::t().help_card_open_folder());
+            if r_item.clicked() {
+                if let Some(dir) = &self.viewing_dir {
+                    crate::translate::open_in_file_manager(dir);
+                }
+                ui.close();
+            }
+            // このセル自身のフォルダ（「↑」は親フォルダ）が対象のメニュー
+            ui.separator();
+            this_folder_menu_items(ui, dir, &mut self.pending_open_in_search);
+        });
+        response.double_clicked()
+    }
+
     fn draw_archive_grid(&mut self, ui: &mut egui::Ui) {
         // 検索タブを開いた瞬間、まだどの検索結果も選択していない間は実ディレクトリの中身が
         // 一瞬見えてしまう（archivesは前の表示のまま残っている）。理想は切替と同時に
@@ -2457,8 +2998,43 @@ impl NekoviewApp {
         // 越えてはいけない境界なので、半端な余白を切り上げて1列多く詰め込む丸め処理は
         // 行わない（切り上げるとタグパネル領域にカードがはみ出し、クリックが
         // 効かなくなる不具合があった）。常に切り捨て。
-        let cols = (((avail_w + GAP) / (cell_w + GAP)).floor() as usize).max(1);
+        // リスト・一覧は1列（キーボードの上下移動はこの列数で動く）。
+        let list_mode = self.view_mode.mode != super::view_mode::ViewMode::Card;
+        let cols = if list_mode { 1 } else { (((avail_w + GAP) / (cell_w + GAP)).floor() as usize).max(1) };
         self.explorer_cols = cols;
+
+        // 列数が変わったフレームでは、見ていた位置（選択カード、無ければ上端の行）を保つように
+        // オフセットを決め直す。ScrollAreaへ渡す前に適用する。
+        let grid_total = folder_entries.len() + self.filtered_indices.len();
+        // 表示の形（カード↔リスト・リストのサイズ・サムネ設定）が変わったフレームでは、見ていた位置を保つ
+        // ようにオフセットを決め直す（layout_anchor.rs）。列数だけが変わる補正は下の grid_anchor が担う。
+        let geometry = if list_mode {
+            let row_h = self.list_metrics().row_h;
+            super::layout_anchor::Geometry { cols: 1, item_h: row_h, pitch: row_h + super::list_view::ROW_GAP, is_list: true }
+        } else {
+            super::layout_anchor::Geometry { cols, item_h: cell_h, pitch: cell_h + GAP, is_list: false }
+        };
+        let layout_changed = match &self.layout_snapshot {
+            Some(prev) => {
+                if let Some(offset) = super::layout_anchor::compensated_offset(prev, &geometry, grid_total) {
+                    self.explorer_scroll_offset = offset;
+                }
+                super::layout_anchor::needs_compensation(&prev.geometry, &geometry)
+            }
+            None => false,
+        };
+        // リストは grid_anchor の対象外。形が変わったフレームのカードも、上で補正済みなので二重にしない。
+        if !list_mode
+            && !layout_changed
+            && let Some(offset) = self.grid_anchor.begin_frame(cols, self.explorer_scroll_offset, cell_h, grid_total)
+        {
+            self.explorer_scroll_offset = offset;
+        }
+
+        // リストの列見出しは、縦スクロールの外（本体の上）に固定で置く。
+        if list_mode {
+            self.draw_list_header(ui, avail_w);
+        }
 
         // ScrollAreaをタグパネル分だけ右を削った矩形に閉じ込める。フル幅のままだと縦スクロール
         // バー（ScrollAreaの右端）がFloatingのタグパネルの真下に潜って見えなくなる。
@@ -2467,7 +3043,8 @@ impl NekoviewApp {
             egui::vec2(avail_w, ui.available_height()),
         );
         let output = ui.scope_builder(egui::UiBuilder::new().max_rect(scroll_rect), |ui| {
-        egui::ScrollArea::vertical()
+        // リスト・一覧は列が多く横にあふれうるので縦横スクロール。カードは従来どおり縦のみ。
+        (if list_mode { egui::ScrollArea::both() } else { egui::ScrollArea::vertical() })
                 // アイテム上または空白を左ドラッグして一覧をスクロールできるようにする。
                 // セル側はSense::click()のままなので、短いクリックの選択/開く操作は維持される。
                 .scroll_source(egui::scroll_area::ScrollSource::ALL)
@@ -2475,10 +3052,25 @@ impl NekoviewApp {
                 .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
                 .vertical_scroll_offset(self.explorer_scroll_offset)
                 .show(ui, |ui| {
+            // 一覧領域の全面（カードの隙間・行末・グリッド下）を先に右クリック対象にしておく。
+            // カードはこの上に描かれるのでカード上の右クリックはカード側が優先され、
+            // カードの無い余白への右クリックだけがここに届く。
+            // 縦スクロールのclip_rectは横方向が親UIのままで、検索/仮想タブでは左のツリーペインまで
+            // 含んでしまいクリックを奪うため、グリッド自身の領域（scroll_rect）で切る。
+            let grid_bg = ui.interact(
+                ui.clip_rect().intersect(scroll_rect),
+                ui.id().with("archive_grid_bg"),
+                egui::Sense::click(),
+            );
+            // リスト・一覧は専用の描画で行を並べる。下のグリッドは空のまま通す（背景メニューやスクロールの後処理を共有するため）。
+            let list_nav = if list_mode { self.draw_archive_list(ui, &folder_entries, scroll_rect) } else { None };
             let grid_response = egui::Grid::new("archive_grid")
                 .num_columns(cols)
                 .spacing([GAP, GAP])
                 .show(ui, |ui| {
+                    if list_mode {
+                        return None;
+                    }
                     let mut cell_index: usize = 0;
                     let mut pending_navigate: Option<GridNav> = None;
                     let grid_focused = self.focused_pane == FocusPane::Grid;
@@ -2495,28 +3087,9 @@ impl NekoviewApp {
                                 ui.painter().rect_filled(rect, 4.0, ui.visuals().faint_bg_color);
                                 nav_icons::draw_up_icon(ui.painter(), rect, nav_icons::NAV_ICON_COLOR);
                             }
-                            if grid_focused && self.grid_cursor.as_ref() == Some(&GridEntry::Up(parent.clone())) {
-                                draw_cursor_ring(ui, rect);
-                            }
-                            if response.clicked() {
-                                self.focused_pane = FocusPane::Grid;
-                                self.grid_cursor = Some(GridEntry::Up(parent.clone()));
-                                self.selected_archive_index = None;
-                                self.selected_archive_meta = None;
-                            }
-                            if response.double_clicked() {
+                            if self.finish_real_folder_cell(ui, rect, &response, GridEntry::Up(parent.clone()), parent, grid_focused) {
                                 pending_navigate = Some(GridNav::Real(parent.clone()));
                             }
-                            response.context_menu(|ui| {
-                                let r_item = ui.button(i18n::t().explorer_open_folder_menu());
-                                help_tip_auto(&r_item, &i18n::t().help_card_open_folder());
-                                if r_item.clicked() {
-                                    if let Some(dir) = &self.viewing_dir {
-                                        crate::translate::open_in_file_manager(dir);
-                                    }
-                                    ui.close();
-                                }
-                            });
                             cell_index += 1;
                             if cell_index % cols == 0 {
                                 ui.end_row();
@@ -2535,28 +3108,9 @@ impl NekoviewApp {
                                     .to_string();
                                 self.draw_folder_card_face(ui, rect, &response, cell_w, cell_h, &full_name, &full_name, dir_path);
                             }
-                            if grid_focused && self.grid_cursor.as_ref() == Some(&GridEntry::Subdir(dir_path.clone())) {
-                                draw_cursor_ring(ui, rect);
-                            }
-                            if response.clicked() {
-                                self.focused_pane = FocusPane::Grid;
-                                self.grid_cursor = Some(GridEntry::Subdir(dir_path.clone()));
-                                self.selected_archive_index = None;
-                                self.selected_archive_meta = None;
-                            }
-                            if response.double_clicked() {
+                            if self.finish_real_folder_cell(ui, rect, &response, GridEntry::Subdir(dir_path.clone()), dir_path, grid_focused) {
                                 pending_navigate = Some(GridNav::Real(dir_path.clone()));
                             }
-                            response.context_menu(|ui| {
-                                let r_item = ui.button(i18n::t().explorer_open_folder_menu());
-                                help_tip_auto(&r_item, &i18n::t().help_card_open_folder());
-                                if r_item.clicked() {
-                                    if let Some(dir) = &self.viewing_dir {
-                                        crate::translate::open_in_file_manager(dir);
-                                    }
-                                    ui.close();
-                                }
-                            });
                             cell_index += 1;
                             if cell_index % cols == 0 {
                                 ui.end_row();
@@ -2592,8 +3146,11 @@ impl NekoviewApp {
                     let mut visible_order_range: Option<(usize, usize)> = None;
                     for (i, (real_idx, path)) in visible.iter().enumerate() {
                         let real_idx = *real_idx;
-                        let is_selected = self.selected_archive_index == Some(real_idx)
-                            || self.multi_selected.contains(&real_idx);
+                        let is_selected = super::selection::is_selected(
+                            &self.multi_selected,
+                            self.selected_archive_index,
+                            real_idx,
+                        );
                         let (rect, response) = ui.allocate_exact_size(
                             egui::vec2(cell_w, cell_h),
                             egui::Sense::click(),
@@ -2604,58 +3161,28 @@ impl NekoviewApp {
                                 Some((lo, hi)) => (lo.min(i), hi.max(i)),
                                 None => (i, i),
                             });
-                            self.thumb_display_requested.insert(path.clone());
-                            if path.parent().is_some_and(|parent| parent == self.current_dir)
-                                && self.folder_pane_tab.shows_real_dir()
-                            {
-                                self.prioritize_thumbnail_path(path);
-                            }
-                            if let Some(tex) = self.thumbnails.get(path) {
-                                let letterbox_color = if ui.visuals().dark_mode {
-                                    egui::Color32::BLACK
-                                } else {
-                                    egui::Color32::WHITE
-                                };
-                                ui.painter().rect_filled(rect, 4.0, letterbox_color);
-                                let img_rect = fit_rect_contain(rect, tex.size_vec2());
-                                ui.painter().image(
-                                    tex.id(),
-                                    img_rect,
-                                    egui::Rect::from_min_max(
-                                        egui::pos2(0.0, 0.0),
-                                        egui::pos2(1.0, 1.0),
-                                    ),
+                            self.paint_archive_thumbnail(ui, rect, path);
+
+                            // ファイルID解決待ち（新規・移動直後）は、サムネ中央に「ファイル検証中」を重ねる。
+                            // 解決が済むと外れ、移動していれば評価等が引き継がれた表示に差し替わる。
+                            if self.identity_verifying.contains(path) {
+                                let painter = ui.painter();
+                                painter.rect_filled(rect, 4.0, egui::Color32::from_black_alpha(90));
+                                let galley = painter.layout_no_wrap(
+                                    i18n::t().card_verifying().to_owned(),
+                                    egui::FontId::proportional(13.0),
                                     egui::Color32::WHITE,
                                 );
-                            } else {
-                                ui.painter().rect_filled(
-                                    rect,
-                                    4.0,
-                                    egui::Color32::from_gray(60),
+                                let pill = egui::Rect::from_center_size(
+                                    rect.center(),
+                                    galley.size() + egui::vec2(16.0, 8.0),
                                 );
-                                if !self.thumb_pending.contains(path)
-                                    && !self.thumb_failed.contains(path)
-                                    && !self.thumb_queued.contains(path)
-                                {
-                                    if self.thumb_req_tx.try_send(ThumbRequest {
-                                        archive_path: path.clone(),
-                                        db: self.cache_db.clone(),
-                                        is_raw_file: self.raw_image_files.contains(path),
-                                        requested_edge: self.config.thumb_size,
-                                        requested_filter: self.config.thumb_filter,
-                                        generation_token: None,
-                                        session_id: self.thumb_session.load(std::sync::atomic::Ordering::Acquire),
-                                        is_tag_preview: false,
-                                        thumbnail_selection: path.parent().and_then(|dir| {
-                                            let filename = path.file_name()?.to_str()?;
-                                            self.spread_db.as_ref().and_then(|db| {
-                                                crate::spread_state::read_thumbnail_selection(db, dir, filename)
-                                            })
-                                        }),
-                                    }).is_ok() {
-                                        self.thumb_pending.insert(path.clone());
-                                    }
-                                }
+                                painter.rect_filled(pill, 6.0, egui::Color32::from_black_alpha(170));
+                                painter.galley(
+                                    pill.center() - galley.size() / 2.0,
+                                    galley,
+                                    egui::Color32::WHITE,
+                                );
                             }
 
                             // ── カード下部の情報オーバーレイ帯（ファイル名 / 更新日時 / サイズ）──
@@ -2831,6 +3358,18 @@ impl NekoviewApp {
                                 }
                             }
 
+                            // 重複マーカー: 上辺の左右中央。見えているカードの移動マーカーは「見た」印を控える。
+                            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                                let icon_rect = super::dup_marker_ui::card_icon_rect(rect);
+                                if self.viewing_similar.is_some() {
+                                    self.paint_similar_base_mark(ui, &response, icon_rect, real_idx, path);
+                                } else {
+                                    self.paint_marker_icon(ui, &response, icon_rect, real_idx, name);
+                                    let sim_rect = super::dup_marker_ui::card_similar_rect(rect);
+                                    self.paint_similar_mock(ui, &response, sim_rect, real_idx, name);
+                                }
+                            }
+
                             // 無効ZIP・サムネデコード失敗は左上に赤Xを描画
                             let thumb_failed = self.thumb_failed.contains(path);
                             let has_error_marker =
@@ -2853,14 +3392,7 @@ impl NekoviewApp {
 
                             // お気に入りマーカー: 左上から左下に列挙（表示できる分だけ）
                             // 横断一覧表示中はフルパスキー、通常のディレクトリ表示中はファイル名キーで引く。
-                            let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                            let marker_ids = if self.viewing_favorites.is_some()
-                                || self.viewing_search.is_some()
-                            {
-                                self.cross_view_favorite_markers.get(path)
-                            } else {
-                                self.favorite_states.get(filename)
-                            };
+                            let marker_ids = self.favorite_marker_ids(path);
                             if let Some(folder_ids) = marker_ids {
                                 // 赤Xが左上を使用中なら、先頭マーカーを1段下げて重なりを避ける。
                                 let (marker_top, max_lines) =
@@ -2942,6 +3474,31 @@ impl NekoviewApp {
                                 );
                             }
 
+                            // 類似ファイル一覧の入口のファイルは、色を重ねて枠も付ける（他と見分けるため）
+                            if self.is_similar_entry(path) {
+                                let color = super::list_view::similar_entry_color();
+                                ui.painter().rect_filled(rect, 0.0, color.gamma_multiply(0.22));
+                                ui.painter().rect_stroke(rect, 0.0, egui::Stroke::new(3.0, color), egui::StrokeKind::Inside);
+                            }
+
+                            // 類似ファイル一覧: 完全比較の結果バッジを、カード上辺の中央に置く
+                            // （この一覧では重複マーカーのアイコンを出さないので、同じ場所が空く）
+                            if let Some((text, color)) = self.compare_badge(path) {
+                                let font = egui::FontId::proportional(12.0);
+                                let galley = ui.painter().layout_no_wrap(text, font, egui::Color32::WHITE);
+                                let pill = egui::Rect::from_center_size(
+                                    egui::pos2(rect.center().x, rect.min.y + 4.0 + 16.0 + 4.0 + 9.0),
+                                    galley.size() + egui::vec2(12.0, 4.0),
+                                );
+                                ui.painter().rect_filled(pill, 8.0, color);
+                                ui.painter().galley(pill.center() - galley.size() / 2.0, galley, egui::Color32::WHITE);
+                            }
+
+                            // 確認の結果もう無いファイル（類似ファイル一覧）は薄くする
+                            if self.is_similar_gone(path) {
+                                ui.painter().rect_filled(rect, 0.0, ui.visuals().panel_fill.gamma_multiply(0.6));
+                            }
+
                             // 選択中アイテムを枠で囲む（生ファイルは赤、ZIPは青）
                             if is_selected {
                                 let is_raw = self.raw_image_files.contains(path);
@@ -2962,172 +3519,7 @@ impl NekoviewApp {
                             }
                         }
 
-                        let is_raw = self.raw_image_files.contains(path);
-                        if response.clicked() {
-                            self.focused_pane = FocusPane::Grid;
-                            self.grid_cursor = Some(GridEntry::Archive(real_idx));
-                            let modifiers = ui.input(|i| i.modifiers);
-                            if modifiers.command {
-                                // Ctrl(Cmd)+クリック: トグル追加/除外
-                                if self.multi_selected.is_empty()
-                                    && let Some(prev) = self.selected_archive_index
-                                {
-                                    self.multi_selected.insert(prev);
-                                }
-                                if !self.multi_selected.insert(real_idx) {
-                                    self.multi_selected.remove(&real_idx);
-                                }
-                                self.select_anchor = Some(real_idx);
-                                self.selected_archive_index = Some(real_idx);
-                                self.selected_archive_meta = None;
-                                if self.multi_selected.len() == 1 {
-                                    self.multi_selected.clear();
-                                }
-                            } else if modifiers.shift {
-                                // Shift+クリック: 起点からの範囲選択
-                                let anchor = self.select_anchor.unwrap_or(real_idx);
-                                let anchor_pos = visible.iter().position(|(idx, _)| *idx == anchor).unwrap_or(i);
-                                let (from, to) = if anchor_pos <= i { (anchor_pos, i) } else { (i, anchor_pos) };
-                                self.multi_selected = visible[from..=to].iter().map(|(idx, _)| *idx).collect();
-                                self.selected_archive_index = Some(real_idx);
-                                self.selected_archive_meta = None;
-                            } else if is_raw && self.selected_archive_index == Some(real_idx) && self.multi_selected.is_empty() {
-                                // 生ファイル: 選択済み状態のシングルクリックで開く
-                                if self.network_gate(path) {
-                                    self.open_viewer(ViewerState::new_raw(path.clone(), self.viewer_slots, self.config.default_slot));
-                                }
-                            } else {
-                                self.multi_selected.clear();
-                                self.select_anchor = Some(real_idx);
-                                self.selected_archive_index = Some(real_idx);
-                                self.selected_archive_meta = std::fs::metadata(path)
-                                    .ok()
-                                    .map(|m| (m.modified().unwrap_or(std::time::UNIX_EPOCH), m.len()));
-                            }
-                        }
-                        if response.double_clicked() && !is_raw {
-                            if self.invalid_archives.contains(path) {
-                                let name = truncate_filename(path);
-                                self.app_toast = Some((
-                                    i18n::t().invalid_zip(&name),
-                                    std::time::Instant::now(),
-                                ));
-                            } else if !self.network_gate(path) {
-                                // トースト表示・再チェックは network_gate 内で処理済み。
-                            } else {
-                                // メモリ見積もりゲート・ViewerState構築は非同期化済み
-                                // （進捗オーバーレイ経由。完了後の後始末は poll_pending_open が行う）。
-                                self.start_archive_open(path.clone());
-                            }
-                        }
-
-                        // 右クリックメニュー: 複数選択中はホバー位置を無視し選択集合全体を対象にする。
-                        // 未選択（単一）時はこのセルのファイル1件のみを対象にする。
-                        // ソート条件/しおり保存/見開き設定の3項目は、右クリックの瞬間に対象外
-                        // （ディレクトリ・単品生画像ファイル・無効アーカイブ）を除外した後の件数が
-                        // 0ならトーストのみ表示してメニューにその3項目を出さない（お気に入り詳細設定・
-                        // フォルダを開くは対象外の概念が無いため無条件に出す）。
-                        if response.secondary_clicked() {
-                            let raw_targets: Vec<PathBuf> = if !self.multi_selected.is_empty() {
-                                self.multi_selected.iter().filter_map(|&idx| self.archives.get(idx).cloned()).collect()
-                            } else {
-                                vec![path.clone()]
-                            };
-                            if self.filter_bulk_setting_targets(raw_targets).is_empty() {
-                                self.app_toast = Some((
-                                    i18n::t().bulk_setting_no_target_toast().to_string(),
-                                    std::time::Instant::now(),
-                                ));
-                            }
-                        }
-                        response.context_menu(|ui| {
-                            let raw_targets: Vec<PathBuf> = if !self.multi_selected.is_empty() {
-                                self.multi_selected.iter().filter_map(|&idx| self.archives.get(idx).cloned()).collect()
-                            } else {
-                                vec![path.clone()]
-                            };
-                            let filtered_targets = self.filter_bulk_setting_targets(raw_targets.clone());
-
-                            if !self.multi_selected.is_empty() {
-                                let count = self.multi_selected.len();
-                                let r_item = ui.button(i18n::t().favorite_detail_menu_bulk(count));
-                                help_tip_auto(&r_item, &i18n::t().help_card_favorite());
-                                if r_item.clicked() {
-                                    self.open_favorite_detail_dialog_for_paths(raw_targets.clone());
-                                    ui.close();
-                                }
-                                if !filtered_targets.is_empty() {
-                                    let fcount = filtered_targets.len();
-                                    let r_item = ui.button(i18n::t().sort_condition_menu_bulk(fcount));
-                                    help_tip_auto(&r_item, &i18n::t().help_card_sort());
-                                    if r_item.clicked() {
-                                        self.open_sort_condition_dialog_for_paths(filtered_targets.clone());
-                                        ui.close();
-                                    }
-                                    let r_item = ui.button(i18n::t().bookmark_setting_menu_bulk(fcount));
-                                    help_tip_auto(&r_item, &i18n::t().help_card_bookmark());
-                                    if r_item.clicked() {
-                                        self.open_bookmark_setting_dialog_for_paths(filtered_targets.clone());
-                                        ui.close();
-                                    }
-                                    let r_item = ui.button(i18n::t().spread_setting_menu_bulk(fcount));
-                                    help_tip_auto(&r_item, &i18n::t().help_card_spread());
-                                    if r_item.clicked() {
-                                        self.open_spread_setting_dialog_for_paths(filtered_targets.clone());
-                                        ui.close();
-                                    }
-                                    let r_item = ui.button(i18n::t().rating_setting_menu_bulk(fcount));
-                                    help_tip_auto(&r_item, &i18n::t().help_card_rating());
-                                    if r_item.clicked() {
-                                        self.open_rating_setting_dialog_for_paths(filtered_targets.clone());
-                                        ui.close();
-                                    }
-                                }
-                            } else {
-                                let r_item = ui.button(i18n::t().favorite_detail_menu());
-                                help_tip_auto(&r_item, &i18n::t().help_card_favorite());
-                                if r_item.clicked() {
-                                    self.open_favorite_detail_dialog_for_paths(raw_targets.clone());
-                                    ui.close();
-                                }
-                                if !filtered_targets.is_empty() {
-                                    let r_item = ui.button(i18n::t().sort_condition_menu());
-                                    help_tip_auto(&r_item, &i18n::t().help_card_sort());
-                                    if r_item.clicked() {
-                                        self.open_sort_condition_dialog_for_paths(filtered_targets.clone());
-                                        ui.close();
-                                    }
-                                    let r_item = ui.button(i18n::t().bookmark_setting_menu());
-                                    help_tip_auto(&r_item, &i18n::t().help_card_bookmark());
-                                    if r_item.clicked() {
-                                        self.open_bookmark_setting_dialog_for_paths(filtered_targets.clone());
-                                        ui.close();
-                                    }
-                                    let r_item = ui.button(i18n::t().spread_setting_menu());
-                                    help_tip_auto(&r_item, &i18n::t().help_card_spread());
-                                    if r_item.clicked() {
-                                        self.open_spread_setting_dialog_for_paths(filtered_targets.clone());
-                                        ui.close();
-                                    }
-                                    let r_item = ui.button(i18n::t().rating_setting_menu());
-                                    help_tip_auto(&r_item, &i18n::t().help_card_rating());
-                                    if r_item.clicked() {
-                                        self.open_rating_setting_dialog_for_paths(filtered_targets.clone());
-                                        ui.close();
-                                    }
-                                }
-                            }
-
-                            ui.separator();
-                            let r_item = ui.button(i18n::t().explorer_open_folder_menu());
-                            help_tip_auto(&r_item, &i18n::t().help_card_open_folder());
-                            if r_item.clicked() {
-                                if let Some(dir) = &self.viewing_dir {
-                                    crate::translate::open_in_file_manager(dir);
-                                }
-                                ui.close();
-                            }
-                        });
+                        self.handle_archive_interaction(ui, &response, real_idx, i);
 
                         cell_index += 1;
                         if cell_index % cols == 0 {
@@ -3135,25 +3527,71 @@ impl NekoviewApp {
                         }
                     }
                     if let Some((lo, hi)) = visible_order_range {
-                        self.update_thumbnail_lookahead(&visible, lo, hi);
+                        self.update_thumbnail_lookahead(lo, hi);
                     }
                     if cell_index % cols != 0 {
                         ui.end_row();
                     }
                     pending_navigate
                 });
-            // グリッド下の余白（サムネの無い領域）への右クリック: メニューは出すが非活性にする
-            let bg_size = egui::vec2(ui.available_width(), ui.available_height().max(40.0));
-            let (_, bg_response) = ui.allocate_exact_size(bg_size, egui::Sense::click());
-            bg_response.context_menu(|ui| {
+            // 余白（カードの無い領域）への右クリック: お気に入り詳細は対象カードが無いので非活性。
+            // 実フォルダ/仮想フォルダのタブは一覧全体が同一の viewing_dir を指すので「フォルダを開く」を
+            // 有効にする。お気に入り/検索はカードごとに実パスが違うため余白では出さない。
+            let bg_open_dir = if self.folder_pane_tab.shows_real_dir() { self.viewing_dir.clone() } else { None };
+            grid_bg.context_menu(|ui| {
                 ui.add_enabled(false, egui::Button::new(i18n::t().favorite_detail_menu()));
+                if let Some(dir) = &bg_open_dir {
+                    ui.separator();
+                    let r_item = ui.button(i18n::t().explorer_open_folder_menu());
+                    help_tip_auto(&r_item, &i18n::t().help_card_open_folder());
+                    if r_item.clicked() {
+                        crate::translate::open_in_file_manager(dir);
+                        ui.close();
+                    }
+                    // 余白は表示中のフォルダ（PWD）が対象。ネットワークパスは対象外
+                    let searchable = crate::fs::mount::network_mount_root(dir).is_none();
+                    let r_item = ui.add_enabled(
+                        searchable,
+                        egui::Button::new(i18n::t().explorer_open_in_search_menu()),
+                    );
+                    help_tip_auto(&r_item, &i18n::t().help_open_in_search());
+                    if r_item.clicked() {
+                        self.pending_open_in_search = Some(dir.clone());
+                        ui.close();
+                    }
+                }
             });
-            grid_response.inner
+            list_nav.or(grid_response.inner)
         })
         }).inner;
         // ユーザーの手動スクロールを読み戻してストアを更新
         self.explorer_scroll_offset = output.state.offset.y;
+        // 固定の列見出しを同じだけ横にずらすため、リストの横スクロール量を覚える
+        self.list_scroll_x = if list_mode { output.state.offset.x } else { 0.0 };
         self.explorer_viewport_h = output.inner_rect.height();
+        // 選択（カーソル）カードの並び上の位置。入力側(cur_entry)と同じ優先順位
+        let cursor_entry = self.grid_cursor.clone()
+            .or_else(|| self.selected_archive_index.map(GridEntry::Archive));
+        let selected_pos = cursor_entry.and_then(|e| match e {
+            GridEntry::Archive(idx) => self.filtered_indices.iter().position(|&i| i == idx)
+                .map(|p| folder_entries.len() + p),
+            other => folder_entries.iter().position(|f| *f == other),
+        });
+        self.layout_snapshot = Some(super::layout_anchor::Snapshot {
+            geometry,
+            offset: self.explorer_scroll_offset,
+            viewport_h: self.explorer_viewport_h,
+            total: grid_total,
+            selected: selected_pos,
+        });
+        if !list_mode {
+            self.grid_anchor.end_frame(self.explorer_scroll_offset, self.explorer_viewport_h, cell_h, cols, grid_total, selected_pos);
+        }
+        // 一覧の右クリック「このフォルダを検索タブで開く」は、描画が終わってから消化する
+        if let Some(path) = self.pending_open_in_search.take() {
+            self.open_in_search_tab(path);
+            return;
+        }
         match output.inner {
             Some(GridNav::Real(path)) => self.navigate_to(path, DirectoryNavigationSource::ItemPane),
             Some(GridNav::Virtual(id)) => self.select_virtual_node(id),
@@ -3162,20 +3600,41 @@ impl NekoviewApp {
     }
 }
 
+/// 右クリックしたフォルダ自身を対象にするメニュー項目（「このフォルダを開く」「このフォルダを検索タブで開く」）。
+/// 表示中のフォルダ（PWD）が対象の「現在のフォルダを開く」とは別物。ネットワークパスは無効化する。
+/// 検索タブで開く要求は `pending_search` に積み、一覧の描画後に消化する。
+pub(super) fn this_folder_menu_items(ui: &mut egui::Ui, folder: &Path, pending_search: &mut Option<PathBuf>) {
+    let enabled = crate::fs::mount::network_mount_root(folder).is_none();
+    let r_item = ui.add_enabled(enabled, egui::Button::new(i18n::t().explorer_open_this_folder_menu()));
+    help_tip_auto(&r_item, &i18n::t().help_open_this_folder());
+    if r_item.clicked() {
+        crate::translate::open_in_file_manager(folder);
+        ui.close();
+    }
+    let r_item = ui.add_enabled(enabled, egui::Button::new(i18n::t().explorer_open_in_search_menu()));
+    help_tip_auto(&r_item, &i18n::t().help_open_in_search());
+    if r_item.clicked() {
+        *pending_search = Some(folder.to_path_buf());
+        ui.close();
+    }
+}
+
 /// 実ツリーの右クリックメニューに出す項目。登録ピッカーなど、メニューを出さないツリーは `NONE`。
 #[derive(Clone, Copy)]
 pub(super) struct TreeMenu {
     /// 「仮想フォルダに追加する」（仮想タブ内の実ツリーペインだけ）
     pub add_to_virtual: bool,
+    /// 「このフォルダを検索タブで開く」（実フォルダ/仮想フォルダタブのツリーだけ）
+    pub open_in_search: bool,
     /// 「ソート条件設定」
     pub sort: bool,
 }
 
 impl TreeMenu {
-    pub const NONE: Self = Self { add_to_virtual: false, sort: false };
+    pub const NONE: Self = Self { add_to_virtual: false, open_in_search: false, sort: false };
 
     fn any(self) -> bool {
-        self.add_to_virtual || self.sort
+        self.add_to_virtual || self.open_in_search || self.sort
     }
 }
 
@@ -3188,6 +3647,29 @@ fn real_tree_context_menu(ui: &mut egui::Ui, path: Option<&PathBuf>, menu: TreeM
         if r.clicked() {
             if let Some(p) = path {
                 *action = TreeAction::AddToVirtual(p.clone());
+            }
+            ui.close();
+        }
+        if menu.open_in_search || menu.sort {
+            ui.separator();
+        }
+    }
+    if menu.open_in_search {
+        // ネットワークパスは対象外（OS差が埋められないため）
+        let target = path.filter(|p| crate::fs::mount::network_mount_root(p).is_none());
+        let r = ui.add_enabled(target.is_some(), egui::Button::new(i18n::t().explorer_open_this_folder_menu()));
+        help_tip_auto(&r, &i18n::t().help_open_this_folder());
+        if r.clicked() {
+            if let Some(p) = target {
+                crate::translate::open_in_file_manager(p);
+            }
+            ui.close();
+        }
+        let r = ui.add_enabled(target.is_some(), egui::Button::new(i18n::t().explorer_open_in_search_menu()));
+        help_tip_auto(&r, &i18n::t().help_open_in_search());
+        if r.clicked() {
+            if let Some(p) = target {
+                *action = TreeAction::OpenInSearch(p.clone());
             }
             ui.close();
         }
@@ -3340,7 +3822,7 @@ pub(super) fn truncate_filename(path: &std::path::Path) -> String {
 /// SystemTime を暦日へ分解し、カード情報帯の設定書式で文字列化する。
 /// 分解は Howard Hinnant の civil-from-days アルゴリズム。時刻・ローカルオフセットは
 /// 扱わない（UTC 基準。ローカル化は別チケット）。
-fn format_mtime(
+pub(super) fn format_mtime(
     t: std::time::SystemTime,
     fmt: &crate::card_date_format::CardDateFormat,
     lang: i18n::Lang,
@@ -3362,7 +3844,7 @@ fn format_mtime(
 /// ファイルサイズを人間可読形式にする。
 /// 1MB以上 → "12.3 MB"（小数1桁）／ 1KB以上 → "856 KB"（整数）／ それ未満 → "< 1 KB"。
 /// GB帯もMB表示（GB単位は使わない）。
-fn humanize_size(bytes: u64) -> String {
+pub(super) fn humanize_size(bytes: u64) -> String {
     const KB: u64 = 1 << 10;
     const MB: u64 = 1 << 20;
     if bytes >= MB {
@@ -3605,7 +4087,11 @@ impl NekoviewApp {
     /// 実ツリー（実ツリータブ・仮想タブ内の実ツリーペイン・検索タブ内）の右クリックメニュー。
     /// 「仮想フォルダに追加する」は仮想タブ内だけ。「ソート条件設定」はどのタブでも出る。
     fn real_tree_menu(&self) -> TreeMenu {
-        TreeMenu { add_to_virtual: self.folder_pane_tab == FolderPaneTab::VirtualFolders, sort: true }
+        TreeMenu {
+            add_to_virtual: self.folder_pane_tab == FolderPaneTab::VirtualFolders,
+            open_in_search: self.folder_pane_tab.shows_real_dir(),
+            sort: true,
+        }
     }
 }
 
@@ -3628,7 +4114,7 @@ fn truncated_galley(
 /// `horizontal_wrapped`内で収まらなければチップごと次の行へ折り返される（`Frame`+`label`や
 /// `Button::truncate`は行の残りに潰れて折り返さず見切れていた）。1チップが行全体
 /// (`full_w`)より広い場合だけ`…`で省略する。`hover_fill`がtrueなら、ホバー時に背景を出す。
-fn tag_chip(
+pub(super) fn tag_chip(
     ui: &mut egui::Ui,
     text: &str,
     full_w: f32,

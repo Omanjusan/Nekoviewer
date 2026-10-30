@@ -19,7 +19,7 @@ mod sync;
 use crate::gui_config::VirtualPosition;
 use broken::BrokenCheck;
 use delete::DeleteTarget;
-use register::{LargeImport, OverlapInfo, PendingRegister};
+use register::{LargeImport, OverlapInfo, PendingRegister, SubsConfirm};
 use rename::RenameDialog;
 
 use crate::i18n;
@@ -54,18 +54,18 @@ enum Picker {
 
 /// ピッカー内の実フォルダツリー。メインの実ツリーとは独立した状態（ドライブ・展開・子フォルダ）を持つ。
 /// 子フォルダは展開時に非同期で読む（`spawn_scan_subdirs`）。
-struct RealTreeState {
-    drive: usize,
-    root: PathBuf,
-    expanded: HashSet<PathBuf>,
-    children: HashMap<PathBuf, Vec<PathBuf>>,
+pub(super) struct RealTreeState {
+    pub(super) drive: usize,
+    pub(super) root: PathBuf,
+    pub(super) expanded: HashSet<PathBuf>,
+    pub(super) children: HashMap<PathBuf, Vec<PathBuf>>,
     loading: Vec<(PathBuf, mpsc::Receiver<Vec<PathBuf>>)>,
-    selected: Option<PathBuf>,
+    pub(super) selected: Option<PathBuf>,
 }
 
 impl RealTreeState {
     /// 初期ドライブは現在の実ツリーのルートに一致するドライブ（無ければ先頭）。ルート直下だけを展開する。
-    fn new(drives: &[MountEntry], tree_root: &Path, ctx: &egui::Context) -> Self {
+    pub(super) fn new(drives: &[MountEntry], tree_root: &Path, ctx: &egui::Context) -> Self {
         let drive = drives.iter().position(|d| d.path == tree_root).unwrap_or(0);
         let mut t = Self::empty(drive, Self::drive_root(drives, drive, tree_root));
         t.request_children(t.root.clone(), ctx);
@@ -88,7 +88,7 @@ impl RealTreeState {
     }
 
     /// ドライブを切り替える。展開・子フォルダ・選択は捨てて、新しいルート直下を読み直す。
-    fn set_drive(&mut self, drives: &[MountEntry], drive: usize, ctx: &egui::Context) {
+    pub(super) fn set_drive(&mut self, drives: &[MountEntry], drive: usize, ctx: &egui::Context) {
         let root = Self::drive_root(drives, drive, &self.root);
         *self = Self::empty(drive, root);
         self.request_children(self.root.clone(), ctx);
@@ -105,7 +105,7 @@ impl RealTreeState {
     }
 
     /// 読み込み完了した子フォルダ一覧を取り込む。
-    fn poll(&mut self) {
+    pub(super) fn poll(&mut self) {
         let mut i = 0;
         while i < self.loading.len() {
             match self.loading[i].1.try_recv() {
@@ -123,7 +123,7 @@ impl RealTreeState {
         }
     }
 
-    fn toggle_expand(&mut self, path: PathBuf, ctx: &egui::Context) {
+    pub(super) fn toggle_expand(&mut self, path: PathBuf, ctx: &egui::Context) {
         if !self.expanded.remove(&path) {
             self.request_children(path.clone(), ctx);
             self.expanded.insert(path);
@@ -150,6 +150,8 @@ pub(super) struct VirtualState {
     scroll_to_cursor: bool,
     picker: Option<Picker>,
     confirm: Option<Confirm>,
+    /// 「実サブフォルダを一括登録」の確認ダイアログ
+    subs_confirm: Option<SubsConfirm>,
     delete: Option<DeleteTarget>,
     /// 評価・スキャン中の登録（1件ずつ）
     register_pending: Option<PendingRegister>,
@@ -175,6 +177,7 @@ impl VirtualState {
             scroll_to_cursor: false,
             picker: None,
             confirm: None,
+            subs_confirm: None,
             delete: None,
             register_pending: None,
             large_import: None,
@@ -215,11 +218,15 @@ enum TreeEvent {
     Select(u32),
     DoubleClick(u32),
     Register(u32),
+    /// 実サブフォルダの一括登録（未登録分を、このノードの子として足す）
+    RegisterSubs(u32),
     Rename(u32),
     /// 実ツリーを、このノードの実パスまで展開して選択表示にする
     Sync(u32),
     /// フォルダタブへ移り、このノードの実フォルダを選択済みにして開く
     OpenInFolders(u32),
+    /// 検索タブへ移り、このノードの実フォルダを検索の基点にする
+    OpenInSearch(u32),
     Delete(u32),
     /// ツリー全体の並び条件（ノードには依存しない）
     SortSetting,
@@ -258,7 +265,7 @@ fn children_of(nodes: &[TreeNode], parent: u32) -> Vec<&TreeNode> {
 
 /// 仮想ツリーの右クリックメニュー。`target` が行のid、行の外（ツリー内の余白）は None。
 /// 行の外では、ツリー全体に効く「ソート条件設定」だけが有効で、ほかはグレーアウトする。
-fn tree_context_menu(ui: &mut egui::Ui, target: Option<u32>, broken: &HashSet<u32>, out: &mut Vec<TreeEvent>) {
+fn tree_context_menu(ui: &mut egui::Ui, target: Option<u32>, real: Option<&Path>, broken: &HashSet<u32>, out: &mut Vec<TreeEvent>) {
     // ルートは名前変更・削除の対象外。区切り線で「変更」「登録」「削除」「ソート」を分ける
     let node = target.filter(|id| *id != ROOT);
     let r = ui.add_enabled(node.is_some(), egui::Button::new(i18n::t().virtual_menu_rename()));
@@ -287,12 +294,39 @@ fn tree_context_menu(ui: &mut egui::Ui, target: Option<u32>, broken: &HashSet<u3
         }
         ui.close();
     }
+    // このフォルダを開く/検索タブで開く: 実パスに辿れないノードに加え、ネットワークパスも対象外（OS差が埋められないため）
+    let searchable = syncable.filter(|_| real.is_some_and(|r| crate::fs::mount::network_mount_root(r).is_none()));
+    let r = ui.add_enabled(searchable.is_some(), egui::Button::new(i18n::t().explorer_open_this_folder_menu()));
+    help_tip_auto(&r, &i18n::t().help_open_this_folder());
+    if r.clicked() {
+        if let Some(real) = real.filter(|_| searchable.is_some()) {
+            crate::translate::open_in_file_manager(real);
+        }
+        ui.close();
+    }
+    let r = ui.add_enabled(searchable.is_some(), egui::Button::new(i18n::t().explorer_open_in_search_menu()));
+    help_tip_auto(&r, &i18n::t().help_open_in_search());
+    if r.clicked() {
+        if let Some(id) = searchable {
+            out.push(TreeEvent::OpenInSearch(id));
+        }
+        ui.close();
+    }
     ui.separator();
     let r = ui.add_enabled(target.is_some(), egui::Button::new(i18n::t().virtual_menu_register()));
     help_tip_auto(&r, &i18n::t().help_vmenu_register());
     if r.clicked() {
         if let Some(id) = target {
             out.push(TreeEvent::Register(id));
+        }
+        ui.close();
+    }
+    // 実フォルダを持たないルートと、リンク切れは対象外
+    let r = ui.add_enabled(syncable.is_some(), egui::Button::new(i18n::t().virtual_menu_register_subs()));
+    help_tip_auto(&r, &i18n::t().help_vmenu_register_subs());
+    if r.clicked() {
+        if let Some(id) = syncable {
+            out.push(TreeEvent::RegisterSubs(id));
         }
         ui.close();
     }
@@ -400,7 +434,7 @@ fn draw_tree_row(
             out.push(TreeEvent::DoubleClick(id));
         }
         if menu_on {
-            r.context_menu(|ui| tree_context_menu(ui, Some(id), broken, out));
+            r.context_menu(|ui| tree_context_menu(ui, Some(id), real, broken, out));
         }
     });
     if is_expanded {
@@ -675,7 +709,9 @@ impl NekoviewApp {
             ui.painter().rect_filled(rect, 4.0, ui.visuals().faint_bg_color);
             nav_icons::draw_up_icon(ui.painter(), rect, nav_icons::NAV_ICON_COLOR);
         }
-        self.finish_virtual_card(ui, rect, &response, GridEntry::VirtualUp(target), grid_focused)
+        // 「↑」の対象は親ノードの実フォルダ（ルート・リンク切れは対象外）
+        let folder_target = self.node_folder_target(target);
+        self.finish_virtual_card(ui, rect, &response, GridEntry::VirtualUp(target), folder_target, grid_focused)
     }
 
     /// 仮想ノード表示中のフォルダカード。ダブルクリックされたら true。
@@ -710,35 +746,63 @@ impl NekoviewApp {
                 }
             }
         }
-        self.finish_virtual_card(ui, rect, &response, GridEntry::VirtualSubdir(node_id), grid_focused)
+        // 「このフォルダ」メニューの対象: このカードの実フォルダ（ルート・リンク切れは対象外）
+        let folder_target = self.node_folder_target(node_id);
+        self.finish_virtual_card(ui, rect, &response, GridEntry::VirtualSubdir(node_id), folder_target, grid_focused)
+    }
+
+    /// 仮想ノードの行表示用の情報: (名前, リンク切れか, 実フォルダの更新日時)。リスト表示で使う。
+    pub(super) fn virtual_row_info(&self, id: u32) -> Option<(String, bool, Option<std::time::SystemTime>)> {
+        let n = self.virtual_state.nodes.iter().find(|n| n.id == id)?;
+        Some((n.name.clone(), self.virtual_state.broken.contains(&id), self.virtual_state.mtimes.get(&id).copied()))
+    }
+
+    /// 仮想ノードの実フォルダ。「このフォルダ」メニューの対象で、ルートとリンク切れは None。
+    pub(super) fn node_folder_target(&self, id: u32) -> Option<PathBuf> {
+        if id == ROOT || self.virtual_state.broken.contains(&id) {
+            return None;
+        }
+        self.virtual_state.nodes.iter().find(|n| n.id == id).map(|n| n.real.clone())
     }
 
     /// 仮想カード共通の後処理（カーソルリング・クリック選択・右クリックメニュー）。
-    fn finish_virtual_card(
+    pub(super) fn finish_virtual_card(
         &mut self,
         ui: &egui::Ui,
         rect: egui::Rect,
         response: &egui::Response,
         entry: GridEntry,
+        folder_target: Option<PathBuf>,
         grid_focused: bool,
     ) -> bool {
         if grid_focused && self.grid_cursor.as_ref() == Some(&entry) {
             super::panels::draw_cursor_ring(ui, rect);
         }
         if response.clicked() {
+            let prev_selected = self.selected_archive_index;
             self.focused_pane = FocusPane::Grid;
             self.grid_cursor = Some(entry);
             self.selected_archive_index = None;
             self.selected_archive_meta = None;
+            self.after_folder_click(ui, prev_selected);
         }
         // 実パスを持たない表示（`/`・リンク切れ）では viewing_dir が None で、開く対象が無い
-        if let Some(dir) = self.viewing_dir.clone() {
+        let open_dir = self.viewing_dir.clone();
+        if open_dir.is_some() || folder_target.is_some() {
             response.context_menu(|ui| {
-                let r_item = ui.button(i18n::t().explorer_open_folder_menu());
-                help_tip_auto(&r_item, &i18n::t().help_card_open_folder());
-                if r_item.clicked() {
-                    crate::translate::open_in_file_manager(&dir);
-                    ui.close();
+                if let Some(dir) = &open_dir {
+                    let r_item = ui.button(i18n::t().explorer_open_folder_menu());
+                    help_tip_auto(&r_item, &i18n::t().help_card_open_folder());
+                    if r_item.clicked() {
+                        crate::translate::open_in_file_manager(dir);
+                        ui.close();
+                    }
+                }
+                if let Some(target) = &folder_target {
+                    if open_dir.is_some() {
+                        ui.separator();
+                    }
+                    super::panels::this_folder_menu_items(ui, target, &mut self.pending_open_in_search);
                 }
             });
         }
@@ -762,7 +826,7 @@ impl NekoviewApp {
                 let ring = (self.focused_pane == FocusPane::VirtualTab).then(|| self.virtual_cursor());
                 draw_tree(ui, &m.nodes, Some("/"), &m.expanded, viewing, true, ring, scroll_to_cursor, &m.broken, &mut events);
             });
-        bg.context_menu(|ui| tree_context_menu(ui, None, &self.virtual_state.broken, &mut events));
+        bg.context_menu(|ui| tree_context_menu(ui, None, None, &self.virtual_state.broken, &mut events));
         if !events.is_empty() {
             self.focused_pane = FocusPane::VirtualTab;
         }
@@ -774,6 +838,7 @@ impl NekoviewApp {
                 TreeEvent::Rename(id) => self.open_rename_dialog(id),
                 TreeEvent::Sync(id) => self.sync_real_tree(id),
                 TreeEvent::OpenInFolders(id) => self.open_in_folders_tab(id),
+                TreeEvent::OpenInSearch(id) => self.open_in_search_tab_for_node(id),
                 TreeEvent::SortSetting => {
                     self.virtual_state.rename = None;
                     self.open_tree_sort_dialog(super::tree_sort_ui::TreeSortTarget::Virtual);
@@ -783,6 +848,10 @@ impl NekoviewApp {
                     self.virtual_state.rename = None;
                     let tree = RealTreeState::new(&self.drives, &self.tree_root, &self.egui_ctx);
                     self.virtual_state.picker = Some(Picker::Real { dest: id, tree });
+                }
+                TreeEvent::RegisterSubs(id) => {
+                    self.virtual_state.rename = None;
+                    self.virtual_state.subs_confirm = Some(SubsConfirm { id, deep: false });
                 }
                 TreeEvent::Delete(id) => {
                     self.virtual_state.rename = None;
@@ -831,13 +900,10 @@ impl NekoviewApp {
         self.poll_virtual_register();
         self.draw_virtual_picker(ctx);
         self.draw_virtual_confirm(ctx);
+        self.draw_virtual_register_subs(ctx);
         self.draw_virtual_large_import(ctx);
         self.draw_virtual_rename(ctx);
         self.draw_virtual_delete(ctx);
-    }
-
-    pub(super) fn set_toast(&mut self, msg: impl Into<String>) {
-        self.app_toast = Some((msg.into(), std::time::Instant::now()));
     }
 
     /// 実フォルダ／追加先仮想フォルダの選択ダイアログ。OK/キャンセルは無く、
@@ -921,7 +987,7 @@ impl NekoviewApp {
                         tree.selected = Some(path.clone());
                         self.begin_register(path, *dest);
                     }
-                    TreeAction::AddToVirtual(_) | TreeAction::SortSetting | TreeAction::None => {}
+                    TreeAction::AddToVirtual(_) | TreeAction::OpenInSearch(_) | TreeAction::SortSetting | TreeAction::None => {}
                 }
             }
             Picker::VirtualDest { src, expanded, selected } => {

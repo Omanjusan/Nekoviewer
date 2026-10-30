@@ -26,6 +26,18 @@
 - [features/koma-mode.md](features/koma-mode.md) — 疑似コマ送りモード（拡大表示の上のサブモード）
 - [features/archive-rating.md](features/archive-rating.md) — アーカイブ評価（★半星刻み）・訪問回数・
   サムネ評価帯・評価フィルタ
+- [features/file-identity.md](features/file-identity.md) — ファイルID（フィンガープリント）管理。移動・リネーム・
+  コピー後も評価・しおり・見開き・ソート・登録サムネ・タグ・お気に入り・サムネを引き継ぐ仕組み
+- [features/fingerprint-resolution-ui.md](features/fingerprint-resolution-ui.md) — 「DB内の重複の解決」画面のレイアウト・文面仕様
+- [features/file-identity-test-checklist.md](features/file-identity-test-checklist.md) — ファイルID管理の統合テスト手順書
+- [features/explorer-view-modes.md](features/explorer-view-modes.md) — エクスプローラーの表示モード（カード／リスト）と選択の規則、手動テスト手順
+- [features/duplicate-marker.md](features/duplicate-marker.md) — 重複マーカー（同じ内容のファイルの警告）と類似ファイル一覧・完全比較、手動テスト手順
+- [features/list-attr-column.md](features/list-attr-column.md) — リストの「エラー列」「属性列」（固定スロット）と、★・訪問回数の＋－編集（ロック付き）、手動テスト手順
+- [features/tag-search.md](features/tag-search.md) — タグ検索タブ（フォルダ横断のタグ絞り込み、単一選択カテゴリ、左ペイン幅の可変）と手動テスト手順
+- [features/virtual-folder-register-subs.md](features/virtual-folder-register-subs.md) — 仮想フォルダの
+  「実サブフォルダを一括登録」（未登録分だけを子として追加。子孫まで見るかは選択）
+- [features/reveal-in-file-manager.md](features/reveal-in-file-manager.md) — 選択した項目を維持したままファイラーで開く（Windows COM / Linux FileManager1、Nautilusの制限）
+- [dev-db-backup.md](dev-db-backup.md) — 開発用DBバックアップ/リストア（デバッグタブ。実リリース時に削除）
 
 ## 4. 決定記録（過去の経緯・完了済み計画）
 

@@ -108,6 +108,34 @@ impl NekoviewApp {
         }
     }
 
+    /// 実フォルダ `real` を検索の基点にして検索タブを開く。検索条件・検索履歴は保持し、基点だけを置き換える。
+    /// 検索タブのツリーも `real` まで展開して選択表示にする（別ドライブならルートも切り替える）。
+    /// ネットワークパスはメニュー側で無効化しているが、ここでも念のため弾く。
+    pub(in crate::view_explorer) fn open_in_search_tab(&mut self, real: PathBuf) {
+        if self.network_mount_root_cached(&real).is_some() {
+            return;
+        }
+        if !self.path_reachable(&real) {
+            self.set_toast(i18n::t().virtual_folder_unreachable());
+            return;
+        }
+        let outcome = self.ensure_tree_root_for(&real);
+        self.switch_folder_tab(FolderPaneTab::Search);
+        self.set_search_base_dir(real.clone());
+        self.focused_pane = FocusPane::TreeTab;
+        match outcome {
+            RootOutcome::NoDrive => self.set_toast(i18n::t().virtual_sync_no_drive()),
+            RootOutcome::Kept | RootOutcome::Switched(_) => self.follow_in_tree(real, None),
+        }
+    }
+
+    /// 仮想ノード `id` の実フォルダを検索の基点にして検索タブを開く。
+    pub(super) fn open_in_search_tab_for_node(&mut self, id: u32) {
+        if let Some(real) = self.node_real_path(id) {
+            self.open_in_search_tab(real);
+        }
+    }
+
     fn node_real_path(&self, id: u32) -> Option<PathBuf> {
         self.virtual_state.nodes.iter().find(|n| n.id == id).map(|n| n.real.clone())
     }

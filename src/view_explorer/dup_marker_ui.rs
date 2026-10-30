@@ -1,0 +1,644 @@
+//! 重複マーカーのアイコン描画と当たり判定。カード（上辺中央）とリスト（重複列）で共通に使う。
+//!
+//! 見た目は図形で描く（フォントの字形に依存しない）。種別は色と形で区別する:
+//! 移動 = 青い丸に右向きの矢印、再取得 = 橙の丸に重なった二重四角、
+//! 旧ファイル側（他に重複あり）= 再取得と同じ形の半透明。
+
+use std::collections::HashMap;
+
+use crate::duplicate_marker::{DirMarker, MarkerKind};
+use crate::file_identity::Presence;
+use crate::i18n;
+
+
+/// 確認済みの重複先ID -> 存在確認の結果。
+pub(super) type PresenceMap = HashMap<u64, Presence>;
+
+/// `ids` が空でなく、全てが「消失」と確認できている。未確認・オフライン・現存が1つでもあれば false
+/// （消えたと断定できるのは、全員が確かに消えているときだけ）。
+pub(super) fn all_gone(ids: &[u64], presence: &PresenceMap) -> bool {
+    !ids.is_empty() && ids.iter().all(|id| presence.get(id) == Some(&Presence::Missing))
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum MarkerIcon {
+    Moved,
+    Reacquired,
+    Elsewhere,
+    /// 「正常として消した」再取得（「消去済」を入れた時だけ出す。グレー）。
+    Dismissed,
+}
+
+impl MarkerIcon {
+    /// ホバー時に出す説明。
+    pub(super) fn tooltip(self) -> &'static str {
+        let t = i18n::t();
+        match self {
+            Self::Moved => t.dup_marker_moved(),
+            Self::Reacquired => t.dup_marker_reacquired(),
+            Self::Elsewhere => t.dup_marker_elsewhere(),
+            Self::Dismissed => t.dup_marker_dismissed(),
+        }
+    }
+}
+
+/// 絞り込み・並びの対象になる自身のマーカーの検出日時。マーカー無し、旧ファイル側だけ（被参照）、
+/// 消去済み（`show_dismissed` でない時）は None。
+/// 再取得で、重複先が全て消失と確認できているものも対象外。
+pub(super) fn active_detected_at(m: &DirMarker, show_dismissed: bool, presence: &PresenceMap) -> Option<i64> {
+    let own = m.own.as_ref()?;
+    if own.kind == MarkerKind::Reacquired && all_gone(&own.targets, presence) {
+        return None;
+    }
+    (!own.dismissed || show_dismissed).then_some(own.detected_at)
+}
+
+/// 出すアイコン。自身のマーカーが（消去済みでなければ）優先、無ければ被参照の薄いアイコン。
+/// 消去済みは、`show_dismissed` のときだけグレーで出す。
+/// 再取得の重複先が全て消失、旧ファイル側の参照元が全て消失と確認できたものは出さない。
+pub(super) fn icon_for(m: &DirMarker, show_dismissed: bool, presence: &PresenceMap) -> Option<MarkerIcon> {
+    let own_icon = m.own.as_ref().and_then(|own| {
+        if own.kind == MarkerKind::Reacquired && all_gone(&own.targets, presence) {
+            return None;
+        }
+        if !own.dismissed {
+            Some(match own.kind {
+                MarkerKind::Moved => MarkerIcon::Moved,
+                MarkerKind::Reacquired => MarkerIcon::Reacquired,
+            })
+        } else if show_dismissed {
+            Some(MarkerIcon::Dismissed)
+        } else {
+            None
+        }
+    });
+    own_icon.or_else(|| {
+        (!m.referenced_by.is_empty() && !all_gone(&m.referenced_by, presence)).then_some(MarkerIcon::Elsewhere)
+    })
+}
+
+const ICON_SIZE: f32 = 16.0;
+const CARD_TOP_GAP: f32 = 4.0;
+
+/// カード上辺の左右中央に置くアイコンの矩形。
+pub(super) fn card_icon_rect(card: egui::Rect) -> egui::Rect {
+    egui::Rect::from_center_size(
+        egui::pos2(card.center().x, card.min.y + CARD_TOP_GAP + ICON_SIZE / 2.0),
+        egui::vec2(ICON_SIZE, ICON_SIZE),
+    )
+}
+
+/// リストの重複列（`cell` の中央）に置くアイコンの矩形。
+pub(super) fn list_icon_rect(cell: egui::Rect) -> egui::Rect {
+    egui::Rect::from_center_size(cell.center(), egui::vec2(ICON_SIZE, ICON_SIZE))
+}
+
+/// 重複列の左スロット（重複マーカー）の矩形。右スロットは「？」（似ている画像）が使う。
+pub(super) fn list_marker_rect(cell: egui::Rect) -> egui::Rect {
+    egui::Rect::from_center_size(
+        egui::pos2(cell.min.x + SLOT_PAD + ICON_SIZE / 2.0, cell.center().y),
+        egui::vec2(ICON_SIZE, ICON_SIZE),
+    )
+}
+
+/// リストの重複列の右スロット（「？」）の矩形。
+pub(super) fn list_similar_rect(cell: egui::Rect) -> egui::Rect {
+    egui::Rect::from_center_size(
+        egui::pos2(cell.max.x - SLOT_PAD - ICON_SIZE / 2.0, cell.center().y),
+        egui::vec2(ICON_SIZE, ICON_SIZE),
+    )
+}
+
+/// カードの「？」の矩形。重複マーカーのすぐ右に並べる。
+pub(super) fn card_similar_rect(card: egui::Rect) -> egui::Rect {
+    card_icon_rect(card).translate(egui::vec2(ICON_SIZE + SLOT_PAD, 0.0))
+}
+
+/// 重複列の左右スロットの外側の余白と、カードでのアイコン間の隙間。
+const SLOT_PAD: f32 = 4.0;
+
+/// しきい値の既定値(%)と、コンボボックスの選択肢（5%刻み）。
+pub(super) const SIM_DEFAULT_PCT: u8 = 90;
+pub(super) const SIM_PCT_CHOICES: [u8; 7] = [70, 75, 80, 85, 90, 95, 100];
+
+/// 保存された文字列からしきい値(%)を読む。空・壊れた値・選択肢に無い値は既定値。
+pub(super) fn sim_pct_from_state(s: &str) -> u8 {
+    s.trim().parse::<u8>().ok().filter(|v| SIM_PCT_CHOICES.contains(v)).unwrap_or(SIM_DEFAULT_PCT)
+}
+
+/// 「消去済」のアイコンの灰色（重複の消去済と、「？」の消去済で共通）。
+pub(super) const DISMISSED_GREY: egui::Color32 = egui::Color32::from_rgb(140, 140, 140);
+
+/// 「？」（似ている画像）の丸の色。`dismissed` は、ユーザーが「正常として消した」組を示す灰色版。
+/// 重複の消去済と同じ規則で、形はそのままに色だけ `DISMISSED_GREY` にする。
+pub(super) fn similar_icon_fill(dismissed: bool) -> egui::Color32 {
+    if dismissed { DISMISSED_GREY } else { egui::Color32::from_rgb(140, 95, 215) }
+}
+
+/// 「？」（似ている画像）のアイコン。丸に白い「?」。`dismissed` なら灰色版（消去済）。
+/// 大きさは `rect` の幅に合わせて拡縮する（既定は `ICON_SIZE`）。
+pub(super) fn paint_similar_icon(painter: &egui::Painter, rect: egui::Rect, dismissed: bool) {
+    let k = rect.width() / ICON_SIZE;
+    painter.circle_filled(rect.center(), rect.width() / 2.0, similar_icon_fill(dismissed));
+    painter.text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        "?",
+        egui::FontId::proportional(12.0 * k),
+        egui::Color32::WHITE,
+    );
+}
+
+/// 「元に戻す」のアイコン（左へ戻る曲がった矢印）。通常は灰色、ホバーで濃く。大きさは `rect` の幅に合わせる。
+pub(super) fn paint_restore_icon(painter: &egui::Painter, rect: egui::Rect, hovered: bool) {
+    let k = rect.width() / ICON_SIZE;
+    let color = if hovered { egui::Color32::from_rgb(60, 130, 220) } else { DISMISSED_GREY };
+    let stroke = egui::Stroke::new(1.8 * k, color);
+    let c = rect.center();
+    let r = 4.5 * k;
+    // 時計回りに、上(-90°)から約270°まわる円弧。終点は左上で、そこに矢じりをつける。
+    let n = 14;
+    let points: Vec<egui::Pos2> = (0..=n)
+        .map(|i| {
+            let deg = -150.0 + 270.0 * (i as f32 / n as f32);
+            let rad = deg.to_radians();
+            c + egui::vec2(r * rad.cos(), r * rad.sin())
+        })
+        .collect();
+    painter.add(egui::Shape::line(points.clone(), stroke));
+    // 始点（左上）に、外向き（左下方向）の矢じり。
+    let tip = points[0];
+    painter.line_segment([tip, tip + egui::vec2(-1.0 * k, 3.6 * k)], stroke);
+    painter.line_segment([tip, tip + egui::vec2(3.6 * k, 0.4 * k)], stroke);
+}
+
+/// 重複マーカーのアイコン。大きさは `rect` の幅に合わせて拡縮する（既定は `ICON_SIZE`）。
+pub(super) fn paint_icon(painter: &egui::Painter, rect: egui::Rect, icon: MarkerIcon) {
+    let (base, alpha) = match icon {
+        MarkerIcon::Moved => (egui::Color32::from_rgb(60, 130, 220), 255),
+        MarkerIcon::Reacquired => (egui::Color32::from_rgb(235, 140, 35), 255),
+        MarkerIcon::Elsewhere => (egui::Color32::from_rgb(235, 140, 35), 120),
+        MarkerIcon::Dismissed => (DISMISSED_GREY, 255),
+    };
+    let k = rect.width() / ICON_SIZE;
+    let v = |x: f32, y: f32| egui::vec2(x * k, y * k);
+    let with_alpha = |c: egui::Color32, a: u8| egui::Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), a);
+    let c = rect.center();
+    painter.circle_filled(c, rect.width() / 2.0, with_alpha(base, alpha));
+    let ink = egui::Stroke::new(1.5 * k, egui::Color32::from_white_alpha(if alpha == 255 { 255 } else { 210 }));
+    match icon {
+        MarkerIcon::Moved => {
+            let (l, r) = (c + v(-4.0, 0.0), c + v(4.0, 0.0));
+            painter.line_segment([l, r], ink);
+            painter.line_segment([r, r + v(-3.0, -3.0)], ink);
+            painter.line_segment([r, r + v(-3.0, 3.0)], ink);
+        }
+        MarkerIcon::Reacquired | MarkerIcon::Elsewhere | MarkerIcon::Dismissed => {
+            let side = v(6.0, 6.0);
+            let back = egui::Rect::from_min_size(c + v(-4.5, -4.5), side);
+            let front = egui::Rect::from_min_size(c + v(-1.5, -1.5), side);
+            painter.rect_stroke(back, k, ink, egui::StrokeKind::Inside);
+            painter.rect_filled(front, k, with_alpha(base, alpha));
+            painter.rect_stroke(front, k, ink, egui::StrokeKind::Inside);
+        }
+    }
+}
+
+/// デバッグタブの見本用: 全マーカーアイコン（名前, 描画）を、実寸と拡大で並べる。
+pub(super) fn draw_icon_sheet(ui: &mut egui::Ui) {
+    type Painter = fn(&egui::Painter, egui::Rect);
+    let samples: [(&str, Painter); 7] = [
+        ("移動", |p, r| paint_icon(p, r, MarkerIcon::Moved)),
+        ("再取得", |p, r| paint_icon(p, r, MarkerIcon::Reacquired)),
+        ("旧ファイル側", |p, r| paint_icon(p, r, MarkerIcon::Elsewhere)),
+        ("消去済(重複)", |p, r| paint_icon(p, r, MarkerIcon::Dismissed)),
+        ("？(類似)", |p, r| paint_similar_icon(p, r, false)),
+        ("？消去済(類似)", |p, r| paint_similar_icon(p, r, true)),
+        ("元に戻す", |p, r| paint_restore_icon(p, r, false)),
+    ];
+    for (scale, label) in [(1.0_f32, "実寸"), (3.0, "3倍")] {
+        ui.label(label);
+        ui.horizontal(|ui| {
+            for (name, paint) in samples {
+                ui.vertical(|ui| {
+                    let size = ICON_SIZE * scale;
+                    let (rect, _) = ui.allocate_exact_size(egui::vec2(size + 8.0, size + 8.0), egui::Sense::hover());
+                    paint(ui.painter(), egui::Rect::from_center_size(rect.center(), egui::vec2(size, size)));
+                    ui.label(egui::RichText::new(name).small());
+                });
+                ui.add_space(6.0);
+            }
+        });
+    }
+}
+
+/// 「？」に出す中身。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct SimSummary {
+    /// いちばん近い相手との類似度(%)。
+    pub pct: u8,
+    /// しきい値を満たす相手の数。
+    pub count: usize,
+    /// 消した相手だけが残っている（灰色の「？」）。
+    pub dismissed: bool,
+}
+
+/// 類似ファイル一覧・似ている画像ビューを開く依頼。アイコンのクリックでは依頼を置くだけにし、
+/// 実際の差し替えは次のフレームの頭で行う。リストやカードは、見えている行の範囲を先に決めて順に描くので、
+/// 描画ループの途中で `archives` を差し替えると、後続の行が範囲外の添字を引いて落ちる。
+pub(super) enum SimilarEntryRequest {
+    /// 同じ内容（FP一致）の一覧。
+    SameContent { path: std::path::PathBuf, id: u64 },
+    /// 似ている画像（サムネの類似）の一覧。
+    LookAlike { path: std::path::PathBuf, id: u64 },
+    /// 似ている画像ビューの、消した組を元に戻す（行のボタンの押下。一覧の作り直しを伴うので、次のフレームで行う）。
+    RestorePair { entry_id: u64, other_id: u64 },
+}
+
+/// 開いているポップアップ。移動マーカーの説明だけを出す（ほかの種類のアイコンは、押すと類似ファイル一覧を直接開く）。
+pub(super) struct MarkerPopup {
+    icon: MarkerIcon,
+    anchor: egui::Pos2,
+}
+
+impl super::NekoviewApp {
+    /// 重複マーカーを出す表示か。通常のフォルダ表示だけ（お気に入り・検索の横断一覧は対象外）。
+    pub(super) fn marker_view_active(&self) -> bool {
+        self.folder_pane_tab.shows_real_dir() && self.viewing_favorites.is_none()
+            && self.viewing_search.is_none()
+            && self.viewing_similar.is_none()
+    }
+
+    /// 絞り込み・並びの対象になる自身のマーカーの検出日時（unix秒）。マーカー無し、消去済み
+    /// （「消去済」を入れていない時）、マーカーを出さない表示は None。
+    pub(super) fn active_marker_detected_at(&self, filename: &str) -> Option<i64> {
+        if !self.marker_view_active() {
+            return None;
+        }
+        active_detected_at(self.dir_markers.get(filename)?, self.dup_show_dismissed, &self.marker_presence)
+    }
+
+    /// そのファイル名のアイコン。マーカーを出さない表示や、マーカーの無いファイルは None。
+    pub(super) fn marker_icon(&self, filename: &str) -> Option<MarkerIcon> {
+        if !self.marker_view_active() {
+            return None;
+        }
+        self.dir_markers.get(filename).and_then(|m| icon_for(m, self.dup_show_dismissed, &self.marker_presence))
+    }
+
+    /// アイコンを描き、ホバーで説明を出す。見えているファイルの移動マーカーは「見た」印を控え、
+    /// クリックの振り分けのため、描いた矩形を覚える。
+    pub(super) fn paint_marker_icon(
+        &mut self,
+        ui: &egui::Ui,
+        response: &egui::Response,
+        icon_rect: egui::Rect,
+        real_idx: usize,
+        name: &str,
+    ) {
+        self.note_marker_seen(name);
+        let Some(icon) = self.marker_icon(name) else {
+            self.marker_icon_hits.remove(&real_idx);
+            return;
+        };
+        paint_icon(&ui.painter().with_clip_rect(ui.clip_rect()), icon_rect, icon);
+        self.marker_icon_hits.insert(real_idx, icon_rect);
+        let on_icon = ui.input(|i| i.pointer.hover_pos()).is_some_and(|p| icon_rect.contains(p));
+        if on_icon && self.marker_popup.is_none() {
+            let tip = if icon == MarkerIcon::Moved {
+                icon.tooltip().to_owned()
+            } else {
+                format!("{}\n{}", icon.tooltip(), i18n::t().dup_marker_click_hint())
+            };
+            response.clone().on_hover_text(tip);
+        }
+    }
+
+    /// そのファイル名に「？」を出すなら、その中身（類似度・件数・灰色か）。
+    /// 消していない相手がしきい値を満たすなら紫。無く、「消去済」が入っていて、消した相手がしきい値を満たすなら灰色。
+    /// マーカーを出さない表示や、どちらも無いものは None。照合結果は距離順なので、類似度は最も近い相手のもの。
+    pub(super) fn sim_summary(&self, filename: &str) -> Option<SimSummary> {
+        if !self.marker_view_active() {
+            return None;
+        }
+        let matches = self.sim_matches.get(filename)?;
+        if let Some((pct, count)) = crate::thumb_similar::summarize(matches, self.sim_threshold_pct) {
+            return Some(SimSummary { pct, count, dismissed: false });
+        }
+        if self.dup_show_dismissed
+            && let Some((pct, count)) = crate::thumb_similar::summarize_dismissed(matches, self.sim_threshold_pct)
+        {
+            return Some(SimSummary { pct, count, dismissed: true });
+        }
+        None
+    }
+
+    /// `sim_summary` の、類似度だけ（絞り込みと並びの「あるか」の判定に使う）。
+    pub(super) fn sim_pct(&self, filename: &str) -> Option<u8> {
+        self.sim_summary(filename).map(|s| s.pct)
+    }
+
+    /// 「？」を描き、ホバーで説明を出す。クリックの振り分けのため、描いた矩形を覚える。
+    pub(super) fn paint_similar_mock(
+        &mut self,
+        ui: &egui::Ui,
+        response: &egui::Response,
+        icon_rect: egui::Rect,
+        real_idx: usize,
+        name: &str,
+    ) {
+        let Some(info) = self.sim_summary(name) else {
+            self.sim_icon_hits.remove(&real_idx);
+            return;
+        };
+        paint_similar_icon(&ui.painter().with_clip_rect(ui.clip_rect()), icon_rect, info.dismissed);
+        self.sim_icon_hits.insert(real_idx, (icon_rect, info));
+        let on_icon = ui.input(|i| i.pointer.hover_pos()).is_some_and(|p| icon_rect.contains(p));
+        if on_icon && self.marker_popup.is_none() {
+            let t = i18n::t();
+            let tip = if info.dismissed {
+                format!("{}\n{}", t.sim_marker_dismissed_tooltip(info.pct, info.count), t.sim_marker_dismissed_click_hint())
+            } else {
+                format!("{}\n{}", t.sim_marker_tooltip(info.pct, info.count), t.sim_marker_click_hint())
+            };
+            response.clone().on_hover_text(tip);
+        }
+    }
+
+    /// アイコンのクリックなら、ポップアップを開いて true（選択や起動はしない）。
+    /// ダブルクリックの2回目も、起動させないよう握りつぶす。
+    pub(super) fn try_open_marker_popup(&mut self, ui: &egui::Ui, response: &egui::Response, real_idx: usize) -> bool {
+        // 類似ファイル一覧では、この矩形は基準の目印（マーカーのアイコンは出さない）。
+        if self.viewing_similar.is_some() {
+            return self.try_click_similar_base(response, real_idx);
+        }
+        if !(response.clicked() || response.double_clicked()) {
+            return false;
+        }
+        // 「？」のクリック: 似ている画像ビューを開く。ダブルクリックの2回目は握りつぶす。
+        if let Some((rect, _)) = self.sim_icon_hits.get(&real_idx).copied()
+            && ui.input(|i| i.pointer.interact_pos()).is_some_and(|p| rect.contains(p))
+        {
+            if response.clicked()
+                && let Some(path) = self.archives.get(real_idx).cloned()
+                && let Some(entry_id) = self.spread_db.as_ref().zip(path.parent()).zip(path.file_name().and_then(|n| n.to_str())).and_then(
+                    |((db, dir), name)| crate::file_identity::lookup(db, &crate::spread_state::make_key(dir, name)),
+                ).map(|rec| rec.id)
+            {
+                self.pending_similar_entry = Some(SimilarEntryRequest::LookAlike { path, id: entry_id });
+                response.ctx.request_repaint();
+            }
+            return true;
+        }
+        let Some(rect) = self.marker_icon_hits.get(&real_idx).copied() else { return false };
+        let on_icon = ui.input(|i| i.pointer.interact_pos()).is_some_and(|p| rect.contains(p));
+        if !on_icon {
+            return false;
+        }
+        if response.double_clicked() {
+            return true;
+        }
+        let Some(path) = self.archives.get(real_idx).cloned() else { return false };
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else { return false };
+        let Some(icon) = self.marker_icon(name) else { return false };
+        // 移動マーカーは旧ファイルが無く、一覧にならない。説明のポップアップだけを出す。
+        if icon == MarkerIcon::Moved {
+            self.marker_popup = Some(MarkerPopup { icon, anchor: egui::pos2(rect.min.x, rect.max.y + 4.0) });
+            return true;
+        }
+        // それ以外は、同じ内容のファイルだけを並べた類似ファイル一覧を直接開く。
+        let entry_id = self
+            .spread_db
+            .as_ref()
+            .zip(path.parent())
+            .and_then(|(db, dir)| crate::file_identity::lookup(db, &crate::spread_state::make_key(dir, name)))
+            .map(|rec| rec.id);
+        if let Some(id) = entry_id {
+            self.pending_similar_entry = Some(SimilarEntryRequest::SameContent { path, id });
+            response.ctx.request_repaint();
+        }
+        true
+    }
+
+    /// 溜まっている一覧を開く依頼を実行する。フレームの頭で呼ぶ（描画ループの途中では呼ばない）。
+    pub(super) fn apply_pending_similar_entry(&mut self) {
+        match self.pending_similar_entry.take() {
+            Some(SimilarEntryRequest::SameContent { path, id }) => self.enter_similar_view(path, id),
+            Some(SimilarEntryRequest::LookAlike { path, id }) => self.enter_look_alike_view(path, id),
+            Some(SimilarEntryRequest::RestorePair { entry_id, other_id }) => self.restore_look_alike_pair(entry_id, other_id),
+            None => {}
+        }
+    }
+
+    /// 開いているポップアップを描く。外側の押下かEscで閉じる。
+    pub(super) fn draw_marker_popup(&mut self, ctx: &egui::Context) {
+        let Some(popup) = &self.marker_popup else { return };
+        let t = i18n::t();
+        let area = egui::Area::new(egui::Id::new("dup_marker_popup"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(popup.anchor)
+            .show(ctx, |ui| {
+                egui::Frame::popup(ui.style()).show(ui, |ui| {
+                    ui.set_max_width(380.0);
+                    ui.label(egui::RichText::new(popup.icon.tooltip()).strong());
+                    ui.label(t.dup_popup_quick_match());
+                });
+            });
+        let pressed_outside = ctx.input(|i| i.pointer.any_pressed())
+            && ctx.input(|i| i.pointer.interact_pos()).is_some_and(|p| !area.response.rect.contains(p));
+        let escape = ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
+        if pressed_outside || escape {
+            self.marker_popup = None;
+        }
+    }
+
+    /// 表示領域に入ったファイルの移動マーカーを控える（書くのはフォルダ離脱・終了時）。
+    pub(super) fn note_marker_seen(&mut self, filename: &str) {
+        if !self.marker_view_active() {
+            return;
+        }
+        let Some(own) = self.dir_markers.get(filename).and_then(|m| m.own.as_ref()) else { return };
+        if own.kind == MarkerKind::Moved && !own.dismissed && !own.in_viewport {
+            self.marker_seen.insert(own.id);
+        }
+    }
+
+    /// 控えた「表示領域に入った移動マーカー」の印をDBへ書く。
+    pub(super) fn flush_seen_markers(&mut self) {
+        if self.marker_seen.is_empty() {
+            return;
+        }
+        let ids: Vec<u64> = self.marker_seen.drain().collect();
+        if let Some(db) = &self.spread_db {
+            crate::duplicate_marker::mark_in_viewport(db, &ids);
+        }
+    }
+
+    /// フォルダのスキャン開始時。別のフォルダへ移ったなら、前のフォルダで控えた印を書く
+    /// （同じフォルダの再スキャンは訪問が続いているので書かない）。
+    pub(super) fn on_marker_dir_scan(&mut self) {
+        self.marker_popup = None;
+        self.marker_icon_hits.clear();
+        self.sim_icon_hits.clear();
+        self.sim_matches.clear();
+        // 重複先の存在確認は、フォルダを読み込むたびにやり直す（確認が済むまでは、いつもどおり表示する）。
+        self.marker_probe.invalidate();
+        self.thumb_hash.invalidate();
+        self.marker_presence.clear();
+        self.marker_probe_requested.clear();
+        if self.marker_seen_dir.as_deref() != Some(self.current_dir.as_path()) {
+            self.flush_seen_markers();
+            self.marker_seen_dir = Some(self.current_dir.clone());
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::duplicate_marker::MarkerRecord;
+
+    fn own(kind: MarkerKind, dismissed: bool) -> MarkerRecord {
+        MarkerRecord {
+            id: 1,
+            kind,
+            targets: vec![],
+            in_viewport: false,
+            dismissed,
+            mtime_match: false,
+            detected_at: 0,
+        }
+    }
+
+    #[test]
+    fn own_marker_decides_the_icon_by_kind() {
+        let moved = DirMarker { own: Some(own(MarkerKind::Moved, false)), referenced_by: vec![] };
+        let re = DirMarker { own: Some(own(MarkerKind::Reacquired, false)), referenced_by: vec![] };
+        assert_eq!(icon_for(&moved, false, &PresenceMap::new()), Some(MarkerIcon::Moved));
+        assert_eq!(icon_for(&re, false, &PresenceMap::new()), Some(MarkerIcon::Reacquired));
+    }
+
+    #[test]
+    fn own_marker_wins_over_being_referenced() {
+        let both = DirMarker { own: Some(own(MarkerKind::Reacquired, false)), referenced_by: vec![9] };
+        assert_eq!(icon_for(&both, false, &PresenceMap::new()), Some(MarkerIcon::Reacquired));
+    }
+
+    #[test]
+    fn referenced_only_is_the_faint_icon() {
+        let old = DirMarker { own: None, referenced_by: vec![9] };
+        assert_eq!(icon_for(&old, false, &PresenceMap::new()), Some(MarkerIcon::Elsewhere));
+    }
+
+    #[test]
+    fn dismissed_own_marker_shows_nothing_unless_referenced() {
+        let gone = DirMarker { own: Some(own(MarkerKind::Reacquired, true)), referenced_by: vec![] };
+        assert_eq!(icon_for(&gone, false, &PresenceMap::new()), None);
+        let gone_but_old = DirMarker { own: Some(own(MarkerKind::Reacquired, true)), referenced_by: vec![9] };
+        assert_eq!(icon_for(&gone_but_old, false, &PresenceMap::new()), Some(MarkerIcon::Elsewhere));
+    }
+
+    #[test]
+    fn dismissed_own_marker_shows_grey_only_when_asked() {
+        let gone = DirMarker { own: Some(own(MarkerKind::Reacquired, true)), referenced_by: vec![] };
+        assert_eq!(icon_for(&gone, true, &PresenceMap::new()), Some(MarkerIcon::Dismissed));
+        // 消去済みでも旧ファイル側の薄いアイコンは別物（自身の消去済み表示を優先する）。
+        let gone_but_old = DirMarker { own: Some(own(MarkerKind::Reacquired, true)), referenced_by: vec![9] };
+        assert_eq!(icon_for(&gone_but_old, true, &PresenceMap::new()), Some(MarkerIcon::Dismissed));
+    }
+
+    #[test]
+    fn dismissed_similar_icon_uses_the_same_grey_as_the_dismissed_duplicate_icon() {
+        assert_eq!(similar_icon_fill(true), DISMISSED_GREY);
+        assert_eq!(similar_icon_fill(false), egui::Color32::from_rgb(140, 95, 215), "紫は従来どおり");
+        assert_ne!(similar_icon_fill(true), similar_icon_fill(false));
+    }
+
+    #[test]
+    fn sim_threshold_state_accepts_only_the_listed_choices() {
+        for pct in SIM_PCT_CHOICES {
+            assert_eq!(sim_pct_from_state(&pct.to_string()), pct);
+        }
+        assert_eq!(sim_pct_from_state(" 80 "), 80, "前後の空白は無視");
+        for bad in ["", "abc", "-5", "300", "82", "0", "69"] {
+            assert_eq!(sim_pct_from_state(bad), SIM_DEFAULT_PCT, "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn active_detected_at_follows_own_marker_and_dismissal() {
+        let mut live = own(MarkerKind::Moved, false);
+        live.detected_at = 42;
+        let m = DirMarker { own: Some(live), referenced_by: vec![] };
+        assert_eq!(active_detected_at(&m, false, &PresenceMap::new()), Some(42));
+        let mut gone = own(MarkerKind::Reacquired, true);
+        gone.detected_at = 7;
+        let d = DirMarker { own: Some(gone), referenced_by: vec![] };
+        assert_eq!(active_detected_at(&d, false, &PresenceMap::new()), None, "消去済みは対象外");
+        assert_eq!(active_detected_at(&d, true, &PresenceMap::new()), Some(7), "「消去済」を入れると対象");
+        let old = DirMarker { own: None, referenced_by: vec![9] };
+        assert_eq!(active_detected_at(&old, true, &PresenceMap::new()), None, "旧ファイル側は絞り込み・並びの対象外");
+    }
+
+    fn presence(pairs: &[(u64, Presence)]) -> PresenceMap {
+        pairs.iter().copied().collect()
+    }
+
+    #[test]
+    fn all_gone_needs_every_target_confirmed_missing() {
+        assert!(!all_gone(&[], &presence(&[])), "空は消えたと言えない");
+        assert!(!all_gone(&[1], &presence(&[])), "未確認は消えたと断定しない");
+        assert!(!all_gone(&[1], &presence(&[(1, Presence::Offline)])), "オフラインは断定しない");
+        assert!(!all_gone(&[1, 2], &presence(&[(1, Presence::Missing), (2, Presence::Present)])));
+        assert!(!all_gone(&[1, 2], &presence(&[(1, Presence::Missing)])), "一部が未確認");
+        assert!(all_gone(&[1, 2], &presence(&[(1, Presence::Missing), (2, Presence::Missing)])));
+    }
+
+    #[test]
+    fn reacquired_icon_hides_only_when_all_targets_are_gone() {
+        let mut rec = own(MarkerKind::Reacquired, false);
+        rec.targets = vec![1, 2];
+        let m = DirMarker { own: Some(rec), referenced_by: vec![] };
+        let part = presence(&[(1, Presence::Missing), (2, Presence::Present)]);
+        assert_eq!(icon_for(&m, false, &part), Some(MarkerIcon::Reacquired));
+        let all = presence(&[(1, Presence::Missing), (2, Presence::Missing)]);
+        assert_eq!(icon_for(&m, false, &all), None);
+        assert_eq!(icon_for(&m, true, &all), None, "消去済を入れていても、重複先が無いなら出さない");
+        assert_eq!(active_detected_at(&m, false, &all), None, "絞り込み・並びからも外れる");
+        assert_eq!(active_detected_at(&m, false, &part), Some(0));
+    }
+
+    #[test]
+    fn moved_icon_ignores_presence() {
+        let m = DirMarker { own: Some(own(MarkerKind::Moved, false)), referenced_by: vec![] };
+        let gone = presence(&[(1, Presence::Missing)]);
+        assert_eq!(icon_for(&m, false, &gone), Some(MarkerIcon::Moved));
+        assert_eq!(active_detected_at(&m, false, &gone), Some(0));
+    }
+
+    #[test]
+    fn elsewhere_icon_hides_when_every_referrer_is_gone() {
+        let m = DirMarker { own: None, referenced_by: vec![8, 9] };
+        let one = presence(&[(8, Presence::Missing), (9, Presence::Offline)]);
+        assert_eq!(icon_for(&m, false, &one), Some(MarkerIcon::Elsewhere));
+        let all = presence(&[(8, Presence::Missing), (9, Presence::Missing)]);
+        assert_eq!(icon_for(&m, false, &all), None);
+    }
+
+    #[test]
+    fn hidden_own_marker_falls_back_to_the_referenced_icon() {
+        let mut rec = own(MarkerKind::Reacquired, false);
+        rec.targets = vec![1];
+        let m = DirMarker { own: Some(rec), referenced_by: vec![9] };
+        let gone = presence(&[(1, Presence::Missing)]);
+        assert_eq!(icon_for(&m, false, &gone), Some(MarkerIcon::Elsewhere));
+    }
+
+    #[test]
+    fn card_icon_sits_at_top_center() {
+        let card = egui::Rect::from_min_size(egui::pos2(10.0, 20.0), egui::vec2(100.0, 80.0));
+        let r = card_icon_rect(card);
+        assert_eq!(r.center().x, card.center().x);
+        assert!(r.min.y > card.min.y && r.max.y < card.center().y);
+    }
+}

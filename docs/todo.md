@@ -8,3 +8,18 @@
     - display_name()のi18n化（現状ReaderAction/ExplorerActionの表示名が日本語ハードコード。i18n::t()経由の多言語対応パターンに合流させる）
     - Explorer側のマウス割り当て対応（現状キーボードのみ）
     - 「削除」ボタン（既定値に戻すのではなく、そのスロットを完全に無効化する機能）。ActionBindingの型（`Option<KeyCombo>`で未設定＝既定値）では3値目の「無効化」状態を表現できないため設計変更が必要
+
+## ファイルID管理の残件（[features/file-identity.md](features/file-identity.md)）
+
+- 旧v1の一括変換（バッチ）: 旧v1の行（評価・しおり・タグ・見開き・ソート・登録サムネ等）を全てID形式へ変換して旧v1を削除する。
+  実体が見つからない行はFPなしのIDにする必要がある。掃除（[features/file-identity.md](features/file-identity.md) 8章）が旧v1の
+  お気に入り所属しか消さないため、ID導入前からの記録は掃除後も残り、同じパスの別ファイルに復活しうる。v1.11（FP化の初回配布）
+  の前に判断する。規模は大きい
+- 掃除の実機確認: 自動掃除（オンライン日数）・手動の「追えない記録の掃除」・サムネ行の掃除・世代バックアップとGUIリストアは、
+  単体テストのみで実機での通し確認が未了。Windowsでの稼働中DBのコピー、ボリューム識別（ドライブ文字の付け替え）も未確認
+- 手動紐付け画面: 自動復旧できなかった記録（バックフィルが間に合わなかった旧データ等）を、ユーザーが手で紐付ける。
+  解決UI（[fingerprint-resolution-ui.md](features/fingerprint-resolution-ui.md)）の「候補から選ぶ」操作と画面を共通化できる
+- 製品版の自動バックアップ: `dev_db_backup::ensure_pre_migration_backup`（DBを開く前に1回きりコピー）は起動処理へ接続済み。
+  失敗時の確認ダイアログとID層の無効化（`file_identity::set_enabled`）も実装済み。設定画面の「バックアップフォルダを開く」も実装済み。残り: 試験。開発用のバックアップ/リストアUIは実リリース時に削除（[dev-db-backup.md](dev-db-backup.md)）
+- お気に入りの横断一覧（IDレコードの全件走査）が、数十万ファイル規模でどれだけかかるかの確認
+

@@ -68,6 +68,11 @@ v1.1.0時点のキャッシュ層（`cache.rs` / `anim.rs` / `neko_dir.rs`）の
 - 再生成判定はバッチ差分検出ではなく、グリッド表示のたびにDB内mtimeと現在のファイルmtimeを
   突合する遅延方式
 - 非画像ZIP等は `INVALID_TABLE` にマーカーを記録し、毎回の再スキャンを避ける
+- **消えたファイルのサムネ行は、スキャン時に削除しない**（`sync_thumbnail_records` は検索用の索引と非画像マーカーだけ掃除する）。
+  ファイルが移動・リネーム・複製されたとき、ファイルID解決（[features/file-identity.md](features/file-identity.md)）が
+  元のDBの生成済み（Current）のサムネ行を新しい名前（別フォルダのDB可）へコピーするため
+  （`take_thumbnail_rows` / `put_thumbnail_rows`。移動先で生成中・生成済みなら上書きしない）。
+  ID解決待ちのファイルは、解決が済むまでサムネ生成を始めない。残ったサムネ行の掃除は、別ブランチ予定のキャッシュ整理の役割
 
 ## 見積もり（開く前のメモリ超過チェック）
 
