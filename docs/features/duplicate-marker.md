@@ -11,6 +11,7 @@
 [similar_view.rs](../../src/view_explorer/similar_view.rs)（類似ファイル一覧）、
 [identity_worker.rs](../../src/view_explorer/identity_worker.rs)（ID解決からの記録）。
 ファイルIDの仕組みは [file-identity.md](file-identity.md)。
+FPが違っても見た目が似ているファイルは、サムネの比較で別に拾う（[similar-image-marker.md](similar-image-marker.md)）。
 
 ## マーカーの種類
 
