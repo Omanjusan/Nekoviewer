@@ -2171,7 +2171,9 @@ impl NekoviewApp {
             widest + ui.spacing().button_padding.x * 2.0
         };
         let mode = self.view_mode.mode;
-        if ui.add(egui::Button::new(t.view_mode_card_label()).selected(mode == ViewMode::Card)).clicked() {
+        // 「消した組」ウィンドウはリスト表示の設定（S/M/L/サムネ無し・ホバー）に従うので、開いている間はカードを選べない。
+        let card_btn = egui::Button::new(t.view_mode_card_label()).selected(mode == ViewMode::Card);
+        if ui.add_enabled(self.dismissed_window.is_none(), card_btn).clicked() {
             self.view_mode.select_card();
         }
         // add_sized は高さ0指定で独自に縦位置を決めて他のボタンとずれるため、min_size で幅だけ確保する。
@@ -2636,9 +2638,14 @@ impl NekoviewApp {
                 && !self.thumb_queued.contains(path)
                 && !self.identity_verifying.contains(path)
             {
+                // キャッシュDBは表示中フォルダのもの。別フォルダのファイル（横断一覧・「消した組」ウィンドウ）に渡すと、
+                // サムネを間違ったフォルダのDBへ保存してしまうので、その場合はDBなしで生成する。
+                let same_dir_db = (self.folder_pane_tab.shows_real_dir() && path.parent() == Some(self.current_dir.as_path()))
+                    .then(|| self.cache_db.clone())
+                    .flatten();
                 if self.thumb_req_tx.try_send(ThumbRequest {
                     archive_path: path.clone(),
-                    db: self.cache_db.clone(),
+                    db: same_dir_db,
                     is_raw_file: self.raw_image_files.contains(path),
                     requested_edge: self.config.thumb_size,
                     requested_filter: self.config.thumb_filter,

@@ -34,7 +34,7 @@ const POPUP_OFFSET: f32 = 18.0;
 /// 表示モードから、行の形式（実効のサイズ）とホバーのポップアップの有無を決める。
 /// ポップアップはサイズ（S/M/L/サムネ無し）に依らず、チェックボックス（`hover_popup`）で決まる。
 /// 一覧は常に文字のみの行（= サムネ無しの見た目）で、ポップアップは出さない。
-fn layout_for(mode: ViewMode, list_size: ListSize, hover_popup: bool) -> (ListSize, bool) {
+pub(super) fn layout_for(mode: ViewMode, list_size: ListSize, hover_popup: bool) -> (ListSize, bool) {
     match mode {
         ViewMode::Text => (ListSize::NoThumb, false),
         _ => (list_size, hover_popup),
@@ -645,7 +645,7 @@ impl NekoviewApp {
     }
 
     /// ホバー形式: ポインタの横にサムネのポップアップを出す（遅延なし）。画面端では反対側へ寄せる。
-    fn show_list_hover_thumbnail(&mut self, ui: &egui::Ui, path: &PathBuf) {
+    pub(super) fn show_list_hover_thumbnail(&mut self, ui: &egui::Ui, path: &PathBuf) {
         let Some(pointer) = ui.input(|i| i.pointer.hover_pos()) else { return };
         let cell_h = self.config.thumb_size as f32;
         let cell_w = (cell_h / std::f32::consts::SQRT_2).round();

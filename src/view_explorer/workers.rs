@@ -507,7 +507,8 @@ impl NekoviewApp {
             }
             match result.rgba {
                 Some(rgba) => {
-                    if self.archives.contains(&result.path)
+                    // 「消した組」ウィンドウが開いている間は、一覧に無いファイル（別フォルダのもの）のサムネも受け取る。
+                    if (self.archives.contains(&result.path) || self.dismissed_window.is_some())
                         && (self.thumb_display_requested.contains(&result.path)
                             || self.thumbnails.contains_key(&result.path))
                     {
