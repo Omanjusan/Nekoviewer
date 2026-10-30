@@ -81,7 +81,7 @@ impl MarkerRecord {
         }
         let kind = MarkerKind::from_u8(r.u8()?)?;
         let flags = r.u8()?;
-        let id = r.u64()?;GO
+        let id = r.u64()?;
         let detected_at = r.i64()?;
         let n = r.u32()? as usize;
         let targets = (0..n).map(|_| r.u64()).collect::<Option<Vec<u64>>>()?;

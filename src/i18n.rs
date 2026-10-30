@@ -182,8 +182,8 @@ impl Lang {
     pub fn dup_show_dismissed_label(self) -> &'static str {
         match self {
             Lang::Japanese => "消去済",
-            Lang::English  => "Incl. dismissed",
-            Lang::Chinese  => "含已清除",
+            Lang::English  => "Dismissed",
+            Lang::Chinese  => "已清除",
         }
     }
 
@@ -200,8 +200,8 @@ impl Lang {
     pub fn sim_filter_label(self) -> &'static str {
         match self {
             Lang::Japanese => "サムネ類似",
-            Lang::English  => "Similar",
-            Lang::Chinese  => "相似",
+            Lang::English  => "Thumb similar",
+            Lang::Chinese  => "缩略图相似",
         }
     }
 
