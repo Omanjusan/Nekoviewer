@@ -3,8 +3,10 @@
 //! - 相手は、これまでに開いてハッシュが保存されたファイル全て（`thumb_hash_store`）。同じフォルダ内の相手も含む
 //! - 距離が `max_distance_for_pct(MIN_PCT)` 以下の組を、距離付きで返す。UIのしきい値（70〜100%）での絞り込みは
 //!   表示側が行う（スライダーを動かしても照合し直さない）。件数の上限はない
-//! - 除く相手: FPが一致するファイル（重複マーカーの担当）、「正常として消した」ペア、
+//! - 除く相手: FPが一致するファイル（重複マーカーの担当）、
 //!   消失・オフラインのファイル（現存する相手だけを根拠にする）、自分と同じパスの古い記録
+//! - 「正常として消した」ペアは除かず、`dismissed` の旗をつけて残す。「？」を出す・並べる・絞り込む通常の判定は
+//!   旗のない相手だけを数え（`summarize`）、「消去済」を入れたときの灰色の「？」は旗のある相手を数える（`summarize_dismissed`）
 //! - 結果は保存しない（派生情報）。フォルダを開くたび・サムネ生成が一段落するたびに作り直す
 
 use std::collections::{HashMap, HashSet};
@@ -28,6 +30,8 @@ pub struct SimilarMatch {
     pub other: u64,
     /// ハミング距離（0〜`max_distance_for_pct(MIN_PCT)`）。
     pub distance: u8,
+    /// ユーザーが「正常として消した」組。通常の判定では数えず、「消去済」を入れたときだけ灰色で扱う。
+    pub dismissed: bool,
 }
 
 impl SimilarMatch {
@@ -37,11 +41,21 @@ impl SimilarMatch {
     }
 }
 
-/// 距離順の相手 `matches` のうち、類似度が `min_pct` 以上のものの (いちばん近い相手の類似度(%), 件数)。
-/// 1件も満たさなければ None。「？」のホバー説明と、出す・出さないの判定に使う。
+/// 距離順の相手 `matches` のうち、**消していない**もので類似度が `min_pct` 以上のものの
+/// (いちばん近い相手の類似度(%), 件数)。1件も満たさなければ None。「？」のホバー説明と、出す・出さないの判定に使う。
 pub fn summarize(matches: &[SimilarMatch], min_pct: u8) -> Option<(u8, usize)> {
-    let pct = matches.first()?.pct();
-    (pct >= min_pct).then(|| (pct, matches.iter().take_while(|m| m.pct() >= min_pct).count()))
+    summarize_where(matches, min_pct, false)
+}
+
+/// `summarize` の、**消した組**だけの版。「消去済」を入れたときの灰色の「？」に使う。
+pub fn summarize_dismissed(matches: &[SimilarMatch], min_pct: u8) -> Option<(u8, usize)> {
+    summarize_where(matches, min_pct, true)
+}
+
+fn summarize_where(matches: &[SimilarMatch], min_pct: u8, dismissed: bool) -> Option<(u8, usize)> {
+    let mut hits = matches.iter().filter(|m| m.dismissed == dismissed && m.pct() >= min_pct);
+    let best = hits.next()?.pct();
+    Some((best, 1 + hits.count()))
 }
 
 /// `subjects` の各ハッシュに対して、`universe` の中で距離が `max_distance` 以下のもの（自分自身を除く）。
@@ -140,11 +154,7 @@ pub fn match_names(
         return HashMap::new();
     }
     let universe: Vec<(u64, u64)> = rows.keys().filter_map(|&id| hashed(id).map(|h| (id, h))).collect();
-    let pairs: Vec<(u64, u64, u8)> =
-        candidate_pairs(&subjects, &universe, thumb_hash::max_distance_for_pct(MIN_PCT))
-            .into_iter()
-            .filter(|(s, o, _)| !dismissed.contains(&thumb_hash_store::pair(*s, *o)))
-            .collect();
+    let pairs = candidate_pairs(&subjects, &universe, thumb_hash::max_distance_for_pct(MIN_PCT));
     if pairs.is_empty() {
         return HashMap::new();
     }
@@ -174,7 +184,11 @@ pub fn match_names(
         if !presence.is_present(oid, now, || probe(other) == Presence::Present) {
             continue;
         }
-        out.entry(name_of[&sid].to_owned()).or_default().push(SimilarMatch { other: oid, distance });
+        out.entry(name_of[&sid].to_owned()).or_default().push(SimilarMatch {
+            other: oid,
+            distance,
+            dismissed: dismissed.contains(&thumb_hash_store::pair(sid, oid)),
+        });
     }
     for matches in out.values_mut() {
         matches.sort_by_key(|m| (m.distance, m.other));
@@ -319,7 +333,7 @@ mod tests {
 
     #[test]
     fn summarize_counts_only_partners_at_or_above_the_threshold() {
-        let m = |distance: u8| SimilarMatch { other: u64::from(distance), distance };
+        let m = |distance: u8| SimilarMatch { other: u64::from(distance), distance, dismissed: false };
         // 距離 0 / 3 / 6 / 13 / 19 は、類似度 100 / 95 / 91 / 80 / 70 %。
         let list = [m(0), m(3), m(6), m(13), m(19)];
         assert_eq!(summarize(&list, 100), Some((100, 1)));
@@ -338,8 +352,8 @@ mod tests {
         set_hash(&db, a, Some(0));
         set_hash(&db, b, Some(bits(3)));
         let got = run(&db, &t.0, &["a.zip", "b.zip"]);
-        assert_eq!(got["a.zip"], vec![SimilarMatch { other: b, distance: 3 }]);
-        assert_eq!(got["b.zip"], vec![SimilarMatch { other: a, distance: 3 }], "双方に付く");
+        assert_eq!(got["a.zip"], vec![SimilarMatch { other: b, distance: 3, dismissed: false }]);
+        assert_eq!(got["b.zip"], vec![SimilarMatch { other: a, distance: 3, dismissed: false }], "双方に付く");
         assert_eq!(got["a.zip"][0].pct(), 95);
     }
 
@@ -353,7 +367,7 @@ mod tests {
         set_hash(&db, b, Some(bits(8)));
         let got = run(&db, &d1, &["a.zip"]);
         assert_eq!(got.keys().collect::<Vec<_>>(), vec!["a.zip"]);
-        assert_eq!(got["a.zip"], vec![SimilarMatch { other: b, distance: 8 }]);
+        assert_eq!(got["a.zip"], vec![SimilarMatch { other: b, distance: 8, dismissed: false }]);
     }
 
     #[test]
@@ -412,11 +426,11 @@ mod tests {
             set_hash(&db, id, Some(0));
         }
         let got = run(&db, &d1, &["a.zip"]);
-        assert_eq!(got["a.zip"], vec![SimilarMatch { other, distance: 0 }], "FP一致のcopy.zipは除く");
+        assert_eq!(got["a.zip"], vec![SimilarMatch { other, distance: 0, dismissed: false }], "FP一致のcopy.zipは除く");
     }
 
     #[test]
-    fn dismissed_pairs_are_excluded_in_both_directions_only_for_that_pair() {
+    fn dismissed_pairs_are_flagged_in_both_directions_only_for_that_pair() {
         let t = TempRoot::new("dismissed");
         let db = open_spread_db(&t.0).unwrap();
         let (a, b, c) = (register(&db, &t.0, "a.zip", 1), register(&db, &t.0, "b.zip", 2), register(&db, &t.0, "c.zip", 3));
@@ -425,9 +439,24 @@ mod tests {
         }
         assert!(thumb_hash_store::dismiss_pair(&db, b, a, 100), "順序に依らない");
         let got = run(&db, &t.0, &["a.zip", "b.zip", "c.zip"]);
-        assert_eq!(got["a.zip"], vec![SimilarMatch { other: c, distance: 0 }]);
-        assert_eq!(got["b.zip"], vec![SimilarMatch { other: c, distance: 0 }]);
-        assert_eq!(got["c.zip"].len(), 2);
+        let flags = |name: &str| got[name].iter().map(|m| (m.other, m.dismissed)).collect::<Vec<_>>();
+        assert_eq!(flags("a.zip"), vec![(b, true), (c, false)], "a→b は消した組。旗つきで残る");
+        assert_eq!(flags("b.zip"), vec![(a, true), (c, false)]);
+        assert_eq!(flags("c.zip"), vec![(a, false), (b, false)], "他の組には旗がつかない");
+    }
+
+    #[test]
+    fn summaries_count_dismissed_and_active_partners_separately() {
+        let m = |other: u64, distance: u8, dismissed: bool| SimilarMatch { other, distance, dismissed };
+        // 距離 0 / 3 / 6 / 13 は、類似度 100 / 95 / 91 / 80 %。
+        let list = [m(1, 0, true), m(2, 3, false), m(3, 6, true), m(4, 13, false)];
+        assert_eq!(summarize(&list, 70), Some((95, 2)), "消していない相手だけ。最も近いのは 95%");
+        assert_eq!(summarize_dismissed(&list, 70), Some((100, 2)), "消した相手だけ");
+        assert_eq!(summarize(&list, 96), None);
+        assert_eq!(summarize_dismissed(&list, 92), Some((100, 1)), "しきい値は消した相手にも効く");
+        let only_dismissed = [m(1, 0, true)];
+        assert_eq!(summarize(&only_dismissed, 70), None, "消した相手だけなら、通常の判定は何も出さない");
+        assert_eq!(summarize_dismissed(&[], 70), None);
     }
 
     #[test]
@@ -449,7 +478,7 @@ mod tests {
             _ => Presence::Present,
         };
         let got = match_dir(&db, &t.0, &names(&["a.zip"]), &probe, &|| true);
-        assert_eq!(got["a.zip"], vec![SimilarMatch { other: ok, distance: 0 }]);
+        assert_eq!(got["a.zip"], vec![SimilarMatch { other: ok, distance: 0, dismissed: false }]);
     }
 
     #[test]

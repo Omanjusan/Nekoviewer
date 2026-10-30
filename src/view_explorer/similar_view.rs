@@ -37,7 +37,12 @@ pub(super) struct SimilarView {
     pub look_alike: bool,
     /// 似ている画像ビューの、ファイルID → 入口との類似度(%)。入口は100。
     pub pcts: std::collections::HashMap<u64, u8>,
+    /// 似ている画像ビューのうち、「正常として消した」組の相手のファイルID（灰色で並べ、行のボタンで元に戻せる）。
+    pub dismissed_ids: std::collections::HashSet<u64>,
 }
+
+/// 似ている画像ビューの中身: (並べるファイル, ID → 類似度, 消した組の相手のID)。
+type LookAlikeFiles = (Vec<SimilarFile>, std::collections::HashMap<u64, u8>, std::collections::HashSet<u64>);
 
 /// 告知バーの高さ（px）と背景色（青と水色の中間）。
 const BANNER_H: f32 = 22.0;
@@ -89,6 +94,7 @@ impl NekoviewApp {
             token,
             look_alike: false,
             pcts: std::collections::HashMap::new(),
+            dismissed_ids: std::collections::HashSet::new(),
         });
         self.show_similar_paths(Vec::new());
         self.marker_probe.submit_group(db, entry_id, token);
@@ -99,33 +105,38 @@ impl NekoviewApp {
         self.viewing_similar.as_ref().is_some_and(|v| v.look_alike)
     }
 
-    /// 似ている画像ビューに並べるファイル（入口を含む）と、入口との類似度。
-    /// 照合結果（`sim_matches`）のうち、いまのしきい値を満たす相手。相手のパスはIDのレコードから引く。
-    fn look_alike_files(
-        &self,
-        entry_path: &std::path::Path,
-        entry_id: u64,
-    ) -> Option<(Vec<SimilarFile>, std::collections::HashMap<u64, u8>)> {
+    /// 似ている画像ビューに並べるファイル（入口を含む）、入口との類似度、消した組の相手のID。
+    /// 照合結果（`sim_matches`）のうち、いまのしきい値を満たす相手。消した組の相手は、「消去済」が入っているときだけ加える。
+    /// 相手のパスはIDのレコードから引く。
+    fn look_alike_files(&self, entry_path: &std::path::Path, entry_id: u64) -> Option<LookAlikeFiles> {
         use redb::ReadableDatabase;
         let db = self.spread_db.as_ref()?;
         let name = entry_path.file_name()?.to_str()?;
         let mut files = vec![SimilarFile { id: entry_id, path: entry_path.to_path_buf(), stat: None }];
         let mut pcts = std::collections::HashMap::from([(entry_id, 100_u8)]);
-        let Some(matches) = self.sim_matches.get(name) else { return Some((files, pcts)) };
+        let mut dismissed_ids = std::collections::HashSet::new();
+        let Some(matches) = self.sim_matches.get(name) else { return Some((files, pcts, dismissed_ids)) };
         let guard = db.lock().ok()?;
         let tx = guard.begin_read().ok()?;
-        for m in matches.iter().take_while(|m| m.pct() >= self.sim_threshold_pct) {
+        let wanted = matches
+            .iter()
+            .take_while(|m| m.pct() >= self.sim_threshold_pct)
+            .filter(|m| !m.dismissed || self.dup_show_dismissed);
+        for m in wanted {
             let Some(rec) = crate::file_identity::record_by_id_tx(&tx, m.other) else { continue };
             files.push(SimilarFile { id: m.other, path: crate::file_identity::path_of_key(&rec.path_key), stat: None });
             pcts.insert(m.other, m.pct());
+            if m.dismissed {
+                dismissed_ids.insert(m.other);
+            }
         }
-        Some((files, pcts))
+        Some((files, pcts, dismissed_ids))
     }
 
     /// 似ている画像ビューを開く。`entry_path` は入口のファイル（「？」を押したファイル）、`entry_id` はそのファイルID。
     /// 照合は済んでいるので、収集の待ちは無い。
     pub(super) fn enter_look_alike_view(&mut self, entry_path: PathBuf, entry_id: u64) {
-        let Some((files, pcts)) = self.look_alike_files(&entry_path, entry_id) else { return };
+        let Some((files, pcts, dismissed_ids)) = self.look_alike_files(&entry_path, entry_id) else { return };
         self.marker_popup = None;
         self.similar_token += 1;
         let token = self.similar_token;
@@ -144,6 +155,7 @@ impl NekoviewApp {
             token,
             look_alike: true,
             pcts,
+            dismissed_ids,
         });
         self.show_similar_paths(paths);
         if let Some(pos) = self.archives.iter().position(|p| *p == entry_path) {
@@ -156,12 +168,13 @@ impl NekoviewApp {
     pub(super) fn rebuild_look_alike(&mut self) {
         let Some(view) = self.viewing_similar.as_ref().filter(|v| v.look_alike) else { return };
         let (entry_path, entry_id) = (view.entry_path.clone(), view.entry_id);
-        let Some((files, pcts)) = self.look_alike_files(&entry_path, entry_id) else { return };
+        let Some((files, pcts, dismissed_ids)) = self.look_alike_files(&entry_path, entry_id) else { return };
         let previous = self.selected_archive_index.and_then(|i| self.archives.get(i)).cloned();
         let paths: Vec<PathBuf> = files.iter().map(|f| f.path.clone()).collect();
         if let Some(view) = self.viewing_similar.as_mut() {
             view.files = files;
             view.pcts = pcts;
+            view.dismissed_ids = dismissed_ids;
         }
         self.show_similar_paths(paths);
         let keep = previous.filter(|p| self.archives.contains(p)).unwrap_or(entry_path);
@@ -178,7 +191,8 @@ impl NekoviewApp {
         let dismissed = view
             .files
             .iter()
-            .filter(|f| f.id != entry_id && crate::thumb_hash_store::dismiss_pair(&db, entry_id, f.id, crate::file_identity::now_unix()))
+            .filter(|f| f.id != entry_id && !view.dismissed_ids.contains(&f.id))
+            .filter(|f| crate::thumb_hash_store::dismiss_pair(&db, entry_id, f.id, crate::file_identity::now_unix()))
             .count();
         self.set_toast(i18n::t().sim_dismissed_toast(dismissed));
         self.exit_similar_view();
@@ -351,6 +365,10 @@ impl NekoviewApp {
         real_idx: usize,
         path: &std::path::Path,
     ) {
+        if self.is_look_alike_view() {
+            self.paint_restore_button(ui, response, rect, real_idx, path);
+            return;
+        }
         if self.compare_base().is_none() {
             self.marker_icon_hits.remove(&real_idx);
             return;
@@ -384,9 +402,63 @@ impl NekoviewApp {
             && let Some(path) = self.archives.get(real_idx)
             && let Some(id) = self.viewing_similar.as_ref().and_then(|v| v.files.iter().find(|f| f.path == *path)).map(|f| f.id)
         {
-            self.set_similar_base(id);
+            if let Some(view) = self.viewing_similar.as_ref().filter(|v| v.look_alike) {
+                // 似ている画像ビュー: 「元に戻す」ボタン。一覧を作り直すので、次のフレームで行う。
+                self.pending_similar_entry =
+                    Some(super::dup_marker_ui::SimilarEntryRequest::RestorePair { entry_id: view.entry_id, other_id: id });
+                response.ctx.request_repaint();
+            } else {
+                self.set_similar_base(id);
+            }
         }
         true
+    }
+
+    /// 似ている画像ビューの「元に戻す」ボタン（「基準」列の位置）。消した組の相手の行にだけ出す。
+    fn paint_restore_button(
+        &mut self,
+        ui: &egui::Ui,
+        response: &egui::Response,
+        rect: egui::Rect,
+        real_idx: usize,
+        path: &std::path::Path,
+    ) {
+        let is_dismissed = self
+            .viewing_similar
+            .as_ref()
+            .and_then(|v| v.files.iter().find(|f| f.path == path).map(|f| v.dismissed_ids.contains(&f.id)))
+            .unwrap_or(false);
+        if !is_dismissed {
+            self.marker_icon_hits.remove(&real_idx);
+            return;
+        }
+        let on_icon = ui.input(|i| i.pointer.hover_pos()).is_some_and(|p| rect.contains(p));
+        super::dup_marker_ui::paint_restore_icon(&ui.painter().with_clip_rect(ui.clip_rect()), rect, on_icon);
+        self.marker_icon_hits.insert(real_idx, rect);
+        if on_icon {
+            response.clone().on_hover_text(i18n::t().sim_restore_tip());
+        }
+    }
+
+    /// 消した組（入口と相手）を元に戻し、一覧を作り直す。入口側の照合結果の旗も外す
+    /// （相手側のフォルダの結果は、そのフォルダを開いたときの照合で直る）。
+    pub(super) fn restore_look_alike_pair(&mut self, entry_id: u64, other_id: u64) {
+        let Some(db) = self.spread_db.clone() else { return };
+        if !crate::thumb_hash_store::undismiss_pair(&db, entry_id, other_id) {
+            return;
+        }
+        let entry_name = self
+            .viewing_similar
+            .as_ref()
+            .filter(|v| v.look_alike && v.entry_id == entry_id)
+            .and_then(|v| v.entry_path.file_name().and_then(|n| n.to_str()).map(str::to_owned));
+        if let Some(matches) = entry_name.and_then(|n| self.sim_matches.get_mut(&n)) {
+            for m in matches.iter_mut().filter(|m| m.other == other_id) {
+                m.dismissed = false;
+            }
+        }
+        self.rebuild_look_alike();
+        self.set_toast(i18n::t().sim_restored_toast().to_owned());
     }
 
     /// 一覧のファイルのサイズ・更新日時が、結果を得た時から変わった組の結果を捨てる。
@@ -450,6 +522,10 @@ impl NekoviewApp {
                 return Some((i18n::t().similar_badge_base().to_owned(), color));
             }
             let pct = *view.pcts.get(&id)?;
+            if view.dismissed_ids.contains(&id) {
+                // 消した組の行: 灰色で「NN% 消去済」。
+                return Some((format!("{pct}% {}", i18n::t().sim_badge_dismissed()), super::dup_marker_ui::DISMISSED_GREY));
+            }
             return Some((format!("{pct}%"), color));
         }
         let base = self.compare_base()?;
@@ -489,8 +565,12 @@ impl NekoviewApp {
         }
         let Some(view) = &self.viewing_similar else { return };
         if view.look_alike {
-            let others = self.archives.len().saturating_sub(1);
+            let dismissed = view.dismissed_ids.len();
+            let others = self.archives.len().saturating_sub(1).saturating_sub(dismissed);
             ui.label(if others == 0 { t.sim_view_empty().to_owned() } else { t.sim_view_header(others) });
+            if dismissed > 0 {
+                ui.label(egui::RichText::new(t.sim_view_dismissed_count(dismissed)).weak());
+            }
             ui.separator();
             if ui.button(t.similar_refresh()).clicked() {
                 self.rebuild_look_alike();

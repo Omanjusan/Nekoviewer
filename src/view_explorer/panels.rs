@@ -2408,6 +2408,10 @@ impl NekoviewApp {
             let r_dismissed = ui
                 .checkbox(&mut self.dup_show_dismissed, t.dup_show_dismissed_label())
                 .on_hover_text(t.dup_show_dismissed_hint());
+            if r_dismissed.changed() {
+                // 似ている画像ビューを開いている間は、消した組の行の出し入れも反映する。
+                self.rebuild_look_alike();
+            }
             if r_dup.changed() || r_dismissed.changed() {
                 // 消去済みの表示は並びにも効くので、並びごと作り直す。
                 if self.dup_sort && r_dismissed.changed() {

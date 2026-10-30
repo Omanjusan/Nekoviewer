@@ -250,6 +250,60 @@ impl Lang {
         }
     }
 
+    /// 灰色の「？」（消した組だけが残っている）のホバー説明。
+    pub fn sim_marker_dismissed_tooltip(self, pct: u8, count: usize) -> String {
+        match self {
+            Lang::Japanese => format!("「正常として消した」似ているファイルが{count}件あります（最も近いもので類似度 {pct}%）"),
+            Lang::English  => format!("{count} look-alike file(s) were dismissed as normal (closest: {pct}% similar)"),
+            Lang::Chinese  => format!("有{count}个相似文件已被标记为正常（最接近的相似度 {pct}%）"),
+        }
+    }
+
+    /// 灰色の「？」のホバー説明に添える、クリックでできること。
+    pub fn sim_marker_dismissed_click_hint(self) -> &'static str {
+        match self {
+            Lang::Japanese => "クリックすると、消した組を含めて一覧で見られます。一覧で元に戻せます",
+            Lang::English  => "Click to see them in a list, including dismissed ones. You can restore them there",
+            Lang::Chinese  => "点击可在列表中查看（含已清除的组），并可在列表中恢复",
+        }
+    }
+
+    /// 似ている画像ビューの列見出し: 消した組を元に戻すボタンの列。
+    pub fn list_col_restore(self) -> &'static str {
+        match self {
+            Lang::Japanese => "戻す",
+            Lang::English  => "Restore",
+            Lang::Chinese  => "恢复",
+        }
+    }
+
+    /// 似ている画像ビューの「元に戻す」ボタンのホバー説明。
+    pub fn sim_restore_tip(self) -> &'static str {
+        match self {
+            Lang::Japanese => "この組の「正常として消す」を取り消します。次の照合から、通常の「？」の相手に戻ります",
+            Lang::English  => "Undo \"dismiss as normal\" for this pair. It becomes a normal \"?\" partner again",
+            Lang::Chinese  => "撤销此组的“清除为正常”。之后恢复为普通的“？”对象",
+        }
+    }
+
+    /// 消した組を元に戻した後のトースト。
+    pub fn sim_restored_toast(self) -> &'static str {
+        match self {
+            Lang::Japanese => "消した組を元に戻しました",
+            Lang::English  => "Restored the dismissed pair",
+            Lang::Chinese  => "已恢复该组",
+        }
+    }
+
+    /// 似ている画像ビューの「類似度」列で、消した組の行に添える文字。
+    pub fn sim_badge_dismissed(self) -> &'static str {
+        match self {
+            Lang::Japanese => "消去済",
+            Lang::English  => "Dismissed",
+            Lang::Chinese  => "已清除",
+        }
+    }
+
     /// 似ている画像ビューの告知バー。
     pub fn sim_banner(self) -> &'static str {
         match self {
@@ -265,6 +319,15 @@ impl Lang {
             Lang::Japanese => format!("サムネが似ているファイル {n}件"),
             Lang::English  => format!("{n} file(s) with look-alike thumbnails"),
             Lang::Chinese  => format!("缩略图相似的文件 {n}个"),
+        }
+    }
+
+    /// 似ている画像ビューの見出しに添える、消した組の件数。
+    pub fn sim_view_dismissed_count(self, n: usize) -> String {
+        match self {
+            Lang::Japanese => format!("（消去済 {n}件）"),
+            Lang::English  => format!("({n} dismissed)"),
+            Lang::Chinese  => format!("（已清除 {n}个）"),
         }
     }
 

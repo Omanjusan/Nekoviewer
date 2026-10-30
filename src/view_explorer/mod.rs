@@ -904,8 +904,8 @@ pub struct NekoviewApp {
     sim_threshold_pct: u8,
     /// 【モック】下段フィルタ「サムネ類似」。
     sim_filter: bool,
-    /// 【モック】今フレームに描いた「？」の矩形 (archives のインデックス -> (矩形, (類似度%, 相手の数)))。クリックの振り分け用。
-    sim_icon_hits: HashMap<usize, (egui::Rect, (u8, usize))>,
+    /// 【モック】今フレームに描いた「？」の矩形 (archives のインデックス -> (矩形, 中身))。クリックの振り分け用。
+    sim_icon_hits: HashMap<usize, (egui::Rect, dup_marker_ui::SimSummary)>,
     /// 重複先の存在確認のワーカー（専用スレッド）。
     marker_probe: marker_probe::MarkerProbeWorker,
     /// 確認済みの重複先ID -> 現存／消失／オフライン。フォルダを読み込むたびに作り直す。

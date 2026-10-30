@@ -149,6 +149,29 @@ pub(super) fn paint_similar_icon(painter: &egui::Painter, rect: egui::Rect, dism
     );
 }
 
+/// 「元に戻す」のアイコン（左へ戻る曲がった矢印）。通常は灰色、ホバーで濃く。大きさは `rect` の幅に合わせる。
+pub(super) fn paint_restore_icon(painter: &egui::Painter, rect: egui::Rect, hovered: bool) {
+    let k = rect.width() / ICON_SIZE;
+    let color = if hovered { egui::Color32::from_rgb(60, 130, 220) } else { DISMISSED_GREY };
+    let stroke = egui::Stroke::new(1.8 * k, color);
+    let c = rect.center();
+    let r = 4.5 * k;
+    // 時計回りに、上(-90°)から約270°まわる円弧。終点は左上で、そこに矢じりをつける。
+    let n = 14;
+    let points: Vec<egui::Pos2> = (0..=n)
+        .map(|i| {
+            let deg = -150.0 + 270.0 * (i as f32 / n as f32);
+            let rad = deg.to_radians();
+            c + egui::vec2(r * rad.cos(), r * rad.sin())
+        })
+        .collect();
+    painter.add(egui::Shape::line(points.clone(), stroke));
+    // 始点（左上）に、外向き（左下方向）の矢じり。
+    let tip = points[0];
+    painter.line_segment([tip, tip + egui::vec2(-1.0 * k, 3.6 * k)], stroke);
+    painter.line_segment([tip, tip + egui::vec2(3.6 * k, 0.4 * k)], stroke);
+}
+
 /// 重複マーカーのアイコン。大きさは `rect` の幅に合わせて拡縮する（既定は `ICON_SIZE`）。
 pub(super) fn paint_icon(painter: &egui::Painter, rect: egui::Rect, icon: MarkerIcon) {
     let (base, alpha) = match icon {
@@ -184,13 +207,14 @@ pub(super) fn paint_icon(painter: &egui::Painter, rect: egui::Rect, icon: Marker
 /// デバッグタブの見本用: 全マーカーアイコン（名前, 描画）を、実寸と拡大で並べる。
 pub(super) fn draw_icon_sheet(ui: &mut egui::Ui) {
     type Painter = fn(&egui::Painter, egui::Rect);
-    let samples: [(&str, Painter); 6] = [
+    let samples: [(&str, Painter); 7] = [
         ("移動", |p, r| paint_icon(p, r, MarkerIcon::Moved)),
         ("再取得", |p, r| paint_icon(p, r, MarkerIcon::Reacquired)),
         ("旧ファイル側", |p, r| paint_icon(p, r, MarkerIcon::Elsewhere)),
         ("消去済(重複)", |p, r| paint_icon(p, r, MarkerIcon::Dismissed)),
         ("？(類似)", |p, r| paint_similar_icon(p, r, false)),
         ("？消去済(類似)", |p, r| paint_similar_icon(p, r, true)),
+        ("元に戻す", |p, r| paint_restore_icon(p, r, false)),
     ];
     for (scale, label) in [(1.0_f32, "実寸"), (3.0, "3倍")] {
         ui.label(label);
@@ -208,6 +232,17 @@ pub(super) fn draw_icon_sheet(ui: &mut egui::Ui) {
     }
 }
 
+/// 「？」に出す中身。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct SimSummary {
+    /// いちばん近い相手との類似度(%)。
+    pub pct: u8,
+    /// しきい値を満たす相手の数。
+    pub count: usize,
+    /// 消した相手だけが残っている（灰色の「？」）。
+    pub dismissed: bool,
+}
+
 /// 類似ファイル一覧・似ている画像ビューを開く依頼。アイコンのクリックでは依頼を置くだけにし、
 /// 実際の差し替えは次のフレームの頭で行う。リストやカードは、見えている行の範囲を先に決めて順に描くので、
 /// 描画ループの途中で `archives` を差し替えると、後続の行が範囲外の添字を引いて落ちる。
@@ -216,6 +251,8 @@ pub(super) enum SimilarEntryRequest {
     SameContent { path: std::path::PathBuf, id: u64 },
     /// 似ている画像（サムネの類似）の一覧。
     LookAlike { path: std::path::PathBuf, id: u64 },
+    /// 似ている画像ビューの、消した組を元に戻す（行のボタンの押下。一覧の作り直しを伴うので、次のフレームで行う）。
+    RestorePair { entry_id: u64, other_id: u64 },
 }
 
 /// 開いているポップアップ。移動マーカーの説明だけを出す（ほかの種類のアイコンは、押すと類似ファイル一覧を直接開く）。
@@ -277,18 +314,28 @@ impl super::NekoviewApp {
         }
     }
 
-    /// そのファイル名に「？」を出すなら、(いちばん近い相手との類似度(%), しきい値を満たす相手の数)。
-    /// マーカーを出さない表示や、しきい値に届かないものは None。照合結果は距離順なので先頭が最も近い。
-    pub(super) fn sim_summary(&self, filename: &str) -> Option<(u8, usize)> {
+    /// そのファイル名に「？」を出すなら、その中身（類似度・件数・灰色か）。
+    /// 消していない相手がしきい値を満たすなら紫。無く、「消去済」が入っていて、消した相手がしきい値を満たすなら灰色。
+    /// マーカーを出さない表示や、どちらも無いものは None。照合結果は距離順なので、類似度は最も近い相手のもの。
+    pub(super) fn sim_summary(&self, filename: &str) -> Option<SimSummary> {
         if !self.marker_view_active() {
             return None;
         }
-        crate::thumb_similar::summarize(self.sim_matches.get(filename)?, self.sim_threshold_pct)
+        let matches = self.sim_matches.get(filename)?;
+        if let Some((pct, count)) = crate::thumb_similar::summarize(matches, self.sim_threshold_pct) {
+            return Some(SimSummary { pct, count, dismissed: false });
+        }
+        if self.dup_show_dismissed
+            && let Some((pct, count)) = crate::thumb_similar::summarize_dismissed(matches, self.sim_threshold_pct)
+        {
+            return Some(SimSummary { pct, count, dismissed: true });
+        }
+        None
     }
 
-    /// `sim_summary` の、類似度だけ。
+    /// `sim_summary` の、類似度だけ（絞り込みと並びの「あるか」の判定に使う）。
     pub(super) fn sim_pct(&self, filename: &str) -> Option<u8> {
-        self.sim_summary(filename).map(|(pct, _)| pct)
+        self.sim_summary(filename).map(|s| s.pct)
     }
 
     /// 「？」を描き、ホバーで説明を出す。クリックの振り分けのため、描いた矩形を覚える。
@@ -304,12 +351,17 @@ impl super::NekoviewApp {
             self.sim_icon_hits.remove(&real_idx);
             return;
         };
-        paint_similar_icon(&ui.painter().with_clip_rect(ui.clip_rect()), icon_rect, false);
+        paint_similar_icon(&ui.painter().with_clip_rect(ui.clip_rect()), icon_rect, info.dismissed);
         self.sim_icon_hits.insert(real_idx, (icon_rect, info));
         let on_icon = ui.input(|i| i.pointer.hover_pos()).is_some_and(|p| icon_rect.contains(p));
         if on_icon && self.marker_popup.is_none() {
             let t = i18n::t();
-            response.clone().on_hover_text(format!("{}\n{}", t.sim_marker_tooltip(info.0, info.1), t.sim_marker_click_hint()));
+            let tip = if info.dismissed {
+                format!("{}\n{}", t.sim_marker_dismissed_tooltip(info.pct, info.count), t.sim_marker_dismissed_click_hint())
+            } else {
+                format!("{}\n{}", t.sim_marker_tooltip(info.pct, info.count), t.sim_marker_click_hint())
+            };
+            response.clone().on_hover_text(tip);
         }
     }
 
@@ -373,6 +425,7 @@ impl super::NekoviewApp {
         match self.pending_similar_entry.take() {
             Some(SimilarEntryRequest::SameContent { path, id }) => self.enter_similar_view(path, id),
             Some(SimilarEntryRequest::LookAlike { path, id }) => self.enter_look_alike_view(path, id),
+            Some(SimilarEntryRequest::RestorePair { entry_id, other_id }) => self.restore_look_alike_pair(entry_id, other_id),
             None => {}
         }
     }
