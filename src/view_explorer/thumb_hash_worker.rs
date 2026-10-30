@@ -124,7 +124,7 @@ impl super::NekoviewApp {
         }
     }
 
-    /// 照合の結果を受け取る。「？」の表示と「似ているもの」絞り込みに効くので、変わったら絞り込みを作り直す。
+    /// 照合の結果を受け取る。「？」の表示と「サムネ類似」絞り込みに効くので、変わったら絞り込みを作り直す。
     /// 途中経過（Partial）は足し込み、最後の結果（Final）は置き換える。古い世代の結果は捨てる。
     pub(super) fn poll_thumb_hash(&mut self) {
         let mut changed = false;

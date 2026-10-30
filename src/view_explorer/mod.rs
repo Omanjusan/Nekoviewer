@@ -888,9 +888,9 @@ pub struct NekoviewApp {
     reveal_icon_hits: HashMap<usize, egui::Rect>,
     /// 開いている重複マーカーのポップアップ。
     marker_popup: Option<dup_marker_ui::MarkerPopup>,
-    /// 下段フィルタ「重複あり」。自身にマーカーがあるファイルだけを出す（保存しない）。
+    /// 下段フィルタ「重複」。自身にマーカーがあるファイルだけを出す（保存しない）。
     dup_filter: bool,
-    /// 下段フィルタ「消去済みも」。消去済みのマーカーも、絞り込み・並び・アイコンの対象にする（保存しない）。
+    /// 下段フィルタ「消去済」。消去済みのマーカーも、絞り込み・並び・アイコンの対象にする（保存しない）。
     dup_show_dismissed: bool,
     /// リスト見出し「重複」のソート。マーカー付きを検出日時の新しい順で先頭に寄せる（保存しない）。
     dup_sort: bool,
@@ -902,7 +902,7 @@ pub struct NekoviewApp {
     sim_matches: HashMap<String, Vec<crate::thumb_similar::SimilarMatch>>,
     /// 似ている画像の「？」を出す類似度(%)のしきい値。パス行のコンボボックス。`nekoviewer.state` の `explorer_sim_threshold` に保存する。
     sim_threshold_pct: u8,
-    /// 【モック】下段フィルタ「似ているもの」。
+    /// 【モック】下段フィルタ「サムネ類似」。
     sim_filter: bool,
     /// 【モック】今フレームに描いた「？」の矩形 (archives のインデックス -> (矩形, (類似度%, 相手の数)))。クリックの振り分け用。
     sim_icon_hits: HashMap<usize, (egui::Rect, (u8, usize))>,

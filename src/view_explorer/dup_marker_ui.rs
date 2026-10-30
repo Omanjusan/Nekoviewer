@@ -25,7 +25,7 @@ pub(super) enum MarkerIcon {
     Moved,
     Reacquired,
     Elsewhere,
-    /// 「正常として消した」再取得（「消去済みも」を入れた時だけ出す。グレー）。
+    /// 「正常として消した」再取得（「消去済」を入れた時だけ出す。グレー）。
     Dismissed,
 }
 
@@ -192,7 +192,7 @@ impl super::NekoviewApp {
     }
 
     /// 絞り込み・並びの対象になる自身のマーカーの検出日時（unix秒）。マーカー無し、消去済み
-    /// （「消去済みも」を入れていない時）、マーカーを出さない表示は None。
+    /// （「消去済」を入れていない時）、マーカーを出さない表示は None。
     pub(super) fn active_marker_detected_at(&self, filename: &str) -> Option<i64> {
         if !self.marker_view_active() {
             return None;
@@ -474,7 +474,7 @@ mod tests {
         gone.detected_at = 7;
         let d = DirMarker { own: Some(gone), referenced_by: vec![] };
         assert_eq!(active_detected_at(&d, false, &PresenceMap::new()), None, "消去済みは対象外");
-        assert_eq!(active_detected_at(&d, true, &PresenceMap::new()), Some(7), "「消去済みも」を入れると対象");
+        assert_eq!(active_detected_at(&d, true, &PresenceMap::new()), Some(7), "「消去済」を入れると対象");
         let old = DirMarker { own: None, referenced_by: vec![9] };
         assert_eq!(active_detected_at(&old, true, &PresenceMap::new()), None, "旧ファイル側は絞り込み・並びの対象外");
     }
@@ -502,7 +502,7 @@ mod tests {
         assert_eq!(icon_for(&m, false, &part), Some(MarkerIcon::Reacquired));
         let all = presence(&[(1, Presence::Missing), (2, Presence::Missing)]);
         assert_eq!(icon_for(&m, false, &all), None);
-        assert_eq!(icon_for(&m, true, &all), None, "消去済みも表示でも、重複先が無いなら出さない");
+        assert_eq!(icon_for(&m, true, &all), None, "消去済を入れていても、重複先が無いなら出さない");
         assert_eq!(active_detected_at(&m, false, &all), None, "絞り込み・並びからも外れる");
         assert_eq!(active_detected_at(&m, false, &part), Some(0));
     }

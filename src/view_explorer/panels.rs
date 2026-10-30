@@ -2313,8 +2313,8 @@ impl NekoviewApp {
     fn draw_filter_bar(&mut self, ui: &mut egui::Ui) {
         // 評価フィルタ群（縦線・チェック・比較・★）と右端の空白ぶん。文字列欄はこの残りを使う。
         const RATING_GROUP_W: f32 = 290.0;
-        // 重複フィルタ群（縦線・「重複あり」・「消去済みも」）のぶん。
-        const DUP_GROUP_W: f32 = 200.0;
+        // 重複フィルタ群（縦線・「重複」・「消去済」・「サムネ類似」）のぶん。
+        const DUP_GROUP_W: f32 = 240.0;
         const RIGHT_GAP: f32 = 5.0;
         let help_on = self.help_enabled;
         let help_text = i18n::t().help_filter_text();

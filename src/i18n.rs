@@ -163,13 +163,13 @@ impl Lang {
     /// 下段フィルタ行: 重複マーカーを持つファイルだけを出すチェックボックスの名前。
     pub fn dup_filter_label(self) -> &'static str {
         match self {
-            Lang::Japanese => "重複あり",
+            Lang::Japanese => "重複",
             Lang::English  => "Duplicates",
             Lang::Chinese  => "重复",
         }
     }
 
-    /// 下段フィルタ行: 重複あり絞り込みの説明。
+    /// 下段フィルタ行: 「重複」絞り込みの説明。
     pub fn dup_filter_hint(self) -> &'static str {
         match self {
             Lang::Japanese => "移動・再取得のマーカーが付いたファイルだけを表示します",
@@ -181,13 +181,13 @@ impl Lang {
     /// 下段フィルタ行: 「正常として消した」マーカーも表示するチェックボックスの名前。
     pub fn dup_show_dismissed_label(self) -> &'static str {
         match self {
-            Lang::Japanese => "消去済みも",
+            Lang::Japanese => "消去済",
             Lang::English  => "Incl. dismissed",
             Lang::Chinese  => "含已清除",
         }
     }
 
-    /// 下段フィルタ行: 消去済みも表示の説明。
+    /// 下段フィルタ行: 「消去済」表示の説明。
     pub fn dup_show_dismissed_hint(self) -> &'static str {
         match self {
             Lang::Japanese => "「正常として消す」を押したマーカーも、グレーのアイコンで表示します",
@@ -199,13 +199,13 @@ impl Lang {
     /// 下段フィルタ行: 「？」（似ている画像）が付いたファイルだけを出すチェックボックスの名前。
     pub fn sim_filter_label(self) -> &'static str {
         match self {
-            Lang::Japanese => "似ているもの",
+            Lang::Japanese => "サムネ類似",
             Lang::English  => "Similar",
             Lang::Chinese  => "相似",
         }
     }
 
-    /// 下段フィルタ行: 似ているもの絞り込みの説明。
+    /// 下段フィルタ行: 「サムネ類似」絞り込みの説明。
     pub fn sim_filter_hint(self) -> &'static str {
         match self {
             Lang::Japanese => "サムネが似ているファイル（「？」マーカー）だけを表示します",

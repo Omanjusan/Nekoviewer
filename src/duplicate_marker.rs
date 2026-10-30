@@ -52,7 +52,7 @@ pub struct MarkerRecord {
     pub targets: Vec<u64>,
     /// 表示領域に入ったか（移動マーカーの消去の起点）。
     pub in_viewport: bool,
-    /// ユーザーが正常として消した（一覧の「消去済みも表示」で呼び戻せる）。
+    /// ユーザーが正常として消した（下段フィルタの「消去済」で呼び戻せる）。
     pub dismissed: bool,
     /// 重複先と更新日時が一致していた（再取得の補助表示）。
     pub mtime_match: bool,
@@ -81,7 +81,7 @@ impl MarkerRecord {
         }
         let kind = MarkerKind::from_u8(r.u8()?)?;
         let flags = r.u8()?;
-        let id = r.u64()?;
+        let id = r.u64()?;GO
         let detected_at = r.i64()?;
         let n = r.u32()? as usize;
         let targets = (0..n).map(|_| r.u64()).collect::<Option<Vec<u64>>>()?;
@@ -274,7 +274,7 @@ pub fn purge_seen_moved(db: &Arc<Mutex<Database>>, dir: &Path) -> usize {
     removed
 }
 
-/// 再取得マーカーを「正常として消す」。行は残し、消去済みにする（一覧の「消去済みも表示」で呼び戻せる）。
+/// 再取得マーカーを「正常として消す」。行は残し、消去済みにする（下段フィルタの「消去済」で呼び戻せる）。
 /// 移動マーカー（再訪で自然に消える）と、既に消去済み・無いものは何もしない。消去済みにしたら true。
 pub fn dismiss(db: &Arc<Mutex<Database>>, id: u64) -> bool {
     write(db, |table, _rev| {
