@@ -498,6 +498,13 @@ impl Keymap {
     pub fn reader_binding(&self, action: ReaderAction) -> ActionBinding {
         self.reader.get(&action).copied().unwrap_or_else(|| action.default_binding())
     }
+
+    /// ウィンドウ位置スロット idx（0..3）を展開するキーボード割り当ての表示名。
+    /// 未割り当て・範囲外は None。複数キーを持てない仕様なので、取れるのは現在有効な1つだけ。
+    pub fn apply_slot_key_label(&self, idx: usize) -> Option<String> {
+        let action = *[ReaderAction::ApplySlot1, ReaderAction::ApplySlot2, ReaderAction::ApplySlot3, ReaderAction::ApplySlot4].get(idx)?;
+        self.reader_binding(action).effective_keyboard().map(crate::tool_palette::key_assign::combo_display)
+    }
     pub fn explorer_binding(&self, action: ExplorerAction) -> ActionBinding {
         self.explorer.get(&action).copied().unwrap_or_else(|| action.default_binding())
     }
@@ -822,6 +829,18 @@ mod tests {
         // F5は既定でApplySlot1に割り当て済みなので、JumpFirstPageをF5に変えようとすると衝突する。
         let conflict = km.find_reader_keyboard_conflict(KeyCombo::plain(Key::F5), ReaderAction::JumpFirstPage);
         assert_eq!(conflict, Some(ReaderAction::ApplySlot1));
+    }
+
+    #[test]
+    fn apply_slot_key_label_follows_default_rebind_and_clear() {
+        let mut km = Keymap::default();
+        assert_eq!(km.apply_slot_key_label(0).as_deref(), Some("F5"));
+        assert_eq!(km.apply_slot_key_label(3).as_deref(), Some("F8"));
+        assert_eq!(km.apply_slot_key_label(4), None, "範囲外");
+        km.set_reader_keyboard(ReaderAction::ApplySlot2, Some(KeyCombo::shift(Key::F6)));
+        assert_eq!(km.apply_slot_key_label(1).as_deref(), Some("Shift + F6"));
+        km.clear_reader_keyboard(ReaderAction::ApplySlot3);
+        assert_eq!(km.apply_slot_key_label(2), None, "未割り当て");
     }
 
     #[test]

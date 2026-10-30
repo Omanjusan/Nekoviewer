@@ -3689,6 +3689,107 @@ impl Lang {
         }
     }
 
+    /// ビューアー上部バー右寄せの「ウィンドウ位置」メニューボタン。
+    pub fn window_pos_menu_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ウィンドウ位置",
+            Lang::English  => "Window Position",
+            Lang::Chinese  => "窗口位置",
+        }
+    }
+
+    pub fn window_pos_apply(self) -> &'static str {
+        match self {
+            Lang::Japanese => "展開",
+            Lang::English  => "Apply",
+            Lang::Chinese  => "展开",
+        }
+    }
+
+    pub fn window_pos_record(self) -> &'static str {
+        match self {
+            Lang::Japanese => "記録",
+            Lang::English  => "Save",
+            Lang::Chinese  => "记录",
+        }
+    }
+
+    pub fn window_pos_delete(self) -> &'static str {
+        match self {
+            Lang::Japanese => "削除",
+            Lang::English  => "Delete",
+            Lang::Chinese  => "删除",
+        }
+    }
+
+    /// スロット未保存の行に出す文言（展開はno-op）。
+    pub fn window_pos_empty(self) -> &'static str {
+        match self {
+            Lang::Japanese => "記録なし",
+            Lang::English  => "Empty",
+            Lang::Chinese  => "无记录",
+        }
+    }
+
+    /// 行頭のキー名が取れない（キーボード未割り当て）ときの表示。
+    pub fn window_pos_key_none(self) -> &'static str {
+        "—"
+    }
+
+    /// 記録済みスロットの内容表示。モニター番号は1始まり。
+    pub fn window_pos_entry(self, monitor: Option<usize>, x: i32, y: i32, w: u32, h: u32) -> String {
+        let mon = match (self, monitor) {
+            (Lang::Japanese, Some(n)) => format!("モニター{n}"),
+            (Lang::English,  Some(n)) => format!("Monitor {n}"),
+            (Lang::Chinese,  Some(n)) => format!("显示器{n}"),
+            (Lang::Japanese, None)    => "モニター?".to_owned(),
+            (Lang::English,  None)    => "Monitor ?".to_owned(),
+            (Lang::Chinese,  None)    => "显示器?".to_owned(),
+        };
+        format!("{mon} ({x},{y}) {w}×{h}")
+    }
+
+    /// 「開いたとき自動展開」チェック（各行に1つ・排他）。
+    pub fn window_pos_auto_apply(self) -> &'static str {
+        match self {
+            Lang::Japanese => "開いたとき自動展開",
+            Lang::English  => "Auto-apply on open",
+            Lang::Chinese  => "打开时自动展开",
+        }
+    }
+
+    pub fn window_pos_auto_apply_hint(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ビューアーを開くたびに、このスロットの位置・サイズを適用する。チェックは1つだけ（全て外すと適用しない）。未記録のスロットは何もしない。",
+            Lang::English  => "Apply this slot's position/size every time the viewer opens. Only one slot can be checked (uncheck all to disable). An empty slot does nothing.",
+            Lang::Chinese  => "每次打开查看器时应用此槽位的位置与大小。只能勾选一个（全部取消则不应用）。空槽位不执行任何操作。",
+        }
+    }
+
+    pub fn window_pos_overwrite_title(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ウィンドウ位置の上書き",
+            Lang::English  => "Overwrite window position",
+            Lang::Chinese  => "覆盖窗口位置",
+        }
+    }
+
+    pub fn window_pos_overwrite_body(self, key: &str) -> String {
+        match self {
+            Lang::Japanese => format!("{key} の記録済みの位置・サイズを、現在のビューアーの位置・サイズで上書きする？"),
+            Lang::English  => format!("Overwrite the saved position/size of {key} with the viewer's current position/size?"),
+            Lang::Chinese  => format!("用查看器当前的位置与大小覆盖 {key} 已记录的内容？"),
+        }
+    }
+
+    pub fn window_pos_overwrite_ok(self) -> &'static str {
+        match self {
+            Lang::Japanese => "上書き",
+            Lang::English  => "Overwrite",
+            Lang::Chinese  => "覆盖",
+        }
+    }
+
     /// 言語選択コンボボックス用の、その言語自身の正式名称（現在の表示言語に依存しない）。
     pub fn native_name(self) -> &'static str {
         match self {
