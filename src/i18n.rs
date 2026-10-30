@@ -214,6 +214,15 @@ impl Lang {
         }
     }
 
+    /// パス行: 似ている画像のしきい値コンボボックスの左に置くラベル。
+    pub fn sim_threshold_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "サムネ一致閾値",
+            Lang::English  => "Thumb match",
+            Lang::Chinese  => "缩略图匹配阈值",
+        }
+    }
+
     /// パス行: 似ている画像のしきい値(類似度%)コンボボックスの説明。
     pub fn sim_threshold_hint(self) -> &'static str {
         match self {

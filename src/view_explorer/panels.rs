@@ -2186,6 +2186,7 @@ impl NekoviewApp {
         );
         // 【モック】似ている画像の類似度しきい値。「？」を出す下限(%)。
         let before = self.sim_threshold_pct;
+        ui.label(t.sim_threshold_label()).on_hover_text(t.sim_threshold_hint());
         let r_sim = egui::ComboBox::from_id_salt("sim_threshold_pct")
             .width(52.0)
             .selected_text(format!("{}%", self.sim_threshold_pct))
