@@ -1060,6 +1060,8 @@ pub struct NekoviewApp {
     identity_sweep_due: std::time::Instant,
     /// 起動時の自動バックアップ失敗の確認待ち（選ぶまでID層は止まっている）。
     backup_failure: Option<backup_failure_ui::BackupFailure>,
+    /// 1.11の起動時の注意ダイアログ（ファイルID管理への移行の案内）の表示待ち。バックアップ失敗の確認が済んでから出す。
+    release_notice_pending: bool,
     /// アプリ終了の要求（確認ダイアログの「終了」）。`winit_app` が拾う。
     exit_requested: bool,
     /// 開発用DBツール（デバッグタブ）の状態。実リリース時に dev_db_tools.rs ごと削除する。
@@ -1376,6 +1378,7 @@ mod dev_db_tools;
 mod identity_worker;
 mod identity_resolution_ui;
 mod backup_failure_ui;
+mod release_notice_ui;
 mod reveal_ui;
 mod relink_ui;
 mod db_backup_ui;
@@ -1401,7 +1404,7 @@ mod glyph_audit;
 
 
 impl NekoviewApp {
-    pub fn new(start_dir: PathBuf, config: AppConfig, viewer_slots: [Option<WindowSlot>; 4], sort_state: SortState, viewer_cfg: ViewerConfig, show_hidden: bool, card_info_mode: &str, card_rating_mode: &str, card_date_format: crate::card_date_format::CardDateFormat, translate_cfg: crate::translate::TranslateConfig, tab_positions: crate::gui_config::TabPositions, tree_sorts: crate::tree_sort::TreeSorts, tag_panel_open: bool, tag_preview_high_quality: bool, explorer_view_mode: &str, explorer_list_cols: &str, explorer_sim_threshold: &str, open_target: Option<PathBuf>, ctx: egui::Context) -> Self {
+    pub fn new(start_dir: PathBuf, mut config: AppConfig, viewer_slots: [Option<WindowSlot>; 4], sort_state: SortState, viewer_cfg: ViewerConfig, show_hidden: bool, card_info_mode: &str, card_rating_mode: &str, card_date_format: crate::card_date_format::CardDateFormat, translate_cfg: crate::translate::TranslateConfig, tab_positions: crate::gui_config::TabPositions, tree_sorts: crate::tree_sort::TreeSorts, tag_panel_open: bool, tag_preview_high_quality: bool, explorer_view_mode: &str, explorer_list_cols: &str, explorer_sim_threshold: &str, open_target: Option<PathBuf>, ctx: egui::Context) -> Self {
         // 「前回フォルダに復帰」がオフなら、他のフォルダ系タブの保存位置も復元しない（既定に戻す）
         let tab_positions = if config.startup.use_last_dir {
             tab_positions
@@ -1421,7 +1424,16 @@ impl NekoviewApp {
         // fit-within(縦横比維持)なので短辺は箱の中に自動的に収まる。
         let max_decode_target = (config.max_decode_edge, config.max_decode_edge);
         let config_root = config.config_root.clone();
+        // DBを開くと無ければ作られるので、新規インストールの判定は開く前に行う。
+        let db_existed = crate::dev_db_backup::db_path(&config_root).exists();
         let (spread_db, backup_failure) = backup_failure_ui::open_spread_db_with_backup(&config_root);
+        // 旧版からの更新なら注意ダイアログを出す。出さない起動では、前回起動バージョンを今のものへ更新する
+        // （出す場合は、ダイアログのOKで更新する）。
+        let current_version = env!("CARGO_PKG_VERSION");
+        let release_notice_pending = crate::release_notice::should_show(&config.last_run_version, current_version, db_existed);
+        if !release_notice_pending {
+            config.last_run_version = current_version.to_string();
+        }
         let (tag_manager_categories, tag_manager_next_tier_id) =
             crate::tag_manager::load(&config_root).unwrap_or_else(crate::tag_manager::default_state);
         let (tag_main_options, tag_attr_options) = crate::tag_manager::derive_tag_options(&tag_manager_categories);
@@ -1520,6 +1532,7 @@ impl NekoviewApp {
             cache_neko_dir: None,
             spread_db,
             backup_failure,
+            release_notice_pending,
             exit_requested: false,
             spread_states: HashMap::new(),
             archive_sort_states: HashMap::new(),

@@ -775,6 +775,50 @@ impl Lang {
         self.idres_pick("終了", "Quit", "退出")
     }
 
+    // ---- 1.11の起動時の注意ダイアログ ----
+
+    pub fn relnotice_title(self) -> &'static str {
+        self.idres_pick(
+            "1.11 へようこそ：記録の管理方式が変わりました",
+            "Welcome to 1.11: how your records are managed has changed",
+            "欢迎使用 1.11：记录的管理方式已改变",
+        )
+    }
+
+    /// 段落は空行（\n\n）で区切る。
+    pub fn relnotice_body(self) -> &'static str {
+        self.idres_pick(
+            "ファイルを「パス」ではなく「内容」で見分ける方式に移行しました。この移行は元に戻せません。旧バージョンに戻す場合は、自動で取ったバックアップを手動で復元してください。\n\n\
+             移行は、フォルダを開いたときに順次行われます（起動の数秒後から、裏でも少しずつ進みます）。次の機能は、移行が済んだ範囲でしか正しく働きません。\n\
+             ・タグ検索：移行済みのファイルだけが対象です\n\
+             ・重複マーカー／類似画像マーカー（？）：開いたことのあるフォルダの間でだけ検出されます\n\n\
+             普段使うフォルダを一度ずつ開いてください。初回は「ファイル検証中」やサムネの計算で、いつもより時間がかかります。",
+            "Files are now recognized by their content instead of their path. This migration cannot be undone. To go back to an older version, restore the automatic backup by hand.\n\n\
+             The migration happens as you open folders (a little more runs in the background a few seconds after launch). The following features only work correctly for what has already been migrated:\n\
+             - Tag search: only migrated files are searched\n\
+             - Duplicate / similar image markers (?): detected only among folders you have opened before\n\n\
+             Please open each of your usual folders once. The first time takes longer than usual because of \"Verifying files\" and thumbnail calculations.",
+            "现在按“内容”而不是“路径”来识别文件。此迁移无法撤销。若要退回旧版本，请手动恢复自动备份。\n\n\
+             迁移会在您打开文件夹时依次进行（启动数秒后也会在后台少量进行）。以下功能只对已迁移的范围正常工作：\n\
+             ・标签搜索：仅限已迁移的文件\n\
+             ・重复标记／相似图片标记（？）：仅在您打开过的文件夹之间检测\n\n\
+             请把常用的文件夹各打开一次。首次打开会因“正在验证文件”和缩略图计算而比平时慢。",
+        )
+    }
+
+    /// バックアップの場所の案内（設定画面の「エクスプローラー」タブ内）。
+    pub fn relnotice_backup_hint(self) -> &'static str {
+        self.idres_pick(
+            "バックアップの場所：設定 → エクスプローラー → データベース管理 → バックアップフォルダを開く",
+            "Where the backup is: Settings → Explorer → Database management → Open backup folder",
+            "备份位置：设置 → 资源管理器 → 数据库管理 → 打开备份文件夹",
+        )
+    }
+
+    pub fn relnotice_ok(self) -> &'static str {
+        self.idres_pick("OK", "OK", "确定")
+    }
+
     // ---- DB内の重複の解決（解決UI）----
 
     fn idres_pick(self, ja: &'static str, en: &'static str, zh: &'static str) -> &'static str {

@@ -121,6 +121,9 @@ impl NekoviewApp {
             Choice::ContinueWithoutIdentity => {
                 // ID層はOFFのまま。旧パス仕様のまま動かす。
                 self.finish_deferred_startup();
+                // 移行していない今回は注意ダイアログを出さない。前回起動バージョンも更新しないので、
+                // バックアップを再試行する次回の起動で出る。
+                self.release_notice_pending = false;
             }
             Choice::Quit => self.exit_requested = true,
         }
