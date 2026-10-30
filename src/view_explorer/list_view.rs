@@ -15,6 +15,7 @@ use crate::i18n;
 
 use super::panels::{draw_cursor_ring, format_mtime, humanize_size};
 use super::list_columns::ListColumns;
+use super::list_edit_ui::{edit_cell_rects, EditBtn};
 use super::view_mode::{ListSize, ViewMode};
 use super::*;
 
@@ -285,6 +286,7 @@ impl NekoviewApp {
         ui.spacing_mut().item_spacing.y = ROW_GAP;
         // 「ファイラー」ボタンの当たり判定は、今フレームに描いた行のものだけ使う。
         self.reveal_icon_hits.clear();
+        self.list_edit_hits.clear();
 
         // 仮想スクロール: 全行ぶんの高さを一度だけ確保し、見えている行（＋前後1行）だけを作る。
         // 行ごとの当たり判定・パスの複製・描画は見えている行に限るので、件数が多くても重くならない。
@@ -638,7 +640,15 @@ impl NekoviewApp {
 
         // 評価（未評価 or ★）と訪問回数。生画像は評価の対象外（カードと同じく「-」）。
         let rating = self.archive_rating_of(path);
-        let rating_col = col_rect(rect, widths, Col::Rating);
+        // 編集の解除中は2段のセルになり、値は上段・＋－は下段に置く。
+        let editing = self.list_editing();
+        let rating_cell = col_rect(rect, widths, Col::Rating);
+        let visits_cell = col_rect(rect, widths, Col::Visits);
+        let (rating_col, visits_col) = if editing {
+            (edit_cell_rects(rating_cell).value, edit_cell_rects(visits_cell).value)
+        } else {
+            (rating_cell, visits_cell)
+        };
         let painter = ui.painter();
         let half = rating.map_or(0, |r| r.rating_half);
         if is_raw {
@@ -654,7 +664,18 @@ impl NekoviewApp {
             crate::rating_overlay::paint_compact_stars(painter, half, center, radius);
         }
         let visits = rating.map_or(0, |r| r.visit_count);
-        cell_text(painter, col_rect(rect, widths, Col::Visits), &visits.to_string(), font, text_color);
+        if visits == 0 {
+            cell_text(painter, visits_col, i18n::t().visit_unvisited(), font, ui.visuals().weak_text_color());
+        } else {
+            cell_text(painter, visits_col, &visits.to_string(), font, text_color);
+        }
+        if editing {
+            // 生画像は評価の対象外なので、評価の＋－は出さない（訪問回数は出す）。
+            if !is_raw {
+                self.paint_edit_buttons(ui, rating_cell, real_idx, (EditBtn::RatingDown, EditBtn::RatingUp), rating);
+            }
+            self.paint_edit_buttons(ui, visits_cell, real_idx, (EditBtn::VisitDown, EditBtn::VisitUp), rating);
+        }
 
         if gone {
             // 確認の結果、もう無いファイル。薄くして、更新で一覧から外れることを待つ。

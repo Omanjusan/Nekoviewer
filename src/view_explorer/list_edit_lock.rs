@@ -34,9 +34,10 @@ impl ListEditLock {
         self.unlocked
     }
 
-    /// ボタンの押下。ロック ⇄ アンロック。
-    pub(super) fn toggle(&mut self) {
+    /// ボタンの押下。ロック ⇄ アンロック。アンロック → ロックになったときだけ true。
+    pub(super) fn toggle(&mut self) -> bool {
         self.unlocked = !self.unlocked;
+        !self.unlocked
     }
 
     /// 毎フレーム、今の表示を渡す。前と違えば自動でロックに戻す。
@@ -49,11 +50,6 @@ impl ListEditLock {
             return true;
         }
         false
-    }
-
-    /// 手動でロックに戻す。アンロック → ロックになったときだけ true。
-    pub(super) fn lock(&mut self) -> bool {
-        std::mem::replace(&mut self.unlocked, false)
     }
 }
 
@@ -69,7 +65,9 @@ impl NekoviewApp {
             similar_entry: self.viewing_similar.as_ref().map(|v| v.entry_path.clone()),
             mode: self.view_mode.mode,
         };
-        self.list_edit_lock.sync(key);
+        if self.list_edit_lock.sync(key) {
+            self.finish_list_edit();
+        }
     }
 }
 
@@ -150,11 +148,10 @@ mod tests {
     }
 
     #[test]
-    fn manual_lock_reports_only_a_real_change() {
+    fn toggle_reports_only_the_unlock_to_lock_change() {
         let mut l = ListEditLock::default();
-        assert!(!l.lock());
-        l.toggle();
-        assert!(l.lock());
+        assert!(!l.toggle(), "ロック → アンロック");
+        assert!(l.toggle(), "アンロック → ロック");
         assert!(!l.is_unlocked());
     }
 }

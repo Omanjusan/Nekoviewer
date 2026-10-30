@@ -2218,8 +2218,8 @@ impl NekoviewApp {
         let lock_resp = ui
             .add_enabled(mode == ViewMode::List, lock_btn)
             .on_hover_text(t.list_edit_lock_hint());
-        if lock_resp.clicked() {
-            self.list_edit_lock.toggle();
+        if lock_resp.clicked() && self.list_edit_lock.toggle() {
+            self.finish_list_edit();
         }
         ui.separator();
     }
@@ -2692,6 +2692,10 @@ impl NekoviewApp {
     ) {
         // リストの「ファイラー」ボタンを押したときは、選択や起動ではなくファイラーで開く。
         if self.try_click_reveal(ui, response, real_idx) {
+            return;
+        }
+        // 編集の解除中に＋－を押したときは、選択や起動ではなく値を動かす。
+        if self.try_click_edit(ui, response, real_idx) {
             return;
         }
         // 重複マーカーのアイコンを押したときは、選択や起動ではなくポップアップを開く。

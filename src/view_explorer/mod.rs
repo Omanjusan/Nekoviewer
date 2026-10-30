@@ -906,6 +906,10 @@ pub struct NekoviewApp {
     sim_threshold_pct: u8,
     /// リストの「★/訪問回数の編集」のロック。起動時は必ずロック（保存しない）。
     list_edit_lock: list_edit_lock::ListEditLock,
+    /// 今フレームに描いた＋－ボタンの当たり判定（行 → ボタン・矩形・押せるか）。描画のたびに作り直す。
+    list_edit_hits: Vec<(usize, list_edit_ui::EditBtn, egui::Rect, bool)>,
+    /// 編集で値を動かした後、まだ並び・絞り込みに反映していない。ロックし直した時点で反映する。
+    list_edit_dirty: bool,
     /// 【モック】下段フィルタ「サムネ類似」。
     sim_filter: bool,
     /// 【モック】今フレームに描いた「？」の矩形 (archives のインデックス -> (矩形, 中身))。クリックの振り分け用。
@@ -1383,6 +1387,7 @@ mod list_view;
 mod list_columns;
 mod list_attr_ui;
 mod list_edit_lock;
+mod list_edit_ui;
 mod dup_marker_ui;
 mod marker_probe;
 mod marker_compare;
@@ -1534,6 +1539,8 @@ impl NekoviewApp {
             sim_matches: HashMap::new(),
             sim_threshold_pct: dup_marker_ui::sim_pct_from_state(explorer_sim_threshold),
             list_edit_lock: list_edit_lock::ListEditLock::default(),
+            list_edit_hits: Vec::new(),
+            list_edit_dirty: false,
             sim_filter: false,
             sim_icon_hits: HashMap::new(),
             marker_probe: marker_probe::MarkerProbeWorker::spawn(ctx.clone()),

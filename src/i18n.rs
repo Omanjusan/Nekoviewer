@@ -1158,8 +1158,20 @@ impl Lang {
         }
     }
 
-    /// 評価帯の回数の行
+    /// 訪問回数が0（一度も開いていない、または手動で0に戻した）ときの表示。リストとカードで共通。
+    pub fn visit_unvisited(self) -> &'static str {
+        match self {
+            Lang::Japanese => "未訪問",
+            Lang::English  => "Unvisited",
+            Lang::Chinese  => "未访问",
+        }
+    }
+
+    /// カードの訪問回数の行。0回は「未訪問」だけに置き換える（評価行の「未評価」と対になる）。
     pub fn visit_count_line(self, n: u32) -> String {
+        if n == 0 {
+            return self.visit_unvisited().to_string();
+        }
         match self {
             Lang::Japanese => format!("訪問回数：{n}回"),
             Lang::English  => format!("Visits: {n}"),
@@ -2562,6 +2574,15 @@ impl Lang {
             (Lang::English, true)   => "Rating/Visits edit: Unlocked",
             (Lang::Chinese, false)  => "评分/访问次数编辑：已锁定",
             (Lang::Chinese, true)   => "评分/访问次数编辑：已解锁",
+        }
+    }
+
+    /// ＋－の保存に失敗したときのトースト
+    pub fn list_edit_failed(self) -> &'static str {
+        match self {
+            Lang::Japanese => "評価・訪問回数を保存できませんでした",
+            Lang::English  => "Could not save the rating or visit count",
+            Lang::Chinese  => "无法保存评分或访问次数",
         }
     }
 
@@ -8119,5 +8140,19 @@ mod thumbnail_status_tests {
             Lang::Japanese.thumbnail_status(80, 80, 0, false),
             "サムネイル 80/80",
         );
+    }
+}
+
+#[cfg(test)]
+mod visit_line_tests {
+    use super::Lang;
+
+    #[test]
+    fn zero_visits_reads_as_unvisited_in_every_language() {
+        for lang in [Lang::Japanese, Lang::English, Lang::Chinese] {
+            assert_eq!(lang.visit_count_line(0), lang.visit_unvisited());
+            assert!(lang.visit_count_line(3).contains('3'));
+        }
+        assert_eq!(Lang::Japanese.visit_unvisited(), "未訪問");
     }
 }
