@@ -289,7 +289,6 @@ pub fn dismiss(db: &Arc<Mutex<Database>>, id: u64) -> bool {
 /// 「正常として消した」再取得マーカーを元に戻す（消去済みの印を外す。`dismiss` の逆）。
 /// 消去済みでないもの・移動マーカー・無いものは何もしない。戻したら true。
 /// 戻した後は、重複先が残っていれば通常の再取得マーカーとして表示に復活する。
-#[allow(dead_code)] // 「消した組」の一覧画面（U4）で使う。
 pub fn undismiss(db: &Arc<Mutex<Database>>, id: u64) -> bool {
     write(db, |table, _rev| {
         let rec = table.get(id).ok()?.and_then(|g| MarkerRecord::decode(g.value()));
@@ -303,7 +302,6 @@ pub fn undismiss(db: &Arc<Mutex<Database>>, id: u64) -> bool {
 
 /// 「正常として消した」再取得マーカーの全て（検出日時の新しい順、同じならIDの大きい順）。
 /// 「消した組」の一覧画面に使う。テーブルが無ければ空。
-#[allow(dead_code)] // 一覧画面（U4）で使う。
 pub fn list_dismissed(db: &Arc<Mutex<Database>>) -> Vec<MarkerRecord> {
     let mut out = list(db);
     out.retain(|r| r.kind == MarkerKind::Reacquired && r.dismissed);

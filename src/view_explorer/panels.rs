@@ -263,6 +263,7 @@ impl NekoviewApp {
         self.draw_unreachable_clean_dialogs(&ctx);
         self.draw_reveal_dialog(&ctx);
         self.draw_marker_popup(&ctx);
+        self.draw_dismissed_window(&ctx);
         self.draw_sort_condition_dialog(&ctx);
         self.draw_bookmark_setting_dialog(&ctx);
         self.draw_spread_setting_dialog(&ctx);
@@ -2318,8 +2319,8 @@ impl NekoviewApp {
     fn draw_filter_bar(&mut self, ui: &mut egui::Ui) {
         // 評価フィルタ群（縦線・チェック・比較・★）と右端の空白ぶん。文字列欄はこの残りを使う。
         const RATING_GROUP_W: f32 = 290.0;
-        // 重複フィルタ群（縦線・「重複」・「消去済」・「サムネ類似」）のぶん。
-        const DUP_GROUP_W: f32 = 240.0;
+        // 重複フィルタ群（縦線・「重複」・「サムネ類似」・「消去済」・「↩」）のぶん。
+        const DUP_GROUP_W: f32 = 270.0;
         const RIGHT_GAP: f32 = 5.0;
         let help_on = self.help_enabled;
         let help_text = i18n::t().help_filter_text();
@@ -2404,7 +2405,10 @@ impl NekoviewApp {
             // ── 重複フィルタ（通常のフォルダ表示でだけ働く。お気に入り・検索の横断一覧では絞り込まない）──
             ui.separator();
             let t = i18n::t();
+            // 並びは「重複」「サムネ類似」「消去済」「↩（消した組の一覧）」。入口を右端に置く。
             let r_dup = ui.checkbox(&mut self.dup_filter, t.dup_filter_label()).on_hover_text(t.dup_filter_hint());
+            let r_sim_filter =
+                ui.checkbox(&mut self.sim_filter, t.sim_filter_label()).on_hover_text(t.sim_filter_hint());
             let r_dismissed = ui
                 .checkbox(&mut self.dup_show_dismissed, t.dup_show_dismissed_label())
                 .on_hover_text(t.dup_show_dismissed_hint());
@@ -2420,10 +2424,19 @@ impl NekoviewApp {
                     changed = true;
                 }
             }
-            let r_sim_filter =
-                ui.checkbox(&mut self.sim_filter, t.sim_filter_label()).on_hover_text(t.sim_filter_hint());
             if r_sim_filter.changed() {
                 changed = true;
+            }
+            // 消した組の一覧ウィンドウを開閉する入口。
+            let (entry_rect, entry_resp) = ui.allocate_exact_size(egui::vec2(22.0, 22.0), egui::Sense::click());
+            let entry_hovered = entry_resp.hovered() || self.dismissed_window.is_some();
+            super::dup_marker_ui::paint_restore_icon(
+                ui.painter(),
+                egui::Rect::from_center_size(entry_rect.center(), egui::vec2(16.0, 16.0)),
+                entry_hovered,
+            );
+            if entry_resp.on_hover_text(t.dismissed_window_entry_tip()).clicked() {
+                self.toggle_dismissed_window();
             }
             ui.add_space(RIGHT_GAP);
 

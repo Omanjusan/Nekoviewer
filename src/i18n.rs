@@ -304,6 +304,114 @@ impl Lang {
         }
     }
 
+    /// 「消した組」ウィンドウの題名。
+    pub fn dismissed_window_title(self) -> &'static str {
+        match self {
+            Lang::Japanese => "消した組",
+            Lang::English  => "Dismissed pairs",
+            Lang::Chinese  => "已清除的组",
+        }
+    }
+
+    /// 「消した組」ウィンドウの説明。
+    pub fn dismissed_window_explain(self) -> &'static str {
+        match self {
+            Lang::Japanese => "「正常として消す」「別物として消す」で消した組の一覧です。行の戻るボタンで取り消します。取り消した組は、次の照合から通常のマーカーに戻ります",
+            Lang::English  => "Pairs dismissed as normal / different. Use the restore button on a row to undo. Restored pairs become normal markers again from the next check",
+            Lang::Chinese  => "已清除为正常/不同的组。点击行上的恢复按钮即可撤销。撤销后，下次比对时恢复为普通标记",
+        }
+    }
+
+    /// 「消した組」ウィンドウの節見出し: 重複。
+    pub fn dismissed_window_dup_heading(self, n: usize) -> String {
+        match self {
+            Lang::Japanese => format!("重複（正常として消したマーカー）  {n}件"),
+            Lang::English  => format!("Duplicates (dismissed as normal)  {n}"),
+            Lang::Chinese  => format!("重复（已清除为正常）  {n}个"),
+        }
+    }
+
+    /// 「消した組」ウィンドウの節見出し: サムネ類似。
+    pub fn dismissed_window_sim_heading(self, n: usize) -> String {
+        match self {
+            Lang::Japanese => format!("サムネ類似（別物として消した組）  {n}件"),
+            Lang::English  => format!("Thumb similar (dismissed as different)  {n}"),
+            Lang::Chinese  => format!("缩略图相似（已清除为不同）  {n}个"),
+        }
+    }
+
+    /// 「消した組」ウィンドウ: 該当なし。
+    pub fn dismissed_window_empty(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ありません",
+            Lang::English  => "None",
+            Lang::Chinese  => "无",
+        }
+    }
+
+    /// 重複先が複数のときの「他N件」。
+    pub fn dismissed_window_others(self, n: usize) -> String {
+        match self {
+            Lang::Japanese => format!("他{n}件"),
+            Lang::English  => format!("+{n} more"),
+            Lang::Chinese  => format!("另有{n}个"),
+        }
+    }
+
+    /// 重複先のレコードが引けなかったとき。
+    pub fn dismissed_window_no_target(self) -> &'static str {
+        match self {
+            Lang::Japanese => "（重複先の記録なし）",
+            Lang::English  => "(no record of the original)",
+            Lang::Chinese  => "（无原文件记录）",
+        }
+    }
+
+    /// ファイルが未確認（実体が見つからなかった）の行に添える文字。
+    pub fn dismissed_window_unconfirmed(self) -> &'static str {
+        match self {
+            Lang::Japanese => "（ファイルが見つかりません）",
+            Lang::English  => "(file not found)",
+            Lang::Chinese  => "（找不到文件）",
+        }
+    }
+
+    /// 日時が分からない行。
+    pub fn dismissed_window_time_unknown(self) -> &'static str {
+        match self {
+            Lang::Japanese => "日時不明",
+            Lang::English  => "date unknown",
+            Lang::Chinese  => "日期未知",
+        }
+    }
+
+    /// 行ごとの「元に戻す」ボタンのホバー説明。
+    pub fn dismissed_window_restore_tip(self) -> &'static str {
+        match self {
+            Lang::Japanese => "この組の「消す」を取り消して、元に戻します",
+            Lang::English  => "Undo the dismissal of this pair",
+            Lang::Chinese  => "撤销对此组的清除",
+        }
+    }
+
+    /// 戻した後のトースト。
+    pub fn dismissed_window_restored_toast(self) -> &'static str {
+        match self {
+            Lang::Japanese => "元に戻しました",
+            Lang::English  => "Restored",
+            Lang::Chinese  => "已恢复",
+        }
+    }
+
+    /// 下段フィルタ行の右端の入口のホバー説明。
+    pub fn dismissed_window_entry_tip(self) -> &'static str {
+        match self {
+            Lang::Japanese => "「正常として消した」組の一覧を開きます。行ごとに元に戻せます",
+            Lang::English  => "Open the list of dismissed pairs. You can restore each one",
+            Lang::Chinese  => "打开已清除组的列表，可逐个恢复",
+        }
+    }
+
     /// 似ている画像ビューの告知バー。
     pub fn sim_banner(self) -> &'static str {
         match self {

@@ -104,7 +104,6 @@ pub fn pair(a: u64, b: u64) -> (u64, u64) {
 
 /// 「正常として消した」ペアを、消した日時 `at`（unix秒）つきで記録する。
 /// 同じIDどうしは何もせず成功。既に記録済みのペアは、日時を新しく書き直す。成功したら true。
-#[allow(dead_code)] // 消すボタン（U5）と一覧画面（U4）で使う。
 pub fn dismiss_pair(db: &Arc<Mutex<Database>>, a: u64, b: u64, at: i64) -> bool {
     if a == b {
         return true;
@@ -161,7 +160,6 @@ pub fn list_dismissed_pairs(db: &Arc<Mutex<Database>>) -> Vec<DismissedPair> {
 
 /// 消したペアを元に戻す（新旧どちらの表にあっても消す）。戻したら true、記録が無ければ false。
 /// 戻した組は、次の照合から、通常の「？」の相手に戻る。表が無ければ作らない。
-#[allow(dead_code)] // 一覧画面（U3以降）で使う。
 pub fn undismiss_pair(db: &Arc<Mutex<Database>>, a: u64, b: u64) -> bool {
     let key = pair(a, b);
     let Ok(guard) = db.lock() else { return false };

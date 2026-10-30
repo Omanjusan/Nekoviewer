@@ -896,6 +896,8 @@ pub struct NekoviewApp {
     dup_sort: bool,
     /// サムネのdHash計算の専用スレッド。
     thumb_hash: thumb_hash_worker::ThumbHashWorker,
+    /// 「消した組」ウィンドウ（開いている間だけ持つ。下段フィルタ行の↩で開閉）。
+    dismissed_window: Option<dismissed_window::DismissedWindow>,
     /// 一覧を開く依頼（アイコンのクリックで置き、次のフレームの頭で実行する）。
     pending_similar_entry: Option<dup_marker_ui::SimilarEntryRequest>,
     /// 似ている画像の照合結果（ファイル名 → 距離の近い順の相手）。保存しない派生情報。
@@ -1381,6 +1383,7 @@ mod dup_marker_ui;
 mod marker_probe;
 mod marker_compare;
 mod similar_view;
+mod dismissed_window;
 mod thumb_hash_worker;
 mod layout_anchor;
 
@@ -1522,6 +1525,7 @@ impl NekoviewApp {
             dup_show_dismissed: false,
             dup_sort: false,
             thumb_hash: thumb_hash_worker::ThumbHashWorker::spawn(ctx.clone()),
+            dismissed_window: None,
             pending_similar_entry: None,
             sim_matches: HashMap::new(),
             sim_threshold_pct: dup_marker_ui::sim_pct_from_state(explorer_sim_threshold),
