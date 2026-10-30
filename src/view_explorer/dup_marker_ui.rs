@@ -93,6 +93,53 @@ pub(super) fn list_icon_rect(cell: egui::Rect) -> egui::Rect {
     egui::Rect::from_center_size(cell.center(), egui::vec2(ICON_SIZE, ICON_SIZE))
 }
 
+/// 重複列の左スロット（重複マーカー）の矩形。右スロットは「？」（似ている画像）が使う。
+pub(super) fn list_marker_rect(cell: egui::Rect) -> egui::Rect {
+    egui::Rect::from_center_size(
+        egui::pos2(cell.min.x + SLOT_PAD + ICON_SIZE / 2.0, cell.center().y),
+        egui::vec2(ICON_SIZE, ICON_SIZE),
+    )
+}
+
+/// リストの重複列の右スロット（「？」）の矩形。
+pub(super) fn list_similar_rect(cell: egui::Rect) -> egui::Rect {
+    egui::Rect::from_center_size(
+        egui::pos2(cell.max.x - SLOT_PAD - ICON_SIZE / 2.0, cell.center().y),
+        egui::vec2(ICON_SIZE, ICON_SIZE),
+    )
+}
+
+/// カードの「？」の矩形。重複マーカーのすぐ右に並べる。
+pub(super) fn card_similar_rect(card: egui::Rect) -> egui::Rect {
+    card_icon_rect(card).translate(egui::vec2(ICON_SIZE + SLOT_PAD, 0.0))
+}
+
+/// 重複列の左右スロットの外側の余白と、カードでのアイコン間の隙間。
+const SLOT_PAD: f32 = 4.0;
+
+/// 【モック】しきい値の既定値(%)と、コンボボックスの選択肢（5%刻み）。
+pub(super) const SIM_DEFAULT_PCT: u8 = 90;
+pub(super) const SIM_PCT_CHOICES: [u8; 7] = [70, 75, 80, 85, 90, 95, 100];
+
+/// 【モック】ファイル名から決まる仮の類似度(%)。約3分の1のファイルが対象で、65〜100%に散らす。
+/// 本実装では、サムネのdHashの距離から求めた値に置き換える。
+pub(super) fn mock_similar_pct(name: &str) -> Option<u8> {
+    let h = name.bytes().fold(0xcbf29ce484222325_u64, |h, b| (h ^ u64::from(b)).wrapping_mul(0x100000001b3));
+    (h % 3 == 0).then(|| 65 + ((h / 3) % 36) as u8)
+}
+
+/// 「？」（似ている画像）のアイコン。紫の丸に白い「?」。
+pub(super) fn paint_similar_icon(painter: &egui::Painter, rect: egui::Rect) {
+    painter.circle_filled(rect.center(), ICON_SIZE / 2.0, egui::Color32::from_rgb(140, 95, 215));
+    painter.text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        "?",
+        egui::FontId::proportional(12.0),
+        egui::Color32::WHITE,
+    );
+}
+
 pub(super) fn paint_icon(painter: &egui::Painter, rect: egui::Rect, icon: MarkerIcon) {
     let (base, alpha) = match icon {
         MarkerIcon::Moved => (egui::Color32::from_rgb(60, 130, 220), 255),
@@ -181,6 +228,57 @@ impl super::NekoviewApp {
         }
     }
 
+    /// 【モック】そのファイル名に「？」を出すなら類似度(%)。マーカーを出さない表示や、しきい値に届かないものは None。
+    pub(super) fn sim_mock_pct(&self, filename: &str) -> Option<u8> {
+        if !self.marker_view_active() {
+            return None;
+        }
+        mock_similar_pct(filename).filter(|pct| *pct >= self.sim_threshold_pct)
+    }
+
+    /// 【モック】「？」を描き、ホバーで説明を出す。クリックの振り分けのため、描いた矩形を覚える。
+    pub(super) fn paint_similar_mock(
+        &mut self,
+        ui: &egui::Ui,
+        response: &egui::Response,
+        icon_rect: egui::Rect,
+        real_idx: usize,
+        name: &str,
+    ) {
+        let Some(pct) = self.sim_mock_pct(name) else {
+            self.sim_icon_hits.remove(&real_idx);
+            return;
+        };
+        paint_similar_icon(&ui.painter().with_clip_rect(ui.clip_rect()), icon_rect);
+        self.sim_icon_hits.insert(real_idx, (icon_rect, pct));
+        let on_icon = ui.input(|i| i.pointer.hover_pos()).is_some_and(|p| icon_rect.contains(p));
+        if on_icon && self.sim_popup.is_none() && self.marker_popup.is_none() {
+            response.clone().on_hover_text(i18n::t().sim_marker_tooltip(pct));
+        }
+    }
+
+    /// 【モック】「？」の説明ポップアップ。外側クリックかEscで閉じる。
+    pub(super) fn draw_sim_popup(&mut self, ctx: &egui::Context) {
+        let Some((anchor, pct)) = self.sim_popup else { return };
+        let t = i18n::t();
+        let area = egui::Area::new(egui::Id::new("sim_mock_popup"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(anchor)
+            .show(ctx, |ui| {
+                egui::Frame::popup(ui.style()).show(ui, |ui| {
+                    ui.set_max_width(380.0);
+                    ui.label(egui::RichText::new(t.sim_marker_tooltip(pct)).strong());
+                    ui.label(t.sim_mock_popup_note());
+                });
+            });
+        let pressed_outside = ctx.input(|i| i.pointer.any_pressed())
+            && ctx.input(|i| i.pointer.interact_pos()).is_some_and(|p| !area.response.rect.contains(p));
+        let escape = ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
+        if pressed_outside || escape {
+            self.sim_popup = None;
+        }
+    }
+
     /// アイコンのクリックなら、ポップアップを開いて true（選択や起動はしない）。
     /// ダブルクリックの2回目も、起動させないよう握りつぶす。
     pub(super) fn try_open_marker_popup(&mut self, ui: &egui::Ui, response: &egui::Response, real_idx: usize) -> bool {
@@ -190,6 +288,15 @@ impl super::NekoviewApp {
         }
         if !(response.clicked() || response.double_clicked()) {
             return false;
+        }
+        // 【モック】「？」のクリック。
+        if let Some((rect, pct)) = self.sim_icon_hits.get(&real_idx).copied()
+            && ui.input(|i| i.pointer.interact_pos()).is_some_and(|p| rect.contains(p))
+        {
+            if response.clicked() {
+                self.sim_popup = Some((egui::pos2(rect.min.x, rect.max.y + 4.0), pct));
+            }
+            return true;
         }
         let Some(rect) = self.marker_icon_hits.get(&real_idx).copied() else { return false };
         let on_icon = ui.input(|i| i.pointer.interact_pos()).is_some_and(|p| rect.contains(p));
@@ -269,6 +376,8 @@ impl super::NekoviewApp {
     pub(super) fn on_marker_dir_scan(&mut self) {
         self.marker_popup = None;
         self.marker_icon_hits.clear();
+        self.sim_popup = None;
+        self.sim_icon_hits.clear();
         // 重複先の存在確認は、フォルダを読み込むたびにやり直す（確認が済むまでは、いつもどおり表示する）。
         self.marker_probe.invalidate();
         self.marker_presence.clear();

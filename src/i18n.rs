@@ -196,6 +196,51 @@ impl Lang {
         }
     }
 
+    /// 下段フィルタ行: 「？」（似ている画像）が付いたファイルだけを出すチェックボックスの名前。
+    pub fn sim_filter_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "似ているもの",
+            Lang::English  => "Similar",
+            Lang::Chinese  => "相似",
+        }
+    }
+
+    /// 下段フィルタ行: 似ているもの絞り込みの説明。
+    pub fn sim_filter_hint(self) -> &'static str {
+        match self {
+            Lang::Japanese => "サムネが似ているファイル（「？」マーカー）だけを表示します",
+            Lang::English  => "Show only files with look-alike thumbnails (\"?\" marker)",
+            Lang::Chinese  => "仅显示缩略图相似的文件（“？”标记）",
+        }
+    }
+
+    /// パス行: 似ている画像のしきい値(類似度%)コンボボックスの説明。
+    pub fn sim_threshold_hint(self) -> &'static str {
+        match self {
+            Lang::Japanese => "サムネの類似度がこの値以上のファイルに「？」を付けます。高いほど厳密です",
+            Lang::English  => "Mark files whose thumbnail similarity is at least this value with \"?\". Higher is stricter",
+            Lang::Chinese  => "缩略图相似度不低于此值的文件将标记“？”。越高越严格",
+        }
+    }
+
+    /// 「？」マーカーのホバー説明。
+    pub fn sim_marker_tooltip(self, pct: u8) -> String {
+        match self {
+            Lang::Japanese => format!("サムネが似ているファイルがあります（類似度 {pct}%）。内容が同じとは限りません"),
+            Lang::English  => format!("A file with a look-alike thumbnail exists ({pct}% similar). The content may differ"),
+            Lang::Chinese  => format!("存在缩略图相似的文件（相似度 {pct}%）。内容不一定相同"),
+        }
+    }
+
+    /// 「？」マーカーをクリックしたときのモック表示。
+    pub fn sim_mock_popup_note(self) -> &'static str {
+        match self {
+            Lang::Japanese => "（モック）ここに「似ている画像ビュー」が開きます",
+            Lang::English  => "(Mock) The look-alike image view will open here",
+            Lang::Chinese  => "（模型）此处将打开“相似图片视图”",
+        }
+    }
+
     /// 消去済みの再取得マーカーのホバー説明。
     pub fn dup_marker_dismissed(self) -> &'static str {
         match self {

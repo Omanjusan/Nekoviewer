@@ -263,6 +263,7 @@ impl NekoviewApp {
         self.draw_unreachable_clean_dialogs(&ctx);
         self.draw_reveal_dialog(&ctx);
         self.draw_marker_popup(&ctx);
+        self.draw_sim_popup(&ctx);
         self.draw_sort_condition_dialog(&ctx);
         self.draw_bookmark_setting_dialog(&ctx);
         self.draw_spread_setting_dialog(&ctx);
@@ -2183,6 +2184,21 @@ impl NekoviewApp {
             mode != ViewMode::Card,
             egui::Checkbox::new(&mut self.view_mode.hover_popup, t.view_mode_hover_popup_label()),
         );
+        // 【モック】似ている画像の類似度しきい値。「？」を出す下限(%)。
+        let before = self.sim_threshold_pct;
+        let r_sim = egui::ComboBox::from_id_salt("sim_threshold_pct")
+            .width(52.0)
+            .selected_text(format!("{}%", self.sim_threshold_pct))
+            .show_ui(ui, |ui| {
+                for pct in super::dup_marker_ui::SIM_PCT_CHOICES {
+                    ui.selectable_value(&mut self.sim_threshold_pct, pct, format!("{pct}%"));
+                }
+            });
+        r_sim.response.on_hover_text(t.sim_threshold_hint());
+        if self.sim_threshold_pct != before {
+            self.sim_popup = None;
+            self.recompute_filter();
+        }
         ui.separator();
     }
 
@@ -2393,6 +2409,11 @@ impl NekoviewApp {
                 } else {
                     changed = true;
                 }
+            }
+            let r_sim_filter =
+                ui.checkbox(&mut self.sim_filter, t.sim_filter_label()).on_hover_text(t.sim_filter_hint());
+            if r_sim_filter.changed() {
+                changed = true;
             }
             ui.add_space(RIGHT_GAP);
 
@@ -3296,6 +3317,8 @@ impl NekoviewApp {
                                     self.paint_similar_base_mark(ui, &response, icon_rect, real_idx, path);
                                 } else {
                                     self.paint_marker_icon(ui, &response, icon_rect, real_idx, name);
+                                    let sim_rect = super::dup_marker_ui::card_similar_rect(rect);
+                                    self.paint_similar_mock(ui, &response, sim_rect, real_idx, name);
                                 }
                             }
 

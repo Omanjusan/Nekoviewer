@@ -588,7 +588,8 @@ impl NekoviewApp {
         if self.viewing_similar.is_some() {
             self.paint_similar_base_mark(ui, response, super::dup_marker_ui::list_icon_rect(dup_cell), real_idx, path);
         } else {
-            self.paint_marker_icon(ui, response, super::dup_marker_ui::list_icon_rect(dup_cell), real_idx, name);
+            self.paint_marker_icon(ui, response, super::dup_marker_ui::list_marker_rect(dup_cell), real_idx, name);
+            self.paint_similar_mock(ui, response, super::dup_marker_ui::list_similar_rect(dup_cell), real_idx, name);
         }
         let painter = ui.painter();
         if let Some((mt, sz)) = meta {

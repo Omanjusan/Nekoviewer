@@ -1001,7 +1001,8 @@ impl NekoviewApp {
         let text_active = self.filter_enabled && !self.filter_text.trim().is_empty();
         let rating_active = self.rating_filter.enabled;
         let dup_active = self.dup_filter && self.marker_view_active();
-        if text_active || rating_active || dup_active {
+        let sim_active = self.sim_filter && self.marker_view_active();
+        if text_active || rating_active || dup_active || sim_active {
             let text = self.filter_text.clone();
             // 評価は横断一覧でもキャッシュ経由で引く（未取得ぶんはここで遅延ロードされる）
             let ratings: Vec<Option<u8>> = if rating_active {
@@ -1024,6 +1025,15 @@ impl NekoviewApp {
                             .and_then(|n| n.to_str())
                             .is_some_and(|name| self.active_marker_detected_at(name).is_some());
                         if !marked {
+                            return false;
+                        }
+                    }
+                    if sim_active {
+                        let similar = p
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .is_some_and(|name| self.sim_mock_pct(name).is_some());
+                        if !similar {
                             return false;
                         }
                     }

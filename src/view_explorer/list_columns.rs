@@ -6,9 +6,9 @@
 pub(crate) const COL_COUNT: usize = 6;
 
 /// 既定幅（px）。
-pub(crate) const DEFAULT_WIDTHS: [f32; COL_COUNT] = [24.0, 360.0, 90.0, 160.0, 120.0, 80.0];
-/// 最小幅（px）。見出しの文字と、評価の★が収まる程度。
-pub(crate) const MIN_WIDTHS: [f32; COL_COUNT] = [20.0, 80.0, 50.0, 80.0, 60.0, 40.0];
+pub(crate) const DEFAULT_WIDTHS: [f32; COL_COUNT] = [44.0, 360.0, 90.0, 160.0, 120.0, 80.0];
+/// 最小幅（px）。見出しの文字と、評価の★が収まる程度。重複列は、アイコン2つ（重複・似ている）が並ぶ幅。
+pub(crate) const MIN_WIDTHS: [f32; COL_COUNT] = [40.0, 80.0, 50.0, 80.0, 60.0, 40.0];
 const MAX_WIDTH: f32 = 1200.0;
 
 #[derive(Clone, Copy, PartialEq, Debug)]
