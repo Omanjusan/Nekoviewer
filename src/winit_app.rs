@@ -216,6 +216,9 @@ fn make_egui_window(
         }
     });
 
+    // view_reader がモニター一覧を取れるよう、窓のハンドルを Context に預ける（`monitor_rects` が読む）。
+    egui_ctx.data_mut(|d| d.insert_temp(egui::Id::new(WINDOW_HANDLE_KEY), WindowHandle(window.clone())));
+
     let egui_state = egui_winit::State::new(
         egui_ctx.clone(),
         viewport_id,
@@ -236,6 +239,32 @@ fn make_egui_window(
         next_repaint: Some(Instant::now()),
         not_before: Instant::now(),
     }
+}
+
+const WINDOW_HANDLE_KEY: &str = "nv_window_handle";
+
+/// `egui::Context` の一時データに預ける、この窓の winit ハンドル。
+#[derive(Clone)]
+struct WindowHandle(Arc<Window>);
+
+/// この Context の窓から見える全モニターの矩形（論理座標、左→右・上→下の順）。
+/// 論理座標への換算は egui が窓位置に使う倍率（`pixels_per_point`）に揃える。取得できなければ空。
+pub fn monitor_rects(ctx: &egui::Context) -> Vec<crate::monitor_geom::MonitorRect> {
+    let Some(handle) = ctx.data(|d| d.get_temp::<WindowHandle>(egui::Id::new(WINDOW_HANDLE_KEY))) else {
+        return Vec::new();
+    };
+    let ppp = ctx.pixels_per_point();
+    let mut v: Vec<_> = handle
+        .0
+        .available_monitors()
+        .map(|m| {
+            let p = m.position();
+            let s = m.size();
+            crate::monitor_geom::MonitorRect::from_physical(p.x, p.y, s.width, s.height, ppp)
+        })
+        .collect();
+    crate::monitor_geom::sort_for_numbering(&mut v);
+    v
 }
 
 /// 1 つの窓を 1 フレーム描画し、egui が望む次回再描画までの猶予を返す。

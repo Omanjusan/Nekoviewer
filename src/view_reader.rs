@@ -2064,13 +2064,10 @@ impl ViewerState {
     }
 
     /// ウィンドウ位置・サイズスロットを実際にウィンドウへ適用する共通処理。
-    /// 画面外に出ないよう `clamp_slot_position_inner` で補正してから送る。
+    /// 画面外に出ないよう、全モニターを見て `clamp_slot_position` で補正してから送る。
     fn apply_window_slot(ctx: &egui::Context, slot: WindowSlot, monitor_size: Option<egui::Vec2>) -> (i32, i32) {
-        let (cx, cy) = if let Some(m) = monitor_size {
-            Self::clamp_slot_position_inner(slot.x, slot.y, slot.w, slot.h, m)
-        } else {
-            (slot.x, slot.y)
-        };
+        let monitors = Self::slot_monitors(ctx, monitor_size);
+        let (cx, cy) = crate::monitor_geom::clamp_slot_position(slot.x, slot.y, slot.w, slot.h, &monitors);
         ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(
             egui::pos2(cx as f32, cy as f32),
         ));
@@ -2078,6 +2075,18 @@ impl ViewerState {
             egui::vec2(slot.w as f32, slot.h as f32),
         ));
         (cx, cy)
+    }
+
+    /// スロットの補正・番号逆算に使うモニター一覧。取得できないときは、いまいるモニターを
+    /// 原点に置いた1枚として扱う（旧実装と同じ挙動）。それも無ければ空（補正しない）。
+    fn slot_monitors(ctx: &egui::Context, monitor_size: Option<egui::Vec2>) -> Vec<crate::monitor_geom::MonitorRect> {
+        let v = crate::winit_app::monitor_rects(ctx);
+        if !v.is_empty() {
+            return v;
+        }
+        monitor_size
+            .map(|m| vec![crate::monitor_geom::MonitorRect { x: 0, y: 0, w: m.x as u32, h: m.y as u32 }])
+            .unwrap_or_default()
     }
 
     /// ビューアーを開いた直後（初回フレーム）に conf 既定スロットを一度だけ適用する。
@@ -2283,6 +2292,7 @@ impl ViewerState {
         save_slots: &mut Option<[Option<WindowSlot>; 4]>,
     ) {
         let t = i18n::t();
+        let monitors = Self::slot_monitors(ctx, input.monitor_size);
         egui::Grid::new("window_pos_menu_grid").num_columns(4).show(ui, |ui| {
             for i in 0..4usize {
                 let key = keymap.apply_slot_key_label(i).unwrap_or_else(|| t.window_pos_key_none().to_owned());
@@ -2293,8 +2303,10 @@ impl ViewerState {
                     ui.close();
                 }
                 match slot {
-                    // モニター番号の逆算は P3 で入れる。それまでは不明扱い。
-                    Some(s) => { ui.label(t.window_pos_entry(None, s.x, s.y, s.w, s.h)); }
+                    Some(s) => {
+                        let mon = crate::monitor_geom::monitor_index_for_slot(s.x, s.y, s.w, s.h, &monitors).map(|i| i + 1);
+                        ui.label(t.window_pos_entry(mon, s.x, s.y, s.w, s.h));
+                    }
                     None => { ui.weak(t.window_pos_empty()); }
                 }
                 if ui.button(t.window_pos_record()).clicked() {
@@ -5846,15 +5858,6 @@ impl ViewerState {
             Self::paint_texture_rotated_at(painter, tex, fit.center(), scale, angle_deg);
         }
         fit
-    }
-
-    /// スロット位置をモニター内に収まるようクランプする（少なくとも 100px は画面内に残す）
-    fn clamp_slot_position_inner(x: i32, y: i32, w: u32, _h: u32, monitor: egui::Vec2) -> (i32, i32) {
-        let min_visible = 100.0_f32;
-        let cx = x.max(-(w as i32) + min_visible as i32)
-                  .min((monitor.x - min_visible) as i32);
-        let cy = y.max(0).min((monitor.y - min_visible) as i32);
-        (cx, cy)
     }
 
     /// 単ページを offset_x だけ横にずらして描画（アニメーション用）
