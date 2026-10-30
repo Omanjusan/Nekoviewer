@@ -2,6 +2,32 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.11.0] - 2026-10-30
+
+### Added
+
+- File identity management (fingerprints). Files are recognized by content instead of path, so ratings, bookmarks, spread settings, sort settings, registered thumbnails, tags, favorites and thumbnails carry over after a move or rename. Includes choosing the source to inherit from or the origin of a move, duplicate (copy) detection, resolution dialogs, and a "Verifying files" indicator
+- Database backups. An automatic backup taken before the migration to fingerprint management (with a confirmation dialog if it fails), generational backups (configurable number of generations), restore from the GUI, and an "Open backup folder" button in the settings
+- Automatic cleanup of records. Unconfirmed IDs whose online-day deadline has expired are cleaned up automatically, plus a manual "Clean up untraceable records" and cleanup of thumbnail rows
+- Explorer view modes. Switch between cards and a list; list sizes (S, M, L, no thumbnails); thumbnail popup on hover; resizable columns; range selection; keyboard cursor following; position correction when the layout changes
+- Error and attribute columns in the list. Shows invalid ZIPs, thumbnail failures and lost network connections, and icons for saved settings and favorites
+- Plus/minus editing of the star rating and visit count (with an edit lock)
+- Duplicate marker. Detects and marks files with identical content, lists files with the same content, and a "Compare all exactly" button
+- Similar image marker (? icon). Thumbnail match threshold, a list of similar files, and a window for undoing dismissed pairs. The window is opened from the @-like mark in the filter newly added at the bottom right of the explorer
+- Tag search tab. Find files across folders by the tags assigned to them
+- Virtual folders: bulk re-fetch of real subfolders (you can choose whether to also register the children of subfolders)
+- More ways to open folders: commands to open the folder of a folder item and the target of the `../` item. The file selection is reproduced in the OS file manager
+- Localized the tag-related UI in the settings dialog
+
+### Fixed
+
+- Fixed the PWD ★ not being restored correctly when files are migrated
+- Fixed the score filter being hidden when the tag UI is shown
+- Fixed unmounted favorites not reconnecting on reload after mounting
+- Unified "Open PWD" in the Search and Favorites tabs so that it opens the parent folder of the item. Removed the awkwardness when moving the search base folder from other tabs
+- A single-select tag can now be deselected by toggling it (except the main tag)
+- The variable-width hover icon on the divider is now shown only on the center handle
+
 ## [1.10.0] - 2026-09-29
 
 ### Added

@@ -245,6 +245,9 @@ pub struct AppConfig {
     /// 「次回から表示しない」チェック済みで確認したか。永続設定
     /// （state の `app_folder_book_access_warning_seen`）。
     pub folder_book_access_warning_seen: bool,
+    /// 前回起動したときのバージョン（state の `app_last_run_version`）。空=記録なし（1.11より前の版、または新規）。
+    /// 起動時の注意ダイアログ（[release_notice.rs](crate::release_notice)）の表示判定に使う。
+    pub last_run_version: String,
 }
 
 impl AppConfig {
@@ -302,6 +305,7 @@ impl AppConfig {
             keymap: Keymap::load(&root),
             config_root: root,
             folder_book_access_warning_seen: false,
+            last_run_version: String::new(),
         }
     }
 

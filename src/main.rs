@@ -16,6 +16,7 @@ mod file_settings;
 mod fs;
 mod gui_config;
 mod i18n;
+mod release_notice;
 mod identity_pending;
 mod identity_online;
 mod identity_relink;
@@ -134,6 +135,7 @@ fn main() {
         if let Some(v) = state.app_magnifier_zoom_notice_shown { cfg.magnifier_zoom_notice_shown = v; }
         if let Some(v) = state.app_max_decode_edge_prompt_answered { cfg.max_decode_edge_prompt_answered = v; }
         if let Some(v) = state.app_folder_book_access_warning_seen { cfg.folder_book_access_warning_seen = v; }
+        if let Some(v) = &state.app_last_run_version { cfg.last_run_version = v.clone(); }
 
         // 原寸時の最大長辺幅の既定値を 1920 → 4000 に上げた。保存済みの値が新既定値より低く未回答なら、
         // 起動時に1度だけ更新するか確認する（新既定値以上の人は、確認不要として回答済みにしておく）。
