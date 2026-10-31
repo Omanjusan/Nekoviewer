@@ -30,6 +30,7 @@
   コピー後も評価・しおり・見開き・ソート・登録サムネ・タグ・お気に入り・サムネを引き継ぐ仕組み
 - [features/fingerprint-resolution-ui.md](features/fingerprint-resolution-ui.md) — 「DB内の重複の解決」画面のレイアウト・文面仕様
 - [features/file-identity-test-checklist.md](features/file-identity-test-checklist.md) — ファイルID管理の統合テスト手順書
+- [features/window-position-menu.md](features/window-position-menu.md) — ウィンドウ位置メニュー（記録/展開/削除/自動展開）・画面外補正・ビューアー復帰
 - [e2e-window-pos.md](e2e-window-pos.md) — ウィンドウ位置・ビューアー復帰の自動テスト（Xephyr＋制御口）の実行手順
 - [features/explorer-view-modes.md](features/explorer-view-modes.md) — エクスプローラーの表示モード（カード／リスト）と選択の規則、手動テスト手順
 - [features/duplicate-marker.md](features/duplicate-marker.md) — 重複マーカー（同じ内容のファイルの警告）と類似ファイル一覧・完全比較、手動テスト手順

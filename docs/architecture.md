@@ -98,7 +98,7 @@ Reader ウィンドウの描画と入力処理。`ViewerState` 構造体。
 そのスナップショットを参照する（複数回呼び出しによるバグ防止）。`show()` が `ViewerOutput` を
 返し、呼び出し元（view_explorer）が処理。
 責務：ページ表示（Single/Spread）、スクロール、フルスクリーン切り替え、キー入力・マウス入力の
-処理、アニメーション更新、`PageCache` からのテクスチャ取得、`WindowSlot`（F5–F8）の保存・復元。
+処理、アニメーション更新、`PageCache` からのテクスチャ取得、`WindowSlot`（F5–F8）の保存・復元（[features/window-position-menu.md](features/window-position-menu.md)）。
 
 ### cache.rs
 ページキャッシュ（`PageCache`）、ファイルキャッシュ（`FileCache`）、サムネイルワーカー、各種

@@ -88,7 +88,7 @@ Rust + egui（生winit + egui-wgpu、eframe不使用）で作る画像ビュー�
 | `Enter` | ズーム（実寸 ⇔ フィット）切替 |
 | `Alt`+`Enter` | フルスクリーン切替（擬似フルスクリーン） |
 | `Esc` | クローズ（フルスクリーン解除も兼ねる） |
-| `F5`〜`F8` | ウィンドウ位置・サイズのスロット適用/保存 |
+| `F5`〜`F8` | ウィンドウ位置・サイズのスロット適用（保存・削除は `[ウィンドウ位置]` メニュー。[features/window-position-menu.md](features/window-position-menu.md)） |
 
 - マルチウィンドウ対応: 各ビューアが独立したOSネイティブウィンドウとして開く（生winit採用によって実現）
 
@@ -117,7 +117,7 @@ Rust + egui（生winit + egui-wgpu、eframe不使用）で作る画像ビュー�
 
 TOMLではなく独自の`key = value` + `[section]`形式。実行ファイル隣に2ファイルに分離して保存する。
 
-- `nekoviewer.conf`（`config.rs`、起動時のみ読込）: `[startup]`（use_last_dir/fixed_dir）、`[viewer]`（filter/default_slot）、`[thumbnail]`（filter）、`[grid]`（thumb_size）、`[worker]`（decode_threads）、`[cache]`（storage/cache_total_mb/anim_*）、`[log]`（perf/key/common）
+- `nekoviewer.conf`（`config.rs`、起動時のみ読込）: `[startup]`（use_last_dir/fixed_dir）、`[viewer]`（filter/default_slot。実行中は state の app_default_slot が優先され、`[ウィンドウ位置]` メニューのチェックで変わる）、`[thumbnail]`（filter）、`[grid]`（thumb_size）、`[worker]`（decode_threads）、`[cache]`（storage/cache_total_mb/anim_*）、`[log]`（perf/key/common）
 - `nekoviewer.state`（`gui_config.rs`、実行中に随時上書き保存）: last_dir/window_size/sort_key/sort_ascending/lang/viewer_zoom/fullscreen/thumbbar設定等
 
 ---
