@@ -965,9 +965,17 @@ impl WinitApp {
 
 /// winit イベントループを起動する（戻ってきたら終了）。
 pub fn run(start_dir: PathBuf, cfg: AppConfig, state: AppState, open_target: Option<PathBuf>) {
-    let event_loop = EventLoop::<UserEvent>::with_user_event()
-        .build()
-        .expect("event loop");
+    // 保存済みの「次回 XWayland」と環境から今回のバックエンドを決める（display_backend.rs）。
+    let force_x11 = crate::display_backend::init(cfg.launch_x11);
+    let mut builder = EventLoop::<UserEvent>::with_user_event();
+    #[cfg(all(unix, not(target_os = "macos")))]
+    if force_x11 {
+        use winit::platform::x11::EventLoopBuilderExtX11;
+        builder.with_x11();
+    }
+    #[cfg(not(all(unix, not(target_os = "macos"))))]
+    let _ = force_x11;
+    let event_loop = builder.build().expect("event loop");
     // 既定は Wait（render-on-demand）。再描画予定は about_to_wait で WaitUntil/Poll に切替。
     event_loop.set_control_flow(ControlFlow::Wait);
     let proxy = event_loop.create_proxy();

@@ -503,6 +503,8 @@ pub struct ViewerState {
     window_pos_overwrite_pending: Option<usize>,
     /// 「開いたとき自動展開」チェックの変更を app 側へ渡すための待ち（外側 Some = 変更あり）
     pending_default_slot_change: Option<Option<usize>>,
+    /// 「次回起動時の XWayland / Wayland」チェックの変更を app 側へ渡すための待ち
+    pending_launch_x11_change: Option<bool>,
     /// 自動テスト用の制御口から届いたスロット操作コマンド（test-control feature のみ）
     #[cfg(feature = "test-control")]
     test_cmds: std::collections::VecDeque<crate::test_control::Cmd>,
@@ -883,6 +885,7 @@ impl ViewerState {
             palette_slot_cycle_index: None,
             window_pos_overwrite_pending: None,
             pending_default_slot_change: None,
+            pending_launch_x11_change: None,
             #[cfg(feature = "test-control")]
             test_cmds: std::collections::VecDeque::new(),
             outer_pos: None,
@@ -995,6 +998,7 @@ impl ViewerState {
             palette_slot_cycle_index: None,
             window_pos_overwrite_pending: None,
             pending_default_slot_change: None,
+            pending_launch_x11_change: None,
             #[cfg(feature = "test-control")]
             test_cmds: std::collections::VecDeque::new(),
             outer_pos: None,
@@ -1785,7 +1789,7 @@ impl ViewerState {
         let ctx = ui.ctx().clone();
         let viewer_style = ui.style().clone();
         if !self.open || self.entries.is_empty() {
-            return ViewerOutput { nav: ViewerNav::None, close_requested: !self.open, save_slots: None, default_slot_change: None, spread_save_action: None, sort_save_action: None, thumbnail_save_action: None, bookmark_save_action: None, rating_save_action: None, favorite_add_requested: false, toggle_translate_window: false, tool_palette_changed: false, magnifier_settings_changed: false, palette_key_assign: None };
+            return ViewerOutput { nav: ViewerNav::None, close_requested: !self.open, save_slots: None, default_slot_change: None, launch_x11_change: None, spread_save_action: None, sort_save_action: None, thumbnail_save_action: None, bookmark_save_action: None, rating_save_action: None, favorite_add_requested: false, toggle_translate_window: false, tool_palette_changed: false, magnifier_settings_changed: false, palette_key_assign: None };
         }
 
         // ── フレーム入力を一括収集（ctx.input はこの1回のみ）────────────────
@@ -2046,7 +2050,7 @@ impl ViewerState {
         self.maybe_open_file_detail_dialog();
         self.draw_file_detail_dialog(&ctx);
         let palette_key_assign = self.draw_tool_palette_key_assign(&ctx, keymap);
-        ViewerOutput { nav, close_requested: close_self, save_slots, default_slot_change: self.pending_default_slot_change.take(), spread_save_action, sort_save_action, thumbnail_save_action, bookmark_save_action, rating_save_action, favorite_add_requested, toggle_translate_window, tool_palette_changed, magnifier_settings_changed: std::mem::take(&mut self.magnifier_settings_dirty), palette_key_assign }
+        ViewerOutput { nav, close_requested: close_self, save_slots, default_slot_change: self.pending_default_slot_change.take(), launch_x11_change: self.pending_launch_x11_change.take(), spread_save_action, sort_save_action, thumbnail_save_action, bookmark_save_action, rating_save_action, favorite_add_requested, toggle_translate_window, tool_palette_changed, magnifier_settings_changed: std::mem::take(&mut self.magnifier_settings_dirty), palette_key_assign }
     }
 
     /// ツールパレットの変更確定処理。image_filterのpoll_image_filter_debounceと同じ考え方で、
@@ -2321,6 +2325,7 @@ impl ViewerState {
                 Cmd::Record(i) => self.record_window_slot(i, input, save_slots),
                 Cmd::Delete(i) => self.delete_window_slot(i, save_slots),
                 Cmd::Auto(v) => self.set_auto_apply_slot(v),
+                Cmd::LaunchX11(v) => self.set_launch_x11(v),
                 Cmd::Move { .. } | Cmd::Recover | Cmd::Close | Cmd::Dump => {}
             }
         }
@@ -2336,6 +2341,46 @@ impl ViewerState {
         self.test_cmds.is_empty()
     }
 
+    /// メニュー最上段の、起動バックエンド（Wayland / XWayland）の案内と「次回起動時」のチェック。
+    /// Wayland セッションでだけ出す。チェックは状態ではなく「次回に今のモードを変えたい」意思
+    /// （[`crate::display_backend`]）。
+    fn draw_backend_notice(&mut self, ui: &mut egui::Ui) {
+        use crate::display_backend::{self as backend, Mode};
+        let mode = backend::mode();
+        if mode == Mode::NotWayland {
+            return;
+        }
+        let t = i18n::t();
+        ui.scope(|ui| {
+            ui.set_max_width(420.0);
+            let next_label = match mode {
+                Mode::XWayland => {
+                    ui.label(t.backend_xwayland_running());
+                    ui.weak(t.backend_xwayland_hint());
+                    t.backend_next_wayland()
+                }
+                _ => {
+                    ui.colored_label(ui.visuals().warn_fg_color, t.backend_wayland_warning());
+                    t.backend_next_xwayland()
+                }
+            };
+            if backend::x11_unavailable() {
+                ui.colored_label(ui.visuals().error_fg_color, t.backend_xwayland_unavailable());
+            }
+            let mut pending = backend::switch_pending();
+            if ui.checkbox(&mut pending, next_label).changed() {
+                self.set_launch_x11(backend::next_launch_for_pending(mode, pending));
+            }
+            ui.separator();
+        });
+    }
+
+    /// 「次回起動時に XWayland で起動する」を変える。app 側への永続化は出力経由。
+    fn set_launch_x11(&mut self, next: bool) {
+        crate::display_backend::set_next_launch_x11(next);
+        self.pending_launch_x11_change = Some(next);
+    }
+
     /// 「ウィンドウ位置」メニューの中身。1行=キー名・展開・記録内容・記録。
     fn draw_window_pos_menu(
         &mut self,
@@ -2346,6 +2391,7 @@ impl ViewerState {
         save_slots: &mut Option<[Option<WindowSlot>; 4]>,
     ) {
         let t = i18n::t();
+        self.draw_backend_notice(ui);
         let monitors = Self::slot_monitors(ctx, input.monitor_size);
         egui::Grid::new("window_pos_menu_grid").num_columns(6).show(ui, |ui| {
             for i in 0..4usize {

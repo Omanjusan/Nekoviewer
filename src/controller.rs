@@ -73,6 +73,8 @@ pub struct ViewerOutput {
     /// Some(v) のとき app 側で「開いたとき自動展開」スロット（`AppConfig::default_slot`）を v に更新して永続化する。
     /// v = None は自動展開なし。外側の Option が「変更あり」を表す。
     pub default_slot_change: Option<Option<usize>>,
+    /// Some(v) のとき app 側で「次回起動時に XWayland で起動する」（`AppConfig::launch_x11`）を v にして永続化する。
+    pub launch_x11_change: Option<bool>,
     /// Some(_) のとき app 側で見開き状態DBへの保存/削除を行う
     pub spread_save_action: Option<SpreadSaveAction>,
     /// Some(_) のとき app 側でソート条件DBへの保存/削除を行う

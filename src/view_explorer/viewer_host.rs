@@ -96,6 +96,8 @@ impl NekoviewApp {
             "viewer_open": self.viewer_is_open(),
             "slots": slots,
             "default_slot": self.config.default_slot,
+            "launch_x11": self.config.launch_x11,
+            "backend": format!("{:?}", crate::display_backend::mode()),
         })
     }
 
@@ -592,6 +594,11 @@ impl NekoviewApp {
 
         if let Some(slots) = output.save_slots {
             self.viewer_slots = slots;
+            self.persist_state();
+        }
+
+        if let Some(v) = output.launch_x11_change {
+            self.config.launch_x11 = v;
             self.persist_state();
         }
 

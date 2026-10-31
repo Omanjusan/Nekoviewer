@@ -245,6 +245,9 @@ pub struct AppConfig {
     /// 「次回から表示しない」チェック済みで確認したか。永続設定
     /// （state の `app_folder_book_access_warning_seen`）。
     pub folder_book_access_warning_seen: bool,
+    /// 次回起動時に X11 バックエンド（XWayland）で起動するか（state の `app_launch_x11`）。
+    /// Wayland セッションでだけ意味を持つ。詳細は [display_backend.rs](crate::display_backend)。
+    pub launch_x11: bool,
     /// 前回起動したときのバージョン（state の `app_last_run_version`）。空=記録なし（1.11より前の版、または新規）。
     /// 起動時の注意ダイアログ（[release_notice.rs](crate::release_notice)）の表示判定に使う。
     pub last_run_version: String,
@@ -305,6 +308,7 @@ impl AppConfig {
             keymap: Keymap::load(&root),
             config_root: root,
             folder_book_access_warning_seen: false,
+            launch_x11: false,
             last_run_version: String::new(),
         }
     }

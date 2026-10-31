@@ -3758,6 +3758,56 @@ impl Lang {
         }
     }
 
+    /// Wayland ネイティブで起動しているときの最上段の警告。
+    pub fn backend_wayland_warning(self) -> &'static str {
+        match self {
+            Lang::Japanese => "Waylandで起動している場合はこの機能は動作しません。XWaylandで実行しなおしてください",
+            Lang::English  => "This feature does not work when running on Wayland. Please restart under XWayland.",
+            Lang::Chinese  => "在 Wayland 下运行时此功能无法使用。请改用 XWayland 重新运行。",
+        }
+    }
+
+    pub fn backend_next_xwayland(self) -> &'static str {
+        match self {
+            Lang::Japanese => "次回起動時にXWaylandで起動する",
+            Lang::English  => "Start with XWayland next time",
+            Lang::Chinese  => "下次启动时使用 XWayland",
+        }
+    }
+
+    pub fn backend_xwayland_running(self) -> &'static str {
+        match self {
+            Lang::Japanese => "XWaylandで起動しています。",
+            Lang::English  => "Running under XWayland.",
+            Lang::Chinese  => "当前正在通过 XWayland 运行。",
+        }
+    }
+
+    pub fn backend_xwayland_hint(self) -> &'static str {
+        match self {
+            Lang::Japanese => "もし不具合が生じていると判断した場合既定のWaylandモードで実行することをおすすめします",
+            Lang::English  => "If you suspect problems, we recommend running in the default Wayland mode.",
+            Lang::Chinese  => "如果您认为出现了问题，建议使用默认的 Wayland 模式运行。",
+        }
+    }
+
+    pub fn backend_next_wayland(self) -> &'static str {
+        match self {
+            Lang::Japanese => "次回起動時にWaylandで起動する",
+            Lang::English  => "Start with Wayland next time",
+            Lang::Chinese  => "下次启动时使用 Wayland",
+        }
+    }
+
+    /// XWayland を望まれたが DISPLAY が無く、Wayland のまま起動したとき。
+    pub fn backend_xwayland_unavailable(self) -> &'static str {
+        match self {
+            Lang::Japanese => "XWaylandが使えない（DISPLAYが見つからない）ため、Waylandで起動しました。",
+            Lang::English  => "XWayland is unavailable (DISPLAY not found), so Wayland was used.",
+            Lang::Chinese  => "无法使用 XWayland（未找到 DISPLAY），已使用 Wayland 启动。",
+        }
+    }
+
     pub fn window_pos_overwrite_title(self) -> &'static str {
         match self {
             Lang::Japanese => "ウィンドウ位置の上書き",

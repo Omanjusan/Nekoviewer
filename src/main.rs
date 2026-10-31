@@ -6,6 +6,7 @@ mod config;
 mod confirm_dialog;
 mod controller;
 mod decode_jobs;
+mod display_backend;
 mod db_backup;
 mod dev_db_backup;
 mod duplicate_marker;
@@ -138,6 +139,7 @@ fn main() {
         if let Some(v) = state.app_magnifier_zoom_notice_shown { cfg.magnifier_zoom_notice_shown = v; }
         if let Some(v) = state.app_max_decode_edge_prompt_answered { cfg.max_decode_edge_prompt_answered = v; }
         if let Some(v) = state.app_folder_book_access_warning_seen { cfg.folder_book_access_warning_seen = v; }
+        if let Some(v) = state.app_launch_x11 { cfg.launch_x11 = v; }
         if let Some(v) = &state.app_last_run_version { cfg.last_run_version = v.clone(); }
 
         // 原寸時の最大長辺幅の既定値を 1920 → 4000 に上げた。保存済みの値が新既定値より低く未回答なら、

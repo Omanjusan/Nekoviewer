@@ -102,6 +102,11 @@ impl Env {
 
     /// アプリを起動して、ビューアー窓が出るまで待つ。`fake_monitors` はモニター一覧の差し替え。
     fn launch(&mut self, fake_monitors: Option<&str>) {
+        self.launch_with(fake_monitors, None);
+    }
+
+    /// `fake_backend` は NEKO_FAKE_BACKEND（メニューの表示だけを wayland / xwayland / unavailable にする）。
+    fn launch_with(&mut self, fake_monitors: Option<&str>, fake_backend: Option<&str>) {
         self.stop_app();
         let _ = std::fs::remove_file(self.ctl().join("dump.json"));
         let h = self.root.join("home");
@@ -120,6 +125,9 @@ impl Env {
             .stderr(std::fs::File::create(self.root.join("app.log")).unwrap());
         if let Some(m) = fake_monitors {
             cmd.env("NEKO_FAKE_MONITORS", m);
+        }
+        if let Some(b) = fake_backend {
+            cmd.env("NEKO_FAKE_BACKEND", b);
         }
         self.app = Some(Guard(cmd.spawn().expect("spawn nekoviewer")));
         assert!(
@@ -353,4 +361,36 @@ fn auto_apply_persists_across_restart_and_survives_deleting_its_slot() {
     e.settle();
     assert!(e.dump()["app"]["default_slot"].is_null());
     assert!(state_text(&e.state_file()).contains("app_default_slot=\n"));
+}
+
+#[test]
+#[ignore = "needs Xephyr + GPU rendering; run explicitly"]
+fn next_launch_backend_choice_is_persisted_and_the_checkbox_means_a_wish_to_switch() {
+    if skip() { return; }
+    let mut e = Env::new("backend");
+    // Wayland ネイティブ起動中の表示（実バックエンドは変えない）。保存は「次回 XWayland」=なし
+    e.launch_with(None, Some("wayland"));
+    let d = e.dump();
+    assert_eq!(d["app"]["backend"], "Wayland");
+    assert_eq!(d["app"]["launch_x11"], false);
+
+    // チェックを入れる＝次回 XWayland。保存され、再起動しても残る
+    e.send(&["launchx11 1"]);
+    e.settle();
+    assert_eq!(e.dump()["app"]["launch_x11"], true);
+    assert!(state_text(&e.state_file()).contains("app_launch_x11=true"));
+    e.launch_with(None, Some("wayland"));
+    assert_eq!(e.dump()["app"]["launch_x11"], true, "persisted across restart");
+
+    // XWayland 起動中の表示。外す＝次回 Wayland。保存値が false に戻り、設定ファイルにも残る
+    e.launch_with(None, Some("xwayland"));
+    assert_eq!(e.dump()["app"]["backend"], "XWayland");
+    e.send(&["launchx11 0"]);
+    e.settle();
+    assert_eq!(e.dump()["app"]["launch_x11"], false);
+    assert!(state_text(&e.state_file()).contains("app_launch_x11=false"));
+
+    // Wayland セッションでない（X11 / Windows）ときは、メニューに何も出ない扱い
+    e.launch(None);
+    assert_eq!(e.dump()["app"]["backend"], "NotWayland");
 }

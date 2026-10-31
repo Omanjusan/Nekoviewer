@@ -421,6 +421,8 @@ pub struct AppState {
     pub app_max_decode_edge_prompt_answered: Option<bool>,
     /// 「フォルダ本アクセス」初回警告を「次回から表示しない」済みで確認したか。
     pub app_folder_book_access_warning_seen: Option<bool>,
+    /// 次回起動時に XWayland で起動するか。
+    pub app_launch_x11: Option<bool>,
     /// 前回起動したときのバージョン。空文字は未記録として None に落とす。
     pub app_last_run_version: Option<String>,
     /// 外側Noneはキー未記載（ハードコード既定値を使う）、内側Noneはユーザーが明示的に選んだ「なし」。
@@ -480,6 +482,7 @@ impl Default for AppState {
             app_magnifier_zoom_notice_shown: None,
             app_max_decode_edge_prompt_answered: None,
             app_folder_book_access_warning_seen: None,
+            app_launch_x11: None,
             app_last_run_version: None,
             app_default_slot: None,
             translate_cfg: TranslateConfig::default(),
@@ -580,6 +583,7 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
     let mut app_magnifier_zoom_notice_shown: Option<bool> = None;
     let mut app_max_decode_edge_prompt_answered: Option<bool> = None;
     let mut app_folder_book_access_warning_seen: Option<bool> = None;
+    let mut app_launch_x11: Option<bool> = None;
     let mut app_last_run_version: Option<String> = None;
     let mut app_default_slot: Option<Option<usize>> = None;
     let mut thumbbar_pos: Option<ThumbbarPos> = None;
@@ -746,6 +750,7 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
                 "app_magnifier_zoom_notice_shown" => { app_magnifier_zoom_notice_shown = v.trim().parse().ok(); }
                 "app_max_decode_edge_prompt_answered" => { app_max_decode_edge_prompt_answered = v.trim().parse().ok(); }
                 "app_folder_book_access_warning_seen" => { app_folder_book_access_warning_seen = v.trim().parse().ok(); }
+                "app_launch_x11" => { app_launch_x11 = v.trim().parse().ok(); }
                 "app_last_run_version" => { app_last_run_version = Some(v.trim().to_string()).filter(|s| !s.is_empty()); }
                 "app_default_slot" => {
                     app_default_slot = Some(match v.trim() {
@@ -1011,6 +1016,7 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
         app_magnifier_zoom_notice_shown,
         app_max_decode_edge_prompt_answered,
         app_folder_book_access_warning_seen,
+        app_launch_x11,
         app_last_run_version,
         app_default_slot,
         translate_cfg: TranslateConfig {
@@ -1197,6 +1203,7 @@ pub fn save_state(root: &Path, dir: &Path, window_size: (u32, u32), viewer_slots
         "app_decode_threads={}\napp_default_slot={}\napp_magnifier_zoom_notice_shown={}\napp_max_decode_edge_prompt_answered={}\napp_folder_book_access_warning_seen={}\n",
         app_cfg.decode_threads, default_slot_str, app_cfg.magnifier_zoom_notice_shown, app_cfg.max_decode_edge_prompt_answered, app_cfg.folder_book_access_warning_seen,
     ));
+    content.push_str(&format!("app_launch_x11={}\n", app_cfg.launch_x11));
     if !app_cfg.last_run_version.is_empty() {
         content.push_str(&format!("app_last_run_version={}\n", app_cfg.last_run_version));
     }
@@ -1253,6 +1260,14 @@ mod tests {
         assert_eq!(parsed.app_magnifier_zoom_notice_shown, None);
         let parsed = parse_state_text("notice_none", "lang=ja\n");
         assert_eq!(parsed.app_magnifier_zoom_notice_shown, None);
+    }
+
+    #[test]
+    fn launch_x11_flag_parses_and_defaults_to_unset() {
+        assert_eq!(parse_state_text("lx_on", "app_launch_x11=true\n").app_launch_x11, Some(true));
+        assert_eq!(parse_state_text("lx_off", "app_launch_x11=false\n").app_launch_x11, Some(false));
+        assert_eq!(parse_state_text("lx_bad", "app_launch_x11=yes\n").app_launch_x11, None);
+        assert_eq!(parse_state_text("lx_none", "").app_launch_x11, None);
     }
 
     #[test]
