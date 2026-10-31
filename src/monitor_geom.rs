@@ -55,7 +55,7 @@ pub fn monitor_index_for_slot(x: i32, y: i32, w: u32, h: u32, monitors: &[Monito
 }
 
 /// 補正の基準にするモニター。重なり最大のものを選び、どれとも重ならなければ窓の中心に最も近いもの。
-fn target_monitor(x: i32, y: i32, w: u32, h: u32, monitors: &[MonitorRect]) -> Option<&MonitorRect> {
+pub fn target_monitor(x: i32, y: i32, w: u32, h: u32, monitors: &[MonitorRect]) -> Option<&MonitorRect> {
     if let Some(i) = monitor_index_for_slot(x, y, w, h, monitors) {
         return monitors.get(i);
     }
@@ -77,6 +77,16 @@ pub fn clamp_slot_position(x: i32, y: i32, w: u32, h: u32, monitors: &[MonitorRe
     let min_y = m.y;
     let max_y = (m.bottom() as i32 - MIN_VISIBLE).max(min_y);
     (x.clamp(min_x, max_x), y.clamp(min_y, max_y))
+}
+
+/// 窓（外寸 outer_w×outer_h）をモニターの中央へ置く左上座標と、モニターに収まるよう縮めた外寸を返す。
+/// 窓がモニターより大きいときだけ縮める。単位（論理/物理）は呼び出し側で揃えること。
+pub fn center_in_monitor(outer_w: u32, outer_h: u32, m: &MonitorRect) -> (i32, i32, u32, u32) {
+    let w = outer_w.min(m.w);
+    let h = outer_h.min(m.h);
+    let x = m.x + ((m.w - w) / 2) as i32;
+    let y = m.y + ((m.h - h) / 2) as i32;
+    (x, y, w, h)
 }
 
 #[cfg(test)]
@@ -144,5 +154,13 @@ mod tests {
     #[test]
     fn clamp_without_monitors_is_noop() {
         assert_eq!(clamp_slot_position(-9999, 9999, 800, 600, &[]), (-9999, 9999));
+    }
+
+    #[test]
+    fn center_in_monitor_centers_and_shrinks_only_when_too_big() {
+        let mon = m(1920, 0, 1920, 1080);
+        assert_eq!(center_in_monitor(800, 600, &mon), (1920 + 560, 240, 800, 600));
+        assert_eq!(center_in_monitor(4000, 600, &mon), (1920, 240, 1920, 600));
+        assert_eq!(center_in_monitor(1920, 1080, &mon), (1920, 0, 1920, 1080));
     }
 }

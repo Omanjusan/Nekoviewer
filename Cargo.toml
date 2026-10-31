@@ -62,6 +62,8 @@ ab_glyph = "0.2"
 default = ["fmt-7z", "fmt-tar", "tar-zstd"]
 fmt-7z = ["dep:sevenz-rust2"]
 fmt-tar = ["dep:tar"]
+# 自動テスト用の制御口（NEKO_TEST_CONTROL / NEKO_FAKE_MONITORS）。通常ビルドには入れない。
+test-control = []
 # tar.zst 対応。ruzstd は純 Rust の zstd 実装で C 依存を引き込まないため、単一 musl 配布と
 # 両立できる。tar バックエンドが前提のため fmt-tar を暗黙有効化する。
 tar-zstd = ["fmt-tar", "dep:ruzstd"]

@@ -61,6 +61,49 @@ impl NekoviewApp {
         f
     }
 
+    /// 自動テスト用: 「ビューアー復帰」ボタンと同じ要求を立てる。
+    #[cfg(feature = "test-control")]
+    pub fn test_request_recover(&mut self) {
+        if self.viewer_is_open() {
+            self.viewer_recover_requested = true;
+        }
+    }
+
+    /// 自動テスト用: ビューアーへスロット操作コマンドを渡す。ビューアーが無ければ false。
+    #[cfg(feature = "test-control")]
+    pub fn test_push_viewer_cmd(&self, cmd: crate::test_control::Cmd) -> bool {
+        match self.viewer.lock().unwrap().as_mut() {
+            Some(v) => { v.test_push_cmd(cmd); true }
+            None => false,
+        }
+    }
+
+    /// 自動テスト用: 渡したコマンドが全て処理済みで、復帰要求も残っていないか。
+    #[cfg(feature = "test-control")]
+    pub fn test_viewer_idle(&self) -> bool {
+        !self.viewer_recover_requested
+            && self.viewer.lock().unwrap().as_ref().map_or(true, |v| v.test_cmds_idle())
+    }
+
+    /// 自動テスト用: 永続化される側の状態（スロット・自動展開）と、ビューアーの開閉。
+    #[cfg(feature = "test-control")]
+    pub fn test_state_json(&self) -> serde_json::Value {
+        let slots: Vec<serde_json::Value> = self.viewer_slots.iter().map(|s| match s {
+            Some(s) => serde_json::json!({"x": s.x, "y": s.y, "w": s.w, "h": s.h}),
+            None => serde_json::Value::Null,
+        }).collect();
+        serde_json::json!({
+            "viewer_open": self.viewer_is_open(),
+            "slots": slots,
+            "default_slot": self.config.default_slot,
+        })
+    }
+
+    /// ビューアー窓を画面中央へ戻す要求を取り出す（取り出したら false に戻す）。
+    pub fn take_viewer_recover_request(&mut self) -> bool {
+        std::mem::take(&mut self.viewer_recover_requested)
+    }
+
     /// ビューアーを閉じる（OS のクローズボタン等から winit_app が呼ぶ）。
     pub fn close_viewer(&mut self) {
         self.deactivate_tag_main_edit();

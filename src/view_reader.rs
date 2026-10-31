@@ -503,6 +503,9 @@ pub struct ViewerState {
     window_pos_overwrite_pending: Option<usize>,
     /// 「開いたとき自動展開」チェックの変更を app 側へ渡すための待ち（外側 Some = 変更あり）
     pending_default_slot_change: Option<Option<usize>>,
+    /// 自動テスト用の制御口から届いたスロット操作コマンド（test-control feature のみ）
+    #[cfg(feature = "test-control")]
+    test_cmds: std::collections::VecDeque<crate::test_control::Cmd>,
     /// スロット保存後に app 側へ永続化を要求するフラグ
     /// 前フレームの outer_rect 左上座標（保存用、1フレーム遅れ許容）
     outer_pos: Option<egui::Pos2>,
@@ -880,6 +883,8 @@ impl ViewerState {
             palette_slot_cycle_index: None,
             window_pos_overwrite_pending: None,
             pending_default_slot_change: None,
+            #[cfg(feature = "test-control")]
+            test_cmds: std::collections::VecDeque::new(),
             outer_pos: None,
             entry_list_visible: false,
             edge_turn_hover: None,
@@ -990,6 +995,8 @@ impl ViewerState {
             palette_slot_cycle_index: None,
             window_pos_overwrite_pending: None,
             pending_default_slot_change: None,
+            #[cfg(feature = "test-control")]
+            test_cmds: std::collections::VecDeque::new(),
             outer_pos: None,
             entry_list_visible: false,
             edge_turn_hover: None,
@@ -2083,12 +2090,14 @@ impl ViewerState {
 
     /// スロットの補正・番号逆算に使うモニター一覧。取得できないときは、いまいるモニターを
     /// 原点に置いた1枚として扱う（旧実装と同じ挙動）。それも無ければ空（補正しない）。
+    /// 一部の X サーバーが返す極小のダミーモニター（1x1 等）は、補正が全部の窓を押し潰すので無視する。
     fn slot_monitors(ctx: &egui::Context, monitor_size: Option<egui::Vec2>) -> Vec<crate::monitor_geom::MonitorRect> {
         let v = crate::winit_app::monitor_rects(ctx);
         if !v.is_empty() {
             return v;
         }
         monitor_size
+            .filter(|m| m.x >= 200.0 && m.y >= 200.0)
             .map(|m| vec![crate::monitor_geom::MonitorRect { x: 0, y: 0, w: m.x as u32, h: m.y as u32 }])
             .unwrap_or_default()
     }
@@ -2181,6 +2190,9 @@ impl ViewerState {
         keymap: &Keymap,
     ) -> Option<[Option<WindowSlot>; 4]> {
         let mut save_slots = None;
+
+        #[cfg(feature = "test-control")]
+        self.run_test_cmds(ctx, input, &mut save_slots);
 
         // ── スロット適用（F5〜F8）────────────────────────────────────────────
         if let Some(idx) = input.slot_apply {
@@ -2286,6 +2298,44 @@ impl ViewerState {
             inner.width() as u32, inner.height() as u32);
     }
 
+    /// スロット idx（0..3）の記録を消す。自動展開の指定は外さない（空のまま残り、展開はno-op）。
+    fn delete_window_slot(&mut self, idx: usize, save_slots: &mut Option<[Option<WindowSlot>; 4]>) {
+        self.slots[idx] = None;
+        *save_slots = Some(self.slots);
+        log_key!("[slot] delete slot{}", idx + 1);
+    }
+
+    /// 「開いたとき自動展開」のスロットを変える（None = なし）。app 側への永続化は出力経由。
+    fn set_auto_apply_slot(&mut self, next: Option<usize>) {
+        self.default_slot = next;
+        self.pending_default_slot_change = Some(next);
+    }
+
+    /// 自動テスト用: 溜めたコマンドを、メニュー操作と同じ関数経由で実行する。
+    #[cfg(feature = "test-control")]
+    fn run_test_cmds(&mut self, ctx: &egui::Context, input: &FrameInput, save_slots: &mut Option<[Option<WindowSlot>; 4]>) {
+        use crate::test_control::Cmd;
+        while let Some(cmd) = self.test_cmds.pop_front() {
+            match cmd {
+                Cmd::Apply(i) => self.apply_window_slot_and_toast(ctx, i),
+                Cmd::Record(i) => self.record_window_slot(i, input, save_slots),
+                Cmd::Delete(i) => self.delete_window_slot(i, save_slots),
+                Cmd::Auto(v) => self.set_auto_apply_slot(v),
+                Cmd::Move { .. } | Cmd::Recover | Cmd::Dump => {}
+            }
+        }
+    }
+
+    #[cfg(feature = "test-control")]
+    pub fn test_push_cmd(&mut self, cmd: crate::test_control::Cmd) {
+        self.test_cmds.push_back(cmd);
+    }
+
+    #[cfg(feature = "test-control")]
+    pub fn test_cmds_idle(&self) -> bool {
+        self.test_cmds.is_empty()
+    }
+
     /// 「ウィンドウ位置」メニューの中身。1行=キー名・展開・記録内容・記録。
     fn draw_window_pos_menu(
         &mut self,
@@ -2322,18 +2372,14 @@ impl ViewerState {
                 }
                 // 削除は確認なし。自動展開に指定中でもチェックは外さない（空のまま残り、展開はno-op）。
                 if ui.add_enabled(slot.is_some(), egui::Button::new(t.window_pos_delete())).clicked() {
-                    self.slots[i] = None;
-                    *save_slots = Some(self.slots);
-                    log_key!("[slot] delete slot{}", i + 1);
+                    self.delete_window_slot(i, save_slots);
                 }
                 let mut auto = self.default_slot == Some(i);
                 if ui.checkbox(&mut auto, t.window_pos_auto_apply())
                     .on_hover_text(t.window_pos_auto_apply_hint())
                     .changed()
                 {
-                    let next = if auto { Some(i) } else { None };
-                    self.default_slot = next;
-                    self.pending_default_slot_change = Some(next);
+                    self.set_auto_apply_slot(if auto { Some(i) } else { None });
                 }
                 ui.end_row();
             }

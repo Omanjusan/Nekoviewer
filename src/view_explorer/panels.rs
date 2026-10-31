@@ -352,7 +352,12 @@ impl NekoviewApp {
     pub(super) fn menu_bar_items(&self) -> Vec<(MenuBarButton, bool)> {
         MENU_BAR_ORDER.iter().map(|&b| {
             // 第2セットの昇降は、スコア／訪問回数が押し下げられている間だけ有効
-            (b, b != MenuBarButton::SortRatingOrder || self.rating_sort.key.is_some())
+            let enabled = match b {
+                MenuBarButton::SortRatingOrder => self.rating_sort.key.is_some(),
+                MenuBarButton::ViewerRecover => self.viewer_is_open(),
+                _ => true,
+            };
+            (b, enabled)
         }).collect()
     }
 
@@ -432,6 +437,11 @@ impl NekoviewApp {
             }
             MenuBarButton::FolderBookAccessToggle => {
                 self.toggle_folder_book_access();
+            }
+            MenuBarButton::ViewerRecover => {
+                if self.viewer_is_open() {
+                    self.viewer_recover_requested = true;
+                }
             }
             MenuBarButton::Settings => {
                 self.open_settings();
@@ -605,6 +615,18 @@ impl NekoviewApp {
                 if is_cursor(MenuBarButton::Settings) { draw_cursor_ring(ui, r_settings.rect); }
                 if r_settings.clicked() {
                     self.open_settings();
+                }
+
+                ui.separator();
+
+                // ── ビューアー復帰（画面外へ行った窓を中央へ戻す単発ボタン）─────────
+                // ビューアーが開いていないときは押せない。
+                let viewer_open = self.viewer_is_open();
+                let r_recover = ui.add_enabled(viewer_open, egui::Button::new(i18n::t().viewer_recover_button()));
+                if is_cursor(MenuBarButton::ViewerRecover) { draw_cursor_ring(ui, r_recover.rect); }
+                help_tip(&r_recover, help_on, &i18n::t().help_viewer_recover());
+                if r_recover.clicked() {
+                    self.viewer_recover_requested = true;
                 }
 
                 ui.separator();

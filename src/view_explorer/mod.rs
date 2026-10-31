@@ -285,12 +285,14 @@ pub(crate) enum MenuBarButton {
     ToolPaletteToggle,
     /// 「フォルダ本アクセス」トグル。永続化しない（毎回OFF起動）。
     FolderBookAccessToggle,
+    /// 画面外へ行ったビューアー窓を中央へ戻す単発ボタン。ビューアーが開いているときだけ有効。
+    ViewerRecover,
     Settings,
 }
 
 /// 表示順そのもの（draw_menu_barの描画順と一致させること）。
 /// 見開き・ページモード群はビューアーツールバーへ移設した（toolbar.rs 参照）。
-pub(crate) const MENU_BAR_ORDER: [MenuBarButton; 16] = [
+pub(crate) const MENU_BAR_ORDER: [MenuBarButton; 17] = [
     MenuBarButton::Reload,
     MenuBarButton::SortName,
     MenuBarButton::SortDate,
@@ -304,6 +306,7 @@ pub(crate) const MENU_BAR_ORDER: [MenuBarButton; 16] = [
     MenuBarButton::FolderBookAccessToggle,
     MenuBarButton::ScoringToggle,
     MenuBarButton::ToolPaletteToggle,
+    MenuBarButton::ViewerRecover,
     MenuBarButton::Settings,
     MenuBarButton::StatusToggle,
     MenuBarButton::HelpToggle,
@@ -329,7 +332,7 @@ mod menu_bar_order_tests {
     #[test]
     fn settings_status_and_help_keep_the_visual_right_end_order() {
         assert_eq!(
-            &MENU_BAR_ORDER[13..],
+            &MENU_BAR_ORDER[14..],
             &[
                 MenuBarButton::Settings,
                 MenuBarButton::StatusToggle,
@@ -1228,6 +1231,8 @@ pub struct NekoviewApp {
     pub(crate) translate_window_autocheck_done_for: Option<PathBuf>,
     /// ビューアウィンドウをフォーカス前面に出すフラグ
     viewer_focus_requested: bool,
+    /// ビューアー窓を画面中央へ戻す要求（メニューバーの「ビューアー復帰」）。winit_app が取り出して実行する
+    viewer_recover_requested: bool,
     pub(crate) show_hidden: bool,
     /// サムネカード下部の情報帯の表示量（メニューバーの1ボタンで循環）。
     pub(crate) card_info_mode: CardInfoMode,
@@ -1702,6 +1707,7 @@ impl NekoviewApp {
             translate_ocr_inflight_key: None,
             translate_ocr_queue: std::collections::VecDeque::new(),
             viewer_focus_requested: false,
+            viewer_recover_requested: false,
             show_hidden,
             card_info_mode: CardInfoMode::from_state_str(card_info_mode),
             card_rating_mode: CardRatingMode::from_state_str(card_rating_mode),

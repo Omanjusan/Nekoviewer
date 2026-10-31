@@ -241,6 +241,45 @@ fn make_egui_window(
     }
 }
 
+/// ビューアー窓を、いまいるモニターの中央へ戻す。サイズは維持し、モニターより大きいときだけ
+/// 収まるよう縮める。全画面中は何もしない。最小化されていれば戻す。
+/// 「いまいるモニター」は補正と同じ基準（窓と最も重なる、無ければ最も近いモニター）で決める。
+/// 完全に画面外へ出た窓でも OS の `current_monitor` に頼らずに済む。一覧が空のときだけ winit に
+/// 聞き、サイズ0のダミーモニター（一部の X サーバー）は無視する。何も決まらなければ動かさない。
+/// 計算は論理座標。窓への指示も論理座標で出す。
+fn recover_viewer_window(win: &Window, ctx: &egui::Context) {
+    if win.fullscreen().is_some() {
+        return;
+    }
+    win.set_minimized(false);
+    let ppp = ctx.pixels_per_point().max(0.1);
+    let logical = |v: u32| (v as f32 / ppp).round() as u32;
+    let (o, i) = (win.outer_size(), win.inner_size());
+    let (ow, oh) = (logical(o.width), logical(o.height));
+    let (px, py) = win
+        .outer_position()
+        .map(|p| ((p.x as f32 / ppp).round() as i32, (p.y as f32 / ppp).round() as i32))
+        .unwrap_or((0, 0));
+
+    let monitors = monitor_rects(ctx);
+    let mon = crate::monitor_geom::target_monitor(px, py, ow, oh, &monitors).copied().or_else(|| {
+        let m = win.current_monitor().or_else(|| win.primary_monitor()).or_else(|| win.available_monitors().next())?;
+        let (p, s) = (m.position(), m.size());
+        (s.width > 0 && s.height > 0).then(|| crate::monitor_geom::MonitorRect::from_physical(p.x, p.y, s.width, s.height, ppp))
+    });
+    let Some(mon) = mon else { return };
+
+    let (x, y, fw, fh) = crate::monitor_geom::center_in_monitor(ow, oh, &mon);
+    if (fw, fh) != (ow, oh) {
+        let nw = logical(i.width).saturating_sub(ow - fw).max(1);
+        let nh = logical(i.height).saturating_sub(oh - fh).max(1);
+        let _ = win.request_inner_size(winit::dpi::LogicalSize::new(nw, nh));
+    }
+    win.set_outer_position(winit::dpi::LogicalPosition::new(x, y));
+    win.focus_window();
+    crate::log_common!("[viewer] recover → pos=({},{}) size={}x{}", x, y, fw, fh);
+}
+
 const WINDOW_HANDLE_KEY: &str = "nv_window_handle";
 
 /// `egui::Context` の一時データに預ける、この窓の winit ハンドル。
@@ -250,6 +289,10 @@ struct WindowHandle(Arc<Window>);
 /// この Context の窓から見える全モニターの矩形（論理座標、左→右・上→下の順）。
 /// 論理座標への換算は egui が窓位置に使う倍率（`pixels_per_point`）に揃える。取得できなければ空。
 pub fn monitor_rects(ctx: &egui::Context) -> Vec<crate::monitor_geom::MonitorRect> {
+    #[cfg(feature = "test-control")]
+    if let Some(v) = crate::test_control::fake_monitors() {
+        return v;
+    }
     let Some(handle) = ctx.data(|d| d.get_temp::<WindowHandle>(egui::Id::new(WINDOW_HANDLE_KEY))) else {
         return Vec::new();
     };
@@ -337,6 +380,12 @@ struct WinitApp {
     /// 窓生成のたびNormalへ戻るため、生成時は必ずfalse扱いにする。
     translate_always_on_top_applied: bool,
     app: Option<NekoviewApp>,
+    /// 自動テスト用の制御口（NEKO_TEST_CONTROL 指定時のみ Some）
+    #[cfg(feature = "test-control")]
+    test_control: Option<crate::test_control::Control>,
+    /// dump 要求後、状態が落ち着くまで待つ残りティック数（0 = 要求なし）
+    #[cfg(feature = "test-control")]
+    test_dump_ticks: u32,
 }
 
 fn observe_physical_size(last: &mut Option<(u32, u32)>, current: (u32, u32)) -> bool {
@@ -364,6 +413,10 @@ impl WinitApp {
             translate: None,
             translate_always_on_top_applied: false,
             app: None,
+            #[cfg(feature = "test-control")]
+            test_control: crate::test_control::Control::from_env(),
+            #[cfg(feature = "test-control")]
+            test_dump_ticks: 0,
         }
     }
 
@@ -447,6 +500,13 @@ impl WinitApp {
             if app.take_viewer_focus_request() {
                 if let Some(v) = self.viewer.as_ref() {
                     v.window.focus_window();
+                }
+            }
+            // メニューバーの「ビューアー復帰」: 画面外へ行った窓をいまいるモニターの中央へ戻す。
+            if app.take_viewer_recover_request() {
+                if let Some(v) = self.viewer.as_ref() {
+                    recover_viewer_window(&v.window, &v.egui_ctx);
+                    v.egui_ctx.request_repaint();
                 }
             }
         }
@@ -808,6 +868,8 @@ impl ApplicationHandler<UserEvent> for WinitApp {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        #[cfg(feature = "test-control")]
+        self.poll_test_control();
         // エクスプローラーの操作でビューアー/ステータス窓が開いた/閉じた可能性に追従する。
         self.sync_viewer_window(event_loop);
         self.sync_status_window(event_loop);
@@ -828,6 +890,69 @@ impl ApplicationHandler<UserEvent> for WinitApp {
             Some(t) => event_loop.set_control_flow(ControlFlow::WaitUntil(t)),
             None => event_loop.set_control_flow(ControlFlow::Wait),
         }
+        // 制御口が有効な間は、コマンド到着を拾うため一定間隔で必ず起床する。
+        #[cfg(feature = "test-control")]
+        if self.test_control.is_some() {
+            event_loop.set_control_flow(ControlFlow::WaitUntil(Instant::now() + Duration::from_millis(50)));
+        }
+    }
+}
+
+#[cfg(feature = "test-control")]
+impl WinitApp {
+    /// 制御口のコマンドを取り込んで実行し、dump 要求があれば状態が落ち着いてから書き出す。
+    fn poll_test_control(&mut self) {
+        use crate::test_control::Cmd;
+        let Some(ctl) = self.test_control.as_ref() else { return };
+        for cmd in ctl.take_commands() {
+            match cmd {
+                Cmd::Move { x, y, w, h } => {
+                    if let Some(v) = self.viewer.as_ref() {
+                        let _ = v.window.request_inner_size(winit::dpi::PhysicalSize::new(w, h));
+                        v.window.set_outer_position(winit::dpi::PhysicalPosition::new(x, y));
+                        v.egui_ctx.request_repaint();
+                    }
+                }
+                Cmd::Recover => {
+                    if let Some(app) = self.app.as_mut() { app.test_request_recover(); }
+                }
+                Cmd::Dump => self.test_dump_ticks = 6,
+                other => {
+                    if let (Some(app), Some(v)) = (self.app.as_ref(), self.viewer.as_ref()) {
+                        if app.test_push_viewer_cmd(other) {
+                            v.egui_ctx.request_repaint();
+                        }
+                    }
+                }
+            }
+        }
+        if self.test_dump_ticks > 0 {
+            let idle = self.app.as_ref().map_or(true, |a| a.test_viewer_idle());
+            self.test_dump_ticks = if idle { self.test_dump_ticks - 1 } else { 6 };
+            if self.test_dump_ticks == 0 {
+                let json = self.test_dump_json();
+                if let Some(ctl) = self.test_control.as_ref() { ctl.write_dump(&json.to_string()); }
+            }
+        }
+    }
+
+    fn test_dump_json(&self) -> serde_json::Value {
+        let geom = |w: &Window| {
+            let p = w.outer_position().ok();
+            let (o, i) = (w.outer_size(), w.inner_size());
+            serde_json::json!({
+                "outer_x": p.map(|p| p.x), "outer_y": p.map(|p| p.y),
+                "outer_w": o.width, "outer_h": o.height,
+                "inner_w": i.width, "inner_h": i.height,
+            })
+        };
+        let monitors = self.explorer.as_ref().map(|e| monitor_rects(&e.egui_ctx)).unwrap_or_default();
+        let monitors: Vec<_> = monitors.iter().map(|m| serde_json::json!({"x": m.x, "y": m.y, "w": m.w, "h": m.h})).collect();
+        serde_json::json!({
+            "viewer_window": self.viewer.as_ref().map(|v| geom(&v.window)),
+            "monitors": monitors,
+            "app": self.app.as_ref().map(|a| a.test_state_json()),
+        })
     }
 }
 

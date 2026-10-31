@@ -4072,6 +4072,44 @@ impl Lang {
         }
     }
 
+    /// メニューバーの「ビューアー復帰」ボタン（画面外へ行ったビューアー窓を中央へ戻す）。
+    pub fn viewer_recover_button(self) -> &'static str {
+        match self {
+            Lang::Japanese => "[ビューアー復帰]",
+            Lang::English  => "[Recover Viewer]",
+            Lang::Chinese  => "[找回查看器]",
+        }
+    }
+
+    pub fn help_viewer_recover(self) -> HelpDoc {
+        match self {
+            Lang::Japanese => HelpDoc {
+                title: "ビューアー復帰",
+                sections: &[(
+                    "[ビューアー復帰]",
+                    "画面外に出てしまったビューアーを、いまいるモニターの中央へ戻す。\n\
+                     ビューアーが開いているときだけ押せる。",
+                )],
+            },
+            Lang::English => HelpDoc {
+                title: "Recover Viewer",
+                sections: &[(
+                    "[Recover Viewer]",
+                    "Brings a viewer window that has gone off-screen back to the center of its monitor.\n\
+                     Available only while the viewer is open.",
+                )],
+            },
+            Lang::Chinese => HelpDoc {
+                title: "找回查看器",
+                sections: &[(
+                    "[找回查看器]",
+                    "将跑到屏幕之外的查看器窗口移回所在显示器的中央。\n\
+                     仅在查看器打开时可用。",
+                )],
+            },
+        }
+    }
+
     pub fn settings_button(self) -> &'static str {
         match self {
             Lang::Japanese => "[設定]",

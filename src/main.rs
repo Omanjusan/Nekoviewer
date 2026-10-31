@@ -34,6 +34,8 @@ mod magnifier;
 mod magnifier_cursor;
 mod model_innerlog;
 mod monitor_geom;
+#[cfg(feature = "test-control")]
+mod test_control;
 mod neko_dir;
 mod rating_filter;
 mod rating_overlay;
