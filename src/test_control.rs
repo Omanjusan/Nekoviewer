@@ -23,6 +23,8 @@ pub enum Cmd {
     Delete(usize),
     /// 「開いたとき自動展開」。None = 全チェックを外す
     Auto(Option<usize>),
+    /// ビューアー窓の OS クローズ（X ボタン）と同じ処理
+    Close,
     Dump,
 }
 
@@ -48,6 +50,7 @@ pub fn parse_line(line: &str) -> Option<Cmd> {
         ("delete", [n]) => slot_arg(n).map(Cmd::Delete),
         ("auto", ["none"]) => Some(Cmd::Auto(None)),
         ("auto", [n]) => slot_arg(n).map(|i| Cmd::Auto(Some(i))),
+        ("close", []) => Some(Cmd::Close),
         ("dump", []) => Some(Cmd::Dump),
         _ => None,
     }
@@ -116,6 +119,7 @@ mod tests {
         assert_eq!(parse_line("auto none"), Some(Cmd::Auto(None)));
         assert_eq!(parse_line("move -5000 100 800 600"), Some(Cmd::Move { x: -5000, y: 100, w: 800, h: 600 }));
         assert_eq!(parse_line("recover"), Some(Cmd::Recover));
+        assert_eq!(parse_line("close"), Some(Cmd::Close));
         assert_eq!(parse_line("dump"), Some(Cmd::Dump));
     }
 

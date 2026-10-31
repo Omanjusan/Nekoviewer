@@ -178,6 +178,12 @@ impl Env {
         )
     }
 
+    /// この Xephyr 上に、タイトルが `title_part` を含むトップレベル窓があるか。
+    fn has_x_window(&self, title_part: &str) -> bool {
+        let out = Command::new("xwininfo").args(["-display", &self.display, "-root", "-tree"]).output().expect("run xwininfo");
+        String::from_utf8_lossy(&out.stdout).lines().any(|l| l.contains(title_part))
+    }
+
     fn slot(&self, idx: usize) -> Value {
         self.dump()["app"]["slots"][idx].clone()
     }
@@ -218,6 +224,25 @@ fn recover_brings_an_offscreen_viewer_back_to_the_center() {
     e.send(&["recover"]);
     e.settle();
     assert_eq!(e.viewer_geom(), (0, 0, 1920, 1080));
+}
+
+#[test]
+#[ignore = "needs Xephyr + GPU rendering; run explicitly"]
+fn closing_the_viewer_destroys_its_os_window() {
+    if skip() { return; }
+    let mut e = Env::new("close");
+    e.launch(Some("0,0,1920,1080"));
+    // メニューの操作後に閉じても同じ。モニター一覧（窓ハンドル）を引いた後でも窓が残らないこと
+    e.send(&["record 1", "auto 1"]);
+    e.settle();
+    assert!(e.has_x_window("Imageview"));
+
+    e.send(&["close"]);
+    assert!(
+        wait_until(Duration::from_secs(5), || !e.has_x_window("Imageview")),
+        "the viewer's OS window must be destroyed when the viewer closes (a leftover window is frozen)"
+    );
+    assert_eq!(e.dump()["app"]["viewer_open"], false);
 }
 
 #[test]

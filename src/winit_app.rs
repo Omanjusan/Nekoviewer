@@ -217,7 +217,7 @@ fn make_egui_window(
     });
 
     // view_reader がモニター一覧を取れるよう、窓のハンドルを Context に預ける（`monitor_rects` が読む）。
-    egui_ctx.data_mut(|d| d.insert_temp(egui::Id::new(WINDOW_HANDLE_KEY), WindowHandle(window.clone())));
+    egui_ctx.data_mut(|d| d.insert_temp(egui::Id::new(WINDOW_HANDLE_KEY), WindowHandle(Arc::downgrade(&window))));
 
     let egui_state = egui_winit::State::new(
         egui_ctx.clone(),
@@ -283,8 +283,10 @@ fn recover_viewer_window(win: &Window, ctx: &egui::Context) {
 const WINDOW_HANDLE_KEY: &str = "nv_window_handle";
 
 /// `egui::Context` の一時データに預ける、この窓の winit ハンドル。
+/// **弱参照にすること。** Context はワーカースレッド等にも複製されて窓より長生きしうるため、強参照で預けると
+/// 窓を閉じても OS 窓が破棄されず、描画もイベント処理もされない固まった窓が残る。
 #[derive(Clone)]
-struct WindowHandle(Arc<Window>);
+struct WindowHandle(std::sync::Weak<Window>);
 
 /// この Context の窓から見える全モニターの矩形（論理座標、左→右・上→下の順）。
 /// 論理座標への換算は egui が窓位置に使う倍率（`pixels_per_point`）に揃える。取得できなければ空。
@@ -296,9 +298,9 @@ pub fn monitor_rects(ctx: &egui::Context) -> Vec<crate::monitor_geom::MonitorRec
     let Some(handle) = ctx.data(|d| d.get_temp::<WindowHandle>(egui::Id::new(WINDOW_HANDLE_KEY))) else {
         return Vec::new();
     };
+    let Some(window) = handle.0.upgrade() else { return Vec::new() };
     let ppp = ctx.pixels_per_point();
-    let mut v: Vec<_> = handle
-        .0
+    let mut v: Vec<_> = window
         .available_monitors()
         .map(|m| {
             let p = m.position();
@@ -869,7 +871,7 @@ impl ApplicationHandler<UserEvent> for WinitApp {
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         #[cfg(feature = "test-control")]
-        self.poll_test_control();
+        self.poll_test_control(event_loop);
         // エクスプローラーの操作でビューアー/ステータス窓が開いた/閉じた可能性に追従する。
         self.sync_viewer_window(event_loop);
         self.sync_status_window(event_loop);
@@ -901,7 +903,7 @@ impl ApplicationHandler<UserEvent> for WinitApp {
 #[cfg(feature = "test-control")]
 impl WinitApp {
     /// 制御口のコマンドを取り込んで実行し、dump 要求があれば状態が落ち着いてから書き出す。
-    fn poll_test_control(&mut self) {
+    fn poll_test_control(&mut self, event_loop: &ActiveEventLoop) {
         use crate::test_control::Cmd;
         let Some(ctl) = self.test_control.as_ref() else { return };
         for cmd in ctl.take_commands() {
@@ -915,6 +917,11 @@ impl WinitApp {
                 }
                 Cmd::Recover => {
                     if let Some(app) = self.app.as_mut() { app.test_request_recover(); }
+                }
+                Cmd::Close => {
+                    // CloseRequested（ビューアー窓）と同じ手順
+                    if let Some(app) = self.app.as_mut() { app.close_viewer(); }
+                    self.sync_viewer_window(event_loop);
                 }
                 Cmd::Dump => self.test_dump_ticks = 6,
                 other => {

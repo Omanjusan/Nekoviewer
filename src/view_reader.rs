@@ -2321,7 +2321,7 @@ impl ViewerState {
                 Cmd::Record(i) => self.record_window_slot(i, input, save_slots),
                 Cmd::Delete(i) => self.delete_window_slot(i, save_slots),
                 Cmd::Auto(v) => self.set_auto_apply_slot(v),
-                Cmd::Move { .. } | Cmd::Recover | Cmd::Dump => {}
+                Cmd::Move { .. } | Cmd::Recover | Cmd::Close | Cmd::Dump => {}
             }
         }
     }

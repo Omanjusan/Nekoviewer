@@ -22,6 +22,7 @@ cargo test --features test-control --test window_pos_e2e -- --ignored --test-thr
 - `NEKO_TEST_CONTROL=<dir>` を付けて起動すると、`<dir>/cmd.txt`（1行1コマンド）を50msごとに確認して実行し、削除する。
   - `move x y w h` — ビューアー窓を物理座標で動かす（画面外へ飛ばす用）
   - `recover` — メニューバーの「ビューアー復帰」と同じ
+  - `close` — ビューアー窓の OS クローズ（Xボタン）と同じ処理
   - `apply N` / `record N` / `delete N` — スロット操作（N=1〜4、F5=1）。メニューと同じ関数を通る
   - `auto N` / `auto none` — 「開いたとき自動展開」
   - `dump` — 状態が落ち着いてから `<dir>/dump.json` に書く（窓の位置・サイズ、モニター一覧、スロット、自動展開）
@@ -33,6 +34,7 @@ cargo test --features test-control --test window_pos_e2e -- --ignored --test-thr
 | テスト | 確かめること |
 |---|---|
 | `recover_brings_an_offscreen_viewer_back_to_the_center` | 画面外の窓が中央へ戻る。サイズは維持。画面より大きい窓は収まるよう縮む |
+| `closing_the_viewer_destroys_its_os_window` | ビューアーを閉じると OS 窓が破棄される（残ると描画もイベント処理もされず固まる） |
 | `record_apply_delete_roundtrip` | 記録した位置・サイズへ展開できる。削除後の展開は何も起きない |
 | `apply_pulls_offscreen_slots_in_and_keeps_second_monitor_positions` | 2枚目モニター上の記録はそのまま展開。モニター外の記録は近いモニターの内側へ寄る |
 | `auto_apply_persists_across_restart_and_survives_deleting_its_slot` | 自動展開が再起動後も効く。指定スロットを削除してもチェックは外れず空のまま。「なし」も永続する |
