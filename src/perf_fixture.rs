@@ -102,6 +102,11 @@ impl Session {
         }
     }
 
+    pub fn is_done(&self, stage: Stage) -> bool {
+        self.stages[stage.index()].done_at.is_some()
+    }
+
+    /// DB操作（ロック待ちを含む）に使った時間を足す。
     pub fn lock_wait(&mut self, stage: Stage, waited: Duration) {
         self.stages[stage.index()].lock_wait += waited;
     }
@@ -145,14 +150,19 @@ impl Session {
                 _ => "（記録なし）".to_owned(),
             };
             let avg_ms = if s.count == 0 { 0.0 } else { s.busy.as_secs_f64() * 1000.0 / s.count as f64 };
+            let db_wait = if s.lock_wait.is_zero() {
+                String::new()
+            } else {
+                format!("  DB待ち {:.3}s", s.lock_wait.as_secs_f64())
+            };
             out.push(format!(
-                "[perf-fixture] {} {}  件数 {}  累計処理 {:.3}s  平均 {:.2}ms/件  ロック待ち {:.3}s{}",
+                "[perf-fixture] {} {}  件数 {}  累計処理 {:.3}s  平均 {:.2}ms/件{}{}",
                 st.label(),
                 span,
                 s.count,
                 s.busy.as_secs_f64(),
                 avg_ms,
-                s.lock_wait.as_secs_f64(),
+                db_wait,
                 if required && s.done_at.is_none() { "  【未完了】" } else { "" },
             ));
         }
@@ -217,6 +227,16 @@ fn with_session(f: impl FnOnce(&mut Session, Instant)) {
     }
 }
 
+/// その段が完了済みか。計測中でなければ false。
+pub fn is_stage_done(stage: Stage) -> bool {
+    is_active() && SESSION.lock().ok().and_then(|g| g.as_ref().map(|s| s.is_done(stage))).unwrap_or(false)
+}
+
+/// サムネのみモードか（他の段の起動を抑止する判定）。
+pub fn is_thumb_only() -> bool {
+    mode() == Some(Mode::ThumbOnly)
+}
+
 pub fn item(stage: Stage, busy: Duration) {
     with_session(|s, now| s.item(stage, busy, now));
 }
@@ -250,6 +270,16 @@ mod tests {
     }
 
     #[test]
+    fn is_done_reflects_stage_done() {
+        let t0 = Instant::now();
+        let mut s = Session::new(Mode::Full, "d".into(), 1, t0);
+        assert!(!s.is_done(Stage::Thumb));
+        s.stage_done(Stage::Thumb, t0 + ms(5));
+        assert!(s.is_done(Stage::Thumb));
+        assert!(!s.is_done(Stage::ThumbHash));
+    }
+
+    #[test]
     fn full_needs_every_required_stage() {
         let t0 = Instant::now();
         let mut s = Session::new(Mode::Full, "d".into(), 1, t0);
@@ -274,7 +304,7 @@ mod tests {
         s.stage_done(Stage::Marker, t0 + ms(900));
         let text = s.render().join("\n");
         assert!(text.contains("総時間 1.500s"), "{text}");
-        assert!(text.contains("件数 2  累計処理 0.600s  平均 300.00ms/件  ロック待ち 0.030s"), "{text}");
+        assert!(text.contains("件数 2  累計処理 0.600s  平均 300.00ms/件  DB待ち 0.030s"), "{text}");
         assert!(text.contains("+0.050s → +0.700s"), "{text}");
     }
 

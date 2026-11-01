@@ -45,6 +45,9 @@ impl NekoviewApp {
             self.perf_fixture_ui.dialog = Some(Dialog::ConfirmClear(Mode::Full));
             ui.close();
         }
+        if pdb::restore_pending(&self.config.config_root) {
+            ui.colored_label(egui::Color32::YELLOW, "復元予約あり（再起動で適用）");
+        }
         let has_backup = pdb::has_backup(&self.config.config_root);
         if ui.add_enabled(has_backup, egui::Button::new("DB消去前に戻す")).clicked() {
             self.perf_fixture_ui.dialog = Some(Dialog::ConfirmRestore);

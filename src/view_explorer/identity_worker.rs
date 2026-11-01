@@ -366,7 +366,10 @@ pub(super) fn process_batch_with(
             continue;
         };
         let key = keys.key(dir, name);
-        match file_identity::resolve_file(db, &key, path, now, false) {
+        let resolve_started = Instant::now();
+        let resolved = file_identity::resolve_file(db, &key, path, now, false);
+        crate::perf_fixture::item(crate::perf_fixture::Stage::IdResolve, resolve_started.elapsed());
+        match resolved {
             ResolveOutcome::Resolved(Resolution::Moved { id, from }) => {
                 if crate::duplicate_marker::record_moved(db, id, now) {
                     outcome.markers_created += 1;
@@ -523,6 +526,12 @@ impl NekoviewApp {
         if !crate::file_identity::is_enabled() {
             return;
         }
+        // 計測（サムネのみ）: ID解決を走らせない。「検証中」も付けないので、サムネ生成は待たされない。
+        if crate::perf_fixture::is_thumb_only() {
+            self.identity_verifying.clear();
+            self.identity_progress = None;
+            return;
+        }
         let Some(db) = self.spread_db.clone() else { return };
         let paths: Vec<PathBuf> = self.archives.clone();
         self.identity_verifying = crate::spread_state::paths_without_identity_or_legacy(&db, &paths);
@@ -629,6 +638,7 @@ impl NekoviewApp {
                         (false, true) => self.set_toast(t.dup_marker_toast(markers_created)),
                         (false, false) => {}
                     }
+                    crate::perf_fixture::stage_done(crate::perf_fixture::Stage::IdResolve);
                     // 解決が済んだので、このフォルダの同内容ファイル（導入前から重複していたものなど）を探す。
                     self.request_marker_detect();
                     self.request_thumb_hash();

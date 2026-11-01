@@ -530,7 +530,15 @@ impl NekoviewApp {
         let just_finished = was_pending && self.thumb_pending.is_empty();
         if just_finished {
             // 後から生成されたサムネのハッシュを拾う。
-            self.request_thumb_hash();
+            // 計測: 待ちのキューも空になった時が「サムネ生成の完了」。この完了を先に記録してから依頼する
+            // （dHash側が「サムネ完了後の依頼」と判定できるように）。サムネのみモードでは依頼自体が抑止される。
+            let thumb_only = crate::perf_fixture::is_thumb_only();
+            if self.thumb_queue.is_empty() && self.thumb_priority_queue.is_empty() {
+                crate::perf_fixture::stage_done(crate::perf_fixture::Stage::Thumb);
+            }
+            if !thumb_only {
+                self.request_thumb_hash();
+            }
         }
 
         // cd_summary バックグラウンド計算の結果をポーリング

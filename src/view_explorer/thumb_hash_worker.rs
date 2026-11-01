@@ -17,11 +17,13 @@ pub(super) enum ThumbHashEvent {
     /// 1チャンクぶんの照合結果。そのチャンクの名前だけを含む。これまでの結果へ足し込む。
     Partial { generation: u64, matches: std::collections::HashMap<String, Vec<SimilarMatch>> },
     /// 走査の最後に全名前をやり直した結果。これまでの結果を置き換える。
-    Final { generation: u64, matches: std::collections::HashMap<String, Vec<SimilarMatch>> },
+    /// `after_thumbs`: サムネ生成が一段落した後の依頼か（計測の「dHash完了」の判定に使う）。
+    Final { generation: u64, after_thumbs: bool, matches: std::collections::HashMap<String, Vec<SimilarMatch>> },
 }
 
 struct Job {
     generation: u64,
+    after_thumbs: bool,
     spread_db: Arc<Mutex<Database>>,
     cache_db: Arc<Mutex<Database>>,
     dir: std::path::PathBuf,
@@ -52,6 +54,7 @@ impl ThumbHashWorker {
                         job = next;
                     }
                     let generation = job.generation;
+                    let after_thumbs = job.after_thumbs;
                     let keep_going = || worker_current.load(Ordering::Acquire) == generation;
                     crate::thumb_similar::scan_dir(
                         &job.spread_db,
@@ -65,7 +68,7 @@ impl ThumbHashWorker {
                         &mut |event| {
                             let _ = event_tx.send(match event {
                                 ScanEvent::Partial(matches) => ThumbHashEvent::Partial { generation, matches },
-                                ScanEvent::Final(matches) => ThumbHashEvent::Final { generation, matches },
+                                ScanEvent::Final(matches) => ThumbHashEvent::Final { generation, after_thumbs, matches },
                             });
                             ctx.request_repaint();
                         },
@@ -88,10 +91,11 @@ impl ThumbHashWorker {
         cache_db: Arc<Mutex<Database>>,
         dir: std::path::PathBuf,
         names: Vec<String>,
+        after_thumbs: bool,
     ) {
         let generation = self.current.load(Ordering::Acquire);
         if let Some(tx) = &self.job_tx {
-            let _ = tx.send(Job { generation, spread_db, cache_db, dir, names });
+            let _ = tx.send(Job { generation, after_thumbs, spread_db, cache_db, dir, names });
         }
     }
 
@@ -110,7 +114,7 @@ impl super::NekoviewApp {
     /// 表示中のフォルダのサムネについて、ハッシュの計算を依頼する。
     /// 通常のフォルダ表示だけ。サムネ未生成のファイルは飛ばされるので、生成が一段落した時にも呼ぶ。
     pub(super) fn request_thumb_hash(&mut self) {
-        if !self.marker_view_active() {
+        if !self.marker_view_active() || crate::perf_fixture::is_thumb_only() {
             return;
         }
         let (Some(spread_db), Some(cache_db)) = (self.spread_db.clone(), self.cache_db.clone()) else { return };
@@ -120,7 +124,8 @@ impl super::NekoviewApp {
             .filter_map(|p| p.file_name().and_then(|n| n.to_str()).map(str::to_owned))
             .collect();
         if !names.is_empty() {
-            self.thumb_hash.submit(spread_db, cache_db, self.current_dir.clone(), names);
+            let after_thumbs = crate::perf_fixture::is_stage_done(crate::perf_fixture::Stage::Thumb);
+            self.thumb_hash.submit(spread_db, cache_db, self.current_dir.clone(), names, after_thumbs);
         }
     }
 
@@ -135,7 +140,10 @@ impl super::NekoviewApp {
                         changed |= self.sim_matches.insert(name, found.clone()).as_ref() != Some(&found);
                     }
                 }
-                ThumbHashEvent::Final { generation, matches } if self.thumb_hash.is_current(generation) => {
+                ThumbHashEvent::Final { generation, after_thumbs, matches } if self.thumb_hash.is_current(generation) => {
+                    if after_thumbs {
+                        crate::perf_fixture::stage_done(crate::perf_fixture::Stage::ThumbHash);
+                    }
                     if matches != self.sim_matches {
                         self.sim_matches = matches;
                         changed = true;

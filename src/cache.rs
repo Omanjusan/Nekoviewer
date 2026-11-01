@@ -1688,7 +1688,11 @@ fn spawn_thumb_gen_pool(
                     continue;
                 }
                 // 失敗（None）でも必ず返送し、呼び元が thumb_pending を解放できるようにする
+                let gen_started = std::time::Instant::now();
                 let rgba = generate_thumb(&req);
+                if !req.is_tag_preview {
+                    crate::perf_fixture::item(crate::perf_fixture::Stage::Thumb, gen_started.elapsed());
+                }
                 if rgba.is_none() {
                     if let (Some(db), Some(token), Some(filename)) = (
                         req.db.as_ref(),
