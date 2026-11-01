@@ -1047,6 +1047,8 @@ pub struct NekoviewApp {
     identity_worker: identity_worker::IdentityWorker,
     /// ID解決が済むまで「ファイル検証中」を出すパス（新規・移動直後のファイル）。
     pub(super) identity_verifying: HashSet<PathBuf>,
+    /// 「検証中」のうち、画面に見えているため優先解決を依頼済みのパス（同じ依頼を毎フレーム出さない）。
+    identity_priority_sent: HashSet<PathBuf>,
     /// 解決で評価等が付き替わった（完了時に並び・フィルタを作り直す）。
     identity_dirty: bool,
     /// 重複・曖昧の解決UI（現状はレイアウトのモック。仮データ）。
@@ -1639,6 +1641,7 @@ impl NekoviewApp {
             settings_draft,
             identity_worker: identity_worker::IdentityWorker::spawn(ctx.clone()),
             identity_verifying: HashSet::new(),
+            identity_priority_sent: HashSet::new(),
             identity_dirty: false,
             identity_resolve_ui: Default::default(),
             identity_progress: None,

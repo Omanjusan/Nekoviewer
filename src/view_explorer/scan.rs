@@ -701,6 +701,8 @@ impl NekoviewApp {
     /// 進行方向へ1画面ぶんだけ先読みを足し、逆側にはみ出た未送信ぶんは捨てる。
     pub(super) fn update_thumbnail_lookahead(&mut self, lo: usize, hi: usize) {
         let total = self.filtered_indices.len();
+        // 見えている「検証中」のファイルは、ID解決を先頭からの順に先立って依頼する（サムネ生成が解決待ちで止まるため）。
+        self.prioritize_identity_for_visible(lo, hi);
         // 計測フィクスチャーの全件サムネ生成中は、窓の外のキューを捨てない（perf_fixture_ui.rs）。
         if self.perf_fixture_all_thumbs_active() {
             return;
