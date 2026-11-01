@@ -352,6 +352,45 @@ pub(super) fn process_batch_with(
     on_relocated: &dyn Fn(&Path, &str),
     emit: &mut dyn FnMut(BatchChunk),
 ) -> BatchOutcome {
+    process_batch_threads(db, paths, keep_going, now, chunk_size, on_relocated, emit, super::fp_prefetch::threads_from_env())
+}
+
+/// `process_batch_with` の、FP読みの先読みスレッド数を指定できる版。1なら先読みなし（従来の動作）。
+#[allow(clippy::too_many_arguments)]
+pub(super) fn process_batch_threads(
+    db: &Arc<Mutex<Database>>,
+    paths: &[PathBuf],
+    keep_going: &dyn Fn() -> bool,
+    now: i64,
+    chunk_size: usize,
+    on_relocated: &dyn Fn(&Path, &str),
+    emit: &mut dyn FnMut(BatchChunk),
+    threads: usize,
+) -> BatchOutcome {
+    if threads <= 1 || paths.len() < 2 {
+        return process_batch_inner(db, paths, keep_going, now, chunk_size, on_relocated, emit, None);
+    }
+    let mut maker = KeyMaker::default();
+    let keys: Vec<Option<String>> = paths
+        .iter()
+        .map(|p| Some(maker.key(p.parent()?, p.file_name()?.to_str()?)))
+        .collect();
+    super::fp_prefetch::run(db, paths, &keys, threads, now, |pf| {
+        process_batch_inner(db, paths, keep_going, now, chunk_size, on_relocated, emit, Some(pf))
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn process_batch_inner(
+    db: &Arc<Mutex<Database>>,
+    paths: &[PathBuf],
+    keep_going: &dyn Fn() -> bool,
+    now: i64,
+    chunk_size: usize,
+    on_relocated: &dyn Fn(&Path, &str),
+    emit: &mut dyn FnMut(BatchChunk),
+    prefetch: Option<&super::fp_prefetch::Prefetcher>,
+) -> BatchOutcome {
     let mut keys = KeyMaker::default();
     let mut outcome = BatchOutcome::default();
     let mut chunk = BatchChunk::default();
@@ -366,8 +405,13 @@ pub(super) fn process_batch_with(
             continue;
         };
         let key = keys.key(dir, name);
+        // 先読み済みの観測があれば渡す（Skip＝stat一致などは従来どおり自分で判定する）。
+        let pre = prefetch.and_then(|pf| pf.take(index, keep_going)).and_then(|f| match f {
+            super::fp_prefetch::Fetched::Observed(o) => Some(o),
+            super::fp_prefetch::Fetched::Skip => None,
+        });
         let resolve_started = Instant::now();
-        let resolved = file_identity::resolve_file(db, &key, path, now, false);
+        let resolved = file_identity::resolve_file_with(db, &key, path, now, false, pre);
         crate::perf_fixture::item(crate::perf_fixture::Stage::IdResolve, resolve_started.elapsed());
         match resolved {
             ResolveOutcome::Resolved(Resolution::Moved { id, from }) => {
@@ -719,6 +763,69 @@ mod tests {
 
     fn rec_of(db: &Arc<Mutex<Database>>, path: &Path) -> Option<file_identity::FileRecord> {
         file_identity::lookup(db, &crate::spread_state::make_key(path.parent()?, path.file_name()?.to_str()?))
+    }
+
+    fn run_threads(db: &Arc<Mutex<Database>>, paths: &[PathBuf], threads: usize) -> (BatchOutcome, Vec<BatchChunk>) {
+        let mut emitted = Vec::new();
+        let outcome = process_batch_threads(
+            db,
+            paths,
+            &|| true,
+            file_identity::now_unix(),
+            CHUNK_SIZE,
+            &|_, _| {},
+            &mut |c| emitted.push(c),
+            threads,
+        );
+        (outcome, emitted)
+    }
+
+    #[test]
+    fn prefetch_threads_give_the_same_records_and_report_order_as_serial() {
+        let t = TempRoot::new("prefetch_same");
+        let (db1, db2) = (open_spread_db(&t.dir("a_root")).unwrap(), open_spread_db(&t.dir("b_root")).unwrap());
+        let dir = t.dir("d");
+        // 先読みの窓(8件×4本)を超える件数。内容の同じ2件（コピー判定）と、書き込み中の1件（後回し）を混ぜる。
+        let mut paths: Vec<PathBuf> = (0..80).map(|i| file(&dir, &format!("f{i:03}.zip"), 3000 + i, 1000)).collect();
+        paths.push(file(&dir, "dup_a.zip", 5000, 1000));
+        paths.push(file(&dir, "dup_b.zip", 5000, 1000));
+        paths.push(file(&dir, "fresh.zip", 3000, 0));
+        let (o1, e1) = run_threads(&db1, &paths, 1);
+        let (o4, e4) = run_threads(&db2, &paths, 4);
+        let settled = |e: &[BatchChunk]| e.iter().flat_map(|c| c.settled.clone()).collect::<Vec<_>>();
+        assert_eq!(settled(&e1), settled(&e4), "報告される順序と内容は先読みの有無で変わらない");
+        assert_eq!(o1.unstable, o4.unstable);
+        assert_eq!(o1.markers_created, o4.markers_created);
+        for p in &paths {
+            let (a, b) = (rec_of(&db1, p), rec_of(&db2, p));
+            assert_eq!(a.as_ref().map(|r| (r.id, r.fp)), b.as_ref().map(|r| (r.id, r.fp)), "{p:?}");
+        }
+        // 2回目はstat一致で、先読みも何も読まない。
+        let (_, again) = run_threads(&db2, &paths, 4);
+        assert!(again.iter().all(|c| c.settled.is_empty()));
+    }
+
+    #[test]
+    fn prefetch_stops_without_hanging_when_aborted() {
+        let t = TempRoot::new("prefetch_abort");
+        let db = open_spread_db(&t.0).unwrap();
+        let dir = t.dir("d");
+        let paths: Vec<PathBuf> = (0..60).map(|i| file(&dir, &format!("f{i:03}.zip"), 3000 + i, 1000)).collect();
+        let calls = Cell::new(0);
+        let outcome = process_batch_threads(
+            &db,
+            &paths,
+            &|| {
+                calls.set(calls.get() + 1);
+                calls.get() < 10
+            },
+            file_identity::now_unix(),
+            CHUNK_SIZE,
+            &|_, _| {},
+            &mut |_| {},
+            4,
+        );
+        assert!(outcome.aborted);
     }
 
     #[test]

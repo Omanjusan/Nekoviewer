@@ -252,6 +252,11 @@ pub enum Observed {
     Unreadable(String),
 }
 
+/// 先読み（`view_explorer::fp_prefetch`）からも使う、更新日時（unix秒）の取り方。
+pub(crate) fn mtime_of(m: &std::fs::Metadata) -> i64 {
+    mtime_secs(m)
+}
+
 fn mtime_secs(m: &std::fs::Metadata) -> i64 {
     m.modified()
         .ok()
@@ -1019,6 +1024,18 @@ pub fn resolve_file(
     now: i64,
     record_unstable_without_fp: bool,
 ) -> ResolveOutcome {
+    resolve_file_with(db, key, path, now, record_unstable_without_fp, None)
+}
+
+/// `resolve_file` の、観測済みの結果（先読み）を受け取れる版。`pre` が `Some` なら、stat一致でない場合の観測を省く。
+pub fn resolve_file_with(
+    db: &Arc<Mutex<Database>>,
+    key: &str,
+    path: &Path,
+    now: i64,
+    record_unstable_without_fp: bool,
+    pre: Option<Observed>,
+) -> ResolveOutcome {
     if !is_enabled() {
         return ResolveOutcome::Gone;
     }
@@ -1038,9 +1055,15 @@ pub fn resolve_file(
     if quick {
         return ResolveOutcome::Unchanged;
     }
-    let t_observe = std::time::Instant::now();
-    let observed = observe(path, now);
-    detail(Stage::IdResolve, "観測(observe)全体＝FP各行を含む", t_observe.elapsed());
+    let observed = match pre {
+        Some(o) => o,
+        None => {
+            let t_observe = std::time::Instant::now();
+            let o = observe(path, now);
+            detail(Stage::IdResolve, "観測(observe)全体＝FP各行を含む", t_observe.elapsed());
+            o
+        }
+    };
     let obs = match observed {
         Observed::Ready(o) => o,
         Observed::Unstable if record_unstable_without_fp => {
