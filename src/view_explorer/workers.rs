@@ -472,7 +472,8 @@ impl NekoviewApp {
         self.poll_similar_focus();
 
         // サムネイルワーカーからの結果を受信してGPUテクスチャへアップロード
-        let was_pending = !self.thumb_pending.is_empty();
+        // 手すき生成の保留は数えない（1件ごとにハッシュ・サマリーの更新が走るのを避ける）。
+        let was_pending = self.normal_thumb_pending() > 0;
         let thumb_results: Vec<ThumbResult> =
             std::iter::from_fn(|| self.thumb_res_rx.try_recv().ok()).collect();
         for result in thumb_results {
@@ -504,6 +505,7 @@ impl NekoviewApp {
             }
             if result.stage == ThumbResultStage::Complete {
                 self.thumb_pending.remove(&result.path);
+                self.idle_thumb_completed(&result.path);
             }
             match result.rgba {
                 Some(rgba) => {
@@ -527,8 +529,10 @@ impl NekoviewApp {
         }
         self.pump_perf_fixture_all_thumbs();
         self.pump_thumbnail_queue(ctx);
+        self.pump_idle_thumbnails(ctx);
         // pending が空になった瞬間に最終カウントを更新する
-        let just_finished = was_pending && self.thumb_pending.is_empty();
+        let idle_finished = self.take_idle_thumb_report();
+        let just_finished = (was_pending && self.normal_thumb_pending() == 0) || idle_finished;
         if just_finished {
             // 後から生成されたサムネのハッシュを拾う。
             // 計測: 待ちのキューも空になった時が「サムネ生成の完了」。この完了を先に記録してから依頼する

@@ -36,6 +36,7 @@
 - [features/duplicate-marker.md](features/duplicate-marker.md) — 重複マーカー（同じ内容のファイルの警告）と類似ファイル一覧・完全比較、手動テスト手順
 - [features/list-attr-column.md](features/list-attr-column.md) — リストの「エラー列」「属性列」（固定スロット）と、★・訪問回数の＋－編集（ロック付き）、手動テスト手順
 - [features/perf-fixture.md](features/perf-fixture.md) — 速度計測フィクスチャー（開発専用）。サムネのみ／フルサポートの処理時間比較、DBクリアと復元、手動確認項目
+- [features/idle-thumb.md](features/idle-thumb.md) — 手すき時間のサムネ生成（操作が3秒止まっている間に、画面外のサムネをDBへ先回りして貯める）、手動確認項目
 - [features/tag-search.md](features/tag-search.md) — タグ検索タブ（フォルダ横断のタグ絞り込み、単一選択カテゴリ、左ペイン幅の可変）と手動テスト手順
 - [features/virtual-folder-register-subs.md](features/virtual-folder-register-subs.md) — 仮想フォルダの
   「実サブフォルダを一括登録」（未登録分だけを子として追加。子孫まで見るかは選択）

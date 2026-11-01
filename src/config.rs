@@ -216,6 +216,8 @@ pub struct AppConfig {
     pub backup_generations: u32,
     /// ページデコードの並列スレッド数（0 = 自動: 論理コア数/2）
     pub decode_threads: usize,
+    /// 手すき時間に、画面外のサムネを自動で生成するか（操作が3秒止まっている間だけ、1件ずつ）。
+    pub idle_thumb_generation: bool,
     /// 虫眼鏡の拡大縮小（Shift+ホイール等）の割り当てを起動時に知らせ済みか。永続設定
     /// （state の `app_magnifier_zoom_notice_shown`）。
     pub magnifier_zoom_notice_shown: bool,
@@ -296,6 +298,7 @@ impl AppConfig {
             unconfirmed_retention_days: UNCONFIRMED_RETENTION_DAYS_DEFAULT,
             backup_generations: BACKUP_GENERATIONS_DEFAULT,
             decode_threads: 0,
+            idle_thumb_generation: true,
             magnifier_zoom_notice_shown: false,
             pending_magnifier_zoom_notice: None,
             startup: StartupConfig {
