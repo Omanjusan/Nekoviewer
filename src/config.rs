@@ -14,11 +14,14 @@ pub struct LogConfig {
     pub perf:   bool,
     pub key:    bool,
     pub common: bool,
+    /// サムネ周りのリファクタリング用。計測フィクスチャー（`perf_fixture`）のメニューを有効にする。
+    pub thumb_refactor: bool,
 }
 
 static LOG_PERF:   AtomicBool = AtomicBool::new(false);
 static LOG_KEY:    AtomicBool = AtomicBool::new(false);
 static LOG_COMMON: AtomicBool = AtomicBool::new(false);
+static LOG_THUMB_REFACTOR: AtomicBool = AtomicBool::new(false);
 
 /// どこからでも呼べるログ設定取得。AppConfig::load() より前に呼ぶとデフォルト値を返す。
 pub fn log() -> LogConfig {
@@ -26,6 +29,7 @@ pub fn log() -> LogConfig {
         perf:   LOG_PERF.load(Ordering::Relaxed),
         key:    LOG_KEY.load(Ordering::Relaxed),
         common: LOG_COMMON.load(Ordering::Relaxed),
+        thumb_refactor: LOG_THUMB_REFACTOR.load(Ordering::Relaxed),
     }
 }
 
@@ -33,6 +37,7 @@ pub fn set_log(cfg: LogConfig) {
     LOG_PERF.store(cfg.perf, Ordering::Relaxed);
     LOG_KEY.store(cfg.key, Ordering::Relaxed);
     LOG_COMMON.store(cfg.common, Ordering::Relaxed);
+    LOG_THUMB_REFACTOR.store(cfg.thumb_refactor, Ordering::Relaxed);
 }
 
 // perf ログは高頻度パス（デコードループ等）から呼ばれるため、リングバッファ(Mutex)への

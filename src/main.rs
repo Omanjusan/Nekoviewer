@@ -38,6 +38,7 @@ mod monitor_geom;
 #[cfg(feature = "test-control")]
 mod test_control;
 mod neko_dir;
+mod perf_fixture;
 mod rating_filter;
 mod rating_overlay;
 mod rotation;
@@ -116,6 +117,7 @@ fn main() {
         if let Some(v) = state.app_log_perf { log_cfg.perf = v; }
         if let Some(v) = state.app_log_key { log_cfg.key = v; }
         if let Some(v) = state.app_log_common { log_cfg.common = v; }
+        if let Some(v) = state.app_log_thumb_refactor { log_cfg.thumb_refactor = v; }
         config::set_log(log_cfg);
 
         // その他タブで編集された起動時フォルダ設定も同様に state 側を優先する。

@@ -190,6 +190,7 @@ pub(crate) struct SettingsDraft {
     log_perf: bool,
     log_key: bool,
     log_common: bool,
+    log_thumb_refactor: bool,
     /// ページデコードの並列スレッド数をユーザーが手動指定するか。false = 自動(論理コア数/2)。
     decode_threads_user_set: bool,
     decode_threads: usize,
@@ -326,6 +327,7 @@ impl SettingsDraft {
             log_perf: crate::config::log().perf,
             log_key: crate::config::log().key,
             log_common: crate::config::log().common,
+            log_thumb_refactor: crate::config::log().thumb_refactor,
             decode_threads_user_set: config.decode_threads != 0,
             decode_threads: if config.decode_threads == 0 { config.resolved_decode_threads() } else { config.decode_threads },
             startup_use_last_dir: config.startup.use_last_dir,
@@ -369,6 +371,7 @@ impl SettingsDraft {
             perf: self.log_perf,
             key: self.log_key,
             common: self.log_common,
+            thumb_refactor: self.log_thumb_refactor,
         });
 
         config.startup.use_last_dir = self.startup_use_last_dir;
@@ -823,6 +826,8 @@ fn draw_settings_tab_debug(ui: &mut egui::Ui, draft: &mut SettingsDraft) {
     ui.checkbox(&mut draft.log_perf, i18n::t().settings_debug_log_perf());
     ui.checkbox(&mut draft.log_key, i18n::t().settings_debug_log_key());
     ui.checkbox(&mut draft.log_common, i18n::t().settings_debug_log_common());
+    // 開発専用のため i18n へは入れず日本語直書き（perf_fixture のメニューを有効にする）。
+    ui.checkbox(&mut draft.log_thumb_refactor, "サムネ周りのリファクタリング用ログ（計測フィクスチャー）");
 
     ui.separator();
     ui.label(i18n::t().settings_decode_threads_label());

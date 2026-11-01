@@ -403,6 +403,7 @@ pub struct AppState {
     pub app_log_perf: Option<bool>,
     pub app_log_key: Option<bool>,
     pub app_log_common: Option<bool>,
+    pub app_log_thumb_refactor: Option<bool>,
     /// その他タブで編集する起動時フォルダ設定。
     pub app_startup_use_last_dir: Option<bool>,
     pub app_startup_fixed_dir: Option<PathBuf>,
@@ -472,6 +473,7 @@ impl Default for AppState {
             app_log_perf: None,
             app_log_key: None,
             app_log_common: None,
+            app_log_thumb_refactor: None,
             app_startup_use_last_dir: None,
             app_startup_fixed_dir: None,
             app_thumb_filter: None,
@@ -573,6 +575,7 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
     let mut app_log_perf: Option<bool> = None;
     let mut app_log_key: Option<bool> = None;
     let mut app_log_common: Option<bool> = None;
+    let mut app_log_thumb_refactor: Option<bool> = None;
     let mut app_startup_use_last_dir: Option<bool> = None;
     let mut app_startup_fixed_dir: Option<PathBuf> = None;
     let mut app_thumb_filter: Option<ResizeFilter> = None;
@@ -734,6 +737,7 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
                 "app_log_perf" => { app_log_perf = v.trim().parse().ok(); }
                 "app_log_key" => { app_log_key = v.trim().parse().ok(); }
                 "app_log_common" => { app_log_common = v.trim().parse().ok(); }
+                "app_log_thumb_refactor" => { app_log_thumb_refactor = v.trim().parse().ok(); }
                 "app_startup_use_last_dir" => { app_startup_use_last_dir = v.trim().parse().ok(); }
                 "app_startup_fixed_dir" => {
                     let v = v.trim();
@@ -1006,6 +1010,7 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
         app_log_perf,
         app_log_key,
         app_log_common,
+        app_log_thumb_refactor,
         app_startup_use_last_dir,
         app_startup_fixed_dir,
         app_thumb_filter,
@@ -1176,8 +1181,8 @@ pub fn save_state(root: &Path, dir: &Path, window_size: (u32, u32), viewer_slots
     // デバッグタブが編集するログ設定。現在有効な値（グローバルなconfig::log()）をそのまま書き戻す。
     let log_cfg = crate::config::log();
     content.push_str(&format!(
-        "app_log_perf={}\napp_log_key={}\napp_log_common={}\n",
-        log_cfg.perf, log_cfg.key, log_cfg.common,
+        "app_log_perf={}\napp_log_key={}\napp_log_common={}\napp_log_thumb_refactor={}\n",
+        log_cfg.perf, log_cfg.key, log_cfg.common, log_cfg.thumb_refactor,
     ));
     // その他タブが編集する起動時フォルダ設定。
     content.push_str(&format!(
