@@ -17,10 +17,30 @@ enum Dialog {
     Message,
 }
 
-#[derive(Default)]
+/// 全件サムネ生成の計測で、1フレームに先読みキューへ積む最大数。
+const PUSH_PER_FRAME: usize = 64;
+
+/// 「画面外も含めて全件のサムネを生成する」計測の進行状態。
+pub(super) struct AllThumbs {
+    /// 一覧が揃って、`todo` を作ったか。
+    inited: bool,
+    /// まだキューへ積んでいないファイル（ID解決待ちのものは、解決が済むまで残す）。
+    todo: std::collections::HashSet<std::path::PathBuf>,
+}
+
 pub(super) struct PerfFixtureUi {
     dialog: Option<Dialog>,
     message: Option<String>,
+    /// 確認ダイアログのチェック。ONなら画面外のサムネも全件生成して測る（既定ON）。
+    all_thumbs_option: bool,
+    /// 計測中の全件サムネ生成の状態。計測中でなければ None。
+    all_thumbs: Option<AllThumbs>,
+}
+
+impl Default for PerfFixtureUi {
+    fn default() -> Self {
+        Self { dialog: None, message: None, all_thumbs_option: true, all_thumbs: None }
+    }
 }
 
 impl NekoviewApp {
@@ -77,6 +97,10 @@ impl NekoviewApp {
                     if pdb::has_backup(&root) {
                         ui.label("退避は既にあるため、上書きしません。");
                     }
+                    ui.checkbox(
+                        &mut self.perf_fixture_ui.all_thumbs_option,
+                        "画面外も含めて全件のサムネを生成して測る（OFFだと表示範囲＋先読み1画面分だけ）",
+                    );
                     ui.horizontal(|ui| {
                         if ui.button("キャンセル").clicked() {
                             next = Some(None);
@@ -167,7 +191,67 @@ impl NekoviewApp {
             crate::neko_dir::remove_thumbs(cache_db, &names);
         }
         perf_fixture::start(mode, dir.display().to_string(), names.len());
+        self.perf_fixture_ui.all_thumbs = self
+            .perf_fixture_ui
+            .all_thumbs_option
+            .then(|| AllThumbs { inited: false, todo: Default::default() });
         println!("[perf-fixture] クリア: ID {cleared} 件 / サムネ {} 件", names.len());
         self.start_scan();
+    }
+
+    /// 全件サムネ生成の計測中、一覧の全ファイルを毎フレーム先読みキューへ積む（`poll_workers` から呼ぶ）。
+    /// 通常の先読みは表示範囲＋1画面分だけなので、画面外の分は積まれない。ID解決待ち（検証中）のものは、
+    /// 解決が済むまで残して後から積む。計測が終わったら状態を捨てる。
+    pub(super) fn pump_perf_fixture_all_thumbs(&mut self) {
+        if !perf_fixture::is_active() {
+            self.perf_fixture_ui.all_thumbs = None;
+            return;
+        }
+        let Some(state) = self.perf_fixture_ui.all_thumbs.as_mut() else { return };
+        if !state.inited {
+            // 一覧が届いた（スキャン完了）時に、全ファイルを対象にする。
+            if matches!(self.scan_state, super::ScanState::Done) && !self.archives.is_empty() {
+                state.todo = self.archives.iter().cloned().collect();
+                state.inited = true;
+            } else {
+                return;
+            }
+        }
+        // 一覧の表示順（ディスク上の並びに近い）で積む。1フレームに積む数は絞る（フレームを重くしない）。
+        // ID解決待ちで飛ばしたものは数えない（先頭が詰まっても後ろが積まれるように）。
+        let paths: Vec<std::path::PathBuf> = self.archives.iter().filter(|p| state.todo.contains(*p)).cloned().collect();
+        let mut pushed = 0;
+        for path in paths {
+            if pushed >= PUSH_PER_FRAME {
+                break;
+            }
+            if self.thumb_failed.contains(&path) {
+                self.perf_fixture_ui.all_thumbs.as_mut().map(|s| s.todo.remove(&path));
+                continue;
+            }
+            if self.identity_verifying.contains(&path) {
+                continue;
+            }
+            if !self.thumb_pending.contains(&path) && !self.thumb_queued.contains(&path) {
+                // クリア直後で全件がサムネ未生成なので、DBを引いて確認せず「未生成」として積む。
+                // （UIスレッドから全件分のDBを引くと、生成スレッドの書き込みとロックで競合して固まる）
+                self.thumb_missing_queued.insert(path.clone());
+                self.thumb_queued.insert(path.clone());
+                self.thumb_queue.push_back(path.clone());
+                pushed += 1;
+            }
+            self.perf_fixture_ui.all_thumbs.as_mut().map(|s| s.todo.remove(&path));
+        }
+        self.egui_ctx.request_repaint();
+    }
+
+    /// 全件サムネ生成の計測で、積み残しが無いか（無効な計測なら常に true）。
+    pub(super) fn perf_fixture_all_thumbs_sent(&self) -> bool {
+        self.perf_fixture_ui.all_thumbs.as_ref().is_none_or(|s| s.inited && s.todo.is_empty())
+    }
+
+    /// 全件サムネ生成の計測中か（通常の先読みの窓の絞り込みを止めるため）。
+    pub(super) fn perf_fixture_all_thumbs_active(&self) -> bool {
+        self.perf_fixture_ui.all_thumbs.is_some() && perf_fixture::is_active()
     }
 }

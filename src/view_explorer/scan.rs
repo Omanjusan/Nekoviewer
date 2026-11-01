@@ -668,7 +668,7 @@ impl NekoviewApp {
             .collect()
     }
 
-    fn is_thumb_missing(&self, path: &PathBuf) -> bool {
+    pub(super) fn is_thumb_missing(&self, path: &PathBuf) -> bool {
         path.file_name().and_then(|n| n.to_str())
             .and_then(|name| self.cache_db.as_ref()
                 .and_then(|db| neko_dir::read_thumbnail_state(db, name)))
@@ -701,6 +701,10 @@ impl NekoviewApp {
     /// 進行方向へ1画面ぶんだけ先読みを足し、逆側にはみ出た未送信ぶんは捨てる。
     pub(super) fn update_thumbnail_lookahead(&mut self, lo: usize, hi: usize) {
         let total = self.filtered_indices.len();
+        // 計測フィクスチャーの全件サムネ生成中は、窓の外のキューを捨てない（perf_fixture_ui.rs）。
+        if self.perf_fixture_all_thumbs_active() {
+            return;
+        }
         if !self.folder_pane_tab.shows_real_dir()
             || self.viewing_favorites.is_some()
             || self.viewing_search.is_some()

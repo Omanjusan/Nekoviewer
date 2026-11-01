@@ -205,8 +205,11 @@ fn fp_windows(len: u64) -> Vec<(u64, u64)> {
 
 /// ファイルのFPを計算する。0バイトは None。open→read→close で完結し、ハンドルは保持しない。
 pub fn compute_fp(path: &Path) -> std::io::Result<Option<Fp>> {
+    use crate::perf_fixture::{detail, Stage};
+    let t_open = std::time::Instant::now();
     let mut file = std::fs::File::open(path)?;
     let len = file.metadata()?.len();
+    detail(Stage::IdResolve, "FP: open+stat", t_open.elapsed());
     if len == 0 {
         return Ok(None);
     }
@@ -214,12 +217,19 @@ pub fn compute_fp(path: &Path) -> std::io::Result<Option<Fp>> {
     hasher.update(b"nekoviewer-fp1");
     hasher.update(len.to_le_bytes());
     let mut buf = Vec::new();
+    let (mut read_time, mut sha_time) = (std::time::Duration::ZERO, std::time::Duration::ZERO);
     for (offset, n) in fp_windows(len) {
         buf.resize(n as usize, 0);
+        let t_read = std::time::Instant::now();
         file.seek(SeekFrom::Start(offset))?;
         file.read_exact(&mut buf)?;
+        read_time += t_read.elapsed();
+        let t_sha = std::time::Instant::now();
         hasher.update(&buf);
+        sha_time += t_sha.elapsed();
     }
+    detail(Stage::IdResolve, "FP: 窓の読み(seek+read)", read_time);
+    detail(Stage::IdResolve, "FP: SHA-256", sha_time);
     Ok(Some(hasher.finalize()[..16].try_into().expect("16 bytes")))
 }
 
@@ -1012,6 +1022,8 @@ pub fn resolve_file(
     if !is_enabled() {
         return ResolveOutcome::Gone;
     }
+    use crate::perf_fixture::{detail, Stage};
+    let t_meta = std::time::Instant::now();
     let meta = match std::fs::metadata(path) {
         Ok(m) if m.is_file() => m,
         Ok(_) => return ResolveOutcome::Gone,
@@ -1019,10 +1031,17 @@ pub fn resolve_file(
         Err(e) => return ResolveOutcome::Failed(e.to_string()),
     };
     let (size, mtime) = (meta.len(), mtime_secs(&meta));
-    if lookup(db, key).is_some_and(|r| quick_hit(&r, size, mtime)) {
+    detail(Stage::IdResolve, "metadata(stat)", t_meta.elapsed());
+    let t_lookup = std::time::Instant::now();
+    let quick = lookup(db, key).is_some_and(|r| quick_hit(&r, size, mtime));
+    detail(Stage::IdResolve, "DB参照(quick_hit)", t_lookup.elapsed());
+    if quick {
         return ResolveOutcome::Unchanged;
     }
-    let obs = match observe(path, now) {
+    let t_observe = std::time::Instant::now();
+    let observed = observe(path, now);
+    detail(Stage::IdResolve, "観測(observe)全体＝FP各行を含む", t_observe.elapsed());
+    let obs = match observed {
         Observed::Ready(o) => o,
         Observed::Unstable if record_unstable_without_fp => {
             Observation { size, mtime, volume: mount_root(path), fp: None }
@@ -1041,7 +1060,10 @@ pub fn resolve_file(
         data_signature: &data_signature,
         has_legacy_data: &has_legacy_data,
     };
-    match resolve_path(db, key, &obs, &env) {
+    let t_resolve = std::time::Instant::now();
+    let resolved = resolve_path(db, key, &obs, &env);
+    detail(Stage::IdResolve, "DB解決(resolve_path)", t_resolve.elapsed());
+    match resolved {
         Ok(r) => ResolveOutcome::Resolved(r),
         Err(e) => ResolveOutcome::Failed(format!("{e:?}")),
     }

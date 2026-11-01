@@ -525,6 +525,7 @@ impl NekoviewApp {
                 }
             }
         }
+        self.pump_perf_fixture_all_thumbs();
         self.pump_thumbnail_queue(ctx);
         // pending が空になった瞬間に最終カウントを更新する
         let just_finished = was_pending && self.thumb_pending.is_empty();
@@ -533,7 +534,7 @@ impl NekoviewApp {
             // 計測: 待ちのキューも空になった時が「サムネ生成の完了」。この完了を先に記録してから依頼する
             // （dHash側が「サムネ完了後の依頼」と判定できるように）。サムネのみモードでは依頼自体が抑止される。
             let thumb_only = crate::perf_fixture::is_thumb_only();
-            if self.thumb_queue.is_empty() && self.thumb_priority_queue.is_empty() {
+            if self.thumb_queue.is_empty() && self.thumb_priority_queue.is_empty() && self.perf_fixture_all_thumbs_sent() {
                 crate::perf_fixture::stage_done(crate::perf_fixture::Stage::Thumb);
             }
             if !thumb_only {

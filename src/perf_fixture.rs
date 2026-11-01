@@ -69,6 +69,8 @@ struct StageStat {
     count: usize,
     busy: Duration,
     lock_wait: Duration,
+    /// 処理の内訳（ラベルごとの累計時間）。段の累計処理時間の中身を見るためのもの。
+    details: Vec<(&'static str, Duration)>,
     first_start: Option<Instant>,
     last_end: Option<Instant>,
     done_at: Option<Instant>,
@@ -100,6 +102,28 @@ impl Session {
         if s.last_end.map_or(true, |l| now > l) {
             s.last_end = Some(now);
         }
+    }
+
+    /// 段の処理時間の内訳を足す（`label` ごとに累計）。
+    pub fn detail(&mut self, stage: Stage, label: &'static str, d: Duration) {
+        let s = &mut self.stages[stage.index()];
+        match s.details.iter_mut().find(|(l, _)| *l == label) {
+            Some((_, total)) => *total += d,
+            None => s.details.push((label, d)),
+        }
+    }
+
+    /// 100件ごとの途中経過（止まっているのか遅いのかを見分けるため）。
+    pub fn progress_line(&self, stage: Stage) -> Option<String> {
+        let s = &self.stages[stage.index()];
+        (s.count > 0 && s.count % 100 == 0).then(|| {
+            format!(
+                "[perf-fixture] 途中経過 {} {} 件完了（+{:.1}s）",
+                stage.label().trim(),
+                s.count,
+                s.last_end.map_or(0.0, |t| t.saturating_duration_since(self.started).as_secs_f64())
+            )
+        })
     }
 
     pub fn is_done(&self, stage: Stage) -> bool {
@@ -165,6 +189,13 @@ impl Session {
                 db_wait,
                 if required && s.done_at.is_none() { "  【未完了】" } else { "" },
             ));
+            for (label, total) in &s.details {
+                let per = if s.count == 0 { 0.0 } else { total.as_secs_f64() * 1000.0 / s.count as f64 };
+                out.push(format!(
+                    "[perf-fixture]     └ {label}  累計 {:.3}s  平均 {per:.2}ms/件",
+                    total.as_secs_f64()
+                ));
+            }
         }
         out
     }
@@ -238,7 +269,17 @@ pub fn is_thumb_only() -> bool {
 }
 
 pub fn item(stage: Stage, busy: Duration) {
-    with_session(|s, now| s.item(stage, busy, now));
+    with_session(|s, now| {
+        s.item(stage, busy, now);
+        if let Some(line) = s.progress_line(stage) {
+            println!("{line}");
+        }
+    });
+}
+
+/// 段の処理時間の内訳。`stage` の件数あたりに換算して表示される。
+pub fn detail(stage: Stage, label: &'static str, d: Duration) {
+    with_session(|s, _| s.detail(stage, label, d));
 }
 
 pub fn lock_wait(stage: Stage, waited: Duration) {
@@ -267,6 +308,20 @@ mod tests {
         assert!(!s.finished(), "stage_done まで完了にしない");
         s.stage_done(Stage::Thumb, t0 + ms(300));
         assert!(s.finished());
+    }
+
+    #[test]
+    fn details_accumulate_per_label_and_render_under_the_stage() {
+        let t0 = Instant::now();
+        let mut s = Session::new(Mode::Full, "d".into(), 2, t0);
+        s.item(Stage::IdResolve, ms(100), t0 + ms(100));
+        s.item(Stage::IdResolve, ms(100), t0 + ms(200));
+        s.detail(Stage::IdResolve, "FP読み", ms(120));
+        s.detail(Stage::IdResolve, "FP読み", ms(60));
+        s.detail(Stage::IdResolve, "DB解決", ms(10));
+        let text = s.render().join("\n");
+        assert!(text.contains("└ FP読み  累計 0.180s  平均 90.00ms/件"), "{text}");
+        assert!(text.contains("└ DB解決  累計 0.010s  平均 5.00ms/件"), "{text}");
     }
 
     #[test]
