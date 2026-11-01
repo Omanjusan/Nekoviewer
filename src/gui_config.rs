@@ -1526,6 +1526,7 @@ mod tests {
         let bad = parse_state_text("idle_thumb_bad", "app_idle_thumb_wait_secs=abc\napp_idle_thumb_generation=maybe\n");
         assert_eq!((bad.app_idle_thumb_wait_secs, bad.app_idle_thumb_generation), (None, None));
         assert_eq!(crate::config::IDLE_THUMB_WAIT_DEFAULT, 3);
+        assert!(crate::config::IDLE_THUMB_WHILE_VIEWER_DEFAULT, "ビューアーを開いている間も続けるのが既定");
         assert_eq!((crate::config::IDLE_THUMB_WAIT_MIN, crate::config::IDLE_THUMB_WAIT_MAX), (1, 30));
     }
 

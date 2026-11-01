@@ -130,6 +130,8 @@ pub const BACKUP_GENERATIONS_DEFAULT: u32 = 3;
 pub const IDLE_THUMB_WAIT_MIN: u32 = 1;
 pub const IDLE_THUMB_WAIT_MAX: u32 = 30;
 pub const IDLE_THUMB_WAIT_DEFAULT: u32 = 3;
+/// ビューアー窓が開いている間も手すき生成を続けるかの既定。
+pub const IDLE_THUMB_WHILE_VIEWER_DEFAULT: bool = true;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ResizeFilter {
@@ -224,7 +226,7 @@ pub struct AppConfig {
     pub idle_thumb_generation: bool,
     /// 手すき生成を始めるまでの待ち（最後の入力から、秒。1〜30）。
     pub idle_thumb_wait_secs: u32,
-    /// ビューアー窓が開いている間も手すき生成を続けるか（既定は止める）。
+    /// ビューアー窓が開いている間も手すき生成を続けるか（既定は続ける）。
     pub idle_thumb_while_viewer: bool,
     /// 虫眼鏡の拡大縮小（Shift+ホイール等）の割り当てを起動時に知らせ済みか。永続設定
     /// （state の `app_magnifier_zoom_notice_shown`）。
@@ -308,7 +310,7 @@ impl AppConfig {
             decode_threads: 0,
             idle_thumb_generation: true,
             idle_thumb_wait_secs: IDLE_THUMB_WAIT_DEFAULT,
-            idle_thumb_while_viewer: false,
+            idle_thumb_while_viewer: IDLE_THUMB_WHILE_VIEWER_DEFAULT,
             magnifier_zoom_notice_shown: false,
             pending_magnifier_zoom_notice: None,
             startup: StartupConfig {
