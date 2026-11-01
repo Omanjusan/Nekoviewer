@@ -1382,7 +1382,6 @@ mod calendar_gui;
 mod open_progress;
 mod help;
 mod dev_db_tools;
-mod fp_prefetch;
 mod perf_fixture_ui;
 mod identity_worker;
 mod identity_resolution_ui;

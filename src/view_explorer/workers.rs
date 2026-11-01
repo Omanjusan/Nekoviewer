@@ -534,6 +534,13 @@ impl NekoviewApp {
             // 計測: 待ちのキューも空になった時が「サムネ生成の完了」。この完了を先に記録してから依頼する
             // （dHash側が「サムネ完了後の依頼」と判定できるように）。サムネのみモードでは依頼自体が抑止される。
             let thumb_only = crate::perf_fixture::is_thumb_only();
+            if crate::perf_fixture::is_active() {
+                println!(
+                    "[perf-fixture] サムネ保留が空になった: 未送信 {} / 積み残し無し {}",
+                    self.thumb_queued.len(),
+                    self.perf_fixture_all_thumbs_sent()
+                );
+            }
             // 未送信の本当の集合は thumb_queued（送信で外れる）。キュー本体には、優先キュー経由で送った後の
             // 古い要素が残りうる（通常は先読みの窓の絞り込みで捨てられる）ので、空かどうかの判定には使わない。
             if self.thumb_queued.is_empty() && self.perf_fixture_all_thumbs_sent() {
