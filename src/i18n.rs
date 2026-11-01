@@ -4352,6 +4352,46 @@ impl Lang {
         }
     }
 
+    pub fn settings_idle_thumb_toggle(self) -> &'static str {
+        match self {
+            Lang::Japanese => "操作が止まっている間に、現在地フォルダのサムネ生成を続ける",
+            Lang::English  => "Keep generating thumbnails for the current folder while idle",
+            Lang::Chinese  => "操作停止期间，继续生成当前文件夹的缩略图",
+        }
+    }
+
+    pub fn settings_idle_thumb_wait_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "最後の操作から始めるまでの待ち時間",
+            Lang::English  => "Wait after the last input before starting",
+            Lang::Chinese  => "最后一次操作后开始前的等待时间",
+        }
+    }
+
+    pub fn settings_idle_thumb_wait_value(self, secs: u32) -> String {
+        match self {
+            Lang::Japanese => format!("{secs} 秒"),
+            Lang::English  => format!("{secs} s"),
+            Lang::Chinese  => format!("{secs} 秒"),
+        }
+    }
+
+    pub fn settings_idle_thumb_while_viewer(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ビューアーを開いている間も続ける",
+            Lang::English  => "Keep going while the viewer window is open",
+            Lang::Chinese  => "查看器窗口打开时也继续",
+        }
+    }
+
+    pub fn settings_idle_thumb_explain(self) -> &'static str {
+        match self {
+            Lang::Japanese => "画面に出ていない分のサムネを、1件ずつ先に作って貯めておきます。操作を再開すると新しい生成を止めます。外付けHDDなどでは、操作の再開直後に一瞬重く感じることがあります。ビューアーを開いている間も続けると、本のページ読み込みとディスクを取り合います。",
+            Lang::English  => "Thumbnails not yet on screen are generated one at a time and cached in advance. New generation stops as soon as you resume working. On external HDDs and similar, things may feel briefly slow right after you resume. Continuing while the viewer is open competes with page loading for the disk.",
+            Lang::Chinese  => "逐个预先生成尚未显示在屏幕上的缩略图并缓存。恢复操作后会立即停止新的生成。在外置硬盘等设备上，恢复操作的瞬间可能会略有卡顿。查看器打开时继续生成，会与书页加载争用磁盘。",
+        }
+    }
+
     pub fn settings_backup_generations_label(self) -> &'static str {
         match self {
             Lang::Japanese => "■ バックアップを残す世代数",

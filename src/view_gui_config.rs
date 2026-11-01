@@ -138,6 +138,9 @@ pub(crate) struct SettingsDraft {
     thumb_size: u32,
     unconfirmed_retention_days: u32,
     backup_generations: u32,
+    idle_thumb_generation: bool,
+    idle_thumb_wait_secs: u32,
+    idle_thumb_while_viewer: bool,
     viewer_filter: ResizeFilter,
     thumb_filter: ResizeFilter,
     lang: i18n::Lang,
@@ -290,6 +293,9 @@ impl SettingsDraft {
             thumb_size: config.thumb_size,
             unconfirmed_retention_days: config.unconfirmed_retention_days,
             backup_generations: config.backup_generations,
+            idle_thumb_generation: config.idle_thumb_generation,
+            idle_thumb_wait_secs: config.idle_thumb_wait_secs,
+            idle_thumb_while_viewer: config.idle_thumb_while_viewer,
             viewer_filter: config.viewer_filter,
             thumb_filter: config.thumb_filter,
             lang: i18n::t(),
@@ -358,6 +364,11 @@ impl SettingsDraft {
         config.backup_generations = self
             .backup_generations
             .clamp(crate::config::BACKUP_GENERATIONS_MIN, crate::config::BACKUP_GENERATIONS_MAX);
+        config.idle_thumb_generation = self.idle_thumb_generation;
+        config.idle_thumb_wait_secs = self
+            .idle_thumb_wait_secs
+            .clamp(crate::config::IDLE_THUMB_WAIT_MIN, crate::config::IDLE_THUMB_WAIT_MAX);
+        config.idle_thumb_while_viewer = self.idle_thumb_while_viewer;
         config.viewer_filter = self.viewer_filter;
         config.thumb_filter = self.thumb_filter;
         i18n::set(self.lang);
@@ -627,6 +638,31 @@ fn draw_settings_tab_common(ui: &mut egui::Ui, draft: &mut SettingsDraft) {
     ui.add_space(4.0);
     ui.label(i18n::t().settings_resize_filter_thumb_label());
     draw_resize_filter_combo(ui, "common_thumb_filter", &mut draft.thumb_filter);
+    ui.separator();
+
+    // 操作が止まっている間のサムネ生成（idle_thumb.rs）。待ち時間とビューアー中の扱いは、ONのときだけ操作できる。
+    let t = i18n::t();
+    ui.checkbox(&mut draft.idle_thumb_generation, t.settings_idle_thumb_toggle());
+    ui.add_enabled_ui(draft.idle_thumb_generation, |ui| {
+        ui.indent("idle_thumb_children", |ui| {
+            ui.label(t.settings_idle_thumb_wait_label());
+            ui.scope(|ui| {
+                ui.spacing_mut().slider_width = 200.0;
+                ui.horizontal(|ui| {
+                    ui.add(
+                        egui::Slider::new(
+                            &mut draft.idle_thumb_wait_secs,
+                            crate::config::IDLE_THUMB_WAIT_MIN..=crate::config::IDLE_THUMB_WAIT_MAX,
+                        )
+                        .show_value(false),
+                    );
+                    ui.label(t.settings_idle_thumb_wait_value(draft.idle_thumb_wait_secs));
+                });
+            });
+            ui.checkbox(&mut draft.idle_thumb_while_viewer, t.settings_idle_thumb_while_viewer());
+        });
+    });
+    ui.label(t.settings_idle_thumb_explain());
     ui.separator();
 
     ui.horizontal(|ui| {

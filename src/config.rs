@@ -126,6 +126,10 @@ pub const UNCONFIRMED_RETENTION_DAYS_DEFAULT: u32 = 60;
 pub const BACKUP_GENERATIONS_MIN: u32 = 1;
 pub const BACKUP_GENERATIONS_MAX: u32 = 10;
 pub const BACKUP_GENERATIONS_DEFAULT: u32 = 3;
+/// 手すき時間のサムネ生成を始めるまでの待ち（最後の入力から、秒）。
+pub const IDLE_THUMB_WAIT_MIN: u32 = 1;
+pub const IDLE_THUMB_WAIT_MAX: u32 = 30;
+pub const IDLE_THUMB_WAIT_DEFAULT: u32 = 3;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ResizeFilter {
@@ -216,8 +220,12 @@ pub struct AppConfig {
     pub backup_generations: u32,
     /// ページデコードの並列スレッド数（0 = 自動: 論理コア数/2）
     pub decode_threads: usize,
-    /// 手すき時間に、画面外のサムネを自動で生成するか（操作が3秒止まっている間だけ、1件ずつ）。
+    /// 操作が止まっている間に、現在地フォルダのサムネ生成を続けるか（1件ずつ。idle_thumb.rs）。
     pub idle_thumb_generation: bool,
+    /// 手すき生成を始めるまでの待ち（最後の入力から、秒。1〜30）。
+    pub idle_thumb_wait_secs: u32,
+    /// ビューアー窓が開いている間も手すき生成を続けるか（既定は止める）。
+    pub idle_thumb_while_viewer: bool,
     /// 虫眼鏡の拡大縮小（Shift+ホイール等）の割り当てを起動時に知らせ済みか。永続設定
     /// （state の `app_magnifier_zoom_notice_shown`）。
     pub magnifier_zoom_notice_shown: bool,
@@ -299,6 +307,8 @@ impl AppConfig {
             backup_generations: BACKUP_GENERATIONS_DEFAULT,
             decode_threads: 0,
             idle_thumb_generation: true,
+            idle_thumb_wait_secs: IDLE_THUMB_WAIT_DEFAULT,
+            idle_thumb_while_viewer: false,
             magnifier_zoom_notice_shown: false,
             pending_magnifier_zoom_notice: None,
             startup: StartupConfig {

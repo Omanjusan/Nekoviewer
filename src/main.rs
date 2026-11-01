@@ -132,6 +132,11 @@ fn main() {
             cfg.unconfirmed_retention_days =
                 v.clamp(config::UNCONFIRMED_RETENTION_DAYS_MIN, config::UNCONFIRMED_RETENTION_DAYS_MAX);
         }
+        if let Some(v) = state.app_idle_thumb_generation { cfg.idle_thumb_generation = v; }
+        if let Some(v) = state.app_idle_thumb_wait_secs {
+            cfg.idle_thumb_wait_secs = v.clamp(config::IDLE_THUMB_WAIT_MIN, config::IDLE_THUMB_WAIT_MAX);
+        }
+        if let Some(v) = state.app_idle_thumb_while_viewer { cfg.idle_thumb_while_viewer = v; }
         if let Some(v) = state.app_backup_generations {
             cfg.backup_generations = v.clamp(config::BACKUP_GENERATIONS_MIN, config::BACKUP_GENERATIONS_MAX);
         }

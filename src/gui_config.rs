@@ -414,6 +414,10 @@ pub struct AppState {
     pub app_unconfirmed_retention_days: Option<u32>,
     /// DBバックアップの世代数（1〜10）。
     pub app_backup_generations: Option<u32>,
+    /// 手すき時間のサムネ生成（ON/OFF、待ち秒数1〜30、ビューアーを開いている間も続けるか）。
+    pub app_idle_thumb_generation: Option<bool>,
+    pub app_idle_thumb_wait_secs: Option<u32>,
+    pub app_idle_thumb_while_viewer: Option<bool>,
     /// フェーズ4b: decode_threads/default_slotもGUI編集可能にしこちらへ統合。
     pub app_decode_threads: Option<usize>,
     /// 虫眼鏡の拡大縮小の割り当てを知らせ済みか（1度だけ表示するための記録）。
@@ -480,6 +484,9 @@ impl Default for AppState {
             app_thumb_size: None,
             app_unconfirmed_retention_days: None,
             app_backup_generations: None,
+            app_idle_thumb_generation: None,
+            app_idle_thumb_wait_secs: None,
+            app_idle_thumb_while_viewer: None,
             app_decode_threads: None,
             app_magnifier_zoom_notice_shown: None,
             app_max_decode_edge_prompt_answered: None,
@@ -582,6 +589,9 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
     let mut app_thumb_size: Option<u32> = None;
     let mut app_unconfirmed_retention_days: Option<u32> = None;
     let mut app_backup_generations: Option<u32> = None;
+    let mut app_idle_thumb_generation: Option<bool> = None;
+    let mut app_idle_thumb_wait_secs: Option<u32> = None;
+    let mut app_idle_thumb_while_viewer: Option<bool> = None;
     let mut app_decode_threads: Option<usize> = None;
     let mut app_magnifier_zoom_notice_shown: Option<bool> = None;
     let mut app_max_decode_edge_prompt_answered: Option<bool> = None;
@@ -750,6 +760,9 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
                 "app_thumb_size" => { app_thumb_size = v.trim().parse().ok(); }
                 "app_unconfirmed_retention_days" => { app_unconfirmed_retention_days = v.trim().parse().ok(); }
                 "app_backup_generations" => { app_backup_generations = v.trim().parse().ok(); }
+                "app_idle_thumb_generation" => { app_idle_thumb_generation = v.trim().parse().ok(); }
+                "app_idle_thumb_wait_secs" => { app_idle_thumb_wait_secs = v.trim().parse().ok(); }
+                "app_idle_thumb_while_viewer" => { app_idle_thumb_while_viewer = v.trim().parse().ok(); }
                 "app_decode_threads" => { app_decode_threads = v.trim().parse().ok(); }
                 "app_magnifier_zoom_notice_shown" => { app_magnifier_zoom_notice_shown = v.trim().parse().ok(); }
                 "app_max_decode_edge_prompt_answered" => { app_max_decode_edge_prompt_answered = v.trim().parse().ok(); }
@@ -1017,6 +1030,9 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
         app_thumb_size,
         app_unconfirmed_retention_days,
         app_backup_generations,
+        app_idle_thumb_generation,
+        app_idle_thumb_wait_secs,
+        app_idle_thumb_while_viewer,
         app_decode_threads,
         app_magnifier_zoom_notice_shown,
         app_max_decode_edge_prompt_answered,
@@ -1200,6 +1216,10 @@ pub fn save_state(root: &Path, dir: &Path, window_size: (u32, u32), viewer_slots
         app_cfg.unconfirmed_retention_days,
     ));
     content.push_str(&format!("app_backup_generations={}\n", app_cfg.backup_generations));
+    content.push_str(&format!(
+        "app_idle_thumb_generation={}\napp_idle_thumb_wait_secs={}\napp_idle_thumb_while_viewer={}\n",
+        app_cfg.idle_thumb_generation, app_cfg.idle_thumb_wait_secs, app_cfg.idle_thumb_while_viewer,
+    ));
     // フェーズ4b: decode_threads/default_slotもここへ統合。
     let default_slot_str = match app_cfg.default_slot {
         Some(0) => "5", Some(1) => "6", Some(2) => "7", Some(3) => "8", _ => "",
@@ -1487,6 +1507,26 @@ mod tests {
         let config = ViewerConfig::default();
         assert!(!config.zoom_actual);
         assert!(config.redecode_on_resize);
+    }
+
+    #[test]
+    fn idle_thumb_keys_parse_and_are_optional() {
+        let parsed = parse_state_text(
+            "idle_thumb",
+            "app_idle_thumb_generation=false\napp_idle_thumb_wait_secs=12\napp_idle_thumb_while_viewer=true\n",
+        );
+        assert_eq!(parsed.app_idle_thumb_generation, Some(false));
+        assert_eq!(parsed.app_idle_thumb_wait_secs, Some(12));
+        assert_eq!(parsed.app_idle_thumb_while_viewer, Some(true));
+        let missing = parse_state_text("idle_thumb_missing", "app_thumb_size=256\n");
+        assert_eq!(
+            (missing.app_idle_thumb_generation, missing.app_idle_thumb_wait_secs, missing.app_idle_thumb_while_viewer),
+            (None, None, None)
+        );
+        let bad = parse_state_text("idle_thumb_bad", "app_idle_thumb_wait_secs=abc\napp_idle_thumb_generation=maybe\n");
+        assert_eq!((bad.app_idle_thumb_wait_secs, bad.app_idle_thumb_generation), (None, None));
+        assert_eq!(crate::config::IDLE_THUMB_WAIT_DEFAULT, 3);
+        assert_eq!((crate::config::IDLE_THUMB_WAIT_MIN, crate::config::IDLE_THUMB_WAIT_MAX), (1, 30));
     }
 
     #[test]

@@ -1,13 +1,13 @@
 //! 手すき時間のサムネ生成。表示中のフォルダで、画面外（先読みの窓の外）のサムネ未生成のファイルを、
 //! 操作が止まっている間だけ、1件ずつ生成してDBキャッシュに貯める。
 //!
-//! - 条件: 最後の入力から [`IDLE_AFTER`] 以上たち、通常のサムネ処理（先読みキュー・保留）が空で、設定がONのとき。
-//!   ビューアー窓が開いている間は動かない（入力はエクスプローラー窓のものだけを見ているので、本を読んでいる間の
-//!   ページデコードとディスクを取り合わないため）
+//! - 条件: 最後の入力から設定の待ち時間（既定3秒）以上たち、通常のサムネ処理（先読みキュー・保留）が空で、設定がONのとき。
+//!   ビューアー窓が開いている間は、設定で許可しない限り動かない（入力はエクスプローラー窓のものだけを見ているので、
+//!   本を読んでいる間のページデコードとディスクを取り合わないため）
 //! - 入力があれば新規の送信を止める（送信済みの分は完走させる）。次の手すきで、一覧の先頭から見直す
 //! - 対象はID解決済みのファイルだけ（「検証中」はサムネの引っ越しの前提があるため待つ）。ネットワークパスは対象外
 //! - 結果はDBに保存されるだけ（テクスチャにはしない。画面に出る時にDBから読む）
-//! - 同時実行数は環境変数 `NEKO_IDLE_THUMB_THREADS`（既定1）。計測フィクスチャーの実行中は動かない
+//! - 同時実行数は1件固定。計測フィクスチャーの実行中は動かない
 //! - 設定→デバッグの「サムネ周りのリファクタリング用ログ」がONの間、開始・100件ごとの進捗・入力による中断・周の完了を
 //!   標準出力へ出す（`[idle-thumb]`）。送信が1件も無かった周は出さない
 //! - 見直しの1周は、`SCAN_PER_FRAME` 件ずつ状態を確認して進める（UIを重くしない）
@@ -20,22 +20,12 @@ use std::time::{Duration, Instant};
 use super::NekoviewApp;
 use crate::cache::ThumbRequest;
 
-/// 最後の入力からこれだけたつと「手すき」とみなす。
-const IDLE_AFTER: Duration = Duration::from_secs(3);
+/// 同時に生成する件数（固定）。外付けHDDでは並列にしても速くならず、操作再開時の影響だけが増えるため。
+const CONCURRENCY: usize = 1;
 /// 1回の呼び出し（1フレーム）で、サムネの有無を確認する最大件数。
 const SCAN_PER_FRAME: usize = 16;
 /// ID解決待ちで飛ばしたものを見直すまでの間隔。
 const RECHECK_AFTER: Duration = Duration::from_secs(1);
-const MAX_THREADS: usize = 16;
-
-/// 手すき生成の同時実行数を環境変数から読む（未設定・不正は1）。
-pub(super) fn limit_from_env() -> usize {
-    std::env::var("NEKO_IDLE_THUMB_THREADS")
-        .ok()
-        .and_then(|v| v.trim().parse::<usize>().ok())
-        .unwrap_or(1)
-        .clamp(1, MAX_THREADS)
-}
 
 /// 手すき生成の進行状態。
 pub(super) struct IdleThumb {
@@ -49,8 +39,6 @@ pub(super) struct IdleThumb {
     seen_activity: Option<Instant>,
     /// 見直しを始めてよい時刻（ID解決待ちの再確認を間引く）。
     recheck_at: Option<Instant>,
-    /// 同時実行数の上限。
-    limit: usize,
     /// 手すき生成で送って、まだ結果が返っていないパス。通常の「保留が空になった」判定（ハッシュ・サマリー更新）から外す。
     pending: HashSet<PathBuf>,
     /// 前回の報告以降に、1件でも送ったか。
@@ -95,7 +83,6 @@ impl IdleThumb {
             done: false,
             seen_activity: None,
             recheck_at: None,
-            limit: limit_from_env(),
             pending: HashSet::new(),
             dirty: false,
             report_done: false,
@@ -132,16 +119,16 @@ impl IdleThumb {
         self.pass_sent += 1;
         if self.pass_started.is_none() {
             self.pass_started = Some(Instant::now());
-            log(|| format!("開始: {}（一覧 {} 件、同時 {} 件まで）", dir.display(), total, self.limit));
+            log(|| format!("開始: {}（一覧 {} 件、同時 {} 件まで）", dir.display(), total, CONCURRENCY));
         } else if self.pass_sent % 100 == 0 {
             log(|| format!("送信 {} 件（+{:.1}s）", self.pass_sent, self.elapsed()));
         }
     }
 }
 
-/// 手すきとみなせるか（最後の入力からの経過）。
-pub(super) fn is_idle(since_input: Duration) -> bool {
-    since_input >= IDLE_AFTER
+/// 手すきとみなせるか（最後の入力からの経過が、設定の待ち時間以上）。
+pub(super) fn is_idle(since_input: Duration, wait: Duration) -> bool {
+    since_input >= wait
 }
 
 impl NekoviewApp {
@@ -149,7 +136,7 @@ impl NekoviewApp {
     pub(super) fn pump_idle_thumbnails(&mut self, ctx: &egui::Context) {
         if !self.config.idle_thumb_generation
             || crate::perf_fixture::is_active()
-            || self.viewer_is_open()
+            || (self.viewer_is_open() && !self.config.idle_thumb_while_viewer)
             || !self.folder_pane_tab.shows_real_dir()
             || self.viewing_favorites.is_some()
             || self.viewing_search.is_some()
@@ -171,16 +158,20 @@ impl NekoviewApp {
             return;
         }
         let since_input = activity.elapsed();
-        if !is_idle(since_input) {
+        let wait = Duration::from_secs(u64::from(self.config.idle_thumb_wait_secs.clamp(
+            crate::config::IDLE_THUMB_WAIT_MIN,
+            crate::config::IDLE_THUMB_WAIT_MAX,
+        )));
+        if !is_idle(since_input, wait) {
             // 手すきになる時刻に、入力が無くても再描画して再開する。
-            ctx.request_repaint_after(IDLE_AFTER - since_input);
+            ctx.request_repaint_after(wait - since_input);
             return;
         }
         // 通常のサムネ処理が空で、手すき生成の同時実行数に空きがあること。
         if !self.thumb_queued.is_empty()
             || !self.thumb_priority_queue.is_empty()
             || self.normal_thumb_pending() > 0
-            || self.idle_thumb.pending.len() >= self.idle_thumb.limit
+            || self.idle_thumb.pending.len() >= CONCURRENCY
         {
             return;
         }
@@ -254,7 +245,7 @@ impl NekoviewApp {
                 let (dir, total) = (self.current_dir.clone(), self.archives.len());
                 self.idle_thumb.note_sent(&dir, total);
                 // 同時実行数いっぱいなら、完了を待つ（完了の通知で再描画される）。
-                if self.idle_thumb.pending.len() >= self.idle_thumb.limit {
+                if self.idle_thumb.pending.len() >= CONCURRENCY {
                     return;
                 }
             } else {
@@ -315,9 +306,13 @@ mod tests {
 
     #[test]
     fn idle_begins_only_after_the_wait() {
-        assert!(!is_idle(Duration::from_millis(2999)));
-        assert!(is_idle(Duration::from_secs(3)));
-        assert!(is_idle(Duration::from_secs(60)));
+        let wait = Duration::from_secs(3);
+        assert!(!is_idle(Duration::from_millis(2999), wait));
+        assert!(is_idle(Duration::from_secs(3), wait));
+        assert!(is_idle(Duration::from_secs(60), wait));
+        // 待ち時間は設定で変わる。
+        assert!(!is_idle(Duration::from_secs(5), Duration::from_secs(10)));
+        assert!(is_idle(Duration::from_secs(1), Duration::from_secs(1)));
     }
 
     #[test]
@@ -329,12 +324,5 @@ mod tests {
         let a = Instant::now();
         s.restart(a);
         assert_eq!((s.cursor, s.deferred, s.done, s.seen_activity), (0, false, false, Some(a)));
-    }
-
-    #[test]
-    fn limit_is_clamped_and_defaults_to_one() {
-        // 環境変数は他のテストと共有されるので、既定値（未設定）の範囲だけを確認する。
-        let n = limit_from_env();
-        assert!((1..=MAX_THREADS).contains(&n));
     }
 }
