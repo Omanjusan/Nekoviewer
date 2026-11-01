@@ -70,6 +70,15 @@ tar-zstd = ["fmt-tar", "dep:ruzstd"]
 # tar.xz は liblzma（C 依存）を要し単一 musl 配布と相性が悪いため既定で無効。現状は枠のみ。
 tar-xz = []
 
+# 速度計測用（perf_fixture）。リリース相当の最適化(opt-level 3)のまま、再ビルドだけを速くする。
+# `cargo run --profile fastrel` で使う。[profile.release] は変えないので、make release・CI・
+# AppImage・Flatpak の成果物には影響しない（出力先も target/fastrel/ で別）。
+[profile.fastrel]
+inherits = "release"
+incremental = true
+codegen-units = 256
+lto = "off"
+
 [profile.dev.package.fast_image_resize]
 opt-level = 3
 
