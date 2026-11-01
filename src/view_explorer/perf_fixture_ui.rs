@@ -35,11 +35,13 @@ pub(super) struct PerfFixtureUi {
     all_thumbs_option: bool,
     /// 計測中の全件サムネ生成の状態。計測中でなければ None。
     all_thumbs: Option<AllThumbs>,
+    /// 直近に状況を出力した時刻（止まっているのかを見分ける定期出力）。
+    last_status: Option<std::time::Instant>,
 }
 
 impl Default for PerfFixtureUi {
     fn default() -> Self {
-        Self { dialog: None, message: None, all_thumbs_option: true, all_thumbs: None }
+        Self { dialog: None, message: None, all_thumbs_option: true, all_thumbs: None, last_status: None }
     }
 }
 
@@ -207,6 +209,10 @@ impl NekoviewApp {
             self.perf_fixture_ui.all_thumbs = None;
             return;
         }
+        // 優先キュー経由で送った後にキューへ残った古い要素を捨てる（先読みの窓の絞り込みを止めている間の掃除）。
+        self.thumb_queue.retain(|p| self.thumb_queued.contains(p));
+        self.thumb_priority_queue.retain(|p| self.thumb_queued.contains(p));
+        self.print_perf_fixture_status();
         let Some(state) = self.perf_fixture_ui.all_thumbs.as_mut() else { return };
         if !state.inited {
             // 一覧が届いた（スキャン完了）時に、全ファイルを対象にする。
@@ -243,6 +249,37 @@ impl NekoviewApp {
             self.perf_fixture_ui.all_thumbs.as_mut().map(|s| s.todo.remove(&path));
         }
         self.egui_ctx.request_repaint();
+    }
+
+    /// 計測中、5秒ごとにサムネ周りの待ち状況を出す。終わらない時に、どこで止まっているかを見るため。
+    fn print_perf_fixture_status(&mut self) {
+        let now = std::time::Instant::now();
+        match self.perf_fixture_ui.last_status {
+            Some(t) if now.duration_since(t) < std::time::Duration::from_secs(5) => return,
+            _ => self.perf_fixture_ui.last_status = Some(now),
+        }
+        let names: Vec<String> = self
+            .thumb_pending
+            .iter()
+            .take(5)
+            .filter_map(|p| p.file_name().and_then(|n| n.to_str()).map(str::to_owned))
+            .collect();
+        let todo = self
+            .perf_fixture_ui
+            .all_thumbs
+            .as_ref()
+            .map_or("-".to_owned(), |s| if s.inited { s.todo.len().to_string() } else { "未初期化".to_owned() });
+        println!(
+            "[perf-fixture] 状況 保留 {} / 未送信 {}（キュー {}・優先 {}） / 未投入 {} / 失敗 {} / 検証中 {} / 保留の例 {:?}",
+            self.thumb_pending.len(),
+            self.thumb_queued.len(),
+            self.thumb_queue.len(),
+            self.thumb_priority_queue.len(),
+            todo,
+            self.thumb_failed.len(),
+            self.identity_verifying.len(),
+            names,
+        );
     }
 
     /// 全件サムネ生成の計測で、積み残しが無いか（無効な計測なら常に true）。

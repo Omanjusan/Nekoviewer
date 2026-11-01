@@ -126,6 +126,11 @@ impl Session {
         })
     }
 
+    /// 必要なのに未完了の段のラベル。
+    pub fn unfinished_required(&self) -> Vec<&'static str> {
+        self.mode.required().iter().filter(|st| !self.is_done(**st)).map(|st| st.label().trim()).collect()
+    }
+
     pub fn is_done(&self, stage: Stage) -> bool {
         self.stages[stage.index()].done_at.is_some()
     }
@@ -226,6 +231,9 @@ pub fn mode() -> Option<Mode> {
 /// 計測を始める。前の計測が未完了なら破棄する。
 pub fn start(mode: Mode, label: String, files: usize) {
     if let Ok(mut g) = SESSION.lock() {
+        if let Some(prev) = g.as_ref() {
+            println!("[perf-fixture] 前の計測は未完了のまま破棄（未完了の段: {}）", prev.unfinished_required().join("、"));
+        }
         *g = Some(Session::new(mode, label.clone(), files, Instant::now()));
         ACTIVE.store(true, Ordering::Release);
     }
