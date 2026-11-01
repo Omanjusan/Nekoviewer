@@ -1069,6 +1069,8 @@ pub struct NekoviewApp {
     exit_requested: bool,
     /// 開発用DBツール（デバッグタブ）の状態。実リリース時に dev_db_tools.rs ごと削除する。
     pub(crate) dev_db_ui: dev_db_tools::DevDbUiState,
+    /// 計測フィクスチャー（カード右クリック）のダイアログ状態。開発専用。
+    perf_fixture_ui: perf_fixture_ui::PerfFixtureUi,
     /// 翻訳機能(実験的)の永続設定。設定ダイアログの[反映]でのみ書き換わる。
     pub(crate) translate_cfg: crate::translate::TranslateConfig,
     /// お気に入り・検索・仮想フォルダの各タブが最後にいた位置（stateファイルに保存・復元）。
@@ -1380,6 +1382,7 @@ mod calendar_gui;
 mod open_progress;
 mod help;
 mod dev_db_tools;
+mod perf_fixture_ui;
 mod identity_worker;
 mod identity_resolution_ui;
 mod backup_failure_ui;
@@ -1644,6 +1647,7 @@ impl NekoviewApp {
             identity_backfill_started: false,
             identity_sweep_due: std::time::Instant::now() + identity_worker::SWEEP_FIRST_DELAY,
             dev_db_ui: dev_db_tools::DevDbUiState::load(&config_root),
+            perf_fixture_ui: perf_fixture_ui::PerfFixtureUi::default(),
             translate_cfg,
             tab_positions,
             tree_sorts,

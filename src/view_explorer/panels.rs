@@ -269,6 +269,7 @@ impl NekoviewApp {
         self.draw_spread_setting_dialog(&ctx);
         self.draw_rating_setting_dialog(&ctx);
         self.draw_backup_failure_dialog(&ctx);
+        self.draw_perf_fixture_dialogs(&ctx);
         self.draw_release_notice_dialog(&ctx);
         self.draw_settings_dialog(&ctx);
         // 旧来の無条件 ctx.request_repaint() は撤去（イベント駆動化）。
@@ -2932,6 +2933,9 @@ impl NekoviewApp {
                     ui.close();
                 }
             }
+
+            // 計測フィクスチャー（設定→デバッグのゲートがONの間だけ。perf_fixture_ui.rs）
+            self.draw_perf_fixture_menu(ui);
         });
     }
 

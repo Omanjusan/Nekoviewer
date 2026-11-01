@@ -39,6 +39,7 @@ mod monitor_geom;
 mod test_control;
 mod neko_dir;
 mod perf_fixture;
+mod perf_fixture_db;
 mod rating_filter;
 mod rating_overlay;
 mod rotation;

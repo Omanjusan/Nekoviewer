@@ -1056,6 +1056,32 @@ pub fn remove_thumb(db: &Arc<Mutex<Database>>, filename: &str) {
     let _ = tx.commit();
 }
 
+/// 複数ファイルのサムネ（JPEGと生成元・サイズ・フィルタ・状態）を1トランザクションで破棄する。
+/// 計測フィクスチャーが「初回登録」の状態を作るために使う。
+pub fn remove_thumbs(db: &Arc<Mutex<Database>>, filenames: &[String]) {
+    let Ok(db) = db.lock() else { return };
+    let Ok(tx) = db.begin_write() else { return };
+    if let Ok(mut table) = tx.open_table(THUMBS_TABLE) {
+        for f in filenames { let _ = table.remove(f.as_str()); }
+    }
+    if let Ok(mut table) = tx.open_table(THUMB_SOURCES_TABLE) {
+        for f in filenames { let _ = table.remove(f.as_str()); }
+    }
+    if let Ok(mut table) = tx.open_table(THUMB_EDGES_TABLE) {
+        for f in filenames { let _ = table.remove(f.as_str()); }
+    }
+    if let Ok(mut table) = tx.open_table(THUMB_FILTERS_TABLE) {
+        for f in filenames { let _ = table.remove(f.as_str()); }
+    }
+    if let Ok(mut table) = tx.open_table(THUMB_STATES_TABLE) {
+        for f in filenames { let _ = table.remove(f.as_str()); }
+    }
+    if let Ok(mut table) = tx.open_table(THUMB_DESIRED_SOURCES_TABLE) {
+        for f in filenames { let _ = table.remove(f.as_str()); }
+    }
+    let _ = tx.commit();
+}
+
 /// 旧JPEGを保持したまま、登録ページ変更をファイル単位でstale化する。
 pub fn reset_thumb_for_source(db: &Arc<Mutex<Database>>, filename: &str, source: &str) {
     let Ok(db) = db.lock() else { return };
