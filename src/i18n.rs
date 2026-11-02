@@ -3690,6 +3690,23 @@ impl Lang {
         }
     }
 
+    /// ビューアー上部バー最右端の「メニューバー自動ハイド」トグルボタン。
+    pub fn menubar_autohide_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "自動で隠す",
+            Lang::English  => "Auto-hide",
+            Lang::Chinese  => "自动隐藏",
+        }
+    }
+
+    pub fn menubar_autohide_hint(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ONの間、このバーは普段は引っ込み、ウィンドウ上端にポインタを寄せると出る",
+            Lang::English  => "While ON, this bar stays hidden and appears when the pointer nears the top edge",
+            Lang::Chinese  => "开启时此栏平时隐藏，指针靠近窗口顶部时显示",
+        }
+    }
+
     pub fn window_pos_apply(self) -> &'static str {
         match self {
             Lang::Japanese => "展開",

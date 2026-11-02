@@ -16,6 +16,11 @@ use crate::rotation::{self, RotationState};
 use crate::toolbar::{BarGroup, ViewerBarItem};
 use crate::keymap::{Keymap, ReaderAction, MouseAction, MouseCombo};
 
+/// 自動ハイドのメニューバーが、ホバーを外れてから引っ込むまでの待機(秒)。
+const MENUBAR_HIDE_WAIT_SEC: f64 = 1.0;
+/// 仮想タイトル帯が、ホバーを外れてから隠れるまでの待機(秒)。
+const TITLE_BAND_HIDE_WAIT_SEC: f64 = 3.0;
+
 const SCROLL_THRESHOLD: f32 = 50.0;
 /// アニメ専用パイプラインへ一度に許可するデコード先行幅。
 /// UIが可視アニメをtickしている間だけ、到達のたびに次の範囲を追加する。
@@ -523,6 +528,10 @@ pub struct ViewerState {
     fs_sort_bar_visible: bool,
     /// 仮想タイトル帯を隠す時刻（`FrameInput::time` 基準）。None = まだ初回フレームを迎えていない。
     title_band_hide_at: Option<f64>,
+    /// 自動ハイド時のオーバーレイ・メニューバーの表示状態と、引っ込める時刻・直近の高さ。
+    menubar_visible: bool,
+    menubar_hide_at: Option<f64>,
+    menubar_overlay_h: f32,
     /// フルスクリーン時ソートバー右端のクローズボタンが押された（process_misc_input で消費）
     fs_close_clicked: bool,
     sort_key: ViewerSortKey,
@@ -896,6 +905,9 @@ impl ViewerState {
             entry_list_scrolled_lo: None,
             fs_sort_bar_visible: false,
             title_band_hide_at: None,
+            menubar_visible: false,
+            menubar_hide_at: None,
+            menubar_overlay_h: 0.0,
             fs_close_clicked: false,
             sort_key: ViewerSortKey::Name,
             sort_ascending: true,
@@ -1010,6 +1022,9 @@ impl ViewerState {
             entry_list_scrolled_lo: None,
             fs_sort_bar_visible: false,
             title_band_hide_at: None,
+            menubar_visible: false,
+            menubar_hide_at: None,
+            menubar_overlay_h: 0.0,
             fs_close_clicked: false,
             sort_key: ViewerSortKey::Name,
             sort_ascending: true,
@@ -2212,22 +2227,21 @@ impl ViewerState {
         }
 
         // ── メニューバー（フルスクリーン時は非表示）────────────────────────────
+        // 自動ハイドOFF: 従来どおり常時表示のパネル。ON: 画像の上に重ねるオーバーレイで、
+        // 上端ホバーで出て、外れて MENUBAR_HIDE_WAIT_SEC 後に引っ込む。
         if !cfg.fullscreen {
-            egui::Panel::top("slot_bar")
-                .frame(egui::Frame::side_top_panel(style))
-                .show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        self.draw_bar_items(ui, cfg);
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            // 記録・削除は押しても閉じない（表示を更新するだけ）。展開は自分で ui.close() する。
-                            let config = egui::containers::menu::MenuConfig::new()
-                                .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside);
-                            egui::containers::menu::MenuButton::new(i18n::t().window_pos_menu_label())
-                                .config(config)
-                                .ui(ui, |ui| self.draw_window_pos_menu(ui, ctx, input, keymap, &mut save_slots));
-                        });
+            if cfg.menubar_autohide {
+                self.draw_overlay_menubar(ctx, input, style, cfg, keymap, &mut save_slots);
+            } else {
+                self.menubar_overlay_h = 0.0;
+                egui::Panel::top("slot_bar")
+                    .frame(egui::Frame::side_top_panel(style))
+                    .show(ui, |ui| {
+                        self.draw_menubar_row(ui, ctx, input, cfg, keymap, &mut save_slots);
                     });
-                });
+            }
+        } else {
+            self.menubar_overlay_h = 0.0;
         }
 
         // ── ウィンドウ位置の上書き確認 ──────────────────────────────────────
@@ -2348,6 +2362,91 @@ impl ViewerState {
     /// メニュー最上段の、起動バックエンド（Wayland / XWayland）の案内と「次回起動時」のチェック。
     /// Wayland セッションでだけ出す。チェックは状態ではなく「次回に今のモードを変えたい」意思
     /// （[`crate::display_backend`]）。
+    /// メニューバー1行分の中身（左: ツールバー項目 / 右端から: 自動ハイドトグル → ウィンドウ位置）。
+    fn draw_menubar_row(
+        &mut self,
+        ui: &mut egui::Ui,
+        ctx: &egui::Context,
+        input: &FrameInput,
+        cfg: &mut ViewerConfig,
+        keymap: &Keymap,
+        save_slots: &mut Option<[Option<WindowSlot>; 4]>,
+    ) {
+        ui.horizontal(|ui| {
+            self.draw_bar_items(ui, cfg);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let lang = i18n::t();
+                // right_to_left の最初の要素が最右端になる。
+                if ui
+                    .selectable_label(cfg.menubar_autohide, lang.menubar_autohide_label())
+                    .on_hover_text(lang.menubar_autohide_hint())
+                    .clicked()
+                {
+                    cfg.menubar_autohide = !cfg.menubar_autohide;
+                    ctx.request_repaint();
+                }
+                // 記録・削除は押しても閉じない（表示を更新するだけ）。展開は自分で ui.close() する。
+                let config = egui::containers::menu::MenuConfig::new()
+                    .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside);
+                egui::containers::menu::MenuButton::new(lang.window_pos_menu_label())
+                    .config(config)
+                    .ui(ui, |ui| self.draw_window_pos_menu(ui, ctx, input, keymap, save_slots));
+            });
+        });
+    }
+
+    /// 自動ハイドON時のオーバーレイ・メニューバー。表示状態と待機時間もここで更新する。
+    #[allow(clippy::too_many_arguments)]
+    fn draw_overlay_menubar(
+        &mut self,
+        ctx: &egui::Context,
+        input: &FrameInput,
+        style: &egui::Style,
+        cfg: &mut ViewerConfig,
+        keymap: &Keymap,
+        save_slots: &mut Option<[Option<WindowSlot>; 4]>,
+    ) {
+        const TRIGGER_H: f32 = 40.0;
+        const KEEP_MARGIN: f32 = 10.0;
+        let vp = input.viewport_rect;
+        let bar_h = self.menubar_overlay_h;
+
+        // ポップアップ(ウィンドウ位置メニュー等)や上書き確認の表示中は、ポインタが外れても引っ込めない。
+        let engaged = egui::Popup::is_any_open(ctx) || self.window_pos_overwrite_pending.is_some();
+        // 表示中の保持域は出現域(TRIGGER_H)より狭くしない。狭いと、その差の帯にポインタを置いたまま
+        // 「出る→保持域外で待機切れ→引っ込む→出る」を繰り返してちらつく。
+        let keep_h = if self.menubar_visible { (bar_h + KEEP_MARGIN).max(TRIGGER_H) } else { TRIGGER_H };
+        let hovering = input.hover_pos.is_some_and(|p| vp.contains(p) && p.y < vp.min.y + keep_h);
+        if hovering || (engaged && self.menubar_visible) {
+            self.menubar_hide_at = Some(input.time + MENUBAR_HIDE_WAIT_SEC);
+            self.menubar_visible = true;
+        } else if self.menubar_visible && self.menubar_hide_at.is_none_or(|t| input.time >= t) {
+            self.menubar_visible = false;
+            self.menubar_hide_at = None;
+            ctx.request_repaint();
+        }
+        if !self.menubar_visible {
+            self.menubar_overlay_h = 0.0;
+            return;
+        }
+        // 巻き込み: バーが見えている間はタイトル帯も出し続け、バーが引っ込んだ時点から通常の待機に入る。
+        self.title_band_hide_at = Some(input.time + TITLE_BAND_HIDE_WAIT_SEC);
+        ctx.request_repaint_after(Duration::from_millis(100));
+
+        let area = egui::Area::new(egui::Id::new("menubar_overlay"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(vp.min)
+            .constrain(false)
+            .show(ctx, |ui| {
+                ui.set_width(vp.width());
+                egui::Frame::side_top_panel(style).show(ui, |ui| {
+                    ui.set_width(vp.width() - 2.0 * ui.spacing().window_margin.leftf());
+                    self.draw_menubar_row(ui, ctx, input, cfg, keymap, save_slots);
+                });
+            });
+        self.menubar_overlay_h = area.response.rect.height();
+    }
+
     fn draw_backend_notice(&mut self, ui: &mut egui::Ui) {
         use crate::display_backend::{self as backend, Mode};
         let mode = backend::mode();
@@ -4359,12 +4458,17 @@ impl ViewerState {
         clip: egui::Rect,
     ) -> bool {
         const OPEN_SHOW_SEC: f64 = 3.0;
-        const HIDE_WAIT_SEC: f64 = 3.0;
+        const HIDE_WAIT_SEC: f64 = TITLE_BAND_HIDE_WAIT_SEC;
         const TRIGGER_H: f32 = 40.0;
 
         let visible = self.title_band_hide_at.is_some_and(|t| time < t);
         // 表示中は帯の下端まで、非表示中はウィンドウ上端 TRIGGER_H までをホバー域とする。
-        let zone_bottom = if visible { clip.min.y + Self::TITLE_BAND_H } else { viewport.min.y + TRIGGER_H };
+        // 表示中の域も TRIGGER_H より狭くしない（差の帯でちらつくため）。
+        let zone_bottom = if visible {
+            (clip.min.y + self.menubar_overlay_h + Self::TITLE_BAND_H).max(viewport.min.y + TRIGGER_H)
+        } else {
+            viewport.min.y + TRIGGER_H
+        };
         let hovering = hover_pos.is_some_and(|p| viewport.contains(p) && p.y < zone_bottom);
 
         if hovering {
@@ -4383,12 +4487,13 @@ impl ViewerState {
 
     const TITLE_BAND_H: f32 = 32.0;
 
-    /// 仮想タイトル帯を clip 上端に描く。実ファイル名を上下左右中央寄せで1行。入力は握らない。
+    /// 仮想タイトル帯を clip 上端に描く。ファイル名のみ（プレフィックスなし）を上下左右中央寄せで1行。入力は握らない。
     fn draw_title_band(&self, ctx: &egui::Context, clip: egui::Rect) {
         const BAND_ALPHA: u8 = 160;
-        let text = format!("Nekoviewer - {}", self.title());
+        let text = self.title();
 
-        let band = egui::Rect::from_min_size(clip.min, egui::vec2(clip.width(), Self::TITLE_BAND_H));
+        let band_min = clip.min + egui::vec2(0.0, self.menubar_overlay_h);
+        let band = egui::Rect::from_min_size(band_min, egui::vec2(clip.width(), Self::TITLE_BAND_H));
         let painter = ctx
             .layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("title_band")))
             .with_clip_rect(band);
