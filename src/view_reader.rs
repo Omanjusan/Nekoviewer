@@ -521,6 +521,8 @@ pub struct ViewerState {
     entry_list_scrolled_lo: Option<i32>,
     /// フルスクリーン時ソートバーの表示状態（上端ホバーで on/off）
     fs_sort_bar_visible: bool,
+    /// 仮想タイトル帯を隠す時刻（`FrameInput::time` 基準）。None = まだ初回フレームを迎えていない。
+    title_band_hide_at: Option<f64>,
     /// フルスクリーン時ソートバー右端のクローズボタンが押された（process_misc_input で消費）
     fs_close_clicked: bool,
     sort_key: ViewerSortKey,
@@ -893,6 +895,7 @@ impl ViewerState {
             edge_turn_hover: None,
             entry_list_scrolled_lo: None,
             fs_sort_bar_visible: false,
+            title_band_hide_at: None,
             fs_close_clicked: false,
             sort_key: ViewerSortKey::Name,
             sort_ascending: true,
@@ -1006,6 +1009,7 @@ impl ViewerState {
             edge_turn_hover: None,
             entry_list_scrolled_lo: None,
             fs_sort_bar_visible: false,
+            title_band_hide_at: None,
             fs_close_clicked: false,
             sort_key: ViewerSortKey::Name,
             sort_ascending: true,
@@ -3345,6 +3349,9 @@ impl ViewerState {
             let guarded_primary_clicked = input.primary_clicked && !pointer_in_palette && !pointer_in_bar && !pointer_in_rating;
             self.handle_edge_turn(&edge_ctx, clip, guarded_hover, guarded_primary_clicked, is_spread, step, total, input.time);
             self.draw_edge_turn_marker(&edge_ctx, clip);
+            if self.tick_title_band(&edge_ctx, input.time, input.hover_pos, input.viewport_rect, clip) {
+                self.draw_title_band(&edge_ctx, clip);
+            }
 
             if !frame.animating || frame.zoom_actual || frame.magnifier {
                 // ── 通常レンダリング ──────────────────────────────────────────
@@ -4339,6 +4346,60 @@ impl ViewerState {
         let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("edge_turn_marker")));
         painter.add(egui::Shape::convex_polygon(vec![p_tip + off, p_top + off, p_bot + off], shadow, egui::Stroke::NONE));
         painter.add(egui::Shape::convex_polygon(vec![p_tip, p_top, p_bot], fill, egui::Stroke::NONE));
+    }
+
+    /// 仮想タイトル帯の表示可否を更新して返す。開いた直後の数秒と、上端ホバー中（外れて数秒の
+    /// 待機つき）に表示する。メニューバー/フルスクリーンバーの有無には依存しない。
+    fn tick_title_band(
+        &mut self,
+        ctx: &egui::Context,
+        time: f64,
+        hover_pos: Option<egui::Pos2>,
+        viewport: egui::Rect,
+        clip: egui::Rect,
+    ) -> bool {
+        const OPEN_SHOW_SEC: f64 = 3.0;
+        const HIDE_WAIT_SEC: f64 = 3.0;
+        const TRIGGER_H: f32 = 40.0;
+
+        let visible = self.title_band_hide_at.is_some_and(|t| time < t);
+        // 表示中は帯の下端まで、非表示中はウィンドウ上端 TRIGGER_H までをホバー域とする。
+        let zone_bottom = if visible { clip.min.y + Self::TITLE_BAND_H } else { viewport.min.y + TRIGGER_H };
+        let hovering = hover_pos.is_some_and(|p| viewport.contains(p) && p.y < zone_bottom);
+
+        if hovering {
+            self.title_band_hide_at = Some(time + HIDE_WAIT_SEC);
+        } else if self.title_band_hide_at.is_none() {
+            self.title_band_hide_at = Some(time + OPEN_SHOW_SEC);
+        }
+        let now_visible = self.title_band_hide_at.is_some_and(|t| time < t);
+        if now_visible {
+            ctx.request_repaint_after(Duration::from_millis(100));
+        } else if visible {
+            ctx.request_repaint();
+        }
+        now_visible
+    }
+
+    const TITLE_BAND_H: f32 = 32.0;
+
+    /// 仮想タイトル帯を clip 上端に描く。実ファイル名を上下左右中央寄せで1行。入力は握らない。
+    fn draw_title_band(&self, ctx: &egui::Context, clip: egui::Rect) {
+        const BAND_ALPHA: u8 = 160;
+        let text = format!("Nekoviewer - {}", self.title());
+
+        let band = egui::Rect::from_min_size(clip.min, egui::vec2(clip.width(), Self::TITLE_BAND_H));
+        let painter = ctx
+            .layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("title_band")))
+            .with_clip_rect(band);
+        painter.rect_filled(band, 0.0, egui::Color32::from_black_alpha(BAND_ALPHA));
+        painter.text(
+            band.center(),
+            egui::Align2::CENTER_CENTER,
+            text,
+            egui::TextStyle::Body.resolve(&ctx.global_style()),
+            egui::Color32::WHITE,
+        );
     }
 
     /// 左エントリリストパネル（ホバー制御 + 描画）

@@ -169,6 +169,9 @@ pub struct ViewerConfig {
     /// 画像情報（解像度・ページ数）の右下オーバーレイを表示するか。既定ON。
     /// 永続設定。ツールパレットのトグル「画像情報表示」で切り替える。
     pub image_info_visible: bool,
+    /// ウィンドウモードのメニューバー（slot_bar）を普段は引っ込め、上端ホバーで出すか。既定OFF。
+    /// 永続設定。フルスクリーン専用バーには影響しない。
+    pub menubar_autohide: bool,
     /// アーカイブ末尾の評価オーバーレイ（スコアリング）を出すか。既定ON。
     /// 永続設定。エクスプローラーのメニューバーのボタンで切り替える。OFFでも訪問回数の記録・
     /// サムネの評価帯・score filter・保存済みの評価値は変わらない。
@@ -228,6 +231,7 @@ impl Default for ViewerConfig {
             rotation_session_angle: 0,
             exif_orientation_enabled: true,
             image_info_visible: true,
+            menubar_autohide: false,
             rating_overlay_enabled: true,
             bar_order: DEFAULT_BAR_ORDER,
             transition_kind: TransitionKind::HorizontalSlide,
@@ -609,6 +613,7 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
     let mut thumbbar_marker_a: Option<u8> = None;
     let mut exif_orientation_enabled: Option<bool> = None;
     let mut image_info_visible: Option<bool> = None;
+    let mut menubar_autohide: Option<bool> = None;
     let mut rating_overlay_enabled: Option<bool> = None;
     let mut magnifier_notch_step: Option<crate::magnifier::NotchStep> = None;
     let mut magnifier_detail_ticks: Option<bool> = None;
@@ -788,6 +793,7 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
                 "thumbbar_marker_a" => { thumbbar_marker_a = v.trim().parse().ok(); }
                 "exif_orientation_enabled" => { exif_orientation_enabled = v.trim().parse().ok(); }
                 "image_info_visible" => { image_info_visible = v.trim().parse().ok(); }
+                "menubar_autohide" => { menubar_autohide = v.trim().parse().ok(); }
                 "rating_overlay_enabled" => { rating_overlay_enabled = v.trim().parse().ok(); }
                 "magnifier_notch_step" => { magnifier_notch_step = crate::magnifier::NotchStep::from_state_str(v); }
                 "magnifier_detail_ticks" => { magnifier_detail_ticks = v.trim().parse().ok(); }
@@ -952,6 +958,7 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
             rotation_session_angle: 0,
             exif_orientation_enabled: exif_orientation_enabled.unwrap_or(true),
             image_info_visible: image_info_visible.unwrap_or(true),
+            menubar_autohide: menubar_autohide.unwrap_or(false),
             rating_overlay_enabled: rating_overlay_enabled.unwrap_or(true),
             bar_order: viewer_bar_order.unwrap_or(DEFAULT_BAR_ORDER),
             transition_kind: transition_kind.unwrap_or(TransitionKind::HorizontalSlide),
@@ -1123,6 +1130,10 @@ pub fn save_state(root: &Path, dir: &Path, window_size: (u32, u32), viewer_slots
     content.push_str(&format!(
         "image_info_visible={}\n",
         viewer_cfg.image_info_visible,
+    ));
+    content.push_str(&format!(
+        "menubar_autohide={}\n",
+        viewer_cfg.menubar_autohide,
     ));
     content.push_str(&format!(
         "rating_overlay_enabled={}\n",
@@ -1313,6 +1324,20 @@ mod tests {
         assert_eq!(parsed.app_last_run_version, None);
         let parsed = parse_state_text("lrv_none", "lang=ja\n");
         assert_eq!(parsed.app_last_run_version, None);
+    }
+
+    #[test]
+    fn menubar_autohide_parses_and_defaults_to_off() {
+        assert!(!ViewerConfig::default().menubar_autohide);
+        let parsed = parse_state_text("mbh_on", "menubar_autohide=true\n");
+        assert!(parsed.viewer_cfg.menubar_autohide);
+        let parsed = parse_state_text("mbh_off", "menubar_autohide=false\n");
+        assert!(!parsed.viewer_cfg.menubar_autohide);
+        // 不正値・キーなし（旧state）は既定のOFF。
+        let parsed = parse_state_text("mbh_bad", "menubar_autohide=maybe\n");
+        assert!(!parsed.viewer_cfg.menubar_autohide);
+        let parsed = parse_state_text("mbh_none", "lang=ja\n");
+        assert!(!parsed.viewer_cfg.menubar_autohide);
     }
 
     #[test]
