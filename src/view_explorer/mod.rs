@@ -594,6 +594,8 @@ struct SortConditionDialogState {
     targets: Vec<PathBuf>,
     sort_key: crate::types::ReaderSortKey,
     ascending: bool,
+    /// 「未定義に戻す」の確認表示中
+    confirm_clear: bool,
 }
 
 /// エクスプローラー右クリック「しおり保存」一括変更ダイアログの状態。

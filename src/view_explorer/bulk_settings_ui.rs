@@ -83,6 +83,7 @@ impl NekoviewApp {
             targets,
             sort_key: ReaderSortKey::Name,
             ascending: true,
+            confirm_clear: false,
         });
     }
 
@@ -92,6 +93,7 @@ impl NekoviewApp {
         };
         let mut cancel = false;
         let mut apply = false;
+        let mut clear = false;
         let is_bulk = dialog.targets.len() > 1;
         egui::Window::new(i18n::t().sort_condition_dialog_title())
             .collapsible(false)
@@ -105,6 +107,21 @@ impl NekoviewApp {
                 };
                 ui.label(label);
                 ui.add_space(8.0);
+                if dialog.confirm_clear {
+                    // 未定義に戻す確認。実行するまで何も消さない。
+                    ui.label(i18n::t().sort_condition_clear_confirm(dialog.targets.len()));
+                    ui.small(i18n::t().sort_condition_clear_note());
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        if ui.button(i18n::t().favorite_dialog_cancel()).clicked() {
+                            dialog.confirm_clear = false;
+                        }
+                        if ui.button(i18n::t().sort_condition_clear_execute()).clicked() {
+                            clear = true;
+                        }
+                    });
+                    return;
+                }
                 ui.horizontal(|ui| {
                     ui.radio_value(&mut dialog.sort_key, ReaderSortKey::Name, i18n::t().sort_name().trim_matches(['[', ']']));
                     ui.radio_value(&mut dialog.sort_key, ReaderSortKey::Natural, i18n::t().sort_natural().trim_matches(['[', ']']));
@@ -122,6 +139,11 @@ impl NekoviewApp {
                     if ui.button(i18n::t().bulk_setting_apply_button()).clicked() {
                         apply = true;
                     }
+                    // 破壊的操作は反映から離して置く
+                    ui.add_space(24.0);
+                    if ui.button(i18n::t().sort_condition_clear_button()).clicked() {
+                        dialog.confirm_clear = true;
+                    }
                 });
             });
 
@@ -129,7 +151,33 @@ impl NekoviewApp {
             self.sort_condition_dialog = None;
         } else if apply {
             self.commit_sort_condition_dialog();
+        } else if clear {
+            self.commit_sort_condition_clear();
         }
+    }
+
+    /// 対象の保存済みソート条件をすべて未定義（レコード不在）に戻す。
+    fn commit_sort_condition_clear(&mut self) {
+        let Some(dialog) = self.sort_condition_dialog.take() else { return };
+        let Some(db) = self.spread_db.clone() else { return };
+        let mut results = Vec::with_capacity(dialog.targets.len());
+        for path in &dialog.targets {
+            let dir = path.parent().map(|p| p.to_path_buf());
+            let filename = path.file_name().and_then(|n| n.to_str()).map(str::to_string);
+            let ok = match (dir, filename) {
+                (Some(dir), Some(filename)) => {
+                    crate::spread_state::remove_archive_sort(&db, &dir, &filename);
+                    if dir == self.current_dir {
+                        self.archive_sort_states.remove(&filename);
+                    }
+                    true
+                }
+                _ => false,
+            };
+            results.push(BulkSettingResult { target: path.clone(), ok });
+        }
+        self.sync_saved_archive_settings(&dialog.targets);
+        self.set_toast(build_bulk_setting_toast(&results));
     }
 
     fn commit_sort_condition_dialog(&mut self) {

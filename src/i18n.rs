@@ -1774,6 +1774,42 @@ impl Lang {
         }
     }
 
+    /// ソート条件ダイアログ: 保存済みソート条件を未定義に戻すボタン
+    pub fn sort_condition_clear_button(self) -> &'static str {
+        match self {
+            Lang::Japanese => "未定義に戻す",
+            Lang::English  => "Reset to undefined",
+            Lang::Chinese  => "恢复为未定义",
+        }
+    }
+
+    /// 未定義に戻す確認ダイアログ: 実行ボタン
+    pub fn sort_condition_clear_execute(self) -> &'static str {
+        match self {
+            Lang::Japanese => "未定義に戻す",
+            Lang::English  => "Reset",
+            Lang::Chinese  => "恢复",
+        }
+    }
+
+    /// 未定義に戻す確認ダイアログ: 本文
+    pub fn sort_condition_clear_confirm(self, count: usize) -> String {
+        match self {
+            Lang::Japanese => format!("{count}件の保存済みソート条件を未定義に戻します。よろしいですか？"),
+            Lang::English  => format!("Reset the saved sort condition of {count} file(s) to undefined?"),
+            Lang::Chinese  => format!("将 {count} 个文件已保存的排序条件恢复为未定义。确定吗？"),
+        }
+    }
+
+    /// 未定義に戻す確認ダイアログ: 注意書き
+    pub fn sort_condition_clear_note(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ビューアーで開いているファイルの表示には反映されません。",
+            Lang::English  => "This does not affect files currently open in the viewer.",
+            Lang::Chinese  => "不会影响当前在查看器中打开的文件。",
+        }
+    }
+
     /// エクスプローラー部アイテムカード右クリックメニュー「しおり保存」（単一選択時）
     pub fn bookmark_setting_menu(self) -> &'static str {
         match self {
@@ -8104,7 +8140,8 @@ impl Lang {
                     (
                         "",
                         "このアーカイブをビューアーで開いたときの、ページの並び順を保存する。\n\
-                         キーは名前／自然数／日付、向きは昇順／降順から選ぶ。",
+                         キーは名前／自然数／日付、向きは昇順／降順から選ぶ。\n\
+                         「未定義に戻す」で保存済みの条件を消せる（確認あり。ビューアーで開いている分には反映されない）。",
                     ),
                     (
                         "■ 複数選択しているとき",
@@ -8119,7 +8156,8 @@ impl Lang {
                     (
                         "",
                         "Saves the page order used when this archive is opened in the viewer.\n\
-                         Pick a key (name / natural / date) and a direction (asc / desc).",
+                         Pick a key (name / natural / date) and a direction (asc / desc).\n\
+                         \"Reset to undefined\" removes the saved condition (with confirmation; files already open in the viewer are not affected).",
                     ),
                     (
                         "■ With multiple selection",
@@ -8134,7 +8172,8 @@ impl Lang {
                     (
                         "",
                         "保存在查看器中打开此压缩包时的页面排列顺序。\n\
-                         排序键可选名称/自然数/日期，方向可选升序/降序。",
+                         排序键可选名称/自然数/日期，方向可选升序/降序。\n\
+                         “恢复为未定义”可删除已保存的条件（需确认；不影响已在查看器中打开的文件）。",
                     ),
                     (
                         "■ 多选时",
