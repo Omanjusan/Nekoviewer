@@ -284,6 +284,15 @@ pub(crate) enum MenuBarButton {
     Settings,
 }
 
+/// ソート展開メニュー内のカーソル対象（キーボード操作と描画で共用）。
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub(crate) enum SortMenuItem {
+    PrimaryOrder,
+    PrimaryKey(ExplorerSortKey),
+    RatingOrder,
+    RatingKey(crate::explorer_sort::RatingSortKey),
+}
+
 /// 表示順そのもの（draw_menu_barの描画順と一致させること）。
 /// 見開き・ページモード群はビューアーツールバーへ移設した（toolbar.rs 参照）。
 pub(crate) const MENU_BAR_ORDER: [MenuBarButton; 11] = [
@@ -801,8 +810,10 @@ pub struct NekoviewApp {
     favorite_cursor: Option<FavoriteSelection>,
     /// MenuBar内のプレターゲティングカーソル（MENU_BAR_ORDER上のインデックス）
     menu_cursor: usize,
-    /// キーボード（Enter）からソート展開メニューの開閉を要求された。次の描画で消費する。
-    sort_menu_toggle_requested: bool,
+    /// ソート展開メニューが開いているか（マウス・キーボード共通）。
+    sort_menu_open: bool,
+    /// キーボードでメニュー内を操作中のカーソル（`sort_menu_items()` の添字）。None = メニュー外（バー側）にカーソルがある。
+    sort_menu_cursor: Option<usize>,
     /// 定義済みお気に入りフォルダ一覧のキャッシュ（DB操作の都度リフレッシュ）
     favorite_folders: Vec<crate::favorites::FavoriteFolder>,
     favorite_selected: FavoriteSelection,
@@ -1501,7 +1512,8 @@ impl NekoviewApp {
             drive_cursor: None,
             favorite_cursor: None,
             menu_cursor: 0,
-            sort_menu_toggle_requested: false,
+            sort_menu_open: false,
+            sort_menu_cursor: None,
             favorite_folders: Vec::new(),
             favorite_selected: FavoriteSelection::None,
             favorite_dialog: None,

@@ -380,8 +380,12 @@ impl NekoviewApp {
                 self.reload_current();
             }
             MenuBarButton::Sort => {
-                // 展開メニューの開閉はマウス操作（ボタンのクリック）で行う。キーボード連携は別フェーズ。
-                self.sort_menu_toggle_requested = true;
+                // カーソルが乗った時点で自動展開されるが、マウスで閉じた後などはEnterで開き直す。
+                if self.sort_menu_open {
+                    self.close_sort_menu();
+                } else {
+                    self.open_sort_menu_by_keyboard();
+                }
             }
             MenuBarButton::CardInfoToggle => {
                 self.card_info_mode = self.card_info_mode.next();
@@ -439,21 +443,135 @@ impl NekoviewApp {
         }
     }
 
+    /// ソート展開メニューのキーボードカーソル対象を、上から下へ1列に並べたもの。
+    /// 評価キーがOFFの間は、評価キーの昇降ボタン（押せない）を含めない。
+    pub(super) fn sort_menu_items(&self) -> Vec<SortMenuItem> {
+        use crate::explorer_sort::RatingSortKey;
+        let mut items = vec![
+            SortMenuItem::PrimaryOrder,
+            SortMenuItem::PrimaryKey(ExplorerSortKey::Name),
+            SortMenuItem::PrimaryKey(ExplorerSortKey::Date),
+            SortMenuItem::PrimaryKey(ExplorerSortKey::Size),
+        ];
+        if self.rating_sort.key.is_some() {
+            items.push(SortMenuItem::RatingOrder);
+        }
+        items.push(SortMenuItem::RatingKey(RatingSortKey::Score));
+        items.push(SortMenuItem::RatingKey(RatingSortKey::Visits));
+        items
+    }
+
+    /// メニュー項目の実行（クリック・Enter共通）。
+    fn apply_sort_menu_item(&mut self, item: SortMenuItem) {
+        match item {
+            SortMenuItem::PrimaryOrder => {
+                self.sort_ascending = !self.sort_ascending;
+                self.finish_sort_change();
+            }
+            SortMenuItem::PrimaryKey(key) => {
+                if self.sort_key != key {
+                    self.sort_key = key;
+                    self.finish_sort_change();
+                }
+            }
+            SortMenuItem::RatingOrder => {
+                if self.rating_sort.key.is_some() {
+                    self.rating_sort.ascending = !self.rating_sort.ascending;
+                    self.finish_sort_change();
+                    self.persist_state();
+                }
+            }
+            SortMenuItem::RatingKey(key) => {
+                self.rating_sort.toggle(key);
+                self.finish_sort_change();
+                self.persist_state();
+            }
+        }
+    }
+
+    /// キーボードでメニューを開き、カーソルを最上位の項目へ置く。
+    pub(super) fn open_sort_menu_by_keyboard(&mut self) {
+        self.sort_menu_open = true;
+        self.sort_menu_cursor = Some(0);
+    }
+
+    pub(super) fn close_sort_menu(&mut self) {
+        self.sort_menu_open = false;
+        self.sort_menu_cursor = None;
+    }
+
+    /// ソート展開メニュー内のキー操作（メニュー内カーソルがあるときだけ呼ぶ）。
+    /// ↑↓=全ボタンを1列として移動（先頭で↑ならメニューを閉じる。末尾で↓は何も起きない。
+    /// 隣のメニュー項目には移らない）、←→=メニューを閉じてバー側カーソルをその方向へ動かす、Enter=実行。
+    pub(super) fn handle_sort_menu_keys(&mut self, ctx: &egui::Context) {
+        let km = &self.config.keymap;
+        let (up, down, left, right, enter) = ctx.input(|i| (
+            km.explorer_binding(crate::keymap::ExplorerAction::NavUp).key_pressed(i),
+            km.explorer_binding(crate::keymap::ExplorerAction::NavDown).key_pressed(i),
+            km.explorer_binding(crate::keymap::ExplorerAction::NavLeft).key_pressed(i),
+            km.explorer_binding(crate::keymap::ExplorerAction::NavRight).key_pressed(i),
+            km.explorer_binding(crate::keymap::ExplorerAction::Confirm).key_pressed(i),
+        ));
+        if !(up || down || left || right || enter) {
+            return;
+        }
+        if left || right {
+            self.close_sort_menu();
+            self.step_menu_cursor(right);
+            return;
+        }
+        let items = self.sort_menu_items();
+        let mut idx = self.sort_menu_cursor.unwrap_or(0).min(items.len() - 1);
+        if up {
+            if idx == 0 {
+                self.close_sort_menu();
+                return;
+            }
+            idx -= 1;
+        }
+        if down && idx + 1 < items.len() {
+            idx += 1;
+        }
+        if enter {
+            let item = items[idx];
+            self.apply_sort_menu_item(item);
+            // 評価キーの昇降ボタンが増減して添字がずれるため、同じ項目を探し直す
+            let items = self.sort_menu_items();
+            idx = items.iter().position(|&x| x == item).unwrap_or(idx.min(items.len() - 1));
+        }
+        self.sort_menu_cursor = Some(idx);
+    }
+
+    /// バー側カーソルを、隣の有効なボタンへ1つ動かす。
+    pub(super) fn step_menu_cursor(&mut self, forward: bool) {
+        let items = self.menu_bar_items();
+        let new_pos = if forward {
+            (self.menu_cursor + 1..items.len()).find(|&i| items[i].1)
+        } else {
+            (0..self.menu_cursor).rev().find(|&i| items[i].1)
+        };
+        if let Some(pos) = new_pos {
+            self.menu_cursor = pos;
+        }
+    }
+
     /// ソート展開メニューの中身。基本キー（名前・日付・サイズ＋昇降）と評価キー（スコア・訪問回数＋昇降）。
+    /// キーボードカーソルのある項目にはリングを描く。
     fn draw_sort_menu(&mut self, ui: &mut egui::Ui) {
         let t = i18n::t();
         ui.set_max_width(360.0);
 
         let help_on = self.help_enabled;
+        let cur_item = self.sort_menu_cursor.and_then(|i| self.sort_menu_items().get(i).copied());
+        let mut clicked: Option<SortMenuItem> = None;
+
         // 基本キー：＜見出し＞ [昇降]、その下にキーを横並び
-        let mut sort_changed = false;
         let r_primary = ui
             .horizontal(|ui| {
                 let r = ui.strong(format!("＜{}＞", t.sort_menu_primary()));
-                if sort_order_button(ui, self.sort_ascending).clicked() {
-                    self.sort_ascending = !self.sort_ascending;
-                    sort_changed = true;
-                }
+                let rb = sort_order_button(ui, self.sort_ascending);
+                if cur_item == Some(SortMenuItem::PrimaryOrder) { draw_cursor_ring(ui, rb.rect); }
+                if rb.clicked() { clicked = Some(SortMenuItem::PrimaryOrder); }
                 r
             })
             .inner;
@@ -461,32 +579,24 @@ impl NekoviewApp {
         ui.horizontal(|ui| {
             for key in [ExplorerSortKey::Name, ExplorerSortKey::Date, ExplorerSortKey::Size] {
                 let active = self.sort_key == key;
-                if sort_choice_button(ui, active, key.label(), SORT_CHOICE_SELECTED).clicked() && !active {
-                    self.sort_key = key;
-                    sort_changed = true;
-                }
+                let rb = sort_choice_button(ui, active, key.label(), SORT_CHOICE_SELECTED);
+                if cur_item == Some(SortMenuItem::PrimaryKey(key)) { draw_cursor_ring(ui, rb.rect); }
+                if rb.clicked() { clicked = Some(SortMenuItem::PrimaryKey(key)); }
             }
         });
-        if sort_changed {
-            self.finish_sort_change();
-        }
 
         ui.separator();
 
         // 評価キー（任意）：同じ形。選択中のキーをもう一度押すとOFF。赤で基本キー（青）と区別する。
-        let mut rating_changed = false;
         let r_rating = ui
             .horizontal(|ui| {
                 let r = ui.strong(format!("＜{}＞", t.sort_menu_rating()));
                 let enabled = self.rating_sort.key.is_some();
-                if ui
+                let rb = ui
                     .add_enabled_ui(enabled, |ui| sort_order_button(ui, self.rating_sort.ascending))
-                    .inner
-                    .clicked()
-                {
-                    self.rating_sort.ascending = !self.rating_sort.ascending;
-                    rating_changed = true;
-                }
+                    .inner;
+                if cur_item == Some(SortMenuItem::RatingOrder) { draw_cursor_ring(ui, rb.rect); }
+                if rb.clicked() { clicked = Some(SortMenuItem::RatingOrder); }
                 r
             })
             .inner;
@@ -494,15 +604,14 @@ impl NekoviewApp {
         ui.horizontal(|ui| {
             for key in [crate::explorer_sort::RatingSortKey::Score, crate::explorer_sort::RatingSortKey::Visits] {
                 let active = self.rating_sort.key == Some(key);
-                if sort_choice_button(ui, active, key.label(), SORT_CHOICE_RATING_SELECTED).clicked() {
-                    self.rating_sort.toggle(key);
-                    rating_changed = true;
-                }
+                let rb = sort_choice_button(ui, active, key.label(), SORT_CHOICE_RATING_SELECTED);
+                if cur_item == Some(SortMenuItem::RatingKey(key)) { draw_cursor_ring(ui, rb.rect); }
+                if rb.clicked() { clicked = Some(SortMenuItem::RatingKey(key)); }
             }
         });
-        if rating_changed {
-            self.finish_sort_change();
-            self.persist_state();
+
+        if let Some(item) = clicked {
+            self.apply_sort_menu_item(item);
         }
 
         ui.separator();
@@ -538,11 +647,29 @@ impl NekoviewApp {
             let r_sort = ui.button(sort_label);
             if is_cursor(MenuBarButton::Sort) { draw_cursor_ring(ui, r_sort.rect); }
             help_tip(&r_sort, help_on, &help_sort1);
-            let toggle = r_sort.clicked() || std::mem::take(&mut self.sort_menu_toggle_requested);
+            if r_sort.clicked() {
+                if self.sort_menu_open {
+                    self.close_sort_menu();
+                } else {
+                    // マウスで開いた場合はメニュー内カーソルを出さない（キー操作はバー側のまま）
+                    self.sort_menu_open = true;
+                    self.sort_menu_cursor = None;
+                }
+            }
+            // バー側カーソルがソートボタンから外れたら、キーボードで開いたメニューは縮小する
+            let on_sort = menu_focused && cursor_button == Some(MenuBarButton::Sort);
+            if self.sort_menu_cursor.is_some() && !on_sort {
+                self.close_sort_menu();
+            }
+            let mut open = self.sort_menu_open;
             egui::Popup::menu(&r_sort)
-                .open_memory(toggle.then_some(egui::SetOpenCommand::Toggle))
+                .open_bool(&mut open)
                 .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
                 .show(|ui| self.draw_sort_menu(ui));
+            self.sort_menu_open = open;
+            if !open {
+                self.sort_menu_cursor = None;
+            }
 
             ui.separator();
 

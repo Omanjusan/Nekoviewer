@@ -337,24 +337,43 @@ impl NekoviewApp {
     /// MenuBarにフォーカスがある間の操作。左右=次の有効ボタンへ移動（無効ボタンは飛ばす）、
     /// Enter=クリック相当を発火。
     fn handle_menu_bar_keys(&mut self, ctx: &egui::Context) {
+        // ソート展開メニュー内にカーソルがあるときは、そちらが全キーを受ける
+        if self.sort_menu_cursor.is_some() {
+            self.handle_sort_menu_keys(ctx);
+            return;
+        }
         let km = &self.config.keymap;
-        let (key_left, key_right, key_enter) = ctx.input(|i| (
+        let (key_left, key_right, key_enter, key_down) = ctx.input(|i| (
             km.explorer_binding(ExplorerAction::NavLeft).key_pressed(i),
             km.explorer_binding(ExplorerAction::NavRight).key_pressed(i),
             km.explorer_binding(ExplorerAction::Confirm).key_pressed(i),
+            km.explorer_binding(ExplorerAction::NavDown).key_pressed(i),
         ));
-        if !(key_left || key_right || key_enter) {
+        if !(key_left || key_right || key_enter || key_down) {
+            return;
+        }
+        // ソートボタン上（メニューが閉じている、またはマウスで開いた直後）で↓を押すと、
+        // 展開して最上位の項目へカーソルを置く
+        if key_down {
+            if MENU_BAR_ORDER.get(self.menu_cursor) == Some(&MenuBarButton::Sort) {
+                self.open_sort_menu_by_keyboard();
+            }
             return;
         }
         let items = self.menu_bar_items();
+        let before = self.menu_cursor;
         if key_left {
-            if let Some(new_pos) = (0..self.menu_cursor).rev().find(|&i| items[i].1) {
-                self.menu_cursor = new_pos;
-            }
+            self.step_menu_cursor(false);
         }
         if key_right {
-            if let Some(new_pos) = (self.menu_cursor + 1..items.len()).find(|&i| items[i].1) {
-                self.menu_cursor = new_pos;
+            self.step_menu_cursor(true);
+        }
+        if self.menu_cursor != before {
+            // ソートボタンに着いたら自動展開して最上位の項目へ。外れたら縮小する。
+            if MENU_BAR_ORDER.get(self.menu_cursor) == Some(&MenuBarButton::Sort) {
+                self.open_sort_menu_by_keyboard();
+            } else if self.sort_menu_open {
+                self.close_sort_menu();
             }
         }
         if key_enter {
