@@ -6062,6 +6062,55 @@ impl Lang {
         }
     }
 
+    pub fn tool_palette_toggle_label_fit_width(self) -> &'static str {
+        match self {
+            Lang::Japanese => "幅フィット",
+            Lang::English  => "Fit width",
+            Lang::Chinese  => "适应宽度",
+        }
+    }
+
+    pub fn tool_palette_toggle_label_fit_height(self) -> &'static str {
+        match self {
+            Lang::Japanese => "高さフィット",
+            Lang::English  => "Fit height",
+            Lang::Chinese  => "适应高度",
+        }
+    }
+
+    /// ツールバーのフィット基準軸ボタンの表示（現在の基準軸）。
+    pub fn toolbar_fit_mode_contain(self) -> &'static str {
+        match self {
+            Lang::Japanese => "全体",
+            Lang::English  => "Fit all",
+            Lang::Chinese  => "全部",
+        }
+    }
+
+    pub fn toolbar_fit_mode_width(self) -> &'static str {
+        match self {
+            Lang::Japanese => "幅",
+            Lang::English  => "Width",
+            Lang::Chinese  => "宽度",
+        }
+    }
+
+    pub fn toolbar_fit_mode_height(self) -> &'static str {
+        match self {
+            Lang::Japanese => "高さ",
+            Lang::English  => "Height",
+            Lang::Chinese  => "高度",
+        }
+    }
+
+    pub fn toolbar_fit_mode_tip(self) -> &'static str {
+        match self {
+            Lang::Japanese => "フィットの基準を切り替え（全体 → 幅 → 高さ）\n幅/高さのときは、はみ出す側をドラッグでスクロール。書庫を切り替えると全体に戻る",
+            Lang::English  => "Cycle the fit basis (all → width → height)\nIn width/height, drag to scroll the overflowing side. Resets to all when the archive changes",
+            Lang::Chinese  => "切换适应基准（全部 → 宽度 → 高度）\n宽度/高度时，拖动以滚动溢出的一侧。切换压缩包时恢复为全部",
+        }
+    }
+
     pub fn decode_edge_prompt_title(self) -> &'static str {
         match self {
             Lang::Japanese => "既定値の更新",

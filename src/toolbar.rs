@@ -40,11 +40,13 @@ pub enum ViewerBarItem {
     RotationCarry,
     /// Exif Orientation自動回転の適用トグル
     ExifRotation,
+    /// 虫眼鏡のフィット基準軸（全体／幅／高さ）のサイクルボタン
+    FitMode,
     /// OCR/翻訳子ウィンドウの開閉トグル（旧: 画面隅フローティングボタン、ツールバーへ昇格）
     TranslateToggle,
 }
 
-pub const BAR_ITEM_COUNT: usize = 15;
+pub const BAR_ITEM_COUNT: usize = 16;
 
 /// 既定の並び順。ソート群 → ページ群 → 回転群 → 翻訳群。
 pub const DEFAULT_BAR_ORDER: [ViewerBarItem; BAR_ITEM_COUNT] = [
@@ -62,6 +64,7 @@ pub const DEFAULT_BAR_ORDER: [ViewerBarItem; BAR_ITEM_COUNT] = [
     ViewerBarItem::RotateCw,
     ViewerBarItem::RotationCarry,
     ViewerBarItem::ExifRotation,
+    ViewerBarItem::FitMode,
     ViewerBarItem::TranslateToggle,
 ];
 
@@ -72,6 +75,7 @@ pub enum BarGroup {
     Sort,
     Page,
     Rotation,
+    View,
     Translate,
 }
 
@@ -93,6 +97,7 @@ impl ViewerBarItem {
             ViewerBarItem::RotateCw        => "rotate_cw",
             ViewerBarItem::RotationCarry   => "rotation_carry",
             ViewerBarItem::ExifRotation    => "exif_rotation",
+            ViewerBarItem::FitMode         => "fit_mode",
             ViewerBarItem::TranslateToggle => "translate_toggle",
         }
     }
@@ -113,6 +118,7 @@ impl ViewerBarItem {
             "rotate_cw"        => ViewerBarItem::RotateCw,
             "rotation_carry"   => ViewerBarItem::RotationCarry,
             "exif_rotation"    => ViewerBarItem::ExifRotation,
+            "fit_mode"         => ViewerBarItem::FitMode,
             "translate_toggle" => ViewerBarItem::TranslateToggle,
             _ => return None,
         })
@@ -153,6 +159,7 @@ impl ViewerBarItem {
             | ViewerBarItem::RotateCw
             | ViewerBarItem::RotationCarry
             | ViewerBarItem::ExifRotation => BarGroup::Rotation,
+            ViewerBarItem::FitMode => BarGroup::View,
             ViewerBarItem::TranslateToggle => BarGroup::Translate,
         }
     }
@@ -219,6 +226,20 @@ mod tests {
             // id() ↔ from_id() の往復が成立すること
             assert_eq!(ViewerBarItem::from_id(a.id()), Some(a));
         }
+    }
+
+    /// 旧 state（FitMode を知らない）を読んでも、既定順の直前（回転群の末尾）の直後へ補完される。
+    #[test]
+    fn fit_mode_item_is_completed_after_exif_rotation_for_old_state() {
+        let saved: Vec<ViewerBarItem> = DEFAULT_BAR_ORDER
+            .iter()
+            .copied()
+            .filter(|&it| it != ViewerBarItem::FitMode)
+            .collect();
+        let order = resolve_bar_order(&saved);
+        assert_eq!(order, DEFAULT_BAR_ORDER);
+        let pos = |it| order.iter().position(|&x| x == it).unwrap();
+        assert_eq!(pos(ViewerBarItem::FitMode), pos(ViewerBarItem::ExifRotation) + 1);
     }
 
     #[test]

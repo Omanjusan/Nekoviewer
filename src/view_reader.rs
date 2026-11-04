@@ -718,6 +718,10 @@ pub struct ViewerState {
     magnifier_key: Option<crate::magnifier::MagnifierKey>,
     /// フィット表示のまま（窓サイズ変更にフィット倍率で追従する）か。
     magnifier_at_fit: bool,
+    /// いま虫眼鏡が使っているフィット基準軸（コマモード中は contain）。バー側の停止点・目盛りが参照する。
+    magnifier_fit_mode: crate::magnifier::FitMode,
+    /// `cfg.fit_mode` を最後に整合させた書庫。書庫が変わったら contain へ戻す。
+    fit_mode_archive: Option<PathBuf>,
     /// このフレームで ScrollArea へ scroll_offset を押し込む必要があるか（拡縮・作り直し・追従した）。
     magnifier_offset_dirty: bool,
     /// `magnifier_view` に反映済みのテクスチャ寸法。原寸デコードへの差し替えで寸法が変わったとき、
@@ -1014,6 +1018,8 @@ impl ViewerState {
             magnifier_view: None,
             magnifier_key: None,
             magnifier_at_fit: true,
+            magnifier_fit_mode: crate::magnifier::FitMode::Contain,
+            fit_mode_archive: None,
             magnifier_offset_dirty: false,
             magnifier_ref_len: 0.0,
             magnifier_bar_active_at: None,
@@ -1131,6 +1137,8 @@ impl ViewerState {
             magnifier_view: None,
             magnifier_key: None,
             magnifier_at_fit: true,
+            magnifier_fit_mode: crate::magnifier::FitMode::Contain,
+            fit_mode_archive: None,
             magnifier_offset_dirty: false,
             magnifier_ref_len: 0.0,
             magnifier_bar_active_at: None,
@@ -2051,6 +2059,13 @@ impl ViewerState {
         // コマモードは虫眼鏡の上のサブモード。虫眼鏡がOFFの間（終了ボタン・トグル・入場前）は常にOFF。
         if !cfg.magnifier_on {
             cfg.koma_on = false;
+        }
+
+        // 幅/高さフィットは書庫単位のセッション状態。書庫が変わったら contain へ戻す（ページ送りでは維持）。
+        // 虫眼鏡に入る前の設定も消さないよう、虫眼鏡の有無によらず毎フレームここで整合させる。
+        if self.fit_mode_archive.as_deref() != Some(self.archive_path.as_path()) {
+            cfg.fit_mode = crate::magnifier::FitMode::Contain;
+            self.fit_mode_archive = Some(self.archive_path.clone());
         }
 
         let rotation_angle = self.manual_rotation_angle(cfg);
@@ -3432,7 +3447,7 @@ impl ViewerState {
                     input.hover_pos
                 };
                 let target = self.magnifier_target(frame);
-                self.update_magnifier(viewport_rect, target, anchor, input.wheel_notches, &mut cfg.magnifier, cfg.koma_on, input.time);
+                self.update_magnifier(viewport_rect, target, anchor, input.wheel_notches, &mut cfg.magnifier, cfg.koma_on, cfg.fit_mode, input.time);
                 let scale_before_bar = self.magnifier_view.map(|v| v.scale);
                 let view_before_bar = self.magnifier_view;
                 if let Some(bar) = bar_rects
@@ -4769,6 +4784,25 @@ impl ViewerState {
                     cfg.exif_orientation_enabled = !cfg.exif_orientation_enabled;
                 }
             }
+            // 虫眼鏡のフィット基準軸のサイクル（全体→幅→高さ）。ボタンには現在の基準軸を出し、
+            // 幅/高さのときは選択状態にする。押すと虫眼鏡モードも立てる（コマモード中は押しても効かない）。
+            ViewerBarItem::FitMode => {
+                use crate::magnifier::FitMode;
+                let label = match cfg.fit_mode {
+                    FitMode::Contain => t.toolbar_fit_mode_contain(),
+                    FitMode::Width => t.toolbar_fit_mode_width(),
+                    FitMode::Height => t.toolbar_fit_mode_height(),
+                };
+                if ui.selectable_label(cfg.fit_mode != FitMode::Contain, label)
+                    .on_hover_text(t.toolbar_fit_mode_tip())
+                    .clicked()
+                {
+                    cfg.fit_mode = cfg.fit_mode.next();
+                    if cfg.fit_mode != FitMode::Contain {
+                        cfg.magnifier_on = true;
+                    }
+                }
+            }
             // OCR/翻訳子ウィンドウの開閉トグル。実際の開閉状態はapp側が持ち、show()呼び出し時に
             // translate_window_openとして受け取って表示にのみ使う（真の状態はここでは変更しない）。
             ViewerBarItem::TranslateToggle => {
@@ -5068,9 +5102,10 @@ impl ViewerState {
         wheel_notches: f32,
         cfg: &mut crate::magnifier::MagnifierConfig,
         koma_on: bool,
+        fit_mode: crate::magnifier::FitMode,
         time: f64,
     ) {
-        use crate::magnifier::{carried_view, fit_scale, notch_scale, rescale_for_new_texture, snap_stops, zoom_about, clamp_offset, MagnifierView, FIT_EPS};
+        use crate::magnifier::{carried_view, fit_mode_view, fit_scale, fit_scale_for, notch_scale, rescale_for_new_texture, fit_stops, zoom_about, clamp_offset, MagnifierView, FIT_EPS};
         if !koma_on {
             self.koma_was_on = false;
         }
@@ -5083,10 +5118,27 @@ impl ViewerState {
         let img = target.img;
         let vp = viewport.size();
         let fit = fit_scale(vp, img);
-        let range = cfg.scale_range(fit);
+        // 幅/高さフィットの倍率（contain のときは fit と同じ）。コマモード中は contain に固定する。
+        let fit_mode = if koma_on { crate::magnifier::FitMode::Contain } else { fit_mode };
+        let mode_changed = self.magnifier_fit_mode != fit_mode;
+        self.magnifier_fit_mode = fit_mode;
+        let mode_fit = fit_scale_for(fit_mode, vp, img);
+        let mut range = cfg.scale_range(fit);
+        // 幅/高さフィット倍率は contain 以上。上限が足りないときは広げて、フィット自体は必ず表現できるようにする。
+        range.1 = range.1.max(mode_fit);
 
         let had_view = self.magnifier_view.is_some() && self.magnifier_key == Some(target.key);
         let mut view = match self.magnifier_view {
+            // フィット基準軸が切り替わった: 同じページのまま、新しい基準のフィットへ作り直す（拡大中でも戻る）。
+            Some(_) if self.magnifier_key == Some(target.key) && mode_changed => {
+                self.magnifier_offset_dirty = true;
+                if fit_mode == crate::magnifier::FitMode::Contain {
+                    MagnifierView::fit(vp, img)
+                } else {
+                    let rtl = self.koma_read_dir() == crate::koma::ReadDir::RightToLeft;
+                    fit_mode_view(fit_mode, vp, img, range, rtl, false)
+                }
+            }
             Some(mut v) if self.magnifier_key == Some(target.key) => {
                 // 原寸デコードへの差し替えなどで解像度が変わったら、画面上の大きさを
                 // 保つよう倍率を換算する（スクロール位置は画面px基準なのでそのまま）。
@@ -5116,7 +5168,7 @@ impl ViewerState {
                 }
                 // フィット表示のままなら窓サイズ変更にフィット倍率で追従する。
                 // それ以外は範囲内へ丸め、スクロール範囲も収め直す。
-                let scale = if self.magnifier_at_fit { fit } else { v.scale.clamp(range.0, range.1) };
+                let scale = if self.magnifier_at_fit { mode_fit } else { v.scale.clamp(range.0, range.1) };
                 if scale != v.scale {
                     self.magnifier_offset_dirty = true;
                 }
@@ -5145,6 +5197,13 @@ impl ViewerState {
                         MagnifierView { scale, offset: if arrive_last { grid.last() } else { grid.first() } }
                     }
                     // 進行方向と逆の端・上端から始める（既存の原寸見開きと同じ慣例）。
+                    // 幅/高さフィット: 引き継ぎは使わず、ページごとにフィットし直す。開始位置は読み方向側の端
+                    // （戻りで入ったときは逆端）。
+                    (None, _) if fit_mode != crate::magnifier::FitMode::Contain => {
+                        let back = self.anim_dir < 0;
+                        let rtl = self.koma_read_dir() == crate::koma::ReadDir::RightToLeft;
+                        fit_mode_view(fit_mode, vp, img, range, rtl != back, back)
+                    }
                     (None, Some(rel)) => carried_view(rel, fit, range, vp, img, self.anim_dir < 0),
                     (None, None) => MagnifierView::fit(vp, img),
                 }
@@ -5184,7 +5243,7 @@ impl ViewerState {
             && self.koma_tween.is_none()
             && let Some(p) = wheel_anchor.filter(|p| viewport.contains(*p))
         {
-            let next = notch_scale(view.scale, wheel_notches, cfg.notch_ratio(), range, &snap_stops(fit));
+            let next = notch_scale(view.scale, wheel_notches, cfg.notch_ratio(), range, &fit_stops(fit, mode_fit));
             if next != view.scale {
                 // コマモード: 選んだ倍率が新しい基準倍率（縮小前）。表示する倍率は、超過分の自動縮小を査定した値。
                 let mut target_scale = next;
@@ -5197,7 +5256,7 @@ impl ViewerState {
             }
         }
 
-        self.magnifier_at_fit = (view.scale - fit).abs() <= FIT_EPS;
+        self.magnifier_at_fit = (view.scale - mode_fit).abs() <= FIT_EPS;
         self.magnifier_ref_len = target.ref_len;
         self.magnifier_view = Some(view);
         self.koma_geom = Some((img, vp));
@@ -5243,7 +5302,9 @@ impl ViewerState {
         let img = target.img;
         let vp = viewport.size();
         let fit = fit_scale(vp, img);
-        let range = cfg.scale_range(fit);
+        let mode_fit = fit_scale_for(self.magnifier_fit_mode, vp, img);
+        let mut range = cfg.scale_range(fit);
+        range.1 = range.1.max(mode_fit);
 
         if wheel_active || pointer_in_bar {
             self.magnifier_bar_active_at = Some(time);
@@ -5345,12 +5406,15 @@ impl ViewerState {
                     }
                 }
                 // フィット倍率（入場時倍率）の位置。原寸と重なるときは原寸の目盛りに任せる。
-                if (fit - ACTUAL_SCALE).abs() > 1e-3 {
-                    let x = x_of(fit);
-                    painter.line_segment(
-                        [egui::pos2(x, cy - 6.0), egui::pos2(x, cy + 6.0)],
-                        egui::Stroke::new(1.5, egui::Color32::from_rgba_unmultiplied(110, 190, 240, a(230))),
-                    );
+                // 幅/高さフィット中は、その倍率の位置にも同じ印を付ける。
+                for mark in [fit, mode_fit] {
+                    if (mark - ACTUAL_SCALE).abs() > 1e-3 {
+                        let x = x_of(mark);
+                        painter.line_segment(
+                            [egui::pos2(x, cy - 6.0), egui::pos2(x, cy + 6.0)],
+                            egui::Stroke::new(1.5, egui::Color32::from_rgba_unmultiplied(110, 190, 240, a(230))),
+                        );
+                    }
                 }
                 let radius = (track.height() / 2.0 - 1.0).clamp(3.0, 7.0);
                 painter.circle_filled(egui::pos2(thumb_x, cy), radius, egui::Color32::from_white_alpha(a(240)));
@@ -5379,11 +5443,11 @@ impl ViewerState {
         }
 
         if let Some(x) = pressed_x {
-            let target = slider_scale_at(x, (track.left(), track.right()), range, BAR_ACTUAL_MAGNET_PX, &snap_stops(fit));
+            let target = slider_scale_at(x, (track.left(), track.right()), range, BAR_ACTUAL_MAGNET_PX, &fit_stops(fit, mode_fit));
             if (target - view.scale).abs() > 1e-6 {
                 self.magnifier_view = Some(zoom_about(view, vp / 2.0, vp, img, target));
                 self.magnifier_offset_dirty = true;
-                self.magnifier_at_fit = (target - fit).abs() <= FIT_EPS;
+                self.magnifier_at_fit = (target - mode_fit).abs() <= FIT_EPS;
             }
             self.magnifier_bar_active_at = Some(time);
         }
@@ -7789,6 +7853,88 @@ mod magnifier_flow_tests {
         assert_offset_at(&h, first, "変形後も先頭コマ付近にいる");
         press(&mut h, egui::Key::Space);
         assert_offset_at(&h, grid.position(1), "変形後のコマ送り");
+    }
+
+    // ── 幅フィット／高さフィット ─────────────────────────────────────────────
+    fn set_fit(h: &mut Harness, mode: crate::magnifier::FitMode) {
+        h.cfg.fit_mode = mode;
+        h.cfg.magnifier_on = true;
+        for _ in 0..3 {
+            h.frame(vec![], egui::Modifiers::NONE);
+        }
+    }
+
+    #[test]
+    fn fit_width_scales_the_page_to_the_window_width_and_starts_at_the_top() {
+        let mut h = Harness::with_pages(3, 800, 1200);
+        set_fit(&mut h, crate::magnifier::FitMode::Width);
+        let (img, vp) = h.viewer.koma_geom.unwrap();
+        let view = h.viewer.magnifier_view.unwrap();
+        assert!((view.scale - vp.x / img.x).abs() < 1e-3, "幅に合っていない: {} vs {}", view.scale, vp.x / img.x);
+        assert!(view.offset.y.abs() < 1e-3, "上端から始まっていない: {:?}", view.offset);
+        assert!(h.viewer.magnifier_at_fit);
+    }
+
+    #[test]
+    fn fit_height_scales_the_page_to_the_window_height() {
+        let mut h = Harness::with_pages(3, 1200, 800);
+        set_fit(&mut h, crate::magnifier::FitMode::Height);
+        let (img, vp) = h.viewer.koma_geom.unwrap();
+        let view = h.viewer.magnifier_view.unwrap();
+        assert!((view.scale - vp.y / img.y).abs() < 1e-3, "高さに合っていない: {} vs {}", view.scale, vp.y / img.y);
+    }
+
+    #[test]
+    fn fit_mode_switch_while_magnified_returns_to_the_new_fit() {
+        let mut h = Harness::with_pages(3, 800, 1200);
+        set_fit(&mut h, crate::magnifier::FitMode::Width);
+        // 拡大してフィットから外す。
+        let v = h.viewer.magnifier_view.unwrap();
+        h.viewer.magnifier_view = Some(crate::magnifier::MagnifierView { scale: v.scale * 1.5, offset: v.offset });
+        h.viewer.magnifier_at_fit = false;
+        h.frame(vec![], egui::Modifiers::NONE);
+        set_fit(&mut h, crate::magnifier::FitMode::Height);
+        let (img, vp) = h.viewer.koma_geom.unwrap();
+        let view = h.viewer.magnifier_view.unwrap();
+        assert!((view.scale - vp.y / img.y).abs() < 1e-3, "新しい基準のフィットに戻らない: {}", view.scale);
+    }
+
+    #[test]
+    fn fit_width_follows_the_window_width_and_survives_page_turns() {
+        let mut h = Harness::with_pages(3, 800, 1200);
+        set_fit(&mut h, crate::magnifier::FitMode::Width);
+        h.screen = egui::vec2(SCREEN.x * 0.6, SCREEN.y);
+        for _ in 0..3 {
+            h.frame(vec![], egui::Modifiers::NONE);
+        }
+        let (img, vp) = h.viewer.koma_geom.unwrap();
+        let view = h.viewer.magnifier_view.unwrap();
+        assert!((view.scale - vp.x / img.x).abs() < 1e-3, "窓幅の変化に追従しない: {}", view.scale);
+        press(&mut h, egui::Key::Space);
+        for _ in 0..3 {
+            h.frame(vec![], egui::Modifiers::NONE);
+        }
+        assert_eq!(h.cfg.fit_mode, crate::magnifier::FitMode::Width, "ページ送りでモードが外れた");
+        let (img, vp) = h.viewer.koma_geom.unwrap();
+        let view = h.viewer.magnifier_view.unwrap();
+        assert!((view.scale - vp.x / img.x).abs() < 1e-3, "次ページが幅に合っていない: {}", view.scale);
+    }
+
+    #[test]
+    fn fit_mode_resets_to_contain_when_the_archive_changes() {
+        let mut h = Harness::with_pages(3, 800, 1200);
+        set_fit(&mut h, crate::magnifier::FitMode::Width);
+        h.viewer.archive_path = PathBuf::from("other.png");
+        h.frame(vec![], egui::Modifiers::NONE);
+        assert_eq!(h.cfg.fit_mode, crate::magnifier::FitMode::Contain);
+    }
+
+    #[test]
+    fn fit_mode_is_ignored_while_the_koma_mode_is_on() {
+        let mut h = Harness::with_pages(3, 800, 1200);
+        h.cfg.fit_mode = crate::magnifier::FitMode::Width;
+        h.start_koma(1.0);
+        assert_eq!(h.viewer.magnifier_fit_mode, crate::magnifier::FitMode::Contain);
     }
 
     #[test]

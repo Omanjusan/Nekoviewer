@@ -230,6 +230,9 @@ pub struct ViewerConfig {
     /// 疑似コマ送りモードのON/OFF。非永続・実行時のみ（ツールパレットのマスで切替）。
     /// 虫眼鏡モードの上のサブモードなので、虫眼鏡がOFFの間は常にOFF。
     pub koma_on: bool,
+    /// 虫眼鏡の上のフィット基準軸（contain／幅／高さ）。非永続・ビューアー窓のセッション限り。
+    /// 書庫を切り替えると contain へ戻る。コマモード中は無視される。
+    pub fit_mode: crate::magnifier::FitMode,
     /// 虫眼鏡モードの設定値（上限倍率・バー幅など）。現状は既定値のみで永続化しない。
     pub magnifier: crate::magnifier::MagnifierConfig,
     /// GPUテクスチャを保持するページ窓のVRAM予算など。非永続（現状は既定値のみ）。
@@ -271,6 +274,7 @@ impl Default for ViewerConfig {
             tool_palette: PaletteState::default(),
             magnifier_on: false,
             koma_on: false,
+            fit_mode: crate::magnifier::FitMode::default(),
             magnifier: crate::magnifier::MagnifierConfig::default(),
             texture_window: crate::texture_window::TextureWindowConfig::default(),
         }
@@ -1028,6 +1032,7 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
             },
             magnifier_on: false,
             koma_on: false,
+            fit_mode: crate::magnifier::FitMode::default(),
             magnifier: {
                 // 不正値は捨てて既定値。永続化するのはノッチ倍率・目盛りの詳細/簡易・コマ送りの基準倍率だけ。
                 let mut m = crate::magnifier::MagnifierConfig::default();

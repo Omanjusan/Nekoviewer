@@ -6,6 +6,7 @@
 use crate::gui_config::ViewerConfig;
 use crate::i18n::Lang;
 use crate::image_filter::ColorFilterMode;
+use crate::magnifier::FitMode;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ToggleKind {
@@ -23,6 +24,10 @@ pub enum ToggleKind {
     ImageInfo,
     /// 疑似コマ送りモードのON/OFF（虫眼鏡モードの上のサブモード。ONにすると虫眼鏡もONになる）
     KomaMode,
+    /// 幅フィット（虫眼鏡の上のサブモード。ONにすると虫眼鏡もONになる。高さフィットとは排他）
+    FitWidth,
+    /// 高さフィット（同上）
+    FitHeight,
 }
 
 impl ToggleKind {
@@ -36,6 +41,8 @@ impl ToggleKind {
             ToggleKind::Magnifier => "magnifier",
             ToggleKind::ImageInfo => "image_info",
             ToggleKind::KomaMode => "koma_mode",
+            ToggleKind::FitWidth => "fit_width",
+            ToggleKind::FitHeight => "fit_height",
         }
     }
 
@@ -48,6 +55,8 @@ impl ToggleKind {
             "magnifier" => ToggleKind::Magnifier,
             "image_info" => ToggleKind::ImageInfo,
             "koma_mode" => ToggleKind::KomaMode,
+            "fit_width" => ToggleKind::FitWidth,
+            "fit_height" => ToggleKind::FitHeight,
             _ => return None,
         })
     }
@@ -114,7 +123,30 @@ pub const TOGGLE_DEFS: &[ToggleDef] = &[
             }
         },
     },
+    ToggleDef {
+        key: ToggleKind::FitWidth,
+        label: Lang::tool_palette_toggle_label_fit_width,
+        get: |cfg| cfg.fit_mode == FitMode::Width,
+        // 幅/高さフィットは虫眼鏡の上のサブモード。ONなら虫眼鏡も立て、高さフィットとは排他にする。
+        // OFFは contain へ戻すだけ（他方がONのときに巻き込んで消さない）。
+        set: |cfg, on| set_fit_mode(cfg, FitMode::Width, on),
+    },
+    ToggleDef {
+        key: ToggleKind::FitHeight,
+        label: Lang::tool_palette_toggle_label_fit_height,
+        get: |cfg| cfg.fit_mode == FitMode::Height,
+        set: |cfg, on| set_fit_mode(cfg, FitMode::Height, on),
+    },
 ];
+
+fn set_fit_mode(cfg: &mut ViewerConfig, mode: FitMode, on: bool) {
+    if on {
+        cfg.fit_mode = mode;
+        cfg.magnifier_on = true;
+    } else if cfg.fit_mode == mode {
+        cfg.fit_mode = FitMode::Contain;
+    }
+}
 
 /// key に対応する定義を探す。TOGGLE_DEFS は全 ToggleKind を網羅している前提
 /// （`toggle_defs_cover_all_kinds` テストで担保）。
@@ -136,7 +168,7 @@ pub fn execute_toggle(cfg: &mut ViewerConfig, kind: ToggleKind) {
 mod tests {
     use super::*;
 
-    const ALL_KINDS: [ToggleKind; 7] = [
+    const ALL_KINDS: [ToggleKind; 9] = [
         ToggleKind::BlueLightCut,
         ToggleKind::GammaEnabled,
         ToggleKind::BrightnessEnabled,
@@ -144,6 +176,8 @@ mod tests {
         ToggleKind::Magnifier,
         ToggleKind::ImageInfo,
         ToggleKind::KomaMode,
+        ToggleKind::FitWidth,
+        ToggleKind::FitHeight,
     ];
 
     #[test]
@@ -191,6 +225,31 @@ mod tests {
         execute_toggle(&mut cfg, ToggleKind::KomaMode);
         assert!(!cfg.koma_on);
         assert!(cfg.magnifier_on);
+    }
+
+    #[test]
+    fn execute_toggle_fit_modes_are_exclusive_and_turn_magnifier_on() {
+        let mut cfg = ViewerConfig::default();
+        assert_eq!(cfg.fit_mode, FitMode::Contain);
+        execute_toggle(&mut cfg, ToggleKind::FitWidth);
+        assert_eq!(cfg.fit_mode, FitMode::Width);
+        assert!(cfg.magnifier_on, "幅フィットは虫眼鏡の上のサブモード");
+        // 高さフィットをONにすると幅フィットは外れる（排他）。
+        execute_toggle(&mut cfg, ToggleKind::FitHeight);
+        assert_eq!(cfg.fit_mode, FitMode::Height);
+        assert!(!(find_toggle_def(ToggleKind::FitWidth).get)(&cfg));
+        // OFFは contain へ戻すだけで、虫眼鏡は巻き込まない。
+        execute_toggle(&mut cfg, ToggleKind::FitHeight);
+        assert_eq!(cfg.fit_mode, FitMode::Contain);
+        assert!(cfg.magnifier_on);
+    }
+
+    #[test]
+    fn set_fit_mode_off_does_not_clear_the_other_mode() {
+        let mut cfg = ViewerConfig::default();
+        cfg.fit_mode = FitMode::Height;
+        (find_toggle_def(ToggleKind::FitWidth).set)(&mut cfg, false);
+        assert_eq!(cfg.fit_mode, FitMode::Height);
     }
 
     #[test]

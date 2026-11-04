@@ -62,6 +62,8 @@ impl PaletteCategory {
                 Action(ActionKind::KomaPrev),
                 Action(ActionKind::SlideshowToggle),
                 Toggle(ToggleKind::Magnifier),
+                Toggle(ToggleKind::FitWidth),
+                Toggle(ToggleKind::FitHeight),
             ],
             PaletteCategory::ImageQuality => &[
                 Toggle(ToggleKind::BlueLightCut),
