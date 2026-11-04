@@ -1804,9 +1804,18 @@ impl Lang {
     /// 未定義に戻す確認ダイアログ: 注意書き
     pub fn sort_condition_clear_note(self) -> &'static str {
         match self {
-            Lang::Japanese => "ビューアーで開いているファイルの表示には反映されません。",
-            Lang::English  => "This does not affect files currently open in the viewer.",
-            Lang::Chinese  => "不会影响当前在查看器中打开的文件。",
+            Lang::Japanese => "ビューアーで開いているファイルも解除されます（表示中の並びは変わりません）。",
+            Lang::English  => "Files open in the viewer are also reset (the current order stays as is).",
+            Lang::Chinese  => "在查看器中打开的文件也会被解除（当前排列不变）。",
+        }
+    }
+
+    /// ソート条件ダイアログ: 反映時の注意書き
+    pub fn sort_condition_apply_note(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ビューアーで開いているファイルは、閉じるときに開いている側の条件で上書きされることがあります。",
+            Lang::English  => "A file open in the viewer may be overwritten with the viewer's own condition when it is closed.",
+            Lang::Chinese  => "在查看器中打开的文件，关闭时可能被查看器一侧的条件覆盖。",
         }
     }
 
@@ -8141,7 +8150,8 @@ impl Lang {
                         "",
                         "このアーカイブをビューアーで開いたときの、ページの並び順を保存する。\n\
                          キーは名前／自然数／日付、向きは昇順／降順から選ぶ。\n\
-                         「未定義に戻す」で保存済みの条件を消せる（確認あり。ビューアーで開いている分には反映されない）。",
+                         「未定義に戻す」で保存済みの条件を消せる（確認あり。ビューアーで開いているファイルも解除される）。\n\
+                         反映は、ビューアーで開いているファイルだと閉じるときに開いている側の条件で上書きされることがある。",
                     ),
                     (
                         "■ 複数選択しているとき",
@@ -8157,7 +8167,8 @@ impl Lang {
                         "",
                         "Saves the page order used when this archive is opened in the viewer.\n\
                          Pick a key (name / natural / date) and a direction (asc / desc).\n\
-                         \"Reset to undefined\" removes the saved condition (with confirmation; files already open in the viewer are not affected).",
+                         \"Reset to undefined\" removes the saved condition (with confirmation; also for files open in the viewer).\n\
+                         Apply may be overwritten by the viewer's own condition when a file open in the viewer is closed.",
                     ),
                     (
                         "■ With multiple selection",
@@ -8173,7 +8184,8 @@ impl Lang {
                         "",
                         "保存在查看器中打开此压缩包时的页面排列顺序。\n\
                          排序键可选名称/自然数/日期，方向可选升序/降序。\n\
-                         “恢复为未定义”可删除已保存的条件（需确认；不影响已在查看器中打开的文件）。",
+                         “恢复为未定义”可删除已保存的条件（需确认；在查看器中打开的文件也会解除）。\n\
+                         应用时，在查看器中打开的文件关闭时可能被查看器一侧的条件覆盖。",
                     ),
                     (
                         "■ 多选时",

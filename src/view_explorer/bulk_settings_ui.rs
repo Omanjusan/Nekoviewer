@@ -132,6 +132,8 @@ impl NekoviewApp {
                     ui.radio_value(&mut dialog.ascending, false, i18n::t().sort_desc().trim_matches(['[', ']']));
                 });
                 ui.add_space(8.0);
+                ui.small(i18n::t().sort_condition_apply_note());
+                ui.add_space(4.0);
                 ui.horizontal(|ui| {
                     if ui.button(i18n::t().favorite_dialog_cancel()).clicked() {
                         cancel = true;
@@ -175,6 +177,16 @@ impl NekoviewApp {
                 _ => false,
             };
             results.push(BulkSettingResult { target: path.clone(), ok });
+        }
+        // 対象をビューアーで開いている場合、ビューアー内の「保存ON」記憶が残ると、閉じる際の
+        // flush_current_sort_if_changed で解除が上書きで取り消される。記憶だけ外す（現在の並びは維持）。
+        {
+            let mut viewer_guard = self.viewer.lock().unwrap();
+            if let Some(viewer) = viewer_guard.as_mut() {
+                if dialog.targets.iter().any(|p| p == viewer.archive_path()) {
+                    viewer.clear_saved_sort();
+                }
+            }
         }
         self.sync_saved_archive_settings(&dialog.targets);
         self.set_toast(build_bulk_setting_toast(&results));
