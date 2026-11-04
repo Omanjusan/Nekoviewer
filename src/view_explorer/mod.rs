@@ -291,6 +291,9 @@ pub(crate) enum SortMenuItem {
     PrimaryKey(ExplorerSortKey),
     RatingOrder,
     RatingKey(crate::explorer_sort::RatingSortKey),
+    /// ビューアーのデフォルト（任意）の昇降。キーが未指定の間は押せない
+    ViewerDefaultOrder,
+    ViewerDefaultKey(crate::types::ReaderSortKey),
 }
 
 /// 表示順そのもの（draw_menu_barの描画順と一致させること）。

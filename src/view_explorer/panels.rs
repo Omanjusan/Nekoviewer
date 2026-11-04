@@ -7,6 +7,16 @@ use crate::types::ExplorerSortKey;
 use crate::fs::dir;
 use crate::view_reader::{fit_rect_contain, sort_choice_button, sort_order_button, ViewerState, SORT_CHOICE_SELECTED};
 
+/// ビューアーのデフォルト（任意）のキー候補（表示順）。
+const VIEWER_DEFAULT_KEYS: [crate::types::ReaderSortKey; 3] = [
+    crate::types::ReaderSortKey::Name,
+    crate::types::ReaderSortKey::Natural,
+    crate::types::ReaderSortKey::Date,
+];
+
+/// ビューアーのデフォルト（任意）の選択中の塗り色。基本キー（青）・評価キー（赤）と区別する緑。
+const SORT_CHOICE_VIEWER_DEFAULT_SELECTED: egui::Color32 = egui::Color32::from_rgb(40, 130, 70);
+
 /// 評価キー（スコア・訪問回数）の選択中の塗り色。基本キー（青）と区別する赤。
 const SORT_CHOICE_RATING_SELECTED: egui::Color32 = egui::Color32::from_rgb(170, 40, 40);
 use super::*;
@@ -458,6 +468,13 @@ impl NekoviewApp {
         }
         items.push(SortMenuItem::RatingKey(RatingSortKey::Score));
         items.push(SortMenuItem::RatingKey(RatingSortKey::Visits));
+        // ビューアーのデフォルト（任意）。キー未指定の間は昇降ボタン（押せない）を含めない
+        if self.viewer_cfg.lock().unwrap().default_sort_key.is_some() {
+            items.push(SortMenuItem::ViewerDefaultOrder);
+        }
+        for key in VIEWER_DEFAULT_KEYS {
+            items.push(SortMenuItem::ViewerDefaultKey(key));
+        }
         items
     }
 
@@ -484,6 +501,26 @@ impl NekoviewApp {
             SortMenuItem::RatingKey(key) => {
                 self.rating_sort.toggle(key);
                 self.finish_sort_change();
+                self.persist_state();
+            }
+            // ビューアーのデフォルトは次にファイルを開くときから効く。いま開いているファイルや
+            // エクスプローラーの並びは変えない。
+            SortMenuItem::ViewerDefaultOrder => {
+                {
+                    let mut cfg = self.viewer_cfg.lock().unwrap();
+                    if cfg.default_sort_key.is_none() {
+                        return;
+                    }
+                    cfg.default_sort_ascending = !cfg.default_sort_ascending;
+                }
+                self.persist_state();
+            }
+            SortMenuItem::ViewerDefaultKey(key) => {
+                {
+                    // 選択中のキーをもう一度押すと指定なし（従来どおり名前・昇順）に戻る
+                    let mut cfg = self.viewer_cfg.lock().unwrap();
+                    cfg.default_sort_key = if cfg.default_sort_key == Some(key) { None } else { Some(key) };
+                }
                 self.persist_state();
             }
         }
@@ -610,12 +647,42 @@ impl NekoviewApp {
             }
         });
 
+        ui.weak(t.sort_menu_rating_note());
+
+        ui.separator();
+
+        // ビューアーのデフォルト（任意）：保存済みソートが無いファイルをビューアーで開くときの条件。
+        // 選択中のキーをもう一度押すと指定なし。緑で他の2ブロックと区別する。
+        let (default_key, default_asc) = {
+            let cfg = self.viewer_cfg.lock().unwrap();
+            (cfg.default_sort_key, cfg.default_sort_ascending)
+        };
+        ui.horizontal(|ui| {
+            ui.strong(format!("＜{}＞", t.sort_menu_viewer_default()));
+            let rb = ui
+                .add_enabled_ui(default_key.is_some(), |ui| sort_order_button(ui, default_asc))
+                .inner;
+            if cur_item == Some(SortMenuItem::ViewerDefaultOrder) { draw_cursor_ring(ui, rb.rect); }
+            if rb.clicked() { clicked = Some(SortMenuItem::ViewerDefaultOrder); }
+        });
+        ui.horizontal(|ui| {
+            for key in VIEWER_DEFAULT_KEYS {
+                let label = match key {
+                    crate::types::ReaderSortKey::Name => t.sort_name(),
+                    crate::types::ReaderSortKey::Natural => t.sort_natural(),
+                    crate::types::ReaderSortKey::Date => t.sort_date(),
+                };
+                let rb = sort_choice_button(ui, default_key == Some(key), label, SORT_CHOICE_VIEWER_DEFAULT_SELECTED);
+                if cur_item == Some(SortMenuItem::ViewerDefaultKey(key)) { draw_cursor_ring(ui, rb.rect); }
+                if rb.clicked() { clicked = Some(SortMenuItem::ViewerDefaultKey(key)); }
+            }
+        });
+
         if let Some(item) = clicked {
             self.apply_sort_menu_item(item);
         }
 
-        ui.separator();
-        ui.weak(t.sort_menu_rating_note());
+        ui.weak(t.sort_menu_note());
     }
 
     fn draw_menu_bar(&mut self, ui: &mut egui::Ui) {

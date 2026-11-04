@@ -3717,43 +3717,16 @@ impl Lang {
         }
     }
 
-    /// ビューアーのツールバー「ソート条件」メニューボタン。
-    pub fn sort_menu_label(self) -> &'static str {
+    /// エクスプローラーのソートメニュー末尾、ビューアーのデフォルト（任意）の見出し。
+    pub fn sort_menu_viewer_default(self) -> &'static str {
         match self {
-            Lang::Japanese => "ソート条件",
-            Lang::English  => "Sort",
-            Lang::Chinese  => "排序条件",
+            Lang::Japanese => "ビューアーのデフォルト（任意）",
+            Lang::English  => "Viewer default (optional)",
+            Lang::Chinese  => "查看器默认排序（可选）",
         }
     }
 
-    /// 「ソート条件」メニューの、現在の条件を表す見出し。
-    pub fn sort_menu_current(self) -> &'static str {
-        match self {
-            Lang::Japanese => "現在の条件",
-            Lang::English  => "Current",
-            Lang::Chinese  => "当前条件",
-        }
-    }
-
-    /// 「ソート条件」メニューの、各キー行のデフォルト指定チェック。
-    pub fn sort_menu_set_default(self) -> &'static str {
-        match self {
-            Lang::Japanese => "このキーをデフォルト設定する",
-            Lang::English  => "Use this key as default",
-            Lang::Chinese  => "设为默认排序键",
-        }
-    }
-
-    /// 「ソート条件」メニューの、デフォルトの昇順/降順トグルの見出し。
-    pub fn sort_menu_default_order(self) -> &'static str {
-        match self {
-            Lang::Japanese => "デフォルトの順序",
-            Lang::English  => "Default order",
-            Lang::Chinese  => "默认顺序",
-        }
-    }
-
-    /// 「ソート条件」メニュー下部の注意書き。
+    /// ソートメニュー末尾の注意書き（ビューアーのデフォルトより保存済みの条件が優先される）。
     pub fn sort_menu_note(self) -> &'static str {
         match self {
             Lang::Japanese => "デフォルトキーが設定されていても、ソート条件を保存したファイルは保存された条件が優先されます。",

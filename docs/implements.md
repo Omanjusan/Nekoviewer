@@ -72,7 +72,7 @@ Rust + egui（生winit + egui-wgpu、eframe不使用）で作る画像ビュー�
 | ファイルサイズ | ✓ |
 
 - 保存先はディレクトリごとではなく、`nekoviewer.state`にグローバル単一設定として保存する
-- 操作はメニューバーの「ソート」展開メニュー。評価キー（スコア・訪問回数）もある。ビューアー側のデフォルトソートを含め [features/sort-menu.md](features/sort-menu.md) 参照
+- 操作はメニューバーの「ソート」展開メニュー。評価キー（スコア・訪問回数）もある。ビューアーを開くときのデフォルトソート（任意）も同じメニューで指定する。詳細は [features/sort-menu.md](features/sort-menu.md) 参照
 
 ---
 

@@ -191,10 +191,11 @@ pub struct ViewerConfig {
     /// ウィンドウモードのメニューバー（slot_bar）を普段は引っ込め、上端ホバーで出すか。既定OFF。
     /// 永続設定。フルスクリーン専用バーには影響しない。
     pub menubar_autohide: bool,
-    /// ビューアーで保存済みソート条件が無いアーカイブを開いたときのソートキー（既定は名前）。
-    /// 永続設定。ビューアーの「ソート条件」メニューの「このキーをデフォルト設定する」で変える。
-    pub default_sort_key: crate::types::ReaderSortKey,
-    /// 同上の昇順(true)/降順(false)。既定は昇順。
+    /// ビューアーで保存済みソート条件が無いアーカイブを開いたときのソートキー。None = 指定なし
+    /// （従来どおり名前・昇順）。永続設定。エクスプローラーのソートメニュー末尾
+    /// 「ビューアーのデフォルト（任意）」で変える（選択中のキーをもう一度押すとNone）。
+    pub default_sort_key: Option<crate::types::ReaderSortKey>,
+    /// 同上の昇順(true)/降順(false)。既定は昇順。キーがNoneの間も向きは覚えておく。
     pub default_sort_ascending: bool,
     /// アーカイブ末尾の評価オーバーレイ（スコアリング）を出すか。既定ON。
     /// 永続設定。エクスプローラーのメニューバーのボタンで切り替える。OFFでも訪問回数の記録・
@@ -256,7 +257,7 @@ impl Default for ViewerConfig {
             exif_orientation_enabled: true,
             image_info_visible: true,
             menubar_autohide: false,
-            default_sort_key: crate::types::ReaderSortKey::Name,
+            default_sort_key: None,
             default_sort_ascending: true,
             rating_overlay_enabled: true,
             bar_order: DEFAULT_BAR_ORDER,
@@ -989,7 +990,7 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
             exif_orientation_enabled: exif_orientation_enabled.unwrap_or(true),
             image_info_visible: image_info_visible.unwrap_or(true),
             menubar_autohide: menubar_autohide.unwrap_or(false),
-            default_sort_key: viewer_default_sort_key.unwrap_or(crate::types::ReaderSortKey::Name),
+            default_sort_key: viewer_default_sort_key,
             default_sort_ascending: viewer_default_sort_ascending.unwrap_or(true),
             rating_overlay_enabled: rating_overlay_enabled.unwrap_or(true),
             bar_order: viewer_bar_order.unwrap_or(DEFAULT_BAR_ORDER),
@@ -1169,7 +1170,7 @@ pub fn save_state(root: &Path, dir: &Path, window_size: (u32, u32), viewer_slots
     ));
     content.push_str(&format!(
         "viewer_default_sort_key={}\nviewer_default_sort_ascending={}\n",
-        reader_sort_key_to_state(viewer_cfg.default_sort_key),
+        viewer_cfg.default_sort_key.map_or("off", reader_sort_key_to_state),
         viewer_cfg.default_sort_ascending,
     ));
     content.push_str(&format!(
@@ -1575,19 +1576,23 @@ mod tests {
     fn viewer_default_sort_round_trips_and_falls_back() {
         use crate::types::ReaderSortKey;
         let d = ViewerConfig::default();
-        assert_eq!((d.default_sort_key, d.default_sort_ascending), (ReaderSortKey::Name, true));
+        assert_eq!((d.default_sort_key, d.default_sort_ascending), (None, true));
         let parsed = parse_state_text(
             "vds_ok",
             "viewer_default_sort_key=natural\nviewer_default_sort_ascending=false\n",
         );
-        assert_eq!(parsed.viewer_cfg.default_sort_key, ReaderSortKey::Natural);
+        assert_eq!(parsed.viewer_cfg.default_sort_key, Some(ReaderSortKey::Natural));
         assert!(!parsed.viewer_cfg.default_sort_ascending);
-        let bad = parse_state_text(
-            "vds_bad",
-            "viewer_default_sort_key=bogus\nviewer_default_sort_ascending=zzz\n",
-        );
-        assert_eq!(bad.viewer_cfg.default_sort_key, ReaderSortKey::Name);
-        assert!(bad.viewer_cfg.default_sort_ascending);
+        // off・未知の値・欠落は「指定なし」、向きが壊れていれば昇順
+        for (tag, text) in [
+            ("vds_off", "viewer_default_sort_key=off\n"),
+            ("vds_bad", "viewer_default_sort_key=bogus\nviewer_default_sort_ascending=zzz\n"),
+            ("vds_none", "app_thumb_size=256\n"),
+        ] {
+            let p = parse_state_text(tag, text);
+            assert_eq!(p.viewer_cfg.default_sort_key, None, "{tag}");
+            assert!(p.viewer_cfg.default_sort_ascending, "{tag}");
+        }
         for k in [ReaderSortKey::Name, ReaderSortKey::Natural, ReaderSortKey::Date] {
             assert_eq!(reader_sort_key_from_state(reader_sort_key_to_state(k)), Some(k));
         }
