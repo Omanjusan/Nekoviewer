@@ -350,6 +350,58 @@ fn wheel_event_amount(i: &egui::InputState, include_x: bool, line: f32, point: f
     }).sum()
 }
 
+/// ソート条件メニューの選択肢ボタン。未選択でも薄いグレー背景と枠を付けてボタンと分かるようにし、
+/// 選択中は `selected_fill` で塗る。エクスプローラー側のソートメニューと共用。
+pub(crate) fn sort_choice_button(
+    ui: &mut egui::Ui,
+    selected: bool,
+    text: impl Into<String>,
+    selected_fill: egui::Color32,
+) -> egui::Response {
+    let dark = ui.visuals().dark_mode;
+    let (fill, border, text_color) = if selected {
+        (selected_fill, selected_fill, egui::Color32::WHITE)
+    } else if dark {
+        (egui::Color32::from_gray(64), egui::Color32::from_gray(100), ui.visuals().text_color())
+    } else {
+        (egui::Color32::from_gray(222), egui::Color32::from_gray(180), ui.visuals().text_color())
+    };
+    ui.add(
+        egui::Button::new(egui::RichText::new(sort_label_plain(&text.into()).to_string()).color(text_color))
+            .fill(fill)
+            .stroke(egui::Stroke::new(1.0, border)),
+    )
+}
+
+/// 昇順/降順の矢印グリフ。豆腐チェック（glyph_audit）の対象。
+pub(crate) const SORT_ASC_ARROW: &str = "↑";
+pub(crate) const SORT_DESC_ARROW: &str = "↓";
+
+/// `[昇順]` 形式のi18nラベルから角括弧を外す。ソートメニューでは文字だけで表示する。
+pub(crate) fn sort_label_plain(s: &str) -> &str {
+    s.trim_matches(['[', ']'])
+}
+
+/// 昇順/降順の切り替えボタン。キー選択（グレー塗り）と同列に見えないよう、
+/// 塗りなし＋青系の枠線＋矢印付きで描く。
+pub(crate) fn sort_order_button(ui: &mut egui::Ui, ascending: bool) -> egui::Response {
+    let t = i18n::t();
+    let (arrow, word) = if ascending { (SORT_ASC_ARROW, t.sort_asc()) } else { (SORT_DESC_ARROW, t.sort_desc()) };
+    let accent = if ui.visuals().dark_mode {
+        egui::Color32::from_rgb(110, 160, 235)
+    } else {
+        egui::Color32::from_rgb(30, 100, 200)
+    };
+    ui.add(
+        egui::Button::new(egui::RichText::new(format!("{arrow} {}", sort_label_plain(word))).color(accent))
+            .fill(egui::Color32::TRANSPARENT)
+            .stroke(egui::Stroke::new(1.5, accent)),
+    )
+}
+
+/// 選択中のソート選択肢の塗り色（ビューアー側・エクスプローラー基本キー側）。
+pub(crate) const SORT_CHOICE_SELECTED: egui::Color32 = egui::Color32::from_rgb(30, 100, 200);
+
 /// 自然数ソート比較: 数字列は数値として比較、それ以外は文字列として比較
 fn nat_cmp(a: &str, b: &str) -> std::cmp::Ordering {
     let mut ai = a.chars().peekable();
@@ -510,6 +562,8 @@ pub struct ViewerState {
     pending_default_slot_change: Option<Option<usize>>,
     /// 「次回起動時の XWayland / Wayland」チェックの変更を app 側へ渡すための待ち
     pending_launch_x11_change: Option<bool>,
+    /// 「ソート条件」メニューでデフォルトのキー／順序を変えた直後に立て、app 側の永続化へ渡す。
+    default_sort_dirty: bool,
     /// 自動テスト用の制御口から届いたスロット操作コマンド（test-control feature のみ）
     #[cfg(feature = "test-control")]
     test_cmds: std::collections::VecDeque<crate::test_control::Cmd>,
@@ -897,6 +951,7 @@ impl ViewerState {
             window_pos_overwrite_pending: None,
             pending_default_slot_change: None,
             pending_launch_x11_change: None,
+            default_sort_dirty: false,
             #[cfg(feature = "test-control")]
             test_cmds: std::collections::VecDeque::new(),
             outer_pos: None,
@@ -1014,6 +1069,7 @@ impl ViewerState {
             window_pos_overwrite_pending: None,
             pending_default_slot_change: None,
             pending_launch_x11_change: None,
+            default_sort_dirty: false,
             #[cfg(feature = "test-control")]
             test_cmds: std::collections::VecDeque::new(),
             outer_pos: None,
@@ -1808,7 +1864,7 @@ impl ViewerState {
         let ctx = ui.ctx().clone();
         let viewer_style = ui.style().clone();
         if !self.open || self.entries.is_empty() {
-            return ViewerOutput { nav: ViewerNav::None, close_requested: !self.open, save_slots: None, default_slot_change: None, launch_x11_change: None, spread_save_action: None, sort_save_action: None, thumbnail_save_action: None, bookmark_save_action: None, rating_save_action: None, favorite_add_requested: false, toggle_translate_window: false, tool_palette_changed: false, magnifier_settings_changed: false, palette_key_assign: None };
+            return ViewerOutput { nav: ViewerNav::None, close_requested: !self.open, save_slots: None, default_slot_change: None, launch_x11_change: None, spread_save_action: None, sort_save_action: None, thumbnail_save_action: None, bookmark_save_action: None, rating_save_action: None, favorite_add_requested: false, toggle_translate_window: false, tool_palette_changed: false, magnifier_settings_changed: false, default_sort_changed: false, palette_key_assign: None };
         }
 
         // ── フレーム入力を一括収集（ctx.input はこの1回のみ）────────────────
@@ -2069,7 +2125,7 @@ impl ViewerState {
         self.maybe_open_file_detail_dialog();
         self.draw_file_detail_dialog(&ctx);
         let palette_key_assign = self.draw_tool_palette_key_assign(&ctx, keymap);
-        ViewerOutput { nav, close_requested: close_self, save_slots, default_slot_change: self.pending_default_slot_change.take(), launch_x11_change: self.pending_launch_x11_change.take(), spread_save_action, sort_save_action, thumbnail_save_action, bookmark_save_action, rating_save_action, favorite_add_requested, toggle_translate_window, tool_palette_changed, magnifier_settings_changed: std::mem::take(&mut self.magnifier_settings_dirty), palette_key_assign }
+        ViewerOutput { nav, close_requested: close_self, save_slots, default_slot_change: self.pending_default_slot_change.take(), launch_x11_change: self.pending_launch_x11_change.take(), spread_save_action, sort_save_action, thumbnail_save_action, bookmark_save_action, rating_save_action, favorite_add_requested, toggle_translate_window, tool_palette_changed, magnifier_settings_changed: std::mem::take(&mut self.magnifier_settings_dirty), default_sort_changed: std::mem::take(&mut self.default_sort_dirty), palette_key_assign }
     }
 
     /// ツールパレットの変更確定処理。image_filterのpoll_image_filter_debounceと同じ考え方で、
@@ -2485,6 +2541,49 @@ impl ViewerState {
     }
 
     /// 「ウィンドウ位置」メニューの中身。1行=キー名・展開・記録内容・記録。
+    /// ツールバーの「ソート条件」メニューの中身。
+    /// キー選択・昇降は現在のビューアーにだけ効く。「デフォルト設定」は共有の ViewerConfig に書き、
+    /// 保存済みソートが無いアーカイブを開いたときの初期条件になる（保存済みがあればそちらが優先）。
+    fn draw_sort_menu(&mut self, ui: &mut egui::Ui, cfg: &mut ViewerConfig) {
+        let t = i18n::t();
+        ui.set_max_width(360.0);
+        ui.strong(t.sort_menu_current());
+        egui::Grid::new("sort_menu_grid").num_columns(2).show(ui, |ui| {
+            for (key, label) in [
+                (ViewerSortKey::Name, t.sort_name()),
+                (ViewerSortKey::Natural, t.sort_natural()),
+                (ViewerSortKey::Date, t.sort_date()),
+            ] {
+                let active = self.sort_key == key;
+                if sort_choice_button(ui, active, label, SORT_CHOICE_SELECTED).clicked() && !active {
+                    self.sort_key = key;
+                    self.sort_entries();
+                }
+                // チェックは常に1つだけ（実質ラジオ）。ONのものを押しても外れない。
+                let mut is_default = cfg.default_sort_key == key;
+                if ui.checkbox(&mut is_default, t.sort_menu_set_default()).clicked() && is_default {
+                    cfg.default_sort_key = key;
+                    self.default_sort_dirty = true;
+                }
+                ui.end_row();
+            }
+            if sort_order_button(ui, self.sort_ascending).clicked() {
+                self.sort_ascending = !self.sort_ascending;
+                self.sort_entries();
+            }
+            ui.horizontal(|ui| {
+                ui.label(t.sort_menu_default_order());
+                if sort_order_button(ui, cfg.default_sort_ascending).clicked() {
+                    cfg.default_sort_ascending = !cfg.default_sort_ascending;
+                    self.default_sort_dirty = true;
+                }
+            });
+            ui.end_row();
+        });
+        ui.separator();
+        ui.weak(t.sort_menu_note());
+    }
+
     fn draw_window_pos_menu(
         &mut self,
         ui: &mut egui::Ui,
@@ -4619,24 +4718,12 @@ impl ViewerState {
     fn draw_bar_item(&mut self, ui: &mut egui::Ui, cfg: &mut ViewerConfig, item: ViewerBarItem) {
         let t = i18n::t();
         match item {
-            ViewerBarItem::SortName | ViewerBarItem::SortNatural | ViewerBarItem::SortDate => {
-                let (key, label) = match item {
-                    ViewerBarItem::SortName    => (ViewerSortKey::Name,    t.sort_name()),
-                    ViewerBarItem::SortNatural => (ViewerSortKey::Natural, t.sort_natural()),
-                    _                          => (ViewerSortKey::Date,    t.sort_date()),
-                };
-                if ui.selectable_label(self.sort_key == key, label).clicked() {
-                    self.sort_key = key;
-                    self.sort_entries();
-                }
-            }
-            ViewerBarItem::SortOrder => {
-                ui.label(":");
-                let order_label = if self.sort_ascending { t.sort_asc() } else { t.sort_desc() };
-                if ui.button(order_label).clicked() {
-                    self.sort_ascending = !self.sort_ascending;
-                    self.sort_entries();
-                }
+            ViewerBarItem::SortMenu => {
+                let config = egui::containers::menu::MenuConfig::new()
+                    .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside);
+                egui::containers::menu::MenuButton::new(t.sort_menu_label())
+                    .config(config)
+                    .ui(ui, |ui| self.draw_sort_menu(ui, cfg));
             }
             // ページ表示モード3択（アイコントグル、選択状態=現在モード）
             ViewerBarItem::PageSingle | ViewerBarItem::SpreadLeft | ViewerBarItem::SpreadRight => {

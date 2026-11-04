@@ -264,14 +264,8 @@ enum FavoriteSelection {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum MenuBarButton {
     Reload,
-    SortName,
-    SortDate,
-    SortSize,
-    SortOrder,
-    /// 第2ソートセット（スコア／訪問回数）。押し下げ中をもう一度押すとOFF
-    SortScore,
-    SortVisits,
-    SortRatingOrder,
+    /// ソート条件の展開メニュー（基本キー＝名前・日付・サイズ＋昇降、評価キー＝スコア・訪問回数＋昇降）。
+    Sort,
     CardInfoToggle,
     /// 評価帯（info2）の表示量の循環トグル。
     CardRatingToggle,
@@ -292,15 +286,9 @@ pub(crate) enum MenuBarButton {
 
 /// 表示順そのもの（draw_menu_barの描画順と一致させること）。
 /// 見開き・ページモード群はビューアーツールバーへ移設した（toolbar.rs 参照）。
-pub(crate) const MENU_BAR_ORDER: [MenuBarButton; 17] = [
+pub(crate) const MENU_BAR_ORDER: [MenuBarButton; 11] = [
     MenuBarButton::Reload,
-    MenuBarButton::SortName,
-    MenuBarButton::SortDate,
-    MenuBarButton::SortSize,
-    MenuBarButton::SortOrder,
-    MenuBarButton::SortScore,
-    MenuBarButton::SortVisits,
-    MenuBarButton::SortRatingOrder,
+    MenuBarButton::Sort,
     MenuBarButton::CardInfoToggle,
     MenuBarButton::CardRatingToggle,
     MenuBarButton::FolderBookAccessToggle,
@@ -317,22 +305,14 @@ mod menu_bar_order_tests {
     use super::{MenuBarButton, MENU_BAR_ORDER};
 
     #[test]
-    fn rating_sort_set_follows_the_main_sort_set() {
-        assert_eq!(
-            &MENU_BAR_ORDER[4..8],
-            &[
-                MenuBarButton::SortOrder,
-                MenuBarButton::SortScore,
-                MenuBarButton::SortVisits,
-                MenuBarButton::SortRatingOrder,
-            ],
-        );
+    fn sort_menu_button_follows_reload() {
+        assert_eq!(&MENU_BAR_ORDER[..2], &[MenuBarButton::Reload, MenuBarButton::Sort]);
     }
 
     #[test]
     fn settings_status_and_help_keep_the_visual_right_end_order() {
         assert_eq!(
-            &MENU_BAR_ORDER[14..],
+            &MENU_BAR_ORDER[8..],
             &[
                 MenuBarButton::Settings,
                 MenuBarButton::StatusToggle,
@@ -821,6 +801,8 @@ pub struct NekoviewApp {
     favorite_cursor: Option<FavoriteSelection>,
     /// MenuBar内のプレターゲティングカーソル（MENU_BAR_ORDER上のインデックス）
     menu_cursor: usize,
+    /// キーボード（Enter）からソート展開メニューの開閉を要求された。次の描画で消費する。
+    sort_menu_toggle_requested: bool,
     /// 定義済みお気に入りフォルダ一覧のキャッシュ（DB操作の都度リフレッシュ）
     favorite_folders: Vec<crate::favorites::FavoriteFolder>,
     favorite_selected: FavoriteSelection,
@@ -1519,6 +1501,7 @@ impl NekoviewApp {
             drive_cursor: None,
             favorite_cursor: None,
             menu_cursor: 0,
+            sort_menu_toggle_requested: false,
             favorite_folders: Vec::new(),
             favorite_selected: FavoriteSelection::None,
             favorite_dialog: None,

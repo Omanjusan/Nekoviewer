@@ -12,14 +12,10 @@
 /// 4箇所を揃えること（`default_order_is_complete_permutation` テストが検出する）。
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ViewerBarItem {
-    /// アーカイブ内ソート: 名前
-    SortName,
-    /// アーカイブ内ソート: 自然数
-    SortNatural,
-    /// アーカイブ内ソート: 日付
-    SortDate,
-    /// アーカイブ内ソート: 昇順/降順トグル
-    SortOrder,
+    /// アーカイブ内ソートの「ソート条件」メニュー（キー選択・昇降・デフォルト指定）。
+    /// 旧 SortName/SortNatural/SortDate/SortOrder（id: sort_name 等）はこれに集約した。
+    /// 旧IDは読み込み時に捨てられ、本項目が既定位置（先頭）に補完される。
+    SortMenu,
     /// ページ表示モード: 単ページ
     PageSingle,
     /// ページ表示モード: 見開き左
@@ -44,14 +40,11 @@ pub enum ViewerBarItem {
     TranslateToggle,
 }
 
-pub const BAR_ITEM_COUNT: usize = 15;
+pub const BAR_ITEM_COUNT: usize = 12;
 
 /// 既定の並び順。ソート群 → ページ群 → 回転群 → 翻訳群。
 pub const DEFAULT_BAR_ORDER: [ViewerBarItem; BAR_ITEM_COUNT] = [
-    ViewerBarItem::SortName,
-    ViewerBarItem::SortNatural,
-    ViewerBarItem::SortDate,
-    ViewerBarItem::SortOrder,
+    ViewerBarItem::SortMenu,
     ViewerBarItem::PageSingle,
     ViewerBarItem::SpreadLeft,
     ViewerBarItem::SpreadRight,
@@ -79,10 +72,7 @@ impl ViewerBarItem {
     /// state ファイル永続化用ID。一度リリースしたIDは変更しない（前方互換の要）。
     pub fn id(self) -> &'static str {
         match self {
-            ViewerBarItem::SortName        => "sort_name",
-            ViewerBarItem::SortNatural     => "sort_natural",
-            ViewerBarItem::SortDate        => "sort_date",
-            ViewerBarItem::SortOrder       => "sort_order",
+            ViewerBarItem::SortMenu        => "sort_menu",
             ViewerBarItem::PageSingle      => "page_single",
             ViewerBarItem::SpreadLeft      => "spread_left",
             ViewerBarItem::SpreadRight     => "spread_right",
@@ -99,10 +89,7 @@ impl ViewerBarItem {
 
     pub fn from_id(s: &str) -> Option<Self> {
         Some(match s {
-            "sort_name"        => ViewerBarItem::SortName,
-            "sort_natural"     => ViewerBarItem::SortNatural,
-            "sort_date"        => ViewerBarItem::SortDate,
-            "sort_order"       => ViewerBarItem::SortOrder,
+            "sort_menu"        => ViewerBarItem::SortMenu,
             "page_single"      => ViewerBarItem::PageSingle,
             "spread_left"      => ViewerBarItem::SpreadLeft,
             "spread_right"     => ViewerBarItem::SpreadRight,
@@ -139,10 +126,7 @@ impl ViewerBarItem {
 
     pub fn group(self) -> BarGroup {
         match self {
-            ViewerBarItem::SortName
-            | ViewerBarItem::SortNatural
-            | ViewerBarItem::SortDate
-            | ViewerBarItem::SortOrder => BarGroup::Sort,
+            ViewerBarItem::SortMenu => BarGroup::Sort,
             ViewerBarItem::PageSingle
             | ViewerBarItem::SpreadLeft
             | ViewerBarItem::SpreadRight
@@ -240,12 +224,12 @@ mod tests {
 
     #[test]
     fn duplicates_keep_first() {
-        // SortDate を既定順の前に重複させる → 先頭の SortDate が勝つ
-        let s = format!("sort_date,{}", bar_order_to_str(&DEFAULT_BAR_ORDER));
+        // RotateCw を既定順の前に重複させる → 先頭の RotateCw が勝つ
+        let s = format!("rotate_cw,{}", bar_order_to_str(&DEFAULT_BAR_ORDER));
         let order = parse_bar_order(&s);
-        assert_eq!(order[0], ViewerBarItem::SortDate);
-        assert_eq!(order[1], ViewerBarItem::SortName);
-        assert_eq!(order[2], ViewerBarItem::SortNatural);
+        assert_eq!(order[0], ViewerBarItem::RotateCw);
+        assert_eq!(order[1], ViewerBarItem::SortMenu);
+        assert_eq!(order[2], ViewerBarItem::PageSingle);
     }
 
     /// 並べ替えた保存順序はそのまま維持されること（全体を逆順に）。
@@ -264,7 +248,7 @@ mod tests {
         let saved: Vec<ViewerBarItem> = DEFAULT_BAR_ORDER
             .iter()
             .copied()
-            .filter(|&it| it != ViewerBarItem::SortDate)
+            .filter(|&it| it != ViewerBarItem::SpreadBack)
             .collect();
         assert_eq!(resolve_bar_order(&saved), DEFAULT_BAR_ORDER);
     }
@@ -297,8 +281,18 @@ mod tests {
         let saved: Vec<ViewerBarItem> = DEFAULT_BAR_ORDER
             .iter()
             .copied()
-            .filter(|&it| it != ViewerBarItem::SortName)
+            .filter(|&it| it != ViewerBarItem::SortMenu)
             .collect();
         assert_eq!(resolve_bar_order(&saved), DEFAULT_BAR_ORDER);
+    }
+
+    /// 旧版の state（ソート4項目が個別IDで並ぶ）を読んでも、旧IDは捨てられ、
+    /// 「ソート条件」メニューが先頭に補完されて既定順に一致すること。
+    #[test]
+    fn legacy_sort_ids_migrate_to_sort_menu() {
+        let legacy = "sort_name,sort_natural,sort_date,sort_order,page_single,spread_left,spread_right,\
+                      spread_back,spread_fwd,offset_indicator,rotate_ccw,rotate_cw,rotation_carry,\
+                      exif_rotation,translate_toggle";
+        assert_eq!(parse_bar_order(legacy), DEFAULT_BAR_ORDER);
     }
 }

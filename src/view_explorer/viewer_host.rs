@@ -607,7 +607,7 @@ impl NekoviewApp {
             self.persist_state();
         }
 
-        if output.tool_palette_changed || output.magnifier_settings_changed {
+        if output.tool_palette_changed || output.magnifier_settings_changed || output.default_sort_changed {
             self.persist_state();
         }
 
@@ -1189,6 +1189,13 @@ impl NekoviewApp {
         if let Some((key, ascending)) = saved_sort {
             state.restore_saved_sort(key, ascending);
             state.set_saved_sort(Some((key, ascending)));
+        } else {
+            // 保存済みが無いときだけ、設定の既定ソートを使う。保存はONにしない（saved_sortはNoneのまま）。
+            let (key, ascending) = {
+                let cfg = self.viewer_cfg.lock().unwrap();
+                (cfg.default_sort_key, cfg.default_sort_ascending)
+            };
+            state.restore_saved_sort(key, ascending);
         }
         let saved_spread = if archive_dir == self.current_dir {
             self.spread_states.get(filename).copied()

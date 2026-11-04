@@ -16,6 +16,25 @@ use crate::toolbar::{BAR_ITEM_COUNT, DEFAULT_BAR_ORDER, ViewerBarItem, bar_order
 use crate::translate::TranslateConfig;
 use crate::tool_palette::{PaletteState, PaletteSlotContent, SLOT_COUNT, slot_content_to_id, slot_content_from_id};
 
+/// ビューアーの既定ソートキーを state ファイルの値へ変換する。
+pub fn reader_sort_key_to_state(key: crate::types::ReaderSortKey) -> &'static str {
+    match key {
+        crate::types::ReaderSortKey::Name => "name",
+        crate::types::ReaderSortKey::Natural => "natural",
+        crate::types::ReaderSortKey::Date => "date",
+    }
+}
+
+/// state ファイルの値からビューアーの既定ソートキーを復元する。未知の値は None（＝名前に戻る）。
+pub fn reader_sort_key_from_state(s: &str) -> Option<crate::types::ReaderSortKey> {
+    match s.trim() {
+        "name" => Some(crate::types::ReaderSortKey::Name),
+        "natural" => Some(crate::types::ReaderSortKey::Natural),
+        "date" => Some(crate::types::ReaderSortKey::Date),
+        _ => None,
+    }
+}
+
 // ── State ファイル（動的状態: 最後のディレクトリ・ウィンドウサイズ）────────────
 
 pub struct SortState {
@@ -172,6 +191,11 @@ pub struct ViewerConfig {
     /// ウィンドウモードのメニューバー（slot_bar）を普段は引っ込め、上端ホバーで出すか。既定OFF。
     /// 永続設定。フルスクリーン専用バーには影響しない。
     pub menubar_autohide: bool,
+    /// ビューアーで保存済みソート条件が無いアーカイブを開いたときのソートキー（既定は名前）。
+    /// 永続設定。ビューアーの「ソート条件」メニューの「このキーをデフォルト設定する」で変える。
+    pub default_sort_key: crate::types::ReaderSortKey,
+    /// 同上の昇順(true)/降順(false)。既定は昇順。
+    pub default_sort_ascending: bool,
     /// アーカイブ末尾の評価オーバーレイ（スコアリング）を出すか。既定ON。
     /// 永続設定。エクスプローラーのメニューバーのボタンで切り替える。OFFでも訪問回数の記録・
     /// サムネの評価帯・score filter・保存済みの評価値は変わらない。
@@ -232,6 +256,8 @@ impl Default for ViewerConfig {
             exif_orientation_enabled: true,
             image_info_visible: true,
             menubar_autohide: false,
+            default_sort_key: crate::types::ReaderSortKey::Name,
+            default_sort_ascending: true,
             rating_overlay_enabled: true,
             bar_order: DEFAULT_BAR_ORDER,
             transition_kind: TransitionKind::HorizontalSlide,
@@ -614,6 +640,8 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
     let mut exif_orientation_enabled: Option<bool> = None;
     let mut image_info_visible: Option<bool> = None;
     let mut menubar_autohide: Option<bool> = None;
+    let mut viewer_default_sort_key: Option<crate::types::ReaderSortKey> = None;
+    let mut viewer_default_sort_ascending: Option<bool> = None;
     let mut rating_overlay_enabled: Option<bool> = None;
     let mut magnifier_notch_step: Option<crate::magnifier::NotchStep> = None;
     let mut magnifier_detail_ticks: Option<bool> = None;
@@ -794,6 +822,8 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
                 "exif_orientation_enabled" => { exif_orientation_enabled = v.trim().parse().ok(); }
                 "image_info_visible" => { image_info_visible = v.trim().parse().ok(); }
                 "menubar_autohide" => { menubar_autohide = v.trim().parse().ok(); }
+                "viewer_default_sort_key" => { viewer_default_sort_key = reader_sort_key_from_state(v); }
+                "viewer_default_sort_ascending" => { viewer_default_sort_ascending = v.trim().parse().ok(); }
                 "rating_overlay_enabled" => { rating_overlay_enabled = v.trim().parse().ok(); }
                 "magnifier_notch_step" => { magnifier_notch_step = crate::magnifier::NotchStep::from_state_str(v); }
                 "magnifier_detail_ticks" => { magnifier_detail_ticks = v.trim().parse().ok(); }
@@ -959,6 +989,8 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
             exif_orientation_enabled: exif_orientation_enabled.unwrap_or(true),
             image_info_visible: image_info_visible.unwrap_or(true),
             menubar_autohide: menubar_autohide.unwrap_or(false),
+            default_sort_key: viewer_default_sort_key.unwrap_or(crate::types::ReaderSortKey::Name),
+            default_sort_ascending: viewer_default_sort_ascending.unwrap_or(true),
             rating_overlay_enabled: rating_overlay_enabled.unwrap_or(true),
             bar_order: viewer_bar_order.unwrap_or(DEFAULT_BAR_ORDER),
             transition_kind: transition_kind.unwrap_or(TransitionKind::HorizontalSlide),
@@ -1134,6 +1166,11 @@ pub fn save_state(root: &Path, dir: &Path, window_size: (u32, u32), viewer_slots
     content.push_str(&format!(
         "menubar_autohide={}\n",
         viewer_cfg.menubar_autohide,
+    ));
+    content.push_str(&format!(
+        "viewer_default_sort_key={}\nviewer_default_sort_ascending={}\n",
+        reader_sort_key_to_state(viewer_cfg.default_sort_key),
+        viewer_cfg.default_sort_ascending,
     ));
     content.push_str(&format!(
         "rating_overlay_enabled={}\n",
@@ -1532,6 +1569,28 @@ mod tests {
         let config = ViewerConfig::default();
         assert!(!config.zoom_actual);
         assert!(config.redecode_on_resize);
+    }
+
+    #[test]
+    fn viewer_default_sort_round_trips_and_falls_back() {
+        use crate::types::ReaderSortKey;
+        let d = ViewerConfig::default();
+        assert_eq!((d.default_sort_key, d.default_sort_ascending), (ReaderSortKey::Name, true));
+        let parsed = parse_state_text(
+            "vds_ok",
+            "viewer_default_sort_key=natural\nviewer_default_sort_ascending=false\n",
+        );
+        assert_eq!(parsed.viewer_cfg.default_sort_key, ReaderSortKey::Natural);
+        assert!(!parsed.viewer_cfg.default_sort_ascending);
+        let bad = parse_state_text(
+            "vds_bad",
+            "viewer_default_sort_key=bogus\nviewer_default_sort_ascending=zzz\n",
+        );
+        assert_eq!(bad.viewer_cfg.default_sort_key, ReaderSortKey::Name);
+        assert!(bad.viewer_cfg.default_sort_ascending);
+        for k in [ReaderSortKey::Name, ReaderSortKey::Natural, ReaderSortKey::Date] {
+            assert_eq!(reader_sort_key_from_state(reader_sort_key_to_state(k)), Some(k));
+        }
     }
 
     #[test]

@@ -3681,6 +3681,87 @@ impl Lang {
         }
     }
 
+    /// エクスプローラーのメニューバーのソートボタンの先頭語（続けて現在の条件を並べる）。
+    pub fn sort_button_prefix(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ソート",
+            Lang::English  => "Sort",
+            Lang::Chinese  => "排序",
+        }
+    }
+
+    /// エクスプローラーのソートメニューの、基本キー（名前・日付・サイズ）の見出し。
+    pub fn sort_menu_primary(self) -> &'static str {
+        match self {
+            Lang::Japanese => "基本キー",
+            Lang::English  => "Primary key",
+            Lang::Chinese  => "基本排序键",
+        }
+    }
+
+    /// エクスプローラーのソートメニューの、評価キー（スコア・訪問回数）の見出し。
+    pub fn sort_menu_rating(self) -> &'static str {
+        match self {
+            Lang::Japanese => "評価キー（任意）",
+            Lang::English  => "Rating key (optional)",
+            Lang::Chinese  => "评价排序键（可选）",
+        }
+    }
+
+    /// エクスプローラーのソートメニュー下部の補足。
+    pub fn sort_menu_rating_note(self) -> &'static str {
+        match self {
+            Lang::Japanese => "評価キーがONのときは評価キーが優先され、同順位を基本キーで並べる。任意キーの条件は選択中のボタンをもう一度押すと無効化可能。",
+            Lang::English  => "While a rating key is on it takes priority, and ties are ordered by the primary key. The optional key can be disabled by pressing its selected button again.",
+            Lang::Chinese  => "开启评价排序键时优先按其排序，相同时再按基本排序键。可选键的条件可通过再次点击已选中的按钮来取消。",
+        }
+    }
+
+    /// ビューアーのツールバー「ソート条件」メニューボタン。
+    pub fn sort_menu_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ソート条件",
+            Lang::English  => "Sort",
+            Lang::Chinese  => "排序条件",
+        }
+    }
+
+    /// 「ソート条件」メニューの、現在の条件を表す見出し。
+    pub fn sort_menu_current(self) -> &'static str {
+        match self {
+            Lang::Japanese => "現在の条件",
+            Lang::English  => "Current",
+            Lang::Chinese  => "当前条件",
+        }
+    }
+
+    /// 「ソート条件」メニューの、各キー行のデフォルト指定チェック。
+    pub fn sort_menu_set_default(self) -> &'static str {
+        match self {
+            Lang::Japanese => "このキーをデフォルト設定する",
+            Lang::English  => "Use this key as default",
+            Lang::Chinese  => "设为默认排序键",
+        }
+    }
+
+    /// 「ソート条件」メニューの、デフォルトの昇順/降順トグルの見出し。
+    pub fn sort_menu_default_order(self) -> &'static str {
+        match self {
+            Lang::Japanese => "デフォルトの順序",
+            Lang::English  => "Default order",
+            Lang::Chinese  => "默认顺序",
+        }
+    }
+
+    /// 「ソート条件」メニュー下部の注意書き。
+    pub fn sort_menu_note(self) -> &'static str {
+        match self {
+            Lang::Japanese => "デフォルトキーが設定されていても、ソート条件を保存したファイルは保存された条件が優先されます。",
+            Lang::English  => "Even when a default key is set, files with a saved sort condition use the saved one.",
+            Lang::Chinese  => "即使设置了默认排序键，已保存排序条件的文件仍优先使用已保存的条件。",
+        }
+    }
+
     /// ビューアー上部バー右寄せの「ウィンドウ位置」メニューボタン。
     pub fn window_pos_menu_label(self) -> &'static str {
         match self {
