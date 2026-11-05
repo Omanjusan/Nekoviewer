@@ -233,6 +233,12 @@ pub struct ViewerConfig {
     /// 虫眼鏡の上のフィット基準軸（contain／幅／高さ）。非永続・ビューアー窓のセッション限り。
     /// 書庫を切り替えると contain へ戻る。コマモード中は無視される。
     pub fit_mode: crate::magnifier::FitMode,
+    /// 幅/高さフィットが虫眼鏡モードを立てた（=その前は虫眼鏡がOFFだった）か。全体へ戻すときに虫眼鏡も
+    /// 元のOFFへ戻すための記録。`set_fit_mode` だけが書き換える。非永続。
+    pub fit_entered_magnifier: bool,
+    /// 幅/高さフィット中のホイールを「拡縮」ではなく「スクロール」にするか。非永続・ウィンドウのセッション限り
+    /// （書庫を切り替えても保持する）。フィット中以外・コマモード中は無視され、常に拡縮になる。
+    pub wheel_scroll: bool,
     /// 虫眼鏡モードの設定値（上限倍率・バー幅など）。現状は既定値のみで永続化しない。
     pub magnifier: crate::magnifier::MagnifierConfig,
     /// GPUテクスチャを保持するページ窓のVRAM予算など。非永続（現状は既定値のみ）。
@@ -275,8 +281,34 @@ impl Default for ViewerConfig {
             magnifier_on: false,
             koma_on: false,
             fit_mode: crate::magnifier::FitMode::default(),
+            fit_entered_magnifier: false,
+            wheel_scroll: false,
             magnifier: crate::magnifier::MagnifierConfig::default(),
             texture_window: crate::texture_window::TextureWindowConfig::default(),
+        }
+    }
+}
+
+impl ViewerConfig {
+    /// フィット基準軸を切り替える（ツールバー・ツールパレット共通）。幅/高さフィットは虫眼鏡の上の
+    /// サブモードなので、全体から幅/高さへ入るときに虫眼鏡がOFFならONにし、その事実を記録する。
+    /// 全体へ戻すときは、記録があれば虫眼鏡も元のOFFへ戻す（ダブルクリックなどの通常動作が戻る）。
+    /// 虫眼鏡が元々ONだったときは、全体へ戻してもONのまま。幅⇔高さの切替は虫眼鏡に触れない。
+    pub fn set_fit_mode(&mut self, mode: crate::magnifier::FitMode) {
+        use crate::magnifier::FitMode;
+        let was = self.fit_mode;
+        self.fit_mode = mode;
+        if was == FitMode::Contain && mode != FitMode::Contain {
+            if !self.magnifier_on {
+                self.magnifier_on = true;
+                self.fit_entered_magnifier = true;
+            }
+        } else if was != FitMode::Contain && mode == FitMode::Contain {
+            if self.fit_entered_magnifier {
+                self.magnifier_on = false;
+                self.koma_on = false;
+            }
+            self.fit_entered_magnifier = false;
         }
     }
 }
@@ -1033,6 +1065,8 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
             magnifier_on: false,
             koma_on: false,
             fit_mode: crate::magnifier::FitMode::default(),
+            fit_entered_magnifier: false,
+            wheel_scroll: false,
             magnifier: {
                 // 不正値は捨てて既定値。永続化するのはノッチ倍率・目盛りの詳細/簡易・コマ送りの基準倍率だけ。
                 let mut m = crate::magnifier::MagnifierConfig::default();

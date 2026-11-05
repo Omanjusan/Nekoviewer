@@ -206,6 +206,9 @@ struct FrameInput {
     /// 虫眼鏡の拡大縮小の割り当て（既定 Shift+ホイール）のホイール量（ノッチ単位・正=上回し）。
     /// モードのON/OFFに関わらず拾う。
     zoom_wheel_notches: f32,
+    /// 幅/高さフィットのホイールスクロール量（points・正=上回し）。ページ送りと同じ割り当てのホイールを
+    /// 画像のスクロールへ回すときだけ、`scroll_delta` から移される（それ以外は 0）。
+    wheel_scroll_px: f32,
     // ポインタ
     hover_pos: Option<egui::Pos2>,
     middle_clicked: bool,
@@ -315,6 +318,7 @@ impl FrameInput {
                 shift_scroll_delta: file_mouse.map(wheel_amount).unwrap_or(0.0),
                 wheel_notches:      page_mouse.map(wheel_notches_of).unwrap_or(0.0),
                 zoom_wheel_notches: zoom_mouse.map(wheel_notches_of).unwrap_or(0.0),
+                wheel_scroll_px:    0.0,
                 hover_pos:          i.pointer.hover_pos(),
                 middle_clicked,
                 primary_clicked:    i.pointer.button_clicked(egui::PointerButton::Primary),
@@ -2059,12 +2063,15 @@ impl ViewerState {
         // コマモードは虫眼鏡の上のサブモード。虫眼鏡がOFFの間（終了ボタン・トグル・入場前）は常にOFF。
         if !cfg.magnifier_on {
             cfg.koma_on = false;
+            // 幅/高さフィットも虫眼鏡の上のサブモード。虫眼鏡が切れたら全体へ戻す（終了ボタン・トグル）。
+            cfg.fit_mode = crate::magnifier::FitMode::Contain;
+            cfg.fit_entered_magnifier = false;
         }
 
         // 幅/高さフィットは書庫単位のセッション状態。書庫が変わったら contain へ戻す（ページ送りでは維持）。
         // 虫眼鏡に入る前の設定も消さないよう、虫眼鏡の有無によらず毎フレームここで整合させる。
         if self.fit_mode_archive.as_deref() != Some(self.archive_path.as_path()) {
-            cfg.fit_mode = crate::magnifier::FitMode::Contain;
+            cfg.set_fit_mode(crate::magnifier::FitMode::Contain);
             self.fit_mode_archive = Some(self.archive_path.clone());
         }
 
@@ -2076,10 +2083,18 @@ impl ViewerState {
             } else {
                 tex_lo.is_some()
             };
+        // 幅/高さフィット中でスクロール指定のときは、ページ送りと同じ割り当てのホイールを画像のスクロールへ回す
+        // （拡縮は専用の割り当て=既定Shift+ホイールだけが担う）。それ以外は従来どおりホイール=拡縮。
+        let wheel_scrolls = magnifier_active && Self::wheel_scroll_effective(cfg);
         if magnifier_active {
-            // ホイールはページ送りではなく拡縮へ回す。専用の拡大縮小の割り当てぶんも足す。
+            // ホイールはページ送りではなく拡縮（またはスクロール）へ回す。専用の拡大縮小の割り当てぶんも足す。
+            if wheel_scrolls {
+                input.wheel_scroll_px = input.scroll_delta;
+                input.wheel_notches = input.zoom_wheel_notches;
+            } else {
+                input.wheel_notches += input.zoom_wheel_notches;
+            }
             input.scroll_delta = 0.0;
-            input.wheel_notches += input.zoom_wheel_notches;
         } else {
             input.wheel_notches = 0.0;
         }
@@ -3447,7 +3462,7 @@ impl ViewerState {
                     input.hover_pos
                 };
                 let target = self.magnifier_target(frame);
-                self.update_magnifier(viewport_rect, target, anchor, input.wheel_notches, &mut cfg.magnifier, cfg.koma_on, cfg.fit_mode, input.time);
+                self.update_magnifier(viewport_rect, target, anchor, input.wheel_notches, input.wheel_scroll_px, &mut cfg.magnifier, cfg.koma_on, cfg.fit_mode, input.time);
                 let scale_before_bar = self.magnifier_view.map(|v| v.scale);
                 let view_before_bar = self.magnifier_view;
                 if let Some(bar) = bar_rects
@@ -4797,11 +4812,21 @@ impl ViewerState {
                     .on_hover_text(t.toolbar_fit_mode_tip())
                     .clicked()
                 {
-                    cfg.fit_mode = cfg.fit_mode.next();
-                    if cfg.fit_mode != FitMode::Contain {
-                        cfg.magnifier_on = true;
-                    }
+                    cfg.set_fit_mode(cfg.fit_mode.next());
                 }
+            }
+            // ホイール動作（拡大⇔スクロール）。幅/高さフィット中だけ切り替えられる（それ以外はグレー）。
+            ViewerBarItem::WheelMode => {
+                let enabled = cfg.fit_mode != crate::magnifier::FitMode::Contain && !cfg.koma_on;
+                let label = if cfg.wheel_scroll { t.toolbar_wheel_mode_scroll() } else { t.toolbar_wheel_mode_zoom() };
+                ui.add_enabled_ui(enabled, |ui| {
+                    if ui.selectable_label(cfg.wheel_scroll, label)
+                        .on_hover_text(t.toolbar_wheel_mode_tip(enabled))
+                        .clicked()
+                    {
+                        cfg.wheel_scroll = !cfg.wheel_scroll;
+                    }
+                });
             }
             // OCR/翻訳子ウィンドウの開閉トグル。実際の開閉状態はapp側が持ち、show()呼び出し時に
             // translate_window_openとして受け取って表示にのみ使う（真の状態はここでは変更しない）。
@@ -5100,6 +5125,7 @@ impl ViewerState {
         target: Option<crate::magnifier::MagnifierTarget>,
         wheel_anchor: Option<egui::Pos2>,
         wheel_notches: f32,
+        wheel_scroll_px: f32,
         cfg: &mut crate::magnifier::MagnifierConfig,
         koma_on: bool,
         fit_mode: crate::magnifier::FitMode,
@@ -5256,10 +5282,34 @@ impl ViewerState {
             }
         }
 
+        // ホイールスクロール（幅/高さフィット中・スクロール指定）: 溢れる軸（幅フィット=縦、高さフィット=横）へ
+        // 動かす。下回し（負）で先へ進む。端で止まるだけで、ページは送らない。
+        if wheel_scroll_px != 0.0
+            && self.koma_tween.is_none()
+            && fit_mode != crate::magnifier::FitMode::Contain
+            && wheel_anchor.is_some_and(|p| viewport.contains(p))
+        {
+            let mut next = view;
+            match fit_mode {
+                crate::magnifier::FitMode::Width => next.offset.y -= wheel_scroll_px,
+                _ => next.offset.x -= wheel_scroll_px,
+            }
+            let next = clamp_offset(next, vp, img);
+            if next.offset != view.offset {
+                view = next;
+                self.magnifier_offset_dirty = true;
+            }
+        }
+
         self.magnifier_at_fit = (view.scale - mode_fit).abs() <= FIT_EPS;
         self.magnifier_ref_len = target.ref_len;
         self.magnifier_view = Some(view);
         self.koma_geom = Some((img, vp));
+    }
+
+    /// ホイールをスクロールに使うか。トグルがONで、幅/高さフィット中かつコマモードでないときだけ有効。
+    pub(crate) fn wheel_scroll_effective(cfg: &ViewerConfig) -> bool {
+        cfg.wheel_scroll && cfg.fit_mode != crate::magnifier::FitMode::Contain && !cfg.koma_on
     }
 
     /// 虫眼鏡カーソルの画像（画面の拡大率に合わせた大きさ）。同じ大きさの間は使い回す。
@@ -7918,6 +7968,111 @@ mod magnifier_flow_tests {
         let (img, vp) = h.viewer.koma_geom.unwrap();
         let view = h.viewer.magnifier_view.unwrap();
         assert!((view.scale - vp.x / img.x).abs() < 1e-3, "次ページが幅に合っていない: {}", view.scale);
+    }
+
+    fn wheel_n(h: &mut Harness, up: bool, modifiers: egui::Modifiers, n: usize) {
+        for _ in 0..n {
+            h.wheel(up, modifiers);
+        }
+        for _ in 0..4 {
+            h.frame(vec![], egui::Modifiers::NONE);
+        }
+    }
+
+    #[test]
+    fn wheel_scrolls_the_overflow_axis_in_fit_width_when_scroll_mode_is_on() {
+        let mut h = Harness::with_pages(3, 800, 1200);
+        h.cfg.wheel_scroll = true;
+        set_fit(&mut h, crate::magnifier::FitMode::Width);
+        let s0 = h.viewer.magnifier_view.unwrap().scale;
+        let page0 = h.viewer.spread_lo();
+        wheel_n(&mut h, false, egui::Modifiers::NONE, 2);
+        let view = h.viewer.magnifier_view.unwrap();
+        assert!(view.offset.y > 1.0, "下回しで縦に進まない: {:?}", view.offset);
+        assert!((view.scale - s0).abs() < 1e-6, "スクロールのはずが拡縮された: {} -> {}", s0, view.scale);
+        assert_eq!(h.viewer.spread_lo(), page0, "スクロールでページが送られた");
+        // 上回しで戻る（上端で止まり、負にはならない）。
+        wheel_n(&mut h, true, egui::Modifiers::NONE, 10);
+        assert!(h.viewer.magnifier_view.unwrap().offset.y.abs() < 1e-3, "上端で止まらない");
+        assert_eq!(h.viewer.spread_lo(), page0);
+    }
+
+    #[test]
+    fn wheel_zooms_when_scroll_mode_is_off_even_in_fit_width() {
+        let mut h = Harness::with_pages(3, 800, 1200);
+        set_fit(&mut h, crate::magnifier::FitMode::Width);
+        let s0 = h.viewer.magnifier_view.unwrap().scale;
+        wheel_n(&mut h, true, egui::Modifiers::NONE, 1);
+        assert!(h.viewer.magnifier_view.unwrap().scale > s0, "既定は拡縮のまま: {}", h.state());
+    }
+
+    #[test]
+    fn shift_wheel_still_zooms_in_scroll_mode() {
+        let mut h = Harness::with_pages(3, 800, 1200);
+        h.cfg.wheel_scroll = true;
+        set_fit(&mut h, crate::magnifier::FitMode::Width);
+        let s0 = h.viewer.magnifier_view.unwrap().scale;
+        wheel_n(&mut h, true, egui::Modifiers::SHIFT, 1);
+        assert!(h.viewer.magnifier_view.unwrap().scale > s0, "Shift+ホイールで拡縮できない: {}", h.state());
+    }
+
+    #[test]
+    fn scroll_mode_is_ignored_outside_fit_and_in_koma_mode() {
+        let mut cfg = ViewerConfig::default();
+        cfg.wheel_scroll = true;
+        assert!(!ViewerState::wheel_scroll_effective(&cfg), "全体フィットでは無効");
+        cfg.fit_mode = crate::magnifier::FitMode::Height;
+        assert!(ViewerState::wheel_scroll_effective(&cfg));
+        cfg.koma_on = true;
+        assert!(!ViewerState::wheel_scroll_effective(&cfg), "コマモード中は無効");
+    }
+
+    #[test]
+    fn scroll_mode_flag_survives_an_archive_change() {
+        let mut h = Harness::with_pages(3, 800, 1200);
+        h.cfg.wheel_scroll = true;
+        set_fit(&mut h, crate::magnifier::FitMode::Width);
+        h.viewer.archive_path = PathBuf::from("other.png");
+        h.frame(vec![], egui::Modifiers::NONE);
+        assert_eq!(h.cfg.fit_mode, crate::magnifier::FitMode::Contain);
+        assert!(h.cfg.wheel_scroll, "ホイールの好みは書庫切替で消さない");
+    }
+
+    #[test]
+    fn exit_button_style_magnifier_off_returns_the_fit_mode_to_contain() {
+        let mut h = Harness::with_pages(3, 800, 1200);
+        h.cfg.set_fit_mode(crate::magnifier::FitMode::Width);
+        h.frame(vec![], egui::Modifiers::NONE);
+        assert!(h.cfg.magnifier_on);
+        // 終了ボタン・トグルと同じ: 虫眼鏡だけが切れる。
+        h.cfg.magnifier_on = false;
+        h.frame(vec![], egui::Modifiers::NONE);
+        assert_eq!(h.cfg.fit_mode, crate::magnifier::FitMode::Contain, "虫眼鏡が切れたのにフィットが残った");
+        assert!(!h.cfg.fit_entered_magnifier);
+    }
+
+    #[test]
+    fn cycling_back_to_contain_turns_the_magnifier_off_and_restores_double_click() {
+        let mut h = Harness::with_pages(3, 800, 1200);
+        for _ in 0..3 {
+            h.cfg.set_fit_mode(h.cfg.fit_mode.next());
+            h.frame(vec![], egui::Modifiers::NONE);
+        }
+        assert_eq!(h.cfg.fit_mode, crate::magnifier::FitMode::Contain);
+        assert!(!h.cfg.magnifier_on, "一周しても虫眼鏡が残る: {}", h.state());
+        assert!(h.viewer.magnifier_view.is_none());
+    }
+
+    #[test]
+    fn archive_change_also_restores_the_magnifier_the_fit_mode_turned_on() {
+        let mut h = Harness::with_pages(3, 800, 1200);
+        h.cfg.set_fit_mode(crate::magnifier::FitMode::Width);
+        h.frame(vec![], egui::Modifiers::NONE);
+        h.viewer.archive_path = PathBuf::from("other.png");
+        h.frame(vec![], egui::Modifiers::NONE);
+        h.frame(vec![], egui::Modifiers::NONE);
+        assert_eq!(h.cfg.fit_mode, crate::magnifier::FitMode::Contain);
+        assert!(!h.cfg.magnifier_on, "書庫切替後も虫眼鏡が残る");
     }
 
     #[test]

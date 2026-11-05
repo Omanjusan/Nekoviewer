@@ -128,7 +128,7 @@ pub const TOGGLE_DEFS: &[ToggleDef] = &[
         label: Lang::tool_palette_toggle_label_fit_width,
         get: |cfg| cfg.fit_mode == FitMode::Width,
         // 幅/高さフィットは虫眼鏡の上のサブモード。ONなら虫眼鏡も立て、高さフィットとは排他にする。
-        // OFFは contain へ戻すだけ（他方がONのときに巻き込んで消さない）。
+        // OFFは contain へ戻すだけ（他方がONのときに巻き込んで消さない）。フィットが立てた虫眼鏡は一緒にOFFへ戻る。
         set: |cfg, on| set_fit_mode(cfg, FitMode::Width, on),
     },
     ToggleDef {
@@ -141,10 +141,9 @@ pub const TOGGLE_DEFS: &[ToggleDef] = &[
 
 fn set_fit_mode(cfg: &mut ViewerConfig, mode: FitMode, on: bool) {
     if on {
-        cfg.fit_mode = mode;
-        cfg.magnifier_on = true;
+        cfg.set_fit_mode(mode);
     } else if cfg.fit_mode == mode {
-        cfg.fit_mode = FitMode::Contain;
+        cfg.set_fit_mode(FitMode::Contain);
     }
 }
 
@@ -238,10 +237,34 @@ mod tests {
         execute_toggle(&mut cfg, ToggleKind::FitHeight);
         assert_eq!(cfg.fit_mode, FitMode::Height);
         assert!(!(find_toggle_def(ToggleKind::FitWidth).get)(&cfg));
-        // OFFは contain へ戻すだけで、虫眼鏡は巻き込まない。
+        // OFFは contain へ戻す。フィットが立てた虫眼鏡も元のOFFへ戻る。
         execute_toggle(&mut cfg, ToggleKind::FitHeight);
         assert_eq!(cfg.fit_mode, FitMode::Contain);
-        assert!(cfg.magnifier_on);
+        assert!(!cfg.magnifier_on, "フィットが立てた虫眼鏡が残った");
+    }
+
+    #[test]
+    fn fit_off_keeps_a_magnifier_that_was_already_on() {
+        let mut cfg = ViewerConfig::default();
+        cfg.magnifier_on = true;
+        execute_toggle(&mut cfg, ToggleKind::FitWidth);
+        execute_toggle(&mut cfg, ToggleKind::FitWidth);
+        assert_eq!(cfg.fit_mode, FitMode::Contain);
+        assert!(cfg.magnifier_on, "元々ONだった虫眼鏡は残す");
+    }
+
+    #[test]
+    fn full_toolbar_cycle_restores_the_original_magnifier_state() {
+        let mut cfg = ViewerConfig::default();
+        for _ in 0..3 {
+            cfg.set_fit_mode(cfg.fit_mode.next());
+        }
+        assert_eq!(cfg.fit_mode, FitMode::Contain);
+        assert!(!cfg.magnifier_on && !cfg.fit_entered_magnifier);
+        // 幅⇔高さの切替は虫眼鏡の記録に触れない。
+        cfg.set_fit_mode(FitMode::Width);
+        cfg.set_fit_mode(FitMode::Height);
+        assert!(cfg.magnifier_on && cfg.fit_entered_magnifier);
     }
 
     #[test]

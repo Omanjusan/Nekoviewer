@@ -42,11 +42,13 @@ pub enum ViewerBarItem {
     ExifRotation,
     /// 虫眼鏡のフィット基準軸（全体／幅／高さ）のサイクルボタン
     FitMode,
+    /// 幅/高さフィット中のホイール動作（拡大⇔スクロール）トグル
+    WheelMode,
     /// OCR/翻訳子ウィンドウの開閉トグル（旧: 画面隅フローティングボタン、ツールバーへ昇格）
     TranslateToggle,
 }
 
-pub const BAR_ITEM_COUNT: usize = 16;
+pub const BAR_ITEM_COUNT: usize = 17;
 
 /// 既定の並び順。ソート群 → ページ群 → 回転群 → 翻訳群。
 pub const DEFAULT_BAR_ORDER: [ViewerBarItem; BAR_ITEM_COUNT] = [
@@ -65,6 +67,7 @@ pub const DEFAULT_BAR_ORDER: [ViewerBarItem; BAR_ITEM_COUNT] = [
     ViewerBarItem::RotationCarry,
     ViewerBarItem::ExifRotation,
     ViewerBarItem::FitMode,
+    ViewerBarItem::WheelMode,
     ViewerBarItem::TranslateToggle,
 ];
 
@@ -98,6 +101,7 @@ impl ViewerBarItem {
             ViewerBarItem::RotationCarry   => "rotation_carry",
             ViewerBarItem::ExifRotation    => "exif_rotation",
             ViewerBarItem::FitMode         => "fit_mode",
+            ViewerBarItem::WheelMode       => "wheel_mode",
             ViewerBarItem::TranslateToggle => "translate_toggle",
         }
     }
@@ -119,6 +123,7 @@ impl ViewerBarItem {
             "rotation_carry"   => ViewerBarItem::RotationCarry,
             "exif_rotation"    => ViewerBarItem::ExifRotation,
             "fit_mode"         => ViewerBarItem::FitMode,
+            "wheel_mode"       => ViewerBarItem::WheelMode,
             "translate_toggle" => ViewerBarItem::TranslateToggle,
             _ => return None,
         })
@@ -159,7 +164,7 @@ impl ViewerBarItem {
             | ViewerBarItem::RotateCw
             | ViewerBarItem::RotationCarry
             | ViewerBarItem::ExifRotation => BarGroup::Rotation,
-            ViewerBarItem::FitMode => BarGroup::View,
+            ViewerBarItem::FitMode | ViewerBarItem::WheelMode => BarGroup::View,
             ViewerBarItem::TranslateToggle => BarGroup::Translate,
         }
     }

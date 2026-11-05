@@ -6111,6 +6111,34 @@ impl Lang {
         }
     }
 
+    /// ツールバーのホイール動作ボタンの表示（現在の動作）。
+    pub fn toolbar_wheel_mode_zoom(self) -> &'static str {
+        match self {
+            Lang::Japanese => "拡大",
+            Lang::English  => "Zoom",
+            Lang::Chinese  => "缩放",
+        }
+    }
+
+    pub fn toolbar_wheel_mode_scroll(self) -> &'static str {
+        match self {
+            Lang::Japanese => "スクロール",
+            Lang::English  => "Scroll",
+            Lang::Chinese  => "滚动",
+        }
+    }
+
+    pub fn toolbar_wheel_mode_tip(self, enabled: bool) -> &'static str {
+        match (self, enabled) {
+            (Lang::Japanese, true) => "ホイールの動作を切り替え（拡大 ⇔ スクロール）\nスクロール中も拡大はShift+ホイール。端に着いてもページは送られない",
+            (Lang::English,  true) => "Switch the wheel action (zoom ⇔ scroll)\nWhile scrolling, Shift+wheel still zooms. The page does not turn at the edge",
+            (Lang::Chinese,  true) => "切换滚轮动作（缩放 ⇔ 滚动）\n滚动时仍可用Shift+滚轮缩放。到达边缘不会翻页",
+            (Lang::Japanese, false) => "ホイールの動作切り替え（幅/高さフィット中のみ使えます）",
+            (Lang::English,  false) => "Wheel action switch (available only in fit-width/height)",
+            (Lang::Chinese,  false) => "滚轮动作切换（仅在适应宽度/高度时可用）",
+        }
+    }
+
     pub fn decode_edge_prompt_title(self) -> &'static str {
         match self {
             Lang::Japanese => "既定値の更新",
