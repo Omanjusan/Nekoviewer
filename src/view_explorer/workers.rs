@@ -102,15 +102,15 @@ impl NekoviewApp {
     /// 再デコードさせる。既存アニメは表示世代に依存しない単一インスタンスとして保持し、
     /// ここでは作り直さない（表示サイズの更新は後続フェーズで既存pipelineへ通知する）。
     fn fire_resize_redecode(&mut self, seq: u64) {
-        let (zoom_actual, magnifier_on) = {
+        let (zoom_actual, magnifier_on, fit_mode) = {
             let cfg = self.viewer_cfg.lock().unwrap();
-            (cfg.zoom_actual, cfg.magnifier_on)
+            (cfg.zoom_actual, cfg.magnifier_on, Self::effective_fit_mode(&cfg))
         };
         let max_decode_edge = self.config.max_decode_edge;
         let target = {
             let viewer = self.viewer.lock().unwrap();
             match viewer.as_ref() {
-                Some(v) => v.current_decode_target(zoom_actual, max_decode_edge, magnifier_on),
+                Some(v) => v.current_decode_target(zoom_actual, max_decode_edge, magnifier_on, fit_mode),
                 None => return,
             }
         };
@@ -124,18 +124,25 @@ impl NekoviewApp {
         );
     }
 
+    /// デコード目標に使うフィット基準軸。虫眼鏡がOFFのとき、またはコマモード中は全体として扱う。
+    fn effective_fit_mode(cfg: &crate::gui_config::ViewerConfig) -> crate::magnifier::FitMode {
+        if cfg.magnifier_on && !cfg.koma_on { cfg.fit_mode } else { crate::magnifier::FitMode::Contain }
+    }
+
     /// 虫眼鏡モードのON/OFFを検知したら、デバウンスせず即座に再デコードを発火する
     /// （ONで原寸デコードへ、OFFで表示サイズのデコードへ戻す）。「原寸」設定では常に上限まで
     /// デコード済みなので、切替に伴う再デコードは不要（毎フレームのガードレール復元に任せる）。
     fn poll_magnifier_toggle(&mut self) {
-        let (now, redecode_on, seq) = {
+        let (now, fit_now, redecode_on, seq) = {
             let cfg = self.viewer_cfg.lock().unwrap();
-            (cfg.magnifier_on, cfg.redecode_on_resize, cfg.redecode_trigger_seq)
+            (cfg.magnifier_on, Self::effective_fit_mode(&cfg), cfg.redecode_on_resize, cfg.redecode_trigger_seq)
         };
-        if now == self.magnifier_on_last_seen {
+        // ON/OFFに加え、虫眼鏡中のフィット基準軸（全体/幅/高さ）が変わってもデコード目標が変わるので再発火する。
+        if now == self.magnifier_on_last_seen && fit_now == self.fit_mode_last_seen {
             return;
         }
         self.magnifier_on_last_seen = now;
+        self.fit_mode_last_seen = fit_now;
         if redecode_on {
             self.resize_redecode_deadline = None;
             self.fire_resize_redecode(seq);
@@ -294,8 +301,7 @@ impl NekoviewApp {
         if cfg.redecode_on_resize && !cfg.zoom_actual {
             self.decode_target = if cfg.magnifier_on {
                 // 虫眼鏡ON中に開いたビューアーは、最初から原寸デコードにする。
-                let edge = crate::view_reader::clamp_decode_edge(self.config.max_decode_edge, 8192);
-                Some((edge, edge))
+                Some(crate::view_reader::magnifier_decode_target(self.config.max_decode_edge, 8192, Self::effective_fit_mode(&cfg)))
             } else {
                 Some((physical_size.0.max(1), physical_size.1.max(1)))
             };

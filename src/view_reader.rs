@@ -37,6 +37,21 @@ const MAX_TEXTURE_SIDE_FALLBACK: usize = 8192;
 pub(crate) fn clamp_decode_edge(edge: u32, max_texture_side: usize) -> u32 {
     edge.min(max_texture_side.min(u32::MAX as usize) as u32).max(1)
 }
+/// 虫眼鏡中のデコード目標（縦横比を保って収める箱）。通常は1辺 `max_decode_edge` の正方形（長辺がその値まで）。
+/// 幅フィットは溢れる縦を、高さフィットは溢れる横を、GPUテクスチャの1辺上限まで広げる。
+/// 長辺基準のままだと、縦長のウェブトゥーン（例 800x20000）が幅 160px まで縮められてぼやけるため。
+/// 上限（約8192px）を超える超長尺は、それでも縮む（タイル分割はしない方針）。
+pub(crate) fn magnifier_decode_target(max_decode_edge: u32, max_texture_side: usize, fit_mode: crate::magnifier::FitMode) -> (u32, u32) {
+    use crate::magnifier::FitMode;
+    let edge = clamp_decode_edge(max_decode_edge, max_texture_side);
+    let long = clamp_decode_edge(u32::MAX, max_texture_side);
+    match fit_mode {
+        FitMode::Contain => (edge, edge),
+        FitMode::Width => (edge, long),
+        FitMode::Height => (long, edge),
+    }
+}
+
 /// サムネイルバー: 現在ページを中心にこの枚数分だけ先取り要求する（暫定固定値）。
 /// フェーズ2で実際の可視範囲ベースに置き換え予定。
 const THUMBBAR_ENQUEUE_WINDOW: i32 = 40;
@@ -851,14 +866,13 @@ impl ViewerState {
     /// それ以外は直近の描画領域サイズ(物理px)を上限にする。
     /// （旧実装は zoom_actual 時に None=無制限を返しており、"原寸時に許容する最大長辺幅"
     /// 設定が「ウィンドウ追従」ON時には効かないままになる抜け穴があったため統一した）
-    pub fn current_decode_target(&self, zoom_actual: bool, max_decode_edge: u32, magnifier_on: bool) -> Option<(u32, u32)> {
+    pub fn current_decode_target(&self, zoom_actual: bool, max_decode_edge: u32, magnifier_on: bool, fit_mode: crate::magnifier::FitMode) -> Option<(u32, u32)> {
         if zoom_actual {
             let edge = self.actual_decode_edge(max_decode_edge);
             Some((edge, edge))
         } else if magnifier_on {
             // 虫眼鏡: 単ページ・見開きとも、見開きの2倍は掛けず、1ページを max_decode_edge までデコードする。
-            let edge = clamp_decode_edge(max_decode_edge, self.max_texture_side);
-            Some((edge, edge))
+            Some(magnifier_decode_target(max_decode_edge, self.max_texture_side, fit_mode))
         } else {
             let (w, h) = self.content_px;
             Some((clamp_decode_edge(w, self.max_texture_side), clamp_decode_edge(h, self.max_texture_side)))
@@ -7104,6 +7118,39 @@ mod decode_edge_tests {
     fn edge_is_never_zero() {
         assert_eq!(clamp_decode_edge(0, 8192), 1);
         assert_eq!(clamp_decode_edge(100, 0), 1);
+    }
+
+    #[test]
+    fn magnifier_target_widens_only_the_overflow_axis() {
+        use super::magnifier_decode_target;
+        use crate::magnifier::FitMode;
+        assert_eq!(magnifier_decode_target(4000, 8192, FitMode::Contain), (4000, 4000));
+        assert_eq!(magnifier_decode_target(4000, 8192, FitMode::Width), (4000, 8192));
+        assert_eq!(magnifier_decode_target(4000, 8192, FitMode::Height), (8192, 4000));
+        // 設定値がテクスチャ上限を超えても、上限で頭打ちになる。
+        assert_eq!(magnifier_decode_target(15360, 8192, FitMode::Width), (8192, 8192));
+    }
+
+    #[test]
+    fn width_fit_keeps_a_tall_webtoon_wide_enough() {
+        use super::magnifier_decode_target;
+        use crate::magnifier::FitMode;
+        // 800x6000 の縦長は、幅フィットなら縮められず原寸のままデコードされる（従来の正方形目標だと 533x4000）。
+        let (tw, th) = magnifier_decode_target(4000, 8192, FitMode::Width);
+        assert_eq!(crate::anim::fit_within(800, 6000, tw, th), (800, 6000));
+        let (tw, th) = magnifier_decode_target(4000, 8192, FitMode::Contain);
+        assert_eq!(crate::anim::fit_within(800, 6000, tw, th), (533, 4000));
+        // 上限を超える 800x20000 は、テクスチャ上限（8192）までの縮小で止まる（幅は 327px）。
+        let (tw, th) = magnifier_decode_target(4000, 8192, FitMode::Width);
+        assert_eq!(crate::anim::fit_within(800, 20000, tw, th), (327, 8192));
+    }
+
+    #[test]
+    fn height_fit_keeps_a_wide_panorama_tall_enough() {
+        use super::magnifier_decode_target;
+        use crate::magnifier::FitMode;
+        let (tw, th) = magnifier_decode_target(4000, 8192, FitMode::Height);
+        assert_eq!(crate::anim::fit_within(6000, 800, tw, th), (6000, 800));
     }
 }
 
