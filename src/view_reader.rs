@@ -879,6 +879,12 @@ impl ViewerState {
         }
     }
 
+    /// 基準解像度が「原寸」のときの常時デコード目標（ガードレール）。通常は1辺 `actual_decode_edge` の正方形で、
+    /// 虫眼鏡の幅/高さフィット中は溢れる軸をテクスチャ上限まで広げる（縦長・横長がぼやけないように）。
+    pub fn guardrail_decode_target(&self, max_decode_edge: u32, fit_mode: crate::magnifier::FitMode) -> (u32, u32) {
+        magnifier_decode_target(self.actual_decode_edge(max_decode_edge), self.max_texture_side, fit_mode)
+    }
+
     /// 「原寸」のデコード長辺上限。見開き中は2倍にし、GPUテクスチャの1辺上限で頭打ちにする。
     pub fn actual_decode_edge(&self, max_decode_edge: u32) -> u32 {
         let edge = if self.page_mode != PageMode::Single {
@@ -7143,6 +7149,16 @@ mod decode_edge_tests {
         // 上限を超える 800x20000 は、テクスチャ上限（8192）までの縮小で止まる（幅は 327px）。
         let (tw, th) = magnifier_decode_target(4000, 8192, FitMode::Width);
         assert_eq!(crate::anim::fit_within(800, 20000, tw, th), (327, 8192));
+    }
+
+    #[test]
+    fn guardrail_target_follows_the_fit_mode_for_the_original_size_setting() {
+        use crate::magnifier::FitMode;
+        let v = super::ViewerState::new_raw(std::path::PathBuf::from("t.png"), [None; 4], None);
+        // 単ページ・実測前のテクスチャ上限(8192)。全体は従来どおり正方形。
+        assert_eq!(v.guardrail_decode_target(4000, FitMode::Contain), (4000, 4000));
+        assert_eq!(v.guardrail_decode_target(4000, FitMode::Width), (4000, 8192));
+        assert_eq!(v.guardrail_decode_target(4000, FitMode::Height), (8192, 4000));
     }
 
     #[test]

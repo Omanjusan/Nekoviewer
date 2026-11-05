@@ -66,14 +66,16 @@ impl NekoviewApp {
             // 放置されると、一度でも「ウィンドウ追従」+ビューアー等倍ズームを使った後は
             // 「原寸」に戻してもガードレールが永続的に外れたままになるバグがあったため、
             // ここで毎フレーム復元する（実際に変化した時だけ再デコードを発火）。
-            let edge = {
+            // 虫眼鏡の幅/高さフィット中は、溢れる軸をテクスチャ上限まで広げる（フィット基準軸の変化も
+            // ここで毎フレーム拾われ、目標が変わったときだけ再デコードされる）。
+            let fit_mode = Self::effective_fit_mode(&self.viewer_cfg.lock().unwrap());
+            let guardrail = {
                 let viewer = self.viewer.lock().unwrap();
-                match viewer.as_ref() {
-                    Some(v) => v.actual_decode_edge(self.config.max_decode_edge),
-                    None => self.config.max_decode_edge,
-                }
+                Some(match viewer.as_ref() {
+                    Some(v) => v.guardrail_decode_target(self.config.max_decode_edge, fit_mode),
+                    None => (self.config.max_decode_edge, self.config.max_decode_edge),
+                })
             };
-            let guardrail = Some((edge, edge));
             if self.decode_target != guardrail {
                 self.decode_target = guardrail;
                 self.begin_lazy_decode_generation();
