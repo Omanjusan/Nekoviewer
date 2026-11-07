@@ -53,6 +53,7 @@ mod tag_master;
 mod tag_similarity;
 mod tag_source;
 mod tag_search;
+mod tag_trial;
 mod texture_window;
 // 「似ている画像」マーカーの特徴量。照合・保存の配線（Phase 2以降）までは使われない。
 #[allow(dead_code)]

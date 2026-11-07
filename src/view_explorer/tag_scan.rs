@@ -177,6 +177,11 @@ impl TagScanJob {
     }
 }
 
+/// 取得ボタンを押せる状態か（`can_start_tag_scan` の判定。仮想フォルダは条件に含まない）。
+fn scan_allowed(running: bool, favorites: bool, similar: bool, search: bool, tag_search_tab: bool, has_targets: bool) -> bool {
+    !running && !favorites && !similar && !search && !tag_search_tab && has_targets
+}
+
 impl NekoviewApp {
     /// 一括情報取得の対象（表示中の実フォルダ直下のアーカイブ。単体画像と無効アーカイブは除く）。
     fn tag_scan_targets(&self) -> Vec<PathBuf> {
@@ -187,15 +192,18 @@ impl NekoviewApp {
             .collect()
     }
 
-    /// ボタンを押せるか。実フォルダ表示中（仮想・お気に入り・検索・類似・タグ検索を除く）で、対象があり、実行中でないとき。
+    /// ボタンを押せるか。フォルダ表示中（お気に入り・検索・類似・タグ検索を除く。仮想フォルダは対象）で、
+    /// 対象があり、実行中でないとき。仮想フォルダは、開いたノードの実パスを実スキャンした一覧を出すので、
+    /// 通常のフォルダと同じに扱える（仮想ルート `/` とリンク切れは一覧が空になり、対象なしで押せない）。
     pub(super) fn can_start_tag_scan(&self) -> bool {
-        self.tag_scan_job.is_none()
-            && self.viewing_favorites.is_none()
-            && self.viewing_similar.is_none()
-            && self.viewing_search.is_none()
-            && self.viewing_virtual_node.is_none()
-            && self.folder_pane_tab != super::FolderPaneTab::TagSearch
-            && !self.tag_scan_targets().is_empty()
+        scan_allowed(
+            self.tag_scan_job.is_some() || self.tag_trial_active,
+            self.viewing_favorites.is_some(),
+            self.viewing_similar.is_some(),
+            self.viewing_search.is_some(),
+            self.folder_pane_tab == super::FolderPaneTab::TagSearch,
+            !self.tag_scan_targets().is_empty(),
+        )
     }
 
     pub(super) fn start_tag_scan(&mut self) {
@@ -290,6 +298,20 @@ impl NekoviewApp {
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn scan_button_rules() {
+        // 通常のフォルダ（仮想フォルダも、実パスの一覧なので同じ）。
+        assert!(scan_allowed(false, false, false, false, false, true));
+        // 対象なし（仮想ルート・リンク切れ・アーカイブの無いフォルダ）。
+        assert!(!scan_allowed(false, false, false, false, false, false));
+        // 実行中、お気に入り・類似・検索の一覧、タグ検索タブ。
+        assert!(!scan_allowed(true, false, false, false, false, true));
+        assert!(!scan_allowed(false, true, false, false, false, true));
+        assert!(!scan_allowed(false, false, true, false, false, true));
+        assert!(!scan_allowed(false, false, false, true, false, true));
+        assert!(!scan_allowed(false, false, false, false, true, true));
+    }
 
     fn temp_dir(tag: &str) -> PathBuf {
         let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();

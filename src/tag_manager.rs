@@ -1,5 +1,9 @@
 //! タグマネージャー（カテゴリ/tier/色のマスタ定義）のJSON永続化。
 //!
+//! 保存先は2つ（`Slot`）。本物の `nekoviewer_tags.json` と、一括タグ付けの適用後に使う試用中の仮マスター
+//! `nekoviewer_tags.trial.json`。試用中は仮マスターだけを読み書きし、本物は確定（`promote_trial`）まで変えない。
+//! 破棄（`discard_trial`）は仮マスターを捨てて本物に戻す（`next_tier_id` は大きい方を引き継ぐ）。
+//!
 //! 対象は「タグ管理」画面で編集するマスタ定義のみで、各ファイル/アーカイブへの
 //! 実際のタグ付け（紐付け）はスコープ外（別途検討）。保存は操作確定ごとの即時保存
 //! （呼び出し側が編集確定のたびに`save`を呼ぶ）で、専用の待避タイミングは持たない。
@@ -40,12 +44,54 @@ struct SaveDataV1 {
     categories: Vec<CategorySaveData>,
 }
 
-fn data_path(root: &Path) -> PathBuf {
-    root.join("nekoviewer_tags.json")
+/// マスターの保存先。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Slot {
+    /// 本物。
+    Real,
+    /// 試用中の仮マスター。
+    Trial,
 }
 
-fn data_tmp_path(root: &Path) -> PathBuf {
-    root.join("nekoviewer_tags.json.tmp")
+fn file_name(slot: Slot) -> &'static str {
+    match slot {
+        Slot::Real => "nekoviewer_tags.json",
+        Slot::Trial => "nekoviewer_tags.trial.json",
+    }
+}
+
+fn data_path(root: &Path, slot: Slot) -> PathBuf {
+    root.join(file_name(slot))
+}
+
+fn data_tmp_path(root: &Path, slot: Slot) -> PathBuf {
+    root.join(format!("{}.tmp", file_name(slot)))
+}
+
+/// 試用中の仮マスターのファイルがあるか（アプリを閉じても残るので、起動時に試用中かを判定する）。
+pub(crate) fn trial_exists(root: &Path) -> bool {
+    data_path(root, Slot::Trial).is_file()
+}
+
+/// 仮マスターを本物に昇格する（アトミックな置き換え）。仮マスターが無い・置き換えに失敗したら false。
+pub(crate) fn promote_trial(root: &Path) -> bool {
+    let (from, to) = (data_path(root, Slot::Trial), data_path(root, Slot::Real));
+    from.is_file() && std::fs::rename(&from, &to).is_ok()
+}
+
+/// 仮マスターを捨てて、本物を読み直して返す。`next_tier_id` は、本物と仮マスターの大きい方を引き継ぎ、本物にも保存する
+/// （仮マスターが新規要素に振った番号が、DBに残った孤立IDと再び衝突しないようにするため）。
+/// 仮マスターが壊れていて読めないときは、そのまま捨てる。本物も無ければ初期状態。
+pub(crate) fn discard_trial(root: &Path) -> (Vec<TagManagerCategoryUi>, u64) {
+    let trial_next = load_slot(root, Slot::Trial).map(|(_, n)| n);
+    let (cats, real_next) = load_slot(root, Slot::Real).unwrap_or_else(default_state);
+    let next = real_next.max(trial_next.unwrap_or(0));
+    if next != real_next {
+        save_slot(root, Slot::Real, &cats, next);
+    }
+    let _ = std::fs::remove_file(data_path(root, Slot::Trial));
+    let _ = std::fs::remove_file(data_tmp_path(root, Slot::Trial));
+    (cats, next)
 }
 
 /// 保存ファイルが無い（初回起動）場合の初期状態: メインカテゴリ1つ＋補填用要素1つのみ。
@@ -86,9 +132,14 @@ pub(crate) fn ensure_main_category_nonempty(categories: &mut [TagManagerCategory
     false
 }
 
-/// root配下の保存ファイルを読み込む。無い・壊れている場合はNone（呼び出し側で`default_state`を使う）。
+/// root配下の本物の保存ファイルを読み込む。無い・壊れている場合はNone（呼び出し側で`default_state`を使う）。
 pub(crate) fn load(root: &Path) -> Option<(Vec<TagManagerCategoryUi>, u64)> {
-    let content = std::fs::read_to_string(data_path(root)).ok()?;
+    load_slot(root, Slot::Real)
+}
+
+/// 保存先を指定して読み込む。無い・壊れている場合はNone。
+pub(crate) fn load_slot(root: &Path, slot: Slot) -> Option<(Vec<TagManagerCategoryUi>, u64)> {
+    let content = std::fs::read_to_string(data_path(root, slot)).ok()?;
     let data: SaveDataV1 = serde_json::from_str(&content).ok()?;
     let categories = data
         .categories
@@ -207,8 +258,13 @@ pub(crate) fn parse_bulk_elements(input: &str) -> Vec<String> {
     result
 }
 
-/// アトミック保存（tmpに書いてからrename）。gui_config::save_stateと同じ方式。
+/// 本物へのアトミック保存（tmpに書いてからrename）。gui_config::save_stateと同じ方式。
 pub(crate) fn save(root: &Path, categories: &[TagManagerCategoryUi], next_tier_id: u64) {
+    save_slot(root, Slot::Real, categories, next_tier_id);
+}
+
+/// 保存先を指定したアトミック保存。
+pub(crate) fn save_slot(root: &Path, slot: Slot, categories: &[TagManagerCategoryUi], next_tier_id: u64) {
     let data = SaveDataV1 {
         next_tier_id,
         categories: categories
@@ -237,8 +293,8 @@ pub(crate) fn save(root: &Path, categories: &[TagManagerCategoryUi], next_tier_i
     };
     let Ok(content) = serde_json::to_string_pretty(&data) else { return };
     let _ = std::fs::create_dir_all(root);
-    let path = data_path(root);
-    let tmp = data_tmp_path(root);
+    let path = data_path(root, slot);
+    let tmp = data_tmp_path(root, slot);
     if std::fs::write(&tmp, &content).is_err() {
         return;
     }
@@ -275,6 +331,66 @@ mod tests {
         assert_eq!(opts[2], (2, "e2".to_string()));
     }
 
+    #[test]
+    fn trial_master_is_separate_until_promoted() {
+        let root = temp_root("trial_promote");
+        let real = vec![cat(false, &[1, 2])];
+        save(&root, &real, 10);
+        assert!(!trial_exists(&root));
+        let mut trial = vec![cat(false, &[1, 2, 3])];
+        trial[0].tiers[0].element = Some("Kouji|Koji".into());
+        save_slot(&root, Slot::Trial, &trial, 11);
+        assert!(trial_exists(&root));
+        // 試用中も、本物は変わらない。
+        let (r, rn) = load(&root).unwrap();
+        assert_eq!((r[0].tiers.len(), rn), (2, 10));
+        let (t, tn) = load_slot(&root, Slot::Trial).unwrap();
+        assert_eq!((t[0].tiers.len(), tn, t[0].tiers[0].element.as_deref()), (3, 11, Some("Kouji|Koji")));
+        // 昇格で本物が仮マスターの内容になり、仮マスターのファイルは無くなる。
+        assert!(promote_trial(&root));
+        assert!(!trial_exists(&root));
+        let (r, rn) = load(&root).unwrap();
+        assert_eq!((r[0].tiers.len(), rn), (3, 11));
+        assert!(!promote_trial(&root), "仮マスターが無ければ false");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn discard_returns_to_the_real_master_but_keeps_the_larger_next_id() {
+        let root = temp_root("trial_discard");
+        save(&root, &[cat(false, &[1, 2])], 10);
+        save_slot(&root, Slot::Trial, &[cat(false, &[1, 2, 3, 4])], 15);
+        let (cats, next) = discard_trial(&root);
+        assert_eq!(cats[0].tiers.len(), 2, "本物の内容に戻る");
+        assert_eq!(next, 15, "仮マスターが振った番号は巻き戻さない");
+        assert!(!trial_exists(&root));
+        // 本物のファイルにも、飛ばした番号が保存されている。
+        let (r, rn) = load(&root).unwrap();
+        assert_eq!((r[0].tiers.len(), rn), (2, 15));
+        // 仮マスターのほうが小さい番号なら、本物の番号のまま。
+        save_slot(&root, Slot::Trial, &[cat(false, &[1])], 5);
+        assert_eq!(discard_trial(&root).1, 15);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn discard_handles_a_broken_trial_file_and_a_missing_real_file() {
+        let root = temp_root("trial_broken");
+        save(&root, &[cat(false, &[1])], 7);
+        std::fs::write(data_path(&root, Slot::Trial), "{ broken").unwrap();
+        let (cats, next) = discard_trial(&root);
+        assert_eq!((cats[0].tiers.len(), next), (1, 7));
+        assert!(!trial_exists(&root));
+        // 本物が無いときは初期状態。
+        let root2 = temp_root("trial_no_real");
+        save_slot(&root2, Slot::Trial, &[cat(false, &[1, 2, 3])], 40);
+        let (cats, next) = discard_trial(&root2);
+        assert!(cats.iter().any(|c| c.is_main), "初期状態（メインカテゴリ）");
+        assert_eq!(next, 40);
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&root2);
+    }
+
     fn temp_root(tag: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!("nekoviewer_tagmgr_{tag}_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -294,13 +410,13 @@ mod tests {
         assert_eq!(loaded[0].system_kind, Some(crate::tag_master::SystemKind::ArchiveFormat));
         assert_eq!(loaded[1].system_kind, None);
         // 通常カテゴリのJSONには system_kind のキーを出さない（旧版と同じ形のまま）。
-        let text = std::fs::read_to_string(data_path(&root)).unwrap();
+        let text = std::fs::read_to_string(data_path(&root, Slot::Real)).unwrap();
         assert_eq!(text.matches("system_kind").count(), 1);
 
         // system_kind を持たない旧JSON・未知の種別キーは通常カテゴリとして読む。
         let old = r#"{"next_tier_id":3,"categories":[{"name":"x","is_main":false,"single_select":false,"color":[1,2,3],"tiers":[]},
             {"name":"y","is_main":false,"system_kind":"future_kind","color":[1,2,3],"tiers":[]}]}"#;
-        std::fs::write(data_path(&root), old).unwrap();
+        std::fs::write(data_path(&root, Slot::Real), old).unwrap();
         let (loaded, _) = load(&root).unwrap();
         assert!(loaded.iter().all(|c| c.system_kind.is_none()));
         let _ = std::fs::remove_dir_all(&root);

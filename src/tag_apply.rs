@@ -13,6 +13,7 @@ use redb::Database;
 
 use crate::i18n::Lang;
 use crate::tag_candidates::{CandidateSet, CatRef, Choice, Role};
+use crate::tag_trial::{TrialFile, TrialRecord};
 use crate::tag_master::{alias_keys, join_aliases, merge_file_tags_in, split_aliases, TagMaster};
 use crate::view_explorer::TagManagerCategoryUi;
 
@@ -175,17 +176,38 @@ pub(crate) struct ApplyReport {
 pub(crate) enum ApplyError {
     /// バックアップに失敗したので、何も変更せずに中止した。
     BackupFailed,
+    /// 試用の記録を保存できなかったので、マスターもタグも変えずに中止した。
+    RecordFailed,
 }
 
-/// ファイルごとにタグを足して書き込む。戻り値は（増えた, 変化なし, 失敗）。
+/// 1ファイルのタグの変更（書き込み前に決める）。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct FileChange {
+    pub dir: PathBuf,
+    pub name: String,
+    /// 書き込み前のタグ。
+    pub existing: Vec<u64>,
+    /// 合成後のタグ。
+    pub merged: Vec<u64>,
+}
+
+impl FileChange {
+    /// 適用で足すタグ（`existing` に無く `merged` にあるもの）。
+    pub(crate) fn added(&self) -> Vec<u64> {
+        self.merged.iter().copied().filter(|id| !self.existing.contains(id)).collect()
+    }
+}
+
+/// ファイルごとの変更を決める（まだ書き込まない）。戻り値は（変更の一覧, パスが引けず失敗した件数）。
 /// 既存のタグはDBから読み直して合成する（走査から時間が経っていても、後から付けたタグを消さない）。
-pub(crate) fn write_file_tags(
+pub(crate) fn plan_file_changes(
     db: &Arc<Mutex<Database>>,
     paths: &[PathBuf],
     file_additions: &HashMap<usize, Vec<u64>>,
     master: &[TagManagerCategoryUi],
-) -> (usize, usize, usize) {
-    let (mut tagged, mut unchanged, mut failed) = (0, 0, 0);
+) -> (Vec<FileChange>, usize) {
+    let mut failed = 0;
+    let mut changes = Vec::new();
     let mut files: Vec<(&usize, &Vec<u64>)> = file_additions.iter().collect();
     files.sort_by_key(|(i, _)| **i);
     for (&fi, additions) in files {
@@ -199,9 +221,18 @@ pub(crate) fn write_file_tags(
         };
         let existing = crate::spread_state::read_archive_tags(db, dir, name);
         let merged = merge_file_tags_in(master, &existing, additions);
-        if merged == existing {
+        changes.push(FileChange { dir: dir.to_path_buf(), name: name.to_string(), existing, merged });
+    }
+    (changes, failed)
+}
+
+/// 決めた変更を書き込む。戻り値は（増えた, 変化なし, 失敗）。
+pub(crate) fn write_file_changes(db: &Arc<Mutex<Database>>, changes: &[FileChange]) -> (usize, usize, usize) {
+    let (mut tagged, mut unchanged, mut failed) = (0, 0, 0);
+    for c in changes {
+        if c.merged == c.existing {
             unchanged += 1;
-        } else if crate::spread_state::write_archive_tags(db, dir, name, &merged) {
+        } else if crate::spread_state::write_archive_tags(db, &c.dir, &c.name, &c.merged) {
             tagged += 1;
         } else {
             failed += 1;
@@ -210,8 +241,35 @@ pub(crate) fn write_file_tags(
     (tagged, unchanged, failed)
 }
 
+/// ファイルごとにタグを足して書き込む。戻り値は（増えた, 変化なし, 失敗）。
+pub(crate) fn write_file_tags(
+    db: &Arc<Mutex<Database>>,
+    paths: &[PathBuf],
+    file_additions: &HashMap<usize, Vec<u64>>,
+    master: &[TagManagerCategoryUi],
+) -> (usize, usize, usize) {
+    let (changes, unresolved) = plan_file_changes(db, paths, file_additions, master);
+    let (tagged, unchanged, failed) = write_file_changes(db, &changes);
+    (tagged, unchanged, failed + unresolved)
+}
+
+/// 足したタグがあるファイルの記録（破棄で外す元）。
+pub(crate) fn trial_record_of(changes: &[FileChange]) -> TrialRecord {
+    TrialRecord {
+        files: changes
+            .iter()
+            .filter_map(|c| {
+                let added = c.added();
+                (!added.is_empty()).then(|| TrialFile { dir: c.dir.clone(), name: c.name.clone(), added })
+            })
+            .collect(),
+    }
+}
+
 /// 適用を実行する。`backup` はバックアップを取り、成功したら世代名を返す（失敗は None）。
-/// `save_master` はマスターを保存する。順序は バックアップ → マスター保存 → タグ書き込み。
+/// `save_master` はマスターを保存する。`save_record` は、足すタグの記録を保存する（保存できたら true）。
+/// 順序は バックアップ → 変更の決定 → 記録の保存 → マスター保存 → タグ書き込み。
+/// 記録を保存できなかったら、マスターもタグも変えずに `RecordFailed` で中止する（試用の破棄で戻せなくなるため）。
 pub(crate) fn run_apply(
     db: &Arc<Mutex<Database>>,
     paths: &[PathBuf],
@@ -219,11 +277,18 @@ pub(crate) fn run_apply(
     master: &[TagManagerCategoryUi],
     backup: &dyn Fn() -> Option<String>,
     save_master: &dyn Fn(),
+    save_record: &dyn Fn(&TrialRecord) -> bool,
 ) -> Result<ApplyReport, ApplyError> {
     let backup_name = backup().ok_or(ApplyError::BackupFailed)?;
-    // タグのIDがマスターに存在してから紐付けるため、先にマスターを保存する。
+    let (changes, unresolved) = plan_file_changes(db, paths, &plan.file_additions, master);
+    // 足すタグの記録は、書き込みの前に保存する。途中で落ちても、破棄で外せる。
+    if !save_record(&trial_record_of(&changes)) {
+        return Err(ApplyError::RecordFailed);
+    }
+    // タグのIDがマスターに存在してから紐付けるため、タグを書く前にマスターを保存する。
     save_master();
-    let (tagged, unchanged, failed) = write_file_tags(db, paths, &plan.file_additions, master);
+    let (tagged, unchanged, failed) = write_file_changes(db, &changes);
+    let failed = failed + unresolved;
     Ok(ApplyReport {
         tagged,
         unchanged,
@@ -381,6 +446,28 @@ mod tests {
     }
 
     #[test]
+    fn record_holds_only_added_ids_and_a_failed_record_stops_everything() {
+        let (db, root, paths) = seed_db("rec", &[("a.zip", &[1]), ("b.zip", &[10, 20])]);
+        let mut adds: HashMap<usize, Vec<u64>> = HashMap::new();
+        adds.insert(0, vec![10, 20]);
+        adds.insert(1, vec![10, 20]); // b は既に両方持っている
+        let (changes, unresolved) = plan_file_changes(&db, &paths, &adds, &master());
+        assert_eq!(unresolved, 0);
+        let rec = trial_record_of(&changes);
+        assert_eq!(rec.files.len(), 1, "変化の無い b は記録しない");
+        assert_eq!((rec.files[0].name.as_str(), rec.files[0].added.clone()), ("a.zip", vec![10, 20]));
+        assert_eq!(changes[0].existing, vec![1], "メインが設定済みなので、既存は残す");
+        // 記録を保存できなければ、マスターもタグも変えずに中止する。
+        let plan = Plan { file_additions: adds, ..Plan::default() };
+        let saved = Cell::new(false);
+        let r = run_apply(&db, &paths, &plan, &master(), &|| Some("g".into()), &|| saved.set(true), &|_| false);
+        assert_eq!(r, Err(ApplyError::RecordFailed));
+        assert!(!saved.get());
+        assert_eq!(crate::spread_state::read_archive_tags(&db, &root, "a.zip"), vec![1]);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn plan_skips_rejected_candidates_and_missing_existing_targets() {
         let inputs = [input("[Circ (Wr)] a.zip", "zip", None)];
         let mut set = build_candidates(&inputs, &master(), &MatchOptions::default(), Lang::English);
@@ -453,7 +540,7 @@ mod tests {
         adds.insert(0, vec![10]);
         let plan = Plan { file_additions: adds, new_categories: 1, new_elements: 2, ..Plan::default() };
         let saved = Cell::new(false);
-        let r = run_apply(&db, &paths, &plan, &master(), &|| None, &|| saved.set(true));
+        let r = run_apply(&db, &paths, &plan, &master(), &|| None, &|| saved.set(true), &|_| true);
         assert_eq!(r, Err(ApplyError::BackupFailed));
         assert!(!saved.get(), "バックアップに失敗したらマスターも保存しない");
         assert!(crate::spread_state::read_archive_tags(&db, &root, "a.zip").is_empty(), "タグも書かない");
@@ -469,9 +556,15 @@ mod tests {
                 Some("gen-1".to_string())
             },
             &|| order.borrow_mut().push("save"),
+            &|r| {
+                order.borrow_mut().push("record");
+                assert_eq!(r.files.len(), 1);
+                assert_eq!(r.files[0].added, vec![10]);
+                true
+            },
         )
         .unwrap();
-        assert_eq!(*order.borrow(), vec!["backup", "save"]);
+        assert_eq!(*order.borrow(), vec!["backup", "record", "save"]);
         assert_eq!((r.tagged, r.unchanged, r.failed, r.new_categories, r.new_elements), (1, 0, 0, 1, 2));
         assert_eq!(r.backup, "gen-1");
         assert_eq!(crate::spread_state::read_archive_tags(&db, &root, "a.zip"), vec![10]);

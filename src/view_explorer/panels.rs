@@ -1009,7 +1009,8 @@ impl NekoviewApp {
         ui.vertical_centered(|ui| {
             let enabled = self.can_start_tag_scan();
             let resp = ui.add_enabled(enabled, egui::Button::new(i18n::t().tag_scan_button()));
-            let resp = if enabled { resp } else { resp.on_disabled_hover_text(i18n::t().tag_scan_unavailable_hint()) };
+            let hint = if self.tag_trial_active { i18n::t().tag_scan_trial_hint() } else { i18n::t().tag_scan_unavailable_hint() };
+            let resp = if enabled { resp } else { resp.on_disabled_hover_text(hint) };
             if resp.clicked() {
                 self.start_tag_scan();
             }
@@ -1401,7 +1402,26 @@ impl NekoviewApp {
         all.retain(|s| self.tag_attr_options.contains(s));
         self.tag_attr_dormant = crate::tag_manager::enforce_single_select(&self.tag_manager_categories, &mut all);
         self.tag_attr_selected = all;
-        crate::tag_manager::save(&self.config.config_root, &self.tag_manager_categories, self.tag_manager_next_tier_id);
+        self.save_tag_master_file();
+    }
+
+    /// タグマスターをファイルへ保存する。試用中は仮マスターへ、そうでなければ本物へ（本物は確定まで変えない）。
+    pub(super) fn save_tag_master_file(&self) {
+        crate::tag_manager::save_slot(
+            &self.config.config_root,
+            self.tag_master_slot(),
+            &self.tag_manager_categories,
+            self.tag_manager_next_tier_id,
+        );
+    }
+
+    /// いま読み書きするマスターの保存先。
+    pub(super) fn tag_master_slot(&self) -> crate::tag_manager::Slot {
+        if self.tag_trial_active {
+            crate::tag_manager::Slot::Trial
+        } else {
+            crate::tag_manager::Slot::Real
+        }
     }
 
     fn draw_tag_manager_overlay(&mut self, ctx: &egui::Context) {

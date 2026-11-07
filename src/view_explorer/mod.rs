@@ -1161,6 +1161,9 @@ pub struct NekoviewApp {
     pub(crate) tag_manager_categories: Vec<TagManagerCategoryUi>,
     /// タグマネージャー: 次に採番するtier(要素)ID。削除しても減らさない単調増加カウンタ。
     pub(crate) tag_manager_next_tier_id: u64,
+    /// 一括タグ付けの適用後の「試用中」か。試用中は仮マスター（`nekoviewer_tags.trial.json`）を読み書きし、
+    /// 本物のマスターは確定まで変えない。ファイルが残っていれば、次回起動も試用中から始まる。
+    pub(crate) tag_trial_active: bool,
     /// タグ検索タブ（モック）: 有効化中のタグ(tier_id)。`TAG_MAIN_UNSET_ID`はメイン未設定の疑似タグ。
     /// セッション中のみ保持し、永続化はしない。
     pub(crate) tag_search_enabled: std::collections::HashSet<u64>,
@@ -1471,13 +1474,23 @@ impl NekoviewApp {
         if !release_notice_pending {
             config.last_run_version = current_version.to_string();
         }
-        let (mut tag_manager_categories, mut tag_manager_next_tier_id) =
-            crate::tag_manager::load(&config_root).unwrap_or_else(crate::tag_manager::default_state);
+        // 試用中（仮マスターが残っている）なら、仮マスターから始める。読めなければ破棄して本物に戻す。
+        let mut tag_trial_active = crate::tag_manager::trial_exists(&config_root);
+        let trial_loaded = if tag_trial_active { crate::tag_manager::load_slot(&config_root, crate::tag_manager::Slot::Trial) } else { None };
+        if tag_trial_active && trial_loaded.is_none() {
+            crate::log_common!("[tag-trial] 仮マスターを読めないので破棄して本物に戻す");
+            let _ = crate::tag_manager::discard_trial(&config_root);
+            tag_trial_active = false;
+        }
+        let (mut tag_manager_categories, mut tag_manager_next_tier_id) = trial_loaded
+            .or_else(|| crate::tag_manager::load(&config_root))
+            .unwrap_or_else(crate::tag_manager::default_state);
         // システムカテゴリ（アーカイブ形式）が無ければ、初期要素つきで作って保存する。
         if crate::tag_master::TagMaster::new(&mut tag_manager_categories, &mut tag_manager_next_tier_id)
             .ensure_system_categories()
         {
-            crate::tag_manager::save(&config_root, &tag_manager_categories, tag_manager_next_tier_id);
+            let slot = if tag_trial_active { crate::tag_manager::Slot::Trial } else { crate::tag_manager::Slot::Real };
+            crate::tag_manager::save_slot(&config_root, slot, &tag_manager_categories, tag_manager_next_tier_id);
         }
         let (tag_main_options, tag_attr_options) = crate::tag_manager::derive_tag_options(&tag_manager_categories);
         let tag_main_selected = tag_main_options.first().map(|(id, _)| *id);
@@ -1723,6 +1736,7 @@ impl NekoviewApp {
             tag_manager_area_rect: egui::Rect::NOTHING,
             tag_manager_categories,
             tag_manager_next_tier_id,
+            tag_trial_active,
             tag_manager_selected_category: Some(0),
             tag_manager_editing_element: None,
             tag_manager_editing_buffer: String::new(),

@@ -4179,11 +4179,27 @@ impl Lang {
         }
     }
 
+    pub fn tag_scan_trial_hint(self) -> &'static str {
+        match self {
+            Lang::Japanese => "試用中です。先に確定か破棄をしてください",
+            Lang::English  => "A trial is in progress. Confirm or discard it first",
+            Lang::Chinese  => "正在试用中，请先确认或放弃",
+        }
+    }
+
+    pub fn tag_apply_record_failed(self) -> &'static str {
+        match self {
+            Lang::Japanese => "試用の記録を保存できなかったため、適用を中止しました（何も変更していません）",
+            Lang::English  => "Could not save the trial record, so the apply was aborted (nothing was changed)",
+            Lang::Chinese  => "无法保存试用记录，已中止应用（未做任何更改）",
+        }
+    }
+
     pub fn tag_scan_unavailable_hint(self) -> &'static str {
         match self {
-            Lang::Japanese => "実フォルダを表示していて、アーカイブがあるときだけ使えます",
-            Lang::English  => "Available only while viewing a real folder that contains archives",
-            Lang::Chinese  => "仅在查看包含压缩包的实际文件夹时可用",
+            Lang::Japanese => "フォルダ（仮想フォルダを含む）を表示していて、アーカイブがあるときだけ使えます",
+            Lang::English  => "Available only while viewing a folder (virtual folders included) that contains archives",
+            Lang::Chinese  => "仅在查看包含压缩包的文件夹（含虚拟文件夹）时可用",
         }
     }
 

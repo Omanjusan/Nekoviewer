@@ -630,6 +630,11 @@ impl NekoviewApp {
     /// 採用された候補を適用する。別スレッドで、バックアップ → マスター保存 → タグ書き込みを行う。
     fn start_tag_apply(&mut self, st: &TagConfirm) {
         let Some(db) = self.spread_db.clone() else { return };
+        // 試用中の再適用は禁止（先に確定か破棄をしてもらう）。ボタン側でも押せなくしている。
+        if self.tag_trial_active {
+            self.set_toast(i18n::t().tag_scan_trial_hint());
+            return;
+        }
         let mut master = self.tag_manager_categories.clone();
         let mut next = self.tag_manager_next_tier_id;
         let plan = plan_application(&st.set, &mut master, &mut next, i18n::t());
@@ -654,8 +659,11 @@ impl NekoviewApp {
                     None
                 }
             };
-            let save_master = || crate::tag_manager::save(&root, &worker_master, worker_next);
-            let out = run_apply(&db, &paths, &plan, &worker_master, &backup, &save_master);
+            // 適用は仮マスターに書く。本物のマスターは、確定するまで変えない。
+            let save_master =
+                || crate::tag_manager::save_slot(&root, crate::tag_manager::Slot::Trial, &worker_master, worker_next);
+            let save_record = |r: &crate::tag_trial::TrialRecord| r.save(&root);
+            let out = run_apply(&db, &paths, &plan, &worker_master, &backup, &save_master, &save_record);
             let _ = tx.send(out);
             ctx.request_repaint();
         });
@@ -678,6 +686,8 @@ impl NekoviewApp {
         match out {
             Ok(report) => {
                 // 新しいマスターを取り込み、タグの選択肢と表示を作り直す。
+                // 以降は試用中。仮マスターを使い、保存も仮マスターへ行く。
+                self.tag_trial_active = true;
                 self.tag_manager_categories = job.master;
                 self.tag_manager_next_tier_id = job.next_tier_id;
                 self.save_tag_manager();
@@ -686,6 +696,7 @@ impl NekoviewApp {
                 self.set_toast(t.tag_apply_done(&report));
             }
             Err(ApplyError::BackupFailed) => self.set_toast(t.tag_apply_backup_failed()),
+            Err(ApplyError::RecordFailed) => self.set_toast(t.tag_apply_record_failed()),
         }
     }
 
