@@ -277,6 +277,7 @@ impl NekoviewApp {
         self.draw_reveal_dialog(&ctx);
         self.draw_marker_popup(&ctx);
         self.draw_dismissed_window(&ctx);
+        self.draw_detail_window(&ctx);
         self.draw_sort_condition_dialog(&ctx);
         self.draw_bookmark_setting_dialog(&ctx);
         self.draw_spread_setting_dialog(&ctx);
@@ -2903,6 +2904,10 @@ impl NekoviewApp {
     ) {
         // リストの「ファイラー」ボタンを押したときは、選択や起動ではなくファイラーで開く。
         if self.try_click_reveal(ui, response, real_idx) {
+            return;
+        }
+        // リストの「詳細」アイコンを押したときは、選択や起動ではなく詳細ウィンドウを開く。
+        if self.try_click_detail(ui, response, real_idx) {
             return;
         }
         // 編集の解除中に＋－を押したときは、選択や起動ではなく値を動かす。

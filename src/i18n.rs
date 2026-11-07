@@ -2555,6 +2555,93 @@ impl Lang {
         }
     }
 
+    /// 「詳細」列のアイコンのヒント
+    pub fn list_detail_tip(self) -> &'static str {
+        match self {
+            Lang::Japanese => "詳細テキスト（ComicInfo・nfo・コメント）を表示",
+            Lang::English  => "Show the detail text (ComicInfo, nfo, comment)",
+            Lang::Chinese  => "显示详细文本（ComicInfo、nfo、注释）",
+        }
+    }
+
+    pub fn detail_window_title(self, name: &str) -> String {
+        match self {
+            Lang::Japanese => format!("詳細 - {name}"),
+            Lang::English  => format!("Details - {name}"),
+            Lang::Chinese  => format!("详情 - {name}"),
+        }
+    }
+
+    pub fn detail_loading(self) -> &'static str {
+        match self {
+            Lang::Japanese => "読み込み中…",
+            Lang::English  => "Loading…",
+            Lang::Chinese  => "加载中…",
+        }
+    }
+
+    pub fn detail_none(self) -> &'static str {
+        match self {
+            Lang::Japanese => "表示できる詳細テキストはありません（ファイルが変更・移動された可能性があります）",
+            Lang::English  => "No detail text to show (the file may have been changed or moved)",
+            Lang::Chinese  => "没有可显示的详细文本（文件可能已被更改或移动）",
+        }
+    }
+
+    pub fn detail_section_comic_info(self) -> &'static str {
+        "ComicInfo.xml"
+    }
+
+    pub fn detail_section_nfo(self, name: &str) -> String {
+        format!("nfo: {name}")
+    }
+
+    pub fn detail_section_comment(self) -> &'static str {
+        match self {
+            Lang::Japanese => "zipコメント",
+            Lang::English  => "Zip comment",
+            Lang::Chinese  => "zip 注释",
+        }
+    }
+
+    /// 長すぎる本文を途中で切ったときの注記
+    pub fn detail_truncated(self, shown: usize) -> String {
+        match self {
+            Lang::Japanese => format!("（長いため、先頭の{shown}文字だけ表示しています）"),
+            Lang::English  => format!("(Too long: showing only the first {shown} characters)"),
+            Lang::Chinese  => format!("（内容过长，仅显示前 {shown} 个字符）"),
+        }
+    }
+
+    /// ComicInfo.xml のタグ名に対する表示名。未知のタグはタグ名のまま。
+    pub fn comic_info_field(self, tag: &str) -> String {
+        let (ja, en, zh) = match tag {
+            "Title" => ("タイトル", "Title", "标题"),
+            "Series" => ("シリーズ", "Series", "系列"),
+            "Number" => ("話数", "Number", "编号"),
+            "Volume" => ("巻", "Volume", "卷"),
+            "Writer" => ("著者", "Writer", "作者"),
+            "Penciller" => ("作画", "Penciller", "作画"),
+            "Publisher" => ("出版社", "Publisher", "出版社"),
+            "Imprint" => ("レーベル", "Imprint", "品牌"),
+            "Genre" => ("ジャンル", "Genre", "类型"),
+            "Tags" => ("タグ", "Tags", "标签"),
+            "Year" => ("年", "Year", "年"),
+            "Month" => ("月", "Month", "月"),
+            "LanguageISO" => ("言語", "Language", "语言"),
+            "PageCount" => ("ページ数(記載値)", "Page count (declared)", "页数（声明值）"),
+            "Web" => ("Web", "Web", "网址"),
+            "Summary" => ("あらすじ", "Summary", "简介"),
+            other => return other.to_string(),
+        };
+        match self {
+            Lang::Japanese => ja,
+            Lang::English => en,
+            Lang::Chinese => zh,
+        }
+        .to_string()
+    }
+
     pub fn list_col_name(self) -> &'static str {
         match self {
             Lang::Japanese => "名前",

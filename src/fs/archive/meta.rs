@@ -186,6 +186,8 @@ pub struct ComicInfo {
 }
 
 impl ComicInfo {
+    /// タグ名で値を引く（テスト用。画面は `fields` の並びをそのまま使う）。
+    #[cfg(test)]
     pub fn get(&self, tag: &str) -> Option<&str> {
         self.fields.iter().find(|(t, _)| *t == tag).map(|(_, v)| v.as_str())
     }

@@ -297,6 +297,7 @@ impl NekoviewApp {
         ui.spacing_mut().item_spacing.y = ROW_GAP;
         // 「ファイラー」ボタンの当たり判定は、今フレームに描いた行のものだけ使う。
         self.reveal_icon_hits.clear();
+        self.detail_icon_hits.clear();
         self.list_edit_hits.clear();
 
         // 仮想スクロール: 全行ぶんの高さを一度だけ確保し、見えている行（＋前後1行）だけを作る。
@@ -693,7 +694,12 @@ impl NekoviewApp {
                 let cell = col_rect(rect, widths, Col::Detail);
                 let side = (cell.height() - 8.0).clamp(10.0, 18.0);
                 let icon_rect = egui::Rect::from_center_size(cell.center(), egui::vec2(side, side));
-                nav_icons::draw_document_icon(&ui.painter().with_clip_rect(ui.clip_rect()), icon_rect, false);
+                let on_icon = ui.input(|i| i.pointer.hover_pos()).is_some_and(|p| icon_rect.contains(p));
+                nav_icons::draw_document_icon(&ui.painter().with_clip_rect(ui.clip_rect()), icon_rect, on_icon);
+                self.detail_icon_hits.insert(real_idx, icon_rect);
+                if on_icon {
+                    response.clone().on_hover_text(i18n::t().list_detail_tip());
+                }
             }
         }
         if editing {

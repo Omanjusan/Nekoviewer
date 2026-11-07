@@ -890,6 +890,10 @@ pub struct NekoviewApp {
     marker_icon_hits: HashMap<usize, egui::Rect>,
     /// リストの「ファイラー」ボタンの矩形（行番号 → 矩形）。毎フレーム `draw_archive_list` の頭で作り直す。
     reveal_icon_hits: HashMap<usize, egui::Rect>,
+    /// リストの「詳細」アイコンの矩形（行番号 → 矩形）。毎フレーム `draw_archive_list` の頭で作り直す。
+    detail_icon_hits: HashMap<usize, egui::Rect>,
+    /// 開いている詳細ウィンドウ（ComicInfo・nfo・zipコメント）。
+    detail_window: Option<detail_window::DetailWindow>,
     /// 開いている重複マーカーのポップアップ。
     marker_popup: Option<dup_marker_ui::MarkerPopup>,
     /// 下段フィルタ「重複」。自身にマーカーがあるファイルだけを出す（保存しない）。
@@ -1413,6 +1417,7 @@ mod marker_probe;
 mod marker_compare;
 mod similar_view;
 mod dismissed_window;
+mod detail_window;
 mod thumb_hash_worker;
 mod layout_anchor;
 
@@ -1562,6 +1567,8 @@ impl NekoviewApp {
             marker_seen_dir: None,
             marker_icon_hits: HashMap::new(),
             reveal_icon_hits: HashMap::new(),
+            detail_icon_hits: HashMap::new(),
+            detail_window: None,
             marker_popup: None,
             dup_filter: false,
             dup_show_dismissed: false,
