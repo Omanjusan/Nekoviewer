@@ -865,6 +865,8 @@ pub struct NekoviewApp {
     cd_summary_updated_at: Option<std::time::Instant>,
     /// 現在ディレクトリの redb キャッシュDB（キャッシュ無効なら None）
     cache_db: Option<std::sync::Arc<std::sync::Mutex<redb::Database>>>,
+    /// リストの「ページ数」「詳細」列用。フォルダ単位で cache.redb の記録を読んで持つ。
+    archive_meta: archive_meta_cache::ArchiveMetaCache,
     /// 現在ディレクトリに対応するキャッシュディレクトリのパス。
     /// DB未作成のフォルダで対象ファイルが見つかった時点の遅延作成に使う。
     cache_neko_dir: Option<PathBuf>,
@@ -1364,6 +1366,7 @@ pub struct NekoviewApp {
     tool_palette_visible_last_seen: bool,
 }
 
+mod archive_meta_cache;
 mod scan;
 mod folder_sort;
 mod workers;
@@ -1544,6 +1547,7 @@ impl NekoviewApp {
             cd_summary_rx: None,
             cd_summary_updated_at: None,
             cache_db: None,
+            archive_meta: Default::default(),
             cache_neko_dir: None,
             spread_db,
             backup_failure,

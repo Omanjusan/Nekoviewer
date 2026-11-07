@@ -355,6 +355,8 @@ impl NekoviewApp {
 
     /// バックグラウンドスキャンを起動する（UIをブロックしない）
     pub(super) fn start_scan(&mut self) {
+        // フォルダを開き直すたびに、ページ数・詳細有無の記録を読み直す。
+        self.archive_meta.clear();
         // タグ検索タブの中央は走査結果で埋める。実フォルダの読み込みで上書きしない
         // （タブを出るときは、折りたたんだ後に改めて呼ばれる）。
         if self.folder_pane_tab == FolderPaneTab::TagSearch {

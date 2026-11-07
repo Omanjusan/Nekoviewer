@@ -73,6 +73,13 @@ pub const INVALID_TABLE: TableDefinition<&str, i64> = TableDefinition::new("inva
 /// サムネ生成が完了したファイルのみ記録される（サムネ未取得ファイルは検索対象外）。
 pub const FILES_TABLE: TableDefinition<&str, (i64, u64)> = TableDefinition::new("files");
 
+/// アーカイブ情報テーブル（リストの「ページ数」「詳細」列用）: キー=ファイル名,
+/// バリュー=(mtime_secs, size_bytes, page_count, detail_flags)。
+/// ビューアーを開いた時点で書く再計算可能なキャッシュ。mtime・sizeが現物と違う行は無効として扱う。
+/// detail_flags: 0=詳細は未確認、1=確認済みで無し、2=確認済みで有り。
+pub const ARCHIVE_META_TABLE: TableDefinition<&str, (i64, u64, u32, u8)> =
+    TableDefinition::new("archive_meta_v1");
+
 /// 逆引き用テーブル: キー="source_dir"固定, バリュー=このDBに対応する実ディレクトリの絶対パス文字列。
 /// neko_dir_for() が一方向ハッシュのため、DBファイル単体からPWDを算出するにはこれが要る。
 const SOURCE_DIR_TABLE: TableDefinition<&str, &str> = TableDefinition::new("source_dir");
@@ -140,6 +147,7 @@ pub fn open_cache_db(neko_dir: &Path, source_dir: &Path) -> Option<Arc<Mutex<Dat
         tx.open_table(THUMB_FILTERS_TABLE).ok()?;
         tx.open_table(THUMB_STATES_TABLE).ok()?;
         tx.open_table(FILES_TABLE).ok()?;
+        tx.open_table(ARCHIVE_META_TABLE).ok()?;
         {
             let mut source_dir_table = tx.open_table(SOURCE_DIR_TABLE).ok()?;
             let abs = source_dir.to_string_lossy();
@@ -1363,6 +1371,85 @@ pub fn is_invalid_and_current(db: &Arc<Mutex<Database>>, filename: &str, archive
     stored_mtime == file_mtime(archive_path)
 }
 
+/// 詳細テキストの有無（`ARCHIVE_META_TABLE` の detail_flags）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DetailFlag {
+    /// 未確認（zip/cbz以外、または読めなかった）。
+    Unknown,
+    /// 確認済みで詳細テキストは無い。
+    None,
+    /// 確認済みで有る。
+    Present,
+}
+
+impl DetailFlag {
+    fn to_u8(self) -> u8 {
+        match self {
+            Self::Unknown => 0,
+            Self::None => 1,
+            Self::Present => 2,
+        }
+    }
+    fn from_u8(v: u8) -> Self {
+        match v {
+            1 => Self::None,
+            2 => Self::Present,
+            _ => Self::Unknown,
+        }
+    }
+}
+
+/// `ARCHIVE_META_TABLE` の1行。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ArchiveMetaRow {
+    pub mtime: i64,
+    pub size: u64,
+    pub page_count: u32,
+    pub detail: DetailFlag,
+}
+
+impl ArchiveMetaRow {
+    /// 現物のmtime・sizeと一致する（記録が古くなっていない）か。
+    pub fn is_current(&self, mtime: i64, size: u64) -> bool {
+        self.mtime == mtime && self.size == size
+    }
+}
+
+/// アーカイブ情報を書く。`page_count` は u32 に丸める。
+pub fn write_archive_meta(
+    db: &Arc<Mutex<Database>>,
+    filename: &str,
+    mtime: i64,
+    size: u64,
+    page_count: usize,
+    detail: DetailFlag,
+) {
+    let Ok(db) = db.lock() else { return };
+    let Ok(tx) = db.begin_write() else { return };
+    if let Ok(mut table) = tx.open_table(ARCHIVE_META_TABLE) {
+        let pages = u32::try_from(page_count).unwrap_or(u32::MAX);
+        let _ = table.insert(filename, (mtime, size, pages, detail.to_u8()));
+    }
+    let _ = tx.commit();
+}
+
+/// このDBのアーカイブ情報を全て読む（キー=ファイル名）。DBが開けない・表が無ければ空。
+pub fn read_all_archive_meta(db: &Arc<Mutex<Database>>) -> HashMap<String, ArchiveMetaRow> {
+    let mut out = HashMap::new();
+    let Ok(db) = db.lock() else { return out };
+    let Ok(tx) = db.begin_read() else { return out };
+    let Ok(table) = tx.open_table(ARCHIVE_META_TABLE) else { return out };
+    let Ok(iter) = table.iter() else { return out };
+    for item in iter.flatten() {
+        let (mtime, size, page_count, flag) = item.1.value();
+        out.insert(
+            item.0.value().to_owned(),
+            ArchiveMetaRow { mtime, size, page_count, detail: DetailFlag::from_u8(flag) },
+        );
+    }
+    out
+}
+
 /// ファイルのmtimeをi64（Unix秒）で返す。取得失敗時は0。
 pub fn file_mtime(path: &Path) -> i64 {
     std::fs::metadata(path)
@@ -1419,4 +1506,55 @@ fn sha256_hex(data: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(data);
     format!("{:x}", hasher.finalize())
+}
+
+#[cfg(test)]
+mod archive_meta_tests {
+    use super::*;
+
+    fn temp_db(tag: &str) -> (PathBuf, Arc<Mutex<Database>>) {
+        let neko_dir = std::env::temp_dir().join(format!(
+            "nekoviewer_archive_meta_{tag}_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos(),
+        ));
+        let db = open_cache_db(&neko_dir, &neko_dir.join("src")).unwrap();
+        (neko_dir, db)
+    }
+
+    #[test]
+    fn archive_meta_round_trips_and_overwrites() {
+        let (dir, db) = temp_db("rt");
+        assert!(read_all_archive_meta(&db).is_empty());
+        write_archive_meta(&db, "a.zip", 100, 2000, 30, DetailFlag::Present);
+        write_archive_meta(&db, "b.cbz", 200, 3000, 5, DetailFlag::None);
+        write_archive_meta(&db, "c.7z", 300, 4000, 7, DetailFlag::Unknown);
+        let all = read_all_archive_meta(&db);
+        assert_eq!(all.len(), 3);
+        assert_eq!(all["a.zip"], ArchiveMetaRow { mtime: 100, size: 2000, page_count: 30, detail: DetailFlag::Present });
+        assert_eq!(all["b.cbz"].detail, DetailFlag::None);
+        assert_eq!(all["c.7z"].detail, DetailFlag::Unknown);
+        // 再オープン（ファイルが変わった）で上書きされる。
+        write_archive_meta(&db, "a.zip", 150, 2100, 31, DetailFlag::None);
+        let all = read_all_archive_meta(&db);
+        assert_eq!(all["a.zip"].page_count, 31);
+        assert_eq!(all["a.zip"].detail, DetailFlag::None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn archive_meta_is_current_only_when_mtime_and_size_match() {
+        let row = ArchiveMetaRow { mtime: 100, size: 2000, page_count: 3, detail: DetailFlag::None };
+        assert!(row.is_current(100, 2000));
+        assert!(!row.is_current(101, 2000));
+        assert!(!row.is_current(100, 2001));
+    }
+
+    #[test]
+    fn archive_meta_clamps_huge_page_count() {
+        let (dir, db) = temp_db("clamp");
+        write_archive_meta(&db, "x.zip", 1, 1, usize::MAX, DetailFlag::Unknown);
+        assert_eq!(read_all_archive_meta(&db)["x.zip"].page_count, u32::MAX);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
