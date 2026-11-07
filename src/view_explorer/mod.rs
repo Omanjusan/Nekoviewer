@@ -1059,6 +1059,12 @@ pub struct NekoviewApp {
     tag_confirm: Option<tag_confirm::TagConfirm>,
     /// 適用中のジョブ（バックアップ → マスター保存 → タグ書き込み）。
     tag_apply_job: Option<tag_confirm::TagApplyJob>,
+    /// 試用中の確定・破棄の確認ダイアログ。
+    tag_trial_dialog: Option<tag_trial_ui::TrialDialog>,
+    /// 試用の破棄の実行中（各ファイルからタグを外している間）。
+    tag_discard_job: Option<tag_trial_ui::TagDiscardJob>,
+    /// 試用中の案内トーストを出したか（起動後に1回だけ）。
+    tag_trial_notified: bool,
     /// 設定ダイアログの表示状態・選択中タブ・編集用下書き
     pub(crate) settings_open: bool,
     pub(crate) settings_tab: SettingsTab,
@@ -1390,6 +1396,7 @@ pub struct NekoviewApp {
 mod archive_info_cache;
 mod tag_scan;
 mod tag_confirm;
+mod tag_trial_ui;
 mod scan;
 mod folder_sort;
 mod workers;
@@ -1692,6 +1699,9 @@ impl NekoviewApp {
             tag_scan_result: None,
             tag_confirm: None,
             tag_apply_job: None,
+            tag_trial_dialog: None,
+            tag_discard_job: None,
+            tag_trial_notified: false,
             settings_open: false,
             settings_tab: SettingsTab::Common,
             settings_draft,

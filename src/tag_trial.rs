@@ -7,7 +7,9 @@
 //! - 記録は、ファイルのタグを書く**前**に保存する。途中で落ちても、足したかもしれないIDを破棄で外せる
 
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
+use redb::Database;
 use serde::{Deserialize, Serialize};
 
 /// 1ファイルに足したID。
@@ -62,6 +64,40 @@ impl TrialRecord {
     pub(crate) fn added_total(&self) -> usize {
         self.files.iter().map(|f| f.added.len()).sum()
     }
+}
+
+/// 破棄で各ファイルからタグを外した結果。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct DiscardReport {
+    /// タグを外したファイルの数。
+    pub restored: usize,
+    /// 外すタグが既に無かった（適用後に手で外した等）ファイルの数。
+    pub unchanged: usize,
+    /// ファイルが元の場所に無く、追えなかった数（試用中に移動・削除した等）。
+    pub missing: usize,
+    /// DBへの書き込みに失敗した数。
+    pub failed: usize,
+}
+
+/// 記録のタグを、各ファイルの**現在の**タグから外す。適用のあとに手で付けた・外したタグには触らない。
+pub(crate) fn remove_added_tags(db: &Arc<Mutex<Database>>, record: &TrialRecord) -> DiscardReport {
+    let mut r = DiscardReport::default();
+    for f in &record.files {
+        let current = crate::spread_state::read_archive_tags(db, &f.dir, &f.name);
+        let kept: Vec<u64> = current.iter().copied().filter(|id| !f.added.contains(id)).collect();
+        if kept == current {
+            if f.dir.join(&f.name).exists() {
+                r.unchanged += 1;
+            } else {
+                r.missing += 1;
+            }
+        } else if crate::spread_state::write_archive_tags(db, &f.dir, &f.name, &kept) {
+            r.restored += 1;
+        } else {
+            r.failed += 1;
+        }
+    }
+    r
 }
 
 #[cfg(test)]

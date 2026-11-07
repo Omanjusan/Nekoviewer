@@ -218,6 +218,8 @@ impl NekoviewApp {
             && self.tag_scan_job.is_none()
             && self.tag_confirm.is_none()
             && self.tag_apply_job.is_none()
+            && self.tag_discard_job.is_none()
+            && self.tag_trial_dialog.is_none()
             && self.tree_sort_dialog.is_none()
             && !self.tag_manager_open
         {
@@ -284,6 +286,8 @@ impl NekoviewApp {
         self.draw_tag_scan_overlay(&ctx);
         self.draw_tag_confirm(&ctx);
         self.draw_tag_apply_overlay(&ctx);
+        self.draw_tag_trial_dialog(&ctx);
+        self.draw_tag_discard_overlay(&ctx);
         self.draw_sort_condition_dialog(&ctx);
         self.draw_bookmark_setting_dialog(&ctx);
         self.draw_spread_setting_dialog(&ctx);
@@ -1006,6 +1010,7 @@ impl NekoviewApp {
         let content_w = ui.available_width();
         // 最上段・左右中央: 現在のフォルダ直下のアーカイブから、タグ情報（info.txt・ファイル名・拡張子）を
         // 一括で取得する。実フォルダを表示していて対象があるときだけ押せる。
+        self.draw_tag_trial_banner(ui);
         ui.vertical_centered(|ui| {
             let enabled = self.can_start_tag_scan();
             let resp = ui.add_enabled(enabled, egui::Button::new(i18n::t().tag_scan_button()));

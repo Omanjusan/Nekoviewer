@@ -242,6 +242,8 @@ pub(crate) fn write_file_changes(db: &Arc<Mutex<Database>>, changes: &[FileChang
 }
 
 /// ファイルごとにタグを足して書き込む。戻り値は（増えた, 変化なし, 失敗）。
+/// 本番の適用は `plan_file_changes` と `write_file_changes` を分けて呼ぶ（間で記録を保存するため）。テスト用のまとめ版。
+#[cfg(test)]
 pub(crate) fn write_file_tags(
     db: &Arc<Mutex<Database>>,
     paths: &[PathBuf],
@@ -464,6 +466,38 @@ mod tests {
         assert_eq!(r, Err(ApplyError::RecordFailed));
         assert!(!saved.get());
         assert_eq!(crate::spread_state::read_archive_tags(&db, &root, "a.zip"), vec![1]);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn discard_removes_only_the_added_ids_and_keeps_later_manual_edits() {
+        use crate::tag_trial::{remove_added_tags, DiscardReport};
+        let (db, root, paths) = seed_db("disc", &[("a.zip", &[1]), ("b.zip", &[]), ("c.zip", &[5]), ("d.zip", &[])]);
+        let mut adds: HashMap<usize, Vec<u64>> = HashMap::new();
+        for i in 0..4 {
+            adds.insert(i, vec![10, 20]);
+        }
+        let (changes, _) = plan_file_changes(&db, &paths, &adds, &master());
+        let rec = trial_record_of(&changes);
+        let (tagged, _, _) = write_file_changes(&db, &changes);
+        assert_eq!(tagged, 4);
+        // 適用のあとに手で変えた分: b に 7 を足す、c の 10 を手で外す。d は消す（移動したことにする）。
+        let read = |n: &str| crate::spread_state::read_archive_tags(&db, &root, n);
+        let mut b = read("b.zip");
+        b.push(7);
+        assert!(crate::spread_state::write_archive_tags(&db, &root, "b.zip", &b));
+        let c: Vec<u64> = read("c.zip").into_iter().filter(|&x| x != 10).collect();
+        assert!(crate::spread_state::write_archive_tags(&db, &root, "c.zip", &c));
+        std::fs::remove_file(root.join("d.zip")).unwrap();
+        assert!(crate::spread_state::write_archive_tags(&db, &root, "d.zip", &[]));
+        let r = remove_added_tags(&db, &rec);
+        assert_eq!(read("a.zip"), vec![1], "適用前の状態に戻る");
+        assert_eq!(read("b.zip"), vec![7], "手で足したタグは残る");
+        assert_eq!(read("c.zip"), vec![5], "c は 20 だけ外れる。手で外した 10 は戻さない");
+        assert_eq!(r, DiscardReport { restored: 3, unchanged: 0, missing: 1, failed: 0 });
+        // もう一度外しても変化なし。
+        let r = remove_added_tags(&db, &rec);
+        assert_eq!((r.restored, r.unchanged, r.missing), (0, 3, 1));
         let _ = std::fs::remove_dir_all(&root);
     }
 

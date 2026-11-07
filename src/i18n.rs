@@ -4179,6 +4179,144 @@ impl Lang {
         }
     }
 
+    pub fn tag_trial_banner(self) -> &'static str {
+        match self {
+            Lang::Japanese => "試用中",
+            Lang::English  => "Trial",
+            Lang::Chinese  => "试用中",
+        }
+    }
+
+    pub fn tag_trial_banner_hover(self) -> &'static str {
+        match self {
+            Lang::Japanese => "適用したタグは仮の状態です。使い心地を見て、確定か破棄を選んでください",
+            Lang::English  => "The applied tags are provisional. Try them out, then confirm or discard",
+            Lang::Chinese  => "已应用的标签为临时状态。试用后请选择确认或放弃",
+        }
+    }
+
+    pub fn tag_trial_confirm_button(self) -> &'static str {
+        match self {
+            Lang::Japanese => "確定",
+            Lang::English  => "Confirm",
+            Lang::Chinese  => "确认",
+        }
+    }
+
+    pub fn tag_trial_confirm_hover(self) -> &'static str {
+        match self {
+            Lang::Japanese => "仮のタグマスターを本物にします",
+            Lang::English  => "Make the provisional tag master permanent",
+            Lang::Chinese  => "将临时标签主表设为正式",
+        }
+    }
+
+    pub fn tag_trial_discard_button(self) -> &'static str {
+        match self {
+            Lang::Japanese => "破棄",
+            Lang::English  => "Discard",
+            Lang::Chinese  => "放弃",
+        }
+    }
+
+    pub fn tag_trial_discard_hover(self) -> &'static str {
+        match self {
+            Lang::Japanese => "適用で足したタグを外し、タグマスターを適用前に戻します",
+            Lang::English  => "Remove the tags added by the apply and restore the tag master",
+            Lang::Chinese  => "移除应用时添加的标签，并将标签主表恢复原状",
+        }
+    }
+
+    pub fn tag_trial_discard_no_db(self) -> &'static str {
+        match self {
+            Lang::Japanese => "データベースを開けていないため、破棄できません",
+            Lang::English  => "Cannot discard because the database is not open",
+            Lang::Chinese  => "数据库未打开，无法放弃",
+        }
+    }
+
+    pub fn tag_trial_confirm_title(self) -> &'static str {
+        match self {
+            Lang::Japanese => "試用の確定",
+            Lang::English  => "Confirm the trial",
+            Lang::Chinese  => "确认试用",
+        }
+    }
+
+    pub fn tag_trial_confirm_body(self) -> &'static str {
+        match self {
+            Lang::Japanese => "仮のタグマスターを本物にします。確定すると、適用前の状態には戻せなくなります（適用前に作ったデータベースのバックアップ世代からは復元できます）。",
+            Lang::English  => "The provisional tag master becomes permanent. After this, the pre-apply state cannot be restored here (you can still restore the database backup made before the apply).",
+            Lang::Chinese  => "临时标签主表将变为正式。确认后无法在此恢复到应用前的状态（仍可使用应用前创建的数据库备份恢复）。",
+        }
+    }
+
+    pub fn tag_trial_discard_title(self) -> &'static str {
+        match self {
+            Lang::Japanese => "試用の破棄",
+            Lang::English  => "Discard the trial",
+            Lang::Chinese  => "放弃试用",
+        }
+    }
+
+    pub fn tag_trial_discard_body(self, files: usize, ids: usize) -> String {
+        match self {
+            Lang::Japanese => format!("適用で足した {ids} 件のタグ（{files} ファイル）を外し、タグマスターを適用前に戻します。試用中にタグ管理で行った編集も失われます。適用のあとに手で付けたタグには触りません。"),
+            Lang::English  => format!("The {ids} tag(s) added by the apply ({files} file(s)) will be removed and the tag master restored. Edits made in the tag manager during the trial are lost too. Tags you added by hand afterwards are kept."),
+            Lang::Chinese  => format!("将移除应用时添加的 {ids} 个标签（{files} 个文件），并恢复标签主表。试用期间在标签管理中的编辑也会丢失。应用之后手动添加的标签不受影响。"),
+        }
+    }
+
+    pub fn tag_trial_confirmed(self) -> &'static str {
+        match self {
+            Lang::Japanese => "試用を確定しました",
+            Lang::English  => "Trial confirmed",
+            Lang::Chinese  => "已确认试用",
+        }
+    }
+
+    pub fn tag_trial_confirm_failed(self) -> &'static str {
+        match self {
+            Lang::Japanese => "確定に失敗しました（試用中のままです）",
+            Lang::English  => "Failed to confirm (still in trial)",
+            Lang::Chinese  => "确认失败（仍处于试用中）",
+        }
+    }
+
+    pub fn tag_trial_discard_progress(self) -> &'static str {
+        match self {
+            Lang::Japanese => "試用を破棄しています…",
+            Lang::English  => "Discarding the trial…",
+            Lang::Chinese  => "正在放弃试用…",
+        }
+    }
+
+    pub fn tag_trial_resumed(self) -> &'static str {
+        match self {
+            Lang::Japanese => "一括タグ付けの試用中です。タグパネルの「確定」か「破棄」を選んでください",
+            Lang::English  => "A bulk-tagging trial is in progress. Choose Confirm or Discard in the tag panel",
+            Lang::Chinese  => "批量打标签正在试用中。请在标签面板中选择“确认”或“放弃”",
+        }
+    }
+
+    pub fn tag_trial_discarded(self, r: &crate::tag_trial::DiscardReport) -> String {
+        let (ja, en, zh) = (
+            if r.missing > 0 { format!("・見つからず{}件", r.missing) } else { String::new() },
+            if r.missing > 0 { format!(", not found {}", r.missing) } else { String::new() },
+            if r.missing > 0 { format!("、未找到 {} 个", r.missing) } else { String::new() },
+        );
+        let (fja, fen, fzh) = (
+            if r.failed > 0 { format!("・失敗{}件", r.failed) } else { String::new() },
+            if r.failed > 0 { format!(", failed {}", r.failed) } else { String::new() },
+            if r.failed > 0 { format!("、失败 {} 个", r.failed) } else { String::new() },
+        );
+        match self {
+            Lang::Japanese => format!("試用を破棄しました: タグを外したファイル{}件（変化なし{}件{}{}）", r.restored, r.unchanged, ja, fja),
+            Lang::English  => format!("Trial discarded: tags removed from {} file(s) (unchanged {}{}{})", r.restored, r.unchanged, en, fen),
+            Lang::Chinese  => format!("已放弃试用：已从 {} 个文件移除标签（无变化 {} 个{}{}）", r.restored, r.unchanged, zh, fzh),
+        }
+    }
+
     pub fn tag_scan_trial_hint(self) -> &'static str {
         match self {
             Lang::Japanese => "試用中です。先に確定か破棄をしてください",

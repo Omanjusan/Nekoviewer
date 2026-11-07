@@ -259,6 +259,8 @@ pub(crate) fn parse_bulk_elements(input: &str) -> Vec<String> {
 }
 
 /// 本物へのアトミック保存（tmpに書いてからrename）。gui_config::save_stateと同じ方式。
+/// 本番は保存先を選ぶ `save_slot` を使う。これはテスト用の短縮形。
+#[cfg(test)]
 pub(crate) fn save(root: &Path, categories: &[TagManagerCategoryUi], next_tier_id: u64) {
     save_slot(root, Slot::Real, categories, next_tier_id);
 }

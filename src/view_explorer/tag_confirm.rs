@@ -688,6 +688,7 @@ impl NekoviewApp {
                 // 新しいマスターを取り込み、タグの選択肢と表示を作り直す。
                 // 以降は試用中。仮マスターを使い、保存も仮マスターへ行く。
                 self.tag_trial_active = true;
+                self.tag_trial_notified = true;
                 self.tag_manager_categories = job.master;
                 self.tag_manager_next_tier_id = job.next_tier_id;
                 self.save_tag_manager();
