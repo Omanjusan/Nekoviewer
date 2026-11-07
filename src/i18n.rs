@@ -4520,6 +4520,126 @@ impl Lang {
         }
     }
 
+    pub fn tag_confirm_filter_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "名前で絞り込み",
+            Lang::English  => "Filter by name",
+            Lang::Chinese  => "按名称筛选",
+        }
+    }
+
+    pub fn tag_confirm_filter_hint(self) -> &'static str {
+        match self {
+            Lang::Japanese => "別名を含む部分一致",
+            Lang::English  => "Partial match (incl. aliases)",
+            Lang::Chinese  => "部分匹配（含别名）",
+        }
+    }
+
+    pub fn tag_confirm_merge_button(self, n: usize) -> String {
+        match self {
+            Lang::Japanese => format!("まとめる（{n}件）を確定"),
+            Lang::English  => format!("Merge {n} selected"),
+            Lang::Chinese  => format!("合并所选（{n}项）"),
+        }
+    }
+
+    pub fn tag_confirm_merge_hover(self) -> &'static str {
+        match self {
+            Lang::Japanese => "「まとめる」にチェックした同じ種類の行を、別名つきの1要素にまとめる",
+            Lang::English  => "Merge the checked rows of the same kind into one element with aliases",
+            Lang::Chinese  => "将勾选的同类行合并为一个带别名的元素",
+        }
+    }
+
+    pub fn tag_confirm_merge_clear(self) -> &'static str {
+        match self {
+            Lang::Japanese => "チェックを外す",
+            Lang::English  => "Clear checks",
+            Lang::Chinese  => "清除勾选",
+        }
+    }
+
+    pub fn tag_confirm_merge_check_hover(self) -> &'static str {
+        match self {
+            Lang::Japanese => "まとめる対象にする",
+            Lang::English  => "Select for merging",
+            Lang::Chinese  => "选为合并对象",
+        }
+    }
+
+    pub fn tag_confirm_cluster_merge(self) -> &'static str {
+        match self {
+            Lang::Japanese => "束をまとめる",
+            Lang::English  => "Merge group",
+            Lang::Chinese  => "合并整组",
+        }
+    }
+
+    pub fn tag_confirm_merged_hover(self, n: usize) -> String {
+        match self {
+            Lang::Japanese => format!("別名{n}個をまとめた1要素"),
+            Lang::English  => format!("One element with {n} aliases"),
+            Lang::Chinese  => format!("含 {n} 个别名的单个元素"),
+        }
+    }
+
+    pub fn tag_confirm_merged_menu(self) -> &'static str {
+        match self {
+            Lang::Japanese => "別名…",
+            Lang::English  => "Aliases…",
+            Lang::Chinese  => "别名…",
+        }
+    }
+
+    pub fn tag_confirm_primary_alias(self) -> &'static str {
+        match self {
+            Lang::Japanese => "先頭見出しにする別名",
+            Lang::English  => "Alias shown first",
+            Lang::Chinese  => "作为首要显示的别名",
+        }
+    }
+
+    pub fn tag_confirm_split(self) -> &'static str {
+        match self {
+            Lang::Japanese => "まとめを分解",
+            Lang::English  => "Split apart",
+            Lang::Chinese  => "拆分",
+        }
+    }
+
+    pub fn tag_confirm_merge_err_too_few(self) -> &'static str {
+        match self {
+            Lang::Japanese => "まとめるには2件以上チェックしてください",
+            Lang::English  => "Check at least 2 rows to merge",
+            Lang::Chinese  => "请至少勾选 2 项",
+        }
+    }
+
+    pub fn tag_confirm_merge_err_mixed(self) -> &'static str {
+        match self {
+            Lang::Japanese => "種類が違う行はまとめられません",
+            Lang::English  => "Rows of different kinds cannot be merged",
+            Lang::Chinese  => "不同种类的行无法合并",
+        }
+    }
+
+    pub fn tag_confirm_merge_err_multiple(self, a: &str, b: &str) -> String {
+        match self {
+            Lang::Japanese => format!("異なる既存要素「{a}」「{b}」に一致するため、まとめられません（既存要素どうしの統合は非対応）"),
+            Lang::English  => format!("Cannot merge: matches different existing elements \"{a}\" and \"{b}\" (merging existing elements is not supported)"),
+            Lang::Chinese  => format!("无法合并：匹配了不同的现有元素“{a}”“{b}”（不支持合并现有元素）"),
+        }
+    }
+
+    pub fn tag_confirm_merge_err_overlap(self, alias: &str, element: &str) -> String {
+        match self {
+            Lang::Japanese => format!("別名「{alias}」が既存要素「{element}」の別名と重なるため、まとめられません"),
+            Lang::English  => format!("Cannot merge: alias \"{alias}\" overlaps the existing element \"{element}\""),
+            Lang::Chinese  => format!("无法合并：别名“{alias}”与现有元素“{element}”重叠"),
+        }
+    }
+
     pub fn tag_confirm_apply_none(self) -> &'static str {
         match self {
             Lang::Japanese => "付けるタグがありません（採用された候補がありません）",

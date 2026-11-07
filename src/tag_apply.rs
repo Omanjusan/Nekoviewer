@@ -13,7 +13,7 @@ use redb::Database;
 
 use crate::i18n::Lang;
 use crate::tag_candidates::{CandidateSet, CatRef, Choice, Role};
-use crate::tag_master::{alias_keys, escape_alias_sep, join_aliases, merge_file_tags_in, split_aliases, TagMaster};
+use crate::tag_master::{alias_keys, join_aliases, merge_file_tags_in, split_aliases, TagMaster};
 use crate::view_explorer::TagManagerCategoryUi;
 
 /// 適用の計画。
@@ -67,8 +67,7 @@ pub(crate) fn plan_application(
                 *tier_id
             }
             Choice::Alias { cat_idx, tier_id } => {
-                let alias = escape_alias_sep(&c.name);
-                match add_alias_to_element(cats, next_tier_id, *cat_idx, *tier_id, &alias) {
+                match add_aliases_to_element(cats, next_tier_id, *cat_idx, *tier_id, &c.alias_list()) {
                     AliasOutcome::Renamed(old, new) => plan.renames.push((*cat_idx, *tier_id, old, new)),
                     AliasOutcome::AlreadyHas => {}
                     AliasOutcome::Conflict => plan.alias_conflicts += 1,
@@ -90,7 +89,7 @@ pub(crate) fn plan_application(
                         }
                     },
                 };
-                let Some((id, created)) = master.add_element_unique(cat_idx, &crate::tag_master::escape_alias_sep(&c.name)) else { continue };
+                let Some((id, created)) = master.add_element_unique(cat_idx, &c.registration_name()) else { continue };
                 if created {
                     plan.new_elements += 1;
                 }
@@ -119,28 +118,33 @@ enum AliasOutcome {
 }
 
 /// `cat_idx` の `tier_id` の要素に別名 `alias` を足す。重なる別名が他の要素にあれば書き換えない。
-fn add_alias_to_element(
+fn add_aliases_to_element(
     cats: &mut Vec<TagManagerCategoryUi>,
     next_tier_id: &mut u64,
     cat_idx: usize,
     tier_id: u64,
-    alias: &str,
+    aliases: &[String],
 ) -> AliasOutcome {
     let master = TagMaster::new(cats, next_tier_id);
     let Some(old) = master.element_name(cat_idx, tier_id) else { return AliasOutcome::MissingTarget };
-    let new_keys = alias_keys(alias);
-    if new_keys.is_empty() {
-        return AliasOutcome::AlreadyHas;
-    }
     let own = alias_keys(&old);
-    if new_keys.iter().all(|k| own.contains(k)) {
+    // 要素がまだ持っていない別名だけを足す。
+    let mut added: Vec<&String> = Vec::new();
+    for a in aliases {
+        let keys = alias_keys(a);
+        if keys.is_empty() || keys.iter().all(|k| own.contains(k)) || added.iter().any(|x| alias_keys(x) == keys) {
+            continue;
+        }
+        added.push(a);
+    }
+    if added.is_empty() {
         return AliasOutcome::AlreadyHas;
     }
-    if master.find_elements(cat_idx, alias).iter().any(|&id| id != tier_id) {
+    if added.iter().any(|a| master.find_elements(cat_idx, a).iter().any(|&id| id != tier_id)) {
         return AliasOutcome::Conflict;
     }
     let mut parts: Vec<String> = split_aliases(&old).into_iter().map(String::from).collect();
-    parts.push(alias.trim().to_string());
+    parts.extend(added.into_iter().map(|a| a.trim().to_string()));
     let new = join_aliases(&parts);
     for t in cats[cat_idx].tiers.iter_mut().filter(|t| t.id == tier_id) {
         t.element = Some(new.clone());
@@ -334,6 +338,30 @@ mod tests {
         let plan = plan_application(&set, &mut cats, &mut next, Lang::English);
         assert!(plan.renames.is_empty());
         assert!(!plan.file_additions.get(&0).is_some_and(|v| v.contains(&20)));
+    }
+
+    #[test]
+    fn merged_candidates_register_one_aliased_element_or_extend_the_existing_one() {
+        let inputs = [input("[Circ (Kouji)] a.zip", "zip", None), input("[Circ2 (Koji)] b.zip", "zip", None)];
+        let mut set = build_candidates(&inputs, &master(), &MatchOptions::default(), Lang::English);
+        let pos = |set: &CandidateSet, r: Role, n: &str| set.candidates.iter().position(|c| c.role == r && c.name == n).unwrap();
+        let (a, b) = (pos(&set, Role::Author, "Kouji"), pos(&set, Role::Author, "Koji"));
+        set.merge_candidates(&[a, b], None, 1, &master()).unwrap();
+        let (g1, g2) = (pos(&set, Role::Group, "Circ"), pos(&set, Role::Group, "Circ2"));
+        set.merge_candidates(&[g1, g2], None, 2, &master()).unwrap();
+        let mut cats = master();
+        let mut next = 100u64;
+        let plan = plan_application(&set, &mut cats, &mut next, Lang::English);
+        assert_eq!(cats[2].tiers[0].element.as_deref(), Some("Kouji|Koji"), "既存の作者に別名を足す");
+        assert_eq!(plan.renames.len(), 1);
+        let groups = cats.iter().find(|c| c.name == "Group").expect("グループカテゴリを新規作成");
+        assert_eq!(groups.tiers.len(), 1);
+        assert_eq!(groups.tiers[0].element.as_deref(), Some("Circ|Circ2"));
+        assert_eq!(plan.new_elements, 1 + 0 + 0 + set.candidates.iter().filter(|c| c.role == Role::Event && c.needs_new_element()).count());
+        // 両ファイルとも、まとめた作者(20)とグループにタグが付く。
+        let group_id = groups.tiers[0].id;
+        assert!(plan.file_additions[&0].contains(&20) && plan.file_additions[&1].contains(&20));
+        assert!(plan.file_additions[&0].contains(&group_id) && plan.file_additions[&1].contains(&group_id));
     }
 
     #[test]

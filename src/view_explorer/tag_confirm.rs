@@ -10,16 +10,18 @@
 //! 「適用」は、DBのバックアップ → マスターへの新規カテゴリ・要素の追加 → 各ファイルへのタグ追加、を別スレッドで行う
 //! （`tag_apply`）。既存のタグは消さない。バックアップに失敗したら、何も変更せずに中止する。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{mpsc, Arc};
 
 use crate::i18n::{self, Lang};
 use crate::tag_candidates::{
-    build_candidates, CandidateInput, CandidateSet, CatRef, Choice, Role, Window, ERROR_NEW_ELEMENTS, WARN_NEW_ELEMENTS,
+    build_candidates, Bundle, Candidate, CandidateInput, CandidateSet, CatRef, Choice, MergeError, Role, Window,
+    ERROR_NEW_ELEMENTS, WARN_NEW_ELEMENTS,
 };
+use crate::tag_master::split_aliases;
 use crate::tag_apply::{plan_application, run_apply, ApplyError, ApplyReport};
-use crate::tag_similarity::MatchOptions;
+use crate::tag_similarity::{keys, MatchOptions};
 
 use super::{NekoviewApp, TagManagerCategoryUi};
 
@@ -31,12 +33,23 @@ pub(super) enum Row {
     Cand(usize),
 }
 
-/// 窓に出す行を作る。`only_unconfirmed` なら未確定の候補だけ。
-pub(super) fn rows_for(set: &CandidateSet, window: Window, only_unconfirmed: bool) -> Vec<Row> {
+/// 絞り込み欄の文字列に合う候補か（名前・別名・見つかった表記のどれかに、正規化した部分一致。空なら全部）。
+fn matches_query(c: &Candidate, query: &str, opts: &MatchOptions) -> bool {
+    let q = keys(query, opts).exact;
+    if q.is_empty() {
+        return true;
+    }
+    let hit = |s: &str| keys(s, opts).exact.contains(&q);
+    split_aliases(&c.name).into_iter().any(hit) || c.forms.iter().any(|f| hit(f))
+}
+
+/// 窓に出す行を作る。`only_unconfirmed` なら未確定の候補だけ。`query` は名前の絞り込み（別名を含む部分一致）。
+pub(super) fn rows_for(set: &CandidateSet, window: Window, only_unconfirmed: bool, query: &str, opts: &MatchOptions) -> Vec<Row> {
     let idx: Vec<usize> = set
         .indices_in_window(window)
         .into_iter()
         .filter(|&i| !only_unconfirmed || set.candidates[i].unconfirmed)
+        .filter(|&i| matches_query(&set.candidates[i], query, opts))
         .collect();
     let mut cluster_sizes: HashMap<usize, usize> = HashMap::new();
     for &i in &idx {
@@ -87,6 +100,24 @@ pub(super) struct TagConfirm {
     rebuild: Option<mpsc::Receiver<CandidateSet>>,
     /// しきい値スライダーをドラッグしている間の仮の値（離したときに確定して作り直す）。
     threshold_draft: Option<u8>,
+    /// 「まとめる」にチェックした候補（種類, 候補のキー）。
+    checked: HashSet<(Role, String)>,
+    /// 名前の絞り込み欄。
+    filter: String,
+    next_bundle_id: u64,
+    /// まとめを拒否したときの理由（窓に出す）。
+    merge_msg: Option<String>,
+}
+
+/// 一覧の行から出す操作（描画中は候補の並びを変えられないので、描画後にまとめて行う）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RowAction {
+    /// 束（類似品の同じ番号）をまとめる。
+    MergeCluster(usize),
+    /// まとめた候補を分解する。
+    Split(usize),
+    /// まとめた候補の、先頭見出しにする別名（候補の番号, 別名の位置）。
+    SetPrimary(usize, usize),
 }
 
 impl TagConfirm {
@@ -104,17 +135,22 @@ impl TagConfirm {
         } else {
             return None;
         };
-        Some(Self { set, inputs: Arc::new(inputs), paths, master: Arc::new(master), stage, only_unconfirmed: false, rebuild: None, threshold_draft: None })
+        Some(Self { set, inputs: Arc::new(inputs), paths, master: Arc::new(master), stage, only_unconfirmed: false, rebuild: None, threshold_draft: None, checked: HashSet::new(), filter: String::new(), next_bundle_id: 1, merge_msg: None })
     }
 
     /// 切替項目が変わったので、別スレッドで候補を作り直す。進行中の作り直しは捨てる。
     fn start_rebuild(&mut self, opts: MatchOptions, lang: Lang) {
         let (tx, rx) = mpsc::channel();
         let (inputs, master) = (Arc::clone(&self.inputs), Arc::clone(&self.master));
+        // 手動でまとめた候補は、作り直したあとも同じまとめを復元する。
+        let bundles: Vec<Bundle> = self.set.snapshot_bundles();
         std::thread::spawn(move || {
-            let _ = tx.send(build_candidates(&inputs, &master, &opts, lang));
+            let mut fresh = build_candidates(&inputs, &master, &opts, lang);
+            fresh.apply_bundles(&bundles, &master);
+            let _ = tx.send(fresh);
         });
         self.rebuild = Some(rx);
+        self.checked.clear();
     }
 
     /// 作り直しの完了を取り込む。ユーザーが変えた採否は引き継ぐ。
@@ -174,6 +210,8 @@ impl NekoviewApp {
         let mut next_stage: Option<Window> = None;
         let mut cancel = false;
         let mut apply_clicked = false;
+        let mut confirm_merge = false;
+        let mut row_action: Option<RowAction> = None;
         let mut opts = self.config.tag_match;
         let before = opts;
 
@@ -253,10 +291,33 @@ impl NekoviewApp {
                 }
                 ui.checkbox(&mut st.only_unconfirmed, t.tag_confirm_only_unconfirmed());
             });
+            // 名前の絞り込みと、チェックした行をまとめる操作。
+            let checked_here = window_idx
+                .iter()
+                .filter(|&&i| st.checked.contains(&(st.set.candidates[i].role, st.set.candidates[i].key.clone())))
+                .count();
+            ui.horizontal_wrapped(|ui| {
+                ui.label(t.tag_confirm_filter_label());
+                ui.add(egui::TextEdit::singleline(&mut st.filter).desired_width(160.0).hint_text(t.tag_confirm_filter_hint()));
+                if !st.filter.is_empty() && ui.small_button("✕").clicked() {
+                    st.filter.clear();
+                }
+                ui.separator();
+                let btn = ui.add_enabled(checked_here >= 2, egui::Button::new(t.tag_confirm_merge_button(checked_here)));
+                if btn.on_hover_text(t.tag_confirm_merge_hover()).on_disabled_hover_text(t.tag_confirm_merge_hover()).clicked() {
+                    confirm_merge = true;
+                }
+                if checked_here > 0 && ui.small_button(t.tag_confirm_merge_clear()).clicked() {
+                    st.checked.clear();
+                }
+            });
+            if let Some(msg) = &st.merge_msg {
+                ui.colored_label(egui::Color32::from_rgb(220, 60, 60), msg);
+            }
             ui.separator();
 
             // 一覧。
-            let rows = rows_for(&st.set, stage, st.only_unconfirmed);
+            let rows = rows_for(&st.set, stage, st.only_unconfirmed, &st.filter, &opts);
             let row_h = ui.spacing().interact_size.y + 6.0;
             let footer_h = 40.0;
             let list_h = (ui.available_height() - footer_h).max(80.0);
@@ -283,9 +344,14 @@ impl NekoviewApp {
                                             c.unadopt();
                                         }
                                     }
+                                    if ui.small_button(t.tag_confirm_cluster_merge()).on_hover_text(t.tag_confirm_merge_hover()).clicked() {
+                                        row_action = Some(RowAction::MergeCluster(id));
+                                    }
                                 });
                             }
-                            Row::Cand(i) => draw_candidate_row(ui, &mut st.set, i, &st.master, t),
+                            Row::Cand(i) => {
+                                draw_candidate_row(ui, &mut st.set, i, &st.master, &mut st.checked, &mut row_action, t)
+                            }
                         }
                     }
                     if rows.is_empty() {
@@ -329,6 +395,42 @@ impl NekoviewApp {
             });
         });
 
+        // まとめる・分解・先頭の別名の変更（描画中は並びを変えられないので、ここで行う）。
+        let merge_idxs: Option<Vec<usize>> = match row_action {
+            Some(RowAction::MergeCluster(id)) => Some(
+                (0..st.set.candidates.len())
+                    .filter(|&i| st.set.candidates[i].cluster == id && st.set.candidates[i].role.window() == stage)
+                    .collect(),
+            ),
+            _ if confirm_merge => Some(
+                (0..st.set.candidates.len())
+                    .filter(|&i| {
+                        let c = &st.set.candidates[i];
+                        c.role.window() == stage && st.checked.contains(&(c.role, c.key.clone()))
+                    })
+                    .collect(),
+            ),
+            _ => None,
+        };
+        if let Some(idxs) = merge_idxs {
+            let id = st.next_bundle_id;
+            match st.set.merge_candidates(&idxs, None, id, &st.master) {
+                Ok(_) => {
+                    st.next_bundle_id += 1;
+                    st.checked.clear();
+                    st.merge_msg = None;
+                }
+                Err(e) => st.merge_msg = Some(merge_error_text(&e, t)),
+            }
+        }
+        match row_action {
+            Some(RowAction::Split(i)) => {
+                st.set.split_candidate(i);
+                st.merge_msg = None;
+            }
+            Some(RowAction::SetPrimary(i, pos)) => st.set.set_primary_alias(i, pos),
+            _ => {}
+        }
         if opts != before {
             let clamped = opts.clamped();
             self.config.tag_match = clamped;
@@ -347,10 +449,37 @@ impl NekoviewApp {
     }
 }
 
+fn merge_error_text(e: &MergeError, t: Lang) -> String {
+    match e {
+        MergeError::TooFew => t.tag_confirm_merge_err_too_few().to_string(),
+        MergeError::MixedRoles => t.tag_confirm_merge_err_mixed().to_string(),
+        MergeError::MultipleExisting { first, second } => t.tag_confirm_merge_err_multiple(first, second),
+        MergeError::AliasOverlap { alias, element } => t.tag_confirm_merge_err_overlap(alias, element),
+    }
+}
+
 /// 候補1行。
-fn draw_candidate_row(ui: &mut egui::Ui, set: &mut CandidateSet, i: usize, master: &[TagManagerCategoryUi], t: Lang) {
+fn draw_candidate_row(
+    ui: &mut egui::Ui,
+    set: &mut CandidateSet,
+    i: usize,
+    master: &[TagManagerCategoryUi],
+    checked: &mut HashSet<(Role, String)>,
+    action: &mut Option<RowAction>,
+    t: Lang,
+) {
     let c = &mut set.candidates[i];
     ui.horizontal(|ui| {
+        // 「まとめる」の対象にするチェック（採否のチェックとは別）。
+        let id = (c.role, c.key.clone());
+        let mut merge_on = checked.contains(&id);
+        if ui.checkbox(&mut merge_on, "").on_hover_text(t.tag_confirm_merge_check_hover()).changed() {
+            if merge_on {
+                checked.insert(id);
+            } else {
+                checked.remove(&id);
+            }
+        }
         let mut adopted = c.is_adopted();
         if ui.checkbox(&mut adopted, "").changed() {
             if adopted {
@@ -360,7 +489,24 @@ fn draw_candidate_row(ui: &mut egui::Ui, set: &mut CandidateSet, i: usize, maste
             }
         }
         let label = egui::RichText::new(&c.name);
-        ui.label(if matches!(c.choice, Choice::New) { label.strong() } else { label });
+        let name_resp = ui.label(if matches!(c.choice, Choice::New) { label.strong() } else { label });
+        if !c.aliases.is_empty() {
+            name_resp.on_hover_text(t.tag_confirm_merged_hover(c.aliases.len()));
+            ui.menu_button(t.tag_confirm_merged_menu(), |ui| {
+                ui.weak(t.tag_confirm_primary_alias());
+                for (pos, a) in c.aliases.iter().enumerate() {
+                    if ui.radio(pos == 0, a).clicked() {
+                        *action = Some(RowAction::SetPrimary(i, pos));
+                        ui.close();
+                    }
+                }
+                ui.separator();
+                if ui.button(t.tag_confirm_split()).clicked() {
+                    *action = Some(RowAction::Split(i));
+                    ui.close();
+                }
+            });
+        }
         ui.weak(t.tag_confirm_file_count(c.files.len()));
         if c.unconfirmed {
             ui.colored_label(egui::Color32::from_rgb(230, 160, 40), t.tag_confirm_unconfirmed());
@@ -368,6 +514,9 @@ fn draw_candidate_row(ui: &mut egui::Ui, set: &mut CandidateSet, i: usize, maste
         match &c.choice {
             Choice::Existing { tier_id, .. } if c.suggestions.is_empty() => {
                 ui.weak(t.tag_confirm_existing(&element_name(master, *tier_id)));
+            }
+            Choice::Alias { tier_id, .. } if c.suggestions.is_empty() => {
+                ui.weak(t.tag_confirm_choice_alias(&element_name(master, *tier_id), &c.name));
             }
             _ if c.category == CatRef::New && matches!(c.choice, Choice::New) => {
                 ui.weak(t.tag_confirm_new_category(c.role.new_category_name(t)));
@@ -514,20 +663,46 @@ mod tests {
     fn rows_have_sections_cluster_headers_and_respect_the_unconfirmed_filter() {
         let inputs = [input("[Aaa (Bbbbbbb)] t.zip", Some("Category: Manga\n")), input("[Aaa (Bbbbbbc)] u.zip", None)];
         let set = build_candidates(&inputs, &[], &MatchOptions::default(), Lang::English);
-        let w1 = rows_for(&set, Window::One, false);
+        let w1 = rows_for(&set, Window::One, false, "", &MatchOptions::default());
         assert_eq!(w1.first(), Some(&Row::Section(Role::Format)));
         assert!(w1.contains(&Row::Section(Role::Main)));
         assert!(!w1.iter().any(|r| matches!(r, Row::Section(Role::Author))));
-        let w2 = rows_for(&set, Window::Two, false);
+        let w2 = rows_for(&set, Window::Two, false, "", &MatchOptions::default());
         assert_eq!(w2.first(), Some(&Row::Section(Role::Author)), "種類順は作者→グループ");
         // Bbbbbbb と Bbbbbbc は類似で、同じ束の見出しが付く。
         assert!(w2.iter().any(|r| matches!(r, Row::Cluster { size: 2, .. })), "{w2:?}");
         let cand_rows = w2.iter().filter(|r| matches!(r, Row::Cand(_))).count();
         assert_eq!(cand_rows, 3, "Aaa / Bbbbbbb / Bbbbbbc");
         // 未確定だけ: すべて未確定（既存タグが無い）。何も無いマスターでは変わらない。
-        assert_eq!(rows_for(&set, Window::Two, true).len(), w2.len());
+        assert_eq!(rows_for(&set, Window::Two, true, "", &MatchOptions::default()).len(), w2.len());
         // 窓1の候補は未確定ではないので、フィルタで消える。
-        assert!(rows_for(&set, Window::One, true).is_empty());
+        assert!(rows_for(&set, Window::One, true, "", &MatchOptions::default()).is_empty());
+    }
+
+    #[test]
+    fn query_filters_by_name_alias_and_form_with_normalization() {
+        let inputs = [input("[Aaa (Kouji)] t.zip", None), input("[Aaa (Zzz)] u.zip", None)];
+        let cats: Vec<TagManagerCategoryUi> = Vec::new();
+        let mut set = build_candidates(&inputs, &cats, &MatchOptions::default(), Lang::English);
+        let opts = MatchOptions::default();
+        let names = |set: &CandidateSet, q: &str| -> Vec<String> {
+            rows_for(set, Window::Two, false, q, &opts)
+                .into_iter()
+                .filter_map(|r| if let Row::Cand(i) = r { Some(set.candidates[i].name.clone()) } else { None })
+                .collect()
+        };
+        assert_eq!(names(&set, "kou"), ["Kouji"], "部分一致・大文字小文字を区別しない");
+        assert_eq!(names(&set, "ＫＯＵ"), ["Kouji"], "全角半角を吸収");
+        assert_eq!(names(&set, "  ").len(), 3, "空白だけは絞り込まない");
+        // まとめた候補は、別名のどれでも見つかる。
+        let (a, b) = (
+            set.candidates.iter().position(|c| c.name == "Kouji").unwrap(),
+            set.candidates.iter().position(|c| c.name == "Zzz").unwrap(),
+        );
+        set.merge_candidates(&[a, b], None, 1, &cats).unwrap();
+        assert_eq!(names(&set, "zz"), ["Kouji|Zzz"]);
+        assert_eq!(names(&set, "kou"), ["Kouji|Zzz"]);
+        assert!(names(&set, "nomatch").is_empty());
     }
 
     #[test]

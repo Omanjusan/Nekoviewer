@@ -15,7 +15,7 @@
 use std::collections::HashMap;
 
 use crate::i18n::Lang;
-use crate::tag_master::{normalize_key, split_aliases, SystemKind};
+use crate::tag_master::{alias_keys, escape_alias_sep, join_aliases, normalize_key, overlapping_elements, split_aliases, SystemKind};
 use crate::tag_similarity::{cluster, keys, normalize_width, similarity_at_least, Keys, MatchOptions};
 use crate::tag_source::{
     canonical_language, language_english_name, parse_info_txt, parse_name_parts, split_archive_extension, Creator,
@@ -145,6 +145,12 @@ pub(crate) struct Candidate {
     pub unconfirmed: bool,
     /// 類似品の束の番号（同じ種類の中で、類似度がしきい値以上のものが同じ番号）。
     pub cluster: usize,
+    /// 手動でまとめた候補の別名（先頭が主表記。`|` は全角に置換済み）。まとめていない候補は空。
+    pub aliases: Vec<String>,
+    /// まとめる前の候補（分解で元に戻す）。まとめていない候補は空。
+    pub members: Vec<Candidate>,
+    /// まとめの番号（再生成後も同じまとめを復元するための識別）。
+    pub bundle_id: Option<u64>,
 }
 
 impl Candidate {
@@ -153,13 +159,31 @@ impl Candidate {
         !matches!(self.choice, Choice::Skip)
     }
 
-    /// 採用にする。初期が既存の完全一致ならそれ、類似提案があれば最上位、無ければ新規作成。
+    /// 要素として登録する名前。まとめた候補は別名を `|` でつないだ名前、そうでなければ名前の `|` を全角にしたもの。
+    pub(crate) fn registration_name(&self) -> String {
+        if self.aliases.is_empty() {
+            escape_alias_sep(&self.name)
+        } else {
+            join_aliases(&self.aliases)
+        }
+    }
+
+    /// 既存要素へ足す別名の一覧（まとめていなければ登録名の1つだけ）。
+    pub(crate) fn alias_list(&self) -> Vec<String> {
+        if self.aliases.is_empty() {
+            vec![escape_alias_sep(&self.name)]
+        } else {
+            self.aliases.clone()
+        }
+    }
+
+    /// 採用にする。初期が既存の完全一致（まとめた候補では別名追加）ならそれ、類似提案があれば最上位、無ければ新規作成。
     pub(crate) fn adopt(&mut self) {
         if self.is_adopted() {
             return;
         }
         self.choice = match (&self.initial, self.suggestions.first()) {
-            (Choice::Existing { .. }, _) => self.initial.clone(),
+            (Choice::Existing { .. } | Choice::Alias { .. }, _) => self.initial.clone(),
             (_, Some(s)) => Choice::Existing { cat_idx: s.cat_idx, tier_id: s.tier_id },
             _ => Choice::New,
         };
@@ -520,6 +544,9 @@ pub(crate) fn build_candidates(
             suggestions,
             unconfirmed,
             cluster: 0,
+            aliases: Vec::new(),
+            members: Vec::new(),
+            bundle_id: None,
         });
     }
 
@@ -609,6 +636,198 @@ impl CandidateSet {
             }
         }
         fresh.limits = check_limits(&fresh.candidates);
+    }
+}
+
+// ── 手動のまとめ（別名つき1要素） ──────────────────────────────────────
+
+/// まとめを拒否する理由。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum MergeError {
+    /// 2件未満。
+    TooFew,
+    /// 種類が違う候補が混じっている。
+    MixedRoles,
+    /// 異なる既存要素に一致する候補が複数ある（既存要素どうしの統合は非対応）。
+    MultipleExisting { first: String, second: String },
+    /// 別名が他の既存要素の別名と重なる。
+    AliasOverlap { alias: String, element: String },
+}
+
+/// まとめの記録（再生成した候補へ同じまとめを復元するための情報）。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Bundle {
+    pub id: u64,
+    pub role: Role,
+    /// まとめた候補の表記（再生成後に、どの候補をまとめるかを探す手がかり）。
+    pub forms: Vec<String>,
+    pub aliases: Vec<String>,
+}
+
+fn element_of(cats: &[TagManagerCategoryUi], cat_idx: usize, tier_id: u64) -> Option<&str> {
+    cats.get(cat_idx)?.tiers.iter().find(|t| t.id == tier_id).and_then(|t| t.element.as_deref())
+}
+
+impl CandidateSet {
+    /// 候補 `idxs` を1つにまとめ、まとめた候補の番号を返す。
+    /// 既存の完全一致が1つあればその要素への別名追加、無ければ別名つきの新規要素。`aliases` が None なら各候補の名前を並べる。
+    pub(crate) fn merge_candidates(
+        &mut self,
+        idxs: &[usize],
+        aliases: Option<Vec<String>>,
+        bundle_id: u64,
+        cats: &[TagManagerCategoryUi],
+    ) -> Result<usize, MergeError> {
+        let mut idxs: Vec<usize> = idxs.iter().copied().filter(|&i| i < self.candidates.len()).collect();
+        idxs.sort_unstable();
+        idxs.dedup();
+        if idxs.len() < 2 {
+            return Err(MergeError::TooFew);
+        }
+        let role = self.candidates[idxs[0]].role;
+        if idxs.iter().any(|&i| self.candidates[i].role != role) {
+            return Err(MergeError::MixedRoles);
+        }
+        // 元の候補（既にまとめたものは中身に展開する）。
+        let mut leaves: Vec<Candidate> = Vec::new();
+        for &i in &idxs {
+            let c = &self.candidates[i];
+            if c.members.is_empty() {
+                leaves.push(c.clone());
+            } else {
+                leaves.extend(c.members.iter().cloned());
+            }
+        }
+        // 既存の完全一致（まとめた候補の別名追加も含む）の対象。
+        let mut target: Option<(usize, u64)> = None;
+        for l in &leaves {
+            if let Choice::Existing { cat_idx, tier_id } | Choice::Alias { cat_idx, tier_id } = l.initial {
+                match target {
+                    None => target = Some((cat_idx, tier_id)),
+                    Some((_, t)) if t == tier_id => {}
+                    Some((c0, t0)) => {
+                        let name = |c: usize, t: u64| element_of(cats, c, t).map_or_else(|| format!("#{t}"), String::from);
+                        return Err(MergeError::MultipleExisting { first: name(c0, t0), second: name(cat_idx, tier_id) });
+                    }
+                }
+            }
+        }
+        // 別名の並び（重複は除く）。
+        let aliases = aliases.unwrap_or_else(|| {
+            let mut v: Vec<String> = Vec::new();
+            for l in &leaves {
+                let a = escape_alias_sep(l.name.trim());
+                if !a.is_empty() && !v.iter().any(|x| alias_keys(x) == alias_keys(&a)) {
+                    v.push(a);
+                }
+            }
+            v
+        });
+        // 別名が、対象以外の既存要素の別名と重ならないこと。
+        let cat_idx = match (target, leaves[0].category) {
+            (Some((c, _)), _) => Some(c),
+            (None, CatRef::Existing(c)) => Some(c),
+            _ => None,
+        };
+        if let Some(ci) = cat_idx {
+            for a in &aliases {
+                for (id, element) in overlapping_elements(cats, ci, a) {
+                    if target.map(|(_, t)| t) != Some(id) {
+                        return Err(MergeError::AliasOverlap { alias: a.clone(), element });
+                    }
+                }
+            }
+        }
+        let covered = target.is_some_and(|(c, t)| {
+            let have = element_of(cats, c, t).map(alias_keys).unwrap_or_default();
+            aliases.iter().all(|a| alias_keys(a).iter().all(|k| have.contains(k)))
+        });
+        let initial = match target {
+            Some((cat_idx, tier_id)) if covered => Choice::Existing { cat_idx, tier_id },
+            Some((cat_idx, tier_id)) => Choice::Alias { cat_idx, tier_id },
+            None => Choice::New,
+        };
+        let all_skipped = leaves.iter().all(|l| !l.is_adopted());
+        let mut forms: Vec<String> = Vec::new();
+        let mut files: Vec<usize> = Vec::new();
+        for l in &leaves {
+            for f in &l.forms {
+                if !forms.contains(f) {
+                    forms.push(f.clone());
+                }
+            }
+            files.extend(l.files.iter().copied());
+        }
+        files.sort_unstable();
+        files.dedup();
+        let merged = Candidate {
+            role,
+            name: join_aliases(&aliases),
+            forms,
+            key: format!("bundle:{bundle_id}"),
+            files,
+            category: leaves[0].category,
+            choice: if all_skipped { Choice::Skip } else { initial.clone() },
+            initial,
+            suggestions: Vec::new(),
+            unconfirmed: leaves.iter().all(|l| l.unconfirmed),
+            cluster: leaves.iter().map(|l| l.cluster).min().unwrap_or(0),
+            aliases,
+            members: leaves,
+            bundle_id: Some(bundle_id),
+        };
+        for &i in idxs.iter().rev() {
+            self.candidates.remove(i);
+        }
+        self.candidates.push(merged);
+        self.limits = check_limits(&self.candidates);
+        Ok(self.candidates.len() - 1)
+    }
+
+    /// まとめた候補を元の候補に分解する。まとめていなければ false。
+    pub(crate) fn split_candidate(&mut self, idx: usize) -> bool {
+        if self.candidates.get(idx).is_none_or(|c| c.members.is_empty()) {
+            return false;
+        }
+        let c = self.candidates.remove(idx);
+        self.candidates.extend(c.members);
+        self.limits = check_limits(&self.candidates);
+        true
+    }
+
+    /// まとめた候補の、先頭見出しにする別名を `pos` 番目に変える。
+    pub(crate) fn set_primary_alias(&mut self, idx: usize, pos: usize) {
+        let Some(c) = self.candidates.get_mut(idx) else { return };
+        if pos == 0 || pos >= c.aliases.len() {
+            return;
+        }
+        let a = c.aliases.remove(pos);
+        c.aliases.insert(0, a);
+        c.name = join_aliases(&c.aliases);
+    }
+
+    /// いまのまとめの記録。
+    pub(crate) fn snapshot_bundles(&self) -> Vec<Bundle> {
+        self.candidates
+            .iter()
+            .filter_map(|c| {
+                c.bundle_id.map(|id| Bundle { id, role: c.role, forms: c.forms.clone(), aliases: c.aliases.clone() })
+            })
+            .collect()
+    }
+
+    /// 再生成した候補に、記録したまとめを復元する（表記が重なる、まとめていない同じ種類の候補を集める）。
+    /// 2件未満になった・拒否されたまとめは復元しない。
+    pub(crate) fn apply_bundles(&mut self, bundles: &[Bundle], cats: &[TagManagerCategoryUi]) {
+        for b in bundles {
+            let idxs: Vec<usize> = (0..self.candidates.len())
+                .filter(|&i| {
+                    let c = &self.candidates[i];
+                    c.bundle_id.is_none() && c.role == b.role && c.forms.iter().any(|f| b.forms.contains(f))
+                })
+                .collect();
+            let _ = self.merge_candidates(&idxs, Some(b.aliases.clone()), b.id, cats);
+        }
     }
 }
 
@@ -784,6 +1003,122 @@ mod tests {
         c.choice = Choice::Alias { cat_idx: 2, tier_id: 20 };
         assert!(c.is_adopted());
         assert!(!c.needs_new_element());
+    }
+
+    fn authors_set(cats: &[TagManagerCategoryUi]) -> CandidateSet {
+        let inputs = [
+            input("[Circ (Kouji)] a.zip", "zip", None),
+            input("[Circ2 (Koji)] b.zip", "zip", None),
+            input("[Circ3 (Taro)] c.zip", "zip", None),
+        ];
+        build_candidates(&inputs, cats, &MatchOptions::default(), Lang::English)
+    }
+
+    fn idx_of(set: &CandidateSet, role: Role, name: &str) -> usize {
+        set.candidates.iter().position(|c| c.role == role && c.name == name).unwrap()
+    }
+
+    #[test]
+    fn merge_with_an_exact_existing_member_adds_aliases_to_that_element() {
+        let cats = master();
+        let mut set = authors_set(&cats);
+        let total_before = set.candidates.len();
+        let (a, b) = (idx_of(&set, Role::Author, "Kouji"), idx_of(&set, Role::Author, "Koji"));
+        let m = set.merge_candidates(&[a, b], None, 1, &cats).unwrap();
+        let c = &set.candidates[m];
+        assert_eq!(c.aliases, ["Kouji", "Koji"]);
+        assert_eq!(c.name, "Kouji|Koji");
+        assert_eq!(c.choice, Choice::Alias { cat_idx: 2, tier_id: 20 }, "Kouji は既存。Koji を別名に足す");
+        assert!(c.is_adopted() && !c.needs_new_element());
+        assert_eq!(c.files, vec![0, 1]);
+        assert_eq!(c.members.len(), 2);
+        assert_eq!(c.key, "bundle:1");
+        assert_eq!(c.registration_name(), "Kouji|Koji");
+        assert_eq!(set.candidates.len(), total_before - 1, "元の2件が1件に");
+    }
+
+    #[test]
+    fn merge_without_an_existing_member_makes_one_new_aliased_element() {
+        let cats = master();
+        let mut set = authors_set(&cats);
+        let before = set.limits.window2_new;
+        let (a, b) = (idx_of(&set, Role::Author, "Taro"), idx_of(&set, Role::Group, "Circ"));
+        assert_eq!(set.merge_candidates(&[a, b], None, 2, &cats), Err(MergeError::MixedRoles));
+        let g1 = idx_of(&set, Role::Group, "Circ");
+        let g2 = idx_of(&set, Role::Group, "Circ2");
+        let m = set.merge_candidates(&[g1, g2], None, 3, &cats).unwrap();
+        assert_eq!(set.candidates[m].choice, Choice::New);
+        assert_eq!(set.candidates[m].registration_name(), "Circ|Circ2");
+        assert_eq!(set.limits.window2_new, before - 1, "新規要素が1つ減る");
+        assert_eq!(set.merge_candidates(&[m], None, 4, &cats), Err(MergeError::TooFew));
+    }
+
+    #[test]
+    fn merge_is_rejected_for_multiple_existing_elements_or_overlapping_aliases() {
+        let mut cats = master();
+        cats[2].tiers.push(tier(21, "Taro"));
+        let mut set = authors_set(&cats);
+        let (a, b) = (idx_of(&set, Role::Author, "Kouji"), idx_of(&set, Role::Author, "Taro"));
+        assert_eq!(
+            set.merge_candidates(&[a, b], None, 1, &cats),
+            Err(MergeError::MultipleExisting { first: "Kouji".into(), second: "Taro".into() })
+        );
+        // 新規どうしの別名が、既存要素の別名と重なる（照合の設定で完全一致にならなかった場合）。
+        let mut cats = master();
+        cats[2].tiers.push(tier(21, "Koji"));
+        let mut opts = MatchOptions::default();
+        opts.romaji = false;
+        let inputs = [input("[Circ (Kouji)] a.zip", "zip", None), input("[Circ2 (Koji!)] b.zip", "zip", None)];
+        let mut set = build_candidates(&inputs, &cats, &opts, Lang::English);
+        // "Koji!" は記号を無視した完全一致で既存 Koji（21）、"Kouji" は既存 Kouji（20）→ 複数の既存。
+        let (a, b) = (idx_of(&set, Role::Author, "Kouji"), idx_of(&set, Role::Author, "Koji!"));
+        assert!(matches!(set.merge_candidates(&[a, b], None, 1, &cats), Err(MergeError::MultipleExisting { .. })));
+    }
+
+    #[test]
+    fn merged_candidate_skip_split_and_primary_alias() {
+        let cats = master();
+        let mut set = authors_set(&cats);
+        let (a, b) = (idx_of(&set, Role::Group, "Circ"), idx_of(&set, Role::Group, "Circ2"));
+        set.candidates[a].unadopt();
+        set.candidates[b].unadopt();
+        let m = set.merge_candidates(&[a, b], None, 1, &cats).unwrap();
+        assert!(!set.candidates[m].is_adopted(), "メンバー全部が不採用なら不採用");
+        set.candidates[m].adopt();
+        assert_eq!(set.candidates[m].choice, Choice::New);
+        set.set_primary_alias(m, 1);
+        assert_eq!(set.candidates[m].name, "Circ2|Circ");
+        assert_eq!(set.candidates[m].registration_name(), "Circ2|Circ");
+        assert!(set.split_candidate(m));
+        assert!(set.candidates.iter().any(|c| c.name == "Circ") && set.candidates.iter().any(|c| c.name == "Circ2"));
+        assert!(!set.split_candidate(0), "まとめていない候補は分解できない");
+    }
+
+    #[test]
+    fn merging_a_merged_candidate_flattens_and_bundles_are_restored_after_rebuild() {
+        let cats = master();
+        let mut set = authors_set(&cats);
+        let g: Vec<usize> = ["Circ", "Circ2", "Circ3"].iter().map(|n| idx_of(&set, Role::Group, n)).collect();
+        let m = set.merge_candidates(&g[..2], None, 7, &cats).unwrap();
+        let g3 = idx_of(&set, Role::Group, "Circ3");
+        let m = set.merge_candidates(&[m, g3], None, 8, &cats).unwrap();
+        assert_eq!(set.candidates[m].members.len(), 3, "展開して3件");
+        assert_eq!(set.candidates[m].aliases.len(), 3);
+        let bundles = set.snapshot_bundles();
+        assert_eq!(bundles.len(), 1);
+        // 再生成（まとめ無し）→ 復元。
+        let mut fresh = authors_set(&cats);
+        assert!(fresh.candidates.iter().all(|c| c.bundle_id.is_none()));
+        fresh.apply_bundles(&bundles, &cats);
+        let restored = fresh.candidates.iter().find(|c| c.bundle_id == Some(8)).expect("復元される");
+        assert_eq!(restored.name, set.candidates[m].name);
+        assert_eq!(restored.members.len(), 3);
+        // ユーザーの採否の引き継ぎ（まとめた候補のキーは番号で安定）。
+        let mut old = set.clone();
+        let mi = old.candidates.iter().position(|c| c.bundle_id == Some(8)).unwrap();
+        old.candidates[mi].unadopt();
+        old.carry_over_choices(&mut fresh);
+        assert!(!fresh.candidates.iter().find(|c| c.bundle_id == Some(8)).unwrap().is_adopted());
     }
 
     #[test]

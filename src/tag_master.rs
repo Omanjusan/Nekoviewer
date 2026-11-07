@@ -122,6 +122,19 @@ pub(crate) fn alias_keys(name: &str) -> Vec<String> {
     out
 }
 
+/// カテゴリ内で、`name` の別名のどれかと別名が重なる要素（tier_id, 要素の全体名）。
+pub(crate) fn overlapping_elements(cats: &[TagManagerCategoryUi], cat_idx: usize, name: &str) -> Vec<(u64, String)> {
+    let keys = alias_keys(name);
+    let Some(c) = cats.get(cat_idx) else { return Vec::new() };
+    if keys.is_empty() {
+        return Vec::new();
+    }
+    c.tiers
+        .iter()
+        .filter_map(|t| t.element.as_deref().filter(|e| element_hits(e, &keys)).map(|e| (t.id, e.to_string())))
+        .collect()
+}
+
 /// 要素名の別名のどれかが、`keys`（正規化キー）のどれかと一致するか。
 fn element_hits(element: &str, keys: &[String]) -> bool {
     split_aliases(element).iter().any(|a| {
