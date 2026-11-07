@@ -1,4 +1,4 @@
-//! リストの「ページ数」「詳細」列が引く、アーカイブ情報（`neko_dir::ARCHIVE_META_TABLE`）のメモリキャッシュ。
+//! リストの「ページ数」「詳細」列が引く、アーカイブ情報（ページ数・詳細有無。`neko_dir::ARCHIVE_META_TABLE`）のメモリキャッシュ。
 //!
 //! フォルダ単位で cache.redb の該当表を丸ごと読み、以降はメモリから引く。
 //! お気に入り・検索・仮想フォルダなど複数フォルダのファイルが並ぶ表示でも、フォルダごとに1回だけ読む。
@@ -14,11 +14,11 @@ use super::NekoviewApp;
 
 /// フォルダ → （ファイル名 → 記録）。DBが無いフォルダは空の表を持つ（毎フレーム開き直さないため）。
 #[derive(Default)]
-pub(super) struct ArchiveMetaCache {
+pub(super) struct ArchiveInfoCache {
     dirs: RefCell<HashMap<PathBuf, HashMap<String, ArchiveMetaRow>>>,
 }
 
-impl ArchiveMetaCache {
+impl ArchiveInfoCache {
     pub(super) fn invalidate_dir(&self, dir: &Path) {
         self.dirs.borrow_mut().remove(dir);
     }
@@ -47,10 +47,10 @@ impl ArchiveMetaCache {
 impl NekoviewApp {
     /// ファイルの記録（ページ数・詳細有無）。記録が無ければ None。
     /// 現物と一致するか（`is_current`）は呼び出し側が、手持ちの mtime・size で確認する。
-    pub(super) fn archive_meta_of(&self, path: &Path) -> Option<ArchiveMetaRow> {
+    pub(super) fn archive_info_of(&self, path: &Path) -> Option<ArchiveMetaRow> {
         let dir = path.parent()?;
         let name = path.file_name()?.to_str()?;
-        self.archive_meta.get_or_load(dir, name, || {
+        self.archive_info.get_or_load(dir, name, || {
             let db = if dir == self.current_dir {
                 self.cache_db.clone()
             } else {
@@ -59,6 +59,24 @@ impl NekoviewApp {
             };
             db.map(|db| neko_dir::read_all_archive_meta(&db)).unwrap_or_default()
         })
+    }
+}
+
+impl NekoviewApp {
+    /// 記録が現物と一致する（mtime・sizeが同じ）ときだけ返す。古い・無いときは None。
+    pub(super) fn fresh_archive_info(
+        &self,
+        path: &Path,
+        mtime: Option<std::time::SystemTime>,
+        size: u64,
+    ) -> Option<ArchiveMetaRow> {
+        let secs = mtime?.duration_since(std::time::UNIX_EPOCH).ok()?.as_secs() as i64;
+        self.archive_info_of(path).filter(|r| r.is_current(secs, size))
+    }
+
+    /// ページ数（未取得・記録が古い場合は 0）。ソートはこれを使い、未取得を 0 として扱う。
+    pub(super) fn fresh_page_count(&self, path: &Path, mtime: Option<std::time::SystemTime>, size: u64) -> u32 {
+        self.fresh_archive_info(path, mtime, size).map_or(0, |r| r.page_count)
     }
 }
 
@@ -73,7 +91,7 @@ mod tests {
 
     #[test]
     fn loads_each_dir_once_and_serves_from_memory() {
-        let cache = ArchiveMetaCache::default();
+        let cache = ArchiveInfoCache::default();
         let mut loads = 0;
         let dir = Path::new("/d");
         let mut table = HashMap::new();
@@ -93,7 +111,7 @@ mod tests {
 
     #[test]
     fn invalidate_forces_reload_and_empty_dir_is_remembered() {
-        let cache = ArchiveMetaCache::default();
+        let cache = ArchiveInfoCache::default();
         let dir = Path::new("/d");
         let mut loads = 0;
         assert!(cache.get_or_load(dir, "a.zip", || { loads += 1; HashMap::new() }).is_none());

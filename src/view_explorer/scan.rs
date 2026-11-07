@@ -83,6 +83,8 @@ struct SortEntry {
     size: u64,
     rating_half: u8,
     visit_count: u32,
+    /// ページ数（ビューアーを開いて記録された値。未取得・記録が古い場合は0）
+    page_count: u32,
 }
 
 impl SortEntry {
@@ -93,6 +95,7 @@ impl SortEntry {
             size: self.size,
             rating_half: self.rating_half,
             visit_count: self.visit_count,
+            page_count: self.page_count,
         }
     }
 }
@@ -356,7 +359,7 @@ impl NekoviewApp {
     /// バックグラウンドスキャンを起動する（UIをブロックしない）
     pub(super) fn start_scan(&mut self) {
         // フォルダを開き直すたびに、ページ数・詳細有無の記録を読み直す。
-        self.archive_meta.clear();
+        self.archive_info.clear();
         // タグ検索タブの中央は走査結果で埋める。実フォルダの読み込みで上書きしない
         // （タブを出るときは、折りたたんだ後に改めて呼ばれる）。
         if self.folder_pane_tab == FolderPaneTab::TagSearch {
@@ -993,9 +996,14 @@ impl NekoviewApp {
                 && p.file_name()
                     .and_then(|n| n.to_str())
                     .is_some_and(|name| self.favorite_states.contains_key(name));
-            let meta = (sort.needs_mtime() || sort.needs_size())
+            let meta = (sort.needs_mtime() || sort.needs_size() || sort.needs_pages())
                 .then(|| std::fs::metadata(p).ok())
                 .flatten();
+            let page_count = if sort.needs_pages() {
+                meta.as_ref().map_or(0, |m| self.fresh_page_count(p, m.modified().ok(), m.len()))
+            } else {
+                0
+            };
             let rating = if sort.needs_rating() {
                 self.archive_rating_cache.get(p).copied().flatten()
             } else {
@@ -1019,6 +1027,7 @@ impl NekoviewApp {
                 size: meta.as_ref().map_or(0, |m| m.len()),
                 rating_half: rating.map_or(0, |r| r.rating_half),
                 visit_count: rating.map_or(0, |r| r.visit_count),
+                page_count,
             }
         }).collect();
         // 重複ソートONの段（両方 > 重複のみ > 類似のみ > なし）は、お気に入りの先頭固定よりさらに前。

@@ -18,6 +18,8 @@ use crate::types::ExplorerSortKey;
 pub enum RatingSortKey {
     Score,
     Visits,
+    /// ページ数（ビューアーを開いて記録された値。未取得は0として扱う）
+    Pages,
 }
 
 impl RatingSortKey {
@@ -25,6 +27,7 @@ impl RatingSortKey {
         match self {
             Self::Score => "score",
             Self::Visits => "visits",
+            Self::Pages => "pages",
         }
     }
 
@@ -33,6 +36,7 @@ impl RatingSortKey {
         match s {
             "score" => Some(Self::Score),
             "visits" => Some(Self::Visits),
+            "pages" => Some(Self::Pages),
             _ => None,
         }
     }
@@ -80,6 +84,8 @@ pub enum HeaderColumn {
     Date,
     Score,
     Visits,
+    /// ページ数（第2セットの Pages）
+    Pages,
 }
 
 /// ソート設定の全体（第1セット＋第2セット）。見出しのクリックで遷移させる単位。
@@ -96,7 +102,7 @@ impl HeaderColumn {
             Self::Name => Some(ExplorerSortKey::Name),
             Self::Size => Some(ExplorerSortKey::Size),
             Self::Date => Some(ExplorerSortKey::Date),
-            Self::Score | Self::Visits => None,
+            Self::Score | Self::Visits | Self::Pages => None,
         }
     }
 
@@ -104,6 +110,7 @@ impl HeaderColumn {
         match self {
             Self::Score => Some(RatingSortKey::Score),
             Self::Visits => Some(RatingSortKey::Visits),
+            Self::Pages => Some(RatingSortKey::Pages),
             _ => None,
         }
     }
@@ -151,6 +158,8 @@ pub struct SortRow<'a> {
     pub rating_half: u8,
     /// 開いた回数（0=未訪問 / レコード不在）
     pub visit_count: u32,
+    /// ページ数（0=未取得）
+    pub page_count: u32,
 }
 
 /// 2セット分のソート条件
@@ -173,13 +182,19 @@ impl ExplorerSort {
 
     /// 評価・訪問回数を集める必要があるか
     pub fn needs_rating(&self) -> bool {
-        self.rating.key.is_some()
+        matches!(self.rating.key, Some(RatingSortKey::Score | RatingSortKey::Visits))
+    }
+
+    /// ページ数の記録を集める必要があるか
+    pub fn needs_pages(&self) -> bool {
+        self.rating.key == Some(RatingSortKey::Pages)
     }
 
     pub fn compare(&self, a: &SortRow, b: &SortRow) -> Ordering {
         let rating = match self.rating.key {
             Some(RatingSortKey::Score) => directed(self.rating.ascending, a.rating_half.cmp(&b.rating_half)),
             Some(RatingSortKey::Visits) => directed(self.rating.ascending, a.visit_count.cmp(&b.visit_count)),
+            Some(RatingSortKey::Pages) => directed(self.rating.ascending, a.page_count.cmp(&b.page_count)),
             None => Ordering::Equal,
         };
         rating.then_with(|| self.compare_main(a, b))
@@ -266,6 +281,44 @@ mod tests {
 
     fn row(name: &str, rating_half: u8, visit_count: u32) -> SortRow<'_> {
         SortRow { name, rating_half, visit_count, ..SortRow::default() }
+    }
+
+    #[test]
+    fn pages_header_cycles_desc_asc_off_like_the_other_second_set_keys() {
+        let s = settings(ExplorerSortKey::Name, true, None, false);
+        let on = header_click(s, HeaderColumn::Pages);
+        assert_eq!(on.rating, RatingSort { key: Some(RatingSortKey::Pages), ascending: false });
+        let asc = header_click(on, HeaderColumn::Pages);
+        assert_eq!(asc.rating, RatingSort { key: Some(RatingSortKey::Pages), ascending: true });
+        assert_eq!(header_arrow(&asc, HeaderColumn::Pages), Some(true));
+        let off = header_click(asc, HeaderColumn::Pages);
+        assert_eq!(off.rating.key, None);
+        assert_eq!(header_arrow(&off, HeaderColumn::Pages), None);
+    }
+
+    #[test]
+    fn pages_sort_treats_unfetched_as_zero_so_ascending_collects_them_first() {
+        let rows = [
+            SortRow { name: "many", page_count: 300, ..SortRow::default() },
+            SortRow { name: "none_b", page_count: 0, ..SortRow::default() },
+            SortRow { name: "few", page_count: 12, ..SortRow::default() },
+            SortRow { name: "none_a", page_count: 0, ..SortRow::default() },
+        ];
+        let asc = sort(ExplorerSortKey::Name, true, Some(RatingSortKey::Pages), true);
+        assert_eq!(order(&asc, &rows), ["none_a", "none_b", "few", "many"], "未取得(0)が先頭、同順位は名前順");
+        let desc = sort(ExplorerSortKey::Name, true, Some(RatingSortKey::Pages), false);
+        assert_eq!(order(&desc, &rows), ["many", "few", "none_a", "none_b"]);
+    }
+
+    #[test]
+    fn pages_key_needs_pages_but_not_the_rating_records() {
+        let s = sort(ExplorerSortKey::Name, true, Some(RatingSortKey::Pages), false);
+        assert!(s.needs_pages());
+        assert!(!s.needs_rating(), "評価DBを無駄に引かない");
+        let v = sort(ExplorerSortKey::Name, true, Some(RatingSortKey::Visits), false);
+        assert!(v.needs_rating() && !v.needs_pages());
+        assert_eq!(RatingSortKey::from_state_key("pages"), Some(RatingSortKey::Pages));
+        assert_eq!(RatingSortKey::Pages.as_state_key(), "pages");
     }
 
     fn sort(key: ExplorerSortKey, ascending: bool, rating_key: Option<RatingSortKey>, rating_ascending: bool) -> ExplorerSort {

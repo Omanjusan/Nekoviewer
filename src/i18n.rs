@@ -82,6 +82,14 @@ impl Lang {
         }
     }
 
+    pub fn sort_pages(self) -> &'static str {
+        match self {
+            Lang::Japanese => "[ページ数]",
+            Lang::English  => "[Pages]",
+            Lang::Chinese  => "[页数]",
+        }
+    }
+
     pub fn sort_asc(self) -> &'static str {
         match self {
             Lang::Japanese => "[昇順]",
@@ -2592,6 +2600,24 @@ impl Lang {
             Lang::Japanese => "訪問回数",
             Lang::English  => "Visits",
             Lang::Chinese  => "访问次数",
+        }
+    }
+
+    /// 「ページ数」列の見出し（ビューアーを開くと記録される）
+    pub fn list_col_pages(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ページ数",
+            Lang::English  => "Pages",
+            Lang::Chinese  => "页数",
+        }
+    }
+
+    /// 「詳細」列の見出し（詳細テキストのあるファイルにアイコンが付く）
+    pub fn list_col_detail(self) -> &'static str {
+        match self {
+            Lang::Japanese => "詳細",
+            Lang::English  => "Details",
+            Lang::Chinese  => "详情",
         }
     }
 

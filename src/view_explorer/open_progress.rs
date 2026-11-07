@@ -215,7 +215,7 @@ impl super::NekoviewApp {
         let size = crate::neko_dir::file_size(path);
         crate::neko_dir::write_archive_meta(&db, name, mtime, size, page_count, detail);
         // 次の描画でそのフォルダの記録を読み直す（リストの列にすぐ反映される）。
-        self.archive_meta.invalidate_dir(dir);
+        self.archive_info.invalidate_dir(dir);
     }
 
     /// アーカイブオープン中央オーバーレイを描画する。

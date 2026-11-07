@@ -1,14 +1,16 @@
-//! リストの列幅（サムネ列を除く6列）。ユーザーが見出しの境界をドラッグして変え、全モード・全タブ共通で保存する。
+//! リストの列幅（幅を変えられる7列。サムネ・エラー・ファイラー・詳細・属性は固定幅なので持たない）。ユーザーが見出しの境界をドラッグして変え、全モード・全タブ共通で保存する。
 //!
-//! 列の並びは 重複／名前／サイズ／更新日時／評価／訪問回数。サムネ列の幅は行の高さ（S/M/L）で決まるので持たない。
-//! 保存は `nekoviewer.state` の `explorer_list_cols`（カンマ区切りの6つの整数。未知・欠落・壊れた値は既定幅）。
+//! 列の並びは 重複／名前／サイズ／更新日時／評価／訪問回数／ページ数。サムネ列の幅は行の高さ（S/M/L）で決まるので持たない。
+//! 保存は `nekoviewer.state` の `explorer_list_cols`（カンマ区切りの7つの整数。6つだけの旧形式は、ページ数だけ既定幅で読む。未知・欠落・壊れた値は既定幅）。
 
-pub(crate) const COL_COUNT: usize = 6;
+pub(crate) const COL_COUNT: usize = 7;
+/// ページ数列を足す前の旧形式の個数。
+const LEGACY_COL_COUNT: usize = 6;
 
 /// 既定幅（px）。
-pub(crate) const DEFAULT_WIDTHS: [f32; COL_COUNT] = [44.0, 360.0, 90.0, 160.0, 120.0, 80.0];
+pub(crate) const DEFAULT_WIDTHS: [f32; COL_COUNT] = [44.0, 360.0, 90.0, 160.0, 120.0, 80.0, 80.0];
 /// 最小幅（px）。見出しの文字と、評価の★が収まる程度。重複列は、アイコン2つ（重複・似ている）が並ぶ幅。
-pub(crate) const MIN_WIDTHS: [f32; COL_COUNT] = [40.0, 80.0, 50.0, 80.0, 60.0, 40.0];
+pub(crate) const MIN_WIDTHS: [f32; COL_COUNT] = [40.0, 80.0, 50.0, 80.0, 60.0, 40.0, 50.0];
 const MAX_WIDTH: f32 = 1200.0;
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -41,10 +43,11 @@ impl ListColumns {
         self.widths.iter().map(|w| format!("{}", w.round() as i32)).collect::<Vec<_>>().join(",")
     }
 
-    /// 6つの数値が揃わない・数値でない場合は全て既定幅。範囲外の値は丸める。
+    /// 7つ（旧形式は6つ）の数値が揃わない・数値でない場合は全て既定幅。範囲外の値は丸める。
     pub(crate) fn from_state_str(s: &str) -> Self {
         let parsed: Vec<f32> = s.split(',').filter_map(|t| t.trim().parse::<f32>().ok()).collect();
-        if s.split(',').count() != COL_COUNT || parsed.len() != COL_COUNT {
+        let n = s.split(',').count();
+        if (n != COL_COUNT && n != LEGACY_COL_COUNT) || parsed.len() != n {
             return Self::default();
         }
         let mut out = Self::default();
@@ -93,14 +96,21 @@ mod tests {
         let d = ListColumns::default();
         assert_eq!(ListColumns::from_state_str(""), d);
         assert_eq!(ListColumns::from_state_str("1,2,3"), d, "個数が足りない");
-        assert_eq!(ListColumns::from_state_str("1,2,3,4,5,6,7"), d, "個数が多い");
-        assert_eq!(ListColumns::from_state_str("a,b,c,d,e,f"), d, "数値でない");
-        assert_eq!(ListColumns::from_state_str("24,360,90,160,120,x"), d, "一部だけ壊れていたら全て既定");
+        assert_eq!(ListColumns::from_state_str("1,2,3,4,5,6,7,8"), d, "個数が多い");
+        assert_eq!(ListColumns::from_state_str("a,b,c,d,e,f,g"), d, "数値でない");
+        assert_eq!(ListColumns::from_state_str("24,360,90,160,120,80,x"), d, "一部だけ壊れていたら全て既定");
+    }
+
+    #[test]
+    fn legacy_six_column_state_keeps_widths_and_defaults_the_pages_column() {
+        let c = ListColumns::from_state_str("30,200,100,170,130,90");
+        assert_eq!((c.width(0), c.width(1), c.width(5)), (40.0_f32.max(30.0), 200.0, 90.0), "最小幅に丸めた上で旧値を保つ");
+        assert_eq!(c.width(6), DEFAULT_WIDTHS[6]);
     }
 
     #[test]
     fn out_of_range_values_are_clamped_on_load() {
-        let c = ListColumns::from_state_str("1,1,1,1,1,1");
+        let c = ListColumns::from_state_str("1,1,1,1,1,1,1");
         for i in 0..COL_COUNT {
             assert_eq!(c.width(i), MIN_WIDTHS[i]);
         }
