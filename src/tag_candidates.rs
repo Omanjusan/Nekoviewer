@@ -132,6 +132,8 @@ pub(crate) struct Candidate {
     /// 新規要素を作る場合のカテゴリ。
     pub category: CatRef,
     pub choice: Choice,
+    /// 生成時の初期の扱い（確認ウィンドウで「採用」に戻すときの基準）。
+    pub initial: Choice,
     /// 既存タグへの類似提案（類似度の降順）。
     pub suggestions: Vec<Suggestion>,
     /// 作者・グループとして確証が無い（既存タグに完全一致せず、`[X]` 単独や括弧の向きが推測のもの）。
@@ -141,6 +143,28 @@ pub(crate) struct Candidate {
 }
 
 impl Candidate {
+    /// 付ける（採用）か。
+    pub(crate) fn is_adopted(&self) -> bool {
+        !matches!(self.choice, Choice::Skip)
+    }
+
+    /// 採用にする。初期が既存の完全一致ならそれ、類似提案があれば最上位、無ければ新規作成。
+    pub(crate) fn adopt(&mut self) {
+        if self.is_adopted() {
+            return;
+        }
+        self.choice = match (&self.initial, self.suggestions.first()) {
+            (Choice::Existing { .. }, _) => self.initial.clone(),
+            (_, Some(s)) => Choice::Existing { cat_idx: s.cat_idx, tier_id: s.tier_id },
+            _ => Choice::New,
+        };
+    }
+
+    /// 不採用（付けない）にする。
+    pub(crate) fn unadopt(&mut self) {
+        self.choice = Choice::Skip;
+    }
+
     /// 新規要素を作る必要がある（既存の完全一致ではない）か。要素数の警告・エラー判定に使う。
     pub(crate) fn needs_new_element(&self) -> bool {
         !matches!(self.choice, Choice::Existing { .. })
@@ -472,6 +496,7 @@ pub(crate) fn build_candidates(
             key: acc.key,
             files: acc.files,
             category,
+            initial: choice.clone(),
             choice,
             suggestions,
             unconfirmed,
@@ -512,6 +537,11 @@ fn pick_registration_name(forms: &[(String, usize)], lang: Lang) -> String {
         .unwrap_or_default()
 }
 
+/// 採否を変えたあとの集計をやり直す（確認ウィンドウ用）。
+pub(crate) fn recount_limits(candidates: &[Candidate]) -> LimitReport {
+    check_limits(candidates)
+}
+
 /// 窓ごとの新規要素数を数え、警告・エラーを判定する。
 fn check_limits(candidates: &[Candidate]) -> LimitReport {
     let count = |w: Window| candidates.iter().filter(|c| c.role.window() == w && c.needs_new_element()).count();
@@ -523,6 +553,43 @@ fn check_limits(candidates: &[Candidate]) -> LimitReport {
         window1_warn: w1 > WARN_NEW_ELEMENTS,
         window2_warn: w2 > WARN_NEW_ELEMENTS,
         error_count: over.into_iter().max(),
+    }
+}
+
+impl CandidateSet {
+    /// 窓ごとの候補の番号（種類順、束の最初の出現順、名前順）。
+    pub(crate) fn indices_in_window(&self, w: Window) -> Vec<usize> {
+        let order = |r: Role| match r {
+            Role::Format => 0,
+            Role::Main => 1,
+            Role::Language => 2,
+            Role::Event => 3,
+            Role::Author => 4,
+            Role::Group => 5,
+        };
+        let mut idx: Vec<usize> = (0..self.candidates.len()).filter(|&i| self.candidates[i].role.window() == w).collect();
+        idx.sort_by(|&a, &b| {
+            let (ca, cb) = (&self.candidates[a], &self.candidates[b]);
+            order(ca.role)
+                .cmp(&order(cb.role))
+                .then(ca.cluster.cmp(&cb.cluster))
+                .then(ca.name.to_lowercase().cmp(&cb.name.to_lowercase()))
+        });
+        idx
+    }
+
+    /// 再生成した候補 `fresh` に、ユーザーが変えた扱い（`touched`: 種類＋キー → 扱い）を引き継ぐ。
+    /// 同じ種類・キーの候補が無ければ捨てる。
+    pub(crate) fn carry_over_choices(&self, fresh: &mut CandidateSet) {
+        let old: HashMap<(Role, &str), &Candidate> = self.candidates.iter().map(|c| ((c.role, c.key.as_str()), c)).collect();
+        for c in &mut fresh.candidates {
+            if let Some(o) = old.get(&(c.role, c.key.as_str())) {
+                if o.choice != o.initial {
+                    c.choice = o.choice.clone();
+                }
+            }
+        }
+        fresh.limits = check_limits(&fresh.candidates);
     }
 }
 
@@ -718,6 +785,66 @@ mod tests {
         // 既存に一致するものは新規に数えない。
         let set = build_candidates(&[input("[Hawk Bit (Kouji)] t.zip", "zip", None)], &master(), &o, Lang::English);
         assert_eq!((set.limits.window1_new, set.limits.window2_new), (0, 0));
+    }
+
+    #[test]
+    fn adopt_and_unadopt_restore_the_sensible_choice() {
+        let set = build_candidates(&[input("[Koji] t.zip", "zip", None), input("[Hawk Bit (Kouji)] u.zip", "zip", None)], &master(), &MatchOptions::default(), Lang::Japanese);
+        let mut koji = find(&set, Role::Author, "Koji").clone();
+        assert_eq!(koji.choice, Choice::Skip);
+        assert!(!koji.is_adopted());
+        koji.adopt();
+        assert_eq!(koji.choice, Choice::Existing { cat_idx: 2, tier_id: 20 }, "類似提案の最上位");
+        koji.choice = Choice::New;
+        koji.unadopt();
+        assert_eq!(koji.choice, Choice::Skip);
+        let mut kouji = find(&set, Role::Author, "Kouji").clone();
+        kouji.unadopt();
+        kouji.adopt();
+        assert_eq!(kouji.choice, kouji.initial, "完全一致は初期の既存に戻る");
+        // 提案も既存も無い候補は、新規作成。
+        let set = build_candidates(&[input("[Zzzz (Qqqq)] t.zip", "zip", None)], &master(), &MatchOptions::default(), Lang::Japanese);
+        let mut c = find(&set, Role::Author, "Qqqq").clone();
+        c.unadopt();
+        c.adopt();
+        assert_eq!(c.choice, Choice::New);
+    }
+
+    #[test]
+    fn indices_in_window_split_roles_and_group_clusters() {
+        let inputs = [
+            input("(E1) [Aaa (Bbb)] t.zip", "zip", Some("Category: Manga\n")),
+            input("[Aaa (Bbc)] t.zip", "zip", None),
+        ];
+        let set = build_candidates(&inputs, &master(), &MatchOptions::default(), Lang::English);
+        let w1 = set.indices_in_window(Window::One);
+        let w2 = set.indices_in_window(Window::Two);
+        assert!(w1.iter().all(|&i| set.candidates[i].role.window() == Window::One));
+        assert!(w2.iter().all(|&i| matches!(set.candidates[i].role, Role::Author | Role::Group)));
+        assert_eq!(w1.len() + w2.len(), set.candidates.len());
+        let roles: Vec<Role> = w1.iter().map(|&i| set.candidates[i].role).collect();
+        let mut sorted = roles.clone();
+        sorted.sort_by_key(|r| match r { Role::Format => 0, Role::Main => 1, Role::Language => 2, _ => 3 });
+        assert_eq!(roles, sorted, "種類順");
+    }
+
+    #[test]
+    fn carry_over_keeps_user_changes_for_candidates_that_still_exist() {
+        let inputs = [input("[Koji] t.zip", "zip", None), input("[Zzzz] u.zip", "zip", None)];
+        let o = MatchOptions::default();
+        let mut set = build_candidates(&inputs, &master(), &o, Lang::English);
+        // ユーザーが Koji を採用、Zzzz を不採用に変えた。
+        let koji = set.candidates.iter().position(|c| c.name == "Koji").unwrap();
+        set.candidates[koji].adopt();
+        let zzzz = set.candidates.iter().position(|c| c.name == "Zzzz").unwrap();
+        set.candidates[zzzz].unadopt();
+        let strict = MatchOptions { threshold: 100, ..o };
+        let mut fresh = build_candidates(&inputs, &master(), &strict, Lang::English);
+        assert_eq!(find(&fresh, Role::Author, "Koji").choice, Choice::New, "しきい値100では提案が消える");
+        set.carry_over_choices(&mut fresh);
+        assert_eq!(find(&fresh, Role::Author, "Koji").choice, Choice::Existing { cat_idx: 2, tier_id: 20 }, "変えた扱いを引き継ぐ");
+        assert_eq!(find(&fresh, Role::Author, "Zzzz").choice, Choice::Skip);
+        assert_eq!(fresh.limits.window2_new, 1, "上限の集計も引き継ぎ後でやり直す（Zzzz は Skip でも新規の数に入る）");
     }
 
     #[test]

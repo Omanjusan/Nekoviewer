@@ -216,6 +216,7 @@ impl NekoviewApp {
             && !self.search_date_end_calendar.is_open()
             && self.pending_open.is_none()
             && self.tag_scan_job.is_none()
+            && self.tag_confirm.is_none()
             && self.tree_sort_dialog.is_none()
             && !self.tag_manager_open
         {
@@ -280,6 +281,7 @@ impl NekoviewApp {
         self.draw_dismissed_window(&ctx);
         self.draw_detail_window(&ctx);
         self.draw_tag_scan_overlay(&ctx);
+        self.draw_tag_confirm(&ctx);
         self.draw_sort_condition_dialog(&ctx);
         self.draw_bookmark_setting_dialog(&ctx);
         self.draw_spread_setting_dialog(&ctx);

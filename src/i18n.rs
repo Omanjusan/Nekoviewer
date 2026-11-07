@@ -4224,6 +4224,294 @@ impl Lang {
         }
     }
 
+    pub fn tag_confirm_title_one(self) -> &'static str {
+        match self {
+            Lang::Japanese => "タグ候補の確認 (1/2): 形式・カテゴリ・言語・イベント",
+            Lang::English  => "Confirm tag candidates (1/2): format, category, language, event",
+            Lang::Chinese  => "确认标签候选 (1/2)：格式、类别、语言、活动",
+        }
+    }
+
+    pub fn tag_confirm_title_two(self) -> &'static str {
+        match self {
+            Lang::Japanese => "タグ候補の確認 (2/2): 作者・グループ",
+            Lang::English  => "Confirm tag candidates (2/2): authors and groups",
+            Lang::Chinese  => "确认标签候选 (2/2)：作者、团体",
+        }
+    }
+
+    pub fn tag_confirm_opt_width(self) -> &'static str {
+        match self {
+            Lang::Japanese => "全角半角",
+            Lang::English  => "Full/half width",
+            Lang::Chinese  => "全角半角",
+        }
+    }
+
+    pub fn tag_confirm_opt_space(self) -> &'static str {
+        match self {
+            Lang::Japanese => "スペース無視",
+            Lang::English  => "Ignore spaces",
+            Lang::Chinese  => "忽略空格",
+        }
+    }
+
+    pub fn tag_confirm_opt_hyphen(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ハイフン・アンダーバー無視",
+            Lang::English  => "Ignore hyphens/underscores",
+            Lang::Chinese  => "忽略连字符/下划线",
+        }
+    }
+
+    pub fn tag_confirm_opt_symbols(self) -> &'static str {
+        match self {
+            Lang::Japanese => "特殊文字を除く",
+            Lang::English  => "Remove special characters",
+            Lang::Chinese  => "去除特殊字符",
+        }
+    }
+
+    pub fn tag_confirm_opt_romaji(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ローマ字の表記ゆれ",
+            Lang::English  => "Romaji spelling variants",
+            Lang::Chinese  => "罗马字拼写差异",
+        }
+    }
+
+    pub fn tag_confirm_threshold(self) -> &'static str {
+        match self {
+            Lang::Japanese => "類似度のしきい値",
+            Lang::English  => "Similarity threshold",
+            Lang::Chinese  => "相似度阈值",
+        }
+    }
+
+    pub fn tag_confirm_adopt_all(self) -> &'static str {
+        match self {
+            Lang::Japanese => "すべて採用",
+            Lang::English  => "Adopt all",
+            Lang::Chinese  => "全部采用",
+        }
+    }
+
+    pub fn tag_confirm_unadopt_all(self) -> &'static str {
+        match self {
+            Lang::Japanese => "すべて不採用",
+            Lang::English  => "Reject all",
+            Lang::Chinese  => "全部不采用",
+        }
+    }
+
+    pub fn tag_confirm_unadopt_unconfirmed(self) -> &'static str {
+        match self {
+            Lang::Japanese => "未確定を不採用",
+            Lang::English  => "Reject unconfirmed",
+            Lang::Chinese  => "未确认全部不采用",
+        }
+    }
+
+    pub fn tag_confirm_only_unconfirmed(self) -> &'static str {
+        match self {
+            Lang::Japanese => "未確定のみ表示",
+            Lang::English  => "Show unconfirmed only",
+            Lang::Chinese  => "仅显示未确认",
+        }
+    }
+
+    pub fn tag_confirm_cluster_adopt(self) -> &'static str {
+        match self {
+            Lang::Japanese => "まとめて採用",
+            Lang::English  => "Adopt group",
+            Lang::Chinese  => "整组采用",
+        }
+    }
+
+    pub fn tag_confirm_cluster_unadopt(self) -> &'static str {
+        match self {
+            Lang::Japanese => "まとめて不採用",
+            Lang::English  => "Reject group",
+            Lang::Chinese  => "整组不采用",
+        }
+    }
+
+    pub fn tag_confirm_unconfirmed(self) -> &'static str {
+        match self {
+            Lang::Japanese => "未確定",
+            Lang::English  => "unconfirmed",
+            Lang::Chinese  => "未确认",
+        }
+    }
+
+    pub fn tag_confirm_empty(self) -> &'static str {
+        match self {
+            Lang::Japanese => "表示する候補がありません",
+            Lang::English  => "No candidates to show",
+            Lang::Chinese  => "没有可显示的候选",
+        }
+    }
+
+    pub fn tag_confirm_next(self) -> &'static str {
+        match self {
+            Lang::Japanese => "次へ",
+            Lang::English  => "Next",
+            Lang::Chinese  => "下一步",
+        }
+    }
+
+    pub fn tag_confirm_back(self) -> &'static str {
+        match self {
+            Lang::Japanese => "戻る",
+            Lang::English  => "Back",
+            Lang::Chinese  => "返回",
+        }
+    }
+
+    pub fn tag_confirm_apply(self) -> &'static str {
+        match self {
+            Lang::Japanese => "適用",
+            Lang::English  => "Apply",
+            Lang::Chinese  => "应用",
+        }
+    }
+
+    pub fn tag_confirm_apply_pending(self) -> &'static str {
+        match self {
+            Lang::Japanese => "適用は次の単位で実装します（いまは確認のみ）",
+            Lang::English  => "Applying is not implemented yet (review only for now)",
+            Lang::Chinese  => "应用功能将在后续版本实现（目前仅供确认）",
+        }
+    }
+
+    pub fn tag_confirm_no_candidates(self) -> &'static str {
+        match self {
+            Lang::Japanese => "付けられるタグ候補がありませんでした",
+            Lang::English  => "No tag candidates were found",
+            Lang::Chinese  => "没有可添加的标签候选",
+        }
+    }
+
+    pub fn tag_confirm_role_format(self) -> &'static str {
+        match self {
+            Lang::Japanese => "アーカイブ形式",
+            Lang::English  => "Archive format",
+            Lang::Chinese  => "压缩包格式",
+        }
+    }
+
+    pub fn tag_confirm_role_main(self) -> &'static str {
+        match self {
+            Lang::Japanese => "カテゴリ（メインタグ）",
+            Lang::English  => "Category (main tag)",
+            Lang::Chinese  => "类别（主标签）",
+        }
+    }
+
+    pub fn tag_confirm_role_language(self) -> &'static str {
+        match self {
+            Lang::Japanese => "言語",
+            Lang::English  => "Language",
+            Lang::Chinese  => "语言",
+        }
+    }
+
+    pub fn tag_confirm_role_event(self) -> &'static str {
+        match self {
+            Lang::Japanese => "イベント",
+            Lang::English  => "Event",
+            Lang::Chinese  => "活动",
+        }
+    }
+
+    pub fn tag_confirm_role_author(self) -> &'static str {
+        match self {
+            Lang::Japanese => "作者",
+            Lang::English  => "Authors",
+            Lang::Chinese  => "作者",
+        }
+    }
+
+    pub fn tag_confirm_role_group(self) -> &'static str {
+        match self {
+            Lang::Japanese => "グループ",
+            Lang::English  => "Groups",
+            Lang::Chinese  => "团体",
+        }
+    }
+
+    pub fn tag_confirm_choice_skip(self) -> &'static str {
+        match self {
+            Lang::Japanese => "付けない",
+            Lang::English  => "Do not tag",
+            Lang::Chinese  => "不添加",
+        }
+    }
+
+    pub fn tag_confirm_summary(self, adopted: usize, new_elements: usize) -> String {
+        match self {
+            Lang::Japanese => format!("採用 {adopted}件 / 新規要素 {new_elements}個"),
+            Lang::English  => format!("Adopted {adopted} / new elements {new_elements}"),
+            Lang::Chinese  => format!("采用 {adopted} 个 / 新元素 {new_elements} 个"),
+        }
+    }
+
+    pub fn tag_confirm_warn_many(self, limit: usize) -> String {
+        match self {
+            Lang::Japanese => format!("⚠ 新規要素が{limit}個を超えています。続行はできますが、タグが大量に増えます"),
+            Lang::English  => format!("⚠ Over {limit} new elements. You can continue, but many tags will be added"),
+            Lang::Chinese  => format!("⚠ 新元素超过 {limit} 个。可以继续，但会新增大量标签"),
+        }
+    }
+
+    pub fn tag_confirm_error_many(self, limit: usize) -> String {
+        match self {
+            Lang::Japanese => format!("新規要素が上限（{limit}個）を超えています"),
+            Lang::English  => format!("New elements exceed the limit ({limit})"),
+            Lang::Chinese  => format!("新元素超过上限（{limit} 个）"),
+        }
+    }
+
+    pub fn tag_confirm_cluster_header(self, size: usize) -> String {
+        match self {
+            Lang::Japanese => format!("類似品 {size}件"),
+            Lang::English  => format!("Similar items ({size})"),
+            Lang::Chinese  => format!("相似项 {size} 个"),
+        }
+    }
+
+    pub fn tag_confirm_file_count(self, n: usize) -> String {
+        match self {
+            Lang::Japanese => format!("{n}件"),
+            Lang::English  => format!("{n} file(s)"),
+            Lang::Chinese  => format!("{n} 个文件"),
+        }
+    }
+
+    pub fn tag_confirm_existing(self, name: &str) -> String {
+        match self {
+            Lang::Japanese => format!("→ 既存: {name}"),
+            Lang::English  => format!("→ existing: {name}"),
+            Lang::Chinese  => format!("→ 已有：{name}"),
+        }
+    }
+
+    pub fn tag_confirm_new_category(self, category: &str) -> String {
+        match self {
+            Lang::Japanese => format!("→ 新規（カテゴリ「{category}」を作成）"),
+            Lang::English  => format!("→ new (creates category \"{category}\")"),
+            Lang::Chinese  => format!("→ 新建（创建类别“{category}”）"),
+        }
+    }
+
+    pub fn tag_confirm_choice_new(self, name: &str) -> String {
+        match self {
+            Lang::Japanese => format!("新規作成: {name}"),
+            Lang::English  => format!("Create new: {name}"),
+            Lang::Chinese  => format!("新建：{name}"),
+        }
+    }
+
     /// 新規要素が上限を超えたときのエラー（何もせず終了する）
     pub fn tag_scan_too_many(self, count: usize, limit: usize) -> String {
         match self {

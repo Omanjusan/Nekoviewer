@@ -1055,8 +1055,8 @@ pub struct NekoviewApp {
     tag_scan_job: Option<tag_scan::TagScanJob>,
     /// 直近の走査結果（メモリのみ。候補生成・確認ウィンドウ・適用が読む）。
     tag_scan_result: Option<tag_scan::TagScanResult>,
-    /// 一括タグ付けの照合の切替項目（正規化5項目・類似しきい値）。確認ウィンドウで切り替える。
-    tag_match_options: crate::tag_similarity::MatchOptions,
+    /// 開いているタグ候補の確認ウィンドウ（2枚）。
+    tag_confirm: Option<tag_confirm::TagConfirm>,
     /// 設定ダイアログの表示状態・選択中タブ・編集用下書き
     pub(crate) settings_open: bool,
     pub(crate) settings_tab: SettingsTab,
@@ -1384,6 +1384,7 @@ pub struct NekoviewApp {
 
 mod archive_info_cache;
 mod tag_scan;
+mod tag_confirm;
 mod scan;
 mod folder_sort;
 mod workers;
@@ -1674,7 +1675,7 @@ impl NekoviewApp {
             pending_open: None,
             tag_scan_job: None,
             tag_scan_result: None,
-            tag_match_options: Default::default(),
+            tag_confirm: None,
             settings_open: false,
             settings_tab: SettingsTab::Common,
             settings_draft,

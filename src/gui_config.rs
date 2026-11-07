@@ -495,6 +495,8 @@ pub struct AppState {
     pub app_folder_book_access_warning_seen: Option<bool>,
     /// アーカイブ内TXTの画像ページ設定（`TextPageOptions::to_state_str` の形）。
     pub app_text_page: Option<crate::fs::archive::text_page::TextPageOptions>,
+    /// 一括タグ付けの照合の切替項目（`MatchOptions::to_state_str` の形）。
+    pub app_tag_match: Option<crate::tag_similarity::MatchOptions>,
     /// 次回起動時に XWayland で起動するか。
     pub app_launch_x11: Option<bool>,
     /// 前回起動したときのバージョン。空文字は未記録として None に落とす。
@@ -561,6 +563,7 @@ impl Default for AppState {
             app_max_decode_edge_prompt_answered: None,
             app_folder_book_access_warning_seen: None,
             app_text_page: None,
+            app_tag_match: None,
             app_launch_x11: None,
             app_last_run_version: None,
             app_default_slot: None,
@@ -667,6 +670,7 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
     let mut app_max_decode_edge_prompt_answered: Option<bool> = None;
     let mut app_folder_book_access_warning_seen: Option<bool> = None;
     let mut app_text_page: Option<crate::fs::archive::text_page::TextPageOptions> = None;
+    let mut app_tag_match: Option<crate::tag_similarity::MatchOptions> = None;
     let mut app_launch_x11: Option<bool> = None;
     let mut app_last_run_version: Option<String> = None;
     let mut app_default_slot: Option<Option<usize>> = None;
@@ -842,6 +846,7 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
                 "app_max_decode_edge_prompt_answered" => { app_max_decode_edge_prompt_answered = v.trim().parse().ok(); }
                 "app_folder_book_access_warning_seen" => { app_folder_book_access_warning_seen = v.trim().parse().ok(); }
                 "app_text_page" => { app_text_page = crate::fs::archive::text_page::TextPageOptions::from_state_str(v); }
+                "app_tag_match" => { app_tag_match = crate::tag_similarity::MatchOptions::from_state_str(v); }
                 "app_launch_x11" => { app_launch_x11 = v.trim().parse().ok(); }
                 "app_last_run_version" => { app_last_run_version = Some(v.trim().to_string()).filter(|s| !s.is_empty()); }
                 "app_default_slot" => {
@@ -1122,6 +1127,7 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
         app_max_decode_edge_prompt_answered,
         app_folder_book_access_warning_seen,
         app_text_page,
+        app_tag_match,
         app_launch_x11,
         app_last_run_version,
         app_default_slot,
@@ -1323,6 +1329,7 @@ pub fn save_state(root: &Path, dir: &Path, window_size: (u32, u32), viewer_slots
         app_cfg.decode_threads, default_slot_str, app_cfg.magnifier_zoom_notice_shown, app_cfg.max_decode_edge_prompt_answered, app_cfg.folder_book_access_warning_seen,
     ));
     content.push_str(&format!("app_text_page={}\n", app_cfg.text_page.to_state_str()));
+    content.push_str(&format!("app_tag_match={}\n", app_cfg.tag_match.to_state_str()));
     content.push_str(&format!("app_launch_x11={}\n", app_cfg.launch_x11));
     if !app_cfg.last_run_version.is_empty() {
         content.push_str(&format!("app_last_run_version={}\n", app_cfg.last_run_version));
@@ -1388,6 +1395,15 @@ mod tests {
         assert_eq!(parse_state_text("lx_off", "app_launch_x11=false\n").app_launch_x11, Some(false));
         assert_eq!(parse_state_text("lx_bad", "app_launch_x11=yes\n").app_launch_x11, None);
         assert_eq!(parse_state_text("lx_none", "").app_launch_x11, None);
+    }
+
+    #[test]
+    fn tag_match_option_parses_and_ignores_bad_values() {
+        let parsed = parse_state_text("tm_set", "app_tag_match=0,1,0,1,0,90\n");
+        let o = parsed.app_tag_match.unwrap();
+        assert_eq!((o.width, o.space, o.hyphen_underscore, o.symbols, o.romaji, o.threshold), (false, true, false, true, false, 90));
+        assert_eq!(parse_state_text("tm_bad", "app_tag_match=junk\n").app_tag_match, None);
+        assert_eq!(parse_state_text("tm_none", "lang=ja\n").app_tag_match, None);
     }
 
     #[test]

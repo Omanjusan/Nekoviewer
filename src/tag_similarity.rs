@@ -35,6 +35,34 @@ impl Default for MatchOptions {
 }
 
 impl MatchOptions {
+    /// state ファイル用の文字列（全角半角,スペース,ハイフン,特殊文字,ローマ字,しきい値）。例: `1,1,1,1,1,80`。
+    pub(crate) fn to_state_str(self) -> String {
+        let b = |v: bool| u8::from(v);
+        format!("{},{},{},{},{},{}", b(self.width), b(self.space), b(self.hyphen_underscore), b(self.symbols), b(self.romaji), self.threshold)
+    }
+
+    /// `to_state_str` の逆。個数や値が不正なら None（呼び出し側は既定値のまま）。しきい値は丸める。
+    pub(crate) fn from_state_str(s: &str) -> Option<Self> {
+        let p: Vec<&str> = s.trim().split(',').map(str::trim).collect();
+        let [w, sp, h, sy, r, th] = p.as_slice() else { return None };
+        let flag = |v: &str| match v {
+            "1" => Some(true),
+            "0" => Some(false),
+            _ => None,
+        };
+        Some(
+            Self {
+                width: flag(w)?,
+                space: flag(sp)?,
+                hyphen_underscore: flag(h)?,
+                symbols: flag(sy)?,
+                romaji: flag(r)?,
+                threshold: th.parse().ok()?,
+            }
+            .clamped(),
+        )
+    }
+
     /// しきい値を 50〜100 に丸める。
     pub(crate) fn clamped(mut self) -> Self {
         self.threshold = self.threshold.clamp(50, 100);
@@ -512,6 +540,19 @@ mod tests {
         assert_eq!(exact_key("a(b)!", &all), "ab");
         // 日本語の文字は記号として落とさない。
         assert_eq!(exact_key("作者・こうじ", &all), "作者こうじ".replace('・', ""));
+    }
+
+    #[test]
+    fn options_state_string_round_trips_and_rejects_garbage() {
+        let o = MatchOptions { width: false, space: true, hyphen_underscore: false, symbols: true, romaji: false, threshold: 90 };
+        assert_eq!(o.to_state_str(), "0,1,0,1,0,90");
+        assert_eq!(MatchOptions::from_state_str(&o.to_state_str()), Some(o));
+        assert_eq!(MatchOptions::default().to_state_str(), "1,1,1,1,1,80");
+        for bad in ["", "1,1,1", "1,1,1,1,1", "1,1,1,1,1,x", "2,1,1,1,1,80", "1,1,1,1,1,80,1"] {
+            assert_eq!(MatchOptions::from_state_str(bad), None, "{bad}");
+        }
+        assert_eq!(MatchOptions::from_state_str("1,1,1,1,1,10").map(|o| o.threshold), Some(50), "しきい値は丸める");
+        assert_eq!(MatchOptions::from_state_str("1,1,1,1,1,255").map(|o| o.threshold), Some(100));
     }
 
     #[test]

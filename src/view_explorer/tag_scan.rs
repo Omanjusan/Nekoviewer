@@ -122,8 +122,13 @@ fn attach_candidates(result: &mut TagScanResult, master: &[TagManagerCategoryUi]
     if result.cancelled {
         return;
     }
-    let inputs: Vec<CandidateInput> = result
-        .items
+    let inputs = inputs_from_items(&result.items);
+    result.candidates = Some(build_candidates(&inputs, master, opts, lang));
+}
+
+/// 走査結果を、候補生成の入力にする。
+pub(super) fn inputs_from_items(items: &[ScanItem]) -> Vec<CandidateInput> {
+    items
         .iter()
         .map(|it| CandidateInput {
             file_name: it.path.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string(),
@@ -133,8 +138,7 @@ fn attach_candidates(result: &mut TagScanResult, master: &[TagManagerCategoryUi]
                 _ => None,
             },
         })
-        .collect();
-    result.candidates = Some(build_candidates(&inputs, master, opts, lang));
+        .collect()
 }
 
 /// 走査中のジョブ（背景スレッド＋進捗＋キャンセル）。
@@ -205,7 +209,7 @@ impl NekoviewApp {
             targets,
             self.spread_db.clone(),
             self.tag_manager_categories.clone(),
-            self.tag_match_options,
+            self.config.tag_match,
             i18n::t(),
         ));
     }
@@ -245,6 +249,11 @@ impl NekoviewApp {
                 ));
             }
             self.set_toast(text);
+            // 候補があれば、確認ウィンドウ（1枚目）を開く。
+            if let Some(set) = result.candidates.clone() {
+                let inputs = inputs_from_items(&result.items);
+                self.open_tag_confirm(set, inputs, self.tag_manager_categories.clone());
+            }
             self.tag_scan_result = Some(result);
         }
     }
