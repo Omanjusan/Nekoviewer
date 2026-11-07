@@ -9,7 +9,7 @@ use super::{ArchiveMemoryEstimate, ArchiveOpenProgress, EntryEstimate, ImageEntr
 
 /// ZIPエントリのファイル名をUTF-8文字列にデコードする。
 /// UTF-8として無効な場合はShift-JISとして試みる（Windowsで作成された日本語ZIPに対応）。
-fn decode_zip_name(raw: &[u8]) -> String {
+pub(super) fn decode_zip_name(raw: &[u8]) -> String {
     if let Ok(s) = std::str::from_utf8(raw) {
         return s.to_string();
     }

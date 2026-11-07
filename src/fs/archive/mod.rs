@@ -7,6 +7,8 @@ use std::path::Path;
 pub mod decode;
 pub mod detect;
 mod folder;
+#[allow(dead_code)] // ユニットAの配線(P2〜P3)が入るまで未使用
+pub mod meta;
 mod progress;
 #[cfg(feature = "fmt-7z")]
 mod sevenz;
