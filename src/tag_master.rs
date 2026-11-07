@@ -213,6 +213,11 @@ impl<'a> TagMaster<'a> {
         out
     }
 
+    /// `cat_idx` の `tier_id` の要素名（全体）。
+    pub(crate) fn element_name(&self, cat_idx: usize, tier_id: u64) -> Option<String> {
+        self.cats.get(cat_idx)?.tiers.iter().find(|t| t.id == tier_id).and_then(|t| t.element.clone())
+    }
+
     /// tier_id が属するカテゴリ番号。
     pub(crate) fn category_of(&self, tier_id: u64) -> Option<usize> {
         self.cats.iter().position(|c| c.tiers.iter().any(|t| t.id == tier_id && t.element.is_some()))

@@ -13,7 +13,7 @@ use redb::Database;
 
 use crate::i18n::Lang;
 use crate::tag_candidates::{CandidateSet, CatRef, Choice, Role};
-use crate::tag_master::{merge_file_tags_in, TagMaster};
+use crate::tag_master::{alias_keys, escape_alias_sep, join_aliases, merge_file_tags_in, split_aliases, TagMaster};
 use crate::view_explorer::TagManagerCategoryUi;
 
 /// 適用の計画。
@@ -23,6 +23,10 @@ pub(crate) struct Plan {
     pub file_additions: HashMap<usize, Vec<u64>>,
     pub new_categories: usize,
     pub new_elements: usize,
+    /// 別名を足して要素名を書き換えたもの（カテゴリ番号, tier_id, 書き換え前, 書き換え後）。
+    pub renames: Vec<(usize, u64, String, String)>,
+    /// 別名が他の要素の別名と重なるため、書き換えずにタグだけ付けた件数。
+    pub alias_conflicts: usize,
 }
 
 fn role_order(r: Role) -> u8 {
@@ -62,6 +66,16 @@ pub(crate) fn plan_application(
                 }
                 *tier_id
             }
+            Choice::Alias { cat_idx, tier_id } => {
+                let alias = escape_alias_sep(&c.name);
+                match add_alias_to_element(cats, next_tier_id, *cat_idx, *tier_id, &alias) {
+                    AliasOutcome::Renamed(old, new) => plan.renames.push((*cat_idx, *tier_id, old, new)),
+                    AliasOutcome::AlreadyHas => {}
+                    AliasOutcome::Conflict => plan.alias_conflicts += 1,
+                    AliasOutcome::MissingTarget => continue,
+                }
+                *tier_id
+            }
             Choice::New => {
                 let mut master = TagMaster::new(cats, next_tier_id);
                 let cat_idx = match c.category {
@@ -93,6 +107,47 @@ pub(crate) fn plan_application(
     plan
 }
 
+enum AliasOutcome {
+    /// 要素名を（書き換え前, 書き換え後）にした。
+    Renamed(String, String),
+    /// 既に同じ別名を持っている（書き換え不要）。
+    AlreadyHas,
+    /// 別の要素の別名と重なるので書き換えない。
+    Conflict,
+    /// 対象の要素がマスターに無い。
+    MissingTarget,
+}
+
+/// `cat_idx` の `tier_id` の要素に別名 `alias` を足す。重なる別名が他の要素にあれば書き換えない。
+fn add_alias_to_element(
+    cats: &mut Vec<TagManagerCategoryUi>,
+    next_tier_id: &mut u64,
+    cat_idx: usize,
+    tier_id: u64,
+    alias: &str,
+) -> AliasOutcome {
+    let master = TagMaster::new(cats, next_tier_id);
+    let Some(old) = master.element_name(cat_idx, tier_id) else { return AliasOutcome::MissingTarget };
+    let new_keys = alias_keys(alias);
+    if new_keys.is_empty() {
+        return AliasOutcome::AlreadyHas;
+    }
+    let own = alias_keys(&old);
+    if new_keys.iter().all(|k| own.contains(k)) {
+        return AliasOutcome::AlreadyHas;
+    }
+    if master.find_elements(cat_idx, alias).iter().any(|&id| id != tier_id) {
+        return AliasOutcome::Conflict;
+    }
+    let mut parts: Vec<String> = split_aliases(&old).into_iter().map(String::from).collect();
+    parts.push(alias.trim().to_string());
+    let new = join_aliases(&parts);
+    for t in cats[cat_idx].tiers.iter_mut().filter(|t| t.id == tier_id) {
+        t.element = Some(new.clone());
+    }
+    AliasOutcome::Renamed(old, new)
+}
+
 /// 適用の結果。
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct ApplyReport {
@@ -104,6 +159,8 @@ pub(crate) struct ApplyReport {
     pub failed: usize,
     pub new_categories: usize,
     pub new_elements: usize,
+    /// 別名を足して名前を書き換えた要素の数。
+    pub renamed_elements: usize,
     /// 作ったバックアップ世代の名前。
     pub backup: String,
 }
@@ -167,6 +224,7 @@ pub(crate) fn run_apply(
         failed,
         new_categories: plan.new_categories,
         new_elements: plan.new_elements,
+        renamed_elements: plan.renames.len(),
         backup: backup_name,
     })
 }
@@ -229,6 +287,53 @@ mod tests {
         assert_eq!(f0.len(), 6, "形式・Manga・言語・イベント・グループ・作者");
         assert_eq!(f1.len(), 5, "形式・言語・イベント・グループ・作者(New Writer)");
         assert_eq!(next, 105, "新規要素の数だけ採番");
+    }
+
+    #[test]
+    fn alias_choice_renames_the_element_and_tags_with_it() {
+        let inputs = [input("[Circ (Koji)] a.zip", "zip", None), input("[Circ (Koji)] b.zip", "zip", None)];
+        let mut set = build_candidates(&inputs, &master(), &MatchOptions::default(), Lang::English);
+        let c = set.candidates.iter_mut().find(|c| c.role == Role::Author).unwrap();
+        c.choice = Choice::Alias { cat_idx: 2, tier_id: 20 };
+        let mut cats = master();
+        let mut next = 100u64;
+        let plan = plan_application(&set, &mut cats, &mut next, Lang::English);
+        assert_eq!(plan.renames, vec![(2, 20, "Kouji".to_string(), "Kouji|Koji".to_string())]);
+        assert_eq!(cats[2].tiers[0].element.as_deref(), Some("Kouji|Koji"));
+        assert!(plan.file_additions[&0].contains(&20) && plan.file_additions[&1].contains(&20));
+        assert!(cats[2].tiers.len() == 1, "要素は増えない");
+        // 次回は別名への完全一致で自動採用される。
+        let again = build_candidates(&inputs, &cats, &MatchOptions::default(), Lang::English);
+        let c = again.candidates.iter().find(|c| c.role == Role::Author).unwrap();
+        assert_eq!(c.choice, Choice::Existing { cat_idx: 2, tier_id: 20 });
+    }
+
+    #[test]
+    fn alias_choice_is_not_applied_when_it_overlaps_another_element_or_exists() {
+        let inputs = [input("[Circ (Koji)] a.zip", "zip", None)];
+        let mut set = build_candidates(&inputs, &master(), &MatchOptions::default(), Lang::English);
+        set.candidates.iter_mut().find(|c| c.role == Role::Author).unwrap().choice = Choice::Alias { cat_idx: 2, tier_id: 20 };
+        // 別の要素 Koji が既にある → 書き換えず、タグだけ付ける。
+        let mut cats = master();
+        cats[2].tiers.push(tier(21, "Koji"));
+        let mut next = 100u64;
+        let plan = plan_application(&set, &mut cats, &mut next, Lang::English);
+        assert!(plan.renames.is_empty());
+        assert_eq!(plan.alias_conflicts, 1);
+        assert_eq!(cats[2].tiers[0].element.as_deref(), Some("Kouji"));
+        assert!(plan.file_additions[&0].contains(&20));
+        // 既に同じ別名を持つ → 書き換えない（衝突でもない）。
+        let mut cats = master();
+        cats[2].tiers[0].element = Some("Kouji|koji".to_string());
+        let plan = plan_application(&set, &mut cats, &mut next, Lang::English);
+        assert!(plan.renames.is_empty() && plan.alias_conflicts == 0);
+        assert_eq!(cats[2].tiers[0].element.as_deref(), Some("Kouji|koji"));
+        // 対象の要素が無い → 飛ばす。
+        let mut cats = master();
+        cats[2].tiers.clear();
+        let plan = plan_application(&set, &mut cats, &mut next, Lang::English);
+        assert!(plan.renames.is_empty());
+        assert!(!plan.file_additions.get(&0).is_some_and(|v| v.contains(&20)));
     }
 
     #[test]
@@ -302,7 +407,7 @@ mod tests {
         let (db, root, paths) = seed_db("run", &[("a.zip", &[])]);
         let mut adds: HashMap<usize, Vec<u64>> = HashMap::new();
         adds.insert(0, vec![10]);
-        let plan = Plan { file_additions: adds, new_categories: 1, new_elements: 2 };
+        let plan = Plan { file_additions: adds, new_categories: 1, new_elements: 2, ..Plan::default() };
         let saved = Cell::new(false);
         let r = run_apply(&db, &paths, &plan, &master(), &|| None, &|| saved.set(true));
         assert_eq!(r, Err(ApplyError::BackupFailed));

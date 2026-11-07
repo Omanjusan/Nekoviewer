@@ -15,7 +15,7 @@
 use std::collections::HashMap;
 
 use crate::i18n::Lang;
-use crate::tag_master::{normalize_key, SystemKind};
+use crate::tag_master::{normalize_key, split_aliases, SystemKind};
 use crate::tag_similarity::{cluster, keys, normalize_width, similarity_at_least, Keys, MatchOptions};
 use crate::tag_source::{
     canonical_language, language_english_name, parse_info_txt, parse_name_parts, split_archive_extension, Creator,
@@ -103,7 +103,10 @@ pub(crate) enum CatRef {
 pub(crate) struct Suggestion {
     pub cat_idx: usize,
     pub tier_id: u64,
+    /// 要素の全体名（別名つきなら `A|B|C`）。
     pub name: String,
+    /// 最も近かった別名（別名の無い要素では `name` と同じ）。
+    pub alias: String,
     pub score: u8,
 }
 
@@ -114,6 +117,8 @@ pub(crate) enum Choice {
     Existing { cat_idx: usize, tier_id: u64 },
     /// 新しい要素を作って付ける（採用）。
     New,
+    /// 既存の要素の別名に、この候補の名前を足して付ける（採用）。要素名が `Kouji` → `Kouji|Koji` に書き換わる。
+    Alias { cat_idx: usize, tier_id: u64 },
     /// 付けない（未選択）。
     Skip,
 }
@@ -167,7 +172,7 @@ impl Candidate {
 
     /// 新規要素を作る必要がある（既存の完全一致ではない）か。要素数の警告・エラー判定に使う。
     pub(crate) fn needs_new_element(&self) -> bool {
-        !matches!(self.choice, Choice::Existing { .. })
+        !matches!(self.choice, Choice::Existing { .. } | Choice::Alias { .. })
     }
 }
 
@@ -223,16 +228,24 @@ fn find_category(cats: &[TagManagerCategoryUi], role: Role) -> CatRef {
 /// カテゴリの要素（tier_id・名前・照合キー）。照合のたびにキーを作り直さないよう、先に作っておく。
 struct ElementIndex {
     cat_idx: usize,
-    items: Vec<(u64, String, Keys)>,
+    /// 別名ごとに1件（tier_id・要素の全体名・別名・照合キー）。別名の無い要素は1件。
+    items: Vec<(u64, String, String, Keys)>,
 }
 
 fn element_index(cats: &[TagManagerCategoryUi], cat: CatRef, opts: &MatchOptions) -> Option<ElementIndex> {
     let CatRef::Existing(idx) = cat else { return None };
-    let items = cats[idx]
-        .tiers
-        .iter()
-        .filter_map(|t| t.element.as_ref().map(|e| (t.id, e.clone(), keys(e, opts))))
-        .collect();
+    let mut items = Vec::new();
+    for t in &cats[idx].tiers {
+        let Some(e) = t.element.as_ref() else { continue };
+        let aliases = split_aliases(e);
+        if aliases.is_empty() {
+            // 空白や `|` だけの名前。従来どおり全体を1件として扱う。
+            items.push((t.id, e.clone(), e.clone(), keys(e, opts)));
+        }
+        for a in aliases {
+            items.push((t.id, e.clone(), a.to_string(), keys(a, opts)));
+        }
+    }
     Some(ElementIndex { cat_idx: idx, items })
 }
 
@@ -242,20 +255,28 @@ impl ElementIndex {
         if k.exact.is_empty() {
             return None;
         }
-        self.items.iter().find(|(_, _, ek)| ek.exact == k.exact).map(|(id, n, _)| (*id, n.as_str()))
+        self.items.iter().find(|(_, _, _, ek)| ek.exact == k.exact).map(|(id, n, _, _)| (*id, n.as_str()))
     }
 
-    /// しきい値以上の類似要素（完全一致を除く）。
+    /// しきい値以上の類似要素（完全一致を除く）。要素ごとに、最も近い別名の類似度を使う。
     fn similar(&self, k: &Keys, threshold: u8) -> Vec<Suggestion> {
-        let mut out: Vec<Suggestion> = self
-            .items
-            .iter()
-            .filter(|(_, _, ek)| ek.exact != k.exact)
-            .filter_map(|(id, name, ek)| {
-                similarity_at_least(k, ek, threshold)
-                    .map(|score| Suggestion { cat_idx: self.cat_idx, tier_id: *id, name: name.clone(), score })
-            })
-            .collect();
+        let mut out: Vec<Suggestion> = Vec::new();
+        for (id, name, alias, ek) in &self.items {
+            if ek.exact == k.exact {
+                continue;
+            }
+            let Some(score) = similarity_at_least(k, ek, threshold) else { continue };
+            match out.iter_mut().find(|s| s.tier_id == *id) {
+                Some(s) if s.score >= score => {}
+                Some(s) => {
+                    s.score = score;
+                    s.alias = alias.clone();
+                }
+                None => out.push(Suggestion { cat_idx: self.cat_idx, tier_id: *id, name: name.clone(), alias: alias.clone(), score }),
+            }
+        }
+        // 別名のどれかが完全一致する要素は、完全一致として扱う（提案に出さない）。
+        out.retain(|s| !self.items.iter().any(|(id, _, _, ek)| *id == s.tier_id && ek.exact == k.exact));
         out.sort_by(|a, b| b.score.cmp(&a.score).then(a.name.cmp(&b.name)));
         out
     }
@@ -439,8 +460,8 @@ pub(crate) fn build_candidates(
                     existing = ix
                         .items
                         .iter()
-                        .find(|(_, n, ek)| canonical_language(n).is_some_and(|c| c == acc.key) || ek.exact == k.exact)
-                        .map(|(id, _, _)| (ix.cat_idx, *id));
+                        .find(|(_, _, a, ek)| canonical_language(a).is_some_and(|c| c == acc.key) || ek.exact == k.exact)
+                        .map(|(id, _, _, _)| (ix.cat_idx, *id));
                 }
             }
             Role::Format | Role::Main | Role::Event => {
@@ -733,6 +754,36 @@ mod tests {
         assert_eq!(authors[0].cluster, authors[1].cluster, "類似品は同じ束");
         let groups = set.candidates.iter().filter(|c| c.role == Role::Group).count();
         assert_eq!(groups, 1);
+    }
+
+    #[test]
+    fn existing_elements_match_by_any_alias() {
+        let mut cats = master();
+        cats[2].tiers[0].element = Some("Kouji|Tarou|コウタ".to_string());
+        // 2番目の別名に完全一致 → 既存の採用。
+        let set = build_candidates(&[input("[Circ (tarou)] a.zip", "zip", None)], &cats, &MatchOptions::default(), Lang::English);
+        let c = find(&set, Role::Author, "tarou");
+        assert_eq!(c.choice, Choice::Existing { cat_idx: 2, tier_id: 20 });
+        assert!(c.suggestions.is_empty());
+        // 別名どうしが類似（ローマ字ゆれ）→ 提案。全体名と、近かった別名が出る。
+        let set = build_candidates(&[input("[Circ (Kouta)] a.zip", "zip", None)], &cats, &MatchOptions::default(), Lang::English);
+        let c = find(&set, Role::Author, "Kouta");
+        assert_eq!(c.choice, Choice::Skip);
+        assert_eq!(c.suggestions.len(), 1, "要素ごとに1件");
+        assert_eq!((c.suggestions[0].tier_id, c.suggestions[0].name.as_str(), c.suggestions[0].alias.as_str()), (20, "Kouji|Tarou|コウタ", "コウタ"));
+        // 別名に完全一致する要素は、類似提案に出さない（完全一致が優先）。
+        let set = build_candidates(&[input("[Circ (Kouji)] a.zip", "zip", None)], &cats, &MatchOptions::default(), Lang::English);
+        let c = find(&set, Role::Author, "Kouji");
+        assert_eq!(c.choice, Choice::Existing { cat_idx: 2, tier_id: 20 });
+    }
+
+    #[test]
+    fn alias_choice_counts_as_adopted_and_needs_no_new_element() {
+        let set = build_candidates(&[input("[Circ (Koji)] a.zip", "zip", None)], &master(), &MatchOptions::default(), Lang::English);
+        let mut c = find(&set, Role::Author, "Koji").clone();
+        c.choice = Choice::Alias { cat_idx: 2, tier_id: 20 };
+        assert!(c.is_adopted());
+        assert!(!c.needs_new_element());
     }
 
     #[test]

@@ -4512,6 +4512,14 @@ impl Lang {
         }
     }
 
+    pub fn tag_confirm_choice_alias(self, element: &str, name: &str) -> String {
+        match self {
+            Lang::Japanese => format!("別名に追加: {element} ← {name}"),
+            Lang::English  => format!("Add as alias: {element} ← {name}"),
+            Lang::Chinese  => format!("添加为别名：{element} ← {name}"),
+        }
+    }
+
     pub fn tag_confirm_apply_none(self) -> &'static str {
         match self {
             Lang::Japanese => "付けるタグがありません（採用された候補がありません）",

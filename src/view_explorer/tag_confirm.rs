@@ -380,6 +380,7 @@ fn draw_candidate_row(ui: &mut egui::Ui, set: &mut CandidateSet, i: usize, maste
                     let score = c.suggestions.iter().find(|s| s.tier_id == *tier_id).map_or(100, |s| s.score);
                     format!("{} ({score}%)", element_name(master, *tier_id))
                 }
+                Choice::Alias { tier_id, .. } => t.tag_confirm_choice_alias(&element_name(master, *tier_id), &c.name),
                 Choice::New => t.tag_confirm_choice_new(&c.name),
                 Choice::Skip => t.tag_confirm_choice_skip().to_string(),
             };
@@ -390,8 +391,17 @@ fn draw_candidate_row(ui: &mut egui::Ui, set: &mut CandidateSet, i: usize, maste
                 let suggestions = c.suggestions.clone();
                 for s in suggestions {
                     let selected = matches!(c.choice, Choice::Existing { tier_id, .. } if tier_id == s.tier_id);
-                    if ui.selectable_label(selected, format!("{} ({}%)", s.name, s.score)).clicked() {
+                    let shown = if s.alias != s.name && s.name.contains('|') {
+                        format!("{} ({}%) ≈ {}", s.name, s.score, s.alias)
+                    } else {
+                        format!("{} ({}%)", s.name, s.score)
+                    };
+                    if ui.selectable_label(selected, shown).clicked() {
                         c.choice = Choice::Existing { cat_idx: s.cat_idx, tier_id: s.tier_id };
+                    }
+                    let alias_selected = matches!(c.choice, Choice::Alias { tier_id, .. } if tier_id == s.tier_id);
+                    if ui.selectable_label(alias_selected, t.tag_confirm_choice_alias(&s.name, &c.name)).clicked() {
+                        c.choice = Choice::Alias { cat_idx: s.cat_idx, tier_id: s.tier_id };
                     }
                 }
                 if ui.selectable_label(matches!(c.choice, Choice::Skip), t.tag_confirm_choice_skip()).clicked() {
