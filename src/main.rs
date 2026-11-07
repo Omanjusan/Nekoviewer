@@ -46,6 +46,7 @@ mod rotation;
 mod single_instance;
 mod spread_offset;
 mod spread_state;
+mod tag_candidates;
 mod tag_manager;
 mod tag_master;
 mod tag_similarity;

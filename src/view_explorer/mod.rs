@@ -630,6 +630,7 @@ struct RatingSettingDialogState {
 }
 
 /// タグマネージャー: カテゴリのUI状態（`tag_manager.rs`でJSON永続化される）。
+#[derive(Clone)]
 pub(crate) struct TagManagerCategoryUi {
     /// 保存名。メインカテゴリは表示に使わない（`display_name`参照）。
     pub(crate) name: String,
@@ -700,6 +701,7 @@ pub(crate) fn pick_distinct_tag_color(existing: &[egui::Color32]) -> egui::Color
 }
 
 /// タグマネージャー: tier1件ぶんのUI状態。
+#[derive(Clone)]
 pub(crate) struct TagManagerTierUi {
     /// tier（＝要素）の不変ID。連番採番で削除しても再利用しない。要素名(`element`)は
     /// リネーム可能だが`id`は変わらないため、将来ファイルとの紐付けをID参照で持たせても
@@ -1053,6 +1055,8 @@ pub struct NekoviewApp {
     tag_scan_job: Option<tag_scan::TagScanJob>,
     /// 直近の走査結果（メモリのみ。候補生成・確認ウィンドウ・適用が読む）。
     tag_scan_result: Option<tag_scan::TagScanResult>,
+    /// 一括タグ付けの照合の切替項目（正規化5項目・類似しきい値）。確認ウィンドウで切り替える。
+    tag_match_options: crate::tag_similarity::MatchOptions,
     /// 設定ダイアログの表示状態・選択中タブ・編集用下書き
     pub(crate) settings_open: bool,
     pub(crate) settings_tab: SettingsTab,
@@ -1670,6 +1674,7 @@ impl NekoviewApp {
             pending_open: None,
             tag_scan_job: None,
             tag_scan_result: None,
+            tag_match_options: Default::default(),
             settings_open: false,
             settings_tab: SettingsTab::Common,
             settings_draft,

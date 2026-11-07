@@ -96,6 +96,11 @@ fn apply_width(s: &str) -> String {
     halfwidth_kana_to_full(&converted)
 }
 
+/// 登録名用の全角半角の正規化（全角英数記号→半角、全角空白→空白、半角カナ→全角カナ）。大文字小文字は変えない。
+pub(crate) fn normalize_width(s: &str) -> String {
+    apply_width(s)
+}
+
 fn is_hyphen_like(c: char) -> bool {
     matches!(c, '-' | '_' | '‐' | '‑' | '–' | '—' | '−' | '＿' | '－' | 'ー' | '～' | '〜' | '~')
 }
@@ -333,6 +338,29 @@ fn edit_distance(a: &[char], b: &[char]) -> usize {
     prev[b.len()]
 }
 
+/// 編集距離が `bound` 以下ならその距離、超えると分かった時点で None。
+fn bounded_edit_distance(a: &[char], b: &[char], bound: usize) -> Option<usize> {
+    if a.len().abs_diff(b.len()) > bound {
+        return None;
+    }
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    let mut cur = vec![0usize; b.len() + 1];
+    for (i, &ca) in a.iter().enumerate() {
+        cur[0] = i + 1;
+        let mut row_min = cur[0];
+        for (j, &cb) in b.iter().enumerate() {
+            let cost = usize::from(ca != cb);
+            cur[j + 1] = (prev[j] + cost).min(prev[j + 1] + 1).min(cur[j] + 1);
+            row_min = row_min.min(cur[j + 1]);
+        }
+        if row_min > bound {
+            return None;
+        }
+        std::mem::swap(&mut prev, &mut cur);
+    }
+    (prev[b.len()] <= bound).then_some(prev[b.len()])
+}
+
 /// 類似キー同士の類似度（0〜100）。どちらかが空なら 0。
 fn key_similarity(a: &str, b: &str) -> u8 {
     if a.is_empty() || b.is_empty() {
@@ -343,17 +371,69 @@ fn key_similarity(a: &str, b: &str) -> u8 {
     }
     let (ca, cb): (Vec<char>, Vec<char>) = (a.chars().collect(), b.chars().collect());
     let max = ca.len().max(cb.len());
+    // 長さの差だけで下限が決まる（編集距離は長さの差以上）。大きく違うものは距離を計算しない。
+    let min_d = ca.len().abs_diff(cb.len());
+    if min_d * 100 / max > 60 {
+        return (100usize.saturating_sub(min_d * 100 / max)) as u8;
+    }
     let d = edit_distance(&ca, &cb);
     (100usize.saturating_sub(d * 100 / max)) as u8
 }
 
 /// 2つの名前の類似度（0〜100）。完全一致キーが等しければ100、それ以外は99を超えない。
 pub(crate) fn similarity(a: &str, b: &str, opts: &MatchOptions) -> u8 {
-    let (ea, eb) = (exact_key(a, opts), exact_key(b, opts));
-    if !ea.is_empty() && ea == eb {
+    similarity_keys(&keys(a, opts), &keys(b, opts))
+}
+
+/// 1つの名前の照合キー（事前計算して、多数の相手との比較で使い回す）。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Keys {
+    pub exact: String,
+    pub fuzzy: String,
+    /// `fuzzy` を文字の配列にしたもの（編集距離の計算で毎回作り直さないため）。
+    chars: Vec<char>,
+}
+
+pub(crate) fn keys(name: &str, opts: &MatchOptions) -> Keys {
+    let fuzzy = fuzzy_key(name, opts);
+    let chars = fuzzy.chars().collect();
+    Keys { exact: exact_key(name, opts), fuzzy, chars }
+}
+
+/// 事前計算したキーどうしの類似度（`similarity` と同じ規則）。
+pub(crate) fn similarity_keys(a: &Keys, b: &Keys) -> u8 {
+    if !a.exact.is_empty() && a.exact == b.exact {
         return 100;
     }
-    key_similarity(&fuzzy_key(a, opts), &fuzzy_key(b, opts)).min(99)
+    if a.chars.is_empty() || b.chars.is_empty() {
+        return 0;
+    }
+    if a.chars == b.chars {
+        return 99;
+    }
+    let max = a.chars.len().max(b.chars.len());
+    let d = edit_distance(&a.chars, &b.chars);
+    (100usize.saturating_sub(d * 100 / max)).min(99) as u8
+}
+
+/// 類似度が `threshold` 以上のときだけ値を返す。届かないと分かった時点で距離の計算を打ち切るので、
+/// 多数の相手との比較（既存タグの検索・類似品の束ね）はこちらを使う。
+pub(crate) fn similarity_at_least(a: &Keys, b: &Keys, threshold: u8) -> Option<u8> {
+    if !a.exact.is_empty() && a.exact == b.exact {
+        return Some(100);
+    }
+    if a.chars.is_empty() || b.chars.is_empty() {
+        return None;
+    }
+    if a.chars == b.chars {
+        // 完全一致ではない（類似キーだけが同じ）ので99。しきい値が100なら届かない。
+        return (threshold <= 99).then_some(99);
+    }
+    let max = a.chars.len().max(b.chars.len());
+    // 類似度 = 100 - d*100/max >= threshold となる最大の d。
+    let bound = ((101 - threshold as usize) * max).saturating_sub(1) / 100;
+    let d = bounded_edit_distance(&a.chars, &b.chars, bound)?;
+    Some((100usize.saturating_sub(d * 100 / max)).min(99) as u8)
 }
 
 /// 完全一致か（正規化4項目だけで同じか）。
@@ -365,8 +445,7 @@ pub(crate) fn is_exact(a: &str, b: &str, opts: &MatchOptions) -> bool {
 /// `names` を、類似度が `opts.threshold` 以上のものどうしで束ねる（連鎖でつながるものも同じ束）。
 /// 戻り値は各名前の束の番号（先に出た名前の番号から振る）。完全一致キーが同じ名前は必ず同じ束。
 pub(crate) fn cluster(names: &[String], opts: &MatchOptions) -> Vec<usize> {
-    let fuzzy: Vec<String> = names.iter().map(|n| fuzzy_key(n, opts)).collect();
-    let exact: Vec<String> = names.iter().map(|n| exact_key(n, opts)).collect();
+    let ks: Vec<Keys> = names.iter().map(|n| keys(n, opts)).collect();
     let mut parent: Vec<usize> = (0..names.len()).collect();
     fn find(p: &mut Vec<usize>, x: usize) -> usize {
         let mut r = x;
@@ -381,24 +460,13 @@ pub(crate) fn cluster(names: &[String], opts: &MatchOptions) -> Vec<usize> {
         }
         r
     }
-    let threshold = opts.threshold as usize;
-    let lens: Vec<usize> = fuzzy.iter().map(|k| k.chars().count()).collect();
     for i in 0..names.len() {
         for j in (i + 1)..names.len() {
-            let same = !exact[i].is_empty() && exact[i] == exact[j];
-            if !same {
-                // 長さの差だけで、しきい値に届かないことが分かるものは比べない。
-                let (li, lj) = (lens[i], lens[j]);
-                let max = li.max(lj);
-                if max == 0 || (li.abs_diff(lj) * 100 / max) > 100usize.saturating_sub(threshold) {
-                    continue;
-                }
-                if key_similarity(&fuzzy[i], &fuzzy[j]).min(99) < threshold as u8 {
-                    continue;
-                }
+            if find(&mut parent, i) == find(&mut parent, j) {
+                continue;
             }
-            let (ri, rj) = (find(&mut parent, i), find(&mut parent, j));
-            if ri != rj {
+            if similarity_at_least(&ks[i], &ks[j], opts.threshold).is_some() {
+                let (ri, rj) = (find(&mut parent, i), find(&mut parent, j));
                 parent[rj] = ri;
             }
         }
@@ -444,6 +512,13 @@ mod tests {
         assert_eq!(exact_key("a(b)!", &all), "ab");
         // 日本語の文字は記号として落とさない。
         assert_eq!(exact_key("作者・こうじ", &all), "作者こうじ".replace('・', ""));
+    }
+
+    #[test]
+    fn normalize_width_keeps_case_and_widens_halfwidth_kana() {
+        assert_eq!(normalize_width("ＡＢＣ　ｄｅｆ"), "ABC def");
+        assert_eq!(normalize_width("ｺｳｼﾞ"), "コウジ");
+        assert_eq!(normalize_width("Hawk Bit"), "Hawk Bit");
     }
 
     #[test]

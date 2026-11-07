@@ -15,7 +15,11 @@ use std::sync::{mpsc, Arc, Mutex};
 use redb::Database;
 
 use crate::i18n;
+use crate::i18n::Lang;
+use crate::tag_candidates::{build_candidates, CandidateInput, CandidateSet, Role};
+use crate::tag_similarity::MatchOptions;
 use crate::tag_source::{format_tag_for, parse_info_txt, FormatTag, InfoTxt};
+use crate::view_explorer::TagManagerCategoryUi;
 
 use super::NekoviewApp;
 
@@ -50,6 +54,8 @@ pub(super) struct TagScanResult {
     pub cancelled: bool,
     /// 対象の総数（キャンセル時に何件中かを出すため）。
     pub total: usize,
+    /// 走査結果から作った候補（キャンセル時は None）。確認ウィンドウ・適用が読む。
+    pub candidates: Option<CandidateSet>,
 }
 
 impl TagScanResult {
@@ -107,7 +113,28 @@ pub(super) fn run_scan(
         items.push(scan_one(path, db));
         done.fetch_add(1, Ordering::Relaxed);
     }
-    TagScanResult { dir, items, cancelled, total: targets.len() }
+    TagScanResult { dir, items, cancelled, total: targets.len(), candidates: None }
+}
+
+/// 走査結果から候補を作って結果に付ける（キャンセル済みなら何もしない）。
+/// 重い照合になりうるので、画面のスレッドではなくワーカーの中で呼ぶ。
+fn attach_candidates(result: &mut TagScanResult, master: &[TagManagerCategoryUi], opts: &MatchOptions, lang: Lang) {
+    if result.cancelled {
+        return;
+    }
+    let inputs: Vec<CandidateInput> = result
+        .items
+        .iter()
+        .map(|it| CandidateInput {
+            file_name: it.path.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string(),
+            format: it.format.clone(),
+            info: match &it.info {
+                InfoState::Found(i) => Some(i.clone()),
+                _ => None,
+            },
+        })
+        .collect();
+    result.candidates = Some(build_candidates(&inputs, master, opts, lang));
 }
 
 /// 走査中のジョブ（背景スレッド＋進捗＋キャンセル）。
@@ -119,14 +146,22 @@ pub(super) struct TagScanJob {
 }
 
 impl TagScanJob {
-    pub(super) fn spawn(dir: PathBuf, targets: Vec<PathBuf>, db: Option<Arc<Mutex<Database>>>) -> Self {
+    pub(super) fn spawn(
+        dir: PathBuf,
+        targets: Vec<PathBuf>,
+        db: Option<Arc<Mutex<Database>>>,
+        master: Vec<TagManagerCategoryUi>,
+        opts: MatchOptions,
+        lang: Lang,
+    ) -> Self {
         let done = Arc::new(AtomicUsize::new(0));
         let cancel = Arc::new(AtomicBool::new(false));
         let (tx, rx) = mpsc::channel();
         let total = targets.len();
         let (w_dir, w_done, w_cancel) = (dir.clone(), Arc::clone(&done), Arc::clone(&cancel));
         std::thread::spawn(move || {
-            let result = run_scan(w_dir, &targets, db.as_ref(), &w_done, &w_cancel);
+            let mut result = run_scan(w_dir, &targets, db.as_ref(), &w_done, &w_cancel);
+            attach_candidates(&mut result, &master, &opts, lang);
             // 受信側が破棄済み（アプリ終了）でもエラーは無視する。
             let _ = tx.send(result);
         });
@@ -165,7 +200,14 @@ impl NekoviewApp {
         }
         let targets = self.tag_scan_targets();
         self.tag_scan_result = None;
-        self.tag_scan_job = Some(TagScanJob::spawn(self.current_dir.clone(), targets, self.spread_db.clone()));
+        self.tag_scan_job = Some(TagScanJob::spawn(
+            self.current_dir.clone(),
+            targets,
+            self.spread_db.clone(),
+            self.tag_manager_categories.clone(),
+            self.tag_match_options,
+            i18n::t(),
+        ));
     }
 
     /// 完了を確認する（毎フレーム呼んでよい）。完了したら結果を保持し、件数をトーストで知らせる。
@@ -187,9 +229,22 @@ impl NekoviewApp {
         let t = i18n::t();
         if result.cancelled {
             self.set_toast(t.tag_scan_cancelled(result.items.len(), result.total));
+        } else if let Some(n) = result.candidates.as_ref().and_then(|c| c.limits.error_count) {
+            // どちらかの窓で新規要素が上限を超えたら、何もせずに終わる（片方だけの確認には進ませない）。
+            self.set_toast(t.tag_scan_too_many(n, crate::tag_candidates::ERROR_NEW_ELEMENTS));
         } else {
             let (found, absent, other) = result.info_counts();
-            self.set_toast(t.tag_scan_done(result.items.len(), found, absent, other));
+            let mut text = t.tag_scan_done(result.items.len(), found, absent, other);
+            if let Some(set) = &result.candidates {
+                let c = |r: Role| set.count_by_role(r);
+                text.push('\n');
+                text.push_str(&t.tag_candidates_summary(
+                    [c(Role::Format), c(Role::Main), c(Role::Language), c(Role::Event), c(Role::Author), c(Role::Group)],
+                    (set.limits.window1_new, set.limits.window2_new),
+                    (set.limits.window1_warn, set.limits.window2_warn),
+                ));
+            }
+            self.set_toast(text);
             self.tag_scan_result = Some(result);
         }
     }
@@ -321,11 +376,43 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// 目視用: `NEKO_SCAN_DIR` のフォルダを走査して、候補の一覧を表示する
+    /// （`NEKO_SCAN_DIR=<dir> cargo test dump_candidates_for_dir -- --ignored --nocapture`）。
+    /// マスターは、初期状態（メインカテゴリ＋アーカイブ形式）に、作者「Kouji」・グループ「Hawk Bit」・言語「日本語」を足したもの。
+    #[test]
+    #[ignore]
+    fn dump_candidates_for_dir() {
+        use crate::tag_master::TagMaster;
+        let Ok(dir) = std::env::var("NEKO_SCAN_DIR") else { return };
+        let dir = PathBuf::from(dir);
+        let mut targets: Vec<PathBuf> = std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.path()).collect();
+        targets.sort();
+        let r = run_scan(dir.clone(), &targets, None, &AtomicUsize::new(0), &AtomicBool::new(false));
+        let (mut cats, mut next) = crate::tag_manager::default_state();
+        let mut m = TagMaster::new(&mut cats, &mut next);
+        m.ensure_system_categories();
+        for (name, el) in [("作者", "Kouji"), ("グループ", "Hawk Bit"), ("言語", "日本語")] {
+            let c = m.add_category(name.to_string(), false, None);
+            m.push_element(c, el);
+        }
+        let mut result = r;
+        attach_candidates(&mut result, &cats, &MatchOptions::default(), Lang::Japanese);
+        let set = result.candidates.unwrap();
+        println!("files={} with_info={} limits={:?}", set.file_count, set.files_with_info, set.limits);
+        for c in &set.candidates {
+            println!(
+                "{:?} {:?} files={} choice={:?} unconfirmed={} cluster={} suggestions={:?}",
+                c.role, c.name, c.files.len(), c.choice, c.unconfirmed, c.cluster,
+                c.suggestions.iter().map(|s| format!("{}:{}%", s.name, s.score)).collect::<Vec<_>>()
+            );
+        }
+    }
+
     #[test]
     fn job_runs_on_a_thread_and_delivers_the_result() {
         let dir = temp_dir("job");
         let t = write_zip(&dir, "a.zip", &[("info.txt", b"Category: Manga")]);
-        let job = TagScanJob::spawn(dir.clone(), vec![t], None);
+        let job = TagScanJob::spawn(dir.clone(), vec![t], None, Vec::new(), MatchOptions::default(), Lang::Japanese);
         let mut got = None;
         for _ in 0..300 {
             if let Ok(r) = job.rx.try_recv() {
@@ -336,6 +423,9 @@ mod tests {
         }
         let r = got.expect("結果が届く");
         assert_eq!(r.info_counts(), (1, 0, 0));
+        let set = r.candidates.as_ref().expect("候補まで作られる");
+        assert_eq!(set.count_by_role(Role::Main), 1, "info.txt の Category=Manga");
+        assert_eq!(set.count_by_role(Role::Format), 1);
         assert_eq!(job.progress(), (1, 1));
         let _ = std::fs::remove_dir_all(&dir);
     }

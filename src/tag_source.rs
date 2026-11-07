@@ -127,6 +127,27 @@ pub(crate) fn canonical_language(raw: &str) -> Option<&'static str> {
         .map(|(canon, _)| *canon)
 }
 
+/// 言語の正規名（`canonical_language` の戻り値）に対応する英語名。登録名を英語にする場合に使う。
+pub(crate) fn language_english_name(canonical: &str) -> &'static str {
+    match canonical {
+        "日本語" => "Japanese",
+        "英語" => "English",
+        "中国語" => "Chinese",
+        "韓国語" => "Korean",
+        "フランス語" => "French",
+        "ドイツ語" => "German",
+        "スペイン語" => "Spanish",
+        "イタリア語" => "Italian",
+        "ロシア語" => "Russian",
+        "ポルトガル語" => "Portuguese",
+        "タイ語" => "Thai",
+        "ベトナム語" => "Vietnamese",
+        "インドネシア語" => "Indonesian",
+        "ポーランド語" => "Polish",
+        _ => "Other",
+    }
+}
+
 // ── ファイル名 ────────────────────────────────────────────────────────
 
 /// 先頭の `[...]` の中身。括弧書きが付いていれば `Pair`（外側, 内側）、無ければ `Single`。

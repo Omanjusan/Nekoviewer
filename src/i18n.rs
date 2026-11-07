@@ -4205,6 +4205,34 @@ impl Lang {
         }
     }
 
+    /// 候補生成の結果（件数は 形式・メイン・言語・イベント・作者・グループ の順）と、窓ごとの新規要素数・警告
+    pub fn tag_candidates_summary(self, counts: [usize; 6], new_elements: (usize, usize), warn: (bool, bool)) -> String {
+        let [f, m, l, e, a, g] = counts;
+        let (w1, w2) = new_elements;
+        let warn_text = match (warn.0, warn.1) {
+            (false, false) => String::new(),
+            _ => match self {
+                Lang::Japanese => " ⚠新規要素が多めです".to_string(),
+                Lang::English  => " ⚠ many new elements".to_string(),
+                Lang::Chinese  => " ⚠ 新元素较多".to_string(),
+            },
+        };
+        match self {
+            Lang::Japanese => format!("候補: 形式{f}・カテゴリ{m}・言語{l}・イベント{e}・作者{a}・グループ{g} / 新規要素 窓1:{w1}個 窓2:{w2}個{warn_text}"),
+            Lang::English  => format!("Candidates: format {f}, category {m}, language {l}, event {e}, author {a}, group {g} / new elements: window1 {w1}, window2 {w2}{warn_text}"),
+            Lang::Chinese  => format!("候选：格式{f}、类别{m}、语言{l}、活动{e}、作者{a}、团体{g} / 新元素：窗口1 {w1}、窗口2 {w2}{warn_text}"),
+        }
+    }
+
+    /// 新規要素が上限を超えたときのエラー（何もせず終了する）
+    pub fn tag_scan_too_many(self, count: usize, limit: usize) -> String {
+        match self {
+            Lang::Japanese => format!("フォルダに格納されているタグ情報量が多すぎます（対象要素数{count}個/上限値{limit}個）。ファイルを減らしたフォルダを対象にして再試行してください"),
+            Lang::English  => format!("The folder holds too much tag information (target elements: {count} / limit: {limit}). Please retry with a folder that has fewer files"),
+            Lang::Chinese  => format!("文件夹中的标签信息过多（目标元素数 {count} 个/上限 {limit} 个）。请减少文件后重试"),
+        }
+    }
+
     pub fn tag_scan_cancelled(self, done: usize, total: usize) -> String {
         match self {
             Lang::Japanese => format!("タグ情報の取得をキャンセルしました（{done} / {total}件まで）"),
