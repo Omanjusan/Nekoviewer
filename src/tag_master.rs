@@ -8,6 +8,8 @@
 //! - メインカテゴリとシステムカテゴリは削除できない（`remove_category` が拒否する）
 //! - システムカテゴリは種別キー（`SystemKind`）で識別する。名前を変えても追跡できる
 //! - ファイルのタグ合成（`merge_file_tags`）は既存のタグを消さず、排他の規則を守って足す
+//! - 要素名は `A|B|C`（縦棒区切り）で別名をまとめられる。先頭が主表記。照合・重複判定は、どれかの別名が
+//!   一致すれば同じ要素とみなす。名前そのものに `|` を含めたいときは全角 `｜` に置換して登録する
 
 // 一部の検索・集計の関数は、テストと今後の照合用の公開APIで、いまの画面からは呼ばれない。
 #![allow(dead_code)]
@@ -78,6 +80,56 @@ pub(crate) fn normalize_key(name: &str) -> String {
         .collect()
 }
 
+/// 別名の区切り。要素名 `A|B|C` は、A・B・C を別名に持つ1要素。
+pub(crate) const ALIAS_SEP: char = '|';
+
+/// 要素名を別名に分ける。各別名は前後の空白を除き、空のものは捨てる。先頭が主表記。
+/// 区切りの無い名前は、それ自身1つだけ（空白だけの名前は空）。
+pub(crate) fn split_aliases(name: &str) -> Vec<&str> {
+    name.split(ALIAS_SEP).map(str::trim).filter(|s| !s.is_empty()).collect()
+}
+
+/// 別名を `|` でつないで要素名にする。空の別名は捨てる。
+pub(crate) fn join_aliases<S: AsRef<str>>(aliases: &[S]) -> String {
+    let parts: Vec<&str> = aliases.iter().map(|a| a.as_ref().trim()).filter(|s| !s.is_empty()).collect();
+    parts.join(&ALIAS_SEP.to_string())
+}
+
+/// 表示用の主表記（先頭の別名）。別名が無い（空）なら元の名前を返す。
+pub(crate) fn primary_alias(name: &str) -> &str {
+    split_aliases(name).first().copied().unwrap_or(name)
+}
+
+/// 名前に含まれる `|` を全角 `｜` に置換する（別名の区切りと区別するため。候補を要素として登録する前に使う）。
+pub(crate) fn escape_alias_sep(name: &str) -> String {
+    name.replace(ALIAS_SEP, "｜")
+}
+
+/// 要素名が別名を持つか（`|` で2つ以上に分かれる）。
+pub(crate) fn has_aliases(name: &str) -> bool {
+    split_aliases(name).len() > 1
+}
+
+/// 要素名の、別名ごとの正規化キー。空になるものと重複は除く（順序は別名の順）。
+pub(crate) fn alias_keys(name: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for a in split_aliases(name) {
+        let k = normalize_key(a);
+        if !k.is_empty() && !out.contains(&k) {
+            out.push(k);
+        }
+    }
+    out
+}
+
+/// 要素名の別名のどれかが、`keys`（正規化キー）のどれかと一致するか。
+fn element_hits(element: &str, keys: &[String]) -> bool {
+    split_aliases(element).iter().any(|a| {
+        let k = normalize_key(a);
+        !k.is_empty() && keys.contains(&k)
+    })
+}
+
 /// 同一性判定で無視する記号。名前の区切りや装飾に使われるもの。
 fn is_ignorable_symbol(c: char) -> bool {
     matches!(
@@ -128,29 +180,32 @@ impl<'a> TagMaster<'a> {
     }
 
     /// カテゴリ内の要素を名前（正規化して比較）で探して、tier_idを返す。
+    /// 要素の別名のどれかが、探す名前の別名のどれかと一致すれば見つかったとする（先頭から見て最初の1つ）。
     pub(crate) fn find_element(&self, cat_idx: usize, name: &str) -> Option<u64> {
-        let key = normalize_key(name);
-        if key.is_empty() {
-            return None;
+        self.find_elements(cat_idx, name).into_iter().next()
+    }
+
+    /// `find_element` の、一致する要素を全部返す版（別名が複数の既存要素に重なっていないかの確認用）。
+    pub(crate) fn find_elements(&self, cat_idx: usize, name: &str) -> Vec<u64> {
+        let keys = alias_keys(name);
+        if keys.is_empty() {
+            return Vec::new();
         }
-        self.cats
-            .get(cat_idx)?
-            .tiers
-            .iter()
-            .find_map(|t| t.element.as_deref().filter(|e| normalize_key(e) == key).map(|_| t.id))
+        let Some(c) = self.cats.get(cat_idx) else { return Vec::new() };
+        c.tiers.iter().filter(|t| t.element.as_deref().is_some_and(|e| element_hits(e, &keys))).map(|t| t.id).collect()
     }
 
     /// 全カテゴリから、要素を名前（正規化して比較）で探す（（カテゴリ番号, tier_id）の一覧）。
-    /// 作者かグループかの判定など、既存の確定タグとの照合に使う。
+    /// 作者かグループかの判定など、既存の確定タグとの照合に使う。別名のどれかが一致すれば含める。
     pub(crate) fn find_element_anywhere(&self, name: &str) -> Vec<(usize, u64)> {
-        let key = normalize_key(name);
-        if key.is_empty() {
+        let keys = alias_keys(name);
+        if keys.is_empty() {
             return Vec::new();
         }
         let mut out = Vec::new();
         for (ci, c) in self.cats.iter().enumerate() {
             for t in &c.tiers {
-                if t.element.as_deref().is_some_and(|e| normalize_key(e) == key) {
+                if t.element.as_deref().is_some_and(|e| element_hits(e, &keys)) {
                     out.push((ci, t.id));
                 }
             }
@@ -201,6 +256,9 @@ impl<'a> TagMaster<'a> {
     /// 要素を追加する。同じ正規化名の要素が既にあれば、それを返す（重複させない）。
     /// 戻り値は（tier_id, 新規に作ったか）。空白だけの名前は None。
     pub(crate) fn add_element_unique(&mut self, cat_idx: usize, name: &str) -> Option<(u64, bool)> {
+        if split_aliases(name).is_empty() {
+            return None; // 空白と `|` だけの名前
+        }
         if let Some(id) = self.find_element(cat_idx, name) {
             return Some((id, false));
         }
@@ -209,22 +267,22 @@ impl<'a> TagMaster<'a> {
 
     /// 書き込まずに、`names` を `cat_idx` へ `add_element_unique` で追加したときの新規要素数を数える。
     /// `cat_idx` が None なら、まだ無いカテゴリ（全て新規）。`names` 内の同一視できる重複は1つと数える。
+    /// 別名つきの名前は、別名のどれかが既存（または先に数えた名前）と一致すれば新規と数えない。
     pub(crate) fn count_new_elements(&self, cat_idx: Option<usize>, names: &[String]) -> usize {
-        let mut seen: HashSet<String> = HashSet::new();
+        let mut have: HashSet<String> = match cat_idx.and_then(|i| self.cats.get(i)) {
+            None => HashSet::new(),
+            Some(c) => c.tiers.iter().filter_map(|t| t.element.as_deref()).flat_map(alias_keys).collect(),
+        };
+        let mut count = 0;
         for n in names {
-            let key = normalize_key(n);
-            if key.is_empty() || !seen.insert(key) {
+            let keys = alias_keys(n);
+            if keys.is_empty() || keys.iter().any(|k| have.contains(k)) {
                 continue;
             }
+            have.extend(keys);
+            count += 1;
         }
-        match cat_idx.and_then(|i| self.cats.get(i)) {
-            None => seen.len(),
-            Some(c) => {
-                let have: HashSet<String> =
-                    c.tiers.iter().filter_map(|t| t.element.as_deref().map(normalize_key)).collect();
-                seen.iter().filter(|k| !have.contains(*k)).count()
-            }
-        }
+        count
     }
 
     // ── 削除 ──────────────────────────────────────────────────────────
@@ -400,6 +458,76 @@ mod tests {
         assert_eq!(m.count_new_elements(None, &names), 4, "カテゴリが無ければ全て新規（重複除く）");
         assert_eq!(next, 100, "何も書き込まない");
         assert_eq!(cats[1].tiers.len(), 3);
+    }
+
+    #[test]
+    fn alias_split_join_and_escape() {
+        assert_eq!(split_aliases("Kouji|Koji|コウジ"), ["Kouji", "Koji", "コウジ"]);
+        assert_eq!(split_aliases(" A | |B "), ["A", "B"], "前後の空白と空の別名は捨てる");
+        assert_eq!(split_aliases("単独"), ["単独"]);
+        assert!(split_aliases("  ").is_empty());
+        assert!(split_aliases("|").is_empty());
+        assert_eq!(join_aliases(&["Kouji", " ", "Koji"]), "Kouji|Koji");
+        assert_eq!(join_aliases::<&str>(&[]), "");
+        assert_eq!(primary_alias("Kouji|Koji"), "Kouji");
+        assert_eq!(primary_alias("Kouji"), "Kouji");
+        assert_eq!(primary_alias("|Koji"), "Koji", "先頭が空なら次の別名");
+        assert_eq!(escape_alias_sep("A|B"), "A｜B");
+        assert_eq!(split_aliases(&escape_alias_sep("A|B")), ["A｜B"], "全角は区切りにならない");
+        assert!(has_aliases("A|B"));
+        assert!(!has_aliases("A|"));
+        assert!(!has_aliases("A"));
+        assert_eq!(alias_keys("Kouji|KOJI|ｋｏｊｉ|-"), ["kouji", "koji"], "重複と空は除く");
+    }
+
+    #[test]
+    fn find_matches_any_alias_on_either_side() {
+        let (mut cats, mut next) = sample();
+        cats[1].tiers[0].element = Some("Kouji|Koji|コウジ".to_string());
+        let m = TagMaster::new(&mut cats, &mut next);
+        assert_eq!(m.find_element(1, "koji"), Some(10), "2番目の別名");
+        assert_eq!(m.find_element(1, "コウジ"), Some(10));
+        assert_eq!(m.find_element(1, "KOUJI"), Some(10));
+        assert_eq!(m.find_element(1, "Other|Koji"), Some(10), "探す側の別名でも一致する");
+        assert_eq!(m.find_element(1, "Kou ji"), Some(10), "区切り記号・空白の違いは吸収");
+        assert_eq!(m.find_element(1, "Other|Another"), None);
+        assert_eq!(m.find_element(1, "|"), None);
+        assert_eq!(m.find_element_anywhere("Koji"), vec![(1, 10)]);
+        assert_eq!(m.find_elements(1, "Koji|abc d"), vec![10, 11], "複数の既存要素に重なる");
+        assert!(m.find_elements(9, "koji").is_empty());
+    }
+
+    #[test]
+    fn pipe_in_search_name_is_not_swallowed_as_a_symbol() {
+        let (mut cats, mut next) = sample();
+        let m = TagMaster::new(&mut cats, &mut next);
+        // 以前は `|` が無視記号で、"ko|uji" は "kouji" と同一視されていた。いまは別名の区切り。
+        assert_eq!(m.find_element(1, "ko|uji"), None);
+        // 全角 `｜` で登録した名前は、1つの名前として扱う（記号として無視される）。
+        assert_eq!(normalize_key("ko｜uji"), "kouji");
+    }
+
+    #[test]
+    fn add_element_unique_dedupes_by_alias() {
+        let (mut cats, mut next) = sample();
+        let mut m = TagMaster::new(&mut cats, &mut next);
+        // 既存 Kouji と別名が重なる → 新規にしない。
+        assert_eq!(m.add_element_unique(1, "Koji|KOUJI"), Some((10, false)));
+        // 新しい別名つき要素は、そのまま1要素で登録される。
+        assert_eq!(m.add_element_unique(1, "Tarou|Taro"), Some((100, true)));
+        assert_eq!(m.add_element_unique(1, "taro"), Some((100, false)));
+        assert_eq!(m.add_element_unique(1, "|"), None);
+        assert_eq!(cats[1].tiers.last().unwrap().element.as_deref(), Some("Tarou|Taro"));
+    }
+
+    #[test]
+    fn count_new_elements_handles_aliases() {
+        let (mut cats, mut next) = sample();
+        cats[1].tiers[0].element = Some("Kouji|Koji".to_string());
+        let m = TagMaster::new(&mut cats, &mut next);
+        let names: Vec<String> = ["koji", "Taro|Tarou", "tarou", "Jiro", "Jiro|Jirou", "|"].map(String::from).to_vec();
+        assert_eq!(m.count_new_elements(Some(1), &names), 2, "koji は既存の別名、tarou は直前と重複、Jiro|Jirou は Jiro と重複");
+        assert_eq!(m.count_new_elements(None, &names), 3, "koji / Taro|Tarou / Jiro（Jiro|Jirou は重複）");
     }
 
     #[test]

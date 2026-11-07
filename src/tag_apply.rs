@@ -76,7 +76,7 @@ pub(crate) fn plan_application(
                         }
                     },
                 };
-                let Some((id, created)) = master.add_element_unique(cat_idx, &c.name) else { continue };
+                let Some((id, created)) = master.add_element_unique(cat_idx, &crate::tag_master::escape_alias_sep(&c.name)) else { continue };
                 if created {
                     plan.new_elements += 1;
                 }
