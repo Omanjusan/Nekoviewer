@@ -5409,6 +5409,62 @@ impl Lang {
         }
     }
 
+    pub fn settings_text_page_enabled(self) -> &'static str {
+        match self {
+            Lang::Japanese => "アーカイブ内のTXTを画像ページとして開く（zip/cbz）",
+            Lang::English  => "Open TXT files inside archives as image pages (zip/cbz)",
+            Lang::Chinese  => "将压缩包内的 TXT 作为图片页打开（zip/cbz）",
+        }
+    }
+
+    pub fn settings_text_page_height_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "TXTページの高さ上限",
+            Lang::English  => "TXT page height limit",
+            Lang::Chinese  => "TXT 页高度上限",
+        }
+    }
+
+    pub fn settings_text_page_truncate(self) -> &'static str {
+        match self {
+            Lang::Japanese => "超えたら切り詰める",
+            Lang::English  => "Truncate when exceeded",
+            Lang::Chinese  => "超出时截断",
+        }
+    }
+
+    pub fn settings_text_page_split(self) -> &'static str {
+        match self {
+            Lang::Japanese => "超えたらページ分割する",
+            Lang::English  => "Split into pages when exceeded",
+            Lang::Chinese  => "超出时分页",
+        }
+    }
+
+    pub fn settings_text_page_read_limit_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "TXTの読み込み上限サイズ（超えた分は読まない）",
+            Lang::English  => "TXT read size limit (the rest is not read)",
+            Lang::Chinese  => "TXT 读取大小上限（超出部分不读取）",
+        }
+    }
+
+    pub fn settings_text_page_count(self) -> &'static str {
+        match self {
+            Lang::Japanese => "リストのページ数にTXTページを含める",
+            Lang::English  => "Include TXT pages in the list's page count",
+            Lang::Chinese  => "列表页数中包含 TXT 页",
+        }
+    }
+
+    pub fn settings_text_page_explain(self) -> &'static str {
+        match self {
+            Lang::Japanese => "TXTは横書き・等幅の白地黒文字で画像化する。ページ分割は一覧取得時に本文を読む。変更は次に開くアーカイブから効く。",
+            Lang::English  => "TXT is rendered as horizontal monospace black-on-white text. Splitting reads the text when the list is built. Changes apply to archives opened afterwards.",
+            Lang::Chinese  => "TXT 以横排等宽的白底黑字渲染。分页会在生成列表时读取正文。更改对之后打开的压缩包生效。",
+        }
+    }
+
     pub fn settings_thumb_size_label(self) -> &'static str {
         match self {
             Lang::Japanese => "■ サムネイルサイズ",

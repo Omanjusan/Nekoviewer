@@ -262,6 +262,9 @@ pub struct AppConfig {
     /// 「次回から表示しない」チェック済みで確認したか。永続設定
     /// （state の `app_folder_book_access_warning_seen`）。
     pub folder_book_access_warning_seen: bool,
+    /// アーカイブ内TXTを画像ページとして開く設定（有効・高さ上限・切り詰め/分割・読込上限・ページ数への算入）。
+    /// 永続設定（state の `app_text_page`）。変更時は `fs::archive::text_page::set_options` へ反映する。
+    pub text_page: crate::fs::archive::text_page::TextPageOptions,
     /// 次回起動時に X11 バックエンド（XWayland）で起動するか（state の `app_launch_x11`）。
     /// Wayland セッションでだけ意味を持つ。詳細は [display_backend.rs](crate::display_backend)。
     pub launch_x11: bool,
@@ -328,6 +331,7 @@ impl AppConfig {
             keymap: Keymap::load(&root),
             config_root: root,
             folder_book_access_warning_seen: false,
+            text_page: Default::default(),
             launch_x11: false,
             last_run_version: String::new(),
         }

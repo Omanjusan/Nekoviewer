@@ -182,7 +182,13 @@ impl super::NekoviewApp {
             }
             OpenPollResult::Ready { entries, check, detail } => {
                 let path = self.pending_open.take().expect("pending_open just polled").path;
-                self.record_archive_meta(&path, entries.len(), detail);
+                // TXTページは、設定でページ数に含める場合だけ数える（既定は含めない）。
+                let count_text = archive::text_page::options().count_in_pages;
+                let pages = entries
+                    .iter()
+                    .filter(|e| count_text || !archive::text_page::is_text_entry_name(&e.entry_name))
+                    .count();
+                self.record_archive_meta(&path, pages, detail);
                 if self.apply_memory_check(&path, check) {
                     let is_virtual_book = path.is_dir();
                     let state = crate::view_reader::ViewerState::from_image_entries(

@@ -135,6 +135,8 @@ pub(crate) struct SettingsDraft {
     /// ダイアログを開いた時点のシステム総RAM(MB)。毎フレームのsysinfo呼び出しを避けるためキャッシュする。
     system_ram_mb: u64,
     max_decode_edge: u32,
+    /// アーカイブ内TXTを画像ページとして開く設定。
+    text_page: crate::fs::archive::text_page::TextPageOptions,
     thumb_size: u32,
     unconfirmed_retention_days: u32,
     backup_generations: u32,
@@ -290,6 +292,7 @@ impl SettingsDraft {
             cache_total_mb: config.cache_total_mb.unwrap_or_else(crate::cache::default_cache_total_mb),
             system_ram_mb,
             max_decode_edge: config.max_decode_edge,
+            text_page: config.text_page,
             thumb_size: config.thumb_size,
             unconfirmed_retention_days: config.unconfirmed_retention_days,
             backup_generations: config.backup_generations,
@@ -356,6 +359,8 @@ impl SettingsDraft {
         viewer_cfg.resize_debounce_ms = self.debounce_ms;
         config.cache_total_mb = if self.cache_total_user_set { Some(self.cache_total_mb) } else { None };
         config.max_decode_edge = self.max_decode_edge;
+        config.text_page = self.text_page.clamped();
+        crate::fs::archive::text_page::set_options(config.text_page);
         config.thumb_size = self.thumb_size;
         config.unconfirmed_retention_days = self.unconfirmed_retention_days.clamp(
             crate::config::UNCONFIRMED_RETENTION_DAYS_MIN,
@@ -573,6 +578,41 @@ fn draw_resize_filter_combo(ui: &mut egui::Ui, id: &str, value: &mut ResizeFilte
         });
 }
 
+/// アーカイブ内TXTを画像ページとして開く設定（共通タブ）。
+fn draw_text_page_settings(ui: &mut egui::Ui, o: &mut crate::fs::archive::text_page::TextPageOptions) {
+    use crate::fs::archive::text_page::{HEIGHT_LIMIT_MAX, HEIGHT_LIMIT_MIN, READ_LIMIT_MAX, READ_LIMIT_MIN};
+    let t = i18n::t();
+    ui.checkbox(&mut o.enabled, t.settings_text_page_enabled());
+    ui.add_enabled_ui(o.enabled, |ui| {
+        ui.indent("text_page_children", |ui| {
+            ui.label(t.settings_text_page_height_label());
+            ui.scope(|ui| {
+                ui.spacing_mut().slider_width = 200.0;
+                ui.horizontal(|ui| {
+                    ui.add(egui::Slider::new(&mut o.height_limit, HEIGHT_LIMIT_MIN..=HEIGHT_LIMIT_MAX).show_value(false).step_by(100.0));
+                    ui.label(format!("{} px", o.height_limit));
+                });
+            });
+            ui.horizontal(|ui| {
+                ui.radio_value(&mut o.split, false, t.settings_text_page_truncate());
+                ui.radio_value(&mut o.split, true, t.settings_text_page_split());
+            });
+            ui.label(t.settings_text_page_read_limit_label());
+            let mut kb = (o.read_limit / 1024) as u32;
+            ui.scope(|ui| {
+                ui.spacing_mut().slider_width = 200.0;
+                ui.horizontal(|ui| {
+                    ui.add(egui::Slider::new(&mut kb, (READ_LIMIT_MIN / 1024) as u32..=(READ_LIMIT_MAX / 1024) as u32).show_value(false).step_by(64.0));
+                    ui.label(format!("{kb} KB"));
+                });
+            });
+            o.read_limit = kb as usize * 1024;
+            ui.checkbox(&mut o.count_in_pages, t.settings_text_page_count());
+        });
+    });
+    ui.label(egui::RichText::new(t.settings_text_page_explain()).weak());
+}
+
 fn draw_settings_tab_common(ui: &mut egui::Ui, draft: &mut SettingsDraft) {
     ui.label(i18n::t().settings_base_resolution_label());
     ui.horizontal(|ui| {
@@ -638,6 +678,9 @@ fn draw_settings_tab_common(ui: &mut egui::Ui, draft: &mut SettingsDraft) {
     ui.add_space(4.0);
     ui.label(i18n::t().settings_resize_filter_thumb_label());
     draw_resize_filter_combo(ui, "common_thumb_filter", &mut draft.thumb_filter);
+    ui.separator();
+
+    draw_text_page_settings(ui, &mut draft.text_page);
     ui.separator();
 
     // 操作が止まっている間のサムネ生成（idle_thumb.rs）。待ち時間とビューアー中の扱いは、ONのときだけ操作できる。

@@ -30,7 +30,7 @@ pub fn format_page_count(n: u32) -> String {
     }
 }
 
-fn is_combining(c: char) -> bool {
+pub(crate) fn is_combining(c: char) -> bool {
     matches!(c as u32,
         0x0300..=0x036F | 0x1AB0..=0x1AFF | 0x1DC0..=0x1DFF | 0x20D0..=0x20FF | 0xFE20..=0xFE2F)
 }

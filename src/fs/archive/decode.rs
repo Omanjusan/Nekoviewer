@@ -68,6 +68,10 @@ pub(crate) fn detect_orientation_for_toggle(buf: &[u8]) -> image::metadata::Orie
 /// `exif_enabled`: 項目(D)。falseならOrientation検出自体は行うが適用をスキップする
 /// （誤ったOrientationタグが埋め込まれたアーカイブ向けの逃げ道）。
 pub fn decode_image_bytes(buf: &[u8], exif_enabled: bool) -> Option<image::DynamicImage> {
+    // TXTページ（読み出し側が本文を目印つきで包んだもの）は、文字を描いた画像にする。
+    if super::text_page::is_payload(buf) {
+        return super::text_page::render(buf);
+    }
     if has_webp_signature(buf) {
         // このパスは常に単一の静的画像を返す（アニメ再生自体は別経路のRingAnimationが担う）
         // ため、どちらの分岐で取れたフレームに対してもExif Orientationを適用してよい。

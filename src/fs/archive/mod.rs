@@ -8,6 +8,7 @@ pub mod decode;
 pub mod detect;
 mod folder;
 pub mod meta;
+pub mod text_page;
 mod progress;
 #[cfg(feature = "fmt-7z")]
 mod sevenz;

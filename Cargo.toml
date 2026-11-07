@@ -51,10 +51,10 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 base64 = "0.22"
 time = { version = "0.3.55", features = ["local-offset"] }
+# TXTページの文字描画（グリフのラスタライズ）用。epaint 経由で既にロック済みの版に合わせる。
+ab_glyph = "0.2"
 
 [dev-dependencies]
-# マーカー候補グリフの収録・塗りつぶし検証テスト用（epaint 経由で既にロック済みの版に合わせる）
-ab_glyph = "0.2"
 
 [features]
 # zip/cbz は画像・コミックビューアの基幹形式のため常時コンパイル（feature 化しない）。

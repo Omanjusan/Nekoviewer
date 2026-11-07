@@ -28,6 +28,7 @@ pub(crate) fn list_images_zip_with_progress(path: &Path, on_progress: &mut Progr
     };
 
     let total = archive.len();
+    let text_opts = super::text_page::options();
     // (display_name, entry_name, date_key)
     let mut pairs: Vec<(String, String, u64)> = Vec::new();
     for i in 0..total {
@@ -39,7 +40,8 @@ pub(crate) fn list_images_zip_with_progress(path: &Path, on_progress: &mut Progr
             continue;
         }
         let raw = entry.name_raw().to_vec();
-        if !is_image_entry_raw(&raw) {
+        let is_text = text_opts.enabled && super::text_page::is_text_entry_raw(&raw);
+        if !is_image_entry_raw(&raw) && !is_text {
             continue;
         }
         let display_name = decode_zip_name(&raw);
@@ -52,7 +54,30 @@ pub(crate) fn list_images_zip_with_progress(path: &Path, on_progress: &mut Progr
                 + (dt.minute() as u64) * 100
                 + (dt.second() as u64)
         });
-        pairs.push((display_name, entry_name, date_key));
+        if is_text {
+            // TXTは画像ページ。分割モードのときだけ本文を読んでページ数を決める（切り詰めなら1ページで読まない）。
+            let pages = if text_opts.split {
+                let declared_larger = entry.size() > text_opts.read_limit as u64;
+                match read_limited_entry(entry, text_opts.read_limit) {
+                    Some(body) => {
+                        let truncated = declared_larger || body.len() >= text_opts.read_limit;
+                        super::text_page::count_pages(&body, truncated, &text_opts)
+                    }
+                    None => 1,
+                }
+            } else {
+                1
+            };
+            for page in 0..pages {
+                pairs.push((
+                    super::text_page::page_display_name(&display_name, page),
+                    super::text_page::page_entry_name(&entry_name, page),
+                    date_key,
+                ));
+            }
+        } else {
+            pairs.push((display_name, entry_name, date_key));
+        }
     }
 
     Some(super::finalize_entries(pairs))
@@ -63,11 +88,28 @@ pub fn load_bytes_from_archive<R: Read + Seek>(
     archive: &mut ::zip::ZipArchive<R>,
     entry_name: &str,
 ) -> Option<(Vec<u8>, String)> {
+    // TXTページ（分割モードの仮想名を含む）は、元のエントリを上限まで読み、目印つきのペイロードにして返す。
+    let (real_name, page) = super::text_page::split_entry_name(entry_name);
+    if super::text_page::is_text_entry_raw(real_name.as_bytes()) {
+        let limit = super::text_page::options().read_limit;
+        let entry = archive.by_name(real_name).ok()?;
+        let display_name = decode_zip_name(entry.name_raw());
+        let declared_larger = entry.size() > limit as u64;
+        let body = read_limited_entry(entry, limit)?;
+        return Some((super::text_page::wrap_entry(body, page, declared_larger), display_name));
+    }
     let mut entry = archive.by_name(entry_name).ok()?;
     let mut buf = Vec::new();
     entry.read_to_end(&mut buf).ok()?;
     let display_name = decode_zip_name(entry.name_raw());
     Some((buf, display_name))
+}
+
+/// エントリを `limit` バイトまで読む。宣言サイズは信用せず、展開後のバイト数で打ち切る。
+fn read_limited_entry<R: Read>(entry: R, limit: usize) -> Option<Vec<u8>> {
+    let mut buf = Vec::new();
+    entry.take(limit as u64).read_to_end(&mut buf).ok()?;
+    Some(buf)
 }
 
 /// フェーズ2: 開済みZIPアーカイブから1エントリを展開し、サイズを見積もる。
@@ -227,5 +269,110 @@ pub(crate) fn load_first_image_via_archive(path: &Path) -> Option<image::Dynamic
             return Some(img);
         }
     }
+    // 画像が1枚も無いときは、TXTページの先頭ページをサムネにする（TXTだけのアーカイブ用）。
+    if super::text_page::options().enabled {
+        for i in 0..archive.len() {
+            let Ok(entry) = archive.by_index(i) else { continue };
+            if entry.is_dir() || !super::text_page::is_text_entry_raw(entry.name_raw()) {
+                continue;
+            }
+            let limit = super::text_page::options().read_limit;
+            let declared_larger = entry.size() > limit as u64;
+            let Some(body) = read_limited_entry(entry, limit) else { continue };
+            return decode_image(&super::text_page::wrap_entry(body, 0, declared_larger));
+        }
+    }
     None
+}
+
+#[cfg(test)]
+mod text_page_tests {
+    use super::*;
+    use crate::fs::archive::text_page::{self, TextPageOptions};
+    use std::io::Write;
+
+    fn jpeg() -> Vec<u8> {
+        let img = image::RgbImage::from_pixel(8, 8, image::Rgb([200, 100, 50]));
+        let mut out = std::io::Cursor::new(Vec::new());
+        img.write_to(&mut out, image::ImageFormat::Jpeg).unwrap();
+        out.into_inner()
+    }
+
+    fn make_zip(tag: &str, files: &[(&str, Vec<u8>)]) -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(format!("nekoviewer_txtpage_{}_{tag}.zip", std::process::id()));
+        let mut w = ::zip::ZipWriter::new(std::fs::File::create(&path).unwrap());
+        for (n, d) in files {
+            w.start_file(*n, ::zip::write::SimpleFileOptions::default()).unwrap();
+            w.write_all(d).unwrap();
+        }
+        w.finish().unwrap();
+        path
+    }
+
+    /// 設定は全体で共有なので、設定を変えるテストは1つにまとめて直列に走らせ、最後に既定へ戻す。
+    #[test]
+    fn txt_entries_become_pages_in_listing_loading_and_thumbnail() {
+        let long_text = (0..400).map(|i| format!("行{i} のテキストです")).collect::<Vec<_>>().join("\n");
+        let path = make_zip("main", &[
+            ("0001.jpg", jpeg()),
+            ("note.TXT", long_text.clone().into_bytes()),
+            ("zzz.bin", b"binary".to_vec()),
+        ]);
+
+        // 既定（切り詰め・有効）: txt は1エントリ。
+        text_page::set_options(TextPageOptions::default());
+        let entries = list_images_zip_with_progress(&path, &mut |_| true).unwrap();
+        let names: Vec<_> = entries.iter().map(|e| e.display_name.as_str()).collect();
+        assert_eq!(names, ["0001.jpg", "note.TXT"]);
+        let txt = entries.iter().find(|e| text_page::is_text_entry_name(&e.entry_name)).unwrap();
+
+        let file = std::fs::File::open(&path).unwrap();
+        let mut archive = ::zip::ZipArchive::new(file).unwrap();
+        let (bytes, display) = load_bytes_from_archive(&mut archive, &txt.entry_name).unwrap();
+        assert_eq!(display, "note.TXT");
+        assert!(text_page::is_payload(&bytes));
+        let img = crate::fs::archive::decode_image_bytes(&bytes, true).unwrap();
+        assert_eq!(img.width(), text_page::PAGE_W);
+        assert!(img.height() <= 4000);
+        // ふつうの画像はこれまでどおり。
+        let jpg = entries.iter().find(|e| e.display_name == "0001.jpg").unwrap();
+        let (jb, _) = load_bytes_from_archive(&mut archive, &jpg.entry_name).unwrap();
+        assert!(!text_page::is_payload(&jb));
+
+        // 分割: 同じTXTが複数ページになり、各ページが読める。
+        text_page::set_options(TextPageOptions { split: true, height_limit: 1000, ..Default::default() });
+        let entries = list_images_zip_with_progress(&path, &mut |_| true).unwrap();
+        let txt_pages: Vec<_> = entries.iter().filter(|e| text_page::is_text_entry_name(&e.entry_name)).collect();
+        assert!(txt_pages.len() > 3, "400行は1000pxの高さでは複数ページ: {}", txt_pages.len());
+        assert_eq!(txt_pages[0].display_name, "note.TXT");
+        assert_eq!(txt_pages[1].display_name, "note_p02.TXT");
+        for e in &txt_pages {
+            let (b, _) = load_bytes_from_archive(&mut archive, &e.entry_name).unwrap();
+            assert!(crate::fs::archive::decode_image_bytes(&b, true).is_some(), "{}", e.display_name);
+        }
+
+        // 無効化: txt は一覧に出ない。
+        text_page::set_options(TextPageOptions { enabled: false, ..Default::default() });
+        let entries = list_images_zip_with_progress(&path, &mut |_| true).unwrap();
+        assert_eq!(entries.len(), 1);
+
+        // 読み込み上限: 上限を超える本文は途中までしか読まない。
+        let huge = vec![b'a'; 3 * 1024 * 1024];
+        let big = make_zip("huge", &[("big.txt", huge)]);
+        text_page::set_options(TextPageOptions { read_limit: 100 * 1024, ..Default::default() });
+        let mut archive2 = ::zip::ZipArchive::new(std::fs::File::open(&big).unwrap()).unwrap();
+        let (b, _) = load_bytes_from_archive(&mut archive2, "big.txt").unwrap();
+        assert_eq!(b.len(), 17 + 100 * 1024, "本文は上限まで（ヘッダー17バイト＋100KB）");
+        assert_eq!(b[16] & 2, 2, "上限で切れたフラグ");
+
+        // TXTだけのアーカイブは、サムネ用の先頭画像としてTXTの1ページ目を返す。
+        text_page::set_options(TextPageOptions::default());
+        let only = make_zip("only", &[("a.txt", b"hello".to_vec())]);
+        assert!(load_first_image_via_archive(&only).is_some());
+
+        text_page::set_options(TextPageOptions::default());
+        for p in [path, big, only] {
+            let _ = std::fs::remove_file(p);
+        }
+    }
 }
