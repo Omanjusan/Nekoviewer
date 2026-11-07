@@ -290,6 +290,29 @@ pub fn read_zip_detail(path: &Path) -> Option<DetailMeta> {
     Some(meta)
 }
 
+/// zip/cbz 内の `info.txt`（ファイル名が完全一致。大文字小文字は区別せず、サブフォルダ内も可）の本文を読む。
+/// zipとして開けなければ None。開けて info.txt が無ければ `Some(None)`。複数あれば最初のもの。
+/// 本文は安全化済み（`decode_text_bytes`）で、読み出しは `DETAIL_READ_LIMIT` までに切る。
+pub fn read_zip_info_txt(path: &Path) -> Option<Option<String>> {
+    let file = std::fs::File::open(path).ok()?;
+    let mut archive = ::zip::ZipArchive::new(file).ok()?;
+    let index = (0..archive.len()).find(|&i| {
+        archive.name_for_index(i).is_some_and(|n| !n.ends_with('/') && base_name(n).eq_ignore_ascii_case("info.txt"))
+    });
+    let Some(index) = index else { return Some(None) };
+    // 暗号化・壊れたエントリは「無し」として扱う（走査全体を止めない）。
+    let Ok(entry) = archive.by_index(index) else { return Some(None) };
+    Some(read_limited(entry, DETAIL_READ_LIMIT).map(|b| decode_text_bytes(&b)))
+}
+
+/// 形式を判定して info.txt の本文を読む。当面は zip/cbz のみ対応（他形式は None＝対象外）。
+pub fn read_info_txt(path: &Path) -> Option<Option<String>> {
+    match detect_format(path) {
+        ArchiveFormat::Zip => read_zip_info_txt(path),
+        _ => None,
+    }
+}
+
 /// 形式を判定して詳細テキストを読む。当面は zip/cbz のみ対応（他形式は None）。
 pub fn read_detail(path: &Path) -> Option<DetailMeta> {
     match detect_format(path) {
@@ -422,6 +445,21 @@ mod tests {
         assert_eq!(meta.nfo[1].name, "Info.TXT");
         assert_eq!(meta.nfo[1].text, "付属のinfo.txt\n2行目");
         assert_eq!(meta.comment, "from site");
+    }
+
+    #[test]
+    fn info_txt_reader_distinguishes_found_absent_and_not_zip() {
+        let found = build_zip("info_found", &[("0001.jpg", b"x"), ("sub/INFO.TXT", "Category: Manga\r\n".as_bytes())], "");
+        assert_eq!(read_zip_info_txt(&found), Some(Some("Category: Manga\n".to_string())));
+        let absent = build_zip("info_absent", &[("0001.jpg", b"x"), ("myinfo.txt", b"no"), ("info.txt.bak", b"no")], "");
+        assert_eq!(read_zip_info_txt(&absent), Some(None), "完全一致だけが info.txt");
+        let bad = std::env::temp_dir().join(format!("nekoviewer_meta_test_{}_info_bad.zip", std::process::id()));
+        std::fs::write(&bad, b"not a zip").unwrap();
+        assert_eq!(read_zip_info_txt(&bad), None);
+        assert_eq!(read_zip_info_txt(Path::new("/nonexistent/x.zip")), None);
+        for p in [found, absent, bad] {
+            let _ = std::fs::remove_file(p);
+        }
     }
 
     #[test]

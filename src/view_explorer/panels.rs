@@ -215,6 +215,7 @@ impl NekoviewApp {
             && !self.search_date_start_calendar.is_open()
             && !self.search_date_end_calendar.is_open()
             && self.pending_open.is_none()
+            && self.tag_scan_job.is_none()
             && self.tree_sort_dialog.is_none()
             && !self.tag_manager_open
         {
@@ -278,6 +279,7 @@ impl NekoviewApp {
         self.draw_marker_popup(&ctx);
         self.draw_dismissed_window(&ctx);
         self.draw_detail_window(&ctx);
+        self.draw_tag_scan_overlay(&ctx);
         self.draw_sort_condition_dialog(&ctx);
         self.draw_bookmark_setting_dialog(&ctx);
         self.draw_spread_setting_dialog(&ctx);
@@ -998,6 +1000,17 @@ impl NekoviewApp {
         // `available_width()`を取ると実際のパネル幅より広い値になり、下段の
         // horizontal_wrapped が折り返さず見切れていた。
         let content_w = ui.available_width();
+        // 最上段・左右中央: 現在のフォルダ直下のアーカイブから、タグ情報（info.txt・ファイル名・拡張子）を
+        // 一括で取得する。実フォルダを表示していて対象があるときだけ押せる。
+        ui.vertical_centered(|ui| {
+            let enabled = self.can_start_tag_scan();
+            let resp = ui.add_enabled(enabled, egui::Button::new(i18n::t().tag_scan_button()));
+            let resp = if enabled { resp } else { resp.on_disabled_hover_text(i18n::t().tag_scan_unavailable_hint()) };
+            if resp.clicked() {
+                self.start_tag_scan();
+            }
+        });
+        ui.add_space(4.0);
         // フェーズTM0: 仮置きのタグマネージャー呼び出しボタン。既存のメインタグ／
         // 属性タグUIとは切り離した独立機能なので、位置・見た目は後で調整前提。
         // 狭い幅では2つ目のボタンが見切れないよう折り返す。

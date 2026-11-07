@@ -4170,6 +4170,49 @@ impl Lang {
         }
     }
 
+    /// タグパネル最上部の一括情報取得ボタン
+    pub fn tag_scan_button(self) -> &'static str {
+        match self {
+            Lang::Japanese => "現フォルダ内タグ情報取得",
+            Lang::English  => "Collect tag info in this folder",
+            Lang::Chinese  => "获取当前文件夹的标签信息",
+        }
+    }
+
+    pub fn tag_scan_unavailable_hint(self) -> &'static str {
+        match self {
+            Lang::Japanese => "実フォルダを表示していて、アーカイブがあるときだけ使えます",
+            Lang::English  => "Available only while viewing a real folder that contains archives",
+            Lang::Chinese  => "仅在查看包含压缩包的实际文件夹时可用",
+        }
+    }
+
+    /// 走査中の進捗表示
+    pub fn tag_scan_progress(self, done: usize, total: usize) -> String {
+        match self {
+            Lang::Japanese => format!("タグ情報を取得中… {done} / {total}"),
+            Lang::English  => format!("Collecting tag info… {done} / {total}"),
+            Lang::Chinese  => format!("正在获取标签信息… {done} / {total}"),
+        }
+    }
+
+    /// 走査完了のトースト（info.txt あり／なし／対象外の内訳）
+    pub fn tag_scan_done(self, total: usize, found: usize, absent: usize, other: usize) -> String {
+        match self {
+            Lang::Japanese => format!("{total}件を走査: info.txt あり {found}件 / なし {absent}件 / zip以外 {other}件"),
+            Lang::English  => format!("Scanned {total}: info.txt found {found} / none {absent} / non-zip {other}"),
+            Lang::Chinese  => format!("已扫描 {total} 个：有 info.txt {found} 个 / 无 {absent} 个 / 非 zip {other} 个"),
+        }
+    }
+
+    pub fn tag_scan_cancelled(self, done: usize, total: usize) -> String {
+        match self {
+            Lang::Japanese => format!("タグ情報の取得をキャンセルしました（{done} / {total}件まで）"),
+            Lang::English  => format!("Tag info collection cancelled ({done} / {total})"),
+            Lang::Chinese  => format!("已取消获取标签信息（{done} / {total}）"),
+        }
+    }
+
     pub fn tag_panel_manager_button(self) -> &'static str {
         match self {
             Lang::Japanese => "🏷 タグ管理",
