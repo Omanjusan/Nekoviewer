@@ -165,6 +165,8 @@ pub(crate) struct ApplyReport {
     pub new_elements: usize,
     /// 別名を足して名前を書き換えた要素の数。
     pub renamed_elements: usize,
+    /// 別名が他の要素と重なるため、名前を書き換えずにタグだけ付けた候補の数。
+    pub alias_conflicts: usize,
     /// 作ったバックアップ世代の名前。
     pub backup: String,
 }
@@ -229,6 +231,7 @@ pub(crate) fn run_apply(
         new_categories: plan.new_categories,
         new_elements: plan.new_elements,
         renamed_elements: plan.renames.len(),
+        alias_conflicts: plan.alias_conflicts,
         backup: backup_name,
     })
 }
@@ -362,6 +365,19 @@ mod tests {
         let group_id = groups.tiers[0].id;
         assert!(plan.file_additions[&0].contains(&20) && plan.file_additions[&1].contains(&20));
         assert!(plan.file_additions[&0].contains(&group_id) && plan.file_additions[&1].contains(&group_id));
+    }
+
+    #[test]
+    fn done_toast_mentions_renamed_elements_only_when_present() {
+        let mut r = ApplyReport { tagged: 3, backup: "g1".into(), ..ApplyReport::default() };
+        assert!(!Lang::Japanese.tag_apply_done(&r).contains("別名"));
+        r.renamed_elements = 2;
+        r.alias_conflicts = 1;
+        for l in [Lang::Japanese, Lang::English, Lang::Chinese] {
+            let msg = l.tag_apply_done(&r);
+            assert!(msg.contains('2') && msg.contains('1') && msg.contains("g1"), "{msg}");
+        }
+        assert!(Lang::Japanese.tag_apply_done(&r).contains("別名を追加した既存要素2個"));
     }
 
     #[test]

@@ -107,6 +107,16 @@ pub(super) struct TagConfirm {
     next_bundle_id: u64,
     /// まとめを拒否したときの理由（窓に出す）。
     merge_msg: Option<String>,
+    /// 適用前の確認（既存要素の名前が書き換わるとき）。Some の間は確認の窓を出す。
+    rename_review: Option<RenameReview>,
+}
+
+/// 適用前に見せる、書き換わる既存要素の一覧。
+struct RenameReview {
+    /// （書き換え前, 書き換え後）。
+    renames: Vec<(String, String)>,
+    /// 別名が重なって書き換えない候補の数。
+    conflicts: usize,
 }
 
 /// 一覧の行から出す操作（描画中は候補の並びを変えられないので、描画後にまとめて行う）。
@@ -135,7 +145,7 @@ impl TagConfirm {
         } else {
             return None;
         };
-        Some(Self { set, inputs: Arc::new(inputs), paths, master: Arc::new(master), stage, only_unconfirmed: false, rebuild: None, threshold_draft: None, checked: HashSet::new(), filter: String::new(), next_bundle_id: 1, merge_msg: None })
+        Some(Self { set, inputs: Arc::new(inputs), paths, master: Arc::new(master), stage, only_unconfirmed: false, rebuild: None, threshold_draft: None, checked: HashSet::new(), filter: String::new(), next_bundle_id: 1, merge_msg: None, rename_review: None })
     }
 
     /// 切替項目が変わったので、別スレッドで候補を作り直す。進行中の作り直しは捨てる。
@@ -441,10 +451,57 @@ impl NekoviewApp {
             st.stage = s;
         }
         if apply_clicked {
-            // 窓を閉じて、適用を始める（結果はトーストで知らせる）。
-            self.start_tag_apply(&st);
+            // 既存要素の名前が書き換わるなら、先に一覧を見せて確認する。
+            let mut master = self.tag_manager_categories.clone();
+            let mut next = self.tag_manager_next_tier_id;
+            let plan = plan_application(&st.set, &mut master, &mut next, i18n::t());
+            if plan.renames.is_empty() {
+                self.start_tag_apply(&st);
+            } else {
+                st.rename_review = Some(RenameReview {
+                    renames: plan.renames.iter().map(|(_, _, old, new)| (old.clone(), new.clone())).collect(),
+                    conflicts: plan.alias_conflicts,
+                });
+                self.tag_confirm = Some(st);
+            }
         } else if open && !cancel {
-            self.tag_confirm = Some(st);
+            // 書き換えの確認（モーダル）。
+            let mut proceed = false;
+            if let Some(review) = &st.rename_review {
+                let mut back = false;
+                let modal = egui::Modal::new(egui::Id::new("tag_rename_review")).show(ctx, |ui| {
+                    ui.set_width(460.0);
+                    ui.heading(t.tag_rename_review_title());
+                    ui.label(t.tag_rename_review_intro(review.renames.len()));
+                    ui.add_space(4.0);
+                    egui::ScrollArea::vertical().max_height(260.0).auto_shrink([false, true]).show(ui, |ui| {
+                        for (old, new) in &review.renames {
+                            ui.label(format!("{old}  →  {new}"));
+                        }
+                    });
+                    if review.conflicts > 0 {
+                        ui.add_space(4.0);
+                        ui.colored_label(egui::Color32::from_rgb(230, 160, 40), t.tag_rename_review_conflicts(review.conflicts));
+                    }
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        if ui.button(t.tag_rename_review_apply()).clicked() {
+                            proceed = true;
+                        }
+                        if ui.button(t.tag_confirm_back()).clicked() {
+                            back = true;
+                        }
+                    });
+                });
+                if back || modal.should_close() {
+                    st.rename_review = None;
+                }
+            }
+            if proceed {
+                self.start_tag_apply(&st);
+            } else {
+                self.tag_confirm = Some(st);
+            }
         }
     }
 }

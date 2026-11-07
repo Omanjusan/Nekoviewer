@@ -4640,6 +4640,38 @@ impl Lang {
         }
     }
 
+    pub fn tag_rename_review_title(self) -> &'static str {
+        match self {
+            Lang::Japanese => "既存要素の名前の書き換え",
+            Lang::English  => "Renaming existing elements",
+            Lang::Chinese  => "重命名现有元素",
+        }
+    }
+
+    pub fn tag_rename_review_intro(self, n: usize) -> String {
+        match self {
+            Lang::Japanese => format!("次の既存要素{n}個に別名を追加して、名前を書き換えます（適用前にDBのバックアップを取ります）。"),
+            Lang::English  => format!("{n} existing element(s) will be renamed by adding aliases (the DB is backed up first)."),
+            Lang::Chinese  => format!("将为 {n} 个现有元素添加别名并重命名（应用前会备份数据库）。"),
+        }
+    }
+
+    pub fn tag_rename_review_conflicts(self, n: usize) -> String {
+        match self {
+            Lang::Japanese => format!("別名が他の要素と重なるため、名前を書き換えない候補が{n}件あります（タグだけ付きます）。"),
+            Lang::English  => format!("{n} candidate(s) will not be renamed because the alias overlaps another element (tags are still applied)."),
+            Lang::Chinese  => format!("有 {n} 项因别名与其他元素重叠而不会重命名（仍会添加标签）。"),
+        }
+    }
+
+    pub fn tag_rename_review_apply(self) -> &'static str {
+        match self {
+            Lang::Japanese => "このまま適用",
+            Lang::English  => "Apply",
+            Lang::Chinese  => "应用",
+        }
+    }
+
     pub fn tag_confirm_apply_none(self) -> &'static str {
         match self {
             Lang::Japanese => "付けるタグがありません（採用された候補がありません）",
@@ -4668,18 +4700,37 @@ impl Lang {
         let fail_ja = if r.failed > 0 { format!("・失敗{}件", r.failed) } else { String::new() };
         let fail_en = if r.failed > 0 { format!(", failed {}", r.failed) } else { String::new() };
         let fail_zh = if r.failed > 0 { format!("、失败 {} 个", r.failed) } else { String::new() };
+        // 別名まわり（あるときだけ付ける）。
+        let (rn_ja, rn_en, rn_zh) = if r.renamed_elements > 0 {
+            (
+                format!("・別名を追加した既存要素{}個", r.renamed_elements),
+                format!(", existing elements given aliases {}", r.renamed_elements),
+                format!("、添加别名的现有元素 {} 个", r.renamed_elements),
+            )
+        } else {
+            (String::new(), String::new(), String::new())
+        };
+        let (cf_ja, cf_en, cf_zh) = if r.alias_conflicts > 0 {
+            (
+                format!(" / 別名が重なり追加しなかった{}件", r.alias_conflicts),
+                format!(" / aliases skipped due to overlap: {}", r.alias_conflicts),
+                format!(" / 因别名重叠未添加：{} 项", r.alias_conflicts),
+            )
+        } else {
+            (String::new(), String::new(), String::new())
+        };
         match self {
             Lang::Japanese => format!(
-                "タグを付けました: {}件（変化なし{}件{}） / 新規要素{}個・新規カテゴリ{}個 / バックアップ: {}",
-                r.tagged, r.unchanged, fail_ja, r.new_elements, r.new_categories, r.backup
+                "タグを付けました: {}件（変化なし{}件{}） / 新規要素{}個・新規カテゴリ{}個{}{} / バックアップ: {}",
+                r.tagged, r.unchanged, fail_ja, r.new_elements, r.new_categories, rn_ja, cf_ja, r.backup
             ),
             Lang::English => format!(
-                "Tags applied: {} file(s) (unchanged {}{}) / new elements {}, new categories {} / backup: {}",
-                r.tagged, r.unchanged, fail_en, r.new_elements, r.new_categories, r.backup
+                "Tags applied: {} file(s) (unchanged {}{}) / new elements {}, new categories {}{}{} / backup: {}",
+                r.tagged, r.unchanged, fail_en, r.new_elements, r.new_categories, rn_en, cf_en, r.backup
             ),
             Lang::Chinese => format!(
-                "已添加标签：{} 个文件（无变化 {} 个{}） / 新元素 {} 个、新类别 {} 个 / 备份：{}",
-                r.tagged, r.unchanged, fail_zh, r.new_elements, r.new_categories, r.backup
+                "已添加标签：{} 个文件（无变化 {} 个{}） / 新元素 {} 个、新类别 {} 个{}{} / 备份：{}",
+                r.tagged, r.unchanged, fail_zh, r.new_elements, r.new_categories, rn_zh, cf_zh, r.backup
             ),
         }
     }
