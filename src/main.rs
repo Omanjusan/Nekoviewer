@@ -48,6 +48,7 @@ mod spread_offset;
 mod spread_state;
 mod tag_manager;
 mod tag_master;
+mod tag_similarity;
 mod tag_source;
 mod tag_search;
 mod texture_window;
