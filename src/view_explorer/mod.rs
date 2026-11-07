@@ -645,6 +645,9 @@ pub(crate) struct TagManagerCategoryUi {
     /// `is_main`のカテゴリは常にtrue固定（メインタグドラムと同じ排他選択）。
     /// それ以外のカテゴリはタグ管理画面のラジオボタンで切り替え可能（既定false＝複数選択）。
     pub(crate) single_select: bool,
+    /// システムが作るカテゴリの種別。`Some` のカテゴリは削除できない（名前・色の変更と要素の増減は自由）。
+    /// 種別キーでJSONに保存するので、名前を変えても追跡できる（`tag_master::SystemKind`）。
+    pub(crate) system_kind: Option<crate::tag_master::SystemKind>,
 }
 
 impl TagManagerCategoryUi {
@@ -1456,8 +1459,14 @@ impl NekoviewApp {
         if !release_notice_pending {
             config.last_run_version = current_version.to_string();
         }
-        let (tag_manager_categories, tag_manager_next_tier_id) =
+        let (mut tag_manager_categories, mut tag_manager_next_tier_id) =
             crate::tag_manager::load(&config_root).unwrap_or_else(crate::tag_manager::default_state);
+        // システムカテゴリ（アーカイブ形式）が無ければ、初期要素つきで作って保存する。
+        if crate::tag_master::TagMaster::new(&mut tag_manager_categories, &mut tag_manager_next_tier_id)
+            .ensure_system_categories()
+        {
+            crate::tag_manager::save(&config_root, &tag_manager_categories, tag_manager_next_tier_id);
+        }
         let (tag_main_options, tag_attr_options) = crate::tag_manager::derive_tag_options(&tag_manager_categories);
         let tag_main_selected = tag_main_options.first().map(|(id, _)| *id);
         let mut tag_attr_selected: Vec<u64> = Vec::new();

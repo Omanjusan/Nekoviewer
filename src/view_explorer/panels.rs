@@ -1566,16 +1566,12 @@ impl NekoviewApp {
                 |ui| {
                     if ui.button("＋").clicked() {
                         let n = self.tag_manager_categories.len() + 1;
-                        let existing: Vec<egui::Color32> =
-                            self.tag_manager_categories.iter().map(|c| c.color).collect();
-                        self.tag_manager_categories.push(TagManagerCategoryUi {
-                            name: i18n::t().tag_manager_new_category_name(n),
-                            tiers: Vec::new(),
-                            color: pick_distinct_tag_color(&existing),
-                            is_main: false,
-                            single_select: false,
-                        });
-                        self.tag_manager_selected_category = Some(self.tag_manager_categories.len() - 1);
+                        let idx = crate::tag_master::TagMaster::new(
+                            &mut self.tag_manager_categories,
+                            &mut self.tag_manager_next_tier_id,
+                        )
+                        .add_category(i18n::t().tag_manager_new_category_name(n), false, None);
+                        self.tag_manager_selected_category = Some(idx);
                         self.tag_manager_bulk_input.clear();
                         self.save_tag_manager();
                     }
@@ -1586,14 +1582,14 @@ impl NekoviewApp {
 
         // 要素を持つtierが1つも無いカテゴリは、ピッカー側から呼び出せない「未成立」状態。
         // メインカテゴリ（is_main）は常に先頭に固定表示され、削除不可。
-        let rows: Vec<(String, bool, bool)> = self
+        let rows: Vec<(String, bool, bool, bool)> = self
             .tag_manager_categories
             .iter()
-            .map(|c| (c.display_name(), c.tiers.iter().any(|t| t.element.is_some()), c.is_main))
+            .map(|c| (c.display_name(), c.tiers.iter().any(|t| t.element.is_some()), c.is_main, c.system_kind.is_some()))
             .collect();
         let mut select_idx: Option<usize> = None;
         let mut delete_idx: Option<usize> = None;
-        for (i, (name, established, is_main)) in rows.iter().enumerate() {
+        for (i, (name, established, is_main, is_system)) in rows.iter().enumerate() {
             let selected = self.tag_manager_selected_category == Some(i);
             ui.horizontal(|ui| {
                 let label = if *is_main {
@@ -1608,6 +1604,9 @@ impl NekoviewApp {
                 }
                 if *is_main {
                     ui.add_enabled(false, egui::Button::new("－"));
+                } else if *is_system {
+                    // システムカテゴリは削除できない（要素の増減・名前・色は自由）。
+                    ui.add_enabled(false, egui::Button::new("－")).on_disabled_hover_text(i18n::t().tag_manager_system_category_tip());
                 } else if ui.small_button("－").clicked() {
                     delete_idx = Some(i);
                 }
@@ -1617,8 +1616,11 @@ impl NekoviewApp {
             self.tag_manager_selected_category = Some(i);
             self.tag_manager_bulk_input.clear();
         }
-        if let Some(i) = delete_idx {
-            self.tag_manager_categories.remove(i);
+        if let Some(i) = delete_idx
+            && crate::tag_master::TagMaster::new(&mut self.tag_manager_categories, &mut self.tag_manager_next_tier_id)
+                .remove_category(i)
+                .is_ok()
+        {
             let len = self.tag_manager_categories.len();
             self.tag_manager_selected_category = match self.tag_manager_selected_category {
                 Some(sel) if sel == i => {
@@ -1906,13 +1908,10 @@ impl NekoviewApp {
             self.save_tag_manager();
         }
         if let Some(t_idx) = delete_tier {
-            let tiers = &mut self.tag_manager_categories[cat_idx].tiers;
-            tiers.remove(t_idx);
             // tierは常に連番(1,2,3,...)を保つ。negativeフラグは各tierが個別に
             // 持ったままなので、削除・再採番してもポジ/ネガの割り当ては変わらない。
-            for (i, t) in tiers.iter_mut().enumerate() {
-                t.tier_no = i as i32 + 1;
-            }
+            crate::tag_master::TagMaster::new(&mut self.tag_manager_categories, &mut self.tag_manager_next_tier_id)
+                .remove_tier(cat_idx, t_idx);
             // tierのindex構成が変わるため、編集中状態はインデックスのズレを避けて破棄する。
             self.tag_manager_editing_element = None;
             self.tag_manager_editing_buffer.clear();
@@ -1960,18 +1959,13 @@ impl NekoviewApp {
             if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                 let names = crate::tag_manager::parse_bulk_elements(&self.tag_manager_bulk_input);
                 if !names.is_empty() {
-                    let tiers = &mut self.tag_manager_categories[cat_idx].tiers;
-                    let mut next_no = tiers.len() as i32 + 1;
+                    // 手動入力は同名でも追加する（従来どおり）。
+                    let mut master = crate::tag_master::TagMaster::new(
+                        &mut self.tag_manager_categories,
+                        &mut self.tag_manager_next_tier_id,
+                    );
                     for name in names {
-                        let id = self.tag_manager_next_tier_id;
-                        self.tag_manager_next_tier_id += 1;
-                        tiers.push(TagManagerTierUi {
-                            id,
-                            tier_no: next_no,
-                            negative: false,
-                            element: Some(name),
-                        });
-                        next_no += 1;
+                        master.push_element(cat_idx, &name);
                     }
                     self.tag_manager_bulk_input.clear();
                     self.save_tag_manager();
@@ -2008,11 +2002,8 @@ impl NekoviewApp {
             });
 
         if let Some(t_idx) = remove_tier {
-            self.tag_manager_categories[cat_idx].tiers.remove(t_idx);
-            let tiers = &mut self.tag_manager_categories[cat_idx].tiers;
-            for (i, t) in tiers.iter_mut().enumerate() {
-                t.tier_no = i as i32 + 1;
-            }
+            crate::tag_master::TagMaster::new(&mut self.tag_manager_categories, &mut self.tag_manager_next_tier_id)
+                .remove_tier(cat_idx, t_idx);
             self.ensure_tag_main_nonempty();
             self.save_tag_manager();
         }

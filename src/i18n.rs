@@ -4109,6 +4109,33 @@ impl Lang {
     }
 
     /// メインカテゴリの表示名。保存名は使わず、表示のたびに言語別へ差し替える
+    /// システムカテゴリ「アーカイブ形式」の初期名（作成後はユーザーが変更できる）
+    pub fn tag_system_archive_format_name(self) -> &'static str {
+        match self {
+            Lang::Japanese => "アーカイブ形式",
+            Lang::English  => "Archive format",
+            Lang::Chinese  => "压缩包格式",
+        }
+    }
+
+    /// アーカイブ形式カテゴリの、フォルダ本の要素名
+    pub fn tag_format_folder_name(self) -> &'static str {
+        match self {
+            Lang::Japanese => "フォルダ",
+            Lang::English  => "Folder",
+            Lang::Chinese  => "文件夹",
+        }
+    }
+
+    /// システムカテゴリの「－」が押せない理由（ヒント）
+    pub fn tag_manager_system_category_tip(self) -> &'static str {
+        match self {
+            Lang::Japanese => "システムのカテゴリなので削除できません（名前・色・要素は変更できます）",
+            Lang::English  => "This is a system category and cannot be deleted (you can rename it, recolor it, and edit its elements)",
+            Lang::Chinese  => "这是系统分类，无法删除（可以修改名称、颜色和元素）",
+        }
+    }
+
     pub fn tag_main_category_name(self) -> &'static str {
         match self {
             Lang::Japanese => "メイン",

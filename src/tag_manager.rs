@@ -27,6 +27,9 @@ struct CategorySaveData {
     /// 存在しないため、`#[serde(default)]`でfalse（複数選択）として読み込む。
     #[serde(default)]
     single_select: bool,
+    /// システムカテゴリの種別キー（`tag_master::SystemKind::as_key`）。旧JSON・通常カテゴリは未設定。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    system_kind: Option<String>,
     color: (u8, u8, u8),
     tiers: Vec<TierSaveData>,
 }
@@ -59,6 +62,7 @@ pub(crate) fn default_state() -> (Vec<TagManagerCategoryUi>, u64) {
         color: crate::view_explorer::pick_distinct_tag_color(&[]),
         is_main: true,
         single_select: true,
+        system_kind: None,
     }];
     (categories, 2)
 }
@@ -94,6 +98,8 @@ pub(crate) fn load(root: &Path) -> Option<(Vec<TagManagerCategoryUi>, u64)> {
             is_main: c.is_main,
             // メインカテゴリは常に単一選択固定（保存データが壊れていても矯正する）。
             single_select: c.is_main || c.single_select,
+            // 未知の種別キー（将来版のJSON）は通常カテゴリとして読む。
+            system_kind: c.system_kind.as_deref().and_then(crate::tag_master::SystemKind::from_key),
             color: egui::Color32::from_rgb(c.color.0, c.color.1, c.color.2),
             tiers: c
                 .tiers
@@ -207,6 +213,7 @@ pub(crate) fn save(root: &Path, categories: &[TagManagerCategoryUi], next_tier_i
                     name: c.name.clone(),
                     is_main: c.is_main,
                     single_select: c.single_select,
+                    system_kind: c.system_kind.map(|k| k.as_key().to_string()),
                     color: (r, g, b),
                     tiers: c
                         .tiers
@@ -243,12 +250,44 @@ mod tests {
             name: "c".into(),
             is_main: false,
             single_select: single,
+            system_kind: None,
             color: egui::Color32::WHITE,
             tiers: ids
                 .iter()
                 .map(|&id| TagManagerTierUi { id, tier_no: id as i32, negative: false, element: Some(format!("e{id}")) })
                 .collect(),
         }
+    }
+
+    fn temp_root(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("nekoviewer_tagmgr_{tag}_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn system_kind_round_trips_through_json_and_old_json_loads_as_normal() {
+        let root = temp_root("sys");
+        let mut c = cat(false, &[1, 2]);
+        c.system_kind = Some(crate::tag_master::SystemKind::ArchiveFormat);
+        let normal = cat(false, &[3]);
+        save(&root, &[c, normal], 10);
+        let (loaded, next) = load(&root).unwrap();
+        assert_eq!(next, 10);
+        assert_eq!(loaded[0].system_kind, Some(crate::tag_master::SystemKind::ArchiveFormat));
+        assert_eq!(loaded[1].system_kind, None);
+        // 通常カテゴリのJSONには system_kind のキーを出さない（旧版と同じ形のまま）。
+        let text = std::fs::read_to_string(data_path(&root)).unwrap();
+        assert_eq!(text.matches("system_kind").count(), 1);
+
+        // system_kind を持たない旧JSON・未知の種別キーは通常カテゴリとして読む。
+        let old = r#"{"next_tier_id":3,"categories":[{"name":"x","is_main":false,"single_select":false,"color":[1,2,3],"tiers":[]},
+            {"name":"y","is_main":false,"system_kind":"future_kind","color":[1,2,3],"tiers":[]}]}"#;
+        std::fs::write(data_path(&root), old).unwrap();
+        let (loaded, _) = load(&root).unwrap();
+        assert!(loaded.iter().all(|c| c.system_kind.is_none()));
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
