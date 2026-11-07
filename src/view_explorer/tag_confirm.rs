@@ -7,15 +7,18 @@
 //! - 行は、採否のチェック・名前・対象の件数・「未確定」の印と、類似提案があれば選択欄（既存の候補・新規作成・付けない）
 //! - 類似品の束は見出しの行を出し、まとめて採用・不採用にできる
 //!
-//! 「適用」は、この単位では押せない（次の単位で、バックアップ・マスターへの追加・タグ付けを実装する）。
+//! 「適用」は、DBのバックアップ → マスターへの新規カテゴリ・要素の追加 → 各ファイルへのタグ追加、を別スレッドで行う
+//! （`tag_apply`）。既存のタグは消さない。バックアップに失敗したら、何も変更せずに中止する。
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::{mpsc, Arc};
 
 use crate::i18n::{self, Lang};
 use crate::tag_candidates::{
     build_candidates, CandidateInput, CandidateSet, CatRef, Choice, Role, Window, ERROR_NEW_ELEMENTS, WARN_NEW_ELEMENTS,
 };
+use crate::tag_apply::{plan_application, run_apply, ApplyError, ApplyReport};
 use crate::tag_similarity::MatchOptions;
 
 use super::{NekoviewApp, TagManagerCategoryUi};
@@ -76,6 +79,8 @@ fn element_name(master: &[TagManagerCategoryUi], tier_id: u64) -> String {
 pub(super) struct TagConfirm {
     set: CandidateSet,
     inputs: Arc<Vec<CandidateInput>>,
+    /// 入力と同じ順のファイルのパス（適用でタグを書く先）。
+    paths: Vec<PathBuf>,
     master: Arc<Vec<TagManagerCategoryUi>>,
     stage: Window,
     only_unconfirmed: bool,
@@ -88,6 +93,7 @@ impl TagConfirm {
     pub(super) fn new(
         set: CandidateSet,
         inputs: Vec<CandidateInput>,
+        paths: Vec<PathBuf>,
         master: Vec<TagManagerCategoryUi>,
     ) -> Option<Self> {
         let has = |w: Window| set.candidates.iter().any(|c| c.role.window() == w);
@@ -98,7 +104,7 @@ impl TagConfirm {
         } else {
             return None;
         };
-        Some(Self { set, inputs: Arc::new(inputs), master: Arc::new(master), stage, only_unconfirmed: false, rebuild: None, threshold_draft: None })
+        Some(Self { set, inputs: Arc::new(inputs), paths, master: Arc::new(master), stage, only_unconfirmed: false, rebuild: None, threshold_draft: None })
     }
 
     /// 切替項目が変わったので、別スレッドで候補を作り直す。進行中の作り直しは捨てる。
@@ -144,8 +150,14 @@ fn role_label(role: Role) -> &'static str {
 
 impl NekoviewApp {
     /// 走査と候補生成の完了後に、確認ウィンドウを開く（候補が1つも無ければ開かない）。
-    pub(super) fn open_tag_confirm(&mut self, set: CandidateSet, inputs: Vec<CandidateInput>, master: Vec<TagManagerCategoryUi>) {
-        match TagConfirm::new(set, inputs, master) {
+    pub(super) fn open_tag_confirm(
+        &mut self,
+        set: CandidateSet,
+        inputs: Vec<CandidateInput>,
+        paths: Vec<PathBuf>,
+        master: Vec<TagManagerCategoryUi>,
+    ) {
+        match TagConfirm::new(set, inputs, paths, master) {
             Some(c) => self.tag_confirm = Some(c),
             None => self.set_toast(i18n::t().tag_confirm_no_candidates()),
         }
@@ -161,6 +173,7 @@ impl NekoviewApp {
         let mut open = true;
         let mut next_stage: Option<Window> = None;
         let mut cancel = false;
+        let mut apply_clicked = false;
         let mut opts = self.config.tag_match;
         let before = opts;
 
@@ -281,23 +294,33 @@ impl NekoviewApp {
                 },
             );
 
-            // 操作ボタン。
+            // 操作ボタン。適用は、最後の窓（作者・グループの窓。無ければ1枚目）で押せる。
             ui.separator();
+            let any_adopted = st.set.candidates.iter().any(|c| c.is_adopted());
+            let blocked = limits.error_count.is_some();
+            let apply_enabled = any_adopted && !blocked && self.spread_db.is_some() && self.tag_apply_job.is_none();
+            let apply_hint = if blocked {
+                t.tag_confirm_error_many(ERROR_NEW_ELEMENTS)
+            } else if !any_adopted {
+                t.tag_confirm_apply_none().to_string()
+            } else {
+                t.tag_confirm_apply_pending().to_string()
+            };
             ui.horizontal(|ui| {
+                let has_two = st.set.candidates.iter().any(|c| c.role.window() == Window::Two);
                 if stage == Window::Two {
                     let back_enabled = st.set.candidates.iter().any(|c| c.role.window() == Window::One);
                     if ui.add_enabled(back_enabled, egui::Button::new(t.tag_confirm_back())).clicked() {
                         next_stage = Some(Window::One);
                     }
-                    // 適用は次の単位で実装する。
-                    ui.add_enabled(false, egui::Button::new(t.tag_confirm_apply())).on_disabled_hover_text(t.tag_confirm_apply_pending());
-                } else {
-                    let has_two = st.set.candidates.iter().any(|c| c.role.window() == Window::Two);
-                    if ui.add_enabled(has_two, egui::Button::new(t.tag_confirm_next())).clicked() {
-                        next_stage = Some(Window::Two);
-                    }
-                    if !has_two {
-                        ui.add_enabled(false, egui::Button::new(t.tag_confirm_apply())).on_disabled_hover_text(t.tag_confirm_apply_pending());
+                } else if ui.add_enabled(has_two, egui::Button::new(t.tag_confirm_next())).clicked() {
+                    next_stage = Some(Window::Two);
+                }
+                if stage == Window::Two || !has_two {
+                    let btn = ui.add_enabled(apply_enabled, egui::Button::new(t.tag_confirm_apply()));
+                    let btn = if apply_enabled { btn } else { btn.on_disabled_hover_text(apply_hint) };
+                    if btn.clicked() {
+                        apply_clicked = true;
                     }
                 }
                 if ui.button(t.archive_open_cancel()).clicked() {
@@ -315,7 +338,10 @@ impl NekoviewApp {
         if let Some(s) = next_stage {
             st.stage = s;
         }
-        if open && !cancel {
+        if apply_clicked {
+            // 窓を閉じて、適用を始める（結果はトーストで知らせる）。
+            self.start_tag_apply(&st);
+        } else if open && !cancel {
             self.tag_confirm = Some(st);
         }
     }
@@ -376,6 +402,94 @@ fn draw_candidate_row(ui: &mut egui::Ui, set: &mut CandidateSet, i: usize, maste
     });
 }
 
+/// 適用中のジョブ。
+pub(super) struct TagApplyJob {
+    rx: mpsc::Receiver<Result<ApplyReport, ApplyError>>,
+    /// 成功したときに画面側へ取り込む、新しいマスター。
+    master: Vec<TagManagerCategoryUi>,
+    next_tier_id: u64,
+}
+
+impl NekoviewApp {
+    /// 採用された候補を適用する。別スレッドで、バックアップ → マスター保存 → タグ書き込みを行う。
+    fn start_tag_apply(&mut self, st: &TagConfirm) {
+        let Some(db) = self.spread_db.clone() else { return };
+        let mut master = self.tag_manager_categories.clone();
+        let mut next = self.tag_manager_next_tier_id;
+        let plan = plan_application(&st.set, &mut master, &mut next, i18n::t());
+        if plan.file_additions.is_empty() {
+            self.set_toast(i18n::t().tag_confirm_apply_none());
+            return;
+        }
+        let paths = st.paths.clone();
+        let root = self.config.config_root.clone();
+        let keep = self.config.backup_generations as usize;
+        let (worker_master, worker_next) = (master.clone(), next);
+        let (tx, rx) = mpsc::channel();
+        let ctx = self.egui_ctx.clone();
+        std::thread::spawn(move || {
+            let backup = || match crate::db_backup::create_generation(&db, &root, keep) {
+                Ok(g) => {
+                    crate::log_common!("[tag-apply] 適用前のバックアップを作成: {}", g.name);
+                    Some(g.name)
+                }
+                Err(e) => {
+                    crate::log_common!("[tag-apply] 適用前のバックアップに失敗（適用を中止）: {:?}", e);
+                    None
+                }
+            };
+            let save_master = || crate::tag_manager::save(&root, &worker_master, worker_next);
+            let out = run_apply(&db, &paths, &plan, &worker_master, &backup, &save_master);
+            let _ = tx.send(out);
+            ctx.request_repaint();
+        });
+        self.tag_apply_job = Some(TagApplyJob { rx, master, next_tier_id: next });
+    }
+
+    /// 適用の完了を取り込む（毎フレーム呼んでよい）。
+    pub(super) fn poll_tag_apply(&mut self) {
+        let Some(job) = self.tag_apply_job.as_ref() else { return };
+        let out = match job.rx.try_recv() {
+            Ok(o) => o,
+            Err(mpsc::TryRecvError::Empty) => return,
+            Err(mpsc::TryRecvError::Disconnected) => {
+                self.tag_apply_job = None;
+                return;
+            }
+        };
+        let job = self.tag_apply_job.take().expect("job just polled");
+        let t = i18n::t();
+        match out {
+            Ok(report) => {
+                // 新しいマスターを取り込み、タグの選択肢と表示を作り直す。
+                self.tag_manager_categories = job.master;
+                self.tag_manager_next_tier_id = job.next_tier_id;
+                self.save_tag_manager();
+                // 選択中のファイルのタグ表示を読み直させる。
+                self.tag_binding_path = None;
+                self.set_toast(t.tag_apply_done(&report));
+            }
+            Err(ApplyError::BackupFailed) => self.set_toast(t.tag_apply_backup_failed()),
+        }
+    }
+
+    /// 適用中の進捗オーバーレイ（背後のマウス入力を遮断する）。
+    pub(super) fn draw_tag_apply_overlay(&mut self, ctx: &egui::Context) {
+        if self.tag_apply_job.is_none() {
+            return;
+        }
+        egui::Modal::new(egui::Id::new("tag_apply_progress")).show(ctx, |ui| {
+            ui.set_width(320.0);
+            ui.vertical_centered(|ui| {
+                ui.add(egui::Spinner::new().size(24.0));
+                ui.add_space(6.0);
+                ui.label(i18n::t().tag_apply_progress());
+            });
+        });
+        ctx.request_repaint();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -409,10 +523,10 @@ mod tests {
     #[test]
     fn confirm_starts_at_the_first_window_that_has_candidates() {
         let only_authors = build_candidates(&[crate::tag_candidates::input_from_info_text("[A (B)] t.zip", None, None)], &[], &MatchOptions::default(), Lang::English);
-        let c = TagConfirm::new(only_authors, vec![], vec![]).unwrap();
+        let c = TagConfirm::new(only_authors, vec![], vec![], vec![]).unwrap();
         assert_eq!(c.stage, Window::Two, "窓1が空なら2枚目から");
         let empty = build_candidates(&[], &[], &MatchOptions::default(), Lang::English);
-        assert!(TagConfirm::new(empty, vec![], vec![]).is_none());
+        assert!(TagConfirm::new(empty, vec![], vec![], vec![]).is_none());
     }
 
     #[test]

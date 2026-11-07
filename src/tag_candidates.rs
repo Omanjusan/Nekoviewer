@@ -9,7 +9,7 @@
 //! - `[A(B)]` は一般系（外=グループ・内=作者）を基本に、既存タグとの類似度の合計が高い向きへ補正する
 //! - 窓1は作者・グループ以外、窓2は作者・グループ。新規要素数が窓ごとに1000で警告、3000でエラー
 
-// 確認ウィンドウ・適用（D・E）が使う。それまでは未使用の警告を出さない。
+// 候補の補助情報（表記の一覧・ファイル数など）は、確認ウィンドウの表示や今後の拡張用に保持している。
 #![allow(dead_code)]
 
 use std::collections::HashMap;
@@ -282,8 +282,6 @@ struct Mention {
     /// 括弧の向きを推測で決めた（既存タグの裏づけが無い）。
     guessed: bool,
 }
-
-const FOLDER_NAMES: [&str; 3] = ["フォルダ", "Folder", "文件夹"];
 
 fn file_stem(input: &CandidateInput) -> &str {
     split_archive_extension(&input.file_name).0

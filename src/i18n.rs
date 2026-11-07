@@ -4378,9 +4378,9 @@ impl Lang {
 
     pub fn tag_confirm_apply_pending(self) -> &'static str {
         match self {
-            Lang::Japanese => "適用は次の単位で実装します（いまは確認のみ）",
-            Lang::English  => "Applying is not implemented yet (review only for now)",
-            Lang::Chinese  => "应用功能将在后续版本实现（目前仅供确认）",
+            Lang::Japanese => "いまは適用できません（DBが使えないか、適用中です）",
+            Lang::English  => "Cannot apply now (the database is unavailable or an apply is in progress)",
+            Lang::Chinese  => "目前无法应用（数据库不可用或正在应用）",
         }
     }
 
@@ -4509,6 +4509,50 @@ impl Lang {
             Lang::Japanese => format!("新規作成: {name}"),
             Lang::English  => format!("Create new: {name}"),
             Lang::Chinese  => format!("新建：{name}"),
+        }
+    }
+
+    pub fn tag_confirm_apply_none(self) -> &'static str {
+        match self {
+            Lang::Japanese => "付けるタグがありません（採用された候補がありません）",
+            Lang::English  => "Nothing to apply (no adopted candidates)",
+            Lang::Chinese  => "没有可应用的标签（没有已采用的候选）",
+        }
+    }
+
+    pub fn tag_apply_progress(self) -> &'static str {
+        match self {
+            Lang::Japanese => "バックアップを作成して、タグを付けています…",
+            Lang::English  => "Backing up and applying tags…",
+            Lang::Chinese  => "正在备份并添加标签…",
+        }
+    }
+
+    pub fn tag_apply_backup_failed(self) -> &'static str {
+        match self {
+            Lang::Japanese => "バックアップに失敗したため、何も変更せずに中止しました",
+            Lang::English  => "Backup failed; aborted without changing anything",
+            Lang::Chinese  => "备份失败，已中止，未做任何更改",
+        }
+    }
+
+    pub fn tag_apply_done(self, r: &crate::tag_apply::ApplyReport) -> String {
+        let fail_ja = if r.failed > 0 { format!("・失敗{}件", r.failed) } else { String::new() };
+        let fail_en = if r.failed > 0 { format!(", failed {}", r.failed) } else { String::new() };
+        let fail_zh = if r.failed > 0 { format!("、失败 {} 个", r.failed) } else { String::new() };
+        match self {
+            Lang::Japanese => format!(
+                "タグを付けました: {}件（変化なし{}件{}） / 新規要素{}個・新規カテゴリ{}個 / バックアップ: {}",
+                r.tagged, r.unchanged, fail_ja, r.new_elements, r.new_categories, r.backup
+            ),
+            Lang::English => format!(
+                "Tags applied: {} file(s) (unchanged {}{}) / new elements {}, new categories {} / backup: {}",
+                r.tagged, r.unchanged, fail_en, r.new_elements, r.new_categories, r.backup
+            ),
+            Lang::Chinese => format!(
+                "已添加标签：{} 个文件（无变化 {} 个{}） / 新元素 {} 个、新类别 {} 个 / 备份：{}",
+                r.tagged, r.unchanged, fail_zh, r.new_elements, r.new_categories, r.backup
+            ),
         }
     }
 

@@ -9,7 +9,7 @@
 //! - システムカテゴリは種別キー（`SystemKind`）で識別する。名前を変えても追跡できる
 //! - ファイルのタグ合成（`merge_file_tags`）は既存のタグを消さず、排他の規則を守って足す
 
-// 検索・ドライラン・合成は、一括タグ付け（C以降）が使う。それまでは未使用の警告を出さない。
+// 一部の検索・集計の関数は、テストと今後の照合用の公開APIで、いまの画面からは呼ばれない。
 #![allow(dead_code)]
 
 use std::collections::HashSet;
@@ -107,6 +107,11 @@ pub(crate) struct TagMaster<'a> {
 impl<'a> TagMaster<'a> {
     pub(crate) fn new(cats: &'a mut Vec<TagManagerCategoryUi>, next_tier_id: &'a mut u64) -> Self {
         Self { cats, next_tier_id }
+    }
+
+    /// カテゴリ数。
+    pub(crate) fn len(&self) -> usize {
+        self.cats.len()
     }
 
     // ── 検索 ──────────────────────────────────────────────────────────
@@ -273,7 +278,7 @@ impl<'a> TagMaster<'a> {
     // ── ファイルのタグ合成 ────────────────────────────────────────────
 
     /// 自動付与の排他規則を持つカテゴリか（メイン・単一選択・アーカイブ形式）。
-    fn auto_exclusive(c: &TagManagerCategoryUi) -> bool {
+    pub(crate) fn auto_exclusive(c: &TagManagerCategoryUi) -> bool {
         c.is_main || c.single_select || c.system_kind == Some(SystemKind::ArchiveFormat)
     }
 
@@ -283,25 +288,31 @@ impl<'a> TagMaster<'a> {
     ///   足したいIDの先頭1つを足す（メインは未設定のときだけ付く）
     /// - マスターに無いID・重複は足さない
     pub(crate) fn merge_file_tags(&self, existing: &[u64], additions: &[u64]) -> Vec<u64> {
-        let mut out: Vec<u64> = existing.to_vec();
-        let mut have: HashSet<u64> = existing.iter().copied().collect();
-        for &id in additions {
-            if have.contains(&id) {
+        merge_file_tags_in(self.cats, existing, additions)
+    }
+}
+
+/// `TagMaster::merge_file_tags` の、借用なしで呼べる版（別スレッドでカテゴリの写しを読むだけのときに使う）。
+pub(crate) fn merge_file_tags_in(cats: &[TagManagerCategoryUi], existing: &[u64], additions: &[u64]) -> Vec<u64> {
+    let category_of = |tier_id: u64| cats.iter().position(|c| c.tiers.iter().any(|t| t.id == tier_id && t.element.is_some()));
+    let mut out: Vec<u64> = existing.to_vec();
+    let mut have: HashSet<u64> = existing.iter().copied().collect();
+    for &id in additions {
+        if have.contains(&id) {
+            continue;
+        }
+        let Some(ci) = category_of(id) else { continue };
+        let cat = &cats[ci];
+        if TagMaster::auto_exclusive(cat) {
+            let taken = cat.tiers.iter().any(|t| t.element.is_some() && have.contains(&t.id));
+            if taken {
                 continue;
             }
-            let Some(ci) = self.category_of(id) else { continue };
-            let cat = &self.cats[ci];
-            if Self::auto_exclusive(cat) {
-                let taken = cat.tiers.iter().any(|t| t.element.is_some() && have.contains(&t.id));
-                if taken {
-                    continue;
-                }
-            }
-            out.push(id);
-            have.insert(id);
         }
-        out
+        out.push(id);
+        have.insert(id);
     }
+    out
 }
 
 #[cfg(test)]

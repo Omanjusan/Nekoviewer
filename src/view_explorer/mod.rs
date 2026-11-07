@@ -1057,6 +1057,8 @@ pub struct NekoviewApp {
     tag_scan_result: Option<tag_scan::TagScanResult>,
     /// 開いているタグ候補の確認ウィンドウ（2枚）。
     tag_confirm: Option<tag_confirm::TagConfirm>,
+    /// 適用中のジョブ（バックアップ → マスター保存 → タグ書き込み）。
+    tag_apply_job: Option<tag_confirm::TagApplyJob>,
     /// 設定ダイアログの表示状態・選択中タブ・編集用下書き
     pub(crate) settings_open: bool,
     pub(crate) settings_tab: SettingsTab,
@@ -1676,6 +1678,7 @@ impl NekoviewApp {
             tag_scan_job: None,
             tag_scan_result: None,
             tag_confirm: None,
+            tag_apply_job: None,
             settings_open: false,
             settings_tab: SettingsTab::Common,
             settings_draft,

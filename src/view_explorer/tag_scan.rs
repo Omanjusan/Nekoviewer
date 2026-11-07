@@ -252,7 +252,8 @@ impl NekoviewApp {
             // 候補があれば、確認ウィンドウ（1枚目）を開く。
             if let Some(set) = result.candidates.clone() {
                 let inputs = inputs_from_items(&result.items);
-                self.open_tag_confirm(set, inputs, self.tag_manager_categories.clone());
+                let paths = result.items.iter().map(|i| i.path.clone()).collect();
+                self.open_tag_confirm(set, inputs, paths, self.tag_manager_categories.clone());
             }
             self.tag_scan_result = Some(result);
         }

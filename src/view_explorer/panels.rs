@@ -217,6 +217,7 @@ impl NekoviewApp {
             && self.pending_open.is_none()
             && self.tag_scan_job.is_none()
             && self.tag_confirm.is_none()
+            && self.tag_apply_job.is_none()
             && self.tree_sort_dialog.is_none()
             && !self.tag_manager_open
         {
@@ -282,6 +283,7 @@ impl NekoviewApp {
         self.draw_detail_window(&ctx);
         self.draw_tag_scan_overlay(&ctx);
         self.draw_tag_confirm(&ctx);
+        self.draw_tag_apply_overlay(&ctx);
         self.draw_sort_condition_dialog(&ctx);
         self.draw_bookmark_setting_dialog(&ctx);
         self.draw_spread_setting_dialog(&ctx);
@@ -1384,7 +1386,7 @@ impl NekoviewApp {
         }
     }
 
-    fn save_tag_manager(&mut self) {
+    pub(super) fn save_tag_manager(&mut self) {
         let (main_options, attr_options) = crate::tag_manager::derive_tag_options(&self.tag_manager_categories);
         self.tag_main_options = main_options;
         // 選択中タグ自体が消えていれば（tier削除等）「未設定」へフォールバックする。
