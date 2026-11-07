@@ -133,7 +133,13 @@ pub(crate) fn derive_tag_options(categories: &[TagManagerCategoryUi]) -> (Vec<(u
         categories
             .iter()
             .find(|c| c.is_main)
-            .map(|c| c.tiers.iter().filter_map(|t| t.element.clone().map(|name| (t.id, name))).collect::<Vec<_>>())
+            .map(|c| {
+                // 別名つきの要素は、ドラム等の表示には先頭の別名だけを使う。
+                c.tiers
+                    .iter()
+                    .filter_map(|t| t.element.as_deref().map(|name| (t.id, crate::tag_master::display_name(name).to_string())))
+                    .collect::<Vec<_>>()
+            })
             .unwrap_or_default(),
     );
     let attr_options = categories
@@ -257,6 +263,16 @@ mod tests {
                 .map(|&id| TagManagerTierUi { id, tier_no: id as i32, negative: false, element: Some(format!("e{id}")) })
                 .collect(),
         }
+    }
+
+    #[test]
+    fn main_options_show_only_the_first_alias() {
+        let mut main = cat(true, &[1, 2]);
+        main.is_main = true;
+        main.tiers[0].element = Some("漫画|Manga|Comic".to_string());
+        let (opts, _) = derive_tag_options(&[main]);
+        assert_eq!(opts[1], (1, "漫画".to_string()));
+        assert_eq!(opts[2], (2, "e2".to_string()));
     }
 
     fn temp_root(tag: &str) -> std::path::PathBuf {

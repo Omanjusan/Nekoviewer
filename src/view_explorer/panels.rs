@@ -1992,6 +1992,7 @@ impl NekoviewApp {
         ui.separator();
 
         let mut remove_tier: Option<usize> = None;
+        let mut promote_alias_at: Option<(usize, usize)> = None;
         let area_height = ui.available_height() * 0.9;
         egui::ScrollArea::vertical()
             .id_salt("tag_manager_flat_scroll")
@@ -2011,13 +2012,25 @@ impl NekoviewApp {
                     }
                     let text_color = contrasting_text_color(cat_color);
                     for (t_idx, name) in elements {
-                        if tag_chip_removable(ui, &name, full_w, cat_color, text_color, t_idx) {
+                        let (removed, promote) = tag_chip_removable(ui, &name, full_w, cat_color, text_color, t_idx);
+                        if removed {
                             remove_tier = Some(t_idx);
+                        }
+                        if let Some(pos) = promote {
+                            promote_alias_at = Some((t_idx, pos));
                         }
                     }
                 });
             });
 
+        if let Some((t_idx, pos)) = promote_alias_at {
+            // 先頭見出しにする別名を入れ替える（要素名の並びだけが変わる。tier_id・付与済みのタグはそのまま）。
+            let tier = &mut self.tag_manager_categories[cat_idx].tiers[t_idx];
+            if let Some(name) = tier.element.as_deref() {
+                tier.element = Some(crate::tag_master::promote_alias(name, pos));
+                self.save_tag_manager();
+            }
+        }
         if let Some(t_idx) = remove_tier {
             crate::tag_master::TagMaster::new(&mut self.tag_manager_categories, &mut self.tag_manager_next_tier_id)
                 .remove_tier(cat_idx, t_idx);
@@ -4351,7 +4364,9 @@ pub(super) fn tag_chip(
 ) -> egui::Response {
     let pad = egui::vec2(6.0, 2.0);
     let font = egui::TextStyle::Button.resolve(ui.style());
-    let galley = truncated_galley(ui, text, font, text_color, (full_w - pad.x * 2.0).max(8.0));
+    // 別名つき（`A|B|C`）は先頭の別名だけを表示し、ホバーで全文を出す。
+    let shown = crate::tag_master::display_name(text);
+    let galley = truncated_galley(ui, shown, font, text_color, (full_w - pad.x * 2.0).max(8.0));
     let size = galley.size() + pad * 2.0;
     let (rect, resp) = ui.allocate_exact_size(size, sense);
     let fill = if hover_fill && resp.hovered() { ui.visuals().widgets.hovered.weak_bg_fill } else { fill };
@@ -4363,6 +4378,8 @@ pub(super) fn tag_chip(
 /// `tag_chip`の削除ボタン(×)付き版。文字部分と×を1個の矩形として確保するため、チップごと
 /// 折り返す。長い要素は文字側だけを`…`で省略し、×は常に右端に残す。×がクリック
 /// された（＝削除要求）時にtrueを返す。`key`はチップごとに一意なID用（要素のindex等）。
+/// 別名つき（`A|B|C`）は先頭の別名だけを表示し、ホバーで全文を出す。別名があるチップは、文字部分を
+/// クリックすると「先頭にする別名」のラジオが開き、選んだ別名の位置を返す（`(削除要求, 先頭にする別名の位置)`）。
 fn tag_chip_removable(
     ui: &mut egui::Ui,
     text: &str,
@@ -4370,13 +4387,17 @@ fn tag_chip_removable(
     fill: egui::Color32,
     text_color: egui::Color32,
     key: usize,
-) -> bool {
+) -> (bool, Option<usize>) {
     const X_W: f32 = 16.0;
     let pad = egui::vec2(6.0, 2.0);
     let font = egui::TextStyle::Button.resolve(ui.style());
-    let galley = truncated_galley(ui, text, font.clone(), text_color, (full_w - pad.x * 2.0 - X_W).max(8.0));
+    let aliases = crate::tag_master::split_aliases(text);
+    let has_aliases = aliases.len() > 1;
+    let shown = crate::tag_master::display_name(text);
+    let galley = truncated_galley(ui, shown, font.clone(), text_color, (full_w - pad.x * 2.0 - X_W).max(8.0));
     let size = egui::vec2(galley.size().x + pad.x * 2.0 + X_W, galley.size().y + pad.y * 2.0);
-    let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::hover());
+    let sense = if has_aliases { egui::Sense::click() } else { egui::Sense::hover() };
+    let (rect, resp) = ui.allocate_exact_size(size, sense);
     ui.painter().rect_filled(rect, 3.0, fill);
     ui.painter().galley(rect.min + pad, galley, text_color);
     let x_rect = egui::Rect::from_min_max(egui::pos2(rect.right() - X_W - pad.x, rect.top()), rect.right_bottom());
@@ -4389,6 +4410,17 @@ fn tag_chip_removable(
         font,
         x_color,
     );
+    let mut promote = None;
+    if has_aliases {
+        egui::Popup::menu(&resp).show(|ui| {
+            ui.weak(i18n::t().tag_confirm_primary_alias());
+            for (pos, a) in aliases.iter().enumerate() {
+                if ui.radio(pos == 0, *a).clicked() && pos != 0 {
+                    promote = Some(pos);
+                }
+            }
+        });
+    }
     resp.on_hover_text(text);
-    x_resp.clicked()
+    (x_resp.clicked(), promote)
 }

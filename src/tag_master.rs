@@ -100,6 +100,22 @@ pub(crate) fn primary_alias(name: &str) -> &str {
     split_aliases(name).first().copied().unwrap_or(name)
 }
 
+/// 要素名の `pos` 番目の別名を先頭（主表記）にした名前を返す。範囲外・別名が1つなら元のまま。
+pub(crate) fn promote_alias(name: &str, pos: usize) -> String {
+    let mut parts: Vec<String> = split_aliases(name).into_iter().map(String::from).collect();
+    if pos == 0 || pos >= parts.len() {
+        return name.to_string();
+    }
+    let a = parts.remove(pos);
+    parts.insert(0, a);
+    join_aliases(&parts)
+}
+
+/// 画面に出す要素名（別名つきなら先頭の別名だけ）。全文はホバーで出す。
+pub(crate) fn display_name(name: &str) -> &str {
+    primary_alias(name)
+}
+
 /// 名前に含まれる `|` を全角 `｜` に置換する（別名の区切りと区別するため。候補を要素として登録する前に使う）。
 pub(crate) fn escape_alias_sep(name: &str) -> String {
     name.replace(ALIAS_SEP, "｜")
@@ -496,6 +512,18 @@ mod tests {
         assert!(!has_aliases("A|"));
         assert!(!has_aliases("A"));
         assert_eq!(alias_keys("Kouji|KOJI|ｋｏｊｉ|-"), ["kouji", "koji"], "重複と空は除く");
+    }
+
+    #[test]
+    fn promote_alias_moves_the_chosen_alias_to_the_front() {
+        assert_eq!(promote_alias("A|B|C", 2), "C|A|B");
+        assert_eq!(promote_alias("A|B|C", 1), "B|A|C");
+        assert_eq!(promote_alias("A|B|C", 0), "A|B|C");
+        assert_eq!(promote_alias("A|B", 5), "A|B", "範囲外は変えない");
+        assert_eq!(promote_alias("A", 1), "A");
+        assert_eq!(promote_alias(" A | B ", 1), "B|A", "空白は整える");
+        assert_eq!(display_name("Kouji|Koji"), "Kouji");
+        assert_eq!(display_name("Kouji"), "Kouji");
     }
 
     #[test]
