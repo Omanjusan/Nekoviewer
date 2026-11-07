@@ -1,4 +1,4 @@
-//! アーカイブの詳細テキスト（ComicInfo.xml・内部 .nfo・zipコメント）の抽出と、表示用に安全化する純関数。
+//! アーカイブの詳細テキスト（ComicInfo.xml・内部の .nfo / info.txt / readme.txt・zipコメント）の抽出と、表示用に安全化する純関数。
 //!
 //! 安全方針（外部の不正なファイルを読む前提）:
 //! - 読み出しは `take(上限)` で打ち切る。宣言サイズは信用しない（zip爆弾対策）。
@@ -16,7 +16,7 @@ use super::detect::{detect_format, ArchiveFormat};
 pub const DETAIL_READ_LIMIT: u64 = 256 * 1024;
 /// zipコメントの上限（バイト）。zip仕様上の最大は 65535。
 const COMMENT_LIMIT: usize = 64 * 1024;
-/// 拾う .nfo の最大件数。
+/// 拾う付属テキスト（.nfo / info.txt / readme.txt）の最大件数。
 const MAX_NFO_FILES: usize = 4;
 /// 連続して許す結合文字の数（これを超える分は落とす。zalgo対策）。
 const MAX_COMBINING_RUN: usize = 3;
@@ -203,7 +203,7 @@ pub fn parse_comic_info(bytes: &[u8]) -> Option<ComicInfo> {
     (!fields.is_empty()).then_some(ComicInfo { fields })
 }
 
-/// 内部の .nfo 1件。
+/// 付属テキスト（.nfo / info.txt / readme.txt）1件。info.txt・readme.txt は画像ページ（TXTページ）としても残る。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NfoText {
     pub name: String,
@@ -235,10 +235,14 @@ fn is_comic_info_name(name: &str) -> bool {
     base_name(name).eq_ignore_ascii_case("comicinfo.xml")
 }
 
-fn is_nfo_name(name: &str) -> bool {
-    base_name(name)
-        .rsplit_once('.')
-        .is_some_and(|(stem, ext)| !stem.is_empty() && ext.eq_ignore_ascii_case("nfo"))
+/// 詳細として拾う付属テキストの名前か。`*.nfo` と、ファイル名が `info.txt` / `readme.txt` のもの
+/// （大文字小文字は区別せず、サブフォルダ内も可）。ほかの `.txt` は拾わない（TXTページとしてだけ扱う）。
+fn is_detail_text_name(name: &str) -> bool {
+    let base = base_name(name);
+    if base.eq_ignore_ascii_case("info.txt") || base.eq_ignore_ascii_case("readme.txt") {
+        return true;
+    }
+    base.rsplit_once('.').is_some_and(|(stem, ext)| !stem.is_empty() && ext.eq_ignore_ascii_case("nfo"))
 }
 
 /// 読み出し上限つきでバイト列を読む。
@@ -274,7 +278,7 @@ pub fn read_zip_detail(path: &Path) -> Option<DetailMeta> {
             if let Some(bytes) = read_limited(entry, DETAIL_READ_LIMIT) {
                 meta.comic_info = parse_comic_info(&bytes);
             }
-        } else if want_nfo && is_nfo_name(&name) {
+        } else if want_nfo && is_detail_text_name(&name) {
             if let Some(bytes) = read_limited(entry, DETAIL_READ_LIMIT) {
                 let text = decode_text_bytes(&bytes).trim().to_owned();
                 if !text.is_empty() {
@@ -371,10 +375,15 @@ mod tests {
         assert!(is_comic_info_name("ComicInfo.xml"));
         assert!(is_comic_info_name("sub/COMICINFO.XML"));
         assert!(!is_comic_info_name("ComicInfo.xml.bak"));
-        assert!(is_nfo_name("readme.NFO"));
-        assert!(is_nfo_name("a\\b\\info.nfo"));
-        assert!(!is_nfo_name(".nfo"));
-        assert!(!is_nfo_name("info.txt"));
+        assert!(is_detail_text_name("readme.NFO"));
+        assert!(is_detail_text_name("a\\b\\info.nfo"));
+        assert!(!is_detail_text_name(".nfo"));
+        assert!(is_detail_text_name("info.txt"));
+        assert!(is_detail_text_name("sub/README.TXT"));
+        assert!(is_detail_text_name("x\\Info.Txt"));
+        assert!(!is_detail_text_name("info.txt.bak"));
+        assert!(!is_detail_text_name("myinfo.txt"), "完全一致のみ");
+        assert!(!is_detail_text_name("notes.txt"));
     }
 
     fn build_zip(name: &str, files: &[(&str, &[u8])], comment: &str) -> std::path::PathBuf {
@@ -398,7 +407,8 @@ mod tests {
                 ("001.jpg", b"not really an image"),
                 ("ComicInfo.xml", b"<ComicInfo><Title>T</Title></ComicInfo>"),
                 ("note/info.nfo", "メモ\r\n2行目".as_bytes()),
-                ("readme.txt", b"txt is a page, not a detail"),
+                ("notes.txt", b"other txt is a page, not a detail"),
+                ("Info.TXT", "付属のinfo.txt\r\n2行目".as_bytes()),
             ],
             "from site",
         );
@@ -406,9 +416,11 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         assert!(meta.has_detail());
         assert_eq!(meta.comic_info.unwrap().get("Title"), Some("T"));
-        assert_eq!(meta.nfo.len(), 1);
+        assert_eq!(meta.nfo.len(), 2, "nfo と info.txt。notes.txt は拾わない");
         assert_eq!(meta.nfo[0].name, "info.nfo");
         assert_eq!(meta.nfo[0].text, "メモ\n2行目");
+        assert_eq!(meta.nfo[1].name, "Info.TXT");
+        assert_eq!(meta.nfo[1].text, "付属のinfo.txt\n2行目");
         assert_eq!(meta.comment, "from site");
     }
 

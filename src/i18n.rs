@@ -2592,8 +2592,13 @@ impl Lang {
         "ComicInfo.xml"
     }
 
-    pub fn detail_section_nfo(self, name: &str) -> String {
-        format!("nfo: {name}")
+    /// 付属テキスト（.nfo / info.txt / readme.txt）の見出し
+    pub fn detail_section_text(self, name: &str) -> String {
+        match self {
+            Lang::Japanese => format!("テキスト: {name}"),
+            Lang::English  => format!("Text: {name}"),
+            Lang::Chinese  => format!("文本: {name}"),
+        }
     }
 
     pub fn detail_section_comment(self) -> &'static str {

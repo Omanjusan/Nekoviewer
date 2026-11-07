@@ -1,5 +1,5 @@
 //! 詳細ウィンドウ。リストの「詳細」列のアイコンから開き、アーカイブ内の詳細テキスト
-//! （ComicInfo.xml・内部の .nfo・zipコメント）を一覧で見せる。
+//! （ComicInfo.xml・内部の .nfo / info.txt / readme.txt・zipコメント）を一覧で見せる。
 //!
 //! - 読み出し（`archive::meta::read_detail`）は別スレッドで行い、窓は読み込み中表示を出して待つ
 //! - 窓は1つだけ。別のファイルのアイコンを押すと中身を差し替える（窓の位置は保つ）
@@ -136,7 +136,7 @@ fn draw_detail_body(ui: &mut egui::Ui, d: &DetailMeta) {
         ui.separator();
     }
     for nfo in &d.nfo {
-        ui.strong(t.detail_section_nfo(&nfo.name));
+        ui.strong(t.detail_section_text(&nfo.name));
         body_label(ui, &nfo.text);
         ui.separator();
     }
