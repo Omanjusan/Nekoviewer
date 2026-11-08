@@ -524,6 +524,8 @@ pub struct AppState {
     pub explorer_list_cols: String,
     /// 似ている画像の「？」を出す類似度(%)のしきい値。空は既定。値はエクスプローラー側で解釈する。
     pub explorer_sim_threshold: String,
+    /// UIベースカラー（ダーク／ライト）。未記載・不明な値はダーク。
+    pub theme_mode: crate::ui_theme::ThemeMode,
 }
 
 impl Default for AppState {
@@ -577,6 +579,7 @@ impl Default for AppState {
             explorer_view_mode: "card:s".to_string(),
             explorer_list_cols: String::new(),
             explorer_sim_threshold: String::new(),
+            theme_mode: crate::ui_theme::ThemeMode::default(),
         }
     }
 }
@@ -638,6 +641,7 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
     let mut explorer_view_mode: Option<String> = None;
     let mut explorer_list_cols: Option<String> = None;
     let mut explorer_sim_threshold: Option<String> = None;
+    let mut theme_mode = crate::ui_theme::ThemeMode::default();
     // カード日付書式の6キー（未記載は CardDateFormat::from_state 側で各既定へフォールバック）
     let mut card_date_mode = String::new();
     let mut card_date_auto_style = String::new();
@@ -803,6 +807,7 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
                 "explorer_view_mode" => { explorer_view_mode = Some(v.trim().to_string()); }
                 "explorer_list_cols" => { explorer_list_cols = Some(v.trim().to_string()); }
                 "explorer_sim_threshold" => { explorer_sim_threshold = Some(v.trim().to_string()); }
+                "theme" => { theme_mode = crate::ui_theme::ThemeMode::from_state_str(v); }
                 "card_date_mode" => { card_date_mode = v.trim().to_string(); }
                 "card_date_auto_style" => { card_date_auto_style = v.trim().to_string(); }
                 "card_date_order" => { card_date_order = v.trim().to_string(); }
@@ -1157,6 +1162,7 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
         explorer_view_mode: explorer_view_mode.unwrap_or_else(|| "card:s".to_string()),
         explorer_list_cols: explorer_list_cols.unwrap_or_default(),
         explorer_sim_threshold: explorer_sim_threshold.unwrap_or_default(),
+        theme_mode,
     })
 }
 
@@ -1179,7 +1185,7 @@ fn magnifier_state_lines(m: &crate::magnifier::MagnifierConfig) -> String {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn save_state(root: &Path, dir: &Path, window_size: (u32, u32), viewer_slots: &[Option<WindowSlot>; 4], sort_state: &SortState, lang: &str, viewer_cfg: &ViewerConfig, show_hidden: bool, card_info_mode: &str, card_rating_mode: &str, card_date_format: &CardDateFormat, app_cfg: &AppConfig, translate_cfg: &TranslateConfig, tab_positions: &TabPositions, tree_sorts: &crate::tree_sort::TreeSorts, tag_panel_open: bool, tag_preview_high_quality: bool, explorer_view_mode: &str, explorer_list_cols: &str, explorer_sim_threshold: &str) {
+pub fn save_state(root: &Path, dir: &Path, window_size: (u32, u32), viewer_slots: &[Option<WindowSlot>; 4], sort_state: &SortState, lang: &str, viewer_cfg: &ViewerConfig, show_hidden: bool, card_info_mode: &str, card_rating_mode: &str, card_date_format: &CardDateFormat, app_cfg: &AppConfig, translate_cfg: &TranslateConfig, tab_positions: &TabPositions, tree_sorts: &crate::tree_sort::TreeSorts, tag_panel_open: bool, tag_preview_high_quality: bool, explorer_view_mode: &str, explorer_list_cols: &str, explorer_sim_threshold: &str, theme_mode: crate::ui_theme::ThemeMode) {
     let _ = std::fs::create_dir_all(root);
     let (path, bak, tmp) = (state_path(root), state_bak_path(root), state_tmp_path(root));
 
@@ -1191,6 +1197,7 @@ pub fn save_state(root: &Path, dir: &Path, window_size: (u32, u32), viewer_slots
         sort_state.rating.state_key(), sort_state.rating.ascending, tag_panel_open, tag_preview_high_quality,
     );
     content.push_str(&format!("explorer_view_mode={explorer_view_mode}\nexplorer_list_cols={explorer_list_cols}\nexplorer_sim_threshold={explorer_sim_threshold}\n"));
+    content.push_str(&format!("theme={}\n", theme_mode.as_state_str()));
     // フォルダ系タブ（お気に入り・検索・仮想フォルダ）の最後の位置（Some のものだけ）
     content.push_str(&tab_positions.state_lines());
     // ツリーの並び条件（Some のものだけ）
@@ -1800,6 +1807,26 @@ mod tests {
         std::fs::write(state_path(&root), "last_dir=/tmp/x\nlang=ja\n").unwrap();
         let parsed = parse_state_file(&state_path(&root)).expect("state file parses");
         assert_eq!(parsed.explorer_sim_threshold, "");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn theme_key_parses_and_defaults_to_dark() {
+        use crate::ui_theme::ThemeMode;
+        let root = std::env::temp_dir()
+            .join(format!("nekoviewer_state_theme_test_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&root);
+        std::fs::write(state_path(&root), "last_dir=/tmp/x\nlang=ja\ntheme=light\n").unwrap();
+        assert_eq!(parse_state_file(&state_path(&root)).expect("parses").theme_mode, ThemeMode::Light);
+
+        std::fs::write(state_path(&root), "last_dir=/tmp/x\nlang=ja\ntheme=dark\n").unwrap();
+        assert_eq!(parse_state_file(&state_path(&root)).expect("parses").theme_mode, ThemeMode::Dark);
+
+        // 旧stateにキーがなければ・値が不正ならダーク
+        std::fs::write(state_path(&root), "last_dir=/tmp/x\nlang=ja\n").unwrap();
+        assert_eq!(parse_state_file(&state_path(&root)).expect("parses").theme_mode, ThemeMode::Dark);
+        std::fs::write(state_path(&root), "last_dir=/tmp/x\nlang=ja\ntheme=system\n").unwrap();
+        assert_eq!(parse_state_file(&state_path(&root)).expect("parses").theme_mode, ThemeMode::Dark);
         let _ = std::fs::remove_dir_all(&root);
     }
 

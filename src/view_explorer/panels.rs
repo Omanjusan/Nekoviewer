@@ -449,10 +449,11 @@ impl NekoviewApp {
         }
     }
 
-    /// UIベースカラーを入れ替え、エクスプローラー窓の Context に反映する（検証中は他窓・永続化なし）。
+    /// UIベースカラーを入れ替え、エクスプローラー窓の Context に反映して保存する（他窓への反映は未実装）。
     fn toggle_theme(&mut self) {
         self.theme_mode = self.theme_mode.toggled();
         self.theme_mode.apply(&self.egui_ctx);
+        self.persist_state();
     }
 
     /// ソートボタンの表示文字。評価キーがONなら「評価キー → 基本キー」の順に並べる（優先順）。
@@ -795,7 +796,7 @@ impl NekoviewApp {
                 self.persist_state();
             }
 
-            // ── UIベースカラー（ダーク⇄ライト）切替（1ボタン・検証中は非永続） ──────
+            // ── UIベースカラー（ダーク⇄ライト）切替（1ボタン・永続） ──────
             let r_theme = ui.button(i18n::t().theme_button(self.theme_mode));
             if is_cursor(MenuBarButton::ThemeToggle) { draw_cursor_ring(ui, r_theme.rect); }
             if r_theme.clicked() {

@@ -270,7 +270,7 @@ pub(crate) enum MenuBarButton {
     CardInfoToggle,
     /// 評価帯（info2）の表示量の循環トグル。
     CardRatingToggle,
-    /// UIベースカラー（ダーク⇄ライト）の切替。エクスプローラー窓のみ（検証中・非永続）。
+    /// UIベースカラー（ダーク⇄ライト）の切替。永続設定。
     ThemeToggle,
     /// スコアリング（アーカイブ末尾の評価オーバーレイ）のON/OFF。viewer_cfg直結の永続設定。
     ScoringToggle,
@@ -1359,7 +1359,8 @@ pub struct NekoviewApp {
     status_update_requested: Arc<std::sync::atomic::AtomicBool>,
     /// バックグラウンドワーカーから ROOT を起こす（イベント駆動再描画）ために保持する ctx
     egui_ctx: egui::Context,
-    /// UIベースカラー（ダーク／ライト）。検証中はエクスプローラー窓のみに適用・非永続。
+    /// UIベースカラー（ダーク／ライト）。`nekoviewer.state` の `theme` に保存する。
+    /// 現状はエクスプローラー窓のみに適用（他窓への反映は未実装）。
     theme_mode: crate::ui_theme::ThemeMode,
     /// ビューアー窓自身の ctx（render_viewer 毎フレーム更新）。OCR/翻訳子ウィンドウから
     /// ページ送りで共有 ViewerState を書き換えた際、独立 Context のビューアー窓を
@@ -1456,7 +1457,7 @@ mod glyph_audit;
 
 
 impl NekoviewApp {
-    pub fn new(start_dir: PathBuf, mut config: AppConfig, viewer_slots: [Option<WindowSlot>; 4], sort_state: SortState, viewer_cfg: ViewerConfig, show_hidden: bool, card_info_mode: &str, card_rating_mode: &str, card_date_format: crate::card_date_format::CardDateFormat, translate_cfg: crate::translate::TranslateConfig, tab_positions: crate::gui_config::TabPositions, tree_sorts: crate::tree_sort::TreeSorts, tag_panel_open: bool, tag_preview_high_quality: bool, explorer_view_mode: &str, explorer_list_cols: &str, explorer_sim_threshold: &str, open_target: Option<PathBuf>, ctx: egui::Context) -> Self {
+    pub fn new(start_dir: PathBuf, mut config: AppConfig, viewer_slots: [Option<WindowSlot>; 4], sort_state: SortState, viewer_cfg: ViewerConfig, show_hidden: bool, card_info_mode: &str, card_rating_mode: &str, card_date_format: crate::card_date_format::CardDateFormat, translate_cfg: crate::translate::TranslateConfig, tab_positions: crate::gui_config::TabPositions, tree_sorts: crate::tree_sort::TreeSorts, tag_panel_open: bool, tag_preview_high_quality: bool, explorer_view_mode: &str, explorer_list_cols: &str, explorer_sim_threshold: &str, theme_mode: crate::ui_theme::ThemeMode, open_target: Option<PathBuf>, ctx: egui::Context) -> Self {
         // 「前回フォルダに復帰」がオフなら、他のフォルダ系タブの保存位置も復元しない（既定に戻す）
         let tab_positions = if config.startup.use_last_dir {
             tab_positions
@@ -1508,8 +1509,7 @@ impl NekoviewApp {
         let tag_main_selected = tag_main_options.first().map(|(id, _)| *id);
         let mut tag_attr_selected: Vec<u64> = Vec::new();
         let _ = crate::tag_manager::enforce_single_select(&tag_manager_categories, &mut tag_attr_selected);
-        // 検証中: 起動時は常にダーク（非永続）。システム連動は使わず明示的に渡す。
-        let theme_mode = crate::ui_theme::ThemeMode::default();
+        // システム連動は使わず、保存値（既定ダーク）を明示的に渡す。
         theme_mode.apply(&ctx);
         let settings_draft = SettingsDraft::from_current(&config, &viewer_cfg, show_hidden, card_date_format, &translate_cfg);
         // viewer_cfg は下でArc<Mutex<..>>へムーブするため、そこで必要な値は先に控えておく
@@ -1900,6 +1900,7 @@ impl NekoviewApp {
             &self.view_mode.as_state_str(),
             &self.list_cols.as_state_str(),
             &self.sim_threshold_pct.to_string(),
+            self.theme_mode,
         );
     }
 }

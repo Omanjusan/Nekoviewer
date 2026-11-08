@@ -1,5 +1,6 @@
 //! UI のベースカラー（ダーク／ライト）。システム連動は持たない（winit 0.30 が Linux で OS テーマを
 //! 渡さないため。ThemePreference::System を使わず、常に Dark / Light を明示して egui に渡す）。
+//! `nekoviewer.state` の `theme=dark|light` に永続化する。
 
 /// UI のベースカラー。既定はダーク（従来の見た目）。
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -15,6 +16,22 @@ impl ThemeMode {
         match self {
             ThemeMode::Dark => ThemeMode::Light,
             ThemeMode::Light => ThemeMode::Dark,
+        }
+    }
+
+    /// state ファイルに書く値（`theme=` の右辺）。
+    pub(crate) fn as_state_str(self) -> &'static str {
+        match self {
+            ThemeMode::Dark => "dark",
+            ThemeMode::Light => "light",
+        }
+    }
+
+    /// state ファイルの値から復元する。未記載・不明な値は既定（ダーク）。
+    pub(crate) fn from_state_str(s: &str) -> Self {
+        match s.trim() {
+            "light" => ThemeMode::Light,
+            _ => ThemeMode::Dark,
         }
     }
 
@@ -45,6 +62,16 @@ mod tests {
         assert_eq!(ThemeMode::Dark.toggled(), ThemeMode::Light);
         assert_eq!(ThemeMode::Light.toggled(), ThemeMode::Dark);
         assert_eq!(ThemeMode::Dark.toggled().toggled(), ThemeMode::Dark);
+    }
+
+    #[test]
+    fn state_str_round_trips_and_unknown_falls_back_to_dark() {
+        for m in [ThemeMode::Dark, ThemeMode::Light] {
+            assert_eq!(ThemeMode::from_state_str(m.as_state_str()), m);
+        }
+        assert_eq!(ThemeMode::from_state_str(""), ThemeMode::Dark);
+        assert_eq!(ThemeMode::from_state_str("system"), ThemeMode::Dark);
+        assert_eq!(ThemeMode::from_state_str(" light \n"), ThemeMode::Light);
     }
 
     #[test]

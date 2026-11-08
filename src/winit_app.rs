@@ -454,6 +454,7 @@ impl WinitApp {
             &state.explorer_view_mode,
             &state.explorer_list_cols,
             &state.explorer_sim_threshold,
+            state.theme_mode,
             open_target,
             win.egui_ctx.clone(),
         );
