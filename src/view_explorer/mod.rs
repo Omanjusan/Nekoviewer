@@ -1360,7 +1360,7 @@ pub struct NekoviewApp {
     /// バックグラウンドワーカーから ROOT を起こす（イベント駆動再描画）ために保持する ctx
     egui_ctx: egui::Context,
     /// UIベースカラー（ダーク／ライト）。`nekoviewer.state` の `theme` に保存する。
-    /// 現状はエクスプローラー窓のみに適用（他窓への反映は未実装）。
+    /// 全窓へ適用する（窓ごとの Context へは winit_app の render 直前に行き渡らせる）。
     theme_mode: crate::ui_theme::ThemeMode,
     /// ビューアー窓自身の ctx（render_viewer 毎フレーム更新）。OCR/翻訳子ウィンドウから
     /// ページ送りで共有 ViewerState を書き換えた際、独立 Context のビューアー窓を

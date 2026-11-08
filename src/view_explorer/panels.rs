@@ -449,7 +449,12 @@ impl NekoviewApp {
         }
     }
 
-    /// UIベースカラーを入れ替え、エクスプローラー窓の Context に反映して保存する（他窓への反映は未実装）。
+    /// 現在の UI テーマ。`winit_app` が各窓の Context へ行き渡らせるために参照する。
+    pub fn theme_mode(&self) -> crate::ui_theme::ThemeMode {
+        self.theme_mode
+    }
+
+    /// UIベースカラーを入れ替え、エクスプローラー窓の Context に反映して保存する（他窓へは winit_app が次の描画で反映する）。
     fn toggle_theme(&mut self) {
         self.theme_mode = self.theme_mode.toggled();
         self.theme_mode.apply(&self.egui_ctx);

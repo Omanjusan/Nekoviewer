@@ -122,12 +122,23 @@ struct EguiWindow {
     /// （occluded サーフェスへの frame callback 停止で acquire が無期限ブロックするため）ので、
     /// vsync に代わるフレームペーサーとして全プラットフォームで一律に効かせる。
     not_before: Instant,
+    /// この窓の Context に最後に適用した UI テーマ。`None` = 未適用（初回フレーム前）。
+    applied_theme: Option<crate::ui_theme::ThemeMode>,
 }
 
 /// モニタ Hz が取得できないときの上限フォールバック。
 const FALLBACK_FRAME_CAP_MILLIHERTZ: u32 = 120_000;
 
 impl EguiWindow {
+    /// UI テーマを、この窓の Context に未適用か変わっていたときだけ適用する（render 直前に呼ぶ）。
+    /// 窓は Context が独立しているため、窓ごとに適用が要る。生成直後の初回フレームもここで揃う。
+    fn sync_theme(&mut self, mode: crate::ui_theme::ThemeMode) {
+        if self.applied_theme != Some(mode) {
+            mode.apply(&self.egui_ctx);
+            self.applied_theme = Some(mode);
+        }
+    }
+
     /// `next_repaint` を `t` と比較してより早い方に更新する（フレームキャップ下限つき）。
     fn bump(&mut self, t: Instant) {
         let t = t.max(self.not_before);
@@ -238,6 +249,7 @@ fn make_egui_window(
         first_frame: true,
         next_repaint: Some(Instant::now()),
         not_before: Instant::now(),
+        applied_theme: None,
     }
 }
 
@@ -381,6 +393,8 @@ struct WinitApp {
     /// 直近に`translate`窓へ適用したWindowLevel（最前面固定トグル）。
     /// 窓生成のたびNormalへ戻るため、生成時は必ずfalse扱いにする。
     translate_always_on_top_applied: bool,
+    /// 直近に全窓へ行き渡らせたと確認した UI テーマ。変わったら他窓も再描画させる。
+    last_theme: crate::ui_theme::ThemeMode,
     app: Option<NekoviewApp>,
     /// 自動テスト用の制御口（NEKO_TEST_CONTROL 指定時のみ Some）
     #[cfg(feature = "test-control")]
@@ -414,6 +428,7 @@ impl WinitApp {
             status: None,
             translate: None,
             translate_always_on_top_applied: false,
+            last_theme: crate::ui_theme::ThemeMode::default(),
             app: None,
             #[cfg(feature = "test-control")]
             test_control: crate::test_control::Control::from_env(),
@@ -595,6 +610,7 @@ impl WinitApp {
         if self.explorer.as_ref().map_or(false, |w| w.due(now)) {
             if let (Some(win), Some(app)) = (self.explorer.as_mut(), self.app.as_mut()) {
                 let started = Instant::now();
+                win.sync_theme(app.theme_mode());
                 let delay = render_window(win, event_loop, |ui| {
                     // 常時走る処理（旧 eframe::App::logic）。egui パス内で UI より前に呼ぶ。
                     let ctx = ui.ctx().clone();
@@ -618,10 +634,21 @@ impl WinitApp {
             }
         }
 
+        // UI テーマが変わったら、描画待ちで止まっている他窓も次の描画で追従させる。
+        if let Some(mode) = self.app.as_ref().map(|a| a.theme_mode()) {
+            if mode != self.last_theme {
+                self.last_theme = mode;
+                for w in [self.viewer.as_mut(), self.status.as_mut(), self.translate.as_mut()].into_iter().flatten() {
+                    w.bump(now);
+                }
+            }
+        }
+
         if self.viewer.as_ref().map_or(false, |w| w.due(now)) {
             if let (Some(win), Some(app)) = (self.viewer.as_mut(), self.app.as_mut()) {
                 let frame_cap = win.frame_cap_interval();
                 let started = Instant::now();
+                win.sync_theme(app.theme_mode());
                 let delay = render_window(win, event_loop, |ui| {
                     app.render_viewer(ui);
                 });
@@ -641,6 +668,7 @@ impl WinitApp {
         if self.status.as_ref().map_or(false, |w| w.due(now)) {
             if let (Some(win), Some(app)) = (self.status.as_mut(), self.app.as_mut()) {
                 let started = Instant::now();
+                win.sync_theme(app.theme_mode());
                 let delay = render_window(win, event_loop, |ui| {
                     app.render_status(ui);
                 });
@@ -651,6 +679,7 @@ impl WinitApp {
         if self.translate.as_ref().map_or(false, |w| w.due(now)) {
             if let (Some(win), Some(app)) = (self.translate.as_mut(), self.app.as_mut()) {
                 let started = Instant::now();
+                win.sync_theme(app.theme_mode());
                 let delay = render_window(win, event_loop, |ui| {
                     app.render_translate_window(ui);
                 });
