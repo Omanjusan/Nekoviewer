@@ -270,7 +270,7 @@ pub(crate) enum MenuBarButton {
     CardInfoToggle,
     /// 評価帯（info2）の表示量の循環トグル。
     CardRatingToggle,
-    /// UIベースカラー（ダーク⇄ライト）の切替。永続設定。
+    /// UIベースカラー（ダーク⇄ライト）の切替。永続設定。メニューバー右端の[stat]と[?]の間。
     ThemeToggle,
     /// スコアリング（アーカイブ末尾の評価オーバーレイ）のON/OFF。viewer_cfg直結の永続設定。
     ScoringToggle,
@@ -306,13 +306,13 @@ pub(crate) const MENU_BAR_ORDER: [MenuBarButton; 12] = [
     MenuBarButton::Sort,
     MenuBarButton::CardInfoToggle,
     MenuBarButton::CardRatingToggle,
-    MenuBarButton::ThemeToggle,
     MenuBarButton::FolderBookAccessToggle,
     MenuBarButton::ScoringToggle,
     MenuBarButton::ToolPaletteToggle,
     MenuBarButton::ViewerRecover,
     MenuBarButton::Settings,
     MenuBarButton::StatusToggle,
+    MenuBarButton::ThemeToggle,
     MenuBarButton::HelpToggle,
 ];
 
@@ -328,10 +328,11 @@ mod menu_bar_order_tests {
     #[test]
     fn settings_status_and_help_keep_the_visual_right_end_order() {
         assert_eq!(
-            &MENU_BAR_ORDER[9..],
+            &MENU_BAR_ORDER[8..],
             &[
                 MenuBarButton::Settings,
                 MenuBarButton::StatusToggle,
+                MenuBarButton::ThemeToggle,
                 MenuBarButton::HelpToggle,
             ],
         );

@@ -801,13 +801,6 @@ impl NekoviewApp {
                 self.persist_state();
             }
 
-            // ── UIベースカラー（ダーク⇄ライト）切替（1ボタン・永続） ──────
-            let r_theme = ui.button(i18n::t().theme_button(self.theme_mode));
-            if is_cursor(MenuBarButton::ThemeToggle) { draw_cursor_ring(ui, r_theme.rect); }
-            if r_theme.clicked() {
-                self.toggle_theme();
-            }
-
             // ── ステータスウィンドウボタン（右端） ────────────────────────
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 // 右→左レイアウトのため最初に追加した方が最も右端（[?]が視覚上の右端）。
@@ -822,6 +815,14 @@ impl NekoviewApp {
                 if is_cursor(MenuBarButton::HelpToggle) { draw_cursor_ring(ui, r_help.rect); }
                 if r_help.clicked() {
                     self.help_enabled = !self.help_enabled;
+                }
+
+                // ── UIベースカラー（ダーク⇄ライト）切替（1ボタン・永続） ──────
+                // RightToLeftレイアウトのため、[?]の次に置くと視覚上は[?]の左隣（[stat]の右隣）になる。
+                let r_theme = ui.button(i18n::t().theme_button(self.theme_mode));
+                if is_cursor(MenuBarButton::ThemeToggle) { draw_cursor_ring(ui, r_theme.rect); }
+                if r_theme.clicked() {
+                    self.toggle_theme();
                 }
 
                 let r_status = ui.button(i18n::t().status_button());
