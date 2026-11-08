@@ -375,6 +375,12 @@ impl NekoviewApp {
     /// OCR/翻訳子ウィンドウの1フレーム描画。winit_app が子窓の egui パスから呼ぶ。
     /// 左＝OCR原文、右＝翻訳結果のDIFF風2ペイン。OCRと翻訳は完全に独立したボタン/処理単位。
     pub fn render_translate_window(&mut self, ui: &mut egui::Ui) {
+        // 独立 OS 窓のルートには背景塗りが無い（クリア色は黒）。ライト時に暗い文字が黒地に載らないよう、
+        // テーマ連動の背景を持つパネルに載せる。
+        egui::CentralPanel::default().show(ui, |ui| self.render_translate_window_body(ui));
+    }
+
+    fn render_translate_window_body(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
         // ビューアー窓側の通常のページ送りでこの独立Contextの窓を起こせるよう、
         // 毎フレーム自身の ctx を保持しておく（render_viewer側の対応処理と対）。

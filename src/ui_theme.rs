@@ -48,6 +48,15 @@ impl ThemeMode {
     }
 }
 
+/// 固定の暗色背景（半透明の黒など）の上に置く子 Ui を、テーマに関わらずダークの見た目にする。
+/// ライト時に「暗い背景に暗い文字」になるのを防ぐ。ビューアーの画像上オーバーレイ
+/// （ツールパレット、サムネバー）のように、背景色が画像前提で固定のものが対象。
+/// スタイルの他の項目（余白など）は触らず、`visuals` だけを差し替える。
+pub(crate) fn force_dark_visuals(ui: &mut egui::Ui) {
+    let dark = ui.ctx().style_of(egui::Theme::Dark).visuals.clone();
+    ui.style_mut().visuals = dark;
+}
+
 #[cfg(test)]
 mod tests {
     use super::ThemeMode;

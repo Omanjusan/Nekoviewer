@@ -2856,6 +2856,8 @@ impl ViewerState {
         ui.painter().rect_filled(rect, 6.0, egui::Color32::from_black_alpha(bg_alpha));
 
         let mut child = ui.new_child(egui::UiBuilder::new().id_salt("tool_palette_child").max_rect(rect));
+        // 背景は画像上の固定の暗色。ライト時も文字が読めるよう、中身はダークの見た目に固定する。
+        crate::ui_theme::force_dark_visuals(&mut child);
 
         // パレット全体を覆う土台のinteract。マス間・ヘッダー余白などどの個別ウィジェットにも
         // 拾われない隙間のクリック／右クリックが背面（画像側の全面クリック領域）へ抜けて
@@ -3134,6 +3136,7 @@ impl ViewerState {
                 let mut dialog_child = ui.new_child(
                     egui::UiBuilder::new().id_salt("tool_palette_dialog_child").max_rect(dialog_rect.shrink(Self::TOOL_PALETTE_PAD)),
                 );
+                crate::ui_theme::force_dark_visuals(&mut dialog_child);
                 let mut dialog = crate::tool_palette::create_dialog(kind);
 
                 const CLOSE_BTN_W: f32 = 20.0;
@@ -3920,6 +3923,7 @@ impl ViewerState {
 
         ui.painter().rect_filled(rect, 4.0, egui::Color32::from_black_alpha(160));
         let mut child = ui.new_child(egui::UiBuilder::new().id_salt("thumbbar_overlay_child").max_rect(rect));
+        crate::ui_theme::force_dark_visuals(&mut child);
         self.draw_thumbbar_contents(&mut child, cfg, horizontal);
     }
 

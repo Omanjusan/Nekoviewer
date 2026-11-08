@@ -65,7 +65,11 @@ impl NekoviewApp {
         self.refresh_status_data(dt_ms);
         {
             let data = self.status_window_data.lock().unwrap();
-            crate::view_status::draw_content(ui, &data);
+            // 独立 OS 窓のルートには背景塗りが無い（クリア色は黒）。ライト時に暗い文字が黒地に載らないよう、
+            // テーマ連動の背景を持つパネルに載せる。
+            egui::CentralPanel::default().show(ui, |ui| {
+                crate::view_status::draw_content(ui, &data);
+            });
         }
         // 次の 1Hz tick へ向けて自分自身の再描画を予約する。
         ui.ctx().request_repaint_after(std::time::Duration::from_secs(1));
