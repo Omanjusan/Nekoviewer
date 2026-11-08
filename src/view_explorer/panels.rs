@@ -416,6 +416,9 @@ impl NekoviewApp {
                 self.card_rating_mode = self.card_rating_mode.next();
                 self.persist_state();
             }
+            MenuBarButton::ThemeToggle => {
+                self.toggle_theme();
+            }
             MenuBarButton::StatusToggle => {
                 self.show_status_window = !self.show_status_window;
             }
@@ -444,6 +447,12 @@ impl NekoviewApp {
                 self.open_settings();
             }
         }
+    }
+
+    /// UIベースカラーを入れ替え、エクスプローラー窓の Context に反映する（検証中は他窓・永続化なし）。
+    fn toggle_theme(&mut self) {
+        self.theme_mode = self.theme_mode.toggled();
+        self.theme_mode.apply(&self.egui_ctx);
     }
 
     /// ソートボタンの表示文字。評価キーがONなら「評価キー → 基本キー」の順に並べる（優先順）。
@@ -784,6 +793,13 @@ impl NekoviewApp {
             if r_rating.clicked() {
                 self.card_rating_mode = self.card_rating_mode.next();
                 self.persist_state();
+            }
+
+            // ── UIベースカラー（ダーク⇄ライト）切替（1ボタン・検証中は非永続） ──────
+            let r_theme = ui.button(i18n::t().theme_button(self.theme_mode));
+            if is_cursor(MenuBarButton::ThemeToggle) { draw_cursor_ring(ui, r_theme.rect); }
+            if r_theme.clicked() {
+                self.toggle_theme();
             }
 
             // ── ステータスウィンドウボタン（右端） ────────────────────────

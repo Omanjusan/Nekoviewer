@@ -270,6 +270,8 @@ pub(crate) enum MenuBarButton {
     CardInfoToggle,
     /// 評価帯（info2）の表示量の循環トグル。
     CardRatingToggle,
+    /// UIベースカラー（ダーク⇄ライト）の切替。エクスプローラー窓のみ（検証中・非永続）。
+    ThemeToggle,
     /// スコアリング（アーカイブ末尾の評価オーバーレイ）のON/OFF。viewer_cfg直結の永続設定。
     ScoringToggle,
     StatusToggle,
@@ -299,11 +301,12 @@ pub(crate) enum SortMenuItem {
 
 /// 表示順そのもの（draw_menu_barの描画順と一致させること）。
 /// 見開き・ページモード群はビューアーツールバーへ移設した（toolbar.rs 参照）。
-pub(crate) const MENU_BAR_ORDER: [MenuBarButton; 11] = [
+pub(crate) const MENU_BAR_ORDER: [MenuBarButton; 12] = [
     MenuBarButton::Reload,
     MenuBarButton::Sort,
     MenuBarButton::CardInfoToggle,
     MenuBarButton::CardRatingToggle,
+    MenuBarButton::ThemeToggle,
     MenuBarButton::FolderBookAccessToggle,
     MenuBarButton::ScoringToggle,
     MenuBarButton::ToolPaletteToggle,
@@ -325,7 +328,7 @@ mod menu_bar_order_tests {
     #[test]
     fn settings_status_and_help_keep_the_visual_right_end_order() {
         assert_eq!(
-            &MENU_BAR_ORDER[8..],
+            &MENU_BAR_ORDER[9..],
             &[
                 MenuBarButton::Settings,
                 MenuBarButton::StatusToggle,
@@ -1356,6 +1359,8 @@ pub struct NekoviewApp {
     status_update_requested: Arc<std::sync::atomic::AtomicBool>,
     /// バックグラウンドワーカーから ROOT を起こす（イベント駆動再描画）ために保持する ctx
     egui_ctx: egui::Context,
+    /// UIベースカラー（ダーク／ライト）。検証中はエクスプローラー窓のみに適用・非永続。
+    theme_mode: crate::ui_theme::ThemeMode,
     /// ビューアー窓自身の ctx（render_viewer 毎フレーム更新）。OCR/翻訳子ウィンドウから
     /// ページ送りで共有 ViewerState を書き換えた際、独立 Context のビューアー窓を
     /// 起こす（request_repaint）ために保持する。
@@ -1503,6 +1508,9 @@ impl NekoviewApp {
         let tag_main_selected = tag_main_options.first().map(|(id, _)| *id);
         let mut tag_attr_selected: Vec<u64> = Vec::new();
         let _ = crate::tag_manager::enforce_single_select(&tag_manager_categories, &mut tag_attr_selected);
+        // 検証中: 起動時は常にダーク（非永続）。システム連動は使わず明示的に渡す。
+        let theme_mode = crate::ui_theme::ThemeMode::default();
+        theme_mode.apply(&ctx);
         let settings_draft = SettingsDraft::from_current(&config, &viewer_cfg, show_hidden, card_date_format, &translate_cfg);
         // viewer_cfg は下でArc<Mutex<..>>へムーブするため、そこで必要な値は先に控えておく
         // （config_root等、他のconfig系フィールドと同じ扱い）。
@@ -1832,6 +1840,7 @@ impl NekoviewApp {
             last_status_update: std::time::Instant::now(),
             status_update_requested: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             egui_ctx: ctx,
+            theme_mode,
             viewer_egui_ctx: None,
             translate_egui_ctx: None,
             translate_last_seen_parent_keys: Vec::new(),

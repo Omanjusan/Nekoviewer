@@ -7689,6 +7689,19 @@ pub struct HelpDoc {
 }
 
 impl Lang {
+    /// UIベースカラー切替ボタンの表示。現在のモード名を出す（押すと反対側へ切り替わる）。
+    pub fn theme_button(self, mode: crate::ui_theme::ThemeMode) -> &'static str {
+        use crate::ui_theme::ThemeMode;
+        match (self, mode) {
+            (Lang::Japanese, ThemeMode::Dark)  => "ダーク",
+            (Lang::Japanese, ThemeMode::Light) => "ライト",
+            (Lang::English,  ThemeMode::Dark)  => "Dark",
+            (Lang::English,  ThemeMode::Light) => "Light",
+            (Lang::Chinese,  ThemeMode::Dark)  => "深色",
+            (Lang::Chinese,  ThemeMode::Light) => "浅色",
+        }
+    }
+
     pub fn help_toggle_button(self) -> &'static str {
         "[?]"
     }

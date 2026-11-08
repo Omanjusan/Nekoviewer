@@ -26,6 +26,7 @@ mod identity_resolve;
 mod image_filter;
 mod image_info;
 mod types;
+mod ui_theme;
 mod ui_widgets;
 mod keymap;
 mod koma;
