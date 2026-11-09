@@ -58,6 +58,7 @@ mod tag_master;
 mod tag_model;
 mod tag_similarity;
 mod tag_source;
+mod tag_rules;
 mod tag_search;
 mod tag_trial;
 mod texture_window;
