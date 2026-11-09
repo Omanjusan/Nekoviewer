@@ -155,6 +155,8 @@ pub(crate) struct Candidate {
     pub bundle_id: Option<u64>,
     /// 学習モデルが「タグにしない」と判定したため、未採用にして残している（要確認）。
     pub review: bool,
+    /// 対にした別の見出し行の表記（英語⇄日本語）。登録するとき、`name` の別名として足す。
+    pub alt_forms: Vec<String>,
 }
 
 impl Candidate {
@@ -166,7 +168,9 @@ impl Candidate {
     /// 要素として登録する名前。まとめた候補は別名を `|` でつないだ名前、そうでなければ名前の `|` を全角にしたもの。
     pub(crate) fn registration_name(&self) -> String {
         if self.aliases.is_empty() {
-            escape_alias_sep(&self.name)
+            let mut all = vec![escape_alias_sep(&self.name)];
+            all.extend(self.alt_forms.iter().map(|a| escape_alias_sep(a)));
+            join_aliases(&all)
         } else {
             join_aliases(&self.aliases)
         }
@@ -175,7 +179,9 @@ impl Candidate {
     /// 既存要素へ足す別名の一覧（まとめていなければ登録名の1つだけ）。
     pub(crate) fn alias_list(&self) -> Vec<String> {
         if self.aliases.is_empty() {
-            vec![escape_alias_sep(&self.name)]
+            let mut all = vec![escape_alias_sep(&self.name)];
+            all.extend(self.alt_forms.iter().map(|a| escape_alias_sep(a)));
+            all
         } else {
             self.aliases.clone()
         }
@@ -332,6 +338,8 @@ struct Mention {
     guessed: bool,
     /// 学習モデルが「タグにしない（無視）」と判定した（役割は、現行ルールが当てたもの）。
     ignored: bool,
+    /// info.txt の別の見出し行（英語行など）の同じ位置にあった名前。対にして別名として登録する。
+    alt: Option<String>,
 }
 
 fn file_stem(input: &CandidateInput) -> &str {
@@ -355,6 +363,14 @@ struct Sources {
     event: Option<String>,
     creator: Option<Creator>,
     language: Option<&'static str>,
+    /// info.txt の別の見出し行（`title` 以外）のうち、イベント・作者の構造が同じ行の、同じ位置の名前。
+    alt_event: Option<String>,
+    alt_creator: Option<Creator>,
+}
+
+/// 2つの作者表記が同じ構造（単独どうし、または外側・内側どうし）か。
+fn same_creator_shape(a: &Creator, b: &Creator) -> bool {
+    matches!((a, b), (Creator::Single(_), Creator::Single(_)) | (Creator::Pair { .. }, Creator::Pair { .. }))
 }
 
 fn gather_sources(input: &CandidateInput) -> Sources {
@@ -368,7 +384,24 @@ fn gather_sources(input: &CandidateInput) -> Sources {
         .and_then(InfoTxt::info_language)
         .or_else(|| info_parts.as_ref().and_then(NameParts::language))
         .or_else(|| name_parts.language());
-    Sources { event, creator, language }
+    // 別の見出し行（英語行など）で、構造が同じものがあれば、同じ位置の名前を対にする。
+    let (mut alt_event, mut alt_creator) = (None, None);
+    if let (Some(info), Some(base)) = (input.info.as_ref(), info_parts.as_ref()) {
+        for line in &info.alt_titles {
+            let alt = parse_name_parts(line);
+            let creator_ok = match (&base.creator, &alt.creator) {
+                (Some(a), Some(b)) => same_creator_shape(a, b),
+                (None, None) => true,
+                _ => false,
+            };
+            if creator_ok && base.event.is_some() == alt.event.is_some() {
+                alt_event = alt.event;
+                alt_creator = alt.creator;
+                break;
+            }
+        }
+    }
+    Sources { event, creator, language, alt_event, alt_creator }
 }
 
 /// モデルの確信度がこれ未満の作者・グループは、向き・種別を推測で決めた（未確定）ものとして扱う。
@@ -388,13 +421,22 @@ fn model_mentions(
     lang: Lang,
 ) -> Vec<Mention> {
     let rules = gather_sources(input);
-    let source = input
-        .info
-        .as_ref()
-        .and_then(|i| i.title.as_deref())
-        .filter(|t| !crate::tag_features::tokenize(t).is_empty())
-        .unwrap_or(&input.file_name);
+    let info_title = input.info.as_ref().and_then(|i| i.title.as_deref()).filter(|t| !crate::tag_features::tokenize(t).is_empty());
+    let source = info_title.unwrap_or(&input.file_name);
     let preds = model.predict_file(source);
+    // info.txt の別の見出し行（英語行など）で、括弧の構造が同じものがあれば、同じ位置の名前を対にする。
+    let mut alt_texts: Vec<Option<String>> = vec![None; preds.len()];
+    if info_title.is_some() {
+        for line in input.info.iter().flat_map(|i| i.alt_titles.iter()) {
+            let toks = crate::tag_features::tokenize(line);
+            let same = toks.len() == preds.len()
+                && toks.iter().zip(&preds).all(|(a, p)| a.bracket == p.token.bracket && a.slot == p.token.slot && a.nesting == p.token.nesting);
+            if same {
+                alt_texts = toks.into_iter().map(|t| Some(t.text)).collect();
+                break;
+            }
+        }
+    }
 
     // 現行ルールが、この文字列に当てていた役割（無視と判定されたものを残す根拠）。
     let rule_role = |text: &str| -> Option<Role> {
@@ -416,6 +458,7 @@ fn model_mentions(
         from_single,
         guessed,
         ignored,
+        alt: None,
     };
 
     let mut out: Vec<Mention> = Vec::new();
@@ -448,8 +491,9 @@ fn model_mentions(
                     guessed = false;
                 }
             }
-            for (tok, label) in [(&p.token, lo), (&q.token, li)] {
-                push_labeled(&mut out, tok.text.as_str(), label, false, guessed, &rule_role, &mention, lang, info_language.is_some());
+            for (n, (tok, label)) in [(&p.token, lo), (&q.token, li)].into_iter().enumerate() {
+                let alt = alt_texts[i + n].as_deref();
+                push_labeled(&mut out, tok.text.as_str(), label, false, guessed, alt, &rule_role, &mention, lang, info_language.is_some());
             }
             i += 2;
             continue;
@@ -469,7 +513,7 @@ fn model_mentions(
                 }
             }
         }
-        push_labeled(&mut out, p.token.text.as_str(), label, from_single, guessed, &rule_role, &mention, lang, info_language.is_some());
+        push_labeled(&mut out, p.token.text.as_str(), label, from_single, guessed, alt_texts[i].as_deref(), &rule_role, &mention, lang, info_language.is_some());
         i += 1;
     }
     out
@@ -483,15 +527,24 @@ fn push_labeled(
     label: Label,
     from_single: bool,
     guessed: bool,
+    alt: Option<&str>,
     rule_role: &dyn Fn(&str) -> Option<Role>,
     mention: &dyn Fn(Role, &str, bool, bool, bool) -> Mention,
     lang: Lang,
     info_language_given: bool,
 ) {
     match label {
-        Label::Author => out.push(mention(Role::Author, text, from_single, guessed, false)),
-        Label::Group => out.push(mention(Role::Group, text, from_single, guessed, false)),
-        Label::Event => out.push(mention(Role::Event, text, false, false, false)),
+        Label::Author | Label::Group | Label::Event => {
+            let role = match label {
+                Label::Author => Role::Author,
+                Label::Group => Role::Group,
+                _ => Role::Event,
+            };
+            let single = from_single && role != Role::Event;
+            let mut m = mention(role, text, single, if role == Role::Event { false } else { guessed }, false);
+            m.alt = alt.map(str::to_string);
+            out.push(m);
+        }
         Label::Language => {
             // 辞書に合う言語だけ。info.txt の Language があれば、それを優先して重ねない。
             if !info_language_given {
@@ -508,6 +561,21 @@ fn push_labeled(
             }
         }
     }
+}
+
+/// 提案を、要素ごとに最も高い類似度の1件にして、類似度の降順に並べる。
+fn dedupe_suggestions(mut v: Vec<Suggestion>) -> Vec<Suggestion> {
+    v.sort_by(|a, b| b.score.cmp(&a.score).then(a.name.cmp(&b.name)));
+    let mut seen: Vec<u64> = Vec::new();
+    v.retain(|s| {
+        if seen.contains(&s.tier_id) {
+            false
+        } else {
+            seen.push(s.tier_id);
+            true
+        }
+    });
+    v
 }
 
 // ── 候補生成 ──────────────────────────────────────────────────────────
@@ -545,10 +613,10 @@ pub(crate) fn build_candidates_with(
             files_with_info += 1;
         }
         if let Some(tag) = &input.format {
-            mentions.push((fi, Mention { role: Role::Format, name: format_name(tag, lang), from_single: false, guessed: false, ignored: false }));
+            mentions.push((fi, Mention { role: Role::Format, name: format_name(tag, lang), from_single: false, guessed: false, ignored: false, alt: None }));
         }
         if let Some(cat) = input.info.as_ref().and_then(|i| i.category.clone()) {
-            mentions.push((fi, Mention { role: Role::Main, name: cat, from_single: false, guessed: false, ignored: false }));
+            mentions.push((fi, Mention { role: Role::Main, name: cat, from_single: false, guessed: false, ignored: false, alt: None }));
         }
         if let Some(model) = model {
             mentions.extend(model_mentions(input, model, &author_idx, &group_idx, &opts, lang).into_iter().map(|m| (fi, m)));
@@ -557,10 +625,17 @@ pub(crate) fn build_candidates_with(
         let src = gather_sources(input);
         if let Some(canon) = src.language {
             let name = if lang == Lang::Japanese { canon } else { language_english_name(canon) };
-            mentions.push((fi, Mention { role: Role::Language, name: name.to_string(), from_single: false, guessed: false, ignored: false }));
+            mentions.push((fi, Mention { role: Role::Language, name: name.to_string(), from_single: false, guessed: false, ignored: false, alt: None }));
         }
+        // 日本語行のイベント・作者と、別の見出し行の同じ位置の名前を対にする（info.txt の見出しがあるときだけ）。
+        let alt_ev = src.alt_event.clone();
+        let (alt_outer, alt_inner, alt_single) = match &src.alt_creator {
+            Some(Creator::Pair { outer, inner }) => (Some(outer.clone()), Some(inner.clone()), None),
+            Some(Creator::Single(x)) => (None, None, Some(x.clone())),
+            None => (None, None, None),
+        };
         if let Some(ev) = src.event {
-            mentions.push((fi, Mention { role: Role::Event, name: ev, from_single: false, guessed: false, ignored: false }));
+            mentions.push((fi, Mention { role: Role::Event, name: ev, from_single: false, guessed: false, ignored: false, alt: alt_ev }));
         }
         match src.creator {
             Some(Creator::Pair { outer, inner }) => {
@@ -570,8 +645,8 @@ pub(crate) fn build_candidates_with(
                 let swap = swapped > normal;
                 let (outer_role, inner_role) = if swap { (Role::Author, Role::Group) } else { (Role::Group, Role::Author) };
                 let guessed = normal == 0 && swapped == 0;
-                mentions.push((fi, Mention { role: outer_role, name: outer, from_single: false, guessed, ignored: false }));
-                mentions.push((fi, Mention { role: inner_role, name: inner, from_single: false, guessed, ignored: false }));
+                mentions.push((fi, Mention { role: outer_role, name: outer, from_single: false, guessed, ignored: false, alt: alt_outer }));
+                mentions.push((fi, Mention { role: inner_role, name: inner, from_single: false, guessed, ignored: false, alt: alt_inner }));
             }
             Some(Creator::Single(x)) => {
                 // 既存の作者・グループに完全一致があれば、その側。無ければ作者の候補（未確定）。
@@ -579,7 +654,7 @@ pub(crate) fn build_candidates_with(
                 let in_author = author_idx.as_ref().is_some_and(|ix| ix.exact(&k).is_some());
                 let in_group = group_idx.as_ref().is_some_and(|ix| ix.exact(&k).is_some());
                 let role = if !in_author && in_group { Role::Group } else { Role::Author };
-                mentions.push((fi, Mention { role, name: x, from_single: true, guessed: false, ignored: false }));
+                mentions.push((fi, Mention { role, name: x, from_single: true, guessed: false, ignored: false, alt: alt_single }));
             }
             None => {}
         }
@@ -595,6 +670,8 @@ pub(crate) fn build_candidates_with(
         guessed: bool,
         /// すべての言及が、モデルに「無視」と判定されたもの。
         ignored: bool,
+        /// 対にした別の見出し行の表記（重複を除く）。
+        alts: Vec<String>,
     }
     let mut order: Vec<(Role, String)> = Vec::new();
     let mut accs: HashMap<(Role, String), Acc> = HashMap::new();
@@ -611,7 +688,7 @@ pub(crate) fn build_candidates_with(
         }
         let acc = accs.entry((m.role, ident.clone())).or_insert_with(|| {
             order.push((m.role, ident.clone()));
-            Acc { role: m.role, key: ident.clone(), forms: Vec::new(), files: Vec::new(), from_single: false, guessed: false, ignored: true }
+            Acc { role: m.role, key: ident.clone(), forms: Vec::new(), files: Vec::new(), from_single: false, guessed: false, ignored: true, alts: Vec::new() }
         });
         match acc.forms.iter_mut().find(|(f, _)| *f == m.name) {
             Some((_, n)) => *n += 1,
@@ -623,6 +700,11 @@ pub(crate) fn build_candidates_with(
         acc.from_single |= m.from_single;
         acc.guessed |= m.guessed;
         acc.ignored &= m.ignored;
+        if let Some(a) = &m.alt {
+            if !acc.alts.contains(a) {
+                acc.alts.push(a.clone());
+            }
+        }
     }
 
     // 3) 候補ごとに、既存タグとの照合・初期の扱い・登録名を決める。
@@ -633,10 +715,33 @@ pub(crate) fn build_candidates_with(
     let mut candidates: Vec<Candidate> = Vec::new();
     for (role, ident) in order {
         let acc = accs.remove(&(role, ident)).unwrap();
-        let picked = pick_registration_name(&acc.forms, lang);
+        // 対にした別の見出し行の表記（英語⇄日本語）も含めて、UIの言語に合う表記を登録名にし、残りは別名にする。
+        let mut forms_all = acc.forms.clone();
+        for a in &acc.alts {
+            let ak = keys(a, &opts).exact;
+            if !forms_all.iter().any(|(f, _)| keys(f, &opts).exact == ak) {
+                forms_all.push((a.clone(), 1));
+            }
+        }
+        let picked = pick_registration_name(&forms_all, lang);
         // 全角半角の正規化がONなら、登録名も正規化する（半角カナ・全角英数をそのまま登録しない）。
-        let name = if opts.width { normalize_width(&picked) } else { picked };
+        let norm = |s: &str| if opts.width { normalize_width(s) } else { s.to_string() };
+        let name = norm(&picked);
         let k = keys(&name, &opts);
+        let mut alt_forms: Vec<String> = Vec::new();
+        if matches!(role, Role::Author | Role::Group | Role::Event) {
+            let mut seen = vec![k.exact.clone()];
+            for (f, _) in &forms_all {
+                let (nf, fk) = (norm(f), keys(f, &opts).exact);
+                if !fk.is_empty() && !seen.contains(&fk) {
+                    seen.push(fk);
+                    alt_forms.push(nf);
+                }
+            }
+        }
+        // 既存タグの照合に使うキー（登録名と、対にした別の表記）。
+        let mut match_keys: Vec<Keys> = vec![k.clone()];
+        match_keys.extend(alt_forms.iter().map(|f| keys(f, &opts)));
         let category = cat_of(role);
         let mut suggestions: Vec<Suggestion> = Vec::new();
         let mut existing: Option<(usize, u64)> = None;
@@ -659,10 +764,13 @@ pub(crate) fn build_candidates_with(
                     _ => &event_ix,
                 };
                 if let Some(ix) = ix {
-                    existing = ix.exact(&k).map(|(id, _)| (ix.cat_idx, id));
+                    existing = match_keys.iter().find_map(|mk| ix.exact(mk).map(|(id, _)| (ix.cat_idx, id)));
                     // 形式は拡張子の完全一致だけ。メイン・イベントは類似も提案する。
                     if existing.is_none() && role != Role::Format {
-                        suggestions = ix.similar(&k, opts.threshold);
+                        for mk in &match_keys {
+                            suggestions.extend(ix.similar(mk, opts.threshold));
+                        }
+                        suggestions = dedupe_suggestions(suggestions);
                     }
                 }
             }
@@ -676,19 +784,29 @@ pub(crate) fn build_candidates_with(
                 }
                 for ix in &pools {
                     if existing.is_none() {
-                        existing = ix.exact(&k).map(|(id, _)| (ix.cat_idx, id));
+                        existing = match_keys.iter().find_map(|mk| ix.exact(mk).map(|(id, _)| (ix.cat_idx, id)));
                     }
                 }
                 if existing.is_none() {
                     for ix in &pools {
-                        suggestions.extend(ix.similar(&k, opts.threshold));
+                        for mk in &match_keys {
+                            suggestions.extend(ix.similar(mk, opts.threshold));
+                        }
                     }
-                    suggestions.sort_by(|a, b| b.score.cmp(&a.score).then(a.name.cmp(&b.name)));
+                    suggestions = dedupe_suggestions(suggestions);
                 }
             }
         }
         suggestions.truncate(MAX_SUGGESTIONS);
+        // 対にした表記があり、既存の要素がそのすべての表記を別名に持っていなければ、足りない表記を別名として足す候補にする。
+        let alias_needed = !alt_forms.is_empty()
+            && existing.is_some_and(|(cat_idx, tier_id)| {
+                [&author_idx, &group_idx, &event_ix].into_iter().flatten().find(|ix| ix.cat_idx == cat_idx).is_some_and(|ix| {
+                    !match_keys.iter().all(|mk| ix.items.iter().any(|(id, _, _, ek)| *id == tier_id && ek.exact == mk.exact))
+                })
+            });
         let choice = match (existing, suggestions.is_empty()) {
+            (Some((cat_idx, tier_id)), _) if alias_needed => Choice::Alias { cat_idx, tier_id },
             (Some((cat_idx, tier_id)), _) => Choice::Existing { cat_idx, tier_id },
             (None, false) => Choice::Skip,
             (None, true) => Choice::New,
@@ -715,6 +833,7 @@ pub(crate) fn build_candidates_with(
             members: Vec::new(),
             bundle_id: None,
             review,
+            alt_forms,
         });
     }
 
@@ -942,6 +1061,7 @@ impl CandidateSet {
             cluster: leaves.iter().map(|l| l.cluster).min().unwrap_or(0),
             aliases,
             review: leaves.iter().all(|l| l.review),
+            alt_forms: Vec::new(),
             members: leaves,
             bundle_id: Some(bundle_id),
         };
@@ -1418,5 +1538,81 @@ mod tests {
         let weird = [input("[] ().zip", "zip", Some("")), input("[(A)] t.zip", "zip", Some("Category:   \n"))];
         let set = build_candidates(&weird, &[], &MatchOptions::default(), Lang::Japanese);
         assert!(set.candidates.iter().any(|c| c.role == Role::Author && c.name == "A"));
+    }
+
+    // ── 2行タイトル（英語行・日本語行）の対応づけ ──
+
+    const PAIRED_INFO: &str = "[Ebizoridan (Shien)] Senpai Book 2 [Digital]\n[えびぞり団 (しえん)] 先輩の本 2 [DL版]\nhttps://example.invalid/\n\nCategory: Doujinshi\nLanguage: Japanese\n";
+
+    fn names_of(set: &CandidateSet, role: Role) -> Vec<(String, Vec<String>, String)> {
+        set.candidates.iter().filter(|c| c.role == role).map(|c| (c.name.clone(), c.alt_forms.clone(), c.registration_name())).collect()
+    }
+
+    #[test]
+    fn two_line_title_pairs_names_by_position_and_registers_with_aliases() {
+        let inputs = [input("x.zip", "zip", Some(PAIRED_INFO))];
+        // UIが日本語なら、日本語の表記が主、英語の表記が別名。照合は日本語行で行う。
+        let ja = build_candidates(&inputs, &[], &MatchOptions::default(), Lang::Japanese);
+        assert_eq!(names_of(&ja, Role::Group), vec![("えびぞり団".to_string(), vec!["Ebizoridan".to_string()], "えびぞり団|Ebizoridan".to_string())]);
+        assert_eq!(names_of(&ja, Role::Author), vec![("しえん".to_string(), vec!["Shien".to_string()], "しえん|Shien".to_string())]);
+        // UIが英語なら、英語の表記が主。
+        let en = build_candidates(&inputs, &[], &MatchOptions::default(), Lang::English);
+        assert_eq!(names_of(&en, Role::Group)[0].2, "Ebizoridan|えびぞり団");
+        assert_eq!(names_of(&en, Role::Author)[0].2, "Shien|しえん");
+    }
+
+    #[test]
+    fn identical_names_in_both_lines_get_no_alias_and_structure_mismatch_is_not_paired() {
+        // 同じ表記（イベントコード）は別名にしない。
+        let info = "(C105) [Hawk Bit (Kouji)] A\n(C105) [ホークビット (こうじ)] あ\n\nCategory: Doujinshi\n";
+        let set = build_candidates(&[input("x.zip", "zip", Some(info))], &[], &MatchOptions::default(), Lang::Japanese);
+        assert_eq!(names_of(&set, Role::Event), vec![("C105".to_string(), vec![], "C105".to_string())]);
+        assert_eq!(names_of(&set, Role::Author)[0].1, vec!["Kouji".to_string()]);
+        // 括弧の構造が違う（英語行は作者が単独）なら、対にしない。
+        let info = "[Hawk Bit] A\n[ホークビット (こうじ)] あ\n\nCategory: Doujinshi\n";
+        let set = build_candidates(&[input("x.zip", "zip", Some(info))], &[], &MatchOptions::default(), Lang::Japanese);
+        assert!(set.candidates.iter().all(|c| c.alt_forms.is_empty()));
+    }
+
+    #[test]
+    fn existing_element_found_by_either_form_gets_an_alias_candidate_adopted_by_default() {
+        // マスターに英語の表記だけがある（Ebizoridan / Shien）。日本語の表記を別名として足す候補になる。
+        let master = vec![
+            cat("作者", false, None, vec![tier(20, "Shien")]),
+            cat("グループ", false, None, vec![tier(30, "Ebizoridan")]),
+        ];
+        let set = build_candidates(&[input("x.zip", "zip", Some(PAIRED_INFO))], &master, &MatchOptions::default(), Lang::Japanese);
+        let g = set.candidates.iter().find(|c| c.role == Role::Group).unwrap();
+        assert_eq!(g.choice, Choice::Alias { cat_idx: 1, tier_id: 30 });
+        assert!(g.is_adopted());
+        assert_eq!(g.alias_list(), vec!["えびぞり団".to_string(), "Ebizoridan".to_string()]);
+        let a = set.candidates.iter().find(|c| c.role == Role::Author).unwrap();
+        assert_eq!(a.choice, Choice::Alias { cat_idx: 0, tier_id: 20 });
+        // 既存の要素がすべての表記を別名に持っているなら、そのまま既存に付ける。
+        let full = vec![
+            cat("作者", false, None, vec![tier(20, "Shien|しえん")]),
+            cat("グループ", false, None, vec![tier(30, "Ebizoridan|えびぞり団")]),
+        ];
+        let set = build_candidates(&[input("x.zip", "zip", Some(PAIRED_INFO))], &full, &MatchOptions::default(), Lang::Japanese);
+        assert_eq!(set.candidates.iter().find(|c| c.role == Role::Group).unwrap().choice, Choice::Existing { cat_idx: 1, tier_id: 30 });
+        assert_eq!(set.candidates.iter().find(|c| c.role == Role::Author).unwrap().choice, Choice::Existing { cat_idx: 0, tier_id: 20 });
+    }
+
+    #[test]
+    fn alias_pairs_merge_across_files_and_survive_single_line_files() {
+        // 1件目は対あり、2件目は日本語行だけ。同じ日本語名なら1つの候補にまとまり、別名は1件目から引き継ぐ。
+        let second = "[えびぞり団 (しえん)] 別の本\n\nCategory: Doujinshi\n";
+        let set = build_candidates(&[input("a.zip", "zip", Some(PAIRED_INFO)), input("b.zip", "zip", Some(second))], &[], &MatchOptions::default(), Lang::Japanese);
+        let g: Vec<_> = set.candidates.iter().filter(|c| c.role == Role::Group).collect();
+        assert_eq!(g.len(), 1);
+        assert_eq!((g[0].files.clone(), g[0].alt_forms.clone()), (vec![0, 1], vec!["Ebizoridan".to_string()]));
+    }
+
+    #[test]
+    fn single_line_titles_and_filename_only_files_are_unchanged() {
+        let set = build_candidates(&[input("[Hawk Bit (Kouji)] t.zip", "zip", None)], &[], &MatchOptions::default(), Lang::Japanese);
+        assert!(set.candidates.iter().all(|c| c.alt_forms.is_empty()));
+        let set = build_candidates(&[input("x.zip", "zip", Some(SAMPLE_INFO))], &master(), &MatchOptions::default(), Lang::Japanese);
+        assert_eq!(find(&set, Role::Group, "Hawk Bit").choice, Choice::Existing { cat_idx: 3, tier_id: 30 });
     }
 }

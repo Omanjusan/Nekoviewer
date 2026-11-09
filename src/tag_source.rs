@@ -17,8 +17,11 @@ use crate::tag_master::normalize_key;
 /// info.txt から取り出した項目。無い項目は None。
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct InfoTxt {
-    /// 先頭の見出し行（タイトル）。ファイル名と同じ形式なら `parse_name_parts` に渡せる。
+    /// 見出し行（タイトル）。ファイル名と同じ形式なら `parse_name_parts` に渡せる。見出しが複数行（英語行・日本語行など）の
+    /// ときは、内部照合に使う行（かなを含む行、無ければ漢字を含む行、無ければ先頭行）。
     pub title: Option<String>,
+    /// 見出しが複数行のときの、`title` 以外の行（出現順）。同じ位置の名前を対にして別名にするために使う。
+    pub alt_titles: Vec<String>,
     /// `Category:`（Doujinshi / Manga など）。メインタグの元。
     pub category: Option<String>,
     /// `Language:` の値そのまま（`Japanese` / `Chinese  TR` など）。辞書引きは `info_language` を使う。
@@ -50,17 +53,44 @@ fn is_placeholder(line: &str) -> bool {
     l.starts_with('<') && l.ends_with('>')
 }
 
+/// 見出し（タイトル群）として読む最大行数。本文を飲み込まないための上限。
+const MAX_TITLE_LINES: usize = 4;
+
+fn is_url_line(line: &str) -> bool {
+    let l = line.trim().to_ascii_lowercase();
+    l.starts_with("http://") || l.starts_with("https://")
+}
+
+fn has_kana(s: &str) -> bool {
+    s.chars().any(|c| matches!(c, '\u{3040}'..='\u{30FF}' | '\u{FF66}'..='\u{FF9F}'))
+}
+
+fn has_han(s: &str) -> bool {
+    s.chars().any(|c| matches!(c, '\u{4E00}'..='\u{9FFF}' | '\u{3400}'..='\u{4DBF}'))
+}
+
+/// タイトル群から、内部照合に使う行の位置を選ぶ。かなを含む行、無ければ漢字を含む行、無ければ先頭行。
+fn pick_title_line(lines: &[String]) -> usize {
+    lines.iter().position(|l| has_kana(l)).or_else(|| lines.iter().position(|l| has_han(l))).unwrap_or(0)
+}
+
 /// info.txt の本文を解析する。本文は `meta::decode_text_bytes` で安全化済みであること。
-/// 見出し行（タイトル）は、最初の空でない行のうち、既知のキー行でもプレースホルダでもないもの。
+/// 見出し（タイトル群）は、最初の空でない行のうち既知のキー行でもプレースホルダでもないものから始まり、
+/// 空行・キー行・プレースホルダ・URL行の手前まで続く連続行（最大 `MAX_TITLE_LINES` 行）。
+/// 全行を走査したうえで確定し、英語行・日本語行のような複数行の見出しも取りこぼさない。
 pub(crate) fn parse_info_txt(text: &str) -> InfoTxt {
     let mut out = InfoTxt::default();
     let mut seen_first_content = false;
-    for line in text.lines() {
-        let line = line.trim();
+    let mut title_lines: Vec<String> = Vec::new();
+    let mut in_title = false;
+    for raw in text.lines() {
+        let line = raw.trim();
         if line.is_empty() {
+            in_title = false;
             continue;
         }
         if let Some((key, value)) = split_info_line(line) {
+            in_title = false;
             seen_first_content = true;
             if value.is_empty() {
                 continue;
@@ -72,10 +102,22 @@ pub(crate) fn parse_info_txt(text: &str) -> InfoTxt {
             }
             continue;
         }
-        if !seen_first_content && out.title.is_none() && !is_placeholder(line) {
-            out.title = Some(collapse_spaces(line));
+        let is_title_candidate = !is_placeholder(line) && !is_url_line(line);
+        if in_title && is_title_candidate && title_lines.len() < MAX_TITLE_LINES {
+            title_lines.push(collapse_spaces(line));
+            continue;
+        }
+        in_title = false;
+        if !seen_first_content && title_lines.is_empty() && is_title_candidate {
+            title_lines.push(collapse_spaces(line));
+            in_title = true;
         }
         seen_first_content = true;
+    }
+    if !title_lines.is_empty() {
+        let at = pick_title_line(&title_lines);
+        out.title = Some(title_lines.remove(at));
+        out.alt_titles = title_lines;
     }
     out
 }
@@ -482,5 +524,60 @@ mod tests {
         assert_eq!(format_tag_for("a.CBZ", false), Some(FormatTag::Extension("cbz".into())));
         assert_eq!(format_tag_for("a.rar", false), Some(FormatTag::Extension("rar".into())), "未知の拡張子も候補にする");
         assert_eq!(format_tag_for("noext", false), None);
+    }
+
+    #[test]
+    fn two_line_title_picks_the_japanese_line_for_matching_and_keeps_the_other() {
+        let text = "[Ebizoridan (Shien)] Senpai, Kyou Tomatte mo Ii yo ne? 2 [Digital]\n[えびぞり団 (しえん)] 先輩、今日泊ってもいいよね? 2 [DL版]\nhttps://example.invalid/g/1/\n\nCategory: Doujinshi\nLanguage: Japanese  \n";
+        let info = parse_info_txt(text);
+        assert_eq!(info.title.as_deref(), Some("[えびぞり団 (しえん)] 先輩、今日泊ってもいいよね? 2 [DL版]"));
+        assert_eq!(info.alt_titles, vec!["[Ebizoridan (Shien)] Senpai, Kyou Tomatte mo Ii yo ne? 2 [Digital]".to_string()]);
+        assert_eq!(info.category.as_deref(), Some("Doujinshi"));
+    }
+
+    #[test]
+    fn japanese_line_is_found_whichever_order_the_lines_come_in() {
+        let info = parse_info_txt("アナンガ・ランガ Vol.136\nAnanga Ranga Vol. 136\n\nCategory: Manga\n");
+        assert_eq!(info.title.as_deref(), Some("アナンガ・ランガ Vol.136"));
+        assert_eq!(info.alt_titles, vec!["Ananga Ranga Vol. 136".to_string()]);
+        let info = parse_info_txt("Ananga Ranga Vol. 136\nアナンガ・ランガ Vol.136\nhttps://x\nCategory: Manga\n");
+        assert_eq!(info.title.as_deref(), Some("アナンガ・ランガ Vol.136"));
+    }
+
+    #[test]
+    fn han_only_line_is_used_only_when_no_line_has_kana() {
+        // かな行があれば、漢字だけの行（中国語など）より優先する。
+        let info = parse_info_txt("希尔薇 - w旗袍 - Arknights\n希尔薇のコスプレ\n\nCategory: Cosplay\n");
+        assert_eq!(info.title.as_deref(), Some("希尔薇のコスプレ"));
+        // かな行が無ければ、漢字を含む行。
+        let info = parse_info_txt("Silver Qipao\n希尔薇 - w旗袍 - Arknights\n\nCategory: Cosplay\n");
+        assert_eq!(info.title.as_deref(), Some("希尔薇 - w旗袍 - Arknights"));
+        // どちらも無ければ先頭行。
+        let info = parse_info_txt("First Title\nSecond Title\n\nCategory: Manga\n");
+        assert_eq!(info.title.as_deref(), Some("First Title"));
+        assert_eq!(info.alt_titles, vec!["Second Title".to_string()]);
+    }
+
+    #[test]
+    fn single_line_titles_are_unchanged() {
+        let info = parse_info_txt("希尔薇 - w旗袍 - Arknights\n\nhttps://x\n\nCategory: Cosplay\nUploader: q9947099\n");
+        assert_eq!(info.title.as_deref(), Some("希尔薇 - w旗袍 - Arknights"));
+        assert!(info.alt_titles.is_empty());
+        let info = parse_info_txt("COMIC BAVEL 2026-04 [Digital]\nCOMIC BAVEL 2026年4月号 [DL版]\nhttps://\n\nCategory: Manga\n");
+        assert_eq!(info.title.as_deref(), Some("COMIC BAVEL 2026年4月号 [DL版]"));
+    }
+
+    #[test]
+    fn title_group_stops_at_placeholder_url_blank_and_key_lines_and_caps_the_length() {
+        assert_eq!(parse_info_txt("A\n<download url>\nB\n").alt_titles, Vec::<String>::new());
+        assert_eq!(parse_info_txt("A\nhttps://x\nB\n").alt_titles, Vec::<String>::new());
+        assert_eq!(parse_info_txt("A\n\nB\n").alt_titles, Vec::<String>::new(), "空行で終わる");
+        assert_eq!(parse_info_txt("A\nCategory: Manga\nB\n").alt_titles, Vec::<String>::new());
+        let long = parse_info_txt("1\n2\n3\n4\n5\n6\n");
+        assert_eq!(1 + long.alt_titles.len(), 4, "見出しは最大4行");
+        // 見出しのあとの本文の行は見出しにならない。
+        let info = parse_info_txt("Title\n\nCategory: Manga\nfree text line\n");
+        assert_eq!(info.title.as_deref(), Some("Title"));
+        assert!(info.alt_titles.is_empty());
     }
 }

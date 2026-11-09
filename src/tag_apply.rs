@@ -604,4 +604,36 @@ mod tests {
         assert_eq!(crate::spread_state::read_archive_tags(&db, &root, "a.zip"), vec![10]);
         let _ = std::fs::remove_dir_all(&root);
     }
+
+    #[test]
+    fn paired_two_line_names_are_registered_as_one_element_with_aliases() {
+        let info = "[Ebizoridan (Shien)] A [Digital]\n[えびぞり団 (しえん)] あ [DL版]\nhttps://x\n\nCategory: Doujinshi\n";
+        let inputs = [input_from_info_text("a.zip", Some(FormatTag::Extension("zip".into())), Some(info))];
+        let set = build_candidates(&inputs, &[], &MatchOptions::default(), Lang::Japanese);
+        let (mut cats, mut next) = (Vec::new(), 100u64);
+        let plan = plan_application(&set, &mut cats, &mut next, Lang::Japanese);
+        let names: Vec<String> = cats.iter().flat_map(|c| c.tiers.iter().filter_map(|t| t.element.clone())).collect();
+        assert!(names.contains(&"えびぞり団|Ebizoridan".to_string()), "{names:?}");
+        assert!(names.contains(&"しえん|Shien".to_string()), "{names:?}");
+        assert!(plan.new_elements >= 2);
+    }
+
+    #[test]
+    fn alias_candidate_adds_the_missing_form_to_the_existing_element() {
+        let info = "[Ebizoridan (Shien)] A\n[えびぞり団 (しえん)] あ\n\nCategory: Doujinshi\n";
+        let inputs = [input_from_info_text("a.zip", None, Some(info))];
+        let mut cats = vec![crate::view_explorer::TagManagerCategoryUi {
+            name: "グループ".into(),
+            tiers: vec![tier(30, "Ebizoridan")],
+            color: egui::Color32::GRAY,
+            is_main: false,
+            single_select: false,
+            system_kind: None,
+        }];
+        let set = build_candidates(&inputs, &cats, &MatchOptions::default(), Lang::Japanese);
+        let mut next = 100u64;
+        let plan = plan_application(&set, &mut cats, &mut next, Lang::Japanese);
+        assert_eq!(cats[0].tiers[0].element.as_deref(), Some("Ebizoridan|えびぞり団"), "別名が足され、要素名が書き換わる");
+        assert_eq!(plan.renames.len(), 1, "書き換わる既存要素の一覧に出る");
+    }
 }

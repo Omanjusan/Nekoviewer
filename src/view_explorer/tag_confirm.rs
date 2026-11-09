@@ -568,6 +568,10 @@ fn draw_candidate_row(
                 }
             });
         }
+        // 対にした別の見出し行の表記（英語⇄日本語）。登録するときは、登録名の別名として足される。
+        if !c.alt_forms.is_empty() {
+            ui.weak(format!("（{}）", c.alt_forms.join(" / ")));
+        }
         ui.weak(t.tag_confirm_file_count(c.files.len()));
         if c.unconfirmed {
             ui.colored_label(egui::Color32::from_rgb(230, 160, 40), t.tag_confirm_unconfirmed());
