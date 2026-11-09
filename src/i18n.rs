@@ -4223,6 +4223,66 @@ impl Lang {
         self.learn_pick("学習データがありません", "", "")
     }
 
+    /// 学習窓・ラベル窓（日本語のみ。英・中は空で日本語にフォールバック）
+    pub fn tag_learn_open_button(self) -> &'static str { self.learn_pick("タグ学習…", "", "") }
+    pub fn tag_learn_window_title(self) -> &'static str { self.learn_pick("タグ学習", "", "") }
+    pub fn tag_learn_label_window_title(self) -> &'static str { self.learn_pick("タグ学習 — ラベル付け", "", "") }
+    pub fn tag_learn_use_checkbox(self) -> &'static str { self.learn_pick("学習結果を使う（OFFなら従来のルールだけで判定）", "", "") }
+    pub fn tag_learn_estimate_none(self) -> &'static str { self.learn_pick("目安の一致率: 学習データが10件以上になると表示します", "", "") }
+    pub fn tag_learn_estimate(self, percent: u32) -> String {
+        let ja = format!("目安の一致率 約{percent}%（学習データ内の5分割検証。件数が少ないと揺れが大きい）");
+        let local: Option<String> = match self { Lang::Japanese => None, Lang::English => None, Lang::Chinese => None };
+        local.unwrap_or(ja)
+    }
+    pub fn tag_learn_count_heading(self) -> &'static str { self.learn_pick("追加で学習する件数（現在のフォルダから選びます）", "", "") }
+    pub fn tag_learn_count_label(self, n: usize) -> &'static str {
+        match n {
+            10 => self.learn_pick("10件　手軽だが不安定", "", ""),
+            20 => self.learn_pick("20件　バランス", "", ""),
+            _ => self.learn_pick("30件　手堅い（手間は中程度）", "", ""),
+        }
+    }
+    pub fn tag_learn_folder_info(self, available: usize, will_pick: usize) -> String {
+        let ja = format!("このフォルダの対象: 括弧のある未学習のファイル {available}件 → {will_pick}件を選びます");
+        let local: Option<String> = match self { Lang::Japanese => None, Lang::English => None, Lang::Chinese => None };
+        local.unwrap_or(ja)
+    }
+    pub fn tag_learn_start_button(self) -> &'static str { self.learn_pick("学習を始める", "", "") }
+    pub fn tag_learn_start_disabled_hover(self) -> &'static str { self.learn_pick("括弧のある未学習のファイルが、現在のフォルダにありません", "", "") }
+    pub fn tag_learn_close_button(self) -> &'static str { self.learn_pick("閉じる", "", "") }
+    pub fn tag_learn_label_help(self) -> &'static str { self.learn_pick("ファイル名の括弧ごとに種別を確認し、違うものだけ直してください。直した行は確認済みになります。", "", "") }
+    pub fn tag_learn_confirmed_count(self, confirmed: usize, total: usize) -> String {
+        let ja = format!("確認済 {confirmed}/{total}");
+        let local: Option<String> = match self { Lang::Japanese => None, Lang::English => None, Lang::Chinese => None };
+        local.unwrap_or(ja)
+    }
+    pub fn tag_learn_confirm_all(self) -> &'static str { self.learn_pick("すべて確認済にする", "", "") }
+    pub fn tag_learn_commit_button(self) -> &'static str { self.learn_pick("学習する", "", "") }
+    pub fn tag_learn_commit_hover(self, confirmed: usize, total: usize) -> String {
+        let ja = if confirmed < total { format!("確認済の{confirmed}件だけで学習します（未確認の行は学習しません）") } else { "確認済のすべてで学習します".to_string() };
+        let local: Option<String> = match self { Lang::Japanese => None, Lang::English => None, Lang::Chinese => None };
+        local.unwrap_or(ja)
+    }
+    pub fn tag_learn_commit_disabled_hover(self) -> &'static str { self.learn_pick("確認済の行がありません", "", "") }
+    pub fn tag_learn_cancel_button(self) -> &'static str { self.learn_pick("キャンセル", "", "") }
+    pub fn tag_learn_done_toast(self, n: usize) -> String {
+        let ja = format!("{n}件を学習しました");
+        let local: Option<String> = match self { Lang::Japanese => None, Lang::English => None, Lang::Chinese => None };
+        local.unwrap_or(ja)
+    }
+    pub fn tag_learn_save_failed_toast(self) -> &'static str { self.learn_pick("学習データを保存できませんでした", "", "") }
+    /// ラベルの種別名（ドロップダウンの表示）
+    pub fn tag_learn_label_name(self, label: crate::tag_corpus::Label) -> &'static str {
+        use crate::tag_corpus::Label;
+        match label {
+            Label::Author => self.learn_pick("作者", "", ""),
+            Label::Group => self.learn_pick("グループ", "", ""),
+            Label::Event => self.learn_pick("イベント", "", ""),
+            Label::Language => self.learn_pick("言語", "", ""),
+            Label::Ignore => self.learn_pick("無視", "", ""),
+        }
+    }
+
     pub fn tag_trial_banner(self) -> &'static str {
         match self {
             Lang::Japanese => "試用中",

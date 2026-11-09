@@ -1175,6 +1175,8 @@ pub struct NekoviewApp {
     pub(crate) tag_learned: crate::tag_learning::LearnedSet,
     /// 学習データから作ったモデル（学習データが空なら None）。使うかどうかは `config.tag_learning_use`。
     pub(crate) tag_model: Option<std::sync::Arc<crate::tag_model::Model>>,
+    /// タグ学習窓（開いている間 Some）。
+    tag_learn: Option<tag_learning_ui::TagLearn>,
     /// 一括タグ付けの適用後の「試用中」か。試用中は仮マスター（`nekoviewer_tags.trial.json`）を読み書きし、
     /// 本物のマスターは確定まで変えない。ファイルが残っていれば、次回起動も試用中から始まる。
     pub(crate) tag_trial_active: bool,
@@ -1764,6 +1766,7 @@ impl NekoviewApp {
             tag_manager_next_tier_id,
             tag_learned,
             tag_model,
+            tag_learn: None,
             tag_trial_active,
             tag_manager_selected_category: Some(0),
             tag_manager_editing_element: None,

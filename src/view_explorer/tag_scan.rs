@@ -186,7 +186,7 @@ fn scan_allowed(running: bool, favorites: bool, similar: bool, search: bool, tag
 
 impl NekoviewApp {
     /// 一括情報取得の対象（表示中の実フォルダ直下のアーカイブ。単体画像と無効アーカイブは除く）。
-    fn tag_scan_targets(&self) -> Vec<PathBuf> {
+    pub(super) fn tag_scan_targets(&self) -> Vec<PathBuf> {
         self.archives
             .iter()
             .filter(|p| !self.raw_image_files.contains(*p) && !self.invalid_archives.contains(*p))

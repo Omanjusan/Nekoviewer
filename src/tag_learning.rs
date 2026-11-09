@@ -16,9 +16,15 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use std::collections::{BTreeMap, HashSet};
+
+use crate::i18n::Lang;
+use crate::tag_candidates::{build_candidates_with, CandidateInput, Role};
 use crate::tag_corpus::{token_key, CorpusEntry, Label};
 use crate::tag_features::{split_multi, tokenize, Token};
-use crate::tag_similarity::MatchOptions;
+use crate::tag_model::Model;
+use crate::tag_similarity::{exact_key, MatchOptions};
+use crate::view_explorer::TagManagerCategoryUi;
 
 const FILE_NAME: &str = "nekoviewer_tag_learning.json";
 const VERSION: u32 = 1;
@@ -199,6 +205,115 @@ pub(crate) fn examples_for_entry(e: &CorpusEntry, opts: &MatchOptions) -> (Vec<E
     (examples, unmatched)
 }
 
+// ── ラベル付けの補助（初期値の提案・サンプル選び・保存する形への変換） ──
+
+/// ファイル名の括弧ごとに、ラベル付けの初期値を提案する。モデルがあればモデルの予測、無ければ現行ルール
+/// （`cats` は現在のタグマスター。裏づけがあれば向きの判定に使われる）。括弧が無いファイルは空。
+pub(crate) fn suggest_labels(
+    file_name: &str,
+    model: Option<&Model>,
+    cats: &[TagManagerCategoryUi],
+    opts: &MatchOptions,
+    lang: Lang,
+) -> Vec<(Token, Label)> {
+    if let Some(m) = model {
+        return m.predict_file(file_name).into_iter().map(|p| (p.token, p.label)).collect();
+    }
+    let input = CandidateInput { file_name: file_name.to_string(), format: None, info: None };
+    let set = build_candidates_with(std::slice::from_ref(&input), cats, opts, lang, None);
+    tokenize(file_name)
+        .into_iter()
+        .map(|t| {
+            let k = exact_key(&t.text, opts);
+            let label = set
+                .candidates
+                .iter()
+                .filter(|c| c.forms.iter().any(|f| exact_key(f, opts) == k))
+                .find_map(|c| match c.role {
+                    Role::Author => Some(Label::Author),
+                    Role::Group => Some(Label::Group),
+                    Role::Event => Some(Label::Event),
+                    Role::Language => Some(Label::Language),
+                    _ => None,
+                })
+                .unwrap_or(Label::Ignore);
+            (t, label)
+        })
+        .collect()
+}
+
+/// 確認した括弧のラベルを、保存する形（ファイル名＋ラベル）にする。「無視」は、ラベルを書かない（学習時に無視になる）。
+pub(crate) fn entry_from_labels(file_name: &str, tokens: &[(Token, Label)]) -> CorpusEntry {
+    let mut labels: Vec<(Label, String)> = Vec::new();
+    for (t, l) in tokens {
+        if *l != Label::Ignore && !labels.iter().any(|(x, y)| x == l && y == &t.text) {
+            labels.push((*l, t.text.clone()));
+        }
+    }
+    CorpusEntry { file_name: file_name.to_string(), labels, hard: false }
+}
+
+/// 括弧の「形」の署名（位置・入れ子・イベントコードや辞書語の有無）。同じ署名のファイルは、学習で似た情報しか増やさない。
+fn pattern_signature(file_name: &str) -> Option<String> {
+    let tokens = tokenize(file_name);
+    if tokens.is_empty() {
+        return None;
+    }
+    let parts: Vec<String> = tokens
+        .iter()
+        .map(|t| {
+            t.features()
+                .into_iter()
+                .filter(|f| f.starts_with("pos:") || f.starts_with("kw:") || f == "pat:event_code" || f == "dict:language")
+                .collect::<Vec<_>>()
+                .join("+")
+        })
+        .collect();
+    Some(parts.join("|"))
+}
+
+/// 学習用に `n` 件を選ぶ。括弧の形が違うものを優先して、形ごとに順に1件ずつ取る（形が多いグループから先）。
+/// 括弧が無いファイルと、`exclude`（学習済み）は除く。足りなければある分だけ。結果は決定的。
+pub(crate) fn select_samples(names: &[String], exclude: &HashSet<String>, n: usize) -> Vec<String> {
+    let mut groups: BTreeMap<String, Vec<&String>> = BTreeMap::new();
+    let mut seen: HashSet<&String> = HashSet::new();
+    for name in names {
+        if exclude.contains(name) || !seen.insert(name) {
+            continue;
+        }
+        if let Some(sig) = pattern_signature(name) {
+            groups.entry(sig).or_default().push(name);
+        }
+    }
+    let mut groups: Vec<Vec<&String>> = groups.into_values().collect();
+    for g in &mut groups {
+        g.sort();
+    }
+    groups.sort_by(|a, b| b.len().cmp(&a.len()).then_with(|| a[0].cmp(b[0])));
+    let mut taken: Vec<HashSet<usize>> = vec![HashSet::new(); groups.len()];
+    let mut out: Vec<String> = Vec::new();
+    let mut round = 0usize;
+    while out.len() < n && groups.iter().zip(&taken).any(|(g, t)| t.len() < g.len()) {
+        for (gi, g) in groups.iter().enumerate() {
+            if out.len() >= n {
+                break;
+            }
+            if taken[gi].len() >= g.len() {
+                continue;
+            }
+            // 黄金比で散らして、同じシリーズが並ばないようにする。取り済みなら次の空きへ。
+            let mut idx = ((round as f64 * 0.618_033_988_75 + gi as f64 * 0.31) * g.len() as f64) as usize % g.len();
+            while taken[gi].contains(&idx) {
+                idx = (idx + 1) % g.len();
+            }
+            taken[gi].insert(idx);
+            out.push(g[idx].clone());
+        }
+        round += 1;
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -310,6 +425,70 @@ mod tests {
         let set = LearnedSet { version: VERSION, entries };
         assert!(set.save(Path::new(&out)));
         println!("{} 件を {out}/{FILE_NAME} に書いた", set.len());
+    }
+
+    #[test]
+    fn suggest_labels_by_rules_without_model() {
+        let cats = crate::tag_manager::default_state().0;
+        let v = suggest_labels("(C105) [Hawk Bit (Kouji)] T [日本語].zip", None, &cats, &MatchOptions::default(), Lang::Japanese);
+        let got: Vec<_> = v.iter().map(|(t, l)| (t.text.as_str(), *l)).collect();
+        assert_eq!(got, vec![("C105", Label::Event), ("Hawk Bit", Label::Group), ("Kouji", Label::Author), ("日本語", Label::Language)]);
+        let v = suggest_labels("Mixed [DL版].zip", None, &cats, &MatchOptions::default(), Lang::Japanese);
+        assert_eq!(v[0].1, Label::Ignore, "ルールが当てない括弧は無視");
+        assert!(suggest_labels("Plain.zip", None, &cats, &MatchOptions::default(), Lang::Japanese).is_empty());
+    }
+
+    #[test]
+    fn suggest_labels_uses_the_model_when_given() {
+        let e = entry("[Aoi (Blue Moon)] T.zip", &[(Label::Author, "Aoi"), (Label::Group, "Blue Moon")]);
+        let entries: Vec<CorpusEntry> = ["Bell:Red Sun", "Cato:Green Hill", "Dune:Gray Sea", "Echo:Pink Sky"]
+            .iter()
+            .map(|s| {
+                let (a, c) = s.split_once(':').unwrap();
+                entry(&format!("[{a} ({c})] T.zip"), &[(Label::Author, a), (Label::Group, c)])
+            })
+            .chain(std::iter::once(e))
+            .collect();
+        let model = crate::tag_model::Model::train(&LearnedSet { version: 1, entries }.training_data(&MatchOptions::default())).unwrap();
+        let v = suggest_labels("[Kai (Rock Fall)] X.zip", Some(&model), &[], &MatchOptions::default(), Lang::Japanese);
+        assert_eq!((v[0].1, v[1].1), (Label::Author, Label::Group));
+    }
+
+    #[test]
+    fn entry_from_labels_drops_ignore_and_duplicates() {
+        let toks = tokenize("(成年コミック) [Kouji] T.zip");
+        let pairs = vec![(toks[0].clone(), Label::Ignore), (toks[1].clone(), Label::Author), (toks[1].clone(), Label::Author)];
+        let e = entry_from_labels("(成年コミック) [Kouji] T.zip", &pairs);
+        assert_eq!(e.labels, vec![(Label::Author, "Kouji".to_string())]);
+        // 保存して学習の例にすると、ラベルの無い括弧は無視になる。
+        let (ex, unmatched) = examples_for_entry(&e, &MatchOptions::default());
+        assert_eq!((ex[0].label, ex[1].label), (Label::Ignore, Label::Author));
+        assert!(unmatched.is_empty());
+    }
+
+    #[test]
+    fn select_samples_prefers_distinct_shapes_and_skips_learned_and_bracketless() {
+        let names: Vec<String> = [
+            "(C1) [A (B)] t1.zip", "(C2) [C (D)] t2.zip", "(C3) [E (F)] t3.zip", "(C4) [G (H)] t4.zip", // 標準形が4件
+            "(成年コミック) [X] g.zip",                                                                       // ジャンル接頭辞
+            "[Solo] s.zip",                                                                                   // 単独
+            "Title [Writer].zip",                                                                             // 末尾の括弧
+            "plain.zip", "Vol.01 No Brackets.zip",                                                            // 括弧なし
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        let picked = select_samples(&names, &HashSet::new(), 4);
+        assert_eq!(picked.len(), 4);
+        assert!(!picked.iter().any(|n| n.starts_with("plain") || n.starts_with("Vol")), "括弧なしは選ばない");
+        let standard = picked.iter().filter(|n| n.starts_with("(C")).count();
+        assert_eq!(standard, 1, "標準形は1件だけ。残りは別の形から: {picked:?}");
+        // 学習済みは除く。足りなければある分だけ。
+        let exclude: HashSet<String> = ["[Solo] s.zip".to_string()].into_iter().collect();
+        let all = select_samples(&names, &exclude, 50);
+        assert_eq!(all.len(), 6);
+        assert!(!all.contains(&"[Solo] s.zip".to_string()));
+        assert_eq!(select_samples(&names, &HashSet::new(), 4), picked, "決定的");
     }
 
     #[test]
