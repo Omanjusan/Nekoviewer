@@ -269,6 +269,8 @@ pub struct AppConfig {
     pub tag_match: crate::tag_similarity::MatchOptions,
     /// 一括タグ付けの判定で、学習結果（`tag_learning`）を使うか。永続設定（state の `app_tag_learning_use`）。既定は使う。
     pub tag_learning_use: bool,
+    /// 学習データが無いまま一括取得を押したときの、学習の案内を今後表示しない。永続設定（state の `app_tag_learn_intro_hidden`）。
+    pub tag_learn_intro_hidden: bool,
     /// 次回起動時に X11 バックエンド（XWayland）で起動するか（state の `app_launch_x11`）。
     /// Wayland セッションでだけ意味を持つ。詳細は [display_backend.rs](crate::display_backend)。
     pub launch_x11: bool,
@@ -338,6 +340,7 @@ impl AppConfig {
             text_page: Default::default(),
             tag_match: Default::default(),
             tag_learning_use: true,
+            tag_learn_intro_hidden: false,
             launch_x11: false,
             last_run_version: String::new(),
         }

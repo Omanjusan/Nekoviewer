@@ -163,6 +163,7 @@ fn main() {
         if let Some(v) = state.app_text_page { cfg.text_page = v; }
         if let Some(v) = state.app_tag_match { cfg.tag_match = v; }
         if let Some(v) = state.app_tag_learning_use { cfg.tag_learning_use = v; }
+        if let Some(v) = state.app_tag_learn_intro_hidden { cfg.tag_learn_intro_hidden = v; }
         fs::archive::text_page::set_options(cfg.text_page);
         if let Some(v) = &state.app_last_run_version { cfg.last_run_version = v.clone(); }
 

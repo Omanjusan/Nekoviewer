@@ -4271,6 +4271,24 @@ impl Lang {
         local.unwrap_or(ja)
     }
     pub fn tag_learn_save_failed_toast(self) -> &'static str { self.learn_pick("学習データを保存できませんでした", "", "") }
+    pub fn tag_learn_view_button(self) -> &'static str { self.learn_pick("学習データを見る…", "", "") }
+    pub fn tag_learn_clear_button(self) -> &'static str { self.learn_pick("全消去してやり直す", "", "") }
+    pub fn tag_learn_clear_confirm(self) -> &'static str { self.learn_pick("学習データをすべて消去します。元に戻せません。", "", "") }
+    pub fn tag_learn_clear_do(self) -> &'static str { self.learn_pick("消去する", "", "") }
+    pub fn tag_learn_clear_cancel(self) -> &'static str { self.learn_pick("やめる", "", "") }
+    pub fn tag_learn_viewer_title(self) -> &'static str { self.learn_pick("タグ学習 — 学習データ", "", "") }
+    pub fn tag_learn_viewer_empty(self) -> &'static str { self.learn_pick("学習データはありません", "", "") }
+    pub fn tag_learn_viewer_back(self) -> &'static str { self.learn_pick("戻る", "", "") }
+    pub fn tag_learn_viewer_delete(self) -> &'static str { self.learn_pick("削除", "", "") }
+    pub fn tag_learn_viewer_no_labels(self) -> &'static str { self.learn_pick("（ラベルなし＝括弧はすべて無視）", "", "") }
+    pub fn tag_learn_viewer_remove_label_hover(self) -> &'static str { self.learn_pick("このラベルだけ消す", "", "") }
+    pub fn tag_learn_intro_title(self) -> &'static str { self.learn_pick("タグ学習のご案内", "", "") }
+    pub fn tag_learn_intro_body(self) -> &'static str { self.learn_pick("学習データがありません。数十件のファイル名で判定を学習させると、作者・グループ・イベントなどの判定が改善します。", "", "") }
+    pub fn tag_learn_intro_start(self) -> &'static str { self.learn_pick("学習する", "", "") }
+    pub fn tag_learn_intro_skip(self) -> &'static str { self.learn_pick("今回は学習せず取得", "", "") }
+    pub fn tag_learn_intro_hide(self) -> &'static str { self.learn_pick("今後このご案内を表示しない", "", "") }
+    pub fn tag_learn_add_menu(self) -> &'static str { self.learn_pick("タグ学習に追加…", "", "") }
+    pub fn tag_learn_add_menu_disabled(self) -> &'static str { self.learn_pick("括弧のないファイル名は学習できません", "", "") }
     /// ラベルの種別名（ドロップダウンの表示）
     pub fn tag_learn_label_name(self, label: crate::tag_corpus::Label) -> &'static str {
         use crate::tag_corpus::Label;

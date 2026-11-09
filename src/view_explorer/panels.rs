@@ -1042,7 +1042,7 @@ impl NekoviewApp {
             let hint = if self.tag_trial_active { i18n::t().tag_scan_trial_hint() } else { i18n::t().tag_scan_unavailable_hint() };
             let resp = if enabled { resp } else { resp.on_disabled_hover_text(hint) };
             if resp.clicked() {
-                self.start_tag_scan();
+                self.request_tag_scan();
             }
         });
         self.draw_tag_learning_status(ui);
@@ -3146,6 +3146,7 @@ impl NekoviewApp {
 
             ui.separator();
             self.draw_reveal_menu_item(ui, path);
+            self.draw_tag_learn_menu_item(ui, path);
             ui.separator();
             if self.folder_pane_tab.shows_real_dir() {
                 let r_item = ui.button(i18n::t().explorer_open_folder_menu());

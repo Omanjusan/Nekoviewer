@@ -143,6 +143,8 @@ pub(crate) struct SettingsDraft {
     idle_thumb_generation: bool,
     idle_thumb_wait_secs: u32,
     idle_thumb_while_viewer: bool,
+    /// 一括タグ付けの判定で学習結果を使うか。
+    tag_learning_use: bool,
     viewer_filter: ResizeFilter,
     thumb_filter: ResizeFilter,
     lang: i18n::Lang,
@@ -299,6 +301,7 @@ impl SettingsDraft {
             idle_thumb_generation: config.idle_thumb_generation,
             idle_thumb_wait_secs: config.idle_thumb_wait_secs,
             idle_thumb_while_viewer: config.idle_thumb_while_viewer,
+            tag_learning_use: config.tag_learning_use,
             viewer_filter: config.viewer_filter,
             thumb_filter: config.thumb_filter,
             lang: i18n::t(),
@@ -374,6 +377,7 @@ impl SettingsDraft {
             .idle_thumb_wait_secs
             .clamp(crate::config::IDLE_THUMB_WAIT_MIN, crate::config::IDLE_THUMB_WAIT_MAX);
         config.idle_thumb_while_viewer = self.idle_thumb_while_viewer;
+        config.tag_learning_use = self.tag_learning_use;
         config.viewer_filter = self.viewer_filter;
         config.thumb_filter = self.thumb_filter;
         i18n::set(self.lang);
@@ -869,6 +873,11 @@ fn draw_settings_tab_explorer(ui: &mut egui::Ui, draft: &mut SettingsDraft) {
     ui.separator();
     // ライブプレビュー（現在のモード・言語で解決した実際の書式）
     ui.label(i18n::t().settings_card_date_preview(&f.preview(lang)));
+
+    // タグ自動取得: 学習結果を使うか（タグ学習窓のチェックと同じ値）。
+    ui.add_space(6.0);
+    ui.separator();
+    ui.checkbox(&mut draft.tag_learning_use, i18n::t().tag_learn_use_checkbox());
 }
 
 fn draw_settings_tab_anim(ui: &mut egui::Ui, draft: &mut SettingsDraft) {

@@ -242,6 +242,11 @@ pub(crate) fn suggest_labels(
         .collect()
 }
 
+/// 保存済みの1件を、ラベル窓で編集できる形（括弧ごとのラベル）に戻す。
+pub(crate) fn labels_from_entry(e: &CorpusEntry, opts: &MatchOptions) -> Vec<(Token, Label)> {
+    examples_for_entry(e, opts).0.into_iter().map(|x| (x.token, x.label)).collect()
+}
+
 /// 確認した括弧のラベルを、保存する形（ファイル名＋ラベル）にする。「無視」は、ラベルを書かない（学習時に無視になる）。
 pub(crate) fn entry_from_labels(file_name: &str, tokens: &[(Token, Label)]) -> CorpusEntry {
     let mut labels: Vec<(Label, String)> = Vec::new();
@@ -489,6 +494,16 @@ mod tests {
         assert_eq!(all.len(), 6);
         assert!(!all.contains(&"[Solo] s.zip".to_string()));
         assert_eq!(select_samples(&names, &HashSet::new(), 4), picked, "決定的");
+    }
+
+    #[test]
+    fn labels_from_entry_restores_the_editable_labels() {
+        let e = entry("(成年コミック) [Kouji (Hawk Bit)] T.zip", &[(Label::Author, "Kouji"), (Label::Group, "Hawk Bit")]);
+        let v = labels_from_entry(&e, &MatchOptions::default());
+        let got: Vec<_> = v.iter().map(|(t, l)| (t.text.as_str(), *l)).collect();
+        assert_eq!(got, vec![("成年コミック", Label::Ignore), ("Kouji", Label::Author), ("Hawk Bit", Label::Group)]);
+        // 編集して保存し直しても、同じ形に戻る。
+        assert_eq!(entry_from_labels(&e.file_name, &v).labels, e.labels);
     }
 
     #[test]
