@@ -1175,6 +1175,8 @@ pub struct NekoviewApp {
     pub(crate) tag_learned: crate::tag_learning::LearnedSet,
     /// 学習データから作ったモデル（学習データが空なら None）。使うかどうかは `config.tag_learning_use`。
     pub(crate) tag_model: Option<std::sync::Arc<crate::tag_model::Model>>,
+    /// タグ自動取得の大ルール（抽出の下処理）。設定フォルダの `nekoviewer_tag_rules.json`。
+    pub(crate) tag_rules: crate::tag_rules::RuleSet,
     /// タグ学習窓（開いている間 Some）。
     tag_learn: Option<tag_learning_ui::TagLearn>,
     /// 一括タグ付けの適用後の「試用中」か。試用中は仮マスター（`nekoviewer_tags.trial.json`）を読み書きし、
@@ -1515,6 +1517,7 @@ impl NekoviewApp {
         }
         let tag_learned = tag_learning_ui::load_learned(&config_root);
         let tag_model = tag_learning_ui::train_model(&tag_learned, &config.tag_match);
+        let tag_rules = crate::tag_rules::RuleSet::load(&config_root).unwrap_or_default();
         let (tag_main_options, tag_attr_options) = crate::tag_manager::derive_tag_options(&tag_manager_categories);
         let tag_main_selected = tag_main_options.first().map(|(id, _)| *id);
         let mut tag_attr_selected: Vec<u64> = Vec::new();
@@ -1766,6 +1769,7 @@ impl NekoviewApp {
             tag_manager_next_tier_id,
             tag_learned,
             tag_model,
+            tag_rules,
             tag_learn: None,
             tag_trial_active,
             tag_manager_selected_category: Some(0),

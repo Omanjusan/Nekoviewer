@@ -16,7 +16,8 @@ use redb::Database;
 
 use crate::i18n;
 use crate::i18n::Lang;
-use crate::tag_candidates::{build_candidates_with, CandidateInput, CandidateSet, Role};
+use crate::tag_candidates::{build_candidates_full, CandidateInput, CandidateSet, Role};
+use crate::tag_rules::TagRule;
 use crate::tag_model::Model;
 use crate::tag_similarity::MatchOptions;
 use crate::tag_source::{format_tag_for, parse_info_txt, FormatTag, InfoTxt};
@@ -119,12 +120,12 @@ pub(super) fn run_scan(
 
 /// 走査結果から候補を作って結果に付ける（キャンセル済みなら何もしない）。
 /// 重い照合になりうるので、画面のスレッドではなくワーカーの中で呼ぶ。
-fn attach_candidates(result: &mut TagScanResult, master: &[TagManagerCategoryUi], opts: &MatchOptions, lang: Lang, model: Option<&Model>) {
+fn attach_candidates(result: &mut TagScanResult, master: &[TagManagerCategoryUi], opts: &MatchOptions, lang: Lang, model: Option<&Model>, rules: &[TagRule]) {
     if result.cancelled {
         return;
     }
     let inputs = inputs_from_items(&result.items);
-    result.candidates = Some(build_candidates_with(&inputs, master, opts, lang, model));
+    result.candidates = Some(build_candidates_full(&inputs, master, opts, lang, model, rules));
 }
 
 /// 走査結果を、候補生成の入力にする。
@@ -159,6 +160,7 @@ impl TagScanJob {
         opts: MatchOptions,
         lang: Lang,
         model: Option<Arc<Model>>,
+        rules: Arc<Vec<TagRule>>,
     ) -> Self {
         let done = Arc::new(AtomicUsize::new(0));
         let cancel = Arc::new(AtomicBool::new(false));
@@ -167,7 +169,7 @@ impl TagScanJob {
         let (w_dir, w_done, w_cancel) = (dir.clone(), Arc::clone(&done), Arc::clone(&cancel));
         std::thread::spawn(move || {
             let mut result = run_scan(w_dir, &targets, db.as_ref(), &w_done, &w_cancel);
-            attach_candidates(&mut result, &master, &opts, lang, model.as_deref());
+            attach_candidates(&mut result, &master, &opts, lang, model.as_deref(), &rules);
             // 受信側が破棄済み（アプリ終了）でもエラーは無視する。
             let _ = tx.send(result);
         });
@@ -222,6 +224,7 @@ impl NekoviewApp {
             self.config.tag_match,
             i18n::t(),
             self.active_tag_model(),
+            Arc::new(self.tag_rules.rules.clone()),
         ));
     }
 
@@ -431,7 +434,7 @@ mod tests {
             m.push_element(c, el);
         }
         let mut result = r;
-        attach_candidates(&mut result, &cats, &MatchOptions::default(), Lang::Japanese, None);
+        attach_candidates(&mut result, &cats, &MatchOptions::default(), Lang::Japanese, None, &[]);
         let set = result.candidates.unwrap();
         println!("files={} with_info={} limits={:?}", set.file_count, set.files_with_info, set.limits);
         for c in &set.candidates {
@@ -461,7 +464,7 @@ mod tests {
         let dir = temp_dir("job_model");
         let t = write_zip(&dir, "[Kai (Rock Fall)] Book.zip", &[("x.txt", b"x")]);
         let run = |m: Option<Arc<crate::tag_model::Model>>| {
-            let job = TagScanJob::spawn(dir.clone(), vec![t.clone()], None, Vec::new(), MatchOptions::default(), Lang::Japanese, m);
+            let job = TagScanJob::spawn(dir.clone(), vec![t.clone()], None, Vec::new(), MatchOptions::default(), Lang::Japanese, m, Arc::new(Vec::new()));
             let mut got = None;
             for _ in 0..300 {
                 if let Ok(r) = job.rx.try_recv() {
@@ -484,7 +487,7 @@ mod tests {
     fn job_runs_on_a_thread_and_delivers_the_result() {
         let dir = temp_dir("job");
         let t = write_zip(&dir, "a.zip", &[("info.txt", b"Category: Manga")]);
-        let job = TagScanJob::spawn(dir.clone(), vec![t], None, Vec::new(), MatchOptions::default(), Lang::Japanese, None);
+        let job = TagScanJob::spawn(dir.clone(), vec![t], None, Vec::new(), MatchOptions::default(), Lang::Japanese, None, Arc::new(Vec::new()));
         let mut got = None;
         for _ in 0..300 {
             if let Ok(r) = job.rx.try_recv() {

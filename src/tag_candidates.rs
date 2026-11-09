@@ -17,6 +17,7 @@ use std::collections::HashMap;
 use crate::i18n::Lang;
 use crate::tag_corpus::Label;
 use crate::tag_model::Model;
+use crate::tag_rules::{evaluate_rules, RuleInput, RuleOutcome, RuleRole, TagRule};
 use crate::tag_master::{alias_keys, escape_alias_sep, join_aliases, normalize_key, overlapping_elements, split_aliases, SystemKind};
 use crate::tag_similarity::{cluster, keys, normalize_width, similarity_at_least, Keys, MatchOptions};
 use crate::tag_source::{
@@ -157,6 +158,8 @@ pub(crate) struct Candidate {
     pub review: bool,
     /// 対にした別の見出し行の表記（英語⇄日本語）。登録するとき、`name` の別名として足す。
     pub alt_forms: Vec<String>,
+    /// ルールで無効にされたため、未採用にして残している（要確認）。無効にしたルールの名前（「、」でつなぐ）。
+    pub rule_reason: Option<String>,
 }
 
 impl Candidate {
@@ -234,6 +237,8 @@ pub(crate) struct LimitReport {
 #[derive(Clone, Debug)]
 pub(crate) struct CandidateSet {
     pub candidates: Vec<Candidate>,
+    /// 成立したルールの名前と、成立したファイル数（ルールの並び順）。
+    pub rule_hits: Vec<(String, usize)>,
     pub limits: LimitReport,
     pub file_count: usize,
     pub files_with_info: usize,
@@ -340,6 +345,8 @@ struct Mention {
     ignored: bool,
     /// info.txt の別の見出し行（英語行など）の同じ位置にあった名前。対にして別名として登録する。
     alt: Option<String>,
+    /// この言及を無効にしたルールの名前（`ignored` も true になる）。
+    rule: Option<String>,
 }
 
 fn file_stem(input: &CandidateInput) -> &str {
@@ -459,6 +466,7 @@ fn model_mentions(
         guessed,
         ignored,
         alt: None,
+        rule: None,
     };
 
     let mut out: Vec<Mention> = Vec::new();
@@ -590,14 +598,28 @@ pub(crate) fn build_candidates(
     build_candidates_with(inputs, cats, opts, lang, None)
 }
 
-/// 候補を作る。`model` があれば、括弧の種別（作者・グループ・イベント・言語・無視）を学習モデルで判定する。
-/// 既存マスターに完全一致があるものは、モデルよりマスターを優先する。
+/// 候補を作る（学習モデルつき・ルールなし）。
 pub(crate) fn build_candidates_with(
     inputs: &[CandidateInput],
     cats: &[TagManagerCategoryUi],
     opts: &MatchOptions,
     lang: Lang,
     model: Option<&Model>,
+) -> CandidateSet {
+    build_candidates_full(inputs, cats, opts, lang, model, &[])
+}
+
+/// 候補を作る。`model` があれば、括弧の種別（作者・グループ・イベント・言語・無視）を学習モデルで判定する。
+/// 既存マスターに完全一致があるものは、モデルよりマスターを優先する。
+/// `rules`（大ルール）は抽出の下処理: ファイルごとに成立したルールが無効にした種類の言及は、候補にして未採用・要確認で残す
+/// （既存マスターに完全一致があっても、ルールを優先する）。
+pub(crate) fn build_candidates_full(
+    inputs: &[CandidateInput],
+    cats: &[TagManagerCategoryUi],
+    opts: &MatchOptions,
+    lang: Lang,
+    model: Option<&Model>,
+    rules: &[TagRule],
 ) -> CandidateSet {
     let opts = opts.clamped();
     let cat_of = |role: Role| find_category(cats, role);
@@ -608,15 +630,19 @@ pub(crate) fn build_candidates_with(
     // 1) ファイルごとの言及を集める。
     let mut mentions: Vec<(usize, Mention)> = Vec::new();
     let mut files_with_info = 0usize;
+    let mut outcomes: Vec<RuleOutcome> = Vec::new();
     for (fi, input) in inputs.iter().enumerate() {
+        if !rules.is_empty() {
+            outcomes.push(evaluate_rules(rules, &RuleInput::new(&input.file_name, input.info.as_ref()), &opts));
+        }
         if input.info.is_some() {
             files_with_info += 1;
         }
         if let Some(tag) = &input.format {
-            mentions.push((fi, Mention { role: Role::Format, name: format_name(tag, lang), from_single: false, guessed: false, ignored: false, alt: None }));
+            mentions.push((fi, Mention { role: Role::Format, name: format_name(tag, lang), from_single: false, guessed: false, ignored: false, alt: None, rule: None }));
         }
         if let Some(cat) = input.info.as_ref().and_then(|i| i.category.clone()) {
-            mentions.push((fi, Mention { role: Role::Main, name: cat, from_single: false, guessed: false, ignored: false, alt: None }));
+            mentions.push((fi, Mention { role: Role::Main, name: cat, from_single: false, guessed: false, ignored: false, alt: None, rule: None }));
         }
         if let Some(model) = model {
             mentions.extend(model_mentions(input, model, &author_idx, &group_idx, &opts, lang).into_iter().map(|m| (fi, m)));
@@ -625,7 +651,7 @@ pub(crate) fn build_candidates_with(
         let src = gather_sources(input);
         if let Some(canon) = src.language {
             let name = if lang == Lang::Japanese { canon } else { language_english_name(canon) };
-            mentions.push((fi, Mention { role: Role::Language, name: name.to_string(), from_single: false, guessed: false, ignored: false, alt: None }));
+            mentions.push((fi, Mention { role: Role::Language, name: name.to_string(), from_single: false, guessed: false, ignored: false, alt: None, rule: None }));
         }
         // 日本語行のイベント・作者と、別の見出し行の同じ位置の名前を対にする（info.txt の見出しがあるときだけ）。
         let alt_ev = src.alt_event.clone();
@@ -635,7 +661,7 @@ pub(crate) fn build_candidates_with(
             None => (None, None, None),
         };
         if let Some(ev) = src.event {
-            mentions.push((fi, Mention { role: Role::Event, name: ev, from_single: false, guessed: false, ignored: false, alt: alt_ev }));
+            mentions.push((fi, Mention { role: Role::Event, name: ev, from_single: false, guessed: false, ignored: false, alt: alt_ev, rule: None }));
         }
         match src.creator {
             Some(Creator::Pair { outer, inner }) => {
@@ -645,8 +671,8 @@ pub(crate) fn build_candidates_with(
                 let swap = swapped > normal;
                 let (outer_role, inner_role) = if swap { (Role::Author, Role::Group) } else { (Role::Group, Role::Author) };
                 let guessed = normal == 0 && swapped == 0;
-                mentions.push((fi, Mention { role: outer_role, name: outer, from_single: false, guessed, ignored: false, alt: alt_outer }));
-                mentions.push((fi, Mention { role: inner_role, name: inner, from_single: false, guessed, ignored: false, alt: alt_inner }));
+                mentions.push((fi, Mention { role: outer_role, name: outer, from_single: false, guessed, ignored: false, alt: alt_outer, rule: None }));
+                mentions.push((fi, Mention { role: inner_role, name: inner, from_single: false, guessed, ignored: false, alt: alt_inner, rule: None }));
             }
             Some(Creator::Single(x)) => {
                 // 既存の作者・グループに完全一致があれば、その側。無ければ作者の候補（未確定）。
@@ -654,9 +680,34 @@ pub(crate) fn build_candidates_with(
                 let in_author = author_idx.as_ref().is_some_and(|ix| ix.exact(&k).is_some());
                 let in_group = group_idx.as_ref().is_some_and(|ix| ix.exact(&k).is_some());
                 let role = if !in_author && in_group { Role::Group } else { Role::Author };
-                mentions.push((fi, Mention { role, name: x, from_single: true, guessed: false, ignored: false, alt: alt_single }));
+                mentions.push((fi, Mention { role, name: x, from_single: true, guessed: false, ignored: false, alt: alt_single, rule: None }));
             }
             None => {}
+        }
+    }
+
+    // 1b) ルールが無効にした種類の言及は、無効にしたルールの名前を付けて「無視」扱いにする（未採用・要確認で残す）。
+    let mut rule_hits: Vec<(String, usize)> = Vec::new();
+    if !rules.is_empty() {
+        for rule in rules {
+            let n = outcomes.iter().filter(|o| o.applied.contains(&rule.name)).count();
+            if n > 0 && !rule_hits.iter().any(|(name, _)| *name == rule.name) {
+                rule_hits.push((rule.name.clone(), n));
+            }
+        }
+        for (fi, m) in &mut mentions {
+            let role = match m.role {
+                Role::Format => RuleRole::Format,
+                Role::Main => RuleRole::Main,
+                Role::Language => RuleRole::Language,
+                Role::Event => RuleRole::Event,
+                Role::Author => RuleRole::Author,
+                Role::Group => RuleRole::Group,
+            };
+            if let Some(reason) = outcomes[*fi].disabled_reason(role) {
+                m.ignored = true;
+                m.rule = Some(reason);
+            }
         }
     }
 
@@ -672,6 +723,8 @@ pub(crate) fn build_candidates_with(
         ignored: bool,
         /// 対にした別の見出し行の表記（重複を除く）。
         alts: Vec<String>,
+        /// 言及を無効にしたルールの名前（重複を除く）。
+        rule_reasons: Vec<String>,
     }
     let mut order: Vec<(Role, String)> = Vec::new();
     let mut accs: HashMap<(Role, String), Acc> = HashMap::new();
@@ -688,7 +741,7 @@ pub(crate) fn build_candidates_with(
         }
         let acc = accs.entry((m.role, ident.clone())).or_insert_with(|| {
             order.push((m.role, ident.clone()));
-            Acc { role: m.role, key: ident.clone(), forms: Vec::new(), files: Vec::new(), from_single: false, guessed: false, ignored: true, alts: Vec::new() }
+            Acc { role: m.role, key: ident.clone(), forms: Vec::new(), files: Vec::new(), from_single: false, guessed: false, ignored: true, alts: Vec::new(), rule_reasons: Vec::new() }
         });
         match acc.forms.iter_mut().find(|(f, _)| *f == m.name) {
             Some((_, n)) => *n += 1,
@@ -700,6 +753,11 @@ pub(crate) fn build_candidates_with(
         acc.from_single |= m.from_single;
         acc.guessed |= m.guessed;
         acc.ignored &= m.ignored;
+        if let Some(r) = &m.rule {
+            if !acc.rule_reasons.contains(r) {
+                acc.rule_reasons.push(r.clone());
+            }
+        }
         if let Some(a) = &m.alt {
             if !acc.alts.contains(a) {
                 acc.alts.push(a.clone());
@@ -812,8 +870,11 @@ pub(crate) fn build_candidates_with(
             (None, true) => Choice::New,
         };
         // モデルが「無視」と判定したものは、既存タグの完全一致が無い限り、未採用にして残す（要確認）。
-        let review = acc.ignored && !matches!(choice, Choice::Existing { .. });
+        // ルールが無効にしたものは、既存マスターに一致していても、ルールを優先して未採用にする。
+        let rule_disabled = acc.ignored && !acc.rule_reasons.is_empty();
+        let review = rule_disabled || (acc.ignored && !matches!(choice, Choice::Existing { .. }));
         let choice = if review { Choice::Skip } else { choice };
+        let rule_reason = rule_disabled.then(|| acc.rule_reasons.join("、"));
         let unconfirmed = matches!(role, Role::Author | Role::Group)
             && !matches!(choice, Choice::Existing { .. })
             && (acc.from_single || acc.guessed);
@@ -834,6 +895,7 @@ pub(crate) fn build_candidates_with(
             bundle_id: None,
             review,
             alt_forms,
+            rule_reason,
         });
     }
 
@@ -851,7 +913,7 @@ pub(crate) fn build_candidates_with(
     }
 
     let limits = check_limits(&candidates);
-    CandidateSet { candidates, limits, file_count: inputs.len(), files_with_info }
+    CandidateSet { candidates, rule_hits, limits, file_count: inputs.len(), files_with_info }
 }
 
 /// 登録名を表記の中から選ぶ。UIが日本語なら日本語（ASCII以外）を含む表記を、それ以外は英字だけの表記を優先し、
@@ -1062,6 +1124,15 @@ impl CandidateSet {
             aliases,
             review: leaves.iter().all(|l| l.review),
             alt_forms: Vec::new(),
+            rule_reason: leaves.iter().all(|l| l.rule_reason.is_some()).then(|| {
+                let mut names: Vec<String> = Vec::new();
+                for r in leaves.iter().filter_map(|l| l.rule_reason.as_deref()) {
+                    if !names.iter().any(|n| n == r) {
+                        names.push(r.to_string());
+                    }
+                }
+                names.join("、")
+            }),
             members: leaves,
             bundle_id: Some(bundle_id),
         };
@@ -1614,5 +1685,102 @@ mod tests {
         assert!(set.candidates.iter().all(|c| c.alt_forms.is_empty()));
         let set = build_candidates(&[input("x.zip", "zip", Some(SAMPLE_INFO))], &master(), &MatchOptions::default(), Lang::Japanese);
         assert_eq!(find(&set, Role::Group, "Hawk Bit").choice, Choice::Existing { cat_idx: 3, tier_id: 30 });
+    }
+
+    // ── 大ルール（下処理） ──
+
+    use crate::tag_rules::{Preset, TagRule};
+
+    fn preset_rule(p: Preset, id: u64) -> TagRule {
+        let mut r = p.to_rule(id);
+        if r.effect == crate::tag_rules::Effect::default() {
+            r.effect.disable.insert(RuleRole::Event);
+        }
+        r
+    }
+
+    fn build_with_rules(inputs: &[CandidateInput], cats: &[TagManagerCategoryUi], rules: &[TagRule]) -> CandidateSet {
+        build_candidates_full(inputs, cats, &MatchOptions::default(), Lang::Japanese, None, rules)
+    }
+
+    #[test]
+    fn rule_disables_roles_and_keeps_them_as_unadopted_review_candidates_with_the_reason() {
+        let inputs = [input("(C105) [Hawk Bit (Kouji)] Book [AI Generated].zip", "zip", None)];
+        let none = build_with_rules(&inputs, &[], &[]);
+        assert!(none.candidates.iter().all(|c| !c.review && c.is_adopted()), "ルール無しなら従来どおり");
+        let set = build_with_rules(&inputs, &[], &[preset_rule(Preset::AiGenerated, 1)]);
+        for role in [Role::Author, Role::Group, Role::Event] {
+            let c = set.candidates.iter().find(|c| c.role == role).unwrap();
+            assert!(c.review && !c.is_adopted(), "{role:?} は未採用・要確認で残る");
+            assert_eq!(c.rule_reason.as_deref(), Some("AI generated"));
+        }
+        // 効果で触れていない種類（形式・言語）は、そのまま採用される。
+        let fmt = set.candidates.iter().find(|c| c.role == Role::Format).unwrap();
+        assert!(!fmt.review && fmt.is_adopted());
+        assert_eq!(set.rule_hits, vec![("AI generated".to_string(), 1)]);
+    }
+
+    #[test]
+    fn rule_wins_over_an_exact_master_match() {
+        let mut r = preset_rule(Preset::Anthology, 1);
+        r.effect.disable = [RuleRole::Author, RuleRole::Group].into_iter().collect();
+        let set = build_with_rules(&[input("Anthology x.zip", "zip", Some(SAMPLE_INFO))], &master(), &[r]);
+        let a = set.candidates.iter().find(|c| c.role == Role::Author).unwrap();
+        assert_eq!(a.initial, Choice::Skip, "既存マスターに一致していても、ルールが無効にしたら未採用");
+        assert!(a.review);
+    }
+
+    #[test]
+    fn rule_applies_per_file_and_a_name_used_by_an_unaffected_file_stays_adopted() {
+        // 1件目はAI generated（作者・グループ無効）、2件目は通常。同じ作者名なら、2件目の分があるので候補は採用のまま。
+        let inputs = [input("[Hawk Bit (Kouji)] A [AI Generated].zip", "zip", None), input("[Hawk Bit (Kouji)] B.zip", "zip", None)];
+        let set = build_with_rules(&inputs, &[], &[preset_rule(Preset::AiGenerated, 1)]);
+        let a = set.candidates.iter().find(|c| c.role == Role::Author).unwrap();
+        assert!(!a.review && a.is_adopted());
+        // 2件ともAI generatedなら、未採用・要確認。
+        let inputs = [input("[Hawk Bit (Kouji)] A [AI Generated].zip", "zip", None), input("[Hawk Bit (Kouji)] B ai generated.zip", "zip", None)];
+        let set = build_with_rules(&inputs, &[], &[preset_rule(Preset::AiGenerated, 1)]);
+        assert!(set.candidates.iter().find(|c| c.role == Role::Author).unwrap().review);
+        assert_eq!(set.rule_hits, vec![("AI generated".to_string(), 2)]);
+    }
+
+    #[test]
+    fn rule_can_disable_system_roles_and_reasons_are_joined_across_rules() {
+        let mut ai = preset_rule(Preset::AiGenerated, 1);
+        ai.effect.disable.insert(RuleRole::Format);
+        let anth = preset_rule(Preset::Anthology, 2);
+        let set = build_with_rules(&[input("[Hawk Bit (Kouji)] Anthology AI generated.zip", "zip", None)], &[], &[ai, anth]);
+        let fmt = set.candidates.iter().find(|c| c.role == Role::Format).unwrap();
+        assert_eq!(fmt.rule_reason.as_deref(), Some("AI generated"));
+        let author = set.candidates.iter().find(|c| c.role == Role::Author).unwrap();
+        assert_eq!(author.rule_reason.as_deref(), Some("AI generated、anthology"));
+    }
+
+    #[test]
+    fn rules_read_the_info_txt_category_and_two_line_titles() {
+        let info = "[Ebizoridan (Shien)] Cosplay Book\n[えびぞり団 (しえん)] コスプレ本\n\nCategory: Doujinshi\n";
+        let set = build_with_rules(&[input("x.zip", "zip", Some(info))], &[], &[preset_rule(Preset::Cosplay, 1)]);
+        assert!(set.candidates.iter().find(|c| c.role == Role::Group).unwrap().review, "info.txt の見出し行（日本語行・英語行）に cosplay/コスプレ");
+        let set = build_with_rules(&[input("x.zip", "zip", Some("[A (B)] T\n\nCategory: Cosplay\n"))], &[], &[preset_rule(Preset::Cosplay, 1)]);
+        assert!(set.candidates.iter().find(|c| c.role == Role::Author).unwrap().review, "Category: Cosplay");
+    }
+
+    #[test]
+    fn rules_apply_on_the_learned_model_path_too() {
+        use crate::tag_corpus::{CorpusEntry, Label};
+        use crate::tag_learning::LearnedSet;
+        let entries = vec![CorpusEntry { file_name: "[A (B)] T.zip".into(), labels: vec![(Label::Group, "A".into()), (Label::Author, "B".into())], hard: false }];
+        let model = Model::train(&LearnedSet { version: 1, entries }.training_data(&MatchOptions::default())).unwrap();
+        let rules = [preset_rule(Preset::AiGenerated, 1)];
+        let set = build_candidates_full(&[input("[Hawk Bit (Kouji)] Book AI generated.zip", "zip", None)], &[], &MatchOptions::default(), Lang::Japanese, Some(&model), &rules);
+        assert!(set.candidates.iter().find(|c| c.role == Role::Author).unwrap().review);
+    }
+
+    #[test]
+    fn disabled_rules_do_nothing() {
+        let mut r = preset_rule(Preset::AiGenerated, 1);
+        r.enabled = false;
+        let set = build_with_rules(&[input("[Hawk Bit (Kouji)] Book AI generated.zip", "zip", None)], &[], &[r]);
+        assert!(set.candidates.iter().all(|c| !c.review) && set.rule_hits.is_empty());
     }
 }

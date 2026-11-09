@@ -4271,6 +4271,18 @@ impl Lang {
         local.unwrap_or(ja)
     }
     pub fn tag_learn_save_failed_toast(self) -> &'static str { self.learn_pick("学習データを保存できませんでした", "", "") }
+    /// 確認ウィンドウ: 大ルールの表示（日本語のみ。英・中は空で日本語にフォールバック）
+    pub fn tag_confirm_rule_hits(self, hits: &str) -> String {
+        let ja = format!("大ルール適用: {hits}");
+        let local: Option<String> = match self { Lang::Japanese => None, Lang::English => None, Lang::Chinese => None };
+        local.unwrap_or(ja)
+    }
+    pub fn tag_confirm_review_rule(self, rules: &str) -> String {
+        let ja = format!("要確認: ルール「{rules}」で無効");
+        let local: Option<String> = match self { Lang::Japanese => None, Lang::English => None, Lang::Chinese => None };
+        local.unwrap_or(ja)
+    }
+    pub fn tag_confirm_review_learned(self) -> &'static str { self.learn_pick("要確認: 学習で無視と判定", "", "") }
     pub fn tag_learn_view_button(self) -> &'static str { self.learn_pick("学習データを見る…", "", "") }
     pub fn tag_learn_clear_button(self) -> &'static str { self.learn_pick("全消去してやり直す", "", "") }
     pub fn tag_learn_clear_confirm(self) -> &'static str { self.learn_pick("学習データをすべて消去します。元に戻せません。", "", "") }
