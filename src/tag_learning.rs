@@ -219,7 +219,7 @@ pub(crate) fn suggest_labels(
     if let Some(m) = model {
         return m.predict_file(file_name).into_iter().map(|p| (p.token, p.label)).collect();
     }
-    let input = CandidateInput { file_name: file_name.to_string(), format: None, info: None };
+    let input = CandidateInput { file_name: file_name.to_string(), format: None, info: None, meta: None };
     let set = build_candidates_with(std::slice::from_ref(&input), cats, opts, lang, None);
     tokenize(file_name)
         .into_iter()

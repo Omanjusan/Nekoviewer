@@ -186,7 +186,7 @@
 
 ## ComicInfo.xml・meta.json の読み出し（タグ大ルール計画の単位X1）
 
-> 状態: **読み出しと統合の土台まで**（X1）。候補への反映（優先順位・種類の対応づけ）は次の単位X2、新種類（属性・年月）は X3。今の取得結果は、まだ ComicInfo.xml・meta.json の影響を受けない。
+> 状態: 読み出し（X1）と、候補への反映（X2）まで実装済み。新種類（属性・年月）は X3。
 
 - **取得元の優先順位（決定）**: ComicInfo.xml → meta.json（空欄を埋める）→ info.txt → タイトル（ファイル名）。XML・JSON は「完全に正」の情報
 - **読み出し**（`fs/archive/meta.rs` の `read_tag_sources`）: zip/cbz を1回だけ開いて、info.txt・ComicInfo.xml・meta.json を読む。ファイル名は完全一致（大文字小文字は区別せず、サブフォルダ内も可。複数あれば最初のもの）。meta.json の読み出し上限は 1MiB。暗号化・壊れたエントリは「無し」扱いで、走査は止めない。zip/cbz 以外は対象外
@@ -197,3 +197,22 @@
   - 年月は `2023-12`、月が無ければ `2023`（月0として並ぶ。月のデータは書かない）。年が無く月だけのときは取らない。JSON の `upload_date` はアップロード日なので使わない
   - 題名の行は、XML の Title → JSON の japanese → english の順（重複を除く）。内部照合の行は `tag_source::split_title_group`（かな→漢字→先頭行）で選ぶ
 - 走査結果（`ScanItem.meta`）に、`ArchiveMeta`（XML と JSON）を持たせた。どちらも無い・JSON が壊れているときは None
+
+### 候補への反映（X2）
+- **題名・メイン・言語**: 「正の情報」があれば、info.txt より優先して上書きする（XML → JSON → info.txt）。題名は XML の Title・JSON の japanese・english。以降の抽出（イベント・括弧・2行の対応づけ・ルール）は、この題名を info.txt の見出しと同じに扱う。メインは Genre（XML）または category（JSON）、言語は LanguageISO（XML）または language（JSON）
+- **作者・グループ**: 作者は Writer（XML）または artist（JSON）、グループは Publisher・Imprint（XML）または group（JSON）。分かっているときは、題名の括弧から推測した作者・グループの言及を捨て、「正の情報」の名前を使う
+  - 題名の括弧に同じ名前（大文字小文字違い・綴りのブレ・翻訳違いを含む。完全一致キーか類似度のしきい値以上）があれば、その表記を登録名にし、「正の情報」の表記を対の別名にする。例: `[かゆみ止め]` と artist `kayumidome` は、JSON の2つの題名の括弧位置の対応（`[Kayumidome]`）で結び付き、`かゆみ止め|Kayumidome` として登録される
+  - 題名の `[X]` 単独は、Writer・artist と一致すれば作者に確定する（「未確定」にならない）
+  - 一致しなかった括弧は、その種類の名前が「正の情報」に無いときだけ残す。`[Hawk Bit (Kouji)]` で作者 Kouji だけ分かっていれば、`Hawk Bit` はグループの候補（未確定）として残る
+- **パロディ元・キャラ**: Series（XML）または parody（JSON）、character（JSON）を、ルールで有効にしていなくても取る。`original` / `オリジナル` は取らない。大ルールが無効にしたものは、他の種類と同じく未採用・要確認になる
+- 大ルールは、「正の情報」由来の言及にも適用する（ルール優先）
+- 属性タグ（Tags）と年月は、新種類として X3 で取り込む（今は取らない）
+
+### 手動テストの追加（X2）
+1. ComicInfo.xml に `Writer` があるzip（ファイル名は `[Kirome] …` のような単独の括弧）で取得 → 窓2の作者が「未確定」にならず、初期採用
+2. meta.json に `artist` があり、題名の `japanese` / `english` の括弧位置が同じzip → 作者が `かゆみ止め|Kayumidome` のような別名つきで出る（確認ウィンドウの名前の横に `（Kayumidome）`）
+3. `Series: original` のXMLでは、パロディ元の候補が出ない。`Series: Touhou Project` ならパロディ元が出る（ルール不要）
+4. `LanguageISO: ja` が言語「日本語」になる。XML の `Genre` / JSON の `category` がメインになる
+5. `[Kouji (Hawk Bit)]` のように、題名の括弧の向きが逆でも、Writer が `Kouji` なら作者 Kouji・グループ Hawk Bit になる
+6. XML・JSON のどちらも無いアーカイブは、従来と同じ結果
+7. `AI generated` のルールがあるときは、XML 由来の作者も、未採用・要確認（理由つき）になる

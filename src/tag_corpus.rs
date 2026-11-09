@@ -179,7 +179,7 @@ pub(crate) fn predict_with_rules(
     entries
         .iter()
         .map(|e| {
-            let input = CandidateInput { file_name: e.file_name.clone(), format: None, info: None };
+            let input = CandidateInput { file_name: e.file_name.clone(), format: None, info: None, meta: None };
             let set = build_candidates(std::slice::from_ref(&input), cats, opts, lang);
             let mut v: Vec<(Label, String)> = set
                 .candidates
@@ -309,7 +309,7 @@ pub(crate) fn evaluate(
 pub(crate) fn template_from_names(names: &[String], cats: &[TagManagerCategoryUi], opts: &MatchOptions, lang: Lang) -> String {
     let mut out = String::from("# タグ自動取得 サンプルコーパス（現行ルールの結果を初期値にした雛形。間違った行を直す）\n");
     for name in names {
-        let input = CandidateInput { file_name: name.clone(), format: None, info: None };
+        let input = CandidateInput { file_name: name.clone(), format: None, info: None, meta: None };
         let set = build_candidates(std::slice::from_ref(&input), cats, opts, lang);
         let mut labels: Vec<(Label, String)> = Vec::new();
         for role in [Role::Event, Role::Group, Role::Author, Role::Language] {

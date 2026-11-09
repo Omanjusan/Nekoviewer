@@ -12,16 +12,18 @@
 // 候補の補助情報（表記の一覧・ファイル数など）は、確認ウィンドウの表示や今後の拡張用に保持している。
 #![allow(dead_code)]
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 
 use crate::i18n::Lang;
 use crate::tag_corpus::Label;
+use crate::tag_meta::{resolve, ArchiveMeta, Resolved};
 use crate::tag_model::Model;
 use crate::tag_rules::{evaluate_rules, parse_dash_title, RuleInput, RuleOutcome, RuleRole, TagRule};
 use crate::tag_master::{alias_keys, escape_alias_sep, join_aliases, normalize_key, overlapping_elements, split_aliases, SystemKind};
-use crate::tag_similarity::{cluster, keys, normalize_width, similarity_at_least, Keys, MatchOptions};
+use crate::tag_similarity::{cluster, exact_key, keys, normalize_width, similarity, similarity_at_least, Keys, MatchOptions};
 use crate::tag_source::{
-    canonical_language, language_english_name, parse_info_txt, parse_name_parts, split_archive_extension, Creator,
+    canonical_language, language_english_name, parse_info_txt, parse_name_parts, split_archive_extension, split_title_group, Creator,
     FormatTag, InfoTxt, NameParts,
 };
 use crate::view_explorer::TagManagerCategoryUi;
@@ -255,6 +257,8 @@ pub(crate) struct CandidateInput {
     pub format: Option<FormatTag>,
     /// info.txt の解析結果。無い・対象外なら None。
     pub info: Option<InfoTxt>,
+    /// ComicInfo.xml・meta.json（アーカイブ内の「正の情報」）。無ければ None。info.txt・ファイル名より優先する。
+    pub meta: Option<ArchiveMeta>,
 }
 
 /// 窓ごとの新規要素数と、警告・エラーの判定。
@@ -443,6 +447,108 @@ fn gather_sources(input: &CandidateInput) -> Sources {
         }
     }
     Sources { event, creator, language, alt_event, alt_creator }
+}
+
+/// 「正の情報」（ComicInfo.xml・meta.json）があれば、題名・メイン・言語を info.txt より優先して上書きした入力にする
+/// （XML → JSON → info.txt の順。以降の抽出は、この入力を info.txt と同じに扱う）。統合した値も返す。
+fn effective_input(input: &CandidateInput) -> (Cow<'_, CandidateInput>, Option<Resolved>) {
+    let Some(meta) = &input.meta else { return (Cow::Borrowed(input), None) };
+    let r = resolve(meta);
+    let mut eff = input.clone();
+    let mut info = eff.info.take().unwrap_or_default();
+    let (title, alts) = split_title_group(&r.titles);
+    if title.is_some() {
+        info.title = title;
+        info.alt_titles = alts;
+    }
+    if let Some(c) = r.categories.first() {
+        info.category = Some(c.clone());
+    }
+    if let Some(l) = r.languages.first() {
+        info.language = Some(l.clone());
+    }
+    eff.info = Some(info);
+    (Cow::Owned(eff), Some(r))
+}
+
+/// 題名から拾った名前（`m.name` と、対にした別の行の表記 `m.alt`）が、「正の情報」の名前 `known` と同じ人・団体か。
+/// 完全一致キーが同じか、類似度がしきい値以上。
+fn same_name(m: &Mention, known: &str, opts: &MatchOptions) -> bool {
+    let kk = exact_key(known, opts);
+    [Some(&m.name), m.alt.as_ref()].into_iter().flatten().any(|n| exact_key(n, opts) == kk || similarity(n, known, opts) >= opts.threshold)
+}
+
+/// 「正の情報」の作者・グループ・パロディ元・キャラを、言及に反映する（1ファイルぶん）。
+/// - 作者・グループが分かっているとき、題名の括弧から推測した作者・グループの言及は捨て、「正の情報」の名前を使う。
+///   題名の括弧に同じ名前（表記違い・翻訳違いを含む）があれば、その表記を登録名にして、「正の情報」の表記を対の別名にする
+/// - 「正の情報」と一致しなかった括弧は、その種類の名前が「正の情報」に無いときだけ残す（`[Hawk Bit (Kouji)]` で作者だけ分かっていれば、
+///   残りの `Hawk Bit` はグループの候補として残る）
+/// - パロディ元・キャラは、ルールで有効にしていなくても取る（「正の情報」だから）。ルールが無効にしたものは、後段で未採用・要確認になる
+fn apply_authority(file_mentions: Vec<Mention>, r: &Resolved, opts: &MatchOptions) -> Vec<Mention> {
+    let has_creators = !r.authors.is_empty() || !r.groups.is_empty();
+    let mut out: Vec<Mention> = Vec::new();
+    let mut tokens: Vec<Mention> = Vec::new();
+    for m in file_mentions {
+        if has_creators && matches!(m.role, Role::Author | Role::Group) {
+            tokens.push(m);
+        } else {
+            out.push(m);
+        }
+    }
+    let mut used = vec![false; tokens.len()];
+    let plain = |role: Role, name: &str, alt: Option<String>| Mention {
+        role,
+        name: name.to_string(),
+        from_single: false,
+        guessed: false,
+        ignored: false,
+        alt,
+        rule: None,
+    };
+    for (role, names) in [(Role::Author, &r.authors), (Role::Group, &r.groups)] {
+        for known in names {
+            let hit = (0..tokens.len()).find(|&i| !used[i] && same_name(&tokens[i], known, opts));
+            match hit {
+                Some(i) => {
+                    used[i] = true;
+                    let t = &tokens[i];
+                    // 題名側の表記を登録名にし、「正の情報」の表記が別なら、対の別名にする。
+                    let alt = t.alt.clone().or_else(|| (exact_key(known, opts) != exact_key(&t.name, opts)).then(|| known.clone()));
+                    out.push(plain(role, &t.name, alt));
+                }
+                None => out.push(plain(role, known, None)),
+            }
+        }
+    }
+    for (i, mut t) in tokens.into_iter().enumerate() {
+        if used[i] {
+            continue;
+        }
+        // 一致しなかった括弧。その種類の名前が「正の情報」にあれば、矛盾するので捨てる。無ければ、もう一方の種類として残す（推測）。
+        let known_for_role = match t.role {
+            Role::Author => !r.authors.is_empty(),
+            _ => !r.groups.is_empty(),
+        };
+        if known_for_role {
+            let other_known = match t.role {
+                Role::Author => !r.groups.is_empty(),
+                _ => !r.authors.is_empty(),
+            };
+            if other_known {
+                continue;
+            }
+            t.role = if t.role == Role::Author { Role::Group } else { Role::Author };
+            t.guessed = true;
+        }
+        out.push(t);
+    }
+    for p in &r.parodies {
+        out.push(plain(Role::Parody, p, None));
+    }
+    for c in &r.characters {
+        out.push(plain(Role::Character, c, None));
+    }
+    out
 }
 
 /// ` - ` 区切りの題名（cosplay の `演者 - キャラ (パロディ元)` / `演者 - キャラ - パロディ元` / `演者 - キャラ`）から、
@@ -702,7 +808,12 @@ pub(crate) fn build_candidates_full(
     let mut mentions: Vec<(usize, Mention)> = Vec::new();
     let mut files_with_info = 0usize;
     let mut outcomes: Vec<RuleOutcome> = Vec::new();
-    for (fi, input) in inputs.iter().enumerate() {
+    let mut resolved_all: Vec<Option<Resolved>> = Vec::new();
+    for (fi, input_ref) in inputs.iter().enumerate() {
+        // 「正の情報」（ComicInfo.xml・meta.json）があれば、題名・メイン・言語を info.txt より優先する。
+        let (effective, resolved) = effective_input(input_ref);
+        let input: &CandidateInput = &effective;
+        resolved_all.push(resolved);
         if !rules.is_empty() {
             outcomes.push(evaluate_rules(rules, &RuleInput::new(&input.file_name, input.info.as_ref()), &opts));
             // 大ルールが有効にした新種類（演者・キャラ・パロディ元）は、` - ` 区切りの題名から取る。
@@ -758,6 +869,24 @@ pub(crate) fn build_candidates_full(
             }
             None => {}
         }
+    }
+
+    // 1a) 「正の情報」の作者・グループ・パロディ元・キャラを反映する。
+    if resolved_all.iter().any(Option::is_some) {
+        let mut adjusted: Vec<(usize, Mention)> = Vec::with_capacity(mentions.len());
+        let mut old = std::mem::take(&mut mentions).into_iter().peekable();
+        for (fi, resolved) in resolved_all.iter().enumerate() {
+            let mut mine: Vec<Mention> = Vec::new();
+            while old.peek().is_some_and(|(f, _)| *f == fi) {
+                mine.push(old.next().unwrap().1);
+            }
+            let out = match resolved {
+                Some(r) => apply_authority(mine, r, &opts),
+                None => mine,
+            };
+            adjusted.extend(out.into_iter().map(|m| (fi, m)));
+        }
+        mentions = adjusted;
     }
 
     // 1b) ルールが無効にした種類の言及は、無効にしたルールの名前を付けて「無視」扱いにする（未採用・要確認で残す）。
@@ -1269,7 +1398,7 @@ impl CandidateSet {
 
 /// info.txt の本文から入力を作る（走査結果の変換用）。本文が空でも `Some`（info.txt はあった）。
 pub(crate) fn input_from_info_text(file_name: &str, format: Option<FormatTag>, info_text: Option<&str>) -> CandidateInput {
-    CandidateInput { file_name: file_name.to_string(), format, info: info_text.map(parse_info_txt) }
+    CandidateInput { file_name: file_name.to_string(), format, info: info_text.map(parse_info_txt), meta: None }
 }
 
 #[cfg(test)]
@@ -1947,5 +2076,136 @@ mod tests {
         let parody = set.candidates.iter().find(|c| c.role == Role::Parody);
         assert!(parody.is_none() || parody.is_some_and(|c| c.review), "無効にされたパロディ元は取らないか、要確認で残す");
         assert!(set.candidates.iter().find(|c| c.role == Role::Performer).unwrap().is_adopted());
+    }
+
+    // ── 正の情報（ComicInfo.xml・meta.json）の統合 ──
+
+    const XML_SAMPLE: &str = "<?xml version=\"1.0\"?><ComicInfo><Title>[Kirome] Elf Mama-San no manga</Title><Series>original</Series>\
+        <Writer>kirome</Writer><Tags>very long hair, bald, elf</Tags><Year>2023</Year><Month>12</Month><LanguageISO>ja</LanguageISO></ComicInfo>";
+    const JSON_SAMPLE: &str = r#"{"title":{"english":"[Kayumidome] Valerie Monogatari 3","japanese":"[かゆみ止め] ヴァレリー物語(3)"},"tags":[{"type":"language","name":"japanese"},{"type":"category","name":"manga"},{"type":"tag","name":"group"},{"type":"artist","name":"kayumidome"}]}"#;
+
+    fn meta_input(name: &str, xml: Option<&str>, json: Option<&str>) -> CandidateInput {
+        let info = xml.and_then(|x| crate::fs::archive::meta::parse_comic_info(x.as_bytes()));
+        CandidateInput {
+            file_name: name.to_string(),
+            format: Some(FormatTag::Extension("zip".into())),
+            info: None,
+            meta: ArchiveMeta::from_sources(info.as_ref(), json),
+        }
+    }
+
+    fn cand<'a>(set: &'a CandidateSet, role: Role) -> Option<&'a Candidate> {
+        set.candidates.iter().find(|c| c.role == role)
+    }
+
+    #[test]
+    fn writer_confirms_a_single_bracket_as_author_without_unconfirmed() {
+        // 題名 `[Kirome]` は、単独の括弧なので従来は「未確定」。Writer（kirome）で作者に確定する。
+        let plain = build_candidates(&[input("[Kirome] Elf Mama-San no manga.zip", "zip", None)], &[], &MatchOptions::default(), Lang::Japanese);
+        assert!(cand(&plain, Role::Author).unwrap().unconfirmed, "正の情報が無ければ、従来どおり未確定");
+        let set = build_candidates(&[meta_input("[Kirome] Elf Mama-San no manga.zip", Some(XML_SAMPLE), None)], &[], &MatchOptions::default(), Lang::Japanese);
+        let a = cand(&set, Role::Author).unwrap();
+        assert_eq!(a.name, "Kirome", "題名側の表記を登録名にする（大文字小文字違いは同じ名前）");
+        assert!(!a.unconfirmed && a.is_adopted());
+        assert!(cand(&set, Role::Group).is_none());
+        // XML の Series: original はパロディ元にしない。LanguageISO: ja は言語になる。
+        assert!(cand(&set, Role::Parody).is_none());
+        assert_eq!(cand(&set, Role::Language).unwrap().name, "日本語");
+    }
+
+    #[test]
+    fn json_artist_is_paired_with_the_japanese_title_bracket_through_the_two_titles() {
+        let set = build_candidates(&[meta_input("whatever.zip", None, Some(JSON_SAMPLE))], &[], &MatchOptions::default(), Lang::Japanese);
+        let a = cand(&set, Role::Author).unwrap();
+        // 漢字の `かゆみ止め` と、ローマ字の `kayumidome` は、2つの題名の括弧の位置で対になる。
+        assert_eq!(a.name, "かゆみ止め");
+        assert_eq!(a.registration_name(), "かゆみ止め|Kayumidome");
+        assert!(!a.unconfirmed && a.is_adopted());
+        assert_eq!(cand(&set, Role::Main).unwrap().name, "manga", "JSON の category がメイン");
+        assert_eq!(cand(&set, Role::Language).unwrap().name, "日本語");
+        // type: tag の `group` は、グループではない。
+        assert!(cand(&set, Role::Group).is_none());
+    }
+
+    #[test]
+    fn xml_wins_over_json_and_json_fills_the_gaps() {
+        // 同じ本の XML と JSON。作者は1つにまとまり、題名の括弧（日本語行）の表記が登録名、英語の表記が別名になる。
+        let xml = "<ComicInfo><Title>[Kayumidome] Valerie Monogatari 3</Title><Writer>kayumidome</Writer></ComicInfo>";
+        let set = build_candidates(&[meta_input("x.zip", Some(xml), Some(JSON_SAMPLE))], &[], &MatchOptions::default(), Lang::Japanese);
+        let authors: Vec<&Candidate> = set.candidates.iter().filter(|c| c.role == Role::Author).collect();
+        assert_eq!(authors.len(), 1);
+        assert_eq!(authors[0].registration_name(), "かゆみ止め|Kayumidome");
+        assert_eq!(cand(&set, Role::Main).unwrap().name, "manga", "XML に Genre が無いので JSON の category で埋める");
+        // XML と JSON で作者が違うときは、XML だけを使う（JSON の artist は使わない）。
+        let xml = "<ComicInfo><Writer>Other Person</Writer></ComicInfo>";
+        let set = build_candidates(&[meta_input("x.zip", Some(xml), Some(JSON_SAMPLE))], &[], &MatchOptions::default(), Lang::Japanese);
+        let names: Vec<&str> = set.candidates.iter().filter(|c| c.role == Role::Author).map(|c| c.name.as_str()).collect();
+        assert_eq!(names, vec!["Other Person"]);
+    }
+
+    #[test]
+    fn authority_fixes_the_direction_of_a_pair_and_keeps_the_other_as_group() {
+        let xml = "<ComicInfo><Writer>Kouji</Writer></ComicInfo>";
+        // 題名が `[作者 (サークル)]` の向き（従来のルールは外側=グループと推測して逆にする）でも、Writer で正しくなる。
+        let set = build_candidates(&[meta_input("[Kouji (Hawk Bit)] T.zip", Some(xml), None)], &[], &MatchOptions::default(), Lang::Japanese);
+        assert_eq!((cand(&set, Role::Author).unwrap().name.as_str(), cand(&set, Role::Group).unwrap().name.as_str()), ("Kouji", "Hawk Bit"));
+        // 通常の向きでも、作者が確定し、残りの括弧はグループとして残る。
+        let set = build_candidates(&[meta_input("[Hawk Bit (Kouji)] T.zip", Some(xml), None)], &[], &MatchOptions::default(), Lang::Japanese);
+        assert_eq!((cand(&set, Role::Author).unwrap().name.as_str(), cand(&set, Role::Group).unwrap().name.as_str()), ("Kouji", "Hawk Bit"));
+    }
+
+    #[test]
+    fn publisher_gives_the_group_and_a_name_missing_from_the_title_is_used_as_is() {
+        let xml = "<ComicInfo><Writer>Kouji</Writer><Publisher>Hawk Bit</Publisher></ComicInfo>";
+        let set = build_candidates(&[meta_input("plain title.zip", Some(xml), None)], &[], &MatchOptions::default(), Lang::Japanese);
+        assert_eq!(cand(&set, Role::Author).unwrap().name, "Kouji");
+        assert_eq!(cand(&set, Role::Group).unwrap().name, "Hawk Bit");
+        assert!(!cand(&set, Role::Author).unwrap().unconfirmed);
+    }
+
+    #[test]
+    fn writer_name_variants_are_matched_to_the_title_token_by_similarity() {
+        // 翻訳・誤字のブレ（Koji / Kouji）。題名の括弧に同じ名前があるとみなして、その表記を登録名にする。
+        let xml = "<ComicInfo><Writer>Koji</Writer></ComicInfo>";
+        let set = build_candidates(&[meta_input("[Kouji] T.zip", Some(xml), None)], &[], &MatchOptions::default(), Lang::Japanese);
+        let a: Vec<_> = set.candidates.iter().filter(|c| c.role == Role::Author).collect();
+        assert_eq!(a.len(), 1, "同じ人は1つにまとまる");
+        let mut both: Vec<String> = std::iter::once(a[0].name.clone()).chain(a[0].alt_forms.clone()).collect();
+        both.sort();
+        assert_eq!(both, vec!["Koji".to_string(), "Kouji".to_string()], "題名の表記と Writer の表記が、登録名と別名になる");
+    }
+
+    #[test]
+    fn parody_and_character_are_taken_without_a_rule_but_original_is_not() {
+        let xml = "<ComicInfo><Series>Touhou Project</Series></ComicInfo>";
+        let json = r#"{"tags":[{"type":"character","name":"Reimu Hakurei"},{"type":"parody","name":"original"}]}"#;
+        let set = build_candidates(&[meta_input("t.zip", Some(xml), Some(json))], &[], &MatchOptions::default(), Lang::Japanese);
+        assert_eq!(cand(&set, Role::Parody).unwrap().name, "Touhou Project");
+        assert_eq!(cand(&set, Role::Character).unwrap().name, "Reimu Hakurei");
+        assert!(cand(&set, Role::Parody).unwrap().is_adopted());
+    }
+
+    #[test]
+    fn rules_still_apply_to_authority_names() {
+        let set = build_with_rules(&[meta_input("[Kirome] AI generated Book.zip", Some(XML_SAMPLE), None)], &[], &[preset_rule(Preset::AiGenerated, 1)]);
+        let a = cand(&set, Role::Author).unwrap();
+        assert!(a.review && !a.is_adopted(), "XML 由来の作者も、ルールが無効にしたら未採用・要確認");
+        assert_eq!(a.rule_reason.as_deref(), Some("AI generated"));
+    }
+
+    #[test]
+    fn xml_title_replaces_the_info_txt_title_and_files_without_meta_are_unchanged() {
+        // info.txt の見出しは `[Wrong (Name)]` だが、XML の Title と Writer を優先する。
+        let info = parse_info_txt("[Wrong (Name)] Book\n\nCategory: Doujinshi\n");
+        let mut inp = meta_input("a.zip", Some("<ComicInfo><Title>[Hawk Bit (Kouji)] Book</Title><Writer>Kouji</Writer></ComicInfo>"), None);
+        inp.info = Some(info);
+        let set = build_candidates(&[inp], &[], &MatchOptions::default(), Lang::Japanese);
+        let names: Vec<&str> = set.candidates.iter().filter(|c| matches!(c.role, Role::Author | Role::Group)).map(|c| c.name.as_str()).collect();
+        assert!(names.contains(&"Kouji") && names.contains(&"Hawk Bit") && !names.contains(&"Wrong") && !names.contains(&"Name"), "{names:?}");
+        // メイン（Category）は、XML に Genre が無いので info.txt のまま。
+        assert_eq!(cand(&set, Role::Main).unwrap().name, "Doujinshi");
+        // meta の無いファイルは、従来どおり。
+        let set = build_candidates(&[input("x.zip", "zip", Some(SAMPLE_INFO))], &master(), &MatchOptions::default(), Lang::Japanese);
+        assert_eq!(find(&set, Role::Group, "Hawk Bit").choice, Choice::Existing { cat_idx: 3, tier_id: 30 });
     }
 }

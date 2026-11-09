@@ -32,7 +32,7 @@ pub(crate) fn predict_with_model(
     entries
         .iter()
         .map(|e| {
-            let input = CandidateInput { file_name: e.file_name.clone(), format: None, info: None };
+            let input = CandidateInput { file_name: e.file_name.clone(), format: None, info: None, meta: None };
             let set = build_candidates_with(std::slice::from_ref(&input), cats, opts, lang, Some(model));
             let mut v: Vec<(Label, String)> = set
                 .candidates
@@ -351,7 +351,7 @@ mod tests {
         let lib = synth_library(60, 0.1, 9);
         let data = LearnedSet { version: 1, entries: lib }.training_data(&opts);
         let model = Model::train(&data).unwrap();
-        let input = CandidateInput { file_name: "(成年コミック) [Zed] T.zip".into(), format: None, info: None };
+        let input = CandidateInput { file_name: "(成年コミック) [Zed] T.zip".into(), format: None, info: None, meta: None };
         let set = build_candidates_with(&[input], &empty_master(), &opts, Lang::Japanese, Some(&model));
         let genre = set.candidates.iter().find(|c| c.name == "成年コミック").expect("無視と判定されても候補は残る");
         assert!(genre.review && !genre.is_adopted(), "未採用・要確認で残す");
@@ -376,7 +376,7 @@ mod tests {
             let a = m.add_category("作者".to_string(), false, None);
             m.push_element(a, "Kouji");
         }
-        let input = CandidateInput { file_name: "[Hawk Bit (Kouji)] T.zip".into(), format: None, info: None };
+        let input = CandidateInput { file_name: "[Hawk Bit (Kouji)] T.zip".into(), format: None, info: None, meta: None };
         let set = build_candidates_with(&[input], &cats, &opts, Lang::Japanese, Some(&model));
         let g = set.candidates.iter().find(|c| c.name == "Hawk Bit").unwrap();
         assert_eq!(g.role, Role::Group);

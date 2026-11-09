@@ -150,6 +150,7 @@ pub(super) fn inputs_from_items(items: &[ScanItem]) -> Vec<CandidateInput> {
                 InfoState::Found(i) => Some(i.clone()),
                 _ => None,
             },
+            meta: it.meta.clone(),
         })
         .collect()
 }
@@ -540,6 +541,18 @@ mod tests {
         assert!(r.items[1].meta.is_none() && r.items[2].meta.is_none(), "付属データが無ければ None");
         assert!(r.items[3].meta.is_none(), "壊れた meta.json は無し扱い（走査は止めない）");
         assert_eq!(r.meta_counts(), (1, 1));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn scanned_comic_info_reaches_the_candidates() {
+        let dir = temp_dir("scan_meta_cands");
+        let z = write_zip(&dir, "[Kirome] Elf Mama-San no manga.zip", &[("ComicInfo.xml", b"<ComicInfo><Writer>kirome</Writer><LanguageISO>ja</LanguageISO></ComicInfo>")]);
+        let r = run(&dir, &[z]);
+        let set = crate::tag_candidates::build_candidates(&inputs_from_items(&r.items), &[], &MatchOptions::default(), Lang::Japanese);
+        let a = set.candidates.iter().find(|c| c.role == Role::Author).unwrap();
+        assert!(!a.unconfirmed, "XML の Writer で、単独の括弧が作者に確定する");
+        assert!(set.candidates.iter().any(|c| c.role == Role::Language && c.name == "日本語"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
