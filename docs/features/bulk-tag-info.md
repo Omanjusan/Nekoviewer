@@ -183,3 +183,17 @@
 2. マスタに英語の表記だけのタグがある状態で取得 → 「別名を足す」候補が初期採用で出る。適用前に「書き換わる既存要素」の一覧に、`Ebizoridan` → `Ebizoridan|えびぞり団` が出る
 3. 括弧の構造が違う2行（英語行は作者が単独）では、対にならない
 4. 1行だけのinfo.txt・info.txtが無いファイルは、従来と同じ結果になる
+
+## ComicInfo.xml・meta.json の読み出し（タグ大ルール計画の単位X1）
+
+> 状態: **読み出しと統合の土台まで**（X1）。候補への反映（優先順位・種類の対応づけ）は次の単位X2、新種類（属性・年月）は X3。今の取得結果は、まだ ComicInfo.xml・meta.json の影響を受けない。
+
+- **取得元の優先順位（決定）**: ComicInfo.xml → meta.json（空欄を埋める）→ info.txt → タイトル（ファイル名）。XML・JSON は「完全に正」の情報
+- **読み出し**（`fs/archive/meta.rs` の `read_tag_sources`）: zip/cbz を1回だけ開いて、info.txt・ComicInfo.xml・meta.json を読む。ファイル名は完全一致（大文字小文字は区別せず、サブフォルダ内も可。複数あれば最初のもの）。meta.json の読み出し上限は 1MiB。暗号化・壊れたエントリは「無し」扱いで、走査は止めない。zip/cbz 以外は対象外
+- **型と統合**（`src/tag_meta.rs`・純関数）
+  - ComicInfo.xml: `Title` `Series` `Writer`（複数は分割）`Publisher`/`Imprint`（グループ）`Genre`（メイン）`Tags`（属性）`Year` `Month` `LanguageISO`
+  - meta.json: `title.english`/`title.japanese`、`tags[]` の `type`（language / category / tag / artist / group / parody / character）。**`type: tag` の名前が `group` でも、普通のタグ**。知らない `type` は読み飛ばす
+  - 統合（`resolve`）: 項目ごとに、XML に値があれば XML、無ければ JSON。属性タグだけは和集合。`Series: original` / `オリジナル` は元作品ではないので、パロディ元にしない（XML が original なら JSON の parody で埋める）
+  - 年月は `2023-12`、月が無ければ `2023`（月0として並ぶ。月のデータは書かない）。年が無く月だけのときは取らない。JSON の `upload_date` はアップロード日なので使わない
+  - 題名の行は、XML の Title → JSON の japanese → english の順（重複を除く）。内部照合の行は `tag_source::split_title_group`（かな→漢字→先頭行）で選ぶ
+- 走査結果（`ScanItem.meta`）に、`ArchiveMeta`（XML と JSON）を持たせた。どちらも無い・JSON が壊れているときは None

@@ -18,6 +18,7 @@ use crate::i18n;
 use crate::i18n::Lang;
 use crate::tag_candidates::{build_candidates_full, CandidateInput, CandidateSet, Role};
 use crate::tag_rules::TagRule;
+use crate::tag_meta::ArchiveMeta;
 use crate::tag_model::Model;
 use crate::tag_similarity::MatchOptions;
 use crate::tag_source::{format_tag_for, parse_info_txt, FormatTag, InfoTxt};
@@ -42,6 +43,8 @@ pub(super) struct ScanItem {
     pub path: PathBuf,
     pub format: Option<FormatTag>,
     pub info: InfoState,
+    /// アーカイブ内の「正の情報」（ComicInfo.xml・meta.json）。どちらも無い・読めないときは None。
+    pub meta: Option<ArchiveMeta>,
     /// 走査時点で付いているタグ（tier_id）。
     pub existing_tags: Vec<u64>,
 }
@@ -61,6 +64,13 @@ pub(super) struct TagScanResult {
 }
 
 impl TagScanResult {
+    /// （ComicInfo.xml あり, meta.json あり）の件数。
+    pub(super) fn meta_counts(&self) -> (usize, usize) {
+        let xml = self.items.iter().filter(|i| i.meta.as_ref().is_some_and(ArchiveMeta::has_xml)).count();
+        let json = self.items.iter().filter(|i| i.meta.as_ref().is_some_and(ArchiveMeta::has_json)).count();
+        (xml, json)
+    }
+
     /// （info.txt あり, なし, 対象外）の件数。
     pub(super) fn info_counts(&self) -> (usize, usize, usize) {
         let mut c = (0, 0, 0);
@@ -80,21 +90,22 @@ fn scan_one(path: &Path, db: Option<&Arc<Mutex<Database>>>) -> ScanItem {
     let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
     let is_dir = path.is_dir();
     let format = format_tag_for(name, is_dir);
-    let info = if is_dir {
-        InfoState::NotApplicable
-    } else {
-        match crate::fs::archive::meta::read_info_txt(path) {
-            None => InfoState::NotApplicable,
-            Some(None) => InfoState::Absent,
+    // zip/cbz は1回だけ開いて、info.txt・ComicInfo.xml・meta.json をまとめて読む。
+    let sources = if is_dir { None } else { crate::fs::archive::meta::read_tag_sources(path) };
+    let info = match &sources {
+        None => InfoState::NotApplicable,
+        Some(s) => match &s.info_txt {
+            None => InfoState::Absent,
             // 本文が空・読めない場合も、info.txt はあったが項目は無いものとして扱う。
-            Some(Some(text)) => InfoState::Found(parse_info_txt(&text)),
-        }
+            Some(text) => InfoState::Found(parse_info_txt(text)),
+        },
     };
+    let meta = sources.as_ref().and_then(|s| ArchiveMeta::from_sources(s.comic_info.as_ref(), s.meta_json.as_deref()));
     let existing_tags = match (db, path.parent()) {
         (Some(db), Some(dir)) if !name.is_empty() => crate::spread_state::read_archive_tags(db, dir, name),
         _ => Vec::new(),
     };
-    ScanItem { path: path.to_path_buf(), format, info, existing_tags }
+    ScanItem { path: path.to_path_buf(), format, info, meta, existing_tags }
 }
 
 /// `targets` を順に調べる。`done` に処理済みの件数を反映し、`cancel` が立ったら打ち切る。
@@ -502,6 +513,33 @@ mod tests {
         assert_eq!(set.count_by_role(Role::Main), 1, "info.txt の Category=Manga");
         assert_eq!(set.count_by_role(Role::Format), 1);
         assert_eq!(job.progress(), (1, 1));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn scan_reads_comic_info_and_meta_json_together_with_info_txt() {
+        let dir = temp_dir("scan_meta");
+        let both = write_zip(
+            &dir,
+            "a.zip",
+            &[
+                ("info.txt", b"Title\n\nCategory: Doujinshi\n"),
+                ("ComicInfo.xml", b"<ComicInfo><Writer>kirome</Writer><Year>2023</Year><Month>12</Month></ComicInfo>"),
+                ("meta.json", br#"{"tags":[{"type":"artist","name":"kayumidome"},{"type":"tag","name":"elf"}]}"#),
+            ],
+        );
+        let only_info = write_zip(&dir, "b.zip", &[("info.txt", b"Title\n")]);
+        let none = write_zip(&dir, "c.zip", &[("001.jpg", b"img")]);
+        let broken_json = write_zip(&dir, "d.zip", &[("meta.json", b"{broken")]);
+        let r = run(&dir, &[both, only_info, none, broken_json]);
+        assert_eq!(r.info_counts(), (2, 2, 0));
+        let m = r.items[0].meta.as_ref().expect("XML と JSON の両方");
+        assert!(m.has_xml() && m.has_json());
+        assert_eq!(m.comic.as_ref().unwrap().writers, vec!["kirome"]);
+        assert_eq!(m.json.as_ref().unwrap().artists, vec!["kayumidome"]);
+        assert!(r.items[1].meta.is_none() && r.items[2].meta.is_none(), "付属データが無ければ None");
+        assert!(r.items[3].meta.is_none(), "壊れた meta.json は無し扱い（走査は止めない）");
+        assert_eq!(r.meta_counts(), (1, 1));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

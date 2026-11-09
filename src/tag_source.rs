@@ -74,6 +74,24 @@ fn pick_title_line(lines: &[String]) -> usize {
     lines.iter().position(|l| has_kana(l)).or_else(|| lines.iter().position(|l| has_han(l))).unwrap_or(0)
 }
 
+/// 見出しの行（出現順）から、内部照合に使う行と、その他の行（`InfoTxt.alt_titles` と同じ並び）を選ぶ。
+/// かなを含む行、無ければ漢字を含む行、無ければ先頭行。空の行・重複した行は除く。
+pub(crate) fn split_title_group(lines: &[String]) -> (Option<String>, Vec<String>) {
+    let mut v: Vec<String> = Vec::new();
+    for l in lines {
+        let l = collapse_spaces(l);
+        if !l.is_empty() && !v.contains(&l) {
+            v.push(l);
+        }
+    }
+    if v.is_empty() {
+        return (None, Vec::new());
+    }
+    let at = pick_title_line(&v);
+    let title = v.remove(at);
+    (Some(title), v)
+}
+
 /// info.txt の本文を解析する。本文は `meta::decode_text_bytes` で安全化済みであること。
 /// 見出し（タイトル群）は、最初の空でない行のうち既知のキー行でもプレースホルダでもないものから始まり、
 /// 空行・キー行・プレースホルダ・URL行の手前まで続く連続行（最大 `MAX_TITLE_LINES` 行）。
@@ -579,5 +597,15 @@ mod tests {
         let info = parse_info_txt("Title\n\nCategory: Manga\nfree text line\n");
         assert_eq!(info.title.as_deref(), Some("Title"));
         assert!(info.alt_titles.is_empty());
+    }
+
+    #[test]
+    fn split_title_group_picks_the_japanese_line_and_dedupes() {
+        let lines: Vec<String> = ["[Kirome] Elf", "[かゆみ止め] ヴァレリー物語", "  [Kirome]   Elf ", ""].iter().map(|s| s.to_string()).collect();
+        let (title, alts) = split_title_group(&lines);
+        assert_eq!(title.as_deref(), Some("[かゆみ止め] ヴァレリー物語"));
+        assert_eq!(alts, vec!["[Kirome] Elf".to_string()], "空白違いの同じ行は1つにまとめる");
+        assert_eq!(split_title_group(&[]), (None, Vec::new()));
+        assert_eq!(split_title_group(&["   ".to_string()]), (None, Vec::new()));
     }
 }

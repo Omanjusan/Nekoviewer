@@ -305,6 +305,74 @@ pub fn read_zip_info_txt(path: &Path) -> Option<Option<String>> {
     Some(read_limited(entry, DETAIL_READ_LIMIT).map(|b| decode_text_bytes(&b)))
 }
 
+/// meta.json 1件あたりの読み出し上限（バイト）。タグが多いものも入る大きさ。
+pub const META_JSON_LIMIT: u64 = 1024 * 1024;
+
+/// zip/cbz 内の、タグ取得に使う付属データ（info.txt・ComicInfo.xml・meta.json）。無いものは None。
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub struct TagSourceFiles {
+    /// info.txt の本文（安全化済み）。
+    pub info_txt: Option<String>,
+    pub comic_info: Option<ComicInfo>,
+    /// meta.json の本文（安全化済み。JSONとしての解析は呼び出し側）。
+    pub meta_json: Option<String>,
+}
+
+fn is_meta_json_name(name: &str) -> bool {
+    base_name(name).eq_ignore_ascii_case("meta.json")
+}
+
+/// zip/cbz を1回だけ開いて、info.txt・ComicInfo.xml・meta.json を読む（それぞれ、ファイル名が完全一致。大文字小文字は
+/// 区別せず、サブフォルダ内も可。複数あれば最初のもの）。zipとして開けなければ None。開けて、どれも無ければ `Some(全部None)`。
+/// 暗号化・壊れたエントリは「無し」として扱う（走査全体を止めない）。
+pub fn read_zip_tag_sources(path: &Path) -> Option<TagSourceFiles> {
+    let file = std::fs::File::open(path).ok()?;
+    let mut archive = ::zip::ZipArchive::new(file).ok()?;
+    let (mut info_idx, mut comic_idx, mut json_idx) = (None, None, None);
+    for i in 0..archive.len() {
+        let Some(name) = archive.name_for_index(i) else { continue };
+        if name.ends_with('/') {
+            continue;
+        }
+        let base = base_name(name);
+        if info_idx.is_none() && base.eq_ignore_ascii_case("info.txt") {
+            info_idx = Some(i);
+        } else if comic_idx.is_none() && is_comic_info_name(name) {
+            comic_idx = Some(i);
+        } else if json_idx.is_none() && is_meta_json_name(name) {
+            json_idx = Some(i);
+        }
+        if info_idx.is_some() && comic_idx.is_some() && json_idx.is_some() {
+            break;
+        }
+    }
+    let mut out = TagSourceFiles::default();
+    if let Some(i) = info_idx {
+        if let Ok(entry) = archive.by_index(i) {
+            out.info_txt = read_limited(entry, DETAIL_READ_LIMIT).map(|b| decode_text_bytes(&b));
+        }
+    }
+    if let Some(i) = comic_idx {
+        if let Ok(entry) = archive.by_index(i) {
+            out.comic_info = read_limited(entry, DETAIL_READ_LIMIT).and_then(|b| parse_comic_info(&b));
+        }
+    }
+    if let Some(i) = json_idx {
+        if let Ok(entry) = archive.by_index(i) {
+            out.meta_json = read_limited(entry, META_JSON_LIMIT).map(|b| decode_text_bytes(&b));
+        }
+    }
+    Some(out)
+}
+
+/// 形式を判定して、タグ取得に使う付属データを読む。当面は zip/cbz のみ対応（他形式は None＝対象外）。
+pub fn read_tag_sources(path: &Path) -> Option<TagSourceFiles> {
+    match detect_format(path) {
+        ArchiveFormat::Zip => read_zip_tag_sources(path),
+        _ => None,
+    }
+}
+
 /// 形式を判定して info.txt の本文を読む。当面は zip/cbz のみ対応（他形式は None＝対象外）。
 pub fn read_info_txt(path: &Path) -> Option<Option<String>> {
     match detect_format(path) {
@@ -420,6 +488,49 @@ mod tests {
         }
         w.finish().unwrap();
         path
+    }
+
+    #[test]
+    fn zip_tag_sources_read_info_comic_info_and_meta_json_in_one_pass() {
+        let path = build_zip(
+            "tagsrc",
+            &[
+                ("001.jpg", b"img"),
+                ("sub/Info.TXT", "Title\nCategory: Manga\n".as_bytes()),
+                ("ComicInfo.xml", b"<ComicInfo><Title>T</Title><Writer>kirome</Writer></ComicInfo>"),
+                ("META.JSON", br#"{"id":1,"tags":[]}"#),
+                ("meta.json.bak", b"not this"),
+            ],
+            "",
+        );
+        let got = read_zip_tag_sources(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(got.info_txt.as_deref(), Some("Title\nCategory: Manga\n"));
+        assert_eq!(got.comic_info.as_ref().and_then(|c| c.get("Writer")), Some("kirome"));
+        assert_eq!(got.meta_json.as_deref(), Some(r#"{"id":1,"tags":[]}"#), "名前は完全一致（meta.json.bak は対象外）");
+    }
+
+    #[test]
+    fn zip_tag_sources_are_none_inside_and_none_outside() {
+        let path = build_zip("tagsrc_none", &[("001.jpg", b"img")], "");
+        let got = read_zip_tag_sources(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(got, TagSourceFiles::default(), "zip だが付属データなし");
+        let not_zip = std::env::temp_dir().join(format!("nekoviewer_meta_test_{}_notzip.zip", std::process::id()));
+        std::fs::write(&not_zip, b"plain text").unwrap();
+        assert!(read_zip_tag_sources(&not_zip).is_none(), "zip として開けない");
+        let _ = std::fs::remove_file(&not_zip);
+    }
+
+    #[test]
+    fn zip_tag_sources_cap_the_json_size_and_skip_empty_comic_info() {
+        let mut big = br#"{"tags":["#.to_vec();
+        big.extend(std::iter::repeat(b' ').take(META_JSON_LIMIT as usize * 2));
+        let path = build_zip("tagsrc_big", &[("meta.json", &big), ("ComicInfo.xml", b"<ComicInfo></ComicInfo>")], "");
+        let got = read_zip_tag_sources(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(got.meta_json.as_ref().map(|s| s.len() as u64), Some(META_JSON_LIMIT));
+        assert!(got.comic_info.is_none(), "拾える項目が無い ComicInfo.xml は無し扱い");
     }
 
     #[test]

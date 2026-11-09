@@ -55,6 +55,7 @@ mod tag_features;
 mod tag_learning;
 mod tag_manager;
 mod tag_master;
+mod tag_meta;
 mod tag_model;
 mod tag_similarity;
 mod tag_source;
