@@ -15,6 +15,8 @@
 use std::collections::HashMap;
 
 use crate::i18n::Lang;
+use crate::tag_corpus::Label;
+use crate::tag_model::Model;
 use crate::tag_master::{alias_keys, escape_alias_sep, join_aliases, normalize_key, overlapping_elements, split_aliases, SystemKind};
 use crate::tag_similarity::{cluster, keys, normalize_width, similarity_at_least, Keys, MatchOptions};
 use crate::tag_source::{
@@ -151,6 +153,8 @@ pub(crate) struct Candidate {
     pub members: Vec<Candidate>,
     /// まとめの番号（再生成後も同じまとめを復元するための識別）。
     pub bundle_id: Option<u64>,
+    /// 学習モデルが「タグにしない」と判定したため、未採用にして残している（要確認）。
+    pub review: bool,
 }
 
 impl Candidate {
@@ -326,6 +330,8 @@ struct Mention {
     from_single: bool,
     /// 括弧の向きを推測で決めた（既存タグの裏づけが無い）。
     guessed: bool,
+    /// 学習モデルが「タグにしない（無視）」と判定した（役割は、現行ルールが当てたもの）。
+    ignored: bool,
 }
 
 fn file_stem(input: &CandidateInput) -> &str {
@@ -365,14 +371,165 @@ fn gather_sources(input: &CandidateInput) -> Sources {
     Sources { event, creator, language }
 }
 
+/// モデルの確信度がこれ未満の作者・グループは、向き・種別を推測で決めた（未確定）ものとして扱う。
+const MODEL_CONFIDENT: f64 = 0.75;
+
+/// 学習モデルで、ファイル名（info.txt のタイトルがあればそちら）の括弧から、作者・グループ・イベント・言語の言及を作る。
+/// - 既存マスターに完全一致（作者・グループ）があれば、モデルよりマスターを優先する。`[A(B)]` の向きも、マスターの裏づけが
+///   ある（向きで差がつく）ときはマスターの向きにする
+/// - 「無視」と判定された括弧は、現行ルールが役割を当てていたものだけ、`ignored` つきで残す（未採用・要確認にするため）
+/// - 言語は info.txt の Language を優先し、無ければ辞書に合う括弧だけを言語にする
+fn model_mentions(
+    input: &CandidateInput,
+    model: &Model,
+    author_idx: &Option<ElementIndex>,
+    group_idx: &Option<ElementIndex>,
+    opts: &MatchOptions,
+    lang: Lang,
+) -> Vec<Mention> {
+    let rules = gather_sources(input);
+    let source = input
+        .info
+        .as_ref()
+        .and_then(|i| i.title.as_deref())
+        .filter(|t| !crate::tag_features::tokenize(t).is_empty())
+        .unwrap_or(&input.file_name);
+    let preds = model.predict_file(source);
+
+    // 現行ルールが、この文字列に当てていた役割（無視と判定されたものを残す根拠）。
+    let rule_role = |text: &str| -> Option<Role> {
+        if rules.event.as_deref() == Some(text) {
+            return Some(Role::Event);
+        }
+        match &rules.creator {
+            Some(Creator::Single(x)) if x == text => Some(Role::Author),
+            Some(Creator::Pair { outer, .. }) if outer == text => Some(Role::Group),
+            Some(Creator::Pair { inner, .. }) if inner == text => Some(Role::Author),
+            _ => None,
+        }
+    };
+    let exact_in = |idx: &Option<ElementIndex>, k: &Keys| idx.as_ref().is_some_and(|ix| ix.exact(k).is_some());
+    let evidence = |idx: &Option<ElementIndex>, n: &str| idx.as_ref().map_or(0, |ix| ix.evidence(&keys(n, opts), opts.threshold));
+    let mention = |role: Role, name: &str, from_single: bool, guessed: bool, ignored: bool| Mention {
+        role,
+        name: name.to_string(),
+        from_single,
+        guessed,
+        ignored,
+    };
+
+    let mut out: Vec<Mention> = Vec::new();
+    // info.txt の Language があれば、それが正（括弧が言語と判定されても重ねない）。
+    let info_language = input.info.as_ref().and_then(InfoTxt::info_language);
+    if let Some(canon) = info_language {
+        let name = if lang == Lang::Japanese { canon } else { language_english_name(canon) };
+        out.push(mention(Role::Language, name, false, false, false));
+    }
+
+    let mut i = 0;
+    while i < preds.len() {
+        let p = &preds[i];
+        // 外側・内側の組は、向きをまとめて決める。
+        let pair = p.token.nesting == crate::tag_features::Nesting::Outer
+            && preds.get(i + 1).is_some_and(|q| q.token.nesting == crate::tag_features::Nesting::Inner);
+        if pair {
+            let q = &preds[i + 1];
+            let (mut lo, mut li) = (p.label, q.label);
+            let mut guessed = p.confidence < MODEL_CONFIDENT;
+            let creator_pair = matches!((lo, li), (Label::Author, Label::Group) | (Label::Group, Label::Author));
+            if creator_pair {
+                // マスターの裏づけがあり、向きで差がつくなら、マスターの向き。
+                let normal = evidence(group_idx, &p.token.text) + evidence(author_idx, &q.token.text);
+                let swapped = evidence(author_idx, &p.token.text) + evidence(group_idx, &q.token.text);
+                if normal != swapped {
+                    (lo, li) = if swapped > normal { (Label::Author, Label::Group) } else { (Label::Group, Label::Author) };
+                    guessed = false;
+                } else if normal != 0 {
+                    guessed = false;
+                }
+            }
+            for (tok, label) in [(&p.token, lo), (&q.token, li)] {
+                push_labeled(&mut out, tok.text.as_str(), label, false, guessed, &rule_role, &mention, lang, info_language.is_some());
+            }
+            i += 2;
+            continue;
+        }
+        // 1つだけの括弧。作者・グループは、マスターに完全一致があればその側。
+        let mut label = p.label;
+        let mut from_single = false;
+        let mut guessed = false;
+        if matches!(label, Label::Author | Label::Group) {
+            let k = keys(&p.token.text, opts);
+            match (exact_in(author_idx, &k), exact_in(group_idx, &k)) {
+                (true, _) => label = Label::Author,
+                (false, true) => label = Label::Group,
+                (false, false) => {
+                    from_single = p.confidence < MODEL_CONFIDENT;
+                    guessed = from_single;
+                }
+            }
+        }
+        push_labeled(&mut out, p.token.text.as_str(), label, from_single, guessed, &rule_role, &mention, lang, info_language.is_some());
+        i += 1;
+    }
+    out
+}
+
+/// 種別が決まった括弧1つを、言及として足す。
+#[allow(clippy::too_many_arguments)]
+fn push_labeled(
+    out: &mut Vec<Mention>,
+    text: &str,
+    label: Label,
+    from_single: bool,
+    guessed: bool,
+    rule_role: &dyn Fn(&str) -> Option<Role>,
+    mention: &dyn Fn(Role, &str, bool, bool, bool) -> Mention,
+    lang: Lang,
+    info_language_given: bool,
+) {
+    match label {
+        Label::Author => out.push(mention(Role::Author, text, from_single, guessed, false)),
+        Label::Group => out.push(mention(Role::Group, text, from_single, guessed, false)),
+        Label::Event => out.push(mention(Role::Event, text, false, false, false)),
+        Label::Language => {
+            // 辞書に合う言語だけ。info.txt の Language があれば、それを優先して重ねない。
+            if !info_language_given {
+                if let Some(canon) = canonical_language(text) {
+                    let name = if lang == Lang::Japanese { canon } else { language_english_name(canon) };
+                    out.push(mention(Role::Language, name, false, false, false));
+                }
+            }
+        }
+        Label::Ignore => {
+            if let Some(role) = rule_role(text) {
+                let single = matches!(role, Role::Author | Role::Group) && from_single;
+                out.push(mention(role, text, single, false, true));
+            }
+        }
+    }
+}
+
 // ── 候補生成 ──────────────────────────────────────────────────────────
 
-/// 候補を作る。`cats` は現在のタグマスター（読み取りのみ）。
+/// 候補を作る（学習モデルなし。現行ルールだけ）。`cats` は現在のタグマスター（読み取りのみ）。
 pub(crate) fn build_candidates(
     inputs: &[CandidateInput],
     cats: &[TagManagerCategoryUi],
     opts: &MatchOptions,
     lang: Lang,
+) -> CandidateSet {
+    build_candidates_with(inputs, cats, opts, lang, None)
+}
+
+/// 候補を作る。`model` があれば、括弧の種別（作者・グループ・イベント・言語・無視）を学習モデルで判定する。
+/// 既存マスターに完全一致があるものは、モデルよりマスターを優先する。
+pub(crate) fn build_candidates_with(
+    inputs: &[CandidateInput],
+    cats: &[TagManagerCategoryUi],
+    opts: &MatchOptions,
+    lang: Lang,
+    model: Option<&Model>,
 ) -> CandidateSet {
     let opts = opts.clamped();
     let cat_of = |role: Role| find_category(cats, role);
@@ -388,18 +545,22 @@ pub(crate) fn build_candidates(
             files_with_info += 1;
         }
         if let Some(tag) = &input.format {
-            mentions.push((fi, Mention { role: Role::Format, name: format_name(tag, lang), from_single: false, guessed: false }));
+            mentions.push((fi, Mention { role: Role::Format, name: format_name(tag, lang), from_single: false, guessed: false, ignored: false }));
         }
         if let Some(cat) = input.info.as_ref().and_then(|i| i.category.clone()) {
-            mentions.push((fi, Mention { role: Role::Main, name: cat, from_single: false, guessed: false }));
+            mentions.push((fi, Mention { role: Role::Main, name: cat, from_single: false, guessed: false, ignored: false }));
+        }
+        if let Some(model) = model {
+            mentions.extend(model_mentions(input, model, &author_idx, &group_idx, &opts, lang).into_iter().map(|m| (fi, m)));
+            continue;
         }
         let src = gather_sources(input);
         if let Some(canon) = src.language {
             let name = if lang == Lang::Japanese { canon } else { language_english_name(canon) };
-            mentions.push((fi, Mention { role: Role::Language, name: name.to_string(), from_single: false, guessed: false }));
+            mentions.push((fi, Mention { role: Role::Language, name: name.to_string(), from_single: false, guessed: false, ignored: false }));
         }
         if let Some(ev) = src.event {
-            mentions.push((fi, Mention { role: Role::Event, name: ev, from_single: false, guessed: false }));
+            mentions.push((fi, Mention { role: Role::Event, name: ev, from_single: false, guessed: false, ignored: false }));
         }
         match src.creator {
             Some(Creator::Pair { outer, inner }) => {
@@ -409,8 +570,8 @@ pub(crate) fn build_candidates(
                 let swap = swapped > normal;
                 let (outer_role, inner_role) = if swap { (Role::Author, Role::Group) } else { (Role::Group, Role::Author) };
                 let guessed = normal == 0 && swapped == 0;
-                mentions.push((fi, Mention { role: outer_role, name: outer, from_single: false, guessed }));
-                mentions.push((fi, Mention { role: inner_role, name: inner, from_single: false, guessed }));
+                mentions.push((fi, Mention { role: outer_role, name: outer, from_single: false, guessed, ignored: false }));
+                mentions.push((fi, Mention { role: inner_role, name: inner, from_single: false, guessed, ignored: false }));
             }
             Some(Creator::Single(x)) => {
                 // 既存の作者・グループに完全一致があれば、その側。無ければ作者の候補（未確定）。
@@ -418,7 +579,7 @@ pub(crate) fn build_candidates(
                 let in_author = author_idx.as_ref().is_some_and(|ix| ix.exact(&k).is_some());
                 let in_group = group_idx.as_ref().is_some_and(|ix| ix.exact(&k).is_some());
                 let role = if !in_author && in_group { Role::Group } else { Role::Author };
-                mentions.push((fi, Mention { role, name: x, from_single: true, guessed: false }));
+                mentions.push((fi, Mention { role, name: x, from_single: true, guessed: false, ignored: false }));
             }
             None => {}
         }
@@ -432,6 +593,8 @@ pub(crate) fn build_candidates(
         files: Vec<usize>,
         from_single: bool,
         guessed: bool,
+        /// すべての言及が、モデルに「無視」と判定されたもの。
+        ignored: bool,
     }
     let mut order: Vec<(Role, String)> = Vec::new();
     let mut accs: HashMap<(Role, String), Acc> = HashMap::new();
@@ -448,7 +611,7 @@ pub(crate) fn build_candidates(
         }
         let acc = accs.entry((m.role, ident.clone())).or_insert_with(|| {
             order.push((m.role, ident.clone()));
-            Acc { role: m.role, key: ident.clone(), forms: Vec::new(), files: Vec::new(), from_single: false, guessed: false }
+            Acc { role: m.role, key: ident.clone(), forms: Vec::new(), files: Vec::new(), from_single: false, guessed: false, ignored: true }
         });
         match acc.forms.iter_mut().find(|(f, _)| *f == m.name) {
             Some((_, n)) => *n += 1,
@@ -459,6 +622,7 @@ pub(crate) fn build_candidates(
         }
         acc.from_single |= m.from_single;
         acc.guessed |= m.guessed;
+        acc.ignored &= m.ignored;
     }
 
     // 3) 候補ごとに、既存タグとの照合・初期の扱い・登録名を決める。
@@ -529,6 +693,9 @@ pub(crate) fn build_candidates(
             (None, false) => Choice::Skip,
             (None, true) => Choice::New,
         };
+        // モデルが「無視」と判定したものは、既存タグの完全一致が無い限り、未採用にして残す（要確認）。
+        let review = acc.ignored && !matches!(choice, Choice::Existing { .. });
+        let choice = if review { Choice::Skip } else { choice };
         let unconfirmed = matches!(role, Role::Author | Role::Group)
             && !matches!(choice, Choice::Existing { .. })
             && (acc.from_single || acc.guessed);
@@ -547,6 +714,7 @@ pub(crate) fn build_candidates(
             aliases: Vec::new(),
             members: Vec::new(),
             bundle_id: None,
+            review,
         });
     }
 
@@ -773,6 +941,7 @@ impl CandidateSet {
             unconfirmed: leaves.iter().all(|l| l.unconfirmed),
             cluster: leaves.iter().map(|l| l.cluster).min().unwrap_or(0),
             aliases,
+            review: leaves.iter().all(|l| l.review),
             members: leaves,
             bundle_id: Some(bundle_id),
         };
