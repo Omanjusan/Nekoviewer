@@ -49,6 +49,7 @@ mod spread_offset;
 mod spread_state;
 mod tag_apply;
 mod tag_candidates;
+mod tag_corpus;
 mod tag_manager;
 mod tag_master;
 mod tag_similarity;
