@@ -31,14 +31,7 @@ pub(crate) struct Plan {
 }
 
 fn role_order(r: Role) -> u8 {
-    match r {
-        Role::Format => 0,
-        Role::Main => 1,
-        Role::Language => 2,
-        Role::Event => 3,
-        Role::Author => 4,
-        Role::Group => 5,
-    }
+    r.order()
 }
 
 /// 採用された候補を、マスター（`cats`・`next_tier_id`。呼び出し側の写し）への追加と、ファイルごとのタグIDにする。
@@ -635,5 +628,22 @@ mod tests {
         let plan = plan_application(&set, &mut cats, &mut next, Lang::Japanese);
         assert_eq!(cats[0].tiers[0].element.as_deref(), Some("Ebizoridan|えびぞり団"), "別名が足され、要素名が書き換わる");
         assert_eq!(plan.renames.len(), 1, "書き換わる既存要素の一覧に出る");
+    }
+
+    #[test]
+    fn new_roles_create_their_own_categories_and_are_applied_in_role_order() {
+        use crate::tag_rules::{CondTarget, Condition, NameShape, Preset};
+        let mut rule = Preset::Cosplay.to_rule(1);
+        rule.conditions = vec![Condition::Shape { targets: vec![CondTarget::FileName], shape: NameShape::Dash2Paren }];
+        let inputs = [input_from_info_text("Tiny Asa アサ - Castorice (Honkai-Star Rail).zip", Some(FormatTag::Extension("zip".into())), None)];
+        let set = crate::tag_candidates::build_candidates_full(&inputs, &[], &MatchOptions::default(), Lang::Japanese, None, &[rule]);
+        let (mut cats, mut next) = (Vec::new(), 100u64);
+        let plan = plan_application(&set, &mut cats, &mut next, Lang::Japanese);
+        let find = |cat: &str| cats.iter().find(|c| c.name == cat).map(|c| c.tiers.iter().filter_map(|t| t.element.clone()).collect::<Vec<_>>());
+        assert_eq!(find("演者"), Some(vec!["Tiny Asa アサ".to_string()]));
+        assert_eq!(find("キャラクター"), Some(vec!["Castorice".to_string()]));
+        assert_eq!(find("パロディ元"), Some(vec!["Honkai-Star Rail".to_string()]));
+        assert_eq!(plan.new_categories, 4, "形式（zip）＋演者・キャラクター・パロディ元");
+        assert_eq!(plan.file_additions.get(&0).map(|v| v.len()), Some(4));
     }
 }

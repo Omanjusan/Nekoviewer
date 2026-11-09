@@ -199,6 +199,9 @@ fn role_label(role: Role) -> &'static str {
         Role::Event => t.tag_confirm_role_event(),
         Role::Author => t.tag_confirm_role_author(),
         Role::Group => t.tag_confirm_role_group(),
+        Role::Performer => t.tag_confirm_role_performer(),
+        Role::Character => t.tag_confirm_role_character(),
+        Role::Parody => t.tag_confirm_role_parody(),
     }
 }
 

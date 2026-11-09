@@ -17,7 +17,7 @@ use std::collections::HashMap;
 use crate::i18n::Lang;
 use crate::tag_corpus::Label;
 use crate::tag_model::Model;
-use crate::tag_rules::{evaluate_rules, RuleInput, RuleOutcome, RuleRole, TagRule};
+use crate::tag_rules::{evaluate_rules, parse_dash_title, RuleInput, RuleOutcome, RuleRole, TagRule};
 use crate::tag_master::{alias_keys, escape_alias_sep, join_aliases, normalize_key, overlapping_elements, split_aliases, SystemKind};
 use crate::tag_similarity::{cluster, keys, normalize_width, similarity_at_least, Keys, MatchOptions};
 use crate::tag_source::{
@@ -41,6 +41,12 @@ pub(crate) enum Role {
     Event,
     Author,
     Group,
+    /// 演者（cosplay）。大ルールで有効にしたときだけ取る。
+    Performer,
+    /// キャラ（cosplay）。大ルールで有効にしたときだけ取る。
+    Character,
+    /// パロディ元。大ルールで有効にしたときだけ取る。
+    Parody,
 }
 
 /// 確認ウィンドウ。
@@ -55,8 +61,24 @@ pub(crate) enum Window {
 impl Role {
     pub(crate) fn window(self) -> Window {
         match self {
-            Role::Author | Role::Group => Window::Two,
+            // 人名の種類は窓2。
+            Role::Author | Role::Group | Role::Performer => Window::Two,
             _ => Window::One,
+        }
+    }
+
+    /// 窓の中の並び順（一覧・適用の順）。
+    pub(crate) fn order(self) -> u8 {
+        match self {
+            Role::Format => 0,
+            Role::Main => 1,
+            Role::Language => 2,
+            Role::Event => 3,
+            Role::Parody => 4,
+            Role::Character => 5,
+            Role::Author => 6,
+            Role::Group => 7,
+            Role::Performer => 8,
         }
     }
 
@@ -74,6 +96,15 @@ impl Role {
             (Role::Event, Lang::English) => "Event",
             (Role::Event, Lang::Chinese) => "活动",
             (Role::Event, _) => "イベント",
+            (Role::Performer, Lang::English) => "Performer",
+            (Role::Performer, Lang::Chinese) => "演员",
+            (Role::Performer, _) => "演者",
+            (Role::Character, Lang::English) => "Character",
+            (Role::Character, Lang::Chinese) => "角色",
+            (Role::Character, _) => "キャラクター",
+            (Role::Parody, Lang::English) => "Parody",
+            (Role::Parody, Lang::Chinese) => "原作",
+            (Role::Parody, _) => "パロディ元",
             // 形式とメインは常に既存のカテゴリがある。
             (Role::Format, _) => "Archive format",
             (Role::Main, _) => "Main",
@@ -87,6 +118,9 @@ impl Role {
             Role::Group => &["グループ", "サークル", "group", "circle", "团体", "社团"],
             Role::Language => &["言語", "language", "语言"],
             Role::Event => &["イベント", "event", "活动"],
+            Role::Performer => &["演者", "performer", "cosplayer", "演员", "モデル"],
+            Role::Character => &["キャラクター", "キャラ", "character", "角色"],
+            Role::Parody => &["パロディ元", "パロディ", "parody", "原作", "作品", "series"],
             Role::Format | Role::Main => &[],
         }
     }
@@ -411,6 +445,43 @@ fn gather_sources(input: &CandidateInput) -> Sources {
     Sources { event, creator, language, alt_event, alt_creator }
 }
 
+/// ` - ` 区切りの題名（cosplay の `演者 - キャラ (パロディ元)` / `演者 - キャラ - パロディ元` / `演者 - キャラ`）から、
+/// 演者・キャラ・パロディ元の言及を作る。取るのは、ルールが有効にした種類だけ。
+/// 題名は、info.txt の見出し（内部照合の行）が ` - ` 区切りならそれ、でなければファイル名。
+/// info.txt の別の見出し行が同じ形なら、同じ位置の名前を対にする。
+fn dash_mentions(input: &CandidateInput, outcome: &RuleOutcome) -> Vec<Mention> {
+    let wanted = [RuleRole::Performer, RuleRole::Character, RuleRole::Parody];
+    if !wanted.iter().any(|r| outcome.is_role_enabled(*r)) {
+        return Vec::new();
+    }
+    let from_info = input.info.as_ref().and_then(|i| i.title.as_deref()).and_then(parse_dash_title);
+    let main = match from_info.clone().or_else(|| parse_dash_title(file_stem(input))) {
+        Some(d) => d,
+        None => return Vec::new(),
+    };
+    let alt = from_info.and_then(|d| {
+        input.info.as_ref()?.alt_titles.iter().filter_map(|l| parse_dash_title(l)).find(|a| a.shape == d.shape)
+    });
+    let mention = |role: Role, rule_role: RuleRole, name: &str, alt: Option<&String>| {
+        outcome.is_role_enabled(rule_role).then(|| Mention {
+            role,
+            name: name.to_string(),
+            from_single: false,
+            guessed: false,
+            ignored: false,
+            alt: alt.cloned(),
+            rule: None,
+        })
+    };
+    let mut out: Vec<Mention> = Vec::new();
+    out.extend(mention(Role::Performer, RuleRole::Performer, &main.first, alt.as_ref().map(|a| &a.first)));
+    out.extend(mention(Role::Character, RuleRole::Character, &main.second, alt.as_ref().map(|a| &a.second)));
+    if let Some(third) = &main.third {
+        out.extend(mention(Role::Parody, RuleRole::Parody, third, alt.as_ref().and_then(|a| a.third.as_ref())));
+    }
+    out
+}
+
 /// モデルの確信度がこれ未満の作者・グループは、向き・種別を推測で決めた（未確定）ものとして扱う。
 const MODEL_CONFIDENT: f64 = 0.75;
 
@@ -634,6 +705,9 @@ pub(crate) fn build_candidates_full(
     for (fi, input) in inputs.iter().enumerate() {
         if !rules.is_empty() {
             outcomes.push(evaluate_rules(rules, &RuleInput::new(&input.file_name, input.info.as_ref()), &opts));
+            // 大ルールが有効にした新種類（演者・キャラ・パロディ元）は、` - ` 区切りの題名から取る。
+            let dash = dash_mentions(input, &outcomes[fi]);
+            mentions.extend(dash.into_iter().map(|m| (fi, m)));
         }
         if input.info.is_some() {
             files_with_info += 1;
@@ -703,6 +777,9 @@ pub(crate) fn build_candidates_full(
                 Role::Event => RuleRole::Event,
                 Role::Author => RuleRole::Author,
                 Role::Group => RuleRole::Group,
+                Role::Performer => RuleRole::Performer,
+                Role::Character => RuleRole::Character,
+                Role::Parody => RuleRole::Parody,
             };
             if let Some(reason) = outcomes[*fi].disabled_reason(role) {
                 m.ignored = true;
@@ -770,6 +847,9 @@ pub(crate) fn build_candidates_full(
     let main_ix = element_index(cats, cat_of(Role::Main), &opts);
     let lang_ix = element_index(cats, cat_of(Role::Language), &opts);
     let event_ix = element_index(cats, cat_of(Role::Event), &opts);
+    let performer_ix = element_index(cats, cat_of(Role::Performer), &opts);
+    let character_ix = element_index(cats, cat_of(Role::Character), &opts);
+    let parody_ix = element_index(cats, cat_of(Role::Parody), &opts);
     let mut candidates: Vec<Candidate> = Vec::new();
     for (role, ident) in order {
         let acc = accs.remove(&(role, ident)).unwrap();
@@ -787,7 +867,7 @@ pub(crate) fn build_candidates_full(
         let name = norm(&picked);
         let k = keys(&name, &opts);
         let mut alt_forms: Vec<String> = Vec::new();
-        if matches!(role, Role::Author | Role::Group | Role::Event) {
+        if matches!(role, Role::Author | Role::Group | Role::Event | Role::Performer | Role::Character | Role::Parody) {
             let mut seen = vec![k.exact.clone()];
             for (f, _) in &forms_all {
                 let (nf, fk) = (norm(f), keys(f, &opts).exact);
@@ -815,10 +895,13 @@ pub(crate) fn build_candidates_full(
                         .map(|(id, _, _, _)| (ix.cat_idx, *id));
                 }
             }
-            Role::Format | Role::Main | Role::Event => {
+            Role::Format | Role::Main | Role::Event | Role::Performer | Role::Character | Role::Parody => {
                 let ix = match role {
                     Role::Format => &format_ix,
                     Role::Main => &main_ix,
+                    Role::Performer => &performer_ix,
+                    Role::Character => &character_ix,
+                    Role::Parody => &parody_ix,
                     _ => &event_ix,
                 };
                 if let Some(ix) = ix {
@@ -859,7 +942,7 @@ pub(crate) fn build_candidates_full(
         // 対にした表記があり、既存の要素がそのすべての表記を別名に持っていなければ、足りない表記を別名として足す候補にする。
         let alias_needed = !alt_forms.is_empty()
             && existing.is_some_and(|(cat_idx, tier_id)| {
-                [&author_idx, &group_idx, &event_ix].into_iter().flatten().find(|ix| ix.cat_idx == cat_idx).is_some_and(|ix| {
+                [&author_idx, &group_idx, &event_ix, &performer_ix, &character_ix, &parody_ix].into_iter().flatten().find(|ix| ix.cat_idx == cat_idx).is_some_and(|ix| {
                     !match_keys.iter().all(|mk| ix.items.iter().any(|(id, _, _, ek)| *id == tier_id && ek.exact == mk.exact))
                 })
             });
@@ -954,14 +1037,7 @@ fn check_limits(candidates: &[Candidate]) -> LimitReport {
 impl CandidateSet {
     /// 窓ごとの候補の番号（種類順、束の最初の出現順、名前順）。
     pub(crate) fn indices_in_window(&self, w: Window) -> Vec<usize> {
-        let order = |r: Role| match r {
-            Role::Format => 0,
-            Role::Main => 1,
-            Role::Language => 2,
-            Role::Event => 3,
-            Role::Author => 4,
-            Role::Group => 5,
-        };
+        let order = |r: Role| r.order();
         let mut idx: Vec<usize> = (0..self.candidates.len()).filter(|&i| self.candidates[i].role.window() == w).collect();
         idx.sort_by(|&a, &b| {
             let (ca, cb) = (&self.candidates[a], &self.candidates[b]);
@@ -1782,5 +1858,94 @@ mod tests {
         r.enabled = false;
         let set = build_with_rules(&[input("[Hawk Bit (Kouji)] Book AI generated.zip", "zip", None)], &[], &[r]);
         assert!(set.candidates.iter().all(|c| !c.review) && set.rule_hits.is_empty());
+    }
+
+    // ── 新種類（演者・キャラ・パロディ元）と cosplay の文法 ──
+
+    use crate::tag_rules::{CondTarget, Condition, NameShape};
+
+    fn shape_cosplay_rule(shape: NameShape) -> TagRule {
+        let mut r = Preset::Cosplay.to_rule(1);
+        r.conditions = vec![Condition::Shape { targets: vec![CondTarget::FileName, CondTarget::InfoTitle], shape }];
+        r
+    }
+
+    fn name_of(set: &CandidateSet, role: Role) -> Option<String> {
+        set.candidates.iter().find(|c| c.role == role).map(|c| c.name.clone())
+    }
+
+    #[test]
+    fn cosplay_filename_without_info_gives_performer_character_and_parody() {
+        let inputs = [input("Tiny Asa アサ - Castorice (Honkai-Star Rail).zip", "zip", None)];
+        let set = build_with_rules(&inputs, &[], &[shape_cosplay_rule(NameShape::Dash2Paren)]);
+        assert_eq!(name_of(&set, Role::Performer).as_deref(), Some("Tiny Asa アサ"));
+        assert_eq!(name_of(&set, Role::Character).as_deref(), Some("Castorice"));
+        assert_eq!(name_of(&set, Role::Parody).as_deref(), Some("Honkai-Star Rail"));
+        assert!(set.candidates.iter().filter(|c| matches!(c.role, Role::Performer | Role::Character | Role::Parody)).all(|c| c.is_adopted() && !c.review));
+        // 窓の割り当て: 演者（人名）は窓2、キャラ・パロディ元は窓1。
+        assert_eq!((Role::Performer.window(), Role::Character.window(), Role::Parody.window()), (Window::Two, Window::One, Window::One));
+        // ルールが無ければ、新種類は取らない。
+        let none = build_with_rules(&inputs, &[], &[]);
+        assert!(none.candidates.iter().all(|c| !matches!(c.role, Role::Performer | Role::Character | Role::Parody)));
+    }
+
+    #[test]
+    fn cosplay_info_txt_three_part_title_and_category() {
+        let info = "希尔薇 - w旗袍 - Arknights\n\nhttps://example.invalid/\n\nCategory: Cosplay\nLanguage: Japanese\n";
+        let set = build_with_rules(&[input("x.zip", "zip", Some(info))], &[], &[Preset::Cosplay.to_rule(1)]);
+        assert_eq!(name_of(&set, Role::Performer).as_deref(), Some("希尔薇"));
+        assert_eq!(name_of(&set, Role::Character).as_deref(), Some("w旗袍"));
+        assert_eq!(name_of(&set, Role::Parody).as_deref(), Some("Arknights"));
+        // 既存のルール（作者・グループ・イベントを無効）はそのまま。形式・言語は採用のまま。
+        assert!(set.candidates.iter().find(|c| c.role == Role::Language).unwrap().is_adopted());
+        assert!(set.candidates.iter().find(|c| c.role == Role::Format).unwrap().is_adopted());
+    }
+
+    #[test]
+    fn two_part_title_has_no_parody_and_non_dash_titles_give_nothing() {
+        let set = build_with_rules(&[input("Asa - Chara.zip", "zip", None)], &[], &[shape_cosplay_rule(NameShape::Dash2)]);
+        assert_eq!((name_of(&set, Role::Performer).as_deref(), name_of(&set, Role::Character).as_deref()), (Some("Asa"), Some("Chara")));
+        assert_eq!(name_of(&set, Role::Parody), None, "最小単位は演者＋キャラ。パロディ元は任意");
+        // cosplay の Category だが、題名が ` - ` 区切りでなければ、何も取らない（作者・グループ等は無効のまま）。
+        let set = build_with_rules(&[input("x.zip", "zip", Some("[Circle (Author)] Title\n\nCategory: Cosplay\n"))], &[], &[Preset::Cosplay.to_rule(1)]);
+        assert!(set.candidates.iter().all(|c| !matches!(c.role, Role::Performer | Role::Character | Role::Parody)));
+        assert!(set.candidates.iter().find(|c| c.role == Role::Author).unwrap().review);
+    }
+
+    #[test]
+    fn dash_title_names_are_paired_with_the_other_line_as_aliases() {
+        let info = "Asa - Castorice (Honkai Star Rail)\nアサ - カストリス (崩壊：スターレイル)\n\nCategory: Cosplay\n";
+        let set = build_with_rules(&[input("x.zip", "zip", Some(info))], &[], &[Preset::Cosplay.to_rule(1)]);
+        let c = set.candidates.iter().find(|c| c.role == Role::Character).unwrap();
+        assert_eq!((c.name.as_str(), c.alt_forms.clone()), ("カストリス", vec!["Castorice".to_string()]));
+        assert_eq!(c.registration_name(), "カストリス|Castorice");
+        let p = set.candidates.iter().find(|c| c.role == Role::Parody).unwrap();
+        assert_eq!(p.registration_name(), "崩壊:スターレイル|Honkai Star Rail", "全角半角の正規化（既定ON）で、全角コロンは半角になる");
+    }
+
+    #[test]
+    fn new_roles_match_existing_categories_by_alias_names() {
+        let master = vec![
+            cat("演者", false, None, vec![tier(50, "Tiny Asa アサ")]),
+            cat("キャラクター", false, None, vec![tier(51, "Castorice")]),
+            cat("パロディ元", false, None, vec![tier(52, "Honkai-Star Rail")]),
+        ];
+        let set = build_with_rules(&[input("Tiny Asa アサ - Castorice (Honkai-Star Rail).zip", "zip", None)], &master, &[shape_cosplay_rule(NameShape::Dash2Paren)]);
+        let choice = |role| set.candidates.iter().find(|c| c.role == role).unwrap().choice.clone();
+        assert_eq!(choice(Role::Performer), Choice::Existing { cat_idx: 0, tier_id: 50 });
+        assert_eq!(choice(Role::Character), Choice::Existing { cat_idx: 1, tier_id: 51 });
+        assert_eq!(choice(Role::Parody), Choice::Existing { cat_idx: 2, tier_id: 52 });
+    }
+
+    #[test]
+    fn another_rule_can_still_disable_a_new_role() {
+        let mut parody_off = Preset::AiGenerated.to_rule(2);
+        parody_off.conditions = vec![Condition::Shape { targets: vec![CondTarget::FileName], shape: NameShape::Dash2Paren }];
+        parody_off.effect.disable = [RuleRole::Parody].into_iter().collect();
+        parody_off.effect.enable.clear();
+        let set = build_with_rules(&[input("Asa - Chara (Series).zip", "zip", None)], &[], &[shape_cosplay_rule(NameShape::Dash2Paren), parody_off]);
+        let parody = set.candidates.iter().find(|c| c.role == Role::Parody);
+        assert!(parody.is_none() || parody.is_some_and(|c| c.review), "無効にされたパロディ元は取らないか、要確認で残す");
+        assert!(set.candidates.iter().find(|c| c.role == Role::Performer).unwrap().is_adopted());
     }
 }

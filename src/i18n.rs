@@ -4283,6 +4283,9 @@ impl Lang {
         local.unwrap_or(ja)
     }
     pub fn tag_confirm_review_learned(self) -> &'static str { self.learn_pick("要確認: 学習で無視と判定", "", "") }
+    pub fn tag_confirm_role_performer(self) -> &'static str { self.learn_pick("演者", "", "") }
+    pub fn tag_confirm_role_character(self) -> &'static str { self.learn_pick("キャラ", "", "") }
+    pub fn tag_confirm_role_parody(self) -> &'static str { self.learn_pick("パロディ元", "", "") }
     pub fn tag_learn_view_button(self) -> &'static str { self.learn_pick("学習データを見る…", "", "") }
     pub fn tag_learn_clear_button(self) -> &'static str { self.learn_pick("全消去してやり直す", "", "") }
     pub fn tag_learn_clear_confirm(self) -> &'static str { self.learn_pick("学習データをすべて消去します。元に戻せません。", "", "") }

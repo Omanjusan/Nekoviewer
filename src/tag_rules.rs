@@ -776,7 +776,7 @@ mod tests {
         assert!(!out.is_role_enabled(RuleRole::Group));
     }
 
-    /// 目視用: 効果の既定があるプリセット3つ（AI generated / cosplay / anthology）を、設定フォルダ `NEKO_RULES_OUT` に
+    /// 目視用: 効果の既定があるプリセット3つ（AI generated / cosplay / anthology）と、cosplay のファイル名の形のルールを、設定フォルダ `NEKO_RULES_OUT` に
     /// 書き出す。編集UI（R4）ができる前に、抽出への接続を実機で確かめるために使う
     /// （`NEKO_RULES_OUT=<設定フォルダ> cargo test export_default_preset_rules -- --ignored --nocapture`）。既存のルールは上書きされる。
     #[test]
@@ -787,6 +787,14 @@ mod tests {
         for p in [Preset::AiGenerated, Preset::Cosplay, Preset::Anthology] {
             s.add(p.to_rule(0)).unwrap();
         }
+        // info.txt が無い cosplay（`演者 - キャラ (パロディ元)` / `演者 - キャラ - パロディ元`）をファイル名の形で拾うルール。
+        let mut shaped = Preset::Cosplay.to_rule(0);
+        shaped.name = "cosplay（ファイル名の形）".into();
+        shaped.conditions = [NameShape::Dash2Paren, NameShape::Dash3]
+            .into_iter()
+            .map(|shape| Condition::Shape { targets: vec![CondTarget::FileName], shape })
+            .collect();
+        s.add(shaped).unwrap();
         assert!(s.save(Path::new(&out)));
         println!("{} 件のルールを {out}/{FILE_NAME} に書いた", s.rules.len());
     }
