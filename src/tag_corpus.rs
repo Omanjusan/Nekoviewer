@@ -30,6 +30,8 @@ use crate::view_explorer::TagManagerCategoryUi;
 
 /// 正解（または予測）のラベル種別。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub(crate) enum Label {
     Author,
     Group,
@@ -76,6 +78,7 @@ impl Label {
 
 /// コーパスの1行。
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize)]
 pub(crate) struct CorpusEntry {
     pub file_name: String,
     /// 正解のラベル（出現順。文字列は書かれた表記のまま）。
@@ -142,7 +145,7 @@ pub(crate) fn format_entry(e: &CorpusEntry) -> String {
 // ── 採点 ─────────────────────────────────────────────────────────────
 
 /// 比較用のキー。言語は辞書の正規名、それ以外は完全一致キー。
-fn token_key(label: Label, text: &str, opts: &MatchOptions) -> String {
+pub(crate) fn token_key(label: Label, text: &str, opts: &MatchOptions) -> String {
     if label == Label::Language {
         if let Some(c) = canonical_language(text) {
             return c.to_string();

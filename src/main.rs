@@ -50,6 +50,8 @@ mod spread_state;
 mod tag_apply;
 mod tag_candidates;
 mod tag_corpus;
+mod tag_features;
+mod tag_learning;
 mod tag_manager;
 mod tag_master;
 mod tag_similarity;

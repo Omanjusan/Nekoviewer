@@ -81,7 +81,7 @@ pub(crate) fn parse_info_txt(text: &str) -> InfoTxt {
 }
 
 /// 連続する空白（全角空白を含む）を1つの半角空白にして、前後を落とす。
-fn collapse_spaces(s: &str) -> String {
+pub(crate) fn collapse_spaces(s: &str) -> String {
     s.split(|c: char| c.is_whitespace()).filter(|p| !p.is_empty()).collect::<Vec<_>>().join(" ")
 }
 
@@ -174,21 +174,21 @@ impl NameParts {
     }
 }
 
-fn is_open_round(c: char) -> bool {
+pub(crate) fn is_open_round(c: char) -> bool {
     c == '(' || c == '（'
 }
-fn is_close_round(c: char) -> bool {
+pub(crate) fn is_close_round(c: char) -> bool {
     c == ')' || c == '）'
 }
-fn is_open_square(c: char) -> bool {
+pub(crate) fn is_open_square(c: char) -> bool {
     c == '[' || c == '［'
 }
-fn is_close_square(c: char) -> bool {
+pub(crate) fn is_close_square(c: char) -> bool {
     c == ']' || c == '］'
 }
 
 /// 先頭の `open` で始まる括弧の、対応する閉じ括弧までの中身と、その後ろの残りを返す（入れ子対応）。
-fn take_leading_group(s: &str, is_open: fn(char) -> bool, is_close: fn(char) -> bool) -> Option<(&str, &str)> {
+pub(crate) fn take_leading_group(s: &str, is_open: fn(char) -> bool, is_close: fn(char) -> bool) -> Option<(&str, &str)> {
     let mut chars = s.char_indices();
     let (_, first) = chars.next()?;
     if !is_open(first) {
@@ -210,7 +210,7 @@ fn take_leading_group(s: &str, is_open: fn(char) -> bool, is_close: fn(char) -> 
 }
 
 /// 末尾の閉じ括弧で終わる括弧の、対応する開き括弧より前の部分と、その中身を返す（入れ子対応）。
-fn take_trailing_group(s: &str, is_open: fn(char) -> bool, is_close: fn(char) -> bool) -> Option<(&str, &str)> {
+pub(crate) fn take_trailing_group(s: &str, is_open: fn(char) -> bool, is_close: fn(char) -> bool) -> Option<(&str, &str)> {
     let last = s.chars().next_back()?;
     if !is_close(last) {
         return None;
