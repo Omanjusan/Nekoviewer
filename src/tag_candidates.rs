@@ -49,6 +49,10 @@ pub(crate) enum Role {
     Character,
     /// パロディ元。大ルールで有効にしたときだけ取る。
     Parody,
+    /// 属性タグ（ComicInfo.xml の Tags・meta.json の type=tag）。「正の情報」があるときだけ取る。
+    Attribute,
+    /// 年月（`2023-12`。月が無ければ `2023`）。ComicInfo.xml の Year・Month から、「正の情報」があるときだけ取る。
+    YearMonth,
 }
 
 /// 確認ウィンドウ。
@@ -81,6 +85,8 @@ impl Role {
             Role::Author => 6,
             Role::Group => 7,
             Role::Performer => 8,
+            Role::YearMonth => 9,
+            Role::Attribute => 10,
         }
     }
 
@@ -107,6 +113,10 @@ impl Role {
             (Role::Parody, Lang::English) => "Parody",
             (Role::Parody, Lang::Chinese) => "原作",
             (Role::Parody, _) => "パロディ元",
+            (Role::Attribute, Lang::English) => "Attribute",
+            (Role::Attribute, _) => "属性",
+            (Role::YearMonth, Lang::English) => "Year-Month",
+            (Role::YearMonth, _) => "年月",
             // 形式とメインは常に既存のカテゴリがある。
             (Role::Format, _) => "Archive format",
             (Role::Main, _) => "Main",
@@ -123,6 +133,8 @@ impl Role {
             Role::Performer => &["演者", "performer", "cosplayer", "演员", "モデル"],
             Role::Character => &["キャラクター", "キャラ", "character", "角色"],
             Role::Parody => &["パロディ元", "パロディ", "parody", "原作", "作品", "series"],
+            Role::Attribute => &["属性", "attribute", "attributes", "タグ", "tag", "tags"],
+            Role::YearMonth => &["年月", "year-month", "yearmonth", "year month"],
             Role::Format | Role::Main => &[],
         }
     }
@@ -548,6 +560,13 @@ fn apply_authority(file_mentions: Vec<Mention>, r: &Resolved, opts: &MatchOption
     for c in &r.characters {
         out.push(plain(Role::Character, c, None));
     }
+    // 属性タグ・年月は、「正の情報」があるときだけ取る（題名・txt だけのファイルからは取らない）。
+    for a in &r.attributes {
+        out.push(plain(Role::Attribute, a, None));
+    }
+    if let Some(ym) = &r.year_month {
+        out.push(plain(Role::YearMonth, &ym.element_name(), None));
+    }
     out
 }
 
@@ -909,6 +928,8 @@ pub(crate) fn build_candidates_full(
                 Role::Performer => RuleRole::Performer,
                 Role::Character => RuleRole::Character,
                 Role::Parody => RuleRole::Parody,
+                Role::Attribute => RuleRole::Attribute,
+                Role::YearMonth => RuleRole::YearMonth,
             };
             if let Some(reason) = outcomes[*fi].disabled_reason(role) {
                 m.ignored = true;
@@ -916,6 +937,9 @@ pub(crate) fn build_candidates_full(
             }
         }
     }
+
+    // 属性タグの照合用の索引は、属性タグの言及があるときだけ作る。
+    let has_attribute_mentions = mentions.iter().any(|(_, m)| m.role == Role::Attribute);
 
     // 2) 種類＋完全一致キーで候補にまとめる。
     struct Acc {
@@ -979,6 +1003,17 @@ pub(crate) fn build_candidates_full(
     let performer_ix = element_index(cats, cat_of(Role::Performer), &opts);
     let character_ix = element_index(cats, cat_of(Role::Character), &opts);
     let parody_ix = element_index(cats, cat_of(Role::Parody), &opts);
+    let year_month_ix = element_index(cats, cat_of(Role::YearMonth), &opts);
+    // 属性タグは、メイン・システム以外のどのカテゴリにある要素にも完全一致で付ける（無ければ「属性」カテゴリに新規作成）。
+    let attribute_cat = cat_of(Role::Attribute);
+    let attribute_ixs: Vec<ElementIndex> = if has_attribute_mentions {
+        (0..cats.len())
+            .filter(|&i| !cats[i].is_main && cats[i].system_kind.is_none())
+            .filter_map(|i| element_index(cats, CatRef::Existing(i), &opts))
+            .collect()
+    } else {
+        Vec::new()
+    };
     let mut candidates: Vec<Candidate> = Vec::new();
     for (role, ident) in order {
         let acc = accs.remove(&(role, ident)).unwrap();
@@ -1024,19 +1059,24 @@ pub(crate) fn build_candidates_full(
                         .map(|(id, _, _, _)| (ix.cat_idx, *id));
                 }
             }
-            Role::Format | Role::Main | Role::Event | Role::Performer | Role::Character | Role::Parody => {
+            Role::Attribute => {
+                // どのカテゴリにあっても、完全一致する要素に付ける。見つからなければ新規作成（提案は出さない）。
+                existing = attribute_ixs.iter().find_map(|ix| match_keys.iter().find_map(|mk| ix.exact(mk).map(|(id, _)| (ix.cat_idx, id))));
+            }
+            Role::Format | Role::Main | Role::Event | Role::Performer | Role::Character | Role::Parody | Role::YearMonth => {
                 let ix = match role {
                     Role::Format => &format_ix,
                     Role::Main => &main_ix,
                     Role::Performer => &performer_ix,
                     Role::Character => &character_ix,
                     Role::Parody => &parody_ix,
+                    Role::YearMonth => &year_month_ix,
                     _ => &event_ix,
                 };
                 if let Some(ix) = ix {
                     existing = match_keys.iter().find_map(|mk| ix.exact(mk).map(|(id, _)| (ix.cat_idx, id)));
-                    // 形式は拡張子の完全一致だけ。メイン・イベントは類似も提案する。
-                    if existing.is_none() && role != Role::Format {
+                    // 形式・年月は完全一致だけ（年月は似た文字列ばかりなので、類似を提案しない）。それ以外は類似も提案する。
+                    if existing.is_none() && !matches!(role, Role::Format | Role::YearMonth) {
                         for mk in &match_keys {
                             suggestions.extend(ix.similar(mk, opts.threshold));
                         }
@@ -1113,7 +1153,7 @@ pub(crate) fn build_candidates_full(
 
     // 4) 類似品の束（同じ種類の中で）。番号は種類をまたいで一意にする。
     let mut next_cluster = 0usize;
-    for role in [Role::Format, Role::Main, Role::Language, Role::Event, Role::Author, Role::Group] {
+    for role in [Role::Format, Role::Main, Role::Language, Role::Event, Role::Parody, Role::Character, Role::Author, Role::Group, Role::Performer] {
         let idxs: Vec<usize> = (0..candidates.len()).filter(|&i| candidates[i].role == role).collect();
         let names: Vec<String> = idxs.iter().map(|&i| candidates[i].name.clone()).collect();
         let ids = cluster(&names, &opts);
@@ -1122,6 +1162,12 @@ pub(crate) fn build_candidates_full(
             candidates[i].cluster = base + ids[pos];
             next_cluster = next_cluster.max(base + ids[pos] + 1);
         }
+    }
+
+    // 属性タグ・年月は、似た名前でも束ねない（候補ごとに別の番号にする）。
+    for c in candidates.iter_mut().filter(|c| matches!(c.role, Role::Attribute | Role::YearMonth)) {
+        c.cluster = next_cluster;
+        next_cluster += 1;
     }
 
     let limits = check_limits(&candidates);
@@ -2207,5 +2253,97 @@ mod tests {
         // meta の無いファイルは、従来どおり。
         let set = build_candidates(&[input("x.zip", "zip", Some(SAMPLE_INFO))], &master(), &MatchOptions::default(), Lang::Japanese);
         assert_eq!(find(&set, Role::Group, "Hawk Bit").choice, Choice::Existing { cat_idx: 3, tier_id: 30 });
+    }
+
+    // ── 属性タグ・年月（「正の情報」があるときだけ） ──
+
+    fn attr_names(set: &CandidateSet) -> Vec<String> {
+        let mut v: Vec<String> = set.candidates.iter().filter(|c| c.role == Role::Attribute).map(|c| c.name.clone()).collect();
+        v.sort();
+        v
+    }
+
+    #[test]
+    fn xml_tags_and_year_month_become_attribute_and_year_month_candidates() {
+        let set = build_candidates(&[meta_input("a.zip", Some(XML_SAMPLE), None)], &[], &MatchOptions::default(), Lang::Japanese);
+        assert_eq!(attr_names(&set), vec!["bald", "elf", "very long hair"]);
+        let ym = cand(&set, Role::YearMonth).unwrap();
+        assert_eq!(ym.name, "2023-12");
+        assert!(ym.is_adopted() && set.candidates.iter().filter(|c| c.role == Role::Attribute).all(|c| c.is_adopted() && c.choice == Choice::New));
+        assert_eq!((Role::Attribute.window(), Role::YearMonth.window()), (Window::One, Window::One));
+        // 新規カテゴリの名前（既存が無いとき）。
+        assert_eq!((Role::Attribute.new_category_name(Lang::Japanese), Role::YearMonth.new_category_name(Lang::Japanese)), ("属性", "年月"));
+    }
+
+    #[test]
+    fn json_tags_are_attributes_too_and_a_tag_named_group_is_just_a_tag() {
+        let set = build_candidates(&[meta_input("a.zip", None, Some(JSON_SAMPLE))], &[], &MatchOptions::default(), Lang::Japanese);
+        assert_eq!(attr_names(&set), vec!["group"]);
+        assert!(cand(&set, Role::Group).is_none());
+        assert!(cand(&set, Role::YearMonth).is_none(), "JSON だけでは年月は取らない");
+    }
+
+    #[test]
+    fn year_without_month_is_year_only_and_month_without_year_is_dropped() {
+        let set = build_candidates(&[meta_input("a.zip", Some("<ComicInfo><Year>2020</Year></ComicInfo>"), None)], &[], &MatchOptions::default(), Lang::Japanese);
+        assert_eq!(cand(&set, Role::YearMonth).unwrap().name, "2020");
+        let set = build_candidates(&[meta_input("a.zip", Some("<ComicInfo><Month>5</Month><Tags>x</Tags></ComicInfo>"), None)], &[], &MatchOptions::default(), Lang::Japanese);
+        assert!(cand(&set, Role::YearMonth).is_none());
+    }
+
+    #[test]
+    fn no_attributes_or_year_month_without_authority_data() {
+        // info.txt・ファイル名だけのファイルからは、取らない。
+        let set = build_candidates(&[input("[A (B)] t.zip", "zip", Some("[A (B)] t\n\nCategory: Doujinshi\nTags:\n> female: elf\n"))], &[], &MatchOptions::default(), Lang::Japanese);
+        assert!(set.candidates.iter().all(|c| !matches!(c.role, Role::Attribute | Role::YearMonth)));
+    }
+
+    #[test]
+    fn attributes_attach_to_an_existing_element_in_any_non_main_category() {
+        let master = vec![
+            cat("main", true, None, vec![tier(1, "Manga")]),
+            cat("種族", false, None, vec![tier(60, "Elf"), tier(61, "Dwarf")]),
+            cat("年月", false, None, vec![tier(70, "2023-12")]),
+        ];
+        let set = build_candidates(&[meta_input("a.zip", Some(XML_SAMPLE), None)], &master, &MatchOptions::default(), Lang::Japanese);
+        let choice = |name: &str| set.candidates.iter().find(|c| c.role == Role::Attribute && c.name == name).unwrap().choice.clone();
+        assert_eq!(choice("elf"), Choice::Existing { cat_idx: 1, tier_id: 60 }, "別カテゴリ（種族）の Elf に付ける");
+        assert_eq!(choice("bald"), Choice::New, "どこにも無ければ新規作成");
+        assert_eq!(cand(&set, Role::YearMonth).unwrap().choice, Choice::Existing { cat_idx: 2, tier_id: 70 });
+        // 属性タグは類似の提案を出さない（`elves` が `elf` に似ていても、新規のまま）。
+        let json = r#"{"tags":[{"type":"tag","name":"elves"}]}"#;
+        let set = build_candidates(&[meta_input("a.zip", None, Some(json))], &master, &MatchOptions::default(), Lang::Japanese);
+        let c = set.candidates.iter().find(|c| c.role == Role::Attribute).unwrap();
+        assert!(c.suggestions.is_empty() && c.choice == Choice::New);
+    }
+
+    #[test]
+    fn year_months_are_never_suggested_as_similar_and_attribute_clusters_are_unique() {
+        let master = vec![cat("年月", false, None, vec![tier(70, "2023-02")])];
+        let set = build_candidates(&[meta_input("a.zip", Some("<ComicInfo><Year>2023</Year><Month>12</Month></ComicInfo>"), None)], &master, &MatchOptions::default(), Lang::Japanese);
+        let ym = cand(&set, Role::YearMonth).unwrap();
+        assert!(ym.suggestions.is_empty() && ym.choice == Choice::New && ym.is_adopted());
+        // 束（類似品）の番号は、種類をまたいで重ならない。属性・年月は束ねない。
+        let set = build_candidates(&[meta_input("a.zip", Some(XML_SAMPLE), Some(JSON_SAMPLE))], &[], &MatchOptions::default(), Lang::Japanese);
+        let mut seen = std::collections::HashMap::new();
+        for c in &set.candidates {
+            let e = seen.entry(c.cluster).or_insert(c.role);
+            assert_eq!(*e, c.role, "束 {} が種類をまたいでいる", c.cluster);
+        }
+        let attr_clusters: Vec<usize> = set.candidates.iter().filter(|c| c.role == Role::Attribute).map(|c| c.cluster).collect();
+        let mut uniq = attr_clusters.clone();
+        uniq.sort();
+        uniq.dedup();
+        assert_eq!(uniq.len(), attr_clusters.len());
+    }
+
+    #[test]
+    fn a_rule_can_disable_attributes_and_year_month() {
+        let mut r = preset_rule(Preset::AiGenerated, 1);
+        r.effect.disable = [RuleRole::Attribute, RuleRole::YearMonth].into_iter().collect();
+        r.effect.enable.clear();
+        let set = build_with_rules(&[meta_input("AI generated.zip", Some(XML_SAMPLE), None)], &[], &[r]);
+        assert!(set.candidates.iter().filter(|c| matches!(c.role, Role::Attribute | Role::YearMonth)).all(|c| c.review && !c.is_adopted()));
+        assert!(cand(&set, Role::Author).unwrap().is_adopted(), "無効にしていない種類はそのまま");
     }
 }

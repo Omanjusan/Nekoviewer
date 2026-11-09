@@ -646,4 +646,19 @@ mod tests {
         assert_eq!(plan.new_categories, 4, "形式（zip）＋演者・キャラクター・パロディ元");
         assert_eq!(plan.file_additions.get(&0).map(|v| v.len()), Some(4));
     }
+
+    #[test]
+    fn attributes_and_year_month_create_their_own_categories_and_elements() {
+        let xml = "<ComicInfo><Writer>kirome</Writer><Tags>elf, bald</Tags><Year>2023</Year><Month>12</Month></ComicInfo>";
+        let meta = crate::tag_meta::ArchiveMeta::from_sources(crate::fs::archive::meta::parse_comic_info(xml.as_bytes()).as_ref(), None);
+        let inputs = [crate::tag_candidates::CandidateInput { file_name: "[Kirome] t.zip".into(), format: None, info: None, meta }];
+        let set = build_candidates(&inputs, &[], &MatchOptions::default(), Lang::Japanese);
+        let (mut cats, mut next) = (Vec::new(), 100u64);
+        let plan = plan_application(&set, &mut cats, &mut next, Lang::Japanese);
+        let find = |cat: &str| cats.iter().find(|c| c.name == cat).map(|c| c.tiers.iter().filter_map(|t| t.element.clone()).collect::<Vec<_>>());
+        assert_eq!(find("属性").map(|mut v| { v.sort(); v }), Some(vec!["bald".to_string(), "elf".to_string()]));
+        assert_eq!(find("年月"), Some(vec!["2023-12".to_string()]));
+        assert_eq!(find("作者"), Some(vec!["Kirome".to_string()]));
+        assert_eq!(plan.file_additions.get(&0).map(|v| v.len()), Some(4), "作者1＋属性2＋年月1");
+    }
 }

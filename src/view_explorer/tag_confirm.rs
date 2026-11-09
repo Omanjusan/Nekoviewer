@@ -202,6 +202,8 @@ fn role_label(role: Role) -> &'static str {
         Role::Performer => t.tag_confirm_role_performer(),
         Role::Character => t.tag_confirm_role_character(),
         Role::Parody => t.tag_confirm_role_parody(),
+        Role::Attribute => t.tag_confirm_role_attribute(),
+        Role::YearMonth => t.tag_confirm_role_year_month(),
     }
 }
 

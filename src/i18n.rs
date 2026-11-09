@@ -4286,6 +4286,8 @@ impl Lang {
     pub fn tag_confirm_role_performer(self) -> &'static str { self.learn_pick("演者", "", "") }
     pub fn tag_confirm_role_character(self) -> &'static str { self.learn_pick("キャラ", "", "") }
     pub fn tag_confirm_role_parody(self) -> &'static str { self.learn_pick("パロディ元", "", "") }
+    pub fn tag_confirm_role_attribute(self) -> &'static str { self.learn_pick("属性", "", "") }
+    pub fn tag_confirm_role_year_month(self) -> &'static str { self.learn_pick("年月", "", "") }
     pub fn tag_learn_view_button(self) -> &'static str { self.learn_pick("学習データを見る…", "", "") }
     pub fn tag_learn_clear_button(self) -> &'static str { self.learn_pick("全消去してやり直す", "", "") }
     pub fn tag_learn_clear_confirm(self) -> &'static str { self.learn_pick("学習データをすべて消去します。元に戻せません。", "", "") }

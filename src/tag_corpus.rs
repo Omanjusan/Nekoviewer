@@ -71,7 +71,7 @@ impl Label {
             Role::Group => Some(Label::Group),
             Role::Event => Some(Label::Event),
             Role::Language => Some(Label::Language),
-            Role::Format | Role::Main | Role::Performer | Role::Character | Role::Parody => None,
+            Role::Format | Role::Main | Role::Performer | Role::Character | Role::Parody | Role::Attribute | Role::YearMonth => None,
         }
     }
 }

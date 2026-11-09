@@ -46,6 +46,10 @@ pub(crate) enum RuleRole {
     Character,
     /// 新種類: パロディ元。
     Parody,
+    /// 新種類: 属性タグ（ComicInfo.xml の Tags・meta.json の tag）。「正の情報」があるときに取る。
+    Attribute,
+    /// 新種類: 年月（ComicInfo.xml の Year・Month）。「正の情報」があるときに取る。
+    YearMonth,
 }
 
 impl RuleRole {
@@ -54,7 +58,9 @@ impl RuleRole {
         [RuleRole::Format, RuleRole::Main, RuleRole::Language, RuleRole::Event, RuleRole::Author, RuleRole::Group];
     /// 新種類（有効にしたルールがあるときだけ取る）。
     pub(crate) const OPT_IN: [RuleRole; 3] = [RuleRole::Performer, RuleRole::Character, RuleRole::Parody];
-    pub(crate) const ALL: [RuleRole; 9] = [
+    /// 「正の情報」（ComicInfo.xml・meta.json）があるときに取る種類（ルールで有効にしなくても取る。無効にはできる）。
+    pub(crate) const FROM_AUTHORITY: [RuleRole; 2] = [RuleRole::Attribute, RuleRole::YearMonth];
+    pub(crate) const ALL: [RuleRole; 11] = [
         RuleRole::Format,
         RuleRole::Main,
         RuleRole::Language,
@@ -64,6 +70,8 @@ impl RuleRole {
         RuleRole::Performer,
         RuleRole::Character,
         RuleRole::Parody,
+        RuleRole::Attribute,
+        RuleRole::YearMonth,
     ];
 
     pub(crate) fn is_opt_in(self) -> bool {
