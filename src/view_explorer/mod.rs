@@ -1171,6 +1171,10 @@ pub struct NekoviewApp {
     pub(crate) tag_manager_categories: Vec<TagManagerCategoryUi>,
     /// タグマネージャー: 次に採番するtier(要素)ID。削除しても減らさない単調増加カウンタ。
     pub(crate) tag_manager_next_tier_id: u64,
+    /// 一括タグ付けの判定の学習データ（全フォルダ共通）。設定フォルダの `nekoviewer_tag_learning.json`。
+    pub(crate) tag_learned: crate::tag_learning::LearnedSet,
+    /// 学習データから作ったモデル（学習データが空なら None）。使うかどうかは `config.tag_learning_use`。
+    pub(crate) tag_model: Option<std::sync::Arc<crate::tag_model::Model>>,
     /// 一括タグ付けの適用後の「試用中」か。試用中は仮マスター（`nekoviewer_tags.trial.json`）を読み書きし、
     /// 本物のマスターは確定まで変えない。ファイルが残っていれば、次回起動も試用中から始まる。
     pub(crate) tag_trial_active: bool,
@@ -1404,6 +1408,7 @@ mod archive_info_cache;
 mod tag_scan;
 mod tag_confirm;
 mod tag_trial_ui;
+mod tag_learning_ui;
 mod scan;
 mod folder_sort;
 mod workers;
@@ -1506,6 +1511,8 @@ impl NekoviewApp {
             let slot = if tag_trial_active { crate::tag_manager::Slot::Trial } else { crate::tag_manager::Slot::Real };
             crate::tag_manager::save_slot(&config_root, slot, &tag_manager_categories, tag_manager_next_tier_id);
         }
+        let tag_learned = tag_learning_ui::load_learned(&config_root);
+        let tag_model = tag_learning_ui::train_model(&tag_learned, &config.tag_match);
         let (tag_main_options, tag_attr_options) = crate::tag_manager::derive_tag_options(&tag_manager_categories);
         let tag_main_selected = tag_main_options.first().map(|(id, _)| *id);
         let mut tag_attr_selected: Vec<u64> = Vec::new();
@@ -1755,6 +1762,8 @@ impl NekoviewApp {
             tag_manager_area_rect: egui::Rect::NOTHING,
             tag_manager_categories,
             tag_manager_next_tier_id,
+            tag_learned,
+            tag_model,
             tag_trial_active,
             tag_manager_selected_category: Some(0),
             tag_manager_editing_element: None,

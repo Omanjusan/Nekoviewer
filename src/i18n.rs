@@ -4179,6 +4179,50 @@ impl Lang {
         }
     }
 
+    // ── タグ学習（日本語のみ。英・中は未実装＝None/空で、日本語にフォールバックする） ──
+    // 日本語の文言がまだ確定していないため、3言語化は文言確定後に行う（英・中の分岐に値を入れるだけで済む形にしてある）。
+
+    fn learn_pick(self, ja: &'static str, en: &'static str, zh: &'static str) -> &'static str {
+        let local = match self {
+            Lang::Japanese => ja,
+            Lang::English => en,
+            Lang::Chinese => zh,
+        };
+        if local.is_empty() { ja } else { local }
+    }
+
+    /// タグパネル: 学習データの件数の表示
+    pub fn tag_learn_status(self, n: usize) -> String {
+        let ja = if n == 0 { "未学習".to_string() } else { format!("学習済 {n}件") };
+        let local: Option<String> = match self {
+            Lang::Japanese => None,
+            Lang::English => None,
+            Lang::Chinese => None,
+        };
+        local.unwrap_or(ja)
+    }
+
+    pub fn tag_learn_status_hover(self) -> &'static str {
+        self.learn_pick("一括取得の判定を、振り分けたファイル名から学習した件数", "", "")
+    }
+
+    /// 学習結果を使う/使わないの切替ボタン（`on` は現在の状態）
+    pub fn tag_learn_use_toggle(self, on: bool) -> &'static str {
+        if on {
+            self.learn_pick("● 使う", "", "")
+        } else {
+            self.learn_pick("○ 使わない", "", "")
+        }
+    }
+
+    pub fn tag_learn_use_hover(self) -> &'static str {
+        self.learn_pick("使う: 学習結果で作者・グループ・イベント・言語を判定する\n使わない: 従来のルールだけで判定する", "", "")
+    }
+
+    pub fn tag_learn_use_disabled_hover(self) -> &'static str {
+        self.learn_pick("学習データがありません", "", "")
+    }
+
     pub fn tag_trial_banner(self) -> &'static str {
         match self {
             Lang::Japanese => "試用中",

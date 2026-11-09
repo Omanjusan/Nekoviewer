@@ -1043,6 +1043,7 @@ impl NekoviewApp {
                 self.start_tag_scan();
             }
         });
+        self.draw_tag_learning_status(ui);
         ui.add_space(4.0);
         // フェーズTM0: 仮置きのタグマネージャー呼び出しボタン。既存のメインタグ／
         // 属性タグUIとは切り離した独立機能なので、位置・見た目は後で調整前提。

@@ -16,7 +16,8 @@ use redb::Database;
 
 use crate::i18n;
 use crate::i18n::Lang;
-use crate::tag_candidates::{build_candidates, CandidateInput, CandidateSet, Role};
+use crate::tag_candidates::{build_candidates_with, CandidateInput, CandidateSet, Role};
+use crate::tag_model::Model;
 use crate::tag_similarity::MatchOptions;
 use crate::tag_source::{format_tag_for, parse_info_txt, FormatTag, InfoTxt};
 use crate::view_explorer::TagManagerCategoryUi;
@@ -118,12 +119,12 @@ pub(super) fn run_scan(
 
 /// 走査結果から候補を作って結果に付ける（キャンセル済みなら何もしない）。
 /// 重い照合になりうるので、画面のスレッドではなくワーカーの中で呼ぶ。
-fn attach_candidates(result: &mut TagScanResult, master: &[TagManagerCategoryUi], opts: &MatchOptions, lang: Lang) {
+fn attach_candidates(result: &mut TagScanResult, master: &[TagManagerCategoryUi], opts: &MatchOptions, lang: Lang, model: Option<&Model>) {
     if result.cancelled {
         return;
     }
     let inputs = inputs_from_items(&result.items);
-    result.candidates = Some(build_candidates(&inputs, master, opts, lang));
+    result.candidates = Some(build_candidates_with(&inputs, master, opts, lang, model));
 }
 
 /// 走査結果を、候補生成の入力にする。
@@ -157,6 +158,7 @@ impl TagScanJob {
         master: Vec<TagManagerCategoryUi>,
         opts: MatchOptions,
         lang: Lang,
+        model: Option<Arc<Model>>,
     ) -> Self {
         let done = Arc::new(AtomicUsize::new(0));
         let cancel = Arc::new(AtomicBool::new(false));
@@ -165,7 +167,7 @@ impl TagScanJob {
         let (w_dir, w_done, w_cancel) = (dir.clone(), Arc::clone(&done), Arc::clone(&cancel));
         std::thread::spawn(move || {
             let mut result = run_scan(w_dir, &targets, db.as_ref(), &w_done, &w_cancel);
-            attach_candidates(&mut result, &master, &opts, lang);
+            attach_candidates(&mut result, &master, &opts, lang, model.as_deref());
             // 受信側が破棄済み（アプリ終了）でもエラーは無視する。
             let _ = tx.send(result);
         });
@@ -219,6 +221,7 @@ impl NekoviewApp {
             self.tag_manager_categories.clone(),
             self.config.tag_match,
             i18n::t(),
+            self.active_tag_model(),
         ));
     }
 
@@ -428,7 +431,7 @@ mod tests {
             m.push_element(c, el);
         }
         let mut result = r;
-        attach_candidates(&mut result, &cats, &MatchOptions::default(), Lang::Japanese);
+        attach_candidates(&mut result, &cats, &MatchOptions::default(), Lang::Japanese, None);
         let set = result.candidates.unwrap();
         println!("files={} with_info={} limits={:?}", set.file_count, set.files_with_info, set.limits);
         for c in &set.candidates {
@@ -441,10 +444,47 @@ mod tests {
     }
 
     #[test]
+    fn job_uses_the_learned_model_for_roles_when_given() {
+        use crate::tag_corpus::{CorpusEntry, Label};
+        use crate::tag_learning::LearnedSet;
+        // 「外側が作者・内側がサークル」の流儀を学習したモデルを渡すと、モデルなしとは逆の向きになる。
+        let pairs = [("Aoi", "Blue Moon"), ("Bell", "Red Sun"), ("Cato", "Green Hill"), ("Dune", "Gray Sea"), ("Echo", "Pink Sky"), ("Fumi", "Gold Sand")];
+        let entries: Vec<CorpusEntry> = pairs
+            .iter()
+            .map(|(a, c)| CorpusEntry {
+                file_name: format!("[{a} ({c})] T.zip"),
+                labels: vec![(Label::Author, a.to_string()), (Label::Group, c.to_string())],
+                hard: false,
+            })
+            .collect();
+        let model = Arc::new(crate::tag_model::Model::train(&LearnedSet { version: 1, entries }.training_data(&MatchOptions::default())).unwrap());
+        let dir = temp_dir("job_model");
+        let t = write_zip(&dir, "[Kai (Rock Fall)] Book.zip", &[("x.txt", b"x")]);
+        let run = |m: Option<Arc<crate::tag_model::Model>>| {
+            let job = TagScanJob::spawn(dir.clone(), vec![t.clone()], None, Vec::new(), MatchOptions::default(), Lang::Japanese, m);
+            let mut got = None;
+            for _ in 0..300 {
+                if let Ok(r) = job.rx.try_recv() {
+                    got = Some(r);
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            got.expect("結果が届く").candidates.expect("候補まで作られる")
+        };
+        let role_of = |set: &CandidateSet, name: &str| set.candidates.iter().find(|c| c.name == name).unwrap().role;
+        let plain = run(None);
+        assert_eq!((role_of(&plain, "Kai"), role_of(&plain, "Rock Fall")), (Role::Group, Role::Author), "モデルなしは外側=グループ");
+        let learned = run(Some(model));
+        assert_eq!((role_of(&learned, "Kai"), role_of(&learned, "Rock Fall")), (Role::Author, Role::Group), "学習後は外側=作者");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn job_runs_on_a_thread_and_delivers_the_result() {
         let dir = temp_dir("job");
         let t = write_zip(&dir, "a.zip", &[("info.txt", b"Category: Manga")]);
-        let job = TagScanJob::spawn(dir.clone(), vec![t], None, Vec::new(), MatchOptions::default(), Lang::Japanese);
+        let job = TagScanJob::spawn(dir.clone(), vec![t], None, Vec::new(), MatchOptions::default(), Lang::Japanese, None);
         let mut got = None;
         for _ in 0..300 {
             if let Ok(r) = job.rx.try_recv() {

@@ -298,6 +298,20 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// 目視用: `NEKO_CORPUS` のコーパス（TSV）を、設定フォルダ `NEKO_LEARN_OUT` の学習データ
+    /// （`nekoviewer_tag_learning.json`）として書き出す。アプリの学習窓ができる前に、配線を実機で確かめるために使う
+    /// （`NEKO_CORPUS=<tsv> NEKO_LEARN_OUT=<config dir> cargo test export_corpus_as_learning_data -- --ignored --nocapture`）。
+    /// 既存の学習データは上書きされるので、出力先には注意する。
+    #[test]
+    #[ignore]
+    fn export_corpus_as_learning_data() {
+        let (Ok(src), Ok(out)) = (std::env::var("NEKO_CORPUS"), std::env::var("NEKO_LEARN_OUT")) else { return };
+        let entries = parse_corpus(&std::fs::read_to_string(src).unwrap()).unwrap();
+        let set = LearnedSet { version: VERSION, entries };
+        assert!(set.save(Path::new(&out)));
+        println!("{} 件を {out}/{FILE_NAME} に書いた", set.len());
+    }
+
     #[test]
     fn synthetic_corpus_converts_without_unmatched_labels() {
         let set = LearnedSet { version: VERSION, entries: parse_corpus(SYNTHETIC).unwrap() };

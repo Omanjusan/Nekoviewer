@@ -267,6 +267,8 @@ pub struct AppConfig {
     pub text_page: crate::fs::archive::text_page::TextPageOptions,
     /// 一括タグ付けの照合の切替項目（正規化5項目・類似のしきい値）。永続設定（state の `app_tag_match`）。
     pub tag_match: crate::tag_similarity::MatchOptions,
+    /// 一括タグ付けの判定で、学習結果（`tag_learning`）を使うか。永続設定（state の `app_tag_learning_use`）。既定は使う。
+    pub tag_learning_use: bool,
     /// 次回起動時に X11 バックエンド（XWayland）で起動するか（state の `app_launch_x11`）。
     /// Wayland セッションでだけ意味を持つ。詳細は [display_backend.rs](crate::display_backend)。
     pub launch_x11: bool,
@@ -335,6 +337,7 @@ impl AppConfig {
             folder_book_access_warning_seen: false,
             text_page: Default::default(),
             tag_match: Default::default(),
+            tag_learning_use: true,
             launch_x11: false,
             last_run_version: String::new(),
         }

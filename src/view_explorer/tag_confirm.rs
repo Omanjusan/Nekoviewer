@@ -16,10 +16,11 @@ use std::sync::{mpsc, Arc};
 
 use crate::i18n::{self, Lang};
 use crate::tag_candidates::{
-    build_candidates, Bundle, Candidate, CandidateInput, CandidateSet, CatRef, Choice, MergeError, Role, Window,
+    build_candidates_with, Bundle, Candidate, CandidateInput, CandidateSet, CatRef, Choice, MergeError, Role, Window,
     ERROR_NEW_ELEMENTS, WARN_NEW_ELEMENTS,
 };
 use crate::tag_master::split_aliases;
+use crate::tag_model::Model;
 use crate::tag_apply::{plan_application, run_apply, ApplyError, ApplyReport};
 use crate::tag_similarity::{keys, MatchOptions};
 
@@ -95,6 +96,8 @@ pub(super) struct TagConfirm {
     /// 入力と同じ順のファイルのパス（適用でタグを書く先）。
     paths: Vec<PathBuf>,
     master: Arc<Vec<TagManagerCategoryUi>>,
+    /// 候補生成に使った学習モデル（切替項目を変えた作り直しでも同じモデルを使う）。
+    model: Option<Arc<Model>>,
     stage: Window,
     only_unconfirmed: bool,
     rebuild: Option<mpsc::Receiver<CandidateSet>>,
@@ -136,6 +139,7 @@ impl TagConfirm {
         inputs: Vec<CandidateInput>,
         paths: Vec<PathBuf>,
         master: Vec<TagManagerCategoryUi>,
+        model: Option<Arc<Model>>,
     ) -> Option<Self> {
         let has = |w: Window| set.candidates.iter().any(|c| c.role.window() == w);
         let stage = if has(Window::One) {
@@ -145,17 +149,17 @@ impl TagConfirm {
         } else {
             return None;
         };
-        Some(Self { set, inputs: Arc::new(inputs), paths, master: Arc::new(master), stage, only_unconfirmed: false, rebuild: None, threshold_draft: None, checked: HashSet::new(), filter: String::new(), next_bundle_id: 1, merge_msg: None, rename_review: None })
+        Some(Self { set, inputs: Arc::new(inputs), paths, master: Arc::new(master), model, stage, only_unconfirmed: false, rebuild: None, threshold_draft: None, checked: HashSet::new(), filter: String::new(), next_bundle_id: 1, merge_msg: None, rename_review: None })
     }
 
     /// 切替項目が変わったので、別スレッドで候補を作り直す。進行中の作り直しは捨てる。
     fn start_rebuild(&mut self, opts: MatchOptions, lang: Lang) {
         let (tx, rx) = mpsc::channel();
-        let (inputs, master) = (Arc::clone(&self.inputs), Arc::clone(&self.master));
+        let (inputs, master, model) = (Arc::clone(&self.inputs), Arc::clone(&self.master), self.model.clone());
         // 手動でまとめた候補は、作り直したあとも同じまとめを復元する。
         let bundles: Vec<Bundle> = self.set.snapshot_bundles();
         std::thread::spawn(move || {
-            let mut fresh = build_candidates(&inputs, &master, &opts, lang);
+            let mut fresh = build_candidates_with(&inputs, &master, &opts, lang, model.as_deref());
             fresh.apply_bundles(&bundles, &master);
             let _ = tx.send(fresh);
         });
@@ -203,7 +207,7 @@ impl NekoviewApp {
         paths: Vec<PathBuf>,
         master: Vec<TagManagerCategoryUi>,
     ) {
-        match TagConfirm::new(set, inputs, paths, master) {
+        match TagConfirm::new(set, inputs, paths, master, self.active_tag_model()) {
             Some(c) => self.tag_confirm = Some(c),
             None => self.set_toast(i18n::t().tag_confirm_no_candidates()),
         }
@@ -777,10 +781,10 @@ mod tests {
     #[test]
     fn confirm_starts_at_the_first_window_that_has_candidates() {
         let only_authors = build_candidates(&[crate::tag_candidates::input_from_info_text("[A (B)] t.zip", None, None)], &[], &MatchOptions::default(), Lang::English);
-        let c = TagConfirm::new(only_authors, vec![], vec![], vec![]).unwrap();
+        let c = TagConfirm::new(only_authors, vec![], vec![], vec![], None).unwrap();
         assert_eq!(c.stage, Window::Two, "窓1が空なら2枚目から");
         let empty = build_candidates(&[], &[], &MatchOptions::default(), Lang::English);
-        assert!(TagConfirm::new(empty, vec![], vec![], vec![]).is_none());
+        assert!(TagConfirm::new(empty, vec![], vec![], vec![], None).is_none());
     }
 
     #[test]
