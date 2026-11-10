@@ -140,6 +140,12 @@ fn draw_detail_body(ui: &mut egui::Ui, d: &DetailMeta) {
         body_label(ui, &nfo.text);
         ui.separator();
     }
+    // meta.json は P2 で整形表示にする。それまでは本文をそのまま出す。
+    if let Some(json) = d.meta_json.as_deref().filter(|j| !j.trim().is_empty()) {
+        ui.strong(t.detail_section_text("meta.json"));
+        body_label(ui, json);
+        ui.separator();
+    }
     if !d.comment.trim().is_empty() {
         ui.strong(t.detail_section_comment());
         body_label(ui, &d.comment);

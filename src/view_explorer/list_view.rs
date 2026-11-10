@@ -690,7 +690,7 @@ impl NekoviewApp {
             if !pages.is_empty() {
                 cell_text(ui.painter(), col_rect(rect, widths, Col::Pages), &pages, font, text_color);
             }
-            if info.detail == crate::neko_dir::DetailFlag::Present {
+            if info.detail.present_kinds().is_some() {
                 let cell = col_rect(rect, widths, Col::Detail);
                 let side = (cell.height() - 8.0).clamp(10.0, 18.0);
                 let icon_rect = egui::Rect::from_center_size(cell.center(), egui::vec2(side, side));

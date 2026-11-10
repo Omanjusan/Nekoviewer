@@ -210,6 +210,31 @@ pub struct NfoText {
     pub text: String,
 }
 
+/// 詳細の種別（リストの「詳細」列のアイコンに対応する）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub struct DetailKinds {
+    /// ComicInfo.xml。
+    pub xml: bool,
+    /// meta.json。
+    pub json: bool,
+    /// 付属テキスト（.nfo / info.txt / readme.txt）とzipコメント。
+    pub txt: bool,
+}
+
+impl DetailKinds {
+    pub fn any(self) -> bool {
+        self.xml || self.json || self.txt
+    }
+
+    pub fn to_bits(self) -> u8 {
+        u8::from(self.xml) | (u8::from(self.json) << 1) | (u8::from(self.txt) << 2)
+    }
+
+    pub fn from_bits(bits: u8) -> Self {
+        Self { xml: bits & 1 != 0, json: bits & 2 != 0, txt: bits & 4 != 0 }
+    }
+}
+
 /// アーカイブの詳細テキスト一式。
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct DetailMeta {
@@ -217,13 +242,29 @@ pub struct DetailMeta {
     pub nfo: Vec<NfoText>,
     /// zipコメント（zip/cbzのみ）。
     pub comment: String,
+    /// meta.json の本文（安全化済み。読み出し上限 `META_JSON_LIMIT`）。
+    pub meta_json: Option<String>,
 }
 
 impl DetailMeta {
+    /// 種別ごとの有無。
+    pub fn kinds(&self) -> DetailKinds {
+        DetailKinds {
+            xml: self.comic_info.is_some(),
+            json: self.meta_json.as_ref().is_some_and(|s| !s.trim().is_empty()),
+            txt: !self.nfo.is_empty() || !self.comment.trim().is_empty(),
+        }
+    }
+
     /// 詳細ウィンドウに出せる内容があるか（リストの「詳細」列の判定）。
     pub fn has_detail(&self) -> bool {
-        self.comic_info.is_some() || !self.nfo.is_empty() || !self.comment.trim().is_empty()
+        self.kinds().any()
     }
+}
+
+/// 詳細テキストの抽出に対応している形式か（zip/cbzのみ。7z・tar・フォルダは対応外＝リストでは N/A）。
+pub fn detail_supported(path: &Path) -> bool {
+    !path.is_dir() && matches!(detect_format(path), ArchiveFormat::Zip)
 }
 
 /// エントリ名の最後の要素（`/` と `\` の両方で切る）。
@@ -255,39 +296,7 @@ fn read_limited<R: Read>(r: R, limit: u64) -> Option<Vec<u8>> {
 /// zip/cbz から詳細テキストを読む。開けない・zipでない場合は None。
 /// 詳細が無くても `Some(空のDetailMeta)` を返す（「確認済みで無し」と「未確認」を区別するため）。
 pub fn read_zip_detail(path: &Path) -> Option<DetailMeta> {
-    let file = std::fs::File::open(path).ok()?;
-    let mut archive = ::zip::ZipArchive::new(file).ok()?;
-
-    let comment_raw = archive.comment();
-    let comment_raw = &comment_raw[..comment_raw.len().min(COMMENT_LIMIT)];
-    let mut meta = DetailMeta { comment: decode_text_bytes(comment_raw).trim().to_owned(), ..Default::default() };
-
-    for i in 0..archive.len() {
-        let want_info = meta.comic_info.is_none();
-        let want_nfo = meta.nfo.len() < MAX_NFO_FILES;
-        if !want_info && !want_nfo {
-            break;
-        }
-        // 暗号化・壊れたエントリは by_index が失敗するので飛ばす。
-        let Ok(entry) = archive.by_index(i) else { continue };
-        if entry.is_dir() {
-            continue;
-        }
-        let name = super::zip::decode_zip_name(entry.name_raw());
-        if want_info && is_comic_info_name(&name) {
-            if let Some(bytes) = read_limited(entry, DETAIL_READ_LIMIT) {
-                meta.comic_info = parse_comic_info(&bytes);
-            }
-        } else if want_nfo && is_detail_text_name(&name) {
-            if let Some(bytes) = read_limited(entry, DETAIL_READ_LIMIT) {
-                let text = decode_text_bytes(&bytes).trim().to_owned();
-                if !text.is_empty() {
-                    meta.nfo.push(NfoText { name: base_name(&name).to_owned(), text });
-                }
-            }
-        }
-    }
-    Some(meta)
+    read_zip_bundle(path).map(|b| b.detail)
 }
 
 /// zip/cbz 内の `info.txt`（ファイル名が完全一致。大文字小文字は区別せず、サブフォルダ内も可）の本文を読む。
@@ -322,47 +331,88 @@ fn is_meta_json_name(name: &str) -> bool {
     base_name(name).eq_ignore_ascii_case("meta.json")
 }
 
-/// zip/cbz を1回だけ開いて、info.txt・ComicInfo.xml・meta.json を読む（それぞれ、ファイル名が完全一致。大文字小文字は
-/// 区別せず、サブフォルダ内も可。複数あれば最初のもの）。zipとして開けなければ None。開けて、どれも無ければ `Some(全部None)`。
+/// zip/cbz を1回だけ開いて読んだ、詳細表示とタグ取得の両方の元。
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub struct ZipBundle {
+    /// 詳細ウィンドウ・リストの「詳細」列の元。
+    pub detail: DetailMeta,
+    /// タグ取得の元（info.txt・ComicInfo.xml・meta.json）。
+    pub tag: TagSourceFiles,
+    /// 画像拡張子のエントリ数（TXTページは含まない。ページ数列に使えるが、開いたときの数と細部が違うことがある）。
+    pub image_count: usize,
+}
+
+/// zip/cbz を1回だけ開いて、詳細テキスト（ComicInfo.xml・meta.json・.nfo/info.txt/readme.txt・zipコメント）と
+/// タグ取得の元、画像の数をまとめて読む。ファイル名は完全一致（大文字小文字は区別せず、サブフォルダ内も可。複数あれば最初のもの。
+/// 付属テキストは最大4件）。zipとして開けなければ None。開けて、どれも無ければ空の `ZipBundle`。
 /// 暗号化・壊れたエントリは「無し」として扱う（走査全体を止めない）。
-pub fn read_zip_tag_sources(path: &Path) -> Option<TagSourceFiles> {
+/// 名前の分類はzipの中央ディレクトリ（名前一覧）だけで行い、本体を読むのは対象のエントリだけ。
+pub fn read_zip_bundle(path: &Path) -> Option<ZipBundle> {
     let file = std::fs::File::open(path).ok()?;
     let mut archive = ::zip::ZipArchive::new(file).ok()?;
+
+    let comment_raw = archive.comment();
+    let comment_raw = &comment_raw[..comment_raw.len().min(COMMENT_LIMIT)];
+    let mut out = ZipBundle::default();
+    out.detail.comment = decode_text_bytes(comment_raw).trim().to_owned();
+
     let (mut info_idx, mut comic_idx, mut json_idx) = (None, None, None);
+    let mut nfo_idxs: Vec<usize> = Vec::new();
     for i in 0..archive.len() {
         let Some(name) = archive.name_for_index(i) else { continue };
         if name.ends_with('/') {
             continue;
         }
-        let base = base_name(name);
-        if info_idx.is_none() && base.eq_ignore_ascii_case("info.txt") {
+        if super::detect::is_image_entry_raw(name.as_bytes()) {
+            out.image_count += 1;
+            continue;
+        }
+        if info_idx.is_none() && base_name(name).eq_ignore_ascii_case("info.txt") {
             info_idx = Some(i);
-        } else if comic_idx.is_none() && is_comic_info_name(name) {
+        }
+        if comic_idx.is_none() && is_comic_info_name(name) {
             comic_idx = Some(i);
         } else if json_idx.is_none() && is_meta_json_name(name) {
             json_idx = Some(i);
         }
-        if info_idx.is_some() && comic_idx.is_some() && json_idx.is_some() {
-            break;
+        if nfo_idxs.len() < MAX_NFO_FILES && is_detail_text_name(name) {
+            nfo_idxs.push(i);
         }
     }
-    let mut out = TagSourceFiles::default();
-    if let Some(i) = info_idx {
-        if let Ok(entry) = archive.by_index(i) {
-            out.info_txt = read_limited(entry, DETAIL_READ_LIMIT).map(|b| decode_text_bytes(&b));
-        }
+
+    if let Some(i) = info_idx
+        && let Ok(entry) = archive.by_index(i)
+    {
+        out.tag.info_txt = read_limited(entry, DETAIL_READ_LIMIT).map(|b| decode_text_bytes(&b));
     }
-    if let Some(i) = comic_idx {
-        if let Ok(entry) = archive.by_index(i) {
-            out.comic_info = read_limited(entry, DETAIL_READ_LIMIT).and_then(|b| parse_comic_info(&b));
-        }
+    if let Some(i) = comic_idx
+        && let Ok(entry) = archive.by_index(i)
+    {
+        out.tag.comic_info = read_limited(entry, DETAIL_READ_LIMIT).and_then(|b| parse_comic_info(&b));
+        out.detail.comic_info = out.tag.comic_info.clone();
     }
-    if let Some(i) = json_idx {
-        if let Ok(entry) = archive.by_index(i) {
-            out.meta_json = read_limited(entry, META_JSON_LIMIT).map(|b| decode_text_bytes(&b));
+    if let Some(i) = json_idx
+        && let Ok(entry) = archive.by_index(i)
+    {
+        out.tag.meta_json = read_limited(entry, META_JSON_LIMIT).map(|b| decode_text_bytes(&b));
+        out.detail.meta_json = out.tag.meta_json.clone();
+    }
+    for i in nfo_idxs {
+        let Ok(entry) = archive.by_index(i) else { continue };
+        let name = super::zip::decode_zip_name(entry.name_raw());
+        if let Some(bytes) = read_limited(entry, DETAIL_READ_LIMIT) {
+            let text = decode_text_bytes(&bytes).trim().to_owned();
+            if !text.is_empty() {
+                out.detail.nfo.push(NfoText { name: base_name(&name).to_owned(), text });
+            }
         }
     }
     Some(out)
+}
+
+/// zip/cbz のタグ取得の元（`read_zip_bundle` の一部）。zipとして開けなければ None。
+pub fn read_zip_tag_sources(path: &Path) -> Option<TagSourceFiles> {
+    read_zip_bundle(path).map(|b| b.tag)
 }
 
 /// 形式を判定して、タグ取得に使う付属データを読む。当面は zip/cbz のみ対応（他形式は None＝対象外）。
@@ -531,6 +581,55 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         assert_eq!(got.meta_json.as_ref().map(|s| s.len() as u64), Some(META_JSON_LIMIT));
         assert!(got.comic_info.is_none(), "拾える項目が無い ComicInfo.xml は無し扱い");
+    }
+
+    #[test]
+    fn bundle_reads_detail_tag_sources_and_image_count_in_one_open() {
+        let path = build_zip(
+            "bundle",
+            &[
+                ("001.jpg", b"i"),
+                ("sub/002.PNG", b"i"),
+                ("notes.txt", b"page, not detail"),
+                ("Info.txt", "T\nCategory: Manga\n".as_bytes()),
+                ("ComicInfo.xml", b"<ComicInfo><Title>T</Title></ComicInfo>"),
+                ("meta.json", br#"{"tags":[]}"#),
+            ],
+            "",
+        );
+        let b = read_zip_bundle(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(b.image_count, 2, "画像だけ数える");
+        assert_eq!(b.detail.kinds(), DetailKinds { xml: true, json: true, txt: true });
+        assert_eq!(b.detail.nfo.len(), 1);
+        assert_eq!(b.tag.info_txt.as_deref(), Some("T\nCategory: Manga\n"));
+        assert_eq!(b.tag.meta_json.as_deref(), Some(r#"{"tags":[]}"#));
+        assert_eq!(b.detail.meta_json, b.tag.meta_json);
+    }
+
+    #[test]
+    fn json_only_zip_counts_as_having_detail() {
+        let path = build_zip("jsononly", &[("001.jpg", b"i"), ("meta.json", br#"{"a":1}"#)], "");
+        let d = read_zip_detail(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(d.kinds(), DetailKinds { xml: false, json: true, txt: false });
+        assert!(d.has_detail());
+    }
+
+    #[test]
+    fn comment_only_is_txt_and_blank_json_is_nothing() {
+        let path = build_zip("commentonly", &[("001.jpg", b"i"), ("meta.json", b"  \n")], "from site");
+        let d = read_zip_detail(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(d.kinds(), DetailKinds { xml: false, json: false, txt: true });
+    }
+
+    #[test]
+    fn detail_kinds_bits_round_trip_and_support_check() {
+        for bits in 0..8u8 {
+            assert_eq!(DetailKinds::from_bits(bits).to_bits(), bits);
+        }
+        assert!(!detail_supported(&std::env::temp_dir()), "フォルダは対応外");
     }
 
     #[test]

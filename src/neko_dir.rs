@@ -6,6 +6,7 @@ use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 use sha2::{Digest, Sha256};
 
 use crate::config::AppConfig;
+use crate::fs::archive::meta::{DetailKinds, DetailMeta};
 
 /// サムネキャッシュテーブル: キー=ファイル名, バリュー=(source_mtime_secs: i64, jpeg_blob: Vec<u8>)
 pub const THUMBS_TABLE: TableDefinition<&str, (i64, &[u8])> = TableDefinition::new("thumbs");
@@ -1371,30 +1372,57 @@ pub fn is_invalid_and_current(db: &Arc<Mutex<Database>>, filename: &str, archive
     stored_mtime == file_mtime(archive_path)
 }
 
-/// 詳細テキストの有無（`ARCHIVE_META_TABLE` の detail_flags）。
+/// 詳細テキストの確認状態と種別（`ARCHIVE_META_TABLE` の detail_flags）。
+///
+/// 保存形式は1バイト: `0x80` = 確認済み（下位3ビットが XML・JSON・TXT の有無）、`0x40` = 対応外の形式（N/A）、
+/// それ以外 = 未確認。旧版が書いた 1（無し）・2（有り）は種別が分からないので未確認として読み、開き直したときに再記録される。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DetailFlag {
-    /// 未確認（zip/cbz以外、または読めなかった）。
+    /// 未確認（まだ開いていない・走査していない、または読めなかった）。
     Unknown,
-    /// 確認済みで詳細テキストは無い。
-    None,
-    /// 確認済みで有る。
-    Present,
+    /// 詳細テキストの抽出に対応していない形式（7z・tar・フォルダ）。
+    NotApplicable,
+    /// 確認済み。種別がすべて無ければ「確認済みで無し」。
+    Checked(DetailKinds),
 }
 
 impl DetailFlag {
+    const CHECKED_BIT: u8 = 0x80;
+    const NOT_APPLICABLE: u8 = 0x40;
+
     fn to_u8(self) -> u8 {
         match self {
             Self::Unknown => 0,
-            Self::None => 1,
-            Self::Present => 2,
+            Self::NotApplicable => Self::NOT_APPLICABLE,
+            Self::Checked(k) => Self::CHECKED_BIT | k.to_bits(),
         }
     }
+
     fn from_u8(v: u8) -> Self {
-        match v {
-            1 => Self::None,
-            2 => Self::Present,
-            _ => Self::Unknown,
+        if v & Self::CHECKED_BIT != 0 {
+            Self::Checked(DetailKinds::from_bits(v))
+        } else if v == Self::NOT_APPLICABLE {
+            Self::NotApplicable
+        } else {
+            Self::Unknown
+        }
+    }
+
+    /// 読み出し結果から作る。`read` は `meta::read_detail` の結果、`supported` は `meta::detail_supported`。
+    /// 対応形式で読めなかったとき（壊れたzipなど）は未確認のままにする。
+    pub fn from_read(read: Option<&DetailMeta>, supported: bool) -> Self {
+        match read {
+            Some(d) => Self::Checked(d.kinds()),
+            None if !supported => Self::NotApplicable,
+            None => Self::Unknown,
+        }
+    }
+
+    /// 確認済みで、1種類でも有るときの種別。
+    pub fn present_kinds(self) -> Option<DetailKinds> {
+        match self {
+            Self::Checked(k) if k.any() => Some(k),
+            _ => None,
         }
     }
 }
@@ -1526,28 +1554,57 @@ mod archive_meta_tests {
     fn archive_meta_round_trips_and_overwrites() {
         let (dir, db) = temp_db("rt");
         assert!(read_all_archive_meta(&db).is_empty());
-        write_archive_meta(&db, "a.zip", 100, 2000, 30, DetailFlag::Present);
-        write_archive_meta(&db, "b.cbz", 200, 3000, 5, DetailFlag::None);
-        write_archive_meta(&db, "c.7z", 300, 4000, 7, DetailFlag::Unknown);
+        let xml_txt = DetailFlag::Checked(DetailKinds { xml: true, json: false, txt: true });
+        let none = DetailFlag::Checked(DetailKinds::default());
+        write_archive_meta(&db, "a.zip", 100, 2000, 30, xml_txt);
+        write_archive_meta(&db, "b.cbz", 200, 3000, 5, none);
+        write_archive_meta(&db, "c.7z", 300, 4000, 7, DetailFlag::NotApplicable);
+        write_archive_meta(&db, "d.zip", 400, 5000, 1, DetailFlag::Unknown);
         let all = read_all_archive_meta(&db);
-        assert_eq!(all.len(), 3);
-        assert_eq!(all["a.zip"], ArchiveMetaRow { mtime: 100, size: 2000, page_count: 30, detail: DetailFlag::Present });
-        assert_eq!(all["b.cbz"].detail, DetailFlag::None);
-        assert_eq!(all["c.7z"].detail, DetailFlag::Unknown);
+        assert_eq!(all.len(), 4);
+        assert_eq!(all["a.zip"], ArchiveMetaRow { mtime: 100, size: 2000, page_count: 30, detail: xml_txt });
+        assert_eq!(all["b.cbz"].detail, none);
+        assert_eq!(all["c.7z"].detail, DetailFlag::NotApplicable);
+        assert_eq!(all["d.zip"].detail, DetailFlag::Unknown);
         // 再オープン（ファイルが変わった）で上書きされる。
-        write_archive_meta(&db, "a.zip", 150, 2100, 31, DetailFlag::None);
+        write_archive_meta(&db, "a.zip", 150, 2100, 31, none);
         let all = read_all_archive_meta(&db);
         assert_eq!(all["a.zip"].page_count, 31);
-        assert_eq!(all["a.zip"].detail, DetailFlag::None);
+        assert_eq!(all["a.zip"].detail, none);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn archive_meta_is_current_only_when_mtime_and_size_match() {
-        let row = ArchiveMetaRow { mtime: 100, size: 2000, page_count: 3, detail: DetailFlag::None };
+        let row = ArchiveMetaRow { mtime: 100, size: 2000, page_count: 3, detail: DetailFlag::Unknown };
         assert!(row.is_current(100, 2000));
         assert!(!row.is_current(101, 2000));
         assert!(!row.is_current(100, 2001));
+    }
+
+    #[test]
+    fn detail_flag_encoding_keeps_kinds_and_reads_old_values_as_unknown() {
+        for bits in 0..8u8 {
+            let f = DetailFlag::Checked(DetailKinds::from_bits(bits));
+            assert_eq!(DetailFlag::from_u8(f.to_u8()), f);
+        }
+        assert_eq!(DetailFlag::from_u8(DetailFlag::NotApplicable.to_u8()), DetailFlag::NotApplicable);
+        assert_eq!(DetailFlag::from_u8(0), DetailFlag::Unknown);
+        // 旧版の 1（無し）・2（有り）は種別が分からないので未確認。
+        assert_eq!(DetailFlag::from_u8(1), DetailFlag::Unknown);
+        assert_eq!(DetailFlag::from_u8(2), DetailFlag::Unknown);
+        assert_eq!(DetailFlag::Unknown.present_kinds(), None);
+        assert_eq!(DetailFlag::Checked(DetailKinds::default()).present_kinds(), None);
+        let k = DetailKinds { xml: false, json: true, txt: false };
+        assert_eq!(DetailFlag::Checked(k).present_kinds(), Some(k));
+    }
+
+    #[test]
+    fn detail_flag_from_read_separates_na_from_unreadable() {
+        let d = DetailMeta { comment: "c".into(), ..Default::default() };
+        assert_eq!(DetailFlag::from_read(Some(&d), true), DetailFlag::Checked(DetailKinds { xml: false, json: false, txt: true }));
+        assert_eq!(DetailFlag::from_read(None, false), DetailFlag::NotApplicable);
+        assert_eq!(DetailFlag::from_read(None, true), DetailFlag::Unknown);
     }
 
     #[test]

@@ -95,11 +95,10 @@ impl PendingOpen {
                         budget.file_budget_bytes,
                     );
                     // 詳細テキストの有無もここで確認する（zip/cbzのみ。他形式は未確認のまま）。
-                    let detail = match archive::meta::read_detail(&worker_path) {
-                        Some(d) if d.has_detail() => DetailFlag::Present,
-                        Some(_) => DetailFlag::None,
-                        None => DetailFlag::Unknown,
-                    };
+                    let detail = DetailFlag::from_read(
+                        archive::meta::read_detail(&worker_path).as_ref(),
+                        archive::meta::detail_supported(&worker_path),
+                    );
                     WorkerOutcome::Ready { entries, check, detail }
                 }
             };
