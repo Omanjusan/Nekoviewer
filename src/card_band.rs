@@ -281,9 +281,10 @@ impl BandSettings {
         }
     }
 
-    /// 実カードに描くカスタム書式。カスタムが有効で要素が1つ以上あるときだけ Some。
+    /// 実カードに描くカスタム書式。カスタムが有効なときだけ Some（要素が空なら空スライス）。
+    /// 空のときは「何も出さない」が正解なので、None（＝従来方式の帯を描く）にはしない。
     pub(crate) fn render_items(&self) -> Option<&[Item]> {
-        (self.active == Active::Custom && !self.items.is_empty()).then_some(self.items.as_slice())
+        (self.active == Active::Custom).then_some(self.items.as_slice())
     }
 }
 
@@ -652,15 +653,16 @@ mod tests {
     fn settings_parse_defaults_and_round_trip() {
         let d = BandSettings::from_state("", "", None);
         assert_eq!(d, BandSettings::default());
-        assert_eq!(d.render_items(), None);
+        assert_eq!(d.render_items(), None, "従来方式が既定");
         let s = BandSettings::from_state("custom", "title:l,nl,date", Some("70"));
         assert_eq!(s.active, Active::Custom);
         assert_eq!(s.transparency_pct, 70);
         assert_eq!(s.render_items().map(|i| i.len()), Some(3));
         // 壊れた透過度は既定へ
         assert_eq!(BandSettings::from_state("custom", "title", Some("abc")).transparency_pct, DEFAULT_TRANSPARENCY_PCT);
-        // カスタム有効でも要素が空なら描かない／従来方式採用中は要素があっても描かない
-        assert_eq!(BandSettings::from_state("custom", "", None).render_items(), None);
+        // カスタム有効で要素が空なら、空スライス（＝何も出さない。従来方式の帯にフォールバックしない）
+        assert_eq!(BandSettings::from_state("custom", "", None).render_items(), Some(&[][..]));
+        // 従来方式採用中は、カスタムの要素があっても None（従来方式の帯を描く）
         assert_eq!(BandSettings::from_state("classic", "title", None).render_items(), None);
     }
 }
