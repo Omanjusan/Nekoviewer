@@ -71,6 +71,13 @@ todo (E)「見開きボタンをビューアーウィンドウに移動」の実
   - 設定に無いID → 既定位置に補完（新バージョンで項目が増えても自然に出現）
 - 右寄せの `[ウィンドウ位置]`（旧F5〜F8の4ボタン。[window-position-menu.md](window-position-menu.md)）は順序Vecの対象外（固定右寄せのまま）
 
+## 採点項目（Rating）
+
+翻訳の右（既定順の末尾）に評価群 `BarGroup::Rating` / `ViewerBarItem::Rating`（state ID `rating`）を追加した。
+点数表示と±ボタンを1項目にまとめて描く。表示条件（アーカイブのみ・スコアリングON）を満たさないときは、
+セパレータごと描画を飛ばす（`draw_bar_items`）。仕様は [archive-rating.md](archive-rating.md) の
+「ビューアーbarの採点UI」。
+
 ## 将来拡張（今回やらない、この基盤の上に載る）
 
 - **ライブ並べ替え**: egui 0.35標準の`dnd_drag_source`/`dnd_drop_zone`で外部依存なしに

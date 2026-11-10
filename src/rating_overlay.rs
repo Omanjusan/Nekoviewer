@@ -286,6 +286,31 @@ pub fn show(ui: &mut egui::Ui, band: Rect, value_half: u8, unset_label: &str) ->
     event
 }
 
+/// ビューアーbarの採点UIの表示可否。巻末オーバーレイと同じ対象（アーカイブのみ）で、スコアリングOFFなら隠す。
+pub fn bar_visible(enabled: bool, is_raw_file: bool, is_virtual_book: bool) -> bool {
+    enabled && !is_raw_file && !is_virtual_book
+}
+
+/// ±0.5（半星1つ分）の増減。範囲 0..=MAX_HALF で頭打ち・下限の場合は None（押せない）。
+pub fn step_half(current: u8, up: bool) -> Option<u8> {
+    let cur = current.min(MAX_HALF);
+    if up {
+        (cur < MAX_HALF).then(|| cur + 1)
+    } else {
+        (cur > 0).then(|| cur - 1)
+    }
+}
+
+/// barの点数表示。未評価（0）は `unset_label`、それ以外は `★ 3.5`（小数点1桁固定）。
+pub fn bar_score_text(half: u8, unset_label: &str) -> String {
+    if half == 0 {
+        unset_label.to_string()
+    } else {
+        let h = half.min(MAX_HALF);
+        format!("★ {}.{}", h / 2, if h % 2 == 1 { 5 } else { 0 })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -411,5 +436,32 @@ mod tests {
         assert!(small.height() <= 100.0 * BAND_VIEWPORT_RATIO + 0.01);
         let row = star_row_in(small);
         assert!(row.rect().min.x >= small.min.x && row.rect().max.x <= small.max.x);
+    }
+
+    #[test]
+    fn bar_step_is_half_star_and_clamped() {
+        assert_eq!(step_half(0, true), Some(1));
+        assert_eq!(step_half(1, false), Some(0), "0.5から－で未評価");
+        assert_eq!(step_half(0, false), None, "0で－は押せない");
+        assert_eq!(step_half(9, true), Some(10));
+        assert_eq!(step_half(MAX_HALF, true), None, "★5.0で＋は押せない");
+        assert_eq!(step_half(99, true), None, "範囲外は最大へ丸めて頭打ち");
+    }
+
+    #[test]
+    fn bar_score_text_formats_one_decimal() {
+        assert_eq!(bar_score_text(0, "未評価"), "未評価");
+        assert_eq!(bar_score_text(1, "x"), "★ 0.5");
+        assert_eq!(bar_score_text(7, "x"), "★ 3.5");
+        assert_eq!(bar_score_text(10, "x"), "★ 5.0");
+        assert_eq!(bar_score_text(99, "x"), "★ 5.0");
+    }
+
+    #[test]
+    fn bar_visible_follows_overlay_targets() {
+        assert!(bar_visible(true, false, false));
+        assert!(!bar_visible(false, false, false), "スコアリングOFFで隠す");
+        assert!(!bar_visible(true, true, false), "生画像は対象外");
+        assert!(!bar_visible(true, false, true), "フォルダ(仮想ブック)は対象外");
     }
 }

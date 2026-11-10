@@ -4714,12 +4714,32 @@ impl ViewerState {
         let order = cfg.bar_order;
         let mut prev_group: Option<BarGroup> = None;
         for item in order {
+            // 表示対象外の項目は、セパレータごと飛ばす（空の区切りを残さない）
+            if item == ViewerBarItem::Rating && !self.rating_bar_visible(cfg) {
+                continue;
+            }
             if prev_group.is_some_and(|g| g != item.group()) {
                 ui.separator();
             }
             prev_group = Some(item.group());
             self.draw_bar_item(ui, cfg, item);
         }
+    }
+
+    /// barの採点UIを出すか（アーカイブのみ・スコアリングON時のみ）。
+    fn rating_bar_visible(&self, cfg: &ViewerConfig) -> bool {
+        crate::rating_overlay::bar_visible(cfg.rating_overlay_enabled, self.is_raw_file, self.is_virtual_book)
+    }
+
+    /// barの±0.5ボタンの操作を反映する。巻末オーバーレイと同じ `apply_rating_event` を通すので、
+    /// 表示値・DB保存・サムネ評価帯への反映が1経路にまとまり、両者は常に同期する。
+    /// 未評価に戻す場合（0）も `Set(0)` で絶対値保存する。巻末の「未評価にする」(`Clear`)と違い、
+    /// barからはトーストを出さない（点数表示が即変わるため）。
+    fn step_rating_from_bar(&mut self, up: bool) {
+        use crate::controller::RatingSaveAction;
+        let Some(next) = crate::rating_overlay::step_half(self.rating_half, up) else { return };
+        self.rating_half = next;
+        self.pending_rating_action = Some(RatingSaveAction::Set(next));
     }
 
     fn draw_bar_item(&mut self, ui: &mut egui::Ui, cfg: &mut ViewerConfig, item: ViewerBarItem) {
@@ -4864,6 +4884,25 @@ impl ViewerState {
                         self.pending_toggle_translate_window = true;
                     }
                 });
+            }
+            // 採点: 点数表示＋[-][+]（右側に固める）。値は巻末オーバーレイと共有。
+            ViewerBarItem::Rating => {
+                if !self.rating_bar_visible(cfg) { return; }
+                ui.label(crate::rating_overlay::bar_score_text(self.rating_half, t.rating_bar_unset()));
+                let half = self.rating_half;
+                let tip = t.rating_bar_step_tip();
+                if ui.add_enabled(crate::rating_overlay::step_half(half, false).is_some(), egui::Button::new("-"))
+                    .on_hover_text(tip)
+                    .clicked()
+                {
+                    self.step_rating_from_bar(false);
+                }
+                if ui.add_enabled(crate::rating_overlay::step_half(half, true).is_some(), egui::Button::new("+"))
+                    .on_hover_text(tip)
+                    .clicked()
+                {
+                    self.step_rating_from_bar(true);
+                }
             }
         }
     }
@@ -7096,6 +7135,40 @@ mod bookmark_restore_tests {
         assert!(viewer.rating_overlay_dismissed);
         assert_eq!(viewer.rating_half, 4, "Xでは評価値を変えない");
         assert_eq!(viewer.take_rating_action(), None);
+    }
+
+    #[test]
+    fn bar_step_syncs_with_overlay_value_and_saves_absolute() {
+        use crate::controller::RatingSaveAction;
+        use crate::rating_overlay::RatingEvent;
+        let mut viewer = archive_viewer();
+        // 未評価から＋ → ★0.5
+        viewer.step_rating_from_bar(true);
+        assert_eq!(viewer.rating_half, 1);
+        assert_eq!(viewer.take_rating_action(), Some(RatingSaveAction::Set(1)));
+        // 巻末オーバーレイで★3.5にしたあと、barの＋は同じ値から続く（同期）
+        viewer.apply_rating_event(RatingEvent::Set(7));
+        viewer.take_rating_action();
+        viewer.step_rating_from_bar(true);
+        assert_eq!(viewer.rating_half, 8);
+        assert_eq!(viewer.take_rating_action(), Some(RatingSaveAction::Set(8)));
+        // ★0.5から－で未評価（トーストを伴うClearではなく、絶対値0の保存）
+        viewer.set_saved_rating(1);
+        viewer.step_rating_from_bar(false);
+        assert_eq!(viewer.rating_half, 0);
+        assert_eq!(viewer.take_rating_action(), Some(RatingSaveAction::Set(0)));
+    }
+
+    #[test]
+    fn bar_step_at_limits_does_nothing() {
+        let mut viewer = archive_viewer();
+        viewer.step_rating_from_bar(false);
+        assert_eq!(viewer.rating_half, 0);
+        assert_eq!(viewer.take_rating_action(), None, "0で－は保存要求を出さない");
+        viewer.set_saved_rating(crate::rating_overlay::MAX_HALF);
+        viewer.step_rating_from_bar(true);
+        assert_eq!(viewer.rating_half, crate::rating_overlay::MAX_HALF);
+        assert_eq!(viewer.take_rating_action(), None, "★5.0で＋は保存要求を出さない");
     }
 
     #[test]

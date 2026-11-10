@@ -46,11 +46,13 @@ pub enum ViewerBarItem {
     WheelMode,
     /// OCR/翻訳子ウィンドウの開閉トグル（旧: 画面隅フローティングボタン、ツールバーへ昇格）
     TranslateToggle,
+    /// アーカイブ評価の点数表示と±0.5ボタン（巻末の評価オーバーレイと同じ値を共有）
+    Rating,
 }
 
-pub const BAR_ITEM_COUNT: usize = 17;
+pub const BAR_ITEM_COUNT: usize = 18;
 
-/// 既定の並び順。ソート群 → ページ群 → 回転群 → 翻訳群。
+/// 既定の並び順。ソート群 → ページ群 → 回転群 → 翻訳群 → 評価群。
 pub const DEFAULT_BAR_ORDER: [ViewerBarItem; BAR_ITEM_COUNT] = [
     ViewerBarItem::SortName,
     ViewerBarItem::SortNatural,
@@ -69,6 +71,7 @@ pub const DEFAULT_BAR_ORDER: [ViewerBarItem; BAR_ITEM_COUNT] = [
     ViewerBarItem::FitMode,
     ViewerBarItem::WheelMode,
     ViewerBarItem::TranslateToggle,
+    ViewerBarItem::Rating,
 ];
 
 /// 描画グループ。隣接項目のグループが変わる位置に描画側がセパレータを挟む
@@ -80,6 +83,7 @@ pub enum BarGroup {
     Rotation,
     View,
     Translate,
+    Rating,
 }
 
 impl ViewerBarItem {
@@ -103,6 +107,7 @@ impl ViewerBarItem {
             ViewerBarItem::FitMode         => "fit_mode",
             ViewerBarItem::WheelMode       => "wheel_mode",
             ViewerBarItem::TranslateToggle => "translate_toggle",
+            ViewerBarItem::Rating          => "rating",
         }
     }
 
@@ -125,6 +130,7 @@ impl ViewerBarItem {
             "fit_mode"         => ViewerBarItem::FitMode,
             "wheel_mode"       => ViewerBarItem::WheelMode,
             "translate_toggle" => ViewerBarItem::TranslateToggle,
+            "rating"           => ViewerBarItem::Rating,
             _ => return None,
         })
     }
@@ -166,6 +172,7 @@ impl ViewerBarItem {
             | ViewerBarItem::ExifRotation => BarGroup::Rotation,
             ViewerBarItem::FitMode | ViewerBarItem::WheelMode => BarGroup::View,
             ViewerBarItem::TranslateToggle => BarGroup::Translate,
+            ViewerBarItem::Rating => BarGroup::Rating,
         }
     }
 }
@@ -326,5 +333,20 @@ mod tests {
             .filter(|&it| it != ViewerBarItem::SortName)
             .collect();
         assert_eq!(resolve_bar_order(&saved), DEFAULT_BAR_ORDER);
+    }
+
+    /// 旧 state（Rating を知らない）を読んでも、既定順の直前（翻訳）の直後へ補完される。
+    #[test]
+    fn rating_item_is_completed_after_translate_for_old_state() {
+        let saved: Vec<ViewerBarItem> = DEFAULT_BAR_ORDER
+            .iter()
+            .copied()
+            .filter(|&it| it != ViewerBarItem::Rating)
+            .collect();
+        let order = resolve_bar_order(&saved);
+        assert_eq!(order, DEFAULT_BAR_ORDER);
+        let pos = |it| order.iter().position(|&x| x == it).unwrap();
+        assert_eq!(pos(ViewerBarItem::Rating), pos(ViewerBarItem::TranslateToggle) + 1);
+        assert_eq!(ViewerBarItem::Rating.group(), BarGroup::Rating);
     }
 }

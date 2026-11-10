@@ -24,12 +24,41 @@
   DBには触れない
 - 帯の上のクリック・ホバーは、ページ送り・ダブルクリック原寸切替・左右端ページ送りゾーンへ伝えない
 
+## ビューアーbarの採点UI（途中ページでの評価）
+
+巻末まで読み進めなくても評価できるよう、ビューアーのツールバー（top bar と、フルスクリーンのホバーバー
+`fs_sort_bar`）の翻訳ボタンの右に、点数表示と±0.5ボタンを置く（`ViewerBarItem::Rating`、
+グループ `BarGroup::Rating`。[viewer-toolbar.md](viewer-toolbar.md)）。
+
+- 表示: `★ 3.5 [-][+]`（点数は小数点1桁固定。点数と±ボタンは右側に固める）。未評価（0）は点数欄が「未評価」
+- `-` / `+` で0.5ずつ増減。0で`-`、★5.0で`+`はグレーアウト（押せない）。★0.5から`-`で未評価（0）
+- 巻末オーバーレイと同じ `rating_half` を共有し、保存も同じ `pending_rating_action` → DB の1経路。
+  どちらで操作しても、もう一方の表示と保存値が同期する（✕で巻末オーバーレイを閉じた後でもbarは操作できる）
+- 保存は絶対値（`Set(n)`）。`-` で未評価に戻した場合も `Set(0)` で、トーストは出さない
+  （巻末の「未評価にする」ボタンは従来どおりトーストを出す）
+- 表示条件（[rating_overlay.rs](../../src/rating_overlay.rs) `bar_visible`）: アーカイブのみ
+  （生画像・フォルダ（仮想ブック）は出さない）で、スコアリングON。OFFのときはbarからも隠す
+  （前後のセパレータごと飛ばす）
+- キーボードショートカット・点数欄のクリック直接設定は無い
+
+### 手動テスト
+
+1. アーカイブを開き、2ページ目で `+` を押す → `★ 0.5`。最終ページへ進むと巻末の★も0.5まで塗られている
+2. 巻末の★で★3.5に変更 → 戻ると barが `★ 3.5`。そこから `+` で `★ 4.0`、巻末も4.0
+3. ★0.5で `-` → 「未評価」表示。トーストは出ない。このとき `-` はグレー
+4. ★5.0で `+` がグレー。未評価（0）では `-` がグレー
+5. ビューアーを閉じてエクスプローラーのサムネ評価帯に反映される（閉じた後の再ソートは既存仕様）。開き直しても保存値で表示
+6. 生画像・フォルダ（仮想ブック）を開くと、採点UIと前後のセパレータが出ない
+7. スコアリングOFFで、採点UIが消える（ONへ戻すと再出現）
+8. フルスクリーンのホバーバーにも出て、操作が効く
+9. 巻末で✕で閉じた後も、barの± が効く
+
 ## スコアリングのON/OFF
 
 - エクスプローラーのメニューバー、`ツールボックスON/OFF` の左隣の `スコアリングON/OFF` ボタンで切り替える
   （`MenuBarButton::ScoringToggle`）。評価システム自体が邪魔な人向けの永続設定で、既定ON
 - state キーは `rating_overlay_enabled`（`ViewerConfig` の項目）。旧stateにキーがなければON
-- OFF の間は、アーカイブ末尾の評価オーバーレイだけを出さない（表示中に切り替えても消える）。
+- OFF の間は、アーカイブ末尾の評価オーバーレイとビューアーbarの採点UIだけを出さない（表示中に切り替えても消える）。
   訪問回数の記録・サムネの評価帯（info2）・score filter・保存済みの評価値は変わらない
 
 ## サムネカードの評価帯（info2）
@@ -106,12 +135,12 @@ IDが解決済みならv2、未解決・実体の無いファイルは旧v1の�
 
 | 内容 | 場所 |
 |---|---|
-| 星の描画・オーバーレイ・クリック→半星値 | [rating_overlay.rs](../../src/rating_overlay.rs) |
+| 星の描画・オーバーレイ・クリック→半星値・barの点数文字列/±（`step_half`/`bar_score_text`/`bar_visible`） | [rating_overlay.rs](../../src/rating_overlay.rs) |
 | フィルタ条件（`RatingFilter`） | [rating_filter.rs](../../src/rating_filter.rs) |
 | ソート比較（`ExplorerSort` / `RatingSort`） | [explorer_sort.rs](../../src/explorer_sort.rs) |
 | DBテーブル・訪問/評価の読み書き | [spread_state.rs](../../src/spread_state.rs) |
 | 評価の保存要求（`RatingSaveAction`） | [controller.rs](../../src/controller.rs) |
-| ビューアの状態とオーバーレイ描画 | [view_reader.rs](../../src/view_reader.rs) |
+| ビューアの状態とオーバーレイ描画・barの採点UI（`step_rating_from_bar`） | [view_reader.rs](../../src/view_reader.rs) |
 | 保存の反映・訪問カウント・キャッシュ更新 | [viewer_host.rs](../../src/view_explorer/viewer_host.rs) |
 | `CardRatingMode`・メニューボタン | [view_explorer/mod.rs](../../src/view_explorer/mod.rs) |
 | 帯の描画・フィルタ行 | [panels.rs](../../src/view_explorer/panels.rs) |

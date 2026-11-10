@@ -1474,6 +1474,24 @@ impl Lang {
         }
     }
 
+    /// ビューアーbarの採点UI: 未評価時の点数欄の表示。
+    pub fn rating_bar_unset(self) -> &'static str {
+        match self {
+            Lang::Japanese => "未評価",
+            Lang::English  => "Unrated",
+            Lang::Chinese  => "未评价",
+        }
+    }
+
+    /// ビューアーbarの[-][+]ボタンのツールチップ。
+    pub fn rating_bar_step_tip(self) -> &'static str {
+        match self {
+            Lang::Japanese => "評価を0.5ずつ増減（巻末の評価と同じ値）",
+            Lang::English  => "Change rating by 0.5 (same value as the end-of-book rating)",
+            Lang::Chinese  => "评价增减0.5（与书末评价同步）",
+        }
+    }
+
     pub fn toast_rating_cleared(self) -> &'static str {
         match self {
             Lang::Japanese => "未評価として登録しなおしました",
