@@ -294,6 +294,7 @@ impl NekoviewApp {
         self.draw_bookmark_setting_dialog(&ctx);
         self.draw_spread_setting_dialog(&ctx);
         self.draw_rating_setting_dialog(&ctx);
+        self.draw_card_band_mock_dialog(&ctx);
         self.draw_backup_failure_dialog(&ctx);
         self.draw_perf_fixture_dialogs(&ctx);
         self.draw_release_notice_dialog(&ctx);
@@ -801,6 +802,12 @@ impl NekoviewApp {
             if r_rating.clicked() {
                 self.card_rating_mode = self.card_rating_mode.next();
                 self.persist_state();
+            }
+
+            // ── 【MOCK・仮ボタン】カード帯設定ダイアログ（P4で「帯」ボタンへ統合し、このボタンは消す） ──
+            // キーボード移動の対象外（MENU_BAR_ORDERに入れない）。
+            if ui.button("帯(MOCK)").clicked() {
+                self.card_band_mock.open();
             }
 
             // ── ステータスウィンドウボタン（右端） ────────────────────────

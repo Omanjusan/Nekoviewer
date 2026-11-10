@@ -1293,6 +1293,8 @@ pub struct NekoviewApp {
     pub(crate) card_date_format: crate::card_date_format::CardDateFormat,
     /// 情報帯の見た目（背景色・透過度・文字色・文字サイズ）。今は Default 固定。
     pub(crate) card_info_style: CardInfoStyle,
+    /// カード帯設定ダイアログのMOCK状態（紐付けなし。P4でメニューバーの「帯」ボタンへ統合する）
+    card_band_mock: card_band_dialog_ui::CardBandMock,
     /// 情報帯の行が帯幅を超えた時のホバー横スクロール状態: (対象パス, ホバー開始時刻)。
     pub(crate) card_info_hover: Option<(PathBuf, std::time::Instant)>,
     /// 可視カードぶんだけ遅延取得するファイルメタデータのキャッシュ: パス → (更新日時, サイズbytes)。
@@ -1441,6 +1443,7 @@ mod identity_worker;
 mod identity_resolution_ui;
 mod backup_failure_ui;
 mod release_notice_ui;
+mod card_band_dialog_ui;
 mod reveal_ui;
 mod relink_ui;
 mod db_backup_ui;
@@ -1815,6 +1818,7 @@ impl NekoviewApp {
             list_scroll_x: 0.0,
             card_date_format,
             card_info_style: CardInfoStyle::default(),
+            card_band_mock: Default::default(),
             card_info_hover: None,
             archive_meta_cache: HashMap::new(),
             archive_rating_cache: HashMap::new(),
