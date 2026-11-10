@@ -1444,6 +1444,7 @@ mod identity_resolution_ui;
 mod backup_failure_ui;
 mod release_notice_ui;
 mod card_band_dialog_ui;
+mod card_band_paint;
 mod reveal_ui;
 mod relink_ui;
 mod db_backup_ui;

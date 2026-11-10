@@ -9,7 +9,8 @@
 //! データモデルと配置計画は card_band.rs（純関数・P1）を使う。実カード描画への接続はP2、文言のi18nはP4。
 
 use super::{CardInfoMode, CardInfoStyle, CardRatingMode, NekoviewApp};
-use crate::card_band::{self, Active, Align, Elem, Item, MAX_ITEMS, MAX_LINES};
+use super::card_band_paint::{band_metrics, paint_band};
+use crate::card_band::{self, Active, Align, BandData, Elem, Item, MAX_ITEMS, MAX_LINES};
 use egui::{Align2, Color32, Pos2, Rect, Stroke, Vec2};
 
 /// サンプルカードの大きさ（px）。
@@ -17,8 +18,6 @@ const SAMPLE_CARD_W: f32 = 240.0;
 const SAMPLE_CARD_H: f32 = 120.0;
 /// 文字サイズの算出に使う仮想のカード高（実カードの cell_h 相当。サンプルの見た目の高さとは独立）。
 const SAMPLE_CELL_H: f32 = 200.0;
-/// 帯の左右余白（実カード描画の PAD と同じ）。
-const PAD: f32 = 4.0;
 
 /// 要素ボタン・スタック欄に出す名称（i18nはP4で）。
 fn elem_label(e: Elem) -> &'static str {
@@ -112,97 +111,24 @@ impl CardBandMock {
     pub(super) fn open(&mut self) {
         self.draft = Some(self.saved.clone());
     }
-}
 
-// ── サンプル帯の描画（仮実装） ───────────────────────────────────────────
-
-const SAMPLE_TITLE: &str = "サンプル_タイトル.zip";
-const SAMPLE_DATE: &str = "2026-01-31";
-const SAMPLE_SIZE: &str = "12.3 MB";
-const SAMPLE_HALF: u8 = 7; // ★3.5
-const SAMPLE_VISITS: &str = "訪問回数：12回";
-
-fn text_of(e: Elem) -> Option<&'static str> {
-    match e {
-        Elem::Date => Some(SAMPLE_DATE),
-        Elem::Title => Some(SAMPLE_TITLE),
-        Elem::Size => Some(SAMPLE_SIZE),
-        Elem::Score => Some("3.5"),
-        Elem::Visits => Some(SAMPLE_VISITS),
-        _ => None,
+    /// 実カードに描くカスタム書式。カスタムが有効で、要素が1つ以上あるときだけ Some。
+    /// （P4で state に配線するまでは、このダイアログで確定した内容をセッション内だけ反映する）
+    pub(super) fn render_items(&self) -> Option<Vec<Item>> {
+        (self.saved.side == Active::Custom && !self.saved.items.is_empty()).then(|| self.saved.items.clone())
     }
 }
 
-/// 1要素の幅。
-fn item_width(painter: &egui::Painter, font: &egui::FontId, e: Elem, line_px: f32, star_r: f32) -> f32 {
-    match e {
-        Elem::Stars => {
-            let l = crate::rating_overlay::compact_star_layout(SAMPLE_HALF, Pos2::ZERO, star_r);
-            match (l.first(), l.last()) {
-                (Some(a), Some(b)) => (b.0.x - a.0.x) + star_r * 1.902,
-                _ => 0.0,
-            }
-        }
-        Elem::Space => line_px * 0.3,
-        Elem::Divider => 7.0,
-        Elem::Newline => 0.0,
-        _ => painter
-            .layout_no_wrap(text_of(e).unwrap_or("").to_string(), font.clone(), Color32::WHITE)
-            .size()
-            .x,
-    }
-}
+// ── サンプル帯の描画（実カードと同じ描画 card_band_paint::paint_band を使う） ──
 
-/// ゾーン（左／中央／右）内に要素を左から順に描く。クリップは呼び出し側の painter が担う。
-fn paint_run(
-    painter: &egui::Painter,
-    font: &egui::FontId,
-    color: Color32,
-    run: &[Elem],
-    mut x: f32,
-    cy: f32,
-    row_h: f32,
-    line_px: f32,
-    star_r: f32,
-) {
-    for &e in run {
-        let w = item_width(painter, font, e, line_px, star_r);
-        match e {
-            Elem::Stars => {
-                crate::rating_overlay::paint_compact_stars(painter, SAMPLE_HALF, Pos2::new(x + w / 2.0, cy), star_r);
-            }
-            Elem::Divider => {
-                painter.line_segment(
-                    [Pos2::new(x + w / 2.0, cy - row_h / 2.0 + 1.0), Pos2::new(x + w / 2.0, cy + row_h / 2.0 - 1.0)],
-                    Stroke::new(1.0, color),
-                );
-            }
-            Elem::Space | Elem::Newline => {}
-            _ => {
-                painter.text(Pos2::new(x, cy), Align2::LEFT_CENTER, text_of(e).unwrap_or(""), font.clone(), color);
-            }
-        }
-        x += w;
-    }
-}
-
-/// 1行ぶんを配置計画（card_band::plan_row）どおりに描く。
-fn paint_row(painter: &egui::Painter, band: Rect, row: &[Item], cy: f32, row_h: f32, line_px: f32, style: &CardInfoStyle) {
-    let font = egui::FontId::proportional(line_px);
-    let star_r = row_h * 0.45;
-    let l = band.min.x + PAD;
-    let avail = (band.max.x - PAD - l).max(1.0);
-    let aligns: Vec<Align> = row.iter().map(|i| i.align).collect();
-    let widths: Vec<f32> = row.iter().map(|i| item_width(painter, &font, i.elem, line_px, star_r)).collect();
-    let plan = card_band::plan_row(&aligns, &widths, avail);
-    let color = style.text_color;
-    for zone in [&plan.left, &plan.center, &plan.right] {
-        if zone.clip.1 <= zone.clip.0 || zone.idx.is_empty() {
-            continue;
-        }
-        let clip = Rect::from_min_max(Pos2::new(l + zone.clip.0, band.min.y), Pos2::new(l + zone.clip.1, band.max.y));
-        let run: Vec<Elem> = zone.idx.iter().map(|&i| row[i].elem).collect();
-        paint_run(&painter.with_clip_rect(clip), &font, color, &run, l + zone.start, cy, row_h, line_px, star_r);
+fn sample_data() -> BandData {
+    BandData {
+        title: "サンプル_タイトル.zip".to_string(),
+        date: "2026-01-31".to_string(),
+        size: "12.3 MB".to_string(),
+        rating_half: Some(7), // ★3.5
+        unrated: "未評価".to_string(),
+        visits_text: "訪問回数：12回".to_string(),
     }
 }
 
@@ -224,15 +150,9 @@ fn paint_sample(ui: &mut egui::Ui, items: &[Item], style: &CardInfoStyle) {
     if rows.is_empty() {
         return;
     }
-    let line_px = (SAMPLE_CELL_H * (style.text_size / 200.0)).clamp(9.0, style.text_size);
-    let row_h = line_px * 1.35;
-    let band_h = rows.len() as f32 * row_h + 4.0;
+    let (line_px, row_h, band_h) = band_metrics(SAMPLE_CELL_H, style, rows.len());
     let band = Rect::from_min_max(Pos2::new(rect.min.x, rect.max.y - band_h), rect.max);
-    painter.rect_filled(band, 0.0, style.band_color);
-    for (i, row) in rows.iter().enumerate() {
-        let cy = band.min.y + 2.0 + i as f32 * row_h + row_h / 2.0;
-        paint_row(&painter, band, row, cy, row_h, line_px, style);
-    }
+    paint_band(&painter, band, &rows, &sample_data(), style, line_px, row_h, None);
 }
 
 // ── ダイアログ本体 ───────────────────────────────────────────────────────

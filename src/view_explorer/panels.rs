@@ -3487,9 +3487,15 @@ impl NekoviewApp {
                             // 画像の上に半透明帯を重ねる。マーカー描画より前に置くことで、
                             // マーカー（赤×・お気に入り等）は帯の上に出る（重なりは許容）。
                             // 帯は「情報行（0..=3）＋評価行（0..=2, info2）」を上から順に積む。
+                            // カスタム書式が有効なら、従来方式の帯は出さず、カスタム帯だけを描く
+                            // （従来方式の描画コードは無変更。n_lines を0にして素通りさせる）。
+                            let custom_band = self.card_band_mock.render_items();
+                            if let Some(items) = &custom_band {
+                                self.paint_custom_card_band(ui, &response, rect, path, cell_h, items);
+                            }
                             let info_lines = self.card_info_mode.line_count();
                             let rating_lines = self.card_rating_mode.line_count();
-                            let n_lines = info_lines + rating_lines;
+                            let n_lines = if custom_band.is_some() { 0 } else { info_lines + rating_lines };
                             if n_lines > 0 {
                                 // 可視カードぶんだけメタデータを遅延取得（失敗時は次フレーム再試行）
                                 if info_lines > 0

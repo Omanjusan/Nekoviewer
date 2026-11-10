@@ -198,6 +198,15 @@ pub fn compact_star_layout(value_half: u8, center: Pos2, radius: f32) -> Vec<(Po
         .collect()
 }
 
+/// `compact_star_layout` で並べた星の行の全幅。値0なら0。
+pub fn compact_stars_width(value_half: u8, radius: f32) -> f32 {
+    let l = compact_star_layout(value_half, Pos2::ZERO, radius);
+    match (l.first(), l.last()) {
+        (Some(a), Some(b)) => (b.0.x - a.0.x) + radius * STAR_WIDTH_PER_RADIUS,
+        _ => 0.0,
+    }
+}
+
 /// ★5個ぶんが `avail_w` に収まるよう、星の外半径を上限 `radius` から縮める。
 pub fn fit_compact_radius(radius: f32, avail_w: f32) -> f32 {
     let five_w_per_radius =

@@ -233,6 +233,79 @@ pub(crate) fn from_state_str(s: &str) -> Vec<Item> {
     normalize(&items)
 }
 
+// ── 要素 → 表示内容 ──────────────────────────────────────────────────────
+
+/// 1枚のカードぶんの表示データ（呼び出し側が i18n・書式を済ませて渡す）。
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct BandData {
+    pub title: String,
+    /// 整形済みの日付。未取得なら空
+    pub date: String,
+    /// 整形済みのサイズ。未取得なら空
+    pub size: String,
+    /// 評価（半星単位 0..=10）。`None` = 生画像（評価の対象外）
+    pub rating_half: Option<u8>,
+    /// 「未評価」の表記（言語依存）
+    pub unrated: String,
+    /// 整形済みの訪問回数の行（「訪問回数：XX回」）
+    pub visits_text: String,
+}
+
+/// 要素の描画内容。
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum Content {
+    Text(String),
+    /// 星の描画（半星値 1..=10）
+    Stars(u8),
+    /// 半角1個ぶんの隙間
+    Space,
+    /// 行の高さいっぱいの縦線
+    Bar,
+}
+
+/// 要素を表示内容へ解決する。データ不在時の表示は現行踏襲:
+/// 生画像は「-」、未評価は `unrated`、評価ありは星／小数1桁。日付・サイズが未取得なら空文字。
+pub(crate) fn content_of(e: Elem, d: &BandData) -> Content {
+    match e {
+        Elem::Date => Content::Text(d.date.clone()),
+        Elem::Title => Content::Text(d.title.clone()),
+        Elem::Size => Content::Text(d.size.clone()),
+        Elem::Stars => match d.rating_half {
+            None => Content::Text("-".to_string()),
+            Some(0) => Content::Text(d.unrated.clone()),
+            Some(h) => Content::Stars(h.min(10)),
+        },
+        Elem::Score => match d.rating_half {
+            None => Content::Text("-".to_string()),
+            Some(0) => Content::Text(d.unrated.clone()),
+            Some(h) => {
+                let h = h.min(10);
+                Content::Text(format!("{}.{}", h / 2, if h % 2 == 1 { 5 } else { 0 }))
+            }
+        },
+        Elem::Visits => Content::Text(d.visits_text.clone()),
+        Elem::Space => Content::Space,
+        Elem::Divider => Content::Bar,
+        // 改行は行分割で消費済みなので、ここへ来たら何も描かない
+        Elem::Newline => Content::Space,
+    }
+}
+
+/// 日付・サイズの取得が要る書式か（メタデータの遅延取得を省くため）。
+pub(crate) fn needs_meta(items: &[Item]) -> bool {
+    items.iter().any(|i| matches!(i.elem, Elem::Date | Elem::Size))
+}
+
+/// 評価・訪問回数の取得が要る書式か。
+pub(crate) fn needs_rating(items: &[Item]) -> bool {
+    items.iter().any(|i| matches!(i.elem, Elem::Stars | Elem::Score | Elem::Visits))
+}
+
+/// ゾーンの内容が描画範囲を超えた分（ホバー時のマーキー量）。超えていなければ 0。
+pub(crate) fn zone_overflow(content_w: f32, clip: (f32, f32)) -> f32 {
+    (content_w - (clip.1 - clip.0).max(0.0)).max(0.0)
+}
+
 // ── 1行の配置計画 ────────────────────────────────────────────────────────
 
 /// 1ゾーンの配置計画。座標は行の左端を0とした相対値。
@@ -441,5 +514,63 @@ mod tests {
     fn empty_row_has_empty_zones() {
         let p = plan_row(&[], &[], 80.0);
         assert!(p.left.idx.is_empty() && p.center.idx.is_empty() && p.right.idx.is_empty());
+    }
+
+    // ── content_of ──
+
+    fn data(rating: Option<u8>) -> BandData {
+        BandData {
+            title: "a.zip".into(),
+            date: "2026-01-31".into(),
+            size: "1 MB".into(),
+            rating_half: rating,
+            unrated: "未評価".into(),
+            visits_text: "訪問回数：3回".into(),
+        }
+    }
+
+    #[test]
+    fn content_resolves_text_elements() {
+        let d = data(Some(7));
+        assert_eq!(content_of(Elem::Title, &d), Content::Text("a.zip".into()));
+        assert_eq!(content_of(Elem::Date, &d), Content::Text("2026-01-31".into()));
+        assert_eq!(content_of(Elem::Size, &d), Content::Text("1 MB".into()));
+        assert_eq!(content_of(Elem::Visits, &d), Content::Text("訪問回数：3回".into()));
+        assert_eq!(content_of(Elem::Space, &d), Content::Space);
+        assert_eq!(content_of(Elem::Divider, &d), Content::Bar);
+    }
+
+    #[test]
+    fn rating_elements_follow_the_classic_display_rules() {
+        // 評価あり: 星 / 小数1桁
+        assert_eq!(content_of(Elem::Stars, &data(Some(7))), Content::Stars(7));
+        assert_eq!(content_of(Elem::Score, &data(Some(7))), Content::Text("3.5".into()));
+        assert_eq!(content_of(Elem::Score, &data(Some(10))), Content::Text("5.0".into()));
+        assert_eq!(content_of(Elem::Score, &data(Some(1))), Content::Text("0.5".into()));
+        // 未評価
+        assert_eq!(content_of(Elem::Stars, &data(Some(0))), Content::Text("未評価".into()));
+        assert_eq!(content_of(Elem::Score, &data(Some(0))), Content::Text("未評価".into()));
+        // 生画像は「-」
+        assert_eq!(content_of(Elem::Stars, &data(None)), Content::Text("-".into()));
+        assert_eq!(content_of(Elem::Score, &data(None)), Content::Text("-".into()));
+        // 範囲外は丸める
+        assert_eq!(content_of(Elem::Stars, &data(Some(99))), Content::Stars(10));
+    }
+
+    #[test]
+    fn meta_and_rating_needs_are_detected() {
+        assert!(needs_meta(&[it(Elem::Title), it(Elem::Date)]));
+        assert!(needs_meta(&[it(Elem::Size)]));
+        assert!(!needs_meta(&[it(Elem::Title), it(Elem::Stars)]));
+        assert!(needs_rating(&[it(Elem::Score)]));
+        assert!(needs_rating(&[it(Elem::Visits)]));
+        assert!(!needs_rating(&[it(Elem::Title), it(Elem::Date)]));
+    }
+
+    #[test]
+    fn zone_overflow_is_the_excess_only() {
+        assert_eq!(zone_overflow(120.0, (0.0, 100.0)), 20.0);
+        assert_eq!(zone_overflow(80.0, (0.0, 100.0)), 0.0);
+        assert_eq!(zone_overflow(10.0, (50.0, 50.0)), 10.0, "幅0のゾーンは全部がはみ出し");
     }
 }
