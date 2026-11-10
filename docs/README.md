@@ -24,6 +24,7 @@
   Exif ON/OFF設定
 - [features/archive-sort-state.md](features/archive-sort-state.md) — アーカイブ単位のソート条件保存
 - [features/sort-menu.md](features/sort-menu.md) — エクスプローラーのソート展開メニュー（基本キー・評価キー・ビューアーのデフォルト）とキー操作
+- [features/card-band.md](features/card-band.md) — サムネカード下部の帯の設定（従来方式／カスタム書式・透過度）
 - [features/koma-mode.md](features/koma-mode.md) — 疑似コマ送りモード（拡大表示の上のサブモード）
 - [features/archive-rating.md](features/archive-rating.md) — アーカイブ評価（★半星刻み）・訪問回数・
   サムネ評価帯・評価フィルタ
