@@ -6,15 +6,12 @@
 //! - 新UI: 要素ボタンを押した順にスタック。各項目に [寄せ][X]。差し込み・並べ替えは無し
 //! - ✕なしのモーダル。Esc・枠外クリックはキャンセル扱い
 //!
-//! データモデル（`Elem` / `Align` / `Item`）と帯のレイアウトは、P1（card_band.rs・純関数）／
-//! P2（実カード描画）で正式版に置き換える前提の仮実装。文言も日本語直書き（i18nはP4で）。
+//! データモデルと配置計画は card_band.rs（純関数・P1）を使う。実カード描画への接続はP2、文言のi18nはP4。
 
 use super::{CardInfoMode, CardInfoStyle, CardRatingMode, NekoviewApp};
+use crate::card_band::{self, Active, Align, Elem, Item, MAX_ITEMS, MAX_LINES};
 use egui::{Align2, Color32, Pos2, Rect, Stroke, Vec2};
 
-/// 要素の合計上限と行数上限（確定仕様）。
-const MAX_ITEMS: usize = 24;
-const MAX_LINES: usize = 6;
 /// サンプルカードの大きさ（px）。
 const SAMPLE_CARD_W: f32 = 240.0;
 const SAMPLE_CARD_H: f32 = 120.0;
@@ -23,87 +20,29 @@ const SAMPLE_CELL_H: f32 = 200.0;
 /// 帯の左右余白（実カード描画の PAD と同じ）。
 const PAD: f32 = 4.0;
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(super) enum Elem {
-    Date,
-    Title,
-    Size,
-    Stars,
-    Score,
-    Visits,
-    Space,
-    Newline,
-    Divider,
-}
-
-impl Elem {
-    const ALL: [Elem; 9] = [
-        Elem::Date,
-        Elem::Title,
-        Elem::Size,
-        Elem::Stars,
-        Elem::Score,
-        Elem::Visits,
-        Elem::Space,
-        Elem::Newline,
-        Elem::Divider,
-    ];
-
-    fn label(self) -> &'static str {
-        match self {
-            Elem::Date => "日付",
-            Elem::Title => "タイトル",
-            Elem::Size => "サイズ",
-            Elem::Stars => "評価点★",
-            Elem::Score => "評価点数値",
-            Elem::Visits => "訪問回数",
-            Elem::Space => "空白",
-            Elem::Newline => "改行",
-            Elem::Divider => "区切りバー",
-        }
+/// 要素ボタン・スタック欄に出す名称（i18nはP4で）。
+fn elem_label(e: Elem) -> &'static str {
+    match e {
+        Elem::Date => "日付",
+        Elem::Title => "タイトル",
+        Elem::Size => "サイズ",
+        Elem::Stars => "評価点★",
+        Elem::Score => "評価点数値",
+        Elem::Visits => "訪問回数",
+        Elem::Space => "空白",
+        Elem::Newline => "改行",
+        Elem::Divider => "区切りバー",
     }
 }
 
-/// 寄せ属性。未設定 → 左 → 中央 → 右 → 未設定 の順にトグルする。
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(super) enum Align {
-    Unset,
-    Left,
-    Center,
-    Right,
-}
-
-impl Align {
-    fn next(self) -> Self {
-        match self {
-            Align::Unset => Align::Left,
-            Align::Left => Align::Center,
-            Align::Center => Align::Right,
-            Align::Right => Align::Unset,
-        }
+/// 寄せ属性の表示。未設定も明示する。
+fn align_label(a: Align) -> &'static str {
+    match a {
+        Align::Unset => "未設定",
+        Align::Left => "左",
+        Align::Center => "中央",
+        Align::Right => "右",
     }
-
-    fn label(self) -> &'static str {
-        match self {
-            Align::Unset => "未設定",
-            Align::Left => "左",
-            Align::Center => "中央",
-            Align::Right => "右",
-        }
-    }
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(super) struct Item {
-    elem: Elem,
-    align: Align,
-}
-
-/// どちらの導線の内容をサンプル帯に出すか（最後に触った側）。
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Side {
-    Legacy,
-    Custom,
 }
 
 /// ダイアログの編集内容（ドラフト／確定済みの両方に使う）。
@@ -112,42 +51,27 @@ pub(super) struct BandDraft {
     info: CardInfoMode,
     rating: CardRatingMode,
     items: Vec<Item>,
-    side: Side,
+    side: Active,
 }
 
 impl Default for BandDraft {
     fn default() -> Self {
-        Self { info: CardInfoMode::Off, rating: CardRatingMode::Off, items: Vec::new(), side: Side::Legacy }
+        Self { info: CardInfoMode::Off, rating: CardRatingMode::Off, items: Vec::new(), side: Active::Classic }
     }
 }
 
 impl BandDraft {
     fn line_count(&self) -> usize {
-        if self.items.is_empty() {
-            0
-        } else {
-            1 + self.items.iter().filter(|i| i.elem == Elem::Newline).count()
-        }
+        card_band::line_count(&self.items)
     }
 
     fn can_add(&self, e: Elem) -> bool {
-        self.items.len() < MAX_ITEMS && !(e == Elem::Newline && self.line_count() >= MAX_LINES)
+        card_band::can_add(&self.items, e)
     }
 
-    /// 確定時の正規化: 先頭・末尾の改行を削除し、連続改行を1つにする。
+    /// 確定時の正規化（カスタム側のみ。従来側の選択はそのまま）。
     fn normalized(mut self) -> Self {
-        let mut out: Vec<Item> = Vec::with_capacity(self.items.len());
-        for it in self.items.drain(..) {
-            let prev_nl = out.last().is_none_or(|p| p.elem == Elem::Newline);
-            if it.elem == Elem::Newline && prev_nl {
-                continue;
-            }
-            out.push(it);
-        }
-        while out.last().is_some_and(|p| p.elem == Elem::Newline) {
-            out.pop();
-        }
-        self.items = out;
+        self.items = card_band::normalize(&self.items);
         self
     }
 
@@ -171,8 +95,8 @@ impl BandDraft {
 
     fn sample_items(&self) -> Vec<Item> {
         match self.side {
-            Side::Legacy => self.legacy_items(),
-            Side::Custom => self.items.clone(),
+            Active::Classic => self.legacy_items(),
+            Active::Custom => self.items.clone(),
         }
     }
 }
@@ -262,36 +186,23 @@ fn paint_run(
     }
 }
 
-/// 1行ぶんを3ゾーンで配置する。明示指定を優先し、未設定は左ゾーンの明示左の後ろへ書式順で続ける。
-/// 幅が足りないときの優先は 左 → 右 → 中央（溢れた側を切り詰める）。
+/// 1行ぶんを配置計画（card_band::plan_row）どおりに描く。
 fn paint_row(painter: &egui::Painter, band: Rect, row: &[Item], cy: f32, row_h: f32, line_px: f32, style: &CardInfoStyle) {
     let font = egui::FontId::proportional(line_px);
     let star_r = row_h * 0.45;
-    let pick = |a: Align| -> Vec<Elem> { row.iter().filter(|i| i.align == a).map(|i| i.elem).collect() };
-    let mut left = pick(Align::Left);
-    left.extend(pick(Align::Unset));
-    let center = pick(Align::Center);
-    let right = pick(Align::Right);
-    let width = |run: &[Elem]| -> f32 { run.iter().map(|&e| item_width(painter, &font, e, line_px, star_r)).sum() };
-
     let l = band.min.x + PAD;
-    let r = band.max.x - PAD;
-    let avail = (r - l).max(1.0);
-    let (lw, cw, rw) = (width(&left), width(&center), width(&right));
-
-    let lw_shown = lw.min(avail);
-    let rw_shown = rw.min(avail - lw_shown);
-    let right_start = r - rw_shown;
-    let c_zone_l = l + lw_shown;
-    let c_zone_r = right_start;
-    let zone = |a: f32, b: f32| Rect::from_min_max(Pos2::new(a, band.min.y), Pos2::new(b.max(a), band.max.y));
-
+    let avail = (band.max.x - PAD - l).max(1.0);
+    let aligns: Vec<Align> = row.iter().map(|i| i.align).collect();
+    let widths: Vec<f32> = row.iter().map(|i| item_width(painter, &font, i.elem, line_px, star_r)).collect();
+    let plan = card_band::plan_row(&aligns, &widths, avail);
     let color = style.text_color;
-    paint_run(&painter.with_clip_rect(zone(l, l + lw_shown)), &font, color, &left, l, cy, row_h, line_px, star_r);
-    paint_run(&painter.with_clip_rect(zone(right_start, r)), &font, color, &right, right_start, cy, row_h, line_px, star_r);
-    if cw > 0.0 && c_zone_r > c_zone_l {
-        let cx = ((band.center().x) - cw / 2.0).clamp(c_zone_l, (c_zone_r - cw).max(c_zone_l));
-        paint_run(&painter.with_clip_rect(zone(c_zone_l, c_zone_r)), &font, color, &center, cx, cy, row_h, line_px, star_r);
+    for zone in [&plan.left, &plan.center, &plan.right] {
+        if zone.clip.1 <= zone.clip.0 || zone.idx.is_empty() {
+            continue;
+        }
+        let clip = Rect::from_min_max(Pos2::new(l + zone.clip.0, band.min.y), Pos2::new(l + zone.clip.1, band.max.y));
+        let run: Vec<Elem> = zone.idx.iter().map(|&i| row[i].elem).collect();
+        paint_run(&painter.with_clip_rect(clip), &font, color, &run, l + zone.start, cy, row_h, line_px, star_r);
     }
 }
 
@@ -309,16 +220,8 @@ fn paint_sample(ui: &mut egui::Ui, items: &[Item], style: &CardInfoStyle) {
     );
     painter.rect_stroke(rect, 4.0, Stroke::new(1.0, Color32::from_gray(110)), egui::StrokeKind::Inside);
 
-    // 行に分割
-    let mut rows: Vec<Vec<Item>> = vec![Vec::new()];
-    for it in items {
-        if it.elem == Elem::Newline {
-            rows.push(Vec::new());
-        } else if let Some(last) = rows.last_mut() {
-            last.push(*it);
-        }
-    }
-    if items.is_empty() {
+    let rows = card_band::split_rows(items);
+    if rows.is_empty() {
         return;
     }
     let line_px = (SAMPLE_CELL_H * (style.text_size / 200.0)).clamp(9.0, style.text_size);
@@ -370,14 +273,14 @@ impl NekoviewApp {
                     // 見出しは切替ボタンを兼ねる（従来／カスタムは排他）。押した側がアクティブになり、
                     // 非アクティブ側の欄はグレーアウトして内容を保持する。確定は両方を保存し、アクティブ側を実採用する。
                     if ui
-                        .add_sized([col_w, 28.0], egui::Button::new(egui::RichText::new("従来方式").strong()).selected(draft.side == Side::Legacy))
+                        .add_sized([col_w, 28.0], egui::Button::new(egui::RichText::new("従来方式").strong()).selected(draft.side == Active::Classic))
                         .on_hover_text("こちらを採用する（カスタム側の内容は保持されます）")
                         .clicked()
                     {
-                        draft.side = Side::Legacy;
+                        draft.side = Active::Classic;
                     }
                     ui.add_space(4.0);
-                    ui.add_enabled_ui(draft.side == Side::Legacy, |ui| {
+                    ui.add_enabled_ui(draft.side == Active::Classic, |ui| {
                     let info_label = match draft.info {
                         CardInfoMode::Off => t.card_info_off(),
                         CardInfoMode::Name => t.card_info_name(),
@@ -407,16 +310,16 @@ impl NekoviewApp {
                 ui.vertical(|ui| {
                     ui.set_width(custom_w);
                     if ui
-                        .add_sized([col_w, 28.0], egui::Button::new(egui::RichText::new("カスタム").strong()).selected(draft.side == Side::Custom))
+                        .add_sized([col_w, 28.0], egui::Button::new(egui::RichText::new("カスタム").strong()).selected(draft.side == Active::Custom))
                         .on_hover_text("こちらを採用する（従来側の選択は保持されます）")
                         .clicked()
                     {
-                        draft.side = Side::Custom;
+                        draft.side = Active::Custom;
                     }
-                    ui.add_enabled_ui(draft.side == Side::Custom, |ui| {
+                    ui.add_enabled_ui(draft.side == Active::Custom, |ui| {
                     ui.horizontal_wrapped(|ui| {
                         for e in Elem::ALL {
-                            if ui.add_enabled(draft.can_add(e), egui::Button::new(e.label())).clicked() {
+                            if ui.add_enabled(draft.can_add(e), egui::Button::new(elem_label(e))).clicked() {
                                 draft.items.push(Item { elem: e, align: Align::Unset });
                             }
                         }
@@ -431,14 +334,14 @@ impl NekoviewApp {
                         for (i, it) in draft.items.iter_mut().enumerate() {
                             ui.horizontal(|ui| {
                                 ui.label(egui::RichText::new(format!("{:>2}", i + 1)).weak());
-                                let name = egui::RichText::new(it.elem.label());
+                                let name = egui::RichText::new(elem_label(it.elem));
                                 ui.label(if it.elem == Elem::Newline { name.weak() } else { name });
                                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                     if ui.small_button("X").on_hover_text("この項目を削除").clicked() {
                                         remove = Some(i);
                                     }
                                     if ui
-                                        .add_sized([52.0, 18.0], egui::Button::new(it.align.label()).small())
+                                        .add_sized([52.0, 18.0], egui::Button::new(align_label(it.align)).small())
                                         .on_hover_text("寄せを切替（左 → 中央 → 右 → 未設定）")
                                         .clicked()
                                     {
@@ -464,8 +367,8 @@ impl NekoviewApp {
             ui.horizontal(|ui| {
                 ui.strong("サンプル");
                 ui.weak(match draft.side {
-                    Side::Legacy => "（従来の内容）",
-                    Side::Custom => "（カスタムの内容）",
+                    Active::Classic => "（従来の内容）",
+                    Active::Custom => "（カスタムの内容）",
                 });
             });
             ui.vertical_centered(|ui| paint_sample(ui, &draft.sample_items(), &style));
@@ -498,46 +401,15 @@ mod tests {
     use super::*;
 
     fn it(e: Elem) -> Item {
-        Item { elem: e, align: Align::Unset }
+        Item::new(e, Align::Unset)
     }
 
     #[test]
-    fn align_cycles_through_unset_left_center_right() {
-        let mut a = Align::Unset;
-        let seq: Vec<Align> = (0..5).map(|_| { a = a.next(); a }).collect();
-        assert_eq!(seq, vec![Align::Left, Align::Center, Align::Right, Align::Unset, Align::Left]);
-        assert_eq!(Align::Unset.label(), "未設定", "未設定は明示する");
-    }
-
-    #[test]
-    fn normalize_trims_and_collapses_newlines() {
-        let d = BandDraft {
-            items: vec![
-                it(Elem::Newline), it(Elem::Title), it(Elem::Newline), it(Elem::Newline),
-                it(Elem::Date), it(Elem::Newline),
-            ],
-            ..BandDraft::default()
+    fn labels_are_explicit_even_when_unset() {
+        assert_eq!(align_label(Align::Unset), "未設定", "未設定は明示する");
+        for e in Elem::ALL {
+            assert!(!elem_label(e).is_empty());
         }
-        .normalized();
-        let kinds: Vec<Elem> = d.items.iter().map(|i| i.elem).collect();
-        assert_eq!(kinds, vec![Elem::Title, Elem::Newline, Elem::Date]);
-    }
-
-    #[test]
-    fn limits_block_adding() {
-        let mut d = BandDraft::default();
-        for _ in 0..MAX_LINES - 1 {
-            d.items.push(it(Elem::Title));
-            d.items.push(it(Elem::Newline));
-        }
-        d.items.push(it(Elem::Title));
-        assert_eq!(d.line_count(), MAX_LINES);
-        assert!(!d.can_add(Elem::Newline), "行上限で改行は追加できない");
-        assert!(d.can_add(Elem::Title));
-        while d.items.len() < MAX_ITEMS {
-            d.items.push(it(Elem::Space));
-        }
-        assert!(!d.can_add(Elem::Title), "要素上限で何も追加できない");
     }
 
     #[test]
@@ -561,13 +433,13 @@ mod tests {
             info: CardInfoMode::NameDate,
             rating: CardRatingMode::Stars,
             items: vec![it(Elem::Title), it(Elem::Newline)],
-            side: Side::Custom,
+            side: Active::Custom,
         }
         .normalized();
         assert_eq!(d.info, CardInfoMode::NameDate, "従来側の選択は保持される");
         assert_eq!(d.rating, CardRatingMode::Stars);
         assert_eq!(d.items.len(), 1, "カスタム側は正規化される");
-        assert_eq!(d.side, Side::Custom, "アクティブな側が実採用される");
+        assert_eq!(d.side, Active::Custom, "アクティブな側が実採用される");
         let kinds: Vec<Elem> = d.sample_items().iter().map(|i| i.elem).collect();
         assert_eq!(kinds, vec![Elem::Title], "採用側の内容が出る");
     }
