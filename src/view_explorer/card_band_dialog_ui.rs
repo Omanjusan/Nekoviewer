@@ -344,18 +344,23 @@ impl NekoviewApp {
         let mut confirm = false;
         let mut cancel = false;
 
+        // 窓が狭いときははみ出さないよう、幅を窓に合わせて縮める（右欄が縮み代）。
+        let dialog_w = (ctx.content_rect().width() - 60.0).clamp(480.0, 740.0);
+        let legacy_w = 230.0;
+        let custom_w = dialog_w - legacy_w - 24.0;
         let modal = egui::Modal::new(egui::Id::new("card_band_mock_dialog")).show(ctx, |ui| {
-            ui.set_width(740.0);
+            ui.set_width(dialog_w);
             ui.horizontal(|ui| {
                 ui.heading("カード帯の設定");
                 ui.weak("MOCK: 実カードには反映されません");
             });
             ui.add_space(2.0);
 
-            ui.horizontal_top(|ui| {
+            let mut left_rect = Rect::NOTHING;
+            let columns = ui.horizontal_top(|ui| {
                 // ── 従来UI ──
-                ui.vertical(|ui| {
-                    ui.set_width(230.0);
+                left_rect = ui.vertical(|ui| {
+                    ui.set_width(legacy_w);
                     ui.strong("従来（ワンタッチ）");
                     ui.add_space(4.0);
                     let info_label = match draft.info {
@@ -378,13 +383,15 @@ impl NekoviewApp {
                         draft.rating = draft.rating.next();
                         draft.side = Side::Legacy;
                     }
-                });
+                }).response.rect;
 
-                ui.separator();
+                // 中央線は下の columns.response から固定高さで描く（縦のui.separator()は
+                // モーダル内で利用可能な高さ全部を取り、ダイアログが縦に巨大化するため使わない）。
+                ui.add_space(12.0);
 
                 // ── 新UI ──
                 ui.vertical(|ui| {
-                    ui.set_width(470.0);
+                    ui.set_width(custom_w);
                     ui.strong("カスタム");
                     ui.horizontal_wrapped(|ui| {
                         for e in Elem::ALL {
@@ -428,6 +435,11 @@ impl NekoviewApp {
                     }
                 });
             });
+            let x = left_rect.max.x + 6.0;
+            ui.painter().line_segment(
+                [Pos2::new(x, columns.response.rect.min.y), Pos2::new(x, columns.response.rect.max.y)],
+                Stroke::new(1.0, ui.visuals().widgets.noninteractive.bg_stroke.color),
+            );
 
             ui.separator();
             ui.horizontal(|ui| {
