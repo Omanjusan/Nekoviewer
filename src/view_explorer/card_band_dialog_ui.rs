@@ -83,10 +83,9 @@ impl Align {
         }
     }
 
-    /// 未設定のときは何も表示しない（決まっているときだけ方向を出す）。
     fn label(self) -> &'static str {
         match self {
-            Align::Unset => "　",
+            Align::Unset => "未設定",
             Align::Left => "左",
             Align::Center => "中央",
             Align::Right => "右",
@@ -344,12 +343,19 @@ impl NekoviewApp {
         let mut confirm = false;
         let mut cancel = false;
 
-        // 窓が狭いときははみ出さないよう、幅を窓に合わせて縮める（右欄が縮み代）。
-        let dialog_w = (ctx.content_rect().width() - 60.0).clamp(480.0, 740.0);
-        let legacy_w = 230.0;
-        let custom_w = dialog_w - legacy_w - 24.0;
+        // 窓が狭いときははみ出さないよう、幅を窓に合わせて縮める。
+        // 左右の欄は同じ幅にし、中央線（欄の間の隙間の真ん中）がダイアログの中央に来るようにする。
+        let dialog_w = (ctx.content_rect().width() - 60.0).clamp(480.0, 660.0);
+        const GAP: f32 = 12.0;
+
         let modal = egui::Modal::new(egui::Id::new("card_band_mock_dialog")).show(ctx, |ui| {
             ui.set_width(dialog_w);
+            // 横並びでは項目の間に item_spacing.x が両側に入るので、その分を欄幅から引いて全体を dialog_w に収める。
+            let sp = ui.spacing().item_spacing.x;
+            let col_w = (dialog_w - GAP - 2.0 * sp) / 2.0;
+            let legacy_w = col_w;
+            let custom_w = col_w;
+            let legacy_btn_w = (col_w - 16.0).max(120.0);
             ui.horizontal(|ui| {
                 ui.heading("カード帯の設定");
                 ui.weak("MOCK: 実カードには反映されません");
@@ -369,7 +375,7 @@ impl NekoviewApp {
                         CardInfoMode::NameDate => t.card_info_name_date(),
                         CardInfoMode::NameDateSize => t.card_info_name_date_size(),
                     };
-                    if ui.add_sized([210.0, 26.0], egui::Button::new(info_label)).clicked() {
+                    if ui.add_sized([legacy_btn_w, 26.0], egui::Button::new(info_label)).clicked() {
                         draft.info = draft.info.next();
                         draft.side = Side::Legacy;
                     }
@@ -379,7 +385,7 @@ impl NekoviewApp {
                         CardRatingMode::Visits => t.card_rating_visits(),
                         CardRatingMode::StarsVisits => t.card_rating_stars_visits(),
                     };
-                    if ui.add_sized([210.0, 26.0], egui::Button::new(rating_label)).clicked() {
+                    if ui.add_sized([legacy_btn_w, 26.0], egui::Button::new(rating_label)).clicked() {
                         draft.rating = draft.rating.next();
                         draft.side = Side::Legacy;
                     }
@@ -387,7 +393,7 @@ impl NekoviewApp {
 
                 // 中央線は下の columns.response から固定高さで描く（縦のui.separator()は
                 // モーダル内で利用可能な高さ全部を取り、ダイアログが縦に巨大化するため使わない）。
-                ui.add_space(12.0);
+                ui.add_space(GAP);
 
                 // ── 新UI ──
                 ui.vertical(|ui| {
@@ -401,7 +407,7 @@ impl NekoviewApp {
                             }
                         }
                     });
-                    ui.weak(format!("要素 {}/{}　行 {}/{}", draft.items.len(), MAX_ITEMS, draft.line_count(), MAX_LINES));
+                    ui.weak(format!("要素制限数 {}/{}　行制限数 {}/{}", draft.items.len(), MAX_ITEMS, draft.line_count(), MAX_LINES));
 
                     let mut remove: Option<usize> = None;
                     egui::ScrollArea::vertical().max_height(84.0).auto_shrink([false, true]).show(ui, |ui| {
@@ -418,7 +424,7 @@ impl NekoviewApp {
                                         remove = Some(i);
                                     }
                                     if ui
-                                        .add_sized([40.0, 18.0], egui::Button::new(it.align.label()).small())
+                                        .add_sized([52.0, 18.0], egui::Button::new(it.align.label()).small())
                                         .on_hover_text("寄せを切替（左 → 中央 → 右 → 未設定）")
                                         .clicked()
                                     {
@@ -435,7 +441,7 @@ impl NekoviewApp {
                     }
                 });
             });
-            let x = left_rect.max.x + 6.0;
+            let x = left_rect.max.x + sp + GAP / 2.0;
             ui.painter().line_segment(
                 [Pos2::new(x, columns.response.rect.min.y), Pos2::new(x, columns.response.rect.max.y)],
                 Stroke::new(1.0, ui.visuals().widgets.noninteractive.bg_stroke.color),
@@ -487,7 +493,7 @@ mod tests {
         let mut a = Align::Unset;
         let seq: Vec<Align> = (0..5).map(|_| { a = a.next(); a }).collect();
         assert_eq!(seq, vec![Align::Left, Align::Center, Align::Right, Align::Unset, Align::Left]);
-        assert_eq!(Align::Unset.label().trim(), "", "未設定は文字を出さない");
+        assert_eq!(Align::Unset.label(), "未設定", "未設定は明示する");
     }
 
     #[test]
