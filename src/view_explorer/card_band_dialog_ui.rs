@@ -367,8 +367,17 @@ impl NekoviewApp {
                 // ── 従来UI ──
                 left_rect = ui.vertical(|ui| {
                     ui.set_width(legacy_w);
-                    ui.strong("従来（ワンタッチ）");
+                    // 見出しは切替ボタンを兼ねる（従来／カスタムは排他）。押した側がアクティブになり、
+                    // 非アクティブ側の欄はグレーアウトして内容を保持する。確定は両方を保存し、アクティブ側を実採用する。
+                    if ui
+                        .add_sized([col_w, 28.0], egui::Button::new(egui::RichText::new("従来（ワンタッチ）").strong()).selected(draft.side == Side::Legacy))
+                        .on_hover_text("こちらを採用する（カスタム側の内容は保持されます）")
+                        .clicked()
+                    {
+                        draft.side = Side::Legacy;
+                    }
                     ui.add_space(4.0);
+                    ui.add_enabled_ui(draft.side == Side::Legacy, |ui| {
                     let info_label = match draft.info {
                         CardInfoMode::Off => t.card_info_off(),
                         CardInfoMode::Name => t.card_info_name(),
@@ -377,7 +386,6 @@ impl NekoviewApp {
                     };
                     if ui.add_sized([legacy_btn_w, 26.0], egui::Button::new(info_label)).clicked() {
                         draft.info = draft.info.next();
-                        draft.side = Side::Legacy;
                     }
                     let rating_label = match draft.rating {
                         CardRatingMode::Off => t.card_rating_off(),
@@ -387,8 +395,8 @@ impl NekoviewApp {
                     };
                     if ui.add_sized([legacy_btn_w, 26.0], egui::Button::new(rating_label)).clicked() {
                         draft.rating = draft.rating.next();
-                        draft.side = Side::Legacy;
                     }
+                    });
                 }).response.rect;
 
                 // 中央線は下の columns.response から固定高さで描く（縦のui.separator()は
@@ -398,12 +406,18 @@ impl NekoviewApp {
                 // ── 新UI ──
                 ui.vertical(|ui| {
                     ui.set_width(custom_w);
-                    ui.strong("カスタム");
+                    if ui
+                        .add_sized([col_w, 28.0], egui::Button::new(egui::RichText::new("カスタム").strong()).selected(draft.side == Side::Custom))
+                        .on_hover_text("こちらを採用する（従来側の選択は保持されます）")
+                        .clicked()
+                    {
+                        draft.side = Side::Custom;
+                    }
+                    ui.add_enabled_ui(draft.side == Side::Custom, |ui| {
                     ui.horizontal_wrapped(|ui| {
                         for e in Elem::ALL {
                             if ui.add_enabled(draft.can_add(e), egui::Button::new(e.label())).clicked() {
                                 draft.items.push(Item { elem: e, align: Align::Unset });
-                                draft.side = Side::Custom;
                             }
                         }
                     });
@@ -429,7 +443,6 @@ impl NekoviewApp {
                                         .clicked()
                                     {
                                         it.align = it.align.next();
-                                        draft.side = Side::Custom;
                                     }
                                 });
                             });
@@ -437,8 +450,8 @@ impl NekoviewApp {
                     });
                     if let Some(i) = remove {
                         draft.items.remove(i);
-                        draft.side = Side::Custom;
                     }
+                    });
                 });
             });
             let x = left_rect.max.x + sp + GAP / 2.0;
@@ -540,5 +553,22 @@ mod tests {
                 (Elem::Visits, Align::Center),
             ]
         );
+    }
+
+    #[test]
+    fn confirm_keeps_both_sides_and_adopts_the_active_one() {
+        let d = BandDraft {
+            info: CardInfoMode::NameDate,
+            rating: CardRatingMode::Stars,
+            items: vec![it(Elem::Title), it(Elem::Newline)],
+            side: Side::Custom,
+        }
+        .normalized();
+        assert_eq!(d.info, CardInfoMode::NameDate, "従来側の選択は保持される");
+        assert_eq!(d.rating, CardRatingMode::Stars);
+        assert_eq!(d.items.len(), 1, "カスタム側は正規化される");
+        assert_eq!(d.side, Side::Custom, "アクティブな側が実採用される");
+        let kinds: Vec<Elem> = d.sample_items().iter().map(|i| i.elem).collect();
+        assert_eq!(kinds, vec![Elem::Title], "採用側の内容が出る");
     }
 }
