@@ -17,7 +17,9 @@ const MAX_ITEMS: usize = 24;
 const MAX_LINES: usize = 6;
 /// サンプルカードの大きさ（px）。
 const SAMPLE_CARD_W: f32 = 240.0;
-const SAMPLE_CARD_H: f32 = 150.0;
+const SAMPLE_CARD_H: f32 = 120.0;
+/// 文字サイズの算出に使う仮想のカード高（実カードの cell_h 相当。サンプルの見た目の高さとは独立）。
+const SAMPLE_CELL_H: f32 = 200.0;
 /// 帯の左右余白（実カード描画の PAD と同じ）。
 const PAD: f32 = 4.0;
 
@@ -320,7 +322,7 @@ fn paint_sample(ui: &mut egui::Ui, items: &[Item], style: &CardInfoStyle) {
     if items.is_empty() {
         return;
     }
-    let line_px = (SAMPLE_CARD_H * (style.text_size / 200.0)).clamp(9.0, style.text_size);
+    let line_px = (SAMPLE_CELL_H * (style.text_size / 200.0)).clamp(9.0, style.text_size);
     let row_h = line_px * 1.35;
     let band_h = rows.len() as f32 * row_h + 4.0;
     let band = Rect::from_min_max(Pos2::new(rect.min.x, rect.max.y - band_h), rect.max);
@@ -343,15 +345,17 @@ impl NekoviewApp {
         let mut cancel = false;
 
         let modal = egui::Modal::new(egui::Id::new("card_band_mock_dialog")).show(ctx, |ui| {
-            ui.set_width(600.0);
-            ui.heading("カード帯の設定");
-            ui.weak("MOCK: 見た目の確認用。実カードには反映されません");
-            ui.separator();
+            ui.set_width(740.0);
+            ui.horizontal(|ui| {
+                ui.heading("カード帯の設定");
+                ui.weak("MOCK: 実カードには反映されません");
+            });
+            ui.add_space(2.0);
 
             ui.horizontal_top(|ui| {
                 // ── 従来UI ──
                 ui.vertical(|ui| {
-                    ui.set_width(270.0);
+                    ui.set_width(230.0);
                     ui.strong("従来（ワンタッチ）");
                     ui.add_space(4.0);
                     let info_label = match draft.info {
@@ -360,7 +364,7 @@ impl NekoviewApp {
                         CardInfoMode::NameDate => t.card_info_name_date(),
                         CardInfoMode::NameDateSize => t.card_info_name_date_size(),
                     };
-                    if ui.add_sized([250.0, 28.0], egui::Button::new(info_label)).clicked() {
+                    if ui.add_sized([210.0, 26.0], egui::Button::new(info_label)).clicked() {
                         draft.info = draft.info.next();
                         draft.side = Side::Legacy;
                     }
@@ -370,21 +374,18 @@ impl NekoviewApp {
                         CardRatingMode::Visits => t.card_rating_visits(),
                         CardRatingMode::StarsVisits => t.card_rating_stars_visits(),
                     };
-                    if ui.add_sized([250.0, 28.0], egui::Button::new(rating_label)).clicked() {
+                    if ui.add_sized([210.0, 26.0], egui::Button::new(rating_label)).clicked() {
                         draft.rating = draft.rating.next();
                         draft.side = Side::Legacy;
                     }
-                    ui.add_space(4.0);
-                    ui.weak("押すたびに情報帯が切り替わります");
                 });
 
                 ui.separator();
 
                 // ── 新UI ──
                 ui.vertical(|ui| {
-                    ui.set_width(300.0);
+                    ui.set_width(470.0);
                     ui.strong("カスタム");
-                    ui.add_space(4.0);
                     ui.horizontal_wrapped(|ui| {
                         for e in Elem::ALL {
                             if ui.add_enabled(draft.can_add(e), egui::Button::new(e.label())).clicked() {
@@ -393,11 +394,10 @@ impl NekoviewApp {
                             }
                         }
                     });
-                    ui.add_space(4.0);
                     ui.weak(format!("要素 {}/{}　行 {}/{}", draft.items.len(), MAX_ITEMS, draft.line_count(), MAX_LINES));
 
                     let mut remove: Option<usize> = None;
-                    egui::ScrollArea::vertical().max_height(150.0).auto_shrink([false, true]).show(ui, |ui| {
+                    egui::ScrollArea::vertical().max_height(84.0).auto_shrink([false, true]).show(ui, |ui| {
                         if draft.items.is_empty() {
                             ui.weak("（要素ボタンを押して積む）");
                         }
@@ -437,10 +437,9 @@ impl NekoviewApp {
                     Side::Custom => "（カスタムの内容）",
                 });
             });
-            ui.add_space(2.0);
             ui.vertical_centered(|ui| paint_sample(ui, &draft.sample_items(), &style));
 
-            ui.separator();
+            ui.add_space(2.0);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.button("確定").clicked() {
                     confirm = true;
