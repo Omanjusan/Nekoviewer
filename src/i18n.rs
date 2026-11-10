@@ -7968,12 +7968,12 @@ impl Lang {
 
     // ── カード帯の設定ダイアログ ──
 
-    /// メニューバーの[帯]ボタン（カード帯の設定ダイアログを開く）。
+    /// メニューバーの[カード帯設定]ボタン（カード帯の設定ダイアログを開く）。
     pub fn card_band_button(self) -> &'static str {
         match self {
-            Lang::Japanese => "帯",
-            Lang::English  => "[Band]",
-            Lang::Chinese  => "信息带",
+            Lang::Japanese => "カード帯設定",
+            Lang::English  => "[Band Settings]",
+            Lang::Chinese  => "信息带设置",
         }
     }
 
@@ -8181,7 +8181,7 @@ impl Lang {
                 title: "サムネ情報帯",
                 sections: &[
                     (
-                        "[帯]",
+                        "[カード帯設定]",
                         "サムネイル下部の帯の設定ダイアログを開く。\n\
                          ・従来方式: 2つのボタンで、情報（OFF→名前→名前+日付→名前+日付+容量）と\n\
                          　評価（OFF→★→回数→★+回数）を切り替える。\n\
@@ -8195,7 +8195,7 @@ impl Lang {
                 title: "Thumbnail info band",
                 sections: &[
                     (
-                        "[Band]",
+                        "[Band Settings]",
                         "Opens the settings dialog for the band under each thumbnail.\n\
                          - Classic mode: two buttons cycle the info (OFF -> Name -> Name+Date -> Name+Date+Size)\n\
                          \u{3000}and the rating (OFF -> Stars -> Visits -> Stars+Visits).\n\
@@ -8209,7 +8209,7 @@ impl Lang {
                 title: "缩略图信息带",
                 sections: &[
                     (
-                        "[信息带]",
+                        "[信息带设置]",
                         "打开缩略图下方信息带的设置对话框。\n\
                          ・经典方式：用两个按钮切换信息（关闭→名称→名称+日期→名称+日期+大小）\n\
                          　和评分（关闭→★→次数→★+次数）。\n\
