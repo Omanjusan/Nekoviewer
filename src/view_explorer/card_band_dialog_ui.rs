@@ -355,7 +355,7 @@ impl NekoviewApp {
             let col_w = (dialog_w - GAP - 2.0 * sp) / 2.0;
             let legacy_w = col_w;
             let custom_w = col_w;
-            let legacy_btn_w = (col_w - 16.0).max(120.0);
+            let legacy_btn_w = (col_w / 2.0).max(110.0);
             ui.horizontal(|ui| {
                 ui.heading("カード帯の設定");
                 ui.weak("MOCK: 実カードには反映されません");
@@ -370,7 +370,7 @@ impl NekoviewApp {
                     // 見出しは切替ボタンを兼ねる（従来／カスタムは排他）。押した側がアクティブになり、
                     // 非アクティブ側の欄はグレーアウトして内容を保持する。確定は両方を保存し、アクティブ側を実採用する。
                     if ui
-                        .add_sized([col_w, 28.0], egui::Button::new(egui::RichText::new("従来（ワンタッチ）").strong()).selected(draft.side == Side::Legacy))
+                        .add_sized([col_w, 28.0], egui::Button::new(egui::RichText::new("従来方式").strong()).selected(draft.side == Side::Legacy))
                         .on_hover_text("こちらを採用する（カスタム側の内容は保持されます）")
                         .clicked()
                     {
