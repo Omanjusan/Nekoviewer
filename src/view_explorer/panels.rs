@@ -294,7 +294,7 @@ impl NekoviewApp {
         self.draw_bookmark_setting_dialog(&ctx);
         self.draw_spread_setting_dialog(&ctx);
         self.draw_rating_setting_dialog(&ctx);
-        self.draw_card_band_mock_dialog(&ctx);
+        self.draw_card_band_dialog(&ctx);
         self.draw_backup_failure_dialog(&ctx);
         self.draw_perf_fixture_dialogs(&ctx);
         self.draw_release_notice_dialog(&ctx);
@@ -411,13 +411,8 @@ impl NekoviewApp {
                     self.open_sort_menu_by_keyboard();
                 }
             }
-            MenuBarButton::CardInfoToggle => {
-                self.card_info_mode = self.card_info_mode.next();
-                self.persist_state();
-            }
-            MenuBarButton::CardRatingToggle => {
-                self.card_rating_mode = self.card_rating_mode.next();
-                self.persist_state();
+            MenuBarButton::CardBand => {
+                self.open_card_band_dialog();
             }
             MenuBarButton::ThemeToggle => {
                 self.toggle_theme();
@@ -774,40 +769,12 @@ impl NekoviewApp {
 
             ui.separator();
 
-            // ── サムネカード下部情報の循環トグル（1ボタン） ──────────────
-            let info_label = match self.card_info_mode {
-                CardInfoMode::Off => i18n::t().card_info_off(),
-                CardInfoMode::Name => i18n::t().card_info_name(),
-                CardInfoMode::NameDate => i18n::t().card_info_name_date(),
-                CardInfoMode::NameDateSize => i18n::t().card_info_name_date_size(),
-            };
-            let r_info = ui.button(info_label);
-            if is_cursor(MenuBarButton::CardInfoToggle) { draw_cursor_ring(ui, r_info.rect); }
-            help_tip(&r_info, help_on, &help_info);
-            if r_info.clicked() {
-                self.card_info_mode = self.card_info_mode.next();
-                self.persist_state();
-            }
-
-            // ── 評価帯（info2）の循環トグル（1ボタン） ─────────────────────
-            let rating_label = match self.card_rating_mode {
-                CardRatingMode::Off => i18n::t().card_rating_off(),
-                CardRatingMode::Stars => i18n::t().card_rating_stars(),
-                CardRatingMode::Visits => i18n::t().card_rating_visits(),
-                CardRatingMode::StarsVisits => i18n::t().card_rating_stars_visits(),
-            };
-            let r_rating = ui.button(rating_label);
-            if is_cursor(MenuBarButton::CardRatingToggle) { draw_cursor_ring(ui, r_rating.rect); }
-            help_tip(&r_rating, help_on, &help_info);
-            if r_rating.clicked() {
-                self.card_rating_mode = self.card_rating_mode.next();
-                self.persist_state();
-            }
-
-            // ── 【MOCK・仮ボタン】カード帯設定ダイアログ（P4で「帯」ボタンへ統合し、このボタンは消す） ──
-            // キーボード移動の対象外（MENU_BAR_ORDERに入れない）。
-            if ui.button("帯(MOCK)").clicked() {
-                self.card_band_mock.open();
+            // ── カード帯の設定ダイアログを開く（旧「情報」「情報2」の2ボタンを集約） ──────────
+            let r_band = ui.button(i18n::t().card_band_button());
+            if is_cursor(MenuBarButton::CardBand) { draw_cursor_ring(ui, r_band.rect); }
+            help_tip(&r_band, help_on, &help_info);
+            if r_band.clicked() {
+                self.open_card_band_dialog();
             }
 
             // ── ステータスウィンドウボタン（右端） ────────────────────────
@@ -3489,7 +3456,7 @@ impl NekoviewApp {
                             // 帯は「情報行（0..=3）＋評価行（0..=2, info2）」を上から順に積む。
                             // カスタム書式が有効なら、従来方式の帯は出さず、カスタム帯だけを描く
                             // （従来方式の描画コードは無変更。n_lines を0にして素通りさせる）。
-                            let custom_band = self.card_band_mock.render_items();
+                            let custom_band: Option<Vec<crate::card_band::Item>> = self.card_band.render_items().map(|i| i.to_vec());
                             if let Some(items) = &custom_band {
                                 self.paint_custom_card_band(ui, &response, rect, path, cell_h, items);
                             }

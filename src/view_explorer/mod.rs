@@ -267,9 +267,8 @@ pub(crate) enum MenuBarButton {
     Reload,
     /// ソート条件の展開メニュー（基本キー＝名前・日付・サイズ＋昇降、評価キー＝スコア・訪問回数＋昇降）。
     Sort,
-    CardInfoToggle,
-    /// 評価帯（info2）の表示量の循環トグル。
-    CardRatingToggle,
+    /// カード帯の設定ダイアログを開く（旧「情報」「情報2」の2ボタンを1つに集約）。
+    CardBand,
     /// UIベースカラー（ダーク⇄ライト）の切替。永続設定。メニューバー右端の[stat]と[?]の間。
     ThemeToggle,
     /// スコアリング（アーカイブ末尾の評価オーバーレイ）のON/OFF。viewer_cfg直結の永続設定。
@@ -301,11 +300,10 @@ pub(crate) enum SortMenuItem {
 
 /// 表示順そのもの（draw_menu_barの描画順と一致させること）。
 /// 見開き・ページモード群はビューアーツールバーへ移設した（toolbar.rs 参照）。
-pub(crate) const MENU_BAR_ORDER: [MenuBarButton; 12] = [
+pub(crate) const MENU_BAR_ORDER: [MenuBarButton; 11] = [
     MenuBarButton::Reload,
     MenuBarButton::Sort,
-    MenuBarButton::CardInfoToggle,
-    MenuBarButton::CardRatingToggle,
+    MenuBarButton::CardBand,
     MenuBarButton::FolderBookAccessToggle,
     MenuBarButton::ScoringToggle,
     MenuBarButton::ToolPaletteToggle,
@@ -328,7 +326,7 @@ mod menu_bar_order_tests {
     #[test]
     fn settings_status_and_help_keep_the_visual_right_end_order() {
         assert_eq!(
-            &MENU_BAR_ORDER[8..],
+            &MENU_BAR_ORDER[7..],
             &[
                 MenuBarButton::Settings,
                 MenuBarButton::StatusToggle,
@@ -1293,8 +1291,10 @@ pub struct NekoviewApp {
     pub(crate) card_date_format: crate::card_date_format::CardDateFormat,
     /// 情報帯の見た目（背景色・透過度・文字色・文字サイズ）。今は Default 固定。
     pub(crate) card_info_style: CardInfoStyle,
-    /// カード帯設定ダイアログのMOCK状態（紐付けなし。P4でメニューバーの「帯」ボタンへ統合する）
-    card_band_mock: card_band_dialog_ui::CardBandMock,
+    /// カード帯のカスタム書式・有効な導線・背景の透過度（state に保存。従来方式の選択は card_info_mode / card_rating_mode）
+    pub(crate) card_band: crate::card_band::BandSettings,
+    /// カード帯設定ダイアログ（開いている間のドラフト）
+    card_band_dialog: card_band_dialog_ui::CardBandDialog,
     /// 情報帯の行が帯幅を超えた時のホバー横スクロール状態: (対象パス, ホバー開始時刻)。
     pub(crate) card_info_hover: Option<(PathBuf, std::time::Instant)>,
     /// 可視カードぶんだけ遅延取得するファイルメタデータのキャッシュ: パス → (更新日時, サイズbytes)。
@@ -1471,7 +1471,7 @@ mod glyph_audit;
 
 
 impl NekoviewApp {
-    pub fn new(start_dir: PathBuf, mut config: AppConfig, viewer_slots: [Option<WindowSlot>; 4], sort_state: SortState, viewer_cfg: ViewerConfig, show_hidden: bool, card_info_mode: &str, card_rating_mode: &str, card_date_format: crate::card_date_format::CardDateFormat, translate_cfg: crate::translate::TranslateConfig, tab_positions: crate::gui_config::TabPositions, tree_sorts: crate::tree_sort::TreeSorts, tag_panel_open: bool, tag_preview_high_quality: bool, explorer_view_mode: &str, explorer_list_cols: &str, explorer_sim_threshold: &str, theme_mode: crate::ui_theme::ThemeMode, open_target: Option<PathBuf>, ctx: egui::Context) -> Self {
+    pub fn new(start_dir: PathBuf, mut config: AppConfig, viewer_slots: [Option<WindowSlot>; 4], sort_state: SortState, viewer_cfg: ViewerConfig, show_hidden: bool, card_info_mode: &str, card_rating_mode: &str, card_date_format: crate::card_date_format::CardDateFormat, card_band: crate::card_band::BandSettings, translate_cfg: crate::translate::TranslateConfig, tab_positions: crate::gui_config::TabPositions, tree_sorts: crate::tree_sort::TreeSorts, tag_panel_open: bool, tag_preview_high_quality: bool, explorer_view_mode: &str, explorer_list_cols: &str, explorer_sim_threshold: &str, theme_mode: crate::ui_theme::ThemeMode, open_target: Option<PathBuf>, ctx: egui::Context) -> Self {
         // 「前回フォルダに復帰」がオフなら、他のフォルダ系タブの保存位置も復元しない（既定に戻す）
         let tab_positions = if config.startup.use_last_dir {
             tab_positions
@@ -1818,8 +1818,12 @@ impl NekoviewApp {
             list_cols: list_columns::ListColumns::from_state_str(explorer_list_cols),
             list_scroll_x: 0.0,
             card_date_format,
-            card_info_style: CardInfoStyle::default(),
-            card_band_mock: Default::default(),
+            card_info_style: CardInfoStyle {
+                band_color: egui::Color32::from_black_alpha(crate::card_band::band_alpha(card_band.transparency_pct)),
+                ..CardInfoStyle::default()
+            },
+            card_band,
+            card_band_dialog: Default::default(),
             card_info_hover: None,
             archive_meta_cache: HashMap::new(),
             archive_rating_cache: HashMap::new(),
@@ -1913,6 +1917,7 @@ impl NekoviewApp {
             self.card_info_mode.as_state_str(),
             self.card_rating_mode.as_state_str(),
             &self.card_date_format,
+            &self.card_band,
             &self.config,
             &self.translate_cfg,
             &self.tab_positions,

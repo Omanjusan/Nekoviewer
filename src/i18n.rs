@@ -7966,35 +7966,242 @@ impl Lang {
         }
     }
 
+    // ── カード帯の設定ダイアログ ──
+
+    /// メニューバーの[帯]ボタン（カード帯の設定ダイアログを開く）。
+    pub fn card_band_button(self) -> &'static str {
+        match self {
+            Lang::Japanese => "帯",
+            Lang::English  => "[Band]",
+            Lang::Chinese  => "信息带",
+        }
+    }
+
+    pub fn band_dialog_title(self) -> &'static str {
+        match self {
+            Lang::Japanese => "カード帯の設定",
+            Lang::English  => "Card band settings",
+            Lang::Chinese  => "卡片信息带设置",
+        }
+    }
+
+    pub fn band_classic_heading(self) -> &'static str {
+        match self {
+            Lang::Japanese => "従来方式",
+            Lang::English  => "Classic mode",
+            Lang::Chinese  => "经典方式",
+        }
+    }
+
+    pub fn band_custom_heading(self) -> &'static str {
+        match self {
+            Lang::Japanese => "カスタム",
+            Lang::English  => "Custom",
+            Lang::Chinese  => "自定义",
+        }
+    }
+
+    pub fn band_classic_tip(self) -> &'static str {
+        match self {
+            Lang::Japanese => "こちらを採用する（カスタム側の内容は保持されます）",
+            Lang::English  => "Use this mode (the custom layout is kept)",
+            Lang::Chinese  => "采用此方式（自定义内容会保留）",
+        }
+    }
+
+    pub fn band_custom_tip(self) -> &'static str {
+        match self {
+            Lang::Japanese => "こちらを採用する（従来方式の選択は保持されます）",
+            Lang::English  => "Use this mode (the classic selection is kept)",
+            Lang::Chinese  => "采用此方式（经典方式的选择会保留）",
+        }
+    }
+
+    pub fn band_limits(self, items: usize, max_items: usize, lines: usize, max_lines: usize) -> String {
+        match self {
+            Lang::Japanese => format!("要素制限数 {items}/{max_items}　行制限数 {lines}/{max_lines}"),
+            Lang::English  => format!("Elements {items}/{max_items}   Lines {lines}/{max_lines}"),
+            Lang::Chinese  => format!("元素上限 {items}/{max_items}　行数上限 {lines}/{max_lines}"),
+        }
+    }
+
+    pub fn band_stack_empty(self) -> &'static str {
+        match self {
+            Lang::Japanese => "（要素ボタンを押して積む）",
+            Lang::English  => "(press an element button to add it)",
+            Lang::Chinese  => "（按元素按钮依次添加）",
+        }
+    }
+
+    pub fn band_remove_tip(self) -> &'static str {
+        match self {
+            Lang::Japanese => "この項目を削除",
+            Lang::English  => "Remove this item",
+            Lang::Chinese  => "删除此项",
+        }
+    }
+
+    pub fn band_align_tip(self) -> &'static str {
+        match self {
+            Lang::Japanese => "寄せを切替（左 → 中央 → 右 → 未設定）",
+            Lang::English  => "Change alignment (Left -> Center -> Right -> Unset)",
+            Lang::Chinese  => "切换对齐（左 → 居中 → 右 → 未设置）",
+        }
+    }
+
+    /// 要素ボタン・スタック欄の名称。
+    pub fn band_elem(self, e: crate::card_band::Elem) -> &'static str {
+        use crate::card_band::Elem;
+        match (self, e) {
+            (Lang::Japanese, Elem::Date) => "日付",
+            (Lang::Japanese, Elem::Title) => "タイトル",
+            (Lang::Japanese, Elem::Size) => "サイズ",
+            (Lang::Japanese, Elem::Stars) => "評価点★",
+            (Lang::Japanese, Elem::Score) => "評価点数値",
+            (Lang::Japanese, Elem::Visits) => "訪問回数",
+            (Lang::Japanese, Elem::Space) => "空白",
+            (Lang::Japanese, Elem::Newline) => "改行",
+            (Lang::Japanese, Elem::Divider) => "区切りバー",
+            (Lang::English, Elem::Date) => "Date",
+            (Lang::English, Elem::Title) => "Title",
+            (Lang::English, Elem::Size) => "Size",
+            (Lang::English, Elem::Stars) => "Rating ★",
+            (Lang::English, Elem::Score) => "Rating no.",
+            (Lang::English, Elem::Visits) => "Visits",
+            (Lang::English, Elem::Space) => "Space",
+            (Lang::English, Elem::Newline) => "Newline",
+            (Lang::English, Elem::Divider) => "Divider",
+            (Lang::Chinese, Elem::Date) => "日期",
+            (Lang::Chinese, Elem::Title) => "标题",
+            (Lang::Chinese, Elem::Size) => "大小",
+            (Lang::Chinese, Elem::Stars) => "评分★",
+            (Lang::Chinese, Elem::Score) => "评分数值",
+            (Lang::Chinese, Elem::Visits) => "访问次数",
+            (Lang::Chinese, Elem::Space) => "空格",
+            (Lang::Chinese, Elem::Newline) => "换行",
+            (Lang::Chinese, Elem::Divider) => "分隔线",
+        }
+    }
+
+    /// 寄せ属性の表示。未設定も明示する。
+    pub fn band_align(self, a: crate::card_band::Align) -> &'static str {
+        use crate::card_band::Align;
+        match (self, a) {
+            (Lang::Japanese, Align::Unset) => "未設定",
+            (Lang::Japanese, Align::Left) => "左",
+            (Lang::Japanese, Align::Center) => "中央",
+            (Lang::Japanese, Align::Right) => "右",
+            (Lang::English, Align::Unset) => "Unset",
+            (Lang::English, Align::Left) => "Left",
+            (Lang::English, Align::Center) => "Center",
+            (Lang::English, Align::Right) => "Right",
+            (Lang::Chinese, Align::Unset) => "未设置",
+            (Lang::Chinese, Align::Left) => "左",
+            (Lang::Chinese, Align::Center) => "居中",
+            (Lang::Chinese, Align::Right) => "右",
+        }
+    }
+
+    pub fn band_sample_heading(self) -> &'static str {
+        match self {
+            Lang::Japanese => "サンプル",
+            Lang::English  => "Sample",
+            Lang::Chinese  => "示例",
+        }
+    }
+
+    pub fn band_sample_of_classic(self) -> &'static str {
+        match self {
+            Lang::Japanese => "（従来方式の内容）",
+            Lang::English  => "(classic mode)",
+            Lang::Chinese  => "（经典方式的内容）",
+        }
+    }
+
+    pub fn band_sample_of_custom(self) -> &'static str {
+        match self {
+            Lang::Japanese => "（カスタムの内容）",
+            Lang::English  => "(custom layout)",
+            Lang::Chinese  => "（自定义的内容）",
+        }
+    }
+
+    pub fn band_sample_title(self) -> &'static str {
+        match self {
+            Lang::Japanese => "サンプル_タイトル.zip",
+            Lang::English  => "Sample_title.zip",
+            Lang::Chinese  => "示例_标题.zip",
+        }
+    }
+
+    pub fn band_sample_thumb(self) -> &'static str {
+        match self {
+            Lang::Japanese => "サムネイル",
+            Lang::English  => "Thumbnail",
+            Lang::Chinese  => "缩略图",
+        }
+    }
+
+    /// 帯の背景の透過度ボタン（押すたびに10%ずつ変わる）。
+    pub fn band_transparency_button(self, pct: u8) -> String {
+        match self {
+            Lang::Japanese => format!("透過度 {pct}%"),
+            Lang::English  => format!("Transparency {pct}%"),
+            Lang::Chinese  => format!("透明度 {pct}%"),
+        }
+    }
+
+    pub fn band_transparency_tip(self) -> &'static str {
+        match self {
+            Lang::Japanese => "帯の背景の透過度。押すたびに10%ずつ変わる（100%の次は0%）。従来方式・カスタム共通",
+            Lang::English  => "Band background transparency. Changes by 10% per press (100% wraps to 0%). Applies to both modes",
+            Lang::Chinese  => "信息带背景的透明度。每按一次变化10%（100%之后回到0%）。两种方式通用",
+        }
+    }
+
+    pub fn band_confirm(self) -> &'static str {
+        match self {
+            Lang::Japanese => "確定",
+            Lang::English  => "OK",
+            Lang::Chinese  => "确定",
+        }
+    }
+
+    pub fn band_cancel(self) -> &'static str {
+        match self {
+            Lang::Japanese => "キャンセル",
+            Lang::English  => "Cancel",
+            Lang::Chinese  => "取消",
+        }
+    }
+
     pub fn help_card_info(self) -> HelpDoc {
         match self {
             Lang::Japanese => HelpDoc {
                 title: "サムネ情報帯",
                 sections: &[
                     (
-                        "[情報]",
-                        "サムネイル下部の帯に出す内容を切り替える。押すたびに循環する。\n\
-                         OFF → 名前 → 名前+日付 → 名前+日付+容量",
-                    ),
-                    (
-                        "[情報2]",
-                        "評価帯の内容を切り替える。押すたびに循環する。\n\
-                         OFF → ★（スコア） → 回数（訪問回数） → ★+回数",
+                        "[帯]",
+                        "サムネイル下部の帯の設定ダイアログを開く。\n\
+                         ・従来方式: 2つのボタンで、情報（OFF→名前→名前+日付→名前+日付+容量）と\n\
+                         　評価（OFF→★→回数→★+回数）を切り替える。\n\
+                         ・カスタム: 日付・タイトル・サイズ・評価・訪問回数などの要素を押した順に積んで書式を作る。\n\
+                         　各要素は左・中央・右に寄せられる。\n\
+                         見出しのボタンで、実際に使う方を選ぶ。透過度は両方に効く。",
                     ),
                 ],
             },
             Lang::English => HelpDoc {
-                title: "Thumbnail info bands",
+                title: "Thumbnail info band",
                 sections: &[
                     (
-                        "[Info]",
-                        "Changes what the band under each thumbnail shows. Cycles on every press.\n\
-                         OFF -> Name -> Name+Date -> Name+Date+Size",
-                    ),
-                    (
-                        "[Info2]",
-                        "Changes what the rating band shows. Cycles on every press.\n\
-                         OFF -> Stars (score) -> Visits -> Stars+Visits",
+                        "[Band]",
+                        "Opens the settings dialog for the band under each thumbnail.\n\
+                         - Classic mode: two buttons cycle the info (OFF -> Name -> Name+Date -> Name+Date+Size)\n\
+                         \u{3000}and the rating (OFF -> Stars -> Visits -> Stars+Visits).\n\
+                         - Custom: build the layout by adding elements (date, title, size, rating, visits...) in order.\n\
+                         \u{3000}Each element can be aligned left, center or right.\n\
+                         The heading buttons choose which one is used. Transparency applies to both.",
                     ),
                 ],
             },
@@ -8002,14 +8209,13 @@ impl Lang {
                 title: "缩略图信息带",
                 sections: &[
                     (
-                        "[信息]",
-                        "切换缩略图下方信息带显示的内容，每按一次循环切换。\n\
-                         关闭 → 名称 → 名称+日期 → 名称+日期+大小",
-                    ),
-                    (
-                        "[信息2]",
-                        "切换评分带显示的内容，每按一次循环切换。\n\
-                         关闭 → ★（评分） → 次数（访问次数） → ★+次数",
+                        "[信息带]",
+                        "打开缩略图下方信息带的设置对话框。\n\
+                         ・经典方式：用两个按钮切换信息（关闭→名称→名称+日期→名称+日期+大小）\n\
+                         　和评分（关闭→★→次数→★+次数）。\n\
+                         ・自定义：按顺序添加日期、标题、大小、评分、访问次数等元素来组成格式。\n\
+                         　各元素可靠左、居中或靠右。\n\
+                         用标题按钮选择实际采用的方式。透明度对两种方式都有效。",
                     ),
                 ],
             },

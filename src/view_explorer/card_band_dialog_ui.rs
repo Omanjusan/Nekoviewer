@@ -1,12 +1,11 @@
-//! カード帯の設定ダイアログ（**MOCK**: 見た目と操作感の確定用。実カード・state・DBには一切つながない）。
+//! カード帯の設定ダイアログ（メニューバーの[帯]ボタンから開く）。
 //!
-//! 仕様は memory の project_card_band_custom_plan。ここで確定させるのは UI の骨格:
-//! - 左右縦割（従来UI｜中央線｜新UI）＋共通のサンプル帯＋キャンセル/確定
-//! - 従来UI: 情報・評価の循環ボタンを縦に2個。押すとサンプル帯だけが変わる
-//! - 新UI: 要素ボタンを押した順にスタック。各項目に [寄せ][X]。差し込み・並べ替えは無し
-//! - ✕なしのモーダル。Esc・枠外クリックはキャンセル扱い
+//! - 左右縦割（従来方式｜中央線｜カスタム）＋共通のサンプル帯＋キャンセル/確定。見出しは排他の切替ボタン
+//! - 従来方式: 情報・評価の循環ボタン。カスタム: 要素ボタンを押した順にスタック（寄せトグル・X削除）
+//! - サンプル帯の右上に、帯の背景の透過度ボタン（10%刻み・0〜100%、従来方式・カスタム共通）
+//! - ✕なしのモーダル。Esc・枠外クリックはキャンセル扱い。確定で両方の内容を保存し、有効な導線を実採用する
 //!
-//! データモデルと配置計画は card_band.rs（純関数・P1）を使う。実カード描画への接続はP2、文言のi18nはP4。
+//! データモデルと配置計画は card_band.rs（純関数）、描画は card_band_paint.rs（実カードと共有）。
 
 use super::{CardInfoMode, CardInfoStyle, CardRatingMode, NekoviewApp};
 use super::card_band_paint::{band_metrics, paint_band};
@@ -19,43 +18,26 @@ const SAMPLE_CARD_H: f32 = 120.0;
 /// 文字サイズの算出に使う仮想のカード高（実カードの cell_h 相当。サンプルの見た目の高さとは独立）。
 const SAMPLE_CELL_H: f32 = 200.0;
 
-/// 要素ボタン・スタック欄に出す名称（i18nはP4で）。
-fn elem_label(e: Elem) -> &'static str {
-    match e {
-        Elem::Date => "日付",
-        Elem::Title => "タイトル",
-        Elem::Size => "サイズ",
-        Elem::Stars => "評価点★",
-        Elem::Score => "評価点数値",
-        Elem::Visits => "訪問回数",
-        Elem::Space => "空白",
-        Elem::Newline => "改行",
-        Elem::Divider => "区切りバー",
-    }
-}
-
-/// 寄せ属性の表示。未設定も明示する。
-fn align_label(a: Align) -> &'static str {
-    match a {
-        Align::Unset => "未設定",
-        Align::Left => "左",
-        Align::Center => "中央",
-        Align::Right => "右",
-    }
-}
-
-/// ダイアログの編集内容（ドラフト／確定済みの両方に使う）。
+/// ダイアログの編集内容（開いている間のドラフト）。
 #[derive(Clone, PartialEq, Debug)]
 pub(super) struct BandDraft {
     info: CardInfoMode,
     rating: CardRatingMode,
     items: Vec<Item>,
     side: Active,
+    /// 帯の背景の透過度（%、10刻み）
+    transparency_pct: u8,
 }
 
 impl Default for BandDraft {
     fn default() -> Self {
-        Self { info: CardInfoMode::Off, rating: CardRatingMode::Off, items: Vec::new(), side: Active::Classic }
+        Self {
+            info: CardInfoMode::Off,
+            rating: CardRatingMode::Off,
+            items: Vec::new(),
+            side: Active::Classic,
+            transparency_pct: card_band::DEFAULT_TRANSPARENCY_PCT,
+        }
     }
 }
 
@@ -100,47 +82,35 @@ impl BandDraft {
     }
 }
 
-/// アプリが持つMOCK状態。`saved` は確定済み（セッション内のみ）、`draft` はダイアログ表示中の編集内容。
+/// ダイアログの状態。`draft` が Some の間だけ開いている（確定・キャンセルで None に戻る）。
 #[derive(Default)]
-pub(super) struct CardBandMock {
-    saved: BandDraft,
+pub(super) struct CardBandDialog {
     draft: Option<BandDraft>,
-}
-
-impl CardBandMock {
-    pub(super) fn open(&mut self) {
-        self.draft = Some(self.saved.clone());
-    }
-
-    /// 実カードに描くカスタム書式。カスタムが有効で、要素が1つ以上あるときだけ Some。
-    /// （P4で state に配線するまでは、このダイアログで確定した内容をセッション内だけ反映する）
-    pub(super) fn render_items(&self) -> Option<Vec<Item>> {
-        (self.saved.side == Active::Custom && !self.saved.items.is_empty()).then(|| self.saved.items.clone())
-    }
 }
 
 // ── サンプル帯の描画（実カードと同じ描画 card_band_paint::paint_band を使う） ──
 
-fn sample_data() -> BandData {
+fn sample_data(t: crate::i18n::Lang) -> BandData {
     BandData {
-        title: "サンプル_タイトル.zip".to_string(),
+        title: t.band_sample_title().to_string(),
         date: "2026-01-31".to_string(),
         size: "12.3 MB".to_string(),
         rating_half: Some(7), // ★3.5
-        unrated: "未評価".to_string(),
-        visits_text: "訪問回数：12回".to_string(),
+        unrated: t.rating_unrated().to_string(),
+        visits_text: t.visit_count_line(12),
     }
 }
 
 /// 疑似カード＋帯を描く。
 fn paint_sample(ui: &mut egui::Ui, items: &[Item], style: &CardInfoStyle) {
+    let t = crate::i18n::t();
     let (rect, _) = ui.allocate_exact_size(Vec2::new(SAMPLE_CARD_W, SAMPLE_CARD_H), egui::Sense::hover());
     let painter = ui.painter_at(rect);
     painter.rect_filled(rect, 4.0, Color32::from_gray(70));
     painter.text(
         rect.center() - Vec2::new(0.0, 20.0),
         Align2::CENTER_CENTER,
-        "サムネイル",
+        t.band_sample_thumb(),
         egui::FontId::proportional(14.0),
         Color32::from_gray(120),
     );
@@ -152,17 +122,42 @@ fn paint_sample(ui: &mut egui::Ui, items: &[Item], style: &CardInfoStyle) {
     }
     let (line_px, row_h, band_h) = band_metrics(SAMPLE_CELL_H, style, rows.len());
     let band = Rect::from_min_max(Pos2::new(rect.min.x, rect.max.y - band_h), rect.max);
-    paint_band(&painter, band, &rows, &sample_data(), style, line_px, row_h, None);
+    paint_band(&painter, band, &rows, &sample_data(t), style, line_px, row_h, None);
 }
 
 // ── ダイアログ本体 ───────────────────────────────────────────────────────
 
 impl NekoviewApp {
-    /// 毎フレーム、MOCKダイアログが開いていれば描く。実状態には触れない。
-    pub(super) fn draw_card_band_mock_dialog(&mut self, ctx: &egui::Context) {
-        let Some(mut draft) = self.card_band_mock.draft.take() else { return };
+    /// ダイアログを開く。ドラフトは現在の実状態（従来方式の選択・カスタム書式・有効な導線・透過度）から始める。
+    pub(super) fn open_card_band_dialog(&mut self) {
+        self.card_band_dialog.draft = Some(BandDraft {
+            info: self.card_info_mode,
+            rating: self.card_rating_mode,
+            items: self.card_band.items.clone(),
+            side: self.card_band.active,
+            transparency_pct: self.card_band.transparency_pct,
+        });
+    }
+
+    /// 確定: 従来方式の選択・カスタム書式・有効な導線・透過度の全部を実状態へ反映して保存する。
+    fn apply_card_band_draft(&mut self, draft: BandDraft) {
+        let draft = draft.normalized();
+        self.card_info_mode = draft.info;
+        self.card_rating_mode = draft.rating;
+        self.card_band = card_band::BandSettings {
+            active: draft.side,
+            items: draft.items,
+            transparency_pct: draft.transparency_pct,
+        };
+        self.card_info_style.band_color = Color32::from_black_alpha(card_band::band_alpha(draft.transparency_pct));
+        self.persist_state();
+    }
+
+    /// 毎フレーム、ダイアログが開いていれば描く。確定されたときだけ実状態へ反映する。
+    pub(super) fn draw_card_band_dialog(&mut self, ctx: &egui::Context) {
+        let Some(mut draft) = self.card_band_dialog.draft.take() else { return };
         let t = crate::i18n::t();
-        let style = self.card_info_style;
+        let base_style = self.card_info_style;
         let mut confirm = false;
         let mut cancel = false;
 
@@ -171,7 +166,7 @@ impl NekoviewApp {
         let dialog_w = (ctx.content_rect().width() - 60.0).clamp(480.0, 660.0);
         const GAP: f32 = 12.0;
 
-        let modal = egui::Modal::new(egui::Id::new("card_band_mock_dialog")).show(ctx, |ui| {
+        let modal = egui::Modal::new(egui::Id::new("card_band_dialog")).show(ctx, |ui| {
             ui.set_width(dialog_w);
             // 横並びでは項目の間に item_spacing.x が両側に入るので、その分を欄幅から引いて全体を dialog_w に収める。
             let sp = ui.spacing().item_spacing.x;
@@ -179,10 +174,7 @@ impl NekoviewApp {
             let legacy_w = col_w;
             let custom_w = col_w;
             let legacy_btn_w = (col_w / 2.0).max(110.0);
-            ui.horizontal(|ui| {
-                ui.heading("カード帯の設定");
-                ui.weak("MOCK: 実カードには反映されません");
-            });
+            ui.heading(t.band_dialog_title());
             ui.add_space(2.0);
 
             let mut left_rect = Rect::NOTHING;
@@ -193,8 +185,8 @@ impl NekoviewApp {
                     // 見出しは切替ボタンを兼ねる（従来／カスタムは排他）。押した側がアクティブになり、
                     // 非アクティブ側の欄はグレーアウトして内容を保持する。確定は両方を保存し、アクティブ側を実採用する。
                     if ui
-                        .add_sized([col_w, 28.0], egui::Button::new(egui::RichText::new("従来方式").strong()).selected(draft.side == Active::Classic))
-                        .on_hover_text("こちらを採用する（カスタム側の内容は保持されます）")
+                        .add_sized([col_w, 28.0], egui::Button::new(egui::RichText::new(t.band_classic_heading()).strong()).selected(draft.side == Active::Classic))
+                        .on_hover_text(t.band_classic_tip())
                         .clicked()
                     {
                         draft.side = Active::Classic;
@@ -230,8 +222,8 @@ impl NekoviewApp {
                 ui.vertical(|ui| {
                     ui.set_width(custom_w);
                     if ui
-                        .add_sized([col_w, 28.0], egui::Button::new(egui::RichText::new("カスタム").strong()).selected(draft.side == Active::Custom))
-                        .on_hover_text("こちらを採用する（従来側の選択は保持されます）")
+                        .add_sized([col_w, 28.0], egui::Button::new(egui::RichText::new(t.band_custom_heading()).strong()).selected(draft.side == Active::Custom))
+                        .on_hover_text(t.band_custom_tip())
                         .clicked()
                     {
                         draft.side = Active::Custom;
@@ -239,30 +231,30 @@ impl NekoviewApp {
                     ui.add_enabled_ui(draft.side == Active::Custom, |ui| {
                     ui.horizontal_wrapped(|ui| {
                         for e in Elem::ALL {
-                            if ui.add_enabled(draft.can_add(e), egui::Button::new(elem_label(e))).clicked() {
+                            if ui.add_enabled(draft.can_add(e), egui::Button::new(t.band_elem(e))).clicked() {
                                 draft.items.push(Item { elem: e, align: Align::Unset });
                             }
                         }
                     });
-                    ui.weak(format!("要素制限数 {}/{}　行制限数 {}/{}", draft.items.len(), MAX_ITEMS, draft.line_count(), MAX_LINES));
+                    ui.weak(t.band_limits(draft.items.len(), MAX_ITEMS, draft.line_count(), MAX_LINES));
 
                     let mut remove: Option<usize> = None;
                     egui::ScrollArea::vertical().max_height(84.0).auto_shrink([false, true]).show(ui, |ui| {
                         if draft.items.is_empty() {
-                            ui.weak("（要素ボタンを押して積む）");
+                            ui.weak(t.band_stack_empty());
                         }
                         for (i, it) in draft.items.iter_mut().enumerate() {
                             ui.horizontal(|ui| {
                                 ui.label(egui::RichText::new(format!("{:>2}", i + 1)).weak());
-                                let name = egui::RichText::new(elem_label(it.elem));
+                                let name = egui::RichText::new(t.band_elem(it.elem));
                                 ui.label(if it.elem == Elem::Newline { name.weak() } else { name });
                                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                    if ui.small_button("X").on_hover_text("この項目を削除").clicked() {
+                                    if ui.small_button("X").on_hover_text(t.band_remove_tip()).clicked() {
                                         remove = Some(i);
                                     }
                                     if ui
-                                        .add_sized([52.0, 18.0], egui::Button::new(align_label(it.align)).small())
-                                        .on_hover_text("寄せを切替（左 → 中央 → 右 → 未設定）")
+                                        .add_sized([52.0, 18.0], egui::Button::new(t.band_align(it.align)).small())
+                                        .on_hover_text(t.band_align_tip())
                                         .clicked()
                                     {
                                         it.align = it.align.next();
@@ -285,20 +277,33 @@ impl NekoviewApp {
 
             ui.separator();
             ui.horizontal(|ui| {
-                ui.strong("サンプル");
+                ui.strong(t.band_sample_heading());
                 ui.weak(match draft.side {
-                    Active::Classic => "（従来の内容）",
-                    Active::Custom => "（カスタムの内容）",
+                    Active::Classic => t.band_sample_of_classic(),
+                    Active::Custom => t.band_sample_of_custom(),
+                });
+                // サンプル表示エリアの右上: 帯の背景の透過度（押すたびに10%ずつ。従来方式・カスタム共通）
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui
+                        .button(t.band_transparency_button(draft.transparency_pct))
+                        .on_hover_text(t.band_transparency_tip())
+                        .clicked()
+                    {
+                        draft.transparency_pct = card_band::next_transparency(draft.transparency_pct);
+                    }
                 });
             });
-            ui.vertical_centered(|ui| paint_sample(ui, &draft.sample_items(), &style));
+            // サンプル帯はドラフトの透過度で描く（確定するまで実カードには反映しない）
+            let mut sample_style = base_style;
+            sample_style.band_color = Color32::from_black_alpha(card_band::band_alpha(draft.transparency_pct));
+            ui.vertical_centered(|ui| paint_sample(ui, &draft.sample_items(), &sample_style));
 
             ui.add_space(2.0);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.button("確定").clicked() {
+                if ui.button(t.band_confirm()).clicked() {
                     confirm = true;
                 }
-                if ui.button("キャンセル").clicked() {
+                if ui.button(t.band_cancel()).clicked() {
                     cancel = true;
                 }
             });
@@ -309,9 +314,9 @@ impl NekoviewApp {
             cancel = true;
         }
         if confirm {
-            self.card_band_mock.saved = draft.normalized();
+            self.apply_card_band_draft(draft);
         } else if !cancel {
-            self.card_band_mock.draft = Some(draft);
+            self.card_band_dialog.draft = Some(draft);
         }
     }
 }
@@ -325,11 +330,18 @@ mod tests {
     }
 
     #[test]
-    fn labels_are_explicit_even_when_unset() {
-        assert_eq!(align_label(Align::Unset), "未設定", "未設定は明示する");
-        for e in Elem::ALL {
-            assert!(!elem_label(e).is_empty());
+    fn labels_exist_in_every_language_and_unset_is_explicit() {
+        use crate::i18n::Lang;
+        for lang in [Lang::Japanese, Lang::English, Lang::Chinese] {
+            for e in Elem::ALL {
+                assert!(!lang.band_elem(e).is_empty());
+            }
+            for a in [Align::Unset, Align::Left, Align::Center, Align::Right] {
+                assert!(!lang.band_align(a).trim().is_empty(), "寄せは未設定も文字で明示する");
+            }
         }
+        assert_eq!(Lang::Japanese.band_align(Align::Unset), "未設定");
+        assert_eq!(Lang::English.band_classic_heading(), "Classic mode");
     }
 
     #[test]
@@ -354,6 +366,7 @@ mod tests {
             rating: CardRatingMode::Stars,
             items: vec![it(Elem::Title), it(Elem::Newline)],
             side: Active::Custom,
+            transparency_pct: 40,
         }
         .normalized();
         assert_eq!(d.info, CardInfoMode::NameDate, "従来側の選択は保持される");

@@ -457,6 +457,8 @@ pub struct AppState {
     /// サムネカード情報帯の「更新日時」表示に使う日付書式。設定ダイアログの
     /// エクスプローラータブで編集し、state には card_date_* の6キーに分割して保存する。
     pub card_date_format: CardDateFormat,
+    /// カード帯のカスタム書式・有効な導線・背景の透過度。state には card_band_* の3キーで保存する。
+    pub card_band: crate::card_band::BandSettings,
     /// 設定ダイアログから編集された AppConfig 上書き値。
     /// None のものは config.rs のハードコード既定値をそのまま使う。一度でもダイアログで
     /// 変更するとこの state 側の値が以後その既定値より優先される（次回起動反映）。
@@ -545,6 +547,7 @@ impl Default for AppState {
             card_info_mode: "off".to_string(),
             card_rating_mode: "off".to_string(),
             card_date_format: CardDateFormat::default(),
+            card_band: crate::card_band::BandSettings::default(),
             app_cache_total_mb: None,
             app_anim_ring_min_frames: None,
             app_anim_ring_max_frames: None,
@@ -644,6 +647,9 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
     let mut tag_preview_high_quality: Option<bool> = None;
     let mut card_info_mode: Option<String> = None;
     let mut card_rating_mode: Option<String> = None;
+    let mut card_band_active = String::new();
+    let mut card_band_custom = String::new();
+    let mut card_band_transparency: Option<String> = None;
     let mut explorer_view_mode: Option<String> = None;
     let mut explorer_list_cols: Option<String> = None;
     let mut explorer_sim_threshold: Option<String> = None;
@@ -812,6 +818,9 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
                 "tag_preview_high_quality" => { tag_preview_high_quality = v.trim().parse().ok(); }
                 "card_info_mode" => { card_info_mode = Some(v.trim().to_string()); }
                 "card_rating_mode" => { card_rating_mode = Some(v.trim().to_string()); }
+                "card_band_active" => { card_band_active = v.trim().to_string(); }
+                "card_band_custom" => { card_band_custom = v.trim().to_string(); }
+                "card_band_transparency" => { card_band_transparency = Some(v.trim().to_string()); }
                 "explorer_view_mode" => { explorer_view_mode = Some(v.trim().to_string()); }
                 "explorer_list_cols" => { explorer_list_cols = Some(v.trim().to_string()); }
                 "explorer_sim_threshold" => { explorer_sim_threshold = Some(v.trim().to_string()); }
@@ -1110,6 +1119,7 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
         show_hidden: show_hidden.unwrap_or(false),
         card_info_mode: card_info_mode.unwrap_or_else(|| "off".to_string()),
         card_rating_mode: card_rating_mode.unwrap_or_else(|| "off".to_string()),
+        card_band: crate::card_band::BandSettings::from_state(&card_band_active, &card_band_custom, card_band_transparency.as_deref()),
         card_date_format: CardDateFormat::from_state(
             &card_date_mode,
             &card_date_auto_style,
@@ -1197,7 +1207,7 @@ fn magnifier_state_lines(m: &crate::magnifier::MagnifierConfig) -> String {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn save_state(root: &Path, dir: &Path, window_size: (u32, u32), viewer_slots: &[Option<WindowSlot>; 4], sort_state: &SortState, lang: &str, viewer_cfg: &ViewerConfig, show_hidden: bool, card_info_mode: &str, card_rating_mode: &str, card_date_format: &CardDateFormat, app_cfg: &AppConfig, translate_cfg: &TranslateConfig, tab_positions: &TabPositions, tree_sorts: &crate::tree_sort::TreeSorts, tag_panel_open: bool, tag_preview_high_quality: bool, explorer_view_mode: &str, explorer_list_cols: &str, explorer_sim_threshold: &str, theme_mode: crate::ui_theme::ThemeMode) {
+pub fn save_state(root: &Path, dir: &Path, window_size: (u32, u32), viewer_slots: &[Option<WindowSlot>; 4], sort_state: &SortState, lang: &str, viewer_cfg: &ViewerConfig, show_hidden: bool, card_info_mode: &str, card_rating_mode: &str, card_date_format: &CardDateFormat, card_band: &crate::card_band::BandSettings, app_cfg: &AppConfig, translate_cfg: &TranslateConfig, tab_positions: &TabPositions, tree_sorts: &crate::tree_sort::TreeSorts, tag_panel_open: bool, tag_preview_high_quality: bool, explorer_view_mode: &str, explorer_list_cols: &str, explorer_sim_threshold: &str, theme_mode: crate::ui_theme::ThemeMode) {
     let _ = std::fs::create_dir_all(root);
     let (path, bak, tmp) = (state_path(root), state_bak_path(root), state_tmp_path(root));
 
@@ -1219,6 +1229,11 @@ pub fn save_state(root: &Path, dir: &Path, window_size: (u32, u32), viewer_slots
         "card_date_mode={}\ncard_date_auto_style={}\ncard_date_order={}\ncard_date_sep={}\ncard_date_year={}\ncard_date_month={}\n",
         card_date_format.mode_str(), card_date_format.auto_style_str(), card_date_format.order_str(),
         card_date_format.sep_str(), card_date_format.year_str(), card_date_format.month_str(),
+    ));
+    // カード帯: 有効な導線 / カスタム書式（要素ID[:寄せ]のカンマ区切り）/ 背景の透過度(%)
+    content.push_str(&format!(
+        "card_band_active={}\ncard_band_custom={}\ncard_band_transparency={}\n",
+        card_band.active.as_state_str(), crate::card_band::to_state_str(&card_band.items), card_band.transparency_pct,
     ));
     content.push_str(&format!(
         "thumbbar_pos={}\nthumbbar_thumb_size={}\nthumbbar_idle_hide_ms={}\nthumbbar_overlap={}\nthumbbar_marker_r={}\nthumbbar_marker_g={}\nthumbbar_marker_b={}\nthumbbar_marker_a={}\n",
@@ -1771,6 +1786,29 @@ mod tests {
         std::fs::write(state_path(&root), "last_dir=/tmp/x\nlang=ja\nrating_overlay_enabled=bogus\n").unwrap();
         let parsed = parse_state_file(&state_path(&root)).expect("state file parses");
         assert!(parsed.viewer_cfg.rating_overlay_enabled);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn card_band_keys_parse_and_default_when_missing_or_broken() {
+        use crate::card_band::{Active, BandSettings, DEFAULT_TRANSPARENCY_PCT};
+        let root = std::env::temp_dir()
+            .join(format!("nekoviewer_state_card_band_test_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&root);
+        std::fs::write(
+            state_path(&root),
+            "last_dir=/tmp/x\nlang=ja\ncard_band_active=custom\ncard_band_custom=title:l,nl,future:r,date:r\ncard_band_transparency=70\n",
+        ).unwrap();
+        let parsed = parse_state_file(&state_path(&root)).expect("state file parses");
+        assert_eq!(parsed.card_band.active, Active::Custom);
+        assert_eq!(parsed.card_band.items.len(), 3, "未知の要素は読み捨て");
+        assert_eq!(parsed.card_band.transparency_pct, 70);
+
+        // 旧state（キー無し）は従来方式・既定の透過度
+        std::fs::write(state_path(&root), "last_dir=/tmp/x\nlang=ja\n").unwrap();
+        let parsed = parse_state_file(&state_path(&root)).expect("state file parses");
+        assert_eq!(parsed.card_band, BandSettings::default());
+        assert_eq!(parsed.card_band.transparency_pct, DEFAULT_TRANSPARENCY_PCT);
         let _ = std::fs::remove_dir_all(&root);
     }
 

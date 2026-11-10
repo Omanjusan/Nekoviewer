@@ -461,6 +461,7 @@ impl WinitApp {
             &state.card_info_mode,
             &state.card_rating_mode,
             state.card_date_format,
+            state.card_band,
             state.translate_cfg,
             state.tab_positions,
             state.tree_sorts,

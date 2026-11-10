@@ -8,9 +8,6 @@
 //! - 1行を3ゾーン（左／中央／右）へ配置する計画（`plan_row`）。明示指定を優先し、未設定は左ゾーンの
 //!   明示左の後ろへ書式順で続く。幅が足りないときは 左 → 右 → 中央 の優先で溢れた側を切り詰める
 
-// 保存（to_state_str / from_state_str / Active）の配線はP4。それまで未使用の警告を出さない。
-#![allow(dead_code)]
-
 /// 要素の合計上限。
 pub(crate) const MAX_ITEMS: usize = 24;
 /// 行数の上限（改行は最大 MAX_LINES-1 個）。
@@ -231,6 +228,63 @@ pub(crate) fn from_state_str(s: &str) -> Vec<Item> {
         })
         .collect();
     normalize(&items)
+}
+
+// ── 設定（保存対象） ─────────────────────────────────────────────────────
+
+/// 帯の背景の透過度（%）の既定。従来の帯（黒・アルファ150/255）にほぼ等しい。
+pub(crate) const DEFAULT_TRANSPARENCY_PCT: u8 = 40;
+
+/// 透過度のトグル順: 0 → 10 → … → 100 → 0。
+pub(crate) fn next_transparency(pct: u8) -> u8 {
+    let p = normalize_transparency(pct);
+    if p >= 100 { 0 } else { p + 10 }
+}
+
+/// 透過度を 0..=100 の10%刻みへ丸める（手編集・範囲外の保護）。
+pub(crate) fn normalize_transparency(pct: u8) -> u8 {
+    (((pct.min(100) as u16 + 5) / 10) * 10) as u8
+}
+
+/// 透過度(%) → 帯の黒背景のアルファ(0..=255)。0%=不透明、100%=完全に透明。
+pub(crate) fn band_alpha(transparency_pct: u8) -> u8 {
+    let p = normalize_transparency(transparency_pct) as u32;
+    (((100 - p) * 255 + 50) / 100) as u8
+}
+
+/// state に保存する帯の設定。従来方式の選択（`card_info_mode` / `card_rating_mode`）は別キーのまま。
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct BandSettings {
+    /// 実採用する導線
+    pub active: Active,
+    /// カスタム書式（正規化済み）。従来方式を採用していても保持する
+    pub items: Vec<Item>,
+    /// 帯の背景の透過度（%、10刻み。従来方式・カスタム共通）
+    pub transparency_pct: u8,
+}
+
+impl Default for BandSettings {
+    fn default() -> Self {
+        Self { active: Active::Classic, items: Vec::new(), transparency_pct: DEFAULT_TRANSPARENCY_PCT }
+    }
+}
+
+impl BandSettings {
+    /// state の3キーから復元する。壊れた値・欠落は既定へ。
+    pub(crate) fn from_state(active: &str, items: &str, transparency: Option<&str>) -> Self {
+        Self {
+            active: Active::from_state_str(active.trim()),
+            items: from_state_str(items),
+            transparency_pct: transparency
+                .and_then(|s| s.trim().parse::<u8>().ok())
+                .map_or(DEFAULT_TRANSPARENCY_PCT, normalize_transparency),
+        }
+    }
+
+    /// 実カードに描くカスタム書式。カスタムが有効で要素が1つ以上あるときだけ Some。
+    pub(crate) fn render_items(&self) -> Option<&[Item]> {
+        (self.active == Active::Custom && !self.items.is_empty()).then_some(self.items.as_slice())
+    }
 }
 
 // ── 要素 → 表示内容 ──────────────────────────────────────────────────────
@@ -572,5 +626,41 @@ mod tests {
         assert_eq!(zone_overflow(120.0, (0.0, 100.0)), 20.0);
         assert_eq!(zone_overflow(80.0, (0.0, 100.0)), 0.0);
         assert_eq!(zone_overflow(10.0, (50.0, 50.0)), 10.0, "幅0のゾーンは全部がはみ出し");
+    }
+
+    // ── 設定 ──
+
+    #[test]
+    fn transparency_toggles_in_ten_percent_steps_and_wraps() {
+        assert_eq!(next_transparency(0), 10);
+        assert_eq!(next_transparency(40), 50);
+        assert_eq!(next_transparency(90), 100);
+        assert_eq!(next_transparency(100), 0, "100の次は0へ戻る");
+        assert_eq!(next_transparency(43), 50, "10刻みでない値は丸めてから進む");
+    }
+
+    #[test]
+    fn transparency_maps_to_alpha() {
+        assert_eq!(band_alpha(0), 255, "透過度0%は不透明");
+        assert_eq!(band_alpha(100), 0, "透過度100%は完全に透明");
+        assert_eq!(band_alpha(40), 153);
+        assert_eq!(band_alpha(250), 0, "範囲外は100%扱い");
+        assert_eq!(normalize_transparency(250), 100);
+    }
+
+    #[test]
+    fn settings_parse_defaults_and_round_trip() {
+        let d = BandSettings::from_state("", "", None);
+        assert_eq!(d, BandSettings::default());
+        assert_eq!(d.render_items(), None);
+        let s = BandSettings::from_state("custom", "title:l,nl,date", Some("70"));
+        assert_eq!(s.active, Active::Custom);
+        assert_eq!(s.transparency_pct, 70);
+        assert_eq!(s.render_items().map(|i| i.len()), Some(3));
+        // 壊れた透過度は既定へ
+        assert_eq!(BandSettings::from_state("custom", "title", Some("abc")).transparency_pct, DEFAULT_TRANSPARENCY_PCT);
+        // カスタム有効でも要素が空なら描かない／従来方式採用中は要素があっても描かない
+        assert_eq!(BandSettings::from_state("custom", "", None).render_items(), None);
+        assert_eq!(BandSettings::from_state("classic", "title", None).render_items(), None);
     }
 }
