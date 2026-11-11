@@ -120,6 +120,10 @@
 | 読み込み上限 | 1MB | 64KB〜4MB |
 | リストのページ数にTXTを含める | OFF | — |
 
+## 関連: 公開評価列
+
+info.txt の `Rating:` を出す「公開評価」列は [source-rating-column.md](source-rating-column.md)。記録は同じ `cache.redb` の別表（`archive_rating_v1`）で、ビューアーを開いたとき・走査のときに、詳細・ページ数と同じタイミングで書く。
+
 ## 未対応・注意
 
 - 7z/tar/フォルダ内のTXT。
