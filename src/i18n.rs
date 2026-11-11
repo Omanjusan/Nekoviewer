@@ -4218,6 +4218,33 @@ impl Lang {
         }
     }
 
+    /// カテゴリ削除の確認ダイアログ: タイトル
+    pub fn tag_manager_delete_category_title(self) -> &'static str {
+        match self {
+            Lang::Japanese => "カテゴリの削除",
+            Lang::English  => "Delete category",
+            Lang::Chinese  => "删除分类",
+        }
+    }
+
+    /// カテゴリ削除の確認ダイアログ: 本文（カテゴリ名・要素数）
+    pub fn tag_manager_delete_category_body(self, name: &str, elements: usize) -> String {
+        match self {
+            Lang::Japanese => format!("カテゴリ「{name}」（要素 {elements} 個）を削除します。このカテゴリの要素は、ファイルに付いていてもタグとして使えなくなります。"),
+            Lang::English  => format!("Delete the category \"{name}\" ({elements} elements)? Its elements will no longer work as tags, even on files that already have them."),
+            Lang::Chinese  => format!("将删除分类“{name}”（{elements} 个元素）。该分类的元素即使已附加在文件上，也将无法作为标签使用。"),
+        }
+    }
+
+    /// カテゴリ削除の確認ダイアログ: 実行ボタン
+    pub fn tag_manager_delete_category_ok(self) -> &'static str {
+        match self {
+            Lang::Japanese => "削除する",
+            Lang::English  => "Delete",
+            Lang::Chinese  => "删除",
+        }
+    }
+
     pub fn tag_main_category_name(self) -> &'static str {
         match self {
             Lang::Japanese => "メイン",

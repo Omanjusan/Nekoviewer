@@ -1660,6 +1660,11 @@ impl NekoviewApp {
             self.tag_manager_selected_category = Some(i);
             self.tag_manager_bulk_input.clear();
         }
+        // 「－」は確認待ちにするだけで、削除は確認ダイアログのOKで行う。
+        if let Some(i) = delete_idx {
+            self.tag_manager_delete_confirm = Some((i, rows[i].0.clone()));
+        }
+        let delete_idx = self.draw_tag_category_delete_confirm(ui.ctx());
         if let Some(i) = delete_idx
             && crate::tag_master::TagMaster::new(&mut self.tag_manager_categories, &mut self.tag_manager_next_tier_id)
                 .remove_category(i)
@@ -1676,6 +1681,43 @@ impl NekoviewApp {
             self.tag_manager_bulk_input.clear();
             self.ensure_tag_main_nonempty();
             self.save_tag_manager();
+        }
+    }
+
+    /// カテゴリ削除の確認ダイアログを描き、OKが押されたら削除するカテゴリのindexを返す。
+    /// 確認待ちのカテゴリが消えた・名前が変わった（別のカテゴリになった）ときは黙って破棄する。
+    fn draw_tag_category_delete_confirm(&mut self, ctx: &egui::Context) -> Option<usize> {
+        use crate::confirm_dialog::{draw_confirm_dialog, ConfirmDialogSpec, ConfirmOutcome};
+        let (idx, name) = self.tag_manager_delete_confirm.clone()?;
+        let Some(cat) = self.tag_manager_categories.get(idx).filter(|c| c.display_name() == name) else {
+            self.tag_manager_delete_confirm = None;
+            return None;
+        };
+        let elements = cat.tiers.iter().filter(|t| t.element.is_some()).count();
+        let t = i18n::t();
+        let outcome = draw_confirm_dialog(
+            ctx,
+            ConfirmDialogSpec {
+                id_salt: "tag_manager_delete_category_window",
+                title: t.tag_manager_delete_category_title(),
+                ok_label: t.tag_manager_delete_category_ok(),
+                cancel_label: t.favorite_dialog_cancel(),
+                foreground: true,
+            },
+            |ui| {
+                ui.label(t.tag_manager_delete_category_body(&name, elements));
+            },
+        );
+        match outcome {
+            ConfirmOutcome::None => None,
+            ConfirmOutcome::Cancel => {
+                self.tag_manager_delete_confirm = None;
+                None
+            }
+            ConfirmOutcome::Ok => {
+                self.tag_manager_delete_confirm = None;
+                Some(idx)
+            }
         }
     }
 

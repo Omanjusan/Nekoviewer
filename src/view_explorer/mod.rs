@@ -1194,6 +1194,8 @@ pub struct NekoviewApp {
     tag_search_unconfirmed: usize,
     /// タグマネージャー(フェーズTM1): 選択中カテゴリのインデックス。
     pub(crate) tag_manager_selected_category: Option<usize>,
+    /// タグマネージャー: カテゴリ削除の確認待ち（カテゴリindex, 押した時点の表示名）。表示名が変わっていたら破棄する。
+    tag_manager_delete_confirm: Option<(usize, String)>,
     /// タグマネージャー: インライン編集中の要素(カテゴリindex, tier内index)。
     /// ダイアログは使わず、tier行のその場でテキスト入力に切り替える。
     pub(crate) tag_manager_editing_element: Option<(usize, usize)>,
@@ -1778,6 +1780,7 @@ impl NekoviewApp {
             tag_learn: None,
             tag_trial_active,
             tag_manager_selected_category: Some(0),
+            tag_manager_delete_confirm: None,
             tag_manager_editing_element: None,
             tag_manager_editing_buffer: String::new(),
             tag_manager_editing_focus_pending: false,
