@@ -898,7 +898,7 @@ pub struct NekoviewApp {
     /// リストの「ファイラー」ボタンの矩形（行番号 → 矩形）。毎フレーム `draw_archive_list` の頭で作り直す。
     reveal_icon_hits: HashMap<usize, egui::Rect>,
     /// リストの「詳細」アイコンの矩形（行番号 → 矩形）。毎フレーム `draw_archive_list` の頭で作り直す。
-    detail_icon_hits: HashMap<usize, egui::Rect>,
+    detail_icon_hits: HashMap<usize, Vec<(egui::Rect, detail_window::DetailKind)>>,
     /// 開いている詳細ウィンドウ（ComicInfo・nfo・zipコメント）。
     detail_window: Option<detail_window::DetailWindow>,
     /// 開いている重複マーカーのポップアップ。

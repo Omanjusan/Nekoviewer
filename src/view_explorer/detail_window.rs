@@ -25,6 +25,40 @@ const CASCADE_DX: f32 = 20.0;
 /// ずらしが画面から外れないよう、この枚数で最初の位置に戻す。
 const CASCADE_WRAP: usize = 12;
 
+/// 「詳細」列のアイコンの種類（押すと、その種類の窓を開く）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum DetailKind {
+    Xml,
+    Json,
+    Txt,
+}
+
+impl DetailKind {
+    /// 列に左から並べる順。
+    pub(super) const ALL: [DetailKind; 3] = [DetailKind::Xml, DetailKind::Json, DetailKind::Txt];
+
+    pub(super) fn label(self) -> &'static str {
+        match self {
+            Self::Xml => "XML",
+            Self::Json => "JSON",
+            Self::Txt => "TXT",
+        }
+    }
+
+    /// 記録された種別のうち、この種類が有るか。
+    pub(super) fn is_in(self, k: DetailKinds) -> bool {
+        match self {
+            Self::Xml => k.xml,
+            Self::Json => k.json,
+            Self::Txt => k.txt,
+        }
+    }
+
+    fn only(self) -> DetailKinds {
+        DetailKinds { xml: self == Self::Xml, json: self == Self::Json, txt: self == Self::Txt }
+    }
+}
+
 /// 窓の中身。
 enum PaneBody {
     Comic(ComicInfo),
@@ -178,15 +212,15 @@ impl NekoviewApp {
         if self.view_mode.mode == super::view_mode::ViewMode::Card || !(response.clicked() || response.double_clicked()) {
             return false;
         }
-        let Some(rect) = self.detail_icon_hits.get(&real_idx).copied() else { return false };
-        if !ui.input(|i| i.pointer.interact_pos()).is_some_and(|p| rect.contains(p)) {
+        let Some(hits) = self.detail_icon_hits.get(&real_idx) else { return false };
+        let pointer = ui.input(|i| i.pointer.interact_pos());
+        let Some(kind) = hits.iter().find(|(rect, _)| pointer.is_some_and(|p| rect.contains(p))).map(|(_, k)| *k) else {
             return false;
-        }
+        };
         if response.clicked()
             && let Some(path) = self.archives.get(real_idx).cloned()
         {
-            // 暫定: 3種類まとめて開く（種類別のアイコンは列UIの段階で付ける）。
-            self.open_detail_windows(path, DetailKinds { xml: true, json: true, txt: true });
+            self.open_detail_windows(path, kind.only());
         }
         true
     }
@@ -378,6 +412,13 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         assert_eq!(only_json.panes.len(), 1);
         assert_eq!(only_json.panes[0].key, PaneKey::Json);
+    }
+
+    #[test]
+    fn kind_picks_only_its_own_windows() {
+        let k = DetailKinds { xml: true, json: false, txt: true };
+        assert_eq!(DetailKind::ALL.map(|d| d.is_in(k)), [true, false, true]);
+        assert_eq!(DetailKind::Json.only(), DetailKinds { xml: false, json: true, txt: false });
     }
 
     #[test]

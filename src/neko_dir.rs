@@ -1417,14 +1417,6 @@ impl DetailFlag {
             None => Self::Unknown,
         }
     }
-
-    /// 確認済みで、1種類でも有るときの種別。
-    pub fn present_kinds(self) -> Option<DetailKinds> {
-        match self {
-            Self::Checked(k) if k.any() => Some(k),
-            _ => None,
-        }
-    }
 }
 
 /// `ARCHIVE_META_TABLE` の1行。
@@ -1593,10 +1585,6 @@ mod archive_meta_tests {
         // 旧版の 1（無し）・2（有り）は種別が分からないので未確認。
         assert_eq!(DetailFlag::from_u8(1), DetailFlag::Unknown);
         assert_eq!(DetailFlag::from_u8(2), DetailFlag::Unknown);
-        assert_eq!(DetailFlag::Unknown.present_kinds(), None);
-        assert_eq!(DetailFlag::Checked(DetailKinds::default()).present_kinds(), None);
-        let k = DetailKinds { xml: false, json: true, txt: false };
-        assert_eq!(DetailFlag::Checked(k).present_kinds(), Some(k));
     }
 
     #[test]

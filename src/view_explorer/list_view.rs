@@ -98,8 +98,11 @@ fn column_widths(thumb_w: f32, cols: &ListColumns, place_w: f32, compare_w: f32)
 /// 「エラー」列の幅（px。固定）。赤X・⚠ の2スロット。
 const ERROR_COL_W: f32 = 44.0;
 
-/// 「詳細」列の幅（px。固定）。見出しの文字と、ファイルのアイコン1つが収まる幅。
-const DETAIL_COL_W: f32 = 56.0;
+/// 「詳細」列の1スロットの幅（px）。種別バッジ（XML・JSON・TXT）が1つ入る。位置は種別ごとに固定。
+const DETAIL_SLOT_W: f32 = 32.0;
+
+/// 「詳細」列の幅（px。固定）。種別バッジ3スロットが並ぶ幅。
+const DETAIL_COL_W: f32 = CELL_PAD + DETAIL_SLOT_W * 3.0;
 
 /// 「属性」列の幅（px。固定）。保存設定4スロット（L/R・S・T・B）＋お気に入り3スロットの計7スロット。
 const ATTR_COL_W: f32 = 126.0;
@@ -690,17 +693,8 @@ impl NekoviewApp {
             if !pages.is_empty() {
                 cell_text(ui.painter(), col_rect(rect, widths, Col::Pages), &pages, font, text_color);
             }
-            if info.detail.present_kinds().is_some() {
-                let cell = col_rect(rect, widths, Col::Detail);
-                let side = (cell.height() - 8.0).clamp(10.0, 18.0);
-                let icon_rect = egui::Rect::from_center_size(cell.center(), egui::vec2(side, side));
-                let on_icon = ui.input(|i| i.pointer.hover_pos()).is_some_and(|p| icon_rect.contains(p));
-                nav_icons::draw_document_icon(&ui.painter().with_clip_rect(ui.clip_rect()), icon_rect, on_icon);
-                self.detail_icon_hits.insert(real_idx, icon_rect);
-                if on_icon {
-                    response.clone().on_hover_text(i18n::t().list_detail_tip());
-                }
-            }
+            let detail_cell = col_rect(rect, widths, Col::Detail);
+            self.paint_detail_cell(ui, response, detail_cell, real_idx, info.detail, font);
         }
         if editing {
             // 生画像は評価の対象外なので、評価の＋－は出さない（訪問回数は出す）。
@@ -717,6 +711,62 @@ impl NekoviewApp {
 
         if self.focused_pane == FocusPane::Grid && self.grid_cursor.as_ref() == Some(&GridEntry::Archive(real_idx)) {
             draw_cursor_ring(ui, rect);
+        }
+    }
+
+    /// 「詳細」列のセル。確認済みで有る種別は、XML・JSON・TXT の固定スロットにバッジを出す（押すとその種類の窓）。
+    /// 確認済みで無いときは薄い「－」、対応外の形式（7z・tar・フォルダ）は「N/A」、未確認は空欄。
+    fn paint_detail_cell(
+        &mut self,
+        ui: &egui::Ui,
+        response: &egui::Response,
+        cell: egui::Rect,
+        real_idx: usize,
+        flag: crate::neko_dir::DetailFlag,
+        font: &egui::FontId,
+    ) {
+        use crate::neko_dir::DetailFlag;
+        use super::detail_window::DetailKind;
+        if cell.width() <= 0.0 {
+            return;
+        }
+        let weak = ui.visuals().weak_text_color();
+        let hover_pos = ui.input(|i| i.pointer.hover_pos());
+        let t = i18n::t();
+        match flag {
+            DetailFlag::Unknown => {}
+            DetailFlag::NotApplicable => {
+                cell_text(ui.painter(), cell, "N/A", font, weak);
+                if hover_pos.is_some_and(|p| cell.contains(p)) {
+                    response.clone().on_hover_text(t.list_detail_tip("na"));
+                }
+            }
+            DetailFlag::Checked(kinds) if !kinds.any() => {
+                cell_text(ui.painter(), cell, "－", font, weak);
+                if hover_pos.is_some_and(|p| cell.contains(p)) {
+                    response.clone().on_hover_text(t.list_detail_tip("none"));
+                }
+            }
+            DetailFlag::Checked(kinds) => {
+                let mut hits = Vec::new();
+                for (i, kind) in DetailKind::ALL.into_iter().enumerate() {
+                    if !kind.is_in(kinds) {
+                        continue;
+                    }
+                    let slot = egui::Rect::from_min_size(
+                        egui::pos2(cell.min.x + CELL_PAD + DETAIL_SLOT_W * i as f32, cell.min.y),
+                        egui::vec2(DETAIL_SLOT_W, cell.height()),
+                    );
+                    let badge = egui::Rect::from_center_size(slot.center(), egui::vec2(DETAIL_SLOT_W - 4.0, 15.0));
+                    let on_badge = hover_pos.is_some_and(|p| badge.contains(p));
+                    nav_icons::draw_kind_badge(&ui.painter().with_clip_rect(ui.clip_rect()), badge, kind.label(), on_badge);
+                    if on_badge {
+                        response.clone().on_hover_text(t.list_detail_tip(kind.label()));
+                    }
+                    hits.push((badge, kind));
+                }
+                self.detail_icon_hits.insert(real_idx, hits);
+            }
         }
     }
 

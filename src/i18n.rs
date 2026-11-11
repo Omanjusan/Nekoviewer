@@ -2573,12 +2573,24 @@ impl Lang {
         }
     }
 
-    /// 「詳細」列のアイコンのヒント
-    pub fn list_detail_tip(self) -> &'static str {
-        match self {
-            Lang::Japanese => "詳細テキスト（ComicInfo・nfo・コメント）を表示",
-            Lang::English  => "Show the detail text (ComicInfo, nfo, comment)",
-            Lang::Chinese  => "显示详细文本（ComicInfo、nfo、注释）",
+    /// 「詳細」列のバッジ・表示のヒント。`kind` は "XML" / "JSON" / "TXT" / "none"（確認済みで無し）/ "na"（対応外の形式）。
+    pub fn list_detail_tip(self, kind: &str) -> &'static str {
+        match (kind, self) {
+            ("XML", Lang::Japanese) => "ComicInfo.xml を表示",
+            ("XML", Lang::English) => "Show ComicInfo.xml",
+            ("XML", Lang::Chinese) => "显示 ComicInfo.xml",
+            ("JSON", Lang::Japanese) => "meta.json を表示",
+            ("JSON", Lang::English) => "Show meta.json",
+            ("JSON", Lang::Chinese) => "显示 meta.json",
+            ("TXT", Lang::Japanese) => "付属テキスト（nfo・info.txt・readme・zipコメント）を表示",
+            ("TXT", Lang::English) => "Show the attached text (nfo, info.txt, readme, zip comment)",
+            ("TXT", Lang::Chinese) => "显示附带文本（nfo、info.txt、readme、zip 注释）",
+            ("none", Lang::Japanese) => "確認済み：詳細ファイルはありません",
+            ("none", Lang::English) => "Checked: no detail files",
+            ("none", Lang::Chinese) => "已确认：没有详情文件",
+            (_, Lang::Japanese) => "この形式は詳細ファイルの取得に対応していません",
+            (_, Lang::English) => "This format does not support reading detail files",
+            (_, Lang::Chinese) => "此格式不支持读取详情文件",
         }
     }
 
