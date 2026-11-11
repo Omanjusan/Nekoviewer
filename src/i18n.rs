@@ -4245,6 +4245,95 @@ impl Lang {
         }
     }
 
+    /// 世代窓: 開くボタン
+    pub fn tag_gen_button(self) -> &'static str {
+        match self {
+            Lang::Japanese => "世代…",
+            Lang::English  => "Generations…",
+            Lang::Chinese  => "版本…",
+        }
+    }
+
+    pub fn tag_gen_title(self) -> &'static str {
+        match self {
+            Lang::Japanese => "タグマスターの世代",
+            Lang::English  => "Tag master generations",
+            Lang::Chinese  => "标签主表版本",
+        }
+    }
+
+    pub fn tag_gen_explain(self) -> &'static str {
+        match self {
+            Lang::Japanese => "変更の直前の状態が、履歴として自動で残ります。選んだ世代に戻せます（いまの状態も世代に残ります）。",
+            Lang::English  => "The state just before each change is kept automatically. You can go back to a selected generation (the current state is kept too).",
+            Lang::Chinese  => "每次更改前的状态会自动保留。可恢复到所选版本（当前状态也会保留）。",
+        }
+    }
+
+    pub fn tag_gen_current(self) -> &'static str {
+        match self {
+            Lang::Japanese => "現世代（採用中）",
+            Lang::English  => "Current (in use)",
+            Lang::Chinese  => "当前版本（使用中）",
+        }
+    }
+
+    pub fn tag_gen_empty(self) -> &'static str {
+        match self {
+            Lang::Japanese => "履歴はまだありません",
+            Lang::English  => "No history yet",
+            Lang::Chinese  => "暂无历史",
+        }
+    }
+
+    pub fn tag_gen_restore(self) -> &'static str {
+        match self {
+            Lang::Japanese => "この世代に戻す",
+            Lang::English  => "Restore this generation",
+            Lang::Chinese  => "恢复到此版本",
+        }
+    }
+
+    pub fn tag_gen_trial_tip(self) -> &'static str {
+        match self {
+            Lang::Japanese => "試用中は戻せません。先に確定か破棄をしてください",
+            Lang::English  => "Cannot restore during a trial. Confirm or discard the trial first",
+            Lang::Chinese  => "试用期间无法恢复。请先确认或放弃试用",
+        }
+    }
+
+    pub fn tag_gen_confirm_title(self) -> &'static str {
+        match self {
+            Lang::Japanese => "世代に戻す",
+            Lang::English  => "Restore generation",
+            Lang::Chinese  => "恢复版本",
+        }
+    }
+
+    pub fn tag_gen_confirm_body(self, when: &str) -> String {
+        match self {
+            Lang::Japanese => format!("{when} の状態に戻します。いまの状態は世代に残り、DBのバックアップも1つ作ります。ファイルに付いたタグは変わりませんが、その世代に無い要素のタグは使えなくなります。"),
+            Lang::English  => format!("Restore the tag master to its state at {when}. The current state is kept as a generation and a database backup is made. Tags on files are unchanged, but tags for elements missing from that generation will stop working."),
+            Lang::Chinese  => format!("将标签主表恢复到 {when} 的状态。当前状态会保留为版本，并创建一份数据库备份。文件上的标签不变，但该版本中不存在的元素的标签将无法使用。"),
+        }
+    }
+
+    pub fn tag_gen_restored_toast(self) -> &'static str {
+        match self {
+            Lang::Japanese => "タグマスターを世代に戻しました",
+            Lang::English  => "Tag master restored",
+            Lang::Chinese  => "已恢复标签主表",
+        }
+    }
+
+    pub fn tag_gen_restore_failed_toast(self) -> &'static str {
+        match self {
+            Lang::Japanese => "この世代を読み込めませんでした（何も変更していません）",
+            Lang::English  => "Could not read this generation (nothing was changed)",
+            Lang::Chinese  => "无法读取此版本（未做任何更改）",
+        }
+    }
+
     pub fn tag_main_category_name(self) -> &'static str {
         match self {
             Lang::Japanese => "メイン",

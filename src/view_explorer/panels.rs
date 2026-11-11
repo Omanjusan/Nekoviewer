@@ -1029,6 +1029,7 @@ impl NekoviewApp {
         ui.horizontal_wrapped(|ui| {
             if ui.button(i18n::t().tag_panel_manager_button()).clicked() {
                 self.tag_manager_open = true;
+                self.tag_master_gen_ui = None;
             }
             // タグパネルのプレビューを、グリッドサムネの引き伸ばし（軽量・低画質）ではなく
             // 専用解像度で再デコードした高画質表示に切り替えるトグル。低スペックPC・
@@ -1385,7 +1386,7 @@ impl NekoviewApp {
     /// タイミングは持たず、編集操作が確定するたびにこれを呼ぶ。合わせて、メインタグ
     /// メインタグ／属性タグパレットの選択肢をマスタ定義から再生成して結びつける。
     /// メインカテゴリの要素0件ガード。補填が走った場合はトーストで知らせる。
-    fn ensure_tag_main_nonempty(&mut self) {
+    pub(super) fn ensure_tag_main_nonempty(&mut self) {
         if crate::tag_manager::ensure_main_category_nonempty(
             &mut self.tag_manager_categories,
             &mut self.tag_manager_next_tier_id,
@@ -1486,6 +1487,11 @@ impl NekoviewApp {
                             },
                         );
                     });
+                    ui.horizontal(|ui| {
+                        if ui.small_button(i18n::t().tag_gen_button()).clicked() {
+                            self.toggle_tag_master_gen_window();
+                        }
+                    });
                     ui.separator();
 
                     // フェーズTM1/TM2: 左カラム(カテゴリ一覧)｜仕切り線｜右カラム(tier編集)。
@@ -1532,6 +1538,7 @@ impl NekoviewApp {
                     );
                 });
             });
+        self.draw_tag_master_gen_window(ctx);
     }
 
     /// タグマネージャー: カテゴリリスト左端の縦貫通エリア。選択カテゴリの並べ替えボタンを

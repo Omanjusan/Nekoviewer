@@ -1196,6 +1196,8 @@ pub struct NekoviewApp {
     pub(crate) tag_manager_selected_category: Option<usize>,
     /// タグマネージャー: カテゴリ削除の確認待ち（カテゴリindex, 押した時点の表示名）。表示名が変わっていたら破棄する。
     tag_manager_delete_confirm: Option<(usize, String)>,
+    /// タグマネージャー: マスター世代の窓（開いている間だけ Some）。
+    tag_master_gen_ui: Option<tag_master_gen_ui::GenWindow>,
     /// タグマネージャー: インライン編集中の要素(カテゴリindex, tier内index)。
     /// ダイアログは使わず、tier行のその場でテキスト入力に切り替える。
     pub(crate) tag_manager_editing_element: Option<(usize, usize)>,
@@ -1417,6 +1419,7 @@ mod archive_info_cache;
 mod tag_scan;
 mod tag_confirm;
 mod tag_trial_ui;
+mod tag_master_gen_ui;
 mod tag_learning_ui;
 mod scan;
 mod folder_sort;
@@ -1781,6 +1784,7 @@ impl NekoviewApp {
             tag_trial_active,
             tag_manager_selected_category: Some(0),
             tag_manager_delete_confirm: None,
+            tag_master_gen_ui: None,
             tag_manager_editing_element: None,
             tag_manager_editing_buffer: String::new(),
             tag_manager_editing_focus_pending: false,
