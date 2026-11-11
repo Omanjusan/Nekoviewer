@@ -1453,6 +1453,50 @@ pub fn write_archive_meta(
     let _ = tx.commit();
 }
 
+/// タグ取得の走査が書く、1ファイルぶんのアーカイブ情報。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ArchiveMetaWrite {
+    pub filename: String,
+    pub mtime: i64,
+    pub size: u64,
+    /// 走査で数えたページ数。分からなければ None（記録済みの値を残す）。
+    pub page_count: Option<usize>,
+    pub detail: DetailFlag,
+}
+
+/// 走査の結果と、記録済みの行を合わせる。記録が現物と一致しているなら、より確かな既存の値を残す:
+/// ビューアーで数えたページ数（0より大きい）は走査の概数より優先し、走査で読めなかった（未確認の）詳細は既存の確認結果を残す。
+fn merge_scan_row(existing: Option<ArchiveMetaRow>, new: &ArchiveMetaWrite) -> (u32, DetailFlag) {
+    let scanned_pages = new.page_count.map_or(0, |n| u32::try_from(n).unwrap_or(u32::MAX));
+    let keep = existing.filter(|r| r.is_current(new.mtime, new.size));
+    let pages = match keep {
+        Some(r) if r.page_count > 0 => r.page_count,
+        _ => scanned_pages,
+    };
+    let detail = match keep {
+        Some(r) if new.detail == DetailFlag::Unknown => r.detail,
+        _ => new.detail,
+    };
+    (pages, detail)
+}
+
+/// 走査の結果をまとめて（1トランザクションで）書く。記録済みの確かな値は `merge_scan_row` で残す。
+pub fn merge_archive_meta_batch(db: &Arc<Mutex<Database>>, rows: &[ArchiveMetaWrite]) {
+    let Ok(db) = db.lock() else { return };
+    let Ok(tx) = db.begin_write() else { return };
+    if let Ok(mut table) = tx.open_table(ARCHIVE_META_TABLE) {
+        for row in rows {
+            let existing = table.get(row.filename.as_str()).ok().flatten().map(|g| {
+                let (mtime, size, page_count, flag) = g.value();
+                ArchiveMetaRow { mtime, size, page_count, detail: DetailFlag::from_u8(flag) }
+            });
+            let (pages, detail) = merge_scan_row(existing, row);
+            let _ = table.insert(row.filename.as_str(), (row.mtime, row.size, pages, detail.to_u8()));
+        }
+    }
+    let _ = tx.commit();
+}
+
 /// このDBのアーカイブ情報を全て読む（キー=ファイル名）。DBが開けない・表が無ければ空。
 pub fn read_all_archive_meta(db: &Arc<Mutex<Database>>) -> HashMap<String, ArchiveMetaRow> {
     let mut out = HashMap::new();
@@ -1593,6 +1637,44 @@ mod archive_meta_tests {
         assert_eq!(DetailFlag::from_read(Some(&d), true), DetailFlag::Checked(DetailKinds { xml: false, json: false, txt: true }));
         assert_eq!(DetailFlag::from_read(None, false), DetailFlag::NotApplicable);
         assert_eq!(DetailFlag::from_read(None, true), DetailFlag::Unknown);
+    }
+
+    fn scan_row(pages: Option<usize>, detail: DetailFlag) -> ArchiveMetaWrite {
+        ArchiveMetaWrite { filename: "a.zip".into(), mtime: 100, size: 2000, page_count: pages, detail }
+    }
+
+    #[test]
+    fn scan_merge_keeps_viewer_page_count_and_confirmed_detail() {
+        let xml = DetailFlag::Checked(DetailKinds { xml: true, json: false, txt: false });
+        let viewer = ArchiveMetaRow { mtime: 100, size: 2000, page_count: 30, detail: xml };
+        // 走査の概数より、ビューアーで数えた値を残す。
+        assert_eq!(merge_scan_row(Some(viewer), &scan_row(Some(28), DetailFlag::Unknown)), (30, xml));
+        // 走査で詳細が確認できたなら、そちらで更新する。
+        let none = DetailFlag::Checked(DetailKinds::default());
+        assert_eq!(merge_scan_row(Some(viewer), &scan_row(None, none)), (30, none));
+        // 記録が無い・古いときは走査の値（ページ数不明は0）。
+        assert_eq!(merge_scan_row(None, &scan_row(Some(28), xml)), (28, xml));
+        assert_eq!(merge_scan_row(None, &scan_row(None, DetailFlag::NotApplicable)), (0, DetailFlag::NotApplicable));
+        let stale = ArchiveMetaRow { mtime: 99, ..viewer };
+        assert_eq!(merge_scan_row(Some(stale), &scan_row(Some(28), DetailFlag::Unknown)), (28, DetailFlag::Unknown));
+    }
+
+    #[test]
+    fn scan_batch_writes_in_one_pass_and_merges() {
+        let (dir, db) = temp_db("batch");
+        let xml = DetailFlag::Checked(DetailKinds { xml: true, json: false, txt: false });
+        write_archive_meta(&db, "a.zip", 100, 2000, 30, xml);
+        let rows = vec![
+            scan_row(Some(28), DetailFlag::Unknown),
+            ArchiveMetaWrite { filename: "b.7z".into(), mtime: 5, size: 6, page_count: None, detail: DetailFlag::NotApplicable },
+            ArchiveMetaWrite { filename: "c.zip".into(), mtime: 7, size: 8, page_count: Some(12), detail: xml },
+        ];
+        merge_archive_meta_batch(&db, &rows);
+        let all = read_all_archive_meta(&db);
+        assert_eq!((all["a.zip"].page_count, all["a.zip"].detail), (30, xml));
+        assert_eq!(all["b.7z"].detail, DetailFlag::NotApplicable);
+        assert_eq!((all["c.zip"].page_count, all["c.zip"].detail), (12, xml));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -415,10 +415,10 @@ pub fn read_zip_tag_sources(path: &Path) -> Option<TagSourceFiles> {
     read_zip_bundle(path).map(|b| b.tag)
 }
 
-/// 形式を判定して、タグ取得に使う付属データを読む。当面は zip/cbz のみ対応（他形式は None＝対象外）。
-pub fn read_tag_sources(path: &Path) -> Option<TagSourceFiles> {
+/// 形式を判定して、詳細テキスト・タグ取得の元・画像数をまとめて読む。当面は zip/cbz のみ対応（他形式は None＝対象外）。
+pub fn read_bundle(path: &Path) -> Option<ZipBundle> {
     match detect_format(path) {
-        ArchiveFormat::Zip => read_zip_tag_sources(path),
+        ArchiveFormat::Zip => read_zip_bundle(path),
         _ => None,
     }
 }

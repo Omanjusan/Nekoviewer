@@ -47,6 +47,13 @@ pub(super) struct ScanItem {
     pub meta: Option<ArchiveMeta>,
     /// 走査時点で付いているタグ（tier_id）。
     pub existing_tags: Vec<u64>,
+    /// 詳細ファイル（XML・JSON・TXT）の確認結果。リストの「詳細」列に反映する。
+    pub detail: crate::neko_dir::DetailFlag,
+    /// zip で数えた画像の数。分からなければ None（設定でTXTもページに数えるときは、開いた時の数とずれるので None）。
+    pub page_count: Option<usize>,
+    /// 読む前のファイルの更新日時（秒）とサイズ。記録が現物と一致するかの判定に使う。
+    pub mtime: i64,
+    pub size: u64,
 }
 
 /// 走査の結果。
@@ -90,9 +97,19 @@ fn scan_one(path: &Path, db: Option<&Arc<Mutex<Database>>>) -> ScanItem {
     let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
     let is_dir = path.is_dir();
     let format = format_tag_for(name, is_dir);
-    // zip/cbz は1回だけ開いて、info.txt・ComicInfo.xml・meta.json をまとめて読む。
-    let sources = if is_dir { None } else { crate::fs::archive::meta::read_tag_sources(path) };
-    let info = match &sources {
+    let (mtime, size) = (crate::neko_dir::file_mtime(path), crate::neko_dir::file_size(path));
+    // zip/cbz は1回だけ開いて、info.txt・ComicInfo.xml・meta.json・付属テキストなどをまとめて読む。
+    let bundle = if is_dir { None } else { crate::fs::archive::meta::read_bundle(path) };
+    let sources = bundle.as_ref().map(|b| &b.tag);
+    let detail = crate::neko_dir::DetailFlag::from_read(
+        bundle.as_ref().map(|b| &b.detail),
+        crate::fs::archive::meta::detail_supported(path),
+    );
+    let page_count = bundle
+        .as_ref()
+        .map(|b| b.image_count)
+        .filter(|_| !crate::fs::archive::text_page::options().count_in_pages);
+    let info = match sources {
         None => InfoState::NotApplicable,
         Some(s) => match &s.info_txt {
             None => InfoState::Absent,
@@ -100,12 +117,12 @@ fn scan_one(path: &Path, db: Option<&Arc<Mutex<Database>>>) -> ScanItem {
             Some(text) => InfoState::Found(parse_info_txt(text)),
         },
     };
-    let meta = sources.as_ref().and_then(|s| ArchiveMeta::from_sources(s.comic_info.as_ref(), s.meta_json.as_deref()));
+    let meta = sources.and_then(|s| ArchiveMeta::from_sources(s.comic_info.as_ref(), s.meta_json.as_deref()));
     let existing_tags = match (db, path.parent()) {
         (Some(db), Some(dir)) if !name.is_empty() => crate::spread_state::read_archive_tags(db, dir, name),
         _ => Vec::new(),
     };
-    ScanItem { path: path.to_path_buf(), format, info, meta, existing_tags }
+    ScanItem { path: path.to_path_buf(), format, info, meta, existing_tags, detail, page_count, mtime, size }
 }
 
 /// `targets` を順に調べる。`done` に処理済みの件数を反映し、`cancel` が立ったら打ち切る。
@@ -252,6 +269,8 @@ impl NekoviewApp {
             }
         };
         self.tag_scan_job = None;
+        // 走査で分かった詳細・ページ数はキャッシュに書く（別フォルダへ移っていても、そのフォルダの分は有効）。
+        self.record_scan_meta(&result);
         // 走査中に別フォルダへ移っていたら、結果は捨てる（別フォルダのタグ候補になってしまうため）。
         if result.dir != self.current_dir {
             return;
@@ -283,6 +302,37 @@ impl NekoviewApp {
             }
             self.tag_scan_result = Some(result);
         }
+    }
+
+    /// 走査結果の詳細・ページ数を、そのフォルダの cache.redb に一括で書く（リストの列がすぐ埋まる）。
+    /// 書けなくても走査の結果は使う。ビューアーで数えた確かな値は残す（`neko_dir::merge_archive_meta_batch`）。
+    fn record_scan_meta(&mut self, result: &TagScanResult) {
+        let rows: Vec<crate::neko_dir::ArchiveMetaWrite> = result
+            .items
+            .iter()
+            .filter_map(|it| {
+                let filename = it.path.file_name()?.to_str()?.to_owned();
+                Some(crate::neko_dir::ArchiveMetaWrite {
+                    filename,
+                    mtime: it.mtime,
+                    size: it.size,
+                    page_count: it.page_count,
+                    detail: it.detail,
+                })
+            })
+            .collect();
+        if rows.is_empty() {
+            return;
+        }
+        let dir = &result.dir;
+        let db = if *dir == self.current_dir {
+            self.cache_db.clone()
+        } else {
+            crate::neko_dir::neko_dir_for(dir, &self.config).and_then(|nd| crate::neko_dir::open_cache_db(&nd, dir))
+        };
+        let Some(db) = db else { return };
+        crate::neko_dir::merge_archive_meta_batch(&db, &rows);
+        self.archive_info.invalidate_dir(dir);
     }
 
     /// 走査中の進捗オーバーレイ（背後のマウス入力を遮断する。キャンセルボタン付き）。
@@ -389,6 +439,32 @@ mod tests {
         assert_eq!(r.items[4].info, InfoState::NotApplicable, "存在しないファイルでも落ちない");
         assert_eq!(r.info_counts(), (1, 1, 3));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn scan_records_detail_kinds_page_count_and_stamp() {
+        use crate::fs::archive::meta::DetailKinds;
+        use crate::neko_dir::DetailFlag;
+        let dir = temp_dir("detail");
+        let rich = write_zip(
+            &dir,
+            "rich.zip",
+            &[("1.jpg", b"x"), ("2.png", b"x"), ("meta.json", br#"{"tags":[]}"#), ("info.txt", b"T\nCategory: Manga\n")],
+        );
+        let plain = write_zip(&dir, "plain.zip", &[("1.jpg", b"x")]);
+        let broken = dir.join("broken.zip");
+        std::fs::write(&broken, b"not a zip").unwrap();
+        let book = dir.join("book");
+        std::fs::create_dir_all(&book).unwrap();
+        let r = run(&dir, &[rich.clone(), plain.clone(), broken.clone(), book.clone()]);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(r.items[0].detail, DetailFlag::Checked(DetailKinds { xml: false, json: true, txt: true }));
+        assert_eq!(r.items[0].page_count, Some(2));
+        assert_eq!(r.items[1].detail, DetailFlag::Checked(DetailKinds::default()), "確認済みで無し");
+        assert_eq!(r.items[2].detail, DetailFlag::Unknown, "壊れたzipは未確認のまま（N/Aにしない）");
+        assert_eq!(r.items[3].detail, DetailFlag::NotApplicable, "フォルダは対応外");
+        assert_eq!(r.items[3].page_count, None);
+        assert!(r.items[0].mtime > 0 && r.items[0].size > 0);
     }
 
     #[test]
