@@ -81,6 +81,12 @@ pub const FILES_TABLE: TableDefinition<&str, (i64, u64)> = TableDefinition::new(
 pub const ARCHIVE_META_TABLE: TableDefinition<&str, (i64, u64, u32, u8)> =
     TableDefinition::new("archive_meta_v1");
 
+/// 公開評価テーブル（リストの「公開評価」列用。info.txt の `Rating:`）: キー=ファイル名,
+/// バリュー=(mtime_secs, size_bytes, rating_x100)。rating_x100 は評価を100倍した整数（4.82 → 482）で、
+/// `u32::MAX` は「確認済みで評価なし」。行が無いか、mtime・sizeが現物（`ARCHIVE_META_TABLE` の行）と違うときは未確認。
+/// `ARCHIVE_META_TABLE` の値の型は変えられない（既存DBが開けなくなる）ので、別の表にしてある。
+pub const ARCHIVE_RATING_TABLE: TableDefinition<&str, (i64, u64, u32)> = TableDefinition::new("archive_rating_v1");
+
 /// 逆引き用テーブル: キー="source_dir"固定, バリュー=このDBに対応する実ディレクトリの絶対パス文字列。
 /// neko_dir_for() が一方向ハッシュのため、DBファイル単体からPWDを算出するにはこれが要る。
 const SOURCE_DIR_TABLE: TableDefinition<&str, &str> = TableDefinition::new("source_dir");
@@ -149,6 +155,7 @@ pub fn open_cache_db(neko_dir: &Path, source_dir: &Path) -> Option<Arc<Mutex<Dat
         tx.open_table(THUMB_STATES_TABLE).ok()?;
         tx.open_table(FILES_TABLE).ok()?;
         tx.open_table(ARCHIVE_META_TABLE).ok()?;
+        tx.open_table(ARCHIVE_RATING_TABLE).ok()?;
         {
             let mut source_dir_table = tx.open_table(SOURCE_DIR_TABLE).ok()?;
             let abs = source_dir.to_string_lossy();
@@ -1419,13 +1426,58 @@ impl DetailFlag {
     }
 }
 
-/// `ARCHIVE_META_TABLE` の1行。
+/// 公開評価（info.txt の `Rating:`）の確認状態。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SourceRating {
+    /// 未確認（まだ開いていない・走査していない、または読めなかった・対応外の形式）。
+    Unknown,
+    /// 確認済みで、評価は無い（info.txt が無い・`Rating:` 行が無い・範囲外）。
+    None,
+    /// 評価を100倍した整数（4.82 → 482）。
+    Value(u32),
+}
+
+impl SourceRating {
+    const NONE_MARK: u32 = u32::MAX;
+
+    fn to_stored(self) -> Option<u32> {
+        match self {
+            Self::Unknown => None,
+            Self::None => Some(Self::NONE_MARK),
+            Self::Value(v) => Some(v.min(Self::NONE_MARK - 1)),
+        }
+    }
+
+    fn from_stored(v: u32) -> Self {
+        if v == Self::NONE_MARK { Self::None } else { Self::Value(v) }
+    }
+
+    /// 読み出し結果から作る。`read` が None（zipでない・読めない）なら未確認。
+    pub fn from_read(read: Option<&DetailMeta>) -> Self {
+        match read {
+            Some(d) => d.info_rating.map_or(Self::None, Self::Value),
+            None => Self::Unknown,
+        }
+    }
+
+    /// ソート用の値（評価×100。未確認・評価なしは0）。
+    pub fn sort_value(self) -> u32 {
+        match self {
+            Self::Value(v) => v,
+            _ => 0,
+        }
+    }
+}
+
+/// `ARCHIVE_META_TABLE` の1行（`ARCHIVE_RATING_TABLE` の公開評価を合成したもの）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ArchiveMetaRow {
     pub mtime: i64,
     pub size: u64,
     pub page_count: u32,
     pub detail: DetailFlag,
+    /// 公開評価。評価表の行の mtime・size が、この行と同じときだけ有効（違えば未確認）。
+    pub source_rating: SourceRating,
 }
 
 impl ArchiveMetaRow {
@@ -1435,7 +1487,7 @@ impl ArchiveMetaRow {
     }
 }
 
-/// アーカイブ情報を書く。`page_count` は u32 に丸める。
+/// アーカイブ情報を書く。`page_count` は u32 に丸める。公開評価は触らない。
 pub fn write_archive_meta(
     db: &Arc<Mutex<Database>>,
     filename: &str,
@@ -1444,11 +1496,29 @@ pub fn write_archive_meta(
     page_count: usize,
     detail: DetailFlag,
 ) {
+    write_archive_meta_full(db, filename, mtime, size, page_count, detail, SourceRating::Unknown);
+}
+
+/// アーカイブ情報と公開評価を同じトランザクションで書く。`rating` が未確認なら、評価の表は触らない。
+pub fn write_archive_meta_full(
+    db: &Arc<Mutex<Database>>,
+    filename: &str,
+    mtime: i64,
+    size: u64,
+    page_count: usize,
+    detail: DetailFlag,
+    rating: SourceRating,
+) {
     let Ok(db) = db.lock() else { return };
     let Ok(tx) = db.begin_write() else { return };
     if let Ok(mut table) = tx.open_table(ARCHIVE_META_TABLE) {
         let pages = u32::try_from(page_count).unwrap_or(u32::MAX);
         let _ = table.insert(filename, (mtime, size, pages, detail.to_u8()));
+    }
+    if let Some(stored) = rating.to_stored()
+        && let Ok(mut table) = tx.open_table(ARCHIVE_RATING_TABLE)
+    {
+        let _ = table.insert(filename, (mtime, size, stored));
     }
     let _ = tx.commit();
 }
@@ -1462,6 +1532,8 @@ pub struct ArchiveMetaWrite {
     /// 走査で数えたページ数。分からなければ None（記録済みの値を残す）。
     pub page_count: Option<usize>,
     pub detail: DetailFlag,
+    /// 公開評価。未確認なら評価の表は触らない。
+    pub rating: SourceRating,
 }
 
 /// 走査の結果と、記録済みの行を合わせる。記録が現物と一致しているなら、より確かな既存の値を残す:
@@ -1488,10 +1560,18 @@ pub fn merge_archive_meta_batch(db: &Arc<Mutex<Database>>, rows: &[ArchiveMetaWr
         for row in rows {
             let existing = table.get(row.filename.as_str()).ok().flatten().map(|g| {
                 let (mtime, size, page_count, flag) = g.value();
-                ArchiveMetaRow { mtime, size, page_count, detail: DetailFlag::from_u8(flag) }
+                ArchiveMetaRow { mtime, size, page_count, detail: DetailFlag::from_u8(flag), source_rating: SourceRating::Unknown }
             });
             let (pages, detail) = merge_scan_row(existing, row);
             let _ = table.insert(row.filename.as_str(), (row.mtime, row.size, pages, detail.to_u8()));
+        }
+    }
+    // 公開評価は、走査で確認できたものだけ書く（未確認のものは、既存の確認結果をそのまま残す）。
+    if let Ok(mut table) = tx.open_table(ARCHIVE_RATING_TABLE) {
+        for row in rows {
+            if let Some(stored) = row.rating.to_stored() {
+                let _ = table.insert(row.filename.as_str(), (row.mtime, row.size, stored));
+            }
         }
     }
     let _ = tx.commit();
@@ -1508,8 +1588,27 @@ pub fn read_all_archive_meta(db: &Arc<Mutex<Database>>) -> HashMap<String, Archi
         let (mtime, size, page_count, flag) = item.1.value();
         out.insert(
             item.0.value().to_owned(),
-            ArchiveMetaRow { mtime, size, page_count, detail: DetailFlag::from_u8(flag) },
+            ArchiveMetaRow {
+                mtime,
+                size,
+                page_count,
+                detail: DetailFlag::from_u8(flag),
+                source_rating: SourceRating::Unknown,
+            },
         );
+    }
+    // 公開評価を合成する（表が無い旧DBは全部未確認。更新日時・サイズが違う行も未確認）。
+    if let Ok(ratings) = tx.open_table(ARCHIVE_RATING_TABLE)
+        && let Ok(iter) = ratings.iter()
+    {
+        for item in iter.flatten() {
+            let (mtime, size, stored) = item.1.value();
+            if let Some(row) = out.get_mut(item.0.value())
+                && row.is_current(mtime, size)
+            {
+                row.source_rating = SourceRating::from_stored(stored);
+            }
+        }
     }
     out
 }
@@ -1598,7 +1697,7 @@ mod archive_meta_tests {
         write_archive_meta(&db, "d.zip", 400, 5000, 1, DetailFlag::Unknown);
         let all = read_all_archive_meta(&db);
         assert_eq!(all.len(), 4);
-        assert_eq!(all["a.zip"], ArchiveMetaRow { mtime: 100, size: 2000, page_count: 30, detail: xml_txt });
+        assert_eq!(all["a.zip"], ArchiveMetaRow { mtime: 100, size: 2000, page_count: 30, detail: xml_txt, source_rating: SourceRating::Unknown });
         assert_eq!(all["b.cbz"].detail, none);
         assert_eq!(all["c.7z"].detail, DetailFlag::NotApplicable);
         assert_eq!(all["d.zip"].detail, DetailFlag::Unknown);
@@ -1612,7 +1711,7 @@ mod archive_meta_tests {
 
     #[test]
     fn archive_meta_is_current_only_when_mtime_and_size_match() {
-        let row = ArchiveMetaRow { mtime: 100, size: 2000, page_count: 3, detail: DetailFlag::Unknown };
+        let row = ArchiveMetaRow { mtime: 100, size: 2000, page_count: 3, detail: DetailFlag::Unknown, source_rating: SourceRating::Unknown };
         assert!(row.is_current(100, 2000));
         assert!(!row.is_current(101, 2000));
         assert!(!row.is_current(100, 2001));
@@ -1640,13 +1739,13 @@ mod archive_meta_tests {
     }
 
     fn scan_row(pages: Option<usize>, detail: DetailFlag) -> ArchiveMetaWrite {
-        ArchiveMetaWrite { filename: "a.zip".into(), mtime: 100, size: 2000, page_count: pages, detail }
+        ArchiveMetaWrite { filename: "a.zip".into(), mtime: 100, size: 2000, page_count: pages, detail, rating: SourceRating::Unknown }
     }
 
     #[test]
     fn scan_merge_keeps_viewer_page_count_and_confirmed_detail() {
         let xml = DetailFlag::Checked(DetailKinds { xml: true, json: false, txt: false });
-        let viewer = ArchiveMetaRow { mtime: 100, size: 2000, page_count: 30, detail: xml };
+        let viewer = ArchiveMetaRow { mtime: 100, size: 2000, page_count: 30, detail: xml, source_rating: SourceRating::Unknown };
         // 走査の概数より、ビューアーで数えた値を残す。
         assert_eq!(merge_scan_row(Some(viewer), &scan_row(Some(28), DetailFlag::Unknown)), (30, xml));
         // 走査で詳細が確認できたなら、そちらで更新する。
@@ -1666,8 +1765,8 @@ mod archive_meta_tests {
         write_archive_meta(&db, "a.zip", 100, 2000, 30, xml);
         let rows = vec![
             scan_row(Some(28), DetailFlag::Unknown),
-            ArchiveMetaWrite { filename: "b.7z".into(), mtime: 5, size: 6, page_count: None, detail: DetailFlag::NotApplicable },
-            ArchiveMetaWrite { filename: "c.zip".into(), mtime: 7, size: 8, page_count: Some(12), detail: xml },
+            ArchiveMetaWrite { filename: "b.7z".into(), mtime: 5, size: 6, page_count: None, detail: DetailFlag::NotApplicable, rating: SourceRating::Unknown },
+            ArchiveMetaWrite { filename: "c.zip".into(), mtime: 7, size: 8, page_count: Some(12), detail: xml, rating: SourceRating::Value(482) },
         ];
         merge_archive_meta_batch(&db, &rows);
         let all = read_all_archive_meta(&db);
@@ -1675,6 +1774,58 @@ mod archive_meta_tests {
         assert_eq!(all["b.7z"].detail, DetailFlag::NotApplicable);
         assert_eq!((all["c.zip"].page_count, all["c.zip"].detail), (12, xml));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn source_rating_round_trips_and_ignores_stale_rows() {
+        let (dir, db) = temp_db("rating");
+        let none = DetailFlag::Checked(DetailKinds::default());
+        write_archive_meta_full(&db, "a.zip", 100, 2000, 5, none, SourceRating::Value(482));
+        write_archive_meta_full(&db, "b.zip", 100, 2000, 5, none, SourceRating::None);
+        write_archive_meta_full(&db, "c.zip", 100, 2000, 5, none, SourceRating::Unknown);
+        let all = read_all_archive_meta(&db);
+        assert_eq!(all["a.zip"].source_rating, SourceRating::Value(482));
+        assert_eq!(all["b.zip"].source_rating, SourceRating::None);
+        assert_eq!(all["c.zip"].source_rating, SourceRating::Unknown, "未確認のときは評価の表を触らない");
+        // ファイルが変わって記録し直したら、古い評価は使わない（未確認のときは評価の表を触らないので、更新日時が食い違う）。
+        write_archive_meta_full(&db, "a.zip", 200, 2100, 5, none, SourceRating::Unknown);
+        assert_eq!(read_all_archive_meta(&db)["a.zip"].source_rating, SourceRating::Unknown);
+        // 評価0.00は有効な値。
+        write_archive_meta_full(&db, "a.zip", 200, 2100, 5, none, SourceRating::Value(0));
+        assert_eq!(read_all_archive_meta(&db)["a.zip"].source_rating, SourceRating::Value(0));
+        // 評価の「無し」の確認で、前の評価を消す。
+        write_archive_meta_full(&db, "a.zip", 200, 2100, 5, none, SourceRating::None);
+        assert_eq!(read_all_archive_meta(&db)["a.zip"].source_rating, SourceRating::None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn scan_batch_writes_ratings_but_keeps_existing_when_unconfirmed() {
+        let (dir, db) = temp_db("rating_batch");
+        let none = DetailFlag::Checked(DetailKinds::default());
+        write_archive_meta_full(&db, "a.zip", 100, 2000, 5, none, SourceRating::Value(300));
+        let rows = vec![
+            ArchiveMetaWrite { filename: "a.zip".into(), mtime: 100, size: 2000, page_count: None, detail: DetailFlag::Unknown, rating: SourceRating::Unknown },
+            ArchiveMetaWrite { filename: "b.zip".into(), mtime: 1, size: 2, page_count: Some(3), detail: none, rating: SourceRating::Value(482) },
+            ArchiveMetaWrite { filename: "c.zip".into(), mtime: 1, size: 2, page_count: Some(3), detail: none, rating: SourceRating::None },
+        ];
+        merge_archive_meta_batch(&db, &rows);
+        let all = read_all_archive_meta(&db);
+        assert_eq!(all["a.zip"].source_rating, SourceRating::Value(300), "走査で未確認なら既存を残す");
+        assert_eq!(all["b.zip"].source_rating, SourceRating::Value(482));
+        assert_eq!(all["c.zip"].source_rating, SourceRating::None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn source_rating_from_read_and_sort_value() {
+        let with = DetailMeta { info_rating: Some(482), ..Default::default() };
+        let without = DetailMeta::default();
+        assert_eq!(SourceRating::from_read(Some(&with)), SourceRating::Value(482));
+        assert_eq!(SourceRating::from_read(Some(&without)), SourceRating::None);
+        assert_eq!(SourceRating::from_read(None), SourceRating::Unknown);
+        assert_eq!(SourceRating::Value(482).sort_value(), 482);
+        assert_eq!((SourceRating::None.sort_value(), SourceRating::Unknown.sort_value()), (0, 0));
     }
 
     #[test]

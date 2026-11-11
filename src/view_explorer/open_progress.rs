@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 
 use crate::fs::archive::{self, ArchiveMemoryCheck, ArchiveOpenProgress, ImageEntry};
-use crate::neko_dir::DetailFlag;
+use crate::neko_dir::{DetailFlag, SourceRating};
 
 /// 非同期オープン中の局面。
 #[derive(Clone, Copy)]
@@ -29,7 +29,7 @@ pub enum OpenPollResult {
     /// まだ読み込み中。
     Pending,
     /// 読み込み・見積もり完了。有効な画像アーカイブだった。
-    Ready { entries: Vec<ImageEntry>, check: ArchiveMemoryCheck, detail: DetailFlag },
+    Ready { entries: Vec<ImageEntry>, check: ArchiveMemoryCheck, detail: DetailFlag, rating: SourceRating },
     /// 読み込み完了したが画像が1件も無かった（無効アーカイブ扱い）。
     Empty,
     /// ユーザーがキャンセルした。
@@ -49,7 +49,7 @@ pub struct MemoryBudgetParams {
 enum WorkerOutcome {
     Cancelled,
     Empty,
-    Ready { entries: Vec<ImageEntry>, check: ArchiveMemoryCheck, detail: DetailFlag },
+    Ready { entries: Vec<ImageEntry>, check: ArchiveMemoryCheck, detail: DetailFlag, rating: SourceRating },
 }
 
 /// エクスプローラーからダブルクリックされたアーカイブの非同期オープン処理。
@@ -95,11 +95,10 @@ impl PendingOpen {
                         budget.file_budget_bytes,
                     );
                     // 詳細テキストの有無もここで確認する（zip/cbzのみ。他形式は未確認のまま）。
-                    let detail = DetailFlag::from_read(
-                        archive::meta::read_detail(&worker_path).as_ref(),
-                        archive::meta::detail_supported(&worker_path),
-                    );
-                    WorkerOutcome::Ready { entries, check, detail }
+                    let read = archive::meta::read_detail(&worker_path);
+                    let detail = DetailFlag::from_read(read.as_ref(), archive::meta::detail_supported(&worker_path));
+                    let rating = SourceRating::from_read(read.as_ref());
+                    WorkerOutcome::Ready { entries, check, detail, rating }
                 }
             };
             // 受信側が既に破棄されていても（キャンセル後の取りこぼし）エラーは無視する。
@@ -127,7 +126,7 @@ impl PendingOpen {
     pub fn poll(&mut self) -> OpenPollResult {
         match self.result_rx.try_recv() {
             Ok(WorkerOutcome::Empty) => OpenPollResult::Empty,
-            Ok(WorkerOutcome::Ready { entries, check, detail }) => OpenPollResult::Ready { entries, check, detail },
+            Ok(WorkerOutcome::Ready { entries, check, detail, rating }) => OpenPollResult::Ready { entries, check, detail, rating },
             Ok(WorkerOutcome::Cancelled) => {
                 if self.cancelled_by_user {
                     OpenPollResult::Cancelled
@@ -179,7 +178,7 @@ impl super::NekoviewApp {
                 let name = super::panels::truncate_filename(&path);
                 self.set_toast(crate::i18n::t().invalid_zip(&name));
             }
-            OpenPollResult::Ready { entries, check, detail } => {
+            OpenPollResult::Ready { entries, check, detail, rating } => {
                 let path = self.pending_open.take().expect("pending_open just polled").path;
                 // TXTページは、設定でページ数に含める場合だけ数える（既定は含めない）。
                 let count_text = archive::text_page::options().count_in_pages;
@@ -187,7 +186,7 @@ impl super::NekoviewApp {
                     .iter()
                     .filter(|e| count_text || !archive::text_page::is_text_entry_name(&e.entry_name))
                     .count();
-                self.record_archive_meta(&path, pages, detail);
+                self.record_archive_meta(&path, pages, detail, rating);
                 if self.apply_memory_check(&path, check) {
                     let is_virtual_book = path.is_dir();
                     let state = crate::view_reader::ViewerState::from_image_entries(
@@ -207,7 +206,7 @@ impl super::NekoviewApp {
     /// ビューアーを開いた時点のページ数・詳細有無を、そのファイルのフォルダの cache.redb に記録する。
     /// 仮想フォルダ・お気に入り・検索などから開いた場合も、ファイル自身のフォルダへ書く。
     /// 書けなくても（DBが開けない等）オープンは止めない。
-    fn record_archive_meta(&mut self, path: &std::path::Path, page_count: usize, detail: DetailFlag) {
+    fn record_archive_meta(&mut self, path: &std::path::Path, page_count: usize, detail: DetailFlag, rating: SourceRating) {
         let (Some(dir), Some(name)) = (path.parent(), path.file_name().and_then(|n| n.to_str())) else { return };
         let db = if dir == self.current_dir {
             self.cache_db.clone()
@@ -218,7 +217,7 @@ impl super::NekoviewApp {
         let Some(db) = db else { return };
         let mtime = crate::neko_dir::file_mtime(path);
         let size = crate::neko_dir::file_size(path);
-        crate::neko_dir::write_archive_meta(&db, name, mtime, size, page_count, detail);
+        crate::neko_dir::write_archive_meta_full(&db, name, mtime, size, page_count, detail, rating);
         // 次の描画でそのフォルダの記録を読み直す（リストの列にすぐ反映される）。
         self.archive_info.invalidate_dir(dir);
     }

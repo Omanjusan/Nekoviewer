@@ -49,6 +49,8 @@ pub(super) struct ScanItem {
     pub existing_tags: Vec<u64>,
     /// 詳細ファイル（XML・JSON・TXT）の確認結果。リストの「詳細」列に反映する。
     pub detail: crate::neko_dir::DetailFlag,
+    /// info.txt の `Rating:`（公開評価）。リストの「公開評価」列に反映する。
+    pub rating: crate::neko_dir::SourceRating,
     /// zip で数えた画像の数。分からなければ None（設定でTXTもページに数えるときは、開いた時の数とずれるので None）。
     pub page_count: Option<usize>,
     /// 読む前のファイルの更新日時（秒）とサイズ。記録が現物と一致するかの判定に使う。
@@ -105,6 +107,7 @@ fn scan_one(path: &Path, db: Option<&Arc<Mutex<Database>>>) -> ScanItem {
         bundle.as_ref().map(|b| &b.detail),
         crate::fs::archive::meta::detail_supported(path),
     );
+    let rating = crate::neko_dir::SourceRating::from_read(bundle.as_ref().map(|b| &b.detail));
     let page_count = bundle
         .as_ref()
         .map(|b| b.image_count)
@@ -122,7 +125,7 @@ fn scan_one(path: &Path, db: Option<&Arc<Mutex<Database>>>) -> ScanItem {
         (Some(db), Some(dir)) if !name.is_empty() => crate::spread_state::read_archive_tags(db, dir, name),
         _ => Vec::new(),
     };
-    ScanItem { path: path.to_path_buf(), format, info, meta, existing_tags, detail, page_count, mtime, size }
+    ScanItem { path: path.to_path_buf(), format, info, meta, existing_tags, detail, rating, page_count, mtime, size }
 }
 
 /// `targets` を順に調べる。`done` に処理済みの件数を反映し、`cancel` が立ったら打ち切る。
@@ -318,6 +321,7 @@ impl NekoviewApp {
                     size: it.size,
                     page_count: it.page_count,
                     detail: it.detail,
+                    rating: it.rating,
                 })
             })
             .collect();
@@ -465,6 +469,20 @@ mod tests {
         assert_eq!(r.items[3].detail, DetailFlag::NotApplicable, "フォルダは対応外");
         assert_eq!(r.items[3].page_count, None);
         assert!(r.items[0].mtime > 0 && r.items[0].size > 0);
+        // 公開評価: info.txt に Rating 行が無ければ「確認済みで無し」、壊れたzipとフォルダは未確認。
+        assert_eq!(r.items[0].rating, crate::neko_dir::SourceRating::None);
+        assert_eq!(r.items[1].rating, crate::neko_dir::SourceRating::None);
+        assert_eq!(r.items[2].rating, crate::neko_dir::SourceRating::Unknown);
+        assert_eq!(r.items[3].rating, crate::neko_dir::SourceRating::Unknown);
+    }
+
+    #[test]
+    fn scan_reads_the_source_rating_from_info_txt() {
+        let dir = temp_dir("rating");
+        let rated = write_zip(&dir, "rated.zip", &[("1.jpg", b"x"), ("info.txt", b"T\nFavorited: 442 times\nRating: 4.82\n")]);
+        let r = run(&dir, &[rated]);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(r.items[0].rating, crate::neko_dir::SourceRating::Value(482));
     }
 
     #[test]

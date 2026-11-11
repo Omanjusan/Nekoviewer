@@ -244,6 +244,8 @@ pub struct DetailMeta {
     pub comment: String,
     /// meta.json の本文（安全化済み。読み出し上限 `META_JSON_LIMIT`）。
     pub meta_json: Option<String>,
+    /// info.txt の `Rating:` 行の値を100倍した整数（4.82 → 482）。info.txt が無い・行が無い・範囲外は None。
+    pub info_rating: Option<u32>,
 }
 
 impl DetailMeta {
@@ -260,6 +262,21 @@ impl DetailMeta {
     pub fn has_detail(&self) -> bool {
         self.kinds().any()
     }
+}
+
+/// info.txt の本文から `Rating:` 行を読み、100倍した整数にして返す（`Rating: 4.82` → 482）。
+/// 行頭のキーが `rating`（大文字小文字は区別しない）の最初の行を使う。0.00〜5.00の範囲外・数値でない値は None。
+/// 0.00 は有効な値として返す（`Some(0)`）。小数第3位以下は四捨五入。
+pub fn parse_info_rating(text: &str) -> Option<u32> {
+    let line = text.lines().find(|l| l.split_once(':').is_some_and(|(k, _)| k.trim().eq_ignore_ascii_case("rating")))?;
+    let value = line.split_once(':')?.1.trim();
+    // 「4.82」のほか、末尾に注記があっても先頭の語だけを見る（`4.82 (123 votes)` など）。
+    let token = value.split_whitespace().next()?;
+    let n: f64 = token.parse().ok()?;
+    if !n.is_finite() || !(0.0..=5.0).contains(&n) {
+        return None;
+    }
+    Some((n * 100.0).round() as u32)
 }
 
 /// 詳細テキストの抽出に対応している形式か（zip/cbzのみ。7z・tar・フォルダは対応外＝リストでは N/A）。
@@ -384,6 +401,7 @@ pub fn read_zip_bundle(path: &Path) -> Option<ZipBundle> {
         && let Ok(entry) = archive.by_index(i)
     {
         out.tag.info_txt = read_limited(entry, DETAIL_READ_LIMIT).map(|b| decode_text_bytes(&b));
+        out.detail.info_rating = out.tag.info_txt.as_deref().and_then(parse_info_rating);
     }
     if let Some(i) = comic_idx
         && let Ok(entry) = archive.by_index(i)
@@ -605,6 +623,34 @@ mod tests {
         assert_eq!(b.tag.info_txt.as_deref(), Some("T\nCategory: Manga\n"));
         assert_eq!(b.tag.meta_json.as_deref(), Some(r#"{"tags":[]}"#));
         assert_eq!(b.detail.meta_json, b.tag.meta_json);
+    }
+
+    #[test]
+    fn info_rating_reads_two_decimals_and_rejects_bad_values() {
+        assert_eq!(parse_info_rating("Category: Manga\nFavorited: 442 times\nRating: 4.82\n"), Some(482));
+        assert_eq!(parse_info_rating("rating:5"), Some(500));
+        assert_eq!(parse_info_rating("RATING : 0.00"), Some(0), "0.00 は有効な値");
+        assert_eq!(parse_info_rating("Rating: 4.8 (123 votes)"), Some(480));
+        assert_eq!(parse_info_rating("Rating: 4.999"), Some(500), "第3位は四捨五入");
+        assert_eq!(parse_info_rating("Rating: 5.01"), None, "範囲外");
+        assert_eq!(parse_info_rating("Rating: -1"), None);
+        assert_eq!(parse_info_rating("Rating: NaN"), None);
+        assert_eq!(parse_info_rating("Rating: good"), None);
+        assert_eq!(parse_info_rating("Rating:"), None);
+        assert_eq!(parse_info_rating("Title only"), None);
+        assert_eq!(parse_info_rating("Rating: x\nRating: 4.0"), None, "最初の Rating 行だけを見る");
+    }
+
+    #[test]
+    fn bundle_carries_the_info_rating_only_from_info_txt() {
+        let with = build_zip("rating_with", &[("1.jpg", b"i"), ("info.txt", b"T\nRating: 4.82\n")], "");
+        let readme = build_zip("rating_readme", &[("1.jpg", b"i"), ("readme.txt", b"Rating: 4.82\n")], "");
+        let a = read_zip_bundle(&with).unwrap();
+        let b = read_zip_bundle(&readme).unwrap();
+        let _ = std::fs::remove_file(&with);
+        let _ = std::fs::remove_file(&readme);
+        assert_eq!(a.detail.info_rating, Some(482));
+        assert_eq!(b.detail.info_rating, None, "readme.txt の Rating は見ない");
     }
 
     #[test]

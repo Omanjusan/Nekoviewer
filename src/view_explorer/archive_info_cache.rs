@@ -86,7 +86,7 @@ mod tests {
     use crate::neko_dir::DetailFlag;
 
     fn row(pages: u32) -> ArchiveMetaRow {
-        ArchiveMetaRow { mtime: 1, size: 2, page_count: pages, detail: DetailFlag::Unknown }
+        ArchiveMetaRow { mtime: 1, size: 2, page_count: pages, detail: DetailFlag::Unknown, source_rating: crate::neko_dir::SourceRating::Unknown }
     }
 
     #[test]
