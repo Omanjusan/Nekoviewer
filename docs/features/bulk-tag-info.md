@@ -110,6 +110,13 @@
 - 削除できない（タグ管理で「－」が押せない）。名前・色の変更と、要素の追加・削除はできる。要素を全部消しても補充しない。
 - 複数選択のカテゴリ（チップ表示）。1ファイル1要素は、自動付与の規則で守る（手動では複数を選べる）。
 
+## リストの列への反映
+
+走査は、タグ候補を作るほかに、同じ1回の読み出しで**リストの「詳細」列（XML・JSON・TXT）とzipのページ数列**の記録も作る。
+完了時（キャンセル時も処理した分）に、そのフォルダの `cache.redb`（`archive_meta_v1`）へまとめて書く。
+これはタグやマスターの書き込みではなく、再生成できるキャッシュ。タグの追加・付与は従来どおり「適用」まで行わない。
+仕様の詳細・記録を守る規則は [archive-detail-pages-txt.md](archive-detail-pages-txt.md) の「走査からの記録」。
+
 ## 未対応・注意
 
 - info.txt の取得は zip/cbz のみ。
@@ -189,7 +196,7 @@
 > 状態: 読み出し（X1）、候補への反映（X2）、新種類（属性・年月）（X3）まで実装済み。
 
 - **取得元の優先順位（決定）**: ComicInfo.xml → meta.json（空欄を埋める）→ info.txt → タイトル（ファイル名）。XML・JSON は「完全に正」の情報
-- **読み出し**（`fs/archive/meta.rs` の `read_tag_sources`）: zip/cbz を1回だけ開いて、info.txt・ComicInfo.xml・meta.json を読む。ファイル名は完全一致（大文字小文字は区別せず、サブフォルダ内も可。複数あれば最初のもの）。meta.json の読み出し上限は 1MiB。暗号化・壊れたエントリは「無し」扱いで、走査は止めない。zip/cbz 以外は対象外
+- **読み出し**（`fs/archive/meta.rs` の `read_bundle` → `read_zip_bundle`。タグ取得の元は `ZipBundle::tag`）: zip/cbz を1回だけ開いて、info.txt・ComicInfo.xml・meta.json を読む（同じ1回で、リストの詳細列・ページ数用の情報も取る）。ファイル名は完全一致（大文字小文字は区別せず、サブフォルダ内も可。複数あれば最初のもの）。meta.json の読み出し上限は 1MiB。暗号化・壊れたエントリは「無し」扱いで、走査は止めない。zip/cbz 以外は対象外
 - **型と統合**（`src/tag_meta.rs`・純関数）
   - ComicInfo.xml: `Title` `Series` `Writer`（複数は分割）`Publisher`/`Imprint`（グループ）`Genre`（メイン）`Tags`（属性）`Year` `Month` `LanguageISO`
   - meta.json: `title.english`/`title.japanese`、`tags[]` の `type`（language / category / tag / artist / group / parody / character）。**`type: tag` の名前が `group` でも、普通のタグ**。知らない `type` は読み飛ばす
