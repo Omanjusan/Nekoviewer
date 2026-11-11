@@ -1179,6 +1179,8 @@ impl NekoviewApp {
             cfg.magnifier_on = false;
         }
         self.deactivate_tag_main_edit();
+        // 詳細窓は、ほかの画像・アーカイブを開いた時点で片づける。
+        self.close_detail_windows();
         self.flush_current_sort_if_changed();
         self.flush_current_bookmark_if_enabled();
         let path = state.archive_path().clone();

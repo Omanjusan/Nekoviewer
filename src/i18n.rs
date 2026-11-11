@@ -2627,6 +2627,26 @@ impl Lang {
         }
     }
 
+    /// meta.json の詳細窓の項目名
+    pub fn detail_json_field(self, key: &str) -> &'static str {
+        let (ja, en, zh) = match key {
+            "title_japanese" => ("タイトル(日)", "Title (JA)", "标题(日)"),
+            "title_english" => ("タイトル(英)", "Title (EN)", "标题(英)"),
+            "language" => ("言語", "Language", "语言"),
+            "category" => ("カテゴリ", "Category", "分类"),
+            "artist" => ("作者", "Artist", "作者"),
+            "group" => ("グループ", "Group", "社团"),
+            "parody" => ("パロディ", "Parody", "原作"),
+            "character" => ("キャラクター", "Character", "角色"),
+            _ => ("タグ", "Tags", "标签"),
+        };
+        match self {
+            Lang::Japanese => ja,
+            Lang::English  => en,
+            Lang::Chinese  => zh,
+        }
+    }
+
     /// 長すぎる本文を途中で切ったときの注記
     pub fn detail_truncated(self, shown: usize) -> String {
         match self {
