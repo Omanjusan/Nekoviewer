@@ -30,6 +30,11 @@ pub fn format_page_count(n: u32) -> String {
     }
 }
 
+/// リストの「公開評価」列に出す文字列。評価×100の整数を小数2桁にする（482 → `4.82`、0 → `0.00`）。
+pub fn format_source_rating(x100: u32) -> String {
+    format!("{}.{:02}", x100 / 100, x100 % 100)
+}
+
 pub(crate) fn is_combining(c: char) -> bool {
     matches!(c as u32,
         0x0300..=0x036F | 0x1AB0..=0x1AFF | 0x1DC0..=0x1DFF | 0x20D0..=0x20FF | 0xFE20..=0xFE2F)
@@ -469,6 +474,14 @@ mod tests {
         assert_eq!(format_page_count(999), "999");
         assert_eq!(format_page_count(1000), ">999");
         assert_eq!(format_page_count(u32::MAX), ">999");
+    }
+
+    #[test]
+    fn source_rating_text_has_two_decimals() {
+        assert_eq!(format_source_rating(482), "4.82");
+        assert_eq!(format_source_rating(500), "5.00");
+        assert_eq!(format_source_rating(5), "0.05");
+        assert_eq!(format_source_rating(0), "0.00");
     }
 
     #[test]

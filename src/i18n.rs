@@ -2754,6 +2754,30 @@ impl Lang {
         }
     }
 
+    /// 「公開評価」列の見出し（アーカイブ内の info.txt にある評価。自分の「評価」とは別）
+    pub fn list_col_source_rating(self) -> &'static str {
+        match self {
+            Lang::Japanese => "公開評価",
+            Lang::English  => "Source Rating",
+            Lang::Chinese  => "来源评分",
+        }
+    }
+
+    /// 「公開評価」列のヒント。`kind` は "value" / "none"（確認済みで無し）/ "na"（対応外の形式）。
+    pub fn list_source_rating_tip(self, kind: &str) -> &'static str {
+        match (kind, self) {
+            ("value", Lang::Japanese) => "公開評価（アーカイブ内の info.txt の Rating）",
+            ("value", Lang::English) => "Source rating (Rating in the archive's info.txt)",
+            ("value", Lang::Chinese) => "来源评分（压缩包内 info.txt 的 Rating）",
+            ("none", Lang::Japanese) => "確認済み：info.txt に評価はありません",
+            ("none", Lang::English) => "Checked: no rating in info.txt",
+            ("none", Lang::Chinese) => "已确认：info.txt 中没有评分",
+            (_, Lang::Japanese) => "この形式は info.txt の取得に対応していません",
+            (_, Lang::English) => "This format does not support reading info.txt",
+            (_, Lang::Chinese) => "此格式不支持读取 info.txt",
+        }
+    }
+
     /// 「詳細」列の見出し（詳細テキストのあるファイルにアイコンが付く）
     pub fn list_col_detail(self) -> &'static str {
         match self {

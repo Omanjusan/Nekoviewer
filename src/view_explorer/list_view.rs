@@ -71,10 +71,10 @@ fn thumb_col_width(size: ListSize, row_h: f32) -> f32 {
 }
 
 /// 列の数（`Col` の要素数）。
-const COL_N: usize = 14;
+const COL_N: usize = 15;
 
-/// 列の幅（エラー・重複・ファイラー・サムネ・名前・場所・完全比較・サイズ・更新日時・評価・訪問回数・ページ数・詳細・属性）。
-/// ユーザー設定は重複・名前・サイズ・更新日時・評価・訪問回数・ページ数。エラー・詳細・属性は固定幅。
+/// 列の幅（エラー・重複・ファイラー・サムネ・名前・場所・完全比較・サイズ・更新日時・評価・公開評価・訪問回数・ページ数・詳細・属性）。
+/// ユーザー設定は重複・名前・サイズ・更新日時・評価・訪問回数・ページ数。エラー・公開評価・詳細・属性は固定幅。
 /// `place_w`・`compare_w` は類似ファイル一覧のときだけ出す「場所」「完全比較」列の幅（出さないときは 0）。
 fn column_widths(thumb_w: f32, cols: &ListColumns, place_w: f32, compare_w: f32) -> [f32; COL_N] {
     [
@@ -88,6 +88,7 @@ fn column_widths(thumb_w: f32, cols: &ListColumns, place_w: f32, compare_w: f32)
         cols.width(2),
         cols.width(3),
         cols.width(4),
+        SOURCE_RATING_COL_W,
         cols.width(5),
         cols.width(6),
         DETAIL_COL_W,
@@ -97,6 +98,9 @@ fn column_widths(thumb_w: f32, cols: &ListColumns, place_w: f32, compare_w: f32)
 
 /// 「エラー」列の幅（px。固定）。赤X・⚠ の2スロット。
 const ERROR_COL_W: f32 = 44.0;
+
+/// 「公開評価」列の幅（px。固定）。見出しと `4.82` の数値が収まる幅。
+const SOURCE_RATING_COL_W: f32 = 92.0;
 
 /// 「詳細」列の1スロットの幅（px）。種別バッジ（XML・JSON・TXT）が1つ入る。位置は種別ごとに固定。
 const DETAIL_SLOT_W: f32 = 32.0;
@@ -132,13 +136,15 @@ enum Col {
     Size = 7,
     Mtime = 8,
     Rating = 9,
-    Visits = 10,
+    /// アーカイブ内の info.txt の `Rating:`（公開評価）。固定幅。
+    SourceRating = 10,
+    Visits = 11,
     /// ビューアーを開いたときに記録されたページ数（未取得は空欄）。
-    Pages = 11,
-    /// 詳細テキスト（ComicInfo・nfo・zipコメント）があるファイルにアイコンを出す。
-    Detail = 12,
+    Pages = 12,
+    /// 詳細ファイル（ComicInfo.xml・meta.json・付属テキスト）の種別バッジ。
+    Detail = 13,
     /// 最右。保存設定マーカー（L/R・S・T・B）とお気に入りマーカー。
-    Attr = 13,
+    Attr = 14,
 }
 
 impl Col {
@@ -152,14 +158,14 @@ impl Col {
             Col::Rating => Some(HeaderColumn::Score),
             Col::Visits => Some(HeaderColumn::Visits),
             Col::Pages => Some(HeaderColumn::Pages),
-            Col::Error | Col::Dup | Col::Reveal | Col::Thumb | Col::Place | Col::Compare | Col::Detail | Col::Attr => None,
+            Col::Error | Col::Dup | Col::Reveal | Col::Thumb | Col::Place | Col::Compare | Col::SourceRating | Col::Detail | Col::Attr => None,
         }
     }
 
     /// 幅を変えられる列の `ListColumns` 上の番号。サムネ列は行の高さで決まるので変えられない。
     fn resize_index(self) -> Option<usize> {
         match self {
-            Col::Error | Col::Reveal | Col::Thumb | Col::Place | Col::Compare | Col::Detail | Col::Attr => None,
+            Col::Error | Col::Reveal | Col::Thumb | Col::Place | Col::Compare | Col::SourceRating | Col::Detail | Col::Attr => None,
             Col::Dup => Some(0),
             Col::Name => Some(1),
             Col::Size => Some(2),
@@ -214,6 +220,35 @@ fn cell_text(painter: &egui::Painter, rect: egui::Rect, text: &str, font: &egui:
         font.clone(),
         color,
     );
+}
+
+/// 「公開評価」列のセル。info.txt の `Rating:` を小数2桁の数値で出す。
+/// 確認済みで評価が無いときは薄い「－」、対応外の形式（詳細の記録が N/A）は「N/A」、未確認は空欄。
+fn paint_source_rating_cell(
+    ui: &egui::Ui,
+    response: &egui::Response,
+    cell: egui::Rect,
+    rating: crate::neko_dir::SourceRating,
+    detail: crate::neko_dir::DetailFlag,
+    font: &egui::FontId,
+    text_color: egui::Color32,
+) {
+    use crate::neko_dir::{DetailFlag, SourceRating};
+    if cell.width() <= 0.0 {
+        return;
+    }
+    let weak = ui.visuals().weak_text_color();
+    let t = i18n::t();
+    let (text, color, tip) = match (rating, detail) {
+        (SourceRating::Value(v), _) => (crate::fs::archive::meta::format_source_rating(v), text_color, t.list_source_rating_tip("value")),
+        (SourceRating::None, _) => ("－".to_owned(), weak, t.list_source_rating_tip("none")),
+        (SourceRating::Unknown, DetailFlag::NotApplicable) => ("N/A".to_owned(), weak, t.list_source_rating_tip("na")),
+        (SourceRating::Unknown, _) => return,
+    };
+    cell_text(ui.painter(), cell, &text, font, color);
+    if ui.input(|i| i.pointer.hover_pos()).is_some_and(|p| cell.contains(p)) {
+        response.clone().on_hover_text(tip);
+    }
 }
 
 /// 行 `i` の当たり判定。行ごとの子UIの下にIDを置く。
@@ -439,7 +474,7 @@ impl NekoviewApp {
         // 境界の操作を先に処理して、この後の描画（見出しと本体の行）に今フレームの幅を反映する。
         let mut changed = false;
         let mut active_idx: Option<usize> = None;
-        for col in [Col::Error, Col::Dup, Col::Reveal, Col::Name, Col::Place, Col::Compare, Col::Size, Col::Mtime, Col::Rating, Col::Visits, Col::Pages, Col::Detail, Col::Attr] {
+        for col in [Col::Error, Col::Dup, Col::Reveal, Col::Name, Col::Place, Col::Compare, Col::Size, Col::Mtime, Col::Rating, Col::SourceRating, Col::Visits, Col::Pages, Col::Detail, Col::Attr] {
             let Some(idx) = col.resize_index() else { continue };
             let x = col_rect(row, &m.widths, col).max.x;
             let grab = egui::Rect::from_center_size(egui::pos2(x, rect.center().y), egui::vec2(RESIZE_GRAB_W, HEADER_H))
@@ -509,6 +544,7 @@ impl NekoviewApp {
             (Col::Size, t.list_col_size()),
             (Col::Mtime, t.list_col_mtime()),
             (Col::Rating, t.list_col_rating()),
+            (Col::SourceRating, t.list_col_source_rating()),
             (Col::Visits, t.list_col_visits()),
             (Col::Pages, t.list_col_pages()),
             (Col::Detail, t.list_col_detail()),
@@ -530,7 +566,7 @@ impl NekoviewApp {
         // 境界線。つかめる状態の境界（ホバー・ドラッグ中）だけ太く強調する（リサイズのマーカー）。
         let line = grid_line_color(ui);
         let marker = ui.visuals().strong_text_color();
-        for col in [Col::Error, Col::Dup, Col::Reveal, Col::Name, Col::Place, Col::Compare, Col::Size, Col::Mtime, Col::Rating, Col::Visits, Col::Pages, Col::Detail, Col::Attr] {
+        for col in [Col::Error, Col::Dup, Col::Reveal, Col::Name, Col::Place, Col::Compare, Col::Size, Col::Mtime, Col::Rating, Col::SourceRating, Col::Visits, Col::Pages, Col::Detail, Col::Attr] {
             let x = col_rect(row, &m.widths, col).max.x;
             let active = col.resize_index().is_some() && col.resize_index() == active_idx;
             let stroke = if active { egui::Stroke::new(2.0, marker) } else { egui::Stroke::new(1.0, line) };
@@ -695,6 +731,7 @@ impl NekoviewApp {
             }
             let detail_cell = col_rect(rect, widths, Col::Detail);
             self.paint_detail_cell(ui, response, detail_cell, real_idx, info.detail, font);
+            paint_source_rating_cell(ui, response, col_rect(rect, widths, Col::SourceRating), info.source_rating, info.detail, font, text_color);
         }
         if editing {
             // 生画像は評価の対象外なので、評価の＋－は出さない（訪問回数は出す）。
@@ -924,6 +961,7 @@ mod tests {
         assert_eq!(Col::Visits.sort_column(), Some(H::Visits));
         assert_eq!(Col::Pages.sort_column(), Some(H::Pages), "ページ数は第2セットのソート");
         assert_eq!(Col::Detail.sort_column(), None, "詳細はソートなし");
+        assert_eq!(Col::SourceRating.sort_column(), None, "公開評価のソートはR3で対応");
     }
 
     #[test]
@@ -933,6 +971,7 @@ mod tests {
         assert_eq!(Col::Error.resize_index(), None, "エラー列の幅は固定");
         assert_eq!(Col::Attr.resize_index(), None, "属性列の幅は固定");
         assert_eq!(Col::Detail.resize_index(), None, "詳細列の幅は固定");
+        assert_eq!(Col::SourceRating.resize_index(), None, "公開評価列の幅は固定");
         let idx: Vec<_> = [Col::Dup, Col::Name, Col::Size, Col::Mtime, Col::Rating, Col::Visits, Col::Pages]
             .into_iter()
             .map(|c| c.resize_index())
@@ -976,13 +1015,14 @@ mod tests {
         // 固定幅なので、ユーザー設定（7個。ページ数まで）の個数は変わらない
         assert_eq!(crate::view_explorer::list_columns::COL_COUNT, 7);
         assert_eq!(widths[Col::Detail as usize], DETAIL_COL_W, "詳細は固定幅");
+        assert_eq!(widths[Col::SourceRating as usize], SOURCE_RATING_COL_W, "公開評価は固定幅");
     }
 
     #[test]
     fn columns_tile_the_row_without_gaps_or_overlap() {
         let widths = column_widths(40.0, &ListColumns::default(), PLACE_COL_W, COMPARE_COL_W);
         let row = egui::Rect::from_min_size(egui::pos2(10.0, 5.0), egui::vec2(widths.iter().sum(), 30.0));
-        let cols = [Col::Error, Col::Dup, Col::Reveal, Col::Thumb, Col::Name, Col::Place, Col::Compare, Col::Size, Col::Mtime, Col::Rating, Col::Visits, Col::Pages, Col::Detail, Col::Attr];
+        let cols = [Col::Error, Col::Dup, Col::Reveal, Col::Thumb, Col::Name, Col::Place, Col::Compare, Col::Size, Col::Mtime, Col::Rating, Col::SourceRating, Col::Visits, Col::Pages, Col::Detail, Col::Attr];
         let mut x = row.min.x;
         for c in cols {
             let r = col_rect(row, &widths, c);
