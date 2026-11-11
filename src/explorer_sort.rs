@@ -20,6 +20,8 @@ pub enum RatingSortKey {
     Visits,
     /// ページ数（ビューアーを開いて記録された値。未取得は0として扱う）
     Pages,
+    /// 公開評価（アーカイブ内 info.txt の Rating。未取得・評価なしは0として扱う）
+    SourceRating,
 }
 
 impl RatingSortKey {
@@ -28,6 +30,7 @@ impl RatingSortKey {
             Self::Score => "score",
             Self::Visits => "visits",
             Self::Pages => "pages",
+            Self::SourceRating => "source_rating",
         }
     }
 
@@ -37,6 +40,7 @@ impl RatingSortKey {
             "score" => Some(Self::Score),
             "visits" => Some(Self::Visits),
             "pages" => Some(Self::Pages),
+            "source_rating" => Some(Self::SourceRating),
             _ => None,
         }
     }
@@ -86,6 +90,8 @@ pub enum HeaderColumn {
     Visits,
     /// ページ数（第2セットの Pages）
     Pages,
+    /// 公開評価（第2セットの SourceRating）
+    SourceRating,
 }
 
 /// ソート設定の全体（第1セット＋第2セット）。見出しのクリックで遷移させる単位。
@@ -102,7 +108,7 @@ impl HeaderColumn {
             Self::Name => Some(ExplorerSortKey::Name),
             Self::Size => Some(ExplorerSortKey::Size),
             Self::Date => Some(ExplorerSortKey::Date),
-            Self::Score | Self::Visits | Self::Pages => None,
+            Self::Score | Self::Visits | Self::Pages | Self::SourceRating => None,
         }
     }
 
@@ -111,6 +117,7 @@ impl HeaderColumn {
             Self::Score => Some(RatingSortKey::Score),
             Self::Visits => Some(RatingSortKey::Visits),
             Self::Pages => Some(RatingSortKey::Pages),
+            Self::SourceRating => Some(RatingSortKey::SourceRating),
             _ => None,
         }
     }
@@ -160,6 +167,8 @@ pub struct SortRow<'a> {
     pub visit_count: u32,
     /// ページ数（0=未取得）
     pub page_count: u32,
+    /// 公開評価×100（0=未取得・評価なし）
+    pub source_rating: u32,
 }
 
 /// 2セット分のソート条件
@@ -190,11 +199,17 @@ impl ExplorerSort {
         self.rating.key == Some(RatingSortKey::Pages)
     }
 
+    /// 公開評価の記録を集める必要があるか
+    pub fn needs_source_rating(&self) -> bool {
+        self.rating.key == Some(RatingSortKey::SourceRating)
+    }
+
     pub fn compare(&self, a: &SortRow, b: &SortRow) -> Ordering {
         let rating = match self.rating.key {
             Some(RatingSortKey::Score) => directed(self.rating.ascending, a.rating_half.cmp(&b.rating_half)),
             Some(RatingSortKey::Visits) => directed(self.rating.ascending, a.visit_count.cmp(&b.visit_count)),
             Some(RatingSortKey::Pages) => directed(self.rating.ascending, a.page_count.cmp(&b.page_count)),
+            Some(RatingSortKey::SourceRating) => directed(self.rating.ascending, a.source_rating.cmp(&b.source_rating)),
             None => Ordering::Equal,
         };
         rating.then_with(|| self.compare_main(a, b))
@@ -308,6 +323,31 @@ mod tests {
         assert_eq!(order(&asc, &rows), ["none_a", "none_b", "few", "many"], "未取得(0)が先頭、同順位は名前順");
         let desc = sort(ExplorerSortKey::Name, true, Some(RatingSortKey::Pages), false);
         assert_eq!(order(&desc, &rows), ["many", "few", "none_a", "none_b"]);
+    }
+
+    #[test]
+    fn source_rating_sort_treats_unfetched_and_none_as_zero() {
+        let rows = [
+            SortRow { name: "hi", source_rating: 482, ..SortRow::default() },
+            SortRow { name: "none_b", source_rating: 0, ..SortRow::default() },
+            SortRow { name: "lo", source_rating: 120, ..SortRow::default() },
+            SortRow { name: "none_a", source_rating: 0, ..SortRow::default() },
+        ];
+        let desc = sort(ExplorerSortKey::Name, true, Some(RatingSortKey::SourceRating), false);
+        assert_eq!(order(&desc, &rows), ["hi", "lo", "none_a", "none_b"]);
+        let asc = sort(ExplorerSortKey::Name, true, Some(RatingSortKey::SourceRating), true);
+        assert_eq!(order(&asc, &rows), ["none_a", "none_b", "lo", "hi"], "未取得・評価なし(0)が先頭");
+    }
+
+    #[test]
+    fn source_rating_key_state_header_and_needs() {
+        assert_eq!(RatingSortKey::from_state_key("source_rating"), Some(RatingSortKey::SourceRating));
+        assert_eq!(RatingSortKey::SourceRating.as_state_key(), "source_rating");
+        let s = sort(ExplorerSortKey::Name, true, Some(RatingSortKey::SourceRating), false);
+        assert!(s.needs_source_rating() && !s.needs_rating() && !s.needs_pages());
+        let on = header_click(SortSettings { key: ExplorerSortKey::Name, ascending: true, rating: RatingSort::default() }, HeaderColumn::SourceRating);
+        assert_eq!(on.rating, RatingSort { key: Some(RatingSortKey::SourceRating), ascending: false });
+        assert_eq!(header_arrow(&on, HeaderColumn::SourceRating), Some(false));
     }
 
     #[test]

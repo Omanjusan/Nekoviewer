@@ -90,6 +90,14 @@ impl Lang {
         }
     }
 
+    pub fn sort_source_rating(self) -> &'static str {
+        match self {
+            Lang::Japanese => "[公開評価]",
+            Lang::English  => "[Source Rating]",
+            Lang::Chinese  => "[来源评分]",
+        }
+    }
+
     pub fn sort_asc(self) -> &'static str {
         match self {
             Lang::Japanese => "[昇順]",

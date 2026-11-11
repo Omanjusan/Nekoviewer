@@ -158,7 +158,8 @@ impl Col {
             Col::Rating => Some(HeaderColumn::Score),
             Col::Visits => Some(HeaderColumn::Visits),
             Col::Pages => Some(HeaderColumn::Pages),
-            Col::Error | Col::Dup | Col::Reveal | Col::Thumb | Col::Place | Col::Compare | Col::SourceRating | Col::Detail | Col::Attr => None,
+            Col::SourceRating => Some(HeaderColumn::SourceRating),
+            Col::Error | Col::Dup | Col::Reveal | Col::Thumb | Col::Place | Col::Compare | Col::Detail | Col::Attr => None,
         }
     }
 
@@ -456,7 +457,7 @@ impl NekoviewApp {
             }
             dup_click = resp.clicked();
         }
-        for col in [Col::Name, Col::Size, Col::Mtime, Col::Rating, Col::Visits, Col::Pages] {
+        for col in [Col::Name, Col::Size, Col::Mtime, Col::Rating, Col::SourceRating, Col::Visits, Col::Pages] {
             let Some(sort_col) = col.sort_column() else { continue };
             let cell = col_rect(row, &m.widths, col).intersect(rect);
             if cell.width() <= 0.0 {
@@ -961,7 +962,7 @@ mod tests {
         assert_eq!(Col::Visits.sort_column(), Some(H::Visits));
         assert_eq!(Col::Pages.sort_column(), Some(H::Pages), "ページ数は第2セットのソート");
         assert_eq!(Col::Detail.sort_column(), None, "詳細はソートなし");
-        assert_eq!(Col::SourceRating.sort_column(), None, "公開評価のソートはR3で対応");
+        assert_eq!(Col::SourceRating.sort_column(), Some(H::SourceRating), "公開評価はソート可");
     }
 
     #[test]

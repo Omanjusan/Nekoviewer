@@ -85,6 +85,8 @@ struct SortEntry {
     visit_count: u32,
     /// ページ数（ビューアーを開いて記録された値。未取得・記録が古い場合は0）
     page_count: u32,
+    /// 公開評価×100（記録が無い・古い・評価なしは0）
+    source_rating: u32,
 }
 
 impl SortEntry {
@@ -96,6 +98,7 @@ impl SortEntry {
             rating_half: self.rating_half,
             visit_count: self.visit_count,
             page_count: self.page_count,
+            source_rating: self.source_rating,
         }
     }
 }
@@ -996,11 +999,16 @@ impl NekoviewApp {
                 && p.file_name()
                     .and_then(|n| n.to_str())
                     .is_some_and(|name| self.favorite_states.contains_key(name));
-            let meta = (sort.needs_mtime() || sort.needs_size() || sort.needs_pages())
+            let meta = (sort.needs_mtime() || sort.needs_size() || sort.needs_pages() || sort.needs_source_rating())
                 .then(|| std::fs::metadata(p).ok())
                 .flatten();
             let page_count = if sort.needs_pages() {
                 meta.as_ref().map_or(0, |m| self.fresh_page_count(p, m.modified().ok(), m.len()))
+            } else {
+                0
+            };
+            let source_rating = if sort.needs_source_rating() {
+                meta.as_ref().map_or(0, |m| self.fresh_source_rating(p, m.modified().ok(), m.len()))
             } else {
                 0
             };
@@ -1028,6 +1036,7 @@ impl NekoviewApp {
                 rating_half: rating.map_or(0, |r| r.rating_half),
                 visit_count: rating.map_or(0, |r| r.visit_count),
                 page_count,
+                source_rating,
             }
         }).collect();
         // 重複ソートONの段（両方 > 重複のみ > 類似のみ > なし）は、お気に入りの先頭固定よりさらに前。

@@ -74,6 +74,11 @@ impl NekoviewApp {
         self.archive_info_of(path).filter(|r| r.is_current(secs, size))
     }
 
+    /// 公開評価×100（未取得・評価なし・記録が古い場合は 0）。ソートはこれを使う。
+    pub(super) fn fresh_source_rating(&self, path: &Path, mtime: Option<std::time::SystemTime>, size: u64) -> u32 {
+        self.fresh_archive_info(path, mtime, size).map_or(0, |r| r.source_rating.sort_value())
+    }
+
     /// ページ数（未取得・記録が古い場合は 0）。ソートはこれを使い、未取得を 0 として扱う。
     pub(super) fn fresh_page_count(&self, path: &Path, mtime: Option<std::time::SystemTime>, size: u64) -> u32 {
         self.fresh_archive_info(path, mtime, size).map_or(0, |r| r.page_count)

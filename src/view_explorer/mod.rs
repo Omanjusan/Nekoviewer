@@ -20,6 +20,7 @@ impl crate::explorer_sort::RatingSortKey {
             Self::Score => t.sort_score(),
             Self::Visits => t.sort_visits(),
             Self::Pages => t.sort_pages(),
+            Self::SourceRating => t.sort_source_rating(),
         }
     }
 }

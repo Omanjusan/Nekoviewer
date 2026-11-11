@@ -493,6 +493,7 @@ impl NekoviewApp {
         items.push(SortMenuItem::RatingKey(RatingSortKey::Score));
         items.push(SortMenuItem::RatingKey(RatingSortKey::Visits));
         items.push(SortMenuItem::RatingKey(RatingSortKey::Pages));
+        items.push(SortMenuItem::RatingKey(RatingSortKey::SourceRating));
         // ビューアーのデフォルト（任意）。キー未指定の間は昇降ボタン（押せない）を含めない
         if self.viewer_cfg.lock().unwrap().default_sort_key.is_some() {
             items.push(SortMenuItem::ViewerDefaultOrder);
@@ -668,6 +669,7 @@ impl NekoviewApp {
                 crate::explorer_sort::RatingSortKey::Score,
                 crate::explorer_sort::RatingSortKey::Visits,
                 crate::explorer_sort::RatingSortKey::Pages,
+                crate::explorer_sort::RatingSortKey::SourceRating,
             ] {
                 let active = self.rating_sort.key == Some(key);
                 let rb = sort_choice_button(ui, active, key.label(), SORT_CHOICE_RATING_SELECTED);
