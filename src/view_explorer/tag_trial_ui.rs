@@ -94,6 +94,8 @@ impl NekoviewApp {
     /// 確定: 仮マスターを本物にする。
     fn confirm_tag_trial(&mut self) {
         let root = self.config.config_root.clone();
+        // 確定は本物を置き換えるので、置き換え前の本物を世代に残す。
+        crate::tag_master_gen::snapshot_before_save(&root, self.tag_master_gen_keep(), true);
         if crate::tag_manager::promote_trial(&root) {
             TrialRecord::remove(&root);
             self.tag_trial_active = false;

@@ -1414,6 +1414,10 @@ impl NekoviewApp {
 
     /// タグマスターをファイルへ保存する。試用中は仮マスターへ、そうでなければ本物へ（本物は確定まで変えない）。
     pub(super) fn save_tag_master_file(&self) {
+        // 本物へ書く前に、変更前の状態を世代として残す（連続編集はまとめる）。試用中は本物が変わらないので取らない。
+        if !self.tag_trial_active {
+            crate::tag_master_gen::snapshot_before_save(&self.config.config_root, self.tag_master_gen_keep(), false);
+        }
         crate::tag_manager::save_slot(
             &self.config.config_root,
             self.tag_master_slot(),
@@ -1423,6 +1427,11 @@ impl NekoviewApp {
     }
 
     /// いま読み書きするマスターの保存先。
+    /// マスター世代を残す数。設定画面で変えられるようにする（P4）までは既定値。
+    pub(super) fn tag_master_gen_keep(&self) -> usize {
+        crate::tag_master_gen::DEFAULT_KEEP
+    }
+
     pub(super) fn tag_master_slot(&self) -> crate::tag_manager::Slot {
         if self.tag_trial_active {
             crate::tag_manager::Slot::Trial
@@ -1716,6 +1725,10 @@ impl NekoviewApp {
             }
             ConfirmOutcome::Ok => {
                 self.tag_manager_delete_confirm = None;
+                // 削除は取り返しがつかないので、間隔にかかわらず直前の状態を世代に残す。
+                if !self.tag_trial_active {
+                    crate::tag_master_gen::snapshot_before_save(&self.config.config_root, self.tag_master_gen_keep(), true);
+                }
                 Some(idx)
             }
         }

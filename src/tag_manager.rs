@@ -139,7 +139,17 @@ pub(crate) fn load(root: &Path) -> Option<(Vec<TagManagerCategoryUi>, u64)> {
 
 /// 保存先を指定して読み込む。無い・壊れている場合はNone。
 pub(crate) fn load_slot(root: &Path, slot: Slot) -> Option<(Vec<TagManagerCategoryUi>, u64)> {
-    let content = std::fs::read_to_string(data_path(root, slot)).ok()?;
+    load_path(&data_path(root, slot))
+}
+
+/// 本物の保存ファイルのパス（世代スナップショットの元）。
+pub(crate) fn real_path(root: &Path) -> PathBuf {
+    data_path(root, Slot::Real)
+}
+
+/// ファイルパスを指定して読み込む（世代スナップショットの読み出し用）。無い・壊れている場合はNone。
+pub(crate) fn load_path(path: &Path) -> Option<(Vec<TagManagerCategoryUi>, u64)> {
+    let content = std::fs::read_to_string(path).ok()?;
     let data: SaveDataV1 = serde_json::from_str(&content).ok()?;
     let categories = data
         .categories
