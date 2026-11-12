@@ -4407,18 +4407,22 @@ impl Lang {
     /// 学習結果を使う/使わないの切替ボタン（`on` は現在の状態）
     pub fn tag_learn_use_toggle(self, on: bool) -> &'static str {
         if on {
-            self.learn_pick("● 使う", "", "")
+            self.learn_pick("● 学習内容を反映する", "● Apply learned data", "● 应用学习内容")
         } else {
-            self.learn_pick("○ 使わない", "", "")
+            self.learn_pick("○ 学習内容を反映しない", "○ Don't apply learned data", "○ 不应用学习内容")
         }
     }
 
     pub fn tag_learn_use_hover(self) -> &'static str {
-        self.learn_pick("使う: 学習結果で作者・グループ・イベント・言語を判定する\n使わない: 従来のルールだけで判定する", "", "")
+        self.learn_pick(
+            "反映する: 学習結果で作者・グループ・イベント・言語を判定する\n反映しない: 従来のルールだけで判定する",
+            "Apply: use the learned data to judge author, group, event and language\nDon't apply: judge with the conventional rules only",
+            "应用：使用学习结果判断作者、社团、活动和语言\n不应用：仅使用原有规则判断",
+        )
     }
 
     pub fn tag_learn_use_disabled_hover(self) -> &'static str {
-        self.learn_pick("学習データがありません", "", "")
+        self.learn_pick("学習データがありません", "No learned data yet", "尚无学习数据")
     }
 
     /// 学習窓・ラベル窓（日本語のみ。英・中は空で日本語にフォールバック）

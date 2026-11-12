@@ -45,7 +45,7 @@ impl NekoviewApp {
         self.tag_model = train_model(&self.tag_learned, &self.config.tag_match);
     }
 
-    /// タグパネルの学習行: 「タグ学習…」ボタン、学習済みの件数、学習結果を使う/使わないの切替。
+    /// タグパネルの学習行: 「タグ学習…」ボタンと学習済みの件数（中央）、その一段下の左端に「学習内容を反映する/しない」の切替。
     pub(super) fn draw_tag_learning_status(&mut self, ui: &mut egui::Ui) {
         let t = i18n::t();
         let n = self.tag_learned.len();
@@ -55,15 +55,17 @@ impl NekoviewApp {
                     self.tag_learn = Some(TagLearn::open(self));
                 }
                 ui.weak(t.tag_learn_status(n)).on_hover_text(t.tag_learn_status_hover());
-                // 使う/使わない。学習データが無いときは切り替えても結果が変わらないので、押せなくする。
-                let on = self.config.tag_learning_use;
-                let resp = ui.add_enabled(n > 0, egui::Button::selectable(on, t.tag_learn_use_toggle(on)).small());
-                let resp = if n > 0 { resp.on_hover_text(t.tag_learn_use_hover()) } else { resp.on_disabled_hover_text(t.tag_learn_use_disabled_hover()) };
-                if resp.clicked() {
-                    self.config.tag_learning_use = !on;
-                    self.persist_state();
-                }
             });
+        });
+        // 学習内容を反映する/しない。一段下の左端。学習データが無いときは切り替えても結果が変わらないので、押せなくする。
+        ui.horizontal(|ui| {
+            let on = self.config.tag_learning_use;
+            let resp = ui.add_enabled(n > 0, egui::Button::selectable(on, t.tag_learn_use_toggle(on)).small());
+            let resp = if n > 0 { resp.on_hover_text(t.tag_learn_use_hover()) } else { resp.on_disabled_hover_text(t.tag_learn_use_disabled_hover()) };
+            if resp.clicked() {
+                self.config.tag_learning_use = !on;
+                self.persist_state();
+            }
         });
     }
 
