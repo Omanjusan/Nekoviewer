@@ -1,11 +1,12 @@
 //! タグ自動取得の大ルール（`tag_rules`）の窓「タグ抽出ルール定義」。
 //!
 //! 一覧（カードで有効/無効・編集・削除、コピー、初期ルールの足し直し、再読込）と、ステップ式の編集画面
-//! （①名前 → ②条件。③結果・④確認は次の単位）。編集は下書きに対して行い、「保存して一覧へ」で保存する。
+//! （①名前 → ②条件 → ③結果 → ④確認＋ためし判定）。編集は下書きに対して行い、④の「保存して一覧へ」で保存する。
 //! 条件の「対象」は選ばせない（文字列・形の条件は、ファイル名・見出し行・Category・題名を自動ですべて見る）。
 
 use crate::i18n;
-use crate::tag_rules::{CondTarget, Condition, NameShape, RuleRole, TagRule, TextMatch};
+use crate::tag_rules::{CondTarget, Condition, NameShape, RuleInput, RuleRole, TagRule, TextMatch};
+use crate::tag_similarity::MatchOptions;
 
 use super::NekoviewApp;
 
@@ -50,10 +51,10 @@ fn target_label(t: CondTarget) -> &'static str {
     }
 }
 
-/// ステップの数（①名前 ②条件 ③結果 ④確認）。③④は次の単位で作る。
+/// ステップの数（①名前 ②条件 ③結果 ④確認）。
 const STEPS: usize = 4;
-/// いま編集できるステップの数。
-const READY_STEPS: usize = 2;
+/// 編集できるステップの数。
+const READY_STEPS: usize = 4;
 
 /// 編集を離れるときの行き先（未保存なら、確認を出してから）。
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -71,11 +72,15 @@ pub(super) struct RuleEditor {
     dirty: bool,
     /// 未保存のまま離れようとして、確認を出している。
     leave_ask: Option<Leave>,
+    /// ためし判定の入力（④）。保存しない。
+    trial_file: String,
+    trial_titles: String,
+    trial_category: String,
 }
 
 impl RuleEditor {
     fn edit(rule: TagRule) -> Self {
-        Self { draft: rule, is_new: false, step: 0, dirty: false, leave_ask: None }
+        Self { draft: rule, is_new: false, step: 0, dirty: false, leave_ask: None, trial_file: String::new(), trial_titles: String::new(), trial_category: String::new() }
     }
 
     /// 空のルール（無効・条件1つ（空）・効果なし）。
@@ -88,7 +93,7 @@ impl RuleEditor {
             match_all: false,
             effect: Default::default(),
         };
-        Self { draft, is_new: true, step: 0, dirty: false, leave_ask: None }
+        Self { draft, is_new: true, step: 0, dirty: false, leave_ask: None, trial_file: String::new(), trial_titles: String::new(), trial_category: String::new() }
     }
 
     /// 入力の誤り（（ステップの番号, 理由））。他のルールの名前と重なる名前は、誤り。
@@ -106,6 +111,10 @@ impl RuleEditor {
         }
         if self.draft.conditions.iter().any(|c| matches!(c, Condition::Text { text, .. } if text.trim().is_empty())) {
             out.push((1, t.tag_rules_err_text_empty()));
+        }
+        // 有効なルールは、効果を1つ以上持つ（効果が空でいいのは、無効のルールだけ）。
+        if self.draft.enabled && self.draft.effect.disable.is_empty() && self.draft.effect.enable.is_empty() {
+            out.push((2, t.tag_rules_err_effect_empty()));
         }
         out
     }
@@ -139,8 +148,163 @@ fn shape_label(s: NameShape) -> &'static str {
     }
 }
 
+/// 種類の効果の状態（0=そのまま, 1=無効, 2=有効）。
+fn effect_state(rule: &TagRule, role: RuleRole) -> u8 {
+    if rule.effect.disable.contains(&role) {
+        1
+    } else if rule.effect.enable.contains(&role) {
+        2
+    } else {
+        0
+    }
+}
+
+/// 種類の効果を変える。無効と有効の両方にはならない。「そのまま」は、無効だけを外す
+/// （効かない「有効」の指定が JSON にあっても、そのまま保持する）。
+fn set_effect_state(rule: &mut TagRule, role: RuleRole, state: u8) {
+    match state {
+        1 => {
+            rule.effect.enable.remove(&role);
+            rule.effect.disable.insert(role);
+        }
+        2 => {
+            rule.effect.disable.remove(&role);
+            rule.effect.enable.insert(role);
+        }
+        _ => {
+            rule.effect.disable.remove(&role);
+            if role.is_opt_in() {
+                rule.effect.enable.remove(&role);
+            }
+        }
+    }
+}
+
+/// 条件の1行の説明（ためし判定で、当たった条件を示す）。
+fn describe_condition(c: &Condition) -> String {
+    let t = i18n::t();
+    match c {
+        Condition::Text { text, how, .. } => t.tag_rules_describe_text(text, how_label(*how)),
+        Condition::Shape { shape, .. } => t.tag_rules_describe_shape(shape_label(*shape)),
+    }
+}
+
+/// ためし判定の入力から、評価の入力を作る。ファイル名が空なら None。
+fn trial_input(ed: &RuleEditor) -> Option<RuleInput> {
+    let file = ed.trial_file.trim();
+    if file.is_empty() {
+        return None;
+    }
+    let titles = ed.trial_titles.trim();
+    let category = ed.trial_category.trim();
+    let info = if titles.is_empty() && category.is_empty() {
+        None
+    } else {
+        let mut text = titles.to_string();
+        if !category.is_empty() {
+            text.push_str(&format!("\n\nCategory: {category}"));
+        }
+        Some(crate::tag_source::parse_info_txt(&text))
+    };
+    Some(RuleInput::new(file, info.as_ref()))
+}
+
+/// ③結果: 種類ごとに、当てはまったときの効果を選ぶ。
+fn draw_effects_step(ui: &mut egui::Ui, ed: &mut RuleEditor) {
+    let t = i18n::t();
+    ui.strong(t.tag_rules_effect_heading());
+    ui.weak(t.tag_rules_effect_hint());
+    let groups: [(&str, Vec<RuleRole>, bool); 2] = [
+        (t.tag_rules_effect_group_existing(), RuleRole::EXISTING.iter().chain(RuleRole::FROM_AUTHORITY.iter()).copied().collect(), false),
+        (t.tag_rules_effect_group_new(), RuleRole::OPT_IN.to_vec(), true),
+    ];
+    for (caption, roles, opt_in) in groups {
+        ui.add_space(4.0);
+        ui.label(egui::RichText::new(caption).weak().strong());
+        for role in roles {
+            ui.horizontal(|ui| {
+                ui.label(role_label(role));
+                let mut state = effect_state(&ed.draft, role);
+                let before = state;
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    // 右から並べる（見た目は「そのまま｜有効｜無効」の順に、左から）。
+                    if opt_in {
+                        ui.selectable_value(&mut state, 1, t.tag_rules_eff_disable());
+                        ui.selectable_value(&mut state, 2, t.tag_rules_eff_enable());
+                    } else {
+                        ui.selectable_value(&mut state, 1, t.tag_rules_eff_disable());
+                    }
+                    ui.selectable_value(&mut state, 0, t.tag_rules_eff_none());
+                });
+                // 「有効」を持つ種類（演者など）以外では、2択のまま。JSON由来の効かない「有効」は、触れずに保持する。
+                if state != before {
+                    set_effect_state(&mut ed.draft, role, state);
+                    ed.dirty = true;
+                }
+            });
+        }
+        if opt_in {
+            ui.weak(t.tag_rules_effect_new_hint());
+        }
+    }
+}
+
+/// ④確認: ルールのまとめと、ためし判定。
+fn draw_review_step(ui: &mut egui::Ui, ed: &mut RuleEditor, opts: &MatchOptions) {
+    let t = i18n::t();
+    ui.strong(t.tag_rules_review_heading());
+    egui::Frame::group(ui.style()).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        let name = ed.draft.name.trim();
+        ui.label(egui::RichText::new(if name.is_empty() { "…" } else { name }).strong());
+        ui.weak(summary(&ed.draft));
+    });
+    ui.add_space(4.0);
+    ui.strong(t.tag_rules_trial_heading());
+    ui.weak(t.tag_rules_trial_hint());
+    ui.add(egui::TextEdit::singleline(&mut ed.trial_file).hint_text(t.tag_rules_trial_file_hint()).desired_width(f32::INFINITY));
+    ui.add(egui::TextEdit::multiline(&mut ed.trial_titles).hint_text(t.tag_rules_trial_titles_hint()).desired_rows(2).desired_width(f32::INFINITY));
+    ui.add(egui::TextEdit::singleline(&mut ed.trial_category).hint_text(t.tag_rules_trial_category_hint()).desired_width(f32::INFINITY));
+    let Some(input) = trial_input(ed) else {
+        ui.weak(t.tag_rules_trial_need_file());
+        return;
+    };
+    // 無効のルールでも、条件に当てはまるかは試せる（効果の表示は、有効にしたと仮定して出す）。
+    let mut rule = ed.draft.clone();
+    rule.enabled = true;
+    let hit = rule.applies_to(&input, opts);
+    egui::Frame::group(ui.style()).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        let (text, color) = if hit {
+            (t.tag_rules_trial_hit(), egui::Color32::from_rgb(70, 170, 100))
+        } else {
+            (t.tag_rules_trial_miss(), ui.visuals().weak_text_color())
+        };
+        ui.label(egui::RichText::new(text).strong().color(color));
+        for c in &rule.conditions {
+            let ok = c.matches(&input, opts);
+            ui.label(format!("{} {}", if ok { "✔" } else { "✖" }, describe_condition(c)));
+        }
+        if hit {
+            let join = |set: &std::collections::BTreeSet<RuleRole>| set.iter().map(|r| role_label(*r)).collect::<Vec<_>>().join("・");
+            if rule.effect.disable.is_empty() && rule.effect.enable.is_empty() {
+                ui.weak(t.tag_rules_trial_no_effect());
+            }
+            if !rule.effect.disable.is_empty() {
+                ui.label(t.tag_rules_trial_effect_disable(&join(&rule.effect.disable)));
+            }
+            if !rule.effect.enable.is_empty() {
+                ui.label(t.tag_rules_trial_effect_enable(&join(&rule.effect.enable)));
+            }
+        }
+        if !ed.draft.enabled {
+            ui.weak(t.tag_rules_trial_disabled_note());
+        }
+    });
+}
+
 /// 編集画面（ステップ式）を描く。
-fn draw_rule_editor(ui: &mut egui::Ui, ed: &mut RuleEditor, errors: &[(usize, &'static str)]) -> EditorOut {
+fn draw_rule_editor(ui: &mut egui::Ui, ed: &mut RuleEditor, errors: &[(usize, &'static str)], opts: &MatchOptions) -> EditorOut {
     let t = i18n::t();
     let red = egui::Color32::from_rgb(230, 90, 80);
     let mut out = EditorOut::default();
@@ -186,7 +350,7 @@ fn draw_rule_editor(ui: &mut egui::Ui, ed: &mut RuleEditor, errors: &[(usize, &'
             if ui.add(egui::TextEdit::singleline(&mut ed.draft.name).desired_width(f32::INFINITY)).changed() {
                 ed.dirty = true;
             }
-        } else {
+        } else if ed.step == 1 {
             ui.strong(t.tag_rules_cond_heading());
             ui.weak(t.tag_rules_cond_hint());
             let mut remove: Option<usize> = None;
@@ -264,6 +428,10 @@ fn draw_rule_editor(ui: &mut egui::Ui, ed: &mut RuleEditor, errors: &[(usize, &'
                     }
                 });
             }
+        } else if ed.step == 2 {
+            draw_effects_step(ui, ed);
+        } else {
+            draw_review_step(ui, ed, opts);
         }
         for e in &step_errors {
             ui.colored_label(red, *e);
@@ -276,7 +444,7 @@ fn draw_rule_editor(ui: &mut egui::Ui, ed: &mut RuleEditor, errors: &[(usize, &'
             out.back_to_list = true;
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            // いま作ってある最後のステップ（②）に、保存を仮置きする。③④ができたら、④へ移す。
+            // 最後のステップ（④確認）で保存する。
             if ed.step + 1 >= READY_STEPS {
                 let ok = errors.is_empty();
                 let btn = ui.add_enabled(ok, egui::Button::new(t.tag_rules_save_and_back()));
@@ -359,6 +527,7 @@ impl NekoviewApp {
         let mut action: Option<RuleAction> = None;
         let mut editor = self.tag_rules_editor.take();
         let mut editor_out = EditorOut::default();
+        let opts = self.config.tag_match;
         let center = self.explorer_center(ctx);
         let warn = egui::Color32::from_rgb(230, 90, 80);
         // 編集中のルール以外の名前（同名の誤りの判定に使う）。
@@ -384,7 +553,7 @@ impl NekoviewApp {
             .show(ctx, |ui| {
                 if let Some(ed) = editor.as_mut() {
                     let errors = ed.errors(&other_names);
-                    editor_out = draw_rule_editor(ui, ed, &errors);
+                    editor_out = draw_rule_editor(ui, ed, &errors, &opts);
                     return;
                 }
                 ui.weak(t.tag_rules_list_hint());
@@ -630,6 +799,63 @@ mod tests {
         // AI generated は4つの対象すべてを見る（限定なし）。
         let ai = Preset::AiGenerated.to_rule(1);
         assert!(matches!(&ai.conditions[0], Condition::Text { targets, .. } if is_all_targets(targets)));
+    }
+
+    #[test]
+    fn effect_choices_keep_the_two_sets_exclusive_and_preserve_inert_enables() {
+        let mut r = Preset::Cosplay.to_rule(1);
+        // 演者: 有効 → 無効 → そのまま。無効と有効の両方にはならない。
+        assert_eq!(effect_state(&r, RuleRole::Performer), 2);
+        set_effect_state(&mut r, RuleRole::Performer, 1);
+        assert!(r.effect.disable.contains(&RuleRole::Performer) && !r.effect.enable.contains(&RuleRole::Performer));
+        set_effect_state(&mut r, RuleRole::Performer, 0);
+        assert_eq!(effect_state(&r, RuleRole::Performer), 0);
+        // 作者: 無効 → そのまま。
+        assert_eq!(effect_state(&r, RuleRole::Author), 1);
+        set_effect_state(&mut r, RuleRole::Author, 0);
+        assert_eq!(effect_state(&r, RuleRole::Author), 0);
+        // 従来の種類に JSON で入っていた「有効」は、「そのまま」にしても消えない（効かないが、触らない）。
+        r.effect.enable.insert(RuleRole::Group);
+        set_effect_state(&mut r, RuleRole::Group, 0);
+        assert!(r.effect.enable.contains(&RuleRole::Group));
+        // 無効にすると、有効の側からは外れる（両方にはならない）。
+        set_effect_state(&mut r, RuleRole::Group, 1);
+        assert!(!r.effect.enable.contains(&RuleRole::Group) && r.effect.disable.intersection(&r.effect.enable).next().is_none());
+    }
+
+    #[test]
+    fn enabled_rule_without_effect_is_an_error_at_step_three() {
+        let mut manga = Preset::Manga.to_rule(1);
+        manga.enabled = false;
+        let mut ed = RuleEditor::edit(manga);
+        assert!(ed.errors(&[]).is_empty(), "無効のルールは、効果が空でもよい");
+        ed.draft.enabled = true;
+        assert_eq!(ed.errors(&[]).iter().map(|e| e.0).collect::<Vec<_>>(), vec![2]);
+        set_effect_state(&mut ed.draft, RuleRole::Author, 1);
+        assert!(ed.errors(&[]).is_empty());
+    }
+
+    #[test]
+    fn trial_judgement_uses_file_name_info_titles_and_category() {
+        let opts = MatchOptions::default();
+        let mut ed = RuleEditor::edit(Preset::AiGenerated.to_rule(1));
+        assert!(trial_input(&ed).is_none(), "ファイル名が空なら、判定しない");
+        ed.trial_file = "[Circle (Author)] Book [AI Generated].zip".into();
+        let input = trial_input(&ed).unwrap();
+        assert!(ed.draft.applies_to(&input, &opts));
+        assert!(describe_condition(&ed.draft.conditions[0]).contains("AI generated"));
+        // 当てはまらないファイル名。
+        ed.trial_file = "[Circle (Author)] Book.zip".into();
+        assert!(!ed.draft.applies_to(&trial_input(&ed).unwrap(), &opts));
+        // info.txt の見出し行で当てはまる。
+        ed.trial_titles = "Some Book [AI Generated]".into();
+        assert!(ed.draft.applies_to(&trial_input(&ed).unwrap(), &opts));
+        // Category だけを見る初期ルール（doujinshi）は、Category を入れたときだけ当てはまる。
+        let mut dj = RuleEditor::edit(Preset::Doujinshi.to_rule(2));
+        dj.trial_file = "x.zip".into();
+        assert!(!dj.draft.applies_to(&trial_input(&dj).unwrap(), &opts));
+        dj.trial_category = "Doujinshi".into();
+        assert!(dj.draft.applies_to(&trial_input(&dj).unwrap(), &opts));
     }
 
     #[test]

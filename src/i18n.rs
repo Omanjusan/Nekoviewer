@@ -5171,6 +5171,174 @@ impl Lang {
             Lang::Chinese  => "已保存规则",
         }
     }
+    pub fn tag_rules_describe_text(self, text: &str, how: &str) -> String {
+        match self {
+            Lang::Japanese => format!("「{text}」{how}"),
+            Lang::English  => format!("\"{text}\" {how}"),
+            Lang::Chinese  => format!("“{text}”{how}"),
+        }
+    }
+    pub fn tag_rules_describe_shape(self, shape: &str) -> String {
+        match self {
+            Lang::Japanese => format!("ファイル名が {shape} の形"),
+            Lang::English  => format!("File name has the form {shape}"),
+            Lang::Chinese  => format!("文件名形式为 {shape}"),
+        }
+    }
+    pub fn tag_rules_effect_heading(self) -> &'static str {
+        match self {
+            Lang::Japanese => "当てはまったら、種類ごとにどうする?",
+            Lang::English  => "When it matches, what to do for each kind?",
+            Lang::Chinese  => "满足条件时，各类别如何处理？",
+        }
+    }
+    pub fn tag_rules_effect_hint(self) -> &'static str {
+        match self {
+            Lang::Japanese => "「無効」にした種類の言及は、候補から外れ、「未採用・要確認」で残ります。",
+            Lang::English  => "Mentions of a kind set to \"Off\" are dropped from the candidates and kept as \"not adopted / needs review\".",
+            Lang::Chinese  => "设为“停用”的类别，其提及会从候选中移除，并以“未采用・需确认”保留。",
+        }
+    }
+    pub fn tag_rules_effect_group_existing(self) -> &'static str {
+        match self {
+            Lang::Japanese => "従来の種類（属性・年月は、XML/JSONがあるときに取ります）",
+            Lang::English  => "Existing kinds (Attribute and Year-Month are taken when XML/JSON is present)",
+            Lang::Chinese  => "现有类别（属性和年月在有 XML/JSON 时获取）",
+        }
+    }
+    pub fn tag_rules_effect_group_new(self) -> &'static str {
+        match self {
+            Lang::Japanese => "新しい種類",
+            Lang::English  => "New kinds",
+            Lang::Chinese  => "新类别",
+        }
+    }
+    pub fn tag_rules_effect_new_hint(self) -> &'static str {
+        match self {
+            Lang::Japanese => "新しい種類は、普段は取りません。「有効」にしたルールが当てはまったファイルだけ取ります。",
+            Lang::English  => "New kinds are not collected normally. They are collected only for files matched by a rule that sets them to \"On\".",
+            Lang::Chinese  => "新类别平时不获取，仅在设为“启用”的规则匹配的文件上获取。",
+        }
+    }
+    pub fn tag_rules_eff_none(self) -> &'static str {
+        match self {
+            Lang::Japanese => "そのまま",
+            Lang::English  => "As is",
+            Lang::Chinese  => "不变",
+        }
+    }
+    pub fn tag_rules_eff_disable(self) -> &'static str {
+        match self {
+            Lang::Japanese => "無効",
+            Lang::English  => "Off",
+            Lang::Chinese  => "停用",
+        }
+    }
+    pub fn tag_rules_eff_enable(self) -> &'static str {
+        match self {
+            Lang::Japanese => "有効",
+            Lang::English  => "On",
+            Lang::Chinese  => "启用",
+        }
+    }
+    pub fn tag_rules_err_effect_empty(self) -> &'static str {
+        match self {
+            Lang::Japanese => "効果がありません。種類を1つ以上選ぶか、一覧でこのルールを無効にしてください",
+            Lang::English  => "No effect is set. Choose at least one kind, or disable this rule in the list",
+            Lang::Chinese  => "未设置效果。请至少选择一个类别，或在列表中停用此规则",
+        }
+    }
+    pub fn tag_rules_review_heading(self) -> &'static str {
+        match self {
+            Lang::Japanese => "このルールの内容",
+            Lang::English  => "Summary of this rule",
+            Lang::Chinese  => "此规则的内容",
+        }
+    }
+    pub fn tag_rules_trial_heading(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ためし判定",
+            Lang::English  => "Test",
+            Lang::Chinese  => "试判定",
+        }
+    }
+    pub fn tag_rules_trial_hint(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ファイル名などを入れると、このルールが当てはまるかを確かめられます（保存はされません）。",
+            Lang::English  => "Enter a file name and so on to check whether this rule matches (nothing is saved).",
+            Lang::Chinese  => "输入文件名等，可检查此规则是否匹配（不会保存）。",
+        }
+    }
+    pub fn tag_rules_trial_file_hint(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ファイル名（例: [Circle (Author)] Book [AI Generated].zip）",
+            Lang::English  => "File name (e.g. [Circle (Author)] Book [AI Generated].zip)",
+            Lang::Chinese  => "文件名（例：[Circle (Author)] Book [AI Generated].zip）",
+        }
+    }
+    pub fn tag_rules_trial_titles_hint(self) -> &'static str {
+        match self {
+            Lang::Japanese => "info.txt の見出し行（任意・複数行可）",
+            Lang::English  => "info.txt title lines (optional, multiple lines allowed)",
+            Lang::Chinese  => "info.txt 标题行（可选，可多行）",
+        }
+    }
+    pub fn tag_rules_trial_category_hint(self) -> &'static str {
+        match self {
+            Lang::Japanese => "info.txt の Category（任意）",
+            Lang::English  => "info.txt Category (optional)",
+            Lang::Chinese  => "info.txt 的 Category（可选）",
+        }
+    }
+    pub fn tag_rules_trial_need_file(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ファイル名を入れると、判定します",
+            Lang::English  => "Enter a file name to run the test",
+            Lang::Chinese  => "输入文件名后进行判定",
+        }
+    }
+    pub fn tag_rules_trial_hit(self) -> &'static str {
+        match self {
+            Lang::Japanese => "当てはまる",
+            Lang::English  => "Matches",
+            Lang::Chinese  => "匹配",
+        }
+    }
+    pub fn tag_rules_trial_miss(self) -> &'static str {
+        match self {
+            Lang::Japanese => "当てはまらない",
+            Lang::English  => "Does not match",
+            Lang::Chinese  => "不匹配",
+        }
+    }
+    pub fn tag_rules_trial_no_effect(self) -> &'static str {
+        match self {
+            Lang::Japanese => "効果なし（どの種類も「そのまま」）",
+            Lang::English  => "No effect (every kind is \"As is\")",
+            Lang::Chinese  => "无效果（所有类别均为“不变”）",
+        }
+    }
+    pub fn tag_rules_trial_effect_disable(self, list: &str) -> String {
+        match self {
+            Lang::Japanese => format!("無効にする種類: {list}"),
+            Lang::English  => format!("Kinds turned off: {list}"),
+            Lang::Chinese  => format!("停用的类别：{list}"),
+        }
+    }
+    pub fn tag_rules_trial_effect_enable(self, list: &str) -> String {
+        match self {
+            Lang::Japanese => format!("有効にする種類: {list}"),
+            Lang::English  => format!("Kinds turned on: {list}"),
+            Lang::Chinese  => format!("启用的类别：{list}"),
+        }
+    }
+    pub fn tag_rules_trial_disabled_note(self) -> &'static str {
+        match self {
+            Lang::Japanese => "このルールは無効のため、実際の取得では成立しません（効果は、有効にしたと仮定して表示しています）",
+            Lang::English  => "This rule is disabled, so it does not take effect in a real collection (effects are shown as if enabled)",
+            Lang::Chinese  => "此规则已停用，实际获取时不会生效（效果按启用状态显示）",
+        }
+    }
     pub fn tag_rules_window_title(self) -> &'static str { self.learn_pick("タグ抽出ルール定義", "", "") }
     pub fn tag_rules_empty(self) -> &'static str { self.learn_pick("ルールはありません", "", "") }
     pub fn tag_rules_disabled(self) -> &'static str { self.learn_pick("（無効）", "", "") }
