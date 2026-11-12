@@ -342,7 +342,7 @@ impl NekoviewApp {
         let (done, total) = job.progress();
         let fraction = if total == 0 { 0.0 } else { done as f32 / total as f32 };
         let mut cancel_clicked = false;
-        egui::Modal::new(egui::Id::new("tag_scan_progress")).show(ctx, |ui| {
+        self.explorer_modal(ctx, "tag_scan_progress").show(ctx, |ui| {
             ui.set_width(320.0);
             ui.vertical_centered(|ui| {
                 ui.add(

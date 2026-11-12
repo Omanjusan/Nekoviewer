@@ -42,12 +42,15 @@ impl NekoviewApp {
         let t = i18n::t();
         let mut open = true;
         let mut reload = false;
+        let center = self.explorer_center(ctx);
         egui::Window::new(t.tag_rules_window_title())
             .id(egui::Id::new("tag_rules_window"))
             .open(&mut open)
             .collapsible(false)
             .resizable(true)
             .default_size([560.0, 360.0])
+            .pivot(egui::Align2::CENTER_CENTER)
+            .default_pos(center)
             .show(ctx, |ui| {
                 ui.colored_label(egui::Color32::from_rgb(230, 160, 40), t.tag_rules_provisional_notice());
                 ui.separator();

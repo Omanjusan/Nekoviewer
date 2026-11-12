@@ -4778,7 +4778,7 @@ impl Lang {
     pub fn tag_menu_learn_use(self) -> &'static str { self.learn_pick("学習内容を使う", "", "") }
     pub fn tag_menu_scan_item(self) -> &'static str { self.learn_pick("現フォルダファイルのタグ自動抽出＆付与", "", "") }
     pub fn tag_menu_edit_item(self) -> &'static str { self.learn_pick("タグ・カテゴリ編集", "", "") }
-    pub fn tag_rules_open_button(self) -> &'static str { self.learn_pick("大ルール…", "", "") }
+    pub fn tag_rules_open_button(self) -> &'static str { self.learn_pick("タグ抽出ルール定義開始", "", "") }
     pub fn tag_rules_open_hover(self) -> &'static str { self.learn_pick("タグ取得の前処理（AI generated・cosplay などの大ルール）の一覧を開く", "", "") }
     pub fn tag_rules_count(self, n: usize) -> String {
         let ja = if n == 0 { "ルール無し".to_string() } else { format!("ルール {n}件") };

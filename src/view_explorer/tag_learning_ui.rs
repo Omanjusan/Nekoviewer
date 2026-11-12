@@ -126,13 +126,15 @@ impl NekoviewApp {
             LearnStage::Viewer => t.tag_learn_viewer_title(),
         };
         let resizable = matches!(st.stage, LearnStage::Labeling(_) | LearnStage::Viewer);
+        let center = self.explorer_center(ctx);
         egui::Window::new(title)
             .id(egui::Id::new("tag_learn_window"))
             .open(&mut open)
             .collapsible(false)
             .resizable(resizable)
             .default_size([640.0, 520.0])
-            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .pivot(egui::Align2::CENTER_CENTER)
+            .fixed_pos(center)
             .show(ctx, |ui| match &mut st.stage {
                 LearnStage::Intro => {
                     ui.label(t.tag_learn_intro_body());

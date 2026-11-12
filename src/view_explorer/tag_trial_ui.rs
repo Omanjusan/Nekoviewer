@@ -9,7 +9,7 @@
 use std::sync::mpsc;
 
 use super::*;
-use crate::confirm_dialog::{draw_confirm_dialog, ConfirmDialogSpec, ConfirmOutcome};
+use crate::confirm_dialog::{draw_confirm_dialog_at, ConfirmDialogSpec, ConfirmOutcome};
 use crate::i18n;
 use crate::tag_trial::{remove_added_tags, DiscardReport, TrialRecord};
 
@@ -67,9 +67,10 @@ impl NekoviewApp {
             TrialDialog::Confirm => (t.tag_trial_confirm_title(), t.tag_trial_confirm_button()),
             TrialDialog::Discard { .. } => (t.tag_trial_discard_title(), t.tag_trial_discard_button()),
         };
-        let outcome = draw_confirm_dialog(
+        let outcome = draw_confirm_dialog_at(
             ctx,
             ConfirmDialogSpec { id_salt: "tag_trial_dialog", title, ok_label, cancel_label: t.favorite_dialog_cancel(), foreground: true },
+            Some(self.explorer_center(ctx)),
             |ui| {
                 ui.set_max_width(420.0);
                 match dialog {
@@ -158,7 +159,7 @@ impl NekoviewApp {
         if self.tag_discard_job.is_none() {
             return;
         }
-        egui::Modal::new(egui::Id::new("tag_discard_progress")).show(ctx, |ui| {
+        self.explorer_modal(ctx, "tag_discard_progress").show(ctx, |ui| {
             ui.set_width(320.0);
             ui.vertical_centered(|ui| {
                 ui.add(egui::Spinner::new().size(24.0));

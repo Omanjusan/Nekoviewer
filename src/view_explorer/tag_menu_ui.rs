@@ -8,6 +8,24 @@ use crate::i18n;
 use super::NekoviewApp;
 
 impl NekoviewApp {
+    /// タグ系の窓・モーダルを出す位置: エクスプローラー部（中央パネル）の中心。まだ測れていなければ画面中央。
+    pub(super) fn explorer_center(&self, ctx: &egui::Context) -> egui::Pos2 {
+        let r = self.tag_manager_area_rect;
+        if r.is_positive() { r.center() } else { ctx.content_rect().center() }
+    }
+
+    /// `egui::Modal` の、エクスプローラー部中央に出す版。背後の暗幕は従来どおり画面全体。
+    pub(super) fn explorer_modal(&self, ctx: &egui::Context, id: &'static str) -> egui::Modal {
+        let area = egui::Area::new(egui::Id::new(id))
+            .kind(egui::UiKind::Modal)
+            .sense(egui::Sense::hover())
+            .pivot(egui::Align2::CENTER_CENTER)
+            .fixed_pos(self.explorer_center(ctx))
+            .order(egui::Order::Foreground)
+            .interactable(true);
+        egui::Modal::new(egui::Id::new(id)).area(area)
+    }
+
     /// タグパネル最上段の入口ボタン（左右中央）。押すと子のポップアップメニューが開く。
     pub(super) fn draw_tag_entry_menu(&mut self, ui: &mut egui::Ui) {
         ui.vertical_centered(|ui| {

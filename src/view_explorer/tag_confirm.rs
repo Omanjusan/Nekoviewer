@@ -257,6 +257,7 @@ impl NekoviewApp {
         let mut opts = self.config.tag_match;
         let before = opts;
 
+        let center = self.explorer_center(ctx);
         egui::Window::new(match stage {
             Window::One => t.tag_confirm_title_one(),
             Window::Two => t.tag_confirm_title_two(),
@@ -266,6 +267,8 @@ impl NekoviewApp {
         .collapsible(false)
         .resizable(true)
         .default_size([780.0, 560.0])
+        .pivot(egui::Align2::CENTER_CENTER)
+        .default_pos(center)
         .show(ctx, |ui| {
             // 照合の切替項目。
             ui.horizontal_wrapped(|ui| {
@@ -512,7 +515,7 @@ impl NekoviewApp {
             let mut proceed = false;
             if let Some(review) = &st.rename_review {
                 let mut back = false;
-                let modal = egui::Modal::new(egui::Id::new("tag_rename_review")).show(ctx, |ui| {
+                let modal = self.explorer_modal(ctx, "tag_rename_review").show(ctx, |ui| {
                     ui.set_width(460.0);
                     ui.heading(t.tag_rename_review_title());
                     ui.label(t.tag_rename_review_intro(review.renames.len()));
@@ -559,7 +562,7 @@ impl NekoviewApp {
             .map(|m| super::db_backup_ui::format_size(m.len()))
             .unwrap_or_else(|_| "-".to_owned());
         let (mut expand, mut keep) = (false, false);
-        egui::Modal::new(egui::Id::new("tag_limit_dialog")).show(ctx, |ui| {
+        self.explorer_modal(ctx, "tag_limit_dialog").show(ctx, |ui| {
             ui.set_width(520.0);
             ui.heading(t.tag_limit_title());
             ui.add_space(4.0);
@@ -795,7 +798,7 @@ impl NekoviewApp {
         if self.tag_apply_job.is_none() {
             return;
         }
-        egui::Modal::new(egui::Id::new("tag_apply_progress")).show(ctx, |ui| {
+        self.explorer_modal(ctx, "tag_apply_progress").show(ctx, |ui| {
             ui.set_width(320.0);
             ui.vertical_centered(|ui| {
                 ui.add(egui::Spinner::new().size(24.0));
