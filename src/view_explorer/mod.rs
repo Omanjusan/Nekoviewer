@@ -1178,6 +1178,8 @@ pub struct NekoviewApp {
     pub(crate) tag_rules: crate::tag_rules::RuleSet,
     /// タグ学習窓（開いている間 Some）。
     tag_learn: Option<tag_learning_ui::TagLearn>,
+    /// 大ルールの一覧窓（仮。編集UIは後で決める）を開いているか。
+    tag_rules_open: bool,
     /// 一括タグ付けの適用後の「試用中」か。試用中は仮マスター（`nekoviewer_tags.trial.json`）を読み書きし、
     /// 本物のマスターは確定まで変えない。ファイルが残っていれば、次回起動も試用中から始まる。
     pub(crate) tag_trial_active: bool,
@@ -1434,6 +1436,7 @@ mod tag_trial_ui;
 mod tag_master_gen_ui;
 mod tag_danger_ui;
 mod tag_learning_ui;
+mod tag_rules_ui;
 mod scan;
 mod folder_sort;
 mod workers;
@@ -1794,6 +1797,7 @@ impl NekoviewApp {
             tag_model,
             tag_rules,
             tag_learn: None,
+            tag_rules_open: false,
             tag_trial_active,
             tag_manager_selected_category: Some(0),
             tag_manager_delete_confirm: None,

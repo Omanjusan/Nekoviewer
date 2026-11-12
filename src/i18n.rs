@@ -4772,6 +4772,35 @@ impl Lang {
     pub fn tag_confirm_role_parody(self) -> &'static str { self.learn_pick("パロディ元", "", "") }
     pub fn tag_confirm_role_attribute(self) -> &'static str { self.learn_pick("属性", "", "") }
     pub fn tag_confirm_role_year_month(self) -> &'static str { self.learn_pick("年月", "", "") }
+    /// 大ルールの入口（仮。日本語のみ。英・中は空で日本語にフォールバック）
+    pub fn tag_rules_open_button(self) -> &'static str { self.learn_pick("大ルール…", "", "") }
+    pub fn tag_rules_open_hover(self) -> &'static str { self.learn_pick("タグ取得の前処理（AI generated・cosplay などの大ルール）の一覧を開く", "", "") }
+    pub fn tag_rules_count(self, n: usize) -> String {
+        let ja = if n == 0 { "ルール無し".to_string() } else { format!("ルール {n}件") };
+        let local: Option<String> = match self { Lang::Japanese => None, Lang::English => None, Lang::Chinese => None };
+        local.unwrap_or(ja)
+    }
+    pub fn tag_rules_window_title(self) -> &'static str { self.learn_pick("タグ大ルール", "", "") }
+    pub fn tag_rules_provisional_notice(self) -> &'static str {
+        self.learn_pick("仮の画面です（編集UIは準備中）。設定フォルダの nekoviewer_tag_rules.json に置いたルールを、「再読込」で反映します。", "", "")
+    }
+    pub fn tag_rules_empty(self) -> &'static str { self.learn_pick("ルールはありません", "", "") }
+    pub fn tag_rules_disabled(self) -> &'static str { self.learn_pick("（無効）", "", "") }
+    pub fn tag_rules_summary(self, conditions: usize, match_all: bool, disable: &str, enable: &str) -> String {
+        let mode = if match_all { "すべて" } else { "いずれか" };
+        let dash = |s: &str| if s.is_empty() { "なし".to_string() } else { s.to_string() };
+        let ja = format!("条件 {conditions}件（{mode}） / 無効: {} / 有効: {}", dash(disable), dash(enable));
+        let local: Option<String> = match self { Lang::Japanese => None, Lang::English => None, Lang::Chinese => None };
+        local.unwrap_or(ja)
+    }
+    pub fn tag_rules_reload_button(self) -> &'static str { self.learn_pick("再読込", "", "") }
+    pub fn tag_rules_reload_hover(self) -> &'static str { self.learn_pick("設定フォルダのルールファイルを読み直す", "", "") }
+    pub fn tag_rules_reloaded(self, n: usize) -> String {
+        let ja = format!("大ルールを読み込みました（{n}件）");
+        let local: Option<String> = match self { Lang::Japanese => None, Lang::English => None, Lang::Chinese => None };
+        local.unwrap_or(ja)
+    }
+    pub fn tag_rules_reload_failed(self) -> &'static str { self.learn_pick("ルールファイルを読み込めませんでした（形式が壊れているか、新しい版です）", "", "") }
     pub fn tag_learn_view_button(self) -> &'static str { self.learn_pick("学習データを見る…", "", "") }
     pub fn tag_learn_clear_button(self) -> &'static str { self.learn_pick("全消去してやり直す", "", "") }
     pub fn tag_learn_clear_confirm(self) -> &'static str { self.learn_pick("学習データをすべて消去します。元に戻せません。", "", "") }

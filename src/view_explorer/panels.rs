@@ -218,6 +218,7 @@ impl NekoviewApp {
             && self.tag_scan_job.is_none()
             && self.tag_confirm.is_none()
             && self.tag_learn.is_none()
+            && !self.tag_rules_open
             && self.tag_apply_job.is_none()
             && self.tag_discard_job.is_none()
             && self.tag_trial_dialog.is_none()
@@ -287,6 +288,7 @@ impl NekoviewApp {
         self.draw_tag_scan_overlay(&ctx);
         self.draw_tag_confirm(&ctx);
         self.draw_tag_learn(&ctx);
+        self.draw_tag_rules_window(&ctx);
         self.draw_tag_apply_overlay(&ctx);
         self.draw_tag_trial_dialog(&ctx);
         self.draw_tag_discard_overlay(&ctx);
@@ -1022,6 +1024,7 @@ impl NekoviewApp {
             }
         });
         self.draw_tag_learning_status(ui);
+        self.draw_tag_rules_entry(ui);
         ui.add_space(4.0);
         // フェーズTM0: 仮置きのタグマネージャー呼び出しボタン。既存のメインタグ／
         // 属性タグUIとは切り離した独立機能なので、位置・見た目は後で調整前提。
