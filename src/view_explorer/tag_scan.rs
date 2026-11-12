@@ -281,10 +281,8 @@ impl NekoviewApp {
         let t = i18n::t();
         if result.cancelled {
             self.set_toast(t.tag_scan_cancelled(result.items.len(), result.total));
-        } else if let Some(n) = result.candidates.as_ref().and_then(|c| c.limits.error_count) {
-            // どちらかの窓で新規要素が上限を超えたら、何もせずに終わる（片方だけの確認には進ませない）。
-            self.set_toast(t.tag_scan_too_many(n, crate::tag_candidates::ERROR_NEW_ELEMENTS));
         } else {
+            // 上限（カテゴリごとの新規要素数）を超えていても、結果は捨てない。確認ウィンドウの上で、拡張するか維持（切り捨て）かを選ぶ。
             let (found, absent, other) = result.info_counts();
             let mut text = t.tag_scan_done(result.items.len(), found, absent, other);
             if let Some(set) = &result.candidates {
@@ -293,7 +291,6 @@ impl NekoviewApp {
                 text.push_str(&t.tag_candidates_summary(
                     [c(Role::Format), c(Role::Main), c(Role::Language), c(Role::Event), c(Role::Author), c(Role::Group)],
                     (set.limits.window1_new, set.limits.window2_new),
-                    (set.limits.window1_warn, set.limits.window2_warn),
                 ));
             }
             self.set_toast(text);

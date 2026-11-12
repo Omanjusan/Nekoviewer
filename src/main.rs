@@ -159,6 +159,9 @@ fn main() {
         if let Some(v) = state.app_tag_master_generations {
             cfg.tag_master_generations = v.clamp(config::TAG_MASTER_GENERATIONS_MIN, config::TAG_MASTER_GENERATIONS_MAX);
         }
+        if let Some(v) = state.app_tag_new_element_limit {
+            cfg.tag_new_element_limit = v.clamp(config::TAG_NEW_ELEMENT_LIMIT_MIN, config::TAG_NEW_ELEMENT_LIMIT_MAX);
+        }
 
         // フェーズ4b: decode_threads/default_slotも同様にstate側を優先する。
         if let Some(v) = state.app_decode_threads { cfg.decode_threads = v; }

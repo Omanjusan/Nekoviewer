@@ -16,8 +16,8 @@ use std::sync::{mpsc, Arc};
 
 use crate::i18n::{self, Lang};
 use crate::tag_candidates::{
-    build_candidates_full, Bundle, Candidate, CandidateInput, CandidateSet, CatRef, Choice, MergeError, Role, Window,
-    ERROR_NEW_ELEMENTS, WARN_NEW_ELEMENTS,
+    build_candidates_full, over_limit, Bundle, Candidate, CandidateInput, CandidateSet, CatRef, Choice, MergeError, Role, Window,
+    LIMIT_EXPAND_STEP,
 };
 use crate::tag_master::split_aliases;
 use crate::tag_model::Model;
@@ -115,6 +115,12 @@ pub(super) struct TagConfirm {
     merge_msg: Option<String>,
     /// 適用前の確認（既存要素の名前が書き換わるとき）。Some の間は確認の窓を出す。
     rename_review: Option<RenameReview>,
+    /// 1カテゴリあたりの新規要素数の上限（設定の既定値から始まり、「拡張する」で増える）。
+    limit: usize,
+    /// 「上限を維持する」を選んだ。作り直したあとも、上限を超えた分を切り捨てる。
+    limit_keep: bool,
+    /// 切り捨てて候補から除いた数（種類ごと）。窓に注意書きを出す。
+    truncated: Vec<(Role, usize)>,
 }
 
 /// 適用前に見せる、書き換わる既存要素の一覧。
@@ -144,6 +150,7 @@ impl TagConfirm {
         master: Vec<TagManagerCategoryUi>,
         model: Option<Arc<Model>>,
         rules: Arc<Vec<TagRule>>,
+        limit: usize,
     ) -> Option<Self> {
         let has = |w: Window| set.candidates.iter().any(|c| c.role.window() == w);
         let stage = if has(Window::One) {
@@ -153,7 +160,7 @@ impl TagConfirm {
         } else {
             return None;
         };
-        Some(Self { set, inputs: Arc::new(inputs), paths, master: Arc::new(master), model, rules, stage, only_unconfirmed: false, rebuild: None, threshold_draft: None, checked: HashSet::new(), filter: String::new(), next_bundle_id: 1, merge_msg: None, rename_review: None })
+        Some(Self { set, inputs: Arc::new(inputs), paths, master: Arc::new(master), model, rules, stage, only_unconfirmed: false, rebuild: None, threshold_draft: None, checked: HashSet::new(), filter: String::new(), next_bundle_id: 1, merge_msg: None, rename_review: None, limit, limit_keep: false, truncated: Vec::new() })
     }
 
     /// 切替項目が変わったので、別スレッドで候補を作り直す。進行中の作り直しは捨てる。
@@ -178,6 +185,10 @@ impl TagConfirm {
             Ok(mut fresh) => {
                 self.set.carry_over_choices(&mut fresh);
                 self.set = fresh;
+                // 「上限を維持する」を選んだあとは、作り直した候補にも同じ切り捨てをかける。
+                if self.limit_keep {
+                    self.truncated = self.set.truncate_to_limit(self.limit);
+                }
                 self.rebuild = None;
                 true
             }
@@ -216,7 +227,15 @@ impl NekoviewApp {
         paths: Vec<PathBuf>,
         master: Vec<TagManagerCategoryUi>,
     ) {
-        match TagConfirm::new(set, inputs, paths, master, self.active_tag_model(), Arc::new(self.tag_rules.rules.clone())) {
+        match TagConfirm::new(
+            set,
+            inputs,
+            paths,
+            master,
+            self.active_tag_model(),
+            Arc::new(self.tag_rules.rules.clone()),
+            self.config.tag_new_element_limit as usize,
+        ) {
             Some(c) => self.tag_confirm = Some(c),
             None => self.set_toast(i18n::t().tag_confirm_no_candidates()),
         }
@@ -275,22 +294,20 @@ impl NekoviewApp {
             });
             ui.separator();
 
-            // 警告（新規要素数）。
-            // 採否を変えると新規要素数も変わるので、毎フレーム数え直す（候補の数だけの軽い集計）。
+            // 新規要素数。採否を変えると変わるので、毎フレーム数え直す（候補の数だけの軽い集計）。
             let limits = crate::tag_candidates::recount_limits(&st.set.candidates);
-            let (new_count, warn) = match stage {
-                Window::One => (limits.window1_new, limits.window1_warn),
-                Window::Two => (limits.window2_new, limits.window2_warn),
+            let new_count = match stage {
+                Window::One => limits.window1_new,
+                Window::Two => limits.window2_new,
             };
             ui.horizontal_wrapped(|ui| {
                 ui.label(t.tag_confirm_summary(adopted_count(&st.set, stage), new_count));
-                if warn {
-                    ui.colored_label(egui::Color32::from_rgb(230, 160, 40), t.tag_confirm_warn_many(WARN_NEW_ELEMENTS));
-                }
-                if new_count > ERROR_NEW_ELEMENTS {
-                    ui.colored_label(egui::Color32::from_rgb(220, 60, 60), t.tag_confirm_error_many(ERROR_NEW_ELEMENTS));
-                }
             });
+            // 上限のため切り捨てた分があれば知らせる。
+            if !st.truncated.is_empty() {
+                let rows: Vec<String> = st.truncated.iter().map(|&(r, n)| format!("{} {n}", role_label(r))).collect();
+                ui.colored_label(egui::Color32::from_rgb(230, 160, 40), t.tag_confirm_truncated(&rows.join(" / ")));
+            }
 
             // 一括操作。
             let window_idx: Vec<usize> = st.set.indices_in_window(stage);
@@ -391,10 +408,11 @@ impl NekoviewApp {
             // 操作ボタン。適用は、最後の窓（作者・グループの窓。無ければ1枚目）で押せる。
             ui.separator();
             let any_adopted = st.set.candidates.iter().any(|c| c.is_adopted());
-            let blocked = limits.error_count.is_some();
+            // 上限を超えたまま（拡張も維持も選んでいない）の間は適用できない。
+            let blocked = !st.limit_keep && !over_limit(&st.set.candidates, st.limit).is_empty();
             let apply_enabled = any_adopted && !blocked && self.spread_db.is_some() && self.tag_apply_job.is_none();
             let apply_hint = if blocked {
-                t.tag_confirm_error_many(ERROR_NEW_ELEMENTS)
+                t.tag_confirm_limit_pending().to_string()
             } else if !any_adopted {
                 t.tag_confirm_apply_none().to_string()
             } else {
@@ -483,6 +501,13 @@ impl NekoviewApp {
                 self.tag_confirm = Some(st);
             }
         } else if open && !cancel {
+            // 上限を超えているとき: 拡張するか、維持して切り捨てるかを選ぶ（モーダル）。作り直し中は待つ。
+            if !st.limit_keep && st.rebuild.is_none() {
+                let over = over_limit(&st.set.candidates, st.limit);
+                if !over.is_empty() {
+                    self.draw_tag_limit_dialog(ctx, &mut st, &over);
+                }
+            }
             // 書き換えの確認（モーダル）。
             let mut proceed = false;
             if let Some(review) = &st.rename_review {
@@ -520,6 +545,40 @@ impl NekoviewApp {
             } else {
                 self.tag_confirm = Some(st);
             }
+        }
+    }
+}
+
+impl NekoviewApp {
+    /// 上限超過のダイアログ。「拡張する」は上限を増やす（まだ超えていれば次のフレームでまた出る）。
+    /// 「上限を維持する」は、該当ファイル数の多い要素から上限まで残して、あとを切り捨てる。
+    fn draw_tag_limit_dialog(&mut self, ctx: &egui::Context, st: &mut TagConfirm, over: &[(Role, usize)]) {
+        let t = i18n::t();
+        let rows: Vec<String> = over.iter().map(|&(r, n)| t.tag_limit_row(role_label(r), n, n - st.limit)).collect();
+        let db_size = std::fs::metadata(crate::dev_db_backup::db_path(&self.config.config_root))
+            .map(|m| super::db_backup_ui::format_size(m.len()))
+            .unwrap_or_else(|_| "-".to_owned());
+        let (mut expand, mut keep) = (false, false);
+        egui::Modal::new(egui::Id::new("tag_limit_dialog")).show(ctx, |ui| {
+            ui.set_width(520.0);
+            ui.heading(t.tag_limit_title());
+            ui.add_space(4.0);
+            ui.label(t.tag_limit_body(st.limit, &rows.join("\n"), &db_size, LIMIT_EXPAND_STEP));
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                if ui.button(t.tag_limit_expand(LIMIT_EXPAND_STEP)).clicked() {
+                    expand = true;
+                }
+                if ui.button(t.tag_limit_keep()).clicked() {
+                    keep = true;
+                }
+            });
+        });
+        if expand {
+            st.limit += LIMIT_EXPAND_STEP;
+        } else if keep {
+            st.limit_keep = true;
+            st.truncated = st.set.truncate_to_limit(st.limit);
         }
     }
 }
@@ -807,10 +866,10 @@ mod tests {
     #[test]
     fn confirm_starts_at_the_first_window_that_has_candidates() {
         let only_authors = build_candidates(&[crate::tag_candidates::input_from_info_text("[A (B)] t.zip", None, None)], &[], &MatchOptions::default(), Lang::English);
-        let c = TagConfirm::new(only_authors, vec![], vec![], vec![], None, Arc::new(Vec::new())).unwrap();
+        let c = TagConfirm::new(only_authors, vec![], vec![], vec![], None, Arc::new(Vec::new()), 5000).unwrap();
         assert_eq!(c.stage, Window::Two, "窓1が空なら2枚目から");
         let empty = build_candidates(&[], &[], &MatchOptions::default(), Lang::English);
-        assert!(TagConfirm::new(empty, vec![], vec![], vec![], None, Arc::new(Vec::new())).is_none());
+        assert!(TagConfirm::new(empty, vec![], vec![], vec![], None, Arc::new(Vec::new()), 5000).is_none());
     }
 
     #[test]

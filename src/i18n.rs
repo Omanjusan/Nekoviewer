@@ -4701,21 +4701,13 @@ impl Lang {
     }
 
     /// 候補生成の結果（件数は 形式・メイン・言語・イベント・作者・グループ の順）と、窓ごとの新規要素数・警告
-    pub fn tag_candidates_summary(self, counts: [usize; 6], new_elements: (usize, usize), warn: (bool, bool)) -> String {
+    pub fn tag_candidates_summary(self, counts: [usize; 6], new_elements: (usize, usize)) -> String {
         let [f, m, l, e, a, g] = counts;
         let (w1, w2) = new_elements;
-        let warn_text = match (warn.0, warn.1) {
-            (false, false) => String::new(),
-            _ => match self {
-                Lang::Japanese => " ⚠新規要素が多めです".to_string(),
-                Lang::English  => " ⚠ many new elements".to_string(),
-                Lang::Chinese  => " ⚠ 新元素较多".to_string(),
-            },
-        };
         match self {
-            Lang::Japanese => format!("候補: 形式{f}・カテゴリ{m}・言語{l}・イベント{e}・作者{a}・グループ{g} / 新規要素 窓1:{w1}個 窓2:{w2}個{warn_text}"),
-            Lang::English  => format!("Candidates: format {f}, category {m}, language {l}, event {e}, author {a}, group {g} / new elements: window1 {w1}, window2 {w2}{warn_text}"),
-            Lang::Chinese  => format!("候选：格式{f}、类别{m}、语言{l}、活动{e}、作者{a}、团体{g} / 新元素：窗口1 {w1}、窗口2 {w2}{warn_text}"),
+            Lang::Japanese => format!("候補: 形式{f}・カテゴリ{m}・言語{l}・イベント{e}・作者{a}・グループ{g} / 新規要素 窓1:{w1}個 窓2:{w2}個"),
+            Lang::English  => format!("Candidates: format {f}, category {m}, language {l}, event {e}, author {a}, group {g} / new elements: window1 {w1}, window2 {w2}"),
+            Lang::Chinese  => format!("候选：格式{f}、类别{m}、语言{l}、活动{e}、作者{a}、团体{g} / 新元素：窗口1 {w1}、窗口2 {w2}"),
         }
     }
 
@@ -4951,19 +4943,94 @@ impl Lang {
         }
     }
 
-    pub fn tag_confirm_warn_many(self, limit: usize) -> String {
+    /// 「DB」タブ: 一括タグ取得の、カテゴリごとの新規要素数の上限
+    pub fn settings_tag_new_limit_label(self) -> &'static str {
         match self {
-            Lang::Japanese => format!("⚠ 新規要素が{limit}個を超えています。続行はできますが、タグが大量に増えます"),
-            Lang::English  => format!("⚠ Over {limit} new elements. You can continue, but many tags will be added"),
-            Lang::Chinese  => format!("⚠ 新元素超过 {limit} 个。可以继续，但会新增大量标签"),
+            Lang::Japanese => "一括タグ取得: 1カテゴリあたりの新規要素の上限",
+            Lang::English  => "Bulk tag collection: new-element limit per category",
+            Lang::Chinese  => "批量获取标签：每个分类的新元素上限",
         }
     }
 
-    pub fn tag_confirm_error_many(self, limit: usize) -> String {
+    pub fn settings_tag_new_limit_value(self, n: u32) -> String {
         match self {
-            Lang::Japanese => format!("新規要素が上限（{limit}個）を超えています"),
-            Lang::English  => format!("New elements exceed the limit ({limit})"),
-            Lang::Chinese  => format!("新元素超过上限（{limit} 个）"),
+            Lang::Japanese => format!("{n} 個"),
+            Lang::English  => format!("{n}"),
+            Lang::Chinese  => format!("{n} 个"),
+        }
+    }
+
+    pub fn settings_tag_new_limit_explain(self) -> &'static str {
+        match self {
+            Lang::Japanese => "作者・グループなど、カテゴリごとに数えます。上限を超えると、確認ウィンドウで「5000個拡張する」か「上限を維持して切り捨てる」かを選べます。",
+            Lang::English  => "Counted per category (author, group, etc.). When exceeded, the confirmation window lets you either expand the limit by 5000 or keep it and cut the excess.",
+            Lang::Chinese  => "按分类（作者、团体等）分别计数。超过上限时，可在确认窗口中选择“扩展5000个”或“保持上限并舍弃超出部分”。",
+        }
+    }
+
+    /// 上限超過ダイアログ: タイトル
+    pub fn tag_limit_title(self) -> &'static str {
+        match self {
+            Lang::Japanese => "新規要素が上限を超えています",
+            Lang::English  => "New elements exceed the limit",
+            Lang::Chinese  => "新元素超过上限",
+        }
+    }
+
+    /// 上限超過ダイアログ: 本文。`rows` は「カテゴリ名: 新規N個」を並べたもの、`db_size` は現在のDBサイズの表記。
+    pub fn tag_limit_body(self, limit: usize, rows: &str, db_size: &str, step: usize) -> String {
+        match self {
+            Lang::Japanese => format!(
+                "カテゴリごとの新規要素の上限（{limit}個）を超えています。\n\n{rows}\n\n現在のデータベースのサイズ: {db_size}\n\n【{step}個拡張する】上限を{step}個増やします。登録する要素が増えるぶん、データベースも大きくなります。\n【上限を維持する】該当ファイル数の多い要素から{limit}個まで登録します。残りは新規登録されず、その要素が付くはずだったファイルにはタグが付きません。"
+            ),
+            Lang::English => format!(
+                "New elements exceed the per-category limit ({limit}).\n\n{rows}\n\nCurrent database size: {db_size}\n\n[Expand by {step}] raises the limit by {step}. More elements are registered and the database grows.\n[Keep the limit] registers up to {limit} elements, starting with those used by the most files. The rest are not registered, and files that would have received them get no tag."
+            ),
+            Lang::Chinese => format!(
+                "新元素超过了每个分类的上限（{limit} 个）。\n\n{rows}\n\n当前数据库大小：{db_size}\n\n【扩展{step}个】将上限提高{step}个。注册的元素增多，数据库也会变大。\n【保持上限】从关联文件数最多的元素开始，最多注册{limit}个。其余不会新建，本应附带这些元素的文件将不会获得标签。"
+            ),
+        }
+    }
+
+    /// 上限超過ダイアログ: 1カテゴリぶんの行
+    pub fn tag_limit_row(self, category: &str, new_count: usize, over: usize) -> String {
+        match self {
+            Lang::Japanese => format!("・{category}: 新規 {new_count}個（{over}個超過）"),
+            Lang::English  => format!("- {category}: {new_count} new ({over} over)"),
+            Lang::Chinese  => format!("- {category}：新增 {new_count} 个（超出 {over} 个）"),
+        }
+    }
+
+    pub fn tag_limit_expand(self, step: usize) -> String {
+        match self {
+            Lang::Japanese => format!("{step}個拡張する"),
+            Lang::English  => format!("Expand by {step}"),
+            Lang::Chinese  => format!("扩展{step}个"),
+        }
+    }
+
+    pub fn tag_limit_keep(self) -> &'static str {
+        match self {
+            Lang::Japanese => "上限を維持する",
+            Lang::English  => "Keep the limit",
+            Lang::Chinese  => "保持上限",
+        }
+    }
+
+    /// 確認ウィンドウ: 上限のため除いた件数の表示。`rows` は「作者 123個」などを並べたもの。
+    pub fn tag_confirm_truncated(self, rows: &str) -> String {
+        match self {
+            Lang::Japanese => format!("⚠ 上限のため、新規登録しない要素があります（{rows}）。その要素が付くはずだったファイルにはタグが付きません"),
+            Lang::English  => format!("⚠ Some elements are not registered because of the limit ({rows}). Files that would have received them get no tag"),
+            Lang::Chinese  => format!("⚠ 因上限，部分元素不会新建（{rows}）。本应附带这些元素的文件将不会获得标签"),
+        }
+    }
+
+    pub fn tag_confirm_limit_pending(self) -> &'static str {
+        match self {
+            Lang::Japanese => "新規要素が上限を超えています。拡張するか、上限を維持するかを選んでください",
+            Lang::English  => "New elements exceed the limit. Choose to expand it or keep it",
+            Lang::Chinese  => "新元素超过上限。请选择扩展或保持上限",
         }
     }
 
@@ -5231,14 +5298,6 @@ impl Lang {
     }
 
     /// 新規要素が上限を超えたときのエラー（何もせず終了する）
-    pub fn tag_scan_too_many(self, count: usize, limit: usize) -> String {
-        match self {
-            Lang::Japanese => format!("フォルダに格納されているタグ情報量が多すぎます（対象要素数{count}個/上限値{limit}個）。ファイルを減らしたフォルダを対象にして再試行してください"),
-            Lang::English  => format!("The folder holds too much tag information (target elements: {count} / limit: {limit}). Please retry with a folder that has fewer files"),
-            Lang::Chinese  => format!("文件夹中的标签信息过多（目标元素数 {count} 个/上限 {limit} 个）。请减少文件后重试"),
-        }
-    }
-
     pub fn tag_scan_cancelled(self, done: usize, total: usize) -> String {
         match self {
             Lang::Japanese => format!("タグ情報の取得をキャンセルしました（{done} / {total}件まで）"),

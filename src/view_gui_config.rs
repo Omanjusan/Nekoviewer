@@ -144,6 +144,7 @@ pub(crate) struct SettingsDraft {
     unconfirmed_retention_days: u32,
     backup_generations: u32,
     tag_master_generations: u32,
+    tag_new_element_limit: u32,
     idle_thumb_generation: bool,
     idle_thumb_wait_secs: u32,
     idle_thumb_while_viewer: bool,
@@ -303,6 +304,7 @@ impl SettingsDraft {
             unconfirmed_retention_days: config.unconfirmed_retention_days,
             backup_generations: config.backup_generations,
             tag_master_generations: config.tag_master_generations,
+            tag_new_element_limit: config.tag_new_element_limit,
             idle_thumb_generation: config.idle_thumb_generation,
             idle_thumb_wait_secs: config.idle_thumb_wait_secs,
             idle_thumb_while_viewer: config.idle_thumb_while_viewer,
@@ -380,6 +382,9 @@ impl SettingsDraft {
         config.tag_master_generations = self
             .tag_master_generations
             .clamp(crate::config::TAG_MASTER_GENERATIONS_MIN, crate::config::TAG_MASTER_GENERATIONS_MAX);
+        config.tag_new_element_limit = self
+            .tag_new_element_limit
+            .clamp(crate::config::TAG_NEW_ELEMENT_LIMIT_MIN, crate::config::TAG_NEW_ELEMENT_LIMIT_MAX);
         config.idle_thumb_generation = self.idle_thumb_generation;
         config.idle_thumb_wait_secs = self
             .idle_thumb_wait_secs
@@ -1942,6 +1947,22 @@ impl NekoviewApp {
             ui.label(t.settings_tag_master_generations_value(self.settings_draft.tag_master_generations));
         });
         ui.label(t.settings_tag_master_generations_explain());
+
+        // 一括タグ取得で、1カテゴリあたりに作れる新規要素数の上限。超えたら確認ウィンドウで拡張か維持（切り捨て）を選ぶ。
+        ui.add_space(6.0);
+        ui.label(t.settings_tag_new_limit_label());
+        ui.horizontal(|ui| {
+            ui.add(
+                egui::Slider::new(
+                    &mut self.settings_draft.tag_new_element_limit,
+                    crate::config::TAG_NEW_ELEMENT_LIMIT_MIN..=crate::config::TAG_NEW_ELEMENT_LIMIT_MAX,
+                )
+                .step_by(crate::config::TAG_NEW_ELEMENT_LIMIT_STEP as f64)
+                .show_value(false),
+            );
+            ui.label(t.settings_tag_new_limit_value(self.settings_draft.tag_new_element_limit));
+        });
+        ui.label(t.settings_tag_new_limit_explain());
 
         // 移行前の自動バックアップ（`backup_auto/`）の場所を開く。まだ無ければ押せない。
         ui.separator();

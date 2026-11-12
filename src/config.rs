@@ -130,6 +130,11 @@ pub const BACKUP_GENERATIONS_DEFAULT: u32 = 3;
 pub const TAG_MASTER_GENERATIONS_MIN: u32 = 1;
 pub const TAG_MASTER_GENERATIONS_MAX: u32 = 10;
 pub const TAG_MASTER_GENERATIONS_DEFAULT: u32 = 5;
+/// 一括タグ取得で、1カテゴリあたりに作れる新規要素数の上限（既定値）の範囲。超えたときは確認ウィンドウで拡張・維持を選ぶ。
+pub const TAG_NEW_ELEMENT_LIMIT_MIN: u32 = 1000;
+pub const TAG_NEW_ELEMENT_LIMIT_MAX: u32 = 20000;
+pub const TAG_NEW_ELEMENT_LIMIT_DEFAULT: u32 = 5000;
+pub const TAG_NEW_ELEMENT_LIMIT_STEP: u32 = 1000;
 /// 手すき時間のサムネ生成を始めるまでの待ち（最後の入力から、秒）。
 pub const IDLE_THUMB_WAIT_MIN: u32 = 1;
 pub const IDLE_THUMB_WAIT_MAX: u32 = 30;
@@ -226,6 +231,8 @@ pub struct AppConfig {
     pub backup_generations: u32,
     /// タグマスターの履歴（`tag_master_gen/`）を残す世代数（1〜10）。
     pub tag_master_generations: u32,
+    /// 一括タグ取得の、1カテゴリあたりの新規要素数の上限（既定値）。
+    pub tag_new_element_limit: u32,
     /// ページデコードの並列スレッド数（0 = 自動: 論理コア数/2）
     pub decode_threads: usize,
     /// 操作が止まっている間に、現在地フォルダのサムネ生成を続けるか（1件ずつ。idle_thumb.rs）。
@@ -323,6 +330,7 @@ impl AppConfig {
             unconfirmed_retention_days: UNCONFIRMED_RETENTION_DAYS_DEFAULT,
             backup_generations: BACKUP_GENERATIONS_DEFAULT,
             tag_master_generations: TAG_MASTER_GENERATIONS_DEFAULT,
+            tag_new_element_limit: TAG_NEW_ELEMENT_LIMIT_DEFAULT,
             decode_threads: 0,
             idle_thumb_generation: true,
             idle_thumb_wait_secs: IDLE_THUMB_WAIT_DEFAULT,

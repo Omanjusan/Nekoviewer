@@ -485,6 +485,8 @@ pub struct AppState {
     pub app_backup_generations: Option<u32>,
     /// タグマスターの世代数（1〜10）。
     pub app_tag_master_generations: Option<u32>,
+    /// 一括タグ取得の、1カテゴリあたりの新規要素数の上限。
+    pub app_tag_new_element_limit: Option<u32>,
     /// 手すき時間のサムネ生成（ON/OFF、待ち秒数1〜30、ビューアーを開いている間も続けるか）。
     pub app_idle_thumb_generation: Option<bool>,
     pub app_idle_thumb_wait_secs: Option<u32>,
@@ -567,6 +569,7 @@ impl Default for AppState {
             app_unconfirmed_retention_days: None,
             app_backup_generations: None,
             app_tag_master_generations: None,
+            app_tag_new_element_limit: None,
             app_idle_thumb_generation: None,
             app_idle_thumb_wait_secs: None,
             app_idle_thumb_while_viewer: None,
@@ -682,6 +685,7 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
     let mut app_unconfirmed_retention_days: Option<u32> = None;
     let mut app_backup_generations: Option<u32> = None;
     let mut app_tag_master_generations: Option<u32> = None;
+    let mut app_tag_new_element_limit: Option<u32> = None;
     let mut app_idle_thumb_generation: Option<bool> = None;
     let mut app_idle_thumb_wait_secs: Option<u32> = None;
     let mut app_idle_thumb_while_viewer: Option<bool> = None;
@@ -865,6 +869,7 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
                 "app_unconfirmed_retention_days" => { app_unconfirmed_retention_days = v.trim().parse().ok(); }
                 "app_backup_generations" => { app_backup_generations = v.trim().parse().ok(); }
                 "app_tag_master_generations" => { app_tag_master_generations = v.trim().parse().ok(); }
+                "app_tag_new_element_limit" => { app_tag_new_element_limit = v.trim().parse().ok(); }
                 "app_idle_thumb_generation" => { app_idle_thumb_generation = v.trim().parse().ok(); }
                 "app_idle_thumb_wait_secs" => { app_idle_thumb_wait_secs = v.trim().parse().ok(); }
                 "app_idle_thumb_while_viewer" => { app_idle_thumb_while_viewer = v.trim().parse().ok(); }
@@ -1150,6 +1155,7 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
         app_unconfirmed_retention_days,
         app_backup_generations,
         app_tag_master_generations,
+        app_tag_new_element_limit,
         app_idle_thumb_generation,
         app_idle_thumb_wait_secs,
         app_idle_thumb_while_viewer,
@@ -1357,6 +1363,7 @@ pub fn save_state(root: &Path, dir: &Path, window_size: (u32, u32), viewer_slots
     ));
     content.push_str(&format!("app_backup_generations={}\n", app_cfg.backup_generations));
     content.push_str(&format!("app_tag_master_generations={}\n", app_cfg.tag_master_generations));
+    content.push_str(&format!("app_tag_new_element_limit={}\n", app_cfg.tag_new_element_limit));
     content.push_str(&format!(
         "app_idle_thumb_generation={}\napp_idle_thumb_wait_secs={}\napp_idle_thumb_while_viewer={}\n",
         app_cfg.idle_thumb_generation, app_cfg.idle_thumb_wait_secs, app_cfg.idle_thumb_while_viewer,
@@ -1754,6 +1761,10 @@ mod tests {
         let missing = parse_state_text("tag_master_gens_missing", "app_backup_generations=5\n");
         assert_eq!(missing.app_tag_master_generations, None);
         assert_eq!(crate::config::TAG_MASTER_GENERATIONS_DEFAULT, 5);
+        let limit = parse_state_text("tag_new_limit", "app_tag_new_element_limit=8000\n");
+        assert_eq!(limit.app_tag_new_element_limit, Some(8000));
+        assert_eq!(parse_state_text("tag_new_limit_missing", "").app_tag_new_element_limit, None);
+        assert_eq!(crate::config::TAG_NEW_ELEMENT_LIMIT_DEFAULT, 5000);
         assert_eq!((crate::config::TAG_MASTER_GENERATIONS_MIN, crate::config::TAG_MASTER_GENERATIONS_MAX), (1, 10));
     }
 

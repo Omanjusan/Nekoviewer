@@ -13,7 +13,7 @@
 #![allow(dead_code)]
 
 use std::borrow::Cow;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::i18n::Lang;
 use crate::tag_corpus::Label;
@@ -28,9 +28,8 @@ use crate::tag_source::{
 };
 use crate::view_explorer::TagManagerCategoryUi;
 
-/// 新規要素数の警告・エラーのしきい値（窓ごと）。
-pub(crate) const WARN_NEW_ELEMENTS: usize = 1000;
-pub(crate) const ERROR_NEW_ELEMENTS: usize = 3000;
+/// 上限に達したとき、1回の「拡張」で増やす新規要素数（カテゴリごと）。上限の既定値は設定（`AppConfig::tag_new_element_limit`）。
+pub(crate) const LIMIT_EXPAND_STEP: usize = 5000;
 /// 1候補に並べる類似提案の最大数。
 const MAX_SUGGESTIONS: usize = 5;
 
@@ -273,15 +272,11 @@ pub(crate) struct CandidateInput {
     pub meta: Option<ArchiveMeta>,
 }
 
-/// 窓ごとの新規要素数と、警告・エラーの判定。
+/// 窓ごとの新規要素数（集計表示用）。上限の判定はカテゴリ（種類）ごとに別で行う（`over_limit`）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct LimitReport {
     pub window1_new: usize,
     pub window2_new: usize,
-    pub window1_warn: bool,
-    pub window2_warn: bool,
-    /// どちらか一方でも上限を超えたとき、超えた側の新規要素数（両方なら多い方）。
-    pub error_count: Option<usize>,
 }
 
 #[derive(Clone, Debug)]
@@ -1195,21 +1190,48 @@ pub(crate) fn recount_limits(candidates: &[Candidate]) -> LimitReport {
     check_limits(candidates)
 }
 
-/// 窓ごとの新規要素数を数え、警告・エラーを判定する。
+/// 窓ごとの新規要素数を数える。
 fn check_limits(candidates: &[Candidate]) -> LimitReport {
     let count = |w: Window| candidates.iter().filter(|c| c.role.window() == w && c.needs_new_element()).count();
-    let (w1, w2) = (count(Window::One), count(Window::Two));
-    let over: Vec<usize> = [w1, w2].into_iter().filter(|&n| n > ERROR_NEW_ELEMENTS).collect();
-    LimitReport {
-        window1_new: w1,
-        window2_new: w2,
-        window1_warn: w1 > WARN_NEW_ELEMENTS,
-        window2_warn: w2 > WARN_NEW_ELEMENTS,
-        error_count: over.into_iter().max(),
+    LimitReport { window1_new: count(Window::One), window2_new: count(Window::Two) }
+}
+
+/// 上限（`limit`）を超えているカテゴリ（種類）と、その新規要素数。種類の並び順。
+pub(crate) fn over_limit(candidates: &[Candidate], limit: usize) -> Vec<(Role, usize)> {
+    let mut counts: HashMap<Role, usize> = HashMap::new();
+    for c in candidates.iter().filter(|c| c.needs_new_element()) {
+        *counts.entry(c.role).or_default() += 1;
     }
+    let mut over: Vec<(Role, usize)> = counts.into_iter().filter(|&(_, n)| n > limit).collect();
+    over.sort_by_key(|&(r, _)| r.order());
+    over
 }
 
 impl CandidateSet {
+    /// 上限を超えているカテゴリごとに、新規要素のうち該当ファイル数の多いものから `limit` 個だけ残し、残りを候補から除く
+    /// （同数なら名前順）。既存の要素に一致する候補は数えず、触らない。除いた数を種類ごとに返す（除いたものが無ければ空）。
+    pub(crate) fn truncate_to_limit(&mut self, limit: usize) -> Vec<(Role, usize)> {
+        let mut removed: Vec<(Role, usize)> = Vec::new();
+        for (role, _) in over_limit(&self.candidates, limit) {
+            let mut idx: Vec<usize> =
+                (0..self.candidates.len()).filter(|&i| self.candidates[i].role == role && self.candidates[i].needs_new_element()).collect();
+            idx.sort_by(|&a, &b| {
+                let (ca, cb) = (&self.candidates[a], &self.candidates[b]);
+                cb.files.len().cmp(&ca.files.len()).then(ca.name.to_lowercase().cmp(&cb.name.to_lowercase())).then(a.cmp(&b))
+            });
+            let drop: HashSet<usize> = idx.into_iter().skip(limit).collect();
+            removed.push((role, drop.len()));
+            let mut i = 0;
+            self.candidates.retain(|_| {
+                let keep = !drop.contains(&i);
+                i += 1;
+                keep
+            });
+        }
+        self.limits = check_limits(&self.candidates);
+        removed
+    }
+
     /// 窓ごとの候補の番号（種類順、束の最初の出現順、名前順）。
     pub(crate) fn indices_in_window(&self, w: Window) -> Vec<usize> {
         let order = |r: Role| r.order();
@@ -1761,25 +1783,65 @@ mod tests {
     }
 
     #[test]
-    fn limits_warn_per_window_and_error_when_either_exceeds() {
+    fn over_limit_is_judged_per_category() {
         let o = MatchOptions::default();
         let many = |n: usize, prefix: &str| -> Vec<CandidateInput> {
             (0..n).map(|i| input(&format!("[{prefix}{i:05}] t.zip"), "zip", None)).collect()
         };
-        // 作者1500件: 窓2が警告（エラーではない）。
+        // 作者1500件は、上限1000なら作者だけが超える。窓2の集計は1500。
         let set = build_candidates(&many(1500, "Writer"), &master(), &o, Lang::English);
-        assert_eq!((set.limits.window2_new, set.limits.window2_warn, set.limits.error_count), (1500, true, None));
-        assert!(!set.limits.window1_warn);
-        // 作者3001件: エラー。Nは超過した側の数。
-        let set = build_candidates(&many(3001, "Writer"), &master(), &o, Lang::English);
-        assert_eq!(set.limits.error_count, Some(3001));
-        // 窓1だけが超える場合も（イベントを3001個）エラー。
-        let events: Vec<CandidateInput> = (0..3001).map(|i| input(&format!("(Event{i:05}) t.zip"), "zip", None)).collect();
-        let set = build_candidates(&events, &master(), &o, Lang::English);
-        assert_eq!((set.limits.window1_new, set.limits.error_count), (3001, Some(3001)));
+        assert_eq!(set.limits.window2_new, 1500);
+        assert_eq!(over_limit(&set.candidates, 1000), vec![(Role::Author, 1500)]);
+        assert!(over_limit(&set.candidates, 1500).is_empty(), "ちょうど上限は超えない");
+        // イベント（窓1）と作者（窓2）は別カテゴリ。それぞれの数で判定し、合算しない。
+        let mut inputs = many(600, "Writer");
+        inputs.extend((0..600).map(|i| input(&format!("(Event{i:05}) t.zip"), "zip", None)));
+        let set = build_candidates(&inputs, &master(), &o, Lang::English);
+        assert!(over_limit(&set.candidates, 1000).is_empty(), "合算では1200だが、カテゴリ別では超えない");
+        let over = over_limit(&set.candidates, 500);
+        assert_eq!(over.iter().map(|(r, _)| *r).collect::<Vec<_>>(), vec![Role::Event, Role::Author], "種類の並び順");
         // 既存に一致するものは新規に数えない。
         let set = build_candidates(&[input("[Hawk Bit (Kouji)] t.zip", "zip", None)], &master(), &o, Lang::English);
         assert_eq!((set.limits.window1_new, set.limits.window2_new), (0, 0));
+        assert!(over_limit(&set.candidates, 0).is_empty());
+    }
+
+    #[test]
+    fn truncate_keeps_the_most_used_and_reports_the_removed_count() {
+        let o = MatchOptions::default();
+        // 作者 A は3ファイル、B は2、C〜E は1。上限3なら A・B と、同数1件のうち名前順で先頭の C が残る。
+        let mut inputs = Vec::new();
+        for (name, n) in [("Aaa", 3), ("Bbb", 2), ("Ccc", 1), ("Ddd", 1), ("Eee", 1)] {
+            inputs.extend((0..n).map(|i| input(&format!("[{name}] t{i}.zip"), "zip", None)));
+        }
+        let mut set = build_candidates(&inputs, &master(), &o, Lang::English);
+        let authors = |s: &CandidateSet| {
+            let mut v: Vec<String> = s.candidates.iter().filter(|c| c.role == Role::Author).map(|c| c.name.clone()).collect();
+            v.sort();
+            v
+        };
+        assert_eq!(authors(&set).len(), 5);
+        let removed = set.truncate_to_limit(3);
+        assert_eq!(removed, vec![(Role::Author, 2)]);
+        assert_eq!(authors(&set), vec!["Aaa", "Bbb", "Ccc"]);
+        assert!(over_limit(&set.candidates, 3).is_empty());
+        assert_eq!(set.limits.window2_new, 3, "集計もやり直す");
+        // 上限内なら何も除かない。
+        assert!(set.truncate_to_limit(3).is_empty());
+    }
+
+    #[test]
+    fn truncate_does_not_touch_existing_matches_or_other_categories() {
+        let o = MatchOptions::default();
+        let mut inputs: Vec<CandidateInput> = (0..4).map(|i| input(&format!("[W{i}] t.zip"), "zip", None)).collect();
+        inputs.push(input("[Hawk Bit (Kouji)] u.zip", "zip", None));
+        inputs.push(input("(C105) v.zip", "zip", None));
+        let mut set = build_candidates(&inputs, &master(), &o, Lang::English);
+        let before_other: Vec<String> = set.candidates.iter().filter(|c| c.role != Role::Author).map(|c| c.name.clone()).collect();
+        set.truncate_to_limit(1);
+        let after_other: Vec<String> = set.candidates.iter().filter(|c| c.role != Role::Author).map(|c| c.name.clone()).collect();
+        assert_eq!(before_other, after_other);
+        assert!(set.candidates.iter().any(|c| c.name == "Kouji" && !c.needs_new_element()), "既存一致は残る");
     }
 
     #[test]
@@ -1839,7 +1901,7 @@ mod tests {
         set.carry_over_choices(&mut fresh);
         assert_eq!(find(&fresh, Role::Author, "Koji").choice, Choice::Existing { cat_idx: 2, tier_id: 20 }, "変えた扱いを引き継ぐ");
         assert_eq!(find(&fresh, Role::Author, "Zzzz").choice, Choice::Skip);
-        assert_eq!(fresh.limits.window2_new, 1, "上限の集計も引き継ぎ後でやり直す（Zzzz は Skip でも新規の数に入る）");
+        assert_eq!(fresh.limits.window2_new, 1, "新規の集計も引き継ぎ後でやり直す（Zzzz は Skip でも新規の数に入る）");
     }
 
     #[test]
@@ -1856,7 +1918,7 @@ mod tests {
     fn empty_and_odd_inputs_do_not_panic() {
         let set = build_candidates(&[], &master(), &MatchOptions::default(), Lang::Japanese);
         assert!(set.candidates.is_empty());
-        assert_eq!((set.file_count, set.limits.error_count), (0, None));
+        assert_eq!((set.file_count, set.limits.window1_new, set.limits.window2_new), (0, 0, 0));
         let weird = [input("[] ().zip", "zip", Some("")), input("[(A)] t.zip", "zip", Some("Category:   \n"))];
         let set = build_candidates(&weird, &[], &MatchOptions::default(), Lang::Japanese);
         assert!(set.candidates.iter().any(|c| c.role == Role::Author && c.name == "A"));
