@@ -4710,7 +4710,7 @@ impl Lang {
     /// 学習窓・ラベル窓（日本語のみ。英・中は空で日本語にフォールバック）
     pub fn tag_learn_open_button(self) -> &'static str { self.learn_pick("タグ学習…", "", "") }
     pub fn tag_learn_window_title(self) -> &'static str { self.learn_pick("タグ抽出用データ学習", "", "") }
-    pub fn tag_learn_label_window_title(self) -> &'static str { self.learn_pick("タグ学習 — ラベル付け", "", "") }
+    pub fn tag_learn_label_window_title(self) -> &'static str { self.learn_pick("タグ抽出用データ学習 — ラベル付け", "", "") }
     pub fn tag_learn_use_checkbox(self) -> &'static str { self.learn_pick("学習結果を使う（OFFなら従来のルールだけで判定）", "", "") }
     pub fn tag_learn_estimate_none(self) -> &'static str { self.learn_pick("目安の一致率: 学習データが10件以上になると表示します", "", "") }
     pub fn tag_learn_estimate(self, percent: u32) -> String {
