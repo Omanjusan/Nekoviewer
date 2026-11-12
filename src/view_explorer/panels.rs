@@ -1011,41 +1011,11 @@ impl NekoviewApp {
         // `available_width()`を取ると実際のパネル幅より広い値になり、下段の
         // horizontal_wrapped が折り返さず見切れていた。
         let content_w = ui.available_width();
-        // 最上段・左右中央: 現在のフォルダ直下のアーカイブから、タグ情報（info.txt・ファイル名・拡張子）を
-        // 一括で取得する。実フォルダを表示していて対象があるときだけ押せる。
+        // 試用バナーの下に、入口「🏷 タグ管理」を1個だけ置く。学習・取得・大ルール・タグ・カテゴリ編集は、
+        // その子のポップアップメニューにある（tag_menu_ui.rs）。
         self.draw_tag_trial_banner(ui);
-        ui.vertical_centered(|ui| {
-            let enabled = self.can_start_tag_scan();
-            let resp = ui.add_enabled(enabled, egui::Button::new(i18n::t().tag_scan_button()));
-            let hint = if self.tag_trial_active { i18n::t().tag_scan_trial_hint() } else { i18n::t().tag_scan_unavailable_hint() };
-            let resp = if enabled { resp } else { resp.on_disabled_hover_text(hint) };
-            if resp.clicked() {
-                self.request_tag_scan();
-            }
-        });
-        self.draw_tag_learning_status(ui);
-        self.draw_tag_rules_entry(ui);
+        self.draw_tag_entry_menu(ui);
         ui.add_space(4.0);
-        // フェーズTM0: 仮置きのタグマネージャー呼び出しボタン。既存のメインタグ／
-        // 属性タグUIとは切り離した独立機能なので、位置・見た目は後で調整前提。
-        // 狭い幅では2つ目のボタンが見切れないよう折り返す。
-        ui.horizontal_wrapped(|ui| {
-            if ui.button(i18n::t().tag_panel_manager_button()).clicked() {
-                self.tag_manager_open = true;
-                self.tag_manager_session_snapped.set(false);
-                self.tag_master_gen_ui = None;
-                self.tag_danger_open = false;
-                self.tag_danger_clear_stage = 0;
-                self.tag_danger_recovery_ask = 0;
-            }
-            // タグパネルのプレビューを、グリッドサムネの引き伸ばし（軽量・低画質）ではなく
-            // 専用解像度で再デコードした高画質表示に切り替えるトグル。低スペックPC・
-            // 小さいモニタでは重くなりうるため既定OFF。
-            let hq = self.tag_preview_high_quality;
-            if ui.selectable_label(hq, i18n::t().tag_panel_hq_preview_toggle()).clicked() {
-                self.tag_preview_high_quality = !hq;
-            }
-        });
         let path = self.selected_archive_index.and_then(|idx| self.archives.get(idx).cloned());
         let Some(path) = path else {
             // 選択中のファイルが無いときは、紐付け先の無いメイン/属性タグUIを
@@ -1061,7 +1031,18 @@ impl NekoviewApp {
         };
         self.sync_tag_binding(&path);
         ui.add_space(10.0);
-        self.draw_tag_panel_preview(ui);
+        // 画像が出ているときだけ、その直下に高画質プレビューのトグルを置く。
+        if self.draw_tag_panel_preview(ui).is_some() {
+            ui.vertical_centered(|ui| {
+                // タグパネルのプレビューを、グリッドサムネの引き伸ばし（軽量・低画質）ではなく
+                // 専用解像度で再デコードした高画質表示に切り替えるトグル。低スペックPC・
+                // 小さいモニタでは重くなりうるため既定OFF。
+                let hq = self.tag_preview_high_quality;
+                if ui.selectable_label(hq, i18n::t().tag_panel_hq_preview_toggle()).clicked() {
+                    self.tag_preview_high_quality = !hq;
+                }
+            });
+        }
         ui.add_space(8.0);
         self.draw_tag_panel_main_tags(ui);
         ui.separator();
@@ -1075,6 +1056,16 @@ impl NekoviewApp {
         ui.scope_builder(egui::UiBuilder::new().max_rect(attr_rect), |ui| {
             self.draw_tag_panel_attr_tags(ui);
         });
+    }
+
+    /// 旧タグ管理画面（オーバーレイ）を開く。「タグ・カテゴリ編集」から呼ぶ。
+    pub(super) fn open_tag_manager_overlay(&mut self) {
+        self.tag_manager_open = true;
+        self.tag_manager_session_snapped.set(false);
+        self.tag_master_gen_ui = None;
+        self.tag_danger_open = false;
+        self.tag_danger_clear_stage = 0;
+        self.tag_danger_recovery_ask = 0;
     }
 
     /// タグ付けレイアウト・ドラムUI: メインタグ編集トグルをOFFへ戻し、現在のタグ選択を

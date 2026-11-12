@@ -45,28 +45,11 @@ impl NekoviewApp {
         self.tag_model = train_model(&self.tag_learned, &self.config.tag_match);
     }
 
-    /// タグパネルの学習行: 「タグ学習…」ボタンと学習済みの件数（中央）、その一段下の左端に「学習内容を反映する/しない」の切替。
-    pub(super) fn draw_tag_learning_status(&mut self, ui: &mut egui::Ui) {
-        let t = i18n::t();
-        let n = self.tag_learned.len();
-        ui.vertical_centered(|ui| {
-            ui.horizontal(|ui| {
-                if ui.small_button(t.tag_learn_open_button()).clicked() && self.tag_learn.is_none() {
-                    self.tag_learn = Some(TagLearn::open(self));
-                }
-                ui.weak(t.tag_learn_status(n)).on_hover_text(t.tag_learn_status_hover());
-            });
-        });
-        // 学習内容を反映する/しない。一段下の左端。学習データが無いときは切り替えても結果が変わらないので、押せなくする。
-        ui.horizontal(|ui| {
-            let on = self.config.tag_learning_use;
-            let resp = ui.add_enabled(n > 0, egui::Button::selectable(on, t.tag_learn_use_toggle(on)).small());
-            let resp = if n > 0 { resp.on_hover_text(t.tag_learn_use_hover()) } else { resp.on_disabled_hover_text(t.tag_learn_use_disabled_hover()) };
-            if resp.clicked() {
-                self.config.tag_learning_use = !on;
-                self.persist_state();
-            }
-        });
+    /// 「タグ管理」メニューの「現フォルダに対するタグ抽出用学習…」から呼ぶ。学習窓が開いていなければ開く。
+    pub(super) fn open_tag_learn_window(&mut self) {
+        if self.tag_learn.is_none() {
+            self.tag_learn = Some(TagLearn::open(self));
+        }
     }
 
     /// 学習の元にするファイル名（現在のフォルダの対象）。お気に入り・検索・類似・タグ検索の表示中は空。

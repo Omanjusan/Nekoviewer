@@ -1437,6 +1437,7 @@ mod tag_master_gen_ui;
 mod tag_danger_ui;
 mod tag_learning_ui;
 mod tag_rules_ui;
+mod tag_menu_ui;
 mod scan;
 mod folder_sort;
 mod workers;

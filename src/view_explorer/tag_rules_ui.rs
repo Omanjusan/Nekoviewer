@@ -34,17 +34,6 @@ fn summary(rule: &TagRule) -> String {
 }
 
 impl NekoviewApp {
-    /// タグパネルの1行: 「大ルール…」ボタンとルールの件数。
-    pub(super) fn draw_tag_rules_entry(&mut self, ui: &mut egui::Ui) {
-        let t = i18n::t();
-        ui.horizontal(|ui| {
-            if ui.small_button(t.tag_rules_open_button()).on_hover_text(t.tag_rules_open_hover()).clicked() {
-                self.tag_rules_open = !self.tag_rules_open;
-            }
-            ui.weak(t.tag_rules_count(self.tag_rules.rules.len()));
-        });
-    }
-
     /// 大ルールの一覧窓（読み取り専用。編集UIは準備中）。
     pub(super) fn draw_tag_rules_window(&mut self, ctx: &egui::Context) {
         if !self.tag_rules_open {

@@ -4773,6 +4773,11 @@ impl Lang {
     pub fn tag_confirm_role_attribute(self) -> &'static str { self.learn_pick("属性", "", "") }
     pub fn tag_confirm_role_year_month(self) -> &'static str { self.learn_pick("年月", "", "") }
     /// 大ルールの入口（仮。日本語のみ。英・中は空で日本語にフォールバック）
+    /// 「タグ管理」メニューの項目（日本語のみ。英・中は空で日本語にフォールバック）
+    pub fn tag_menu_learn_item(self) -> &'static str { self.learn_pick("現フォルダに対するタグ抽出用学習…", "", "") }
+    pub fn tag_menu_learn_use(self) -> &'static str { self.learn_pick("学習内容を使う", "", "") }
+    pub fn tag_menu_scan_item(self) -> &'static str { self.learn_pick("現フォルダファイルのタグ自動抽出＆付与", "", "") }
+    pub fn tag_menu_edit_item(self) -> &'static str { self.learn_pick("タグ・カテゴリ編集", "", "") }
     pub fn tag_rules_open_button(self) -> &'static str { self.learn_pick("大ルール…", "", "") }
     pub fn tag_rules_open_hover(self) -> &'static str { self.learn_pick("タグ取得の前処理（AI generated・cosplay などの大ルール）の一覧を開く", "", "") }
     pub fn tag_rules_count(self, n: usize) -> String {
