@@ -1174,11 +1174,11 @@ pub struct NekoviewApp {
     pub(crate) tag_learned: crate::tag_learning::LearnedSet,
     /// 学習データから作ったモデル（学習データが空なら None）。使うかどうかは `config.tag_learning_use`。
     pub(crate) tag_model: Option<std::sync::Arc<crate::tag_model::Model>>,
-    /// タグ自動取得の大ルール（抽出の下処理）。設定フォルダの `nekoviewer_tag_rules.json`。
+    /// タグ自動取得のタグ抽出ルール（抽出の下処理）。設定フォルダの `nekoviewer_tag_rules.json`。
     pub(crate) tag_rules: crate::tag_rules::RuleSet,
     /// タグ学習窓（開いている間 Some）。
     tag_learn: Option<tag_learning_ui::TagLearn>,
-    /// 大ルールの一覧窓（仮。編集UIは後で決める）を開いているか。
+    /// タグ抽出ルールの一覧窓（仮。編集UIは後で決める）を開いているか。
     tag_rules_open: bool,
     /// ルール一覧で、削除の確認を出しているルールのID。
     tag_rules_del_ask: Option<u64>,

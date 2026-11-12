@@ -1011,7 +1011,7 @@ impl NekoviewApp {
         // `available_width()`を取ると実際のパネル幅より広い値になり、下段の
         // horizontal_wrapped が折り返さず見切れていた。
         let content_w = ui.available_width();
-        // 試用バナーの下に、入口「🏷 タグ管理」を1個だけ置く。学習・取得・大ルール・タグ・カテゴリ編集は、
+        // 試用バナーの下に、入口「🏷 タグ管理」を1個だけ置く。学習・取得・タグ抽出ルール・タグ・カテゴリ編集は、
         // その子のポップアップメニューにある（tag_menu_ui.rs）。
         self.draw_tag_trial_banner(ui);
         self.draw_tag_entry_menu(ui);

@@ -42,11 +42,11 @@ pub(crate) enum Role {
     Event,
     Author,
     Group,
-    /// 演者（cosplay）。大ルールで有効にしたときだけ取る。
+    /// 演者（cosplay）。タグ抽出ルールで有効にしたときだけ取る。
     Performer,
-    /// キャラ（cosplay）。大ルールで有効にしたときだけ取る。
+    /// キャラ（cosplay）。タグ抽出ルールで有効にしたときだけ取る。
     Character,
-    /// パロディ元。大ルールで有効にしたときだけ取る。
+    /// パロディ元。タグ抽出ルールで有効にしたときだけ取る。
     Parody,
     /// 属性タグ（ComicInfo.xml の Tags・meta.json の type=tag）。「正の情報」があるときだけ取る。
     Attribute,
@@ -803,7 +803,7 @@ pub(crate) fn build_candidates_with(
 /// 候補を作る。`model` があれば、括弧の種別（作者・グループ・イベント・言語・無視）を学習モデルで判定する。
 /// 既存マスターに完全一致があるものは、モデルよりマスターを優先する。
 /// `name_lang` は、新規要素の主表記を選ぶ言語（登録表記の設定。表示言語に合わせるときは `lang` と同じ）。
-/// `rules`（大ルール）は抽出の下処理: ファイルごとに成立したルールが無効にした種類の言及は、候補にして未採用・要確認で残す
+/// `rules`（タグ抽出ルール）は抽出の下処理: ファイルごとに成立したルールが無効にした種類の言及は、候補にして未採用・要確認で残す
 /// （既存マスターに完全一致があっても、ルールを優先する）。
 pub(crate) fn build_candidates_full(
     inputs: &[CandidateInput],
@@ -832,7 +832,7 @@ pub(crate) fn build_candidates_full(
         resolved_all.push(resolved);
         if !rules.is_empty() {
             outcomes.push(evaluate_rules(rules, &RuleInput::new(&input.file_name, input.info.as_ref()), &opts));
-            // 大ルールが有効にした新種類（演者・キャラ・パロディ元）は、` - ` 区切りの題名から取る。
+            // タグ抽出ルールが有効にした新種類（演者・キャラ・パロディ元）は、` - ` 区切りの題名から取る。
             let dash = dash_mentions(input, &outcomes[fi]);
             mentions.extend(dash.into_iter().map(|m| (fi, m)));
         }
@@ -2025,7 +2025,7 @@ mod tests {
         assert_eq!(find(&set, Role::Group, "Hawk Bit").choice, Choice::Existing { cat_idx: 3, tier_id: 30 });
     }
 
-    // ── 大ルール（下処理） ──
+    // ── タグ抽出ルール（下処理） ──
 
     use crate::tag_rules::{Preset, TagRule};
 

@@ -1,7 +1,7 @@
 //! タグパネルの入口「🏷 タグ管理」と、その子のポップアップメニュー。
 //!
 //! 子の項目: 現フォルダに対するタグ抽出用学習／現フォルダファイルのタグ自動抽出＆付与／
-//! 大ルール／タグ・カテゴリ編集（従来のタグ管理画面）。件数は項目の右にグレーで出す。
+//! タグ抽出ルール／タグ・カテゴリ編集（従来のタグ管理画面）。件数は項目の右にグレーで出す。
 
 use crate::i18n;
 
@@ -59,7 +59,7 @@ impl NekoviewApp {
             ui.close();
         }
 
-        // 3: 大ルール（仮の一覧窓）
+        // 3: タグ抽出ルール（仮の一覧窓）
         let resp = ui
             .add(egui::Button::new(t.tag_rules_open_button()).right_text(egui::RichText::new(t.tag_rules_count(self.tag_rules.rules.iter().filter(|r| r.enabled).count(), self.tag_rules.rules.len())).weak()))
             .on_hover_text(t.tag_rules_open_hover());

@@ -4755,9 +4755,9 @@ impl Lang {
         local.unwrap_or(ja)
     }
     pub fn tag_learn_save_failed_toast(self) -> &'static str { self.learn_pick("学習データを保存できませんでした", "", "") }
-    /// 確認ウィンドウ: 大ルールの表示（日本語のみ。英・中は空で日本語にフォールバック）
+    /// 確認ウィンドウ: タグ抽出ルールの表示（日本語のみ。英・中は空で日本語にフォールバック）
     pub fn tag_confirm_rule_hits(self, hits: &str) -> String {
-        let ja = format!("大ルール適用: {hits}");
+        let ja = format!("タグ抽出ルール適用: {hits}");
         let local: Option<String> = match self { Lang::Japanese => None, Lang::English => None, Lang::Chinese => None };
         local.unwrap_or(ja)
     }
@@ -4772,14 +4772,14 @@ impl Lang {
     pub fn tag_confirm_role_parody(self) -> &'static str { self.learn_pick("パロディ元", "", "") }
     pub fn tag_confirm_role_attribute(self) -> &'static str { self.learn_pick("属性", "", "") }
     pub fn tag_confirm_role_year_month(self) -> &'static str { self.learn_pick("年月", "", "") }
-    /// 大ルールの入口（仮。日本語のみ。英・中は空で日本語にフォールバック）
+    /// タグ抽出ルールの入口（仮。日本語のみ。英・中は空で日本語にフォールバック）
     /// 「タグ管理」メニューの項目（日本語のみ。英・中は空で日本語にフォールバック）
     pub fn tag_menu_learn_item(self) -> &'static str { self.learn_pick("現フォルダに対するタグ抽出用学習…", "", "") }
     pub fn tag_menu_learn_use(self) -> &'static str { self.learn_pick("学習内容を使う", "", "") }
     pub fn tag_menu_scan_item(self) -> &'static str { self.learn_pick("現フォルダファイルのタグ自動抽出＆付与", "", "") }
     pub fn tag_menu_edit_item(self) -> &'static str { self.learn_pick("タグ・カテゴリ編集", "", "") }
-    pub fn tag_rules_open_button(self) -> &'static str { self.learn_pick("タグ抽出ルール定義開始", "", "") }
-    pub fn tag_rules_open_hover(self) -> &'static str { self.learn_pick("タグ取得の前処理（AI generated・cosplay などの大ルール）の一覧を開く", "", "") }
+    pub fn tag_rules_open_button(self) -> &'static str { self.learn_pick("（上級者向け）タグ抽出ルール定義開始", "", "") }
+    pub fn tag_rules_open_hover(self) -> &'static str { self.learn_pick("タグ取得の前処理（AI generated・cosplay などのタグ抽出ルール）の一覧を開く", "", "") }
     /// メニューの項目の右に出す、ルールの件数（有効 / 全部）。
     pub fn tag_rules_count(self, enabled: usize, total: usize) -> String {
         match self {
@@ -5352,7 +5352,7 @@ impl Lang {
     pub fn tag_rules_reload_button(self) -> &'static str { self.learn_pick("再読込", "", "") }
     pub fn tag_rules_reload_hover(self) -> &'static str { self.learn_pick("設定フォルダのルールファイルを読み直す", "", "") }
     pub fn tag_rules_reloaded(self, n: usize) -> String {
-        let ja = format!("大ルールを読み込みました（{n}件）");
+        let ja = format!("タグ抽出ルールを読み込みました（{n}件）");
         let local: Option<String> = match self { Lang::Japanese => None, Lang::English => None, Lang::Chinese => None };
         local.unwrap_or(ja)
     }

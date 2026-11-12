@@ -99,7 +99,7 @@ pub(super) struct TagConfirm {
     master: Arc<Vec<TagManagerCategoryUi>>,
     /// 候補生成に使った学習モデル（切替項目を変えた作り直しでも同じモデルを使う）。
     model: Option<Arc<Model>>,
-    /// 候補生成に使った大ルール（作り直しでも同じルールを使う）。
+    /// 候補生成に使ったタグ抽出ルール（作り直しでも同じルールを使う）。
     rules: Arc<Vec<TagRule>>,
     stage: Window,
     only_unconfirmed: bool,
@@ -316,7 +316,7 @@ impl NekoviewApp {
 
             // 一括操作。
             let window_idx: Vec<usize> = st.set.indices_in_window(stage);
-            // 大ルールが成立したファイルがあれば、ルール名と件数を出す。
+            // タグ抽出ルールが成立したファイルがあれば、ルール名と件数を出す。
             if !st.set.rule_hits.is_empty() {
                 let hits: Vec<String> = st.set.rule_hits.iter().map(|(name, n)| format!("{name} {n}件")).collect();
                 ui.weak(t.tag_confirm_rule_hits(&hits.join(" / ")));
