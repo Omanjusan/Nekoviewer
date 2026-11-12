@@ -4248,25 +4248,25 @@ impl Lang {
     /// 世代窓: 開くボタン
     pub fn tag_gen_button(self) -> &'static str {
         match self {
-            Lang::Japanese => "世代…",
-            Lang::English  => "Generations…",
-            Lang::Chinese  => "版本…",
+            Lang::Japanese => "ロールバック",
+            Lang::English  => "Rollback",
+            Lang::Chinese  => "回滚",
         }
     }
 
     pub fn tag_gen_title(self) -> &'static str {
         match self {
-            Lang::Japanese => "タグマスターの世代",
-            Lang::English  => "Tag master generations",
-            Lang::Chinese  => "标签主表版本",
+            Lang::Japanese => "タグマスターのロールバック",
+            Lang::English  => "Tag master rollback",
+            Lang::Chinese  => "标签主表回滚",
         }
     }
 
     pub fn tag_gen_explain(self) -> &'static str {
         match self {
-            Lang::Japanese => "変更の直前の状態が、履歴として自動で残ります。選んだ世代に戻せます（いまの状態も世代に残ります）。",
-            Lang::English  => "The state just before each change is kept automatically. You can go back to a selected generation (the current state is kept too).",
-            Lang::Chinese  => "每次更改前的状态会自动保留。可恢复到所选版本（当前状态也会保留）。",
+            Lang::Japanese => "タグ管理を開いて編集するたびに、開く前の状態が履歴として自動で残ります。選んだ世代に戻せます（いまの状態も世代に残ります）。",
+            Lang::English  => "Each time you open the tag manager and edit, the state before opening is kept automatically. You can roll back to a selected generation (the current state is kept too).",
+            Lang::Chinese  => "每次打开标签管理并编辑时，打开前的状态会自动保留。可回滚到所选版本（当前状态也会保留）。",
         }
     }
 
@@ -4288,9 +4288,9 @@ impl Lang {
 
     pub fn tag_gen_restore(self) -> &'static str {
         match self {
-            Lang::Japanese => "この世代に戻す",
-            Lang::English  => "Restore this generation",
-            Lang::Chinese  => "恢复到此版本",
+            Lang::Japanese => "ロールバックする",
+            Lang::English  => "Roll back",
+            Lang::Chinese  => "回滚",
         }
     }
 
@@ -4304,9 +4304,9 @@ impl Lang {
 
     pub fn tag_gen_confirm_title(self) -> &'static str {
         match self {
-            Lang::Japanese => "世代に戻す",
-            Lang::English  => "Restore generation",
-            Lang::Chinese  => "恢复版本",
+            Lang::Japanese => "ロールバック",
+            Lang::English  => "Rollback",
+            Lang::Chinese  => "回滚",
         }
     }
 
@@ -4320,9 +4320,9 @@ impl Lang {
 
     pub fn tag_gen_restored_toast(self) -> &'static str {
         match self {
-            Lang::Japanese => "タグマスターを世代に戻しました",
-            Lang::English  => "Tag master restored",
-            Lang::Chinese  => "已恢复标签主表",
+            Lang::Japanese => "タグマスターをロールバックしました",
+            Lang::English  => "Tag master rolled back",
+            Lang::Chinese  => "已回滚标签主表",
         }
     }
 

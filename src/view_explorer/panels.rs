@@ -1029,6 +1029,7 @@ impl NekoviewApp {
         ui.horizontal_wrapped(|ui| {
             if ui.button(i18n::t().tag_panel_manager_button()).clicked() {
                 self.tag_manager_open = true;
+                self.tag_manager_session_snapped.set(false);
                 self.tag_master_gen_ui = None;
             }
             // タグパネルのプレビューを、グリッドサムネの引き伸ばし（軽量・低画質）ではなく
@@ -1416,8 +1417,16 @@ impl NekoviewApp {
     /// タグマスターをファイルへ保存する。試用中は仮マスターへ、そうでなければ本物へ（本物は確定まで変えない）。
     pub(super) fn save_tag_master_file(&self) {
         // 本物へ書く前に、変更前の状態を世代として残す（連続編集はまとめる）。試用中は本物が変わらないので取らない。
+        // タグ管理画面を開いている間は、最初の保存で「開く前の状態」を1世代だけ残す（以降の編集では増やさない）。
+        // 画面を開いていない間の保存は、連続編集をまとめる従来の間隔で残す。
         if !self.tag_trial_active {
-            crate::tag_master_gen::snapshot_before_save(&self.config.config_root, self.tag_master_gen_keep(), false);
+            let root = &self.config.config_root;
+            if !self.tag_manager_open {
+                crate::tag_master_gen::snapshot_before_save(root, self.tag_master_gen_keep(), false);
+            } else if !self.tag_manager_session_snapped.get() {
+                crate::tag_master_gen::snapshot_before_save(root, self.tag_master_gen_keep(), true);
+                self.tag_manager_session_snapped.set(true);
+            }
         }
         crate::tag_manager::save_slot(
             &self.config.config_root,
@@ -1474,7 +1483,24 @@ impl NekoviewApp {
                             egui::vec2(total_w - TAG_MANAGER_CLOSE_BTN * 2.0, row_h),
                             egui::Layout::top_down(egui::Align::Center),
                             |ui| {
-                                ui.heading(i18n::t().tag_manager_title());
+                                let title = ui.heading(i18n::t().tag_manager_title());
+                                // タイトルは中央のまま、右隣に少し空けてロールバックボタンを置く。
+                                let btn_rect = egui::Rect::from_min_size(
+                                    egui::pos2(title.rect.right() + 16.0, title.rect.top()),
+                                    egui::vec2(ui.available_width().max(0.0), title.rect.height()),
+                                );
+                                ui.scope_builder(
+                                    egui::UiBuilder::new()
+                                        .max_rect(btn_rect)
+                                        .layout(egui::Layout::left_to_right(egui::Align::Center)),
+                                    |ui| {
+                                        let r = ui.button(i18n::t().tag_gen_button());
+                                        self.tag_master_gen_btn_rect = r.rect;
+                                        if r.clicked() {
+                                            self.toggle_tag_master_gen_window();
+                                        }
+                                    },
+                                );
                             },
                         );
                         ui.allocate_ui_with_layout(
@@ -1486,11 +1512,6 @@ impl NekoviewApp {
                                 }
                             },
                         );
-                    });
-                    ui.horizontal(|ui| {
-                        if ui.small_button(i18n::t().tag_gen_button()).clicked() {
-                            self.toggle_tag_master_gen_window();
-                        }
                     });
                     ui.separator();
 

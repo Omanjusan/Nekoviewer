@@ -1,4 +1,4 @@
-//! タグ管理画面の「世代」窓。タグマスターの履歴（`tag_master_gen.rs`）を一覧から選んで、その状態に戻す。
+//! タグ管理画面の「ロールバック」窓。タグマスターの履歴（`tag_master_gen.rs`）を一覧から選んで、その状態に戻す。
 //!
 //! 復帰の手順: ①いまのマスターを世代に残す ②DBの世代を1つ作る（失敗したら何も変えない）③選んだ世代でマスターを置き換える。
 //! ファイルに付いたタグ（DB）は変えない。復帰した世代に無い要素のタグは、マスターに無いので使えなくなる（DBには残る）。
@@ -9,7 +9,7 @@ use crate::confirm_dialog::{draw_confirm_dialog, ConfirmDialogSpec, ConfirmOutco
 use crate::i18n;
 use crate::tag_master_gen::{self, MasterGen};
 
-/// 世代窓の状態。
+/// ロールバック窓の状態。
 pub(super) struct GenWindow {
     gens: Vec<MasterGen>,
     /// 一覧で選んでいる世代のファイル名。
@@ -19,7 +19,7 @@ pub(super) struct GenWindow {
 }
 
 impl NekoviewApp {
-    /// 世代窓を開く（一覧は開くたびに読み直す）。開いていれば閉じる。
+    /// ロールバック窓を開く（一覧は開くたびに読み直す）。開いていれば閉じる。
     pub(super) fn toggle_tag_master_gen_window(&mut self) {
         if self.tag_master_gen_ui.is_some() {
             self.tag_master_gen_ui = None;
@@ -29,13 +29,13 @@ impl NekoviewApp {
         self.tag_master_gen_ui = Some(GenWindow { gens, selected: None, confirming: false });
     }
 
-    /// 世代窓と、復帰の確認ダイアログを描く。
+    /// ロールバック窓と、確認ダイアログを描く。窓の外を押したとき・実行したときは窓を閉じる。
     pub(super) fn draw_tag_master_gen_window(&mut self, ctx: &egui::Context) {
         let Some(mut state) = self.tag_master_gen_ui.take() else { return };
         let t = i18n::t();
         let mut open = true;
         let mut ask_restore = false;
-        egui::Window::new(t.tag_gen_title())
+        let shown = egui::Window::new(t.tag_gen_title())
             .id(egui::Id::new("tag_master_gen_window"))
             .order(egui::Order::Foreground)
             .collapsible(false)
@@ -70,11 +70,20 @@ impl NekoviewApp {
                     ask_restore = true;
                 }
             });
+        let win_rect = shown.map(|r| r.response.rect);
         if ask_restore {
             state.confirming = true;
         }
         if !open {
             return; // × で閉じた（状態は捨てる）
+        }
+        // 窓の外を押したら閉じる（確認ダイアログの表示中は閉じない。ボタン自体の押下はボタン側で切り替える）。
+        if !state.confirming && ctx.input(|i| i.pointer.primary_pressed()) {
+            let pos = ctx.input(|i| i.pointer.interact_pos());
+            let inside = pos.is_some_and(|p| win_rect.is_some_and(|r| r.contains(p)) || self.tag_master_gen_btn_rect.contains(p));
+            if !inside {
+                return;
+            }
         }
         // 選んだ世代が一覧から消えていたら（ローテーション等）、確認は黙って閉じる。
         let chosen = state.selected.clone().and_then(|n| state.gens.iter().find(|g| g.name == n).cloned());
@@ -100,14 +109,11 @@ impl NekoviewApp {
                 ConfirmOutcome::Cancel => state.confirming = false,
                 ConfirmOutcome::Ok => {
                     match self.restore_tag_master_gen(&g.name) {
-                        Ok(()) => {
-                            self.set_toast(t.tag_gen_restored_toast());
-                            state.gens = tag_master_gen::list(&self.config.config_root);
-                        }
+                        Ok(()) => self.set_toast(t.tag_gen_restored_toast()),
                         Err(msg) => self.set_toast(msg),
                     }
-                    state.confirming = false;
-                    state.selected = None;
+                    // 実行したら窓を閉じる。
+                    return;
                 }
             }
         }
