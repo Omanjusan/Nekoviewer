@@ -6,7 +6,7 @@
 //! - 保存先はDBの新規テーブル `auto_tag_added_v1`。キーは既存のファイルID（ID+FP照合で、移動・改名に追従する）。
 //!   値はタグIDの並び。世代バックアップ・リカバリポイントはDBごと保存するので、そのまま同梱される
 //! - 同じファイルへ再び足したときは、前の記録に和集合で足す（前回分がまだ付いているため）
-//! - 手動で付けた分を記録から外す（`remove_ids`）のは、付け直し（P3）が使う
+//! - 手動で付けた分は記録から外す（`remove_ids`。タグパネルの手動の保存が呼ぶ）。付け直し（P3）は、記録のIDだけを外す
 
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -39,8 +39,15 @@ pub(crate) fn read_by_id(db: &Database, id: u64) -> Vec<u64> {
     t.get(id).ok().flatten().map(|g| decode(g.value())).unwrap_or_default()
 }
 
+/// ファイルの記録を返す。実体からIDを解決し直すので、移動・改名のあとでも引ける。IDを解決できないときは空。
+pub(crate) fn read_resolved(db: &Arc<Mutex<Database>>, dir: &Path, name: &str) -> Vec<u64> {
+    let Some(rec) = crate::file_identity::ensure_record(db, dir, name) else { return Vec::new() };
+    let Ok(guard) = db.lock() else { return Vec::new() };
+    read_by_id(&guard, rec.id)
+}
+
 /// ファイルの記録を返す。ファイルにIDがまだ無い（追えない）ときは空。IDは作らない。
-#[allow(dead_code)] // 付け直し（P3）が使う
+#[cfg(test)]
 pub(crate) fn read(db: &Arc<Mutex<Database>>, dir: &Path, name: &str) -> Vec<u64> {
     let key = crate::spread_state::make_key(dir, name);
     let Some(rec) = crate::file_identity::lookup(db, &key) else { return Vec::new() };
@@ -81,7 +88,6 @@ pub(crate) fn add(db: &Arc<Mutex<Database>>, dir: &Path, name: &str, ids: &[u64]
 }
 
 /// 記録から指定のIDを外す（手動で付けたタグを、自動付与の記録から外すとき）。記録が無ければ何もしない。成否を返す。
-#[allow(dead_code)] // 付け直し（P3）が使う
 pub(crate) fn remove_ids(db: &Arc<Mutex<Database>>, dir: &Path, name: &str, ids: &[u64]) -> bool {
     let key = crate::spread_state::make_key(dir, name);
     let Some(rec) = crate::file_identity::lookup(db, &key) else { return true };
@@ -97,7 +103,7 @@ pub(crate) fn remove_ids(db: &Arc<Mutex<Database>>, dir: &Path, name: &str, ids:
 }
 
 /// 全ファイルの記録を消す（「タグを全部クリア」のあと。タグが無いので記録も意味を失う）。成否を返す。
-#[allow(dead_code)] // 付け直し（P3）が使う
+#[cfg(test)]
 pub(crate) fn clear_all(db: &Arc<Mutex<Database>>) -> bool {
     let Ok(guard) = db.lock() else { return false };
     let Ok(tx) = guard.begin_write() else { return false };
@@ -126,10 +132,11 @@ pub(crate) struct RecordReport {
 pub(crate) fn record_from_trial(db: &Arc<Mutex<Database>>, record: &TrialRecord) -> RecordReport {
     let mut r = RecordReport::default();
     for f in &record.files {
-        if f.added.is_empty() {
+        if f.added.is_empty() && f.removed.is_empty() {
             continue;
         }
-        if add(db, &f.dir, &f.name, &f.added) {
+        // 付け直しで外した前回分は、記録から外してから、今回足した分を記録する（外して付け直したIDは、改めて記録される）。
+        if remove_ids(db, &f.dir, &f.name, &f.removed) && add(db, &f.dir, &f.name, &f.added) {
             r.recorded += 1;
         } else {
             r.failed += 1;
@@ -214,9 +221,9 @@ mod tests {
         let db = new_db(&dir);
         let rec = TrialRecord {
             files: vec![
-                TrialFile { dir: dir.clone(), name: "a.zip".into(), added: vec![1, 2] },
-                TrialFile { dir: dir.clone(), name: "b.zip".into(), added: vec![] },
-                TrialFile { dir: dir.clone(), name: "gone.zip".into(), added: vec![4] },
+                TrialFile { dir: dir.clone(), name: "a.zip".into(), added: vec![1, 2], removed: vec![] },
+                TrialFile { dir: dir.clone(), name: "b.zip".into(), added: vec![], removed: vec![] },
+                TrialFile { dir: dir.clone(), name: "gone.zip".into(), added: vec![4], removed: vec![] },
             ],
         };
         let r = record_from_trial(&db, &rec);

@@ -163,6 +163,8 @@ pub(crate) struct ApplyReport {
     pub alias_conflicts: usize,
     /// 作ったバックアップ世代の名前。
     pub backup: String,
+    /// 「前回の自動付与分を外して付け直す」で、前回分を外したファイルの数。
+    pub detached_files: usize,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -182,28 +184,39 @@ pub(crate) struct FileChange {
     pub existing: Vec<u64>,
     /// 合成後のタグ。
     pub merged: Vec<u64>,
+    /// 「前回の自動付与分を外して付け直す」で、適用の前に外すタグ（前回の自動付与の記録のうち、いま付いているもの）。
+    pub removed: Vec<u64>,
 }
 
 impl FileChange {
-    /// 適用で足すタグ（`existing` に無く `merged` にあるもの）。
+    /// 適用で足すタグ。付け直しで外した分を除いた既存のタグに無く、`merged` にあるもの
+    /// （外して付け直したタグも、足した扱いになる）。
     pub(crate) fn added(&self) -> Vec<u64> {
-        self.merged.iter().copied().filter(|id| !self.existing.contains(id)).collect()
+        self.merged.iter().copied().filter(|id| !self.existing.contains(id) || self.removed.contains(id)).collect()
     }
 }
 
 /// ファイルごとの変更を決める（まだ書き込まない）。戻り値は（変更の一覧, パスが引けず失敗した件数）。
 /// 既存のタグはDBから読み直して合成する（走査から時間が経っていても、後から付けたタグを消さない）。
+/// `detach` が true なら、各ファイルの前回の自動付与の記録のうち、いま付いているタグを先に外してから合成する
+/// （足すタグが無いファイルも、前回分は外す）。記録に無いタグ（手動で付けたもの等）には触らない。
 pub(crate) fn plan_file_changes(
     db: &Arc<Mutex<Database>>,
     paths: &[PathBuf],
     file_additions: &HashMap<usize, Vec<u64>>,
     master: &[TagManagerCategoryUi],
+    detach: bool,
 ) -> (Vec<FileChange>, usize) {
     let mut failed = 0;
     let mut changes = Vec::new();
-    let mut files: Vec<(&usize, &Vec<u64>)> = file_additions.iter().collect();
-    files.sort_by_key(|(i, _)| **i);
-    for (&fi, additions) in files {
+    let mut files: Vec<usize> = file_additions.keys().copied().collect();
+    if detach {
+        files.extend(0..paths.len());
+    }
+    files.sort_unstable();
+    files.dedup();
+    for fi in files {
+        let additions: &[u64] = file_additions.get(&fi).map(Vec::as_slice).unwrap_or(&[]);
         let Some(path) = paths.get(fi) else {
             failed += 1;
             continue;
@@ -213,8 +226,18 @@ pub(crate) fn plan_file_changes(
             continue;
         };
         let existing = crate::spread_state::read_archive_tags(db, dir, name);
-        let merged = merge_file_tags_in(master, &existing, additions);
-        changes.push(FileChange { dir: dir.to_path_buf(), name: name.to_string(), existing, merged });
+        let removed: Vec<u64> = if detach {
+            crate::tag_auto_record::read_resolved(db, dir, name).into_iter().filter(|id| existing.contains(id)).collect()
+        } else {
+            Vec::new()
+        };
+        // 足すタグも外すタグも無いファイルは、変更の一覧に入れない。
+        if removed.is_empty() && !file_additions.contains_key(&fi) {
+            continue;
+        }
+        let base: Vec<u64> = existing.iter().copied().filter(|id| !removed.contains(id)).collect();
+        let merged = merge_file_tags_in(master, &base, additions);
+        changes.push(FileChange { dir: dir.to_path_buf(), name: name.to_string(), existing, merged, removed });
     }
     (changes, failed)
 }
@@ -243,7 +266,7 @@ pub(crate) fn write_file_tags(
     file_additions: &HashMap<usize, Vec<u64>>,
     master: &[TagManagerCategoryUi],
 ) -> (usize, usize, usize) {
-    let (changes, unresolved) = plan_file_changes(db, paths, file_additions, master);
+    let (changes, unresolved) = plan_file_changes(db, paths, file_additions, master, false);
     let (tagged, unchanged, failed) = write_file_changes(db, &changes);
     (tagged, unchanged, failed + unresolved)
 }
@@ -255,7 +278,8 @@ pub(crate) fn trial_record_of(changes: &[FileChange]) -> TrialRecord {
             .iter()
             .filter_map(|c| {
                 let added = c.added();
-                (!added.is_empty()).then(|| TrialFile { dir: c.dir.clone(), name: c.name.clone(), added })
+                (!added.is_empty() || !c.removed.is_empty())
+                    .then(|| TrialFile { dir: c.dir.clone(), name: c.name.clone(), added, removed: c.removed.clone() })
             })
             .collect(),
     }
@@ -263,6 +287,7 @@ pub(crate) fn trial_record_of(changes: &[FileChange]) -> TrialRecord {
 
 /// 適用を実行する。`backup` はバックアップを取り、成功したら世代名を返す（失敗は None）。
 /// `save_master` はマスターを保存する。`save_record` は、足すタグの記録を保存する（保存できたら true）。
+/// `detach` は「前回の自動付与分を外して付け直す」（`plan_file_changes` を参照）。
 /// 順序は バックアップ → 変更の決定 → 記録の保存 → マスター保存 → タグ書き込み。
 /// 記録を保存できなかったら、マスターもタグも変えずに `RecordFailed` で中止する（試用の破棄で戻せなくなるため）。
 pub(crate) fn run_apply(
@@ -270,12 +295,13 @@ pub(crate) fn run_apply(
     paths: &[PathBuf],
     plan: &Plan,
     master: &[TagManagerCategoryUi],
+    detach: bool,
     backup: &dyn Fn() -> Option<String>,
     save_master: &dyn Fn(),
     save_record: &dyn Fn(&TrialRecord) -> bool,
 ) -> Result<ApplyReport, ApplyError> {
     let backup_name = backup().ok_or(ApplyError::BackupFailed)?;
-    let (changes, unresolved) = plan_file_changes(db, paths, &plan.file_additions, master);
+    let (changes, unresolved) = plan_file_changes(db, paths, &plan.file_additions, master, detach);
     // 足すタグの記録は、書き込みの前に保存する。途中で落ちても、破棄で外せる。
     if !save_record(&trial_record_of(&changes)) {
         return Err(ApplyError::RecordFailed);
@@ -293,6 +319,7 @@ pub(crate) fn run_apply(
         renamed_elements: plan.renames.len(),
         alias_conflicts: plan.alias_conflicts,
         backup: backup_name,
+        detached_files: changes.iter().filter(|c| !c.removed.is_empty()).count(),
     })
 }
 
@@ -446,7 +473,7 @@ mod tests {
         let mut adds: HashMap<usize, Vec<u64>> = HashMap::new();
         adds.insert(0, vec![10, 20]);
         adds.insert(1, vec![10, 20]); // b は既に両方持っている
-        let (changes, unresolved) = plan_file_changes(&db, &paths, &adds, &master());
+        let (changes, unresolved) = plan_file_changes(&db, &paths, &adds, &master(), false);
         assert_eq!(unresolved, 0);
         let rec = trial_record_of(&changes);
         assert_eq!(rec.files.len(), 1, "変化の無い b は記録しない");
@@ -455,7 +482,7 @@ mod tests {
         // 記録を保存できなければ、マスターもタグも変えずに中止する。
         let plan = Plan { file_additions: adds, ..Plan::default() };
         let saved = Cell::new(false);
-        let r = run_apply(&db, &paths, &plan, &master(), &|| Some("g".into()), &|| saved.set(true), &|_| false);
+        let r = run_apply(&db, &paths, &plan, &master(), false, &|| Some("g".into()), &|| saved.set(true), &|_| false);
         assert_eq!(r, Err(ApplyError::RecordFailed));
         assert!(!saved.get());
         assert_eq!(crate::spread_state::read_archive_tags(&db, &root, "a.zip"), vec![1]);
@@ -470,7 +497,7 @@ mod tests {
         for i in 0..4 {
             adds.insert(i, vec![10, 20]);
         }
-        let (changes, _) = plan_file_changes(&db, &paths, &adds, &master());
+        let (changes, _) = plan_file_changes(&db, &paths, &adds, &master(), false);
         let rec = trial_record_of(&changes);
         let (tagged, _, _) = write_file_changes(&db, &changes);
         assert_eq!(tagged, 4);
@@ -491,6 +518,75 @@ mod tests {
         // もう一度外しても変化なし。
         let r = remove_added_tags(&db, &rec);
         assert_eq!((r.restored, r.unchanged, r.missing), (0, 3, 1));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn detach_removes_only_recorded_tags_and_discard_restores_them() {
+        use crate::tag_auto_record as rec;
+        use crate::tag_trial::remove_added_tags;
+        let cats = vec![cat("作者", false, None, vec![tier(1, "a"), tier(2, "b"), tier(3, "c"), tier(4, "d")])];
+        let (db, root, paths) = seed_db("detach", &[("a.zip", &[1, 2, 3]), ("b.zip", &[1]), ("c.zip", &[3])]);
+        // 前回の自動付与の記録: a は 1・2（3 は手動）、b は 1。c は記録なし（手動の 3 だけ）。
+        assert!(rec::add(&db, &root, "a.zip", &[1, 2]));
+        assert!(rec::add(&db, &root, "b.zip", &[1]));
+        let mut adds: HashMap<usize, Vec<u64>> = HashMap::new();
+        adds.insert(0, vec![2, 4]); // a: 2 は付け直し、4 は新規
+        let read = |n: &str| {
+            let mut v = crate::spread_state::read_archive_tags(&db, &root, n);
+            v.sort_unstable();
+            v
+        };
+
+        // 付け直しOFF: 従来どおり足すだけ（外さない）。
+        let (off, _) = plan_file_changes(&db, &paths, &adds, &cats, false);
+        assert_eq!(off.len(), 1);
+        assert!(off[0].removed.is_empty());
+        assert_eq!(off[0].added(), vec![4]);
+
+        // 付け直しON: 記録のうち、いま付いているものだけを外す。足すタグが無い b も外れる。記録の無い c には触れない。
+        let (on, unresolved) = plan_file_changes(&db, &paths, &adds, &cats, true);
+        assert_eq!(unresolved, 0);
+        assert_eq!(on.len(), 2, "c は足すものも外すものも無いので入らない");
+        let (a, b) = (&on[0], &on[1]);
+        assert_eq!((a.name.as_str(), a.removed.clone()), ("a.zip", vec![1, 2]));
+        assert_eq!(a.added(), vec![2, 4], "外して付け直した 2 も、足した扱い");
+        assert_eq!((b.name.as_str(), b.removed.clone(), b.added()), ("b.zip", vec![1], Vec::<u64>::new()));
+        let record = trial_record_of(&on);
+        assert_eq!(record.files.len(), 2);
+        let (tagged, _, failed) = write_file_changes(&db, &on);
+        assert_eq!((tagged, failed), (2, 0));
+        assert_eq!(read("a.zip"), vec![2, 3, 4], "手動の 3 は残り、1 は外れ、2 は付け直され、4 が増える");
+        assert_eq!(read("b.zip"), Vec::<u64>::new());
+        assert_eq!(read("c.zip"), vec![3]);
+
+        // 確定すると、自動付与の記録は「外した分を除き、今回足した分」になる。
+        let report = rec::record_from_trial(&db, &record);
+        assert_eq!((report.recorded, report.failed), (2, 0));
+        assert_eq!(rec::read(&db, &root, "a.zip"), vec![2, 4]);
+        assert!(rec::read(&db, &root, "b.zip").is_empty());
+
+        // 破棄（確定の前に取り消した場合）は、外した前回分も元に戻す。
+        let before = remove_added_tags(&db, &record);
+        assert_eq!(before.failed, 0);
+        assert_eq!(read("a.zip"), vec![1, 2, 3], "適用前の状態に戻る");
+        assert_eq!(read("b.zip"), vec![1]);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn manual_tags_are_protected_by_removing_them_from_the_record() {
+        use crate::tag_auto_record as rec;
+        let cats = vec![cat("作者", false, None, vec![tier(1, "a"), tier(2, "b")])];
+        let (db, root, paths) = seed_db("protect", &[("a.zip", &[1, 2])]);
+        assert!(rec::add(&db, &root, "a.zip", &[1, 2]));
+        // 手動で 2 を外して付け直した（panels の確定フックが、新しく付けたIDを記録から外す）。
+        assert!(rec::remove_ids(&db, &root, "a.zip", &[2]));
+        let adds: HashMap<usize, Vec<u64>> = HashMap::new();
+        let (on, _) = plan_file_changes(&db, &paths, &adds, &cats, true);
+        assert_eq!(on[0].removed, vec![1], "記録に残っている 1 だけが外れる。手動の 2 は残る");
+        write_file_changes(&db, &on);
+        assert_eq!(crate::spread_state::read_archive_tags(&db, &root, "a.zip"), vec![2]);
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -567,7 +663,7 @@ mod tests {
         adds.insert(0, vec![10]);
         let plan = Plan { file_additions: adds, new_categories: 1, new_elements: 2, ..Plan::default() };
         let saved = Cell::new(false);
-        let r = run_apply(&db, &paths, &plan, &master(), &|| None, &|| saved.set(true), &|_| true);
+        let r = run_apply(&db, &paths, &plan, &master(), false, &|| None, &|| saved.set(true), &|_| true);
         assert_eq!(r, Err(ApplyError::BackupFailed));
         assert!(!saved.get(), "バックアップに失敗したらマスターも保存しない");
         assert!(crate::spread_state::read_archive_tags(&db, &root, "a.zip").is_empty(), "タグも書かない");
@@ -578,6 +674,7 @@ mod tests {
             &paths,
             &plan,
             &master(),
+            false,
             &|| {
                 order.borrow_mut().push("backup");
                 Some("gen-1".to_string())

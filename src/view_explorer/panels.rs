@@ -1094,7 +1094,12 @@ impl NekoviewApp {
                 ids.push(main_id);
             }
         }
-        crate::spread_state::write_archive_tags(db, dir, filename, &ids);
+        // 手動で付け直した（新しく付けた）タグは、自動付与の記録から外す。再抽出の「前回分を外して付け直す」で消されないようにする。
+        let before = crate::spread_state::read_archive_tags(db, dir, filename);
+        let newly: Vec<u64> = ids.iter().copied().filter(|id| !before.contains(id)).collect();
+        if crate::spread_state::write_archive_tags(db, dir, filename, &ids) && !newly.is_empty() {
+            crate::tag_auto_record::remove_ids(db, dir, filename, &newly);
+        }
     }
 
     /// タグパネル: 選択中ファイルと`tag_main_selected`/`tag_attr_selected`の紐付けを

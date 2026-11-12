@@ -121,6 +121,8 @@ pub(super) struct TagConfirm {
     limit_keep: bool,
     /// 切り捨てて候補から除いた数（種類ごと）。窓に注意書きを出す。
     truncated: Vec<(Role, usize)>,
+    /// 「前回の自動付与分を外して付け直す」（既定はOFF）。
+    reattach: bool,
 }
 
 /// 適用前に見せる、書き換わる既存要素の一覧。
@@ -160,7 +162,7 @@ impl TagConfirm {
         } else {
             return None;
         };
-        Some(Self { set, inputs: Arc::new(inputs), paths, master: Arc::new(master), model, rules, stage, only_unconfirmed: false, rebuild: None, threshold_draft: None, checked: HashSet::new(), filter: String::new(), next_bundle_id: 1, merge_msg: None, rename_review: None, limit, limit_keep: false, truncated: Vec::new() })
+        Some(Self { set, inputs: Arc::new(inputs), paths, master: Arc::new(master), model, rules, stage, only_unconfirmed: false, rebuild: None, threshold_draft: None, checked: HashSet::new(), filter: String::new(), next_bundle_id: 1, merge_msg: None, rename_review: None, limit, limit_keep: false, truncated: Vec::new(), reattach: false })
     }
 
     /// 切替項目が変わったので、別スレッドで候補を作り直す。進行中の作り直しは捨てる。
@@ -423,6 +425,10 @@ impl NekoviewApp {
             };
             ui.horizontal(|ui| {
                 let has_two = st.set.candidates.iter().any(|c| c.role.window() == Window::Two);
+                // 適用のできる窓では、前回の自動付与分を外して付け直すかを選べる（既定はOFF）。
+                if stage == Window::Two || !has_two {
+                    ui.checkbox(&mut st.reattach, t.tag_confirm_reattach()).on_hover_text(t.tag_confirm_reattach_hover());
+                }
                 if stage == Window::Two {
                     let back_enabled = st.set.candidates.iter().any(|c| c.role.window() == Window::One);
                     if ui.add_enabled(back_enabled, egui::Button::new(t.tag_confirm_back())).clicked() {
@@ -735,6 +741,7 @@ impl NekoviewApp {
             return;
         }
         let paths = st.paths.clone();
+        let detach = st.reattach;
         let root = self.config.config_root.clone();
         let keep = self.config.backup_generations as usize;
         let (worker_master, worker_next) = (master.clone(), next);
@@ -755,7 +762,7 @@ impl NekoviewApp {
             let save_master =
                 || crate::tag_manager::save_slot(&root, crate::tag_manager::Slot::Trial, &worker_master, worker_next);
             let save_record = |r: &crate::tag_trial::TrialRecord| r.save(&root);
-            let out = run_apply(&db, &paths, &plan, &worker_master, &backup, &save_master, &save_record);
+            let out = run_apply(&db, &paths, &plan, &worker_master, detach, &backup, &save_master, &save_record);
             let _ = tx.send(out);
             ctx.request_repaint();
         });

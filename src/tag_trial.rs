@@ -21,6 +21,9 @@ pub(crate) struct TrialFile {
     pub name: String,
     /// 適用で足したタグID。
     pub added: Vec<u64>,
+    /// 「前回の自動付与分を外して付け直す」で、適用の前に外したタグID（破棄で元に戻す）。旧い記録には無い（空）。
+    #[serde(default)]
+    pub removed: Vec<u64>,
 }
 
 /// 試用中の記録。
@@ -84,7 +87,13 @@ pub(crate) fn remove_added_tags(db: &Arc<Mutex<Database>>, record: &TrialRecord)
     let mut r = DiscardReport::default();
     for f in &record.files {
         let current = crate::spread_state::read_archive_tags(db, &f.dir, &f.name);
-        let kept: Vec<u64> = current.iter().copied().filter(|id| !f.added.contains(id)).collect();
+        let mut kept: Vec<u64> = current.iter().copied().filter(|id| !f.added.contains(id)).collect();
+        // 付け直しで外した前回分は、元に戻す（適用前の状態に戻すため）。
+        for id in &f.removed {
+            if !kept.contains(id) {
+                kept.push(*id);
+            }
+        }
         if kept == current {
             if f.dir.join(&f.name).exists() {
                 r.unchanged += 1;
@@ -117,8 +126,8 @@ mod tests {
         assert_eq!(TrialRecord::load(&root), None);
         let rec = TrialRecord {
             files: vec![
-                TrialFile { dir: PathBuf::from("/a/b"), name: "x.zip".into(), added: vec![3, 4] },
-                TrialFile { dir: PathBuf::from("/a/c"), name: "日本語.cbz".into(), added: vec![9] },
+                TrialFile { dir: PathBuf::from("/a/b"), name: "x.zip".into(), added: vec![3, 4], removed: vec![] },
+                TrialFile { dir: PathBuf::from("/a/c"), name: "日本語.cbz".into(), added: vec![9], removed: vec![2] },
             ],
         };
         assert!(rec.save(&root));
@@ -130,6 +139,9 @@ mod tests {
         assert_eq!(TrialRecord::load(&root), Some(rec2));
         TrialRecord::remove(&root);
         assert_eq!(TrialRecord::load(&root), None);
+        // `removed` を持たない旧い記録も読める。
+        std::fs::write(record_path(&root), r#"{"files":[{"dir":"/a","name":"x.zip","added":[1]}]}"#).unwrap();
+        assert_eq!(TrialRecord::load(&root).unwrap().files[0].removed, Vec::<u64>::new());
         // 壊れたファイルは None。
         std::fs::write(record_path(&root), "{ broken").unwrap();
         assert_eq!(TrialRecord::load(&root), None);

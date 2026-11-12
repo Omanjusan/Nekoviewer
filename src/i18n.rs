@@ -4924,6 +4924,22 @@ impl Lang {
         }
     }
 
+    pub fn tag_confirm_reattach(self) -> &'static str {
+        match self {
+            Lang::Japanese => "前回の自動付与分を外して付け直す",
+            Lang::English  => "Remove previous auto-tags and re-apply",
+            Lang::Chinese  => "移除上次自动标记后重新标记",
+        }
+    }
+
+    pub fn tag_confirm_reattach_hover(self) -> &'static str {
+        match self {
+            Lang::Japanese => "前回「確定」した自動付与のうち、いまも付いているタグを先に外してから、今回の分を付けます。手動で付けたタグには触れません。「破棄」すると、外した分も元に戻ります。",
+            Lang::English  => "Before applying, removes the tags that were auto-applied at the last confirmation and are still attached, then applies this time's tags. Tags you added manually are left alone. \"Discard\" restores the removed tags.",
+            Lang::Chinese  => "先移除上次确认时自动添加且仍存在的标签，再添加本次的标签。手动添加的标签不会被改动。“放弃”时会恢复被移除的标签。",
+        }
+    }
+
     pub fn tag_trial_confirmed_record_failed(self, n: usize) -> String {
         match self {
             Lang::Japanese => format!("確定しました。ただし{n}件のファイルは、自動付与の記録を残せませんでした（ファイルが見つからない等）"),
@@ -5646,18 +5662,28 @@ impl Lang {
         } else {
             (String::new(), String::new(), String::new())
         };
+        // 前回の自動付与分を外して付け直したとき（あるときだけ付ける）。
+        let (dt_ja, dt_en, dt_zh) = if r.detached_files > 0 {
+            (
+                format!(" / 前回の自動付与分を外したファイル{}件", r.detached_files),
+                format!(" / files whose previous auto-tags were removed: {}", r.detached_files),
+                format!(" / 已移除上次自动标记的文件：{} 个", r.detached_files),
+            )
+        } else {
+            (String::new(), String::new(), String::new())
+        };
         match self {
             Lang::Japanese => format!(
-                "タグを付けました: {}件（変化なし{}件{}） / 新規要素{}個・新規カテゴリ{}個{}{} / バックアップ: {}",
-                r.tagged, r.unchanged, fail_ja, r.new_elements, r.new_categories, rn_ja, cf_ja, r.backup
+                "タグを付けました: {}件（変化なし{}件{}） / 新規要素{}個・新規カテゴリ{}個{}{}{} / バックアップ: {}",
+                r.tagged, r.unchanged, fail_ja, r.new_elements, r.new_categories, rn_ja, cf_ja, dt_ja, r.backup
             ),
             Lang::English => format!(
-                "Tags applied: {} file(s) (unchanged {}{}) / new elements {}, new categories {}{}{} / backup: {}",
-                r.tagged, r.unchanged, fail_en, r.new_elements, r.new_categories, rn_en, cf_en, r.backup
+                "Tags applied: {} file(s) (unchanged {}{}) / new elements {}, new categories {}{}{}{} / backup: {}",
+                r.tagged, r.unchanged, fail_en, r.new_elements, r.new_categories, rn_en, cf_en, dt_en, r.backup
             ),
             Lang::Chinese => format!(
-                "已添加标签：{} 个文件（无变化 {} 个{}） / 新元素 {} 个、新类别 {} 个{}{} / 备份：{}",
-                r.tagged, r.unchanged, fail_zh, r.new_elements, r.new_categories, rn_zh, cf_zh, r.backup
+                "已添加标签：{} 个文件（无变化 {} 个{}） / 新元素 {} 个、新类别 {} 个{}{}{} / 备份：{}",
+                r.tagged, r.unchanged, fail_zh, r.new_elements, r.new_categories, rn_zh, cf_zh, dt_zh, r.backup
             ),
         }
     }
