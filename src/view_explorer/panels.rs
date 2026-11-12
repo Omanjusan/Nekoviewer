@@ -1437,9 +1437,9 @@ impl NekoviewApp {
     }
 
     /// いま読み書きするマスターの保存先。
-    /// マスター世代を残す数。設定画面で変えられるようにする（P4）までは既定値。
+    /// マスター世代を残す数（設定の「DB」タブ）。
     pub(super) fn tag_master_gen_keep(&self) -> usize {
-        crate::tag_master_gen::DEFAULT_KEEP
+        self.config.tag_master_generations as usize
     }
 
     pub(super) fn tag_master_slot(&self) -> crate::tag_manager::Slot {

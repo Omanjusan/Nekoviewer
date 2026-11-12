@@ -33,6 +33,8 @@ pub(crate) enum SettingsTab {
     Keymap,
     /// コマ送り（疑似コマ送りモード）。2段目の先頭。
     Koma,
+    /// データベース（本体DB・タグマスター・バックアップ場所）。2段目。
+    Database,
     #[cfg(windows)]
     Windows,
     Other,
@@ -54,7 +56,7 @@ fn settings_tab_rows() -> [Vec<SettingsTab>; 2] {
     ];
     #[cfg(windows)]
     first.push(SettingsTab::Windows);
-    [first, vec![SettingsTab::Koma, SettingsTab::Other, SettingsTab::Debug]]
+    [first, vec![SettingsTab::Koma, SettingsTab::Database, SettingsTab::Other, SettingsTab::Debug]]
 }
 
 fn settings_tab_label(tab: SettingsTab) -> &'static str {
@@ -69,6 +71,7 @@ fn settings_tab_label(tab: SettingsTab) -> &'static str {
         SettingsTab::Translate => t.settings_tab_translate(),
         SettingsTab::Keymap => "キーアサイン",
         SettingsTab::Koma => t.settings_tab_koma(),
+        SettingsTab::Database => t.settings_tab_database(),
         #[cfg(windows)]
         SettingsTab::Windows => t.settings_tab_windows(),
         SettingsTab::Other => t.settings_tab_other(),
@@ -140,6 +143,7 @@ pub(crate) struct SettingsDraft {
     thumb_size: u32,
     unconfirmed_retention_days: u32,
     backup_generations: u32,
+    tag_master_generations: u32,
     idle_thumb_generation: bool,
     idle_thumb_wait_secs: u32,
     idle_thumb_while_viewer: bool,
@@ -298,6 +302,7 @@ impl SettingsDraft {
             thumb_size: config.thumb_size,
             unconfirmed_retention_days: config.unconfirmed_retention_days,
             backup_generations: config.backup_generations,
+            tag_master_generations: config.tag_master_generations,
             idle_thumb_generation: config.idle_thumb_generation,
             idle_thumb_wait_secs: config.idle_thumb_wait_secs,
             idle_thumb_while_viewer: config.idle_thumb_while_viewer,
@@ -372,6 +377,9 @@ impl SettingsDraft {
         config.backup_generations = self
             .backup_generations
             .clamp(crate::config::BACKUP_GENERATIONS_MIN, crate::config::BACKUP_GENERATIONS_MAX);
+        config.tag_master_generations = self
+            .tag_master_generations
+            .clamp(crate::config::TAG_MASTER_GENERATIONS_MIN, crate::config::TAG_MASTER_GENERATIONS_MAX);
         config.idle_thumb_generation = self.idle_thumb_generation;
         config.idle_thumb_wait_secs = self
             .idle_thumb_wait_secs
@@ -1602,10 +1610,7 @@ impl NekoviewApp {
 
             match self.settings_tab {
                 SettingsTab::Common => draw_settings_tab_common(ui, &mut self.settings_draft),
-                SettingsTab::Explorer => {
-                    draw_settings_tab_explorer(ui, &mut self.settings_draft);
-                    self.draw_settings_database_section(ui);
-                }
+                SettingsTab::Explorer => draw_settings_tab_explorer(ui, &mut self.settings_draft),
                 SettingsTab::Anim => draw_settings_tab_anim(ui, &mut self.settings_draft),
                 SettingsTab::Static => self.draw_settings_tab_static(ui),
                 SettingsTab::Viewer => draw_settings_tab_viewer(ui, &mut self.settings_draft),
@@ -1613,6 +1618,7 @@ impl NekoviewApp {
                 SettingsTab::Translate => self.draw_settings_tab_translate(ui, ctx),
                 SettingsTab::Keymap => draw_settings_tab_keymap(ui, &mut self.settings_draft),
                 SettingsTab::Koma => draw_settings_tab_koma(ui, &mut self.settings_draft),
+                SettingsTab::Database => self.draw_settings_tab_database(ui),
                 #[cfg(windows)]
                 SettingsTab::Windows => self.draw_settings_tab_windows(ui),
                 SettingsTab::Other => self.draw_settings_tab_other(ui),
@@ -1885,11 +1891,11 @@ impl NekoviewApp {
         });
     }
 
-    /// エクスプローラータブ末尾の「データベース管理」。未確認IDの保持日数とバックアップ関連を集約する。
-    fn draw_settings_database_section(&mut self, ui: &mut egui::Ui) {
+    /// 「DB」タブ。本体データベース・タグマスター・バックアップ場所の3セクション。
+    fn draw_settings_tab_database(&mut self, ui: &mut egui::Ui) {
+        let t = i18n::t();
         // 重複の解決UIの「削除まで残り○日」の元になる、未確認IDの保持日数。
-        ui.separator();
-        ui.label(i18n::t().settings_database_heading());
+        ui.label(egui::RichText::new(t.settings_database_heading()).strong().size(15.0));
         ui.add_space(4.0);
         ui.label(i18n::t().settings_unconfirmed_retention_label());
         ui.horizontal(|ui| {
@@ -1920,8 +1926,27 @@ impl NekoviewApp {
         self.draw_db_backup_section(ui);
         self.draw_unreachable_clean_section(ui);
 
+        // タグマスター（nekoviewer_tags.json）の履歴の世代数。履歴の操作はタグ管理画面の「ロールバック」。
+        ui.separator();
+        ui.label(egui::RichText::new(t.settings_tag_master_heading()).strong().size(15.0));
+        ui.add_space(4.0);
+        ui.label(t.settings_tag_master_generations_label());
+        ui.horizontal(|ui| {
+            ui.add(
+                egui::Slider::new(
+                    &mut self.settings_draft.tag_master_generations,
+                    crate::config::TAG_MASTER_GENERATIONS_MIN..=crate::config::TAG_MASTER_GENERATIONS_MAX,
+                )
+                .show_value(false),
+            );
+            ui.label(t.settings_tag_master_generations_value(self.settings_draft.tag_master_generations));
+        });
+        ui.label(t.settings_tag_master_generations_explain());
+
         // 移行前の自動バックアップ（`backup_auto/`）の場所を開く。まだ無ければ押せない。
         ui.separator();
+        ui.label(egui::RichText::new(t.settings_backup_folder_heading()).strong().size(15.0));
+        ui.add_space(4.0);
         ui.label(i18n::t().settings_backup_folder_label());
         let backup_dir = crate::dev_db_backup::auto_backup_dir(&self.config.config_root);
         let exists = backup_dir.is_dir();
@@ -1998,7 +2023,7 @@ mod tests {
     #[test]
     fn settings_tabs_are_two_rows_with_koma_leading_the_second() {
         let [first, second] = settings_tab_rows();
-        assert_eq!(second, vec![SettingsTab::Koma, SettingsTab::Other, SettingsTab::Debug]);
+        assert_eq!(second, vec![SettingsTab::Koma, SettingsTab::Database, SettingsTab::Other, SettingsTab::Debug]);
         // 1段目は従来の並び（コマ送り・その他・デバッグを含まない）。
         assert_eq!(first[0], SettingsTab::Common);
         assert_eq!(first[7], SettingsTab::Keymap);
@@ -2012,7 +2037,7 @@ mod tests {
         let mut expected = vec![
             SettingsTab::Common, SettingsTab::Explorer, SettingsTab::Anim, SettingsTab::Static,
             SettingsTab::Viewer, SettingsTab::Slideshow, SettingsTab::Translate, SettingsTab::Keymap,
-            SettingsTab::Koma, SettingsTab::Other, SettingsTab::Debug,
+            SettingsTab::Koma, SettingsTab::Database, SettingsTab::Other, SettingsTab::Debug,
         ];
         #[cfg(windows)]
         expected.push(SettingsTab::Windows);

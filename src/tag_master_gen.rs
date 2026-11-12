@@ -10,9 +10,6 @@
 //!
 //! 対象はマスターのJSONだけ。ファイルのタグ付け（DB）は含まない。
 
-// 世代数の範囲（KEEP_MIN/KEEP_MAX）は、設定画面（P4）が使う。それまで未使用。
-#![allow(dead_code)]
-
 use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -25,8 +22,6 @@ const STEM: &str = "tags";
 const TIMESTAMP_LEN: usize = 15;
 /// 連続編集を1回にまとめる間隔（秒）。直前のスナップショットからこの間は新しく取らない。
 pub(crate) const DEBOUNCE_SECS: u64 = 60;
-/// 世代数の既定（設定画面で変えられるようにするまでの固定値）。
-pub(crate) const DEFAULT_KEEP: usize = 5;
 pub(crate) const KEEP_MIN: usize = 1;
 pub(crate) const KEEP_MAX: usize = 10;
 

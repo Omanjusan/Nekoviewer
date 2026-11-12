@@ -156,6 +156,9 @@ fn main() {
         if let Some(v) = state.app_backup_generations {
             cfg.backup_generations = v.clamp(config::BACKUP_GENERATIONS_MIN, config::BACKUP_GENERATIONS_MAX);
         }
+        if let Some(v) = state.app_tag_master_generations {
+            cfg.tag_master_generations = v.clamp(config::TAG_MASTER_GENERATIONS_MIN, config::TAG_MASTER_GENERATIONS_MAX);
+        }
 
         // フェーズ4b: decode_threads/default_slotも同様にstate側を優先する。
         if let Some(v) = state.app_decode_threads { cfg.decode_threads = v; }

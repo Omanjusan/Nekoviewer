@@ -126,6 +126,10 @@ pub const UNCONFIRMED_RETENTION_DAYS_DEFAULT: u32 = 60;
 pub const BACKUP_GENERATIONS_MIN: u32 = 1;
 pub const BACKUP_GENERATIONS_MAX: u32 = 10;
 pub const BACKUP_GENERATIONS_DEFAULT: u32 = 3;
+/// タグマスター（`tag_master_gen/`）の世代数の範囲と既定値。
+pub const TAG_MASTER_GENERATIONS_MIN: u32 = 1;
+pub const TAG_MASTER_GENERATIONS_MAX: u32 = 10;
+pub const TAG_MASTER_GENERATIONS_DEFAULT: u32 = 5;
 /// 手すき時間のサムネ生成を始めるまでの待ち（最後の入力から、秒）。
 pub const IDLE_THUMB_WAIT_MIN: u32 = 1;
 pub const IDLE_THUMB_WAIT_MAX: u32 = 30;
@@ -220,6 +224,8 @@ pub struct AppConfig {
     pub unconfirmed_retention_days: u32,
     /// DBバックアップ（`backup_auto/` の世代）を残す世代数（1〜10）。
     pub backup_generations: u32,
+    /// タグマスターの履歴（`tag_master_gen/`）を残す世代数（1〜10）。
+    pub tag_master_generations: u32,
     /// ページデコードの並列スレッド数（0 = 自動: 論理コア数/2）
     pub decode_threads: usize,
     /// 操作が止まっている間に、現在地フォルダのサムネ生成を続けるか（1件ずつ。idle_thumb.rs）。
@@ -316,6 +322,7 @@ impl AppConfig {
             thumb_size: 256,
             unconfirmed_retention_days: UNCONFIRMED_RETENTION_DAYS_DEFAULT,
             backup_generations: BACKUP_GENERATIONS_DEFAULT,
+            tag_master_generations: TAG_MASTER_GENERATIONS_DEFAULT,
             decode_threads: 0,
             idle_thumb_generation: true,
             idle_thumb_wait_secs: IDLE_THUMB_WAIT_DEFAULT,

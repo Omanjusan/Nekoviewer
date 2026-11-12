@@ -5658,11 +5658,60 @@ impl Lang {
         }
     }
 
+    /// 「DB」タブ: 本体データベースのセクション見出し
     pub fn settings_database_heading(self) -> &'static str {
         match self {
-            Lang::Japanese => "データベース管理",
-            Lang::English  => "Database management",
-            Lang::Chinese  => "数据库管理",
+            Lang::Japanese => "本体データベース（評価・タグ付け・お気に入りなど）",
+            Lang::English  => "Main database (ratings, tagging, favorites, etc.)",
+            Lang::Chinese  => "主数据库（评分、标签、收藏等）",
+        }
+    }
+
+    pub fn settings_tab_database(self) -> &'static str {
+        match self {
+            Lang::Japanese => "DB",
+            Lang::English  => "DB",
+            Lang::Chinese  => "数据库",
+        }
+    }
+
+    pub fn settings_tag_master_heading(self) -> &'static str {
+        match self {
+            Lang::Japanese => "タグマスター（カテゴリ・要素の定義）",
+            Lang::English  => "Tag master (category and element definitions)",
+            Lang::Chinese  => "标签主表（分类和元素的定义）",
+        }
+    }
+
+    pub fn settings_tag_master_generations_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "履歴を残す世代数",
+            Lang::English  => "Generations to keep",
+            Lang::Chinese  => "保留的版本数",
+        }
+    }
+
+    pub fn settings_tag_master_generations_value(self, n: u32) -> String {
+        match self {
+            Lang::Japanese => format!("{n} 世代"),
+            Lang::English  => format!("{n} generations"),
+            Lang::Chinese  => format!("{n} 个版本"),
+        }
+    }
+
+    pub fn settings_tag_master_generations_explain(self) -> &'static str {
+        match self {
+            Lang::Japanese => "タグ管理画面を開いて編集するたびに、開く前の状態が履歴に残ります。履歴から戻すには、タグ管理画面の「ロールバック」を使います。超えた分は古い順に消えます。",
+            Lang::English  => "Each time you open the tag manager and edit, the state before opening is kept. To go back, use \"Rollback\" in the tag manager. Older generations beyond this number are deleted first.",
+            Lang::Chinese  => "每次打开标签管理并编辑时，打开前的状态会被保留。要恢复请使用标签管理中的“回滚”。超出的部分按从旧到新的顺序删除。",
+        }
+    }
+
+    pub fn settings_backup_folder_heading(self) -> &'static str {
+        match self {
+            Lang::Japanese => "バックアップの場所",
+            Lang::English  => "Backup location",
+            Lang::Chinese  => "备份位置",
         }
     }
 
