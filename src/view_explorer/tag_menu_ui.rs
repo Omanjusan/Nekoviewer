@@ -61,7 +61,7 @@ impl NekoviewApp {
 
         // 3: 大ルール（仮の一覧窓）
         let resp = ui
-            .add(egui::Button::new(t.tag_rules_open_button()).right_text(egui::RichText::new(t.tag_rules_count(self.tag_rules.rules.len())).weak()))
+            .add(egui::Button::new(t.tag_rules_open_button()).right_text(egui::RichText::new(t.tag_rules_count(self.tag_rules.rules.iter().filter(|r| r.enabled).count(), self.tag_rules.rules.len())).weak()))
             .on_hover_text(t.tag_rules_open_hover());
         if resp.clicked() {
             self.tag_rules_open = !self.tag_rules_open;

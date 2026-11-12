@@ -1180,6 +1180,10 @@ pub struct NekoviewApp {
     tag_learn: Option<tag_learning_ui::TagLearn>,
     /// 大ルールの一覧窓（仮。編集UIは後で決める）を開いているか。
     tag_rules_open: bool,
+    /// ルール一覧で、削除の確認を出しているルールのID。
+    tag_rules_del_ask: Option<u64>,
+    /// ルール一覧の「コピーして編集」で、コピー元に選んでいるルールのID。
+    tag_rules_copy_src: Option<u64>,
     /// 一括タグ付けの適用後の「試用中」か。試用中は仮マスター（`nekoviewer_tags.trial.json`）を読み書きし、
     /// 本物のマスターは確定まで変えない。ファイルが残っていれば、次回起動も試用中から始まる。
     pub(crate) tag_trial_active: bool,
@@ -1544,7 +1548,16 @@ impl NekoviewApp {
         }
         let tag_learned = tag_learning_ui::load_learned(&config_root);
         let tag_model = tag_learning_ui::train_model(&tag_learned, &config.tag_match);
-        let tag_rules = crate::tag_rules::RuleSet::load(&config_root).unwrap_or_default();
+        // ルールファイルが無い初回だけ、初期ルール（すべて「無効」）を置く。壊れている・新しい版のファイルは、上書きしない。
+        let tag_rules = match crate::tag_rules::RuleSet::load(&config_root) {
+            Some(set) => set,
+            None if !crate::tag_rules::RuleSet::file_exists(&config_root) => {
+                let set = crate::tag_rules::RuleSet::with_initial_rules();
+                set.save(&config_root);
+                set
+            }
+            None => crate::tag_rules::RuleSet::default(),
+        };
         let (tag_main_options, tag_attr_options) = crate::tag_manager::derive_tag_options(&tag_manager_categories);
         let tag_main_selected = tag_main_options.first().map(|(id, _)| *id);
         let mut tag_attr_selected: Vec<u64> = Vec::new();
@@ -1799,6 +1812,8 @@ impl NekoviewApp {
             tag_rules,
             tag_learn: None,
             tag_rules_open: false,
+            tag_rules_del_ask: None,
+            tag_rules_copy_src: None,
             tag_trial_active,
             tag_manager_selected_category: Some(0),
             tag_manager_delete_confirm: None,

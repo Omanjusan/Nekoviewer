@@ -4780,15 +4780,123 @@ impl Lang {
     pub fn tag_menu_edit_item(self) -> &'static str { self.learn_pick("タグ・カテゴリ編集", "", "") }
     pub fn tag_rules_open_button(self) -> &'static str { self.learn_pick("タグ抽出ルール定義開始", "", "") }
     pub fn tag_rules_open_hover(self) -> &'static str { self.learn_pick("タグ取得の前処理（AI generated・cosplay などの大ルール）の一覧を開く", "", "") }
-    pub fn tag_rules_count(self, n: usize) -> String {
-        let ja = if n == 0 { "ルール無し".to_string() } else { format!("ルール {n}件") };
-        let local: Option<String> = match self { Lang::Japanese => None, Lang::English => None, Lang::Chinese => None };
-        local.unwrap_or(ja)
+    /// メニューの項目の右に出す、ルールの件数（有効 / 全部）。
+    pub fn tag_rules_count(self, enabled: usize, total: usize) -> String {
+        match self {
+            Lang::Japanese => if total == 0 { "ルール無し".to_string() } else { format!("有効 {enabled}件 / 全{total}件") },
+            Lang::English  => if total == 0 { "No rules".to_string() } else { format!("{enabled} on / {total} total") },
+            Lang::Chinese  => if total == 0 { "无规则".to_string() } else { format!("启用 {enabled} 条 / 共 {total} 条") },
+        }
+    }
+    pub fn tag_rules_list_hint(self) -> &'static str {
+        match self {
+            Lang::Japanese => "有効・無効の切り替え、削除、コピーは、押したときに保存されます。取得の確認ウィンドウをすでに開いている間は、次の取得から反映されます。",
+            Lang::English  => "Toggling, deleting and copying are saved immediately. A confirmation window that is already open keeps its old rules; changes apply from the next collection.",
+            Lang::Chinese  => "启用/停用、删除和复制会立即保存。已打开的确认窗口不受影响，下次获取时生效。",
+        }
+    }
+    pub fn tag_rules_toggle(self, on: bool) -> &'static str {
+        match (self, on) {
+            (Lang::Japanese, true)  => "● 有効",
+            (Lang::Japanese, false) => "○ 無効",
+            (Lang::English, true)   => "● On",
+            (Lang::English, false)  => "○ Off",
+            (Lang::Chinese, true)   => "● 启用",
+            (Lang::Chinese, false)  => "○ 停用",
+        }
+    }
+    pub fn tag_rules_edit_button(self) -> &'static str {
+        match self { Lang::Japanese => "編集", Lang::English => "Edit", Lang::Chinese => "编辑" }
+    }
+    pub fn tag_rules_edit_pending_hover(self) -> &'static str {
+        match self {
+            Lang::Japanese => "編集画面は準備中です",
+            Lang::English  => "The editor is not available yet",
+            Lang::Chinese  => "编辑界面准备中",
+        }
+    }
+    pub fn tag_rules_delete_button(self) -> &'static str {
+        match self { Lang::Japanese => "削除", Lang::English => "Delete", Lang::Chinese => "删除" }
+    }
+    pub fn tag_rules_delete_ask(self) -> &'static str {
+        match self {
+            Lang::Japanese => "このルールを削除する?",
+            Lang::English  => "Delete this rule?",
+            Lang::Chinese  => "删除此规则？",
+        }
+    }
+    pub fn tag_rules_delete_do(self) -> &'static str {
+        match self { Lang::Japanese => "削除する", Lang::English => "Delete", Lang::Chinese => "删除" }
+    }
+    pub fn tag_rules_delete_cancel(self) -> &'static str {
+        match self { Lang::Japanese => "やめる", Lang::English => "Cancel", Lang::Chinese => "取消" }
+    }
+    pub fn tag_rules_copy_heading(self) -> &'static str {
+        match self {
+            Lang::Japanese => "既に設定したルールをコピーして編集",
+            Lang::English  => "Copy an existing rule to edit",
+            Lang::Chinese  => "复制已有规则后编辑",
+        }
+    }
+    pub fn tag_rules_copy_button(self) -> &'static str {
+        match self { Lang::Japanese => "コピー開始", Lang::English => "Copy", Lang::Chinese => "开始复制" }
+    }
+    pub fn tag_rules_copy_hint(self) -> &'static str {
+        match self {
+            Lang::Japanese => "選んだルールの条件と結果を引き継いだ、新しいルールを一覧に足します。",
+            Lang::English  => "Adds a new rule to the list with the conditions and effects of the selected rule.",
+            Lang::Chinese  => "将所选规则的条件和效果复制为一条新规则，加入列表。",
+        }
+    }
+    pub fn tag_rules_copy_suffix(self) -> &'static str {
+        match self { Lang::Japanese => " のコピー", Lang::English => " (copy)", Lang::Chinese => "（副本）" }
+    }
+    pub fn tag_rules_copied(self, name: &str) -> String {
+        match self {
+            Lang::Japanese => format!("「{name}」をコピーしました"),
+            Lang::English  => format!("Copied \"{name}\""),
+            Lang::Chinese  => format!("已复制“{name}”"),
+        }
+    }
+    pub fn tag_rules_restore_button(self) -> &'static str {
+        match self { Lang::Japanese => "初期ルールを足し直す", Lang::English => "Restore initial rules", Lang::Chinese => "补回初始规则" }
+    }
+    pub fn tag_rules_restore_hover(self) -> &'static str {
+        match self {
+            Lang::Japanese => "削除した初期ルールを、「無効」で足し直します。同じ名前のルールがあれば足しません。",
+            Lang::English  => "Adds back deleted initial rules as disabled. Rules with the same name are not added again.",
+            Lang::Chinese  => "将已删除的初始规则以“停用”状态补回。已有同名规则时不会重复添加。",
+        }
+    }
+    pub fn tag_rules_restore_none(self) -> &'static str {
+        match self {
+            Lang::Japanese => "足す初期ルールはありません",
+            Lang::English  => "No initial rules to add",
+            Lang::Chinese  => "没有需要补回的初始规则",
+        }
+    }
+    pub fn tag_rules_restored(self, n: usize) -> String {
+        match self {
+            Lang::Japanese => format!("初期ルールを{n}件足しました（無効）"),
+            Lang::English  => format!("Added {n} initial rule(s) (disabled)"),
+            Lang::Chinese  => format!("已补回 {n} 条初始规则（停用）"),
+        }
+    }
+    pub fn tag_rules_enable_needs_effect(self) -> &'static str {
+        match self {
+            Lang::Japanese => "このルールは効果が空のため、有効にできません（効果を選んでから有効にします）",
+            Lang::English  => "This rule has no effect yet, so it cannot be enabled (choose an effect first)",
+            Lang::Chinese  => "此规则尚未设置效果，无法启用（请先选择效果）",
+        }
+    }
+    pub fn tag_rules_save_failed(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ルールを保存できませんでした。変更は反映していません",
+            Lang::English  => "Could not save the rules. The change was not applied",
+            Lang::Chinese  => "无法保存规则，更改未生效",
+        }
     }
     pub fn tag_rules_window_title(self) -> &'static str { self.learn_pick("タグ抽出ルール定義", "", "") }
-    pub fn tag_rules_provisional_notice(self) -> &'static str {
-        self.learn_pick("仮の画面です（編集UIは準備中）。設定フォルダの nekoviewer_tag_rules.json に置いたルールを、「再読込」で反映します。", "", "")
-    }
     pub fn tag_rules_empty(self) -> &'static str { self.learn_pick("ルールはありません", "", "") }
     pub fn tag_rules_disabled(self) -> &'static str { self.learn_pick("（無効）", "", "") }
     pub fn tag_rules_summary(self, conditions: usize, match_all: bool, disable: &str, enable: &str) -> String {

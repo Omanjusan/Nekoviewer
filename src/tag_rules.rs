@@ -175,7 +175,8 @@ impl TagRule {
                 }
             }
         }
-        if self.effect.disable.is_empty() && self.effect.enable.is_empty() {
+        // 効果が空でいいのは、無効のルールだけ（条件のひな形として持てる）。有効にするには、効果が要る。
+        if self.enabled && self.effect.disable.is_empty() && self.effect.enable.is_empty() {
             return Err("効果が無い".into());
         }
         if let Some(r) = self.effect.disable.intersection(&self.effect.enable).next() {
@@ -476,7 +477,54 @@ fn path(root: &Path) -> PathBuf {
     root.join(FILE_NAME)
 }
 
+/// 初期ルール（すべて「無効」）。7つのプリセットと、cosplay（ファイル名の形）。
+/// 効果が空のプリセット（画集・manga など）も、条件のひな形として、コピー元にできるよう入れる。
+pub(crate) fn initial_rules() -> Vec<TagRule> {
+    let mut rules: Vec<TagRule> = Preset::ALL.iter().map(|p| p.to_rule(0)).collect();
+    // info.txt が無い cosplay（`演者 - キャラ (パロディ元)` / `演者 - キャラ - パロディ元`）をファイル名の形で拾うルール。
+    let mut shaped = Preset::Cosplay.to_rule(0);
+    shaped.name = SHAPED_COSPLAY_NAME.to_string();
+    shaped.conditions = [NameShape::Dash2Paren, NameShape::Dash3]
+        .into_iter()
+        .map(|shape| Condition::Shape { targets: vec![CondTarget::FileName], shape })
+        .collect();
+    rules.push(shaped);
+    for r in &mut rules {
+        r.enabled = false;
+    }
+    rules
+}
+
+/// 初期ルールの cosplay（ファイル名の形）の名前。
+const SHAPED_COSPLAY_NAME: &str = "cosplay（ファイル名の形）";
+
 impl RuleSet {
+    /// 初期ルールだけを持つルール一式（すべて「無効」）。
+    pub(crate) fn with_initial_rules() -> Self {
+        let mut s = Self::default();
+        s.add_missing_initial();
+        s
+    }
+
+    /// 初期ルールのうち、同じ名前のルールがまだ無いものを、末尾へ「無効」で足す。足した数を返す。
+    pub(crate) fn add_missing_initial(&mut self) -> usize {
+        let mut added = 0;
+        for rule in initial_rules() {
+            if self.rules.iter().any(|r| r.name == rule.name) {
+                continue;
+            }
+            if self.add(rule).is_ok() {
+                added += 1;
+            }
+        }
+        added
+    }
+
+    /// ルールファイルがあるか（壊れていても true）。初回の初期ルールの同梱を、ファイルが無いときだけにするため。
+    pub(crate) fn file_exists(root: &Path) -> bool {
+        path(root).exists()
+    }
+
     /// ルールを末尾に足す（IDは振り直す）。検証に通らなければ理由を返す。
     pub(crate) fn add(&mut self, mut rule: TagRule) -> Result<u64, String> {
         rule.id = self.next_id;
@@ -787,6 +835,40 @@ mod tests {
     /// 目視用: 効果の既定があるプリセット3つ（AI generated / cosplay / anthology）と、cosplay のファイル名の形のルールを、設定フォルダ `NEKO_RULES_OUT` に
     /// 書き出す。編集UI（R4）ができる前に、抽出への接続を実機で確かめるために使う
     /// （`NEKO_RULES_OUT=<設定フォルダ> cargo test export_default_preset_rules -- --ignored --nocapture`）。既存のルールは上書きされる。
+    #[test]
+    fn rule_without_effect_is_valid_only_while_disabled() {
+        let mut r = Preset::Manga.to_rule(1);
+        assert!(r.effect.disable.is_empty() && r.effect.enable.is_empty());
+        assert_eq!(r.validate(), Err("効果が無い".to_string()), "有効にするには効果が要る");
+        r.enabled = false;
+        assert!(r.validate().is_ok(), "無効なら、条件だけのひな形として持てる");
+    }
+
+    #[test]
+    fn initial_rules_are_all_disabled_valid_and_added_only_when_missing() {
+        let set = RuleSet::with_initial_rules();
+        assert_eq!(set.rules.len(), 8, "7プリセット＋cosplay（ファイル名の形）");
+        assert!(set.rules.iter().all(|r| !r.enabled && r.validate().is_ok()));
+        let names: std::collections::HashSet<_> = set.rules.iter().map(|r| r.name.clone()).collect();
+        assert_eq!(names.len(), 8, "名前は重ならない");
+        // 無効なルールは、何も成立させない（従来と同じ結果）。
+        let out = set.evaluate(&input("[AI Generated] x.zip", None), &opts());
+        assert!(out.is_empty());
+        // 足し直しは、無いものだけ。1つ消すと、その1つだけが戻る。
+        let mut s = set.clone();
+        assert_eq!(s.add_missing_initial(), 0);
+        let id = s.rules.iter().find(|r| r.name == "manga").unwrap().id;
+        assert!(s.remove(id));
+        assert_eq!(s.add_missing_initial(), 1);
+        assert_eq!(s.rules.len(), 8);
+        assert!(s.rules.last().is_some_and(|r| r.name == "manga" && !r.enabled));
+        // 有効にして使っているルールを、足し直しで上書きしない。
+        let mut t = set.clone();
+        t.rules[0].enabled = true;
+        t.add_missing_initial();
+        assert!(t.rules[0].enabled);
+    }
+
     #[test]
     #[ignore]
     fn export_default_preset_rules() {
