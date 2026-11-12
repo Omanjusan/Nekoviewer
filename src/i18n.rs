@@ -4785,7 +4785,7 @@ impl Lang {
         let local: Option<String> = match self { Lang::Japanese => None, Lang::English => None, Lang::Chinese => None };
         local.unwrap_or(ja)
     }
-    pub fn tag_rules_window_title(self) -> &'static str { self.learn_pick("タグ大ルール", "", "") }
+    pub fn tag_rules_window_title(self) -> &'static str { self.learn_pick("タグ抽出ルール定義", "", "") }
     pub fn tag_rules_provisional_notice(self) -> &'static str {
         self.learn_pick("仮の画面です（編集UIは準備中）。設定フォルダの nekoviewer_tag_rules.json に置いたルールを、「再読込」で反映します。", "", "")
     }
