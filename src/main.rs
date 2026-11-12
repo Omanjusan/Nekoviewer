@@ -160,6 +160,9 @@ fn main() {
         if let Some(v) = state.app_tag_master_generations {
             cfg.tag_master_generations = v.clamp(config::TAG_MASTER_GENERATIONS_MIN, config::TAG_MASTER_GENERATIONS_MAX);
         }
+        if let Some(v) = state.app_tag_register_name.as_deref().and_then(config::TagRegisterName::from_key) {
+            cfg.tag_register_name = v;
+        }
         if let Some(v) = state.app_tag_new_element_limit {
             cfg.tag_new_element_limit = v.clamp(config::TAG_NEW_ELEMENT_LIMIT_MIN, config::TAG_NEW_ELEMENT_LIMIT_MAX);
         }

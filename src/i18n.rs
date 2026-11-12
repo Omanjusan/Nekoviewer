@@ -5284,6 +5284,47 @@ impl Lang {
         }
     }
 
+    /// 設定窓（DB）: 新規に登録する要素の主表記の言語
+    pub fn settings_tag_register_name_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "新規要素の登録表記",
+            Lang::English  => "Name form for new elements",
+            Lang::Chinese  => "新建元素的登记写法",
+        }
+    }
+
+    pub fn settings_tag_register_name_follow(self) -> &'static str {
+        match self {
+            Lang::Japanese => "表示言語に合わせる",
+            Lang::English  => "Follow display language",
+            Lang::Chinese  => "跟随显示语言",
+        }
+    }
+
+    pub fn settings_tag_register_name_japanese(self) -> &'static str {
+        match self {
+            Lang::Japanese => "日本語優先",
+            Lang::English  => "Japanese first",
+            Lang::Chinese  => "日语优先",
+        }
+    }
+
+    pub fn settings_tag_register_name_english(self) -> &'static str {
+        match self {
+            Lang::Japanese => "英語優先",
+            Lang::English  => "English first",
+            Lang::Chinese  => "英语优先",
+        }
+    }
+
+    pub fn settings_tag_register_name_explain(self) -> &'static str {
+        match self {
+            Lang::Japanese => "一括タグ取得で新しく作る要素の主表記（A|B の先頭）を選びます。英日の表記が両方あるときだけ効き、もう一方は別名になります。すでに登録した要素は書き換えません。表示言語に合わせると、日本語表示なら日本語、それ以外は英字だけの表記になります。",
+            Lang::English  => "Chooses the main form (the first of A|B) of elements newly created by the bulk tag collection. It only matters when both an English and a Japanese form exist; the other becomes an alias. Existing elements are never rewritten. \"Follow display language\" uses Japanese for the Japanese UI and the Latin-only form otherwise.",
+            Lang::Chinese  => "选择批量获取标签时新建元素的主写法（A|B 的第一项）。仅在同时存在英文和日文写法时生效，另一种写法作为别名。已登记的元素不会被改写。“跟随显示语言”在日语界面下使用日文写法，其他界面使用纯英文写法。",
+        }
+    }
+
     /// 上限超過ダイアログ: タイトル
     pub fn tag_limit_title(self) -> &'static str {
         match self {

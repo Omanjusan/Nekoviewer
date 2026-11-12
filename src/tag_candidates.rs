@@ -797,11 +797,12 @@ pub(crate) fn build_candidates_with(
     lang: Lang,
     model: Option<&Model>,
 ) -> CandidateSet {
-    build_candidates_full(inputs, cats, opts, lang, model, &[])
+    build_candidates_full(inputs, cats, opts, lang, lang, model, &[])
 }
 
 /// 候補を作る。`model` があれば、括弧の種別（作者・グループ・イベント・言語・無視）を学習モデルで判定する。
 /// 既存マスターに完全一致があるものは、モデルよりマスターを優先する。
+/// `name_lang` は、新規要素の主表記を選ぶ言語（登録表記の設定。表示言語に合わせるときは `lang` と同じ）。
 /// `rules`（大ルール）は抽出の下処理: ファイルごとに成立したルールが無効にした種類の言及は、候補にして未採用・要確認で残す
 /// （既存マスターに完全一致があっても、ルールを優先する）。
 pub(crate) fn build_candidates_full(
@@ -809,6 +810,7 @@ pub(crate) fn build_candidates_full(
     cats: &[TagManagerCategoryUi],
     opts: &MatchOptions,
     lang: Lang,
+    name_lang: Lang,
     model: Option<&Model>,
     rules: &[TagRule],
 ) -> CandidateSet {
@@ -1020,7 +1022,7 @@ pub(crate) fn build_candidates_full(
                 forms_all.push((a.clone(), 1));
             }
         }
-        let picked = pick_registration_name(&forms_all, lang);
+        let picked = pick_registration_name(&forms_all, name_lang);
         // 全角半角の正規化がONなら、登録名も正規化する（半角カナ・全角英数をそのまま登録しない）。
         let norm = |s: &str| if opts.width { normalize_width(s) } else { s.to_string() };
         let name = norm(&picked);
@@ -1983,6 +1985,29 @@ mod tests {
     }
 
     #[test]
+    fn registration_name_setting_chooses_the_main_form_only_for_element_names() {
+        use crate::config::TagRegisterName;
+        let inputs = [input("x.zip", "zip", Some(PAIRED_INFO))];
+        let group_of = |ui: Lang, pref: TagRegisterName| {
+            let set = build_candidates_full(&inputs, &[], &MatchOptions::default(), ui, pref.name_lang(ui), None, &[]);
+            let g = set.candidates.iter().find(|c| c.role == Role::Group).unwrap().clone();
+            (g.name, g.alt_forms)
+        };
+        let ja = ("えびぞり団".to_string(), vec!["Ebizoridan".to_string()]);
+        let en = ("Ebizoridan".to_string(), vec!["えびぞり団".to_string()]);
+        // 表示言語に合わせる: 日本語表示=日本語、英語表示=英字（従来どおり）。
+        assert_eq!(group_of(Lang::Japanese, TagRegisterName::FollowUi), ja);
+        assert_eq!(group_of(Lang::English, TagRegisterName::FollowUi), en);
+        // 日本語優先・英語優先は、表示言語に関わらず固定。もう一方は別名になる。
+        assert_eq!(group_of(Lang::English, TagRegisterName::Japanese), ja);
+        assert_eq!(group_of(Lang::Japanese, TagRegisterName::English), en);
+        // 要素名だけが対象: 形式名・言語名は、設定に関わらず表示言語で決まる（`lang` を使い続ける）。
+        let lang_inputs = [input("a.zip", "zip", Some("Language: Japanese\n"))];
+        let set = build_candidates_full(&lang_inputs, &[], &MatchOptions::default(), Lang::English, Lang::Japanese, None, &[]);
+        assert!(set.candidates.iter().any(|c| c.role == Role::Language && c.name == "Japanese"));
+    }
+
+    #[test]
     fn alias_pairs_merge_across_files_and_survive_single_line_files() {
         // 1件目は対あり、2件目は日本語行だけ。同じ日本語名なら1つの候補にまとまり、別名は1件目から引き継ぐ。
         let second = "[えびぞり団 (しえん)] 別の本\n\nCategory: Doujinshi\n";
@@ -2013,7 +2038,7 @@ mod tests {
     }
 
     fn build_with_rules(inputs: &[CandidateInput], cats: &[TagManagerCategoryUi], rules: &[TagRule]) -> CandidateSet {
-        build_candidates_full(inputs, cats, &MatchOptions::default(), Lang::Japanese, None, rules)
+        build_candidates_full(inputs, cats, &MatchOptions::default(), Lang::Japanese, Lang::Japanese, None, rules)
     }
 
     #[test]
@@ -2085,7 +2110,7 @@ mod tests {
         let entries = vec![CorpusEntry { file_name: "[A (B)] T.zip".into(), labels: vec![(Label::Group, "A".into()), (Label::Author, "B".into())], hard: false }];
         let model = Model::train(&LearnedSet { version: 1, entries }.training_data(&MatchOptions::default())).unwrap();
         let rules = [preset_rule(Preset::AiGenerated, 1)];
-        let set = build_candidates_full(&[input("[Hawk Bit (Kouji)] Book AI generated.zip", "zip", None)], &[], &MatchOptions::default(), Lang::Japanese, Some(&model), &rules);
+        let set = build_candidates_full(&[input("[Hawk Bit (Kouji)] Book AI generated.zip", "zip", None)], &[], &MatchOptions::default(), Lang::Japanese, Lang::Japanese, Some(&model), &rules);
         assert!(set.candidates.iter().find(|c| c.role == Role::Author).unwrap().review);
     }
 

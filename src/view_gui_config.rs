@@ -145,6 +145,7 @@ pub(crate) struct SettingsDraft {
     backup_generations: u32,
     tag_master_generations: u32,
     tag_new_element_limit: u32,
+    tag_register_name: crate::config::TagRegisterName,
     idle_thumb_generation: bool,
     idle_thumb_wait_secs: u32,
     idle_thumb_while_viewer: bool,
@@ -305,6 +306,7 @@ impl SettingsDraft {
             backup_generations: config.backup_generations,
             tag_master_generations: config.tag_master_generations,
             tag_new_element_limit: config.tag_new_element_limit,
+            tag_register_name: config.tag_register_name,
             idle_thumb_generation: config.idle_thumb_generation,
             idle_thumb_wait_secs: config.idle_thumb_wait_secs,
             idle_thumb_while_viewer: config.idle_thumb_while_viewer,
@@ -385,6 +387,7 @@ impl SettingsDraft {
         config.tag_new_element_limit = self
             .tag_new_element_limit
             .clamp(crate::config::TAG_NEW_ELEMENT_LIMIT_MIN, crate::config::TAG_NEW_ELEMENT_LIMIT_MAX);
+        config.tag_register_name = self.tag_register_name;
         config.idle_thumb_generation = self.idle_thumb_generation;
         config.idle_thumb_wait_secs = self
             .idle_thumb_wait_secs
@@ -1963,6 +1966,21 @@ impl NekoviewApp {
             ui.label(t.settings_tag_new_limit_value(self.settings_draft.tag_new_element_limit));
         });
         ui.label(t.settings_tag_new_limit_explain());
+
+        // 新規に登録する要素の主表記（`A|B` の先頭）の言語。既存の要素は書き換えない。
+        ui.add_space(6.0);
+        ui.label(t.settings_tag_register_name_label());
+        ui.horizontal_wrapped(|ui| {
+            use crate::config::TagRegisterName as N;
+            for (v, text) in [
+                (N::FollowUi, t.settings_tag_register_name_follow()),
+                (N::Japanese, t.settings_tag_register_name_japanese()),
+                (N::English, t.settings_tag_register_name_english()),
+            ] {
+                ui.radio_value(&mut self.settings_draft.tag_register_name, v, text);
+            }
+        });
+        ui.label(t.settings_tag_register_name_explain());
 
         // 移行前の自動バックアップ（`backup_auto/`）の場所を開く。まだ無ければ押せない。
         ui.separator();

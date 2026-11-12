@@ -134,6 +134,44 @@ pub const TAG_MASTER_GENERATIONS_DEFAULT: u32 = 5;
 pub const TAG_NEW_ELEMENT_LIMIT_MIN: u32 = 1000;
 pub const TAG_NEW_ELEMENT_LIMIT_MAX: u32 = 20000;
 pub const TAG_NEW_ELEMENT_LIMIT_DEFAULT: u32 = 5000;
+
+/// 一括タグ取得で、新規に登録する要素の主表記（`A|B` の先頭）にどの言語を優先するか。内部の照合は日本語のまま。
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum TagRegisterName {
+    /// 表示言語に合わせる（日本語表示なら日本語、それ以外は英字だけの表記）。
+    #[default]
+    FollowUi,
+    Japanese,
+    English,
+}
+
+impl TagRegisterName {
+    pub fn as_key(self) -> &'static str {
+        match self {
+            Self::FollowUi => "follow",
+            Self::Japanese => "japanese",
+            Self::English => "english",
+        }
+    }
+
+    pub fn from_key(key: &str) -> Option<Self> {
+        match key.trim() {
+            "follow" => Some(Self::FollowUi),
+            "japanese" => Some(Self::Japanese),
+            "english" => Some(Self::English),
+            _ => None,
+        }
+    }
+
+    /// 主表記を選ぶときに使う言語（`pick_registration_name` へ渡す）。表示言語に合わせるときは `ui` を返す。
+    pub fn name_lang(self, ui: crate::i18n::Lang) -> crate::i18n::Lang {
+        match self {
+            Self::FollowUi => ui,
+            Self::Japanese => crate::i18n::Lang::Japanese,
+            Self::English => crate::i18n::Lang::English,
+        }
+    }
+}
 pub const TAG_NEW_ELEMENT_LIMIT_STEP: u32 = 1000;
 /// 手すき時間のサムネ生成を始めるまでの待ち（最後の入力から、秒）。
 pub const IDLE_THUMB_WAIT_MIN: u32 = 1;
@@ -233,6 +271,8 @@ pub struct AppConfig {
     pub tag_master_generations: u32,
     /// 一括タグ取得の、1カテゴリあたりの新規要素数の上限（既定値）。
     pub tag_new_element_limit: u32,
+    /// 一括タグ取得で新規登録する要素の主表記の言語。
+    pub tag_register_name: TagRegisterName,
     /// ページデコードの並列スレッド数（0 = 自動: 論理コア数/2）
     pub decode_threads: usize,
     /// 操作が止まっている間に、現在地フォルダのサムネ生成を続けるか（1件ずつ。idle_thumb.rs）。
@@ -331,6 +371,7 @@ impl AppConfig {
             backup_generations: BACKUP_GENERATIONS_DEFAULT,
             tag_master_generations: TAG_MASTER_GENERATIONS_DEFAULT,
             tag_new_element_limit: TAG_NEW_ELEMENT_LIMIT_DEFAULT,
+            tag_register_name: TagRegisterName::default(),
             decode_threads: 0,
             idle_thumb_generation: true,
             idle_thumb_wait_secs: IDLE_THUMB_WAIT_DEFAULT,

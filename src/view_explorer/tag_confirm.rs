@@ -164,13 +164,13 @@ impl TagConfirm {
     }
 
     /// 切替項目が変わったので、別スレッドで候補を作り直す。進行中の作り直しは捨てる。
-    fn start_rebuild(&mut self, opts: MatchOptions, lang: Lang) {
+    fn start_rebuild(&mut self, opts: MatchOptions, lang: Lang, name_lang: Lang) {
         let (tx, rx) = mpsc::channel();
         let (inputs, master, model, rules) = (Arc::clone(&self.inputs), Arc::clone(&self.master), self.model.clone(), Arc::clone(&self.rules));
         // 手動でまとめた候補は、作り直したあとも同じまとめを復元する。
         let bundles: Vec<Bundle> = self.set.snapshot_bundles();
         std::thread::spawn(move || {
-            let mut fresh = build_candidates_full(&inputs, &master, &opts, lang, model.as_deref(), &rules);
+            let mut fresh = build_candidates_full(&inputs, &master, &opts, lang, name_lang, model.as_deref(), &rules);
             fresh.apply_bundles(&bundles, &master);
             let _ = tx.send(fresh);
         });
@@ -484,7 +484,7 @@ impl NekoviewApp {
             let clamped = opts.clamped();
             self.config.tag_match = clamped;
             self.persist_state();
-            st.start_rebuild(clamped, i18n::t());
+            st.start_rebuild(clamped, i18n::t(), self.config.tag_register_name.name_lang(i18n::t()));
         }
         if let Some(s) = next_stage {
             st.stage = s;

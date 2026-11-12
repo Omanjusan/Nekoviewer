@@ -636,7 +636,7 @@ mod tests {
         let mut rule = Preset::Cosplay.to_rule(1);
         rule.conditions = vec![Condition::Shape { targets: vec![CondTarget::FileName], shape: NameShape::Dash2Paren }];
         let inputs = [input_from_info_text("Tiny Asa アサ - Castorice (Honkai-Star Rail).zip", Some(FormatTag::Extension("zip".into())), None)];
-        let set = crate::tag_candidates::build_candidates_full(&inputs, &[], &MatchOptions::default(), Lang::Japanese, None, &[rule]);
+        let set = crate::tag_candidates::build_candidates_full(&inputs, &[], &MatchOptions::default(), Lang::Japanese, Lang::Japanese, None, &[rule]);
         let (mut cats, mut next) = (Vec::new(), 100u64);
         let plan = plan_application(&set, &mut cats, &mut next, Lang::Japanese);
         let find = |cat: &str| cats.iter().find(|c| c.name == cat).map(|c| c.tiers.iter().filter_map(|t| t.element.clone()).collect::<Vec<_>>());
