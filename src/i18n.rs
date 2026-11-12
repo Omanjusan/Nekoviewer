@@ -4270,14 +4270,6 @@ impl Lang {
         }
     }
 
-    pub fn tag_danger_coming_soon(self) -> &'static str {
-        match self {
-            Lang::Japanese => "この機能は準備中です",
-            Lang::English  => "This feature is not available yet",
-            Lang::Chinese  => "此功能尚未提供",
-        }
-    }
-
     pub fn tag_danger_clear_heading(self) -> &'static str {
         match self {
             Lang::Japanese => "タグのクリア",
@@ -4374,6 +4366,143 @@ impl Lang {
         }
     }
 
+    pub fn tag_danger_recovery_none(self) -> &'static str {
+        match self {
+            Lang::Japanese => "リカバリポイントは未設定です",
+            Lang::English  => "No recovery point is set",
+            Lang::Chinese  => "尚未设置恢复点",
+        }
+    }
+
+    pub fn tag_danger_recovery_status(self, when: &str, db: &str, master: &str) -> String {
+        match self {
+            Lang::Japanese => format!("設定済み: {when}（DB {db} ＋ マスター {master}）"),
+            Lang::English  => format!("Set: {when} (DB {db} + master {master})"),
+            Lang::Chinese  => format!("已设置：{when}（数据库 {db} ＋ 主表 {master}）"),
+        }
+    }
+
+    pub fn tag_danger_recovery_delete_button(self) -> &'static str {
+        match self {
+            Lang::Japanese => "削除…",
+            Lang::English  => "Delete…",
+            Lang::Chinese  => "删除…",
+        }
+    }
+
+    pub fn tag_danger_recovery_overwrite_title(self) -> &'static str {
+        match self {
+            Lang::Japanese => "リカバリポイントの上書き",
+            Lang::English  => "Overwrite recovery point",
+            Lang::Chinese  => "覆盖恢复点",
+        }
+    }
+
+    pub fn tag_danger_recovery_overwrite_body(self) -> &'static str {
+        match self {
+            Lang::Japanese => "いまのタグマスターとデータベースで、設定済みのリカバリポイントを上書きします。前のリカバリポイントには戻せなくなります。",
+            Lang::English  => "Overwrites the existing recovery point with the current tag master and database. You will not be able to go back to the previous recovery point.",
+            Lang::Chinese  => "将用当前标签主表和数据库覆盖已设置的恢复点。之后无法再恢复到之前的恢复点。",
+        }
+    }
+
+    pub fn tag_danger_recovery_overwrite_ok(self) -> &'static str {
+        match self {
+            Lang::Japanese => "上書きする",
+            Lang::English  => "Overwrite",
+            Lang::Chinese  => "覆盖",
+        }
+    }
+
+    pub fn tag_danger_recovery_delete_title(self) -> &'static str {
+        match self {
+            Lang::Japanese => "リカバリポイントの削除",
+            Lang::English  => "Delete recovery point",
+            Lang::Chinese  => "删除恢复点",
+        }
+    }
+
+    pub fn tag_danger_recovery_delete_body(self) -> &'static str {
+        match self {
+            Lang::Japanese => "リカバリポイントを削除します。保存してあるタグマスターとデータベースのコピーが消え、復元の予約があれば取り消されます。",
+            Lang::English  => "Deletes the recovery point. The saved copies of the tag master and database are removed, and any pending restore is cancelled.",
+            Lang::Chinese  => "将删除恢复点。已保存的标签主表和数据库副本会被删除，已预约的恢复也会取消。",
+        }
+    }
+
+    pub fn tag_danger_recovery_delete_ok(self) -> &'static str {
+        match self {
+            Lang::Japanese => "削除する",
+            Lang::English  => "Delete",
+            Lang::Chinese  => "删除",
+        }
+    }
+
+    pub fn tag_danger_recovery_set_toast(self) -> &'static str {
+        match self {
+            Lang::Japanese => "リカバリポイントを設定しました",
+            Lang::English  => "Recovery point set",
+            Lang::Chinese  => "已设置恢复点",
+        }
+    }
+
+    pub fn tag_danger_recovery_deleted_toast(self) -> &'static str {
+        match self {
+            Lang::Japanese => "リカバリポイントを削除しました",
+            Lang::English  => "Recovery point deleted",
+            Lang::Chinese  => "已删除恢复点",
+        }
+    }
+
+    /// ロールバック窓: リカバリポイントの行の見出し
+    pub fn tag_gen_recovery_row(self) -> &'static str {
+        match self {
+            Lang::Japanese => "リカバリポイント（固定）",
+            Lang::English  => "Recovery point (fixed)",
+            Lang::Chinese  => "恢复点（固定）",
+        }
+    }
+
+    pub fn tag_gen_recovery_row_hover(self) -> &'static str {
+        match self {
+            Lang::Japanese => "主にデバッグ用。タグマスターとデータベース全体を戻します（次回起動時に反映）",
+            Lang::English  => "Mainly for debugging. Restores the tag master and the whole database (applied at the next launch)",
+            Lang::Chinese  => "主要用于调试。恢复标签主表和整个数据库（下次启动时生效）",
+        }
+    }
+
+    pub fn tag_gen_recovery_pending(self) -> &'static str {
+        match self {
+            Lang::Japanese => "リカバリポイントへの復元を予約中です（次回起動時に反映）",
+            Lang::English  => "A restore to the recovery point is scheduled (applied at the next launch)",
+            Lang::Chinese  => "已预约恢复到恢复点（下次启动时生效）",
+        }
+    }
+
+    pub fn tag_gen_recovery_cancel(self) -> &'static str {
+        match self {
+            Lang::Japanese => "予約を取り消す",
+            Lang::English  => "Cancel",
+            Lang::Chinese  => "取消预约",
+        }
+    }
+
+    pub fn tag_gen_confirm_recovery_body(self, when: &str) -> String {
+        match self {
+            Lang::Japanese => format!("{when} に設定したリカバリポイントへ戻します。タグマスターとデータベース全体が、アプリの再起動時にまとめて戻ります。それ以降の評価・タグ・お気に入りなどの変更は失われます。いまのデータベースは退避、いまのマスターは世代に残ります。"),
+            Lang::English  => format!("Go back to the recovery point set at {when}. The tag master and the whole database are restored together when the app restarts, and changes made since then (ratings, tags, favorites, etc.) will be lost. The current database is kept as a pre-restore copy and the current master as a generation."),
+            Lang::Chinese  => format!("将恢复到 {when} 设置的恢复点。标签主表和整个数据库将在应用重启时一并恢复，此后的评分、标签、收藏等更改将丢失。当前数据库会作为备份保留，当前主表会保留为版本。"),
+        }
+    }
+
+    pub fn tag_gen_recovery_requested_toast(self) -> &'static str {
+        match self {
+            Lang::Japanese => "リカバリポイントへの復元を予約しました。アプリの再起動で反映されます",
+            Lang::English  => "Restore to the recovery point scheduled. It takes effect when the app restarts",
+            Lang::Chinese  => "已预约恢复到恢复点，重启应用后生效",
+        }
+    }
+
     pub fn tag_danger_recovery_heading(self) -> &'static str {
         match self {
             Lang::Japanese => "リカバリポイント（主にデバッグ用）",
@@ -4384,9 +4513,9 @@ impl Lang {
 
     pub fn tag_danger_recovery_explain(self) -> &'static str {
         match self {
-            Lang::Japanese => "いまのタグマスターとデータベース全体を、固定の1か所に保存します。ロールバックの一覧の最下段から、いつでも戻せます（ローテーションで消えません）。",
-            Lang::English  => "Saves the current tag master and the whole database in one fixed slot. You can go back from the bottom of the rollback list at any time (it is never rotated away).",
-            Lang::Chinese  => "将当前标签主表和整个数据库保存到一个固定位置。可随时从回滚列表最下方恢复（不会被轮替删除）。",
+            Lang::Japanese => "いまのタグマスターとデータベース全体を、固定の1か所に保存します。ロールバックの一覧の最下段から、いつでも戻せます（ローテーションで消えません。復元は次回起動時に、マスターとDBをまとめて適用します）。",
+            Lang::English  => "Saves the current tag master and the whole database in one fixed slot. You can go back from the bottom of the rollback list at any time (it is never rotated away; the restore applies the master and database together at the next launch).",
+            Lang::Chinese  => "将当前标签主表和整个数据库保存到一个固定位置。可随时从回滚列表最下方恢复（不会被轮替删除；恢复将在下次启动时一并应用主表和数据库）。",
         }
     }
 

@@ -57,6 +57,7 @@ mod tag_learning;
 mod tag_manager;
 mod tag_master;
 mod tag_master_gen;
+mod tag_recovery;
 mod tag_meta;
 mod tag_model;
 mod tag_similarity;

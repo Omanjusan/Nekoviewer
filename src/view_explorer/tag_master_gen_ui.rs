@@ -8,10 +8,16 @@ use super::*;
 use crate::confirm_dialog::{draw_confirm_dialog, ConfirmDialogSpec, ConfirmOutcome};
 use crate::i18n;
 use crate::tag_master_gen::{self, MasterGen};
+use crate::tag_recovery::{self, RecoveryInfo};
+
+/// 一覧で「リカバリポイント」の行を選んでいることを表す印（世代のファイル名とは重ならない）。
+const RECOVERY_KEY: &str = "<recovery>";
 
 /// ロールバック窓の状態。
 pub(super) struct GenWindow {
     gens: Vec<MasterGen>,
+    /// 固定枠のリカバリポイント（設定済みなら一覧の最下段に出す）。
+    recovery: Option<RecoveryInfo>,
     /// 一覧で選んでいる世代のファイル名。
     selected: Option<String>,
     /// 「この世代に戻す」の確認待ちか。
@@ -26,7 +32,8 @@ impl NekoviewApp {
             return;
         }
         let gens = tag_master_gen::list(&self.config.config_root);
-        self.tag_master_gen_ui = Some(GenWindow { gens, selected: None, confirming: false });
+        let recovery = tag_recovery::info(&self.config.config_root);
+        self.tag_master_gen_ui = Some(GenWindow { gens, recovery, selected: None, confirming: false });
     }
 
     /// ロールバック窓と、確認ダイアログを描く。窓の外を押したとき・実行したときは窓を閉じる。
@@ -43,6 +50,15 @@ impl NekoviewApp {
             .open(&mut open)
             .show(ctx, |ui| {
                 ui.label(t.tag_gen_explain());
+                // リカバリポイントへの復元が予約されているとき（次回起動で反映される）。
+                if tag_recovery::restore_pending(&self.config.config_root) {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.colored_label(ui.visuals().warn_fg_color, t.tag_gen_recovery_pending());
+                        if ui.small_button(t.tag_gen_recovery_cancel()).clicked() {
+                            let _ = tag_recovery::cancel_restore(&self.config.config_root);
+                        }
+                    });
+                }
                 ui.add_space(4.0);
                 ui.add_enabled(false, egui::Button::selectable(false, t.tag_gen_current()));
                 if state.gens.is_empty() {
@@ -61,6 +77,20 @@ impl NekoviewApp {
                         }
                     }
                 });
+                // 固定枠のリカバリポイント（デバッグ用）。一覧の最下段に、区切って出す。
+                if let Some(r) = &state.recovery {
+                    ui.separator();
+                    let selected = state.selected.as_deref() == Some(RECOVERY_KEY);
+                    let label = format!(
+                        "{}   {}   {}",
+                        t.tag_gen_recovery_row(),
+                        super::db_backup_ui::format_unix(r.modified_unix),
+                        super::db_backup_ui::format_size(r.db_size + r.master_size)
+                    );
+                    if ui.selectable_label(selected, label).on_hover_text(t.tag_gen_recovery_row_hover()).clicked() {
+                        state.selected = Some(RECOVERY_KEY.to_owned());
+                    }
+                }
                 ui.add_space(6.0);
                 let can_restore = state.selected.is_some() && !self.tag_trial_active;
                 let resp = ui.add_enabled(can_restore, egui::Button::new(t.tag_gen_restore()));
@@ -86,11 +116,39 @@ impl NekoviewApp {
             }
         }
         // 選んだ世代が一覧から消えていたら（ローテーション等）、確認は黙って閉じる。
+        let recovery_chosen = state.selected.as_deref() == Some(RECOVERY_KEY);
         let chosen = state.selected.clone().and_then(|n| state.gens.iter().find(|g| g.name == n).cloned());
-        if state.confirming && chosen.is_none() {
+        if state.confirming && chosen.is_none() && !(recovery_chosen && state.recovery.is_some()) {
             state.confirming = false;
         }
-        if state.confirming && let Some(g) = chosen {
+        if state.confirming && recovery_chosen && let Some(r) = state.recovery.clone() {
+            // リカバリポイントへの復元: マスターとDBをまとめて、次回起動時に戻す。
+            let outcome = draw_confirm_dialog(
+                ctx,
+                ConfirmDialogSpec {
+                    id_salt: "tag_master_gen_confirm_recovery_window",
+                    title: t.tag_gen_confirm_title(),
+                    ok_label: t.tag_gen_restore(),
+                    cancel_label: t.favorite_dialog_cancel(),
+                    foreground: true,
+                },
+                |ui| {
+                    ui.set_max_width(460.0);
+                    ui.label(t.tag_gen_confirm_recovery_body(&super::db_backup_ui::format_unix(r.modified_unix)));
+                },
+            );
+            match outcome {
+                ConfirmOutcome::None => {}
+                ConfirmOutcome::Cancel => state.confirming = false,
+                ConfirmOutcome::Ok => {
+                    match tag_recovery::request_restore(&self.config.config_root) {
+                        Ok(()) => self.set_toast(t.tag_gen_recovery_requested_toast()),
+                        Err(e) => self.set_toast(t.settings_backup_failed_toast(&format!("{e:?}"))),
+                    }
+                    return;
+                }
+            }
+        } else if state.confirming && let Some(g) = chosen {
             let outcome = draw_confirm_dialog(
                 ctx,
                 ConfirmDialogSpec {

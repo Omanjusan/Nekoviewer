@@ -4,7 +4,8 @@
 //! - 試用中（一括適用の仮マスターを編集中）は押せない
 //! - タグのクリア（D2）: 2段階の確認のあと、DB世代とマスター世代を自動で取り、マスターを初期状態へ戻し、全ファイルの
 //!   タグ付けを消す。評価・お気に入り・学習データは消さない。`next_tier_id` は巻き戻さない（孤立IDの再利用を防ぐため）
-//! - リカバリポイント（D3）は未実装。押せない状態のボタンだけ
+//! - リカバリポイント（D3）: マスターとDB全体を固定枠1つに保存する（`tag_recovery.rs`）。上書きと削除は確認つき。
+//!   復元はロールバック窓の一覧の最下段から行う（次回起動時に、マスターとDBをまとめて戻す）
 
 use super::*;
 use crate::confirm_dialog::{draw_confirm_dialog, ConfirmDialogSpec, ConfirmOutcome};
@@ -47,17 +48,46 @@ impl NekoviewApp {
                 // リカバリポイント（D3で実装）。
                 ui.label(egui::RichText::new(t.tag_danger_recovery_heading()).strong());
                 ui.label(t.tag_danger_recovery_explain());
-                ui.add_enabled(false, egui::Button::new(t.tag_danger_recovery_set_button()))
-                    .on_disabled_hover_text(t.tag_danger_coming_soon());
+                let root = self.config.config_root.clone();
+                let info = crate::tag_recovery::info(&root);
+                match &info {
+                    Some(i) => ui.label(t.tag_danger_recovery_status(
+                        &super::db_backup_ui::format_unix(i.modified_unix),
+                        &super::db_backup_ui::format_size(i.db_size),
+                        &super::db_backup_ui::format_size(i.master_size),
+                    )),
+                    None => ui.weak(t.tag_danger_recovery_none()),
+                };
+                let can_set = self.spread_db.is_some() && !self.tag_trial_active && self.tag_apply_job.is_none();
+                ui.horizontal(|ui| {
+                    let set = ui.add_enabled(can_set, egui::Button::new(t.tag_danger_recovery_set_button()));
+                    if !can_set {
+                        set.on_disabled_hover_text(t.tag_danger_clear_unavailable());
+                    } else if set.clicked() {
+                        if info.is_some() {
+                            self.tag_danger_recovery_ask = 1;
+                        } else {
+                            self.run_recovery_set();
+                        }
+                    }
+                    if ui.add_enabled(info.is_some(), egui::Button::new(t.tag_danger_recovery_delete_button())).clicked() {
+                        self.tag_danger_recovery_ask = 2;
+                    }
+                });
             });
         if !open {
             self.tag_danger_open = false;
             self.tag_danger_clear_stage = 0;
+            self.tag_danger_recovery_ask = 0;
             return;
         }
         // 確認ダイアログの表示中は、窓の外クリックで閉じない（ダイアログの中を押しても閉じてしまうため）。
         if self.tag_danger_clear_stage != 0 {
             self.draw_tag_clear_confirm(ctx);
+            return;
+        }
+        if self.tag_danger_recovery_ask != 0 {
+            self.draw_tag_recovery_confirm(ctx);
             return;
         }
         if ctx.input(|i| i.pointer.primary_pressed()) {
@@ -67,6 +97,53 @@ impl NekoviewApp {
             if !inside {
                 self.tag_danger_open = false;
             }
+        }
+    }
+
+    /// リカバリポイントの上書き・削除の確認ダイアログ。
+    fn draw_tag_recovery_confirm(&mut self, ctx: &egui::Context) {
+        let t = i18n::t();
+        let setting = self.tag_danger_recovery_ask == 1;
+        let outcome = draw_confirm_dialog(
+            ctx,
+            ConfirmDialogSpec {
+                id_salt: "tag_recovery_confirm",
+                title: if setting { t.tag_danger_recovery_overwrite_title() } else { t.tag_danger_recovery_delete_title() },
+                ok_label: if setting { t.tag_danger_recovery_overwrite_ok() } else { t.tag_danger_recovery_delete_ok() },
+                cancel_label: t.favorite_dialog_cancel(),
+                foreground: true,
+            },
+            |ui| {
+                ui.set_max_width(440.0);
+                ui.label(if setting { t.tag_danger_recovery_overwrite_body() } else { t.tag_danger_recovery_delete_body() });
+            },
+        );
+        match outcome {
+            ConfirmOutcome::None => {}
+            ConfirmOutcome::Cancel => self.tag_danger_recovery_ask = 0,
+            ConfirmOutcome::Ok => {
+                self.tag_danger_recovery_ask = 0;
+                if setting {
+                    self.run_recovery_set();
+                } else {
+                    match crate::tag_recovery::delete(&self.config.config_root) {
+                        Ok(()) => self.set_toast(t.tag_danger_recovery_deleted_toast()),
+                        Err(e) => self.set_toast(t.settings_backup_failed_toast(&e.to_string())),
+                    }
+                }
+            }
+        }
+    }
+
+    /// いまのマスターとDBを、リカバリポイントとして保存する（既にあれば置き換える）。
+    fn run_recovery_set(&mut self) {
+        let t = i18n::t();
+        let Some(db) = self.spread_db.clone() else { return };
+        // マスターが未保存（初回など）でもコピーできるよう、先にファイルへ保存しておく。
+        self.save_tag_master_file();
+        match crate::tag_recovery::set(&db, &self.config.config_root) {
+            Ok(_) => self.set_toast(t.tag_danger_recovery_set_toast()),
+            Err(e) => self.set_toast(t.settings_backup_failed_toast(&format!("{e:?}"))),
         }
     }
 

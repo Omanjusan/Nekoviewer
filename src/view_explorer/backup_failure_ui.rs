@@ -38,6 +38,12 @@ pub(super) fn open_spread_db_with_backup(config_root: &Path) -> (Option<Arc<Mute
         Ok(false) => {}
         Err(e) => crate::log_common!("[backup] 世代への復元予約の適用に失敗（現DBのまま起動）: {:?}", e),
     }
+    // タグ管理の「リカバリポイントへ戻す」予約。マスターとDBをまとめて、DBを開く前に適用する。
+    match crate::tag_recovery::apply_pending(config_root, crate::tag_master_gen::KEEP_MAX) {
+        Ok(true) => crate::log_common!("[tag-recovery] リカバリポイントへの復元予約を適用した"),
+        Ok(false) => {}
+        Err(e) => crate::log_common!("[tag-recovery] リカバリポイントへの復元予約の適用に失敗: {:?}", e),
+    }
     // 計測フィクスチャーの「DB消去前に戻す」予約も、DBを開く前に適用する（開発専用）。
     match crate::perf_fixture_db::apply_pending_restore(config_root) {
         Ok(true) => crate::log_common!("[perf_fixture] 消去前への復元予約を適用した"),
