@@ -1184,6 +1184,8 @@ pub struct NekoviewApp {
     tag_rules_del_ask: Option<u64>,
     /// ルール一覧の「コピーして編集」で、コピー元に選んでいるルールのID。
     tag_rules_copy_src: Option<u64>,
+    /// ルール編集画面（ステップ式）の下書き。Some の間は、窓に一覧でなく編集画面を出す。
+    tag_rules_editor: Option<tag_rules_ui::RuleEditor>,
     /// 一括タグ付けの適用後の「試用中」か。試用中は仮マスター（`nekoviewer_tags.trial.json`）を読み書きし、
     /// 本物のマスターは確定まで変えない。ファイルが残っていれば、次回起動も試用中から始まる。
     pub(crate) tag_trial_active: bool,
@@ -1814,6 +1816,7 @@ impl NekoviewApp {
             tag_rules_open: false,
             tag_rules_del_ask: None,
             tag_rules_copy_src: None,
+            tag_rules_editor: None,
             tag_trial_active,
             tag_manager_selected_category: Some(0),
             tag_manager_delete_confirm: None,

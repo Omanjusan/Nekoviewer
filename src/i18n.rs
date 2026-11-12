@@ -4896,6 +4896,281 @@ impl Lang {
             Lang::Chinese  => "无法保存规则，更改未生效",
         }
     }
+    pub fn tag_rules_step_name(self, i: usize) -> &'static str {
+        match (self, i) {
+            (Lang::Japanese, 0) => "① 名前",
+            (Lang::Japanese, 1) => "② 条件",
+            (Lang::Japanese, 2) => "③ 結果",
+            (Lang::Japanese, _) => "④ 確認",
+            (Lang::English, 0)  => "1 Name",
+            (Lang::English, 1)  => "2 Conditions",
+            (Lang::English, 2)  => "3 Effects",
+            (Lang::English, _)  => "4 Review",
+            (Lang::Chinese, 0)  => "① 名称",
+            (Lang::Chinese, 1)  => "② 条件",
+            (Lang::Chinese, 2)  => "③ 效果",
+            (Lang::Chinese, _)  => "④ 确认",
+        }
+    }
+    pub fn tag_rules_step_pending_hover(self) -> &'static str {
+        match self {
+            Lang::Japanese => "この画面は準備中です",
+            Lang::English  => "This step is not available yet",
+            Lang::Chinese  => "此步骤准备中",
+        }
+    }
+    pub fn tag_rules_name_heading(self) -> &'static str {
+        match self {
+            Lang::Japanese => "このルールの名前",
+            Lang::English  => "Name of this rule",
+            Lang::Chinese  => "此规则的名称",
+        }
+    }
+    pub fn tag_rules_name_hint(self) -> &'static str {
+        match self {
+            Lang::Japanese => "一覧に出る名前です。有効・無効の切り替えと削除は、一覧のカードから行います。",
+            Lang::English  => "Shown in the list. Enabling, disabling and deleting are done from the cards in the list.",
+            Lang::Chinese  => "显示在列表中。启用/停用和删除请在列表的卡片上进行。",
+        }
+    }
+    pub fn tag_rules_cond_heading(self) -> &'static str {
+        match self {
+            Lang::Japanese => "どんなファイルに当てはめる?",
+            Lang::English  => "Which files does this rule apply to?",
+            Lang::Chinese  => "适用于哪些文件？",
+        }
+    }
+    pub fn tag_rules_cond_hint(self) -> &'static str {
+        match self {
+            Lang::Japanese => "文字列は、ファイル名・info.txt の見出し行・Category・題名を、自動ですべて見ます。",
+            Lang::English  => "Text is checked automatically against the file name, the info.txt title lines, Category and the title.",
+            Lang::Chinese  => "文字串会自动检查文件名、info.txt 的标题行、Category 和标题。",
+        }
+    }
+    pub fn tag_rules_text_hint(self) -> &'static str {
+        match self {
+            Lang::Japanese => "文字列",
+            Lang::English  => "Text",
+            Lang::Chinese  => "文字串",
+        }
+    }
+    pub fn tag_rules_how_contains(self) -> &'static str {
+        match self {
+            Lang::Japanese => "を含む",
+            Lang::English  => "contains",
+            Lang::Chinese  => "包含",
+        }
+    }
+    pub fn tag_rules_how_prefix(self) -> &'static str {
+        match self {
+            Lang::Japanese => "で始まる",
+            Lang::English  => "starts with",
+            Lang::Chinese  => "开头为",
+        }
+    }
+    pub fn tag_rules_how_exact(self) -> &'static str {
+        match self {
+            Lang::Japanese => "と一致する",
+            Lang::English  => "equals",
+            Lang::Chinese  => "完全一致",
+        }
+    }
+    pub fn tag_rules_shape_prefix(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ファイル名が",
+            Lang::English  => "File name has the form",
+            Lang::Chinese  => "文件名的形式为",
+        }
+    }
+    pub fn tag_rules_shape_suffix(self) -> &'static str {
+        match self {
+            Lang::Japanese => "の形（区切りは、前後に半角スペースのある「 - 」）",
+            Lang::English  => "(separator: \" - \" with spaces on both sides)",
+            Lang::Chinese  => "（分隔符为前后带空格的“ - ”）",
+        }
+    }
+    pub fn tag_rules_add_text(self) -> &'static str {
+        match self {
+            Lang::Japanese => "+ 文字列の条件",
+            Lang::English  => "+ Text condition",
+            Lang::Chinese  => "+ 文字串条件",
+        }
+    }
+    pub fn tag_rules_add_shape(self) -> &'static str {
+        match self {
+            Lang::Japanese => "+ ファイル名の形",
+            Lang::English  => "+ File name form",
+            Lang::Chinese  => "+ 文件名形式",
+        }
+    }
+    pub fn tag_rules_unlimit(self) -> &'static str {
+        match self {
+            Lang::Japanese => "限定を解除",
+            Lang::English  => "Remove limit",
+            Lang::Chinese  => "解除限定",
+        }
+    }
+    pub fn tag_rules_limited(self, targets: &str) -> String {
+        match self {
+            Lang::Japanese => format!("対象を限定中: {targets}"),
+            Lang::English  => format!("Limited to: {targets}"),
+            Lang::Chinese  => format!("已限定对象：{targets}"),
+        }
+    }
+    pub fn tag_rules_target_file_name(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ファイル名",
+            Lang::English  => "File name",
+            Lang::Chinese  => "文件名",
+        }
+    }
+    pub fn tag_rules_target_info_title(self) -> &'static str {
+        match self {
+            Lang::Japanese => "info.txtの見出し行",
+            Lang::English  => "info.txt title lines",
+            Lang::Chinese  => "info.txt 标题行",
+        }
+    }
+    pub fn tag_rules_target_info_category(self) -> &'static str {
+        match self {
+            Lang::Japanese => "info.txtのCategory",
+            Lang::English  => "info.txt Category",
+            Lang::Chinese  => "info.txt 的 Category",
+        }
+    }
+    pub fn tag_rules_target_title(self) -> &'static str {
+        match self {
+            Lang::Japanese => "題名",
+            Lang::English  => "Title",
+            Lang::Chinese  => "标题",
+        }
+    }
+    pub fn tag_rules_mode_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "条件が複数あるとき:",
+            Lang::English  => "With several conditions:",
+            Lang::Chinese  => "有多个条件时：",
+        }
+    }
+    pub fn tag_rules_mode_any(self) -> &'static str {
+        match self {
+            Lang::Japanese => "いずれかに当てはまる",
+            Lang::English  => "Any matches",
+            Lang::Chinese  => "满足任一条件",
+        }
+    }
+    pub fn tag_rules_mode_all(self) -> &'static str {
+        match self {
+            Lang::Japanese => "すべてに当てはまる",
+            Lang::English  => "All match",
+            Lang::Chinese  => "满足所有条件",
+        }
+    }
+    pub fn tag_rules_back_to_list(self) -> &'static str {
+        match self {
+            Lang::Japanese => "← 一覧へ",
+            Lang::English  => "← Back to list",
+            Lang::Chinese  => "← 返回列表",
+        }
+    }
+    pub fn tag_rules_prev(self) -> &'static str {
+        match self {
+            Lang::Japanese => "戻る",
+            Lang::English  => "Back",
+            Lang::Chinese  => "上一步",
+        }
+    }
+    pub fn tag_rules_next(self) -> &'static str {
+        match self {
+            Lang::Japanese => "次へ",
+            Lang::English  => "Next",
+            Lang::Chinese  => "下一步",
+        }
+    }
+    pub fn tag_rules_save_and_back(self) -> &'static str {
+        match self {
+            Lang::Japanese => "保存して一覧へ",
+            Lang::English  => "Save and back to list",
+            Lang::Chinese  => "保存并返回列表",
+        }
+    }
+    pub fn tag_rules_save_blocked_hover(self) -> &'static str {
+        match self {
+            Lang::Japanese => "❗の付いたステップを直すと、保存できます",
+            Lang::English  => "Fix the steps marked with ❗ to save",
+            Lang::Chinese  => "修正标有 ❗ 的步骤后即可保存",
+        }
+    }
+    pub fn tag_rules_leave_ask(self) -> &'static str {
+        match self {
+            Lang::Japanese => "変更が保存されていません。破棄しますか?",
+            Lang::English  => "There are unsaved changes. Discard them?",
+            Lang::Chinese  => "有未保存的更改。要放弃吗？",
+        }
+    }
+    pub fn tag_rules_leave_discard(self) -> &'static str {
+        match self {
+            Lang::Japanese => "破棄する",
+            Lang::English  => "Discard",
+            Lang::Chinese  => "放弃",
+        }
+    }
+    pub fn tag_rules_leave_stay(self) -> &'static str {
+        match self {
+            Lang::Japanese => "編集を続ける",
+            Lang::English  => "Keep editing",
+            Lang::Chinese  => "继续编辑",
+        }
+    }
+    pub fn tag_rules_err_name_empty(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ルールの名前を入力してください",
+            Lang::English  => "Enter a name for the rule",
+            Lang::Chinese  => "请输入规则名称",
+        }
+    }
+    pub fn tag_rules_err_name_dup(self) -> &'static str {
+        match self {
+            Lang::Japanese => "同じ名前のルールがあります",
+            Lang::English  => "A rule with the same name already exists",
+            Lang::Chinese  => "已有同名规则",
+        }
+    }
+    pub fn tag_rules_err_no_condition(self) -> &'static str {
+        match self {
+            Lang::Japanese => "条件がありません。条件を1つ以上足してください",
+            Lang::English  => "No conditions. Add at least one",
+            Lang::Chinese  => "没有条件。请至少添加一个",
+        }
+    }
+    pub fn tag_rules_err_text_empty(self) -> &'static str {
+        match self {
+            Lang::Japanese => "文字列が空の条件があります",
+            Lang::English  => "There is a condition with empty text",
+            Lang::Chinese  => "有文字串为空的条件",
+        }
+    }
+    pub fn tag_rules_new_button(self) -> &'static str {
+        match self {
+            Lang::Japanese => "+ 空のルール",
+            Lang::English  => "+ New rule",
+            Lang::Chinese  => "+ 空规则",
+        }
+    }
+    pub fn tag_rules_new_name(self) -> &'static str {
+        match self {
+            Lang::Japanese => "新しいルール",
+            Lang::English  => "New rule",
+            Lang::Chinese  => "新规则",
+        }
+    }
+    pub fn tag_rules_saved(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ルールを保存しました",
+            Lang::English  => "Rule saved",
+            Lang::Chinese  => "已保存规则",
+        }
+    }
     pub fn tag_rules_window_title(self) -> &'static str { self.learn_pick("タグ抽出ルール定義", "", "") }
     pub fn tag_rules_empty(self) -> &'static str { self.learn_pick("ルールはありません", "", "") }
     pub fn tag_rules_disabled(self) -> &'static str { self.learn_pick("（無効）", "", "") }
