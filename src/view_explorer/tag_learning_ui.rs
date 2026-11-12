@@ -112,7 +112,7 @@ impl NekoviewApp {
         }
 
         let mut open = true;
-        let (mut start, mut commit, mut cancel_labeling, mut skip_scan, mut to_viewer, mut to_hub) = (false, false, false, false, false, false);
+        let (mut start, mut commit, mut cancel_labeling, mut skip_scan, mut to_viewer) = (false, false, false, false, false);
         let mut close_clicked = false;
         let mut clear_all = false;
         let mut remove_entry: Option<String> = None;
@@ -154,7 +154,22 @@ impl NekoviewApp {
                     ui.checkbox(&mut hide_intro, t.tag_learn_intro_hide());
                 }
                 LearnStage::Hub => {
-                    ui.label(t.tag_learn_status(learned_len));
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(t.tag_learn_status(learned_len));
+                        to_viewer = ui.add_enabled(learned_len > 0, egui::Button::new(t.tag_learn_view_button())).clicked();
+                        if st.confirm_clear {
+                            ui.colored_label(egui::Color32::from_rgb(230, 160, 40), t.tag_learn_clear_confirm());
+                            if ui.button(t.tag_learn_clear_do()).clicked() {
+                                clear_all = true;
+                                st.confirm_clear = false;
+                            }
+                            if ui.button(t.tag_learn_clear_cancel()).clicked() {
+                                st.confirm_clear = false;
+                            }
+                        } else if ui.add_enabled(learned_len > 0, egui::Button::new(t.tag_learn_clear_button())).clicked() {
+                            st.confirm_clear = true;
+                        }
+                    });
                     match st.estimate.and_then(|e| e.1) {
                         Some(p) => ui.weak(t.tag_learn_estimate(p)),
                         None => ui.weak(t.tag_learn_estimate_none()),
@@ -172,22 +187,6 @@ impl NekoviewApp {
                         let resp = if st.available > 0 { resp } else { resp.on_disabled_hover_text(t.tag_learn_start_disabled_hover()) };
                         start = resp.clicked();
                         close_clicked = ui.button(t.tag_learn_close_button()).clicked();
-                    });
-                    ui.separator();
-                    ui.horizontal(|ui| {
-                        to_viewer = ui.add_enabled(learned_len > 0, egui::Button::new(t.tag_learn_view_button())).clicked();
-                        if st.confirm_clear {
-                            ui.colored_label(egui::Color32::from_rgb(230, 160, 40), t.tag_learn_clear_confirm());
-                            if ui.button(t.tag_learn_clear_do()).clicked() {
-                                clear_all = true;
-                                st.confirm_clear = false;
-                            }
-                            if ui.button(t.tag_learn_clear_cancel()).clicked() {
-                                st.confirm_clear = false;
-                            }
-                        } else if ui.add_enabled(learned_len > 0, egui::Button::new(t.tag_learn_clear_button())).clicked() {
-                            st.confirm_clear = true;
-                        }
                     });
                 }
                 LearnStage::Viewer => {
@@ -220,9 +219,6 @@ impl NekoviewApp {
                             });
                             ui.separator();
                         }
-                    });
-                    ui.horizontal(|ui| {
-                        to_hub = ui.button(t.tag_learn_viewer_back()).clicked();
                     });
                 }
                 LearnStage::Labeling(rows) => {
@@ -302,9 +298,6 @@ impl NekoviewApp {
         }
         if to_viewer {
             st.stage = LearnStage::Viewer;
-        }
-        if to_hub {
-            st.stage = LearnStage::Hub;
         }
         if start {
             let rows = st.pick_rows(self);

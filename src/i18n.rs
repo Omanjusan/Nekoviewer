@@ -4806,12 +4806,12 @@ impl Lang {
         local.unwrap_or(ja)
     }
     pub fn tag_rules_reload_failed(self) -> &'static str { self.learn_pick("ルールファイルを読み込めませんでした（形式が壊れているか、新しい版です）", "", "") }
-    pub fn tag_learn_view_button(self) -> &'static str { self.learn_pick("学習データを見る…", "", "") }
-    pub fn tag_learn_clear_button(self) -> &'static str { self.learn_pick("全消去してやり直す", "", "") }
+    pub fn tag_learn_view_button(self) -> &'static str { self.learn_pick("既存の学習データを見る", "", "") }
+    pub fn tag_learn_clear_button(self) -> &'static str { self.learn_pick("既存の学習データを全て消去", "", "") }
     pub fn tag_learn_clear_confirm(self) -> &'static str { self.learn_pick("学習データをすべて消去します。元に戻せません。", "", "") }
     pub fn tag_learn_clear_do(self) -> &'static str { self.learn_pick("消去する", "", "") }
     pub fn tag_learn_clear_cancel(self) -> &'static str { self.learn_pick("やめる", "", "") }
-    pub fn tag_learn_viewer_title(self) -> &'static str { self.learn_pick("タグ学習 — 学習データ", "", "") }
+    pub fn tag_learn_viewer_title(self) -> &'static str { self.learn_pick("学習済みデータ一覧", "", "") }
     pub fn tag_learn_viewer_empty(self) -> &'static str { self.learn_pick("学習データはありません", "", "") }
     pub fn tag_learn_viewer_back(self) -> &'static str { self.learn_pick("戻る", "", "") }
     pub fn tag_learn_viewer_delete(self) -> &'static str { self.learn_pick("削除", "", "") }
