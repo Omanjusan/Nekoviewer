@@ -1,6 +1,6 @@
 //! タグパネルの入口「🏷 タグ管理」と、その子のポップアップメニュー。
 //!
-//! 子の項目: 現フォルダに対するタグ抽出用学習／学習内容を使う（チェック）／現フォルダファイルのタグ自動抽出＆付与／
+//! 子の項目: 現フォルダに対するタグ抽出用学習／現フォルダファイルのタグ自動抽出＆付与／
 //! 大ルール／タグ・カテゴリ編集（従来のタグ管理画面）。件数は項目の右にグレーで出す。
 
 use crate::i18n;
@@ -29,7 +29,7 @@ impl NekoviewApp {
     /// タグパネル最上段の入口ボタン（左右中央）。押すと子のポップアップメニューが開く。
     pub(super) fn draw_tag_entry_menu(&mut self, ui: &mut egui::Ui) {
         ui.vertical_centered(|ui| {
-            // チェック項目（学習内容を使う）は押しても閉じない。別窓・処理を起動する項目は自分で閉じる。
+            // 別窓・処理を起動する項目は、押したら自分で閉じる。
             let config = egui::containers::menu::MenuConfig::new().close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside);
             egui::containers::menu::MenuButton::new(i18n::t().tag_panel_manager_button()).config(config).ui(ui, |ui| self.draw_tag_entry_menu_items(ui));
         });
@@ -49,16 +49,7 @@ impl NekoviewApp {
             ui.close();
         }
 
-        // 2: 学習内容を使う（チェック）。学習データが無いときは切り替えても結果が変わらないので押せない。
-        let mut on = self.config.tag_learning_use;
-        let resp = ui.add_enabled(learned > 0, egui::Checkbox::new(&mut on, t.tag_menu_learn_use()));
-        let resp = if learned > 0 { resp.on_hover_text(t.tag_learn_use_hover()) } else { resp.on_disabled_hover_text(t.tag_learn_use_disabled_hover()) };
-        if resp.changed() {
-            self.config.tag_learning_use = on;
-            self.persist_state();
-        }
-
-        // 3: 現フォルダファイルのタグ自動抽出＆付与
+        // 2: 現フォルダファイルのタグ自動抽出＆付与
         let enabled = self.can_start_tag_scan();
         let resp = ui.add_enabled(enabled, egui::Button::new(t.tag_menu_scan_item()));
         let hint = if self.tag_trial_active { t.tag_scan_trial_hint() } else { t.tag_scan_unavailable_hint() };
@@ -68,7 +59,7 @@ impl NekoviewApp {
             ui.close();
         }
 
-        // 4: 大ルール（仮の一覧窓）
+        // 3: 大ルール（仮の一覧窓）
         let resp = ui
             .add(egui::Button::new(t.tag_rules_open_button()).right_text(egui::RichText::new(t.tag_rules_count(self.tag_rules.rules.len())).weak()))
             .on_hover_text(t.tag_rules_open_hover());
@@ -79,7 +70,7 @@ impl NekoviewApp {
 
         ui.separator();
 
-        // 5: タグ・カテゴリ編集（従来のタグ管理画面）
+        // 4: タグ・カテゴリ編集（従来のタグ管理画面）
         if ui.button(t.tag_menu_edit_item()).clicked() {
             self.open_tag_manager_overlay();
             ui.close();

@@ -321,6 +321,11 @@ impl NekoviewApp {
                 let saved = self.tag_learned.save(&self.config.config_root);
                 self.rebuild_tag_model();
                 if saved {
+                    // 学習を足したら「学習内容を使う」を自動でONにする。その後の手動OFFは、次の学習まで戻さない。
+                    if n > 0 && !self.config.tag_learning_use {
+                        self.config.tag_learning_use = true;
+                        self.persist_state();
+                    }
                     self.set_toast(t.tag_learn_done_toast(n));
                 } else {
                     self.set_toast(t.tag_learn_save_failed_toast());
