@@ -1200,6 +1200,10 @@ pub struct NekoviewApp {
     tag_master_gen_ui: Option<tag_master_gen_ui::GenWindow>,
     /// タグマネージャー: ロールバックボタンの範囲（押した位置が窓の外かの判定から除く）。
     tag_master_gen_btn_rect: egui::Rect,
+    /// タグマネージャー: 「危険な設定」窓を開いているか。
+    tag_danger_open: bool,
+    /// タグマネージャー: 「危険な設定」ボタンの範囲（押した位置が窓の外かの判定から除く）。
+    tag_danger_btn_rect: egui::Rect,
     /// タグマネージャー: 今回開いている間に、開く前の状態の世代を取り済みか（開くたびに false へ戻す）。
     tag_manager_session_snapped: std::cell::Cell<bool>,
     /// タグマネージャー: インライン編集中の要素(カテゴリindex, tier内index)。
@@ -1424,6 +1428,7 @@ mod tag_scan;
 mod tag_confirm;
 mod tag_trial_ui;
 mod tag_master_gen_ui;
+mod tag_danger_ui;
 mod tag_learning_ui;
 mod scan;
 mod folder_sort;
@@ -1790,6 +1795,8 @@ impl NekoviewApp {
             tag_manager_delete_confirm: None,
             tag_master_gen_ui: None,
             tag_master_gen_btn_rect: egui::Rect::NOTHING,
+            tag_danger_open: false,
+            tag_danger_btn_rect: egui::Rect::NOTHING,
             tag_manager_session_snapped: std::cell::Cell::new(false),
             tag_manager_editing_element: None,
             tag_manager_editing_buffer: String::new(),

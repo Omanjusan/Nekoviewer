@@ -1031,6 +1031,7 @@ impl NekoviewApp {
                 self.tag_manager_open = true;
                 self.tag_manager_session_snapped.set(false);
                 self.tag_master_gen_ui = None;
+                self.tag_danger_open = false;
             }
             // タグパネルのプレビューを、グリッドサムネの引き伸ばし（軽量・低画質）ではなく
             // 専用解像度で再デコードした高画質表示に切り替えるトグル。低スペックPC・
@@ -1499,6 +1500,17 @@ impl NekoviewApp {
                                         if r.clicked() {
                                             self.toggle_tag_master_gen_window();
                                         }
+                                        // 右隣に「危険な設定」。試用中は押せない。
+                                        ui.add_space(8.0);
+                                        let d = ui.add_enabled(
+                                            !self.tag_trial_active,
+                                            egui::Button::new(egui::RichText::new(i18n::t().tag_danger_button()).color(egui::Color32::from_rgb(230, 90, 80))),
+                                        );
+                                        let d = if self.tag_trial_active { d.on_disabled_hover_text(i18n::t().tag_danger_trial_tip()) } else { d };
+                                        self.tag_danger_btn_rect = d.rect;
+                                        if d.clicked() {
+                                            self.toggle_tag_danger_window();
+                                        }
                                     },
                                 );
                             },
@@ -1560,6 +1572,7 @@ impl NekoviewApp {
                 });
             });
         self.draw_tag_master_gen_window(ctx);
+        self.draw_tag_danger_window(ctx);
     }
 
     /// タグマネージャー: カテゴリリスト左端の縦貫通エリア。選択カテゴリの並べ替えボタンを

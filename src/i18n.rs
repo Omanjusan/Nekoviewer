@@ -4245,6 +4245,87 @@ impl Lang {
         }
     }
 
+    /// 「危険な設定」窓: 開くボタン
+    pub fn tag_danger_button(self) -> &'static str {
+        match self {
+            Lang::Japanese => "危険な設定",
+            Lang::English  => "Danger zone",
+            Lang::Chinese  => "危险设置",
+        }
+    }
+
+    pub fn tag_danger_title(self) -> &'static str {
+        match self {
+            Lang::Japanese => "危険な設定",
+            Lang::English  => "Danger zone",
+            Lang::Chinese  => "危险设置",
+        }
+    }
+
+    pub fn tag_danger_trial_tip(self) -> &'static str {
+        match self {
+            Lang::Japanese => "試用中は使えません。先に確定か破棄をしてください",
+            Lang::English  => "Not available during a trial. Confirm or discard the trial first",
+            Lang::Chinese  => "试用期间无法使用。请先确认或放弃试用",
+        }
+    }
+
+    pub fn tag_danger_coming_soon(self) -> &'static str {
+        match self {
+            Lang::Japanese => "この機能は準備中です",
+            Lang::English  => "This feature is not available yet",
+            Lang::Chinese  => "此功能尚未提供",
+        }
+    }
+
+    pub fn tag_danger_clear_heading(self) -> &'static str {
+        match self {
+            Lang::Japanese => "タグのクリア",
+            Lang::English  => "Clear tags",
+            Lang::Chinese  => "清除标签",
+        }
+    }
+
+    pub fn tag_danger_clear_explain(self) -> &'static str {
+        match self {
+            Lang::Japanese => "タグマスター（カテゴリ・要素）を初期状態に戻し、全ファイルのタグ付けも消します。一括タグ取得でやり直したいときに使います。評価・お気に入り・学習データは消えません。",
+            Lang::English  => "Resets the tag master (categories and elements) and removes the tags from every file. Use this to start over with bulk tag collection. Ratings, favorites and learning data are kept.",
+            Lang::Chinese  => "将标签主表（分类和元素）恢复为初始状态，并清除所有文件的标签。用于通过批量获取标签重新开始。评分、收藏和学习数据不会被清除。",
+        }
+    }
+
+    pub fn tag_danger_clear_button(self) -> &'static str {
+        match self {
+            Lang::Japanese => "タグを全部クリア…",
+            Lang::English  => "Clear all tags…",
+            Lang::Chinese  => "清除全部标签…",
+        }
+    }
+
+    pub fn tag_danger_recovery_heading(self) -> &'static str {
+        match self {
+            Lang::Japanese => "リカバリポイント（主にデバッグ用）",
+            Lang::English  => "Recovery point (mainly for debugging)",
+            Lang::Chinese  => "恢复点（主要用于调试）",
+        }
+    }
+
+    pub fn tag_danger_recovery_explain(self) -> &'static str {
+        match self {
+            Lang::Japanese => "いまのタグマスターとデータベース全体を、固定の1か所に保存します。ロールバックの一覧の最下段から、いつでも戻せます（ローテーションで消えません）。",
+            Lang::English  => "Saves the current tag master and the whole database in one fixed slot. You can go back from the bottom of the rollback list at any time (it is never rotated away).",
+            Lang::Chinese  => "将当前标签主表和整个数据库保存到一个固定位置。可随时从回滚列表最下方恢复（不会被轮替删除）。",
+        }
+    }
+
+    pub fn tag_danger_recovery_set_button(self) -> &'static str {
+        match self {
+            Lang::Japanese => "現在の状態をリカバリポイントに設定…",
+            Lang::English  => "Set current state as recovery point…",
+            Lang::Chinese  => "将当前状态设为恢复点…",
+        }
+    }
+
     /// 世代窓: 開くボタン
     pub fn tag_gen_button(self) -> &'static str {
         match self {
