@@ -1204,6 +1204,8 @@ pub struct NekoviewApp {
     tag_danger_open: bool,
     /// タグマネージャー: 「危険な設定」ボタンの範囲（押した位置が窓の外かの判定から除く）。
     tag_danger_btn_rect: egui::Rect,
+    /// 「危険な設定」のタグのクリア: 確認の段階（0=なし、1=内容の確認、2=最終確認）。
+    tag_danger_clear_stage: u8,
     /// タグマネージャー: 今回開いている間に、開く前の状態の世代を取り済みか（開くたびに false へ戻す）。
     tag_manager_session_snapped: std::cell::Cell<bool>,
     /// タグマネージャー: インライン編集中の要素(カテゴリindex, tier内index)。
@@ -1797,6 +1799,7 @@ impl NekoviewApp {
             tag_master_gen_btn_rect: egui::Rect::NOTHING,
             tag_danger_open: false,
             tag_danger_btn_rect: egui::Rect::NOTHING,
+            tag_danger_clear_stage: 0,
             tag_manager_session_snapped: std::cell::Cell::new(false),
             tag_manager_editing_element: None,
             tag_manager_editing_buffer: String::new(),

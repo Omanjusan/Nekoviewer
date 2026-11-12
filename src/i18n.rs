@@ -4302,6 +4302,78 @@ impl Lang {
         }
     }
 
+    pub fn tag_danger_clear_unavailable(self) -> &'static str {
+        match self {
+            Lang::Japanese => "いまは実行できません（データベースが開けない、または一括適用の実行中です）",
+            Lang::English  => "Cannot run now (the database is unavailable, or a bulk apply is running)",
+            Lang::Chinese  => "目前无法执行（数据库不可用，或正在执行批量应用）",
+        }
+    }
+
+    pub fn tag_danger_clear_confirm1_title(self) -> &'static str {
+        match self {
+            Lang::Japanese => "タグのクリア（1/2）",
+            Lang::English  => "Clear tags (1/2)",
+            Lang::Chinese  => "清除标签（1/2）",
+        }
+    }
+
+    pub fn tag_danger_clear_confirm1_body(self) -> &'static str {
+        match self {
+            Lang::Japanese => "次のものを消します。\n・タグマスター（カテゴリ・要素）を初期状態に戻す\n・全ファイルのタグ付け\n\n消さないもの: 評価・お気に入り・見開きなどの設定・学習データ\n\n実行の直前に、データベースのバックアップ世代とタグマスターの世代を自動で作ります。元に戻すには、設定の「DB」タブからDBの世代を復元し、タグ管理のロールバックでマスターを戻します。",
+            Lang::English  => "This will remove:\n- reset the tag master (categories and elements) to its initial state\n- the tags of every file\n\nKept: ratings, favorites, spread and other per-file settings, learning data\n\nJust before running, a database backup generation and a tag master generation are created automatically. To undo, restore the database generation from the \"DB\" settings tab and roll the tag master back from the tag manager.",
+            Lang::Chinese  => "将清除以下内容：\n・将标签主表（分类和元素）恢复为初始状态\n・所有文件的标签\n\n不会清除：评分、收藏、跨页等设置、学习数据\n\n执行前会自动创建数据库备份版本和标签主表版本。如需撤销，请在设置的“数据库”标签中恢复数据库版本，并在标签管理中回滚标签主表。",
+        }
+    }
+
+    pub fn tag_danger_clear_confirm2_title(self) -> &'static str {
+        match self {
+            Lang::Japanese => "本当にクリアしますか（2/2）",
+            Lang::English  => "Really clear? (2/2)",
+            Lang::Chinese  => "确定要清除吗（2/2）",
+        }
+    }
+
+    pub fn tag_danger_clear_confirm2_body(self) -> &'static str {
+        match self {
+            Lang::Japanese => "全ファイルのタグ付けとタグマスターを消します。この操作は取り消せません（バックアップから戻すことはできます）。実行しますか？",
+            Lang::English  => "This removes the tags of every file and resets the tag master. It cannot be undone (you can restore from the backups). Run it?",
+            Lang::Chinese  => "将清除所有文件的标签并重置标签主表。此操作无法撤销（可从备份恢复）。确定执行吗？",
+        }
+    }
+
+    pub fn tag_danger_clear_next(self) -> &'static str {
+        match self {
+            Lang::Japanese => "次へ",
+            Lang::English  => "Next",
+            Lang::Chinese  => "下一步",
+        }
+    }
+
+    pub fn tag_danger_clear_run(self) -> &'static str {
+        match self {
+            Lang::Japanese => "クリアする",
+            Lang::English  => "Clear",
+            Lang::Chinese  => "清除",
+        }
+    }
+
+    pub fn tag_danger_cleared_toast(self, records: usize) -> String {
+        match self {
+            Lang::Japanese => format!("タグをクリアしました（タグ付けの記録 {records}件を消去）"),
+            Lang::English  => format!("Tags cleared ({records} tag records removed)"),
+            Lang::Chinese  => format!("已清除标签（删除 {records} 条标签记录）"),
+        }
+    }
+
+    pub fn tag_danger_clear_failed_toast(self) -> &'static str {
+        match self {
+            Lang::Japanese => "タグのクリアに失敗しました（何も変更していません）",
+            Lang::English  => "Failed to clear tags (nothing was changed)",
+            Lang::Chinese  => "清除标签失败（未做任何更改）",
+        }
+    }
+
     pub fn tag_danger_recovery_heading(self) -> &'static str {
         match self {
             Lang::Japanese => "リカバリポイント（主にデバッグ用）",

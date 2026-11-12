@@ -1032,6 +1032,7 @@ impl NekoviewApp {
                 self.tag_manager_session_snapped.set(false);
                 self.tag_master_gen_ui = None;
                 self.tag_danger_open = false;
+                self.tag_danger_clear_stage = 0;
             }
             // タグパネルのプレビューを、グリッドサムネの引き伸ばし（軽量・低画質）ではなく
             // 専用解像度で再デコードした高画質表示に切り替えるトグル。低スペックPC・

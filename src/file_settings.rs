@@ -13,7 +13,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use redb::{Database, ReadTransaction, ReadableDatabase, ReadableTable, TableDefinition};
+use redb::{Database, ReadTransaction, ReadableDatabase, ReadableTable, ReadableTableMetadata, TableDefinition};
 
 use crate::file_identity::{put_str, Reader};
 use crate::favorites::FAVORITE_MEMBERSHIP_TABLE;
@@ -370,6 +370,47 @@ pub(crate) fn modify_for_record(
     Some(ok)
 }
 
+/// 全ファイルのタグ付けを消した件数。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub struct ClearedTags {
+    /// タグが入っていた第2世代（ID）のレコード数。
+    pub records: usize,
+    /// 消した旧v1（パスキー）の行数。
+    pub legacy_rows: usize,
+}
+
+/// 全ファイルのタグ付けを消す（1トランザクション）。ID方式のレコードはタグだけを「解除」にし、他の設定（見開き・
+/// ソート・登録サムネ・お気に入り所属）には触らない。旧v1のタグ表は中身を全部消す（解除済みなので復活はしない）。
+/// 評価・お気に入り本体・学習データなど、タグ以外のものは消さない。失敗したら None（何も変えない）。
+pub fn clear_all_tags(db: &Arc<Mutex<Database>>) -> Option<ClearedTags> {
+    let guard = db.lock().ok()?;
+    let rtx = guard.begin_read().ok()?;
+    let mut updates: Vec<(u64, Vec<u8>)> = Vec::new();
+    if let Ok(t) = rtx.open_table(FILE_SETTINGS_TABLE_V2) {
+        for e in t.iter().ok()?.flatten() {
+            if let Some(mut s) = FileSettings::decode(e.1.value())
+                && s.tags.is_set()
+            {
+                s.tags = Slot::Cleared;
+                updates.push((e.0.value(), s.encode()));
+            }
+        }
+    }
+    let legacy_rows = rtx.open_table(ARCHIVE_TAGS_TABLE_V1).ok().and_then(|t| t.len().ok()).unwrap_or(0) as usize;
+    drop(rtx);
+    let wtx = guard.begin_write().ok()?;
+    {
+        let mut t = wtx.open_table(FILE_SETTINGS_TABLE_V2).ok()?;
+        for (id, bytes) in &updates {
+            t.insert(*id, bytes.as_slice()).ok()?;
+        }
+    }
+    wtx.delete_table(ARCHIVE_TAGS_TABLE_V1).ok()?;
+    wtx.open_table(ARCHIVE_TAGS_TABLE_V1).ok()?;
+    wtx.commit().ok()?;
+    Some(ClearedTags { records: updates.len(), legacy_rows })
+}
+
 fn migrate<T>(slot: &mut Slot<T>, legacy: Option<T>) {
     if matches!(slot, Slot::Unmigrated) {
         *slot = match legacy {
@@ -630,6 +671,38 @@ mod tests {
         assert!(read_archive_tags(&db, &d1, "x.zip").is_empty());
         assert!(write_archive_tags(&db, &d2, "y.zip", &[]));
         assert!(read_archive_tags(&db, &d2, "y.zip").is_empty());
+    }
+
+    #[test]
+    fn clear_all_tags_removes_every_tag_but_keeps_other_settings() {
+        let root = real_dir("clear_all_tags");
+        let db = new_db(&root);
+        real_file(&root, "a.zip", 3000);
+        real_file(&root, "b.zip", 4000);
+        real_file(&root, "legacy.zip", 5000);
+        assert!(write_archive_tags(&db, &root, "a.zip", &[1, 2]));
+        assert!(write_archive_tags(&db, &root, "b.zip", &[3]));
+        // 他の設定（見開き）を持つレコード。タグ解除で消えない。
+        assert_eq!(modify(&db, &root, "a.zip", |s| s.spread = Slot::Set((1, 2))), Some(true));
+        // 旧v1にだけあるタグ（未移行）。
+        seed_v1_tags(&db, &root, "legacy.zip", &[7, 8]);
+        assert_eq!(read_archive_tags(&db, &root, "legacy.zip"), vec![7, 8]);
+
+        let cleared = clear_all_tags(&db).expect("cleared");
+        assert_eq!(cleared.records, 2, "a.zip と b.zip");
+        assert!(cleared.legacy_rows >= 1);
+        for name in ["a.zip", "b.zip", "legacy.zip"] {
+            assert!(read_archive_tags(&db, &root, name).is_empty(), "{name}");
+        }
+        let eff = read_effective(&db, &root, "a.zip").unwrap();
+        assert_eq!(eff.spread, Some((1, 2)), "他の設定は残る");
+        // 消したあとに付け直せる。
+        assert!(write_archive_tags(&db, &root, "a.zip", &[9]));
+        assert_eq!(read_archive_tags(&db, &root, "a.zip"), vec![9]);
+        // もう一度やっても壊れない（0件）。
+        assert!(write_archive_tags(&db, &root, "a.zip", &[]));
+        let again = clear_all_tags(&db).unwrap();
+        assert_eq!(again.records, 0);
     }
 
     #[test]
