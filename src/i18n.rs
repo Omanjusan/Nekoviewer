@@ -4924,6 +4924,14 @@ impl Lang {
         }
     }
 
+    pub fn tag_trial_confirmed_record_failed(self, n: usize) -> String {
+        match self {
+            Lang::Japanese => format!("確定しました。ただし{n}件のファイルは、自動付与の記録を残せませんでした（ファイルが見つからない等）"),
+            Lang::English  => format!("Confirmed. However, the auto-tagging record could not be saved for {n} file(s) (e.g. file not found)"),
+            Lang::Chinese  => format!("已确认。但有{n}个文件未能保存自动标记记录（例如找不到文件）"),
+        }
+    }
+
     pub fn tag_trial_confirmed(self) -> &'static str {
         match self {
             Lang::Japanese => "試用を確定しました",

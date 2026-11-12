@@ -407,6 +407,9 @@ pub fn clear_all_tags(db: &Arc<Mutex<Database>>) -> Option<ClearedTags> {
     }
     wtx.delete_table(ARCHIVE_TAGS_TABLE_V1).ok()?;
     wtx.open_table(ARCHIVE_TAGS_TABLE_V1).ok()?;
+    // タグが無くなるので、自動付与の記録も同じトランザクションで消す。
+    wtx.delete_table(crate::tag_auto_record::AUTO_TAG_TABLE).ok()?;
+    wtx.open_table(crate::tag_auto_record::AUTO_TAG_TABLE).ok()?;
     wtx.commit().ok()?;
     Some(ClearedTags { records: updates.len(), legacy_rows })
 }

@@ -918,6 +918,7 @@ pub fn delete_id(db: &Arc<Mutex<Database>>, id: u64) -> Result<(), IdentityError
         }
     }
     crate::duplicate_marker::forget_id_tx(&tx, id).ok_or(IdentityError::Db)?;
+    crate::tag_auto_record::forget_id_tx(&tx, id).ok_or(IdentityError::Db)?;
     crate::thumb_hash_store::forget_id_tx(&tx, id).ok_or(IdentityError::Db)?;
     tx.commit().map_err(db_err)?;
     Ok(())

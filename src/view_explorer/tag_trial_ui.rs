@@ -98,9 +98,19 @@ impl NekoviewApp {
         // 確定は本物を置き換えるので、置き換え前の本物を世代に残す。
         crate::tag_master_gen::snapshot_before_save(&root, self.tag_master_gen_keep(), true);
         if crate::tag_manager::promote_trial(&root) {
+            // 自動付与で足したタグIDを、ファイルごとの記録（DB）へ移す。再抽出で「前回分を外して付け直す」ための元になる。
+            let report = self
+                .spread_db
+                .as_ref()
+                .map(|db| crate::tag_auto_record::record_from_trial(db, &TrialRecord::load(&root).unwrap_or_default()))
+                .unwrap_or_default();
             TrialRecord::remove(&root);
             self.tag_trial_active = false;
-            self.set_toast(i18n::t().tag_trial_confirmed());
+            if report.failed > 0 {
+                self.set_toast(i18n::t().tag_trial_confirmed_record_failed(report.failed));
+            } else {
+                self.set_toast(i18n::t().tag_trial_confirmed());
+            }
         } else {
             self.set_toast(i18n::t().tag_trial_confirm_failed());
         }
