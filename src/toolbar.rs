@@ -18,6 +18,8 @@ pub enum ViewerBarItem {
     SortNatural,
     /// アーカイブ内ソート: 日付
     SortDate,
+    /// アーカイブ内ソート: 格納順（アーカイブ内の並び）
+    SortStored,
     /// アーカイブ内ソート: 昇順/降順トグル
     SortOrder,
     /// ページ表示モード: 単ページ
@@ -50,13 +52,14 @@ pub enum ViewerBarItem {
     Rating,
 }
 
-pub const BAR_ITEM_COUNT: usize = 18;
+pub const BAR_ITEM_COUNT: usize = 19;
 
 /// 既定の並び順。ソート群 → ページ群 → 回転群 → 翻訳群 → 評価群。
 pub const DEFAULT_BAR_ORDER: [ViewerBarItem; BAR_ITEM_COUNT] = [
     ViewerBarItem::SortName,
     ViewerBarItem::SortNatural,
     ViewerBarItem::SortDate,
+    ViewerBarItem::SortStored,
     ViewerBarItem::SortOrder,
     ViewerBarItem::PageSingle,
     ViewerBarItem::SpreadLeft,
@@ -93,6 +96,7 @@ impl ViewerBarItem {
             ViewerBarItem::SortName        => "sort_name",
             ViewerBarItem::SortNatural     => "sort_natural",
             ViewerBarItem::SortDate        => "sort_date",
+            ViewerBarItem::SortStored      => "sort_stored",
             ViewerBarItem::SortOrder       => "sort_order",
             ViewerBarItem::PageSingle      => "page_single",
             ViewerBarItem::SpreadLeft      => "spread_left",
@@ -116,6 +120,7 @@ impl ViewerBarItem {
             "sort_name"        => ViewerBarItem::SortName,
             "sort_natural"     => ViewerBarItem::SortNatural,
             "sort_date"        => ViewerBarItem::SortDate,
+            "sort_stored"      => ViewerBarItem::SortStored,
             "sort_order"       => ViewerBarItem::SortOrder,
             "page_single"      => ViewerBarItem::PageSingle,
             "spread_left"      => ViewerBarItem::SpreadLeft,
@@ -159,6 +164,7 @@ impl ViewerBarItem {
             ViewerBarItem::SortName
             | ViewerBarItem::SortNatural
             | ViewerBarItem::SortDate
+            | ViewerBarItem::SortStored
             | ViewerBarItem::SortOrder => BarGroup::Sort,
             ViewerBarItem::PageSingle
             | ViewerBarItem::SpreadLeft

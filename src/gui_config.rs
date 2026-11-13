@@ -22,6 +22,7 @@ pub fn reader_sort_key_to_state(key: crate::types::ReaderSortKey) -> &'static st
         crate::types::ReaderSortKey::Name => "name",
         crate::types::ReaderSortKey::Natural => "natural",
         crate::types::ReaderSortKey::Date => "date",
+        crate::types::ReaderSortKey::Stored => "stored",
     }
 }
 
@@ -31,6 +32,7 @@ pub fn reader_sort_key_from_state(s: &str) -> Option<crate::types::ReaderSortKey
         "name" => Some(crate::types::ReaderSortKey::Name),
         "natural" => Some(crate::types::ReaderSortKey::Natural),
         "date" => Some(crate::types::ReaderSortKey::Date),
+        "stored" => Some(crate::types::ReaderSortKey::Stored),
         _ => None,
     }
 }
@@ -1735,7 +1737,7 @@ mod tests {
             assert_eq!(p.viewer_cfg.default_sort_key, None, "{tag}");
             assert!(p.viewer_cfg.default_sort_ascending, "{tag}");
         }
-        for k in [ReaderSortKey::Name, ReaderSortKey::Natural, ReaderSortKey::Date] {
+        for k in [ReaderSortKey::Name, ReaderSortKey::Natural, ReaderSortKey::Date, ReaderSortKey::Stored] {
             assert_eq!(reader_sort_key_from_state(reader_sort_key_to_state(k)), Some(k));
         }
     }

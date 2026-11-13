@@ -8,10 +8,11 @@ use crate::fs::dir;
 use crate::view_reader::{fit_rect_contain, sort_choice_button, sort_order_button, ViewerState, SORT_CHOICE_SELECTED};
 
 /// ビューアーのデフォルト（任意）のキー候補（表示順）。
-const VIEWER_DEFAULT_KEYS: [crate::types::ReaderSortKey; 3] = [
+const VIEWER_DEFAULT_KEYS: [crate::types::ReaderSortKey; 4] = [
     crate::types::ReaderSortKey::Name,
     crate::types::ReaderSortKey::Natural,
     crate::types::ReaderSortKey::Date,
+    crate::types::ReaderSortKey::Stored,
 ];
 
 /// ビューアーのデフォルト（任意）の選択中の塗り色。基本キー（青）・評価キー（赤）と区別する緑。
@@ -704,6 +705,7 @@ impl NekoviewApp {
                     crate::types::ReaderSortKey::Name => t.sort_name(),
                     crate::types::ReaderSortKey::Natural => t.sort_natural(),
                     crate::types::ReaderSortKey::Date => t.sort_date(),
+                    crate::types::ReaderSortKey::Stored => t.sort_stored(),
                 };
                 let rb = sort_choice_button(ui, default_key == Some(key), label, SORT_CHOICE_VIEWER_DEFAULT_SELECTED);
                 if cur_item == Some(SortMenuItem::ViewerDefaultKey(key)) { draw_cursor_ring(ui, rb.rect); }

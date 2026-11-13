@@ -58,6 +58,33 @@ impl Lang {
         }
     }
 
+    /// アーカイブ内の格納順ソート（作者が意図した並びの可能性）
+    pub fn sort_stored(self) -> &'static str {
+        match self {
+            Lang::Japanese => "[格納順]",
+            Lang::English  => "[Stored]",
+            Lang::Chinese  => "[存储顺序]",
+        }
+    }
+
+    /// 格納順ボタンのホバー説明
+    pub fn sort_stored_tip(self) -> &'static str {
+        match self {
+            Lang::Japanese => "アーカイブ内の格納順（作成ツールが入れた並び）",
+            Lang::English  => "Order stored in the archive (as written by the creation tool)",
+            Lang::Chinese  => "压缩包内的存储顺序（由创建工具写入）",
+        }
+    }
+
+    /// 格納順ボタンが無効なときのホバー説明（フォルダ・単一画像には格納順が無い）
+    pub fn sort_stored_unavailable_tip(self) -> &'static str {
+        match self {
+            Lang::Japanese => "フォルダ・単一画像には格納順がありません",
+            Lang::English  => "Folders and single images have no stored order",
+            Lang::Chinese  => "文件夹和单张图片没有存储顺序",
+        }
+    }
+
     pub fn sort_natural(self) -> &'static str {
         match self {
             Lang::Japanese => "[自然数]",

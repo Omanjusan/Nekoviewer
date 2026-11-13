@@ -952,6 +952,7 @@ impl ViewerState {
                 display_name: e.display_name,
                 date_key: e.date_key,
                 original_index: i,
+                stored_index: e.stored_index,
             })
             .collect();
         Self {
@@ -1072,6 +1073,7 @@ impl ViewerState {
             display_name: name,
             date_key: 0,
             original_index: 0,
+            stored_index: 0,
         }];
         Self {
             archive_path: path,
@@ -1504,6 +1506,10 @@ impl ViewerState {
         if self.is_raw_file || self.current_sort_snapshot() == (key, ascending) {
             return;
         }
+        // 格納順が使えないもの（フォルダ等）は名前順のまま開く。保存値・既定設定は触らない。
+        if key == ViewerSortKey::Stored && !self.stored_sort_available() {
+            return;
+        }
         self.sort_key = key;
         self.sort_ascending = ascending;
         self.sort_entries();
@@ -1524,8 +1530,13 @@ impl ViewerState {
 
     /// 保存ONで、現在値が保存済み値から変わっている場合だけtrue。
     pub fn sort_save_changed(&self) -> bool {
-        self.saved_sort
-            .is_some_and(|saved| saved != self.current_sort_snapshot())
+        self.saved_sort.is_some_and(|saved| {
+            // 格納順が使えないものでは名前順で開くため、保存値との差を「変更あり」と数えない
+            if saved.0 == ViewerSortKey::Stored && !self.stored_sort_available() {
+                return false;
+            }
+            saved != self.current_sort_snapshot()
+        })
     }
 
     /// 保存を解除する。現在のソート条件とページ位置は変更しない。
@@ -1710,9 +1721,28 @@ impl ViewerState {
         (get(lo), get(lo + 1))
     }
 
+    /// 「格納順」ソートが使えるか。フォルダ（仮想本）は列挙順がFS依存、単一画像は1枚のみで、
+    /// どちらも「格納順」の概念が無いため使えない（ボタンはグレーアウト）。
+    pub fn stored_sort_available(&self) -> bool {
+        !self.is_raw_file && !self.is_virtual_book
+    }
+
     fn sort_entries(&mut self) {
         let asc = self.sort_ascending;
         match self.sort_key {
+            ViewerSortKey::Stored if !self.stored_sort_available() => {
+                // 使えない状況で保存値・既定値が来ても名前順に読み替える（保存値自体は書き換えない）
+                self.entries.sort_by(|a, b| {
+                    let c = a.display_name.cmp(&b.display_name);
+                    if asc { c } else { c.reverse() }
+                });
+            }
+            ViewerSortKey::Stored => {
+                self.entries.sort_by(|a, b| {
+                    let c = a.stored_index.cmp(&b.stored_index);
+                    if asc { c } else { c.reverse() }
+                });
+            }
             ViewerSortKey::Name => {
                 self.entries.sort_by(|a, b| {
                     let c = a.display_name.cmp(&b.display_name);
@@ -4756,6 +4786,21 @@ impl ViewerState {
                     self.sort_entries();
                 }
             }
+            ViewerBarItem::SortStored => {
+                let available = self.stored_sort_available();
+                let tip = if available { t.sort_stored_tip() } else { t.sort_stored_unavailable_tip() };
+                let selected = available && self.sort_key == ViewerSortKey::Stored;
+                let clicked = ui
+                    .add_enabled_ui(available, |ui| ui.selectable_label(selected, t.sort_stored()))
+                    .inner
+                    .on_hover_text(tip)
+                    .on_disabled_hover_text(tip)
+                    .clicked();
+                if clicked {
+                    self.sort_key = ViewerSortKey::Stored;
+                    self.sort_entries();
+                }
+            }
             ViewerBarItem::SortOrder => {
                 ui.label(":");
                 let order_label = if self.sort_ascending { t.sort_asc() } else { t.sort_desc() };
@@ -4912,6 +4957,7 @@ impl ViewerState {
             ViewerSortKey::Name => t.sort_name(),
             ViewerSortKey::Natural => t.sort_natural(),
             ViewerSortKey::Date => t.sort_date(),
+            ViewerSortKey::Stored => t.sort_stored(),
         };
         let order_label = if ascending { t.sort_asc() } else { t.sort_desc() };
         format!(
@@ -6721,6 +6767,7 @@ mod sort_save_state_tests {
             display_name: "second".to_string(),
             date_key: 1,
             original_index: 1,
+            stored_index: 1,
         });
         viewer
     }
@@ -6919,12 +6966,14 @@ mod sort_save_state_tests {
                 display_name: "b".to_string(),
                 date_key: 2,
                 original_index: 0,
+                stored_index: 0,
             },
             ViewerEntry {
                 entry_name: "a".to_string(),
                 display_name: "a".to_string(),
                 date_key: 1,
                 original_index: 1,
+                stored_index: 1,
             },
         ];
         viewer.sort_key = ViewerSortKey::Date;
@@ -6981,12 +7030,14 @@ mod sort_save_state_tests {
                 display_name: "old".to_string(),
                 date_key: 1,
                 original_index: 0,
+                stored_index: 0,
             },
             ViewerEntry {
                 entry_name: "new".to_string(),
                 display_name: "new".to_string(),
                 date_key: 2,
                 original_index: 1,
+                stored_index: 1,
             },
         ];
 
@@ -7012,6 +7063,65 @@ mod sort_save_state_tests {
 
         assert_eq!(viewer.spread_base, 4);
     }
+
+    /// 格納順テスト用: 名前順と格納順が食い違う3ページ（格納順: c, a, b）。
+    fn stored_viewer() -> ViewerState {
+        let mut viewer = viewer();
+        viewer.is_raw_file = false;
+        viewer.is_virtual_book = false;
+        let mk = |name: &str, orig: usize, stored: usize| ViewerEntry {
+            entry_name: name.to_string(),
+            display_name: name.to_string(),
+            date_key: 0,
+            original_index: orig,
+            stored_index: stored,
+        };
+        // original_index は名前ソート後の位置（a=0, b=1, c=2）
+        viewer.entries = vec![mk("a", 0, 1), mk("b", 1, 2), mk("c", 2, 0)];
+        viewer
+    }
+
+    fn names(viewer: &ViewerState) -> Vec<&str> {
+        viewer.entries.iter().map(|e| e.display_name.as_str()).collect()
+    }
+
+    #[test]
+    fn stored_sort_follows_archive_order_and_keeps_original_index() {
+        let mut viewer = stored_viewer();
+        viewer.restore_saved_sort(ViewerSortKey::Stored, true);
+        assert_eq!(names(&viewer), ["c", "a", "b"]);
+        // キャッシュキーの original_index はソートで変化しない
+        let origs: Vec<usize> = viewer.entries.iter().map(|e| e.original_index).collect();
+        assert_eq!(origs, [2, 0, 1]);
+        // 降順は格納順の逆
+        viewer.restore_saved_sort(ViewerSortKey::Stored, false);
+        assert_eq!(names(&viewer), ["b", "a", "c"]);
+        // 名前順へ戻せる
+        viewer.restore_saved_sort(ViewerSortKey::Name, true);
+        assert_eq!(names(&viewer), ["a", "b", "c"]);
+    }
+
+    #[test]
+    fn stored_sort_is_unavailable_for_folder_and_raw_file() {
+        let mut viewer = stored_viewer();
+        assert!(viewer.stored_sort_available());
+        viewer.is_virtual_book = true;
+        assert!(!viewer.stored_sort_available());
+        // フォルダでは保存値・既定設定が格納順でも名前順のまま開く
+        viewer.restore_saved_sort(ViewerSortKey::Stored, true);
+        assert!(matches!(viewer.current_sort_snapshot().0, ViewerSortKey::Name));
+        // 保存値(格納順)との差は「変更あり」と数えない
+        viewer.set_saved_sort(Some((ViewerSortKey::Stored, true)));
+        assert!(!viewer.sort_save_changed());
+        // 万一 sort_key が Stored でも並びは名前順に読み替える
+        viewer.sort_key = ViewerSortKey::Stored;
+        viewer.sort_entries();
+        assert_eq!(names(&viewer), ["a", "b", "c"]);
+        // 単一画像も不可
+        let mut raw = stored_viewer();
+        raw.is_raw_file = true;
+        assert!(!raw.stored_sort_available());
+    }
 }
 
 #[cfg(test)]
@@ -7031,12 +7141,14 @@ mod bookmark_restore_tests {
                 display_name: "first".to_string(),
                 date_key: 0,
                 original_index: 0,
+                stored_index: 0,
             },
             ViewerEntry {
                 entry_name: "second".to_string(),
                 display_name: "second".to_string(),
                 date_key: 1,
                 original_index: 1,
+                stored_index: 1,
             },
         ];
         viewer
@@ -7772,6 +7884,7 @@ mod magnifier_flow_tests {
                     display_name: format!("{i}.png"),
                     date_key: 0,
                     original_index: i,
+                    stored_index: i,
                 });
                 let img = image::RgbaImage::from_pixel(w, h_px, image::Rgba([180, 180, 180, 255]));
                 h.cache.insert(path.clone(), i, 0, PageContent::Static(img), &path, 0);
@@ -8778,6 +8891,7 @@ mod texture_window_flow_tests {
                     display_name: format!("{i}.png"),
                     date_key: 0,
                     original_index: i,
+                    stored_index: i,
                 });
                 let img = image::RgbaImage::from_pixel(page_w, page_h, image::Rgba([180, 180, 180, 255]));
                 cache.insert(path.clone(), i, 0, PageContent::Static(img), &path, 0);
@@ -8912,6 +9026,7 @@ mod image_info_spread_tests {
                     display_name: format!("{i}.png"),
                     date_key: 0,
                     original_index: i,
+                    stored_index: i,
                 });
                 let (w, h) = if i % 2 == 0 { SIZE_EVEN } else { SIZE_ODD };
                 let img = image::RgbaImage::from_pixel(w, h, image::Rgba([180, 180, 180, 255]));

@@ -417,6 +417,7 @@ pub fn reader_sort_key_to_u8(key: ReaderSortKey) -> u8 {
         ReaderSortKey::Name => 0,
         ReaderSortKey::Natural => 1,
         ReaderSortKey::Date => 2,
+        ReaderSortKey::Stored => 3,
     }
 }
 
@@ -426,6 +427,7 @@ pub fn reader_sort_key_from_u8(v: u8) -> Option<ReaderSortKey> {
         0 => Some(ReaderSortKey::Name),
         1 => Some(ReaderSortKey::Natural),
         2 => Some(ReaderSortKey::Date),
+        3 => Some(ReaderSortKey::Stored),
         _ => None,
     }
 }
@@ -1253,7 +1255,12 @@ mod tests {
             reader_sort_key_from_u8(2),
             Some(ReaderSortKey::Date)
         ));
-        assert!(reader_sort_key_from_u8(3).is_none());
+        assert_eq!(reader_sort_key_to_u8(ReaderSortKey::Stored), 3);
+        assert!(matches!(
+            reader_sort_key_from_u8(3),
+            Some(ReaderSortKey::Stored)
+        ));
+        assert!(reader_sort_key_from_u8(4).is_none());
         assert!(reader_sort_key_from_u8(u8::MAX).is_none());
     }
 

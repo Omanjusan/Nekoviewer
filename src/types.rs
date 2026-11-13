@@ -27,6 +27,8 @@ pub enum ReaderSortKey {
     Name,
     Natural,
     Date,
+    /// アーカイブ内の格納順（作者が意図した並びの可能性）。フォルダ・単一画像では名前順と同義
+    Stored,
 }
 
 /// explorer（ディレクトリ内ファイル群）のソートキー
@@ -44,6 +46,8 @@ pub struct ViewerEntry {
     pub display_name: String,
     pub date_key: u64,
     pub original_index: usize,
+    /// アーカイブ内の格納順（「格納順」ソート用。`original_index`と違い名前ソート後の位置ではない）
+    pub stored_index: usize,
 }
 
 // ── モデル構造体 ────────────────────────────────────────────────────────────

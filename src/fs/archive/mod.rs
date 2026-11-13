@@ -34,6 +34,9 @@ pub struct ImageEntry {
     pub entry_name: String,
     /// 日付ソートキー（年月日時分秒を1桁ずつパックした u64）
     pub date_key: u64,
+    /// 格納順（アーカイブ内の列挙順。TXT分割ページは元ファイル内のページ順）。
+    /// 「格納順」ソート用で、フォルダ（仮想本）では名前順と同義（列挙順＝FS依存のため使わない）。
+    pub stored_index: usize,
 }
 
 /// フェーズ2: 総ページ数に応じてサンプリング対象のインデックスを決める。
@@ -266,17 +269,21 @@ pub(crate) fn unix_secs_to_date_key(secs: u64) -> u64 {
 
 /// (display_name, entry_name, date_key) のペア列から、ソート・衝突回避済みの
 /// `ImageEntry` 列を組み立てる（ZIP/7z/フォルダ共通処理）。
-pub(crate) fn finalize_entries(mut pairs: Vec<(String, String, u64)>) -> Vec<ImageEntry> {
-    // ファイル名優先、同名はentry_nameで安定ソート
-    pairs.sort_by(|(da, ea, _), (db, eb, _)| {
-        basename(da).cmp(basename(db)).then(ea.cmp(eb))
-    });
+pub(crate) fn finalize_entries(pairs: Vec<(String, String, u64)>) -> Vec<ImageEntry> {
+    // 呼び出し側の列挙順＝格納順。ソートで失われる前に連番を振る。
+    let mut pairs: Vec<(String, String, u64, usize)> = pairs
+        .into_iter()
+        .enumerate()
+        .map(|(i, (d, e, k))| (d, e, k, i))
+        .collect();
+    // ファイル名優先、同名は格納順で安定ソート（先に格納されたものが無印、後続に "_01" を付ける）
+    pairs.sort_by(|(da, _, _, ia), (db, _, _, ib)| basename(da).cmp(basename(db)).then(ia.cmp(ib)));
 
     // 衝突検出: 同じファイル名が2回目以降なら "stem_01.ext" 形式を付与
     let mut seen: HashMap<String, usize> = HashMap::new();
     let mut entries: Vec<ImageEntry> = pairs
         .into_iter()
-        .map(|(display_name, entry_name, date_key)| {
+        .map(|(display_name, entry_name, date_key, stored_index)| {
             let base = basename(&display_name).to_string();
             let count = seen.entry(base.clone()).or_insert(0);
             let final_display = if *count == 0 {
@@ -285,7 +292,7 @@ pub(crate) fn finalize_entries(mut pairs: Vec<(String, String, u64)>) -> Vec<Ima
                 collision_name(&base, *count)
             };
             *count += 1;
-            ImageEntry { display_name: final_display, entry_name, date_key }
+            ImageEntry { display_name: final_display, entry_name, date_key, stored_index }
         })
         .collect();
 
@@ -359,6 +366,43 @@ mod tests {
         assert!(!entries.is_empty(), "画像エントリが0件");
         let has_thumbs_db = entries.iter().any(|e| e.display_name == "Thumbs.db");
         assert!(!has_thumbs_db, "Thumbs.db が除外されていない");
+    }
+
+    #[test]
+    fn finalize_entries_records_stored_order_before_sorting() {
+        use super::finalize_entries;
+        // 格納順: z, a, sub/a（basename 衝突）, m
+        let pairs = vec![
+            ("z.webp".to_string(), "z.webp".to_string(), 0u64),
+            ("a.webp".to_string(), "a.webp".to_string(), 0),
+            ("sub/a.webp".to_string(), "sub/a.webp".to_string(), 0),
+            ("m.webp".to_string(), "m.webp".to_string(), 0),
+        ];
+        let entries = finalize_entries(pairs);
+        // 名前順に並ぶ（衝突は先に格納された方が無印、後続に _01）
+        let names: Vec<&str> = entries.iter().map(|e| e.display_name.as_str()).collect();
+        assert_eq!(names, ["a.webp", "a_01.webp", "m.webp", "z.webp"]);
+        let stored: Vec<usize> = entries.iter().map(|e| e.stored_index).collect();
+        assert_eq!(stored, [1, 2, 3, 0]);
+        // stored_index で並べ直すと元の列挙順に戻る
+        let mut by_stored: Vec<&super::ImageEntry> = entries.iter().collect();
+        by_stored.sort_by_key(|e| e.stored_index);
+        let entry_names: Vec<&str> = by_stored.iter().map(|e| e.entry_name.as_str()).collect();
+        assert_eq!(entry_names, ["z.webp", "a.webp", "sub/a.webp", "m.webp"]);
+    }
+
+    #[test]
+    fn finalize_entries_collision_prefers_earlier_stored_entry() {
+        use super::finalize_entries;
+        // パス順なら "a/x" < "b/x" だが、格納順で "b/x" が先なら "b/x" が無印になる
+        let pairs = vec![
+            ("b/x.webp".to_string(), "b/x.webp".to_string(), 0u64),
+            ("a/x.webp".to_string(), "a/x.webp".to_string(), 0),
+        ];
+        let entries = finalize_entries(pairs);
+        assert_eq!(entries[0].display_name, "x.webp");
+        assert_eq!(entries[0].entry_name, "b/x.webp");
+        assert_eq!(entries[1].display_name, "x_01.webp");
     }
 
     #[test]
