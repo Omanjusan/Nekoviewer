@@ -87,9 +87,25 @@ impl Lang {
 
     pub fn sort_natural(self) -> &'static str {
         match self {
-            Lang::Japanese => "[自然数]",
-            Lang::English  => "[Natural]",
-            Lang::Chinese  => "[自然序]",
+            Lang::Japanese => "[自然数:行頭]",
+            Lang::English  => "[Natural:Lead]",
+            Lang::Chinese  => "[自然序:行首]",
+        }
+    }
+
+    pub fn sort_natural_layer(self) -> &'static str {
+        match self {
+            Lang::Japanese => "[自然数:層]",
+            Lang::English  => "[Natural:Layer]",
+            Lang::Chinese  => "[自然序:层]",
+        }
+    }
+
+    pub fn sort_natural_tip(self) -> &'static str {
+        match self {
+            Lang::Japanese => "クリックで「行頭番号優先」⇔「層番号優先」を切り替え\n層番号優先: 001, 002 → 001 (2), 002 (2) → 001 (3), 002 (3) の順（末尾の (n) を層とみなす）",
+            Lang::English  => "Click to toggle leading-number order <-> layer order\nLayer order: 001, 002 -> 001 (2), 002 (2) -> 001 (3), 002 (3) (a trailing (n) is the layer)",
+            Lang::Chinese  => "点击在“行首编号优先”与“层编号优先”之间切换\n层编号优先：001, 002 → 001 (2), 002 (2) → 001 (3), 002 (3)（末尾的 (n) 视为层）",
         }
     }
 

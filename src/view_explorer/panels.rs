@@ -8,9 +8,10 @@ use crate::fs::dir;
 use crate::view_reader::{fit_rect_contain, sort_choice_button, sort_order_button, ViewerState, SORT_CHOICE_SELECTED};
 
 /// ビューアーのデフォルト（任意）のキー候補（表示順）。
-const VIEWER_DEFAULT_KEYS: [crate::types::ReaderSortKey; 4] = [
+const VIEWER_DEFAULT_KEYS: [crate::types::ReaderSortKey; 5] = [
     crate::types::ReaderSortKey::Name,
     crate::types::ReaderSortKey::Natural,
+    crate::types::ReaderSortKey::NaturalLayer,
     crate::types::ReaderSortKey::Date,
     crate::types::ReaderSortKey::Stored,
 ];
@@ -704,6 +705,7 @@ impl NekoviewApp {
                 let label = match key {
                     crate::types::ReaderSortKey::Name => t.sort_name(),
                     crate::types::ReaderSortKey::Natural => t.sort_natural(),
+                    crate::types::ReaderSortKey::NaturalLayer => t.sort_natural_layer(),
                     crate::types::ReaderSortKey::Date => t.sort_date(),
                     crate::types::ReaderSortKey::Stored => t.sort_stored(),
                 };

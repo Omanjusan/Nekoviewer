@@ -2,7 +2,7 @@
 
 エクスプローラーのメニューバーにあったソート関連の7ボタンを、展開メニュー1個に集約した。
 メニューは3ブロックで、末尾の「ビューアーのデフォルト（任意）」で、ビューアーで保存済みソートの無いファイルを
-開くときの初期条件を決める。ビューアー側のツールバーは、名前・自然数・日付・格納順・昇降のボタン（格納順は [archive-sort-state.md](archive-sort-state.md) 参照）。
+開くときの初期条件を決める。ビューアー側のツールバーは、名前・自然数（行頭/層の切替）・日付・格納順・昇降のボタン（格納順・自然数の層モードは [archive-sort-state.md](archive-sort-state.md) 参照）。
 実装は [panels.rs](../../src/view_explorer/panels.rs)（`draw_sort_menu` / `sort_menu_items` / `apply_sort_menu_item` /
 `handle_sort_menu_keys`）、メニューバーのキー操作は [input.rs](../../src/view_explorer/input.rs)
 （`handle_menu_bar_keys`）、ボタン部品は [view_reader.rs](../../src/view_reader.rs)（`sort_choice_button` / `sort_order_button`）。
@@ -21,7 +21,7 @@
 評価キーがONのときは評価キーが優先され、同順位を基本キーで並べる。任意キーの条件は選択中のボタンをもう一度押すと無効化可能。
 -----------------
 ＜ビューアーのデフォルト（任意）＞ [↑ 昇順]
- 名前  自然数  日付  格納順
+ 名前  自然数:行頭  自然数:層  日付  格納順
 デフォルトキーが設定されていても、ソート条件を保存したファイルは保存された条件が優先されます。
 ```
 

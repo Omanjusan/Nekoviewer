@@ -125,6 +125,7 @@ impl NekoviewApp {
                 ui.horizontal(|ui| {
                     ui.radio_value(&mut dialog.sort_key, ReaderSortKey::Name, i18n::t().sort_name().trim_matches(['[', ']']));
                     ui.radio_value(&mut dialog.sort_key, ReaderSortKey::Natural, i18n::t().sort_natural().trim_matches(['[', ']']));
+                    ui.radio_value(&mut dialog.sort_key, ReaderSortKey::NaturalLayer, i18n::t().sort_natural_layer().trim_matches(['[', ']']));
                     ui.radio_value(&mut dialog.sort_key, ReaderSortKey::Date, i18n::t().sort_date().trim_matches(['[', ']']));
                     ui.radio_value(&mut dialog.sort_key, ReaderSortKey::Stored, i18n::t().sort_stored().trim_matches(['[', ']']));
                 });

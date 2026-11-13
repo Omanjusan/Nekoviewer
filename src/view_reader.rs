@@ -447,6 +447,37 @@ fn nat_cmp(a: &str, b: &str) -> std::cmp::Ordering {
     }
 }
 
+/// ファイル名末尾（拡張子の直前）の半角 ` (n)` を層番号として切り出す。
+/// 戻り値は (層番号, 層表記を除いた名前)。無印は層0。` (n)` の前の空白は1つまで取り除く。
+/// 括弧しかない名前（`(2).jpg`）や数字以外の括弧（`(a)`）は層なし扱い。
+fn split_layer(name: &str) -> (u64, String) {
+    let (stem, ext) = match name.rfind('.') {
+        Some(i) if i > 0 => name.split_at(i),
+        _ => (name, ""),
+    };
+    if let Some(inner) = stem.strip_suffix(')') {
+        if let Some(open) = inner.rfind('(') {
+            let digits = &inner[open + 1..];
+            let before = &inner[..open];
+            if !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()) && !before.trim_end().is_empty() {
+                let before = before.strip_suffix(' ').unwrap_or(before);
+                let layer = digits.parse::<u64>().unwrap_or(u64::MAX);
+                return (layer, format!("{before}{ext}"));
+            }
+        }
+    }
+    (0, name.to_string())
+}
+
+/// 層番号優先の自然順比較: 層番号 → 層表記を除いた名前の自然順 → 元の名前の自然順（決定性のため）。
+fn nat_layer_cmp(a: &str, b: &str) -> std::cmp::Ordering {
+    let (la, ba) = split_layer(a);
+    let (lb, bb) = split_layer(b);
+    la.cmp(&lb)
+        .then_with(|| nat_cmp(&ba, &bb))
+        .then_with(|| nat_cmp(a, b))
+}
+
 fn eat_digits(iter: &mut std::iter::Peekable<std::str::Chars<'_>>) -> u64 {
     let mut n = 0u64;
     while let Some(&c) = iter.peek() {
@@ -1752,6 +1783,12 @@ impl ViewerState {
             ViewerSortKey::Natural => {
                 self.entries.sort_by(|a, b| {
                     let c = nat_cmp(&a.display_name, &b.display_name);
+                    if asc { c } else { c.reverse() }
+                });
+            }
+            ViewerSortKey::NaturalLayer => {
+                self.entries.sort_by(|a, b| {
+                    let c = nat_layer_cmp(&a.display_name, &b.display_name);
                     if asc { c } else { c.reverse() }
                 });
             }
@@ -4775,11 +4812,24 @@ impl ViewerState {
     fn draw_bar_item(&mut self, ui: &mut egui::Ui, cfg: &mut ViewerConfig, item: ViewerBarItem) {
         let t = i18n::t();
         match item {
-            ViewerBarItem::SortName | ViewerBarItem::SortNatural | ViewerBarItem::SortDate => {
+            ViewerBarItem::SortNatural => {
+                // 1ボタンで「行頭番号優先」⇔「層番号優先」を循環する。ラベルは現在のモードを示す。
+                let layer = self.sort_key == ViewerSortKey::NaturalLayer;
+                let label = if layer { t.sort_natural_layer() } else { t.sort_natural() };
+                let selected = layer || self.sort_key == ViewerSortKey::Natural;
+                if ui.selectable_label(selected, label).on_hover_text(t.sort_natural_tip()).clicked() {
+                    self.sort_key = if self.sort_key == ViewerSortKey::Natural {
+                        ViewerSortKey::NaturalLayer
+                    } else {
+                        ViewerSortKey::Natural
+                    };
+                    self.sort_entries();
+                }
+            }
+            ViewerBarItem::SortName | ViewerBarItem::SortDate => {
                 let (key, label) = match item {
-                    ViewerBarItem::SortName    => (ViewerSortKey::Name,    t.sort_name()),
-                    ViewerBarItem::SortNatural => (ViewerSortKey::Natural, t.sort_natural()),
-                    _                          => (ViewerSortKey::Date,    t.sort_date()),
+                    ViewerBarItem::SortName => (ViewerSortKey::Name, t.sort_name()),
+                    _                       => (ViewerSortKey::Date, t.sort_date()),
                 };
                 if ui.selectable_label(self.sort_key == key, label).clicked() {
                     self.sort_key = key;
@@ -4956,6 +5006,7 @@ impl ViewerState {
         let key_label = match key {
             ViewerSortKey::Name => t.sort_name(),
             ViewerSortKey::Natural => t.sort_natural(),
+            ViewerSortKey::NaturalLayer => t.sort_natural_layer(),
             ViewerSortKey::Date => t.sort_date(),
             ViewerSortKey::Stored => t.sort_stored(),
         };
@@ -7005,6 +7056,63 @@ mod sort_save_state_tests {
     }
 
     #[test]
+    fn split_layer_extracts_trailing_paren_number() {
+        assert_eq!(split_layer("001.jpg"), (0, "001.jpg".to_string()));
+        assert_eq!(split_layer("001 (2).jpg"), (2, "001.jpg".to_string()));
+        assert_eq!(split_layer("001(3).jpg"), (3, "001.jpg".to_string()));
+        assert_eq!(split_layer("a (b).jpg"), (0, "a (b).jpg".to_string()));
+        assert_eq!(split_layer("(2).jpg"), (0, "(2).jpg".to_string()));
+        assert_eq!(split_layer("x (2) y.jpg"), (0, "x (2) y.jpg".to_string()));
+        assert_eq!(split_layer("noext (4)"), (4, "noext".to_string()));
+    }
+
+    #[test]
+    fn nat_layer_orders_layer_major_then_number() {
+        let mut names = vec![
+            "002 (2).jpg", "001.jpg", "002.jpg", "003 (3).jpg", "001 (2).jpg",
+            "003.jpg", "002 (3).jpg", "003 (2).jpg", "010.jpg", "010 (2).jpg",
+        ];
+        names.sort_by(|a, b| nat_layer_cmp(a, b));
+        assert_eq!(
+            names,
+            vec![
+                "001.jpg", "002.jpg", "003.jpg", "010.jpg",
+                "001 (2).jpg", "002 (2).jpg", "003 (2).jpg", "010 (2).jpg",
+                "002 (3).jpg", "003 (3).jpg",
+            ]
+        );
+        // 行頭番号優先（従来の自然順）は番号ごとに層が混ざる
+        let mut lead = vec!["002.jpg", "001 (2).jpg", "001.jpg"];
+        lead.sort_by(|a, b| nat_cmp(a, b));
+        assert_eq!(lead, vec!["001 (2).jpg", "001.jpg", "002.jpg"]);
+    }
+
+    #[test]
+    fn natural_layer_sort_applies_to_entries_and_descends() {
+        let mut viewer = viewer();
+        viewer.entries = ["002 (2).jpg", "001.jpg", "002.jpg", "001 (2).jpg"]
+            .iter()
+            .enumerate()
+            .map(|(i, n)| crate::types::ViewerEntry {
+                display_name: n.to_string(),
+                entry_name: n.to_string(),
+                date_key: 0,
+                original_index: i,
+                stored_index: i,
+            })
+            .collect();
+        viewer.sort_key = ViewerSortKey::NaturalLayer;
+        viewer.sort_ascending = true;
+        viewer.sort_entries();
+        let order: Vec<_> = viewer.entries.iter().map(|e| e.display_name.as_str()).collect();
+        assert_eq!(order, ["001.jpg", "002.jpg", "001 (2).jpg", "002 (2).jpg"]);
+        viewer.sort_ascending = false;
+        viewer.sort_entries();
+        let order: Vec<_> = viewer.entries.iter().map(|e| e.display_name.as_str()).collect();
+        assert_eq!(order, ["002 (2).jpg", "001 (2).jpg", "002.jpg", "001.jpg"]);
+    }
+
+    #[test]
     fn sort_setting_text_uses_unbracketed_localized_labels() {
         assert_eq!(
             ViewerState::sort_setting_text(ViewerSortKey::Name, true, i18n::Lang::Japanese),
@@ -7012,7 +7120,7 @@ mod sort_save_state_tests {
         );
         assert_eq!(
             ViewerState::sort_setting_text(ViewerSortKey::Natural, false, i18n::Lang::English),
-            "Natural Desc"
+            "Natural:Lead Desc"
         );
         assert_eq!(
             ViewerState::sort_setting_text(ViewerSortKey::Date, true, i18n::Lang::Chinese),

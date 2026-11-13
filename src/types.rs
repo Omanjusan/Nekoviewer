@@ -25,7 +25,10 @@ impl PageMode {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ReaderSortKey {
     Name,
+    /// 自然順（行頭番号優先）。数字列は数値として比較する
     Natural,
+    /// 自然順（層番号優先）。末尾の ` (n)` を層番号として先に比べ、層ごとに連番を並べる
+    NaturalLayer,
     Date,
     /// アーカイブ内の格納順（作者が意図した並びの可能性）。フォルダ・単一画像では名前順と同義
     Stored,
