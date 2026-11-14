@@ -54,6 +54,8 @@ pub enum ExploreCmd {
     SearchSize { min: String, max: String },
     SearchStart,
     SearchCancel,
+    /// 新モードの「注意点」ダイアログを開く（ボタンを押すのと同じ）
+    SearchNotice,
     /// 履歴の idx 番目（0 始まり）を選んで表示する
     SearchSelect(usize),
 }
@@ -104,6 +106,7 @@ pub fn parse_explore_line(line: &str) -> Option<ExploreCmd> {
         }
         "search-start" if arg.is_empty() => Some(ExploreCmd::SearchStart),
         "search-cancel" if arg.is_empty() => Some(ExploreCmd::SearchCancel),
+        "search-notice" if arg.is_empty() => Some(ExploreCmd::SearchNotice),
         "search-select" => arg.parse().ok().map(ExploreCmd::SearchSelect),
         _ => None,
     }
@@ -253,6 +256,7 @@ mod tests {
         assert_eq!(parse_explore_line("search-start"), Some(ExploreCmd::SearchStart));
         assert_eq!(parse_explore_line("search-start now"), None);
         assert_eq!(parse_explore_line("search-cancel"), Some(ExploreCmd::SearchCancel));
+        assert_eq!(parse_explore_line("search-notice"), Some(ExploreCmd::SearchNotice));
         assert_eq!(parse_explore_line("search-select 2"), Some(ExploreCmd::SearchSelect(2)));
         assert_eq!(parse_explore_line("search-select x"), None);
     }

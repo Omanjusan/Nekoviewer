@@ -286,6 +286,7 @@ impl NekoviewApp {
         self.draw_reveal_dialog(&ctx);
         self.draw_marker_popup(&ctx);
         self.draw_dismissed_window(&ctx);
+        self.draw_search_notice_dialog(&ctx);
         self.draw_detail_window(&ctx);
         self.draw_tag_scan_overlay(&ctx);
         self.draw_tag_confirm(&ctx);

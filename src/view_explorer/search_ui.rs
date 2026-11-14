@@ -197,6 +197,36 @@ impl NekoviewApp {
         let r = ui.add(egui::TextEdit::singleline(&mut self.search_form.new_size_max_mb).lock_focus(true));
         self.sync_search_form_response(&r, SearchFormFocus::NewSizeMax, true);
         help_tip(&r, help_on, &help_cond);
+
+        // フォームの最後: 注意点（マーカーの扱いなど）を出すボタン。
+        ui.add_space(8.0);
+        if ui.button(i18n::t().search_notice_button()).clicked() {
+            self.search_notice_open = true;
+        }
+    }
+
+    /// 新モードの「注意点」ダイアログ。右上の×だけで閉じる。検索タブの新モードを離れたら閉じる。
+    pub(super) fn draw_search_notice_dialog(&mut self, ctx: &egui::Context) {
+        if !self.search_notice_open {
+            return;
+        }
+        if !(self.folder_pane_tab == FolderPaneTab::Search && self.search_form.mode == SearchMode::New) {
+            self.search_notice_open = false;
+            return;
+        }
+        let t = i18n::t();
+        let mut open = true;
+        egui::Window::new(t.search_notice_title())
+            .id(egui::Id::new("search_notice_dialog"))
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.set_max_width(440.0);
+                ui.add(egui::Label::new(t.search_notice_body()).wrap());
+            });
+        self.search_notice_open = open;
     }
 
     /// 旧モードの条件欄（従来どおり）。基底フォルダ・ファイル名・サブディレクトリ・サイズ・日付。

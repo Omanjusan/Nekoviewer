@@ -38,6 +38,7 @@ impl NekoviewApp {
                 }
             },
             ExploreCmd::SearchCancel => self.cancel_new_search(),
+            ExploreCmd::SearchNotice => self.search_notice_open = true,
             ExploreCmd::SearchSelect(idx) => self.select_search_history(idx),
         }
     }
@@ -75,6 +76,7 @@ impl NekoviewApp {
             "tab": tab,
             "mode": if self.search_form.mode == SearchMode::New { "new" } else { "legacy" },
             "job_running": self.search_job.is_some(),
+            "notice_open": self.search_notice_open,
             "any_running": self.any_search_running(),
             "viewing": self.viewing_search,
             "selected": self.search_selected,

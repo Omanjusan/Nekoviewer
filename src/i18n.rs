@@ -3384,6 +3384,30 @@ impl Lang {
         }
     }
 
+    pub fn search_notice_button(self) -> &'static str {
+        match self {
+            Lang::Japanese => "注意点",
+            Lang::English  => "Notes",
+            Lang::Chinese  => "注意事项",
+        }
+    }
+
+    pub fn search_notice_title(self) -> &'static str {
+        match self {
+            Lang::Japanese => "新検索の注意点",
+            Lang::English  => "Notes on the new search",
+            Lang::Chinese  => "新搜索的注意事项",
+        }
+    }
+
+    pub fn search_notice_body(self) -> &'static str {
+        match self {
+            Lang::Japanese => "検索結果のマーカーは、すでに保存されている情報の読み取り表示です。\n\n・重複マーカー: 保存済みのものを表示します。\n・サムネイル類似マーカー: すでに計算済みの情報を使って表示するだけで、未計算のファイルを新たに計算してマーカーを付けることは、この検索結果内では行いません。\n・マーカーをクリックしても、類似ファイル一覧などへは移動しません。\n\nこれは、計算量が膨大になる可能性を避け、結果を素早く出すことを優先しているためです。",
+            Lang::English  => "Markers in search results are a read-only display of information that is already stored.\n\n- Duplicate markers: shown from what is already saved.\n- Similar-thumbnail markers: shown only from information that has already been computed. Files that have not been computed are not newly computed or marked within these search results.\n- Clicking a marker does not jump to the similar-file list or any other view.\n\nThis avoids a potentially huge amount of computation and keeps results fast.",
+            Lang::Chinese  => "搜索结果中的标记，只是对已保存信息的只读显示。\n\n・重复标记：显示已保存的内容。\n・缩略图相似标记：仅使用已计算好的信息来显示；在此搜索结果内，不会对尚未计算的文件重新计算并添加标记。\n・点击标记不会跳转到相似文件列表等视图。\n\n这是为了避免计算量过大，并优先快速给出结果。",
+        }
+    }
+
     pub fn search_new_text_hint(self) -> &'static str {
         match self {
             Lang::Japanese => "スペース区切り。\"…\" で句",

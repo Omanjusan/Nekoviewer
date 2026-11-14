@@ -1428,6 +1428,8 @@ pub struct NekoviewApp {
     /// 新モードの検索ジョブ（実行中のみSome）。タブを切り替えても、アプリ本体が持つので継続する。
     /// 結果は履歴の実行中エントリ（`running`）へ溜まる。
     search_job: Option<crate::ledger_search::LedgerSearchJob>,
+    /// 新モードの「注意点」ダイアログを開いているか。
+    search_notice_open: bool,
     /// Some(_) の間、中央グリッドは実ディレクトリではなく選択中の検索結果
     /// （search_history[idx]）のフラット一覧を表示している。
     viewing_search: Option<usize>,
@@ -1967,6 +1969,7 @@ impl NekoviewApp {
             search_pending: None,
             search_pending_form: None,
             search_job: None,
+            search_notice_open: false,
             viewing_search: None,
             explorer_cols: 1,
             explorer_scroll_offset: 0.0,
