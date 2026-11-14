@@ -171,7 +171,7 @@ impl<'a> Reader<'a> {
 }
 
 /// "dir\0filename" のファイル名部分。
-fn file_name_of(path_key: &str) -> &str {
+pub(crate) fn file_name_of(path_key: &str) -> &str {
     path_key.rsplit('\0').next().unwrap_or(path_key)
 }
 
@@ -957,6 +957,12 @@ pub fn all_records_tx(tx: &redb::ReadTransaction) -> Vec<FileRecord> {
     let Ok(ids) = tx.open_table(FILE_ID_TABLE) else { return Vec::new() };
     let Ok(iter) = ids.iter() else { return Vec::new() };
     iter.flatten().filter_map(|(_, v)| FileRecord::decode(v.value())).collect()
+}
+
+/// IDレコードの総数（テーブルの件数。走査せず取れる）。検索の進捗「n / N」の分母用。
+pub(crate) fn record_count_tx(tx: &redb::ReadTransaction) -> u64 {
+    use redb::ReadableTableMetadata;
+    tx.open_table(FILE_ID_TABLE).ok().and_then(|t| t.len().ok()).unwrap_or(0)
 }
 
 /// IDレコードをID昇順に1件ずつ渡す。`f` が false を返したら打ち切る（キャンセル用）。

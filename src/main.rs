@@ -65,6 +65,9 @@ mod tag_similarity;
 mod tag_source;
 mod tag_rules;
 mod tag_search;
+// 検索タブ「新」モードの走査エンジン。UIの配線（Phase B/C）までは使われない。
+#[allow(dead_code)]
+mod ledger_search;
 mod tag_trial;
 mod tag_auto_record;
 mod texture_window;
