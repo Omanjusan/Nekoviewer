@@ -5,7 +5,7 @@ use crate::fs::dir;
 use crate::neko_dir;
 
 use super::{
-    push_search_result, NekoviewApp, ScanState, SearchFormState, SearchResultEntry,
+    push_search_result, NekoviewApp, ScanState, SearchFormState, SearchMode, SearchResultEntry,
     TreeScanPending,
 };
 use crate::i18n;
@@ -137,7 +137,7 @@ impl NekoviewApp {
     /// 「検索開始」ボタンから呼ぶ。実行中（search_running）なら何もしない
     /// （多重実行不可、呼び出し側でもボタンを無効化済み）。
     pub(super) fn start_search(&mut self, ctx: &egui::Context) {
-        if self.search_running {
+        if self.search_running || self.search_job.is_some() {
             return;
         }
         let Some(cache_root) = self.config.cache_root() else { return };
@@ -157,13 +157,14 @@ impl NekoviewApp {
     /// 検索ワーカーの結果をポーリングする。完了したら履歴の先頭に追加し、
     /// その結果を選択状態にする（検索したらすぐ見えるように）。
     pub(super) fn poll_search(&mut self) {
+        self.poll_new_search();
         let Some(rx) = &self.search_pending else { return };
         let Ok(hits) = rx.try_recv() else { return };
         self.search_pending = None;
         self.search_running = false;
         let form = self.search_pending_form.take().unwrap_or_else(|| self.search_form.clone());
         let label = i18n::t().search_result_label(&form.name_pattern, hits.len());
-        push_search_result(&mut self.search_history, SearchResultEntry { label, hits, form });
+        push_search_result(&mut self.search_history, SearchResultEntry { label, hits, form, ..Default::default() });
         self.search_selected = Some(0);
         self.enter_search_view(0);
     }
@@ -189,6 +190,10 @@ impl NekoviewApp {
             .map(|db| crate::spread_state::saved_settings_for_paths(db, &self.archives))
             .unwrap_or_default();
         self.raw_image_files.clear();
+        // 新モード（台帳）の結果は単体画像も含みうる。追記時（append_search_view_hits）と同じ扱いにする。
+        if entry.form.mode == SearchMode::New {
+            self.raw_image_files.extend(self.archives.iter().filter(|p| crate::fs::archive::is_supported_image_file(p)).cloned());
+        }
         // 階層概念を持ち込まない平坦一覧という契約のため、サブフォルダ一覧も明示的に空にする
         // （grid_entries/draw_archive_grid側もviewing_searchをガードしているが二重の防御）。
         self.subdirs.clear();
@@ -245,7 +250,6 @@ impl NekoviewApp {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::view_explorer::SearchMode;
 
     fn unique_tmp(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
@@ -295,6 +299,7 @@ mod tests {
             label: "saved".to_string(),
             hits: Vec::new(),
             form: saved.clone(),
+            ..Default::default()
         }];
         let mut current = SearchFormState {
             base_dir: Some(PathBuf::from("/current/base")),

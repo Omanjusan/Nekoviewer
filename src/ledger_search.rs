@@ -100,6 +100,7 @@ impl LedgerQuery {
     }
 
     /// 文字列もサイズも空（全件が通る）か。
+    #[allow(dead_code)] // テスト・今後のUI用の公開口
     pub fn is_empty(&self) -> bool {
         self.tokens.is_empty() && self.size_min.is_none() && self.size_max.is_none()
     }
@@ -138,6 +139,7 @@ impl LedgerQuery {
     }
 
     /// 1ファイルが条件を満たすか（単体テスト・呼び出し側の確認用。走査は `pre_match` と `tags_match` を使う）。
+    #[allow(dead_code)] // テスト・今後のUI用の公開口
     pub fn matches(&self, file_name: &str, size: u64, tags: &[u64]) -> bool {
         match self.pre_match(file_name, size) {
             Some(r) => r,
@@ -173,6 +175,7 @@ pub struct LedgerScan {
 
 impl LedgerScan {
     /// 打ち切る（Drop と同じ。受け取り側を残したまま止めたいとき）。
+    #[allow(dead_code)] // テスト・今後のUI用の公開口
     pub fn cancel(&self) {
         self.cancel.store(true, Ordering::Relaxed);
     }
@@ -376,10 +379,12 @@ impl LedgerSearchJob {
         self.state = JobState::Cancelled;
     }
 
+    #[allow(dead_code)] // テスト・今後のUI用の公開口
     pub fn state(&self) -> JobState {
         self.state
     }
 
+    #[allow(dead_code)] // テスト・今後のUI用の公開口
     pub fn is_running(&self) -> bool {
         self.state == JobState::Running
     }

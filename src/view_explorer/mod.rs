@@ -250,14 +250,23 @@ mod search_focus_tests {
 
 /// 1回の検索実行結果。左ペインの検索結果リストに1行として表示される
 /// （検索された順で最上位に追加され、下へ送られていく）。
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub(crate) struct SearchResultEntry {
-    /// リスト表示用ラベル（検索ファイル名の表示ができるだけの文字数）
+    /// リスト表示用ラベル（検索ファイル名の表示ができるだけの文字数）。
+    /// 新モードの実行中エントリは、ヒット・進捗が届くたびに作り直す。
     pub label: String,
-    /// ヒットしたファイルのフルパス一覧
+    /// ヒットしたファイルのフルパス一覧（実行中のエントリは、集まった分まで）
     pub hits: Vec<PathBuf>,
     /// 検索開始時点のフォーム入力。履歴を選択した際にフォームへ復元する。
     pub form: SearchFormState,
+    /// 新モードの検索が実行中のエントリ（同時に1つだけ）。旧モードのエントリは常に false。
+    pub running: bool,
+    /// 新モード: 進捗（調べた件数, 台帳の総数）。
+    pub progress: Option<(usize, usize)>,
+    /// 新モード: 前回の確認で見つからなかったため、一覧から外した件数。
+    pub unconfirmed: usize,
+    /// 新モード: 途中で中断した（それまでの結果は残る）。
+    pub cancelled: bool,
 }
 
 /// 検索結果を履歴の先頭に追加する（新しい実行が最上位に来て、既存分は下に送られる）。
@@ -1416,6 +1425,9 @@ pub struct NekoviewApp {
     search_pending: Option<mpsc::Receiver<Vec<PathBuf>>>,
     /// 実行中の検索を開始した時点のフォーム入力。
     search_pending_form: Option<SearchFormState>,
+    /// 新モードの検索ジョブ（実行中のみSome）。タブを切り替えても、アプリ本体が持つので継続する。
+    /// 結果は履歴の実行中エントリ（`running`）へ溜まる。
+    search_job: Option<crate::ledger_search::LedgerSearchJob>,
     /// Some(_) の間、中央グリッドは実ディレクトリではなく選択中の検索結果
     /// （search_history[idx]）のフラット一覧を表示している。
     viewing_search: Option<usize>,
@@ -1511,6 +1523,7 @@ mod real_tree_sort;
 mod bulk_settings_ui;
 mod search_ui;
 mod search;
+mod search_new;
 mod status;
 mod nav_icons;
 mod calendar_gui;
@@ -1951,6 +1964,7 @@ impl NekoviewApp {
             search_running: false,
             search_pending: None,
             search_pending_form: None,
+            search_job: None,
             viewing_search: None,
             explorer_cols: 1,
             explorer_scroll_offset: 0.0,
@@ -2041,17 +2055,17 @@ mod search_result_tests {
     fn push_search_result_inserts_newest_at_top() {
         let mut history: Vec<SearchResultEntry> = Vec::new();
 
-        push_search_result(&mut history, SearchResultEntry { label: "1回目".to_string(), hits: vec![], form: Default::default() });
+        push_search_result(&mut history, SearchResultEntry { label: "1回目".to_string(), hits: vec![], form: Default::default(), ..Default::default() });
         assert_eq!(history.len(), 1);
         assert_eq!(history[0].label, "1回目");
 
-        push_search_result(&mut history, SearchResultEntry { label: "2回目".to_string(), hits: vec![], form: Default::default() });
+        push_search_result(&mut history, SearchResultEntry { label: "2回目".to_string(), hits: vec![], form: Default::default(), ..Default::default() });
         assert_eq!(history.len(), 2);
         // 新しい実行が最上位、既存分は下に送られる
         assert_eq!(history[0].label, "2回目");
         assert_eq!(history[1].label, "1回目");
 
-        push_search_result(&mut history, SearchResultEntry { label: "3回目".to_string(), hits: vec![], form: Default::default() });
+        push_search_result(&mut history, SearchResultEntry { label: "3回目".to_string(), hits: vec![], form: Default::default(), ..Default::default() });
         assert_eq!(
             history.iter().map(|e| e.label.as_str()).collect::<Vec<_>>(),
             vec!["3回目", "2回目", "1回目"],

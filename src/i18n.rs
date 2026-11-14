@@ -3269,6 +3269,32 @@ impl Lang {
         }
     }
 
+    pub fn search_cancel_button(self) -> &'static str {
+        match self {
+            Lang::Japanese => "中断",
+            Lang::English  => "Stop",
+            Lang::Chinese  => "中断",
+        }
+    }
+
+    /// 検索結果の行ラベルに添える（中断した検索）。
+    pub fn search_cancelled_suffix(self) -> &'static str {
+        match self {
+            Lang::Japanese => " 中断",
+            Lang::English  => " stopped",
+            Lang::Chinese  => " 已中断",
+        }
+    }
+
+    /// 検索結果の行ラベルに添える（前回の確認で見つからず、一覧から外した件数）。
+    pub fn search_unconfirmed_suffix(self, n: usize) -> String {
+        match self {
+            Lang::Japanese => format!(" 確認不可{n}件"),
+            Lang::English  => format!(" {n} unverified"),
+            Lang::Chinese  => format!(" 无法确认{n}个"),
+        }
+    }
+
     pub fn search_base_dir_label(self) -> &'static str {
         match self {
             Lang::Japanese => "検索基底フォルダ",
@@ -9975,21 +10001,21 @@ impl Lang {
             Lang::Japanese => HelpDoc {
                 title: "検索の実行",
                 sections: &[
-                    ("[検索開始]", "入力した条件で検索を実行する。検索中は押せない。"),
+                    ("[検索開始]", "入力した条件で検索を実行する。新モードの検索中は[中断]になり、押すと打ち切る（それまでの結果は残る）。検索は同時に1つだけで、別のタブに移っても裏で続く。"),
                     ("[条件クリア]", "入力した条件を空に戻す。基底フォルダは消えない。"),
                 ],
             },
             Lang::English => HelpDoc {
                 title: "Running a search",
                 sections: &[
-                    ("[Start search]", "Runs a search with the entered conditions. Disabled while searching."),
+                    ("[Start search]", "Runs a search with the entered conditions. While a New-mode search runs it becomes [Stop] and cancels it (results so far are kept). Only one search runs at a time, and it keeps going in the background when you switch tabs."),
                     ("[Clear conditions]", "Empties the entered conditions. The base folder is kept."),
                 ],
             },
             Lang::Chinese => HelpDoc {
                 title: "执行搜索",
                 sections: &[
-                    ("[开始搜索]", "按输入的条件执行搜索。搜索期间不可点击。"),
+                    ("[开始搜索]", "按输入的条件执行搜索。新模式搜索期间按钮变为[中断]，点击后终止（已得到的结果保留）。同时只能进行一个搜索，切换到其他标签页后仍在后台继续。"),
                     ("[清除条件]", "清空输入的条件。基准文件夹不会被清除。"),
                 ],
             },
