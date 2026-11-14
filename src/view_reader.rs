@@ -450,7 +450,7 @@ fn nat_cmp(a: &str, b: &str) -> std::cmp::Ordering {
 /// ファイル名末尾（拡張子の直前）の半角 ` (n)` を層番号として切り出す。
 /// 戻り値は (層番号, 層表記を除いた名前)。無印は層0。` (n)` の前の空白は1つまで取り除く。
 /// 括弧しかない名前（`(2).jpg`）や数字以外の括弧（`(a)`）は層なし扱い。
-fn split_layer(name: &str) -> (u64, String) {
+pub(crate) fn split_layer(name: &str) -> (u64, String) {
     let (stem, ext) = match name.rfind('.') {
         Some(i) if i > 0 => name.split_at(i),
         _ => (name, ""),

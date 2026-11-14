@@ -30,6 +30,7 @@ mod types;
 mod ui_theme;
 mod ui_widgets;
 mod keymap;
+mod layer_scan;
 mod koma;
 // 変換関数はフェーズ2で配線済み。バー幅API・自動ハイド秒などはフェーズ4以降で配線するまで未使用。
 #[allow(dead_code)]
@@ -216,6 +217,11 @@ fn main() {
         };
         let start_dir = cfg.resolve_start_dir(cli_dir, &state);
         log_common!("[startup] start_dir = {:?}, open_target = {:?}", start_dir, open_target);
+        // 走査対象は復帰先（実ツリー=start_dir、仮想フォルダタブ=ノードの実パス）。タブはCLI引数の固定後の値を見る。
+        // 走査は別スレッドで走り、結果は標準出力に出る（起動は止めない）。
+        if args.scan_layers {
+            layer_scan::spawn_scan(layer_scan::pick_scan_dir(&state.tab_positions, &start_dir));
+        }
 
         (cfg, state, start_dir, open_target)
     });
@@ -379,6 +385,8 @@ struct CliArgs {
     start_path:   Option<PathBuf>,
     /// キャッシュ合計（ページ+ファイル）の上限MB。
     cache_max_mb: Option<u64>,
+    /// `--scan-layers`: 復帰先フォルダ直下のzipを別スレッドで走査し、層つきの中身を持つ最初の1件を標準出力に出す（テスト用）。
+    scan_layers:  bool,
 }
 
 impl CliArgs {
@@ -387,10 +395,13 @@ impl CliArgs {
     fn parse() -> Self {
         let mut start_path   = None::<PathBuf>;
         let mut cache_max_mb = None::<u64>;
+        let mut scan_layers  = false;
 
         let mut it = std::env::args().skip(1);
         while let Some(arg) = it.next() {
-            if let Some(rest) = arg.strip_prefix("--cache-max-mb") {
+            if arg == "--scan-layers" {
+                scan_layers = true;
+            } else if let Some(rest) = arg.strip_prefix("--cache-max-mb") {
                 cache_max_mb = Self::take_value(rest, &mut it);
             } else if !arg.starts_with('-') {
                 // 複数の位置引数（複数ファイル/複数DIR）が来ても先頭のみを対象とし、以降は無視する。
@@ -401,7 +412,7 @@ impl CliArgs {
             // 未知の --xxx オプションは無視
         }
 
-        Self { start_path, cache_max_mb }
+        Self { start_path, cache_max_mb, scan_layers }
     }
 
     fn take_value(rest: &str, it: &mut impl Iterator<Item = String>) -> Option<u64> {
