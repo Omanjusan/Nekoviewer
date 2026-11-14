@@ -45,11 +45,7 @@ fn restore_search_form(
 }
 
 fn parse_mb(s: &str) -> Option<u64> {
-    let s = s.trim();
-    if s.is_empty() {
-        return None;
-    }
-    s.parse::<f64>().ok().filter(|v| v.is_finite() && *v >= 0.0).map(|mb| (mb * 1024.0 * 1024.0) as u64)
+    crate::ledger_search::parse_size_mb(s)
 }
 
 /// "YYYY-MM-DD" を UTC 00:00:00 の Unix秒に変換する。chrono非依存

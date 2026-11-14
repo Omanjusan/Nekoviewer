@@ -258,6 +258,148 @@ fn run_scan(
     (scanned, total)
 }
 
+/// サイズ欄（MB。小数可）をバイトにする。空・数値でない・負・非有限は「制限なし」（None）。
+pub fn parse_size_mb(s: &str) -> Option<u64> {
+    let s = s.trim();
+    if s.is_empty() {
+        return None;
+    }
+    s.parse::<f64>().ok().filter(|v| v.is_finite() && *v >= 0.0).map(|mb| (mb * 1024.0 * 1024.0) as u64)
+}
+
+/// タグマネージャーの全カテゴリ（メイン・ネガティブ tier を含む）から、全要素の（tier_id, 要素名）を集める。
+/// 要素名は別名つき（`A|B|C`）のまま返す。要素が空の tier は飛ばす。
+pub fn tier_names_of(categories: &[crate::view_explorer::TagManagerCategoryUi]) -> Vec<(u64, String)> {
+    categories
+        .iter()
+        .flat_map(|c| c.tiers.iter())
+        .filter_map(|t| t.element.as_ref().filter(|e| !e.trim().is_empty()).map(|e| (t.id, e.clone())))
+        .collect()
+}
+
+impl LedgerQuery {
+    /// 画面の入力（未パースの文字列）から条件を作る。サイズは MB の文字列。
+    pub fn from_inputs(
+        text: &str,
+        size_min_mb: &str,
+        size_max_mb: &str,
+        tier_names: &[(u64, String)],
+    ) -> Self {
+        Self::new(text, tier_names, parse_size_mb(size_min_mb), parse_size_mb(size_max_mb))
+    }
+}
+
+/// ジョブの状態。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JobState {
+    Running,
+    /// 最後まで走査した。
+    Done,
+    /// 途中で打ち切った（それまでのヒットは残る）。
+    Cancelled,
+}
+
+/// `LedgerSearchJob::poll` の結果。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JobPoll {
+    /// この呼び出しで増えたヒットの範囲（`hits()` の添字）。表示中の一覧へ追記する分。
+    pub new_hits: std::ops::Range<usize>,
+    /// この呼び出しで完了へ移った（1回だけ true になる）。
+    pub finished: bool,
+}
+
+/// 1回の検索の実行を持つ。画面（egui）にも履歴にも依存しない状態機械で、呼び出し側が毎フレーム
+/// `poll` するだけで、ヒット・進捗・未確認件数・完了が集まる。どのタブを表示していても、ジョブ自身は
+/// 走査スレッドの結果を受け取り続ける（表示への反映は呼び出し側が `hits()` から行う）。
+/// 捨てる（Drop）と走査は打ち切られる。
+pub struct LedgerSearchJob {
+    scan: Option<LedgerScan>,
+    hits: Vec<PathBuf>,
+    unconfirmed: usize,
+    progress: Option<(usize, usize)>,
+    state: JobState,
+}
+
+impl LedgerSearchJob {
+    pub fn start(db: Arc<Mutex<Database>>, query: LedgerQuery, wake: impl Fn() + Send + 'static) -> Self {
+        Self::from_scan(spawn(db, query, wake))
+    }
+
+    fn from_scan(scan: LedgerScan) -> Self {
+        Self { scan: Some(scan), hits: Vec::new(), unconfirmed: 0, progress: None, state: JobState::Running }
+    }
+
+    /// 走査スレッドからのメッセージを全部受け取って取り込む。
+    pub fn poll(&mut self) -> JobPoll {
+        let before = self.hits.len();
+        let mut finished = false;
+        if let Some(scan) = &self.scan {
+            loop {
+                match scan.rx.try_recv() {
+                    Ok(LedgerScanMsg::Hits(hits)) => {
+                        for h in hits {
+                            if h.confirmed {
+                                self.hits.push(h.path);
+                            } else {
+                                self.unconfirmed += 1;
+                            }
+                        }
+                    }
+                    Ok(LedgerScanMsg::Progress { scanned, total }) => self.progress = Some((scanned, total)),
+                    Ok(LedgerScanMsg::Done { scanned, total }) => {
+                        self.progress = Some((scanned, total));
+                        finished = true;
+                        break;
+                    }
+                    Err(mpsc::TryRecvError::Empty) => break,
+                    // 走査スレッドが完了を送らずに消えた（異常終了）。永遠に実行中にならないよう完了扱いにする。
+                    Err(mpsc::TryRecvError::Disconnected) => {
+                        finished = true;
+                        break;
+                    }
+                }
+            }
+        }
+        if finished {
+            self.scan = None;
+            self.state = JobState::Done;
+        }
+        JobPoll { new_hits: before..self.hits.len(), finished }
+    }
+
+    /// 打ち切る。実行中でなければ何もしない。それまでのヒットは残る。
+    pub fn cancel(&mut self) {
+        if self.state != JobState::Running {
+            return;
+        }
+        self.scan = None;
+        self.state = JobState::Cancelled;
+    }
+
+    pub fn state(&self) -> JobState {
+        self.state
+    }
+
+    pub fn is_running(&self) -> bool {
+        self.state == JobState::Running
+    }
+
+    /// 確認済みのヒット（到着順）。前回確認で見つからなかったものは含まない。
+    pub fn hits(&self) -> &[PathBuf] {
+        &self.hits
+    }
+
+    /// 前回の確認で見つからなかったため、一覧から外した件数。
+    pub fn unconfirmed(&self) -> usize {
+        self.unconfirmed
+    }
+
+    /// 進捗（調べた件数, 総数）。まだ最初の進捗が届いていなければ None。完了後は最終値。
+    pub fn progress(&self) -> Option<(usize, usize)> {
+        self.progress
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -506,5 +648,307 @@ mod tests {
             .collect();
         flags.sort();
         assert_eq!(flags, vec![("gone.zip".to_string(), false), ("here.zip".to_string(), true)]);
+    }
+
+    // ---- 条件の部品 ----
+
+    #[test]
+    fn size_inputs_are_parsed_in_megabytes_and_garbage_means_no_limit() {
+        assert_eq!(parse_size_mb("10"), Some(10 * 1024 * 1024));
+        assert_eq!(parse_size_mb(" 0.5 "), Some(512 * 1024));
+        assert_eq!(parse_size_mb(""), None);
+        assert_eq!(parse_size_mb("abc"), None);
+        assert_eq!(parse_size_mb("-1"), None);
+        assert_eq!(parse_size_mb("NaN"), None);
+        let q = LedgerQuery::from_inputs("", "1", "", &names_table());
+        assert!(!q.is_empty());
+        assert!(!q.matches("x.zip", 1024 * 1024 - 1, &[]));
+        assert!(q.matches("x.zip", 1024 * 1024, &[]));
+    }
+
+    #[test]
+    fn tier_names_come_from_every_category_including_main_and_skip_empty_tiers() {
+        use crate::view_explorer::{TagManagerCategoryUi, TagManagerTierUi};
+        let tier = |id: u64, element: Option<&str>, negative: bool| TagManagerTierUi {
+            id,
+            tier_no: 0,
+            negative,
+            element: element.map(String::from),
+        };
+        let cat = |name: &str, is_main: bool, tiers: Vec<TagManagerTierUi>| TagManagerCategoryUi {
+            name: name.to_string(),
+            tiers,
+            color: egui::Color32::WHITE,
+            is_main,
+            single_select: is_main,
+            system_kind: None,
+        };
+        let cats = vec![
+            cat("main", true, vec![tier(1, Some("Doujinshi"), false), tier(2, None, false)]),
+            cat("作者", false, vec![tier(10, Some("Kouji|コウジ"), false), tier(11, Some("  "), false), tier(12, Some("NG"), true)]),
+        ];
+        assert_eq!(
+            tier_names_of(&cats),
+            vec![(1, "Doujinshi".to_string()), (10, "Kouji|コウジ".to_string()), (12, "NG".to_string())]
+        );
+    }
+
+    // ---- 検索ジョブ（状態機械） ----
+
+    /// 完了まで poll を回す（タイムアウトで失敗）。途中の poll 結果も返す。
+    fn drive(job: &mut LedgerSearchJob) -> Vec<JobPoll> {
+        let start = std::time::Instant::now();
+        let mut polls = Vec::new();
+        while job.is_running() {
+            assert!(start.elapsed() < std::time::Duration::from_secs(10), "検索ジョブが終わらない");
+            polls.push(job.poll());
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        polls
+    }
+
+    fn job_names(job: &LedgerSearchJob) -> Vec<String> {
+        let mut v: Vec<String> =
+            job.hits().iter().map(|p| p.file_name().unwrap().to_string_lossy().into_owned()).collect();
+        v.sort();
+        v
+    }
+
+    #[test]
+    fn job_collects_hits_progress_and_finishes_exactly_once() {
+        let (db, _root) = seed("job_basic", &[("a.zip", 3000, &[]), ("b.zip", 3100, &[3]), ("c.txt", 3200, &[])]);
+        let mut job = LedgerSearchJob::start(db, q("zip kouji"), || {});
+        assert!(job.is_running());
+        assert_eq!(job.state(), JobState::Running);
+        let polls = drive(&mut job);
+        assert_eq!(job.state(), JobState::Done);
+        assert_eq!(job_names(&job), vec!["a.zip", "b.zip"]);
+        assert_eq!(job.progress(), Some((3, 3)));
+        assert_eq!(job.unconfirmed(), 0);
+        assert_eq!(polls.iter().filter(|p| p.finished).count(), 1, "完了は1回だけ通知される");
+        // 追記範囲の合計 = ヒット全体（取りこぼしも重複も無い）
+        let total: usize = polls.iter().map(|p| p.new_hits.len()).sum();
+        assert_eq!(total, job.hits().len());
+        // 完了後の poll は何も起こさない
+        let after = job.poll();
+        assert!(!after.finished);
+        assert!(after.new_hits.is_empty());
+    }
+
+    #[test]
+    fn job_keeps_unconfirmed_files_out_of_the_hits_but_counts_them() {
+        let (db, root) = seed("job_unconfirmed", &[("gone.zip", 3000, &[]), ("here.zip", 3100, &[])]);
+        let key = crate::spread_state::make_key(&root, "gone.zip");
+        assert!(crate::file_identity::mark_unconfirmed(&db, &key, crate::file_identity::now_unix()));
+        let mut job = LedgerSearchJob::start(db, q("zip"), || {});
+        drive(&mut job);
+        assert_eq!(job_names(&job), vec!["here.zip"]);
+        assert_eq!(job.unconfirmed(), 1);
+    }
+
+    #[test]
+    fn job_new_hits_ranges_let_the_caller_append_to_a_shown_list() {
+        let files: Vec<(String, usize, &[u64])> = (0..450).map(|i| (format!("n{i:03}.zip"), 3000 + i, &[][..])).collect();
+        let refs: Vec<(&str, usize, &[u64])> = files.iter().map(|(n, l, t)| (n.as_str(), *l, *t)).collect();
+        let (db, _root) = seed("job_ranges", &refs);
+        let mut job = LedgerSearchJob::start(db, q("n"), || {});
+        // 表示中の一覧を模す: 範囲ごとに追記していくと、最後にヒット全体と一致する
+        let mut shown: Vec<PathBuf> = Vec::new();
+        let start = std::time::Instant::now();
+        while job.is_running() {
+            assert!(start.elapsed() < std::time::Duration::from_secs(20));
+            let p = job.poll();
+            shown.extend_from_slice(&job.hits()[p.new_hits.clone()]);
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        assert_eq!(shown, job.hits());
+        assert_eq!(shown.len(), 450);
+    }
+
+    #[test]
+    fn job_cancel_stops_it_and_keeps_what_arrived() {
+        let files: Vec<(String, usize, &[u64])> = (0..30).map(|i| (format!("c{i:02}.zip"), 3000 + i, &[][..])).collect();
+        let refs: Vec<(&str, usize, &[u64])> = files.iter().map(|(n, l, t)| (n.as_str(), *l, *t)).collect();
+        let (db, _root) = seed("job_cancel", &refs);
+        let mut job = LedgerSearchJob::start(db, q("c"), || {});
+        job.cancel();
+        assert_eq!(job.state(), JobState::Cancelled);
+        assert!(!job.is_running());
+        let before = job.hits().len();
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let p = job.poll();
+        assert!(!p.finished, "打ち切ったジョブは完了を通知しない");
+        assert_eq!(job.hits().len(), before);
+        // 完了後・打ち切り後の cancel は状態を変えない
+        job.cancel();
+        assert_eq!(job.state(), JobState::Cancelled);
+    }
+
+    #[test]
+    fn cancel_after_done_does_not_turn_it_into_cancelled() {
+        let (db, _root) = seed("job_done_cancel", &[("a.zip", 3000, &[])]);
+        let mut job = LedgerSearchJob::start(db, q("a"), || {});
+        drive(&mut job);
+        job.cancel();
+        assert_eq!(job.state(), JobState::Done);
+    }
+
+    #[test]
+    fn dropping_the_job_cancels_the_scan_thread() {
+        let (db, _root) = seed("job_drop", &[("a.zip", 3000, &[])]);
+        let job = LedgerSearchJob::start(db, q("a"), || {});
+        let flag = Arc::clone(&job.scan.as_ref().unwrap().cancel);
+        drop(job);
+        assert!(flag.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn a_dead_scan_thread_is_treated_as_finished() {
+        let (tx, rx) = mpsc::channel();
+        drop(tx);
+        let scan = LedgerScan { rx, cancel: Arc::new(AtomicBool::new(false)) };
+        let mut job = LedgerSearchJob::from_scan(scan);
+        let p = job.poll();
+        assert!(p.finished);
+        assert_eq!(job.state(), JobState::Done);
+    }
+
+    #[test]
+    fn a_job_keeps_collecting_while_nobody_looks_at_its_hits() {
+        // 「他のタブにいても継続する」の本体: 呼び出し側が表示に使わなくても、poll だけで集まり続ける。
+        let (db, _root) = seed("job_background", &[("x1.zip", 3000, &[]), ("x2.zip", 3100, &[])]);
+        let mut job = LedgerSearchJob::start(db, q("x"), || {});
+        drive(&mut job);
+        assert_eq!(job.hits().len(), 2);
+    }
+
+    // ---- 実フィクスチャ（test/tag_fixtures）の結合テスト ----
+
+    /// `test/tag_fixtures` のファイルを一時フォルダへ写し、台帳に登録する。
+    /// 名前に作者の表記ゆれ（Kouji/Koji/Kohji/コウジ…）を含むファイルへ作者タグ(10)、
+    /// グループ名（Hawk Bit/hawk-bit/ホークビット…）を含むファイルへグループタグ(20)を付ける。
+    fn seed_fixtures(tag: &str) -> (Arc<Mutex<Database>>, PathBuf, Vec<String>) {
+        let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("test/tag_fixtures");
+        let root = temp_dir(tag);
+        let db = open_spread_db(&root).unwrap();
+        let mut names: Vec<String> = std::fs::read_dir(&src)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().is_file())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        for name in &names {
+            std::fs::copy(src.join(name), root.join(name)).unwrap();
+            crate::file_identity::ensure_record(&db, &root, name).unwrap();
+            let lower = name.to_lowercase();
+            let mut tags = Vec::new();
+            if ["kouji", "koji", "kohji", "ｺｳｼﾞ", "こうじ"].iter().any(|k| lower.contains(k)) {
+                tags.push(10);
+            }
+            if ["hawk bit", "hawk-bit", "ホークビット", "ﾎｰｸﾋﾞｯﾄ"].iter().any(|k| lower.contains(k)) {
+                tags.push(20);
+            }
+            if !tags.is_empty() {
+                assert!(write_archive_tags(&db, &root, name, &tags));
+            }
+        }
+        (db, root, names)
+    }
+
+    fn fixture_tier_names() -> Vec<(u64, String)> {
+        vec![
+            (10, "Kouji|Kohji|Koji|コウジ|ｺｳｼﾞ|こうじ".to_string()),
+            (20, "Hawk Bit|hawk-bit|ホークビット".to_string()),
+        ]
+    }
+
+    fn fixture_search(db: &Arc<Mutex<Database>>, text: &str) -> Vec<String> {
+        let query = LedgerQuery::from_inputs(text, "", "", &fixture_tier_names());
+        let mut job = LedgerSearchJob::start(Arc::clone(db), query, || {});
+        drive(&mut job);
+        job_names(&job)
+    }
+
+    fn expected(names: &[String], pred: impl Fn(&str) -> bool) -> Vec<String> {
+        let mut v: Vec<String> = names.iter().filter(|n| pred(n)).cloned().collect();
+        v.sort();
+        v
+    }
+
+    #[test]
+    fn fixtures_are_found_by_author_alias_even_when_the_file_name_has_another_spelling() {
+        let (db, _root, names) = seed_fixtures("fx_author");
+        // 「コウジ」は別名。ファイル名が Kouji/Koji/Kohji でも、作者タグ経由で拾える。
+        let got = fixture_search(&db, "コウジ");
+        let want = expected(&names, |n| {
+            let l = n.to_lowercase();
+            ["kouji", "koji", "kohji", "ｺｳｼﾞ", "こうじ"].iter().any(|k| l.contains(k))
+        });
+        assert!(want.len() >= 6, "フィクスチャに作者ゆれの付いたファイルがある前提: {want:?}");
+        assert_eq!(got, want);
+        // ファイル名だけでは「コウジ」に当たるのは ホークビット(こうじ) 等に限られる = タグ経由で増えている
+        assert!(got.len() > expected(&names, |n| n.contains("コウジ")).len());
+    }
+
+    #[test]
+    fn fixtures_are_found_by_group_alias_and_quoted_phrases() {
+        let (db, _root, names) = seed_fixtures("fx_group");
+        let got = fixture_search(&db, "\"hawk bit\"");
+        let want = expected(&names, |n| {
+            let l = n.to_lowercase();
+            ["hawk bit", "hawk-bit", "ホークビット", "ﾎｰｸﾋﾞｯﾄ"].iter().any(|k| l.contains(k))
+        });
+        assert!(!want.is_empty());
+        assert_eq!(got, want);
+    }
+
+    #[test]
+    fn fixtures_or_across_tag_names_and_file_names_with_full_width_separators() {
+        let (db, _root, names) = seed_fixtures("fx_or");
+        // 全角スペース区切り・引用符つきの句・ファイル名の語を混ぜる（どれかに当たればヒット）。
+        let got = fixture_search(&db, "ホークビット\u{3000}\"Circle D\"\u{3000}Plain");
+        let want = expected(&names, |n| {
+            let l = n.to_lowercase();
+            ["hawk bit", "hawk-bit", "ホークビット", "ﾎｰｸﾋﾞｯﾄ"].iter().any(|k| l.contains(k))
+                || l.contains("circle d")
+                || l.contains("plain")
+        });
+        assert!(want.iter().any(|n| n.contains("Circle D")) && want.iter().any(|n| n.contains("Plain")));
+        assert_eq!(got, want);
+    }
+
+    #[test]
+    fn fixtures_file_name_only_search_needs_no_tags_and_unknown_words_find_nothing() {
+        let (db, _root, names) = seed_fixtures("fx_name");
+        let got = fixture_search(&db, "Circle");
+        assert_eq!(got, expected(&names, |n| n.contains("Circle")));
+        assert_eq!(got.len(), 4);
+        assert!(fixture_search(&db, "zzzz-no-such-word").is_empty());
+        // glob（従来のファイル名検索と同じ規則）
+        let got = fixture_search(&db, "*.7z");
+        assert_eq!(got, expected(&names, |n| n.ends_with(".7z")));
+    }
+
+    #[test]
+    fn fixtures_size_narrows_the_text_result() {
+        let (db, root, names) = seed_fixtures("fx_size");
+        let sizes: Vec<(String, u64)> =
+            names.iter().map(|n| (n.clone(), std::fs::metadata(root.join(n)).unwrap().len())).collect();
+        let max = sizes.iter().map(|(_, s)| *s).max().unwrap();
+        let min_mb = format!("{}", (max as f64) / (1024.0 * 1024.0));
+        // 最大サイズ以上だけ = 最大サイズのファイルだけ（丸めの誤差を避けるため、結果が1件以上で最大に一致するものだけを確認）
+        let query = LedgerQuery::from_inputs("", &min_mb, "", &fixture_tier_names());
+        let mut job = LedgerSearchJob::start(Arc::clone(&db), query, || {});
+        drive(&mut job);
+        for p in job.hits() {
+            assert!(std::fs::metadata(p).unwrap().len() as f64 >= max as f64 - 1.0);
+        }
+        assert!(!job.hits().is_empty());
+        // 上限を 0 にすると、サイズ0のファイルだけ（フィクスチャに無ければ0件）
+        let none = LedgerQuery::from_inputs("", "", "0", &fixture_tier_names());
+        let mut job = LedgerSearchJob::start(db, none, || {});
+        drive(&mut job);
+        assert_eq!(job.hits().len(), sizes.iter().filter(|(_, s)| *s == 0).count());
     }
 }
