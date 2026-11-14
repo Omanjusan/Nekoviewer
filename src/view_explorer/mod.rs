@@ -1524,6 +1524,8 @@ mod bulk_settings_ui;
 mod search_ui;
 mod search;
 mod search_new;
+#[cfg(feature = "test-control")]
+mod test_explore;
 mod status;
 mod nav_icons;
 mod calendar_gui;

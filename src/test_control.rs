@@ -30,6 +30,90 @@ pub enum Cmd {
     Dump,
 }
 
+/// 左ペインのタブ（`tab` コマンドの引数）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TabArg {
+    Real,
+    Favorites,
+    Search,
+    Virtual,
+    Tag,
+}
+
+/// エクスプローラー側（検索タブなど）を操作するコマンド。ビューアーのスロット操作とは別に扱う。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ExploreCmd {
+    /// 実フォルダを開く（`open <パス>`。パスは行の残り全部）
+    Open(PathBuf),
+    Tab(TabArg),
+    /// 検索モード。true=新、false=旧
+    SearchMode(bool),
+    /// 新モードの検索文字列（`search-text <文字列>`。行の残り全部。空も可）
+    SearchText(String),
+    /// 新モードのサイズ（MB）。空は `-`
+    SearchSize { min: String, max: String },
+    SearchStart,
+    SearchCancel,
+    /// 履歴の idx 番目（0 始まり）を選んで表示する
+    SearchSelect(usize),
+}
+
+/// `cmd.txt` の1行の解釈結果。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Parsed {
+    Window(Cmd),
+    Explore(ExploreCmd),
+}
+
+/// 行を「コマンド語」と「残り全部」に分ける（残りは空白を保つ。先頭の区切り1つだけ除く）。
+fn split_word(line: &str) -> (&str, &str) {
+    let line = line.trim_end_matches(['\r', '\n']);
+    match line.split_once(char::is_whitespace) {
+        Some((w, rest)) => (w, rest),
+        None => (line, ""),
+    }
+}
+
+pub fn parse_explore_line(line: &str) -> Option<ExploreCmd> {
+    let (word, rest) = split_word(line.trim_start());
+    let arg = rest.trim();
+    match word {
+        "open" => (!arg.is_empty()).then(|| ExploreCmd::Open(PathBuf::from(arg))),
+        "tab" => Some(ExploreCmd::Tab(match arg {
+            "real" => TabArg::Real,
+            "favorites" => TabArg::Favorites,
+            "search" => TabArg::Search,
+            "virtual" => TabArg::Virtual,
+            "tag" => TabArg::Tag,
+            _ => return None,
+        })),
+        "search-mode" => match arg {
+            "new" => Some(ExploreCmd::SearchMode(true)),
+            "legacy" => Some(ExploreCmd::SearchMode(false)),
+            _ => None,
+        },
+        "search-text" => Some(ExploreCmd::SearchText(rest.to_string())),
+        "search-size" => {
+            let mut it = arg.split_whitespace();
+            let (min, max) = (it.next()?, it.next()?);
+            if it.next().is_some() {
+                return None;
+            }
+            let norm = |s: &str| if s == "-" { String::new() } else { s.to_string() };
+            Some(ExploreCmd::SearchSize { min: norm(min), max: norm(max) })
+        }
+        "search-start" if arg.is_empty() => Some(ExploreCmd::SearchStart),
+        "search-cancel" if arg.is_empty() => Some(ExploreCmd::SearchCancel),
+        "search-select" => arg.parse().ok().map(ExploreCmd::SearchSelect),
+        _ => None,
+    }
+}
+
+/// 1行を、エクスプローラー側→ビューアー側の順に解釈する。
+pub fn parse_any(line: &str) -> Option<Parsed> {
+    parse_explore_line(line).map(Parsed::Explore).or_else(|| parse_line(line).map(Parsed::Window))
+}
+
 fn slot_arg(s: &str) -> Option<usize> {
     let n: usize = s.parse().ok()?;
     (1..=4).contains(&n).then(|| n - 1)
@@ -94,11 +178,11 @@ impl Control {
     }
 
     /// `cmd.txt` があれば読んで削除し、解釈できた行をコマンドとして返す。
-    pub fn take_commands(&self) -> Vec<Cmd> {
+    pub fn take_commands(&self) -> Vec<Parsed> {
         let path = self.dir.join("cmd.txt");
         let Ok(text) = std::fs::read_to_string(&path) else { return Vec::new() };
         let _ = std::fs::remove_file(&path);
-        text.lines().filter_map(parse_line).collect()
+        text.lines().filter_map(parse_any).collect()
     }
 
     pub fn write_dump(&self, json: &str) {
@@ -144,5 +228,40 @@ mod tests {
         let v = parse_fake_monitors("1920,0,1920,1080; 0,0,1920,1080;oops;1,2,3");
         assert_eq!(v, vec![MonitorRect { x: 0, y: 0, w: 1920, h: 1080 }, MonitorRect { x: 1920, y: 0, w: 1920, h: 1080 }]);
         assert!(parse_fake_monitors("").is_empty());
+    }
+
+    #[test]
+    fn parses_explorer_commands_keeping_spaces_in_the_rest_of_the_line() {
+        assert_eq!(parse_explore_line("open /tmp/my dir/x"), Some(ExploreCmd::Open(PathBuf::from("/tmp/my dir/x"))));
+        assert_eq!(parse_explore_line("open"), None);
+        assert_eq!(parse_explore_line("tab search"), Some(ExploreCmd::Tab(TabArg::Search)));
+        assert_eq!(parse_explore_line("tab real"), Some(ExploreCmd::Tab(TabArg::Real)));
+        assert_eq!(parse_explore_line("tab nope"), None);
+        assert_eq!(parse_explore_line("search-mode new"), Some(ExploreCmd::SearchMode(true)));
+        assert_eq!(parse_explore_line("search-mode legacy"), Some(ExploreCmd::SearchMode(false)));
+        assert_eq!(parse_explore_line("search-mode x"), None);
+        assert_eq!(
+            parse_explore_line("search-text a \"b c\"  d"),
+            Some(ExploreCmd::SearchText("a \"b c\"  d".to_string()))
+        );
+        assert_eq!(parse_explore_line("search-text"), Some(ExploreCmd::SearchText(String::new())));
+        assert_eq!(
+            parse_explore_line("search-size 1.5 -"),
+            Some(ExploreCmd::SearchSize { min: "1.5".to_string(), max: String::new() })
+        );
+        assert_eq!(parse_explore_line("search-size 1"), None);
+        assert_eq!(parse_explore_line("search-start"), Some(ExploreCmd::SearchStart));
+        assert_eq!(parse_explore_line("search-start now"), None);
+        assert_eq!(parse_explore_line("search-cancel"), Some(ExploreCmd::SearchCancel));
+        assert_eq!(parse_explore_line("search-select 2"), Some(ExploreCmd::SearchSelect(2)));
+        assert_eq!(parse_explore_line("search-select x"), None);
+    }
+
+    #[test]
+    fn parse_any_routes_explorer_and_viewer_commands() {
+        assert_eq!(parse_any("tab tag"), Some(Parsed::Explore(ExploreCmd::Tab(TabArg::Tag))));
+        assert_eq!(parse_any("apply 2"), Some(Parsed::Window(Cmd::Apply(1))));
+        assert_eq!(parse_any("dump"), Some(Parsed::Window(Cmd::Dump)));
+        assert_eq!(parse_any("bogus"), None);
     }
 }

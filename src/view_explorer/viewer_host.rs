@@ -98,6 +98,7 @@ impl NekoviewApp {
             "default_slot": self.config.default_slot,
             "launch_x11": self.config.launch_x11,
             "backend": format!("{:?}", crate::display_backend::mode()),
+            "search": self.test_search_json(),
         })
     }
 

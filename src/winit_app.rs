@@ -935,9 +935,17 @@ impl ApplicationHandler<UserEvent> for WinitApp {
 impl WinitApp {
     /// 制御口のコマンドを取り込んで実行し、dump 要求があれば状態が落ち着いてから書き出す。
     fn poll_test_control(&mut self, event_loop: &ActiveEventLoop) {
-        use crate::test_control::Cmd;
+        use crate::test_control::{Cmd, Parsed};
         let Some(ctl) = self.test_control.as_ref() else { return };
-        for cmd in ctl.take_commands() {
+        for parsed in ctl.take_commands() {
+            let cmd = match parsed {
+                Parsed::Explore(e) => {
+                    if let Some(app) = self.app.as_mut() { app.test_explore_cmd(e); }
+                    if let Some(ex) = self.explorer.as_ref() { ex.egui_ctx.request_repaint(); }
+                    continue;
+                }
+                Parsed::Window(cmd) => cmd,
+            };
             match cmd {
                 Cmd::Move { x, y, w, h } => {
                     if let Some(v) = self.viewer.as_ref() {
