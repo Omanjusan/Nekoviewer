@@ -249,6 +249,7 @@ impl NekoviewApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::view_explorer::SearchMode;
 
     fn unique_tmp(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
@@ -289,6 +290,10 @@ mod tests {
             size_max_mb: "20".to_string(),
             date_after: "2025-01-02".to_string(),
             date_before: "2025-03-04".to_string(),
+            mode: SearchMode::Legacy,
+            new_text: "saved text".to_string(),
+            new_size_min_mb: "3".to_string(),
+            new_size_max_mb: "4".to_string(),
         };
         let history = vec![SearchResultEntry {
             label: "saved".to_string(),
@@ -303,6 +308,10 @@ mod tests {
             size_max_mb: "2".to_string(),
             date_after: "2026-05-06".to_string(),
             date_before: "2026-07-08".to_string(),
+            mode: SearchMode::New,
+            new_text: "current text".to_string(),
+            new_size_min_mb: "5".to_string(),
+            new_size_max_mb: "6".to_string(),
         };
 
         assert!(restore_search_form(&mut current, &history, 0));

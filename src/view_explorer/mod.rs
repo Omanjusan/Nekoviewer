@@ -165,42 +165,86 @@ impl FocusPane {
     }
 }
 
+/// 検索タブのモード。新=ID台帳の全件走査（検索文字列＋サイズ）、旧=基点フォルダ配下の
+/// サムネDB照会（従来の検索）。既定は新。
+#[derive(Default, Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum SearchMode {
+    #[default]
+    New,
+    Legacy,
+}
+
+impl SearchMode {
+    /// このモードで、フォームの先頭になる入力欄。
+    pub(crate) fn first_field(self) -> SearchFormFocus {
+        match self {
+            Self::New => SearchFormFocus::NewText,
+            Self::Legacy => SearchFormFocus::NamePattern,
+        }
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum SearchFormFocus {
-    NamePattern, IncludeSubdirs, SizeMin, SizeMax, DateAfter, DateBefore, Start, Clear,
+    // 旧モード
+    NamePattern, IncludeSubdirs, SizeMin, SizeMax, DateAfter, DateBefore,
+    // 新モード
+    NewText, NewSizeMin, NewSizeMax,
+    // 共通（ボタン。フォームの下に固定）
+    Start, Clear,
 }
 
 impl SearchFormFocus {
-    fn next(self) -> Option<Self> { Some(match self {
-        Self::NamePattern => Self::IncludeSubdirs, Self::IncludeSubdirs => Self::SizeMin,
-        Self::SizeMin => Self::SizeMax, Self::SizeMax => Self::DateAfter,
-        Self::DateAfter => Self::DateBefore, Self::DateBefore => Self::Start,
-        Self::Start => Self::Clear, Self::Clear => return None,
-    }) }
-    fn prev(self) -> Option<Self> { Some(match self {
-        Self::NamePattern => return None, Self::IncludeSubdirs => Self::NamePattern,
-        Self::SizeMin => Self::IncludeSubdirs, Self::SizeMax => Self::SizeMin,
-        Self::DateAfter => Self::SizeMax, Self::DateBefore => Self::DateAfter,
-        Self::Start => Self::DateBefore, Self::Clear => Self::Start,
-    }) }
+    /// モードごとの巡回順（Tab）。ボタンはどちらも末尾。
+    fn order(mode: SearchMode) -> &'static [Self] {
+        use SearchFormFocus::*;
+        match mode {
+            SearchMode::New => &[NewText, NewSizeMin, NewSizeMax, Start, Clear],
+            SearchMode::Legacy => &[NamePattern, IncludeSubdirs, SizeMin, SizeMax, DateAfter, DateBefore, Start, Clear],
+        }
+    }
+    fn next(self, mode: SearchMode) -> Option<Self> {
+        let order = Self::order(mode);
+        let pos = order.iter().position(|f| *f == self)?;
+        order.get(pos + 1).copied()
+    }
+    fn prev(self, mode: SearchMode) -> Option<Self> {
+        let order = Self::order(mode);
+        let pos = order.iter().position(|f| *f == self)?;
+        pos.checked_sub(1).map(|p| order[p])
+    }
 }
 
 #[cfg(test)]
 mod search_focus_tests {
     use super::SearchFormFocus::*;
+    use super::SearchMode;
 
-    #[test]
-    fn search_form_focus_visits_every_field_in_confirmed_order() {
-        let mut current = NamePattern;
+    fn walk(mode: SearchMode) -> Vec<super::SearchFormFocus> {
+        let mut current = mode.first_field();
         let mut visited = vec![current];
-        while let Some(next) = current.next() {
+        while let Some(next) = current.next(mode) {
             visited.push(next);
             current = next;
         }
-        assert_eq!(visited, vec![NamePattern, IncludeSubdirs, SizeMin, SizeMax,
+        visited
+    }
+
+    #[test]
+    fn search_form_focus_visits_every_legacy_field_in_confirmed_order() {
+        assert_eq!(walk(SearchMode::Legacy), vec![NamePattern, IncludeSubdirs, SizeMin, SizeMax,
             DateAfter, DateBefore, Start, Clear]);
-        assert_eq!(NamePattern.prev(), None);
-        assert_eq!(Clear.next(), None);
+        assert_eq!(NamePattern.prev(SearchMode::Legacy), None);
+        assert_eq!(Clear.next(SearchMode::Legacy), None);
+    }
+
+    #[test]
+    fn search_form_focus_visits_new_mode_fields_and_skips_legacy_only_ones() {
+        assert_eq!(walk(SearchMode::New), vec![NewText, NewSizeMin, NewSizeMax, Start, Clear]);
+        assert_eq!(NewText.prev(SearchMode::New), None);
+        assert_eq!(Clear.prev(SearchMode::New), Some(Start));
+        // 別モードの欄に居るときは、巡回できない（None）。モード切替側が先頭へ戻す。
+        assert_eq!(IncludeSubdirs.next(SearchMode::New), None);
     }
 }
 
@@ -225,6 +269,8 @@ pub(crate) fn push_search_result(history: &mut Vec<SearchResultEntry>, entry: Se
 /// 実行時（Phase3）にパースする。
 #[derive(Default, Clone, Debug, PartialEq, Eq)]
 pub(crate) struct SearchFormState {
+    /// 検索タブのモード（新／旧）。履歴の復元でも一緒に戻る。
+    pub mode: SearchMode,
     /// 検索の基点ディレクトリ。None のうちは検索タブ初回入場時に current_dir で初期化される
     /// （switch_folder_tab参照）。以降はアイテムペイン内ツリー/ドライブのクリックで更新され、
     /// タブを行き来しても保持される。
@@ -235,6 +281,11 @@ pub(crate) struct SearchFormState {
     pub size_max_mb: String,
     pub date_after: String,
     pub date_before: String,
+    /// 新モードの検索文字列（スペース区切り・`"..."` で句・どれかに当たればヒット。ファイル名とタグ名が対象）。
+    /// 旧モードの欄とは意味が違うので共有しない。
+    pub new_text: String,
+    pub new_size_min_mb: String,
+    pub new_size_max_mb: String,
 }
 
 /// サムネグリッドの「↑・サブフォルダ・アーカイブファイル」を貫通する統一カーソル位置。
@@ -1892,7 +1943,7 @@ impl NekoviewApp {
             search_history: Vec::new(),
             search_selected: None,
             search_form: SearchFormState::default(),
-            search_form_focus: SearchFormFocus::NamePattern,
+            search_form_focus: SearchMode::default().first_field(),
             search_form_focus_request: false,
             search_date_start_calendar: calendar_gui::CalendarGui::new(local_today),
             search_date_end_calendar: calendar_gui::CalendarGui::new(local_today),

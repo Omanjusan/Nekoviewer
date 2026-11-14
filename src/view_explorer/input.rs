@@ -26,13 +26,16 @@ impl NekoviewApp {
             return;
         }
         if self.focused_pane == FocusPane::SearchForm {
-            let next = if shift_tab { self.search_form_focus.prev() } else { self.search_form_focus.next() };
+            let mode = self.search_form.mode;
+            let next = if shift_tab { self.search_form_focus.prev(mode) } else { self.search_form_focus.next(mode) };
             if let Some(next) = next {
                 self.search_form_focus = next;
                 self.search_form_focus_request = true;
                 return;
             }
-            self.focused_pane = if shift_tab { FocusPane::FolderTabBar } else if self.search_history.is_empty() { FocusPane::TreeTab } else { FocusPane::SearchHistory };
+            // 新モードではツリー/ドライブが無いので、履歴の次はグリッド。
+            let after_form = if self.search_tree_hidden() { FocusPane::Grid } else { FocusPane::TreeTab };
+            self.focused_pane = if shift_tab { FocusPane::FolderTabBar } else if self.search_history.is_empty() { after_form } else { FocusPane::SearchHistory };
             self.surrender_native_focus(ctx);
             self.on_focus_pane_changed();
             return;
@@ -42,11 +45,15 @@ impl NekoviewApp {
         } else {
             self.focused_pane.next(self.folder_pane_tab, self.virtual_real_pane_open())
         };
+        // 新モードのツリー/ドライブは隠れているので、巡回では飛ばす（進む=グリッドへ、戻る=履歴へ）。
+        if self.search_tree_hidden() && matches!(self.focused_pane, FocusPane::TreeTab | FocusPane::Drives) {
+            self.focused_pane = if shift_tab { FocusPane::SearchHistory } else { FocusPane::Grid };
+        }
         if self.focused_pane == FocusPane::SearchHistory && self.search_history.is_empty() {
-            self.focused_pane = if shift_tab { FocusPane::SearchForm } else { FocusPane::TreeTab };
+            self.focused_pane = if shift_tab { FocusPane::SearchForm } else if self.search_tree_hidden() { FocusPane::Grid } else { FocusPane::TreeTab };
         }
         if self.focused_pane == FocusPane::SearchForm {
-            self.search_form_focus = if shift_tab { SearchFormFocus::Clear } else { SearchFormFocus::NamePattern };
+            self.search_form_focus = if shift_tab { SearchFormFocus::Clear } else { self.search_form.mode.first_field() };
             self.search_form_focus_request = true;
         }
         // 検索条件フォームのテキスト欄は lock_focus(true) にしているため、Tabで

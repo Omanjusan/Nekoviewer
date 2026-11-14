@@ -2277,7 +2277,7 @@ impl NekoviewApp {
             if search_resp.clicked() {
                 self.switch_folder_tab(FolderPaneTab::Search);
                 self.focused_pane = FocusPane::SearchForm;
-                self.search_form_focus = SearchFormFocus::NamePattern;
+                self.search_form_focus = self.search_form.mode.first_field();
                 self.search_form_focus_request = true;
             }
         });
@@ -2448,7 +2448,8 @@ impl NekoviewApp {
         // 検索タブ選択中のみアイテムペインを縦割りにする（左: ツリー+ドライブ固定幅、右: 従来の中身）。
         // [Phase A] レイアウトのモック確認用: ツリー/ドライブは実ツリーと表示・状態を共有しており、
         // クリック時の動作もまだ実ナビゲーションのまま（検索基点への分離はPhase Bで対応）。
-        if self.folder_pane_tab == FolderPaneTab::Search {
+        // 新モードでは基点フォルダを使わないので、ツリー/ドライブは出さず、全幅を一覧に使う。
+        if self.folder_pane_tab == FolderPaneTab::Search && !self.search_tree_hidden() {
             const TREE_PANE_WIDTH: f32 = 200.0;
             // ui.horizontal + ui.vertical のネストだと子の available_height() が
             // 正しく伝播しない（egui挙動）ため、両ペインとも allocate_ui_with_layout で

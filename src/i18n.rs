@@ -3325,6 +3325,38 @@ impl Lang {
         }
     }
 
+    pub fn search_mode_new(self) -> &'static str {
+        match self {
+            Lang::Japanese => "新",
+            Lang::English  => "New",
+            Lang::Chinese  => "新",
+        }
+    }
+
+    pub fn search_mode_legacy(self) -> &'static str {
+        match self {
+            Lang::Japanese => "旧（フォルダ指定）",
+            Lang::English  => "Legacy (by folder)",
+            Lang::Chinese  => "旧（按文件夹）",
+        }
+    }
+
+    pub fn search_new_text_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "検索文字列（ファイル名・タグ名）",
+            Lang::English  => "Search text (file / tag names)",
+            Lang::Chinese  => "搜索文字（文件名・标签名）",
+        }
+    }
+
+    pub fn search_new_text_hint(self) -> &'static str {
+        match self {
+            Lang::Japanese => "スペース区切り。\"…\" で句",
+            Lang::English  => "Space-separated. \"...\" for phrases",
+            Lang::Chinese  => "空格分隔。\"…\" 表示短语",
+        }
+    }
+
     pub fn calendar_window_title(self) -> &'static str {
         match self {
             Lang::Japanese => "日付を選択",
@@ -9959,6 +9991,76 @@ impl Lang {
                 sections: &[
                     ("[开始搜索]", "按输入的条件执行搜索。搜索期间不可点击。"),
                     ("[清除条件]", "清空输入的条件。基准文件夹不会被清除。"),
+                ],
+            },
+        }
+    }
+
+    pub fn help_search_mode(self) -> HelpDoc {
+        match self {
+            Lang::Japanese => HelpDoc {
+                title: "検索モード",
+                sections: &[
+                    ("[新]", "登録済みの全ファイルを対象に探す。フォルダの指定は要らない。一度も開いていないフォルダのファイルは対象外。"),
+                    ("[旧（フォルダ指定）]", "基底フォルダ（とその下）のサムネイルDBを探す従来の検索。フォルダを絞りたいときに使う。"),
+                ],
+            },
+            Lang::English => HelpDoc {
+                title: "Search mode",
+                sections: &[
+                    ("[New]", "Searches every registered file. No folder needed. Files in folders that have never been opened are not included."),
+                    ("[Legacy (by folder)]", "The previous search over the thumbnail DBs of a base folder (and below). Use it to narrow to a folder."),
+                ],
+            },
+            Lang::Chinese => HelpDoc {
+                title: "搜索模式",
+                sections: &[
+                    ("[新]", "搜索所有已登记的文件，无需指定文件夹。从未打开过的文件夹中的文件不在范围内。"),
+                    ("[旧（按文件夹）]", "按基准文件夹（及其子目录）的缩略图数据库搜索的旧方式。需要限定文件夹时使用。"),
+                ],
+            },
+        }
+    }
+
+    pub fn help_search_new_conditions(self) -> HelpDoc {
+        match self {
+            Lang::Japanese => HelpDoc {
+                title: "検索条件（新）",
+                sections: &[
+                    (
+                        "[検索文字列]",
+                        "半角・全角スペースで区切った語のどれかに当たれば、ヒットする。\"サー クル\" のように引用符で囲むと、スペースを含む1語になる。ファイル名と、付いているタグの名前（別名も）の両方を、大文字小文字を区別せず部分一致で探す。空欄なら文字列の条件は無し。",
+                    ),
+                    (
+                        "[サイズ]",
+                        "MB単位で下限・上限を指定する。空欄なら制限なし。文字列との両方を満たすものが対象。",
+                    ),
+                ],
+            },
+            Lang::English => HelpDoc {
+                title: "Search conditions (New)",
+                sections: &[
+                    (
+                        "[Search text]",
+                        "A file matches if any word (separated by half/full-width spaces) hits. Quote words such as \"cir cle\" to keep the space. Both the file name and the names of its tags (aliases too) are searched, case-insensitively by substring. Empty means no text condition.",
+                    ),
+                    (
+                        "[Size]",
+                        "Set lower / upper limits in MB. Leave empty for no limit. Files must satisfy both the text and the size.",
+                    ),
+                ],
+            },
+            Lang::Chinese => HelpDoc {
+                title: "搜索条件（新）",
+                sections: &[
+                    (
+                        "[搜索文字]",
+                        "以半角/全角空格分隔的词，任意一个命中即匹配。用引号括起来（如 \"社 团\"）可保留空格。同时在文件名与所带标签名（含别名）中，不区分大小写地按子串搜索。留空表示无文字条件。",
+                    ),
+                    (
+                        "[大小]",
+                        "以 MB 为单位指定下限和上限。留空表示不限。需同时满足文字和大小条件。",
+                    ),
                 ],
             },
         }
