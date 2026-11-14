@@ -73,9 +73,15 @@ fn thumb_col_width(size: ListSize, row_h: f32) -> f32 {
 /// 列の数（`Col` の要素数）。
 const COL_N: usize = 15;
 
+/// 「場所」列（フルパス）を出す表示か。複数のフォルダにまたがる横断一覧（類似ファイル一覧・検索結果・
+/// お気に入り・タグ検索）だけで出す。「完全比較」列は類似ファイル一覧専用なので、ここでは決めない。
+fn place_column_shown(similar: bool, search: bool, favorites: bool, tag_search: bool) -> bool {
+    similar || search || favorites || tag_search
+}
+
 /// 列の幅（エラー・重複・ファイラー・サムネ・名前・場所・完全比較・サイズ・更新日時・評価・公開評価・訪問回数・ページ数・詳細・属性）。
 /// ユーザー設定は重複・名前・サイズ・更新日時・評価・訪問回数・ページ数。エラー・公開評価・詳細・属性は固定幅。
-/// `place_w`・`compare_w` は類似ファイル一覧のときだけ出す「場所」「完全比較」列の幅（出さないときは 0）。
+/// `place_w` は横断一覧のときだけ出す「場所」列、`compare_w` は類似ファイル一覧のときだけ出す「完全比較」列の幅（出さないときは 0）。
 fn column_widths(thumb_w: f32, cols: &ListColumns, place_w: f32, compare_w: f32) -> [f32; COL_N] {
     [
         ERROR_COL_W,
@@ -308,7 +314,16 @@ impl NekoviewApp {
         // 編集の解除はリスト（一覧は封印中）のときだけ効く。
         let editing = self.list_edit_lock.is_unlocked() && self.view_mode.mode == ViewMode::List;
         let row_h = edit_row_height(base_row_h, editing);
-        let place_w = if self.viewing_similar.is_some() { PLACE_COL_W } else { 0.0 };
+        let place_w = if place_column_shown(
+            self.viewing_similar.is_some(),
+            self.viewing_search.is_some(),
+            self.viewing_favorites.is_some(),
+            self.folder_pane_tab == FolderPaneTab::TagSearch,
+        ) {
+            PLACE_COL_W
+        } else {
+            0.0
+        };
         let compare_w = if self.viewing_similar.is_some() { COMPARE_COL_W } else { 0.0 };
         let widths = column_widths(thumb_col_width(size, base_row_h), &self.list_cols, place_w, compare_w);
         ListMetrics { row_h, base_row_h, widths, total_w: widths.iter().sum() }
@@ -998,6 +1013,15 @@ mod tests {
     fn hover_mode_has_only_an_icon_column_for_thumbnails() {
         assert_eq!(thumb_col_width(ListSize::NoThumb, 24.0), HOVER_ICON_COL_W);
         assert!(thumb_col_width(ListSize::L, 120.0) > thumb_col_width(ListSize::S, 50.0));
+    }
+
+    #[test]
+    fn place_column_is_shown_only_in_cross_folder_views() {
+        assert!(!place_column_shown(false, false, false, false), "通常のフォルダ表示では出さない");
+        assert!(place_column_shown(true, false, false, false), "類似ファイル一覧");
+        assert!(place_column_shown(false, true, false, false), "検索結果");
+        assert!(place_column_shown(false, false, true, false), "お気に入り");
+        assert!(place_column_shown(false, false, false, true), "タグ検索");
     }
 
     #[test]

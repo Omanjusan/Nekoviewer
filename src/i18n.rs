@@ -3375,6 +3375,15 @@ impl Lang {
         }
     }
 
+    /// 新モードの検索文字列欄にホバーしたときの説明（ヘルプ表示のON/OFFに関わらず出す）。
+    pub fn search_new_text_tooltip(self) -> &'static str {
+        match self {
+            Lang::Japanese => "半角、全角スペースでOR検索用の単語を増やせます。単語内にスペースがある場合は\"サン　プル\"のように\"で単語を囲ってください。フィルタ文字列も使えます",
+            Lang::English  => "Separate words with half- or full-width spaces to add OR search words. If a word contains a space, enclose it in quotes, like \"Sam ple\". Filter patterns (* ? [...]) can be used too.",
+            Lang::Chinese  => "可用半角或全角空格分隔，增加 OR 搜索的词。词中含空格时，请用 \" 括起来，如 \"示　例\"。也可使用过滤字符串（* ? [...]）。",
+        }
+    }
+
     pub fn search_new_text_hint(self) -> &'static str {
         match self {
             Lang::Japanese => "スペース区切り。\"…\" で句",

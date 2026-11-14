@@ -81,8 +81,8 @@ impl NekoviewApp {
         }
     }
 
-    /// 検索タブ左ペインの条件部。最上段にモード切替（新／旧）、その下に条件フォーム（スクロール）、
-    /// 最下段（結果履歴の直上）に検索開始/条件クリアのボタンを固定する。ボタンは新旧共通。
+    /// 検索タブ左ペインの条件部。最上段にモード切替（新／旧）、その下に条件フォーム、
+    /// フォームの直下にスプリッターと検索開始/条件クリアのボタンを置く。ボタンは新旧共通。
     pub(super) fn draw_search_condition_pane(&mut self, ui: &mut egui::Ui) {
         let help_on = self.help_enabled;
         let help_mode = i18n::t().help_search_mode();
@@ -102,13 +102,14 @@ impl NekoviewApp {
         });
         ui.separator();
 
-        // ボタン行の分を残して、フォームをスクロールにする。
-        let bottom_h = ui.spacing().interact_size.y + ui.spacing().item_spacing.y * 2.0 + 8.0;
+        // ボタンは条件フォームの直下に置く（フォームの高さに合わせて上下に動く）。フォームが高すぎて
+        // 収まらないときだけ、ボタン行の分を残してフォームをスクロールにする。
+        let bottom_h = ui.spacing().interact_size.y + ui.spacing().item_spacing.y * 3.0 + 8.0;
         let form_h = (ui.available_height() - bottom_h).max(0.0);
         egui::ScrollArea::vertical()
             .id_salt("search_condition_scroll")
             .max_height(form_h)
-            .auto_shrink([false, false])
+            .auto_shrink([false, true])
             .show(ui, |ui| match self.search_form.mode {
                 SearchMode::New => self.draw_search_new_fields(ui),
                 SearchMode::Legacy => self.draw_search_legacy_fields(ui),
@@ -180,7 +181,8 @@ impl NekoviewApp {
                 .hint_text(i18n::t().search_new_text_hint())
                 .desired_width(f32::INFINITY)
                 .lock_focus(true),
-        );
+        )
+        .on_hover_text(i18n::t().search_new_text_tooltip());
         self.sync_search_form_response(&r, SearchFormFocus::NewText, true);
         help_tip(&r, help_on, &help_cond);
 
