@@ -3386,25 +3386,25 @@ impl Lang {
 
     pub fn search_notice_button(self) -> &'static str {
         match self {
-            Lang::Japanese => "注意点",
-            Lang::English  => "Notes",
-            Lang::Chinese  => "注意事项",
+            Lang::Japanese => "新検索モードの注意点",
+            Lang::English  => "Notes on the new search mode",
+            Lang::Chinese  => "新搜索模式的注意事项",
         }
     }
 
     pub fn search_notice_title(self) -> &'static str {
         match self {
-            Lang::Japanese => "新検索の注意点",
-            Lang::English  => "Notes on the new search",
-            Lang::Chinese  => "新搜索的注意事项",
+            Lang::Japanese => "新検索モードの注意点",
+            Lang::English  => "Notes on the new search mode",
+            Lang::Chinese  => "新搜索模式的注意事项",
         }
     }
 
     pub fn search_notice_body(self) -> &'static str {
         match self {
-            Lang::Japanese => "検索結果のマーカーは、すでに保存されている情報の読み取り表示です。\n\n・重複マーカー: 保存済みのものを表示します。\n・サムネイル類似マーカー: すでに計算済みの情報を使って表示するだけで、未計算のファイルを新たに計算してマーカーを付けることは、この検索結果内では行いません。\n・マーカーをクリックしても、類似ファイル一覧などへは移動しません。\n\nこれは、計算量が膨大になる可能性を避け、結果を素早く出すことを優先しているためです。",
-            Lang::English  => "Markers in search results are a read-only display of information that is already stored.\n\n- Duplicate markers: shown from what is already saved.\n- Similar-thumbnail markers: shown only from information that has already been computed. Files that have not been computed are not newly computed or marked within these search results.\n- Clicking a marker does not jump to the similar-file list or any other view.\n\nThis avoids a potentially huge amount of computation and keeps results fast.",
-            Lang::Chinese  => "搜索结果中的标记，只是对已保存信息的只读显示。\n\n・重复标记：显示已保存的内容。\n・缩略图相似标记：仅使用已计算好的信息来显示；在此搜索结果内，不会对尚未计算的文件重新计算并添加标记。\n・点击标记不会跳转到相似文件列表等视图。\n\n这是为了避免计算量过大，并优先快速给出结果。",
+            Lang::Japanese => "ここでの一致・類似マーカーは計算量が膨大になるのを避け、結果を素早く出すため保存済みマーカーを表示するだけで新たな検知は行わず、解決UIにも移動できません。実フォルダ・仮想フォルダの現地移動メニューがあるので現地へ移動してから解決をしてください。",
+            Lang::English  => "To avoid a huge amount of computation and keep results fast, the match / similar markers here only show markers that are already saved. No new detection is performed, and you cannot jump to the resolution UI from here. Use the menu to go to the actual location in the Folders or Virtual Folders tab, and resolve them there.",
+            Lang::Chinese  => "为避免计算量过大并优先快速给出结果，此处的一致/相似标记只显示已保存的标记，不会进行新的检测，也无法从这里跳转到处理界面。请使用菜单跳转到文件夹或虚拟文件夹标签页中的实际位置，然后在那里处理。",
         }
     }
 
