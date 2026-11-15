@@ -79,8 +79,13 @@ impl NekoviewApp {
 
     /// 新モードの検索を始める。履歴の先頭に実行中エントリを置いて選択し、空の一覧から表示を始める
     /// （ヒットは `poll_new_search` が逐次追記する）。実行中・台帳なしなら何もしない。
-    pub(super) fn start_new_search(&mut self) {
+    /// `replace` は、保存済みの行を選んで再実行したときの元の行の時刻（置き換えて先頭へ移す）。
+    pub(super) fn start_new_search(&mut self, replace: Option<i64>) {
         if self.any_search_running() {
+            return;
+        }
+        // 条件が空の検索は始めない（全件の列挙になるため）。
+        if !super::search_history_ui::search_condition_is_valid(&self.search_form) {
             return;
         }
         let Some(db) = self.spread_db.clone() else { return };
@@ -89,10 +94,16 @@ impl NekoviewApp {
         let query = LedgerQuery::from_inputs(&form.new_text, &form.new_size_min_mb, &form.new_size_max_mb, &tier_names);
         let ctx = self.egui_ctx.clone();
         self.search_job = Some(LedgerSearchJob::start(db, query, move || ctx.request_repaint()));
-        let mut entry = SearchResultEntry { form, running: true, ..Default::default() };
+        // 条件だけを履歴ファイルへ積む。再実行なら、元の行はここで取り除く。
+        let saved_at = self.save_search_condition(&form, replace);
+        if let Some(t) = replace {
+            self.remove_stored_row(t);
+        }
+        let mut entry = SearchResultEntry { form, running: true, saved_at: Some(saved_at), ..Default::default() };
         entry.refresh_new_label();
         push_search_result(&mut self.search_history, entry);
         self.enter_search_view(0);
+        self.enforce_search_history_limits();
     }
 
     /// 実行中の新モード検索を中断する。それまでに集まった結果は履歴に残る。
@@ -133,6 +144,8 @@ impl NekoviewApp {
             self.sort_archives();
             self.recompute_filter();
         }
+        // 結果が確定して保持件数が増えた。多すぎれば、古い行から結果を手放す。
+        self.enforce_search_history_limits();
     }
 
     /// 検索タブで、履歴の idx 番目を表示しているか（ここが true の間だけ、一覧へ追記する）。

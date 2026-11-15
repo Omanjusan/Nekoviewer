@@ -267,6 +267,11 @@ pub(crate) struct SearchResultEntry {
     pub unconfirmed: usize,
     /// 新モード: 途中で中断した（それまでの結果は残る）。
     pub cancelled: bool,
+    /// 結果を持たない行（再起動後に条件だけ復元した行、またはセッション内で結果を手放した行）。
+    /// 選ぶと、条件をフォームへ復元して再走査する。
+    pub restored: bool,
+    /// 保存ファイルの行の保存時刻（unix秒）。検索条件の履歴ファイルの行と対応する。
+    pub saved_at: Option<i64>,
 }
 
 /// 検索結果を履歴の先頭に追加する（新しい実行が最上位に来て、既存分は下に送られる）。
@@ -1429,6 +1434,8 @@ pub struct NekoviewApp {
     search_pending: Option<mpsc::Receiver<Vec<PathBuf>>>,
     /// 実行中の検索を開始した時点のフォーム入力。
     search_pending_form: Option<SearchFormState>,
+    /// 旧モードの実行中の検索について、保存した条件の行の時刻（完了時に履歴の行へ引き継ぐ）。
+    search_pending_saved_at: Option<i64>,
     /// 新モードの検索ジョブ（実行中のみSome）。タブを切り替えても、アプリ本体が持つので継続する。
     /// 結果は履歴の実行中エントリ（`running`）へ溜まる。
     search_job: Option<crate::ledger_search::LedgerSearchJob>,
@@ -1530,6 +1537,7 @@ mod bulk_settings_ui;
 mod search_ui;
 mod search;
 mod search_new;
+mod search_history_ui;
 #[cfg(feature = "test-control")]
 mod test_explore;
 mod status;
@@ -1963,7 +1971,8 @@ impl NekoviewApp {
             filter_text: String::new(),
             rating_filter: crate::rating_filter::RatingFilter::default(),
             filtered_indices: Vec::new(),
-            search_history: Vec::new(),
+            // 保存された検索条件を、結果を持たない行として並べる（選ぶと条件を復元して再走査する）。
+            search_history: search_history_ui::load_restored_history(&config_root),
             search_selected: None,
             search_form: SearchFormState::default(),
             search_form_focus: SearchMode::default().first_field(),
@@ -1974,6 +1983,7 @@ impl NekoviewApp {
             search_running: false,
             search_pending: None,
             search_pending_form: None,
+            search_pending_saved_at: None,
             search_job: None,
             search_notice_open: false,
             viewing_search: None,

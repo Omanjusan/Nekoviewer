@@ -50,7 +50,7 @@ fn parse_mb(s: &str) -> Option<u64> {
 
 /// "YYYY-MM-DD" を UTC 00:00:00 の Unix秒に変換する。chrono非依存
 /// （panels.rs の format_mtime と対称。Howard Hinnant's civil_from_days の逆算）。
-fn parse_date(s: &str) -> Option<i64> {
+pub(super) fn parse_date(s: &str) -> Option<i64> {
     let s = s.trim();
     if s.is_empty() {
         return None;
@@ -136,8 +136,13 @@ pub(super) fn spawn_search(
 impl NekoviewApp {
     /// 「検索開始」ボタンから呼ぶ。実行中（search_running）なら何もしない
     /// （多重実行不可、呼び出し側でもボタンを無効化済み）。
-    pub(super) fn start_search(&mut self, ctx: &egui::Context) {
+    /// `replace` は、保存済みの行を選んで再実行したときの元の行の時刻（置き換えて先頭へ移す）。
+    pub(super) fn start_search(&mut self, ctx: &egui::Context, replace: Option<i64>) {
         if self.search_running || self.search_job.is_some() {
+            return;
+        }
+        // 条件が空の検索は始めない（全件の列挙になるため）。
+        if !super::search_history_ui::search_condition_is_valid(&self.search_form) {
             return;
         }
         let Some(cache_root) = self.config.cache_root() else { return };
@@ -150,6 +155,11 @@ impl NekoviewApp {
         let include_subdirs = submitted_form.include_subdirs;
         let ctx = ctx.clone();
         self.search_pending = Some(spawn_search(root, include_subdirs, cache_root, conditions, move || ctx.request_repaint()));
+        // 条件だけを履歴ファイルへ積む。再実行なら、元の行はここで取り除く（完了時に新しい行が先頭へ入る）。
+        self.search_pending_saved_at = Some(self.save_search_condition(&submitted_form, replace));
+        if let Some(t) = replace {
+            self.remove_stored_row(t);
+        }
         self.search_pending_form = Some(submitted_form);
         self.search_running = true;
     }
@@ -164,13 +174,20 @@ impl NekoviewApp {
         self.search_running = false;
         let form = self.search_pending_form.take().unwrap_or_else(|| self.search_form.clone());
         let label = i18n::t().search_result_label(&form.name_pattern, hits.len());
-        push_search_result(&mut self.search_history, SearchResultEntry { label, hits, form, ..Default::default() });
+        let saved_at = self.search_pending_saved_at.take();
+        push_search_result(&mut self.search_history, SearchResultEntry { label, hits, form, saved_at, ..Default::default() });
         self.search_selected = Some(0);
         self.enter_search_view(0);
+        self.enforce_search_history_limits();
     }
 
     /// 履歴をユーザーが確定したとき、実行時の全条件をフォームへ上書きして結果を表示する。
     pub(super) fn select_search_history(&mut self, idx: usize) {
+        // 結果を持たない行（再起動後に復元した行など）は、条件を復元して再走査する。
+        if self.search_history.get(idx).is_some_and(|e| e.restored) {
+            self.rerun_stored_search(idx);
+            return;
+        }
         if !restore_search_form(&mut self.search_form, &self.search_history, idx) {
             return;
         }

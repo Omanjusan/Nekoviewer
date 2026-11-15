@@ -31,10 +31,10 @@ impl NekoviewApp {
                 self.search_form.new_size_max_mb = max;
             }
             ExploreCmd::SearchStart => match self.search_form.mode {
-                SearchMode::New => self.start_new_search(),
+                SearchMode::New => self.start_new_search(None),
                 SearchMode::Legacy => {
                     let ctx = self.egui_ctx.clone();
-                    self.start_search(&ctx);
+                    self.start_search(&ctx, None);
                 }
             },
             ExploreCmd::SearchCancel => self.cancel_new_search(),
@@ -68,6 +68,8 @@ impl NekoviewApp {
                     "label": e.label,
                     "hits": e.hits.len(),
                     "running": e.running,
+                    "restored": e.restored,
+                    "saved_at": e.saved_at,
                     "cancelled": e.cancelled,
                     "unconfirmed": e.unconfirmed,
                     "mode": if e.form.mode == SearchMode::New { "new" } else { "legacy" },
@@ -89,6 +91,7 @@ impl NekoviewApp {
                 super::ScanState::Done => "done",
             },
             "loading_shown": self.scan_loading_visible(),
+            "form_text": self.search_form.new_text,
             "current_dir": self.current_dir.display().to_string(),
             // カーソル（選択枠）が乗っているファイル名。フォルダの行に乗っていれば null。
             "cursor_file": match &self.grid_cursor {

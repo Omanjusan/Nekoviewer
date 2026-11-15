@@ -392,3 +392,98 @@ fn goto_real_opens_the_files_folder_in_the_folders_tab_and_selects_the_file() {
     // 検索の履歴は残っている（検索タブへ戻って見直せる）
     assert_eq!(s["history"].as_array().unwrap().len(), 1);
 }
+
+/// 検索条件の履歴ファイル（新モード）。アプリの設定フォルダ直下。
+fn history_file(e: &Env) -> PathBuf {
+    e.root.join("home/c/nekoview/search_history_new.jsonl")
+}
+
+fn history_lines(e: &Env) -> Vec<Value> {
+    std::fs::read_to_string(history_file(e))
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|l| serde_json::from_str(l).ok())
+        .collect()
+}
+
+#[test]
+#[ignore = "needs Xephyr + GPU rendering; run explicitly"]
+fn search_conditions_are_saved_and_a_restored_row_rescans_after_a_restart() {
+    if skip() { return; }
+    let mut e = Env::new("search-history");
+    e.make_files("alpha", 8, 16);
+    e.make_files("beta", 4, 16);
+    e.launch();
+    e.open_and_wait_ledger(12);
+
+    // 3回検索する（同じ条件を含めて、毎回1行ずつ積む）
+    e.send(&["tab search"]);
+    for (i, text) in ["alpha", "beta", "alpha"].iter().enumerate() {
+        e.send(&[&format!("search-text {text}"), "search-start"]);
+        e.wait_search("search done", Duration::from_secs(30), |s| {
+            s["history"].as_array().is_some_and(|h| h.len() == i + 1 && h[0]["running"] == false)
+        });
+    }
+    // 条件だけが保存される（結果は保存しない）。新しい順
+    assert!(
+        wait_until(Duration::from_secs(10), || history_lines(&e).len() == 3),
+        "条件が履歴ファイルへ保存される"
+    );
+    let saved = history_lines(&e);
+    let texts: Vec<&str> = saved.iter().map(|l| l["text"].as_str().unwrap()).collect();
+    assert_eq!(texts, vec!["alpha", "beta", "alpha"], "新しいものが先頭");
+    let raw = std::fs::read_to_string(history_file(&e)).unwrap();
+    assert!(!raw.contains("alpha_000.png"), "ヒット（結果）は保存しない");
+
+    // 再起動すると、履歴は「結果を持たない行」として戻る
+    e.launch();
+    let s = e.search();
+    let rows = s["history"].as_array().unwrap();
+    assert_eq!(rows.len(), 3, "履歴が復元される: {s}");
+    assert!(rows.iter().all(|r| r["restored"] == true && r["running"] == false && hits(r) == 0));
+    assert!(rows[1]["label"].as_str().unwrap().contains("beta"));
+    assert_eq!(rows[0]["mode"], "new");
+
+    // 「beta」の行（2番目）を選ぶと、条件を復元して再走査する。その行は置き換わって先頭へ移る
+    e.send(&["tab search", "search-select 1"]);
+    let s = e.wait_search("restored row rescanned", Duration::from_secs(30), |s| {
+        s["history"].as_array().is_some_and(|h| h.len() == 3 && h[0]["restored"] == false && h[0]["running"] == false)
+    });
+    assert_eq!(hits(&s["history"][0]), 4, "beta は4件: {}", s["history"][0]);
+    assert_eq!(s["form_text"], "beta", "条件がフォームへ復元されている");
+    assert_eq!(s["archives"], 4);
+    // ファイルでも、同じ行が重複せず先頭へ移っている
+    assert!(wait_until(Duration::from_secs(10), || {
+        let l = history_lines(&e);
+        l.len() == 3 && l[0]["text"] == "beta"
+    }));
+    let texts: Vec<String> = history_lines(&e).iter().map(|l| l["text"].as_str().unwrap().to_string()).collect();
+    assert_eq!(texts, vec!["beta", "alpha", "alpha"]);
+}
+
+#[test]
+#[ignore = "needs Xephyr + GPU rendering; run explicitly"]
+fn a_search_without_any_condition_cannot_start_in_either_mode() {
+    if skip() { return; }
+    let mut e = Env::new("search-empty");
+    e.make_files("alpha", 3, 16);
+    e.launch();
+    e.open_and_wait_ledger(3);
+    e.send(&["tab search", "search-text", "search-start"]);
+    std::thread::sleep(Duration::from_millis(500));
+    let s = e.search();
+    assert_eq!(s["history"].as_array().unwrap().len(), 0, "空の文字列では始まらない: {s}");
+    assert_eq!(s["any_running"], false);
+    // 数値として読めないサイズだけでも、条件にならない
+    e.send(&["search-size abc -", "search-start"]);
+    std::thread::sleep(Duration::from_millis(500));
+    assert_eq!(e.search()["history"].as_array().unwrap().len(), 0);
+    // 旧モード（ファイル名・サイズ・日付が空）でも始まらない
+    e.send(&["search-mode legacy", "search-start"]);
+    std::thread::sleep(Duration::from_millis(500));
+    assert_eq!(e.search()["history"].as_array().unwrap().len(), 0);
+    assert!(!history_file(&e).exists(), "始まらなかった検索は、履歴にも残らない");
+    // 有効な条件を入れれば始まる
+    e.send(&["search-mode new", "search-text alpha", "search-start"]);
+    e.wait_search("started", Duration::from_secs(30), |s| s["history"].as_array().is_some_and(|h| h.len() == 1 && h[0]["running"] == false));
+}

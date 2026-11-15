@@ -124,20 +124,28 @@ impl NekoviewApp {
             let (label, enabled) = if cancelling {
                 (i18n::t().search_cancel_button(), true)
             } else {
-                let can_start = !self.any_search_running() && (mode == SearchMode::Legacy || self.spread_db.is_some());
+                let can_start = !self.any_search_running()
+                    && (mode == SearchMode::Legacy || self.spread_db.is_some())
+                    && super::search_history_ui::search_condition_is_valid(&self.search_form);
                 (i18n::t().search_start_button(), can_start)
             };
             let start = ui.add_enabled(enabled, egui::Button::new(label));
+            // 条件が空で押せないときは、その理由を出す。
+            let start = if !enabled && !self.any_search_running() && !super::search_history_ui::search_condition_is_valid(&self.search_form) {
+                start.on_disabled_hover_text(i18n::t().search_condition_required())
+            } else {
+                start
+            };
             self.sync_search_form_response(&start, SearchFormFocus::Start, enabled);
             help_tip(&start, help_on, &help_actions);
             if start.clicked() {
                 if cancelling {
                     self.cancel_new_search();
                 } else if mode == SearchMode::New {
-                    self.start_new_search();
+                    self.start_new_search(None);
                 } else {
                     let ctx = ui.ctx().clone();
-                    self.start_search(&ctx);
+                    self.start_search(&ctx, None);
                 }
             }
             let clear = ui.button(i18n::t().search_clear_button());

@@ -3448,6 +3448,15 @@ impl Lang {
         }
     }
 
+    /// 検索開始ボタンが押せないとき（条件が空）のホバー説明。
+    pub fn search_condition_required(self) -> &'static str {
+        match self {
+            Lang::Japanese => "検索条件を1つ以上入力してください（文字列・サイズ・日付など）",
+            Lang::English  => "Enter at least one search condition (text, size, date, ...)",
+            Lang::Chinese  => "请至少输入一个搜索条件（文字、大小、日期等）",
+        }
+    }
+
     pub fn search_new_text_hint(self) -> &'static str {
         match self {
             Lang::Japanese => "スペース区切り。\"…\" で句",
