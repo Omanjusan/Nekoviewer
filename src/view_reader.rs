@@ -833,6 +833,11 @@ pub struct ViewerState {
     thumbbar_shown_rect: Option<egui::Rect>,
     /// バー上で押したマウスボタンを押しっぱなしか（スワイプ中にポインターがバー外へ出ても消さないため）。
     thumbbar_press_in_bar: bool,
+    /// 上配置のサムネバーが優先する矩形（出ていればバー、隠れていれば発火域）。この上ではメニューバー・
+    /// ファイル名バーを新規に出さない。前フレームの値を使う（メニュー側の判定がバー判定より先に走るため）。
+    thumbbar_menu_guard: Option<egui::Rect>,
+    /// 直近フレームでファイル名バー（仮想タイトル帯）が出ていたか。上配置のバーの押し下げ量に使う。
+    title_band_shown: bool,
 }
 
 impl ViewerState {
@@ -1123,6 +1128,8 @@ impl ViewerState {
             thumbbar_visible: false,
             thumbbar_shown_rect: None,
             thumbbar_press_in_bar: false,
+            thumbbar_menu_guard: None,
+            title_band_shown: false,
         }
     }
 
@@ -1251,6 +1258,8 @@ impl ViewerState {
             thumbbar_visible: false,
             thumbbar_shown_rect: None,
             thumbbar_press_in_bar: false,
+            thumbbar_menu_guard: None,
+            title_band_shown: false,
         }
     }
 
@@ -2601,7 +2610,9 @@ impl ViewerState {
         // 表示中の保持域は出現域(TRIGGER_H)より狭くしない。狭いと、その差の帯にポインタを置いたまま
         // 「出る→保持域外で待機切れ→引っ込む→出る」を繰り返してちらつく。
         let keep_h = if self.menubar_visible { (bar_h + KEEP_MARGIN).max(TRIGGER_H) } else { TRIGGER_H };
-        let hovering = input.hover_pos.is_some_and(|p| vp.contains(p) && p.y < vp.min.y + keep_h);
+        // 上配置のサムネバーが優先する範囲では、メニューバーを新規に出さない（出ている間の保持には影響しない）。
+        let blocked_by_thumbbar = |p: egui::Pos2| !self.menubar_visible && self.thumbbar_menu_guard.is_some_and(|g| g.contains(p));
+        let hovering = input.hover_pos.is_some_and(|p| vp.contains(p) && p.y < vp.min.y + keep_h && !blocked_by_thumbbar(p));
         if hovering || (engaged && self.menubar_visible) {
             self.menubar_hide_at = Some(input.time + MENUBAR_HIDE_WAIT_SEC);
             self.menubar_visible = true;
@@ -3743,7 +3754,9 @@ impl ViewerState {
             let guarded_primary_clicked = input.primary_clicked && !pointer_in_palette && !pointer_in_bar && !pointer_in_rating && !pointer_in_thumbbar && !pointer_in_entry_list;
             self.handle_edge_turn(&edge_ctx, clip, guarded_hover, guarded_primary_clicked, is_spread, step, total, input.time, cfg.thumbbar_pos);
             self.draw_edge_turn_marker(&edge_ctx, clip);
-            if self.tick_title_band(&edge_ctx, input.time, input.hover_pos, input.viewport_rect, clip) {
+            let title_shown = self.tick_title_band(&edge_ctx, input.time, input.hover_pos, input.viewport_rect, clip);
+            self.title_band_shown = title_shown;
+            if title_shown {
                 self.draw_title_band(&edge_ctx, clip);
             }
 
@@ -4072,8 +4085,8 @@ impl ViewerState {
         (double_clicked, single_clicked)
     }
 
-    /// サムネバーのオーバーレイ余白（ビューポート端からバーまで）。
-    const THUMBBAR_MARGIN: f32 = 10.0;
+    /// 上配置のバーを左右それぞれ切り詰める幅（ここがメニューバー・ファイル名バーを出す導線＝遊びになる）。
+    const THUMBBAR_TOP_GAP: f32 = 50.0;
     /// 左右バーの発火域（左下・右下の角）の一辺。ページ送りゾーン幅と同じにして、角をその領域からくり抜く。
     const THUMBBAR_CORNER: f32 = 100.0;
     /// 上端のメニューバー・タイトルバー用の確保高の下限（タイトル帯のホバートリガー高と同じ）。
@@ -4085,19 +4098,30 @@ impl ViewerState {
         (self.menubar_overlay_h + Self::TITLE_BAND_H).max(Self::THUMBBAR_TOP_MIN_INSET)
     }
 
-    /// サムネバーの矩形と発火域を求める（純粋関数）。`top_inset` はメニューバー＋タイトルバーの下端までの高さ。
+    /// サムネバーの矩形と発火域を求める（純粋関数）。バーは画面の端に完全に寄せる（余白0）。
+    /// ホイールがバー専用になる範囲＝バーの矩形なので、端に隙間があるとそこでページ送りが効いてしまう。
     /// - 上下バー: 発火域はバー帯のうち、左右のページ送り保護域（各 EDGE_TURN_ZONE_W）を除いた区間。
     /// - 左右バー: 発火域は左下／右下の角（THUMBBAR_CORNER 四方）。エントリリスト発火域・ページ送り保護域と競合しない場所。
-    /// 上・左・右のバーは top_inset より下から始める（メニューバーとタイトルバーを邪魔しない）。
-    fn thumbbar_rects(pos: ThumbbarPos, viewport: egui::Rect, thickness: f32, top_inset: f32) -> Option<(egui::Rect, egui::Rect)> {
-        let m = Self::THUMBBAR_MARGIN;
+    /// - 上バーだけ、左右それぞれ THUMBBAR_TOP_GAP ずつ切り詰めて中央寄せにする（遊び＝メニュー導線）。
+    ///   Y は `top_stack`（メニューバー＋ファイル名バーのうち今出ている高さ）の下。何も出ていなければ上端（0）。
+    ///   メニュー等が先に出ているときは、発火域もその下になる。
+    /// - 左右バーは `top_inset` より下から始める（上端は従来どおりメニュー導線として空ける）。
+    fn thumbbar_rects(
+        pos: ThumbbarPos,
+        viewport: egui::Rect,
+        thickness: f32,
+        top_inset: f32,
+        top_stack: f32,
+    ) -> Option<(egui::Rect, egui::Rect)> {
         let zone = Self::EDGE_TURN_ZONE_W;
-        let top = viewport.min.y + top_inset;
+        let side_top = viewport.min.y + top_inset;
         let (bar, trigger) = match pos {
             ThumbbarPos::Top => {
+                let gap = Self::THUMBBAR_TOP_GAP;
+                let y = viewport.min.y + top_stack;
                 let bar = egui::Rect::from_min_size(
-                    egui::pos2(viewport.min.x + m, top),
-                    egui::vec2((viewport.width() - m * 2.0).max(0.0), thickness),
+                    egui::pos2(viewport.min.x + gap, y),
+                    egui::vec2((viewport.width() - gap * 2.0).max(0.0), thickness),
                 );
                 let trig = egui::Rect::from_min_max(
                     egui::pos2(viewport.min.x + zone, bar.min.y),
@@ -4107,19 +4131,19 @@ impl ViewerState {
             }
             ThumbbarPos::Bottom => {
                 let bar = egui::Rect::from_min_size(
-                    egui::pos2(viewport.min.x + m, viewport.max.y - m - thickness),
-                    egui::vec2((viewport.width() - m * 2.0).max(0.0), thickness),
+                    egui::pos2(viewport.min.x, viewport.max.y - thickness),
+                    egui::vec2(viewport.width(), thickness),
                 );
                 let trig = egui::Rect::from_min_max(
                     egui::pos2(viewport.min.x + zone, bar.min.y),
-                    egui::pos2(viewport.max.x - zone, viewport.max.y),
+                    egui::pos2(viewport.max.x - zone, bar.max.y),
                 );
                 (bar, trig)
             }
             ThumbbarPos::Left => {
-                let bar = egui::Rect::from_min_size(
-                    egui::pos2(viewport.min.x + m, top),
-                    egui::vec2(thickness, (viewport.max.y - m - top).max(0.0)),
+                let bar = egui::Rect::from_min_max(
+                    egui::pos2(viewport.min.x, side_top),
+                    egui::pos2(viewport.min.x + thickness, viewport.max.y.max(side_top)),
                 );
                 let trig = egui::Rect::from_min_max(
                     egui::pos2(viewport.min.x, viewport.max.y - Self::THUMBBAR_CORNER),
@@ -4128,9 +4152,9 @@ impl ViewerState {
                 (bar, trig)
             }
             ThumbbarPos::Right => {
-                let bar = egui::Rect::from_min_size(
-                    egui::pos2(viewport.max.x - m - thickness, top),
-                    egui::vec2(thickness, (viewport.max.y - m - top).max(0.0)),
+                let bar = egui::Rect::from_min_max(
+                    egui::pos2(viewport.max.x - thickness, side_top),
+                    egui::pos2(viewport.max.x, viewport.max.y.max(side_top)),
                 );
                 let trig = egui::Rect::from_min_max(
                     egui::pos2(viewport.max.x - Self::THUMBBAR_CORNER, viewport.max.y - Self::THUMBBAR_CORNER),
@@ -4141,6 +4165,13 @@ impl ViewerState {
             ThumbbarPos::None => return None,
         };
         Some((bar, trigger))
+    }
+
+    /// 上配置のバーをY方向に押し下げる量（今出ているメニューバー＋ファイル名バーの高さ。何も出ていなければ0）。
+    fn thumbbar_top_stack(&self) -> f32 {
+        let menu = if self.menubar_visible { self.menubar_overlay_h } else { 0.0 };
+        let title = if self.title_band_shown { Self::TITLE_BAND_H } else { 0.0 };
+        menu + title
     }
 
     /// サムネバーの表示状態を更新し、出すべきなら矩形を返す。
@@ -4158,13 +4189,14 @@ impl ViewerState {
         let thickness = cfg.thumbbar_thumb_size as f32 + 16.0;
         let top_inset = self.top_overlay_inset();
         let rects = if self.entries.len() > 1 && !self.entry_list_visible {
-            Self::thumbbar_rects(cfg.thumbbar_pos, viewport, thickness, top_inset)
+            Self::thumbbar_rects(cfg.thumbbar_pos, viewport, thickness, top_inset, self.thumbbar_top_stack())
         } else {
             None
         };
         let Some((bar, trigger)) = rects else {
             self.thumbbar_visible = false;
             self.thumbbar_shown_rect = None;
+            self.thumbbar_menu_guard = None;
             return None;
         };
 
@@ -4199,6 +4231,10 @@ impl ViewerState {
         }
 
         self.thumbbar_shown_rect = self.thumbbar_visible.then_some(bar);
+        // 上配置では、バー（出ていれば矩形、隠れていれば発火域）の上でメニューバー・ファイル名バーを新規に出さない
+        // （バー優先）。メニュー等は左右の遊びの上端からだけ出る。
+        self.thumbbar_menu_guard = (cfg.thumbbar_pos == ThumbbarPos::Top)
+            .then(|| if self.thumbbar_visible { bar } else { trigger });
         self.thumbbar_shown_rect
     }
 
@@ -4908,7 +4944,9 @@ impl ViewerState {
         } else {
             viewport.min.y + TRIGGER_H
         };
-        let hovering = hover_pos.is_some_and(|p| viewport.contains(p) && p.y < zone_bottom);
+        // 上配置のサムネバーが優先する範囲では、ファイル名バーを新規に出さない（出ている間の保持には影響しない）。
+        let blocked = |p: egui::Pos2| !visible && self.thumbbar_menu_guard.is_some_and(|g| g.contains(p));
+        let hovering = hover_pos.is_some_and(|p| viewport.contains(p) && p.y < zone_bottom && !blocked(p));
 
         if hovering {
             self.title_band_hide_at = Some(time + HIDE_WAIT_SEC);
@@ -7212,7 +7250,7 @@ mod sort_save_state_tests {
     fn thumbbar_trigger_for_top_and_bottom_excludes_the_page_turn_zones() {
         let vp = tb_viewport();
         for pos in [ThumbbarPos::Top, ThumbbarPos::Bottom] {
-            let (bar, trig) = ViewerState::thumbbar_rects(pos, vp, 116.0, 40.0).unwrap();
+            let (bar, trig) = ViewerState::thumbbar_rects(pos, vp, 116.0, 40.0, 0.0).unwrap();
             // 左右の保護域(100px)の内側は発火しない
             assert!(!trig.contains(egui::pos2(50.0, bar.center().y)));
             assert!(!trig.contains(egui::pos2(950.0, bar.center().y)));
@@ -7221,29 +7259,107 @@ mod sort_save_state_tests {
     }
 
     #[test]
-    fn thumbbar_top_bar_starts_below_the_menu_and_title_zone() {
+    fn thumbbar_bars_sit_flush_against_the_screen_edges_with_no_margin() {
         let vp = tb_viewport();
-        let (bar, trig) = ViewerState::thumbbar_rects(ThumbbarPos::Top, vp, 116.0, 62.0).unwrap();
-        assert!(bar.min.y >= 62.0);
-        assert!(trig.min.y >= 62.0);
-        // 左右バーもメニュー＋タイトルバーの下から始まる
+        let (b, _) = ViewerState::thumbbar_rects(ThumbbarPos::Bottom, vp, 116.0, 40.0, 0.0).unwrap();
+        assert_eq!((b.min.x, b.max.x, b.max.y), (0.0, 1000.0, 800.0));
+        let (l, _) = ViewerState::thumbbar_rects(ThumbbarPos::Left, vp, 116.0, 40.0, 0.0).unwrap();
+        assert_eq!((l.min.x, l.max.y), (0.0, 800.0));
+        let (r, _) = ViewerState::thumbbar_rects(ThumbbarPos::Right, vp, 116.0, 40.0, 0.0).unwrap();
+        assert_eq!((r.max.x, r.max.y), (1000.0, 800.0));
+    }
+
+    #[test]
+    fn thumbbar_top_bar_is_narrowed_by_50px_each_side_and_flush_to_the_top_when_nothing_is_shown() {
+        let vp = tb_viewport();
+        let (bar, trig) = ViewerState::thumbbar_rects(ThumbbarPos::Top, vp, 116.0, 40.0, 0.0).unwrap();
+        assert_eq!((bar.min.x, bar.max.x), (50.0, 950.0)); // 左右50pxずつの遊び（中央寄せ）
+        assert_eq!(bar.min.y, 0.0); // メニューバー・ファイル名バーを無視して上端
+        assert_eq!(trig.min.y, 0.0); // 上端のホバーで発火する
+    }
+
+    #[test]
+    fn thumbbar_top_bar_and_its_trigger_move_below_the_menu_and_title_bars() {
+        let vp = tb_viewport();
+        // メニュー(30)＋ファイル名バー(32)が出ているとき
+        let (bar, trig) = ViewerState::thumbbar_rects(ThumbbarPos::Top, vp, 116.0, 62.0, 62.0).unwrap();
+        assert_eq!(bar.min.y, 62.0);
+        assert_eq!(trig.min.y, 62.0); // 検知域も2つのバーより下
+        // 左右バーの上端は従来どおり上端40px以上（メニュー等が出ていればその下）を空ける
         for pos in [ThumbbarPos::Left, ThumbbarPos::Right] {
-            let (bar, _) = ViewerState::thumbbar_rects(pos, vp, 116.0, 62.0).unwrap();
+            let (bar, _) = ViewerState::thumbbar_rects(pos, vp, 116.0, 62.0, 62.0).unwrap();
             assert!(bar.min.y >= 62.0);
+            let (bar0, _) = ViewerState::thumbbar_rects(pos, vp, 116.0, 40.0, 0.0).unwrap();
+            assert!(bar0.min.y >= 40.0);
         }
+    }
+
+    #[test]
+    fn thumbbar_top_stack_is_the_height_of_whichever_of_menu_and_title_bars_is_shown() {
+        let mut v = tb_viewer();
+        assert_eq!(v.thumbbar_top_stack(), 0.0);
+        v.title_band_shown = true;
+        assert_eq!(v.thumbbar_top_stack(), ViewerState::TITLE_BAND_H);
+        v.menubar_visible = true;
+        v.menubar_overlay_h = 30.0;
+        assert_eq!(v.thumbbar_top_stack(), 30.0 + ViewerState::TITLE_BAND_H);
+        // メニューが引っ込んだら、ファイル名バーの分だけに戻る（Yを再調整）
+        v.menubar_visible = false;
+        assert_eq!(v.thumbbar_top_stack(), ViewerState::TITLE_BAND_H);
+        v.title_band_shown = false;
+        assert_eq!(v.thumbbar_top_stack(), 0.0);
+    }
+
+    #[test]
+    fn top_thumbbar_guards_the_menu_triggers_with_its_rect_when_shown_and_its_trigger_when_hidden() {
+        let ctx = egui::Context::default();
+        let vp = tb_viewport();
+        let cfg = tb_cfg(ThumbbarPos::Top, 3000);
+        let mut v = tb_viewer();
+        // 隠れている間: 発火域（x=100..900, 上端）がガード。上端中央ではメニューを出さない
+        let _ = v.update_thumbbar_visibility(&cfg, vp, Some(egui::pos2(500.0, 500.0)), &ctx);
+        let g = v.thumbbar_menu_guard.expect("上配置ではガードがある");
+        assert!(g.contains(egui::pos2(500.0, 10.0)));
+        assert!(!g.contains(egui::pos2(20.0, 10.0))); // 左右の遊び（x<50）はメニューを出せる
+        // 発火域へ侵入して出る → ガードはバーの矩形（x=50..950）
+        let bar = v.update_thumbbar_visibility(&cfg, vp, Some(egui::pos2(500.0, 10.0)), &ctx).unwrap();
+        assert_eq!(v.thumbbar_menu_guard, Some(bar));
+        assert!(!bar.contains(egui::pos2(20.0, 10.0)));
+        // メニュー・ファイル名バーが出たら、バーは押し下げられる
+        v.menubar_visible = true;
+        v.menubar_overlay_h = 30.0;
+        v.title_band_shown = true;
+        let moved = v.update_thumbbar_visibility(&cfg, vp, Some(egui::pos2(500.0, 100.0)), &ctx).unwrap();
+        assert_eq!(moved.min.y, 62.0);
+        // 上配置以外ではガードなし
+        let _ = v.update_thumbbar_visibility(&tb_cfg(ThumbbarPos::Bottom, 3000), vp, Some(egui::pos2(500.0, 10.0)), &ctx);
+        assert!(v.thumbbar_menu_guard.is_none());
+    }
+
+    #[test]
+    fn title_band_is_not_newly_shown_inside_the_top_thumbbar_guard_but_is_from_the_side_gaps() {
+        let ctx = egui::Context::default();
+        let vp = tb_viewport();
+        let mut v = tb_viewer();
+        v.title_band_hide_at = Some(0.0); // 引っ込んでいる状態（time=10 では期限切れ）
+        v.thumbbar_menu_guard = Some(egui::Rect::from_min_max(egui::pos2(50.0, 0.0), egui::pos2(950.0, 116.0)));
+        // バーの上端ではファイル名バーを出さない
+        assert!(!v.tick_title_band(&ctx, 10.0, Some(egui::pos2(500.0, 10.0)), vp, vp));
+        // 左右の遊び（x<50）の上端からは出る
+        assert!(v.tick_title_band(&ctx, 10.0, Some(egui::pos2(20.0, 10.0)), vp, vp));
     }
 
     #[test]
     fn thumbbar_trigger_for_left_and_right_is_the_bottom_corner_only() {
         let vp = tb_viewport();
-        let (_, l) = ViewerState::thumbbar_rects(ThumbbarPos::Left, vp, 116.0, 40.0).unwrap();
+        let (_, l) = ViewerState::thumbbar_rects(ThumbbarPos::Left, vp, 116.0, 40.0, 0.0).unwrap();
         assert!(l.contains(egui::pos2(10.0, 790.0)));
         assert!(!l.contains(egui::pos2(10.0, 400.0)));
         assert!(!l.contains(egui::pos2(990.0, 790.0)));
-        let (_, r) = ViewerState::thumbbar_rects(ThumbbarPos::Right, vp, 116.0, 40.0).unwrap();
+        let (_, r) = ViewerState::thumbbar_rects(ThumbbarPos::Right, vp, 116.0, 40.0, 0.0).unwrap();
         assert!(r.contains(egui::pos2(990.0, 790.0)));
         assert!(!r.contains(egui::pos2(10.0, 790.0)));
-        assert!(ViewerState::thumbbar_rects(ThumbbarPos::None, vp, 116.0, 40.0).is_none());
+        assert!(ViewerState::thumbbar_rects(ThumbbarPos::None, vp, 116.0, 40.0, 0.0).is_none());
     }
 
     #[test]
