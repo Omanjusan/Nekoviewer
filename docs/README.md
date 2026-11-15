@@ -34,12 +34,16 @@
 - [features/file-identity-test-checklist.md](features/file-identity-test-checklist.md) — ファイルID管理の統合テスト手順書
 - [features/window-position-menu.md](features/window-position-menu.md) — ウィンドウ位置メニュー（記録/展開/削除/自動展開）・画面外補正・ビューアー復帰
 - [e2e-window-pos.md](e2e-window-pos.md) — ウィンドウ位置・ビューアー復帰の自動テスト（Xephyr＋制御口）の実行手順
+- [e2e-search.md](e2e-search.md) — 検索タブの自動テスト（Xephyr＋制御口）の実行手順・コマンド・観測項目
 - [features/explorer-view-modes.md](features/explorer-view-modes.md) — エクスプローラーの表示モード（カード／リスト）と選択の規則、手動テスト手順
 - [features/duplicate-marker.md](features/duplicate-marker.md) — 重複マーカー（同じ内容のファイルの警告）と類似ファイル一覧・完全比較、手動テスト手順
 - [features/list-attr-column.md](features/list-attr-column.md) — リストの「エラー列」「属性列」（固定スロット）と、★・訪問回数の＋－編集（ロック付き）、手動テスト手順
 - [features/perf-fixture.md](features/perf-fixture.md) — 速度計測フィクスチャー（開発専用）。サムネのみ／フルサポートの処理時間比較、DBクリアと復元、手動確認項目
 - [features/idle-thumb.md](features/idle-thumb.md) — 手すき時間のサムネ生成（操作が3秒止まっている間に、画面外のサムネをDBへ先回りして貯める）、手動確認項目
 - [features/tag-search.md](features/tag-search.md) — タグ検索タブ（フォルダ横断のタグ絞り込み、単一選択カテゴリ、左ペイン幅の可変）と手動テスト手順
+- [features/search-tab.md](features/search-tab.md) — 検索タブ（新=台帳全件／旧=基点フォルダ）、検索文字列の書き方、進捗・中断・他タブでの継続、
+  場所列と「実」「仮想」の移動アイコン、結果のマーカー（読み取り専用）、手動テスト手順
+- [features/search-history.md](features/search-history.md) — 検索条件の履歴（条件だけを JSON Lines で保存、新旧で別ファイル、各50件、再起動後は再走査）と、空条件の禁止
 - [features/virtual-folder-register-subs.md](features/virtual-folder-register-subs.md) — 仮想フォルダの
   「実サブフォルダを一括登録」（未登録分だけを子として追加。子孫まで見るかは選択）
 - [features/reveal-in-file-manager.md](features/reveal-in-file-manager.md) — 選択した項目を維持したままファイラーで開く（Windows COM / Linux FileManager1、Nautilusの制限）
