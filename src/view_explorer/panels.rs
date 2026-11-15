@@ -286,6 +286,8 @@ impl NekoviewApp {
         self.draw_reveal_dialog(&ctx);
         self.draw_marker_popup(&ctx);
         self.draw_goto_virtual_menu(&ctx);
+        // 描かれた行のうち、まだ判定していないものの「？」の照合を依頼する（検索タブの新モードの結果のみ）。
+        self.submit_sim_cross_requests();
         self.draw_dismissed_window(&ctx);
         self.draw_search_notice_dialog(&ctx);
         self.draw_detail_window(&ctx);

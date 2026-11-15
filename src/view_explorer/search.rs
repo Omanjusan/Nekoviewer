@@ -245,6 +245,8 @@ impl NekoviewApp {
         self.search_resume_uid = self.viewing_search.and_then(|i| self.search_history.get(i)).map(|e| e.uid).filter(|&u| u != 0);
         self.viewing_search = None;
         self.cross_markers.clear();
+        self.cross_hit_ids.clear();
+        self.reset_sim_cross();
         self.start_scan();
     }
 

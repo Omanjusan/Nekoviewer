@@ -656,3 +656,66 @@ fn search_results_show_saved_duplicate_markers_read_only() {
     assert_eq!(find("/files/dup_y.png"), None, "重複の無いファイルには付かない");
     assert_eq!(markers.len(), 2);
 }
+
+/// 縦横のグラデーションの画像。`tweak` を変えると、数画素だけ違う（FP は変わるが、サムネの見た目はほぼ同じ）。
+fn make_gradient(dir: &Path, name: &str, tweak: u8) {
+    std::fs::create_dir_all(dir).unwrap();
+    let img = image::RgbImage::from_fn(64, 64, |x, y| {
+        let base = [(x * 4) as u8, (y * 4) as u8, ((x + y) * 2) as u8];
+        // 隅の数画素だけ変える
+        if x < 2 && y < 2 { image::Rgb([base[0].wrapping_add(tweak), base[1], base[2]]) } else { image::Rgb(base) }
+    });
+    img.save(dir.join(name)).unwrap();
+}
+
+/// 縞模様（グラデーションとは見た目が全く違う）。
+fn make_stripes(dir: &Path, name: &str) {
+    std::fs::create_dir_all(dir).unwrap();
+    let img = image::RgbImage::from_fn(64, 64, |x, _| {
+        let v = if (x / 4) % 2 == 0 { 20u8 } else { 235u8 };
+        image::Rgb([v, v, v])
+    });
+    img.save(dir.join(name)).unwrap();
+}
+
+#[test]
+#[ignore = "needs Xephyr + GPU rendering; run explicitly"]
+fn search_results_show_a_lazily_matched_similar_marker_from_saved_hashes() {
+    if skip() { return; }
+    let mut e = Env::new("search-similar");
+    let dir1 = e.files_dir();
+    let dir2 = e.root.join("files2");
+    make_gradient(&dir1, "sim_a.png", 0);
+    make_gradient(&dir2, "sim_b.png", 9); // sim_a とほぼ同じ見た目（内容は違うので、FP は一致しない）
+    make_stripes(&dir1, "sim_c.png");
+    e.launch();
+    // 2つのフォルダを順に開く。サムネが作られ、ハッシュが保存される（実アプリの経路どおり）
+    let open1 = format!("open {}", dir1.display());
+    e.send(&["tab real", &open1]);
+    e.wait_search("first folder hashed", Duration::from_secs(90), |s| s["hash_rows"].as_u64().unwrap_or(0) >= 2);
+    let open2 = format!("open {}", dir2.display());
+    e.send(&[&open2]);
+    e.wait_search("all three hashed", Duration::from_secs(90), |s| s["hash_rows"].as_u64().unwrap_or(0) >= 3);
+
+    // 検索すると、表示中の行だけが遅延で照合され、似ている2枚に「？」が出る（クリックはできない読み取り専用）
+    e.send(&["tab search", "search-text sim_", "search-start"]);
+    let s = e.wait_search("lazy matching done", Duration::from_secs(60), |s| {
+        s["archives"] == 3 && s["sim_done"].as_u64().unwrap_or(0) >= 3 && s["sim_inflight"] == 0
+    });
+    let sims = s["cross_sims"].as_object().unwrap();
+    let key = |suffix: &str| sims.keys().find(|k| k.ends_with(suffix)).cloned();
+    let a = key("/files/sim_a.png").unwrap_or_else(|| panic!("sim_a に「？」が出ない: {sims:?}"));
+    let b = key("/files2/sim_b.png").unwrap_or_else(|| panic!("sim_b に「？」が出ない: {sims:?}"));
+    assert_eq!(sims[&a]["count"], 1);
+    assert_eq!(sims[&b]["count"], 1);
+    assert_eq!(sims[&a]["dismissed"], false);
+    assert!(key("/files/sim_c.png").is_none(), "見た目が違う縞模様には付かない: {sims:?}");
+    assert_eq!(sims.len(), 2);
+
+    // しきい値を変えると、計算し直される（結果は捨てられ、表示中の行で再計算される）
+    e.send(&["sim-threshold 70"]);
+    let s = e.wait_search("recomputed after the threshold change", Duration::from_secs(60), |s| {
+        s["sim_done"].as_u64().unwrap_or(0) >= 3 && s["sim_inflight"] == 0 && s["cross_sims"].as_object().is_some_and(|m| m.len() >= 2)
+    });
+    assert!(s["cross_sims"].as_object().unwrap().keys().any(|k| k.ends_with("/files/sim_a.png")));
+}

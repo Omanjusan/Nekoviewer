@@ -319,6 +319,7 @@ impl super::NekoviewApp {
         let Some(db) = self.spread_db.clone() else { return };
         let found = crate::duplicate_marker::load_for_ids(&db, ids);
         for (path, id) in paths.iter().zip(ids) {
+            self.cross_hit_ids.insert(path.clone(), *id);
             if let Some(m) = found.get(id) {
                 self.cross_markers.insert(path.clone(), m.clone());
             }
@@ -328,6 +329,9 @@ impl super::NekoviewApp {
     /// 履歴の idx 番目の行（新モード）の結果について、重複マーカーを読み直す。ほかの行・モードでは空にする。
     pub(super) fn reload_cross_markers(&mut self, idx: usize) {
         self.cross_markers.clear();
+        self.cross_hit_ids.clear();
+        // 結果が切り替わるので、「？」の照合結果も捨てる（古い依頼は世代で打ち切られる）。
+        self.reset_sim_cross();
         let Some(entry) = self.search_history.get(idx) else { return };
         if entry.form.mode != super::SearchMode::New || entry.hit_ids.len() != entry.hits.len() {
             return;
@@ -337,6 +341,7 @@ impl super::NekoviewApp {
         let Some(db) = self.spread_db.clone() else { return };
         let found = crate::duplicate_marker::load_for_ids(&db, &ids);
         for (path, id) in paths.into_iter().zip(ids) {
+            self.cross_hit_ids.insert(path.clone(), id);
             if let Some(m) = found.get(&id) {
                 self.cross_markers.insert(path, m.clone());
             }
@@ -377,7 +382,7 @@ impl super::NekoviewApp {
             let Some(icon) = self.cross_marker_icon(path) else { return };
             paint_icon(&ui.painter().with_clip_rect(ui.clip_rect()), icon_rect, icon);
             if ui.input(|i| i.pointer.hover_pos()).is_some_and(|p| icon_rect.contains(p)) {
-                response.clone().on_hover_text(icon.tooltip());
+                response.clone().on_hover_text(format!("{}\n{}", icon.tooltip(), i18n::t().cross_marker_no_jump()));
             }
             return;
         }
@@ -432,6 +437,20 @@ impl super::NekoviewApp {
         real_idx: usize,
         name: &str,
     ) {
+        // 検索タブの新モードの結果: 保存済みのハッシュで、表示中の行だけ遅延照合した「？」を、読み取り専用で出す。
+        if self.cross_marker_view_active() {
+            self.sim_icon_hits.remove(&real_idx);
+            let Some(id) = self.archives.get(real_idx).and_then(|p| self.cross_hit_ids.get(p)).copied() else { return };
+            self.sim_cross_note_wanted(id);
+            let Some(info) = self.sim_cross_summary(id) else { return };
+            paint_similar_icon(&ui.painter().with_clip_rect(ui.clip_rect()), icon_rect, info.dismissed);
+            if ui.input(|i| i.pointer.hover_pos()).is_some_and(|p| icon_rect.contains(p)) {
+                let t = i18n::t();
+                let body = if info.dismissed { t.sim_marker_dismissed_tooltip(info.pct, info.count) } else { t.sim_marker_tooltip(info.pct, info.count) };
+                response.clone().on_hover_text(format!("{body}\n{}", t.cross_marker_no_jump()));
+            }
+            return;
+        }
         let Some(info) = self.sim_summary(name) else {
             self.sim_icon_hits.remove(&real_idx);
             return;

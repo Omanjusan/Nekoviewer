@@ -1460,6 +1460,11 @@ pub struct NekoviewApp {
     /// 新モードの検索結果の各ファイルの重複マーカー（保存済みの分を、ファイルIDで読んだもの。キー = フルパス）。
     /// 検索タブで新モードの結果を表示している間だけ持つ。読み取り専用の表示で、検出や照合は動かさない。
     cross_markers: HashMap<PathBuf, crate::duplicate_marker::DirMarker>,
+    /// 新モードの検索結果の各ファイルのID（キー = フルパス）。重複マーカーと「？」の引き当てに使う。
+    cross_hit_ids: HashMap<PathBuf, u64>,
+    /// 新モードの検索結果の「？」（保存済みハッシュによる、表示中の行だけの遅延照合）の状態と専用スレッド。
+    sim_cross: similar_cross::SimilarCrossState,
+    sim_cross_worker: Option<similar_cross::SimilarCrossWorker>,
     /// 検索タブを離れたときに見ていた履歴の行（`SearchResultEntry::uid`）。検索タブへ戻ったとき、その行の結果を出し直す。
     search_resume_uid: Option<u64>,
     /// 新モードの「注意点」ダイアログを開いているか。
@@ -1561,6 +1566,7 @@ mod search_ui;
 mod search;
 mod search_new;
 mod goto_virtual;
+mod similar_cross;
 mod search_history_ui;
 #[cfg(feature = "test-control")]
 mod test_explore;
@@ -2015,6 +2021,9 @@ impl NekoviewApp {
             search_pending_saved_at: None,
             search_job: None,
             cross_markers: HashMap::new(),
+            cross_hit_ids: HashMap::new(),
+            sim_cross: similar_cross::SimilarCrossState::default(),
+            sim_cross_worker: None,
             search_resume_uid: None,
             search_notice_open: false,
             viewing_search: None,

@@ -44,6 +44,7 @@ impl NekoviewApp {
                     self.open_file_location_in_folders_tab(file);
                 }
             }
+            ExploreCmd::SimThreshold(pct) => self.sim_threshold_pct = pct,
             ExploreCmd::VirtualAdd(path) => {
                 if let Some(db) = self.spread_db.clone() {
                     let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
@@ -114,6 +115,20 @@ impl NekoviewApp {
             },
             "loading_shown": self.scan_loading_visible(),
             "form_text": self.search_form.new_text,
+            // 保存済みのハッシュの行数（「？」の照合の相手の全体）
+            "hash_rows": self.spread_db.as_ref().map(|db| crate::thumb_hash_store::all_rows(db).len()),
+            // 検索結果（新モード）で「？」が出るファイル: {フルパス: {pct, count, dismissed}}
+            "cross_sims": self
+                .archives
+                .iter()
+                .filter_map(|p| {
+                    let id = self.cross_hit_ids.get(p)?;
+                    let info = self.sim_cross_summary(*id)?;
+                    Some((p.display().to_string(), serde_json::json!({"pct": info.pct, "count": info.count, "dismissed": info.dismissed})))
+                })
+                .collect::<std::collections::BTreeMap<_, _>>(),
+            "sim_inflight": self.sim_cross.inflight.len(),
+            "sim_done": self.sim_cross.done.len(),
             // 現在のフォルダ表示の重複マーカーの件数（遡及検出が済んだかの目安）
             "dir_markers": self.dir_markers.len(),
             // 検索結果（新モード）で、重複マーカーのアイコンが出るファイル: {ファイル名: アイコン名}

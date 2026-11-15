@@ -3464,6 +3464,15 @@ impl Lang {
         }
     }
 
+    /// 検索結果（新モード）のマーカーのホバー説明の末尾に添える一文。
+    pub fn cross_marker_no_jump(self) -> &'static str {
+        match self {
+            Lang::Japanese => "検索結果からは一致・類似ファイルリストには飛べません。",
+            Lang::English  => "From search results you cannot jump to the match / similar file list.",
+            Lang::Chinese  => "无法从搜索结果跳转到一致/相似文件列表。",
+        }
+    }
+
     /// 検索開始ボタンが押せないとき（条件が空）のホバー説明。
     pub fn search_condition_required(self) -> &'static str {
         match self {

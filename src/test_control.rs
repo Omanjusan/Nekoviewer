@@ -60,6 +60,8 @@ pub enum ExploreCmd {
     ListMode(bool),
     /// 一覧の idx 番目のファイルについて、リストの「実フォルダ」アイコンを押したのと同じ移動をする
     GotoReal(usize),
+    /// 「サムネ一致閾値」(%) を変える（パス行のコンボボックスと同じ。表示中の「？」は計算し直される）
+    SimThreshold(u8),
     /// 実フォルダを、仮想ルート直下に登録する（名前はフォルダ名）。仮想フォルダ列のテスト用
     VirtualAdd(PathBuf),
     /// 一覧の idx 番目のファイルについて、「仮想フォルダ」アイコンを押したのと同じ移動をする。
@@ -117,6 +119,7 @@ pub fn parse_explore_line(line: &str) -> Option<ExploreCmd> {
         "search-cancel" if arg.is_empty() => Some(ExploreCmd::SearchCancel),
         "search-notice" if arg.is_empty() => Some(ExploreCmd::SearchNotice),
         "goto-real" => arg.parse().ok().map(ExploreCmd::GotoReal),
+        "sim-threshold" => arg.parse().ok().filter(|p| (70..=100).contains(p)).map(ExploreCmd::SimThreshold),
         "virtual-add" => (!arg.is_empty()).then(|| ExploreCmd::VirtualAdd(PathBuf::from(arg))),
         "goto-virtual" => {
             let mut it = arg.split_whitespace();
@@ -287,6 +290,8 @@ mod tests {
         assert_eq!(parse_explore_line("search-notice"), Some(ExploreCmd::SearchNotice));
         assert_eq!(parse_explore_line("goto-real 3"), Some(ExploreCmd::GotoReal(3)));
         assert_eq!(parse_explore_line("goto-real x"), None);
+        assert_eq!(parse_explore_line("sim-threshold 80"), Some(ExploreCmd::SimThreshold(80)));
+        assert_eq!(parse_explore_line("sim-threshold 50"), None);
         assert_eq!(parse_explore_line("virtual-add /tmp/my dir"), Some(ExploreCmd::VirtualAdd(PathBuf::from("/tmp/my dir"))));
         assert_eq!(parse_explore_line("virtual-add"), None);
         assert_eq!(parse_explore_line("goto-virtual 4"), Some(ExploreCmd::GotoVirtual { idx: 4, pick: None }));

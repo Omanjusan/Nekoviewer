@@ -199,6 +199,8 @@ impl NekoviewApp {
         // 明示的にクリアしたので、検索タブへ戻っても出し直さない。
         self.search_resume_uid = None;
         self.cross_markers.clear();
+        self.cross_hit_ids.clear();
+        self.reset_sim_cross();
         if self.viewing_search.take().is_none() {
             return;
         }
