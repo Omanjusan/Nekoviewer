@@ -3788,9 +3788,9 @@ impl Lang {
 
     pub fn key_status_precise(self) -> &'static str {
         match self {
-            Lang::Japanese => "取得状況: メタデータから取得",
-            Lang::English  => "Status: from metadata",
-            Lang::Chinese  => "获取状态：来自元数据",
+            Lang::Japanese => "主要タグ取得状況: メタデータから取得",
+            Lang::English  => "Main tag status: from metadata",
+            Lang::Chinese  => "主要标签获取状态：来自元数据",
         }
     }
 
@@ -3804,17 +3804,17 @@ impl Lang {
 
     pub fn key_status_simple(self) -> &'static str {
         match self {
-            Lang::Japanese => "取得状況: ファイル名から簡易取得",
-            Lang::English  => "Status: simple detection from file name",
-            Lang::Chinese  => "获取状态：根据文件名简易获取",
+            Lang::Japanese => "主要タグ取得状況: ファイル名から簡易取得",
+            Lang::English  => "Main tag status: simple detection from file name",
+            Lang::Chinese  => "主要标签获取状态：根据文件名简易获取",
         }
     }
 
     pub fn key_status_unavailable(self) -> &'static str {
         match self {
-            Lang::Japanese => "取得状況: 取得不可",
-            Lang::English  => "Status: unavailable",
-            Lang::Chinese  => "获取状态：无法获取",
+            Lang::Japanese => "主要タグ取得状況: 取得不可",
+            Lang::English  => "Main tag status: unavailable",
+            Lang::Chinese  => "主要标签获取状态：无法获取",
         }
     }
 
@@ -3823,6 +3823,86 @@ impl Lang {
             Lang::Japanese => "押すと、取得状況の説明を開く。",
             Lang::English  => "Click to open an explanation of the status.",
             Lang::Chinese  => "点击打开获取状态的说明。",
+        }
+    }
+
+    pub fn key_notice_title(self) -> &'static str {
+        match self {
+            Lang::Japanese => "主要タグの取得状況について",
+            Lang::English  => "About Main Tag Status",
+            Lang::Chinese  => "关于主要标签的获取状态",
+        }
+    }
+
+    /// 案内ダイアログの本文: 簡易取得のとき。
+    pub fn key_notice_body_simple(self) -> &'static str {
+        match self {
+            Lang::Japanese => "このファイルの主要タグ（グループ・作者・キャラクターなど）は、ファイル名から簡易的に取得した名前です。\n\
+メタデータ（ComicInfo.xml・meta.json）から取得したものではないため、正確でない場合があります。\n\
+\n\
+【括弧が無くても取得できる場合】\n\
+次のどちらかの場合、ファイル名に括弧が無くても名前を取得できます。\n\
+・メタデータがあり、タグの自動抽出で付与済みの場合\n\
+・メインカテゴリなどを手動で正しく設定し、学習データに沿ってファイル名から抽出できる場合\n\
+\n\
+【正確に取得するには】\n\
+フォルダを開いて、タグ管理の「現フォルダファイルのタグ自動抽出＆付与」を実行してください。\n\
+フォルダを一度も開いていない場合は、メタデータの有無が未確認のため、簡易取得と表示されます。",
+            Lang::English => "The main tags (group, author, character, etc.) of this file are names detected simply from the file name.\n\
+They were not obtained from metadata (ComicInfo.xml / meta.json), so they may not be accurate.\n\
+\n\
+[Names can be detected even without brackets]\n\
+In either of the following cases, a name can be detected even if the file name has no brackets.\n\
+- The file has metadata and its tags were already assigned by automatic tag extraction\n\
+- You set the main category etc. correctly by hand, and the name can be extracted from the file name using the learning data\n\
+\n\
+[To get accurate results]\n\
+Open the folder and run \"Auto-extract & assign tags for files in current folder\" in Tag Manager.\n\
+If you have never opened the folder, the presence of metadata is unconfirmed, so the status is shown as simple detection.",
+            Lang::Chinese => "此文件的主要标签（团体、作者、角色等）是根据文件名简易获取的名称。\n\
+它们并非来自元数据（ComicInfo.xml / meta.json），因此可能不准确。\n\
+\n\
+【没有括号也能获取的情况】\n\
+在以下任一情况下，即使文件名没有括号也能获取名称。\n\
+・文件有元数据，且已通过标签自动提取完成分配\n\
+・手动正确设置了主类别等，并可依据学习数据从文件名中提取\n\
+\n\
+【要准确获取】\n\
+请打开文件夹，在标签管理中执行“当前文件夹文件的标签自动提取并分配”。\n\
+若从未打开过该文件夹，则元数据是否存在尚未确认，因此显示为简易获取。",
+        }
+    }
+
+    /// 案内ダイアログの本文: 取得不可のとき。
+    pub fn key_notice_body_unavailable(self) -> &'static str {
+        match self {
+            Lang::Japanese => "このファイルからは、主要タグ（グループ・作者・キャラクターなど）を取得できませんでした。\n\
+\n\
+【取得できない理由】\n\
+・ファイルに主要タグが付いていません\n\
+・ファイル名からも判定できません（括弧などの手がかりが無い、または学習データに一致しません）\n\
+\n\
+【取得するには】\n\
+メタデータ（ComicInfo.xml・meta.json）があるファイルは、フォルダを開いて、タグ管理の「現フォルダファイルのタグ自動抽出＆付与」を実行してください。\n\
+メタデータが無いファイルは、メインカテゴリなどを手動で設定し、タグ抽出用の学習を行うと、ファイル名から取得できることがあります。",
+            Lang::English => "No main tags (group, author, character, etc.) could be obtained from this file.\n\
+\n\
+[Why they could not be obtained]\n\
+- No main tags are attached to the file\n\
+- They cannot be detected from the file name either (no clues such as brackets, or no match in the learning data)\n\
+\n\
+[To obtain them]\n\
+For files with metadata (ComicInfo.xml / meta.json), open the folder and run \"Auto-extract & assign tags for files in current folder\" in Tag Manager.\n\
+For files without metadata, setting the main category etc. by hand and training the tag extraction learning may allow names to be detected from the file name.",
+            Lang::Chinese => "无法从此文件获取主要标签（团体、作者、角色等）。\n\
+\n\
+【无法获取的原因】\n\
+・文件上没有主要标签\n\
+・也无法从文件名判断（没有括号等线索，或与学习数据不匹配）\n\
+\n\
+【获取方法】\n\
+对于有元数据（ComicInfo.xml / meta.json）的文件，请打开文件夹，在标签管理中执行“当前文件夹文件的标签自动提取并分配”。\n\
+对于没有元数据的文件，手动设置主类别等并进行标签提取学习后，有时可从文件名中获取。",
         }
     }
 

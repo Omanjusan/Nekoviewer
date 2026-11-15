@@ -283,6 +283,7 @@ impl NekoviewApp {
         self.draw_favorite_detail_dialog(&ctx);
         self.draw_relink_dialogs(&ctx);
         self.draw_key_pick_dialog(&ctx);
+        self.draw_key_notice_dialog(&ctx);
         self.run_pending_key_search();
         self.draw_unreachable_clean_dialogs(&ctx);
         self.draw_reveal_dialog(&ctx);

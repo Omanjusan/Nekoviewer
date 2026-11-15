@@ -143,6 +143,33 @@ impl NekoviewApp {
         }
     }
 
+    /// 取得状況の案内ダイアログ（簡易取得用・取得不可用の2文面）。右上の×だけで閉じる。レイアウトは新検索の注意点と同じ。
+    pub(super) fn draw_key_notice_dialog(&mut self, ctx: &egui::Context) {
+        let Some(status) = self.key_notice else { return };
+        let t = i18n::t();
+        let body = match status {
+            KeyStatus::Unavailable => t.key_notice_body_unavailable(),
+            // 高精度はボタンが押せないので来ないが、来ても簡易の文面を出す。
+            KeyStatus::Simple | KeyStatus::Precise => t.key_notice_body_simple(),
+        };
+        let mut open = true;
+        egui::Window::new(t.key_notice_title())
+            .id(egui::Id::new("key_notice_dialog"))
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .pivot(egui::Align2::CENTER_CENTER)
+            .fixed_pos(self.explorer_center(ctx))
+            .order(egui::Order::Foreground)
+            .show(ctx, |ui| {
+                ui.set_max_width(440.0);
+                ui.add(egui::Label::new(body).wrap());
+            });
+        if !open {
+            self.key_notice = None;
+        }
+    }
+
     /// 選んだ名前での検索を予約する。メニューのクリックはカードの描画ループの途中で呼ばれ、その中で検索タブへ移って
     /// 一覧（`archives`）を差し替えると、描画中の添字が範囲外になる。実行は、描画が終わってから（`run_pending_key_search`）。
     fn request_key_search(&mut self, text: String) {
