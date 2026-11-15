@@ -18,6 +18,9 @@ use crate::keymap::{Keymap, ReaderAction, MouseAction, MouseCombo};
 
 /// 自動ハイドのメニューバーが、ホバーを外れてから引っ込むまでの待機(秒)。
 const MENUBAR_HIDE_WAIT_SEC: f64 = 1.0;
+/// 自動ハイドのメニューバーの保持域の余白(px)。バー高にこれを足した範囲は、ポインタが乗っている間バーが残る。
+/// ツールボックスをバーの下へ押し下げるときの隙間にも同じ値を使う（保持域の外に出して、掴めるようにする）。
+const MENUBAR_KEEP_MARGIN: f32 = 10.0;
 /// 仮想タイトル帯が、ホバーを外れてから隠れるまでの待機(秒)。
 const TITLE_BAND_HIDE_WAIT_SEC: f64 = 3.0;
 
@@ -2576,7 +2579,7 @@ impl ViewerState {
         save_slots: &mut Option<[Option<WindowSlot>; 4]>,
     ) {
         const TRIGGER_H: f32 = 40.0;
-        const KEEP_MARGIN: f32 = 10.0;
+        const KEEP_MARGIN: f32 = MENUBAR_KEEP_MARGIN;
         let vp = input.viewport_rect;
         let bar_h = self.menubar_overlay_h;
 
@@ -2914,6 +2917,25 @@ impl ViewerState {
         let min_x = raw.x.clamp(viewport.min.x, max_x);
         let min_y = raw.y.clamp(viewport.min.y, max_y);
         Some(egui::Rect::from_min_size(egui::pos2(min_x, min_y), size))
+    }
+
+    /// 自動ハイドのメニューバーが出ていて、ツールボックスの上端がバーに重なっているときだけ、
+    /// ツールボックスをバーの下へ押し下げる（寄せ先は保ったまま offset を求め直すので、位置は保存される）。
+    /// バーが出ていない間・重なっていない間は何もしない。バーはヘッダー（ドラッグの掴み場所）を覆い、
+    /// しかも上端40pxに触れるだけで出てくるため、重なったまま放置するとツールボックスを掴めなくなる。
+    fn push_palette_below_overlay_menubar(&mut self, viewport: egui::Rect) {
+        let bar_h = self.menubar_overlay_h;
+        if bar_h <= 0.0 {
+            return;
+        }
+        let Some(rect) = self.tool_palette_rect(viewport) else {
+            return;
+        };
+        if rect.min.y >= viewport.min.y + bar_h {
+            return;
+        }
+        let target = egui::pos2(rect.min.x, viewport.min.y + bar_h + MENUBAR_KEEP_MARGIN);
+        self.tool_palette.set_top_left_keep_anchor(viewport, rect.size(), target);
     }
 
     /// ツールパレットのオーバーレイ本体を描画する。子Ui＋Painter直描き方式
@@ -3525,6 +3547,7 @@ impl ViewerState {
             )
             .then(|| crate::rating_overlay::band_rect(viewport_rect));
             let pointer_in_rating = input.hover_pos.is_some_and(|p| rating_rect.is_some_and(|r| r.contains(p)));
+            self.push_palette_below_overlay_menubar(viewport_rect);
             let palette_rect = self.tool_palette_rect(viewport_rect);
             let dialog_rect = self.tool_palette_open_dialog.and_then(|open_idx| {
                 let pr = palette_rect?;
@@ -8920,6 +8943,27 @@ mod magnifier_flow_tests {
         h.screen = SCREEN;
         h.warm_up();
         assert_eq!(palette_rect(&h).min, original);
+    }
+
+    /// 自動ハイドのメニューバーが出てツールボックスの上端と重なったら、バーの下へ押し下げる。
+    #[test]
+    fn palette_is_pushed_below_overlay_menubar_only_when_overlapping() {
+        let mut h = Harness::with_palette_slot();
+        let viewport = real_viewport(h.screen);
+        // バーが出ていなければ何もしない。
+        h.viewer.tool_palette.set_top_left_offset(100.0, 4.0);
+        h.viewer.menubar_overlay_h = 0.0;
+        h.viewer.push_palette_below_overlay_menubar(viewport);
+        assert_eq!(h.viewer.tool_palette.offset, (100.0, 4.0));
+        // バーが出て重なっていれば、バー高＋余白の位置まで下げる（offsetが更新される）。
+        h.viewer.menubar_overlay_h = 30.0;
+        h.viewer.push_palette_below_overlay_menubar(viewport);
+        assert_eq!(h.viewer.tool_palette_rect(viewport).unwrap().min.y, viewport.min.y + 30.0 + MENUBAR_KEEP_MARGIN);
+        assert_eq!(h.viewer.tool_palette.offset.1, 30.0 + MENUBAR_KEEP_MARGIN);
+        // 重なっていない位置は動かさない。
+        h.viewer.tool_palette.set_top_left_offset(100.0, 200.0);
+        h.viewer.push_palette_below_overlay_menubar(viewport);
+        assert_eq!(h.viewer.tool_palette.offset, (100.0, 200.0));
     }
 
     /// 右下に置いたパレットは、窓を拡大しても右下の隅に追従する（左上の絶対座標のままだと取り残される）。
