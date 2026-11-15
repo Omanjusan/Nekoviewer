@@ -824,6 +824,8 @@ pub struct ViewerState {
     /// 直近フレームで出ていたサムネバーの矩形（出ていなければ None）。エントリリストなど、
     /// サムネバーより先に処理される側が「バー上では開かない」を判定するのに使う。
     thumbbar_shown_rect: Option<egui::Rect>,
+    /// バー上で押したマウスボタンを押しっぱなしか（スワイプ中にポインターがバー外へ出ても消さないため）。
+    thumbbar_press_in_bar: bool,
 }
 
 impl ViewerState {
@@ -1110,6 +1112,7 @@ impl ViewerState {
             thumbbar_palette_block: None,
             thumbbar_visible: false,
             thumbbar_shown_rect: None,
+            thumbbar_press_in_bar: false,
         }
     }
 
@@ -1234,6 +1237,7 @@ impl ViewerState {
             thumbbar_palette_block: None,
             thumbbar_visible: false,
             thumbbar_shown_rect: None,
+            thumbbar_press_in_bar: false,
         }
     }
 
@@ -2142,6 +2146,7 @@ impl ViewerState {
             && !self.tool_palette_menu_open
             && input.hover_pos.is_some_and(|p| {
                 viewport_before_central.contains(p)
+                    && !self.thumbbar_shown_rect.is_some_and(|r| r.contains(p))
                     && !self.tool_palette_rect(viewport_before_central).is_some_and(|r| r.contains(p))
             })
         {
@@ -2209,6 +2214,12 @@ impl ViewerState {
         }
         let tool_palette_changed = self.poll_tool_palette_debounce(cfg, &ctx);
 
+        // サムネバー上のホイールはバーの表示位置を動かす専用（ScrollArea が処理する）。
+        // ページ送り・ファイル送りへは渡さない（ページ送りはバーの外でのみ）。
+        if self.thumbbar_shown_rect.zip(input.hover_pos).is_some_and(|(r, p)| r.contains(p)) {
+            input.scroll_delta = 0.0;
+            input.shift_scroll_delta = 0.0;
+        }
         let nav = self.process_navigation(&input, is_spread, step, total, frame.magnifier && cfg.koma_on);
         if std::mem::take(&mut self.koma_moved) {
             ctx.request_repaint();
@@ -4127,11 +4138,20 @@ impl ViewerState {
             return None;
         };
 
+        // バー上で押し始めたボタンが押されている間（スワイプ中）は、ポインターがバー外へ出ても「バー上」扱い。
+        let (pressed, down) = ctx.input(|i| (i.pointer.primary_pressed(), i.pointer.primary_down()));
+        if pressed && hover.is_some_and(|p| bar.contains(p)) {
+            self.thumbbar_press_in_bar = true;
+        }
+        if !down {
+            self.thumbbar_press_in_bar = false;
+        }
+
         let idle_ms = cfg.thumbbar_idle_hide_ms;
         if idle_ms == 0 {
             self.thumbbar_visible = true;
         } else if self.thumbbar_visible {
-            if hover.is_some_and(|p| bar.contains(p)) {
+            if self.thumbbar_press_in_bar || hover.is_some_and(|p| bar.contains(p)) {
                 self.thumbbar_last_activity = Instant::now();
             } else {
                 let elapsed = self.thumbbar_last_activity.elapsed().as_millis() as u64;
@@ -4197,12 +4217,21 @@ impl ViewerState {
         let palette_over_pointer = self.thumbbar_palette_block.is_some_and(|r| {
             ui.ctx().input(|i| i.pointer.hover_pos()).is_some_and(|p| r.contains(p))
         });
+        ui.style_mut().always_scroll_the_only_direction = true;
         let mut scroll_area = egui::ScrollArea::new([horizontal, !horizontal])
             .id_salt("thumbbar_scroll")
             .auto_shrink([false, false]);
-        if palette_over_pointer {
-            scroll_area = scroll_area.scroll_source(egui::scroll_area::ScrollSource::NONE);
-        }
+        // スワイプ: マウスでもバーをつかんで動かせる（離した後は慣性で流れる）。既定ではタッチ画面のみ。
+        // クリックとの判別は egui 側で、一定以上動かすとドラッグ扱いになりサムネのクリック（ジャンプ）は発火しない。
+        // ホイールはバーの表示位置を動かす専用（ページ送り・ファイル送りには渡さない。process_navigation 前のガード参照）。
+        // 横配置では、縦ホイール（上下回転）を左右移動へ変換する（egui 既定では横向きの領域は縦ホイールに反応しない）。
+        scroll_area = if palette_over_pointer {
+            scroll_area.scroll_source(egui::scroll_area::ScrollSource::NONE)
+        } else {
+            scroll_area
+                .scroll_source(egui::scroll_area::ScrollSource::ALL)
+                .on_drag_cursor(egui::CursorIcon::Grabbing)
+        };
         scroll_area
             .show_viewport(ui, |ui, viewport| {
                 if slot_count <= 0 {
@@ -7152,6 +7181,37 @@ mod sort_save_state_tests {
         let mut v = tb_viewer();
         assert!(v.update_thumbbar_visibility(&cfg, vp, Some(egui::pos2(500.0, 790.0)), &ctx).is_some());
         assert!(v.update_thumbbar_visibility(&cfg, vp, Some(egui::pos2(500.0, 100.0)), &ctx).is_some());
+    }
+
+    #[test]
+    fn thumbbar_stays_while_swiping_even_if_the_pointer_leaves_the_bar() {
+        let ctx = egui::Context::default();
+        let vp = tb_viewport();
+        let cfg = tb_cfg(ThumbbarPos::Bottom, 3000);
+        let mut v = tb_viewer();
+        let bar = v.update_thumbbar_visibility(&cfg, vp, Some(egui::pos2(500.0, 790.0)), &ctx).unwrap();
+        let inside = bar.center();
+        let outside = egui::pos2(500.0, 100.0);
+        let button = |pos: egui::Pos2, pressed: bool| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        // バー上で押す
+        ctx.begin_pass(egui::RawInput { events: vec![egui::Event::PointerMoved(inside), button(inside, true)], ..Default::default() });
+        assert!(v.update_thumbbar_visibility(&cfg, vp, Some(inside), &ctx).is_some());
+        let _ = ctx.end_pass();
+        // 押したままバー外へ出て、待機時間を超えても消えない
+        v.thumbbar_last_activity = Instant::now() - Duration::from_millis(10_000);
+        ctx.begin_pass(egui::RawInput { events: vec![egui::Event::PointerMoved(outside)], ..Default::default() });
+        assert!(v.update_thumbbar_visibility(&cfg, vp, Some(outside), &ctx).is_some());
+        let _ = ctx.end_pass();
+        // 離したら、バー外にいるので待機時間の経過で消える
+        v.thumbbar_last_activity = Instant::now() - Duration::from_millis(10_000);
+        ctx.begin_pass(egui::RawInput { events: vec![button(outside, false)], ..Default::default() });
+        assert!(v.update_thumbbar_visibility(&cfg, vp, Some(outside), &ctx).is_none());
+        let _ = ctx.end_pass();
     }
 
     #[test]
