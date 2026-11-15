@@ -911,6 +911,9 @@ pub struct NekoviewApp {
     key_menu: Option<key_search_ui::KeyMenuCache>,
     /// 複数候補のときの選択ダイアログ
     key_pick: Option<key_search_ui::KeyPickDialog>,
+    /// 「主要タグ検索」のステータスボタンから開く、取得状況の案内ダイアログの状態（押された時点の状態。描画は次のフェーズ）
+    #[allow(dead_code)]
+    key_notice: Option<crate::search_keys::KeyStatus>,
     /// 予約された「主要タグ検索」の検索文字列。描画が終わってから実行する（`run_pending_key_search`）
     key_search_pending: Option<String>,
     /// 再紐付けのバックグラウンド実行（結果の受け取り口）。実行中は Some
@@ -1753,6 +1756,7 @@ impl NekoviewApp {
             relink_dialog: None,
             key_menu: None,
             key_pick: None,
+            key_notice: None,
             key_search_pending: None,
             relink_job: None,
             favorite_unset_confirm: None,

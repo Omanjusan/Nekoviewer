@@ -137,8 +137,6 @@ pub(crate) fn resolve_keys(
 
 /// 主要タグの取得状況（メニューのステータスボタンの表示と、案内ダイアログの出し分けに使う）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-// 画面（ステータスボタン）への配線は次のフェーズ。それまでは呼び出し元が無い。
-#[allow(dead_code)]
 pub(crate) enum KeyStatus {
     /// メタデータ（ComicInfo.xml・meta.json）から付与されたタグで取得できている（押せない表示）。
     Precise,
@@ -150,14 +148,12 @@ pub(crate) enum KeyStatus {
 
 /// キャッシュの詳細フラグが、高精度の根拠になるメタデータ（ComicInfo.xml または meta.json）を持つか。
 /// 未確認・対象外・info.txt のみは持たない扱い（info.txt は「正の情報」より優先度が低いため簡易扱い）。
-#[allow(dead_code)]
 pub(crate) fn has_precise_meta(flag: crate::neko_dir::DetailFlag) -> bool {
     matches!(flag, crate::neko_dir::DetailFlag::Checked(k) if k.xml || k.json)
 }
 
 /// 取得状況を決める。名前が1つも無ければ取得不可。全種類がDBのタグ由来で、かつ詳細フラグが高精度の根拠を持つときだけ高精度。
 /// 種類ごとに取得元が混ざるときは、一番低い精度（簡易）に合わせる。
-#[allow(dead_code)]
 pub(crate) fn key_status(names: &[KeyName], precise_meta: bool) -> KeyStatus {
     if names.is_empty() {
         KeyStatus::Unavailable

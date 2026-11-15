@@ -3778,19 +3778,51 @@ impl Lang {
         }
     }
 
-    pub fn key_search_disabled_none(self) -> &'static str {
-        match self {
-            Lang::Japanese => "検索の切り口になる名前が見つからない（タグ未登録で、ファイル名からも判定できない）",
-            Lang::English  => "No searchable names found (no tags registered and none detected from the file name)",
-            Lang::Chinese  => "未找到可搜索的名称（未登记标签，也无法从文件名判断）",
-        }
-    }
-
     pub fn key_search_role_none(self, label: &str) -> String {
         match self {
             Lang::Japanese => format!("「{label}」は見つからない（タグ未登録で、ファイル名からも判定できない）"),
             Lang::English  => format!("No \"{label}\" found (not tagged, and not detected from the file name)"),
             Lang::Chinese  => format!("未找到“{label}”（未登记标签，也无法从文件名判断）"),
+        }
+    }
+
+    pub fn key_status_precise(self) -> &'static str {
+        match self {
+            Lang::Japanese => "取得状況: メタデータから取得",
+            Lang::English  => "Status: from metadata",
+            Lang::Chinese  => "获取状态：来自元数据",
+        }
+    }
+
+    pub fn key_status_precise_hover(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ComicInfo.xml または meta.json から取得したタグを使っている。",
+            Lang::English  => "Using tags obtained from ComicInfo.xml or meta.json.",
+            Lang::Chinese  => "使用了从 ComicInfo.xml 或 meta.json 获取的标签。",
+        }
+    }
+
+    pub fn key_status_simple(self) -> &'static str {
+        match self {
+            Lang::Japanese => "取得状況: ファイル名から簡易取得",
+            Lang::English  => "Status: simple detection from file name",
+            Lang::Chinese  => "获取状态：根据文件名简易获取",
+        }
+    }
+
+    pub fn key_status_unavailable(self) -> &'static str {
+        match self {
+            Lang::Japanese => "取得状況: 取得不可",
+            Lang::English  => "Status: unavailable",
+            Lang::Chinese  => "获取状态：无法获取",
+        }
+    }
+
+    pub fn key_status_click_hover(self) -> &'static str {
+        match self {
+            Lang::Japanese => "押すと、取得状況の説明を開く。",
+            Lang::English  => "Click to open an explanation of the status.",
+            Lang::Chinese  => "点击打开获取状态的说明。",
         }
     }
 

@@ -9,7 +9,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::i18n;
-use crate::search_keys::{self, KeyName, KeySource, SEARCH_ROLES};
+use crate::search_keys::{self, KeyName, KeySource, KeyStatus, SEARCH_ROLES};
 use crate::tag_candidates::Role;
 
 use super::*;
@@ -18,6 +18,8 @@ use super::*;
 pub(super) struct KeyMenuCache {
     path: PathBuf,
     names: Vec<KeyName>,
+    /// 主要タグの取得状況（サブメニュー末尾のステータスボタンの表示）。
+    status: KeyStatus,
 }
 
 /// 1つの種類に名前が複数あるときの選択ダイアログ。`checked` は `names` と同じ並び。
@@ -53,18 +55,26 @@ impl NekoviewApp {
             self.active_tag_model().as_deref(),
             &self.tag_rules.rules,
         );
-        self.key_menu = Some(KeyMenuCache { path: path.to_path_buf(), names });
+        // 高精度の根拠（ComicInfo.xml・meta.json の有無）は、キャッシュの詳細フラグから読む。現物と一致する記録だけを使い、
+        // 記録が無い・古い（未確認）ときは根拠なし。
+        let meta = std::fs::metadata(path).ok();
+        let precise_meta = meta
+            .and_then(|m| self.fresh_archive_info(path, m.modified().ok(), m.len()))
+            .is_some_and(|r| search_keys::has_precise_meta(r.detail));
+        let status = search_keys::key_status(&names, precise_meta);
+        self.key_menu = Some(KeyMenuCache { path: path.to_path_buf(), names, status });
     }
 
     /// 「主要タグ検索 ▶」。名前が1つも取れていない、または複数選択中は、全体がグレー。
     pub(super) fn draw_key_search_menu(&mut self, ui: &mut egui::Ui, path: &Path) {
         let t = i18n::t();
         let multi = !self.multi_selected.is_empty();
-        let names: Vec<KeyName> = match &self.key_menu {
-            Some(c) if !multi && c.path == path => c.names.clone(),
-            _ => Vec::new(),
+        let (names, status): (Vec<KeyName>, KeyStatus) = match &self.key_menu {
+            Some(c) if !multi && c.path == path => (c.names.clone(), c.status),
+            _ => (Vec::new(), KeyStatus::Unavailable),
         };
-        let enabled = !names.is_empty();
+        // 名前が1つも取れなくても、取得状況の案内（ステータスボタン）を開けるよう、サブメニュー自体は開ける。複数選択中だけグレー。
+        let enabled = !multi;
         let mut picked: Option<Role> = None;
         let top = ui.add_enabled_ui(enabled, |ui| {
             egui::containers::menu::SubMenuButton::new(t.key_search_menu()).ui(ui, |ui| {
@@ -89,12 +99,16 @@ impl NekoviewApp {
                         ui.close();
                     }
                 }
+                ui.separator();
+                if self.draw_key_status_button(ui, status) {
+                    ui.close();
+                }
             })
         });
         if enabled {
             top.inner.0.on_hover_text(t.key_search_menu_hover());
         } else {
-            top.inner.0.on_disabled_hover_text(if multi { t.key_search_disabled_multi() } else { t.key_search_disabled_none() });
+            top.inner.0.on_disabled_hover_text(t.key_search_disabled_multi());
         }
         if let Some(role) = picked {
             let of_role = search_keys::of_role(&names, role);
@@ -103,6 +117,28 @@ impl NekoviewApp {
             } else if !of_role.is_empty() {
                 let checked = vec![false; of_role.len()];
                 self.key_pick = Some(KeyPickDialog { role, names: of_role, checked });
+            }
+        }
+    }
+
+    /// 取得状況のステータスボタン。高精度はグレーの表示のみ。簡易取得・取得不可は押すと案内を開く。
+    /// 押されたら true（メニューを閉じる）。
+    fn draw_key_status_button(&mut self, ui: &mut egui::Ui, status: KeyStatus) -> bool {
+        let t = i18n::t();
+        match status {
+            KeyStatus::Precise => {
+                ui.add_enabled(false, egui::Button::new(t.key_status_precise()))
+                    .on_disabled_hover_text(t.key_status_precise_hover());
+                false
+            }
+            KeyStatus::Simple | KeyStatus::Unavailable => {
+                let label = if status == KeyStatus::Simple { t.key_status_simple() } else { t.key_status_unavailable() };
+                let resp = ui.add(egui::Button::new(label).right_text(egui::RichText::new("?").weak()));
+                let clicked = resp.on_hover_text(t.key_status_click_hover()).clicked();
+                if clicked {
+                    self.key_notice = Some(status);
+                }
+                clicked
             }
         }
     }
