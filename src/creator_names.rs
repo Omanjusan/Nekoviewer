@@ -5,9 +5,6 @@
 //! 別名つきの要素（`A|B|C`）は1名として扱い、検索語は主表記（先頭の別名）を使う。
 //! 検索語の結び方は `search_text`（スペース区切り＝新モード検索のOR）。
 
-// 画面への配線（右クリックメニュー・選択ダイアログ）は次のフェーズ。それまでは呼び出し元が無い。
-#![allow(dead_code)]
-
 use crate::i18n::Lang;
 use crate::tag_candidates::{build_candidates_full, find_category, CandidateInput, CandidateSet, CatRef, Choice, Role};
 use crate::tag_master::{normalize_key, primary_alias};

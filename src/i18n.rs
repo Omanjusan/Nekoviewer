@@ -3729,6 +3729,105 @@ impl Lang {
         }
     }
 
+    pub fn menu_theme_search(self) -> &'static str {
+        match self {
+            Lang::Japanese => "検索",
+            Lang::English  => "Search",
+            Lang::Chinese  => "搜索",
+        }
+    }
+
+    // ---- 「この作者／グループのファイルを検索」（creator_search_ui.rs） ----
+
+    pub fn creator_search_menu(self) -> &'static str {
+        match self {
+            Lang::Japanese => "この作者／グループのファイルを検索",
+            Lang::English  => "Search Files by This Author/Group",
+            Lang::Chinese  => "搜索此作者/团体的文件",
+        }
+    }
+
+    pub fn creator_search_disabled_multi(self) -> &'static str {
+        match self {
+            Lang::Japanese => "複数選択中は使えない（1つだけ選んで右クリックする）",
+            Lang::English  => "Not available with multiple selection (right-click a single file)",
+            Lang::Chinese  => "多选时不可用（请只选一个文件后右键）",
+        }
+    }
+
+    pub fn creator_search_disabled_none(self) -> &'static str {
+        match self {
+            Lang::Japanese => "作者・グループが見つからない（タグ未登録で、ファイル名からも判定できない）",
+            Lang::English  => "No author/group found (no tags registered and none detected from the file name)",
+            Lang::Chinese  => "未找到作者/团体（未登记标签，也无法从文件名判断）",
+        }
+    }
+
+    pub fn creator_source_db(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ファイルに付いているタグから",
+            Lang::English  => "from the file's tags",
+            Lang::Chinese  => "来自文件的标签",
+        }
+    }
+
+    pub fn creator_source_file_name(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ファイル名から判定",
+            Lang::English  => "detected from the file name",
+            Lang::Chinese  => "根据文件名判断",
+        }
+    }
+
+    pub fn creator_role_author(self) -> &'static str {
+        match self {
+            Lang::Japanese => "作者",
+            Lang::English  => "Author",
+            Lang::Chinese  => "作者",
+        }
+    }
+
+    pub fn creator_role_group(self) -> &'static str {
+        match self {
+            Lang::Japanese => "グループ",
+            Lang::English  => "Group",
+            Lang::Chinese  => "团体",
+        }
+    }
+
+    pub fn creator_pick_title(self) -> &'static str {
+        match self {
+            Lang::Japanese => "検索する作者／グループを選ぶ",
+            Lang::English  => "Choose Authors/Groups to Search",
+            Lang::Chinese  => "选择要搜索的作者/团体",
+        }
+    }
+
+    pub fn creator_pick_body(self) -> &'static str {
+        match self {
+            Lang::Japanese => "チェックした名前のどれかに当たるファイルを探す（複数チェックはOR）。",
+            Lang::English  => "Find files matching any of the checked names (multiple checks are OR).",
+            Lang::Chinese  => "搜索匹配任一已勾选名称的文件（多选为“或”）。",
+        }
+    }
+
+    pub fn creator_pick_ok(self) -> &'static str {
+        match self {
+            Lang::Japanese => "検索",
+            Lang::English  => "Search",
+            Lang::Chinese  => "搜索",
+        }
+    }
+
+    /// 暫定（次のフェーズで、検索タブへ移って即実行する処理に置き換える）。
+    pub fn creator_search_pending_toast(self, text: &str) -> String {
+        match self {
+            Lang::Japanese => format!("検索語: {text}（検索の実行は次のフェーズ）"),
+            Lang::English  => format!("Search terms: {text} (search runs in the next phase)"),
+            Lang::Chinese  => format!("搜索词: {text}（搜索将在下一阶段执行）"),
+        }
+    }
+
     // ---- お気に入りタブ: 再紐付け・外す（relink_ui.rs） ----
 
     pub fn relink_menu(self) -> &'static str {
