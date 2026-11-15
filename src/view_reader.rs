@@ -629,6 +629,9 @@ pub struct ViewerState {
     /// 左エントリリストを最後に現在地へスクロールした spread_lo。
     /// 非表示中は更新せず、再表示時またはページ変更時だけ現在行を中央へ寄せる。
     entry_list_scrolled_lo: Option<i32>,
+    /// 直近フレームで出ていたエントリリスト本体の矩形（出ていなければ None）。
+    /// リスト上のホイールをページ送りへ渡さない（リストのスクロール専用にする）判定に使う。
+    entry_list_rect: Option<egui::Rect>,
     /// フルスクリーン時ソートバーの表示状態（上端ホバーで on/off）
     fs_sort_bar_visible: bool,
     /// 仮想タイトル帯を隠す時刻（`FrameInput::time` 基準）。None = まだ初回フレームを迎えていない。
@@ -1034,6 +1037,7 @@ impl ViewerState {
             entry_list_visible: false,
             edge_turn_hover: None,
             entry_list_scrolled_lo: None,
+            entry_list_rect: None,
             fs_sort_bar_visible: false,
             title_band_hide_at: None,
             menubar_visible: false,
@@ -1159,6 +1163,7 @@ impl ViewerState {
             entry_list_visible: false,
             edge_turn_hover: None,
             entry_list_scrolled_lo: None,
+            entry_list_rect: None,
             fs_sort_bar_visible: false,
             title_band_hide_at: None,
             menubar_visible: false,
@@ -2147,6 +2152,7 @@ impl ViewerState {
             && input.hover_pos.is_some_and(|p| {
                 viewport_before_central.contains(p)
                     && !self.thumbbar_shown_rect.is_some_and(|r| r.contains(p))
+                    && !self.entry_list_rect.is_some_and(|r| r.contains(p))
                     && !self.tool_palette_rect(viewport_before_central).is_some_and(|r| r.contains(p))
             })
         {
@@ -2214,9 +2220,10 @@ impl ViewerState {
         }
         let tool_palette_changed = self.poll_tool_palette_debounce(cfg, &ctx);
 
-        // サムネバー上のホイールはバーの表示位置を動かす専用（ScrollArea が処理する）。
-        // ページ送り・ファイル送りへは渡さない（ページ送りはバーの外でのみ）。
-        if self.thumbbar_shown_rect.zip(input.hover_pos).is_some_and(|(r, p)| r.contains(p)) {
+        // サムネバー・エントリリスト上のホイールは、それぞれの表示位置を動かす専用（ScrollArea が処理する）。
+        // ページ送り・ファイル送りへは渡さない（ページ送りはその外でのみ）。
+        let wheel_over = |r: Option<egui::Rect>| r.zip(input.hover_pos).is_some_and(|(r, p)| r.contains(p));
+        if wheel_over(self.thumbbar_shown_rect) || wheel_over(self.entry_list_rect) {
             input.scroll_delta = 0.0;
             input.shift_scroll_delta = 0.0;
         }
@@ -4055,6 +4062,12 @@ impl ViewerState {
     /// 上端のメニューバー・タイトルバー用の確保高の下限（タイトル帯のホバートリガー高と同じ）。
     const THUMBBAR_TOP_MIN_INSET: f32 = 40.0;
 
+    /// メニューバー＋タイトルバー（自動ハイドのオーバーレイ）の下端までの高さ。サムネバー・エントリリストは
+    /// これより下から始め、両バーを邪魔しない。メニューバーが出ている間はその分だけ下がる。
+    fn top_overlay_inset(&self) -> f32 {
+        (self.menubar_overlay_h + Self::TITLE_BAND_H).max(Self::THUMBBAR_TOP_MIN_INSET)
+    }
+
     /// サムネバーの矩形と発火域を求める（純粋関数）。`top_inset` はメニューバー＋タイトルバーの下端までの高さ。
     /// - 上下バー: 発火域はバー帯のうち、左右のページ送り保護域（各 EDGE_TURN_ZONE_W）を除いた区間。
     /// - 左右バー: 発火域は左下／右下の角（THUMBBAR_CORNER 四方）。エントリリスト発火域・ページ送り保護域と競合しない場所。
@@ -4126,7 +4139,7 @@ impl ViewerState {
         ctx: &egui::Context,
     ) -> Option<egui::Rect> {
         let thickness = cfg.thumbbar_thumb_size as f32 + 16.0;
-        let top_inset = (self.menubar_overlay_h + Self::TITLE_BAND_H).max(Self::THUMBBAR_TOP_MIN_INSET);
+        let top_inset = self.top_overlay_inset();
         let rects = if self.entries.len() > 1 && !self.entry_list_visible {
             Self::thumbbar_rects(cfg.thumbbar_pos, viewport, thickness, top_inset)
         } else {
@@ -4947,23 +4960,49 @@ impl ViewerState {
             }
         }
 
-        if self.entry_list_visible {
-            // 仮想ページ(-1 or total)を握りつぶさないよう、クランプ前の生の lo/hi で
-            // ペア判定してから、実ページ範囲内のものだけハイライトする。
-            let lo = self.spread_lo();
-            let is_spread = self.page_mode != PageMode::Single;
-            let hi = if is_spread { lo + 1 } else { lo };
-            let entries_snap = self.entries.clone();
-            let scroll_anchor = Self::entry_list_scroll_anchor(lo, entries_snap.len());
-            let should_scroll = !was_visible || self.entry_list_scrolled_lo != Some(lo);
-            let mut jump_to: Option<i32> = None;
+        if !self.entry_list_visible {
+            // 隠した時点でリセット（ホイールで動かした位置は残さない。再表示時は現在ページが中央になる）。
+            self.entry_list_rect = None;
+            self.entry_list_scrolled_lo = None;
+            return;
+        }
 
-            egui::Panel::left("entry_list_panel")
-                .exact_size(ENTRY_PANEL_W)
-                // 固定幅なのにリサイズカーソルだけ出る不具合の防止（既定resizable=true）
-                .resizable(false)
-                .frame(egui::Frame::side_top_panel(viewer_style))
-                .show(ui, |ui| {
+        // 仮想ページ(-1 or total)を握りつぶさないよう、クランプ前の生の lo/hi で
+        // ペア判定してから、実ページ範囲内のものだけハイライトする。
+        let lo = self.spread_lo();
+        let is_spread = self.page_mode != PageMode::Single;
+        let hi = if is_spread { lo + 1 } else { lo };
+        let entries_snap = self.entries.clone();
+        let scroll_anchor = Self::entry_list_scroll_anchor(lo, entries_snap.len());
+        let should_scroll = !was_visible || self.entry_list_scrolled_lo != Some(lo);
+        // 表示中にページが変わったとき（行クリックのジャンプ・キー送りなど）は、行き先まで滑らかにスクロールして着地する。
+        // 表示を始めた瞬間の初期位置だけは即時（従来どおり）。
+        let smooth = should_scroll && was_visible;
+        let mut jump_to: Option<i32> = None;
+        let inset = self.top_overlay_inset();
+        let mut list_rect: Option<egui::Rect> = None;
+
+        egui::Panel::left("entry_list_panel")
+            .exact_size(ENTRY_PANEL_W)
+            // 固定幅なのにリサイズカーソルだけ出る不具合の防止（既定resizable=true）
+            .resizable(false)
+            .frame(egui::Frame::NONE)
+            .show(ui, |ui| {
+                // パネル（領域の確保）は全高のまま、背景と中身はメニューバー＋タイトルバーの下から始める。
+                let panel_frame = egui::Frame::side_top_panel(viewer_style);
+                let panel_rect = ui.max_rect();
+                let body = egui::Rect::from_min_max(
+                    egui::pos2(panel_rect.min.x, (panel_rect.min.y + inset).min(panel_rect.max.y)),
+                    panel_rect.max,
+                );
+                ui.painter().rect_filled(body, 0.0, panel_frame.fill);
+                list_rect = Some(body);
+                let m = panel_frame.inner_margin;
+                let inner = egui::Rect::from_min_max(
+                    body.min + egui::vec2(f32::from(m.left), f32::from(m.top)),
+                    body.max - egui::vec2(f32::from(m.right), f32::from(m.bottom)),
+                );
+                ui.scope_builder(egui::UiBuilder::new().max_rect(inner), |ui| {
                     let output = egui::ScrollArea::vertical()
                         .auto_shrink([false, false])
                         .show(ui, |ui| {
@@ -4973,6 +5012,10 @@ impl ViewerState {
                                 let response = ui.selectable_label(is_cur, &entry.display_name);
                                 if scroll_anchor == Some(i) {
                                     anchor_rect = Some(response.rect);
+                                    if smooth {
+                                        // 中央へ寄せる。先頭・末尾付近は egui が範囲内にクランプする（中央までは行かない）。
+                                        ui.scroll_to_rect(response.rect, Some(egui::Align::Center));
+                                    }
                                 }
                                 // クリックでそのページへジャンプ（見開きはそのページを含む見開きへ着地）。
                                 if response.clicked() {
@@ -4982,7 +5025,10 @@ impl ViewerState {
                             anchor_rect
                         });
 
-                    if should_scroll && let Some(anchor_rect) = output.inner {
+                    if smooth {
+                        ctx.request_repaint();
+                        self.entry_list_scrolled_lo = Some(lo);
+                    } else if should_scroll && let Some(anchor_rect) = output.inner {
                         // 現在行のコンテンツ上の位置から絶対オフセットを求める。
                         // 0..max_offset にクランプすることで、先頭側ではマーカーが
                         // 中央まで移動し、中盤だけ中央固定、末尾側では再び下へ移動する。
@@ -5000,11 +5046,12 @@ impl ViewerState {
                         self.entry_list_scrolled_lo = Some(lo);
                     }
                 });
-            if let Some(page) = jump_to {
-                self.jump_page_request = Some(page);
-                self.thumbbar_last_activity = Instant::now();
-                ctx.request_repaint();
-            }
+            });
+        self.entry_list_rect = list_rect;
+        if let Some(page) = jump_to {
+            self.jump_page_request = Some(page);
+            self.thumbbar_last_activity = Instant::now();
+            ctx.request_repaint();
         }
     }
 
@@ -7181,6 +7228,37 @@ mod sort_save_state_tests {
         let mut v = tb_viewer();
         assert!(v.update_thumbbar_visibility(&cfg, vp, Some(egui::pos2(500.0, 790.0)), &ctx).is_some());
         assert!(v.update_thumbbar_visibility(&cfg, vp, Some(egui::pos2(500.0, 100.0)), &ctx).is_some());
+    }
+
+    /// エントリリストを1フレーム描く（ホバー位置を渡して、表示・非表示の判定も走らせる）。
+    fn run_entry_list_frame(v: &mut ViewerState, ctx: &egui::Context, hover: Option<egui::Pos2>) {
+        let vp = tb_viewport();
+        let style = egui::Style::default();
+        let _ = ctx.run_ui(egui::RawInput { screen_rect: Some(vp), ..Default::default() }, |ui| {
+            let ctx = ui.ctx().clone();
+            v.draw_entry_list(ui, &ctx, &style, hover, vp);
+        });
+    }
+
+    #[test]
+    fn entry_list_starts_below_the_menu_and_title_zone_and_resets_when_hidden() {
+        let ctx = egui::Context::default();
+        let mut v = tb_viewer();
+        v.menubar_overlay_h = 30.0;
+        // 左上のホバー域で開く
+        run_entry_list_frame(&mut v, &ctx, Some(egui::pos2(10.0, 10.0)));
+        assert!(v.entry_list_visible);
+        let rect = v.entry_list_rect.expect("表示中は矩形が記録される");
+        // メニューバー(30)＋タイトルバー(32)の下から始まる
+        assert!(rect.min.y >= 62.0, "min.y={}", rect.min.y);
+        // 表示中に1フレーム回すと、現在行への初期スクロールが記録される
+        run_entry_list_frame(&mut v, &ctx, Some(egui::pos2(10.0, 300.0)));
+        assert!(v.entry_list_scrolled_lo.is_some());
+        // 右へ出て隠す → 矩形とスクロール記録がリセットされる
+        run_entry_list_frame(&mut v, &ctx, Some(egui::pos2(600.0, 300.0)));
+        assert!(!v.entry_list_visible);
+        assert!(v.entry_list_rect.is_none());
+        assert!(v.entry_list_scrolled_lo.is_none());
     }
 
     #[test]
