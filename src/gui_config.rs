@@ -55,7 +55,7 @@ impl Default for SortState {
 }
 
 /// アーカイブ内サムネイルバーの配置。ビューアー画面を軸とした表示位置。
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ThumbbarPos {
     Left,
     Right,
@@ -183,7 +183,6 @@ pub struct ViewerConfig {
     /// ページ操作停滞後、サムネバーを自動で消すまでの待機時間(ms)。0 = 常時表示
     pub thumbbar_idle_hide_ms: u64,
     /// true = サムネバーを本画像の前面にオーバーレイ表示（本画像はサムネバー領域を意識せず描画）
-    pub thumbbar_overlap: bool,
     /// 現在地マーカーの色(R)
     pub thumbbar_marker_r: u8,
     /// 現在地マーカーの色(G)
@@ -273,7 +272,6 @@ impl Default for ViewerConfig {
             thumbbar_pos: ThumbbarPos::None,
             thumbbar_thumb_size: 96,
             thumbbar_idle_hide_ms: 3000,
-            thumbbar_overlap: false,
             thumbbar_marker_r: 230,
             thumbbar_marker_g: 169,
             thumbbar_marker_b: 79,
@@ -724,7 +722,6 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
     let mut thumbbar_pos: Option<ThumbbarPos> = None;
     let mut thumbbar_thumb_size: Option<u32> = None;
     let mut thumbbar_idle_hide_ms: Option<u64> = None;
-    let mut thumbbar_overlap: Option<bool> = None;
     let mut thumbbar_marker_r: Option<u8> = None;
     let mut thumbbar_marker_g: Option<u8> = None;
     let mut thumbbar_marker_b: Option<u8> = None;
@@ -921,7 +918,8 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
                 "thumbbar_pos" => { thumbbar_pos = Some(parse_thumbbar_pos(v.trim())); }
                 "thumbbar_thumb_size" => { thumbbar_thumb_size = v.trim().parse().ok(); }
                 "thumbbar_idle_hide_ms" => { thumbbar_idle_hide_ms = v.trim().parse().ok(); }
-                "thumbbar_overlap" => { thumbbar_overlap = v.trim().parse().ok(); }
+                // 旧設定「重ねて表示」。サムネバーはオーバーレイ表示に一本化したため読み捨てる。
+                "thumbbar_overlap" => {}
                 "thumbbar_marker_r" => { thumbbar_marker_r = v.trim().parse().ok(); }
                 "thumbbar_marker_g" => { thumbbar_marker_g = v.trim().parse().ok(); }
                 "thumbbar_marker_b" => { thumbbar_marker_b = v.trim().parse().ok(); }
@@ -1090,7 +1088,6 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
             thumbbar_pos: thumbbar_pos.unwrap_or(ThumbbarPos::None),
             thumbbar_thumb_size: thumbbar_thumb_size.unwrap_or(96),
             thumbbar_idle_hide_ms: thumbbar_idle_hide_ms.unwrap_or(3000),
-            thumbbar_overlap: thumbbar_overlap.unwrap_or(false),
             thumbbar_marker_r: thumbbar_marker_r.unwrap_or(230),
             thumbbar_marker_g: thumbbar_marker_g.unwrap_or(169),
             thumbbar_marker_b: thumbbar_marker_b.unwrap_or(79),
@@ -1287,9 +1284,9 @@ pub fn save_state(root: &Path, dir: &Path, window_size: (u32, u32), viewer_slots
         card_band.active.as_state_str(), crate::card_band::to_state_str(&card_band.items), card_band.transparency_pct,
     ));
     content.push_str(&format!(
-        "thumbbar_pos={}\nthumbbar_thumb_size={}\nthumbbar_idle_hide_ms={}\nthumbbar_overlap={}\nthumbbar_marker_r={}\nthumbbar_marker_g={}\nthumbbar_marker_b={}\nthumbbar_marker_a={}\n",
+        "thumbbar_pos={}\nthumbbar_thumb_size={}\nthumbbar_idle_hide_ms={}\nthumbbar_marker_r={}\nthumbbar_marker_g={}\nthumbbar_marker_b={}\nthumbbar_marker_a={}\n",
         thumbbar_pos_to_str(viewer_cfg.thumbbar_pos), viewer_cfg.thumbbar_thumb_size, viewer_cfg.thumbbar_idle_hide_ms,
-        viewer_cfg.thumbbar_overlap, viewer_cfg.thumbbar_marker_r, viewer_cfg.thumbbar_marker_g,
+        viewer_cfg.thumbbar_marker_r, viewer_cfg.thumbbar_marker_g,
         viewer_cfg.thumbbar_marker_b, viewer_cfg.thumbbar_marker_a,
     ));
     content.push_str(&format!(

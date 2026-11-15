@@ -164,7 +164,6 @@ pub(crate) struct SettingsDraft {
     thumbbar_pos: ThumbbarPos,
     thumbbar_thumb_size: u32,
     thumbbar_idle_hide_ms: u64,
-    thumbbar_overlap: bool,
     thumbbar_marker_r: u8,
     thumbbar_marker_g: u8,
     thumbbar_marker_b: u8,
@@ -322,7 +321,6 @@ impl SettingsDraft {
             thumbbar_pos: viewer_cfg.thumbbar_pos,
             thumbbar_thumb_size: viewer_cfg.thumbbar_thumb_size,
             thumbbar_idle_hide_ms: viewer_cfg.thumbbar_idle_hide_ms,
-            thumbbar_overlap: viewer_cfg.thumbbar_overlap,
             thumbbar_marker_r: viewer_cfg.thumbbar_marker_r,
             thumbbar_marker_g: viewer_cfg.thumbbar_marker_g,
             thumbbar_marker_b: viewer_cfg.thumbbar_marker_b,
@@ -417,7 +415,6 @@ impl SettingsDraft {
         viewer_cfg.thumbbar_pos = self.thumbbar_pos;
         viewer_cfg.thumbbar_thumb_size = self.thumbbar_thumb_size;
         viewer_cfg.thumbbar_idle_hide_ms = self.thumbbar_idle_hide_ms;
-        viewer_cfg.thumbbar_overlap = self.thumbbar_overlap;
         viewer_cfg.thumbbar_marker_r = self.thumbbar_marker_r;
         viewer_cfg.thumbbar_marker_g = self.thumbbar_marker_g;
         viewer_cfg.thumbbar_marker_b = self.thumbbar_marker_b;
@@ -1000,13 +997,6 @@ fn draw_settings_tab_viewer(ui: &mut egui::Ui, draft: &mut SettingsDraft) {
         });
     });
     ui.label(i18n::t().settings_thumbbar_idle_explain());
-    ui.separator();
-
-    ui.horizontal(|ui| {
-        ui.label(i18n::t().settings_thumbbar_overlap_label());
-        ui.checkbox(&mut draft.thumbbar_overlap, "");
-    });
-    ui.label(i18n::t().settings_thumbbar_overlap_explain());
     ui.separator();
 
     ui.label(i18n::t().settings_thumbbar_marker_label());

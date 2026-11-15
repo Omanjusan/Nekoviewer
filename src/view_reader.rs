@@ -671,7 +671,7 @@ pub struct ViewerState {
     /// thumbbar_missing_indices が毎フレーム同じエントリを再要求し、
     /// デコードワーカーが失敗デコードを永久に繰り返す（破損画像等への保険）。
     thumb_failed: HashSet<usize>,
-    /// サムネイルバー自動非表示用: 直近のページ操作(ナビゲーション入力)時刻。
+    /// サムネイルバー自動非表示用: ポインターが最後にバー上にあった（または表示を強制した）時刻。バーを出てからの待機時間の起点。
     thumbbar_last_activity: Instant,
     /// サムネイルバーを最後にセンタリングした spread_lo。ページが実際に変わった
     /// フレームでだけ scroll_to_rect を呼ぶための重複防止フラグ（毎フレーム呼ぶと
@@ -819,6 +819,11 @@ pub struct ViewerState {
     /// オーバーレイはパレットより後に登録されるため、重なり部分ではパレットを最上位として扱い、
     /// サムネバー側のクリック・ドラッグ・ホイールを受け付けないために使う。
     thumbbar_palette_block: Option<egui::Rect>,
+    /// サムネバーが今出ているか（ポインター侵入で出て、バーを出てから待機時間後に消える）。
+    thumbbar_visible: bool,
+    /// 直近フレームで出ていたサムネバーの矩形（出ていなければ None）。エントリリストなど、
+    /// サムネバーより先に処理される側が「バー上では開かない」を判定するのに使う。
+    thumbbar_shown_rect: Option<egui::Rect>,
 }
 
 impl ViewerState {
@@ -1103,6 +1108,8 @@ impl ViewerState {
             palette_nav_request: None,
             jump_page_request: None,
             thumbbar_palette_block: None,
+            thumbbar_visible: false,
+            thumbbar_shown_rect: None,
         }
     }
 
@@ -1225,6 +1232,8 @@ impl ViewerState {
             palette_nav_request: None,
             jump_page_request: None,
             thumbbar_palette_block: None,
+            thumbbar_visible: false,
+            thumbbar_shown_rect: None,
         }
     }
 
@@ -2083,19 +2092,6 @@ impl ViewerState {
         let shift_scroll_delta = input.shift_scroll_delta;
         let scroll_delta = scroll_delta_raw;
 
-        // サムネイルバー自動非表示用: ページ送りに関わる入力があった時刻を記録する。
-        // key_left/key_right（←→）はファイル切替専用でこのビューア内のページ送りではなく、
-        // 端（先頭/末尾ファイル）で移動先が無い場合は何も動かずトーストが出るだけ。その場合は
-        // ここで無条件にタイマーを更新すると「何も動いていないのにバーだけ反応する」矛盾が
-        // 起きるため対象から外す。移動が成功した場合は新規 ViewerState 生成時に
-        // thumbbar_last_activity が Instant::now() で初期化されるため、そちらで表示される。
-        if key_up || key_down || key_space
-            || shift_nav_up || shift_nav_down || input.key_home || input.key_end
-            || scroll_delta != 0.0 || shift_scroll_delta != 0.0
-        {
-            self.thumbbar_last_activity = Instant::now();
-        }
-
         if key_left || key_right || key_up || key_down || key_space || esc || zoom_key || fs_key
             || mode1 || mode2 || mode3 || shift4 || shift5
             || shift_nav_up || shift_nav_down || input.key_home || input.key_end
@@ -2133,19 +2129,8 @@ impl ViewerState {
         self.draw_entry_list(ui, &ctx, &viewer_style, input.hover_pos, input.viewport_rect);
 
         // ── アーカイブ内サムネイルバー ────────────────────────────────────────
+        // 表示の可否・矩形は draw_central_panel 内（ポインター侵入トリガー）で決めて描く。
         // 単一ファイル/1ファイル格納アーカイブでは常に非表示（設定に関わらず）。
-        // idle_hide_ms > 0 のとき、ページ操作停滞がその時間を超えたら自動的に隠す(0=常時表示)。
-        let idle_ms = cfg.thumbbar_idle_hide_ms;
-        let idle_elapsed_ms = self.thumbbar_last_activity.elapsed().as_millis() as u64;
-        let auto_hidden = idle_ms > 0 && idle_elapsed_ms >= idle_ms;
-        if idle_ms > 0 && !auto_hidden {
-            // 残り時間ちょうどで再描画させ、入力が無くても自動的に隠れるようにする。
-            ctx.request_repaint_after(Duration::from_millis((idle_ms - idle_elapsed_ms).max(1)));
-        }
-        let show_thumbbar = cfg.thumbbar_pos != ThumbbarPos::None && total > 1 && !auto_hidden;
-        if show_thumbbar && !cfg.thumbbar_overlap {
-            self.draw_thumbbar_panel(ui, cfg, cfg.thumbbar_pos);
-        }
         let viewport_before_central = ui.max_rect();
 
         // ── 既定動作（ホイールの拡大割り当て・既定 Shift+ホイール）での虫眼鏡モード入場 ─────
@@ -2218,22 +2203,11 @@ impl ViewerState {
             page_animated,
         };
         let tool_palette_before = self.tool_palette.clone();
-        let (double_clicked, single_clicked) = self.draw_central_panel(ui, &frame, &input, is_spread, step, total, cfg, keymap);
+        let (double_clicked, _single_clicked) = self.draw_central_panel(ui, &frame, &input, is_spread, step, total, cfg, keymap);
         if self.tool_palette != tool_palette_before {
             self.tool_palette_last_changed = Some(Instant::now());
         }
         let tool_palette_changed = self.poll_tool_palette_debounce(cfg, &ctx);
-
-        // メイン画像シングルクリックでサムネバーの自動非表示タイマーを早送りし、即座に隠す。
-        // idle_hide_ms == 0（常時表示設定）のときは早送り対象のタイマー自体が存在しないため何もしない。
-        if single_clicked && idle_ms > 0 {
-            self.thumbbar_last_activity = Instant::now() - Duration::from_millis(idle_ms);
-            ctx.request_repaint();
-        }
-
-        if show_thumbbar && cfg.thumbbar_overlap {
-            self.draw_thumbbar_overlay(ui, cfg, cfg.thumbbar_pos, viewport_before_central);
-        }
 
         let nav = self.process_navigation(&input, is_spread, step, total, frame.magnifier && cfg.koma_on);
         if std::mem::take(&mut self.koma_moved) {
@@ -2837,6 +2811,8 @@ impl ViewerState {
     /// （自動非表示で消えていても、操作時刻を更新することで再び見える）。
     fn cycle_thumbbar_pos(&mut self, ctx: &egui::Context, cfg: &mut ViewerConfig) {
         cfg.thumbbar_pos = cfg.thumbbar_pos.next_cycle();
+        // 押した瞬間にその配置先へ表示し、非表示タイマーもここから数え直す（ポインターがバー外ならそのまま待機時間で消える）。
+        self.thumbbar_visible = true;
         self.thumbbar_last_activity = Instant::now();
         // 新しい配置先でも現在ページが中央に来るよう、センタリング済み記録を捨てる。
         self.thumbbar_scrolled_lo = None;
@@ -3648,6 +3624,11 @@ impl ViewerState {
             }) || self.tool_palette_menu_open;
             self.tick_tool_palette_auto_hide(ui.ctx(), input.time, pointer_in_palette);
 
+            // ── サムネバー：ポインター侵入トリガーの表示判定 ─────────────────────
+            // 出ている間、バー上のクリック・ホバーは背面（画像・ページ送りゾーン）へ伝えない。
+            let thumbbar_rect = self.update_thumbbar_visibility(cfg, viewport_rect, input.hover_pos, ui.ctx());
+            let pointer_in_thumbbar = thumbbar_rect.zip(input.hover_pos).is_some_and(|(r, p)| r.contains(p));
+
             // ── 虫眼鏡：ホイール拡縮（ポインタ基準）とスライダーバー ────────────────────
             // パレット上のホイールは握りつぶす。バー上のホイールは表示中心基準で拡縮する。
             // バーはモードON中は（非表示でも）常にイベントを吸収し、ホバーで再表示される。
@@ -3728,9 +3709,9 @@ impl ViewerState {
 
             // ── 左右端ページ送りゾーン ───────────────────────────────────────────
             let edge_ctx = ui.ctx().clone();
-            let guarded_hover = if pointer_in_palette || pointer_in_bar || pointer_in_rating { None } else { input.hover_pos };
-            let guarded_primary_clicked = input.primary_clicked && !pointer_in_palette && !pointer_in_bar && !pointer_in_rating;
-            self.handle_edge_turn(&edge_ctx, clip, guarded_hover, guarded_primary_clicked, is_spread, step, total, input.time);
+            let guarded_hover = if pointer_in_palette || pointer_in_bar || pointer_in_rating || pointer_in_thumbbar { None } else { input.hover_pos };
+            let guarded_primary_clicked = input.primary_clicked && !pointer_in_palette && !pointer_in_bar && !pointer_in_rating && !pointer_in_thumbbar;
+            self.handle_edge_turn(&edge_ctx, clip, guarded_hover, guarded_primary_clicked, is_spread, step, total, input.time, cfg.thumbbar_pos);
             self.draw_edge_turn_marker(&edge_ctx, clip);
             if self.tick_title_band(&edge_ctx, input.time, input.hover_pos, input.viewport_rect, clip) {
                 self.draw_title_band(&edge_ctx, clip);
@@ -3934,7 +3915,7 @@ impl ViewerState {
             }
 
             // パレット上でのクリックは画像側（ページめくり／原寸切替）へ伝えない。
-            if pointer_in_palette || pointer_in_rating {
+            if pointer_in_palette || pointer_in_rating || pointer_in_thumbbar {
                 double_clicked = false;
                 single_clicked = false;
             }
@@ -4028,6 +4009,13 @@ impl ViewerState {
                 }
             }
 
+            // ── サムネバー（オーバーレイ） ────────────────────────────────────
+            // パレットより先に描く（同一レイヤー内は後描きが前面になるため、ツールボックスがバーの前面に来る）。
+            self.thumbbar_palette_block = if self.tool_palette_auto_hidden { None } else { palette_rect };
+            if let Some(rect) = thumbbar_rect {
+                self.draw_thumbbar_overlay(ui, cfg, cfg.thumbbar_pos, rect);
+            }
+
             // ── ツールパレット：最前面オーバーレイ ────────────────────────────
             // auto_hidden中は完全無描画（pointer_in_paletteの当たり判定はrect自体が
             // 生きているため上のtick呼び出しで検知でき、描画をスキップするだけでよい）。
@@ -4049,60 +4037,127 @@ impl ViewerState {
         (double_clicked, single_clicked)
     }
 
-    /// サムネイルバー: 本画像の領域を圧迫する形（配置に応じて Panel で領域確保）。
-    fn draw_thumbbar_panel(&mut self, ui: &mut egui::Ui, cfg: &ViewerConfig, pos: ThumbbarPos) {
-        let outer = cfg.thumbbar_thumb_size as f32 + 16.0;
-        let frame = egui::Frame::side_top_panel(ui.style());
-        self.thumbbar_palette_block = None;
-        match pos {
-            ThumbbarPos::Left => {
-                egui::Panel::left("thumbbar_panel").exact_size(outer).resizable(false).frame(frame)
-                    .show(ui, |ui| self.draw_thumbbar_contents(ui, cfg, false));
-            }
-            ThumbbarPos::Right => {
-                egui::Panel::right("thumbbar_panel").exact_size(outer).resizable(false).frame(frame)
-                    .show(ui, |ui| self.draw_thumbbar_contents(ui, cfg, false));
-            }
+    /// サムネバーのオーバーレイ余白（ビューポート端からバーまで）。
+    const THUMBBAR_MARGIN: f32 = 10.0;
+    /// 左右バーの発火域（左下・右下の角）の一辺。ページ送りゾーン幅と同じにして、角をその領域からくり抜く。
+    const THUMBBAR_CORNER: f32 = 100.0;
+    /// 上端のメニューバー・タイトルバー用の確保高の下限（タイトル帯のホバートリガー高と同じ）。
+    const THUMBBAR_TOP_MIN_INSET: f32 = 40.0;
+
+    /// サムネバーの矩形と発火域を求める（純粋関数）。`top_inset` はメニューバー＋タイトルバーの下端までの高さ。
+    /// - 上下バー: 発火域はバー帯のうち、左右のページ送り保護域（各 EDGE_TURN_ZONE_W）を除いた区間。
+    /// - 左右バー: 発火域は左下／右下の角（THUMBBAR_CORNER 四方）。エントリリスト発火域・ページ送り保護域と競合しない場所。
+    /// 上・左・右のバーは top_inset より下から始める（メニューバーとタイトルバーを邪魔しない）。
+    fn thumbbar_rects(pos: ThumbbarPos, viewport: egui::Rect, thickness: f32, top_inset: f32) -> Option<(egui::Rect, egui::Rect)> {
+        let m = Self::THUMBBAR_MARGIN;
+        let zone = Self::EDGE_TURN_ZONE_W;
+        let top = viewport.min.y + top_inset;
+        let (bar, trigger) = match pos {
             ThumbbarPos::Top => {
-                egui::Panel::top("thumbbar_panel").exact_size(outer).resizable(false).frame(frame)
-                    .show(ui, |ui| self.draw_thumbbar_contents(ui, cfg, true));
+                let bar = egui::Rect::from_min_size(
+                    egui::pos2(viewport.min.x + m, top),
+                    egui::vec2((viewport.width() - m * 2.0).max(0.0), thickness),
+                );
+                let trig = egui::Rect::from_min_max(
+                    egui::pos2(viewport.min.x + zone, bar.min.y),
+                    egui::pos2(viewport.max.x - zone, bar.max.y),
+                );
+                (bar, trig)
             }
             ThumbbarPos::Bottom => {
-                egui::Panel::bottom("thumbbar_panel").exact_size(outer).resizable(false).frame(frame)
-                    .show(ui, |ui| self.draw_thumbbar_contents(ui, cfg, true));
+                let bar = egui::Rect::from_min_size(
+                    egui::pos2(viewport.min.x + m, viewport.max.y - m - thickness),
+                    egui::vec2((viewport.width() - m * 2.0).max(0.0), thickness),
+                );
+                let trig = egui::Rect::from_min_max(
+                    egui::pos2(viewport.min.x + zone, bar.min.y),
+                    egui::pos2(viewport.max.x - zone, viewport.max.y),
+                );
+                (bar, trig)
             }
-            ThumbbarPos::None => {}
-        }
+            ThumbbarPos::Left => {
+                let bar = egui::Rect::from_min_size(
+                    egui::pos2(viewport.min.x + m, top),
+                    egui::vec2(thickness, (viewport.max.y - m - top).max(0.0)),
+                );
+                let trig = egui::Rect::from_min_max(
+                    egui::pos2(viewport.min.x, viewport.max.y - Self::THUMBBAR_CORNER),
+                    egui::pos2(viewport.min.x + Self::THUMBBAR_CORNER, viewport.max.y),
+                );
+                (bar, trig)
+            }
+            ThumbbarPos::Right => {
+                let bar = egui::Rect::from_min_size(
+                    egui::pos2(viewport.max.x - m - thickness, top),
+                    egui::vec2(thickness, (viewport.max.y - m - top).max(0.0)),
+                );
+                let trig = egui::Rect::from_min_max(
+                    egui::pos2(viewport.max.x - Self::THUMBBAR_CORNER, viewport.max.y - Self::THUMBBAR_CORNER),
+                    egui::pos2(viewport.max.x, viewport.max.y),
+                );
+                (bar, trig)
+            }
+            ThumbbarPos::None => return None,
+        };
+        Some((bar, trigger))
     }
 
-    /// サムネイルバー: 本画像の前面にオーバーレイ表示（領域は確保しない）。
-    /// `viewport` は central panel 描画前に記録した全体領域。
-    fn draw_thumbbar_overlay(&mut self, ui: &mut egui::Ui, cfg: &ViewerConfig, pos: ThumbbarPos, viewport: egui::Rect) {
+    /// サムネバーの表示状態を更新し、出すべきなら矩形を返す。
+    /// - 発火域へのポインター侵入で出る。ポインターがバー上にある間は出続け（タイマーは止まる）、
+    ///   バーを出た時点から `thumbbar_idle_hide_ms` 後に消える。待機時間 0 は常時表示（トリガー不要）。
+    /// - 左エントリリストが出ている間は出さない（エントリリスト優先）。
+    /// - ページ送りでは出ない（ファイルを開いた直後も隠れた状態から始まる）。
+    fn update_thumbbar_visibility(
+        &mut self,
+        cfg: &ViewerConfig,
+        viewport: egui::Rect,
+        hover: Option<egui::Pos2>,
+        ctx: &egui::Context,
+    ) -> Option<egui::Rect> {
         let thickness = cfg.thumbbar_thumb_size as f32 + 16.0;
-        const MARGIN: f32 = 10.0;
-        let horizontal = matches!(pos, ThumbbarPos::Top | ThumbbarPos::Bottom);
-        let rect = match pos {
-            ThumbbarPos::Left => egui::Rect::from_min_size(
-                viewport.min + egui::vec2(MARGIN, MARGIN),
-                egui::vec2(thickness, viewport.height() - MARGIN * 2.0),
-            ),
-            ThumbbarPos::Right => egui::Rect::from_min_size(
-                egui::pos2(viewport.max.x - MARGIN - thickness, viewport.min.y + MARGIN),
-                egui::vec2(thickness, viewport.height() - MARGIN * 2.0),
-            ),
-            ThumbbarPos::Top => egui::Rect::from_min_size(
-                viewport.min + egui::vec2(MARGIN, MARGIN),
-                egui::vec2(viewport.width() - MARGIN * 2.0, thickness),
-            ),
-            ThumbbarPos::Bottom => egui::Rect::from_min_size(
-                egui::pos2(viewport.min.x + MARGIN, viewport.max.y - MARGIN - thickness),
-                egui::vec2(viewport.width() - MARGIN * 2.0, thickness),
-            ),
-            ThumbbarPos::None => return,
+        let top_inset = (self.menubar_overlay_h + Self::TITLE_BAND_H).max(Self::THUMBBAR_TOP_MIN_INSET);
+        let rects = if self.entries.len() > 1 && !self.entry_list_visible {
+            Self::thumbbar_rects(cfg.thumbbar_pos, viewport, thickness, top_inset)
+        } else {
+            None
+        };
+        let Some((bar, trigger)) = rects else {
+            self.thumbbar_visible = false;
+            self.thumbbar_shown_rect = None;
+            return None;
         };
 
+        let idle_ms = cfg.thumbbar_idle_hide_ms;
+        if idle_ms == 0 {
+            self.thumbbar_visible = true;
+        } else if self.thumbbar_visible {
+            if hover.is_some_and(|p| bar.contains(p)) {
+                self.thumbbar_last_activity = Instant::now();
+            } else {
+                let elapsed = self.thumbbar_last_activity.elapsed().as_millis() as u64;
+                if elapsed >= idle_ms {
+                    self.thumbbar_visible = false;
+                } else {
+                    // 残り時間ちょうどで再描画させ、入力が無くても自動的に隠れるようにする。
+                    ctx.request_repaint_after(Duration::from_millis((idle_ms - elapsed).max(1)));
+                }
+            }
+        } else if hover.is_some_and(|p| trigger.contains(p)) {
+            self.thumbbar_visible = true;
+            self.thumbbar_last_activity = Instant::now();
+            ctx.request_repaint();
+        }
+
+        self.thumbbar_shown_rect = self.thumbbar_visible.then_some(bar);
+        self.thumbbar_shown_rect
+    }
+
+    /// サムネイルバー: 本画像の前面にオーバーレイ表示（領域は確保しない）。`rect` は表示するバーの矩形。
+    fn draw_thumbbar_overlay(&mut self, ui: &mut egui::Ui, cfg: &ViewerConfig, pos: ThumbbarPos, rect: egui::Rect) {
+        let horizontal = matches!(pos, ThumbbarPos::Top | ThumbbarPos::Bottom);
         ui.painter().rect_filled(rect, 4.0, egui::Color32::from_black_alpha(160));
-        self.thumbbar_palette_block = if self.tool_palette_auto_hidden { None } else { self.tool_palette_rect(viewport) };
+        // バー全体を覆う土台のinteract。サムネの隙間・余白のクリックが背面の画像（ページ送り等）へ抜けないようにする。
+        ui.interact(rect, ui.id().with("thumbbar_backstop"), egui::Sense::click().union(egui::Sense::drag()));
         let mut child = ui.new_child(egui::UiBuilder::new().id_salt("thumbbar_overlay_child").max_rect(rect));
         crate::ui_theme::force_dark_visuals(&mut child);
         self.draw_thumbbar_contents(&mut child, cfg, horizontal);
@@ -4666,12 +4721,17 @@ impl ViewerState {
     /// マウス位置がどちらの端ゾーンにあるかを判定する（進む/戻る可否は見ない）。
     /// 左ゾーンは左エントリリストの発火域（左端上部の一部）と競合しないよう、
     /// その下端から画面下端までとする。右ゾーンは競合が無いため全高。
-    fn edge_turn_zone_at(clip: egui::Rect, pos: egui::Pos2) -> Option<bool> {
+    /// サムネバーを左（右）に置いているときは、その側の下角（THUMBBAR_CORNER 四方）をバーの発火域として
+    /// くり抜き、ページ送りゾーンから除く。
+    fn edge_turn_zone_at(clip: egui::Rect, pos: egui::Pos2, thumbbar_pos: ThumbbarPos) -> Option<bool> {
         let top_avoid_h = Self::hover_trigger_height(clip.height());
+        let corner_top = clip.max.y - Self::THUMBBAR_CORNER;
         let in_left  = pos.x < clip.min.x + Self::EDGE_TURN_ZONE_W
-            && pos.y >= clip.min.y + top_avoid_h && pos.y <= clip.max.y;
+            && pos.y >= clip.min.y + top_avoid_h && pos.y <= clip.max.y
+            && !(thumbbar_pos == ThumbbarPos::Left && pos.y > corner_top);
         let in_right = pos.x > clip.max.x - Self::EDGE_TURN_ZONE_W
-            && pos.y >= clip.min.y && pos.y <= clip.max.y;
+            && pos.y >= clip.min.y && pos.y <= clip.max.y
+            && !(thumbbar_pos == ThumbbarPos::Right && pos.y > corner_top);
         if in_left { Some(true) } else if in_right { Some(false) } else { None }
     }
 
@@ -4698,6 +4758,7 @@ impl ViewerState {
         step: i32,
         total: usize,
         time: f64,
+        thumbbar_pos: ThumbbarPos,
     ) {
         let total_i = total as i32;
 
@@ -4705,7 +4766,7 @@ impl ViewerState {
             None
         } else {
             hover_pos
-                .and_then(|pos| Self::edge_turn_zone_at(clip, pos))
+                .and_then(|pos| Self::edge_turn_zone_at(clip, pos, thumbbar_pos))
                 .filter(|&left_edge| self.edge_turn_can_move(left_edge, is_spread, step, total_i))
         };
 
@@ -4843,9 +4904,11 @@ impl ViewerState {
         let screen_left = viewport_rect.min.x;
         let trigger_h = Self::hover_trigger_height(viewport_rect.height());
         if let Some(pos) = hover_pos {
+            // サムネバーが出ているときは、その上ではエントリリストを開かない（バー優先）。
             if !self.entry_list_visible
                 && pos.x < screen_left + TRIGGER_W
                 && pos.y < viewport_rect.min.y + trigger_h
+                && !self.thumbbar_shown_rect.is_some_and(|r| r.contains(pos))
             {
                 self.entry_list_visible = true;
                 ctx.request_repaint();
@@ -6977,6 +7040,149 @@ mod sort_save_state_tests {
             stored_index: 1,
         });
         viewer
+    }
+
+    fn tb_viewport() -> egui::Rect {
+        egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1000.0, 800.0))
+    }
+
+    fn tb_cfg(pos: ThumbbarPos, idle_ms: u64) -> ViewerConfig {
+        let mut cfg = ViewerConfig::default();
+        cfg.thumbbar_pos = pos;
+        cfg.thumbbar_idle_hide_ms = idle_ms;
+        cfg
+    }
+
+    fn tb_viewer() -> ViewerState {
+        let mut v = archive_viewer();
+        v.entries = (0..10)
+            .map(|i| ViewerEntry {
+                entry_name: format!("p{i}"),
+                display_name: format!("p{i}"),
+                date_key: i,
+                original_index: i as usize,
+                stored_index: i as usize,
+            })
+            .collect();
+        v
+    }
+
+    #[test]
+    fn thumbbar_trigger_for_top_and_bottom_excludes_the_page_turn_zones() {
+        let vp = tb_viewport();
+        for pos in [ThumbbarPos::Top, ThumbbarPos::Bottom] {
+            let (bar, trig) = ViewerState::thumbbar_rects(pos, vp, 116.0, 40.0).unwrap();
+            // 左右の保護域(100px)の内側は発火しない
+            assert!(!trig.contains(egui::pos2(50.0, bar.center().y)));
+            assert!(!trig.contains(egui::pos2(950.0, bar.center().y)));
+            assert!(trig.contains(egui::pos2(500.0, bar.center().y)));
+        }
+    }
+
+    #[test]
+    fn thumbbar_top_bar_starts_below_the_menu_and_title_zone() {
+        let vp = tb_viewport();
+        let (bar, trig) = ViewerState::thumbbar_rects(ThumbbarPos::Top, vp, 116.0, 62.0).unwrap();
+        assert!(bar.min.y >= 62.0);
+        assert!(trig.min.y >= 62.0);
+        // 左右バーもメニュー＋タイトルバーの下から始まる
+        for pos in [ThumbbarPos::Left, ThumbbarPos::Right] {
+            let (bar, _) = ViewerState::thumbbar_rects(pos, vp, 116.0, 62.0).unwrap();
+            assert!(bar.min.y >= 62.0);
+        }
+    }
+
+    #[test]
+    fn thumbbar_trigger_for_left_and_right_is_the_bottom_corner_only() {
+        let vp = tb_viewport();
+        let (_, l) = ViewerState::thumbbar_rects(ThumbbarPos::Left, vp, 116.0, 40.0).unwrap();
+        assert!(l.contains(egui::pos2(10.0, 790.0)));
+        assert!(!l.contains(egui::pos2(10.0, 400.0)));
+        assert!(!l.contains(egui::pos2(990.0, 790.0)));
+        let (_, r) = ViewerState::thumbbar_rects(ThumbbarPos::Right, vp, 116.0, 40.0).unwrap();
+        assert!(r.contains(egui::pos2(990.0, 790.0)));
+        assert!(!r.contains(egui::pos2(10.0, 790.0)));
+        assert!(ViewerState::thumbbar_rects(ThumbbarPos::None, vp, 116.0, 40.0).is_none());
+    }
+
+    #[test]
+    fn edge_turn_zone_is_carved_out_at_the_corner_on_the_thumbbar_side_only() {
+        let vp = tb_viewport();
+        let in_left_corner = egui::pos2(10.0, 790.0);
+        let in_right_corner = egui::pos2(990.0, 790.0);
+        // バーなし/上下バー: 従来どおり左右下角もページ送りゾーン
+        assert_eq!(ViewerState::edge_turn_zone_at(vp, in_left_corner, ThumbbarPos::None), Some(true));
+        assert_eq!(ViewerState::edge_turn_zone_at(vp, in_right_corner, ThumbbarPos::Bottom), Some(false));
+        // 左バー: 左下角だけくり抜く。右下角は残る
+        assert_eq!(ViewerState::edge_turn_zone_at(vp, in_left_corner, ThumbbarPos::Left), None);
+        assert_eq!(ViewerState::edge_turn_zone_at(vp, in_right_corner, ThumbbarPos::Left), Some(false));
+        // 右バー: 右下角だけくり抜く
+        assert_eq!(ViewerState::edge_turn_zone_at(vp, in_right_corner, ThumbbarPos::Right), None);
+        // くり抜き域より上は左右とも従来どおり
+        assert_eq!(ViewerState::edge_turn_zone_at(vp, egui::pos2(10.0, 400.0), ThumbbarPos::Left), Some(true));
+    }
+
+    #[test]
+    fn thumbbar_appears_on_trigger_entry_stays_while_pointer_is_inside_and_is_hidden_by_default() {
+        let ctx = egui::Context::default();
+        let vp = tb_viewport();
+        let cfg = tb_cfg(ThumbbarPos::Bottom, 3000);
+        let mut v = tb_viewer();
+        // 初期は隠れている。ページ送り相当の状態変化では出ない
+        assert!(v.update_thumbbar_visibility(&cfg, vp, Some(egui::pos2(500.0, 300.0)), &ctx).is_none());
+        // 発火域（下帯の中央）への侵入で出る
+        let bar = v.update_thumbbar_visibility(&cfg, vp, Some(egui::pos2(500.0, 790.0)), &ctx);
+        assert!(bar.is_some());
+        // バー上にいる間は、待機時間を超えても消えない（タイマーは進まず更新される）
+        v.thumbbar_last_activity = Instant::now() - Duration::from_millis(10_000);
+        let bar_c = bar.unwrap().center();
+        assert!(v.update_thumbbar_visibility(&cfg, vp, Some(bar_c), &ctx).is_some());
+        // バーを出てから待機時間が過ぎたら消える
+        v.thumbbar_last_activity = Instant::now() - Duration::from_millis(10_000);
+        assert!(v.update_thumbbar_visibility(&cfg, vp, Some(egui::pos2(500.0, 100.0)), &ctx).is_none());
+        // 消えた後は、バーの位置にいても発火域でなければ再表示されない（左右ページ送り保護域）
+        assert!(v.update_thumbbar_visibility(&cfg, vp, Some(egui::pos2(30.0, 790.0)), &ctx).is_none());
+    }
+
+    #[test]
+    fn thumbbar_does_not_hide_before_the_wait_elapses_after_leaving() {
+        let ctx = egui::Context::default();
+        let vp = tb_viewport();
+        let cfg = tb_cfg(ThumbbarPos::Bottom, 3000);
+        let mut v = tb_viewer();
+        assert!(v.update_thumbbar_visibility(&cfg, vp, Some(egui::pos2(500.0, 790.0)), &ctx).is_some());
+        assert!(v.update_thumbbar_visibility(&cfg, vp, Some(egui::pos2(500.0, 100.0)), &ctx).is_some());
+    }
+
+    #[test]
+    fn thumbbar_is_suppressed_while_the_entry_list_is_open_and_zero_wait_means_always_visible() {
+        let ctx = egui::Context::default();
+        let vp = tb_viewport();
+        let mut v = tb_viewer();
+        // 待機時間0: トリガーなしで常時表示
+        let always = tb_cfg(ThumbbarPos::Top, 0);
+        assert!(v.update_thumbbar_visibility(&always, vp, None, &ctx).is_some());
+        // エントリリスト表示中は出さない（0でも）
+        v.entry_list_visible = true;
+        assert!(v.update_thumbbar_visibility(&always, vp, None, &ctx).is_none());
+        // 配置なし・1ファイルのときも出ない
+        v.entry_list_visible = false;
+        assert!(v.update_thumbbar_visibility(&tb_cfg(ThumbbarPos::None, 0), vp, None, &ctx).is_none());
+        let mut single = viewer();
+        single.entries.truncate(1);
+        assert!(single.update_thumbbar_visibility(&always, vp, None, &ctx).is_none());
+    }
+
+    #[test]
+    fn cycling_the_thumbbar_from_the_palette_shows_it_immediately() {
+        let ctx = egui::Context::default();
+        let vp = tb_viewport();
+        let mut cfg = tb_cfg(ThumbbarPos::None, 3000);
+        let mut v = tb_viewer();
+        v.cycle_thumbbar_pos(&ctx, &mut cfg);
+        assert_eq!(cfg.thumbbar_pos, ThumbbarPos::Bottom);
+        // ポインターがバー外でも、押した瞬間は表示される（待機時間はそこから数える）
+        assert!(v.update_thumbbar_visibility(&cfg, vp, Some(egui::pos2(500.0, 100.0)), &ctx).is_some());
     }
 
     #[test]

@@ -7889,22 +7889,6 @@ For files without metadata, setting the main category etc. by hand and training 
         }
     }
 
-    pub fn settings_thumbbar_overlap_label(self) -> &'static str {
-        match self {
-            Lang::Japanese => "■ 本画像との重なりを許可",
-            Lang::English  => "■ Allow overlap with the main image",
-            Lang::Chinese  => "■ 允许与正文图像重叠",
-        }
-    }
-
-    pub fn settings_thumbbar_overlap_explain(self) -> &'static str {
-        match self {
-            Lang::Japanese => "ONの場合、本画像はサムネイルバーの領域を意識せずに描画し、サムネイルバーはその前面にオーバーレイ表示する。",
-            Lang::English  => "When on, the main image is drawn without reserving space for the thumbnail bar, and the bar overlays on top of it instead.",
-            Lang::Chinese  => "开启后，正文图像不为缩略图栏预留空间，缩略图栏将叠加显示在其上方。",
-        }
-    }
-
     pub fn settings_thumbbar_marker_label(self) -> &'static str {
         match self {
             Lang::Japanese => "■ 現在地マーカー色 (RGBA)",
