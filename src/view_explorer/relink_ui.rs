@@ -178,7 +178,6 @@ impl NekoviewApp {
                         return;
                     }
                     TreeAction::AddToVirtual(_)
-                    | TreeAction::OpenInSearch(_)
                     | TreeAction::SortSetting
                     | TreeAction::None => {}
                 }

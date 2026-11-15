@@ -225,8 +225,6 @@ enum TreeEvent {
     Sync(u32),
     /// フォルダタブへ移り、このノードの実フォルダを選択済みにして開く
     OpenInFolders(u32),
-    /// 検索タブへ移り、このノードの実フォルダを検索の基点にする
-    OpenInSearch(u32),
     Delete(u32),
     /// ツリー全体の並び条件（ノードには依存しない）
     SortSetting,
@@ -294,21 +292,13 @@ fn tree_context_menu(ui: &mut egui::Ui, target: Option<u32>, real: Option<&Path>
         }
         ui.close();
     }
-    // このフォルダを開く/検索タブで開く: 実パスに辿れないノードに加え、ネットワークパスも対象外（OS差が埋められないため）
-    let searchable = syncable.filter(|_| real.is_some_and(|r| crate::fs::mount::network_mount_root(r).is_none()));
-    let r = ui.add_enabled(searchable.is_some(), egui::Button::new(i18n::t().explorer_open_this_folder_menu()));
+    // このフォルダをファイラーで開く: 実パスに辿れないノードに加え、ネットワークパスも対象外（OS差が埋められないため）
+    let openable = syncable.filter(|_| real.is_some_and(|r| crate::fs::mount::network_mount_root(r).is_none()));
+    let r = ui.add_enabled(openable.is_some(), egui::Button::new(i18n::t().explorer_open_this_folder_menu()));
     help_tip_auto(&r, &i18n::t().help_open_this_folder());
     if r.clicked() {
-        if let Some(real) = real.filter(|_| searchable.is_some()) {
+        if let Some(real) = real.filter(|_| openable.is_some()) {
             crate::translate::open_in_file_manager(real);
-        }
-        ui.close();
-    }
-    let r = ui.add_enabled(searchable.is_some(), egui::Button::new(i18n::t().explorer_open_in_search_menu()));
-    help_tip_auto(&r, &i18n::t().help_open_in_search());
-    if r.clicked() {
-        if let Some(id) = searchable {
-            out.push(TreeEvent::OpenInSearch(id));
         }
         ui.close();
     }
@@ -804,7 +794,7 @@ impl NekoviewApp {
                     if open_dir.is_some() {
                         ui.separator();
                     }
-                    super::panels::this_folder_menu_items(ui, target, &mut self.pending_open_in_search);
+                    super::panels::this_folder_menu_items(ui, target);
                 }
             });
         }
@@ -840,7 +830,6 @@ impl NekoviewApp {
                 TreeEvent::Rename(id) => self.open_rename_dialog(id),
                 TreeEvent::Sync(id) => self.sync_real_tree(id),
                 TreeEvent::OpenInFolders(id) => self.open_in_folders_tab(id),
-                TreeEvent::OpenInSearch(id) => self.open_in_search_tab_for_node(id),
                 TreeEvent::SortSetting => {
                     self.virtual_state.rename = None;
                     self.open_tree_sort_dialog(super::tree_sort_ui::TreeSortTarget::Virtual);
@@ -989,7 +978,7 @@ impl NekoviewApp {
                         tree.selected = Some(path.clone());
                         self.begin_register(path, *dest);
                     }
-                    TreeAction::AddToVirtual(_) | TreeAction::OpenInSearch(_) | TreeAction::SortSetting | TreeAction::None => {}
+                    TreeAction::AddToVirtual(_) | TreeAction::SortSetting | TreeAction::None => {}
                 }
             }
             Picker::VirtualDest { src, expanded, selected } => {

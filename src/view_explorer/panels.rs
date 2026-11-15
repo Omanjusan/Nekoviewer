@@ -2398,7 +2398,6 @@ impl NekoviewApp {
                 }
             }
             TreeAction::AddToVirtual(path) => self.open_virtual_dest_picker(path),
-            TreeAction::OpenInSearch(path) => self.open_in_search_tab(path),
             TreeAction::SortSetting => self.open_tree_sort_dialog(super::tree_sort_ui::TreeSortTarget::Real),
             TreeAction::Navigate(path) | TreeAction::DoubleClick(path) => {
                 self.focused_pane = FocusPane::TreeTab;
@@ -3357,17 +3356,19 @@ impl NekoviewApp {
             self.after_folder_click(ui, prev_selected);
         }
         response.context_menu(|ui| {
-            let r_item = ui.button(i18n::t().explorer_open_folder_menu());
-            help_tip_auto(&r_item, &i18n::t().help_card_open_folder());
-            if r_item.clicked() {
-                if let Some(dir) = &self.viewing_dir {
-                    crate::translate::open_in_file_manager(dir);
+            crate::ui_widgets::menu_theme_heading(ui, i18n::t().menu_theme_os_file_manager());
+            crate::ui_widgets::menu_theme_items(ui, |ui| {
+                let r_item = ui.button(i18n::t().explorer_open_folder_menu());
+                help_tip_auto(&r_item, &i18n::t().help_card_open_folder());
+                if r_item.clicked() {
+                    if let Some(dir) = &self.viewing_dir {
+                        crate::translate::open_in_file_manager(dir);
+                    }
+                    ui.close();
                 }
-                ui.close();
-            }
-            // このセル自身のフォルダ（「↑」は親フォルダ）が対象のメニュー
-            ui.separator();
-            this_folder_menu_items(ui, dir, &mut self.pending_open_in_search);
+                // このセル自身のフォルダ（「↑」は親フォルダ）が対象の項目
+                this_folder_menu_items(ui, dir);
+            });
         });
         response.double_clicked()
     }
@@ -3949,26 +3950,21 @@ impl NekoviewApp {
             // 有効にする。お気に入り/検索はカードごとに実パスが違うため余白では出さない。
             let bg_open_dir = if self.folder_pane_tab.shows_real_dir() { self.viewing_dir.clone() } else { None };
             grid_bg.context_menu(|ui| {
-                ui.add_enabled(false, egui::Button::new(i18n::t().favorite_detail_menu()));
+                crate::ui_widgets::menu_theme_heading(ui, i18n::t().menu_theme_file_settings());
+                crate::ui_widgets::menu_theme_items(ui, |ui| {
+                    ui.add_enabled(false, egui::Button::new(i18n::t().favorite_detail_menu()));
+                });
                 if let Some(dir) = &bg_open_dir {
                     ui.separator();
-                    let r_item = ui.button(i18n::t().explorer_open_folder_menu());
-                    help_tip_auto(&r_item, &i18n::t().help_card_open_folder());
-                    if r_item.clicked() {
-                        crate::translate::open_in_file_manager(dir);
-                        ui.close();
-                    }
-                    // 余白は表示中のフォルダ（PWD）が対象。ネットワークパスは対象外
-                    let searchable = crate::fs::mount::network_mount_root(dir).is_none();
-                    let r_item = ui.add_enabled(
-                        searchable,
-                        egui::Button::new(i18n::t().explorer_open_in_search_menu()),
-                    );
-                    help_tip_auto(&r_item, &i18n::t().help_open_in_search());
-                    if r_item.clicked() {
-                        self.pending_open_in_search = Some(dir.clone());
-                        ui.close();
-                    }
+                    crate::ui_widgets::menu_theme_heading(ui, i18n::t().menu_theme_os_file_manager());
+                    crate::ui_widgets::menu_theme_items(ui, |ui| {
+                        let r_item = ui.button(i18n::t().explorer_open_folder_menu());
+                        help_tip_auto(&r_item, &i18n::t().help_card_open_folder());
+                        if r_item.clicked() {
+                            crate::translate::open_in_file_manager(dir);
+                            ui.close();
+                        }
+                    });
                 }
             });
             list_nav.or(grid_response.inner)
@@ -3997,11 +3993,6 @@ impl NekoviewApp {
         if !list_mode {
             self.grid_anchor.end_frame(self.explorer_scroll_offset, self.explorer_viewport_h, cell_h, cols, grid_total, selected_pos);
         }
-        // 一覧の右クリック「このフォルダを検索タブで開く」は、描画が終わってから消化する
-        if let Some(path) = self.pending_open_in_search.take() {
-            self.open_in_search_tab(path);
-            return;
-        }
         // 「実フォルダ」アイコンの移動も、描画が終わってから消化する（一覧の差し替えを描画の途中でしない）
         if let Some(file) = self.pending_goto_real.take() {
             self.open_file_location_in_folders_tab(file);
@@ -4020,21 +4011,14 @@ impl NekoviewApp {
     }
 }
 
-/// 右クリックしたフォルダ自身を対象にするメニュー項目（「このフォルダを開く」「このフォルダを検索タブで開く」）。
-/// 表示中のフォルダ（PWD）が対象の「現在のフォルダを開く」とは別物。ネットワークパスは無効化する。
-/// 検索タブで開く要求は `pending_search` に積み、一覧の描画後に消化する。
-pub(super) fn this_folder_menu_items(ui: &mut egui::Ui, folder: &Path, pending_search: &mut Option<PathBuf>) {
+/// 右クリックしたフォルダ自身を対象にするメニュー項目（「このフォルダをファイラーで開く」）。
+/// 表示中のフォルダ（PWD）が対象の「現在のフォルダをファイラーで開く」とは別物。ネットワークパスは無効化する。
+pub(super) fn this_folder_menu_items(ui: &mut egui::Ui, folder: &Path) {
     let enabled = crate::fs::mount::network_mount_root(folder).is_none();
     let r_item = ui.add_enabled(enabled, egui::Button::new(i18n::t().explorer_open_this_folder_menu()));
     help_tip_auto(&r_item, &i18n::t().help_open_this_folder());
     if r_item.clicked() {
         crate::translate::open_in_file_manager(folder);
-        ui.close();
-    }
-    let r_item = ui.add_enabled(enabled, egui::Button::new(i18n::t().explorer_open_in_search_menu()));
-    help_tip_auto(&r_item, &i18n::t().help_open_in_search());
-    if r_item.clicked() {
-        *pending_search = Some(folder.to_path_buf());
         ui.close();
     }
 }
@@ -4044,17 +4028,17 @@ pub(super) fn this_folder_menu_items(ui: &mut egui::Ui, folder: &Path, pending_s
 pub(super) struct TreeMenu {
     /// 「仮想フォルダに追加する」（仮想タブ内の実ツリーペインだけ）
     pub add_to_virtual: bool,
-    /// 「このフォルダを検索タブで開く」（実フォルダ/仮想フォルダタブのツリーだけ）
-    pub open_in_search: bool,
+    /// 「このフォルダをファイラーで開く」（実フォルダ/仮想フォルダタブのツリーだけ）
+    pub open_folder: bool,
     /// 「ソート条件設定」
     pub sort: bool,
 }
 
 impl TreeMenu {
-    pub const NONE: Self = Self { add_to_virtual: false, open_in_search: false, sort: false };
+    pub const NONE: Self = Self { add_to_virtual: false, open_folder: false, sort: false };
 
     fn any(self) -> bool {
-        self.add_to_virtual || self.open_in_search || self.sort
+        self.add_to_virtual || self.open_folder || self.sort
     }
 }
 
@@ -4070,11 +4054,11 @@ fn real_tree_context_menu(ui: &mut egui::Ui, path: Option<&PathBuf>, menu: TreeM
             }
             ui.close();
         }
-        if menu.open_in_search || menu.sort {
+        if menu.open_folder || menu.sort {
             ui.separator();
         }
     }
-    if menu.open_in_search {
+    if menu.open_folder {
         // ネットワークパスは対象外（OS差が埋められないため）
         let target = path.filter(|p| crate::fs::mount::network_mount_root(p).is_none());
         let r = ui.add_enabled(target.is_some(), egui::Button::new(i18n::t().explorer_open_this_folder_menu()));
@@ -4082,14 +4066,6 @@ fn real_tree_context_menu(ui: &mut egui::Ui, path: Option<&PathBuf>, menu: TreeM
         if r.clicked() {
             if let Some(p) = target {
                 crate::translate::open_in_file_manager(p);
-            }
-            ui.close();
-        }
-        let r = ui.add_enabled(target.is_some(), egui::Button::new(i18n::t().explorer_open_in_search_menu()));
-        help_tip_auto(&r, &i18n::t().help_open_in_search());
-        if r.clicked() {
-            if let Some(p) = target {
-                *action = TreeAction::OpenInSearch(p.clone());
             }
             ui.close();
         }
@@ -4509,7 +4485,7 @@ impl NekoviewApp {
     fn real_tree_menu(&self) -> TreeMenu {
         TreeMenu {
             add_to_virtual: self.folder_pane_tab == FolderPaneTab::VirtualFolders,
-            open_in_search: self.folder_pane_tab.shows_real_dir(),
+            open_folder: self.folder_pane_tab.shows_real_dir(),
             sort: true,
         }
     }

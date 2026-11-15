@@ -1708,9 +1708,9 @@ impl Lang {
     /// （OS標準ファイラーで現在表示中ディレクトリ=PWDを開く）
     pub fn explorer_open_folder_menu(self) -> &'static str {
         match self {
-            Lang::Japanese => "現在のフォルダを開く",
-            Lang::English  => "Open Current Folder",
-            Lang::Chinese  => "打开当前文件夹",
+            Lang::Japanese => "現在のフォルダをファイラーで開く",
+            Lang::English  => "Open Current Folder in File Manager",
+            Lang::Chinese  => "在文件管理器中打开当前文件夹",
         }
     }
 
@@ -1803,18 +1803,9 @@ impl Lang {
     /// （OS標準ファイラーで、右クリックしたフォルダ自身を開く）
     pub fn explorer_open_this_folder_menu(self) -> &'static str {
         match self {
-            Lang::Japanese => "このフォルダを開く",
-            Lang::English  => "Open This Folder",
-            Lang::Chinese  => "打开此文件夹",
-        }
-    }
-
-    /// 実フォルダ/仮想フォルダタブのフォルダ右クリック「このフォルダを検索タブで開く」
-    pub fn explorer_open_in_search_menu(self) -> &'static str {
-        match self {
-            Lang::Japanese => "このフォルダを検索タブで開く",
-            Lang::English  => "Open This Folder in Search Tab",
-            Lang::Chinese  => "在搜索标签中打开此文件夹",
+            Lang::Japanese => "このフォルダをファイラーで開く",
+            Lang::English  => "Open This Folder in File Manager",
+            Lang::Chinese  => "在文件管理器中打开此文件夹",
         }
     }
 
@@ -10865,69 +10856,10 @@ impl Lang {
         }
     }
 
-    pub fn help_open_in_search(self) -> HelpDoc {
-        match self {
-            Lang::Japanese => HelpDoc {
-                title: "このフォルダを検索タブで開く",
-                sections: &[
-                    (
-                        "",
-                        "このフォルダを検索の基点フォルダに設定して、検索タブへ移る。\n\
-                         検索タブのツリーも、このフォルダまで展開して選択表示になる。",
-                    ),
-                    (
-                        "■ 保持されるもの",
-                        "名前・サイズ・日付などの検索条件と、検索結果の履歴はそのまま。基点フォルダだけが置き換わる。",
-                    ),
-                    (
-                        "■ グレーアウトする場合",
-                        "ネットワークパス上のフォルダ、実フォルダに辿れない仮想ノード（ルート・リンク切れ）。",
-                    ),
-                ],
-            },
-            Lang::English => HelpDoc {
-                title: "Open This Folder in Search Tab",
-                sections: &[
-                    (
-                        "",
-                        "Sets this folder as the search base folder and switches to the Search tab.\n\
-                         The Search tab's tree is also expanded to this folder and selected.",
-                    ),
-                    (
-                        "■ What is kept",
-                        "Search conditions (name, size, date, ...) and the search history stay as they are. Only the base folder is replaced.",
-                    ),
-                    (
-                        "■ When it is grayed out",
-                        "Folders on a network path, and virtual nodes without a real folder (root, broken links).",
-                    ),
-                ],
-            },
-            Lang::Chinese => HelpDoc {
-                title: "在搜索标签中打开此文件夹",
-                sections: &[
-                    (
-                        "",
-                        "将此文件夹设为搜索基点文件夹并切换到搜索标签。\n\
-                         搜索标签中的目录树也会展开到此文件夹并显示为选中状态。",
-                    ),
-                    (
-                        "■ 保留的内容",
-                        "名称、大小、日期等搜索条件和搜索历史保持不变，只替换基点文件夹。",
-                    ),
-                    (
-                        "■ 变灰的情况",
-                        "网络路径上的文件夹，以及没有实际文件夹的虚拟节点（根、链接失效）。",
-                    ),
-                ],
-            },
-        }
-    }
-
     pub fn help_card_open_folder(self) -> HelpDoc {
         match self {
             Lang::Japanese => HelpDoc {
-                title: "現在のフォルダを開く",
+                title: "現在のフォルダをファイラーで開く",
                 sections: &[(
                     "",
                     "OS標準のファイラーで、いま表示しているフォルダ（現在のフォルダ）を開く。\n\
@@ -11095,7 +11027,7 @@ impl Lang {
     pub fn help_open_this_folder(self) -> HelpDoc {
         match self {
             Lang::Japanese => HelpDoc {
-                title: "このフォルダを開く",
+                title: "このフォルダをファイラーで開く",
                 sections: &[
                     (
                         "",

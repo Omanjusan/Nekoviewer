@@ -68,8 +68,6 @@ enum TreeAction {
     DoubleClick(PathBuf),
     /// 実ツリー右クリック「仮想フォルダに追加する」
     AddToVirtual(PathBuf),
-    /// 実ツリー右クリック「このフォルダを検索タブで開く」
-    OpenInSearch(PathBuf),
     /// 実ツリー右クリック「ソート条件設定」（ツリー全体の設定でパスに依存しない）
     SortSetting,
 }
@@ -1209,9 +1207,6 @@ pub struct NekoviewApp {
     pub(crate) tag_panel_width: f32,
     /// タグ機能・レイアウト器: タグパネルの編集モード展開状態（上側ツマミでさらに中央側へ拡張）。
     pub(crate) tag_panel_edit_expanded: bool,
-    /// アイテム一覧の右クリック「このフォルダを検索タブで開く」の要求。描画の途中でタブを
-    /// 切り替えないよう、一覧の描画後に消化する（draw_archive_grid の末尾）。
-    pub(crate) pending_open_in_search: Option<PathBuf>,
     /// 「選択した項目を維持したままファイラーで開く」複数選択時のダイアログ状態
     reveal_dialog: Option<reveal_ui::RevealDialogState>,
     /// ファイラー呼び出し（別スレッド）の結果待ち
@@ -1914,7 +1909,6 @@ impl NekoviewApp {
             tag_panel_open,
             tag_panel_width: 280.0,
             tag_panel_edit_expanded: false,
-            pending_open_in_search: None,
             reveal_dialog: None,
             reveal_pending: Vec::new(),
             tag_main_options,
