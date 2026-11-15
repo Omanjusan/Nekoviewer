@@ -114,6 +114,17 @@ impl NekoviewApp {
             },
             "loading_shown": self.scan_loading_visible(),
             "form_text": self.search_form.new_text,
+            // 現在のフォルダ表示の重複マーカーの件数（遡及検出が済んだかの目安）
+            "dir_markers": self.dir_markers.len(),
+            // 検索結果（新モード）で、重複マーカーのアイコンが出るファイル: {ファイル名: アイコン名}
+            "cross_markers": self
+                .archives
+                .iter()
+                .filter_map(|p| {
+                    let icon = self.cross_marker_icon(p)?;
+                    Some((p.display().to_string(), format!("{icon:?}")))
+                })
+                .collect::<std::collections::BTreeMap<_, _>>(),
             "virtual_node": self.viewing_virtual_node,
             "goto_menu": self.goto_virtual_menu.as_ref().map(|m| m.len()),
             "virtual_ids": self

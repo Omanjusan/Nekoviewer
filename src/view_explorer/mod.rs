@@ -272,10 +272,18 @@ pub(crate) struct SearchResultEntry {
     pub restored: bool,
     /// 保存ファイルの行の保存時刻（unix秒）。検索条件の履歴ファイルの行と対応する。
     pub saved_at: Option<i64>,
+    /// 新モードの結果: `hits` と同じ並びのファイルID（重複マーカーの引き当てに使う）。旧モードの行は空。
+    pub hit_ids: Vec<u64>,
+    /// セッション内で一意な行の識別子（0 は未割り当て）。検索タブへ戻ったときに、直前に見ていた行を探す。
+    pub uid: u64,
 }
 
 /// 検索結果を履歴の先頭に追加する（新しい実行が最上位に来て、既存分は下に送られる）。
-pub(crate) fn push_search_result(history: &mut Vec<SearchResultEntry>, entry: SearchResultEntry) {
+pub(crate) fn push_search_result(history: &mut Vec<SearchResultEntry>, mut entry: SearchResultEntry) {
+    static NEXT_UID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    if entry.uid == 0 {
+        entry.uid = NEXT_UID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
     history.insert(0, entry);
 }
 
@@ -1449,6 +1457,11 @@ pub struct NekoviewApp {
     /// 新モードの検索ジョブ（実行中のみSome）。タブを切り替えても、アプリ本体が持つので継続する。
     /// 結果は履歴の実行中エントリ（`running`）へ溜まる。
     search_job: Option<crate::ledger_search::LedgerSearchJob>,
+    /// 新モードの検索結果の各ファイルの重複マーカー（保存済みの分を、ファイルIDで読んだもの。キー = フルパス）。
+    /// 検索タブで新モードの結果を表示している間だけ持つ。読み取り専用の表示で、検出や照合は動かさない。
+    cross_markers: HashMap<PathBuf, crate::duplicate_marker::DirMarker>,
+    /// 検索タブを離れたときに見ていた履歴の行（`SearchResultEntry::uid`）。検索タブへ戻ったとき、その行の結果を出し直す。
+    search_resume_uid: Option<u64>,
     /// 新モードの「注意点」ダイアログを開いているか。
     search_notice_open: bool,
     /// Some(_) の間、中央グリッドは実ディレクトリではなく選択中の検索結果
@@ -2001,6 +2014,8 @@ impl NekoviewApp {
             search_pending_form: None,
             search_pending_saved_at: None,
             search_job: None,
+            cross_markers: HashMap::new(),
+            search_resume_uid: None,
             search_notice_open: false,
             viewing_search: None,
             explorer_cols: 1,

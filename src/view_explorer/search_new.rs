@@ -56,8 +56,9 @@ impl SearchResultEntry {
     }
 
     /// 実行中エントリへ、ジョブの途中経過を取り込む（ヒットの追記・進捗・外した件数）。
-    pub(super) fn absorb_progress(&mut self, new_hits: &[PathBuf], progress: Option<(usize, usize)>, unconfirmed: usize) {
+    pub(super) fn absorb_progress(&mut self, new_hits: &[PathBuf], new_ids: &[u64], progress: Option<(usize, usize)>, unconfirmed: usize) {
         self.hits.extend_from_slice(new_hits);
+        self.hit_ids.extend_from_slice(new_ids);
         self.progress = progress;
         self.unconfirmed = unconfirmed;
         self.refresh_new_label();
@@ -120,15 +121,16 @@ impl NekoviewApp {
         let Some(job) = self.search_job.as_mut() else { return };
         let polled = job.poll();
         let new_paths: Vec<PathBuf> = job.hits()[polled.new_hits.clone()].to_vec();
+        let new_ids: Vec<u64> = job.hit_ids()[polled.new_hits.clone()].to_vec();
         let (progress, unconfirmed) = (job.progress(), job.unconfirmed());
         let Some(idx) = self.search_history.iter().position(|e| e.running) else {
             // 受け皿のエントリが無い（想定外）。ジョブだけ残らないよう捨てる。
             self.search_job = None;
             return;
         };
-        self.search_history[idx].absorb_progress(&new_paths, progress, unconfirmed);
+        self.search_history[idx].absorb_progress(&new_paths, &new_ids, progress, unconfirmed);
         if self.viewing_new_search(idx) && !new_paths.is_empty() {
-            self.append_search_view_hits(new_paths);
+            self.append_search_view_hits(new_paths, &new_ids);
         }
         if polled.finished {
             self.search_job = None;
@@ -154,7 +156,8 @@ impl NekoviewApp {
     }
 
     /// 表示中の検索結果の一覧へヒットを追記する（タグ検索の追記と同じ扱い）。
-    fn append_search_view_hits(&mut self, paths: Vec<PathBuf>) {
+    fn append_search_view_hits(&mut self, paths: Vec<PathBuf>, ids: &[u64]) {
+        self.add_cross_markers(&paths, ids);
         if let Some(db) = self.spread_db.clone() {
             self.cross_view_favorite_markers.extend(crate::favorites::memberships_for_paths(&db, &paths));
             self.saved_archive_settings.extend(crate::spread_state::saved_settings_for_paths(&db, &paths));
@@ -213,9 +216,10 @@ mod tests {
     #[test]
     fn entry_collects_hits_and_finishes_with_a_refreshed_label() {
         let mut e = SearchResultEntry { form: form("x", "", ""), running: true, ..Default::default() };
-        e.absorb_progress(&[PathBuf::from("/a/1.zip"), PathBuf::from("/a/2.zip")], Some((50, 100)), 0);
-        e.absorb_progress(&[PathBuf::from("/a/3.zip")], Some((90, 100)), 1);
+        e.absorb_progress(&[PathBuf::from("/a/1.zip"), PathBuf::from("/a/2.zip")], &[1, 2], Some((50, 100)), 0);
+        e.absorb_progress(&[PathBuf::from("/a/3.zip")], &[3], Some((90, 100)), 1);
         assert_eq!(e.hits.len(), 3);
+        assert_eq!(e.hit_ids, vec![1, 2, 3], "ファイルIDも、ヒットと同じ並びで溜まる");
         assert_eq!((e.progress, e.unconfirmed), (Some((90, 100)), 1));
         assert!(e.running && e.label.contains("90/100") && e.label.contains('3'));
         e.finish_run(false);
@@ -224,7 +228,7 @@ mod tests {
         assert_eq!(e.hits.len(), 3, "完了後もヒットは残る");
 
         let mut c = SearchResultEntry { form: form("x", "", ""), running: true, ..Default::default() };
-        c.absorb_progress(&[PathBuf::from("/a/1.zip")], Some((5, 100)), 0);
+        c.absorb_progress(&[PathBuf::from("/a/1.zip")], &[1], Some((5, 100)), 0);
         c.finish_run(true);
         assert!(!c.running && c.cancelled);
         assert_eq!(c.hits.len(), 1, "中断してもそれまでのヒットは残る");

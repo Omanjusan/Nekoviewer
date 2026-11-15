@@ -164,6 +164,7 @@ pub(super) fn evict_old_hits(history: &mut [SearchResultEntry], budget: usize, k
         }
         total -= e.hits.len();
         e.hits = Vec::new();
+        e.hit_ids = Vec::new();
         e.restored = true;
         e.progress = None;
         e.cancelled = false;
@@ -195,6 +196,9 @@ impl NekoviewApp {
     /// 実行中の検索は止めない（その行は、元のモードへ戻ると、また一覧に出る）。
     pub(super) fn clear_search_display(&mut self) {
         self.search_selected = None;
+        // 明示的にクリアしたので、検索タブへ戻っても出し直さない。
+        self.search_resume_uid = None;
+        self.cross_markers.clear();
         if self.viewing_search.take().is_none() {
             return;
         }

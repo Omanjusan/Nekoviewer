@@ -964,7 +964,8 @@ impl NekoviewApp {
                 FolderPaneTab::Favorites => self.restore_favorites_position(),
                 FolderPaneTab::VirtualFolders => self.restore_virtual_position(),
                 FolderPaneTab::TagSearch => self.enter_tag_search_view(),
-                FolderPaneTab::RealTree | FolderPaneTab::Search => {}
+                FolderPaneTab::Search => self.resume_search_view(),
+                FolderPaneTab::RealTree => {}
             }
         }
     }

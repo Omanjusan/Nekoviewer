@@ -318,6 +318,8 @@ pub struct JobPoll {
 pub struct LedgerSearchJob {
     scan: Option<LedgerScan>,
     hits: Vec<PathBuf>,
+    /// `hits` と同じ並びのファイルID（重複マーカーなど、IDで引く情報を表示するため）。
+    hit_ids: Vec<u64>,
     unconfirmed: usize,
     progress: Option<(usize, usize)>,
     state: JobState,
@@ -329,7 +331,7 @@ impl LedgerSearchJob {
     }
 
     fn from_scan(scan: LedgerScan) -> Self {
-        Self { scan: Some(scan), hits: Vec::new(), unconfirmed: 0, progress: None, state: JobState::Running }
+        Self { scan: Some(scan), hits: Vec::new(), hit_ids: Vec::new(), unconfirmed: 0, progress: None, state: JobState::Running }
     }
 
     /// 走査スレッドからのメッセージを全部受け取って取り込む。
@@ -343,6 +345,7 @@ impl LedgerSearchJob {
                         for h in hits {
                             if h.confirmed {
                                 self.hits.push(h.path);
+                                self.hit_ids.push(h.id);
                             } else {
                                 self.unconfirmed += 1;
                             }
@@ -392,6 +395,11 @@ impl LedgerSearchJob {
     /// 確認済みのヒット（到着順）。前回確認で見つからなかったものは含まない。
     pub fn hits(&self) -> &[PathBuf] {
         &self.hits
+    }
+
+    /// `hits()` と同じ並びのファイルID。
+    pub fn hit_ids(&self) -> &[u64] {
+        &self.hit_ids
     }
 
     /// 前回の確認で見つからなかったため、一覧から外した件数。
@@ -728,6 +736,7 @@ mod tests {
         let polls = drive(&mut job);
         assert_eq!(job.state(), JobState::Done);
         assert_eq!(job_names(&job), vec!["a.zip", "b.zip"]);
+        assert_eq!(job.hit_ids().len(), job.hits().len(), "ファイルIDは、ヒットと同じ並び・同じ件数");
         assert_eq!(job.progress(), Some((3, 3)));
         assert_eq!(job.unconfirmed(), 0);
         assert_eq!(polls.iter().filter(|p| p.finished).count(), 1, "完了は1回だけ通知される");

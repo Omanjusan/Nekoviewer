@@ -206,9 +206,12 @@ impl NekoviewApp {
         self.saved_archive_settings = self.spread_db.as_ref()
             .map(|db| crate::spread_state::saved_settings_for_paths(db, &self.archives))
             .unwrap_or_default();
+        // 新モードの結果なら、保存済みの重複マーカーを読み直す（読み取り専用の表示用）。
+        let is_new = entry.form.mode == SearchMode::New;
+        self.reload_cross_markers(idx);
         self.raw_image_files.clear();
         // 新モード（台帳）の結果は単体画像も含みうる。追記時（append_search_view_hits）と同じ扱いにする。
-        if entry.form.mode == SearchMode::New {
+        if is_new {
             self.raw_image_files.extend(self.archives.iter().filter(|p| crate::fs::archive::is_supported_image_file(p)).cloned());
         }
         // 階層概念を持ち込まない平坦一覧という契約のため、サブフォルダ一覧も明示的に空にする
@@ -238,8 +241,24 @@ impl NekoviewApp {
         if self.viewing_search.is_none() {
             return;
         }
+        // 検索タブへ戻ったときに、いま見ている行の結果を出し直せるよう、行を覚えておく。
+        self.search_resume_uid = self.viewing_search.and_then(|i| self.search_history.get(i)).map(|e| e.uid).filter(|&u| u != 0);
         self.viewing_search = None;
+        self.cross_markers.clear();
         self.start_scan();
+    }
+
+    /// 検索タブへ戻ったとき: 離れる直前に見ていた履歴の行（結果を持つ行）の結果を、出し直す。
+    /// 別のモードへ切り替わっていた・行が無くなっていた・結果を持たない行になっていた場合は、何もしない。
+    pub(super) fn resume_search_view(&mut self) {
+        let Some(uid) = self.search_resume_uid.take() else { return };
+        let Some(idx) = self.search_history.iter().position(|e| e.uid == uid) else { return };
+        let entry = &self.search_history[idx];
+        if entry.restored || entry.form.mode != self.search_form.mode {
+            return;
+        }
+        self.search_selected = Some(idx);
+        self.enter_search_view(idx);
     }
 
     /// 検索タブ内でドライブをクリックした時の処理。ツリー表示のルートを実ツリーと同じ要領で

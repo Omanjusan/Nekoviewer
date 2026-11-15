@@ -391,6 +391,12 @@ fn goto_real_opens_the_files_folder_in_the_folders_tab_and_selects_the_file() {
     assert_eq!(s["viewing"], Value::Null, "実フォルダの表示に戻っている");
     // 検索の履歴は残っている（検索タブへ戻って見直せる）
     assert_eq!(s["history"].as_array().unwrap().len(), 1);
+
+    // 検索タブへ戻ると、離れる直前に見ていた検索結果が、そのまま出る（リセットされない）
+    e.send(&["tab search"]);
+    let s = e.wait_search("search results resumed", Duration::from_secs(10), |s| s["tab"] == "search" && s["viewing"] == 0 && s["archives"] == 12);
+    assert_eq!(s["selected"], 0);
+    assert_eq!(s["history"].as_array().unwrap().len(), 1, "履歴も残っている");
 }
 
 /// 検索条件の履歴ファイル（新モード）。アプリの設定フォルダ直下。
@@ -599,4 +605,54 @@ fn goto_virtual_opens_the_registered_virtual_folder_and_chooses_among_several() 
         s["tab"] == "virtual" && s["virtual_node"] == ids[1] && s["scan_state"] == "done" && s["cursor_file"] == "alpha_002.png"
     });
     assert_eq!(s["goto_menu"], Value::Null, "選んだらメニューは閉じる");
+    // 仮想フォルダタブから検索タブへ戻っても、検索結果は出し直される
+    e.send(&["tab search"]);
+    e.wait_search("results resumed after the virtual tab", Duration::from_secs(10), |s| {
+        s["tab"] == "search" && s["viewing"] == 0 && s["archives"] == 12
+    });
+}
+
+/// 同じ内容のファイルを別フォルダに作る（`seed` が同じなら内容も同じ）。
+fn make_file_in(dir: &Path, name: &str, seed: u32) {
+    std::fs::create_dir_all(dir).unwrap();
+    let img = image::RgbImage::from_fn(24, 24, |x, y| {
+        image::Rgb([(x.wrapping_add(seed) % 251) as u8, (y.wrapping_mul(7).wrapping_add(seed) % 241) as u8, (seed % 233) as u8])
+    });
+    img.save(dir.join(name)).unwrap();
+}
+
+#[test]
+#[ignore = "needs Xephyr + GPU rendering; run explicitly"]
+fn search_results_show_saved_duplicate_markers_read_only() {
+    if skip() { return; }
+    let mut e = Env::new("search-dup-markers");
+    let dir1 = e.files_dir();
+    let dir2 = e.root.join("files2");
+    // 同じ内容の dup_x.png を2つのフォルダに置く。dup_y.png は1つだけ
+    make_file_in(&dir1, "dup_x.png", 11);
+    make_file_in(&dir2, "dup_x.png", 11);
+    make_file_in(&dir1, "dup_y.png", 99);
+    e.launch();
+    // 2つのフォルダを順に開く（ID解決と、遡及検出での重複マーカーの記録は、実アプリの経路どおり）
+    let open1 = format!("open {}", dir1.display());
+    e.send(&["tab real", &open1]);
+    e.wait_search("first folder registered", Duration::from_secs(60), |s| s["ledger_total"].as_u64().unwrap_or(0) >= 2);
+    let open2 = format!("open {}", dir2.display());
+    e.send(&[&open2]);
+    // 後から開いたフォルダのファイルが再取得側になり、マーカーが記録される
+    e.wait_search("duplicate marker recorded", Duration::from_secs(60), |s| {
+        s["current_dir"].as_str().is_some_and(|d| d.ends_with("/files2")) && s["dir_markers"].as_u64().unwrap_or(0) >= 1
+    });
+
+    // 検索すると、保存済みの重複マーカーが、読み取り専用で結果に出る
+    e.send(&["tab search", "search-text dup_", "search-start"]);
+    let s = e.wait_search("search done", Duration::from_secs(30), |s| {
+        s["history"].as_array().is_some_and(|h| h.len() == 1 && h[0]["running"] == false) && s["archives"] == 3
+    });
+    let markers = s["cross_markers"].as_object().unwrap();
+    let find = |suffix: &str| markers.iter().find(|(k, _)| k.ends_with(suffix)).map(|(_, v)| v.as_str().unwrap().to_string());
+    assert_eq!(find("/files2/dup_x.png").as_deref(), Some("Reacquired"), "後から登録した側は再取得: {markers:?}");
+    assert_eq!(find("/files/dup_x.png").as_deref(), Some("Elsewhere"), "元の側は旧ファイル側（他に重複あり）: {markers:?}");
+    assert_eq!(find("/files/dup_y.png"), None, "重複の無いファイルには付かない");
+    assert_eq!(markers.len(), 2);
 }
