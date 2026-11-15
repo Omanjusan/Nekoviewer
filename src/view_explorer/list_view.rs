@@ -84,7 +84,7 @@ fn place_column_shown(similar: bool, search: bool, favorites: bool, tag_search: 
 /// `goto` は横断一覧のときだけ出す「実フォルダ」「仮想フォルダ」の移動アイコン列（出さないときは幅 0）。
 /// `place_w` は横断一覧のときだけ出す「場所」列、`compare_w` は類似ファイル一覧のときだけ出す「完全比較」列の幅（出さないときは 0）。
 fn column_widths(thumb_w: f32, cols: &ListColumns, place_w: f32, compare_w: f32, goto: bool) -> [f32; COL_N] {
-    let (real_go_w, virt_go_w) = if goto { (REAL_GO_COL_W, VIRT_GO_COL_W) } else { (0.0, 0.0) };
+    let (real_go_w, virt_go_w) = if goto { (cols.width(7), cols.width(8)) } else { (0.0, 0.0) };
     [
         ERROR_COL_W,
         cols.width(0),
@@ -123,12 +123,6 @@ const ATTR_COL_W: f32 = 126.0;
 
 /// 「ファイラー」列の幅（px。固定）。見出しの文字が収まる幅。
 const REVEAL_COL_W: f32 = 76.0;
-
-/// 横断一覧の「実」列（実フォルダへの移動アイコン）の幅（px。固定）。アイコン1つと短い見出しが収まる幅。
-const REAL_GO_COL_W: f32 = 34.0;
-
-/// 横断一覧の「仮想」列（仮想フォルダへの移動アイコン）の幅（px。固定）。
-const VIRT_GO_COL_W: f32 = 42.0;
 
 /// 類似ファイル一覧の「完全比較」列の幅（px。固定）。
 const COMPARE_COL_W: f32 = 120.0;
@@ -186,7 +180,7 @@ impl Col {
     /// 幅を変えられる列の `ListColumns` 上の番号。サムネ列は行の高さで決まるので変えられない。
     fn resize_index(self) -> Option<usize> {
         match self {
-            Col::Error | Col::Reveal | Col::RealGo | Col::VirtGo | Col::Thumb | Col::Place | Col::Compare | Col::SourceRating | Col::Detail | Col::Attr => None,
+            Col::Error | Col::Reveal | Col::Thumb | Col::Place | Col::Compare | Col::SourceRating | Col::Detail | Col::Attr => None,
             Col::Dup => Some(0),
             Col::Name => Some(1),
             Col::Size => Some(2),
@@ -194,6 +188,8 @@ impl Col {
             Col::Rating => Some(4),
             Col::Visits => Some(5),
             Col::Pages => Some(6),
+            Col::RealGo => Some(7),
+            Col::VirtGo => Some(8),
         }
     }
 }
@@ -1075,7 +1071,7 @@ mod tests {
         let with = column_widths(40.0, &ListColumns::default(), PLACE_COL_W, COMPARE_COL_W, true);
         assert_eq!(
             with.iter().sum::<f32>() - widths.iter().sum::<f32>(),
-            PLACE_COL_W + COMPARE_COL_W + REAL_GO_COL_W + VIRT_GO_COL_W,
+            PLACE_COL_W + COMPARE_COL_W + crate::view_explorer::list_columns::DEFAULT_WIDTHS[7] + crate::view_explorer::list_columns::DEFAULT_WIDTHS[8],
             "横断一覧では、場所・完全比較・実フォルダ・仮想フォルダの列が増える"
         );
         assert_eq!((widths[Col::RealGo as usize], widths[Col::VirtGo as usize]), (0.0, 0.0), "通常の表示では移動アイコン列は出ない");
@@ -1086,8 +1082,8 @@ mod tests {
         let widths = column_widths(40.0, &ListColumns::default(), 0.0, 0.0, false);
         assert_eq!((widths[Col::Error as usize], widths[Col::Attr as usize]), (ERROR_COL_W, ATTR_COL_W));
         assert_eq!((Col::Error as usize, Col::Attr as usize), (0, COL_N - 1));
-        // 固定幅なので、ユーザー設定（7個。ページ数まで）の個数は変わらない
-        assert_eq!(crate::view_explorer::list_columns::COL_COUNT, 7);
+        // 固定幅なので、ユーザー設定（9個。ページ数と、実・仮想の移動アイコン列まで）の個数は変わらない
+        assert_eq!(crate::view_explorer::list_columns::COL_COUNT, 9);
         assert_eq!(widths[Col::Detail as usize], DETAIL_COL_W, "詳細は固定幅");
         assert_eq!(widths[Col::SourceRating as usize], SOURCE_RATING_COL_W, "公開評価は固定幅");
     }
