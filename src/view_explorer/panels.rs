@@ -4045,41 +4045,54 @@ impl TreeMenu {
 /// 実ツリーの右クリックメニュー。`path` が行のパス、行の外（ツリー内の余白）は None。
 /// 行の外では、ツリー全体に効く「ソート条件設定」だけが有効で、ほかはグレーアウトする。
 fn real_tree_context_menu(ui: &mut egui::Ui, path: Option<&PathBuf>, menu: TreeMenu, action: &mut TreeAction) {
+    // テーマ見出し（太字・クリック不可）＋インデントした項目。テーマ間は区切り線。
+    let mut need_separator = false;
     if menu.add_to_virtual {
-        let r = ui.add_enabled(path.is_some(), egui::Button::new(i18n::t().virtual_menu_add_from_real()));
-        help_tip_auto(&r, &i18n::t().help_tree_add_to_virtual());
-        if r.clicked() {
-            if let Some(p) = path {
-                *action = TreeAction::AddToVirtual(p.clone());
+        crate::ui_widgets::menu_theme_heading(ui, i18n::t().menu_theme_virtual_folder());
+        crate::ui_widgets::menu_theme_items(ui, |ui| {
+            let r = ui.add_enabled(path.is_some(), egui::Button::new(i18n::t().virtual_menu_add_from_real()));
+            help_tip_auto(&r, &i18n::t().help_tree_add_to_virtual());
+            if r.clicked() {
+                if let Some(p) = path {
+                    *action = TreeAction::AddToVirtual(p.clone());
+                }
+                ui.close();
             }
-            ui.close();
-        }
-        if menu.open_folder || menu.sort {
-            ui.separator();
-        }
+        });
+        need_separator = true;
     }
     if menu.open_folder {
-        // ネットワークパスは対象外（OS差が埋められないため）
-        let target = path.filter(|p| crate::fs::mount::network_mount_root(p).is_none());
-        let r = ui.add_enabled(target.is_some(), egui::Button::new(i18n::t().explorer_open_this_folder_menu()));
-        help_tip_auto(&r, &i18n::t().help_open_this_folder());
-        if r.clicked() {
-            if let Some(p) = target {
-                crate::translate::open_in_file_manager(p);
-            }
-            ui.close();
-        }
-        if menu.sort {
+        if need_separator {
             ui.separator();
         }
+        crate::ui_widgets::menu_theme_heading(ui, i18n::t().menu_theme_os_file_manager());
+        crate::ui_widgets::menu_theme_items(ui, |ui| {
+            // ネットワークパスは対象外（OS差が埋められないため）
+            let target = path.filter(|p| crate::fs::mount::network_mount_root(p).is_none());
+            let r = ui.add_enabled(target.is_some(), egui::Button::new(i18n::t().explorer_open_this_folder_menu()));
+            help_tip_auto(&r, &i18n::t().help_open_this_folder());
+            if r.clicked() {
+                if let Some(p) = target {
+                    crate::translate::open_in_file_manager(p);
+                }
+                ui.close();
+            }
+        });
+        need_separator = true;
     }
     if menu.sort {
-        let r = ui.button(i18n::t().tree_sort_menu());
-        help_tip_auto(&r, &i18n::t().help_tree_sort());
-        if r.clicked() {
-            *action = TreeAction::SortSetting;
-            ui.close();
+        if need_separator {
+            ui.separator();
         }
+        crate::ui_widgets::menu_theme_heading(ui, i18n::t().menu_theme_view());
+        crate::ui_widgets::menu_theme_items(ui, |ui| {
+            let r = ui.button(i18n::t().tree_sort_menu());
+            help_tip_auto(&r, &i18n::t().help_tree_sort());
+            if r.clicked() {
+                *action = TreeAction::SortSetting;
+                ui.close();
+            }
+        });
     }
 }
 

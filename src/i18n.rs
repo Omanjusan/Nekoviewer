@@ -3720,6 +3720,22 @@ impl Lang {
         }
     }
 
+    pub fn menu_theme_virtual_folder(self) -> &'static str {
+        match self {
+            Lang::Japanese => "仮想フォルダ",
+            Lang::English  => "Virtual Folders",
+            Lang::Chinese  => "虚拟文件夹",
+        }
+    }
+
+    pub fn menu_theme_view(self) -> &'static str {
+        match self {
+            Lang::Japanese => "表示",
+            Lang::English  => "View",
+            Lang::Chinese  => "显示",
+        }
+    }
+
     pub fn menu_theme_search(self) -> &'static str {
         match self {
             Lang::Japanese => "検索",
