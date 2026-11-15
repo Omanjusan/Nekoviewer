@@ -634,6 +634,8 @@ pub struct ViewerState {
     entry_list_rect: Option<egui::Rect>,
     /// このフレームでエントリリストが開いたばかりか（表示開始の初期位置は即時、以降のページ変更は滑らかに追従）。
     entry_list_just_opened: bool,
+    /// リスト上で押したマウスボタンを押しっぱなしか（スワイプ中にポインターがリスト外へ出ても隠さないため）。
+    entry_list_press_in: bool,
     /// フルスクリーン時ソートバーの表示状態（上端ホバーで on/off）
     fs_sort_bar_visible: bool,
     /// 仮想タイトル帯を隠す時刻（`FrameInput::time` 基準）。None = まだ初回フレームを迎えていない。
@@ -1041,6 +1043,7 @@ impl ViewerState {
             entry_list_scrolled_lo: None,
             entry_list_rect: None,
             entry_list_just_opened: false,
+            entry_list_press_in: false,
             fs_sort_bar_visible: false,
             title_band_hide_at: None,
             menubar_visible: false,
@@ -1168,6 +1171,7 @@ impl ViewerState {
             entry_list_scrolled_lo: None,
             entry_list_rect: None,
             entry_list_just_opened: false,
+            entry_list_press_in: false,
             fs_sort_bar_visible: false,
             title_band_hide_at: None,
             menubar_visible: false,
@@ -4962,6 +4966,14 @@ impl ViewerState {
         let was_visible = self.entry_list_visible;
         let screen_left = viewport_rect.min.x;
         let trigger_h = Self::hover_trigger_height(viewport_rect.height());
+        // リスト上で押し始めたボタンが押されている間（スワイプ中）は、ポインターがリスト外へ出ても隠さない。
+        let (pressed, down) = ctx.input(|i| (i.pointer.primary_pressed(), i.pointer.primary_down()));
+        if pressed && hover_pos.zip(self.entry_list_rect).is_some_and(|(p, r)| r.contains(p)) {
+            self.entry_list_press_in = true;
+        }
+        if !down {
+            self.entry_list_press_in = false;
+        }
         if let Some(pos) = hover_pos {
             // サムネバーが出ているときは、その上ではエントリリストを開かない（バー優先）。
             if !self.entry_list_visible
@@ -4971,7 +4983,10 @@ impl ViewerState {
             {
                 self.entry_list_visible = true;
                 ctx.request_repaint();
-            } else if self.entry_list_visible && pos.x > screen_left + Self::ENTRY_PANEL_W + HIDE_MARGIN {
+            } else if self.entry_list_visible
+                && !self.entry_list_press_in
+                && pos.x > screen_left + Self::ENTRY_PANEL_W + HIDE_MARGIN
+            {
                 self.entry_list_visible = false;
                 ctx.request_repaint();
             }
@@ -4991,6 +5006,29 @@ impl ViewerState {
         );
         self.entry_list_rect = Some(rect);
         self.entry_list_rect
+    }
+
+    /// エントリリストの1行（選択中は強調背景）。背景が半透明で背後の画像が透けるため、文字に影を付けて読みやすくする
+    /// （ページ数オーバーレイと同じ手法: 黒の半透明を1pxずらして下に敷く）。クリックを返す。
+    fn entry_list_row(ui: &mut egui::Ui, selected: bool, text: &str) -> egui::Response {
+        let pad = ui.spacing().button_padding;
+        let wrap_w = (ui.available_width() - pad.x * 2.0).max(1.0);
+        let font = egui::TextStyle::Button.resolve(ui.style());
+        let probe = ui.painter().layout(text.to_owned(), font.clone(), egui::Color32::WHITE, wrap_w);
+        let height = (probe.size().y + pad.y * 2.0).max(ui.spacing().interact_size.y);
+        let (rect, response) = ui.allocate_exact_size(egui::vec2(ui.available_width(), height), egui::Sense::click());
+        if ui.is_rect_visible(rect) {
+            let visuals = ui.style().interact_selectable(&response, selected);
+            if selected || response.hovered() {
+                ui.painter().rect_filled(rect, visuals.corner_radius, visuals.weak_bg_fill);
+            }
+            let galley = ui.painter().layout(text.to_owned(), font, visuals.text_color(), wrap_w);
+            let pos = egui::pos2(rect.min.x + pad.x, rect.center().y - galley.size().y / 2.0);
+            let painter = ui.painter();
+            painter.galley_with_override_text_color(pos + egui::vec2(1.0, 1.0), galley.clone(), egui::Color32::from_black_alpha(200));
+            painter.galley(pos, galley, visuals.text_color());
+        }
+        response
     }
 
     /// 左エントリリストをオーバーレイ描画する（`update_entry_list_visibility` が返した矩形に）。
@@ -5026,14 +5064,20 @@ impl ViewerState {
         });
         let mut child = ui.new_child(egui::UiBuilder::new().id_salt("entry_list_child").max_rect(inner));
         let mut scroll_area = egui::ScrollArea::vertical().id_salt("entry_list_scroll").auto_shrink([false, false]);
-        if palette_over_pointer {
-            scroll_area = scroll_area.scroll_source(egui::scroll_area::ScrollSource::NONE);
-        }
+        // スワイプ: マウスでもリストをつかんで動かせる（離した後は慣性で流れる）。サムネバーと同じ。
+        // クリックとの判別は egui 側で、一定以上動かすと行のクリック（ジャンプ）は発火しない。
+        scroll_area = if palette_over_pointer {
+            scroll_area.scroll_source(egui::scroll_area::ScrollSource::NONE)
+        } else {
+            scroll_area
+                .scroll_source(egui::scroll_area::ScrollSource::ALL)
+                .on_drag_cursor(egui::CursorIcon::Grabbing)
+        };
         let output = scroll_area.show(&mut child, |ui| {
             let mut anchor_rect = None;
             for (i, entry) in entries_snap.iter().enumerate() {
                 let is_cur = i as i32 == lo || i as i32 == hi;
-                let response = ui.selectable_label(is_cur, &entry.display_name);
+                let response = Self::entry_list_row(ui, is_cur, &entry.display_name);
                 if scroll_anchor == Some(i) {
                     anchor_rect = Some(response.rect);
                     if smooth {
@@ -7260,6 +7304,38 @@ mod sort_save_state_tests {
                 v.draw_entry_list_overlay(ui, &ctx, rect);
             }
         });
+    }
+
+    #[test]
+    fn entry_list_stays_while_swiping_even_if_the_pointer_leaves_it() {
+        let ctx = egui::Context::default();
+        let vp = tb_viewport();
+        let mut v = tb_viewer();
+        let button = |pos: egui::Pos2, pressed: bool| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        // 開く（左上のホバー域）→ 矩形が確定
+        run_entry_list_frame(&mut v, &ctx, Some(egui::pos2(10.0, 10.0)));
+        run_entry_list_frame(&mut v, &ctx, Some(egui::pos2(10.0, 300.0)));
+        let inside = egui::pos2(50.0, 300.0);
+        let outside = egui::pos2(600.0, 300.0);
+        // リスト上で押す
+        ctx.begin_pass(egui::RawInput { events: vec![egui::Event::PointerMoved(inside), button(inside, true)], ..Default::default() });
+        let _ = v.update_entry_list_visibility(&ctx, Some(inside), vp);
+        let _ = ctx.end_pass();
+        // 押したままリスト外（隠れる距離）へ出ても隠れない
+        ctx.begin_pass(egui::RawInput { events: vec![egui::Event::PointerMoved(outside)], ..Default::default() });
+        let _ = v.update_entry_list_visibility(&ctx, Some(outside), vp);
+        let _ = ctx.end_pass();
+        assert!(v.entry_list_visible);
+        // 離したあと、リスト外にいるなら隠れる
+        ctx.begin_pass(egui::RawInput { events: vec![button(outside, false)], ..Default::default() });
+        let _ = v.update_entry_list_visibility(&ctx, Some(outside), vp);
+        let _ = ctx.end_pass();
+        assert!(!v.entry_list_visible);
     }
 
     #[test]
