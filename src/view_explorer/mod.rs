@@ -909,10 +909,10 @@ pub struct NekoviewApp {
     favorite_delete_confirm: Option<u8>,
     /// お気に入りタブ右クリック「移動先を指定して再紐付け」のダイアログ状態（`relink_ui.rs`）
     relink_dialog: Option<relink_ui::RelinkDialog>,
-    /// 右クリックしたファイルの作者・グループ名（解決済み）。「この作者／グループのファイルを検索」の項目が読む（`creator_search_ui.rs`）
-    creator_menu: Option<creator_search_ui::CreatorMenuCache>,
+    /// 右クリックしたファイルの、検索の切り口になる名前（種類別・解決済み）。「タグ検索」のすだれメニューが読む（`key_search_ui.rs`）
+    key_menu: Option<key_search_ui::KeyMenuCache>,
     /// 複数候補のときの選択ダイアログ
-    creator_pick: Option<creator_search_ui::CreatorPickDialog>,
+    key_pick: Option<key_search_ui::KeyPickDialog>,
     /// 再紐付けのバックグラウンド実行（結果の受け取り口）。実行中は Some
     relink_job: Option<mpsc::Receiver<crate::identity_relink::RelinkReport>>,
     /// 複数件の「お気に入り設定から外す」の確認待ちパス
@@ -1590,7 +1590,7 @@ mod card_band_dialog_ui;
 mod card_band_paint;
 mod reveal_ui;
 mod relink_ui;
-mod creator_search_ui;
+mod key_search_ui;
 mod db_backup_ui;
 mod unreachable_clean_ui;
 mod grid_anchor;
@@ -1754,8 +1754,8 @@ impl NekoviewApp {
             favorite_dialog: None,
             favorite_delete_confirm: None,
             relink_dialog: None,
-            creator_menu: None,
-            creator_pick: None,
+            key_menu: None,
+            key_pick: None,
             relink_job: None,
             favorite_unset_confirm: None,
             db_restore_confirm: None,

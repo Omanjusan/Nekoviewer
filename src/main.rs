@@ -66,7 +66,7 @@ mod tag_source;
 mod tag_rules;
 mod tag_search;
 mod ledger_search;
-mod creator_names;
+mod search_keys;
 mod similar_search;
 mod search_history_store;
 mod tag_trial;

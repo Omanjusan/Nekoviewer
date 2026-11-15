@@ -282,7 +282,7 @@ impl NekoviewApp {
         self.draw_favorite_delete_confirm_dialog(&ctx);
         self.draw_favorite_detail_dialog(&ctx);
         self.draw_relink_dialogs(&ctx);
-        self.draw_creator_pick_dialog(&ctx);
+        self.draw_key_pick_dialog(&ctx);
         self.draw_unreachable_clean_dialogs(&ctx);
         self.draw_reveal_dialog(&ctx);
         self.draw_marker_popup(&ctx);
@@ -3149,7 +3149,7 @@ impl NekoviewApp {
         // 0ならトーストのみ表示してメニューにその3項目を出さない（お気に入り詳細設定・
         // フォルダを開くは対象外の概念が無いため無条件に出す）。
         if response.secondary_clicked() {
-            self.cache_creator_menu(path);
+            self.cache_key_menu(path);
             let raw_targets: Vec<PathBuf> = if !self.multi_selected.is_empty() {
                 self.multi_selected.iter().filter_map(|&idx| self.archives.get(idx).cloned()).collect()
             } else {
@@ -3241,7 +3241,7 @@ impl NekoviewApp {
 
             ui.separator();
             crate::ui_widgets::menu_theme_heading(ui, i18n::t().menu_theme_search());
-            self.draw_creator_search_menu_item(ui, path);
+            self.draw_key_search_menu(ui, path);
             ui.separator();
             crate::ui_widgets::menu_theme_heading(ui, i18n::t().menu_theme_os_file_manager());
             self.draw_reveal_menu_item(ui, path);

@@ -3737,17 +3737,17 @@ impl Lang {
         }
     }
 
-    // ---- 「この作者／グループのファイルを検索」（creator_search_ui.rs） ----
+    // ---- 右クリック「タグ検索」のすだれメニュー（key_search_ui.rs） ----
 
-    pub fn creator_search_menu(self) -> &'static str {
+    pub fn key_search_menu(self) -> &'static str {
         match self {
-            Lang::Japanese => "この作者／グループのファイルを検索",
-            Lang::English  => "Search Files by This Author/Group",
-            Lang::Chinese  => "搜索此作者/团体的文件",
+            Lang::Japanese => "タグ検索",
+            Lang::English  => "Tag Search",
+            Lang::Chinese  => "标签搜索",
         }
     }
 
-    pub fn creator_search_disabled_multi(self) -> &'static str {
+    pub fn key_search_disabled_multi(self) -> &'static str {
         match self {
             Lang::Japanese => "複数選択中は使えない（1つだけ選んで右クリックする）",
             Lang::English  => "Not available with multiple selection (right-click a single file)",
@@ -3755,15 +3755,23 @@ impl Lang {
         }
     }
 
-    pub fn creator_search_disabled_none(self) -> &'static str {
+    pub fn key_search_disabled_none(self) -> &'static str {
         match self {
-            Lang::Japanese => "作者・グループが見つからない（タグ未登録で、ファイル名からも判定できない）",
-            Lang::English  => "No author/group found (no tags registered and none detected from the file name)",
-            Lang::Chinese  => "未找到作者/团体（未登记标签，也无法从文件名判断）",
+            Lang::Japanese => "検索の切り口になる名前が見つからない（タグ未登録で、ファイル名からも判定できない）",
+            Lang::English  => "No searchable names found (no tags registered and none detected from the file name)",
+            Lang::Chinese  => "未找到可搜索的名称（未登记标签，也无法从文件名判断）",
         }
     }
 
-    pub fn creator_source_db(self) -> &'static str {
+    pub fn key_search_role_none(self, label: &str) -> String {
+        match self {
+            Lang::Japanese => format!("「{label}」は見つからない（タグ未登録で、ファイル名からも判定できない）"),
+            Lang::English  => format!("No \"{label}\" found (not tagged, and not detected from the file name)"),
+            Lang::Chinese  => format!("未找到“{label}”（未登记标签，也无法从文件名判断）"),
+        }
+    }
+
+    pub fn key_source_db(self) -> &'static str {
         match self {
             Lang::Japanese => "ファイルに付いているタグから",
             Lang::English  => "from the file's tags",
@@ -3771,7 +3779,7 @@ impl Lang {
         }
     }
 
-    pub fn creator_source_file_name(self) -> &'static str {
+    pub fn key_source_file_name(self) -> &'static str {
         match self {
             Lang::Japanese => "ファイル名から判定",
             Lang::English  => "detected from the file name",
@@ -3779,31 +3787,15 @@ impl Lang {
         }
     }
 
-    pub fn creator_role_author(self) -> &'static str {
+    pub fn key_pick_title(self, label: &str) -> String {
         match self {
-            Lang::Japanese => "作者",
-            Lang::English  => "Author",
-            Lang::Chinese  => "作者",
+            Lang::Japanese => format!("検索する「{label}」を選ぶ"),
+            Lang::English  => format!("Choose {label} to Search"),
+            Lang::Chinese  => format!("选择要搜索的“{label}”"),
         }
     }
 
-    pub fn creator_role_group(self) -> &'static str {
-        match self {
-            Lang::Japanese => "グループ",
-            Lang::English  => "Group",
-            Lang::Chinese  => "团体",
-        }
-    }
-
-    pub fn creator_pick_title(self) -> &'static str {
-        match self {
-            Lang::Japanese => "検索する作者／グループを選ぶ",
-            Lang::English  => "Choose Authors/Groups to Search",
-            Lang::Chinese  => "选择要搜索的作者/团体",
-        }
-    }
-
-    pub fn creator_pick_body(self) -> &'static str {
+    pub fn key_pick_body(self) -> &'static str {
         match self {
             Lang::Japanese => "チェックした名前のどれかに当たるファイルを探す（複数チェックはOR）。",
             Lang::English  => "Find files matching any of the checked names (multiple checks are OR).",
@@ -3811,7 +3803,7 @@ impl Lang {
         }
     }
 
-    pub fn creator_pick_ok(self) -> &'static str {
+    pub fn key_pick_ok(self) -> &'static str {
         match self {
             Lang::Japanese => "検索",
             Lang::English  => "Search",
@@ -3820,7 +3812,7 @@ impl Lang {
     }
 
     /// 暫定（次のフェーズで、検索タブへ移って即実行する処理に置き換える）。
-    pub fn creator_search_pending_toast(self, text: &str) -> String {
+    pub fn key_search_pending_toast(self, text: &str) -> String {
         match self {
             Lang::Japanese => format!("検索語: {text}（検索の実行は次のフェーズ）"),
             Lang::English  => format!("Search terms: {text} (search runs in the next phase)"),
