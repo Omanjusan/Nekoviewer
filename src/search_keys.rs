@@ -135,6 +135,39 @@ pub(crate) fn resolve_keys(
     out
 }
 
+/// 主要タグの取得状況（メニューのステータスボタンの表示と、案内ダイアログの出し分けに使う）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+// 画面（ステータスボタン）への配線は次のフェーズ。それまでは呼び出し元が無い。
+#[allow(dead_code)]
+pub(crate) enum KeyStatus {
+    /// メタデータ（ComicInfo.xml・meta.json）から付与されたタグで取得できている（押せない表示）。
+    Precise,
+    /// ファイル名からの簡易取得を含む、または詳細フラグが「正の情報」を持たない（案内を開ける）。
+    Simple,
+    /// どちらでも取得できない（案内を開ける）。
+    Unavailable,
+}
+
+/// キャッシュの詳細フラグが、高精度の根拠になるメタデータ（ComicInfo.xml または meta.json）を持つか。
+/// 未確認・対象外・info.txt のみは持たない扱い（info.txt は「正の情報」より優先度が低いため簡易扱い）。
+#[allow(dead_code)]
+pub(crate) fn has_precise_meta(flag: crate::neko_dir::DetailFlag) -> bool {
+    matches!(flag, crate::neko_dir::DetailFlag::Checked(k) if k.xml || k.json)
+}
+
+/// 取得状況を決める。名前が1つも無ければ取得不可。全種類がDBのタグ由来で、かつ詳細フラグが高精度の根拠を持つときだけ高精度。
+/// 種類ごとに取得元が混ざるときは、一番低い精度（簡易）に合わせる。
+#[allow(dead_code)]
+pub(crate) fn key_status(names: &[KeyName], precise_meta: bool) -> KeyStatus {
+    if names.is_empty() {
+        KeyStatus::Unavailable
+    } else if precise_meta && names.iter().all(|n| n.source == KeySource::Db) {
+        KeyStatus::Precise
+    } else {
+        KeyStatus::Simple
+    }
+}
+
 /// 新モード検索の検索文字列。語はスペース区切り（＝OR）で、空白・引用符を含む名前は `"…"` で囲む。
 /// 引用符そのものは語の区切りになるので、名前に含まれていたら空白に置き換える。
 pub(crate) fn search_text(names: &[&KeyName]) -> String {
@@ -243,6 +276,37 @@ mod tests {
         let v = from_db_tags(&[40, 20, 21, 30], &master());
         assert_eq!(names(&of_role(&v, Role::Author)), vec![(Role::Author, "Kouji"), (Role::Author, "Other")]);
         assert!(of_role(&v, Role::Parody).is_empty());
+    }
+
+    #[test]
+    fn status_is_precise_only_when_all_db_and_precise_meta() {
+        let mk = |source| KeyName { role: Role::Author, name: "A".into(), full: "A".into(), source };
+        let (db, file) = (mk(KeySource::Db), mk(KeySource::FileName));
+        // 名前が無ければ取得不可（詳細フラグに依らない）。
+        assert_eq!(key_status(&[], true), KeyStatus::Unavailable);
+        assert_eq!(key_status(&[], false), KeyStatus::Unavailable);
+        // 全部DB由来＋XML/JSONあり → 高精度。
+        assert_eq!(key_status(&[db.clone()], true), KeyStatus::Precise);
+        // 全部DB由来でも、詳細フラグが根拠を持たない（手動タグ・info.txtのみ・未確認）→ 簡易。
+        assert_eq!(key_status(&[db.clone()], false), KeyStatus::Simple);
+        // ファイル名由来が1つでも混ざれば簡易（一番低い精度に合わせる）。
+        assert_eq!(key_status(&[db.clone(), file.clone()], true), KeyStatus::Simple);
+        assert_eq!(key_status(&[file], true), KeyStatus::Simple);
+    }
+
+    #[test]
+    fn precise_meta_needs_xml_or_json_in_a_checked_flag() {
+        use crate::fs::archive::meta::DetailKinds;
+        use crate::neko_dir::DetailFlag;
+        let kinds = |xml, json, txt| DetailFlag::Checked(DetailKinds { xml, json, txt });
+        assert!(has_precise_meta(kinds(true, false, false)));
+        assert!(has_precise_meta(kinds(false, true, false)));
+        assert!(has_precise_meta(kinds(true, true, true)));
+        // info.txt（付属テキスト）のみ・何も無し・未確認・対象外は根拠にならない。
+        assert!(!has_precise_meta(kinds(false, false, true)));
+        assert!(!has_precise_meta(kinds(false, false, false)));
+        assert!(!has_precise_meta(DetailFlag::Unknown));
+        assert!(!has_precise_meta(DetailFlag::NotApplicable));
     }
 
     #[test]
