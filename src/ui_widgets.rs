@@ -1,5 +1,13 @@
 //! 画面横断で使う小物ウィジェット。
 
+/// 見出しの下の、押せる項目のインデント幅。
+const MENU_ITEM_INDENT: i8 = 14;
+
+/// 右クリックメニューで、見出しの下に並べる「押せる項目」をまとめる。左にインデントを入れて、見出し行と区別する。
+pub fn menu_theme_items<R>(ui: &mut egui::Ui, add_contents: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    egui::Frame::NONE.inner_margin(egui::Margin { left: MENU_ITEM_INDENT, ..Default::default() }).show(ui, add_contents).inner
+}
+
 /// 右クリックメニューのテーマ見出し（太字・クリック不可）。直前のテーマとの間には、呼び出し側が
 /// `ui.separator()` を置く（先頭のテーマの前には置かない）。
 pub fn menu_theme_heading(ui: &mut egui::Ui, text: &str) {

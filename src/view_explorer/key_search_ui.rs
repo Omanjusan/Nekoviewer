@@ -1,4 +1,4 @@
-//! 右クリック「タグ検索」（すだれメニュー）と、1つの種類に名前が複数あるときの選択ダイアログ。
+//! 右クリック「主要タグ検索」（すだれメニュー）と、1つの種類に名前が複数あるときの選択ダイアログ。
 //!
 //! 「タグ検索 ▶ グループ／作者／演者／キャラクター／パロディ元／イベント／言語／年月」。種類ごとに、名前が1つなら即検索、
 //! 複数なら選択ダイアログ（チェックした名前のOR）。名前の解決は `search_keys`（種類ごとに、DBのタグ優先、無ければファイル名抽出）。
@@ -56,7 +56,7 @@ impl NekoviewApp {
         self.key_menu = Some(KeyMenuCache { path: path.to_path_buf(), names });
     }
 
-    /// 「タグ検索 ▶」。名前が1つも取れていない、または複数選択中は、全体がグレー。
+    /// 「主要タグ検索 ▶」。名前が1つも取れていない、または複数選択中は、全体がグレー。
     pub(super) fn draw_key_search_menu(&mut self, ui: &mut egui::Ui, path: &Path) {
         let t = i18n::t();
         let multi = !self.multi_selected.is_empty();
@@ -91,7 +91,9 @@ impl NekoviewApp {
                 }
             })
         });
-        if !enabled {
+        if enabled {
+            top.inner.0.on_hover_text(t.key_search_menu_hover());
+        } else {
             top.inner.0.on_disabled_hover_text(if multi { t.key_search_disabled_multi() } else { t.key_search_disabled_none() });
         }
         if let Some(role) = picked {
@@ -105,9 +107,35 @@ impl NekoviewApp {
         }
     }
 
-    /// 選んだ名前で検索を始める。検索タブへ移って即実行する本体は次のフェーズ。いまは検索語をトーストで知らせるだけ。
+    /// 選んだ名前での検索を予約する。メニューのクリックはカードの描画ループの途中で呼ばれ、その中で検索タブへ移って
+    /// 一覧（`archives`）を差し替えると、描画中の添字が範囲外になる。実行は、描画が終わってから（`run_pending_key_search`）。
     fn request_key_search(&mut self, text: String) {
-        self.set_toast(i18n::t().key_search_pending_toast(&text));
+        self.key_search_pending = Some(text);
+        self.egui_ctx.request_repaint();
+    }
+
+    /// 予約された検索を実行する。画面の描画が終わった後（ダイアログ描画と同じ位置）で毎フレーム呼ぶ。
+    /// 検索タブ（新モード）へ移ってすぐ検索を始める（ワンアクション）。
+    /// 検索文字列はこの名前だけにし、サイズ条件は前回の入力が結果を黙って絞らないよう空にする。
+    /// 台帳（DB）が無ければ移らずに知らせる。別の検索が実行中なら、条件だけ入れて移り、開始はせずに知らせる
+    /// （検索は同時に1つだけ）。
+    pub(super) fn run_pending_key_search(&mut self) {
+        let Some(text) = self.key_search_pending.take() else { return };
+        let t = i18n::t();
+        if self.spread_db.is_none() {
+            self.set_toast(t.key_search_no_ledger());
+            return;
+        }
+        self.switch_folder_tab(FolderPaneTab::Search);
+        self.set_search_mode(SearchMode::New);
+        self.search_form.new_text = text;
+        self.search_form.new_size_min_mb.clear();
+        self.search_form.new_size_max_mb.clear();
+        if self.any_search_running() {
+            self.set_toast(t.key_search_busy());
+            return;
+        }
+        self.start_new_search(None);
     }
 
     /// 選択ダイアログ。1つもチェックが無いうちは「検索」がグレー。

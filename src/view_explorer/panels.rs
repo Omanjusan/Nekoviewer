@@ -283,6 +283,7 @@ impl NekoviewApp {
         self.draw_favorite_detail_dialog(&ctx);
         self.draw_relink_dialogs(&ctx);
         self.draw_key_pick_dialog(&ctx);
+        self.run_pending_key_search();
         self.draw_unreachable_clean_dialogs(&ctx);
         self.draw_reveal_dialog(&ctx);
         self.draw_marker_popup(&ctx);
@@ -3169,136 +3170,146 @@ impl NekoviewApp {
 
             // テーマ見出し（太字・クリック不可）で項目を分ける。テーマ間は区切り線。
             crate::ui_widgets::menu_theme_heading(ui, i18n::t().menu_theme_file_settings());
-            if !self.multi_selected.is_empty() {
-                let count = self.multi_selected.len();
-                let r_item = ui.button(i18n::t().favorite_detail_menu_bulk(count));
-                help_tip_auto(&r_item, &i18n::t().help_card_favorite());
-                if r_item.clicked() {
-                    self.open_favorite_detail_dialog_for_paths(raw_targets.clone());
-                    ui.close();
+            crate::ui_widgets::menu_theme_items(ui, |ui| {
+                if !self.multi_selected.is_empty() {
+                    let count = self.multi_selected.len();
+                    let r_item = ui.button(i18n::t().favorite_detail_menu_bulk(count));
+                    help_tip_auto(&r_item, &i18n::t().help_card_favorite());
+                    if r_item.clicked() {
+                        self.open_favorite_detail_dialog_for_paths(raw_targets.clone());
+                        ui.close();
+                    }
+                    if !filtered_targets.is_empty() {
+                        let fcount = filtered_targets.len();
+                        let r_item = ui.button(i18n::t().sort_condition_menu_bulk(fcount));
+                        help_tip_auto(&r_item, &i18n::t().help_card_sort());
+                        if r_item.clicked() {
+                            self.open_sort_condition_dialog_for_paths(filtered_targets.clone());
+                            ui.close();
+                        }
+                        let r_item = ui.button(i18n::t().bookmark_setting_menu_bulk(fcount));
+                        help_tip_auto(&r_item, &i18n::t().help_card_bookmark());
+                        if r_item.clicked() {
+                            self.open_bookmark_setting_dialog_for_paths(filtered_targets.clone());
+                            ui.close();
+                        }
+                        let r_item = ui.button(i18n::t().spread_setting_menu_bulk(fcount));
+                        help_tip_auto(&r_item, &i18n::t().help_card_spread());
+                        if r_item.clicked() {
+                            self.open_spread_setting_dialog_for_paths(filtered_targets.clone());
+                            ui.close();
+                        }
+                        let r_item = ui.button(i18n::t().rating_setting_menu_bulk(fcount));
+                        help_tip_auto(&r_item, &i18n::t().help_card_rating());
+                        if r_item.clicked() {
+                            self.open_rating_setting_dialog_for_paths(filtered_targets.clone());
+                            ui.close();
+                        }
+                    }
+                } else {
+                    let r_item = ui.button(i18n::t().favorite_detail_menu());
+                    help_tip_auto(&r_item, &i18n::t().help_card_favorite());
+                    if r_item.clicked() {
+                        self.open_favorite_detail_dialog_for_paths(raw_targets.clone());
+                        ui.close();
+                    }
+                    if !filtered_targets.is_empty() {
+                        let r_item = ui.button(i18n::t().sort_condition_menu());
+                        help_tip_auto(&r_item, &i18n::t().help_card_sort());
+                        if r_item.clicked() {
+                            self.open_sort_condition_dialog_for_paths(filtered_targets.clone());
+                            ui.close();
+                        }
+                        let r_item = ui.button(i18n::t().bookmark_setting_menu());
+                        help_tip_auto(&r_item, &i18n::t().help_card_bookmark());
+                        if r_item.clicked() {
+                            self.open_bookmark_setting_dialog_for_paths(filtered_targets.clone());
+                            ui.close();
+                        }
+                        let r_item = ui.button(i18n::t().spread_setting_menu());
+                        help_tip_auto(&r_item, &i18n::t().help_card_spread());
+                        if r_item.clicked() {
+                            self.open_spread_setting_dialog_for_paths(filtered_targets.clone());
+                            ui.close();
+                        }
+                        let r_item = ui.button(i18n::t().rating_setting_menu());
+                        help_tip_auto(&r_item, &i18n::t().help_card_rating());
+                        if r_item.clicked() {
+                            self.open_rating_setting_dialog_for_paths(filtered_targets.clone());
+                            ui.close();
+                        }
+                    }
                 }
-                if !filtered_targets.is_empty() {
-                    let fcount = filtered_targets.len();
-                    let r_item = ui.button(i18n::t().sort_condition_menu_bulk(fcount));
-                    help_tip_auto(&r_item, &i18n::t().help_card_sort());
-                    if r_item.clicked() {
-                        self.open_sort_condition_dialog_for_paths(filtered_targets.clone());
-                        ui.close();
-                    }
-                    let r_item = ui.button(i18n::t().bookmark_setting_menu_bulk(fcount));
-                    help_tip_auto(&r_item, &i18n::t().help_card_bookmark());
-                    if r_item.clicked() {
-                        self.open_bookmark_setting_dialog_for_paths(filtered_targets.clone());
-                        ui.close();
-                    }
-                    let r_item = ui.button(i18n::t().spread_setting_menu_bulk(fcount));
-                    help_tip_auto(&r_item, &i18n::t().help_card_spread());
-                    if r_item.clicked() {
-                        self.open_spread_setting_dialog_for_paths(filtered_targets.clone());
-                        ui.close();
-                    }
-                    let r_item = ui.button(i18n::t().rating_setting_menu_bulk(fcount));
-                    help_tip_auto(&r_item, &i18n::t().help_card_rating());
-                    if r_item.clicked() {
-                        self.open_rating_setting_dialog_for_paths(filtered_targets.clone());
-                        ui.close();
-                    }
-                }
-            } else {
-                let r_item = ui.button(i18n::t().favorite_detail_menu());
-                help_tip_auto(&r_item, &i18n::t().help_card_favorite());
-                if r_item.clicked() {
-                    self.open_favorite_detail_dialog_for_paths(raw_targets.clone());
-                    ui.close();
-                }
-                if !filtered_targets.is_empty() {
-                    let r_item = ui.button(i18n::t().sort_condition_menu());
-                    help_tip_auto(&r_item, &i18n::t().help_card_sort());
-                    if r_item.clicked() {
-                        self.open_sort_condition_dialog_for_paths(filtered_targets.clone());
-                        ui.close();
-                    }
-                    let r_item = ui.button(i18n::t().bookmark_setting_menu());
-                    help_tip_auto(&r_item, &i18n::t().help_card_bookmark());
-                    if r_item.clicked() {
-                        self.open_bookmark_setting_dialog_for_paths(filtered_targets.clone());
-                        ui.close();
-                    }
-                    let r_item = ui.button(i18n::t().spread_setting_menu());
-                    help_tip_auto(&r_item, &i18n::t().help_card_spread());
-                    if r_item.clicked() {
-                        self.open_spread_setting_dialog_for_paths(filtered_targets.clone());
-                        ui.close();
-                    }
-                    let r_item = ui.button(i18n::t().rating_setting_menu());
-                    help_tip_auto(&r_item, &i18n::t().help_card_rating());
-                    if r_item.clicked() {
-                        self.open_rating_setting_dialog_for_paths(filtered_targets.clone());
-                        ui.close();
-                    }
-                }
-            }
+            });
 
             ui.separator();
             crate::ui_widgets::menu_theme_heading(ui, i18n::t().menu_theme_search());
-            self.draw_key_search_menu(ui, path);
+            crate::ui_widgets::menu_theme_items(ui, |ui| {
+                self.draw_key_search_menu(ui, path);
+            });
             ui.separator();
             crate::ui_widgets::menu_theme_heading(ui, i18n::t().menu_theme_os_file_manager());
-            self.draw_reveal_menu_item(ui, path);
-            if self.folder_pane_tab.shows_real_dir() {
-                let r_item = ui.button(i18n::t().explorer_open_folder_menu());
-                help_tip_auto(&r_item, &i18n::t().help_card_open_folder());
-                if r_item.clicked() {
-                    if let Some(dir) = &self.viewing_dir {
-                        crate::translate::open_in_file_manager(dir);
+            crate::ui_widgets::menu_theme_items(ui, |ui| {
+                self.draw_reveal_menu_item(ui, path);
+                if self.folder_pane_tab.shows_real_dir() {
+                    let r_item = ui.button(i18n::t().explorer_open_folder_menu());
+                    help_tip_auto(&r_item, &i18n::t().help_card_open_folder());
+                    if r_item.clicked() {
+                        if let Some(dir) = &self.viewing_dir {
+                            crate::translate::open_in_file_manager(dir);
+                        }
+                        ui.close();
                     }
-                    ui.close();
-                }
-            } else {
-                // お気に入り/検索の横断一覧は「現在のフォルダ」を持たないので、カードごとの親フォルダを開く。
-                // 複数選択中・ネットワークパス・親が存在しない場合はグレー（存在確認はメニューを開いている間だけ）。
-                let parent = path.parent().filter(|d| {
-                    self.multi_selected.is_empty()
-                        && crate::fs::mount::network_mount_root(d).is_none()
-                        && d.is_dir()
-                });
-                let r_item = ui.add_enabled(
-                    parent.is_some(),
-                    egui::Button::new(i18n::t().explorer_open_parent_folder_menu()),
-                );
-                help_tip_auto(&r_item, &i18n::t().help_open_parent_folder());
-                if r_item.clicked() {
-                    if let Some(dir) = parent {
-                        crate::translate::open_in_file_manager(dir);
+                } else {
+                    // お気に入り/検索の横断一覧は「現在のフォルダ」を持たないので、カードごとの親フォルダを開く。
+                    // 複数選択中・ネットワークパス・親が存在しない場合はグレー（存在確認はメニューを開いている間だけ）。
+                    let parent = path.parent().filter(|d| {
+                        self.multi_selected.is_empty()
+                            && crate::fs::mount::network_mount_root(d).is_none()
+                            && d.is_dir()
+                    });
+                    let r_item = ui.add_enabled(
+                        parent.is_some(),
+                        egui::Button::new(i18n::t().explorer_open_parent_folder_menu()),
+                    );
+                    help_tip_auto(&r_item, &i18n::t().help_open_parent_folder());
+                    if r_item.clicked() {
+                        if let Some(dir) = parent {
+                            crate::translate::open_in_file_manager(dir);
+                        }
+                        ui.close();
                     }
-                    ui.close();
                 }
-            }
+            });
 
             ui.separator();
             crate::ui_widgets::menu_theme_heading(ui, i18n::t().menu_theme_tag_learning());
-            self.draw_tag_learn_menu_item(ui, path);
+            crate::ui_widgets::menu_theme_items(ui, |ui| {
+                self.draw_tag_learn_menu_item(ui, path);
+            });
 
             // お気に入りタブ: 開けなくなったお気に入りの再紐付け・整理（relink_ui.rs）
             if self.folder_pane_tab == FolderPaneTab::Favorites {
                 ui.separator();
                 crate::ui_widgets::menu_theme_heading(ui, i18n::t().menu_theme_favorite_manage());
-                let ghosts = self.relink_ghost_ids(&raw_targets);
-                let r_item = ui.add_enabled(
-                    !ghosts.is_empty(),
-                    egui::Button::new(i18n::t().relink_menu()),
-                );
-                help_tip_auto(&r_item, &i18n::t().help_relink());
-                if r_item.clicked() {
-                    self.open_relink_picker(ghosts);
-                    ui.close();
-                }
-                let r_item = ui.button(i18n::t().favorite_unset_menu());
-                help_tip_auto(&r_item, &i18n::t().help_favorite_unset());
-                if r_item.clicked() {
-                    self.request_unset_favorites(raw_targets.clone());
-                    ui.close();
-                }
+                crate::ui_widgets::menu_theme_items(ui, |ui| {
+                    let ghosts = self.relink_ghost_ids(&raw_targets);
+                    let r_item = ui.add_enabled(
+                        !ghosts.is_empty(),
+                        egui::Button::new(i18n::t().relink_menu()),
+                    );
+                    help_tip_auto(&r_item, &i18n::t().help_relink());
+                    if r_item.clicked() {
+                        self.open_relink_picker(ghosts);
+                        ui.close();
+                    }
+                    let r_item = ui.button(i18n::t().favorite_unset_menu());
+                    help_tip_auto(&r_item, &i18n::t().help_favorite_unset());
+                    if r_item.clicked() {
+                        self.request_unset_favorites(raw_targets.clone());
+                        ui.close();
+                    }
+                });
             }
 
             // 計測フィクスチャー（設定→デバッグのゲートがONの間だけ。perf_fixture_ui.rs）

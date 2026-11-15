@@ -3741,9 +3741,17 @@ impl Lang {
 
     pub fn key_search_menu(self) -> &'static str {
         match self {
-            Lang::Japanese => "タグ検索",
-            Lang::English  => "Tag Search",
-            Lang::Chinese  => "标签搜索",
+            Lang::Japanese => "主要タグ検索",
+            Lang::English  => "Main Tag Search",
+            Lang::Chinese  => "主要标签搜索",
+        }
+    }
+
+    pub fn key_search_menu_hover(self) -> &'static str {
+        match self {
+            Lang::Japanese => "グループ・作者・キャラクターなど、決まった種類のタグ（とファイル名から判定した名前）で検索する。ユーザー独自のタグは対象外。",
+            Lang::English  => "Search by fixed kinds of tags (group, author, character, ...) and names detected from the file name. User-defined tags are not included.",
+            Lang::Chinese  => "按固定类别的标签（团体、作者、角色等）及从文件名判断出的名称搜索。不包括用户自定义标签。",
         }
     }
 
@@ -3811,12 +3819,19 @@ impl Lang {
         }
     }
 
-    /// 暫定（次のフェーズで、検索タブへ移って即実行する処理に置き換える）。
-    pub fn key_search_pending_toast(self, text: &str) -> String {
+    pub fn key_search_no_ledger(self) -> &'static str {
         match self {
-            Lang::Japanese => format!("検索語: {text}（検索の実行は次のフェーズ）"),
-            Lang::English  => format!("Search terms: {text} (search runs in the next phase)"),
-            Lang::Chinese  => format!("搜索词: {text}（搜索将在下一阶段执行）"),
+            Lang::Japanese => "台帳（DB）が使えないため検索できない",
+            Lang::English  => "Cannot search because the ledger (DB) is unavailable",
+            Lang::Chinese  => "账本（DB）不可用，无法搜索",
+        }
+    }
+
+    pub fn key_search_busy(self) -> &'static str {
+        match self {
+            Lang::Japanese => "別の検索を実行中のため、条件だけ入れた（検索は同時に1つだけ。終わってから「検索開始」を押す）",
+            Lang::English  => "Another search is running, so only the conditions were entered (one search at a time; press Start when it finishes)",
+            Lang::Chinese  => "另一项搜索正在进行，仅填入了条件（同一时间只能搜索一项，结束后请点击“开始搜索”）",
         }
     }
 

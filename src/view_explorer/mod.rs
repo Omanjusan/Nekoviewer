@@ -913,6 +913,8 @@ pub struct NekoviewApp {
     key_menu: Option<key_search_ui::KeyMenuCache>,
     /// 複数候補のときの選択ダイアログ
     key_pick: Option<key_search_ui::KeyPickDialog>,
+    /// 予約された「主要タグ検索」の検索文字列。描画が終わってから実行する（`run_pending_key_search`）
+    key_search_pending: Option<String>,
     /// 再紐付けのバックグラウンド実行（結果の受け取り口）。実行中は Some
     relink_job: Option<mpsc::Receiver<crate::identity_relink::RelinkReport>>,
     /// 複数件の「お気に入り設定から外す」の確認待ちパス
@@ -1756,6 +1758,7 @@ impl NekoviewApp {
             relink_dialog: None,
             key_menu: None,
             key_pick: None,
+            key_search_pending: None,
             relink_job: None,
             favorite_unset_confirm: None,
             db_restore_confirm: None,
