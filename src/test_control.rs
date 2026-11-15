@@ -56,6 +56,8 @@ pub enum ExploreCmd {
     SearchCancel,
     /// 新モードの「注意点」ダイアログを開く（ボタンを押すのと同じ）
     SearchNotice,
+    /// 表示モード。true=リスト、false=カード
+    ListMode(bool),
     /// 履歴の idx 番目（0 始まり）を選んで表示する
     SearchSelect(usize),
 }
@@ -107,6 +109,11 @@ pub fn parse_explore_line(line: &str) -> Option<ExploreCmd> {
         "search-start" if arg.is_empty() => Some(ExploreCmd::SearchStart),
         "search-cancel" if arg.is_empty() => Some(ExploreCmd::SearchCancel),
         "search-notice" if arg.is_empty() => Some(ExploreCmd::SearchNotice),
+        "view-mode" => match arg {
+            "list" => Some(ExploreCmd::ListMode(true)),
+            "card" => Some(ExploreCmd::ListMode(false)),
+            _ => None,
+        },
         "search-select" => arg.parse().ok().map(ExploreCmd::SearchSelect),
         _ => None,
     }

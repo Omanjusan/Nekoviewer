@@ -2780,6 +2780,46 @@ impl Lang {
         }
     }
 
+    pub fn list_col_goto_real(self) -> &'static str {
+        match self {
+            Lang::Japanese => "実",
+            Lang::English  => "Dir",
+            Lang::Chinese  => "实际",
+        }
+    }
+
+    pub fn list_col_goto_virtual(self) -> &'static str {
+        match self {
+            Lang::Japanese => "仮想",
+            Lang::English  => "Virt",
+            Lang::Chinese  => "虚拟",
+        }
+    }
+
+    pub fn list_goto_real_tip(self) -> &'static str {
+        match self {
+            Lang::Japanese => "このファイルの場所を、フォルダタブで開く",
+            Lang::English  => "Open this file's location in the Folders tab",
+            Lang::Chinese  => "在文件夹标签页中打开此文件所在位置",
+        }
+    }
+
+    pub fn list_goto_virtual_tip(self) -> &'static str {
+        match self {
+            Lang::Japanese => "このファイルの場所を登録した仮想フォルダを、仮想フォルダタブで開く",
+            Lang::English  => "Open the virtual folder that registers this file's location, in the Virtual Folders tab",
+            Lang::Chinese  => "在虚拟文件夹标签页中打开登记了此文件所在位置的虚拟文件夹",
+        }
+    }
+
+    pub fn list_goto_virtual_none_tip(self) -> &'static str {
+        match self {
+            Lang::Japanese => "このファイルの場所を登録した仮想フォルダはありません",
+            Lang::English  => "No virtual folder registers this file's location",
+            Lang::Chinese  => "没有登记此文件所在位置的虚拟文件夹",
+        }
+    }
+
     pub fn list_col_place(self) -> &'static str {
         match self {
             Lang::Japanese => "場所",

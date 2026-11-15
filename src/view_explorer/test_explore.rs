@@ -39,6 +39,9 @@ impl NekoviewApp {
             },
             ExploreCmd::SearchCancel => self.cancel_new_search(),
             ExploreCmd::SearchNotice => self.search_notice_open = true,
+            ExploreCmd::ListMode(list) => {
+                self.view_mode.mode = if list { super::view_mode::ViewMode::List } else { super::view_mode::ViewMode::Card };
+            }
             ExploreCmd::SearchSelect(idx) => self.select_search_history(idx),
         }
     }

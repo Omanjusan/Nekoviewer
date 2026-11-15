@@ -71,7 +71,7 @@ fn thumb_col_width(size: ListSize, row_h: f32) -> f32 {
 }
 
 /// 列の数（`Col` の要素数）。
-const COL_N: usize = 15;
+const COL_N: usize = 17;
 
 /// 「場所」列（フルパス）を出す表示か。複数のフォルダにまたがる横断一覧（類似ファイル一覧・検索結果・
 /// お気に入り・タグ検索）だけで出す。「完全比較」列は類似ファイル一覧専用なので、ここでは決めない。
@@ -81,12 +81,16 @@ fn place_column_shown(similar: bool, search: bool, favorites: bool, tag_search: 
 
 /// 列の幅（エラー・重複・ファイラー・サムネ・名前・場所・完全比較・サイズ・更新日時・評価・公開評価・訪問回数・ページ数・詳細・属性）。
 /// ユーザー設定は重複・名前・サイズ・更新日時・評価・訪問回数・ページ数。エラー・公開評価・詳細・属性は固定幅。
+/// `goto` は横断一覧のときだけ出す「実フォルダ」「仮想フォルダ」の移動アイコン列（出さないときは幅 0）。
 /// `place_w` は横断一覧のときだけ出す「場所」列、`compare_w` は類似ファイル一覧のときだけ出す「完全比較」列の幅（出さないときは 0）。
-fn column_widths(thumb_w: f32, cols: &ListColumns, place_w: f32, compare_w: f32) -> [f32; COL_N] {
+fn column_widths(thumb_w: f32, cols: &ListColumns, place_w: f32, compare_w: f32, goto: bool) -> [f32; COL_N] {
+    let (real_go_w, virt_go_w) = if goto { (REAL_GO_COL_W, VIRT_GO_COL_W) } else { (0.0, 0.0) };
     [
         ERROR_COL_W,
         cols.width(0),
         REVEAL_COL_W,
+        real_go_w,
+        virt_go_w,
         thumb_w,
         cols.width(1),
         place_w,
@@ -120,6 +124,12 @@ const ATTR_COL_W: f32 = 126.0;
 /// 「ファイラー」列の幅（px。固定）。見出しの文字が収まる幅。
 const REVEAL_COL_W: f32 = 76.0;
 
+/// 横断一覧の「実」列（実フォルダへの移動アイコン）の幅（px。固定）。アイコン1つと短い見出しが収まる幅。
+const REAL_GO_COL_W: f32 = 34.0;
+
+/// 横断一覧の「仮想」列（仮想フォルダへの移動アイコン）の幅（px。固定）。
+const VIRT_GO_COL_W: f32 = 42.0;
+
 /// 類似ファイル一覧の「完全比較」列の幅（px。固定）。
 const COMPARE_COL_W: f32 = 120.0;
 
@@ -133,24 +143,28 @@ enum Col {
     Dup = 1,
     /// 単体ファイルを選択状態でOSのファイラーで開くボタン。
     Reveal = 2,
-    Thumb = 3,
-    Name = 4,
-    /// 類似ファイル一覧のときだけ幅を持つ（それ以外は幅 0）。
-    Place = 5,
+    /// 横断一覧のときだけ幅を持つ（それ以外は幅 0）。このファイルの実フォルダをフォルダタブで開く移動アイコン。
+    RealGo = 3,
+    /// 横断一覧のときだけ幅を持つ。このファイルの場所を登録した仮想フォルダを仮想フォルダタブで開く移動アイコン。
+    VirtGo = 4,
+    Thumb = 5,
+    Name = 6,
+    /// 横断一覧のときだけ幅を持つ（それ以外は幅 0）。
+    Place = 7,
     /// 類似ファイル一覧のときだけ幅を持つ（完全比較の結果バッジ）。
-    Compare = 6,
-    Size = 7,
-    Mtime = 8,
-    Rating = 9,
+    Compare = 8,
+    Size = 9,
+    Mtime = 10,
+    Rating = 11,
     /// アーカイブ内の info.txt の `Rating:`（公開評価）。固定幅。
-    SourceRating = 10,
-    Visits = 11,
+    SourceRating = 12,
+    Visits = 13,
     /// ビューアーを開いたときに記録されたページ数（未取得は空欄）。
-    Pages = 12,
+    Pages = 14,
     /// 詳細ファイル（ComicInfo.xml・meta.json・付属テキスト）の種別バッジ。
-    Detail = 13,
+    Detail = 15,
     /// 最右。保存設定マーカー（L/R・S・T・B）とお気に入りマーカー。
-    Attr = 14,
+    Attr = 16,
 }
 
 impl Col {
@@ -165,14 +179,14 @@ impl Col {
             Col::Visits => Some(HeaderColumn::Visits),
             Col::Pages => Some(HeaderColumn::Pages),
             Col::SourceRating => Some(HeaderColumn::SourceRating),
-            Col::Error | Col::Dup | Col::Reveal | Col::Thumb | Col::Place | Col::Compare | Col::Detail | Col::Attr => None,
+            Col::Error | Col::Dup | Col::Reveal | Col::RealGo | Col::VirtGo | Col::Thumb | Col::Place | Col::Compare | Col::Detail | Col::Attr => None,
         }
     }
 
     /// 幅を変えられる列の `ListColumns` 上の番号。サムネ列は行の高さで決まるので変えられない。
     fn resize_index(self) -> Option<usize> {
         match self {
-            Col::Error | Col::Reveal | Col::Thumb | Col::Place | Col::Compare | Col::SourceRating | Col::Detail | Col::Attr => None,
+            Col::Error | Col::Reveal | Col::RealGo | Col::VirtGo | Col::Thumb | Col::Place | Col::Compare | Col::SourceRating | Col::Detail | Col::Attr => None,
             Col::Dup => Some(0),
             Col::Name => Some(1),
             Col::Size => Some(2),
@@ -325,7 +339,9 @@ impl NekoviewApp {
             0.0
         };
         let compare_w = if self.viewing_similar.is_some() { COMPARE_COL_W } else { 0.0 };
-        let widths = column_widths(thumb_col_width(size, base_row_h), &self.list_cols, place_w, compare_w);
+        // 「実フォルダ」「仮想フォルダ」の移動アイコン列は、場所列と同じ横断一覧のときに出す。
+        let goto = place_w > 0.0;
+        let widths = column_widths(thumb_col_width(size, base_row_h), &self.list_cols, place_w, compare_w, goto);
         ListMetrics { row_h, base_row_h, widths, total_w: widths.iter().sum() }
     }
 
@@ -490,7 +506,7 @@ impl NekoviewApp {
         // 境界の操作を先に処理して、この後の描画（見出しと本体の行）に今フレームの幅を反映する。
         let mut changed = false;
         let mut active_idx: Option<usize> = None;
-        for col in [Col::Error, Col::Dup, Col::Reveal, Col::Name, Col::Place, Col::Compare, Col::Size, Col::Mtime, Col::Rating, Col::SourceRating, Col::Visits, Col::Pages, Col::Detail, Col::Attr] {
+        for col in [Col::Error, Col::Dup, Col::Reveal, Col::RealGo, Col::VirtGo, Col::Name, Col::Place, Col::Compare, Col::Size, Col::Mtime, Col::Rating, Col::SourceRating, Col::Visits, Col::Pages, Col::Detail, Col::Attr] {
             let Some(idx) = col.resize_index() else { continue };
             let x = col_rect(row, &m.widths, col).max.x;
             let grab = egui::Rect::from_center_size(egui::pos2(x, rect.center().y), egui::vec2(RESIZE_GRAB_W, HEADER_H))
@@ -554,6 +570,8 @@ impl NekoviewApp {
             (Col::Error, t.list_col_error()),
             (Col::Dup, if self.is_look_alike_view() { t.list_col_restore() } else if self.viewing_similar.is_some() { t.list_col_base() } else { t.list_col_dup() }),
             (Col::Reveal, t.list_col_reveal()),
+            (Col::RealGo, t.list_col_goto_real()),
+            (Col::VirtGo, t.list_col_goto_virtual()),
             (Col::Name, t.list_col_name()),
             (Col::Place, t.list_col_place()),
             (Col::Compare, if self.is_look_alike_view() { t.list_col_similarity() } else { t.list_col_compare() }),
@@ -582,7 +600,7 @@ impl NekoviewApp {
         // 境界線。つかめる状態の境界（ホバー・ドラッグ中）だけ太く強調する（リサイズのマーカー）。
         let line = grid_line_color(ui);
         let marker = ui.visuals().strong_text_color();
-        for col in [Col::Error, Col::Dup, Col::Reveal, Col::Name, Col::Place, Col::Compare, Col::Size, Col::Mtime, Col::Rating, Col::SourceRating, Col::Visits, Col::Pages, Col::Detail, Col::Attr] {
+        for col in [Col::Error, Col::Dup, Col::Reveal, Col::RealGo, Col::VirtGo, Col::Name, Col::Place, Col::Compare, Col::Size, Col::Mtime, Col::Rating, Col::SourceRating, Col::Visits, Col::Pages, Col::Detail, Col::Attr] {
             let x = col_rect(row, &m.widths, col).max.x;
             let active = col.resize_index().is_some() && col.resize_index() == active_idx;
             let stroke = if active { egui::Stroke::new(2.0, marker) } else { egui::Stroke::new(1.0, line) };
@@ -691,6 +709,7 @@ impl NekoviewApp {
             cell_text(ui.painter(), compare_cell, &text, font, color);
         }
         self.paint_reveal_cell(ui, response, col_rect(rect, widths, Col::Reveal), real_idx);
+        self.paint_goto_cells(ui, response, path, col_rect(rect, widths, Col::RealGo), col_rect(rect, widths, Col::VirtGo));
         self.paint_error_cell(ui, response, col_rect(rect, widths, Col::Error), path);
         self.paint_attr_cell(ui, response, col_rect(rect, widths, Col::Attr), path);
         let dup_cell = col_rect(rect, widths, Col::Dup);
@@ -837,6 +856,31 @@ impl NekoviewApp {
         if on_icon {
             response.clone().on_hover_text(i18n::t().list_reveal_tip());
         }
+    }
+
+    /// 「実フォルダ」「仮想フォルダ」列の移動アイコン（モック: 見た目とホバー説明だけ。押しても何も起きない）。
+    /// 仮想フォルダ側は、このファイルの場所を登録した仮想フォルダが無いときは灰色にする。
+    fn paint_goto_cells(&mut self, ui: &egui::Ui, response: &egui::Response, path: &std::path::Path, real_cell: egui::Rect, virt_cell: egui::Rect) {
+        let t = i18n::t();
+        let hover = ui.input(|i| i.pointer.hover_pos());
+        let painter = ui.painter().with_clip_rect(ui.clip_rect());
+        let cell_icon = |cell: egui::Rect, color: egui::Color32, enabled: bool, tip: &str| {
+            if cell.width() <= 0.0 {
+                return;
+            }
+            // 移動マーカーと同じ大きさ（丸の中の→矢印）。
+            let side = super::dup_marker_ui::ICON_SIZE;
+            let icon_rect = egui::Rect::from_center_size(cell.center(), egui::vec2(side, side));
+            let on_icon = hover.is_some_and(|p| icon_rect.contains(p));
+            super::dup_marker_ui::paint_goto_icon(&painter, icon_rect, color, on_icon && enabled, enabled);
+            if on_icon {
+                response.clone().on_hover_text(tip);
+            }
+        };
+        cell_icon(real_cell, super::dup_marker_ui::GOTO_REAL_COLOR, true, t.list_goto_real_tip());
+        let has_virtual = path.parent().is_some_and(|dir| self.virtual_node_exists_for(dir));
+        let virt_tip = if has_virtual { t.list_goto_virtual_tip() } else { t.list_goto_virtual_none_tip() };
+        cell_icon(virt_cell, super::dup_marker_ui::GOTO_VIRTUAL_COLOR, has_virtual, virt_tip);
     }
 
     /// ホバー形式: ポインタの横にサムネのポップアップを出す（遅延なし）。画面端では反対側へ寄せる。
@@ -1026,15 +1070,20 @@ mod tests {
 
     #[test]
     fn place_column_has_no_width_outside_the_similar_view() {
-        let widths = column_widths(40.0, &ListColumns::default(), 0.0, 0.0);
+        let widths = column_widths(40.0, &ListColumns::default(), 0.0, 0.0, false);
         assert_eq!((widths[Col::Place as usize], widths[Col::Compare as usize]), (0.0, 0.0));
-        let with = column_widths(40.0, &ListColumns::default(), PLACE_COL_W, COMPARE_COL_W);
-        assert_eq!(with.iter().sum::<f32>() - widths.iter().sum::<f32>(), PLACE_COL_W + COMPARE_COL_W);
+        let with = column_widths(40.0, &ListColumns::default(), PLACE_COL_W, COMPARE_COL_W, true);
+        assert_eq!(
+            with.iter().sum::<f32>() - widths.iter().sum::<f32>(),
+            PLACE_COL_W + COMPARE_COL_W + REAL_GO_COL_W + VIRT_GO_COL_W,
+            "横断一覧では、場所・完全比較・実フォルダ・仮想フォルダの列が増える"
+        );
+        assert_eq!((widths[Col::RealGo as usize], widths[Col::VirtGo as usize]), (0.0, 0.0), "通常の表示では移動アイコン列は出ない");
     }
 
     #[test]
     fn error_and_attr_columns_are_fixed_and_sit_at_both_ends() {
-        let widths = column_widths(40.0, &ListColumns::default(), 0.0, 0.0);
+        let widths = column_widths(40.0, &ListColumns::default(), 0.0, 0.0, false);
         assert_eq!((widths[Col::Error as usize], widths[Col::Attr as usize]), (ERROR_COL_W, ATTR_COL_W));
         assert_eq!((Col::Error as usize, Col::Attr as usize), (0, COL_N - 1));
         // 固定幅なので、ユーザー設定（7個。ページ数まで）の個数は変わらない
@@ -1045,9 +1094,9 @@ mod tests {
 
     #[test]
     fn columns_tile_the_row_without_gaps_or_overlap() {
-        let widths = column_widths(40.0, &ListColumns::default(), PLACE_COL_W, COMPARE_COL_W);
+        let widths = column_widths(40.0, &ListColumns::default(), PLACE_COL_W, COMPARE_COL_W, true);
         let row = egui::Rect::from_min_size(egui::pos2(10.0, 5.0), egui::vec2(widths.iter().sum(), 30.0));
-        let cols = [Col::Error, Col::Dup, Col::Reveal, Col::Thumb, Col::Name, Col::Place, Col::Compare, Col::Size, Col::Mtime, Col::Rating, Col::SourceRating, Col::Visits, Col::Pages, Col::Detail, Col::Attr];
+        let cols = [Col::Error, Col::Dup, Col::Reveal, Col::RealGo, Col::VirtGo, Col::Thumb, Col::Name, Col::Place, Col::Compare, Col::Size, Col::Mtime, Col::Rating, Col::SourceRating, Col::Visits, Col::Pages, Col::Detail, Col::Attr];
         let mut x = row.min.x;
         for c in cols {
             let r = col_rect(row, &widths, c);

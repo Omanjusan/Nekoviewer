@@ -138,6 +138,12 @@ impl NekoviewApp {
         }
     }
 
+    /// この実フォルダを登録している仮想ノードがあるか（リストの「仮想フォルダ」移動アイコンの有効・無効に使う）。
+    /// 仮想ノードは仮想タブに入るたびに読み直す表なので、一度も開いていないうちは「無い」になる。
+    pub(in crate::view_explorer) fn virtual_node_exists_for(&self, dir: &std::path::Path) -> bool {
+        self.virtual_state.nodes.iter().any(|n| n.real == dir)
+    }
+
     fn node_real_path(&self, id: u32) -> Option<PathBuf> {
         self.virtual_state.nodes.iter().find(|n| n.id == id).map(|n| n.real.clone())
     }

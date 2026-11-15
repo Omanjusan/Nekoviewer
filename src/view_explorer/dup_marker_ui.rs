@@ -77,7 +77,7 @@ pub(super) fn icon_for(m: &DirMarker, show_dismissed: bool, presence: &PresenceM
     })
 }
 
-const ICON_SIZE: f32 = 16.0;
+pub(super) const ICON_SIZE: f32 = 16.0;
 const CARD_TOP_GAP: f32 = 4.0;
 
 /// カード上辺の左右中央に置くアイコンの矩形。
@@ -202,6 +202,32 @@ pub(super) fn paint_icon(painter: &egui::Painter, rect: egui::Rect, icon: Marker
             painter.rect_stroke(front, k, ink, egui::StrokeKind::Inside);
         }
     }
+}
+
+/// 「実フォルダへ移動」アイコンの色（青〜水色の中間）。
+pub(super) const GOTO_REAL_COLOR: egui::Color32 = egui::Color32::from_rgb(40, 170, 230);
+/// 「仮想フォルダへ移動」アイコンの色（緑）。
+pub(super) const GOTO_VIRTUAL_COLOR: egui::Color32 = egui::Color32::from_rgb(60, 180, 90);
+
+/// リストの「実フォルダ」「仮想フォルダ」列の移動アイコン。移動マーカーと同じ形（丸の中の→矢印）で、色だけを変える。
+/// `hovered` のときは明るく、`enabled` が false（押せない）のときは消去済みと同じ灰色にする。
+pub(super) fn paint_goto_icon(painter: &egui::Painter, rect: egui::Rect, color: egui::Color32, hovered: bool, enabled: bool) {
+    let base = if !enabled {
+        DISMISSED_GREY
+    } else if hovered {
+        color.lerp_to_gamma(egui::Color32::WHITE, 0.25)
+    } else {
+        color
+    };
+    let k = rect.width() / ICON_SIZE;
+    let v = |x: f32, y: f32| egui::vec2(x * k, y * k);
+    let c = rect.center();
+    painter.circle_filled(c, rect.width() / 2.0, base);
+    let ink = egui::Stroke::new(1.5 * k, egui::Color32::WHITE);
+    let (l, r) = (c + v(-4.0, 0.0), c + v(4.0, 0.0));
+    painter.line_segment([l, r], ink);
+    painter.line_segment([r, r + v(-3.0, -3.0)], ink);
+    painter.line_segment([r, r + v(-3.0, 3.0)], ink);
 }
 
 /// デバッグタブの見本用: 全マーカーアイコン（名前, 描画）を、実寸と拡大で並べる。
