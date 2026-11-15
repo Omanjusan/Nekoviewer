@@ -2341,9 +2341,9 @@ impl Lang {
 
     pub fn virtual_menu_register_subs(self) -> &'static str {
         match self {
-            Lang::Japanese => "フォルダの実サブフォルダを一括登録",
-            Lang::English  => "Register Real Subfolders",
-            Lang::Chinese  => "批量登记实际子文件夹",
+            Lang::Japanese => "実パスのサブフォルダを一括登録",
+            Lang::English  => "Register Subfolders of Real Path",
+            Lang::Chinese  => "批量登记实际路径的子文件夹",
         }
     }
 
@@ -2477,9 +2477,9 @@ impl Lang {
 
     pub fn virtual_menu_delete(self) -> &'static str {
         match self {
-            Lang::Japanese => "仮想フォルダ削除",
-            Lang::English  => "Delete Virtual Folder",
-            Lang::Chinese  => "删除虚拟文件夹",
+            Lang::Japanese => "フォルダ削除",
+            Lang::English  => "Delete Folder",
+            Lang::Chinese  => "删除文件夹",
         }
     }
 
@@ -3733,6 +3733,14 @@ impl Lang {
             Lang::Japanese => "表示",
             Lang::English  => "View",
             Lang::Chinese  => "显示",
+        }
+    }
+
+    pub fn menu_theme_move(self) -> &'static str {
+        match self {
+            Lang::Japanese => "移動",
+            Lang::English  => "Go To",
+            Lang::Chinese  => "跳转",
         }
     }
 
@@ -10683,7 +10691,7 @@ impl Lang {
     pub fn help_vmenu_register_subs(self) -> HelpDoc {
         match self {
             Lang::Japanese => HelpDoc {
-                title: "フォルダの実サブフォルダを一括登録",
+                title: "実パスのサブフォルダを一括登録",
                 sections: &[(
                     "",
                     "このフォルダの実フォルダにあるサブフォルダを調べて、まだ登録されていないものを\n\
@@ -10701,7 +10709,7 @@ impl Lang {
                 )],
             },
             Lang::Chinese => HelpDoc {
-                title: "批量登记实际子文件夹",
+                title: "批量登记实际路径的子文件夹",
                 sections: &[(
                     "",
                     "检查此文件夹的实际文件夹中的子文件夹，把尚未登记的\n\
@@ -10715,7 +10723,7 @@ impl Lang {
     pub fn help_vmenu_delete(self) -> HelpDoc {
         match self {
             Lang::Japanese => HelpDoc {
-                title: "仮想フォルダ削除",
+                title: "フォルダ削除",
                 sections: &[
                     (
                         "",
@@ -10751,7 +10759,7 @@ impl Lang {
                 ],
             },
             Lang::Chinese => HelpDoc {
-                title: "删除虚拟文件夹",
+                title: "删除文件夹",
                 sections: &[
                     (
                         "",

@@ -263,79 +263,97 @@ fn children_of(nodes: &[TreeNode], parent: u32) -> Vec<&TreeNode> {
 
 /// 仮想ツリーの右クリックメニュー。`target` が行のid、行の外（ツリー内の余白）は None。
 /// 行の外では、ツリー全体に効く「ソート条件設定」だけが有効で、ほかはグレーアウトする。
+/// テーマ見出し（太字・クリック不可）＋インデントした項目で、テーマ間は区切り線:
+/// 仮想フォルダ（名前変更・登録・サブ登録・削除）／移動（同期・フォルダタブで開く）／ファイラーで開く（OS）／表示（ソート）。
 fn tree_context_menu(ui: &mut egui::Ui, target: Option<u32>, real: Option<&Path>, broken: &HashSet<u32>, out: &mut Vec<TreeEvent>) {
-    // ルートは名前変更・削除の対象外。区切り線で「変更」「登録」「削除」「ソート」を分ける
+    let t = i18n::t();
+    // ルートは名前変更・削除の対象外
     let node = target.filter(|id| *id != ROOT);
-    let r = ui.add_enabled(node.is_some(), egui::Button::new(i18n::t().virtual_menu_rename()));
-    help_tip_auto(&r, &i18n::t().help_vmenu_rename());
-    if r.clicked() {
-        if let Some(id) = node {
-            out.push(TreeEvent::Rename(id));
-        }
-        ui.close();
-    }
-    // 実パスへ辿れないノード（ルート・リンク切れ）は同期・フォルダタブで開くの対象外
+    // 実パスへ辿れないノード（ルート・リンク切れ）は同期・フォルダタブで開く・サブ登録の対象外
     let syncable = node.filter(|id| !broken.contains(id));
-    let r = ui.add_enabled(syncable.is_some(), egui::Button::new(i18n::t().virtual_menu_sync()));
-    help_tip_auto(&r, &i18n::t().help_vmenu_sync());
-    if r.clicked() {
-        if let Some(id) = syncable {
-            out.push(TreeEvent::Sync(id));
+
+    crate::ui_widgets::menu_theme_heading(ui, t.menu_theme_virtual_folder());
+    crate::ui_widgets::menu_theme_items(ui, |ui| {
+        let r = ui.add_enabled(node.is_some(), egui::Button::new(t.virtual_menu_rename()));
+        help_tip_auto(&r, &i18n::t().help_vmenu_rename());
+        if r.clicked() {
+            if let Some(id) = node {
+                out.push(TreeEvent::Rename(id));
+            }
+            ui.close();
         }
-        ui.close();
-    }
-    let r = ui.add_enabled(syncable.is_some(), egui::Button::new(i18n::t().virtual_menu_open_in_folders()));
-    help_tip_auto(&r, &i18n::t().help_vmenu_open_in_folders());
-    if r.clicked() {
-        if let Some(id) = syncable {
-            out.push(TreeEvent::OpenInFolders(id));
+        let r = ui.add_enabled(target.is_some(), egui::Button::new(t.virtual_menu_register()));
+        help_tip_auto(&r, &i18n::t().help_vmenu_register());
+        if r.clicked() {
+            if let Some(id) = target {
+                out.push(TreeEvent::Register(id));
+            }
+            ui.close();
         }
-        ui.close();
-    }
-    // このフォルダをファイラーで開く: 実パスに辿れないノードに加え、ネットワークパスも対象外（OS差が埋められないため）
-    let openable = syncable.filter(|_| real.is_some_and(|r| crate::fs::mount::network_mount_root(r).is_none()));
-    let r = ui.add_enabled(openable.is_some(), egui::Button::new(i18n::t().explorer_open_this_folder_menu()));
-    help_tip_auto(&r, &i18n::t().help_open_this_folder());
-    if r.clicked() {
-        if let Some(real) = real.filter(|_| openable.is_some()) {
-            crate::translate::open_in_file_manager(real);
+        let r = ui.add_enabled(syncable.is_some(), egui::Button::new(t.virtual_menu_register_subs()));
+        help_tip_auto(&r, &i18n::t().help_vmenu_register_subs());
+        if r.clicked() {
+            if let Some(id) = syncable {
+                out.push(TreeEvent::RegisterSubs(id));
+            }
+            ui.close();
         }
-        ui.close();
-    }
+        let r = ui.add_enabled(node.is_some(), egui::Button::new(t.virtual_menu_delete()));
+        help_tip_auto(&r, &i18n::t().help_vmenu_delete());
+        if r.clicked() {
+            if let Some(id) = node {
+                out.push(TreeEvent::Delete(id));
+            }
+            ui.close();
+        }
+    });
+
     ui.separator();
-    let r = ui.add_enabled(target.is_some(), egui::Button::new(i18n::t().virtual_menu_register()));
-    help_tip_auto(&r, &i18n::t().help_vmenu_register());
-    if r.clicked() {
-        if let Some(id) = target {
-            out.push(TreeEvent::Register(id));
+    crate::ui_widgets::menu_theme_heading(ui, t.menu_theme_move());
+    crate::ui_widgets::menu_theme_items(ui, |ui| {
+        let r = ui.add_enabled(syncable.is_some(), egui::Button::new(t.virtual_menu_sync()));
+        help_tip_auto(&r, &i18n::t().help_vmenu_sync());
+        if r.clicked() {
+            if let Some(id) = syncable {
+                out.push(TreeEvent::Sync(id));
+            }
+            ui.close();
         }
-        ui.close();
-    }
-    // 実フォルダを持たないルートと、リンク切れは対象外
-    let r = ui.add_enabled(syncable.is_some(), egui::Button::new(i18n::t().virtual_menu_register_subs()));
-    help_tip_auto(&r, &i18n::t().help_vmenu_register_subs());
-    if r.clicked() {
-        if let Some(id) = syncable {
-            out.push(TreeEvent::RegisterSubs(id));
+        let r = ui.add_enabled(syncable.is_some(), egui::Button::new(t.virtual_menu_open_in_folders()));
+        help_tip_auto(&r, &i18n::t().help_vmenu_open_in_folders());
+        if r.clicked() {
+            if let Some(id) = syncable {
+                out.push(TreeEvent::OpenInFolders(id));
+            }
+            ui.close();
         }
-        ui.close();
-    }
+    });
+
     ui.separator();
-    let r = ui.add_enabled(node.is_some(), egui::Button::new(i18n::t().virtual_menu_delete()));
-    help_tip_auto(&r, &i18n::t().help_vmenu_delete());
-    if r.clicked() {
-        if let Some(id) = node {
-            out.push(TreeEvent::Delete(id));
+    crate::ui_widgets::menu_theme_heading(ui, t.menu_theme_os_file_manager());
+    crate::ui_widgets::menu_theme_items(ui, |ui| {
+        // 実パスに辿れないノードに加え、ネットワークパスも対象外（OS差が埋められないため）
+        let openable = syncable.filter(|_| real.is_some_and(|r| crate::fs::mount::network_mount_root(r).is_none()));
+        let r = ui.add_enabled(openable.is_some(), egui::Button::new(t.explorer_open_this_folder_menu()));
+        help_tip_auto(&r, &i18n::t().help_open_this_folder());
+        if r.clicked() {
+            if let Some(real) = real.filter(|_| openable.is_some()) {
+                crate::translate::open_in_file_manager(real);
+            }
+            ui.close();
         }
-        ui.close();
-    }
+    });
+
     ui.separator();
-    let r = ui.button(i18n::t().tree_sort_menu());
-    help_tip_auto(&r, &i18n::t().help_tree_sort());
-    if r.clicked() {
-        out.push(TreeEvent::SortSetting);
-        ui.close();
-    }
+    crate::ui_widgets::menu_theme_heading(ui, t.menu_theme_view());
+    crate::ui_widgets::menu_theme_items(ui, |ui| {
+        let r = ui.button(t.tree_sort_menu());
+        help_tip_auto(&r, &i18n::t().help_tree_sort());
+        if r.clicked() {
+            out.push(TreeEvent::SortSetting);
+            ui.close();
+        }
+    });
 }
 
 /// ダミーツリー描画。`root_label` が Some なら仮想ルート行（id=ROOT）を先頭に描く。
