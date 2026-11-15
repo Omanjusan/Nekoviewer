@@ -35,6 +35,7 @@
 - [features/window-position-menu.md](features/window-position-menu.md) — ウィンドウ位置メニュー（記録/展開/削除/自動展開）・画面外補正・ビューアー復帰
 - [e2e-window-pos.md](e2e-window-pos.md) — ウィンドウ位置・ビューアー復帰の自動テスト（Xephyr＋制御口）の実行手順
 - [e2e-search.md](e2e-search.md) — 検索タブの自動テスト（Xephyr＋制御口）の実行手順・コマンド・観測項目
+- [features/main-tag-search.md](features/main-tag-search.md) — 主要タグ検索（右クリックのワンアクション検索・取得状況の表示）と、右クリックメニューのテーマ分け
 - [features/explorer-view-modes.md](features/explorer-view-modes.md) — エクスプローラーの表示モード（カード／リスト）と選択の規則、手動テスト手順
 - [features/duplicate-marker.md](features/duplicate-marker.md) — 重複マーカー（同じ内容のファイルの警告）と類似ファイル一覧・完全比較、手動テスト手順
 - [features/list-attr-column.md](features/list-attr-column.md) — リストの「エラー列」「属性列」（固定スロット）と、★・訪問回数の＋－編集（ロック付き）、手動テスト手順
