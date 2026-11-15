@@ -338,3 +338,24 @@ fn switching_search_mode_keeps_each_modes_input_and_hides_the_tree() {
     });
     assert_eq!(hits(&s["history"][0]), 5);
 }
+
+#[test]
+#[ignore = "needs Xephyr + GPU rendering; run explicitly"]
+fn the_search_tab_never_shows_a_stuck_loading_label() {
+    if skip() { return; }
+    let mut e = Env::new("search-loading");
+    e.make_files("alpha", 5, 16);
+    e.launch();
+    e.open_and_wait_ledger(5);
+    // タグ検索タブから検索タブへ移ると、実フォルダのスキャンが（結果を受け取らないまま）保留になる。
+    // 作業していなくても「読み込み中」を出し続けてはいけない。
+    e.send(&["tab tag", "tab search"]);
+    std::thread::sleep(Duration::from_millis(1500)); // 0.5秒の猶予を過ぎるまで待つ
+    let s = e.search();
+    assert_eq!(s["tab"], "search");
+    assert_eq!(s["loading_shown"], false, "検索タブで読み込み中の表示が残っている: {s}");
+    // 実フォルダのタブへ戻ると、保留されていた結果が届いて、一覧が出る（結果は失われない）
+    e.send(&["tab real"]);
+    let s = e.wait_search("real listing restored", Duration::from_secs(20), |s| s["scan_state"] == "done" && s["archives"] == 5);
+    assert_eq!(s["loading_shown"], false);
+}

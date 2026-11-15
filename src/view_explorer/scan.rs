@@ -452,6 +452,22 @@ impl NekoviewApp {
     }
 
     /// フレームごとにスキャン結果をポーリングして反映する
+    /// 実ディレクトリのスキャン結果を受け取る表示か（`poll_scan` が結果を処理する条件）。
+    /// 検索・お気に入り・タグ検索・類似の横断表示や、それらのタブでは受け取らない（結果は届いたまま保留される）。
+    pub(super) fn scan_result_is_polled(&self) -> bool {
+        self.folder_pane_tab.shows_real_dir()
+            && self.viewing_favorites.is_none()
+            && self.viewing_search.is_none()
+            && self.viewing_similar.is_none()
+    }
+
+    /// 中央に「読み込み中...」を出すか。受け取らない表示（検索タブなど）では、スキャンが保留のまま
+    /// 「読み込み中」に見えてしまうので出さない。短いアクセスのチラツキ防止に、0.5秒経ってから出す。
+    pub(super) fn scan_loading_visible(&self) -> bool {
+        self.scan_result_is_polled()
+            && matches!(&self.scan_state, ScanState::Loading { started_at, .. } if started_at.elapsed().as_secs_f32() > 0.5)
+    }
+
     pub(super) fn poll_scan(&mut self) {
         // お気に入り/検索結果の横断表示中はarchives/subdirsを差し替えているため、
         // 入室時に開始していた実ディレクトリの背後スキャン結果が遅れて届くと
@@ -460,11 +476,7 @@ impl NekoviewApp {
         // 必ず呼ばれる）に改めてstart_scan()されるため、ここでは単に無視すればよい。
         // folder_pane_tab とOptionフラグの二重チェック（タブ状態を唯一の一次判定にしつつ、
         // フラグの取りこぼしがあっても安全側に倒す）。
-        if !self.folder_pane_tab.shows_real_dir()
-            || self.viewing_favorites.is_some()
-            || self.viewing_search.is_some()
-            || self.viewing_similar.is_some()
-        {
+        if !self.scan_result_is_polled() {
             return;
         }
         let result = match self.scan_state {

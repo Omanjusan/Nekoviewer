@@ -2653,9 +2653,9 @@ impl NekoviewApp {
         ui.separator();
 
         {
-            // ローディング中は 0.5秒経過後にスピナーを表示（短いアクセスのチラツキ防止）
-            let is_loading = matches!(&self.scan_state, ScanState::Loading { started_at, .. }
-                if started_at.elapsed().as_secs_f32() > 0.5);
+            // ローディング中は 0.5秒経過後に表示（短いアクセスのチラツキ防止）。実ディレクトリの結果を
+            // 受け取らない表示（検索タブなど）では出さない（保留中のスキャンが「読み込み中」に見えるため）。
+            let is_loading = self.scan_loading_visible();
 
             const FILTER_BAR_H: f32 = 28.0;
             let content_h = (ui.available_height() - FILTER_BAR_H).max(0.0);

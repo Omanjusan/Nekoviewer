@@ -78,6 +78,12 @@ impl NekoviewApp {
         serde_json::json!({
             "tab": tab,
             "mode": if self.search_form.mode == SearchMode::New { "new" } else { "legacy" },
+            "scan_state": match &self.scan_state {
+                super::ScanState::Idle => "idle",
+                super::ScanState::Loading { .. } => "loading",
+                super::ScanState::Done => "done",
+            },
+            "loading_shown": self.scan_loading_visible(),
             "job_running": self.search_job.is_some(),
             "notice_open": self.search_notice_open,
             "any_running": self.any_search_running(),
