@@ -3667,7 +3667,9 @@ impl ViewerState {
 
             // ── サムネバー：ポインター侵入トリガーの表示判定 ─────────────────────
             // 出ている間、バー上のクリック・ホバーは背面（画像・ページ送りゾーン）へ伝えない。
-            let thumbbar_rect = self.update_thumbbar_visibility(cfg, viewport_rect, input.hover_pos, ui.ctx());
+            // 基準は `clip`（余白を含むパネル全体）。`viewport_rect` は CentralPanel の内側余白(8px)を引いた領域で、
+            // それを基準にすると画面端から浮いてしまい、その隙間でホイールがページ送りになる／メニューが出てしまう。
+            let thumbbar_rect = self.update_thumbbar_visibility(cfg, clip, input.hover_pos, ui.ctx());
             let pointer_in_thumbbar = thumbbar_rect.zip(input.hover_pos).is_some_and(|(r, p)| r.contains(p));
 
             // ── 虫眼鏡：ホイール拡縮（ポインタ基準）とスライダーバー ────────────────────
@@ -4231,10 +4233,19 @@ impl ViewerState {
         }
 
         self.thumbbar_shown_rect = self.thumbbar_visible.then_some(bar);
-        // 上配置では、バー（出ていれば矩形、隠れていれば発火域）の上でメニューバー・ファイル名バーを新規に出さない
-        // （バー優先）。メニュー等は左右の遊びの上端からだけ出る。
-        self.thumbbar_menu_guard = (cfg.thumbbar_pos == ThumbbarPos::Top)
-            .then(|| if self.thumbbar_visible { bar } else { trigger });
+        // バーが出ている間は、メニューバー・ファイル名バーを新規に出さない（バー優先）。出せるのは左右の遊び
+        // （左右それぞれ THUMBBAR_TOP_GAP の幅）の上端からだけ。
+        // 上配置は、隠れている間も発火域（上端中央）がガード（上端中央ではバーが先に出る）。
+        // 上以外の配置は、出ている間だけ上端中央をガードする（隠れている間はメニューが通常どおり出る）。
+        self.thumbbar_menu_guard = match cfg.thumbbar_pos {
+            ThumbbarPos::Top => Some(if self.thumbbar_visible { bar } else { trigger }),
+            _ => self.thumbbar_visible.then(|| {
+                egui::Rect::from_min_max(
+                    egui::pos2(viewport.min.x + Self::THUMBBAR_TOP_GAP, viewport.min.y),
+                    egui::pos2(viewport.max.x - Self::THUMBBAR_TOP_GAP, viewport.min.y + top_inset.max(Self::THUMBBAR_TOP_MIN_INSET)),
+                )
+            }),
+        };
         self.thumbbar_shown_rect
     }
 
@@ -7258,6 +7269,24 @@ mod sort_save_state_tests {
         }
     }
 
+    /// サムネバーの配置基準は `ui.clip_rect()`（余白を含むパネル全体）でなければならない。
+    /// CentralPanel の既定は内側余白8pxがあり、`ui.cursor()`/`available_size()` 基準（viewport_rect）だと
+    /// 画面端から8px浮く。この前提（clip が余白込みの全体であること）が egui の更新で崩れていないかを確かめる。
+    #[test]
+    fn central_panel_clip_rect_includes_the_inner_margin_unlike_the_cursor_area() {
+        let ctx = egui::Context::default();
+        let vp = tb_viewport();
+        let mut seen = None;
+        let _ = ctx.run_ui(egui::RawInput { screen_rect: Some(vp), ..Default::default() }, |ui| {
+            egui::CentralPanel::default().show(ui, |ui| {
+                seen = Some((ui.clip_rect(), ui.cursor().left_top()));
+            });
+        });
+        let (clip, cursor) = seen.unwrap();
+        assert_eq!(clip, vp, "clip は余白込みの全体");
+        assert!(cursor.x > 0.0 && cursor.y > 0.0, "cursor 基準は余白ぶん内側: {cursor:?}");
+    }
+
     #[test]
     fn thumbbar_bars_sit_flush_against_the_screen_edges_with_no_margin() {
         let vp = tb_viewport();
@@ -7331,9 +7360,27 @@ mod sort_save_state_tests {
         v.title_band_shown = true;
         let moved = v.update_thumbbar_visibility(&cfg, vp, Some(egui::pos2(500.0, 100.0)), &ctx).unwrap();
         assert_eq!(moved.min.y, 62.0);
-        // 上配置以外ではガードなし
-        let _ = v.update_thumbbar_visibility(&tb_cfg(ThumbbarPos::Bottom, 3000), vp, Some(egui::pos2(500.0, 10.0)), &ctx);
-        assert!(v.thumbbar_menu_guard.is_none());
+    }
+
+    #[test]
+    fn non_top_thumbbar_guards_the_top_edge_only_while_shown_and_leaves_the_side_gaps_open() {
+        let ctx = egui::Context::default();
+        let vp = tb_viewport();
+        for pos in [ThumbbarPos::Bottom, ThumbbarPos::Left, ThumbbarPos::Right] {
+            let cfg = tb_cfg(pos, 3000);
+            let mut v = tb_viewer();
+            // 隠れている間はガードなし（メニューは通常どおり出る）
+            let _ = v.update_thumbbar_visibility(&cfg, vp, Some(egui::pos2(500.0, 300.0)), &ctx);
+            assert!(v.thumbbar_menu_guard.is_none(), "{pos:?}");
+            // 出ている間: 上端中央はガード、左右の遊び（x<50, x>w-50）はメニューを出せる
+            v.thumbbar_visible = true;
+            let _ = v.update_thumbbar_visibility(&cfg, vp, Some(egui::pos2(500.0, 300.0)), &ctx);
+            let g = v.thumbbar_menu_guard.unwrap_or_else(|| panic!("{pos:?}: 出ている間はガードがある"));
+            assert!(g.contains(egui::pos2(500.0, 10.0)), "{pos:?}");
+            assert!(g.contains(egui::pos2(60.0, 10.0)), "{pos:?}");
+            assert!(!g.contains(egui::pos2(20.0, 10.0)), "{pos:?}");
+            assert!(!g.contains(egui::pos2(980.0, 10.0)), "{pos:?}");
+        }
     }
 
     #[test]
