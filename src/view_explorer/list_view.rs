@@ -363,6 +363,7 @@ impl NekoviewApp {
         ui.spacing_mut().item_spacing.y = ROW_GAP;
         // 「ファイラー」ボタンの当たり判定は、今フレームに描いた行のものだけ使う。
         self.reveal_icon_hits.clear();
+        self.goto_real_hits.clear();
         self.detail_icon_hits.clear();
         self.list_edit_hits.clear();
 
@@ -705,7 +706,7 @@ impl NekoviewApp {
             cell_text(ui.painter(), compare_cell, &text, font, color);
         }
         self.paint_reveal_cell(ui, response, col_rect(rect, widths, Col::Reveal), real_idx);
-        self.paint_goto_cells(ui, response, path, col_rect(rect, widths, Col::RealGo), col_rect(rect, widths, Col::VirtGo));
+        self.paint_goto_cells(ui, response, path, real_idx, col_rect(rect, widths, Col::RealGo), col_rect(rect, widths, Col::VirtGo));
         self.paint_error_cell(ui, response, col_rect(rect, widths, Col::Error), path);
         self.paint_attr_cell(ui, response, col_rect(rect, widths, Col::Attr), path);
         let dup_cell = col_rect(rect, widths, Col::Dup);
@@ -854,15 +855,16 @@ impl NekoviewApp {
         }
     }
 
-    /// 「実フォルダ」「仮想フォルダ」列の移動アイコン（モック: 見た目とホバー説明だけ。押しても何も起きない）。
-    /// 仮想フォルダ側は、このファイルの場所を登録した仮想フォルダが無いときは灰色にする。
-    fn paint_goto_cells(&mut self, ui: &egui::Ui, response: &egui::Response, path: &std::path::Path, real_cell: egui::Rect, virt_cell: egui::Rect) {
+    /// 「実フォルダ」「仮想フォルダ」列の移動アイコン。実フォルダ側は押すと、そのファイルの場所をフォルダタブで開く
+    /// （当たり判定は `goto_real_hits` に登録し、押下は `try_click_goto` が選択や起動より先に拾う）。
+    /// 仮想フォルダ側はまだ押せない（見た目とホバー説明だけ）。登録した仮想フォルダが無いときは灰色にする。
+    fn paint_goto_cells(&mut self, ui: &egui::Ui, response: &egui::Response, path: &std::path::Path, real_idx: usize, real_cell: egui::Rect, virt_cell: egui::Rect) {
         let t = i18n::t();
         let hover = ui.input(|i| i.pointer.hover_pos());
         let painter = ui.painter().with_clip_rect(ui.clip_rect());
-        let cell_icon = |cell: egui::Rect, color: egui::Color32, enabled: bool, tip: &str| {
+        let cell_icon = |cell: egui::Rect, color: egui::Color32, enabled: bool, tip: &str| -> Option<egui::Rect> {
             if cell.width() <= 0.0 {
-                return;
+                return None;
             }
             // 移動マーカーと同じ大きさ（丸の中の→矢印）。
             let side = super::dup_marker_ui::ICON_SIZE;
@@ -872,11 +874,33 @@ impl NekoviewApp {
             if on_icon {
                 response.clone().on_hover_text(tip);
             }
+            Some(icon_rect)
         };
-        cell_icon(real_cell, super::dup_marker_ui::GOTO_REAL_COLOR, true, t.list_goto_real_tip());
+        if let Some(rect) = cell_icon(real_cell, super::dup_marker_ui::GOTO_REAL_COLOR, true, t.list_goto_real_tip()) {
+            self.goto_real_hits.insert(real_idx, rect);
+        }
         let has_virtual = path.parent().is_some_and(|dir| self.virtual_node_exists_for(dir));
         let virt_tip = if has_virtual { t.list_goto_virtual_tip() } else { t.list_goto_virtual_none_tip() };
         cell_icon(virt_cell, super::dup_marker_ui::GOTO_VIRTUAL_COLOR, has_virtual, virt_tip);
+    }
+
+    /// 「実フォルダ」アイコンの押下なら、そのファイルを移動先の要求として積んで true（選択や起動はしない）。
+    /// ダブルクリックの2回目も、起動させないよう握りつぶす。
+    pub(super) fn try_click_goto(&mut self, ui: &egui::Ui, response: &egui::Response, real_idx: usize) -> bool {
+        // 当たり判定はリスト描画のたびに作り直す。カードに切り替えた直後の古い矩形は拾わない。
+        if self.view_mode.mode == ViewMode::Card || !(response.clicked() || response.double_clicked()) {
+            return false;
+        }
+        let Some(rect) = self.goto_real_hits.get(&real_idx).copied() else { return false };
+        if !ui.input(|i| i.pointer.interact_pos()).is_some_and(|p| rect.contains(p)) {
+            return false;
+        }
+        if response.clicked()
+            && let Some(path) = self.archives.get(real_idx).cloned()
+        {
+            self.pending_goto_real = Some(path);
+        }
+        true
     }
 
     /// ホバー形式: ポインタの横にサムネのポップアップを出す（遅延なし）。画面端では反対側へ寄せる。

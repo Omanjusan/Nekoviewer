@@ -39,6 +39,11 @@ impl NekoviewApp {
             },
             ExploreCmd::SearchCancel => self.cancel_new_search(),
             ExploreCmd::SearchNotice => self.search_notice_open = true,
+            ExploreCmd::GotoReal(idx) => {
+                if let Some(file) = self.archives.get(idx).cloned() {
+                    self.open_file_location_in_folders_tab(file);
+                }
+            }
             ExploreCmd::ListMode(list) => {
                 self.view_mode.mode = if list { super::view_mode::ViewMode::List } else { super::view_mode::ViewMode::Card };
             }
@@ -84,6 +89,16 @@ impl NekoviewApp {
                 super::ScanState::Done => "done",
             },
             "loading_shown": self.scan_loading_visible(),
+            "current_dir": self.current_dir.display().to_string(),
+            // カーソル（選択枠）が乗っているファイル名。フォルダの行に乗っていれば null。
+            "cursor_file": match &self.grid_cursor {
+                Some(super::GridEntry::Archive(i)) => self
+                    .archives
+                    .get(*i)
+                    .and_then(|p| p.file_name())
+                    .map(|n| n.to_string_lossy().into_owned()),
+                _ => None,
+            },
             "job_running": self.search_job.is_some(),
             "notice_open": self.search_notice_open,
             "any_running": self.any_search_running(),

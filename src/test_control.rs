@@ -58,6 +58,8 @@ pub enum ExploreCmd {
     SearchNotice,
     /// 表示モード。true=リスト、false=カード
     ListMode(bool),
+    /// 一覧の idx 番目のファイルについて、リストの「実フォルダ」アイコンを押したのと同じ移動をする
+    GotoReal(usize),
     /// 履歴の idx 番目（0 始まり）を選んで表示する
     SearchSelect(usize),
 }
@@ -109,6 +111,7 @@ pub fn parse_explore_line(line: &str) -> Option<ExploreCmd> {
         "search-start" if arg.is_empty() => Some(ExploreCmd::SearchStart),
         "search-cancel" if arg.is_empty() => Some(ExploreCmd::SearchCancel),
         "search-notice" if arg.is_empty() => Some(ExploreCmd::SearchNotice),
+        "goto-real" => arg.parse().ok().map(ExploreCmd::GotoReal),
         "view-mode" => match arg {
             "list" => Some(ExploreCmd::ListMode(true)),
             "card" => Some(ExploreCmd::ListMode(false)),
@@ -264,6 +267,8 @@ mod tests {
         assert_eq!(parse_explore_line("search-start now"), None);
         assert_eq!(parse_explore_line("search-cancel"), Some(ExploreCmd::SearchCancel));
         assert_eq!(parse_explore_line("search-notice"), Some(ExploreCmd::SearchNotice));
+        assert_eq!(parse_explore_line("goto-real 3"), Some(ExploreCmd::GotoReal(3)));
+        assert_eq!(parse_explore_line("goto-real x"), None);
         assert_eq!(parse_explore_line("search-select 2"), Some(ExploreCmd::SearchSelect(2)));
         assert_eq!(parse_explore_line("search-select x"), None);
     }

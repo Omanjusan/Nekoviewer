@@ -359,3 +359,36 @@ fn the_search_tab_never_shows_a_stuck_loading_label() {
     let s = e.wait_search("real listing restored", Duration::from_secs(20), |s| s["scan_state"] == "done" && s["archives"] == 5);
     assert_eq!(s["loading_shown"], false);
 }
+
+#[test]
+#[ignore = "needs Xephyr + GPU rendering; run explicitly"]
+fn goto_real_opens_the_files_folder_in_the_folders_tab_and_selects_the_file() {
+    if skip() { return; }
+    let mut e = Env::new("search-goto-real");
+    e.make_files("alpha", 12, 16);
+    e.launch();
+    e.open_and_wait_ledger(12);
+    // いったん別のフォルダ（起動時の画像のフォルダ）へ移ってから、検索結果の「実フォルダ」アイコンで戻る
+    let other = format!("open {}", e.root.join("pics").display());
+    e.send(&["tab real", &other]);
+    e.wait_search("moved away", Duration::from_secs(20), |s| {
+        s["current_dir"].as_str().is_some_and(|d| d.ends_with("/pics")) && s["scan_state"] == "done"
+    });
+    e.send(&["tab search", "search-text alpha", "search-start"]);
+    e.wait_search("search done", Duration::from_secs(30), |s| {
+        s["history"].as_array().is_some_and(|h| h.len() == 1 && h[0]["running"] == false) && s["archives"] == 12
+    });
+
+    // 検索結果の 7 番目（名前順で alpha_006）の場所へ移る
+    e.send(&["goto-real 6"]);
+    let s = e.wait_search("opened in the folders tab", Duration::from_secs(20), |s| {
+        s["tab"] == "real"
+            && s["current_dir"].as_str().is_some_and(|d| d.ends_with("/files"))
+            && s["scan_state"] == "done"
+            && s["archives"] == 12
+            && s["cursor_file"] == "alpha_006.png"
+    });
+    assert_eq!(s["viewing"], Value::Null, "実フォルダの表示に戻っている");
+    // 検索の履歴は残っている（検索タブへ戻って見直せる）
+    assert_eq!(s["history"].as_array().unwrap().len(), 1);
+}

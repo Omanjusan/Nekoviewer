@@ -3057,6 +3057,10 @@ impl NekoviewApp {
         if self.try_click_reveal(ui, response, real_idx) {
             return;
         }
+        // リストの「実フォルダ」アイコンを押したときは、選択や起動ではなく、そのファイルの場所をフォルダタブで開く。
+        if self.try_click_goto(ui, response, real_idx) {
+            return;
+        }
         // リストの「詳細」アイコンを押したときは、選択や起動ではなく詳細ウィンドウを開く。
         if self.try_click_detail(ui, response, real_idx) {
             return;
@@ -3966,6 +3970,11 @@ impl NekoviewApp {
         // 一覧の右クリック「このフォルダを検索タブで開く」は、描画が終わってから消化する
         if let Some(path) = self.pending_open_in_search.take() {
             self.open_in_search_tab(path);
+            return;
+        }
+        // 「実フォルダ」アイコンの移動も、描画が終わってから消化する（一覧の差し替えを描画の途中でしない）
+        if let Some(file) = self.pending_goto_real.take() {
+            self.open_file_location_in_folders_tab(file);
             return;
         }
         match output.inner {

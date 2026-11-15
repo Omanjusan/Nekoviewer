@@ -108,6 +108,30 @@ impl NekoviewApp {
         }
     }
 
+    /// ファイル `file` の場所（親の実フォルダ）を、フォルダタブ（実ツリー）で開き、そのファイルを選択して表示する。
+    /// 横断一覧（検索結果など）のリストの「実フォルダ」アイコンから使う。別ドライブならツリーのルートも切り替える。
+    /// 読み込みが済んだら、類似ファイル一覧から戻るときと同じ仕組み（`similar_return`）で、ファイルを選び直して
+    /// 見える位置までスクロールする。届かない場所はトーストで知らせて、何も変えない。
+    pub(in crate::view_explorer) fn open_file_location_in_folders_tab(&mut self, file: PathBuf) {
+        let Some(dir) = file.parent().map(std::path::Path::to_path_buf) else { return };
+        if !self.path_reachable(&dir) {
+            self.set_toast(i18n::t().virtual_folder_unreachable());
+            return;
+        }
+        let outcome = self.ensure_tree_root_for(&dir);
+        // 実位置の退避は捨てる（別の場所へ明示的に移る操作のため）
+        self.real_dir_stash.clear();
+        self.switch_folder_tab(FolderPaneTab::RealTree);
+        self.focused_pane = FocusPane::TreeTab;
+        self.navigate_to(dir.clone(), DirectoryNavigationSource::ItemPane);
+        self.similar_return = Some(file);
+        self.persist_state();
+        match outcome {
+            RootOutcome::NoDrive => self.set_toast(i18n::t().virtual_open_no_drive()),
+            RootOutcome::Kept | RootOutcome::Switched(_) => self.follow_in_tree(dir, None),
+        }
+    }
+
     /// 実フォルダ `real` を検索の基点にして検索タブを開く。検索条件・検索履歴は保持し、基点だけを置き換える。
     /// 検索タブのツリーも `real` まで展開して選択表示にする（別ドライブならルートも切り替える）。
     /// ネットワークパスはメニュー側で無効化しているが、ここでも念のため弾く。

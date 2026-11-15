@@ -958,6 +958,10 @@ pub struct NekoviewApp {
     marker_icon_hits: HashMap<usize, egui::Rect>,
     /// リストの「ファイラー」ボタンの矩形（行番号 → 矩形）。毎フレーム `draw_archive_list` の頭で作り直す。
     reveal_icon_hits: HashMap<usize, egui::Rect>,
+    /// リストの「実フォルダ」列の移動アイコンの当たり判定（行の実インデックス → 矩形）。今フレームに描いた行だけ。
+    goto_real_hits: HashMap<usize, egui::Rect>,
+    /// 「実フォルダ」アイコンが押されたファイル。描画の途中で表示を差し替えないよう、一覧の描画後に消化する。
+    pending_goto_real: Option<PathBuf>,
     /// リストの「詳細」アイコンの矩形（行番号 → 矩形）。毎フレーム `draw_archive_list` の頭で作り直す。
     detail_icon_hits: HashMap<usize, Vec<(egui::Rect, detail_window::DetailKind)>>,
     /// 開いている詳細ウィンドウ（ComicInfo・nfo・zipコメント）。
@@ -1739,6 +1743,8 @@ impl NekoviewApp {
             marker_seen_dir: None,
             marker_icon_hits: HashMap::new(),
             reveal_icon_hits: HashMap::new(),
+            goto_real_hits: HashMap::new(),
+            pending_goto_real: None,
             detail_icon_hits: HashMap::new(),
             detail_window: None,
             marker_popup: None,
