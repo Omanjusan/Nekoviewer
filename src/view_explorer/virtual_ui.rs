@@ -800,20 +800,20 @@ impl NekoviewApp {
         let open_dir = self.viewing_dir.clone();
         if open_dir.is_some() || folder_target.is_some() {
             response.context_menu(|ui| {
-                if let Some(dir) = &open_dir {
-                    let r_item = ui.button(i18n::t().explorer_open_folder_menu());
-                    help_tip_auto(&r_item, &i18n::t().help_card_open_folder());
-                    if r_item.clicked() {
-                        crate::translate::open_in_file_manager(dir);
-                        ui.close();
+                crate::ui_widgets::menu_theme_heading(ui, i18n::t().menu_theme_os_file_manager());
+                crate::ui_widgets::menu_theme_items(ui, |ui| {
+                    if let Some(dir) = &open_dir {
+                        let r_item = ui.button(i18n::t().explorer_open_folder_menu());
+                        help_tip_auto(&r_item, &i18n::t().help_card_open_folder());
+                        if r_item.clicked() {
+                            crate::translate::open_in_file_manager(dir);
+                            ui.close();
+                        }
                     }
-                }
-                if let Some(target) = &folder_target {
-                    if open_dir.is_some() {
-                        ui.separator();
+                    if let Some(target) = &folder_target {
+                        super::panels::this_folder_menu_items(ui, target);
                     }
-                    super::panels::this_folder_menu_items(ui, target);
-                }
+                });
             });
         }
         response.double_clicked()
