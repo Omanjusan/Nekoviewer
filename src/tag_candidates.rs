@@ -297,7 +297,7 @@ impl CandidateSet {
 
 // ── 既存カテゴリの検索 ────────────────────────────────────────────────
 
-fn find_category(cats: &[TagManagerCategoryUi], role: Role) -> CatRef {
+pub(crate) fn find_category(cats: &[TagManagerCategoryUi], role: Role) -> CatRef {
     let idx = match role {
         Role::Format => cats.iter().position(|c| c.system_kind == Some(SystemKind::ArchiveFormat)),
         Role::Main => cats.iter().position(|c| c.is_main),
