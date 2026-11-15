@@ -2910,8 +2910,9 @@ impl ViewerState {
         let size = self.tool_palette_grid_size();
         let max_x = (viewport.max.x - size.x).max(viewport.min.x);
         let max_y = (viewport.max.y - size.y).max(viewport.min.y);
-        let min_x = self.tool_palette.pos.0.clamp(viewport.min.x, max_x);
-        let min_y = self.tool_palette.pos.1.clamp(viewport.min.y, max_y);
+        let raw = self.tool_palette.top_left(viewport, size);
+        let min_x = raw.x.clamp(viewport.min.x, max_x);
+        let min_y = raw.y.clamp(viewport.min.y, max_y);
         Some(egui::Rect::from_min_size(egui::pos2(min_x, min_y), size))
     }
 
@@ -2957,7 +2958,12 @@ impl ViewerState {
             if drag_resp.dragged() {
                 // 加算基準は生値ではなく表示中（クランプ済み）の左上。クランプ中に生値へ
                 // 移動量が蓄積して、逆方向へ動かしても長く追従しなくなるのを防ぐ。
-                self.tool_palette.pos = (rect.min.x + drag_resp.drag_delta().x, rect.min.y + drag_resp.drag_delta().y);
+                // 寄せ先はドラッグ中は固定し、offsetだけ動かす（離したときに寄せ先を決め直す）。
+                let moved = rect.min + drag_resp.drag_delta();
+                self.tool_palette.set_top_left_keep_anchor(viewport, rect.size(), moved);
+            }
+            if drag_resp.drag_stopped() {
+                self.tool_palette.reanchor_at(viewport, rect.size(), rect.min);
             }
         }
 
@@ -7538,7 +7544,7 @@ mod magnifier_flow_tests {
         fn with_palette_slot() -> Self {
             let mut h = Self::new_unwarmed();
             h.cfg.tool_palette.visible = true;
-            h.cfg.tool_palette.pos = (100.0, 100.0);
+            h.cfg.tool_palette.set_top_left_offset(100.0, 100.0);
             h.cfg.tool_palette.slots[0] = crate::tool_palette::PaletteSlotContent::Toggle(crate::tool_palette::ToggleKind::Magnifier);
             h.warm_up();
             h
@@ -7710,9 +7716,15 @@ mod magnifier_flow_tests {
         fit
     }
 
+    /// ハーネスで実際に中央パネルへ渡る viewport（画面からタイトル帯・余白を引いた矩形）。
+    /// パレットは viewport 基準の寄せ先で置かれるので、テストの座標計算もこれを使う。
+    fn real_viewport(screen: egui::Vec2) -> egui::Rect {
+        egui::Rect::from_min_max(egui::pos2(8.0, 30.0), egui::pos2(screen.x - 8.0, screen.y - 8.0))
+    }
+
     /// バーのモード終了ボタンを、実際のクリック操作（ホバー→押下→離す）で押す。
     fn click_exit_button(h: &mut Harness) {
-        let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, h.screen);
+        let viewport = real_viewport(h.screen);
         let center = h
             .cfg
             .magnifier
@@ -7854,7 +7866,7 @@ mod magnifier_flow_tests {
 
     /// パレットの虫眼鏡マスを、実際のクリック操作（押下→離す）で切り替える。
     fn click_palette_magnifier_slot(h: &mut Harness) {
-        let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, SCREEN);
+        let viewport = real_viewport(SCREEN);
         let palette = h.viewer.tool_palette_rect(viewport).expect("パレットが表示されていない");
         let slot = h.viewer.tool_palette.slot_size_px();
         let center = palette.min
@@ -8155,7 +8167,7 @@ mod magnifier_flow_tests {
         // マス内容はビューアー側のキャッシュが持つ（cfg は初回同期のみ）。
         h.cfg.tool_palette.visible = true;
         h.viewer.tool_palette.visible = true;
-        h.viewer.tool_palette.pos = (100.0, 100.0);
+        h.viewer.tool_palette.set_top_left_offset(100.0, 100.0);
         h.viewer.tool_palette.slots[0] = crate::tool_palette::PaletteSlotContent::Action(crate::tool_palette::ActionKind::KomaNext);
         h.frame(vec![], egui::Modifiers::NONE);
         // コマモードOFF（拡大表示中でも、通常表示でも）: 何も起きない。
@@ -8486,7 +8498,7 @@ mod magnifier_flow_tests {
         let mut h = Harness::with_pages(3, 800, 1200);
         h.cfg.tool_palette.visible = true;
         h.viewer.tool_palette.visible = true;
-        h.viewer.tool_palette.pos = (100.0, 100.0);
+        h.viewer.tool_palette.set_top_left_offset(100.0, 100.0);
         h.viewer.tool_palette.slots[0] = crate::tool_palette::PaletteSlotContent::Action(crate::tool_palette::ActionKind::KomaPrev);
         h.frame(vec![], egui::Modifiers::NONE);
         h.start_koma(2.5);
@@ -8816,7 +8828,7 @@ mod magnifier_flow_tests {
 
     // ── ツールパレットのドラッグ：クランプ中の座標蓄積 ─────────────────────────
     fn palette_rect(h: &Harness) -> egui::Rect {
-        let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, h.screen);
+        let viewport = real_viewport(h.screen);
         h.viewer.tool_palette_rect(viewport).expect("パレットが表示されていない")
     }
 
@@ -8857,7 +8869,7 @@ mod magnifier_flow_tests {
     fn palette_drag_right_after_window_shrink_follows_immediately() {
         let mut h = Harness::with_palette_slot();
         // 大きな画面の下端に置いた状態（生値が縮小後の範囲を大きく超える）。
-        h.viewer.tool_palette.pos = (100.0, 700.0);
+        h.viewer.tool_palette.set_top_left_offset(100.0, 700.0);
         h.frame(vec![], egui::Modifiers::NONE);
         h.screen = egui::vec2(1000.0, 300.0);
         h.warm_up();
@@ -8868,8 +8880,8 @@ mod magnifier_flow_tests {
         let after_y = palette_rect(&h).min.y;
         assert!(
             after_y <= clamped_y - 50.0,
-            "クランプ中の生値が蓄積され、上へ100pxドラッグしても追従しない: {clamped_y} -> {after_y} (pos={:?})",
-            h.viewer.tool_palette.pos
+            "クランプ中の生値が蓄積され、上へ100pxドラッグしても追従しない: {clamped_y} -> {after_y} (offset={:?})",
+            h.viewer.tool_palette.offset
         );
     }
 
@@ -8877,7 +8889,7 @@ mod magnifier_flow_tests {
     fn palette_drag_pressed_against_edge_does_not_accumulate() {
         let mut h = Harness::with_palette_slot();
         let bottom_y = {
-            h.viewer.tool_palette.pos = (100.0, 10_000.0);
+            h.viewer.tool_palette.set_top_left_offset(100.0, 10_000.0);
             h.warm_up();
             palette_rect(&h).min.y
         };
@@ -8890,8 +8902,8 @@ mod magnifier_flow_tests {
         let after_y = palette_rect(&h).min.y;
         assert!(
             after_y <= bottom_y - 50.0,
-            "端に押し付けた分が蓄積され、逆方向へ動かしても追従しない: {bottom_y} -> {after_y} (pos={:?})",
-            h.viewer.tool_palette.pos
+            "端に押し付けた分が蓄積され、逆方向へ動かしても追従しない: {bottom_y} -> {after_y} (offset={:?})",
+            h.viewer.tool_palette.offset
         );
     }
 
@@ -8899,7 +8911,7 @@ mod magnifier_flow_tests {
     #[test]
     fn palette_returns_to_original_position_when_window_restored_without_drag() {
         let mut h = Harness::with_palette_slot();
-        h.viewer.tool_palette.pos = (100.0, 600.0);
+        h.viewer.tool_palette.set_top_left_offset(100.0, 600.0);
         h.warm_up();
         let original = palette_rect(&h).min;
         h.screen = egui::vec2(1000.0, 300.0);
@@ -8908,6 +8920,41 @@ mod magnifier_flow_tests {
         h.screen = SCREEN;
         h.warm_up();
         assert_eq!(palette_rect(&h).min, original);
+    }
+
+    /// 右下に置いたパレットは、窓を拡大しても右下の隅に追従する（左上の絶対座標のままだと取り残される）。
+    #[test]
+    fn palette_dragged_to_bottom_right_follows_window_growth() {
+        use crate::tool_palette::Align;
+        let mut h = Harness::with_palette_slot();
+        h.viewer.tool_palette.set_top_left_offset(10_000.0, 10_000.0);
+        h.warm_up();
+        // ヘッダーを少しだけ掴んで動かし、離して寄せ先を確定させる。
+        drag_palette_header_by(&mut h, -10.0);
+        assert_eq!(h.viewer.tool_palette.anchor, (Align::End, Align::End), "右下へ寄せ先が決まらない");
+        let gap_before = h.screen.y - palette_rect(&h).max.y;
+        let right_gap_before = h.screen.x - palette_rect(&h).max.x;
+
+        h.screen = egui::vec2(h.screen.x + 400.0, h.screen.y + 300.0);
+        h.warm_up();
+        let r = palette_rect(&h);
+        assert!((h.screen.y - r.max.y - gap_before).abs() < 0.5, "下端からの距離が窓拡大で変わった");
+        assert!((h.screen.x - r.max.x - right_gap_before).abs() < 0.5, "右端からの距離が窓拡大で変わった");
+    }
+
+    /// 左上へ置いた場合は従来どおり左上基準のまま（窓拡大で動かない）。
+    #[test]
+    fn palette_dragged_to_top_left_stays_put_on_window_growth() {
+        use crate::tool_palette::Align;
+        let mut h = Harness::with_palette_slot();
+        h.viewer.tool_palette.set_top_left_offset(20.0, 20.0);
+        h.warm_up();
+        drag_palette_header_by(&mut h, 10.0);
+        assert_eq!(h.viewer.tool_palette.anchor, (Align::Start, Align::Start));
+        let before = palette_rect(&h).min;
+        h.screen = egui::vec2(h.screen.x + 400.0, h.screen.y + 300.0);
+        h.warm_up();
+        assert_eq!(palette_rect(&h).min, before);
     }
 
     /// ツールボックスの割り当てキーを1回押す（押下→離し）。

@@ -754,6 +754,10 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
     let mut image_filter_order: Option<[crate::image_filter::FilterStage; crate::image_filter::FILTER_STAGE_COUNT]> = None;
     let mut tool_palette_pos_x: Option<f32> = None;
     let mut tool_palette_pos_y: Option<f32> = None;
+    let mut tool_palette_anchor_h: Option<crate::tool_palette::Align> = None;
+    let mut tool_palette_anchor_v: Option<crate::tool_palette::Align> = None;
+    let mut tool_palette_offset_x: Option<f32> = None;
+    let mut tool_palette_offset_y: Option<f32> = None;
     let mut tool_palette_locked: Option<bool> = None;
     let mut tool_palette_auto_hide_locked: Option<bool> = None;
     let mut tool_palette_opacity_pct: Option<u8> = None;
@@ -988,6 +992,10 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
                 "image_filter_sharpness_enabled" => { image_filter_sharpness_enabled = v.trim().parse().ok(); }
                 "tool_palette_pos_x" => { tool_palette_pos_x = v.trim().parse().ok(); }
                 "tool_palette_pos_y" => { tool_palette_pos_y = v.trim().parse().ok(); }
+                "tool_palette_anchor_h" => { tool_palette_anchor_h = crate::tool_palette::Align::from_id(v); }
+                "tool_palette_anchor_v" => { tool_palette_anchor_v = crate::tool_palette::Align::from_id(v); }
+                "tool_palette_offset_x" => { tool_palette_offset_x = v.trim().parse().ok(); }
+                "tool_palette_offset_y" => { tool_palette_offset_y = v.trim().parse().ok(); }
                 "tool_palette_locked" => { tool_palette_locked = v.trim().parse().ok(); }
                 "tool_palette_auto_hide_locked" => { tool_palette_auto_hide_locked = v.trim().parse().ok(); }
                 "tool_palette_opacity_pct" => {
@@ -1103,7 +1111,15 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
             tool_palette: {
                 let default = PaletteState::default();
                 PaletteState {
-                    pos: (tool_palette_pos_x.unwrap_or(default.pos.0), tool_palette_pos_y.unwrap_or(default.pos.1)),
+                    // 旧形式（絶対座標 pos_x/y）は「左上寄せ＋その距離」として読む＝見た目は従来と同一。
+                    anchor: (
+                        tool_palette_anchor_h.unwrap_or(default.anchor.0),
+                        tool_palette_anchor_v.unwrap_or(default.anchor.1),
+                    ),
+                    offset: (
+                        tool_palette_offset_x.or(tool_palette_pos_x).unwrap_or(default.offset.0),
+                        tool_palette_offset_y.or(tool_palette_pos_y).unwrap_or(default.offset.1),
+                    ),
                     locked: tool_palette_locked.unwrap_or(default.locked),
                     auto_hide_locked: tool_palette_auto_hide_locked.unwrap_or(default.auto_hide_locked),
                     opacity_pct: tool_palette_opacity_pct.unwrap_or(default.opacity_pct),
@@ -1321,9 +1337,11 @@ pub fn save_state(root: &Path, dir: &Path, window_size: (u32, u32), viewer_slots
         viewer_cfg.image_filter.sharpness_enabled,
     ));
     content.push_str(&format!(
-        "tool_palette_pos_x={}\ntool_palette_pos_y={}\ntool_palette_locked={}\ntool_palette_auto_hide_locked={}\ntool_palette_opacity_pct={}\ntool_palette_visible={}\ntool_palette_slot_size_idx={}\ntool_palette_visible_rows={}\ntool_palette_row_edit_locked={}\ntool_palette_slots={}\n",
-        viewer_cfg.tool_palette.pos.0,
-        viewer_cfg.tool_palette.pos.1,
+        "tool_palette_anchor_h={}\ntool_palette_anchor_v={}\ntool_palette_offset_x={}\ntool_palette_offset_y={}\ntool_palette_locked={}\ntool_palette_auto_hide_locked={}\ntool_palette_opacity_pct={}\ntool_palette_visible={}\ntool_palette_slot_size_idx={}\ntool_palette_visible_rows={}\ntool_palette_row_edit_locked={}\ntool_palette_slots={}\n",
+        viewer_cfg.tool_palette.anchor.0.to_id(),
+        viewer_cfg.tool_palette.anchor.1.to_id(),
+        viewer_cfg.tool_palette.offset.0,
+        viewer_cfg.tool_palette.offset.1,
         viewer_cfg.tool_palette.locked,
         viewer_cfg.tool_palette.auto_hide_locked,
         viewer_cfg.tool_palette.opacity_pct,
@@ -2029,7 +2047,9 @@ mod tests {
 
         let parsed = parse_state_file(&state_path(&root)).expect("state file parses");
         let tp = parsed.viewer_cfg.tool_palette;
-        assert_eq!(tp.pos, (120.5, 64.0));
+        // 旧形式の絶対座標は、左上寄せ＋その距離として読まれる。
+        assert_eq!(tp.anchor, (crate::tool_palette::Align::Start, crate::tool_palette::Align::Start));
+        assert_eq!(tp.offset, (120.5, 64.0));
         assert!(tp.locked);
         assert_eq!(tp.opacity_pct, 40);
         assert!(!tp.visible);
@@ -2042,6 +2062,27 @@ mod tests {
         // auto_hide_locked未指定時はデフォルト(true=常時表示)にフォールバックする。
         assert!(tp.auto_hide_locked);
 
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn tool_palette_anchor_keys_parse_and_override_legacy_pos() {
+        use crate::tool_palette::Align;
+        let root = std::env::temp_dir()
+            .join(format!("nekoviewer_state_tool_palette_anchor_test_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&root);
+        std::fs::write(
+            state_path(&root),
+            "last_dir=/tmp/x\nlang=ja\n\
+             tool_palette_pos_x=1\ntool_palette_pos_y=2\n\
+             tool_palette_anchor_h=end\ntool_palette_anchor_v=center\n\
+             tool_palette_offset_x=24.5\ntool_palette_offset_y=-8\n",
+        )
+        .unwrap();
+        let parsed = parse_state_file(&state_path(&root)).expect("state file parses");
+        let tp = parsed.viewer_cfg.tool_palette;
+        assert_eq!(tp.anchor, (Align::End, Align::Center));
+        assert_eq!(tp.offset, (24.5, -8.0));
         let _ = std::fs::remove_dir_all(&root);
     }
 
