@@ -111,24 +111,27 @@ impl NekoviewApp {
                         self.enter_favorite_view(FavoriteSelection::Folder(folder.id));
                     }
                     resp.context_menu(|ui| {
-                        let r_rename = ui.button(i18n::t().favorite_rename_menu());
-                        help_tip_auto(&r_rename, &i18n::t().help_fav_rename());
-                        if r_rename.clicked() {
-                            self.favorite_dialog = Some(FavoriteDialogState {
-                                mode: FavoriteDialogMode::Rename(folder.id),
-                                name: folder.name.clone(),
-                                marker: folder.marker.clone(),
-                                color: rgba_u32_to_color32(folder.color_rgba),
-                                error: None,
-                            });
-                            ui.close();
-                        }
-                        let r_delete = ui.button(i18n::t().favorite_delete_menu());
-                        help_tip_auto(&r_delete, &i18n::t().help_fav_delete());
-                        if r_delete.clicked() {
-                            self.favorite_delete_confirm = Some(folder.id);
-                            ui.close();
-                        }
+                        crate::ui_widgets::menu_theme_heading(ui, i18n::t().menu_theme_favorite_manage());
+                        crate::ui_widgets::menu_theme_items(ui, |ui| {
+                            let r_rename = ui.button(i18n::t().favorite_rename_menu());
+                            help_tip_auto(&r_rename, &i18n::t().help_fav_rename());
+                            if r_rename.clicked() {
+                                self.favorite_dialog = Some(FavoriteDialogState {
+                                    mode: FavoriteDialogMode::Rename(folder.id),
+                                    name: folder.name.clone(),
+                                    marker: folder.marker.clone(),
+                                    color: rgba_u32_to_color32(folder.color_rgba),
+                                    error: None,
+                                });
+                                ui.close();
+                            }
+                            let r_delete = ui.button(i18n::t().favorite_delete_menu());
+                            help_tip_auto(&r_delete, &i18n::t().help_fav_delete());
+                            if r_delete.clicked() {
+                                self.favorite_delete_confirm = Some(folder.id);
+                                ui.close();
+                            }
+                        });
                     });
                 }
             });

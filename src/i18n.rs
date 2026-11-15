@@ -3584,17 +3584,17 @@ impl Lang {
 
     pub fn favorite_rename_menu(self) -> &'static str {
         match self {
-            Lang::Japanese => "リネーム (F2)",
-            Lang::English  => "Rename (F2)",
-            Lang::Chinese  => "重命名 (F2)",
+            Lang::Japanese => "プロパティの変更 (F2)",
+            Lang::English  => "Edit Properties (F2)",
+            Lang::Chinese  => "修改属性 (F2)",
         }
     }
 
     pub fn favorite_delete_menu(self) -> &'static str {
         match self {
-            Lang::Japanese => "削除",
-            Lang::English  => "Delete",
-            Lang::Chinese  => "删除",
+            Lang::Japanese => "お気に入りフォルダの削除",
+            Lang::English  => "Delete Favorite Folder",
+            Lang::Chinese  => "删除收藏夹",
         }
     }
 
@@ -3608,9 +3608,9 @@ impl Lang {
 
     pub fn favorite_dialog_title_rename(self) -> &'static str {
         match self {
-            Lang::Japanese => "お気に入りフォルダのリネーム",
-            Lang::English  => "Rename Favorite Folder",
-            Lang::Chinese  => "重命名收藏夹",
+            Lang::Japanese => "お気に入りフォルダのプロパティ",
+            Lang::English  => "Favorite Folder Properties",
+            Lang::Chinese  => "收藏夹属性",
         }
     }
 
@@ -10961,15 +10961,15 @@ impl Lang {
     pub fn help_fav_rename(self) -> HelpDoc {
         match self {
             Lang::Japanese => HelpDoc {
-                title: "リネーム (F2)",
+                title: "プロパティの変更 (F2)",
                 sections: &[("", "お気に入りフォルダの名前を変更する。ダイアログでマーカーと色も変えられる。")],
             },
             Lang::English => HelpDoc {
-                title: "Rename (F2)",
+                title: "Edit Properties (F2)",
                 sections: &[("", "Renames the favorites folder. The dialog also lets you change its marker and color.")],
             },
             Lang::Chinese => HelpDoc {
-                title: "重命名 (F2)",
+                title: "修改属性 (F2)",
                 sections: &[("", "更改收藏文件夹的名称。在对话框中还可以更改标记和颜色。")],
             },
         }
@@ -10978,15 +10978,15 @@ impl Lang {
     pub fn help_fav_delete(self) -> HelpDoc {
         match self {
             Lang::Japanese => HelpDoc {
-                title: "削除",
+                title: "お気に入りフォルダの削除",
                 sections: &[("", "お気に入りフォルダを削除する（確認あり）。所属するファイルの登録も解除される。")],
             },
             Lang::English => HelpDoc {
-                title: "Delete",
+                title: "Delete Favorite Folder",
                 sections: &[("", "Deletes the favorites folder (with confirmation). Files assigned to it are unassigned too.")],
             },
             Lang::Chinese => HelpDoc {
-                title: "删除",
+                title: "删除收藏夹",
                 sections: &[("", "删除收藏文件夹（有确认）。所属文件的收藏关系也会被解除。")],
             },
         }
