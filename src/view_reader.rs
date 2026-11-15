@@ -632,6 +632,8 @@ pub struct ViewerState {
     /// 直近フレームで出ていたエントリリスト本体の矩形（出ていなければ None）。
     /// リスト上のホイールをページ送りへ渡さない（リストのスクロール専用にする）判定に使う。
     entry_list_rect: Option<egui::Rect>,
+    /// このフレームでエントリリストが開いたばかりか（表示開始の初期位置は即時、以降のページ変更は滑らかに追従）。
+    entry_list_just_opened: bool,
     /// フルスクリーン時ソートバーの表示状態（上端ホバーで on/off）
     fs_sort_bar_visible: bool,
     /// 仮想タイトル帯を隠す時刻（`FrameInput::time` 基準）。None = まだ初回フレームを迎えていない。
@@ -1038,6 +1040,7 @@ impl ViewerState {
             edge_turn_hover: None,
             entry_list_scrolled_lo: None,
             entry_list_rect: None,
+            entry_list_just_opened: false,
             fs_sort_bar_visible: false,
             title_band_hide_at: None,
             menubar_visible: false,
@@ -1164,6 +1167,7 @@ impl ViewerState {
             edge_turn_hover: None,
             entry_list_scrolled_lo: None,
             entry_list_rect: None,
+            entry_list_just_opened: false,
             fs_sort_bar_visible: false,
             title_band_hide_at: None,
             menubar_visible: false,
@@ -2134,8 +2138,8 @@ impl ViewerState {
 
         let save_slots = self.draw_top_bar(ui, &ctx, &input, &viewer_style, cfg, keymap);
 
-        // ── 左エントリリスト ──────────────────────────────────────────────────
-        self.draw_entry_list(ui, &ctx, &viewer_style, input.hover_pos, input.viewport_rect);
+        // 左エントリリストは本画像の前面にオーバーレイ表示する（領域を確保しない＝画像は縮まない）。
+        // 表示判定・描画は draw_central_panel 内（サムネバーと同様、パレットより先に描く）。
 
         // ── アーカイブ内サムネイルバー ────────────────────────────────────────
         // 表示の可否・矩形は draw_central_panel 内（ポインター侵入トリガー）で決めて描く。
@@ -3642,6 +3646,10 @@ impl ViewerState {
             }) || self.tool_palette_menu_open;
             self.tick_tool_palette_auto_hide(ui.ctx(), input.time, pointer_in_palette);
 
+            // ── 左エントリリスト：ホバーでの表示判定（オーバーレイ。サムネバーより先に判定＝リスト優先） ──
+            let entry_list_rect = self.update_entry_list_visibility(ui.ctx(), input.hover_pos, viewport_rect);
+            let pointer_in_entry_list = entry_list_rect.zip(input.hover_pos).is_some_and(|(r, p)| r.contains(p));
+
             // ── サムネバー：ポインター侵入トリガーの表示判定 ─────────────────────
             // 出ている間、バー上のクリック・ホバーは背面（画像・ページ送りゾーン）へ伝えない。
             let thumbbar_rect = self.update_thumbbar_visibility(cfg, viewport_rect, input.hover_pos, ui.ctx());
@@ -3727,8 +3735,8 @@ impl ViewerState {
 
             // ── 左右端ページ送りゾーン ───────────────────────────────────────────
             let edge_ctx = ui.ctx().clone();
-            let guarded_hover = if pointer_in_palette || pointer_in_bar || pointer_in_rating || pointer_in_thumbbar { None } else { input.hover_pos };
-            let guarded_primary_clicked = input.primary_clicked && !pointer_in_palette && !pointer_in_bar && !pointer_in_rating && !pointer_in_thumbbar;
+            let guarded_hover = if pointer_in_palette || pointer_in_bar || pointer_in_rating || pointer_in_thumbbar || pointer_in_entry_list { None } else { input.hover_pos };
+            let guarded_primary_clicked = input.primary_clicked && !pointer_in_palette && !pointer_in_bar && !pointer_in_rating && !pointer_in_thumbbar && !pointer_in_entry_list;
             self.handle_edge_turn(&edge_ctx, clip, guarded_hover, guarded_primary_clicked, is_spread, step, total, input.time, cfg.thumbbar_pos);
             self.draw_edge_turn_marker(&edge_ctx, clip);
             if self.tick_title_band(&edge_ctx, input.time, input.hover_pos, input.viewport_rect, clip) {
@@ -3933,7 +3941,7 @@ impl ViewerState {
             }
 
             // パレット上でのクリックは画像側（ページめくり／原寸切替）へ伝えない。
-            if pointer_in_palette || pointer_in_rating || pointer_in_thumbbar {
+            if pointer_in_palette || pointer_in_rating || pointer_in_thumbbar || pointer_in_entry_list {
                 double_clicked = false;
                 single_clicked = false;
             }
@@ -4032,6 +4040,11 @@ impl ViewerState {
             self.thumbbar_palette_block = if self.tool_palette_auto_hidden { None } else { palette_rect };
             if let Some(rect) = thumbbar_rect {
                 self.draw_thumbbar_overlay(ui, cfg, cfg.thumbbar_pos, rect);
+            }
+            // ── 左エントリリスト（オーバーレイ）。サムネバーとは排他なので重ならない。 ──
+            if let Some(rect) = entry_list_rect {
+                let ctx = ui.ctx().clone();
+                self.draw_entry_list_overlay(ui, &ctx, rect);
             }
 
             // ── ツールパレット：最前面オーバーレイ ────────────────────────────
@@ -4929,16 +4942,20 @@ impl ViewerState {
         );
     }
 
-    /// 左エントリリストパネル（ホバー制御 + 描画）
-    fn draw_entry_list(
+    /// 左エントリリストの幅。
+    const ENTRY_PANEL_W: f32 = 180.0;
+    /// 左エントリリスト背景の不透明度（50%透過）。
+    const ENTRY_LIST_BG_OPACITY: f32 = 0.5;
+
+    /// 左エントリリストの表示状態を更新し、出すべきなら本体の矩形を返す（ホバー制御）。
+    /// 矩形はメニューバー＋タイトルバーの下から始まるオーバーレイ（本画像の領域は確保しない）。
+    /// 隠した時点で、ホイールで動かした位置・現在行へのスクロール記録をリセットする。
+    fn update_entry_list_visibility(
         &mut self,
-        ui: &mut egui::Ui,
         ctx: &egui::Context,
-        viewer_style: &egui::Style,
         hover_pos: Option<egui::Pos2>,
         viewport_rect: egui::Rect,
-    ) {
-        const ENTRY_PANEL_W: f32 = 180.0;
+    ) -> Option<egui::Rect> {
         const TRIGGER_W: f32 = 40.0;
         const HIDE_MARGIN: f32 = 20.0;
 
@@ -4954,19 +4971,31 @@ impl ViewerState {
             {
                 self.entry_list_visible = true;
                 ctx.request_repaint();
-            } else if self.entry_list_visible && pos.x > screen_left + ENTRY_PANEL_W + HIDE_MARGIN {
+            } else if self.entry_list_visible && pos.x > screen_left + Self::ENTRY_PANEL_W + HIDE_MARGIN {
                 self.entry_list_visible = false;
                 ctx.request_repaint();
             }
         }
+        self.entry_list_just_opened = self.entry_list_visible && !was_visible;
 
         if !self.entry_list_visible {
-            // 隠した時点でリセット（ホイールで動かした位置は残さない。再表示時は現在ページが中央になる）。
+            // 隠した時点でリセット（再表示時は現在ページが中央になる）。
             self.entry_list_rect = None;
             self.entry_list_scrolled_lo = None;
-            return;
+            return None;
         }
+        let top = (viewport_rect.min.y + self.top_overlay_inset()).min(viewport_rect.max.y);
+        let rect = egui::Rect::from_min_max(
+            egui::pos2(screen_left, top),
+            egui::pos2(screen_left + Self::ENTRY_PANEL_W, viewport_rect.max.y),
+        );
+        self.entry_list_rect = Some(rect);
+        self.entry_list_rect
+    }
 
+    /// 左エントリリストをオーバーレイ描画する（`update_entry_list_visibility` が返した矩形に）。
+    /// パレットより先に描く（同一レイヤー内は後描きが前面）。行クリックでそのページへジャンプ要求を出す。
+    fn draw_entry_list_overlay(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, rect: egui::Rect) {
         // 仮想ページ(-1 or total)を握りつぶさないよう、クランプ前の生の lo/hi で
         // ペア判定してから、実ページ範囲内のものだけハイライトする。
         let lo = self.spread_lo();
@@ -4974,80 +5003,72 @@ impl ViewerState {
         let hi = if is_spread { lo + 1 } else { lo };
         let entries_snap = self.entries.clone();
         let scroll_anchor = Self::entry_list_scroll_anchor(lo, entries_snap.len());
-        let should_scroll = !was_visible || self.entry_list_scrolled_lo != Some(lo);
+        let should_scroll = self.entry_list_just_opened || self.entry_list_scrolled_lo != Some(lo);
         // 表示中にページが変わったとき（行クリックのジャンプ・キー送りなど）は、行き先まで滑らかにスクロールして着地する。
         // 表示を始めた瞬間の初期位置だけは即時（従来どおり）。
-        let smooth = should_scroll && was_visible;
+        let smooth = should_scroll && !self.entry_list_just_opened;
         let mut jump_to: Option<i32> = None;
-        let inset = self.top_overlay_inset();
-        let mut list_rect: Option<egui::Rect> = None;
 
-        egui::Panel::left("entry_list_panel")
-            .exact_size(ENTRY_PANEL_W)
-            // 固定幅なのにリサイズカーソルだけ出る不具合の防止（既定resizable=true）
-            .resizable(false)
-            .frame(egui::Frame::NONE)
-            .show(ui, |ui| {
-                // パネル（領域の確保）は全高のまま、背景と中身はメニューバー＋タイトルバーの下から始める。
-                let panel_frame = egui::Frame::side_top_panel(viewer_style);
-                let panel_rect = ui.max_rect();
-                let body = egui::Rect::from_min_max(
-                    egui::pos2(panel_rect.min.x, (panel_rect.min.y + inset).min(panel_rect.max.y)),
-                    panel_rect.max,
-                );
-                ui.painter().rect_filled(body, 0.0, panel_frame.fill);
-                list_rect = Some(body);
-                let m = panel_frame.inner_margin;
-                let inner = egui::Rect::from_min_max(
-                    body.min + egui::vec2(f32::from(m.left), f32::from(m.top)),
-                    body.max - egui::vec2(f32::from(m.right), f32::from(m.bottom)),
-                );
-                ui.scope_builder(egui::UiBuilder::new().max_rect(inner), |ui| {
-                    let output = egui::ScrollArea::vertical()
-                        .auto_shrink([false, false])
-                        .show(ui, |ui| {
-                            let mut anchor_rect = None;
-                            for (i, entry) in entries_snap.iter().enumerate() {
-                                let is_cur = i as i32 == lo || i as i32 == hi;
-                                let response = ui.selectable_label(is_cur, &entry.display_name);
-                                if scroll_anchor == Some(i) {
-                                    anchor_rect = Some(response.rect);
-                                    if smooth {
-                                        // 中央へ寄せる。先頭・末尾付近は egui が範囲内にクランプする（中央までは行かない）。
-                                        ui.scroll_to_rect(response.rect, Some(egui::Align::Center));
-                                    }
-                                }
-                                // クリックでそのページへジャンプ（見開きはそのページを含む見開きへ着地）。
-                                if response.clicked() {
-                                    jump_to = Some(i as i32);
-                                }
-                            }
-                            anchor_rect
-                        });
+        // 背景: パネル色の50%透過。
+        let panel_frame = egui::Frame::side_top_panel(ui.style());
+        ui.painter().rect_filled(rect, 0.0, panel_frame.fill.gamma_multiply(Self::ENTRY_LIST_BG_OPACITY));
+        // 領域全体を覆う土台のinteract。行の隙間・余白のクリックが背面の画像（ページ送り等）へ抜けないようにする。
+        ui.interact(rect, ui.id().with("entry_list_backstop"), egui::Sense::click().union(egui::Sense::drag()));
 
+        let m = panel_frame.inner_margin;
+        let inner = egui::Rect::from_min_max(
+            rect.min + egui::vec2(f32::from(m.left), f32::from(m.top)),
+            rect.max - egui::vec2(f32::from(m.right), f32::from(m.bottom)),
+        );
+        // パレットがリストに重なっていて、その上にポインタがあるときは、リスト側のスクロールを止める。
+        let palette_over_pointer = self.thumbbar_palette_block.is_some_and(|r| {
+            ctx.input(|i| i.pointer.hover_pos()).is_some_and(|p| r.contains(p))
+        });
+        let mut child = ui.new_child(egui::UiBuilder::new().id_salt("entry_list_child").max_rect(inner));
+        let mut scroll_area = egui::ScrollArea::vertical().id_salt("entry_list_scroll").auto_shrink([false, false]);
+        if palette_over_pointer {
+            scroll_area = scroll_area.scroll_source(egui::scroll_area::ScrollSource::NONE);
+        }
+        let output = scroll_area.show(&mut child, |ui| {
+            let mut anchor_rect = None;
+            for (i, entry) in entries_snap.iter().enumerate() {
+                let is_cur = i as i32 == lo || i as i32 == hi;
+                let response = ui.selectable_label(is_cur, &entry.display_name);
+                if scroll_anchor == Some(i) {
+                    anchor_rect = Some(response.rect);
                     if smooth {
-                        ctx.request_repaint();
-                        self.entry_list_scrolled_lo = Some(lo);
-                    } else if should_scroll && let Some(anchor_rect) = output.inner {
-                        // 現在行のコンテンツ上の位置から絶対オフセットを求める。
-                        // 0..max_offset にクランプすることで、先頭側ではマーカーが
-                        // 中央まで移動し、中盤だけ中央固定、末尾側では再び下へ移動する。
-                        let max_offset = (output.content_size.y - output.inner_rect.height()).max(0.0);
-                        let desired = Self::entry_list_follow_offset(
-                            output.state.offset.y,
-                            anchor_rect.center().y,
-                            output.inner_rect.center().y,
-                            max_offset,
-                        );
-                        let mut state = output.state;
-                        state.offset.y = desired;
-                        state.store(ctx, output.id);
-                        ctx.request_repaint();
-                        self.entry_list_scrolled_lo = Some(lo);
+                        // 中央へ寄せる。先頭・末尾付近は egui が範囲内にクランプする（中央までは行かない）。
+                        ui.scroll_to_rect(response.rect, Some(egui::Align::Center));
                     }
-                });
-            });
-        self.entry_list_rect = list_rect;
+                }
+                // クリックでそのページへジャンプ（見開きはそのページを含む見開きへ着地）。
+                if response.clicked() {
+                    jump_to = Some(i as i32);
+                }
+            }
+            anchor_rect
+        });
+
+        if smooth {
+            ctx.request_repaint();
+            self.entry_list_scrolled_lo = Some(lo);
+        } else if should_scroll && let Some(anchor_rect) = output.inner {
+            // 現在行のコンテンツ上の位置から絶対オフセットを求める。
+            // 0..max_offset にクランプすることで、先頭側ではマーカーが
+            // 中央まで移動し、中盤だけ中央固定、末尾側では再び下へ移動する。
+            let max_offset = (output.content_size.y - output.inner_rect.height()).max(0.0);
+            let desired = Self::entry_list_follow_offset(
+                output.state.offset.y,
+                anchor_rect.center().y,
+                output.inner_rect.center().y,
+                max_offset,
+            );
+            let mut state = output.state;
+            state.offset.y = desired;
+            state.store(ctx, output.id);
+            ctx.request_repaint();
+            self.entry_list_scrolled_lo = Some(lo);
+        }
         if let Some(page) = jump_to {
             self.jump_page_request = Some(page);
             self.thumbbar_last_activity = Instant::now();
@@ -7230,14 +7251,33 @@ mod sort_save_state_tests {
         assert!(v.update_thumbbar_visibility(&cfg, vp, Some(egui::pos2(500.0, 100.0)), &ctx).is_some());
     }
 
-    /// エントリリストを1フレーム描く（ホバー位置を渡して、表示・非表示の判定も走らせる）。
+    /// エントリリストを1フレーム回す（ホバー位置を渡して表示・非表示の判定も走らせ、表示中なら描く）。
     fn run_entry_list_frame(v: &mut ViewerState, ctx: &egui::Context, hover: Option<egui::Pos2>) {
         let vp = tb_viewport();
-        let style = egui::Style::default();
         let _ = ctx.run_ui(egui::RawInput { screen_rect: Some(vp), ..Default::default() }, |ui| {
             let ctx = ui.ctx().clone();
-            v.draw_entry_list(ui, &ctx, &style, hover, vp);
+            if let Some(rect) = v.update_entry_list_visibility(&ctx, hover, vp) {
+                v.draw_entry_list_overlay(ui, &ctx, rect);
+            }
         });
+    }
+
+    #[test]
+    fn entry_list_overlay_does_not_reserve_space_so_the_image_area_does_not_shrink() {
+        let ctx = egui::Context::default();
+        let mut v = tb_viewer();
+        v.entry_list_visible = true;
+        let vp = tb_viewport();
+        let mut before = egui::Rect::NOTHING;
+        let mut after = egui::Rect::NOTHING;
+        let _ = ctx.run_ui(egui::RawInput { screen_rect: Some(vp), ..Default::default() }, |ui| {
+            let ctx = ui.ctx().clone();
+            before = ui.available_rect_before_wrap();
+            let rect = v.update_entry_list_visibility(&ctx, Some(egui::pos2(10.0, 300.0)), vp).unwrap();
+            v.draw_entry_list_overlay(ui, &ctx, rect);
+            after = ui.available_rect_before_wrap();
+        });
+        assert_eq!(before, after, "リストを出しても残り領域（本画像の領域）は変わらない");
     }
 
     #[test]
