@@ -76,6 +76,7 @@ impl PaletteCategory {
                 Action(ActionKind::ToggleFullscreen),
                 Action(ActionKind::ToggleZoomActual),
                 Toggle(ToggleKind::ImageInfo),
+                Action(ActionKind::CycleThumbbar),
                 Action(ActionKind::OpenFolder),
             ],
             PaletteCategory::SpreadSettings => &[

@@ -64,6 +64,19 @@ pub enum ThumbbarPos {
     None,
 }
 
+impl ThumbbarPos {
+    /// パレットの切替ボタン用の巡回: OFF→下→左→上→右→OFF。
+    pub fn next_cycle(self) -> Self {
+        match self {
+            ThumbbarPos::None => ThumbbarPos::Bottom,
+            ThumbbarPos::Bottom => ThumbbarPos::Left,
+            ThumbbarPos::Left => ThumbbarPos::Top,
+            ThumbbarPos::Top => ThumbbarPos::Right,
+            ThumbbarPos::Right => ThumbbarPos::None,
+        }
+    }
+}
+
 pub(crate) fn parse_thumbbar_pos(s: &str) -> ThumbbarPos {
     match s {
         "left"   => ThumbbarPos::Left,
@@ -1435,6 +1448,27 @@ pub fn save_state(root: &Path, dir: &Path, window_size: (u32, u32), viewer_slots
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn thumbbar_pos_cycle_goes_off_bottom_left_top_right_off() {
+        let mut p = ThumbbarPos::None;
+        let mut seen = Vec::new();
+        for _ in 0..5 {
+            p = p.next_cycle();
+            seen.push(thumbbar_pos_to_str(p));
+        }
+        assert_eq!(seen, ["bottom", "left", "top", "right", "none"]);
+    }
+
+    #[test]
+    fn thumbbar_pos_state_labels_per_language() {
+        use crate::i18n::Lang;
+        assert_eq!(Lang::English.tool_palette_thumbbar_state(ThumbbarPos::Bottom), "BOTTOM");
+        assert_eq!(Lang::Japanese.tool_palette_thumbbar_state(ThumbbarPos::Left), "左");
+        assert_eq!(Lang::Chinese.tool_palette_thumbbar_state(ThumbbarPos::Top), "上");
+        assert_eq!(Lang::Japanese.tool_palette_thumbbar_state(ThumbbarPos::None), "OFF");
+        assert_eq!(Lang::English.tool_palette_thumbbar_state(ThumbbarPos::None), "OFF");
+    }
 
     /// テスト専用の一時ディレクトリに content を state として書き、パースして返す。
     fn parse_state_text(tag: &str, content: &str) -> AppState {

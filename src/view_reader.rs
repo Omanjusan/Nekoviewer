@@ -783,7 +783,8 @@ pub struct ViewerState {
     /// スライダーバーを最後に操作・ホバーした時刻（自動ハイドの起点）。None = 作り直し直後で、
     /// 次の描画でその時刻を起点にする（モードON直後・ページ送り直後は必ず見える）。
     magnifier_bar_active_at: Option<f64>,
-    /// ノッチ倍率／目盛りの詳細・簡易を切り替えた。次の `ViewerOutput` で保存を促して下ろす。
+    /// ノッチ倍率／目盛りの詳細・簡易、またはサムネバー配置（パレットの切替ボタン）を変えた。
+    /// 次の `ViewerOutput` で保存を促して下ろす（`magnifier_settings_changed` 経由で永続化）。
     magnifier_settings_dirty: bool,
     /// 前フレームまでにコマモードがONだったか（ONの立ち上がり検出用。基準倍率の取り込みに使う）。
     koma_was_on: bool,
@@ -810,6 +811,14 @@ pub struct ViewerState {
     /// draw_central_panel（パレット実行）は process_navigation より先に走るため、
     /// 一旦ここへ保持し process_navigation の戻り値へ合流させる。
     palette_nav_request: Option<ViewerNav>,
+    /// サムネバー／左エントリリストのクリックで要求された、任意ページ（実ページ番号 0始まり）へのジャンプ。
+    /// 描画側（draw_thumbbar_contents / draw_entry_list）は process_navigation より先に走るため、
+    /// 一旦ここへ保持し process_navigation 内で `jump_to_page` に渡す。
+    jump_page_request: Option<i32>,
+    /// サムネバーをオーバーレイ表示するとき、パレットが実際に描かれている矩形（なければ None）。
+    /// オーバーレイはパレットより後に登録されるため、重なり部分ではパレットを最上位として扱い、
+    /// サムネバー側のクリック・ドラッグ・ホイールを受け付けないために使う。
+    thumbbar_palette_block: Option<egui::Rect>,
 }
 
 impl ViewerState {
@@ -1092,6 +1101,8 @@ impl ViewerState {
             magnifier_cursor: None,
             max_texture_side: MAX_TEXTURE_SIDE_FALLBACK,
             palette_nav_request: None,
+            jump_page_request: None,
+            thumbbar_palette_block: None,
         }
     }
 
@@ -1212,6 +1223,8 @@ impl ViewerState {
             magnifier_cursor: None,
             max_texture_side: MAX_TEXTURE_SIDE_FALLBACK,
             palette_nav_request: None,
+            jump_page_request: None,
+            thumbbar_palette_block: None,
         }
     }
 
@@ -2789,12 +2802,61 @@ impl ViewerState {
             self.jump_to_last_page(is_spread, step, total_i);
         }
 
+        // サムネバー／左エントリリストのクリックによる任意ページへのジャンプ。
+        if let Some(page) = self.jump_page_request.take() {
+            self.jump_to_page(page, is_spread, total_i);
+        }
+
         // ツールパレットのファイル送りボタン（draw_central_panelで本関数より先に実行済み）の要求を合流。
         if let Some(req) = self.palette_nav_request.take() {
             nav = req;
         }
 
         nav
+    }
+
+    /// 実ページ `page`（0始まり）を含む表示位置を求める。戻り値は `(spread_base, force_virtual_left)`。
+    /// - 単ページ: `spread_base = page`、offset は 0 に戻す。
+    /// - 見開き: offset(-1/0/+1)は維持し、`page` を含む見開き（lo は offset と偶奇が一致）へ着地する。
+    ///   offset=+1 で先頭ページ(0)が対象のときは lo=-1 となり +1 では表現できないため、仮想左（-1）へ倒す。
+    fn jump_target(page: i32, offset: i32, is_spread: bool, total: i32) -> (i32, bool) {
+        let page = page.clamp(0, (total - 1).max(0));
+        if !is_spread {
+            return (page, false);
+        }
+        let lo = if (page - offset).rem_euclid(2) == 0 { page } else { page - 1 };
+        if lo < 0 {
+            // lo == -1: 先頭仮想ページ付き（offset=-1）。spread_base は 0。
+            return (0, true);
+        }
+        (lo - offset, false)
+    }
+
+    /// サムネバーの配置を次の状態へ進める（OFF→下→左→上→右→OFF）。設定は永続化する。
+    /// 押した瞬間にその配置先へ実際に出し、自動非表示のタイマーもその時点から始める
+    /// （自動非表示で消えていても、操作時刻を更新することで再び見える）。
+    fn cycle_thumbbar_pos(&mut self, ctx: &egui::Context, cfg: &mut ViewerConfig) {
+        cfg.thumbbar_pos = cfg.thumbbar_pos.next_cycle();
+        self.thumbbar_last_activity = Instant::now();
+        // 新しい配置先でも現在ページが中央に来るよう、センタリング済み記録を捨てる。
+        self.thumbbar_scrolled_lo = None;
+        self.magnifier_settings_dirty = true;
+        ctx.request_repaint();
+    }
+
+    /// 任意の実ページへ絶対ジャンプ（サムネバー／エントリリストのクリック用）。
+    /// 見開きは `page` を含む見開きに着地し、ページずれ(offset)は維持する。
+    fn jump_to_page(&mut self, page: i32, is_spread: bool, total_i: i32) {
+        self.scroll_acc = 0.0;
+        self.shift_scroll_acc = 0.0;
+        let (base, force_left) = Self::jump_target(page, self.offset.value(), is_spread, total_i);
+        if !is_spread {
+            self.offset.reset();
+        } else if force_left {
+            self.offset.force_virtual_left();
+        }
+        self.spread_base = base;
+        self.offset.update_virtual_right(is_spread && self.spread_lo() + 1 >= total_i);
     }
 
     /// アーカイブ内先頭ページへ絶対ジャンプ。通常のページ送りを限界まで行った状態と
@@ -3201,6 +3263,24 @@ impl ViewerState {
                     }
                     _ => None,
                 };
+                // サムネバー切替：現在の配置（TOP/BOTTOM/LEFT/RIGHT、または OFF）を文字で表示する。
+                // OFF のみ灰色、表示中は緑（ON/OFF 表示と同じ配色）。
+                if content == crate::tool_palette::PaletteSlotContent::Action(crate::tool_palette::ActionKind::CycleThumbbar) {
+                    let on = cfg.thumbbar_pos != ThumbbarPos::None;
+                    let (r, g, b) = if on { (80, 220, 120) } else { (170, 170, 170) };
+                    let state_color = egui::Color32::from_rgba_unmultiplied(r, g, b, label_alpha);
+                    let state_font_size = (slot * 0.24).clamp(7.0, 12.0);
+                    let state_galley = child.painter().layout_no_wrap(
+                        lang.tool_palette_thumbbar_state(cfg.thumbbar_pos).to_string(),
+                        egui::FontId::proportional(state_font_size),
+                        state_color,
+                    );
+                    let state_pos = egui::pos2(
+                        slot_rect.center().x - state_galley.size().x / 2.0,
+                        slot_rect.max.y - state_galley.size().y - LABEL_PAD,
+                    );
+                    child.painter().with_clip_rect(slot_rect).galley(state_pos, state_galley, state_color);
+                }
                 if let Some(on) = stateful_action_on {
                     let (r, g, b) = if on { (80, 220, 120) } else { (170, 170, 170) };
                     let state_color = egui::Color32::from_rgba_unmultiplied(r, g, b, label_alpha);
@@ -3399,6 +3479,9 @@ impl ViewerState {
             }
             crate::tool_palette::PaletteSlotContent::Action(crate::tool_palette::ActionKind::ApplySlot4) => {
                 self.apply_window_slot_and_toast(ctx, 3);
+            }
+            crate::tool_palette::PaletteSlotContent::Action(crate::tool_palette::ActionKind::CycleThumbbar) => {
+                self.cycle_thumbbar_pos(ctx, cfg);
             }
             crate::tool_palette::PaletteSlotContent::Action(crate::tool_palette::ActionKind::CycleApplySlot) => {
                 self.cycle_apply_slot_and_toast(ctx);
@@ -3970,6 +4053,7 @@ impl ViewerState {
     fn draw_thumbbar_panel(&mut self, ui: &mut egui::Ui, cfg: &ViewerConfig, pos: ThumbbarPos) {
         let outer = cfg.thumbbar_thumb_size as f32 + 16.0;
         let frame = egui::Frame::side_top_panel(ui.style());
+        self.thumbbar_palette_block = None;
         match pos {
             ThumbbarPos::Left => {
                 egui::Panel::left("thumbbar_panel").exact_size(outer).resizable(false).frame(frame)
@@ -4018,6 +4102,7 @@ impl ViewerState {
         };
 
         ui.painter().rect_filled(rect, 4.0, egui::Color32::from_black_alpha(160));
+        self.thumbbar_palette_block = if self.tool_palette_auto_hidden { None } else { self.tool_palette_rect(viewport) };
         let mut child = ui.new_child(egui::UiBuilder::new().id_salt("thumbbar_overlay_child").max_rect(rect));
         crate::ui_theme::force_dark_visuals(&mut child);
         self.draw_thumbbar_contents(&mut child, cfg, horizontal);
@@ -4053,9 +4138,17 @@ impl ViewerState {
         let base = if virtual_left { 1 } else { 0 };
         let slot_count = total + base + if virtual_right { 1 } else { 0 };
 
-        egui::ScrollArea::new([horizontal, !horizontal])
+        // パレットがバーに重なっていて、その上にポインタがあるときは、バー側のスクロール（ドラッグ・ホイール）を止める。
+        let palette_over_pointer = self.thumbbar_palette_block.is_some_and(|r| {
+            ui.ctx().input(|i| i.pointer.hover_pos()).is_some_and(|p| r.contains(p))
+        });
+        let mut scroll_area = egui::ScrollArea::new([horizontal, !horizontal])
             .id_salt("thumbbar_scroll")
-            .auto_shrink([false, false])
+            .auto_shrink([false, false]);
+        if palette_over_pointer {
+            scroll_area = scroll_area.scroll_source(egui::scroll_area::ScrollSource::NONE);
+        }
+        scroll_area
             .show_viewport(ui, |ui, viewport| {
                 if slot_count <= 0 {
                     self.thumbbar_visible_range = Some((0, -1));
@@ -4127,6 +4220,26 @@ impl ViewerState {
                             );
                             ui.painter().galley(text_pos, galley, text_color);
                         }
+                        // クリックでそのページへジャンプ（仮想スロットは端の実ページへ丸める）。
+                        // ドラッグ（バーのスクロール）はクリック扱いにならない（egui の click は移動なしの押下→離上のみ）。
+                        // パレットが上に重なっている位置では受け付けない（パレットが最上位、イベントを貫通させない）。
+                        let blocked = palette_over_pointer;
+                        let sense = if blocked { egui::Sense::hover() } else { egui::Sense::click() };
+                        let resp = ui.interact(rect, ui.id().with(("thumbbar_item", s)), sense);
+                        if resp.hovered() && !blocked {
+                            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                            ui.painter().rect_stroke(
+                                rect,
+                                3.0,
+                                egui::Stroke::new(1.5, egui::Color32::from_white_alpha(200)),
+                                egui::StrokeKind::Inside,
+                            );
+                        }
+                        if resp.clicked() && !blocked {
+                            self.jump_page_request = Some(page.clamp(0, total - 1));
+                            self.thumbbar_last_activity = Instant::now();
+                            ui.ctx().request_repaint();
+                        }
                     }
                 }
                 // 現在地(lo/hi)が可視範囲外（マージンの外）でも、位置計算だけで
@@ -4143,6 +4256,10 @@ impl ViewerState {
                     });
                     ui.scroll_to_rect(r, Some(egui::Align::Center));
                     self.thumbbar_scrolled_lo = Some(lo);
+                }
+                // バー上でポインタを動かしている間は自動非表示の起点を更新する（ジャンプ先を探している最中に消えないように）。
+                if ui.rect_contains_pointer(ui.clip_rect()) && ui.ctx().input(|i| i.pointer.is_moving()) {
+                    self.thumbbar_last_activity = Instant::now();
                 }
             });
     }
@@ -4747,6 +4864,7 @@ impl ViewerState {
             let entries_snap = self.entries.clone();
             let scroll_anchor = Self::entry_list_scroll_anchor(lo, entries_snap.len());
             let should_scroll = !was_visible || self.entry_list_scrolled_lo != Some(lo);
+            let mut jump_to: Option<i32> = None;
 
             egui::Panel::left("entry_list_panel")
                 .exact_size(ENTRY_PANEL_W)
@@ -4763,6 +4881,10 @@ impl ViewerState {
                                 let response = ui.selectable_label(is_cur, &entry.display_name);
                                 if scroll_anchor == Some(i) {
                                     anchor_rect = Some(response.rect);
+                                }
+                                // クリックでそのページへジャンプ（見開きはそのページを含む見開きへ着地）。
+                                if response.clicked() {
+                                    jump_to = Some(i as i32);
                                 }
                             }
                             anchor_rect
@@ -4786,6 +4908,11 @@ impl ViewerState {
                         self.entry_list_scrolled_lo = Some(lo);
                     }
                 });
+            if let Some(page) = jump_to {
+                self.jump_page_request = Some(page);
+                self.thumbbar_last_activity = Instant::now();
+                ctx.request_repaint();
+            }
         }
     }
 
@@ -6850,6 +6977,60 @@ mod sort_save_state_tests {
             stored_index: 1,
         });
         viewer
+    }
+
+    #[test]
+    fn jump_target_single_page_lands_on_the_page_itself() {
+        assert_eq!(ViewerState::jump_target(0, 0, false, 30), (0, false));
+        assert_eq!(ViewerState::jump_target(19, 0, false, 30), (19, false));
+        // 範囲外は実ページへ丸める
+        assert_eq!(ViewerState::jump_target(-1, 0, false, 30), (0, false));
+        assert_eq!(ViewerState::jump_target(30, 0, false, 30), (29, false));
+    }
+
+    #[test]
+    fn jump_target_spread_lands_on_the_spread_containing_the_page_for_every_offset() {
+        for offset in [-1, 0, 1] {
+            for page in 0..30 {
+                let (base, force_left) = ViewerState::jump_target(page, offset, true, 30);
+                let (eff_offset, lo) = if force_left { (-1, base - 1) } else { (offset, base + offset) };
+                assert!(lo == page || lo + 1 == page, "off={offset} page={page} lo={lo}");
+                // lo は（実効）offset と偶奇が一致し、spread_base は 2 の倍数
+                assert_eq!((lo - eff_offset).rem_euclid(2), 0, "parity off={offset} page={page}");
+                assert_eq!(base.rem_euclid(2), 0, "base off={offset} page={page}");
+            }
+        }
+    }
+
+    #[test]
+    fn jump_target_shifted_offset_to_first_page_falls_back_to_virtual_left() {
+        // offset=+1 では lo=-1 を表せないため仮想左(-1)へ倒す
+        assert_eq!(ViewerState::jump_target(0, 1, true, 30), (0, true));
+        assert_eq!(ViewerState::jump_target(0, -1, true, 30), (0, true));
+        assert_eq!(ViewerState::jump_target(0, 0, true, 30), (0, false));
+    }
+
+    #[test]
+    fn jump_to_page_keeps_spread_offset_and_shows_the_clicked_page() {
+        let mut viewer = viewer();
+        viewer.entries = (0..30)
+            .map(|i| ViewerEntry {
+                entry_name: format!("p{i}"),
+                display_name: format!("p{i}"),
+                date_key: i,
+                original_index: i as usize,
+                stored_index: i as usize,
+            })
+            .collect();
+        viewer.offset.advance(); // 0 → +1
+        viewer.jump_to_page(19, true, 30);
+        assert_eq!(viewer.offset.value(), 1);
+        let lo = viewer.spread_lo();
+        assert!(lo == 19 || lo + 1 == 19);
+        // 単ページでは offset が戻り、そのページそのものを表示
+        viewer.jump_to_page(19, false, 30);
+        assert_eq!(viewer.spread_lo(), 19);
+        assert_eq!(viewer.offset.value(), 0);
     }
 
     #[test]

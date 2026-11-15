@@ -9224,6 +9224,31 @@ For files without metadata, setting the main category etc. by hand and training 
         }
     }
 
+    pub fn tool_palette_action_label_cycle_thumbbar(self) -> &'static str {
+        match self {
+            Lang::Japanese => "サムネバー切替",
+            Lang::English  => "Cycle Thumbnail Bar",
+            Lang::Chinese  => "切换缩略图栏",
+        }
+    }
+
+    /// サムネバー切替ボタンのマス内に出す現在状態の文字（配置の4方向、または非表示）。
+    pub fn tool_palette_thumbbar_state(self, pos: crate::gui_config::ThumbbarPos) -> &'static str {
+        use crate::gui_config::ThumbbarPos;
+        match (self, pos) {
+            (Lang::English, ThumbbarPos::Top) => "TOP",
+            (Lang::English, ThumbbarPos::Bottom) => "BOTTOM",
+            (Lang::English, ThumbbarPos::Left) => "LEFT",
+            (Lang::English, ThumbbarPos::Right) => "RIGHT",
+            (_, ThumbbarPos::Top) => "上",
+            (_, ThumbbarPos::Bottom) => "下",
+            (_, ThumbbarPos::Left) => "左",
+            (_, ThumbbarPos::Right) => "右",
+            (Lang::Chinese, ThumbbarPos::None) => "关闭",
+            (_, ThumbbarPos::None) => "OFF",
+        }
+    }
+
     // ── ツールパレット登録メニューのカテゴリ（tool_palette/category.rs） ──
 
     pub fn tool_palette_category_navigate(self) -> &'static str {
