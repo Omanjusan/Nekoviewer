@@ -26,11 +26,12 @@ impl NekoviewApp {
         self.draw_search_pane(ui);
     }
 
-    /// 検索結果の履歴リスト（draw_search_left_pane の下段）。
+    /// 検索結果の履歴リスト（draw_search_left_pane の下段）。いまのモード（新／旧）の行だけを出す。
     fn draw_search_pane(&mut self, ui: &mut egui::Ui) {
         let help_on = self.help_enabled;
         let help_history = i18n::t().help_search_history();
-        if self.search_history.is_empty() {
+        let visible = self.visible_search_history();
+        if visible.is_empty() {
             ui.add_space(8.0);
             ui.weak(i18n::t().search_no_results_hint());
             return;
@@ -43,7 +44,7 @@ impl NekoviewApp {
             .show(ui, |ui| {
                 // search_history は新しい実行が先頭 = 上から下へそのまま並べれば
                 // 「検索された順で最上位に追加され、下に送られていく」表示になる。
-                for idx in 0..self.search_history.len() {
+                for idx in visible {
                     let label = self.search_history[idx].label.clone();
                     let is_cursor = self.focused_pane == FocusPane::SearchHistory
                         && self.search_selected == Some(idx);
@@ -72,6 +73,8 @@ impl NekoviewApp {
             return;
         }
         self.search_form.mode = mode;
+        // 表示中の結果は別のモードの行のものなのでクリアし、履歴は新しいモードの行だけで描き直す。
+        self.clear_search_display();
         self.search_form_focus = mode.first_field();
         if mode == SearchMode::New && matches!(self.focused_pane, FocusPane::TreeTab | FocusPane::Drives) {
             self.focused_pane = FocusPane::SearchForm;

@@ -487,3 +487,56 @@ fn a_search_without_any_condition_cannot_start_in_either_mode() {
     e.send(&["search-mode new", "search-text alpha", "search-start"]);
     e.wait_search("started", Duration::from_secs(30), |s| s["history"].as_array().is_some_and(|h| h.len() == 1 && h[0]["running"] == false));
 }
+
+#[test]
+#[ignore = "needs Xephyr + GPU rendering; run explicitly"]
+fn each_search_mode_shows_only_its_own_history_and_clears_the_results_on_switching() {
+    if skip() { return; }
+    let mut e = Env::new("search-history-modes");
+    e.make_files("alpha", 8, 16);
+    // 旧モードの履歴を1行、あらかじめ保存しておく（起動時に、結果を持たない行として復元される）
+    let dir = e.root.join("home/c/nekoview");
+    std::fs::create_dir_all(&dir).unwrap();
+    let legacy_line = serde_json::json!({
+        "v": 1, "t": 1_700_000_000i64, "base_dir": e.files_dir().display().to_string(), "name": "alpha*",
+        "subdirs": false, "size_min": "", "size_max": "", "date_after": "", "date_before": "",
+    });
+    std::fs::write(dir.join("search_history_legacy.jsonl"), format!("{legacy_line}\n")).unwrap();
+    e.launch();
+    e.open_and_wait_ledger(8);
+
+    // 新モード: 新の行はまだ無い（旧の行は一覧に出ない）
+    e.send(&["tab search"]);
+    let s = e.search();
+    assert_eq!(s["mode"], "new");
+    assert_eq!(s["history"].as_array().unwrap().len(), 1, "旧の行が復元されている: {s}");
+    assert_eq!(s["history_visible"], serde_json::json!([]), "新モードの一覧に、旧の行は出さない");
+
+    // 新モードで検索すると、新の行が1つ出る。結果も表示される
+    e.send(&["search-text alpha", "search-start"]);
+    let s = e.wait_search("new search done", Duration::from_secs(30), |s| {
+        s["history"].as_array().is_some_and(|h| h.len() == 2 && h[0]["running"] == false)
+    });
+    assert_eq!(s["history_visible"], serde_json::json!([0]));
+    assert_eq!(s["viewing"], 0);
+    assert_eq!(s["archives"], 8);
+
+    // 旧へ切り替える: 表示中の結果をクリアし、旧の行だけを出す
+    e.send(&["search-mode legacy"]);
+    let s = e.search();
+    assert_eq!(s["mode"], "legacy");
+    assert_eq!(s["history_visible"], serde_json::json!([1]), "旧モードの一覧には、旧の行だけ");
+    assert_eq!(s["viewing"], Value::Null, "新の結果の表示はクリアされる");
+    assert_eq!(s["archives"], 0);
+    assert_eq!(s["selected"], Value::Null);
+
+    // 新へ戻す: 新の行だけを出す。結果は、行を選ぶまで出ない
+    e.send(&["search-mode new"]);
+    let s = e.search();
+    assert_eq!(s["history_visible"], serde_json::json!([0]));
+    assert_eq!(s["viewing"], Value::Null);
+    assert_eq!(s["archives"], 0);
+    e.send(&["search-select 0"]);
+    let s = e.wait_search("row shows its results", Duration::from_secs(10), |s| s["viewing"] == 0 && s["archives"] == 8);
+    assert_eq!(s["selected"], 0);
+}

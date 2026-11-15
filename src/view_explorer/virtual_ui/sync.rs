@@ -146,7 +146,7 @@ impl NekoviewApp {
         let outcome = self.ensure_tree_root_for(&real);
         self.switch_folder_tab(FolderPaneTab::Search);
         // 基点フォルダを指定して開く操作なので、旧（フォルダ指定）モードで開く。
-        self.search_form.mode = crate::view_explorer::SearchMode::Legacy;
+        self.set_search_mode(crate::view_explorer::SearchMode::Legacy);
         self.set_search_base_dir(real.clone());
         self.focused_pane = FocusPane::TreeTab;
         match outcome {

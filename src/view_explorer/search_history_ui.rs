@@ -129,6 +129,11 @@ pub(super) fn load_restored_history(dir: &Path) -> Vec<SearchResultEntry> {
     all.into_iter().map(|(_, _, e)| e).collect()
 }
 
+/// 履歴のうち、モード `mode` の行の添字（履歴の並び＝新しい順のまま）。履歴の一覧には、いまのモードの行だけを出す。
+pub(super) fn visible_history_indices(history: &[SearchResultEntry], mode: SearchMode) -> Vec<usize> {
+    history.iter().enumerate().filter(|(_, e)| e.form.mode == mode).map(|(i, _)| i).collect()
+}
+
 /// 履歴を、モードごとに `store::MAX_ENTRIES` 件までにする（先頭が新しい。古い行から消す）。実行中の行は消さない。
 pub(super) fn trim_history_per_mode(history: &mut Vec<SearchResultEntry>) {
     let (mut new_n, mut legacy_n) = (0usize, 0usize);
@@ -178,6 +183,28 @@ impl NekoviewApp {
             let _ = store::push(&dir, entry, replace);
         });
         saved_at
+    }
+
+    /// いまのモードの履歴の行の添字（新しい順）。一覧の描画・キー操作・フォーカス巡回は、この行だけを対象にする。
+    pub(super) fn visible_search_history(&self) -> Vec<usize> {
+        visible_history_indices(&self.search_history, self.search_form.mode)
+    }
+
+    /// モードを切り替えたとき: 表示中の検索結果（別のモードの行の結果）をクリアして、履歴の選択も外す。
+    /// 履歴の一覧は、新しいモードの行だけで描き直される（`visible_search_history`）。
+    /// 実行中の検索は止めない（その行は、元のモードへ戻ると、また一覧に出る）。
+    pub(super) fn clear_search_display(&mut self) {
+        self.search_selected = None;
+        if self.viewing_search.take().is_none() {
+            return;
+        }
+        self.clear_dir_listing();
+        self.selected_archive_index = None;
+        self.selected_archive_meta = None;
+        self.multi_selected.clear();
+        self.select_anchor = None;
+        self.grid_cursor = None;
+        self.explorer_scroll_offset = 0.0;
     }
 
     /// 履歴の idx 番目の行を取り除く。表示中・選択中の位置は、ずれた分を直す。
@@ -367,6 +394,20 @@ mod tests {
         assert_eq!(history[2].hits.len(), 300, "表示中の行は手放さない");
         assert!(history[1].restored, "それ以外の古い行は手放す");
         assert_eq!(history[0].hits.len(), 300, "実行中の行は対象外（件数の合計にも入れない）");
+    }
+
+    #[test]
+    fn each_mode_sees_only_its_own_rows_in_the_original_order() {
+        let history = vec![
+            entry_at(SearchMode::New, "n0", 0),
+            entry_at(SearchMode::Legacy, "l0", 0),
+            entry_at(SearchMode::New, "n1", 0),
+            entry_at(SearchMode::Legacy, "l1", 0),
+            entry_at(SearchMode::Legacy, "l2", 0),
+        ];
+        assert_eq!(visible_history_indices(&history, SearchMode::New), vec![0, 2]);
+        assert_eq!(visible_history_indices(&history, SearchMode::Legacy), vec![1, 3, 4]);
+        assert!(visible_history_indices(&[], SearchMode::New).is_empty());
     }
 
     #[test]

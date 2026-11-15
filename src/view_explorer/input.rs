@@ -35,7 +35,7 @@ impl NekoviewApp {
             }
             // 新モードではツリー/ドライブが無いので、履歴の次はグリッド。
             let after_form = if self.search_tree_hidden() { FocusPane::Grid } else { FocusPane::TreeTab };
-            self.focused_pane = if shift_tab { FocusPane::FolderTabBar } else if self.search_history.is_empty() { after_form } else { FocusPane::SearchHistory };
+            self.focused_pane = if shift_tab { FocusPane::FolderTabBar } else if self.visible_search_history().is_empty() { after_form } else { FocusPane::SearchHistory };
             self.surrender_native_focus(ctx);
             self.on_focus_pane_changed();
             return;
@@ -49,7 +49,7 @@ impl NekoviewApp {
         if self.search_tree_hidden() && matches!(self.focused_pane, FocusPane::TreeTab | FocusPane::Drives) {
             self.focused_pane = if shift_tab { FocusPane::SearchHistory } else { FocusPane::Grid };
         }
-        if self.focused_pane == FocusPane::SearchHistory && self.search_history.is_empty() {
+        if self.focused_pane == FocusPane::SearchHistory && self.visible_search_history().is_empty() {
             self.focused_pane = if shift_tab { FocusPane::SearchForm } else if self.search_tree_hidden() { FocusPane::Grid } else { FocusPane::TreeTab };
         }
         if self.focused_pane == FocusPane::SearchForm {
@@ -98,9 +98,11 @@ impl NekoviewApp {
             FocusPane::SearchForm => {}
             FocusPane::VirtualTab => self.reset_virtual_cursor(),
             FocusPane::SearchHistory => {
-                let valid = self.search_selected.is_some_and(|i| i < self.search_history.len());
+                // 選択は、いまのモードの行の中だけで有効（別のモードの行は一覧に出ていない）。
+                let visible = self.visible_search_history();
+                let valid = self.search_selected.is_some_and(|i| visible.contains(&i));
                 if !valid {
-                    self.search_selected = if self.search_history.is_empty() { None } else { Some(0) };
+                    self.search_selected = visible.first().copied();
                 }
             }
             FocusPane::Drives => {
@@ -123,16 +125,19 @@ impl NekoviewApp {
     }
 
     fn handle_search_history_keys(&mut self, ctx: &egui::Context) {
-        if self.search_history.is_empty() { return; }
+        // 一覧に出ている（いまのモードの）行だけを上下に動く。
+        let visible = self.visible_search_history();
+        if visible.is_empty() { return; }
         let km = &self.config.keymap;
         let (up, down, enter) = ctx.input(|i| (
             km.explorer_binding(ExplorerAction::NavUp).key_pressed(i),
             km.explorer_binding(ExplorerAction::NavDown).key_pressed(i),
             km.explorer_binding(ExplorerAction::Confirm).key_pressed(i),
         ));
-        let mut idx = self.search_selected.unwrap_or(0).min(self.search_history.len() - 1);
-        if up && idx > 0 { idx -= 1; }
-        if down && idx + 1 < self.search_history.len() { idx += 1; }
+        let mut pos = self.search_selected.and_then(|i| visible.iter().position(|&v| v == i)).unwrap_or(0);
+        if up && pos > 0 { pos -= 1; }
+        if down && pos + 1 < visible.len() { pos += 1; }
+        let idx = visible[pos];
         self.search_selected = Some(idx);
         if enter { self.select_search_history(idx); }
     }

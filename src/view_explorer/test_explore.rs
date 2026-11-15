@@ -92,6 +92,7 @@ impl NekoviewApp {
             },
             "loading_shown": self.scan_loading_visible(),
             "form_text": self.search_form.new_text,
+            "history_visible": self.visible_search_history(),
             "current_dir": self.current_dir.display().to_string(),
             // カーソル（選択枠）が乗っているファイル名。フォルダの行に乗っていれば null。
             "cursor_file": match &self.grid_cursor {

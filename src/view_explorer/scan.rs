@@ -401,7 +401,7 @@ impl NekoviewApp {
     }
 
     /// 実ディレクトリの一覧（フォルダ・ファイル）を空にする。start_scan と show_empty_listing の共通部分。
-    fn clear_dir_listing(&mut self) {
+    pub(super) fn clear_dir_listing(&mut self) {
         self.subdirs.clear();
         self.subdir_mtimes.clear();
         self.archives.clear();
