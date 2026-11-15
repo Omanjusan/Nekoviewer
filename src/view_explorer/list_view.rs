@@ -364,6 +364,7 @@ impl NekoviewApp {
         // 「ファイラー」ボタンの当たり判定は、今フレームに描いた行のものだけ使う。
         self.reveal_icon_hits.clear();
         self.goto_real_hits.clear();
+        self.goto_virtual_hits.clear();
         self.detail_icon_hits.clear();
         self.list_edit_hits.clear();
 
@@ -855,11 +856,13 @@ impl NekoviewApp {
         }
     }
 
-    /// 「実フォルダ」「仮想フォルダ」列の移動アイコン。実フォルダ側は押すと、そのファイルの場所をフォルダタブで開く
-    /// （当たり判定は `goto_real_hits` に登録し、押下は `try_click_goto` が選択や起動より先に拾う）。
-    /// 仮想フォルダ側はまだ押せない（見た目とホバー説明だけ）。登録した仮想フォルダが無いときは灰色にする。
+    /// 「実フォルダ」「仮想フォルダ」列の移動アイコン。押すと、そのファイルの場所をフォルダタブ／仮想フォルダタブで開く
+    /// （当たり判定は `goto_real_hits` / `goto_virtual_hits` に登録し、押下は `try_click_goto` が選択や起動より先に拾う）。
+    /// 仮想フォルダ側は、そのファイルの場所を登録した仮想フォルダが無いときは灰色で、押せない。
     fn paint_goto_cells(&mut self, ui: &egui::Ui, response: &egui::Response, path: &std::path::Path, real_idx: usize, real_cell: egui::Rect, virt_cell: egui::Rect) {
         let t = i18n::t();
+        // 逆引きは、タブを移ったあとの最初の描画で引き直す（登録の変更を反映する）。
+        self.ensure_virtual_lookup();
         let hover = ui.input(|i| i.pointer.hover_pos());
         let painter = ui.painter().with_clip_rect(ui.clip_rect());
         let cell_icon = |cell: egui::Rect, color: egui::Color32, enabled: bool, tip: &str| -> Option<egui::Rect> {
@@ -879,26 +882,40 @@ impl NekoviewApp {
         if let Some(rect) = cell_icon(real_cell, super::dup_marker_ui::GOTO_REAL_COLOR, true, t.list_goto_real_tip()) {
             self.goto_real_hits.insert(real_idx, rect);
         }
-        let has_virtual = path.parent().is_some_and(|dir| self.virtual_node_exists_for(dir));
-        let virt_tip = if has_virtual { t.list_goto_virtual_tip() } else { t.list_goto_virtual_none_tip() };
-        cell_icon(virt_cell, super::dup_marker_ui::GOTO_VIRTUAL_COLOR, has_virtual, virt_tip);
+        let count = path.parent().map_or(0, |dir| self.virtual_nodes_for(dir).len());
+        let virt_tip = match count {
+            0 => t.list_goto_virtual_none_tip(),
+            1 => t.list_goto_virtual_tip(),
+            _ => t.list_goto_virtual_many_tip(),
+        };
+        if let Some(rect) = cell_icon(virt_cell, super::dup_marker_ui::GOTO_VIRTUAL_COLOR, count > 0, virt_tip) {
+            // 灰色（登録なし）でも当たり判定は持つ（押しても行の選択や起動にならないよう、押下は握りつぶす）。
+            self.goto_virtual_hits.insert(real_idx, rect);
+        }
     }
 
-    /// 「実フォルダ」アイコンの押下なら、そのファイルを移動先の要求として積んで true（選択や起動はしない）。
+    /// 「実フォルダ」「仮想フォルダ」アイコンの押下なら、移動の要求を積んで true（選択や起動はしない）。
     /// ダブルクリックの2回目も、起動させないよう握りつぶす。
     pub(super) fn try_click_goto(&mut self, ui: &egui::Ui, response: &egui::Response, real_idx: usize) -> bool {
         // 当たり判定はリスト描画のたびに作り直す。カードに切り替えた直後の古い矩形は拾わない。
         if self.view_mode.mode == ViewMode::Card || !(response.clicked() || response.double_clicked()) {
             return false;
         }
-        let Some(rect) = self.goto_real_hits.get(&real_idx).copied() else { return false };
-        if !ui.input(|i| i.pointer.interact_pos()).is_some_and(|p| rect.contains(p)) {
+        let pointer = ui.input(|i| i.pointer.interact_pos());
+        let on = |rect: Option<egui::Rect>| rect.is_some_and(|r| pointer.is_some_and(|p| r.contains(p)));
+        let on_real = on(self.goto_real_hits.get(&real_idx).copied());
+        let on_virtual = on(self.goto_virtual_hits.get(&real_idx).copied());
+        if !on_real && !on_virtual {
             return false;
         }
         if response.clicked()
             && let Some(path) = self.archives.get(real_idx).cloned()
         {
-            self.pending_goto_real = Some(path);
+            if on_real {
+                self.pending_goto_real = Some(path);
+            } else if let Some(p) = pointer {
+                self.pending_goto_virtual = Some((path, p));
+            }
         }
         true
     }

@@ -533,6 +533,8 @@ impl NekoviewApp {
     /// DBから仮想ノードを読み直す（兄弟は `order` 順）。DBが無ければ空のツリー。
     /// 消えたノードを指す展開・選択状態は捨てる。
     pub(super) fn refresh_virtual_nodes(&mut self) {
+        // 登録の顔ぶれが変わりうるので、横断一覧の移動アイコン用の逆引きも引き直す。
+        self.virtual_lookup_loaded = false;
         let mut list = self
             .spread_db
             .as_ref()

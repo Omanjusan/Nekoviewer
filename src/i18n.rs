@@ -2812,6 +2812,22 @@ impl Lang {
         }
     }
 
+    pub fn list_goto_virtual_many_tip(self) -> &'static str {
+        match self {
+            Lang::Japanese => "このファイルの場所を登録した仮想フォルダが複数あります。押して選ぶ",
+            Lang::English  => "Several virtual folders register this file's location. Click to choose one",
+            Lang::Chinese  => "有多个虚拟文件夹登记了此文件所在位置。点击选择",
+        }
+    }
+
+    pub fn goto_virtual_menu_title(self) -> &'static str {
+        match self {
+            Lang::Japanese => "開く仮想フォルダを選ぶ",
+            Lang::English  => "Choose a virtual folder",
+            Lang::Chinese  => "选择要打开的虚拟文件夹",
+        }
+    }
+
     pub fn list_goto_virtual_none_tip(self) -> &'static str {
         match self {
             Lang::Japanese => "このファイルの場所を登録した仮想フォルダはありません",

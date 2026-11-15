@@ -285,6 +285,7 @@ impl NekoviewApp {
         self.draw_unreachable_clean_dialogs(&ctx);
         self.draw_reveal_dialog(&ctx);
         self.draw_marker_popup(&ctx);
+        self.draw_goto_virtual_menu(&ctx);
         self.draw_dismissed_window(&ctx);
         self.draw_search_notice_dialog(&ctx);
         self.draw_detail_window(&ctx);
@@ -927,6 +928,10 @@ impl NekoviewApp {
     pub(super) fn switch_folder_tab(&mut self, tab: FolderPaneTab) {
         // 実際に別のタブへ入るときだけ、そのタブの保存位置を開く（同じタブの押し直しでは開き直さない）
         let entering = self.folder_pane_tab != tab;
+        if entering {
+            // 他のタブで仮想フォルダの登録が変わったかもしれない。移動アイコンの逆引きは、次の描画で引き直す。
+            self.virtual_lookup_loaded = false;
+        }
         self.folder_pane_tab = tab;
         // 検索タブへの初回入場時のみ、その時点のPWDを検索基点の初期値にする。
         // 既にユーザーがツリー/ドライブで基点を選んでいれば（Some）上書きしない。
@@ -3975,6 +3980,11 @@ impl NekoviewApp {
         // 「実フォルダ」アイコンの移動も、描画が終わってから消化する（一覧の差し替えを描画の途中でしない）
         if let Some(file) = self.pending_goto_real.take() {
             self.open_file_location_in_folders_tab(file);
+            return;
+        }
+        // 「仮想フォルダ」アイコンも同様。登録が1つならそこへ移り、複数なら選択メニューを出す。
+        if let Some((file, anchor)) = self.pending_goto_virtual.take() {
+            self.start_goto_virtual(file, anchor);
             return;
         }
         match output.inner {

@@ -540,3 +540,63 @@ fn each_search_mode_shows_only_its_own_history_and_clears_the_results_on_switchi
     let s = e.wait_search("row shows its results", Duration::from_secs(10), |s| s["viewing"] == 0 && s["archives"] == 8);
     assert_eq!(s["selected"], 0);
 }
+
+#[test]
+#[ignore = "needs Xephyr + GPU rendering; run explicitly"]
+fn goto_virtual_opens_the_registered_virtual_folder_and_chooses_among_several() {
+    if skip() { return; }
+    let mut e = Env::new("search-goto-virtual");
+    e.make_files("alpha", 12, 16);
+    e.launch();
+    e.open_and_wait_ledger(12);
+    let other = format!("open {}", e.root.join("pics").display());
+    e.send(&["tab real", &other]);
+    e.wait_search("moved away", Duration::from_secs(20), |s| {
+        s["current_dir"].as_str().is_some_and(|d| d.ends_with("/pics")) && s["scan_state"] == "done"
+    });
+    e.send(&["tab search", "search-text alpha", "search-start"]);
+    e.wait_search("search done", Duration::from_secs(30), |s| {
+        s["history"].as_array().is_some_and(|h| h.len() == 1 && h[0]["running"] == false) && s["archives"] == 12
+    });
+
+    // 登録した仮想フォルダが無いうちは、何も起きない（アイコンは灰色）
+    e.send(&["goto-virtual 3"]);
+    std::thread::sleep(Duration::from_millis(500));
+    let s = e.search();
+    assert_eq!(s["tab"], "search", "登録が無ければ移動しない: {s}");
+    assert_eq!(s["goto_menu"], Value::Null);
+
+    // 登録が1つ: そこへ移る。仮想フォルダタブで、そのノードが開き、ファイルが選択される
+    let register = format!("virtual-add {}", e.files_dir().display());
+    e.send(&[&register]);
+    let ids = e.search()["virtual_ids"].as_array().unwrap().clone();
+    assert_eq!(ids.len(), 1);
+    e.send(&["goto-virtual 5"]);
+    let s = e.wait_search("opened in the virtual tab", Duration::from_secs(20), |s| {
+        s["tab"] == "virtual"
+            && s["virtual_node"] == ids[0]
+            && s["current_dir"].as_str().is_some_and(|d| d.ends_with("/files"))
+            && s["scan_state"] == "done"
+            && s["archives"] == 12
+            && s["cursor_file"] == "alpha_005.png"
+    });
+    assert_eq!(s["goto_menu"], Value::Null);
+    // 検索の履歴は残っている
+    assert_eq!(s["history"].as_array().unwrap().len(), 1);
+
+    // 同じフォルダをもう1つ登録（同じ実パスの複数登録）。検索結果へ戻って押すと、選択メニューが出る
+    e.send(&[&register, "tab search", "search-select 0"]);
+    e.wait_search("results shown again", Duration::from_secs(10), |s| s["tab"] == "search" && s["archives"] == 12);
+    let ids = e.search()["virtual_ids"].as_array().unwrap().clone();
+    assert_eq!(ids.len(), 2);
+    e.send(&["goto-virtual 2"]);
+    let s = e.search();
+    assert_eq!(s["goto_menu"], 2, "登録が2つなので、選択メニューが出る: {s}");
+    assert_eq!(s["tab"], "search", "選ぶまでは移らない");
+    // 2つ目を選ぶと、そのノードが開く
+    e.send(&["goto-virtual 2 1"]);
+    let s = e.wait_search("second node opened", Duration::from_secs(20), |s| {
+        s["tab"] == "virtual" && s["virtual_node"] == ids[1] && s["scan_state"] == "done" && s["cursor_file"] == "alpha_002.png"
+    });
+    assert_eq!(s["goto_menu"], Value::Null, "選んだらメニューは閉じる");
+}

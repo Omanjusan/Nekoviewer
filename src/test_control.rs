@@ -60,6 +60,11 @@ pub enum ExploreCmd {
     ListMode(bool),
     /// 一覧の idx 番目のファイルについて、リストの「実フォルダ」アイコンを押したのと同じ移動をする
     GotoReal(usize),
+    /// 実フォルダを、仮想ルート直下に登録する（名前はフォルダ名）。仮想フォルダ列のテスト用
+    VirtualAdd(PathBuf),
+    /// 一覧の idx 番目のファイルについて、「仮想フォルダ」アイコンを押したのと同じ移動をする。
+    /// 登録が複数でメニューが出たときは、`pick`（0始まり）の項目を押したことにする。
+    GotoVirtual { idx: usize, pick: Option<usize> },
     /// 履歴の idx 番目（0 始まり）を選んで表示する
     SearchSelect(usize),
 }
@@ -112,6 +117,19 @@ pub fn parse_explore_line(line: &str) -> Option<ExploreCmd> {
         "search-cancel" if arg.is_empty() => Some(ExploreCmd::SearchCancel),
         "search-notice" if arg.is_empty() => Some(ExploreCmd::SearchNotice),
         "goto-real" => arg.parse().ok().map(ExploreCmd::GotoReal),
+        "virtual-add" => (!arg.is_empty()).then(|| ExploreCmd::VirtualAdd(PathBuf::from(arg))),
+        "goto-virtual" => {
+            let mut it = arg.split_whitespace();
+            let idx = it.next()?.parse().ok()?;
+            let pick = match it.next() {
+                Some(p) => Some(p.parse().ok()?),
+                None => None,
+            };
+            if it.next().is_some() {
+                return None;
+            }
+            Some(ExploreCmd::GotoVirtual { idx, pick })
+        }
         "view-mode" => match arg {
             "list" => Some(ExploreCmd::ListMode(true)),
             "card" => Some(ExploreCmd::ListMode(false)),
@@ -269,6 +287,12 @@ mod tests {
         assert_eq!(parse_explore_line("search-notice"), Some(ExploreCmd::SearchNotice));
         assert_eq!(parse_explore_line("goto-real 3"), Some(ExploreCmd::GotoReal(3)));
         assert_eq!(parse_explore_line("goto-real x"), None);
+        assert_eq!(parse_explore_line("virtual-add /tmp/my dir"), Some(ExploreCmd::VirtualAdd(PathBuf::from("/tmp/my dir"))));
+        assert_eq!(parse_explore_line("virtual-add"), None);
+        assert_eq!(parse_explore_line("goto-virtual 4"), Some(ExploreCmd::GotoVirtual { idx: 4, pick: None }));
+        assert_eq!(parse_explore_line("goto-virtual 4 1"), Some(ExploreCmd::GotoVirtual { idx: 4, pick: Some(1) }));
+        assert_eq!(parse_explore_line("goto-virtual 4 x"), None);
+        assert_eq!(parse_explore_line("goto-virtual 4 1 2"), None);
         assert_eq!(parse_explore_line("search-select 2"), Some(ExploreCmd::SearchSelect(2)));
         assert_eq!(parse_explore_line("search-select x"), None);
     }

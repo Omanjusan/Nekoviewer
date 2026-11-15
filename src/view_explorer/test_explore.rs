@@ -44,6 +44,28 @@ impl NekoviewApp {
                     self.open_file_location_in_folders_tab(file);
                 }
             }
+            ExploreCmd::VirtualAdd(path) => {
+                if let Some(db) = self.spread_db.clone() {
+                    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                    // 同じ親の下に同じ実フォルダは登録できない。すでに登録があれば、その子として足す
+                    // （同じ実フォルダを登録した仮想ノードが複数ある状態を作るため）。
+                    let existing = crate::virtual_folders::list_nodes(&db);
+                    let parent = existing.iter().find(|n| n.real_path == path).map_or(crate::virtual_folders::ROOT_ID, |n| n.id);
+                    let _ = crate::virtual_folders::add_node(&db, parent, &path, &name);
+                    self.virtual_lookup_loaded = false;
+                }
+            }
+            ExploreCmd::GotoVirtual { idx, pick } => {
+                if let Some(file) = self.archives.get(idx).cloned() {
+                    self.start_goto_virtual(file, egui::pos2(100.0, 100.0));
+                    if let Some(n) = pick {
+                        let chosen = self.goto_virtual_menu.as_ref().and_then(|m| m.entries.get(n).map(|e| (e.0, m.file.clone())));
+                        if let Some((id, file)) = chosen {
+                            self.open_file_location_in_virtual_tab(id, file);
+                        }
+                    }
+                }
+            }
             ExploreCmd::ListMode(list) => {
                 self.view_mode.mode = if list { super::view_mode::ViewMode::List } else { super::view_mode::ViewMode::Card };
             }
@@ -92,6 +114,13 @@ impl NekoviewApp {
             },
             "loading_shown": self.scan_loading_visible(),
             "form_text": self.search_form.new_text,
+            "virtual_node": self.viewing_virtual_node,
+            "goto_menu": self.goto_virtual_menu.as_ref().map(|m| m.len()),
+            "virtual_ids": self
+                .spread_db
+                .as_ref()
+                .map(|db| crate::virtual_folders::list_nodes(db).iter().map(|n| n.id).collect::<Vec<_>>())
+                .unwrap_or_default(),
             "history_visible": self.visible_search_history(),
             "current_dir": self.current_dir.display().to_string(),
             // カーソル（選択枠）が乗っているファイル名。フォルダの行に乗っていれば null。

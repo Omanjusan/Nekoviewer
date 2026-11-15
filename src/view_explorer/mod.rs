@@ -965,6 +965,16 @@ pub struct NekoviewApp {
     reveal_icon_hits: HashMap<usize, egui::Rect>,
     /// リストの「実フォルダ」列の移動アイコンの当たり判定（行の実インデックス → 矩形）。今フレームに描いた行だけ。
     goto_real_hits: HashMap<usize, egui::Rect>,
+    /// 同じく「仮想フォルダ」列（登録した仮想フォルダがあるときだけ押せる）。
+    goto_virtual_hits: HashMap<usize, egui::Rect>,
+    /// 実フォルダ → それを登録している仮想ノードのID（登録順）。移動アイコンの有効・無効と移動先に使う。
+    virtual_lookup: HashMap<PathBuf, Vec<u32>>,
+    /// `virtual_lookup` が最新か。タブを移ったとき・仮想ノードを読み直したときに false にし、描画の前に引き直す。
+    virtual_lookup_loaded: bool,
+    /// 「仮想フォルダ」アイコンが押されたファイルと、押した位置。描画の後に消化する。
+    pending_goto_virtual: Option<(PathBuf, egui::Pos2)>,
+    /// 移動先の仮想フォルダが複数あるときに出す選択メニュー。
+    goto_virtual_menu: Option<goto_virtual::GotoVirtualMenu>,
     /// 「実フォルダ」アイコンが押されたファイル。描画の途中で表示を差し替えないよう、一覧の描画後に消化する。
     pending_goto_real: Option<PathBuf>,
     /// リストの「詳細」アイコンの矩形（行番号 → 矩形）。毎フレーム `draw_archive_list` の頭で作り直す。
@@ -1537,6 +1547,7 @@ mod bulk_settings_ui;
 mod search_ui;
 mod search;
 mod search_new;
+mod goto_virtual;
 mod search_history_ui;
 #[cfg(feature = "test-control")]
 mod test_explore;
@@ -1752,6 +1763,11 @@ impl NekoviewApp {
             marker_icon_hits: HashMap::new(),
             reveal_icon_hits: HashMap::new(),
             goto_real_hits: HashMap::new(),
+            goto_virtual_hits: HashMap::new(),
+            virtual_lookup: HashMap::new(),
+            virtual_lookup_loaded: false,
+            pending_goto_virtual: None,
+            goto_virtual_menu: None,
             pending_goto_real: None,
             detail_icon_hits: HashMap::new(),
             detail_window: None,
