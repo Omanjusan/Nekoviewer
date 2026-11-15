@@ -1,5 +1,11 @@
 //! 画面横断で使う小物ウィジェット。
 
+/// 右クリックメニューのテーマ見出し（太字・クリック不可）。直前のテーマとの間には、呼び出し側が
+/// `ui.separator()` を置く（先頭のテーマの前には置かない）。
+pub fn menu_theme_heading(ui: &mut egui::Ui, text: &str) {
+    ui.add(egui::Label::new(egui::RichText::new(text).strong()).selectable(false));
+}
+
 /// ×マークの半径（ボタン短辺に対する比）。22px のボタンで約5px になる。
 const CLOSE_MARK_HALF_RATIO: f32 = 0.23;
 const CLOSE_MARK_WIDTH: f32 = 1.5;

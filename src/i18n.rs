@@ -3695,13 +3695,47 @@ impl Lang {
         }
     }
 
+    // ---- カード右クリックメニューのテーマ見出し（panels.rs） ----
+
+    pub fn menu_theme_file_settings(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ファイル設定",
+            Lang::English  => "File Settings",
+            Lang::Chinese  => "文件设置",
+        }
+    }
+
+    pub fn menu_theme_os_file_manager(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ファイラーで開く（OS）",
+            Lang::English  => "Open in File Manager (OS)",
+            Lang::Chinese  => "在文件管理器中打开（系统）",
+        }
+    }
+
+    pub fn menu_theme_tag_learning(self) -> &'static str {
+        match self {
+            Lang::Japanese => "タグ学習",
+            Lang::English  => "Tag Learning",
+            Lang::Chinese  => "标签学习",
+        }
+    }
+
+    pub fn menu_theme_favorite_manage(self) -> &'static str {
+        match self {
+            Lang::Japanese => "お気に入り整理",
+            Lang::English  => "Manage Favorites",
+            Lang::Chinese  => "整理收藏",
+        }
+    }
+
     // ---- お気に入りタブ: 再紐付け・外す（relink_ui.rs） ----
 
     pub fn relink_menu(self) -> &'static str {
         match self {
-            Lang::Japanese => "移動先を指定して元ファイルを検索",
-            Lang::English  => "Specify Destination to Find Original",
-            Lang::Chinese  => "指定目标位置以查找原文件",
+            Lang::Japanese => "移動先を指定して再紐付け",
+            Lang::English  => "Specify Destination to Relink",
+            Lang::Chinese  => "指定目标位置并重新关联",
         }
     }
 
@@ -3851,7 +3885,7 @@ impl Lang {
     pub fn help_relink(self) -> HelpDoc {
         match self {
             Lang::Japanese => HelpDoc {
-                title: "移動先を指定して元ファイルを検索",
+                title: "移動先を指定して再紐付け",
                 sections: &[
                     (
                         "",

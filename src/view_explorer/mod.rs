@@ -907,7 +907,7 @@ pub struct NekoviewApp {
     favorite_dialog: Option<FavoriteDialogState>,
     /// 削除確認待ちのお気に入りフォルダID
     favorite_delete_confirm: Option<u8>,
-    /// お気に入りタブ右クリック「移動先を指定して元ファイルを検索」のダイアログ状態（`relink_ui.rs`）
+    /// お気に入りタブ右クリック「移動先を指定して再紐付け」のダイアログ状態（`relink_ui.rs`）
     relink_dialog: Option<relink_ui::RelinkDialog>,
     /// 再紐付けのバックグラウンド実行（結果の受け取り口）。実行中は Some
     relink_job: Option<mpsc::Receiver<crate::identity_relink::RelinkReport>>,

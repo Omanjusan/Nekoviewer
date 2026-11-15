@@ -3165,6 +3165,8 @@ impl NekoviewApp {
             };
             let filtered_targets = self.filter_bulk_setting_targets(raw_targets.clone());
 
+            // テーマ見出し（太字・クリック不可）で項目を分ける。テーマ間は区切り線。
+            crate::ui_widgets::menu_theme_heading(ui, i18n::t().menu_theme_file_settings());
             if !self.multi_selected.is_empty() {
                 let count = self.multi_selected.len();
                 let r_item = ui.button(i18n::t().favorite_detail_menu_bulk(count));
@@ -3236,9 +3238,8 @@ impl NekoviewApp {
             }
 
             ui.separator();
+            crate::ui_widgets::menu_theme_heading(ui, i18n::t().menu_theme_os_file_manager());
             self.draw_reveal_menu_item(ui, path);
-            self.draw_tag_learn_menu_item(ui, path);
-            ui.separator();
             if self.folder_pane_tab.shows_real_dir() {
                 let r_item = ui.button(i18n::t().explorer_open_folder_menu());
                 help_tip_auto(&r_item, &i18n::t().help_card_open_folder());
@@ -3269,9 +3270,14 @@ impl NekoviewApp {
                 }
             }
 
+            ui.separator();
+            crate::ui_widgets::menu_theme_heading(ui, i18n::t().menu_theme_tag_learning());
+            self.draw_tag_learn_menu_item(ui, path);
+
             // お気に入りタブ: 開けなくなったお気に入りの再紐付け・整理（relink_ui.rs）
             if self.folder_pane_tab == FolderPaneTab::Favorites {
                 ui.separator();
+                crate::ui_widgets::menu_theme_heading(ui, i18n::t().menu_theme_favorite_manage());
                 let ghosts = self.relink_ghost_ids(&raw_targets);
                 let r_item = ui.add_enabled(
                     !ghosts.is_empty(),
