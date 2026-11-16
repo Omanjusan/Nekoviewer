@@ -4,8 +4,10 @@
 //! - 2枚目: 作者・グループ名。「戻る」「適用」「キャンセル」。キャンセルは全部を捨てる（ディスクには何も書いていない）
 //! - 上部で、照合の切替項目（正規化5項目と類似のしきい値）を切り替えられる。切り替えると別スレッドで候補を作り直し、
 //!   ユーザーが変えた採否は、同じ候補に引き継ぐ
-//! - 行は、採否のチェック・名前・対象の件数・「未確定」の印と、類似提案があれば選択欄（既存の候補・新規作成・付けない）
-//! - 類似品の束は見出しの行を出し、まとめて採用・不採用にできる
+//! - 行は2段。1段目は、採否のトグル（タグ採用予定／タグ不採用）・名前・対象のファイル数・要確認の印・（類似提案があれば）選択欄・「⋯」。
+//!   2段目は、何をどこにどうするかの1文（`tag_confirm_text::conclusion`）
+//! - 他の要素と同一としてまとめるのは、行の「⋯」から開くダイアログで行う（用途とデメリットを案内する）。結果は必ず「タグ採用予定」
+//! - 類似品の束は見出しの行を出し、まとめて「タグ採用予定」「タグ不採用」にできる
 //!
 //! 「適用」は、DBのバックアップ → マスターへの新規カテゴリ・要素の追加 → 各ファイルへのタグ追加、を別スレッドで行う
 //! （`tag_apply`）。既存のタグは消さない。バックアップに失敗したら、何も変更せずに中止する。
@@ -16,9 +18,10 @@ use std::sync::{mpsc, Arc};
 
 use crate::i18n::{self, Lang};
 use crate::tag_candidates::{
-    build_candidates_full, over_limit, Bundle, Candidate, CandidateInput, CandidateSet, CatRef, Choice, MergeError, Role, Window,
+    build_candidates_full, over_limit, Bundle, Candidate, CandidateInput, CandidateSet, Choice, MergeError, Role, Window,
     LIMIT_EXPAND_STEP,
 };
+use crate::tag_confirm_text as ctext;
 use crate::tag_master::split_aliases;
 use crate::tag_model::Model;
 use crate::tag_rules::TagRule;
@@ -106,13 +109,11 @@ pub(super) struct TagConfirm {
     rebuild: Option<mpsc::Receiver<CandidateSet>>,
     /// しきい値スライダーをドラッグしている間の仮の値（離したときに確定して作り直す）。
     threshold_draft: Option<u8>,
-    /// 「まとめる」にチェックした候補（種類, 候補のキー）。
-    checked: HashSet<(Role, String)>,
+    /// 「他の要素と同一としてまとめる」ダイアログ（開いている間だけ Some）。
+    merge_dialog: Option<MergeDialog>,
     /// 名前の絞り込み欄。
     filter: String,
     next_bundle_id: u64,
-    /// まとめを拒否したときの理由（窓に出す）。
-    merge_msg: Option<String>,
     /// 適用前の確認（既存要素の名前が書き換わるとき）。Some の間は確認の窓を出す。
     rename_review: Option<RenameReview>,
     /// 1カテゴリあたりの新規要素数の上限（設定の既定値から始まり、「拡張する」で増える）。
@@ -133,11 +134,27 @@ struct RenameReview {
     conflicts: usize,
 }
 
+/// 「他の要素と同一としてまとめる」ダイアログの状態。
+struct MergeDialog {
+    /// まとめる候補の種類（同じ種類の中からだけ選べる）。
+    role: Role,
+    /// ダイアログを開いた候補の名前（説明文に出す）。
+    name: String,
+    /// 選んだ候補のキー。
+    selected: HashSet<String>,
+    /// 相手を探す絞り込み欄。
+    filter: String,
+    /// まとめを拒否したときの理由。
+    msg: Option<String>,
+}
+
 /// 一覧の行から出す操作（描画中は候補の並びを変えられないので、描画後にまとめて行う）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum RowAction {
-    /// 束（類似品の同じ番号）をまとめる。
+    /// 束（類似品の同じ番号）をまとめるダイアログを開く。
     MergeCluster(usize),
+    /// 候補（番号）をまとめるダイアログを開く。
+    OpenMerge(usize),
     /// まとめた候補を分解する。
     Split(usize),
     /// まとめた候補の、先頭見出しにする別名（候補の番号, 別名の位置）。
@@ -162,7 +179,7 @@ impl TagConfirm {
         } else {
             return None;
         };
-        Some(Self { set, inputs: Arc::new(inputs), paths, master: Arc::new(master), model, rules, stage, only_unconfirmed: false, rebuild: None, threshold_draft: None, checked: HashSet::new(), filter: String::new(), next_bundle_id: 1, merge_msg: None, rename_review: None, limit, limit_keep: false, truncated: Vec::new(), reattach: false })
+        Some(Self { set, inputs: Arc::new(inputs), paths, master: Arc::new(master), model, rules, stage, only_unconfirmed: false, rebuild: None, threshold_draft: None, merge_dialog: None, filter: String::new(), next_bundle_id: 1, rename_review: None, limit, limit_keep: false, truncated: Vec::new(), reattach: false })
     }
 
     /// 切替項目が変わったので、別スレッドで候補を作り直す。進行中の作り直しは捨てる。
@@ -177,7 +194,21 @@ impl TagConfirm {
             let _ = tx.send(fresh);
         });
         self.rebuild = Some(rx);
-        self.checked.clear();
+        self.merge_dialog = None;
+    }
+
+    /// まとめるダイアログを開く。`idxs` は最初から選んでおく候補（同じ種類のものだけ）。
+    fn open_merge_dialog(&mut self, idxs: &[usize]) {
+        let Some(first) = idxs.first().and_then(|&i| self.set.candidates.get(i)) else { return };
+        let role = first.role;
+        let name = first.name.clone();
+        let selected: HashSet<String> = idxs
+            .iter()
+            .filter_map(|&i| self.set.candidates.get(i))
+            .filter(|c| c.role == role)
+            .map(|c| c.key.clone())
+            .collect();
+        self.merge_dialog = Some(MergeDialog { role, name, selected, filter: String::new(), msg: None });
     }
 
     /// 作り直しの完了を取り込む。ユーザーが変えた採否は引き継ぐ。
@@ -254,7 +285,6 @@ impl NekoviewApp {
         let mut next_stage: Option<Window> = None;
         let mut cancel = false;
         let mut apply_clicked = false;
-        let mut confirm_merge = false;
         let mut row_action: Option<RowAction> = None;
         let mut opts = self.config.tag_match;
         let before = opts;
@@ -268,7 +298,7 @@ impl NekoviewApp {
         .open(&mut open)
         .collapsible(false)
         .resizable(true)
-        .default_size([780.0, 560.0])
+        .default_size([860.0, 580.0])
         .pivot(egui::Align2::CENTER_CENTER)
         .default_pos(center)
         .show(ctx, |ui| {
@@ -341,34 +371,19 @@ impl NekoviewApp {
                 }
                 ui.checkbox(&mut st.only_unconfirmed, t.tag_confirm_only_unconfirmed());
             });
-            // 名前の絞り込みと、チェックした行をまとめる操作。
-            let checked_here = window_idx
-                .iter()
-                .filter(|&&i| st.checked.contains(&(st.set.candidates[i].role, st.set.candidates[i].key.clone())))
-                .count();
+            // 名前の絞り込み。
             ui.horizontal_wrapped(|ui| {
                 ui.label(t.tag_confirm_filter_label());
                 ui.add(egui::TextEdit::singleline(&mut st.filter).desired_width(160.0).hint_text(t.tag_confirm_filter_hint()));
                 if !st.filter.is_empty() && ui.small_button("✕").clicked() {
                     st.filter.clear();
                 }
-                ui.separator();
-                let btn = ui.add_enabled(checked_here >= 2, egui::Button::new(t.tag_confirm_merge_button(checked_here)));
-                if btn.on_hover_text(t.tag_confirm_merge_hover()).on_disabled_hover_text(t.tag_confirm_merge_hover()).clicked() {
-                    confirm_merge = true;
-                }
-                if checked_here > 0 && ui.small_button(t.tag_confirm_merge_clear()).clicked() {
-                    st.checked.clear();
-                }
             });
-            if let Some(msg) = &st.merge_msg {
-                ui.colored_label(egui::Color32::from_rgb(220, 60, 60), msg);
-            }
             ui.separator();
 
             // 一覧。
             let rows = rows_for(&st.set, stage, st.only_unconfirmed, &st.filter, &opts);
-            let row_h = ui.spacing().interact_size.y + 6.0;
+            let row_h = confirm_row_height(ui) + ui.spacing().item_spacing.y;
             let footer_h = 40.0;
             let list_h = (ui.available_height() - footer_h).max(80.0);
             egui::ScrollArea::vertical().id_salt(("tag_confirm_list", stage as u8)).max_height(list_h).auto_shrink([false, false]).show_rows(
@@ -383,24 +398,24 @@ impl NekoviewApp {
                             }
                             Row::Cluster { id, size } => {
                                 ui.horizontal(|ui| {
-                                    ui.weak(t.tag_confirm_cluster_header(size));
-                                    if ui.small_button(t.tag_confirm_cluster_adopt()).clicked() {
+                                    ui.weak(ctext::cluster_header(size));
+                                    if ui.small_button(ctext::CLUSTER_ADOPT_LABEL).clicked() {
                                         for c in st.set.candidates.iter_mut().filter(|c| c.cluster == id && c.role.window() == stage) {
                                             c.adopt();
                                         }
                                     }
-                                    if ui.small_button(t.tag_confirm_cluster_unadopt()).clicked() {
+                                    if ui.small_button(ctext::CLUSTER_REJECT_LABEL).clicked() {
                                         for c in st.set.candidates.iter_mut().filter(|c| c.cluster == id && c.role.window() == stage) {
                                             c.unadopt();
                                         }
                                     }
-                                    if ui.small_button(t.tag_confirm_cluster_merge()).on_hover_text(t.tag_confirm_merge_hover()).clicked() {
+                                    if ui.small_button(ctext::MERGE_LABEL).clicked() {
                                         row_action = Some(RowAction::MergeCluster(id));
                                     }
                                 });
                             }
                             Row::Cand(i) => {
-                                draw_candidate_row(ui, &mut st.set, i, &st.master, &mut st.checked, &mut row_action, t)
+                                draw_candidate_row(ui, &mut st.set, i, &st.master, &mut row_action, t)
                             }
                         }
                     }
@@ -450,41 +465,20 @@ impl NekoviewApp {
             });
         });
 
-        // まとめる・分解・先頭の別名の変更（描画中は並びを変えられないので、ここで行う）。
-        let merge_idxs: Option<Vec<usize>> = match row_action {
-            Some(RowAction::MergeCluster(id)) => Some(
-                (0..st.set.candidates.len())
-                    .filter(|&i| st.set.candidates[i].cluster == id && st.set.candidates[i].role.window() == stage)
-                    .collect(),
-            ),
-            _ if confirm_merge => Some(
-                (0..st.set.candidates.len())
-                    .filter(|&i| {
-                        let c = &st.set.candidates[i];
-                        c.role.window() == stage && st.checked.contains(&(c.role, c.key.clone()))
-                    })
-                    .collect(),
-            ),
-            _ => None,
-        };
-        if let Some(idxs) = merge_idxs {
-            let id = st.next_bundle_id;
-            match st.set.merge_candidates(&idxs, None, id, &st.master) {
-                Ok(_) => {
-                    st.next_bundle_id += 1;
-                    st.checked.clear();
-                    st.merge_msg = None;
-                }
-                Err(e) => st.merge_msg = Some(merge_error_text(&e, t)),
-            }
-        }
+        // まとめるダイアログを開く・分解・先頭の別名の変更（描画中は並びを変えられないので、ここで行う）。
         match row_action {
+            Some(RowAction::OpenMerge(i)) => st.open_merge_dialog(&[i]),
+            Some(RowAction::MergeCluster(id)) => {
+                let idxs: Vec<usize> = (0..st.set.candidates.len())
+                    .filter(|&i| st.set.candidates[i].cluster == id && st.set.candidates[i].role.window() == stage)
+                    .collect();
+                st.open_merge_dialog(&idxs);
+            }
             Some(RowAction::Split(i)) => {
                 st.set.split_candidate(i);
-                st.merge_msg = None;
             }
             Some(RowAction::SetPrimary(i, pos)) => st.set.set_primary_alias(i, pos),
-            _ => {}
+            None => {}
         }
         if opts != before {
             let clamped = opts.clamped();
@@ -549,6 +543,7 @@ impl NekoviewApp {
                     st.rename_review = None;
                 }
             }
+            self.draw_tag_merge_dialog(ctx, &mut st);
             if proceed {
                 self.start_tag_apply(&st);
             } else {
@@ -592,6 +587,90 @@ impl NekoviewApp {
     }
 }
 
+impl NekoviewApp {
+    /// 「他の要素と同一としてまとめる」ダイアログ。用途とデメリットを案内し、同じ種類の候補から相手を選ばせる。
+    /// 実行すると、選んだ候補を別名つきの1要素にまとめ、その行を「タグ採用予定」にする。
+    fn draw_tag_merge_dialog(&mut self, ctx: &egui::Context, st: &mut TagConfirm) {
+        let Some(mut md) = st.merge_dialog.take() else { return };
+        let t = i18n::t();
+        let opts = self.config.tag_match;
+        let role = md.role;
+        let (mut ok, mut cancel) = (false, false);
+        let modal = self.explorer_modal(ctx, "tag_merge_dialog").show(ctx, |ui| {
+            ui.set_width(560.0);
+            ui.heading(ctext::MERGE_TITLE);
+            ui.add_space(4.0);
+            ui.label(ctext::merge_intro(&md.name));
+            ui.add_space(6.0);
+            ui.weak(i18n::t().tag_confirm_filter_label());
+            ui.add(egui::TextEdit::singleline(&mut md.filter).desired_width(240.0).hint_text(t.tag_confirm_filter_hint()));
+            // 同じ種類の候補。選んだものは、絞り込みに合わなくても残す。
+            let idx: Vec<usize> = (0..st.set.candidates.len())
+                .filter(|&i| {
+                    let c = &st.set.candidates[i];
+                    c.role == role && (md.selected.contains(&c.key) || matches_query(c, &md.filter, &opts))
+                })
+                .collect();
+            let row_h = ui.spacing().interact_size.y;
+            egui::ScrollArea::vertical().id_salt("tag_merge_list").max_height(200.0).auto_shrink([false, true]).show_rows(ui, row_h, idx.len(), |ui, range| {
+                for &i in &idx[range] {
+                    let c = &st.set.candidates[i];
+                    let mut on = md.selected.contains(&c.key);
+                    if ui.checkbox(&mut on, format!("{}　{}", c.name, ctext::file_count(c.files.len()))).changed() {
+                        if on {
+                            md.selected.insert(c.key.clone());
+                        } else {
+                            md.selected.remove(&c.key);
+                        }
+                    }
+                }
+            });
+            let chosen: Vec<&Candidate> = st.set.candidates.iter().filter(|c| c.role == role && md.selected.contains(&c.key)).collect();
+            let names: Vec<&str> = chosen.iter().map(|c| c.name.as_str()).collect();
+            let files: HashSet<usize> = chosen.iter().flat_map(|c| c.files.iter().copied()).collect();
+            ui.add_space(4.0);
+            ui.label(ctext::merge_preview(&names, files.len()));
+            ui.add_space(6.0);
+            ui.colored_label(egui::Color32::from_rgb(220, 60, 60), "まとめる前に知っておくこと");
+            for line in ctext::MERGE_CONSEQUENCES {
+                ui.label(format!("・{line}"));
+            }
+            if let Some(msg) = &md.msg {
+                ui.add_space(4.0);
+                ui.colored_label(egui::Color32::from_rgb(220, 60, 60), msg);
+            }
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                if ui.button(t.archive_open_cancel()).clicked() {
+                    cancel = true;
+                }
+                if ui.add_enabled(chosen.len() >= 2, egui::Button::new(ctext::MERGE_OK_LABEL)).clicked() {
+                    ok = true;
+                }
+            });
+        });
+        if cancel || modal.should_close() {
+            return;
+        }
+        if ok {
+            let idxs: Vec<usize> = (0..st.set.candidates.len())
+                .filter(|&i| st.set.candidates[i].role == role && md.selected.contains(&st.set.candidates[i].key))
+                .collect();
+            let id = st.next_bundle_id;
+            match st.set.merge_candidates(&idxs, None, id, &st.master) {
+                Ok(merged) => {
+                    st.next_bundle_id += 1;
+                    // まとめた結果は、必ず「タグ採用予定」にする。
+                    st.set.candidates[merged].adopt();
+                    return;
+                }
+                Err(e) => md.msg = Some(merge_error_text(&e, t)),
+            }
+        }
+        st.merge_dialog = Some(md);
+    }
+}
+
 fn merge_error_text(e: &MergeError, t: Lang) -> String {
     match e {
         MergeError::TooFew => t.tag_confirm_merge_err_too_few().to_string(),
@@ -601,117 +680,132 @@ fn merge_error_text(e: &MergeError, t: Lang) -> String {
     }
 }
 
-/// 候補1行。
+/// 行（2段）の高さ。一覧は固定の行高で仮想スクロールするので、全ての行をこの高さにそろえる。
+fn confirm_row_height(ui: &egui::Ui) -> f32 {
+    ui.spacing().interact_size.y + ui.text_style_height(&egui::TextStyle::Body) + 10.0
+}
+
+/// 採否トグルの幅。
+const TOGGLE_WIDTH: f32 = 116.0;
+
+/// 候補1行（2段）。1段目: 採否のトグル・名前・対象のファイル数・要確認の印・選択欄・「⋯」。
+/// 2段目: 何をどこにどうするかの1文（長いときは切り詰めて、ホバーで全文）。
 fn draw_candidate_row(
     ui: &mut egui::Ui,
     set: &mut CandidateSet,
     i: usize,
     master: &[TagManagerCategoryUi],
-    checked: &mut HashSet<(Role, String)>,
     action: &mut Option<RowAction>,
     t: Lang,
 ) {
+    let reason = ctext::review_kind(&set.candidates[i]);
+    let conclusion = ctext::conclusion(&set.candidates[i], master);
+    let row_h = confirm_row_height(ui);
+    let amber = egui::Color32::from_rgb(230, 160, 40);
     let c = &mut set.candidates[i];
-    ui.horizontal(|ui| {
-        // 「まとめる」の対象にするチェック（採否のチェックとは別）。
-        let id = (c.role, c.key.clone());
-        let mut merge_on = checked.contains(&id);
-        if ui.checkbox(&mut merge_on, "").on_hover_text(t.tag_confirm_merge_check_hover()).changed() {
-            if merge_on {
-                checked.insert(id);
+    let scope = ui.scope(|ui| {
+        ui.set_min_height(row_h);
+        ui.horizontal(|ui| {
+            // 採否は、この1つのトグルだけ（「まとめる」は「⋯」から）。
+            let adopted = c.is_adopted();
+            let label = egui::RichText::new(ctext::toggle_label(adopted));
+            let toggle = if adopted {
+                egui::Button::new(label.strong().color(ui.visuals().selection.stroke.color)).fill(ui.visuals().selection.bg_fill)
             } else {
-                checked.remove(&id);
+                egui::Button::new(label.weak())
+            };
+            if ui.add(toggle.min_size(egui::vec2(TOGGLE_WIDTH, 0.0))).on_hover_text(ctext::TOGGLE_HINT).clicked() {
+                if adopted {
+                    c.unadopt();
+                } else {
+                    c.adopt();
+                }
             }
+            ui.vertical(|ui| {
+                ui.horizontal(|ui| {
+                    // 名前（まとめた行は先頭の別名）。新規に登録するものは太字。
+                    let shown = c.aliases.first().cloned().unwrap_or_else(|| c.name.clone());
+                    let label = egui::RichText::new(shown);
+                    let name_resp = ui.label(if matches!(c.choice, Choice::New) { label.strong() } else { label });
+                    if !c.aliases.is_empty() {
+                        name_resp.on_hover_text(t.tag_confirm_merged_hover(c.aliases.len()));
+                        ui.weak(format!("（{}: {}）", ctext::MERGED_LABEL, c.aliases.join(" ＝ ")));
+                    }
+                    // 対にした別の見出し行の表記（英語⇄日本語）。登録するときは、登録名の別名として足される。
+                    if !c.alt_forms.is_empty() {
+                        ui.weak(format!("（{}）", c.alt_forms.join(" / ")));
+                    }
+                    ui.weak(ctext::file_count(c.files.len()));
+                    if let Some(kind) = &reason {
+                        ui.colored_label(amber, ctext::review_badge(kind));
+                    }
+                    if !c.suggestions.is_empty() {
+                        draw_choice_combo(ui, c, i, master, t);
+                    }
+                    ui.menu_button("⋯", |ui| {
+                        if ui.button(ctext::MERGE_LABEL).clicked() {
+                            *action = Some(RowAction::OpenMerge(i));
+                            ui.close();
+                        }
+                        if !c.aliases.is_empty() {
+                            ui.separator();
+                            ui.weak(t.tag_confirm_primary_alias());
+                            for (pos, a) in c.aliases.iter().enumerate() {
+                                if ui.radio(pos == 0, a).clicked() {
+                                    *action = Some(RowAction::SetPrimary(i, pos));
+                                    ui.close();
+                                }
+                            }
+                            ui.separator();
+                            if ui.button(ctext::SPLIT_LABEL).clicked() {
+                                *action = Some(RowAction::Split(i));
+                                ui.close();
+                            }
+                        }
+                    });
+                });
+                ui.add(egui::Label::new(conclusion.as_str()).truncate()).on_hover_text(&conclusion);
+            });
+        });
+    });
+    // 行どうしの区切り線。
+    let rect = scope.response.rect;
+    ui.painter().hline(rect.x_range(), rect.bottom() + 1.0, ui.visuals().widgets.noninteractive.bg_stroke);
+}
+
+/// 類似提案がある行の選択欄（既存の要素・別名として足す・新規・タグ不採用）。
+fn draw_choice_combo(ui: &mut egui::Ui, c: &mut Candidate, i: usize, master: &[TagManagerCategoryUi], t: Lang) {
+    let current = match &c.choice {
+        Choice::Existing { tier_id, .. } => {
+            let score = c.suggestions.iter().find(|s| s.tier_id == *tier_id).map_or(100, |s| s.score);
+            format!("{} ({score}%)", element_name(master, *tier_id))
         }
-        let mut adopted = c.is_adopted();
-        if ui.checkbox(&mut adopted, "").changed() {
-            if adopted {
-                c.adopt();
+        Choice::Alias { tier_id, .. } => t.tag_confirm_choice_alias(&element_name(master, *tier_id), &c.name),
+        Choice::New => t.tag_confirm_choice_new(&c.name),
+        Choice::Skip => ctext::REJECT_LABEL.to_string(),
+    };
+    egui::ComboBox::from_id_salt(("tag_confirm_choice", i)).selected_text(current).width(220.0).show_ui(ui, |ui| {
+        if ui.selectable_label(matches!(c.choice, Choice::New), t.tag_confirm_choice_new(&c.name)).clicked() {
+            c.choice = Choice::New;
+        }
+        let suggestions = c.suggestions.clone();
+        for s in suggestions {
+            let selected = matches!(c.choice, Choice::Existing { tier_id, .. } if tier_id == s.tier_id);
+            let shown = if s.alias != s.name && s.name.contains('|') {
+                format!("{} ({}%) ≈ {}", s.name, s.score, s.alias)
             } else {
-                c.unadopt();
-            }
-        }
-        let label = egui::RichText::new(&c.name);
-        let name_resp = ui.label(if matches!(c.choice, Choice::New) { label.strong() } else { label });
-        if !c.aliases.is_empty() {
-            name_resp.on_hover_text(t.tag_confirm_merged_hover(c.aliases.len()));
-            ui.menu_button(t.tag_confirm_merged_menu(), |ui| {
-                ui.weak(t.tag_confirm_primary_alias());
-                for (pos, a) in c.aliases.iter().enumerate() {
-                    if ui.radio(pos == 0, a).clicked() {
-                        *action = Some(RowAction::SetPrimary(i, pos));
-                        ui.close();
-                    }
-                }
-                ui.separator();
-                if ui.button(t.tag_confirm_split()).clicked() {
-                    *action = Some(RowAction::Split(i));
-                    ui.close();
-                }
-            });
-        }
-        // 対にした別の見出し行の表記（英語⇄日本語）。登録するときは、登録名の別名として足される。
-        if !c.alt_forms.is_empty() {
-            ui.weak(format!("（{}）", c.alt_forms.join(" / ")));
-        }
-        ui.weak(t.tag_confirm_file_count(c.files.len()));
-        if c.unconfirmed {
-            ui.colored_label(egui::Color32::from_rgb(230, 160, 40), t.tag_confirm_unconfirmed());
-        }
-        // 無効と判定されて、未採用で残している候補（ルール・学習のどちらによるかを添える）。
-        if c.review {
-            let amber = egui::Color32::from_rgb(230, 160, 40);
-            match &c.rule_reason {
-                Some(rule) => ui.colored_label(amber, t.tag_confirm_review_rule(rule)),
-                None => ui.colored_label(amber, t.tag_confirm_review_learned()),
+                format!("{} ({}%)", s.name, s.score)
             };
+            if ui.selectable_label(selected, shown).clicked() {
+                c.choice = Choice::Existing { cat_idx: s.cat_idx, tier_id: s.tier_id };
+            }
+            let alias_selected = matches!(c.choice, Choice::Alias { tier_id, .. } if tier_id == s.tier_id);
+            if ui.selectable_label(alias_selected, t.tag_confirm_choice_alias(&s.name, &c.name)).clicked() {
+                c.choice = Choice::Alias { cat_idx: s.cat_idx, tier_id: s.tier_id };
+            }
         }
-        match &c.choice {
-            Choice::Existing { tier_id, .. } if c.suggestions.is_empty() => {
-                ui.weak(t.tag_confirm_existing(&element_name(master, *tier_id)));
-            }
-            Choice::Alias { tier_id, .. } if c.suggestions.is_empty() => {
-                ui.weak(t.tag_confirm_choice_alias(&element_name(master, *tier_id), &c.name));
-            }
-            _ if c.category == CatRef::New && matches!(c.choice, Choice::New) => {
-                ui.weak(t.tag_confirm_new_category(c.role.new_category_name(t)));
-            }
-            _ => {}
-        }
-        if !c.suggestions.is_empty() {
-            let current = match &c.choice {
-                Choice::Existing { tier_id, .. } => {
-                    let score = c.suggestions.iter().find(|s| s.tier_id == *tier_id).map_or(100, |s| s.score);
-                    format!("{} ({score}%)", element_name(master, *tier_id))
-                }
-                Choice::Alias { tier_id, .. } => t.tag_confirm_choice_alias(&element_name(master, *tier_id), &c.name),
-                Choice::New => t.tag_confirm_choice_new(&c.name),
-                Choice::Skip => t.tag_confirm_choice_skip().to_string(),
-            };
-            egui::ComboBox::from_id_salt(("tag_confirm_choice", i)).selected_text(current).width(220.0).show_ui(ui, |ui| {
-                if ui.selectable_label(matches!(c.choice, Choice::New), t.tag_confirm_choice_new(&c.name)).clicked() {
-                    c.choice = Choice::New;
-                }
-                let suggestions = c.suggestions.clone();
-                for s in suggestions {
-                    let selected = matches!(c.choice, Choice::Existing { tier_id, .. } if tier_id == s.tier_id);
-                    let shown = if s.alias != s.name && s.name.contains('|') {
-                        format!("{} ({}%) ≈ {}", s.name, s.score, s.alias)
-                    } else {
-                        format!("{} ({}%)", s.name, s.score)
-                    };
-                    if ui.selectable_label(selected, shown).clicked() {
-                        c.choice = Choice::Existing { cat_idx: s.cat_idx, tier_id: s.tier_id };
-                    }
-                    let alias_selected = matches!(c.choice, Choice::Alias { tier_id, .. } if tier_id == s.tier_id);
-                    if ui.selectable_label(alias_selected, t.tag_confirm_choice_alias(&s.name, &c.name)).clicked() {
-                        c.choice = Choice::Alias { cat_idx: s.cat_idx, tier_id: s.tier_id };
-                    }
-                }
-                if ui.selectable_label(matches!(c.choice, Choice::Skip), t.tag_confirm_choice_skip()).clicked() {
-                    c.choice = Choice::Skip;
-                }
-            });
+        if ui.selectable_label(matches!(c.choice, Choice::Skip), ctext::REJECT_LABEL).clicked() {
+            c.choice = Choice::Skip;
         }
     });
 }

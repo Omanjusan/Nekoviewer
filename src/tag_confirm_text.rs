@@ -31,6 +31,64 @@ pub(crate) fn toggle_label(adopted: bool) -> String {
     }
 }
 
+// ── 「他の要素と同一としてまとめる」 ────────────────────────────────
+
+/// 行の「⋯」メニュー・類似品の見出しのボタン名。
+pub(crate) const MERGE_LABEL: &str = "他の要素と同一としてまとめる…";
+/// まとめた行の「⋯」メニューの項目。
+pub(crate) const SPLIT_LABEL: &str = "まとめを解除（適用前のみ）";
+/// ダイアログのタイトル。
+pub(crate) const MERGE_TITLE: &str = "他の要素と同一としてまとめる";
+/// ダイアログの実行ボタン。
+pub(crate) const MERGE_OK_LABEL: &str = "まとめる";
+/// まとめた行に付ける、同じものの目印の見出し。
+pub(crate) const MERGED_LABEL: &str = "同一";
+
+/// ダイアログの冒頭の説明（用途）。
+pub(crate) fn merge_intro(name: &str) -> String {
+    format!(
+        "『{name}』を、下記のタグと同じものとしてまとめます。「同人誌|doujinshi」のように、英語と日本語を同一視したいときや、カテゴリの数を増やさずに、検索結果を同じにしたいときに使ってください。"
+    )
+}
+
+/// ダイアログの「まとめる前に知っておくこと」（デメリット）。
+pub(crate) const MERGE_CONSEQUENCES: [&str; 4] = [
+    "まとめたタグは1つのタグとして扱われます。片方の名前だけで、単独に検索することはできなくなります。",
+    "まとめを、あとから分離する機能はありません。適用前なら「まとめを解除」で戻せますが、適用後は、タグ管理で名前の別名を消すことしかできず、すでに付いたタグが別々のタグに戻ることはありません。",
+    "すでに別々に登録されているタグどうしは、まとめられません。",
+    "まとめた結果は、必ず「タグ採用予定」になります。",
+];
+
+/// 選んだ候補の、まとめる前の確認文（件数つき）。2件未満のときは促す文。
+pub(crate) fn merge_preview(names: &[&str], files: usize) -> String {
+    if names.len() < 2 {
+        return "2件以上を選んでください".to_string();
+    }
+    format!("まとめる候補：{}（合計{files}ファイル）", names.join("、"))
+}
+
+/// 類似品の束の見出し。
+pub(crate) fn cluster_header(size: usize) -> String {
+    format!("名前が似ている候補 {size}件")
+}
+
+/// 類似品の束の見出しのボタン。
+pub(crate) const CLUSTER_ADOPT_LABEL: &str = "まとめて「タグ採用予定」へ";
+pub(crate) const CLUSTER_REJECT_LABEL: &str = "まとめて「タグ不採用」へ";
+
+/// 採否トグルのホバー文。
+pub(crate) const TOGGLE_HINT: &str = "押すと「タグ採用予定」と「タグ不採用」が切り替わります";
+
+/// 行に出す対象ファイル数。
+pub(crate) fn file_count(n: usize) -> String {
+    format!("{n}ファイル")
+}
+
+/// 行の1段目に出す、要確認の印（短い理由つき）。
+pub(crate) fn review_badge(kind: &ReviewKind) -> String {
+    format!("要確認：{}", review_short(kind))
+}
+
 // ── 名前の取り出し ──────────────────────────────────────────────────
 
 /// カテゴリの表示名。番号が範囲外のときは、種類の既定名。
@@ -372,6 +430,20 @@ mod tests {
         let m = master();
         let c = base(Role::Author, "Taro", Choice::Existing { cat_idx: 1, tier_id: 11 });
         assert!(conclusion(&c, &m).contains("『Taro』（既存の要素）"));
+    }
+
+    #[test]
+    fn merge_texts_state_use_and_downsides() {
+        let intro = merge_intro("doujinshi");
+        assert!(intro.starts_with("『doujinshi』を、下記のタグと同じものとしてまとめます。"));
+        assert!(intro.contains("同人誌|doujinshi"));
+        let all = MERGE_CONSEQUENCES.join("");
+        assert!(all.contains("単独に検索することはできなくなります"));
+        assert!(all.contains("分離する機能はありません"));
+        assert!(all.contains("必ず「タグ採用予定」"));
+        assert_eq!(merge_preview(&["A"], 3), "2件以上を選んでください");
+        assert_eq!(merge_preview(&["A", "B"], 7), "まとめる候補：A、B（合計7ファイル）");
+        assert_eq!(cluster_header(3), "名前が似ている候補 3件");
     }
 
     #[test]
