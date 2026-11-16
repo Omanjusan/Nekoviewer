@@ -129,6 +129,49 @@ pub(crate) fn why_title(name: &str) -> String {
     format!("要確認の理由：{name}")
 }
 
+// ── 一覧の見出し帯・下端のサマリー・照合の設定 ───────────────────────
+
+pub(crate) const VIEW_ALL: &str = "すべて";
+pub(crate) const VIEW_NEEDS_REVIEW: &str = "要確認";
+pub(crate) const DEFAULT_REVIEW_LABEL: &str = "デフォルト表示を要確認項目にする";
+pub(crate) const DEFAULT_REVIEW_HINT: &str = "オンのとき、確認窓を開いたら要確認の候補だけを先に表示します（要確認が無いときは、すべてを表示します）";
+pub(crate) const NEEDS_REVIEW_EMPTY: &str = "要確認の候補はありません。";
+
+pub(crate) const BULK_LABEL: &str = "一括操作 ▾";
+pub(crate) const BULK_ADOPT_ALL: &str = "すべて「タグ採用予定」にする";
+pub(crate) const BULK_REJECT_ALL: &str = "すべて「タグ不採用」にする";
+pub(crate) const BULK_REJECT_UNCONFIRMED: &str = "未確定の候補を「タグ不採用」にする";
+
+pub(crate) const SETTINGS_BUTTON: &str = "⚙ 照合の設定";
+pub(crate) const SETTINGS_HINT: &str = "普通は変更不要です";
+pub(crate) const SETTINGS_TITLE: &str = "照合の設定";
+pub(crate) const SETTINGS_NOTE: &str = "普通は変更不要です。表記のゆれを、どこまで同じものとみなすかの設定です。変えると、候補が作り直されます。";
+pub(crate) const THRESHOLD_NOTE: &str = "低いほど、似ている候補が多く出ます。";
+
+/// 一覧の下端のサマリー（この窓の分）。
+pub(crate) fn summary(planned: usize, new_elements: usize, rejected: usize) -> String {
+    format!("{ADOPT_LABEL} {planned}件 / マスターに新しく登録 {new_elements}個 / {REJECT_LABEL} {rejected}件")
+}
+
+/// ルールが働いたことを知らせるボタン（ルールの種類の数）。
+pub(crate) fn rule_hits_button(kinds: usize) -> String {
+    format!("ルールが働いた候補（{kinds}種）")
+}
+
+pub(crate) const RULE_HITS_TITLE: &str = "ルールが働いた候補";
+pub(crate) const RULE_HITS_NOTE: &str = "ルールで「タグ不採用」になった候補には、行に「要確認」が付きます。ファイルにタグ付けしたい場合は、その行で「解決する…」を押してください。";
+
+/// ルールが成立したファイル数の1行。
+pub(crate) fn rule_hit_line(rule: &str, files: usize) -> String {
+    format!("{rule}：{files}ファイル")
+}
+
+/// 確認窓を開いたとき・窓を切り替えたときの、最初の表示。
+/// 「要確認を既定にする」がオンで、確認が済んでいない要確認があるときだけ「要確認」。それ以外は「すべて」。
+pub(crate) fn initial_view_is_review(default_review: bool, pending_review: usize) -> bool {
+    default_review && pending_review > 0
+}
+
 // ── 名前の取り出し ──────────────────────────────────────────────────
 
 /// カテゴリの表示名。番号が範囲外のときは、種類の既定名。
@@ -484,6 +527,16 @@ mod tests {
         assert_eq!(merge_preview(&["A"], 3), "2件以上を選んでください");
         assert_eq!(merge_preview(&["A", "B"], 7), "まとめる候補：A、B（合計7ファイル）");
         assert_eq!(cluster_header(3), "名前が似ている候補 3件");
+    }
+
+    #[test]
+    fn summary_and_initial_view() {
+        assert_eq!(summary(10, 4, 3), "タグ採用予定 10件 / マスターに新しく登録 4個 / タグ不採用 3件");
+        assert_eq!(rule_hits_button(2), "ルールが働いた候補（2種）");
+        assert_eq!(rule_hit_line("AI generated", 3), "AI generated：3ファイル");
+        assert!(initial_view_is_review(true, 1));
+        assert!(!initial_view_is_review(true, 0), "要確認が無ければ、すべてを表示");
+        assert!(!initial_view_is_review(false, 5), "チェックを外すと、すべてを表示");
     }
 
     #[test]

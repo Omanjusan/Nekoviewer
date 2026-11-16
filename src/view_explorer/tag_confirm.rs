@@ -38,6 +38,50 @@ pub(super) enum Row {
     Cand(usize),
 }
 
+/// 一覧の表示の絞り込み（見出し帯のチップ）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum ListView {
+    /// すべて。
+    All,
+    /// 要確認のうち、まだ確認していないもの。
+    NeedsReview,
+    /// タグ採用予定のもの。
+    Planned,
+    /// タグ不採用のもの。
+    Rejected,
+}
+
+/// 窓の候補の件数（チップに出す）。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) struct ViewCounts {
+    pub(super) all: usize,
+    pub(super) needs_review: usize,
+    pub(super) planned: usize,
+    pub(super) rejected: usize,
+}
+
+/// 要確認で、まだ確認していない候補か。
+fn pending_review(c: &Candidate, confirmed: &HashSet<(Role, String)>) -> bool {
+    ctext::needs_review(c) && !confirmed.contains(&(c.role, c.key.clone()))
+}
+
+/// 窓ごとのチップの件数を数える。
+pub(super) fn view_counts(set: &CandidateSet, window: Window, confirmed: &HashSet<(Role, String)>) -> ViewCounts {
+    let mut n = ViewCounts::default();
+    for c in set.candidates.iter().filter(|c| c.role.window() == window) {
+        n.all += 1;
+        if pending_review(c, confirmed) {
+            n.needs_review += 1;
+        }
+        if c.is_adopted() {
+            n.planned += 1;
+        } else {
+            n.rejected += 1;
+        }
+    }
+    n
+}
+
 /// 絞り込み欄の文字列に合う候補か（名前・別名・見つかった表記のどれかに、正規化した部分一致。空なら全部）。
 fn matches_query(c: &Candidate, query: &str, opts: &MatchOptions) -> bool {
     let q = keys(query, opts).exact;
@@ -48,12 +92,27 @@ fn matches_query(c: &Candidate, query: &str, opts: &MatchOptions) -> bool {
     split_aliases(&c.name).into_iter().any(hit) || c.forms.iter().any(|f| hit(f))
 }
 
-/// 窓に出す行を作る。`only_unconfirmed` なら未確定の候補だけ。`query` は名前の絞り込み（別名を含む部分一致）。
-pub(super) fn rows_for(set: &CandidateSet, window: Window, only_unconfirmed: bool, query: &str, opts: &MatchOptions) -> Vec<Row> {
+/// 窓に出す行を作る。`view` は表示の絞り込み、`query` は名前の絞り込み（別名を含む部分一致）。
+pub(super) fn rows_for(
+    set: &CandidateSet,
+    window: Window,
+    view: ListView,
+    confirmed: &HashSet<(Role, String)>,
+    query: &str,
+    opts: &MatchOptions,
+) -> Vec<Row> {
     let idx: Vec<usize> = set
         .indices_in_window(window)
         .into_iter()
-        .filter(|&i| !only_unconfirmed || ctext::needs_review(&set.candidates[i]))
+        .filter(|&i| {
+            let c = &set.candidates[i];
+            match view {
+                ListView::All => true,
+                ListView::NeedsReview => pending_review(c, confirmed),
+                ListView::Planned => c.is_adopted(),
+                ListView::Rejected => !c.is_adopted(),
+            }
+        })
         .filter(|&i| matches_query(&set.candidates[i], query, opts))
         .collect();
     let mut cluster_sizes: HashMap<usize, usize> = HashMap::new();
@@ -79,7 +138,8 @@ pub(super) fn rows_for(set: &CandidateSet, window: Window, only_unconfirmed: boo
     rows
 }
 
-/// 候補を「付ける」件数（採用済み）。
+/// 候補を「付ける」件数（採用済み）。テストで使う。
+#[cfg(test)]
 pub(super) fn adopted_count(set: &CandidateSet, window: Window) -> usize {
     set.candidates.iter().filter(|c| c.role.window() == window && c.is_adopted()).count()
 }
@@ -95,7 +155,12 @@ pub(super) struct TagConfirm {
     /// 候補生成に使ったタグ抽出ルール（作り直しでも同じルールを使う）。
     rules: Arc<Vec<TagRule>>,
     stage: Window,
-    only_unconfirmed: bool,
+    /// 表示の絞り込み（見出し帯のチップ）。
+    view: ListView,
+    /// 照合の設定ポップアップを開いている。
+    settings_open: bool,
+    /// 「ルールが働いた候補」ポップアップを開いている。
+    rules_dialog_open: bool,
     rebuild: Option<mpsc::Receiver<CandidateSet>>,
     /// しきい値スライダーをドラッグしている間の仮の値（離したときに確定して作り直す）。
     threshold_draft: Option<u8>,
@@ -189,7 +254,7 @@ impl TagConfirm {
         } else {
             return None;
         };
-        Some(Self { set, inputs: Arc::new(inputs), paths, master: Arc::new(master), model, rules, stage, only_unconfirmed: false, rebuild: None, threshold_draft: None, merge_dialog: None, filter: String::new(), next_bundle_id: 1, rename_review: None, limit, limit_keep: false, truncated: Vec::new(), reattach: false, compact: false, confirmed: HashSet::new(), resolve_dialog: None, why_dialog: None })
+        Some(Self { set, inputs: Arc::new(inputs), paths, master: Arc::new(master), model, rules, stage, view: ListView::All, settings_open: false, rules_dialog_open: false, rebuild: None, threshold_draft: None, merge_dialog: None, filter: String::new(), next_bundle_id: 1, rename_review: None, limit, limit_keep: false, truncated: Vec::new(), reattach: false, compact: false, confirmed: HashSet::new(), resolve_dialog: None, why_dialog: None })
     }
 
     /// 切替項目が変わったので、別スレッドで候補を作り直す。進行中の作り直しは捨てる。
@@ -205,6 +270,12 @@ impl TagConfirm {
         });
         self.rebuild = Some(rx);
         self.merge_dialog = None;
+    }
+
+    /// 最初の表示を決める（窓を開いたとき・窓を切り替えたとき）。要確認を既定にする設定がオンで、要確認が残っていれば「要確認」。
+    fn pick_initial_view(&mut self, default_review: bool) {
+        let pending = view_counts(&self.set, self.stage, &self.confirmed).needs_review;
+        self.view = if ctext::initial_view_is_review(default_review, pending) { ListView::NeedsReview } else { ListView::All };
     }
 
     /// 変更ダイアログを開く。いまの選択から始める。
@@ -296,7 +367,10 @@ impl NekoviewApp {
             Arc::new(self.tag_rules.rules.clone()),
             self.config.tag_new_element_limit as usize,
         ) {
-            Some(c) => self.tag_confirm = Some(c),
+            Some(mut c) => {
+                c.pick_initial_view(self.config.tag_confirm_default_review);
+                self.tag_confirm = Some(c);
+            }
             None => self.set_toast(i18n::t().tag_confirm_no_candidates()),
         }
     }
@@ -315,6 +389,7 @@ impl NekoviewApp {
         let mut row_action: Option<RowAction> = None;
         let mut opts = self.config.tag_match;
         let before = opts;
+        let mut default_review = self.config.tag_confirm_default_review;
 
         let center = self.explorer_center(ctx);
         egui::Window::new(match stage {
@@ -329,79 +404,25 @@ impl NekoviewApp {
         .pivot(egui::Align2::CENTER_CENTER)
         .default_pos(center)
         .show(ctx, |ui| {
-            // 照合の切替項目。
-            ui.horizontal_wrapped(|ui| {
-                ui.checkbox(&mut opts.width, t.tag_confirm_opt_width());
-                ui.checkbox(&mut opts.space, t.tag_confirm_opt_space());
-                ui.checkbox(&mut opts.hyphen_underscore, t.tag_confirm_opt_hyphen());
-                ui.checkbox(&mut opts.symbols, t.tag_confirm_opt_symbols());
-                ui.checkbox(&mut opts.romaji, t.tag_confirm_opt_romaji());
-            });
-            ui.horizontal(|ui| {
-                ui.label(t.tag_confirm_threshold());
-                let mut shown = st.threshold_draft.unwrap_or(opts.threshold);
-                let resp = ui.add(egui::Slider::new(&mut shown, 50..=100).suffix("%"));
-                if resp.dragged() {
-                    // ドラッグ中は仮の値だけ動かし、離したときに確定する（毎フレームの作り直し・保存を避ける）。
-                    st.threshold_draft = Some(shown);
-                } else {
-                    if shown != opts.threshold {
-                        opts.threshold = shown;
-                    }
-                    st.threshold_draft = None;
-                }
-                if st.rebuild.is_some() {
-                    ui.add(egui::Spinner::new());
-                }
-            });
-            ui.separator();
-
-            // 新規要素数。採否を変えると変わるので、毎フレーム数え直す（候補の数だけの軽い集計）。
-            let limits = crate::tag_candidates::recount_limits(&st.set.candidates);
-            let new_count = match stage {
-                Window::One => limits.window1_new,
-                Window::Two => limits.window2_new,
-            };
-            ui.horizontal_wrapped(|ui| {
-                ui.label(t.tag_confirm_summary(adopted_count(&st.set, stage), new_count));
-            });
-            // 上限のため切り捨てた分があれば知らせる。
-            if !st.truncated.is_empty() {
-                let rows: Vec<String> = st.truncated.iter().map(|&(r, n)| format!("{} {n}", role_label(r))).collect();
-                ui.colored_label(egui::Color32::from_rgb(230, 160, 40), t.tag_confirm_truncated(&rows.join(" / ")));
-            }
-
-            // 一括操作。
+            // 見出し帯: 表示の絞り込み（チップ）・要確認を既定にするチェック・名前の絞り込み・表示密度・照合の設定・一括操作。
+            let counts = view_counts(&st.set, stage, &st.confirmed);
             let window_idx: Vec<usize> = st.set.indices_in_window(stage);
-            // タグ抽出ルールが成立したファイルがあれば、ルール名と件数を出す。
-            if !st.set.rule_hits.is_empty() {
-                let hits: Vec<String> = st.set.rule_hits.iter().map(|(name, n)| format!("{name} {n}件")).collect();
-                ui.weak(t.tag_confirm_rule_hits(&hits.join(" / ")));
-            }
             ui.horizontal_wrapped(|ui| {
-                if ui.button(t.tag_confirm_adopt_all()).clicked() {
-                    for &i in &window_idx {
-                        st.set.candidates[i].adopt();
+                for (v, label, n) in [
+                    (ListView::All, ctext::VIEW_ALL, counts.all),
+                    (ListView::NeedsReview, ctext::VIEW_NEEDS_REVIEW, counts.needs_review),
+                    (ListView::Planned, ctext::ADOPT_LABEL, counts.planned),
+                    (ListView::Rejected, ctext::REJECT_LABEL, counts.rejected),
+                ] {
+                    if ui.selectable_label(st.view == v, format!("{label} {n}")).clicked() {
+                        st.view = v;
                     }
                 }
-                if ui.button(t.tag_confirm_unadopt_all()).clicked() {
-                    for &i in &window_idx {
-                        st.set.candidates[i].unadopt();
-                    }
-                }
-                if ui.button(t.tag_confirm_unadopt_unconfirmed()).clicked() {
-                    for &i in &window_idx {
-                        if st.set.candidates[i].unconfirmed {
-                            st.set.candidates[i].unadopt();
-                        }
-                    }
-                }
-                ui.checkbox(&mut st.only_unconfirmed, t.tag_confirm_only_unconfirmed());
+                ui.checkbox(&mut default_review, ctext::DEFAULT_REVIEW_LABEL).on_hover_text(ctext::DEFAULT_REVIEW_HINT);
             });
-            // 名前の絞り込み。
             ui.horizontal_wrapped(|ui| {
                 ui.label(t.tag_confirm_filter_label());
-                ui.add(egui::TextEdit::singleline(&mut st.filter).desired_width(160.0).hint_text(t.tag_confirm_filter_hint()));
+                ui.add(egui::TextEdit::singleline(&mut st.filter).desired_width(180.0).hint_text(t.tag_confirm_filter_hint()));
                 if !st.filter.is_empty() && ui.small_button("✕").clicked() {
                     st.filter.clear();
                 }
@@ -410,14 +431,45 @@ impl NekoviewApp {
                 if ui.small_button(density).on_hover_text(ctext::DENSITY_HINT).clicked() {
                     st.compact = !st.compact;
                 }
+                if ui.small_button(ctext::SETTINGS_BUTTON).on_hover_text(ctext::SETTINGS_HINT).clicked() {
+                    st.settings_open = true;
+                }
+                ui.menu_button(ctext::BULK_LABEL, |ui| {
+                    if ui.button(ctext::BULK_ADOPT_ALL).clicked() {
+                        for &i in &window_idx {
+                            st.set.candidates[i].adopt();
+                            confirm_if_flagged(&mut st.confirmed, &st.set.candidates[i]);
+                        }
+                        ui.close();
+                    }
+                    if ui.button(ctext::BULK_REJECT_ALL).clicked() {
+                        for &i in &window_idx {
+                            st.set.candidates[i].unadopt();
+                            confirm_if_flagged(&mut st.confirmed, &st.set.candidates[i]);
+                        }
+                        ui.close();
+                    }
+                    if ui.button(ctext::BULK_REJECT_UNCONFIRMED).clicked() {
+                        for &i in &window_idx {
+                            if st.set.candidates[i].unconfirmed {
+                                st.set.candidates[i].unadopt();
+                                confirm_if_flagged(&mut st.confirmed, &st.set.candidates[i]);
+                            }
+                        }
+                        ui.close();
+                    }
+                });
+                if st.rebuild.is_some() {
+                    ui.add(egui::Spinner::new());
+                }
             });
             ui.separator();
 
             // 一覧（表）。列見出しは固定で、行は固定の高さで仮想スクロールする。
-            let rows = rows_for(&st.set, stage, st.only_unconfirmed, &st.filter, &opts);
+            let rows = rows_for(&st.set, stage, st.view, &st.confirmed, &st.filter, &opts);
             let compact = st.compact;
             let row_h = table_row_height(ui, compact);
-            let footer_h = 40.0;
+            let footer_h = 72.0;
             let header_h = ui.text_style_height(&egui::TextStyle::Body) + 8.0 + ui.spacing().item_spacing.y;
             let list_h = (ui.available_height() - footer_h - header_h).max(80.0);
             draw_table_header(ui, ui.available_width() - ui.spacing().scroll.allocated_width());
@@ -455,10 +507,32 @@ impl NekoviewApp {
                             }
                         }
                         if rows.is_empty() {
-                            ui.weak(t.tag_confirm_empty());
+                            ui.weak(if st.view == ListView::NeedsReview && st.filter.is_empty() { ctext::NEEDS_REVIEW_EMPTY } else { t.tag_confirm_empty() });
                         }
                     },
                 );
+            });
+
+            // 下端のサマリー（この窓の分）と、ルールが働いたことの知らせ。
+            ui.separator();
+            let limits = crate::tag_candidates::recount_limits(&st.set.candidates);
+            let new_count = match stage {
+                Window::One => limits.window1_new,
+                Window::Two => limits.window2_new,
+            };
+            ui.horizontal_wrapped(|ui| {
+                ui.label(ctext::summary(counts.planned, new_count, counts.rejected));
+                if !st.set.rule_hits.is_empty() {
+                    ui.separator();
+                    if ui.small_button(ctext::rule_hits_button(st.set.rule_hits.len())).clicked() {
+                        st.rules_dialog_open = true;
+                    }
+                }
+                // 上限のため切り捨てた分があれば知らせる。
+                if !st.truncated.is_empty() {
+                    let rows: Vec<String> = st.truncated.iter().map(|&(r, n)| format!("{} {n}", role_label(r))).collect();
+                    ui.colored_label(egui::Color32::from_rgb(230, 160, 40), t.tag_confirm_truncated(&rows.join(" / ")));
+                }
             });
 
             // 操作ボタン。適用は、最後の窓（作者・グループの窓。無ければ1枚目）で押せる。
@@ -501,6 +575,53 @@ impl NekoviewApp {
             });
         });
 
+        // 「要確認を既定にする」チェックの変更を保存する。
+        if default_review != self.config.tag_confirm_default_review {
+            self.config.tag_confirm_default_review = default_review;
+            self.persist_state();
+        }
+        // 照合の設定（別ポップアップ）。切り替えたら、下の `opts != before` で候補を作り直す。
+        if open && !cancel && st.settings_open {
+            let mut close = false;
+            let modal = self.explorer_modal(ctx, "tag_match_settings").show(ctx, |ui| {
+                ui.set_width(520.0);
+                ui.heading(ctext::SETTINGS_TITLE);
+                ui.weak(ctext::SETTINGS_NOTE);
+                ui.add_space(6.0);
+                ui.checkbox(&mut opts.width, t.tag_confirm_opt_width());
+                ui.checkbox(&mut opts.space, t.tag_confirm_opt_space());
+                ui.checkbox(&mut opts.hyphen_underscore, t.tag_confirm_opt_hyphen());
+                ui.checkbox(&mut opts.symbols, t.tag_confirm_opt_symbols());
+                ui.checkbox(&mut opts.romaji, t.tag_confirm_opt_romaji());
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    ui.label(t.tag_confirm_threshold());
+                    let mut shown = st.threshold_draft.unwrap_or(opts.threshold);
+                    let resp = ui.add(egui::Slider::new(&mut shown, 50..=100).suffix("%"));
+                    if resp.dragged() {
+                        // ドラッグ中は仮の値だけ動かし、離したときに確定する（毎フレームの作り直し・保存を避ける）。
+                        st.threshold_draft = Some(shown);
+                    } else {
+                        if shown != opts.threshold {
+                            opts.threshold = shown;
+                        }
+                        st.threshold_draft = None;
+                    }
+                    if st.rebuild.is_some() {
+                        ui.add(egui::Spinner::new());
+                    }
+                });
+                ui.weak(ctext::THRESHOLD_NOTE);
+                ui.add_space(8.0);
+                if ui.button(ctext::CLOSE_LABEL).clicked() {
+                    close = true;
+                }
+            });
+            if close || modal.should_close() {
+                st.settings_open = false;
+            }
+        }
+
         // まとめるダイアログを開く・分解・先頭の別名の変更（描画中は並びを変えられないので、ここで行う）。
         match row_action {
             Some(RowAction::OpenMerge(i)) => st.open_merge_dialog(&[i]),
@@ -526,6 +647,7 @@ impl NekoviewApp {
         }
         if let Some(s) = next_stage {
             st.stage = s;
+            st.pick_initial_view(self.config.tag_confirm_default_review);
         }
         if apply_clicked {
             // 既存要素の名前が書き換わるなら、先に一覧を見せて確認する。
@@ -584,6 +706,7 @@ impl NekoviewApp {
             self.draw_tag_merge_dialog(ctx, &mut st);
             self.draw_tag_resolve_dialog(ctx, &mut st);
             self.draw_tag_why_dialog(ctx, &mut st);
+            self.draw_tag_rule_hits_dialog(ctx, &mut st);
             if proceed {
                 self.start_tag_apply(&st);
             } else {
@@ -808,6 +931,41 @@ impl NekoviewApp {
             return;
         }
         st.why_dialog = Some((role, key));
+    }
+}
+
+impl NekoviewApp {
+    /// 「ルールが働いた候補」ポップアップ。成立したルールの名前とファイル数を並べる。
+    fn draw_tag_rule_hits_dialog(&mut self, ctx: &egui::Context, st: &mut TagConfirm) {
+        if !st.rules_dialog_open {
+            return;
+        }
+        let hits: Vec<String> = st.set.rule_hits.iter().map(|(name, n)| ctext::rule_hit_line(name, *n)).collect();
+        let mut close = false;
+        let modal = self.explorer_modal(ctx, "tag_rule_hits_dialog").show(ctx, |ui| {
+            ui.set_width(520.0);
+            ui.heading(ctext::RULE_HITS_TITLE);
+            ui.add_space(4.0);
+            for line in &hits {
+                ui.label(format!("・{line}"));
+            }
+            ui.add_space(6.0);
+            ui.weak(ctext::RULE_HITS_NOTE);
+            ui.add_space(8.0);
+            if ui.button(ctext::CLOSE_LABEL).clicked() {
+                close = true;
+            }
+        });
+        if close || modal.should_close() {
+            st.rules_dialog_open = false;
+        }
+    }
+}
+
+/// 要確認の行なら、確認済みにする（一括操作で採否を決めたとき）。
+fn confirm_if_flagged(confirmed: &mut HashSet<(Role, String)>, c: &Candidate) {
+    if ctext::needs_review(c) {
+        confirmed.insert((c.role, c.key.clone()));
     }
 }
 
@@ -1184,20 +1342,50 @@ mod tests {
     fn rows_have_sections_cluster_headers_and_respect_the_unconfirmed_filter() {
         let inputs = [input("[Aaa (Bbbbbbb)] t.zip", Some("Category: Manga\n")), input("[Aaa (Bbbbbbc)] u.zip", None)];
         let set = build_candidates(&inputs, &[], &MatchOptions::default(), Lang::English);
-        let w1 = rows_for(&set, Window::One, false, "", &MatchOptions::default());
+        let w1 = rows_for(&set, Window::One, ListView::All, &HashSet::new(), "", &MatchOptions::default());
         assert_eq!(w1.first(), Some(&Row::Section(Role::Format)));
         assert!(w1.contains(&Row::Section(Role::Main)));
         assert!(!w1.iter().any(|r| matches!(r, Row::Section(Role::Author))));
-        let w2 = rows_for(&set, Window::Two, false, "", &MatchOptions::default());
+        let w2 = rows_for(&set, Window::Two, ListView::All, &HashSet::new(), "", &MatchOptions::default());
         assert_eq!(w2.first(), Some(&Row::Section(Role::Author)), "種類順は作者→グループ");
         // Bbbbbbb と Bbbbbbc は類似で、同じ束の見出しが付く。
         assert!(w2.iter().any(|r| matches!(r, Row::Cluster { size: 2, .. })), "{w2:?}");
         let cand_rows = w2.iter().filter(|r| matches!(r, Row::Cand(_))).count();
         assert_eq!(cand_rows, 3, "Aaa / Bbbbbbb / Bbbbbbc");
         // 未確定だけ: すべて未確定（既存タグが無い）。何も無いマスターでは変わらない。
-        assert_eq!(rows_for(&set, Window::Two, true, "", &MatchOptions::default()).len(), w2.len());
+        assert_eq!(rows_for(&set, Window::Two, ListView::NeedsReview, &HashSet::new(), "", &MatchOptions::default()).len(), w2.len());
         // 窓1の候補は未確定ではないので、フィルタで消える。
-        assert!(rows_for(&set, Window::One, true, "", &MatchOptions::default()).is_empty());
+        assert!(rows_for(&set, Window::One, ListView::NeedsReview, &HashSet::new(), "", &MatchOptions::default()).is_empty());
+    }
+
+    #[test]
+    fn views_filter_by_review_and_adoption_and_counts_match() {
+        let inputs = [input("[Aaa (Bbbbbbb)] t.zip", Some("Category: Manga\n")), input("[Aaa (Bbbbbbc)] u.zip", None)];
+        let mut set = build_candidates(&inputs, &[], &MatchOptions::default(), Lang::English);
+        let opts = MatchOptions::default();
+        let none = HashSet::new();
+        let cands = |set: &CandidateSet, view: ListView, confirmed: &HashSet<(Role, String)>| -> usize {
+            rows_for(set, Window::Two, view, confirmed, "", &opts).iter().filter(|r| matches!(r, Row::Cand(_))).count()
+        };
+        let counts = view_counts(&set, Window::Two, &none);
+        assert_eq!(counts.all, 3);
+        assert_eq!(counts.planned + counts.rejected, counts.all);
+        assert_eq!(cands(&set, ListView::All, &none), counts.all);
+        assert_eq!(cands(&set, ListView::Planned, &none), counts.planned);
+        assert_eq!(cands(&set, ListView::Rejected, &none), counts.rejected);
+        // 何も無いマスターでは、作者は未確定（要確認）。
+        assert_eq!(counts.needs_review, 3);
+        assert_eq!(cands(&set, ListView::NeedsReview, &none), 3);
+        // 確認済みにした分は、要確認の件数と表示から外れる。
+        let mut confirmed = HashSet::new();
+        let first = set.indices_in_window(Window::Two)[0];
+        confirmed.insert((set.candidates[first].role, set.candidates[first].key.clone()));
+        assert_eq!(view_counts(&set, Window::Two, &confirmed).needs_review, 2);
+        assert_eq!(cands(&set, ListView::NeedsReview, &confirmed), 2);
+        // 採否を変えると、採用予定・不採用の件数が変わる。
+        set.candidates[first].unadopt();
+        assert!(view_counts(&set, Window::Two, &none).rejected >= 1);
+        assert!(cands(&set, ListView::Rejected, &none) >= 1);
     }
 
     #[test]
@@ -1207,7 +1395,7 @@ mod tests {
         let mut set = build_candidates(&inputs, &cats, &MatchOptions::default(), Lang::English);
         let opts = MatchOptions::default();
         let names = |set: &CandidateSet, q: &str| -> Vec<String> {
-            rows_for(set, Window::Two, false, q, &opts)
+            rows_for(set, Window::Two, ListView::All, &HashSet::new(), q, &opts)
                 .into_iter()
                 .filter_map(|r| if let Row::Cand(i) = r { Some(set.candidates[i].name.clone()) } else { None })
                 .collect()

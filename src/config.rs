@@ -322,6 +322,8 @@ pub struct AppConfig {
     pub tag_match: crate::tag_similarity::MatchOptions,
     /// 一括タグ付けの判定で、学習結果（`tag_learning`）を使うか。永続設定（state の `app_tag_learning_use`）。既定は使う。
     pub tag_learning_use: bool,
+    /// 一括タグ付けの確認窓を開いたとき、要確認の候補だけを先に表示するか。永続設定（state の `app_tag_confirm_default_review`）。既定は表示する。
+    pub tag_confirm_default_review: bool,
     /// 学習データが無いまま一括取得を押したときの、学習の案内を今後表示しない。永続設定（state の `app_tag_learn_intro_hidden`）。
     pub tag_learn_intro_hidden: bool,
     /// 次回起動時に X11 バックエンド（XWayland）で起動するか（state の `app_launch_x11`）。
@@ -396,6 +398,7 @@ impl AppConfig {
             text_page: Default::default(),
             tag_match: Default::default(),
             tag_learning_use: true,
+            tag_confirm_default_review: true,
             tag_learn_intro_hidden: false,
             launch_x11: false,
             last_run_version: String::new(),
