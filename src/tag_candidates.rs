@@ -178,6 +178,24 @@ pub(crate) struct Suggestion {
     pub score: u8,
 }
 
+/// 上位名（`COMIC1★15` に対する `COMIC1`）の扱い。初期は「細かい名前だけ」（従来どおり）。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum ParentMode {
+    /// 細かい名前だけを登録する（上位名は使わない）。
+    #[default]
+    None,
+    /// 上位名と細かい名前の両方を登録し、同じファイルに両方のタグを付ける。
+    Both,
+    /// 上位名だけを登録する（細かい名前は登録しない）。
+    ParentOnly,
+}
+
+/// 上位名を探す対象の種類。名前の末尾の番号で「回」を表すもの（イベントなど）に限る。作者などは、誤判定が多いので対象にしない。
+pub(crate) const PARENT_ROLES: [Role; 1] = [Role::Event];
+
+/// 上位名を切り出す区切り記号の既定。ユーザーが追加できる（`candidate_rules`）。
+pub(crate) const DEFAULT_SEPARATORS: [&str; 3] = ["★", "☆", "・"];
+
 /// 候補の扱い。初期値は生成時の規則で決まり、確認ウィンドウで変えられる。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Choice {
@@ -229,6 +247,10 @@ pub(crate) struct Candidate {
     pub category_origin: Option<CatRef>,
     /// 登録先のカテゴリの移し先が、保存してあるカテゴリ振替ルールで決まった（結論文に「ルールにより」を添える）。
     pub category_rule: bool,
+    /// 上位名の候補（名前が `COMIC1★15` のとき `COMIC1`）。見つからなければ None。まとめた候補には付けない。
+    pub parent_name: Option<String>,
+    /// 上位名の扱い（`parent_name` があるときだけ意味を持つ）。
+    pub parent_mode: ParentMode,
 }
 
 impl Candidate {
@@ -1199,6 +1221,8 @@ pub(crate) fn build_candidates_full(
             rule_reason,
             category_origin: None,
             category_rule: false,
+            parent_name: None,
+            parent_mode: ParentMode::None,
         });
     }
 
@@ -1308,6 +1332,8 @@ impl CandidateSet {
         let old: HashMap<(Role, &str), &Candidate> = self.candidates.iter().map(|c| ((c.role, c.key.as_str()), c)).collect();
         for c in &mut fresh.candidates {
             if let Some(o) = old.get(&(c.role, c.key.as_str())) {
+                // 上位名の扱いを引き継ぐ（上位名の候補自体は作り直しのたびに探し直す）。
+                c.parent_mode = o.parent_mode;
                 // 登録先のカテゴリを移した候補は、移した先と扱いをそのまま引き継ぐ。
                 if o.category_origin.is_some() {
                     c.category = o.category;
@@ -1320,6 +1346,98 @@ impl CandidateSet {
             }
         }
         fresh.limits = check_limits(&fresh.candidates);
+    }
+}
+
+// ── 上位名の判定 ───────────────────────────────────────────────────────
+
+fn is_digit_char(c: char) -> bool {
+    c.is_ascii_digit() || ('０'..='９').contains(&c)
+}
+
+/// 区切り記号の後ろが、番号（数字だけ）になっている名前から、上位名（区切り記号の前）を切り出す。
+/// 最後に現れる区切り記号を見る。番号が無い・上位名が空なら None。例: `COMIC1★15` → `COMIC1`。
+pub(crate) fn split_by_separator(name: &str, separators: &[String]) -> Option<String> {
+    let mut best: Option<(usize, String)> = None;
+    for sep in separators.iter().filter(|s| !s.is_empty()) {
+        let Some(pos) = name.rfind(sep.as_str()) else { continue };
+        let rest = name[pos + sep.len()..].trim();
+        let base = name[..pos].trim();
+        if !rest.is_empty() && rest.chars().all(is_digit_char) && !base.is_empty() && best.as_ref().is_none_or(|(p, _)| pos > *p) {
+            best = Some((pos, base.to_string()));
+        }
+    }
+    best.map(|(_, b)| b)
+}
+
+/// 名前の末尾の数字を取り除いた上位名。区切り記号・空白・記号も末尾から除く。数字が無い・上位名が空なら None。例: `C105` → `C`。
+fn strip_trailing_number(name: &str) -> Option<String> {
+    let trimmed = name.trim_end();
+    let without: String = {
+        let n = trimmed.chars().rev().take_while(|c| is_digit_char(*c)).count();
+        if n == 0 {
+            return None;
+        }
+        trimmed.chars().take(trimmed.chars().count() - n).collect()
+    };
+    let base = without.trim_end_matches(|c: char| !c.is_alphanumeric()).trim();
+    (!base.is_empty()).then(|| base.to_string())
+}
+
+impl CandidateSet {
+    /// 上位名の候補を探して、各候補の `parent_name` に入れる（候補の生成・作り直しのあとに呼ぶ）。扱いは変えない。
+    /// 対象は `PARENT_ROLES` の、まとめていない候補。次のどちらかで上位名が決まる。
+    /// - 区切り記号の後ろが番号（`COMIC1★15`）
+    /// - 同じ種類で、末尾の数字を除いた名前（正規化）が同じ候補が2件以上（兄弟。`C104`・`C105` → `C`）
+    pub(crate) fn detect_parents(&mut self, separators: &[String]) {
+        for c in &mut self.candidates {
+            c.parent_name = None;
+        }
+        for role in PARENT_ROLES {
+            // 兄弟判定: 末尾の数字を除いた名前ごとに、候補を数える。
+            let mut groups: HashMap<String, Vec<usize>> = HashMap::new();
+            for (i, c) in self.candidates.iter().enumerate() {
+                if c.role == role && c.members.is_empty() {
+                    if let Some(base) = strip_trailing_number(&c.name) {
+                        groups.entry(normalize_key(&base)).or_default().push(i);
+                    }
+                }
+            }
+            for i in 0..self.candidates.len() {
+                let c = &self.candidates[i];
+                if c.role != role || !c.members.is_empty() {
+                    continue;
+                }
+                let parent = split_by_separator(&c.name, separators).or_else(|| {
+                    let base = strip_trailing_number(&c.name)?;
+                    (groups.get(&normalize_key(&base)).is_some_and(|g| g.len() >= 2)).then_some(base)
+                });
+                // 上位名が、名前そのものと同じなら意味が無い。
+                self.candidates[i].parent_name = parent.filter(|p| normalize_key(p) != normalize_key(&self.candidates[i].name));
+            }
+        }
+    }
+
+    /// 上位名の登録で、新しく増える要素の数（窓ごと）。同じ上位名は1つに数え、マスターのカテゴリに既にあるものは数えない。
+    pub(crate) fn parent_new_elements(&self, window: Window, cats: &[TagManagerCategoryUi]) -> usize {
+        let mut seen: HashSet<(Option<usize>, Role, String)> = HashSet::new();
+        for c in self.candidates.iter().filter(|c| c.role.window() == window && c.is_adopted() && c.parent_mode != ParentMode::None) {
+            let Some(parent) = &c.parent_name else { continue };
+            let cat = match c.category {
+                CatRef::Existing(i) => Some(i),
+                CatRef::New => None,
+            };
+            let exists = cat.is_some_and(|i| {
+                cats.get(i).is_some_and(|cat| {
+                    let want = alias_keys(parent);
+                    cat.tiers.iter().any(|t| t.element.as_deref().is_some_and(|e| alias_keys(e).iter().any(|k| want.contains(k))))
+                })
+            });
+            if !exists {
+                seen.insert((cat, c.role, normalize_key(parent)));
+            }
+        }
+        seen.len()
     }
 }
 
@@ -1510,6 +1628,8 @@ impl CandidateSet {
             bundle_id: Some(bundle_id),
             category_origin: None,
             category_rule: false,
+            parent_name: None,
+            parent_mode: ParentMode::None,
         };
         for &i in idxs.iter().rev() {
             self.candidates.remove(i);
@@ -1944,6 +2064,80 @@ mod tests {
         let after_other: Vec<String> = set.candidates.iter().filter(|c| c.role != Role::Author).map(|c| c.name.clone()).collect();
         assert_eq!(before_other, after_other);
         assert!(set.candidates.iter().any(|c| c.name == "Kouji" && !c.needs_new_element()), "既存一致は残る");
+    }
+
+    fn seps() -> Vec<String> {
+        DEFAULT_SEPARATORS.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn split_by_separator_needs_a_number_after_the_separator() {
+        assert_eq!(split_by_separator("COMIC1★15", &seps()).as_deref(), Some("COMIC1"));
+        assert_eq!(split_by_separator("COMIC1☆11", &seps()).as_deref(), Some("COMIC1"));
+        assert_eq!(split_by_separator("COMIC1・５", &seps()).as_deref(), Some("COMIC1"), "全角の数字も番号");
+        assert_eq!(split_by_separator("Comic Market ★ 105", &seps()).as_deref(), Some("Comic Market"));
+        assert_eq!(split_by_separator("C105", &seps()), None, "区切り記号が無ければ分けない");
+        assert_eq!(split_by_separator("COMIC1★Special", &seps()), None, "番号でなければ分けない");
+        assert_eq!(split_by_separator("★15", &seps()), None, "上位名が空");
+        // ユーザーが足した区切り記号。
+        assert_eq!(split_by_separator("Event@7", &["@".to_string()]).as_deref(), Some("Event"));
+        assert_eq!(split_by_separator("Event@7", &seps()), None);
+        // 最後の区切り記号で分ける。
+        assert_eq!(split_by_separator("A★B★2", &seps()).as_deref(), Some("A★B"));
+    }
+
+    #[test]
+    fn strip_trailing_number_drops_digits_and_trailing_symbols() {
+        assert_eq!(strip_trailing_number("C105").as_deref(), Some("C"));
+        assert_eq!(strip_trailing_number("COMIC1★15").as_deref(), Some("COMIC1"));
+        assert_eq!(strip_trailing_number("COMIC BAVEL 2026").as_deref(), Some("COMIC BAVEL"));
+        assert_eq!(strip_trailing_number("123"), None, "上位名が空");
+        assert_eq!(strip_trailing_number("Vol"), None, "数字が無い");
+    }
+
+    #[test]
+    fn detect_parents_by_separator_and_by_siblings() {
+        let inputs = [
+            input("(COMIC1☆15) [Aaa] a.zip", "zip", None),
+            input("(COMIC1☆11) [Bbb] b.zip", "zip", None),
+            input("(C104) [Ccc] c.zip", "zip", None),
+            input("(C105) [Ddd] d.zip", "zip", None),
+            input("(Lonely9) [Eee] e.zip", "zip", None),
+        ];
+        let mut set = build_candidates(&inputs, &[], &MatchOptions::default(), Lang::English);
+        set.detect_parents(&seps());
+        let parent = |set: &CandidateSet, name: &str| set.candidates.iter().find(|c| c.role == Role::Event && c.name == name).and_then(|c| c.parent_name.clone());
+        assert_eq!(parent(&set, "COMIC1☆15").as_deref(), Some("COMIC1"));
+        assert_eq!(parent(&set, "COMIC1☆11").as_deref(), Some("COMIC1"));
+        // 区切り記号が無くても、兄弟（同じ上位名の候補が2件以上）なら上位名を提案する。
+        assert_eq!(parent(&set, "C104").as_deref(), Some("C"));
+        assert_eq!(parent(&set, "C105").as_deref(), Some("C"));
+        // 兄弟が居なければ、区切り記号が無い名前には提案しない。
+        assert_eq!(parent(&set, "Lonely9"), None);
+        // 作者など、対象外の種類には付けない。初期の扱いは、細かい名前だけ。
+        assert!(set.candidates.iter().filter(|c| c.role != Role::Event).all(|c| c.parent_name.is_none()));
+        assert!(set.candidates.iter().all(|c| c.parent_mode == ParentMode::None));
+        // 区切り記号の一覧を空にすると、番号が区切り記号の後ろにある単独の名前には提案しない。
+        let mut single = build_candidates(&[input("(COMIC1☆15) [Aaa] a.zip", "zip", None)], &[], &MatchOptions::default(), Lang::English);
+        single.detect_parents(&[]);
+        assert_eq!(parent(&single, "COMIC1☆15"), None);
+    }
+
+    #[test]
+    fn parent_mode_survives_rebuild_and_new_parent_elements_are_counted_once() {
+        let inputs = [input("(COMIC1☆15) [Aaa] a.zip", "zip", None), input("(COMIC1☆11) [Bbb] b.zip", "zip", None)];
+        let mut set = build_candidates(&inputs, &[], &MatchOptions::default(), Lang::English);
+        set.detect_parents(&seps());
+        assert_eq!(set.parent_new_elements(Window::One, &[]), 0, "初期は上位名を登録しない");
+        for c in set.candidates.iter_mut().filter(|c| c.role == Role::Event) {
+            c.parent_mode = ParentMode::Both;
+        }
+        assert_eq!(set.parent_new_elements(Window::One, &[]), 1, "COMIC1 は2件で共通の1要素");
+        // 作り直したあとも、扱いを引き継ぐ。上位名は探し直す。
+        let mut fresh = build_candidates(&inputs, &[], &MatchOptions::default(), Lang::English);
+        set.carry_over_choices(&mut fresh);
+        fresh.detect_parents(&seps());
+        assert!(fresh.candidates.iter().filter(|c| c.role == Role::Event).all(|c| c.parent_mode == ParentMode::Both && c.parent_name.as_deref() == Some("COMIC1")));
     }
 
     #[test]

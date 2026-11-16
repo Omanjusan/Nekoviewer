@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex};
 use redb::Database;
 
 use crate::i18n::Lang;
-use crate::tag_candidates::{CandidateSet, CatRef, Choice, Role};
+use crate::tag_candidates::{Candidate, CandidateSet, CatRef, Choice, ParentMode, Role};
 use crate::tag_trial::{TrialFile, TrialRecord};
 use crate::tag_master::{alias_keys, join_aliases, merge_file_tags_in, split_aliases, TagMaster};
 use crate::view_explorer::TagManagerCategoryUi;
@@ -51,53 +51,99 @@ pub(crate) fn plan_application(
     });
     for i in order {
         let c = &set.candidates[i];
-        let tier_id = match &c.choice {
-            Choice::Skip => continue,
-            Choice::Existing { tier_id, .. } => {
-                let exists = cats.iter().any(|cat| cat.tiers.iter().any(|t| t.id == *tier_id && t.element.is_some()));
-                if !exists {
-                    continue;
+        if matches!(c.choice, Choice::Skip) {
+            continue;
+        }
+        // 上位名だけを登録する候補は、細かい名前の扱いを飛ばす。
+        let parent_only = c.parent_mode == ParentMode::ParentOnly && c.parent_name.is_some();
+        // 付けるタグ（細かい名前・上位名の順）と、その登録先のカテゴリ。
+        let mut ids: Vec<u64> = Vec::new();
+        let mut detail_cat: Option<usize> = None;
+        if !parent_only {
+            match &c.choice {
+                Choice::Skip => continue,
+                Choice::Existing { cat_idx, tier_id } => {
+                    let exists = cats.iter().any(|cat| cat.tiers.iter().any(|t| t.id == *tier_id && t.element.is_some()));
+                    if !exists {
+                        continue;
+                    }
+                    detail_cat = Some(*cat_idx);
+                    ids.push(*tier_id);
                 }
-                *tier_id
-            }
-            Choice::Alias { cat_idx, tier_id } => {
-                match add_aliases_to_element(cats, next_tier_id, *cat_idx, *tier_id, &c.alias_list()) {
-                    AliasOutcome::Renamed(old, new) => plan.renames.push((*cat_idx, *tier_id, old, new)),
-                    AliasOutcome::AlreadyHas => {}
-                    AliasOutcome::Conflict => plan.alias_conflicts += 1,
-                    AliasOutcome::MissingTarget => continue,
+                Choice::Alias { cat_idx, tier_id } => {
+                    match add_aliases_to_element(cats, next_tier_id, *cat_idx, *tier_id, &c.alias_list()) {
+                        AliasOutcome::Renamed(old, new) => plan.renames.push((*cat_idx, *tier_id, old, new)),
+                        AliasOutcome::AlreadyHas => {}
+                        AliasOutcome::Conflict => plan.alias_conflicts += 1,
+                        AliasOutcome::MissingTarget => continue,
+                    }
+                    detail_cat = Some(*cat_idx);
+                    ids.push(*tier_id);
                 }
-                *tier_id
+                Choice::New => {
+                    let cat_idx = new_element_category(c, cats, next_tier_id, &mut created_cat_for_role, &mut plan, lang);
+                    let mut master = TagMaster::new(cats, next_tier_id);
+                    let Some((id, created)) = master.add_element_unique(cat_idx, &c.registration_name()) else { continue };
+                    if created {
+                        plan.new_elements += 1;
+                    }
+                    detail_cat = Some(cat_idx);
+                    ids.push(id);
+                }
             }
-            Choice::New => {
-                let mut master = TagMaster::new(cats, next_tier_id);
-                let cat_idx = match c.category {
-                    CatRef::Existing(idx) if idx < master.len() => idx,
-                    _ => match created_cat_for_role.get(&c.role) {
-                        Some(&idx) => idx,
-                        None => {
-                            let idx = master.add_category(c.role.new_category_name(lang).to_string(), false, None);
-                            created_cat_for_role.insert(c.role, idx);
-                            plan.new_categories += 1;
-                            idx
-                        }
-                    },
+        }
+        // 上位名（細かい名前と同じカテゴリに登録する。既にあれば、その要素を使う）。
+        if c.parent_mode != ParentMode::None {
+            if let Some(parent) = &c.parent_name {
+                let cat_idx = match detail_cat {
+                    Some(idx) => idx,
+                    None => new_element_category(c, cats, next_tier_id, &mut created_cat_for_role, &mut plan, lang),
                 };
-                let Some((id, created)) = master.add_element_unique(cat_idx, &c.registration_name()) else { continue };
-                if created {
-                    plan.new_elements += 1;
+                let mut master = TagMaster::new(cats, next_tier_id);
+                if let Some((id, created)) = master.add_element_unique(cat_idx, parent) {
+                    if created {
+                        plan.new_elements += 1;
+                    }
+                    if !ids.contains(&id) {
+                        ids.push(id);
+                    }
                 }
-                id
             }
-        };
-        for &f in &c.files {
-            let list = plan.file_additions.entry(f).or_default();
-            if !list.contains(&tier_id) {
-                list.push(tier_id);
+        }
+        for tier_id in ids {
+            for &f in &c.files {
+                let list = plan.file_additions.entry(f).or_default();
+                if !list.contains(&tier_id) {
+                    list.push(tier_id);
+                }
             }
         }
     }
     plan
+}
+
+/// 新規要素の登録先のカテゴリ（番号）。候補が既存のカテゴリを指していればそれ、無ければ種類の既定の名前で作る（種類ごとに1回だけ）。
+fn new_element_category(
+    c: &Candidate,
+    cats: &mut Vec<TagManagerCategoryUi>,
+    next_tier_id: &mut u64,
+    created_cat_for_role: &mut HashMap<Role, usize>,
+    plan: &mut Plan,
+    lang: Lang,
+) -> usize {
+    let mut master = TagMaster::new(cats, next_tier_id);
+    match c.category {
+        CatRef::Existing(idx) if idx < master.len() => idx,
+        _ => match created_cat_for_role.get(&c.role) {
+            Some(&idx) => idx,
+            None => {
+                let idx = master.add_category(c.role.new_category_name(lang).to_string(), false, None);
+                created_cat_for_role.insert(c.role, idx);
+                plan.new_categories += 1;
+                idx
+            }
+        },
+    }
 }
 
 enum AliasOutcome {
@@ -628,6 +674,76 @@ mod tests {
         assert!(plan.file_additions[&0].contains(&moved.id), "ファイルに、移し先の要素のタグが付く");
         // 種類の既定のカテゴリ（グループ）には、Circ が作られない。
         assert!(cats.iter().enumerate().all(|(i, c)| i == 1 || c.tiers.iter().all(|t| t.element.as_deref() != Some("Circ"))));
+    }
+
+    fn event_set(parent_mode: ParentMode) -> (CandidateSet, Vec<TagManagerCategoryUi>) {
+        let inputs = [input("(COMIC1☆15) [Circ (Wr)] a.zip", "zip", None), input("(COMIC1☆11) [Circ (Wr)] b.zip", "zip", None)];
+        let m = master();
+        let mut set = build_candidates(&inputs, &m, &MatchOptions::default(), Lang::English);
+        let seps: Vec<String> = crate::tag_candidates::DEFAULT_SEPARATORS.iter().map(|s| s.to_string()).collect();
+        set.detect_parents(&seps);
+        for c in set.candidates.iter_mut().filter(|c| c.role == Role::Event) {
+            c.parent_mode = parent_mode;
+        }
+        (set, m)
+    }
+
+    fn element_id(cats: &[TagManagerCategoryUi], name: &str) -> Option<u64> {
+        cats.iter().flat_map(|c| c.tiers.iter()).find(|t| t.element.as_deref() == Some(name)).map(|t| t.id)
+    }
+
+    #[test]
+    fn parent_mode_both_registers_parent_once_and_tags_files_with_both() {
+        let (set, mut cats) = event_set(ParentMode::Both);
+        let mut next = 100u64;
+        let plan = plan_application(&set, &mut cats, &mut next, Lang::English);
+        let parent = element_id(&cats, "COMIC1").expect("上位名が登録される");
+        let (d15, d11) = (element_id(&cats, "COMIC1☆15").unwrap(), element_id(&cats, "COMIC1☆11").unwrap());
+        assert_eq!(cats.iter().flat_map(|c| c.tiers.iter()).filter(|t| t.element.as_deref() == Some("COMIC1")).count(), 1, "2ファイルで共通の1要素");
+        assert!(plan.file_additions[&0].contains(&parent) && plan.file_additions[&0].contains(&d15));
+        assert!(plan.file_additions[&1].contains(&parent) && plan.file_additions[&1].contains(&d11));
+        assert!(!plan.file_additions[&0].contains(&d11), "別の回のタグは付かない");
+    }
+
+    #[test]
+    fn parent_mode_only_registers_just_the_parent_and_none_keeps_old_behavior() {
+        let (set, mut cats) = event_set(ParentMode::ParentOnly);
+        let mut next = 100u64;
+        let plan = plan_application(&set, &mut cats, &mut next, Lang::English);
+        assert!(element_id(&cats, "COMIC1").is_some());
+        assert!(element_id(&cats, "COMIC1☆15").is_none() && element_id(&cats, "COMIC1☆11").is_none(), "細かい名前は登録しない");
+        let parent = element_id(&cats, "COMIC1").unwrap();
+        assert!(plan.file_additions[&0].contains(&parent) && plan.file_additions[&1].contains(&parent));
+        // 初期（細かい名前だけ）は、従来どおり。
+        let (set2, mut cats2) = event_set(ParentMode::None);
+        let mut next2 = 100u64;
+        let plan2 = plan_application(&set2, &mut cats2, &mut next2, Lang::English);
+        assert!(element_id(&cats2, "COMIC1").is_none());
+        assert!(element_id(&cats2, "COMIC1☆15").is_some());
+        assert!(plan2.file_additions[&0].contains(&element_id(&cats2, "COMIC1☆15").unwrap()));
+    }
+
+    #[test]
+    fn parent_uses_the_existing_element_and_skip_registers_nothing() {
+        let (mut set, mut cats) = event_set(ParentMode::Both);
+        // 上位名の要素が、イベント用に作られるカテゴリではなく、移した先のカテゴリに既にある。
+        let target = cats.len() - 1;
+        cats[target].tiers.push(crate::view_explorer::TagManagerTierUi { id: 500, tier_no: 1, negative: false, element: Some("COMIC1".to_string()) });
+        for c in set.candidates.iter_mut().filter(|c| c.role == Role::Event) {
+            c.move_to_category(target);
+        }
+        let mut next = 600u64;
+        let plan = plan_application(&set, &mut cats, &mut next, Lang::English);
+        assert_eq!(cats[target].tiers.iter().filter(|t| t.element.as_deref() == Some("COMIC1")).count(), 1, "既存の要素を使い、重複して作らない");
+        assert!(plan.file_additions[&0].contains(&500));
+        // 不採用なら、上位名も登録しない。
+        let (mut set3, mut cats3) = event_set(ParentMode::Both);
+        for c in set3.candidates.iter_mut().filter(|c| c.role == Role::Event) {
+            c.unadopt();
+        }
+        let mut next3 = 100u64;
+        plan_application(&set3, &mut cats3, &mut next3, Lang::English);
+        assert!(element_id(&cats3, "COMIC1").is_none());
     }
 
     fn seed_db(tag: &str, files: &[(&str, &[u64])]) -> (Arc<Mutex<Database>>, std::path::PathBuf, Vec<PathBuf>) {

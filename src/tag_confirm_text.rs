@@ -8,7 +8,7 @@
 //! - 呼び出し側は、確認ウィンドウの行描画・変更ダイアログ・理由ポップアップ（フェーズB以降）
 
 use crate::i18n::Lang;
-use crate::tag_candidates::{Candidate, CatRef, Choice, Role};
+use crate::tag_candidates::{Candidate, CatRef, Choice, ParentMode, Role};
 use crate::tag_master::{display_name, primary_alias};
 use crate::view_explorer::TagManagerCategoryUi;
 
@@ -172,6 +172,60 @@ pub(crate) fn initial_view_is_review(default_review: bool, pending_review: usize
     default_review && pending_review > 0
 }
 
+// ── 上位名（COMIC1★15 に対する COMIC1） ────────────────────────────
+
+/// 変更ダイアログの、上位名の扱いの選択肢1つ。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ParentOption {
+    pub mode: ParentMode,
+    pub title: String,
+    pub desc: String,
+}
+
+/// 上位名の候補がある候補の、行に出す小さな知らせ（まだ使っていないとき）。
+pub(crate) fn parent_hint(c: &Candidate) -> Option<String> {
+    match (&c.parent_name, c.parent_mode) {
+        (Some(p), ParentMode::None) if c.members.is_empty() => Some(format!("上位名の候補：『{p}』")),
+        _ => None,
+    }
+}
+
+/// 変更ダイアログの、上位名の見出し。
+pub(crate) fn parent_heading(parent: &str) -> String {
+    format!("上位名『{parent}』の扱い")
+}
+
+/// 上位名の扱いの選択肢（細かい名前だけ／両方／上位名だけ）。上位名の候補が無い・まとめた候補なら None。
+pub(crate) fn parent_options(c: &Candidate) -> Option<Vec<ParentOption>> {
+    let parent = c.parent_name.as_deref().filter(|_| c.members.is_empty())?;
+    let name = &c.name;
+    Some(vec![
+        ParentOption {
+            mode: ParentMode::None,
+            title: format!("細かい名前『{name}』だけを登録する"),
+            desc: format!("『{parent}』は登録しません。回ごとに、別のタグになります。"),
+        },
+        ParentOption {
+            mode: ParentMode::Both,
+            title: format!("上位名『{parent}』と、細かい名前『{name}』の両方を登録する"),
+            desc: format!("同じファイルに、両方のタグが付きます。検索では、『{parent}』だけで全ての回、2つを選ぶと特定の回を探せます。"),
+        },
+        ParentOption {
+            mode: ParentMode::ParentOnly,
+            title: format!("上位名『{parent}』だけを登録する"),
+            desc: format!("『{name}』のような回ごとの名前は登録せず、全ての回を『{parent}』として扱います。あとから、回ごとに分けることはできません。"),
+        },
+    ])
+}
+
+/// 照合の設定ポップアップ内の、区切り記号の管理。
+pub(crate) const SEPARATORS_TITLE: &str = "上位名の区切り記号";
+pub(crate) const SEPARATORS_NOTE: &str = "名前の最後が「区切り記号＋番号」のとき（例：COMIC1★15）、区切り記号の前を、上位名の候補にします。変えると、候補の上位名が探し直されます。";
+pub(crate) const SEPARATORS_ADD_LABEL: &str = "追加";
+pub(crate) const SEPARATORS_ADD_HINT: &str = "例：＠";
+pub(crate) const SEPARATORS_RESET_LABEL: &str = "既定に戻す";
+pub(crate) const SEPARATORS_EMPTY: &str = "区切り記号がありません。区切り記号が無い名前でも、同じ上位名の候補が2件以上あれば、上位名を提案します。";
+
 // ── 登録先のカテゴリを選び直す ─────────────────────────────────────
 
 /// カテゴリ振替ルールで決まった行の、結論文の添え書き。
@@ -284,8 +338,28 @@ fn element_label(master: &[TagManagerCategoryUi], tier_id: u64) -> String {
 
 // ── 行の結論文 ──────────────────────────────────────────────────────
 
-/// 行の2段目に出す、「何を・どこに・どうするか」の1文。矢印は付けない。
+/// 行の2段目に出す、「何を・どこに・どうするか」の1文。矢印は付けない。上位名を登録する設定なら、その旨を添える。
 pub(crate) fn conclusion(c: &Candidate, master: &[TagManagerCategoryUi]) -> String {
+    match (c.parent_name.as_deref(), c.parent_mode) {
+        (Some(parent), ParentMode::Both) if c.is_adopted() => format!("{}（上位名『{parent}』も登録し、タグ付けする）", conclusion_base(c, master)),
+        (Some(parent), ParentMode::ParentOnly) if c.is_adopted() => match c.category {
+            CatRef::New => format!(
+                "新しいカテゴリ『{}』を作成し、上位名『{parent}』をその要素として登録して、ファイルにタグ付けする（『{}』は登録しない）",
+                c.role.new_category_name(Lang::Japanese),
+                c.name
+            ),
+            CatRef::Existing(_) => format!(
+                "『{}』カテゴリに上位名『{parent}』を新しい要素として登録し、ファイルにタグ付けする（『{}』は登録しない）",
+                candidate_category_name(c, master),
+                c.name
+            ),
+        },
+        _ => conclusion_base(c, master),
+    }
+}
+
+/// 上位名を考えない、細かい名前の結論文。
+fn conclusion_base(c: &Candidate, master: &[TagManagerCategoryUi]) -> String {
     match &c.choice {
         Choice::Existing { cat_idx, tier_id } => {
             format!("{}『{}』（既存の要素）を、ファイルにタグ付けする", category_name(master, *cat_idx, c.role), element_label(master, *tier_id))
@@ -555,6 +629,8 @@ mod tests {
             rule_reason: None,
             category_origin: None,
             category_rule: false,
+            parent_name: None,
+            parent_mode: crate::tag_candidates::ParentMode::None,
         }
     }
     fn koji() -> Candidate {
@@ -645,6 +721,35 @@ mod tests {
         // 形式・メインの種類には出さない。
         assert!(!can_move_category(&base(Role::Format, "zip", Choice::New)));
         assert!(move_targets(&base(Role::Main, "同人誌", Choice::New), &m).is_empty());
+    }
+
+    #[test]
+    fn parent_texts_and_conclusions() {
+        let m = master();
+        let mut c = base(Role::Event, "COMIC1★15", Choice::New);
+        c.category = CatRef::Existing(2);
+        assert_eq!(parent_hint(&c), None, "上位名が無ければ出さない");
+        c.parent_name = Some("COMIC1".to_string());
+        assert_eq!(parent_hint(&c).as_deref(), Some("上位名の候補：『COMIC1』"));
+        let opts = parent_options(&c).unwrap();
+        assert_eq!(opts.iter().map(|o| o.mode).collect::<Vec<_>>(), [ParentMode::None, ParentMode::Both, ParentMode::ParentOnly]);
+        assert_eq!(opts[0].title, "細かい名前『COMIC1★15』だけを登録する");
+        assert_eq!(opts[1].title, "上位名『COMIC1』と、細かい名前『COMIC1★15』の両方を登録する");
+        assert!(opts[1].desc.contains("『COMIC1』だけで全ての回"));
+        assert!(opts[2].desc.contains("あとから、回ごとに分けることはできません"));
+        // 結論文: 初期は従来どおり。
+        let plain = conclusion(&c, &m);
+        assert_eq!(plain, "『イベント』カテゴリに『COMIC1★15』を新しい要素として登録し、ファイルにタグ付けする");
+        c.parent_mode = ParentMode::Both;
+        assert_eq!(conclusion(&c, &m), format!("{plain}（上位名『COMIC1』も登録し、タグ付けする）"));
+        assert_eq!(parent_hint(&c), None, "使っているときは知らせない");
+        c.parent_mode = ParentMode::ParentOnly;
+        assert_eq!(conclusion(&c, &m), "『イベント』カテゴリに上位名『COMIC1』を新しい要素として登録し、ファイルにタグ付けする（『COMIC1★15』は登録しない）");
+        // 不採用なら、上位名の説明は添えない。まとめた候補には選択肢を出さない。
+        c.unadopt();
+        assert_eq!(conclusion(&c, &m), "ファイルにタグ付けせず、マスターにも登録しない");
+        c.members = vec![base(Role::Event, "x", Choice::New)];
+        assert!(parent_options(&c).is_none());
     }
 
     #[test]

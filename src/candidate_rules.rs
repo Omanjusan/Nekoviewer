@@ -2,7 +2,8 @@
 //!
 //! - 保存先は設定フォルダの `nekoviewer_candidate_rules.json`（tmp→rename）。`{"version":1,"rules":[…]}`。
 //!   ルールは `kind` つきのリスト。知らない種別は捨てずに、そのまま書き戻す（前方互換。種別を足しても形式は変わらない）
-//! - 現在の種別: `move_category`（カテゴリ振替。「この種類のこの名前は、このカテゴリの要素にする」）
+//! - 現在の種別: `move_category`（カテゴリ振替。「この種類のこの名前は、このカテゴリの要素にする」）と、
+//!   `split_separators`（上位名を切り出す区切り記号の一覧。無ければ既定の `★ ☆ ・`）
 //! - 照合は、種類と名前の完全一致（`tag_master::normalize_key` で全角半角・大文字小文字・空白記号を同一視）
 //! - カテゴリは番号ではなく名前で持つ（マスターのロールバックやカテゴリの並べ替えで壊れないように）。
 //!   名前のカテゴリが見つからないときは、使わずに知らせる（`CandidateSet::apply_category_rules`）
@@ -19,6 +20,9 @@ use crate::tag_rules::RuleRole;
 const FILE_NAME: &str = "nekoviewer_candidate_rules.json";
 const VERSION: u32 = 1;
 const KIND_MOVE: &str = "move_category";
+const KIND_SEPARATORS: &str = "split_separators";
+/// 区切り記号の最大の長さ（文字数）。
+pub(crate) const MAX_SEPARATOR_CHARS: usize = 3;
 
 fn path(root: &Path) -> PathBuf {
     root.join(FILE_NAME)
@@ -41,6 +45,8 @@ pub(crate) struct MoveRule {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct CandidateRules {
     pub moves: Vec<MoveRule>,
+    /// 上位名を切り出す区切り記号。None なら既定（`DEFAULT_SEPARATORS`）。
+    separators: Option<Vec<String>>,
     /// 知らない種別のルール（そのまま書き戻す）。
     unknown: Vec<Value>,
     /// ファイルが壊れている・新しい版で読めなかった。true の間は保存しない（元のファイルを守る）。
@@ -78,7 +84,11 @@ impl CandidateRules {
         }
         let mut out = Self::default();
         for r in v.get("rules")?.as_array()? {
-            if r.get("kind").and_then(Value::as_str) == Some(KIND_MOVE)
+            if r.get("kind").and_then(Value::as_str) == Some(KIND_SEPARATORS)
+                && let Some(list) = r.get("separators").and_then(Value::as_array)
+            {
+                out.separators = Some(list.iter().filter_map(|v| v.as_str().map(str::to_string)).collect());
+            } else if r.get("kind").and_then(Value::as_str) == Some(KIND_MOVE)
                 && let Ok(m) = serde_json::from_value::<MoveRule>(r.clone())
             {
                 out.moves.push(m);
@@ -102,6 +112,9 @@ impl CandidateRules {
             }
             rules.push(v);
         }
+        if let Some(list) = &self.separators {
+            rules.push(serde_json::json!({ "kind": KIND_SEPARATORS, "separators": list }));
+        }
         rules.extend(self.unknown.iter().cloned());
         let doc = serde_json::json!({ "version": VERSION, "rules": rules });
         let Ok(content) = serde_json::to_string_pretty(&doc) else { return false };
@@ -115,6 +128,56 @@ impl CandidateRules {
             return false;
         }
         true
+    }
+
+    /// 上位名を切り出す区切り記号（保存が無ければ既定）。
+    pub(crate) fn effective_separators(&self) -> Vec<String> {
+        match &self.separators {
+            Some(list) => list.clone(),
+            None => crate::tag_candidates::DEFAULT_SEPARATORS.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    /// 区切り記号が既定のままか。
+    pub(crate) fn separators_are_default(&self) -> bool {
+        self.separators.is_none()
+    }
+
+    /// 区切り記号を足す。空・長すぎる・空白や数字を含む・重複は拒否して理由を返す。
+    pub(crate) fn add_separator(&mut self, input: &str) -> Result<(), &'static str> {
+        let sep = input.trim();
+        if sep.is_empty() {
+            return Err("区切り記号を入力してください");
+        }
+        if sep.chars().count() > MAX_SEPARATOR_CHARS {
+            return Err("区切り記号は3文字までです");
+        }
+        if sep.chars().any(|c| c.is_whitespace() || c.is_ascii_digit() || ('０'..='９').contains(&c)) {
+            return Err("空白や数字は、区切り記号にできません");
+        }
+        let mut list = self.effective_separators();
+        if list.iter().any(|s| s == sep) {
+            return Err("すでにあります");
+        }
+        list.push(sep.to_string());
+        self.separators = Some(list);
+        Ok(())
+    }
+
+    /// 並びの番号の区切り記号を消す。消せたら true。
+    pub(crate) fn remove_separator(&mut self, index: usize) -> bool {
+        let mut list = self.effective_separators();
+        if index >= list.len() {
+            return false;
+        }
+        list.remove(index);
+        self.separators = Some(list);
+        true
+    }
+
+    /// 区切り記号を既定に戻す。
+    pub(crate) fn reset_separators(&mut self) {
+        self.separators = None;
     }
 
     /// 保存を拒否している状態か（ファイルが読めなかった）。
@@ -224,6 +287,37 @@ mod tests {
         std::fs::write(dir.join(FILE_NAME), r#"{"version":99,"rules":[]}"#).unwrap();
         let newer = CandidateRules::load(&dir);
         assert!(newer.is_read_only() && !newer.save(&dir), "新しい版は上書きしない");
+    }
+
+    #[test]
+    fn separators_default_add_remove_reset_and_persist() {
+        let dir = tmp("sep");
+        let mut r = CandidateRules::default();
+        assert_eq!(r.effective_separators(), ["★", "☆", "・"]);
+        assert!(r.separators_are_default());
+        assert_eq!(r.add_separator(" ＠ "), Ok(()));
+        assert_eq!(r.effective_separators(), ["★", "☆", "・", "＠"]);
+        assert!(r.add_separator("＠").is_err(), "重複");
+        assert!(r.add_separator("").is_err());
+        assert!(r.add_separator("abcd").is_err(), "長すぎる");
+        assert!(r.add_separator("a b").is_err(), "空白");
+        assert!(r.add_separator("1").is_err(), "数字");
+        assert!(r.remove_separator(0));
+        assert!(!r.remove_separator(9));
+        assert_eq!(r.effective_separators(), ["☆", "・", "＠"]);
+        assert!(r.save(&dir));
+        let loaded = CandidateRules::load(&dir);
+        assert_eq!(loaded.effective_separators(), ["☆", "・", "＠"], "保存した一覧を読む");
+        assert!(!loaded.separators_are_default());
+        let mut again = loaded;
+        again.reset_separators();
+        assert!(again.separators_are_default());
+        assert_eq!(again.effective_separators().len(), 3);
+        // カテゴリ振替ルールと同じファイルに共存する。
+        again.upsert_move(RuleRole::Event, "同人CG集", "ジャンル");
+        assert!(again.save(&dir));
+        let text = std::fs::read_to_string(dir.join(FILE_NAME)).unwrap();
+        assert!(text.contains("move_category") && !text.contains("split_separators"), "既定に戻せば、区切り記号の項目は消える: {text}");
     }
 
     #[test]
