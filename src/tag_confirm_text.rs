@@ -383,6 +383,74 @@ pub(crate) fn move_preview(c: &Candidate, master: &[TagManagerCategoryUi], cat_i
     )
 }
 
+// ── 既存の要素に結びつける（別名を足す） ──────────────────────────────
+
+pub(crate) const LINK_TITLE: &str = "既存の要素に結びつける…";
+pub(crate) const LINK_PICK_CATEGORY: &str = "カテゴリ";
+pub(crate) const LINK_PICK_ELEMENT: &str = "結びつける要素";
+pub(crate) const LINK_ELEMENT_PLACEHOLDER: &str = "（要素を選んでください）";
+pub(crate) const LINK_FILTER_HINT: &str = "要素名で絞り込み";
+pub(crate) const LINK_NO_ELEMENT: &str = "このカテゴリには、結びつけられる要素がありません。";
+/// 結びつけの注意（元に戻せる範囲と、メインの扱い）。
+pub(crate) const LINK_NOTE: &str = "要素の名前が書き換わります。適用の試用中なら、「破棄」で元に戻せます（確定したあとは戻せません）。";
+pub(crate) const LINK_MAIN_NOTE: &str = "メインカテゴリは、1つしか選べません。すでに別のメインタグが付いているファイルには、付きません。";
+/// 要素の一覧に出す件数の上限（万単位のときに重くしない。絞り込みで探してもらう）。
+pub(crate) const LINK_LIST_CAP: usize = 200;
+
+/// 結びつけ先にできるカテゴリ（番号, 表示名）。メインを含み、システム（アーカイブ形式）は除く。
+pub(crate) fn link_categories(master: &[TagManagerCategoryUi]) -> Vec<(usize, String)> {
+    master.iter().enumerate().filter(|(_, cat)| cat.system_kind.is_none()).map(|(i, cat)| (i, cat.display_name())).collect()
+}
+
+/// 結びつけの要素1件。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct LinkElement {
+    pub tier_id: u64,
+    /// 別名を含む要素名の全体（ホバー用）。
+    pub full: String,
+    /// 画面に出す主表記。
+    pub label: String,
+}
+
+/// カテゴリの要素を、名前（別名を含む）で絞り込んで並べる。照合は、全角半角・大文字小文字・空白を区別しない部分一致。
+/// 戻り値は（`cap`件までの要素, 絞り込みに合った全件数）。
+pub(crate) fn link_elements(master: &[TagManagerCategoryUi], cat_idx: usize, query: &str, cap: usize) -> (Vec<LinkElement>, usize) {
+    let Some(cat) = master.get(cat_idx) else { return (Vec::new(), 0) };
+    let q = crate::tag_master::normalize_key(query);
+    let mut total = 0;
+    let mut out = Vec::new();
+    for t in &cat.tiers {
+        let Some(full) = t.element.as_deref().filter(|e| !e.trim().is_empty()) else { continue };
+        if !q.is_empty() && !crate::tag_master::normalize_key(full).contains(&q) {
+            continue;
+        }
+        total += 1;
+        if out.len() < cap {
+            out.push(LinkElement { tier_id: t.id, full: full.to_string(), label: display_name(full).to_string() });
+        }
+    }
+    (out, total)
+}
+
+/// 結びつけの説明（カードの本文）。
+pub(crate) fn link_desc(c: &Candidate) -> String {
+    format!(
+        "抽出された『{}』を、すでにある別の要素と同じものとして扱います。選んだ要素に別名『{}』を足して、{}ファイルにタグ付けします。以後の取得でも、『{}』は同じ要素として一致します。",
+        c.name,
+        c.alias_list().join("|"),
+        c.files.len(),
+        c.alias_list().join("』『")
+    )
+}
+
+/// 結びつけを選んだときの結論文（ダイアログの中で、選んだ内容を確かめる）。
+pub(crate) fn link_preview(c: &Candidate, master: &[TagManagerCategoryUi], cat_idx: usize, tier_id: u64) -> String {
+    let aliases = c.alias_list().join("|");
+    let el = element_label(master, tier_id);
+    let cat = category_name(master, cat_idx, c.role);
+    format!("{cat}の要素『{}』を『{}|{aliases}』にして、{}ファイルにタグ付けする", el, element_full(master, tier_id), c.files.len())
+}
+
 // ── 名前の取り出し ──────────────────────────────────────────────────
 
 /// カテゴリの表示名。番号が範囲外のときは、種類の既定名。
@@ -810,6 +878,47 @@ mod tests {
         let body = limit_body(5000, "イベント：新規6000個", "12.3 MB", 1000);
         assert!(body.contains("5000個") && body.contains("イベント：新規6000個") && body.contains("12.3 MB"));
         assert!(body.contains("1000個拡張する（おすすめ）") && body.contains("これ以上大きくなりません"));
+    }
+
+    #[test]
+    fn link_categories_include_main_and_exclude_system() {
+        let mut m = master();
+        let mut sys = cat("形式", false, vec![tier(40, "zip")]);
+        sys.system_kind = Some(crate::tag_master::SystemKind::ArchiveFormat);
+        m.push(sys);
+        let names: Vec<String> = link_categories(&m).into_iter().map(|c| c.1).collect();
+        assert_eq!(names, ["メイン", "作者", "イベント"], "メインを含み、システムは除く");
+    }
+
+    #[test]
+    fn link_elements_filter_by_normalized_name_including_aliases_and_cap() {
+        let mut m = master();
+        m[0].tiers.push(tier(2, "MANGA|漫画"));
+        m[0].tiers.push(TagManagerTierUi { id: 3, tier_no: 2, negative: false, element: None });
+        // 空の要素は出ない。絞り込みなしなら全件。
+        let (all, total) = link_elements(&m, 0, "", 10);
+        assert_eq!((all.len(), total), (2, 2));
+        // 別名にも当たり、全角半角・大文字小文字を区別しない。
+        let (hit, total) = link_elements(&m, 0, "ｍａｎ", 10);
+        assert_eq!(total, 1);
+        assert_eq!(hit[0], LinkElement { tier_id: 2, full: "MANGA|漫画".to_string(), label: "MANGA".to_string() });
+        assert_eq!(link_elements(&m, 0, "漫画", 10).1, 1);
+        assert_eq!(link_elements(&m, 0, "なし", 10).1, 0);
+        // 上限は表示件数だけを切り、全件数は数える。
+        let (cut, total) = link_elements(&m, 0, "", 1);
+        assert_eq!((cut.len(), total), (1, 2));
+        assert_eq!(link_elements(&m, 99, "", 10), (Vec::new(), 0), "範囲外のカテゴリは空");
+    }
+
+    #[test]
+    fn link_texts_name_the_element_and_the_alias() {
+        let mut m = master();
+        m[0].tiers.push(tier(2, "MANGA"));
+        let c = base(Role::Event, "青年コミック", Choice::New);
+        assert_eq!(link_preview(&c, &m, 0, 2), "メインの要素『MANGA』を『MANGA|青年コミック』にして、5ファイルにタグ付けする");
+        let d = link_desc(&c);
+        assert!(d.contains("別名『青年コミック』を足して、5ファイルにタグ付けします"));
+        assert!(LINK_NOTE.contains("試用中") && LINK_MAIN_NOTE.contains("1つしか選べません"));
     }
 
     #[test]
