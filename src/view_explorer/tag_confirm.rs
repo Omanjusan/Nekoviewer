@@ -1257,14 +1257,18 @@ impl NekoviewApp {
                 if movable {
                     let selected = rd.move_cat.is_some();
                     let fill = if selected { ui.visuals().selection.bg_fill.gamma_multiply(0.4) } else { egui::Color32::TRANSPARENT };
-                    let framed = egui::Frame::group(ui.style()).fill(fill).show(ui, |ui| {
+                    egui::Frame::group(ui.style()).fill(fill).show(ui, |ui| {
                         ui.set_width(ui.available_width());
                         ui.horizontal(|ui| {
                             if ui.add_enabled(!targets.is_empty(), egui::RadioButton::new(selected, "")).clicked() {
                                 rd.move_cat = rd.move_cat.or(targets.first().map(|t| t.0));
                                 rd.sel = Choice::New;
                             }
-                            ui.label(egui::RichText::new(ctext::MOVE_TITLE).strong());
+                            // 枠全体にクリックを付けると、内側のプルダウン・チェックのクリックを奪うので、見出しだけを押せるようにする。
+                            if ui.add_enabled(!targets.is_empty(), egui::Label::new(egui::RichText::new(ctext::MOVE_TITLE).strong()).sense(egui::Sense::click())).clicked() {
+                                rd.move_cat = rd.move_cat.or(targets.first().map(|t| t.0));
+                                rd.sel = Choice::New;
+                            }
                         });
                         ui.label(egui::RichText::new(&move_desc).weak());
                         if targets.is_empty() {
@@ -1297,10 +1301,6 @@ impl NekoviewApp {
                             }
                         }
                     });
-                    if !targets.is_empty() && framed.response.interact(egui::Sense::click()).clicked() {
-                        rd.move_cat = rd.move_cat.or(targets.first().map(|t| t.0));
-                        rd.sel = Choice::New;
-                    }
                 }
                 // 上位名（COMIC1★15 に対する COMIC1）の扱い。
                 if let (Some(opts), Some(title)) = (&parent_opts, &parent_title) {
