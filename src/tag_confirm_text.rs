@@ -1,0 +1,510 @@
+//! 一括タグ取得の確認ウィンドウに出す文面の組み立て（純関数）。画面（egui）には触れない。
+//!
+//! - 行の結論文、変更ダイアログの選択肢（見出しと説明）、「要確認」の種類と理由（短文・長文）を作る
+//! - 用語は「タグ採用予定」「タグ不採用」に統一する。「付ける」「付けない」の単独表記は使わず、
+//!   「ファイルにタグ付けする／しない」とフルで書く
+//! - 日本語のみ。英・中への多言語化は、日本語UIの目視確認が終わってから、文言を `i18n.rs` へ移して行う
+//!   （文面はこのモジュールに集約してあるので、移すときの対象はここだけ）
+//! - 呼び出し側は、確認ウィンドウの行描画・変更ダイアログ・理由ポップアップ（フェーズB以降）
+
+// フェーズA（文面の純関数化）の時点では、呼び出し側がまだ無い。フェーズB〜Cで使い始めたら外す。
+#![allow(dead_code)]
+
+use crate::i18n::Lang;
+use crate::tag_candidates::{Candidate, CatRef, Choice, Role};
+use crate::tag_master::{display_name, primary_alias};
+use crate::view_explorer::TagManagerCategoryUi;
+
+/// 採用する（ファイルにタグ付けする）状態の名前。
+pub(crate) const ADOPT_LABEL: &str = "タグ採用予定";
+/// 採用しない（ファイルにタグ付けしない）状態の名前。
+pub(crate) const REJECT_LABEL: &str = "タグ不採用";
+/// 変更ダイアログの副題。
+pub(crate) const RESOLVE_SUBTITLE: &str = "適用するまで、ファイルは変わりません。";
+
+/// 行の採否トグルに出す文字。
+pub(crate) fn toggle_label(adopted: bool) -> String {
+    if adopted {
+        format!("✓ {ADOPT_LABEL}")
+    } else {
+        REJECT_LABEL.to_string()
+    }
+}
+
+// ── 名前の取り出し ──────────────────────────────────────────────────
+
+/// カテゴリの表示名。番号が範囲外のときは、種類の既定名。
+fn category_name(master: &[TagManagerCategoryUi], cat_idx: usize, role: Role) -> String {
+    master.get(cat_idx).map(|c| c.display_name()).unwrap_or_else(|| role.new_category_name(Lang::Japanese).to_string())
+}
+
+/// 候補が入るカテゴリの表示名（まだ無いカテゴリなら、作るときの名前）。
+fn candidate_category_name(c: &Candidate, master: &[TagManagerCategoryUi]) -> String {
+    match c.category {
+        CatRef::Existing(i) => category_name(master, i, c.role),
+        CatRef::New => c.role.new_category_name(Lang::Japanese).to_string(),
+    }
+}
+
+fn element_full(master: &[TagManagerCategoryUi], tier_id: u64) -> String {
+    master
+        .iter()
+        .flat_map(|c| c.tiers.iter())
+        .find(|t| t.id == tier_id)
+        .and_then(|t| t.element.clone())
+        .unwrap_or_else(|| format!("#{tier_id}"))
+}
+
+/// 要素の主表記（別名つきなら先頭の別名）。
+fn element_label(master: &[TagManagerCategoryUi], tier_id: u64) -> String {
+    display_name(&element_full(master, tier_id)).to_string()
+}
+
+// ── 行の結論文 ──────────────────────────────────────────────────────
+
+/// 行の2段目に出す、「何を・どこに・どうするか」の1文。矢印は付けない。
+pub(crate) fn conclusion(c: &Candidate, master: &[TagManagerCategoryUi]) -> String {
+    match &c.choice {
+        Choice::Existing { cat_idx, tier_id } => {
+            format!("{}『{}』（既存の要素）を、ファイルにタグ付けする", category_name(master, *cat_idx, c.role), element_label(master, *tier_id))
+        }
+        Choice::Alias { cat_idx, tier_id } => format!(
+            "既存の{}要素『{}』に、別名『{}』を足して、ファイルにタグ付けする",
+            category_name(master, *cat_idx, c.role),
+            element_label(master, *tier_id),
+            c.alias_list().join("|")
+        ),
+        Choice::New => match c.category {
+            CatRef::New => format!(
+                "新しいカテゴリ『{}』を作成し、『{}』をその要素として登録して、ファイルにタグ付けする",
+                c.role.new_category_name(Lang::Japanese),
+                c.registration_name()
+            ),
+            CatRef::Existing(_) => format!(
+                "『{}』カテゴリに『{}』を新しい要素として登録し、ファイルにタグ付けする",
+                candidate_category_name(c, master),
+                c.registration_name()
+            ),
+        },
+        Choice::Skip => "ファイルにタグ付けせず、マスターにも登録しない".to_string(),
+    }
+}
+
+// ── 変更ダイアログ ──────────────────────────────────────────────────
+
+/// 変更ダイアログの選択肢1つ。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ResolveOption {
+    /// 選ぶと `Candidate::choice` に入る値。
+    pub choice: Choice,
+    /// 選択肢の見出し（結論文と同じ形）。
+    pub title: String,
+    /// 2行目以降の説明（1〜2文）。
+    pub desc: String,
+}
+
+/// 変更ダイアログの見出し。状態（採用・不採用）に依らない言い方にする。
+pub(crate) fn resolve_heading(c: &Candidate) -> String {
+    format!("「{}」（{}ファイルにタグ付けする候補）をどうしますか", c.name, c.files.len())
+}
+
+/// 類似提案があるときの、似ている度合いの注記。
+pub(crate) fn similarity_note(c: &Candidate) -> Option<String> {
+    if c.suggestions.is_empty() {
+        return None;
+    }
+    let parts: Vec<String> = c.suggestions.iter().map(|s| format!("『{}』 {}%", primary_alias(&s.name), s.score)).collect();
+    Some(format!("似ている度合い：{}", parts.join(" / ")))
+}
+
+/// 変更ダイアログに並べる選択肢。類似提案ごとの「既存に付ける」「別名として足す」、新規、不採用の順。
+/// いまの選択（類似提案に無い完全一致など）も、先頭に含める。同じ選択肢は1つにまとめる。
+pub(crate) fn resolve_options(c: &Candidate, master: &[TagManagerCategoryUi]) -> Vec<ResolveOption> {
+    let n = c.files.len();
+    let mut targets: Vec<(usize, u64)> = Vec::new();
+    let mut push_target = |cat_idx: usize, tier_id: u64| {
+        if !targets.contains(&(cat_idx, tier_id)) {
+            targets.push((cat_idx, tier_id));
+        }
+    };
+    for ch in [&c.choice, &c.initial] {
+        if let Choice::Existing { cat_idx, tier_id } | Choice::Alias { cat_idx, tier_id } = ch {
+            push_target(*cat_idx, *tier_id);
+        }
+    }
+    for s in &c.suggestions {
+        push_target(s.cat_idx, s.tier_id);
+    }
+
+    let aliases = c.alias_list().join("|");
+    let reg = c.registration_name();
+    let mut out: Vec<ResolveOption> = Vec::new();
+    for (cat_idx, tier_id) in targets {
+        let cat = category_name(master, cat_idx, c.role);
+        let el = element_label(master, tier_id);
+        out.push(ResolveOption {
+            choice: Choice::Existing { cat_idx, tier_id },
+            title: format!("{cat}『{el}』（既存の要素）をファイルにタグ付け"),
+            desc: format!("「{}」の{n}ファイルに、{cat}の『{el}』が付きます。マスターは変わりません。同じ人（もの）と分かっているときに選びます。", c.name),
+        });
+        out.push(ResolveOption {
+            choice: Choice::Alias { cat_idx, tier_id },
+            title: format!("既存の{cat}要素『{el}』に別名『{aliases}』を足して、ファイルにタグ付け"),
+            desc: format!(
+                "要素名が『{}|{aliases}』に変わり、{n}ファイルに付きます。以後、『{aliases}』も同じタグとして扱います。",
+                element_full(master, tier_id)
+            ),
+        });
+    }
+    out.push(match c.category {
+        CatRef::New => {
+            let newcat = c.role.new_category_name(Lang::Japanese);
+            ResolveOption {
+                choice: Choice::New,
+                title: format!("新しいカテゴリ『{newcat}』を作成し、『{reg}』をその要素として登録して、ファイルにタグ付け"),
+                desc: format!("カテゴリ『{newcat}』と要素『{reg}』が増え、{n}ファイルに付きます。"),
+            }
+        }
+        CatRef::Existing(_) => {
+            let cat = candidate_category_name(c, master);
+            let separate = if c.suggestions.is_empty() { "" } else { "既存のタグとは別のものとして扱います。" };
+            ResolveOption {
+                choice: Choice::New,
+                title: format!("『{reg}』を『{cat}』カテゴリの新しい要素として登録し、ファイルにタグ付け"),
+                desc: format!("『{cat}』に『{reg}』が増え、{n}ファイルに付きます。{separate}"),
+            }
+        }
+    });
+    out.push(ResolveOption {
+        choice: Choice::Skip,
+        title: format!("ファイルにタグ付けしない（{REJECT_LABEL}）"),
+        desc: format!("{n}ファイルにはタグが付かず、マスターにも登録しません。次回の取得で、また候補に出ます。"),
+    });
+    out
+}
+
+// ── 要確認 ──────────────────────────────────────────────────────────
+
+/// 「要確認」の種類。ユーザーに判断を求める候補だけが持つ。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum ReviewKind {
+    /// タグ抽出ルールで無効にされた（ルール名）。
+    Rule(String),
+    /// 学習で「タグにしない」と判定された。
+    Learned,
+    /// 既存のタグに似ていて、アプリには同じかどうか判断できない。
+    Similar { name: String, score: u8 },
+    /// 作者・グループとしての確証が無い。
+    Unconfirmed,
+}
+
+/// 候補の「要確認」の種類。要確認でなければ None。
+pub(crate) fn review_kind(c: &Candidate) -> Option<ReviewKind> {
+    if c.review {
+        return Some(match &c.rule_reason {
+            Some(rule) => ReviewKind::Rule(rule.clone()),
+            None => ReviewKind::Learned,
+        });
+    }
+    if let Some(s) = c.suggestions.first()
+        && c.initial == Choice::Skip
+    {
+        return Some(ReviewKind::Similar { name: primary_alias(&s.name).to_string(), score: s.score });
+    }
+    if c.unconfirmed {
+        return Some(ReviewKind::Unconfirmed);
+    }
+    None
+}
+
+/// 要確認か。
+pub(crate) fn needs_review(c: &Candidate) -> bool {
+    review_kind(c).is_some()
+}
+
+/// 行の2段目に出す、要確認の短い理由（「要確認：」は呼び出し側で付ける）。
+pub(crate) fn review_short(kind: &ReviewKind) -> String {
+    match kind {
+        ReviewKind::Rule(rule) => format!("ルール「{rule}」で無効"),
+        ReviewKind::Learned => "学習により「タグではない」と判定".to_string(),
+        ReviewKind::Similar { .. } => "似た名前が既存にあります".to_string(),
+        ReviewKind::Unconfirmed => "作者かグループか未確定".to_string(),
+    }
+}
+
+/// 「理由を見る」ポップアップの長文。（見出し, 本文）の並び。
+pub(crate) fn review_long(kind: &ReviewKind, c: &Candidate, master: &[TagManagerCategoryUi]) -> Vec<(String, String)> {
+    let name = &c.name;
+    let reject = format!("「{REJECT_LABEL}」（ファイルにタグ付けしない）");
+    let adopt_hint = format!("ファイルにタグ付けしたいときは、「解決する…」から「{ADOPT_LABEL}」にします。");
+    match kind {
+        ReviewKind::Rule(rule) => vec![
+            (
+                "何が起きているか".to_string(),
+                format!(
+                    "ルール『{rule}』が、このファイルに当てはまりました。このルールは、この種類（{}）の名前をタグにしない設定です。『{name}』は、初期は{reject}にしてあります。",
+                    c.role.new_category_name(Lang::Japanese)
+                ),
+            ),
+            (
+                "なぜそうしているか".to_string(),
+                "ルールで無効にされた種類は、ファイル名の中の名前が実際の内容を表さないことがあるため、自動ではタグ付けしません。".to_string(),
+            ),
+            ("どうすればよいか".to_string(), format!("{adopt_hint}ルールの設定そのものは変わりません。")),
+        ],
+        ReviewKind::Learned => vec![
+            (
+                "何が起きているか".to_string(),
+                format!("『{name}』は、あなたが過去に振り分けたファイル名のパターンと似ています。そのパターンでは、この位置の括弧は「タグにしない」ものとして振り分けられていました。初期は{reject}にしてあります。"),
+            ),
+            ("どうすればよいか".to_string(), adopt_hint),
+        ],
+        ReviewKind::Similar { name: best, score } => vec![
+            ("何が起きているか".to_string(), format!("『{name}』は、すでにマスターにある『{best}』と名前がよく似ています（{score}%）。")),
+            (
+                "なぜ確認が必要か".to_string(),
+                format!("同じ人（もの）の表記ゆれかもしれませんし、別のものかもしれません。アプリには判断できないため、初期は{reject}にしてあります。"),
+            ),
+            (
+                "どうすればよいか".to_string(),
+                format!(
+                    "「解決する…」を押して、同じものなら「既存の要素をタグ付け」か「別名として足してタグ付け」、別のものなら「新しい要素として登録してタグ付け」を選びます。分からなければ{reject}のままで構いません。そのファイルにはタグが付きません。"
+                ),
+            ),
+        ],
+        ReviewKind::Unconfirmed => {
+            let state = if c.initial == Choice::Skip { format!("{reject}") } else { format!("「{ADOPT_LABEL}」") };
+            vec![
+                (
+                    "何が起きているか".to_string(),
+                    format!(
+                        "『{name}』は、ファイル名の先頭にある［ ］が1つだけで、作者名なのかグループ（サークル）名なのかを判断する手がかりがありませんでした。いまは{}として、{state}にしてあります。",
+                        candidate_category_name(c, master)
+                    ),
+                ),
+                (
+                    "どうすればよいか".to_string(),
+                    format!("そのままでよければ、何もしなくて構いません。違うと分かっているときは「{REJECT_LABEL}」にして、あとでタグパネルから手動でタグ付けしてください。"),
+                ),
+            ]
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tag_candidates::Suggestion;
+    use crate::view_explorer::TagManagerTierUi;
+
+    fn tier(id: u64, name: &str) -> TagManagerTierUi {
+        TagManagerTierUi { id, tier_no: 1, negative: false, element: Some(name.to_string()) }
+    }
+    fn cat(name: &str, is_main: bool, tiers: Vec<TagManagerTierUi>) -> TagManagerCategoryUi {
+        TagManagerCategoryUi { name: name.to_string(), tiers, color: egui::Color32::GRAY, is_main, single_select: false, system_kind: None }
+    }
+    /// 0=メイン、1=作者（Kouji）、2=イベント。
+    fn master() -> Vec<TagManagerCategoryUi> {
+        vec![
+            cat("main", true, vec![tier(1, "同人誌")]),
+            cat("作者", false, vec![tier(10, "Kouji"), tier(11, "Taro|Tarou")]),
+            cat("イベント", false, vec![tier(20, "C104")]),
+        ]
+    }
+    fn base(role: Role, name: &str, choice: Choice) -> Candidate {
+        Candidate {
+            role,
+            name: name.to_string(),
+            forms: vec![name.to_string()],
+            key: name.to_lowercase(),
+            files: vec![0, 1, 2, 3, 4],
+            category: CatRef::Existing(1),
+            initial: choice.clone(),
+            choice,
+            suggestions: Vec::new(),
+            unconfirmed: false,
+            cluster: 0,
+            aliases: Vec::new(),
+            members: Vec::new(),
+            bundle_id: None,
+            review: false,
+            alt_forms: Vec::new(),
+            rule_reason: None,
+        }
+    }
+    fn koji() -> Candidate {
+        let mut c = base(Role::Author, "Koji", Choice::Skip);
+        c.suggestions = vec![Suggestion { cat_idx: 1, tier_id: 10, name: "Kouji".to_string(), alias: "Kouji".to_string(), score: 92 }];
+        c
+    }
+
+    #[test]
+    fn conclusion_has_no_arrow_and_names_what_where() {
+        let m = master();
+        let existing = base(Role::Author, "Kouji", Choice::Existing { cat_idx: 1, tier_id: 10 });
+        assert_eq!(conclusion(&existing, &m), "作者『Kouji』（既存の要素）を、ファイルにタグ付けする");
+        let mut event = base(Role::Event, "C105", Choice::New);
+        event.category = CatRef::Existing(2);
+        assert_eq!(conclusion(&event, &m), "『イベント』カテゴリに『C105』を新しい要素として登録し、ファイルにタグ付けする");
+        let alias = base(Role::Author, "Koji", Choice::Alias { cat_idx: 1, tier_id: 10 });
+        assert_eq!(conclusion(&alias, &m), "既存の作者要素『Kouji』に、別名『Koji』を足して、ファイルにタグ付けする");
+        let skip = base(Role::Author, "Koji", Choice::Skip);
+        assert_eq!(conclusion(&skip, &m), "ファイルにタグ付けせず、マスターにも登録しない");
+        for c in [&existing, &event, &alias, &skip] {
+            assert!(!conclusion(c, &m).contains('→'), "矢印は付けない");
+        }
+    }
+
+    #[test]
+    fn conclusion_distinguishes_new_category_from_new_element() {
+        let m = master();
+        let mut p = base(Role::Performer, "Castorice", Choice::New);
+        p.category = CatRef::New;
+        p.alt_forms = vec!["カストリス".to_string()];
+        assert_eq!(
+            conclusion(&p, &m),
+            "新しいカテゴリ『演者』を作成し、『Castorice|カストリス』をその要素として登録して、ファイルにタグ付けする"
+        );
+    }
+
+    #[test]
+    fn conclusion_uses_primary_alias_of_existing_element() {
+        let m = master();
+        let c = base(Role::Author, "Taro", Choice::Existing { cat_idx: 1, tier_id: 11 });
+        assert!(conclusion(&c, &m).contains("『Taro』（既存の要素）"));
+    }
+
+    #[test]
+    fn toggle_label_uses_the_two_terms() {
+        assert_eq!(toggle_label(true), "✓ タグ採用予定");
+        assert_eq!(toggle_label(false), "タグ不採用");
+    }
+
+    #[test]
+    fn resolve_options_for_similar_candidate() {
+        let m = master();
+        let opts = resolve_options(&koji(), &m);
+        let choices: Vec<&Choice> = opts.iter().map(|o| &o.choice).collect();
+        assert_eq!(
+            choices,
+            [&Choice::Existing { cat_idx: 1, tier_id: 10 }, &Choice::Alias { cat_idx: 1, tier_id: 10 }, &Choice::New, &Choice::Skip]
+        );
+        assert_eq!(opts[0].title, "作者『Kouji』（既存の要素）をファイルにタグ付け");
+        assert!(opts[0].desc.contains("5ファイルに、作者の『Kouji』が付きます"));
+        assert_eq!(opts[1].title, "既存の作者要素『Kouji』に別名『Koji』を足して、ファイルにタグ付け");
+        assert!(opts[1].desc.contains("『Kouji|Koji』に変わり"));
+        assert_eq!(opts[2].title, "『Koji』を『作者』カテゴリの新しい要素として登録し、ファイルにタグ付け");
+        assert!(opts[2].desc.contains("既存のタグとは別のものとして扱います"));
+        assert_eq!(opts[3].title, "ファイルにタグ付けしない（タグ不採用）");
+        assert!(opts[3].desc.contains("次回の取得で、また候補に出ます"));
+    }
+
+    #[test]
+    fn resolve_options_includes_current_exact_match_without_duplicates() {
+        let m = master();
+        // 完全一致（類似提案に無い）の行でも、いまの選択が先頭の選択肢に入る。
+        let c = base(Role::Author, "Kouji", Choice::Existing { cat_idx: 1, tier_id: 10 });
+        let opts = resolve_options(&c, &m);
+        assert_eq!(opts.first().map(|o| &o.choice), Some(&Choice::Existing { cat_idx: 1, tier_id: 10 }));
+        let mut seen = Vec::new();
+        for o in &opts {
+            assert!(!seen.contains(&o.choice), "同じ選択肢は1つだけ");
+            seen.push(o.choice.clone());
+        }
+        // 類似提案にも同じ要素があっても、重ならない。
+        let mut c2 = koji();
+        c2.choice = Choice::Existing { cat_idx: 1, tier_id: 10 };
+        assert_eq!(resolve_options(&c2, &m).len(), 4);
+    }
+
+    #[test]
+    fn resolve_options_for_new_category_and_plain_new() {
+        let m = master();
+        let mut p = base(Role::Performer, "Castorice", Choice::New);
+        p.category = CatRef::New;
+        let opts = resolve_options(&p, &m);
+        assert_eq!(opts.len(), 2, "提案の無い新規カテゴリの候補は、新規と不採用だけ");
+        assert_eq!(opts[0].title, "新しいカテゴリ『演者』を作成し、『Castorice』をその要素として登録して、ファイルにタグ付け");
+        assert_eq!(opts[0].desc, "カテゴリ『演者』と要素『Castorice』が増え、5ファイルに付きます。");
+        let r = base(Role::Event, "C105", Choice::New);
+        let mut r = r;
+        r.category = CatRef::Existing(2);
+        let o = resolve_options(&r, &m);
+        assert_eq!(o[0].desc, "『イベント』に『C105』が増え、5ファイルに付きます。");
+    }
+
+    #[test]
+    fn resolve_heading_is_state_independent() {
+        assert_eq!(resolve_heading(&koji()), "「Koji」（5ファイルにタグ付けする候補）をどうしますか");
+        let mut adopted = koji();
+        adopted.choice = Choice::New;
+        assert_eq!(resolve_heading(&adopted), resolve_heading(&koji()));
+    }
+
+    #[test]
+    fn similarity_note_lists_scores() {
+        assert_eq!(similarity_note(&koji()).as_deref(), Some("似ている度合い：『Kouji』 92%"));
+        assert_eq!(similarity_note(&base(Role::Author, "X", Choice::New)), None);
+    }
+
+    #[test]
+    fn review_kind_classifies_each_reason() {
+        let mut rule = base(Role::Author, "Mika", Choice::Skip);
+        rule.review = true;
+        rule.rule_reason = Some("AI generated".to_string());
+        assert_eq!(review_kind(&rule), Some(ReviewKind::Rule("AI generated".to_string())));
+        let mut learned = base(Role::Author, "Tiny Asa", Choice::Skip);
+        learned.review = true;
+        assert_eq!(review_kind(&learned), Some(ReviewKind::Learned));
+        assert_eq!(review_kind(&koji()), Some(ReviewKind::Similar { name: "Kouji".to_string(), score: 92 }));
+        let mut unc = base(Role::Author, "Hawk-Bit", Choice::New);
+        unc.unconfirmed = true;
+        assert_eq!(review_kind(&unc), Some(ReviewKind::Unconfirmed));
+        assert_eq!(review_kind(&base(Role::Format, "zip", Choice::Existing { cat_idx: 0, tier_id: 1 })), None);
+    }
+
+    #[test]
+    fn exact_match_with_other_suggestions_is_not_review() {
+        // 完全一致（初期が既存）で、別の類似提案も並ぶ行は、判断を求めない。
+        let mut c = koji();
+        c.initial = Choice::Existing { cat_idx: 1, tier_id: 10 };
+        c.choice = c.initial.clone();
+        assert!(!needs_review(&c));
+    }
+
+    #[test]
+    fn review_short_texts() {
+        assert_eq!(review_short(&ReviewKind::Rule("AI generated".to_string())), "ルール「AI generated」で無効");
+        assert_eq!(review_short(&ReviewKind::Learned), "学習により「タグではない」と判定");
+        assert_eq!(review_short(&ReviewKind::Similar { name: "Kouji".to_string(), score: 92 }), "似た名前が既存にあります");
+        assert_eq!(review_short(&ReviewKind::Unconfirmed), "作者かグループか未確定");
+    }
+
+    #[test]
+    fn review_long_texts_use_full_words_and_terms() {
+        let m = master();
+        let mut rule = base(Role::Author, "Mika", Choice::Skip);
+        rule.review = true;
+        rule.rule_reason = Some("AI generated".to_string());
+        let mut unc = base(Role::Author, "Hawk-Bit", Choice::New);
+        unc.unconfirmed = true;
+        let cases = [(review_kind(&rule).unwrap(), rule), (review_kind(&koji()).unwrap(), koji()), (review_kind(&unc).unwrap(), unc)];
+        for (kind, c) in &cases {
+            let sections = review_long(kind, c, &m);
+            assert!(sections.len() >= 2);
+            let all: String = sections.iter().map(|(h, b)| format!("{h}{b}")).collect();
+            assert!(!all.contains("付ける予定"), "用語は「タグ採用予定」に揃える");
+            assert!(all.contains("タグ"), "{all}");
+            // 「付けない」「付ける」の単独表記を避け、「ファイルにタグ付け」とフルで書く。
+            assert!(!all.contains("付けない") || all.contains("ファイルにタグ付けしない"), "{all}");
+        }
+        let rule_text = review_long(&cases[0].0, &cases[0].1, &m);
+        assert!(rule_text[0].1.contains("ルール『AI generated』"));
+        assert!(rule_text[2].1.contains("「タグ採用予定」にします"));
+        let unc_text = review_long(&cases[2].0, &cases[2].1, &m);
+        assert!(unc_text[0].1.contains("作者として、「タグ採用予定」にしてあります"), "{}", unc_text[0].1);
+        let similar = review_long(&cases[1].0, &cases[1].1, &m);
+        assert!(similar[0].1.contains("『Kouji』と名前がよく似ています（92%）"));
+        assert!(similar[1].1.contains("「タグ不採用」（ファイルにタグ付けしない）"));
+    }
+}

@@ -51,6 +51,7 @@ mod spread_offset;
 mod spread_state;
 mod tag_apply;
 mod tag_candidates;
+mod tag_confirm_text;
 mod tag_corpus;
 mod tag_eval;
 mod tag_features;
