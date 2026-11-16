@@ -890,11 +890,11 @@ impl NekoviewApp {
                     }
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
-                        if ui.button(t.tag_rename_review_apply()).clicked() {
-                            proceed = true;
-                        }
                         if ui.button(t.tag_confirm_back()).clicked() {
                             back = true;
+                        }
+                        if ui.button(t.tag_rename_review_apply()).clicked() {
+                            proceed = true;
                         }
                     });
                 });

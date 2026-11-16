@@ -126,8 +126,8 @@ impl NekoviewApp {
                 let enter = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
-                    ok = ui.add_enabled(valid, egui::Button::new(t.virtual_ok())).clicked() || (enter && valid);
                     cancel = ui.button(t.favorite_dialog_cancel()).clicked();
+                    ok = ui.add_enabled(valid, egui::Button::new(t.virtual_ok())).clicked() || (enter && valid);
                 });
             });
         if cancel {
