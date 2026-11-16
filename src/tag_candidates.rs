@@ -15,6 +15,7 @@
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 
+use crate::candidate_rules::MoveRule;
 use crate::i18n::Lang;
 use crate::tag_corpus::Label;
 use crate::tag_meta::{resolve, ArchiveMeta, Resolved};
@@ -69,6 +70,23 @@ impl Role {
             // 人名の種類は窓2。
             Role::Author | Role::Group | Role::Performer => Window::Two,
             _ => Window::One,
+        }
+    }
+
+    /// 抽出ルール・候補ルールで使う、種類の名前。
+    pub(crate) fn rule_role(self) -> RuleRole {
+        match self {
+            Role::Format => RuleRole::Format,
+            Role::Main => RuleRole::Main,
+            Role::Language => RuleRole::Language,
+            Role::Event => RuleRole::Event,
+            Role::Author => RuleRole::Author,
+            Role::Group => RuleRole::Group,
+            Role::Performer => RuleRole::Performer,
+            Role::Character => RuleRole::Character,
+            Role::Parody => RuleRole::Parody,
+            Role::Attribute => RuleRole::Attribute,
+            Role::YearMonth => RuleRole::YearMonth,
         }
     }
 
@@ -209,6 +227,8 @@ pub(crate) struct Candidate {
     pub rule_reason: Option<String>,
     /// ユーザーが新規要素の登録先を別の既存カテゴリへ移したとき、移す前のカテゴリ（`category` は移した先）。移していなければ None。
     pub category_origin: Option<CatRef>,
+    /// 登録先のカテゴリの移し先が、保存してあるカテゴリ振替ルールで決まった（結論文に「ルールにより」を添える）。
+    pub category_rule: bool,
 }
 
 impl Candidate {
@@ -262,6 +282,7 @@ impl Candidate {
             self.category_origin = Some(self.category);
         }
         self.category = CatRef::Existing(cat_idx);
+        self.category_rule = false;
         self.choice = Choice::New;
     }
 
@@ -270,6 +291,7 @@ impl Candidate {
         if let Some(origin) = self.category_origin.take() {
             self.category = origin;
         }
+        self.category_rule = false;
     }
 
     /// 登録先のカテゴリを移してあるか。
@@ -315,6 +337,8 @@ pub(crate) struct CandidateSet {
     pub limits: LimitReport,
     pub file_count: usize,
     pub files_with_info: usize,
+    /// 保存してあるカテゴリ振替ルールのうち、移し先のカテゴリがマスターに無くて使えなかったものの名前。
+    pub category_rule_missing: Vec<String>,
 }
 
 impl CandidateSet {
@@ -1174,6 +1198,7 @@ pub(crate) fn build_candidates_full(
             alt_forms,
             rule_reason,
             category_origin: None,
+            category_rule: false,
         });
     }
 
@@ -1197,7 +1222,7 @@ pub(crate) fn build_candidates_full(
     }
 
     let limits = check_limits(&candidates);
-    CandidateSet { candidates, rule_hits, limits, file_count: inputs.len(), files_with_info }
+    CandidateSet { candidates, rule_hits, limits, file_count: inputs.len(), files_with_info, category_rule_missing: Vec::new() }
 }
 
 /// 登録名を表記の中から選ぶ。UIが日本語なら日本語（ASCII以外）を含む表記を、それ以外は英字だけの表記を優先し、
@@ -1287,6 +1312,7 @@ impl CandidateSet {
                 if o.category_origin.is_some() {
                     c.category = o.category;
                     c.category_origin = o.category_origin;
+                    c.category_rule = o.category_rule;
                     c.choice = o.choice.clone();
                 } else if o.choice != o.initial {
                     c.choice = o.choice.clone();
@@ -1294,6 +1320,44 @@ impl CandidateSet {
             }
         }
         fresh.limits = check_limits(&fresh.candidates);
+    }
+}
+
+// ── カテゴリ振替ルール ─────────────────────────────────────────────────
+
+impl CandidateSet {
+    /// 保存してあるカテゴリ振替ルールを候補に当てる（候補の生成のあと・作り直しのあとに呼ぶ）。
+    /// 種類と名前（正規化）が合う候補の登録先を、ルールのカテゴリ（名前で探す）へ移し、「新規に登録」にする。
+    /// 形式・メインの種類、まとめた候補、ルール・学習で無効にされた候補（要確認）には当てない。
+    /// 移し先のカテゴリが無い（メイン・システムのカテゴリは対象外）ルールは使わず、名前を `category_rule_missing` に残す。
+    pub(crate) fn apply_category_rules(&mut self, moves: &[MoveRule], cats: &[TagManagerCategoryUi]) {
+        self.category_rule_missing.clear();
+        if moves.is_empty() {
+            return;
+        }
+        let mut missing: Vec<String> = Vec::new();
+        for c in &mut self.candidates {
+            if !c.members.is_empty() || c.review || matches!(c.role, Role::Format | Role::Main) {
+                continue;
+            }
+            let key = normalize_key(&c.name);
+            let Some(rule) = moves.iter().find(|r| r.role == c.role.rule_role() && r.key == key) else { continue };
+            let want = normalize_key(&rule.category);
+            let target = cats.iter().position(|cat| !cat.is_main && cat.system_kind.is_none() && normalize_key(&cat.display_name()) == want);
+            let Some(target) = target else {
+                if !missing.contains(&rule.name) {
+                    missing.push(rule.name.clone());
+                }
+                continue;
+            };
+            if matches!(c.category, CatRef::Existing(i) if i == target) {
+                continue;
+            }
+            c.move_to_category(target);
+            c.category_rule = true;
+        }
+        self.category_rule_missing = missing;
+        self.limits = check_limits(&self.candidates);
     }
 }
 
@@ -1445,6 +1509,7 @@ impl CandidateSet {
             members: leaves,
             bundle_id: Some(bundle_id),
             category_origin: None,
+            category_rule: false,
         };
         for &i in idxs.iter().rev() {
             self.candidates.remove(i);
@@ -1879,6 +1944,51 @@ mod tests {
         let after_other: Vec<String> = set.candidates.iter().filter(|c| c.role != Role::Author).map(|c| c.name.clone()).collect();
         assert_eq!(before_other, after_other);
         assert!(set.candidates.iter().any(|c| c.name == "Kouji" && !c.needs_new_element()), "既存一致は残る");
+    }
+
+    #[test]
+    fn category_rules_move_matching_candidates_by_normalized_name_and_report_missing_categories() {
+        let inputs = [input("(Doujin CG) [Aaa] t.zip", "zip", None)];
+        let mut m = master();
+        let genre = m.len();
+        m.push(TagManagerCategoryUi {
+            name: "ジャンル".to_string(),
+            tiers: Vec::new(),
+            color: egui::Color32::GRAY,
+            is_main: false,
+            single_select: false,
+            system_kind: None,
+        });
+        let mut set = build_candidates(&inputs, &m, &MatchOptions::default(), Lang::English);
+        let ev = set.candidates.iter().position(|c| c.role == Role::Event).expect("event candidate");
+        let ev_name = set.candidates[ev].name.clone();
+        let rule = |cat: &str| MoveRule { role: RuleRole::Event, name: ev_name.clone(), key: normalize_key(&ev_name), category: cat.to_string() };
+        // 名前でカテゴリを探して移し、結論をルールによるものにする。
+        set.apply_category_rules(&[rule("ジャンル")], &m);
+        let c = &set.candidates[ev];
+        assert_eq!((c.category, c.choice.clone(), c.category_rule), (CatRef::Existing(genre), Choice::New, true));
+        assert!(set.category_rule_missing.is_empty());
+        // 種類が違うルールや、他の候補には当たらない。
+        let author = set.candidates.iter().find(|c| c.role == Role::Author).unwrap();
+        assert!(!author.is_category_moved());
+        // カテゴリが無いルールは使わず、名前を知らせる。
+        let mut set2 = build_candidates(&inputs, &m, &MatchOptions::default(), Lang::English);
+        set2.apply_category_rules(&[rule("存在しないカテゴリ")], &m);
+        assert!(!set2.candidates[ev].is_category_moved());
+        assert_eq!(set2.category_rule_missing, [ev_name.clone()]);
+        // メインのカテゴリは移し先にならない（名前が同じでも）。
+        let mut set3 = build_candidates(&inputs, &m, &MatchOptions::default(), Lang::English);
+        set3.apply_category_rules(&[rule("main")], &m);
+        assert_eq!(set3.category_rule_missing, [ev_name.clone()]);
+        // 手で選び直したら、ルール由来の印は消える。
+        set.candidates[ev].move_to_category(2);
+        assert!(!set.candidates[ev].category_rule);
+        // 作り直したあとも、ルールで移した状態を引き継ぐ。
+        let mut set4 = build_candidates(&inputs, &m, &MatchOptions::default(), Lang::English);
+        set4.apply_category_rules(&[rule("ジャンル")], &m);
+        let mut fresh = build_candidates(&inputs, &m, &MatchOptions::default(), Lang::English);
+        set4.carry_over_choices(&mut fresh);
+        assert!(fresh.candidates[ev].category_rule && fresh.candidates[ev].is_category_moved());
     }
 
     #[test]

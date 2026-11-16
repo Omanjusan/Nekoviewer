@@ -174,6 +174,31 @@ pub(crate) fn initial_view_is_review(default_review: bool, pending_review: usize
 
 // ── 登録先のカテゴリを選び直す ─────────────────────────────────────
 
+/// カテゴリ振替ルールで決まった行の、結論文の添え書き。
+pub(crate) const RULE_SUFFIX: &str = "（保存したルールにより）";
+/// 変更ダイアログのチェック（次回以降も同じ扱いにする）。
+pub(crate) const REMEMBER_LABEL: &str = "次回以降も、この名前はこのカテゴリとして扱う";
+pub(crate) const REMEMBER_HINT: &str = "ルールとして保存します。管理と削除は、「⚙ 照合の設定」の中でできます。照合は名前の完全一致です（全角半角・大文字小文字・空白の違いは同じ名前として扱います）";
+/// 変更ダイアログで、保存済みのルールがある候補に出す注意。
+pub(crate) const RULE_EXISTS_NOTE: &str = "この名前には、保存したカテゴリ振替ルールがあります。";
+
+/// 照合の設定ポップアップ内の、ルール管理の見出し・説明。
+pub(crate) const RULES_SECTION_TITLE: &str = "カテゴリ振替ルール";
+pub(crate) const RULES_SECTION_NOTE: &str = "「この名前は、このカテゴリとして扱う」と保存したルールです。次回の取得から有効で、いまの候補は変わりません。";
+pub(crate) const RULES_EMPTY: &str = "保存したルールはありません。";
+pub(crate) const RULES_DELETE_LABEL: &str = "削除";
+pub(crate) const RULES_READ_ONLY: &str = "ルールのファイルを読めなかったため、ルールは保存できません（元のファイルは変更していません）。";
+
+/// 一覧の1行。
+pub(crate) fn rule_line(role: &str, name: &str, category: &str) -> String {
+    format!("【{role}】『{name}』→『{category}』")
+}
+
+/// 使えなかったルールの知らせ（一覧の下端）。
+pub(crate) fn missing_rules_notice(names: &[String]) -> String {
+    format!("カテゴリ振替ルール {}件は、移し先のカテゴリが見つからないため使いませんでした（{}）", names.len(), names.join("、"))
+}
+
 pub(crate) const MOVE_TITLE: &str = "別のカテゴリの要素として登録…";
 pub(crate) const MOVE_PICK_LABEL: &str = "登録先のカテゴリ";
 pub(crate) const MOVE_PICK_PLACEHOLDER: &str = "（選んでください）";
@@ -278,9 +303,10 @@ pub(crate) fn conclusion(c: &Candidate, master: &[TagManagerCategoryUi]) -> Stri
                 c.registration_name()
             ),
             CatRef::Existing(_) => format!(
-                "『{}』カテゴリに『{}』を新しい要素として登録し、ファイルにタグ付けする",
+                "『{}』カテゴリに『{}』を新しい要素として登録し、ファイルにタグ付けする{}",
                 candidate_category_name(c, master),
-                c.registration_name()
+                c.registration_name(),
+                if c.category_rule { RULE_SUFFIX } else { "" }
             ),
         },
         Choice::Skip => "ファイルにタグ付けせず、マスターにも登録しない".to_string(),
@@ -528,6 +554,7 @@ mod tests {
             alt_forms: Vec::new(),
             rule_reason: None,
             category_origin: None,
+            category_rule: false,
         }
     }
     fn koji() -> Candidate {
@@ -618,6 +645,23 @@ mod tests {
         // 形式・メインの種類には出さない。
         assert!(!can_move_category(&base(Role::Format, "zip", Choice::New)));
         assert!(move_targets(&base(Role::Main, "同人誌", Choice::New), &m).is_empty());
+    }
+
+    #[test]
+    fn rule_texts() {
+        assert_eq!(rule_line("イベント", "同人CG集", "ジャンル"), "【イベント】『同人CG集』→『ジャンル』");
+        assert_eq!(
+            missing_rules_notice(&["A".to_string(), "B".to_string()]),
+            "カテゴリ振替ルール 2件は、移し先のカテゴリが見つからないため使いませんでした（A、B）"
+        );
+        let mut m = master();
+        m.push(cat("ジャンル", false, vec![]));
+        let mut c = base(Role::Event, "同人CG集", Choice::New);
+        c.category = CatRef::Existing(2);
+        c.move_to_category(3);
+        assert!(!conclusion(&c, &m).contains("ルール"));
+        c.category_rule = true;
+        assert_eq!(conclusion(&c, &m), "『ジャンル』カテゴリに『同人CG集』を新しい要素として登録し、ファイルにタグ付けする（保存したルールにより）");
     }
 
     #[test]

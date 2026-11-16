@@ -1266,6 +1266,8 @@ pub struct NekoviewApp {
     pub(crate) tag_model: Option<std::sync::Arc<crate::tag_model::Model>>,
     /// タグ自動取得のタグ抽出ルール（抽出の下処理）。設定フォルダの `nekoviewer_tag_rules.json`。
     pub(crate) tag_rules: crate::tag_rules::RuleSet,
+    /// 一括タグ取得の確認窓で保存した候補ルール（カテゴリ振替）。設定フォルダの `nekoviewer_candidate_rules.json`。
+    pub(crate) candidate_rules: crate::candidate_rules::CandidateRules,
     /// タグ学習窓（開いている間 Some）。
     tag_learn: Option<tag_learning_ui::TagLearn>,
     /// タグ抽出ルールの一覧窓（仮。編集UIは後で決める）を開いているか。
@@ -1674,6 +1676,7 @@ impl NekoviewApp {
             }
             None => crate::tag_rules::RuleSet::default(),
         };
+        let candidate_rules = crate::candidate_rules::CandidateRules::load(&config_root);
         let (tag_main_options, tag_attr_options) = crate::tag_manager::derive_tag_options(&tag_manager_categories);
         let tag_main_selected = tag_main_options.first().map(|(id, _)| *id);
         let mut tag_attr_selected: Vec<u64> = Vec::new();
@@ -1936,6 +1939,7 @@ impl NekoviewApp {
             tag_learned,
             tag_model,
             tag_rules,
+            candidate_rules,
             tag_learn: None,
             tag_rules_open: false,
             tag_rules_del_ask: None,

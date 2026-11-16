@@ -21,6 +21,7 @@ use crate::tag_candidates::{
     build_candidates_full, over_limit, Bundle, Candidate, CandidateInput, CandidateSet, CatRef, Choice, MergeError, Role, Window,
     LIMIT_EXPAND_STEP,
 };
+use crate::candidate_rules::{rule_role_name, MoveRule};
 use crate::tag_confirm_text as ctext;
 use crate::tag_master::split_aliases;
 use crate::tag_model::Model;
@@ -155,6 +156,8 @@ pub(super) struct TagConfirm {
     /// 候補生成に使ったタグ抽出ルール（作り直しでも同じルールを使う）。
     rules: Arc<Vec<TagRule>>,
     stage: Window,
+    /// 保存してあるカテゴリ振替ルール（作り直しでも、同じルールを当てる）。
+    move_rules: Arc<Vec<MoveRule>>,
     /// 表示の絞り込み（見出し帯のチップ）。
     view: ListView,
     /// 照合の設定ポップアップを開いている。
@@ -219,6 +222,8 @@ struct ResolveDialog {
     sel: Choice,
     /// 「別のカテゴリの要素として登録」を選んでいるときの、移し先のカテゴリ（番号）。
     move_cat: Option<usize>,
+    /// 「次回以降も、この名前はこのカテゴリとして扱う」（ルールとして保存する）。
+    remember: bool,
 }
 
 /// 一覧の行から出す操作（描画中は候補の並びを変えられないので、描画後にまとめて行う）。
@@ -247,6 +252,7 @@ impl TagConfirm {
         model: Option<Arc<Model>>,
         rules: Arc<Vec<TagRule>>,
         limit: usize,
+        move_rules: Arc<Vec<MoveRule>>,
     ) -> Option<Self> {
         let has = |w: Window| set.candidates.iter().any(|c| c.role.window() == w);
         let stage = if has(Window::One) {
@@ -256,7 +262,7 @@ impl TagConfirm {
         } else {
             return None;
         };
-        Some(Self { set, inputs: Arc::new(inputs), paths, master: Arc::new(master), model, rules, stage, view: ListView::All, settings_open: false, rules_dialog_open: false, rebuild: None, threshold_draft: None, merge_dialog: None, filter: String::new(), next_bundle_id: 1, rename_review: None, limit, limit_keep: false, truncated: Vec::new(), reattach: false, compact: false, confirmed: HashSet::new(), resolve_dialog: None, why_dialog: None })
+        Some(Self { set, inputs: Arc::new(inputs), paths, master: Arc::new(master), model, rules, stage, move_rules, view: ListView::All, settings_open: false, rules_dialog_open: false, rebuild: None, threshold_draft: None, merge_dialog: None, filter: String::new(), next_bundle_id: 1, rename_review: None, limit, limit_keep: false, truncated: Vec::new(), reattach: false, compact: false, confirmed: HashSet::new(), resolve_dialog: None, why_dialog: None })
     }
 
     /// 切替項目が変わったので、別スレッドで候補を作り直す。進行中の作り直しは捨てる。
@@ -265,9 +271,11 @@ impl TagConfirm {
         let (inputs, master, model, rules) = (Arc::clone(&self.inputs), Arc::clone(&self.master), self.model.clone(), Arc::clone(&self.rules));
         // 手動でまとめた候補は、作り直したあとも同じまとめを復元する。
         let bundles: Vec<Bundle> = self.set.snapshot_bundles();
+        let move_rules = Arc::clone(&self.move_rules);
         std::thread::spawn(move || {
             let mut fresh = build_candidates_full(&inputs, &master, &opts, lang, name_lang, model.as_deref(), &rules);
             fresh.apply_bundles(&bundles, &master);
+            fresh.apply_category_rules(&move_rules, &master);
             let _ = tx.send(fresh);
         });
         self.rebuild = Some(rx);
@@ -288,7 +296,7 @@ impl TagConfirm {
             (Some(_), CatRef::Existing(i)) => Some(i),
             _ => None,
         };
-        self.resolve_dialog = Some(ResolveDialog { role: c.role, key: c.key.clone(), sel: c.choice.clone(), move_cat });
+        self.resolve_dialog = Some(ResolveDialog { role: c.role, key: c.key.clone(), sel: c.choice.clone(), move_cat, remember: c.category_rule });
     }
 
     /// 理由ダイアログを開く。
@@ -365,6 +373,10 @@ impl NekoviewApp {
         paths: Vec<PathBuf>,
         master: Vec<TagManagerCategoryUi>,
     ) {
+        // 保存してあるカテゴリ振替ルールを、最初の候補に当てる。
+        let mut set = set;
+        set.apply_category_rules(&self.candidate_rules.moves, &master);
+        let move_rules = Arc::new(self.candidate_rules.moves.clone());
         match TagConfirm::new(
             set,
             inputs,
@@ -373,6 +385,7 @@ impl NekoviewApp {
             self.active_tag_model(),
             Arc::new(self.tag_rules.rules.clone()),
             self.config.tag_new_element_limit as usize,
+            move_rules,
         ) {
             Some(mut c) => {
                 c.pick_initial_view(self.config.tag_confirm_default_review);
@@ -535,6 +548,10 @@ impl NekoviewApp {
                         st.rules_dialog_open = true;
                     }
                 }
+                // 移し先が見つからず使えなかったカテゴリ振替ルールがあれば知らせる。
+                if !st.set.category_rule_missing.is_empty() {
+                    ui.colored_label(egui::Color32::from_rgb(230, 160, 40), ctext::missing_rules_notice(&st.set.category_rule_missing));
+                }
                 // 上限のため切り捨てた分があれば知らせる。
                 if !st.truncated.is_empty() {
                     let rows: Vec<String> = st.truncated.iter().map(|&(r, n)| format!("{} {n}", role_label(r))).collect();
@@ -590,6 +607,7 @@ impl NekoviewApp {
         // 照合の設定（別ポップアップ）。切り替えたら、下の `opts != before` で候補を作り直す。
         if open && !cancel && st.settings_open {
             let mut close = false;
+            let mut delete_rule: Option<usize> = None;
             let modal = self.explorer_modal(ctx, "tag_match_settings").show(ctx, |ui| {
                 ui.set_width(520.0);
                 ui.heading(ctext::SETTINGS_TITLE);
@@ -619,11 +637,38 @@ impl NekoviewApp {
                     }
                 });
                 ui.weak(ctext::THRESHOLD_NOTE);
+                // 保存したカテゴリ振替ルールの一覧と削除。
+                ui.add_space(8.0);
+                ui.separator();
+                ui.strong(ctext::RULES_SECTION_TITLE);
+                ui.weak(ctext::RULES_SECTION_NOTE);
+                if self.candidate_rules.is_read_only() {
+                    ui.colored_label(egui::Color32::from_rgb(230, 160, 40), ctext::RULES_READ_ONLY);
+                }
+                if self.candidate_rules.moves.is_empty() {
+                    ui.weak(ctext::RULES_EMPTY);
+                }
+                egui::ScrollArea::vertical().id_salt("tag_move_rules").max_height(160.0).auto_shrink([false, true]).show(ui, |ui| {
+                    for (i, r) in self.candidate_rules.moves.iter().enumerate() {
+                        ui.horizontal(|ui| {
+                            ui.label(ctext::rule_line(rule_role_name(r.role), &r.name, &r.category));
+                            if ui.small_button(ctext::RULES_DELETE_LABEL).clicked() {
+                                delete_rule = Some(i);
+                            }
+                        });
+                    }
+                });
                 ui.add_space(8.0);
                 if ui.button(ctext::CLOSE_LABEL).clicked() {
                     close = true;
                 }
             });
+            if let Some(i) = delete_rule {
+                if self.candidate_rules.remove_move_at(i) {
+                    self.candidate_rules.save(&self.config.config_root);
+                    st.move_rules = Arc::new(self.candidate_rules.moves.clone());
+                }
+            }
             if close || modal.should_close() {
                 st.settings_open = false;
             }
@@ -847,8 +892,9 @@ impl NekoviewApp {
         let Some(mut rd) = st.resolve_dialog.take() else { return };
         let Some(idx) = st.set.candidates.iter().position(|c| c.role == rd.role && c.key == rd.key) else { return };
         let t = i18n::t();
-        let (heading, note, options, movable, targets, move_desc, previews) = {
+        let (heading, note, options, movable, targets, move_desc, previews, can_remember, rule_exists) = {
             let c = &st.set.candidates[idx];
+            let rule_exists = self.candidate_rules.find_move(c.role.rule_role(), &c.name).is_some();
             let targets = ctext::move_targets(c, &st.master);
             let previews: Vec<(usize, String)> = targets.iter().map(|(i, _)| (*i, ctext::move_preview(c, &st.master, *i))).collect();
             (
@@ -859,6 +905,8 @@ impl NekoviewApp {
                 targets,
                 ctext::move_desc(c, &st.master),
                 previews,
+                c.members.is_empty(),
+                rule_exists,
             )
         };
         let amber = egui::Color32::from_rgb(230, 160, 40);
@@ -927,6 +975,13 @@ impl NekoviewApp {
                             if let Some(preview) = rd.move_cat.and_then(|i| previews.iter().find(|p| p.0 == i)) {
                                 ui.label(&preview.1);
                             }
+                            // 次回以降も同じ扱いにする（ルールとして保存）。まとめた候補には出さない。
+                            if can_remember && rd.move_cat.is_some() {
+                                ui.checkbox(&mut rd.remember, ctext::REMEMBER_LABEL).on_hover_text(ctext::REMEMBER_HINT);
+                            }
+                            if rule_exists {
+                                ui.weak(ctext::RULE_EXISTS_NOTE);
+                            }
                         }
                     });
                     if !targets.is_empty() && framed.response.interact(egui::Sense::click()).clicked() {
@@ -949,13 +1004,34 @@ impl NekoviewApp {
             return;
         }
         if ok {
-            let c = &mut st.set.candidates[idx];
-            match rd.move_cat {
-                Some(cat) => c.move_to_category(cat),
-                None => {
-                    c.restore_category();
-                    c.choice = rd.sel.clone();
+            let mut rules_changed = false;
+            {
+                let c = &mut st.set.candidates[idx];
+                match rd.move_cat {
+                    Some(cat) => {
+                        c.move_to_category(cat);
+                        // 次回以降も同じ扱いにするなら保存し、外したら、保存してあったルールを消す。
+                        if c.members.is_empty() {
+                            let role = c.role.rule_role();
+                            if rd.remember {
+                                if let Some(category) = st.master.get(cat).map(|m| m.display_name()) {
+                                    self.candidate_rules.upsert_move(role, &c.name, &category);
+                                    rules_changed = true;
+                                }
+                            } else if self.candidate_rules.remove_move(role, &c.name) {
+                                rules_changed = true;
+                            }
+                        }
+                    }
+                    None => {
+                        c.restore_category();
+                        c.choice = rd.sel.clone();
+                    }
                 }
+            }
+            if rules_changed {
+                self.candidate_rules.save(&self.config.config_root);
+                st.move_rules = Arc::new(self.candidate_rules.moves.clone());
             }
             st.confirmed.insert((rd.role, rd.key.clone()));
             return;
@@ -1484,10 +1560,10 @@ mod tests {
     #[test]
     fn confirm_starts_at_the_first_window_that_has_candidates() {
         let only_authors = build_candidates(&[crate::tag_candidates::input_from_info_text("[A (B)] t.zip", None, None)], &[], &MatchOptions::default(), Lang::English);
-        let c = TagConfirm::new(only_authors, vec![], vec![], vec![], None, Arc::new(Vec::new()), 5000).unwrap();
+        let c = TagConfirm::new(only_authors, vec![], vec![], vec![], None, Arc::new(Vec::new()), 5000, Arc::new(Vec::new())).unwrap();
         assert_eq!(c.stage, Window::Two, "窓1が空なら2枚目から");
         let empty = build_candidates(&[], &[], &MatchOptions::default(), Lang::English);
-        assert!(TagConfirm::new(empty, vec![], vec![], vec![], None, Arc::new(Vec::new()), 5000).is_none());
+        assert!(TagConfirm::new(empty, vec![], vec![], vec![], None, Arc::new(Vec::new()), 5000, Arc::new(Vec::new())).is_none());
     }
 
     #[test]
