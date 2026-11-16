@@ -175,6 +175,7 @@ pub(super) struct TagConfirm {
     threshold_draft: Option<u8>,
     /// 「他の要素と同一としてまとめる」ダイアログ（開いている間だけ Some）。
     merge_dialog: Option<MergeDialog>,
+    bulk_move_dialog: Option<BulkMoveDialog>,
     /// 名前の絞り込み欄。
     filter: String,
     next_bundle_id: u64,
@@ -220,6 +221,20 @@ struct MergeDialog {
     msg: Option<String>,
 }
 
+/// 「まとめて別のカテゴリへ移す」ダイアログの状態。
+struct BulkMoveDialog {
+    /// 移す候補の種類（同じ種類の中からだけ選べる）。
+    role: Role,
+    /// 選んだ候補のキー。
+    selected: HashSet<String>,
+    /// 候補を探す絞り込み欄。
+    filter: String,
+    /// 登録先のカテゴリ（番号）。
+    target: Option<usize>,
+    /// 次回以降も、これらの名前はこのカテゴリとして扱う（ルールとして保存する）。
+    remember: bool,
+}
+
 /// 変更ダイアログの状態。
 struct ResolveDialog {
     role: Role,
@@ -251,6 +266,8 @@ enum RowAction {
     OpenMerge(usize),
     /// 候補（番号）の変更ダイアログを開く。
     OpenResolve(usize),
+    /// 候補（番号）を最初に選んだ、一括移動ダイアログを開く。
+    OpenBulkMove(usize),
     /// 候補（番号）の理由ダイアログを開く。
     OpenWhy(usize),
     /// まとめた候補を分解する。
@@ -279,7 +296,7 @@ impl TagConfirm {
         } else {
             return None;
         };
-        Some(Self { set, inputs: Arc::new(inputs), paths, master: Arc::new(master), model, rules, stage, move_rules, separators, sep_input: String::new(), sep_error: None, view: ListView::All, settings_open: false, rules_dialog_open: false, rebuild: None, threshold_draft: None, merge_dialog: None, filter: String::new(), next_bundle_id: 1, rename_review: None, limit, limit_keep: false, truncated: Vec::new(), reattach: false, compact: false, confirmed: HashSet::new(), resolve_dialog: None, why_dialog: None })
+        Some(Self { set, inputs: Arc::new(inputs), paths, master: Arc::new(master), model, rules, stage, move_rules, separators, sep_input: String::new(), sep_error: None, view: ListView::All, settings_open: false, rules_dialog_open: false, rebuild: None, threshold_draft: None, merge_dialog: None, bulk_move_dialog: None, filter: String::new(), next_bundle_id: 1, rename_review: None, limit, limit_keep: false, truncated: Vec::new(), reattach: false, compact: false, confirmed: HashSet::new(), resolve_dialog: None, why_dialog: None })
     }
 
     /// 切替項目が変わったので、別スレッドで候補を作り直す。進行中の作り直しは捨てる。
@@ -299,6 +316,7 @@ impl TagConfirm {
         });
         self.rebuild = Some(rx);
         self.merge_dialog = None;
+        self.bulk_move_dialog = None;
     }
 
     /// 最初の表示を決める（窓を開いたとき・窓を切り替えたとき）。要確認を既定にする設定がオンで、要確認が残っていれば「要確認」。
@@ -336,6 +354,16 @@ impl TagConfirm {
             .map(|c| c.key.clone())
             .collect();
         self.merge_dialog = Some(MergeDialog { role, name, selected, filter: String::new(), msg: None });
+    }
+
+    /// 一括移動ダイアログを開く。`idx` の候補を最初から選んでおく。
+    fn open_bulk_move_dialog(&mut self, idx: usize) {
+        let Some(c) = self.set.candidates.get(idx) else { return };
+        if !ctext::can_move_category(c) {
+            return;
+        }
+        let selected = std::iter::once(c.key.clone()).collect();
+        self.bulk_move_dialog = Some(BulkMoveDialog { role: c.role, selected, filter: String::new(), target: None, remember: false });
     }
 
     /// 作り直しの完了を取り込む。ユーザーが変えた採否は引き継ぐ。
@@ -757,6 +785,7 @@ impl NekoviewApp {
         match row_action {
             Some(RowAction::OpenMerge(i)) => st.open_merge_dialog(&[i]),
             Some(RowAction::OpenResolve(i)) => st.open_resolve_dialog(i),
+            Some(RowAction::OpenBulkMove(i)) => st.open_bulk_move_dialog(i),
             Some(RowAction::OpenWhy(i)) => st.open_why_dialog(i),
             Some(RowAction::MergeCluster(id)) => {
                 let idxs: Vec<usize> = (0..st.set.candidates.len())
@@ -835,6 +864,7 @@ impl NekoviewApp {
                 }
             }
             self.draw_tag_merge_dialog(ctx, &mut st);
+            self.draw_tag_bulk_move_dialog(ctx, &mut st);
             self.draw_tag_resolve_dialog(ctx, &mut st);
             self.draw_tag_why_dialog(ctx, &mut st);
             self.draw_tag_rule_hits_dialog(ctx, &mut st);
@@ -962,6 +992,121 @@ impl NekoviewApp {
             }
         }
         st.merge_dialog = Some(md);
+    }
+}
+
+impl NekoviewApp {
+    /// 「まとめて別のカテゴリへ移す」ダイアログ。同じ種類の候補を複数選び、登録先のカテゴリを1つ選ぶ。
+    /// 移した候補は「新規に登録」になる。「次回以降も」を選ぶと、まとめていない候補の名前をルールとして保存する。
+    fn draw_tag_bulk_move_dialog(&mut self, ctx: &egui::Context, st: &mut TagConfirm) {
+        let Some(mut bd) = st.bulk_move_dialog.take() else { return };
+        let t = i18n::t();
+        let opts = self.config.tag_match;
+        let role = bd.role;
+        let (mut ok, mut cancel) = (false, false);
+        // 移し先にできるカテゴリ（同じ種類は、抽出元のカテゴリも同じ）。
+        let targets: Vec<(usize, String)> = st.set.candidates.iter().find(|c| c.role == role).map(|c| ctext::move_targets(c, &st.master)).unwrap_or_default();
+        let modal = self.explorer_modal(ctx, "tag_bulk_move_dialog").show(ctx, |ui| {
+            ui.set_width(560.0);
+            ui.heading(ctext::BULK_MOVE_TITLE);
+            ui.add_space(4.0);
+            ui.label(ctext::bulk_move_intro(role.new_category_name(Lang::Japanese)));
+            ui.add_space(6.0);
+            ui.weak(t.tag_confirm_filter_label());
+            ui.add(egui::TextEdit::singleline(&mut bd.filter).desired_width(240.0).hint_text(t.tag_confirm_filter_hint()));
+            let idx: Vec<usize> = (0..st.set.candidates.len())
+                .filter(|&i| {
+                    let c = &st.set.candidates[i];
+                    c.role == role && (bd.selected.contains(&c.key) || matches_query(c, &bd.filter, &opts))
+                })
+                .collect();
+            // 表示中の候補を、まとめて選ぶ・外す。
+            ui.horizontal(|ui| {
+                if ui.small_button("表示中をすべて選ぶ").clicked() {
+                    for &i in &idx {
+                        bd.selected.insert(st.set.candidates[i].key.clone());
+                    }
+                }
+                if ui.small_button("すべて外す").clicked() {
+                    bd.selected.clear();
+                }
+            });
+            let row_h = ui.spacing().interact_size.y;
+            egui::ScrollArea::vertical().id_salt("tag_bulk_move_list").max_height(220.0).auto_shrink([false, true]).show_rows(ui, row_h, idx.len(), |ui, range| {
+                for &i in &idx[range] {
+                    let c = &st.set.candidates[i];
+                    let mut on = bd.selected.contains(&c.key);
+                    if ui.checkbox(&mut on, format!("{}　{}", c.name, ctext::file_count(c.files.len()))).changed() {
+                        if on {
+                            bd.selected.insert(c.key.clone());
+                        } else {
+                            bd.selected.remove(&c.key);
+                        }
+                    }
+                }
+            });
+            ui.add_space(6.0);
+            if targets.is_empty() {
+                ui.colored_label(egui::Color32::from_rgb(200, 140, 0), ctext::MOVE_NO_TARGET);
+            } else {
+                ui.horizontal(|ui| {
+                    ui.label(ctext::MOVE_PICK_LABEL);
+                    let current = bd.target.and_then(|i| targets.iter().find(|t| t.0 == i)).map_or_else(|| ctext::MOVE_PICK_PLACEHOLDER.to_string(), |t| t.1.clone());
+                    egui::ComboBox::from_id_salt("tag_bulk_move_cat").selected_text(current).show_ui(ui, |ui| {
+                        for (i, name) in &targets {
+                            if ui.selectable_label(bd.target == Some(*i), name).clicked() {
+                                bd.target = Some(*i);
+                            }
+                        }
+                    });
+                });
+                ui.checkbox(&mut bd.remember, ctext::REMEMBER_LABEL).on_hover_text(ctext::REMEMBER_HINT);
+            }
+            let chosen: Vec<&Candidate> = st.set.candidates.iter().filter(|c| c.role == role && bd.selected.contains(&c.key)).collect();
+            let files: HashSet<usize> = chosen.iter().flat_map(|c| c.files.iter().copied()).collect();
+            let cat_name = bd.target.and_then(|i| targets.iter().find(|t| t.0 == i)).map(|t| t.1.as_str());
+            ui.add_space(4.0);
+            ui.label(ctext::bulk_move_preview(chosen.len(), files.len(), cat_name));
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                if ui.button(t.archive_open_cancel()).clicked() {
+                    cancel = true;
+                }
+                if ui.add_enabled(!chosen.is_empty() && bd.target.is_some(), egui::Button::new(ctext::BULK_MOVE_OK_LABEL)).clicked() {
+                    ok = true;
+                }
+            });
+        });
+        if cancel || modal.should_close() {
+            return;
+        }
+        if ok {
+            let Some(cat) = bd.target else { return };
+            let mut rules_changed = false;
+            let category = st.master.get(cat).map(|m| m.display_name());
+            let rule_role = role.rule_role();
+            for c in st.set.candidates.iter_mut().filter(|c| c.role == role && bd.selected.contains(&c.key)) {
+                c.move_to_category(cat);
+                // まとめた候補は、名前が1つに決まらないのでルールにしない。
+                if c.members.is_empty() {
+                    if bd.remember {
+                        if let Some(category) = &category {
+                            self.candidate_rules.upsert_move(rule_role, &c.name, category);
+                            rules_changed = true;
+                        }
+                    } else if self.candidate_rules.remove_move(rule_role, &c.name) {
+                        rules_changed = true;
+                    }
+                }
+                st.confirmed.insert((c.role, c.key.clone()));
+            }
+            if rules_changed {
+                self.candidate_rules.save(&self.config.config_root);
+                st.move_rules = Arc::new(self.candidate_rules.moves.clone());
+            }
+            return;
+        }
+        st.bulk_move_dialog = Some(bd);
     }
 }
 
@@ -1446,6 +1591,10 @@ fn draw_candidate_row(
         ui.menu_button("⋯", |ui| {
             if ui.button(ctext::MERGE_LABEL).clicked() {
                 *action = Some(RowAction::OpenMerge(i));
+                ui.close();
+            }
+            if ctext::can_move_category(c) && ui.button(ctext::BULK_MOVE_LABEL).clicked() {
+                *action = Some(RowAction::OpenBulkMove(i));
                 ui.close();
             }
             if !c.aliases.is_empty() {

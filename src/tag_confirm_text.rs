@@ -298,6 +298,24 @@ pub(crate) fn move_desc(c: &Candidate, master: &[TagManagerCategoryUi]) -> Strin
     )
 }
 
+pub(crate) const BULK_MOVE_LABEL: &str = "まとめて別のカテゴリへ移す…";
+pub(crate) const BULK_MOVE_TITLE: &str = "まとめて別のカテゴリの要素として登録";
+pub(crate) const BULK_MOVE_OK_LABEL: &str = "移す";
+
+/// 一括移動ダイアログの案内。
+pub(crate) fn bulk_move_intro(kind: &str) -> String {
+    format!("「{kind}」として抽出された候補のうち、実際は別の種類のものを、まとめて選んだカテゴリの新しい要素として登録します。移す候補にチェックを入れてください。")
+}
+
+/// 一括移動の確認文（選んだ内容を、ダイアログの中で確かめる）。
+pub(crate) fn bulk_move_preview(count: usize, files: usize, category: Option<&str>) -> String {
+    match (count, category) {
+        (0, _) => "移す候補を選んでください".to_string(),
+        (_, None) => format!("選んだ{count}件（合計{files}ファイル）の登録先のカテゴリを選んでください"),
+        (_, Some(cat)) => format!("選んだ{count}件を、『{cat}』カテゴリの新しい要素として登録し、合計{files}ファイルにタグ付けする"),
+    }
+}
+
 /// 移し先を選んだときの結論文（ダイアログの中で、選んだ内容を確かめる）。
 pub(crate) fn move_preview(c: &Candidate, master: &[TagManagerCategoryUi], cat_idx: usize) -> String {
     format!(
@@ -721,6 +739,14 @@ mod tests {
         // 形式・メインの種類には出さない。
         assert!(!can_move_category(&base(Role::Format, "zip", Choice::New)));
         assert!(move_targets(&base(Role::Main, "同人誌", Choice::New), &m).is_empty());
+    }
+
+    #[test]
+    fn bulk_move_texts() {
+        assert_eq!(bulk_move_preview(0, 0, None), "移す候補を選んでください");
+        assert_eq!(bulk_move_preview(3, 7, None), "選んだ3件（合計7ファイル）の登録先のカテゴリを選んでください");
+        assert_eq!(bulk_move_preview(3, 7, Some("ジャンル")), "選んだ3件を、『ジャンル』カテゴリの新しい要素として登録し、合計7ファイルにタグ付けする");
+        assert!(bulk_move_intro("イベント").contains("「イベント」として抽出された候補"));
     }
 
     #[test]
