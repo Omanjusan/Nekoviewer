@@ -53,7 +53,7 @@ pub(super) fn rows_for(set: &CandidateSet, window: Window, only_unconfirmed: boo
     let idx: Vec<usize> = set
         .indices_in_window(window)
         .into_iter()
-        .filter(|&i| !only_unconfirmed || set.candidates[i].unconfirmed || set.candidates[i].review)
+        .filter(|&i| !only_unconfirmed || ctext::needs_review(&set.candidates[i]))
         .filter(|&i| matches_query(&set.candidates[i], query, opts))
         .collect();
     let mut cluster_sizes: HashMap<usize, usize> = HashMap::new();
@@ -82,16 +82,6 @@ pub(super) fn rows_for(set: &CandidateSet, window: Window, only_unconfirmed: boo
 /// 候補を「付ける」件数（採用済み）。
 pub(super) fn adopted_count(set: &CandidateSet, window: Window) -> usize {
     set.candidates.iter().filter(|c| c.role.window() == window && c.is_adopted()).count()
-}
-
-/// tier_id の要素名（表示用）。
-fn element_name(master: &[TagManagerCategoryUi], tier_id: u64) -> String {
-    master
-        .iter()
-        .flat_map(|c| c.tiers.iter())
-        .find(|t| t.id == tier_id)
-        .and_then(|t| t.element.clone())
-        .unwrap_or_else(|| format!("#{tier_id}"))
 }
 
 pub(super) struct TagConfirm {
@@ -126,6 +116,12 @@ pub(super) struct TagConfirm {
     reattach: bool,
     /// 一覧の表示密度。true ならコンパクト（1段）、false なら標準（2段）。この確認窓の間だけ覚える。
     compact: bool,
+    /// ユーザーが確認した（採否を切り替えた・変更ダイアログで決めた）要確認の候補（種類, 候補のキー）。
+    confirmed: HashSet<(Role, String)>,
+    /// 変更ダイアログ（開いている間だけ Some）。
+    resolve_dialog: Option<ResolveDialog>,
+    /// 理由ダイアログ（開いている間だけ Some）。（種類, 候補のキー）
+    why_dialog: Option<(Role, String)>,
 }
 
 /// 適用前に見せる、書き換わる既存要素の一覧。
@@ -150,6 +146,14 @@ struct MergeDialog {
     msg: Option<String>,
 }
 
+/// 変更ダイアログの状態。
+struct ResolveDialog {
+    role: Role,
+    key: String,
+    /// いま選んでいる選択肢。
+    sel: Choice,
+}
+
 /// 一覧の行から出す操作（描画中は候補の並びを変えられないので、描画後にまとめて行う）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum RowAction {
@@ -157,6 +161,10 @@ enum RowAction {
     MergeCluster(usize),
     /// 候補（番号）をまとめるダイアログを開く。
     OpenMerge(usize),
+    /// 候補（番号）の変更ダイアログを開く。
+    OpenResolve(usize),
+    /// 候補（番号）の理由ダイアログを開く。
+    OpenWhy(usize),
     /// まとめた候補を分解する。
     Split(usize),
     /// まとめた候補の、先頭見出しにする別名（候補の番号, 別名の位置）。
@@ -181,7 +189,7 @@ impl TagConfirm {
         } else {
             return None;
         };
-        Some(Self { set, inputs: Arc::new(inputs), paths, master: Arc::new(master), model, rules, stage, only_unconfirmed: false, rebuild: None, threshold_draft: None, merge_dialog: None, filter: String::new(), next_bundle_id: 1, rename_review: None, limit, limit_keep: false, truncated: Vec::new(), reattach: false, compact: false })
+        Some(Self { set, inputs: Arc::new(inputs), paths, master: Arc::new(master), model, rules, stage, only_unconfirmed: false, rebuild: None, threshold_draft: None, merge_dialog: None, filter: String::new(), next_bundle_id: 1, rename_review: None, limit, limit_keep: false, truncated: Vec::new(), reattach: false, compact: false, confirmed: HashSet::new(), resolve_dialog: None, why_dialog: None })
     }
 
     /// 切替項目が変わったので、別スレッドで候補を作り直す。進行中の作り直しは捨てる。
@@ -197,6 +205,18 @@ impl TagConfirm {
         });
         self.rebuild = Some(rx);
         self.merge_dialog = None;
+    }
+
+    /// 変更ダイアログを開く。いまの選択から始める。
+    fn open_resolve_dialog(&mut self, idx: usize) {
+        let Some(c) = self.set.candidates.get(idx) else { return };
+        self.resolve_dialog = Some(ResolveDialog { role: c.role, key: c.key.clone(), sel: c.choice.clone() });
+    }
+
+    /// 理由ダイアログを開く。
+    fn open_why_dialog(&mut self, idx: usize) {
+        let Some(c) = self.set.candidates.get(idx) else { return };
+        self.why_dialog = Some((c.role, c.key.clone()));
     }
 
     /// まとめるダイアログを開く。`idxs` は最初から選んでおく候補（同じ種類のものだけ）。
@@ -431,7 +451,7 @@ impl NekoviewApp {
                                         row_action = Some(RowAction::MergeCluster(id));
                                     }
                                 }),
-                                Row::Cand(i) => draw_candidate_row(ui, &mut st.set, i, &st.master, &mut row_action, t, first + k, compact),
+                                Row::Cand(i) => draw_candidate_row(ui, &mut st.set, i, &st.master, &mut row_action, &mut st.confirmed, t, first + k, compact),
                             }
                         }
                         if rows.is_empty() {
@@ -484,6 +504,8 @@ impl NekoviewApp {
         // まとめるダイアログを開く・分解・先頭の別名の変更（描画中は並びを変えられないので、ここで行う）。
         match row_action {
             Some(RowAction::OpenMerge(i)) => st.open_merge_dialog(&[i]),
+            Some(RowAction::OpenResolve(i)) => st.open_resolve_dialog(i),
+            Some(RowAction::OpenWhy(i)) => st.open_why_dialog(i),
             Some(RowAction::MergeCluster(id)) => {
                 let idxs: Vec<usize> = (0..st.set.candidates.len())
                     .filter(|&i| st.set.candidates[i].cluster == id && st.set.candidates[i].role.window() == stage)
@@ -560,6 +582,8 @@ impl NekoviewApp {
                 }
             }
             self.draw_tag_merge_dialog(ctx, &mut st);
+            self.draw_tag_resolve_dialog(ctx, &mut st);
+            self.draw_tag_why_dialog(ctx, &mut st);
             if proceed {
                 self.start_tag_apply(&st);
             } else {
@@ -687,6 +711,106 @@ impl NekoviewApp {
     }
 }
 
+impl NekoviewApp {
+    /// 変更ダイアログ。選択肢ごとに、何を・どこに・どうなるかを説明する。選ぶと、その行の扱いが変わり、確認済みになる。
+    fn draw_tag_resolve_dialog(&mut self, ctx: &egui::Context, st: &mut TagConfirm) {
+        let Some(mut rd) = st.resolve_dialog.take() else { return };
+        let Some(idx) = st.set.candidates.iter().position(|c| c.role == rd.role && c.key == rd.key) else { return };
+        let t = i18n::t();
+        let (heading, note, options) = {
+            let c = &st.set.candidates[idx];
+            (ctext::resolve_heading(c), ctext::similarity_note(c), ctext::resolve_options(c, &st.master))
+        };
+        let amber = egui::Color32::from_rgb(230, 160, 40);
+        let (mut ok, mut cancel) = (false, false);
+        let modal = self.explorer_modal(ctx, "tag_resolve_dialog").show(ctx, |ui| {
+            ui.set_width(620.0);
+            ui.heading(heading);
+            ui.weak(ctext::RESOLVE_SUBTITLE);
+            if let Some(n) = note {
+                ui.add_space(4.0);
+                ui.colored_label(amber, n);
+            }
+            ui.add_space(6.0);
+            egui::ScrollArea::vertical().id_salt("tag_resolve_options").max_height(380.0).auto_shrink([false, true]).show(ui, |ui| {
+                for o in &options {
+                    let selected = rd.sel == o.choice;
+                    let fill = if selected { ui.visuals().selection.bg_fill.gamma_multiply(0.4) } else { egui::Color32::TRANSPARENT };
+                    let framed = egui::Frame::group(ui.style()).fill(fill).show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.horizontal(|ui| {
+                            if ui.radio(selected, "").clicked() {
+                                rd.sel = o.choice.clone();
+                            }
+                            ui.label(egui::RichText::new(&o.title).strong());
+                        });
+                        ui.label(egui::RichText::new(&o.desc).weak());
+                    });
+                    if framed.response.interact(egui::Sense::click()).clicked() {
+                        rd.sel = o.choice.clone();
+                    }
+                }
+            });
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                if ui.button(t.archive_open_cancel()).clicked() {
+                    cancel = true;
+                }
+                if ui.button(ctext::RESOLVE_OK_LABEL).clicked() {
+                    ok = true;
+                }
+            });
+        });
+        if cancel || modal.should_close() {
+            return;
+        }
+        if ok {
+            let c = &mut st.set.candidates[idx];
+            c.choice = rd.sel.clone();
+            st.confirmed.insert((rd.role, rd.key.clone()));
+            return;
+        }
+        st.resolve_dialog = Some(rd);
+    }
+
+    /// 理由ダイアログ。要確認になった理由と、どうすればよいかを長文で見せる。「解決する…」で変更ダイアログへ進める。
+    fn draw_tag_why_dialog(&mut self, ctx: &egui::Context, st: &mut TagConfirm) {
+        let Some((role, key)) = st.why_dialog.take() else { return };
+        let Some(idx) = st.set.candidates.iter().position(|c| c.role == role && c.key == key) else { return };
+        let c = &st.set.candidates[idx];
+        let Some(kind) = ctext::review_kind(c) else { return };
+        let title = ctext::why_title(&c.name);
+        let sections = ctext::review_long(&kind, c, &st.master);
+        let (mut close, mut resolve) = (false, false);
+        let modal = self.explorer_modal(ctx, "tag_why_dialog").show(ctx, |ui| {
+            ui.set_width(580.0);
+            ui.heading(title);
+            for (head, body) in &sections {
+                ui.add_space(6.0);
+                ui.strong(head);
+                ui.label(body);
+            }
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                if ui.button(ctext::CLOSE_LABEL).clicked() {
+                    close = true;
+                }
+                if ui.button(ctext::RESOLVE_BUTTON_LABEL).clicked() {
+                    resolve = true;
+                }
+            });
+        });
+        if resolve {
+            st.open_resolve_dialog(idx);
+            return;
+        }
+        if close || modal.should_close() {
+            return;
+        }
+        st.why_dialog = Some((role, key));
+    }
+}
+
 fn merge_error_text(e: &MergeError, t: Lang) -> String {
     match e {
         MergeError::TooFew => t.tag_confirm_merge_err_too_few().to_string(),
@@ -703,7 +827,7 @@ const TOGGLE_COL_W: f32 = 124.0;
 /// ファイル数の列の幅。
 const COUNT_COL_W: f32 = 84.0;
 /// 「⋯」の列の幅。
-const OPS_COL_W: f32 = 44.0;
+const OPS_COL_W: f32 = 150.0;
 /// セルの左右の余白。
 const CELL_PAD: f32 = 6.0;
 
@@ -806,11 +930,15 @@ fn draw_candidate_row(
     i: usize,
     master: &[TagManagerCategoryUi],
     action: &mut Option<RowAction>,
+    confirmed: &mut HashSet<(Role, String)>,
     t: Lang,
     row_no: usize,
     compact: bool,
 ) {
     let reason = ctext::review_kind(&set.candidates[i]);
+    let id = (set.candidates[i].role, set.candidates[i].key.clone());
+    // 要確認のうち、ユーザーが確認済みのもの。
+    let is_confirmed = reason.is_some() && confirmed.contains(&id);
     let conclusion = ctext::conclusion(&set.candidates[i], master);
     let row_h = table_row_height(ui, compact);
     let line1_h = table_line1_height(ui, compact);
@@ -844,6 +972,10 @@ fn draw_candidate_row(
             } else {
                 c.adopt();
             }
+            // 要確認の行は、採否を決めたら確認済みにする。
+            if reason.is_some() {
+                confirmed.insert(id.clone());
+            }
         }
     });
 
@@ -866,23 +998,35 @@ fn draw_candidate_row(
         ui.weak(ctext::file_count(c.files.len()));
     });
 
-    // 要確認の印・類似提案の選択欄（・コンパクトでは結論文）。
+    // 要確認の印と理由ボタン（・コンパクトでは結論文）。
     in_cell(ui, at(cols.x_state() + CELL_PAD, cols.x_ops() - CELL_PAD, 0.0, line1_h), left, |ui| {
-        if !c.suggestions.is_empty() {
-            let w = (ui.available_width() * 0.6).min(220.0);
-            draw_choice_combo(ui, c, i, master, t, w);
-        }
         if let Some(kind) = &reason {
-            let badge = ctext::review_badge(kind);
-            ui.add(egui::Label::new(egui::RichText::new(&badge).color(amber)).truncate()).on_hover_text(&badge);
+            if is_confirmed {
+                ui.label(egui::RichText::new(ctext::CONFIRMED_LABEL).color(ui.visuals().selection.stroke.color));
+            } else {
+                let badge = ctext::review_badge(kind);
+                // 理由ボタンを先に確保して、印の文字は残りの幅で切り詰める。
+                let why_w = 72.0;
+                let badge_w = (ui.available_width() - why_w).max(40.0);
+                ui.add_sized([badge_w, 0.0], egui::Label::new(egui::RichText::new(&badge).color(amber)).truncate()).on_hover_text(&badge);
+                if ui.small_button(ctext::WHY_BUTTON_LABEL).clicked() {
+                    *action = Some(RowAction::OpenWhy(i));
+                }
+            }
         }
         if compact {
             ui.add(egui::Label::new(conclusion.as_str()).truncate()).on_hover_text(&conclusion);
         }
     });
 
-    // 「⋯」。
+    // 「変更…／解決する…」と「⋯」。
     in_cell(ui, at(cols.x_ops() + CELL_PAD, total - CELL_PAD, 0.0, line1_h), left, |ui| {
+        let unresolved = reason.is_some() && !is_confirmed;
+        let label = if unresolved { ctext::RESOLVE_BUTTON_LABEL } else { ctext::CHANGE_BUTTON_LABEL };
+        let button = if unresolved { egui::Button::new(label).small().fill(ui.visuals().selection.bg_fill) } else { egui::Button::new(label).small() };
+        if ui.add(button).clicked() {
+            *action = Some(RowAction::OpenResolve(i));
+        }
         ui.menu_button("⋯", |ui| {
             if ui.button(ctext::MERGE_LABEL).clicked() {
                 *action = Some(RowAction::OpenMerge(i));
@@ -919,43 +1063,6 @@ fn draw_candidate_row(
         ui.painter().vline(rect.left() + x, rect.y_range(), stroke);
     }
     ui.painter().hline(rect.x_range(), rect.bottom(), stroke);
-}
-
-/// 類似提案がある行の選択欄（既存の要素・別名として足す・新規・タグ不採用）。
-fn draw_choice_combo(ui: &mut egui::Ui, c: &mut Candidate, i: usize, master: &[TagManagerCategoryUi], t: Lang, width: f32) {
-    let current = match &c.choice {
-        Choice::Existing { tier_id, .. } => {
-            let score = c.suggestions.iter().find(|s| s.tier_id == *tier_id).map_or(100, |s| s.score);
-            format!("{} ({score}%)", element_name(master, *tier_id))
-        }
-        Choice::Alias { tier_id, .. } => t.tag_confirm_choice_alias(&element_name(master, *tier_id), &c.name),
-        Choice::New => t.tag_confirm_choice_new(&c.name),
-        Choice::Skip => ctext::REJECT_LABEL.to_string(),
-    };
-    egui::ComboBox::from_id_salt(("tag_confirm_choice", i)).selected_text(current).width(width).show_ui(ui, |ui| {
-        if ui.selectable_label(matches!(c.choice, Choice::New), t.tag_confirm_choice_new(&c.name)).clicked() {
-            c.choice = Choice::New;
-        }
-        let suggestions = c.suggestions.clone();
-        for s in suggestions {
-            let selected = matches!(c.choice, Choice::Existing { tier_id, .. } if tier_id == s.tier_id);
-            let shown = if s.alias != s.name && s.name.contains('|') {
-                format!("{} ({}%) ≈ {}", s.name, s.score, s.alias)
-            } else {
-                format!("{} ({}%)", s.name, s.score)
-            };
-            if ui.selectable_label(selected, shown).clicked() {
-                c.choice = Choice::Existing { cat_idx: s.cat_idx, tier_id: s.tier_id };
-            }
-            let alias_selected = matches!(c.choice, Choice::Alias { tier_id, .. } if tier_id == s.tier_id);
-            if ui.selectable_label(alias_selected, t.tag_confirm_choice_alias(&s.name, &c.name)).clicked() {
-                c.choice = Choice::Alias { cat_idx: s.cat_idx, tier_id: s.tier_id };
-            }
-        }
-        if ui.selectable_label(matches!(c.choice, Choice::Skip), ctext::REJECT_LABEL).clicked() {
-            c.choice = Choice::Skip;
-        }
-    });
 }
 
 /// 適用中のジョブ。

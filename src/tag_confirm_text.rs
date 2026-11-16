@@ -7,9 +7,6 @@
 //!   （文面はこのモジュールに集約してあるので、移すときの対象はここだけ）
 //! - 呼び出し側は、確認ウィンドウの行描画・変更ダイアログ・理由ポップアップ（フェーズB以降）
 
-// フェーズA（文面の純関数化）の時点では、呼び出し側がまだ無い。フェーズB〜Cで使い始めたら外す。
-#![allow(dead_code)]
-
 use crate::i18n::Lang;
 use crate::tag_candidates::{Candidate, CatRef, Choice, Role};
 use crate::tag_master::{display_name, primary_alias};
@@ -111,6 +108,26 @@ pub(crate) fn band_title(role_label: &str, is_main: bool) -> String {
 pub(crate) const DENSITY_STANDARD: &str = "表示：標準（2段）";
 pub(crate) const DENSITY_COMPACT: &str = "表示：コンパクト（1段）";
 pub(crate) const DENSITY_HINT: &str = "一覧の行の密度を切り替えます。コンパクトは1行で、行数が多いときに便利です";
+
+// ── 変更・理由ダイアログのボタン ────────────────────────────────────
+
+/// 要確認のままの行のボタン。
+pub(crate) const RESOLVE_BUTTON_LABEL: &str = "解決する…";
+/// 確認済み（または要確認でない）行のボタン。
+pub(crate) const CHANGE_BUTTON_LABEL: &str = "変更…";
+/// 要確認の印のとなりのボタン。
+pub(crate) const WHY_BUTTON_LABEL: &str = "理由を見る";
+/// 解決した行の印。
+pub(crate) const CONFIRMED_LABEL: &str = "✓ 確認済み";
+/// 変更ダイアログの実行ボタン。
+pub(crate) const RESOLVE_OK_LABEL: &str = "この内容にする";
+/// 理由ダイアログの閉じるボタン。
+pub(crate) const CLOSE_LABEL: &str = "閉じる";
+
+/// 理由ダイアログのタイトル。
+pub(crate) fn why_title(name: &str) -> String {
+    format!("要確認の理由：{name}")
+}
 
 // ── 名前の取り出し ──────────────────────────────────────────────────
 
