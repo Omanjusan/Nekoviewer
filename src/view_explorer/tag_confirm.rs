@@ -675,7 +675,7 @@ impl NekoviewApp {
                                         row_action = Some(RowAction::MergeCluster(id));
                                     }
                                 }),
-                                Row::Cand(i) => draw_candidate_row(ui, &mut st.set, i, &st.master, &mut row_action, &mut st.confirmed, t, first + k, compact),
+                                Row::Cand(i) => draw_candidate_row(ui, &mut st.set, i, &st.master, &st.inputs, &mut row_action, &mut st.confirmed, t, first + k, compact),
                             }
                         }
                         if rows.is_empty() {
@@ -1714,6 +1714,52 @@ fn draw_table_header(ui: &mut egui::Ui, total: f32) {
     painter.hline(rect.x_range(), rect.bottom(), stroke);
 }
 
+/// 名前列に、元のファイル名を足す。候補の元になった部分は色つき・下線つきで強調し、ファイル名に無い表記には薄い注記、他にも付くファイルがあれば「（他N件）」を添える。
+fn append_source(job: &mut egui::text::LayoutJob, ui: &egui::Ui, src: &ctext::SourceFile) {
+    let font = egui::TextStyle::Small.resolve(ui.style());
+    let weak = ui.visuals().weak_text_color();
+    let plain = egui::TextFormat { font_id: font.clone(), color: weak, ..Default::default() };
+    match src.range {
+        Some((a, b)) if src.name.is_char_boundary(a) && src.name.is_char_boundary(b) => {
+            let hit = egui::TextFormat { font_id: font, color: ui.visuals().hyperlink_color, underline: egui::Stroke::new(1.0, ui.visuals().hyperlink_color), ..Default::default() };
+            job.append(&src.name[..a], 0.0, plain.clone());
+            job.append(&src.name[a..b], 0.0, hit);
+            job.append(&src.name[b..], 0.0, plain.clone());
+        }
+        _ => {
+            job.append(&src.name, 0.0, plain.clone());
+            if src.range.is_none() {
+                job.append(ctext::SOURCE_NOT_IN_NAME, 4.0, plain.clone());
+            }
+        }
+    }
+    if src.others > 0 {
+        job.append(&ctext::source_others(src.others), 4.0, plain);
+    }
+}
+
+/// 名前列のホバー: 候補名・元のファイル名の全文と、この候補が付くファイル名の一覧。
+fn show_name_hover(resp: egui::Response, name_full: &str, src: Option<&ctext::SourceFile>, list: &(Vec<String>, usize)) -> egui::Response {
+    resp.on_hover_ui(|ui| {
+        ui.label(egui::RichText::new(name_full).strong());
+        if let Some(src) = src {
+            ui.label(&src.name);
+            if !src.range.is_some() {
+                ui.weak(ctext::SOURCE_NOT_IN_NAME);
+            }
+        }
+        if list.0.len() > 1 {
+            ui.separator();
+            for n in &list.0 {
+                ui.weak(n);
+            }
+            if list.1 > 0 {
+                ui.weak(ctext::source_others(list.1));
+            }
+        }
+    })
+}
+
 /// 候補1行。列は、採否・名前・ファイル数・要確認（選択欄）・「⋯」の固定位置。
 /// 標準は2段で、「内容・要確認」の列の1段目に要確認の印・選択欄、2段目に何をどこにどうするかの1文を出す。コンパクトは1段で、その列に両方を並べる。
 /// 長い文字は折り返さず、切り詰めてホバーで全文を出す。
@@ -1722,6 +1768,7 @@ fn draw_candidate_row(
     set: &mut CandidateSet,
     i: usize,
     master: &[TagManagerCategoryUi],
+    inputs: &[CandidateInput],
     action: &mut Option<RowAction>,
     confirmed: &mut HashSet<(Role, String)>,
     t: Lang,
@@ -1734,6 +1781,8 @@ fn draw_candidate_row(
     let is_confirmed = reason.is_some() && confirmed.contains(&id);
     let conclusion = ctext::conclusion(&set.candidates[i], master);
     let parent_hint = ctext::parent_hint(&set.candidates[i]);
+    let source = ctext::source_file(&set.candidates[i], inputs);
+    let source_hover = ctext::source_hover(&set.candidates[i], inputs);
     let row_h = table_row_height(ui, compact);
     let line1_h = table_line1_height(ui, compact);
     let total = ui.available_width();
@@ -1781,11 +1830,37 @@ fn draw_candidate_row(
     if !c.alt_forms.is_empty() {
         name_full.push_str(&format!("（{}）", c.alt_forms.join(" / ")));
     }
-    in_cell(ui, at(cols.x_name() + CELL_PAD, cols.x_count() - CELL_PAD, 0.0, line1_h), left, |ui| {
-        let label = egui::RichText::new(&name_full);
-        let label = if matches!(c.choice, Choice::New) { label.strong() } else { label };
-        ui.add(egui::Label::new(label).truncate()).on_hover_text(&name_full);
-    });
+    let name_is_new = matches!(c.choice, Choice::New);
+    let name_cell = at(cols.x_name() + CELL_PAD, cols.x_count() - CELL_PAD, 0.0, if compact { line1_h } else { row_h });
+    if compact {
+        // コンパクト: 「タグ候補名 ｜ 元のファイル名」を1行に。長いときは、後ろのファイル名から切り詰める。
+        in_cell(ui, name_cell, left, |ui| {
+            let mut job = egui::text::LayoutJob::default();
+            let name_color = if name_is_new { ui.visuals().strong_text_color() } else { ui.visuals().text_color() };
+            job.append(&name_full, 0.0, egui::TextFormat { font_id: egui::TextStyle::Body.resolve(ui.style()), color: name_color, ..Default::default() });
+            if let Some(src) = &source {
+                job.append(ctext::SOURCE_SEPARATOR, 0.0, egui::TextFormat { font_id: egui::TextStyle::Body.resolve(ui.style()), color: ui.visuals().weak_text_color(), ..Default::default() });
+                append_source(&mut job, ui, src);
+            }
+            let resp = ui.add(egui::Label::new(job).truncate());
+            show_name_hover(resp, &name_full, source.as_ref(), &source_hover);
+        });
+    } else {
+        // 標準: 1段目に元のファイル名（候補の元になった部分を強調）、2段目にタグ候補名。
+        in_cell(ui, at(cols.x_name() + CELL_PAD, cols.x_count() - CELL_PAD, 0.0, line1_h), left, |ui| {
+            if let Some(src) = &source {
+                let mut job = egui::text::LayoutJob::default();
+                append_source(&mut job, ui, src);
+                let resp = ui.add(egui::Label::new(job).truncate());
+                show_name_hover(resp, &name_full, source.as_ref(), &source_hover);
+            }
+        });
+        in_cell(ui, at(name_cell.left() - rect.left(), name_cell.right() - rect.left(), line1_h, row_h), left, |ui| {
+            let label = egui::RichText::new(&name_full);
+            let label = if name_is_new { label.strong() } else { label };
+            ui.add(egui::Label::new(label).truncate()).on_hover_text(&name_full);
+        });
+    }
 
     // ファイル数（右寄せ）。
     in_cell(ui, at(cols.x_count(), cols.x_state() - CELL_PAD, 0.0, line1_h), right, |ui| {

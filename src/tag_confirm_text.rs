@@ -8,7 +8,7 @@
 //! - 呼び出し側は、確認ウィンドウの行描画・変更ダイアログ・理由ポップアップ（フェーズB以降）
 
 use crate::i18n::Lang;
-use crate::tag_candidates::{Candidate, CatRef, Choice, ParentMode, Role};
+use crate::tag_candidates::{Candidate, CandidateInput, CatRef, Choice, ParentMode, Role};
 use crate::tag_master::{display_name, primary_alias};
 use crate::view_explorer::TagManagerCategoryUi;
 
@@ -165,6 +165,81 @@ pub(crate) fn limit_body(limit: usize, rows: &str, db_size: &str, step: usize) -
     format!(
         "カテゴリごとの、新規に登録する要素の上限（{limit}個）を超えています。\n\n{rows}\n\n現在のデータベースのサイズ：{db_size}\n\n【{step}個拡張する（おすすめ）】上限を{step}個増やし、すべての要素を登録します。要素が増えたぶん、データベースは大きくなります。ストレージに余裕があるなら、こちらをおすすめします。\n【上限を維持する】データベースは、これ以上大きくなりません。ただし、ファイル数の多い要素から{limit}個までしか登録されません。残りの要素は新しく取り込まれず、その要素が付くはずだったファイルには、タグが付きません。"
     )
+}
+
+// ── 名前列の「元のファイル名」 ────────────────────────────────────────
+
+/// 元のファイル名を探すとき、候補のファイルの先頭から何件まで調べるか（件数が多い候補で、描画のたびに重くしない）。
+pub(crate) const SOURCE_SCAN_CAP: usize = 30;
+/// ホバーで一覧にするファイル名の件数。
+pub(crate) const SOURCE_HOVER_CAP: usize = 10;
+pub(crate) const SOURCE_NOT_IN_NAME: &str = "（ファイル名に含まれない表記）";
+pub(crate) const SOURCE_SEPARATOR: &str = " ｜ ";
+
+/// 「（他N件）」。
+pub(crate) fn source_others(n: usize) -> String {
+    format!("（他{n}件）")
+}
+
+/// 名前列に出す、元のファイル名。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SourceFile {
+    /// ファイル名（拡張子つき）。
+    pub name: String,
+    /// 候補の元になった表記が、ファイル名のどこにあるか（バイト範囲。ファイル名に無ければ None）。
+    pub range: Option<(usize, usize)>,
+    /// 代表の1件のほかに、この候補が付くファイルの数。
+    pub others: usize,
+}
+
+/// 候補の元になった表記（見つかった表記・名前・まとめた別名・対の表記）。長いものを先に当てる。
+fn source_terms(c: &Candidate) -> Vec<&str> {
+    let mut v: Vec<&str> = Vec::new();
+    v.extend(c.forms.iter().map(String::as_str));
+    v.push(c.name.as_str());
+    v.extend(c.aliases.iter().map(String::as_str));
+    v.extend(c.alt_forms.iter().map(String::as_str));
+    for m in &c.members {
+        v.extend(m.forms.iter().map(String::as_str));
+        v.push(m.name.as_str());
+    }
+    v.retain(|t| !t.trim().is_empty());
+    v.sort_by_key(|t| std::cmp::Reverse(t.len()));
+    v.dedup();
+    v
+}
+
+/// `term` が `name` のどこにあるか。完全一致を先に、なければ英字の大文字小文字を区別しない一致。
+fn find_range(name: &str, term: &str) -> Option<(usize, usize)> {
+    if let Some(i) = name.find(term) {
+        return Some((i, i + term.len()));
+    }
+    // 英字だけを小文字にしても、バイト長は変わらない。
+    name.to_ascii_lowercase().find(&term.to_ascii_lowercase()).map(|i| (i, i + term.len()))
+}
+
+/// 候補の「元のファイル名」。表記を含むファイル名を、先頭 `SOURCE_SCAN_CAP` 件から探して優先し、無ければ先頭のファイル。
+/// 候補にファイルが無いときは None。
+pub(crate) fn source_file(c: &Candidate, inputs: &[CandidateInput]) -> Option<SourceFile> {
+    let first = *c.files.first()?;
+    let terms = source_terms(c);
+    let others = c.files.len() - 1;
+    for &f in c.files.iter().take(SOURCE_SCAN_CAP) {
+        let Some(input) = inputs.get(f) else { continue };
+        for t in &terms {
+            if let Some(range) = find_range(&input.file_name, t) {
+                return Some(SourceFile { name: input.file_name.clone(), range: Some(range), others });
+            }
+        }
+    }
+    let name = inputs.get(first).map(|i| i.file_name.clone()).unwrap_or_default();
+    Some(SourceFile { name, range: None, others })
+}
+
+/// ホバーに出す、この候補が付くファイル名の一覧（先頭 `SOURCE_HOVER_CAP` 件と、残りの件数）。
+pub(crate) fn source_hover(c: &Candidate, inputs: &[CandidateInput]) -> (Vec<String>, usize) {
+    let names = c.files.iter().take(SOURCE_HOVER_CAP).filter_map(|&f| inputs.get(f)).map(|i| i.file_name.clone()).collect();
+    (names, c.files.len().saturating_sub(SOURCE_HOVER_CAP))
 }
 
 // ── 変更・理由ダイアログのボタン ────────────────────────────────────
@@ -934,6 +1009,63 @@ mod tests {
         let (cut, total) = link_elements(&m, 0, "", 1);
         assert_eq!((cut.len(), total), (1, 2));
         assert_eq!(link_elements(&m, 99, "", 10), (Vec::new(), 0), "範囲外のカテゴリは空");
+    }
+
+    fn input(name: &str) -> CandidateInput {
+        CandidateInput { file_name: name.to_string(), format: None, info: None, meta: None }
+    }
+
+    #[test]
+    fn source_file_prefers_a_file_containing_the_form_and_marks_it() {
+        let inputs = vec![input("[Other] a.zip"), input("(C105) [Circle (Kouji)] b.zip"), input("[Kouji] c.zip")];
+        let mut c = base(Role::Author, "Kouji", Choice::New);
+        c.files = vec![0, 1, 2];
+        // 先頭のファイルには表記が無い。表記を含む2番目を選び、範囲を返す。
+        let s = source_file(&c, &inputs).unwrap();
+        assert_eq!(s.name, "(C105) [Circle (Kouji)] b.zip");
+        let (a, b) = s.range.unwrap();
+        assert_eq!(&s.name[a..b], "Kouji");
+        assert_eq!(s.others, 2, "代表の1件のほかに2件");
+        // 大文字小文字は区別しない。
+        let mut lower = base(Role::Author, "kouji", Choice::New);
+        lower.forms = vec!["kouji".to_string()];
+        lower.files = vec![1];
+        let s = source_file(&lower, &inputs).unwrap();
+        let (a, b) = s.range.unwrap();
+        assert_eq!(&s.name[a..b], "Kouji");
+        assert_eq!(s.others, 0);
+    }
+
+    #[test]
+    fn source_file_falls_back_to_the_first_file_when_no_name_contains_the_form() {
+        let inputs = vec![input("x.zip"), input("y.zip")];
+        let mut c = base(Role::Language, "日本語", Choice::New);
+        c.files = vec![1, 0];
+        let s = source_file(&c, &inputs).unwrap();
+        assert_eq!((s.name.as_str(), s.range, s.others), ("y.zip", None, 1), "候補のファイルの先頭");
+        c.files.clear();
+        assert_eq!(source_file(&c, &inputs), None);
+        assert_eq!(source_others(3), "（他3件）");
+    }
+
+    #[test]
+    fn source_file_scans_only_the_first_files_and_uses_merged_aliases() {
+        // 表記を含むのが31件目以降なら、探さずに先頭のファイルにする（重くしない）。
+        let mut inputs: Vec<CandidateInput> = (0..40).map(|i| input(&format!("f{i}.zip"))).collect();
+        inputs[35] = input("[Kouji] z.zip");
+        let mut c = base(Role::Author, "Kouji", Choice::New);
+        c.files = (0..40).collect();
+        assert_eq!(source_file(&c, &inputs).unwrap().range, None);
+        // まとめた候補は、別名のどれかを含むファイルを選ぶ。
+        let inputs = vec![input("a.zip"), input("[Koji] b.zip")];
+        let mut m = base(Role::Author, "Kouji", Choice::New);
+        m.aliases = vec!["Kouji".to_string(), "Koji".to_string()];
+        m.files = vec![0, 1];
+        let s = source_file(&m, &inputs).unwrap();
+        assert_eq!(s.name, "[Koji] b.zip");
+        // ホバーは先頭10件と、残りの件数。
+        let (names, rest) = source_hover(&c, &inputs.iter().cloned().cycle().take(40).collect::<Vec<_>>());
+        assert_eq!((names.len(), rest), (SOURCE_HOVER_CAP, 30));
     }
 
     #[test]
