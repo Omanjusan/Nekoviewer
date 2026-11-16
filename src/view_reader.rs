@@ -4090,7 +4090,16 @@ impl ViewerState {
     /// 上配置のバーを左右それぞれ切り詰める幅（ここがメニューバー・ファイル名バーを出す導線＝遊びになる）。
     const THUMBBAR_TOP_GAP: f32 = 50.0;
     /// 左右バーの発火域（左下・右下の角）の一辺。ページ送りゾーン幅と同じにして、角をその領域からくり抜く。
-    const THUMBBAR_CORNER: f32 = 100.0;
+    const THUMBBAR_CORNER_W: f32 = 100.0;
+    /// 左右バーの発火域（下角）の高さの、画面高さに対する割合。ページ送りゾーン（幅100px）はこの高さぶん下側が削られる。
+    const THUMBBAR_CORNER_H_RATIO: f32 = 0.30;
+    /// 発火域の高さの下限（極端に低いウィンドウでも狙える大きさを保つ）。
+    const THUMBBAR_CORNER_H_MIN: f32 = 100.0;
+
+    /// 左右バーの発火域（下角）の高さ。画面高さの30%（最低100px）。幅は固定の THUMBBAR_CORNER_W。
+    fn thumbbar_corner_h(area_h: f32) -> f32 {
+        (area_h * Self::THUMBBAR_CORNER_H_RATIO).max(Self::THUMBBAR_CORNER_H_MIN).min(area_h.max(0.0))
+    }
     /// 上端のメニューバー・タイトルバー用の確保高の下限（タイトル帯のホバートリガー高と同じ）。
     const THUMBBAR_TOP_MIN_INSET: f32 = 40.0;
 
@@ -4103,7 +4112,7 @@ impl ViewerState {
     /// サムネバーの矩形と発火域を求める（純粋関数）。バーは画面の端に完全に寄せる（余白0）。
     /// ホイールがバー専用になる範囲＝バーの矩形なので、端に隙間があるとそこでページ送りが効いてしまう。
     /// - 上下バー: 発火域はバー帯のうち、左右のページ送り保護域（各 EDGE_TURN_ZONE_W）を除いた区間。
-    /// - 左右バー: 発火域は左下／右下の角（THUMBBAR_CORNER 四方）。エントリリスト発火域・ページ送り保護域と競合しない場所。
+    /// - 左右バー: 発火域は左下／右下の角（幅 THUMBBAR_CORNER_W 固定×高さ=画面高さの30%）。エントリリスト発火域（上端15%）と競合しない場所。
     /// - 上バーだけ、左右それぞれ THUMBBAR_TOP_GAP ずつ切り詰めて中央寄せにする（遊び＝メニュー導線）。
     ///   Y は `top_stack`（メニューバー＋ファイル名バーのうち今出ている高さ）の下。何も出ていなければ上端（0）。
     ///   メニュー等が先に出ているときは、発火域もその下になる。
@@ -4148,8 +4157,8 @@ impl ViewerState {
                     egui::pos2(viewport.min.x + thickness, viewport.max.y.max(side_top)),
                 );
                 let trig = egui::Rect::from_min_max(
-                    egui::pos2(viewport.min.x, viewport.max.y - Self::THUMBBAR_CORNER),
-                    egui::pos2(viewport.min.x + Self::THUMBBAR_CORNER, viewport.max.y),
+                    egui::pos2(viewport.min.x, viewport.max.y - Self::thumbbar_corner_h(viewport.height())),
+                    egui::pos2(viewport.min.x + Self::THUMBBAR_CORNER_W, viewport.max.y),
                 );
                 (bar, trig)
             }
@@ -4159,7 +4168,7 @@ impl ViewerState {
                     egui::pos2(viewport.max.x, viewport.max.y.max(side_top)),
                 );
                 let trig = egui::Rect::from_min_max(
-                    egui::pos2(viewport.max.x - Self::THUMBBAR_CORNER, viewport.max.y - Self::THUMBBAR_CORNER),
+                    egui::pos2(viewport.max.x - Self::THUMBBAR_CORNER_W, viewport.max.y - Self::thumbbar_corner_h(viewport.height())),
                     egui::pos2(viewport.max.x, viewport.max.y),
                 );
                 (bar, trig)
@@ -4827,11 +4836,11 @@ impl ViewerState {
     /// マウス位置がどちらの端ゾーンにあるかを判定する（進む/戻る可否は見ない）。
     /// 左ゾーンは左エントリリストの発火域（左端上部の一部）と競合しないよう、
     /// その下端から画面下端までとする。右ゾーンは競合が無いため全高。
-    /// サムネバーを左（右）に置いているときは、その側の下角（THUMBBAR_CORNER 四方）をバーの発火域として
+    /// サムネバーを左（右）に置いているときは、その側の下角（幅100px×高さ=画面高さの30%）をバーの発火域として
     /// くり抜き、ページ送りゾーンから除く。
     fn edge_turn_zone_at(clip: egui::Rect, pos: egui::Pos2, thumbbar_pos: ThumbbarPos) -> Option<bool> {
         let top_avoid_h = Self::hover_trigger_height(clip.height());
-        let corner_top = clip.max.y - Self::THUMBBAR_CORNER;
+        let corner_top = clip.max.y - Self::thumbbar_corner_h(clip.height());
         let in_left  = pos.x < clip.min.x + Self::EDGE_TURN_ZONE_W
             && pos.y >= clip.min.y + top_avoid_h && pos.y <= clip.max.y
             && !(thumbbar_pos == ThumbbarPos::Left && pos.y > corner_top);
@@ -7407,6 +7416,33 @@ mod sort_save_state_tests {
         assert!(r.contains(egui::pos2(990.0, 790.0)));
         assert!(!r.contains(egui::pos2(10.0, 790.0)));
         assert!(ViewerState::thumbbar_rects(ThumbbarPos::None, vp, 116.0, 40.0, 0.0).is_none());
+    }
+
+    #[test]
+    fn thumbbar_corner_height_is_30_percent_of_the_screen_with_a_100px_floor() {
+        let near = |a: f32, b: f32| (a - b).abs() < 0.01;
+        assert!(near(ViewerState::thumbbar_corner_h(800.0), 240.0));
+        assert!(near(ViewerState::thumbbar_corner_h(1080.0), 324.0));
+        // 低いウィンドウでも100pxは確保する。ウィンドウ自体が100pxより低ければ全高まで
+        assert_eq!(ViewerState::thumbbar_corner_h(200.0), 100.0);
+        assert_eq!(ViewerState::thumbbar_corner_h(60.0), 60.0);
+    }
+
+    #[test]
+    fn left_and_right_bar_trigger_grows_with_the_screen_height_and_matches_the_page_turn_carve_out() {
+        let vp = tb_viewport(); // 高さ800 → 角の高さ240（y>560）
+        for pos in [ThumbbarPos::Left, ThumbbarPos::Right] {
+            let (_, trig) = ViewerState::thumbbar_rects(pos, vp, 116.0, 40.0, 0.0).unwrap();
+            assert!((trig.height() - 240.0).abs() < 0.01);
+            assert_eq!(trig.width(), 100.0); // 幅は固定
+            // 発火域とページ送りのくり抜きが同じ範囲（境界の上下で入れ替わる）
+            let x = if pos == ThumbbarPos::Left { 10.0 } else { 990.0 };
+            let inside = egui::pos2(x, 600.0);
+            let above = egui::pos2(x, 500.0);
+            assert!(trig.contains(inside) && !trig.contains(above));
+            assert_eq!(ViewerState::edge_turn_zone_at(vp, inside, pos), None);
+            assert!(ViewerState::edge_turn_zone_at(vp, above, pos).is_some());
+        }
     }
 
     #[test]
