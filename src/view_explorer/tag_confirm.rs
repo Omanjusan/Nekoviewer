@@ -66,6 +66,39 @@ fn pending_review(c: &Candidate, confirmed: &HashSet<(Role, String)>) -> bool {
     ctext::needs_review(c) && !confirmed.contains(&(c.role, c.key.clone()))
 }
 
+/// 未確認の要確認が残っている候補の数（窓をまたいで数える）。
+fn pending_review_total(set: &CandidateSet, confirmed: &HashSet<(Role, String)>) -> usize {
+    set.candidates.iter().filter(|c| pending_review(c, confirmed)).count()
+}
+
+/// 窓冒頭の説明。たたむ・開くボタンと、よくある質問のボタンを持つ。
+fn draw_intro(ui: &mut egui::Ui, st: &mut TagConfirm) {
+    egui::Frame::group(ui.style()).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.horizontal(|ui| {
+            ui.strong(ctext::INTRO_TITLE);
+            if ui.small_button(if st.intro_open { ctext::INTRO_FOLD } else { ctext::INTRO_UNFOLD }).clicked() {
+                st.intro_open = !st.intro_open;
+            }
+            if ui.small_button(ctext::FAQ_BUTTON).clicked() {
+                st.faq_open = true;
+            }
+        });
+        if st.intro_open {
+            egui::ScrollArea::vertical().id_salt("tag_confirm_intro").max_height(150.0).auto_shrink([false, true]).show(ui, |ui| {
+                for p in ctext::INTRO_PARAS {
+                    ui.label(p);
+                }
+                ui.add_space(4.0);
+                ui.strong(ctext::FAILED_TITLE);
+                for p in ctext::FAILED_PARAS {
+                    ui.label(format!("・{p}"));
+                }
+            });
+        }
+    });
+}
+
 /// 窓ごとのチップの件数を数える。
 pub(super) fn view_counts(set: &CandidateSet, window: Window, confirmed: &HashSet<(Role, String)>) -> ViewCounts {
     let mut n = ViewCounts::default();
@@ -176,6 +209,12 @@ pub(super) struct TagConfirm {
     /// 「他の要素と同一としてまとめる」ダイアログ（開いている間だけ Some）。
     merge_dialog: Option<MergeDialog>,
     bulk_move_dialog: Option<BulkMoveDialog>,
+    /// 窓冒頭の説明を開いているか（毎回、開いた状態から始める）。
+    intro_open: bool,
+    /// よくある質問のポップアップを開いているか。
+    faq_open: bool,
+    /// 適用前の確認（要確認が残っているとき）を出しているか。
+    precheck: bool,
     /// 名前の絞り込み欄。
     filter: String,
     next_bundle_id: u64,
@@ -296,7 +335,7 @@ impl TagConfirm {
         } else {
             return None;
         };
-        Some(Self { set, inputs: Arc::new(inputs), paths, master: Arc::new(master), model, rules, stage, move_rules, separators, sep_input: String::new(), sep_error: None, view: ListView::All, settings_open: false, rules_dialog_open: false, rebuild: None, threshold_draft: None, merge_dialog: None, bulk_move_dialog: None, filter: String::new(), next_bundle_id: 1, rename_review: None, limit, limit_keep: false, truncated: Vec::new(), reattach: false, compact: false, confirmed: HashSet::new(), resolve_dialog: None, why_dialog: None })
+        Some(Self { set, inputs: Arc::new(inputs), paths, master: Arc::new(master), model, rules, stage, move_rules, separators, sep_input: String::new(), sep_error: None, view: ListView::All, settings_open: false, rules_dialog_open: false, rebuild: None, threshold_draft: None, merge_dialog: None, bulk_move_dialog: None, intro_open: true, faq_open: false, precheck: false, filter: String::new(), next_bundle_id: 1, rename_review: None, limit, limit_keep: false, truncated: Vec::new(), reattach: false, compact: false, confirmed: HashSet::new(), resolve_dialog: None, why_dialog: None })
     }
 
     /// 切替項目が変わったので、別スレッドで候補を作り直す。進行中の作り直しは捨てる。
@@ -474,6 +513,8 @@ impl NekoviewApp {
         .pivot(egui::Align2::CENTER_CENTER)
         .default_pos(center)
         .show(ctx, |ui| {
+            // 冒頭の説明（毎回全文。たたむボタンはあるが、状態は記憶しない）。
+            draw_intro(ui, &mut st);
             // 見出し帯: 表示の絞り込み（チップ）・要確認を既定にするチェック・名前の絞り込み・表示密度・照合の設定・一括操作。
             let counts = view_counts(&st.set, stage, &st.confirmed);
             let window_idx: Vec<usize> = st.set.indices_in_window(stage);
@@ -539,7 +580,7 @@ impl NekoviewApp {
             let rows = rows_for(&st.set, stage, st.view, &st.confirmed, &st.filter, &opts);
             let compact = st.compact;
             let row_h = table_row_height(ui, compact);
-            let footer_h = 72.0;
+            let footer_h = 110.0;
             let header_h = ui.text_style_height(&egui::TextStyle::Body) + 8.0 + ui.spacing().item_spacing.y;
             let list_h = (ui.available_height() - footer_h - header_h).max(80.0);
             draw_table_header(ui, ui.available_width() - ui.spacing().scroll.allocated_width());
@@ -609,7 +650,7 @@ impl NekoviewApp {
                 }
             });
 
-            // 操作ボタン。適用は、最後の窓（作者・グループの窓。無ければ1枚目）で押せる。
+            // 操作ボタン（2段）。1段目=窓の行き来、2段目=キャンセル（左）と適用（右）。適用は、最後の窓（作者・グループの窓。無ければ1枚目）で押せる。
             ui.separator();
             let any_adopted = st.set.candidates.iter().any(|c| c.is_adopted());
             // 上限を超えたまま（拡張も維持も選んでいない）の間は適用できない。
@@ -622,29 +663,35 @@ impl NekoviewApp {
             } else {
                 t.tag_confirm_apply_pending().to_string()
             };
-            ui.horizontal(|ui| {
-                let has_two = st.set.candidates.iter().any(|c| c.role.window() == Window::Two);
-                // 適用のできる窓では、前回の自動付与分を外して付け直すかを選べる（既定はOFF）。
-                if stage == Window::Two || !has_two {
-                    ui.checkbox(&mut st.reattach, t.tag_confirm_reattach()).on_hover_text(t.tag_confirm_reattach_hover());
-                }
-                if stage == Window::Two {
-                    let back_enabled = st.set.candidates.iter().any(|c| c.role.window() == Window::One);
-                    if ui.add_enabled(back_enabled, egui::Button::new(t.tag_confirm_back())).clicked() {
-                        next_stage = Some(Window::One);
+            let has_two = st.set.candidates.iter().any(|c| c.role.window() == Window::Two);
+            let last_stage = stage == Window::Two || !has_two;
+            if has_two {
+                ui.horizontal(|ui| {
+                    if stage == Window::Two {
+                        let back_enabled = st.set.candidates.iter().any(|c| c.role.window() == Window::One);
+                        if ui.add_enabled(back_enabled, egui::Button::new(ctext::FOOTER_BACK)).clicked() {
+                            next_stage = Some(Window::One);
+                        }
+                    } else if ui.button(ctext::FOOTER_NEXT).clicked() {
+                        next_stage = Some(Window::Two);
                     }
-                } else if ui.add_enabled(has_two, egui::Button::new(t.tag_confirm_next())).clicked() {
-                    next_stage = Some(Window::Two);
+                });
+            }
+            ui.horizontal(|ui| {
+                // 適用のできる窓では、前回の自動付与分を外して付け直すかを選べる（既定はOFF）。
+                if last_stage {
+                    ui.checkbox(&mut st.reattach, t.tag_confirm_reattach()).on_hover_text(t.tag_confirm_reattach_hover());
+                    ui.separator();
                 }
-                if stage == Window::Two || !has_two {
-                    let btn = ui.add_enabled(apply_enabled, egui::Button::new(t.tag_confirm_apply()));
+                if ui.button(t.archive_open_cancel()).clicked() {
+                    cancel = true;
+                }
+                if last_stage {
+                    let btn = ui.add_enabled(apply_enabled, egui::Button::new(ctext::FOOTER_APPLY));
                     let btn = if apply_enabled { btn } else { btn.on_disabled_hover_text(apply_hint) };
                     if btn.clicked() {
                         apply_clicked = true;
                     }
-                }
-                if ui.button(t.archive_open_cancel()).clicked() {
-                    cancel = true;
                 }
             });
         });
@@ -809,20 +856,12 @@ impl NekoviewApp {
             st.stage = s;
             st.pick_initial_view(self.config.tag_confirm_default_review);
         }
-        if apply_clicked {
-            // 既存要素の名前が書き換わるなら、先に一覧を見せて確認する。
-            let mut master = self.tag_manager_categories.clone();
-            let mut next = self.tag_manager_next_tier_id;
-            let plan = plan_application(&st.set, &mut master, &mut next, i18n::t());
-            if plan.renames.is_empty() {
-                self.start_tag_apply(&st);
-            } else {
-                st.rename_review = Some(RenameReview {
-                    renames: plan.renames.iter().map(|(_, _, old, new)| (old.clone(), new.clone())).collect(),
-                    conflicts: plan.alias_conflicts,
-                });
-                self.tag_confirm = Some(st);
-            }
+        if apply_clicked && pending_review_total(&st.set, &st.confirmed) > 0 {
+            // 要確認が残っているときだけ、適用の前に確認する。
+            st.precheck = true;
+            self.tag_confirm = Some(st);
+        } else if apply_clicked {
+            self.begin_apply(st);
         } else if open && !cancel {
             // 上限を超えているとき: 拡張するか、維持して切り捨てるかを選ぶ（モーダル）。作り直し中は待つ。
             if !st.limit_keep && st.rebuild.is_none() {
@@ -863,16 +902,64 @@ impl NekoviewApp {
                     st.rename_review = None;
                 }
             }
+            // 適用前の確認（要確認が残っているとき）。
+            let mut precheck_go = false;
+            if st.precheck {
+                let mut back = false;
+                let pending = pending_review_total(&st.set, &st.confirmed);
+                let modal = self.explorer_modal(ctx, "tag_precheck").show(ctx, |ui| {
+                    ui.set_width(460.0);
+                    ui.heading(ctext::PRECHECK_TITLE);
+                    ui.add_space(4.0);
+                    ui.label(ctext::precheck_body(pending));
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        if ui.button(ctext::PRECHECK_BACK).clicked() {
+                            back = true;
+                        }
+                        if ui.button(ctext::PRECHECK_GO).clicked() {
+                            precheck_go = true;
+                        }
+                    });
+                });
+                if back || modal.should_close() {
+                    st.precheck = false;
+                    // 「要確認」の表示に切り替えて、確認を始めやすくする。
+                    st.view = ListView::NeedsReview;
+                }
+            }
             self.draw_tag_merge_dialog(ctx, &mut st);
             self.draw_tag_bulk_move_dialog(ctx, &mut st);
             self.draw_tag_resolve_dialog(ctx, &mut st);
             self.draw_tag_why_dialog(ctx, &mut st);
             self.draw_tag_rule_hits_dialog(ctx, &mut st);
-            if proceed {
+            self.draw_tag_faq_dialog(ctx, &mut st);
+            if precheck_go {
+                st.precheck = false;
+                self.begin_apply(st);
+            } else if proceed {
                 self.start_tag_apply(&st);
             } else {
                 self.tag_confirm = Some(st);
             }
+        }
+    }
+}
+
+impl NekoviewApp {
+    /// 適用を始める。既存要素の名前が書き換わるなら、先に一覧を見せて確認する。
+    fn begin_apply(&mut self, mut st: TagConfirm) {
+        let mut master = self.tag_manager_categories.clone();
+        let mut next = self.tag_manager_next_tier_id;
+        let plan = plan_application(&st.set, &mut master, &mut next, i18n::t());
+        if plan.renames.is_empty() {
+            self.start_tag_apply(&st);
+        } else {
+            st.rename_review = Some(RenameReview {
+                renames: plan.renames.iter().map(|(_, _, old, new)| (old.clone(), new.clone())).collect(),
+                conflicts: plan.alias_conflicts,
+            });
+            self.tag_confirm = Some(st);
         }
     }
 }
@@ -889,12 +976,12 @@ impl NekoviewApp {
         let (mut expand, mut keep) = (false, false);
         self.explorer_modal(ctx, "tag_limit_dialog").show(ctx, |ui| {
             ui.set_width(520.0);
-            ui.heading(t.tag_limit_title());
+            ui.heading(ctext::LIMIT_TITLE);
             ui.add_space(4.0);
-            ui.label(t.tag_limit_body(st.limit, &rows.join("\n"), &db_size, LIMIT_EXPAND_STEP));
+            ui.label(ctext::limit_body(st.limit, &rows.join("\n"), &db_size, LIMIT_EXPAND_STEP));
             ui.add_space(8.0);
             ui.horizontal(|ui| {
-                if ui.button(t.tag_limit_expand(LIMIT_EXPAND_STEP)).clicked() {
+                if ui.button(format!("{}（おすすめ）", t.tag_limit_expand(LIMIT_EXPAND_STEP))).clicked() {
                     expand = true;
                 }
                 if ui.button(t.tag_limit_keep()).clicked() {
@@ -1326,6 +1413,35 @@ impl NekoviewApp {
             return;
         }
         st.why_dialog = Some((role, key));
+    }
+}
+
+impl NekoviewApp {
+    /// よくある質問のポップアップ。各質問は、見出しをクリックして開閉する。
+    fn draw_tag_faq_dialog(&mut self, ctx: &egui::Context, st: &mut TagConfirm) {
+        if !st.faq_open {
+            return;
+        }
+        let mut close = false;
+        let modal = self.explorer_modal(ctx, "tag_faq_dialog").show(ctx, |ui| {
+            ui.set_width(560.0);
+            ui.heading(ctext::FAQ_TITLE);
+            ui.add_space(4.0);
+            egui::ScrollArea::vertical().id_salt("tag_faq_list").max_height(380.0).auto_shrink([false, true]).show(ui, |ui| {
+                for (q, a) in ctext::FAQ_ITEMS {
+                    egui::CollapsingHeader::new(egui::RichText::new(q).strong()).id_salt(q).show(ui, |ui| {
+                        ui.label(a);
+                    });
+                }
+            });
+            ui.add_space(8.0);
+            if ui.button(ctext::CLOSE_LABEL).clicked() {
+                close = true;
+            }
+        });
+        if close || modal.should_close() {
+            st.faq_open = false;
+        }
     }
 }
 

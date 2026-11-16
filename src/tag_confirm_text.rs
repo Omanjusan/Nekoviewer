@@ -109,6 +109,64 @@ pub(crate) const DENSITY_STANDARD: &str = "表示：標準（2段）";
 pub(crate) const DENSITY_COMPACT: &str = "表示：コンパクト（1段）";
 pub(crate) const DENSITY_HINT: &str = "一覧の行の密度を切り替えます。コンパクトは1行で、行数が多いときに便利です";
 
+// ── 窓冒頭の説明・よくある質問・適用前の確認・上限ダイアログ ─────────────
+
+pub(crate) const INTRO_TITLE: &str = "この窓で求めること";
+pub(crate) const INTRO_FOLD: &str = "説明をたたむ";
+pub(crate) const INTRO_UNFOLD: &str = "説明を開く";
+/// 冒頭の説明（段落ごと）。
+pub(crate) const INTRO_PARAS: [&str; 3] = [
+    "各候補は、ファイルから自動抽出したタグです。検出元のファイルに付けるか（「タグ採用予定」）、付けないか（「タグ不採用」）のどちらかを選びます。「タグ採用予定」は、最終確認で適用した時点で、ファイルのタグDBに書き込まれます。適用するまで、ファイルは変わりません。",
+    "「タグ不採用」の候補は、登録もしません。付けたくないものは、「タグ不採用」にしてください（不採用は保存されないので、次の自動抽出で、また候補に出ます）。",
+    "迷ったら、「変更…」で、どう扱うかを選べます。「要確認」と出ている候補は、内容を見て、扱いを決めてください。",
+];
+pub(crate) const FAILED_TITLE: &str = "失敗したと思ったら";
+/// 「失敗したと思ったら」の説明（段落ごと）。
+pub(crate) const FAILED_PARAS: [&str; 3] = [
+    "適用の前に、データベースのバックアップを自動で取ります。",
+    "この窓の操作を最後まで終えると、「試用中」になります。このとき、タグパネルの「確定」か「破棄」を選べます。",
+    "「破棄」を選ぶと、この自動抽出で足したタグだけをファイルから外し、操作する前に戻します（適用のあとに手で付けた・外したタグには触りません）。データベースのバックアップからの復元は、別に、設定のバックアップ画面でできます。",
+];
+pub(crate) const FAQ_BUTTON: &str = "よくある質問";
+pub(crate) const FAQ_TITLE: &str = "よくある質問（見出しをクリックして展開）";
+/// よくある質問（質問, 答え）。
+pub(crate) const FAQ_ITEMS: [(&str, &str); 3] = [
+    (
+        "自動で付けたタグを、手動で消すと、どうなりますか？",
+        "消したタグは、外れたままです。ただし、「消した」ことは記憶されません。次の自動抽出で同じ候補が出れば、また付きます。付けたくないときは、この窓で「タグ不採用」にしてください。",
+    ),
+    (
+        "手動のタグと、自動のタグは、どう混ざりますか？",
+        "手動で付けたタグは、自動抽出で消えません。自動は、足すだけです。形式・メインなど、1つしか選べないカテゴリは、手動のタグが優先されます（メインは、未設定のときだけ付きます）。同じタグがすでにあるときは、何も起きません。逆に、自動で付けたあとに手動で付け直したタグは、自動付与の記録から外れます。「付け直し」や「破棄」で、外れることはありません。",
+    ),
+    (
+        "旧バージョンの手動タグも含めて、全部やり直したいときは？",
+        "自動付与の分だけなら、試用中は「破棄」、確定後は、適用のときの「前回の自動付与分を外して付け直す」を使います（手動のタグは外れません）。手動のタグも含めて全部消すなら、タグ管理の「危険な設定」の「タグのクリア」です。全ファイルのタグが消え、タグマスターも初期状態に戻ります（評価・お気に入り・学習データは残ります）。直前に、データベースとマスターを自動でバックアップします。心配なときは、先にリカバリポイントを作ってください。",
+    ),
+];
+
+pub(crate) const FOOTER_BACK: &str = "戻る";
+pub(crate) const FOOTER_NEXT: &str = "次へ";
+pub(crate) const FOOTER_APPLY: &str = "今までの選択を適用";
+
+pub(crate) const PRECHECK_TITLE: &str = "要確認の候補が残っています";
+pub(crate) const PRECHECK_BACK: &str = "戻って確認する";
+pub(crate) const PRECHECK_GO: &str = "このまま適用する";
+
+/// 適用前の確認の本文（未確認の要確認が残っているとき）。
+pub(crate) fn precheck_body(count: usize) -> String {
+    format!("まだ確認していない「要確認」の候補が{count}件あります。このまま適用すると、いまの「タグ採用予定」「タグ不採用」の選択どおりに、ファイルにタグが付きます。確認してから適用しますか？")
+}
+
+pub(crate) const LIMIT_TITLE: &str = "新規に登録する要素の数が、上限を超えています";
+
+/// 上限ダイアログの本文。`rows` は種類ごとの超過の行、`db_size` はいまのDBのサイズ、`step` は拡張の幅。
+pub(crate) fn limit_body(limit: usize, rows: &str, db_size: &str, step: usize) -> String {
+    format!(
+        "カテゴリごとの、新規に登録する要素の上限（{limit}個）を超えています。\n\n{rows}\n\n現在のデータベースのサイズ：{db_size}\n\n【{step}個拡張する（おすすめ）】上限を{step}個増やし、すべての要素を登録します。要素が増えたぶん、データベースは大きくなります。ストレージに余裕があるなら、こちらをおすすめします。\n【上限を維持する】データベースは、これ以上大きくなりません。ただし、ファイル数の多い要素から{limit}個までしか登録されません。残りの要素は新しく取り込まれず、その要素が付くはずだったファイルには、タグが付きません。"
+    )
+}
+
 // ── 変更・理由ダイアログのボタン ────────────────────────────────────
 
 /// 要確認のままの行のボタン。
@@ -739,6 +797,19 @@ mod tests {
         // 形式・メインの種類には出さない。
         assert!(!can_move_category(&base(Role::Format, "zip", Choice::New)));
         assert!(move_targets(&base(Role::Main, "同人誌", Choice::New), &m).is_empty());
+    }
+
+    #[test]
+    fn intro_faq_precheck_and_limit_texts() {
+        assert!(INTRO_PARAS[0].contains("「タグ採用予定」") && INTRO_PARAS[0].contains("適用するまで、ファイルは変わりません"));
+        assert!(INTRO_PARAS[1].contains("登録もしません"));
+        assert!(FAILED_PARAS[2].contains("この自動抽出で足したタグだけ"));
+        assert_eq!(FAQ_ITEMS.len(), 3);
+        assert!(FAQ_ITEMS.iter().all(|(q, a)| q.ends_with('？') && !a.is_empty()));
+        assert!(precheck_body(4).contains("4件"));
+        let body = limit_body(5000, "イベント：新規6000個", "12.3 MB", 1000);
+        assert!(body.contains("5000個") && body.contains("イベント：新規6000個") && body.contains("12.3 MB"));
+        assert!(body.contains("1000個拡張する（おすすめ）") && body.contains("これ以上大きくなりません"));
     }
 
     #[test]
