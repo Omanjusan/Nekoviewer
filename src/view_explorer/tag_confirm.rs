@@ -286,6 +286,14 @@ struct ResolveDialog {
     remember: bool,
     /// 上位名の扱い。
     parent_mode: ParentMode,
+    /// 「既存の要素に結びつける」を選んでいるか（選んでいる間は、他の選択肢は選ばれていない扱い）。
+    link_on: bool,
+    /// 結びつけ先のカテゴリ（番号）。
+    link_cat: Option<usize>,
+    /// 結びつけ先の要素（tier_id）。
+    link_tier: Option<u64>,
+    /// 要素を探す絞り込み欄。
+    link_filter: String,
 }
 
 /// 照合の設定ポップアップでの、区切り記号の操作。
@@ -372,7 +380,7 @@ impl TagConfirm {
             (Some(_), CatRef::Existing(i)) => Some(i),
             _ => None,
         };
-        self.resolve_dialog = Some(ResolveDialog { role: c.role, key: c.key.clone(), sel: c.choice.clone(), move_cat, remember: c.category_rule, parent_mode: c.parent_mode });
+        self.resolve_dialog = Some(ResolveDialog { role: c.role, key: c.key.clone(), sel: c.choice.clone(), move_cat, remember: c.category_rule, parent_mode: c.parent_mode, link_on: false, link_cat: None, link_tier: None, link_filter: String::new() });
     }
 
     /// 理由ダイアログを開く。
@@ -1235,7 +1243,7 @@ impl NekoviewApp {
             ui.add_space(6.0);
             egui::ScrollArea::vertical().id_salt("tag_resolve_options").max_height(380.0).auto_shrink([false, true]).show(ui, |ui| {
                 for o in &options {
-                    let selected = rd.move_cat.is_none() && rd.sel == o.choice;
+                    let selected = !rd.link_on && rd.move_cat.is_none() && rd.sel == o.choice;
                     let fill = if selected { ui.visuals().selection.bg_fill.gamma_multiply(0.4) } else { egui::Color32::TRANSPARENT };
                     let framed = egui::Frame::group(ui.style()).fill(fill).show(ui, |ui| {
                         ui.set_width(ui.available_width());
@@ -1243,6 +1251,7 @@ impl NekoviewApp {
                             if ui.radio(selected, "").clicked() {
                                 rd.sel = o.choice.clone();
                                 rd.move_cat = None;
+                                rd.link_on = false;
                             }
                             ui.label(egui::RichText::new(&o.title).strong());
                         });
@@ -1251,23 +1260,24 @@ impl NekoviewApp {
                     if framed.response.interact(egui::Sense::click()).clicked() {
                         rd.sel = o.choice.clone();
                         rd.move_cat = None;
+                        rd.link_on = false;
                     }
                 }
                 // 登録先のカテゴリを選び直す（抽出された種類が実際と違うとき）。
                 if movable {
-                    let selected = rd.move_cat.is_some();
+                    let selected = !rd.link_on && rd.move_cat.is_some();
                     let fill = if selected { ui.visuals().selection.bg_fill.gamma_multiply(0.4) } else { egui::Color32::TRANSPARENT };
                     egui::Frame::group(ui.style()).fill(fill).show(ui, |ui| {
                         ui.set_width(ui.available_width());
                         ui.horizontal(|ui| {
                             if ui.add_enabled(!targets.is_empty(), egui::RadioButton::new(selected, "")).clicked() {
                                 rd.move_cat = rd.move_cat.or(targets.first().map(|t| t.0));
-                                rd.sel = Choice::New;
+                                rd.sel = Choice::New; rd.link_on = false;
                             }
                             // 枠全体にクリックを付けると、内側のプルダウン・チェックのクリックを奪うので、見出しだけを押せるようにする。
                             if ui.add_enabled(!targets.is_empty(), egui::Label::new(egui::RichText::new(ctext::MOVE_TITLE).strong()).sense(egui::Sense::click())).clicked() {
                                 rd.move_cat = rd.move_cat.or(targets.first().map(|t| t.0));
-                                rd.sel = Choice::New;
+                                rd.sel = Choice::New; rd.link_on = false;
                             }
                         });
                         ui.label(egui::RichText::new(&move_desc).weak());
@@ -1284,7 +1294,7 @@ impl NekoviewApp {
                                     for (i, name) in &targets {
                                         if ui.selectable_label(rd.move_cat == Some(*i), name).clicked() {
                                             rd.move_cat = Some(*i);
-                                            rd.sel = Choice::New;
+                                            rd.sel = Choice::New; rd.link_on = false;
                                         }
                                     }
                                 });
@@ -1300,6 +1310,70 @@ impl NekoviewApp {
                                 ui.weak(ctext::RULE_EXISTS_NOTE);
                             }
                         }
+                    });
+                }
+                // 既存の要素に結びつける（別名を足す）。メインを含む任意のカテゴリの、任意の要素を選べる。
+                {
+                    let selected = rd.link_on;
+                    let fill = if selected { ui.visuals().selection.bg_fill.gamma_multiply(0.4) } else { egui::Color32::TRANSPARENT };
+                    let link_cats = ctext::link_categories(&st.master);
+                    egui::Frame::group(ui.style()).fill(fill).show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.horizontal(|ui| {
+                            if ui.add_enabled(!link_cats.is_empty(), egui::RadioButton::new(selected, "")).clicked() {
+                                rd.link_on = true;
+                            }
+                            // 枠全体にクリックを付けると、内側の部品のクリックを奪うので、見出しだけを押せるようにする。
+                            if ui.add_enabled(!link_cats.is_empty(), egui::Label::new(egui::RichText::new(ctext::LINK_TITLE).strong()).sense(egui::Sense::click())).clicked() {
+                                rd.link_on = true;
+                            }
+                        });
+                        ui.label(egui::RichText::new(ctext::link_desc(&st.set.candidates[idx])).weak());
+                        ui.horizontal(|ui| {
+                            ui.label(ctext::LINK_PICK_CATEGORY);
+                            let current = rd.link_cat.and_then(|i| link_cats.iter().find(|c| c.0 == i)).map_or_else(|| ctext::MOVE_PICK_PLACEHOLDER.to_string(), |c| c.1.clone());
+                            egui::ComboBox::from_id_salt("tag_resolve_link_cat").selected_text(current).show_ui(ui, |ui| {
+                                for (i, name) in &link_cats {
+                                    if ui.selectable_label(rd.link_cat == Some(*i), name).clicked() {
+                                        if rd.link_cat != Some(*i) {
+                                            rd.link_cat = Some(*i);
+                                            rd.link_tier = None;
+                                            rd.link_filter.clear();
+                                        }
+                                        rd.link_on = true;
+                                    }
+                                }
+                            });
+                        });
+                        if let Some(cat_idx) = rd.link_cat {
+                            ui.horizontal(|ui| {
+                                ui.label(ctext::LINK_PICK_ELEMENT);
+                                ui.add(egui::TextEdit::singleline(&mut rd.link_filter).desired_width(200.0).hint_text(ctext::LINK_FILTER_HINT));
+                            });
+                            let (elements, total) = ctext::link_elements(&st.master, cat_idx, &rd.link_filter, ctext::LINK_LIST_CAP);
+                            if elements.is_empty() {
+                                ui.weak(ctext::LINK_NO_ELEMENT);
+                            } else {
+                                egui::ScrollArea::vertical().id_salt("tag_resolve_link_elems").max_height(140.0).auto_shrink([false, true]).show(ui, |ui| {
+                                    for e in &elements {
+                                        if ui.selectable_label(rd.link_tier == Some(e.tier_id), &e.label).on_hover_text(&e.full).clicked() {
+                                            rd.link_tier = Some(e.tier_id);
+                                            rd.link_on = true;
+                                        }
+                                    }
+                                    if total > elements.len() {
+                                        ui.weak(ctext::link_more(total - elements.len()));
+                                    }
+                                });
+                            }
+                            if let Some(tier) = rd.link_tier.filter(|_| rd.link_on) {
+                                ui.label(ctext::link_preview(&st.set.candidates[idx], &st.master, cat_idx, tier));
+                            }
+                            if st.master.get(cat_idx).is_some_and(|c| c.is_main) {
+                                ui.colored_label(amber, ctext::LINK_MAIN_NOTE);
+                            }
+                        }
+                        ui.weak(ctext::LINK_NOTE);
                     });
                 }
                 // 上位名（COMIC1★15 に対する COMIC1）の扱い。
@@ -1330,7 +1404,9 @@ impl NekoviewApp {
                 if ui.button(t.archive_open_cancel()).clicked() {
                     cancel = true;
                 }
-                if ui.button(ctext::RESOLVE_OK_LABEL).clicked() {
+                // 結びつけを選んでいるときは、要素を選ぶまで押せない。
+                let link_ready = !rd.link_on || (rd.link_cat.is_some() && rd.link_tier.is_some());
+                if ui.add_enabled(link_ready, egui::Button::new(ctext::RESOLVE_OK_LABEL)).clicked() {
                     ok = true;
                 }
             });
@@ -1346,8 +1422,13 @@ impl NekoviewApp {
                 if parent_opts.is_some() {
                     c.parent_mode = rd.parent_mode;
                 }
-                match rd.move_cat {
-                    Some(cat) => {
+                match (rd.link_on, rd.link_cat, rd.link_tier, rd.move_cat) {
+                    // 既存の要素に別名を足して結びつける。登録先のカテゴリは、もとのままに戻す。
+                    (true, Some(cat_idx), Some(tier_id), _) => {
+                        c.restore_category();
+                        c.choice = Choice::Alias { cat_idx, tier_id };
+                    }
+                    (_, _, _, Some(cat)) => {
                         c.move_to_category(cat);
                         // 次回以降も同じ扱いにするなら保存し、外したら、保存してあったルールを消す。
                         if c.members.is_empty() {
@@ -1362,7 +1443,7 @@ impl NekoviewApp {
                             }
                         }
                     }
-                    None => {
+                    _ => {
                         c.restore_category();
                         c.choice = rd.sel.clone();
                     }

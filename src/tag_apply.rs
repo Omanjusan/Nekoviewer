@@ -449,6 +449,23 @@ mod tests {
     }
 
     #[test]
+    fn alias_choice_can_link_a_candidate_to_a_main_category_element() {
+        // 別の種類（作者）として抽出された候補を、メインカテゴリの要素に、別名を足して結びつける。
+        let inputs = [input("[Circ (Seinen)] a.zip", "zip", None), input("[Circ (Seinen)] b.zip", "zip", None)];
+        let mut set = build_candidates(&inputs, &master(), &MatchOptions::default(), Lang::English);
+        let c = set.candidates.iter_mut().find(|c| c.role == Role::Author).unwrap();
+        c.choice = Choice::Alias { cat_idx: 0, tier_id: 1 };
+        let mut cats = master();
+        let mut next = 100u64;
+        let plan = plan_application(&set, &mut cats, &mut next, Lang::English);
+        assert_eq!(plan.renames, vec![(0, 1, "漫画".to_string(), "漫画|Seinen".to_string())]);
+        assert_eq!(cats[0].tiers[0].element.as_deref(), Some("漫画|Seinen"));
+        assert!(plan.file_additions[&0].contains(&1) && plan.file_additions[&1].contains(&1), "メインの要素が両ファイルに付く");
+        assert_eq!(cats[0].tiers.len(), 1, "要素は増えない");
+        assert!(!cats.iter().any(|c| c.tiers.iter().any(|t| t.element.as_deref() == Some("Seinen"))), "別の新要素は作らない");
+    }
+
+    #[test]
     fn alias_choice_is_not_applied_when_it_overlaps_another_element_or_exists() {
         let inputs = [input("[Circ (Koji)] a.zip", "zip", None)];
         let mut set = build_candidates(&inputs, &master(), &MatchOptions::default(), Lang::English);

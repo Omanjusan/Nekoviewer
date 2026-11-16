@@ -388,7 +388,6 @@ pub(crate) fn move_preview(c: &Candidate, master: &[TagManagerCategoryUi], cat_i
 pub(crate) const LINK_TITLE: &str = "既存の要素に結びつける…";
 pub(crate) const LINK_PICK_CATEGORY: &str = "カテゴリ";
 pub(crate) const LINK_PICK_ELEMENT: &str = "結びつける要素";
-pub(crate) const LINK_ELEMENT_PLACEHOLDER: &str = "（要素を選んでください）";
 pub(crate) const LINK_FILTER_HINT: &str = "要素名で絞り込み";
 pub(crate) const LINK_NO_ELEMENT: &str = "このカテゴリには、結びつけられる要素がありません。";
 /// 結びつけの注意（元に戻せる範囲と、メインの扱い）。
@@ -430,6 +429,11 @@ pub(crate) fn link_elements(master: &[TagManagerCategoryUi], cat_idx: usize, que
         }
     }
     (out, total)
+}
+
+/// 要素の一覧が上限で切れたときの案内。
+pub(crate) fn link_more(rest: usize) -> String {
+    format!("ほか{rest}件あります。名前で絞り込んでください")
 }
 
 /// 結びつけの説明（カードの本文）。
