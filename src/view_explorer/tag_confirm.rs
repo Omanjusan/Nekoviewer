@@ -1008,7 +1008,11 @@ fn draw_candidate_row(
                 // 理由ボタンを先に確保して、印の文字は残りの幅で切り詰める。
                 let why_w = 72.0;
                 let badge_w = (ui.available_width() - why_w).max(40.0);
-                ui.add_sized([badge_w, 0.0], egui::Label::new(egui::RichText::new(&badge).color(amber)).truncate()).on_hover_text(&badge);
+                // 高さは文字に任せ、幅だけを制限する（高さ0の枠に置くと、文字が上下に切れる）。
+                ui.scope(|ui| {
+                    ui.set_max_width(badge_w);
+                    ui.add(egui::Label::new(egui::RichText::new(&badge).color(amber)).truncate()).on_hover_text(&badge);
+                });
                 if ui.small_button(ctext::WHY_BUTTON_LABEL).clicked() {
                     *action = Some(RowAction::OpenWhy(i));
                 }
