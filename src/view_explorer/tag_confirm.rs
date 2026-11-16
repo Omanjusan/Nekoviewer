@@ -124,6 +124,8 @@ pub(super) struct TagConfirm {
     truncated: Vec<(Role, usize)>,
     /// 「前回の自動付与分を外して付け直す」（既定はOFF）。
     reattach: bool,
+    /// 一覧の表示密度。true ならコンパクト（1段）、false なら標準（2段）。この確認窓の間だけ覚える。
+    compact: bool,
 }
 
 /// 適用前に見せる、書き換わる既存要素の一覧。
@@ -179,7 +181,7 @@ impl TagConfirm {
         } else {
             return None;
         };
-        Some(Self { set, inputs: Arc::new(inputs), paths, master: Arc::new(master), model, rules, stage, only_unconfirmed: false, rebuild: None, threshold_draft: None, merge_dialog: None, filter: String::new(), next_bundle_id: 1, rename_review: None, limit, limit_keep: false, truncated: Vec::new(), reattach: false })
+        Some(Self { set, inputs: Arc::new(inputs), paths, master: Arc::new(master), model, rules, stage, only_unconfirmed: false, rebuild: None, threshold_draft: None, merge_dialog: None, filter: String::new(), next_bundle_id: 1, rename_review: None, limit, limit_keep: false, truncated: Vec::new(), reattach: false, compact: false })
     }
 
     /// 切替項目が変わったので、別スレッドで候補を作り直す。進行中の作り直しは捨てる。
@@ -232,6 +234,11 @@ impl TagConfirm {
             }
         }
     }
+}
+
+/// 種類の帯の文字（「カテゴリ：作者」の形）。
+fn band_title(role: Role) -> String {
+    ctext::band_title(role_label(role), role == Role::Main)
 }
 
 fn role_label(role: Role) -> &'static str {
@@ -298,7 +305,7 @@ impl NekoviewApp {
         .open(&mut open)
         .collapsible(false)
         .resizable(true)
-        .default_size([860.0, 580.0])
+        .default_size([1000.0, 600.0])
         .pivot(egui::Align2::CENTER_CENTER)
         .default_pos(center)
         .show(ctx, |ui| {
@@ -378,26 +385,37 @@ impl NekoviewApp {
                 if !st.filter.is_empty() && ui.small_button("✕").clicked() {
                     st.filter.clear();
                 }
+                ui.separator();
+                let density = if st.compact { ctext::DENSITY_COMPACT } else { ctext::DENSITY_STANDARD };
+                if ui.small_button(density).on_hover_text(ctext::DENSITY_HINT).clicked() {
+                    st.compact = !st.compact;
+                }
             });
             ui.separator();
 
-            // 一覧。
+            // 一覧（表）。列見出しは固定で、行は固定の高さで仮想スクロールする。
             let rows = rows_for(&st.set, stage, st.only_unconfirmed, &st.filter, &opts);
-            let row_h = confirm_row_height(ui) + ui.spacing().item_spacing.y;
+            let compact = st.compact;
+            let row_h = table_row_height(ui, compact);
             let footer_h = 40.0;
-            let list_h = (ui.available_height() - footer_h).max(80.0);
-            egui::ScrollArea::vertical().id_salt(("tag_confirm_list", stage as u8)).max_height(list_h).auto_shrink([false, false]).show_rows(
-                ui,
-                row_h,
-                rows.len(),
-                |ui, range| {
-                    for row in &rows[range] {
-                        match *row {
-                            Row::Section(role) => {
-                                ui.strong(role_label(role));
-                            }
-                            Row::Cluster { id, size } => {
-                                ui.horizontal(|ui| {
+            let header_h = ui.text_style_height(&egui::TextStyle::Body) + 8.0 + ui.spacing().item_spacing.y;
+            let list_h = (ui.available_height() - footer_h - header_h).max(80.0);
+            draw_table_header(ui, ui.available_width() - ui.spacing().scroll.allocated_width());
+            ui.scope(|ui| {
+                // 行どうしの隙間は無くし、罫線で区切る（仮想スクロールの行高と一致させる）。
+                ui.spacing_mut().item_spacing.y = 0.0;
+                egui::ScrollArea::vertical().id_salt(("tag_confirm_list", stage as u8)).max_height(list_h).auto_shrink([false, false]).show_rows(
+                    ui,
+                    row_h,
+                    rows.len(),
+                    |ui, range| {
+                        let first = range.start;
+                        for (k, row) in rows[range].iter().enumerate() {
+                            match *row {
+                                Row::Section(role) => band_row(ui, row_h, true, |ui| {
+                                    ui.strong(band_title(role));
+                                }),
+                                Row::Cluster { id, size } => band_row(ui, row_h, false, |ui| {
                                     ui.weak(ctext::cluster_header(size));
                                     if ui.small_button(ctext::CLUSTER_ADOPT_LABEL).clicked() {
                                         for c in st.set.candidates.iter_mut().filter(|c| c.cluster == id && c.role.window() == stage) {
@@ -412,18 +430,16 @@ impl NekoviewApp {
                                     if ui.small_button(ctext::MERGE_LABEL).clicked() {
                                         row_action = Some(RowAction::MergeCluster(id));
                                     }
-                                });
-                            }
-                            Row::Cand(i) => {
-                                draw_candidate_row(ui, &mut st.set, i, &st.master, &mut row_action, t)
+                                }),
+                                Row::Cand(i) => draw_candidate_row(ui, &mut st.set, i, &st.master, &mut row_action, t, first + k, compact),
                             }
                         }
-                    }
-                    if rows.is_empty() {
-                        ui.weak(t.tag_confirm_empty());
-                    }
-                },
-            );
+                        if rows.is_empty() {
+                            ui.weak(t.tag_confirm_empty());
+                        }
+                    },
+                );
+            });
 
             // 操作ボタン。適用は、最後の窓（作者・グループの窓。無ければ1枚目）で押せる。
             ui.separator();
@@ -680,16 +696,110 @@ fn merge_error_text(e: &MergeError, t: Lang) -> String {
     }
 }
 
-/// 行（2段）の高さ。一覧は固定の行高で仮想スクロールするので、全ての行をこの高さにそろえる。
-fn confirm_row_height(ui: &egui::Ui) -> f32 {
-    ui.spacing().interact_size.y + ui.text_style_height(&egui::TextStyle::Body) + 10.0
+// ── 一覧（表） ──────────────────────────────────────────────────────
+
+/// 採否トグルの列の幅。
+const TOGGLE_COL_W: f32 = 124.0;
+/// ファイル数の列の幅。
+const COUNT_COL_W: f32 = 84.0;
+/// 「⋯」の列の幅。
+const OPS_COL_W: f32 = 44.0;
+/// セルの左右の余白。
+const CELL_PAD: f32 = 6.0;
+
+/// 表の列の境目（行の左端からの距離）。名前の列だけ、窓の幅に対する比率（約24%）で決める。
+/// 要確認の列は、残りの幅を全部使う。長い文字は折り返さず、切り詰めてホバーで全文を出す。
+#[derive(Clone, Copy)]
+struct TableCols {
+    total: f32,
+    name: f32,
 }
 
-/// 採否トグルの幅。
-const TOGGLE_WIDTH: f32 = 116.0;
+impl TableCols {
+    fn new(total: f32) -> Self {
+        let rest = (total - TOGGLE_COL_W - COUNT_COL_W - OPS_COL_W - 120.0).max(100.0);
+        Self { total, name: (total * 0.24).clamp(130.0, 280.0).min(rest) }
+    }
+    fn x_name(self) -> f32 {
+        TOGGLE_COL_W
+    }
+    fn x_count(self) -> f32 {
+        TOGGLE_COL_W + self.name
+    }
+    fn x_state(self) -> f32 {
+        self.x_count() + COUNT_COL_W
+    }
+    fn x_ops(self) -> f32 {
+        (self.total - OPS_COL_W).max(self.x_state())
+    }
+}
 
-/// 候補1行（2段）。1段目: 採否のトグル・名前・対象のファイル数・要確認の印・選択欄・「⋯」。
-/// 2段目: 何をどこにどうするかの1文（長いときは切り詰めて、ホバーで全文）。
+/// 行の高さ。標準は2段、コンパクトは1段。一覧は固定の行高で仮想スクロールするので、全ての行をこの高さにそろえる。
+fn table_row_height(ui: &egui::Ui, compact: bool) -> f32 {
+    if compact {
+        ui.spacing().interact_size.y + 6.0
+    } else {
+        ui.spacing().interact_size.y + ui.text_style_height(&egui::TextStyle::Body) + 12.0
+    }
+}
+
+/// 行の1段目の高さ（コンパクトでは行全体）。
+fn table_line1_height(ui: &egui::Ui, compact: bool) -> f32 {
+    if compact {
+        table_row_height(ui, compact)
+    } else {
+        ui.spacing().interact_size.y + 4.0
+    }
+}
+
+/// 矩形 `r` の中にだけ描くセル。はみ出した分は切り取る。
+fn in_cell(ui: &mut egui::Ui, r: egui::Rect, layout: egui::Layout, add: impl FnOnce(&mut egui::Ui)) {
+    ui.scope_builder(egui::UiBuilder::new().max_rect(r).layout(layout), |ui| {
+        ui.set_clip_rect(r.intersect(ui.clip_rect()));
+        add(ui);
+    });
+}
+
+/// 種類の見出し・類似品の見出しの行（表の行と同じ高さの帯）。
+fn band_row(ui: &mut egui::Ui, row_h: f32, center: bool, add: impl FnOnce(&mut egui::Ui)) {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), row_h), egui::Sense::hover());
+    ui.painter().hline(rect.x_range(), rect.bottom(), ui.visuals().widgets.noninteractive.bg_stroke);
+    let layout = if center {
+        egui::Layout::centered_and_justified(egui::Direction::LeftToRight)
+    } else {
+        egui::Layout::left_to_right(egui::Align::Center)
+    };
+    in_cell(ui, rect.shrink2(egui::vec2(CELL_PAD, 0.0)), layout, add);
+}
+
+/// 一覧の列見出し（スクロールしない）。
+fn draw_table_header(ui: &mut egui::Ui, total: f32) {
+    let h = ui.text_style_height(&egui::TextStyle::Body) + 8.0;
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(total, h), egui::Sense::hover());
+    let cols = TableCols::new(total);
+    let stroke = ui.visuals().widgets.noninteractive.bg_stroke;
+    let color = ui.visuals().weak_text_color();
+    let font = egui::TextStyle::Body.resolve(ui.style());
+    let painter = ui.painter();
+    painter.rect_filled(rect, 0.0, ui.visuals().faint_bg_color);
+    let y = rect.center().y;
+    let put = |x: f32, align: egui::Align2, text: &str| {
+        painter.text(egui::pos2(rect.left() + x, y), align, text, font.clone(), color);
+    };
+    put(CELL_PAD, egui::Align2::LEFT_CENTER, ctext::COL_TOGGLE);
+    put(cols.x_name() + CELL_PAD, egui::Align2::LEFT_CENTER, ctext::COL_NAME);
+    put(cols.x_state() - CELL_PAD, egui::Align2::RIGHT_CENTER, ctext::COL_COUNT);
+    put(cols.x_state() + CELL_PAD, egui::Align2::LEFT_CENTER, ctext::COL_STATE);
+    for x in [cols.x_name(), cols.x_count(), cols.x_state(), cols.x_ops()] {
+        painter.vline(rect.left() + x, rect.y_range(), stroke);
+    }
+    painter.hline(rect.x_range(), rect.top(), stroke);
+    painter.hline(rect.x_range(), rect.bottom(), stroke);
+}
+
+/// 候補1行。列は、採否・名前・ファイル数・要確認（選択欄）・「⋯」の固定位置。
+/// 標準は2段で、「内容・要確認」の列の1段目に要確認の印・選択欄、2段目に何をどこにどうするかの1文を出す。コンパクトは1段で、その列に両方を並べる。
+/// 長い文字は折り返さず、切り詰めてホバーで全文を出す。
 fn draw_candidate_row(
     ui: &mut egui::Ui,
     set: &mut CandidateSet,
@@ -697,84 +807,122 @@ fn draw_candidate_row(
     master: &[TagManagerCategoryUi],
     action: &mut Option<RowAction>,
     t: Lang,
+    row_no: usize,
+    compact: bool,
 ) {
     let reason = ctext::review_kind(&set.candidates[i]);
     let conclusion = ctext::conclusion(&set.candidates[i], master);
-    let row_h = confirm_row_height(ui);
+    let row_h = table_row_height(ui, compact);
+    let line1_h = table_line1_height(ui, compact);
+    let total = ui.available_width();
+    let cols = TableCols::new(total);
     let amber = egui::Color32::from_rgb(230, 160, 40);
     let c = &mut set.candidates[i];
-    let scope = ui.scope(|ui| {
-        ui.set_min_height(row_h);
-        ui.horizontal(|ui| {
-            // 採否は、この1つのトグルだけ（「まとめる」は「⋯」から）。
-            let adopted = c.is_adopted();
-            let label = egui::RichText::new(ctext::toggle_label(adopted));
-            let toggle = if adopted {
-                egui::Button::new(label.strong().color(ui.visuals().selection.stroke.color)).fill(ui.visuals().selection.bg_fill)
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(total, row_h), egui::Sense::hover());
+    // 縞（1行おき）。
+    if row_no % 2 == 1 {
+        ui.painter().rect_filled(rect, 0.0, ui.visuals().faint_bg_color);
+    }
+    let at = |x0: f32, x1: f32, y0: f32, y1: f32| {
+        egui::Rect::from_min_max(egui::pos2(rect.left() + x0, rect.top() + y0), egui::pos2(rect.left() + x1, rect.top() + y1))
+    };
+    let left = egui::Layout::left_to_right(egui::Align::Center);
+    let right = egui::Layout::right_to_left(egui::Align::Center);
+
+    // 採否は、この1つのトグルだけ（「まとめる」は「⋯」から）。
+    in_cell(ui, at(CELL_PAD, TOGGLE_COL_W - CELL_PAD, 0.0, row_h), left, |ui| {
+        let adopted = c.is_adopted();
+        let label = egui::RichText::new(ctext::toggle_label(adopted));
+        let toggle = if adopted {
+            egui::Button::new(label.strong().color(ui.visuals().selection.stroke.color)).fill(ui.visuals().selection.bg_fill)
+        } else {
+            egui::Button::new(label.weak())
+        };
+        if ui.add(toggle.min_size(egui::vec2(TOGGLE_COL_W - CELL_PAD * 2.0, 0.0))).on_hover_text(ctext::TOGGLE_HINT).clicked() {
+            if adopted {
+                c.unadopt();
             } else {
-                egui::Button::new(label.weak())
-            };
-            if ui.add(toggle.min_size(egui::vec2(TOGGLE_WIDTH, 0.0))).on_hover_text(ctext::TOGGLE_HINT).clicked() {
-                if adopted {
-                    c.unadopt();
-                } else {
-                    c.adopt();
+                c.adopt();
+            }
+        }
+    });
+
+    // 名前（まとめた行は先頭の別名）。新規に登録するものは太字。同一の別名・対の表記は、後ろに足す。
+    let mut name_full = c.aliases.first().cloned().unwrap_or_else(|| c.name.clone());
+    if !c.aliases.is_empty() {
+        name_full.push_str(&format!("（{}: {}）", ctext::MERGED_LABEL, c.aliases.join(" ＝ ")));
+    }
+    if !c.alt_forms.is_empty() {
+        name_full.push_str(&format!("（{}）", c.alt_forms.join(" / ")));
+    }
+    in_cell(ui, at(cols.x_name() + CELL_PAD, cols.x_count() - CELL_PAD, 0.0, line1_h), left, |ui| {
+        let label = egui::RichText::new(&name_full);
+        let label = if matches!(c.choice, Choice::New) { label.strong() } else { label };
+        ui.add(egui::Label::new(label).truncate()).on_hover_text(&name_full);
+    });
+
+    // ファイル数（右寄せ）。
+    in_cell(ui, at(cols.x_count(), cols.x_state() - CELL_PAD, 0.0, line1_h), right, |ui| {
+        ui.weak(ctext::file_count(c.files.len()));
+    });
+
+    // 要確認の印・類似提案の選択欄（・コンパクトでは結論文）。
+    in_cell(ui, at(cols.x_state() + CELL_PAD, cols.x_ops() - CELL_PAD, 0.0, line1_h), left, |ui| {
+        if !c.suggestions.is_empty() {
+            let w = (ui.available_width() * 0.6).min(220.0);
+            draw_choice_combo(ui, c, i, master, t, w);
+        }
+        if let Some(kind) = &reason {
+            let badge = ctext::review_badge(kind);
+            ui.add(egui::Label::new(egui::RichText::new(&badge).color(amber)).truncate()).on_hover_text(&badge);
+        }
+        if compact {
+            ui.add(egui::Label::new(conclusion.as_str()).truncate()).on_hover_text(&conclusion);
+        }
+    });
+
+    // 「⋯」。
+    in_cell(ui, at(cols.x_ops() + CELL_PAD, total - CELL_PAD, 0.0, line1_h), left, |ui| {
+        ui.menu_button("⋯", |ui| {
+            if ui.button(ctext::MERGE_LABEL).clicked() {
+                *action = Some(RowAction::OpenMerge(i));
+                ui.close();
+            }
+            if !c.aliases.is_empty() {
+                ui.separator();
+                ui.weak(t.tag_confirm_primary_alias());
+                for (pos, a) in c.aliases.iter().enumerate() {
+                    if ui.radio(pos == 0, a).clicked() {
+                        *action = Some(RowAction::SetPrimary(i, pos));
+                        ui.close();
+                    }
+                }
+                ui.separator();
+                if ui.button(ctext::SPLIT_LABEL).clicked() {
+                    *action = Some(RowAction::Split(i));
+                    ui.close();
                 }
             }
-            ui.vertical(|ui| {
-                ui.horizontal(|ui| {
-                    // 名前（まとめた行は先頭の別名）。新規に登録するものは太字。
-                    let shown = c.aliases.first().cloned().unwrap_or_else(|| c.name.clone());
-                    let label = egui::RichText::new(shown);
-                    let name_resp = ui.label(if matches!(c.choice, Choice::New) { label.strong() } else { label });
-                    if !c.aliases.is_empty() {
-                        name_resp.on_hover_text(t.tag_confirm_merged_hover(c.aliases.len()));
-                        ui.weak(format!("（{}: {}）", ctext::MERGED_LABEL, c.aliases.join(" ＝ ")));
-                    }
-                    // 対にした別の見出し行の表記（英語⇄日本語）。登録するときは、登録名の別名として足される。
-                    if !c.alt_forms.is_empty() {
-                        ui.weak(format!("（{}）", c.alt_forms.join(" / ")));
-                    }
-                    ui.weak(ctext::file_count(c.files.len()));
-                    if let Some(kind) = &reason {
-                        ui.colored_label(amber, ctext::review_badge(kind));
-                    }
-                    if !c.suggestions.is_empty() {
-                        draw_choice_combo(ui, c, i, master, t);
-                    }
-                    ui.menu_button("⋯", |ui| {
-                        if ui.button(ctext::MERGE_LABEL).clicked() {
-                            *action = Some(RowAction::OpenMerge(i));
-                            ui.close();
-                        }
-                        if !c.aliases.is_empty() {
-                            ui.separator();
-                            ui.weak(t.tag_confirm_primary_alias());
-                            for (pos, a) in c.aliases.iter().enumerate() {
-                                if ui.radio(pos == 0, a).clicked() {
-                                    *action = Some(RowAction::SetPrimary(i, pos));
-                                    ui.close();
-                                }
-                            }
-                            ui.separator();
-                            if ui.button(ctext::SPLIT_LABEL).clicked() {
-                                *action = Some(RowAction::Split(i));
-                                ui.close();
-                            }
-                        }
-                    });
-                });
-                ui.add(egui::Label::new(conclusion.as_str()).truncate()).on_hover_text(&conclusion);
-            });
         });
     });
-    // 行どうしの区切り線。
-    let rect = scope.response.rect;
-    ui.painter().hline(rect.x_range(), rect.bottom() + 1.0, ui.visuals().widgets.noninteractive.bg_stroke);
+
+    // 2段目（標準のみ）: 何をどこにどうするかの1文を、「内容・要確認」の列の中に出す（列をまたがない）。
+    if !compact {
+        in_cell(ui, at(cols.x_state() + CELL_PAD, cols.x_ops() - CELL_PAD, line1_h, row_h), left, |ui| {
+            ui.add(egui::Label::new(conclusion.as_str()).truncate()).on_hover_text(&conclusion);
+        });
+    }
+
+    // 罫線: 列の境目（行の全高）と、行の下の全幅の区切り。
+    let stroke = ui.visuals().widgets.noninteractive.bg_stroke;
+    for x in [cols.x_name(), cols.x_count(), cols.x_state(), cols.x_ops()] {
+        ui.painter().vline(rect.left() + x, rect.y_range(), stroke);
+    }
+    ui.painter().hline(rect.x_range(), rect.bottom(), stroke);
 }
 
 /// 類似提案がある行の選択欄（既存の要素・別名として足す・新規・タグ不採用）。
-fn draw_choice_combo(ui: &mut egui::Ui, c: &mut Candidate, i: usize, master: &[TagManagerCategoryUi], t: Lang) {
+fn draw_choice_combo(ui: &mut egui::Ui, c: &mut Candidate, i: usize, master: &[TagManagerCategoryUi], t: Lang, width: f32) {
     let current = match &c.choice {
         Choice::Existing { tier_id, .. } => {
             let score = c.suggestions.iter().find(|s| s.tier_id == *tier_id).map_or(100, |s| s.score);
@@ -784,7 +932,7 @@ fn draw_choice_combo(ui: &mut egui::Ui, c: &mut Candidate, i: usize, master: &[T
         Choice::New => t.tag_confirm_choice_new(&c.name),
         Choice::Skip => ctext::REJECT_LABEL.to_string(),
     };
-    egui::ComboBox::from_id_salt(("tag_confirm_choice", i)).selected_text(current).width(220.0).show_ui(ui, |ui| {
+    egui::ComboBox::from_id_salt(("tag_confirm_choice", i)).selected_text(current).width(width).show_ui(ui, |ui| {
         if ui.selectable_label(matches!(c.choice, Choice::New), t.tag_confirm_choice_new(&c.name)).clicked() {
             c.choice = Choice::New;
         }

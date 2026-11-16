@@ -89,6 +89,29 @@ pub(crate) fn review_badge(kind: &ReviewKind) -> String {
     format!("要確認：{}", review_short(kind))
 }
 
+// ── 一覧（表）の見出しと表示密度 ───────────────────────────────────
+
+pub(crate) const COL_TOGGLE: &str = "採否";
+pub(crate) const COL_NAME: &str = "名前";
+pub(crate) const COL_COUNT: &str = "ファイル数";
+/// 要確認の印と、何をどこにどうするかの結論文が入る列の見出し。
+pub(crate) const COL_STATE: &str = "内容・要確認";
+
+/// 種類の帯（行をまたいで中央に出す見出し）の前置き。
+pub(crate) const BAND_PREFIX: &str = "カテゴリ：";
+
+/// 種類の帯の文字。メインタグの種類は「カテゴリ（メインタグ）」という名前なので、「カテゴリ：メインタグ」にする。
+pub(crate) fn band_title(role_label: &str, is_main: bool) -> String {
+    if is_main {
+        format!("{BAND_PREFIX}メインタグ")
+    } else {
+        format!("{BAND_PREFIX}{role_label}")
+    }
+}
+pub(crate) const DENSITY_STANDARD: &str = "表示：標準（2段）";
+pub(crate) const DENSITY_COMPACT: &str = "表示：コンパクト（1段）";
+pub(crate) const DENSITY_HINT: &str = "一覧の行の密度を切り替えます。コンパクトは1行で、行数が多いときに便利です";
+
 // ── 名前の取り出し ──────────────────────────────────────────────────
 
 /// カテゴリの表示名。番号が範囲外のときは、種類の既定名。
@@ -444,6 +467,13 @@ mod tests {
         assert_eq!(merge_preview(&["A"], 3), "2件以上を選んでください");
         assert_eq!(merge_preview(&["A", "B"], 7), "まとめる候補：A、B（合計7ファイル）");
         assert_eq!(cluster_header(3), "名前が似ている候補 3件");
+    }
+
+    #[test]
+    fn band_title_has_category_prefix() {
+        assert_eq!(band_title("作者", false), "カテゴリ：作者");
+        assert_eq!(band_title("言語", false), "カテゴリ：言語");
+        assert_eq!(band_title("カテゴリ（メインタグ）", true), "カテゴリ：メインタグ");
     }
 
     #[test]
