@@ -18,7 +18,7 @@ use std::sync::{mpsc, Arc};
 
 use crate::i18n::{self, Lang};
 use crate::tag_candidates::{
-    build_candidates_full, over_limit, Bundle, Candidate, CandidateInput, CandidateSet, Choice, MergeError, Role, Window,
+    build_candidates_full, over_limit, Bundle, Candidate, CandidateInput, CandidateSet, CatRef, Choice, MergeError, Role, Window,
     LIMIT_EXPAND_STEP,
 };
 use crate::tag_confirm_text as ctext;
@@ -215,8 +215,10 @@ struct MergeDialog {
 struct ResolveDialog {
     role: Role,
     key: String,
-    /// いま選んでいる選択肢。
+    /// いま選んでいる選択肢（移し先を選んでいないとき）。
     sel: Choice,
+    /// 「別のカテゴリの要素として登録」を選んでいるときの、移し先のカテゴリ（番号）。
+    move_cat: Option<usize>,
 }
 
 /// 一覧の行から出す操作（描画中は候補の並びを変えられないので、描画後にまとめて行う）。
@@ -281,7 +283,12 @@ impl TagConfirm {
     /// 変更ダイアログを開く。いまの選択から始める。
     fn open_resolve_dialog(&mut self, idx: usize) {
         let Some(c) = self.set.candidates.get(idx) else { return };
-        self.resolve_dialog = Some(ResolveDialog { role: c.role, key: c.key.clone(), sel: c.choice.clone() });
+        // 移し先を選んである候補は、その移し先から始める。
+        let move_cat = match (c.category_origin, c.category) {
+            (Some(_), CatRef::Existing(i)) => Some(i),
+            _ => None,
+        };
+        self.resolve_dialog = Some(ResolveDialog { role: c.role, key: c.key.clone(), sel: c.choice.clone(), move_cat });
     }
 
     /// 理由ダイアログを開く。
@@ -840,9 +847,19 @@ impl NekoviewApp {
         let Some(mut rd) = st.resolve_dialog.take() else { return };
         let Some(idx) = st.set.candidates.iter().position(|c| c.role == rd.role && c.key == rd.key) else { return };
         let t = i18n::t();
-        let (heading, note, options) = {
+        let (heading, note, options, movable, targets, move_desc, previews) = {
             let c = &st.set.candidates[idx];
-            (ctext::resolve_heading(c), ctext::similarity_note(c), ctext::resolve_options(c, &st.master))
+            let targets = ctext::move_targets(c, &st.master);
+            let previews: Vec<(usize, String)> = targets.iter().map(|(i, _)| (*i, ctext::move_preview(c, &st.master, *i))).collect();
+            (
+                ctext::resolve_heading(c),
+                ctext::similarity_note(c),
+                ctext::resolve_options(c, &st.master),
+                ctext::can_move_category(c),
+                targets,
+                ctext::move_desc(c, &st.master),
+                previews,
+            )
         };
         let amber = egui::Color32::from_rgb(230, 160, 40);
         let (mut ok, mut cancel) = (false, false);
@@ -857,13 +874,14 @@ impl NekoviewApp {
             ui.add_space(6.0);
             egui::ScrollArea::vertical().id_salt("tag_resolve_options").max_height(380.0).auto_shrink([false, true]).show(ui, |ui| {
                 for o in &options {
-                    let selected = rd.sel == o.choice;
+                    let selected = rd.move_cat.is_none() && rd.sel == o.choice;
                     let fill = if selected { ui.visuals().selection.bg_fill.gamma_multiply(0.4) } else { egui::Color32::TRANSPARENT };
                     let framed = egui::Frame::group(ui.style()).fill(fill).show(ui, |ui| {
                         ui.set_width(ui.available_width());
                         ui.horizontal(|ui| {
                             if ui.radio(selected, "").clicked() {
                                 rd.sel = o.choice.clone();
+                                rd.move_cat = None;
                             }
                             ui.label(egui::RichText::new(&o.title).strong());
                         });
@@ -871,6 +889,49 @@ impl NekoviewApp {
                     });
                     if framed.response.interact(egui::Sense::click()).clicked() {
                         rd.sel = o.choice.clone();
+                        rd.move_cat = None;
+                    }
+                }
+                // 登録先のカテゴリを選び直す（抽出された種類が実際と違うとき）。
+                if movable {
+                    let selected = rd.move_cat.is_some();
+                    let fill = if selected { ui.visuals().selection.bg_fill.gamma_multiply(0.4) } else { egui::Color32::TRANSPARENT };
+                    let framed = egui::Frame::group(ui.style()).fill(fill).show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.horizontal(|ui| {
+                            if ui.add_enabled(!targets.is_empty(), egui::RadioButton::new(selected, "")).clicked() {
+                                rd.move_cat = rd.move_cat.or(targets.first().map(|t| t.0));
+                                rd.sel = Choice::New;
+                            }
+                            ui.label(egui::RichText::new(ctext::MOVE_TITLE).strong());
+                        });
+                        ui.label(egui::RichText::new(&move_desc).weak());
+                        if targets.is_empty() {
+                            ui.colored_label(amber, ctext::MOVE_NO_TARGET);
+                        } else {
+                            ui.horizontal(|ui| {
+                                ui.label(ctext::MOVE_PICK_LABEL);
+                                let current = rd
+                                    .move_cat
+                                    .and_then(|i| targets.iter().find(|t| t.0 == i))
+                                    .map_or_else(|| ctext::MOVE_PICK_PLACEHOLDER.to_string(), |t| t.1.clone());
+                                egui::ComboBox::from_id_salt("tag_resolve_move_cat").selected_text(current).show_ui(ui, |ui| {
+                                    for (i, name) in &targets {
+                                        if ui.selectable_label(rd.move_cat == Some(*i), name).clicked() {
+                                            rd.move_cat = Some(*i);
+                                            rd.sel = Choice::New;
+                                        }
+                                    }
+                                });
+                            });
+                            if let Some(preview) = rd.move_cat.and_then(|i| previews.iter().find(|p| p.0 == i)) {
+                                ui.label(&preview.1);
+                            }
+                        }
+                    });
+                    if !targets.is_empty() && framed.response.interact(egui::Sense::click()).clicked() {
+                        rd.move_cat = rd.move_cat.or(targets.first().map(|t| t.0));
+                        rd.sel = Choice::New;
                     }
                 }
             });
@@ -889,7 +950,13 @@ impl NekoviewApp {
         }
         if ok {
             let c = &mut st.set.candidates[idx];
-            c.choice = rd.sel.clone();
+            match rd.move_cat {
+                Some(cat) => c.move_to_category(cat),
+                None => {
+                    c.restore_category();
+                    c.choice = rd.sel.clone();
+                }
+            }
             st.confirmed.insert((rd.role, rd.key.clone()));
             return;
         }

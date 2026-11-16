@@ -612,6 +612,24 @@ mod tests {
         assert!(cats.iter().all(|c| c.tiers.iter().all(|t| t.element.as_deref() != Some("Wr"))), "不採用はマスターにも作らない");
     }
 
+    #[test]
+    fn moved_category_registers_the_element_in_the_target_category() {
+        let inputs = [input("[Circ (Wr)] a.zip", "zip", None)];
+        let mut set = build_candidates(&inputs, &master(), &MatchOptions::default(), Lang::English);
+        for c in &mut set.candidates {
+            if c.name == "Circ" {
+                c.move_to_category(1);
+            }
+        }
+        let mut cats = master();
+        let mut next = 100u64;
+        let plan = plan_application(&set, &mut cats, &mut next, Lang::English);
+        let moved = cats[1].tiers.iter().find(|t| t.element.as_deref() == Some("Circ")).expect("Circ が移し先のカテゴリに登録される");
+        assert!(plan.file_additions[&0].contains(&moved.id), "ファイルに、移し先の要素のタグが付く");
+        // 種類の既定のカテゴリ（グループ）には、Circ が作られない。
+        assert!(cats.iter().enumerate().all(|(i, c)| i == 1 || c.tiers.iter().all(|t| t.element.as_deref() != Some("Circ"))));
+    }
+
     fn seed_db(tag: &str, files: &[(&str, &[u64])]) -> (Arc<Mutex<Database>>, std::path::PathBuf, Vec<PathBuf>) {
         let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
         let root = std::env::temp_dir().join(format!("nekoviewer_tag_apply_{}_{}_{}", std::process::id(), nonce, tag));

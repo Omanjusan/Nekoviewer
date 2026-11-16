@@ -172,6 +172,62 @@ pub(crate) fn initial_view_is_review(default_review: bool, pending_review: usize
     default_review && pending_review > 0
 }
 
+// ── 登録先のカテゴリを選び直す ─────────────────────────────────────
+
+pub(crate) const MOVE_TITLE: &str = "別のカテゴリの要素として登録…";
+pub(crate) const MOVE_PICK_LABEL: &str = "登録先のカテゴリ";
+pub(crate) const MOVE_PICK_PLACEHOLDER: &str = "（選んでください）";
+pub(crate) const MOVE_NO_TARGET: &str = "移し先にできるカテゴリがありません。先にタグ管理でカテゴリを作ってから、選んでください。";
+
+/// 「別のカテゴリの要素として登録」を出す候補か。形式・メインは、種類が決まっているので出さない。
+pub(crate) fn can_move_category(c: &Candidate) -> bool {
+    !matches!(c.role, Role::Format | Role::Main)
+}
+
+/// 移す前の（抽出された種類の）カテゴリ。
+fn base_category(c: &Candidate) -> CatRef {
+    c.category_origin.unwrap_or(c.category)
+}
+
+/// 移し先にできる既存カテゴリ（番号, 表示名）。メインとシステムのカテゴリ、移す前のカテゴリは除く。
+pub(crate) fn move_targets(c: &Candidate, master: &[TagManagerCategoryUi]) -> Vec<(usize, String)> {
+    if !can_move_category(c) {
+        return Vec::new();
+    }
+    let base = match base_category(c) {
+        CatRef::Existing(i) => Some(i),
+        CatRef::New => None,
+    };
+    master
+        .iter()
+        .enumerate()
+        .filter(|(i, cat)| !cat.is_main && cat.system_kind.is_none() && Some(*i) != base)
+        .map(|(i, cat)| (i, cat.display_name()))
+        .collect()
+}
+
+/// 「別のカテゴリの要素として登録」の説明（1〜2文）。
+pub(crate) fn move_desc(c: &Candidate, master: &[TagManagerCategoryUi]) -> String {
+    let cat = match base_category(c) {
+        CatRef::Existing(i) => category_name(master, i, c.role),
+        CatRef::New => c.role.new_category_name(Lang::Japanese).to_string(),
+    };
+    format!(
+        "『{}』を、選んだカテゴリの新しい要素として登録し、{}ファイルにタグ付けします。抽出された『{cat}』が、実際の種類と違うときに選びます。",
+        c.registration_name(),
+        c.files.len()
+    )
+}
+
+/// 移し先を選んだときの結論文（ダイアログの中で、選んだ内容を確かめる）。
+pub(crate) fn move_preview(c: &Candidate, master: &[TagManagerCategoryUi], cat_idx: usize) -> String {
+    format!(
+        "『{}』カテゴリに『{}』を新しい要素として登録し、ファイルにタグ付けする",
+        category_name(master, cat_idx, c.role),
+        c.registration_name()
+    )
+}
+
 // ── 名前の取り出し ──────────────────────────────────────────────────
 
 /// カテゴリの表示名。番号が範囲外のときは、種類の既定名。
@@ -297,7 +353,7 @@ pub(crate) fn resolve_options(c: &Candidate, master: &[TagManagerCategoryUi]) ->
             ),
         });
     }
-    out.push(match c.category {
+    out.push(match base_category(c) {
         CatRef::New => {
             let newcat = c.role.new_category_name(Lang::Japanese);
             ResolveOption {
@@ -306,8 +362,8 @@ pub(crate) fn resolve_options(c: &Candidate, master: &[TagManagerCategoryUi]) ->
                 desc: format!("カテゴリ『{newcat}』と要素『{reg}』が増え、{n}ファイルに付きます。"),
             }
         }
-        CatRef::Existing(_) => {
-            let cat = candidate_category_name(c, master);
+        CatRef::Existing(base_idx) => {
+            let cat = category_name(master, base_idx, c.role);
             let separate = if c.suggestions.is_empty() { "" } else { "既存のタグとは別のものとして扱います。" };
             ResolveOption {
                 choice: Choice::New,
@@ -471,6 +527,7 @@ mod tests {
             review: false,
             alt_forms: Vec::new(),
             rule_reason: None,
+            category_origin: None,
         }
     }
     fn koji() -> Candidate {
@@ -537,6 +594,30 @@ mod tests {
         assert!(initial_view_is_review(true, 1));
         assert!(!initial_view_is_review(true, 0), "要確認が無ければ、すべてを表示");
         assert!(!initial_view_is_review(false, 5), "チェックを外すと、すべてを表示");
+    }
+
+    #[test]
+    fn move_targets_exclude_main_system_and_origin_and_texts_use_the_target() {
+        let mut m = master();
+        m.push(cat("ジャンル", false, vec![tier(30, "青年コミック")]));
+        let mut sys = cat("形式", false, vec![tier(40, "zip")]);
+        sys.system_kind = Some(crate::tag_master::SystemKind::ArchiveFormat);
+        m.push(sys);
+        let mut c = base(Role::Event, "同人CG集", Choice::New);
+        c.category = CatRef::Existing(2);
+        // 移し先: 作者(1)・ジャンル(3)。メイン(0)・システム(4)・いまのカテゴリ(2)は除く。
+        assert_eq!(move_targets(&c, &m), [(1, "作者".to_string()), (3, "ジャンル".to_string())]);
+        assert_eq!(move_preview(&c, &m, 3), "『ジャンル』カテゴリに『同人CG集』を新しい要素として登録し、ファイルにタグ付けする");
+        assert!(move_desc(&c, &m).contains("抽出された『イベント』が、実際の種類と違うときに選びます"));
+        // 移したあとでも、移す前のカテゴリは除かれ、「新規」の選択肢は移す前のカテゴリで書く。
+        c.move_to_category(3);
+        assert_eq!(move_targets(&c, &m), [(1, "作者".to_string())].into_iter().chain([(3, "ジャンル".to_string())]).collect::<Vec<_>>());
+        let plain = resolve_options(&c, &m).into_iter().find(|o| o.choice == Choice::New).unwrap();
+        assert_eq!(plain.title, "『同人CG集』を『イベント』カテゴリの新しい要素として登録し、ファイルにタグ付け");
+        assert_eq!(conclusion(&c, &m), "『ジャンル』カテゴリに『同人CG集』を新しい要素として登録し、ファイルにタグ付けする");
+        // 形式・メインの種類には出さない。
+        assert!(!can_move_category(&base(Role::Format, "zip", Choice::New)));
+        assert!(move_targets(&base(Role::Main, "同人誌", Choice::New), &m).is_empty());
     }
 
     #[test]

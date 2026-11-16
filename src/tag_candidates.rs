@@ -207,6 +207,8 @@ pub(crate) struct Candidate {
     pub alt_forms: Vec<String>,
     /// ルールで無効にされたため、未採用にして残している（要確認）。無効にしたルールの名前（「、」でつなぐ）。
     pub rule_reason: Option<String>,
+    /// ユーザーが新規要素の登録先を別の既存カテゴリへ移したとき、移す前のカテゴリ（`category` は移した先）。移していなければ None。
+    pub category_origin: Option<CatRef>,
 }
 
 impl Candidate {
@@ -242,11 +244,37 @@ impl Candidate {
         if self.is_adopted() {
             return;
         }
+        // 登録先のカテゴリを移した候補は、いつでも「移した先に新規登録」に戻す。
+        if self.is_category_moved() {
+            self.choice = Choice::New;
+            return;
+        }
         self.choice = match (&self.initial, self.suggestions.first()) {
             (Choice::Existing { .. } | Choice::Alias { .. }, _) => self.initial.clone(),
             (_, Some(s)) => Choice::Existing { cat_idx: s.cat_idx, tier_id: s.tier_id },
             _ => Choice::New,
         };
+    }
+
+    /// 新規要素の登録先を、別の既存カテゴリへ移す（抽出された種類が実際と違うと分かったとき）。扱いは「新規に登録」にする。
+    pub(crate) fn move_to_category(&mut self, cat_idx: usize) {
+        if self.category_origin.is_none() {
+            self.category_origin = Some(self.category);
+        }
+        self.category = CatRef::Existing(cat_idx);
+        self.choice = Choice::New;
+    }
+
+    /// 登録先を、移す前のカテゴリへ戻す。移していなければ何もしない。
+    pub(crate) fn restore_category(&mut self) {
+        if let Some(origin) = self.category_origin.take() {
+            self.category = origin;
+        }
+    }
+
+    /// 登録先のカテゴリを移してあるか。
+    pub(crate) fn is_category_moved(&self) -> bool {
+        self.category_origin.is_some()
     }
 
     /// 不採用（付けない）にする。
@@ -1145,6 +1173,7 @@ pub(crate) fn build_candidates_full(
             review,
             alt_forms,
             rule_reason,
+            category_origin: None,
         });
     }
 
@@ -1254,7 +1283,12 @@ impl CandidateSet {
         let old: HashMap<(Role, &str), &Candidate> = self.candidates.iter().map(|c| ((c.role, c.key.as_str()), c)).collect();
         for c in &mut fresh.candidates {
             if let Some(o) = old.get(&(c.role, c.key.as_str())) {
-                if o.choice != o.initial {
+                // 登録先のカテゴリを移した候補は、移した先と扱いをそのまま引き継ぐ。
+                if o.category_origin.is_some() {
+                    c.category = o.category;
+                    c.category_origin = o.category_origin;
+                    c.choice = o.choice.clone();
+                } else if o.choice != o.initial {
                     c.choice = o.choice.clone();
                 }
             }
@@ -1410,6 +1444,7 @@ impl CandidateSet {
             }),
             members: leaves,
             bundle_id: Some(bundle_id),
+            category_origin: None,
         };
         for &i in idxs.iter().rev() {
             self.candidates.remove(i);
@@ -1844,6 +1879,31 @@ mod tests {
         let after_other: Vec<String> = set.candidates.iter().filter(|c| c.role != Role::Author).map(|c| c.name.clone()).collect();
         assert_eq!(before_other, after_other);
         assert!(set.candidates.iter().any(|c| c.name == "Kouji" && !c.needs_new_element()), "既存一致は残る");
+    }
+
+    #[test]
+    fn moved_category_keeps_new_choice_and_survives_rebuild() {
+        let inputs = [input("(Doujin CG) [Aaa] t.zip", "zip", None)];
+        let mut set = build_candidates(&inputs, &master(), &MatchOptions::default(), Lang::English);
+        let idx = set.candidates.iter().position(|c| c.role == Role::Event).expect("event candidate");
+        let origin = set.candidates[idx].category;
+        set.candidates[idx].move_to_category(2);
+        let c = &set.candidates[idx];
+        assert_eq!((c.category, c.choice.clone(), c.category_origin), (CatRef::Existing(2), Choice::New, Some(origin)));
+        assert!(c.is_category_moved());
+        // 不採用にしてから採用に戻しても、移した先に新規登録のまま。
+        set.candidates[idx].unadopt();
+        assert_eq!(set.candidates[idx].choice, Choice::Skip);
+        set.candidates[idx].adopt();
+        assert_eq!((set.candidates[idx].choice.clone(), set.candidates[idx].category), (Choice::New, CatRef::Existing(2)));
+        // 作り直したあとも、移した先を引き継ぐ。
+        let mut fresh = build_candidates(&inputs, &master(), &MatchOptions::default(), Lang::English);
+        set.carry_over_choices(&mut fresh);
+        let f = fresh.candidates.iter().find(|c| c.role == Role::Event).unwrap();
+        assert_eq!((f.category, f.category_origin), (CatRef::Existing(2), Some(origin)));
+        // もとに戻せる。
+        set.candidates[idx].restore_category();
+        assert_eq!((set.candidates[idx].category, set.candidates[idx].category_origin), (origin, None));
     }
 
     #[test]
