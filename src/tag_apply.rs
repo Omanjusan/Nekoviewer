@@ -466,6 +466,22 @@ mod tests {
     }
 
     #[test]
+    fn several_candidates_can_alias_onto_the_same_element() {
+        let inputs = [input("[Circ (Seinen)] a.zip", "zip", None), input("[Circ2 (Shoujo)] b.zip", "zip", None)];
+        let mut set = build_candidates(&inputs, &master(), &MatchOptions::default(), Lang::English);
+        for c in set.candidates.iter_mut().filter(|c| c.role == Role::Author) {
+            c.choice = Choice::Alias { cat_idx: 0, tier_id: 1 };
+        }
+        let mut cats = master();
+        let mut next = 100u64;
+        let plan = plan_application(&set, &mut cats, &mut next, Lang::English);
+        let name = cats[0].tiers[0].element.clone().unwrap();
+        assert!(name.starts_with("漫画|") && name.contains("Seinen") && name.contains("Shoujo"), "{name}");
+        assert!(plan.file_additions[&0].contains(&1) && plan.file_additions[&1].contains(&1));
+        assert_eq!(cats[0].tiers.len(), 1);
+    }
+
+    #[test]
     fn alias_choice_is_not_applied_when_it_overlaps_another_element_or_exists() {
         let inputs = [input("[Circ (Koji)] a.zip", "zip", None)];
         let mut set = build_candidates(&inputs, &master(), &MatchOptions::default(), Lang::English);

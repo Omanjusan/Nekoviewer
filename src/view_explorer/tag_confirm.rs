@@ -71,6 +71,54 @@ fn pending_review_total(set: &CandidateSet, confirmed: &HashSet<(Role, String)>)
     set.candidates.iter().filter(|c| pending_review(c, confirmed)).count()
 }
 
+/// 「既存の要素に結びつける」の選択部品（カテゴリ → 絞り込み → 要素の一覧）。選び直したら true。
+/// 変更ダイアログと一括移動ダイアログで共用する。プレビューや注意書きは、呼び出し側が足す。
+fn draw_link_picker(ui: &mut egui::Ui, id: &str, master: &[TagManagerCategoryUi], cat: &mut Option<usize>, tier: &mut Option<u64>, filter: &mut String) -> bool {
+    let mut touched = false;
+    let link_cats = ctext::link_categories(master);
+    ui.horizontal(|ui| {
+        ui.label(ctext::LINK_PICK_CATEGORY);
+        let current = cat.and_then(|i| link_cats.iter().find(|c| c.0 == i)).map_or_else(|| ctext::MOVE_PICK_PLACEHOLDER.to_string(), |c| c.1.clone());
+        egui::ComboBox::from_id_salt((id, "cat")).selected_text(current).show_ui(ui, |ui| {
+            for (i, name) in &link_cats {
+                if ui.selectable_label(*cat == Some(*i), name).clicked() {
+                    if *cat != Some(*i) {
+                        *cat = Some(*i);
+                        *tier = None;
+                        filter.clear();
+                    }
+                    touched = true;
+                }
+            }
+        });
+    });
+    let Some(cat_idx) = *cat else { return touched };
+    ui.horizontal(|ui| {
+        ui.label(ctext::LINK_PICK_ELEMENT);
+        ui.add(egui::TextEdit::singleline(filter).desired_width(200.0).hint_text(ctext::LINK_FILTER_HINT));
+    });
+    let (elements, total) = ctext::link_elements(master, cat_idx, filter, ctext::LINK_LIST_CAP);
+    if elements.is_empty() {
+        ui.weak(ctext::LINK_NO_ELEMENT);
+    } else {
+        egui::ScrollArea::vertical().id_salt((id, "elems")).max_height(140.0).auto_shrink([false, true]).show(ui, |ui| {
+            for e in &elements {
+                if ui.selectable_label(*tier == Some(e.tier_id), &e.label).on_hover_text(&e.full).clicked() {
+                    *tier = Some(e.tier_id);
+                    touched = true;
+                }
+            }
+            if total > elements.len() {
+                ui.weak(ctext::link_more(total - elements.len()));
+            }
+        });
+    }
+    if master.get(cat_idx).is_some_and(|c| c.is_main) {
+        ui.colored_label(egui::Color32::from_rgb(230, 160, 40), ctext::LINK_MAIN_NOTE);
+    }
+    touched
+}
+
 /// 窓冒頭の説明。たたむ・開くボタンと、よくある質問のボタンを持つ。
 fn draw_intro(ui: &mut egui::Ui, st: &mut TagConfirm) {
     egui::Frame::group(ui.style()).show(ui, |ui| {
@@ -272,6 +320,11 @@ struct BulkMoveDialog {
     target: Option<usize>,
     /// 次回以降も、これらの名前はこのカテゴリとして扱う（ルールとして保存する）。
     remember: bool,
+    /// 「既存の要素に結びつける」を選んでいるか（false なら「別のカテゴリの新しい要素として登録」）。
+    link_on: bool,
+    link_cat: Option<usize>,
+    link_tier: Option<u64>,
+    link_filter: String,
 }
 
 /// 変更ダイアログの状態。
@@ -410,7 +463,7 @@ impl TagConfirm {
             return;
         }
         let selected = std::iter::once(c.key.clone()).collect();
-        self.bulk_move_dialog = Some(BulkMoveDialog { role: c.role, selected, filter: String::new(), target: None, remember: false });
+        self.bulk_move_dialog = Some(BulkMoveDialog { role: c.role, selected, filter: String::new(), target: None, remember: false, link_on: false, link_cat: None, link_tier: None, link_filter: String::new() });
     }
 
     /// 作り直しの完了を取り込む。ユーザーが変えた採否は引き継ぐ。
@@ -1141,7 +1194,16 @@ impl NekoviewApp {
                 }
             });
             ui.add_space(6.0);
-            if targets.is_empty() {
+            // 扱い方: 別のカテゴリの新しい要素として登録する／既存の要素に結びつける（別名を足す）。
+            ui.horizontal(|ui| {
+                ui.radio_value(&mut bd.link_on, false, ctext::BULK_MODE_MOVE);
+                ui.radio_value(&mut bd.link_on, true, ctext::BULK_MODE_LINK);
+            });
+            if bd.link_on {
+                ui.weak(ctext::BULK_LINK_DESC);
+                draw_link_picker(ui, "tag_bulk_link", &st.master, &mut bd.link_cat, &mut bd.link_tier, &mut bd.link_filter);
+                ui.weak(ctext::LINK_NOTE);
+            } else if targets.is_empty() {
                 ui.colored_label(egui::Color32::from_rgb(200, 140, 0), ctext::MOVE_NO_TARGET);
             } else {
                 ui.horizontal(|ui| {
@@ -1161,18 +1223,37 @@ impl NekoviewApp {
             let files: HashSet<usize> = chosen.iter().flat_map(|c| c.files.iter().copied()).collect();
             let cat_name = bd.target.and_then(|i| targets.iter().find(|t| t.0 == i)).map(|t| t.1.as_str());
             ui.add_space(4.0);
-            ui.label(ctext::bulk_move_preview(chosen.len(), files.len(), cat_name));
+            if bd.link_on {
+                let names: Vec<String> = chosen.iter().flat_map(|c| c.alias_list()).collect();
+                let element = bd.link_cat.zip(bd.link_tier).and_then(|(ci, tid)| st.master.get(ci).map(|cat| (cat.display_name(), tid)));
+                let full = element.as_ref().and_then(|(_, tid)| st.master.iter().flat_map(|c| c.tiers.iter()).find(|t| t.id == *tid)).and_then(|t| t.element.clone());
+                ui.label(ctext::bulk_link_preview(chosen.len(), files.len(), element.as_ref().map(|e| e.0.as_str()).zip(full.as_deref()), &names));
+            } else {
+                ui.label(ctext::bulk_move_preview(chosen.len(), files.len(), cat_name));
+            }
             ui.add_space(8.0);
             ui.horizontal(|ui| {
                 if ui.button(t.archive_open_cancel()).clicked() {
                     cancel = true;
                 }
-                if ui.add_enabled(!chosen.is_empty() && bd.target.is_some(), egui::Button::new(ctext::BULK_MOVE_OK_LABEL)).clicked() {
+                let ready = !chosen.is_empty() && if bd.link_on { bd.link_cat.is_some() && bd.link_tier.is_some() } else { bd.target.is_some() };
+                let label = if bd.link_on { ctext::BULK_LINK_OK_LABEL } else { ctext::BULK_MOVE_OK_LABEL };
+                if ui.add_enabled(ready, egui::Button::new(label)).clicked() {
                     ok = true;
                 }
             });
         });
         if cancel || modal.should_close() {
+            return;
+        }
+        if ok && bd.link_on {
+            // 選んだ候補すべてに、同じ既存要素への別名として結びつける（登録先のカテゴリは、もとのままに戻す）。
+            let (Some(cat_idx), Some(tier_id)) = (bd.link_cat, bd.link_tier) else { return };
+            for c in st.set.candidates.iter_mut().filter(|c| c.role == role && bd.selected.contains(&c.key)) {
+                c.restore_category();
+                c.choice = Choice::Alias { cat_idx, tier_id };
+                st.confirmed.insert((c.role, c.key.clone()));
+            }
             return;
         }
         if ok {
@@ -1329,49 +1410,11 @@ impl NekoviewApp {
                             }
                         });
                         ui.label(egui::RichText::new(ctext::link_desc(&st.set.candidates[idx])).weak());
-                        ui.horizontal(|ui| {
-                            ui.label(ctext::LINK_PICK_CATEGORY);
-                            let current = rd.link_cat.and_then(|i| link_cats.iter().find(|c| c.0 == i)).map_or_else(|| ctext::MOVE_PICK_PLACEHOLDER.to_string(), |c| c.1.clone());
-                            egui::ComboBox::from_id_salt("tag_resolve_link_cat").selected_text(current).show_ui(ui, |ui| {
-                                for (i, name) in &link_cats {
-                                    if ui.selectable_label(rd.link_cat == Some(*i), name).clicked() {
-                                        if rd.link_cat != Some(*i) {
-                                            rd.link_cat = Some(*i);
-                                            rd.link_tier = None;
-                                            rd.link_filter.clear();
-                                        }
-                                        rd.link_on = true;
-                                    }
-                                }
-                            });
-                        });
-                        if let Some(cat_idx) = rd.link_cat {
-                            ui.horizontal(|ui| {
-                                ui.label(ctext::LINK_PICK_ELEMENT);
-                                ui.add(egui::TextEdit::singleline(&mut rd.link_filter).desired_width(200.0).hint_text(ctext::LINK_FILTER_HINT));
-                            });
-                            let (elements, total) = ctext::link_elements(&st.master, cat_idx, &rd.link_filter, ctext::LINK_LIST_CAP);
-                            if elements.is_empty() {
-                                ui.weak(ctext::LINK_NO_ELEMENT);
-                            } else {
-                                egui::ScrollArea::vertical().id_salt("tag_resolve_link_elems").max_height(140.0).auto_shrink([false, true]).show(ui, |ui| {
-                                    for e in &elements {
-                                        if ui.selectable_label(rd.link_tier == Some(e.tier_id), &e.label).on_hover_text(&e.full).clicked() {
-                                            rd.link_tier = Some(e.tier_id);
-                                            rd.link_on = true;
-                                        }
-                                    }
-                                    if total > elements.len() {
-                                        ui.weak(ctext::link_more(total - elements.len()));
-                                    }
-                                });
-                            }
-                            if let Some(tier) = rd.link_tier.filter(|_| rd.link_on) {
-                                ui.label(ctext::link_preview(&st.set.candidates[idx], &st.master, cat_idx, tier));
-                            }
-                            if st.master.get(cat_idx).is_some_and(|c| c.is_main) {
-                                ui.colored_label(amber, ctext::LINK_MAIN_NOTE);
-                            }
+                        if draw_link_picker(ui, "tag_resolve_link", &st.master, &mut rd.link_cat, &mut rd.link_tier, &mut rd.link_filter) {
+                            rd.link_on = true;
+                        }
+                        if let (Some(cat_idx), Some(tier)) = (rd.link_cat, rd.link_tier.filter(|_| rd.link_on)) {
+                            ui.label(ctext::link_preview(&st.set.candidates[idx], &st.master, cat_idx, tier));
                         }
                         ui.weak(ctext::LINK_NOTE);
                     });

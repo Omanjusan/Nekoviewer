@@ -362,7 +362,7 @@ pub(crate) const BULK_MOVE_OK_LABEL: &str = "移す";
 
 /// 一括移動ダイアログの案内。
 pub(crate) fn bulk_move_intro(kind: &str) -> String {
-    format!("「{kind}」として抽出された候補のうち、実際は別の種類のものを、まとめて選んだカテゴリの新しい要素として登録します。移す候補にチェックを入れてください。")
+    format!("「{kind}」として抽出された候補のうち、実際は別の種類のものを、まとめて、別のカテゴリの新しい要素として登録するか、すでにある要素に結びつけます。対象の候補にチェックを入れてください。")
 }
 
 /// 一括移動の確認文（選んだ内容を、ダイアログの中で確かめる）。
@@ -429,6 +429,28 @@ pub(crate) fn link_elements(master: &[TagManagerCategoryUi], cat_idx: usize, que
         }
     }
     (out, total)
+}
+
+pub(crate) const BULK_MODE_MOVE: &str = "別のカテゴリの新しい要素として登録";
+pub(crate) const BULK_MODE_LINK: &str = "既存の要素に結びつける（別名を足す）";
+pub(crate) const BULK_LINK_DESC: &str = "選んだ候補の名前を、すでにある1つの要素の別名として足し、その要素をファイルにタグ付けします。以後の取得でも、同じ要素として一致します。";
+pub(crate) const BULK_LINK_OK_LABEL: &str = "結びつける";
+
+/// 一括の結びつけの確認文。`target` は（カテゴリ名, 要素名の全体）。
+pub(crate) fn bulk_link_preview(count: usize, files: usize, target: Option<(&str, &str)>, names: &[String]) -> String {
+    match (count, target) {
+        (0, _) => "結びつける候補を選んでください".to_string(),
+        (_, None) => format!("選んだ{count}件（合計{files}ファイル）の結びつけ先の要素を選んでください"),
+        (_, Some((cat, full))) => {
+            let mut all: Vec<String> = crate::tag_master::split_aliases(full).into_iter().map(str::to_string).collect();
+            for n in names {
+                if !all.iter().any(|a| crate::tag_master::normalize_key(a) == crate::tag_master::normalize_key(n)) {
+                    all.push(n.clone());
+                }
+            }
+            format!("選んだ{count}件を、{cat}の要素の別名として足し、合計{files}ファイルにタグ付けする（要素名は『{}』になる）", all.join("|"))
+        }
+    }
 }
 
 /// 要素の一覧が上限で切れたときの案内。
@@ -912,6 +934,17 @@ mod tests {
         let (cut, total) = link_elements(&m, 0, "", 1);
         assert_eq!((cut.len(), total), (1, 2));
         assert_eq!(link_elements(&m, 99, "", 10), (Vec::new(), 0), "範囲外のカテゴリは空");
+    }
+
+    #[test]
+    fn bulk_link_preview_texts() {
+        assert_eq!(bulk_link_preview(0, 0, None, &[]), "結びつける候補を選んでください");
+        assert!(bulk_link_preview(2, 9, None, &[]).contains("結びつけ先の要素を選んでください"));
+        let names = vec!["青年コミック".to_string(), "少女コミック".to_string(), "漫画".to_string()];
+        // 要素にすでにある別名は、足さない。
+        let p = bulk_link_preview(3, 9, Some(("メイン", "MANGA|漫画")), &names);
+        assert!(p.contains("選んだ3件を、メインの要素の別名として足し、合計9ファイルにタグ付けする"));
+        assert!(p.contains("『MANGA|漫画|青年コミック|少女コミック』になる"), "{p}");
     }
 
     #[test]
