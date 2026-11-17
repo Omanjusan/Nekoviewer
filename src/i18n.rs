@@ -11368,9 +11368,13 @@ pub fn with_display<R>(d: Display, f: impl FnOnce() -> R) -> R {
     r
 }
 
-/// `f` の中で作る文言を、いまの表示にかかわらず日本語にする（日中（テスト）のホバー用）。
+/// ホバー用。日中（テスト）のときだけ、`f` の中で作る文言を日本語にする。ほかの表示（日本語・English・中文）では、そのままの言語。
 pub fn as_ja<R>(f: impl FnOnce() -> R) -> R {
-    with_display(Display::Ja, f)
+    if display() == Display::JaZh {
+        with_display(Display::Ja, f)
+    } else {
+        f()
+    }
 }
 
 pub fn display() -> Display {
@@ -11455,12 +11459,13 @@ mod display_tests {
     }
 
     #[test]
-    fn as_ja_forces_japanese_only_inside_and_restores() {
-        // 他のテストと状態を共有しないよう、スレッドごとの印だけを確かめる（この印は、このスレッドにしか効かない）。
-        let inside = as_ja(|| display());
-        assert_eq!(inside, Display::Ja);
-        let nested = as_ja(|| as_ja(|| display()));
-        assert_eq!(nested, Display::Ja);
+    fn as_ja_applies_only_to_the_test_display() {
+        // 日中（テスト）だけ、日本語になる。English・中文では、そのままの言語（ホバーが日本語に固定される不具合の再発防止）。
+        assert_eq!(with_display(Display::JaZh, || as_ja(|| display())), Display::Ja);
+        assert_eq!(with_display(Display::En, || as_ja(|| display())), Display::En);
+        assert_eq!(with_display(Display::Zh, || as_ja(|| display())), Display::Zh);
+        assert_eq!(with_display(Display::Ja, || as_ja(|| display())), Display::Ja);
+        // 終わったら、元に戻る。
         FORCE.with(|c| assert!(c.get().is_none()));
     }
 

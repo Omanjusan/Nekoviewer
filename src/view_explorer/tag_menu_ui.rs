@@ -51,8 +51,13 @@ impl NekoviewApp {
         // 2: 現フォルダファイルのタグ自動抽出＆付与
         let enabled = self.can_start_tag_scan();
         let resp = ui.add_enabled(enabled, egui::Button::new(i18n::render(|t| t.tag_menu_scan_item().to_string())));
-        let hint = if self.tag_trial_active { i18n::render(|t| t.tag_scan_trial_hint().to_string()) } else { i18n::render(|t| t.tag_scan_unavailable_hint().to_string()) };
-        let resp = if enabled { resp } else { resp.on_disabled_hover_text(i18n::as_ja(|| hint)) };
+        let trial = self.tag_trial_active;
+        let resp = if enabled {
+            resp
+        } else {
+            let hint = i18n::as_ja(|| if trial { i18n::render(|t| t.tag_scan_trial_hint().to_string()) } else { i18n::render(|t| t.tag_scan_unavailable_hint().to_string()) });
+            resp.on_disabled_hover_text(hint)
+        };
         if resp.clicked() {
             self.request_tag_scan();
             ui.close();
