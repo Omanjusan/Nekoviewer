@@ -1838,7 +1838,9 @@ pub fn spawn_thumb_worker(
                     ctx.request_repaint();
                     // 後追い検証: 元ファイルのmtimeと生成条件が一致すれば完了。食い違うときだけ、
                     // 旧画像を表示したままメモリ上で再生成する（DBは更新しない）。
+                    let t_stat = std::time::Instant::now();
                     let current_mtime = crate::neko_dir::file_mtime(&req.archive_path);
+                    let d_stat = t_stat.elapsed();
                     let desired_source = req.thumbnail_selection.as_ref()
                         .map(thumbnail_selection_cache_key)
                         .unwrap_or_default();
@@ -1853,6 +1855,11 @@ pub fn spawn_thumb_worker(
                                 &desired_source,
                             )
                         });
+                    log_perf!(
+                        "[perf/foreign-thumb] {} 検証 stat={:.1}ms 現行={is_current}",
+                        req.archive_path.file_name().and_then(|n| n.to_str()).unwrap_or("?"),
+                        d_stat.as_secs_f64() * 1000.0,
+                    );
                     if is_current || current_mtime == 0 {
                         let _ = res_tx.send(ThumbResult {
                             is_tag_preview: false,
