@@ -1620,116 +1620,59 @@ pub struct ThumbResult {
     pub is_tag_preview: bool,
 }
 
-// ── 飛び地一覧（お気に入り・検索・タグ検索・類似）のサムネ計測（P0・設定の「perf」ログON時のみ）──
-// 飛び地一覧のサムネ要求は db=None で来るため、プローブはDBを引かず常に生成へ回る（保存もされない）。
-// 「もし親フォルダのDBを引いたら当たるのか・引くのにどれだけかかるのか」を、実際の処理の前に1回だけ
-// 試して数字に残す。結果は実処理へ一切影響させない（影の読み出し）。
-// 注意: 影の読み出しで親フォルダのDBを開く（open_cache_db_if_exists＝既存DBのみ）ので、その分プローブは遅くなる。
+// ── 飛び地一覧（お気に入り・検索・タグ検索・類似）のサムネ参照 ──
+// 飛び地一覧のサムネ要求は db=None で来る（表示中フォルダ以外のDBへ誤って保存しないため）。
+// プローブレーンは、そのファイル自身の親フォルダのサムネDB（既存のものだけ・作らない）を読み取り専用で引き、
+// 当たれば表示する。保存はしない。外れ（DB無し・行無し・条件違い）は従来どおりメモリ上だけで生成する。
 
-static VIRT_PERF_CACHE_ROOT: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+static THUMB_CACHE_ROOT: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
 
-/// 影の読み出しが対象DBを探すためのキャッシュルートを登録する（起動時に1回）。
-pub fn set_virt_perf_cache_root(root: Option<PathBuf>) {
+/// 親フォルダ → サムネDB。開いたDBだけを覚える（DB無しは覚えない。後からそのフォルダを開いて作られうるため）。
+type ParentDbMap = HashMap<PathBuf, Arc<Mutex<redb::Database>>>;
+static PARENT_DBS: Mutex<Option<ParentDbMap>> = Mutex::new(None);
+
+/// 飛び地のサムネ参照が対象DBを探すためのキャッシュルートを登録する（起動時に1回）。
+pub fn set_thumb_cache_root(root: Option<PathBuf>) {
     if let Some(root) = root {
-        let _ = VIRT_PERF_CACHE_ROOT.set(root);
+        let _ = THUMB_CACHE_ROOT.set(root);
     }
 }
 
-#[derive(Default)]
-struct VirtThumbStats {
-    shadow_n: u64,
-    hit: u64,
-    no_db: u64,
-    no_row: u64,
-    hash: std::time::Duration,
-    open: std::time::Duration,
-    read: std::time::Duration,
-    stat: std::time::Duration,
-    open_max: std::time::Duration,
-    gen_n: u64,
-    gen_total: std::time::Duration,
-    gen_max: std::time::Duration,
+fn is_foreign_request(req: &ThumbRequest) -> bool {
+    req.db.is_none() && !req.is_tag_preview
 }
 
-static VIRT_THUMB_STATS: Mutex<Option<VirtThumbStats>> = Mutex::new(None);
-const VIRT_SUMMARY_EVERY: u64 = 20;
-
-fn ms(d: std::time::Duration) -> f64 { d.as_secs_f64() * 1000.0 }
-
-fn virt_is_target(req: &ThumbRequest) -> bool {
-    crate::config::log().perf && req.db.is_none() && !req.is_tag_preview
-}
-
-fn virt_summary(s: &VirtThumbStats) {
-    let n = s.shadow_n.max(1) as f64;
-    let g = s.gen_n.max(1) as f64;
-    eprintln!(
-        "[perf/virt-thumb] 要約 影読み{}件: 当たり={} DB無し={} 行無し={} | 平均 hash={:.1}ms open={:.1}ms(最大{:.0}) read={:.1}ms stat={:.1}ms | 実生成{}件 平均{:.0}ms 最大{:.0}ms",
-        s.shadow_n, s.hit, s.no_db, s.no_row,
-        ms(s.hash) / n, ms(s.open) / n, ms(s.open_max), ms(s.read) / n, ms(s.stat) / n,
-        s.gen_n, ms(s.gen_total) / g, ms(s.gen_max),
-    );
-}
-
-/// 飛び地要求について、親フォルダのDBを引いた場合の当たり/外れと各段の時間を記録する。
-fn virt_shadow_probe(req: &ThumbRequest) {
-    if !virt_is_target(req) { return; }
-    let Some(root) = VIRT_PERF_CACHE_ROOT.get() else { return };
-    let Some(parent) = req.archive_path.parent() else { return };
-    let Some(filename) = req.archive_path.file_name().and_then(|n| n.to_str()) else { return };
-
-    let t = std::time::Instant::now();
+/// 飛び地要求のファイルについて、親フォルダの既存サムネDBを返す。
+fn resolve_parent_db(path: &std::path::Path) -> Option<Arc<Mutex<redb::Database>>> {
+    let parent = path.parent()?;
+    if let Ok(guard) = PARENT_DBS.lock() {
+        if let Some(db) = guard.as_ref().and_then(|m| m.get(parent)) {
+            return Some(Arc::clone(db));
+        }
+    }
+    let root = THUMB_CACHE_ROOT.get()?;
     let neko_dir = crate::neko_dir::neko_dir_for_root(parent, root);
-    let d_hash = t.elapsed();
-
-    let t = std::time::Instant::now();
-    let db = crate::neko_dir::open_cache_db_if_exists(&neko_dir, parent);
-    let d_open = t.elapsed();
-
-    let t = std::time::Instant::now();
-    let (outcome, jpeg_len) = match &db {
-        None => ("DB無し", 0),
-        Some(db) => match crate::neko_dir::read_thumb_unchecked(db, filename) {
-            Some((_, jpeg)) => ("当たり", jpeg.len()),
-            None => ("行無し", 0),
-        },
-    };
-    let d_read = t.elapsed();
-
-    let t = std::time::Instant::now();
-    let _ = crate::neko_dir::file_mtime(&req.archive_path);
-    let d_stat = t.elapsed();
-
-    eprintln!(
-        "[perf/virt-thumb] {filename} {outcome} hash={:.1}ms open={:.1}ms read={:.1}ms({}KB) stat={:.1}ms",
-        ms(d_hash), ms(d_open), ms(d_read), jpeg_len / 1024, ms(d_stat),
-    );
-    if let Ok(mut guard) = VIRT_THUMB_STATS.lock() {
-        let s = guard.get_or_insert_with(VirtThumbStats::default);
-        s.shadow_n += 1;
-        match outcome { "当たり" => s.hit += 1, "DB無し" => s.no_db += 1, _ => s.no_row += 1 }
-        s.hash += d_hash;
-        s.open += d_open;
-        s.open_max = s.open_max.max(d_open);
-        s.read += d_read;
-        s.stat += d_stat;
-        if s.shadow_n % VIRT_SUMMARY_EVERY == 0 { virt_summary(s); }
+    let db = crate::neko_dir::open_cache_db_if_exists(&neko_dir, parent)?;
+    if let Ok(mut guard) = PARENT_DBS.lock() {
+        guard.get_or_insert_with(HashMap::new).insert(parent.to_path_buf(), Arc::clone(&db));
     }
+    Some(db)
 }
 
-/// 飛び地要求の実生成にかかった時間を記録する。
-fn virt_record_gen(req: &ThumbRequest, elapsed: std::time::Duration) {
-    if !virt_is_target(req) { return; }
-    eprintln!(
-        "[perf/virt-thumb] 実生成 {} {:.0}ms",
-        req.archive_path.file_name().and_then(|n| n.to_str()).unwrap_or("?"), ms(elapsed),
+/// 飛び地要求のキャッシュ参照。当たれば (デコード済みRGBA, 親DB) を返す。
+fn probe_foreign_thumb(req: &ThumbRequest) -> Option<(image::RgbaImage, Arc<Mutex<redb::Database>>)> {
+    if !is_foreign_request(req) { return None; }
+    let filename = req.archive_path.file_name().and_then(|n| n.to_str())?;
+    let t0 = std::time::Instant::now();
+    let db = resolve_parent_db(&req.archive_path)?;
+    let t_open = t0.elapsed();
+    let (_, jpeg) = crate::neko_dir::read_thumb_unchecked(&db, filename)?;
+    let rgba = image::load_from_memory(&jpeg).ok()?.to_rgba8();
+    log_perf!(
+        "[perf/foreign-thumb] {filename} 当たり open={:.1}ms total={:.1}ms",
+        t_open.as_secs_f64() * 1000.0, t0.elapsed().as_secs_f64() * 1000.0,
     );
-    if let Ok(mut guard) = VIRT_THUMB_STATS.lock() {
-        let s = guard.get_or_insert_with(VirtThumbStats::default);
-        s.gen_n += 1;
-        s.gen_total += elapsed;
-        s.gen_max = s.gen_max.max(elapsed);
-    }
+    Some((rgba, db))
 }
 
 /// プローブレーンのスレッド数。ローカルDB読み＋JPEGデコードのみで軽いため少数で足りる。
@@ -1805,7 +1748,6 @@ fn spawn_thumb_gen_pool(
                 // 失敗（None）でも必ず返送し、呼び元が thumb_pending を解放できるようにする
                 let gen_started = std::time::Instant::now();
                 let rgba = generate_thumb(&req);
-                virt_record_gen(&req, gen_started.elapsed());
                 if !req.is_tag_preview {
                     crate::perf_fixture::item(crate::perf_fixture::Stage::Thumb, gen_started.elapsed());
                 }
@@ -1878,7 +1820,58 @@ pub fn spawn_thumb_worker(
                 if req.session_id != current_session.load(Ordering::Acquire) {
                     continue;
                 }
-                virt_shadow_probe(&req);
+                // 飛び地一覧（db=None）: 親フォルダのサムネDBを読み取り専用で引く。保存はしない。
+                if let Some((rgba, foreign_db)) = probe_foreign_thumb(&req) {
+                    let source_key = req.thumbnail_selection.as_ref().map(thumbnail_selection_cache_key);
+                    let _ = res_tx.send(ThumbResult {
+                        is_tag_preview: false,
+                        path: req.archive_path.clone(),
+                        rgba: Some(rgba),
+                        source_key: source_key.clone(),
+                        requested_edge: req.requested_edge,
+                        requested_filter: req.requested_filter.thumbnail_cache_id(),
+                        session_id: req.session_id,
+                        stage: ThumbResultStage::Preview,
+                        failed: false,
+                        missing: false,
+                    });
+                    ctx.request_repaint();
+                    // 後追い検証: 元ファイルのmtimeと生成条件が一致すれば完了。食い違うときだけ、
+                    // 旧画像を表示したままメモリ上で再生成する（DBは更新しない）。
+                    let current_mtime = crate::neko_dir::file_mtime(&req.archive_path);
+                    let desired_source = req.thumbnail_selection.as_ref()
+                        .map(thumbnail_selection_cache_key)
+                        .unwrap_or_default();
+                    let is_current = current_mtime != 0
+                        && req.archive_path.file_name().and_then(|n| n.to_str()).is_some_and(|filename| {
+                            crate::neko_dir::is_thumbnail_current(
+                                &foreign_db,
+                                filename,
+                                current_mtime,
+                                req.requested_edge,
+                                req.requested_filter.thumbnail_cache_id(),
+                                &desired_source,
+                            )
+                        });
+                    if is_current || current_mtime == 0 {
+                        let _ = res_tx.send(ThumbResult {
+                            is_tag_preview: false,
+                            path: req.archive_path,
+                            rgba: None,
+                            source_key,
+                            requested_edge: req.requested_edge,
+                            requested_filter: req.requested_filter.thumbnail_cache_id(),
+                            session_id: req.session_id,
+                            stage: ThumbResultStage::Complete,
+                            failed: false,
+                            missing: current_mtime == 0,
+                        });
+                        ctx.request_repaint();
+                    } else {
+                        forward_thumb_gen(req, &gen_tx, &net_gen_tx);
+                    }
+                    continue;
+                }
                 match probe_cached_thumb(&req) {
                     Some((rgba, stored_mtime)) => {
                         // キャッシュヒット: statを待たずに先に表示へ回す
@@ -2410,6 +2403,66 @@ mod ring_integration_tests {
         assert!(!complete.missing, "実在するファイルは missing にならない");
         drop(tx);
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 飛び地一覧（db=None）の要求は、親フォルダの既存サムネDBを読み取り専用で引く。
+    /// 当たれば再生成せず、外れた分はメモリ上だけで生成してDBへ書かない。
+    #[test]
+    fn foreign_request_reads_parent_db_and_never_writes_it() {
+        let stamp = format!(
+            "{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos(),
+        );
+        let cache_root = THUMB_CACHE_ROOT
+            .get_or_init(|| std::env::temp_dir().join(format!("nekoviewer_foreign_root_{stamp}")))
+            .clone();
+        let source_dir = std::env::temp_dir().join(format!("nekoviewer_foreign_src_{stamp}"));
+        std::fs::create_dir_all(&source_dir).unwrap();
+        for name in ["hit.png", "miss.png"] {
+            image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(8, 8, image::Rgba([1, 2, 3, 255])))
+                .save(source_dir.join(name)).unwrap();
+        }
+        let neko_dir = crate::neko_dir::neko_dir_for_root(&source_dir, &cache_root);
+        let db = crate::neko_dir::open_cache_db(&neko_dir, &source_dir).unwrap();
+        let (tx, rx, _) = spawn_thumb_worker(2, egui::Context::default());
+        let request = |name: &str, db: Option<Arc<Mutex<redb::Database>>>| ThumbRequest {
+            archive_path: source_dir.join(name),
+            db,
+            is_raw_file: true,
+            thumbnail_selection: None,
+            requested_edge: 64,
+            requested_filter: crate::config::ResizeFilter::Triangle,
+            generation_token: None,
+            session_id: 1,
+            is_tag_preview: false,
+        };
+        let wait = || rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+
+        // 実フォルダの経路で hit.png だけ生成済みにする。
+        tx.send(request("hit.png", Some(Arc::clone(&db)))).unwrap();
+        assert!(wait().rgba.is_some());
+
+        // 飛び地（db=None）: 当たり → 暫定表示＋完了（再生成なし）。
+        tx.send(request("hit.png", None)).unwrap();
+        let preview = wait();
+        let complete = wait();
+        assert_eq!(preview.stage, ThumbResultStage::Preview);
+        assert!(preview.rgba.is_some());
+        assert_eq!(complete.stage, ThumbResultStage::Complete);
+        assert!(complete.rgba.is_none() && !complete.failed && !complete.missing);
+
+        // 飛び地（db=None）: 行が無い → メモリ上だけで生成。DBへは書かない。
+        tx.send(request("miss.png", None)).unwrap();
+        let generated = wait();
+        assert_eq!(generated.stage, ThumbResultStage::Complete);
+        assert!(generated.rgba.is_some());
+        assert!(
+            crate::neko_dir::read_thumb_unchecked(&db, "miss.png").is_none(),
+            "飛び地の生成結果は親フォルダのDBへ保存しない",
+        );
+        drop(tx);
+        let _ = std::fs::remove_dir_all(&source_dir);
     }
 
     /// 消えたファイルは、キャッシュ済みサムネの有無によらず `missing` で知らせる

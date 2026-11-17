@@ -1199,6 +1199,40 @@ pub fn claim_thumbnail_generation(
     Some(token)
 }
 
+/// 読み取り専用で、サムネが「生成済み（Current）かつ元ファイルのmtime・生成条件と一致」かを返す。
+/// `claim_thumbnail_generation` の「取得しない（既に最新）」判定と同じ条件で、書き込みは一切しない。
+/// 飛び地一覧（他フォルダのDBを参照だけする）で、再生成が要るかの判定に使う。
+pub fn is_thumbnail_current(
+    db: &Arc<Mutex<Database>>,
+    filename: &str,
+    source_mtime: i64,
+    requested_edge: u32,
+    requested_filter: u32,
+    desired_source: &str,
+) -> bool {
+    if source_mtime == 0 { return false; }
+    let Ok(db) = db.lock() else { return false };
+    let Ok(tx) = db.begin_read() else { return false };
+    let state = tx.open_table(THUMB_STATES_TABLE).ok()
+        .and_then(|t| t.get(filename).ok().flatten().map(|v| decode_thumbnail_state(v.value())));
+    if !state.is_some_and(|s| s.status == ThumbnailStatus::Current) { return false; }
+    let stored_mtime = tx.open_table(THUMBS_TABLE).ok()
+        .and_then(|t| t.get(filename).ok().flatten().map(|v| v.value().0));
+    let stored_edge = tx.open_table(THUMB_EDGES_TABLE).ok()
+        .and_then(|t| t.get(filename).ok().flatten().map(|v| v.value()));
+    let stored_filter = tx.open_table(THUMB_FILTERS_TABLE).ok()
+        .and_then(|t| t.get(filename).ok().flatten().map(|v| v.value()));
+    let stored_source = tx.open_table(THUMB_SOURCES_TABLE).ok()
+        .and_then(|t| t.get(filename).ok().flatten().map(|v| v.value().to_owned()));
+    stored_mtime == Some(source_mtime)
+        && stored_edge == Some(requested_edge)
+        && stored_filter == Some(requested_filter)
+        && match stored_source.as_deref() {
+            Some(actual) => thumbnail_desired_source_matches(desired_source, actual),
+            None => desired_source.is_empty(),
+        }
+}
+
 /// CAS取得時のtokenと生成条件が現在も一致する場合だけ、旧Blobを原子的に置き換える。
 pub fn finish_thumbnail_generation(
     db: &Arc<Mutex<Database>>,
