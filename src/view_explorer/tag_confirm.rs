@@ -627,12 +627,12 @@ impl NekoviewApp {
                     let config = egui::containers::menu::MenuConfig::new().close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside);
                     egui::containers::menu::MenuButton::new(ctext::option_button()).config(config).ui(ui, |ui| {
                         ui.label(egui::RichText::new(ctext::option_density_heading()).strong());
-                        ui.radio_value(&mut st.compact, false, ctext::density_standard()).on_hover_text(ctext::density_hint());
-                        ui.radio_value(&mut st.compact, true, ctext::density_compact()).on_hover_text(ctext::density_hint());
+                        ui.radio_value(&mut st.compact, false, ctext::density_standard()).on_hover_text(i18n::as_ja(|| ctext::density_hint()));
+                        ui.radio_value(&mut st.compact, true, ctext::density_compact()).on_hover_text(i18n::as_ja(|| ctext::density_hint()));
                         ui.separator();
-                        ui.checkbox(&mut default_review, ctext::default_review_label()).on_hover_text(ctext::default_review_hint());
+                        ui.checkbox(&mut default_review, ctext::default_review_label()).on_hover_text(i18n::as_ja(|| ctext::default_review_hint()));
                         ui.separator();
-                        if ui.button(ctext::settings_button()).on_hover_text(ctext::settings_hint()).clicked() {
+                        if ui.button(ctext::settings_button()).on_hover_text(i18n::as_ja(|| ctext::settings_hint())).clicked() {
                             st.settings_open = true;
                             ui.close();
                         }
@@ -745,13 +745,13 @@ impl NekoviewApp {
             // 上限を超えたまま（拡張も維持も選んでいない）の間は適用できない。
             let blocked = !st.limit_keep && !over_limit(&st.set.candidates, st.limit).is_empty();
             let apply_enabled = any_adopted && !blocked && self.spread_db.is_some() && self.tag_apply_job.is_none();
-            let apply_hint = if blocked {
+            let apply_hint = i18n::as_ja(|| if blocked {
                 i18n::render(|t| t.tag_confirm_limit_pending().to_string()).to_string()
             } else if !any_adopted {
                 i18n::render(|t| t.tag_confirm_apply_none().to_string()).to_string()
             } else {
                 i18n::render(|t| t.tag_confirm_apply_pending().to_string()).to_string()
-            };
+            });
             let has_two = st.set.candidates.iter().any(|c| c.role.window() == Window::Two);
             let last_stage = stage == Window::Two || !has_two;
             if has_two {
@@ -769,7 +769,7 @@ impl NekoviewApp {
             ui.horizontal(|ui| {
                 // 左: 適用のできる窓では、前回の自動付与分を外して付け直すかを選べる（既定はOFF）。
                 if last_stage {
-                    ui.checkbox(&mut st.reattach, i18n::render(|t| t.tag_confirm_reattach().to_string())).on_hover_text(i18n::render(|t| t.tag_confirm_reattach_hover().to_string()));
+                    ui.checkbox(&mut st.reattach, i18n::render(|t| t.tag_confirm_reattach().to_string())).on_hover_text(i18n::as_ja(|| i18n::render(|t| t.tag_confirm_reattach_hover().to_string())));
                 }
                 // 右: キャンセルを右端に置き、適用とは間隔を空ける（押し間違い対策）。
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -865,7 +865,7 @@ impl NekoviewApp {
                 ui.horizontal_wrapped(|ui| {
                     for (i, sep) in seps.iter().enumerate() {
                         ui.label(egui::RichText::new(sep).strong());
-                        if ui.small_button("×").on_hover_text(ctext::rules_delete_label()).clicked() {
+                        if ui.small_button("×").on_hover_text(i18n::as_ja(|| ctext::rules_delete_label())).clicked() {
                             sep_action = Some(SepAction::Remove(i));
                         }
                         ui.add_space(6.0);
@@ -1276,7 +1276,7 @@ impl NekoviewApp {
                         }
                     });
                 });
-                ui.checkbox(&mut bd.remember, ctext::remember_label()).on_hover_text(ctext::remember_hint());
+                ui.checkbox(&mut bd.remember, ctext::remember_label()).on_hover_text(i18n::as_ja(|| ctext::remember_hint()));
             }
             let chosen: Vec<&Candidate> = st.set.candidates.iter().filter(|c| c.role == role && bd.selected.contains(&c.key)).collect();
             let files: HashSet<usize> = chosen.iter().flat_map(|c| c.files.iter().copied()).collect();
@@ -1443,7 +1443,7 @@ impl NekoviewApp {
                             }
                             // 次回以降も同じ扱いにする（ルールとして保存）。まとめた候補には出さない。
                             if can_remember && rd.move_cat.is_some() {
-                                ui.checkbox(&mut rd.remember, ctext::remember_label()).on_hover_text(ctext::remember_hint());
+                                ui.checkbox(&mut rd.remember, ctext::remember_label()).on_hover_text(i18n::as_ja(|| ctext::remember_hint()));
                             }
                             if rule_exists {
                                 ui.weak(ctext::rule_exists_note());
@@ -1806,12 +1806,12 @@ fn show_name_hover(resp: egui::Response, list: &(Vec<String>, usize)) -> egui::R
         return resp;
     }
     resp.on_hover_ui(|ui| {
-        ui.label(egui::RichText::new(ctext::source_hover_heading()).strong());
+        ui.label(egui::RichText::new(i18n::as_ja(|| ctext::source_hover_heading())).strong());
         for (n, name) in list.0.iter().enumerate() {
             ui.label(ctext::source_hover_line(n + 1, name));
         }
         if list.1 > 0 {
-            ui.weak(ctext::source_others(list.1));
+            ui.weak(i18n::as_ja(|| ctext::source_others(list.1)));
         }
     })
 }
@@ -1836,6 +1836,8 @@ fn draw_candidate_row(
     // 要確認のうち、ユーザーが確認済みのもの。
     let is_confirmed = reason.is_some() && confirmed.contains(&id);
     let conclusion = ctext::conclusion(&set.candidates[i], master);
+    // ホバーは、日中（テスト）でも日本語で出す。
+    let conclusion_ja = i18n::as_ja(|| ctext::conclusion(&set.candidates[i], master));
     let parent_hint = ctext::parent_hint(&set.candidates[i]);
     let source = ctext::source_file(&set.candidates[i], inputs);
     let source_hover = ctext::source_hover(&set.candidates[i], inputs);
@@ -1864,7 +1866,7 @@ fn draw_candidate_row(
         } else {
             egui::Button::new(label.weak())
         };
-        if ui.add(toggle.min_size(egui::vec2(TOGGLE_COL_W - CELL_PAD * 2.0, 0.0))).on_hover_text(ctext::toggle_hint()).clicked() {
+        if ui.add(toggle.min_size(egui::vec2(TOGGLE_COL_W - CELL_PAD * 2.0, 0.0))).on_hover_text(i18n::as_ja(|| ctext::toggle_hint())).clicked() {
             if adopted {
                 c.unadopt();
             } else {
@@ -1933,7 +1935,7 @@ fn draw_candidate_row(
                 // 高さは文字に任せ、幅だけを制限する（高さ0の枠に置くと、文字が上下に切れる）。
                 ui.scope(|ui| {
                     ui.set_max_width(badge_w);
-                    ui.add(egui::Label::new(egui::RichText::new(&badge).color(amber)).truncate().show_tooltip_when_elided(false)).on_hover_text(&badge);
+                    ui.add(egui::Label::new(egui::RichText::new(&badge).color(amber)).truncate().show_tooltip_when_elided(false)).on_hover_text(i18n::as_ja(|| ctext::review_badge(kind)));
                 });
                 if ui.small_button(ctext::why_button_label()).clicked() {
                     *action = Some(RowAction::OpenWhy(i));
@@ -1941,10 +1943,10 @@ fn draw_candidate_row(
             }
         }
         if let Some(hint) = &parent_hint {
-            ui.weak(hint).on_hover_text(ctext::parent_hint_hover());
+            ui.weak(hint).on_hover_text(i18n::as_ja(|| ctext::parent_hint_hover()));
         }
         if compact {
-            ui.add(egui::Label::new(conclusion.as_str()).truncate().show_tooltip_when_elided(false)).on_hover_text(&conclusion);
+            ui.add(egui::Label::new(conclusion.as_str()).truncate().show_tooltip_when_elided(false)).on_hover_text(&conclusion_ja);
         }
     });
 
@@ -1986,7 +1988,7 @@ fn draw_candidate_row(
     // 2段目（標準のみ）: 何をどこにどうするかの1文を、「内容・要確認」の列の中に出す（列をまたがない）。
     if !compact {
         in_cell(ui, at(cols.x_state() + CELL_PAD, cols.x_ops() - CELL_PAD, line1_h, row_h), left, |ui| {
-            ui.add(egui::Label::new(conclusion.as_str()).truncate().show_tooltip_when_elided(false)).on_hover_text(&conclusion);
+            ui.add(egui::Label::new(conclusion.as_str()).truncate().show_tooltip_when_elided(false)).on_hover_text(&conclusion_ja);
         });
     }
 
