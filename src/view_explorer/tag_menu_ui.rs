@@ -45,6 +45,8 @@ impl NekoviewApp {
         let enabled = self.can_start_tag_scan();
         let trial = self.tag_trial_active;
         let targets = self.tag_scan_targets().len();
+        let (excluded_raw, excluded_invalid) = self.tag_scan_excluded();
+        let excluded_total = excluded_raw + excluded_invalid;
         let rules_on = self.tag_rules.rules.iter().filter(|r| r.enabled).count();
         let rules_all = self.tag_rules.rules.len();
         let mut pick: Option<EntryPick> = None;
@@ -56,7 +58,23 @@ impl NekoviewApp {
             let (head, _) = ui.allocate_exact_size(egui::vec2(MENU_W, 30.0), egui::Sense::hover());
             let mut left = ui.new_child(egui::UiBuilder::new().max_rect(head).layout(egui::Layout::left_to_right(egui::Align::Center)));
             left.heading(ctext::menu_title());
-            ui.painter().text(head.center(), egui::Align2::CENTER_CENTER, ctext::menu_scope(targets), egui::FontId::proportional(15.0), ui.visuals().weak_text_color());
+            // 中央: 対象の件数と、（あれば）除外の件数。除外はホバーで内訳を出す（下線が、その目印）。
+            let font = egui::FontId::proportional(15.0);
+            let weak = ui.visuals().weak_text_color();
+            let scope = ui.painter().layout_no_wrap(ctext::menu_scope(targets), font.clone(), weak);
+            let excluded = if excluded_total > 0 { Some(ui.painter().layout_no_wrap(ctext::menu_excluded(excluded_total), font, weak)) } else { None };
+            let gap = 16.0;
+            let total_w = scope.size().x + excluded.as_ref().map_or(0.0, |g| gap + g.size().x);
+            let x0 = head.center().x - total_w / 2.0;
+            let scope_w = scope.size().x;
+            ui.painter().galley(egui::pos2(x0, head.center().y - scope.size().y / 2.0), scope, weak);
+            if let Some(g) = excluded {
+                let pos = egui::pos2(x0 + scope_w + gap, head.center().y - g.size().y / 2.0);
+                let r = egui::Rect::from_min_size(pos, g.size());
+                ui.painter().galley(pos, g, weak);
+                ui.painter().hline(r.x_range(), r.bottom() + 1.0, egui::Stroke::new(1.0, weak));
+                ui.interact(r, egui::Id::new("tag_entry_excluded"), egui::Sense::hover()).on_hover_text(i18n::as_ja(|| ctext::menu_excluded_hover(excluded_raw, excluded_invalid)));
+            }
             let mut right = ui.new_child(egui::UiBuilder::new().max_rect(head).layout(egui::Layout::right_to_left(egui::Align::Center)));
             if close_button(&mut right).on_hover_text(i18n::as_ja(|| ctext::menu_close_hint())).clicked() {
                 close = true;

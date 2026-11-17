@@ -551,6 +551,22 @@ pub(crate) fn menu_scope(n: usize) -> String {
 pub(crate) fn menu_close_hint() -> &'static str {
     i18n::tr("閉じる", "Close", "关闭")
 }
+/// 見出しの「除外 N件」。ホバーで、内訳を出す（ホバーできることは、下線で示す）。
+pub(crate) fn menu_excluded(n: usize) -> String {
+    i18n::render(|l| match l {
+        Lang::Japanese => format!("除外 {n}件"),
+        Lang::English => format!("Excluded: {n}"),
+        Lang::Chinese => format!("已排除 {n}项"),
+    })
+}
+/// 「除外」のホバー（内訳）。
+pub(crate) fn menu_excluded_hover(raw: usize, invalid: usize) -> String {
+    i18n::render(|l| match l {
+        Lang::Japanese => format!("タグ抽出の対象から外しているファイル\n・生画像ファイル（アーカイブではない画像）: {raw}件\n・無効なアーカイブ（画像が1枚も入っていないなど）: {invalid}件"),
+        Lang::English => format!("Files left out of tag extraction\n- Loose image files (not archives): {raw}\n- Invalid archives (e.g. containing no images): {invalid}"),
+        Lang::Chinese => format!("未纳入标签提取的文件\n- 单独的图片文件（不是压缩包）：{raw}个\n- 无效的压缩包（例如其中没有图片）：{invalid}个"),
+    })
+}
 pub(crate) fn menu_main_title() -> &'static str {
     i18n::tr("自動タグ抽出", "Auto tag extraction", "自动提取标签")
 }
@@ -2201,6 +2217,8 @@ mod i18n_coverage {
                     toggle_label(true),
                     toggle_label(false),
                     menu_scope(3),
+                    menu_excluded(2),
+                    menu_excluded_hover(1, 1),
                 ];
                 for o in outs {
                     assert!(!has_kana(&o), "{d:?}: 仮名が混ざっている: {o}");

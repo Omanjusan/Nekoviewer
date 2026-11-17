@@ -229,6 +229,13 @@ impl NekoviewApp {
             .collect()
     }
 
+    /// 対象から外している件数（生画像ファイル, 無効と確定したアーカイブ）。`tag_scan_targets` の除外と同じ条件で数える。
+    pub(super) fn tag_scan_excluded(&self) -> (usize, usize) {
+        let raw = self.archives.iter().filter(|p| self.raw_image_files.contains(*p)).count();
+        let invalid = self.archives.iter().filter(|p| !self.raw_image_files.contains(*p) && self.invalid_archives.contains(*p)).count();
+        (raw, invalid)
+    }
+
     /// ボタンを押せるか。フォルダ表示中（お気に入り・検索・類似・タグ検索を除く。仮想フォルダは対象）で、
     /// 対象があり、実行中でないとき。仮想フォルダは、開いたノードの実パスを実スキャンした一覧を出すので、
     /// 通常のフォルダと同じに扱える（仮想ルート `/` とリンク切れは一覧が空になり、対象なしで押せない）。
