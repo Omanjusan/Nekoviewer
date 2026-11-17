@@ -131,6 +131,24 @@ impl IdleThumb {
     }
 }
 
+/// 手すき生成のタイマーを戻す「操作」か。キー・テキスト入力（IME含む）・マウスボタン・タッチ・コピー/切り取り/貼り付けだけ。
+/// マウスの移動・ホイールでの一覧のスクロール・ウィンドウのフォーカス変化などは、操作に数えない
+/// （眺めているだけの間にも、画面外のサムネを先回りして貯めるため）。許可リスト方式なので、
+/// 将来イベントの種類が増えても、手すきが勝手に止まる側には倒れない（数えない側に倒れる）。
+pub(super) fn is_deliberate_operation(event: &egui::Event) -> bool {
+    matches!(
+        event,
+        egui::Event::Key { .. }
+            | egui::Event::Text(_)
+            | egui::Event::Ime(_)
+            | egui::Event::PointerButton { .. }
+            | egui::Event::Touch { .. }
+            | egui::Event::Copy
+            | egui::Event::Cut
+            | egui::Event::Paste(_)
+    )
+}
+
 /// 手すきとみなせるか（最後の入力からの経過が、設定の待ち時間以上）。
 pub(super) fn is_idle(since_input: Duration, wait: Duration) -> bool {
     since_input >= wait
@@ -152,7 +170,7 @@ impl NekoviewApp {
         {
             return;
         }
-        let activity = self.thumb_last_user_activity;
+        let activity = self.idle_last_activity;
         // 入力があったら、その手すきの間に最初から見直す。
         if self.idle_thumb.seen_activity != Some(activity) {
             self.idle_thumb.restart(activity);
@@ -289,7 +307,7 @@ impl NekoviewApp {
             return false;
         }
         self.idle_thumb.pending.insert(path.clone());
-        self.trace_thumb_sent(&path, "手すき", self.idle_thumb.pending.len(), CONCURRENCY, self.thumb_last_user_activity.elapsed(), self.thumb_queue_built_at.elapsed());
+        self.trace_thumb_sent(&path, "手すき", self.idle_thumb.pending.len(), CONCURRENCY, self.idle_last_activity.elapsed(), self.thumb_queue_built_at.elapsed());
         self.thumb_pending.insert(path);
         true
     }
@@ -314,6 +332,40 @@ impl NekoviewApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// マウス移動・ホイールのスクロール・フォーカス変化は操作に数えず、キー・クリックなどは数える。
+    #[test]
+    fn only_deliberate_operations_reset_the_idle_timer() {
+        let pos = egui::pos2(10.0, 20.0);
+        // 数えない（眺めているだけ）
+        assert!(!is_deliberate_operation(&egui::Event::PointerMoved(pos)));
+        assert!(!is_deliberate_operation(&egui::Event::MouseMoved(egui::vec2(1.0, 2.0))));
+        assert!(!is_deliberate_operation(&egui::Event::PointerGone));
+        assert!(!is_deliberate_operation(&egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Line,
+            delta: egui::vec2(0.0, -3.0),
+            phase: egui::TouchPhase::Move,
+            modifiers: egui::Modifiers::NONE,
+        }));
+        assert!(!is_deliberate_operation(&egui::Event::WindowFocused(true)));
+        assert!(!is_deliberate_operation(&egui::Event::Zoom(1.1)));
+        // 数える（人が操作している）
+        assert!(is_deliberate_operation(&egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: egui::Modifiers::NONE,
+        }));
+        assert!(is_deliberate_operation(&egui::Event::Text("a".into())));
+        assert!(is_deliberate_operation(&egui::Event::Key {
+            key: egui::Key::A,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        }));
+        assert!(is_deliberate_operation(&egui::Event::Paste("x".into())));
+    }
 
     #[test]
     fn idle_begins_only_after_the_wait() {

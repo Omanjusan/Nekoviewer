@@ -148,8 +148,13 @@ impl NekoviewApp {
     /// 呼び出し元が CentralPanel の Ui を渡す。
     pub fn ui(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
-        if ctx.input(|i| !i.events.is_empty()) {
+        let (any_event, deliberate) = ctx.input(|i| (!i.events.is_empty(), i.events.iter().any(super::idle_thumb::is_deliberate_operation)));
+        if any_event {
             self.thumb_last_user_activity = std::time::Instant::now();
+        }
+        // 手すき生成のタイマーは、マウス移動・ホイール等では戻さない（`idle_last_activity` 参照）。
+        if deliberate {
+            self.idle_last_activity = std::time::Instant::now();
         }
         // ウィンドウサイズを毎フレーム記録
         let rect = ctx.input(|i| i.viewport_rect());

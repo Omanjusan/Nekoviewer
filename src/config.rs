@@ -182,7 +182,7 @@ pub const TAG_NEW_ELEMENT_LIMIT_STEP: u32 = 1000;
 /// 手すき時間のサムネ生成を始めるまでの待ち（最後の入力から、秒）。
 pub const IDLE_THUMB_WAIT_MIN: u32 = 1;
 pub const IDLE_THUMB_WAIT_MAX: u32 = 30;
-pub const IDLE_THUMB_WAIT_DEFAULT: u32 = 3;
+pub const IDLE_THUMB_WAIT_DEFAULT: u32 = 1;
 /// ビューアー窓が開いている間も手すき生成を続けるかの既定。
 pub const IDLE_THUMB_WHILE_VIEWER_DEFAULT: bool = true;
 
