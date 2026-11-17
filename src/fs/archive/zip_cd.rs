@@ -9,7 +9,7 @@
 //! ZIP64・複数ディスク・先頭に余分なデータがある（自己展開形式など）・エントリ数や大きさの不整合・巨大な中央ディレクトリ。
 //! 結果が一致することの検証は P2/P3 の等価テストで行う。
 
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{BufReader, Read, Seek, SeekFrom};
 
 /// 末尾として最初に読む大きさ。EOCD（22バイト＋コメント最大65535バイト）が必ず入り、
 /// 中央ディレクトリも通常はここに収まる（実測: 最大55KB）。1回の読みなのでシーク数は増えない。
@@ -19,6 +19,10 @@ const MAX_CD_BYTES: u64 = 64 * 1024 * 1024;
 
 const SIG_EOCD: u32 = 0x0605_4b50;
 const SIG_CDFH: u32 = 0x0201_4b50;
+const SIG_LOCAL: u32 = 0x0403_4b50;
+const LOCAL_LEN: usize = 30;
+/// Info-ZIP の Unicode パス拡張。あると zip クレートは名前を差し替えるので、扱いを揃えるため従来経路に任せる。
+const EXTRA_UNICODE_PATH: u16 = 0x7075;
 const EOCD_LEN: usize = 22;
 const CDFH_LEN: usize = 46;
 
@@ -31,10 +35,30 @@ pub(crate) struct CdEntry {
     pub flags: u16,
     /// 圧縮方式（0=stored、8=deflate）。
     pub method: u16,
+    pub crc32: u32,
     pub comp_size: u32,
     pub uncomp_size: u32,
     /// ローカルヘッダの先頭位置（ファイル先頭から）。
     pub header_offset: u32,
+    /// 名前を差し替える拡張（Unicode パス）がある、または拡張領域が読み取れない。
+    /// 名前の解釈が zip クレートと食い違いうるので、呼び出し側は従来経路に戻す。
+    pub odd_name: bool,
+}
+
+/// 拡張領域に Unicode パスがあるか、または壊れていて読み切れないか。
+fn extra_is_odd(extra: &[u8]) -> bool {
+    let mut p = 0usize;
+    while p < extra.len() {
+        if p + 4 > extra.len() {
+            return true;
+        }
+        let (id, size) = (u16_at(extra, p), u16_at(extra, p + 2) as usize);
+        if id == EXTRA_UNICODE_PATH || p + 4 + size > extra.len() {
+            return true;
+        }
+        p += 4 + size;
+    }
+    false
 }
 
 /// 中央ディレクトリの解析結果。
@@ -135,6 +159,7 @@ pub(crate) fn read_central_dir_with<R: Read + Seek>(reader: &mut R, tail_read: u
         }
         let flags = u16_at(cd, p + 8);
         let method = u16_at(cd, p + 10);
+        let crc32 = u32_at(cd, p + 16);
         let (comp_size, uncomp_size) = (u32_at(cd, p + 20), u32_at(cd, p + 24));
         let (name_len, extra_len, cmt_len) = (u16_at(cd, p + 28) as usize, u16_at(cd, p + 30) as usize, u16_at(cd, p + 32) as usize);
         let header_offset = u32_at(cd, p + 42);
@@ -150,7 +175,17 @@ pub(crate) fn read_central_dir_with<R: Read + Seek>(reader: &mut R, tail_read: u
         if header_offset as u64 >= cd_start {
             return None;
         }
-        entries.push(CdEntry { name_raw: cd[p + CDFH_LEN..p + CDFH_LEN + name_len].to_vec(), flags, method, comp_size, uncomp_size, header_offset });
+        let extra = &cd[p + CDFH_LEN + name_len..p + CDFH_LEN + name_len + extra_len];
+        entries.push(CdEntry {
+            name_raw: cd[p + CDFH_LEN..p + CDFH_LEN + name_len].to_vec(),
+            flags,
+            method,
+            crc32,
+            comp_size,
+            uncomp_size,
+            header_offset,
+            odd_name: extra_is_odd(extra),
+        });
         p = end;
     }
     // 件数どおりに読み切って、余りが無いこと。
@@ -158,6 +193,61 @@ pub(crate) fn read_central_dir_with<R: Read + Seek>(reader: &mut R, tail_read: u
         return None;
     }
     Some(CentralDir { entries, comment, cd_start, file_len })
+}
+
+/// 名前の分類（拡張子・`/`・`\\`・`info.txt` との一致）にだけ使う見た目。ASCII はそのまま、それ以外のバイトは1文字の代用にする。
+/// 分類は ASCII の部分しか見ないので、zip クレートが文字コードを解釈した名前（UTF-8 / CP437）での判定と同じ結果になる。
+pub(crate) fn ascii_view(raw: &[u8]) -> String {
+    raw.iter().map(|&b| if b < 0x80 { b as char } else { '\u{FFFD}' }).collect()
+}
+
+/// 読み終わり（EOF）で CRC32 を確かめる読み口（zip クレートの検査と同じ。上限で読み止めたときは検査しない）。
+struct CrcReader<R> {
+    inner: R,
+    crc: flate2::Crc,
+    expected: u32,
+}
+
+impl<R: Read> Read for CrcReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        if n == 0 && !buf.is_empty() {
+            if self.crc.sum() != self.expected {
+                return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "crc32 mismatch"));
+            }
+        } else {
+            self.crc.update(&buf[..n]);
+        }
+        Ok(n)
+    }
+}
+
+/// エントリ本体を、展開後 `limit` バイトまで読む。ローカルヘッダ（30バイト＋名前＋拡張）とデータだけを読む。
+/// 対応するのは stored と deflate のみ。暗号化・その他の方式・不整合・CRC 不一致・読み取りエラーは `Err`
+/// （呼び出し側は、zip 全体を従来経路に戻す。結果を変えないため）。
+pub(crate) fn read_entry_limited<R: Read + Seek>(reader: &mut R, cd: &CentralDir, e: &CdEntry, limit: u64) -> Result<Vec<u8>, ()> {
+    // bit0=暗号化、bit6=強い暗号化。
+    if e.flags & 0x41 != 0 || !matches!(e.method, 0 | 8) {
+        return Err(());
+    }
+    let off = e.header_offset as u64;
+    reader.seek(SeekFrom::Start(off)).map_err(|_| ())?;
+    let mut head = [0u8; LOCAL_LEN];
+    reader.read_exact(&mut head).map_err(|_| ())?;
+    if u32_at(&head, 0) != SIG_LOCAL {
+        return Err(());
+    }
+    let data_start = off + LOCAL_LEN as u64 + u16_at(&head, 26) as u64 + u16_at(&head, 28) as u64;
+    if data_start + e.comp_size as u64 > cd.cd_start {
+        return Err(());
+    }
+    reader.seek(SeekFrom::Start(data_start)).map_err(|_| ())?;
+    let src = (&mut *reader).take(e.comp_size as u64);
+    let body: Box<dyn Read + '_> = if e.method == 0 { Box::new(src) } else { Box::new(flate2::read::DeflateDecoder::new(BufReader::with_capacity(32 * 1024, src))) };
+    let checked = CrcReader { inner: body, crc: flate2::Crc::new(), expected: e.crc32 };
+    let mut out = Vec::new();
+    checked.take(limit).read_to_end(&mut out).map_err(|_| ())?;
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -199,6 +289,7 @@ mod tests {
             assert_eq!(e.name_raw, f.name_raw(), "name #{i}");
             assert_eq!(e.comp_size as u64, f.compressed_size(), "comp #{i}");
             assert_eq!(e.uncomp_size as u64, f.size(), "size #{i}");
+            assert_eq!(e.crc32, f.crc32(), "crc #{i}");
             assert_eq!(e.header_offset as u64, f.header_start(), "offset #{i}");
             let method = match f.compression() {
                 ::zip::CompressionMethod::Stored => 0,

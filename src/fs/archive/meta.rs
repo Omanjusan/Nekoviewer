@@ -376,15 +376,14 @@ pub struct ZipTiming {
 }
 
 /// 末尾 `TAIL_PROBE_BYTES` を1回読む時間（速度調査用）。読めなくても無視する。
-fn probe_tail(file: &std::fs::File, file_size: u64) -> std::time::Duration {
-    use std::io::{Seek, SeekFrom};
+fn probe_tail<R: Read + std::io::Seek>(f: &mut R, file_size: u64) -> std::time::Duration {
+    use std::io::SeekFrom;
     const TAIL_PROBE_BYTES: u64 = 64 * 1024;
     let t = std::time::Instant::now();
-    let mut f = file;
     let from = file_size.saturating_sub(TAIL_PROBE_BYTES);
     if f.seek(SeekFrom::Start(from)).is_ok() {
         let mut buf = Vec::with_capacity(TAIL_PROBE_BYTES as usize);
-        let _ = f.take(TAIL_PROBE_BYTES).read_to_end(&mut buf);
+        let _ = (&mut *f).take(TAIL_PROBE_BYTES).read_to_end(&mut buf);
     }
     let _ = f.seek(SeekFrom::Start(0));
     t.elapsed()
@@ -415,82 +414,183 @@ pub fn read_zip_bundle(path: &Path) -> Option<ZipBundle> {
 }
 
 /// `read_zip_bundle` の計測つき版（速度調査用）。結果は同じで、段階ごとの時間と、読んだエントリの位置を一緒に返す。
+///
+/// まず末尾の中央ディレクトリだけを自前で読む近道（`zip_cd`。HDDの冷たい状態で、zipクレートの
+/// 「全エントリのローカルヘッダを読む」シークを避ける）で試し、判断できなければ従来の zip クレート経由に戻す。
+/// どちらでも結果は同じ（等価テストで確認）。
 pub fn read_zip_bundle_timed(path: &Path) -> Option<(ZipBundle, ZipTiming)> {
+    use std::io::{Seek, SeekFrom};
     let t_open = std::time::Instant::now();
-    let file = std::fs::File::open(path).ok()?;
+    let mut file = std::fs::File::open(path).ok()?;
     let file_size = file.metadata().map(|m| m.len()).unwrap_or(0);
     let open = t_open.elapsed();
-    // perfログがONのときだけ、末尾を生で1回読んで時間を分ける（読んだ分はOSのキャッシュに載り、直後の解析は速くなる。
-    // 「ディスクの読み待ち」と「zipクレートの解析」を切り分けるための計測。結果は変わらない）。
-    let tail = if crate::config::log().perf { probe_tail(&file, file_size) } else { std::time::Duration::ZERO };
-    let t_parse = std::time::Instant::now();
-    let mut archive = ::zip::ZipArchive::new(file).ok()?;
-    let mut timing = ZipTiming { file_size, entries: archive.len(), cd_start: archive.central_directory_start(), open, tail, parse: t_parse.elapsed(), ..Default::default() };
-    let t_list = std::time::Instant::now();
+    if let Some(r) = read_zip_bundle_fast(&mut file, file_size, open) {
+        return Some(r);
+    }
+    file.seek(SeekFrom::Start(0)).ok()?;
+    read_zip_bundle_slow(file, file_size, open)
+}
 
-    let comment_raw = archive.comment();
-    let comment_raw = &comment_raw[..comment_raw.len().min(COMMENT_LIMIT)];
-    let mut out = ZipBundle::default();
-    out.detail.comment = decode_text_bytes(comment_raw).trim().to_owned();
+/// 名前の分類の結果（どのエントリを読むか）。新旧の経路で共通。
+#[derive(Default)]
+struct Plan {
+    image_count: usize,
+    info_idx: Option<usize>,
+    comic_idx: Option<usize>,
+    json_idx: Option<usize>,
+    nfo_idxs: Vec<usize>,
+}
 
-    let (mut info_idx, mut comic_idx, mut json_idx) = (None, None, None);
-    let mut nfo_idxs: Vec<usize> = Vec::new();
-    for i in 0..archive.len() {
-        let Some(name) = archive.name_for_index(i) else { continue };
+/// 名前（中央ディレクトリの順）から、読むエントリを決める。名前の無いもの（None）は飛ばす。
+fn plan_entries<'a>(names: impl Iterator<Item = Option<&'a str>>) -> Plan {
+    let mut plan = Plan::default();
+    for (i, name) in names.enumerate() {
+        let Some(name) = name else { continue };
         if name.ends_with('/') {
             continue;
         }
         if super::detect::is_image_entry_raw(name.as_bytes()) {
-            out.image_count += 1;
+            plan.image_count += 1;
             continue;
         }
-        if info_idx.is_none() && base_name(name).eq_ignore_ascii_case("info.txt") {
-            info_idx = Some(i);
+        if plan.info_idx.is_none() && base_name(name).eq_ignore_ascii_case("info.txt") {
+            plan.info_idx = Some(i);
         }
-        if comic_idx.is_none() && is_comic_info_name(name) {
-            comic_idx = Some(i);
-        } else if json_idx.is_none() && is_meta_json_name(name) {
-            json_idx = Some(i);
+        if plan.comic_idx.is_none() && is_comic_info_name(name) {
+            plan.comic_idx = Some(i);
+        } else if plan.json_idx.is_none() && is_meta_json_name(name) {
+            plan.json_idx = Some(i);
         }
-        if nfo_idxs.len() < MAX_NFO_FILES && is_detail_text_name(name) {
-            nfo_idxs.push(i);
+        if plan.nfo_idxs.len() < MAX_NFO_FILES && is_detail_text_name(name) {
+            plan.nfo_idxs.push(i);
         }
     }
+    plan
+}
 
-    timing.list = t_list.elapsed();
-    let t_read = std::time::Instant::now();
-    if let Some(i) = info_idx
-        && let Ok(entry) = archive.by_index(i)
-    {
-        timing.ranges.push(entry_range(&entry));
-        out.tag.info_txt = read_limited(entry, DETAIL_READ_LIMIT).map(|b| decode_text_bytes(&b));
-        out.detail.info_rating = out.tag.info_txt.as_deref().and_then(parse_info_rating);
-    }
-    if let Some(i) = comic_idx
-        && let Ok(entry) = archive.by_index(i)
-    {
-        timing.ranges.push(entry_range(&entry));
-        out.tag.comic_info = read_limited(entry, DETAIL_READ_LIMIT).and_then(|b| parse_comic_info(&b));
-        out.detail.comic_info = out.tag.comic_info.clone();
-    }
-    if let Some(i) = json_idx
-        && let Ok(entry) = archive.by_index(i)
-    {
-        timing.ranges.push(entry_range(&entry));
-        out.tag.meta_json = read_limited(entry, META_JSON_LIMIT).map(|b| decode_text_bytes(&b));
-        out.detail.meta_json = out.tag.meta_json.clone();
-    }
-    for i in nfo_idxs {
-        let Ok(entry) = archive.by_index(i) else { continue };
-        timing.ranges.push(entry_range(&entry));
-        let name = super::zip::decode_zip_name(entry.name_raw());
-        if let Some(bytes) = read_limited(entry, DETAIL_READ_LIMIT) {
-            let text = decode_text_bytes(&bytes).trim().to_owned();
-            if !text.is_empty() {
-                out.detail.nfo.push(NfoText { name: base_name(&name).to_owned(), text });
+/// 1エントリを読んだ結果。
+enum Fetched {
+    /// エントリを開けなかった（暗号化など）。「無し」として飛ばす。
+    Skip,
+    /// 近道では判断できない。zip 全体を従来経路に戻す。
+    Abort,
+    /// 開けた。`bytes` は読めた本体（読み取りエラーなら None）。`name_raw` は格納されたままの名前。
+    Data { name_raw: Vec<u8>, bytes: Option<Vec<u8>> },
+}
+
+/// 計画に沿ってエントリを読み、`ZipBundle` を組み立てる。`fetch(i, 上限)` が本体を読む。新旧の経路で共通。
+/// 近道が `Fetched::Abort` を返したら None（従来経路に戻す合図）。
+fn assemble_bundle(plan: &Plan, comment_raw: &[u8], mut fetch: impl FnMut(usize, u64) -> Fetched) -> Option<ZipBundle> {
+    let comment_raw = &comment_raw[..comment_raw.len().min(COMMENT_LIMIT)];
+    let mut out = ZipBundle { image_count: plan.image_count, ..Default::default() };
+    out.detail.comment = decode_text_bytes(comment_raw).trim().to_owned();
+
+    if let Some(i) = plan.info_idx {
+        match fetch(i, DETAIL_READ_LIMIT) {
+            Fetched::Abort => return None,
+            Fetched::Skip => {}
+            Fetched::Data { bytes, .. } => {
+                out.tag.info_txt = bytes.map(|b| decode_text_bytes(&b));
+                out.detail.info_rating = out.tag.info_txt.as_deref().and_then(parse_info_rating);
             }
         }
     }
+    if let Some(i) = plan.comic_idx {
+        match fetch(i, DETAIL_READ_LIMIT) {
+            Fetched::Abort => return None,
+            Fetched::Skip => {}
+            Fetched::Data { bytes, .. } => {
+                out.tag.comic_info = bytes.and_then(|b| parse_comic_info(&b));
+                out.detail.comic_info = out.tag.comic_info.clone();
+            }
+        }
+    }
+    if let Some(i) = plan.json_idx {
+        match fetch(i, META_JSON_LIMIT) {
+            Fetched::Abort => return None,
+            Fetched::Skip => {}
+            Fetched::Data { bytes, .. } => {
+                out.tag.meta_json = bytes.map(|b| decode_text_bytes(&b));
+                out.detail.meta_json = out.tag.meta_json.clone();
+            }
+        }
+    }
+    for &i in &plan.nfo_idxs {
+        match fetch(i, DETAIL_READ_LIMIT) {
+            Fetched::Abort => return None,
+            Fetched::Skip => {}
+            Fetched::Data { name_raw, bytes } => {
+                let name = super::zip::decode_zip_name(&name_raw);
+                if let Some(bytes) = bytes {
+                    let text = decode_text_bytes(&bytes).trim().to_owned();
+                    if !text.is_empty() {
+                        out.detail.nfo.push(NfoText { name: base_name(&name).to_owned(), text });
+                    }
+                }
+            }
+        }
+    }
+    Some(out)
+}
+
+/// 近道: 末尾の中央ディレクトリだけを読み、本体は対象のエントリだけを読む。ローカルヘッダの総なめをしない。
+/// 判断できないとき（ZIP64・暗号化・stored/deflate 以外・Unicode パス拡張・不整合など）は None。
+fn read_zip_bundle_fast<R: std::io::Read + std::io::Seek>(reader: &mut R, file_size: u64, open: std::time::Duration) -> Option<(ZipBundle, ZipTiming)> {
+    use super::zip_cd;
+    let t_parse = std::time::Instant::now();
+    let cd = zip_cd::read_central_dir(reader)?;
+    let parse = t_parse.elapsed();
+    if cd.entries.iter().any(|e| e.odd_name) {
+        return None;
+    }
+    let mut timing = ZipTiming { file_size, entries: cd.entries.len(), cd_start: cd.cd_start, open, parse, ..Default::default() };
+
+    let t_list = std::time::Instant::now();
+    // 分類は名前の ASCII 部分だけを見るので、文字コードを解釈しなくても zip クレートと同じ結果になる。
+    let views: Vec<String> = cd.entries.iter().map(|e| zip_cd::ascii_view(&e.name_raw)).collect();
+    let plan = plan_entries(views.iter().map(|v| Some(v.as_str())));
+    timing.list = t_list.elapsed();
+
+    let t_read = std::time::Instant::now();
+    let ranges = &mut timing.ranges;
+    let out = assemble_bundle(&plan, &cd.comment, |i, limit| {
+        let e = &cd.entries[i];
+        match zip_cd::read_entry_limited(reader, &cd, e, limit) {
+            Ok(bytes) => {
+                ranges.push((e.header_offset as u64, e.header_offset as u64 + e.comp_size as u64));
+                Fetched::Data { name_raw: e.name_raw.clone(), bytes: Some(bytes) }
+            }
+            Err(()) => Fetched::Abort,
+        }
+    })?;
+    timing.read = t_read.elapsed();
+    Some((out, timing))
+}
+
+/// 従来の経路: zip クレートで開く（全エントリのローカルヘッダを読むので、HDDの冷たい状態では遅い）。
+fn read_zip_bundle_slow<R: std::io::Read + std::io::Seek>(mut file: R, file_size: u64, open: std::time::Duration) -> Option<(ZipBundle, ZipTiming)> {
+    // perfログがONのときだけ、末尾を生で1回読んで時間を分ける（読んだ分はOSのキャッシュに載り、直後の解析は速くなる。
+    // 「ディスクの読み待ち」と「zipクレートの解析」を切り分けるための計測。結果は変わらない）。
+    let tail = if crate::config::log().perf { probe_tail(&mut file, file_size) } else { std::time::Duration::ZERO };
+    let t_parse = std::time::Instant::now();
+    let mut archive = ::zip::ZipArchive::new(file).ok()?;
+    let mut timing = ZipTiming { file_size, entries: archive.len(), cd_start: archive.central_directory_start(), open, tail, parse: t_parse.elapsed(), ..Default::default() };
+
+    let t_list = std::time::Instant::now();
+    let plan = plan_entries((0..archive.len()).map(|i| archive.name_for_index(i)));
+    let comment = archive.comment().to_vec();
+    timing.list = t_list.elapsed();
+
+    let t_read = std::time::Instant::now();
+    let ranges = &mut timing.ranges;
+    let out = assemble_bundle(&plan, &comment, |i, limit| match archive.by_index(i) {
+        Ok(entry) => {
+            ranges.push(entry_range(&entry));
+            let name_raw = entry.name_raw().to_vec();
+            Fetched::Data { name_raw, bytes: read_limited(entry, limit) }
+        }
+        Err(_) => Fetched::Skip,
+    })?;
     timing.read = t_read.elapsed();
     Some((out, timing))
 }
@@ -822,5 +922,224 @@ mod tests {
         let meta = read_zip_detail(&path).unwrap();
         let _ = std::fs::remove_file(&path);
         assert_eq!(meta.nfo[0].text.len() as u64, DETAIL_READ_LIMIT);
+    }
+
+    // ── 近道（zip_cd）と従来経路（zip クレート）の等価テスト ──────────────────────────
+
+    use ::zip::CompressionMethod as Cm;
+
+    fn zip_bytes(entries: &[(&str, &[u8], Cm)], comment: &str) -> Vec<u8> {
+        let mut buf = Vec::new();
+        {
+            let mut w = ::zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
+            for (name, body, method) in entries {
+                let opt = ::zip::write::SimpleFileOptions::default().compression_method(*method);
+                w.start_file(*name, opt).unwrap();
+                w.write_all(body).unwrap();
+            }
+            if !comment.is_empty() {
+                w.set_comment(comment);
+            }
+            w.finish().unwrap();
+        }
+        buf
+    }
+
+    fn fast_and_slow(bytes: &[u8]) -> (Option<ZipBundle>, Option<ZipBundle>) {
+        let len = bytes.len() as u64;
+        let fast = read_zip_bundle_fast(&mut std::io::Cursor::new(bytes.to_vec()), len, std::time::Duration::ZERO).map(|r| r.0);
+        let slow = read_zip_bundle_slow(std::io::Cursor::new(bytes.to_vec()), len, std::time::Duration::ZERO).map(|r| r.0);
+        (fast, slow)
+    }
+
+    /// 近道が答えたなら、従来経路と完全に同じであること。近道が答えたかを返す（None=従来経路に戻した）。
+    fn assert_equivalent(bytes: &[u8]) -> bool {
+        let (fast, slow) = fast_and_slow(bytes);
+        if let Some(f) = &fast {
+            assert_eq!(Some(f), slow.as_ref(), "近道と従来経路で結果が違う");
+        }
+        // どちらの経路でも、公開関数の結果は従来経路と同じ。
+        let path = std::env::temp_dir().join(format!("nekoviewer_zipcd_eq_{}_{:x}.zip", std::process::id(), bytes.iter().fold(7u64, |h, b| h.wrapping_mul(31).wrapping_add(*b as u64))));
+        std::fs::write(&path, bytes).unwrap();
+        let public = read_zip_bundle(&path);
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(public, slow, "公開関数の結果が従来経路と違う");
+        fast.is_some()
+    }
+
+    const INFO: &[u8] = b"Title: sample\nRating: 4.5\n";
+    const COMIC: &[u8] = b"<ComicInfo><Title>T</Title><Writer>W</Writer></ComicInfo>";
+    const META_JSON: &[u8] = br#"{"title":"x"}"#;
+
+    #[test]
+    fn fast_path_equals_the_zip_crate_for_ordinary_archives() {
+        let page = vec![0xABu8; 4000];
+        // info.txt・ComicInfo・meta.json・nfo・readme・コメントが全部ある。サブフォルダ・大文字小文字・バックスラッシュ区切りも。
+        let all = zip_bytes(
+            &[
+                ("001.jpg", &page, Cm::Stored),
+                ("dir/", b"", Cm::Stored),
+                ("sub/Info.TXT", INFO, Cm::Deflated),
+                ("sub\\ComicInfo.xml", COMIC, Cm::Deflated),
+                ("a/b/META.JSON", META_JSON, Cm::Stored),
+                ("note.nfo", b"nfo one", Cm::Deflated),
+                ("README.txt", b"readme body", Cm::Stored),
+                ("002.PNG", &page, Cm::Deflated),
+                ("__MACOSX/._info.txt", b"junk", Cm::Stored),
+            ],
+            "zip comment コメント",
+        );
+        assert!(assert_equivalent(&all), "ふつうのzipは近道で答える");
+        let (fast, _) = fast_and_slow(&all);
+        let b = fast.unwrap();
+        assert_eq!(b.image_count, 2);
+        assert!(b.tag.info_txt.is_some() && b.tag.comic_info.is_some() && b.tag.meta_json.is_some());
+        assert_eq!(b.detail.comment, "zip comment コメント");
+
+        // 画像だけ・空・info.txt が最後・同名が複数（最初のものを採る）。
+        assert!(assert_equivalent(&zip_bytes(&[("1.jpg", &page, Cm::Stored), ("2.jpg", &page, Cm::Stored)], "")));
+        assert!(assert_equivalent(&zip_bytes(&[], "")));
+        assert!(assert_equivalent(&zip_bytes(&[("1.jpg", &page, Cm::Deflated), ("info.txt", INFO, Cm::Deflated)], "")));
+        assert!(assert_equivalent(&zip_bytes(&[("info.txt", b"first", Cm::Stored), ("x/info.txt", b"second", Cm::Stored)], "")));
+        // nfo は最大4件まで。
+        let nfos: Vec<(String, Vec<u8>)> = (0..6).map(|i| (format!("n{i}.nfo"), format!("text {i}").into_bytes())).collect();
+        let entries: Vec<(&str, &[u8], Cm)> = nfos.iter().map(|(n, b)| (n.as_str(), b.as_slice(), Cm::Deflated)).collect();
+        assert!(assert_equivalent(&zip_bytes(&entries, "")));
+    }
+
+    #[test]
+    fn fast_path_equals_the_zip_crate_for_many_entries_and_huge_texts() {
+        // エントリが多く、中央ディレクトリが大きい。info.txt は最後。
+        let names: Vec<String> = (0..1500).map(|i| format!("pages/chapter_{:03}/image_{i:05}.jpg", i / 50)).collect();
+        let mut entries: Vec<(&str, &[u8], Cm)> = names.iter().map(|n| (n.as_str(), &b"x"[..], Cm::Stored)).collect();
+        entries.push(("info.txt", INFO, Cm::Deflated));
+        assert!(assert_equivalent(&zip_bytes(&entries, "")));
+
+        // 上限（DETAIL_READ_LIMIT / META_JSON_LIMIT）を超える本文は、先頭の上限分だけ（stored・deflate とも）。
+        let big: Vec<u8> = (0..(DETAIL_READ_LIMIT as usize * 2)).map(|i| b'a' + (i % 23) as u8).collect();
+        assert!(assert_equivalent(&zip_bytes(&[("info.txt", &big, Cm::Stored), ("big.nfo", &big, Cm::Deflated)], "")));
+        let big_json = vec![b' '; META_JSON_LIMIT as usize + 100];
+        assert!(assert_equivalent(&zip_bytes(&[("meta.json", &big_json, Cm::Deflated)], "")));
+        // ちょうど上限の長さ。
+        let exact = vec![b'z'; DETAIL_READ_LIMIT as usize];
+        assert!(assert_equivalent(&zip_bytes(&[("info.txt", &exact, Cm::Deflated)], "")));
+    }
+
+    #[test]
+    fn fast_path_equals_the_zip_crate_for_non_utf8_names() {
+        // 名前を UTF-8 フラグなしの Shift-JIS に差し替える（同じ長さの置換。ローカルヘッダと中央ディレクトリの両方）。
+        let mut bytes = zip_bytes(&[("\u{e9}\u{e9}\u{e9}/info.txt", INFO, Cm::Deflated), ("\u{e9}\u{e9}\u{e9}/1.jpg", b"x", Cm::Stored), ("\u{e9}\u{e9}\u{e9}/readme.txt", b"r", Cm::Stored)], "");
+        let (from, to) = ("\u{e9}\u{e9}\u{e9}".as_bytes().to_vec(), vec![0x93u8, 0xFA, 0x96, 0x7B, 0x8C, 0xEA]);
+        assert_eq!(from.len(), to.len());
+        let mut i = 0;
+        while i + from.len() <= bytes.len() {
+            if bytes[i..i + from.len()] == from[..] {
+                bytes[i..i + from.len()].copy_from_slice(&to);
+                i += from.len();
+            } else {
+                i += 1;
+            }
+        }
+        for i in 0..bytes.len().saturating_sub(10) {
+            match bytes[i..i + 4] {
+                [0x50, 0x4b, 0x03, 0x04] => bytes[i + 7] &= !0x08, // ローカルヘッダの flags 上位(bit11)
+                [0x50, 0x4b, 0x01, 0x02] => bytes[i + 9] &= !0x08, // 中央ディレクトリの flags 上位(bit11)
+                _ => {}
+            }
+        }
+        assert!(assert_equivalent(&bytes));
+        let (fast, _) = fast_and_slow(&bytes);
+        assert!(fast.unwrap().tag.info_txt.is_some(), "Shift-JIS名のフォルダ内の info.txt も拾う");
+    }
+
+    #[test]
+    fn fast_path_hands_back_to_the_zip_crate_when_it_cannot_judge() {
+        // 暗号化(AES)・zstd・bzip2 の info.txt。近道は判断せず従来経路に戻す（結果は従来と同じ）。
+        let mut buf = Vec::new();
+        {
+            let mut w = ::zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
+            w.start_file("1.jpg", ::zip::write::SimpleFileOptions::default().compression_method(Cm::Stored)).unwrap();
+            w.write_all(b"x").unwrap();
+            w.start_file("info.txt", ::zip::write::SimpleFileOptions::default().with_aes_encryption(::zip::AesMode::Aes256, "pw")).unwrap();
+            w.write_all(INFO).unwrap();
+            w.finish().unwrap();
+        }
+        assert!(!assert_equivalent(&buf), "暗号化は従来経路へ");
+        assert!(!assert_equivalent(&zip_bytes(&[("info.txt", INFO, Cm::Zstd)], "")), "zstd は従来経路へ");
+        assert!(!assert_equivalent(&zip_bytes(&[("info.txt", INFO, Cm::Bzip2)], "")), "bzip2 は従来経路へ");
+        // 読む対象でなければ、方式が何でも近道で答える（本体を読まない）。
+        assert!(assert_equivalent(&zip_bytes(&[("1.jpg", b"x", Cm::Zstd), ("2.jpg", b"y", Cm::Bzip2)], "")));
+
+        // データが壊れている（CRC 不一致）。従来経路は「読めなかった」扱いにするので、近道は判断せず戻す。
+        let mut bad = zip_bytes(&[("info.txt", b"Hello info body here", Cm::Stored)], "");
+        let at = bad.windows(5).position(|w| w == b"Hello").unwrap();
+        bad[at] ^= 0x55;
+        assert!(!assert_equivalent(&bad));
+        let (_, slow) = fast_and_slow(&bad);
+        assert_eq!(slow.unwrap().tag.info_txt, None);
+
+        // 先頭に余分なデータ（自己展開形式など）。
+        let mut junk = vec![0x11u8; 700];
+        junk.extend_from_slice(&zip_bytes(&[("info.txt", INFO, Cm::Deflated)], ""));
+        assert!(!assert_equivalent(&junk));
+
+        // zip ではない・切れている。どちらも None（従来経路と同じ）。
+        assert!(!assert_equivalent(b"this is not a zip at all"));
+        let good = zip_bytes(&[("info.txt", INFO, Cm::Deflated)], "");
+        assert!(!assert_equivalent(&good[..good.len() - 7]));
+    }
+
+    #[test]
+    fn fast_path_hands_back_when_a_unicode_path_extra_field_renames_an_entry() {
+        // Unicode パス拡張(0x7075)は、zip クレートが名前を差し替える。近道は扱いを揃えるため従来経路へ戻す。
+        // ライタでは作れないので、1エントリ(stored)のzipを手で組む。
+        let (raw, shown) = (b"garbled.txt".as_slice(), b"info.txt".as_slice());
+        let crc = |d: &[u8]| {
+            let mut c = flate2::Crc::new();
+            c.update(d);
+            c.sum()
+        };
+        let mut extra = Vec::new();
+        extra.extend_from_slice(&0x7075u16.to_le_bytes());
+        extra.extend_from_slice(&((1 + 4 + shown.len()) as u16).to_le_bytes());
+        extra.push(1);
+        extra.extend_from_slice(&crc(raw).to_le_bytes());
+        extra.extend_from_slice(shown);
+        let (data_crc, n) = (crc(INFO), INFO.len() as u32);
+        let mut buf = Vec::new();
+        // ローカルヘッダ＋データ
+        buf.extend_from_slice(&0x0403_4b50u32.to_le_bytes());
+        buf.extend_from_slice(&[20, 0, 0, 0, 0, 0, 0, 0, 0, 0]); // version, flags, method, time, date
+        buf.extend_from_slice(&data_crc.to_le_bytes());
+        buf.extend_from_slice(&n.to_le_bytes());
+        buf.extend_from_slice(&n.to_le_bytes());
+        buf.extend_from_slice(&(raw.len() as u16).to_le_bytes());
+        buf.extend_from_slice(&(extra.len() as u16).to_le_bytes());
+        buf.extend_from_slice(raw);
+        buf.extend_from_slice(&extra);
+        buf.extend_from_slice(INFO);
+        // 中央ディレクトリ
+        let cd_start = buf.len() as u32;
+        buf.extend_from_slice(&0x0201_4b50u32.to_le_bytes());
+        buf.extend_from_slice(&[20, 0, 20, 0, 0, 0, 0, 0, 0, 0, 0, 0]); // made, need, flags, method, time, date
+        buf.extend_from_slice(&data_crc.to_le_bytes());
+        buf.extend_from_slice(&n.to_le_bytes());
+        buf.extend_from_slice(&n.to_le_bytes());
+        buf.extend_from_slice(&(raw.len() as u16).to_le_bytes());
+        buf.extend_from_slice(&(extra.len() as u16).to_le_bytes());
+        buf.extend_from_slice(&[0u8; 10]); // comment len, disk, internal attr(2), external attr(4)
+        buf.extend_from_slice(&0u32.to_le_bytes()); // local header offset
+        buf.extend_from_slice(raw);
+        buf.extend_from_slice(&extra);
+        let cd_size = buf.len() as u32 - cd_start;
+        buf.extend_from_slice(&0x0605_4b50u32.to_le_bytes());
+        buf.extend_from_slice(&[0, 0, 0, 0, 1, 0, 1, 0]);
+        buf.extend_from_slice(&cd_size.to_le_bytes());
+        buf.extend_from_slice(&cd_start.to_le_bytes());
+        buf.extend_from_slice(&[0, 0]);
+        // zip クレートは、このエントリを info.txt として扱う（名前が差し替わる）。近道は名前を信用せず従来経路へ戻す。
+        let (_, slow) = fast_and_slow(&buf);
+        assert!(slow.unwrap().tag.info_txt.is_some(), "zip クレートは差し替え後の名前 info.txt を採る");
+        assert!(!assert_equivalent(&buf));
     }
 }

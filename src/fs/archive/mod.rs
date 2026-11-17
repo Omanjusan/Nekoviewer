@@ -15,8 +15,7 @@ mod sevenz;
 #[cfg(feature = "fmt-tar")]
 mod tar;
 mod zip;
-// 末尾だけを読む中央ディレクトリの自前解析。P3で meta.rs に接続するまで未使用。
-#[allow(dead_code)]
+// 末尾だけを読む中央ディレクトリの自前解析（HDDの冷たい状態でのzipオープンの近道。meta.rs の read_zip_bundle が使う）。
 pub(crate) mod zip_cd;
 
 // 既存の呼び出し元が使う `crate::fs::archive::NAME` パスを維持するための再エクスポート。
