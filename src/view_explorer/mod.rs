@@ -1076,6 +1076,14 @@ pub struct NekoviewApp {
     thumb_res_rx: mpsc::Receiver<ThumbResult>,
     thumb_session: Arc<AtomicU64>,
     thumb_pending: HashSet<PathBuf>,
+    /// サムネ生成の待ち時間の計測（`[perf/thumb-wait]` ログ用。perf ログOFFのときは使わない）。
+    /// 送信した時刻と種類（優先・通常・手すき）を、結果が返るまで覚える。
+    thumb_trace: HashMap<PathBuf, (std::time::Instant, &'static str)>,
+    /// 同じ計測の集計（件数・送信→結果の合計と最大・最初の送信時刻）。フォルダのサムネ生成が済んだ時に出して戻す。
+    thumb_trace_count: usize,
+    thumb_trace_sum_ms: f64,
+    thumb_trace_max_ms: f64,
+    thumb_trace_first_sent: Option<std::time::Instant>,
     thumb_display_requested: HashSet<PathBuf>,
     thumb_queue: VecDeque<PathBuf>,
     thumb_priority_queue: VecDeque<PathBuf>,
@@ -1863,6 +1871,11 @@ impl NekoviewApp {
             thumb_res_rx,
             thumb_session,
             thumb_pending: HashSet::new(),
+            thumb_trace: HashMap::new(),
+            thumb_trace_count: 0,
+            thumb_trace_sum_ms: 0.0,
+            thumb_trace_max_ms: 0.0,
+            thumb_trace_first_sent: None,
             thumb_display_requested: HashSet::new(),
             thumb_queue: VecDeque::new(),
             thumb_priority_queue: VecDeque::new(),

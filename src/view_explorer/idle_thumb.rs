@@ -289,6 +289,7 @@ impl NekoviewApp {
             return false;
         }
         self.idle_thumb.pending.insert(path.clone());
+        self.trace_thumb_sent(&path, "手すき", self.idle_thumb.pending.len(), CONCURRENCY, self.thumb_last_user_activity.elapsed(), self.thumb_queue_built_at.elapsed());
         self.thumb_pending.insert(path);
         true
     }

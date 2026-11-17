@@ -40,6 +40,12 @@ pub fn set_log(cfg: LogConfig) {
     LOG_THUMB_REFACTOR.store(cfg.thumb_refactor, Ordering::Relaxed);
 }
 
+/// perf ログに出すファイル名の表記。先頭10文字に切り詰め、足りなければ空白で埋める（行の桁をそろえて読みやすくする）。
+pub fn short_log_name(name: &str) -> String {
+    let head: String = name.chars().take(10).collect();
+    format!("{head:<10}")
+}
+
 // perf ログは高頻度パス（デコードループ等）から呼ばれるため、リングバッファ(Mutex)への
 // 書き込みコストを避けてターミナル(eprintln!)出力のみに留める。
 #[macro_export]
@@ -596,6 +602,15 @@ pub fn filter_to_str(f: ResizeFilter) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn short_log_name_cuts_at_ten_chars_and_pads_short_names() {
+        assert_eq!(short_log_name("[Patreon] Waero [2023-01 - 2026].zip"), "[Patreon] ");
+        assert_eq!(short_log_name("a.zip"), "a.zip     ");
+        // 文字数で数える（バイト数ではない）。日本語名でも途中で切れて壊れない。
+        assert_eq!(short_log_name("アサ - Fleurdelys (Wuthering Waves).zip"), "アサ - Fleur");
+        assert_eq!(short_log_name("").chars().count(), 10);
+    }
 
     #[cfg(unix)]
     #[test]

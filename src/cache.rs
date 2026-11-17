@@ -2322,9 +2322,7 @@ fn probe_cached_thumb(req: &ThumbRequest) -> Option<(image::RgbaImage, i64)> {
     let db = req.db.as_ref()?;
     let filename = req.archive_path.file_name().and_then(|n| n.to_str())?;
     let (stored_mtime, jpeg) = crate::neko_dir::read_thumb_unchecked(db, filename)?;
-    let t0 = std::time::Instant::now();
     let rgba = image::load_from_memory(&jpeg).ok()?.to_rgba8();
-    log_perf!("[perf/thumb] db_cache={:.1}ms", t0.elapsed().as_secs_f64() * 1000.0);
     Some((rgba, stored_mtime))
 }
 
@@ -2386,7 +2384,7 @@ fn generate_thumb(req: &ThumbRequest) -> Option<image::RgbaImage> {
             t_load.as_secs_f64() * 1000.0,
             t2.elapsed().as_secs_f64() * 1000.0,
             t_total.elapsed().as_secs_f64() * 1000.0,
-            filename,
+            crate::config::short_log_name(&filename),
             req.requested_edge,
             req.thumbnail_selection.is_some(),
             req.is_tag_preview,

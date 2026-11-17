@@ -249,7 +249,21 @@ pub fn load_first_image(path: &Path) -> Option<image::DynamicImage> {
         #[cfg(feature = "fmt-tar")]
         ArchiveFormat::Tar => tar::load_first_image_tar(path),
         ArchiveFormat::Zip => {
-            zip::load_first_image_sequential(path).or_else(|| zip::load_first_image_via_archive(path))
+            // 計測: 順読み（先頭から読む。シーク少なめ）で取れたか、失敗して ZipArchive 経由に落ちたか。
+            let t = std::time::Instant::now();
+            if let Some(img) = zip::load_first_image_sequential(path) {
+                crate::log_perf!("[perf/thumb] 先頭画像 順読み={:.1}ms", t.elapsed().as_secs_f64() * 1000.0);
+                return Some(img);
+            }
+            let t_seq = t.elapsed();
+            let img = zip::load_first_image_via_archive(path);
+            crate::log_perf!(
+                "[perf/thumb] 先頭画像 順読み失敗({:.1}ms)→ZipArchive経由={:.1}ms {}",
+                t_seq.as_secs_f64() * 1000.0,
+                (t.elapsed() - t_seq).as_secs_f64() * 1000.0,
+                if img.is_some() { "OK" } else { "失敗" },
+            );
+            img
         }
     }
 }

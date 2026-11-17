@@ -48,7 +48,7 @@ pub struct MemoryBudgetParams {
 
 /// 計測ログ（`[perf/open]`）用の短いファイル名。
 pub(super) fn trace_name(path: &std::path::Path) -> String {
-    path.file_name().and_then(|n| n.to_str()).unwrap_or("?").to_string()
+    crate::config::short_log_name(path.file_name().and_then(|n| n.to_str()).unwrap_or("?"))
 }
 
 /// 「ダブルクリック→ビューアーに1枚目が出るまで」の計測用の時刻メモ（速度調査用。挙動には影響しない）。

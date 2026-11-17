@@ -811,6 +811,69 @@ impl NekoviewApp {
         )))
     }
 
+    /// サムネ要求を送った時刻と種類を覚える（perf ログがONのときだけ）。`[perf/thumb-wait]` の「送信」行を出す。
+    pub(super) fn trace_thumb_sent(
+        &mut self,
+        path: &std::path::Path,
+        kind: &'static str,
+        active: usize,
+        limit: usize,
+        since_input: std::time::Duration,
+        since_folder_open: std::time::Duration,
+    ) {
+        if !crate::config::log().perf {
+            return;
+        }
+        let now = std::time::Instant::now();
+        self.thumb_trace.insert(path.to_path_buf(), (now, kind));
+        self.thumb_trace_first_sent.get_or_insert(now);
+        crate::log_perf!(
+            "[perf/thumb-wait] 送信 {} 種別={} 並列={}/{} フォルダを開いてから={:.0}ms 入力から={:.0}ms ビューアー={}",
+            crate::config::short_log_name(path.file_name().and_then(|n| n.to_str()).unwrap_or("?")),
+            kind,
+            active,
+            limit,
+            since_folder_open.as_secs_f64() * 1000.0,
+            since_input.as_secs_f64() * 1000.0,
+            if self.viewer_is_open() { "開" } else { "閉" },
+        );
+    }
+
+    /// 結果が返ったときに、送信→結果の時間を出して集計に足す。
+    pub(super) fn trace_thumb_done(&mut self, path: &std::path::Path) {
+        let Some((sent, kind)) = self.thumb_trace.remove(path) else { return };
+        let ms = sent.elapsed().as_secs_f64() * 1000.0;
+        self.thumb_trace_count += 1;
+        self.thumb_trace_sum_ms += ms;
+        self.thumb_trace_max_ms = self.thumb_trace_max_ms.max(ms);
+        crate::log_perf!(
+            "[perf/thumb-wait] 結果 {} 種別={} 送信→結果={:.0}ms",
+            crate::config::short_log_name(path.file_name().and_then(|n| n.to_str()).unwrap_or("?")),
+            kind,
+            ms,
+        );
+    }
+
+    /// フォルダのサムネ生成が済んだ時に、件数・平均・最大・最初の送信からの経過を出して、集計を戻す。
+    pub(super) fn trace_thumb_summary(&mut self) {
+        if self.thumb_trace_count == 0 {
+            return;
+        }
+        let total_ms = self.thumb_trace_first_sent.map_or(0.0, |t| t.elapsed().as_secs_f64() * 1000.0);
+        crate::log_perf!(
+            "[perf/thumb-wait] 要約 {}件 送信→結果 平均={:.0}ms 最大={:.0}ms 最初の送信から全完了まで={:.0}ms ビューアー={}",
+            self.thumb_trace_count,
+            self.thumb_trace_sum_ms / self.thumb_trace_count as f64,
+            self.thumb_trace_max_ms,
+            total_ms,
+            if self.viewer_is_open() { "開" } else { "閉" },
+        );
+        self.thumb_trace_count = 0;
+        self.thumb_trace_sum_ms = 0.0;
+        self.thumb_trace_max_ms = 0.0;
+        self.thumb_trace_first_sent = None;
+    }
+
     pub(super) fn pump_thumbnail_queue(&mut self, ctx: &egui::Context) {
         if !self.folder_pane_tab.shows_real_dir()
             || self.viewing_favorites.is_some()
@@ -835,6 +898,7 @@ impl NekoviewApp {
             if !allow_local && !allow_network { break; }
             let Some(path) = self.next_queued_thumbnail(allow_local, allow_network) else { break };
             let is_network = crate::fs::dir::is_gvfs_path(&path);
+            let kind = if self.thumb_priority_queued.contains(&path) { "優先" } else { "通常" };
             let selection = path.parent().and_then(|dir| {
                 let filename = path.file_name()?.to_str()?;
                 self.spread_db.as_ref().and_then(|db| {
@@ -859,6 +923,7 @@ impl NekoviewApp {
             self.thumb_queued.remove(&path);
             self.thumb_missing_queued.remove(&path);
             self.thumb_priority_queued.remove(&path);
+            self.trace_thumb_sent(&path, kind, active_local, local_limit, since_input, since_folder_open);
             self.thumb_pending.insert(path);
             if is_network { active_network += 1; } else { active_local += 1; }
         }

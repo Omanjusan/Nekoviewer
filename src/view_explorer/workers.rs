@@ -535,6 +535,7 @@ impl NekoviewApp {
                 continue;
             }
             if result.stage == ThumbResultStage::Complete {
+                self.trace_thumb_done(&result.path);
                 self.thumb_pending.remove(&result.path);
                 self.idle_thumb_completed(&result.path);
             }
@@ -568,6 +569,7 @@ impl NekoviewApp {
         let idle_finished = self.take_idle_thumb_report();
         let just_finished = (was_pending && self.normal_thumb_pending() == 0) || idle_finished;
         if just_finished {
+            self.trace_thumb_summary();
             // 後から生成されたサムネのハッシュを拾う。
             // 計測: 待ちのキューも空になった時が「サムネ生成の完了」。この完了を先に記録してから依頼する
             // （dHash側が「サムネ完了後の依頼」と判定できるように）。サムネのみモードでは依頼自体が抑止される。
