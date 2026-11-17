@@ -98,8 +98,10 @@ pub(super) fn render(perfs: &[ScanPerf], scan_wall: Duration, cand_wall: Option<
     let db = sum(&|p| p.db);
     // zipを開けなかった件の時間は、bundle の合計から zip の内訳を引いた残りに入る。
     let bundle_other = sum(&|p| p.bundle).saturating_sub(open + tail + parse + list + read);
+    // 上のどれにも入らない時間（`scan_one` の中の、計測の外の処理）。大きければ、計測の外に重い処理が隠れている。
+    let unattributed = total.saturating_sub(stat + magic + sum(&|p| p.bundle) + db);
     out.push(format!(
-        "  段階別の合計(全体に対する割合): stat={:.2}s({:.0}%) magic={:.2}s({:.0}%) file_open={:.2}s({:.0}%) tail_raw={:.2}s({:.0}%) zip_parse={:.2}s({:.0}%) name_list={:.2}s({:.0}%) entry_read={:.2}s({:.0}%) zip_other={:.2}s({:.0}%) db={:.2}s({:.0}%)",
+        "  段階別の合計(全体に対する割合): stat={:.2}s({:.0}%) magic={:.2}s({:.0}%) file_open={:.2}s({:.0}%) tail_raw={:.2}s({:.0}%) zip_parse={:.2}s({:.0}%) name_list={:.2}s({:.0}%) entry_read={:.2}s({:.0}%) zip_other={:.2}s({:.0}%) db={:.2}s({:.0}%) 計測外={:.2}s({:.0}%)",
         stat.as_secs_f64(), share(stat),
         magic.as_secs_f64(), share(magic),
         open.as_secs_f64(), share(open),
@@ -109,6 +111,7 @@ pub(super) fn render(perfs: &[ScanPerf], scan_wall: Duration, cand_wall: Option<
         read.as_secs_f64(), share(read),
         bundle_other.as_secs_f64(), share(bundle_other),
         db.as_secs_f64(), share(db),
+        unattributed.as_secs_f64(), share(unattributed),
     ));
     let mut per: Vec<Duration> = perfs.iter().map(|p| p.total).collect();
     per.sort();

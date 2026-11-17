@@ -123,9 +123,11 @@ fn scan_one_timed(path: &Path, db: Option<&Arc<Mutex<Database>>>) -> (ScanItem, 
     };
     perf.bundle = t.elapsed().saturating_sub(perf.magic);
     let sources = bundle.as_ref().map(|b| &b.tag);
+    // 対応形式かの判定（`detect_format`＝先頭読み）は、zip として読めなかったときだけ要る。読めたなら使われないので、
+    // 引数として先に評価しない（HDDの冷たい状態で、1件ごとの無駄なシークになる）。
     let detail = crate::neko_dir::DetailFlag::from_read(
         bundle.as_ref().map(|b| &b.detail),
-        crate::fs::archive::meta::detail_supported(path),
+        bundle.is_none() && crate::fs::archive::meta::detail_supported(path),
     );
     let rating = crate::neko_dir::SourceRating::from_read(bundle.as_ref().map(|b| &b.detail));
     let page_count = bundle

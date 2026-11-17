@@ -419,16 +419,23 @@ pub fn read_zip_bundle(path: &Path) -> Option<ZipBundle> {
 /// 「全エントリのローカルヘッダを読む」シークを避ける）で試し、判断できなければ従来の zip クレート経由に戻す。
 /// どちらでも結果は同じ（等価テストで確認）。
 pub fn read_zip_bundle_timed(path: &Path) -> Option<(ZipBundle, ZipTiming)> {
-    use std::io::{Seek, SeekFrom};
+    read_zip_bundle_fast_at(path).or_else(|| read_zip_bundle_slow_at(path))
+}
+
+/// 近道だけで読む。判断できなければ None（開けない場合も None）。
+fn read_zip_bundle_fast_at(path: &Path) -> Option<(ZipBundle, ZipTiming)> {
     let t_open = std::time::Instant::now();
     let mut file = std::fs::File::open(path).ok()?;
     let file_size = file.metadata().map(|m| m.len()).unwrap_or(0);
-    let open = t_open.elapsed();
-    if let Some(r) = read_zip_bundle_fast(&mut file, file_size, open) {
-        return Some(r);
-    }
-    file.seek(SeekFrom::Start(0)).ok()?;
-    read_zip_bundle_slow(file, file_size, open)
+    read_zip_bundle_fast(&mut file, file_size, t_open.elapsed())
+}
+
+/// 従来の経路だけで読む（zip クレートで開く）。
+fn read_zip_bundle_slow_at(path: &Path) -> Option<(ZipBundle, ZipTiming)> {
+    let t_open = std::time::Instant::now();
+    let file = std::fs::File::open(path).ok()?;
+    let file_size = file.metadata().map(|m| m.len()).unwrap_or(0);
+    read_zip_bundle_slow(file, file_size, t_open.elapsed())
 }
 
 /// 名前の分類の結果（どのエントリを読むか）。新旧の経路で共通。
@@ -604,16 +611,34 @@ pub fn read_zip_tag_sources(path: &Path) -> Option<TagSourceFiles> {
 ///
 /// マジック判定にかかった時間と、zipの計測値（zipとして開けたとき）も一緒に返す（速度調査用。呼び出し側は読み捨ててよい）。
 pub fn read_bundle_timed(path: &Path) -> (Option<ZipBundle>, std::time::Duration, Option<ZipTiming>) {
+    // 拡張子が .zip / .cbz なら、先頭を読むマジック判定を省き、近道（中央ディレクトリの自前解析）を先に試す。
+    // HDDの冷たい状態では、先頭読みが1件あたり約12msのシークになる。info.txt 等が末尾側にある zip は、この先頭読みが
+    // まるごと不要になる（先頭側にあるものは、本体の読みで先頭を読むので変わらない）。
+    // 近道は「zip の構造として整合して読めたとき」だけ答えるので、中身が別形式の偽装（7z・tar など）には答えず、
+    // 従来どおりマジック判定へ進む。
+    let trusted_ext = has_zip_extension(path);
+    if trusted_ext && let Some((b, tm)) = read_zip_bundle_fast_at(path) {
+        return (Some(b), std::time::Duration::ZERO, Some(tm));
+    }
     let t = std::time::Instant::now();
     let fmt = detect_format(path);
     let magic = t.elapsed();
     match fmt {
-        ArchiveFormat::Zip => match read_zip_bundle_timed(path) {
-            Some((b, tm)) => (Some(b), magic, Some(tm)),
-            None => (None, magic, None),
-        },
+        ArchiveFormat::Zip => {
+            // 近道は試し済みなら、従来の経路だけを使う（同じ失敗を繰り返さない）。
+            let r = if trusted_ext { read_zip_bundle_slow_at(path) } else { read_zip_bundle_timed(path) };
+            match r {
+                Some((b, tm)) => (Some(b), magic, Some(tm)),
+                None => (None, magic, None),
+            }
+        }
         _ => (None, magic, None),
     }
+}
+
+/// 拡張子が .zip / .cbz（大文字小文字は区別しない）か。
+fn has_zip_extension(path: &Path) -> bool {
+    path.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("zip") || e.eq_ignore_ascii_case("cbz"))
 }
 
 /// 形式を判定して info.txt の本文を読む。当面は zip/cbz のみ対応（他形式は None＝対象外）。
@@ -1141,5 +1166,59 @@ mod tests {
         let (_, slow) = fast_and_slow(&buf);
         assert!(slow.unwrap().tag.info_txt.is_some(), "zip クレートは差し替え後の名前 info.txt を採る");
         assert!(!assert_equivalent(&buf));
+    }
+
+    // ── マジック判定の省略（.zip / .cbz） ────────────────────────────────────────
+
+    fn temp_file(tag: &str, bytes: &[u8]) -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(format!("nekoviewer_magicskip_{}_{tag}", std::process::id()));
+        std::fs::write(&path, bytes).unwrap();
+        path
+    }
+
+    #[test]
+    fn zip_extension_skips_the_magic_read_and_gives_the_same_result() {
+        let bytes = zip_bytes(&[("1.jpg", b"x", Cm::Stored), ("info.txt", INFO, Cm::Deflated)], "c");
+        let want = fast_and_slow(&bytes).1;
+        for name in ["a.zip", "b.CBZ", "c.Zip"] {
+            let path = temp_file(name, &bytes);
+            let (bundle, magic, zip) = read_bundle_timed(&path);
+            let _ = std::fs::remove_file(&path);
+            assert_eq!(bundle, want, "{name}");
+            assert!(magic.is_zero(), "{name}: マジック判定を省く");
+            assert!(zip.is_some());
+        }
+        // 拡張子が zip 系でなければ、従来どおりマジック判定を通す（結果は同じ）。
+        let path = temp_file("d.dat", &bytes);
+        let (bundle, _, zip) = read_bundle_timed(&path);
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(bundle, want);
+        assert!(zip.is_some());
+    }
+
+    #[test]
+    fn zip_extension_never_answers_for_non_zip_contents_or_odd_layouts() {
+        // 拡張子だけ zip で中身が違う（テキスト・7z 風のマジック）。どちらも None（従来と同じ）。
+        let path = temp_file("fake1.zip", b"this is just text, not an archive at all");
+        assert_eq!(read_bundle_timed(&path).0, None);
+        let _ = std::fs::remove_file(&path);
+        let mut sevenz = vec![b'7', b'z', 0xBC, 0xAF, 0x27, 0x1C, 0, 4];
+        sevenz.extend_from_slice(&[0u8; 64]);
+        let path = temp_file("fake2.cbz", &sevenz);
+        assert_eq!(read_bundle_timed(&path).0, None);
+        let _ = std::fs::remove_file(&path);
+        // 先頭に余分なデータがある zip は、近道が答えず従来経路になる。結果は従来経路と同じ。
+        let mut junk = vec![0x11u8; 500];
+        junk.extend_from_slice(&zip_bytes(&[("info.txt", INFO, Cm::Deflated)], ""));
+        let want = fast_and_slow(&junk).1;
+        assert!(want.is_some());
+        let path = temp_file("junk.zip", &junk);
+        assert_eq!(read_bundle_timed(&path).0, want);
+        let _ = std::fs::remove_file(&path);
+        // 空のファイル・存在しないファイル。
+        let path = temp_file("empty.zip", b"");
+        assert_eq!(read_bundle_timed(&path).0, None);
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(read_bundle_timed(Path::new("/nonexistent/x.zip")).0, None);
     }
 }
