@@ -926,6 +926,10 @@ pub struct NekoviewApp {
     tag_chip_menu: Option<u64>,
     /// タグ検索タブの要素フィルタ欄の入力（保存しない）
     tag_search_filter: String,
+    /// タグ検索タブの要素フィルタ欄が、入力フォーカスを持ったまま描かれた最後のフレーム番号。
+    /// 直近のフレームなら、エクスプローラーのキー操作と、毎フレームのテキスト入力解除（`stop_text_input`）を止める
+    /// （タブを離れて欄が描かれなくなったら、自然に切れる）。`tag_search_filter_focused` で判定する。
+    tag_search_filter_focus_frame: Option<u64>,
     /// 再紐付けのバックグラウンド実行（結果の受け取り口）。実行中は Some
     relink_job: Option<mpsc::Receiver<crate::identity_relink::RelinkReport>>,
     /// 複数件の「お気に入り設定から外す」の確認待ちパス
@@ -1777,6 +1781,7 @@ impl NekoviewApp {
             tag_search_pending: None,
             tag_chip_menu: None,
             tag_search_filter: String::new(),
+            tag_search_filter_focus_frame: None,
             relink_job: None,
             favorite_unset_confirm: None,
             db_restore_confirm: None,

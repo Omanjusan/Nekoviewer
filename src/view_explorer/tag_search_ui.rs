@@ -10,8 +10,8 @@
 //! 捨てて最初からやり直す。ヒットは到着順に追記し、完了時に1回だけソートする。
 //! 前回の確認で見つからなかったファイルは一覧から外し、数だけ見出しに出す。
 //!
-//! 有効タグは `tag_search_enabled`（メイン未設定の疑似タグは `TAG_MAIN_UNSET_ID`）に
-//! セッション中だけ保持する。
+//! 有効タグは `tag_search_enabled` にセッション中だけ保持する。
+//! メインカテゴリの「未設定」チップは出さない（全件抽出になりがちなため封印。エンジン側の対応は残してある）。
 
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -19,7 +19,6 @@ use std::path::PathBuf;
 use crate::fs::archive;
 
 use crate::i18n;
-use crate::tag_manager::TAG_MAIN_UNSET_ID;
 use crate::tag_search::{TagHit, TagMatchMode, TagQuery, TagScanMsg};
 
 use super::panels::{tag_chip, tag_chip_with_x};
@@ -117,16 +116,16 @@ impl NekoviewApp {
         ui.scope_builder(egui::UiBuilder::new().max_rect(content), |ui| self.draw_tag_search_list(ui));
     }
 
-    /// 左ペイン本体。上から「OR/AND・クリア」「要素フィルタ」「有効なタグ一覧」を固定で置き、
-    /// その下に全カテゴリのチップ一覧（スクロール）を並べる。長い一覧の外に有効タグが隠れないようにするため。
+    /// 左ペイン本体。上から「OR/AND」「有効なタグ一覧（先頭にクリア）」を固定で置き、区切り線の下に「要素フィルタ」、その下に全カテゴリのチップ一覧（スクロール）を並べる。メインカテゴリの「未設定」は出さない。
+    /// 長い一覧の外に有効タグが隠れないようにするため。
     fn draw_tag_search_list(&mut self, ui: &mut egui::Ui) {
         ui.weak(i18n::t().tag_search_left_hint());
         ui.separator();
         let mut changed = false;
         changed |= self.draw_tag_search_mode_row(ui);
-        self.draw_tag_search_filter_row(ui);
         changed |= self.draw_tag_search_active_list(ui);
         ui.separator();
+        self.draw_tag_search_filter_row(ui);
         let mode = self.tag_match_mode();
         let filter = self.tag_search_filter.clone();
         egui::ScrollArea::vertical()
@@ -135,7 +134,6 @@ impl NekoviewApp {
             .show(ui, |ui| {
                 let full_w = ui.available_width();
                 // マスタ定義の借用とチップのトグルが衝突しないよう、先に描画対象を集める。
-                // メインカテゴリは先頭固定で、その先頭に「未設定」の疑似チップを置く。
                 let cats = self.tag_search_categories(&filter);
                 if cats.is_empty() && !filter.trim().is_empty() {
                     ui.weak(i18n::t().tag_search_no_match());
@@ -192,12 +190,17 @@ impl NekoviewApp {
         }
     }
 
+    /// 要素フィルタ欄が入力フォーカスを持っているか。直近（このフレームか1つ前）に描かれたときだけ true。
+    pub(super) fn tag_search_filter_focused(&self, ctx: &egui::Context) -> bool {
+        self.tag_search_filter_focus_frame.is_some_and(|f| ctx.cumulative_frame_nr().saturating_sub(f) <= 1)
+    }
+
     /// 現在の組み合わせ方（未保存=OR）。
     pub(super) fn tag_match_mode(&self) -> TagMatchMode {
         self.tab_positions.tag_search_mode.unwrap_or_default()
     }
 
-    /// OR/ANDのラジオと「クリア」。変更があれば true（呼び出し側が再走査する）。
+    /// OR/ANDのラジオ。変更があれば true（呼び出し側が再走査する）。
     fn draw_tag_search_mode_row(&mut self, ui: &mut egui::Ui) -> bool {
         let t = i18n::t();
         let mut changed = false;
@@ -210,13 +213,6 @@ impl NekoviewApp {
             if ui.radio(mode == TagMatchMode::And, t.tag_search_mode_and()).clicked() {
                 new_mode = TagMatchMode::And;
             }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let has_any = !self.tag_search_enabled.is_empty();
-                if ui.add_enabled(has_any, egui::Button::new(t.tag_search_clear())).clicked() {
-                    self.tag_search_enabled.clear();
-                    changed = true;
-                }
-            });
         });
         if new_mode != mode {
             // ANDへ戻したとき、すでに複数有効な単一選択カテゴリはその場では直さない（次にそのカテゴリを押したとき排他になる）。
@@ -229,37 +225,49 @@ impl NekoviewApp {
 
     /// 要素フィルタ欄（下のチップ一覧だけを絞る。保存しない）。
     fn draw_tag_search_filter_row(&mut self, ui: &mut egui::Ui) {
-        ui.add(
+        let resp = ui.add(
             egui::TextEdit::singleline(&mut self.tag_search_filter)
                 .hint_text(i18n::t().tag_search_filter_hint())
                 .desired_width(f32::INFINITY),
         );
+        // フォーカス中は、エクスプローラーのキー操作と毎フレームの入力解除を止める（panels.rs の描画後処理が読む）。
+        if resp.has_focus() {
+            self.tag_search_filter_focus_frame = Some(ui.ctx().cumulative_frame_nr());
+        }
     }
 
-    /// 「有効なタグ」一覧。×で個別に解除する。0件なら「未選択」。解除があれば true。
+    /// 「有効なタグ」一覧。先頭に「クリア」ボタン、続けて有効タグのチップ（×で個別に解除）を並べる。
+    /// 0件なら、クリア（グレー）の隣に「未選択」。クリアか解除があれば true。
     fn draw_tag_search_active_list(&mut self, ui: &mut egui::Ui) -> bool {
         let t = i18n::t();
         let items = self.tag_search_active_items();
         let mut removed = None;
+        let mut cleared = false;
         ui.add_space(2.0);
         ui.label(egui::RichText::new(t.tag_search_active_heading()).small().strong());
-        if items.is_empty() {
-            ui.weak(t.tag_search_active_none());
-        } else {
-            let full_w = ui.available_width();
-            egui::ScrollArea::vertical()
-                .id_salt("tag_search_active_scroll")
-                .max_height(TAG_SEARCH_ACTIVE_MAX_HEIGHT)
-                .auto_shrink([false, true])
-                .show(ui, |ui| {
-                    ui.horizontal_wrapped(|ui| {
-                        for (id, text, color) in &items {
-                            if tag_chip_with_x(ui, text, full_w, *color, contrasting_text_color(*color), *id) {
-                                removed = Some(*id);
-                            }
+        let full_w = ui.available_width();
+        egui::ScrollArea::vertical()
+            .id_salt("tag_search_active_scroll")
+            .max_height(TAG_SEARCH_ACTIVE_MAX_HEIGHT)
+            .auto_shrink([false, true])
+            .show(ui, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    if ui.add_enabled(!items.is_empty(), egui::Button::new(t.tag_search_clear())).clicked() {
+                        cleared = true;
+                    }
+                    if items.is_empty() {
+                        ui.weak(t.tag_search_active_none());
+                    }
+                    for (id, text, color) in &items {
+                        if tag_chip_with_x(ui, text, full_w, *color, contrasting_text_color(*color), *id) {
+                            removed = Some(*id);
                         }
-                    });
+                    }
                 });
+            });
+        if cleared {
+            self.tag_search_enabled.clear();
+            return true;
         }
         if let Some(id) = removed {
             self.tag_search_enabled.remove(&id);
@@ -268,14 +276,11 @@ impl NekoviewApp {
         false
     }
 
-    /// 有効タグの表示用一覧 `(id, 表示名, 色)`。カテゴリ登録順→要素順で、メインカテゴリの「未設定」を先頭に置く。
+    /// 有効タグの表示用一覧 `(id, 表示名, 色)`。カテゴリ登録順→要素順。
     /// マスタに無いid（削除済みtier）は出さない。
     fn tag_search_active_items(&self) -> Vec<(u64, String, egui::Color32)> {
         let mut out = Vec::new();
         for c in &self.tag_manager_categories {
-            if c.is_main && self.tag_search_enabled.contains(&TAG_MAIN_UNSET_ID) {
-                out.push((TAG_MAIN_UNSET_ID, i18n::t().tag_main_unset_label().to_string(), c.color));
-            }
             for tier in &c.tiers {
                 if let Some(name) = tier.element.as_ref().filter(|_| self.tag_search_enabled.contains(&tier.id)) {
                     out.push((tier.id, name.clone(), c.color));
@@ -286,15 +291,13 @@ impl NekoviewApp {
     }
 
     /// 一覧に出すカテゴリ `TagSearchCategory`。`filter` に当たるチップだけを残し、
-    /// 1つも残らないカテゴリは除く。メインカテゴリの先頭には「未設定」の疑似チップを置く。
+    /// 1つも残らないカテゴリは除く。
     fn tag_search_categories(&self, filter: &str) -> Vec<TagSearchCategory> {
         self.tag_manager_categories
             .iter()
             .filter_map(|c| {
+                // メインカテゴリの「未設定」は出さない（有効にすると台帳の大半が当たる全件抽出になりがちなため封印）。
                 let mut chips: Vec<(u64, String)> = Vec::new();
-                if c.is_main {
-                    chips.push((TAG_MAIN_UNSET_ID, i18n::t().tag_main_unset_label().to_string()));
-                }
                 chips.extend(c.tiers.iter().filter_map(|t| t.element.as_ref().map(|name| (t.id, name.clone()))));
                 // 排他は絞り込み前の全チップが対象（見えていないチップが有効なままにならないように）
                 let group: Vec<u64> = chips.iter().map(|(id, _)| *id).collect();

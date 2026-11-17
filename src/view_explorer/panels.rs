@@ -227,6 +227,7 @@ impl NekoviewApp {
             && self.tag_trial_dialog.is_none()
             && self.tree_sort_dialog.is_none()
             && !self.tag_manager_open
+            && !self.tag_search_filter_focused(&ctx)
         {
             self.handle_explorer_keys(&ctx);
         }
@@ -252,6 +253,8 @@ impl NekoviewApp {
             && self.favorite_detail_dialog.is_none()
             && !self.virtual_text_input_open()
             && !self.tag_manager_open
+            // タグ検索の要素フィルタ欄。許可しないと毎フレームここでフォーカスを外され、入力できない。
+            && !self.tag_search_filter_focused(&ctx)
         {
             ctx.memory_mut(|mem| mem.stop_text_input());
         }
