@@ -389,6 +389,34 @@ mod tests {
     }
 
     #[test]
+    fn clear_folder_thumbs_removes_every_thumb_row_and_keeps_other_records() {
+        let neko_dir = unique_test_neko_dir("clear_folder_thumbs");
+        let db = open_cache_db(&neko_dir, Path::new("/tmp/fake_source_dir_for_clear_folder_thumbs")).expect("db should open");
+        write_thumb(&db, "a.zip", 100, b"jpeg-a");
+        write_thumb(&db, "b.zip", 200, b"jpeg-b");
+        write_thumb_source(&db, "a.zip", Some("left\0pages/cover.jpg"));
+        // JPEG が無く生成元の記録だけ残っているファイルも、1件として数えて消す。
+        write_thumb_source(&db, "c.zip", None);
+        write_file_record(&db, "a.zip", 100, 1234);
+
+        assert_eq!(clear_folder_thumbs(&db), 3);
+
+        for name in ["a.zip", "b.zip", "c.zip"] {
+            assert!(read_thumb_unchecked(&db, name).is_none(), "{name}");
+            assert!(read_thumb_source(&db, name).is_none(), "{name}");
+        }
+        {
+            let db = db.lock().unwrap();
+            let tx = db.begin_read().unwrap();
+            let table = tx.open_table(FILES_TABLE).unwrap();
+            assert_eq!(table.get("a.zip").unwrap().unwrap().value(), (100, 1234), "ファイルの記録は残す");
+        }
+        // 空になった後に呼んでも 0 件で、壊れない。
+        assert_eq!(clear_folder_thumbs(&db), 0);
+        let _ = std::fs::remove_dir_all(&neko_dir);
+    }
+
+    #[test]
     fn source_change_keeps_old_blob_and_rejects_old_token() {
         let neko_dir = unique_test_neko_dir("thumb_source_race");
         let db = open_cache_db(&neko_dir, Path::new("/tmp/fake_thumb_source_race")).unwrap();
@@ -1170,6 +1198,55 @@ pub fn remove_thumbs(db: &Arc<Mutex<Database>>, filenames: &[String]) {
         for f in filenames { let _ = table.remove(f.as_str()); }
     }
     let _ = tx.commit();
+}
+
+/// サムネ系のテーブル1つの全行を消し、消した行のファイル名を `names` に足す。
+fn drain_thumb_table<V: redb::Value + 'static>(
+    tx: &redb::WriteTransaction,
+    def: TableDefinition<'static, &'static str, V>,
+    names: &mut std::collections::HashSet<String>,
+) {
+    let Ok(mut table) = tx.open_table(def) else { return };
+    let keys: Vec<String> = match table.iter() {
+        Ok(rows) => rows.filter_map(|r| r.ok()).map(|(k, _)| k.value().to_string()).collect(),
+        Err(_) => return,
+    };
+    for key in &keys {
+        let _ = table.remove(key.as_str());
+    }
+    names.extend(keys);
+}
+
+/// このフォルダ（のキャッシュDB）に貯めたサムネを、すべて破棄する。戻り値は破棄したファイル数。
+/// 消すのはサムネ本体と、その生成元・サイズ・フィルタ・状態・希望ソースだけ（ファイルの記録・ページ数・評価などは残す）。
+/// 次にそのフォルダを表示すると、サムネは未生成として作り直される。
+///
+/// サムネの拡縮アルゴリズムやサイズの設定を変えたあとに、作り込み済みのサムネを作り直す入口として使う
+/// （UIからは、アプリが開いている `cache_db` のハンドルを渡す）。起動引数 `--clear-thumbs` は
+/// `clear_dir_thumbs` 経由で呼ぶ。1トランザクションなので、途中で止まっても中途半端な状態は残らない。
+pub fn clear_folder_thumbs(db: &Arc<Mutex<Database>>) -> usize {
+    let Ok(db) = db.lock() else { return 0 };
+    let Ok(tx) = db.begin_write() else { return 0 };
+    let mut names = std::collections::HashSet::new();
+    drain_thumb_table(&tx, THUMBS_TABLE, &mut names);
+    drain_thumb_table(&tx, THUMB_SOURCES_TABLE, &mut names);
+    drain_thumb_table(&tx, THUMB_DESIRED_SOURCES_TABLE, &mut names);
+    drain_thumb_table(&tx, THUMB_EDGES_TABLE, &mut names);
+    drain_thumb_table(&tx, THUMB_FILTERS_TABLE, &mut names);
+    drain_thumb_table(&tx, THUMB_STATES_TABLE, &mut names);
+    if tx.commit().is_err() {
+        return 0;
+    }
+    names.len()
+}
+
+/// フォルダ `dir`（直下のみ。サブフォルダは別DB）のサムネを破棄する。キャッシュDBがまだ無ければ何もしない。
+/// 戻り値は、破棄したファイル数（DBが開けなければ None）。同じDBをアプリが既に開いていても、
+/// プロセス内のレジストリ経由で同じハンドルを使う（多重オープンにならない）。
+pub fn clear_dir_thumbs(dir: &Path, config: &AppConfig) -> Option<usize> {
+    let neko_dir = neko_dir_for(dir, config)?;
+    let db = open_cache_db_if_exists(&neko_dir, dir)?;
+    Some(clear_folder_thumbs(&db))
 }
 
 /// 旧JPEGを保持したまま、登録ページ変更をファイル単位でstale化する。

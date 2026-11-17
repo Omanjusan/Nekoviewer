@@ -225,6 +225,14 @@ fn main() {
         };
         let start_dir = cfg.resolve_start_dir(cli_dir, &state);
         log_common!("[startup] start_dir = {:?}, open_target = {:?}", start_dir, open_target);
+        // デバッグ用: 起動するフォルダのサムネを、ワーカーが動き出す前に破棄する（直下のみ）。
+        // 標準エラーへ必ず出す（`--clear-thumbs` を付けたときだけ実行されるので、うるさくない）。
+        if args.clear_thumbs {
+            match neko_dir::clear_dir_thumbs(&start_dir, &cfg) {
+                Some(n) => eprintln!("[startup] --clear-thumbs: {:?} のサムネを {} 件破棄した", start_dir, n),
+                None => eprintln!("[startup] --clear-thumbs: {:?} はキャッシュDBが無い（または開けない）ため何もしなかった", start_dir),
+            }
+        }
         // 走査対象は復帰先（実ツリー=start_dir、仮想フォルダタブ=ノードの実パス）。タブはCLI引数の固定後の値を見る。
         // 走査は別スレッドで走り、結果は標準出力に出る（起動は止めない）。
         if args.scan_layers {
@@ -395,6 +403,9 @@ struct CliArgs {
     cache_max_mb: Option<u64>,
     /// `--scan-layers`: 復帰先フォルダ直下のzipを別スレッドで走査し、層つきの中身を持つ最初の1件を標準出力に出す（テスト用）。
     scan_layers:  bool,
+    /// `--clear-thumbs`: 起動するフォルダ（位置引数があればその場所、無ければ最後に訪れたフォルダ）直下の
+    /// 生成済みサムネを、起動前に破棄する（デバッグ用。再生成とビューアー同時起動の兼ね合いを見る）。
+    clear_thumbs: bool,
 }
 
 impl CliArgs {
@@ -404,11 +415,14 @@ impl CliArgs {
         let mut start_path   = None::<PathBuf>;
         let mut cache_max_mb = None::<u64>;
         let mut scan_layers  = false;
+        let mut clear_thumbs = false;
 
         let mut it = std::env::args().skip(1);
         while let Some(arg) = it.next() {
             if arg == "--scan-layers" {
                 scan_layers = true;
+            } else if arg == "--clear-thumbs" {
+                clear_thumbs = true;
             } else if let Some(rest) = arg.strip_prefix("--cache-max-mb") {
                 cache_max_mb = Self::take_value(rest, &mut it);
             } else if !arg.starts_with('-') {
@@ -420,7 +434,7 @@ impl CliArgs {
             // 未知の --xxx オプションは無視
         }
 
-        Self { start_path, cache_max_mb, scan_layers }
+        Self { start_path, cache_max_mb, scan_layers, clear_thumbs }
     }
 
     fn take_value(rest: &str, it: &mut impl Iterator<Item = String>) -> Option<u64> {
