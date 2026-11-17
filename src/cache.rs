@@ -162,8 +162,19 @@ impl OpenArchive {
         match self {
             Self::Disk(a) => load_page_content(a, entry_name, filter, cache_budget_bytes, ring_bounds, frame_hard_limit_bytes, target_size, exif_enabled),
             Self::Fast(z) => {
+                let t_read = std::time::Instant::now();
                 let (buf, display_name) = z.load_bytes(entry_name)?;
-                decode_bytes_to_content(&buf, &display_name, filter, cache_budget_bytes, ring_bounds, frame_hard_limit_bytes, target_size, exif_enabled)
+                let read = t_read.elapsed();
+                let t_dec = std::time::Instant::now();
+                let content = decode_bytes_to_content(&buf, &display_name, filter, cache_budget_bytes, ring_bounds, frame_hard_limit_bytes, target_size, exif_enabled);
+                log_perf!(
+                    "[perf/open] ページ内訳 {} ディスク読み={:.1}ms サイズ={}KB デコード={:.1}ms",
+                    display_name,
+                    read.as_secs_f64() * 1000.0,
+                    buf.len() / 1024,
+                    t_dec.elapsed().as_secs_f64() * 1000.0,
+                );
+                content
             }
             Self::Mem(a)  => load_page_content(a, entry_name, filter, cache_budget_bytes, ring_bounds, frame_hard_limit_bytes, target_size, exif_enabled),
             Self::Extracted(map) => {
@@ -279,6 +290,7 @@ pub fn spawn_worker(filter: image::imageops::FilterType, num_threads: usize, ctx
                 let _ = take_last_page_meta();
                 let t_job = std::time::Instant::now();
                 let _fg = ForegroundIoGuard::begin();
+                let _page_io = PageIoGuard::begin();
                 let src_kind = match (&req.file_cache_entry, req.is_raw_file) {
                     (_, true) => "raw",
                     (Some(FileCacheEntry::Raw(_)), _) => "mem",
@@ -1621,6 +1633,55 @@ fn wait_foreground_idle() -> std::time::Duration {
     t.elapsed()
 }
 
+// ── ページ読みを、サムネバー用の丸読みより優先する仕組み ──────────────────────────
+// ビューアーのサムネバー（アーカイブ内サムネ）は、全ページ分を CPU 数のスレッドで並行して丸読みする。
+// 巨大なアニメ画像（GIF/WebP 数MB〜20MB）が多い本では、いま見ているページの読みが、同時刻の十数本の
+// 読みに埋もれて 1.5 秒かかっていた（計測: ディスク読み 1567ms・デコード 6ms）。
+// そこで、ページ用デコードワーカーが動いている間は、サムネワーカーは次のジョブを始めずに待つ。
+// すでに読み始めた分は止められないので、各ワーカーの1件ぶんは残る。
+
+/// ページ用デコードワーカーが処理中のジョブ数。
+static PAGE_IO_ACTIVE: AtomicUsize = AtomicUsize::new(0);
+/// ページ用デコードワーカーが最後にジョブを終えた時刻（`fg_epoch` からの経過ミリ秒）。
+static PAGE_IO_LAST_END_MS: AtomicU64 = AtomicU64::new(0);
+/// ページ読みが終わってから、サムネが次を始めるまでに空ける静けさ。ページ送りの連続の合間に割り込まないため。
+const PAGE_IO_QUIET_MS: u64 = 100;
+/// サムネが1件の前で待つ最大時間。ページ送りが続いても、サムネバーがいつまでも出ない事態は避ける。
+const PAGE_IO_WAIT_CAP: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// ページ用デコードワーカーが1ジョブ処理している間だけ生きる印。
+struct PageIoGuard;
+
+impl PageIoGuard {
+    fn begin() -> Self {
+        PAGE_IO_ACTIVE.fetch_add(1, Ordering::SeqCst);
+        Self
+    }
+}
+
+impl Drop for PageIoGuard {
+    fn drop(&mut self) {
+        PAGE_IO_LAST_END_MS.store(fg_now_ms(), Ordering::SeqCst);
+        PAGE_IO_ACTIVE.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// ページ読みが動いておらず、最後に終わってから `quiet_ms` たつまで待つ（最大 `cap`）。待った合計を返す。
+fn wait_page_jobs_idle(quiet_ms: u64, cap: std::time::Duration) -> std::time::Duration {
+    let t = std::time::Instant::now();
+    loop {
+        let since_end = fg_now_ms().saturating_sub(PAGE_IO_LAST_END_MS.load(Ordering::SeqCst));
+        if PAGE_IO_ACTIVE.load(Ordering::SeqCst) == 0 && since_end >= quiet_ms {
+            break;
+        }
+        if t.elapsed() >= cap {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(FG_IO_POLL_MS));
+    }
+    t.elapsed()
+}
+
 /// ファイルを区切りごとに読む。区切りの前にデコードワーカーの稼働を確認して待つ（画面表示を優先）。
 /// 返り値: (中身, 譲って待った合計)。読めなければ None。
 fn read_file_yielding(path: &std::path::Path) -> Option<(Vec<u8>, std::time::Duration)> {
@@ -2127,6 +2188,11 @@ pub fn spawn_entry_thumb_worker(filter: image::imageops::FilterType, num_threads
                 };
 
                 let target = Some((req.edge, req.edge));
+                // ページ読みを優先する（サムネバーの丸読みで、いま見ているページが遅れないように）。
+                let waited = wait_page_jobs_idle(PAGE_IO_QUIET_MS, PAGE_IO_WAIT_CAP);
+                if waited >= std::time::Duration::from_millis(50) {
+                    log_perf!("[perf/open] サムネ(アーカイブ内) index={} ページ読みを優先して待機={:.1}ms", req.original_index, waited.as_secs_f64() * 1000.0);
+                }
                 let _fg = ForegroundIoGuard::begin();
                 // サムネ用途でもframe0の保持を保証し、ビューアー用リング設定と独立させる。
                 let ring_bounds = (2, 2);
@@ -3663,6 +3729,24 @@ mod file_cache_yield_tests {
         assert_eq!(read_file_yielding(&empty).unwrap().0.len(), 0);
         assert!(read_file_yielding(&dir.join("none.bin")).is_none());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ページ読み中は待ち、終わって静かな時間がたてば抜ける。上限を超えたら待ちきらずに抜ける。
+    #[test]
+    fn wait_page_jobs_idle_blocks_while_page_job_active_and_honors_cap() {
+        let g = PageIoGuard::begin();
+        let handle = std::thread::spawn(|| wait_page_jobs_idle(PAGE_IO_QUIET_MS, std::time::Duration::from_secs(5)));
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        assert!(!handle.is_finished(), "ページ読み中は待ち続ける");
+        drop(g);
+        let waited = handle.join().unwrap();
+        assert!(waited >= std::time::Duration::from_millis(200), "終わった後も抜けるまで待つ: {waited:?}");
+
+        // 上限: ページ読みが続いていても、上限で抜ける。
+        let g = PageIoGuard::begin();
+        let waited = wait_page_jobs_idle(PAGE_IO_QUIET_MS, std::time::Duration::from_millis(120));
+        assert!(waited >= std::time::Duration::from_millis(120) && waited < std::time::Duration::from_secs(2), "{waited:?}");
+        drop(g);
     }
 
     /// ジョブ中は待ち、終わって静かな時間が過ぎれば抜ける。
