@@ -48,16 +48,20 @@ impl NekoviewApp {
         let rules_on = self.tag_rules.rules.iter().filter(|r| r.enabled).count();
         let rules_all = self.tag_rules.rules.len();
         let mut pick: Option<EntryPick> = None;
+        let mut close = false;
 
         let modal = self.explorer_modal(ctx, "tag_entry_menu").show(ctx, |ui| {
             ui.set_width(MENU_W);
-            ui.horizontal(|ui| {
-                ui.heading(ctext::menu_title());
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.weak(ctext::menu_scope(targets));
-                });
-            });
-            ui.add_space(8.0);
+            // 見出し: 左にタイトル、中央に対象の件数、右端に閉じるボタン。
+            let (head, _) = ui.allocate_exact_size(egui::vec2(MENU_W, 30.0), egui::Sense::hover());
+            let mut left = ui.new_child(egui::UiBuilder::new().max_rect(head).layout(egui::Layout::left_to_right(egui::Align::Center)));
+            left.heading(ctext::menu_title());
+            ui.painter().text(head.center(), egui::Align2::CENTER_CENTER, ctext::menu_scope(targets), egui::FontId::proportional(15.0), ui.visuals().weak_text_color());
+            let mut right = ui.new_child(egui::UiBuilder::new().max_rect(head).layout(egui::Layout::right_to_left(egui::Align::Center)));
+            if close_button(&mut right).on_hover_text(i18n::as_ja(|| ctext::menu_close_hint())).clicked() {
+                close = true;
+            }
+            ui.add_space(10.0);
 
             // 主導線。
             let reason = if trial {
@@ -71,7 +75,7 @@ impl NekoviewApp {
             ui.add_space(14.0);
 
             // 副導線（カード3枚）。
-            ui.label(egui::RichText::new(ctext::menu_group_label()).weak().small());
+            ui.label(egui::RichText::new(ctext::menu_group_label()).weak().size(13.0));
             ui.add_space(4.0);
             let gap = 10.0;
             let w = (MENU_W - gap * 2.0) / 3.0;
@@ -103,18 +107,18 @@ impl NekoviewApp {
                 EntryPick::Rules => self.tag_rules_open = true,
                 EntryPick::Edit => self.open_tag_manager_overlay(),
             }
-        } else if modal.should_close() {
+        } else if close || modal.should_close() {
             self.tag_entry_menu_open = false;
         }
     }
 }
 
 /// メニューの幅。
-const MENU_W: f32 = 600.0;
+const MENU_W: f32 = 640.0;
 /// 主導線の高さ。
-const MAIN_H: f32 = 84.0;
+const MAIN_H: f32 = 96.0;
 /// カードの高さ。
-const CARD_H: f32 = 160.0;
+const CARD_H: f32 = 188.0;
 const AMBER: egui::Color32 = egui::Color32::from_rgb(230, 160, 40);
 
 enum EntryPick {
@@ -122,6 +126,22 @@ enum EntryPick {
     Learn,
     Rules,
     Edit,
+}
+
+/// 閉じるボタン（「✕」）。フォントの字形に頼らず、線で描く（字形が無いと、四角になるため）。
+fn close_button(ui: &mut egui::Ui) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(28.0, 28.0), egui::Sense::click());
+    let vis = ui.visuals();
+    if resp.hovered() {
+        ui.painter().rect_filled(rect, 4.0, vis.widgets.hovered.weak_bg_fill);
+    }
+    let color = if resp.hovered() { vis.strong_text_color() } else { vis.text_color() };
+    let stroke = egui::Stroke::new(2.0, color);
+    let c = rect.center();
+    let d = 6.0;
+    ui.painter().line_segment([c + egui::vec2(-d, -d), c + egui::vec2(d, d)], stroke);
+    ui.painter().line_segment([c + egui::vec2(-d, d), c + egui::vec2(d, -d)], stroke);
+    resp
 }
 
 /// 主導線の大きな長方形。押せるときは塗りつぶし、押せないときは薄い塗りと枠だけにして、理由をホバーで出す。押されたら true。
@@ -138,10 +158,10 @@ fn main_button(ui: &mut egui::Ui, enabled: bool, reason: &str) -> bool {
     let painter = ui.painter();
     painter.rect(rect, 8.0, fill, stroke, egui::StrokeKind::Inside);
     let left = rect.left() + 24.0;
-    painter.text(egui::pos2(left, rect.center().y - 12.0), egui::Align2::LEFT_CENTER, ctext::menu_main_title(), egui::FontId::proportional(24.0), fg);
+    painter.text(egui::pos2(left, rect.center().y - 14.0), egui::Align2::LEFT_CENTER, ctext::menu_main_title(), egui::FontId::proportional(30.0), fg);
     let sub = if enabled { ctext::menu_main_sub() } else { ctext::menu_main_sub_disabled() };
-    painter.text(egui::pos2(left, rect.center().y + 16.0), egui::Align2::LEFT_CENTER, sub, egui::FontId::proportional(13.0), sub_fg);
-    painter.text(egui::pos2(rect.right() - 22.0, rect.center().y), egui::Align2::RIGHT_CENTER, "▶", egui::FontId::proportional(24.0), sub_fg);
+    painter.text(egui::pos2(left, rect.center().y + 20.0), egui::Align2::LEFT_CENTER, sub, egui::FontId::proportional(15.0), sub_fg);
+    painter.text(egui::pos2(rect.right() - 22.0, rect.center().y), egui::Align2::RIGHT_CENTER, "▶", egui::FontId::proportional(28.0), sub_fg);
     if !enabled {
         resp.on_hover_text(reason);
         return false;
@@ -159,13 +179,13 @@ fn card(ui: &mut egui::Ui, w: f32, title: &str, desc: &str, advice: Option<&str>
     let inner = rect.shrink(10.0);
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(egui::Layout::top_down(egui::Align::Min)));
     child.set_clip_rect(rect.intersect(ui.clip_rect()));
-    child.add(egui::Label::new(egui::RichText::new(title).strong()).wrap().selectable(false));
-    child.add(egui::Label::new(egui::RichText::new(desc).weak().small()).wrap().selectable(false));
+    child.add(egui::Label::new(egui::RichText::new(title).strong().size(17.0)).wrap().selectable(false));
+    child.add(egui::Label::new(egui::RichText::new(desc).weak().size(13.0)).wrap().selectable(false));
     if let Some(a) = advice {
-        child.add(egui::Label::new(egui::RichText::new(a).small().color(AMBER)).wrap().selectable(false));
+        child.add(egui::Label::new(egui::RichText::new(a).size(13.0).color(AMBER)).wrap().selectable(false));
     }
     if let Some((text, warn)) = chip {
-        let font = egui::TextStyle::Small.resolve(ui.style());
+        let font = egui::FontId::proportional(13.0);
         let color = if warn { AMBER } else { ui.visuals().text_color() };
         let galley = ui.painter().layout_no_wrap(text.to_string(), font, color);
         let pad = egui::vec2(8.0, 2.0);

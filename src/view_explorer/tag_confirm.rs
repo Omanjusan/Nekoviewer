@@ -612,7 +612,7 @@ impl NekoviewApp {
                 ui.separator();
                 ui.label(i18n::render(|t| t.tag_confirm_filter_label().to_string()));
                 ui.add(egui::TextEdit::singleline(&mut st.filter).desired_width(180.0).hint_text(i18n::render(|t| t.tag_confirm_filter_hint().to_string())));
-                if !st.filter.is_empty() && ui.small_button("✕").clicked() {
+                if !st.filter.is_empty() && ui.small_button("×").clicked() {
                     st.filter.clear();
                 }
                 if st.rebuild.is_some() {

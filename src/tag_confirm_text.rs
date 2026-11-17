@@ -548,6 +548,9 @@ pub(crate) fn menu_scope(n: usize) -> String {
         Lang::Chinese => format!("对象压缩包 {n}个"),
     })
 }
+pub(crate) fn menu_close_hint() -> &'static str {
+    i18n::tr("閉じる", "Close", "关闭")
+}
 pub(crate) fn menu_main_title() -> &'static str {
     i18n::tr("自動タグ抽出", "Auto tag extraction", "自动提取标签")
 }
@@ -2025,6 +2028,7 @@ mod i18n_coverage {
     fn plain_texts_are_translated_in_all_three_languages() {
         let all: Vec<(&str, fn() -> &'static str)> = vec![
         ("menu_title", menu_title),
+        ("menu_close_hint", menu_close_hint),
         ("menu_main_title", menu_main_title),
         ("menu_main_sub", menu_main_sub),
         ("menu_main_sub_disabled", menu_main_sub_disabled),
