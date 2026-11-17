@@ -237,12 +237,7 @@ impl FastZip {
     /// 次のどれかなら None（従来経路に任せる）: 中央ディレクトリを解析できない／名前を差し替える拡張がある／
     /// 暗号化・deflate/stored 以外の方式がある／画像・TXT の名前が CP437 の解釈を要する／同じ名前が複数ある。
     pub(crate) fn open(path: &Path) -> Option<Self> {
-        use super::zip_cd;
-        let mut file = std::fs::File::open(path).ok()?;
-        let cd = zip_cd::read_central_dir(&mut file)?;
-        if cd.entries.iter().any(|e| e.odd_name || e.flags & 0x41 != 0 || !matches!(e.method, 0 | 8)) {
-            return None;
-        }
+        let (file, cd) = Self::open_central(path)?;
         let mut by_name = std::collections::HashMap::new();
         for (i, e) in cd.entries.iter().enumerate() {
             if matches!(e.name_raw.last(), Some(b'/') | Some(b'\\')) {
@@ -258,6 +253,18 @@ impl FastZip {
             }
         }
         Some(Self { file, cd, by_name })
+    }
+
+    /// 中央ディレクトリだけを読む部分（名前の対応表は作らない）。暗号化・stored/deflate 以外の方式・
+    /// 名前を差し替える拡張があれば None。
+    fn open_central(path: &Path) -> Option<(std::fs::File, super::zip_cd::CentralDir)> {
+        use super::zip_cd;
+        let mut file = std::fs::File::open(path).ok()?;
+        let cd = zip_cd::read_central_dir(&mut file)?;
+        if cd.entries.iter().any(|e| e.odd_name || e.flags & 0x41 != 0 || !matches!(e.method, 0 | 8)) {
+            return None;
+        }
+        Some((file, cd))
     }
 
     /// `load_bytes_from_archive` と同じ結果（生バイトと表示名。TXTページは目印つきペイロード）を返す。
@@ -457,6 +464,39 @@ fn read_u32<R: Read>(r: &mut R) -> Option<u32> {
     let mut buf = [0u8; 4];
     r.read_exact(&mut buf).ok()?;
     Some(u32::from_le_bytes(buf))
+}
+
+/// 先頭画像を、中央ディレクトリの近道で読む（`load_first_image_via_archive` と同じ選び方）。
+/// 中央ディレクトリ順で、最初にデコードできた画像。画像が1枚も無ければ、最初のTXTの1ページ目。
+/// 近道で判断できない zip なら None（呼び出し側が `ZipArchive` 経由に戻る）。`Some(None)` は「判断した上で、画像が無い」。
+/// 順読みが使えない zip（先頭のローカルヘッダが順読み向きでない形）が、`ZipArchive::new` の全ローカルヘッダのシークで
+/// 冷たいHDDなら 11〜14 秒かかっていたのを避けるためのもの。
+pub(crate) fn load_first_image_fast(path: &Path) -> Option<Option<image::DynamicImage>> {
+    use super::zip_cd;
+    let (mut file, cd) = FastZip::open_central(path)?;
+    let is_dir = |raw: &[u8]| matches!(raw.last(), Some(b'/') | Some(b'\\'));
+    for e in &cd.entries {
+        if is_dir(&e.name_raw) || !is_image_entry_raw(&e.name_raw) {
+            continue;
+        }
+        // 読めない・デコードできないエントリは、次へ（従来経路と同じ）。
+        let Ok(buf) = zip_cd::read_entry_limited(&mut file, &cd, e, u64::MAX) else { continue };
+        if let Some(img) = decode_image(&buf) {
+            return Some(Some(img));
+        }
+    }
+    if super::text_page::options().enabled {
+        for e in &cd.entries {
+            if is_dir(&e.name_raw) || !super::text_page::is_text_entry_raw(&e.name_raw) {
+                continue;
+            }
+            let limit = super::text_page::options().read_limit;
+            let declared_larger = e.uncomp_size as u64 > limit as u64;
+            let Ok(body) = zip_cd::read_entry_limited(&mut file, &cd, e, limit as u64) else { continue };
+            return Some(decode_image(&super::text_page::wrap_entry(body, 0, declared_larger)));
+        }
+    }
+    Some(None)
 }
 
 /// フォールバック: ZipArchive 経由（末尾シークあり）
@@ -685,6 +725,47 @@ mod text_page_tests {
         assert_eq!((via_public.width(), via_public.height()), (via_archive.width(), via_archive.height()));
         assert_eq!(crate::fs::archive::detect_format(&cbz), crate::fs::archive::ArchiveFormat::Zip);
         let _ = std::fs::remove_file(cbz);
+    }
+
+    /// 先頭画像の近道が、従来経路（ZipArchive）と同じ画像を選ぶこと（フォルダ・非画像・壊れた画像が先頭にあっても）。
+    #[test]
+    fn first_image_fast_picks_the_same_image_as_the_zip_crate() {
+        let t = ::zip::DateTime::from_date_and_time(2024, 3, 4, 5, 6, 8).unwrap();
+        let wide = {
+            let img = image::RgbImage::from_pixel(40, 8, image::Rgb([1, 2, 3]));
+            let mut out = std::io::Cursor::new(Vec::new());
+            img.write_to(&mut out, image::ImageFormat::Jpeg).unwrap();
+            out.into_inner()
+        };
+        let path = make_zip_dated("first_fast", &[
+            ("dir/", vec![], t),
+            ("readme.bin", b"not an image".to_vec(), t),
+            ("broken.jpg", b"this is not a jpeg".to_vec(), t),
+            ("p1.jpg", wide.clone(), t),
+            ("p2.jpg", jpeg(), t),
+        ]);
+        let fast = load_first_image_fast(&path).expect("近道で判断できる").expect("画像がある");
+        let slow = load_first_image_via_archive(&path).expect("従来経路");
+        assert_eq!((fast.width(), fast.height()), (slow.width(), slow.height()));
+        assert_eq!(fast.width(), 40, "壊れた画像は飛ばして、最初に読めた p1.jpg");
+        let _ = std::fs::remove_file(path);
+    }
+
+    /// 画像が無ければTXTの1ページ目。何も無ければ「判断した上で無し」。
+    #[test]
+    fn first_image_fast_falls_back_to_the_first_text_page_and_reports_none() {
+        let t = ::zip::DateTime::from_date_and_time(2024, 3, 4, 5, 6, 8).unwrap();
+        text_page::set_options(TextPageOptions::default());
+        let txt = make_zip_dated("first_txt", &[("a.txt", b"hello world".to_vec(), t)]);
+        let fast = load_first_image_fast(&txt).expect("近道").expect("TXTの1ページ目");
+        let slow = load_first_image_via_archive(&txt).expect("従来経路");
+        assert_eq!((fast.width(), fast.height()), (slow.width(), slow.height()));
+        let none = make_zip_dated("first_none", &[("x.bin", b"zz".to_vec(), t)]);
+        assert!(matches!(load_first_image_fast(&none), Some(None)));
+        assert!(load_first_image_via_archive(&none).is_none());
+        for p in [txt, none] {
+            let _ = std::fs::remove_file(p);
+        }
     }
 
     /// 拡張子は zip でも中身が zip でないものは、これまでどおり形式判定を通る（zip とは覚えない）。

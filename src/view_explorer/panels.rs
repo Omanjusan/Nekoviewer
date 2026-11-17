@@ -3075,6 +3075,10 @@ impl NekoviewApp {
                         })
                     }),
                 }).is_ok() {
+                    // 計測（perf ログ ON のときだけ）: 画面に見えているセルの直接リクエスト（キューを通らない優先経路）。
+                    let (active, limit) = (self.thumb_pending.len(), self.config.resolved_decode_threads());
+                    let (since_input, since_open) = (self.thumb_last_user_activity.elapsed(), self.thumb_queue_built_at.elapsed());
+                    self.trace_thumb_sent(path, "可視", active, limit, since_input, since_open);
                     self.thumb_pending.insert(path.clone());
                 }
             }

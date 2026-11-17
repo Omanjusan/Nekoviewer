@@ -271,6 +271,17 @@ pub fn load_first_image(path: &Path) -> Option<image::DynamicImage> {
                 }
             }
             let t_seq = t.elapsed();
+            // 順読みが使えない zip は、まず中央ディレクトリの近道で読む（`ZipArchive::new` は冷たいHDDで秒単位）。
+            // 近道で判断できなければ、これまでどおり ZipArchive 経由に戻る。
+            if let Some(result) = zip::load_first_image_fast(path) {
+                crate::log_perf!(
+                    "[perf/thumb] 先頭画像 順読み失敗({:.1}ms)→近道(中央ディレクトリ)={:.1}ms {}",
+                    t_seq.as_secs_f64() * 1000.0,
+                    (t.elapsed() - t_seq).as_secs_f64() * 1000.0,
+                    if result.is_some() { "OK" } else { "画像なし" },
+                );
+                return result;
+            }
             let img = zip::load_first_image_via_archive(path);
             crate::log_perf!(
                 "[perf/thumb] 先頭画像 順読み失敗({:.1}ms)→ZipArchive経由={:.1}ms {}",
