@@ -1711,6 +1711,7 @@ impl NekoviewApp {
         let (req_tx, res_rx) = spawn_worker(config.viewer_filter.to_image_filter(), config.resolved_decode_threads(), ctx.clone(), cache_max, ring_bounds, frame_hard_limit_bytes);
         let (thumb_req_tx, thumb_res_rx, thumb_session) =
             spawn_thumb_worker(config.resolved_decode_threads(), ctx.clone());
+        crate::cache::set_virt_perf_cache_root(config.cache_root());
         let (entry_thumb_req_tx, entry_thumb_res_rx) = spawn_entry_thumb_worker(config.thumb_filter.to_image_filter(), config.resolved_decode_threads(), ctx.clone());
         let (file_cache_req_tx, file_cache_res_rx) = spawn_file_cache_worker(ctx.clone(), file_cache_max);
         // gvfs の一覧はバックグラウンド取得（起動後に poll_gvfs_list で反映）。起動フォルダが
