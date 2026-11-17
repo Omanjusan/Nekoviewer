@@ -830,21 +830,16 @@ impl NekoviewApp {
                     self.open_settings();
                 }
 
-                // ── 言語（設定ボタンの左隣）。「日中（テスト）」は、日本語と中国語を併記して、訳を確認するための表示 ──
+                // ── 言語（設定ボタンの左隣）。1つのボタンで、押すたびに 日本語 → English → 中文 → 日中（テスト）の順に切り替える。
+                // 「日中（テスト）」は、日本語と中国語を併記して、訳を確認するための表示 ──
                 ui.separator();
-                ui.horizontal(|ui| {
-                    let current = i18n::display();
-                    let mut picked = None;
-                    for d in i18n::Display::ALL {
-                        if ui.add(egui::Button::new(d.native_name()).selected(current == d)).clicked() && current != d {
-                            picked = Some(d);
-                        }
-                    }
-                    if let Some(d) = picked {
-                        i18n::set_display(d);
-                        self.persist_state();
-                    }
-                });
+                let current = i18n::display();
+                let next = current.next();
+                let r_lang = ui.button(format!("[{}]", current.native_name())).on_hover_text(format!("{} → {}", current.native_name(), next.native_name()));
+                if r_lang.clicked() {
+                    i18n::set_display(next);
+                    self.persist_state();
+                }
 
                 ui.separator();
 

@@ -11547,6 +11547,7 @@ pub enum Display {
 }
 
 impl Display {
+    #[cfg(test)]
     pub const ALL: [Display; 4] = [Display::Ja, Display::En, Display::Zh, Display::JaZh];
 
     pub fn native_name(self) -> &'static str {
@@ -11555,6 +11556,16 @@ impl Display {
             Display::En => "English",
             Display::Zh => "中文",
             Display::JaZh => "日中（テスト）",
+        }
+    }
+
+    /// 切り替えボタンを押したときの、次の表示（日本語 → English → 中文 → 日中（テスト）→ 日本語）。
+    pub fn next(self) -> Display {
+        match self {
+            Display::Ja => Display::En,
+            Display::En => Display::Zh,
+            Display::Zh => Display::JaZh,
+            Display::JaZh => Display::Ja,
         }
     }
 
@@ -11671,6 +11682,18 @@ mod display_tests {
         }
         assert_eq!(Display::from_code("zzz"), Display::Ja);
         assert_eq!(Display::from_code(""), Display::Ja);
+    }
+
+    #[test]
+    fn next_cycles_through_all_four_and_returns() {
+        let mut d = Display::Ja;
+        let mut seen = vec![d];
+        for _ in 0..4 {
+            d = d.next();
+            seen.push(d);
+        }
+        assert_eq!(seen, vec![Display::Ja, Display::En, Display::Zh, Display::JaZh, Display::Ja]);
+        assert_eq!(Display::ALL.len(), 4);
     }
 
     #[test]
