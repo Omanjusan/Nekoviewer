@@ -236,11 +236,16 @@ impl NekoviewApp {
         self.select_anchor = None;
     }
 
-    /// 検索結果の表示中に、実体が無いと分かったファイルを表示中の一覧から外す。
+    /// 中央の一覧が、台帳由来の横断結果（検索の結果、またはタグ検索の結果）になっているか。
+    pub(super) fn in_ledger_result_view(&self) -> bool {
+        self.viewing_search.is_some() || self.tag_search_view_open
+    }
+
+    /// 台帳由来の結果（検索・タグ検索）の表示中に、実体が無いと分かったファイルを表示中の一覧から外す。
     /// 履歴（`entry.hits`）とDBは変えない（ファイルが戻れば、開き直した時に再び出る）。
     /// 並びは保ったまま詰め、選択・複数選択・グリッドカーソルは同じファイルを指し直す。
     pub(super) fn drop_missing_from_search_view(&mut self, missing: &std::collections::HashSet<PathBuf>) {
-        if self.viewing_search.is_none() {
+        if !self.in_ledger_result_view() {
             return;
         }
         let before = std::mem::take(&mut self.archives);
