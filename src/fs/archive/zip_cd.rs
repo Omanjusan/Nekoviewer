@@ -40,6 +40,9 @@ pub(crate) struct CdEntry {
     pub uncomp_size: u32,
     /// ローカルヘッダの先頭位置（ファイル先頭から）。
     pub header_offset: u32,
+    /// MS-DOS 形式の更新時刻・更新日（日付キーの算出用）。
+    pub mod_time: u16,
+    pub mod_date: u16,
     /// 名前を差し替える拡張（Unicode パス）がある、または拡張領域が読み取れない。
     /// 名前の解釈が zip クレートと食い違いうるので、呼び出し側は従来経路に戻す。
     pub odd_name: bool,
@@ -159,6 +162,7 @@ pub(crate) fn read_central_dir_with<R: Read + Seek>(reader: &mut R, tail_read: u
         }
         let flags = u16_at(cd, p + 8);
         let method = u16_at(cd, p + 10);
+        let (mod_time, mod_date) = (u16_at(cd, p + 12), u16_at(cd, p + 14));
         let crc32 = u32_at(cd, p + 16);
         let (comp_size, uncomp_size) = (u32_at(cd, p + 20), u32_at(cd, p + 24));
         let (name_len, extra_len, cmt_len) = (u16_at(cd, p + 28) as usize, u16_at(cd, p + 30) as usize, u16_at(cd, p + 32) as usize);
@@ -184,6 +188,8 @@ pub(crate) fn read_central_dir_with<R: Read + Seek>(reader: &mut R, tail_read: u
             comp_size,
             uncomp_size,
             header_offset,
+            mod_time,
+            mod_date,
             odd_name: extra_is_odd(extra),
         });
         p = end;

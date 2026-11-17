@@ -20,6 +20,23 @@ pub(super) fn decode_zip_name(raw: &[u8]) -> String {
 /// アーカイブ(ZIP)内の全画像をフラット化して返す。進捗通知版。
 /// エントリ数は`archive.len()`で開始前に確定するため`ArchiveOpenProgress::Determinate`で件数ベースの進捗を通知できる。
 pub(crate) fn list_images_zip_with_progress(path: &Path, on_progress: &mut ProgressCallback) -> Option<Vec<ImageEntry>> {
+    // 近道: 末尾の中央ディレクトリだけを読んで一覧を作る（`ZipArchive::new` は全エントリのローカルヘッダを
+    // シークで読むので、HDDの冷たい状態では秒単位かかる）。判断できなければ従来経路へ戻る。
+    let t_fast = std::time::Instant::now();
+    match list_images_zip_fast(path, on_progress) {
+        FastList::Done(result) => {
+            crate::log_perf!("[perf/open] 一覧 近道(中央ディレクトリ)={:.1}ms", t_fast.elapsed().as_secs_f64() * 1000.0);
+            return result;
+        }
+        FastList::Fallback => {
+            crate::log_perf!("[perf/open] 一覧 近道は使えず従来経路へ（{:.1}ms 消費）", t_fast.elapsed().as_secs_f64() * 1000.0);
+        }
+    }
+    list_images_zip_slow(path, on_progress)
+}
+
+/// 従来経路: zip クレートで開いて一覧を作る（全エントリのローカルヘッダを読むので、冷たいHDDでは遅い）。
+fn list_images_zip_slow(path: &Path, on_progress: &mut ProgressCallback) -> Option<Vec<ImageEntry>> {
     let Ok(file) = std::fs::File::open(path) else {
         return Some(Vec::new());
     };
@@ -60,13 +77,7 @@ pub(crate) fn list_images_zip_with_progress(path: &Path, on_progress: &mut Progr
             // TXTは画像ページ。分割モードのときだけ本文を読んでページ数を決める（切り詰めなら1ページで読まない）。
             let pages = if text_opts.split {
                 let declared_larger = entry.size() > text_opts.read_limit as u64;
-                match read_limited_entry(entry, text_opts.read_limit) {
-                    Some(body) => {
-                        let truncated = declared_larger || body.len() >= text_opts.read_limit;
-                        super::text_page::count_pages(&body, truncated, &text_opts)
-                    }
-                    None => 1,
-                }
+                text_page_count(read_limited_entry(entry, text_opts.read_limit), declared_larger, &text_opts)
             } else {
                 1
             };
@@ -83,6 +94,114 @@ pub(crate) fn list_images_zip_with_progress(path: &Path, on_progress: &mut Progr
     }
 
     Some(super::finalize_entries(pairs))
+}
+
+/// 近道の結果。`Fallback` は「判断できない。従来経路で作り直す」。
+enum FastList {
+    Fallback,
+    /// 一覧ができた（`None` はキャンセル）。
+    Done(Option<Vec<ImageEntry>>),
+}
+
+/// TXTエントリの本文（読めなければ None）からページ数を決める（分割モード用。従来経路と近道で共通）。
+fn text_page_count(body: Option<Vec<u8>>, declared_larger: bool, opts: &super::text_page::TextPageOptions) -> usize {
+    match body {
+        Some(body) => {
+            let truncated = declared_larger || body.len() >= opts.read_limit;
+            super::text_page::count_pages(&body, truncated, opts)
+        }
+        None => 1,
+    }
+}
+
+/// MS-DOS 形式の日付・時刻から日付ソートキーを作る。zip クレートの `DateTime::try_from_msdos` と同じ範囲検査で、
+/// 範囲外は 0（従来経路の `last_modified()` が None のときと同じ）。
+fn dos_date_key(date: u16, time: u16) -> u64 {
+    let year = (date >> 9) as u64 + 1980;
+    let month = ((date >> 5) & 0xF) as u64;
+    let day = (date & 0x1F) as u64;
+    let hour = (time >> 11) as u64;
+    let minute = ((time >> 5) & 0x3F) as u64;
+    let second = ((time & 0x1F) << 1) as u64;
+    let is_leap = (year % 4 == 0) && ((year % 25 != 0) || (year % 16 == 0));
+    let max_day = match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if is_leap => 29,
+        2 => 28,
+        _ => return 0,
+    };
+    if day < 1 || day > max_day || hour > 23 || minute > 59 || second > 60 {
+        return 0;
+    }
+    let second = second.min(58); // exFAT は閏秒を持てない（zip クレートも同じ）
+    year * 10_000_000_000 + month * 100_000_000 + day * 1_000_000 + hour * 10_000 + minute * 100 + second
+}
+
+/// 中央ディレクトリだけで一覧を作る。結果は `list_images_zip_with_progress` の従来経路と同じになる。
+/// 次のどれかなら `Fallback`（従来経路が結果を決める）:
+/// 中央ディレクトリを自前で解析できない（ZIP64・複数ディスク・不整合など）／名前を差し替える拡張がある／
+/// 暗号化・deflate/stored 以外の方式のエントリがある／UTF-8 フラグの無い非ASCII名の画像・TXT（CP437 の解釈が要る）／
+/// TXT本文の読みに失敗した。
+/// 注意: 従来経路は `ZipArchive::new` が全ローカルヘッダを検査するため、ローカルヘッダだけが壊れた zip は
+/// 「開けない（無効アーカイブ）」になる。近道は一覧を作れてしまい、ページ読み込み時に失敗する。
+fn list_images_zip_fast(path: &Path, on_progress: &mut ProgressCallback) -> FastList {
+    use super::zip_cd;
+    let Ok(mut file) = std::fs::File::open(path) else { return FastList::Fallback };
+    let Some(cd) = zip_cd::read_central_dir(&mut file) else { return FastList::Fallback };
+    if cd.entries.iter().any(|e| e.odd_name || e.flags & 0x41 != 0 || !matches!(e.method, 0 | 8)) {
+        return FastList::Fallback;
+    }
+
+    let total = cd.entries.len();
+    let text_opts = super::text_page::options();
+    let mut pairs: Vec<(String, String, u64)> = Vec::new();
+    for (i, e) in cd.entries.iter().enumerate() {
+        if !on_progress(ArchiveOpenProgress::Determinate { current: i, total }) {
+            return FastList::Done(None);
+        }
+        let raw = &e.name_raw;
+        // is_dir: 名前の最後の文字が / か \（どの文字コードでも最後のバイトで決まる）。
+        if matches!(raw.last(), Some(b'/') | Some(b'\\')) {
+            continue;
+        }
+        let is_text = text_opts.enabled && super::text_page::is_text_entry_raw(raw);
+        if !is_image_entry_raw(raw) && !is_text {
+            continue;
+        }
+        // zip クレートの `name()`: UTF-8 フラグがあれば UTF-8、なければ CP437。ASCII ならどちらも同じ。
+        let entry_name = if e.flags & (1 << 11) != 0 {
+            String::from_utf8_lossy(raw).into_owned()
+        } else if raw.is_ascii() {
+            String::from_utf8_lossy(raw).into_owned()
+        } else {
+            return FastList::Fallback;
+        };
+        let display_name = decode_zip_name(raw);
+        let date_key = dos_date_key(e.mod_date, e.mod_time);
+        if is_text {
+            let pages = if text_opts.split {
+                let declared_larger = e.uncomp_size as u64 > text_opts.read_limit as u64;
+                let body = match zip_cd::read_entry_limited(&mut file, &cd, e, text_opts.read_limit as u64) {
+                    Ok(body) => Some(body),
+                    Err(()) => return FastList::Fallback,
+                };
+                text_page_count(body, declared_larger, &text_opts)
+            } else {
+                1
+            };
+            for page in 0..pages {
+                pairs.push((
+                    super::text_page::page_display_name(&display_name, page),
+                    super::text_page::page_entry_name(&entry_name, page),
+                    date_key,
+                ));
+            }
+        } else {
+            pairs.push((display_name, entry_name, date_key));
+        }
+    }
+    FastList::Done(Some(super::finalize_entries(pairs)))
 }
 
 /// 開済みの ZipArchive からエントリの生バイトと表示名を返す（デコードしない）
@@ -316,6 +435,88 @@ mod text_page_tests {
         path
     }
 
+    type Key = (String, String, u64, usize);
+
+    fn keys(v: Vec<ImageEntry>) -> Vec<Key> {
+        v.into_iter().map(|e| (e.display_name, e.entry_name, e.date_key, e.stored_index)).collect()
+    }
+
+    /// 近道（中央ディレクトリ）と従来経路（zip クレート）で、一覧が完全に一致すること。
+    fn assert_fast_equals_slow(path: &std::path::Path) {
+        let FastList::Done(Some(fast)) = list_images_zip_fast(path, &mut |_| true) else {
+            panic!("近道が使えるはずの zip: {path:?}");
+        };
+        let slow = list_images_zip_slow(path, &mut |_| true).unwrap();
+        assert_eq!(keys(fast), keys(slow));
+    }
+
+    /// 日付つきで書く（日付キーの一致も確かめるため）。
+    fn make_zip_dated(tag: &str, files: &[(&str, Vec<u8>, ::zip::DateTime)]) -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(format!("nekoviewer_fastlist_{}_{tag}.zip", std::process::id()));
+        let mut w = ::zip::ZipWriter::new(std::fs::File::create(&path).unwrap());
+        for (n, d, t) in files {
+            if n.ends_with('/') {
+                w.add_directory(*n, ::zip::write::SimpleFileOptions::default().last_modified_time(*t)).unwrap();
+            } else {
+                w.start_file(*n, ::zip::write::SimpleFileOptions::default().last_modified_time(*t)).unwrap();
+                w.write_all(d).unwrap();
+            }
+        }
+        w.finish().unwrap();
+        path
+    }
+
+    #[test]
+    fn fast_list_matches_slow_for_names_dirs_dates_and_collisions() {
+        let t = |y, mo, d, h, mi, s| ::zip::DateTime::from_date_and_time(y, mo, d, h, mi, s).unwrap();
+        let path = make_zip_dated("plain", &[
+            ("dir/", vec![], t(2020, 1, 2, 3, 4, 5)),
+            ("dir/b.jpg", jpeg(), t(2024, 5, 6, 7, 8, 9)),
+            ("other/b.jpg", jpeg(), t(2024, 12, 31, 23, 59, 58)),
+            ("A.JPG", jpeg(), t(1980, 1, 1, 0, 0, 0)),
+            ("日本語/ページ1.png", jpeg(), t(2023, 2, 28, 12, 0, 2)),
+            ("x.bin", b"zz".to_vec(), t(2021, 3, 4, 5, 6, 8)),
+            ("info.txt", b"hello".to_vec(), t(2022, 7, 7, 7, 7, 6)),
+        ]);
+        assert_fast_equals_slow(&path);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn fast_list_falls_back_for_non_ascii_names_without_utf8_flag() {
+        let t = ::zip::DateTime::from_date_and_time(2024, 1, 1, 0, 0, 0).unwrap();
+        let path = make_zip_dated("cp437", &[("éé.jpg", jpeg(), t)]);
+        // UTF-8 フラグ（bit11）を、中央ディレクトリとローカルヘッダの両方から落とす。
+        let mut bytes = std::fs::read(&path).unwrap();
+        for i in 0..bytes.len().saturating_sub(10) {
+            if bytes[i..i + 4] == [0x50, 0x4B, 0x01, 0x02] {
+                bytes[i + 9] &= !0x08;
+            } else if bytes[i..i + 4] == [0x50, 0x4B, 0x03, 0x04] {
+                bytes[i + 7] &= !0x08;
+            }
+        }
+        std::fs::write(&path, &bytes).unwrap();
+        assert!(matches!(list_images_zip_fast(&path, &mut |_| true), FastList::Fallback), "CP437 の解釈が要る名前は従来経路に任せる");
+        // 公開関数は従来経路の結果を返す。
+        let via_public = keys(list_images_zip_with_progress(&path, &mut |_| true).unwrap());
+        let slow = keys(list_images_zip_slow(&path, &mut |_| true).unwrap());
+        assert_eq!(via_public, slow);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn dos_date_key_matches_zip_crate_including_invalid_values() {
+        for date in [0u16, 0x0021, 0x5821, 0x58A1, 0x5ADF, 0x2A5F, 0xFFFF, 0x4E9D /*2019-12-29*/, 0x5841 /*2024-02-01*/, 0x585C /*2024-02-28*/, 0x585D /*2024-02-29*/, 0x585E] {
+            for time in [0u16, 0x7FFF, 0xBF7D, 0xFFFF, 0xC000, 0x0780, 0x00BE, 0x001F, 0x001E] {
+                let expect = ::zip::DateTime::try_from_msdos(date, time).map_or(0u64, |dt| {
+                    (dt.year() as u64) * 10_000_000_000 + (dt.month() as u64) * 100_000_000 + (dt.day() as u64) * 1_000_000
+                        + (dt.hour() as u64) * 10_000 + (dt.minute() as u64) * 100 + (dt.second() as u64)
+                });
+                assert_eq!(dos_date_key(date, time), expect, "date={date:#06x} time={time:#06x}");
+            }
+        }
+    }
+
     /// 設定は全体で共有なので、設定を変えるテストは1つにまとめて直列に走らせ、最後に既定へ戻す。
     #[test]
     fn txt_entries_become_pages_in_listing_loading_and_thumbnail() {
@@ -329,6 +530,7 @@ mod text_page_tests {
         // 既定（切り詰め・有効）: txt は1エントリ。
         text_page::set_options(TextPageOptions::default());
         let entries = list_images_zip_with_progress(&path, &mut |_| true).unwrap();
+        assert_fast_equals_slow(&path);
         let names: Vec<_> = entries.iter().map(|e| e.display_name.as_str()).collect();
         assert_eq!(names, ["0001.jpg", "note.TXT"]);
         let txt = entries.iter().find(|e| text_page::is_text_entry_name(&e.entry_name)).unwrap();
@@ -349,6 +551,7 @@ mod text_page_tests {
         // 分割: 同じTXTが複数ページになり、各ページが読める。
         text_page::set_options(TextPageOptions { split: true, height_limit: 1000, ..Default::default() });
         let entries = list_images_zip_with_progress(&path, &mut |_| true).unwrap();
+        assert_fast_equals_slow(&path);
         let txt_pages: Vec<_> = entries.iter().filter(|e| text_page::is_text_entry_name(&e.entry_name)).collect();
         assert!(txt_pages.len() > 3, "400行は1000pxの高さでは複数ページ: {}", txt_pages.len());
         assert_eq!(txt_pages[0].display_name, "note.TXT");
